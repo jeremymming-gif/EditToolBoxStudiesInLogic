@@ -83,7 +83,10 @@ print("\n── (b) 文档里引用的路径必须存在 ──")
 # 公开仓里就是仓库根 README.md）。**用 ENGINE.parent 推**，不写目录字面量 ——
 # 否则改名脚本会把字面量一起改掉，公开仓里就找不到文件了（2026-10-15 实测）。
 ROOT_README = ENGINE.parent / "README.md"
-DOC_FILES = [ENGINE / "README.md", REPO / "AGENTS.md", ENGINE / "HANDOFF.md", ROOT_README]
+# 使用说明（面向编辑的操作手册）也纳入：它最容易过时，且写满了路径。
+TOOL_MANUAL = ENGINE.parent / "使用说明.md"
+DOC_FILES = [ENGINE / "README.md", REPO / "AGENTS.md", ENGINE / "HANDOFF.md",
+             ROOT_README, TOOL_MANUAL]
 OPTIONAL_DOCS = {REPO / "AGENTS.md", ENGINE / "HANDOFF.md"}
 DOC_FILES += sorted((ENGINE / "docs").rglob("*.md"))
 PREFIXES = ("Engine/", "slcn/", "tools/", "tests/", "docs/", "编辑笔记/")

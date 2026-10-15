@@ -130,7 +130,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 
 **占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-16 01:33:19`；`HEAD` = `60f67f8`；`git status --porcelain` **3** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-16 01:40:56`；`HEAD` = `62589b5`；`git status --porcelain` **3** 行
 <!-- AUTO:STATE:END -->
 
 ---
