@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+"""Windows 外壳与引擎之间的桥梁（第 89 条）——**不开窗口**的测试。
+
+为什么能不开窗口就测：`engine.py` / `settings.py` 里**没有一行 tkinter**
+（那是刻意的设计，见 `engine.py` 开头）。界面只负责「取值 → 调这两个模块 → 显示日志」，
+所以逻辑部分在 mac / Linux / CI 上都能验。
+
+钉住四件事：
+  (a) 引擎与解释器的定位顺序（环境变量 → 打包形态 → 开发形态）；
+  (b) 拼出来的命令行**与 `Engine/docs/ENGINE_API.md` 的契约一致**（参数名、顺序、布尔开关）；
+  (c) **密钥绝不进命令行**（只在环境变量里）；UTF-8 / 无缓冲 / vendor 也都设好；
+  (d) 真跑一次：用桥梁调 `mergepdf.py` 合并一个假期目录，逐行日志能收到、退出码正确。
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+
+SHELL = pathlib.Path(__file__).resolve().parent.parent
+REPO = SHELL.parent.parent
+sys.path.insert(0, str(SHELL))
+
+import engine as E  # noqa: E402
+import settings as S  # noqa: E402
+
+pass_n = 0
+fails: list[str] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    global pass_n
+    if ok:
+        pass_n += 1
+        print(f"PASS  {name}" + (f"  {detail}" if detail else ""))
+    else:
+        fails.append(name)
+        print(f"FAIL  {name}  {detail}")
+
+
+def clear_env(*names: str) -> dict:
+    return {n: os.environ.pop(n, "") for n in names}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("── (a) 定位引擎与解释器 ──")
+eng = E.slcn_engine()
+check("(a) 开发形态能找到 `../Engine`（仓库里 sources-win/ 与 Engine/ 并列）",
+      eng is not None and os.path.isfile(os.path.join(eng, "convert.py")), f"{eng}")
+check("(a) 找的是**绝对路径**", bool(eng) and os.path.isabs(eng))
+check("(a) `slcn_python()` 认得当前解释器（外壳自己就是 Python 跑的）",
+      E.slcn_python() is not None, f"{E.slcn_python()}")
+
+saved = clear_env("SLCN_ENGINE")
+try:
+    os.environ["SLCN_ENGINE"] = "/tmp/绝对不存在的引擎目录"
+    check("(a) `SLCN_ENGINE` 指到不存在的目录 → 忽略它，继续按开发形态找",
+          E.slcn_engine() == eng, f"{E.slcn_engine()}")
+    os.environ["SLCN_ENGINE"] = str(pathlib.Path(eng))
+    check("(a) `SLCN_ENGINE` 指对了 → 就按它来", E.slcn_engine() == eng)
+finally:
+    if saved["SLCN_ENGINE"]:
+        os.environ["SLCN_ENGINE"] = saved["SLCN_ENGINE"]
+    else:
+        os.environ.pop("SLCN_ENGINE", None)
+
+st = E.status()
+check("(a) `status()` 在本机是「可用」的（有引擎目录 + 有 Python）", st.ok, st.describe())
+check("(a) `describe()` 把运行方式写清楚", "引擎目录" in st.describe(), st.describe())
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (b) 拼命令行：必须与 ENGINE_API 的契约一致 ──")
+c = E.convert_call(source=r"C:\稿\张三.docx", out=r"D:\产物", compile_pdf=True,
+                   verify_refs=True, vol="5", issue="90")
+check("(b) 初排转换：入口是 convert.py 且用 `--source/--out`",
+      c.argv[1].endswith("convert.py") and "--source" in c.argv and "--out" in c.argv,
+      c.display)
+check("(b) 布尔开关只在勾选时出现（--compile / --verify-refs）",
+      "--compile" in c.argv and "--verify-refs" in c.argv and "--clean" not in c.argv)
+check("(b) 出版信息按 `--vol 5 --issue 90` 传", "--vol" in c.argv and "--issue" in c.argv)
+check("(b) 路径**原样传**（不自己加引号，交给 subprocess 处理空格）",
+      r"C:\稿\张三.docx" in c.argv, f"{c.argv}")
+
+c2 = E.checkbib_call(returned=r"C:\稿\reference.bib", merge_into=r"D:\产物\01 张三\reference.bib")
+check("(b) 回读校验：`--returned` + `--merge-into`",
+      c2.entry == "checkbib.py" and "--returned" in c2.argv and "--merge-into" in c2.argv)
+check("(b) 没给的可选参数**不出现**（--original/--tex/--out）",
+      "--original" not in c2.argv and "--tex" not in c2.argv and "--out" not in c2.argv)
+
+c3 = E.merge_call(folder=r"E:\期\2026年第5期(90)", editors_page=True, nest_outlines=True)
+check("(b) 合并：`--folder` + 两个开关",
+      c3.entry == "mergepdf.py" and "--folder" in c3.argv
+      and "--editors-page" in c3.argv and "--nest-outlines" in c3.argv
+      and "--back-cover" not in c3.argv)
+check("(b) 三个入口名字都在 `ENTRIES` 里（打包 dispatcher 认这三个）",
+      set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py"}, f"{E.ENTRIES}")
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (c) 环境变量：UTF-8 + 无缓冲 + vendor + **密钥不进 argv** ──")
+API = {"base": "https://api.example.com", "key": "sk-1234567890", "model": "m-1",
+       "thinking": "off", "maxTokens": "4096", "webSearch": True}
+env = E.env_for_run(API)
+check("(c) `PYTHONUNBUFFERED=1`（否则界面看着像卡死）", env.get("PYTHONUNBUFFERED") == "1")
+check("(c) `PYTHONIOENCODING=utf-8`（Windows 控制台默认 cp936，中文会乱码）",
+      env.get("PYTHONIOENCODING") == "utf-8")
+check("(c) `PYTHONPATH` 带上引擎自己的 vendor（pypdf/pypinyin/lxml）",
+      os.path.join(eng, "vendor") in env.get("PYTHONPATH", ""), env.get("PYTHONPATH", "")[:80])
+check("(c) 密钥进了环境变量 `SLCN_LLM_KEY`", env.get("SLCN_LLM_KEY") == "sk-1234567890")
+check("(c) 其余 AI 字段也对得上（base/model/thinking/maxTokens/websearch）",
+      env.get("SLCN_LLM_BASE") == "https://api.example.com"
+      and env.get("SLCN_LLM_MODEL") == "m-1"
+      and env.get("SLCN_LLM_THINKING") == "off"
+      and env.get("SLCN_LLM_MAX_TOKENS") == "4096"
+      and env.get("SLCN_LLM_WEB_SEARCH") == "1")
+for call in (c, c2, c3):
+    check(f"(c) **密钥绝不出现在 argv 里**（{call.entry}）",
+          "sk-1234567890" not in call.display and "SLCN_LLM_KEY" not in call.display)
+check("(c) 没填的 AI 字段不设环境变量（不许塞空串把引擎默认值顶掉）",
+      "SLCN_LLM_SEARCH_TOOL" not in E.env_for_run({"base": "x"}))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (d) 配置读写（密钥只落本地、显示打码）──")
+tmp = tempfile.mkdtemp(prefix="slcn_win_cfg_")
+saved_dir = os.environ.get("APPDATA")
+try:
+    os.environ["APPDATA"] = tmp          # Windows 分支：%APPDATA%\EditToolBox\settings.json
+    if sys.platform.startswith("win"):
+        p = S.config_path()
+        check("(d) 配置路径在 %APPDATA%\\EditToolBox 下",
+              p.startswith(tmp) and p.endswith(os.path.join("EditToolBox", "settings.json")), p)
+        cfg = S.load()
+        check("(d) 文件不存在时给默认值（不抛）", cfg["api"]["key"] == "" and cfg["options"]["convertCompile"])
+        cfg["api"]["key"] = "sk-abcdefgh"
+        written = S.save(cfg)
+        check("(d) 保存后能读回来", S.load()["api"]["key"] == "sk-abcdefgh", written)
+        mode = os.stat(written).st_mode & 0o777
+        check("(d) 权限 0600（里面有密钥）", mode == 0o600, oct(mode))
+        open(written, "w", encoding="utf-8").write("{ 坏掉的 json")
+        check("(d) 配置坏了 → 回默认值，不让界面起不来", S.load()["api"]["key"] == "")
+    else:
+        print("SKIP  (d) 配置目录分支只在 Windows 上走；mac 上按 Library/Application Support 走")
+        cfg = S.load()
+        check("(d) mac 上也能算出配置路径（开发时看得到文件在哪）",
+              S.config_path().endswith("settings.json"), S.config_path())
+finally:
+    if saved_dir is None:
+        os.environ.pop("APPDATA", None)
+    else:
+        os.environ["APPDATA"] = saved_dir
+    shutil.rmtree(tmp, ignore_errors=True)
+
+check("(d) `mask_key` 只留前 4 位", S.mask_key("sk-abcdefgh") == "sk-a…", S.mask_key("sk-abcdefgh"))
+check("(d) 空 key 打码后还是空（界面不留 `…` 这种迷惑占位）", S.mask_key("") == "")
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (e) 真跑一次：桥梁 → mergepdf.py（引擎的实时日志要能收到）──")
+from pypdf import PdfWriter  # noqa: E402
+
+
+def mk(path, pages):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    w = PdfWriter()
+    for _ in range(pages):
+        w.add_blank_page(width=200, height=300)
+    with open(path, "wb") as fh:
+        w.write(fh)
+
+
+work = tempfile.mkdtemp(prefix="slcn_win_run_")
+mk(f"{work}/扉页.pdf", 1)
+mk(f"{work}/000 目录/Chinese Content.pdf", 1)
+mk(f"{work}/01 A_Author/A_Author.pdf", 2)
+out = os.path.join(work, "merged.pdf")
+lines: list[str] = []
+call = E.merge_call(folder=work, out=out, editors_page=False)
+code = E.run_call(call, on_line=lines.append)
+check("(e) 退出码 0", code == 0, f"rc={code}")
+check("(e) 逐行收到了日志（不是攒到最后一次性来）", len(lines) >= 3, f"{len(lines)} 行")
+check("(e) 收到契约行 `完成。合并文件：…（共 N 页）`",
+      any(ln.startswith("完成。合并文件：") and "（共 4 页）" in ln for ln in lines),
+      f"{[ln for ln in lines if ln.startswith('完成')]}")
+check("(e) 产物真的写出来了", os.path.exists(out))
+check("(e) 中文日志没有乱码（收到的是正常汉字）",
+      any("文件夹路径" in ln for ln in lines), f"{lines[:3]}")
+
+bad = E.EngineCall([sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"], "x", "假入口")
+check("(e) 非 0 退出码如实返回（界面靠它判成败）", E.run_call(bad, on_line=lines.append) == 3)
+check("(e) `on_proc` 能拿到进程对象（「停止」按钮要用）",
+      (lambda box: (E.run_call(bad, on_line=lambda _: None, on_proc=lambda p: box.append(p)),
+                    bool(box))[1])([]) is True)
+
+shutil.rmtree(work, ignore_errors=True)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (f) 界面文件：语法/导入检查（不开窗口）──")
+main_py = SHELL / "main.py"
+src = main_py.read_text(encoding="utf-8")
+import ast  # noqa: E402
+ast.parse(src)
+check("(f) `main.py` 语法正确", True)
+check("(f) 界面里**没有**复制引擎逻辑（不 import pypdf / 不自己拼 PDF）",
+      "pypdf" not in src and "PdfWriter" not in src)
+check("(f) 界面把逻辑都委托给 `engine.py`（三个入口各一处调用）",
+      all(f"E.{fn}_call(" in src for fn in ("convert", "checkbib", "merge")), "")
+check("(f) 保留了原版的中文交互（浏览/运行/停止 + 底部日志框）",
+      all(k in src for k in ("浏览", "运行", "停止", "运行日志")))
+check("(f) 界面线程与工作线程分开（Tkinter 不是线程安全的，日志靠队列回传）",
+      "threading.Thread" in src and "queue.Queue" in src and "after(" in src)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (g) 真开一次窗口（控件参数写错只有这一步抓得到）──")
+
+
+def _tk_python() -> str | None:
+    """找一个**带 tkinter** 的解释器：优先当前解释器，其次 Apple 自带的 3.9。"""
+    for cand in (sys.executable, "/usr/bin/python3"):
+        try:
+            r = subprocess.run([cand, "-c", "import tkinter"],
+                               capture_output=True, timeout=60)
+            if r.returncode == 0:
+                return cand
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+import subprocess  # noqa: E402
+import textwrap  # noqa: E402
+
+tkpy = _tk_python()
+if tkpy is None:
+    print("SKIP  (g) 本机没有带 tkinter 的解释器（Windows 上跑得到）")
+else:
+    prog = textwrap.dedent("""
+        import os, sys
+        sys.path.insert(0, os.getcwd())
+        import main as M
+        app = M.MainWindow()
+        tabs = [app.tab_control.tab(i, "text") for i in range(len(app.tab_control.tabs()))]
+        app.log("自检：写一行日志")
+        app.after(700, app.destroy)
+        app.mainloop()
+        print("窗口建成")
+        print("标签页：" + "|".join(tabs))
+    """)
+    env2 = dict(os.environ)
+    env2["PYTHONPATH"] = str(REPO / "Engine" / "vendor")
+    r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True,
+                       env=env2, cwd=str(SHELL), timeout=180)
+    out = r.stdout or ""
+    if r.returncode != 0 and ("no display" in (r.stderr or "") or "TclError" in (r.stderr or "")):
+        print(f"SKIP  (g) 没有可用显示器/窗口服务：{(r.stderr or '').strip().splitlines()[-1:]}")
+    else:
+        check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
+              r.returncode == 0 and "窗口建成" in out,
+              f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
+        check("(g) 四个标签页都在（初排转换 / 文献回读校验 / 合并文件 / 设置）",
+              "初排转换|文献回读校验|合并文件|设置" in out, out.strip()[-80:])
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n" + "=" * 66)
+if fails:
+    print(f"失败 {len(fails)} 项：{fails}")
+    sys.exit(1)
+print(f"全部 {pass_n} 项断言通过")
+print("失败 0 项（全部通过）")
+sys.exit(0)

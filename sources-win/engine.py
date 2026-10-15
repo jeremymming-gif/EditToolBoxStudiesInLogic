@@ -1,0 +1,254 @@
+"""Windows 外壳与引擎之间的**唯一**桥梁（不含任何界面代码）。
+
+为什么单独一个模块、而且**不许 import tkinter**：
+  1. 逻辑要能**离开窗口测试** —— `tests/test_bridge.py` 在 mac/CI 上跑得动，
+     不必有显示器、不必真开窗口；
+  2. 界面只负责「取值 → 拼参数 → 显示日志」，这条纪律与 mac 外壳一致
+     （见 `Engine/docs/ENGINE_API.md`「外壳的义务」）。
+
+**引擎怎么找**（与 mac 外壳同样的思路，但 Windows 上没有 Xcode/Homebrew 那套路径）：
+  `slcn_engine()` 依次尝试
+    ① 环境变量 `SLCN_ENGINE`（指到 `Engine/` 目录）
+    ② **打包形态**：本 exe 同级的 `Engine/`（PyInstaller 会把它放进 `_MEIPASS` 或旁边）
+    ③ 开发形态：本文件上一级的 `../Engine/`（仓库里 `sources-win/` 与 `Engine/` 并列）
+  `slcn_python()` 依次尝试
+    ① 环境变量 `SLCN_PYTHON`
+    ② 已经装了 Python 的开发机：`python` / `python3` / Windows 的 `py` 启动器
+    ③ **冻结引擎**：`SLCNEngine.exe`（把三个 CLI 冻成一个 exe，见 `Engine/engine_main.py`）
+  —— 顺序上「先找真 Python」是因为开发机上改完代码就能验证；发布包走 ③，用户机器上不需要装 Python。
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+
+#: 三个 CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）
+ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py")
+
+
+# ── 定位引擎与解释器 ─────────────────────────────────────────────────────
+
+def _shell_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def slcn_engine() -> str | None:
+    """找到 `Engine/` 目录（内含 `convert.py`），找不到返回 None。"""
+    cands: list[str] = []
+    env = os.environ.get("SLCN_ENGINE", "").strip()
+    if env:
+        cands.append(env)
+    if getattr(sys, "frozen", False):                      # PyInstaller 打包后的形态
+        cands.append(os.path.join(os.path.dirname(sys.executable), "Engine"))
+        cands.append(os.path.join(getattr(sys, "_MEIPASS", ""), "Engine"))
+    cands.append(os.path.join(os.path.dirname(_shell_dir()), "Engine"))   # 开发形态
+    for c in cands:
+        if c and os.path.isfile(os.path.join(c, "convert.py")):
+            return os.path.abspath(c)
+    return None
+
+
+def slcn_python() -> str | None:
+    """找到能跑引擎的 Python 解释器；找不到返回 None（此时应改用冻结引擎 exe）。"""
+    env = os.environ.get("SLCN_PYTHON", "").strip()
+    if env and os.path.exists(env):
+        return env
+    if not getattr(sys, "frozen", False):
+        return sys.executable                               # 外壳自己就是 Python 跑的
+    for name in ("python", "python3", "py"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def frozen_engine_exe() -> str | None:
+    """冻结引擎 exe（`SLCNEngine.exe`）：把三个 CLI 打成一个可执行文件，用户不必装 Python。"""
+    env = os.environ.get("SLCN_ENGINE_EXE", "").strip()
+    if env and os.path.exists(env):
+        return env
+    names = ("SLCNEngine.exe", "SLCNEngine")
+    for base in (os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else _shell_dir(),
+                 _shell_dir(),
+                 slcn_engine() or ""):
+        for n in names:
+            p = os.path.join(base, n) if base else ""
+            if p and os.path.exists(p):
+                return os.path.abspath(p)
+    return None
+
+
+# ── 拼命令行（纯函数，测试直接打这些）──────────────────────────────────
+
+@dataclass
+class EngineCall:
+    """一次引擎调用的全部信息（**密钥不在这里**，见 `env_for_run`）。"""
+    argv: list[str]
+    entry: str
+    label: str
+
+    @property
+    def display(self) -> str:
+        return " ".join(self.argv)
+
+
+def _base_cmd(entry: str) -> list[str] | None:
+    exe = frozen_engine_exe()
+    engine = slcn_engine()
+    if exe:
+        # 冻结形态：`SLCNEngine.exe convert.py --source …`（见 Engine/engine_main.py）
+        return [exe, entry]
+    if not engine:
+        return None
+    py = slcn_python()
+    if not py:
+        return None
+    return [py, os.path.join(engine, entry)]
+
+
+def convert_call(*, source: str, out: str, compile_pdf: bool = False,
+                 clean: bool = False, verify_refs: bool = False,
+                 source_pdf: bool = False, bib: str = "", metadata: str = "",
+                 vol: str = "", issue: str = "", year: str = "",
+                 lang: str = "", extra: str = "") -> EngineCall:
+    """「初排转换」：`convert.py --source … --out …`（参数与 mac 界面一致）。"""
+    cmd = _base_cmd("convert.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--source", source, "--out", out]
+    for flag, on in (("--compile", compile_pdf), ("--clean", clean),
+                     ("--verify-refs", verify_refs), ("--source-pdf", source_pdf)):
+        if on:
+            cmd.append(flag)
+    if bib:
+        cmd += ["--bib", bib]
+    if metadata:
+        cmd += ["--metadata", metadata]
+    for flag, val in (("--vol", vol), ("--issue", issue), ("--year", year), ("--lang", lang)):
+        if val:
+            cmd += [flag, val]
+    if extra.strip():
+        cmd += extra.split()
+    return EngineCall(cmd, "convert.py", "初排转换")
+
+
+def checkbib_call(*, returned: str, original: str = "", tex: str = "",
+                  merge_into: str = "", out: str = "") -> EngineCall:
+    """「文献回读校验」：`checkbib.py --returned … [--merge-into …]`。"""
+    cmd = _base_cmd("checkbib.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--returned", returned]
+    if original:
+        cmd += ["--original", original]
+    if tex:
+        cmd += ["--tex", tex]
+    if merge_into:
+        cmd += ["--merge-into", merge_into]
+    if out:
+        cmd += ["--out", out]
+    return EngineCall(cmd, "checkbib.py", "文献回读校验")
+
+
+def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
+               editors_page: bool = False, back_cover: bool = False) -> EngineCall:
+    """「合并文件」：`mergepdf.py --folder …`（把原 Windows 版的合并规则换成引擎那份）。"""
+    cmd = _base_cmd("mergepdf.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--folder", folder]
+    if out:
+        cmd += ["--out", out]
+    for flag, on in (("--nest-outlines", nest_outlines), ("--editors-page", editors_page),
+                     ("--back-cover", back_cover)):
+        if on:
+            cmd.append(flag)
+    return EngineCall(cmd, "mergepdf.py", "合并文件")
+
+
+# ── 环境变量与执行 ───────────────────────────────────────────────────────
+
+def env_for_run(api: dict | None = None, engine: str | None = None) -> dict:
+    """子进程的环境：UTF-8、无缓冲、vendor 依赖，以及**只走环境变量的密钥**。
+
+    ⚠️ 密钥**绝不进 argv**：命令行参数在任务管理器 / `wmic process` 里谁都能看见。
+    """
+    env = dict(os.environ)
+    engine = engine or slcn_engine()
+    if engine:
+        vendor = os.path.join(engine, "vendor")
+        env["PYTHONPATH"] = vendor + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONUNBUFFERED"] = "1"          # 否则日志按块缓冲，界面看着像卡死
+    env["PYTHONIOENCODING"] = "utf-8"      # Windows 控制台默认 cp936，中文会乱码/报错
+    api = api or {}
+    for key, var in (("base", "SLCN_LLM_BASE"), ("key", "SLCN_LLM_KEY"),
+                     ("model", "SLCN_LLM_MODEL"), ("protocol", "SLCN_LLM_PROTOCOL"),
+                     ("searchTool", "SLCN_LLM_SEARCH_TOOL"),
+                     ("responsesPath", "SLCN_LLM_RESPONSES_PATH")):
+        val = str(api.get(key, "") or "").strip()
+        if val:
+            env[var] = val
+    if api.get("thinking"):
+        env["SLCN_LLM_THINKING"] = str(api["thinking"])
+    if api.get("maxTokens"):
+        env["SLCN_LLM_MAX_TOKENS"] = str(api["maxTokens"])
+    if api.get("webSearch"):
+        env["SLCN_LLM_WEB_SEARCH"] = "1"
+    return env
+
+
+def run_call(call: EngineCall, *, on_line=None, cwd: str | None = None,
+             api: dict | None = None, on_proc=None) -> int:
+    """跑一次引擎调用，逐行回调日志；返回退出码（**只看 0 / 非 0**）。
+
+    `stderr` 合并进 `stdout`：引擎的致命错误走 stderr，编辑在同一个日志框里才看得见。
+    `on_proc(proc)` 在进程刚起来时回调 —— 界面拿它做「停止」按钮（`proc.terminate()`）。
+    """
+    env = env_for_run(api)
+    proc = subprocess.Popen(
+        call.argv, cwd=cwd or None, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),   # Windows：别弹黑框
+    )
+    if on_proc:
+        on_proc(proc)
+    assert proc.stdout is not None
+    for line in proc.stdout:                       # 逐行读 = 实时进度（第 82 条）
+        if on_line:
+            on_line(line.rstrip("\n"))
+    proc.wait()
+    return proc.returncode
+
+
+@dataclass
+class EngineStatus:
+    """给「设置」页显示的引擎状态。"""
+    engine_dir: str | None = None
+    python: str | None = None
+    frozen_exe: str | None = None
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+    def describe(self) -> str:
+        if self.engine_dir is None and self.frozen_exe is None:
+            return "❌ 没找到引擎"
+        how = f"冻结引擎 {self.frozen_exe}" if self.frozen_exe else f"Python {self.python}"
+        return f"✅ 引擎目录 {self.engine_dir}；运行方式：{how}"
+
+
+def status() -> EngineStatus:
+    st = EngineStatus(engine_dir=slcn_engine(), python=slcn_python(),
+                      frozen_exe=frozen_engine_exe())
+    if st.engine_dir is None and st.frozen_exe is None:
+        st.problems.append("找不到 Engine 目录（可用环境变量 SLCN_ENGINE 指定）")
+    if st.frozen_exe is None and st.python is None:
+        st.problems.append("既没有冻结引擎 exe，也没有可用的 Python 解释器")
+    return st

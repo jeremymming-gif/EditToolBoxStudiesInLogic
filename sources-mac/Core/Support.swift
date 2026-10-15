@@ -1,0 +1,312 @@
+import Foundation
+
+enum ToolboxError: LocalizedError {
+    case cannotOpenPDF(String)
+    case cannotWrite(String)
+    case toolMissing(String)
+    case notADirectory(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotOpenPDF(let p): return "无法打开 PDF：\(p)"
+        case .cannotWrite(let p): return "无法写入：\(p)"
+        case .toolMissing(let t): return "未找到命令 \(t)（请确认已安装 TeX Live / MacTeX）"
+        case .notADirectory(let p): return "路径不是文件夹：\(p)"
+        }
+    }
+}
+
+/// 路径与文件的小工具。原程序的路径拼接、glob、时间戳都集中在这里。
+enum PathKit {
+
+    static func exists(_ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: path)
+    }
+
+    static func isDirectory(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        let ok = FileManager.default.fileExists(atPath: path, isDirectory: &isDir)
+        return ok && isDir.boolValue
+    }
+
+    static func join(_ a: String, _ b: String) -> String {
+        (a as NSString).appendingPathComponent(b)
+    }
+
+    /// 把用户输入整理成绝对路径（支持 ~ 展开、去掉首尾空白）
+    static func normalize(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        let standardized = (expanded as NSString).standardizingPath
+        guard !standardized.hasPrefix("/") else { return standardized }
+        // 相对路径：按当前工作目录补成绝对路径。
+        // 否则「上一期目录在哪」「总第 N 期是几」这类靠目录名推断的逻辑会失效。
+        return (FileManager.default.currentDirectoryPath as NSString)
+            .appendingPathComponent(standardized)
+    }
+
+    /// 等价于 Python 的 glob.glob(dir + '/[0-9][0-9]*')：
+    /// 取名字以两位以上数字开头的条目。
+    ///
+    /// ★ 与原版的差异：原版依赖文件系统返回顺序，这里显式排序。
+    ///   原版在 Windows 上恰好按 NTFS 顺序拿到 01…10，而在 macOS 上目录顺序不保证，
+    ///   所以必须排序才能保证合并后的页序正确。
+    static func numberedEntries(in dir: String) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        return names
+            .filter { $0.range(of: "^[0-9][0-9]", options: .regularExpression) != nil }
+            .sorted()
+    }
+
+    /// 对应 strftime。默认格式与原版生成合并文件名时一致。
+    static func timestamp(_ format: String = "yyyy_MM_dd_HH_mm_ss") -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = format
+        return formatter.string(from: Date())
+    }
+
+    static func readText(_ path: String) throws -> String {
+        try String(contentsOfFile: path, encoding: .utf8)
+    }
+
+    static func writeText(_ text: String, to path: String) throws {
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
+/// 调用外部命令（XeLaTeX、biber 等）。
+///
+/// ★ 与原版的差异：原版用 os.system 并写 `>> NUL`（Windows 的空设备）。
+///   macOS 上必须改成 /dev/null，并且要显式补齐 PATH ——
+///   从 Finder 双击启动的 App 不会继承终端里的 PATH，
+///   而 TeX Live 装在 /Library/TeX/texbin，不在默认 PATH 里。
+enum Shell {
+
+    static let extraPaths = [
+        "/Library/TeX/texbin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ]
+
+    static func environment() -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        var parts = extraPaths
+        if let existing = env["PATH"] {
+            for p in existing.split(separator: ":") where !parts.contains(String(p)) {
+                parts.append(String(p))
+            }
+        }
+        env["PATH"] = parts.joined(separator: ":")
+        env["LANG"] = "en_US.UTF-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+        // 子进程的 stdout 是**管道**（不是终端）→ Python 默认按 8KB **块缓冲**：
+        // 运行日志要等缓冲满或进程结束才刷得出来，界面看着就像「卡住了」。
+        // 设这个变量让引擎逐行输出，日志才是实时的（GUI 侧本来就是逐块读，见 run()）。
+        env["PYTHONUNBUFFERED"] = "1"
+        return env
+    }
+
+    static func locate(_ tool: String) -> String? {
+        // 传进来的若**已经是绝对路径**，直接用。
+        // 否则下面会把它当命令名拼到每个 PATH 目录后面，变成
+        // `/opt/homebrew/bin//opt/homebrew/bin/python3` 这种不存在的路径，
+        // 报「未找到命令」——实测「初排转换」就是这么启动失败的。
+        if tool.hasPrefix("/") {
+            return FileManager.default.isExecutableFile(atPath: tool) ? tool : nil
+        }
+        guard let path = environment()["PATH"] else { return nil }
+        for dir in path.split(separator: ":") {
+            let candidate = (String(dir) as NSString).appendingPathComponent(tool)
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// 运行外部命令并把输出实时写入日志。返回退出码，-1 表示启动失败。
+    ///
+    /// - Parameter stdin: 要递给子进程的**标准输入**。给了就写进一个 `Pipe`（写完关闭，
+    ///   子进程读到 EOF）；**不给则与从前完全一样**（不碰 `standardInput`），既有调用方
+    ///   的行为一个字节都不变。
+    ///   为什么需要它：「文献回读校验」的**粘贴模式**要把编辑粘的 bib 通过标准输入递给
+    ///   Python 引擎（`checkbib.py --returned-stdin`），而不是先落一个临时文件再删——
+    ///   临时文件既多一次落盘，又会让那个假文件名印进报告头与合并记录，事后对不上账。
+    @discardableResult
+    static func run(_ tool: String,
+                    _ arguments: [String],
+                    workingDirectory: String? = nil,
+                    discardOutput: Bool = false,
+                    environment extraEnv: [String: String]? = nil,
+                    stdin: String? = nil,
+                    log: Logger?) -> Int32 {
+        guard let executable = locate(tool) else {
+            log?("未找到命令 \(tool)，请确认已安装 TeX Live / MacTeX。\n")
+            return -1
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        var env = environment()
+        if let extraEnv {
+            for (k, v) in extraEnv { env[k] = v }
+        }
+        process.environment = env
+        if let workingDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        }
+
+        let pipe = Pipe()
+        if discardOutput {
+            // 原版的 `>> NUL`
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        } else {
+            process.standardOutput = pipe
+            process.standardError = pipe
+        }
+
+        // stdin：只有显式给了才接管道。⚠️ 写的动作必须与「读子进程输出」并发，
+        // 否则 bib 文本超过管道缓冲（64 KiB）时两边互等 —— 经典管道死锁。
+        let stdinPipe: Pipe?
+        if stdin != nil {
+            let p = Pipe()
+            process.standardInput = p
+            stdinPipe = p
+        } else {
+            stdinPipe = nil
+        }
+
+        do {
+            try process.run()
+        } catch {
+            log?("启动 \(tool) 失败：\(error.localizedDescription)\n")
+            return -1
+        }
+
+        feedStdin(stdin, to: stdinPipe, log: log)
+
+        if !discardOutput {
+            let handle = pipe.fileHandleForReading
+            while true {
+                let data = handle.availableData
+                if data.isEmpty { break }
+                if let s = String(data: data, encoding: .utf8) {
+                    log?(s)
+                } else if let s = String(data: data, encoding: .isoLatin1) {
+                    log?(s)
+                }
+            }
+        }
+
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+
+    /// 把 `text` 写进子进程的 stdin 管道，然后关闭写端（子进程收到 EOF）。
+    ///
+    /// 放在后台队列：主线程接下来要一路读到子进程输出结束，写端与读端必须并发。
+    /// 用 Foundation 的**可抛出**写法 `write(contentsOf:)`：子进程若提前退出（管道破裂），
+    /// 只记一行日志，不让一次写失败把界面带崩。
+    private static func feedStdin(_ text: String?, to pipe: Pipe?, log: Logger?) {
+        guard let text, let pipe else { return }
+        let data = Data(text.utf8)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try pipe.fileHandleForWriting.write(contentsOf: data)
+                try pipe.fileHandleForWriting.close()
+            } catch {
+                log?("（提示：向子进程标准输入写入失败：\(error.localizedDescription)；"
+                     + "若子进程已提前退出，这条可忽略）\n")
+            }
+        }
+    }
+
+    /// 一次外部命令的执行结果
+    struct CommandResult {
+        let status: Int32
+        let output: String
+        var succeeded: Bool { status == 0 }
+    }
+
+    /// 运行外部命令并捕获全部输出（用于编译：成功时保持安静，失败时回显原因）。
+    ///
+    /// 两个与原版不同的地方，都是为了在 macOS 上更稳：
+    ///   1. 标准输入接到 /dev/null，避免 LaTeX 出错时等待输入把界面卡死；
+    ///   2. xelatex 以 -interaction=nonstopmode 运行，同样是为了不挂起。
+    ///
+    /// - Parameter stdin: 与 `run` 同一个口径：给了就写进管道（用于「粘贴预览」把文本喂给
+    ///   `checkbib.py --list-keys`，再把那**一行**输出收回来）；不给仍是 `/dev/null`（一字不变）。
+    static func capture(_ tool: String,
+                        _ arguments: [String],
+                        workingDirectory: String? = nil,
+                        stdin: String? = nil) -> CommandResult? {
+        guard let executable = locate(tool) else { return nil }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.environment = environment()
+        let stdinPipe: Pipe?
+        if stdin != nil {
+            let p = Pipe()
+            process.standardInput = p
+            stdinPipe = p
+        } else {
+            process.standardInput = FileHandle.nullDevice
+            stdinPipe = nil
+        }
+        if let workingDirectory {
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
+        }
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        feedStdin(stdin, to: stdinPipe, log: nil)
+
+        var data = Data()
+        let handle = pipe.fileHandleForReading
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }
+            data.append(chunk)
+        }
+        process.waitUntilExit()
+
+        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        return CommandResult(status: process.terminationStatus, output: text)
+    }
+
+    /// 从编译器输出里挑出错误行，供日志显示
+    static func errorExcerpt(_ output: String, maxLines: Int = 20) -> String {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var indexes = Set<Int>()
+
+        for (i, line) in lines.enumerated() {
+            let isError = line.hasPrefix("! ")
+                || line.hasPrefix("!")
+                || line.contains("Error")
+                || line.contains("error:")
+                || line.contains("Fatal")
+            if isError {
+                for j in i..<min(i + 3, lines.count) { indexes.insert(j) }
+            }
+            if indexes.count >= maxLines { break }
+        }
+
+        if indexes.isEmpty { return "（未能捕获到明确错误信息，可查看该目录下的 .log 文件）" }
+
+        let picked = indexes.sorted().prefix(maxLines).map { lines[$0] }
+        return "—— 错误摘要 ——\n" + picked.joined(separator: "\n")
+    }
+}

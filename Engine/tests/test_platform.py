@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""平台中立化（第 86 条）：引擎要在 macOS 与 Windows 上跑同一份逻辑。
+
+这一套钉住四件事，全部是**真跑/真扫**，不是「代码看起来对」：
+
+  (a) `utf8_stdio()` —— Windows 的 stdout 默认是控制台代码页（cp936），中文日志经管道
+      会乱码甚至 `UnicodeEncodeError` **崩在转换中途**。测试用 `PYTHONIOENCODING=ascii`
+      在子进程里**复现**这个失败模式，再验证修复；
+  (b) `file_uri()` —— LibreOffice 的 `-env:UserInstallation=` 只认 URI，
+      Windows 盘符与**带空格的路径**都必须正确转义；
+  (c) `find_soffice()` —— 三个平台的常见安装位置都要在候选表里（Windows 安装器**不**写 PATH）；
+  (d) **静态守卫**：交付模块里不许出现「文本模式 `open()` 却不写 `encoding=`」
+      —— 那在 Windows 上会按本地编码读中文源稿，直接读成乱码。
+"""
+from __future__ import annotations
+
+import ast
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+ENGINE = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ENGINE))
+
+from slcn import __version__, platform as P  # noqa: E402
+from slcn import office  # noqa: E402
+
+pass_n = 0
+fails: list[str] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    global pass_n
+    if ok:
+        pass_n += 1
+        print(f"PASS  {name}" + (f"  {detail}" if detail else ""))
+    else:
+        fails.append(name)
+        print(f"FAIL  {name}  {detail}")
+
+
+PY = sys.executable
+
+
+def child(code: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ENGINE) + os.pathsep + env.get("PYTHONPATH", "")
+    env.update(env_extra or {})
+    return subprocess.run([PY, "-c", code], capture_output=True, env=env, cwd=str(ENGINE))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("── (a) utf8_stdio：Windows 那个「中文日志崩中途」的失败模式 ──")
+
+# 反例（复现缺陷本身）：把子进程的输出编码设成 ascii（模拟窄代码页），
+# 不打补丁直接 print 中文 → 必须失败。这条证明下面的正例**有牙齿**。
+BAD = "print('中文日志一行')"
+r = child(BAD, {"PYTHONIOENCODING": "ascii"})
+check("(a) 反例：不做任何处理、输出编码是 ascii 时，打印中文**确实会失败**",
+      r.returncode != 0 and b"UnicodeEncodeError" in r.stderr,
+      f"rc={r.returncode}")
+
+GOOD = ("import sys; sys.path.insert(0, '.'); "
+        "from slcn import platform as P; P.utf8_stdio(); print('中文日志一行')")
+r = child(GOOD, {"PYTHONIOENCODING": "ascii"})
+check("(a) 正例：先调 utf8_stdio() → 同样的环境里打印中文**成功**",
+      r.returncode == 0, f"rc={r.returncode} {r.stderr[-120:]!r}")
+check("(a) 而且输出是**真 UTF-8**（不是被替换成 ? 的残骸）",
+      "中文日志一行".encode("utf-8") in r.stdout, r.stdout[:60])
+
+r = child("import sys; sys.path.insert(0, '.'); "
+          "from slcn import platform as P; P.utf8_stdio(); P.utf8_stdio(); print('二次调用 OK')",
+          {"PYTHONIOENCODING": "ascii"})
+check("(a) 幂等：连调两次不炸", r.returncode == 0 and "二次调用 OK".encode() in r.stdout)
+
+r = child("import sys, io; sys.path.insert(0, '.'); from slcn import platform as P; "
+          "sys.stdout = io.StringIO(); P.utf8_stdio(); print('没有 reconfigure 也不许抛')")
+check("(a) 稳健：stdout 被换成没有 reconfigure 的对象时**不抛异常**",
+      r.returncode == 0, f"rc={r.returncode} {r.stderr[-100:]!r}")
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (b) file_uri：LibreOffice 的 -env:UserInstallation 只认 URI ──")
+d = tempfile.mkdtemp(prefix="slcn uri ")
+uri = P.file_uri(d)
+check("(b) 是 file:// 开头的 URI", uri.startswith("file:///"), uri)
+check("(b) **路径里的空格被转义**（临时目录、稿件目录里空格很常见）",
+      "%20" in uri and " " not in uri, uri)
+check("(b) 没有反斜杠（Windows 盘符路径不能直接拼）", "\\" not in uri, uri)
+check("(b) 与 pathlib 的口径一致（两个平台都对）",
+      uri == pathlib.Path(d).resolve().as_uri(), uri)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (c) find_soffice：三平台候选 + 环境变量出口 ──")
+cands = P.SOFFICE_CANDIDATES
+check("(c) 候选表里有 **Windows** 的位置（.exe，安装器默认不写 PATH）",
+      any(c.lower().endswith("soffice.exe") for c in cands), f"{cands}")
+check("(c) 候选表里有 **macOS** 的 .app 位置", any(".app/Contents/MacOS" in c for c in cands))
+check("(c) 候选表里有 **Linux** 的位置", any(c.startswith("/usr/") and c.endswith("soffice") for c in cands))
+
+with tempfile.NamedTemporaryFile(prefix="fake_soffice_", delete=False) as fh:
+    fake = fh.name
+old_env = os.environ.get("SLCN_SOFFICE")
+try:
+    os.environ["SLCN_SOFFICE"] = fake
+    check("(c) `SLCN_SOFFICE` 指到存在的文件 → 就用它（给装在奇怪位置的人一个出口）",
+          P.find_soffice() == fake, f"{P.find_soffice()}")
+    os.environ["SLCN_SOFFICE"] = fake + ".不存在的"
+    check("(c) `SLCN_SOFFICE` 指的路径不存在 → **忽略它**，继续走 PATH/候选",
+          P.find_soffice() != fake + ".不存在的", f"{P.find_soffice()}")
+finally:
+    if old_env is None:
+        os.environ.pop("SLCN_SOFFICE", None)
+    else:
+        os.environ["SLCN_SOFFICE"] = old_env
+    os.unlink(fake)
+
+# 全都没有时返回 None（不许瞎猜一个路径出来）
+import slcn.platform as _pmod  # noqa: E402
+_saved_which, _saved_cands = _pmod.shutil.which, _pmod.SOFFICE_CANDIDATES
+try:
+    _pmod.shutil.which = lambda name: None            # type: ignore[assignment]
+    _pmod.SOFFICE_CANDIDATES = ()                     # type: ignore[assignment]
+    os.environ.pop("SLCN_SOFFICE", None)
+    check("(c) 哪儿都找不到 → 返回 None（绝不返回一个不存在的路径）",
+          P.find_soffice() is None, f"{P.find_soffice()}")
+finally:
+    _pmod.shutil.which = _saved_which                 # type: ignore[assignment]
+    _pmod.SOFFICE_CANDIDATES = _saved_cands           # type: ignore[assignment]
+
+check("(c) `office.available()` 与 `find_soffice()` 同源（不再有写死的常量）",
+      office.available() == (office.find_soffice() is not None))
+check("(c) `office` 模块里**没有**写死的 `SOFFICE` 常量（回归守卫：不许再写死 mac 路径）",
+      not hasattr(office, "SOFFICE"))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (d) 静态守卫：交付模块不许有「文本模式 open() 却不写 encoding=」 ──")
+
+SHIPPED = ["convert.py", "checkbib.py"] + [
+    str(p.relative_to(ENGINE)) for p in sorted((ENGINE / "slcn").glob("*.py"))
+]
+
+
+def offending_opens(path: pathlib.Path) -> list[str]:
+    """返回「文本模式且没写 encoding=」的 open() 行号。
+
+    二进制模式（`"rb"`/`"wb"`/…）不算 —— 那些本来就没有编码问题（实测全库只有 4 处）。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        # ⚠️ 只认**内置** `open(...)`（`Name` 节点）。
+        #    `z.open(src)`（zipfile）/ `p.open()`（Path）是**别的函数**，它们的
+        #    mode/encoding 语义不同 —— 第一版把 `z.open` 当成了内置 open，
+        #    于是 `docxxml.py` 那行 `z.open(src)` 被误报（它根本没有编码问题）。
+        if not (isinstance(fn, ast.Name) and fn.id == "open"):
+            continue
+        if any(k.arg == "encoding" for k in node.keywords):
+            continue
+        mode = ""
+        if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+            mode = str(node.args[1].value)
+        for k in node.keywords:
+            if k.arg == "mode" and isinstance(k.value, ast.Constant):
+                mode = str(k.value.value)
+        if "b" in mode:
+            continue
+        bad.append(f"{path.name}:{node.lineno}（mode={mode or '默认文本'}）")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "attr", None)
+        if name in ("read_text", "write_text") and not any(k.arg == "encoding" for k in node.keywords):
+            bad.append(f"{path.name}:{node.lineno}（{name} 没写 encoding=）")
+    return bad
+
+
+bad = []
+for rel in SHIPPED:
+    bad += offending_opens(ENGINE / rel)
+check("(d) 交付模块里文本模式的 open() **全部**显式写了 encoding=", not bad, "; ".join(bad[:6]))
+check("(d) 覆盖面：确实扫到了这些模块", len(SHIPPED) >= 20, f"{len(SHIPPED)} 个文件")
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (e) 版本号只有一处（双平台不许漂移）──")
+check("(e) `slcn.__version__` 存在且形如 x.y.z",
+      isinstance(__version__, str) and len(__version__.split(".")) == 3, __version__)
+r = child("import subprocess, sys; "
+          "print(subprocess.run([sys.executable, 'convert.py', '--version'], "
+          "capture_output=True, text=True).stdout.strip())")
+check("(e) `convert.py --version` 打得出来，且**不要求 --source**",
+      r.returncode == 0 and __version__ in r.stdout.decode(), r.stdout.decode().strip()[:90])
+r = child("import subprocess, sys; "
+          "p=subprocess.run([sys.executable, 'checkbib.py', '--version'], capture_output=True, text=True); "
+          "print(p.returncode, p.stdout.strip())")
+check("(e) `checkbib.py --version` 同样可用",
+      r.returncode == 0 and __version__ in r.stdout.decode(), r.stdout.decode().strip()[:90])
+r = child("import sys; sys.path.insert(0,'.'); from slcn import platform as P; print(P.describe())")
+check("(e) `describe()` 报出系统 + Python 版本（同事报错时要这一行）",
+      r.returncode == 0 and "Python" in r.stdout.decode() and len(r.stdout.decode().strip()) > 12,
+      r.stdout.decode().strip())
+bs = (ENGINE.parent / "build.sh").read_text(encoding="utf-8")
+check("(e) `build.sh` 的版本号是**现取**的，不再写死（双平台防漂移）",
+      "slcn/__init__.py" in bs and "CFBundleShortVersionString</key><string>$APP_VERSION" in bs)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n" + "=" * 66)
+if fails:
+    print(f"失败 {len(fails)} 项：{fails}")
+    sys.exit(1)
+print(f"全部 {pass_n} 项断言通过")
+print("失败 0 项（全部通过）")
+sys.exit(0)

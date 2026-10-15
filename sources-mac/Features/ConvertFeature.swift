@@ -1,0 +1,448 @@
+import Foundation
+
+/// 「初排转换」—— 调用 Engine（Python 转换引擎）把 Word 文稿 / LaTeX 源文件
+/// 转成符合《逻辑学研究》模板的 LaTeX 初排稿。
+///
+/// 为什么要 shell 出去调 Python，而不是用 Swift 重写
+/// -------------------------------------------------
+/// 核心工作量在**直接解析 Word 的 XML**：OMML 公式转 LaTeX、
+/// `<w:drawing>` 图片提取、`<w:tbl>` 表格转 tabular、脚注分类、引文提升……
+/// Swift 生态里没有与 `python-docx` / `lxml` 相当的成熟替代，
+/// 硬写一遍等于把 6600 行逻辑重做且必然引入新 bug。
+/// 因此这里只做**界面 + 参数拼装 + 找路径**，真正的转换交给 Python。
+enum ConvertFeature {
+
+    /// 转换选项（对应 convert.py 的命令行参数）
+    struct Options {
+        var source = ""          // --source（必填）
+        var out = ""             // --out（必填）
+        var metadata = ""        // --metadata
+        var bib = ""             // --bib
+        var refs = ""            // --refs
+        var author = ""          // --author
+        var name = ""            // --name
+        var lang = ""            // --lang（空=自动）
+        var sty = ""             // --sty
+        var compile = true       // --compile
+        var clean = true         // --clean
+        var verifyRefs = false   // --verify-refs（生成《文献核实任务书》）
+        var sourcePdf = false    // --source-pdf
+        var quoteThreshold = 105 // --quote-threshold
+        var scanOnly = false     // --scan
+        var force = false        // --force（目标目录混有非本工具文件时不再拦截）
+        // ---------- AI（可选；配置来自「设置」页 AppSettings） ----------
+        /// 界面开关「用 AI 处理参考文献」：勾了 = 生成任务书 **并且** 按同一份规范
+        /// 在本机直连 AI 预跑一遍（引擎侧就是在 --verify-refs 分支里读 LLM 配置）。
+        var useAI = false        // 不加参数，只决定下面三个传不传 + 是否加 --verify-refs
+        var llmBase = ""         // --llm-base（OpenAI 兼容 base URL）
+        var llmKey = ""          // --llm-key（⚠️ 只传参，绝不打印/写日志）
+        var llmModel = ""        // --llm-model
+        /// 通道：`chat`（默认）/ `responses`（第 69 条；引擎侧 `--llm-protocol`）。
+        /// **默认值必须留在 `chat`**：不传这个参数时命令行与从前逐字节相同。
+        var llmProtocol = "chat"
+        /// 联网检索开关（默认关）→ `--llm-web-search`（引擎侧加 `tools:[{type:web_search}]`）。
+        /// 只在 responses 通道生效；**勾上也不代表端点真的会检索**（DeepSeek 会静默忽略），
+        /// 所以界面上要如实写清，并由「设置」页的 ⑤ 探针实测。
+        var llmWebSearch = false
+        /// 检索工具类型名（第 70 条）→ `--llm-search-tool`。**空 = 不传这个参数**，
+        /// 引擎用默认 `web_search`（于是命令行与从前逐字节相同）。
+        var llmSearchTool = ""
+        /// responses 路径（第 70 条）→ `--llm-responses-path`。**空 = 不传**，
+        /// 引擎用默认 `/responses`。
+        var llmResponsesPath = ""
+        /// 界面开关「保留原 reference.bib（不并入 AI 结果）」→ `--no-ai-merge`。
+        /// 只在勾了「用 AI 处理参考文献」时才显示（没勾 AI 就压根没有合并通道）。
+        var keepOriginalBib = false // --no-ai-merge
+        // 编辑侧出版信息（作者稿里没有；缺了 PDF 页眉会是「xxxx 年第 x 期，1–10」）
+        var vol = ""             // --vol
+        var issue = ""           // --issue
+        var pubYear = ""         // --year
+        var pages = ""           // --pages（如 137-152，自动算出页数）
+        var received = ""        // --received
+        var editor = ""          // --editor
+        var grants = ""          // --grants
+        // 正文信息手工覆盖（作者稿解析不出来、或解析得不对时的兜底输入路径）。
+        // 空 = 不覆盖，由引擎沿用自动解析结果；与旧版行为完全一致。
+        // 引擎侧接口：build_docx/build_latex 的 `overrides: dict | None`。
+        var titleCn = ""         // --title-cn（中文题名）
+        var authorCn = ""        // --author-cn（第一作者）
+        var affiliationCn = ""   // --affiliation-cn（单位）
+        var email = ""           // --email（邮箱）
+        var abstractCn = ""      // --abstract-cn（中文摘要）
+        var titleEn = ""         // --title-en（英文题名）
+        var abstractEn = ""      // --abstract-en（英文摘要）
+
+        /// AI 是否已配置到「可以调用」：**地址 + 模型名**（密钥可空——本机/自建端点不要密钥）。
+        /// 口径与引擎 `slcn/llm.py` 的 `LLMConfig.ready`（`base and model`）保持一致，
+        /// 免得界面说「已配置」而引擎那边 `cfg.ready` 是假。
+        var aiReady: Bool {
+            !llmBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !llmModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    // MARK: - 开关联动（纯函数，headless 可验证）
+
+    /// 三个复选框在纯逻辑里的身份（`tools/ai_settings_test` 直接按它调 `toggled`）。
+    enum Checkbox { case verifyRefs, useAI, keepOriginalBib }
+
+    /// 勾选 / 取消某个复选框之后的**新选项**。
+    ///
+    /// 联动规则（**方案 A**，用户 2026-10-15 决定）只有这一份实现，SwiftUI 只负责绑定：
+    ///
+    ///   · 勾上「用 AI 处理参考文献」→ **自动把「生成参考文献核实任务书」勾上**，
+    ///     界面同时把它置灰（`verifyRefsLocked`）。为什么必须绑在一起：AI 的逐条建议
+    ///     与「六、合并记录」**都写在这份任务书里**，不生成它，编辑手上就只剩一份被
+    ///     机器改过的 `reference.bib`、没有任何审阅材料 —— 这正是第 64 条那套保障
+    ///     要避免的局面。
+    ///   · 取消 AI 勾选 → 任务书开关恢复可操作，**不改它的值**（用户明确要求：
+    ///     不许顺手把编辑原来勾的选择抹掉；他想取消就自己再点一下）。
+    ///   · 置灰期间任务书若被程序化改掉（旧界面、脚本、`@Published` 直接赋值），
+    ///     拉回 `true` —— 「AI 开着但不出任务书」是自相矛盾的状态，合并记录会无处可写。
+    static func toggled(_ which: Checkbox, to on: Bool, in o: Options) -> Options {
+        var n = o
+        switch which {
+        case .useAI:
+            n.useAI = on
+            if on { n.verifyRefs = true }      // 取消时**不写** verifyRefs（保留编辑的选择）
+        case .verifyRefs:
+            n.verifyRefs = n.useAI ? true : on // 被 AI 锁住时只允许 true
+        case .keepOriginalBib:
+            n.keepOriginalBib = on
+        }
+        return n
+    }
+
+    /// 任务书开关是否应置灰：AI 勾上就锁住（联动规则见 `toggled`）。
+    static func verifyRefsLocked(_ o: Options) -> Bool { o.useAI }
+
+    // MARK: - 环境变量增量（纯函数，headless 可验证）
+
+    /// 把 AI 配置映射成**只含增量**的环境变量字典。传什么、不传什么：
+    ///
+    ///   - `PYTHONPATH`：`vendor/` 存在才设（pypinyin，见 `run()` 的长注释）；
+    ///   - `SLCN_LLM_KEY`：密钥**永远不进 argv**（argv 在 `ps` 里对同机所有用户可见），
+    ///     只在这里给；没填密钥就不设（引擎 `config_from_env` 会回落到空串）。
+    ///   - `SLCN_LLM_THINKING`：`跟随端点默认` 时**不设** —— 引擎侧就是「请求体里不带
+    ///     这个字段」，与从前逐字节相同（见 `AIThinkingMode` 的说明）。
+    ///   - `SLCN_LLM_MAX_TOKENS`：留空时**不设**（引擎默认 2048）；`0` 照发（= 不封顶）；
+    ///     填了非整数也**不设**，但 `knobWarnings` 会返回一行说明 —— 不许静默。
+    ///
+    /// base/model 走 argv（`--llm-base/--llm-model`），不在环境里再重复一份。
+    /// 没勾「用 AI 处理参考文献」时这几个 `SLCN_LLM_*` 一个都不设（与从前一致）。
+    static func engineEnvironment(_ o: Options, toolDir: String,
+                                  knobs: AIEngineKnobs) -> [String: String] {
+        var extra: [String: String] = [:]
+        let vendor = toolDir + "/vendor"
+        if FileManager.default.fileExists(atPath: vendor) {
+            extra["PYTHONPATH"] = vendor
+        }
+        guard o.useAI else { return extra }
+        let aiKey = o.llmKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !aiKey.isEmpty {
+            extra["SLCN_LLM_KEY"] = aiKey
+        }
+        if let v = knobs.thinking.envValue {
+            extra["SLCN_LLM_THINKING"] = v
+        }
+        if let v = AIMaxTokens.envValue(knobs.maxTokens) {
+            extra["SLCN_LLM_MAX_TOKENS"] = v
+        }
+        return extra
+    }
+
+    /// 本次转换真正要用的两个旋钮（思考模式 / 输出上限）。
+    ///
+    /// 口径与 base/key/model **完全一致**：由调用方（「初排转换」页）把界面上
+    /// **当前**的值现取现传 —— 设置页改完立刻生效，不必先点「保存」。
+    /// `live == nil` 时回落到读**已保存**的 `ai.json`（`AppSettings.loadEngineKnobs`）：
+    /// 命令行 / 自检这类没有界面状态的调用方照旧能用，行为与从前一致。
+    ///
+    /// ⚠️ 为什么非得由调用方传：`run()` 在**后台线程**上跑，而 `AppSettings` 的
+    ///    `@Published` 值属于主线程，不能在那里读；`AIEngineKnobs` 是值类型
+    ///    （`String` + `enum`），在主线程取好再跨线程传是安全的。
+    static func effectiveKnobs(_ live: AIEngineKnobs?,
+                               storeDirectory: URL? = nil) -> AIEngineKnobs {
+        live ?? AppSettings.loadEngineKnobs(storeDirectory: storeDirectory)
+    }
+
+    /// 旋钮里「填了但用不了」的值 → 写进运行日志的一行提示（界面另有红字）。
+    /// 为什么要有：不设环境变量/不传参数等于「用引擎默认」，不说一声编辑会以为填的值生效了。
+    static func knobWarnings(_ knobs: AIEngineKnobs) -> [String] {
+        var out: [String] = []
+        if case .invalid(let hint) = AIMaxTokens.parse(knobs.maxTokens) {
+            out.append("⚠ 输出上限「\(knobs.maxTokens)」不是合法整数：本次**不设置** "
+                       + "SLCN_LLM_MAX_TOKENS，引擎将用默认 2048。\(hint)\n")
+        }
+        // 第 70 条：两个高级旋钮填了结构上不可能的值时同样说明「本次不传」——
+        // 它们空着就是「用引擎默认」，只有填错才需要出声。
+        for parsed in [AIAdvancedKnobs.parseSearchTool(knobs.searchTool),
+                       AIAdvancedKnobs.parseResponsesPath(knobs.responsesPath)] {
+            if let h = AIAdvancedKnobs.hint(parsed) {
+                out.append("⚠ " + h + "\n")
+            }
+        }
+        return out
+    }
+
+    /// 找 convert.py。顺序：用户指定 → app 包内 → 从 app 往上找仓库
+    static func locateTool() -> String? {
+        let fm = FileManager.default
+
+        if let custom = UserDefaults.standard.string(forKey: "convertToolPath"),
+           !custom.isEmpty, fm.fileExists(atPath: custom) {
+            return custom
+        }
+
+        // app 包内（build.sh 会把转换引擎 Engine/ 拷进 Resources）
+        if let res = Bundle.main.resourcePath {
+            let p = res + "/Engine/convert.py"
+            if fm.fileExists(atPath: p) { return p }
+        }
+
+        // 从 app 所在位置逐级向上找仓库里的 Engine（Engine）
+        var dir = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0..<6 {
+            let p = dir.path + "/Engine/convert.py"
+            if fm.fileExists(atPath: p) { return p }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+        return nil
+    }
+
+    /// 找可用的 python3。转换依赖 `pypinyin`（项目本地 vendor/ 里）。
+    static func locatePython(toolDir: String) -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ]
+        let fm = FileManager.default
+        for c in candidates where fm.fileExists(atPath: c) {
+            return c
+        }
+        return nil
+    }
+
+    /// 拼命令行参数：**数组形式**，不做 shell 字符串插值。
+    ///
+    /// ⚠️ 刻意**不是** `private`：`tools/ai_settings_test` 要直接断言这几个开关到 argv 的
+    /// 映射（`--verify-refs` / `--no-ai-merge` / 没勾 AI 时两个都不出现），
+    /// 那是「界面承诺 = 引擎真收到的东西」的唯一机器证据。其余照旧由 `run()` 调用。
+    static func arguments(_ o: Options) -> [String] {
+        var a: [String] = []
+        func add(_ flag: String, _ value: String) {
+            guard !value.isEmpty else { return }
+            a += [flag, value]
+        }
+        add("--source", o.source)
+        if !o.scanOnly { add("--out", o.out) }
+        add("--metadata", o.metadata)
+        add("--bib", o.bib)
+        add("--refs", o.refs)
+        add("--author", o.author)
+        add("--name", o.name)
+        add("--lang", o.lang)
+        add("--sty", o.sty)
+        add("--vol", o.vol)
+        add("--issue", o.issue)
+        add("--year", o.pubYear)
+        add("--pages", o.pages)
+        add("--received", o.received)
+        add("--editor", o.editor)
+        add("--grants", o.grants)
+        // 正文信息覆盖：空值由 add() 自动跳过 —— 与不传该参数完全等价。
+        add("--title-cn", o.titleCn)
+        add("--author-cn", o.authorCn)
+        add("--affiliation-cn", o.affiliationCn)
+        add("--email", o.email)
+        add("--abstract-cn", o.abstractCn)
+        add("--title-en", o.titleEn)
+        add("--abstract-en", o.abstractEn)
+        if o.compile && !o.scanOnly { a.append("--compile") }
+        if o.clean { a.append("--clean") }
+        // 《文献核实任务书》本来就该出：勾了「用 AI 处理参考文献」也一并打开 ——
+        // 引擎侧 AI 预跑只在 --verify-refs 分支里进行，不传这个参数就没有 AI 通道。
+        // 所以「未配置 AI 却勾了开关」的结果是：只出任务书（这正是界面文案承诺的行为）。
+        // 界面上的联动（`toggled`）保证了勾 AI 时这个值一定是 true；这里再兜一次，
+        // 是因为 argv 是**引擎真正收到的东西**，界面状态与它必须一致。
+        if o.verifyRefs || o.useAI { a.append("--verify-refs") }
+        // 「保留原 reference.bib（不并入 AI 结果）」只在 AI 勾着时有意义：
+        // 没勾 AI 就压根没有合并通道，加 --no-ai-merge 只是噪声（也会让日志说谎）。
+        if o.useAI && o.keepOriginalBib { a.append("--no-ai-merge") }
+        if o.useAI {
+            // 只有勾了开关才把 AI 配置传下去（不勾就完全不碰这些参数）。
+            // 地址/模型为空时 add() 会自动跳过 —— 引擎侧对空值会回落到环境变量
+            // SLCN_LLM_BASE/KEY/MODEL，与命令行不传该参数完全等价。
+            add("--llm-base", o.llmBase)
+            add("--llm-model", o.llmModel)
+            // ⚠️ **密钥不走命令行**：argv 在 `ps` 里对同机所有用户都可见。
+            //    密钥改由 run() 用环境变量 SLCN_LLM_KEY 传给子进程；引擎
+            //    `config_from_env` 在 `--llm-key` 缺省时会自动回落到该变量，
+            //    所以 AI 行为与传参完全一致。
+            //    `--llm-key` 这个参数本身**保留**：命令行手工调用仍然可用。
+            //
+            // 第 69 条的两个开关：**默认（chat / 不检索）时一个参数都不加** ——
+            // 「不传 = 引擎取默认」这条纪律与 base/model 一致，也保证默认命令行与
+            // 从前逐字节相同（既有 harness 的 e1/e2 断言钉着这件事）。
+            // 非默认值也走 argv 而不是环境变量：`ps` 里能看见「这一次到底联网了没有」，
+            // 对可审计性反倒是好事（密钥才是不能出现在 argv 里的那个）。
+            if o.llmProtocol != "chat" { add("--llm-protocol", o.llmProtocol) }
+            if o.llmWebSearch { a.append("--llm-web-search") }
+            // 第 70 条的两个「未来兼容」旋钮：**留空或填了用不了的值都不传**（第一种是
+            // 「用引擎默认」，第二种由 `knobWarnings` 说明），所以两栏都空时命令行与从前
+            // **逐字节相同**。这里刻意用解析器（而不是 `add` 的单纯非空判断），
+            // 好让「界面承诺 = 引擎真收到的东西」在 argv 这一层就成立 —— 非法值到了引擎
+            // 只会被回落到默认并留一条 stderr，编辑在日志里反而不容易看见。
+            // 为什么也走 argv 而不是环境变量：与 --llm-protocol / --llm-web-search 保持一致，
+            // 而且 `ps` 里能看见「这一次到底用哪个工具名/路径」，对可审计性反倒是好事
+            // （只有密钥那个不能出现在 argv 里）。
+            if let t = AIAdvancedKnobs.envValue(AIAdvancedKnobs.parseSearchTool(o.llmSearchTool)) {
+                add("--llm-search-tool", t)
+            }
+            if let p = AIAdvancedKnobs.envValue(AIAdvancedKnobs.parseResponsesPath(o.llmResponsesPath)) {
+                add("--llm-responses-path", p)
+            }
+        }
+        if o.sourcePdf { a.append("--source-pdf") }
+        if o.scanOnly { a.append("--scan") }
+        if o.quoteThreshold != 105 {
+            a += ["--quote-threshold", String(o.quoteThreshold)]
+        }
+        if o.force { a.append("--force") }
+        return a
+    }
+
+    /// 把「用 AI 处理参考文献」这一项的实际效果写进日志。
+    ///
+    /// 两条硬要求：
+    ///   1. **不许静默忽略**：勾了开关但没配置，必须有一行明确提示说明「本次只出任务书」；
+    ///   2. **密钥不进日志**：只显示前 4 位（`AppSettings.mask`），完整密钥不打印。
+    ///
+    /// 两个「请求体旋钮」也写在这里：编辑要能一眼看出**这次到底发了什么**
+    /// （思考模式与输出上限都会被引擎读成请求体字段，不看日志就无从核对）。
+    private static func logAI(_ o: Options, knobs: AIEngineKnobs, log: Logger) {
+        guard o.useAI else {
+            if o.verifyRefs {
+                log("  文献   生成《文献核实任务书》（未启用 AI 预跑）\n")
+            }
+            return
+        }
+        if o.aiReady {
+            log("  文献   生成《文献核实任务书》+ AI 预跑\n")
+            log("  AI     \(o.llmModel) @ \(o.llmBase)（密钥 \(AppSettings.mask(o.llmKey))）\n")
+            log("  AI     \(knobs.summary)\n")
+            // **本次核实通道**（第 69 条）：编辑看日志第一眼要能回答「这次到底联网了没有」。
+            // 措辞刻意分成「意图」与「端点行为」两层：我们只能保证**发出了**检索工具，
+            // 端点是否真的检索由引擎在跑完后按检索证据（web_search_call）如实报告——
+            // 界面这边不许把「勾了开关」说成「已经联网核实」。
+            if knobs.usesWebSearch {
+                log("  文献   ⚠ **本次已开启联网检索**（通道 responses + web_search）："
+                    + "引擎会带上服务端检索工具，并要求模型先查官方来源。\n")
+                log("  文献   是否真的检索到由**端点**决定（DeepSeek 会静默忽略该工具）："
+                    + "跑完后看日志里的「检索证据」一行——0 次即表示本次只能凭记忆。\n")
+            } else if o.llmProtocol == "responses" {
+                log("  文献   ⚠ 通道 responses，但**未启用联网检索**：模型只能凭记忆作答"
+                    + "（任务书里同样写明）。\n")
+            } else {
+                log("  文献   ⚠ **未启用联网检索**（通道 chat）：模型只能凭记忆作答；"
+                    + "卷/期/页码/出版地务必人工抽查。\n")
+            }
+            if o.keepOriginalBib {
+                // 勾了「保留原 reference.bib」：这次只出任务书（= --no-ai-merge）。
+                // 必须显式说一句 —— 否则编辑会以为 bib 也被改了。
+                log("  文献   ⚠ 已勾「保留原 reference.bib（不并入 AI 结果）」："
+                    + "本次**只出任务书**，AI 结果不并入产物（= --no-ai-merge）\n")
+            } else {
+                log("  文献   AI 结果会并入 reference.bib（回滚副本 reference.bib.ai前）；"
+                    + "AI 调用失败 / 一条都没通过安全校验时，bib **一字节不改**\n")
+            }
+        } else {
+            log("  文献   生成《文献核实任务书》\n")
+            log("⚠ 已勾选「用 AI 处理参考文献」，但「设置」页还没配置 API 地址与模型名，\n")
+            log("  本次**不会调用 AI**，只生成《文献核实任务书》（交给编辑自己的 AI 一样能用）；\n")
+            log("  reference.bib **一字节不改**。\n")
+            log("  要启用：打开「设置」标签页填写 API 地址（如 https://api.deepseek.com/v1）\n")
+            log("  与模型名（如 deepseek-flash），可点「测试连接 / 体检」自检。\n")
+        }
+    }
+
+    /// - Parameter knobs: 界面上的**当前**旋钮值（`ConvertTab` 在主线程现取）。
+    ///   `nil` = 回落到读已保存的 `ai.json`，见 `effectiveKnobs(_:storeDirectory:)`。
+    static func run(options o: Options, knobs liveKnobs: AIEngineKnobs? = nil,
+                    log: Logger) {
+        guard !o.source.isEmpty else {
+            log("请先选择源文件（Word 文稿或 LaTeX 文件）。\n")
+            return
+        }
+        guard let tool = locateTool() else {
+            log("未找到转换引擎 Engine/convert.py。\n")
+            log("按顺序找两处：① app 包内 Contents/Resources/Engine/convert.py"
+                + "（官方 ./build.sh 会把 Engine 打包进去）；")
+            log("② 从 app 所在目录逐级向上找 Engine/convert.py"
+                + "（开发时把 app 放在仓库的  下即可命中）。\n")
+            log("「设置」页底部「转换引擎」一行只读显示当前解析到的实际路径："
+                + "若那里显示「未找到 Engine/convert.py」，说明两处都没命中，"
+                + "请重新用 build.sh 构建，或把 Engine 目录放进 app 包的 Resources 内。\n")
+            return
+        }
+        let toolDir = (tool as NSString).deletingLastPathComponent
+        guard let py = locatePython(toolDir: toolDir) else {
+            log("未找到 python3。请先安装（brew install python3）。\n")
+            return
+        }
+
+        log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
+        log("初排转换\n")
+        log("  工具   \(tool)\n")
+        log("  解释器 \(py)\n")
+        log("  源文件 \(o.source)\n")
+        if !o.scanOnly { log("  输出到 \(o.out)\n") }
+        // 两个「请求体旋钮」在**启动子进程前**解析一次。
+        // 优先用调用方现取的界面值（与 base/key/model 同一口径：改了没保存也生效）；
+        // 没传（`nil`）才回落到读「设置」页保存过的 ai.json。见 `effectiveKnobs`。
+        let knobs = effectiveKnobs(liveKnobs)
+        logAI(o, knobs: knobs, log: log)
+        for w in knobWarnings(knobs) { log(w) }
+        log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n\n")
+
+        // 依赖 pypinyin（项目本地 vendor/），用 PYTHONPATH 挂上。
+        //
+        // ⚠️ **只传增量，不要传整个 environment**。Shell.run 是以
+        // `Shell.environment()`（含 /Library/TeX/texbin、/opt/homebrew/bin）为底、
+        // 再用这里传的值覆盖。若把 ProcessInfo 的整份环境传进去，GUI app 那个
+        // 精简的 PATH（通常只有 /usr/bin:/bin:/usr/sbin:/sbin）会把 TeX 路径
+        // **覆盖掉**，Python 侧 `shutil.which("xelatex")` 就找不到，报
+        // 「找不到命令 xelatex」——实测就是这个问题。
+        //
+        // ⚠️ AI 密钥走**环境变量**，不进 argv（argv 在 `ps` 里对同机所有用户可见）。
+        //    引擎 `slcn/llm.py` 的 `config_from_env(args.llm_base, args.llm_key, args.llm_model)`
+        //    在 llm_key 为 None 时回落到 SLCN_LLM_KEY，所以换到这里后行为完全等价；
+        //    密钥也不进日志（日志只显示前 4 位，见 logAI）。只在勾了开关时设置。
+        //    两个旋钮（SLCN_LLM_THINKING / SLCN_LLM_MAX_TOKENS）由 `engineEnvironment`
+        //    一并拼进来 —— 那个函数是纯函数，`tools/ai_settings_test` 直接验证它的取值。
+        let extra = engineEnvironment(o, toolDir: toolDir, knobs: knobs)
+
+        let status = Shell.run(
+            py,
+            [tool] + arguments(o),
+            workingDirectory: toolDir,
+            environment: extra,
+            log: log
+        )
+
+        log("\n")
+        if status == 0 {
+            log("✅ 完成。\n")
+            if !o.scanOnly {
+                log("产物目录：\(o.out)\n")
+            }
+        } else if status == -1 {
+            log("❌ 启动失败。\n")
+        } else {
+            log("❌ 转换失败（退出码 \(status)）。\n")
+        }
+    }
+}

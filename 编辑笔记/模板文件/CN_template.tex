@@ -1,0 +1,305 @@
+%!TEX encoding = UTF-8 Unicode
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                       %%
+%%                    《逻辑学研究》中文论文模板                         %%
+%%                                                                       %%
+%%              中山大学逻辑与认知研究所逻辑学研究编辑部                 %%
+%%                                                                       %%
+%%                             Ver 1.31                                  %%
+%%                                                                       %%
+%%        You can modify it and distribute it freely    2014.06.04       %%
+%%                                                                       %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%-------------------------------------------------------------------------%
+%
+%  请以第一作者全拼为文件名另存此文档（后缀名仍为.tex），与 SLCN.sty 保存
+%
+%  在同一个文件夹中。你可能需要取消某些行首的注释符以添加需要的内容。
+%  使用XeLaTex编译
+%  参考文献的排版，请作者创建 .bib 文件， 并使用 BibTex 或者 Biber（有中文参考文献时） 进行排版。
+%-------------------------------------------------------------------------%
+
+%=========================================================================%
+%                        一、编辑处理部分
+%
+%                  *** 作者请直接跳至第二部分 ***
+%=========================================================================%
+
+%-------------------------------------------------------------------------%
+%    1.1 设定纸张大小、正文字体大小
+%-------------------------------------------------------------------------%
+\documentclass[b5paper,10.5t,onecolumn,twoside,UTF8,fontset=windows]{article}
+\usepackage{SLCN-MIX}                                                         % 加载版面格式
+\setmainfont{Times New Roman}
+\setCJKsansfont[FakeBold=2]{KaiTi}%楷体加粗使用\textsf命令
+
+%-------------------------------------------------------------------------%
+%    1.2 填入卷期号、出版年月
+%-------------------------------------------------------------------------%
+\newcommand{\myvolnumber}{x}                                              % 输入卷号
+\newcommand{\myissnumber}{x}                                              % 输入当年期号
+\newcommand{\mypubyear}{xxxx}                                             % 输入出版年份
+
+%-------------------------------------------------------------------------%
+%    1.3 填入起止页码、页数
+%-------------------------------------------------------------------------%
+\newcommand{\myfirstpage}{1}                                              % 输入起始页码
+\newcommand{\mylastpage}{10}                                              % 输入终止页码
+\newcommand{\mypages}{10}                                                 % 输入页数
+
+%-------------------------------------------------------------------------%
+%    1.4 填入收稿日期、修改稿日期
+%-------------------------------------------------------------------------%
+\newcommand{\receiveddate}{xxxx-xx-xx}                                    % 输入本文收稿日期
+\newcommand{\revisiondate}{null}                                          % 预置修订日期为空，勿改此行
+%\renewcommand{\revisiondate}{xxxx-xx-xx}                                 % 输入修订日期（若有）并取消该行注释
+
+%-------------------------------------------------------------------------%
+%    1.5 填入作者、单位英译名
+%-------------------------------------------------------------------------%
+\newcommand{\mysecondauthorEN}{null}                                      % 预置第二作者为空，请不要修改此行
+\newcommand{\mythirdauthorEN}{null}                                       % 预置第三作者为空，请不要修改此行
+\newcommand{\myfourthauthorEN}{null}
+\newcommand{\myfifthauthorEN}{null}
+
+\newcommand{\myfirstauthorEN}                                             % 请输入第一作者姓名
+{First Author}
+
+\newcommand{\myfirstaffiliationEN}{%                                       % 请输入第一作者单位
+{Affiliation 1}
+%\\　\hspace{1em}\phantom{\myfirstauthorEN}\hspace{1em} %如有第二单位，删去本行以及下一行起始的百分号%
+%{another affiliation}
+}
+
+%\renewcommand{\mysecondauthorEN}{Second Author}                               % 若需要，请输入第二作者姓名，并取消该行注释
+\newcommand{\mysecondaffiliationEN}{%                                      % 若需要，请输入第二作者单位
+{affiliation 2}
+%\\　\hspace{1em}\phantom{\mysecondauthorEN}\hspace{1em} %如有第二单位，删去此行及下一行起始的百分号%
+%{another affiliation}
+}
+
+%\renewcommand{\mythirdauthorEN}{Third Author}                                % 若需要，请输入第三作者姓名，并取消该行注释
+\newcommand{\mythirdaffiliationEN}{                                       % 若需要，请输入第三作者单位
+{affiliation 3} \\
+{another affiliation}
+}
+
+%\renewcommand{\myfourthauthorEN}{Fourth Author}
+\newcommand{\myfourthaffiliationEN}{
+{affiliation 4}
+}
+
+
+%\renewcommand{\myfifthauthorEN}{Fifth Author}
+\newcommand{\myfifthaffiliationEN}{
+{Affiliation 5}
+}
+
+%-------------------------------------------------------------------------%
+%    1.6 填入文章类型
+%  (original, bookreview, conferencereport)默认为original
+%-------------------------------------------------------------------------%
+\newcommand{\myarticletype}
+{original}
+
+\newcommand{\reviewbooktitle}                                             % 若文章为书评，请输入所评书的出版信息
+{The information of the book reviewed by the author}
+
+\newcommand{\reviewbooktitleEN}{null}                                     % 预置所评书的中译版为空，请勿修改此行
+%\renewcommand{\reviewbooktitleEN}{中译版信息}                            % 若书有中译版，请输入中译版信息并取消该行注释
+
+%-------------------------------------------------------------------------%
+%    1.7 填入责任编辑
+%-------------------------------------------------------------------------%
+\newcommand{\myeditor}{
+{\bf （责任编辑：某某某）}
+}
+
+%-------------------------------------------------------------------------%
+%    1.8 缺省设置
+%-------------------------------------------------------------------------%
+\newcommand{\mysecondauthor}{null}                                        % 预置第二作者为空，请不要修改此行
+\newcommand{\mythirdauthor}{null}                                         % 预置第三作者为空，请不要修改此行
+\newcommand{\mygrants}{null}                                              % 预置“项目资助”为空，请不要修改此行
+\newcommand{\mythanks}{null}                                              % 预置“致谢”为空，请不要修改此行
+
+
+%=========================================================================%
+%
+%                        二、作者写作部分
+%
+%=========================================================================%
+
+%-------------------------------------------------------------------------%
+%    2.1 请填入论文题目、作者姓名、单位、电子邮箱
+%-------------------------------------------------------------------------%
+\newcommand{\mytitle}                                                     % 请输入论文题目
+{在这里填上你的标题}
+
+\newcommand{\myrunningtitle}                                              % 请输入用于页眉的标题（可能需要缩短原来的标题）
+{简短标题}
+
+\newcommand{\myfirstauthor}                                               % 请输入第一作者姓名
+{\kaishu 第一作者}
+
+\newcommand{\myfirstaffiliation}                                          % 请输入第一作者单位，多个单位用\\分隔
+{单位1（到系所）}
+
+\newcommand{\myfirstemail}                                                % 请输入第一作者电子邮箱
+{xxxx@xxxx.xxx}
+
+%\renewcommand{\mysecondauthor}{\kaishu 第二作者}                                 % 若需要，请输入第二作者姓名，并取消该行注释
+
+\newcommand{\mysecondaffiliation}                                         % 若需要，请输入第二作者单位，多个单位用\\分隔
+{单位2（到系所）}
+
+\newcommand{\mysecondemail}                                               % 若需要，请输入第二作者邮箱
+{xxxx@xxxx.xxx}
+
+%\renewcommand{\mythirdauthor}{\kaishu 第三作者}                                  % 若需要，请输入第三作者姓名，并取消该行注释
+
+\newcommand{\mythirdaffiliation}                                          % 若需要，请输入第三作者单位，多个单位用\\分隔
+{单位3（到系所）}
+
+\newcommand{\mythirdemail}                                                % 若需要，请输入第三作者邮箱
+{xxxx@xxxx.xxx}
+
+\newcommand{\myfourthauthor}{null}
+
+%\renewcommand{\myfourthauthor}{\kaishu 第四作者}
+\newcommand{\myfourthaffiliation}{单位四}
+
+\newcommand{\myfourthemail}
+{xxxx@xxxx.xxx}
+
+\newcommand{\myfifthauthor}{null}
+
+%\renewcommand{\myfifthauthor}{\kaishu 第五作者}
+\newcommand{\myfifthaffiliation}{单位五}
+
+\newcommand{\myfifthemail}
+{xxxx@xxxx.xxx}
+%-------------------------------------------------------------------------%
+%    2.2 请填入项目资助、致谢（选填）
+%-------------------------------------------------------------------------%
+%\renewcommand{\mygrants}{国家社会科学基金项目~XXXXXXXX}                  % 若需要，请输入项目名称及批号，并取消该行注释，多个项目以中文逗号分隔
+%\renewcommand{\mythanks}{感谢XXX对本文的帮助。}                          % 若需要，请输入致谢内容，并取消该行注释
+
+%-------------------------------------------------------------------------%
+%    2.3 请填入中文摘要、关键词
+%-------------------------------------------------------------------------%
+\newcommand{\myabstract}                                                  % 请在下面输入中文摘要
+{本文讨论了一个非常重要的问题}
+
+\newcommand{\mykeywords}                                                  % 请在下面输入中文关键词，以中文分号分隔
+{关键；很关键；非常关键；关键得不得了}
+
+%-------------------------------------------------------------------------%
+%    2.4 请填入英文标题、摘要（默认为null）
+%-------------------------------------------------------------------------%
+\newcommand{\mytitleEN}                                                   % 请输入英文标题
+{Title}
+
+\newcommand{\myabstractEN}                                                % 请输入英文摘要
+{Abstract}
+
+%-------------------------------------------------------------------------%
+%    2.5 预置宏包和自定义命令（你可以补充需要的宏包和自定义命令）
+%-------------------------------------------------------------------------%
+\usepackage[pdfborder=0,CJKbookmarks=true]{hyperref}  % 使用内部超链接，其中第二个选项用于支持中文书签
+
+
+
+
+%----------------------------------------------------------
+\addbibresource{reference.bib}				%填入参考文献库文件 .bib
+
+%-------------------------------------------------------------------------%
+%    2.6 打印标题页信息（作者请忽略此部分）
+%-------------------------------------------------------------------------%
+\begin{document}
+\begingroup                                                               % 以下使得收稿日期以不加标记的脚注出现
+\makeatletter
+\let\@makefnmark\relax\footnotetext{%
+  \ifthenelse{\equal{\revisiondate}{null}}{{\bf 收稿日期：}\receiveddate}
+  {{\bf 收稿日期：}\receiveddate；{\bf 修订日期：}\revisiondate}
+}
+\makeatother
+\endgroup
+\printtitlepage                                                           % 打印标题、作者、摘要等信息
+%-------------------------------------------------------------------------%
+%    2.7 正文内容从这里开始
+%-------------------------------------------------------------------------%
+\section{引言}
+正文从这里开始……
+\section{新的一节}
+
+\begin{quotation}
+  这是引用
+\end{quotation}
+
+\begin{quote}
+  这是第二种引用
+\end{quote}
+
+\begin{lem}
+  这是引理
+\end{lem}
+
+\begin{definition}
+  定义
+\end{definition}
+
+\begin{theorem}
+  定理
+\end{theorem}
+
+\parencite{testcn}这是中文引用，需要在bib文件里填上userf=\{cn\}，英文引用则不用\parencite{test}。\parencite{Le08}。
+
+运行xelatex，biber，xelatex，xelatex。
+
+%-------------------------------------------------------------------------%
+%    2.8 参考文献
+%-------------------------------------------------------------------------%
+\vspace{2ex} 
+\printbibliography
+%为了使参考文献按作者姓氏的拼音排列，使用biblatex里面的caspervector样式，需要使用biber编译，
+%编译顺序是XeLatex -> biber -> XeLatex -> XeLatex。
+
+%-------------------------------------------------------------------------%
+%    2.9 打印非原创文章的作者信息（作者请忽略此部分）
+%-------------------------------------------------------------------------%
+\ifthenelse{\equal{\myarticletype}{original}}{}{%
+\vspace*{4ex}
+\noindent{\kaishu \myfirstauthor}                                       % 第一作者
+{\myfirstaffiliation  }                                                   % 第一作者单位
+{\myfirstemail   }                                                          % 第一作者email
+% \vspace*{1ex}                                                                %如果需要请取消注释
+% {\kaishu \mysecondauthor}                                            % 第二作者
+% {\mysecondaffiliation }                                                 % 第二作者单位
+%{ \mysecondemail }                                                     % 第二作者email
+% \vspace*{1ex}                                                           %如果需要请取消注释
+% {\kaishu \mythirdauthor}                                              % 第三作者
+% \mythirdaffiliation                                                   % 第三作者单位
+% \mythirdemail                                                           % 第三作者email
+}
+
+%-------------------------------------------------------------------------%
+%    2.10 打印责任编辑（作者请忽略此部分）
+%-------------------------------------------------------------------------%
+\vspace{4ex}
+\begin{flushright}
+\myeditor
+\end{flushright}
+
+%-------------------------------------------------------------------------%
+%    2.11 根据需要打印英文摘要（作者请忽略此部分）
+%-------------------------------------------------------------------------%
+\ifthenelse{\equal{\mytitleEN}{null}}{}{%
+    \newpage
+    \printtitlepageEN
+}
+
+\end{document}

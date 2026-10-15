@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""合并一期的 PDF（第 88 条）—— 给两个外壳共用的命令行入口。
+
+    python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines]
+                        [--editors-page] [--back-cover] [--version]
+
+**为什么要有它**：这个功能原来 mac 走 SwiftUI + PDFKit、Windows 走 PyPDF2，
+两套实现。做 Windows 版的前提是「引擎只有一份逻辑」，所以合并规则整体搬进
+`slcn/pdfmerge.py`，两个外壳都来调这个 CLI（见 `docs/ENGINE_API.md`）。
+
+**注意**：`文件夹路径` 指的是**期目录**（里面有 `扉页.pdf`、`000 目录/`、`01 Liang_Zhang/` …），
+不是单篇稿件的目录。合并结果默认写成 `<期目录>/合并<时间戳>.pdf`。
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from slcn import platform as _plat  # noqa: E402
+from slcn import pdfmerge  # noqa: E402
+
+
+def main(argv: list[str] | None = None) -> int:
+    _plat.utf8_stdio()
+    ap = argparse.ArgumentParser(
+        prog="mergepdf.py",
+        description="把一期的扉页、目录、各篇文章、封底按顺序合并成一个 PDF，并重建书签大纲",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument("--version", action="version",
+                    version=f"SLCN 引擎 {_plat.engine_version()} ｜ {_plat.describe()}")
+    ap.add_argument("--folder", required=True, metavar="期目录",
+                    help="【必填】期目录（内含 扉页.pdf / 000 …/ / 01 作者/ …）")
+    ap.add_argument("--out", default=None, metavar="合并.pdf",
+                    help="输出路径；默认写到期目录下的「合并<时间戳>.pdf」")
+    ap.add_argument("--nest-outlines", action="store_true",
+                    help="把各篇 PDF 自带的小节书签挂到该篇文章的书签之下（默认平铺在顶层，与原版一致）")
+    ap.add_argument("--editors-page", action="store_true",
+                    help="把编委信息页插在扉页之后（按文件名识别，见 slcn/pdfmerge.py）")
+    ap.add_argument("--back-cover", action="store_true",
+                    help="把封底附加页放到最后（形如 cover+bottom…pdf）")
+    args = ap.parse_args(argv)
+
+    folder = os.path.abspath(os.path.expanduser(args.folder))
+    if not os.path.isdir(folder):
+        print(f"\n❌ 期目录不存在：{folder}\n", file=sys.stderr)
+        return 2
+
+    try:
+        res = pdfmerge.merge_issue(
+            folder,
+            out=os.path.abspath(os.path.expanduser(args.out)) if args.out else None,
+            nest_outlines=args.nest_outlines,
+            editors_page=args.editors_page,
+            back_cover=args.back_cover,
+        )
+    except Exception as e:  # noqa: BLE001  写不出去/PDF 坏到没法处理
+        print(f"\n❌ 合并失败：{e}\n", file=sys.stderr)
+        return 2
+
+    if res.missing:
+        print(f"   ⚠ 有 {len(res.missing)} 个预期文件没找到：{'、'.join(res.missing)}")
+    if res.warnings:
+        print("   ⚠ 注意事项：")
+        for w in res.warnings:
+            print(f"      · {w}")
+    # 契约行（`docs/ENGINE_API.md` §三）：外壳靠这一行拿产物路径与页数
+    print(f"完成。合并文件：{res.output}（共 {res.page_count} 页）")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,159 @@
+name: 构建与发布（macOS + Windows）
+
+# 触发：
+#   · 打 tag（v1.0.0 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
+#   · 手动 workflow_dispatch → 只跑测试与构建，**不**建 Release（用来验证打包脚本）
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # 建 Release 需要
+
+env:
+  # 版本号只有一处：Engine/slcn/__init__.py 的 __version__
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # ── ① 纯逻辑测试：两个平台各跑一遍（不需要 TeX / LibreOffice）────────────
+  test:
+    name: 测试（${{ matrix.os }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 装依赖（vendor 的等价物）
+        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
+
+      # ⚠️ 只跑**不依赖稿件库**的套件：本仓（公开的工具仓）里没有作者稿件，
+      #    依赖真实稿件的断言都自带 SKIP（见各套件里的 `缺真实稿件` 分支）。
+      #    全库回归（corpus.py / docx_audit.py）留在稿件仓里跑，它们要 132 份源稿。
+      - name: 引擎套件（不依赖稿件库的部分）
+        shell: bash
+        run: |
+          set -e
+          cd Engine
+          for f in tests/test_platform.py tests/test_pdfmerge.py \
+                   tests/test_bib_protection_forms.py tests/test_sep_style.py \
+                   tests/test_refmark_raw_refs.py tests/test_unmatched_in_report.py \
+                   tests/test_checkbib.py tests/test_merge_into.py; do
+            echo "── $f"
+            python "$f" | tail -3
+          done
+
+      - name: Windows 外壳（桥梁）测试
+        shell: bash
+        run: |
+          cd sources-win
+          PYTHONPATH="$PWD/../Engine/vendor" python tests/test_bridge.py | tail -4
+
+  # ── ② macOS：构建 .app 并打包 ────────────────────────────────────────────
+  macos:
+    name: 构建 macOS 应用
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: 读取版本号（唯一出处）
+        id: ver
+        run: |
+          V=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' Engine/slcn/__init__.py | head -1)
+          echo "version=${V:-0.0.0}" >> "$GITHUB_OUTPUT"
+      - name: 构建 .app
+        run: ./build.sh
+      - name: 打包（zip 保留可执行位与签名）
+        run: |
+          cd dist
+          zip -qry "EditToolBox-${{ steps.ver.outputs.version }}-macOS-arm64.zip" "编辑部工具箱.app"
+      # ⚠️ 未签名/未公证：下载后会撞 Gatekeeper（「已损坏」）。这是 2026-10-15 的决定
+      #    （不买 Apple Developer 账号），所以资产里附一份说明，正文里也写清处理方法。
+      - name: 附一份「首次打开」说明
+        run: |
+          cat > dist/首次打开（macOS）.txt <<'TXT'
+          《编辑部工具箱》macOS 版首次打开说明
+          ------------------------------------------------
+          本应用**未做 Apple 签名与公证**（编辑部决定不购买开发者账号），
+          从网上下载后直接双击会被 Gatekeeper 拦下，提示「已损坏，无法打开」。
+          这不是文件坏了，是系统隔离标记造成的。处理方法（二选一）：
+
+            方法一（推荐）：右键点应用 → 选「打开」→ 在弹窗里再点「打开」。
+            方法二（终端一条命令）：
+                xattr -dr com.apple.quarantine "/Applications/编辑部工具箱.app"
+
+          另外：本应用需要系统里有 python3 与 TeX（xelatex/biber）；
+          合并 PDF、导出原稿 PDF 另外需要 LibreOffice（可选）。
+          TXT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: |
+            dist/EditToolBox-*.zip
+            dist/首次打开（macOS）.txt
+
+  # ── ③ Windows：冻结引擎 + 界面，打成一个发布目录 ─────────────────────────
+  windows:
+    name: 构建 Windows 应用
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 打包（引擎 exe + 界面 exe）
+        shell: pwsh
+        run: ./sources-win/build-win.ps1
+      - name: 组装发布目录
+        shell: pwsh
+        run: |
+          $V = (Select-String -Path Engine\slcn\__init__.py -Pattern '^__version__ = "(.*)"').Matches.Groups[1].Value
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item sources-win\build\dist\SLCNEngine.exe dist\
+          Copy-Item "sources-win\build\dist\编辑部工具箱.exe" dist\
+          Compress-Archive -Path dist\SLCNEngine.exe, "dist\编辑部工具箱.exe" `
+                           -DestinationPath "EditToolBox-$V-Windows-x64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-app
+          path: EditToolBox-*-Windows-x64.zip
+
+  # ── ④ 发 Release（只在打 tag 时）────────────────────────────────────────
+  release:
+    name: 建 Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: 生成 latest.json（外壳启动时比对它，只提示不自动替换）
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          cat > assets/latest.json <<JSON
+          {
+            "version": "$V",
+            "macos": "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/EditToolBox-$V-macOS-arm64.zip",
+            "windows": "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/EditToolBox-$V-Windows-x64.zip",
+            "notes": "见 Release 说明"
+          }
+          JSON
+          ls -la assets
+      - name: 建 Release 并附上资产
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            assets/*

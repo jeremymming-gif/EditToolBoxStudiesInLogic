@@ -1,0 +1,561 @@
+--- /tmp/preedit/ViewModels.swift.orig	2026-10-15 00:20:08
++++ Sources/Core/ViewModels.swift	2026-10-15 18:46:42
+@@ -13,6 +13,318 @@
+     @Published var running: Bool = false
+ }
+ 
++// MARK: - AI 的两个「请求体旋钮」（设置页 → 引擎）
++
++/// 「通道」二态 → 环境变量 `SLCN_LLM_PROTOCOL`（/ `--llm-protocol`）。
++///
++/// 为什么要有这个开关（2026-10-15 用户决定）：只有 **Responses API**（`{base}/responses`）
++/// 才有「服务端内置工具」这个概念，联网检索（`tools:[{"type":"web_search"}]`）必须走它；
++/// chat 通道（`/chat/completions`）的 `tools` 是 **function calling**，要客户端自己执行，
++/// **不是检索**。默认 `chat`：老行为一字不改（请求体与从前逐字节相同）。
++///
++/// ⚠️ 开了 responses **不等于**能联网：DeepSeek 官方兼容性表把 `web_search` 列为「忽略」的
++/// 内置工具（不报错、也不检索），所以「设置」页的 ⑤ 检索探针会**实测**端点到底会不会查，
++/// 结论如实显示——本工具绝不假装已联网。
++enum AIProtocol: String, CaseIterable, Identifiable {
++    case chat = "chat"
++    case responses = "responses"
++
++    var id: String { rawValue }
++
++    var title: String {
++        switch self {
++        case .chat: return "chat（/chat/completions，默认）"
++        case .responses: return "responses（/responses，支持服务端检索工具）"
++        }
++    }
++
++    /// 传给引擎的命令行/环境变量值
++    var envValue: String { rawValue }
++
++    /// 从 ai.json 读回；认不出（旧文件没这个键 / 手改坏）一律回落 `chat`。
++    init(stored: Any?) {
++        self = (stored as? String).flatMap(AIProtocol.init(rawValue:)) ?? .chat
++    }
++}
++
++/// 「思考模式」三态 → 环境变量 `SLCN_LLM_THINKING`。
++///
++/// 为什么默认是「跟随端点默认」而不是「开启」：官方文档（2026-10）写明 `thinking`
++/// **默认就是 enabled**，显式发 `enabled` 只等于把默认值抄一遍，却会让请求体不再与
++/// 从前逐字节相同 —— 老端点/自建服务多收到一个不认识的字段可能直接 400
++/// （`response_format` 当年就是这么把整条 AI 通道打挂的）。要关就显式选「关闭」。
++enum AIThinkingMode: String, CaseIterable, Identifiable {
++    /// 不发送该字段（请求体与从前逐字节相同）
++    case followEndpoint = "follow"
++    /// `{"type":"disabled"}`：纯抽取/规范化任务推荐
++    case disabled = "off"
++    /// `{"type":"enabled"}`：显式表态，值同端点默认
++    case enabled = "on"
++
++    var id: String { rawValue }
++
++    var title: String {
++        switch self {
++        case .followEndpoint: return "跟随端点默认（不发送该字段）"
++        case .disabled: return "关闭（推荐：纯抽取任务）"
++        case .enabled: return "开启"
++        }
++    }
++
++    /// 传给引擎子进程的值：`nil` = **不设置** `SLCN_LLM_THINKING`
++    /// （= 引擎 `request_params_from_env()` 口径里的「不发该字段」）。
++    var envValue: String? {
++        switch self {
++        case .followEndpoint: return nil
++        case .disabled: return "0"
++        case .enabled: return "1"
++        }
++    }
++
++    /// 从 ai.json 读回。**认不出的值（旧文件没这个键 / 将来手工改坏）一律回落默认**，
++    /// 绝不让读配置失败。
++    init(stored: Any?) {
++        self = (stored as? String).flatMap(AIThinkingMode.init(rawValue:)) ?? .followEndpoint
++    }
++}
++
++/// 「输出上限」输入框的解析口径（纯函数，headless 可验证）。
++///
++/// 与引擎 `request_params_from_env()` 的 `SLCN_LLM_MAX_TOKENS` 口径**故意不完全一样**：
++/// 引擎拿到非整数会「按默认 2048 处理 + stderr 一条说明」，界面这边**直接拒绝保存**
++/// （`saveAI()` 返回 false + 红字提示）—— 编辑在界面上填错就该当场知道，
++/// 而不是等转换完去日志框里翻那一条 stderr。真正跑转换时若值仍然非法
++/// （例如界面里填了非法值又直接点转换），`ConvertFeature` 也**不静默**：不设该变量 + 日志一行说明。
++enum AIMaxTokens {
++    /// 输入框默认值 = 引擎的 `_DEFAULT_MAX_TOKENS`
++    static let defaultText = "2048"
++
++    enum Parsed: Equatable {
++        /// 留空 → **不设置** `SLCN_LLM_MAX_TOKENS`（引擎用自己的默认 2048）
++        case unset
++        /// 合法整数（已规范化为十进制文本；`"0"` = 不封顶）
++        case value(String)
++        /// 非整数 / 负数 → 拒绝，并附一句中文提示
++        case invalid(String)
++    }
++
++    static func parse(_ raw: String) -> Parsed {
++        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
++        if t.isEmpty { return .unset }
++        // 只认十进制整数：`1e3` / `2048.0` / `2_048` / 溢出都不认 —— 引擎的 int()
++        // 同样不认，但引擎会**静默**回落到 2048，所以界面必须当场说清楚。
++        guard let n = Int(t) else {
++            return .invalid("输出上限必须是整数（留空 = 用引擎默认 2048；0 = 不封顶），"
++                            + "现在填的是「\(t)」—— 转换时不会发送这个值。")
++        }
++        guard n >= 0 else {
++            return .invalid("输出上限不能是负数（要「不封顶」请填 0），现在填的是「\(t)」。")
++        }
++        return .value(String(n))
++    }
++
++    /// 环境变量值：`nil` = 不设置该变量（留空或非法都按「不设置」处理）
++    static func envValue(_ raw: String) -> String? {
++        if case .value(let v) = parse(raw) { return v }
++        return nil
++    }
++
++    /// 非法输入的中文提示；合法时为 nil（界面只在非 nil 时显示红字）
++    static func hint(_ raw: String) -> String? {
++        if case .invalid(let h) = parse(raw) { return h }
++        return nil
++    }
++}
++
++/// 两个**高级**文本旋钮的取值口径（第 70 条；纯函数，headless 可验证）。
++///
++/// 为什么要有这两个旋钮：`slcn/llm.py` 里原本把工具类型名 `web_search` 与路径
++/// `/responses` 写死了，而 DeepSeek 现在虽然把内置检索工具**忽略**，将来却可能实现
++/// —— 名字未必还叫 `web_search`（OpenAI 自己就有 `web_search_preview`），路径也可能不是
++/// `/responses`。做成配置之后，服务商一改，编辑改这两栏即可，**不必等新版本**。
++///
++/// 口径（与 `AIMaxTokens` 同一条纪律：不静默）：
++///   · **留空 = 不传给引擎**（引擎用自己的默认 `web_search` / `/responses`），
++///     所以两栏都空时命令行与环境变量与从前**逐字节相同**；
++///   · 填了但**结构上不可能是**合法值 → 同样**不传**，并由 `hint()` 出一行中文提示。
++///     为什么不直接拒绝保存：这两栏是次要旋钮，默认空着就能用，「不传 = 用默认」
++///     本身就是一个正确结果；引擎侧同样是「回落默认 + stderr 一条说明」。
++enum AIAdvancedKnobs {
++    /// 引擎 `slcn/llm.py: DEFAULT_SEARCH_TOOL` —— 工具名留空时它用的值（界面提示用）
++    static let defaultSearchTool = "web_search"
++    /// 引擎 `slcn/llm.py: DEFAULT_RESPONSES_PATH` —— 路径留空时它用的值（界面提示用）
++    static let defaultResponsesPath = "/responses"
++
++    enum Parsed: Equatable {
++        /// 留空 → **不传**（引擎取默认）
++        case unset
++        /// 合法值 → 原样传给引擎（路径缺前导 `/` 由引擎补上，界面不替它编地址）
++        case value(String)
++        /// 结构上不可能是合法值 → 不传 + 中文提示
++        case invalid(String)
++    }
++
++    /// 工具类型名：字母/数字开头，其余只允许 `_ - . :`
++    /// （与引擎 `_TOOL_NAME_RE` 同一口径 —— 两份实现必须一起改，测试钉着这一点）。
++    static func parseSearchTool(_ raw: String) -> Parsed {
++        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
++        if t.isEmpty { return .unset }
++        let scalars = t.unicodeScalars
++        let headOK = scalars.first.map { CharacterSet.alphanumerics.contains($0) } ?? false
++        let bodyOK = scalars.allSatisfy {
++            CharacterSet.alphanumerics.contains($0) || "_-.:".unicodeScalars.contains($0)
++        }
++        guard headOK, bodyOK else {
++            return .invalid("工具名只能由字母/数字与 _ - . : 组成、且以字母或数字开头，"
++                            + "现在填的是「\(t)」—— 本次**不会**把它发给引擎（用默认 "
++                            + defaultSearchTool + "）。")
++        }
++        return .value(t)
++    }
++
++    /// responses 路径：原样传给引擎（缺前导 `/` 由引擎补，末尾 `/` 由引擎去掉），
++    /// 只要不含空白 / `://` / 引号 / 花括号 / 逗号 —— 那些结构上不可能是路径。
++    static func parseResponsesPath(_ raw: String) -> Parsed {
++        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
++        if t.isEmpty { return .unset }
++        let hasSpace = t.unicodeScalars.contains {
++            CharacterSet.whitespacesAndNewlines.contains($0)
++        }
++        let bad = hasSpace || t.contains("://") || t.contains("\"") || t.contains("'")
++            || t.contains("{") || t.contains("}") || t.contains(",")
++        guard !bad else {
++            return .invalid("路径里不许有空白 / :// / 引号 / 花括号 / 逗号，"
++                            + "现在填的是「\(t)」—— 本次**不会**把它发给引擎（用默认 "
++                            + defaultResponsesPath + "）。")
++        }
++        return .value(t)
++    }
++
++    /// 传给引擎的值：`nil` = **不传这个参数**（留空或非法都按「用引擎默认」处理）
++    static func envValue(_ parsed: Parsed) -> String? {
++        if case .value(let v) = parsed { return v }
++        return nil
++    }
++
++    /// 非法输入的中文提示；合法/留空时为 nil（界面只在非 nil 时显示红字）
++    static func hint(_ parsed: Parsed) -> String? {
++        if case .invalid(let h) = parsed { return h }
++        return nil
++    }
++}
++
++/// 传给引擎子进程的**请求体选项**（不是连接参数）。
++///
++/// 为什么单独成结构、而不是塞进「地址/密钥/模型」那一组：
++/// 那三个回答「连哪个端点」，这几个回答「请求体里带什么」—— 只有真正要跑 AI
++/// （勾了「用 AI 处理参考文献」）时才有意义，所以也只在那个时候进环境变量/命令行。
++struct AIEngineKnobs: Equatable {
++    var thinking: AIThinkingMode = .followEndpoint
++    /// **原样**保存用户输入（解析见 `AIMaxTokens`），默认 `"2048"`
++    var maxTokens: String = AIMaxTokens.defaultText
++    /// 通道：`chat`（默认，逐字节老行为）/ `responses`
++    var apiProtocol: AIProtocol = .chat
++    /// 是否启用**服务端联网检索**（默认关；只在 `responses` 通道生效）
++    var webSearch: Bool = false
++    /// 检索工具的**类型名**（第 70 条 → 引擎 `SLCN_LLM_SEARCH_TOOL` / `--llm-search-tool`）。
++    /// **留空 = 不传这个参数**，引擎用默认 `web_search`（于是命令行逐字节不变）。
++    var searchTool: String = ""
++    /// responses 的**路径**（第 70 条 → 引擎 `SLCN_LLM_RESPONSES_PATH` / `--llm-responses-path`）。
++    /// **留空 = 不传这个参数**，引擎用默认 `/responses`。
++    var responsesPath: String = ""
++
++    /// 本组合**实际**会不会带检索工具（chat 通道下即使勾了也不会）。
++    var usesWebSearch: Bool { apiProtocol == .responses && webSearch }
++
++    /// 两个「未来兼容」旋钮的一行说明（第 70 条）：**只有填了才出现**；
++    /// 两栏都空时返回空串，`summary` 与从前逐字节相同。
++    var advancedSummary: String {
++        var parts: [String] = []
++        if let v = AIAdvancedKnobs.envValue(AIAdvancedKnobs.parseSearchTool(searchTool)) {
++            parts.append("工具名 \(v)")
++        }
++        if let v = AIAdvancedKnobs.envValue(AIAdvancedKnobs.parseResponsesPath(responsesPath)) {
++            parts.append("路径 \(v)")
++        }
++        return parts.isEmpty ? "" : "；" + parts.joined(separator: "，")
++    }
++
++    /// 一行摘要（界面/日志用，**不含密钥**）
++    var summary: String {
++        let t = "通道 " + apiProtocol.rawValue
++            + (webSearch
++               ? (apiProtocol == .responses ? " + 联网检索**已启用**" : "（勾了联网检索，但 chat 通道不带检索工具）")
++               : "（未启用联网检索：模型只能凭记忆）")
++        let th = "；思考模式 \(thinking.title)"
++        let core: String
++        switch AIMaxTokens.parse(maxTokens) {
++        case .unset: core = t + th + "；输出上限 未设置（引擎默认 2048）"
++        case .value(let v): core = t + th + "；输出上限 " + (v == "0" ? "0（不封顶）" : v)
++        case .invalid(let h): core = t + th + "；⚠ " + h
++        }
++        return core + advancedSummary
++    }
++}
++
++/// 「设置」页的**预设**：一键把「API 地址 + 模型名」填成常见服务商的值。
++///
++/// 只是填表快捷方式 —— 填完之后两个输入框照样可以改，预设**永远不碰密钥**。
++/// 地址一律带服务商的版本路径（`…/v1`）：引擎 `slcn/llm.py` 是
++/// `base.rstrip("/") + "/chat/completions"`，少一段版本路径就会 404。
++///
++/// ⚠️ 模型名是**会变**的（DeepSeek 官方 2026-10 就已把 `deepseek-chat` /
++/// `deepseek-reasoner` 退役，换成 `deepseek-flash` / `deepseek-v4-pro`），
++/// 所以界面上的帮助文字写明「以服务商文档为准」。
++enum AIProviderPreset: String, CaseIterable, Identifiable {
++    case deepseek = "deepseek"
++    case qwen = "qwen"
++    case glm = "glm"
++    case kimi = "kimi"
++    case custom = "custom"
++
++    var id: String { rawValue }
++
++    var title: String {
++        switch self {
++        case .deepseek: return "DeepSeek"
++        case .qwen: return "通义千问"
++        case .glm: return "智谱 GLM"
++        case .kimi: return "Kimi / Moonshot"
++        case .custom: return "自定义（不动输入框）"
++        }
++    }
++
++    /// 要填进「API 地址」的值；`nil` = 自定义，什么都不动
++    var base: String? {
++        switch self {
++        case .deepseek: return "https://api.deepseek.com/v1"
++        case .qwen: return "https://dashscope.aliyuncs.com/compatible-mode/v1"
++        case .glm: return "https://open.bigmodel.cn/api/paas/v4"
++        case .kimi: return "https://api.moonshot.cn/v1"
++        case .custom: return nil
++        }
++    }
++
++    /// 要填进「模型名」的值；`nil` = 自定义，什么都不动
++    var model: String? {
++        switch self {
++        case .deepseek: return "deepseek-flash"
++        case .qwen: return "qwen-plus"
++        case .glm: return "glm-4"
++        case .kimi: return "moonshot-v1-8k"
++        case .custom: return nil
++        }
++    }
++
++    /// 把预设套到现有的「地址 / 模型名」上（纯函数，headless 可验证）。
++    ///
++    /// ⚠️ 刻意**不接受、也不返回密钥**：换预设永远不该动密钥 ——
++    /// 密钥是编辑自己粘进去的，从类型上就让它碰不到（`SettingsTab.apply` 也只写这两个字段）。
++    func applied(base: String, model: String) -> (base: String, model: String) {
++        (self.base ?? base, self.model ?? model)
++    }
++}
++
+ /// 全局选项
+ ///
+ /// 三个勾选项**默认都是选中的** —— 实际工作流里它们几乎每次都要用，
+@@ -44,14 +356,34 @@
+ 
+     /// API 地址：OpenAI 兼容的 base URL，如 https://api.deepseek.com/v1
+     @Published var aiBase = ""
+-    /// API 密钥。**可以留空** —— 本机 Ollama / LM Studio 不需要密钥；
++    /// API 密钥。**可以留空** —— 本机/自建端点（LM Studio 等）不需要密钥；
+     /// 留空时请求头发 `Bearer none`，与引擎 `slcn/llm.py` 的行为一致。
+     @Published var aiKey = ""
+-    /// 模型名，如 deepseek-chat
++    /// 模型名，如 deepseek-flash（模型名会变，以服务商文档为准）
+     @Published var aiModel = ""
+     /// 「设置」页的状态行（保存/读取结果、文件权限）
+     @Published var aiStatus = ""
+ 
++    /// 思考模式（三态）→ 勾了「用 AI 处理参考文献」时经 `SLCN_LLM_THINKING` 传给引擎
++    @Published var aiThinking: AIThinkingMode = .followEndpoint
++    /// 输出上限：**原样**保存用户输入（默认 "2048"）。留空 = 不设置该环境变量，
++    /// `0` = 不封顶；非整数由 `saveAI()` 拒绝（见 `AIMaxTokens`）。
++    @Published var aiMaxTokens: String = AIMaxTokens.defaultText
++
++    /// 通道（chat / responses）→ 勾了「用 AI 处理参考文献」时经 `--llm-protocol` 传给引擎。
++    @Published var aiProtocol: AIProtocol = .chat
++    /// 联网检索开关 → 勾了 AI 时经 `--llm-web-search` 传给引擎（默认关）。
++    /// ⚠️ 勾上**不代表**端点真的会检索：DeepSeek 的 Responses 会静默忽略该工具，
++    /// 所以「设置」页的 ⑤ 探针要实测，GUI 与引擎都会如实写明。
++    @Published var aiWebSearch: Bool = false
++
++    /// 检索工具的类型名（第 70 条）。**留空 = 不传 `--llm-search-tool`**，引擎用默认
++    /// `web_search`（于是命令行逐字节不变）；填了才传，供将来服务商换名字时使用。
++    @Published var aiSearchTool: String = ""
++    /// responses 的路径（第 70 条）。**留空 = 不传 `--llm-responses-path`**，引擎用默认
++    /// `/responses`；填了才传，供将来服务商换路径时使用。
++    @Published var aiResponsesPath: String = ""
++
+     /// 配置目录。默认（nil）= 用户目录里的 `cn.edu.sysu.logic.toolbox`；
+     /// 允许注入只为了**自动化验证**（在不写用户真实目录的前提下跑通存/读/权限），
+     /// 界面一律用默认值 `AppSettings()`。
+@@ -61,6 +393,14 @@
+     private var savedBase = ""
+     private var savedKey = ""
+     private var savedModel = ""
++    private var savedThinking: AIThinkingMode = .followEndpoint
++    private var savedMaxTokens: String = AIMaxTokens.defaultText
++    /// 通道 / 联网检索也要进「有未保存的修改」的判据（与另两个旋钮同一口径）
++    private var savedProtocol: AIProtocol = .chat
++    private var savedWebSearch: Bool = false
++    /// 第 70 条的两个高级文本旋钮（留空 = 不传给引擎）
++    private var savedSearchTool: String = ""
++    private var savedResponsesPath: String = ""
+ 
+     init(storeDirectory: URL? = nil) {
+         storeDir = storeDirectory
+@@ -83,7 +423,38 @@
+         //    所以创建之后再显式收紧一次 —— `setAttributes` 对已存在的目录也有效。
+         try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                                ofItemAtPath: base.path)
+-        return base.appendingPathComponent("ai.json")
++        return AppSettings.storeURL(storeDirectory: base)
++    }
++
++    /// 只算 `ai.json` 的路径：**不建目录、不收紧权限、不碰界面**
++    /// （给后台线程上的 `loadEngineKnobs` 用；需要建目录的写盘路径见 `aiStoreURL`）。
++    static func storeURL(storeDirectory: URL? = nil) -> URL {
++        (storeDirectory ?? AppSettings.defaultStoreDir()).appendingPathComponent("ai.json")
++    }
++
++    /// 读「设置」页**已保存**的两个旋钮（思考模式 / 输出上限）——这是**兜底**路径。
++    ///
++    /// 正常转换**不走这里**：「初排转换」页把界面上现填的两个旋钮直接传给
++    /// `ConvertFeature.run(knobs:)`（和 base/key/model 一样现取现传，2026-10-15 改活），
++    /// 所以「改了旋钮但没点保存」在本次转换里**照样生效**（只影响重启后是否还在）。
++    ///
++    /// 什么时候会走到这里：调用方**没有**现成的旋钮可传 —— 例如将来别的入口，
++    /// 或在**后台线程**上需要一份值时（`@Published` 属于主线程，不能从后台读）。
++    /// 这条路径读的是上次保存进 `ai.json` 的值。
++    static func loadEngineKnobs(storeDirectory: URL? = nil) -> AIEngineKnobs {
++        var knobs = AIEngineKnobs()
++        guard let data = try? Data(contentsOf: AppSettings.storeURL(storeDirectory: storeDirectory)),
++              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
++        else { return knobs }
++        knobs.thinking = AIThinkingMode(stored: obj["thinking"])
++        if let t = obj["maxTokens"] as? String { knobs.maxTokens = t }
++        // 第 69 条：通道 / 检索开关也要能读回（没有现成旋钮时的兜底路径）。
++        knobs.apiProtocol = AIProtocol(stored: obj["protocol"])
++        knobs.webSearch = (obj["webSearch"] as? Bool) ?? false
++        // 第 70 条的两个高级旋钮：旧 ai.json 没有这两个键 → 空串（= 用引擎默认）。
++        if let t = obj["searchTool"] as? String { knobs.searchTool = t }
++        if let p = obj["responsesPath"] as? String { knobs.responsesPath = p }
++        return knobs
+     }
+ 
+     /// 默认目录：`~/Library/Application Support/cn.edu.sysu.logic.toolbox/`
+@@ -100,21 +471,60 @@
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+         else {
+             savedBase = aiBase; savedKey = aiKey; savedModel = aiModel
++            savedThinking = aiThinking; savedMaxTokens = aiMaxTokens
++            savedProtocol = aiProtocol; savedWebSearch = aiWebSearch
++            savedSearchTool = aiSearchTool; savedResponsesPath = aiResponsesPath
+             return
+         }
+         aiBase = (obj["base"] as? String) ?? ""
+         aiKey = (obj["key"] as? String) ?? ""
+         aiModel = (obj["model"] as? String) ?? ""
++        // ⚠️ 向后兼容：旧 ai.json 里没有这两个键 → 用默认值（思考「跟随端点默认」、
++        //    上限 2048）。类型不对/取值认不出也一律回落默认，绝不让读配置失败。
++        aiThinking = AIThinkingMode(stored: obj["thinking"])
++        aiMaxTokens = (obj["maxTokens"] as? String) ?? AIMaxTokens.defaultText
++        // 第 69 条的两个新键：旧 ai.json 里没有 → 默认（chat / 检索关），绝不让读配置失败。
++        aiProtocol = AIProtocol(stored: obj["protocol"])
++        aiWebSearch = (obj["webSearch"] as? Bool) ?? false
++        // 第 70 条的两个高级旋钮：旧 ai.json 没有这两个键 / 类型不对 → 空串
++        // （= 不传这个参数，引擎用默认），绝不让读配置失败。
++        aiSearchTool = (obj["searchTool"] as? String) ?? ""
++        aiResponsesPath = (obj["responsesPath"] as? String) ?? ""
+         savedBase = aiBase; savedKey = aiKey; savedModel = aiModel
++        savedThinking = aiThinking; savedMaxTokens = aiMaxTokens
++        savedProtocol = aiProtocol; savedWebSearch = aiWebSearch
++        savedSearchTool = aiSearchTool; savedResponsesPath = aiResponsesPath
+     }
+ 
+     /// 写盘并把权限固定为 0600。返回是否成功（失败原因写进 `aiStatus`）。
++    ///
++    /// 「输出上限」非整数时**拒绝保存**（返回 false + 中文提示）：引擎对非整数只会
++    /// 静默回落到 2048，界面这边必须当场说清楚（见 `AIMaxTokens`）。
+     @discardableResult
+     func saveAI() -> Bool {
++        let maxText: String
++        switch AIMaxTokens.parse(aiMaxTokens) {
++        case .invalid(let hint):
++            aiStatus = "未保存：" + hint
++            return false
++        case .unset:
++            maxText = ""
++        case .value(let v):
++            maxText = v      // 规范化（"02048" → "2048"），免得界面与文件里的值不一致
++        }
+         let obj: [String: Any] = [
+             "base": aiBase.trimmingCharacters(in: .whitespacesAndNewlines),
+             "key": aiKey.trimmingCharacters(in: .whitespacesAndNewlines),
+             "model": aiModel.trimmingCharacters(in: .whitespacesAndNewlines),
++            "thinking": aiThinking.rawValue,
++            "maxTokens": maxText,
++            "protocol": aiProtocol.rawValue,
++            "webSearch": aiWebSearch,
++            // 第 70 条的两个高级旋钮：**原样**存（只 trim 掉两端空白）。它们允许是空串
++            // （= 用引擎默认）；非法值也照样存下来（下次打开还能看见自己填了什么，
++            // 界面会给红字提示，而转换时**不会**发给引擎）——绝不静默丢掉用户输入。
++            "searchTool": aiSearchTool.trimmingCharacters(in: .whitespacesAndNewlines),
++            "responsesPath": aiResponsesPath.trimmingCharacters(in: .whitespacesAndNewlines),
+         ]
+         guard let data = try? JSONSerialization.data(withJSONObject: obj,
+                                                      options: [.prettyPrinted, .sortedKeys]) else {
+@@ -134,33 +544,82 @@
+         savedBase = obj["base"] as? String ?? ""
+         savedKey = obj["key"] as? String ?? ""
+         savedModel = obj["model"] as? String ?? ""
++        aiMaxTokens = maxText
++        savedMaxTokens = maxText
++        savedThinking = aiThinking
++        savedProtocol = aiProtocol
++        savedWebSearch = aiWebSearch
++        // 两个高级旋钮与界面对齐（trim 之后的值就是盘上的值，免得刚保存就显示「未保存」）
++        aiSearchTool = obj["searchTool"] as? String ?? ""
++        aiResponsesPath = obj["responsesPath"] as? String ?? ""
++        savedSearchTool = aiSearchTool
++        savedResponsesPath = aiResponsesPath
+         aiStatus = "已保存到 \(url.path)（权限 \(AppSettings.posixMode(of: url))）"
+         return true
+     }
+ 
++    /// 「清空」= **只清界面上那五个输入框**，磁盘上已保存的配置**一个字节都不动**。
++    ///
++    /// ⚠️ WHY（2026-10-15 **用户实测报的 bug**）：从前这里末尾直接调 `saveAI()`，
++    /// 一按「清空」就把 `~/Library/Application Support/cn.edu.sysu.logic.toolbox/ai.json`
++    /// 覆盖成空值 —— 编辑只是想换个服务商、重填地址，一点就把已经配好、本来能用的
++    /// 配置（含密钥）抹掉了，只能重贴。语义应该是「**清空输入框 ≠ 删除配置**」。
++    /// 所以现在落盘路径**唯一**：用户显式点「保存」（`SettingsTab` 的保存按钮）——
++    /// 清空之后 `aiDirty == true`（界面 ≠ 盘上），想真正覆盖就再点一次「保存」。
+     func clearAI() {
+         aiBase = ""; aiKey = ""; aiModel = ""
+-        saveAI()
++        // 两个旋钮也回到引擎默认（思考「跟随端点默认」、上限 2048）：
++        // 「清空」= **在界面上**恢复出厂，别把上一个服务商的调参留在输入框里；
++        // 注意这句话只说界面 —— 盘上那份要等「保存」才跟着变。
++        aiThinking = .followEndpoint
++        aiMaxTokens = AIMaxTokens.defaultText
++        aiProtocol = .chat
++        aiWebSearch = false
++        // 第 70 条的两个高级旋钮也回空串（= 用引擎默认）：与上面同一语义 ——
++        // 「清空」是**在界面上**恢复出厂，盘上那份要等「保存」才跟着变。
++        aiSearchTool = ""
++        aiResponsesPath = ""
++        // 状态行必须当场说清语义（不然编辑会以为配置已经被删了，或反过来以为还在用旧的）：
++        aiStatus = "已清空输入框；磁盘上已保存的配置**没动**（要覆盖请点「保存」）。"
+     }
+ 
+     // MARK: 状态查询（界面用）
+ 
+     /// 是否已配置到「可以调用」的程度：**地址 + 模型名**必填。
+-    /// 密钥可以留空 —— 本机 Ollama / LM Studio 不需要密钥
++    /// 密钥可以留空 —— 本机/自建端点（LM Studio 等）不需要密钥
+     /// （引擎侧 `LLMConfig.ready` 的判定口径完全一致：base and model）。
+     var aiConfigured: Bool {
+         !aiBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+             && !aiModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+     }
+ 
+-    /// 当前内容与上次保存的是否不同（提醒编辑点「保存」）
++    /// 当前内容与上次保存的是否不同（提醒编辑点「保存」）。
++    /// 两个旋钮也算：保存后才会写进 `ai.json`，下次开 App 才不用重填。
++    /// （**但转换用的是现取现传的值**，见 `loadEngineKnobs` 的说明 —— 改了不存
++    /// 只是「重启后丢失」，不会像以前那样「本次转换不生效」。）
+     var aiDirty: Bool {
+         aiBase.trimmingCharacters(in: .whitespacesAndNewlines) != savedBase
+             || aiKey.trimmingCharacters(in: .whitespacesAndNewlines) != savedKey
+             || aiModel.trimmingCharacters(in: .whitespacesAndNewlines) != savedModel
++            || aiThinking != savedThinking
++            // 比「解析结果」而不是原字符串：`2048` 与 `02048` 是同一个值，不该亮黄点
++            || AIMaxTokens.parse(aiMaxTokens) != AIMaxTokens.parse(savedMaxTokens)
++            || aiProtocol != savedProtocol
++            || aiWebSearch != savedWebSearch
++            // 第 70 条的两个高级旋钮：按 trim 后的**文本**比（它们没有「同值不同写法」，
++            // 只有「留空 / 填了什么」这一种差异）
++            || aiSearchTool.trimmingCharacters(in: .whitespacesAndNewlines) != savedSearchTool
++            || aiResponsesPath.trimmingCharacters(in: .whitespacesAndNewlines) != savedResponsesPath
+     }
+ 
+-    /// 一行摘要，供转换页/设置页显示：`deepseek-chat @ https://api.deepseek.com/v1`
++    /// 两个旋钮的当前值（**按界面上的输入**，不做 I/O）
++    var aiEngineKnobs: AIEngineKnobs {
++        AIEngineKnobs(thinking: aiThinking, maxTokens: aiMaxTokens,
++                      apiProtocol: aiProtocol, webSearch: aiWebSearch,
++                      searchTool: aiSearchTool, responsesPath: aiResponsesPath)
++    }
++
++    /// 一行摘要，供转换页/设置页显示：`deepseek-flash @ https://api.deepseek.com/v1`
+     var aiSummary: String {
+         "\(aiModel.trimmingCharacters(in: .whitespacesAndNewlines)) @ "
+             + aiBase.trimmingCharacters(in: .whitespacesAndNewlines)

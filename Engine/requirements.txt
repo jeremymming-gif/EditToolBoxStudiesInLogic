@@ -1,0 +1,6 @@
+# 引擎依赖（纯逻辑部分只需这三个）。安装到项目自带的 vendor/：
+#   python3 -m pip install --target vendor -r requirements.txt
+# 说明：lxml 是编译件（Windows 上要用 Windows 轮子重装），pypdf / pypinyin 是纯 Python。
+lxml>=6.0
+pypdf>=6.0
+pypinyin>=0.55

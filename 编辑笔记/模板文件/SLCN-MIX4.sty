@@ -1,0 +1,1017 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                      %%
+%%                    《逻辑学研究》中文格式模板                         	%%
+%%                                                                      %%
+%%              中山大学逻辑与认知研究所逻辑学研究编辑部                	%%
+%%                                                                      %%
+%%                             Ver 2.0	                                %%
+%%                                                                      %%
+%%        You can modify it and distribute it freely    2019.03.12      %%
+%%                                                                      %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\ProvidesPackage{SLCN}
+
+
+
+%-------------------------------------------------------------------------%
+%    1 预置宏包
+%-------------------------------------------------------------------------%
+\usepackage{ctex}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,fancyhdr}                     % 使用AMS数学公式符号字体定理,页眉,扩展的color
+\usepackage{url}                                                          % 使用外部超链接
+\usepackage{ifthen}                                                       % 使用条件命令
+\usepackage{times}                                                        % 使用Times New Roman字体
+\usepackage{ifpdf}                                                        % 用于绘图工具TpX
+\usepackage{footmisc}																	% 用于footnote前长度调整
+
+%  -----1.2 -------排版手册添加、汇总---
+\usepackage{marvosym}    %用于添加通信作者的标记
+\usepackage[all]{xy}   %绘图
+\usepackage{tikz}       %绘图
+\usepackage{graphicx}  %插图
+\usepackage{longtable}  %长表格
+\usepackage{latexsym}   %可实现另一种风格的box和diamond符号
+
+\newcommand{\cndash}{\raise0.1em\hbox{--}}
+\newcommand{\edash}{\raise0.1em\hbox{-}}
+
+
+%\makeatletter
+\renewenvironment{quotation}
+{\renewcommand{\baselinestretch}{1.2} \it
+	\list{}{\listparindent 2em%
+		\rightmargin=0em \leftmargin=2em
+		\itemindent    \listparindent
+		\rightmargin   \leftmargin
+		\parsep        \z@ \@plus\p@}%
+	\item\relax}
+{\endlist}
+
+\renewenvironment{quote}
+{\renewcommand{\baselinestretch}{1.2} \it
+	\list{}{\listparindent 0em%
+		\rightmargin=0em \leftmargin=2em
+		\itemindent    \listparindent
+		\rightmargin   \leftmargin
+		\parsep        \z@ \@plus\p@}%
+	\item\relax}
+{\endlist}
+
+%\makeatother 
+
+%-------------------------------------------------------------------------%
+%    2 设定页面布局
+%-------------------------------------------------------------------------%
+\usepackage[total={130mm,203mm}, top=28.3mm, headheight=20pt, headsep=4truemm,bindingoffset=1.5cm]{geometry} % 调整版式 （bindingoffset=1.5cm 选项使得奇数页靠右，偶数页靠左）
+\renewcommand{\baselinestretch}{1.3}                              % 定义全文行间距
+\parindent 2em                                                           % 定义全文段落首行缩进两个中文字符
+\renewcommand{\footnotemargin}{2em}
+
+
+%-------------------------------------------------------------------------%
+%    3 重新定义标题页格式；修改论文标题的前置空行数
+%-------------------------------------------------------------------------%
+%感谢 Clerk Ma
+\makeatletter
+\def\@fakenumber#1{%将标号设置为：1到10不变，之后用字母表填充。
+	\ifnum#1<10 \@fnsymbol#1\else\expandafter\@alph\expandafter{\number\numexpr(#1-10)\relax}\fi}
+\def\fakenumber#1{\expandafter\@fakenumber\csname c@#1\endcsname}
+\renewcommand\maketitle{\par
+	\begingroup
+	\renewcommand\thefootnote{\@fakenumber\c@footnote}%
+	\def\@makefnmark{\rlap{\@textsuperscript{\normalfont\@thefnmark}}}%
+	\long\def\@makefntext##1{\parindent 2em\noindent
+		\hb@xt@2em{%
+			\hss\@textsuperscript{\normalfont\@thefnmark}}##1}%
+	\if@twocolumn
+		\ifnum \col@number=\@ne
+			\@maketitle
+		\else
+			\twocolumn[\@maketitle]%
+		\fi
+	\else
+		\newpage
+		\global\@topnum\z@   % Prevents figures from going at top of page.
+		\@maketitle
+	\fi
+	\thispagestyle{plain}\@thanks
+	\endgroup
+	\setcounter{footnote}{0}%
+	\global\let\thanks\relax
+	\global\let\maketitle\relax
+	\global\let\@maketitle\relax
+	\global\let\@thanks\@empty
+	\global\let\@author\@empty
+	\global\let\@date\@empty
+	\global\let\@title\@empty
+	\global\let\title\relax
+	\global\let\author\relax
+	\global\let\date\relax
+	\global\let\and\relax
+}
+
+% 定义一个无标号的脚注
+\usepackage{lipsum}
+
+\def\blfootnote{\gdef\@thefnmark{}\@footnotetext}
+
+%定义标题页参数
+\def\@maketitle{%
+	\newpage
+	\null
+	\vskip 0em%
+	\begin{center}%
+		\let \footnote \thanks
+		{\LARGE \@title \par}%
+		\vskip 1.5em% 
+			{\setcounter{footnote}{10}\large %从作者开始，用10以后的标号（字母表）作为脚注标号
+				\lineskip .5em%
+				\begin{tabular}[t]{c}%
+					\@author
+				\end{tabular}\par}%
+		\vskip 1em%定义作者信息脚注生成
+			{   %\@date \setcounter{footnote}{-1}
+				\let\@makefnmark\relax\footnotetext{%
+					{\ifthenelse{\equal{\myarticletype}{original}}{\printauthors}{}}%
+   \ifthenelse{\equal{\mygrants}{null}}{}{\newline　　\textbf{基金项目：}\mygrants}%
+   \ifthenelse{\equal{\mythanks}{null}}{}{\newline　　\textbf{致　　谢：}\mythanks}%
+   }%如果基金和致谢均无，则注释掉上方的两行内容
+   } %如果没有基金，则仅注释掉基金项目那一行即可，已添加%，现在不会产生新的空行了
+
+	\end{center}
+	\par
+	\vskip 1.2em
+	\makeatother
+}
+
+
+%%
+
+
+%-------------------------------------------------------------------------%
+%    4 节标题及参考文献字体设置
+%-------------------------------------------------------------------------%
+\usepackage{sectsty}
+\sectionfont{\large}
+\subsectionfont{\normalsize}
+%-------------------------------------------------------------------------%
+%    5 定义数学环境样式
+%-------------------------------------------------------------------------%
+%提供定理环境
+\theoremstyle{plain}
+\newtheorem{prop}{\protect\propositionname}[section]
+\newtheorem{proposition}[prop]{\protect\propositionname}
+
+\theoremstyle{definition}
+\newtheorem{defn}{\protect\definitionname}[section]
+\newtheorem{definition}[defn]{\protect\definitionname}
+
+\theoremstyle{remark}
+\newtheorem{rem}{\protect\remarkname}
+\newtheorem{remark}[rem]{\protect\remarkname}
+
+\theoremstyle{defn}
+\newtheorem{example}{\protect\examplename}
+\newtheorem{exm}[example]{\protect\examplename}
+
+\theoremstyle{plain}
+\newtheorem{lem}{\protect\lemmaname}[section]
+\newtheorem{lemma}[lem]{\protect\lemmaname}
+
+\theoremstyle{plain}
+\newtheorem{cor}{\protect\corollaryname}
+\newtheorem{corollary}[cor]{\protect\corollaryname}
+
+\theoremstyle{definition}
+\newtheorem{axm}{\protect\axiomname}[section]
+\newtheorem{axiom}[axm]{\protect\axiomname}
+
+\theoremstyle{plain}
+\newtheorem{thm}{\protect\theoremname}
+\newtheorem{theorem}[lem]{\protect\theoremname}
+
+\providecommand{\corollaryname}{推论}
+\providecommand{\definitionname}{定义}
+\providecommand{\examplename}{例}
+\providecommand{\lemmaname}{引理}
+\providecommand{\propositionname}{命题}
+\providecommand{\remarkname}{注}
+\providecommand{\theoremname}{定理}
+\providecommand{\axiomname}{公理}
+
+%提供证明环境
+\ifx\proof\undefined\
+	\newenvironment{proof}[1][\protect\proofname]{%\par
+		\normalfont\topsep-5\p@\@plus6\p@\relax%\normalfont\topsep6\p@\@plus6\p@\relax
+		\trivlist
+		\itemindent\parindent
+		\item[\hskip\labelsep
+		            \scshape
+		            #1]\ignorespaces
+	}{%
+		\endtrivlist\@endpefalse
+	}
+\fi
+
+\renewcommand{\proofname}{\it{证明}}
+
+%-------------------------------------------------------------------------%
+%    6 定义标题页信息及打印标题页命令
+%-------------------------------------------------------------------------%
+
+%-------------------------------------------------------------------------%
+%    6.1 自动生成文章编号
+%-------------------------------------------------------------------------%
+\newcommand{\mypiia}{%                                                    % 根据起始页码确定文章编号倒数第二项的值
+	\ifthenelse{\myfirstpage < 10}{000\myfirstpage}{%                     % 如果起始页码为一位数，则在前面加3个0;
+		\ifthenelse{\myfirstpage < 100}{00\myfirstpage}{%                 % 如果起始页码为两位数，则在前面加2个0;
+			\ifthenelse{\myfirstpage < 1000}{0\myfirstpage}{%             % 如果起始页码为三位数，则在前面加1个0;
+				\myfirstpage}%                                                % 否则不加0.
+		}%
+	}%
+}
+
+\newcommand{\mypiib}{%                                                    % 根据页码数确定文章编号最后一项的值
+	\ifthenelse{\mypages < 10}{0\mypages}{\mypages}                       % 如果页码数为一位数，则在前面加1个0，否则不加0.
+}
+
+\newcommand{\mypii}{文章编号：1674-3202(\mypubyear)-0%                    % 根据上面的得到的数字自动生成文章编号
+	\myissnumber-\mypiia-\mypiib}
+
+%-------------------------------------------------------------------------%
+%    6.2 根据作者数量的不同定义作者姓名（用于页眉）
+%-------------------------------------------------------------------------%
+\newcommand{\myauthors}{%
+	\ifthenelse{\equal{\mysecondauthor}{null}
+		\and \equal{\mythirdauthor}{null}
+		\and \equal{\myfourthauthor}{null}
+		\and \equal{\myfifthauthor}{null}}{\myfirstauthor}{%
+		\ifthenelse{\equal{\mythirdauthor}{null}
+			\and \equal{\myfourthauthor}{null}
+			\and \equal{\myfifthauthor}{null}}{\myfirstauthor, \mysecondauthor}{%
+			\ifthenelse{\equal{\myfourthauthor}{null}
+				\and \equal{\myfifthauthor}{null}}{\myfirstauthor, \mysecondauthor, \mythirdauthor}{%
+				\ifthenelse{\equal{\myfifthauthor}{null}}
+				{\myfirstauthor, \mysecondauthor, \mythirdauthor, \myfourthauthor}{%
+					\myfirstauthor, \mysecondauthor, \mythirdauthor, \myfourthauthor, \myfifthauthor}
+			}
+		}
+	}
+}
+
+%-------------------------------------------------------------------------%
+%  6.3.1 根据作者数量的不同定义作者姓名（用于标题页），通讯作者标记添加于此。
+%-------------------------------------------------------------------------%
+
+\newenvironment{alphafootnotes}
+{\par\edef\savedfootnotenumber{\number\value{footnote}}
+	\renewcommand{\thefootnote}{\alph{footnote}}
+	\setcounter{footnote}{0}}
+{\par\setcounter{footnote}{\savedfootnotenumber}}
+
+% 只有一个作者的情况
+\newcommand{\myoneauthors}%
+{\author%
+	{%
+		{\kaishu\myfirstauthor}
+	}%
+}
+
+% 有两个作者的情况
+\newcommand{\mytwoauthors}%
+{\author%
+	{%
+		{\kaishu\myfirstauthor}
+		\and 	{\kaishu\mysecondauthor}
+	}%
+}
+
+% 有三个作者的情况
+\newcommand{\mythreeauthors}%
+{\author%
+	{%
+		{\kaishu\myfirstauthor}
+		\and 	{\kaishu\mysecondauthor}
+		\and 	{\kaishu\mythirdauthor}
+	}%
+}
+
+%有四个作者的情况
+\newcommand{\myfourauthors}%
+{\author%
+	{%
+		{\kaishu\myfirstauthor}
+		\and 	{\kaishu\mysecondauthor}
+		\and 	{\kaishu\mythirdauthor}
+		\and 	{\kaishu\myfourthauthor}
+	}%
+}
+
+%有五个作者的情况
+\newcommand{\myfiveauthors}%
+{\author%
+	{%	
+		{\kaishu\myfirstauthor}
+		\and 	{\kaishu\mysecondauthor}
+		\and 	{\kaishu\mythirdauthor}
+		\and 	{\kaishu\myfourthauthor}
+		\and 	{\kaishu\myfifthauthor}
+	}%
+}
+
+
+\newcommand{\authors}%
+{
+	\ifthenelse{\equal{\mysecondauthor}{null}}{\myoneauthors}%仅有一个作者的情况
+	{%           % 
+		\ifthenelse{\equal{\mythirdauthor}{null}}{\mytwoauthors}%有两个作者的情况
+		{%        % 
+			\ifthenelse{\equal{\myfourthauthor}{null}}{\mythreeauthors}% 有三个作者的情况
+			{%           %
+				\ifthenelse{\equal{\myfifthauthor}{null}}{\myfourauthors}{%四个作者的情况
+					\myfiveauthors}%其他
+			}
+		}
+	}
+}
+
+%-------------------------------------------------------------------------%
+%    6.3.2 根据作者数量的不同定义作者姓名、单位、电子邮箱（用于首页下方）
+%-------------------------------------------------------------------------%
+%一个作者的情况
+\newcommand{\printoneauthors}%
+{%\author
+	{%
+			\makebox[4.5em][l]{\myfirstauthor}
+			\begin{minipage}[t]{37.5em}{\myfirstaffiliation\\[-0.2em]\myfirstemail}\end{minipage}\\[0.5em]
+		}%
+}
+
+%两个作者的情况
+\newcommand{\printtwoauthors}%
+{%\author
+	{%
+			\makebox[4.5em][l]{\myfirstauthor}
+			\begin{minipage}[t]{37.5em}{\myfirstaffiliation\\[-0.2em]\myfirstemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mysecondauthor}
+			\begin{minipage}[t]{37.5em}{\mysecondaffiliation\\[-0.2em]\mysecondemail}\end{minipage}\\[0.5em]
+		}%
+}
+
+%三个作者的情况
+\newcommand{\printthreeauthors}%
+{%\author
+	{%
+			\makebox[4.5em][l]{\myfirstauthor}
+			\begin{minipage}[t]{37.5em}{\myfirstaffiliation\\[-0.2em]\myfirstemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mysecondauthor}
+			\begin{minipage}[t]{37.5em}{\mysecondaffiliation\\[-0.2em]\mysecondemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mythirdauthor}
+			\begin{minipage}[t]{37.5em}{\mythirdaffiliation\\[-0.2em]\mythirdemail}\end{minipage}\\[0.5em]
+		}%
+}
+
+%四个作者的情况
+\newcommand{\printfourauthors}%
+{%\author
+	{%
+			\makebox[4.5em][l]{\myfirstauthor}
+			\begin{minipage}[t]{37.5em}{\myfirstaffiliation\\[-0.2em]\myfirstemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mysecondauthor}
+			\begin{minipage}[t]{37.5em}{\mysecondaffiliation\\[-0.2em]\mysecondemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mythirdauthor}
+			\begin{minipage}[t]{37.5em}{\mythirdaffiliation\\[-0.2em]\mythirdemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\myfourthauthor}
+			\begin{minipage}[t]{37.5em}{\myfourthaffiliation\\[-0.2em]\myfourthemail}\end{minipage}\\[0.5em]
+		}%
+}
+
+%五个作者的情况
+\newcommand{\printfiveauthors}%
+{%\author
+	{%
+			\makebox[4.5em][l]{\myfirstauthor}
+			\begin{minipage}[t]{37.5em}{\myfirstaffiliation\\[-0.2em]\myfirstemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mysecondauthor}
+			\begin{minipage}[t]{37.5em}{\mysecondaffiliation\\[-0.2em]\mysecondemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\mythirdauthor}
+			\begin{minipage}[t]{37.5em}{\mythirdaffiliation\\[-0.2em]\mythirdemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\myfourthauthor}
+			\begin{minipage}[t]{37.5em}{\myfourthaffiliation\\[-0.2em]\myfourthemail}\end{minipage}\\[0.5em]
+			\makebox[4.5em][l]{\myfifthauthor}
+			\begin{minipage}[t]{37.5em}{\myfifthaffiliation\\[-0.2em]\myfifthemail}\end{minipage}\\[0.5em]
+		}%
+}
+
+
+\newcommand{\printauthors}%
+{%
+	\textbf{作者信息：}\\[-1em]
+　　　　　%若干个全角空格
+　　\begin{minipage}{50em}
+		\ifthenelse{\equal{\mysecondauthor}{null}}{\printoneauthors}%仅有一个作者的情况
+		{%           % 
+			\ifthenelse{\equal{\mythirdauthor}{null}}{\printtwoauthors}%有两个作者的情况
+			{%        % 
+				\ifthenelse{\equal{\myfourthauthor}{null}}{\printthreeauthors}% 有三个作者的情况
+				{%           %
+					\ifthenelse{\equal{\myfifthauthor}{null}}{\printfourauthors}{%四个作者的情况
+						\printfiveauthors}%其他
+				}
+			}
+		}
+	\end{minipage}
+}
+
+
+%-------------------------------------------------------------------------%
+%    6.4 定义标题页页眉
+%-------------------------------------------------------------------------%
+\newcommand{\mylhead}{逻辑学研究\quad\mypubyear~年第~\myissnumber~期，%
+	\myfirstpage--\mylastpage \\ \mypii}
+
+%-------------------------------------------------------------------------%
+%    6.5 定义奇数页页眉（不含标题页）
+%-------------------------------------------------------------------------%
+\newcommand{\myfancyheadCO}{\myauthors \hspace{1em} \myrunningtitle}
+
+%-------------------------------------------------------------------------%
+%    6.6 定义偶数页页眉
+%-------------------------------------------------------------------------%
+\newcommand{\myfancyheadCE}{逻辑学研究\hspace{2em}第~\myvolnumber~%
+	卷~第~\myissnumber~期~~\mypubyear 年}
+
+%-------------------------------------------------------------------------%
+%    6.7 定义标题页页眉页脚
+%-------------------------------------------------------------------------%
+\newcommand{\mytitlepage}{%
+	\setcounter{page}{\myfirstpage}                                       % 设定页码计数器的起始数为输入的起始页码
+	\fancypagestyle{plain}{\fancyhf{}
+		\lhead{\zihao{6}\mylhead}                                           % 标题页页眉居左的内容
+		\rhead{}                                                            % 标题页页眉居右的内容，此处为空
+		\lfoot{}                                                            % 标题页页脚居左的内容，此处为空
+		\cfoot{}                                                            % 标题页页脚居中的内容，此处为空
+		\rfoot{}                                                            % 标题页页脚居右的内容，此处为空
+		\renewcommand{\headrulewidth}{0pt}
+	}
+}
+
+%-------------------------------------------------------------------------%
+%    6.8 定义奇偶页页眉页脚，O,E表示奇偶，L,C,R表示左中右
+%-------------------------------------------------------------------------%
+\pagestyle{fancy} \fancyhf{}
+\fancyhead[CE]{\zihao{6}\myfancyheadCE}                                   % 打印偶数页页眉居中内容
+\fancyhead[LE,RO]{\zihao{-5}\thepage}                                     % 打印奇偶页页码，小五字号，
+% 其中奇数页页码居右，偶数页页码居左
+\fancyhead[CO]{\zihao{6}\myfancyheadCO}                                   % 打印奇数页页眉居中内容
+\fancyhead[LO]{} \fancyhead[RE]{} \lfoot{} \cfoot{} \rfoot{}              % 其余项目为空
+\renewcommand{\headrulewidth}{0.4pt}
+
+%-------------------------------------------------------------------------%
+%    6.9 定义标题、基金项目、致谢
+%-------------------------------------------------------------------------%
+\newcommand{\thetitle}{\mytitle}%
+
+
+\title{                                                                     % 若文章为会议报道则使标题居左，字号变小
+	\ifthenelse{\equal{\myarticletype}{conferencereport}}{
+		\raggedright\Large\thetitle}{\thetitle}
+}
+
+%-------------------------------------------------------------------------%
+%    6.10 定义原创论文类型标题页信息
+%-------------------------------------------------------------------------%
+\newcommand{\originaltitlepage}{%
+	\mytitlepage
+	\authors
+	\date{}                                                               % 不显示日期
+	\maketitle                                                            % 打印标题、作者等信息
+	\vspace{-4ex}                                                         % 缩小作者与摘要之间的距离
+	\begin{center}                                                          % 打印摘要
+		\begin{minipage}[c]{12cm}
+			\noindent\textbf{摘\hspace{10.5pt}要：}\zihao{-5}\myabstract \\[1ex]  % 增加摘要与关键词之间的行距
+			\textbf{\zihao{5}关键词：}\zihao{-5}\mykeywords \\[1ex]               % 增加关键词与中图分类号之间的行距
+			\textbf{\zihao{5}中图分类号：}\zihao{-5}B81\hspace{4em}
+			\textbf{\zihao{5}文献标识码：}\zihao{-5}A\\
+		\end{minipage}
+	\end{center}
+}
+
+%-------------------------------------------------------------------------%
+%    6.11 定义书评类型标题页信息
+%-------------------------------------------------------------------------%
+\newcommand{\reviewtitlepage}{%
+	\mytitlepage
+	\author{}
+	\date{}
+	\maketitle
+	\vspace*{-8ex}
+	\zihao{5}
+	\noindent\reviewbooktitle
+	\ifthenelse{\equal{\reviewbooktitleEN}{null}}{}{\\ \reviewbooktitleEN}
+	\vspace*{2ex}
+}
+
+%-------------------------------------------------------------------------%
+%    6.12 定义会议报道类型标题页信息
+%-------------------------------------------------------------------------%
+\newcommand{\reporttitlepage}{%
+	\mytitlepage
+	\author{}
+	\date{}
+	\maketitle
+	\vspace*{-8ex}
+}
+
+%-------------------------------------------------------------------------%
+%    6.13 根据文章类型定义标题页打印命令
+%-------------------------------------------------------------------------%
+\newcommand{\printtitlepage}{%
+	\ifthenelse{\equal{\myarticletype}{original}}{\originaltitlepage}{%
+		\ifthenelse{\equal{\myarticletype}{bookreview}}{\reviewtitlepage}{%
+			\reporttitlepage
+		}
+	}
+}
+
+
+%-------------------------------------------------------------------------%
+%    7 定义英文摘要页打印命令
+%-------------------------------------------------------------------------%
+
+
+\newcommand{\myoneauthorsEN}{
+	\zihao{5}{\myfirstauthorEN}      % 只有一个作者的情况     
+}
+
+\newcommand{\mytwoauthorsEN}{
+	\zihao{5}{\myfirstauthorEN}     % 有两个作者的情况    
+	\hspace{1em}   {\mysecondauthorEN}
+}
+
+\newcommand{\mythreeauthorsEN}{
+	\zihao{5}{\myfirstauthorEN}     % 有三个作者的情况    
+	\hspace{1em}   {\mysecondauthorEN}
+	\hspace{1em}    {\mythirdauthorEN}
+}
+
+\newcommand{\myfourauthorsEN}{
+	\zihao{5}{\myfirstauthorEN}     % 有四个作者的情况    
+	\hspace{1em}   {\mysecondauthorEN}
+	\hspace{1em}    {\mythirdauthorEN}
+	\hspace{1em}    {\myfourthauthorEN}
+}
+
+\newcommand{\myfiveauthorsEN}{
+	\zihao{5}{\myfirstauthorEN}     % 有五个作者的情况    
+	\hspace{1em}   {\mysecondauthorEN}
+	\hspace{1em}    {\mythirdauthorEN}
+	\hspace{1em}    {\myfourthauthorEN}
+	\hspace{1em}    {\myfifthauthorEN}
+}
+
+
+\newcommand{\printtitlepageEN}%
+{%
+	\begin{center}
+		\vspace*{4mm}
+		\noindent\Large{\textbf{\mytitleEN}}\\[1em]
+
+		\renewcommand{\baselinestretch}{1.05}
+		%\renewcommand{\thefootnote}{\alph{footnote}}
+		{%\setcounter{footnote}{-1}
+			\ifthenelse{\equal{\mysecondauthorEN}{null}}{\myoneauthorsEN}{    % 
+				\ifthenelse{\equal{\mythirdauthorEN}{null}}{\mytwoauthorsEN}{ % 
+					\ifthenelse{\equal{\myfourthauthorEN}{null}}{\mythreeauthorsEN}{%
+						\ifthenelse{\equal{\myfifthauthorEN}{null}}{\myfourauthorsEN}{%                                                           
+							\myfiveauthorsEN }}}
+			}}\\[4mm]
+
+		\large{\textbf{Abstract}}
+	\end{center}
+	\renewcommand{\baselinestretch}{1}                                        % 重新定义行间距
+
+	\vspace{-0.2em}
+
+	\zihao{5}\myabstractEN\\[2mm]
+
+	\renewcommand{\thefootnote}{\alph{footnote}}
+	{\setcounter{footnote}{-1}
+		\ifthenelse{\equal{\mysecondauthorEN}{null}}{%
+			\footnote{\myfirstauthorEN\hspace{1em} \myfirstaffiliationEN
+				\\　\hspace{1em}\phantom{\myfirstauthorEN}\hspace{1em} \myfirstemail}%一个作者         %此部分所有双斜杠\\后面有一个中文的全角空格
+		}{    % 
+			\ifthenelse{\equal{\mythirdauthorEN}{null}}{\footnote{\myfirstauthorEN\hspace{1em}\hspace{-2.5em}\phantom{\mysecondauthorEN} \myfirstaffiliationEN
+\\　\hspace{1em}\hspace{-2.5em}\phantom{\myfirstauthorEN\mysecondauthorEN}\hspace{1em} \myfirstemail
+\\[0.3em]　\hspace{1em}\mysecondauthorEN\hspace{1em}\hspace{-2.5em}\phantom{\myfirstauthorEN}  \mysecondaffiliationEN
+\\　\hspace{1em}\hspace{-2.5em}\phantom{\mysecondauthorEN\myfirstauthorEN}\hspace{1em} \mysecondemail}%两个作者，根据情况调整\hspace{-2.5em}的数值
+   }{ % 
+				\ifthenelse{\equal{\myfourthauthorEN}{null}}{
+					\footnote{\myfirstauthorEN\hspace{1em} \myfirstaffiliationEN
+						\\　\hspace{1em}\phantom{\myfirstauthorEN}\hspace{1em} \myfirstemail
+						\\[0.3em]　\hspace{1em}\mysecondauthorEN\hspace{1em}  \mysecondaffiliationEN
+						\\　\hspace{1em}\phantom{\mysecondauthorEN}\hspace{1em} \mysecondemail
+						\\[0.3em]　\hspace{1em}\mythirdauthorEN\hspace{1em}  \mythirdaffiliationEN
+						\\　\hspace{1em}\phantom{\mythirdauthorEN}\hspace{1em} \mythirdemail}%三个作者
+				}{%
+					\ifthenelse{\equal{\myfifthauthorEN}{null}}{
+						\footnote{\myfirstauthorEN\hspace{1em} \myfirstaffiliationEN
+							\\　\hspace{1em}\phantom{\myfirstauthorEN}\hspace{1em} \myfirstemail
+							\\[0.3em]　\hspace{1em}\mysecondauthorEN\hspace{1em}  \mysecondaffiliationEN
+							\\　\hspace{1em}\phantom{\mysecondauthorEN}\hspace{1em} \mysecondemail
+							\\[0.3em]　\hspace{1em}\mythirdauthorEN\hspace{1em}  \mythirdaffiliationEN
+							\\　\hspace{1em}\phantom{\mythirdauthorEN}\hspace{1em} \mythirdemail
+							\\[0.3em]　\hspace{1em}\myfourthauthorEN\hspace{1em}  \myfourthaffiliationEN
+							\\　\hspace{1em}\phantom{\myfourthauthorEN}\hspace{1em} \myfourthemail}%四个作者
+					}{%                                                           
+						\footnote{\myfirstauthorEN\hspace{1em} \myfirstaffiliationEN
+							\\　\hspace{1em}\phantom{\myfirstauthorEN}\hspace{1em} \myfirstemail
+							\\[0.3em]　\hspace{1em}\mysecondauthorEN\hspace{1em}  \mysecondaffiliationEN
+							\\　\hspace{1em}\phantom{\mysecondauthorEN}\hspace{1em} \mysecondemail
+							\\[0.3em]　\hspace{1em}\mythirdauthorEN\hspace{1em}  \mythirdaffiliationEN
+							\\　\hspace{1em}\phantom{\mythirdauthorEN}\hspace{1em} \mythirdemail
+							\\[0.3em]　\hspace{1em}\myfourthauthorEN\hspace{1em}  \myfourthaffiliationEN
+							\\　\hspace{1em}\phantom{\myfourthauthorEN}\hspace{1em} \myfourthemail
+							\\[0.3em]　\hspace{1em}\myfifthauthorEN\hspace{1em}  \myfifthaffiliationEN
+							\\　\hspace{1em}\phantom{\myfifthauthorEN}\hspace{1em} \myfifthemail}%五个作者
+					}}}%
+		}}%使用脚注打印作者信息
+
+}
+
+
+%-------------------------------------------------------------------------%
+%    8 设定列表环境间距
+%-------------------------------------------------------------------------%
+\usepackage{enumitem}
+\setenumerate{itemsep=0pt,partopsep=0pt,parsep=\parskip,topsep=5pt}
+\setitemize{itemsep=0pt,partopsep=0pt,parsep=\parskip,topsep=5pt}
+\setdescription{itemsep=0pt,partopsep=0pt,parsep=\parskip,topsep=5pt}
+
+%-------------------------------------------------------------------------%
+%    9 针对参考文献
+%-------------------------------------------------------------------------%
+
+%-------------------------------------------------------------------------%
+%    9.1 全局处理
+%-------------------------------------------------------------------------%
+\usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,backend = biber, style=caspervector,utf8, sorting=nyt]{biblatex}
+\renewcommand{\bibfont}{\normalfont\small}					%字体大小
+\defbibenvironment{bibliography}						%修改行距
+{\list
+	{\printfield[labelnumberwidth]{labelnumber}}
+	{\setlength{\labelwidth}{\labelnumberwidth}%
+		\setlength{\leftmargin}{\labelwidth}%
+		\setlength{\labelsep}{\biblabelsep}%
+		\addtolength{\leftmargin}{\labelsep}%
+		\setlength{\itemsep}{0.8mm}%						%此处修改行距
+		\setlength{\parsep}{\bibparsep}}%
+	\renewcommand*{\makelabel}[1]{\hss##1}}
+{\endlist}
+{\item}
+
+\DefineBibliographyStrings{english}{%
+	bibliography = {参考文献}, % = \bibname				
+	references = {参考文献}, % = \refname
+}
+%-------------------------------------------------------------------------%
+%    针对中英日混排处理
+%-------------------------------------------------------------------------%
+\providecommand{\cegen}[4]{%定义cegen，如果userf=zh or cn，则使用参数1，如果userf=jp，则使用参数2，否则用参数3
+	\ifthenelse%
+	{\iffieldequalstr{userf}{cn}}%
+	{#1}{\iffieldequalstr{userf}{jp}{#2}{\iffieldequalstr{userf}{jps}{#3}{#4}}}%
+}%
+\providecommand{\cncomma}{，}%关于中文逗号
+\providecommand{\jpcomma}{、}%关于日文逗号
+\providecommand{\cjecomma}{\cegen{\cncomma}{\jpcomma}{\jpcomma}{\addcomma\space}}%cjecomma根据userf输出逗号
+\renewcommand{\newunitpunct}{\cjecomma}%重新定义newunit
+\providecommand{\cnperiod}{。}%关于句号
+\providecommand{\jpperiod}{。}%关于句号
+\providecommand{\ceperiod}{\cegen{\cnperiod}{\jpperiod}{\jpperiod}{\addperiod\space}}%根据userf输出句号
+\renewcommand{\finentrypunct}{\ceperiod}%重新定义finentry
+\providecommand{\cncolon}{：} %关于冒号
+\providecommand{\jpcolon}{：} %关于冒号
+\providecommand{\cjecolon}{\cegen{\cncolon}{\jpcolon}{\jpcolon}{\addcolon\space}}%
+\providecommand{\cespace}{\cegen{}{}{}{\addspace}}%
+\renewcommand{\multinamedelim}{\cjecomma}%
+\renewcommand{\finalnamedelim}{\cegen{\cncomma}{\jpcomma}{\jpcomma}{\addspace\bibstring{and}\space}}%最后两个作者的链接，若usrf=cn则用中文逗号，否则用and
+\renewcommand{\andothersdelim}{\cespace}%
+\renewcommand{\postnotedelim}{\cjecomma}%
+\renewcommand{\bibendnotewrapper}[1]{\bibsentence #1。}%
+\renewcommand{\bibfootnotewrapper}[1]{\bibsentence #1。}%
+% 【2】然后再分别定义每个参数的格式（根据语言添加页/頁/p等等）
+%% author 目前原理未完全弄清，建议非英文不要用and连接
+%% year
+\DeclareFieldFormat{year}{\cegen{{#1}年}{{#1}年}{{#1}年}{#1}}%
+%% month
+\DeclareFieldFormat{month}{\cegen{{#1}月}{{#1}月}{{#1}月}{#1}}%
+\newbibmacro*{jp_year+month}{%
+	\printfield{year}%
+	\printfield{month}%
+}%
+%% title
+\DeclareFieldFormat[article,inproceedings,incollection,misc]{title}{\cegen{“#1”}{「#1」}{「#1」}{``\MakeSentenceCase{#1}''}}%
+\DeclareFieldFormat[report]{title}{\cegen{“#1”}{「#1」}{「#1」}{``\MakeSentenceCase{#1}''}}%
+\DeclareFieldFormat[thesis]{title}{\it{#1}}%
+\DeclareFieldFormat[book]{title}{\cegen{\mkbibemph{#1}}{\mkbibemph{#1}}{\mkbibemph{#1}}{\mkbibemph{#1}}}%
+%% journaltitle
+%% 似乎使用的时候只需要输入journal，但这里必须写journaltitle，才是默认参数，原因未知。
+\DeclareFieldFormat{journaltitle}{\cegen{\mkbibemph{#1}}{\mkbibemph{#1}}{\mkbibemph{#1}}{\mkbibemph{#1}}}%
+%% booktitle
+\DeclareFieldFormat{booktitle}{\cegen{\mkbibemph{#1}}{\mkbibemph{#1}}{\mkbibemph{#1}}{\mkbibemph{#1}}}%
+%% editor
+\renewbibmacro*{editor}{%
+	\ifboolexpr{%
+		test \ifuseeditor%
+		and%
+		not test {\ifnameundef{editor}}%
+	}%
+	{%
+		\midsentence%
+		\setunit{\cegen{\cncomma}{\jpcomma}{\jpcomma}{\addcomma\space in\addspace}}%
+		\printnames{editor}%
+		\cegen{（编）}{（編）}{（編）}{(\usebibmacro{editorstrg})}%
+		\setunit{\cegen{}{}{}{\addspace}}%
+		\clearname{editor}%
+	}%
+	{}%
+}%
+%% volume
+\DeclareFieldFormat{volume}{\cegen{第{#1}卷}{第{#1}巻}{#1}{\mkbibbold{#1}}}%
+\DeclareFieldFormat[article]{volume}{\cegen{第{#1}卷}{第{#1}巻}{#1}{\mkbibbold{#1}}}%
+\DeclareFieldFormat[inproceedings,incollection,book]{volume}{\cegen{第{#1}卷}{第{#1}巻}{#1}{\mkbibbold{Vol.\,#1}}}%
+%% number
+\DeclareFieldFormat{number}{\cegen{第{#1}期}{第{#1}号}{{#1}}{\mkbibbold{(#1):}}}%
+%% volume+number
+\newbibmacro*{volume+number}{%
+	\cegen{%中文
+		\printfield{number}%
+	}{%日文
+		\printfield{volume}%
+		\printfield{number}%
+	}{%日文2
+		\printfield{volume}%
+		\printfield{number}%
+	}{%英文
+		\iffieldundef{volume}%
+		{%无volume的情况下
+			\printfield{number}%
+		}%
+		{%有volume的情况下
+			\printfield{volume}%
+			\iffieldundef{number}{:}{\printfield{number}}%若无number则打冒号
+		}%
+	}%
+}%
+%% pages
+% \newcommand{\replacepages}[1]{% 目前测试没有效果
+%     \StrSubstitute{#1}{--}{\cndash}[\temp]% 替换--
+%     \StrSubstitute{\temp}{-}{\cndash}[\result]% 替换-
+%     \result% 输出结果
+% }
+\DeclareFieldFormat{pages}{\cegen{第#1页}{第#1頁}{第#1頁}{#1}}%
+\DeclareFieldFormat[inproceedings,incollection]{pages}{\cegen{第#1页}{第#1頁}{第#1頁}{pp. #1}}%
+%% publisher
+\newbibmacro*{publisher+location}{%
+	\iflistundef{publisher}%
+	{}%
+	{\iflistundef{location}%
+		{\printlist{publisher}}%
+		{\printlist{location}\cjecolon\printlist{publisher}}%
+	}%
+}%
+% 有些默认的就可以，不需要改
+%% location
+% \DeclareFieldFormat{location}{\cegen{#1}{#1}{#1}}
+%% note
+\DeclareFieldFormat*{note}{{#1}}%
+%似乎不能定义其他note，只能使用自带的note，未解决。
+%% url
+\DeclareFieldFormat*{url}{\url{#1}}%
+%% type
+\DeclareFieldFormat{type}{{#1}}%
+% 【3】统一使用通用参数定义文献类型的格式
+%定义article格式
+\DeclareBibliographyDriver{article}{%
+	\ifthenelse{\iffieldequalstr{userf}{cn}\or\iffieldequalstr{userf}{jp}\or\iffieldequalstr{userf}{jps}}%
+	{%
+		\printnames{author}\setunit{\cjecomma}%
+		\printfield{title}\setunit*{\cjecomma}%
+		\printfield{journaltitle}\setunit*{\cjecomma}%
+		\setunit{\cjecomma}%
+		\iffieldequalstr{userf}{cn}{%
+			\printfield{year}%中文只打年份
+		}{%
+			\usebibmacro{jp_year+month}%日文打年月
+		}%
+		\usebibmacro{volume+number}%
+		\setunit{\cjecomma}%
+		\printfield{note}%
+		\setunit{\cjecomma}%
+		\printfield{pages}%
+		\setunit{\cjecomma}%
+		\usebibmacro{publisher+location}%
+		\setunit{\cjecomma}%
+		\printfield{url}%
+		\finentry%
+	}%
+	{%
+		\printnames{author}%英文
+		\newunit%
+		\printfield{year}%
+		\newunit%
+		\printfield{title}%
+		\newunit%
+		\printfield{journaltitle}%
+		\newunit%
+		\usebibmacro{volume+number}%
+		\newunit%
+		\printfield{note}%目前只有这一个备注参数可用，可能不同文章需要备注的位置不同，所以是个大问题
+		\newunit%
+		\printfield{pages}%
+		\newunit%
+		\printfield{url}%
+		\finentry%
+	}%
+}%
+%
+%定义book格式
+\DeclareBibliographyDriver{book}{% 
+	\ifthenelse{\iffieldequalstr{userf}{cn} \or \iffieldequalstr{userf}{jp} \or \iffieldequalstr{userf}{jps}}%
+	{%
+		\printnames{author}\setunit{\cjecomma}%
+		\printfield{title}\setunit*{\cjecomma}%
+		\iffieldequalstr{volume}{}{}{\printfield{volume}\setunit{\cjecomma}}%
+		\iffieldequalstr{note}{}{}{\printfield{note}\setunit{\cjecomma}}%
+		\iffieldequalstr{userf}{cn}{%
+			\usebibmacro{publisher+location}\setunit{\cjecomma}%
+			\printfield{year}\setunit{\cjecomma}%
+		}{%
+			\printfield{year}\setunit{\cjecomma}%
+			\usebibmacro{publisher+location}\setunit{\cjecomma}%
+		}%
+		\iffieldequalstr{url}{}{}{\printfield{url}\setunit{\cjecomma}}%
+		\finentry%
+	}%
+	{%
+		\printnames{author}%
+		\newunit%
+		\printfield{year}%
+		\newunit%
+		\printfield{title}%
+		\newunit%
+		\printfield{volume}%
+		\newunit%
+		\printfield{note}%
+		\newunit%
+		\usebibmacro{publisher+location}%
+		\finentry%
+	}%
+}%
+%定义inproceedings格式
+\DeclareBibliographyDriver{inproceedings}{%	
+	\ifthenelse{\iffieldequalstr{userf}{cn} \or \iffieldequalstr{userf}{jp} \or \iffieldequalstr{userf}{jps}}%
+	{%	
+		\printnames{author}\setunit{\cjecomma}%
+		\printfield{title}\setunit*{\cjecomma}%
+		\usebibmacro{editor}\setunit{\cjecomma}%
+		\printfield{booktitle}\setunit*{\cjecomma}%
+		\setunit{\cjecomma}%
+		\usebibmacro{volume+number}%
+		\setunit{\cjecomma}%
+		\printfield{note}%
+		\setunit{\cjecomma}%
+		\iffieldequalstr{userf}{cn}{%
+			\usebibmacro{publisher+location}\setunit{\cjecomma}%
+			\printfield{year}\setunit{\cjecomma}%中文只打年份
+			\printfield{pages}%
+		}{%
+			\usebibmacro{jp_year+month}\setunit{\cjecomma}%日文打年月
+			\usebibmacro{publisher+location}\setunit{\cjecomma}%
+			\printfield{pages}%
+		}%
+		\setunit{\cjecomma}%
+		\printfield{url}%
+		\finentry%
+	}%
+	{%	
+		\printnames{author}%
+		\newunit%
+		\printfield{year}%
+		\newunit%
+		\printfield{title}%
+		\newunit%
+		\usebibmacro{editor}%
+		\newunit%
+		\printfield{booktitle}%
+		\newunit%
+		\printfield{volume}%
+		\printfield{number}%	
+		\newunit%
+		\printfield{note}%
+		\newunit%
+		\printfield{pages}%
+		\newunit%
+		\usebibmacro{publisher+location}%
+		\newunit%
+		\printfield{url}%
+		\finentry%
+	}%
+}%
+%定义incollection格式
+\DeclareBibliographyDriver{incollection}{% 					
+	\printnames{author}%
+	\newunit%
+	\printfield{year}%
+	\newunit%
+	\printfield{title}%
+	\newunit%
+	\usebibmacro{editor}%
+	\newunit%
+	\printfield{booktitle}%
+	\newunit%
+	\printfield{volume}%
+	\printfield{number}%
+	\newunit%
+	\printfield{pages}%
+	\newunit%
+	\usebibmacro{publisher+location}%
+	\newunit%
+	\printfield{note}%
+	\newunit%
+	\printfield{url}%
+	\finentry%
+}%
+%定义thesis格式
+\DeclareBibliographyDriver{thesis}{%
+	\printnames{author}%
+	\newunit%
+	\printfield{year}%
+	\newunit%
+	\printfield{title}%
+	\newunit%
+	\printfield{type}%
+	\newunit%
+	\printlist{institution}%
+	\newunit%
+	\printfield{url}%
+	\newunit%
+	\printfield{note}%
+	\finentry%
+}%
+
+\DeclareBibliographyDriver{report}{%
+	\printnames{author}%
+	\newunit%
+	\printfield{year}%
+	\newunit%
+	\printfield{title}%
+	\newunit%
+	\printfield{type}%
+	\newunit%
+	\printfield{note}%
+	\newunit%
+	\printfield{url}%
+	\newunit%
+	\printlist{institution}%
+	\finentry%
+}%
+
+\DeclareBibliographyDriver{unpublished}{%
+	\printnames{author}%
+	\newunit%
+	\printfield{year}%
+	\newunit%
+	\printfield{title}%
+	\newunit%
+	\printfield{note}%
+	\finentry%
+}%
+
+% 老版中文用的misc，其关键词journaltitle和booktitle等有不同，这次更新的目的就是统一参数标准，兼容三语，并且利于根据需要修改。（2024.02.05_chenxi）
+% \DeclareBibliographyDriver{misc}{%
+% 	\printnames{author}\setunit{\cjecomma}%
+% 	\printfield{title}\setunit*{\cjecomma}%
+% 	\printfield{journaltitle}\setunit*{\cjecomma}%
+% 	\setunit{\cjecomma}%
+% 	\printfield{year}%
+% 	\usebibmacro{volume+number}%
+% 	\setunit{\cjecomma}%
+% 	\printfield{pages}%
+% 	\setunit{\cjecomma}%
+% 	\usebibmacro{publisher+location}%
+% 	\setunit{\cjecomma}%
+% 	\printfield{url}%
+% 	\finentry%
+% }
+
+% 一些语法记录：
+% \iffieldequalstr{year}{a}{b}{c}如果year=a，则进行b，否则进行c
+% \iffieldundef{a}{b}{c}如果a被定义则执行c，否则执行b
+
+% 用于处理特殊内容，全部手打 userf不填，注意页码用--
+\DeclareBibliographyDriver{misc}{%
+	\printnames{author}%
+}%

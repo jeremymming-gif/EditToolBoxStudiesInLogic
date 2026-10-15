@@ -1,0 +1,541 @@
+"""直接读 Word 的 XML，而不是用 python-docx 的 `paragraph.text`。
+
+为什么要绕开 `paragraph.text`
+------------------------------
+`paragraph.text` 只是把 `<w:t>`（常规文字）拼起来，它会**静默丢掉**三样东西：
+
+  1. `<m:oMath>` —— OMML 公式。陈波稿的 7 个逻辑符号（¬ ∧ ∨ → ↔ ∀ ∃）就是这么消失的，
+     人工成品是 `否定$\\neg$、合取$\\land$`，我们却输出成 `否定、合取`（残句）。
+  2. run 级格式 `<w:i/>` —— 斜体。Lu_Jiang 正文有 414 处斜体，人工转成 185 处
+     `\\emph/\\textit`，我们一处都拿不到。
+  3. `word/footnotes.xml` —— **整个脚注文件**。`doc.paragraphs` 只读 `word/document.xml`。
+     Lu_Jiang 的 90 条参考文献全在脚注里（12,757 字符），因此连 `reference.bib`
+     都没能生成，正文 72 处引用全部漏掉。
+
+这三样加起来，仅 Lu_Jiang 一篇就丢了 17.4% 的内容、少 4 页。
+
+本模块按文档顺序遍历 XML，把这些信息完整取回来。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import zipfile
+from dataclasses import dataclass, field
+
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+W_DRAWING = f"{{{W_NS}}}drawing"
+A_BLIP = f"{{{A_NS}}}blip"
+R_EMBED = f"{{{R_NS}}}embed"
+
+# Unicode 数学符号 → LaTeX（与 slcn/rules.py 的 UNICODE_MATH 保持同源）
+from .rules import UNICODE_MATH  # noqa: E402
+
+
+# ── OMML → LaTeX ──────────────────────────────────────────────────────────
+
+
+def _tag(el) -> str:
+    """本地标签名（去掉命名空间），仅用于 OMML 内部的结构判断。"""
+    t = el.tag
+    return t.split("}", 1)[1] if "}" in t else t
+
+
+W_R = f"{{{W_NS}}}r"
+W_T = f"{{{W_NS}}}t"
+W_P = f"{{{W_NS}}}p"
+M_OMATH = f"{{{M_NS}}}oMath"
+
+# ⚠️ 必须按**带命名空间的完整标签**判断，不能用本地名：
+#    Word 的文字 run 是 <w:r>，OMML 的公式 run 是 <m:r>，去掉命名空间后都叫 "r"，
+#    只比本地名会把公式里的 <m:t>¬</m:t> 又当成普通文字读一遍，
+#    结果输出成 `否定$\lnot$¬`（符号重复）。这是实测踩到的坑。
+
+
+def omml_to_latex(el) -> str:
+    """把一段 `<m:oMath>` 转成 LaTeX 片段（不含外层 $）。
+
+    覆盖 Word 公式编辑器最常见的结构。遇到不认识的结构就退化取其中的文字，
+    宁可少几个排版细节，也绝不丢内容。
+    """
+    return _conv(el).strip()
+
+
+def _conv(el) -> str:
+    name = _tag(el)
+    kids = list(el)
+
+    if name in ("oMath", "oMathPara", "e", "num", "den", "sub", "sup", "fName", "lim", "deg"):
+        return "".join(_conv(k) for k in kids)
+
+    if name == "r":  # 一个数学 run
+        return "".join((k.text or "") for k in kids if _tag(k) == "t")
+
+    if name == "t":
+        return el.text or ""
+
+    if name == "f":  # 分数
+        num = den = ""
+        for k in kids:
+            if _tag(k) == "num":
+                num = _conv(k)
+            elif _tag(k) == "den":
+                den = _conv(k)
+        return f"\\frac{{{num}}}{{{den}}}"
+
+    if name == "sSub":
+        b = s = ""
+        for k in kids:
+            if _tag(k) == "e":
+                b = _conv(k)
+            elif _tag(k) == "sub":
+                s = _conv(k)
+        return f"{b}_{{{s}}}"
+
+    if name == "sSup":
+        b = s = ""
+        for k in kids:
+            if _tag(k) == "e":
+                b = _conv(k)
+            elif _tag(k) == "sup":
+                s = _conv(k)
+        return f"{b}^{{{s}}}"
+
+    if name == "sSubSup":
+        b = sb = sp = ""
+        for k in kids:
+            t = _tag(k)
+            if t == "e":
+                b = _conv(k)
+            elif t == "sub":
+                sb = _conv(k)
+            elif t == "sup":
+                sp = _conv(k)
+        return f"{b}_{{{sb}}}^{{{sp}}}"
+
+    if name == "rad":  # 根号
+        deg = e = ""
+        for k in kids:
+            if _tag(k) == "deg":
+                deg = _conv(k)
+            elif _tag(k) == "e":
+                e = _conv(k)
+        return f"\\sqrt[{deg}]{{{e}}}" if deg else f"\\sqrt{{{e}}}"
+
+    if name == "d":  # 括号
+        inner = ""
+        for k in kids:
+            if _tag(k) == "e":
+                inner = _conv(k)
+        return f"\\left({inner}\\right)"
+
+    if name in ("acc", "bar"):  # 重音
+        base = ""
+        for k in kids:
+            if _tag(k) == "e":
+                base = _conv(k)
+        return f"\\overline{{{base}}}"
+
+    if name == "nary":  # 求和/积分等
+        op = "\\sum"
+        for k in kids:
+            if _tag(k) == "naryPr":
+                for c in k:
+                    if _tag(c) == "chr":
+                        op = str(c.get(f"{{{M_NS}}}val") or "∑")
+        return op
+
+    if name in ("func", "limLow", "limUpp", "groupChr", "box", "borderBox", "phant"):
+        return "".join(_conv(k) for k in kids)
+
+    if name == "ctrlPr" or name.endswith("Pr"):
+        return ""
+
+    # 未知结构：退化取出文字，绝不丢内容
+    return "".join(_conv(k) for k in kids) if kids else (el.text or "")
+
+
+def _math_to_tex(raw: str) -> str:
+    """把公式纯文字里的 Unicode 符号换成 LaTeX 命令。"""
+    out = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch in UNICODE_MATH:
+            cmd = UNICODE_MATH[ch]
+            # 命令与后面的字母之间要有空格，避免 \\landA 这种粘连
+            if cmd.endswith("}") or not cmd.isalpha():
+                out.append(cmd)
+            else:
+                out.append(cmd + " ")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out).strip()
+
+
+# ── 段落读取 ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Seg:
+    """段落里的一个片段。"""
+
+    kind: str  # 'text' | 'math' | 'footnote'
+    text: str = ""
+    italic: bool = False
+    bold: bool = False
+    fid: int | None = None  # kind == 'footnote' 时的脚注 id
+    rid: str = ""  # kind == 'image' 时的关系 id（rIdN）
+
+
+@dataclass
+class Para:
+    segs: list[Seg] = field(default_factory=list)
+    style: str = ""
+
+    @property
+    def plain(self) -> str:
+        """不含公式/脚注标记的纯文字（用于结构判断）。"""
+        return "".join(s.text for s in self.segs if s.kind == "text")
+
+    @property
+    def has_math(self) -> bool:
+        return any(s.kind == "math" for s in self.segs)
+
+    @property
+    def footnote_ids(self) -> list[int]:
+        return [s.fid for s in self.segs if s.kind == "footnote" and s.fid]
+
+    @property
+    def italic_ratio(self) -> float:
+        t = [s for s in self.segs if s.kind == "text" and s.text.strip()]
+        if not t:
+            return 0.0
+        it = sum(len(s.text) for s in t if s.italic)
+        return it / sum(len(s.text) for s in t)
+
+
+def _run_segments(r) -> list[Seg]:
+    """拆一个 <w:r>。里面可能有普通文字，也可能内嵌 <m:oMath>。"""
+    rpr = None
+    for c in r:
+        if c.tag == f"{{{W_NS}}}rPr":
+            rpr = c
+            break
+    italic = bold = False
+    if rpr is not None:
+        for c in rpr:
+            t = c.tag.split("}", 1)[-1]
+            if t == "i":
+                italic = str(c.get(f"{{{W_NS}}}val", "1")) not in ("0", "false")
+            elif t == "b":
+                bold = str(c.get(f"{{{W_NS}}}val", "1")) not in ("0", "false")
+
+    out: list[Seg] = []
+
+    def handle_drawing(c) -> None:
+        """处理一个 <w:drawing>：有 blip 就是内嵌图片，否则是矢量形状。"""
+        for blip in c.iter(A_BLIP):
+            rid = blip.get(R_EMBED)
+            if rid:
+                out.append(Seg("image", rid=rid))
+                return
+        out.append(Seg("shape"))
+
+    seen_drawings: set[int] = set()
+    for c in r:
+        t = c.tag
+        if t == W_T:
+            if c.text:
+                out.append(Seg("text", c.text, italic, bold))
+        elif t == M_OMATH:
+            tex = _math_to_tex(omml_to_latex(c))
+            if tex:
+                out.append(Seg("math", tex, italic, bold))
+        elif t == f"{{{W_NS}}}footnoteReference":
+            fid = c.get(f"{{{W_NS}}}id")
+            if fid is not None:
+                out.append(Seg("footnote", fid=int(fid)))
+        elif t == W_DRAWING:
+            seen_drawings.add(id(c))
+            handle_drawing(c)
+
+    # ⚠️ <w:drawing> 常被包在 <mc:AlternateContent><mc:Choice> 里，
+    #    不是 <w:r> 的直接子元素——只遍历直接子节点会完全漏掉它们。
+    #    实测 03 HaoJian_Xiao 的 6 个矢量形状就是这么漏掉的。
+    for d in r.iter(W_DRAWING):
+        if id(d) not in seen_drawings:
+            seen_drawings.add(id(d))
+            handle_drawing(d)
+    return out
+
+
+def _para_segments(p) -> list[Seg]:
+    """按文档顺序遍历段落，收集文字 / 公式 / 脚注引用。
+
+    注意 <m:oMath> 既可能出现在 <w:r> 内部，也可能是 <w:p> 的直接子元素，
+    所以统一用 iter() 按顺序走一遍，再用 <w:r> 边界处理格式。
+    """
+    segs: list[Seg] = []
+    seen_math: set[int] = set()
+    for el in p.iter():
+        if el.tag == W_R:
+            # <w:r> 里可能内嵌 <m:oMath>，一并取走并登记，避免下面重复处理
+            for sub in el.iter(M_OMATH):
+                seen_math.add(id(sub))
+            segs.extend(_run_segments(el))
+        elif el.tag == M_OMATH and id(el) not in seen_math:
+            # <m:oMath> 也可能是 <w:p> 的直接子元素（独立公式行）
+            tex = _math_to_tex(omml_to_latex(el))
+            if tex:
+                segs.append(Seg("math", tex))
+    return segs
+
+
+def read_body(path: str):
+    """读 word/document.xml，返回 (段落列表, 样式名->样式id 无关)。"""
+    from lxml import etree
+
+    with zipfile.ZipFile(path) as z:
+        doc = etree.fromstring(z.read("word/document.xml"))
+    paras: list[Para] = []
+    for p in doc.iter(W_P):
+        # 只取正文层级的段落（表格里的也算）
+        style = ""
+        ppr = p.find(f"{{{W_NS}}}pPr")
+        if ppr is not None:
+            ps = ppr.find(f"{{{W_NS}}}pStyle")
+            if ps is not None:
+                style = str(ps.get(f"{{{W_NS}}}val") or "")
+        para = Para(segs=merge_segs(_para_segments(p)), style=style)
+        if para.segs:
+            paras.append(para)
+    return paras
+
+
+def read_media(path: str) -> dict[str, str]:
+    """读关系表，返回 {rId: word/media 内的文件名}。
+
+    docx 本身就是 zip，**原图就存在里面**，直接取出即可——比「截图 Word 区域」
+    质量更高：截图会重新采样，还可能带上 Word 的显示缩放。
+    """
+    from lxml import etree
+
+    with zipfile.ZipFile(path) as z:
+        try:
+            root = etree.fromstring(z.read("word/_rels/document.xml.rels"))
+        except KeyError:
+            return {}
+    out: dict[str, str] = {}
+    for rel in root:
+        target = rel.get("Target") or ""
+        if "media/" in target:
+            out[rel.get("Id") or ""] = os.path.basename(target)
+    return out
+
+
+def extract_media(path: str, out_dir: str, mapping: dict[str, str]) -> dict[str, str]:
+    """把用到的图片从 docx 里解出来，返回 {原文件名: 导出后的文件名}。
+
+    导出名统一为 fig1.png / fig2.png …（按在正文里出现的先后），
+    因为原文件名（image1.png）没有信息量。
+    """
+    import shutil
+
+    os.makedirs(out_dir, exist_ok=True)
+    exported: dict[str, str] = {}
+    seq = 0
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        for _rid, fname in mapping.items():
+            if fname in exported:
+                continue
+            src = f"word/media/{fname}"
+            if src not in names:
+                continue
+            seq += 1
+            ext = os.path.splitext(fname)[1].lower() or ".png"
+            new_name = f"fig{seq}{ext}"
+            with z.open(src) as fsrc, open(os.path.join(out_dir, new_name), "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+            exported[fname] = new_name
+    return exported
+
+
+W_TBL = f"{{{W_NS}}}tbl"
+W_TR = f"{{{W_NS}}}tr"
+W_TC = f"{{{W_NS}}}tc"
+W_GRIDSPAN = f"{{{W_NS}}}gridSpan"
+W_VMERGE = f"{{{W_NS}}}vMerge"
+
+
+@dataclass
+class Cell:
+    segs: list[Seg] = field(default_factory=list)
+    colspan: int = 1
+    vmerge: str = ""  # '' | 'restart' | 'continue'
+
+    @property
+    def text(self) -> str:
+        return "".join(s.text for s in self.segs if s.kind == "text").strip()
+
+    @property
+    def has_math(self) -> bool:
+        return any(s.kind == "math" for s in self.segs)
+
+
+@dataclass
+class Table:
+    rows: list[list[Cell]] = field(default_factory=list)
+    ncols: int = 0
+
+    @property
+    def nrows(self) -> int:
+        return len(self.rows)
+
+    @property
+    def merged(self) -> bool:
+        return any(c.colspan > 1 or c.vmerge for r in self.rows for c in r)
+
+    @property
+    def nested(self) -> bool:
+        return False
+
+
+def read_table(tbl) -> Table:
+    """读一张 Word 表格。"""
+    t = Table()
+    for tr in tbl.findall(W_TR):
+        row: list[Cell] = []
+        for tc in tr.findall(W_TC):
+            cell = Cell()
+            for p in tc.iter(W_P):
+                cell.segs.extend(_para_segments(p))
+            cell.segs = merge_segs(cell.segs)
+            tcpr = tc.find(f"{{{W_NS}}}tcPr")
+            if tcpr is not None:
+                gs = tcpr.find(W_GRIDSPAN)
+                if gs is not None:
+                    try:
+                        cell.colspan = max(1, int(gs.get(f"{{{W_NS}}}val") or 1))
+                    except ValueError:
+                        pass
+                vm = tcpr.find(W_VMERGE)
+                if vm is not None:
+                    cell.vmerge = vm.get(f"{{{W_NS}}}val") or "continue"
+            row.append(cell)
+        if row:
+            t.rows.append(row)
+    t.ncols = sum(c.colspan for c in t.rows[0]) if t.rows else 0
+    return t
+
+
+def read_blocks(path: str):
+    """按文档顺序返回正文块：段落 (Para) 与表格 (Table) 混排。
+
+    必须**只取顶层元素**：`root.iter(W_P)` 会把表格单元格里的段落也当成正文段落，
+    那样表格内容会以纯文字形式散进正文，而表格结构本身丢失。
+    """
+    from lxml import etree
+
+    with zipfile.ZipFile(path) as z:
+        root = etree.fromstring(z.read("word/document.xml"))
+    body = root.find(f"{{{W_NS}}}body")
+    if body is None:
+        return []
+
+    blocks = []
+    for el in body:
+        if el.tag == W_P:
+            style = ""
+            ppr = el.find(f"{{{W_NS}}}pPr")
+            if ppr is not None:
+                ps = ppr.find(f"{{{W_NS}}}pStyle")
+                if ps is not None:
+                    style = str(ps.get(f"{{{W_NS}}}val") or "")
+            para = Para(segs=merge_segs(_para_segments(el)), style=style)
+            if para.segs:
+                blocks.append(para)
+        elif el.tag == W_TBL:
+            t = read_table(el)
+            if t.rows:
+                blocks.append(t)
+    return blocks
+
+
+def read_footnotes(path: str) -> dict[int, list[Seg]]:
+    """读 word/footnotes.xml，返回 {脚注id: 片段列表}。
+
+    `separator` / `continuationSeparator` 是脚注区那条横线之类的排版元数据
+    （正文从不引用），按 `w:type` 丢掉。
+    """
+    from lxml import etree
+
+    with zipfile.ZipFile(path) as z:
+        if "word/footnotes.xml" not in z.namelist():
+            return {}
+        root = etree.fromstring(z.read("word/footnotes.xml"))
+
+    out: dict[int, list[Seg]] = {}
+    for fn in root.iter(f"{{{W_NS}}}footnote"):
+        # ⚠️ 判据只能是 `w:type`，**不能按 id 丢**：−1/0 通常确实就是下面这两个伪脚注，
+        #    但本库实测 23 篇稿子的「作者信息/收稿日期」脚注正是一个**不带 w:type 的
+        #    w:id="0"**，而且正文里另有 `w:footnoteReference w:id="0"` 真引用它。
+        #    按 id 丢会连着正文引用一起丢内容（那 23 篇里 7 篇脚注含邮箱），
+        #    还会让普查把「解析器没拿到」误记成「原稿本来就没有」（`absent`）。
+        if (fn.get(f"{{{W_NS}}}type") or "") in ("separator", "continuationSeparator"):
+            continue
+        fid = fn.get(f"{{{W_NS}}}id")
+        if fid is None:
+            continue
+        try:
+            i = int(fid)
+        except ValueError:
+            continue
+        segs: list[Seg] = []
+        for p in fn.iter(W_P):
+            segs.append(Seg("text", "\n"))
+            segs.extend(_para_segments(p))
+        # 去掉开头的换行
+        while segs and segs[0].kind == "text" and not segs[0].text.strip():
+            segs.pop(0)
+        out[i] = segs
+    return out
+
+
+def merge_segs(segs: list[Seg]) -> list[Seg]:
+    """合并相邻且格式相同的文字片段。
+
+    Word 会把一段连续斜体拆成很多 <w:r>（每个词一个），不合并的话会输出
+    `\\textit{dictum} \\textit{omnem} \\textit{hominem}` 这种碎片，
+    而人工成品是一个完整的 `\\textit{...}`。
+    """
+    out: list[Seg] = []
+    for s in segs:
+        if (out and s.kind == "text" and out[-1].kind == "text"
+                and out[-1].italic == s.italic and out[-1].bold == s.bold):
+            out[-1].text += s.text
+        else:
+            out.append(Seg(s.kind, s.text, s.italic, s.bold, s.fid, s.rid))
+    return out
+
+
+def segs_to_text(segs: list[Seg], math_inline: bool = True) -> str:
+    """把片段列表拼成可读文本；公式用 $…$ 包裹。"""
+    out = []
+    for s in segs:
+        if s.kind == "text":
+            out.append(s.text)
+        elif s.kind == "math":
+            out.append(f"${s.text}$" if math_inline else s.text)
+    return "".join(out)
+
+
+def normalize_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
