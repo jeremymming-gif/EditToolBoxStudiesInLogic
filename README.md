@@ -72,7 +72,8 @@ Engine/                  引擎（Python，唯一一份逻辑）
 ├── mergepdf.py          合并一期的 PDF（扉页、目录、各篇、封底 + 重建书签）
 ├── engine_main.py       打包入口：把上面三个 CLI 冻成一个 exe
 ├── slcn/                解析、规范、bib 判据、AI 任务书与合并等模块
-├── docs/                GUIDE（用法）/ RULES（判据）/ ENGINE_API（对外壳的契约）/ cases（案例法）
+├── docs/                GUIDE（用法）/ RULES（判据）/ ENGINE_API（对外壳的契约）
+│                        （内部仓另有 cases/：案例法，含作者信息，不随公开仓发布）
 └── tests/               套件（每个文件都是独立脚本，打印 PASS/FAIL）
 sources-mac/                 macOS 外壳（SwiftUI）
 sources-win/            Windows 外壳（Tkinter）+ 打包脚本 + 桥梁测试
