@@ -286,6 +286,19 @@ $PY ablation_corpus.py
 > `run_poc.py` / `corpus.py` 会自动扫描 `original/` 找源文件——这对回归测试是必要的，
 > 但**不是给编辑用的入口**。正式使用请用 `convert.py`。
 
+### 3.3.1 引擎测试两档：`quick` / `full`
+
+日常改一行跑 quick（秒级，约 1–2 秒）；改了 `slcn/` 判据、改了产物契约（bib / tex / 报告字段）或发版前，跑 full：
+
+```bash
+cd Engine && bash tools/run_engine_tests.sh quick   # 秒级几套：不碰稿件库 / TeX / LibreOffice，也不起长期子进程
+cd Engine && bash tools/run_engine_tests.sh full    # 默认档 = 全部 tests/test_*.py；稿件库在本机时约几分钟
+```
+
+- 每套一行 `PASS/FAIL` + 它自己的末行摘要；结尾汇总「N 套件，红 M」，**有红退出码非 0**。
+- quick 白名单写在脚本注释里；quick 全绿不等于能发版 —— **full 才是回归的完整口径**。
+- 解释器优先 `/opt/homebrew/bin/python3.14`，找不到回落 `python3`；`PYTHONPATH` 自动指向 `Engine/vendor`。
+
 ### 3.4 依赖
 
 Word 解析需要 `python-docx`（DSH 自带解释器已含），中文姓名转拼音需要 `pypinyin`：
