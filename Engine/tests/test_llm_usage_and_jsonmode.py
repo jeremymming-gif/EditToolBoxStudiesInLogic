@@ -48,6 +48,41 @@ BODIES = []          # mock 端点收到的请求体（解析后）
 SCRIPT = []          # 逐次响应脚本：("200", usage|None, content) / ("400"|"500", message)
 
 
+def _read_artifact(out_dir: str, name: str, proc=None) -> str:
+    r"""读引擎产物；**读不到就把诊断打出来**，而不是抛 FileNotFoundError。
+
+    为什么要有它：2026-10-16 windows-latest 上 `test_llm_*` 只报了一句
+    `FileNotFoundError: ...\outroot\San_Zhang\San_Zhang_文献核实.md` ——
+    看不出 convert.py 是崩了、还是把产物写到了别处。这里把退出码、stdout/stderr 末段
+    与产物目录树都打出来，一眼能判断。返回空串，让后续断言以"内容缺失"的方式失败。
+    """
+    path = os.path.join(out_dir, name)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    print(f"  ⚠️ 没找到产物：{path}")
+    if proc is not None:
+        print(f"     convert.py 退出码：{getattr(proc, 'returncode', '?')}")
+        for label in ("stdout", "stderr"):
+            text = getattr(proc, label, "") or ""
+            lines = text.strip().split("\n")
+            print(f"     convert.py {label}（末 {min(20, len(lines))} 行）：")
+            for line in lines[-20:]:
+                print("       " + line)
+    print("     产物目录树（前 25 个文件）：")
+    shown = 0
+    for root, _dirs, files in os.walk(out_dir):
+        for f in sorted(files):
+            if shown >= 25:
+                break
+            print("       " + os.path.relpath(os.path.join(root, f), out_dir))
+            shown += 1
+        if shown >= 25:
+            break
+    return ""
+
+
 def check(name, cond, detail=""):
     print(("PASS  " if cond else "FAIL  ") + name + ("  " + detail if detail else ""))
     if not cond:
@@ -343,7 +378,7 @@ check("⑤A 逐条打印用量（2 条成功各一行 tokens 11+7）",
       proc.stdout.count("tokens 11+7") == 2, repr(proc.stdout.count("tokens 11+7")))
 check("⑤A 收尾汇总按**真实请求数**统计（2 次调用，只累加成功的用量）",
       "共 2 次调用，22 prompt + 14 completion tokens" in proc.stdout, "")
-md = open(os.path.join(out_dir, "San_Zhang_文献核实.md"), encoding="utf-8").read()
+md = _read_artifact(out_dir, "San_Zhang_文献核实.md", proc)
 check("⑤A 两条建议都照旧追加进任务书",
       "## `k1`" in md and "## `k2`" in md
       and md.count("AI-ADVICE-MARKER") == 2 and "AI 建议" in md and "须人工核实" in md, "")
@@ -372,7 +407,7 @@ check("⑤C 用户可见的提前停止说明照旧",
       and "本次**只出任务书**" in proc.stdout, "")
 check("⑤C 没有成功调用也要报汇总（调用发生过 → 3 次调用、0 tokens）",
       "共 3 次调用，0 prompt + 0 completion tokens" in proc.stdout, "")
-md = open(os.path.join(out_dir, "San_Zhang_文献核实.md"), encoding="utf-8").read()
+md = _read_artifact(out_dir, "San_Zhang_文献核实.md", proc)
 check("⑤C 一条建议都没追加（失败不写盘，与从前一致）",
       "AI 建议" not in md and "须人工核实" not in md, "")
 

@@ -56,6 +56,41 @@ OFF = {"type": "disabled"}
 ON = {"type": "enabled"}
 
 
+def _read_artifact(out_dir: str, name: str, proc=None) -> str:
+    r"""读引擎产物；**读不到就把诊断打出来**，而不是抛 FileNotFoundError。
+
+    为什么要有它：2026-10-16 windows-latest 上 `test_llm_*` 只报了一句
+    `FileNotFoundError: ...\outroot\San_Zhang\San_Zhang_文献核实.md` ——
+    看不出 convert.py 是崩了、还是把产物写到了别处。这里把退出码、stdout/stderr 末段
+    与产物目录树都打出来，一眼能判断。返回空串，让后续断言以"内容缺失"的方式失败。
+    """
+    path = os.path.join(out_dir, name)
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+
+    print(f"  ⚠️ 没找到产物：{path}")
+    if proc is not None:
+        print(f"     convert.py 退出码：{getattr(proc, 'returncode', '?')}")
+        for label in ("stdout", "stderr"):
+            text = getattr(proc, label, "") or ""
+            lines = text.strip().split("\n")
+            print(f"     convert.py {label}（末 {min(20, len(lines))} 行）：")
+            for line in lines[-20:]:
+                print("       " + line)
+    print("     产物目录树（前 25 个文件）：")
+    shown = 0
+    for root, _dirs, files in os.walk(out_dir):
+        for f in sorted(files):
+            if shown >= 25:
+                break
+            print("       " + os.path.relpath(os.path.join(root, f), out_dir))
+            shown += 1
+        if shown >= 25:
+            break
+    return ""
+
+
 def check(name, cond, detail=""):
     print(("PASS  " if cond else "FAIL  ") + name + ("  " + detail if detail else ""))
     if not cond:
@@ -263,7 +298,7 @@ def run_convert(n_entries, script, **env_extra):
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env, cwd=_ENGINE,
     )
     out_dir = os.path.join(tmp, "outroot", "San_Zhang")
-    md = open(os.path.join(out_dir, "San_Zhang_文献核实.md"), encoding="utf-8").read()
+    md = _read_artifact(out_dir, "San_Zhang_文献核实.md", proc)
     return proc, md
 
 
