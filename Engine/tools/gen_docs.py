@@ -282,8 +282,47 @@ GIT_LINE = re.compile(r"^\*\*红线只读快照\*\*.*$", re.M)
 _GIT_PLACEHOLDER = "**红线只读快照**：（本机工作区状态，不参与校验）"
 
 
-def normalize_for_check(body: str) -> str:
-    return GIT_LINE.sub(_GIT_PLACEHOLDER, APP_LINE.sub(_APP_PLACEHOLDER, body))
+# 测试计数两行：**在本机前提齐全时是硬断言**（"数字不许手抄"最要紧的一条），
+# 但缺前提时用例会 SKIP，计数必然变小（CI 上没有稿件库/TeX/LibreOffice 就是这样）——
+# 那种情况下把它们也归一化掉，否则 CI 永远红，久而久之就没人看 CI 了。
+TEST_SUMMARY_LINE = re.compile(r"^\*\*测试\*\*（.*$", re.M)
+TEST_BREAKDOWN_LINE = re.compile(r"^`test_[a-z0-9_]+` \d+( ｜ `test_[a-z0-9_]+` \d+)*$", re.M)
+_TEST_PLACEHOLDER = "**测试**：（计数随本机前提浮动，本次不参与校验）"
+
+
+def environment_complete() -> tuple[bool, list[str]]:
+    """本机是否具备"全量跑"的前提：稿件库 + TeX + LibreOffice。
+
+    缺任何一项，测试计数与依赖稿件库的数字就会变 —— `--check` 据此决定严格还是宽松。
+    """
+    import shutil as _sh
+
+    missing: list[str] = []
+    try:
+        from slcn import paths as _p
+        if _p.manuscripts_root() is None:
+            missing.append("稿件库")
+    except Exception as e:  # noqa: BLE001  探测本身失败也按"缺前提"处理，但要说清是哪一项
+        missing.append(f"稿件库（探测异常 {type(e).__name__}）")
+    try:
+        if _sh.which("xelatex") is None:
+            missing.append("xelatex")
+    except Exception as e:  # noqa: BLE001
+        missing.append(f"xelatex（探测异常 {type(e).__name__}）")
+    try:
+        if _sh.which("soffice") is None and _sh.which("libreoffice") is None:
+            missing.append("LibreOffice")
+    except Exception as e:  # noqa: BLE001
+        missing.append(f"LibreOffice（探测异常 {type(e).__name__}）")
+    return (not missing), missing
+
+
+def normalize_for_check(body: str, lenient: bool = False) -> str:
+    out = GIT_LINE.sub(_GIT_PLACEHOLDER, APP_LINE.sub(_APP_PLACEHOLDER, body))
+    if lenient:
+        out = TEST_SUMMARY_LINE.sub(_TEST_PLACEHOLDER, out)
+        out = TEST_BREAKDOWN_LINE.sub(_TEST_PLACEHOLDER, out)
+    return out
 
 
 def read_readme() -> str:
@@ -326,16 +365,25 @@ def main(argv: list[str] | None = None) -> int:
     new_body = "\n" + new
 
     if a.check:
-        if normalize_for_check(old) == normalize_for_check(new_body):
+        complete, missing = environment_complete()
+        lenient = not complete
+        old_cmp = normalize_for_check(old, lenient)
+        new_cmp = normalize_for_check(new_body, lenient)
+        if lenient:
+            print(f"（本次为宽松校验：缺 {'、'.join(missing)}，"
+                  "测试计数与依赖稿件库的数字不参与比对）")
+        if old_cmp == new_cmp:
             if old != new_body:
-                print("PASS  AUTO 块与现算结果一致（差异只在「App 包内一致性」那一行——"
-                      "它随本机构建状态变，按设计不参与校验）")
+                print("PASS  AUTO 块与现算结果一致（差异只在本机状态那几行——"
+                      "按设计不参与校验）")
             else:
                 print("PASS  AUTO 块与现算结果逐字一致")
             return 0 if all_ok else 1
         print("FAIL  AUTO 块已过期（README 里的是旧数字）—— 跑 `tools/gen_docs.py` 更新")
+        # ⚠️ diff 要打**归一化后**的文本：否则会把"按设计不参与校验"的行也列出来，
+        #    真正的问题反而被淹没（2026-10-16 在 CI 上就是被这条误导了一轮）。
         for line in list(difflib.unified_diff(
-                old.split("\n"), new_body.split("\n"),
+                old_cmp.split("\n"), new_cmp.split("\n"),
                 "README/AUTO（现状）", "现算结果", lineterm="", n=1))[:60]:
             print("      " + line)
         return 1
