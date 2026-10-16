@@ -117,7 +117,7 @@ missing, exempted = [], 0
 # 公开的工具仓里没有它们 —— 那不是「文档坏了」，是**有意不带**。所以这类引用单独统计、不判失败。
 # 判据：引用以 `编辑笔记/` 开头、**不是** `编辑笔记/模板文件/`、且在本仓确实不存在。
 PRIVATE_NOTEBOOK, private_refs = [], 0
-LOCAL_DEPS, local_deps = [], 0
+LOCAL_DEPS, local_deps = [], []
 # 公开仓**有意不带**的两类内部资料：`Engine/docs/cases/`（案例法，含作者姓名与稿件片段）
 # 与 `Engine/HANDOFF.md`（内部进度）。缺席时引用它们的路径按「有意不带」跳过。
 INTERNAL_ABSENT = (not any((ENGINE / "docs" / "cases").glob("*.md"))
@@ -174,7 +174,7 @@ if internal_refs:
     print(f"SKIP  (b) {internal_refs} 处指向内部资料（案例法 / HANDOFF.md）的引用："
           f"公开仓有意不带")
 if local_deps:
-    print(f"SKIP  (b) {local_deps} 处指向本地依赖目录 `Engine/vendor`："
+    print(f"SKIP  (b) {len(local_deps)} 处指向本地依赖目录 `Engine/vendor`："
           f"按 requirements.txt 装好之后才有")
 if private_refs:
     print(f"SKIP  (b) {private_refs} 处指向「编辑笔记/」下非模板文件（手册/经验书）的引用："

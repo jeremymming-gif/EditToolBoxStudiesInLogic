@@ -35,7 +35,12 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 PY = sys.executable
-ENV = dict(os.environ, PYTHONPATH=str(ENGINE / "vendor"))
+# ⚠️ 不要**覆盖** PYTHONPATH：把 vendor 拼在前面，环境里原有的继续生效
+#    （本地用 `PYTHONPATH=/path/deps` 跑时曾被踢掉，表现为"找不到 pypdf"的假失败）。
+_VENDOR = str(ENGINE / "vendor")
+ENV = dict(os.environ,
+           PYTHONPATH=os.pathsep.join([_VENDOR] + ([os.environ["PYTHONPATH"]]
+                                                  if os.environ.get("PYTHONPATH") else [])))
 
 
 def run(script: str, *args):
