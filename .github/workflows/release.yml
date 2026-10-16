@@ -14,6 +14,8 @@ permissions:
 env:
   # 版本号只有一处：Engine/slcn/__init__.py 的 __version__
   PYTHONUNBUFFERED: "1"
+  # Windows: 控制台默认 cp1252，测试脚本打印中文会 UnicodeEncodeError
+  PYTHONIOENCODING: "utf-8"
 
 jobs:
   # ── ① 纯逻辑测试：两个平台各跑一遍（不需要 TeX / LibreOffice）────────────
