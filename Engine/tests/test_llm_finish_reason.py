@@ -100,12 +100,26 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
-        BODIES.append(json.loads(self.rfile.read(n).decode("utf-8")))
-        i = len(BODIES) - 1
+        raw = self.rfile.read(n).decode("utf-8")          # 匹配用**原始请求体文本**
+        BODIES.append(json.loads(raw))                    # BODIES 仍是解析后的 dict（有断言依赖）
         if not SCRIPT:                       # 脚本空 = 测试自己写错了，别静默回 200
             step = {"status": 500, "message": "no script"}
         else:
-            step = SCRIPT[i] if i < len(SCRIPT) else SCRIPT[-1]   # 脚本用完后重复最后一步
+            # ① 带 when 的项：按请求体子串匹配，**取最长匹配**（否则 `k1` 会抢走 `k10`），
+            #    命中**不消费** —— 同一键被重复请求时永远给同一份夹具。
+            hits = [s for s in SCRIPT if s.get("when") and s["when"] in raw]
+            if hits:
+                step = max(hits, key=lambda s: len(s["when"]))
+            else:
+                # ② 兜底只走**不带 when** 的项，游标写在脚本项上（SCRIPT.clear() 即复位）——
+                #    用模块级计数器会让"上个场景的兜底进度"漏进下个场景（实测踩过）。
+                bare = [s for s in SCRIPT if not s.get("when")]
+                if bare:
+                    step = next((s for s in bare if not s.get("_used")), bare[-1])
+                    step["_used"] = True
+                else:
+                    # ③ 只剩带键项（如 ④ 只给一步脚本的场景）：重复最后一步，保持老行为
+                    step = SCRIPT[-1]
         if "json" in step:                   # 整段响应体原样发（畸形结构场景）
             status, body = step["status"], step["json"]
         elif step["status"] != 200:
@@ -259,10 +273,12 @@ def run_convert(n_entries, script):
         f.write("\n".join(_BIB_TPL.format(i=i, yy=10 + i) for i in range(1, n_entries + 1)))
     BODIES.clear()
     SCRIPT.clear()
-    # 前 n_entries 步分别绑定到 k1..kn（请求体里出现的条目键）：mock 按**内容**匹配，
-    # 与请求顺序/条数无关（纯按序号在 windows-latest 上错位，导致 AI 建议整段消失）。
-    SCRIPT.extend([dict(s, when=f"k{i}") if i <= n_entries else s
-                   for i, s in enumerate(script, start=1)])
+    # 步数与条目数**一致**时才把第 i 步绑定到第 i 个条目键（mock 按内容匹配 → 与请求顺序无关）；
+    # 不一致（如只给一步脚本的场景）就整份保持纯序号：否则会出现"错配但内容恰好相同"的巧合绿。
+    if len(script) == n_entries:
+        SCRIPT.extend([dict(s, when=f"k{i}") for i, s in enumerate(script, start=1)])
+    else:
+        SCRIPT.extend(script)
     # SLCN_LLM_MAX_TOKENS 明确不设 → 走默认 2048（截断场景的成因要可追溯）；
     # SLCN_LLM_THINKING 也不设 → 请求体不带 thinking（老调用方的字节级兼容由
     # tests/test_llm_thinking_and_reasoning.py 单独断言）
