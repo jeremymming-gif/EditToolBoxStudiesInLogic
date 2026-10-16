@@ -84,7 +84,7 @@ jobs:
       #    （不买 Apple Developer 账号），所以资产里附一份说明，正文里也写清处理方法。
       - name: 附一份「首次打开」说明
         run: |
-          cat > dist/首次打开（macOS）.txt <<'TXT'
+          cat > "首次打开（macOS）.txt" <<'TXT'
           《编辑部工具箱》macOS 版首次打开说明
           ------------------------------------------------
           本应用**未做 Apple 签名与公证**（编辑部决定不购买开发者账号），
@@ -103,7 +103,7 @@ jobs:
           name: macos-app
           path: |
             dist/EditToolBox-*.zip
-            dist/首次打开（macOS）.txt
+            首次打开（macOS）.txt
 
   # ── ③ Windows：冻结引擎 + 界面，打成一个发布目录 ─────────────────────────
   windows:
@@ -148,14 +148,14 @@ jobs:
             · 用「初排转换」编译 PDF 需要系统里有 TeX（xelatex/biber）；
               合并 PDF、导出原稿 PDF 另外需要 LibreOffice（可选）。
           '@
-          Set-Content -Path "dist\首次打开（Windows）.txt" -Value $TXT -Encoding UTF8
-          Get-Item "dist\首次打开（Windows）.txt" | Select-Object Name, Length
+          Set-Content -Path "首次打开（Windows）.txt" -Value $TXT -Encoding UTF8
+          Get-Item "首次打开（Windows）.txt" | Select-Object Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app
           path: |
             EditToolBox-*-Windows-x64.zip
-            dist/首次打开（Windows）.txt
+            首次打开（Windows）.txt
 
   # ── ④ 发 Release（只在打 tag 时）────────────────────────────────────────
   release:
@@ -185,7 +185,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # ⚠️ 只把**文件**交给 gh：artifact 合并后可能带目录（`assets/*` 会把目录当资产传，直接报错），
+          #    而这一步**只在打 tag 时跑**、没法用 workflow_dispatch 预演 —— 所以写成不依赖目录布局的形式。
+          #    用 `while read` 而不是 `mapfile`：本机 bash 3.2 没有 mapfile（CI 上是 5，但脚本要两边都能跑）。
+          FILES=()
+          while IFS= read -r f; do FILES+=("$f"); done <<< "$(find assets -type f | sort)"
+          echo "将要上传 ${#FILES[@]} 个资产："
+          printf '  %s\n' "${FILES[@]}"
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            assets/*
+            "${FILES[@]}"
