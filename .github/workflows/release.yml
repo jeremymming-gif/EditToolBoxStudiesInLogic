@@ -181,6 +181,33 @@ jobs:
           }
           JSON
           ls -la assets
+      # ⚠️ RELEASING.md：未签名/未公证的后果要**在正文里也照实写**（不能只塞在资产里），
+      #    且不许说成小问题。`--notes` 是**前置**到自动生成的提交清单之前的（见 `gh release create -h`）。
+      - name: 写 Release 正文（首次打开的两种处理办法必须写在正文里）
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          cat > /tmp/notes.raw <<'MD'
+          Windows / macOS **免安装**包。本版**未做代码签名、未做公证**（编辑部 2026-10-16 定案），
+          首次打开会被系统拦一下 —— **不是文件坏了，也不是中毒**。
+
+          | 平台 | 会看到什么 | 怎么打开 |
+          |---|---|---|
+          | macOS | 双击提示「已损坏，无法打开」 | 右键点应用 →「打开」→ 弹窗里再点「打开」；<br>或终端一条命令：`xattr -dr com.apple.quarantine "/Applications/编辑部工具箱.app"` |
+          | Windows | 蓝色 SmartScreen「Windows 已保护你的电脑」 | 点「更多信息」→ 再点「**仍要运行**」 |
+
+          **下载哪个**
+
+          - `EditToolBox-@V@-macOS-arm64.zip`（Apple 芯片）＋《首次打开（macOS）.txt》
+          - `EditToolBox-@V@-Windows-x64.zip`（内含两个 exe，**必须放在同一个目录**）＋《首次打开（Windows）.txt》
+          - `latest.json`：应用启动时比对它，**只提示、不自动替换**
+
+          **运行环境**：「初排转换」编译 PDF 需要系统里有 TeX（`xelatex`/`biber`）；
+          合并 PDF、导出原稿 PDF 另外需要 LibreOffice（可选）。
+
+          **本版改动**
+          MD
+          sed "s/@V@/$V/g" /tmp/notes.raw > /tmp/notes.md
+          cat /tmp/notes.md
       - name: 建 Release 并附上资产
         env:
           GH_TOKEN: ${{ github.token }}
@@ -193,6 +220,7 @@ jobs:
           echo "将要上传 ${#FILES[@]} 个资产："
           printf '  %s\n' "${FILES[@]}"
           gh release create "${GITHUB_REF_NAME}" \
-            --title "${GITHUB_REF_NAME}" \
+            --title "编辑部工具箱 ${GITHUB_REF_NAME}" \
+            --notes-file /tmp/notes.md \
             --generate-notes \
             "${FILES[@]}"
