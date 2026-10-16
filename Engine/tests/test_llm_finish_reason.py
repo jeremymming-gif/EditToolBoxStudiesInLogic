@@ -324,10 +324,13 @@ if proc.stdout.count("返回被 max_tokens 截断") != 1:
         _s = json.dumps(_b, ensure_ascii=False)
         _keys.append([k for k in ("k1", "k2", "k3", "k4", "k5", "k6") if k in _s])
     print(f"  [诊断] mock 收到 {len(BODIES)} 次请求，各次命中的条目键：{_keys}")
-    print("  [诊断] 引擎 stdout 里与 AI/核实/截断 相关的行（末 15 行）：")
-    for _l in [l for l in proc.stdout.splitlines()
-               if any(w in l for w in ("核实", "llm", "AI", "截断"))][-15:]:
-        print("         " + _l)
+    # ⚠️ stderr 也要看：引擎的 `[llm] 调用失败：…` 全部走 stderr（上一版只过滤 stdout → 什么都看不到）
+    for _label, _text in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+        _hit = [l for l in (_text or "").splitlines()
+                if any(w in l for w in ("核实", "llm", "AI", "截断"))][-15:]
+        print(f"  [诊断] 引擎 {_label} 里与 AI/核实/截断 相关的行（末 {len(_hit)} 行）：")
+        for _l in _hit:
+            print("         " + _l)
     print(f"  [诊断] 产物里有没有「AI 建议」段：{'AI 建议' in md}")
 check("③A 未被截断的 k2 不告警（判据按条读，不能整期一把）",
       proc.stdout.count("截断") == 1 and "⚠ k2" not in proc.stdout, repr(proc.stdout.count("截断")))
