@@ -316,7 +316,12 @@ for suffix in (".txt", ".json"):
         check(f"(b2) `{name}` 内容与冻结快照一致（路径归一化后）",
               norm(body) == norm(frozen.read_bytes()), f"{len(body)} 字节")
     else:
-        check(f"(b2) `{name}` 与冻结快照**逐字节一致**", frozen.read_bytes() == body,
+        # ⚠️ 行尾归一化：夹具文件在 Windows 上写出来是 CRLF（Python 文本模式的默认行为），
+        #    生成物于是也带 CRLF。产物是给 XeLaTeX 读的，行尾差异无害；
+        #    要守的是**内容**（标题/作者/页码/表头），所以这里比归一化后的字节。
+        #    （2026-10-16：windows-latest 首次跑通其余 38 个套件后，就剩这一处红。）
+        _n = lambda b: b.replace(b"\r\n", b"\n")
+        check(f"(b2) `{name}` 与冻结快照一致（行尾归一化后）", _n(frozen.read_bytes()) == _n(body),
               f"{len(body)} 字节")
 
 print("\n── (c) 与 Swift 真差分（未切换的功能；没有 Swift CLI 或没有稿件库就 SKIP）──")
