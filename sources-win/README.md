@@ -5,10 +5,10 @@
 
 ```text
 sources-win/            ← 本目录：Tkinter 界面（取值 → 拼参数 → 显示日志）
-├── main.py              界面：4 个标签页 + 底部实时日志
+├── main.py              界面：9 个标签页 + 底部实时日志
 ├── engine.py            **与引擎之间的唯一桥梁**（不含 tkinter，所以能离开窗口测试）
-├── settings.py          本地配置（%APPDATA%\EditToolBox\settings.json，0600）
-└── tests/test_bridge.py 桥梁测试（41 项断言，在 mac/CI 上也能跑）
+├── settings.py          本地配置（%APPDATA%\EditToolBox\settings.json；POSIX 上 0600，Windows 靠该目录的 ACL）
+└── tests/test_bridge.py 桥梁测试（不开窗口；mac / CI / Windows 上都跑）
 ```
 
 ## 怎么跑
@@ -49,19 +49,21 @@ python main.py
 
 两块分开冻：**引擎冻成一个 exe**，界面冻成另一个。用户机器上零 Python 依赖。
 
-```bat
-:: ① 冻结引擎 → SLCNEngine.exe（三个 CLI 入口合成一个，见 Engine/engine_main.py）
-cd Engine
-pyinstaller --onefile --console --name SLCNEngine engine_main.py
-copy dist\SLCNEngine.exe ..\sources-win\SLCNEngine.exe
+**不要手打 PyInstaller 命令** —— 用 `build-win.ps1`（唯一一份逻辑：`--hidden-import` 逐入口、
+模板一起打包，末尾还会**逐入口 + 一次最小转换**自检）：
 
-:: ② 冻结界面（把 Engine\ 与 SLCNEngine.exe 一起放进去）
-cd ..\sources-win
-pyinstaller --onefile --noconsole --name SLCN编辑器工具箱 ^
-    --add-data "SLCNEngine.exe;." ^
-    --add-data "..\Engine;Engine" ^
-    --icon icon.ico main.py
+```powershell
+pwsh -ExecutionPolicy Bypass -File build-win.ps1
+# → build\dist\SLCNEngine.exe（引擎，八个入口冻成一个）
+# → build\dist\编辑部工具箱.exe（界面；它会在自己旁边找 SLCNEngine.exe）
 ```
+
+- 两个 exe **必须放在同一个目录**（界面 exe 按这个约定找引擎）；
+- 用户机器上零 Python 依赖。
+
+> ⚠️ 这里从前贴过一段手工配方（`pyinstaller --onefile --console --name SLCNEngine engine_main.py`
+> 之类），**照做会冻出坏包**：dispatcher 是动态 import，漏掉 `--hidden-import` 的话每个入口都
+> `ModuleNotFoundError`（2026-10-17 实测同类的后果是 9 个标签页坏 5 个）。已删除，只留脚本。
 
 > ⚠️ `vendor/` 里 `lxml` 是**编译件**，必须用 Windows 轮子（`pip install --target vendor lxml pypdf pypinyin` 在 Windows 上做一遍）；
 > `pypdf` / `pypinyin` 是纯 Python，跨平台无碍。细节见 `Engine/docs/ENGINE_API.md` §六「平台矩阵」。
@@ -76,7 +78,7 @@ pyinstaller --onefile --noconsole --name SLCN编辑器工具箱 ^
 |---|---|
 | 功能实现在界面进程里直接跑（`merge.py` / `outinfo.py` / `c_bibtex.py` …） | 一律**起子进程调引擎 CLI**（`engine.py`），界面不复制任何逻辑 |
 | 日志靠 `out_txt.insert(...)` 就地打印 | 逐行读子进程 stdout（`PYTHONUNBUFFERED=1`），**实时**显示，可「停止」 |
-| 7 个标签页各自一套实现 | 3 个功能页 + 1 个设置页；每个功能页对应一个引擎入口 |
+| 7 个标签页各自一套实现 | **9 个标签页**，每页都起子进程调同一个引擎入口（界面里不放文档逻辑） |
 
 **功能已对齐**：mac 版的每一项，本壳都有一页，且都起子进程调同一个引擎入口
 （2026-10-15/16 分三批搬完：合并文件、删除临时文件、编译全部、一校核查、检查tex信息、生成目录）。

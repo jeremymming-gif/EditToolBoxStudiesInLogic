@@ -1,7 +1,7 @@
 name: 构建与发布（macOS + Windows）
 
 # 触发：
-#   · 打 tag（v1.0.0 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
+#   · 打 tag（v1.0.1 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
 #   · 手动 workflow_dispatch → 只跑测试与构建，**不**建 Release（用来验证打包脚本）
 on:
   push:

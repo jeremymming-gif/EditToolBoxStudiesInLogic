@@ -15,6 +15,23 @@
 
 ---
 
+## 下载（编辑部同事看这里）
+
+**<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>** ——
+免安装包；**点进去最上面那个就是当前版本**（版本号也可以在 App 的「设置」页看到）：
+
+| 平台 | 下载哪个 | 首次打开 |
+|---|---|---|
+| Windows | `EditToolBox-<版本>-Windows-x64.zip`（解压后**两个 exe 放在同一个文件夹**） | SmartScreen 蓝屏提示 →「更多信息」→「**仍要运行**」 |
+| macOS（Apple 芯片） | `EditToolBox-<版本>-macOS-arm64.zip` | 双击提示「已损坏，无法打开」→ 右键点 App →「打开」→ 再点「打开」 |
+
+每个版本另附 `FIRST-OPEN-Windows.txt` / `FIRST-OPEN-macOS.txt`（内容同上，照实说明），
+以及 `latest.json`（App 启动时比对它，**只提示、不自动替换**）。
+**两个平台都未做代码签名与公证**（编辑部 2026-10-16 定案），所以首次打开会被系统拦一下 ——
+**不是文件坏了**。写给编辑的完整用法见 [`使用说明.md`](使用说明.md)。
+
+---
+
 ## 快速开始
 
 ### 依赖
@@ -38,15 +55,15 @@ python3 -m pip install --target vendor -r requirements.txt
 open dist/编辑部工具箱.app
 ```
 
-下载来的 `.app` 若被 Gatekeeper 拦（提示「已损坏」），见仓库根 `RELEASING.md` 的说明
-（本应用未做 Apple 签名与公证）。
+下载来的 `.app` 若被 Gatekeeper 拦（提示「已损坏」），见上面的「下载」一节
+（本应用未做 Apple 签名与公证；Release 里的 `FIRST-OPEN-macOS.txt` 也写了这两步）。
 
 ### Windows
 
 ```powershell
 cd sources-win
 pwsh -ExecutionPolicy Bypass -File build-win.ps1
-# 产出：build\dist\SLCNEngine.exe（引擎，三个 CLI 冻成一个）与 build\dist\编辑部工具箱.exe（界面）
+# 产出：build\dist\SLCNEngine.exe（引擎，八个 CLI 冻成一个）与 build\dist\编辑部工具箱.exe（界面）
 ```
 
 ### 命令行（引擎单独用也成）
@@ -80,7 +97,7 @@ Engine/                  引擎（Python，唯一一份逻辑）
 ├── proofcheck.py        一校核查：按《排校手册》《流程化经验书》逐条核查初排稿
 ├── compileall.py        编译一期里所有文章的 .tex（xelatex → biber → xelatex ×2）
 ├── cleantemp.py         删除编译临时文件（不删 .tex / .pdf / .log）
-├── engine_main.py       打包入口：把上面三个 CLI 冻成一个 exe
+├── engine_main.py       打包入口：把上面八个 CLI 冻成一个 exe（`ENTRIES` 要与外壳一致）
 ├── slcn/                解析、规范、bib 判据、AI 任务书与合并等模块
 ├── docs/                GUIDE（用法）/ RULES（判据）/ ENGINE_API（对外壳的契约）
 │                        （内部仓另有 cases/：案例法，含作者信息，不随公开仓发布）

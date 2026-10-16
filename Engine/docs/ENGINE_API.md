@@ -15,14 +15,17 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
 ```text
 <仓库>/Engine/                 ← 唯一一份逻辑（convert.py + checkbib.py + mergepdf.py
                                                  + cleantemp.py + compileall.py + proofcheck.py + slcn/）
-<仓库>/Engine/engine_main.py   ← 打包用：把三个 CLI 冻成**一个** exe 的分发入口（第 89 条）
+<仓库>/Engine/engine_main.py   ← 打包用：把**八个** CLI 冻成**一个** exe 的分发入口（第 89 条）
 <仓库>/Engine/vendor/          ← 随包依赖（pypdf / pypinyin / lxml）
 <仓库>/sources-mac/                ← mac 外壳（SwiftUI）
 <仓库>/sources-win/           ← Windows 外壳（Tkinter，见 §七）
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
-发布形态下这三个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §八·打包）。
+发布形态下这八个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §八·打包）。
+⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-win/engine.py: ENTRIES` **必须逐项一致**：
+漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页）；
+配对守卫在 `sources-win/tests/test_bridge.py` 与 `Engine/tests/test_platform.py` (g) 组。
 引擎**不做源文件自动发现**（`--source` 必填），也**不假设 CWD**（内部一律用绝对路径）。
 
 ```bash
@@ -230,7 +233,9 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
   pyinstaller --onefile --console --name SLCNEngine engine_main.py
   ```
 
-  支持三个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+  支持八个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+  `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`sources-win/build-win.ps1` ②④），
+  自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
   这样用户机器上**不需要装 Python**；界面壳另冻一个 exe，两者放同一目录即可
   （外壳的 `sources-win/engine.py: frozen_engine_exe()` 会先找它）。
 - **Release 资产命名建议**（同一 tag 下）：

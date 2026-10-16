@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """平台中立化（第 86 条）：引擎要在 macOS 与 Windows 上跑同一份逻辑。
 
-这一套钉住六件事，全部是**真跑/真扫**，不是「代码看起来对」：
+这一套钉住七件事，全部是**真跑/真扫**，不是「代码看起来对」：
 
   (a) `utf8_stdio()` —— Windows 的 stdout 默认是控制台代码页（cp936），中文日志经管道
       会乱码甚至 `UnicodeEncodeError` **崩在转换中途**。测试用 `PYTHONIOENCODING=ascii`
@@ -14,7 +14,9 @@
   (e) 版本号只有一处（`slcn/__init__.py`），双平台不许漂移；
   (f) **跨盘符路径**：`paths.rel()` 不许让一句「汇报」把整个转换打断 —— Windows 上
       `os.path.relpath('C:\\…', 'D:\\…')` 会抛 `ValueError: path is on mount 'C:', …`，
-      而调用它的地方全是打印产物路径（案例第 103 条：release 链路 15 次全红的真因）。
+      而调用它的地方全是打印产物路径（案例第 103 条：release 链路 15 次全红的真因）；
+  (g) **打包 dispatcher 的入口表**：`engine_main.ENTRIES` 必须覆盖全部交付 CLI ——
+      漏一个，那个入口在 Windows 包里就是「❌ 不认识的入口」退出 2（v1.0.1 实测坏了 5 页）。
 """
 from __future__ import annotations
 
@@ -308,6 +310,19 @@ for rel_p in DELIVERY:
 check("(f) 交付模块里没有裸的 `os.path.relpath`（跨盘符会抛，统一走 `paths.rel()`）",
       not bad_rel, "; ".join(bad_rel[:6]))
 check("(f) 覆盖面：确实扫到了这些模块", len(DELIVERY) >= 25, f"{len(DELIVERY)} 个文件")
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (g) 打包 dispatcher 的入口表（Windows 包只认表里的入口）──")
+
+import engine_main as _em  # noqa: E402  模块级只定义 ENTRIES/USAGE，没有副作用
+
+CLIS = [f for f in ENTRY_FILES if f != "engine_main.py"]
+check("(g) dispatcher 的 `ENTRIES` 覆盖**全部**交付 CLI"
+      "（漏一个 = 那个入口在 Windows 包里「不认识的入口」退出 2）",
+      set(_em.ENTRIES) == set(CLIS), f"CLI {sorted(CLIS)} ／ dispatcher {sorted(_em.ENTRIES)}")
+check("(g) `ENTRIES` 里每个名字都真的有对应文件（防写错名）",
+      all((ENGINE / e).is_file() for e in _em.ENTRIES),
+      repr([e for e in _em.ENTRIES if not (ENGINE / e).is_file()]))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

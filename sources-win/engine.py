@@ -14,7 +14,8 @@
   `slcn_python()` 依次尝试
     ① 环境变量 `SLCN_PYTHON`
     ② 已经装了 Python 的开发机：`python` / `python3` / Windows 的 `py` 启动器
-    ③ **冻结引擎**：`SLCNEngine.exe`（把三个 CLI 冻成一个 exe，见 `Engine/engine_main.py`）
+    ③ **冻结引擎**：`SLCNEngine.exe`（把八个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
+       本文件的 `ENTRIES` 必须与它的 `ENTRIES` 逐项一致 —— 由 tests/test_bridge.py 守着）
   —— 顺序上「先找真 Python」是因为开发机上改完代码就能验证；发布包走 ③，用户机器上不需要装 Python。
 """
 
@@ -69,7 +70,7 @@ def slcn_python() -> str | None:
 
 
 def frozen_engine_exe() -> str | None:
-    """冻结引擎 exe（`SLCNEngine.exe`）：把三个 CLI 打成一个可执行文件，用户不必装 Python。"""
+    """冻结引擎 exe（`SLCNEngine.exe`）：把八个 CLI 打成一个可执行文件，用户不必装 Python。"""
     env = os.environ.get("SLCN_ENGINE_EXE", "").strip()
     if env and os.path.exists(env):
         return env

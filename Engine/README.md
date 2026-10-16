@@ -2,7 +2,7 @@
 
 把作者提交的 **LaTeX 源文件**或 **Word 文稿**，转换为符合《逻辑学研究》标准的**可编译初排稿**
 （`.tex` + `.bib` + `.pdf`）。引擎是 Python（`convert.py` + `slcn/`），界面是 SwiftUI
-（`sources-mac/`，8 个标签页），构建时引擎被打包进 App 的 `Resources/Engine/`。
+（`sources-mac/`，9 个标签页），构建时引擎被打包进 App 的 `Resources/Engine/`。
 它**只服务「初排」这一个环节**：一校~四校、目录序号前缀（三校/蓝样后才由人工加）、蓝样都不归它管。
 
 **本文件只是入口**：这是什么 → 红线 → 怎么跑 → 该读哪份文档 → 当前状态 → 验收链条 → 维护规则。
@@ -29,7 +29,7 @@ Bo_Chen/
 ```
 
 **仓库地图（目录级）**：`Engine/` 引擎（Python，唯一一份逻辑）｜`sources-mac/` 界面
-（SwiftUI，8 个标签页）｜`Engine/docs/` 文档｜`<期号>目录/` 真实稿件（**只读**）｜
+（SwiftUI，9 个标签页）｜`Engine/docs/` 文档｜`<期号>目录/` 真实稿件（**只读**）｜
 `编辑笔记/` 模板与《排校手册》（规范的权威文本）。
 
 ---
@@ -38,11 +38,14 @@ Bo_Chen/
 
 1. **原稿只读** —— 全程不修改任何作者来稿；`original/` 只是归档副本。产出写在 `out/`（已 gitignore）
    与 `--out` 指定的输出根目录。
-2. **不做任何 git 写操作** —— 禁止 `git add` / `git commit` / `git push`，以及任何改写历史或远端引用的操作。
+2. **稿件仓不做任何 git 写操作** —— 作者来稿所在的 `Studies_in_Logic_Database` 里禁止
+   `git add` / `git commit` / `git push`，以及任何改写历史或远端引用的操作；要动先征得用户同意。
    只读的 `git status` / `git log` / `git diff` / `git rev-parse` 允许用于自查。
-   这条同样约束自动化脚本与 AI 会话，**不要「顺手帮你提交一下」**；产出留在工作区，由仓库所有者决定何时提交。
+   **本仓（工具箱）与笔记仓的口径不同**：会话可以自行提交推送，但要**攒批次**（一轮工作一条提交）、
+   不要频繁推 —— 单点清单见仓库根 `AGENTS.md`「红线（硬约束）」3。
 
-> 原文与完整措辞在 [`docs/GUIDE.md`](docs/GUIDE.md)「三、用法」末节（版本控制红线）。
+> 原文与完整措辞在 [`docs/GUIDE.md`](docs/GUIDE.md)「三、用法」末节（版本控制红线）；
+> 提交节奏与稿件仓的例外见仓库根 `AGENTS.md` 红线 3。
 
 ---
 
@@ -76,7 +79,7 @@ python3 -m pip install --target vendor -r requirements.txt
 **源文件必须显式给（`--source` 必填）**，工具不做自动发现；`run_poc.py` / `corpus.py` 的自动发现
 **只给回归用**。完整参数表、依赖、GUI 各页在干什么、报错对照，见
 [`docs/GUIDE.md`](docs/GUIDE.md) 与 **[`使用说明.md`](../使用说明.md)**（后者是面向编辑的操作手册）。
-GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标签页按编辑流程排（初排转换 → 文献回读校验 → …）。
+GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标签页按编辑流程排（初排转换 → 文献回读校验 → …）。
 
 ---
 
@@ -111,7 +114,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**39 套件 / 1491 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**39 套件 / 1493 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
 `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibreport_note_and_clause` 49
@@ -121,7 +124,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
 `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
 `test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36
-`test_platform` 32 ｜ `test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 28
+`test_platform` 34 ｜ `test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 28
 `test_sep_style` 25 ｜ `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
 
 **普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
@@ -147,7 +150,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 
 **占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 00:43:14`；`HEAD` = `b662baf`；`git status --porcelain` **8** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 01:16:35`；`HEAD` = `37bd967`；`git status --porcelain` **17** 行
 <!-- AUTO:STATE:END -->
 
 ---

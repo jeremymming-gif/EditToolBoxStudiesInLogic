@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -24,7 +25,8 @@ import sys
 import tempfile
 
 SHELL = pathlib.Path(__file__).resolve().parent.parent
-REPO = SHELL.parent.parent
+REPO = SHELL.parent                       # ← 仓根；从前写成 `.parent.parent`（= GitHub/），
+                                          #   于是 (g) 组给的 PYTHONPATH 指到了不存在的目录
 sys.path.insert(0, str(SHELL))
 
 import engine as E  # noqa: E402
@@ -98,7 +100,18 @@ check("(b) 合并：`--folder` + 两个开关",
       c3.entry == "mergepdf.py" and "--folder" in c3.argv
       and "--editors-page" in c3.argv and "--nest-outlines" in c3.argv
       and "--back-cover" not in c3.argv)
-check("(b) 八个入口名字都在 `ENTRIES` 里（打包 dispatcher 认这几个）",
+# ⚠️ 这一条**必须去读打包 dispatcher 的表**：从前只比外壳自己的表 + 一个同名单，
+#    是**假保证** —— 外壳长到 8 个入口、dispatcher 停在 3 个，测试照样绿，
+#    而用户机器上 9 个标签页有 5 个「❌ 不认识的入口」退出 2（2026-10-17 v1.0.1 实测）。
+_SPEC = importlib.util.spec_from_file_location("_engine_main_for_test",
+                                              REPO / "Engine" / "engine_main.py")
+_DISP = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_DISP)
+check("(b) 外壳入口表与**打包 dispatcher** 的 `ENTRIES` 逐项一致"
+      "（少一项 = 那个标签页在用户机器上直接退出 2）",
+      set(E.ENTRIES) == set(_DISP.ENTRIES),
+      f"外壳 {len(E.ENTRIES)} 个 {E.ENTRIES} ／ dispatcher {len(_DISP.ENTRIES)} 个 {_DISP.ENTRIES}")
+check("(b) 八个入口名字都在表里（写错名字 = 同上；2026-10-17 起是八个）",
       set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
                          "cleantemp.py", "compileall.py", "proofcheck.py",
                          "infocheck.py", "toc.py"}, f"{E.ENTRIES}")
