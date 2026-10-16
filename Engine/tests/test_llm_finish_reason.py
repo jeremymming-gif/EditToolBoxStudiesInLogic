@@ -259,7 +259,10 @@ def run_convert(n_entries, script):
         f.write("\n".join(_BIB_TPL.format(i=i, yy=10 + i) for i in range(1, n_entries + 1)))
     BODIES.clear()
     SCRIPT.clear()
-    SCRIPT.extend(script)
+    # 前 n_entries 步分别绑定到 k1..kn（请求体里出现的条目键）：mock 按**内容**匹配，
+    # 与请求顺序/条数无关（纯按序号在 windows-latest 上错位，导致 AI 建议整段消失）。
+    SCRIPT.extend([dict(s, when=f"k{i}") if i <= n_entries else s
+                   for i, s in enumerate(script, start=1)])
     # SLCN_LLM_MAX_TOKENS 明确不设 → 走默认 2048（截断场景的成因要可追溯）；
     # SLCN_LLM_THINKING 也不设 → 请求体不带 thinking（老调用方的字节级兼容由
     # tests/test_llm_thinking_and_reasoning.py 单独断言）
