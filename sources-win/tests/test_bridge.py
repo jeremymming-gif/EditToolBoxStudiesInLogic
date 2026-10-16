@@ -5,11 +5,14 @@
 （那是刻意的设计，见 `engine.py` 开头）。界面只负责「取值 → 调这两个模块 → 显示日志」，
 所以逻辑部分在 mac / Linux / CI 上都能验。
 
-钉住四件事：
+钉住七件事：
   (a) 引擎与解释器的定位顺序（环境变量 → 打包形态 → 开发形态）；
   (b) 拼出来的命令行**与 `Engine/docs/ENGINE_API.md` 的契约一致**（参数名、顺序、布尔开关）；
   (c) **密钥绝不进命令行**（只在环境变量里）；UTF-8 / 无缓冲 / vendor 也都设好；
-  (d) 真跑一次：用桥梁调 `mergepdf.py` 合并一个假期目录，逐行日志能收到、退出码正确。
+  (d) 配置读写：密钥只落本地（**每用户**目录）、界面显示打码、坏 JSON 不炸；
+  (e) 真跑一次：用桥梁调 `mergepdf.py` 合并一个假期目录，逐行日志能收到、退出码正确；
+  (f) 界面文件：语法 / 导入检查（不开窗口）；
+  (g) 真开一次窗口（控件参数写错只有这一步抓得到；缺 tkinter 时 SKIP）。
 """
 from __future__ import annotations
 
@@ -169,7 +172,22 @@ try:
         written = S.save(cfg)
         check("(d) 保存后能读回来", S.load()["api"]["key"] == "sk-abcdefgh", written)
         mode = os.stat(written).st_mode & 0o777
-        check("(d) 权限 0600（里面有密钥）", mode == 0o600, oct(mode))
+        # ⚠️ Windows **没有 POSIX 权限位**：`os.chmod(0o600)` 在那里只退化成「清只读位」，
+        #    `os.stat().st_mode & 0o777` 恒为 0o666 —— 在这里断言 `== 0o600` 只会永远红
+        #    （2026-10-16 实测：windows-latest 上「失败 1 项：(d) 权限 0600」，也正是
+        #    第 101 条修完之后暴露出来的**下一个** Windows 缺陷）。
+        #    真正的保护来自**位置**：`%APPDATA%\<App>\` 的 ACL 默认只给本用户 + SYSTEM +
+        #    Administrators，别的标准用户读不到 —— 这就是 Windows 存放密钥的通行做法。
+        #    所以这里断言两件**在 Windows 上真的成立**的事，而不是假装有 0600
+        #    （第 62 条：假的保证比没有保证更糟）。
+        check("(d) 配置写在**每用户**目录（%APPDATA%）里 —— Windows 的保护来自那里的 ACL，"
+              "没有 POSIX 权限位可言",
+              os.path.isabs(written)
+              and os.path.normcase(written).startswith(os.path.normcase(tmp) + os.sep)
+              and os.path.basename(written) == "settings.json", written)
+        check("(d) 落盘那次 chmod 不该把配置**锁成只读**（只读目标会让 os.replace 失败 → "
+              "配置再也存不进去，正是第 62 条那类「用户以为存上了、其实没有」）",
+              bool(mode & 0o200), oct(mode))
         open(written, "w", encoding="utf-8").write("{ 坏掉的 json")
         check("(d) 配置坏了 → 回默认值，不让界面起不来", S.load()["api"]["key"] == "")
     else:

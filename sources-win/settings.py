@@ -2,8 +2,15 @@
 
 放哪：Windows 用 `%APPDATA%\\EditToolBox\\settings.json`；macOS（开发时）用
 `~/Library/Application Support/EditToolBox/`；其它平台 `~/.config/EditToolBox/`。
-**权限 0600**：里面有 API key —— 与 mac 那套（`~/Library/Application Support/
-cn.edu.sysu.logic.toolbox/ai.json`）同样的口径。
+
+里面有 API key，所以位置与权限都要收紧 —— 但两个平台的"收紧"**不是一回事**：
+
+  · POSIX（mac 开发时 / Linux）：`os.chmod(path, 0o600)` 真的生效，只有本人可读写；
+  · Windows：**没有 POSIX 权限位** —— `os.chmod(0o600)` 在那里只退化成「清只读位」，
+    `st_mode & 0o777` 恒为 0o666。真正的保护来自 `%APPDATA%` 的 ACL（默认只给本用户
+    + SYSTEM + Administrators，别的标准用户读不到），也就是 Windows 存放密钥的通行做法。
+    所以这里**刻意不去改 ACL**：改错了会让配置文件自己读不出来 —— 正是第 62 条那次
+    「用户以为存上了、其实没有」的创伤；位置本身已经够了。
 
 ⚠️ key **只落本地**，不出现在命令行参数里（`engine.env_for_run()` 用环境变量传给引擎），
 界面显示时一律打码。
@@ -79,7 +86,10 @@ def load() -> dict:
 
 
 def save(cfg: dict) -> str:
-    """写配置（0600）。返回写入路径；失败时抛异常，由界面提示。"""
+    """写配置（POSIX 上 0600；Windows 见模块抬头 —— 那里靠 `%APPDATA%` 的 ACL）。
+
+    返回写入路径；失败时抛异常，由界面提示。
+    """
     path = config_path()
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
