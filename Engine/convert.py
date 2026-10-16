@@ -1447,6 +1447,7 @@ def main() -> int:
                   "或命令行 --llm-base/--llm-key/--llm-model、环境变量 SLCN_LLM_*）")
 
     # ⑨ 编译（**放在 ⑪ 之后**：并进 reference.bib 的 AI 结果要体现在 PDF 里）
+    compile_failed = ""
     if args.compile:
         print("\n⑨ 编译")
         ok, info = compile_pdf(out_dir, stem)
@@ -1462,6 +1463,7 @@ def main() -> int:
         else:
             print(f"   ❌ 编译未通过：{info}")
             print("      产物 .tex 已保留，可人工排查后重编。")
+            compile_failed = info
 
     # ⑩ 导出原稿 PDF（供矢量形状人工截图）
     if args.source_pdf and os.path.splitext(source)[1].lower() in (".docx", ".doc"):
@@ -1492,10 +1494,21 @@ def main() -> int:
 
     print()
     print("═" * 74)
-    print(f"完成。产物目录：{out_dir}")
     if args.clean:
         print("   已清理编译中间文件；.log 按 EditToolBox 惯例保留，便于排查问题。")
     print("═" * 74)
+    # ⚠️ 契约行必须是 **stdout 的最后一行**（INVARIANTS 三.3 / ENGINE_API 的表格）——
+    #    从前它后面还跟着一条收尾横幅，于是"最后一行"实际是 `═`（外壳真按最后一行取数就会
+    #    取到横幅；mac 外壳目前是自己记着 `--out` 才没炸）。2026-10-17 逐页体检发现。
+    print(f"完成。产物目录：{out_dir}")
+    if compile_failed:
+        # ⚠️ 契约（`docs/ENGINE_API.md`「退出码」）：**没有 1**；中途某一步失败也算失败、
+        #    一律 2 —— 外壳判「成功」只看 0。从前这里无条件 `return 0`，于是"编译没通过"
+        #    在界面上照样是 ✅ 完成（2026-10-17 逐页体检实测：LaTeX 通道 `--compile`
+        #    xelatex 失败、`PIPESTATUS=0`）。消息按 `die()` 的口径走 stderr；
+        #    stdout 的**最后一行仍是契约行**（INVARIANTS 三.3）。
+        print(f"\n❌ 转换已完成，但 ⑨ 编译未通过（退出码 2）：{compile_failed}", file=sys.stderr)
+        return 2
     return 0
 
 

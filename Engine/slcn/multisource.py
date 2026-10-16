@@ -132,9 +132,14 @@ def _looks_like_symbol_table(text: str) -> bool:
     if len(lines) < 6:
         return False
     short = sum(1 for l in lines if len(l) <= 24)
-    pairs = sum(1 for l in lines if re.search(r"[=＝]|\S+\s{2,}\S+", l))
+    pairs = sum(1 for l in lines if _SYMBOL_PAIR.search(l))
     return short / len(lines) > 0.75 and pairs / len(lines) > 0.5
 
+
+#: 符号表的"两列对照"判据。⚠️ 写成 `\S\s{2,}\S` 而**不是** `\S+\s{2,}\S+`：
+#: 后者在每行 200+ 字符的长行上有二次回溯，单次调用实测 **56.4 ms**，前者 0.73 ms（80×）；
+#: 35 篇真实稿 / 2892 行的判定**完全一致**（0 篇不同）。逐页体检实测（案例第 107 条）。
+_SYMBOL_PAIR = re.compile(r"[=＝]|\S\s{2,}\S")
 
 _ABS = re.compile(r"^\s*(摘\s*要|内容提要|Abstract)\s*[:：]", re.I | re.M)
 _KW = re.compile(r"^\s*(关\s*键\s*词|Key\s*words?)\s*[:：]", re.I | re.M)

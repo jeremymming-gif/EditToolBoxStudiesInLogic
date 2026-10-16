@@ -52,6 +52,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     report_dir = os.path.dirname(report)
 
+    # ⚠️ 先确认"这确实是一份《信息检查》报告"：从前喂错文件（例如把某篇 .tex 当报告）
+    #    会**静默产出两份「第 ? 卷，第 ? 期」的空目录、还退出 0** —— 界面照报 ✅，
+    #    而且产物落在**报告所在目录**（真跑时就是作者目录）。2026-10-17 逐页体检实测
+    #    （体检时我自己就这么误写进稿件库一次，当场恢复）。
+    articles = _toc.list_articles(report)
+    if not articles:
+        print(f"\n❌ 这不是一份能用的《信息检查》报告（解析出 0 篇）：{report}\n"
+              f"   要 `infocheck.py --folder \"<期目录>\"` 生成的那种 .txt；"
+              f"本次**没有生成任何文件**。\n", file=sys.stderr)
+        return 2
+
     settings_path = (os.path.abspath(os.path.expanduser(args.settings)) if args.settings
                      else os.path.join(report_dir, _toc.TocSettings.fileName))
     if args.settings and not os.path.isfile(settings_path):
@@ -80,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         # 否则会出现「清单里勾了 3 篇、生成时只认 2 篇」这种对不上的情况。
         import json
         payload = {
-            "articles": [{"name": n, "title": ti} for n, ti in _toc.list_articles(report)],
+            "articles": [{"name": n, "title": ti} for n, ti in articles],
             "templateNote": _toc.template_source_note(report, settings),
             "columnArticles": settings.columnArticles,
             "columnEnabled": settings.is_column_enabled,

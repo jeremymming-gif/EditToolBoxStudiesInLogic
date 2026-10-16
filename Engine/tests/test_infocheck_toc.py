@@ -363,6 +363,29 @@ else:
 shutil.rmtree(root, ignore_errors=True)
 shutil.rmtree(out, ignore_errors=True)
 
+print("\n── (d) 喂错文件必须**拒绝**，不许静默产出空目录 ──")
+# 2026-10-17 逐页体检实测：`toc.py --report <某篇 .tex>` 会静默生成两份
+# 「第 ? 卷，第 ? 期」的空目录、退出码 0，而且**落在报告所在目录** ——
+# 真跑时那就是作者目录（体检时我自己就这么误写进稿件库一次，当场恢复）。
+bad_dir = tempfile.mkdtemp(prefix="slcn_toc_bad_")
+bad = os.path.join(bad_dir, "main.tex")
+with open(bad, "w", encoding="utf-8") as fh:
+    fh.write("\\documentclass{article}\n\\begin{document}hi\\end{document}\n")
+r = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", bad],
+                   capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   env=os.environ, cwd=ENGINE)
+check("(d) 把 .tex 当报告 → 退出码 2（不是 0）", r.returncode == 2,
+      f"rc={r.returncode}｜{r.stdout.strip()[-70:]}")
+check("(d) 报错说清「要 infocheck 生成的 .txt」", "信息检查" in r.stderr, r.stderr.strip()[-90:])
+check("(d) **一个文件都没生成**（报告所在目录里只有我放进去的那份 .tex）",
+      sorted(os.listdir(bad_dir)) == ["main.tex"], repr(sorted(os.listdir(bad_dir))))
+r2 = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", bad, "--preview"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    env=os.environ, cwd=ENGINE)
+check("(d) `--preview` 同样拒绝（界面预览不能显示成「清单为空」）", r2.returncode == 2,
+      f"rc={r2.returncode}")
+shutil.rmtree(bad_dir, ignore_errors=True)
+
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")

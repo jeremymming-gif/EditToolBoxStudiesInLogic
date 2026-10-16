@@ -97,21 +97,58 @@ class ConvertTab(TabPage):
     instruction = ("使用说明：选作者的稿件（.docx / .doc / .tex），再选一个输出根目录，"
                    "产物会写到「输出目录/<作者名>/」。\n"
                    "勾了「出文献核实任务书」会同时生成《…_文献核实.md》；"
-                   "联网核实需要先在「设置」里填好 API 配置。")
+                   "联网核实需要先在「设置」里填好 API 配置。\n"
+                   "⚠️ 正文里读不出第一作者姓名时（部分 LaTeX 投稿就是这样），**必须**填"
+                   "「输出名」或「作者」，否则引擎会拒绝转换并提示要这两个参数。\n"
+                   "第二行是编辑侧出版信息（卷/期/年/页码…）：不填也能转，但 PDF 页眉会是"
+                   "「xxxx 年第 x 期，1–10」占位，得手工改 .tex。")
 
     def build_options(self, parent: ttk.Frame) -> None:
+        row1 = ttk.Frame(parent)
+        row1.pack(anchor="w")
+        row2 = ttk.Frame(parent)
+        row2.pack(anchor="w", pady=(4, 0))
+
         self.v_compile = tk.BooleanVar(value=True)
         self.v_clean = tk.BooleanVar(value=False)
         self.v_refs = tk.BooleanVar(value=True)
         self.v_srcpdf = tk.BooleanVar(value=False)
-        _check(parent, "编译 PDF", self.v_compile).pack(side="left")
-        _check(parent, "清理临时文件", self.v_clean).pack(side="left")
-        _check(parent, "出文献核实任务书", self.v_refs).pack(side="left")
-        _check(parent, "导出原稿 PDF", self.v_srcpdf).pack(side="left")
+        _check(row1, "编译 PDF", self.v_compile).pack(side="left")
+        _check(row1, "清理临时文件", self.v_clean).pack(side="left")
+        _check(row1, "出文献核实任务书", self.v_refs).pack(side="left")
+        _check(row1, "导出原稿 PDF", self.v_srcpdf).pack(side="left")
+
+        # 「输出名 / 作者」决定产物目录名；正文读不出姓名时它们是**唯一活路**（H1）
+        self.v_name = tk.StringVar(value="")
+        self.v_author = tk.StringVar(value="")
+        ttk.Label(row1, text="输出名").pack(side="left", padx=(14, 2))
+        tk.Entry(row1, textvariable=self.v_name, width=14).pack(side="left")
+        ttk.Label(row1, text="作者").pack(side="left", padx=(8, 2))
+        tk.Entry(row1, textvariable=self.v_author, width=10).pack(side="left")
+
+        # 编辑侧出版信息（与 mac 同页同一组；缺了只是页眉占位，不报错）
+        self.v_vol = tk.StringVar(value="")
+        self.v_issue = tk.StringVar(value="")
+        self.v_year = tk.StringVar(value="")
+        self.v_pages = tk.StringVar(value="")
+        self.v_received = tk.StringVar(value="")
+        self.v_editor = tk.StringVar(value="")
+        self.v_grants = tk.StringVar(value="")
+        for label, var, width in (("卷", self.v_vol, 5), ("期", self.v_issue, 5),
+                                  ("年", self.v_year, 6), ("页码", self.v_pages, 10),
+                                  ("收稿日期", self.v_received, 11),
+                                  ("责任编辑", self.v_editor, 8), ("基金", self.v_grants, 20)):
+            ttk.Label(row2, text=label).pack(side="left", padx=(8, 2))
+            tk.Entry(row2, textvariable=var, width=width).pack(side="left")
 
     def extra_args(self) -> dict:
         return {"compile_pdf": self.v_compile.get(), "clean": self.v_clean.get(),
-                "verify_refs": self.v_refs.get(), "source_pdf": self.v_srcpdf.get()}
+                "verify_refs": self.v_refs.get(), "source_pdf": self.v_srcpdf.get(),
+                "name": self.v_name.get().strip(), "author": self.v_author.get().strip(),
+                "vol": self.v_vol.get().strip(), "issue": self.v_issue.get().strip(),
+                "year": self.v_year.get().strip(), "pages": self.v_pages.get().strip(),
+                "received": self.v_received.get().strip(),
+                "editor": self.v_editor.get().strip(), "grants": self.v_grants.get().strip()}
 
 
 class CheckBibTab(TabPage):
@@ -197,7 +234,15 @@ class InfoCheckTab(TabPage):
         elif notes:
             self.summary.config(text=f"共 {len(arts)} 篇；发现 {len(notes)} 处需要核对：" + "；".join(notes[:3]))
         else:
-            self.summary.config(text=f"共 {len(arts)} 篇，卷号/期号/年份一致，页数与 PDF 实际页数相符。")
+            # ⚠️ 不许"假绿"：有的篇没有可比对的 PDF 页数（PDF 打不开 / 没 PDF）时，
+            #    说「页数与 PDF 实际页数相符」是**撒谎**（实测：坏 PDF 被跳过后这里照样写"相符"）。
+            n_nopdf = sum(1 for a in arts if not a.get("actualPDFPages"))
+            if n_nopdf:
+                self.summary.config(
+                    text=f"共 {len(arts)} 篇，卷号/期号/年份一致；但 {n_nopdf} 篇**没有可比对的**"
+                         " PDF 页数（PDF 缺失或打不开，见日志）——页数一致性未验证。")
+            else:
+                self.summary.config(text=f"共 {len(arts)} 篇，卷号/期号/年份一致，页数与 PDF 实际页数相符。")
 
 
 class TocTab(TabPage):
@@ -251,7 +296,9 @@ class TocTab(TabPage):
             messagebox.showerror(APP_TITLE, str(e))
             return
         proc = subprocess.run(call.argv, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", env=E.env_for_run(None))
+                              errors="replace", env=E.env_for_run(None), timeout=120,
+                              # Windows：与 engine.run_call 同一口径，别弹黑框
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         line = ""
         for candidate in (proc.stdout or "").splitlines():
             if candidate.strip().startswith("{"):
@@ -272,12 +319,16 @@ class TocTab(TabPage):
             if name in saved.get("columnArticles", []):
                 self.listbox.selection_set(tk.END)
         self.note.config(text=payload.get("templateNote", ""))
-        if saved.get("columnKind"):
-            self.v_kind.set(saved.get("columnKind", ""))
-            self.v_cname.set(saved.get("columnName", ""))
-            self.v_cname_en.set(saved.get("columnNameEN", ""))
-            self.v_host.set(saved.get("columnHost", ""))
-            self.v_template.set(saved.get("templateFolder", ""))
+        # ⚠️ **逐字段**回填：从前这一整块被 `if saved.get("columnKind"):` 罩着 ——
+        #    编辑只填了「模板来源期目录」、没填栏目类型时，读篇目**不回填**任何字段，
+        #    紧接着 `save_settings()` 又无条件写回界面上的空值 → 他填的模板期被**静默抹掉**
+        #    （2026-10-17 审计实测：文件里 templateFolder=第4期(89)、columnKind 为空
+        #    → 读篇目后输入框空 → 运行后文件里变 ""）。现在按 key 存在与否逐个回填。
+        for _key, _var in (("columnKind", self.v_kind), ("columnName", self.v_cname),
+                           ("columnNameEN", self.v_cname_en), ("columnHost", self.v_host),
+                           ("templateFolder", self.v_template)):
+            if isinstance(saved.get(_key), str):
+                _var.set(saved[_key])
 
     @staticmethod
     def _settings_path(report: str) -> str:
@@ -420,13 +471,18 @@ class SettingsTab(ttk.Frame):
         text = st.describe()
         if st.problems:
             text += "\n" + "\n".join("· " + p for p in st.problems)
-        text += "\n（这一页改了引擎目录后请重开本程序）"
+        text += "\n（引擎目录改完点「保存」即生效；这一行显示的是当前实际解析到的路径）"
         self.status_label.config(text=text)
 
     def save(self) -> None:
         for key, var in self.vars.items():
             if key == "engineDir":
                 self.cfg["engineDir"] = var.get().strip()
+                # 立刻生效（不用重开）：engine.py 读的就是这个环境变量
+                if self.cfg["engineDir"]:
+                    os.environ["SLCN_ENGINE"] = self.cfg["engineDir"]
+                else:
+                    os.environ.pop("SLCN_ENGINE", None)
             else:
                 self.cfg.setdefault("api", {})[key] = var.get().strip()
         self.cfg.setdefault("api", {})["thinking"] = self.v_thinking.get().strip()
@@ -446,6 +502,13 @@ class MainWindow(tk.Tk):
         self.geometry("820x640+400+120")
         self.title(APP_TITLE)
         self.cfg = S.load()
+        # ⚠️ 设置页的「引擎目录」必须**真的生效**：`engine.py` 只认环境变量 `SLCN_ENGINE`，
+        #    从前这里写进 cfg 却全仓无人读 → 自动定位失败时，双击 exe 的编辑在 GUI 里
+        #    **没有任何自救入口**（他们不会去设环境变量）。2026-10-17 审计实测（M5）。
+        #    用 `setdefault`：显式设过环境变量的人仍然优先，不被界面覆盖。
+        _saved_engine = self.cfg.get("engineDir", "").strip()
+        if _saved_engine:
+            os.environ.setdefault("SLCN_ENGINE", _saved_engine)
         self._proc: subprocess.Popen | None = None
         self._q: queue.Queue[str] = queue.Queue()
         self._busy = False
@@ -491,12 +554,39 @@ class MainWindow(tk.Tk):
                     self._proc = None
                     self._set_busy(False)
                     continue
+                if isinstance(line, tuple) and line[0] == "__REPORT__":
+                    _tag, tab, payload = line
+                    if isinstance(tab, InfoCheckTab):
+                        tab.show_report(payload)
+                    continue
                 self.log(line)
         except queue.Empty:
             pass
         self.after(80, self._drain)
 
     # ── 运行 ──
+    @staticmethod
+    def _info_report_payload(folder: str):
+        """跑完「检查tex信息」后，把最新的那份 `信息检查*.json` 读回来喂表格。
+
+        为什么读文件而不是把 `--preview` 的 stdout 接回来：这一趟**必须**不带
+        `--preview`（要落报告给「生成目录」用），所以结构化结果就在它写的 json 里。
+        """
+        try:
+            files = [f for f in os.listdir(folder)
+                     if f.startswith("信息检查") and f.endswith(".json")]
+        except OSError:
+            return None
+        if not files:
+            return None
+        newest = max((os.path.join(folder, f) for f in files), key=lambda q: os.path.getmtime(q))
+        try:
+            with open(newest, encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            return None
+
     def _call_for(self, tab) -> E.EngineCall:
         path = tab.path()
         if not path:
@@ -508,6 +598,10 @@ class MainWindow(tk.Tk):
                 raise ValueError("没有选输出目录")
             return E.convert_call(source=path, out=out, **opts)
         if isinstance(tab, InfoCheckTab):
+            # ⚠️ 不带 `--preview`：这一次跑还要把《信息检查…txt/.json》落到目录里
+            #    （「生成目录」页要读它）。表格由跑完之后的 `__REPORT__` 那条路填
+            #    —— 从前这里 0 处调用 `show_report()`，于是表格永远「（还没检查）」，
+            #    而引擎那一轮其实跑得好好的（2026-10-17 审计实测，H2）。
             return E.infocheck_call(folder=path)
         if isinstance(tab, TocTab):
             tab.save_settings(path)          # 先把本期设置写进引擎要读的 json
@@ -540,18 +634,39 @@ class MainWindow(tk.Tk):
         except RuntimeError as e:
             messagebox.showerror(APP_TITLE, str(e))
             return
+        except Exception as e:  # noqa: BLE001
+            # ⚠️ 从前只捕 ValueError/RuntimeError：报告目录只读/被占用时（Windows 上
+            #    PermissionError 高发）异常从 `_call_for`（`save_settings` 写 json）直接冒出，
+            #    **点「运行」毫无反应**；发布形态还是 `--noconsole`，连 traceback 都看不见
+            #    （2026-10-17 审计实测，M4）。
+            messagebox.showerror(APP_TITLE, f"准备运行时就出错了：\n{e}")
+            self.log(f"❌ 准备运行失败：{e}")
+            return
         self.log(f"\n▶ {call.label}：{call.display}")
         self._set_busy(True)
-        threading.Thread(target=self._worker, args=(call,), daemon=True).start()
+        # ⚠️ 路径必须在**主线程**里取好再交给工作线程：Tk 控件不能跨线程碰 ——
+        #    在工作线程里调 `tab.path()`（读 Entry）会 `RuntimeError: main thread is not
+        #    in main loop`，worker 当场死掉 ⇒ 界面永远卡在「运行中」。
+        #    这是我自己第一版 H2 修法踩的坑，靠**真驱动一次界面**才抓出来（2026-10-17）。
+        path = tab.path()
+        threading.Thread(target=self._worker, args=(call, tab, path), daemon=True).start()
 
-    def _worker(self, call: E.EngineCall) -> None:
+    def _worker(self, call: E.EngineCall, tab=None, path: str = "") -> None:
         try:
             code = E.run_call(call, on_line=self._q.put, api=self.cfg.get("api"),
                               on_proc=lambda p: setattr(self, "_proc", p))
         except Exception as e:  # noqa: BLE001
             self._q.put(f"❌ 启动失败：{e}")
             code = -1
-        self._q.put(f"{'✅ 完成' if code == 0 else '❌ 失败'}（退出码 {code}）")
+        if code == 0 and isinstance(tab, InfoCheckTab) and path:
+            payload = self._info_report_payload(path)
+            if payload:
+                self._q.put(("__REPORT__", tab, payload))
+        # ⚠️ 退出码 1 在引擎里常常是「有结果」而不是失败（INVARIANTS 三.2）：
+        #    checkbib 并回 / proofcheck 有命中 / compileall 有失败 / toc 只出一份。
+        #    从前一律写「❌ 失败（退出码 1）」，与上一行引擎自己打的「完成。…」自相矛盾
+        #    （2026-10-17 审计实测，H3）。文案与 mac 各页逐字对齐，且在 bridge 里有守卫。
+        self._q.put(f"{E.result_text(call.entry, code)}（退出码 {code}）")
         self._q.put("__DONE__")
 
     def _set_busy(self, busy: bool) -> None:
@@ -565,9 +680,15 @@ class MainWindow(tk.Tk):
     def stop(self) -> None:
         proc = self._proc
         if proc and proc.poll() is None:
-            proc.terminate()
-            self.log("⏹ 已请求停止（引擎会在当前步骤结束后退出）")
-        self._set_busy(False)
+            # ⚠️ 只 `terminate()` 直接子进程是不够的：发布形态里那只是 PyInstaller 的
+            #    bootloader，引擎与它起的 xelatex 都是孙进程 —— 实测按下停止后 xelatex
+            #    又跑了 ~12 秒并写出了 PDF（2026-10-17 审计，M3/W1）。
+            #    忙状态也**不在这里解除**：等 worker 读到管道结束（`__DONE__`）再解除，
+            #    否则会出现「界面已不忙、任务还在写产物目录」，编辑再点一次就有两组 TeX 同写。
+            E.kill_tree(proc)
+            self.log("⏹ 已请求停止（连同它起的 TeX 等子进程一起停；等日志收尾后按钮会恢复）")
+        else:
+            self._set_busy(False)
 
 
 def main() -> int:

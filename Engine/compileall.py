@@ -67,8 +67,23 @@ def main(argv: list[str] | None = None) -> int:
         sub = os.path.join(root, name)
         tex = os.path.join(sub, f"{art}.tex")
         print(f"打开路径：{sub}\n")
+        if not os.path.exists(tex):
+            # ⚠️ 精确名找不到时用**宽松键**再找一遍（只留字母数字、小写）：
+            #    目录名与人写的文件名常常只差一个撇号 —— 2025年第4期(83) 的
+            #    `01 Chao'an_He/` 里文件叫 `Chaoan_He.tex`，精确匹配失败 → 这一篇
+            #    **每期都被静默漏编**（`--dry-run` 只列 6/7，编辑多半不会注意；
+            #    人工补编一次 ≈ 6 秒，但得先发现）。2026-10-17 逐页体检实测。
+            lo = _pm.find_tex(sub, art)
+            if lo:
+                print(f"（宽松匹配）{art} → {os.path.basename(lo)}")
+                tex = lo
         if os.path.exists(tex):
-            targets.append((name, art, tex))
+            # ⚠️ 编译用的 **stem 必须取"真正找到的那个文件"的名字**，不是目录名派生的
+            #    `art`：宽松匹配到 `Chaoan_He.tex` 时若仍拿 `Chao'an_He` 去跑 xelatex，
+            #    找不到文件 → 每期白报一次"编译失败"（我第一版只改了发现、没改编译参数，
+            #    被自己的测试当场抓出来）。精确匹配时两者相同，行为不变。
+            stem = os.path.splitext(os.path.basename(tex))[0]
+            targets.append((name, stem, tex))
         else:
             print(f"没有找到{art}文件！\n")
 
@@ -80,8 +95,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         for name, art, tex in targets:
             print(f"（预演）将编译：{name} → {os.path.basename(tex)}")
+        # ⚠️ 契约行（INVARIANTS 三.3 / ENGINE_API 五）的格式是
+        #    `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）`，**新信息一律新增行** ——
+        #    预演这条说明从前是**接在契约行后面**的，于是"最后一行"不再是文档写的那句
+        #    （2026-10-17 逐页体检发现；外壳只取退出码，所以没炸，但契约就是契约）。
+        print(f"（--dry-run：只列出 {len(targets)} 篇，不真跑 TeX）")
         print()
-        print(f"完成。编译 0 篇（成功 0 / 失败 0）—— --dry-run 只列出 {len(targets)} 篇（目录：{root}）")
+        print(f"完成。编译 0 篇（成功 0 / 失败 0）（目录：{root}）")
         return 0
 
     ok = fail = 0

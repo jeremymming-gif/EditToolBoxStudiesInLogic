@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -116,9 +117,18 @@ def _base_cmd(entry: str) -> list[str] | None:
 def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  clean: bool = False, verify_refs: bool = False,
                  source_pdf: bool = False, bib: str = "", metadata: str = "",
-                 vol: str = "", issue: str = "", year: str = "",
+                 author: str = "", name: str = "",
+                 vol: str = "", issue: str = "", year: str = "", pages: str = "",
+                 received: str = "", editor: str = "", grants: str = "",
                  lang: str = "", extra: str = "") -> EngineCall:
-    """「初排转换」：`convert.py --source … --out …`（参数与 mac 界面一致）。"""
+    """「初排转换」：`convert.py --source … --out …`（参数与 mac 界面一致）。
+
+    ⚠️ `author` / `name` 不是可选项而是**某一类稿件的活路**：正文里读不出第一作者姓名时
+    引擎会退出 2 并要求「请显式指定 --author "陈波" / --name Bo_Chen」——
+    界面若没有这两个输入框，这类稿（本刊真实的 LaTeX 投稿里就有）**整页做不了**
+    （2026-10-17 审计实测：`2026年第5期(90)/03 Liang_Zhang/…/main.tex` 等 2 篇 rc=2）。
+    出版信息（vol/issue/…）缺了不报错，但 PDF 页眉会是「xxxx 年第 x 期，1–10」占位。
+    """
     cmd = _base_cmd("convert.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
@@ -131,7 +141,10 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
         cmd += ["--bib", bib]
     if metadata:
         cmd += ["--metadata", metadata]
-    for flag, val in (("--vol", vol), ("--issue", issue), ("--year", year), ("--lang", lang)):
+    for flag, val in (("--author", author), ("--name", name),
+                      ("--vol", vol), ("--issue", issue), ("--year", year),
+                      ("--pages", pages), ("--received", received),
+                      ("--editor", editor), ("--grants", grants), ("--lang", lang)):
         if val:
             cmd += [flag, val]
     if extra.strip():
@@ -276,6 +289,39 @@ def env_for_run(api: dict | None = None, engine: str | None = None) -> dict:
     return env
 
 
+def kill_tree(proc: subprocess.Popen) -> None:
+    """停任务：杀**整棵**进程树，不只是直接子进程。
+
+    为什么非这样不可（2026-10-17 审计实测）：直接子进程在发布形态里只是 PyInstaller
+    的 bootloader，真正的引擎与它起的 `xelatex` 都是**孙进程** —— 只 `terminate()`
+    会出现「界面已经显示不忙、TeX 还在写产物目录」，编辑再点一次运行就有两组 TeX
+    同写一个目录。POSIX 上实测：按下停止后 xelatex 又跑了 ~12 秒并写出了 PDF。
+
+    Windows 用 `taskkill /T /F`（连子孙一起），POSIX 用 `killpg`（`run_call` 里
+    已 `start_new_session=True`）；两条路都失败才退回 `terminate()`。
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return
+        except OSError:
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            return
+        except (OSError, ProcessLookupError):
+            pass
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+
+
 def run_call(call: EngineCall, *, on_line=None, cwd: str | None = None,
              api: dict | None = None, on_proc=None) -> int:
     """跑一次引擎调用，逐行回调日志；返回退出码（**只看 0 / 非 0**）。
@@ -289,6 +335,8 @@ def run_call(call: EngineCall, *, on_line=None, cwd: str | None = None,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),   # Windows：别弹黑框
+        # POSIX：自成进程组，停止时能整组杀（见 kill_tree）
+        start_new_session=(os.name != "nt"),
     )
     if on_proc:
         on_proc(proc)
@@ -298,6 +346,29 @@ def run_call(call: EngineCall, *, on_line=None, cwd: str | None = None,
             on_line(line.rstrip("\n"))
     proc.wait()
     return proc.returncode
+
+
+#: 退出码 1 在引擎里**常常是"有结果"而不是失败**（`Engine/docs/INVARIANTS.md` 三.2）：
+#: checkbib 并回 = 已并入 ≥1 条、compileall = 有失败、proofcheck = 有命中、toc = 只生成一份。
+#: 外壳**不许**把它显示成错误 —— 这条口径与 mac 各页逐字对齐（`CheckBibFeature.swift` 等）。
+_RESULT_1 = {
+    "checkbib.py": "❗ 体检发现问题 / 已并入，请按报告逐条处理（不是程序出错）",
+    "proofcheck.py": "❗ 有命中项，请按报告逐条处理（不是程序出错）",
+    "compileall.py": "⚠ 有文章编译失败（每篇的错误摘要见上面的日志）",
+    "toc.py": "⚠ 只生成了 1 份目录（另一份见上面的日志）",
+}
+_RESULT_1_DEFAULT = "❗ 完成，但有需要处理的结果（退出码 1，见上面的日志）"
+
+
+def result_text(entry: str, code: int) -> str:
+    """把退出码翻成给编辑看的一句话（H3：1 ≠ 失败）。"""
+    if code == 0:
+        return "✅ 完成"
+    if code == 1:
+        return _RESULT_1.get(entry, _RESULT_1_DEFAULT)
+    if code < 0:
+        return f"❌ 启动失败或被中止（退出码 {code}）"
+    return f"❌ 失败（退出码 {code}）"
 
 
 @dataclass
@@ -315,8 +386,14 @@ class EngineStatus:
     def describe(self) -> str:
         if self.engine_dir is None and self.frozen_exe is None:
             return "❌ 没找到引擎"
-        how = f"冻结引擎 {self.frozen_exe}" if self.frozen_exe else f"Python {self.python}"
-        return f"✅ 引擎目录 {self.engine_dir}；运行方式：{how}"
+        # ⚠️ 冻结形态下 `engine_dir` **本来就是 None**（发布包不带 Engine/ 源码），
+        #    从前照样拼出「引擎目录 None」—— 而那正是发布版设置页的默认画面
+        #    （2026-10-17 审计实测；README 的发布前检查还要求它显示「运行方式：冻结引擎 …」）。
+        if self.frozen_exe and self.engine_dir is None:
+            return f"✅ 运行方式：冻结引擎 {self.frozen_exe}"
+        if self.frozen_exe:
+            return f"✅ 引擎目录 {self.engine_dir}；运行方式：冻结引擎 {self.frozen_exe}"
+        return f"✅ 引擎目录 {self.engine_dir}；运行方式：Python {self.python}"
 
 
 def status() -> EngineStatus:

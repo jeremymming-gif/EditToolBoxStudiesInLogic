@@ -25,8 +25,16 @@ import datetime as _dt
 import os
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from pypdf import PdfReader, PdfWriter
+if TYPE_CHECKING:                       # 只在类型检查时可见
+    from pypdf import PdfReader, PdfWriter
+
+# ⚠️ pypdf 走**延迟导入**（用到才 import，各处 `from pypdf import …` 就地写）：
+#    `compileall` / `toc` / `infocheck` 都 import 本模块拿 `numbered_entries` /
+#    `article_name` / `loose_key`，但**根本不碰 PDF** —— 从前它们跟着白付 46 ms。
+#    实测（2026-10-17）：`toc --preview` 0.07→0.03 s、`compileall --dry-run` 0.07→0.03 s，
+#    **产物与 stdout 逐字节相同**。`infocheck` 自己早就是就地 import 的写法（同一口径）。
 
 #: 一期的期目录下，形如 `01 Liang_Zhang` / `000 目录` 的子目录
 _NUMBERED = re.compile(r"^[0-9][0-9]")
@@ -87,8 +95,39 @@ def resolve_article_pdf(folder: str, name: str) -> tuple[str, str] | None:
     return None
 
 
+def _tex_key(name: str) -> str:
+    """比 `loose_key` 再宽一点：**只留字母数字**（撇号、点、括号、下划线全去掉）再小写。
+
+    为什么要它：`01 Chao'an_He/` 里人写的文件名是 `Chaoan_He.tex`（撇号在文件名里没了）——
+    `loose_key` 只去 `_`/空格/连字符，两边仍然不等。CJK 也算字母数字（`str.isalnum()`），
+    所以中文名不会被抹掉。
+    """
+    return "".join(ch for ch in name if ch.isalnum()).lower()
+
+
+def find_tex(folder: str, art: str) -> str | None:
+    """找这一篇的 `.tex`：**先精确、再宽松**（宽松键见 `_tex_key`）。
+
+    只在精确名不存在时才用宽松匹配（`main.tex` 这类不会误配），供 `compileall` 用。
+    """
+    try:
+        files = sorted(os.listdir(folder))
+    except OSError:
+        return None
+    cands = [f for f in files if f.lower().endswith(".tex")]
+    for f in cands:
+        if os.path.splitext(f)[0] == art:
+            return os.path.join(folder, f)
+    target = _tex_key(art)
+    for f in cands:
+        if _tex_key(os.path.splitext(f)[0]) == target:
+            return os.path.join(folder, f)
+    return None
+
+
 def _page_count(path: str) -> int:
     """页数；读不出来返回 -1（与 mac 外壳的 `?? -1` 一致，**不抛**）。"""
+    from pypdf import PdfReader           # noqa: PLC0415  延迟导入（见文件抬头）
     try:
         return len(PdfReader(path).pages)
     except Exception:  # noqa: BLE001  坏文件不该让整期合并不下去
@@ -234,6 +273,7 @@ class Merger:
     """按顺序拼页面 + 重建书签大纲（语义与 mac 的 `PDFMerger` 一致）。"""
 
     def __init__(self, nest_outlines: bool = False) -> None:
+        from pypdf import PdfWriter           # noqa: PLC0415  延迟导入（见文件抬头）
         self.writer = PdfWriter()
         self.nest_outlines = nest_outlines
         self._top: list[_TopItem] = []
@@ -245,6 +285,7 @@ class Merger:
 
     def _append_pages(self, path: str) -> tuple[int, list[OutlineNode]]:
         """追加一个 PDF 的全部页面，返回 (起始页码, 它自带的大纲)。"""
+        from pypdf import PdfReader           # noqa: PLC0415  延迟导入（见文件抬头）
         reader = PdfReader(path)
         start = self.page_count
         nodes = _collect_outline(reader, start)
@@ -267,6 +308,7 @@ class Merger:
 
     def append_ignoring_outline(self, path: str, title: str) -> int:
         """追加页面并登记书签，但**不导入该文件自带的大纲**（编委页 / 封底）。"""
+        from pypdf import PdfReader           # noqa: PLC0415  延迟导入（见文件抬头）
         reader = PdfReader(path)
         start = self.page_count
         for page in reader.pages:
@@ -457,6 +499,7 @@ def _top_items_of(merger: Merger) -> list[tuple[str, int]]:
 
 def read_outline(path: str) -> list[tuple[str, int]]:
     """读回一个 PDF 的顶层书签 (名字, 页码)，供验收/外壳展示用。"""
+    from pypdf import PdfReader               # noqa: PLC0415  延迟导入（见文件抬头）
     reader = PdfReader(path)
     out: list[tuple[str, int]] = []
     try:

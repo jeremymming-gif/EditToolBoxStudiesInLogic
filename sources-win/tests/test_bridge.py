@@ -147,6 +147,28 @@ check("(b) 一校核查：语种「自动」时不传 `--lang`（交给引擎判
       "--lang" not in E.proofcheck_call(tex="/tmp/x.tex").argv)
 
 # ─────────────────────────────────────────────────────────────────────────
+# H1／H3（2026-10-17 审计的两条高危）在**桥梁层**的回归守卫 —— 不需窗口即可跑
+_c_full = E.convert_call(source="a.docx", out="/tmp/o", author="陈波", name="Bo_Chen",
+                         vol="19", issue="5", year="2026", pages="137-152",
+                         received="2025-09-19", editor="何杨", grants="国社科基金")
+check("(b) convert 能把 `--author/--name` 传下去（正文读不出姓名时，这是这类稿的唯一活路）",
+      "--author" in _c_full.argv and "--name" in _c_full.argv
+      and _c_full.argv[_c_full.argv.index("--author") + 1] == "陈波", _c_full.display[:100])
+check("(b) 编辑侧出版信息七项都能传（缺了 PDF 页眉会是「xxxx 年第 x 期」占位）",
+      all(f in _c_full.argv for f in ("--vol", "--issue", "--year", "--pages",
+                                      "--received", "--editor", "--grants")), _c_full.display[:100])
+# 判据取**不变量的原话**：1 常常是"有结果"，外壳不许把它显示成**错误**（打分 ❌）。
+# 注意 `compileall` 的 rc=1 文案里出现"编译失败"是**准确**的（有文章编译失败），
+# 所以这里不能简单地禁"失败"两个字，而是禁"把它当程序失败"的那一档。
+check("(b) **退出码 1 不许打成 ❌ 失败**（INVARIANTS 三.2：1 常常是「有结果」）",
+      all(not E.result_text(e, 1).startswith("❌")
+          for e in ("proofcheck.py", "checkbib.py", "compileall.py", "toc.py", "convert.py"))
+      and "不是程序出错" in E.result_text("proofcheck.py", 1)
+      and E.result_text("proofcheck.py", 0).startswith("✅")
+      and E.result_text("proofcheck.py", 2).startswith("❌"),
+      f"0→{E.result_text('proofcheck.py', 0)}｜1→{E.result_text('proofcheck.py', 1)}"
+      f"｜2→{E.result_text('proofcheck.py', 2)}")
+
 print("\n── (c) 环境变量：UTF-8 + 无缓冲 + vendor + **密钥不进 argv** ──")
 API = {"base": "https://api.example.com", "key": "sk-1234567890", "model": "m-1",
        "thinking": "off", "maxTokens": "4096", "webSearch": True}
@@ -328,6 +350,15 @@ check("(f) 保留了原版的中文交互（浏览/运行/停止 + 底部日志�
       all(k in src for k in ("浏览", "运行", "停止", "运行日志")))
 check("(f) 界面线程与工作线程分开（Tkinter 不是线程安全的，日志靠队列回传）",
       "threading.Thread" in src and "queue.Queue" in src and "after(" in src)
+# ⚠️ 下面三条是 2026-10-17 审计抓到的真缺陷的守卫 —— 从前的"守卫"是假的
+#    （例如只断言 `E.infocheck_call(` 在 main.py 里出现过，而 `show_report` 是死代码）。
+check("(f) 「检查tex信息」的表格**真的有人填**（`show_report` 从前全仓 0 处调用 = 表格永远空）",
+      src.count("show_report(") >= 2 and "_info_report_payload" in src,
+      f"show_report 出现 {src.count('show_report(')} 次")
+check("(f) 初排转换页有「输出名 / 作者」输入框（缺了这类 LaTeX 稿整页做不了）",
+      "输出名" in src and "v_author" in src and "v_name" in src)
+check("(f) 停止走**整棵进程树**（只 terminate 直接子进程时，xelatex 会继续写产物目录）",
+      "E.kill_tree(" in src and "def kill_tree" in (SHELL / "engine.py").read_text(encoding="utf-8"))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (g) 真开一次窗口（控件参数写错只有这一步抓得到）──")
@@ -353,20 +384,47 @@ tkpy = _tk_python()
 if tkpy is None:
     print("SKIP  (g) 本机没有带 tkinter 的解释器（Windows 上跑得到）")
 else:
+    # 给 (g) 用的合成期目录：一篇文章的 tex（不含 PDF —— 页数那条另有诚实化断言）
+    gdir = tempfile.mkdtemp(prefix="slcn_bridge_issue_")
+    gart = os.path.join(gdir, "01 A_Author")
+    os.makedirs(gart, exist_ok=True)
+    with open(os.path.join(gart, "A_Author.tex"), "w", encoding="utf-8") as fh:
+        fh.write("\\documentclass{article}\n\\begin{document}\n"
+                 "\\myvolnumber{19}\\myissnumber{5}\\mypubyear{2026}\n"
+                 "\\title{测试题名}\\author{张三}\n\\maketitle\n正文。\n\\end{document}\n")
+
     prog = textwrap.dedent("""
-        import os, sys
+        import os, sys, time
         sys.path.insert(0, os.getcwd())
         import main as M
         app = M.MainWindow()
         tabs = [app.tab_control.tab(i, "text") for i in range(len(app.tab_control.tabs()))]
         app.log("自检：写一行日志")
-        app.after(700, app.destroy)
-        app.mainloop()
+        app.update()
+        # ⚠️ **真跑一次**「检查tex信息」：走界面真实代码路径（`start` → 工作线程 → 队列 → 填表）。
+        #    这条守的是 H2：从前 `show_report` 是死代码、表格永远是「（还没检查）」，
+        #    而静态断言（只查 `E.infocheck_call(` 出现过）**根本抓不到**。
+        d = os.environ.get("SLCN_BRIDGE_TEST_DIR", "")
+        if d:
+            app.info_tab.entry.insert(0, d)
+            app.start(app.info_tab)
+            t0 = time.time()
+            while app._busy and time.time() - t0 < 90:
+                app.update()
+                time.sleep(0.05)
+            app.update()
+            rows = app.info_tab.table.get_children()
+            lines = [l for l in app.output.get("1.0", "end").splitlines() if l.strip()]
+            print("表格行数=%d" % len(rows))
+            print("结束行=" + (lines[-1] if lines else ""))
+            print("顶部提示=" + app.info_tab.summary.cget("text"))
+        app.destroy()
         print("窗口建成")
         print("标签页：" + "|".join(tabs))
     """)
     env2 = dict(os.environ)
     env2["PYTHONPATH"] = str(REPO / "Engine" / "vendor")
+    env2["SLCN_BRIDGE_TEST_DIR"] = gdir
     r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env=env2, cwd=str(SHELL), timeout=180)
     out = r.stdout or ""
@@ -379,6 +437,16 @@ else:
         check("(g) 九个标签页都在（含新增的检查tex信息 / 生成目录）",
               "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|删除临时文件|设置"
               in out, out.strip()[-160:])
+        check("(g) **真跑一次「检查tex信息」→ 表格被填上**（H2 回归守卫：修之前恒为 0 行）",
+              "表格行数=1" in out,
+              [l for l in out.splitlines() if l.startswith("表格行数")])
+        check("(g) 结束行是「✅ 完成（退出码 0）」（H3：文案由 `E.result_text` 统一给）",
+              "结束行=✅ 完成（退出码 0）" in out,
+              [l for l in out.splitlines() if l.startswith("结束行")])
+        check("(g) 没有可比对的 PDF 页数时，顶部提示**不许**说「相符」（不许假绿）",
+              "未验证" in out or "相符" not in out,
+              [l for l in out.splitlines() if l.startswith("顶部提示")])
+    shutil.rmtree(gdir, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

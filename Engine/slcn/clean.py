@@ -41,6 +41,15 @@ def matches(name: str) -> bool:
     return any(low.endswith(s.lower()) for s in CLEAN_SUFFIXES)
 
 
+#: **永不进入**的目录名（小写比较）：`original/` 是作者来稿归档，红线是"只读"
+#: （`docs/INVARIANTS.md` 一.1、仓库根 `AGENTS.md` 红线 1）。
+#: 为什么非拦不可：清理器的后缀表里有 `.bbl` / `.out` / `.bcf` 这些 ——
+#: 作者交 LaTeX 稿时 `original/` 里**真的可能有同名文件**，删掉就是丢作者的东西。
+#: 2026-10-17 在真期目录上实测：`--dry-run` 列出 5 个待删文件，其中 **3 个在 `original/` 里**
+#: （清一色 `.DS_Store`）—— 那已经是在动"只读"目录了。
+SKIP_DIRS = ("original",)
+
+
 def clean(
     root: str,
     log: Callable[[str], None] | None = None,
@@ -58,7 +67,9 @@ def clean(
         return 0, []
 
     deleted: list[str] = []
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 红线：`original/` 一律不进（剪掉分支，等于整棵子树都不看）
+        dirnames[:] = [d for d in dirnames if d.lower() not in SKIP_DIRS]
         for fname in filenames:
             if not matches(fname):
                 continue

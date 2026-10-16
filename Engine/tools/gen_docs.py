@@ -396,7 +396,15 @@ def main(argv: list[str] | None = None) -> int:
                       "按设计不参与校验）")
             else:
                 print("PASS  AUTO 块与现算结果逐字一致")
-            return 0 if all_ok else 1
+            # ⚠️ `--check` 只回答"块过期了吗"。`all_ok` 里还混着一条**本机状态**：
+            #    「App 包内一致性」（`app_block()`）—— 它自己写着"不参与校验"，
+            #    却曾经让 --check 退出 1：于是同一屏里既 `PASS 块一致` 又 `exit=1`，
+            #    读的人（和另一个 AI 会话）会当成"文档数字过期"去查错方向。
+            #    现在它只作为**提示**出现，退出码只看块是否过期（2026-10-17）。
+            if not all_ok:
+                print("提示  块本身一致；另有 ❌ 项只与**本机构建状态**有关"
+                      "（多半是包内引擎过期）—— 跑一次 `./build.sh` 即可，不影响 --check 的结论")
+            return 0
         print("FAIL  AUTO 块已过期（README 里的是旧数字）—— 跑 `tools/gen_docs.py` 更新")
         # ⚠️ diff 要打**归一化后**的文本：否则会把"按设计不参与校验"的行也列出来，
         #    真正的问题反而被淹没（2026-10-16 在 CI 上就是被这条误导了一轮）。
@@ -413,7 +421,8 @@ def main(argv: list[str] | None = None) -> int:
         after_head, after, after_tail = split_block(read_readme())
         assert (head, tail) == (after_head, after_tail), "块外内容被改动了 —— 这是 bug"
         print("PASS  已就地更新 AUTO 块（块外内容逐字节未动）")
-    print(f"      退出码提示：{'各项检查通过' if all_ok else '有 ❌ 项，见块内'}")
+    print(f"      退出码提示：{'各项检查通过' if all_ok else '有 ❌ 项，见块内'}"
+          f"{'' if all_ok else '（若只有「App 包内一致性」是 ❌，跑 ./build.sh 即可）'}")
     return 0 if all_ok else 1
 
 
