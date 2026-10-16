@@ -297,6 +297,14 @@ def environment_complete() -> tuple[bool, list[str]]:
     """
     import shutil as _sh
 
+    # ⚠️ 必须把 `Engine/` 挂进 sys.path：本项目平时靠 `PYTHONPATH="$PWD/vendor"` 跑，
+    #    那种情况下 `from slcn import paths` 会 ModuleNotFoundError → 探测"失败" →
+    #    永远走宽松模式 → **AUTO 块过期也报 PASS**（2026-10-16 实测：README 写 38 套件/1465 断言，
+    #    实际 39/1483，一直没人发现）。这行是"严格校验真的生效"的前提。
+    _engine_dir = str(Path(__file__).resolve().parents[1])
+    if _engine_dir not in sys.path:
+        sys.path.insert(0, _engine_dir)
+
     missing: list[str] = []
     try:
         from slcn import paths as _p
@@ -370,8 +378,8 @@ def main(argv: list[str] | None = None) -> int:
         old_cmp = normalize_for_check(old, lenient)
         new_cmp = normalize_for_check(new_body, lenient)
         if lenient:
-            print(f"（本次为宽松校验：缺 {'、'.join(missing)}，"
-                  "测试计数与依赖稿件库的数字不参与比对）")
+            print(f"⚠️  宽松校验（缺 {'、'.join(missing)}）：测试计数与依赖稿件库的数字**不参与比对**；"
+                  "本机要拿到严格校验，请让稿件库可发现（设 SLCN_MANUSCRIPTS 或把两仓并排放）")
         if old_cmp == new_cmp:
             if old != new_body:
                 print("PASS  AUTO 块与现算结果一致（差异只在本机状态那几行——"

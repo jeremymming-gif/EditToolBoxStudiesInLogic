@@ -454,30 +454,49 @@ struct SettingsTab: View {
 
     // MARK: - 这一项用在哪 / 引擎侧对应关系
 
+    // ── 从 usage 拆出（第 101 条）：三段 `Text("…" + "…" + …)` 的长拼接让旧版 Swift 编译器
+    //    类型检查超时（CI macos-14 报 unable to type-check ... in reasonable time）。
+    //    文本原样搬进 `String` 属性，视图体里只剩一个名字 —— 渲染逐字节相同。
+
+    /// usage 第 1 段：转换命令会带上什么、密钥怎么传、AI 建议写到哪里。
+    private var usageCommandText: String {
+        "「初排转换」页 → 勾选「用 AI 处理参考文献」→ 转换命令会带上 "
+        + "--verify-refs 与 --llm-base/--llm-model；"
+        + "**密钥不进命令行**，而是通过环境变量 SLCN_LLM_KEY 传给子进程"
+        + "（argv 在 ps 里对同机所有用户可见，环境变量不会）。"
+        + "AI 建议写进同目录的《…_文献核实.md》，标为「AI 建议（须人工核实）」。"
+    }
+
+    /// usage 第 2 段：引擎侧的等价参数与环境变量（界面里填的值优先）。
+    private var usageEngineParamsText: String {
+        "引擎侧等价参数：--llm-base / --llm-key / --llm-model；"
+        + "也可用环境变量 SLCN_LLM_BASE / SLCN_LLM_KEY / SLCN_LLM_MODEL"
+        + "（界面里填的值优先于环境变量）。--llm-key 保留给命令行手工调用。"
+        + "上面两个旋钮走环境变量 SLCN_LLM_THINKING / SLCN_LLM_MAX_TOKENS"
+        + "（勾了 AI 开关才会设置）。"
+    }
+
+    /// usage 第 3 段：第 69/70 条那几个开关的命令行与环境变量，含手工验证端点。
+    private var usageAdvancedParamsText: String {
+        "第 69 条的两个开关也走命令行：通道 → `--llm-protocol chat|responses`"
+        + "（也可用环境变量 SLCN_LLM_PROTOCOL）；联网检索 → `--llm-web-search`"
+        + "（也可用环境变量 SLCN_LLM_WEB_SEARCH=1）。第 70 条的两个高级旋钮同理："
+        + "`--llm-search-tool` / `--llm-responses-path`"
+        + "（也可用环境变量 SLCN_LLM_SEARCH_TOOL / SLCN_LLM_RESPONSES_PATH）。"
+        + "**默认值/留空时不加任何参数**：命令行与从前逐字节相同。"
+        + "想手工验证端点支不支持检索，可以跑：\n"
+        + "    python3 -m slcn.llm --probe --base <地址> --model <模型> --json\n"
+        + "（退出码 0 支持 / 1 不支持 / 2 其他错误；密钥用 SLCN_LLM_KEY，别写进命令行。）"
+    }
+
     private var usage: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("这些设置用在哪里").font(.callout).bold()
-            Text("「初排转换」页 → 勾选「用 AI 处理参考文献」→ 转换命令会带上 "
-                 + "--verify-refs 与 --llm-base/--llm-model；"
-                 + "**密钥不进命令行**，而是通过环境变量 SLCN_LLM_KEY 传给子进程"
-                 + "（argv 在 ps 里对同机所有用户可见，环境变量不会）。"
-                 + "AI 建议写进同目录的《…_文献核实.md》，标为「AI 建议（须人工核实）」。")
+            Text(usageCommandText)
                 .font(.caption).foregroundStyle(.secondary)
-            Text("引擎侧等价参数：--llm-base / --llm-key / --llm-model；"
-                 + "也可用环境变量 SLCN_LLM_BASE / SLCN_LLM_KEY / SLCN_LLM_MODEL"
-                 + "（界面里填的值优先于环境变量）。--llm-key 保留给命令行手工调用。"
-                 + "上面两个旋钮走环境变量 SLCN_LLM_THINKING / SLCN_LLM_MAX_TOKENS"
-                 + "（勾了 AI 开关才会设置）。")
+            Text(usageEngineParamsText)
                 .font(.caption).foregroundStyle(.tertiary)
-            Text("第 69 条的两个开关也走命令行：通道 → `--llm-protocol chat|responses`"
-                 + "（也可用环境变量 SLCN_LLM_PROTOCOL）；联网检索 → `--llm-web-search`"
-                 + "（也可用环境变量 SLCN_LLM_WEB_SEARCH=1）。第 70 条的两个高级旋钮同理："
-                 + "`--llm-search-tool` / `--llm-responses-path`"
-                 + "（也可用环境变量 SLCN_LLM_SEARCH_TOOL / SLCN_LLM_RESPONSES_PATH）。"
-                 + "**默认值/留空时不加任何参数**：命令行与从前逐字节相同。"
-                 + "想手工验证端点支不支持检索，可以跑：\n"
-                 + "    python3 -m slcn.llm --probe --base <地址> --model <模型> --json\n"
-                 + "（退出码 0 支持 / 1 不支持 / 2 其他错误；密钥用 SLCN_LLM_KEY，别写进命令行。）")
+            Text(usageAdvancedParamsText)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.tertiary)
             Text("转换引擎：\(ConvertFeature.locateTool() ?? "未找到 Engine/convert.py")")
