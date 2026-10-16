@@ -66,6 +66,8 @@ def _read_artifact(out_dir: str, name: str, proc=None) -> str:
         with open(path, encoding="utf-8", errors="replace") as fh:
             return fh.read()
 
+    print(f"[DIAG] artifact_missing path={path} "
+          f"rc={getattr(proc, 'returncode', '?')}")
     print(f"  ⚠️ 没找到产物：{path}")
     if proc is not None:
         print(f"     convert.py 退出码：{getattr(proc, 'returncode', '?')}")
@@ -323,6 +325,14 @@ if proc.stdout.count("返回被 max_tokens 截断") != 1:
     for _b in BODIES:
         _s = json.dumps(_b, ensure_ascii=False)
         _keys.append([k for k in ("k1", "k2", "k3", "k4", "k5", "k6") if k in _s])
+    # ⚠️ 诊断行用**纯 ASCII** 打头：中文诊断在 `gh run view --log-failed | grep` 里匹配不稳，
+    #    排查 CI 时白费过两轮。ASCII 标记 + 数值，永远 grep 得到。
+    _md_path = os.path.join(out_dir, "San_Zhang_文献核实.md")
+    print(f"[DIAG] bodies={len(BODIES)} keys={_keys}")
+    print(f"[DIAG] convert rc={proc.returncode} stdout_len={len(proc.stdout or '')} "
+          f"stderr_len={len(proc.stderr or '')} md_exists={os.path.isfile(_md_path)} "
+          f"md_len={len(md)} has_ai_section={'AI 建议' in md}")
+    print(f"[DIAG] out_dir_files={sorted(os.listdir(out_dir))[:12] if os.path.isdir(out_dir) else 'NO_DIR'}")
     print(f"  [诊断] mock 收到 {len(BODIES)} 次请求，各次命中的条目键：{_keys}")
     # ⚠️ stderr 也要看：引擎的 `[llm] 调用失败：…` 全部走 stderr（上一版只过滤 stdout → 什么都看不到）
     for _label, _text in (("stdout", proc.stdout), ("stderr", proc.stderr)):
