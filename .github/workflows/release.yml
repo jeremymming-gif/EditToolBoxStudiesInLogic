@@ -38,17 +38,19 @@ jobs:
       # ⚠️ 只跑**不依赖稿件库**的套件：本仓（公开的工具仓）里没有作者稿件，
       #    依赖真实稿件的断言都自带 SKIP（见各套件里的 `缺真实稿件` 分支）。
       #    全库回归（corpus.py / docx_audit.py）留在稿件仓里跑，它们要 132 份源稿。
+      #
+      # ⚠️ 这里**不写行内循环**，而是复用 `Engine/tools/run_engine_tests.sh`（唯一一份逻辑）：
+      #    旧写法 `python "$f" | tail -3` 有两处致命伤（案例第 101 条）——
+      #      ① `tail -3` 把每套的 stdout 砍到最后 3 行，且管道要等进程结束才吐，
+      #         套件打印的诊断（`[DIAG] …`）**一次都没进过 CI 日志**；
+      #      ② `set -e` + GitHub 默认的 pipefail 在第一套红时就退出 ——
+      #         排在 test_llm_finish_reason 之后的 17 套在 Windows 上**从来没跑过**。
+      #    改后：40 套全跑完，红的套件连完整日志一起贴出来（SLCN_DUMP_RED_LOGS=1）。
       - name: 引擎套件（不依赖稿件库的部分）
         shell: bash
-        run: |
-          set -e
-          cd Engine
-          # 跑**全部**套件（此前只列了 8 个，新加的套件不会在这里被拦住）。
-          # 需要稿件库/TeX/LibreOffice 的用例自带跳过判据，缺就 SKIP，不会误报。
-          for f in tests/test_*.py; do
-            echo "── $f"
-            python "$f" | tail -3
-          done
+        env:
+          SLCN_DUMP_RED_LOGS: "1"
+        run: bash Engine/tools/run_engine_tests.sh full
 
       - name: Windows 外壳（桥梁）测试
         shell: bash

@@ -45,6 +45,8 @@ from slcn import llm  # noqa: E402
 
 FAILS = []
 BODIES = []          # mock 端点收到的请求体（解析后）
+SERVED = []          # mock **实际**给出的响应（哪一步夹具 + 什么 finish）—— 只为诊断，不参与断言
+LAST_ENV = {}        # run_convert() 给子进程的环境（只留 SLCN_/PYTHON_ 前缀，供诊断）
 SCRIPT = []          # 逐步响应脚本（dict）：
 #   200 → {"status": 200, "content": str, "finish": <任意值>, "usage": dict|None}
 #         省略 "finish" 键 = 响应里**压根没有** finish_reason（老端点行为）
@@ -96,6 +98,71 @@ def check(name, cond, detail=""):
         FAILS.append(name)
 
 
+def _diag_convert(tag, proc, md, out_dir):
+    r"""把一次端到端运行（③④⑤）的**全部现场**打到 stderr，供 CI 判读。
+
+    三条纪律，都是踩出来的（案例第 101 条）：
+
+    1. **必须走 stderr**：CI 里这一步的 stdout 被 `| tail -3` 接走、且管道要等进程结束才吐，
+       15 次 windows 运行里所有 `[DIAG]` 就是这么消失的。stderr 不过管道，能活着出来。
+    2. **整段只用 ASCII**（标签也是，数据一律过 `ascii()`，**不用 `repr()`**）：`repr()` 把非 ASCII
+       原样输出，控制台编码一坏就再也对不上；`ascii()` 把中文转成 `\u26a0`、把乱码转成
+       `\xe2\x9a\xa0` —— 「文案真的不同」与「stdout 编码坏了」因此可以当场区分（正是要判的那件事）。
+       标签写 ASCII 还顺带免掉一种自杀：控制台是 cp1252 时打印中文会 `UnicodeEncodeError`。
+    3. **诊断自己绝不许把套件带崩**：上一版这里用了 `run_convert()` 的局部变量 `out_dir`，
+       一进诊断分支就 `NameError` —— 诊断没出来，后面的 ④⑤ 全部没跑，白烧了十几轮 CI。
+       所以下面整段包在 try/except 里。
+    """
+    try:
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+        md = md or ""
+        keys = []
+        for b in BODIES:
+            s = json.dumps(b, ensure_ascii=False)
+            keys.append([k for k in ("k1", "k2", "k3", "k4", "k5", "k6") if k in s])
+        files = sorted(os.listdir(out_dir))[:12] if os.path.isdir(out_dir) else "NO_DIR"
+        lines = [
+            f"tag={tag} os={os.name} py={sys.version.split()[0]} exe={sys.executable}",
+            f"rc={proc.returncode} stdout_len={len(out)} stderr_len={len(err)} md_len={len(md)}",
+            f"bodies={len(BODIES)} keys={keys}",
+            f"served={SERVED}",
+            f"n_cut_warn={out.count('返回被 max_tokens 截断')} n_jieduan={out.count('截断')}",
+            f"has_step11={'⑪ 生成参考文献核实任务书' in out} "
+            f"has_llm={'已配置 LLM' in out} has_progress_k1={'[1/2] k1' in out} "
+            f"has_tokens={'tokens 11+7' in out} has_done={'完成。产物目录' in out}",
+            f"md_has_ai={'AI 建议' in md} md_has_cut={'AI-CUT-K1' in md} "
+            f"md_has_ok={'AI-OK-K2' in md}",
+            f"out_dir_files=" + ascii(files),
+            f"child_env={sorted(LAST_ENV.items())}",
+        ]
+        _say = lambda s: print("[DIAG] " + s, file=sys.stderr)      # noqa: E731
+        _say(f"==== {tag} DIAG begin (pure ascii; \\u = CJK ok, \\x = real mojibake) ====")
+        for l in lines:
+            _say(l)
+        _say("stdout_head=" + ascii(out[:300]))
+        _say("stdout_tail=" + ascii(out[-400:]))
+        _say("stderr_tail=" + ascii(err[-400:]))
+        if len(out) <= 8000:
+            _say("stdout_full=" + ascii(out))
+        if BODIES:
+            _m = BODIES[0].get("messages")
+            _p = ""
+            if isinstance(_m, list) and _m and isinstance(_m[-1], dict):
+                _p = str(_m[-1].get("content", ""))
+            _say(f"req0_top_keys={sorted(BODIES[0].keys())} req0_prompt_tail=" + ascii(_p[-300:]))
+        _say(f"==== {tag} DIAG end ====")
+        sys.stderr.flush()
+    except Exception as e:                                        # 诊断自己出错也不许带崩套件
+        print(f"[DIAG] tag={tag} diag_self_error={ascii(e)}", file=sys.stderr)
+
+
+def _dump_if_failed(tag, proc, md, out_dir, fails_before):
+    """本场景里出现了新的 FAIL 就把完整现场打出来（每个场景最多一次）。"""
+    if len(FAILS) > fails_before:
+        _diag_convert(tag, proc, md, out_dir)
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -134,6 +201,10 @@ class H(BaseHTTPRequestHandler):
             if step.get("usage") is not None:
                 body["usage"] = step["usage"]
         raw = json.dumps(body).encode("utf-8")
+        # 诊断用（不参与任何断言）：这一请求**实际**拿到了哪一步夹具、什么 finish、什么状态码。
+        # 没有它就无法区分「mock 压根没被调到」与「调到了但回的不是那一份夹具」。
+        SERVED.append({"when": step.get("when", "-"), "status": status,
+                       "finish": step.get("finish", "<absent>")})
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
@@ -153,6 +224,7 @@ def call(**step):
     """只放一步脚本，跑一次 `chat()`，返回内容。"""
     SCRIPT.clear()
     BODIES.clear()
+    SERVED.clear()
     SCRIPT.append(step)
     return llm.chat(cfg, "SYS", "USER", timeout=10)
 
@@ -165,6 +237,7 @@ def poison():
     """
     SCRIPT.clear()
     BODIES.clear()
+    SERVED.clear()
     SCRIPT.append({"status": 200, "content": "CUT", "finish": "length", "usage": USAGE})
     assert llm.chat(cfg, "SYS", "USER", timeout=10) == "CUT"
     assert llm.LAST_FINISH == "length", repr(llm.LAST_FINISH)
@@ -212,6 +285,7 @@ def fail_case(label, step, do_call, expect):
 def _run(step, config=None):
     SCRIPT.clear()
     BODIES.clear()
+    SERVED.clear()
     SCRIPT.append(step)
     return llm.chat(config or cfg, "SYS", "USER", timeout=5)
 
@@ -262,10 +336,25 @@ _BIB_TPL = """@article{{k{i},
 # 告警行与任务书里的标记行：与 convert.py ⑪ 的文案逐字对应（改了文案就必须改这里）
 WARN_CORE = "⚠ k1：返回被 max_tokens 截断（finish_reason=length），本条**不完整**，建议调大 SLCN_LLM_MAX_TOKENS 或人工核实"
 MARK = "> ⚠️ 本条 AI 返回被截断（finish_reason=length），内容不完整。"
+AI_HEAD = "AI 建议（**须人工核实**，工具不保证正确）"
+
+
+def _ai_section(md: str) -> str:
+    """取任务书里「AI 建议」那一段（含头部）；**找不到就返回空串，绝不抛异常**。
+
+    为什么非这样不可：Windows 上 ③ 的症状恰恰是「AI 建议整段消失」——若这里写
+    `md.index(...)`，缺段时抛 ValueError，会把后面的 ④⑤ 一起带走（第 101 条）。
+    """
+    i = md.find(AI_HEAD)
+    return md[i:] if i >= 0 else ""
 
 
 def run_convert(n_entries, script):
-    """在临时目录里跑一次真实 convert.py --verify-refs，返回 (proc, 产物目录)。"""
+    """在临时目录里跑一次真实 convert.py --verify-refs，返回 (proc, 产物文本, 产物目录)。
+
+    ⚠️ 产物目录**必须一起返回**：上一版只返回 (proc, md)，而这里的 `out_dir` 是局部变量 ——
+    ③A 的诊断分支在模块级引用它，一进去就 `NameError`（案例第 101 条）。
+    """
     tmp = tempfile.mkdtemp(prefix="slcn_finishtest_")
     tex = os.path.join(tmp, "main.tex")
     bib = os.path.join(tmp, "refs.bib")
@@ -274,6 +363,7 @@ def run_convert(n_entries, script):
     with open(bib, "w", encoding="utf-8") as f:
         f.write("\n".join(_BIB_TPL.format(i=i, yy=10 + i) for i in range(1, n_entries + 1)))
     BODIES.clear()
+    SERVED.clear()
     SCRIPT.clear()
     # 步数与条目数**一致**时才把第 i 步绑定到第 i 个条目键（mock 按内容匹配 → 与请求顺序无关）；
     # 不一致（如只给一步脚本的场景）就整份保持纯序号：否则会出现"错配但内容恰好相同"的巧合绿。
@@ -287,6 +377,9 @@ def run_convert(n_entries, script):
     env = {k: v for k, v in os.environ.items()
            if k not in ("SLCN_LLM_JSON", "SLCN_LLM_MAX_TOKENS", "SLCN_LLM_THINKING")}
     env["PYTHONPATH"] = os.pathsep.join([_ENGINE, os.path.join(_ENGINE, "vendor")])
+    LAST_ENV.clear()
+    LAST_ENV.update({k: v for k, v in env.items()
+                     if k.startswith("SLCN_") or k.startswith("PYTHON")})
     proc = subprocess.run(
         [sys.executable, os.path.join(_ENGINE, "convert.py"),
          "--source", tex, "--out", os.path.join(tmp, "outroot"), "--bib", bib,
@@ -302,14 +395,15 @@ def run_convert(n_entries, script):
     )
     out_dir = os.path.join(tmp, "outroot", "San_Zhang")
     md = _read_artifact(out_dir, "San_Zhang_文献核实.md", proc)
-    return proc, md
+    return proc, md, out_dir
 
 
 # ③ 截断场景：k1 被 max_tokens 截断（半条 bibtex），k2 正常收尾。
 #    断言「按条标注」：只标 k1，不许把整期都标成截断，也不许一条都不标。
 _CUT_K1 = "@article{k1,\n  title = {AI-CUT-K1},\n"          # 故意没有收尾的 }
 _OK_K2 = "@article{k2,\n  title = {AI-OK-K2},\n}"
-proc, md = run_convert(2, [
+_f0 = len(FAILS)
+proc, md, out_dir = run_convert(2, [
     {"status": 200, "content": _CUT_K1, "finish": "length", "usage": USAGE},
     {"status": 200, "content": _OK_K2, "finish": "stop", "usage": USAGE},
 ])
@@ -318,36 +412,12 @@ check("③A convert.py 正常结束（截断不改变退出码、不影响出稿
 check("③A stdout 恰好一条截断告警，含条目号 / finish_reason / 调整建议",
       proc.stdout.count("返回被 max_tokens 截断") == 1 and WARN_CORE in proc.stdout,
       repr([l for l in proc.stdout.splitlines() if "截断" in l]))
-# ── 诊断（只在 ③A 出问题时打印）：一眼区分三种完全不同的原因 ──
-#    mock 收到 0 次 → AI 那步没跑；1 次 → 引擎只查了一条；2 次 → 都查了，问题在响应处理。
-if proc.stdout.count("返回被 max_tokens 截断") != 1:
-    _keys = []
-    for _b in BODIES:
-        _s = json.dumps(_b, ensure_ascii=False)
-        _keys.append([k for k in ("k1", "k2", "k3", "k4", "k5", "k6") if k in _s])
-    # ⚠️ 诊断行用**纯 ASCII** 打头：中文诊断在 `gh run view --log-failed | grep` 里匹配不稳，
-    #    排查 CI 时白费过两轮。ASCII 标记 + 数值，永远 grep 得到。
-    _md_path = os.path.join(out_dir, "San_Zhang_文献核实.md")
-    print(f"[DIAG] bodies={len(BODIES)} keys={_keys}")
-    print(f"[DIAG] convert rc={proc.returncode} stdout_len={len(proc.stdout or '')} "
-          f"stderr_len={len(proc.stderr or '')} md_exists={os.path.isfile(_md_path)} "
-          f"md_len={len(md)} has_ai_section={'AI 建议' in md}")
-    print(f"[DIAG] out_dir_files={sorted(os.listdir(out_dir))[:12] if os.path.isdir(out_dir) else 'NO_DIR'}")
-    print(f"  [诊断] mock 收到 {len(BODIES)} 次请求，各次命中的条目键：{_keys}")
-    # ⚠️ stderr 也要看：引擎的 `[llm] 调用失败：…` 全部走 stderr（上一版只过滤 stdout → 什么都看不到）
-    for _label, _text in (("stdout", proc.stdout), ("stderr", proc.stderr)):
-        _hit = [l for l in (_text or "").splitlines()
-                if any(w in l for w in ("核实", "llm", "AI", "截断"))][-15:]
-        print(f"  [诊断] 引擎 {_label} 里与 AI/核实/截断 相关的行（末 {len(_hit)} 行）：")
-        for _l in _hit:
-            print("         " + _l)
-    print(f"  [诊断] 产物里有没有「AI 建议」段：{'AI 建议' in md}")
 check("③A 未被截断的 k2 不告警（判据按条读，不能整期一把）",
       proc.stdout.count("截断") == 1 and "⚠ k2" not in proc.stdout, repr(proc.stdout.count("截断")))
 _mark_at = md.find(MARK)      # detail 里也要用，且不能因为「没找到」就抛异常（那会假崩）
 # ⚠️ 顺序断言只能在**追加的建议块**里做：任务书本身（`_refmark.build` 生成的正文）里
 #    也有 `## \`k1\`` / `## \`k2\`` 两节，拿全文 index 比会把建议块之前的位置也算进来。
-_tail = md[md.index("AI 建议（**须人工核实**，工具不保证正确）"):]
+_tail = _ai_section(md)
 _h1, _h2, _m = _tail.find("## `k1`"), _tail.find("## `k2`"), _tail.find(MARK)
 check("③A 任务书里恰好一处截断标记，且落在 k1 一节内（不误伤 k2）",
       md.count(MARK) == 1 and -1 < _h1 < _m < _h2,
@@ -358,16 +428,18 @@ check("③A 标记在**该条建议正文之前**（引用行 → 空行 → 建
 check("③A 截断的那条仍然保留（只标注、不丢弃——编辑要能看到已给的部分）",
       "AI-CUT-K1" in md and "AI-OK-K2" in md, "")
 check("③A 任务书结构与「须人工核实」标注照旧",
-      "AI 建议（**须人工核实**，工具不保证正确）" in md and "## `k1`" in md, "")
+      AI_HEAD in md and "## `k1`" in md, "")
 check("③A 逐条 tokens 与收尾汇总未被改坏",
       proc.stdout.count("tokens 11+7") == 2
       and "共 2 次调用，22 prompt + 14 completion tokens" in proc.stdout, "")
 check("③A max_tokens 仍按默认 2048 发出（截断的成因可追溯：告警里指向的就是这个旋钮）",
       len(BODIES) == 2 and all(b.get("max_tokens") == 2048 for b in BODIES),
       repr([b.get("max_tokens") for b in BODIES]))
+_dump_if_failed("3A", proc, md, out_dir, _f0)
 
 # ④ 正常场景（finish_reason=stop）：告警与标记都不许出现，建议照旧追加
-proc, md = run_convert(2, [{"status": 200, "content": _OK_K2, "finish": "stop", "usage": USAGE}])
+_f4 = len(FAILS)
+proc, md, out_dir = run_convert(2, [{"status": 200, "content": _OK_K2, "finish": "stop", "usage": USAGE}])
 check("④A convert.py 正常结束", proc.returncode == 0, (proc.stderr or proc.stdout)[-200:])
 check("④A finish_reason=stop → stdout 一句截断告警都没有",
       "截断" not in proc.stdout and "不完整" not in proc.stdout,
@@ -376,10 +448,12 @@ check("④A finish_reason=stop → 任务书里没有截断标记",
       MARK not in md and "截断" not in md, repr([l for l in md.splitlines() if "截断" in l]))
 check("④A 建议照旧追加、汇总照旧（正常路径零影响）",
       md.count("AI-OK-K2") == 2 and "共 2 次调用，22 prompt + 14 completion tokens" in proc.stdout, "")
+_dump_if_failed("4A", proc, md, out_dir, _f4)
 
 # ④B 老端点：响应里没有 finish_reason / 显式空串 / 非字符串值 → 都不误报，且不失败
 #     （空串是「端点没给」的归一结果，**不是** unclean：这条通道要能继续接老端点）
-proc, md = run_convert(3, [
+_f4b = len(FAILS)
+proc, md, out_dir = run_convert(3, [
     {"status": 200, "content": _OK_K2, "usage": USAGE},                 # 无 finish_reason 键
     {"status": 200, "content": _OK_K2, "finish": "", "usage": USAGE},   # 显式空串
     {"status": 200, "content": _OK_K2, "finish": 5, "usage": USAGE},    # 非字符串
@@ -390,6 +464,7 @@ check("④B 缺字段 / 空串 / 非字符串 → convert.py 仍正常结束（�
 check("④B 缺字段 / 空串 / 非字符串 → 不误报（告警与标记都不出现，建议照旧追加）",
       "截断" not in proc.stdout and "未正常结束" not in proc.stdout
       and MARK not in md and "未正常结束" not in md and md.count("AI-OK-K2") == 3, "")
+_dump_if_failed("4B", proc, md, out_dir, _f4b)
 
 # ⑤ 其余「不干净收尾」：每条一个取值，一次运行全测掉——既验证中文文案映射，
 #    也验证标记是**按条**落在各自的块里（不是整期一把）。
@@ -409,7 +484,8 @@ for _k, _fr, _why in _UNCLEAN:
         _MARKS[_k] = (f"> ⚠️ 本条 AI 返回未正常结束——{_why}"
                       f"（finish_reason={_fr}），内容可能不完整。")
 
-proc, md = run_convert(6, [
+_f5 = len(FAILS)
+proc, md, out_dir = run_convert(6, [
     {"status": 200, "content": f"@article{{{k},\n  title = {{AI-UNCLEAN-{k}}},\n",
      "finish": fr, "usage": USAGE}
     for k, fr, _why in _UNCLEAN
@@ -430,7 +506,7 @@ check("⑤ length 仍走既有「截断」文案（k6；编辑已认识那句，
 check("⑤ 「截断」这个词只在 length 那一条出现（别的成因不许被误说成截断）",
       proc.stdout.count("截断") == 1 and md.count("截断") == 1,
       f"stdout={proc.stdout.count('截断')} md={md.count('截断')}")
-_tail5 = md[md.index("AI 建议（**须人工核实**，工具不保证正确）"):]
+_tail5 = _ai_section(md)
 _order_ok, _detail = True, []
 for _i, (_k, _fr, _why) in enumerate(_UNCLEAN):
     _h = _tail5.find(f"## `{_k}`")
@@ -448,6 +524,7 @@ check("⑤ 六条建议一条都没丢（只标注、不丢弃）",
 check("⑤ 逐条 tokens 与收尾汇总未被改坏",
       proc.stdout.count("tokens 11+7") == 6
       and "共 6 次调用，66 prompt + 42 completion tokens" in proc.stdout, "")
+_dump_if_failed("5", proc, md, out_dir, _f5)
 
 srv.shutdown()
 print()

@@ -20,8 +20,17 @@
 #
 # 解释器：优先 /opt/homebrew/bin/python3.14，找不到回落 python3；依赖走 PYTHONPATH=vendor。
 # 退出码：红 0 套 → 0；否则 = 红的套数（非 0）。
+#
+# CI 用：`SLCN_DUMP_RED_LOGS=1 bash tools/run_engine_tests.sh full`
+#   红的套件会把**完整**日志（stdout+stderr）贴出来，不只是 FAIL 行。
+#   为什么非这样不可：2026-10-16 的 release.yml 用的是 `python "$f" | tail -3`，
+#   15 次 windows 运行里套件打印的全部诊断都被 `tail -3` 吃掉，**而且** `set -e`+pipefail
+#   在第一套红时就退出 —— 排在 test_llm_finish_reason 之后的 17 套在 Windows 上从来没跑过。
+#   这个脚本从设计上就是「跑完全部套件、逐套留日志」，CI 复用它才是唯一一份逻辑。
 set -uo pipefail
 
+# `-h` 要读自己的抬头：必须在 cd 之前把自身路径**绝对化**（cd 之后 $0 的相对路径就找不到自己了）
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.." || exit 2                     # → Engine/
 if [ ! -d tests ]; then
   echo "❌ 找不到 tests/：本脚本要住在 Engine/tools/ 下（现在 cd 到了 ${PWD}）" >&2
@@ -32,8 +41,10 @@ if [ -x /opt/homebrew/bin/python3.14 ]; then
   PY=/opt/homebrew/bin/python3.14
 elif command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3)"                         # 回落：老 mac / Linux / CI
+elif command -v python >/dev/null 2>&1; then
+  PY="$(command -v python)"                          # Windows 的 Git Bash 只有 python.exe
 else
-  echo "❌ 既没有 /opt/homebrew/bin/python3.14，也没有 python3" >&2
+  echo "❌ 既没有 /opt/homebrew/bin/python3.14，也没有 python3 / python" >&2
   exit 2
 fi
 export PYTHONPATH="$PWD/vendor"
@@ -41,8 +52,8 @@ export PYTHONPATH="$PWD/vendor"
 MODE="${1:-full}"
 case "$MODE" in
   quick|full) ;;
-  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) echo "用法：bash tools/run_engine_tests.sh [quick|full]（默认 full）" >&2; exit 2 ;;
+  -h|--help) sed -n '2,29p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  *) echo "用法：bash tools/run_engine_tests.sh [quick|full]（默认 full；CI 加 SLCN_DUMP_RED_LOGS=1）" >&2; exit 2 ;;
 esac
 
 # quick 档白名单（名字同上 tests/<name>.py；按字母序）。每一行的理由都是**核实过的**：
@@ -114,6 +125,13 @@ for f in "${FILES[@]}"; do
     printf '  %-4s %-34s %s｜%s\n' "FAIL" "$name" "$why" "${last:-（没有输出）}"
     # 红在哪：把这套自己的 FAIL 行直接贴出来（最多 8 行），省得再手工重跑一遍
     grep -E '^[[:space:]]*FAIL\b' "$log" | head -8 | sed 's/^/         /'
+    # CI 要看**完整**日志：套件自己的诊断（比如 test_llm_finish_reason 的 [DIAG]）
+    # 大多打在最后 3 行之外，只贴 FAIL 行等于没贴。
+    if [ "${SLCN_DUMP_RED_LOGS:-0}" = "1" ]; then
+      echo "         ──────── $name 完整日志（$(wc -l < "$log" | tr -d ' ') 行）────────"
+      sed 's/^/         /' "$log"
+      echo "         ──────── $name 完整日志结束 ────────"
+    fi
   fi
 done
 

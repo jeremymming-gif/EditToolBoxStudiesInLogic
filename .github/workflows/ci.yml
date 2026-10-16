@@ -34,17 +34,9 @@ jobs:
         working-directory: Engine
         run: python tests/test_docs_consistency.py
       - name: 全部套件
-        working-directory: Engine
-        run: |
-          bad=0
-          for f in tests/test_*.py; do
-            last="$(python "$f" 2>&1 | tail -1)"
-            case "$last" in
-              *"失败 0 项"*|*"0 FAIL"*|*"全部 PASS"*) ;;
-              *) echo "::error file=Engine/$f::$last"; bad=1 ;;
-            esac
-          done
-          exit $bad
+        env:
+          SLCN_DUMP_RED_LOGS: "1"
+        run: bash Engine/tools/run_engine_tests.sh full
       - name: 案例索引是否过期（没有笔记仓时自动跳过）
         run: python tools/gen_case_index.py --check
 
