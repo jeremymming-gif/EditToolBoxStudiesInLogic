@@ -316,6 +316,19 @@ check("③A convert.py 正常结束（截断不改变退出码、不影响出稿
 check("③A stdout 恰好一条截断告警，含条目号 / finish_reason / 调整建议",
       proc.stdout.count("返回被 max_tokens 截断") == 1 and WARN_CORE in proc.stdout,
       repr([l for l in proc.stdout.splitlines() if "截断" in l]))
+# ── 诊断（只在 ③A 出问题时打印）：一眼区分三种完全不同的原因 ──
+#    mock 收到 0 次 → AI 那步没跑；1 次 → 引擎只查了一条；2 次 → 都查了，问题在响应处理。
+if proc.stdout.count("返回被 max_tokens 截断") != 1:
+    _keys = []
+    for _b in BODIES:
+        _s = json.dumps(_b, ensure_ascii=False)
+        _keys.append([k for k in ("k1", "k2", "k3", "k4", "k5", "k6") if k in _s])
+    print(f"  [诊断] mock 收到 {len(BODIES)} 次请求，各次命中的条目键：{_keys}")
+    print("  [诊断] 引擎 stdout 里与 AI/核实/截断 相关的行（末 15 行）：")
+    for _l in [l for l in proc.stdout.splitlines()
+               if any(w in l for w in ("核实", "llm", "AI", "截断"))][-15:]:
+        print("         " + _l)
+    print(f"  [诊断] 产物里有没有「AI 建议」段：{'AI 建议' in md}")
 check("③A 未被截断的 k2 不告警（判据按条读，不能整期一把）",
       proc.stdout.count("截断") == 1 and "⚠ k2" not in proc.stdout, repr(proc.stdout.count("截断")))
 _mark_at = md.find(MARK)      # detail 里也要用，且不能因为「没找到」就抛异常（那会假崩）
