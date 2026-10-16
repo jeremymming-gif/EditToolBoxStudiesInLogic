@@ -284,9 +284,13 @@ for out in snap_outs:
     if not frozen.is_file():
         check(f"(b2) 快照 {name} 存在", False, "跑 SLCN_FREEZE_GOLDEN=1 生成一次")
         continue
-    check(f"(b2) `{name}` 与冻结快照**逐字节一致**",
-          frozen.read_bytes() == body,
-          f"{len(body)} 字节" if frozen.read_bytes() == body else
+    # ⚠️ 行尾归一化（与下面报告快照同一理由）：Windows 上夹具是 CRLF，生成物跟着带 CRLF，
+    #    与 mac 上冻结的快照不同。产物给 XeLaTeX 读，行尾无害 —— 要守的是内容。
+    #    2026-10-16：上一版只改了报告快照那一处，windows 仍红在**目录**这一处（两个循环）。
+    _nl = lambda b: b.replace(b"\r\n", b"\n")
+    check(f"(b2) `{name}` 与冻结快照一致（行尾归一化后）",
+          _nl(frozen.read_bytes()) == _nl(body),
+          f"{len(body)} 字节" if _nl(frozen.read_bytes()) == _nl(body) else
           f"快照 {len(frozen.read_bytes())} vs 现算 {len(body)}")
 
 # 报告产物（txt + json）同样冻成快照：第 96 条把「检查tex信息」也切到引擎后，
