@@ -101,7 +101,7 @@ def check(name, cond, detail=""):
 def _diag_convert(tag, proc, md, out_dir):
     r"""把一次端到端运行（③④⑤）的**全部现场**打到 stderr，供 CI 判读。
 
-    三条纪律，都是踩出来的（案例第 101 条）：
+    三条纪律，都是踩出来的（案例第 102 条）：
 
     1. **必须走 stderr**：CI 里这一步的 stdout 被 `| tail -3` 接走、且管道要等进程结束才吐，
        15 次 windows 运行里所有 `[DIAG]` 就是这么消失的。stderr 不过管道，能活着出来。
@@ -343,7 +343,7 @@ def _ai_section(md: str) -> str:
     """取任务书里「AI 建议」那一段（含头部）；**找不到就返回空串，绝不抛异常**。
 
     为什么非这样不可：Windows 上 ③ 的症状恰恰是「AI 建议整段消失」——若这里写
-    `md.index(...)`，缺段时抛 ValueError，会把后面的 ④⑤ 一起带走（第 101 条）。
+    `md.index(...)`，缺段时抛 ValueError，会把后面的 ④⑤ 一起带走（第 102 条）。
     """
     i = md.find(AI_HEAD)
     return md[i:] if i >= 0 else ""
@@ -353,7 +353,7 @@ def run_convert(n_entries, script):
     """在临时目录里跑一次真实 convert.py --verify-refs，返回 (proc, 产物文本, 产物目录)。
 
     ⚠️ 产物目录**必须一起返回**：上一版只返回 (proc, md)，而这里的 `out_dir` 是局部变量 ——
-    ③A 的诊断分支在模块级引用它，一进去就 `NameError`（案例第 101 条）。
+    ③A 的诊断分支在模块级引用它，一进去就 `NameError`（案例第 102 条）。
     """
     tmp = tempfile.mkdtemp(prefix="slcn_finishtest_")
     tex = os.path.join(tmp, "main.tex")

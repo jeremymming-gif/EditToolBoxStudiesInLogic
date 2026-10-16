@@ -42,7 +42,7 @@ def rel(path: str, start: str | None = None) -> str:
     `ValueError: path is on mount 'C:', start on mount 'D:'`。调用它的地方几乎都是**汇报**
     （「⑦ 写出文件」把产物路径打给编辑看），于是一句汇报就把整个转换打断：
     2026-10-16 windows-latest 上 `%TEMP%` 在 C:、仓库在 D: → `convert.py` 退出 2，
-    release 链路 15 次运行全红（案例第 101 条）。编辑真会遇到同一个坑：
+    release 链路 15 次运行全红（案例第 103 条）。编辑真会遇到同一个坑：
     工具装在 C:、稿件与产物放 D:。
 
     判据（**行为保持**）：同盘符时与 `os.path.relpath` 逐字节相同（POSIX 上永远走不到

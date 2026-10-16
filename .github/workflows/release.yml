@@ -40,7 +40,7 @@ jobs:
       #    全库回归（corpus.py / docx_audit.py）留在稿件仓里跑，它们要 132 份源稿。
       #
       # ⚠️ 这里**不写行内循环**，而是复用 `Engine/tools/run_engine_tests.sh`（唯一一份逻辑）：
-      #    旧写法 `python "$f" | tail -3` 有两处致命伤（案例第 101 条）——
+      #    旧写法 `python "$f" | tail -3` 有两处致命伤（案例第 102 条）——
       #      ① `tail -3` 把每套的 stdout 砍到最后 3 行，且管道要等进程结束才吐，
       #         套件打印的诊断（`[DIAG] …`）**一次都没进过 CI 日志**；
       #      ② `set -e` + GitHub 默认的 pipefail 在第一套红时就退出 ——

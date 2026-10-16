@@ -14,7 +14,7 @@
   (e) 版本号只有一处（`slcn/__init__.py`），双平台不许漂移；
   (f) **跨盘符路径**：`paths.rel()` 不许让一句「汇报」把整个转换打断 —— Windows 上
       `os.path.relpath('C:\\…', 'D:\\…')` 会抛 `ValueError: path is on mount 'C:', …`，
-      而调用它的地方全是打印产物路径（案例第 101 条：release 链路 15 次全红的真因）。
+      而调用它的地方全是打印产物路径（案例第 103 条：release 链路 15 次全红的真因）。
 """
 from __future__ import annotations
 
@@ -83,6 +83,33 @@ r = child("import sys, io; sys.path.insert(0, '.'); from slcn import platform as
           "sys.stdout = io.StringIO(); P.utf8_stdio(); print('没有 reconfigure 也不许抛')")
 check("(a) 稳健：stdout 被换成没有 reconfigure 的对象时**不抛异常**",
       r.returncode == 0, f"rc={r.returncode} {r.stderr[-100:]!r}")
+
+# 端到端：**打包入口** `engine_main.py` 也必须扛得住窄编码控制台。
+# 它曾经漏了 utf8_stdio() —— `SLCNEngine.exe --version` 在 cp1252 上直接
+# `UnicodeEncodeError: 'charmap' codec can't encode characters in position 5-6`
+# 崩掉（2026-10-16 windows-latest 打包自检实测；本机用 PYTHONIOENCODING=ascii
+# 复现出**同一处**（engine_main.py 的 51 行）、同一个 "position 5-6"）。
+# 为什么单测它不可省：这个入口在 mac 上平时不会被跑到，而它正是用户双击的那个 exe。
+r = child("import subprocess, sys;"
+          "p = subprocess.run([sys.executable, 'engine_main.py', '--version'], capture_output=True);"
+          "print('rc', p.returncode, '| has_unicode_error', b'UnicodeEncodeError' in p.stderr,"
+          "      '| out', len(p.stdout))",
+          {"PYTHONIOENCODING": "ascii", "PYTHONUTF8": "0"})
+check("(a) `engine_main.py --version` 在窄编码控制台下不崩、且版本号打得出来",
+      r.returncode == 0 and b"rc 0" in r.stdout and b"has_unicode_error False" in r.stdout
+      and b"out 0" not in r.stdout, r.stdout.decode(errors="replace")[:90])
+
+# 静态守卫：**每一个**交付入口都要调 utf8_stdio()，别只修被抓到的那一个。
+ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "compileall.py",
+               "cleantemp.py", "infocheck.py", "toc.py", "engine_main.py"]
+_missing = []
+for _f in ENTRY_FILES:
+    _ok = any(isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "utf8_stdio"
+              for n in ast.walk(ast.parse((ENGINE / _f).read_text(encoding="utf-8"))))
+    if not _ok:
+        _missing.append(_f)
+check(f"(a) {len(ENTRY_FILES)} 个交付入口**全部**调了 utf8_stdio()（漏一个就是一处崩溃）",
+      not _missing, "; ".join(_missing))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (b) file_uri：LibreOffice 的 -env:UserInstallation 只认 URI ──")

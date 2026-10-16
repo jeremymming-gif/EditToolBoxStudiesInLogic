@@ -59,16 +59,26 @@ struct SettingsTab: View {
 
     // MARK: - 标题与厂商无关说明
 
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var headerText: String {
+        "本刊**不预设厂商**：凡提供 OpenAI 兼容接口的服务都能用 —— "
+        + "DeepSeek / OpenAI / 通义 / Moonshot / 智谱，"
+        + "以及本机/自建端点（LM Studio 等，它们都提供 OpenAI 兼容端点）。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var headerText2: String {
+        "不配置也能用：「初排转换」照常生成《文献核实任务书》，"
+        + "编辑把它交给自己的 AI 即可；配了则额外自动预跑一遍。"
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("AI 设置（可选）").font(.title3).bold()
-            Text("本刊**不预设厂商**：凡提供 OpenAI 兼容接口的服务都能用 —— "
-                 + "DeepSeek / OpenAI / 通义 / Moonshot / 智谱，"
-                 + "以及本机/自建端点（LM Studio 等，它们都提供 OpenAI 兼容端点）。")
+            Text(headerText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("不配置也能用：「初排转换」照常生成《文献核实任务书》，"
-                 + "编辑把它交给自己的 AI 即可；配了则额外自动预跑一遍。")
+            Text(headerText2)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -89,6 +99,12 @@ struct SettingsTab: View {
 
     // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiPresetText: String {
+        "只填「API 地址 + 模型名」（**不碰密钥**），字段仍可自由编辑；"
+        + "模型名会变，请以服务商文档为准。"
+    }
+
     private var aiPresetSection: some View {
         Group {
             // ---------- 预设：只是填表快捷方式，填完照样能改 ----------
@@ -103,8 +119,7 @@ struct SettingsTab: View {
                 .frame(maxWidth: 260)
                 .onChange(of: preset.choice) { _, newValue in apply(newValue) }
             }
-            Text("只填「API 地址 + 模型名」（**不碰密钥**），字段仍可自由编辑；"
-                 + "模型名会变，请以服务商文档为准。")
+            Text(aiPresetText)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -113,6 +128,25 @@ struct SettingsTab: View {
 
     // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiProfilesText: String {
+        "方案 = 地址 / 密钥 / 模型名 / 通道 / 检索 / 思考模式 / 输出上限 **一整套**。"
+        + "选中一个会把它填进下面的输入框（**还要点「保存」才生效**，与「转换时用当前值」一致）。"
+        + "「保存」时若「方案名」非空，就存成那一份（**同名覆盖**，不会越存越多）。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiProfilesText2: String {
+        "留空 = 只更新「当前配置」（与从前一样）；填了就会在下拉里多出一份，"
+        + "下次打开 App 还在。⚠️ 方案里**含密钥**，与当前配置写在同一个 0600 文件里。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiProfilesText3: String {
+        "OpenAI 兼容的 base URL，**要带服务商的版本路径**"
+        + "（如 https://api.deepseek.com/v1；不含 /chat/completions，本工具会自动补上）"
+    }
+
     private var aiProfilesSection: some View {
         Group {
             // ---------- 第 82 条：保存过的配置方案（多套之间来回换） ----------
@@ -136,9 +170,7 @@ struct SettingsTab: View {
                 .controlSize(.small)
                 .disabled(settings.aiSelectedProfile.isEmpty)
             }
-            Text("方案 = 地址 / 密钥 / 模型名 / 通道 / 检索 / 思考模式 / 输出上限 **一整套**。"
-                 + "选中一个会把它填进下面的输入框（**还要点「保存」才生效**，与「转换时用当前值」一致）。"
-                 + "「保存」时若「方案名」非空，就存成那一份（**同名覆盖**，不会越存越多）。")
+            Text(aiProfilesText)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -147,8 +179,7 @@ struct SettingsTab: View {
                 TextField("例如：DeepSeek 云端 / 本机 Ollama", text: $settings.aiProfileName)
                     .textFieldStyle(.roundedBorder)
             }
-            Text("留空 = 只更新「当前配置」（与从前一样）；填了就会在下拉里多出一份，"
-                 + "下次打开 App 还在。⚠️ 方案里**含密钥**，与当前配置写在同一个 0600 文件里。")
+            Text(aiProfilesText2)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -159,8 +190,7 @@ struct SettingsTab: View {
                 TextField("https://api.deepseek.com/v1", text: $settings.aiBase)
                     .textFieldStyle(.roundedBorder)
             }
-            Text("OpenAI 兼容的 base URL，**要带服务商的版本路径**"
-                 + "（如 https://api.deepseek.com/v1；不含 /chat/completions，本工具会自动补上）")
+            Text(aiProfilesText3)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -191,6 +221,27 @@ struct SettingsTab: View {
 
     // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiChannelText: String {
+        "`chat`（默认）= `{地址}/chat/completions`，请求体与从前**逐字节相同**；"
+        + "`responses` = `{地址}/responses`（标准 Responses API）——"
+        + "**只有它**才有「服务端检索工具」这个概念。"
+        + "⚠️ Responses 的路径是 `{地址}/responses`：DeepSeek 文档给的 base 是 "
+        + "https://api.deepseek.com（不带 /v1），OpenAI 要带 /v1，按服务商文档填。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiChannelText2: String {
+        "勾上 = 转换时给端点加 `tools:[{\"type\":\"web_search\"}]`，并要求模型**先查官方来源**、"
+        + "把实际打开的页面 URL 写成每条上方的 `% 来源：…`；查不到的字段照旧省略并写 "
+        + "`% ⚠ 待核实：…`（铁律不变：**只写来源确认过的值**）。\n"
+        + "⚠️ **勾了不等于查到了**：DeepSeek 官方兼容性表把 Responses 的 `web_search` 列为"
+        + "「**忽略**」的内置工具（不报错、也不检索；其官方新闻亦写明「API 暂不支持搜索功能」）。"
+        + "所以请点上面的「测试连接 / 体检」，看 **⑤ 检索探针** 的实测结论——"
+        + "本工具绝不假装已联网：跑完引擎会在日志与「六、合并记录」里报**检索证据**"
+        + "（0 个 `web_search_call` = 本次只能凭记忆）。"
+    }
+
     private var aiChannelSection: some View {
         Group {
             // ---------- 通道 + 联网检索（第 69 条：让「能不能联网」变成可选项与可实测项）----------
@@ -204,11 +255,7 @@ struct SettingsTab: View {
                 .labelsHidden()
                 .frame(maxWidth: 420)
             }
-            Text("`chat`（默认）= `{地址}/chat/completions`，请求体与从前**逐字节相同**；"
-                 + "`responses` = `{地址}/responses`（标准 Responses API）——"
-                 + "**只有它**才有「服务端检索工具」这个概念。"
-                 + "⚠️ Responses 的路径是 `{地址}/responses`：DeepSeek 文档给的 base 是 "
-                 + "https://api.deepseek.com（不带 /v1），OpenAI 要带 /v1，按服务商文档填。")
+            Text(aiChannelText)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -218,14 +265,7 @@ struct SettingsTab: View {
                     .toggleStyle(.checkbox)
                 Spacer()
             }
-            Text("勾上 = 转换时给端点加 `tools:[{\"type\":\"web_search\"}]`，并要求模型**先查官方来源**、"
-                 + "把实际打开的页面 URL 写成每条上方的 `% 来源：…`；查不到的字段照旧省略并写 "
-                 + "`% ⚠ 待核实：…`（铁律不变：**只写来源确认过的值**）。\n"
-                 + "⚠️ **勾了不等于查到了**：DeepSeek 官方兼容性表把 Responses 的 `web_search` 列为"
-                 + "「**忽略**」的内置工具（不报错、也不检索；其官方新闻亦写明「API 暂不支持搜索功能」）。"
-                 + "所以请点上面的「测试连接 / 体检」，看 **⑤ 检索探针** 的实测结论——"
-                 + "本工具绝不假装已联网：跑完引擎会在日志与「六、合并记录」里报**检索证据**"
-                 + "（0 个 `web_search_call` = 本次只能凭记忆）。")
+            Text(aiChannelText2)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -234,6 +274,20 @@ struct SettingsTab: View {
 
     // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiFutureKnobsText: String {
+        "**一般不用改**（两栏都留空就是今天的正确行为，命令行与从前逐字节相同）。"
+        + "将来服务商把内置检索工具**换成别的名字**（例如 `web_search_preview`，"
+        + "OpenAI 自己就有一个这种名字）或**换了路径**时，改这两栏即可，不必等新版本：\n"
+        + "· 检索工具名 → 引擎 `SLCN_LLM_SEARCH_TOOL` / `--llm-search-tool`"
+        + "（引擎默认 `web_search`）；\n"
+        + "· 响应路径 → 引擎 `SLCN_LLM_RESPONSES_PATH` / `--llm-responses-path`"
+        + "（引擎默认 `/responses`，缺前导 `/` 会自动补）。\n"
+        + "⚠️ 改的是**请求形状**，不改变能力：端点到底会不会真的联网仍由上面的"
+        + "「⑤ 检索探针」实测（判据是回复里有没有 `web_search_call`）+ 转换日志里的"
+        + "「检索证据」为准——本工具绝不假装已联网。"
+    }
+
     private var aiFutureKnobsSection: some View {
         Group {
             // ---------- 两个「未来兼容」旋钮（第 70 条；高级/次要，一般不用改）----------
@@ -267,16 +321,7 @@ struct SettingsTab: View {
                     .font(.caption).foregroundStyle(.red)
                     .padding(.leading, 86)
             }
-            Text("**一般不用改**（两栏都留空就是今天的正确行为，命令行与从前逐字节相同）。"
-                 + "将来服务商把内置检索工具**换成别的名字**（例如 `web_search_preview`，"
-                 + "OpenAI 自己就有一个这种名字）或**换了路径**时，改这两栏即可，不必等新版本：\n"
-                 + "· 检索工具名 → 引擎 `SLCN_LLM_SEARCH_TOOL` / `--llm-search-tool`"
-                 + "（引擎默认 `web_search`）；\n"
-                 + "· 响应路径 → 引擎 `SLCN_LLM_RESPONSES_PATH` / `--llm-responses-path`"
-                 + "（引擎默认 `/responses`，缺前导 `/` 会自动补）。\n"
-                 + "⚠️ 改的是**请求形状**，不改变能力：端点到底会不会真的联网仍由上面的"
-                 + "「⑤ 检索探针」实测（判据是回复里有没有 `web_search_call`）+ 转换日志里的"
-                 + "「检索证据」为准——本工具绝不假装已联网。")
+            Text(aiFutureKnobsText)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -285,6 +330,22 @@ struct SettingsTab: View {
 
     // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiRequestKnobsText: String {
+        "「跟随端点默认」= **不发送** thinking 字段（DeepSeek 文档 2026-10："
+        + "thinking 默认就是开启，推理 token 按输出计费）；"
+        + "参考文献核实是纯抽取/规范化任务，「关闭」既省钱也更确定。"
+        + "本机/自建端点可能不认这个字段，那就保持「跟随端点默认」。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var aiRequestKnobsText2: String {
+        "默认 2048（= 引擎默认值，防啰嗦模型把预算烧在推理上、返回半截 bibtex）；"
+        + "填 0 = 不封顶；留空 = 不设置该变量（效果同 2048）。"
+        + "**转换时用的是上面这些输入框里的当前值**：地址/密钥/模型与这两个旋钮同一口径，"
+        + "改完直接去「初排转换」就生效；点「保存」只是把它写进 ai.json，供下次启动读回。"
+    }
+
     private var aiRequestKnobsSection: some View {
         Group {
             // ---------- 两个「请求体旋钮」：只有勾了 AI 开关才随子进程走 ----------
@@ -298,10 +359,7 @@ struct SettingsTab: View {
                 .labelsHidden()
                 .frame(maxWidth: 320)
             }
-            Text("「跟随端点默认」= **不发送** thinking 字段（DeepSeek 文档 2026-10："
-                 + "thinking 默认就是开启，推理 token 按输出计费）；"
-                 + "参考文献核实是纯抽取/规范化任务，「关闭」既省钱也更确定。"
-                 + "本机/自建端点可能不认这个字段，那就保持「跟随端点默认」。")
+            Text(aiRequestKnobsText)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -321,10 +379,7 @@ struct SettingsTab: View {
                     .font(.caption).foregroundStyle(.tertiary)
                     .padding(.leading, 86)
             }
-            Text("默认 2048（= 引擎默认值，防啰嗦模型把预算烧在推理上、返回半截 bibtex）；"
-                 + "填 0 = 不封顶；留空 = 不设置该变量（效果同 2048）。"
-                 + "**转换时用的是上面这些输入框里的当前值**：地址/密钥/模型与这两个旋钮同一口径，"
-                 + "改完直接去「初排转换」就生效；点「保存」只是把它写进 ai.json，供下次启动读回。")
+            Text(aiRequestKnobsText2)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
@@ -384,6 +439,18 @@ struct SettingsTab: View {
 
     /// 点预设：只填地址与模型名（`自定义` 时两个都是 nil，什么都不动）。
     /// **绝不碰密钥** —— 密钥是编辑自己粘的，换预设不该把它清掉。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var applyText: String {
+        "✔ 已配置：\(settings.aiSummary)（密钥 \(AppSettings.mask(settings.aiKey))）"
+        + " —— 「初排转换」页勾选「用 AI 处理参考文献」即可生效。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var applyText2: String {
+        "尚未配置：地址与模型名都填上才算配置完成；"
+        + "转换时若勾了 AI 开关也只会生成《文献核实任务书》。"
+    }
+
     private func apply(_ p: AIProviderPreset) {
         let filled = p.applied(base: settings.aiBase, model: settings.aiModel)
         settings.aiBase = filled.base
@@ -395,21 +462,33 @@ struct SettingsTab: View {
             Text(settings.aiStatus).font(.caption).foregroundStyle(.secondary)
         }
         if settings.aiConfigured {
-            Text("✔ 已配置：\(settings.aiSummary)（密钥 \(AppSettings.mask(settings.aiKey))）"
-                 + " —— 「初排转换」页勾选「用 AI 处理参考文献」即可生效。")
+            Text(applyText)
                 .font(.caption).foregroundStyle(.green)
             Text("请求体：\(settings.aiEngineKnobs.summary)"
                  + (settings.aiDirty ? "（⚠ 有未保存的修改：转换仍用上面填的当前值，"
                                       + "但下次启动会回到已保存的值）" : ""))
                 .font(.caption).foregroundStyle(settings.aiDirty ? Color.orange : Color.secondary)
         } else {
-            Text("尚未配置：地址与模型名都填上才算配置完成；"
-                 + "转换时若勾了 AI 开关也只会生成《文献核实任务书》。")
+            Text(applyText2)
                 .font(.caption).foregroundStyle(.orange)
         }
     }
 
     // MARK: - 明文存储提示（编辑部要求：必须写在界面上）
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var secretWarningText: String {
+        "文件权限已收紧为 0600（仅当前用户可读写），目录为 0700。"
+        + "请勿把这个文件放进网盘/云同步目录，也不要连同仓库一起分享。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var secretWarningText2: String {
+        "工具自身不会打印完整密钥：界面上只显示前 4 位（如 sk-a…），"
+        + "日志里只写「已配置密钥」；密钥**不进命令行参数**"
+        + "（走环境变量 SLCN_LLM_KEY 传给子进程，避免在 ps 里被同机其它用户看到），"
+        + "也不会写进任何产物文件。"
+    }
 
     private var secretWarning: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -419,13 +498,9 @@ struct SettingsTab: View {
             Text("存放位置：\(settings.aiStoreURL.path)")
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
-            Text("文件权限已收紧为 0600（仅当前用户可读写），目录为 0700。"
-                 + "请勿把这个文件放进网盘/云同步目录，也不要连同仓库一起分享。")
+            Text(secretWarningText)
                 .font(.caption).foregroundStyle(.secondary)
-            Text("工具自身不会打印完整密钥：界面上只显示前 4 位（如 sk-a…），"
-                 + "日志里只写「已配置密钥」；密钥**不进命令行参数**"
-                 + "（走环境变量 SLCN_LLM_KEY 传给子进程，避免在 ps 里被同机其它用户看到），"
-                 + "也不会写进任何产物文件。")
+            Text(secretWarningText2)
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -435,19 +510,29 @@ struct SettingsTab: View {
     /// 编辑部要求写清楚「上传了什么」：勾了 AI 开关以后，稿件里**哪些文字**会离开本机。
     /// 口径以引擎 `convert.py` ⑪ 块（`--verify-refs` 的 AI 预跑）为准：
     /// 只发「编辑部规范文本」+「逐条参考文献条目原文」，**不发**正文/摘要/作者信息/全文。
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var privacyText: String {
+        "① 编辑部规范文本（《文献核实任务书》里那份固定的核实口径）；\n"
+        + "② 参考文献条目原文（**逐条**发，不拼成整篇）。"
+    }
+
+    /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
+    private var privacyText2: String {
+        "不配置也完全可用：不填这些设置，「初排转换」照常生成《文献核实任务书》，"
+        + "由编辑把它交给自己的 AI，效果一样（只是少了自动预跑这一步）。"
+    }
+
     private var privacy: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("这个工具会上传什么").font(.callout).bold()
             Text("勾了「用 AI 处理参考文献」时，只有两样东西会发给上面填的那个端点：")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("① 编辑部规范文本（《文献核实任务书》里那份固定的核实口径）；\n"
-                 + "② 参考文献条目原文（**逐条**发，不拼成整篇）。")
+            Text(privacyText)
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.leading, 12)
             Text("**不发送**：正文、摘要、作者信息、稿件全文 —— 都留在本机。")
                 .font(.caption).bold().foregroundStyle(.secondary)
-            Text("不配置也完全可用：不填这些设置，「初排转换」照常生成《文献核实任务书》，"
-                 + "由编辑把它交给自己的 AI，效果一样（只是少了自动预跑这一步）。")
+            Text(privacyText2)
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

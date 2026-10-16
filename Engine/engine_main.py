@@ -42,12 +42,20 @@ USAGE = f"""SLCN 引擎（打包版）
 
 
 def main(argv: list[str] | None = None) -> int:
+    # ⚠️ **第一件事**就是把 stdout/stderr 切成 UTF-8：Windows 控制台默认用**代码页**
+    #    （英文机 cp1252、中文机 cp936），而下面每一行提示都带中文 —— 不先切，
+    #    一句 `SLCNEngine.exe --version` 就会 `UnicodeEncodeError` 崩掉。
+    #    2026-10-16 windows-latest 打包自检实测：两个 exe 都打出来了，自检崩在这里
+    #    （CI 上 `PYTHONIOENCODING=utf-8` 恰好遮住了它，**用户的机器上没有这个变量**）。
+    #    其余入口（convert.py / checkbib.py / …）一直有这一行，漏的只有本文件 ——
+    #    静态守卫见 `tests/test_platform.py` 的 (a) 组。
+    from slcn import platform as _plat
+    _plat.utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ("-h", "--help", "/?"):
         print(USAGE)
         return 0 if argv else 2
     if argv[0] in ("--version", "-V"):
-        from slcn import platform as _plat
         print(f"SLCN 引擎 {_plat.engine_version()}（打包版）｜ {_plat.describe()}")
         return 0
 
