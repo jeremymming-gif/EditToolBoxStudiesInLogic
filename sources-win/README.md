@@ -90,9 +90,12 @@ set PYTHONPATH=..\Engine\vendor
 python tests\test_bridge.py
 ```
 
-`tests/test_bridge.py` 共 41 项断言，覆盖：引擎/解释器定位顺序、命令行与契约一致、
-**密钥绝不进 argv**、UTF-8 与无缓冲环境、配置读写与 0600 权限、真跑一次合并（收到实时日志与契约行）、
+`tests/test_bridge.py` 覆盖：引擎/解释器定位顺序、命令行与契约一致、
+**密钥绝不进 argv**、UTF-8 与无缓冲环境、配置读写（**POSIX 上权限 0600；Windows 上
+没有 POSIX 权限位，靠 `%APPDATA%` 的用户 ACL —— 见 `settings.py` 抬头**）、
+真跑一次合并（收到实时日志与契约行）、
 以及**真开一次窗口**（控件参数写错只有那一步抓得到；没有显示器时自动 SKIP）。
+（本机 mac 上 57 项断言；Windows 上还会多跑 `(d)` 的配置目录分支。）
 
 ## 归属声明（MIT）
 
