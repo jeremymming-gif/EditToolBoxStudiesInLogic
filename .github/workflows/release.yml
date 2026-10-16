@@ -82,9 +82,12 @@ jobs:
           zip -qry "EditToolBox-${{ steps.ver.outputs.version }}-macOS-arm64.zip" "编辑部工具箱.app"
       # ⚠️ 未签名/未公证：下载后会撞 Gatekeeper（「已损坏」）。这是 2026-10-15 的决定
       #    （不买 Apple Developer 账号），所以资产里附一份说明，正文里也写清处理方法。
+      # ⚠️ 资产名必须**纯 ASCII**：GitHub 会把文件名里的非 ASCII 字符**直接删掉** ——
+      #    `首次打开（macOS）.txt` 上传后就成了 `macOS.txt`（2026-10-17 发 v1.0.1 时实测）。
+      #    文件**内容**照旧是中文，只有**文件名**用 ASCII。
       - name: 附一份「首次打开」说明
         run: |
-          cat > "首次打开（macOS）.txt" <<'TXT'
+          cat > "FIRST-OPEN-macOS.txt" <<'TXT'
           《编辑部工具箱》macOS 版首次打开说明
           ------------------------------------------------
           本应用**未做 Apple 签名与公证**（编辑部决定不购买开发者账号），
@@ -103,7 +106,7 @@ jobs:
           name: macos-app
           path: |
             dist/EditToolBox-*.zip
-            首次打开（macOS）.txt
+            FIRST-OPEN-macOS.txt
 
   # ── ③ Windows：冻结引擎 + 界面，打成一个发布目录 ─────────────────────────
   windows:
@@ -148,14 +151,14 @@ jobs:
             · 用「初排转换」编译 PDF 需要系统里有 TeX（xelatex/biber）；
               合并 PDF、导出原稿 PDF 另外需要 LibreOffice（可选）。
           '@
-          Set-Content -Path "首次打开（Windows）.txt" -Value $TXT -Encoding UTF8
-          Get-Item "首次打开（Windows）.txt" | Select-Object Name, Length
+          Set-Content -Path "FIRST-OPEN-Windows.txt" -Value $TXT -Encoding UTF8
+          Get-Item "FIRST-OPEN-Windows.txt" | Select-Object Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app
           path: |
             EditToolBox-*-Windows-x64.zip
-            首次打开（Windows）.txt
+            FIRST-OPEN-Windows.txt
 
   # ── ④ 发 Release（只在打 tag 时）────────────────────────────────────────
   release:
@@ -197,8 +200,8 @@ jobs:
 
           **下载哪个**
 
-          - `EditToolBox-@V@-macOS-arm64.zip`（Apple 芯片）＋《首次打开（macOS）.txt》
-          - `EditToolBox-@V@-Windows-x64.zip`（内含两个 exe，**必须放在同一个目录**）＋《首次打开（Windows）.txt》
+          - `EditToolBox-@V@-macOS-arm64.zip`（Apple 芯片）＋ 说明 `FIRST-OPEN-macOS.txt`
+          - `EditToolBox-@V@-Windows-x64.zip`（内含两个 exe，**必须放在同一个目录**）＋ 说明 `FIRST-OPEN-Windows.txt`
           - `latest.json`：应用启动时比对它，**只提示、不自动替换**
 
           **运行环境**：「初排转换」编译 PDF 需要系统里有 TeX（`xelatex`/`biber`）；

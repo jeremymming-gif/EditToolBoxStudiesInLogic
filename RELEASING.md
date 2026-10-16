@@ -142,9 +142,13 @@ git tag v1.0.0 && git push origin v1.0.0
 | job | 干什么 |
 |---|---|
 | `test` | macos-14 与 windows-latest 各跑一遍**不依赖稿件库**的引擎套件 + 外壳桥梁测试 |
-| `macos` | `./build.sh` 出 `.app` → 打成 `EditToolBox-<版本>-macOS-arm64.zip`，并附一份《首次打开（macOS）.txt》 |
-| `windows` | `sources-win/build-win.ps1` → 冻结 `SLCNEngine.exe` + 界面 exe → `EditToolBox-<版本>-Windows-x64.zip` |
-| `release` | 汇总资产 + 生成 `latest.json`（外壳启动时比对它，**只提示、不自动替换**），建 Release |
+| `macos` | `./build.sh` 出 `.app` → 打成 `EditToolBox-<版本>-macOS-arm64.zip`，并附一份说明 `FIRST-OPEN-macOS.txt` |
+| `windows` | `sources-win/build-win.ps1` → 冻结 `SLCNEngine.exe` + 界面 exe → `EditToolBox-<版本>-Windows-x64.zip`，并附一份说明 `FIRST-OPEN-Windows.txt` |
+| `release` | 汇总资产 + 生成 `latest.json`（外壳启动时比对它，**只提示、不自动替换**），写正文（含两个平台的「首次打开」处理办法）并建 Release |
+
+> ⚠️ **两份说明的文件名必须是纯 ASCII**：GitHub 上传资产时会把文件名里的非 ASCII 字符
+> **直接删掉** —— `首次打开（macOS）.txt` 会变成 `macOS.txt`（2026-10-17 发 v1.0.1 时实测）。
+> 文件**内容**是中文，只有**文件名**用 ASCII。同理，资产名里别用中文。
 
 也可以 `workflow_dispatch` 手动跑一次：只出构建产物、不建 Release（用来验证打包脚本）。
 
