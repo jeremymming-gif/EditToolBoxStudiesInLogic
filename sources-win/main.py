@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import subprocess
@@ -147,6 +148,224 @@ class MergeTab(TabPage):
                 "nest_outlines": self.v_nest.get()}
 
 
+class InfoCheckTab(TabPage):
+    name = "检查tex信息"
+    pick = "dir"
+    instruction = ("使用说明：选**一期的目录**，把各篇文章 tex 里已填好的信息抄出来核对：\n"
+                   "卷号 / 期号 / 年份 / 起止页码 / 页数 / 字号 / 中英文标题 / 各作者 / 全文行距，\n"
+                   "并与该篇 PDF 的**实际页数**对比。没有任何问答 —— 信息本来就在 tex 里。\n"
+                   "产物：`信息检查<时间戳>.txt`（与原版一致）与 `.json`（结构化，供「生成目录」用）。")
+
+    def __init__(self, parent, name, on_run, on_stop):
+        super().__init__(parent, name, on_run, on_stop)
+        # 结果表格：Tkinter 的 Treeview（只读展示）
+        self.summary = ttk.Label(self, text="（还没检查）", wraplength=760, justify="left")
+        self.summary.grid(row=90, column=0, padx=10, pady=(4, 0), sticky="w")
+        cols = ("folder", "vol", "issue", "year", "pages", "declared", "actual", "authors", "title")
+        heads = ("文件夹", "卷", "期", "年份", "起–止", "声明页数", "实际页数", "第一作者", "中文标题")
+        self.table = ttk.Treeview(self, columns=cols, show="headings", height=9)
+        for c, h in zip(cols, heads):
+            self.table.heading(c, text=h)
+            self.table.column(c, width=118 if c in ("authors", "title") else 62, anchor="w")
+        self.table.grid(row=91, column=0, padx=10, pady=(2, 10), sticky="nsew")
+        self.rowconfigure(91, weight=1)
+
+    def show_report(self, payload: dict) -> None:
+        """填表格与顶部提示（`payload` = 引擎 `--preview` 的 JSON）。"""
+        for item in self.table.get_children():
+            self.table.delete(item)
+        arts = payload.get("articles", [])
+        for a in arts:
+            def nz(v, dash="—"):
+                return dash if not v else str(v)
+            span = f"{nz(a.get('startPage'), '?')}–{nz(a.get('endPage'), '?')}"
+            declared = nz(a.get("pages"))
+            actual = nz(a.get("actualPDFPages"))
+            mismatch = (a.get("pages") or "").strip().isdigit() and a.get("actualPDFPages") \
+                and int(a["pages"]) != a["actualPDFPages"]
+            self.table.insert("", "end", values=(
+                a.get("folder", ""), nz(a.get("volume")), nz(a.get("issue")), nz(a.get("year")),
+                span, declared, actual,
+                (a.get("firstAuthorChinese") or a.get("firstAuthorEnglish") or "—"),
+                (a.get("chineseTitle") or "—")[:40]))
+            if mismatch:
+                self.table.item(self.table.get_children()[-1], tags=("bad",))
+        self.table.tag_configure("bad", foreground="#b00")
+        notes = payload.get("inconsistencies") or []
+        if not arts:
+            self.summary.config(text="（还没检查）")
+        elif notes:
+            self.summary.config(text=f"共 {len(arts)} 篇；发现 {len(notes)} 处需要核对：" + "；".join(notes[:3]))
+        else:
+            self.summary.config(text=f"共 {len(arts)} 篇，卷号/期号/年份一致，页数与 PDF 实际页数相符。")
+
+
+class TocTab(TabPage):
+    name = "生成目录"
+    pick = "file"
+    instruction = ("使用说明：选「检查tex信息」生成的**报告 .txt**，生成中英文两份目录 .tex（**先英文后中文**）。\n"
+                   "版式**继承上一期成品**（本期 000 Table of Contents 里已有的优先），只替换本期的卷期信息，\n"
+                   "所以同事手工调过的版式会自动延续。下方可填本期栏目（专栏/专辑），留空表示本期无栏目。\n"
+                   "点「读取篇目」会列出报告里的文章，可勾选哪些属于栏目 —— 设置会写进报告同目录的 `目录设置.json`。")
+
+    def __init__(self, parent, name, on_run, on_stop):
+        super().__init__(parent, name, on_run, on_stop)
+        self.rows: list[tuple[str, str]] = []      # [(文章名, 中文标题)]
+        self.note = ttk.Label(self, text="", wraplength=760, justify="left", foreground="#555")
+        self.note.grid(row=90, column=0, padx=10, pady=(4, 0), sticky="w")
+        self.listbox = tk.Listbox(self, selectmode=tk.EXTENDED, height=7, exportselection=False)
+        self.listbox.grid(row=91, column=0, padx=10, pady=(2, 10), sticky="nsew")
+        self.rowconfigure(91, weight=1)
+
+    def build_options(self, parent: ttk.Frame) -> None:
+        self.v_kind = tk.StringVar(value="")
+        self.v_cname = tk.StringVar(value="")
+        self.v_cname_en = tk.StringVar(value="")
+        self.v_host = tk.StringVar(value="")
+        self.v_template = tk.StringVar(value="")
+        tk.Button(parent, text="读取篇目", width=10, command=self.load_preview).pack(side="left")
+        ttk.Label(parent, text="栏目类型").pack(side="left", padx=(10, 2))
+        ttk.Combobox(parent, textvariable=self.v_kind, width=6, state="readonly",
+                     values=("", "专栏", "专辑")).pack(side="left")
+        ttk.Label(parent, text="栏目名").pack(side="left", padx=(8, 2))
+        tk.Entry(parent, textvariable=self.v_cname, width=16).pack(side="left")
+        ttk.Label(parent, text="英文名").pack(side="left", padx=(8, 2))
+        tk.Entry(parent, textvariable=self.v_cname_en, width=18).pack(side="left")
+        ttk.Label(parent, text="主持人").pack(side="left", padx=(8, 2))
+        tk.Entry(parent, textvariable=self.v_host, width=10).pack(side="left")
+        ttk.Label(parent, text="模板来源期目录（留空=自动找上一期）").pack(side="left", padx=(8, 2))
+        tk.Entry(parent, textvariable=self.v_template, width=22).pack(side="left")
+
+    def extra_args(self) -> dict:
+        return {"template": self.v_template.get()}
+
+    def load_preview(self) -> None:
+        """问引擎要篇目清单（`toc.py --preview`），不要自己解析报告 —— 口径必须与生成时一致。"""
+        report = self.path()
+        if not report:
+            messagebox.showwarning(APP_TITLE, "请先选择「检查tex信息」生成的报告 .txt。")
+            return
+        try:
+            call = E.toc_preview_call(report=report)
+        except RuntimeError as e:
+            messagebox.showerror(APP_TITLE, str(e))
+            return
+        proc = subprocess.run(call.argv, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=E.env_for_run(None))
+        line = ""
+        for candidate in (proc.stdout or "").splitlines():
+            if candidate.strip().startswith("{"):
+                line = candidate
+        if not line:
+            messagebox.showerror(APP_TITLE, "读不到篇目预览，请看「设置」里的引擎路径是否正确。")
+            return
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            messagebox.showerror(APP_TITLE, "篇目预览不是合法 JSON（引擎版本可能过旧）。")
+            return
+        self.rows = [(a.get("name", ""), a.get("title", "")) for a in payload.get("articles", [])]
+        self.listbox.delete(0, tk.END)
+        saved = self._load_settings(report)
+        for name, title in self.rows:
+            self.listbox.insert(tk.END, f"{name}　{title[:34]}")
+            if name in saved.get("columnArticles", []):
+                self.listbox.selection_set(tk.END)
+        self.note.config(text=payload.get("templateNote", ""))
+        if saved.get("columnKind"):
+            self.v_kind.set(saved.get("columnKind", ""))
+            self.v_cname.set(saved.get("columnName", ""))
+            self.v_cname_en.set(saved.get("columnNameEN", ""))
+            self.v_host.set(saved.get("columnHost", ""))
+            self.v_template.set(saved.get("templateFolder", ""))
+
+    @staticmethod
+    def _settings_path(report: str) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(report)), "目录设置.json")
+
+    def _load_settings(self, report: str) -> dict:
+        try:
+            with open(self._settings_path(report), encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save_settings(self, report: str) -> None:
+        """把界面上的本期设置写进引擎要读的那个文件（只有一个真相来源）。"""
+        path = self._settings_path(report)
+        data = self._load_settings(report)
+        data.update({
+            "columnKind": self.v_kind.get(),
+            "columnName": self.v_cname.get(),
+            "columnNameEN": self.v_cname_en.get(),
+            "columnHost": self.v_host.get(),
+            "columnArticles": [self.rows[i][0] for i in self.listbox.curselection()]
+            if self.rows else data.get("columnArticles", []),
+            "templateFolder": self.v_template.get(),
+        })
+        data.setdefault("titleWrapLimit", 20)
+        data.setdefault("titleWrapLimitEN", 35)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+
+
+class CleanTab(TabPage):
+    name = "删除临时文件"
+    pick = "dir"
+    instruction = ("使用说明：选**一期的目录**（或任意目录），会递归删掉 LaTeX 编译中间文件：\n"
+                   ".aux .bbl .bcf .blg .out .run.xml .synctex.gz（以及 macOS 的 .DS_Store）。\n"
+                   "**不会删** .tex / .pdf / .sty / .bib / .log —— .log 是排错用的，故意留着。\n"
+                   "换了设备改过 .tex 之后，建议先清一遍再编译，避免残留中间文件影响参考文献序号。")
+
+    def build_options(self, parent: ttk.Frame) -> None:
+        self.v_dry = tk.BooleanVar(value=True)
+        _check(parent, "先预演（只列出会删哪些，不真删）", self.v_dry).pack(side="left")
+
+    def extra_args(self) -> dict:
+        return {"dry_run": self.v_dry.get()}
+
+
+class CompileAllTab(TabPage):
+    name = "编译全部"
+    pick = "dir"
+    instruction = ("使用说明：选**一期的目录**，对每个 `01 作者/` 子目录编译 `<作者>.tex`：\n"
+                   "xelatex → biber -l=zh_pinyin → xelatex → xelatex。\n"
+                   "`000 目录`（中英文目录）不参与编译；某一篇失败只停那一篇，并回显 .log 里的错误摘要。")
+
+    def build_options(self, parent: ttk.Frame) -> None:
+        self.v_only = tk.StringVar(value="")
+        self.v_dry = tk.BooleanVar(value=False)
+        ttk.Label(parent, text="只编这几篇（序号，如 01,03；留空=全部）").pack(side="left")
+        tk.Entry(parent, textvariable=self.v_only, width=12).pack(side="left", padx=(4, 12))
+        _check(parent, "先预演（只列出会编哪些）", self.v_dry).pack(side="left")
+
+    def extra_args(self) -> dict:
+        return {"only": self.v_only.get(), "dry_run": self.v_dry.get()}
+
+
+class ProofCheckTab(TabPage):
+    name = "一校核查"
+    pick = "file"
+    instruction = ("使用说明：选**初排稿的 .tex**（一般在一校之后跑）。按《排校手册》与\n"
+                   "《流程化经验书》的规范逐条核查：脚注/引文位置（逗号前、句号后）、半角标点混入中文、\n"
+                   "顿号后紧跟引号、集合竖线、图表引用间隔……每条都注明依据与行号。\n"
+                   "**默认只报不改**（报告写到同目录的 `<名字>_一校核查.md`）；\n"
+                   "勾了「顺手把无歧义的改掉」会另写一个 `<名字>_一校核查后.tex`，**输入文件不动**。")
+
+    def build_options(self, parent: ttk.Frame) -> None:
+        self.v_fix = tk.BooleanVar(value=False)
+        self.v_lang = tk.StringVar(value="自动")
+        _check(parent, "顺手把无歧义的改掉（另存新文件）", self.v_fix).pack(side="left")
+        ttk.Label(parent, text="语种").pack(side="left", padx=(12, 2))
+        ttk.Combobox(parent, textvariable=self.v_lang, width=6, state="readonly",
+                     values=("自动", "zh", "en")).pack(side="left")
+
+    def extra_args(self) -> dict:
+        lang = "" if self.v_lang.get() == "自动" else self.v_lang.get()
+        return {"fix": self.v_fix.get(), "lang": lang}
+
+
 class SettingsTab(ttk.Frame):
     """设置：引擎状态 + AI 配置（密钥只落本地，显示打码）。"""
 
@@ -235,8 +454,15 @@ class MainWindow(tk.Tk):
         self.convert_tab = ConvertTab(nb, "初排转换", self.start, self.stop)
         self.checkbib_tab = CheckBibTab(nb, "文献回读校验", self.start, self.stop)
         self.merge_tab = MergeTab(nb, "合并文件", self.start, self.stop)
+        self.proof_tab = ProofCheckTab(nb, "一校核查", self.start, self.stop)
+        self.info_tab = InfoCheckTab(nb, "检查tex信息", self.start, self.stop)
+        self.toc_tab = TocTab(nb, "生成目录", self.start, self.stop)
+        self.compile_tab = CompileAllTab(nb, "编译全部", self.start, self.stop)
+        self.clean_tab = CleanTab(nb, "删除临时文件", self.start, self.stop)
         self.settings_tab = SettingsTab(nb, self.cfg, lambda: None)
-        for tab in (self.convert_tab, self.checkbib_tab, self.merge_tab, self.settings_tab):
+        for tab in (self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
+                    self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
+                    self.settings_tab):
             nb.add(tab, text=tab.name)
         nb.pack(expand=1, fill="both")
 
@@ -281,6 +507,17 @@ class MainWindow(tk.Tk):
             if not out:
                 raise ValueError("没有选输出目录")
             return E.convert_call(source=path, out=out, **opts)
+        if isinstance(tab, InfoCheckTab):
+            return E.infocheck_call(folder=path)
+        if isinstance(tab, TocTab):
+            tab.save_settings(path)          # 先把本期设置写进引擎要读的 json
+            return E.toc_call(report=path, **opts)
+        if isinstance(tab, ProofCheckTab):
+            return E.proofcheck_call(tex=path, **opts)
+        if isinstance(tab, CompileAllTab):
+            return E.compileall_call(folder=path, **opts)
+        if isinstance(tab, CleanTab):
+            return E.cleantemp_call(folder=path, **opts)
         if isinstance(tab, CheckBibTab):
             merge_into = ""
             if opts.get("merge_into_same_dir"):
@@ -319,7 +556,9 @@ class MainWindow(tk.Tk):
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        for tab in (self.convert_tab, self.checkbib_tab, self.merge_tab):
+        for tab in (self.convert_tab, self.checkbib_tab, self.merge_tab,
+                    self.proof_tab, self.info_tab, self.toc_tab,
+                    self.compile_tab, self.clean_tab):
             tab.run_button.config(state="disabled" if busy else "normal")
             tab.stop_button.config(state="normal" if busy else "disabled")
 

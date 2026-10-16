@@ -50,6 +50,7 @@ def _ensure_vendor() -> None:
 _ensure_vendor()
 
 from run_poc import BODY_END, BODY_START, ROOT, TPL, extract_region  # noqa: E402
+from slcn import paths as _paths  # noqa: E402
 from slcn import score as S  # noqa: E402
 from slcn.build import build_docx, build_latex  # noqa: E402
 from slcn.latex import expand_inputs, parse_macros  # noqa: E402
@@ -104,6 +105,14 @@ def target_basename(article_name: str) -> str:
     """'03 Liang_Zhang' → 'Liang_Zhang'"""
     parts = article_name.split()
     return parts[1] if len(parts) > 1 else article_name
+
+
+def _require_manuscripts() -> bool:
+    """全库回归必须有稿件库；没有就打印说明并**正常退出**（公开仓/CI 上不该报错）。"""
+    if _paths.manuscripts_root() is None:
+        print(f"≡ corpus：{_paths.describe()}")
+        return False
+    return True
 
 
 def collect() -> list[tuple[str, str, str]]:
@@ -213,6 +222,9 @@ def pct(xs: list[float], p: float) -> float:
 def main() -> int:
     global STY, SKELETON
     import argparse
+
+    if not _require_manuscripts():
+        return 0
 
     ap = argparse.ArgumentParser(description="全库回归")
     ap.add_argument("--sty", default=None, help="覆盖版面样式文件（默认按语种自动选）")

@@ -14,7 +14,7 @@ TEMPLATES = [
 ]
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   "..", "Sources", "Features", "ContentTemplates.swift")
+                   "..", "sources-mac", "Features", "ContentTemplates.swift")
 
 
 def swift_escape(s: str) -> str:

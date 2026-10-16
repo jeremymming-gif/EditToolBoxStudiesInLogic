@@ -205,13 +205,19 @@ struct ContentTab: View {
         model.settings = settings
         model.settingsLoaded = true
 
-        let articles = ContentFeature.listArticles(reportPath: target)
-        model.rows = articles.map { item in
-            TocArticleRow(id: item.name,
-                          title: item.title,
-                          selected: settings.contains(item.name))
+        // 篇目清单与模板说明都**由引擎算**（`toc.py --preview`）：解析口径必须与真正生成时一致，
+        // 否则会出现「清单里勾了 3 篇、生成时只认 2 篇」。界面不再自己解析报告。
+        if let preview = TocFeature.preview(reportPath: target) {
+            model.rows = preview.articles.map { item in
+                TocArticleRow(id: item.name,
+                              title: item.title,
+                              selected: settings.contains(item.name))
+            }
+            model.templateNote = preview.templateNote
+        } else {
+            model.rows = []
+            model.templateNote = "读不到报告预览（引擎未找到或报告格式不对），请看下方日志"
         }
-        model.templateNote = ContentFeature.templateSourceNote(reportPath: target, settings: settings)
     }
 
     private func execute() {
@@ -231,7 +237,8 @@ struct ContentTab: View {
         let m = model
         m.running = true
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = ContentFeature.run(txtPath: target, settings: settings, log: logger)
+            // 生成交给引擎（`Engine/toc.py`）；本期设置刚写进 目录设置.json，引擎读的就是它。
+            TocFeature.run(reportPath: target, templateFolder: settings.templateFolder, log: logger)
             DispatchQueue.main.async { m.running = false }
         }
     }

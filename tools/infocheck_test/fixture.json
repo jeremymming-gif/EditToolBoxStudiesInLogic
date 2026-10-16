@@ -1,0 +1,53 @@
+{
+  "generatedAt": "2026_10_16_20_16_36",
+  "issueFolder": "/期/2026年第5期(90)",
+  "articles": [
+    {
+      "folder": "01 Lu_Wang",
+      "folderName": "Lu_Wang",
+      "volume": "19",
+      "issue": "5",
+      "year": "2026",
+      "startPage": "1",
+      "endPage": "16",
+      "pages": "16",
+      "chineseTitle": "论雅辛之谜及其解决方案——从扩展的RZH标准看",
+      "englishTitle": "On Yashin's Puzzle",
+      "firstAuthorEnglish": null,
+      "firstAuthorChinese": "\\kaishu 陆王",
+      "secondAuthorEnglish": null,
+      "secondAuthorChinese": "\\kaishu 王二",
+      "thirdAuthorEnglish": null,
+      "thirdAuthorChinese": null,
+      "fontSize": "10.5t",
+      "lineSpacing": "13",
+      "actualPDFPages": null,
+      "hasTeX": true,
+      "hasPDF": false
+    },
+    {
+      "folder": "02 Chaoyang_Huang",
+      "folderName": "Chaoyang_Huang",
+      "volume": "19",
+      "issue": "5",
+      "year": "2026",
+      "startPage": "17",
+      "endPage": "27",
+      "pages": "11",
+      "chineseTitle": "可知性悖论的形式可证与认知实现",
+      "englishTitle": "Knowability, Formal Provability and Cognitive Realization",
+      "firstAuthorEnglish": null,
+      "firstAuthorChinese": "\\kaishu 黄朝阳",
+      "secondAuthorEnglish": null,
+      "secondAuthorChinese": "\\kaishu 李四",
+      "thirdAuthorEnglish": null,
+      "thirdAuthorChinese": null,
+      "fontSize": "10.5t",
+      "lineSpacing": "13",
+      "actualPDFPages": null,
+      "hasTeX": true,
+      "hasPDF": false
+    }
+  ],
+  "inconsistencies": []
+}

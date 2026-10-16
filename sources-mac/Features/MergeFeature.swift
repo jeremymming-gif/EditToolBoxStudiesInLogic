@@ -1,138 +1,114 @@
 import Foundation
 
-/// 「合并文件」—— 对应原程序的 merge.merge_pdfs(folder_path, out_txt)。
+/// 「合并文件」—— 第 99 条：改调引擎 `Engine/mergepdf.py`。
 ///
-/// 合并顺序：扉页.pdf → 000 目录(中文 Chinese Content.pdf、英文 contents.pdf)
-///          → 各篇文章目录（按序号 01,02,…）。
-/// 每追加一份就在大纲里登记一个书签，文章书签的取名为目录名去掉序号后的部分。
+/// 合并顺序与规则都在引擎里（`slcn/pdfmerge.py`，其上游是原版 `merge.py`）：
+/// 扉页 → 编委信息页（可选）→ 中文目录 → 英文目录 → 各篇文章（按序号）→ 封底（可选），
+/// 并在大纲里为每篇登记书签；文章 PDF 找不到时报出来而不是整篇跳过
+/// （原版会静默跳过，实测丢过 33 页）。
+///
+/// 这一页只做两件事：
+///   ① **运行前预览** —— 问引擎 `--detect`「会插哪一份编委页/封底页」，让你点「运行」前就知道结果；
+///   ② 运行 —— 把引擎输出流到日志。
+///
+/// 识别逻辑**不在 Swift 里**：原来 `EditorsPage.swift`（按文件名识别）与 `ExtraPages.swift`
+/// （封底页）各有一份，现在只剩引擎一份 —— 预览与真正合并必然一致。
 enum MergeFeature {
+
+    /// 引擎探测到的附加页（编委页 / 封底页）。
+    struct ExtraPageInfo: Decodable {
+        let fileName: String
+        let pageCount: Int
+        let matchedBy: String
+
+        /// 与引擎日志同款的一句话描述
+        var fullDescription: String { "\(fileName)（\(pageCount) 页，\(matchedBy)）" }
+    }
+
+    /// 运行前预览（字段名与引擎 `--detect` 的 JSON **逐字对应**）。
+    struct Probe: Decodable {
+        let editorsPage: ExtraPageInfo?
+        let others: [String]
+        let backCover: ExtraPageInfo?
+        let coverPages: Int
+
+        var isAmbiguous: Bool { !others.isEmpty }
+    }
+
+    /// 拼命令行参数。**纯函数**（`tools/cutover_test` 直接断言它）。
+    static func arguments(folderPath: String,
+                          nestOutlines: Bool = false,
+                          mergeEditorsPage: Bool = false,
+                          appendBackCover: Bool = false) -> [String] {
+        var args = ["--folder", folderPath]
+        if nestOutlines { args.append("--nest-outlines") }
+        if mergeEditorsPage { args.append("--editors-page") }
+        if appendBackCover { args.append("--back-cover") }
+        return args
+    }
+
+    /// 找 `mergepdf.py`（引擎目录由 `EngineLocator` 统一解析）。
+    static func locateTool(convertTool: String? = EngineLocator.convertTool()) -> String? {
+        EngineLocator.tool(named: "mergepdf.py", convertTool: convertTool)
+    }
+
+    /// 运行前预览：问引擎「会插哪一份编委页/封底页、扉页有几页」。失败返回 nil（界面显示"未找到"）。
+    static func detect(folderPath: String) -> Probe? {
+        let path = PathKit.normalize(folderPath)
+        guard PathKit.isDirectory(path), let tool = locateTool() else { return nil }
+        let toolDir = (tool as NSString).deletingLastPathComponent
+        guard let py = EngineLocator.locatePython(toolDir: toolDir) else { return nil }
+        guard let result = Shell.capture(py,
+                                         [tool] + arguments(folderPath: path) + ["--detect"],
+                                         workingDirectory: toolDir,
+                                         environment: EngineLocator.environment(toolDir: toolDir)),
+              result.succeeded else { return nil }
+        let line = result.output.split(separator: "\n").last.map(String.init) ?? result.output
+        guard let data = line.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(Probe.self, from: data)
+    }
 
     static func run(folderPath rawPath: String,
                     log: Logger,
                     nestOutlines: Bool = false,
                     mergeEditorsPage: Bool = false,
                     appendBackCover: Bool = false) {
+        let path = PathKit.normalize(rawPath)
         log("运行合并文件的函数\n")
-        let folderPath = PathKit.normalize(rawPath)
-        log("文件夹路径：\(folderPath)\n")
+        log("文件夹路径：\(path)\n")
 
-        let folders = PathKit.numberedEntries(in: folderPath)
-        let merger = PDFMerger()
-        merger.nestSourceOutlines = nestOutlines
-
-        // ---------- 扉页 ----------
-        var coverPages = 0
-        do {
-            let cover = PathKit.join(folderPath, "扉页.pdf")
-            log("找pdf路径：\(cover)\n")
-            if PathKit.exists(cover) {
-                try merger.appendWithoutTitle(cover)
-                coverPages = merger.pageCount
-            } else {
-                log("没有找到扉页文件！\n")
-            }
-            merger.addTopLevelItem(title: "cover", pageIndex: 0)
-        } catch {
-            log("处理扉页时出错啦：\(error.localizedDescription)\n")
+        guard PathKit.isDirectory(path) else {
+            log("路径不是文件夹：\(path)\n")
+            log("程序错误\n")
+            return
+        }
+        guard let tool = locateTool() else {
+            log("未找到合并引擎 Engine/mergepdf.py。\n")
+            log("按顺序找两处：① app 包内 Contents/Resources/Engine/mergepdf.py；")
+            log("② 从 app 所在目录逐级向上找 Engine/mergepdf.py\n")
+            return
+        }
+        let toolDir = (tool as NSString).deletingLastPathComponent
+        guard let py = EngineLocator.locatePython(toolDir: toolDir) else {
+            log("未找到 python3。请先安装（brew install python3）。\n")
+            return
         }
 
-        // ---------- 编委信息页（可选，插在扉页之后）----------
-        if mergeEditorsPage {
-            let detection = EditorsPageDetector.detect(in: folderPath)
-            if let candidate = detection.chosen {
-                let path = PathKit.join(folderPath, candidate.fileName)
-                log("找编委信息页：\(path)\n")
-                do {
-                    try merger.appendIgnoringOutline(path, title: "编委页")
-                    log("已加入编委信息页：\(candidate.fileName)（\(candidate.pageCount) 页，\(candidate.matchedBy)）\n")
-                } catch {
-                    log("处理编委信息页时出错啦：\(error.localizedDescription)\n")
-                }
-                if detection.isAmbiguous {
-                    log("⚠️ 另有 \(detection.others.count) 个文件也像编委页，已忽略：\(detection.others.joined(separator: "、"))\n")
-                    log("   建议只保留最终版，并命名为「编委页.pdf」。\n")
-                }
-            } else {
-                log("未找到编委信息页文件，已跳过。建议把该文件命名为「编委页.pdf」放在期目录下。\n")
-            }
-
-            // 扉页不止一页时，可能它本身就已经含编委页，插进去就重复了 —— 只提示，不擅自决定
-            if coverPages > 1 {
-                log("⚠️ 扉页.pdf 有 \(coverPages) 页，可能已经包含编委信息页，请确认合并结果是否重复。\n")
-            }
+        let status = Shell.run(
+            py,
+            [tool] + arguments(folderPath: path,
+                               nestOutlines: nestOutlines,
+                               mergeEditorsPage: mergeEditorsPage,
+                               appendBackCover: appendBackCover),
+            workingDirectory: toolDir,
+            environment: EngineLocator.environment(toolDir: toolDir),
+            log: log
+        )
+        log("\n")
+        if status == 0 {
+            log("运行结束，请确认上方是否有错。\n")
+        } else {
+            log("❌ 合并失败（退出码 \(status)）。\n")
         }
-
-        // ---------- 目录与正文 ----------
-        for name in folders {
-            let folder = PathKit.join(folderPath, name)
-
-            if name.hasPrefix("000") {
-                let chinese = PathKit.join(folder, "Chinese Content.pdf")
-                log("找pdf路径：\(chinese)\n")
-                let english = PathKit.join(folder, "contents.pdf")
-                log("找pdf路径：\(english)\n")
-
-                if PathKit.exists(chinese) {
-                    do { try merger.append(chinese, title: "Chinese Content") }
-                    catch { log("处理中文目录时出错啦：\(error.localizedDescription)\n") }
-                } else {
-                    log("没有找到中文目录文件！\n")
-                }
-
-                if PathKit.exists(english) {
-                    do { try merger.append(english, title: "contents") }
-                    catch { log("处理英文目录时出错啦：\(error.localizedDescription)\n") }
-                } else {
-                    log("没有找到英文目录文件！\n")
-                }
-            } else {
-                // 目录名形如 "03 Liang_Zhang"，取最后一段作为文章名
-                let folderName = name
-                    .split(whereSeparator: { $0.isWhitespace })
-                    .last
-                    .map(String.init) ?? name
-                let pdf = PathKit.join(folder, "\(folderName).pdf")
-                log("找pdf路径：\(pdf)\n")
-
-                // 先按标准名找；找不到再宽松匹配（应对 `Chen Liu.pdf` 这种把
-                // 下划线写成空格的情况 —— 原版会整篇跳过且不报错，实测丢过 33 页）
-                if let found = PathKit.resolveArticlePDF(folder: folder, folderName: folderName) {
-                    if found.actualName != "\(folderName).pdf" {
-                        log("⚠️ 实际文件名是「\(found.actualName)」，与文件夹名「\(folderName)」不一致，已按宽松匹配采用它。\n")
-                    }
-                    do { try merger.append(found.path, title: folderName) }
-                    catch { log("处理\(folderName)时出错啦：\(error.localizedDescription)\n") }
-                } else {
-                    log("没有找到\(folderName)文件！\n")
-                }
-            }
-        }
-
-        // ---------- 封底附加页（可选，放最后）----------
-        if appendBackCover {
-            if let back = EditorsPageDetector.detectBackCover(in: folderPath) {
-                let path = PathKit.join(folderPath, back.fileName)
-                log("找封底页：\(path)\n")
-                do {
-                    try merger.appendIgnoringOutline(path, title: "封底")
-                    log("已在末尾加入封底页：\(back.fileName)（\(back.pageCount) 页，\(back.matchedBy)）\n")
-                } catch {
-                    log("处理封底页时出错啦：\(error.localizedDescription)\n")
-                }
-            } else {
-                log("未找到封底页文件，已跳过。\n")
-            }
-        }
-
-        // ---------- 写出 ----------
-        let output = PathKit.join(folderPath, "合并\(PathKit.timestamp()).pdf")
-        do {
-            try merger.write(to: output)
-            log("已生成合并文件（共 \(merger.pageCount) 页）：\(output)\n")
-        } catch {
-            log("写出合并文件失败：\(error.localizedDescription)\n")
-        }
-
-        log("运行结束，请确认上方是否有错。\n")
     }
 }

@@ -68,7 +68,11 @@ from slcn.docxxml import Table, read_blocks, read_footnotes, segs_to_text  # noq
 from slcn.footnotes import entry_to_bib  # noqa: E402
 from slcn import bibcheck, footref  # noqa: E402
 
-REPO = os.path.abspath(os.path.join(_HERE, "..", ".."))
+# 稿件库锚点（第 100 条）：开发主场搬到公开仓后，稿件库可能在别处 —— 由 `slcn/paths.py` 统一解析。
+# ⚠️ 找不到时**保持 None**，由 main() 打印说明并正常退出；**不要**回退到"Engine 上两级"，
+#    那在公开仓里会指向 <GitHub> 之类的无关目录，扫出莫名其妙的结果。
+from slcn import paths as _paths  # noqa: E402
+REPO = _paths.manuscripts_root()
 OUT_DIR = os.path.join(_HERE, "out")
 OUT_CSV = os.path.join(OUT_DIR, "docx_audit.csv")
 OUT_TXT = os.path.join(OUT_DIR, "docx_audit.txt")
@@ -916,6 +920,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="输出目录（默认 Engine/out/）。**并行跑多份普查时用隔离目录**，"
                          "否则会互相覆盖同一份 csv/txt；也可用环境变量 SLCN_AUDIT_OUT。")
     args = ap.parse_args(argv)
+    if REPO is None:
+        # 公开仓/CI 上没有稿件库是**正常情况**：说明一句、正常退出，不报错
+        print(f"≡ docx_audit：{_paths.describe()}")
+        return 0
     if args.out_dir:
         # 只改输出位置，判据/口径一律不变（为了不改动冻结的快照也能复核）
         global OUT_DIR, OUT_CSV, OUT_TXT

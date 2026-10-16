@@ -1162,8 +1162,10 @@ let supportSrc = rawFile(srcFile("Core/Support.swift"))
 check("j10-run-stdin-param", "`Shell.run` 有 `stdin: String? = nil`（不给 = 与从前一样，不碰 standardInput）",
       supportSrc.contains("stdin: String? = nil") && supportSrc.contains("if stdin != nil {"),
       "含参数=\(supportSrc.contains("stdin: String? = nil"))")
+// ⚠️ 第 95 条给 capture 加了 `environment:`（引擎预览要挂 PYTHONPATH=vendor），
+//    所以这里**只断言 stdin 参数还在**，不锁死它后面有没有别的参数。
 check("j11-capture-stdin-param", "`Shell.capture` 也有 `stdin:`（预览要收回那一行输出）；不给仍是 /dev/null",
-      supportSrc.contains("workingDirectory: String? = nil,\n                        stdin: String? = nil)")
+      supportSrc.contains("stdin: String? = nil")
         && supportSrc.contains("process.standardInput = FileHandle.nullDevice"),
       "")
 check("j12-feed-pipe", "stdin 写进 Pipe 并**在后台队列**写完关闭（避免管道死锁）",

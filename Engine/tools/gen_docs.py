@@ -70,7 +70,13 @@ STATES = ("ok", "fail", "absent")
 # `slcn/bibparse.py`（唯一一份健壮 bib 解析器）、`slcn/bibreport.py`（回读校验报告）、
 # `slcn/aibib.py`（把 AI 返回的条目并入 reference.bib）——`checkbib.py` 与 `convert.py`
 # 都 import 它们，包内缺一份或过期一份，「文献回读校验」与「并入」两条通道当场就废。
-APP_FILES = ["convert.py", "checkbib.py", "slcn/llm.py", "slcn/docxsource.py",
+APP_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "engine_main.py",
+             "cleantemp.py", "compileall.py", "proofcheck.py",
+             "infocheck.py", "toc.py",
+             "slcn/infocheck.py", "slcn/toc.py", "slcn/toctemplate.py",
+             "slcn/content_templates.py",
+             "slcn/proofcheck.py", "slcn/pdfmerge.py", "slcn/platform.py",
+             "slcn/llm.py", "slcn/docxsource.py",
              "slcn/refmark.py", "slcn/bibparse.py", "slcn/bibreport.py", "slcn/aibib.py",
              # 这两条也是「改了就必进包、否则行为不对」的模块，漏检过一次（第 66 条：
              # 解析器修好了但包内还是旧版），所以一并纳入比对。

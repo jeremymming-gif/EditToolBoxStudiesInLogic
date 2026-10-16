@@ -185,45 +185,13 @@ enum ConvertFeature {
         return out
     }
 
-    /// 找 convert.py。顺序：用户指定 → app 包内 → 从 app 往上找仓库
-    static func locateTool() -> String? {
-        let fm = FileManager.default
+    /// 找 convert.py。**实现已下沉到 `EngineLocator`**（第 95 条：好几页都要找引擎，
+    /// 各自找一遍迟早变成两个真相）。这里保留同名转发，调用方与测试都不用改。
+    static func locateTool() -> String? { EngineLocator.convertTool() }
 
-        if let custom = UserDefaults.standard.string(forKey: "convertToolPath"),
-           !custom.isEmpty, fm.fileExists(atPath: custom) {
-            return custom
-        }
-
-        // app 包内（build.sh 会把转换引擎 Engine/ 拷进 Resources）
-        if let res = Bundle.main.resourcePath {
-            let p = res + "/Engine/convert.py"
-            if fm.fileExists(atPath: p) { return p }
-        }
-
-        // 从 app 所在位置逐级向上找仓库里的 Engine（Engine）
-        var dir = Bundle.main.bundleURL.deletingLastPathComponent()
-        for _ in 0..<6 {
-            let p = dir.path + "/Engine/convert.py"
-            if fm.fileExists(atPath: p) { return p }
-            let parent = dir.deletingLastPathComponent()
-            if parent.path == dir.path { break }
-            dir = parent
-        }
-        return nil
-    }
-
-    /// 找可用的 python3。转换依赖 `pypinyin`（项目本地 vendor/ 里）。
+    /// 找可用的 python3（转发到 `EngineLocator`，同上）。
     static func locatePython(toolDir: String) -> String? {
-        let candidates = [
-            "/opt/homebrew/bin/python3",
-            "/usr/local/bin/python3",
-            "/usr/bin/python3",
-        ]
-        let fm = FileManager.default
-        for c in candidates where fm.fileExists(atPath: c) {
-            return c
-        }
-        return nil
+        EngineLocator.locatePython(toolDir: toolDir)
     }
 
     /// 拼命令行参数：**数组形式**，不做 shell 字符串插值。

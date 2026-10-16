@@ -7,6 +7,20 @@ import Combine
 ///
 /// 如果以后安装了完整 Xcode，可以把这些类换回 @State，代码会更简洁。
 
+/// 「一校核查」页的界面状态（第 92 条）。
+///
+/// 为什么不是一个 `@State`：本机只有 Command Line Tools，SwiftUI 的 `@State` 宏插件不可用，
+/// 所以界面状态一律用 `ObservableObject` 承载（见本文件开头那段说明）。
+final class ProofCheckModel: ObservableObject {
+    /// 初排稿 .tex 路径
+    @Published var tex: String = ""
+    /// 是否把「无歧义」的命中另存为新文件（输入文件不动）
+    @Published var fix: Bool = false
+    /// 语种：`自动` / `zh` / `en`（`自动` 交给引擎按模板字段判）
+    @Published var lang: String = "自动"
+    @Published var running: Bool = false
+}
+
 /// 通用功能页的界面状态：一个路径输入框 + 一个「运行中」标记
 final class PathRunnerModel: ObservableObject {
     @Published var path: String = ""
@@ -855,24 +869,23 @@ final class InfoCheckModel: ObservableObject {
     @Published var report: InfoReport? = nil
 }
 
-/// 「合并文件」页的探测状态：在运行前就把"识别到哪个编委页"显示出来，
+/// 「合并文件」页的探测状态：在运行前就把"识别到哪个编委页/封底页"显示出来，
 /// 这样用户点「运行」之前就知道会发生什么。
+///
+/// 第 99 条起，识别**问引擎**（`mergepdf.py --detect`）—— 预览与真正合并必然一致。
 final class EditorsProbeModel: ObservableObject {
-    @Published var detection: EditorsPageDetection = .none
-    @Published var coverPages: Int = 0
+    @Published var probe: MergeFeature.Probe? = nil
     /// 是否已经扫描过（用于区分"没勾选"和"勾了但没找到"）
     @Published var scanned: Bool = false
 
     func refresh(path: String, enabled: Bool) {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard enabled, !trimmed.isEmpty, PathKit.isDirectory(trimmed) else {
-            detection = .none
-            coverPages = 0
+            probe = nil
             scanned = false
             return
         }
-        detection = EditorsPageDetector.detect(in: trimmed)
-        coverPages = EditorsPageDetector.coverPageCount(in: trimmed)
+        probe = MergeFeature.detect(folderPath: trimmed)
         scanned = true
     }
 }

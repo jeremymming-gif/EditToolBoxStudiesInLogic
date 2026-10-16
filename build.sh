@@ -74,6 +74,11 @@ if [ -f "$CONVERT_SRC/convert.py" ]; then
   # 好让将来的 Windows 外壳复用同一份逻辑。mac 目前仍走 Swift + PDFKit 那条，
   # 但把它打进包零成本，将来 GUI 切过来时不必再改打包逻辑。
   [ -f "$CONVERT_SRC/mergepdf.py" ] && cp "$CONVERT_SRC/mergepdf.py" "$DEST/"
+  # 期目录级动作与一校核查（第 91/92 条，2026-10-15 从 mac 版搬进引擎）：
+  # mac 界面暂时还走 Swift 那份，但打进包零成本，将来加标签页时不必再改打包逻辑。
+  for _extra in cleantemp.py compileall.py proofcheck.py infocheck.py toc.py engine_main.py; do
+    [ -f "$CONVERT_SRC/$_extra" ] && cp "$CONVERT_SRC/$_extra" "$DEST/"
+  done
   cp -R "$CONVERT_SRC/slcn" "$DEST/slcn"
   # pypinyin 是项目本地依赖，一并带上，免得用户还要自己装
   if [ -d "$CONVERT_SRC/vendor" ]; then

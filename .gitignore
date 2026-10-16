@@ -10,8 +10,9 @@
 # ─────────────────────────────────────────────────────────────
 # 构建产物与本地依赖 —— **工具目录自足**（2026-10-15 拆仓后补）
 #
-#   为什么要写在这里：忽略规则原来只在**稿件仓根**的 `.gitignore`（`MacToolbox/dist/`、
-#   `MacToolbox/Engine/vendor/`）。拆仓只带 `MacToolbox/` 这一层，根规则不跟着走 ——
+#   为什么要写在这里：2026-10-16 之前开发在稿件仓，忽略规则只在**稿件仓根**的 `.gitignore`
+#   （`MacToolbox/dist/`、`MacToolbox/Engine/vendor/`）；拆仓时只带了 `MacToolbox/` 这一层，
+#   根规则不跟着走 ——
 #   结果公开仓里 `git add -A` 把 373 个 dist 文件（29MB 的 .app）与 460 个 vendor 文件
 #   （mac 轮子）一起提交了。规则必须跟着目录走。
 #
@@ -26,7 +27,7 @@ Engine/vendor/
 Engine/out/
 
 # Python 字节码缓存：**任何位置**都排除（原来只写了 Engine/**，结果
-# 外壳（WindowsShell/ 或改名后的 sources-win/）下的 .pyc 被提交进公开仓 —— 2026-10-15 实测）。
+# 外壳（`sources-win/`，旧名 WindowsShell/）下的 .pyc 曾被提交进公开仓 —— 2026-10-15 实测）。
 __pycache__/
 *.pyc
 

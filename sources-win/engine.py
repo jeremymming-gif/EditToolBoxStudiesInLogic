@@ -26,8 +26,10 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-#: 三个 CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）
-ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py")
+#: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）
+ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
+           "cleantemp.py", "compileall.py", "proofcheck.py",
+           "infocheck.py", "toc.py")
 
 
 # ── 定位引擎与解释器 ─────────────────────────────────────────────────────
@@ -168,6 +170,78 @@ def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
         if on:
             cmd.append(flag)
     return EngineCall(cmd, "mergepdf.py", "合并文件")
+
+
+def cleantemp_call(*, folder: str, dry_run: bool = False) -> EngineCall:
+    """「删除临时文件」：`cleantemp.py --folder …`（不删 .tex/.pdf/.log）。"""
+    cmd = _base_cmd("cleantemp.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--folder", folder]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "cleantemp.py", "删除临时文件")
+
+
+def compileall_call(*, folder: str, only: str = "", dry_run: bool = False) -> EngineCall:
+    """「编译全部」：`compileall.py --folder …`（xelatex → biber → xelatex ×2）。"""
+    cmd = _base_cmd("compileall.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--folder", folder]
+    if only.strip():
+        cmd += ["--only", only.strip()]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "compileall.py", "编译全部")
+
+
+def proofcheck_call(*, tex: str, fix: bool = False, lang: str = "") -> EngineCall:
+    """「一校核查」：`proofcheck.py --tex …`（按《排校手册》《流程化经验书》逐条核查）。"""
+    cmd = _base_cmd("proofcheck.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--tex", tex]
+    if lang:
+        cmd += ["--lang", lang]
+    if fix:
+        cmd.append("--fix")
+    return EngineCall(cmd, "proofcheck.py", "一校核查")
+
+
+def infocheck_call(*, folder: str, preview: bool = False) -> EngineCall:
+    """「检查tex信息」：`infocheck.py --folder …`。
+
+    `preview=True` 时加 `--preview`：引擎只把检查结果 JSON 打到 stdout、**不落文件**，
+    界面用它填表格（口径与真跑一遍完全一致，不会出现"表里 10 篇、报告里 9 篇"）。
+    """
+    cmd = _base_cmd("infocheck.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--folder", folder]
+    if preview:
+        cmd.append("--preview")
+    return EngineCall(cmd, "infocheck.py", "检查tex信息（预览）" if preview else "检查tex信息")
+
+
+def toc_call(*, report: str, template: str = "") -> EngineCall:
+    """「生成目录」：`toc.py --report …`（本期设置由界面先写进 `目录设置.json`）。"""
+    cmd = _base_cmd("toc.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--report", report]
+    if template.strip():
+        cmd += ["--template", template.strip()]
+    return EngineCall(cmd, "toc.py", "生成目录")
+
+
+def toc_preview_call(*, report: str) -> EngineCall:
+    """目录预览：`toc.py --report … --preview`（篇目清单 + 模板来源，JSON，不落文件）。"""
+    cmd = _base_cmd("toc.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--report", report, "--preview"]
+    return EngineCall(cmd, "toc.py", "目录预览")
 
 
 # ── 环境变量与执行 ───────────────────────────────────────────────────────

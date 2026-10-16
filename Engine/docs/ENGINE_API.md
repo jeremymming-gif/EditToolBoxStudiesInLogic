@@ -13,7 +13,8 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
 ## 一、引擎在哪、怎么被调用
 
 ```text
-<仓库>/Engine/                 ← 唯一一份逻辑（convert.py + checkbib.py + mergepdf.py + slcn/）
+<仓库>/Engine/                 ← 唯一一份逻辑（convert.py + checkbib.py + mergepdf.py
+                                                 + cleantemp.py + compileall.py + proofcheck.py + slcn/）
 <仓库>/Engine/engine_main.py   ← 打包用：把三个 CLI 冻成**一个** exe 的分发入口（第 89 条）
 <仓库>/Engine/vendor/          ← 随包依赖（pypdf / pypinyin / lxml）
 <仓库>/sources-mac/                ← mac 外壳（SwiftUI）
@@ -29,7 +30,7 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
 PYTHONPATH=<…>/Engine/vendor      # vendor 依赖
 PYTHONUNBUFFERED=1                # ⚠️ 不设的话日志会按 8KB 块缓冲，界面看着像卡死
 SLCN_LLM_KEY=…                    # 密钥**只走环境变量**，绝不进 argv（argv 在 ps 里谁都能看）
-PYTHONIOENCODING=utf-8            # Windows 尤其要设；引擎内部也会自己 reconfigure（见 §六）
+PYTHONIOENCODING=utf-8            # Windows 尤其要设；引擎内部也会自己 reconfigure（见 §七）
 ```
 
 - **解释器**：Python ≥ 3.11（开发机用 3.14）。Windows 打包时用 PyInstaller 把解释器一起打进去。
@@ -115,18 +116,68 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
   工具箱自己生成的 `合并*.pdf` **一律排除**，不会被当成候选。
 - **退出码**：`0` 合并成功（可能带 `⚠` 警告）；`2` 期目录不存在 / 写不出去。
 - **最后一行**：`完成。合并文件：<绝对路径>（共 N 页）` —— 外壳靠它拿产物路径与页数。
-- 逻辑在 `slcn/pdfmerge.py`。**mac 外壳目前仍走 Swift + PDFKit 那条**
-  （`sources-mac/Core/PDFMerger.swift` + `sources-mac/Features/MergeFeature.swift`），
-  两条路的输出已用真实成品期目录**逐条比对过**（176 页、102 条大纲、层级/名字/页码全同，
-  见 `tests/test_pdfmerge.py` 的 (f) 组）；将来 mac 切到引擎这份时，以引擎为准。
+- 逻辑在 `slcn/pdfmerge.py`。**两个外壳都已改调它**（第 99 条）：
+  mac 侧原来的 `PDFMerger.swift` / `ExtraPages.swift` / `EditorsPage.swift` **已删除**，
+  `sources-mac/Features/MergeFeature.swift` 只剩「拼参数 + 转发 + 解析 `--detect` 的预览」。
+  切换前两条路（Swift + PDFKit 那条与引擎这条）的输出已用真实成品期目录**逐条比对过**
+  （176 页、102 条大纲、层级/名字/页码全同，见 `tests/test_pdfmerge.py` 的 (f) 组）。
+- **`--detect`**：只探测不合并，输出「会插哪一份编委页/封底页、扉页页数」的 JSON ——
+  界面运行前的预览用它，**别在界面里自己扫文件**（否则会出现"预览说找到 A、合并时插了 B"）。
 
-## 五、开发用入口（**不随 App 分发**）
+## 五、入口 4–8：期目录级的动作、一校核查、检查tex信息与生成目录（第 91、92、94 条）
+
+```bash
+python3 cleantemp.py   --folder "<期目录>" [--dry-run]
+python3 compileall.py  --folder "<期目录>" [--only 01,03] [--dry-run]
+python3 proofcheck.py  --tex "<初排稿.tex>" [--lang zh|en] [--out <报告.md>] [--fix]
+python3 infocheck.py   --folder "<期目录>" [--out-dir <目录>]
+python3 infocheck.py   --folder "<期目录>" --preview   # 界面用：检查结果 JSON（不写任何文件）
+python3 toc.py         --report "<信息检查.txt>" [--template <期目录>] [--settings <目录设置.json>]
+python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用：篇目清单 + 模板来源（JSON）
+```
+
+| 入口 | 干什么 | 退出码 | 最后一行（外壳靠它拿结果） |
+|---|---|---|---|
+| `cleantemp.py` | 递归删 LaTeX 编译中间文件（`.aux .bbl .bcf .blg .out .run.xml .synctex.gz` + `.DS_Store`）；**不删** `.tex/.pdf/.sty/.bib/.log` | `0` 成功；`2` 目录不存在 | `完成。已删除 N 个临时文件（目录：…）` |
+| `compileall.py` | 对每个 `NN 作者/` 子目录跑 `xelatex → biber -l=zh_pinyin → xelatex → xelatex`；跳过 `000 目录`；某篇失败**只停那一篇**并回显 `.log` 里的 `!` 摘要 | `0` 全成功；`1` 有失败；`2` 用法/目录错误 | `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）` |
+| `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（26 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改** | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
+| `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
+| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件） | `0` 两份都生成（或 preview 成功）；`1` 只生成一份；`2` 用法/文件错误 | `完成。生成目录 N 份（<目录>）` |
+
+**产物**：
+- `cleantemp` / `compileall`：原地操作（前者删文件、后者生成 `.pdf` 与 `.log`）。
+- `proofcheck`：同目录写 `<stem>_一校核查.md`（报告）；
+  加 `--fix` 时**另写** `<stem>_一校核查后.tex`——**输入文件一个字节都不动**。
+- `infocheck`：期目录根下写 `信息检查<时间戳>.txt`（**CRLF**，与原版/mac 版逐字节一致）
+  与 `.json`（结构化，供 toc 与界面用）；可用 `--out-dir` 挪走。
+- `toc`：报告同目录写 `Chinese Content_<时间戳>.tex` 与 `contents_<时间戳>.tex`
+  （**先英文后中文**，与原版 `run_tab5` 一致）。
+  本期设置（栏目/主持人/标题断行上限）读同目录的 `目录设置.json`，缺失字段逐项回落默认值。
+
+**给外壳的注意**：`compileall` 是长任务（每篇几十秒），必须用第 82 条的实时日志；
+`proofcheck` 的 `1` 表示「有命中」而不是失败，外壳不要把它显示成错误；
+`toc` 的篇目预览必须调 `--preview`（**别在界面里自己解析报告**），否则会出现
+「清单里勾了 3 篇、生成时只认 2 篇」这种对不上的情况。
+
+**mac 界面的切换进度（第 95 条起，按用户定的顺序，第 99 条完成）**：**九页全部改调引擎** ——
+初排转换 / 文献回读校验 / 一校核查 / 生成目录（95）/ 检查tex信息（96）/
+删除临时文件 + 编译全部（98）/ **合并文件（99）**。
+`sources-mac/` 里已经**没有任何文档逻辑**：界面只做「取值 → 拼参数 → 显示日志/表格」。
+切一个删一份 Swift 逻辑（`ContentFeature.swift` + `TocTemplate.swift` 已在第 95 条删除；
+`InfoCheckFeature.swift` 在第 96 条瘦身成"只拼参数 + 解产物"）。
+
+界面侧的通用约定（切过两页后总结出来的）：
+· **表格/清单数据一律问引擎**（`--preview`），界面不自己解析 —— 否则表格与报告会对不上；
+· 只有**展示用的聚合**（如不一致项提示串）可以留在界面，判据必须还在引擎里；
+· 界面把设置写进引擎要读的那个文件（如 `目录设置.json`），**不要用命令行传设置**，避免两个真相。
+
+## 六、开发用入口（**不随 App 分发**）
 
 `docx_audit.py`（全库体例普查，**冻结基线**：改解析器必须 `--out-dir /tmp/…` 或 `SLCN_AUDIT_OUT`）、
 `corpus.py`（全库回归，约 10 分钟）、`ablation.py` / `ablation_corpus.py`（规则消融）。
 这些只在开发机跑，**不要**打进 Release 资产。
 
-## 六、平台矩阵（第 86 条：引擎平台中立化的口径）
+## 七、平台矩阵（第 86 条：引擎平台中立化的口径）
 
 | 需要什么 | macOS | Windows | Linux |
 |---|---|---|---|
@@ -156,7 +207,7 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
 - **字体**：模板 `fontset=windows` 指定 Times New Roman / KaiTi，Windows 上本来就是这套；
   macOS 用户需自备同名字体（既有行为，未变）。
 
-## 七、外壳的义务（写下来，省得两个外壳各做一半）
+## 八、外壳的义务（写下来，省得两个外壳各做一半）
 
 1. **只调 CLI，不复制逻辑**：引擎只有一份；规则改动只在 `Engine/` 里改。
 2. **UTF-8 管道**：设 `PYTHONIOENCODING=utf-8`，按 UTF-8 解码子进程输出（否则中文乱码）。
@@ -167,7 +218,7 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
 7. **绝对路径**：源文件、输出目录、`--returned` 等一律传绝对路径；不依赖 CWD。
 8. **别改产物**：产物目录里的文件由引擎负责，外壳只读、只打开（唯一例外是用户显式点的「删除临时文件」）。
 
-## 八、版本、打包与升级
+## 九、版本、打包与升级
 
 - **版本号只有一处**：`Engine/slcn/__init__.py` 的 `__version__`。
   `convert.py --version` / `checkbib.py --version` 打印它；mac 的 `build.sh` **现取**它写进
@@ -192,12 +243,12 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
   所以 mac 资产只发源码/压缩包，正文里写一条 `xattr -dr com.apple.quarantine`；
   Windows 侧未签名 exe 会让 SmartScreen 提示「更多信息 → 仍要运行」。
 
-## 九、兼容性纪律（改引擎时自查）
+## 十、兼容性纪律（改引擎时自查）
 
 1. **只增不改**：新增参数必须带默认值；不改既有参数的默认行为。
 2. **stdout 只增不改**：外壳认的那几类行（§二）不许改语义；新信息一律**新增**行。
 3. **产物路径不许改**：`<out>/<作者名>/…` 的布局与文件名是契约的一部分。
    （历史上 `reference.bib.ai前`、`_文献核实.md`、`_回读校验报告.md` 都是这么定下来的。）
-4. **退出码语义不许改**（§二/§三）。
+4. **退出码语义不许改**（§二/§三/§五）。
 5. 改完跑：`tests/test_platform.py`（平台）、`tests/test_docs_consistency.py`（文档），
    以及 `README.md` 固定验收链条里的那六项。

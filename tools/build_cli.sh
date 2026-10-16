@@ -12,18 +12,14 @@ swiftc -O -swift-version 5 \
   -module-cache-path "$PROJ/.mc" \
   "$PROJ/sources-mac/Core/Log.swift" \
   "$PROJ/sources-mac/Core/Support.swift" \
-  "$PROJ/sources-mac/Core/PDFMerger.swift" \
   "$PROJ/sources-mac/Core/ViewModels.swift" \
-  "$PROJ/sources-mac/Core/EditorsPage.swift" \
-  "$PROJ/sources-mac/Core/ExtraPages.swift" \
   "$PROJ/sources-mac/Features/MergeFeature.swift" \
   "$PROJ/sources-mac/Features/DeleteTempFeature.swift" \
   "$PROJ/sources-mac/Features/CompileFeature.swift" \
   "$PROJ/sources-mac/Features/InfoCheckFeature.swift" \
-  "$PROJ/sources-mac/Features/ContentFeature.swift" \
   "$PROJ/sources-mac/Features/ContentTemplates.swift" \
   "$PROJ/sources-mac/Features/TocSettings.swift" \
-  "$PROJ/sources-mac/Features/TocTemplate.swift" \
+  "$PROJ/sources-mac/Features/TocFeature.swift" \
   "$PROJ/tools/cli/main.swift" \
   -o "$PROJ/.build/toolbox-cli"
 

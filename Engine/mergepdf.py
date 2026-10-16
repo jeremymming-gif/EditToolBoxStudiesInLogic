@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="把各篇 PDF 自带的小节书签挂到该篇文章的书签之下（默认平铺在顶层，与原版一致）")
     ap.add_argument("--editors-page", action="store_true",
                     help="把编委信息页插在扉页之后（按文件名识别，见 slcn/pdfmerge.py）")
+    ap.add_argument("--detect", action="store_true",
+                    help="只探测编委页/封底页/扉页页数，输出 JSON（给界面做运行前预览），不合并")
     ap.add_argument("--back-cover", action="store_true",
                     help="把封底附加页放到最后（形如 cover+bottom…pdf）")
     args = ap.parse_args(argv)
@@ -49,6 +51,24 @@ def main(argv: list[str] | None = None) -> int:
     if not os.path.isdir(folder):
         print(f"\n❌ 期目录不存在：{folder}\n", file=sys.stderr)
         return 2
+
+    if args.detect:
+        # 给界面用：**与真正合并时同一套识别逻辑**，运行前就知道会插哪一份编委页/封底页。
+        # 界面不该自己去扫文件 —— 那样"预览说找到 A、合并时插了 B"迟早发生。
+        import json as _json
+        chosen, others = pdfmerge.detect_editors_page(folder)
+        back = pdfmerge.detect_back_cover(folder)
+        cover = os.path.join(folder, "扉页.pdf")
+        payload = {
+            "editorsPage": ({"fileName": chosen.file_name, "pageCount": chosen.page_count,
+                             "matchedBy": chosen.matched_by} if chosen else None),
+            "others": others,
+            "backCover": ({"fileName": back.file_name, "pageCount": back.page_count,
+                           "matchedBy": back.matched_by} if back else None),
+            "coverPages": (len(pdfmerge.PdfReader(cover).pages) if os.path.isfile(cover) else 0),
+        }
+        print(_json.dumps(payload, ensure_ascii=False))
+        return 0
 
     try:
         res = pdfmerge.merge_issue(

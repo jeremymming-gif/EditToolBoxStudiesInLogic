@@ -72,14 +72,23 @@ struct MergeTab: View {
         }
         .task {
             // 首次出现时也刷新一次，这样默认勾选的选项一打开就有预览
-            probe.refresh(path: model.path, enabled: settings.mergeEditorsPage)
+            probe.refresh(path: model.path, enabled: needsProbe)
         }
         .onChange(of: model.path) { _, newValue in
-            probe.refresh(path: newValue, enabled: settings.mergeEditorsPage)
+            probe.refresh(path: newValue, enabled: needsProbe)
         }
-        .onChange(of: settings.mergeEditorsPage) { _, newValue in
-            probe.refresh(path: model.path, enabled: newValue)
+        .onChange(of: settings.mergeEditorsPage) { _, _ in
+            probe.refresh(path: model.path, enabled: needsProbe)
         }
+        .onChange(of: settings.appendBackCover) { _, _ in
+            // 封底页的预览也读同一份引擎探测结果（第 99 条起），所以它一勾也要探测
+            probe.refresh(path: model.path, enabled: needsProbe)
+        }
+    }
+
+    /// 两个开关任一需要预览就得探测：一次 `--detect` 同时给出编委页与封底页。
+    private var needsProbe: Bool {
+        settings.mergeEditorsPage || settings.appendBackCover
     }
 
     // MARK: - 封底页预览
@@ -92,7 +101,7 @@ struct MergeTab: View {
         guard !trimmed.isEmpty, PathKit.isDirectory(trimmed) else {
             return "请先选择期目录，程序会自动识别 cover+bottom 这类封底页。"
         }
-        guard let back = EditorsPageDetector.detectBackCover(in: trimmed) else {
+        guard let back = probe.probe?.backCover else {
             return "未找到封底页文件，运行时会自动跳过。"
         }
         return "已识别封底页：\(back.fileName)（\(back.pageCount) 页），会放在最后一页。"
@@ -102,7 +111,7 @@ struct MergeTab: View {
         guard settings.appendBackCover else { return "info.circle" }
         let trimmed = model.path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, PathKit.isDirectory(trimmed) else { return "questionmark.circle" }
-        return EditorsPageDetector.detectBackCover(in: trimmed) == nil
+        return probe.probe?.backCover == nil
             ? "exclamationmark.triangle.fill" : "checkmark.seal.fill"
     }
 
@@ -110,7 +119,7 @@ struct MergeTab: View {
         guard settings.appendBackCover else { return .secondary }
         let trimmed = model.path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, PathKit.isDirectory(trimmed) else { return .secondary }
-        return EditorsPageDetector.detectBackCover(in: trimmed) == nil ? .orange : .green
+        return probe.probe?.backCover == nil ? .orange : .green
     }
 
     // MARK: - 预览文字
@@ -122,17 +131,17 @@ struct MergeTab: View {
         guard probe.scanned else {
             return "请先选择期目录，程序会自动识别其中的编委信息页。"
         }
-        guard let candidate = probe.detection.chosen else {
+        guard let candidate = probe.probe?.editorsPage else {
             return "未找到编委信息页，运行时会自动跳过。建议把该文件命名为「编委页.pdf」放在期目录下。"
         }
         var text = "已识别：\(candidate.fileName)（\(candidate.pageCount) 页，\(candidate.matchedBy)）"
-        if probe.coverPages > 1 {
-            text += "　⚠️ 扉页.pdf 有 \(probe.coverPages) 页，可能已含编委页，请确认是否会重复。"
+        if (probe.probe?.coverPages ?? 0) > 1 {
+            text += "　⚠️ 扉页.pdf 有 \(probe.probe?.coverPages ?? 0) 页，可能已含编委页，请确认是否会重复。"
         } else if candidate.pageCount > 1 {
             text += "　⚠️ 该文件有 \(candidate.pageCount) 页，请确认它是否也含封面。"
         }
-        if probe.detection.isAmbiguous {
-            text += "　⚠️ 另有 \(probe.detection.others.count) 个疑似文件已忽略：\(probe.detection.others.joined(separator: "、"))"
+        if let p = probe.probe, p.isAmbiguous {
+            text += "　⚠️ 另有 \(p.others.count) 个疑似文件已忽略：\(p.others.joined(separator: "、"))"
         }
         return text
     }
@@ -140,13 +149,14 @@ struct MergeTab: View {
     private var hintIcon: String {
         guard settings.mergeEditorsPage else { return "info.circle" }
         guard probe.scanned else { return "questionmark.circle" }
-        if probe.detection.chosen == nil { return "exclamationmark.triangle.fill" }
-        return probe.detection.isAmbiguous ? "exclamationmark.triangle.fill" : "checkmark.seal.fill"
+        if probe.probe?.editorsPage == nil { return "exclamationmark.triangle.fill" }
+        return (probe.probe?.isAmbiguous ?? false)
+            ? "exclamationmark.triangle.fill" : "checkmark.seal.fill"
     }
 
     private var hintColor: Color {
         guard settings.mergeEditorsPage, probe.scanned else { return .secondary }
-        if probe.detection.chosen == nil { return .orange }
-        return probe.detection.isAmbiguous ? .orange : .green
+        if probe.probe?.editorsPage == nil { return .orange }
+        return (probe.probe?.isAmbiguous ?? false) ? .orange : .green
     }
 }

@@ -5,7 +5,8 @@
 
 - **一个引擎，两个外壳**：所有逻辑都在 Python 引擎（`Engine/`）里，界面只负责取值、拼参数、显示日志。
 - **macOS 外壳**：SwiftUI（`sources-mac/`），构建出 `dist/编辑部工具箱.app`。
-- **Windows 外壳**：Tkinter（`sources-win/`），打成两个 exe，用户机器**不需要装 Python**。
+- **Windows 外壳**：Tkinter（`sources-win/`），打成两个 exe，用户机器**不需要装 Python**；
+  7 个标签页：初排转换 / 文献回读校验 / 合并文件 / **一校核查** / 编译全部 / 删除临时文件 / 设置。
 - 参考文献环节可选接大模型（**用你自己的 API key**，密钥只存本机、只走环境变量，绝不进命令行）。
 
 > 这是编辑部的工作工具，不是通用软件：默认模板、字段规范、判据都按本刊体例写死，
@@ -56,6 +57,11 @@ export PYTHONPATH="$PWD/vendor"
 python3 convert.py  --source "作者稿件.docx" --out "输出目录" --compile --verify-refs
 python3 checkbib.py --returned "编辑改回的.bib" --original "原件.bib" --tex "正文.tex"
 python3 mergepdf.py --folder "2026年第5期(90)" --editors-page --nest-outlines
+python3 proofcheck.py --tex "初排稿.tex"          # 一校核查（默认只报不改；--fix 另存新文件）
+python3 compileall.py  --folder "2026年第5期(90)"  # 编译全部
+python3 cleantemp.py   --folder "2026年第5期(90)" --dry-run
+python3 infocheck.py   --folder "2026年第5期(90)"   # 检查tex信息（卷期年/页码/题目/作者 + PDF 页数）
+python3 toc.py         --report "2026年第5期(90)/信息检查<时间戳>.txt"   # 生成中英文目录
 python3 convert.py --version      # 引擎版本 + 运行环境
 ```
 
@@ -70,6 +76,9 @@ Engine/                  引擎（Python，唯一一份逻辑）
 ├── convert.py           初排转换（Word / LaTeX → 可编译初排稿）
 ├── checkbib.py          参考文献回读校验 / 把编辑改回的 .bib 并回产物
 ├── mergepdf.py          合并一期的 PDF（扉页、目录、各篇、封底 + 重建书签）
+├── proofcheck.py        一校核查：按《排校手册》《流程化经验书》逐条核查初排稿
+├── compileall.py        编译一期里所有文章的 .tex（xelatex → biber → xelatex ×2）
+├── cleantemp.py         删除编译临时文件（不删 .tex / .pdf / .log）
 ├── engine_main.py       打包入口：把上面三个 CLI 冻成一个 exe
 ├── slcn/                解析、规范、bib 判据、AI 任务书与合并等模块
 ├── docs/                GUIDE（用法）/ RULES（判据）/ ENGINE_API（对外壳的契约）

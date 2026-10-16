@@ -95,8 +95,40 @@ check("(b) 合并：`--folder` + 两个开关",
       c3.entry == "mergepdf.py" and "--folder" in c3.argv
       and "--editors-page" in c3.argv and "--nest-outlines" in c3.argv
       and "--back-cover" not in c3.argv)
-check("(b) 三个入口名字都在 `ENTRIES` 里（打包 dispatcher 认这三个）",
-      set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py"}, f"{E.ENTRIES}")
+check("(b) 八个入口名字都在 `ENTRIES` 里（打包 dispatcher 认这几个）",
+      set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
+                         "cleantemp.py", "compileall.py", "proofcheck.py",
+                         "infocheck.py", "toc.py"}, f"{E.ENTRIES}")
+
+c7 = E.infocheck_call(folder=r"E:\\期\\90", preview=True)
+check("(b) 检查tex信息：`--folder` + `--preview`（界面表格用）",
+      c7.entry == "infocheck.py" and "--folder" in c7.argv and "--preview" in c7.argv)
+check("(b) 反例：正式检查时**不**带 `--preview`（要落 txt/json 产物）",
+      "--preview" not in E.infocheck_call(folder="/tmp/x").argv)
+c8 = E.toc_call(report=r"C:\\出稿\\信息检查2026.txt", template=r"C:\\期\\上一期")
+check("(b) 生成目录：`--report` + `--template`",
+      c8.entry == "toc.py" and "--report" in c8.argv and "--template" in c8.argv)
+check("(b) 生成目录：模板留空 → **不传** `--template`（交给引擎找上一期）",
+      "--template" not in E.toc_call(report="/tmp/x.txt").argv)
+check("(b) 目录预览：`--preview`（篇目清单，不落文件）",
+      "--preview" in E.toc_preview_call(report="/tmp/x.txt").argv)
+
+c4 = E.cleantemp_call(folder=r"E:\期\2026年第5期(90)", dry_run=True)
+check("(b) 删除临时文件：`--folder` + `--dry-run`",
+      c4.entry == "cleantemp.py" and "--folder" in c4.argv and "--dry-run" in c4.argv)
+check("(b) 反例：不勾预演时**不出现** `--dry-run`",
+      "--dry-run" not in E.cleantemp_call(folder="/tmp/x").argv)
+c5 = E.compileall_call(folder=r"E:\期\90", only="01,03")
+check("(b) 编译全部：`--folder` + `--only 01,03`",
+      c5.entry == "compileall.py" and "--only" in c5.argv and "01,03" in c5.argv)
+check("(b) 编译全部：`--only` 留空时不传这个参数",
+      "--only" not in E.compileall_call(folder="/tmp/x").argv)
+c6 = E.proofcheck_call(tex=r"C:\出稿\Demo.tex", fix=True, lang="zh")
+check("(b) 一校核查：`--tex` + `--fix` + `--lang zh`",
+      c6.entry == "proofcheck.py" and "--tex" in c6.argv and "--fix" in c6.argv
+      and "zh" in c6.argv)
+check("(b) 一校核查：语种「自动」时不传 `--lang`（交给引擎判）",
+      "--lang" not in E.proofcheck_call(tex="/tmp/x.tex").argv)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (c) 环境变量：UTF-8 + 无缓冲 + vendor + **密钥不进 argv** ──")
@@ -186,6 +218,60 @@ check("(e) 产物真的写出来了", os.path.exists(out))
 check("(e) 中文日志没有乱码（收到的是正常汉字）",
       any("文件夹路径" in ln for ln in lines), f"{lines[:3]}")
 
+# 真跑一次「删除临时文件」（造两个临时文件，验证桥接端到端）
+import pathlib as _pl  # noqa: E402
+_clean_dir = tempfile.mkdtemp(prefix="slcn_win_clean_")
+for _n in ("a.aux", "b.synctex.gz", "keep.tex", "keep.log"):
+    open(os.path.join(_clean_dir, _n), "w", encoding="utf-8").write("x")
+_lines2: list[str] = []
+_rc = E.run_call(E.cleantemp_call(folder=_clean_dir), on_line=_lines2.append)
+check("(e) 桥接跑「删除临时文件」：退出码 0、契约行给出删了几个",
+      _rc == 0 and any("完成。已删除 2 个" in ln for ln in _lines2),
+      f"rc={_rc} {[ln for ln in _lines2 if ln.startswith('完成')]}")
+check("(e) `.tex` / `.log` 没被删（与 mac 版同一口径）",
+      os.path.exists(os.path.join(_clean_dir, "keep.tex"))
+      and os.path.exists(os.path.join(_clean_dir, "keep.log")))
+shutil.rmtree(_clean_dir, ignore_errors=True)
+
+# 真跑一次「检查tex信息」的预览：造一期合成稿件 → 引擎 → 解 JSON 填表格
+import json as _json  # noqa: E402
+_ic_dir = tempfile.mkdtemp(prefix="slcn_win_ic_")
+_art = os.path.join(_ic_dir, "01 Lu_Wang")
+os.makedirs(_art, exist_ok=True)
+open(os.path.join(_art, "Lu_Wang.tex"), "w", encoding="utf-8").write(
+    "\\documentclass[b5paper,10.5t,onecolumn,twoside]{ctexart}\n"
+    "\\newcommand{\\myvolnumber}{19}      % 输入卷号\n"
+    "\\newcommand{\\myissnumber}{5}       % 输入当年期号\n"
+    "\\newcommand{\\myyearnumber}{2026}   % 输入出版年份\n"
+    "\\newcommand{\\mystartpage}{1}      % 输入起始页码\n"
+    "\\newcommand{\\myendpage}{16}       % 输入终止页码\n"
+    "\\newcommand{\\mypages}{16}         % 输入页数\n"
+    "\\newcommand{\\mytitle}             % 请输入论文题目\n"
+    "{论雅辛之谜}\n"
+    "\\newcommand{\\myfirstauthor}       % 请输入第一作者姓名\n"
+    "{\\kaishu 陆王}\n")
+_lines3: list[str] = []
+_rc3 = E.run_call(E.infocheck_call(folder=_ic_dir, preview=True), on_line=_lines3.append)
+_payload = None
+for _ln in _lines3:
+    if _ln.strip().startswith("{"):
+        try:
+            _payload = _json.loads(_ln)
+        except ValueError:
+            pass
+check("(e) 桥接跑「检查tex信息 --preview」：退出码 0、能解出 JSON",
+      _rc3 == 0 and isinstance(_payload, dict), f"rc={_rc3}")
+check("(e) 预览**没有落文件**（界面只是看一眼表格）",
+      not [f for f in os.listdir(_ic_dir) if f.startswith("信息检查")],
+      f"{os.listdir(_ic_dir)}")
+if isinstance(_payload, dict):
+    _a = (_payload.get("articles") or [{}])[0]
+    check("(e) 预览里字段齐全（卷/期/年/题目/作者）",
+          _a.get("volume") == "19" and _a.get("issue") == "5" and _a.get("year") == "2026"
+          and "论雅辛" in (_a.get("chineseTitle") or "") and "陆王" in (_a.get("firstAuthorChinese") or ""),
+          f"{_a.get('volume')}/{_a.get('issue')}/{_a.get('year')} {_a.get('chineseTitle')}")
+shutil.rmtree(_ic_dir, ignore_errors=True)
+
 bad = E.EngineCall([sys.executable, "-c", "import sys; print('boom'); sys.exit(3)"], "x", "假入口")
 check("(e) 非 0 退出码如实返回（界面靠它判成败）", E.run_call(bad, on_line=lines.append) == 3)
 check("(e) `on_proc` 能拿到进程对象（「停止」按钮要用）",
@@ -203,8 +289,10 @@ ast.parse(src)
 check("(f) `main.py` 语法正确", True)
 check("(f) 界面里**没有**复制引擎逻辑（不 import pypdf / 不自己拼 PDF）",
       "pypdf" not in src and "PdfWriter" not in src)
-check("(f) 界面把逻辑都委托给 `engine.py`（三个入口各一处调用）",
-      all(f"E.{fn}_call(" in src for fn in ("convert", "checkbib", "merge")), "")
+check("(f) 界面把逻辑都委托给 `engine.py`（八个入口各一处调用）",
+      all(f"E.{fn}_call(" in src
+          for fn in ("convert", "checkbib", "merge", "cleantemp", "compileall", "proofcheck",
+                     "infocheck", "toc")), "")
 check("(f) 保留了原版的中文交互（浏览/运行/停止 + 底部日志框）",
       all(k in src for k in ("浏览", "运行", "停止", "运行日志")))
 check("(f) 界面线程与工作线程分开（Tkinter 不是线程安全的，日志靠队列回传）",
@@ -257,8 +345,9 @@ else:
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
-        check("(g) 四个标签页都在（初排转换 / 文献回读校验 / 合并文件 / 设置）",
-              "初排转换|文献回读校验|合并文件|设置" in out, out.strip()[-80:])
+        check("(g) 九个标签页都在（含新增的检查tex信息 / 生成目录）",
+              "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|删除临时文件|设置"
+              in out, out.strip()[-160:])
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

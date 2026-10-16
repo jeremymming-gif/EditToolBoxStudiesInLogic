@@ -1,0 +1,25 @@
+{
+  "articles" : [
+    {
+      "chineseTitle" : "论雅辛之谜及其解决方案——从扩展的RZH标准看",
+      "endPage" : "16",
+      "englishTitle" : "On Yashin's Puzzle: \\\\A Study Based on the Extended RZH Criterion",
+      "firstAuthorChinese" : "\\kaishu 陆王",
+      "folder" : "01 Lu_Wang",
+      "folderName" : "Lu_Wang",
+      "fontSize" : "10.5t",
+      "hasPDF" : false,
+      "hasTeX" : true,
+      "issue" : "5",
+      "lineSpacing" : "13",
+      "pages" : "16",
+      "secondAuthorChinese" : "\\kaishu 王二",
+      "startPage" : "1",
+      "thirdAuthorEnglish" : "",
+      "volume" : "19",
+      "year" : "2026"
+    }
+  ],
+  "generatedAt" : "GOLDEN",
+  "issueFolder" : "/var/folders/ts/f079f4394_96cwd4t3dzz2fm0000gn/T/slcn_icsnap_7bnn7hwm/2026年第5期(90)"
+}

@@ -81,6 +81,67 @@ enum PathKit {
 ///   macOS 上必须改成 /dev/null，并且要显式补齐 PATH ——
 ///   从 Finder 双击启动的 App 不会继承终端里的 PATH，
 ///   而 TeX Live 装在 /Library/TeX/texbin，不在默认 PATH 里。
+/// 引擎定位：**只此一份**。
+///
+/// 为什么下沉到这里：mac 界面有好几页要调引擎（初排转换 / 文献回读校验 / 一校核查 / 生成目录…），
+/// 每个都自己找一遍引擎，迟早出现「设置里指了自定义路径，某一页却还去包里找」这种两个真相的局面。
+/// 搜索顺序与顺序本身一样重要 —— 用户指定 → app 包内 → 从 app 所在目录逐级向上找仓库。
+enum EngineLocator {
+
+    /// 「设置」页里指定的自定义引擎路径（键名沿用历史的 `convertToolPath`，不要改，
+    /// 否则老用户的设置会丢）。
+    static let overrideKey = "convertToolPath"
+
+    /// 找引擎目录下的某个入口（如 `convert.py` / `toc.py` / `proofcheck.py`）。
+    static func tool(named fileName: String, convertTool: String? = convertTool()) -> String? {
+        guard let convert = convertTool else { return nil }
+        let dir = (convert as NSString).deletingLastPathComponent
+        let candidate = (dir as NSString).appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: candidate) ? candidate : nil
+    }
+
+    /// 找 `convert.py`：用户指定 → app 包内 → 从 app 往上找仓库。
+    static func convertTool() -> String? {
+        let fm = FileManager.default
+
+        if let custom = UserDefaults.standard.string(forKey: overrideKey),
+           !custom.isEmpty, fm.fileExists(atPath: custom) {
+            return custom
+        }
+        if let res = Bundle.main.resourcePath {
+            let p = res + "/Engine/convert.py"
+            if fm.fileExists(atPath: p) { return p }
+        }
+        var dir = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0..<6 {
+            let p = dir.path + "/Engine/convert.py"
+            if fm.fileExists(atPath: p) { return p }
+            let parent = dir.deletingLastPathComponent()
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+        return nil
+    }
+
+    /// 找可用的 python3（引擎跑在它上面）。
+    static func locatePython(toolDir: String) -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3",
+        ]
+        for c in candidates where FileManager.default.fileExists(atPath: c) {
+            return c
+        }
+        return nil
+    }
+
+    /// 给引擎子进程的环境变量增量：项目本地 `vendor/`（引擎依赖装在那里）。
+    static func environment(toolDir: String) -> [String: String] {
+        ["PYTHONPATH": (toolDir as NSString).appendingPathComponent("vendor")]
+    }
+}
+
 enum Shell {
 
     static let extraPaths = [
@@ -242,13 +303,18 @@ enum Shell {
     static func capture(_ tool: String,
                         _ arguments: [String],
                         workingDirectory: String? = nil,
-                        stdin: String? = nil) -> CommandResult? {
+                        stdin: String? = nil,
+                        environment extraEnv: [String: String]? = nil) -> CommandResult? {
         guard let executable = locate(tool) else { return nil }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.environment = environment()
+        var env = environment()
+        if let extraEnv {
+            for (k, v) in extraEnv { env[k] = v }   // ⚠️ 只叠加增量，见 run() 里的同款说明
+        }
+        process.environment = env
         let stdinPipe: Pipe?
         if stdin != nil {
             let p = Pipe()

@@ -88,6 +88,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 | **跑起来**：依赖、CLI 参数、GUI 各页、常见报错对照 | [`Engine/docs/GUIDE.md`](docs/GUIDE.md) |
 | **查判据/口径**：三态、体例签名、bib 规范、任务书、占位符与覆盖键 | [`Engine/docs/RULES.md`](docs/RULES.md) |
 | **写给外壳的契约**：CLI / 退出码 / 环境变量 / 产物路径 / 平台要求（mac 外壳与 Windows 外壳都按它调） | [`Engine/docs/ENGINE_API.md`](docs/ENGINE_API.md) |
+| **一校核查规则表**：《排校手册》《流程化经验书》的规范 → 可执行规则（含**未实现清单与原因**） | [`Engine/docs/PROOF_RULES.md`](docs/PROOF_RULES.md) |
 | 查某个 bug/规则的**根因 + 实测 + 验收**（第 1–30 条） | [`Engine/docs/cases/01-30.md`](docs/cases/01-30.md) |
 | 同上（第 31–61 条；含 task-7 清账与并入记录） | [`Engine/docs/cases/31-61.md`](docs/cases/31-61.md) |
 | 同上（**第 62 条及以后**：新发现一律追加在这里，一条一节、编号连续） | [`Engine/docs/cases/62+.md`](docs/cases/62+.md) |
@@ -110,16 +111,17 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**34 套件 / 1295 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**38 套件 / 1465 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
 `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibreport_note_and_clause` 49
 `test_checkbib` 74 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39
 `test_cn_journal_numbered` 31 ｜ `test_coauthor_en` 16 ｜ `test_en_abstract_sibling` 5 ｜ `test_en_slot_placeholder` 9
-`test_footnote_id0` 12 ｜ `test_incollection_fields` 36 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
-`test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
-`test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51 ｜ `test_pdfmerge` 36
-`test_platform` 24 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 28 ｜ `test_sep_style` 25
+`test_footnote_id0` 12 ｜ `test_incollection_fields` 36 ｜ `test_infocheck_toc` 51 ｜ `test_issue_tools` 27
+`test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
+`test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
+`test_merge_record_provenance` 51 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 24
+`test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 28 ｜ `test_sep_style` 25
 `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
 
 **普查**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
@@ -130,7 +132,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 
 **占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-16 01:43:20`；`HEAD` = `a595ec5`；`git status --porcelain` **2** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-16 21:18:52`；`HEAD` = `b56b18f`；`git status --porcelain` **68** 行
 <!-- AUTO:STATE:END -->
 
 ---

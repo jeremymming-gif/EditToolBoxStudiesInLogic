@@ -19,7 +19,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import score as S  # noqa: E402
 from slcn.build import build_docx, build_latex  # noqa: E402
-from slcn.templates import REPO_ROOT as ROOT, TPL_DIR as TPL  # noqa: E402
+from slcn.templates import TPL_DIR as TPL  # noqa: E402
+from slcn import paths as _paths  # noqa: E402
+
+# 稿件库锚点（第 100 条）：代表稿在各期目录里，不在引擎仓里。
+ROOT = _paths.manuscripts_root() or _paths.engine_root()
 
 OUT = os.path.join(os.path.dirname(__file__), "out")
 if not os.path.isdir(TPL):
@@ -190,6 +194,11 @@ def main() -> int:
             print(f"    版面样式  {t.sty}")
             print(f"    骨架      {t.skeleton}")
         print(f"\n  模板目录下可覆盖的 .sty：{'、'.join(T.AVAILABLE_STY)}")
+        return 0
+
+    # 代表稿在各期目录里：没有稿件库就打印说明并正常退出（公开仓/CI 上不该报错）
+    if _paths.manuscripts_root() is None:
+        print(f"≡ run_poc：{_paths.describe()}")
         return 0
 
     os.makedirs(OUT, exist_ok=True)
