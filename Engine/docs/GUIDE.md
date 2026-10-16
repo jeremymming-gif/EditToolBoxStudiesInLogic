@@ -174,6 +174,17 @@ $PY convert.py --source X.docx --out Y --dry-run
 | `--no-original` | 不建立 `original/`（默认建立） |
 | `--force` | 目标文件夹已存在时覆盖（默认**拒绝**，防误伤已有稿件目录）。GUI 里对应「高级选项 → 覆盖已存在的输出目录（--force）」 |
 
+### 开发者用的环境变量（不装工具箱也用不到）
+
+| 变量 | 作用 |
+|---|---|
+| `SLCN_MANUSCRIPTS` | **稿件库**（各期作者来稿）的位置。重活工具（`docx_audit.py` 全库普查、`corpus.py` 全库回归、`run_poc.py` 代表稿）需要它。不设时自动探测（向上找 → 同级目录，默认两仓并排就命中）；**没有稿件库时这些工具打印一行说明并正常退出（0）** —— 公开仓与 CI 上就是这样。 |
+| `SLCN_NOTES` | **私有笔记仓**（案例法 / 交接说明 / 冻结基线）的位置。默认自动探测同级目录 `EditToolBox-notes/`。 |
+| `SLCN_AUDIT_OUT` | 全库普查的输出目录（等价于 `--out-dir`）。**并行跑多份普查时必须用它隔离**，否则会互相覆盖同一份 csv/txt。 |
+| `SLCN_SOFFICE` | 指定 LibreOffice 可执行文件（Office 文稿转 PDF 用；找不到时相关步骤会跳过并说明）。 |
+
+> 前两个只在开发/回归时用得到；编辑日常使用 `.app` / `.exe` 时不需要设任何环境变量。
+
 #### 「目标文件夹已存在」的判定口径（`convert.py: is_own_product()`）
 
 - **算「自己的」**：`<输出名>.tex/.pdf/.bib/.log` 与几份核对报告、`reference.bib`、

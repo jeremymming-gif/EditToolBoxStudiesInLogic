@@ -41,10 +41,9 @@ jobs:
         run: |
           set -e
           cd Engine
-          for f in tests/test_platform.py tests/test_pdfmerge.py \
-                   tests/test_bib_protection_forms.py tests/test_sep_style.py \
-                   tests/test_refmark_raw_refs.py tests/test_unmatched_in_report.py \
-                   tests/test_checkbib.py tests/test_merge_into.py; do
+          # 跑**全部**套件（此前只列了 8 个，新加的套件不会在这里被拦住）。
+          # 需要稿件库/TeX/LibreOffice 的用例自带跳过判据，缺就 SKIP，不会误报。
+          for f in tests/test_*.py; do
             echo "── $f"
             python "$f" | tail -3
           done

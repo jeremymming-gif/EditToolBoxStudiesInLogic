@@ -124,7 +124,22 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 `test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 28 ｜ `test_sep_style` 25
 `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
 
-**普查**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
+**普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
+
+| 字段 | `ok` | `fail` | `absent` |
+|---|---|---|---|
+| 题名 `title` | 131 | 0 | 1 |
+| 副标题 `subtitle` | 18 | 1 | 113 |
+| 作者 `author` | 73 | 3 | 56 |
+| 单位 `affiliation` | 59 | 3 | 70 |
+| 邮箱 `email` | 45 | 1 | 86 |
+| 中文摘要 `abstract_cn` | 81 | 3 | 48 |
+| 中文关键词 `keywords_cn` | 67 | 7 | 58 |
+| 英文题名 `title_en` | 79 | 0 | 53 |
+| 英文摘要 `abstract_en` | 75 | 0 | 57 |
+
+- `n_headings` 合计 **545**；`n_bib` 合计 **1526**
+- sha256[:12]：`docx_audit.csv` = `5710b55e2167`，`docx_audit.txt` = `4a70cfe4c67a`（与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
 **corpus 回归**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
@@ -132,7 +147,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，8 个标�
 
 **占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-16 21:18:52`；`HEAD` = `b56b18f`；`git status --porcelain` **68** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-16 21:26:49`；`HEAD` = `32d923c`；`git status --porcelain` **1** 行
 <!-- AUTO:STATE:END -->
 
 ---

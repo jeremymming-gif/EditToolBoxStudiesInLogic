@@ -1,0 +1,64 @@
+name: CI
+
+# 每次 push / PR 都跑：引擎全套件 + 文档看门狗 + Swift 测试台 + 外壳桥梁。
+# 设计要点：
+#   · 重活验收（全库普查/回归、代表稿）**需要稿件库**，CI 上没有 —— 那些工具会打印一行说明并
+#     正常退出（0），所以这里不会因为它们红（见 Engine/slcn/paths.py）；
+#   · 需要 TeX / LibreOffice 的用例自带跳过判据，缺就 SKIP，不误报；
+#   · 数字一律看 `tools/gen_docs.py --check`（AUTO 块过期就红）。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: 引擎（套件 + 文档看门狗）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 装依赖
+        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
+      - name: AUTO 块是否过期
+        working-directory: Engine
+        run: python tools/gen_docs.py --check
+      - name: 文档看门狗
+        working-directory: Engine
+        run: python tests/test_docs_consistency.py
+      - name: 全部套件
+        working-directory: Engine
+        run: |
+          bad=0
+          for f in tests/test_*.py; do
+            last="$(python "$f" 2>&1 | tail -1)"
+            case "$last" in
+              *"失败 0 项"*|*"0 FAIL"*|*"全部 PASS"*) ;;
+              *) echo "::error file=Engine/$f::$last"; bad=1 ;;
+            esac
+          done
+          exit $bad
+      - name: 案例索引是否过期（没有笔记仓时自动跳过）
+        run: python tools/gen_case_index.py --check
+
+  swift:
+    name: Swift 测试台 + Windows 外壳桥梁
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 装依赖
+        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
+      - name: Swift 测试台（6 个）
+        run: bash tools/run_swift_tests.sh
+      - name: Windows 外壳桥梁测试（不需要 Windows；真窗口那条缺 tkinter 时 SKIP）
+        working-directory: sources-win
+        run: python tests/test_bridge.py | tail -3
