@@ -35,6 +35,27 @@ NOTES_ENV = "SLCN_NOTES"
 NOTES_SIBLING = "EditToolBox-notes"
 
 
+def rel(path: str, start: str | None = None) -> str:
+    r"""**跨盘符安全**的相对路径：算不出相对路径就回落成绝对路径，**绝不抛异常**。
+
+    为什么需要它：`os.path.relpath()` 在两个不同盘符 / 挂载点之间会抛
+    `ValueError: path is on mount 'C:', start on mount 'D:'`。调用它的地方几乎都是**汇报**
+    （「⑦ 写出文件」把产物路径打给编辑看），于是一句汇报就把整个转换打断：
+    2026-10-16 windows-latest 上 `%TEMP%` 在 C:、仓库在 D: → `convert.py` 退出 2，
+    release 链路 15 次运行全红（案例第 101 条）。编辑真会遇到同一个坑：
+    工具装在 C:、稿件与产物放 D:。
+
+    判据（**行为保持**）：同盘符时与 `os.path.relpath` 逐字节相同（POSIX 上永远走不到
+    except）；只有「算不出来」这一种情况从「抛异常」改成「给绝对路径」——
+    汇报里给绝对路径比崩掉有用得多。**交付模块里不要再直接调 `os.path.relpath`**，
+    静态守卫在 `Engine/tests/test_platform.py` 的 (f) 组。
+    """
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:          # 跨盘符（Windows）/ 跨挂载点：本来就没有相对路径可言
+        return os.path.abspath(path)
+
+
 def looks_like_manuscripts(path: str) -> bool:
     """该目录下**真的有期号目录**才算稿件库。"""
     try:

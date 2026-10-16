@@ -315,7 +315,7 @@ def main() -> int:
                     f"{r.src_tbl},{r.out_tbl},{r.src_img},{r.out_img},"
                     f"{r.src_shape},{r.out_shape},"
                     f'"{r.error}"\n')
-    print(f"\n  明细已写出：{os.path.relpath(os.path.join(OUT, 'corpus.csv'))}")
+    print(f"\n  明细已写出：{_paths.rel(os.path.join(OUT, 'corpus.csv'))}")
     return 0
 
 

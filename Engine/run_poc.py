@@ -74,7 +74,7 @@ def compare(ref_path: str, gen_path: str) -> tuple[S.ScoreResult, S.ScoreResult]
 def run_tex_channel(verbose: bool = True, sty: str | None = None, skeleton: str | None = None) -> dict:
     a = ARTICLES["tex"]
     print("=" * 78)
-    print(f"【{a['label']}】{os.path.relpath(a['dir'], ROOT)}")
+    print(f"【{a['label']}】{_paths.rel(a['dir'], ROOT)}")
     print("=" * 78)
     res = build_latex(
         article_dir=a["dir"],
@@ -97,7 +97,7 @@ def run_docx_channel(verbose: bool = True, sty: str | None = None, skeleton: str
     a = ARTICLES["docx"]
     print()
     print("=" * 78)
-    print(f"【{a['label']}】{os.path.relpath(a['dir'], ROOT)}")
+    print(f"【{a['label']}】{_paths.rel(a['dir'], ROOT)}")
     print("=" * 78)
     res = build_docx(
         docx_path=os.path.join(a["dir"], "original", a["docx"]),
@@ -223,7 +223,7 @@ def main() -> int:
             print(f"  {r['label']:22s} 正文裸相似度 {r['body'].raw_ratio * 100:6.2f}%   "
                   f"内容准确率 {r['body'].char_accuracy * 100:6.2f}%")
         print()
-        print(f"  报告已写出：{os.path.relpath(write_report(results))}")
+        print(f"  报告已写出：{_paths.rel(write_report(results))}")
     return 0
 
 

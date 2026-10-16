@@ -50,6 +50,10 @@ jobs:
         shell: bash
         env:
           SLCN_DUMP_RED_LOGS: "1"
+          # ⚠️ 必须显式指定解释器：脚本的本机约定是 /opt/homebrew/bin/python3.14，
+          #    而 macos-14 的 runner 镜像里**真的装着**它 —— 但它没有下面 pip 装的依赖
+          #    （2026-10-16 实测：不指定 → macos 作业 19 套件全红）。这里用 setup-python 的。
+          SLCN_TEST_PYTHON: python
         run: bash Engine/tools/run_engine_tests.sh full
 
       - name: Windows 外壳（桥梁）测试

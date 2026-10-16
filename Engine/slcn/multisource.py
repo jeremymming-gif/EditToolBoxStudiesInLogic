@@ -37,6 +37,8 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 
+from . import paths as P
+
 # 各角色的文件名线索（**仅作辅助**，主判据是内容）
 _NAME_HINT = {
     "refs": r"参考文献|references?|bibliography|文献",
@@ -173,7 +175,7 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
         dns[:] = [d for d in dns if d != "__MACOSX"]
         for f in sorted(fs):
             full = os.path.join(dp, f)
-            rel = os.path.relpath(full, directory)
+            rel = P.rel(full, directory)
             if _is_junk(rel):
                 continue
             ext = os.path.splitext(f)[1].lower()

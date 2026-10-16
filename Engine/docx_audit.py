@@ -212,7 +212,7 @@ def iter_sources() -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str
                 for p in _docx_files(od, recursive=True):
                     primary.append((issue, slug, p))
             for p in _docx_files(sp, recursive=True):              # 口径外：其余子目录
-                rel = os.path.relpath(p, sp)
+                rel = _paths.rel(p, sp)
                 parts = rel.split(os.sep)
                 if len(parts) == 1 or parts[0].lower() == ORIGINAL_DIR:
                     continue
@@ -502,7 +502,7 @@ def evidence(plains: list[str], fntexts: list[str], ref_info: tuple[int, int, st
 # ══ 单篇体检 ═══════════════════════════════════════════════════════════════
 
 def audit_one(issue: str, slug: str, path: str) -> dict:
-    rel = os.path.relpath(path, REPO).replace(os.sep, "/")
+    rel = _paths.rel(path, REPO).replace(os.sep, "/")
     rec: dict = {
         "issue": issue, "slug": slug, "file": rel, "ok": False, "error": "",
         "chars": 0, "title": "", "author": "", "n_headings": 0, "n_bib": 0,
@@ -836,7 +836,7 @@ def build_report(records: list[dict], others: list[dict]) -> str:
     grp: collections.Counter = collections.Counter()
     for r in others:
         base = os.path.join(REPO, r["issue"], r["slug"])
-        parts = os.path.relpath(os.path.join(REPO, r["file"]), base).split(os.sep)
+        parts = _paths.rel(os.path.join(REPO, r["file"]), base).split(os.sep)
         grp[parts[0] if len(parts) > 1 else "(稿件目录下其它文件)"] += 1
     add("  按一级子目录计数：")
     for k, v in grp.most_common():
@@ -908,7 +908,7 @@ def build_report(records: list[dict], others: list[dict]) -> str:
     add("     ③ 主表未含「原文/Original（大小写之外）/origin」等口径外目录，其聚合结果见附录⑧；")
     add("     ④ 未做人工逐条抽检——长尾每条都给了文件名，便于抽查。")
     add("")
-    add(f"明细 CSV：{os.path.relpath(OUT_CSV, REPO)}"
+    add(f"明细 CSV：{_paths.rel(OUT_CSV, REPO)}"
         f"（{n} 行有效数据；每字段三态列 `*_state` = ok/fail/absent，逐篇可查）")
     return "\n".join(L) + "\n"
 
@@ -946,8 +946,8 @@ def main(argv: list[str] | None = None) -> int:
     with open(OUT_TXT, "w", encoding="utf-8") as f:
         f.write(build_report(records, extra))
     n_ok = sum(1 for r in records if r["ok"])
-    print(f"\n→ {os.path.relpath(OUT_CSV, REPO)}")
-    print(f"→ {os.path.relpath(OUT_TXT, REPO)}")
+    print(f"\n→ {_paths.rel(OUT_CSV, REPO)}")
+    print(f"→ {_paths.rel(OUT_TXT, REPO)}")
     print(f"口径内成功解析 {n_ok}/{len(records)} 篇")
     return 0
 

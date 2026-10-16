@@ -36,6 +36,8 @@ jobs:
       - name: 全部套件
         env:
           SLCN_DUMP_RED_LOGS: "1"
+          # 解释器必须显式指定（macos 镜像自带 /opt/homebrew/bin/python3.14，但没有 pip 装的依赖）
+          SLCN_TEST_PYTHON: python
         run: bash Engine/tools/run_engine_tests.sh full
       - name: 案例索引是否过期（没有笔记仓时自动跳过）
         run: python tools/gen_case_index.py --check

@@ -18,7 +18,14 @@
 # 凡在真语料上还会解析 docx 的套件一律留在 full：本机没稿件库时它们 0.1 秒（整段 SKIP），
 # 稿件库在时就要几十秒 —— 放进 quick 会让「秒级」名不副实。
 #
-# 解释器：优先 /opt/homebrew/bin/python3.14，找不到回落 python3；依赖走 PYTHONPATH=vendor。
+# 解释器优先级：`SLCN_TEST_PYTHON`（显式指定）→ /opt/homebrew/bin/python3.14（本机约定）
+#   → python3 → python（Windows 的 Git Bash 只有 python.exe）。依赖走 PYTHONPATH=vendor。
+#
+# ⚠️ 为什么必须有 `SLCN_TEST_PYTHON` 这个出口：**「本机约定」在别的机器上不成立**。
+#    2026-10-16 实测：macos-14 的 runner 镜像里就装着 /opt/homebrew/bin/python3.14，
+#    但它没有 CI 用 pip 装的那几个依赖 → 19 套件全红（同一个脚本在本机全绿）。
+#    CI 里 setup-python 备好的解释器叫 `python`，由 workflow 显式指定。
+#
 # 退出码：红 0 套 → 0；否则 = 红的套数（非 0）。
 #
 # CI 用：`SLCN_DUMP_RED_LOGS=1 bash tools/run_engine_tests.sh full`
@@ -37,7 +44,13 @@ if [ ! -d tests ]; then
   exit 2
 fi
 
-if [ -x /opt/homebrew/bin/python3.14 ]; then
+if [ -n "${SLCN_TEST_PYTHON:-}" ]; then
+  PY="$SLCN_TEST_PYTHON"
+  if ! command -v "$PY" >/dev/null 2>&1 && [ ! -x "$PY" ]; then
+    echo "❌ SLCN_TEST_PYTHON=$PY 既不在 PATH 里也不是可执行的路径" >&2
+    exit 2
+  fi
+elif [ -x /opt/homebrew/bin/python3.14 ]; then
   PY=/opt/homebrew/bin/python3.14
 elif command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3)"                         # 回落：老 mac / Linux / CI

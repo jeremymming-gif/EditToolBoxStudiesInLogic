@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """平台中立化（第 86 条）：引擎要在 macOS 与 Windows 上跑同一份逻辑。
 
-这一套钉住四件事，全部是**真跑/真扫**，不是「代码看起来对」：
+这一套钉住六件事，全部是**真跑/真扫**，不是「代码看起来对」：
 
   (a) `utf8_stdio()` —— Windows 的 stdout 默认是控制台代码页（cp936），中文日志经管道
       会乱码甚至 `UnicodeEncodeError` **崩在转换中途**。测试用 `PYTHONIOENCODING=ascii`
@@ -10,7 +10,11 @@
       Windows 盘符与**带空格的路径**都必须正确转义；
   (c) `find_soffice()` —— 三个平台的常见安装位置都要在候选表里（Windows 安装器**不**写 PATH）；
   (d) **静态守卫**：交付模块里不许出现「文本模式 `open()` 却不写 `encoding=`」
-      —— 那在 Windows 上会按本地编码读中文源稿，直接读成乱码。
+      —— 那在 Windows 上会按本地编码读中文源稿，直接读成乱码；
+  (e) 版本号只有一处（`slcn/__init__.py`），双平台不许漂移；
+  (f) **跨盘符路径**：`paths.rel()` 不许让一句「汇报」把整个转换打断 —— Windows 上
+      `os.path.relpath('C:\\…', 'D:\\…')` 会抛 `ValueError: path is on mount 'C:', …`，
+      而调用它的地方全是打印产物路径（案例第 101 条：release 链路 15 次全红的真因）。
 """
 from __future__ import annotations
 
@@ -206,6 +210,77 @@ check("(e) `describe()` 报出系统 + Python 版本（同事报错时要这一�
 bs = (ENGINE.parent / "build.sh").read_text(encoding="utf-8")
 check("(e) `build.sh` 的版本号是**现取**的，不再写死（双平台防漂移）",
       "slcn/__init__.py" in bs and "CFBundleShortVersionString</key><string>$APP_VERSION" in bs)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (f) 跨盘符路径：`paths.rel()` 不许让一句汇报打断整个转换 ──")
+
+from slcn import paths as _paths  # noqa: E402
+
+# 反例（复现缺陷本身）：Windows 上 `os.path.relpath('C:\\…', 'D:\\…')` 抛
+# `ValueError: path is on mount 'C:', start on mount 'D:'`。这里把 `os.path.relpath`
+# 换成「必抛」，在 mac/Linux 上**复现同一个失败模式** —— 判据是「调用方会不会因此崩」，
+# 与真的盘符无关（这正是本套件 (a)(b)(c) 一贯的手法）。
+_saved_relpath = os.path.relpath
+
+
+def _windows_like_relpath(path, start=None):
+    raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+
+os.path.relpath = _windows_like_relpath          # type: ignore[assignment]
+try:
+    _raised = False
+    try:
+        os.path.relpath("C:\\a\\x.tex", "D:\\repo")
+    except ValueError:
+        _raised = True
+    got = _paths.rel("C:\\probe\\a.tex", "D:\\repo")
+    _err = ""
+except Exception as e:                            # 修复前：这里就是 ValueError
+    _raised, got, _err = False, None, repr(e)
+finally:
+    os.path.relpath = _saved_relpath              # type: ignore[assignment]
+check("(f) 反例：模拟跨盘符时，**裸 `os.path.relpath` 确实会抛**（证明本组有牙齿）", _raised)
+check("(f) 跨盘符时 `paths.rel()` **不抛异常**，回落成绝对路径（汇报不该打断转换）",
+      got is not None and _err == "", _err or repr(got))
+
+# 行为保持：同盘符（正常情况）必须与 `os.path.relpath` **逐字节相同** ——
+# 否则这次修复会悄悄改掉所有产物的路径显示。
+_d = tempfile.mkdtemp(prefix="slcn rel ")
+_p = os.path.join(_d, "sub", "x.tex")
+os.makedirs(os.path.dirname(_p), exist_ok=True)
+check("(f) 同盘符时与 `os.path.relpath` 逐字节相同（**行为保持**）",
+      _paths.rel(_p, _d) == os.path.relpath(_p, _d), _paths.rel(_p, _d))
+_here = os.path.join(os.getcwd(), "convert.py")
+check("(f) 不传 start 时仍以 cwd 为基准（与原有调用点语义一致）",
+      _paths.rel(_here) == os.path.relpath(_here), _paths.rel(_here))
+
+
+# 静态守卫：本次事故的根因是交付模块里**裸调** `os.path.relpath`。修完还得防它长回来。
+def bare_relpath(path: pathlib.Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        # `os.path.relpath(...)`：Attribute(relpath) ← Attribute(path) ← Name(os)
+        if (isinstance(f, ast.Attribute) and f.attr == "relpath"
+                and isinstance(f.value, ast.Attribute) and f.value.attr == "path"):
+            bad.append(f"{path.name}:{node.lineno}")
+    return bad
+
+
+DELIVERY = SHIPPED + ["cleantemp.py", "compileall.py", "infocheck.py", "mergepdf.py",
+                      "proofcheck.py", "toc.py", "engine_main.py"]
+bad_rel = []
+for rel_p in DELIVERY:
+    if rel_p.endswith("paths.py"):        # 唯一实现点：它包的就是 `os.path.relpath`
+        continue
+    bad_rel += bare_relpath(ENGINE / rel_p)
+check("(f) 交付模块里没有裸的 `os.path.relpath`（跨盘符会抛，统一走 `paths.rel()`）",
+      not bad_rel, "; ".join(bad_rel[:6]))
+check("(f) 覆盖面：确实扫到了这些模块", len(DELIVERY) >= 25, f"{len(DELIVERY)} 个文件")
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

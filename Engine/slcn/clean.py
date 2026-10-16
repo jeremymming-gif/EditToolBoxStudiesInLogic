@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
+from . import paths as P
+
 # 与 EditToolBox DeleteTempFeature.suffixes 逐项一致
 CLEAN_SUFFIXES = [
     ".aux",
@@ -61,7 +63,7 @@ def clean(
             if not matches(fname):
                 continue
             full = os.path.join(dirpath, fname)
-            rel = os.path.relpath(full, root)
+            rel = P.rel(full, root)
             if dry_run:
                 emit(f"Will delete: {rel}")
                 deleted.append(rel)

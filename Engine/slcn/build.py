@@ -7,6 +7,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 
+from . import paths as P
 from . import rules as R
 from . import templates as T
 from .latex import (
@@ -697,7 +698,7 @@ def build_latex(
     tex_path = os.path.join(out_dir, f"{basename}.tex")
     with open(tex_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(tpl)
-    say(f"   {os.path.relpath(tex_path)}")
+    say(f"   {P.rel(tex_path)}")
 
     bib_out = None
     if bib_path:
@@ -708,7 +709,7 @@ def build_latex(
         bib_out = os.path.join(out_dir, "reference.bib")
         with open(bib_out, "w", encoding="utf-8", newline="\n") as f:
             f.write(bib_text)
-        say(f"   {os.path.relpath(bib_out)}（{len(notes)} 处规范化）")
+        say(f"   {P.rel(bib_out)}（{len(notes)} 处规范化）")
 
         used = extract_bibkeys_from_body(body)
         have = set(re.findall(r"@\w+\{([^,]+),", bib_text))
@@ -718,7 +719,7 @@ def build_latex(
 
     sty_out = os.path.join(out_dir, os.path.basename(tpl_sel.sty))
     shutil.copy2(tpl_sel.sty, sty_out)
-    say(f"   {os.path.relpath(sty_out)}")
+    say(f"   {P.rel(sty_out)}")
 
     return BuildResult(
         tex_path=tex_path,
@@ -1092,7 +1093,7 @@ def build_docx(
     tex_path = os.path.join(out_dir, f"{basename}.tex")
     with open(tex_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(tpl)
-    say(f"   {os.path.relpath(tex_path)}")
+    say(f"   {P.rel(tex_path)}")
 
     # 参考文献有两个来源，都写进同一个 .bib：
     #   ① Word 末尾的参考文献区（doc.refs）
@@ -1123,7 +1124,7 @@ def build_docx(
                 say(f"   · {n}")
         with open(bib_out, "w", encoding="utf-8", newline="\n") as f:
             f.write(bib_text)
-        say(f"   {os.path.relpath(bib_out)}（脚注/编号清单 {len(doc.bib_entries)} 条"
+        say(f"   {P.rel(bib_out)}（脚注/编号清单 {len(doc.bib_entries)} 条"
             f" + 文末人年制 {len(doc.refs)} 条）")
 
     # 图片导出：docx 里存着原图，直接取出来放进产物目录
@@ -1142,7 +1143,7 @@ def build_docx(
 
     sty_out = os.path.join(out_dir, os.path.basename(tpl_sel.sty))
     shutil.copy2(tpl_sel.sty, sty_out)
-    say(f"   {os.path.relpath(sty_out)}")
+    say(f"   {P.rel(sty_out)}")
 
     # 把「整条在 note 里」的脚注体例文献拆成结构化条目
     #   （全库实测 244 条，其中 188 条可拆；原文保留在 note 里可回溯）

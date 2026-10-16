@@ -59,7 +59,17 @@ AUDIT_CSV = ENGINE / "out" / "docx_audit.csv"
 AUDIT_TXT = ENGINE / "out" / "docx_audit.txt"
 CORPUS_CSV = ENGINE / "out" / "corpus" / "corpus.csv"
 CORPUS_DIR = ENGINE / "out" / "corpus"
-APP_ENGINE = REPO / "EditToolBox" / "dist" / "编辑部工具箱.app" / "Contents" / "Resources" / "Engine"
+
+# App 包内的引擎副本。**两种布局都要认**（2026-10-15/16 拆仓前后）：
+#   新（公开仓，当前）：`<公开仓>/dist/编辑部工具箱.app/…`   ← REPO 就是项目根
+#   旧（稿件仓时代）：  `<稿件仓>/EditToolBox/dist/…`         ← REPO 是稿件仓根，项目在 EditToolBox/
+# ⚠️ 从前只认旧路径 → 拆仓后这里**永远**报「还没 ./build.sh 过」，而这一行正是
+#    「包内引擎过期」的守卫（本项目踩过多次）。**看错地方的守卫等于没有守卫** ——
+#    与 ②3「宽松模式等于没有警告」是同一个教训（2026-10-16 实测：`./build.sh` 刚跑完，
+#    本行仍写「不存在」）。
+_APP_REL = Path("编辑部工具箱.app") / "Contents" / "Resources" / "Engine"
+APP_ENGINE = next((p for p in (REPO / "dist" / _APP_REL, REPO / "EditToolBox" / "dist" / _APP_REL)
+                   if p.is_dir()), REPO / "dist" / _APP_REL)
 
 # 九个三态字段（与 docx_audit.py 的 CSV_COLUMNS 一一对应；顺序固定，便于 diff）
 FIELDS = [("title", "题名"), ("subtitle", "副标题"), ("author", "作者"),

@@ -20,6 +20,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from . import paths as P
 from .latex import parse_macros
 
 TEX_EXT = {".tex"}
@@ -231,7 +232,7 @@ def identify(article_dir: str, verbose: bool = False) -> SourceSet:
                 mark += " ←元数据源"
             if ss.body and c.path == ss.body.path:
                 mark += " ←正文源"
-            print(f"    {os.path.relpath(c.path, article_dir):50s} [{c.role}] {c.reason}{mark}")
+            print(f"    {P.rel(c.path, article_dir):50s} [{c.role}] {c.reason}{mark}")
     return ss
 
 
