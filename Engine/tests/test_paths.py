@@ -119,7 +119,7 @@ ENV = dict(os.environ, PYTHONPATH=str(ENGINE / "vendor"), SLCN_MANUSCRIPTS="/tmp
 
 def run(script: str, *args):
     return subprocess.run([sys.executable, str(ENGINE / script), *args],
-                          capture_output=True, text=True, env=ENV, cwd=str(ENGINE))
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=ENV, cwd=str(ENGINE))
 
 
 for script, args in (("corpus.py", []), ("docx_audit.py", ["--out-dir", tempfile.mkdtemp()])):

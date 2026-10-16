@@ -338,9 +338,9 @@ else:
                 os.remove(os.path.join(d, f))
     # ⚠️ 第 96 条起 `toolbox-cli info` 也只是转发引擎 —— 下面这段现在比较的是
     #    "引擎 vs 引擎"，留着只作烟雾测试（确认两条命令都能跑通），判别力在 (b2) 快照。
-    subprocess.run([str(cli), "info", sw], capture_output=True, text=True)
+    subprocess.run([str(cli), "info", sw], capture_output=True, text=True, encoding="utf-8", errors="replace")
     subprocess.run([sys.executable, str(ENGINE / "infocheck.py"), "--folder", py, "--out-dir", py],
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace")
     sw_txt = next((os.path.join(sw, f) for f in os.listdir(sw) if f.startswith("信息检查") and f.endswith(".txt")), None)
     py_txt = next((os.path.join(py, f) for f in os.listdir(py) if f.startswith("信息检查") and f.endswith(".txt")), None)
     check("(c) 两条命令产出的报告 txt 一致（第 96 条后为烟雾测试）",

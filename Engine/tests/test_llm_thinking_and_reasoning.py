@@ -260,7 +260,7 @@ def run_convert(n_entries, script, **env_extra):
          #    （并入通道有自己的套件 tests/test_aibib.py）。
          "--no-ai-merge",
          "--llm-base", BASE, "--llm-key", "mock", "--llm-model", "mock-model"],
-        capture_output=True, text=True, timeout=180, env=env, cwd=_ENGINE,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env, cwd=_ENGINE,
     )
     out_dir = os.path.join(tmp, "outroot", "San_Zhang")
     md = open(os.path.join(out_dir, "San_Zhang_文献核实.md"), encoding="utf-8").read()

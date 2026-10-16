@@ -47,7 +47,7 @@ ENGINE = HERE.parent                                # …/<项目>/Engine
 def _git_root() -> pathlib.Path:
     try:
         out = subprocess.run(["git", "-C", str(ENGINE), "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True).stdout.strip()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         if out:
             return pathlib.Path(out)
     except OSError:
@@ -87,7 +87,7 @@ if not _complete:
           "测试计数与依赖稿件库的数字会变，这一项只在前提齐全的机器上有意义")
 else:
     p = subprocess.run([PY, str(ENGINE / "tools" / "gen_docs.py"), "--check"],
-                       cwd=str(ENGINE), capture_output=True, text=True)
+                       cwd=str(ENGINE), capture_output=True, text=True, encoding="utf-8", errors="replace")
     tail = "｜".join((p.stdout + p.stderr).strip().split("\n")[-1:])[:200]
     check("(a) gen_docs.py --check 通过（README 的 AUTO 块 = 现算结果）", p.returncode == 0,
           f"exit={p.returncode} {tail}")

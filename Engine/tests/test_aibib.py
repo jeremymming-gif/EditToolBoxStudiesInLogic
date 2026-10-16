@@ -439,7 +439,7 @@ def run_convert(src, out, extra):
     env["SLCN_LLM_THINKING"] = "0"
     p = subprocess.run([sys.executable, os.path.join(_ENGINE, "convert.py"),
                         "--source", src, "--out", out, "--verify-refs", *extra],
-                       capture_output=True, text=True, timeout=600, env=env, cwd=_ENGINE)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600, env=env, cwd=_ENGINE)
     return p
 
 

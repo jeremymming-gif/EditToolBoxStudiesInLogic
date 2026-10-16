@@ -216,7 +216,7 @@ env["PYTHONPATH"] = str(ENGINE / "vendor") + os.pathsep + env.get("PYTHONPATH", 
 
 def run(*args):
     return subprocess.run([PY, str(ENGINE / "mergepdf.py"), *args],
-                          capture_output=True, text=True, env=env, cwd=str(ENGINE))
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, cwd=str(ENGINE))
 
 
 r = run("--version")

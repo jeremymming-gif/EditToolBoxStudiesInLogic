@@ -336,7 +336,7 @@ else:
     """)
     env2 = dict(os.environ)
     env2["PYTHONPATH"] = str(REPO / "Engine" / "vendor")
-    r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True,
+    r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env=env2, cwd=str(SHELL), timeout=180)
     out = r.stdout or ""
     if r.returncode != 0 and ("no display" in (r.stderr or "") or "TclError" in (r.stderr or "")):

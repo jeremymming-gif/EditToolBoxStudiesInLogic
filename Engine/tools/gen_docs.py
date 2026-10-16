@@ -45,7 +45,7 @@ ENGINE = Path(__file__).resolve().parents[1]          # …/<项目>/Engine
 def _git_root() -> Path:
     try:
         out = subprocess.run(["git", "-C", str(ENGINE), "rev-parse", "--show-toplevel"],
-                             capture_output=True, text=True).stdout.strip()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         if out:
             return Path(out)
     except OSError:
@@ -88,7 +88,7 @@ def sha12(p: Path) -> str:
 
 
 def sh(cmd: list[str], cwd: Path | None = None) -> str:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True).stdout
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
 # ── 测试：现跑 tests/*.py，数套件与 PASS 行 ─────────────────────────────────
@@ -106,7 +106,7 @@ def run_tests() -> tuple[list[tuple[str, int, int]], int]:
         if f.name in SELF_REFERENTIAL:
             continue
         p = subprocess.run([PY, "-u", str(f)], cwd=str(ENGINE), env=env,
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         out = p.stdout + p.stderr
         rows.append((f.stem, len(re.findall(r"^\s*PASS\b", out, re.M)),
                      len(re.findall(r"^\s*FAIL\b", out, re.M))))

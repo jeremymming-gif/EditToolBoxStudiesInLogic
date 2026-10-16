@@ -188,7 +188,7 @@ ENV = dict(os.environ, PYTHONPATH=str(ENGINE / "vendor"))
 
 def run(*args):
     return subprocess.run([PY, str(ENGINE / "proofcheck.py"), *args],
-                          capture_output=True, text=True, env=ENV, cwd=str(ENGINE))
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=ENV, cwd=str(ENGINE))
 
 
 tmp = tempfile.mkdtemp(prefix="slcn_proof_")

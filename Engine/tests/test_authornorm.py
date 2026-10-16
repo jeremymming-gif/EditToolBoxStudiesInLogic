@@ -319,7 +319,7 @@ print("\n── ⑧ checkbib.py 命令行 ──")
 
 def run_cli(*args):
     p = subprocess.run([sys.executable, os.path.join(_ENGINE, "checkbib.py"), *args],
-                       capture_output=True, text=True, cwd=_ENGINE)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=_ENGINE)
     return p.returncode, p.stdout + p.stderr
 
 

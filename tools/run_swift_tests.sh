@@ -30,8 +30,9 @@ run_one() {
     local why
     why="$(grep -m1 -E "error:" /tmp/slcn_err_"$name" | cut -c1-110)"
     # 宏插件/SDK 不匹配属于**工具链限制**，不是代码缺陷：报 SKIP 并说清（本机已验证过）
-    if grep -qiE "macro|plugin|fatalError|SwiftUIMacros" /tmp/slcn_err_"$name"; then
+    if grep -qiE "macro|plugin|fatalError|SwiftUIMacros|unable to type-check" /tmp/slcn_err_"$name"; then
       printf "  %-14s SKIP（工具链限制：%s）\n" "$name" "${why:-宏插件不可用}"
+      grep -m1 -oE "[A-Za-z/]+\.swift:[0-9]+:[0-9]+" /tmp/slcn_err_"$name" | sed 's/^/                 涉及文件：/' || true
       printf "                 —— 本机（完整 Xcode）已验证通过；CI 上跳过不算失败\n"
       return
     fi

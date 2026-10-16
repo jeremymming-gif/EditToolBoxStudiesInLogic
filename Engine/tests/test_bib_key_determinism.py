@@ -243,7 +243,7 @@ with open(_child_path, "w", encoding="utf-8") as fh:
 def child(seed, target):
     env = dict(os.environ, PYTHONHASHSEED=seed)
     r = subprocess.run([sys.executable, _child_path, _ENGINE, target],
-                       capture_output=True, text=True, env=env, timeout=300)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=300)
     if r.returncode != 0:
         raise RuntimeError(f"子进程失败（seed={seed}）：{r.stderr[-800:]}")
     return r.stdout
@@ -298,7 +298,7 @@ with open(_old_path, "w", encoding="utf-8") as fh:
 def old_child(seed):
     env = dict(os.environ, PYTHONHASHSEED=seed)
     return subprocess.run([sys.executable, _old_path, _ENGINE], capture_output=True,
-                          text=True, env=env, timeout=120).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", env=env, timeout=120).stdout.strip()
 
 
 check("④ 对照组：改动前的 `hash()` 兜底在两个进程里**确实**会给出不同的键（证明本测试有牙齿）",

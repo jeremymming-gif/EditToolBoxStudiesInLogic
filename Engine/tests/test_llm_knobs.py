@@ -248,7 +248,7 @@ def probe_cli(extra_args, extra_env=None):
     p = subprocess.run([sys.executable, "-m", "slcn.llm", "--probe", "--json",
                         "--base", BASE_ROOT, "--model", "mock-model",
                         *extra_args],
-                       capture_output=True, text=True, timeout=120, env=env, cwd=_ENGINE)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, env=env, cwd=_ENGINE)
     return p
 
 
@@ -312,7 +312,7 @@ else:
                    "--llm-base", mbase, "--llm-key", "mock", "--llm-model", "mock-model",
                    "--llm-protocol", "responses", "--llm-web-search",
                    "--llm-search-tool", "web_search_preview"]
-            p5 = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+            p5 = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600,
                                 env=env, cwd=_ENGINE)
             with urllib.request.urlopen(f"http://127.0.0.1:{mport}/__stats", timeout=10) as r5:
                 stats = json.loads(r5.read().decode("utf-8"))

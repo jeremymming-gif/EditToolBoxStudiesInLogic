@@ -79,6 +79,18 @@ struct SettingsTab: View {
     private var aiForm: some View {
         VStack(alignment: .leading, spacing: 10) {
 
+            aiPresetSection
+            aiProfilesSection
+            aiChannelSection
+            aiFutureKnobsSection
+            aiRequestKnobsSection
+        }
+    }
+
+    // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
+    //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    private var aiPresetSection: some View {
+        Group {
             // ---------- 预设：只是填表快捷方式，填完照样能改 ----------
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("预设").frame(width: 76, alignment: .trailing)
@@ -96,6 +108,13 @@ struct SettingsTab: View {
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
+        }
+    }
+
+    // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
+    //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    private var aiProfilesSection: some View {
+        Group {
             // ---------- 第 82 条：保存过的配置方案（多套之间来回换） ----------
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("配置方案").frame(width: 76, alignment: .trailing)
@@ -167,6 +186,13 @@ struct SettingsTab: View {
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
+        }
+    }
+
+    // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
+    //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    private var aiChannelSection: some View {
+        Group {
             // ---------- 通道 + 联网检索（第 69 条：让「能不能联网」变成可选项与可实测项）----------
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("通道").frame(width: 76, alignment: .trailing)
@@ -203,6 +229,13 @@ struct SettingsTab: View {
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
+        }
+    }
+
+    // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
+    //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    private var aiFutureKnobsSection: some View {
+        Group {
             // ---------- 两个「未来兼容」旋钮（第 70 条；高级/次要，一般不用改）----------
             // 为什么放在「联网检索」下面而不是最上面：它们是**次要**的高级项，默认留空
             // 就等于今天的正确行为；放这里是为了让「检索相关的东西」挨在一起。
@@ -247,6 +280,13 @@ struct SettingsTab: View {
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
+        }
+    }
+
+    // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时
+    //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
+    private var aiRequestKnobsSection: some View {
+        Group {
             // ---------- 两个「请求体旋钮」：只有勾了 AI 开关才随子进程走 ----------
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text("思考模式").frame(width: 76, alignment: .trailing)
@@ -340,6 +380,7 @@ struct SettingsTab: View {
             }
         }
     }
+
 
     /// 点预设：只填地址与模型名（`自定义` 时两个都是 nil，什么都不动）。
     /// **绝不碰密钥** —— 密钥是编辑自己粘的，换预设不该把它清掉。

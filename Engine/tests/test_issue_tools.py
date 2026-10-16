@@ -45,7 +45,7 @@ ENV = dict(os.environ,
 
 def run(script: str, *args):
     return subprocess.run([PY, str(ENGINE / script), *args],
-                          capture_output=True, text=True, env=ENV, cwd=str(ENGINE))
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", env=ENV, cwd=str(ENGINE))
 
 
 def mkfile(path: str, text: str = "x") -> str:

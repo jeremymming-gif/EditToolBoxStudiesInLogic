@@ -339,7 +339,7 @@ def run_checkbib(args, stdin_text=None):
     env = dict(os.environ)
     env["PYTHONPATH"] = os.path.join(_ENGINE, "vendor")
     p = subprocess.run([sys.executable, CHECKBIB] + args,
-                       input=stdin_text, capture_output=True, text=True,
+                       input=stdin_text, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env=env, cwd=_ENGINE, timeout=180)
     return p.returncode, p.stdout + p.stderr
 
