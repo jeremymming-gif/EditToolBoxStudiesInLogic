@@ -127,10 +127,35 @@ jobs:
           Copy-Item "sources-win\build\dist\编辑部工具箱.exe" dist\
           Compress-Archive -Path dist\SLCNEngine.exe, "dist\编辑部工具箱.exe" `
                            -DestinationPath "EditToolBox-$V-Windows-x64.zip" -Force
+      # ⚠️ RELEASING.md 第 155 行：**资产里必须照实说明**「首次打开」这一步，不许说成小问题。
+      #    未签名 exe 会撞 SmartScreen（蓝色「Windows 已保护你的电脑」），
+      #    而编辑部已定案不做代码签名（R9）—— 所以只能把处理方法写清楚（与 mac 那份对称）。
+      - name: 附一份「首次打开」说明
+        shell: pwsh
+        run: |
+          $TXT = @'
+          《编辑部工具箱》Windows 版首次打开说明
+          ------------------------------------------------
+          本程序**未做代码签名**（编辑部决定不购买代码签名证书），
+          从网上下载后双击会被 SmartScreen 拦下，出现蓝色提示
+          「Windows 已保护你的电脑」。这不是文件坏了，也不是中毒。
+
+            处理方法：点「更多信息」→ 再点「仍要运行」。
+
+          另外两点：
+            · 本包是**免安装**的：解压后两个 exe 必须放在**同一个目录**里
+              （「编辑部工具箱.exe」启动时会在自己旁边找 SLCNEngine.exe）。
+            · 用「初排转换」编译 PDF 需要系统里有 TeX（xelatex/biber）；
+              合并 PDF、导出原稿 PDF 另外需要 LibreOffice（可选）。
+          '@
+          Set-Content -Path "dist\首次打开（Windows）.txt" -Value $TXT -Encoding UTF8
+          Get-Item "dist\首次打开（Windows）.txt" | Select-Object Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app
-          path: EditToolBox-*-Windows-x64.zip
+          path: |
+            EditToolBox-*-Windows-x64.zip
+            dist/首次打开（Windows）.txt
 
   # ── ④ 发 Release（只在打 tag 时）────────────────────────────────────────
   release:
