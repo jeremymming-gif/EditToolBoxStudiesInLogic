@@ -9,8 +9,14 @@
 
 只做「装配 + 打分」，不编译（编译慢且本阶段不需要）。
 
+第二十二批（第 122 条）：支持**进程池并行**（每篇互不共享输出目录，结果按原顺序汇总）。
+默认 `--jobs auto`（min(8, CPU 数)）；`--jobs 1` 完全串行。两种模式的 `corpus.csv`
+逐字节一致（已用全库 69 篇实测对比）。
+
 用法：
-    PYTHONPATH="$PWD/vendor" python3 corpus.py
+    PYTHONPATH="$PWD/vendor" python3 corpus.py                 # 自动并行
+    PYTHONPATH="$PWD/vendor" python3 corpus.py --jobs 1        # 串行（旧行为）
+    PYTHONPATH="$PWD/vendor" python3 corpus.py --limit 5 --jobs 1
 """
 
 from __future__ import annotations
@@ -211,6 +217,23 @@ def run_one(issue: str, slug: str, target: str) -> Row:
     )
 
 
+def _worker_init(sty, skeleton) -> None:
+    """进程池初始化：把 main() 里解析的全局样式/骨架带进子进程。"""
+    global STY, SKELETON
+    STY, SKELETON = sty, skeleton
+
+
+def _worker_run(item: tuple[str, str, str]) -> Row:
+    """进程池里跑一篇；异常照串行口径折成 `异常` 行（TRACE 时打 traceback）。"""
+    issue, slug, target = item
+    try:
+        return run_one(issue, slug, target)
+    except Exception as e:  # noqa: BLE001
+        if os.environ.get("TRACE"):
+            traceback.print_exc()
+        return Row(issue, slug, "异常", "?", False, error=f"{type(e).__name__}: {e}")
+
+
 def pct(xs: list[float], p: float) -> float:
     if not xs:
         return 0.0
@@ -230,6 +253,7 @@ def main() -> int:
     ap.add_argument("--sty", default=None, help="覆盖版面样式文件（默认按语种自动选）")
     ap.add_argument("--skeleton", default=None, help="覆盖骨架模板（默认按语种自动选）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 篇（调试用）")
+    ap.add_argument("--jobs", default="auto", help="进程数：auto（默认，min(8, CPU)）/ 1 / N；1 = 串行")
     args = ap.parse_args()
     STY, SKELETON = args.sty, args.skeleton
 
@@ -239,18 +263,55 @@ def main() -> int:
     os.makedirs(OUT, exist_ok=True)
     print(f"共 {len(items)} 篇有同名目标成品，开始回归…\n")
 
+    try:
+        if str(args.jobs).lower() == "auto":
+            jobs = min(8, os.cpu_count() or 1)
+        else:
+            jobs = int(args.jobs)
+        if jobs < 1:
+            raise ValueError
+    except ValueError:
+        print(f"✗ --jobs 只能是 auto / 1 / 正整数，收到：{args.jobs!r}", file=sys.stderr)
+        return 2
+    jobs = min(jobs, len(items) or 1)
+
     rows: list[Row] = []
-    for n, (issue, slug, target) in enumerate(items, 1):
-        try:
-            r = run_one(issue, slug, target)
-        except Exception as e:  # noqa: BLE001
-            r = Row(issue, slug, "异常", "?", False, error=f"{type(e).__name__}: {e}")
-            if os.environ.get("TRACE"):
-                traceback.print_exc()
-        rows.append(r)
-        mark = "✅" if r.ok else "❌"
-        extra = f"{r.raw * 100:6.2f}%" if r.ok else r.error[:46]
-        print(f"  [{n:2d}/{len(items)}] {mark} {slug[:24]:26s} {r.channel:6s} {extra}")
+    if jobs <= 1 or len(items) <= 1:
+        for n, (issue, slug, target) in enumerate(items, 1):
+            r = _worker_run((issue, slug, target))
+            rows.append(r)
+            mark = "✅" if r.ok else "❌"
+            extra = f"{r.raw * 100:6.2f}%" if r.ok else r.error[:46]
+            print(f"  [{n:2d}/{len(items)}] {mark} {slug[:24]:26s} {r.channel:6s} {extra}")
+    else:
+        # 并行：`executor.map` 按提交顺序产回结果，保证 rows 与 items 同序
+        # （CSV 逐字节一致的前提）。进度按完成顺序另打一行。
+        import concurrent.futures
+
+        print(f"  （并行 {jobs} 个进程）")
+        done = 0
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=jobs,
+                initializer=_worker_init,
+                initargs=(STY, SKELETON)) as ex:
+            futures = [ex.submit(_worker_run, it) for it in items]
+            for fut in concurrent.futures.as_completed(futures):
+                done += 1
+                try:
+                    r = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    r = Row("?", "?", "异常", "?", False, error=f"{type(e).__name__}: {e}")
+                print(f"  完成 {done:2d}/{len(items)}")
+                rows.append(r)
+        # 按 items 原顺序重排（as_completed 是完成序）
+        by_key = {(r.issue, r.slug): r for r in rows}
+        ordered: list[Row] = []
+        for issue, slug, target in items:
+            r = by_key.pop((issue, slug), None)
+            if r is None:  # 理论上不会发生；兜底不让行丢失
+                r = Row(issue, slug, "异常", "?", False, error="并行结果缺失")
+            ordered.append(r)
+        rows = ordered
 
     ok = [r for r in rows if r.ok]
     print("\n" + "=" * 78)

@@ -67,6 +67,10 @@ $PY convert.py --source "/…/main.tex" --metadata "/…/yalcin puzzle.tex" \
 
 # 先看会发生什么，不落盘
 $PY convert.py --source X.docx --out Y --dry-run
+
+# 一键自查（第二十二批；--full 为发版前全套）
+$PY tools/selfcheck.py
+$PY tools/selfcheck.py --full
 ```
 
 **第一次跑先装依赖**（三个包，装进项目自带的 `vendor/`）：
@@ -114,7 +118,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**43 套件 / 1750 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**44 套件 / 1767 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
 `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibreport_note_and_clause` 49
@@ -126,7 +130,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51
 `test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 35
 `test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_search_refs` 54
-`test_sep_style` 25 ｜ `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
+`test_selfcheck` 17 ｜ `test_sep_style` 25 ｜ `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
 
 **普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
 
@@ -151,7 +155,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 23:17:07`；`HEAD` = `fce50ab`；`git status --porcelain` **2** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 23:29:38`；`HEAD` = `8807a8f`；`git status --porcelain` **7** 行
 <!-- AUTO:STATE:END -->
 
 ---
@@ -164,13 +168,17 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
    规则取舍先跑 `ablation_corpus.py` 消融，别凭直觉（这是本项目最重要的纪律）。
 3. **代表稿** —— `convert.py` 跑三篇代表稿：`03 Liang_Zhang`（LaTeX 通道）、
    `10 Bo_Chen`（Word 通道）、`Lu_Jiang`（脚注体例 + 英文稿），人眼核版面与页数。
-4. **`corpus.py` 回归** —— `$PY corpus.py`；判据看**逐篇明细**而不是中位数
-   （`05 Yang_Hu` 有已知的非确定性抖动，根因见 `HANDOFF.md` 第九节）。
+4. **`corpus.py` 回归** —— `$PY corpus.py`（默认 `--jobs auto` 并行；`--jobs 1` = 旧串行）；
+   判据看**逐篇明细**而不是中位数（`05 Yang_Hu` 有已知的非确定性抖动（R5），
+   根因见 `HANDOFF.md` 风险表 / 第九节）。
 5. **重建 App + 包内 `cmp`** —— `cd EditToolBox && ./build.sh`，然后逐个 `cmp`
    包内 `Resources/Engine/` 的引擎文件与仓库同名文件（「包内引擎过期」是本项目踩过的坑）。
    ⚠️ `build.sh` 是**共享资源**：并行会话时必须**串行**，不要两边同时构建。
 6. **文档一致性** —— `$PY tests/test_docs_consistency.py`（内含 `tools/gen_docs.py --check`，
    AUTO 块不许过期；引用路径必须存在；每处 `第 N 条` 必须可查；案例条目零丢失）。
+7. **一键自查** —— `$PY tools/selfcheck.py`（quick）/`--full`：把 1/2/5/6 的离线部分 +
+   代码健康（超长函数/死代码候选/TODO）+ 案例引用/案例库体检（`tools/case_audit.py`，
+   需笔记仓）收进一条命令；输出 PASS/FAIL/WARN。
 
 ---
 

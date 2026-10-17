@@ -45,6 +45,11 @@ python3 tools/gen_docs.py            # 现算并刷新 README 的 AUTO 块（数
 python3 tests/test_docs_consistency.py   # 文档看门狗（期望「失败 0 项」）
 for f in tests/test_*.py; do python3 "$f" | tail -1; done   # 全部套件
 
+# 一键自查（第二十二批）：环境/import 冒烟 + 套件 + 文档看门狗 + 代码健康 + 案例引用/案例库体检
+python3 tools/selfcheck.py           # quick；发版前用 --full
+# 只查案例库（编号/索引/状态/相似度/历史路径；在公开仓根跑）
+python3 ../tools/case_audit.py --check
+
 # Swift 测试台（6 个，headless；一条命令跑完）
 bash tools/run_swift_tests.sh        # 期望「全部测试台 0 FAIL」
 
@@ -79,12 +84,16 @@ CI 上就是这样，所以 CI 不该因为它们红。
 2. **反例测试**：新规则必须配"本来不该命中"的反例；规则取舍先跑 `ablation_corpus.py` 消融
    （本项目最重要的纪律：直觉和单篇数据都会骗人）。
 3. **代表稿**：Word 通道与 LaTeX 通道各至少一篇，人眼核版面与页数。
-4. **全库回归**：`python3 corpus.py`（约 10 分钟），看逐篇明细而不是中位数。
+4. **全库回归**：`python3 corpus.py`（默认 `--jobs auto` 并行，约 2 分钟；`--jobs 1` = 旧串行），
+   看逐篇明细而不是中位数；**注意既有 R5 非确定性**（`id()` 去重 `<w:drawing>`，`05 Yang_Hu`
+   等图形多的稿子约 ±0.03pp 噪声，见 HANDOFF 风险表 R5）——别拿两次 corpus 逐字节对照。
 5. **重建 App + 包内 cmp**：`./build.sh` 之后逐个比对包内引擎文件与仓库同名文件（"包内引擎过期"踩过）。
 6. **文档一致性**：`python3 tests/test_docs_consistency.py`（含 `tools/gen_docs.py --check`）。
 7. **Swift 改动**：`bash tools/run_swift_tests.sh`（6 个测试台 0 FAIL）。
 
 > 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README 已与仓库不同，下次 `./build.sh` 会同步"。
+> **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick）/`--full`（发版前）——覆盖本清单
+> 的离线部分（套件/文档/App 包内 cmp/代码健康/案例引用与案例库体检）。
 
 ## 文档维护
 
