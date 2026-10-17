@@ -1051,6 +1051,21 @@ let i5key = argv(opts(false, true, false, key: "sk-MUST-NOT-BE-IN-ARGV"))
 check("i5-nokey", "密钥**永远不进 argv**（仍只走环境变量 SLCN_LLM_KEY）",
       !i5key.contains { $0.contains("sk-") }, "argv=\(i5key)")
 
+// i5b（P2，第 72 条起）：检索证据开关 → `--search-refs`；只在勾了 AI 时出现
+var optRefs = ConvertFeature.Options()
+optRefs.useAI = true
+optRefs.searchRefs = true
+let i5refsOn = argv(optRefs)
+check("i5b-searchrefs", "勾了「用 AI」+「检索证据」→ argv 里有 --search-refs",
+      i5refsOn.contains("--search-refs"), "argv=\(i5refsOn)")
+let i5refsDefault = argv(opts(false, true, false))
+check("i5b-searchrefs-default", "默认（不勾检索证据）→ 没有 --search-refs（默认命令行逐字节不变）",
+      !i5refsDefault.contains("--search-refs"), "argv=\(i5refsDefault)")
+var optRefsNoAI = ConvertFeature.Options()
+optRefsNoAI.searchRefs = true      // 故意只勾它、不勾 AI
+check("i5b-searchrefs-needs-ai", "没勾「用 AI」时**不传** --search-refs（它复用 AI 的地址/密钥）",
+      !argv(optRefsNoAI).contains("--search-refs"), "argv=\(argv(optRefsNoAI))")
+
 // i6: 源码级接线：SwiftUI 只绑定纯函数，联动逻辑只有一份
 let tabSrc = readSrc("Views/ConvertTab.swift")
 check("i6-bind", "ConvertTab 的复选框绑定走 `ConvertFeature.toggled(...)` + `verifyRefsLocked(...)`",
@@ -1484,6 +1499,57 @@ check("k8-clear", "清空后界面回 chat/关、aiDirty=true，且磁盘 sha �
         && rawFile(dk3 + "/ai.json") == kBefore,
       "protocol=\(sk3.aiProtocol.rawValue) webSearch=\(sk3.aiWebSearch) dirty=\(sk3.aiDirty)")
 
+// ── k14–k18（P2，第 72 条起）：参考文献检索证据开关 ──────────────────────
+// 与「联网检索」是两件事：searchRefs 走 DeepSeek 独立 Search API（`--search-refs`），
+// 默认关；关着时 ai.json 与 argv 都与旧版逐字节相同。
+check("k14-default", "检索证据开关默认关（旧 ai.json 没有这个键也是关）",
+      AIEngineKnobs().searchRefs == false
+        && AppSettings.loadEngineKnobs(storeDirectory: URL(fileURLWithPath: dk)).searchRefs == false,
+      "knob=\(AIEngineKnobs().searchRefs)")
+
+let dkRefs = "/tmp/ai_settings_test/k_refs"
+wipe(dkRefs)
+let skRefs = AppSettings(storeDirectory: URL(fileURLWithPath: dkRefs))
+skRefs.aiBase = "b"; skRefs.aiModel = "m"
+skRefs.aiSearchRefs = true
+let refsSaved = skRefs.saveAI()
+let refsObj = json(rawFile(dkRefs + "/ai.json"))
+check("k15-save", "开启后 saveAI() 把 `searchRefs: true` 写进 ai.json",
+      refsSaved && (refsObj["searchRefs"] as? Bool) == true,
+      "searchRefs=\(refsObj["searchRefs"] ?? "<nil>")")
+let skRefsBack = AppSettings(storeDirectory: URL(fileURLWithPath: dkRefs))
+check("k16-reload", "新实例读回 searchRefs=true，且 aiDirty=false；后台兜底路径也读得到",
+      skRefsBack.aiSearchRefs && !skRefsBack.aiDirty
+        && skRefsBack.aiEngineKnobs.searchRefs
+        && AppSettings.loadEngineKnobs(storeDirectory: URL(fileURLWithPath: dkRefs)).searchRefs,
+      "ui=\(skRefsBack.aiSearchRefs) dirty=\(skRefsBack.aiDirty)")
+// 关着时**不写键**：旧 ai.json 的「逐字节相同」这条硬要求不能被新字段破坏
+let dkRefsOff = "/tmp/ai_settings_test/k_refs_off"
+wipe(dkRefsOff)
+let skRefsOff = AppSettings(storeDirectory: URL(fileURLWithPath: dkRefsOff))
+skRefsOff.aiBase = "b"; skRefsOff.aiModel = "m"
+_ = skRefsOff.saveAI()
+let refsOffObj = json(rawFile(dkRefsOff + "/ai.json"))
+check("k17-absent-when-off", "关着时不写 searchRefs 键（与旧版 ai.json 逐字节相同）",
+      refsOffObj["searchRefs"] == nil,
+      "keys=\(refsOffObj.keys.sorted())")
+// 配置方案：开启才写键、读回一致；applyProfile 能把它带回界面
+let profTrue = AIProfile(name: "有证据", base: "b", key: "k", model: "m",
+                         thinking: .followEndpoint, maxTokens: "2048",
+                         proto: .chat, webSearch: false, searchTool: "",
+                         responsesPath: "", searchRefs: true)
+let profFalse = AIProfile(name: "无证据", base: "b", key: "k", model: "m",
+                          thinking: .followEndpoint, maxTokens: "2048",
+                          proto: .chat, webSearch: false, searchTool: "", responsesPath: "")
+let skProf = AppSettings(storeDirectory: URL(fileURLWithPath: dkRefs))
+skProf.aiProfiles = [profTrue, profFalse]
+let profApplied = skProf.applyProfile(named: "有证据")
+check("k18-profile", "方案 toDict：开着才带 searchRefs 键、关着不带；applyProfile 能把它填回界面",
+      (profTrue.toDict()["searchRefs"] as? Bool) == true
+        && profFalse.toDict()["searchRefs"] == nil
+        && profApplied && skProf.aiSearchRefs,
+      "true=\(profTrue.toDict()["searchRefs"] ?? "<nil>") false=\(profFalse.toDict()["searchRefs"] ?? "<nil>") applied=\(skProf.aiSearchRefs)")
+
 // k9 ⑤ 的接线：跑引擎、参数固定、密钥走环境变量（不进 argv）
 check("k9-probe-argv", "⑤ 探针拼的是引擎 CLI：`-m slcn.llm --probe --json`",
       AIConnectionTester.searchProbeArguments() == ["-m", "slcn.llm", "--probe", "--json"],
@@ -1492,6 +1558,17 @@ let probeSrc = body(after: "static func runSearchProbe(", in: settingsSrc)
 check("k9-key-via-env", "⑤ 把密钥放进**子进程环境**（SLCN_LLM_KEY），**不进 argv**",
       probeSrc.contains("env[\"SLCN_LLM_KEY\"] = key") && !probeSrc.contains("\"--key\""),
       "")
+check("k19-ui", "设置页有「检索证据」开关（绑定 aiSearchRefs）+ 说明写清「独立 Search API/按次计费/默认关」",
+      settingsSrc.contains("$settings.aiSearchRefs")
+        && settingsSrc.contains("DeepSeek 独立 Search API")
+        && settingsSrc.contains("按次计费"),
+      "toggle=\(settingsSrc.contains("$settings.aiSearchRefs")) "
+        + "独立=\(settingsSrc.contains("DeepSeek 独立 Search API")) "
+        + "计费=\(settingsSrc.contains("按次计费"))")
+check("k20-converttab", "转换页把 aiSearchRefs 现取现传（与 base/model 同一口径）+ 说明有据可查",
+      tabSrc.contains("o.searchRefs = settings.aiSearchRefs")
+        && tabSrc.contains("settings.aiSearchRefs"),
+      "wired=\(tabSrc.contains("o.searchRefs = settings.aiSearchRefs"))")
 check("k9-engine-located", "⑤ 走与转换同一条查找路径（locateTool/locatePython），找不到就诚实说「没测出来」",
       probeSrc.contains("ConvertFeature.locateTool()") && probeSrc.contains("ConvertFeature.locatePython(")
         && probeSrc.contains("没找到 Engine/convert.py"),

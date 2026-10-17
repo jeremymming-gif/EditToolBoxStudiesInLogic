@@ -650,6 +650,40 @@ def verify_key_sets(original_bib: str, merged_bib: str) -> str:
     return ""
 
 
+# ── 来源 URL 白名单（P2，第 72 条起）─────────────────────────────────────
+#
+# 背景：P1 起任务书/提示词里会带「本次自动检索证据」（真实搜到的 URL）。但模型仍可能
+# 写一个**看起来像**来源的 URL（编造/张冠李戴）——`% 来源：` 这一行的全部价值就在
+# 「可审计」，编造的 URL 比不写更糟（给编辑一个假的信任信号）。所以合并前做一次
+# **纯离线**校验：回复里 `% 来源：` 出现的 http(s) URL 必须来自**本次运行实际检索到的
+# 来源集合**（预先检索的证据 URL ∪ 模型内置检索返回的 url_citation）；否则该条不并入。
+# 「来源说明」（`% 来源：WorldCat 书目页（未记下 URL）`）不含 URL，无法校验，保持旧行为。
+_SOURCE_LINE_RE = re.compile(r"^\s*%\s*来源[:：]\s*(.+)$", re.M)
+# 终止符：空白、常见包裹符、中英文标点，以及**汉字**——`% 来源：<url>（知网，2026-10-17 查）`
+# 这种写法里 URL 后紧跟全角括号与中文说明，不把汉字/全角左括号算终止符会吞进来源说明。
+_URL_IN_TEXT_RE = re.compile(
+    r"https?://[^\s<>\"'`()（）\[\]【】,，。；;、：:!！?？\u4e00-\u9fff]+")
+
+
+def source_urls_in_reply(reply: str) -> list[str]:
+    """抽出回复里 `% 来源：` 行上的 http(s) URL（只认**来源行**，不扫正文/代码块）。"""
+    urls: list[str] = []
+    for m in _SOURCE_LINE_RE.finditer(reply or ""):
+        for u in _URL_IN_TEXT_RE.finditer(m.group(1)):
+            urls.append(u.group(0).rstrip(".,;:!?)]}）】、。；，"))
+    return urls
+
+
+def bad_source_urls(reply: str, allowed: set[str]) -> list[str]:
+    """返回回复里**不在**本次实际检索来源集合内的 URL（空列表 = 校验通过）。
+
+    `allowed` 由调用方给（`convert.py` ⑪：证据包 URL ∪ 本次内置检索 url_citation）。
+    比较时忽略末尾 `/`；大小写不同视为不同（URL 路径大小写敏感）。
+    """
+    allowed_norm = {u.rstrip("/") for u in allowed if u}
+    return [u for u in source_urls_in_reply(reply) if u.rstrip("/") not in allowed_norm]
+
+
 def merge(original_bib: str, replies: dict[str, str]) -> MergeResult:
     """把 `replies`（请求的 key → AI 回复原文）并进 `original_bib`。
 

@@ -262,6 +262,11 @@ struct AIEngineKnobs: Equatable {
     /// responses 的**路径**（第 70 条 → 引擎 `SLCN_LLM_RESPONSES_PATH` / `--llm-responses-path`）。
     /// **留空 = 不传这个参数**，引擎用默认 `/responses`。
     var responsesPath: String = ""
+    /// P2（第 72 条起）：是否启用「参考文献检索证据」（DeepSeek 独立 Search API，
+    /// 引擎 `--search-refs`；**默认关**）。它与 `webSearch` 是**两件事**：
+    /// 后者是模型内置检索工具；前者是工具自己先检索、把证据注入提示词、并在合并 bib
+    /// 前校验 `% 来源：` URL——不依赖服务商/模型，但按次计费（¥5/1000 次成功）。
+    var searchRefs: Bool = false
 
     /// 本组合**实际**会不会带检索工具（chat 通道下即使勾了也不会）。
     var usesWebSearch: Bool { apiProtocol == .responses && webSearch }
@@ -376,12 +381,14 @@ struct AIProfile: Identifiable, Equatable {
     var webSearch: Bool = false
     var searchTool: String = ""
     var responsesPath: String = ""
+    var searchRefs: Bool = false
 
     var id: String { name }
 
     /// 存盘用的字典（键名与顶层那份**完全一致**，便于人读与手改）。
+    /// `searchRefs` 只在**开启**时写（默认关 = 与旧 ai.json 逐字节相同）。
     func toDict() -> [String: Any] {
-        [
+        var d: [String: Any] = [
             "name": name,
             "base": base,
             "key": key,
@@ -393,6 +400,8 @@ struct AIProfile: Identifiable, Equatable {
             "searchTool": searchTool,
             "responsesPath": responsesPath,
         ]
+        if searchRefs { d["searchRefs"] = true }
+        return d
     }
 
     /// 从盘上的字典还原。**宽容**：名字不是非空字符串就返回 nil（该条作废），
@@ -409,6 +418,7 @@ struct AIProfile: Identifiable, Equatable {
         maxTokens = (dict["maxTokens"] as? String) ?? AIMaxTokens.defaultText
         protocolRaw = (dict["protocol"] as? String) ?? AIProtocol.chat.rawValue
         webSearch = (dict["webSearch"] as? Bool) ?? false
+        searchRefs = (dict["searchRefs"] as? Bool) ?? false
         searchTool = (dict["searchTool"] as? String) ?? ""
         responsesPath = (dict["responsesPath"] as? String) ?? ""
     }
@@ -419,7 +429,7 @@ struct AIProfile: Identifiable, Equatable {
     init(name: String, base: String, key: String, model: String,
          thinking: AIThinkingMode, maxTokens: String,
          proto: AIProtocol, webSearch: Bool,
-         searchTool: String, responsesPath: String) {
+         searchTool: String, responsesPath: String, searchRefs: Bool = false) {
         self.name = name
         self.base = base
         self.key = key
@@ -430,6 +440,7 @@ struct AIProfile: Identifiable, Equatable {
         self.webSearch = webSearch
         self.searchTool = searchTool
         self.responsesPath = responsesPath
+        self.searchRefs = searchRefs
     }
 }
 
@@ -486,6 +497,10 @@ final class AppSettings: ObservableObject {
     /// 所以「设置」页的 ⑤ 探针要实测，GUI 与引擎都会如实写明。
     @Published var aiWebSearch: Bool = false
 
+    /// P2（第 72 条起）：文献检索证据开关 → 勾了 AI 时经 `--search-refs` 传给引擎
+    /// （默认关；DeepSeek 独立 Search API，按次计费）。它**不依赖**端点是否支持内置检索。
+    @Published var aiSearchRefs: Bool = false
+
     /// 检索工具的类型名（第 70 条）。**留空 = 不传 `--llm-search-tool`**，引擎用默认
     /// `web_search`（于是命令行逐字节不变）；填了才传，供将来服务商换名字时使用。
     @Published var aiSearchTool: String = ""
@@ -524,6 +539,7 @@ final class AppSettings: ObservableObject {
     /// 通道 / 联网检索也要进「有未保存的修改」的判据（与另两个旋钮同一口径）
     private var savedProtocol: AIProtocol = .chat
     private var savedWebSearch: Bool = false
+    private var savedSearchRefs: Bool = false
     /// 第 70 条的两个高级文本旋钮（留空 = 不传给引擎）
     private var savedSearchTool: String = ""
     private var savedResponsesPath: String = ""
@@ -577,6 +593,7 @@ final class AppSettings: ObservableObject {
         // 第 69 条：通道 / 检索开关也要能读回（没有现成旋钮时的兜底路径）。
         knobs.apiProtocol = AIProtocol(stored: obj["protocol"])
         knobs.webSearch = (obj["webSearch"] as? Bool) ?? false
+        knobs.searchRefs = (obj["searchRefs"] as? Bool) ?? false
         // 第 70 条的两个高级旋钮：旧 ai.json 没有这两个键 → 空串（= 用引擎默认）。
         if let t = obj["searchTool"] as? String { knobs.searchTool = t }
         if let p = obj["responsesPath"] as? String { knobs.responsesPath = p }
@@ -599,6 +616,7 @@ final class AppSettings: ObservableObject {
             savedBase = aiBase; savedKey = aiKey; savedModel = aiModel
             savedThinking = aiThinking; savedMaxTokens = aiMaxTokens
             savedProtocol = aiProtocol; savedWebSearch = aiWebSearch
+            savedSearchRefs = aiSearchRefs
             savedSearchTool = aiSearchTool; savedResponsesPath = aiResponsesPath
             aiProfiles = []          // 文件不存在：方案列表为空（第 82 条）
             aiProfileName = ""
@@ -615,6 +633,8 @@ final class AppSettings: ObservableObject {
         // 第 69 条的两个新键：旧 ai.json 里没有 → 默认（chat / 检索关），绝不让读配置失败。
         aiProtocol = AIProtocol(stored: obj["protocol"])
         aiWebSearch = (obj["webSearch"] as? Bool) ?? false
+        // P2 的检索证据开关：旧 ai.json 没有这个键 → 默认关（绝不因读配置失败）。
+        aiSearchRefs = (obj["searchRefs"] as? Bool) ?? false
         // 第 70 条的两个高级旋钮：旧 ai.json 没有这两个键 / 类型不对 → 空串
         // （= 不传这个参数，引擎用默认），绝不让读配置失败。
         aiSearchTool = (obj["searchTool"] as? String) ?? ""
@@ -633,6 +653,7 @@ final class AppSettings: ObservableObject {
         savedBase = aiBase; savedKey = aiKey; savedModel = aiModel
         savedThinking = aiThinking; savedMaxTokens = aiMaxTokens
         savedProtocol = aiProtocol; savedWebSearch = aiWebSearch
+        savedSearchRefs = aiSearchRefs
         savedSearchTool = aiSearchTool; savedResponsesPath = aiResponsesPath
     }
 
@@ -665,7 +686,8 @@ final class AppSettings: ObservableObject {
                 thinking: aiThinking, maxTokens: maxText,
                 proto: aiProtocol, webSearch: aiWebSearch,
                 searchTool: aiSearchTool.trimmingCharacters(in: .whitespacesAndNewlines),
-                responsesPath: aiResponsesPath.trimmingCharacters(in: .whitespacesAndNewlines)))
+                responsesPath: aiResponsesPath.trimmingCharacters(in: .whitespacesAndNewlines),
+                searchRefs: aiSearchRefs))
             aiProfileName = wantedName
             aiSelectedProfile = wantedName
         }
@@ -683,6 +705,8 @@ final class AppSettings: ObservableObject {
             "searchTool": aiSearchTool.trimmingCharacters(in: .whitespacesAndNewlines),
             "responsesPath": aiResponsesPath.trimmingCharacters(in: .whitespacesAndNewlines),
         ]
+        // P2 的检索证据开关：只在**开启**时写键（关着时 ai.json 与旧版逐字节相同）。
+        if aiSearchRefs { obj["searchRefs"] = true }
         // 第 82 条：保存过的配置方案。**一个方案都没有时连这个键都不写** ——
         // 没用过方案的编辑，ai.json 与从前**逐字节相同**（既有断言不受影响）；
         // 删光最后一个方案时这个键也随之消失，不留空数组。
@@ -712,6 +736,7 @@ final class AppSettings: ObservableObject {
         savedThinking = aiThinking
         savedProtocol = aiProtocol
         savedWebSearch = aiWebSearch
+        savedSearchRefs = aiSearchRefs
         // 两个高级旋钮与界面对齐（trim 之后的值就是盘上的值，免得刚保存就显示「未保存」）
         aiSearchTool = obj["searchTool"] as? String ?? ""
         aiResponsesPath = obj["responsesPath"] as? String ?? ""
@@ -738,6 +763,7 @@ final class AppSettings: ObservableObject {
         aiMaxTokens = AIMaxTokens.defaultText
         aiProtocol = .chat
         aiWebSearch = false
+        aiSearchRefs = false
         // 第 70 条的两个高级旋钮也回空串（= 用引擎默认）：与上面同一语义 ——
         // 「清空」是**在界面上**恢复出厂，盘上那份要等「保存」才跟着变。
         aiSearchTool = ""
@@ -774,6 +800,7 @@ final class AppSettings: ObservableObject {
         aiMaxTokens = p.maxTokens
         aiProtocol = AIProtocol(stored: p.protocolRaw)
         aiWebSearch = p.webSearch
+        aiSearchRefs = p.searchRefs
         aiSearchTool = p.searchTool
         aiResponsesPath = p.responsesPath
         aiProfileName = p.name
@@ -833,6 +860,7 @@ final class AppSettings: ObservableObject {
             || AIMaxTokens.parse(aiMaxTokens) != AIMaxTokens.parse(savedMaxTokens)
             || aiProtocol != savedProtocol
             || aiWebSearch != savedWebSearch
+            || aiSearchRefs != savedSearchRefs
             // 第 70 条的两个高级旋钮：按 trim 后的**文本**比（它们没有「同值不同写法」，
             // 只有「留空 / 填了什么」这一种差异）
             || aiSearchTool.trimmingCharacters(in: .whitespacesAndNewlines) != savedSearchTool
@@ -843,7 +871,8 @@ final class AppSettings: ObservableObject {
     var aiEngineKnobs: AIEngineKnobs {
         AIEngineKnobs(thinking: aiThinking, maxTokens: aiMaxTokens,
                       apiProtocol: aiProtocol, webSearch: aiWebSearch,
-                      searchTool: aiSearchTool, responsesPath: aiResponsesPath)
+                      searchTool: aiSearchTool, responsesPath: aiResponsesPath,
+                      searchRefs: aiSearchRefs)
     }
 
     /// 一行摘要，供转换页/设置页显示：`deepseek-flash @ https://api.deepseek.com/v1`

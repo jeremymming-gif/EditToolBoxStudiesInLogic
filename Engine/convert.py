@@ -59,6 +59,7 @@ from slcn import clean as _clean  # noqa: E402
 from slcn import platform as _plat  # noqa: E402
 from slcn import refmark as _refmark  # noqa: E402
 from slcn import search as _search  # noqa: E402
+from slcn import aibib as _aibib  # noqa: E402
 from slcn import naming as N  # noqa: E402
 from slcn import sources as _sources  # noqa: E402
 from slcn import templates as T  # noqa: E402
@@ -1275,6 +1276,12 @@ def main() -> int:
                 system += "\n" + _refmark.SEARCH_MD
                 print("   ⚠ 已于本次提示词中加入「必须先用检索工具核对官方来源」一节；"
                       "端点是否真的检索，跑完看下面的检索证据（0 次 = 凭记忆作答）")
+            if evidence:
+                # P2（第 72 条起）：把 P1 的检索证据**作为数据**注入逐条提示词，并声明
+                # 「`% 来源：` 只能写证据里的 URL」。合成前还会做白名单校验（见下）。
+                system += "\n" + _refmark.EVIDENCE_MD
+                print(f"   ⚠ 已于本次提示词中加入「只依据自动检索证据、勿编造来源」一节"
+                      f"（{len(evidence)} 条证据）；合并前会校验 `% 来源：` URL 是否在证据内")
             advice = ["", "---", "", "# AI 建议（**须人工核实**，工具不保证正确）", ""]
             # 请求参数集中由 llm.request_params_from_env() 给（只用 SLCN_LLM_MAX_TOKENS 与
             # SLCN_LLM_THINKING）：给输出封顶、并按用户意愿决定要不要思维链——
@@ -1307,6 +1314,14 @@ def main() -> int:
             # 「凭记忆」当「已联网核实」汇报。
             n_search = 0
             search_urls: list[str] = []
+            # P2：白名单 = 证据包 URL ∪ 本次内置检索返回的 url_citation（都属「本次运行
+            # **实际**检索到的来源」）。只在校验启用（有证据 / 有内置检索且收到了 URL）时生效。
+            allowed_source_urls: set[str] = set()
+            if evidence:
+                for _pack in evidence.values():
+                    for _row in (_pack.get("top") or []):
+                        if _row.get("url"):
+                            allowed_source_urls.add(_row["url"])
             # 本次要**并入 reference.bib** 的回复（key → 原文）。只收「正常收尾」的：
             # 被截断 / 被内容过滤 / 被中断的那几条**一律不并入**——它们只是半条条目，
             # 并进去等于把残缺当完整（「假完整比明显缺失更危险」，第 54/59 条）。
@@ -1323,7 +1338,8 @@ def main() -> int:
                 # 模型只能「如实」报告我们丢的信息——看上去像模型不行，其实喂的是残缺件。
                 # `search=` 只在开了联网检索时追加一行引导（关着时逐字节不变）。
                 prompt = _refmark.entry_prompt(et, k, body, raw_by_key.get(k, ""),
-                                               search=cfg.uses_web_search)
+                                               search=cfg.uses_web_search,
+                                               evidence=(evidence or {}).get(k))
                 n_calls += 1
                 # 统一入口：chat（默认，逐字节旧行为）/ responses（见 slcn/llm.py）。
                 got = llm.complete(cfg, system, prompt, response_format=None,
@@ -1457,18 +1473,34 @@ def main() -> int:
                     print("   ⚠ 没有任何一条 AI 回复可用（截断/内容过滤/没返回内容）："
                           "reference.bib **未改动**，本次只出任务书。")
                 else:
+                    # P2（第 72 条起）：**来源 URL 白名单**校验——回复里 `% 来源：` 的
+                    # http(s) URL 必须来自本次**实际检索到**的来源（证据包 ∪ 内置检索的
+                    # url_citation）。编造的 URL 比不写更糟（假的信任信号），按纪律不并入。
+                    bad_src: dict[str, str] = {}
+                    if allowed_source_urls or (cfg.uses_web_search and search_urls):
+                        _allowed = set(allowed_source_urls) | set(search_urls)
+                        for _k in list(replies):
+                            _bad = _aibib.bad_source_urls(replies[_k], _allowed)
+                            if _bad:
+                                bad_src[_k] = (
+                                    "AI 回复里的 `% 来源：` URL **不在本次检索证据/实际检索结果里**"
+                                    "（疑似编造：" + "、".join(_bad[:3]) + "）；"
+                                    "按纪律不并入，原文该条逐字节未动")
+                                del replies[_k]
+                        print(f"   来源 URL 白名单：{len(replies)} 条通过、{len(bad_src)} 条被挡下")
+                    rejected_all = {**unclean_replies, **bad_src}
                     print("\n   把 AI 结果并入 reference.bib…")
                     prov = channel_provenance(channel, cfg.protocol, cfg.model,
                                               cfg.uses_web_search, n_search)
                     mg = apply_ai_merge(res.bib_path or "", path, replies,
-                                        stem, out_dir, rejected=unclean_replies,
+                                        stem, out_dir, rejected=rejected_all,
                                         provenance=prov)
                     if mg["n_merged"]:
                         print(f"   ✅ 已并入 {mg['n_merged']} 条 / 跳过 {mg['n_skipped']} 条"
                               f"（逐条原因见任务书「六、合并记录」）")
-                        if unclean_replies:
-                            print(f"   ⚠ 另有 {len(unclean_replies)} 条因返回不完整**未并入**"
-                                  "（已在合并记录里注明）")
+                        if rejected_all:
+                            print(f"   ⚠ 另有 {len(rejected_all)} 条**未并入**"
+                                  "（返回不完整 / 来源不在证据内；原因已在合并记录里注明）")
                         print(f"   回滚副本：{os.path.basename(mg['rollback'])}"
                               "（= 本次合并**之前**的那份 reference.bib）")
                         if mg["report"]:

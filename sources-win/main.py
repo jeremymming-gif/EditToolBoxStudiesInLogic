@@ -696,9 +696,15 @@ class SettingsTab(ttk.Frame):
         # 方案 §4「设置页不吓人」：只留**必需**项。思考模式/最长输出是任务相关选项，
         # 已挪到「初排转换」页的 AI 区域（那里才知道上下文）。
         self.v_web = tk.BooleanVar(value=bool(cfg.get("api", {}).get("webSearch", False)))
+        # P2（第 72 条起）：检索证据开关（默认关）——与「允许联网检索」是**两件事**：
+        # 后者是模型内置检索工具；前者是工具自己用 DeepSeek 独立 Search API 检索证据，
+        # 把证据注入提示词并在合并前校验 `% 来源：` URL（按次计费 ¥5/1000 次）。
+        self.v_searchrefs = tk.BooleanVar(value=bool(cfg.get("api", {}).get("searchRefs", False)))
         opts = ttk.Frame(self)
         opts.grid(row=row, column=1, padx=10, pady=6, sticky="w"); row += 1
         _check(opts, "允许联网检索", self.v_web).pack(side="left")
+        _check(opts, "检索参考文献证据（DeepSeek 独立 Search API，按次计费；默认关）",
+               self.v_searchrefs).pack(side="left", padx=(16, 0))
 
         # 密钥常驻状态行：说清「已存/末四位/只在本机」—— 隐藏字段光靠打码，编辑不知道配没配对
         self.key_status = ttk.Label(self, text="", wraplength=760, justify="left",
@@ -808,6 +814,7 @@ class SettingsTab(ttk.Frame):
                 self.cfg.setdefault("api", {})[key] = var.get().strip()
         # thinking/maxTokens 不再由本页负责（input 在「初排转换」页，改即写进 cfg）
         self.cfg["api"]["webSearch"] = bool(self.v_web.get())
+        self.cfg["api"]["searchRefs"] = bool(self.v_searchrefs.get())
         try:
             path = S.save(self.cfg)
         except Exception as e:  # noqa: BLE001

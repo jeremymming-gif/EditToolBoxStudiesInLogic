@@ -276,7 +276,29 @@ struct SettingsTab: View {
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("检索证据").frame(width: 76, alignment: .trailing)
+                Toggle("转换时先用 DeepSeek 独立 Search API 检索参考文献证据（默认关；按次计费）",
+                       isOn: $settings.aiSearchRefs)
+                    .toggleStyle(.checkbox)
+                Spacer()
+            }
+            Text(aiSearchRefsText)
+                .font(.caption).foregroundStyle(.tertiary)
+                .padding(.leading, 86)
+
         }
+    }
+
+    /// 「检索证据」开关的长文案（第 72 条起，P2）：与「联网检索」是**两件事**。
+    private var aiSearchRefsText: String {
+        "勾上 = 转换时先让工具自己用 **DeepSeek 独立 Search API** 逐条检索参考文献，"
+        + "把候选来源（URL/站点/权威度/匹配分）写进任务书，并作为证据注入 AI 提示词；"
+        + "AI 结果并入 `reference.bib` 前，引擎会校验 `% 来源：` 里的 URL 是否真在"
+        + "「本次实际检索到的来源」里——**编造的 URL 会被挡下不并入**。\n"
+        + "⚠️ 与上面的「联网检索」不同：它**不依赖**服务商/模型是否支持内置 `web_search`"
+        + "（DeepSeek flash/v4-pro 都能用），但按成功请求计费（¥5/1000 次，每篇几十条文献"
+        + "约 ¥0.1–0.2）；**默认关**，且需要上面的地址/密钥可用（否则引擎会跳过并提示）。"
     }
 
     // ── 从 aiForm 拆出（第 101 条）：264 行的整段表达式让旧版 Swift 编译器类型检查超时

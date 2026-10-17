@@ -317,6 +317,21 @@ FORMAT_MD = """\
 # 「自动预跑」的 system prompt 用的是同一份 SOURCES_MD；而这节的措辞只在**确实带上了
 # `tools:[{"type":"web_search"}]`** 时才成立。开关关着时说「你有检索工具」就是撒谎，
 # 而撒谎的后果是模型以为查过、编辑以为查过（本项目最忌讳的「静默假装」）。
+EVIDENCE_MD = """\
+## 二·六、本次**工具已预先检索**（只依据下列证据，勿编造来源）
+
+运行这条通道的工具**已经用公开搜索**为这一条文献查过候选来源，并把它附在逐条请求里
+（「【本次自动检索证据】」）。请遵守：
+
+1. **只能依据这些证据判断**（题名/作者/年份是否对得上、来源是否权威）；
+   不要把「模型记忆」当成新证据，也不要假装自己打开过证据以外的页面。
+2. `% 来源：<URL>` **只能写证据里出现过的 URL**（原样照抄；合并前会校验，
+   不在证据里的 URL 视为**编造**，该条会被挡下不并入）。
+3. 证据不足以确认的字段**照旧省略**并写 `% ⚠ 待核实：…`；证据说「未查到」时
+   **不要**补字段、也不要写 `% 来源：`。
+4. 证据只是**线索**，仍须编辑人工核对（见第三节第 11 条「% 来源：」的用法）。
+"""
+
 SEARCH_MD = """\
 ## 二·五、本次**已启用联网检索**（请真的去查，并留下来源）
 
@@ -458,6 +473,50 @@ def _code_span(text: str) -> str:
 # （原文优先，但原文没有的不许编）。测试逐字断言这一行，改文案要连测试一起改。
 RAW_PROMPT_HEADER = "⚠ 源稿原文（解析可能漏字段，**以它为准**；原文没有的仍不许编）："
 
+# ⑪ 逐条请求里「自动检索证据」的引导头（**只在 P1 检索证据存在时**追加）。
+# 与任务书里的「🔎 自动检索证据」同源（都来自 `slcn/search.py`），但提示词要**完整 URL**
+# （不截断——模型会照抄进 `% 来源：`，截断的 URL 会让白名单校验误判为编造）。
+EVIDENCE_PROMPT_HEADER = (
+    "【本次自动检索证据】（工具预先检索；`% 来源：` 只能写这里出现过的 URL，不得编造）：")
+
+_EV_VERDICT_PROMPT = {
+    "evidence": "检索到候选来源",
+    "check": "有候选来源，需人工判断",
+    "missing": "未查到",
+}
+
+
+def evidence_prompt_lines(pack: dict) -> list[str]:
+    """把证据包摊成提示词里的几行（纯函数，测试逐字断言）。
+
+    `missing` 时明确告诉模型「按查不到处理」——否则它会用记忆把字段补齐，
+    那正是「编错的卷号比空缺更糟」要防的。
+    """
+    verdict = str(pack.get("verdict") or "missing")
+    q = (pack.get("queries") or [])
+    lines = [f"- 判词：{_EV_VERDICT_PROMPT.get(verdict, verdict)}"
+             f"（用过的查询：{'、'.join('`%s`' % x for x in q) if q else '（无）'}）"]
+    top = pack.get("top") or []
+    if top and verdict != "missing":
+        for i, row in enumerate(top[:3], 1):
+            bits = [row.get("site_name") or row.get("category") or ""]
+            if row.get("authority") is not None:
+                bits.append(f"authority {row['authority']}")
+            if isinstance(row.get("score"), (int, float)):
+                bits.append(f"匹配 {float(row['score']):.2f}")
+            lines.append(f"- 候选{i}：《{row.get('title') or '(无题名)'}》 "
+                         f"{row.get('url') or '（无 URL）'}（{'｜'.join(b for b in bits if b)}）")
+        if len(top) > 3:
+            lines.append(f"- （另有 {len(top) - 3} 条候选未列出）")
+    else:
+        lines.append("- 本次**未检索到**候选来源：请按「查不到」处理"
+                     "（省略字段 + `% ⚠ 待核实：…`，不要写 `% 来源：`）。")
+        err = (pack.get("error") or "").strip()
+        if err:
+            lines.append(f"- 检索错误：{err[:160]}")
+    return lines
+
+
 # ⑪ 逐条请求里「本次已联网检索」的引导行（**只在开了检索开关时**追加）。
 # 为什么逐条还要再说一遍：system prompt 离得远，模型容易只顾着格式化当前这条；
 # 逐条请求是它**最后**看到的东西，把「先检索、写 `% 来源：`」放在这里最有效。
@@ -468,7 +527,7 @@ SEARCH_PROMPT_LINE = ("⚠ 本次已启用联网检索：请先用检索工具�
 
 
 def entry_prompt(etype: str, key: str, body: str, raw: str = "",
-                 search: bool = False) -> str:
+                 search: bool = False, evidence: dict | None = None) -> str:
     """⑪ 「AI 预跑」逐条请求的提示词。
 
     `raw` 为空时返回值与从前**逐字节相同**（`@type{key,\\n…}`），保证没原文的条目
@@ -479,20 +538,28 @@ def entry_prompt(etype: str, key: str, body: str, raw: str = "",
     `search` 默认 False：只有开了联网检索开关才追加 `SEARCH_PROMPT_LINE`
     （同样是「关着时逐字节相同」这条硬要求的一部分）。
 
+    `evidence` 默认 None：只有 P1 检索证据存在时才追加「【本次自动检索证据】」块
+    （P2，第 72 条起）。它是**数据**（候选 URL/权威度/匹配分），不是指令；
+    `% 来源：` 的 URL 会在合并前被白名单校验（见 `slcn/aibib.py`）。
+    默认 None 时返回值与 P1 之前**逐字节相同**（硬要求）。
+
     请求形状仍是「一条请求 = 一条条目」：回复解析（`slcn/aibib.py`）只认 bibtex 文本，
     多出来的说明行不影响它，也不需要第二个解析口径。
     """
     one = f"@{etype}{{{key},\n{body.strip()}}}"
-    if not raw and not search:
+    tail = ""
+    if evidence is not None:
+        tail += "\n" + EVIDENCE_PROMPT_HEADER + "\n" + "\n".join(evidence_prompt_lines(evidence))
+    if search:
+        tail += "\n" + SEARCH_PROMPT_LINE
+    if not raw and not tail:
         return one
     if not raw:
-        return f"{one}\n{SEARCH_PROMPT_LINE}"
+        return one + tail
     base = (f"条目 key：{key}\n"
             f"解析得到的条目：\n{one}\n"
             f"{RAW_PROMPT_HEADER}\n{_norm_raw_line(raw)}")
-    if search:
-        base += f"\n{SEARCH_PROMPT_LINE}"
-    return base
+    return base + tail
 
 
 def _fence_for(text: str) -> str:

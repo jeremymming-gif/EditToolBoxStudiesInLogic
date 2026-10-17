@@ -358,6 +358,10 @@ def env_for_run(api: dict | None = None, engine: str | None = None) -> dict:
         env["SLCN_LLM_MAX_TOKENS"] = str(api["maxTokens"])
     if api.get("webSearch"):
         env["SLCN_LLM_WEB_SEARCH"] = "1"
+    # P2（第 72 条起）：检索证据开关 → 引擎 `SLCN_SEARCH_REFS=1`（默认关）。
+    # 走环境变量而非 argv：Windows 的 `wmic process` 同机可见，与密钥同一条纪律。
+    if api.get("searchRefs"):
+        env["SLCN_SEARCH_REFS"] = "1"
     return env
 
 

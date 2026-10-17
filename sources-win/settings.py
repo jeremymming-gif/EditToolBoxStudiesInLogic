@@ -30,7 +30,9 @@ API_KEYS = ("base", "key", "model", "protocol", "thinking",
             "maxTokens", "webSearch", "searchTool", "responsesPath")
 
 DEFAULTS: dict = {
-    "api": {k: "" for k in API_KEYS},
+    # webSearch 与 searchRefs 是**布尔**（其余是字符串）——两个检索开关独立：
+    # webSearch = 模型内置检索工具；searchRefs = 工具自己用 DeepSeek Search API 检索证据。
+    "api": {**{k: "" for k in API_KEYS}, "webSearch": False, "searchRefs": False},
     "options": {
         "convertCompile": True,      # 初排转换默认编译 PDF（编辑最常要的产物）
         "convertClean": False,       # 默认保留中间文件，便于排查

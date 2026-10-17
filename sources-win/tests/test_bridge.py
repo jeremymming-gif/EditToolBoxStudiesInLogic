@@ -200,6 +200,11 @@ check("(b) 文献回读校验能传 `--original/--tex/--out`（从前界面没�
 check("(b) 合并页有 `--detect` 预览（与 mac 对等；默认不跑）",
       "--detect" in E.merge_call(folder="/期", detect=True).argv
       and "--detect" not in E.merge_call(folder="/期").argv)
+check("(b) 设置页有「检索证据」开关（P2，第 72 条）：勾选状态进 cfg、保存时写回",
+      "v_searchrefs" in (SHELL / "main.py").read_text(encoding="utf-8")
+      and 'api"]["searchRefs"] = bool(self.v_searchrefs.get())'
+          in (SHELL / "main.py").read_text(encoding="utf-8")
+      and "DeepSeek 独立 Search API" in (SHELL / "main.py").read_text(encoding="utf-8"))
 check("(b) 运行日志里的「最后一行」被当作契约行送去抠路径",
       "_on_line" in (SHELL / "main.py").read_text(encoding="utf-8")
       and "E.artifact_path(" in (SHELL / "main.py").read_text(encoding="utf-8"))
@@ -214,7 +219,7 @@ check("(b) **退出码 1 不许打成 ❌ 失败**（INVARIANTS 三.2：1 常常
 
 print("\n── (c) 环境变量：UTF-8 + 无缓冲 + vendor + **密钥不进 argv** ──")
 API = {"base": "https://api.example.com", "key": "sk-1234567890", "model": "m-1",
-       "thinking": "off", "maxTokens": "4096", "webSearch": True}
+       "thinking": "off", "maxTokens": "4096", "webSearch": True, "searchRefs": True}
 env = E.env_for_run(API)
 check("(c) `PYTHONUNBUFFERED=1`（否则界面看着像卡死）", env.get("PYTHONUNBUFFERED") == "1")
 check("(c) `PYTHONIOENCODING=utf-8`（Windows 控制台默认 cp936，中文会乱码）",
@@ -227,12 +232,16 @@ check("(c) 其余 AI 字段也对得上（base/model/thinking/maxTokens/websearc
       and env.get("SLCN_LLM_MODEL") == "m-1"
       and env.get("SLCN_LLM_THINKING") == "off"
       and env.get("SLCN_LLM_MAX_TOKENS") == "4096"
-      and env.get("SLCN_LLM_WEB_SEARCH") == "1")
+      and env.get("SLCN_LLM_WEB_SEARCH") == "1"
+      and env.get("SLCN_SEARCH_REFS") == "1")
 for call in (c, c2, c3):
     check(f"(c) **密钥绝不出现在 argv 里**（{call.entry}）",
           "sk-1234567890" not in call.display and "SLCN_LLM_KEY" not in call.display)
 check("(c) 没填的 AI 字段不设环境变量（不许塞空串把引擎默认值顶掉）",
       "SLCN_LLM_SEARCH_TOOL" not in E.env_for_run({"base": "x"}))
+check("(c) 检索证据开关默认关：不设 SLCN_SEARCH_REFS（与旧版环境变量逐字节相同）",
+      "SLCN_SEARCH_REFS" not in E.env_for_run({"base": "x", "webSearch": True})
+      and S.DEFAULTS["api"].get("searchRefs") is False)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) 配置读写（密钥只落本地、显示打码）──")

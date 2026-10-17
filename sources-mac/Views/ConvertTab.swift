@@ -395,6 +395,12 @@ struct ConvertTab: View {
                              + "deepseek-flash 仍忽略检索工具、deepseek-v4-pro 才支持，探针会如实实测）。")
                             .foregroundStyle(.orange)
                     }
+                    if settings.aiSearchRefs {
+                        Text("🔎 本次会先用 DeepSeek **独立检索**（Search API）逐条查参考文献证据，"
+                             + "把证据写进任务书并注入 AI 提示词；并入前会校验 `% 来源：` URL "
+                             + "是否真在证据里（按次计费 ¥5/1000 次成功；默认关）。")
+                            .foregroundStyle(.green)
+                    }
                     Text("AI 调用失败、回复被截断、或没有任何一条通过安全校验时，"
                          + "reference.bib 一个字节都不会改（详见下方日志）。"
                          + "无论哪种通道，并完之后都必须人工过一遍。")
@@ -426,6 +432,7 @@ struct ConvertTab: View {
         // 时 `arguments()` 一个参数都不加 —— 命令行与从前逐字节相同。
         o.llmProtocol = settings.aiProtocol.rawValue
         o.llmWebSearch = settings.aiWebSearch
+        o.searchRefs = settings.aiSearchRefs
         // 第 70 条：两个高级旋钮（工具名 / responses 路径）也**现取**，同一口径。
         // 留空 = `arguments()` 不加参数 → 引擎用默认（`web_search` / `/responses`），
         // 命令行与从前逐字节相同。填了非法值时 `arguments()` 会跳过它、`knobWarnings`

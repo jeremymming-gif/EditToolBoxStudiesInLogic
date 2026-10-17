@@ -45,6 +45,10 @@ enum ConvertFeature {
         /// `deepseek-flash` 会静默忽略、`deepseek-v4-pro` 才真检索），
         /// 所以界面上要如实写清，并由「设置」页的 ⑤ 探针实测。
         var llmWebSearch = false
+        /// P2（第 72 条起）：文献检索证据开关（默认关）→ `--search-refs`。
+        /// 它走 DeepSeek **独立** Search API（不是端点内置检索工具），因此只在勾了 AI、
+        /// 且地址/密钥可用时有意义；开启后引擎先检索、再把证据注入提示词并在合并前校验来源 URL。
+        var searchRefs = false
         /// 检索工具类型名（第 70 条）→ `--llm-search-tool`。**空 = 不传这个参数**，
         /// 引擎用默认 `web_search`（于是命令行与从前逐字节相同）。
         var llmSearchTool = ""
@@ -260,6 +264,8 @@ enum ConvertFeature {
             // 对可审计性反倒是好事（密钥才是不能出现在 argv 里的那个）。
             if o.llmProtocol != "chat" { add("--llm-protocol", o.llmProtocol) }
             if o.llmWebSearch { a.append("--llm-web-search") }
+            // P2（第 72 条起）：检索证据（DeepSeek 独立 Search API；默认关不加参数）。
+            if o.searchRefs { a.append("--search-refs") }
             // 第 70 条的两个「未来兼容」旋钮：**留空或填了用不了的值都不传**（第一种是
             // 「用引擎默认」，第二种由 `knobWarnings` 说明），所以两栏都空时命令行与从前
             // **逐字节相同**。这里刻意用解析器（而不是 `add` 的单纯非空判断），
