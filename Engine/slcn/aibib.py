@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.parse
 import shutil
 from dataclasses import dataclass, field
 
@@ -674,14 +675,49 @@ def source_urls_in_reply(reply: str) -> list[str]:
     return urls
 
 
+def _url_key(u: str) -> tuple[str, str] | None:
+    """URL → (host, path) 比较键：**忽略端口、查询串、片段与末尾 `/`**。
+
+    WHY（2026-10-17 真 API 验收）：模型会写「同一来源的变体」——`#1`/`#analytics` 片段、
+    `?openform&…` 查询参数、`https://ip:8080/…` 的端口、或者只写到目录/根路径。
+    字面比较会把这些**真实来源**误判成编造（实测 7/22 被误伤，逐条回查都真在检索结果里）。
+    归一后仍能挡住真正的编造：**换域名或换路径**一律不匹配。
+    """
+    try:
+        p = urllib.parse.urlsplit((u or "").strip())
+    except ValueError:
+        return None
+    host = (p.hostname or "").lower()
+    path = urllib.parse.unquote(p.path or "/")
+    path = re.sub(r"/+", "/", path)
+    if path != "/":
+        path = path.rstrip("/")
+    return (host, path or "/") if host else None
+
+
+def _url_matches(cited: str, allowed: str) -> bool:
+    """cited 是否「同一个来源」：host 相同（忽略端口），且 path 相同或互为前缀。"""
+    c, a = _url_key(cited), _url_key(allowed)
+    if not c or not a or c[0] != a[0]:
+        return False
+    cp, ap = c[1], a[1]
+    if cp == ap:
+        return True
+    if cp == "/" or ap == "/":
+        return True            # 只写到域名根/目录：同一站点，仍算同一来源
+    return ap.startswith(cp + "/") or cp.startswith(ap + "/")
+
+
 def bad_source_urls(reply: str, allowed: set[str]) -> list[str]:
     """返回回复里**不在**本次实际检索来源集合内的 URL（空列表 = 校验通过）。
 
-    `allowed` 由调用方给（`convert.py` ⑪：证据包 URL ∪ 本次内置检索 url_citation）。
-    比较时忽略末尾 `/`；大小写不同视为不同（URL 路径大小写敏感）。
+    `allowed` 由调用方给（`convert.py` ⑪：证据包 top + 本次全部检索结果 URL +
+    内置检索 `url_citation`）。比较口径见 `_url_key` / `_url_matches`：
+    **换域名或换路径**才算编造；同站点的片段/参数/端口/目录变体放行。
     """
-    allowed_norm = {u.rstrip("/") for u in allowed if u}
-    return [u for u in source_urls_in_reply(reply) if u.rstrip("/") not in allowed_norm]
+    allowed_list = [u for u in allowed if u]
+    return [u for u in source_urls_in_reply(reply)
+            if not any(_url_matches(u, a) for a in allowed_list)]
 
 
 def merge(original_bib: str, replies: dict[str, str]) -> MergeResult:

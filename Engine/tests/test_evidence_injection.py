@@ -104,6 +104,27 @@ check("(b) 编造 URL：被识别",
       aibib.bad_source_urls(reply_bad, {GOOD}) == [FAKE])
 check("(b) 末尾 `/` 差异视为同一来源",
       aibib.bad_source_urls(f"% 来源：{GOOD}/\n", {GOOD}) == [])
+# 2026-10-17 真 API 验收修正：模型会写「同一来源的变体」——片段/查询/端口/目录，
+# 字面比较会误伤真实来源（实测 7/22 被误伤，逐条回查都真在检索结果里）。
+_BASE = "https://www.semanticscholar.org/paper/The-Truth-about-Deflationism-Soames/e37f4ffd"
+check("(b) 片段差异（#1 / #analytics）视为同一来源",
+      aibib.bad_source_urls(f"% 来源：{_BASE}\n", {_BASE + "#1"}) == [] and
+      aibib.bad_source_urls(f"% 来源：{_BASE}#analytics#1\n", {_BASE}) == [])
+check("(b) 查询参数差异视为同一来源",
+      aibib.bad_source_urls("% 来源：https://www.pdcnet.org/pdc/bvdb.nsf/purchase26\n",
+                            {"https://www.pdcnet.org/pdc/bvdb.nsf/purchase26?openform&fp=x"}) == [])
+check("(b) 端口差异 / 只写到目录视为同一来源",
+      aibib.bad_source_urls("% 来源：http://59.75.8.75\n",
+                            {"http://59.75.8.75:8080/bookInfo_01h.html"}) == []
+      and aibib.bad_source_urls("% 来源：https://read.cnki.net/\n",
+                                {GOOD}) == [])
+check("(b) 换域名 / 换路径**仍然**判为编造（归一不能放过真编造）",
+      aibib.bad_source_urls("% 来源：https://evil.example.com/pdc/bvdb.nsf/purchase26\n",
+                            {"https://www.pdcnet.org/pdc/bvdb.nsf/purchase26"})
+      == ["https://evil.example.com/pdc/bvdb.nsf/purchase26"]
+      and aibib.bad_source_urls("% 来源：https://www.pdcnet.org/pdc/bvdb.nsf/other\n",
+                                {"https://www.pdcnet.org/pdc/bvdb.nsf/purchase26"})
+      == ["https://www.pdcnet.org/pdc/bvdb.nsf/other"])
 check("(b) 说明文字（不含 URL）放行——无法校验但保持旧行为",
       aibib.bad_source_urls("% 来源：WorldCat 书目页（未记下 URL）\n@book{K,}", set()) == [])
 check("(b) 没有来源行 → 放行（没有可校验的 URL）",
@@ -251,8 +272,8 @@ else:
         check("(c) 编造 URL 的条目被挡下（Zhang2014 仍是原样：没有 address 变更/来源行）",
               "fake-journal.example.com" not in bib_txt
               and md.count("来源 URL") >= 0)
-        check("(c) 任务书合并记录写明「疑似编造」原因",
-              "疑似编造" in md and "不在本次检索证据" in md, md[-400:])
+        check("(c) 任务书合并记录写明「未出现在本次检索结果」原因",
+              "未出现在本次检索结果" in md and "换域名/换路径" in md, md[-400:])
         check("(c) 控制台打印白名单统计（通过/挡下）",
               "来源 URL 白名单" in r_on.stdout, r_on.stdout[-400:])
         check("(c) 编造 URL 的条目原文逐字节未动（没有 address 被补进 Zhang2014）",

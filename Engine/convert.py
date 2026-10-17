@@ -1319,6 +1319,9 @@ def main() -> int:
             allowed_source_urls: set[str] = set()
             if evidence:
                 for _pack in evidence.values():
+                    # 白名单 = top + 本次**全部**检索结果 URL（P2 真 API 验收修正：
+                    # 结果集第 4–5 位也是真实来源；全部纳入但**不**加进提示词，token 不涨）。
+                    allowed_source_urls.update(_pack.get("allowed_urls") or [])
                     for _row in (_pack.get("top") or []):
                         if _row.get("url"):
                             allowed_source_urls.add(_row["url"])
@@ -1483,8 +1486,8 @@ def main() -> int:
                             _bad = _aibib.bad_source_urls(replies[_k], _allowed)
                             if _bad:
                                 bad_src[_k] = (
-                                    "AI 回复里的 `% 来源：` URL **不在本次检索证据/实际检索结果里**"
-                                    "（疑似编造：" + "、".join(_bad[:3]) + "）；"
+                                    "AI 回复里的 `% 来源：` URL **未出现在本次检索结果里**"
+                                    "（换域名/换路径即视为无法核实：" + "、".join(_bad[:3]) + "）；"
                                     "按纪律不并入，原文该条逐字节未动")
                                 del replies[_k]
                         print(f"   来源 URL 白名单：{len(replies)} 条通过、{len(bad_src)} 条被挡下")

@@ -539,6 +539,7 @@ def gather_evidence(bib_text: str, keys: list[str], client: SearchClient,
                 log(f"  检索 [{i}/{n}] {key} — {pack['error']}")
             continue
         collected: dict[str, dict] = {}
+        all_urls: set[str] = set()      # 本次**全部**检索结果 URL（供白名单，不进提示词）
         best_rows: list[dict] = []
         query_used: list[str] = []
         for qi, q in enumerate(queries):
@@ -556,6 +557,8 @@ def gather_evidence(bib_text: str, keys: list[str], client: SearchClient,
             scored.sort(key=lambda r: r["score"], reverse=True)
             best_rows.extend(scored[:TOP_N])
             for r in scored:
+                if r["url"]:
+                    all_urls.add(r["url"])
                 if r["url"] and r["url"] not in collected:
                     collected[r["url"]] = r
             pack["n_results"] = max(pack["n_results"], len(res["results"]))
@@ -563,6 +566,7 @@ def gather_evidence(bib_text: str, keys: list[str], client: SearchClient,
             if scored and scored[0]["score"] >= VERDICT_CHECK:
                 break
         pack["queries"] = query_used
+        pack["allowed_urls"] = sorted(all_urls)   # 白名单用（渲染/提示词都不读它）
         if best_rows:
             best_rows.sort(key=lambda r: r["score"], reverse=True)
             # 同一 URL 只留一次；最多 TOP_N 条

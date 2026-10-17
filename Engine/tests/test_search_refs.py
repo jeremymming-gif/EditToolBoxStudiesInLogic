@@ -282,6 +282,11 @@ try:
     check("(e) 证据包带 top≤3、URL 与 authority", len(ev["Gao2021"]["top"]) <= 3
           and ev["Gao2021"]["top"][0]["url"].startswith("https://read.cnki.net/")
           and ev["Gao2021"]["top"][0]["authority"] == 4)
+    _allowed = ev["Gao2021"].get("allowed_urls") or []
+    check("(e) 证据包另存「本次全部检索结果 URL」供白名单（含不在 top3 的结果）",
+          isinstance(_allowed, list) and len(_allowed) >= 2
+          and all(u.startswith("http") for u in _allowed)
+          and any("example.com/x" in u for u in _allowed), str(_allowed)[:160])
     check("(e) 每条都有中文进度日志", len(logs) == 2 and all("检索 [" in x for x in logs), str(logs[:2]))
     check("(e) stats_summary 含次数/分布/费用",
           "检索" in search.stats_summary(c, ev) and "¥" in search.stats_summary(c, ev),
