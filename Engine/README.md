@@ -146,11 +146,11 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 
 **corpus 回归**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**App 包内一致性**（`dist/编辑部工具箱.app/Contents/Resources/Engine/` vs 仓库）：❌ **2/24** 个**引擎文件**不同 —— 包内已过期，下次 `./build.sh` 会同步：`mergepdf.py`、`slcn/docxsource.py`
+**App 包内一致性**（`dist/编辑部工具箱.app/Contents/Resources/Engine/` vs 仓库）：❌ **1/24** 个**引擎文件**不同 —— 包内已过期，下次 `./build.sh` 会同步：`slcn/docxsource.py`
 
 **占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 13:44:36`；`HEAD` = `7d66aef`；`git status --porcelain` **4** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 13:48:26`；`HEAD` = `740b473`；`git status --porcelain` **4** 行
 <!-- AUTO:STATE:END -->
 
 ---

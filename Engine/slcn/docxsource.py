@@ -226,7 +226,9 @@ def parse_reference_line(line: str) -> RefEntry | None:
         m2 = re.match(r"^(?P<author>.+?)[\.。]\s*(?P<year>\d{4}[a-z]?)[\.。]\s*(?P<rest>.*)$", s)
         if not m2:
             # 2026-10-17 校准：英文条目走专用分支，中文条目走中文分支，互不抢
-            return _parse_reference_line_en(s) or _parse_reference_line_cn(s)
+            return (_parse_reference_line_en(s)
+                    or _parse_reference_line_cn2(s)     # 中文、年份在第 2 段
+                    or _parse_reference_line_cn(s))     # 中文、年份在其余部分
         e = RefEntry(raw=s, author=m2.group("author").strip(), year=m2.group("year"))
         rest = m2.group("rest")
         # 从出版信息里猜类型：含「出版社/ Press/ University」→ 书，含卷期 → 期刊
@@ -301,6 +303,39 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
             kind = "J"
     e = RefEntry(raw=s, author=authors, year=year, title=title.strip().strip("《》"),
                  kind=kind, rest=rest)
+    e.key = make_key(e)
+    return e
+
+
+#: 中文逗号风格但**年份在第 2 段**（实例测试里也出现）：
+#:   `李四, 2021, 语用学导论, 北京: 商务印书馆.`
+#: 与 `_parse_reference_line_cn`（年份在"其余部分"）互补；两者都只处理含中文的行。
+_REF_CN2_RE = re.compile(
+    r"^(?P<author>[^，。；;]{2,60})[，,]\s*"
+    r"(?P<year>(?:19|20)\d{2}[a-z]?)\s*[，,]\s*"
+    r"(?P<rest>.+)$"
+)
+
+
+def _parse_reference_line_cn2(s: str) -> RefEntry | None:
+    """中文逗号风格、**年份在第 2 段**的条目。"""
+    if not re.search(r"[\u4e00-\u9fa5]", s):
+        return None
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+        return None
+    m = _REF_CN2_RE.match(s)
+    if not m:
+        return None
+    rest = m.group("rest").strip()
+    parts = re.split(r"[，,]", rest, maxsplit=1)
+    title = parts[0].strip().strip("《》")
+    kind = "M"
+    if "学位论文" in s or "博士论文" in s or "硕士论文" in s:
+        kind = "D"
+    elif "《" in s or re.search(r"第?\d+[期卷]", s):
+        kind = "J"
+    e = RefEntry(raw=s, author=m.group("author").strip(), year=m.group("year"),
+                 title=title, kind=kind, rest=rest)
     e.key = make_key(e)
     return e
 
