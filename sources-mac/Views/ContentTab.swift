@@ -46,6 +46,7 @@ struct ContentTab: View {
                         .disabled(model.running)
                     Button("浏览…") { browse() }.disabled(model.running)
                     Button(model.running ? "运行中…" : "生成目录") { execute() }
+                    .keyboardShortcut("r", modifiers: .command)
                         .buttonStyle(.borderedProminent)
                         .disabled(model.running || model.path.trimmingCharacters(in: .whitespaces).isEmpty)
                 }

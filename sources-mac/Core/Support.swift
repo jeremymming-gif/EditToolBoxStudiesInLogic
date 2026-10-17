@@ -136,6 +136,38 @@ enum EngineLocator {
         return nil
     }
 
+    // MARK: - Python 版本校验（U8）
+    /// 引擎要 **Python ≥ 3.10**（3.9 会 ImportError，或更糟：某些路径静默给错结果）。
+    /// 体检发现外壳的候选列表里就有 `/usr/bin/python3` = 3.9.6。这里把"版本不对"变成一句明确警告。
+    /// 只在**真正要跑引擎之前**探一次（结果缓存）；启动时不探。
+    private static var versionCache: [String: String] = [:]
+    static func pythonVersion(_ path: String) -> String {
+        if let cached = versionCache[path] { return cached }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: path)
+        proc.arguments = ["-c", "import sys;print('%d.%d' % sys.version_info[:2])"]
+        let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
+        var version = "?"
+        do {
+            try proc.run(); proc.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let t = String(data: data, encoding: .utf8) {
+                version = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        } catch { version = "?" }
+        versionCache[path] = version
+        return version
+    }
+    static func pythonVersionWarning(_ path: String) -> String? {
+        guard path.lowercased().contains("python") else { return nil }
+        let parts = pythonVersion(path).split(separator: ".").compactMap { Int($0) }
+        guard parts.count >= 2 else { return nil }
+        if parts[0] > 3 || (parts[0] == 3 && parts[1] >= 10) { return nil }
+        return "⚠ 这个解释器是 Python \(parts[0]).\(parts[1])（引擎需要 3.10+）：\n"
+            + "  它可能 ImportError，或在某些路径上静默给出错结果。\n"
+            + "  装一个 3.10+：brew install python@3.12（之后重开 App 即可）。\n"
+    }
+
     /// 给引擎子进程的环境变量增量：项目本地 `vendor/`（引擎依赖装在那里）。
     static func environment(toolDir: String) -> [String: String] {
         ["PYTHONPATH": (toolDir as NSString).appendingPathComponent("vendor")]
@@ -266,6 +298,8 @@ enum Shell {
                     environment extraEnv: [String: String]? = nil,
                     stdin: String? = nil,
                     log: Logger?) -> Int32 {
+        // U8：引擎调用前检查解释器版本（`Shell.run` 是唯一的调用入口，一处就够）
+        if let warning = EngineLocator.pythonVersionWarning(tool) { log?(warning) }
         guard let executable = locate(tool) else {
             log?("未找到命令 \(tool)，请确认已安装 TeX Live / MacTeX。\n")
             return -1

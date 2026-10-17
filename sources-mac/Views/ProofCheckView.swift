@@ -43,6 +43,7 @@ struct ProofCheckView: View {
                 Button("浏览…") { browse() }
                     .disabled(model.running)
                 Button(model.running ? "运行中…" : "运行") { execute() }
+                    .keyboardShortcut("r", modifiers: .command)
                     .buttonStyle(.borderedProminent)
                     .disabled(model.running || model.tex.trimmingCharacters(in: .whitespaces).isEmpty)
             }

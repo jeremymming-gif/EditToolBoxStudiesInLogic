@@ -144,6 +144,7 @@ struct CheckBibView: View {
 
                 HStack(spacing: 12) {
                     Button(model.running ? "体检中…" : "开始体检") { execute() }
+                    .keyboardShortcut("r", modifiers: .command)
                         .buttonStyle(.borderedProminent)
                         .disabled(model.running || !hasReturnedSource)
 
