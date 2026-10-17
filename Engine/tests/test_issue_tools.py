@@ -69,6 +69,10 @@ mkfile(os.path.join(root, "deep/deeper/y.synctex.gz"))
 mkfile(os.path.join(root, "01 A/original/x.aux"))
 mkfile(os.path.join(root, "02 B/original/deep/y.bbl"))
 mkfile(os.path.join(root, "02 B/Original/z.out"))          # 大小写也算（同一棵树）
+# 2026-10-17 第十五批：库里历史期真用过 `origin/`（8 篇）与 `原稿/`（3 篇）——
+# 它们同样是**作者来稿**，清理器必须一起保护（否则哪天里面出现 .bbl/.aux 就会被删）
+mkfile(os.path.join(root, "02 B/origin/w.bbl"))
+mkfile(os.path.join(root, "02 B/原稿/v.aux"))
 os.makedirs(os.path.join(root, "weird.aux"), exist_ok=True)      # **目录**名叫 .aux
 mkfile(os.path.join(root, "weird.aux", "inside.log"))            # 里面的日志不许被连累
 
@@ -104,6 +108,10 @@ check("(a) **红线**：`original/` 里的临时文件一个都不碰（作者�
       "original/ 里的文件被删了")
 check("(a) `Original/`（大小写不同）同样不进",
       os.path.exists(os.path.join(root, "02 B/Original/z.out")))
+check("(a) 历史别名 `origin/`、`原稿/` 也按作者来稿保护（2026-10-17 全库普查发现库里真用过）",
+      os.path.exists(os.path.join(root, "02 B/origin/w.bbl"))
+      and os.path.exists(os.path.join(root, "02 B/原稿/v.aux")),
+      "历史别名里的文件被删了")
 # ── (a2) 可回收模式：移入 `.toolbox-trash/<时间戳>/`，可撤销还原（UI 方案第 3 件）──
 root2 = tempfile.mkdtemp(prefix="slcn_trash_")
 for suf in (".aux", ".bbl", ".out"):
@@ -111,6 +119,7 @@ for suf in (".aux", ".bbl", ".out"):
 mkfile(os.path.join(root2, "01 A", "A.tex"))
 mkfile(os.path.join(root2, "01 A", "A.pdf"))
 mkfile(os.path.join(root2, "01 A/original/作者稿.bbl"))      # 红线：不碰
+mkfile(os.path.join(root2, "01 A/origin/作者稿2.bbl"))       # 历史别名：同样不碰
 r = run("cleantemp.py", "--folder", root2, "--trash", "--dry-run")
 check("(a2) `--trash --dry-run`：只说会移哪些，**一个都不动**",
       r.returncode == 0 and "将移入回收目录 3 个" in r.stdout
@@ -133,6 +142,8 @@ check("(a2) 原处的临时文件已经不在；`.tex`/`.pdf` 仍在",
       and os.path.exists(os.path.join(root2, "01 A", "A.tex")))
 check("(a2) **红线**：`original/` 里的 `.bbl` 没被移走",
       os.path.exists(os.path.join(root2, "01 A/original/作者稿.bbl")))
+check("(a2) 历史别名 `origin/` 里的 `.bbl` 也没被移走（回收模式同样保护）",
+      os.path.exists(os.path.join(root2, "01 A/origin/作者稿2.bbl")))
 # 撤销：搬回来
 r = run("cleantemp.py", "--folder", root2, "--restore", _tr[0])
 check("(a2) `--restore`：退出码 0，恢复 3 个", r.returncode == 0 and "已恢复 3 个" in r.stdout,

@@ -49,7 +49,7 @@ struct ConvertTab: View {
                     // ---------- 输出目录（必填） ----------
                     LabeledPathRow(
                         title: "输出目录（必填）",
-                        placeholder: "初排稿的输出位置，例如 …/2026年第5期(90)/03 Liang_Zhang",
+                        placeholder: "初排稿的输出位置，例如 …/2026年第5期(90)（工具会在其下建 名_姓/；不要选 03 名_姓，会多套一层）",
                         path: $model.options.out,
                         kind: .directory,
                         logStore: log

@@ -236,16 +236,24 @@ def process_folders(path: str, out_dir: str | None = None,
 
     for folder in _pm.numbered_entries(path):
         folder_path = os.path.join(path, folder)
-        name = _pm.article_name(folder)
-        if name == "Contents":
+        # `000…` 是「中英文目录」保留号（合并/编译都按前缀跳过）。从前这里只认
+        # `article_name == "Contents"`，于是 `000 目录` 这种写法会被当成**一篇文章**
+        # 混进报告与目录（2026-10-17 全库普查发现 `000 Table of Contents` 全库统一，
+        # 但标准里必须写明，别让人以为改成中文名也行）。
+        if folder.startswith("000"):
             continue
+        name = _pm.article_name(folder)
 
         output.append(f"{name}\n")
         art = ArticleInfo(folder=folder, folderName=name)
 
         # ---------- 读 .tex ----------
-        tex_file = os.path.join(folder_path, f"{name}.tex")
-        if os.path.isfile(tex_file):
+        # 与 `compileall` 同一口径：先精确、再宽松兜底（`TianwenXu.tex` 少了别人的下划线、
+        # `Chaoan_He.tex` 丢了撇号这类）。从前这里**只认精确名**，于是同一篇
+        # 「编译全部」能编、「检查tex信息」却报字段缺失、目录里标题成 None
+        # （2026-10-17 全库普查实测：2024年第2期 03 Tianwen_Xu）。
+        tex_file = _pm.find_tex(folder_path, name)
+        if tex_file:
             art.hasTeX = True
             with open(tex_file, encoding="utf-8", errors="replace") as fh:
                 content = fh.read()
@@ -348,9 +356,14 @@ def process_folders(path: str, out_dir: str | None = None,
                 art.lineSpacing = baseline
 
         # ---------- PDF 实际页数 ----------
-        pdf_file = os.path.join(folder_path, f"{name}.pdf")
-        if os.path.isfile(pdf_file):
+        # 与 `mergepdf` 同一口径：先精确、再宽松兜底（`Chen Liu.pdf` 空格/下划线不同）。
+        pdf_hit = _pm.resolve_article_pdf(folder_path, name)
+        if pdf_hit:
+            pdf_file, actual_pdf = pdf_hit
             art.hasPDF = True
+            if actual_pdf != f"{name}.pdf":
+                log(f"⚠️ {name}：PDF 实际文件名是「{actual_pdf}」，与目录名不一致，已按宽松匹配采用它"
+                    "（建议改成与目录名一致，否则别的工具可能找不到）。")
             try:
                 from pypdf import PdfReader  # noqa: PLC0415
                 n = len(PdfReader(pdf_file).pages)

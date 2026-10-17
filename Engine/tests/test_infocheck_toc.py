@@ -269,6 +269,27 @@ s_old = TOC.TocSettings.load(tmpj)
 check("(a) 旧 json（只有两个字段）读进来不清空、其余取默认",
       s_old.columnKind == "专辑" and s_old.titleWrapLimit == 20 and s_old.columnArticles == [])
 
+# ── 2026-10-17 第十五批（全库普查驱动）：目录保留号 + 文件名宽松兜底 ──
+alt = tempfile.mkdtemp(prefix="slcn_ic_alt_")
+make_issue(alt)
+# ① 非标准 000 目录名：`000 目录` 也不许被当成一篇文章（从前只认 article_name=="Contents"）
+os.makedirs(os.path.join(alt, "000 目录"), exist_ok=True)
+# ② tex 名与目录名只差下划线（实测：2024年第2期 03 Tianwen_Xu 里是 `TianwenXu.tex`）
+_a2 = os.path.join(alt, "02 Tianwen_Xu")
+os.makedirs(_a2, exist_ok=True)
+shutil.copy(os.path.join(alt, "01 Lu_Wang", "Lu_Wang.tex"),
+            os.path.join(_a2, "TianwenXu.tex"))
+_rep_alt = IC.process_folders(alt, write=False)
+_names_alt = [a.folderName for a in _rep_alt.articles]
+check("(a) `000 目录`（非标准名）与 `000 Table of Contents` 都不被当成文章",
+      "目录" not in _names_alt and "Contents" not in _names_alt, f"{_names_alt}")
+check("(a) tex 名只差下划线（`TianwenXu.tex`）→ 宽松匹配后字段照常读到（与 compileall 同一口径）",
+      "Tianwen_Xu" in _names_alt
+      and any(a.folderName == "Tianwen_Xu" and a.hasTeX and a.volume == "19"
+              for a in _rep_alt.articles),
+      f"{[(a.folderName, a.hasTeX, a.volume) for a in _rep_alt.articles]}")
+shutil.rmtree(alt, ignore_errors=True)
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (b2) 冻结快照：目录产物逐字节固定（第 95 条切换后改用它守回归）──")
 # 为什么要有快照：切换前用「与 Swift 差分」守（第 94 条，已记录逐字节一致）；

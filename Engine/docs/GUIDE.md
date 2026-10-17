@@ -214,6 +214,10 @@ $PY convert.py --source X.docx --out Y --dry-run
 
 ### 3.2 输出目录规范
 
+> 本节讲的是**单篇工具的输出目录**（`<输出目录>/<名_姓>/`）。一期里文章目录怎么编号、
+> `000 Table of Contents` / 扉页 / 编委页 / `original/` / `agreement/` 怎么放，
+> 编辑侧的权威规范在**稿件仓 README.md** 的「期目录与文件命名规范」一节（案例第 115 条）。
+
 作者「陈波」→ `Bo_Chen/`，其中：
 
 ```
