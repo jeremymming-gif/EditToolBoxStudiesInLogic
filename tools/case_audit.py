@@ -47,7 +47,8 @@ CURRENT_PREFIXES = ("Engine/", "tools/", "sources-", "slcn/", "tests/", "docs/",
 
 #: 案例是历史档案：这些路径**曾经存在**、后来搬去了别的仓（排版手册 → 稿件仓，
 #: Engine/HANDOFF.md → 笔记仓 HANDOFF.md）。它们不该被当成「当前布局失效」报警。
-HIST_PATH_PREFIXES = ("编辑笔记/排版手册/", "Engine/HANDOFF.md")
+HIST_PATH_PREFIXES = ("编辑笔记/排版手册/", "编辑笔记/流程化经验书.md",
+                      "Engine/HANDOFF.md")
 
 
 def find_cases_dir(explicit: str = "") -> str | None:
@@ -169,7 +170,8 @@ def check_similarity(rows: list[dict], warns: list[str], limit: int = 10,
 
 def check_paths(cases_dir: str, rows: list[dict], warns: list[str]) -> None:
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    roots = [repo, os.path.join(repo, "Engine"), repo]
+    # 案例里也会引用笔记仓自己的工具（如 tools/gui_fast_test.py）——把笔记仓根也纳入解析
+    roots = [repo, os.path.join(repo, "Engine"), os.path.dirname(cases_dir)]
     texts = {r["num"]: r["body"].split("\n") for r in rows}
     for r in rows:
         lines = texts[r["num"]]
