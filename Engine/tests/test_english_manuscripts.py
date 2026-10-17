@@ -118,8 +118,11 @@ _copied = copy_referenced_graphics(
     open(os.path.join(TMP, "gfx/main.tex"), encoding="utf-8").read(), "",
     os.path.join(TMP, "gfx"), _out, _warns,
 )
+# 期望值用 `/` 归一：Windows 上 relpath 返回 `Figs\figure3.pdf`，引擎产物里的
+# `\includegraphics` 路径仍是源稿的 `/`，所以这里比的是「相对路径语义」而非分隔符。
+_copied_norm = {x.replace("\\", "/") for x in _copied}
 check("③ 图片复制：带路径/不带扩展名/子目录都复制成功",
-      set(_copied) == {"Archit.pdf", "Figs/figure3.pdf", "pic.png"}, str(_copied))
+      _copied_norm == {"Archit.pdf", "Figs/figure3.pdf", "pic.png"}, str(_copied))
 check("③ 复制位置保持相对路径",
       os.path.isfile(os.path.join(_out, "Figs/figure3.pdf")))
 
