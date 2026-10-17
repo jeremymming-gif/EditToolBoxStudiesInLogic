@@ -484,8 +484,10 @@ else:
         check("(g) **真跑一次「检查tex信息」→ 表格被填上**（H2 回归守卫：修之前恒为 0 行）",
               "表格行数=1" in out,
               [l for l in out.splitlines() if l.startswith("表格行数")])
-        check("(g) 结束行是「✅ 完成（退出码 0）」（H3：文案由 `E.result_text` 统一给）",
-              "结束行=✅ 完成（退出码 0）" in out,
+        check("(g) 结束行是「✅ 完成（退出码 0）」（H3：文案由 `E.result_text` 统一给；"
+              "运行中的行头会带相对时间戳 `+0.5s`，所以按包含判）",
+              any(l.startswith("结束行=") and "✅ 完成（退出码 0）" in l
+                  for l in out.splitlines()),
               [l for l in out.splitlines() if l.startswith("结束行")])
         check("(g) 没有可比对的 PDF 页数时，顶部提示**不许**说「相符」（不许假绿）",
               "未验证" in out or "相符" not in out,

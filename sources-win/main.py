@@ -861,6 +861,8 @@ class MainWindow(tk.Tk):
         tk.Button(self.log_tools, text="跳到最新", command=lambda: self.output.see("end")).pack(
             side="left", padx=6)
         tk.Button(self.log_tools, text="复制全部", command=self._copy_log).pack(side="left")
+        tk.Button(self.log_tools, text="保存日志…", command=self._save_log).pack(
+            side="left", padx=6)
         self.phase_label = ttk.Label(self.log_tools, text="", foreground=theme.COLOR["muted"])
         self.phase_label.pack(side="left", padx=12)
 
@@ -936,11 +938,40 @@ class MainWindow(tk.Tk):
         return ""
 
     def log(self, text: str) -> None:
+        # 相对时间戳（UI 方案 §2-8）：运行中每行前面加 `+0:03.2`，方便回看"哪一步慢"；
+        # 未运行时（启动信息等）不加，保持干净。绝对时间对排错没用，相对时间才有。
+        if self._busy and self._t0:
+            text = f"+{time.monotonic() - self._t0:5.1f}s  {text}"
         self.output.configure(state="normal")
         self.output.insert("end", text + "\n", self._level_tag(text))
         if self.v_autoscroll.get():          # 上翻看旧日志时别把人强拉到底
             self.output.see("end")
         self.output.configure(state="disabled")
+
+    def _save_log(self) -> None:
+        """把整份运行日志存成 .txt 并打开它（「打开日志文件」的可行形态：
+        平时不落盘，需要留证据/发给人看时再存）。"""
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = fd.asksaveasfilename(
+            title="保存运行日志", defaultextension=".txt",
+            initialfile=f"运行日志-{stamp}.txt",
+            filetypes=[("文本文件", "*.txt"), ("全部文件", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(self.output.get("1.0", "end-1c"))
+        except OSError as e:
+            messagebox.showerror(APP_TITLE, f"保存日志失败：{e}")
+            return
+        self.log(f"（日志已保存：{path}）")
+        try:
+            if os.name == "nt":
+                os.startfile(path)                    # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["open", path])
+        except Exception:  # noqa: BLE001  打不开也不致命（路径已经写进日志）
+            pass
 
     def _copy_log(self) -> None:
         try:
