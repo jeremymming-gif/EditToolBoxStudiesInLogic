@@ -565,10 +565,12 @@ class SettingsTab(ttk.Frame):
 
     name = "设置"
 
-    def __init__(self, parent, cfg: dict, on_save):
+    def __init__(self, parent, cfg: dict, on_save, post=None):
         super().__init__(parent)
         self.cfg = cfg
         self.on_save = on_save
+        # 子线程只往队列里放结果（Tk 控件一律在主线程改 —— 项目纪律）
+        self.post = post or (lambda _msg: None)
         self.columnconfigure(1, weight=1)
         row = 0
 
@@ -618,10 +620,69 @@ class SettingsTab(ttk.Frame):
         self.key_status = ttk.Label(self, text="", wraplength=760, justify="left",
                                     foreground=theme.COLOR["muted"])
         self.key_status.grid(row=row, column=1, padx=10, pady=(0, 4), sticky="w"); row += 1
-        tk.Button(self, text="保存设置", width=14, command=self.save).grid(
-            row=row, column=1, padx=10, pady=10, sticky="w")
+        btns = ttk.Frame(self)
+        btns.grid(row=row, column=1, padx=10, pady=10, sticky="w")
+        tk.Button(btns, text="保存设置", width=14, command=self.save).pack(side="left")
+        # 测试连接（mac 侧早就有这个按钮）：把"配对了没有"从玄学变事实
+        tk.Button(btns, text="测试连接", width=12,
+                  command=self.test_connection).pack(side="left", padx=8)
         self.refresh_status()
         self.refresh_key_status()
+
+    def test_connection(self) -> None:
+        """打一次最小请求，把「连不连得上 / 密钥对不对」变成一条实测结论。
+
+        在**工作线程**里发请求（不冻界面），结果经主窗口队列回传（子线程不碰 Tk 控件）。
+        密钥只进 Authorization 头，不进日志、不进命令行。
+        """
+        base = self.vars["base"].get().strip().rstrip("/")
+        key = self.vars["key"].get().strip()
+        model = self.vars["model"].get().strip()
+        if not base:
+            messagebox.showwarning(APP_TITLE, "请先填 API 地址（如 https://api.deepseek.com）")
+            return
+        self.key_status.config(text="⏳ 测试连接中…（最多等 10 秒）")
+        threading.Thread(target=self._probe, args=(base, key, model), daemon=True).start()
+
+    def _probe(self, base: str, key: str, model: str) -> None:
+        import time as _t
+        import urllib.request
+        def report(text: str) -> None:
+            self.post(("__KEYSTATUS__", text))
+        t0 = _t.monotonic()
+        # ① 先试 GET /models（尽力而为：自建端点没有这个路由不算失败）
+        req = urllib.request.Request(base + "/models", headers={"User-Agent": "SLCN-toolbox"})
+        if key:
+            req.add_header("Authorization", f"Bearer {key}")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                report(f"✅ 连接正常（{_t.monotonic() - t0:.1f} 秒，HTTP {resp.status}）· 密钥只在本机使用")
+                return
+        except Exception as e:  # noqa: BLE001
+            code = getattr(e, "code", None)
+            if code == 401:
+                report("⛔ 401 密钥无效（地址对、密钥不对）")
+                return
+            if code == 403:
+                report("⛔ 403 无权限（密钥或 IP 受限）")
+                return
+            # ② 退回打一次最小 chat 请求（有的端点不提供 /models）
+        body = json.dumps({"model": model or "deepseek-chat", "max_tokens": 1,
+                           "messages": [{"role": "user", "content": "ping"}]}).encode("utf-8")
+        req2 = urllib.request.Request(base + "/chat/completions", data=body,
+                                      headers={"Content-Type": "application/json",
+                                               "User-Agent": "SLCN-toolbox"})
+        if key:
+            req2.add_header("Authorization", f"Bearer {key}")
+        try:
+            with urllib.request.urlopen(req2, timeout=10) as resp:
+                report(f"✅ 连接正常（{_t.monotonic() - t0:.1f} 秒，HTTP {resp.status}）· 密钥只在本机使用")
+        except Exception as e:  # noqa: BLE001
+            code = getattr(e, "code", None)
+            if code in (401, 403):
+                report(f"⛔ {code} 密钥无效或无权限")
+            else:
+                report(f"⛔ 连不上：{e}")
 
     def _toggle_key_visible(self) -> None:
         """眼睛开关：只切输入框的显示方式，**不落盘**。"""
@@ -724,7 +785,8 @@ class MainWindow(tk.Tk):
         self.toc_tab = TocTab(self.content, "生成目录", self.start, self.stop)
         self.compile_tab = CompileAllTab(self.content, "编译全部", self.start, self.stop)
         self.clean_tab = CleanTab(self.content, "删除临时文件", self.start, self.stop)
-        self.settings_tab = SettingsTab(self.content, self.cfg, lambda: None)
+        self.settings_tab = SettingsTab(self.content, self.cfg, lambda: None,
+                                        post=self._q.put)
         self.tabs = [self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
                      self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
                      self.settings_tab]
@@ -863,6 +925,9 @@ class MainWindow(tk.Tk):
                     _tag, tab, payload = line
                     if isinstance(tab, InfoCheckTab):
                         tab.show_report(payload)
+                    continue
+                if isinstance(line, tuple) and line[0] == "__KEYSTATUS__":
+                    self.settings_tab.key_status.config(text=str(line[1]))
                     continue
                 if isinstance(line, tuple) and line[0] == "__RESULT__":
                     _tag, tab, text, path, seconds, undo = line
