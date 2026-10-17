@@ -139,9 +139,16 @@ def channel_provenance(channel: str, protocol: str, model: str,
             "本次结果按**凭记忆**对待（仍须人工抽查卷/期/页码/出版地）")
 
 
+_BACKUP_RE = re.compile(r"^.+\.\d{8}-\d{6}-\d{6}\.bak$")
+
+
 def is_own_product(name: str, stem: str) -> bool:
     """判断目标目录里的一个条目是不是「本工具产物 / 编译中间文件」。"""
     if name in _OWN_FIXED:
+        return True
+    # 第 121 条：原子写留下的 `<文件名>.<YYYYmmdd-HHMMSS-ffffff>.bak` 是**工具自己**写的；
+    # 不认它的话，第二次跑同一篇稿子会被自己的备份文件拦下（「含非本工具的文件」）。
+    if _BACKUP_RE.match(name):
         return True
     # 并入 AI 结果时留下的回滚副本 `reference.bib.ai前`（2026-10-15，第 64 条）：
     # 不认它的话，**第二次跑同一篇稿子会被自己的回滚副本拦下**（「含非本工具的文件」）。

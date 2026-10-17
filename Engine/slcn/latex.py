@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from dataclasses import dataclass
+
+from . import paths as P
 
 
 def strip_comment(line: str) -> str:
@@ -97,8 +100,8 @@ class Macro:
 
 
 _MACRO_RE = re.compile(
-    r"\\(?P<kind>newcommand|renewcommand|providecommand)\s*"
-    r"\{\s*\\(?P<name>[A-Za-z@]+)\s*\}"
+    r"\\(?P<kind>newcommand|renewcommand|providecommand)\*?\s*"
+    r"(?:\{\s*\\(?P<name_braced>[A-Za-z@]+)\s*\}|\\(?P<name_bare>[A-Za-z@]+))"
 )
 
 
@@ -137,8 +140,9 @@ def find_all_macros(text: str, include_commented: bool = False) -> list[Macro]:
         commented = cpos is not None
         if commented and not include_commented:
             continue
+        name = m.group("name_braced") or m.group("name_bare")
         i = skip_ws_comments(text, m.end())
-        # 允许 \newcommand{\x}[1][默认]{值} 这种带参数个数的写法
+        # 允许 \newcommand{\x}[1][默认]{值} / \newcommand\x[1]{值} 这类带参数个数的写法
         while i < len(text) and text[i] == "[":
             j = text.find("]", i)
             if j < 0:
@@ -150,7 +154,7 @@ def find_all_macros(text: str, include_commented: bool = False) -> list[Macro]:
         result.append(
             Macro(
                 kind=m.group("kind"),
-                name=m.group("name"),
+                name=name,
                 value=text[i + 1 : end],
                 span=(m.start(), end + 1),
                 value_span=(i + 1, end),
@@ -328,6 +332,78 @@ def expand_inputs(
         last = m.end()
     parts.append(text[last:])
     return "".join(parts)
+
+
+_INCLUDEGRAPHICS_RE = re.compile(
+    r"\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}"
+)
+_GRAPHICSPATH_RE = re.compile(r"\\graphicspath\s*\{((?:\{[^{}]*\})+)\}")
+
+
+def graphics_search_dirs(preamble_text: str) -> list[str]:
+    """从 `\\graphicspath{{figs/}{images/}}` 取搜索目录（相对源目录）。"""
+    out: list[str] = []
+    for m in _GRAPHICSPATH_RE.finditer(preamble_text or ""):
+        out.extend(x.strip() for x in re.findall(r"\{([^{}]*)\}", m.group(1)) if x.strip())
+    return out
+
+
+def includegraphics_paths(body_text: str) -> list[str]:
+    """正文里 `\\includegraphics[...]{path}` 的路径（去重、保序）。"""
+    out: list[str] = []
+    for m in _INCLUDEGRAPHICS_RE.finditer(body_text or ""):
+        p = m.group(1).strip()
+        if p and p not in out:
+            out.append(p)
+    return out
+
+
+_GRAPHIC_EXTS = ("", ".pdf", ".png", ".jpg", ".jpeg", ".eps")
+
+
+def copy_referenced_graphics(
+    body_text: str,
+    preamble_text: str,
+    source_dir: str,
+    out_dir: str,
+    warnings: list[str] | None = None,
+) -> list[str]:
+    """把正文 `\\includegraphics` 引用到的图片从源目录复制进产物目录。
+
+    第 121 条（04 Chen_Liu 真稿）：LaTeX 通道只搬正文，图片没跟着走 →
+    `Unable to load picture or PDF file 'Archit.pdf'`。按源目录（+`\\graphicspath`）
+    找得到就复制（保持相对路径），找不到记 warning 交给编辑。
+    """
+    copied: list[str] = []
+    search_dirs = graphics_search_dirs(preamble_text) + [""]
+    for raw in includegraphics_paths(body_text):
+        p = raw.strip().strip('"')
+        found = ""
+        for d in search_dirs:
+            base = os.path.normpath(os.path.join(source_dir, d, p)) if d else os.path.normpath(
+                os.path.join(source_dir, p)
+            )
+            stem, ext = os.path.splitext(base)
+            for cand_ext in ((ext,) if ext else _GRAPHIC_EXTS):
+                cand = stem + cand_ext if not ext else base
+                if os.path.isfile(cand):
+                    found = cand
+                    break
+            if found:
+                break
+        if not found:
+            if warnings is not None:
+                warnings.append(f"正文引用的图片找不到，未复制：{raw}")
+            continue
+        rel = P.rel(found, source_dir)
+        dest = os.path.join(out_dir, rel)
+        if os.path.abspath(dest) == os.path.abspath(found):
+            continue
+        os.makedirs(os.path.dirname(dest) or out_dir, exist_ok=True)
+        shutil.copy2(found, dest)
+        if rel not in copied:
+            copied.append(rel)
+    return copied
 
 
 def split_body(text: str) -> tuple[str, str]:

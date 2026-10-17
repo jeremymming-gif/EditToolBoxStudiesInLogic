@@ -187,6 +187,16 @@ $PY convert.py --source X.docx --out Y --dry-run
 `already defined`——这种情况日志会保留原始 TeX 报错，由编辑手工处理。源目录没有 `.bib`
 而正文有 `\cite` 时，会明确警告「未生成 reference.bib（需作者补交参考文献库）」，不再静默。
 
+**第 121 条补丁（2026-10-17，期 88 七篇英文来稿实测）**：
+- `\bibliographystyle` 也当成参考文献区起点截掉（03 Zhentao_Zhang：作者写在
+  `\begin{document}` 之后，残留会与模板 biblatex 冲突 `'\bibliographystyle' invalid for 'biblatex'`）。
+- 宏解析支持**无花括号**写法 `\newcommand\revieww[1]{…}` 与 `\newcommand*`（04 Chen_Liu）；
+- 正文 `\includegraphics` 引用到的图片会从**源文件所在目录**（含 `\graphicspath`）复制进产物目录，
+  保持相对路径；找不到的记「⚠ 正文引用的图片找不到，未复制」交给编辑（04 Chen_Liu 的 `Archit.pdf`/`Figs/*`）；
+- 英文规则 `en-ellipsis` 只在「`...` 后紧跟字母」时输出 `\ldots{}` 做隔离，其余形态逐字节不变
+  （05 YouAn_Su：源稿字面 `...x_n` 以前被粘成 `\ldotsx_n` → 未定义命令）；
+- 重跑自己的产物目录时，`<产物>.<时间戳>.bak` 视为本工具产物，不再需要 `--force`。
+
 | 参数 | 说明 |
 |---|---|
 | `--source` | **必填**。`.docx` / `.doc` / `.tex` |
@@ -727,6 +737,22 @@ mac 走 `--search-refs` argv、Windows 走 `SLCN_SEARCH_REFS` 环境变量，默
 ---
 
 ---
+
+### 3.11 英文来稿通道（2026-10-17，第 121 条，期 88 七篇实测）
+
+期 88 七篇英文来稿（Word 3 + LaTeX 4）实测暴露的英文判据，已拆成**只对全英文稿生效**的补丁，
+中文稿（含中英混排的常见中文稿）产物**逐字节不变**（用例一 10 篇回归 10/10 相同）：
+
+| 判据 | 行为 | 权威实现 | 测试 |
+|---|---|---|---|
+| 英文**论述性脚注**误判 | `classify()` 把含年份的散文脚注判成文献；`parse_entry()` 只能给出 note（无 author/title）时：全英文稿且文末有参考文献区 → 降级为**纯注释**（正文脚注原样保留、不进 bib）；中文稿/无文末区的短引注保留旧行为 | `slcn/docxsource.py::_entry_is_note_only()` / `_looks_short_bibliographic_note()` / `doc_is_en` | `tests/test_english_manuscripts.py` ⑥ |
+| 英文文末参考文献**「全名 + 年份在后」**格式 | 如 `Jacobs, Scott, Jackson, Sally, 1989. Title…` / `Van Eemeren, Frans et al. 2014. …` → 解析成编辑体例作者（`Jacobs, S. and Jackson, S.`）、年份、题名；不动既有 GB 英文/中文格式 | `slcn/docxsource.py::_parse_reference_line_en_fullname()` | ⑦ |
+| 无样式英文小标题 | `N)` 半角编号（02 Lu_Jiang 型）；以及**无编号、无样式、Title Case 短段**（07 Hu_Liu 访谈稿的 `On Logic Pluralism` 等），要求前后都是成段正文——只对全英文稿启用 | `classify_en_heading()` / `_looks_plain_en_title()` + ⑥ 前的上下文判据 | ⑧ |
+| 英文纯注释里的引用 | 全英文稿的纯注释文本也做「（作者 年份）→ `\parencite{key}`」替换（人工成品同样做）；中文脚注不动 | `docxsource.link_citations()` 在 ⑤.3b 的预跑 | ⑥ |
+
+**已知残留（如实说清）**：英文散文脚注里的「叙述式引用」（如 `see King 2001, where…`，
+不带括号）不会自动变 `\parencite`；06 型文末参考文献约 10 条（`et al.` 前缺逗号等变体）
+暂未解析。这两类由编辑按〈参考文献核实任务书〉手工补。
 
 ## 五、目录结构
 

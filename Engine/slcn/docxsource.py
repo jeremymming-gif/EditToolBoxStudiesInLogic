@@ -227,6 +227,7 @@ def parse_reference_line(line: str) -> RefEntry | None:
         if not m2:
             # 2026-10-17 校准：英文条目走专用分支，中文条目走中文分支，互不抢
             return (_parse_reference_line_en(s)
+                    or _parse_reference_line_en_fullname(s)   # 英文全名 + 年份在后（06 型）
                     or _parse_reference_line_cn2(s)     # 中文、年份在第 2 段
                     or _parse_reference_line_cn(s))     # 中文、年份在其余部分
         e = RefEntry(raw=s, author=m2.group("author").strip(), year=m2.group("year"))
@@ -303,6 +304,112 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
             kind = "J"
     e = RefEntry(raw=s, author=authors, year=year, title=title.strip().strip("《》"),
                  kind=kind, rest=rest)
+    e.key = make_key(e)
+    return e
+
+
+def _looks_short_bibliographic_note(text: str) -> bool:
+    """短英文脚注里「像文献条目」的（有 p./pp. 页码或出版社词）仍按文献条目处理。
+
+    第 121 条回归：中文稿里常夹英文文献脚注（`H. Reichenbach, The Theory of
+    Probability, p. 445.`），它们 parse_entry 只能得到 note，但**是文献**、必须保留
+    原有「脚注条目 → bib」行为，不能按散文注释降级（否则正文引用全丢）。
+    """
+    t = text.strip()
+    # 强信号（多条目文献列表常常很长，长度上限只对下面的弱信号生效）：
+    # GB/T 7714 文献类型标识、网络地址。
+    if re.search(r"\[[MJC]\]", t) or re.search(r"https?://|www\.", t):
+        return True
+    if len(t) > 400:
+        return False
+    if re.search(r"\bpp?\.\s*\d", t):
+        return True
+    if re.search(r"\b(?:Press|Publishing|Verlag|Routledge|Blackwell|Wiley|Springer|University)\b", t):
+        return True
+    # 带引号的题名（`“Deconstructing the Laws of Logic,” Philosophy 83 (323)…`）
+    if len(re.findall(r"[“”]", t)) >= 2 or t.count('"') >= 2:
+        return True
+    # 期刊卷期写法（`83 (323)` / `Vol. 68 (1)`）
+    if re.search(r"\b(?:Vol|vol|No|no)\.?\s*\d+|\d+\s*\(\d+\)", t):
+        return True
+    return False
+
+
+def _entry_is_note_only(entry: dict | None) -> bool:
+    """parse_entry() 的结果是否只有 note（= 没能结构化出作者/题名，不是文献条目）。"""
+    if not entry:
+        return True
+    return not any(str(entry.get(k) or "").strip() for k in ("author", "title"))
+
+
+#: 英文「全名 + 年份在后」的参考文献区格式（期 88 / 06 Zhixi_Chen 真稿实测）：
+#:   `Jacobs, Scott, Jackson, Sally, 1989. Building a model of conversational argument. In …`
+#:   `Van Eemeren, Frans et al. 2014. Handbook of Argumentation Theory. …`
+#: 特征：作者是「姓, 名」成对用逗号连写（可带 et al./&），**年份在作者后、后跟句点**。
+#: 注意与 `_REF_EN_RE`（`作者, 年份, 其余`）区分：这条的年、作者之间用**句点**收尾。
+_REF_EN_FULLNAME_RE = re.compile(
+    r"^(?P<pre>.+?)\s*(?P<year>(?:19|20)\d{2})\.\s+(?P<rest>.+)$"
+)
+_EN_AUTHOR_SPLIT = re.compile(r"\s*(?:,|&|\band\b)\s*")
+
+
+def _initials(given: str) -> str:
+    """Given name → 缩写（`Jean-Claude` → `J.-C.`，`Merce` → `M.`）。"""
+    out = []
+    for part in given.split():
+        part = part.strip(".")
+        if not part:
+            continue
+        if "-" in part:
+            out.append("-".join(p[0].upper() + "." for p in part.split("-") if p))
+        else:
+            out.append(part[0].upper() + ".")
+    return " ".join(out)
+
+
+def _parse_reference_line_en_fullname(s: str) -> RefEntry | None:
+    """解析 `Surname, Given, Surname2, Given2, YYYY. Title…` 英文条目（06 Zhixi_Chen 型）。"""
+    if re.search(r"[\u4e00-\u9fa5]", s):
+        return None
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+        return None
+    m = _REF_EN_FULLNAME_RE.match(s)
+    if not m:
+        return None
+    pre, year, rest = m.group("pre").strip(), m.group("year"), m.group("rest").strip()
+    if not (5 <= len(pre) <= 240) or re.search(r"\d{4}", pre):
+        return None
+    if "," not in pre and "et al" not in pre:
+        return None
+    pre = re.sub(r"\bet al\.?$", "", pre).strip().rstrip(",.").strip()
+    if not pre:
+        return None
+    tokens = [x for x in _EN_AUTHOR_SPLIT.split(pre) if x and x.lower() != "et al"]
+    if len(tokens) < 2:
+        return None
+    # 「姓, 名」成对；奇数尾项当只有姓
+    pairs: list[tuple[str, str]] = []
+    for i in range(0, len(tokens), 2):
+        surname = tokens[i].strip(" .")
+        given = tokens[i + 1].strip(" .") if i + 1 < len(tokens) else ""
+        if not surname or not surname[0].isupper():
+            return None
+        if len(surname.split()) > 3 or len(given.split()) > 4:
+            return None
+        pairs.append((surname, given))
+    if not pairs:
+        return None
+    authors = " and ".join(
+        f"{sn}, {_initials(gv)}" if gv else sn for sn, gv in pairs
+    )
+    # 题名 = 第一个句点+空格+大写 之前（没有就取全部 rest）
+    tm = re.split(r"\.\s+(?=[A-Z])", rest, maxsplit=1)
+    title = tm[0].rstrip(".").strip()
+    after = tm[1] if len(tm) > 1 else ""
+    kind = "M"
+    if re.search(r"\(\d+\)|\bVol\b|\bvol\b|\bpp?\.\s*\d+|\d+\s*[-–]\s*\d+|Journal|Review", after):
+        kind = "J"
+    e = RefEntry(raw=s, author=authors, year=year, title=title, kind=kind, rest=rest)
     e.key = make_key(e)
     return e
 
@@ -913,6 +1020,8 @@ MIN_BODY_CHARS = 1500
 # 一个缺失的 \section 能凭空造出 1400 多个假的「实质差异」。
 _HEAD_EN1 = re.compile(r"^\d{1,2}\.\s+(?P<t>\S.*)$")
 _HEAD_EN2 = re.compile(r"^\d{1,2}）\s*(?P<t>\S.*)$")
+# 第 121 条（期 88 / 02 Lu_Jiang 真稿）：英文子标题写 `2) Problems with …`（半角右括号）。
+_HEAD_EN2_HALF = re.compile(r"^\d{1,2}\)\s*(?P<t>[A-Z].*)$")
 _HEAD_EN3 = re.compile(r"^\d{1,2}\.\d{1,2}\s+(?P<t>\S.*)$")  # 1.2 Title
 
 # 元数据块只可能出现在开头这么多段之内
@@ -1781,11 +1890,50 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
     return out
 
 
+#: 无样式英文小标题里允许的小写词（Title Case 判断用）
+_TITLE_SMALL_WORDS = {
+    "a", "an", "the", "and", "or", "nor", "but", "for", "of", "on", "in", "to",
+    "at", "by", "with", "from", "as", "into", "about", "over", "under", "after",
+    "before", "between", "through", "during", "without", "within", "against",
+    "upon", "via", "per", "its",
+}
+
+
+def _looks_plain_en_title(t: str) -> bool:
+    """无编号、无样式的一段英文短句，像不像章节标题（Title Case、无句末标点）。
+
+    第 121 条（07 Hu_Liu 真稿）：访谈稿的 9 个小标题在 docx 里是**无样式独立短段**
+    （`On Logic Pluralism`…），旧判据只认编号标题 → 产物一个 `\\section` 都没有。
+    这里只做「像标题」的文本判据；是否真是标题由调用方结合上下文（前后段落）决定。
+    """
+    if not t or len(t) > 80 or _has_cjk(t):
+        return False
+    if re.search(r"[.?!;:。；：\u2019\u2018]", t):
+        return False
+    words = t.split()
+    if not (2 <= len(words) <= 10):
+        return False
+    if not words[0][:1].isupper():
+        return False
+    for w in words:
+        core = re.sub(r"[^A-Za-z'\-]", "", w)
+        if not core:
+            return False
+        if core[0].isupper() or core.lower() in _TITLE_SMALL_WORDS:
+            continue
+        return False
+    return True
+
+
+#: 无样式英文小标题里允许的小写词（Title Case 判断用）
 def classify_en_heading(t: str) -> tuple[int, str]:
     """判断一段英文文本是不是章节标题，返回 (层级, 标题)。层级 0 表示不是标题。
 
     保守起见，编号列表项不算标题：要求够短、不以句末标点结尾、且句中不含句点。
     """
+    m = _HEAD_EN2_HALF.match(t)
+    if m and len(t) < 130 and "." not in m.group("t"):
+        return 2, m.group("t").strip()
     m = _HEAD_EN2.match(t)
     if m and len(t) < 130 and "。" not in t:
         return 2, m.group("t").strip()
@@ -2044,8 +2192,9 @@ def render_para(
                 note = escape_latex(fn.note)
                 out.append(f"\\footnote{{cf. \\parencite{loc}{{{key}}}. {note} }}")
             else:
-                # 纯注释 / 古典文献：原样保留
-                out.append(f"\\footnote{{{escape_latex(fn.text)}}}")
+                # 纯注释 / 古典文献：原样保留（英文注释已预先转义+替换引用）
+                body_note = getattr(fn, "note_latex", "") or escape_latex(fn.text)
+                out.append(f"\\footnote{{{body_note}}}")
 
     flush_figs(fig_buf)
     if shape_buf:
@@ -2285,6 +2434,10 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     end = ref_start if ref_start > start else len(paras)
     body_paras = paras[start:end]
 
+    # 第 121 条：全英文稿（正文前 120 段无汉字）里，文末有参考文献区时，
+    # 脚注里的散文/引注一律按注释处理（01 Tuomo_Aho 型）；中文稿/混合稿不受这条影响。
+    doc_is_en = not any(_has_cjk(p.plain) for p in body_paras[:120] if p.plain.strip())
+
     # ⑤ 脚注：分类 → 生成 bib → 建立 id→key 映射
     #    （footnotes.xml 在 ③.6 已经读过一次，这里复用，不重复解压）
     fn_segs = fn_segs_early
@@ -2298,8 +2451,27 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     for fid in sorted(fn_objs):
         f = fn_objs[fid]
         if f.kind in ("pure_ref", "mixed"):
+            # 第 121 条（期 88 实测）：英语**论述性脚注**（含年份/see 的散文）会被
+            # classify() 误判成 pure_ref；parse_entry() 只能给出 note（没有 author/title），
+            # 照旧当文献条目会 ① 生成垃圾 bib、② 把脚注散文从正文抽走。
+            # 条目不成立且**不含中文**时降级为纯注释（中文脚注体例不动，避免回归）。
+            _e0 = parse_entry(f.ref)
+            # 「有文末参考文献区」的英文稿（refs 非空）里，脚注的散文/引注一律不算条目；
+            # 没有文末区的短引注（`Cf. X 2012.`，中文稿里的英文脚注常见）保留旧行为，
+            # 避免正文引用全丢。
+            _downgrade = (_entry_is_note_only(_e0) and not _has_cjk(f.text)
+                          and ((doc_is_en and bool(doc.refs))
+                               or (not _looks_short_bibliographic_note(f.text)
+                                   and len(f.text.strip()) >= 90)))
+            if _downgrade:
+                f.kind = "pure_note"
+                f.note = f.text
+                f.ref = ""
+                f.entry = None
+                doc.footnote_notes += 1
+                continue
             seq += 1
-            entry = parse_entry(f.ref)
+            entry = _e0
             f.entry = entry
             f.key = make_key(entry, seq, used_keys)
             keymap[fid] = f.key
@@ -2311,6 +2483,18 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
                 doc.ref_raw_by_key[f.key] = f.ref
         else:
             doc.footnote_notes += 1
+
+    # ⑤.3b 第 121 条：英文纯注释（含上一步由英文散文脚注降级来的）里的
+    # 人年制引用也替换成 \parencite——人工成品在脚注里同样做了引用替换。
+    # 只处理**不含中文**的注释，中文脚注体例保持逐字节不变。
+    for _f in fn_objs.values():
+        if (_f.kind == "pure_note" and not _has_cjk(_f.text)
+                and not getattr(_f, "note_latex", "")):
+            try:
+                _esc = escape_latex(_f.text)
+                _f.note_latex = link_citations(_esc, doc.refs)[0]
+            except Exception:  # noqa: BLE001 —— 注释替换失败不影响主流程
+                _f.note_latex = ""
 
     # ⑤.4 内嵌图片：docx 里就存着原图，直接取出（比截图质量高）
     from .docxxml import read_media
@@ -2353,6 +2537,28 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
                   if k + 1 < len(nonempty_paras) else "")
         if not _is_cn_dot_heading(prev_t) and not _is_cn_dot_heading(next_t):
             lone_cn_dot.add(id(p))
+
+    # ⑤.7 无样式英文小标题（第 121 条，07 Hu_Liu 型）：只对**全英文**稿件启用，
+    # 且要求「前面是成段正文、后面是成段正文」，避免把正文里的短句误判成标题。
+    plain_en_headings: dict[int, str] = {}
+    if nonempty_paras and not any(_has_cjk(x.plain) for x in body_paras[:120] if x.plain.strip()):
+        for k, p in enumerate(nonempty_paras):
+            if k < 0:                     # （占位，实际判据见下：前 3 段多半是元数据）
+                continue
+            t = escape_latex(p.plain).strip()
+            if _HEAD_EN1.match(t) or _HEAD_EN2.match(t) or _HEAD_EN2_HALF.match(t) \
+                    or _HEAD_EN3.match(t) or not _looks_plain_en_title(t):
+                continue
+            prev_t = (escape_latex(nonempty_paras[k - 1].plain).strip() if k else "")
+            next_t = (escape_latex(nonempty_paras[k + 1].plain).strip()
+                      if k + 1 < len(nonempty_paras) else "")
+            prev_ok = (
+                k <= 3                                   # 稿子开头的题名/副题/作者区之后
+                or len(prev_t) > 80                       # 两段正文之间
+                or prev_t.endswith((".", "。", "!", "?", ":", "："))
+            )
+            if prev_ok and len(next_t) > 50:
+                plain_en_headings[id(p)] = t
 
     # ⑥ 渲染正文（段落与表格按原顺序混排）
     fn_pages = {fid: f.locator for fid, f in fn_objs.items()}
@@ -2425,6 +2631,10 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
             lv = 2 if cn_num_top else 1
             doc.headings.append((lv, h))
             out.append(f"\n\\subsection{{{h}}}\n" if lv == 2 else f"\n\\section{{{h}}}\n")
+        elif id(para) in plain_en_headings:
+            h = plain_en_headings[id(para)]
+            doc.headings.append((1, h))
+            out.append(f"\n\\section{{{h}}}\n")
         else:
             lv, h = classify_en_heading(plain)
             if lv == 1:
@@ -2723,9 +2933,19 @@ def link_citations(body: str, refs: list[RefEntry]) -> tuple[str, list[str], lis
     used: set[str] = set()
 
     def repl(m: re.Match) -> str:
-        names = m.group("names").strip()
+        names = re.sub(r"\\[A-Za-z]+\*?|[{}]", " ", m.group("names")).strip()
         year = m.group("year")
         tail = m.group("tail").strip()
+        # 第 121 条（01 Tuomo_Aho 真稿）：括号里带 LaTeX 标记的（如
+        # `(edited in \textit{Peter of Spain 1992})`）不是规范引用点；照替换会把
+        # 收尾花括号当页码塞进 `\parencite{…，}）`，产物直接 `Too many }'s`。
+        # 这种**保留原文**并进 unmatched，交给编辑处理。
+        _probe_t = re.sub(r"\\([&%_#$])", r"\1", tail)
+        if re.search(r"[\\{}]", _probe_t):
+            # tail 里带 LaTeX 花括号/命令 → 页码不干净，保留原文（否则会出
+            # `\parencite{…，}）` 这类不平衡产物；01 Tuomo_Aho 实测）。
+            unmatched.append(m.group(0))
+            return m.group(0)
         # names 可能是「苏珊·哈克」「陈波」「Haack」「Beall 和 Restall」
         cands = re.split(r"[、,，和与&\s]+", names)
         cands = [c for c in cands if c]

@@ -321,7 +321,10 @@ def extract_body_text(text: str) -> str:
             if nl > 0:
                 body = body[nl:]
     # 截到参考文献之前
-    for marker in ("\\printbibliography", "\\bibliography{", "\\begin{thebibliography}", "\\end{document}"):
+    # 第 121 条：`\bibliographystyle` 是 BibTeX 时代的参考文献区起点；作者常把它写在
+    # `\begin{document}` 之后（03 Zhentao_Zhang 真稿），留在正文里会与模板 biblatex 冲突。
+    for marker in ("\\printbibliography", "\\bibliographystyle", "\\bibliography{",
+                   "\\begin{thebibliography}", "\\end{document}"):
         j = body.find(marker)
         if j > 0:
             body = body[:j]

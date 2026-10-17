@@ -23,6 +23,9 @@
 | **英文作者一律倒装**（2026-10-15） | `slcn/bibnorm.py`（`normalize_author_field()` / `author_is_inverted()`）+ `slcn/bibcheck.py`（`author_form_issues()` / `translation_marking_issues()` / `author_has_role_mark()`）+ `tests/test_authornorm.py` | 本文 §四.7 | 第 63/64 条 |
 | 字段完整性 + 类型统一 + 引用双向核对 | `slcn/bibcheck.py`（`REQUIRED` / `TYPE_ALIASES` / `check()` / `check_citations()`） | 本文 §四.2–4 | 第 21/22/25/26 条 |
 | **正文「（作者 年份）」→ `\parencite{key}`**（人年制通道的引用点匹配） | `slcn/docxsource.py`（`link_citations()` / `_year_fallback_evidence()`；索引 = `RefEntry.surname` × 年） | 本文 §六「引用点未匹配」 | 第 73 条 |
+| **英文稿脚注/参考文献/小标题判据**（第 121 条） | `slcn/docxsource.py`（`_entry_is_note_only()` / `_looks_short_bibliographic_note()` / `_parse_reference_line_en_fullname()` / `classify_en_heading()` / `_looks_plain_en_title()`；只对全英文稿生效，中文稿逐字节不变） | 本文 §一；`docs/GUIDE.md` §3.11 | 第 121 条 |
+| **LaTeX 正文图片复制 / 无花括号新命令 / `\bibliographystyle` 截断**（第 121 条） | `slcn/latex.py`（`copy_referenced_graphics()` / `find_all_macros()`）、`slcn/sources.py`、`slcn/build.py` | `docs/GUIDE.md` §3.1 | 第 121 条 |
+| **英文省略号后紧跟字母要隔离**（第 121 条） | `slcn/rules.py::en-ellipsis-letter`（只在后接字母时写 `\ldots{}`，其余逐字节不变） | `docs/GUIDE.md` §3.1 | 第 121 条 |
 | **参考文献键的生成与稳定性**（钉死「不可复现」） | `slcn/docxsource.py`（`make_key()` / `_make_key_core()` / `_dedupe_keys()` / `_strip_zero_width()`；兜底键用 `zlib.crc32`，**不许**用内置 `hash()`） | 本文 §四.2 末「键的稳定性」 | 第 74 条 |
 | **第一作者单位**（脚注「作者简介」句里也抓） | `slcn/docxsource.py`（`_clean_affil_line()` = 旧口径 `_clean_affil_line_strict()` 优先，空了才走 `_clean_affil_by_sentence()`） | `docs/GUIDE.md`「GUI 各页速查」 | 第 75 条 |
 | **Word 通道的英文元数据第二源** | `slcn/sources.py`（`en_metadata_sheet()`）+ `slcn/build.py`（`build_docx(metadata_path=…)` / `_merge_en_metadata_source()`）+ `convert.py`（`find_en_metadata()` / `mark_en_abstract_roles()`） | `docs/GUIDE.md` §3.8 | 第 76 条 |

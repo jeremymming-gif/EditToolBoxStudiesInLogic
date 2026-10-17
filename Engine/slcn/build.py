@@ -13,6 +13,7 @@ from . import rules as R
 from . import templates as T
 from .latex import (
     collect_custom_macros,
+    copy_referenced_graphics,
     count_active_inputs,
     expand_inputs,
     find_all_macros,
@@ -781,6 +782,13 @@ def build_latex(
 
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
+    # 第 121 条：正文 `\includegraphics` 引用的图片从源目录复制进产物目录，
+    # 否则 LaTeX 通道产物一定编译失败（04 Chen_Liu 真稿）。
+    gfx = copy_referenced_graphics(
+        body, meta_text, os.path.dirname(os.path.abspath(body_path)), out_dir, warnings
+    )
+    if gfx:
+        say(f"   复制正文引用图片 {len(gfx)} 个：{'、'.join(gfx[:8])}")
     tex_path = os.path.join(out_dir, f"{basename}.tex")
     # 原子写 + 旧版备份（UI 方案第 4 件）: 产物可能被反复覆盖
     from .fsutil import atomic_write as _atomic_write

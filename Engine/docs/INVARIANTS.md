@@ -81,6 +81,11 @@
 5. **LaTeX 前言依赖迁移只增不改**（第 120 条）：只搬模板没有的宏包 / tikz 库 / 定义；模板管理的包
    （ctex / fontspec / geometry / hyperref / biblatex / 本刊 sty）不搬；Word 通道产物必须零变化。
    位置：`Engine/slcn/preamble.py`；`Engine/tests/test_latex_preamble.py`。
+6. **英文稿判据只作用于全英文稿**（第 121 条）：英文脚注降级 / 英文全名参考文献 / 无样式小标题
+   三条判据都以「正文无汉字」为前提，或以「不含中文」为逐条条件——中文稿（含中英混排）产物
+   必须逐字节不变（用例一 10 篇回归 10/10 相同）。位置：`Engine/slcn/docxsource.py`
+   （`doc_is_en` / `_entry_is_note_only` / `_looks_short_bibliographic_note`）；
+   `Engine/tests/test_english_manuscripts.py`。
 
 ## 七、这份清单自己怎么维护
 

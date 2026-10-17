@@ -59,6 +59,8 @@ class Footnote:
     ref: str = ""  # 文献部分
     note: str = ""  # 注释部分
     locator: str = ""  # \parencite[...] 里的页码定位
+    # 第 121 条：英文纯注释的「已转义 + 引用已替换」版本（空 = 渲染时按 text 转义）
+    note_latex: str = ""
     key: str = ""  # bib 键（生成后回填）
     entry: dict = field(default_factory=dict)  # 解析出的 bib 字段
 
