@@ -293,6 +293,21 @@ check("(e) 中止时**已完成步骤的产物保留**（① 的信息检查报�
       sorted(os.listdir(proot))[:5])
 shutil.rmtree(proot, ignore_errors=True)
 
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (f) 合并预览 --detect：pypdf 延迟导入后的回归守卫 ──")
+mroot = tempfile.mkdtemp(prefix="slcn_merge_detect_")
+mkfile(os.path.join(mroot, "扉页.pdf"), "%PDF-1.4\n")        # 触发 coverPages 计算
+mkfile(os.path.join(mroot, "000 Table of Contents", "contents.tex"), DOC)
+mkfile(os.path.join(mroot, "01 A_Author", "A_Author.tex"), DOC)
+mkfile(os.path.join(mroot, "01 A_Author", "A_Author.pdf"), "%PDF-1.4\n")
+r = run("mergepdf.py", "--folder", mroot, "--detect")
+check("(f) `--detect` 退出码 0、输出 JSON（2026-10-17 实例测试抓到：pypdf 延迟导入后 "
+      "`pdfmerge.PdfReader` 不存在 → AttributeError 崩溃；当时没有测试覆盖 --detect）",
+      r.returncode == 0 and "coverPages" in r.stdout, r.stdout.strip()[-120:] + r.stderr.strip()[-120:])
+check("(f) `--detect` **不写任何产物**（只读预览）",
+      not [f for f in os.listdir(mroot) if f.startswith("合并")], sorted(os.listdir(mroot))[:6])
+shutil.rmtree(mroot, ignore_errors=True)
+
 print("\n" + "=" * 66)
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) 原子写入 + 旧版备份（UI 方案第 4 件）──")

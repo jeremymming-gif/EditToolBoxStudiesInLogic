@@ -24,6 +24,19 @@ from slcn import platform as _plat  # noqa: E402
 from slcn import pdfmerge  # noqa: E402
 
 
+def _pdf_page_count(path: str) -> int:
+    """PDF 页数；打不开返回 0。
+
+    ⚠️ pypdf 在 `slcn/pdfmerge.py` 里是**延迟导入**的（2026-10-17 提速），模块级不再暴露
+    `PdfReader` —— 直接 `pdfmerge.PdfReader(...)` 会 AttributeError（实例测试当场抓到）。
+    """
+    try:
+        from pypdf import PdfReader
+        return len(PdfReader(path).pages)
+    except Exception:  # noqa: BLE001  坏 PDF 不该让 --detect 崩
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _plat.utf8_stdio()
     ap = argparse.ArgumentParser(
@@ -65,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             "others": others,
             "backCover": ({"fileName": back.file_name, "pageCount": back.page_count,
                            "matchedBy": back.matched_by} if back else None),
-            "coverPages": (len(pdfmerge.PdfReader(cover).pages) if os.path.isfile(cover) else 0),
+            "coverPages": (_pdf_page_count(cover) if os.path.isfile(cover) else 0),
         }
         print(_json.dumps(payload, ensure_ascii=False))
         return 0
