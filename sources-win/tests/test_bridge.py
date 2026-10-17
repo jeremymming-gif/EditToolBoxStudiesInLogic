@@ -182,6 +182,11 @@ check("(b) 能从契约行里抠出产物路径（含带括号的期目录名 / 
       all(E.artifact_path(line) == want for line, want in _ap_cases),
       [E.artifact_path(line) for line, _w in _ap_cases])
 shutil.rmtree(_ap_dir, ignore_errors=True)
+check("(b) cleantemp 三种模式：老行为（直接删）/ 移入回收 / 撤销",
+      "--trash" not in E.cleantemp_call(folder="/x").argv
+      and "--trash" in E.cleantemp_call(folder="/x", trash=True).argv
+      and "--restore" in E.cleantemp_call(folder="/x", restore_trash="/x/.toolbox-trash/1").argv
+      and "--dry-run" in E.cleantemp_call(folder="/x", dry_run=True, trash=True).argv)
 check("(b) 运行日志里的「最后一行」被当作契约行送去抠路径",
       "_on_line" in (SHELL / "main.py").read_text(encoding="utf-8")
       and "E.artifact_path(" in (SHELL / "main.py").read_text(encoding="utf-8"))
@@ -382,6 +387,9 @@ check("(f) 「检查tex信息」的表格**真的有人填**（`show_report` 从
       f"show_report 出现 {src.count('show_report(')} 次")
 check("(f) 初排转换页有「输出名 / 作者」输入框（缺了这类 LaTeX 稿整页做不了）",
       "输出名" in src and "v_author" in src and "v_name" in src)
+check("(f) 「删除临时文件」是**先预览再移入回收目录、且可撤销**（UI 方案第 3 件）",
+      "confirm_trash" in src and "undo_btn" in src and "撤销清理" in src
+      and "--trash" in (SHELL / "engine.py").read_text(encoding="utf-8"))
 check("(f) 停止走**整棵进程树**（只 terminate 直接子进程时，xelatex 会继续写产物目录）",
       "E.kill_tree(" in src and "def kill_tree" in (SHELL / "engine.py").read_text(encoding="utf-8"))
 
@@ -423,7 +431,12 @@ else:
         sys.path.insert(0, os.getcwd())
         import main as M
         app = M.MainWindow()
-        tabs = [app.tab_control.tab(i, "text") for i in range(len(app.tab_control.tabs()))]
+        # 侧边栏（UI 方案候选 B）：`tab_texts()` 是替代 Notebook 的稳定接口
+        tabs = app.tab_texts()
+        groups = [app.nav.item(x, "text") for x in app.nav.get_children()]
+        print("侧栏=" + "|".join(groups))
+        app.show_tab(4)
+        print("切页=" + (app.nav.selection()[0] if app.nav.selection() else ""))
         app.log("自检：写一行日志")
         app.update()
         # ⚠️ **真跑一次**「检查tex信息」：走界面真实代码路径（`start` → 工作线程 → 队列 → 填表）。
@@ -459,9 +472,13 @@ else:
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
-        check("(g) 九个标签页都在（含新增的检查tex信息 / 生成目录）",
+        check("(g) 九个页都在（侧边栏顺序：单篇 4 + 整期 4 + 设置）",
               "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|删除临时文件|设置"
               in out, out.strip()[-160:])
+        check("(g) **分组侧边栏**：两层结构（单篇稿件 / 整期装配 / 设置），不是 9 个平级标签",
+              "侧栏=单篇稿件|整期装配|设置" in out, [l for l in out.splitlines() if l.startswith("侧栏")])
+        check("(g) 切页会同步侧栏选中态", "切页=tab:4" in out,
+              [l for l in out.splitlines() if l.startswith("切页")])
         check("(g) **真跑一次「检查tex信息」→ 表格被填上**（H2 回归守卫：修之前恒为 0 行）",
               "表格行数=1" in out,
               [l for l in out.splitlines() if l.startswith("表格行数")])

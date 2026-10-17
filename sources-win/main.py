@@ -89,6 +89,9 @@ class TabPage(ttk.Frame):
         self.copy_btn = tk.Button(self.result_bar, text="复制路径", width=10,
                                   command=self._copy_result, state="disabled")
         self.copy_btn.pack(side="left")
+        # 「撤销」按需出现（删除临时文件 → 移入回收目录后可一键还原；UI 方案第 3 件）
+        self.undo_btn = tk.Button(self.result_bar, text="", width=12, command=self._undo_result)
+        self._undo_cmd = None
         self.result_bar.grid_remove()          # 跑完/运行中才出现
         self._result_path = ""
 
@@ -116,8 +119,12 @@ class TabPage(ttk.Frame):
         self.copy_btn.config(state="disabled")
         self.result_bar.grid()
 
-    def show_result(self, text: str, path: str, seconds: float) -> None:
-        """跑完：状态 + （≥1 秒才显示）用时 + 产物路径，路径可点开/可复制。"""
+    def show_result(self, text: str, path: str, seconds: float,
+                    undo: tuple[str, object] | None = None) -> None:
+        """跑完：状态 + （≥1 秒才显示）用时 + 产物路径，路径可点开/可复制。
+
+        `undo=(按钮文字, 回调)` 时多出一个可撤销按钮（目前只有"移入回收目录"用）。
+        """
         self._result_path = path or ""
         shown = text + (f"｜用时 {seconds:.1f} 秒" if seconds >= 1 else "")
         if path:
@@ -125,7 +132,20 @@ class TabPage(ttk.Frame):
         self.result_label.config(text=shown)
         self.open_btn.config(state="normal" if path else "disabled")
         self.copy_btn.config(state="normal" if path else "disabled")
+        if undo:
+            label, cb = undo
+            self._undo_cmd = cb
+            self.undo_btn.config(text=label)
+            self.undo_btn.pack(side="left", padx=(4, 0))
+        else:
+            self._undo_cmd = None
+            self.undo_btn.pack_forget()
         self.result_bar.grid()
+
+    def _undo_result(self) -> None:
+        cb = self._undo_cmd
+        if cb is not None:
+            cb()
 
     def _open_result(self) -> None:
         """在访达 / 资源管理器里打开产物（文件就定位到它所在的目录）。"""
@@ -452,7 +472,37 @@ class CleanTab(TabPage):
         _check(parent, "先预演（只列出会删哪些，不真删）", self.v_dry).pack(side="left")
 
     def extra_args(self) -> dict:
-        return {"dry_run": self.v_dry.get()}
+        return {}
+
+    def confirm_trash(self) -> None:
+        """点「运行」时：先预演一遍，把**具体清单与大小**摆给编辑看，确认后才移入回收目录。
+
+        依据（`UIUX-PROPOSAL.md` 第 4 节）：确认框只用于后果严重的动作，且必须**具体**
+        （删什么/多大/不碰什么），按钮文案是动词；能撤销就别用红色 destructive。
+        用户取消 → 抛 ValueError，走现有的"已取消"提示，**一个文件都不动**。
+        """
+        folder = self.path()
+        if not folder:
+            raise ValueError("请先选目录")
+        call = E.cleantemp_call(folder=folder, dry_run=True, trash=True)
+        lines: list[str] = []
+        if E.run_call(call, on_line=lines.append) != 0:
+            raise ValueError("预演失败，详见下面日志（什么都没动）")
+        items = [l[len("Will move: "):] for l in lines if l.startswith("Will move: ")]
+        if not items:
+            raise ValueError("没有需要清理的临时文件（什么都没动）")
+        size = next((l.strip() for l in lines if "共 " in l and "（预演）" in l), "")
+        head = "\n".join("  " + x for x in items[:12])
+        if len(items) > 12:
+            head += f"\n  … 还有 {len(items) - 12} 个"
+        ok = messagebox.askyesno(
+            "删除临时文件（可撤销）",
+            plain(f"将把 {len(items)} 个编译中间文件移入回收目录。\n{size}\n\n{head}\n\n"
+            "只处理 .aux/.bbl/.bcf/.blg/.out/.run.xml/.synctex.gz/.DS_Store；\n"
+            "**不会动** .tex/.pdf/.sty/.bib/.log，也**不进** original/（作者来稿）。\n\n"
+            "移入后可以点结果行里的「撤销清理」还原。要继续吗？"))
+        if not ok:
+            raise ValueError("已取消（一个文件都没动）")
 
 
 class CompileAllTab(TabPage):
@@ -580,7 +630,7 @@ class MainWindow(tk.Tk):
         # 主题必须**先**套：clam + 色板 + 字号（见 theme.py 抬头；用户 2026-10-17 拍板
         # vista → clam —— vista 的控件由系统绘制，改不动颜色，做不出与 mac 同一套观感）。
         theme.apply(self)
-        self.geometry("820x640+400+120")
+        self.geometry("1000x700+340+100")   # 侧栏吃掉 ~184px，最小宽度跟着提（UI 方案候选 B）
         self.title(APP_TITLE)
         self.cfg = S.load()
         # ⚠️ 设置页的「引擎目录」必须**真的生效**：`engine.py` 只认环境变量 `SLCN_ENGINE`，
@@ -596,21 +646,48 @@ class MainWindow(tk.Tk):
         self._q: queue.Queue[str] = queue.Queue()
         self._busy = False
 
-        self.tab_control = nb = ttk.Notebook(self)
-        self.convert_tab = ConvertTab(nb, "初排转换", self.start, self.stop)
-        self.checkbib_tab = CheckBibTab(nb, "文献回读校验", self.start, self.stop)
-        self.merge_tab = MergeTab(nb, "合并文件", self.start, self.stop)
-        self.proof_tab = ProofCheckTab(nb, "一校核查", self.start, self.stop)
-        self.info_tab = InfoCheckTab(nb, "检查tex信息", self.start, self.stop)
-        self.toc_tab = TocTab(nb, "生成目录", self.start, self.stop)
-        self.compile_tab = CompileAllTab(nb, "编译全部", self.start, self.stop)
-        self.clean_tab = CleanTab(nb, "删除临时文件", self.start, self.stop)
-        self.settings_tab = SettingsTab(nb, self.cfg, lambda: None)
-        for tab in (self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
-                    self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
-                    self.settings_tab):
-            nb.add(tab, text=tab.name)
-        nb.pack(expand=1, fill="both")
+        # ── 分组侧边栏（UI 方案候选 B；2026-10-17 用户批准）──
+        # 为什么不再用 9 个平级标签：WinUI 说「左侧导航适合 5–10 个**同等重要**的分类」，
+        # HIG 说侧栏「层级不超过两层」—— 我们的 9 个其实是三层（单篇生产 / 整期装配 /
+        # 维护设置），却摆成 9 个平级项。分组后一层是组、二层是页，正好两级。
+        # 选 Treeview 而不是 Notebook：Notebook 的标签**不能分组**（只能用顺序暗示）。
+        self.body = ttk.Frame(self)
+        self.body.pack(expand=1, fill="both")
+        self.sidebar = ttk.Frame(self.body, width=184)
+        self.sidebar.pack(side="left", fill="y")
+        self.sidebar.pack_propagate(False)          # 固定宽度：别被长标签名撑开
+        self.nav = ttk.Treeview(self.sidebar, show="tree", selectmode="browse")
+        self.nav.pack(fill="both", expand=True, padx=(8, 4), pady=8)
+        self.content = ttk.Frame(self.body)
+        self.content.pack(side="left", fill="both", expand=True)
+        self.content.rowconfigure(0, weight=1)
+        self.content.columnconfigure(0, weight=1)
+
+        self.convert_tab = ConvertTab(self.content, "初排转换", self.start, self.stop)
+        self.checkbib_tab = CheckBibTab(self.content, "文献回读校验", self.start, self.stop)
+        self.merge_tab = MergeTab(self.content, "合并文件", self.start, self.stop)
+        self.proof_tab = ProofCheckTab(self.content, "一校核查", self.start, self.stop)
+        self.info_tab = InfoCheckTab(self.content, "检查tex信息", self.start, self.stop)
+        self.toc_tab = TocTab(self.content, "生成目录", self.start, self.stop)
+        self.compile_tab = CompileAllTab(self.content, "编译全部", self.start, self.stop)
+        self.clean_tab = CleanTab(self.content, "删除临时文件", self.start, self.stop)
+        self.settings_tab = SettingsTab(self.content, self.cfg, lambda: None)
+        self.tabs = [self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
+                     self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
+                     self.settings_tab]
+        for tab in self.tabs:                     # 全部叠在同一格里，切页 = tkraise
+            tab.grid(row=0, column=0, sticky="nsew")
+
+        #: 分组 → 页（顺序就是侧栏里的顺序；`设置` 单独放在最下面，照 WinUI 的惯例）
+        self.nav_groups = [("单篇稿件", (0, 1, 2, 3)), ("整期装配", (4, 5, 6, 7))]
+        for title, idxs in self.nav_groups:
+            group = self.nav.insert("", "end", text=title, open=True)
+            for i in idxs:
+                self.nav.insert(group, "end", text=self.tabs[i].name, iid=f"tab:{i}")
+        self.nav.insert("", "end", text="设置", iid=f"tab:{len(self.tabs) - 1}")
+        self.nav.bind("<<TreeviewSelect>>", self._on_nav)
+        self.nav.selection_set("tab:0")
+        self.show_tab(0)
 
         self.output = tk.Text(self, height=18, wrap="none")
         self.output.pack(side="bottom", fill="both", expand=False)
@@ -620,6 +697,33 @@ class MainWindow(tk.Tk):
         self.log(E.status().describe())
         self.log("运行日志：\n")
         self.after(80, self._drain)
+
+    # ── 侧边栏导航（UI 方案候选 B）──
+    def tab_texts(self) -> list[str]:
+        """全部页的名字（按侧栏顺序）—— 测试与自检用（Notebook 换成 Treeview 后的稳定接口）。"""
+        return [t.name for t in self.tabs]
+
+    def show_tab(self, index: int) -> None:
+        """切到第 `index` 页（侧栏选中态与内容一起变）。"""
+        self.tabs[index].tkraise()
+        want = f"tab:{index}"
+        if self.nav.selection() != (want,):          # 已经有就别再 set（见 _on_nav 的注释）
+            self.nav.selection_set(want)
+
+    def _on_nav(self, _event=None) -> None:
+        """侧栏选中 → 切内容。⚠️ **这里绝不回写** `selection_set`。
+
+        坑：`selection_set()` 自己也会触发 `<<TreeviewSelect>>` —— 在事件处理器里回写
+        就等于自我触发，Tk 的事件循环原地打转、建窗阶段直接卡死（2026-10-17 实测，
+        桥接测试超时 180 s 才暴露）。所以：事件里只 `tkraise`，选中态由用户点击 /
+        `show_tab()` 负责。
+        """
+        sel = self.nav.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if iid.startswith("tab:"):
+            self.tabs[int(iid.split(":", 1)[1])].tkraise()
 
     # ── 日志 ──
     def log(self, text: str) -> None:
@@ -644,8 +748,15 @@ class MainWindow(tk.Tk):
                         tab.show_report(payload)
                     continue
                 if isinstance(line, tuple) and line[0] == "__RESULT__":
-                    _tag, tab, text, path, seconds = line
-                    tab.show_result(text, path, seconds)
+                    _tag, tab, text, path, seconds, undo = line
+                    if isinstance(undo, tuple) and len(undo) == 2:
+                        _label, trash_dir = undo
+                        tab.show_result(text, path, seconds,
+                                        undo=(_label, lambda d=trash_dir: self.start(
+                                            tab, E.cleantemp_call(folder=tab.path(),
+                                                                  restore_trash=d))))
+                    else:
+                        tab.show_result(text, path, seconds)
                     continue
                 self.log(line)
         except queue.Empty:
@@ -702,7 +813,11 @@ class MainWindow(tk.Tk):
         if isinstance(tab, CompileAllTab):
             return E.compileall_call(folder=path, **opts)
         if isinstance(tab, CleanTab):
-            return E.cleantemp_call(folder=path, **opts)
+            # UI 方案第 3 件：**先预览再动手**，且动手的方式是"移到回收目录"（可撤销）。
+            # 老行为（直接删）仍保留在 CLI 默认值里，mac 外壳不受影响。
+            if not tab.v_dry.get():
+                tab.confirm_trash()          # 取消 → ValueError（什么都没动）
+            return E.cleantemp_call(folder=path, trash=True)
         if isinstance(tab, CheckBibTab):
             merge_into = ""
             if opts.get("merge_into_same_dir"):
@@ -713,12 +828,12 @@ class MainWindow(tk.Tk):
             return E.checkbib_call(returned=path, merge_into=merge_into)
         return E.merge_call(folder=path, **opts)
 
-    def start(self, tab) -> None:
+    def start(self, tab, call: E.EngineCall | None = None) -> None:
         if self._busy:
             messagebox.showinfo(APP_TITLE, "上一个任务还在跑，请等它结束或点「停止」。")
             return
         try:
-            call = self._call_for(tab)
+            call = call or self._call_for(tab)
         except ValueError as e:
             messagebox.showwarning(APP_TITLE, str(e))
             return
@@ -769,9 +884,13 @@ class MainWindow(tk.Tk):
         #    （2026-10-17 审计实测，H3）。文案与 mac 各页逐字对齐，且在 bridge 里有守卫。
         self._q.put(f"{E.result_text(call.entry, code)}（退出码 {code}）")
         if tab is not None:
+            path = E.artifact_path(last["line"]) if code == 0 else ""
+            undo = None
+            # 清理跑完 → 给一个「撤销清理」按钮：把回收目录里的东西搬回去
+            if isinstance(tab, CleanTab) and code == 0 and path and "--trash" in call.argv:
+                undo = ("撤销清理", path)
             self._q.put(("__RESULT__", tab, E.result_text(call.entry, code),
-                         E.artifact_path(last["line"]) if code == 0 else "",
-                         time.monotonic() - self._t0))
+                         path, time.monotonic() - self._t0, undo))
         self._q.put("__DONE__")
 
     def _set_busy(self, busy: bool) -> None:

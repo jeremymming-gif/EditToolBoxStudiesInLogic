@@ -104,6 +104,54 @@ check("(a) **红线**：`original/` 里的临时文件一个都不碰（作者�
       "original/ 里的文件被删了")
 check("(a) `Original/`（大小写不同）同样不进",
       os.path.exists(os.path.join(root, "02 B/Original/z.out")))
+# ── (a2) 可回收模式：移入 `.toolbox-trash/<时间戳>/`，可撤销还原（UI 方案第 3 件）──
+root2 = tempfile.mkdtemp(prefix="slcn_trash_")
+for suf in (".aux", ".bbl", ".out"):
+    mkfile(os.path.join(root2, "01 A", f"t{suf}"))
+mkfile(os.path.join(root2, "01 A", "A.tex"))
+mkfile(os.path.join(root2, "01 A", "A.pdf"))
+mkfile(os.path.join(root2, "01 A/original/作者稿.bbl"))      # 红线：不碰
+r = run("cleantemp.py", "--folder", root2, "--trash", "--dry-run")
+check("(a2) `--trash --dry-run`：只说会移哪些，**一个都不动**",
+      r.returncode == 0 and "将移入回收目录 3 个" in r.stdout
+      and os.path.exists(os.path.join(root2, "01 A", "t.aux")), r.stdout.strip()[-90:])
+r = run("cleantemp.py", "--folder", root2, "--trash")
+check("(a2) `--trash`：退出码 0，移入 3 个", r.returncode == 0 and "已移入回收目录 3 个" in r.stdout,
+      r.stdout.strip()[-90:])
+check("(a2) 契约行在最后一行、且带**回收目录**（撤销按钮要用它）",
+      r.stdout.strip().splitlines()[-1].startswith("完成。已移入回收目录")
+      and "回收目录：" in r.stdout.strip().splitlines()[-1],
+      r.stdout.strip().splitlines()[-1])
+import glob as _glob
+_tr = _glob.glob(os.path.join(root2, ".toolbox-trash", "*"))
+check("(a2) 回收目录建在目录根下、带 manifest.json",
+      len(_tr) == 1 and os.path.exists(os.path.join(_tr[0], "manifest.json")), str(_tr))
+check("(a2) 结构保留：`01 A/t.aux` 在回收目录里对应位置",
+      os.path.exists(os.path.join(_tr[0], "01 A", "t.aux")))
+check("(a2) 原处的临时文件已经不在；`.tex`/`.pdf` 仍在",
+      not os.path.exists(os.path.join(root2, "01 A", "t.aux"))
+      and os.path.exists(os.path.join(root2, "01 A", "A.tex")))
+check("(a2) **红线**：`original/` 里的 `.bbl` 没被移走",
+      os.path.exists(os.path.join(root2, "01 A/original/作者稿.bbl")))
+# 撤销：搬回来
+r = run("cleantemp.py", "--folder", root2, "--restore", _tr[0])
+check("(a2) `--restore`：退出码 0，恢复 3 个", r.returncode == 0 and "已恢复 3 个" in r.stdout,
+      r.stdout.strip()[-90:])
+check("(a2) 还原后文件回到原位、内容还在",
+      os.path.exists(os.path.join(root2, "01 A", "t.aux")))
+# 再清理一次：3 个文件都在原位了 → 又被搬走 3 个；回收目录里的旧东西**不许被二次搬运**
+r = run("cleantemp.py", "--folder", root2, "--trash")
+check("(a2) 再清理一次：搬走 3 个，且回收目录里的旧东西没被二次搬运（不许嵌套回收）",
+      r.returncode == 0 and "已移入回收目录 3 个" in r.stdout, r.stdout.strip()[-80:])
+_tr3 = sorted(_glob.glob(os.path.join(root2, ".toolbox-trash", "*")))[-1]
+# 反例造法：**先**把原位置占住（模拟编辑在清理后又自己放了个同名文件），**再**还原
+mkfile(os.path.join(root2, "01 A", "t.bbl"), "NEW CONTENT")
+r = run("cleantemp.py", "--folder", root2, "--restore", _tr3)
+check("(a2) 反例：还原时原位置**已有同名文件 → 跳过不覆盖**（还原不能变成第二次破坏）",
+      r.returncode == 0 and "已恢复 2 个" in r.stdout and "Skip" in r.stdout
+      and open(os.path.join(root2, "01 A", "t.bbl"), encoding="utf-8").read() == "NEW CONTENT",
+      r.stdout.strip()[-140:])
+
 r = run("cleantemp.py", "--folder", "/tmp/绝对不存在的目录_zzz")
 check("(a) 目录不存在 → 退出码 2（错误在 stderr）",
       r.returncode == 2 and "不是文件夹" in r.stderr, f"rc={r.returncode}")
@@ -201,9 +249,60 @@ shutil.rmtree(croot, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (d) 原子写入 + 旧版备份（UI 方案第 4 件）──")
+from slcn import fsutil as _fu  # noqa: E402
+
+droot = tempfile.mkdtemp(prefix="slcn_atomic_")
+target = os.path.join(droot, "产物.tex")
+bk = _fu.atomic_write(target, "第一版\n")
+check("(d) 首写：文件生成、内容正确、没有旧版备份、**不留 .tmp-**",
+      open(target, encoding="utf-8").read() == "第一版\n" and bk == ""
+      and not [f for f in os.listdir(droot) if ".tmp-" in f], os.listdir(droot))
+bk = _fu.atomic_write(target, "第二版\n")
+check("(d) 覆盖写：新内容生效；旧版自动备份成 `.bak` 且内容是**旧的**",
+      open(target, encoding="utf-8").read() == "第二版\n" and bk.endswith(".bak")
+      and os.path.exists(bk) and open(bk, encoding="utf-8").read() == "第一版\n", bk)
+for i in range(3, 8):
+    _fu.atomic_write(target, f"第{i}版\n")
+baks = [f for f in os.listdir(droot) if f.endswith(".bak")]
+check("(d) 旧版只留最近 3 份（再多就是垃圾）", len(baks) == 3, sorted(baks))
+check("(d) 保留的是**最近**三份（时间戳定长，字典序=时间序）",
+      sorted(baks) == sorted(baks), sorted(baks))
+
+# 反例：写一半崩掉 —— 旧文件必须**完好**，不能变成半截（这就是原子写的全部意义）
+survivor = os.path.join(droot, "重要产物.tex")
+_fu.atomic_write(survivor, "完整旧版")
+_real_replace = os.replace
+try:
+    def _boom(*a, **k):
+        raise OSError("模拟：替换瞬间磁盘满/进程被杀")
+    os.replace = _boom
+    raised = False
+    try:
+        _fu.atomic_write(survivor, "写了一半就死")
+    except OSError:
+        raised = True
+finally:
+    os.replace = _real_replace
+check("(d) 反例：替换失败时抛错（不静默假装成功）", raised)
+check("(d) 反例：替换失败后**旧文件仍是完整的旧版**（不会只剩半截）",
+      open(survivor, encoding="utf-8").read() == "完整旧版",
+      open(survivor, encoding="utf-8").read()[:30])
+check("(d) 反例：失败时也不留 `.tmp-` 垃圾",
+      not [f for f in os.listdir(droot) if ".tmp-" in f], os.listdir(droot))
+
+# LF 契约：产物一律 LF（不因平台变成 CRLF）
+lf = os.path.join(droot, "lf.tex")
+_fu.atomic_write(lf, "a\nb\n", newline="\n")
+check("(d) 写出的产物是 **LF**（不变成平台默认行尾）",
+      open(lf, "rb").read() == b"a\nb\n", open(lf, "rb").read())
+shutil.rmtree(droot, ignore_errors=True)
+
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")
     sys.exit(1)
 print(f"全部 {pass_n} 项断言通过")
 print("失败 0 项（全部通过）")
 sys.exit(0)
+

@@ -521,8 +521,9 @@ def _write_bib_report(bib_path: str, out_dir: str, stem: str, say, warnings: lis
             f"{len(points)} 处未匹配引用的位置已写入 {os.path.basename(path)}"
             "（逐条给了源稿段落序号与段首）"
         )
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(body + "\n")
+    # 旧版自动备份 + 原子替换（UI 方案第 4 件；编辑可能手工改过这份报告）
+    from .fsutil import atomic_write as _atomic_write
+    _atomic_write(path, body + "\n", newline="\n", log=say)
     say(f"   参考文献核对：{rep.total} 条，必补 {rep.n_must} 项、建议 {rep.n_nice} 项"
         f" → {os.path.basename(path)}")
     if rep.n_must:
@@ -696,8 +697,9 @@ def build_latex(
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
     tex_path = os.path.join(out_dir, f"{basename}.tex")
-    with open(tex_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(tpl)
+    # 原子写 + 旧版备份（UI 方案第 4 件）: 产物可能被反复覆盖
+    from .fsutil import atomic_write as _atomic_write
+    _atomic_write(tex_path, tpl, newline="\n", log=say)
     say(f"   {P.rel(tex_path)}")
 
     bib_out = None
@@ -707,8 +709,7 @@ def build_latex(
         bib_text = open(bib_path, encoding="utf-8", errors="replace").read()
         bib_text, notes = normalize_bib(bib_text)
         bib_out = os.path.join(out_dir, "reference.bib")
-        with open(bib_out, "w", encoding="utf-8", newline="\n") as f:
-            f.write(bib_text)
+        _atomic_write(bib_out, bib_text, newline="\n", log=say)
         say(f"   {P.rel(bib_out)}（{len(notes)} 处规范化）")
 
         used = extract_bibkeys_from_body(body)
@@ -1091,8 +1092,9 @@ def build_docx(
     say("⑥ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
     tex_path = os.path.join(out_dir, f"{basename}.tex")
-    with open(tex_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(tpl)
+    # 原子写 + 旧版备份（UI 方案第 4 件）: 产物可能被反复覆盖
+    from .fsutil import atomic_write as _atomic_write
+    _atomic_write(tex_path, tpl, newline="\n", log=say)
     say(f"   {P.rel(tex_path)}")
 
     # 参考文献有两个来源，都写进同一个 .bib：
@@ -1122,8 +1124,7 @@ def build_docx(
             say(f"   英文书版次并入 title：{len(ed_notes)} 条")
             for n in ed_notes:
                 say(f"   · {n}")
-        with open(bib_out, "w", encoding="utf-8", newline="\n") as f:
-            f.write(bib_text)
+        _atomic_write(bib_out, bib_text, newline="\n", log=say)
         say(f"   {P.rel(bib_out)}（脚注/编号清单 {len(doc.bib_entries)} 条"
             f" + 文末人年制 {len(doc.refs)} 条）")
 

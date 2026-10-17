@@ -10,11 +10,20 @@
   · 日志文案相同：`Deleted: <相对路径>` / `删除完成，共删除N个文件。`
 
 不删的还有 `.tex` / `.pdf` / `.sty` / `.bib`。
+
+**第三种模式（2026-10-17 加）：移入回收目录，可撤销。**
+`trash()` 不删，而是把中间文件搬到 `<目录>/.toolbox-trash/<时间戳>/` 并写 `manifest.json`；
+`restore()` 按 manifest 搬回去。为什么不用系统回收站：Windows 上 stdlib 没有回收站 API
+（`SHFileOperation` 要 ctypes + COM），自建回收目录跨平台一致、可逆、可审计。
+UI 方案第 3 件：编辑主动点的破坏性动作，**能撤销才敢点**（HIG：能撤销就别弹 alert）。
 """
 
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import os
+import shutil
 from collections.abc import Callable
 
 from . import paths as P
@@ -49,6 +58,10 @@ def matches(name: str) -> bool:
 #: （清一色 `.DS_Store`）—— 那已经是在动"只读"目录了。
 SKIP_DIRS = ("original",)
 
+#: 本工具自建的回收目录名（放在被清理目录的根下）。遍历时必须一起跳过 ——
+#: 否则「移入回收 → 再清理」会把回收目录里的东西当中间文件再搬一次（嵌套回收）。
+TRASH_DIR = ".toolbox-trash"
+
 
 def clean(
     root: str,
@@ -67,14 +80,21 @@ def clean(
         return 0, []
 
     deleted: list[str] = []
+    total = 0
     for dirpath, dirnames, filenames in os.walk(root):
         # 红线：`original/` 一律不进（剪掉分支，等于整棵子树都不看）
-        dirnames[:] = [d for d in dirnames if d.lower() not in SKIP_DIRS]
+        # 回收目录也不进：防止「移入回收 → 再清理」把回收的东西再搬一遍
+        dirnames[:] = [d for d in dirnames
+                       if d.lower() not in SKIP_DIRS and d != TRASH_DIR]
         for fname in filenames:
             if not matches(fname):
                 continue
             full = os.path.join(dirpath, fname)
             rel = P.rel(full, root)
+            try:
+                total += os.path.getsize(full)
+            except OSError:
+                pass
             if dry_run:
                 emit(f"Will delete: {rel}")
                 deleted.append(rel)
@@ -87,7 +107,122 @@ def clean(
                 emit(f"Error deleting {rel}: {e}")
 
     if dry_run:
-        emit(f"（预演）将删除 {len(deleted)} 个文件。")
+        emit(f"（预演）将删除 {len(deleted)} 个文件，共 {_human_size(total)}。")
     else:
         emit(f"删除完成，共删除{len(deleted)}个文件。")
     return len(deleted), deleted
+
+
+def _human_size(n: int) -> str:
+    """给编辑看的体积（确认框里说"多大"比说"确定吗"有用得多）。"""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"
+
+
+def _stamp() -> str:
+    return _dt.datetime.now().strftime("%Y_%m_%d_%H%M%S")
+
+
+def trash(
+    root: str,
+    log: Callable[[str], None] | None = None,
+    dry_run: bool = False,
+) -> tuple[int, str]:
+    """把中间文件**移入** `<root>/.toolbox-trash/<时间戳>/`（保留相对目录结构）。
+
+    返回 (文件数, 回收目录)。回收目录里另写 `manifest.json`（原始相对路径），供 `restore()`。
+
+    与 `clean()` 的三点不同：① 不 `os.remove`，而是 `shutil.move`；② 建回收目录；
+    ③ 目录结构保留（`01 A/xx.aux` → `.toolbox-trash/<ts>/01 A/xx.aux`），还原时不用猜。
+    """
+    emit = log or (lambda _s: None)
+    if not os.path.isdir(root):
+        emit(f"路径不是文件夹：{root}")
+        return 0, ""
+    trash_root = os.path.join(root, TRASH_DIR, _stamp())
+    moved: list[str] = []
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d.lower() not in SKIP_DIRS and d != TRASH_DIR]
+        for fname in filenames:
+            if not matches(fname):
+                continue
+            full = os.path.join(dirpath, fname)
+            rel = P.rel(full, root)
+            try:
+                total += os.path.getsize(full)
+            except OSError:
+                pass
+            if dry_run:
+                emit(f"Will move: {rel}")
+                moved.append(rel)
+                continue
+            target = os.path.join(trash_root, rel)
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.move(full, target)
+                emit(f"Moved: {rel}")
+                moved.append(rel)
+            except OSError as e:
+                emit(f"Error moving {rel}: {e}")
+    if dry_run:
+        emit(f"（预演）将移入回收目录 {len(moved)} 个文件，共 {_human_size(total)}。")
+        return len(moved), trash_root
+    if moved:
+        os.makedirs(trash_root, exist_ok=True)
+        with open(os.path.join(trash_root, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump({"root": root, "createdAt": _stamp(), "files": moved},
+                      fh, ensure_ascii=False, indent=2)
+    emit(f"已移入回收目录 {len(moved)} 个文件。")
+    return len(moved), trash_root if moved else ""
+
+
+def restore(
+    root: str,
+    trash_root: str,
+    log: Callable[[str], None] | None = None,
+    dry_run: bool = False,
+) -> tuple[int, list[str]]:
+    """按 `manifest.json` 把回收目录里的文件搬回 `<root>`；返回 (恢复数, 恢复的相对路径)。
+
+    ⚠️ 原位置**已经有同名文件时不覆盖**（跳过并记一条）—— 还原不能变成第二次破坏。
+    """
+    emit = log or (lambda _s: None)
+    manifest = os.path.join(trash_root, "manifest.json")
+    try:
+        with open(manifest, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as e:
+        emit(f"读不到回收清单：{e}")
+        return 0, []
+    files = [str(x) for x in data.get("files", [])]
+    done: list[str] = []
+    for rel in files:
+        src = os.path.join(trash_root, rel)
+        dst = os.path.join(root, rel)
+        if not os.path.exists(src):
+            emit(f"Missing in trash: {rel}")
+            continue
+        if os.path.exists(dst):
+            emit(f"Skip (已经存在，不覆盖): {rel}")
+            continue
+        if dry_run:
+            emit(f"Will restore: {rel}")
+            done.append(rel)
+            continue
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.move(src, dst)
+            emit(f"Restored: {rel}")
+            done.append(rel)
+        except OSError as e:
+            emit(f"Error restoring {rel}: {e}")
+    if dry_run:
+        emit(f"（预演）将恢复 {len(done)} 个文件。")
+    else:
+        emit(f"恢复完成，共恢复{len(done)}个文件。")
+    return len(done), done

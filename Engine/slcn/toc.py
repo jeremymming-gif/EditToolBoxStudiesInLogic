@@ -23,6 +23,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
+from . import fsutil as _fsutil
 from . import infocheck as _ic          # 复用 extract_title / get_line_num（与 Swift 侧是同一份逻辑）
 from . import toctemplate as _tt
 
@@ -463,8 +464,9 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     result += body + "\n\n" + parts.tail
 
     out_path = os.path.join(report_dir, f"{base_name}_{date_str}.tex")
-    with open(out_path, "w", encoding="utf-8", newline="") as fh:
-        fh.write(result)
+    # 原子写 + 旧版备份（UI 方案第 4 件）：目录 .tex 每期都会覆盖上一版，
+    # 同事手工调过的版式万一被盖掉，还能从同目录的 `.bak` 捞回来。
+    _fsutil.atomic_write(out_path, result, newline="", log=log)
 
     log(f"{label}目录TeX文件已生成")
     return out_path

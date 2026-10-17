@@ -187,14 +187,25 @@ def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
     return EngineCall(cmd, "mergepdf.py", "合并文件")
 
 
-def cleantemp_call(*, folder: str, dry_run: bool = False) -> EngineCall:
-    """「删除临时文件」：`cleantemp.py --folder …`（不删 .tex/.pdf/.log）。"""
+def cleantemp_call(*, folder: str, dry_run: bool = False,
+                   trash: bool = False, restore_trash: str = "") -> EngineCall:
+    """「删除临时文件」：`cleantemp.py --folder …`（参数与 mac 界面一致 + 可回收模式）。
+
+    `trash=True` → **移入 `<目录>/.toolbox-trash/<时间戳>/`**（可撤销）；界面用这条。
+    `restore_trash=<回收目录>` → 撤销，把文件搬回原处（不覆盖已存在的文件）。
+    老行为（直接删）仍是默认值：mac 外壳不传 `--trash` 时逐字节不变。
+    """
     cmd = _base_cmd("cleantemp.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
     cmd += ["--folder", folder]
+    if restore_trash:
+        cmd += ["--restore", restore_trash]
+        return EngineCall(cmd, "cleantemp.py", "撤销清理")
     if dry_run:
         cmd.append("--dry-run")
+    if trash:
+        cmd.append("--trash")
     return EngineCall(cmd, "cleantemp.py", "删除临时文件")
 
 

@@ -24,6 +24,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import platform as _plat  # noqa: E402
+from slcn import fsutil as _fsutil  # noqa: E402
 from slcn import proofcheck as _pc  # noqa: E402
 
 
@@ -164,15 +165,16 @@ def main(argv: list[str] | None = None) -> int:
             new_tex, kinds=tuple(k for k in ("footnote", "cite")
                                  if any(h.rule_id in ("ZH-10", "ZH-11", "ZH-12") for h in rep.hits)))
         fixed_path = os.path.join(out_dir, f"{stem}_一校核查后.tex")
-        with open(fixed_path, "w", encoding="utf-8", newline="") as fh:
-            fh.write(new_tex)
+        # 原子写 + 旧版备份（UI 方案第 4 件）：这份是"改后稿"，可能被反复生成
+        _fsutil.atomic_write(fixed_path, new_tex, newline="", log=print)
         print(f"\n  已写出改后的文件：{fixed_path}"
               f"（自动改 {len(fixed)} 处 + 位置调整 {len(moves)} 处；输入文件未动）")
 
     out_path = os.path.abspath(os.path.expanduser(args.out)) if args.out \
         else os.path.join(out_dir, f"{stem}_一校核查.md")
-    with open(out_path, "w", encoding="utf-8", newline="") as fh:
-        fh.write(_report_md(stem, tex_path, rep, fixed, moves, fixed_path))
+    _fsutil.atomic_write(out_path,
+                         _report_md(stem, tex_path, rep, fixed, moves, fixed_path),
+                         newline="", log=print)
 
     print()
     # 契约行（`docs/ENGINE_API.md`）：外壳靠它拿命中数与报告路径

@@ -65,6 +65,11 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 这条路 2026-10-17 之前是 `return 0`：界面上显示 ✅ 完成，而 PDF 其实没编出来
 （案例第 107 条）。
 
+**产物写入（2026-10-17 起）**：生成/覆盖 `.tex`/`.bib`/报告这类产物时走 `slcn/fsutil.py` 的 `atomic_write()`
+—— 先写同目录 `.tmp-<pid>`、`fsync` 后 `os.replace`（POSIX `rename(2)` 保证读者只看到完整旧版
+或完整新版），替换前把旧产物备份成 `<文件>.<时间戳>.bak`（每个文件留最近 **3** 份）。
+所以跑完后同目录里**可能出现 `.bak`**，那不是垃圾，是上一版（诊断「以为存上了其实没有」用）。
+
 **stdout 的最后一行**：`完成。产物目录：<out>/<作者名>`（其余日志都在它之前）。
 
 **stdout 的约定**（外壳可以只认这几类，**其余原样显示**）：
@@ -136,7 +141,8 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
 ## 五、入口 4–8：期目录级的动作、一校核查、检查tex信息与生成目录（第 91、92、94 条）
 
 ```bash
-python3 cleantemp.py   --folder "<期目录>" [--dry-run]
+python3 cleantemp.py   --folder "<期目录>" [--dry-run] [--trash]
+python3 cleantemp.py   --folder "<期目录>" --restore "<.toolbox-trash/时间戳 目录>"
 python3 compileall.py  --folder "<期目录>" [--only 01,03] [--dry-run]
 python3 proofcheck.py  --tex "<初排稿.tex>" [--lang zh|en] [--out <报告.md>] [--fix]
 python3 infocheck.py   --folder "<期目录>" [--out-dir <目录>]
@@ -147,7 +153,7 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
 
 | 入口 | 干什么 | 退出码 | 最后一行（外壳靠它拿结果） |
 |---|---|---|---|
-| `cleantemp.py` | 递归删 LaTeX 编译中间文件（`.aux .bbl .bcf .blg .out .run.xml .synctex.gz` + `.DS_Store`）；**不删** `.tex/.pdf/.sty/.bib/.log`；**且永不进入 `original/`**（作者来稿目录，红线只读 —— 作者交 LaTeX 稿时那里真可能有同名 `.bbl`/`.out`，删掉就是丢稿） | `0` 成功；`2` 目录不存在 | `完成。已删除 N 个临时文件（目录：…）` |
+| `cleantemp.py` | 递归处理 LaTeX 编译中间文件（`.aux .bbl .bcf .blg .out .run.xml .synctex.gz` + `.DS_Store`）；**不删** `.tex/.pdf/.sty/.bib/.log`；**且永不进入 `original/`**（作者来稿目录，红线只读 —— 作者交 LaTeX 稿时那里真可能有同名 `.bbl`/`.out`，删掉就是丢稿）。三种模式：**默认直接删**（老行为，mac 外壳走这条）；`--trash` **移入** `<目录>/.toolbox-trash/<时间戳>/`（保留相对路径 + `manifest.json`，可撤销）；`--restore <回收目录>` 搬回去（**原位置已有同名文件则跳过、不覆盖**） | `0` 成功；`2` 目录不存在 | 删：`完成。已删除 N 个临时文件（目录：…）`　移入回收：`完成。已移入回收目录 N 个临时文件（回收目录：…）`　撤销：`完成。已恢复 N 个文件（目录：…）` |
 | `compileall.py` | 对每个 `NN 作者/` 子目录跑 `xelatex → biber -l=zh_pinyin → xelatex → xelatex`；跳过 `000 目录`；某篇失败**只停那一篇**并回显 `.log` 里的 `!` 摘要 | `0` 全成功；`1` 有失败；`2` 用法/目录错误 | `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）` |
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（26 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改** | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
