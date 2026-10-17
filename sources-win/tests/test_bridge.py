@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Windows 外壳与引擎之间的桥梁（第 89 条）——**不开窗口**的测试。
+"""Windows 外壳与引擎之间的桥梁（第 89 条）——**基本不开窗口**的测试。
 
 为什么能不开窗口就测：`engine.py` / `settings.py` 里**没有一行 tkinter**
 （那是刻意的设计，见 `engine.py` 开头）。界面只负责「取值 → 调这两个模块 → 显示日志」，
-所以逻辑部分在 mac / Linux / CI 上都能验。
+所以逻辑部分在 mac / Linux / CI 上都能验；只有 (g)(h) 两组会真开一次窗口（缺 tkinter 时 SKIP）。
 
-钉住七件事：
+钉住这些事：
   (a) 引擎与解释器的定位顺序（环境变量 → 打包形态 → 开发形态）；
   (b) 拼出来的命令行**与 `Engine/docs/ENGINE_API.md` 的契约一致**（参数名、顺序、布尔开关）；
   (c) **密钥绝不进命令行**（只在环境变量里）；UTF-8 / 无缓冲 / vendor 也都设好；
   (d) 配置读写：密钥只落本地（**每用户**目录）、界面显示打码、坏 JSON 不炸；
   (e) 真跑一次：用桥梁调 `mergepdf.py` 合并一个假期目录，逐行日志能收到、退出码正确；
   (f) 界面文件：语法 / 导入检查（不开窗口）；
-  (g) 真开一次窗口（控件参数写错只有这一步抓得到；缺 tkinter 时 SKIP）。
+  (g) 真开一次窗口（控件参数写错只有这一步抓得到；缺 tkinter 时 SKIP）；
+  (h) 日志「摘要 / 原始」两层（U4）：跨平台夹具 `tools/log_cases.json` 逐条过，
+      并在 (g) 的真窗口里验证能切模式、能看到折叠提示、偏好能落盘、空状态占位不进复制内容。
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -403,6 +406,31 @@ check("(f) 「删除临时文件」是**先预览再移入回收目录、且可�
 check("(f) 停止走**整棵进程树**（只 terminate 直接子进程时，xelatex 会继续写产物目录）",
       "E.kill_tree(" in src and "def kill_tree" in (SHELL / "engine.py").read_text(encoding="utf-8"))
 
+# ── U4 / U5（2026-10-17 第十五批）：日志分层 + ttk 铺满的源码级守卫 ──
+#    真窗口那一步在 (g)/(h)；这里守「别悄悄退回经典控件/写死颜色/把完整日志改丢」。
+_theme_src = (SHELL / "theme.py").read_text(encoding="utf-8")
+# ⚠️ 用 `(?<![\w.])` 卡住前缀：裸字符串 `"tk.Button("` 会命中 `ttk.Button(` 里的那几个字符，
+#    于是守卫永远是绿的（假保证）。2026-10-17 第一版就这么写过，当场被自己抓到。
+_classic = re.findall(r"(?<![\w.])tk\.(?:Button|Entry|Checkbutton)\(", src)
+check("(f) 没有 Tk 经典控件按钮/输入框/勾选框了（clam 只管得到 ttk 控件的外观）",
+      not _classic, f"还有 {len(_classic)} 处")
+check("(f) `tk.Listbox` 保留（Tk 无 ttk 对等物）但色板取自 `theme.style_listbox`",
+      "tk.Listbox(" in src and "theme.style_listbox(" in src
+      and "def style_listbox" in _theme_src)
+check("(f) 日志框 `tk.Text` 保留，颜色/字体取自 theme（bg 白、等宽字体）",
+      "tk.Text(" in src and 'theme.COLOR["text_bg"]' in src and "theme.mono_font()" in src)
+check("(f) 主文件里**没有**写死的颜色（#555/#666/#b00 之类）—— 一律 theme.COLOR[...]",
+      not re.findall(
+          r'(?:fg|bg|foreground|background|insertbackground|selectbackground)="#[0-9a-fA-F]{3,6}"',
+          src))
+check("(f) U4 接线：`is_summary_line` / `_render_log` / 摘要·原始 / `logShowRaw` / 空状态占位",
+      "E.is_summary_line(" in src and "_render_log" in src and "Toolbutton" in src
+      and "摘要" in src and "原始" in src and "logShowRaw" in src
+      and "运行任务后，日志会显示在这里" in src)
+check("(f) 复制/保存一律给**完整日志**（含折叠行）：不读日志控件，用 `_full_log_text()`",
+      src.count("self._full_log_text()") >= 2 and "self.output.get(" not in src
+      and "clipboard_append(self.output" not in src)
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (g) 真开一次窗口（控件参数写错只有这一步抓得到）──")
 
@@ -424,11 +452,14 @@ import subprocess  # noqa: E402
 import textwrap  # noqa: E402
 
 tkpy = _tk_python()
+win_out = ""          # (g) 子进程的 stdout；(h) 组的「摘要/原始」断言要在这里找证据
 if tkpy is None:
     print("SKIP  (g) 本机没有带 tkinter 的解释器（Windows 上跑得到）")
 else:
     # 给 (g) 用的合成期目录：一篇文章的 tex（不含 PDF —— 页数那条另有诚实化断言）
     gdir = tempfile.mkdtemp(prefix="slcn_bridge_issue_")
+    # 给 (g) 用的临时配置目录：U4 切换「摘要/原始」会写 settings.json，别碰开发机上的真文件
+    gcfg = tempfile.mkdtemp(prefix="slcn_bridge_cfg_")
     gart = os.path.join(gdir, "01 A_Author")
     os.makedirs(gart, exist_ok=True)
     with open(os.path.join(gart, "A_Author.tex"), "w", encoding="utf-8") as fh:
@@ -437,8 +468,14 @@ else:
                  "\\title{测试题名}\\author{张三}\n\\maketitle\n正文。\n\\end{document}\n")
 
     prog = textwrap.dedent("""
-        import os, sys, time
+        import json, os, sys, time
         sys.path.insert(0, os.getcwd())
+        import settings as S
+        # U4 的「摘要/原始」切换会**写配置**：把配置路径指到临时目录，
+        # 别动开发机上真实的 settings.json（测试不许有副作用）。
+        _cfg = os.environ.get("SLCN_BRIDGE_CFG", "")
+        if _cfg:
+            S.config_path = lambda: os.path.join(_cfg, "settings.json")
         import main as M
         app = M.MainWindow()
         # 侧边栏（UI 方案候选 B）：`tab_texts()` 是替代 Notebook 的稳定接口
@@ -466,6 +503,34 @@ else:
             print("表格行数=%d" % len(rows))
             print("结束行=" + (lines[-1] if lines else ""))
             print("顶部提示=" + app.info_tab.summary.cget("text"))
+        # ── U4（(h) 组的真窗口证据）：摘要 / 原始两层 ──
+        print("默认模式=%d" % int(app.v_log_raw.get()))
+        app.log("原始层探针：xelatex 的细节行")     # 非摘要行（无标记词、无阶段前缀）
+        app.log("✅ 完成。")                        # 摘要行
+        app.update()
+        _sum = app.output.get("1.0", "end")
+        print("摘要含探针=%d" % int("原始层探针" in _sum))
+        print("摘要含完成=%d" % int("✅ 完成。" in _sum))
+        print("折叠标签=" + app.folded_label.cget("text"))
+        print("全文含探针=%d" % int("原始层探针" in app._full_log_text()))
+        app.v_log_raw.set(True)
+        app._on_log_mode()                          # 切「原始」：重画 + 把偏好写回配置
+        app.update()
+        _raw = app.output.get("1.0", "end")
+        print("原始含探针=%d" % int("原始层探针" in _raw))
+        print("原始含完成=%d" % int("✅ 完成。" in _raw))
+        print("原始折叠标签=" + app.folded_label.cget("text"))
+        _cp = S.config_path()
+        print("偏好落盘=%d" % int(os.path.isfile(_cp)
+                                  and bool(json.load(open(_cp, encoding="utf-8")).get("logShowRaw"))))
+        # 空状态（观察③）：清空后恢复灰占位；占位**不进**复制/保存的内容
+        app.clear_log()
+        app.update()
+        print("清空后占位=%d" % int(M.LOG_PLACEHOLDER in app.output.get("1.0", "end")))
+        print("占位不进全文=%d" % int(M.LOG_PLACEHOLDER not in app._full_log_text()))
+        app.log("✅ 清空后的第一条")
+        app.update()
+        print("占位消失=%d" % int(M.LOG_PLACEHOLDER not in app.output.get("1.0", "end")))
         app.destroy()
         print("窗口建成")
         print("标签页：" + "|".join(tabs))
@@ -473,12 +538,14 @@ else:
     env2 = dict(os.environ)
     env2["PYTHONPATH"] = str(REPO / "Engine" / "vendor")
     env2["SLCN_BRIDGE_TEST_DIR"] = gdir
+    env2["SLCN_BRIDGE_CFG"] = gcfg
     r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env=env2, cwd=str(SHELL), timeout=180)
     out = r.stdout or ""
     if r.returncode != 0 and ("no display" in (r.stderr or "") or "TclError" in (r.stderr or "")):
         print(f"SKIP  (g) 没有可用显示器/窗口服务：{(r.stderr or '').strip().splitlines()[-1:]}")
     else:
+        win_out = out                       # (h) 组还要在这些输出里找 U4 的证据
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
@@ -501,6 +568,65 @@ else:
               "未验证" in out or "相符" not in out,
               [l for l in out.splitlines() if l.startswith("顶部提示")])
     shutil.rmtree(gdir, ignore_errors=True)
+    shutil.rmtree(gcfg, ignore_errors=True)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (h) 日志分层（U4）：跨平台夹具 + 真窗口里能切「摘要 / 原始」──")
+_cases_file = REPO / "tools" / "log_cases.json"
+_cases: list[dict] = []
+try:
+    _cases = json.loads(_cases_file.read_text(encoding="utf-8")).get("cases") or []
+except (OSError, ValueError) as _e:
+    print(f"SKIP  (h) 读不到跨平台夹具 {_cases_file}：{_e}")
+check("(h) 跨平台夹具 `tools/log_cases.json` 至少有 30 条（Swift / Python 跑同一份；"
+      "只增不改，增加用例时两侧仍须全过）",
+      len(_cases) >= 30, f"{len(_cases)} 条")
+_mismatch = [(c.get("line"), c.get("summary"), E.is_summary_line(str(c.get("line", ""))))
+             for c in _cases
+             if E.is_summary_line(str(c.get("line", ""))) != bool(c.get("summary"))]
+check("(h) `engine.is_summary_line` 逐条通过夹具的 30 条（两侧词表不许悄悄分叉）",
+      bool(_cases) and not _mismatch,
+      f"不符 {len(_mismatch)} 条：{_mismatch[:3]}")
+check("(h) 空行 / 纯空白**不算**摘要（否则默认摘要视图里全是空行）",
+      E.is_summary_line("") is False and E.is_summary_line("   ") is False
+      and E.is_summary_line("\n") is False)
+
+
+def _marker(name: str) -> str:
+    """取 (g) 子进程打的一行 `name=value`（没有就返回空串）。"""
+    for line in win_out.splitlines():
+        if line.startswith(name + "="):
+            return line.split("=", 1)[1]
+    return ""
+
+
+if not _marker("默认模式"):
+    print("SKIP  (h) 真窗口那一步没跑（本机没有 tkinter / 窗口服务起不来）")
+    print("      —— 夹具那 3 条仍然有效；Windows 上这组会全跑")
+else:
+    check("(h) 默认是**摘要**（原始层折叠）：`logShowRaw` 缺省为 False",
+          _marker("默认模式") == "0", _marker("默认模式"))
+    check("(h) 摘要视图只画摘要行（非摘要的引擎原文不显示）",
+          _marker("摘要含探针") == "0", _marker("摘要含探针"))
+    check("(h) 摘要行在摘要视图里照常显示", _marker("摘要含完成") == "1", _marker("摘要含完成"))
+    check("(h) 工具条写明「已折叠 N 行原始日志」",
+          "已折叠" in _marker("折叠标签") and "原始日志" in _marker("折叠标签"),
+          _marker("折叠标签"))
+    check("(h) 复制 / 保存给的是**完整日志**（摘要模式下也含折叠的原始行）",
+          _marker("全文含探针") == "1", _marker("全文含探针"))
+    check("(h) 切到「原始」后视图含全部行",
+          _marker("原始含探针") == "1" and _marker("原始含完成") == "1",
+          f"{_marker('原始含探针')}/{_marker('原始含完成')}")
+    check("(h) 原始模式不再显示折叠提示", _marker("原始折叠标签") == "",
+          _marker("原始折叠标签"))
+    check("(h) 切换会持久化 `logShowRaw`（下次启动沿用）", _marker("偏好落盘") == "1",
+          _marker("偏好落盘"))
+    check("(h) 空状态（观察③）：清空后恢复那行灰占位", _marker("清空后占位") == "1",
+          _marker("清空后占位"))
+    check("(h) 占位**不进**复制 / 保存的完整日志", _marker("占位不进全文") == "1",
+          _marker("占位不进全文"))
+    check("(h) 第一条真实日志到达时占位让位", _marker("占位消失") == "1",
+          _marker("占位消失"))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

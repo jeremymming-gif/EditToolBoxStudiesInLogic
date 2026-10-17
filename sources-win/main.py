@@ -23,7 +23,6 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog as fd
-from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +45,14 @@ def plain(text: str) -> str:
 
 APP_TITLE = "编辑部工具箱（Windows）"
 
+#: 内存里保留的日志行上限（整期编译一次能吐几千行；超了从最旧的丢起，
+#: 与 mac 侧 `LogStore.limit`（40 万字符）同一个精神 —— 宁可丢最旧，也别无限涨）。
+LOG_LINE_LIMIT = 4000
+#: 截断时一次多丢一些：否则越到后面每来一行都要整屏重画一遍。
+LOG_TRIM_CHUNK = 500
+#: 空状态（观察③）：日志区还没有任何一行时显示的那句灰字。
+LOG_PLACEHOLDER = "运行任务后，日志会显示在这里…"
+
 
 class TabPage(ttk.Frame):
     """一页 = 一个路径输入 + 浏览 + 若干选项 + 运行。子类只填 `instruction` 与选项。"""
@@ -64,17 +71,18 @@ class TabPage(ttk.Frame):
         ttk.Label(self, text="输入路径，或点「浏览」选择：").grid(
             row=row, column=0, padx=10, pady=(10, 2), sticky="w"); row += 1
 
-        self.entry = tk.Entry(self, exportselection=False)
+        self.entry = ttk.Entry(self, exportselection=False)
         self.entry.grid(row=row, column=0, padx=10, sticky="ew"); row += 1
 
         btns = ttk.Frame(self)
         btns.grid(row=row, column=0, padx=10, pady=6, sticky="w"); row += 1
-        tk.Button(btns, text="浏览", width=10, command=self.browse).pack(side="left")
-        self.run_button = tk.Button(btns, text="运行", width=10,
-                                    command=lambda: self.on_run(self))
+        ttk.Button(btns, text="浏览", width=10, command=self.browse).pack(side="left")
+        # 「运行」是本页的主动作：accent 样式对应 mac 的 `.borderedProminent`
+        self.run_button = ttk.Button(btns, text="运行", width=10, style="Accent.TButton",
+                                     command=lambda: self.on_run(self))
         self.run_button.pack(side="left", padx=6)
-        self.stop_button = tk.Button(btns, text="停止", width=10, state="disabled",
-                                     command=self.on_stop)
+        self.stop_button = ttk.Button(btns, text="停止", width=10, state="disabled",
+                                      command=self.on_stop)
         self.stop_button.pack(side="left")
 
         # ── 完成契约横幅（2026-10-17 UI 方案第 1 件）──
@@ -86,14 +94,14 @@ class TabPage(ttk.Frame):
         self.progress = ttk.Progressbar(self.result_bar, mode="indeterminate", length=110)
         self.result_label = ttk.Label(self.result_bar, text="", wraplength=460, justify="left")
         self.result_label.pack(side="left")
-        self.open_btn = tk.Button(self.result_bar, text="打开产物", width=10,
-                                  command=self._open_result, state="disabled")
+        self.open_btn = ttk.Button(self.result_bar, text="打开产物", width=10,
+                                   command=self._open_result, state="disabled")
         self.open_btn.pack(side="left", padx=(10, 4))
-        self.copy_btn = tk.Button(self.result_bar, text="复制路径", width=10,
-                                  command=self._copy_result, state="disabled")
+        self.copy_btn = ttk.Button(self.result_bar, text="复制路径", width=10,
+                                   command=self._copy_result, state="disabled")
         self.copy_btn.pack(side="left")
         # 「撤销」按需出现（删除临时文件 → 移入回收目录后可一键还原；UI 方案第 3 件）
-        self.undo_btn = tk.Button(self.result_bar, text="", width=12, command=self._undo_result)
+        self.undo_btn = ttk.Button(self.result_bar, text="", width=12, command=self._undo_result)
         self._undo_cmd = None
         self.result_bar.grid_remove()          # 跑完/运行中才出现
         self._result_path = ""
@@ -196,8 +204,9 @@ class TabPage(ttk.Frame):
         return self.entry.get().strip().strip('"')
 
 
-def _check(parent: tk.Widget, text: str, var: tk.BooleanVar) -> tk.Checkbutton:
-    return tk.Checkbutton(parent, text=text, variable=var, anchor="w")
+def _check(parent: tk.Widget, text: str, var: tk.BooleanVar) -> ttk.Checkbutton:
+    """勾选框统一走 ttk（clam 才管得到它的底色/字体；经典控件的锚点是 ttk 不支持的）。"""
+    return ttk.Checkbutton(parent, text=text, variable=var)
 
 
 class ConvertTab(TabPage):
@@ -238,9 +247,9 @@ class ConvertTab(TabPage):
         self.v_name = tk.StringVar(value="")
         self.v_author = tk.StringVar(value="")
         ttk.Label(row1, text="输出名").pack(side="left", padx=(14, 2))
-        tk.Entry(row1, textvariable=self.v_name, width=14).pack(side="left")
+        ttk.Entry(row1, textvariable=self.v_name, width=14).pack(side="left")
         ttk.Label(row1, text="作者").pack(side="left", padx=(8, 2))
-        tk.Entry(row1, textvariable=self.v_author, width=10).pack(side="left")
+        ttk.Entry(row1, textvariable=self.v_author, width=10).pack(side="left")
 
         # 编辑侧出版信息（与 mac 同页同一组；缺了只是页眉占位，不报错）
         self.v_vol = tk.StringVar(value="")
@@ -255,7 +264,7 @@ class ConvertTab(TabPage):
                                   ("收稿日期", self.v_received, 11),
                                   ("责任编辑", self.v_editor, 8), ("基金", self.v_grants, 20)):
             ttk.Label(row2, text=label).pack(side="left", padx=(8, 2))
-            tk.Entry(row2, textvariable=var, width=width).pack(side="left")
+            ttk.Entry(row2, textvariable=var, width=width).pack(side="left")
 
         # AI 的两个旋钮（2026-10-17 从「设置」页挪到这里 —— 方案 §4：任务选项就地改，
         # 别让人去设置页找上下文）。留空 = 不发送该字段（引擎默认行为）。
@@ -264,11 +273,11 @@ class ConvertTab(TabPage):
         row3.pack(anchor="w", pady=(4, 0))
         ttk.Label(row3, text="AI 核实用：思考模式").pack(side="left")
         self.v_thinking = tk.StringVar(value=str(ai_cfg.get("thinking", "")))
-        tk.Entry(row3, textvariable=self.v_thinking, width=10).pack(side="left", padx=(4, 12))
+        ttk.Entry(row3, textvariable=self.v_thinking, width=10).pack(side="left", padx=(4, 12))
         ttk.Label(row3, text="最长输出").pack(side="left")
         self.v_maxtok = tk.StringVar(value=str(ai_cfg.get("maxTokens", "")))
-        tk.Entry(row3, textvariable=self.v_maxtok, width=10).pack(side="left", padx=(4, 12))
-        ttk.Label(row3, text="留空 = 用端点默认值", foreground=theme.COLOR["muted"]).pack(side="left")
+        ttk.Entry(row3, textvariable=self.v_maxtok, width=10).pack(side="left", padx=(4, 12))
+        ttk.Label(row3, text="留空 = 用端点默认值", style="Muted.TLabel").pack(side="left")
         for _v in (self.v_thinking, self.v_maxtok):
             _v.trace_add("write", lambda *_: self.ai_knobs_sink(
                 self.v_thinking.get().strip(), self.v_maxtok.get().strip()))
@@ -306,7 +315,7 @@ class CheckBibTab(TabPage):
                                   ("正文 .tex", self.v_tex, 20),
                                   ("产物目录", self.v_out, 18)):
             ttk.Label(row2, text=label).pack(side="left", padx=(8, 2))
-            tk.Entry(row2, textvariable=var, width=width).pack(side="left")
+            ttk.Entry(row2, textvariable=var, width=width).pack(side="left")
 
     def extra_args(self) -> dict:
         return {"merge_into_same_dir": self.v_merge.get(),
@@ -329,7 +338,7 @@ class MergeTab(TabPage):
         _check(parent, "加封底页", self.v_back).pack(side="left")
         _check(parent, "小节书签挂在文章下", self.v_nest).pack(side="left")
         # 预览清单（与 mac 的 `--detect` 对等）：先看会合并哪些文件，不写任何产物
-        tk.Button(parent, text="预览清单", width=10, command=self.preview).pack(
+        ttk.Button(parent, text="预览清单", width=10, command=self.preview).pack(
             side="left", padx=(12, 0))
 
     def extra_args(self) -> dict:
@@ -400,7 +409,7 @@ class InfoCheckTab(TabPage):
                 (a.get("chineseTitle") or "—")[:40]))
             if mismatch:
                 self.table.item(self.table.get_children()[-1], tags=("bad",))
-        self.table.tag_configure("bad", foreground="#b00")
+        self.table.tag_configure("bad", foreground=theme.COLOR["error"])
         notes = payload.get("inconsistencies") or []
         if not arts:
             self.summary.config(text="（还没检查）")
@@ -430,9 +439,12 @@ class TocTab(TabPage):
         super().__init__(parent, name, on_run, on_stop)
         self.rows: list[tuple[str, str]] = []      # [(文章名, 中文标题)]
         self.note = ttk.Label(self, text="（还没读取篇目：选报告后点「读取篇目」）",
-                              wraplength=760, justify="left", foreground="#555")
+                              wraplength=760, justify="left", style="Muted.TLabel")
         self.note.grid(row=90, column=0, padx=10, pady=(4, 0), sticky="w")
+        # ⚠️ `tk.Listbox` 保留：Tk 没有 ttk 对等物。颜色由 `theme.COLOR` 喂进去
+        #    （`theme.style_listbox`）—— 主文件里不写死颜色。
         self.listbox = tk.Listbox(self, selectmode=tk.EXTENDED, height=7, exportselection=False)
+        theme.style_listbox(self.listbox)
         self.listbox.grid(row=91, column=0, padx=10, pady=(2, 10), sticky="nsew")
         self.rowconfigure(91, weight=1)
 
@@ -442,18 +454,18 @@ class TocTab(TabPage):
         self.v_cname_en = tk.StringVar(value="")
         self.v_host = tk.StringVar(value="")
         self.v_template = tk.StringVar(value="")
-        tk.Button(parent, text="读取篇目", width=10, command=self.load_preview).pack(side="left")
+        ttk.Button(parent, text="读取篇目", width=10, command=self.load_preview).pack(side="left")
         ttk.Label(parent, text="栏目类型").pack(side="left", padx=(10, 2))
         ttk.Combobox(parent, textvariable=self.v_kind, width=6, state="readonly",
                      values=("", "专栏", "专辑")).pack(side="left")
         ttk.Label(parent, text="栏目名").pack(side="left", padx=(8, 2))
-        tk.Entry(parent, textvariable=self.v_cname, width=16).pack(side="left")
+        ttk.Entry(parent, textvariable=self.v_cname, width=16).pack(side="left")
         ttk.Label(parent, text="英文名").pack(side="left", padx=(8, 2))
-        tk.Entry(parent, textvariable=self.v_cname_en, width=18).pack(side="left")
+        ttk.Entry(parent, textvariable=self.v_cname_en, width=18).pack(side="left")
         ttk.Label(parent, text="主持人").pack(side="left", padx=(8, 2))
-        tk.Entry(parent, textvariable=self.v_host, width=10).pack(side="left")
+        ttk.Entry(parent, textvariable=self.v_host, width=10).pack(side="left")
         ttk.Label(parent, text="模板来源期目录（留空=自动找上一期）").pack(side="left", padx=(8, 2))
-        tk.Entry(parent, textvariable=self.v_template, width=22).pack(side="left")
+        ttk.Entry(parent, textvariable=self.v_template, width=22).pack(side="left")
 
     def extra_args(self) -> dict:
         return {"template": self.v_template.get()}
@@ -530,7 +542,8 @@ class TocTab(TabPage):
             "templateFolder": self.v_template.get(),
         })
         data.setdefault("titleWrapLimit", 20)
-        data.setdefault("titleWrapLimitEN", 35)
+        # 英文断行默认 30（2026-10-17 第十四批按期 90 成品校准，原 35 见案例第 110 条）
+        data.setdefault("titleWrapLimitEN", 30)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=2)
 
@@ -592,7 +605,7 @@ class CompileAllTab(TabPage):
         self.v_only = tk.StringVar(value="")
         self.v_dry = tk.BooleanVar(value=False)
         ttk.Label(parent, text="只编这几篇（序号，如 01,03；留空=全部）").pack(side="left")
-        tk.Entry(parent, textvariable=self.v_only, width=12).pack(side="left", padx=(4, 12))
+        ttk.Entry(parent, textvariable=self.v_only, width=12).pack(side="left", padx=(4, 12))
         _check(parent, "先预演（只列出会编哪些）", self.v_dry).pack(side="left")
 
     def extra_args(self) -> dict:
@@ -664,18 +677,18 @@ class SettingsTab(ttk.Frame):
             var = tk.StringVar(value=str(cfg.get("api", {}).get(key, "") or cfg.get(key, "")))
             self.vars[key] = var
             show = "•" if key == "key" else ""
-            entry = tk.Entry(self, textvariable=var, width=52, show=show)
+            entry = ttk.Entry(self, textvariable=var, width=52, show=show)
             entry.grid(row=row, column=1, padx=10, pady=3, sticky="ew")
             if key == "key":
                 self.key_entry = entry                      # 显示/隐藏要切它的 show 属性
                 self.v_show_key = tk.BooleanVar(value=False)
                 tools = ttk.Frame(self)
                 tools.grid(row=row, column=1, padx=10, sticky="e")
-                tk.Checkbutton(tools, text="显示密钥", variable=self.v_show_key,
-                               command=self._toggle_key_visible).pack(side="right")
-                tk.Button(tools, text="清除密钥", width=10, command=self._clear_key).pack(
+                ttk.Checkbutton(tools, text="显示密钥", variable=self.v_show_key,
+                                command=self._toggle_key_visible).pack(side="right")
+                ttk.Button(tools, text="清除密钥", width=10, command=self._clear_key).pack(
                     side="right", padx=6)
-            ttk.Label(self, text=hint, foreground="#666").grid(
+            ttk.Label(self, text=hint, style="Muted.TLabel").grid(
                 row=row + 1, column=1, padx=10, sticky="w")
             row += 2
 
@@ -688,14 +701,15 @@ class SettingsTab(ttk.Frame):
 
         # 密钥常驻状态行：说清「已存/末四位/只在本机」—— 隐藏字段光靠打码，编辑不知道配没配对
         self.key_status = ttk.Label(self, text="", wraplength=760, justify="left",
-                                    foreground=theme.COLOR["muted"])
+                                    style="Muted.TLabel")
         self.key_status.grid(row=row, column=1, padx=10, pady=(0, 4), sticky="w"); row += 1
         btns = ttk.Frame(self)
         btns.grid(row=row, column=1, padx=10, pady=10, sticky="w")
-        tk.Button(btns, text="保存设置", width=14, command=self.save).pack(side="left")
+        ttk.Button(btns, text="保存设置", width=14, style="Accent.TButton",
+                   command=self.save).pack(side="left")
         # 测试连接（mac 侧早就有这个按钮）：把"配对了没有"从玄学变事实
-        tk.Button(btns, text="测试连接", width=12,
-                  command=self.test_connection).pack(side="left", padx=8)
+        ttk.Button(btns, text="测试连接", width=12,
+                   command=self.test_connection).pack(side="left", padx=8)
         self.refresh_status()
         self.refresh_key_status()
 
@@ -814,6 +828,9 @@ class MainWindow(tk.Tk):
         self.geometry("1000x700+340+100")   # 侧栏吃掉 ~184px，最小宽度跟着提（UI 方案候选 B）
         self.title(APP_TITLE)
         self.cfg = S.load()
+        # U4 日志偏好（默认摘要 = 原始层折叠）：`settings.DEFAULTS` 里已有这个键，
+        # 读回后写进 cfg —— 否则设置页点一次「保存」会把整个 cfg 写回、抹掉这份偏好。
+        self.cfg["logShowRaw"] = bool(self.cfg.get("logShowRaw", False))
         # ⚠️ 设置页的「引擎目录」必须**真的生效**：`engine.py` 只认环境变量 `SLCN_ENGINE`，
         #    从前这里写进 cfg 却全仓无人读 → 自动定位失败时，双击 exe 的编辑在 GUI 里
         #    **没有任何自救入口**（他们不会去设环境变量）。2026-10-17 审计实测（M5）。
@@ -828,6 +845,11 @@ class MainWindow(tk.Tk):
         self._q: queue.Queue[str] = queue.Queue()
         self._busy = False
         self._current = 0
+        #: 完整日志行 `(显示文本, 级别 tag, 是否摘要行)` —— 视图只画其中一部分，
+        #: 但复制/保存/切换模式都要用**全量**（U4：摘要只是默认视图，不是数据）。
+        self._log_lines: list[tuple[str, str, bool]] = []
+        self._log_folded = 0                    # 摘要模式下折叠了几行（工具条显示）
+        self._log_placeholder_active = False    # 日志框里现在是不是那行灰占位
 
         # ── 分组侧边栏（UI 方案候选 B；2026-10-17 用户批准）──
         # 为什么不再用 9 个平级标签：WinUI 说「左侧导航适合 5–10 个**同等重要**的分类」，
@@ -882,8 +904,13 @@ class MainWindow(tk.Tk):
         self.bind_all("<Escape>", lambda _e: self._hotkey_stop())
         self.bind_all("<Control-comma>", lambda _e: self._hotkey_settings())
 
-        self.output = tk.Text(self, height=18, wrap="none",
-                              font=tkfont.nametofont("TkFixedFont"))   # 等宽：日志对齐
+        # `tk.Text` 保留：Tk 没有 ttk 对等物。颜色全部从 `theme.COLOR` 取（不写死）。
+        self.output = tk.Text(self, height=18, wrap="none", font=theme.mono_font(),
+                              background=theme.COLOR["text_bg"],
+                              foreground=theme.COLOR["fg"],
+                              insertbackground=theme.COLOR["fg"],
+                              selectbackground=theme.COLOR["accent"],
+                              selectforeground=theme.COLOR["on_accent"])
         self.output.pack(side="bottom", fill="both", expand=False)
         self.output.configure(state="disabled")
         # 级别色（UI 方案 §2-8：普通/琥珀/红三档；颜色**不是唯一**区分手段 ——
@@ -891,17 +918,34 @@ class MainWindow(tk.Tk):
         self.output.tag_configure("err", foreground=theme.COLOR["error"])
         self.output.tag_configure("warn", foreground=theme.COLOR["warn"])
         self.output.tag_configure("ok", foreground=theme.COLOR["ok"])
-        # 日志工具条：自动滚动开关（上翻看旧日志时别被强拉到底）、跳到最新、复制全部、当前阶段
+        # 灰字：空状态占位 / 辅助说明（不是"日志内容"，复制与保存都不含它）
+        self.output.tag_configure("muted", foreground=theme.COLOR["muted"])
+        # 空状态（观察③）：窗口刚起来、日志还空着时先给一句灰字，第一条日志到达即让位
+        self._insert_placeholder()
+
+        # 日志工具条：自动滚动（上翻看旧日志时别被强拉到底）、摘要/原始、跳到最新、
+        # 复制全部、保存、清空、当前阶段
         self.log_tools = ttk.Frame(self)
         self.log_tools.pack(side="bottom", fill="x", padx=10, pady=(2, 0))
         self.v_autoscroll = tk.BooleanVar(value=True)
         ttk.Checkbutton(self.log_tools, text="自动滚动", variable=self.v_autoscroll).pack(side="left")
-        tk.Button(self.log_tools, text="跳到最新", command=lambda: self.output.see("end")).pack(
+        # U4：摘要 / 原始二选一（默认摘要）。取值必须写 **0/1**：BooleanVar 的 Tcl 值是
+        # "0"/"1"，value 写成 False/True 初始态一个都选不中（2026-10-17 实测）。
+        self.v_log_raw = tk.BooleanVar(value=bool(self.cfg.get("logShowRaw", False)))
+        for _text, _value in (("摘要", 0), ("原始", 1)):
+            ttk.Radiobutton(self.log_tools, text=_text, value=_value,
+                            variable=self.v_log_raw, style="Toolbutton",
+                            command=self._on_log_mode).pack(side="left", padx=(8, 0))
+        self.folded_label = ttk.Label(self.log_tools, text="", style="Muted.TLabel")
+        self.folded_label.pack(side="left", padx=(8, 0))
+        ttk.Button(self.log_tools, text="跳到最新",
+                   command=lambda: self.output.see("end")).pack(side="left", padx=6)
+        ttk.Button(self.log_tools, text="复制全部", command=self._copy_log).pack(side="left")
+        ttk.Button(self.log_tools, text="保存日志…", command=self._save_log).pack(
             side="left", padx=6)
-        tk.Button(self.log_tools, text="复制全部", command=self._copy_log).pack(side="left")
-        tk.Button(self.log_tools, text="保存日志…", command=self._save_log).pack(
-            side="left", padx=6)
-        self.phase_label = ttk.Label(self.log_tools, text="", foreground=theme.COLOR["muted"])
+        # 「清空」只清日志（内存与视图一起清，见 clear_log）—— 与 mac 的 LogPane 同一个按钮
+        ttk.Button(self.log_tools, text="清空", command=self.clear_log).pack(side="left")
+        self.phase_label = ttk.Label(self.log_tools, text="", style="Muted.TLabel")
         self.phase_label.pack(side="left", padx=12)
 
         self.log(f"{APP_TITLE}")
@@ -976,18 +1020,114 @@ class MainWindow(tk.Tk):
         return ""
 
     def log(self, text: str) -> None:
+        """追加一行日志：**永远进内存**（`_log_lines`），显示与否看当前是摘要还是原始。
+
+        摘要判据在 `engine.is_summary_line`（与 mac 侧同一份词表 + 同一份夹具）。
+        ⚠️ 判定要用**引擎原文**：下面盖相对时间戳（`+0:03.2s  `）之后，
+        「`▶` 开头 / `[3/25]` 开头」这两类前缀判据就对不上了。
+        """
+        is_summary = E.is_summary_line(text)
         # 相对时间戳（UI 方案 §2-8）：运行中每行前面加 `+0:03.2`，方便回看"哪一步慢"；
         # 未运行时（启动信息等）不加，保持干净。绝对时间对排错没用，相对时间才有。
         if self._busy and self._t0:
             text = f"+{time.monotonic() - self._t0:5.1f}s  {text}"
+        tag = self._level_tag(text)
+        self._log_lines.append((text, tag, is_summary))
+        if not is_summary and text.strip():
+            self._log_folded += 1
+        if self._trim_log():             # 超上限截断过 → 整屏重画（含这行），别让视图与内存对不上
+            self._render_log()
+            return
+        if self._log_placeholder_active:     # 空状态让位：占位只代表「还没有任何一行」
+            self._hide_placeholder()
+        if self.v_log_raw.get() or is_summary:
+            self.output.configure(state="normal")
+            self.output.insert("end", text + "\n", tag)
+            if self.v_autoscroll.get():          # 上翻看旧日志时别把人强拉到底
+                self.output.see("end")
+            self.output.configure(state="disabled")
+        self._refresh_folded_label()
+
+    # ── 日志：摘要 / 原始两层（U4）──
+    def _render_log(self) -> None:
+        """按当前模式把内存里的**完整**日志重画进日志框：摘要模式只画摘要行。
+
+        切换模式、截断、清空都走这里 —— 除了 `log()` 的实时追加，日志框没有别的数据来源。
+        """
+        show_raw = bool(self.v_log_raw.get())
         self.output.configure(state="normal")
-        self.output.insert("end", text + "\n", self._level_tag(text))
-        if self.v_autoscroll.get():          # 上翻看旧日志时别把人强拉到底
-            self.output.see("end")
+        self.output.delete("1.0", "end")
+        folded = 0
+        for text, tag, is_summary in self._log_lines:
+            if show_raw or is_summary:
+                self.output.insert("end", text + "\n", tag)
+            elif text.strip():
+                folded += 1
+        self._log_folded = folded
+        self._log_placeholder_active = False
+        if not self._log_lines:                    # 空状态（观察③）
+            self.output.insert("end", LOG_PLACEHOLDER + "\n", "muted")
+            self._log_placeholder_active = True
         self.output.configure(state="disabled")
+        self._refresh_folded_label()
+        if self.v_autoscroll.get():
+            self.output.see("end")
+
+    def _on_log_mode(self) -> None:
+        """摘要 / 原始切换：立刻重画，并把偏好写回配置（下次启动沿用，AUDIT U4）。"""
+        self.cfg["logShowRaw"] = bool(self.v_log_raw.get())
+        try:
+            S.save(self.cfg)
+        except OSError:
+            pass            # 配置目录只读时别弹窗打断看日志：本次切换照样生效
+        self._render_log()
+
+    def _refresh_folded_label(self) -> None:
+        """工具条上「已折叠 N 行原始日志」：只有摘要模式且真的折叠了才写。"""
+        if self.v_log_raw.get() or self._log_folded <= 0:
+            self.folded_label.config(text="")
+        else:
+            self.folded_label.config(text=f"已折叠 {self._log_folded} 行原始日志")
+
+    def _trim_log(self) -> bool:
+        """超过上限时丢掉最旧的行（一次丢一批，避免每来一行就整屏重画）。返回是否丢了。"""
+        over = len(self._log_lines) - LOG_LINE_LIMIT
+        if over < 0:
+            return False
+        del self._log_lines[:over + LOG_TRIM_CHUNK]
+        return True
+
+    def _full_log_text(self) -> str:
+        """**完整日志**文本（含摘要模式下折叠的原始行）—— 复制/保存一律用它。
+
+        与视图模式无关：摘要只是默认视图（见 U4），留证据/发给人看时不能漏行。
+        """
+        return "\n".join(text for text, _tag, _is_summary in self._log_lines)
+
+    def _insert_placeholder(self) -> None:
+        """空状态（观察③）：日志区还没有任何一行时，给一句灰字，别留一片空白。"""
+        self.output.configure(state="normal")
+        self.output.insert("end", LOG_PLACEHOLDER + "\n", "muted")
+        self.output.configure(state="disabled")
+        self._log_placeholder_active = True
+
+    def _hide_placeholder(self) -> None:
+        """第一条真实日志到达时把占位删掉 —— 占位**从不**进复制/保存的内容。"""
+        if not self._log_placeholder_active:
+            return
+        self.output.configure(state="normal")
+        self.output.delete("1.0", "end")
+        self.output.configure(state="disabled")
+        self._log_placeholder_active = False
+
+    def clear_log(self) -> None:
+        """清空日志：**内存与视图一起清**（否则「复制全部」还会把清掉的行拿出来）。"""
+        self._log_lines.clear()
+        self._log_folded = 0
+        self._render_log()                  # 空 → 自动恢复那行灰占位
 
     def _save_log(self) -> None:
-        """把整份运行日志存成 .txt 并打开它（「打开日志文件」的可行形态：
+        """把**整份**运行日志存成 .txt 并打开它（「打开日志文件」的可行形态：
         平时不落盘，需要留证据/发给人看时再存）。"""
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = fd.asksaveasfilename(
@@ -998,7 +1138,8 @@ class MainWindow(tk.Tk):
             return
         try:
             with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(self.output.get("1.0", "end-1c"))
+                # 完整日志（含摘要模式下折叠的原始行），与视图模式无关；占位不在内
+                fh.write(self._full_log_text())
         except OSError as e:
             messagebox.showerror(APP_TITLE, f"保存日志失败：{e}")
             return
@@ -1012,9 +1153,10 @@ class MainWindow(tk.Tk):
             pass
 
     def _copy_log(self) -> None:
+        """复制**完整日志**（含摘要模式下折叠的原始行）—— 与当前视图模式无关。"""
         try:
             self.clipboard_clear()
-            self.clipboard_append(self.output.get("1.0", "end-1c"))
+            self.clipboard_append(self._full_log_text())
             self.log("（已复制全部运行日志到剪贴板）")
         except tk.TclError:
             pass

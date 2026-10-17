@@ -1271,6 +1271,102 @@ check("u6-cancelled-banner", "完成横幅把「用户取消」显示成「⏹ �
       "")
 
 // ===========================================================================
+// (v) 报告输出（可选）：mac「文献回读校验」补 `--out`（2026-10-17 第十五批）
+//
+//     与 Windows 侧 U7 的三个可选输入对齐：留空 = 自动落点（一字未改），
+//     填已存在的目录 = 报告放进该目录（引擎 `_resolve_out()` 同一判据）。
+// ===========================================================================
+section("T-v  报告输出（可选，mac --out）")
+
+check("v1-view-field", "CheckBibView 有「报告输出（可选）」输入并传给 run(out:)",
+      cbvSrc.contains("报告输出（可选）") && cbvSrc.contains("model.reportOut")
+        && cbvSrc.contains("out: out"),
+      "")
+check("v2-feature-param", "CheckBibFeature.run 接受 `out rawOut` 且有 `resolvedReportPath`",
+      cbfSrc.contains("out rawOut: String = \"\"") && cbfSrc.contains("resolvedReportPath(rawOut, auto: autoOut)"),
+      "")
+// 运行时：空 = 自动落点；目录 = 放进该目录（文件名沿用自动落点的基名）；文件 = 原样
+let vAuto = "/tmp/投稿/reference_回读校验报告.md"
+check("v3-empty-means-auto", "留空 → 自动落点（与从前一字不差）",
+      CheckBibFeature.resolvedReportPath("", auto: vAuto) == vAuto
+        && CheckBibFeature.resolvedReportPath("   ", auto: vAuto) == vAuto,
+      "")
+let vDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("slcn_out_dir_\(UUID().uuidString)").path
+try? FileManager.default.createDirectory(atPath: vDir, withIntermediateDirectories: true)
+check("v4-dir-joins-default-name", "填已存在的目录 → 报告放进该目录、文件名沿用默认基名",
+      CheckBibFeature.resolvedReportPath(vDir, auto: vAuto) == vDir + "/reference_回读校验报告.md",
+      CheckBibFeature.resolvedReportPath(vDir, auto: vAuto))
+let vFile = "/tmp/投稿/自定义报告.md"
+check("v5-file-passes", "填文件路径 → 原样使用", CheckBibFeature.resolvedReportPath(vFile, auto: vAuto) == vFile, "")
+try? FileManager.default.removeItem(atPath: vDir)
+
+// ===========================================================================
+// (w) U4 日志「摘要 / 原始」两层（2026-10-17 第十五批，用户拍板：默认折叠原始层）
+//
+//     两侧必须**同一套判据**：Swift 用 LogStore.isSummaryLine，Windows 用
+//     engine.is_summary_line，都跑 `tools/log_cases.json` 这份跨平台夹具。
+//     这里跑夹具 = 与 Windows 桥梁测试逐条对齐；词表分叉会两边同时变红。
+// ===========================================================================
+section("T-w  U4 日志摘要 / 原始两层（mac）")
+let logSrc2 = readSrc("Core/Log.swift")
+check("w1-store", "LogStore 有摘要层（summaryAttributed）、折叠计数与逐行分类",
+      logSrc2.contains("summaryAttributed") && logSrc2.contains("foldedLineCount")
+        && logSrc2.contains("static func isSummaryLine"),
+      "")
+var wWrong: [String] = []
+var wCaseCount = 0
+let wCasesPath = projFile("tools/log_cases.json")
+if let wData = FileManager.default.contents(atPath: wCasesPath),
+   let wObj = try? JSONSerialization.jsonObject(with: wData) as? [String: Any],
+   let wCases = wObj["cases"] as? [[String: Any]] {
+    wCaseCount = wCases.count
+    for c in wCases {
+        let line = (c["line"] as? String) ?? ""
+        let want = (c["summary"] as? Bool) ?? false
+        if LogStore.isSummaryLine(line) != want {
+            wWrong.append("\(want ? "应摘要" : "应原始")「\(line)」")
+        }
+    }
+    check("w2-fixture", "LogStore.isSummaryLine 逐条通过 tools/log_cases.json（与 Windows 同一份夹具，\(wCaseCount) 条）",
+          wWrong.isEmpty, wWrong.prefix(3).joined(separator: "；"))
+} else {
+    check("w2-fixture", "读不到 tools/log_cases.json", false, wCasesPath)
+}
+let paneSrc = readSrc("Views/LogPane.swift")
+check("w3-pane", "LogPane 有「摘要/原始」切换、折叠行提示与空状态提示；复制仍给完整日志",
+      paneSrc.contains("Text(\"摘要\")") && paneSrc.contains("Text(\"原始\")")
+        && paneSrc.contains("已折叠") && paneSrc.contains("运行任务后，日志会显示在这里")
+        && paneSrc.contains("setString(log.text"),
+      "")
+
+// (x) 完成横幅的「契约行」判据（2026-10-17 第十五批真机实测抓到的真 bug）
+//     现象：编译全部 10/10 成功、日志里也有「完成。编译 10 篇…」，横幅却显示 ❌ 失败。
+//     根因：横幅取的是**最后一行**，而 Feature 在引擎结束后还会补「运行结束，请确认上方是否有错。」。
+//     修法：`EngineOutput.contractLine(from:)` 取最后一条以 `完成。` 开头的行。
+section("T-x  完成横幅：契约行 ≠ 最后一行")
+let xContract = "完成。编译 10 篇（成功 10 / 失败 0）（目录：/tmp/2026年第5期(90)）"
+check("x1-contract-line", "contractLine：跳过 Feature 补的那句「运行结束…」，取到真正的契约行",
+      EngineOutput.contractLine(from: [xContract, "运行结束，请确认上方是否有错。"]) == xContract
+        && EngineOutput.contractLine(from: ["运行结束，请确认上方是否有错。"]) == nil
+        && EngineOutput.contractLine(from: []) == nil,
+      "")
+check("x2-view-uses-contract", "SimpleFeatureView 用 `contractLine(from:)` 判成败（不再取最后一行）",
+      readSrc("Views/SimpleFeatureView.swift").contains("EngineOutput.contractLine(from: box.lines)"),
+      "")
+// 运行时：Logger 的旁路回调必须给**未加时间戳的原文** —— 横幅要按行首 `完成。` 判，
+// 若回调收到 "+ 52.2s  完成。…" 就永远判不成成功（第十五批真机实测的第二个真因）。
+let xStore = LogStore()
+var xSeen: [String] = []
+let xLogger = Logger(store: xStore, startedAt: Date(), onLine: { xSeen.append($0) })
+xLogger("完成。编译 10 篇（成功 10 / 失败 0）（目录：/tmp/2026年第5期(90)）")
+check("x3-online-raw", "Logger.onLine 收到原文（没有 `+  0.0s  ` 前缀），契约行判据可用",
+      xSeen.count == 1
+        && xSeen.first == "完成。编译 10 篇（成功 10 / 失败 0）（目录：/tmp/2026年第5期(90)）"
+        && EngineOutput.indicatesSuccess(xSeen.first ?? ""),
+      xSeen.first ?? "<empty>")
+
+// ===========================================================================
 // (k) 第 69 条：通道（chat/responses）+ 联网检索开关 + ⑤ 检索探针
 //
 //     为什么这批断言重要：用户的要求是「让工具**真的**去联网核实」。

@@ -178,6 +178,14 @@ check("(a) wrap_title：长标题断成两行且两行都不超上限",
 we = TOC.wrap_title("The Knowability Paradox and Its Formal Treatment in Modal Logic", 20, True)
 check("(a) wrap_title：英文在空格处断", we is not None and not we[0].endswith(" ")
       and not we[1].startswith(" "), f"{we}")
+# 2026-10-17 第十四批（案例第 110 条）：期 90 成品里这篇标题断在「的」后；
+# 旧的「0.35/0.65 居中兜底」会把它劈成「真理 / 论」（切词）。这里把与成品一致的断点钉死。
+wc = TOC.wrap_title("推理倾向性：对紧缩真理论概括难题的知识论回应", 20, False)
+check("(a) wrap_title：中文长标题在虚词后断、不切词（期 90 成品同款断点）",
+      wc == ("推理倾向性：对紧缩真理论概括难题的", "知识论回应"), f"{wc}")
+check("(a) TocSettings 默认断行上限：中文 20 / 英文 30（英文按期 90 成品校准，原 35）",
+      TOC.TocSettings().titleWrapLimit == 20 and TOC.TocSettings().titleWrapLimitEN == 30,
+      f"{TOC.TocSettings().titleWrapLimit}/{TOC.TocSettings().titleWrapLimitEN}")
 check("(a) 带副标题（——）时**不**走自动断行，副标题单独一行",
       TOC.chinese_entry(TOC.TocEntry("X", page="1", chineseTitle="主标题——副标题",
                                      chineseAuthors=["张三"]), False, 20).count("\n") == 3)
@@ -252,7 +260,8 @@ check("(a) make_column_block：沿用上一期形态并替换名称与主持人"
 check("(a) make_column_block：没开栏目 → 空",
       TT.make_column_block(TOC.TocSettings(), ["x"], True) == [])
 check("(a) TocSettings.load：文件不存在 → 默认值；字段缺失 → 逐字段回落（旧 json 不清空）",
-      TOC.TocSettings.load(tempfile.mkdtemp()).titleWrapLimit == 20)
+      TOC.TocSettings.load(tempfile.mkdtemp()).titleWrapLimit == 20
+      and TOC.TocSettings.load(tempfile.mkdtemp()).titleWrapLimitEN == 30)
 tmpj = tempfile.mkdtemp()
 with open(os.path.join(tmpj, "目录设置.json"), "w", encoding="utf-8") as fh:
     fh.write('{"columnKind": "专辑", "columnName": "旧文件只有两个字段"}')
@@ -385,6 +394,29 @@ r2 = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", bad, "-
 check("(d) `--preview` 同样拒绝（界面预览不能显示成「清单为空」）", r2.returncode == 2,
       f"rc={r2.returncode}")
 shutil.rmtree(bad_dir, ignore_errors=True)
+
+print("\n── (e) 总第期号无法确定 → 退出码 1（有结果、需人工核对）──")
+# 2026-10-17 第十四批（案例第 110 条）：`总第 N 期` 是从**报告所在目录名**取的
+# （`2026年第5期(90)` → 90）。报告被挪到期目录外时目录头会写成「总第 ? 期」，
+# 从前照旧退出 0、看上去"成功"却是一份残的；现在按 INVARIANTS 三.2 退 1。
+no_issue_dir = tempfile.mkdtemp(prefix="slcn_toc_noissue_")
+rep_noid = make_report(no_issue_dir)          # 目录名不是 `2026年第N期(M)` 形态
+r_no = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", rep_noid],
+                      capture_output=True, text=True, encoding="utf-8", errors="replace",
+                      env=os.environ, cwd=ENGINE)
+_no_out = r_no.stdout.strip().splitlines()
+check("(e) 报告不在期目录里 → 退出码 1（不是 0）", r_no.returncode == 1,
+      f"rc={r_no.returncode}｜{r_no.stdout.strip()[-80:]}")
+check("(e) 明说「无法确定总第 N 期」",
+      "无法确定" in r_no.stdout and "总第" in r_no.stdout and "?" in r_no.stdout,
+      r_no.stdout.strip()[-120:])
+check("(e) 两份目录仍已生成（产物可用，只是需人工补期号）",
+      len([f for f in os.listdir(no_issue_dir)
+           if f.startswith(("contents_", "Chinese Content_"))]) == 2,
+      repr(sorted(os.listdir(no_issue_dir))))
+check("(e) 契约行仍是 stdout 最后一行（外壳靠它拿产物）",
+      bool(_no_out) and _no_out[-1].startswith("完成。"), _no_out[-1] if _no_out else "<empty>")
+shutil.rmtree(no_issue_dir, ignore_errors=True)
 
 print("\n" + "=" * 66)
 if fails:

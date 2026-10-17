@@ -31,6 +31,9 @@ final class CheckBibModel: ObservableObject {
 
     @Published var original = ""      // 任务书前的原件 .bib（可选；**并回时它是目标**）
     @Published var tex = ""           // 正文 .tex（可选）
+    /// 报告落点（可选）：留空 = 自动（交回 .bib 或原件同目录）；填**已存在的目录**则报告放进去；
+    /// 填文件路径则报告写到该文件。2026-10-17 第十五批补上（与 Windows 的 --out 输入对等）。
+    @Published var reportOut = ""
     @Published var running = false
     /// 体检 / 并回完成后的报告路径（成功才有值，「打开报告」按钮用它）
     @Published var reportPath: String? = nil
@@ -128,6 +131,23 @@ struct CheckBibView: View {
                     logStore: log
                 )
                 .disabled(model.running)
+
+                // 报告落点（可选，第十五批）：与 Windows 侧 U7 的三个可选输入对齐。
+                // 留空 = 与从前一字未改（自动落在交回 .bib / 原件同目录）；
+                // 填**已存在的目录** = 报告按默认文件名放进该目录；填文件路径 = 写到那个文件。
+                HStack(spacing: 8) {
+                    Text("报告输出（可选）")
+                        .font(.body)
+                        .frame(width: 148, alignment: .leading)
+                    TextField("留空 = 自动（<名字>_回读校验报告.md）；也可填一个目录或 .md 路径",
+                              text: $model.reportOut)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(model.running)
+                }
+                Text("填**已存在的目录** = 报告按默认文件名放进该目录；填文件路径 = 写到该文件；"
+                     + "留空 = 与从前一样（自动落在交回 .bib / 产物目录旁边）。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
 
                 if model.returnedMode == .file {
                     Text("三个路径都可以直接从访达拖进来。"
@@ -380,13 +400,14 @@ struct CheckBibView: View {
         let src = source
         let original = m.original
         let tex = m.tex
+        let out = m.reportOut
         m.running = true
         m.reportPath = nil
         // 重新体检 = 重新开始：上一次并回留下的「重新编译该篇」不再对应当前结论。
         m.mergedManuscriptDir = nil
         DispatchQueue.global(qos: .userInitiated).async {
             let report = CheckBibFeature.run(source: src, original: original,
-                                             tex: tex, log: logger)
+                                             tex: tex, out: out, log: logger)
             DispatchQueue.main.async {
                 m.reportPath = report
                 m.running = false

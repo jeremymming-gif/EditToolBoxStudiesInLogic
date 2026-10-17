@@ -345,14 +345,33 @@ enum CheckBibFeature {
                     original rawOriginal: String,
                     tex rawTeX: String,
                     log: Logger) -> String? {
-        run(source: .file(rawReturned), original: rawOriginal, tex: rawTeX, log: log)
+        run(source: .file(rawReturned), original: rawOriginal, tex: rawTeX, out: "", log: log)
+    }
+
+    /// 界面「报告输出（可选）」→ 真正传给 `--out` 的路径（纯函数，harness 直接断言）。
+    ///
+    /// - 空 → `auto`（自动落点，**行为与从前一字不差**）；
+    /// - **已存在的目录** → 报告放进该目录，文件名沿用自动落点的文件名
+    ///   （=`<名字>_回读校验报告.md`）—— 引擎侧 `_resolve_out()` 也做同一件事（双保险）；
+    /// - 其它（含不存在路径）→ 当文件路径原样传，母目录不存在时引擎会如实报「写不了报告」。
+    static func resolvedReportPath(_ raw: String, auto: String) -> String {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return auto }
+        let p = PathKit.normalize(t)
+        if PathKit.isDirectory(p) {
+            return PathKit.join(p, (auto as NSString).lastPathComponent)
+        }
+        return p
     }
 
     /// 统一的体检入口：交回的文本可以来自**文件**（`.file`）或**粘贴框**（`.paste`，走 stdin）。
+    ///
+    /// - Parameter rawOut: 界面「报告输出（可选）」的原文；空 = 自动落点（与从前一样）。
     @discardableResult
     static func run(source: ReturnedSource,
                     original rawOriginal: String,
                     tex rawTeX: String,
+                    out rawOut: String = "",
                     log: Logger) -> String? {
         var returned = ""
         var pasted = ""
@@ -395,13 +414,18 @@ enum CheckBibFeature {
 
         // 报告落点：文件模式 = 交回文件旁边（**一字未改**）；粘贴模式 = 原件（产物目录）
         // 旁边，没有原件时退到系统临时目录并说明。
-        let outPath: String
+        // 界面填了「报告输出（可选）」则覆盖自动落点（第十五批，与 Windows --out 对等）。
+        let autoOut: String
         if isPaste {
             let (p, note) = pasteReportPath(forOriginal: rawOriginal)
-            outPath = p
+            autoOut = p
             if !note.isEmpty { log(note + "\n") }
         } else {
-            outPath = reportPath(forReturned: returned)
+            autoOut = reportPath(forReturned: returned)
+        }
+        let outPath = resolvedReportPath(rawOut, auto: autoOut)
+        if !rawOut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, outPath != autoOut {
+            log("（报告落点按界面的「报告输出」：\(outPath)）\n")
         }
 
         let o = Options(returned: isPaste ? "" : returned,

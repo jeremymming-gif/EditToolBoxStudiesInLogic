@@ -41,6 +41,9 @@ DEFAULTS: dict = {
         "mergeNestOutlines": True,
     },
     "engineDir": "",
+    # U4（2026-10-17 第十五批）日志两层：True = 显示「原始」层，False = 摘要（默认折叠原始）。
+    # 放在顶层而不是 options：它是**界面偏好**，不是任务选项。
+    "logShowRaw": False,
 }
 
 
@@ -67,6 +70,11 @@ def _merge_defaults(raw: dict) -> dict:
             out[section].update({k: v for k, v in got.items() if k in out[section]})
     if isinstance(raw.get("engineDir"), str):
         out["engineDir"] = raw["engineDir"]
+    # 顶层布尔偏好（U4：日志「摘要/原始」选择）—— 从前面板外键会在这里被丢掉，
+    # 于是「偏好落盘了、下次启动却不生效」。逐键白名单，避免把任意垃圾键带进来。
+    for key in ("logShowRaw",):
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
     return out
 
 

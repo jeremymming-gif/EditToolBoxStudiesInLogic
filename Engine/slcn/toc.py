@@ -181,14 +181,27 @@ def display_width(s: str) -> float:
     return width
 
 
+# 中文断行的「次优断点」：在常见**虚词/连词**之后断（第一行以它们结尾），
+# 比在词中间硬劈更像人工排版。**故意保守**：只收高频功能词，不收可作实词的单字
+# （在/中/上/下/对/由/把/被/将/于/从/前/后/里/外 等都不收 —— 它们常出现在「存在」
+# 这类词的词尾，断在它们后面反而会切词）。
+_WEAK_BREAK_AFTER = set("的与和及或等者地得之其而并且")
+
+
 def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | None:
     r"""把过长的标题断成两行（返回 None 表示不用断）。
 
     为什么需要：目录第一列是内容自适应的 `l` 列，只要有一篇标题太长，整张表就会被撑宽，
     页码列被推出版心（看起来就是右侧溢出）。同事在成品里也是手工断行的。
 
-    断点选择：中文优先在标点处断，否则在不超过上限的位置尽量靠右；英文在最后一个空格处断。
-    两侧各至少留 3 个字，避免孤字行；两边太不均衡（<35% 或 >65%）时改用居中断。
+    断点选择（2026-10-17 第十四批按期 90 成品校准）：
+      英文：在**最后一个空格**处断（上限内尽量靠右）；
+      中文：① 标点后（：，、；。！？……），且第一行至少占 40%（避免头重脚轻）；
+            ② 没有合适标点时，在**虚词/连词后**断（`_WEAK_BREAK_AFTER`），同样要求第一行 ≥40%；
+            ③ 都没有才用"上限内最靠右"，并在两侧 <35% / >65% 时退回**居中**兜底。
+    为什么加第 ② 步：期 90 有一篇标题被 0.35/0.65 的居中兜底劈成「真理 / 论」这一类
+    （切词）；成品在同一位置断在「的」后。引入 ② 之后，这类标题的断点与成品一致。
+    两侧各至少留 3 个字，避免孤字行。
     """
     if limit <= 0 or display_width(title) <= limit:
         return None
@@ -197,7 +210,12 @@ def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | 
         return None
 
     min_side = 3
+    min_first = len(chars) * 0.4      # 第一行至少占 40%（标点/虚词断点用）
     best: int | None = None
+
+    def fits(i: int) -> bool:
+        return (min_side <= i <= len(chars) - min_side
+                and display_width("".join(chars[:i])) <= limit)
 
     if is_english:
         for i in range(len(chars) - min_side, min_side - 1, -1):
@@ -205,27 +223,29 @@ def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | 
                 best = i
                 break
     else:
-        punctuation = set("：，、；。！？")
+        # ① 标点后（上限内取最靠右；太靠前会造成「第一行很短、第二行很长」的难看版式）
         for i in range(len(chars) - min_side, min_side - 1, -1):
-            if chars[i - 1] not in punctuation:
-                continue
-            # 标点太靠前会造成「第一行很短、第二行很长」的难看版式，这种情况不用它
-            if i < len(chars) * 0.4:
-                continue
-            if display_width("".join(chars[:i])) <= limit:
+            if chars[i - 1] in "：，、；。！？…—" and i >= min_first and fits(i):
                 best = i
                 break
+        # ② 虚词/连词后（同类里取最靠右；同样不许第一行太短）
         if best is None:
             for i in range(len(chars) - min_side, min_side - 1, -1):
-                if display_width("".join(chars[:i])) <= limit:
+                if chars[i - 1] in _WEAK_BREAK_AFTER and i >= min_first and fits(i):
                     best = i
                     break
-        if best is not None:
-            first_ratio = best / len(chars)
-            if first_ratio < 0.35 or first_ratio > 0.65:
-                middle = len(chars) // 2
-                if middle >= min_side and len(chars) - middle >= min_side:
-                    best = middle
+        # ③ 兜底：上限内最靠右；两侧失衡时退回居中（保留原行为，避免孤字行）
+        if best is None:
+            for i in range(len(chars) - min_side, min_side - 1, -1):
+                if fits(i):
+                    best = i
+                    break
+            if best is not None:
+                first_ratio = best / len(chars)
+                if first_ratio < 0.35 or first_ratio > 0.65:
+                    middle = len(chars) // 2
+                    if middle >= min_side and len(chars) - middle >= min_side:
+                        best = middle
 
     if best is None or best < min_side or len(chars) - best < min_side:
         return None
@@ -303,7 +323,10 @@ class TocSettings:
     columnArticles: list[str] = field(default_factory=list)
     templateFolder: str = ""
     titleWrapLimit: float = 20
-    titleWrapLimitEN: float = 35
+    # 英文断行上限：2026-10-17 第十四批按期 90 成品校准，35 → 30。
+    # 证据：成品英文目录的断点实际落在 24–30；用默认 35 时整表比成品宽 21.86pt（7.7mm），
+    # 且 7 处断行同一处都对不上；调成 30 后 4/7 与成品一致（详见案例第 110 条）。
+    titleWrapLimitEN: float = 30
 
     fileName = "目录设置.json"
 
@@ -367,7 +390,7 @@ class TocSettings:
             columnArticles=[str(x) for x in data.get("columnArticles", []) or []],
             templateFolder=str(data.get("templateFolder", "")),
             titleWrapLimit=float(data.get("titleWrapLimit", 20)),
-            titleWrapLimitEN=float(data.get("titleWrapLimitEN", 35)),
+            titleWrapLimitEN=float(data.get("titleWrapLimitEN", 30)),
         )
 
     def save(self, folder: str) -> str:

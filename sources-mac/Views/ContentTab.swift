@@ -153,7 +153,7 @@ struct ContentTab: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 56)
                 Text("英文").font(.caption)
-                TextField("35", value: $model.settings.titleWrapLimitEN, format: .number)
+                TextField("30", value: $model.settings.titleWrapLimitEN, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 56)
                 Text("按汉字宽算。超过上限的标题会自动断成两行，避免把目录表格撑宽、页码被挤出页面；填 0 表示不断行。")

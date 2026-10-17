@@ -5,11 +5,15 @@ r"""Windows 外壳的视觉主题：创建窗口时调一次 `apply(root)`。
 不换就做不出与 mac 侧同一套色板（"两个平台像一家人"是项目既定目标）。
 `clam` 是 Tk 自带、完全由 ttk 自己画的，颜色/字体/间距都能统一。
 
-**这一层只做「主题 + 色板 + 字号」**；把 `tk.Button` / `tk.Entry`（Tk 经典控件）逐个换成
-ttk 控件是后续的事 —— clam 管不到经典控件的外观。`tk.Text`（日志）保留原生白底，
-与 clam 的浅灰底形成"卡片"层次（Fluent 的 base layer + content layer 近似做法）。
+**这一层只做「主题 + 色板 + 字号 + 间距」**。2026-10-17 第十五批（U5）起，外壳里的
+按钮 / 输入框 / 勾选框已经**全部换成 ttk**（clam 管不到 Tk 经典控件的外观），
+只剩两处**必须**用经典控件：
+  · `tk.Text`（日志框）：Tk 没有 ttk 对等物，颜色由 `COLOR[...]` 逐个喂进去；
+  · `tk.Listbox`（文章勾选列表）：同上，用 `style_listbox()` 把色板套上去。
+这两处**不写死颜色**，色板只有这一份。
 
 ⚠️ 不做深色模式：Tk 8.6 不跟随系统主题，**半套深色比没有更糟**（用户 2026-10-17 已知）。
+⚠️ 不做 Mica / 圆角：Tk 画不出来，硬仿只会更丑 —— 清晰 > 花哨。
 """
 from __future__ import annotations
 
@@ -27,6 +31,13 @@ COLOR = {
     "bg": "#f6f8fa",        # 窗口/卡片底色（Fluent base layer 近似）
     "fg": "#1f2328",
     "tab_on": "#ffffff",    # 选中的标签页
+    # ── 2026-10-17 第十五批（U5 主题铺满）：把还散落在主文件里的几种颜色收进来 ──
+    "text_bg": "#ffffff",   # 日志框 / 列表 / 输入框的「内容层」白底
+    "line": "#d0d7de",      # 分隔线 / 控件描边
+    "hover": "#eaeef2",     # 悬停底色（工具条上的「摘要 / 原始」分段按钮）
+    "accent": "#0969da",    # 主按钮 / 选中底色（对应 mac 的 `.borderedProminent`）
+    "accent_hover": "#0550ae",
+    "on_accent": "#ffffff",  # 主色/选中色上的文字
 }
 
 #: 间距三档（Fluent 的 4px 基准；新代码用它，老代码里的散装数字逐步替换）
@@ -63,12 +74,72 @@ def apply(root: tk.Misc) -> None:
     style.configure(".", background=COLOR["bg"], foreground=COLOR["fg"])
     style.configure("TFrame", background=COLOR["bg"])
     style.configure("TLabel", background=COLOR["bg"], foreground=COLOR["fg"])
+    style.configure("Muted.TLabel", background=COLOR["bg"], foreground=COLOR["muted"])
     style.configure("TNotebook", background=COLOR["bg"], borderwidth=0)
     style.configure("TNotebook.Tab", padding=(12, 6))
     style.map("TNotebook.Tab",
               background=[("selected", COLOR["tab_on"]), ("!selected", COLOR["bg"])])
-    style.configure("Treeview", rowheight=base + 11, fieldbackground="#ffffff",
-                    background="#ffffff")
+
+    # 按钮：clam 默认内边距对中文太挤（UI 方案 §5：可点目标要够大）
+    style.configure("TButton", padding=(10, 4))
+    # 主按钮（每页的「运行」）：一个页面只有一个主动作，与 mac 的 `.borderedProminent` 对应
+    style.configure("Accent.TButton", padding=(10, 4), background=COLOR["accent"],
+                    foreground=COLOR["on_accent"], bordercolor=COLOR["accent"],
+                    lightcolor=COLOR["accent"], darkcolor=COLOR["accent"])
+    style.map("Accent.TButton",
+              background=[("disabled", COLOR["muted"]), ("pressed", COLOR["accent_hover"]),
+                          ("active", COLOR["accent_hover"])],
+              foreground=[("disabled", COLOR["on_accent"]), ("active", COLOR["on_accent"])])
+
+    # 勾选框：clam 默认底色与 TFrame 不同一档，摆在浅灰底上会留一块白斑
+    style.configure("TCheckbutton", background=COLOR["bg"], foreground=COLOR["fg"])
+    style.map("TCheckbutton", background=[("active", COLOR["bg"])])
+
+    # 输入框：内容层白底 + 细描边，聚焦时描边变主色（与 Windows 的焦点提示同一套语言）
+    style.configure("TEntry", fieldbackground=COLOR["text_bg"], foreground=COLOR["fg"],
+                    padding=(4, 2), bordercolor=COLOR["line"],
+                    lightcolor=COLOR["line"], darkcolor=COLOR["line"])
+    style.map("TEntry",
+              fieldbackground=[("disabled", COLOR["bg"]), ("readonly", COLOR["bg"])],
+              bordercolor=[("focus", COLOR["accent"])])
+
+    # 日志工具条上的「摘要 / 原始」二选一：`Toolbutton` 布局 = 无圆点的分段按钮。
+    # ⚠️ 两个 Radiobutton 的 value 用 **0/1**：BooleanVar 的 Tcl 值是 "0"/"1"，
+    #    value 写成 False/True（→ "False"/"True"）初始态就一个都选不中。
+    # ⚠️ 选中态用主色填（白底 vs 浅灰底几乎看不出选中，2026-10-17 截图自查抓到的）；
+    #    悬停只作用于**未选中**那一半，否则鼠标一碰选中段就变成灰底白字。
+    style.configure("Toolbutton", padding=(10, 3), background=COLOR["bg"],
+                    foreground=COLOR["fg"], bordercolor=COLOR["line"],
+                    lightcolor=COLOR["bg"], darkcolor=COLOR["bg"])
+    style.map("Toolbutton",
+              background=[("selected", COLOR["accent"]),
+                          ("!selected", "active", COLOR["hover"])],
+              foreground=[("selected", COLOR["on_accent"])],
+              bordercolor=[("selected", COLOR["accent"])])
+
+    style.configure("Treeview", rowheight=base + 11, fieldbackground=COLOR["text_bg"],
+                    background=COLOR["text_bg"], bordercolor=COLOR["line"])
+    style.map("Treeview", background=[("selected", COLOR["accent"])],
+              foreground=[("selected", COLOR["on_accent"])])
     style.configure("Treeview.Heading", font=(None, base, "bold"))
     style.configure("TCombobox", padding=(4, 2))
-    style.configure("TSeparator", background="#d0d7de")
+    style.configure("TSeparator", background=COLOR["line"])
+
+
+def mono_font() -> tkfont.Font:
+    """日志用的等宽字体（Tk 命名字体 `TkFixedFont`：不写死 family / 字号）。
+
+    必须是**函数**：命名字体要等 `Tk()` 建好之后才取得到（模块导入时还没有 root）。
+    """
+    return tkfont.nametofont("TkFixedFont")
+
+
+def style_listbox(widget: tk.Listbox) -> None:
+    """`tk.Listbox` 没有 ttk 对等物：把色板直接套到经典控件上（clam 管不到它）。
+
+    调用点在 `main.TocTab` 建列表之后 —— 颜色只从 `COLOR` 来，主文件里不写死。
+    """
+    widget.configure(background=COLOR["text_bg"], foreground=COLOR["fg"],
+                     selectbackground=COLOR["accent"],
+                     selectforeground=COLOR["on_accent"],
+                     borderwidth=1, relief="solid", highlightthickness=0)

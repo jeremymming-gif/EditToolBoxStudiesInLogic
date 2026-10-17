@@ -168,6 +168,23 @@ def _list_keys_line(text: str) -> str:
 # ── ⑤ 并回模式：把交回的整份 .bib 并回产物（与自动通道同一份核心）─────────
 
 
+def _resolve_out(out: str, returned_path: str, *, merged: bool) -> str:
+    """把 `--out` 解析成真正的报告文件路径：**文件路径原样用；已存在的目录则放默认文件名**。
+
+    为什么要有这条（2026-10-17 第十五批，与两个外壳的输入框对齐）：
+      Windows 页从 U7 起把它叫「产物目录」，mac 页新增的「报告输出（可选）」也允许填目录；
+      而引擎原来的 `--out` 只认文件路径 —— 编辑填一个目录会直接报「写不了报告」。
+    目录不存在时**不猜**：按文件路径交给 `open()`，失败照实报错（静默换落点更难查）。
+    """
+    if not out or not os.path.isdir(out):
+        return out
+    base = os.path.splitext(os.path.basename((returned_path or "").rstrip("/\\")))[0]
+    if not base:
+        base = "交回"
+    suffix = "合并后回读校验报告.md" if merged else "回读校验报告.md"
+    return os.path.join(out, f"{base}_{suffix}")
+
+
 def _merge_main(a, texts: dict[str, str | None], notes: list[str]) -> int:
     """`--merge-into` 的实现。
 
@@ -224,13 +241,14 @@ def _merge_main(a, texts: dict[str, str | None], notes: list[str]) -> int:
         source_note=bibreport.SOURCE_NOTE_MERGE,
     )
     if a.out:
+        out_path = _resolve_out(a.out, a.returned, merged=True)
         try:
-            with open(a.out, "w", encoding="utf-8", newline="\n") as fh:
+            with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(md + "\n")
         except OSError as e:
-            print(f"❌ 写不了报告 {a.out}：{e.strerror or e}（bib 已并回，报告可重跑）", file=sys.stderr)
+            print(f"❌ 写不了报告 {out_path}：{e.strerror or e}（bib 已并回，报告可重跑）", file=sys.stderr)
             return 2
-        print(f"   合并后回读校验报告：{a.out}")
+        print(f"   合并后回读校验报告：{out_path}")
     print(conclusion)
     print("⚠ 这份 bib 已含 AI 结果，请人工核对；原文件见上面的回滚副本。")
     return 1
@@ -360,13 +378,14 @@ def main(argv: list[str] | None = None) -> int:
 
     text = render(rep)
     if a.out:
+        out_path = _resolve_out(a.out, a.returned, merged=False)
         try:
-            with open(a.out, "w", encoding="utf-8") as fh:
+            with open(out_path, "w", encoding="utf-8") as fh:
                 fh.write(text + "\n")
         except OSError as e:
-            print(f"❌ 写不了报告 {a.out}：{e.strerror or e}", file=sys.stderr)
+            print(f"❌ 写不了报告 {out_path}：{e.strerror or e}", file=sys.stderr)
             return 2
-        print(f"结论：{rep.n_problem} 处问题 / {rep.n_info} 处提示 → {a.out}")
+        print(f"结论：{rep.n_problem} 处问题 / {rep.n_info} 处提示 → {out_path}")
     else:
         print(text)
     return 0 if rep.ok else 1

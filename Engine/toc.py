@@ -13,7 +13,8 @@ r"""生成中英文目录（对应 mac 版的「生成目录」，第 94 条搬�
 
 本期设置（栏目、主持人、标题断行上限）读报告同目录的 `目录设置.json`；不存在则按默认值。
 
-退出码：`0` 两份都生成；`1` 只生成了一份；`2` 用法/文件错误。
+退出码：`0` 两份都生成；`1` 两份已生成但**有需人工核对项**（只生成了一份 / 报告不在期目录里
+导致「总第 ? 期」无法确定）；`2` 用法/文件错误。
 """
 
 from __future__ import annotations
@@ -24,8 +25,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from slcn import platform as _plat  # noqa: E402
-from slcn import toc as _toc        # noqa: E402
+from slcn import platform as _plat    # noqa: E402
+from slcn import toc as _toc          # noqa: E402
+from slcn import toctemplate as _tt   # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -104,14 +106,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"报告：{report}")
     print(f"模板：{note}\n")
 
+    # 「总第 N 期」是从**报告所在目录名**（`2026年第5期(90)`）里取的：报告被挪到期目录外时
+    # 会写成「总第 ? 期」。从前这种情况照旧退出 0（只有一行日志），产物看上去"成功"却是残的；
+    # 2026-10-17 第十四批改为退出码 1（INVARIANTS 三.2 的「有结果、需人工核对」），
+    # 界面会显示橙色警告而不是绿色完成。
+    total_issue_known = _tt.total_issue_number(report_dir) is not None
+
     outputs = _toc.run(report, settings, log=lambda s: print(s))
 
     print()
     for p in outputs:
         print(f"  {os.path.basename(p)}")
+    if not total_issue_known:
+        print("⚠️ 无法确定「总第 N 期」：检查报告不在形如 `2026年第5期(90)` 的期目录里，"
+              "目录头部会写成「总第 ? 期」，请人工补。")
     # 契约行（`docs/ENGINE_API.md`）：外壳靠它拿产物
     print(f"完成。生成目录 {len(outputs)} 份（{report_dir}）")
-    return 0 if len(outputs) == 2 else 1
+    if len(outputs) != 2 or not total_issue_known:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

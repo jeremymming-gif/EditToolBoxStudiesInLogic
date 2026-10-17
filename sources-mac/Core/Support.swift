@@ -236,6 +236,20 @@ enum EngineOutput {
     static func indicatesSuccess(_ line: String) -> Bool {
         line.trimmingCharacters(in: .whitespaces).hasPrefix("完成。")
     }
+
+    /// 从一串日志行里挑出**契约行**（最后一条以 `完成。` 开头的行）；没有返回 nil。
+    ///
+    /// ⚠️ 完成横幅**必须**用它，不能取"最后一行"：各 Feature 在引擎结束后还会补一句
+    /// 自己话术（例如 `CompileFeature` 的「运行结束，请确认上方是否有错。」），
+    /// 取最后一行就会把成功的运行判成失败 —— 2026-10-17 第十五批真机实测：
+    /// 「编译全部」10/10 全部成功、日志末行是 `完成。编译 10 篇（成功 10 / 失败 0）…`，
+    /// 横幅却显示「❌ 失败 / 有错误」。（同类：合并文件页。）
+    static func contractLine(from lines: [String]) -> String? {
+        for line in lines.reversed() where indicatesSuccess(line) {
+            return line
+        }
+        return nil
+    }
 }
 
 enum Shell {

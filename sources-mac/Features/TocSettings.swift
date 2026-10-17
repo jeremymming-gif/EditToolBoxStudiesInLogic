@@ -32,8 +32,9 @@ struct TocSettings: Codable {
     ///
     /// 为什么英文要单独一个值：两套模板几何完全不同 ——
     ///   中文是 3 列 `l r r` 带负间距、11pt；英文是 2 列 `l r`、10pt。
-    /// 实测同事的英文成品右边界 155.5mm；扫过 28/30/32/34 后 32 最接近（157.5mm）。
-    var titleWrapLimitEN: Double = 35
+    /// 2026-10-17 第十四批按期 90 成品重新校准：35 时整表比成品宽 21.86pt（7.7mm）、
+    /// 7 处断行一处都对不上；30 时 4/7 与成品一致（详见案例第 110 条）。
+    var titleWrapLimitEN: Double = 30
 
     static let fileName = "目录设置.json"
 
@@ -92,7 +93,7 @@ struct TocSettings: Codable {
         columnArticles = try c.decodeIfPresent([String].self, forKey: .columnArticles) ?? []
         templateFolder = try c.decodeIfPresent(String.self,   forKey: .templateFolder) ?? ""
         titleWrapLimit = try c.decodeIfPresent(Double.self,   forKey: .titleWrapLimit) ?? 20
-        titleWrapLimitEN = try c.decodeIfPresent(Double.self, forKey: .titleWrapLimitEN) ?? 35
+        titleWrapLimitEN = try c.decodeIfPresent(Double.self, forKey: .titleWrapLimitEN) ?? 30
     }
 
     init() {}

@@ -35,6 +35,47 @@ ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "infocheck.py", "toc.py", "publish.py")
 
 
+# ── 日志分层（U4：摘要 / 原始两层，默认折叠原始）─────────────────────────
+#: 摘要行的标记词 —— 与 mac 侧 `sources-mac/Core/Log.swift` 的 `LogStore.summaryMarkers`
+#: **逐字相同**：两侧跑同一份夹具 `tools/log_cases.json`（Swift 在 `tools/ai_settings_test`，
+#: Python 在 `sources-win/tests/test_bridge.py`）。改词表必须两边同时改并更新那份夹具 ——
+#: 否则「两个平台算出来的结果一致」就破了。
+SUMMARY_MARKERS = (
+    "✅", "⚠", "❌", "❗", "ℹ", "⏹", "✓", "✗", "⛔",
+    "完成。", "程序错误", "未找到", "启动失败", "失败", "警告", "需核对", "不一致",
+    "命中", "跳过", "取消", "产物", "结论", "报告", "备份", "提示", "合计",
+    "已配置", "通道", "预演", "剪贴板",
+)
+
+#: 结构前缀：进度行（`[3/25] …` / `（3/25）…`）。
+_SUMMARY_PROGRESS = re.compile(r"^(?:\[\d+/\d+\]|（\d+/\d+）)")
+#: 阶段圈码（`① …` 到 `⑳ …`）。
+_SUMMARY_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+
+def is_summary_line(text: str) -> bool:
+    """一行日志是否属于「摘要层」（摘要只留关键节点与结果，原始层逐行全留）。
+
+    判据只有三类（与 mac 侧 `LogStore.isSummaryLine` 同源）：标记词、阶段前缀
+    （`▶` / 圈码 `①②…`）、进度行前缀（`[i/N]` / `（i/N）`）。空行（含纯空白）
+    **不算**摘要 —— 否则默认的摘要视图里全是空行。
+
+    宁可多收一点：摘要只是默认视图，切到「原始」永远能看到全部行；反过来漏掉
+    一句「✅ 完成」才真要命。唯一的取舍是**不认行首相对时间戳**（外壳会加
+    `+0:03.2s`）—— 那是界面的装饰，调用方拿引擎原文判定（见 `main.MainWindow.log`）。
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if any(marker in s for marker in SUMMARY_MARKERS):
+        return True
+    if s.startswith("▶"):
+        return True
+    if s[0] in _SUMMARY_CIRCLED:
+        return True
+    return bool(_SUMMARY_PROGRESS.match(s))
+
+
 # ── 定位引擎与解释器 ─────────────────────────────────────────────────────
 
 def _shell_dir() -> str:
@@ -380,13 +421,14 @@ def run_call(call: EngineCall, *, on_line=None, cwd: str | None = None,
 
 
 #: 退出码 1 在引擎里**常常是"有结果"而不是失败**（`Engine/docs/INVARIANTS.md` 三.2）：
-#: checkbib 并回 = 已并入 ≥1 条、compileall = 有失败、proofcheck = 有命中、toc = 只生成一份。
-#: 外壳**不许**把它显示成错误 —— 这条口径与 mac 各页逐字对齐（`CheckBibFeature.swift` 等）。
+#: checkbib 并回 = 已并入 ≥1 条、compileall = 有失败、proofcheck = 有命中、
+#: toc = 只生成一份 / 「总第 ? 期」无法确定。外壳**不许**把它显示成错误 ——
+#: 这条口径与 mac 各页逐字对齐（`CheckBibFeature.swift` 等）。
 _RESULT_1 = {
     "checkbib.py": "❗ 体检发现问题 / 已并入，请按报告逐条处理（不是程序出错）",
     "proofcheck.py": "❗ 有命中项，请按报告逐条处理（不是程序出错）",
     "compileall.py": "⚠ 有文章编译失败（每篇的错误摘要见上面的日志）",
-    "toc.py": "⚠ 只生成了 1 份目录（另一份见上面的日志）",
+    "toc.py": "⚠ 已完成，但有需要人工核对的地方（见上面的日志）",
 }
 _RESULT_1_DEFAULT = "❗ 完成，但有需要处理的结果（退出码 1，见上面的日志）"
 

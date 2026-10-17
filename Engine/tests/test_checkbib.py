@@ -930,6 +930,22 @@ with tempfile.TemporaryDirectory() as tmp:
     check("⑥ --list-keys **一个新文件都没写**（--out 也不生效）",
           set(os.listdir(tmp)) == before, f"{sorted(set(os.listdir(tmp)) - before)}")
 
+# `--out` 也接受**已存在的目录**（2026-10-17 第十五批：与界面「产物目录 / 报告输出」对齐）
+with tempfile.TemporaryDirectory() as tmp:
+    pb = write(tmp, "paste.bib", PASTE_BIB)
+    report_dir = os.path.join(tmp, "产物目录")
+    os.makedirs(report_dir)
+    code, out, _ = run_cli("--returned", pb, "--out", report_dir)
+    produced = sorted(os.listdir(report_dir))
+    check("--out 给**目录** → 报告按默认文件名放进该目录",
+          produced == ["paste_回读校验报告.md"] and "**结论：" in read(os.path.join(report_dir, produced[0])),
+          f"{produced}")
+    check("--out 给目录时 stdout 报最终文件路径", "paste_回读校验报告.md" in out, repr(out[:100]))
+    # 不存在的「目录样」路径仍按文件路径处理：照实报错（2），不静默换落点
+    code_bad, _, err_bad = run_cli("--returned", pb, "--out", os.path.join(tmp, "不存在的目录", "x.md"))
+    check("--out 父目录不存在 → 退出码 2 且报「写不了报告」（不静默）",
+          code_bad == 2 and "写不了报告" in err_bad, f"code={code_bad}｜{err_bad[-80:]}")
+
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）") + (f"｜SKIP {len(SKIPS)} 项" if SKIPS else ""))
 sys.exit(1 if FAILS else 0)

@@ -121,15 +121,17 @@ struct SimpleFeatureView: View {
     private func execute() {
         let target = model.path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return }
-        // 抓**最后一行 = 契约行**：填完成横幅的状态与产物路径（EngineOutput 与 Windows 同一套判据）
-        final class LineBox: @unchecked Sendable { var last = "" }
+        // 抓**契约行**（= 引擎最后一行、以 `完成。` 开头）填完成横幅的状态与产物路径。
+        // ⚠️ 不能取"最后一行"：Feature 在引擎结束后还会补自己的话术（「运行结束，请确认…」），
+        //    取最后一行会把成功运行判成失败（第十五批真机实测，见 `EngineOutput.contractLine`）。
+        final class LineBox: @unchecked Sendable { var lines: [String] = [] }
         let box = LineBox()
         let started = Date()
         // U3：每次运行一个取消句柄；`Shell.run` 把子进程注册进来，主按钮据此变「取消」。
         let cancel = RunCancel()
         let logger = Logger(store: log, startedAt: started, cancel: cancel) { line in
             let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !t.isEmpty { box.last = t }
+            if !t.isEmpty { box.lines.append(t) }
         }
         let runner = model
         runner.cancel = cancel
@@ -141,7 +143,9 @@ struct SimpleFeatureView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             action(target, logger)
             let seconds = Date().timeIntervalSince(started)
-            let last = box.last
+            // 契约行优先；没有契约行（例如引擎在启动前就被拒绝）才退回最后一行
+            let contract = EngineOutput.contractLine(from: box.lines)
+            let last = contract ?? (box.lines.last ?? "")
             // U3：用户取消 → 成败按「已取消」显示（用户主动终止不是失败）
             let cancelled = cancel.isCancelled
             let ok = !cancelled && EngineOutput.indicatesSuccess(last)
