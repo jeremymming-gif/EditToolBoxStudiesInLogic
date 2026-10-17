@@ -85,19 +85,27 @@ let mainWindow = readSource("Views/MainWindow.swift")
 let view = readSource("Views/ProofCheckView.swift")
 let models = readSource("Core/ViewModels.swift")
 
-check("(c) MainWindow 里有「一校核查」标签页", mainWindow.contains(".tabItem { Text(\"一校核查\") }"))
+check("(c) MainWindow 的侧边栏里有「一校核查」页",
+      mainWindow.contains("proofcheck") && mainWindow.contains("return \"一校核查\""))
 check("(c) MainWindow 建了 `ProofCheckModel` 并传给页面",
       mainWindow.contains("@StateObject private var proofModel = ProofCheckModel()")
       && mainWindow.contains("ProofCheckView(log: log, model: proofModel)"))
-// 注意：要比的是**标签页定义**的位置，不是文档注释里那几个词
+// 注意：要比的是**导航定义**的位置，不是文档注释里那几个词
 // （注释里也会出现「一校核查」，第一版就栽在这上面）
-let tabCheckBib = mainWindow.range(of: ".tabItem { Text(\"文献回读校验\") }")?.lowerBound
-let tabProof = mainWindow.range(of: ".tabItem { Text(\"一校核查\") }")?.lowerBound
-let tabInfo = mainWindow.range(of: ".tabItem { Text(\"检查tex信息\") }")?.lowerBound
-check("(c) 标签顺序：一校核查紧跟「文献回读校验」之后、且在「检查tex信息」之前"
-      + "（编辑流程：一校 → 核查）",
-      tabCheckBib != nil && tabProof != nil && tabInfo != nil
-      && tabCheckBib! < tabProof! && tabProof! < tabInfo!)
+// 2026-10-17 起界面从 TabView 换成「分组侧边栏」：顺序由 `NavPage.singleArticle` 定义，
+// 一校核查必须在「文献回读校验」之后（编辑流程：回读校验 → 一校核查）。
+// ⚠️ 要取**定义**那一行（`static let singleArticle = [...]`），不是 List 里 `ForEach(...)` 的用法行
+let orderLine = mainWindow.split(separator: "\n")
+    .first { $0.contains("static let singleArticle") } ?? ""
+let order = orderLine.description
+let iBib = order.range(of: ".checkbib")?.lowerBound
+let iProof = order.range(of: ".proofcheck")?.lowerBound
+let iMerge = order.range(of: ".merge")?.lowerBound
+check("(c) 「单篇稿件」组顺序：初排 → 文献回读校验 → **一校核查** → 合并文件"
+      + "（编辑流程：回读校验之后接着一校核查）",
+      order.contains(".convert") && iBib != nil && iProof != nil && iMerge != nil
+      && iBib! < iProof! && iProof! < iMerge!,
+      order.isEmpty ? "<没找到 singleArticle 定义>" : String(order.prefix(120)))
 check("(c) 视图**不用 `@State`**（本机只有 Command Line Tools，SwiftUI 宏插件不可用）",
       !view.contains("@State ") && !view.contains("@State private"))
 check("(c) 视图把状态交给注入的 model（`@ObservedObject var model: ProofCheckModel`）",

@@ -7,7 +7,7 @@
 |---|---|
 | `sources-mac/Features/ProofCheckFeature.swift` | `Options → argv` 的**纯函数**映射（`--tex` / `--lang` / `--fix`，顺序固定；语种「自动」= 空串 → 不传 `--lang`）；路径含空格/中文时不做 shell 插值；`locateTool(convertTool:)` 从 `convert.py` 的目录里找 `proofcheck.py`，找不到就返回 `nil`（不拼出半截命令） |
 | `sources-mac/Views/ProofCheckView.swift` | **不用 `@State`**（本机只有 Command Line Tools，SwiftUI 宏插件不可用 —— 这条限制踩过）；状态交给注入的 `ProofCheckModel`；调 `ProofCheckFeature.run(options:log:)`（逻辑不在视图里）；工作线程跑 + 回主线程复位；勾选项与语种都绑到 model |
-| `sources-mac/Views/MainWindow.swift` | 有「一校核查」标签页，**位置紧跟「文献回读校验」之后、在「检查tex信息」之前**（比的是 `tabItem` 定义的位置，不是注释里的词）；建了 `ProofCheckModel` 并传进页面 |
+| `sources-mac/Views/MainWindow.swift` | 有「一校核查」页（`NavPage` 枚举）；**顺序在「文献回读校验」之后、合并文件之前**（比的是 `NavPage.singleArticle` 的顺序，不是注释里的词）；建了 `ProofCheckModel` 并传进页面 |
 | `sources-mac/Core/ViewModels.swift` | `ProofCheckModel` 四个字段齐全（稿件 / 另存 / 语种 / 运行中） |
 
 ## 为什么放 `tools/`
