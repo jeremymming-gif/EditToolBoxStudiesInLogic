@@ -424,7 +424,7 @@ struct ConvertTab: View {
         //    上执行（AIEngineKnobs 是值类型，跨线程传是安全的）。
         let knobs = settings.aiEngineKnobs
         model.running = true
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         let m = model
         DispatchQueue.global(qos: .userInitiated).async {
             ConvertFeature.run(options: o, knobs: knobs, log: logger)

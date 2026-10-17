@@ -109,7 +109,7 @@ struct ProofCheckView: View {
         options.fix = model.fix
         options.lang = (model.lang == "自动") ? "" : model.lang
 
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         model.running = true
         DispatchQueue.global(qos: .userInitiated).async {
             ProofCheckFeature.run(options: options, log: logger)

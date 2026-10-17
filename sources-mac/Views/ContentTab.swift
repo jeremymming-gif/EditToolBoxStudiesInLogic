@@ -234,7 +234,7 @@ struct ContentTab: View {
         }
         try? settings.save(to: dir)
 
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         let m = model
         m.running = true
         DispatchQueue.global(qos: .userInitiated).async {

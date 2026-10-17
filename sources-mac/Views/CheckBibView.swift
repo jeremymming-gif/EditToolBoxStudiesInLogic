@@ -321,7 +321,7 @@ struct CheckBibView: View {
         let dir = (bib as NSString).deletingLastPathComponent
         let me = (bib as NSString).lastPathComponent
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).sorted()
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
 
         if model.original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let others = names.filter { $0.hasSuffix(".bib") && $0 != me }
@@ -360,7 +360,7 @@ struct CheckBibView: View {
 
     private func execute() {
         let m = model
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         // 来源与路径在主线程取好再进后台：跑的过程中界面已被禁用，不会变
         let src = source
         let original = m.original
@@ -385,7 +385,7 @@ struct CheckBibView: View {
     /// 「重新编译该篇」按钮据此定位（与并回的是同一篇，不会指错稿子）。
     private func mergeBack() {
         let m = model
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         let src = source
         let target = m.original
         let tex = m.tex
@@ -409,7 +409,7 @@ struct CheckBibView: View {
     private func recompile() {
         guard let dir = model.mergedManuscriptDir else { return }
         let m = model
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         m.running = true
         DispatchQueue.global(qos: .userInitiated).async {
             CheckBibFeature.recompile(manuscriptDir: dir, log: logger)

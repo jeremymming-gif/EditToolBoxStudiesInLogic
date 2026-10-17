@@ -161,7 +161,7 @@ struct InfoCheckView: View {
     private func execute() {
         let target = model.path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return }
-        let logger = Logger(store: log)
+        let logger = Logger(store: log, startedAt: Date())
         let m = model
         m.running = true
         m.report = nil
