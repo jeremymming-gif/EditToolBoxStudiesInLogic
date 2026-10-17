@@ -2140,25 +2140,39 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         # 出来时，refmark 第四节会把这份原文交给编辑的 AI 结构化——**不是**在这里
         # 再写一个解析器。解析成功时它也照样留着，但下游用不到。
         doc.ref_raw_lines = list(section)
+        # 两条体例：`[N] 作者, 年份, "题名", 刊名…`（编号清单通道 `_numbered_refs`）
+        # 与「作者. 年份. 题名[M]. …」/中文逗号风格（人年制通道 `parse_reference_line`）。
+        # ⚠️ 取舍必须**按覆盖条数取优**，不能只看"人年制有没有解析出东西"：
+        #    2026-10-17 实例测试回归（案例 116）——Beibei_Gao 的文末 22 条编号清单里有一条
+        #    编号写歪了（`[13 J. Ross…` 少了 `]`），逗号兜底把它误吃成 1 条 → `doc.refs` 非空
+        #    → 旧逻辑「if not doc.refs」就**再也不敢走编号通道** → 整份 22 条只剩 1 条、
+        #    正文引用全部没替换。裸的"先来先得"在两种格式混排/写歪时都会踩这个坑。
+        entries, num2key, raw_by_key = _numbered_refs(section)
         for ln in section:
             e = parse_reference_line(ln)
             if e:
                 doc.refs.append(e)
         _dedupe_keys(doc.refs)
-        # 「条目 → 源稿原文」：文末**人年制**区（第 68 条）。`RefEntry.raw` 就是
-        # `parse_reference_line` 收下的那一行（已把连续空白压成单空格）；
-        # 键在 `_dedupe_keys` 之后才是最终键，所以放在这里取。
-        for e in doc.refs:
-            if e.raw:
-                doc.ref_raw_by_key[e.key] = e.raw
-        if not doc.refs and section:
-            # 第二种体例：`[N] 作者, 年份, "题名", 刊名, 卷(期): 页`
-            # 与附件里那种同源（README 第 28 条），解析器已存在：footref。
-            entries, num2key, raw_by_key = _numbered_refs(section)
+        if len(entries) > len(doc.refs):
+            # 编号清单解释力更强 → 以它为准；逗号兜底误吃的那几条丢掉（它们本就是清单行）
+            doc.refs = []
             doc.bib_entries.extend(entries)
             doc.ref_key_by_num = num2key
             # 编号清单通道的「条目 → 原文」（整条 `[N] …`），见 `_numbered_refs`。
             doc.ref_raw_by_key.update(raw_by_key)
+        else:
+            # 「条目 → 源稿原文」：文末**人年制**区（第 68 条）。`RefEntry.raw` 就是
+            # `parse_reference_line` 收下的那一行（已把连续空白压成单空格）；
+            # 键在 `_dedupe_keys` 之后才是最终键，所以放在这里取。
+            for e in doc.refs:
+                if e.raw:
+                    doc.ref_raw_by_key[e.key] = e.raw
+            if not doc.refs and entries:
+                # 编号清单只收下 1–2 条时上面取优不成立（例如真的只有一条文献）：
+                # 人年制一条都没有就还是用编号通道的结果，别把唯一一条丢掉。
+                doc.bib_entries.extend(entries)
+                doc.ref_key_by_num = num2key
+                doc.ref_raw_by_key.update(raw_by_key)
 
     # ③ 元数据块：中英各一套
     abs_blocks: list[tuple[int, bool, str]] = []

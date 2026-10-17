@@ -231,6 +231,43 @@ check("⑤ 端到端：书与英文条目没被新规则带偏",
       "@book{" in _bib and "publisher = {社会科学文献出版社}" in _bib
       and "journal = {Australasian Journal of Philosophy}" in _bib, _bib)
 
+# ══ ⑦ 回归：编号清单里**一条写歪**也不能把整份清单让给逗号兜底（案例 116）═════
+print("\n── ⑦ 编号清单写歪一条 → 两条通道按覆盖条数取优 ──")
+# 2026-10-17 实例测试回归：Beibei_Gao 文末 22 条编号清单里有一条编号写歪了
+# （`[13 J. Ross…` 少了 `]`），中文/英文逗号兜底把它误吃成 1 条 → `doc.refs` 非空
+# → 旧逻辑「if not doc.refs」再也没走编号通道 → 整份 22 条只剩 1 条、正文引用全部没替换。
+# 修法：两条通道都跑，**编号清单收得更多就以它为准**（见 docxsource.parse_docx ②）。
+# 已知限制：写歪的那条本身会被 `split_numbered_raw` 并进上一条（属切分层，另案），
+# 本测试守的是「不能因为它**整份清单**改走兜底通道」。
+MALFORMED = [
+    "[1] A. Author, 2020, “Title One”, Analysis, 1(2): 3-4.",
+    "[2 B. Author, 2021, “Title Two”, Synthese, 2(3): 5-6.",   # ← 少了 `](写歪一条)
+    "[3] C. Author, 2022, “Title Three”, Mind, 3(4): 7-8.",
+    "[4] D. Author, 2023, “Title Four”, Noûs, 4(5): 9-10.",
+]
+src2 = make_docx(["论编号清单与逗号兜底的取舍", "作者",
+                  "摘要：测试。", "关键词：测试"]
+                 + BODY + ["参考文献"] + MALFORMED)
+doc2 = parse_docx(src2)
+_titles2 = [e.get("title") or "" for _k, e, _r in doc2.bib_entries]
+check("⑦ 写歪一条后，编号清单仍收下其余 3 条（不再被逗号兜底抢走）",
+      len(doc2.bib_entries) == 3 and len(doc2.refs) == 0,
+      f"bib_entries={len(doc2.bib_entries)} refs={len(doc2.refs)} titles={_titles2}")
+check("⑦ 正常那 3 条一条不少",
+      sum(1 for t in _titles2 if t in ("Title One", "Title Three", "Title Four")) == 3,
+      str(_titles2))
+# 反例：真正的中文逗号风格（**不带编号**）仍走人年制通道，不能反过来被编号通道吞掉
+CN_PLAIN = [
+    "陈清泚，“论证研究的认知社会学路径”，《自然辩证法研究》，2020年第2期，第103–108页。",
+    "张建军，逻辑悖论研究引论，北京：人民出版社，2014年。",
+]
+src3 = make_docx(["论中文逗号风格参考文献", "作者",
+                  "摘要：测试。", "关键词：测试"] + BODY + ["参考文献"] + CN_PLAIN)
+doc3 = parse_docx(src3)
+check("⑦ 反例：纯中文逗号风格（无编号）仍走人年制通道（bib_entries=0、refs=2）",
+      len(doc3.refs) == 2 and len(doc3.bib_entries) == 0,
+      f"refs={len(doc3.refs)} bib_entries={len(doc3.bib_entries)}")
+
 # ══ ⑥ 真实语料（不在本机则 SKIP）════════════════════════════════════════════
 print("\n── ⑥ 真实语料 ──")
 REAL = os.path.join(_REPO, "2026年第5期(90)", "01 Jingru_Kou", "定稿.docx")
