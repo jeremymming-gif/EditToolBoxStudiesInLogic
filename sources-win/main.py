@@ -20,6 +20,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog as fd
 from tkinter import messagebox, ttk
@@ -28,6 +29,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
+import theme  # noqa: E402
+
+def plain(text: str) -> str:
+    """把界面文案里的 markdown 记号去掉（Tk 不解析 markdown，会**原样显示**）。
+
+    ⚠️ 2026-10-17 **截了窗口截图自查**才发现：说明文字里全是 `**` 与反引号，
+    编辑看到的是「选**一期的目录**」「`` `信息检查<时间戳>.txt` ``」这种带记号的原样文本。
+    读代码看不出来（字符串就是那样的），只有真看一眼界面才知道。
+
+    只清理**界面文案**；下方运行日志保持引擎原文（那是证据，mac 侧同样原样显示）。
+    """
+    return text.replace("**", "").replace("`", "")
+
 
 APP_TITLE = "编辑部工具箱（Windows）"
 
@@ -62,12 +76,28 @@ class TabPage(ttk.Frame):
                                      command=self.on_stop)
         self.stop_button.pack(side="left")
 
+        # ── 完成契约横幅（2026-10-17 UI 方案第 1 件）──
+        # 为什么要有：编辑最常问的两句是「跑完了吗」「产物在哪」。引擎的契约行里本来就有
+        # 产物路径，界面把它做成**常驻 + 可点开 + 可复制**，比让人翻日志强得多。
+        self.result_bar = ttk.Frame(self)
+        self.result_bar.grid(row=row, column=0, padx=10, pady=(0, 6), sticky="w"); row += 1
+        self.result_label = ttk.Label(self.result_bar, text="", wraplength=460, justify="left")
+        self.result_label.pack(side="left")
+        self.open_btn = tk.Button(self.result_bar, text="打开产物", width=10,
+                                  command=self._open_result, state="disabled")
+        self.open_btn.pack(side="left", padx=(10, 4))
+        self.copy_btn = tk.Button(self.result_bar, text="复制路径", width=10,
+                                  command=self._copy_result, state="disabled")
+        self.copy_btn.pack(side="left")
+        self.result_bar.grid_remove()          # 跑完/运行中才出现
+        self._result_path = ""
+
         self.options = ttk.Frame(self)
         self.options.grid(row=row, column=0, padx=10, sticky="w"); row += 1
         self.build_options(self.options)
 
         if self.instruction:
-            ttk.Label(self, text=self.instruction, wraplength=760,
+            ttk.Label(self, text=plain(self.instruction), wraplength=760,
                       justify="left").grid(row=row, column=0, padx=10, pady=(2, 10), sticky="w")
 
     # 子类可覆盖
@@ -76,6 +106,50 @@ class TabPage(ttk.Frame):
 
     def extra_args(self) -> dict:
         return {}
+
+    # ── 完成横幅：运行中显示秒表，跑完显示状态 + 产物路径 ───────────────────
+    def show_running(self, seconds: float) -> None:
+        """运行中：常驻一条"正在运行 + 已用秒表"（进度不能停，见 UI 方案第 2 件）。"""
+        self._result_path = ""
+        self.result_label.config(text=f"⏳ 正在运行…（已用 {seconds:.1f} 秒）")
+        self.open_btn.config(state="disabled")
+        self.copy_btn.config(state="disabled")
+        self.result_bar.grid()
+
+    def show_result(self, text: str, path: str, seconds: float) -> None:
+        """跑完：状态 + （≥1 秒才显示）用时 + 产物路径，路径可点开/可复制。"""
+        self._result_path = path or ""
+        shown = text + (f"｜用时 {seconds:.1f} 秒" if seconds >= 1 else "")
+        if path:
+            shown += f"｜产物：{path}"
+        self.result_label.config(text=shown)
+        self.open_btn.config(state="normal" if path else "disabled")
+        self.copy_btn.config(state="normal" if path else "disabled")
+        self.result_bar.grid()
+
+    def _open_result(self) -> None:
+        """在访达 / 资源管理器里打开产物（文件就定位到它所在的目录）。"""
+        p = self._result_path
+        if not p:
+            return
+        try:
+            target = p if os.path.isdir(p) else os.path.dirname(p)
+            if os.name == "nt":
+                os.startfile(target)                      # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["open", target])
+        except Exception as e:                            # noqa: BLE001
+            messagebox.showerror(APP_TITLE, f"打不开产物目录：\n{target}\n\n{e}")
+
+    def _copy_result(self) -> None:
+        if not self._result_path:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._result_path)
+            self.log(f"（已复制产物路径：{self._result_path}）")
+        except tk.TclError:
+            pass
 
     def browse(self) -> None:
         path = fd.askdirectory() if self.pick == "dir" else fd.askopenfilename()
@@ -196,14 +270,17 @@ class InfoCheckTab(TabPage):
     def __init__(self, parent, name, on_run, on_stop):
         super().__init__(parent, name, on_run, on_stop)
         # 结果表格：Tkinter 的 Treeview（只读展示）
-        self.summary = ttk.Label(self, text="（还没检查）", wraplength=760, justify="left")
+        self.summary = ttk.Label(self, text="（还没检查：选一期的目录，点「运行」）",
+                                 wraplength=760, justify="left")
         self.summary.grid(row=90, column=0, padx=10, pady=(4, 0), sticky="w")
         cols = ("folder", "vol", "issue", "year", "pages", "declared", "actual", "authors", "title")
         heads = ("文件夹", "卷", "期", "年份", "起–止", "声明页数", "实际页数", "第一作者", "中文标题")
         self.table = ttk.Treeview(self, columns=cols, show="headings", height=9)
         for c, h in zip(cols, heads):
             self.table.heading(c, text=h)
-            self.table.column(c, width=118 if c in ("authors", "title") else 62, anchor="w")
+            # 宽度：第一列放「01 A_Author」，太窄会被截成 A_Autho|（2026-10-17 截图自查）
+            self.table.column(c, width=130 if c == "folder"
+                              else 118 if c in ("authors", "title") else 62, anchor="w")
         self.table.grid(row=91, column=0, padx=10, pady=(2, 10), sticky="nsew")
         self.rowconfigure(91, weight=1)
 
@@ -240,7 +317,7 @@ class InfoCheckTab(TabPage):
             if n_nopdf:
                 self.summary.config(
                     text=f"共 {len(arts)} 篇，卷号/期号/年份一致；但 {n_nopdf} 篇**没有可比对的**"
-                         " PDF 页数（PDF 缺失或打不开，见日志）——页数一致性未验证。")
+                         " PDF 页数（PDF 缺失或打不开，见日志）——页数一致性未验证。".replace("**", ""))
             else:
                 self.summary.config(text=f"共 {len(arts)} 篇，卷号/期号/年份一致，页数与 PDF 实际页数相符。")
 
@@ -256,7 +333,8 @@ class TocTab(TabPage):
     def __init__(self, parent, name, on_run, on_stop):
         super().__init__(parent, name, on_run, on_stop)
         self.rows: list[tuple[str, str]] = []      # [(文章名, 中文标题)]
-        self.note = ttk.Label(self, text="", wraplength=760, justify="left", foreground="#555")
+        self.note = ttk.Label(self, text="（还没读取篇目：选报告后点「读取篇目」）",
+                              wraplength=760, justify="left", foreground="#555")
         self.note.grid(row=90, column=0, padx=10, pady=(4, 0), sticky="w")
         self.listbox = tk.Listbox(self, selectmode=tk.EXTENDED, height=7, exportselection=False)
         self.listbox.grid(row=91, column=0, padx=10, pady=(2, 10), sticky="nsew")
@@ -318,7 +396,7 @@ class TocTab(TabPage):
             self.listbox.insert(tk.END, f"{name}　{title[:34]}")
             if name in saved.get("columnArticles", []):
                 self.listbox.selection_set(tk.END)
-        self.note.config(text=payload.get("templateNote", ""))
+        self.note.config(text=plain(str(payload.get("templateNote", ""))))
         # ⚠️ **逐字段**回填：从前这一整块被 `if saved.get("columnKind"):` 罩着 ——
         #    编辑只填了「模板来源期目录」、没填栏目类型时，读篇目**不回填**任何字段，
         #    紧接着 `save_settings()` 又无条件写回界面上的空值 → 他填的模板期被**静默抹掉**
@@ -499,6 +577,9 @@ class SettingsTab(ttk.Frame):
 class MainWindow(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
+        # 主题必须**先**套：clam + 色板 + 字号（见 theme.py 抬头；用户 2026-10-17 拍板
+        # vista → clam —— vista 的控件由系统绘制，改不动颜色，做不出与 mac 同一套观感）。
+        theme.apply(self)
         self.geometry("820x640+400+120")
         self.title(APP_TITLE)
         self.cfg = S.load()
@@ -510,6 +591,8 @@ class MainWindow(tk.Tk):
         if _saved_engine:
             os.environ.setdefault("SLCN_ENGINE", _saved_engine)
         self._proc: subprocess.Popen | None = None
+        self._running_tab = None
+        self._t0 = 0.0
         self._q: queue.Queue[str] = queue.Queue()
         self._busy = False
 
@@ -552,6 +635,7 @@ class MainWindow(tk.Tk):
                 line = self._q.get_nowait()
                 if line == "__DONE__":          # 内部信号，不是日志
                     self._proc = None
+                    self._running_tab = None
                     self._set_busy(False)
                     continue
                 if isinstance(line, tuple) and line[0] == "__REPORT__":
@@ -559,9 +643,16 @@ class MainWindow(tk.Tk):
                     if isinstance(tab, InfoCheckTab):
                         tab.show_report(payload)
                     continue
+                if isinstance(line, tuple) and line[0] == "__RESULT__":
+                    _tag, tab, text, path, seconds = line
+                    tab.show_result(text, path, seconds)
+                    continue
                 self.log(line)
         except queue.Empty:
             pass
+        # 秒表：运行中每 80ms 刷一次（进度"在动"要看得见 —— UI 方案第 2 件）
+        if self._busy and self._running_tab is not None:
+            self._running_tab.show_running(time.monotonic() - self._t0)
         self.after(80, self._drain)
 
     # ── 运行 ──
@@ -643,6 +734,9 @@ class MainWindow(tk.Tk):
             self.log(f"❌ 准备运行失败：{e}")
             return
         self.log(f"\n▶ {call.label}：{call.display}")
+        self._running_tab = tab
+        self._t0 = time.monotonic()
+        tab.show_running(0.0)
         self._set_busy(True)
         # ⚠️ 路径必须在**主线程**里取好再交给工作线程：Tk 控件不能跨线程碰 ——
         #    在工作线程里调 `tab.path()`（读 Entry）会 `RuntimeError: main thread is not
@@ -652,8 +746,15 @@ class MainWindow(tk.Tk):
         threading.Thread(target=self._worker, args=(call, tab, path), daemon=True).start()
 
     def _worker(self, call: E.EngineCall, tab=None, path: str = "") -> None:
+        last = {"line": ""}
+
+        def _on_line(line: str) -> None:
+            self._q.put(line)
+            if line.strip():
+                last["line"] = line          # 契约行 = stdout 最后一行（ENGINE_API 五）
+
         try:
-            code = E.run_call(call, on_line=self._q.put, api=self.cfg.get("api"),
+            code = E.run_call(call, on_line=_on_line, api=self.cfg.get("api"),
                               on_proc=lambda p: setattr(self, "_proc", p))
         except Exception as e:  # noqa: BLE001
             self._q.put(f"❌ 启动失败：{e}")
@@ -667,6 +768,10 @@ class MainWindow(tk.Tk):
         #    从前一律写「❌ 失败（退出码 1）」，与上一行引擎自己打的「完成。…」自相矛盾
         #    （2026-10-17 审计实测，H3）。文案与 mac 各页逐字对齐，且在 bridge 里有守卫。
         self._q.put(f"{E.result_text(call.entry, code)}（退出码 {code}）")
+        if tab is not None:
+            self._q.put(("__RESULT__", tab, E.result_text(call.entry, code),
+                         E.artifact_path(last["line"]) if code == 0 else "",
+                         time.monotonic() - self._t0))
         self._q.put("__DONE__")
 
     def _set_busy(self, busy: bool) -> None:

@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -358,6 +359,35 @@ _RESULT_1 = {
     "toc.py": "⚠ 只生成了 1 份目录（另一份见上面的日志）",
 }
 _RESULT_1_DEFAULT = "❗ 完成，但有需要处理的结果（退出码 1，见上面的日志）"
+
+
+#: 契约行里可能「像路径起点」的位置：Unix 的 `/`，或 Windows 的 `C:\\` / `C:/`。
+#: ⚠️ **不能靠"路径字符集"去截断**：本项目的期目录名里就带半角括号
+#: （`2026年第5期(90)`），字符集一排除括号就把路径截断了（第一版就这么错的）。
+_PATH_START = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
+
+
+def artifact_path(last_line: str) -> str:
+    """从引擎的**契约行**（stdout 最后一行）里抠出产物路径；抠不到返回空串。
+
+    为什么需要它：编辑最常问的两句是「跑完了吗」「产物在哪」。契约行（`ENGINE_API.md` 五）
+    本来就把路径写在里面了，界面把它做成**可点开 / 可复制**的，比让人翻日志强得多。
+
+    抠法：对每个「路径起点」取**磁盘上真的存在的最长前缀** —— 这样路径里的括号、
+    尾巴上的 `（共 176 页）` / `）` / `。` 都不会误伤，也不需要给路径定字符集。
+    抠不到（dry-run、路径已被移走）就返回空串，界面只显示状态、不给按钮 —— **不猜**。
+    """
+    line = last_line or ""
+    best = ""
+    for m in _PATH_START.finditer(line):
+        rest = line[m.start():]
+        for end in range(len(rest), 0, -1):
+            cand = rest[:end].rstrip("。.…")
+            if os.path.exists(cand):
+                if len(cand) > len(best):
+                    best = cand
+                break
+    return best
 
 
 def result_text(entry: str, code: int) -> str:

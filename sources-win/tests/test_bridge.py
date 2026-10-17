@@ -160,6 +160,31 @@ check("(b) 编辑侧出版信息七项都能传（缺了 PDF 页眉会是「xxxx
 # 判据取**不变量的原话**：1 常常是"有结果"，外壳不许把它显示成**错误**（打分 ❌）。
 # 注意 `compileall` 的 rc=1 文案里出现"编译失败"是**准确**的（有文章编译失败），
 # 所以这里不能简单地禁"失败"两个字，而是禁"把它当程序失败"的那一档。
+# 完成横幅的"产物路径"是从契约行里抠出来的（界面第 1 件 UI 改进）。
+# 真实期目录名里带**半角括号**（`2026年第5期(90)`），靠"路径字符集"截断会截错 —— 用真实形状钉住。
+_ap_dir = tempfile.mkdtemp(prefix="slcn_art_")
+_ap_iss = os.path.join(_ap_dir, "2026年第5期(99)")
+os.makedirs(_ap_iss, exist_ok=True)
+_ap_file = os.path.join(_ap_iss, "信息检查.txt")
+with open(_ap_file, "w", encoding="utf-8") as fh:
+    fh.write("x")
+_ap_pdf = os.path.join(_ap_dir, "合并.pdf")
+with open(_ap_pdf, "wb") as fh:
+    fh.write(b"%PDF-1.4\n")
+_ap_cases = [
+    (f"完成。产物目录：{_ap_iss}", _ap_iss),
+    (f"完成。检查 2 篇（有 tex 2；不一致 0 项）（报告：{_ap_file}）", _ap_file),
+    (f"完成。合并文件：{_ap_pdf}（共 176 页）", _ap_pdf),
+    (f"完成。生成目录 2 份（{_ap_dir}）", _ap_dir),
+    ("没有路径的一行", ""),
+]
+check("(b) 能从契约行里抠出产物路径（含带括号的期目录名 / 尾部注释 / 全角右括号）",
+      all(E.artifact_path(line) == want for line, want in _ap_cases),
+      [E.artifact_path(line) for line, _w in _ap_cases])
+shutil.rmtree(_ap_dir, ignore_errors=True)
+check("(b) 运行日志里的「最后一行」被当作契约行送去抠路径",
+      "_on_line" in (SHELL / "main.py").read_text(encoding="utf-8")
+      and "E.artifact_path(" in (SHELL / "main.py").read_text(encoding="utf-8"))
 check("(b) **退出码 1 不许打成 ❌ 失败**（INVARIANTS 三.2：1 常常是「有结果」）",
       all(not E.result_text(e, 1).startswith("❌")
           for e in ("proofcheck.py", "checkbib.py", "compileall.py", "toc.py", "convert.py"))
