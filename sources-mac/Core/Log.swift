@@ -59,18 +59,27 @@ final class Logger: @unchecked Sendable {
     /// 存在只是为了让横幅能拿到产物路径，不改变日志本身的写入行为。
     private let onLine: ((String) -> Void)?
 
-    init(store: LogStore, onLine: ((String) -> Void)? = nil) {
+    /// 相对时间戳起点（UI 方案 §2-8）：跑任务时每行前面加 `+  3.2s`；nil = 不加
+    /// （启动信息等非运行期日志保持干净）。与 Windows 侧 `MainWindow.log()` 同一行为。
+    private let startedAt: Date?
+
+    init(store: LogStore, startedAt: Date? = nil, onLine: ((String) -> Void)? = nil) {
         self.store = store
+        self.startedAt = startedAt
         self.onLine = onLine
     }
 
     func callAsFunction(_ s: String) {
-        onLine?(s)
+        var text = s
+        if let t0 = startedAt, !s.isEmpty {
+            text = String(format: "+%5.1fs  ", Date().timeIntervalSince(t0)) + s
+        }
+        onLine?(text)
         if Thread.isMainThread {
-            store.append(s)
+            store.append(text)
         } else {
             DispatchQueue.main.async { [store] in
-                store.append(s)
+                store.append(text)
             }
         }
     }

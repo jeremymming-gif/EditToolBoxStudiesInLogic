@@ -113,7 +113,8 @@ struct SimpleFeatureView: View {
         // 抓**最后一行 = 契约行**：填完成横幅的状态与产物路径（EngineOutput 与 Windows 同一套判据）
         final class LineBox: @unchecked Sendable { var last = "" }
         let box = LineBox()
-        let logger = Logger(store: log) { line in
+        let started = Date()
+        let logger = Logger(store: log, startedAt: started) { line in
             let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { box.last = t }
         }
@@ -121,7 +122,6 @@ struct SimpleFeatureView: View {
         runner.running = true
         runner.resultOK = nil
         runner.resultPath = nil
-        let started = Date()
         runner.startedAt = started
         DispatchQueue.global(qos: .userInitiated).async {
             action(target, logger)
