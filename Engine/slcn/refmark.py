@@ -340,12 +340,16 @@ def _entry_block(
     body: str,
     issues: list[bibcheck.Issue],
     raw: str = "",
+    evidence: dict | None = None,
 ) -> str:
     """一条文献的核实小块：原文 + 离线核对发现的问题。
 
     `raw` = 这一条的**源稿原文**（`DocxDoc.ref_raw_by_key`，第 68 条）。给了就在解析结果
     下面附一行「源稿原文」，让编辑与 AI 当场看见「我们解析出来的东西」与「源稿写了什么」
     的差别；没给（例如作者自带的 `.bib`）就**一个字都不多写**，与从前逐字节相同。
+
+    `evidence` = 这条文献的自动检索证据包（P1，第 71 条起）。给了就追加
+    「🔎 自动检索证据」两三行；`None`（默认）时**一个字都不多写**。
     """
     lines = [f"### `{key}` — `@{etype}`", "", "```",
              f"@{etype}{{{key},\n{body.strip()}}}", "```"]
@@ -359,8 +363,61 @@ def _entry_block(
         lines.append(f"- 建议核对：{'、'.join(i.detail for i in nice)}")
     if not must and not nice:
         lines.append("- 离线核对未发现问题；请核对官方来源是否一致（尤其卷/期/页码/出版地）")
+    if evidence:
+        lines += _evidence_lines(evidence)
     lines.append("")
     return "\n".join(lines)
+
+
+#: 检索证据在任务书里每行的截断上限（题名/URL/站点名）。任务书是给人读的，
+#: 太长会被 markdown 折行成一片；完整 URL 交给编辑复制即可（测试只断言前缀）。
+_EV_VERDICT_CN = {
+    "evidence": "检索到来源（**仍须人工核对字段**）",
+    "check": "有候选来源，**需人工判断**",
+    "missing": "**未查到**（检索证据不足，请人工查证或交给联网 AI）",
+}
+
+
+def _one_line(text: str, limit: int) -> str:
+    """压成一行并截断（超出加 `…`，**标注**不静默丢）。"""
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _evidence_lines(pack: dict) -> list[str]:
+    """一条文献的「🔎 自动检索证据」2–4 行（P1，第 71 条起；默认不出现）。
+
+    证据只是**线索**：不给模型提示词、不改转换产物；「未查到」≠ 文献不存在。
+    """
+    verdict = str(pack.get("verdict") or "missing")
+    head = f"- 🔎 **自动检索证据**（DeepSeek Search API）：{_EV_VERDICT_CN.get(verdict, verdict)}"
+    score = pack.get("score")
+    if verdict != "missing" and isinstance(score, (int, float)):
+        head += f"（最佳匹配 {float(score):.2f}）"
+    lines = [head]
+    top = pack.get("top") or []
+    for i, row in enumerate(top[:3], 1):
+        title = _one_line(row.get("title") or "(无题名)", 60)
+        url = _one_line(row.get("url") or "", 160)
+        site = _one_line(row.get("site_name") or row.get("category") or "", 24)
+        auth = row.get("authority")
+        sim = row.get("score")
+        bits = [x for x in (
+            site,
+            f"authority {auth}" if auth is not None else "",
+            f"匹配 {float(sim):.2f}" if isinstance(sim, (int, float)) else "",
+        ) if x]
+        lines.append(f"  - {i}. 《{title}》 — {url}（{'｜'.join(bits)}）" if url
+                     else f"  - {i}. 《{title}》（{'｜'.join(bits)}）")
+    if verdict == "missing" or not top:
+        qs = "、".join(f"`{_one_line(q, 80)}`" for q in (pack.get("queries") or [])[:2])
+        err = _one_line(pack.get("error") or "", 80)
+        tail = f"用过的查询：{qs}" if qs else ""
+        if err:
+            tail += ("；" if tail else "") + f"检索错误：{err}"
+        if tail:
+            lines.append(f"  - {tail}")
+    return lines
 
 
 # 源稿原文在任务书/提示词里最多显示多少字符（超出截断并**标注**，绝不静默丢掉后半截）。
@@ -485,7 +542,9 @@ def _raw_refs_section(raw_ref_lines: list[str]) -> list[str]:
 def build(bib_text: str, stem: str, note: str = "",
           raw_ref_lines: list[str] | None = None,
           raw_by_key: dict[str, str] | None = None,
-          search_note: str = "") -> str:
+          search_note: str = "",
+          evidence: dict[str, dict] | None = None,
+          evidence_note: str = "") -> str:
     """生成整份 markdown 任务书。
 
     `raw_ref_lines` = 源稿参考文献区的**原文行**（`DocxDoc.ref_raw_lines`）。
@@ -499,6 +558,12 @@ def build(bib_text: str, stem: str, note: str = "",
     那句「工具**不做联网核实**」——因为开了检索时那句话**不成立**（工具确实会去联网查）；
     不给（默认）时头部与从前逐字节相同。为什么不做成布尔开关：通道说明要带上协议与模型名
     （编辑事后要能对账），那是调用方（`convert.py` ⑪）才知道的信息，任务书这边只负责摆出来。
+
+    `evidence` / `evidence_note` = **自动检索证据**（P1，第 71 条起；`--search-refs`）：
+    `{bib 键: 证据包}`（由 `slcn/search.py: gather_evidence` 产出），给了就在每条上面追加
+    一小段「🔎 自动检索证据」（含来源 URL / 权威度 / 匹配分 / 用过的 query）；
+    `evidence_note` 是写进头部的检索统计（次数/命中分布/费用）。两者都不给（默认）时，
+    任务书与旧签名调用**逐字节相同**——这是「默认关闭、零行为变化」的硬要求。
     """
     raw_by_key = raw_by_key or {}
     rep = bibcheck.check(bib_text)
@@ -519,6 +584,8 @@ def build(bib_text: str, stem: str, note: str = "",
         L += [ln for ln in search_note.splitlines() if ln.strip()]
     else:
         L.append("> 工具**不做联网核实**，也不预设你用哪家 AI。")
+    if evidence_note:
+        L += ["", *[ln for ln in evidence_note.splitlines() if ln.strip()]]
     L += [
         "",
         f"- 条目总数：**{rep.total}**",
@@ -535,7 +602,8 @@ def build(bib_text: str, stem: str, note: str = "",
         etype = bibcheck.TYPE_ALIASES.get(etype_raw.lower(), etype_raw.lower())
         # 第 68 条：这一条的源稿原文（拿不到就是空串，`_entry_block` 不写任何多余内容）。
         L.append(_entry_block(etype, key, body, rep.issues + form,
-                              raw=raw_by_key.get(key, "")))
+                              raw=raw_by_key.get(key, ""),
+                              evidence=(evidence or {}).get(key)))
     # 第四节**只在**「bib 一条都没有 + 有文献区原文」时追加：这批稿子（全库 14 篇有
     # 文献区却 `n_bib = 0`，其中 9 篇确实有 10–27 行候选条目）交给编辑的 AI 去结构化。
     # 条目解析得出来时这一节不出现——任务书里已经有逐条清单，再贴原文只会打架。

@@ -58,6 +58,7 @@ from slcn import __version__ as ENGINE_VERSION  # noqa: E402
 from slcn import clean as _clean  # noqa: E402
 from slcn import platform as _plat  # noqa: E402
 from slcn import refmark as _refmark  # noqa: E402
+from slcn import search as _search  # noqa: E402
 from slcn import naming as N  # noqa: E402
 from slcn import sources as _sources  # noqa: E402
 from slcn import templates as T  # noqa: E402
@@ -813,6 +814,15 @@ def main() -> int:
     ap.add_argument("--no-ai-merge", action="store_true",
                     help="只出《文献核实任务书》，**不**把 AI 结果并入 reference.bib"
                          "（旧行为；界面「保留原 reference.bib（不并入 AI 结果）」= 这个开关）")
+    # P1（2026-10-17，第 71 条起）：自动检索证据 = DeepSeek Search API（独立原始 JSON API），
+    # **不改模型提示词、不改转换产物**，只把「每条文献在公开网页上的候选来源」写进任务书。
+    # 默认关；不开启时产物与从前的调用**逐字节相同**（任务书里一个字段都不多）。
+    ap.add_argument("--search-refs", action="store_true",
+                    help="（附加，默认关）用 DeepSeek Search API 为每条参考文献检索证据，"
+                         "写进《文献核实任务书》（来源 URL/权威度/匹配分/用过的 query）。"
+                         "地址与密钥复用 --llm-base/--llm-key（或 SLCN_LLM_*；也可用 "
+                         "SLCN_SEARCH_BASE/SLCN_SEARCH_KEY 单独指定）；"
+                         "也可用环境变量 SLCN_SEARCH_REFS=1。⚠️ 会按次计费（¥5/1000 次成功）。")
     ap.add_argument("--llm-base", default=None, help="OpenAI 兼容 API 的 base URL（也可用环境变量 SLCN_LLM_BASE）")
     ap.add_argument("--llm-key", default=None, help="API 密钥（环境变量 SLCN_LLM_KEY）")
     ap.add_argument("--llm-model", default=None, help="模型名（环境变量 SLCN_LLM_MODEL）")
@@ -864,6 +874,11 @@ def main() -> int:
         for name, n in list_editors(args.source):
             print(f"{name}\t{n}")
         return 0
+
+    if args.search_refs and not args.verify_refs:
+        # 显式提示、继续跑：`--search-refs` 只在生成任务书时有落点（逐条清单）。
+        print("⚠ --search-refs 只配合 --verify-refs（没有任务书就没有逐条清单可挂证据）；"
+              "本次忽略检索，转换照常进行。", file=sys.stderr, flush=True)
 
     # --scan：只列出源文件角色就退出（不需要 --out）
     # 非 --scan 时也扫一遍：自动挑出参考文献附件（全库 28% 的稿件把它单独放一个文件）
@@ -1184,13 +1199,47 @@ def main() -> int:
                            "> 逐条来源标注见每条上方的 `% 来源：…`；"
                            "本次是否真的联网核实，以下面的通道说明与合并记录为准。")
 
+        # ── P1（第 71 条起）：自动检索证据（默认关；--search-refs / SLCN_SEARCH_REFS=1）──
+        # 只在生成任务书时有落点：每条文献上方多一段「🔎 自动检索证据」。
+        # **不改模型提示词、不改 reference.bib/tex**（P2 才考虑把证据喂给模型）。
+        entries = list(split_entries(bib_text))
+        search_enabled = bool(args.search_refs) or _search.refs_enabled_from_env()
+        evidence: dict[str, dict] | None = None
+        evidence_note = ""
+        if search_enabled:
+            if not entries:
+                print("   检索证据：本次 bib 里没有可核实的条目，跳过检索。", flush=True)
+            else:
+                base, skey = _search.config_from_env(args.llm_base, args.llm_key)
+                if not base or not skey:
+                    print("   检索证据：⚠ 已要求检索（--search-refs），但没配置 API 地址/密钥"
+                          "（--llm-base/--llm-key 或 SLCN_SEARCH_BASE/SLCN_SEARCH_KEY）——"
+                          "跳过检索证据，任务书照常生成。", flush=True)
+                else:
+                    print("\n⑪·检索 生成参考文献检索证据（DeepSeek Search API）", flush=True)
+                    print(f"   地址 {base}（{_search.resolve_endpoints(base)[0]}）；"
+                          f"每条最多 2 次查询、count=5；计费 ¥5/1000 次成功。"
+                          "证据默认不改任何转换产物，仅写进任务书。", flush=True)
+                    client = _search.SearchClient(base, skey)
+                    keys = [k for _et, k, _b in entries]
+                    evidence = _search.gather_evidence(
+                        bib_text, keys, client, log=lambda m: print(m, flush=True))
+                    summary = _search.stats_summary(client, evidence)
+                    print(f"   {summary}", flush=True)
+                    evidence_note = (
+                        "### 本次检索证据（自动，DeepSeek Search API）\n\n"
+                        f"> {summary}。\n"
+                        "> 证据只是线索：命中的来源仍须人工核对字段；"
+                        "「未查到」≠ 文献不存在（可能是题名解析错或未被收录）。")
+
         # ⚠️ 旧条件是 `res.bib_path`：这批「有文献区、0 条」的稿子根本没有 bib 文件，
         #    于是**连任务书都不生成**——而它们正是最需要把原文交出去的一批。改为「有 bib
         #    或有原文」都生成；两种旧情形的产物逐字节不变（第五节只在「0 条 + 有原文」时追加）。
         if res.bib_path or raw_ref_lines:
             print("\n⑪ 生成参考文献核实任务书", flush=True)
             md = _refmark.build(bib_text, stem, raw_ref_lines=raw_ref_lines,
-                                raw_by_key=raw_by_key, search_note=search_note)
+                                raw_by_key=raw_by_key, search_note=search_note,
+                                evidence=evidence, evidence_note=evidence_note)
             path = os.path.join(out_dir, f"{stem}_文献核实.md")
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(md)
@@ -1204,7 +1253,6 @@ def main() -> int:
                 print("   本次没有可用的源稿原文（LaTeX 通道 / 作者自带的 .bib）")
             print("   交给编辑各自的 AI：文件里已写明规范、来源优先级与回答格式")
 
-        entries = list(split_entries(bib_text))
         if not entries:
             # 「文献区一条都没解析出来」的稿子没有可预跑的条目：必须在这里单独收口，
             # 否则会掉进下面 `n_got == 0` 的失败分支，报一次**根本没发生**的「AI 调用失败」。

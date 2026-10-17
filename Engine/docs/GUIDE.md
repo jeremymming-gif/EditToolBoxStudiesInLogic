@@ -527,7 +527,8 @@ GUI 的「设置」页「测试连接 / 体检」里的 **⑤ 检索探针** 直
 - **内置 `web_search`（Responses 通道）**：仅 `deepseek-v4-pro` 真检索；`deepseek-flash`
   忽略（实测：v4-pro 在 `/responses` 与 `/v1/responses` 都返回 `web_search_call`；单次
   输入 14k–57k token、耗时 16–38 s，按模型 token 计费——贵而慢，只适合当可选捷径）。
-- **独立 Search / Fetch API**（推荐主路径；工具后续版本接入为「文献检索证据」）：
+- **独立 Search / Fetch API**（推荐主路径；工具**已接入**：§3.10 的 `--search-refs`，
+  给每条文献写「检索证据」）：
   `POST {base}/v1/tools/search`、`POST {base}/v1/tools/fetch`（base = `https://api.deepseek.com`）。
   请求字段：`query`（1–128 字，支持 `site:` / `-site:` / `-词` / `"短语"` / `lang:` /
   `after:` / `before:`）、`count`（1–50，默认 10）、`need_content`（`content` 返回正文）。
@@ -642,6 +643,39 @@ PYTHONPATH="$PWD/vendor" python3 mergepdf.py --folder "<期目录>" --editors-pa
 - 编委页/封底按**文件名**识别（这些页没有文字层）：`编委页.pdf` → `cneditor*` → `扉页2.pdf` →
   名字含「编委」；封底 `cover+bottom*` → 名字同时含 cover 与 bottom。工具箱自己的 `合并*.pdf` 一律排除；
 - **缺文件不会中断**（缺哪篇打哪篇的 `⚠`），最后一行是 `完成。合并文件：<路径>（共 N 页）`。
+
+### 3.10 自动检索证据：`--search-refs`（P1，2026-10-17，第 71 条起）
+
+背景（P0 实测见案例 117）：DeepSeek 2026-10-17 上线**独立 Search / Fetch API**
+（`POST {base}/v1/tools/search`、`/v1/tools/fetch`；结果带 `authority` / `rerank_score` /
+`date` / `summary`，支持 `site:` / `lang:` / `after:` 等语法；Search / Fetch 各
+**¥5 / 1000 次成功请求**、账号级 QPS 各 5）。本工具用它给**每条参考文献**补一份
+「公开网页上有没有这条文献、长什么样」的**证据**，写进《文献核实任务书》。
+
+```bash
+$PY convert.py --source X.docx --out Y --verify-refs --search-refs \
+    --llm-base https://api.deepseek.com/v1 --llm-key <key>   # 密钥也可走 SLCN_LLM_KEY
+# 单独指定检索服务：SLCN_SEARCH_BASE / SLCN_SEARCH_KEY；等价开关：SLCN_SEARCH_REFS=1
+```
+
+**它做什么**：每条文献最多 2 次查询（题名加引号 → 题名+作者+年份+刊名、整体不加引号），
+按「题名相似度 0.55 + 作者命中 0.15 + 年份 0.10 + 刊名/出版社命中 0.10 + 域名层级 0.10」
+打分，把 top3 候选（URL / 站点 / authority / 匹配分）写进任务书每条上方的
+「🔎 自动检索证据」，任务书头部附一行检索统计（次数 / 命中分布 / 预估费用）；控制台
+`⑪·检索` 逐条打印判词。
+
+**它不做什么**：**不改模型提示词、不改 `reference.bib`、不改 `.tex`**——证据只是给编辑与
+AI 的线索（P2 才考虑把证据喂给模型）。默认**关闭**：不开启时任务书与转换产物与从前
+**逐字节相同**（回归见 `tests/test_search_refs.py` 的 (h) 组：默认一次请求都不发）。
+
+**口径与限制**（别把证据当结论）：
+- 「未查到」≠ 文献不存在（可能是题名解析错、或该文献未被收录）；任务书会回显用过的
+  query，让编辑能分辨「query 烂」还是「文献真不在」；
+- 命中的来源仍须**人工核对字段**；权威度只是线索（P0 实测 94/100 条结果 authority≥3，
+  单独使用没有判别力），真正的判据是标题/作者/年份/刊名/域名综合分；
+- 隐私：query 由题名/作者/刊名拼成，会发到 DeepSeek 搜索服务（与「把条目原文发给模型」
+  同级别的外发）；
+- 自测：`$PY -m slcn.search --probe --json`（P2 界面的检索探针将直接复用这条命令）。
 
 ---
 

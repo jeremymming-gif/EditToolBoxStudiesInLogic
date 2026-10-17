@@ -151,6 +151,14 @@ b 与 d **不是两种排版体例**，而是同一份清单的两种题名写�
   `本次核实通道：responses + <实际配置的工具名>（已启用联网检索）` 写的也是配置值
   （权威实现 `slcn/llm.py: resolve_search_tool()` / `resolve_responses_path()`；
   用法见 `docs/GUIDE.md` §3.7，回归见 `tests/test_llm_knobs.py`）。
+- **自动检索证据是「附加线索」，不是产物（第 71 条起，`--search-refs`）**：默认关闭；
+  不开启时任务书 / `reference.bib` / `.tex` 与从前**逐字节相同**（回归见
+  `tests/test_search_refs.py` (h) 组：默认一次检索请求都不发）。证据来自 DeepSeek 独立
+  Search API（`slcn/search.py`），只写进任务书，**不改模型提示词**。判分口径
+  （标题相似度 0.55 + 作者 0.15 + 年份 0.10 + 刊名 0.10 + 域名层级 0.10；阈值
+  0.75=「检索到」/ 0.55=「需判断」）属于**判据**，改动须有真实稿件对照；
+  「未查到」必须回显用过的 query，**不许**写成「文献不存在」；query 含题名/作者/刊名
+  （隐私口径见 `docs/GUIDE.md` §3.10）。
 
 
 （照抄第 21 条；权威实现 `slcn/bibcheck.py: REQUIRED` / `check()` / `unify_types()`）
