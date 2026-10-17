@@ -187,6 +187,22 @@ def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
     return EngineCall(cmd, "mergepdf.py", "合并文件")
 
 
+def publish_call(*, folder: str, only: int = 0, from_step: int = 0) -> EngineCall:
+    """「本期出刊」向导：一个入口跑完 四步（编排在引擎侧，外壳只拼参数）。
+
+    引擎 `publish.py` 负责「失败中止 / 退出码 1 橙色继续 / 可单步重跑」，判据只有一份。
+    """
+    cmd = _base_cmd("publish.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--folder", folder]
+    if only:
+        cmd += ["--only", str(only)]
+    elif from_step:
+        cmd += ["--from", str(from_step)]
+    return EngineCall(cmd, "publish.py", "本期出刊")
+
+
 def cleantemp_call(*, folder: str, dry_run: bool = False,
                    trash: bool = False, restore_trash: str = "") -> EngineCall:
     """「删除临时文件」：`cleantemp.py --folder …`（参数与 mac 界面一致 + 可回收模式）。

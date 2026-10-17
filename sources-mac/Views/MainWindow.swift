@@ -60,6 +60,8 @@ struct MainWindow: View {
                         .pageVisible(selection == .toc)
                     cleanPage
                         .pageVisible(selection == .cleantemp)
+                    publishPage
+                        .pageVisible(selection == .publish)
                     SettingsTab(settings: settings)
                         .pageVisible(selection == .settings)
                 }
@@ -88,6 +90,24 @@ struct MainWindow: View {
             log: log
         ) { path, logger in
             CompileFeature.run(folderPath: path, log: logger)
+        }
+    }
+
+    /// 本期出刊向导：一个入口跑完四步（编排与判据在引擎 `publish.py`，只有一份）。
+    private var publishPage: some View {
+        SimpleTab(
+            help: """
+            使用说明：选一期的目录，点运行按顺序跑完四步：
+            ① 检查tex信息 → ② 生成目录 → ③ 合并整期 PDF → ④ 编译全部。
+
+            失败即中止（前 N−1 步的产物保留，日志末行写明卡在第几步）；
+            退出码 1（有结果/需人工核对，例如有文章编译失败）只算橙色警告并继续。
+            要单步重跑某一环节，仍用左边的单个页面。
+            """,
+            pickKind: .directory,
+            log: log
+        ) { path, logger in
+            PublishFeature.run(folderPath: path, log: logger)
         }
     }
 
@@ -123,6 +143,7 @@ struct MainWindow: View {
 enum NavPage: String, CaseIterable, Identifiable {
     case convert, checkbib, proofcheck, merge
     case infocheck, compile, toc, cleantemp
+    case publish
     case settings
 
     var id: String { rawValue }
@@ -137,6 +158,7 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .compile: return "编译全部"
         case .toc: return "生成目录"
         case .cleantemp: return "删除临时文件"
+        case .publish: return "本期出刊"
         case .settings: return "设置"
         }
     }
@@ -152,6 +174,7 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .compile: return "hammer"
         case .toc: return "list.number"
         case .cleantemp: return "trash"
+        case .publish: return "square.stack.3d.up.forward"
         case .settings: return "gearshape"
         }
     }
@@ -163,7 +186,7 @@ enum NavPage: String, CaseIterable, Identifiable {
     static let singleArticle: [NavPage] = [.convert, .checkbib, .proofcheck, .merge]
 
     /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件。
-    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp]
+    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .publish]
 }
 
 /// 只显示当前页：隐藏的页面保留状态但不可点、不进无障碍树

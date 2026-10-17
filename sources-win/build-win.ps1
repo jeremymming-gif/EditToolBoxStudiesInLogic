@@ -62,7 +62,7 @@ Write-Host "▶ 装依赖（Windows 轮子）…" -ForegroundColor Cyan
 #    在用户机器上直接「❌ 不认识的入口」退出 2 —— 2026-10-17 v1.0.1 实测：
 #    表停在"三个入口"，9 个标签页坏了 5 个（下面 hidden-import 与 ④ 自检都按它走）。
 $Entries = @("convert.py", "checkbib.py", "mergepdf.py",
-             "cleantemp.py", "compileall.py", "proofcheck.py",
+             "cleantemp.py", "publish.py", "compileall.py", "proofcheck.py",
              "infocheck.py", "toc.py")
 
 Write-Host "▶ 冻结引擎 → SLCNEngine.exe…" -ForegroundColor Cyan

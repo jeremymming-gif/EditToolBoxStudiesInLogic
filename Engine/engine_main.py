@@ -33,7 +33,8 @@ sys.path.insert(0, HERE)
 #: 允许通过本 exe 调用的入口（键 = 命令行里写的名字）。
 #: 顺序与 `sources-win/engine.py: ENTRIES` 相同 —— 那条一致性由测试守着，别只改一边。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
-           "cleantemp.py", "compileall.py", "proofcheck.py",
+           "cleantemp.py",
+    "publish.py", "compileall.py", "proofcheck.py",
            "infocheck.py", "toc.py")
 
 USAGE = f"""SLCN 引擎（打包版）

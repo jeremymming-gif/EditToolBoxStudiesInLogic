@@ -561,6 +561,19 @@ class CompileAllTab(TabPage):
         return {"only": self.v_only.get(), "dry_run": self.v_dry.get()}
 
 
+class PublishTab(TabPage):
+    name = "本期出刊"
+    pick = "dir"
+    instruction = ("使用说明：选**一期的目录**，点「运行」按顺序跑完四步：\n"
+                   "① 检查tex信息 → ② 生成目录 → ③ 合并整期 PDF → ④ 编译全部。\n"
+                   "**失败即中止**（前 N−1 步的产物保留，日志末行会写明卡在第几步）；\n"
+                   "退出码 1（有结果/需人工核对，例如有文章编译失败）只算**橙色警告**并继续。\n"
+                   "要单步重跑某一环节，仍可用左边的单个页面（编排与判据在引擎 `publish.py`，只有一份）。")
+
+    def build_options(self, parent: ttk.Frame) -> None:
+        pass
+
+
 class ProofCheckTab(TabPage):
     name = "一校核查"
     pick = "file"
@@ -804,16 +817,17 @@ class MainWindow(tk.Tk):
         self.toc_tab = TocTab(self.content, "生成目录", self.start, self.stop)
         self.compile_tab = CompileAllTab(self.content, "编译全部", self.start, self.stop)
         self.clean_tab = CleanTab(self.content, "删除临时文件", self.start, self.stop)
+        self.publish_tab = PublishTab(self.content, "本期出刊", self.start, self.stop)
         self.settings_tab = SettingsTab(self.content, self.cfg, lambda: None,
                                         post=self._q.put)
         self.tabs = [self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
                      self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
-                     self.settings_tab]
+                     self.publish_tab, self.settings_tab]
         for tab in self.tabs:                     # 全部叠在同一格里，切页 = tkraise
             tab.grid(row=0, column=0, sticky="nsew")
 
         #: 分组 → 页（顺序就是侧栏里的顺序；`设置` 单独放在最下面，照 WinUI 的惯例）
-        self.nav_groups = [("单篇稿件", (0, 1, 2, 3)), ("整期装配", (4, 5, 6, 7))]
+        self.nav_groups = [("单篇稿件", (0, 1, 2, 3)), ("整期装配", (4, 5, 6, 7, 8))]
         for title, idxs in self.nav_groups:
             group = self.nav.insert("", "end", text=title, open=True)
             for i in idxs:
@@ -1021,6 +1035,8 @@ class MainWindow(tk.Tk):
             return E.proofcheck_call(tex=path, **opts)
         if isinstance(tab, CompileAllTab):
             return E.compileall_call(folder=path, **opts)
+        if isinstance(tab, PublishTab):
+            return E.publish_call(folder=path)
         if isinstance(tab, CleanTab):
             # UI 方案第 3 件：**先预览再动手**，且动手的方式是"移到回收目录"（可撤销）。
             # 老行为（直接删）仍保留在 CLI 默认值里，mac 外壳不受影响。

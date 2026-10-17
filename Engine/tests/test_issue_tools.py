@@ -248,6 +248,51 @@ check("(c) 转换本身的产物 `.tex` 还在（只是编译没过，别把编�
 shutil.rmtree(croot, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (e) 本期出刊向导：四步编排 / 失败中止 / 单步重跑（UI 方案候选 C 的引擎侧）──")
+proot = tempfile.mkdtemp(prefix="slcn_publish_")
+mkfile(os.path.join(proot, "01 A_Author", "A_Author.tex"), DOC)
+
+r = run("publish.py", "--version")
+check("(e) `--version` 可用", r.returncode == 0 and "SLCN 引擎" in r.stdout)
+r = run("publish.py", "--folder", os.path.join(proot, "不存在的期目录"))
+check("(e) 期目录不存在 → 退出码 2", r.returncode == 2 and "期目录不存在" in r.stderr)
+r = run("publish.py", "--folder", proot, "--only", "9")
+check("(e) `--only 9`（没有第 9 步）→ 用法错误、退出码 2", r.returncode == 2)
+
+# 失败中止：没有 ① 的报告却直接跑 ② → 必须中止，且契约行明说"卡在第 2 步"
+r = run("publish.py", "--folder", proot, "--only", "2")
+check("(e) **失败中止**：没有报告就跑第 2 步 → 退出码 2、契约行说清\"卡在第 2 步\"",
+      r.returncode == 2 and "卡在第 2 步（生成目录）" in r.stdout,
+      r.stdout.strip()[-100:])
+check("(e) 中止时契约行在**最后一行**（外壳靠它显示「卡在哪」）",
+      r.stdout.strip().splitlines()[-1].startswith("完成。出刊：卡在第 2 步"),
+      r.stdout.strip().splitlines()[-1])
+check("(e) 中止时**不生成任何目录产物**（不许静默产出半成品）",
+      not [f for f in os.listdir(proot) if f.endswith(".tex") and ("contents" in f or "Content" in f)])
+
+# 单步重跑：只跑第 1 步 → 报告生成、退出码 0、契约行在最后
+r = run("publish.py", "--folder", proot, "--only", "1")
+check("(e) `--only 1`（单步重跑）：退出码 0、报告生成",
+      r.returncode == 0
+      and any(f.startswith("信息检查") and f.endswith(".txt") for f in os.listdir(proot)),
+      r.stdout.strip()[-100:])
+check("(e) 单步重跑的契约行在最后一行、明说「只跑了第 1 步」",
+      r.stdout.strip().splitlines()[-1].startswith("完成。出刊：只跑了第 1 步"),
+      r.stdout.strip().splitlines()[-1])
+
+# 继续往后跑（这个夹具只有 1 篇 tex、没有 PDF/模板）→ 必然在中途某步中止；
+# 判据只要求「中止语义正确」而不写死卡在第几步（夹具太简，toc 自己也可能拒绝）
+r = run("publish.py", "--folder", proot, "--from", "2")
+_last_line = r.stdout.strip().splitlines()[-1]
+check("(e) 后续步骤失败 → **中止**：退出码 2、契约行在最后一行且说清「卡在第 N 步」",
+      r.returncode == 2 and _last_line.startswith("完成。出刊：卡在第")
+      and "前 " in _last_line and "步产物有效" in _last_line, _last_line)
+check("(e) 中止时**已完成步骤的产物保留**（① 的信息检查报告还在）",
+      any(f.startswith("信息检查") and f.endswith(".txt") for f in os.listdir(proot)),
+      sorted(os.listdir(proot))[:5])
+shutil.rmtree(proot, ignore_errors=True)
+
 print("\n" + "=" * 66)
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) 原子写入 + 旧版备份（UI 方案第 4 件）──")

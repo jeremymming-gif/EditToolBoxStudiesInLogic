@@ -103,6 +103,7 @@ check("(a) `engine_main.py --version` 在窄编码控制台下不崩、且版本
 
 # 静态守卫：**每一个**交付入口都要调 utf8_stdio()，别只修被抓到的那一个。
 ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "compileall.py",
+                "publish.py",
                "cleantemp.py", "infocheck.py", "toc.py", "engine_main.py"]
 _missing = []
 for _f in ENTRY_FILES:
