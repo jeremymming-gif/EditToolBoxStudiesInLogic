@@ -16,6 +16,8 @@ final class ContentTabModel: ObservableObject {
     @Published var rows: [TocArticleRow] = []
     @Published var templateNote: String = "请先选择「检查tex信息」生成的 txt 报告"
     @Published var settingsLoaded = false
+    /// U3：本次生成的取消句柄（运行中主按钮变成「取消」）
+    var cancel: RunCancel? = nil
 }
 
 /// 「生成目录」页：选报告 → 设置本期栏目 → 勾选栏目文章 → 运行
@@ -45,10 +47,19 @@ struct ContentTab: View {
                         .textFieldStyle(.roundedBorder)
                         .disabled(model.running)
                     Button("浏览…") { browse() }.disabled(model.running)
-                    Button(model.running ? "运行中…" : "生成目录") { execute() }
-                    .keyboardShortcut("r", modifiers: .command)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.running || model.path.trimmingCharacters(in: .whitespaces).isEmpty)
+                    // U3：运行中主按钮变成「取消」（取消 = 杀整棵进程树，见 RunCancel）
+                    if model.running {
+                        Button {
+                            model.cancel?.cancel()
+                        } label: {
+                            Label("取消", systemImage: "stop.circle")
+                        }
+                    } else {
+                        Button("生成目录") { execute() }
+                            .keyboardShortcut("r", modifiers: .command)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.path.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
                 }
 
                 HStack(spacing: 6) {
@@ -234,7 +245,10 @@ struct ContentTab: View {
         }
         try? settings.save(to: dir)
 
-        let logger = Logger(store: log, startedAt: Date())
+        // U3：每次生成一个取消句柄；`Shell.run` 把 python 子进程注册进 logger.cancel
+        let cancel = RunCancel()
+        model.cancel = cancel
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
         let m = model
         m.running = true
         DispatchQueue.global(qos: .userInitiated).async {

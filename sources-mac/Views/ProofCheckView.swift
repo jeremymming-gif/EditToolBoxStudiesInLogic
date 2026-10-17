@@ -42,10 +42,19 @@ struct ProofCheckView: View {
                     .disabled(model.running)
                 Button("浏览…") { browse() }
                     .disabled(model.running)
-                Button(model.running ? "运行中…" : "运行") { execute() }
-                    .keyboardShortcut("r", modifiers: .command)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.running || model.tex.trimmingCharacters(in: .whitespaces).isEmpty)
+                // U3：运行中主按钮变成「取消」（取消 = 杀整棵进程树，见 RunCancel）
+                if model.running {
+                    Button {
+                        model.cancel?.cancel()
+                    } label: {
+                        Label("取消", systemImage: "stop.circle")
+                    }
+                } else {
+                    Button("运行") { execute() }
+                        .keyboardShortcut("r", modifiers: .command)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.tex.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
 
             HStack(spacing: 18) {
@@ -109,8 +118,11 @@ struct ProofCheckView: View {
         options.fix = model.fix
         options.lang = (model.lang == "自动") ? "" : model.lang
 
-        let logger = Logger(store: log, startedAt: Date())
+        // U3：每次核查一个取消句柄；`Shell.run` 把 python 子进程注册进 logger.cancel
+        let cancel = RunCancel()
+        model.cancel = cancel
         model.running = true
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
         DispatchQueue.global(qos: .userInitiated).async {
             ProofCheckFeature.run(options: options, log: logger)
             DispatchQueue.main.async { model.running = false }

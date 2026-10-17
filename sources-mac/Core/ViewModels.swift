@@ -19,6 +19,8 @@ final class ProofCheckModel: ObservableObject {
     /// 语种：`自动` / `zh` / `en`（`自动` 交给引擎按模板字段判）
     @Published var lang: String = "自动"
     @Published var running: Bool = false
+    /// U3：本次运行的取消句柄（运行中主按钮变成「取消」）
+    var cancel: RunCancel? = nil
 }
 
 /// 通用功能页的界面状态：一个路径输入框 + 一个「运行中」标记
@@ -34,6 +36,10 @@ final class PathRunnerModel: ObservableObject {
     @Published var resultSeconds: Double = 0
     /// 本次运行的开始时间（运行中算"已用 X 秒"）
     @Published var startedAt: Date? = nil
+    /// U3：本次运行是否是**用户主动取消**（完成横幅据此显示「⏹ 已取消」而不是 ❌ 失败）
+    @Published var resultCancelled: Bool = false
+    /// U3：本次运行的取消句柄（运行中主按钮变成「取消」）
+    var cancel: RunCancel? = nil
 }
 
 // MARK: - AI 的两个「请求体旋钮」（设置页 → 引擎）
@@ -876,6 +882,8 @@ final class InfoCheckModel: ObservableObject {
     @Published var path: String = ""
     @Published var running: Bool = false
     @Published var report: InfoReport? = nil
+    /// U3：本次运行的取消句柄（运行中主按钮变成「取消」）
+    var cancel: RunCancel? = nil
 }
 
 /// 「合并文件」页的探测状态：在运行前就把"识别到哪个编委页/封底页"显示出来，

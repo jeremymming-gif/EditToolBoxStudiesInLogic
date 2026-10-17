@@ -55,6 +55,13 @@ struct SettingsTab: View {
             .padding(16)
             .frame(maxWidth: 880, alignment: .leading)
         }
+        // 操作条**固定在页面底部**（AUDIT-2026-10-17 §七 观察 1）：
+        // 这一页很长，从前「保存 / 测试连接」在滚动区最末尾，编辑要一路滚到底才看得见，
+        // 甚至以为页面没有保存按钮。放进 `safeAreaInset(edge: .bottom)` 后：
+        // ① 任何时候都可见；② 滚动内容自动让位（不会被操作条盖住）。
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            actionBar
+        }
     }
 
     // MARK: - 标题与厂商无关说明
@@ -383,12 +390,39 @@ struct SettingsTab: View {
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
 
+            statusLine
+
+            if !tester.result.isEmpty {
+                Text(tester.result)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(tester.ok == true ? Color.green : Color.orange)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    // MARK: - 固定底部操作条（保存 / 测试连接）
+
+    /// 页面底部**常驻**操作条：位置由 `body` 的 `safeAreaInset(edge: .bottom)` 决定，
+    /// 这里只管内容与材质背景。
+    ///
+    /// 为什么必须固定（AUDIT-2026-10-17 §七 观察 1）：这一页内容很长，从前
+    /// 「保存 / 测试连接 / 清空」在滚动区的**最末尾**，编辑要一路滚到底才看得见，
+    /// 实际反馈是"以为这页没有保存按钮"。固定后还顺带让 ⌘S 的目标永远在眼前。
+    private var actionBar: some View {
+        VStack(spacing: 0) {
+            Divider()
             HStack(spacing: 10) {
                 Button {
                     if settings.saveAI() { tester.result = ""; tester.ok = nil }
                 } label: {
                     Label("保存", systemImage: "square.and.arrow.down")
                 }
+                // 快捷键挂在视图层级上，与按钮是否在滚动区无关，⌘S 照旧有效。
                 .keyboardShortcut("s", modifiers: .command)
 
                 Button {
@@ -406,34 +440,37 @@ struct SettingsTab: View {
                 }
                 // ⚠️ 语义（2026-10-15 用户实测报的 bug，第 62 条）：「清空」只清**界面上的输入框**，
                 //    磁盘上已保存的 ai.json 不动（从前这里会顺手落盘，一按就把配置抹了）。
-                //    说明就贴在这一行按钮旁边，免得编辑以为按了等于「把配置删了」而不敢按。
+                //    说明贴在按钮旁边，免得编辑以为按了等于「把配置删了」而不敢按。
                 Text("只清空输入框，不动已保存的配置；点「保存」才会覆盖".plainMarkdown)
                     .font(.caption).foregroundStyle(.tertiary)
+                    .lineLimit(1)
 
                 if tester.running {
                     ProgressView().controlSize(.small)
-                    Text("正在体检（Swift 3 个请求 + ⑤ 引擎检索探针）…").font(.caption).foregroundStyle(.secondary)
+                    Text("正在体检…")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if !tester.result.isEmpty {
+                    // 完整清单在表单末尾；操作条上给一行摘要，免得滚回去找。
+                    Text(tester.ok == true ? "✅ 体检通过"
+                                           : "⚠️ 体检有失败项（完整清单见上方）")
+                        .font(.caption)
+                        .foregroundStyle(tester.ok == true ? Color.green : Color.orange)
+                        .lineLimit(1)
                 }
-                Spacer()
+
+                Spacer(minLength: 8)
+
                 Text(settings.aiDirty ? "● 有未保存的修改" : "")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                    .lineLimit(1)
             }
-            .padding(.top, 2)
-
-            statusLine
-
-            if !tester.result.isEmpty {
-                Text(tester.result)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .foregroundStyle(tester.ok == true ? Color.green : Color.orange)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 880, alignment: .leading)   // 与滚动内容的宽度对齐
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(.bar)
     }
 
 

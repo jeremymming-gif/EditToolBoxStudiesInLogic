@@ -37,10 +37,20 @@ struct SimpleFeatureView: View {
                     .disabled(model.running)
                 Button("浏览…") { browse() }
                     .disabled(model.running)
-                Button(model.running ? "运行中…" : "运行") { execute() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut("r", modifiers: .command)   // UI 方案 §5：⌘R 运行
-                    .disabled(model.running || model.path.trimmingCharacters(in: .whitespaces).isEmpty)
+                // U3：运行中主按钮变成「取消」（不是把主按钮灰掉、另放一个不起眼的按钮）。
+                // 取消 = 杀整棵进程树（见 `RunCancel`）；短任务可能来不及取消，那就自然结束。
+                if model.running {
+                    Button {
+                        model.cancel?.cancel()
+                    } label: {
+                        Label("取消", systemImage: "stop.circle")
+                    }
+                } else {
+                    Button("运行") { execute() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut("r", modifiers: .command)   // UI 方案 §5：⌘R 运行
+                        .disabled(model.path.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
 
             HStack(spacing: 6) {
@@ -76,6 +86,7 @@ struct SimpleFeatureView: View {
                 // 完成横幅（UI 方案第 1 件）：状态 + 用时 + 产物路径（可点开 / 可复制）
                 ResultBanner(
                     ok: ok,
+                    cancelled: model.resultCancelled,
                     seconds: model.resultSeconds,
                     path: model.resultPath,
                     undoTitle: undoTitle,
@@ -114,26 +125,33 @@ struct SimpleFeatureView: View {
         final class LineBox: @unchecked Sendable { var last = "" }
         let box = LineBox()
         let started = Date()
-        let logger = Logger(store: log, startedAt: started) { line in
+        // U3：每次运行一个取消句柄；`Shell.run` 把子进程注册进来，主按钮据此变「取消」。
+        let cancel = RunCancel()
+        let logger = Logger(store: log, startedAt: started, cancel: cancel) { line in
             let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if !t.isEmpty { box.last = t }
         }
         let runner = model
+        runner.cancel = cancel
         runner.running = true
         runner.resultOK = nil
         runner.resultPath = nil
+        runner.resultCancelled = false
         runner.startedAt = started
         DispatchQueue.global(qos: .userInitiated).async {
             action(target, logger)
             let seconds = Date().timeIntervalSince(started)
             let last = box.last
-            let ok = EngineOutput.indicatesSuccess(last)
+            // U3：用户取消 → 成败按「已取消」显示（用户主动终止不是失败）
+            let cancelled = cancel.isCancelled
+            let ok = !cancelled && EngineOutput.indicatesSuccess(last)
             let path = ok ? EngineOutput.artifactPath(from: last) : nil
             DispatchQueue.main.async {
                 runner.running = false
                 runner.startedAt = nil
                 runner.resultSeconds = seconds
                 runner.resultPath = path
+                runner.resultCancelled = cancelled
                 runner.resultOK = ok
             }
         }
@@ -165,6 +183,8 @@ struct SimpleTab: View {
 struct ResultBanner: View {
 
     let ok: Bool
+    /// U3：用户主动取消（显示「⏹ 已取消」，**不显示成失败**；此时 ok == false）
+    var cancelled: Bool = false
     let seconds: Double
     let path: String?
     var undoTitle: String? = nil
@@ -172,9 +192,13 @@ struct ResultBanner: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(ok ? "✅ 完成" : "❌ 失败 / 有错误")
+            Text(cancelled ? "⏹ 已取消" : (ok ? "✅ 完成" : "❌ 失败 / 有错误"))
                 .font(.callout).fontWeight(.medium)
-                .foregroundStyle(ok ? Color.green : Color.red)
+                .foregroundStyle(cancelled ? Color.orange : (ok ? Color.green : Color.red))
+            if cancelled {
+                Text("（用户终止；产物可能不完整，需要时重新运行）")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if seconds >= 1 {
                 Text(String(format: "用时 %.1f 秒", seconds))
                     .font(.caption).foregroundStyle(.secondary)
@@ -198,7 +222,7 @@ struct ResultBanner: View {
                     NSPasteboard.general.setString(p, forType: .string)
                 }
             }
-            if let title = undoTitle, let onUndo {
+            if !cancelled, let title = undoTitle, let onUndo {
                 Button(title, action: onUndo)
             }
         }

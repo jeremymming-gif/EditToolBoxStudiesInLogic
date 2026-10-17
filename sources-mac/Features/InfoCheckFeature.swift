@@ -175,6 +175,11 @@ enum InfoCheckFeature {
             log: log
         )
         log("\n")
+        // U3：用户取消 → 只说「已取消」
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；本次没有读到完整报告）。\n")
+            return nil
+        }
         guard status == 0 else {
             log("❌ 检查失败（退出码 \(status)）。请把上面的报错发给技术人员。\n")
             return nil

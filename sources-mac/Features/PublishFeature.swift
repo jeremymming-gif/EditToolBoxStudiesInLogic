@@ -34,12 +34,16 @@ enum PublishFeature {
             log("未找到 python3。请先安装（brew install python3）。\n")
             return
         }
-        _ = Shell.run(
+        let status = Shell.run(
             py,
             [tool] + arguments(folderPath: path),
             workingDirectory: toolDir,
             environment: EngineLocator.environment(toolDir: toolDir),
             log: log
         )
+        // U3：用户取消 → 如实说明「只跑到一半」。前序步骤的产物保留（引擎侧原子写，不会写坏）
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；本期出刊只跑到一半，前序步骤的产物保留，需要时重新运行）。\n")
+        }
     }
 }

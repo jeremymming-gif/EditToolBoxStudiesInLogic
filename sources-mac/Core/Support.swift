@@ -240,6 +240,14 @@ enum EngineOutput {
 
 enum Shell {
 
+    /// U3：用户按「取消」时 `Shell.run` / `Shell.capture` 的返回值。
+    ///
+    /// 为什么不用真实退出码：被 SIGTERM 终止的子进程 `terminationStatus` 是 **15**，
+    /// 而引擎契约里 ≥2 表示"失败" —— 照搬就会把「用户主动取消」讲成「失败」。
+    /// 单独一个哨兵，各 Feature 据此**不再补"失败"话术**、视图显示「⏹ 已取消」。
+    /// 与 -1（启动失败）互不冲突：真实退出码不会是负数。
+    static let cancelledStatus: Int32 = -2
+
     static let extraPaths = [
         "/Library/TeX/texbin",
         "/opt/homebrew/bin",
@@ -345,6 +353,11 @@ enum Shell {
             return -1
         }
 
+        // U3：把子进程交给这一轮的取消句柄（「取消」按钮 → 杀整棵进程树，见 RunCancel）。
+        // defer 保证每条返回路径都注销：任务结束后句柄里不留已死亡的 Process 引用。
+        log?.cancel?.attach(process)
+        defer { log?.cancel?.attach(nil) }
+
         feedStdin(stdin, to: stdinPipe, log: log)
 
         if !discardOutput {
@@ -361,6 +374,8 @@ enum Shell {
         }
 
         process.waitUntilExit()
+        // U3：用户取消 → 返回哨兵（各 Feature 收到后不再说"失败"，视图显示「已取消」）
+        if log?.cancel?.isCancelled == true { return Shell.cancelledStatus }
         return process.terminationStatus
     }
 
@@ -398,11 +413,14 @@ enum Shell {
     ///
     /// - Parameter stdin: 与 `run` 同一个口径：给了就写进管道（用于「粘贴预览」把文本喂给
     ///   `checkbib.py --list-keys`，再把那**一行**输出收回来）；不给仍是 `/dev/null`（一字不变）。
+    /// - Parameter cancel: U3 取消句柄。长操作（「重新编译该篇」的四步 TeX）要能取消，
+    ///   所以 `capture` 也注册子进程；短操作（`--detect` / 列表预览）不传，行为不变。
     static func capture(_ tool: String,
                         _ arguments: [String],
                         workingDirectory: String? = nil,
                         stdin: String? = nil,
-                        environment extraEnv: [String: String]? = nil) -> CommandResult? {
+                        environment extraEnv: [String: String]? = nil,
+                        cancel: RunCancel? = nil) -> CommandResult? {
         guard let executable = locate(tool) else { return nil }
 
         let process = Process()
@@ -436,6 +454,10 @@ enum Shell {
             return nil
         }
 
+        // U3：与 `run` 同一口径 —— 长操作（重新编译）期间「取消」按钮要能杀掉这棵进程树
+        cancel?.attach(process)
+        defer { cancel?.attach(nil) }
+
         feedStdin(stdin, to: stdinPipe, log: nil)
 
         var data = Data()
@@ -448,7 +470,9 @@ enum Shell {
         process.waitUntilExit()
 
         let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-        return CommandResult(status: process.terminationStatus, output: text)
+        let status: Int32 = (cancel?.isCancelled == true)
+            ? Shell.cancelledStatus : process.terminationStatus
+        return CommandResult(status: status, output: text)
     }
 
     /// 从编译器输出里挑出错误行，供日志显示

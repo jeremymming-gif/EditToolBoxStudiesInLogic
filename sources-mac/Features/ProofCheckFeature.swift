@@ -81,6 +81,11 @@ enum ProofCheckFeature {
         )
 
         log("\n")
+        // U3：用户取消 → 只说「已取消」，不许讲成失败
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；报告可能未生成或只写了一半，需要时重新运行）。\n")
+            return
+        }
         switch status {
         case 0:
             log("✅ 完成：没有命中任何规则。\n")

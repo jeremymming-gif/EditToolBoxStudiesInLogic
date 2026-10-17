@@ -95,6 +95,11 @@ enum TocFeature {
         )
 
         log("\n")
+        // U3：用户取消 → 只说「已取消」，不许讲成失败（可能一份目录都没写，或只写了一份）
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；目录可能未生成或只写了一半，需要时重新运行）。\n")
+            return
+        }
         switch status {
         case 0:
             log("✅ 完成。中英文目录都已生成（与报告同目录）。\n")

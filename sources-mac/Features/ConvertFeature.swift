@@ -402,6 +402,11 @@ enum ConvertFeature {
         )
 
         log("\n")
+        // U3：用户取消 → 只说「已取消」，**不许**讲成失败（产物可能只写了一半）
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；本次产物可能不完整，需要时重新运行即可）。\n")
+            return
+        }
         if status == 0 {
             log("✅ 完成。\n")
             if !o.scanOnly {

@@ -1201,12 +1201,73 @@ check("j19-view-preview-wiring", "粘贴内容一变就跑预览（onChange）+ 
       cbvSrc.contains(".onChange(of: model.returnedText)")
         && cbvSrc.contains("previewGeneration") && cbvSrc.contains("guard gen == m.previewGeneration"),
       "")
-check("j20-view-empty-disables", "「开始体检」在文本为空时禁用（两种模式各看各的那一栏）",
-      cbvSrc.contains("model.running || !hasReturnedSource") && cbvSrc.contains("hasReturnedSource"),
+// ⚠️ U3（2026-10-17，mac 取消按钮）起：运行中主按钮**变成「取消」**，所以
+//    `开始体检` 的禁用判据不再需要 `model.running ||`（按钮在运行时根本不显示）；
+//    「文本为空 → 禁用」这条保证仍在，只是判据变成 `!hasReturnedSource`。
+//    同时钉住「运行中同一位置是取消按钮且能杀进程树」——这才是 U3 的接线条。
+check("j20-view-empty-disables", "「开始体检」在文本为空时禁用（两种模式各看各的那一栏）；运行中同一位置是「取消」",
+      cbvSrc.contains(".disabled(!hasReturnedSource)") && cbvSrc.contains("hasReturnedSource")
+        && cbvSrc.contains("model.cancel?.cancel()"),
       "")
 check("j21-view-tex-autofill", "粘贴模式从**原件**同目录自动填「正文 .tex」",
       cbvSrc.contains("autofillTeXFromOriginal")
         && cbvSrc.contains("if model.returnedMode == .paste { autofillTeXFromOriginal() }"),
+      "")
+
+// ===========================================================================
+// (u) U3 取消按钮（2026-10-17 第十四批）：mac 取消 = 杀整棵进程树；取消 ≠ 失败
+//
+//     为什么要单独钉：Windows 侧踩过「只 terminate 直接子进程 → xelatex 继续写产物目录」
+//     （M3/W1）；mac 是同一风险 —— python 起的 xelatex 是**孙进程**。这条接线一旦漏掉，
+//     表现是「界面说取消了、TeX 还在后台写同一目录」——比不提供取消更危险。
+//     真机实测记录在笔记仓 AUDIT §七（编译全部页启动 2.5s 后取消，1.5s 内进程树消失）。
+// ===========================================================================
+section("T-u  U3 取消按钮（mac）")
+
+let logSrc = readSrc("Core/Log.swift")
+check("u1-runcancel", "Log.swift 有 `RunCancel`：加锁取消句柄（attach / cancel / isCancelled）",
+      logSrc.contains("final class RunCancel")
+        && logSrc.contains("func attach(_ p: Process?)")
+        && logSrc.contains("func cancel() -> Bool")
+        && logSrc.contains("var isCancelled: Bool")
+        && logSrc.contains("private let lock = NSLock()"),
+      "")
+check("u2-kill-tree", "取消杀**整棵进程树**：`ps -axo pid=,ppid=` 快照 + 后代 SIGTERM + 根进程 terminate",
+      logSrc.contains("\"-axo\", \"pid=,ppid=\"")
+        && logSrc.contains("kill(child, SIGTERM)")
+        && logSrc.contains("root.terminate()"),
+      "")
+check("u3-shell-wiring", "`Shell.run` 与 `Shell.capture` 都把子进程注册进取消句柄；取消返回哨兵 -2（≠ 失败码）",
+      supportSrc.components(separatedBy: ".attach(process)").count - 1 == 2
+        && supportSrc.contains("static let cancelledStatus: Int32 = -2")
+        && supportSrc.contains("if log?.cancel?.isCancelled == true { return Shell.cancelledStatus }"),
+      "attach(process) 次数 = \(supportSrc.components(separatedBy: ".attach(process)").count - 1)（run + capture）")
+
+// 每个 Shell.run 调用点都要认这个哨兵 —— 漏一处，那一页取消后仍会补一句「失败」
+let uFeatureFiles = ["Features/ConvertFeature.swift",
+                     "Features/ProofCheckFeature.swift",
+                     "Features/CompileFeature.swift",
+                     "Features/DeleteTempFeature.swift",
+                     "Features/PublishFeature.swift",
+                     "Features/TocFeature.swift",
+                     "Features/InfoCheckFeature.swift",
+                     "Features/CheckBibFeature.swift",
+                     "Features/MergeFeature.swift"]
+let uMissed = uFeatureFiles.filter { !readSrc($0).contains("Shell.cancelledStatus") }
+check("u4-all-features", "全部 9 个 Feature 都处理了 `Shell.cancelledStatus`（取消不补「失败」话术）",
+      uMissed.isEmpty,
+      uMissed.isEmpty ? "9/9" : "未处理：\(uMissed.joined(separator: "、"))")
+let uViewFiles = ["Views/SimpleFeatureView.swift", "Views/CheckBibView.swift",
+                  "Views/ConvertTab.swift", "Views/ProofCheckView.swift",
+                  "Views/InfoCheckView.swift", "Views/ContentTab.swift"]
+let uNoCancel = uViewFiles.filter { !readSrc($0).contains("model.cancel?.cancel()") }
+check("u5-views-have-cancel", "6 个可运行页的主按钮都变成「取消」（`model.cancel?.cancel()`）",
+      uNoCancel.isEmpty,
+      uNoCancel.isEmpty ? "6/6" : "缺：\(uNoCancel.joined(separator: "、"))")
+check("u6-cancelled-banner", "完成横幅把「用户取消」显示成「⏹ 已取消」而不是 ❌ 失败",
+      readSrc("Views/SimpleFeatureView.swift").contains("⏹ 已取消")
+        && readSrc("Views/SimpleFeatureView.swift").contains("resultCancelled")
+        && readSrc("Core/ViewModels.swift").contains("resultCancelled"),
       "")
 
 // ===========================================================================

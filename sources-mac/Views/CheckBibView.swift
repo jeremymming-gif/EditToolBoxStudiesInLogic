@@ -37,6 +37,8 @@ final class CheckBibModel: ObservableObject {
     /// 并回成功后记住「这一篇」的稿件目录（「重新编译该篇」按钮用它）。
     /// nil = 还没并回过（或这次没改动），此时不显示重新编译按钮。
     @Published var mergedManuscriptDir: String? = nil
+    /// U3：本次运行的取消句柄（体检 / 并回 / 重新编译共用一个；运行中主按钮变成「取消」）
+    var cancel: RunCancel? = nil
 }
 
 /// 「文献回读校验」页：编辑拿《文献核实任务书》改完参考文献交回 `.bib` 后，
@@ -143,10 +145,20 @@ struct CheckBibView: View {
                 Divider()
 
                 HStack(spacing: 12) {
-                    Button(model.running ? "体检中…" : "开始体检") { execute() }
-                    .keyboardShortcut("r", modifiers: .command)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.running || !hasReturnedSource)
+                    // U3：运行中主按钮变成「取消」（体检 / 并回 / 重新编译三者共用；取消 =
+                    // 杀整棵进程树，见 `RunCancel`）。短任务可能来不及按就已经结束，正常。
+                    if model.running {
+                        Button {
+                            model.cancel?.cancel()
+                        } label: {
+                            Label("取消", systemImage: "stop.circle")
+                        }
+                    } else {
+                        Button("开始体检") { execute() }
+                            .keyboardShortcut("r", modifiers: .command)
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!hasReturnedSource)
+                    }
 
                     if model.running {
                         ProgressView().controlSize(.small)
@@ -360,7 +372,10 @@ struct CheckBibView: View {
 
     private func execute() {
         let m = model
-        let logger = Logger(store: log, startedAt: Date())
+        // U3：每次运行一个取消句柄；`Shell.run` 把 python 子进程注册进 logger.cancel
+        let cancel = RunCancel()
+        m.cancel = cancel
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
         // 来源与路径在主线程取好再进后台：跑的过程中界面已被禁用，不会变
         let src = source
         let original = m.original
@@ -385,7 +400,9 @@ struct CheckBibView: View {
     /// 「重新编译该篇」按钮据此定位（与并回的是同一篇，不会指错稿子）。
     private func mergeBack() {
         let m = model
-        let logger = Logger(store: log, startedAt: Date())
+        let cancel = RunCancel()
+        m.cancel = cancel
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
         let src = source
         let target = m.original
         let tex = m.tex
@@ -409,7 +426,10 @@ struct CheckBibView: View {
     private func recompile() {
         guard let dir = model.mergedManuscriptDir else { return }
         let m = model
-        let logger = Logger(store: log, startedAt: Date())
+        // U3：四步 TeX 走 `Shell.capture(cancel:)`，所以这里同样要建取消句柄
+        let cancel = RunCancel()
+        m.cancel = cancel
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
         m.running = true
         DispatchQueue.global(qos: .userInitiated).async {
             CheckBibFeature.recompile(manuscriptDir: dir, log: logger)

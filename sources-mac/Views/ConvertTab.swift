@@ -12,6 +12,8 @@ final class ConvertModel: ObservableObject {
     @Published var options = ConvertFeature.Options()
     @Published var running = false
     @Published var showAdvanced = false
+    /// U3：本次运行的取消句柄（运行中「开始转换」变成「取消」）
+    var cancel: RunCancel? = nil
 }
 
 struct ConvertTab: View {
@@ -274,17 +276,27 @@ struct ConvertTab: View {
                         }
                         .disabled(model.running || model.options.source.isEmpty)
 
-                        Button {
-                            run(scanOnly: false)
-                        } label: {
-                            Label("开始转换", systemImage: "wand.and.stars")
+                        // U3：运行中主按钮变成「取消」（不是灰掉另放一个按钮）。
+                        // 取消 = 杀整棵进程树（Python 起的 xelatex 一起停，见 `RunCancel`）。
+                        if model.running {
+                            Button {
+                                model.cancel?.cancel()
+                            } label: {
+                                Label("取消", systemImage: "stop.circle")
+                            }
+                        } else {
+                            Button {
+                                run(scanOnly: false)
+                            } label: {
+                                Label("开始转换", systemImage: "wand.and.stars")
+                            }
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .disabled(model.options.source.isEmpty || model.options.out.isEmpty)
                         }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(model.running || model.options.source.isEmpty || model.options.out.isEmpty)
 
                         if model.running {
                             ProgressView().controlSize(.small)
-                            Text("运行中…").foregroundStyle(.secondary)
+                            Text("运行中…（点「取消」可中止）").foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -423,8 +435,11 @@ struct ConvertTab: View {
         // ⚠️ 必须在主线程上取好再传：@Published 的值属于主线程，而 run() 在后台队列
         //    上执行（AIEngineKnobs 是值类型，跨线程传是安全的）。
         let knobs = settings.aiEngineKnobs
+        // U3：每次转换一个取消句柄；`Shell.run` 把 python 子进程注册进 logger.cancel。
+        let cancel = RunCancel()
+        model.cancel = cancel
         model.running = true
-        let logger = Logger(store: log, startedAt: Date())
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
         let m = model
         DispatchQueue.global(qos: .userInitiated).async {
             ConvertFeature.run(options: o, knobs: knobs, log: logger)

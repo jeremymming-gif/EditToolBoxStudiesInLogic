@@ -41,25 +41,33 @@ enum DeleteTempFeature {
     }
 
     /// 跑一次 cleantemp（公共部分：找工具 / 找 python / 跑子进程）。
-    private static func runTool(_ args: [String], log: Logger) {
+    /// - Returns: 引擎退出码 0 = 正常结束；false 也可能是用户取消（日志已说明）。
+    @discardableResult
+    private static func runTool(_ args: [String], log: Logger) -> Bool {
         guard let tool = locateTool() else {
             log("未找到清理引擎 Engine/cleantemp.py。\n")
             log("按顺序找两处：① app 包内 Contents/Resources/Engine/cleantemp.py；")
             log("② 从 app 所在目录逐级向上找 Engine/cleantemp.py\n")
-            return
+            return false
         }
         let toolDir = (tool as NSString).deletingLastPathComponent
         guard let py = EngineLocator.locatePython(toolDir: toolDir) else {
             log("未找到 python3。请先安装（brew install python3）。\n")
-            return
+            return false
         }
-        _ = Shell.run(
+        let status = Shell.run(
             py,
             [tool] + args,
             workingDirectory: toolDir,
             environment: EngineLocator.environment(toolDir: toolDir),
             log: log
         )
+        // U3：用户取消 → 如实说明「可能只做了一部分」，并提示撤销入口（不装成成功）
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；清理可能只做了一部分，可点横幅上的「撤销清理」还原）。\n")
+            return false
+        }
+        return status == 0
     }
 
     /// 撤销上一次清理：把回收目录里的文件搬回原处（引擎侧保证**不覆盖**已存在的文件）。
@@ -75,9 +83,8 @@ enum DeleteTempFeature {
             log("回收目录不存在：\(trashDir)\n")
             return
         }
-        runTool(restoreArguments(folderPath: path, trashDir: trashDir), log: log)
-        log("完成。\n")
-    }
+        guard runTool(restoreArguments(folderPath: path, trashDir: trashDir), log: log) else { return }
+        log("完成。\n")    }
 
     /// 确认框：说清「删什么 / 不碰什么 / 可撤销」，按钮用动词（NN/g 确认框准则）。
     private static func confirmTrash(folder: String) -> Bool {

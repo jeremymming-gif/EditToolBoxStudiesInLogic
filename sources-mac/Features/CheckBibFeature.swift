@@ -246,6 +246,11 @@ enum CheckBibFeature {
         )
         log("\n")
 
+        // U3：用户取消 → 只说「已取消」，不进下面的失败分支（bib 可能只改了一部分）
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；bib 的改动可能只做了一部分，需要时重新运行）。\n")
+            return nil
+        }
         if status == 0 {
             // 0 = 未改动（bib 与盘上任何文件都没动）。**不许**说成成功。
             log("ℹ 未改动：没有任何条目通过安全校验，\(o.target) 一个字节都没动"
@@ -309,13 +314,19 @@ enum CheckBibFeature {
         ]
         for (label, cmd, args) in steps {
             log(label + "\n")
-            guard let r = Shell.capture(cmd, args, workingDirectory: dir) else {
+            // U3：四步 TeX 都可能被「取消」按钮打断（`Shell.capture` 也接了取消句柄）
+            guard let r = Shell.capture(cmd, args, workingDirectory: dir,
+                                        cancel: log.cancel) else {
                 log("未找到命令 \(cmd)，请确认已安装 TeX Live / MacTeX。\n")
                 return false
             }
             if !r.succeeded {
-                log("❌ \(label) 失败！\n")
-                log(Shell.errorExcerpt(r.output) + "\n")
+                if r.status == Shell.cancelledStatus {
+                    log("⏹ 已取消（用户终止；该篇可能只编译到一半，需要时重新运行）。\n")
+                } else {
+                    log("❌ \(label) 失败！\n")
+                    log(Shell.errorExcerpt(r.output) + "\n")
+                }
                 return false
             }
         }
@@ -433,6 +444,11 @@ enum CheckBibFeature {
         )
         log("\n")
 
+        // U3：用户取消 → 只说「已取消」，不进下面的失败分支
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；报告可能未生成或只写了一半，需要时重新运行）。\n")
+            return nil
+        }
         if status == 0 {
             log("✅ 未发现问题\n")
         } else if status == 1 {

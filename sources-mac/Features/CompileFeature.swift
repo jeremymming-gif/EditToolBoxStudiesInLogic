@@ -58,6 +58,11 @@ enum CompileFeature {
             log: log
         )
         log("\n")
+        // U3：用户取消 → 只说「已取消」，不许讲成失败（已编完的篇目仍保留 PDF）
+        if status == Shell.cancelledStatus {
+            log("⏹ 已取消（用户终止；已编译完的篇目仍保留 PDF，需要时重新运行）。\n")
+            return
+        }
         switch status {
         case 0:
             log("运行结束，请确认上方是否有错。\n")
