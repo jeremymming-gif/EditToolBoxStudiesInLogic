@@ -172,7 +172,8 @@ def checkbib_call(*, returned: str, original: str = "", tex: str = "",
 
 
 def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
-               editors_page: bool = False, back_cover: bool = False) -> EngineCall:
+               editors_page: bool = False, back_cover: bool = False,
+               detect: bool = False) -> EngineCall:
     """「合并文件」：`mergepdf.py --folder …`（把原 Windows 版的合并规则换成引擎那份）。"""
     cmd = _base_cmd("mergepdf.py")
     if cmd is None:
@@ -184,6 +185,8 @@ def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
                      ("--back-cover", back_cover)):
         if on:
             cmd.append(flag)
+    if detect:
+        cmd.append("--detect")
     return EngineCall(cmd, "mergepdf.py", "合并文件")
 
 

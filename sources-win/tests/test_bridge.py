@@ -189,6 +189,14 @@ check("(b) cleantemp 三种模式：老行为（直接删）/ 移入回收 / 撤
       and "--trash" in E.cleantemp_call(folder="/x", trash=True).argv
       and "--restore" in E.cleantemp_call(folder="/x", restore_trash="/x/.toolbox-trash/1").argv
       and "--dry-run" in E.cleantemp_call(folder="/x", dry_run=True, trash=True).argv)
+# U7：与 mac 对等的参数（引擎早支持，界面从前没传）
+_c_cb = E.checkbib_call(returned="/交回.bib", original="/原件.bib", tex="/正文.tex", out="/产物")
+check("(b) 文献回读校验能传 `--original/--tex/--out`（从前界面没传，报告里一直写「未提供」）",
+      "--original" in _c_cb.argv and "--tex" in _c_cb.argv and "--out" in _c_cb.argv,
+      _c_cb.display[:100])
+check("(b) 合并页有 `--detect` 预览（与 mac 对等；默认不跑）",
+      "--detect" in E.merge_call(folder="/期", detect=True).argv
+      and "--detect" not in E.merge_call(folder="/期").argv)
 check("(b) 运行日志里的「最后一行」被当作契约行送去抠路径",
       "_on_line" in (SHELL / "main.py").read_text(encoding="utf-8")
       and "E.artifact_path(" in (SHELL / "main.py").read_text(encoding="utf-8"))

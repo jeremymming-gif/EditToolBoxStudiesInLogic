@@ -291,11 +291,28 @@ class CheckBibTab(TabPage):
                    "并入前引擎会自动留一份 `reference.bib.ai前` 备份。")
 
     def build_options(self, parent: ttk.Frame) -> None:
+        row1 = ttk.Frame(parent)
+        row1.pack(anchor="w")
         self.v_merge = tk.BooleanVar(value=False)
-        _check(parent, "并回产物 reference.bib（合并前自动备份 .ai前）", self.v_merge).pack(side="left")
+        _check(row1, "并回产物 reference.bib（合并前自动备份 .ai前）", self.v_merge).pack(side="left")
+        # 与 mac 对等的三个可选输入（U7）：引擎早支持，界面从前没传 —— 报告里一直写着
+        # 「原件：未提供（不做字段级 diff）」「正文：未提供（不做引用键闭合核对）」。
+        row2 = ttk.Frame(parent)
+        row2.pack(anchor="w", pady=(4, 0))
+        self.v_original = tk.StringVar(value="")
+        self.v_tex = tk.StringVar(value="")
+        self.v_out = tk.StringVar(value="")
+        for label, var, width in (("原件 .bib", self.v_original, 26),
+                                  ("正文 .tex", self.v_tex, 20),
+                                  ("产物目录", self.v_out, 18)):
+            ttk.Label(row2, text=label).pack(side="left", padx=(8, 2))
+            tk.Entry(row2, textvariable=var, width=width).pack(side="left")
 
     def extra_args(self) -> dict:
-        return {"merge_into_same_dir": self.v_merge.get()}
+        return {"merge_into_same_dir": self.v_merge.get(),
+                "original": self.v_original.get().strip(),
+                "tex": self.v_tex.get().strip(),
+                "out": self.v_out.get().strip()}
 
 
 class MergeTab(TabPage):
@@ -311,10 +328,31 @@ class MergeTab(TabPage):
         _check(parent, "插入编委页", self.v_editors).pack(side="left")
         _check(parent, "加封底页", self.v_back).pack(side="left")
         _check(parent, "小节书签挂在文章下", self.v_nest).pack(side="left")
+        # 预览清单（与 mac 的 `--detect` 对等）：先看会合并哪些文件，不写任何产物
+        tk.Button(parent, text="预览清单", width=10, command=self.preview).pack(
+            side="left", padx=(12, 0))
 
     def extra_args(self) -> dict:
         return {"editors_page": self.v_editors.get(), "back_cover": self.v_back.get(),
                 "nest_outlines": self.v_nest.get()}
+
+    def preview(self) -> None:
+        """先看会合并哪些文件（`mergepdf.py --detect`）—— 不写任何产物。"""
+        folder = self.path()
+        if not folder:
+            messagebox.showwarning(APP_TITLE, "请先选目录。")
+            return
+        try:
+            call = E.merge_call(folder=folder, detect=True)
+        except RuntimeError as e:
+            messagebox.showerror(APP_TITLE, str(e))
+            return
+        lines: list[str] = []
+        if E.run_call(call, on_line=lines.append) != 0:
+            messagebox.showerror(APP_TITLE, "预览失败（详见日志）。")
+            return
+        tail = "\n".join(lines[-18:])
+        messagebox.showinfo(APP_TITLE, "会合并这些（--detect，没写任何文件）：\n\n" + tail[-1500:])
 
 
 class InfoCheckTab(TabPage):
@@ -1081,7 +1119,9 @@ class MainWindow(tk.Tk):
                 if not os.path.exists(target):
                     raise ValueError(f"同目录下没有 reference.bib：{target}")
                 merge_into = target
-            return E.checkbib_call(returned=path, merge_into=merge_into)
+            return E.checkbib_call(returned=path, merge_into=merge_into,
+                                   original=opts.get("original", ""),
+                                   tex=opts.get("tex", ""), out=opts.get("out", ""))
         return E.merge_call(folder=path, **opts)
 
     def start(self, tab, call: E.EngineCall | None = None) -> None:
