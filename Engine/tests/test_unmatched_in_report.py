@@ -417,8 +417,11 @@ with tempfile.TemporaryDirectory() as tmp:
     # 第 61 条的当事人形态：**有文献区、但 0 条解析得出来**（`res.bib_path is None`）。
     # 任务书的门槛是 `res.bib_path or raw_ref_lines`（convert.py），靠的就是这份原文兜底——
     # 本次改动一个字都没碰它，这条断言把它钉住（报告不出是正常的：没有 bib 可核对）。
-    raw_lines = ["A. Capone, 2019, Pragmatics, Oxford: Oxford University Press.",
-                 "李四, 2021, 语用学导论, 北京: 商务印书馆."]
+    # ⚠️ 夹具必须用**当前解析器仍解析不出来**的行，否则这句话就没在测"0 条"这个形态：
+    #    2026-10-17 校准后英文逗号风格能解析了（`A. Capone, 2019, …` 不再是反例），
+    #    而"年份在中间的中文逗号风格"仍是已知限制（见 AUDIT），用它继续钉住第 61 条的原文兜底。
+    raw_lines = ["李四, 2021, 语用学导论, 北京: 商务印书馆.",
+                 "王五, 2022, 另一本书, 某出版社."]
     src61 = make_docx(["论数据库逻辑", "张三", "摘要：本文讨论数据库逻辑。", "关键词：数据库；逻辑"]
                       + BODY_P + ["参考文献"] + raw_lines)
     res61 = build.build_docx(src61, tmp, basename="RawOnly", verbose=False)

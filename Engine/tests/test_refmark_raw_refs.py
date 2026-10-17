@@ -202,8 +202,14 @@ p = make_docx(["论数据库逻辑", "张三", "摘要：本文讨论数据库�
 d = parse_docx(p)
 check("③ 有文献区：ref_raw_lines = 解析器吃掉的那份 section（含解析失败的行、按序、已 strip）",
       d.ref_raw_lines == [ln.strip() for ln in REF_AREA], repr(d.ref_raw_lines))
-check("③ 采集是**附加**的：照样解析出了那 1 条人年制文献（既有行为不变）",
-      len(d.refs) == 1 and d.refs[0].year == "2020", f"refs={[r.year for r in d.refs]}")
+# 2026-10-17 校准（实例测试）：第 2 条英文逗号风格（`A. Capone, 2019, …`）以前解析不出来，
+# 现在能解析了 —— 这是**改进**，断言随之更新；第 3 条（年份在中间的 `李四, 2021, 语用学导论, …`）
+# 仍解析不出来（中文兜底要求年份在"其余部分"，这是已知限制，见 AUDIT）。
+check("③ 采集是**附加**的：人年制文献照旧解析（1 条），且校准后英文条目也能解析（+1 条）",
+      len(d.refs) == 2 and {r.year for r in d.refs} == {"2020", "2019"},
+      f"refs={[r.year for r in d.refs]}")
+check("③ 已知限制：年份在中间的中文逗号条目（`李四, 2021, 语用学导论, …`）仍解析不出来",
+      not any(r.year == "2021" for r in d.refs), f"refs={[r.year for r in d.refs]}")
 check("③ 采集是**附加**的：正文/题名不受影响",
       d.title == "论数据库逻辑" and len(d.body) > 100, f"title={d.title!r}")
 

@@ -273,6 +273,10 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
     """英文逗号风格的单条文献（只在**不含中文**的行上调用）。"""
     if re.search(r"[\u4e00-\u9fa5]", s):
         return None
+    # ⚠️ 编号清单（`[12] …` / `12. …`）有专门通道 `_numbered_refs`，英文分支同样必须让路。
+    #    2026-10-17 校准第一版没让路 → `test_cn_journal_numbered` 4 条端到端断言转红。
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+        return None
     m = _REF_EN_RE.match(s)
     if not m:
         return None
