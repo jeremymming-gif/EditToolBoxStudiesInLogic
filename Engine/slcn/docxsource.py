@@ -225,7 +225,8 @@ def parse_reference_line(line: str) -> RefEntry | None:
         # 没有 [M]/[J] 标识的，退化为「作者. 年份. 其余」
         m2 = re.match(r"^(?P<author>.+?)[\.。]\s*(?P<year>\d{4}[a-z]?)[\.。]\s*(?P<rest>.*)$", s)
         if not m2:
-            return _parse_reference_line_cn(s)     # 中文逗号风格兜底（2026-10-17）
+            # 2026-10-17 校准：英文条目走专用分支，中文条目走中文分支，互不抢
+            return _parse_reference_line_en(s) or _parse_reference_line_cn(s)
         e = RefEntry(raw=s, author=m2.group("author").strip(), year=m2.group("year"))
         rest = m2.group("rest")
         # 从出版信息里猜类型：含「出版社/ Press/ University」→ 书，含卷期 → 期刊
@@ -258,6 +259,48 @@ _REF_CN_RE = re.compile(
 )
 
 
+#: 英文条目在中文列表里的常见风格（本刊作者来稿实测）：
+#:   `A. Aldini, S.A. Alexander, P. Graziani, 2022, “Knowledge-of-own-factivity, …”, Journal, 1(2): 3-4.`
+#:   `T. Williamson, 2000, Knowledge and Its Limits, New York: Oxford University Press.`
+#: 特征：**作者列表**（逗号分隔），然后 `, YYYY,`（年份是第 2 段），其后是题名与出版信息。
+_REF_EN_RE = re.compile(
+    r"^(?P<authors>.+?)\s*,\s*(?P<year>(?:19|20)\d{2}[a-z]?)\s*,\s*(?P<rest>.+)$"
+)
+_QUOTED = re.compile(r"^[“\"「『'](?P<title>.+?)[”\"」』'']")
+
+
+def _parse_reference_line_en(s: str) -> RefEntry | None:
+    """英文逗号风格的单条文献（只在**不含中文**的行上调用）。"""
+    if re.search(r"[\u4e00-\u9fa5]", s):
+        return None
+    m = _REF_EN_RE.match(s)
+    if not m:
+        return None
+    authors = m.group("authors").strip().rstrip(",").strip()
+    year = m.group("year")
+    rest = m.group("rest").strip()
+    qm = _QUOTED.match(rest)
+    if qm:                                   # 有引号 → 题名在引号里，类型看出版信息
+        title = qm.group("title").strip()
+        after = rest[qm.end():].lstrip(",，. ")
+        kind = "M"
+        if re.search(r"\(\d+\)|\bvol\b|\d+\s*[-–]\s*\d+", after):
+            kind = "J"
+        elif "Press" in after or "出版社" in after:
+            kind = "M"
+    else:                                    # 无引号 → 题名到下一个逗号（书常用）
+        parts = [x.strip() for x in re.split(r"[,，]", rest, maxsplit=1)]
+        title = parts[0]
+        after = parts[1] if len(parts) > 1 else ""
+        kind = "M"
+        if re.search(r"\(\d+\)|\bvol\b|\d+\s*[-–]\s*\d+", after):
+            kind = "J"
+    e = RefEntry(raw=s, author=authors, year=year, title=title.strip().strip("《》"),
+                 kind=kind, rest=rest)
+    e.key = make_key(e)
+    return e
+
+
 def _parse_reference_line_cn(s: str) -> RefEntry | None:
     """中文逗号风格的单条文献（2026-10-17 实例测试：用户 10 篇里 2 篇整份列表都这种格式）。
 
@@ -267,6 +310,11 @@ def _parse_reference_line_cn(s: str) -> RefEntry | None:
     #    这里必须让路：2026-10-17 第一版没让路，把 `test_cn_journal_numbered` 的 4 条端到端
     #    断言打红了（编号条目被这里当成普通中文条目，通道就收不到了）。
     if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+        return None
+    # ⚠️ 只处理**含中文**的行：英文条目走 `_parse_reference_line_en`。
+    #    2026-10-17 校准前，英文条目（`A. Aldini, S.A. Alexander, P. Graziani, 2022, “题名”, …`）
+    #    被这里按"作者，题名，其余"切分，**合著者名被当成题名**（title=P. Graziani）。
+    if not re.search(r"[\u4e00-\u9fa5]", s):
         return None
     m = _REF_CN_RE.match(s)
     if not m:
