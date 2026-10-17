@@ -39,6 +39,7 @@ struct SimpleFeatureView: View {
                     .disabled(model.running)
                 Button(model.running ? "运行中…" : "运行") { execute() }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("r", modifiers: .command)   // UI 方案 §5：⌘R 运行
                     .disabled(model.running || model.path.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 

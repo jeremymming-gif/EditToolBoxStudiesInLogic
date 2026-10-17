@@ -42,6 +42,14 @@ def apply(root: tk.Misc) -> None:
     # 字号：Windows 上 TkDefaultFont 默认 9pt（≈12px），比 WinUI 正文（14px）小一档；
     # 中文在高分屏上尤其显小。macOS 侧本来就合适，只做小幅调整。
     base = 10 if sys.platform.startswith("win") else 13
+    # 文字缩放（UI 方案 §5）：Windows 上跟随系统缩放比例，别写死绝对字号。
+    # `tk scaling` = 每个 point 的像素数（96 dpi ≈ 1.333）。声明了 DPI 感知之后它是准的。
+    try:
+        scale = float(root.tk.call("tk", "scaling")) or 1.333
+    except (tk.TclError, ValueError):
+        scale = 1.333
+    if sys.platform.startswith("win"):
+        base = max(9, min(20, round(base * scale / 1.333)))
     for name in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont"):
         try:
             tkfont.nametofont(name).configure(size=base)

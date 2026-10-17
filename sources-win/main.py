@@ -661,6 +661,7 @@ class MainWindow(tk.Tk):
         self._phase = ""
         self._q: queue.Queue[str] = queue.Queue()
         self._busy = False
+        self._current = 0
 
         # ── 分组侧边栏（UI 方案候选 B；2026-10-17 用户批准）──
         # 为什么不再用 9 个平级标签：WinUI 说「左侧导航适合 5–10 个**同等重要**的分类」，
@@ -705,6 +706,13 @@ class MainWindow(tk.Tk):
         self.nav.selection_set("tab:0")
         self.show_tab(0)
 
+        # 键盘快捷键（UI 方案 §5）：Ctrl+R 运行当前页 / Esc 停止 / Ctrl+, 打开设置。
+        # 回车不绑（侧栏/按钮各有默认行为，绑了反而与输入框冲突）。
+        self.bind_all("<Control-r>", lambda _e: self._hotkey_run())
+        self.bind_all("<Control-R>", lambda _e: self._hotkey_run())
+        self.bind_all("<Escape>", lambda _e: self._hotkey_stop())
+        self.bind_all("<Control-comma>", lambda _e: self._hotkey_settings())
+
         self.output = tk.Text(self, height=18, wrap="none",
                               font=tkfont.nametofont("TkFixedFont"))   # 等宽：日志对齐
         self.output.pack(side="bottom", fill="both", expand=False)
@@ -735,8 +743,28 @@ class MainWindow(tk.Tk):
         """全部页的名字（按侧栏顺序）—— 测试与自检用（Notebook 换成 Treeview 后的稳定接口）。"""
         return [t.name for t in self.tabs]
 
+    def current_tab(self):
+        """当前显示的页（快捷键要操作它）。"""
+        return self.tabs[self._current]
+
+    def _hotkey_run(self) -> str:
+        tab = self.current_tab()
+        if not isinstance(tab, SettingsTab) and not self._busy:
+            self.start(tab)
+        return "break"
+
+    def _hotkey_stop(self) -> str:
+        if self._busy:
+            self.stop()
+        return "break"
+
+    def _hotkey_settings(self) -> str:
+        self.show_tab(len(self.tabs) - 1)
+        return "break"
+
     def show_tab(self, index: int) -> None:
         """切到第 `index` 页（侧栏选中态与内容一起变）。"""
+        self._current = index
         self.tabs[index].tkraise()
         want = f"tab:{index}"
         if self.nav.selection() != (want,):          # 已经有就别再 set（见 _on_nav 的注释）
@@ -970,7 +998,29 @@ class MainWindow(tk.Tk):
             self._set_busy(False)
 
 
+def _enable_dpi_awareness() -> None:
+    """Windows 高分屏：声明 **System DPI Aware**。
+
+    不做的话系统把整个窗口当位图拉伸 → 高分屏上**发虚**（Microsoft 文档原话：
+    "Windows will stretch the application bitmap… appearing blurry"）。
+    为什么只做 System 级、不做 Per-Monitor V2：PMv2 要求应用自己响应 DPI 变化，
+    Tkinter 不做（UIUX-PROPOSAL §6 的取舍：办公室一台机器足够）。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)      # 1 = System DPI Aware
+    except Exception:  # noqa: BLE001  老系统没有 shcore，退回旧 API
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:  # noqa: BLE001  失败也不致命（只是可能发虚）
+            pass
+
+
 def main() -> int:
+    _enable_dpi_awareness()
     app = MainWindow()
     app.mainloop()
     return 0
