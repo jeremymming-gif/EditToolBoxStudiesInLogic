@@ -458,9 +458,9 @@ $PY convert.py --source X.docx --out Y --verify-refs \
 
 **两个「未来兼容」旋钮：工具名与路径可配**（2026-10-15，第 70 条）
 
-> 起因：上面那一句里的 `web_search` 与 `{base}/responses` 从前是**硬编码**。DeepSeek 现在
-> 把内置检索工具忽略，但它将来若真的实现，名字未必还叫 `web_search`（OpenAI 自己就有一个
-> `web_search_preview`，各家网关更是各不相同），路径也可能不是 `/responses`。做成配置之后，
+> 起因：上面那一句里的 `web_search` 与 `{base}/responses` 从前是**硬编码**。DeepSeek 的
+> flash 仍忽略内置检索工具（v4-pro 已支持），各家实现也各不相同，名字未必都叫 `web_search`
+> （OpenAI 自己就有一个 `web_search_preview`），路径也可能不是 `/responses`。做成配置之后，
 > 服务商一改，编辑**改一个设置**即可，不必等新版本。
 
 | 旋钮 | 环境变量 | 命令行 | 默认值 | 是什么 |
@@ -495,10 +495,11 @@ $PY -m slcn.llm --probe --base https://api.example.com/v1 --model some-model \
   会写出**实际配置的工具名**（默认时仍是 `web_search`）。
 
 ⚠️ **能力边界（务必看完，不然会以为「勾了就联网了」）**：`tools` 只是一个**请求**。
-DeepSeek 官方「使用 Responses API」的兼容性明细把 `web_search` / `file_search` /
-`code_interpreter` 等内置工具列为「**忽略**」，并写明「不支持的参数会被**静默忽略**、
-不会报错」；其官方新闻（联网搜索上线那条）也写着「目前，**API 暂不支持搜索功能**」。
-**所以 DeepSeek 上开了这个开关也查不到网**，而且它**不会报错**。
+端点是否真的检索，由端点与模型共同决定：OpenAI 的 Responses `web_search` 真会联网；
+**DeepSeek 按模型区分**（2026-10-17 官方文档 + 本机实测）——`deepseek-v4-pro` 会真检索
+并返回 `web_search_call` + 来源 URL；`deepseek-flash` 仍**静默忽略**（HTTP 200、无检索
+证据），官方兼容性明细也仍把 `file_search` / `code_interpreter` 等其它内置工具列为「忽略」。
+**所以同一条开关在不同服务商/模型上效果完全不同，而且不报错。**
 唯一诚实的判据是**回复里有没有检索证据**：
 
 **探针（唯一一份实现，在引擎里）**：
@@ -521,12 +522,27 @@ GUI 的「设置」页「测试连接 / 体检」里的 **⑤ 检索探针** 直
 或 **`⚠ 本次没有任何检索证据（0 个）：端点忽略了这个工具，模型只能凭记忆作答`**，
 并把同样的话写进任务书头部的「本次核实通道」与「六、合并记录」。
 
+**DeepSeek 检索能力现状（2026-10-17 更新）**
+
+- **内置 `web_search`（Responses 通道）**：仅 `deepseek-v4-pro` 真检索；`deepseek-flash`
+  忽略（实测：v4-pro 在 `/responses` 与 `/v1/responses` 都返回 `web_search_call`；单次
+  输入 14k–57k token、耗时 16–38 s，按模型 token 计费——贵而慢，只适合当可选捷径）。
+- **独立 Search / Fetch API**（推荐主路径；工具后续版本接入为「文献检索证据」）：
+  `POST {base}/v1/tools/search`、`POST {base}/v1/tools/fetch`（base = `https://api.deepseek.com`）。
+  请求字段：`query`（1–128 字，支持 `site:` / `-site:` / `-词` / `"短语"` / `lang:` /
+  `after:` / `before:`）、`count`（1–50，默认 10）、`need_content`（`content` 返回正文）。
+  每条结果带 `title / url / snippet / summary / date / site_name / authority(0–4) /
+  rerank_score(0–3)`。按成功请求计费（Search / Fetch 各 ¥5 / 1000 次，失败不收费），
+  账号级 QPS 各 5。⚠️ 检索 query 会包含题名/作者/刊名——与「把条目原文发给模型」同级别的
+  外发，需在设置页与文档写明。
+
 **开关/路径两条容易踩的点**：
 
 - **路径只拼一次 `{base}{路径}`（默认 `/responses`），不猜要不要补 `/v1`**：DeepSeek 文档给的
   Responses `base_url` 是 `https://api.deepseek.com`（不带 /v1），OpenAI 要
   `https://api.openai.com/v1`。按服务商文档填；探针结果里的 `endpoint` 字段能看到实际打的
   地址。路径本身可配（第 70 条，`SLCN_LLM_RESPONSES_PATH` / `--llm-responses-path`）。
+  （DeepSeek 2026-10-17 实测：`/responses` 与 `/v1/responses` 都可用；按服务商文档填最稳。）
 - **Response 的输出上限字段名不同**：chat 是 `max_tokens`，responses 是
   `max_output_tokens`（写错会被静默忽略 → 表现为「没封顶」）。引擎已按通道各用各的。
 - `SLCN_LLM_THINKING=0` 在 responses 上映射成 `reasoning:{"effort":"none"}`；

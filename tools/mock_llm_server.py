@@ -78,8 +78,9 @@ GUI 里怎么填（「设置」页）
                               检索工具我就认什么」的端点），所以换成 `web_search_preview`
                               也照样判支持——判据是证据，不是名字。
     responses_ignore_search   **收到 `tools` 也当没看见**，回 200 但**不给** `web_search_call`
-                              —— 这是 DeepSeek 的真实行为（官方兼容性表把 `web_search`
-                              列为「忽略」，且「不支持的参数会被静默忽略、不会报错」）。
+                              —— 这是 DeepSeek **flash** 的真实行为（官方兼容性表把
+                              `web_search` 列为「忽略」，且「不支持的参数会被静默忽略、不会报错」；
+                              2026-10-17 起同厂 `deepseek-v4-pro` 会真检索）。
                               探针必须据此报 **不支持**；这是本 mock 最重要的一条剧本，
                               没有它，「静默忽略被误报成支持」这个 bug 就无法回归。
     responses_reject_search   请求里带 `tools` 就 **HTTP 400**（端点明确拒绝），
@@ -147,7 +148,7 @@ _MODE_HINT = {
                         "（练「端点支持检索 → 探针报支持」）",
     "responses_ignore_search": "POST /v1/responses：**收到 tools 也当没看见**，"
                                "回 200 但不给 web_search_call"
-                               "（练 DeepSeek 的「静默忽略」→ 探针必须报不支持）",
+                               "（练 DeepSeek flash 的「静默忽略」→ 探针必须报不支持）",
     "responses_reject_search": "POST /v1/responses：请求里带 tools 就 HTTP 400"
                                "（练「端点明确拒绝」→ 探针报不支持 + 原始错误体）",
 }
@@ -566,7 +567,7 @@ class Handler(BaseHTTPRequestHandler):
     # 对着任何端点跑过**。真端点（DeepSeek）拿不到 key、也不该拿验收去烧额度，所以
     # 必须有一个能**按剧本**把三种世界复现出来的本地端点：
     #   · `responses_search`        —— 真支持检索（回 web_search_call + url_citation）；
-    #   · `responses_ignore_search` —— DeepSeek 的真实行为：收到 tools 也**静默忽略**；
+    #   · `responses_ignore_search` —— DeepSeek **flash** 的真实行为：收到 tools 也**静默忽略**；
     #   · `responses_reject_search` —— 端点明确 400 拒绝。
     # 三种都必要：只测前一种，就会把「静默忽略」误报成「支持」（这正是本轮要修的病）。
 
@@ -628,7 +629,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # 检索证据：**只有 `responses_search` 这一个模式**会回 `web_search_call`。
-        # `responses_ignore_search` 刻意什么都不回（DeepSeek 的静默忽略）——探针必须
+        # `responses_ignore_search` 刻意什么都不回（DeepSeek flash 的静默忽略）——探针必须
         # 据此报「不支持」，如果本 mock 在 ignore 模式下也回检索证据，那条判据就白测了。
         search_item = None
         if mode == "responses_search" and has_search:

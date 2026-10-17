@@ -123,7 +123,8 @@ def channel_provenance(channel: str, protocol: str, model: str,
     """「六、合并记录」里那行**本次核实通道**说明（纯函数，便于逐字断言）。
 
     为什么要把「检索证据」数进去、而不只是写「已启用联网检索」：开关开着**不等于**
-    端点真的搜了（DeepSeek 会把 `web_search` 静默忽略）。如果这行只说「已启用联网检索」，
+    端点真的搜了（DeepSeek 的 `deepseek-flash` 会把 `web_search` 静默忽略；
+    `deepseek-v4-pro` 才会真检索）。如果这行只说「已启用联网检索」，
     编辑事后翻合并记录会以为这批条目是联网核实的——那正是本项目最反对的「静默假装」。
     所以：`n_search == 0` 时必须**明写**「没有检索证据、按凭记忆对待」。
     """
@@ -830,7 +831,8 @@ def main() -> int:
     # 第 70 条的两个「未来兼容」旋钮：把硬编码的工具名与路径换成配置。
     # **默认 = 今天的取值**，不传这两个参数时命令行与 URL 与从前逐字节相同。
     # 为什么做成文本而不是布尔开关：将来服务商怎么命名、路径怎么改，现在无从预知
-    # （DeepSeek 官方文档把 web_search 列为「忽略」，但它哪天实现了未必还叫这个名字）。
+    # （各家实现并不一致：DeepSeek 的 flash 仍忽略内置检索工具、v4-pro 已支持；
+    # 名字也未必都叫 web_search）。
     ap.add_argument("--llm-search-tool", default=None,
                     help="responses 通道 tools[].type 的工具名（默认 web_search；也可用环境变量 "
                          "SLCN_LLM_SEARCH_TOOL）。将来服务商换了名字（如 web_search_preview）"
@@ -1252,8 +1254,9 @@ def main() -> int:
             tokens_reason = 0   # 推理 token（`usage.completion_tokens_details.reasoning_tokens`）
             # 检索证据累计（responses + web_search 时才有意义）：`LAST_SEARCH` 是**逐次**
             # 调用的，收尾要的是「整轮跑下来到底检索了几次、引了哪些页面」。
-            # 为什么非数不可：`tools:[{"type":"web_search"}]` 只是请求，DeepSeek 会**静默
-            # 忽略**它并照样回 200 —— 不数这个，我们就会把「凭记忆」当「已联网核实」汇报。
+            # 为什么非数不可：`tools:[{"type":"web_search"}]` 只是请求，有的端点/模型（如
+            # DeepSeek 的 flash）会**静默忽略**它并照样回 200 —— 不数这个，我们就会把
+            # 「凭记忆」当「已联网核实」汇报。
             n_search = 0
             search_urls: list[str] = []
             # 本次要**并入 reference.bib** 的回复（key → 原文）。只收「正常收尾」的：
@@ -1371,7 +1374,7 @@ def main() -> int:
             # ── 联网检索的**证据**（只有开了检索开关才说）─────────────────────────
             #
             # 这一节是「不许静默假装」的落点：`tools:[{"type":"web_search"}]` 只是**请求**，
-            # DeepSeek 会静默忽略它并照样回 200（官方兼容性表把 web_search 列为「忽略」）。
+            # 有的端点/模型（如 DeepSeek 的 flash）会静默忽略它并照样回 200。
             # 所以这里报的是**端点的行为**（收到几个 web_search_call），而不是我们的开关状态。
             if cfg.uses_web_search and n_calls:
                 if n_search:
@@ -1382,8 +1385,8 @@ def main() -> int:
                 else:
                     print("   ⚠ **本次没有任何检索证据**（0 个 web_search_call）："
                           "端点忽略了这个工具，模型只能凭记忆作答。")
-                    print("     按 DeepSeek 官方文档，Responses API 的 web_search 属被「忽略」的"
-                          "内置工具（不报错、也不检索）。")
+                    print("     注意：内置检索工具是否真的生效由端点与模型决定——"
+                          "如 DeepSeek 的 deepseek-flash 会忽略它、deepseek-v4-pro 才真检索。")
                     print("     请把本次结果当成**凭记忆**的修订：卷/期/页码/出版地务必人工抽查，"
                           "或把《文献核实任务书》交给编辑自己的联网 AI。")
             n_left = len(entries) - n_try

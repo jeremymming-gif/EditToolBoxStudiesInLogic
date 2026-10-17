@@ -5,10 +5,11 @@
 检索参数**，模型只能凭记忆」——这是任务书规范与本工具实现之间的矛盾。本轮加了
 `{base}/responses` 通道与 `tools:[{"type":"web_search"}]`，但**真端点里有一个陷阱**：
 
-  **DeepSeek 会静默忽略 `web_search`**（官方「使用 Responses API」兼容性表的 Tools 行列明
-  `web_search` / `file_search` / … 属「忽略」，且「不支持的参数会被静默忽略、不会报错」；
-  官方新闻也写着「目前，API 暂不支持搜索功能」）。于是「HTTP 200」既可能是「真检索了」，
-  也可能是「啥也没干」。只看状态码就会把后者报成「支持」——正是本轮要消灭的「静默假装」。
+  **有的端点/模型（如 DeepSeek 的 deepseek-flash）会静默忽略 `web_search`**（官方
+  「使用 Responses API」兼容性表的 Tools 行列明 `web_search` / `file_search` / … 属「忽略」，
+  且「不支持的参数会被静默忽略、不会报错」；2026-10-17 起同厂 `deepseek-v4-pro` 会真检索）。
+  于是「HTTP 200」既可能是「真检索了」，也可能是「啥也没干」。只看状态码就会把后者报成
+  「支持」——正是本轮要消灭的「静默假装」。
 
 所以本套件把三件事都钉死（全部只打 127.0.0.1 上的本地小 server，**不联网**、不花额度）：
 
@@ -19,7 +20,7 @@
      chat 那组键（含 reasoning）、`status`/`incomplete_details` → `LAST_FINISH`
      （completed→stop、max_output_tokens→length、content_filter、failed、未知原因原样带上）。
   ③ **探针判据**：三种世界各测一次——真检索（有 `web_search_call`）→ 支持；
-     **200 但没有检索证据**（DeepSeek 的静默忽略）→ **不支持**；`tools` 被 400 → 不支持。
+     **200 但没有检索证据**（如 DeepSeek flash 的静默忽略）→ **不支持**；`tools` 被 400 → 不支持。
 
 外加两条与「可审计」直接相关的：`% 来源：…` 注释**能活着穿过合并**、
 `channel_provenance()` 在「开了检索但 0 次检索」时**必须**写成「凭记忆」。
@@ -298,7 +299,7 @@ check("(e) 支持时带上检索次数与来源 URL（编辑能看出它查了�
 
 H.mode = "ignore"        # 收到 tools 也当没看见（DeepSeek 的真实行为）
 r = llm.probe_web_search(BASE_V1, "mock", "mock-model", timeout=10, query="随便问")
-check("(e) **200 但没有检索证据 → 不支持**（DeepSeek 静默忽略；只看状态码就会误报成支持）",
+check("(e) **200 但没有检索证据 → 不支持**（如 DeepSeek flash 静默忽略；只看状态码就会误报成支持）",
       r["verdict"] == "unsupported", json.dumps(r, ensure_ascii=False)[:200])
 check("(e) 这一格的说明必须点名「静默忽略」（编辑要看得懂为什么会这样）",
       "静默忽略" in r["detail"] or "没有检索证据" in r["detail"], r["detail"][:120])

@@ -141,7 +141,8 @@ b 与 d **不是两种排版体例**，而是同一份清单的两种题名写�
   ① 控制台 `本次核实通道：…`；② 任务书头部的同一行；③ 任务书「**六、合并记录**」里那条
   `- **本次核实通道：…**`。**只写通道不够**：开了检索但收到 **0 个 `web_search_call`** 时，
   那句话必须写成「**检索证据 0 个 → 本次结果按凭记忆对待**」——开关状态**不许**冒充已联网
-  （DeepSeek 官方兼容性表把 `web_search` 列为「忽略」的内置工具，不报错也不检索）。
+  （如 DeepSeek 的 `deepseek-flash` 仍把 `web_search` 列为「忽略」的内置工具，不报错也不检索；
+  `deepseek-v4-pro` 则会真检索）。
 - **请求形状可配，判据不可配（第 70 条）**：responses 通道的工具类型名与路径改成配置
   （`SLCN_LLM_SEARCH_TOOL` / `SLCN_LLM_RESPONSES_PATH`，或 `--llm-search-tool` /
   `--llm-responses-path`；默认 `web_search` / `/responses`，**默认时 URL 与请求体逐字节不变**）。

@@ -671,7 +671,8 @@ class SettingsTab(ttk.Frame):
             ("API 地址", "base", "例如 https://api.deepseek.com"),
             ("API Key", "key", "只存在本机，显示时打码；绝不出现在命令行里"),
             ("模型名", "model", "例如 deepseek-chat"),
-            ("检索工具名/路径", "searchTool", "留空 = 用引擎默认；本刊目前不依赖联网检索"),
+            ("检索工具名/路径", "searchTool",
+             "留空 = 用引擎默认；内置检索由端点/模型决定（DeepSeek 需 deepseek-v4-pro）"),
         ):
             ttk.Label(self, text=label).grid(row=row, column=0, padx=10, pady=3, sticky="e")
             var = tk.StringVar(value=str(cfg.get("api", {}).get(key, "") or cfg.get(key, "")))

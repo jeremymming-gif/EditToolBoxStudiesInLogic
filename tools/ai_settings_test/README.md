@@ -114,7 +114,7 @@ swiftc -o /tmp/ai_settings_test_harness \
 | mock 模式 | 期望判词 |
 |---|---|
 | `responses_search` | ✓ 支持（收到 `web_search_call`） |
-| `responses_ignore_search` | ✗ 不支持 —— **DeepSeek 的真实行为**：收到 `tools` 也静默忽略 |
+| `responses_ignore_search` | ✗ 不支持 —— **DeepSeek flash 的真实行为**：收到 `tools` 也静默忽略 |
 | `responses_reject_search` | ✗ 不支持（HTTP 400 + 端点原话） |
 
 **第 70 条又加了一段**（同一个可执行文件）：用 `AIEngineKnobs(searchTool: "web_search_preview")`
@@ -172,9 +172,10 @@ T-l 的源码级接线断言（`l11-converttab-live`）。
 - **⑤ 的真跑只覆盖「引擎 + 假端点」这一层**（见 `probe_e2e/`）：`AIConnectionTester.test`
   里 ⑤ 与 ①②③④ 的串接（同一后台队列、同一 `completion` 回收）仍是源码级证据；
   SwiftUI 的 Picker / Toggle 与「测试连接」按钮没有在真实窗口里点过。
-- **真端点行为未验证**：DeepSeek 的 Responses 会静默忽略 `web_search`，这一点来自官方
-  文档（兼容性表 + 官方新闻），本轮**没有**用真 API key 验证过；`deepseek-flash` 上
-  「探针会不会真的报不支持」只能由文档与 mock 推得。
+- **真端点行为已用真 API key 实测（2026-10-17 P0）**：DeepSeek 的 `deepseek-v4-pro`
+  在 Responses 上会真检索（`/responses` 与 `/v1/responses` 都返回 `web_search_call`），
+  `deepseek-flash` 仍静默忽略 `web_search`（HTTP 200、无证据）。mock 的
+  `responses_ignore_search` 继续覆盖「flash 型静默忽略 → 探针必须报不支持」这一格。
 - **第 70 条的两个高级旋钮也没有对着真端点跑过**（本 harness 一次网络请求都不发）：
   被验证的是「解析口径 / argv 映射 / 存读 / summary 文案」这些纯逻辑，
   以及引擎侧 `tests/test_llm_knobs.py` 的本地假端点证据（含 `web_search_preview` 的

@@ -51,9 +51,10 @@ final class PathRunnerModel: ObservableObject {
 /// chat 通道（`/chat/completions`）的 `tools` 是 **function calling**，要客户端自己执行，
 /// **不是检索**。默认 `chat`：老行为一字不改（请求体与从前逐字节相同）。
 ///
-/// ⚠️ 开了 responses **不等于**能联网：DeepSeek 官方兼容性表把 `web_search` 列为「忽略」的
-/// 内置工具（不报错、也不检索），所以「设置」页的 ⑤ 检索探针会**实测**端点到底会不会查，
-/// 结论如实显示——本工具绝不假装已联网。
+/// ⚠️ 开了 responses **不等于**能联网：内置 `web_search` 是否真检索由端点与模型决定
+/// （DeepSeek 需 `deepseek-v4-pro`；`deepseek-flash` 仍忽略该工具、不报错也不检索），
+/// 所以「设置」页的 ⑤ 检索探针会**实测**端点到底会不会查，结论如实显示——
+/// 本工具绝不假装已联网。
 enum AIProtocol: String, CaseIterable, Identifiable {
     case chat = "chat"
     case responses = "responses"
@@ -168,9 +169,9 @@ enum AIMaxTokens {
 /// 两个**高级**文本旋钮的取值口径（第 70 条；纯函数，headless 可验证）。
 ///
 /// 为什么要有这两个旋钮：`slcn/llm.py` 里原本把工具类型名 `web_search` 与路径
-/// `/responses` 写死了，而 DeepSeek 现在虽然把内置检索工具**忽略**，将来却可能实现
-/// —— 名字未必还叫 `web_search`（OpenAI 自己就有 `web_search_preview`），路径也可能不是
-/// `/responses`。做成配置之后，服务商一改，编辑改这两栏即可，**不必等新版本**。
+/// `/responses` 写死了，而各家实现并不一致（DeepSeek 的 flash 仍忽略内置检索工具、
+/// v4-pro 已支持）—— 名字未必都叫 `web_search`（OpenAI 自己就有 `web_search_preview`），
+/// 路径也可能不是 `/responses`。做成配置之后，服务商一改，编辑改这两栏即可，**不必等新版本**。
 ///
 /// 口径（与 `AIMaxTokens` 同一条纪律：不静默）：
 ///   · **留空 = 不传给引擎**（引擎用自己的默认 `web_search` / `/responses`），
@@ -480,7 +481,8 @@ final class AppSettings: ObservableObject {
     /// 通道（chat / responses）→ 勾了「用 AI 处理参考文献」时经 `--llm-protocol` 传给引擎。
     @Published var aiProtocol: AIProtocol = .chat
     /// 联网检索开关 → 勾了 AI 时经 `--llm-web-search` 传给引擎（默认关）。
-    /// ⚠️ 勾上**不代表**端点真的会检索：DeepSeek 的 Responses 会静默忽略该工具，
+    /// ⚠️ 勾上**不代表**端点真的会检索：内置 `web_search` 是否生效由端点与模型决定
+    /// （DeepSeek 的 `deepseek-flash` 会静默忽略、`deepseek-v4-pro` 才真检索），
     /// 所以「设置」页的 ⑤ 探针要实测，GUI 与引擎都会如实写明。
     @Published var aiWebSearch: Bool = false
 

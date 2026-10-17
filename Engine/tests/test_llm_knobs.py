@@ -2,8 +2,8 @@
 """Responses 通道的两个**未来兼容旋钮**（第 70 条）。
 
 为什么要有这一套：第 69 条把「联网检索」做成了开关，但请求里有两处**硬编码**：
-工具类型名 `web_search` 与路径 `{base}/responses`。DeepSeek 现在把内置检索工具**忽略**
-（官方文档，见第 69 条），可它将来若真的实现，名字未必还叫 `web_search`
+工具类型名 `web_search` 与路径 `{base}/responses`。各家实现并不一致（DeepSeek 的
+flash 仍忽略内置检索工具、v4-pro 已支持），名字也未必都叫 `web_search`
 （OpenAI 自己就有 `web_search_preview`，各家网关更是各不相同），路径也可能不是 `/responses`。
 所以第 70 条把它们变成配置：`SLCN_LLM_SEARCH_TOOL` / `SLCN_LLM_RESPONSES_PATH`
 （命令行 `--llm-search-tool` / `--llm-responses-path`）——将来只需改配置，不必改代码。

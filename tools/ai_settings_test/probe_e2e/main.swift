@@ -8,7 +8,7 @@ import Foundation
 // 对着 `tools/mock_llm_server.py` 这个**本地假端点**跑三种剧本：
 //
 //   responses_search        → ✓ 支持（收到 web_search_call）
-//   responses_ignore_search → ✗ 不支持（**DeepSeek 的真实行为**：收到 tools 也静默忽略）
+//   responses_ignore_search → ✗ 不支持（**DeepSeek flash 的真实行为**：收到 tools 也静默忽略）
 //   responses_reject_search → ✗ 不支持（HTTP 400 + 端点原话）
 //
 // 第 70 条又加了一段：用**自定义工具名**（`web_search_preview`）再跑一次支持检索的剧本，

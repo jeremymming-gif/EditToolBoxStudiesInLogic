@@ -1372,7 +1372,8 @@ check("x3-online-raw", "Logger.onLine 收到原文（没有 `+  0.0s  ` 前缀�
 //     为什么这批断言重要：用户的要求是「让工具**真的**去联网核实」。
 //     界面能保证的只有「把 `--llm-protocol responses --llm-web-search` 发出去」，
 //     **端点到底会不会检索**必须实测（`slcn/llm.py: probe_web_search`，判据是回复里
-//     有没有 `web_search_call`）——因为 DeepSeek 会**静默忽略**这个工具并照样回 200。
+//     有没有 `web_search_call`）——因为有的端点/模型（如 DeepSeek 的 deepseek-flash）
+//     会**静默忽略**这个工具并照样回 200（2026-10-17 起同厂 deepseek-v4-pro 会真检索）。
 //     所以这里要同时钉住：默认逐字节不变、两个开关的接线、以及 ⑤ 的三态判词。
 // ===========================================================================
 section("T-k  通道 / 联网检索开关（第 69 条）")
@@ -1574,12 +1575,13 @@ check("k12-header-probe", "抬头点出「外加 ⑤ 引擎检索探针」，且
 
 // k13 源码级：设置页真的有这两个控件，且转换页把现值取过去
 check("k13-ui-controls", "设置页有「通道」Picker 与「联网检索」开关 + 说明"
-      + "（点名 DeepSeek 把 web_search 当「忽略」的内置工具）+ 「绝不假装已联网」",
+      + "（点名 DeepSeek 按模型区分：flash 仍忽略、v4-pro 才真检索）+ 「绝不假装已联网」",
       settingsSrc.contains("$settings.aiProtocol") && settingsSrc.contains("$settings.aiWebSearch")
-        && settingsSrc.contains("忽略")
+        && settingsSrc.contains("忽略") && settingsSrc.contains("deepseek-v4-pro")
         && settingsSrc.contains("绝不假装已联网"),
       "picker=\(settingsSrc.contains("$settings.aiProtocol")) toggle=\(settingsSrc.contains("$settings.aiWebSearch")) "
-        + "忽略=\(settingsSrc.contains("忽略")) 不假装=\(settingsSrc.contains("绝不假装已联网"))")
+        + "忽略=\(settingsSrc.contains("忽略")) v4pro=\(settingsSrc.contains("deepseek-v4-pro")) "
+        + "不假装=\(settingsSrc.contains("绝不假装已联网"))")
 check("k13-converttab-live", "转换页现取 settings.aiProtocol / aiWebSearch（与 base/model 同一口径）",
       tabSrc.contains("o.llmProtocol = settings.aiProtocol.rawValue")
         && tabSrc.contains("o.llmWebSearch = settings.aiWebSearch"),

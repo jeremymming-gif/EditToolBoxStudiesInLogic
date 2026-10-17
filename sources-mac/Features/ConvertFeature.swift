@@ -41,7 +41,8 @@ enum ConvertFeature {
         /// **默认值必须留在 `chat`**：不传这个参数时命令行与从前逐字节相同。
         var llmProtocol = "chat"
         /// 联网检索开关（默认关）→ `--llm-web-search`（引擎侧加 `tools:[{type:web_search}]`）。
-        /// 只在 responses 通道生效；**勾上也不代表端点真的会检索**（DeepSeek 会静默忽略），
+        /// 只在 responses 通道生效；**勾上也不代表端点真的会检索**（DeepSeek 的
+        /// `deepseek-flash` 会静默忽略、`deepseek-v4-pro` 才真检索），
         /// 所以界面上要如实写清，并由「设置」页的 ⑤ 探针实测。
         var llmWebSearch = false
         /// 检索工具类型名（第 70 条）→ `--llm-search-tool`。**空 = 不传这个参数**，
@@ -309,7 +310,8 @@ enum ConvertFeature {
             if knobs.usesWebSearch {
                 log("  文献   ⚠ **本次已开启联网检索**（通道 responses + web_search）："
                     + "引擎会带上服务端检索工具，并要求模型先查官方来源。\n")
-                log("  文献   是否真的检索到由**端点**决定（DeepSeek 会静默忽略该工具）："
+                log("  文献   是否真的检索到由**端点与模型**决定（DeepSeek 的 deepseek-flash "
+                    + "会静默忽略该工具、deepseek-v4-pro 才真检索）："
                     + "跑完后看日志里的「检索证据」一行——0 次即表示本次只能凭记忆。\n")
             } else if o.llmProtocol == "responses" {
                 log("  文献   ⚠ 通道 responses，但**未启用联网检索**：模型只能凭记忆作答"

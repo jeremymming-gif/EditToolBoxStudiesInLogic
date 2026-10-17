@@ -41,27 +41,33 @@ r"""可选的大模型通道：处理 CrossRef 覆盖不到的文献（中文、
 
 **两个「未来兼容」旋钮**（第 70 条：把硬编码换成配置，将来的服务商改动不必改代码）：
   · `SLCN_LLM_SEARCH_TOOL` ＝ `tools[].type` 用的工具类型名（默认 `web_search`）。
-    为什么要可配：DeepSeek 现在把内置检索工具**忽略**（见下），但它将来若真的实现，
-    名字未必还叫 `web_search` —— OpenAI 自己就有 `web_search_preview`，各家网关更是
-    各不相同。到时候只需把这一项改掉，不必重新构建。
+    为什么要可配：DeepSeek 的 flash 仍忽略内置检索工具（v4-pro 已支持，见下），
+    各家网关的实现也各不相同，名字未必都叫 `web_search` —— OpenAI 自己就有
+    `web_search_preview`。到时候只需把这一项改掉，不必重新构建。
   · `SLCN_LLM_RESPONSES_PATH` ＝ 拼在 base 之后的路径（默认 `/responses`）。
     同一条理由：将来的路径可能不是 `/responses`。缺前导 `/` 会自动补上（并出一声）。
   ⚠️ 两者**默认值就是今天的硬编码值**，所以不设时 URL 与请求体逐字节不变；
   它们的空值 / 认不出的值都按「用默认」处理（`resolve_search_tool` /
   `resolve_responses_path`），绝不因为一个手滑的配置打灭整条 `--verify-refs`。
 
-⚠️ **联网检索的能力边界（2026-10-15 按官方文档核实，别把「发了工具」当成「真的检索了」）**：
+⚠️ **联网检索的能力边界（2026-10-17 更新；别把「发了工具」当成「真的检索了」）**：
   · OpenAI 的 Responses `web_search` 是**服务端内置工具**，真会联网，并回来
     `web_search_call` 输出项 + `output_text` 上的 `url_citation` 注解
     （https://developers.openai.com/api/docs/guides/tools-web-search ）。
-  · **DeepSeek 不支持**：其「使用 Responses API」兼容性明细的 Tools 表把
-    `web_search` / `file_search` / `code_interpreter` … 一律标为「**忽略**」，并写明
-    「不支持的参数会被**静默忽略**、不会报错」
-    （https://api-docs.deepseek.com/zh-cn/guides/responses_api ）；官方新闻也写着
-    「目前，**API 暂不支持搜索功能**」（https://api-docs.deepseek.com/zh-cn/news/news1210 ）。
-    所以在 DeepSeek 上发 `tools:[{"type":"web_search"}]` 会**回 200 但什么都没搜**。
-  这就是本模块为什么要有 `probe_web_search()`：**不信 HTTP 200，只认检索证据**
-  （回复里有没有 `web_search_call`）。判据与理由见该函数。
+  · **DeepSeek 按模型区分**（2026-10-17 官方文档 + 本机实测）：Responses 内置
+    `web_search` 在 **`deepseek-v4-pro`** 上**真的会检索**（返回 `web_search_call` +
+    来源 URL，`/responses` 与 `/v1/responses` 两个端点都通）；在 `deepseek-flash` 上
+    仍被**静默忽略**（HTTP 200、没有 `web_search_call`）。官方兼容性明细仍把
+    `file_search` / `code_interpreter` 等其它内置工具列为「忽略」。
+  · DeepSeek 另提供**独立的 Search / Fetch API**（`POST /v1/tools/search`、
+    `POST /v1/tools/fetch`；自研搜索引擎；结果带 `authority` / `rerank_score` /
+    `date` / `summary`，支持 `site:` / `lang:` / `after:` 等语法；按成功请求计费，
+    Search / Fetch 各 ¥5 / 1000 次、账号级 QPS 各 5）。本模块**不直接调用**它：
+    那是 `slcn/search.py`（P1 接入，给「文献核实」供检索证据）的事——
+    不依赖模型内置工具、也不受模型选择影响。
+  · 所以「HTTP 200」既可能表示「真检索了」，也可能表示「啥也没干」：判据永远是
+    **回复里有没有 `web_search_call`**。`probe_web_search()` 只信这个证据，
+    不信状态码，也不信「工具名写在请求里」。
 """
 
 from __future__ import annotations
@@ -140,7 +146,7 @@ LAST_BODY: str = ""
 #
 # 为什么必须有它：`tools:[{"type":"web_search"}]` 只是一个**请求**，不代表端点真的检索了。
 # 唯一诚实的证据是回复里有没有 `web_search_call` 输出项（OpenAI 官方文档：用了 web_search
-# 的回复一定包含 `web_search_call` + `url_citation` 注解）。DeepSeek 会**静默忽略**这个
+# 的回复一定包含 `web_search_call` + `url_citation` 注解）。有的端点/模型会**静默忽略**这个
 # 工具（见模块头），于是 `n_calls == 0` —— 调用方据此如实说「本次未发生检索」，
 # 绝不能让「发了工具」长得像「已联网核实」。
 LAST_SEARCH: dict = {"n_calls": 0, "queries": [], "urls": []}
@@ -394,7 +400,8 @@ def _responses_search_evidence(d: dict) -> dict:
 
     这是「端点到底有没有真的联网」的唯一机器判据（OpenAI 官方文档：用了 web_search 的
     回复**一定**包含 `web_search_call` 输出项，并通常在 `output_text` 上带 `url_citation`
-    注解）。DeepSeek 会静默忽略该工具 → 这里数出来是 0。
+    注解）。有的端点（如 DeepSeek 的 flash）会静默忽略该工具 → 这里数出来是 0；
+    DeepSeek 的 v4-pro 会真检索、能数到 `web_search_call`。
 
     同时把能取到的检索词与来源 URL 收出来（日志里给编辑看「它查了什么、引了哪些页面」），
     取不到就留空——**不做任何猜测**。
@@ -851,10 +858,11 @@ def complete(
 
 # ── 能力探针：这个端点到底会不会真的联网检索？────────────────────────────────
 #
-# 为什么探针不能只看 HTTP 状态码：**DeepSeek 会静默忽略 `tools:[{"type":"web_search"}]`**
-# （官方兼容性表把 web_search 列为「忽略」，并写明不支持的参数不报错）。于是
-# 「HTTP 200」既可能表示「真检索了」，也可能表示「啥也没干」——只看状态码就会把后者
-# 报成「支持」，正是用户最反对的「静默假装」。所以判据是**回复里有没有检索证据**。
+# 为什么探针不能只看 HTTP 状态码：**有的端点/模型（如 DeepSeek 的 deepseek-flash）
+# 会静默忽略 `tools:[{"type":"web_search"}]`**（官方兼容性表把 web_search 列为「忽略」，
+# 并写明不支持的参数不报错；同厂 `deepseek-v4-pro` 则会真检索）。于是「HTTP 200」既可
+# 能表示「真检索了」，也可能表示「啥也没干」——只看状态码就会把后者报成「支持」，
+# 正是用户最反对的「静默假装」。所以判据是**回复里有没有检索证据**。
 
 # 探针的提问：必须是一个「不检索就答不准」的问法，并且**明确要求给出官方来源 URL**——
 # 这样既能触发工具的调用决定，返回的 `url_citation` 也顺便证明它真读了页面。
@@ -890,7 +898,7 @@ def probe_web_search(base: str, key: str = "", model: str = "",
     | verdict | 什么时候 | 编辑该看到的话 |
     |---|---|---|
     | `supported` | HTTP 200 **且**回复里有 `web_search_call`（检索证据） | 「这个端点支持检索 → 会真的联网查官方来源」 |
-    | `unsupported` | ① HTTP 4xx（端点**明确拒绝**，如不认 `tools` / 工具名）；或 ② HTTP 200 但**没有**检索证据（DeepSeek 的静默忽略） | 「不支持 → 模型只能凭记忆」 |
+    | `unsupported` | ① HTTP 4xx（端点**明确拒绝**，如不认 `tools` / 工具名）；或 ② HTTP 200 但**没有**检索证据（如 DeepSeek flash 的静默忽略） | 「不支持 → 模型只能凭记忆」 |
     | `error` | 连不上 / 超时 / 5xx / 回复不是合法 JSON / 没配置 base+model | 「这次没测出来」（**不能**当成「不支持」，也不能当成「支持」） |
 
     ⚠️ 判据**永远**是「回复里有没有检索证据」，不是状态码（第 69 条；DeepSeek 会 200
@@ -963,8 +971,9 @@ def probe_web_search(base: str, key: str = "", model: str = "",
         #    「忽略」，所以这里必须按「不支持」报，绝不能让编辑以为已经联网核实了。
         res["verdict"] = "unsupported"
         res["detail"] = (f"端点返回 200，但回复里**没有任何检索证据**（没有 web_search_call）"
-                         f"——它把工具 `{tool}` **静默忽略了**（DeepSeek 官方兼容性表把 "
-                         "web_search 列为「忽略」，且「不支持的参数会被静默忽略、不会报错」）。"
+                         f"——它把工具 `{tool}` **静默忽略了**（例如 DeepSeek 的 "
+                         "`deepseek-flash`：兼容性表仍把 web_search 列为「忽略」、不报错；"
+                         "同厂 `deepseek-v4-pro` 则会真检索）。"
                          "按「不支持」处理：模型只能凭记忆。")
     res["verdict_cn"] = _PROBE_VERDICT_CN[res["verdict"]]
     return res
