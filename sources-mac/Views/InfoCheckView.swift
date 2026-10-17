@@ -19,7 +19,7 @@ struct InfoCheckView: View {
             汇总成检查报告，并与 PDF 的实际页数对比。
 
             会生成两份文件：信息检查<时间戳>.txt（与原版一致）和信息检查<时间戳>.json（结构化数据）。
-            """)
+            """.plainMarkdown)
             .font(.callout)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)

@@ -847,7 +847,7 @@ let gHead = AIConnectionTester.header(base: "https://api.deepseek.com/v1", key: 
                                       unsaved: sg.aiDirty)
 print("   [header unsaved]\n\(gHead)")
 check("g-ui-header-truth", "(c) 体检抬头不再说「两个旋钮要保存之后才生效」，改说现取值 + 保存只为下次启动",
-      gHead.contains("有未保存的修改") && gHead.contains("转换时都用**当前填的值**")
+      gHead.contains("有未保存的修改") && gHead.contains("转换时都用当前填的值")
         && gHead.contains("不是已保存的值") && !gHead.contains("才随转换生效")
         && !gHead.contains("要点「保存」"),
       gHead.components(separatedBy: "\n").last ?? "<missing>")
@@ -1065,10 +1065,10 @@ check("i6-hint", "AI 开关的说明按事实把「意图」与「限制」分�
       tabSrc.contains("并入交付的 reference.bib")
         && tabSrc.contains("本次不是联网核实")
         && tabSrc.contains("一个字节都不会改")
-        && tabSrc.contains("本次**已开启联网检索**")
+        && tabSrc.contains("本次已开启联网检索")
         && tabSrc.contains("⑤ 检索探针"),
       "并入=\(tabSrc.contains("并入交付的 reference.bib")) 非联网核实=\(tabSrc.contains("本次不是联网核实")) "
-        + "失败不改=\(tabSrc.contains("一个字节都不会改")) 已开启联网=\(tabSrc.contains("本次**已开启联网检索**")) "
+        + "失败不改=\(tabSrc.contains("一个字节都不会改")) 已开启联网=\(tabSrc.contains("本次已开启联网检索")) "
         + "⑤探针=\(tabSrc.contains("⑤ 检索探针"))")
 
 // i7: 「文献回读校验」页的并回按钮（源码级：并回复用同一个 checkbib.py，且危险动作先声明）

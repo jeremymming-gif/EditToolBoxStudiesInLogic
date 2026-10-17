@@ -25,12 +25,17 @@ final class LogStore: ObservableObject {
 /// 功能模块在工作线程里调用它，内部会自动切回主线程。
 final class Logger: @unchecked Sendable {
     private let store: LogStore
+    /// 每一行旁路回调（界面用它抓**最后一行 = 契约行**去填"完成横幅"）。
+    /// 存在只是为了让横幅能拿到产物路径，不改变日志本身的写入行为。
+    private let onLine: ((String) -> Void)?
 
-    init(store: LogStore) {
+    init(store: LogStore, onLine: ((String) -> Void)? = nil) {
         self.store = store
+        self.onLine = onLine
     }
 
     func callAsFunction(_ s: String) {
+        onLine?(s)
         if Thread.isMainThread {
             store.append(s)
         } else {

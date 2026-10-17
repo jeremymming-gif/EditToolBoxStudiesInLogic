@@ -72,7 +72,7 @@ struct CheckBibView: View {
                 ⚠ 本页只做**离线**体检（不联网、不调任何模型），它也不能判断文献真伪；
                 AI 交回的修订**须人工核对**（联网核实请在编辑自己的联网 AI 里做，或让「初排转换」
                 的 AI 步骤在你配置的、具备检索能力的端点上跑）。
-                """)
+                """.plainMarkdown)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -134,7 +134,7 @@ struct CheckBibView: View {
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 } else {
-                    Text("粘贴模式没有「交回文件」可猜：**并回**仍以「任务书前的原件 .bib」那一栏为目标"
+                    Text("粘贴模式没有「交回文件」可猜：并回仍以「任务书前的原件 .bib」那一栏为目标"
                          + "（所以并回必须先选它），正文 .tex 会从原件的同目录里找唯一的那份自动填。")
                         .font(.caption)
                         .foregroundStyle(.tertiary)

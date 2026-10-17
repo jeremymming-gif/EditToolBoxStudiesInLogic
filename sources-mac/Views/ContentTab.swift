@@ -33,7 +33,7 @@ struct ContentTab: View {
                 程序会以上一期的成品目录为模板（若本期已有成品则用本期的），
                 自动填入卷号、期号、年份、总期号与出版日期，然后生成：
                     Chinese Content_<时间戳>.tex 和 contents_<时间戳>.tex
-                """)
+                """.plainMarkdown)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

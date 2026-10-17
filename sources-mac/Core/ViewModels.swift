@@ -25,6 +25,13 @@ final class ProofCheckModel: ObservableObject {
 final class PathRunnerModel: ObservableObject {
     @Published var path: String = ""
     @Published var running: Bool = false
+    // ── 完成横幅（UI 方案第 1 件）──
+    /// 跑完的状态：nil = 还没跑过；true = 成功；false = 失败/有错误
+    @Published var resultOK: Bool? = nil
+    /// 从契约行里抠出的产物路径（点「在访达中显示」/「复制路径」用）
+    @Published var resultPath: String? = nil
+    /// 用时（秒）
+    @Published var resultSeconds: Double = 0
 }
 
 // MARK: - AI 的两个「请求体旋钮」（设置页 → 引擎）

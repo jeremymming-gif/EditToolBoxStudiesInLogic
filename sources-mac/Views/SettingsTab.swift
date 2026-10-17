@@ -61,7 +61,7 @@ struct SettingsTab: View {
 
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var headerText: String {
-        "本刊**不预设厂商**：凡提供 OpenAI 兼容接口的服务都能用 —— "
+        "本刊不预设厂商：凡提供 OpenAI 兼容接口的服务都能用 —— "
         + "DeepSeek / OpenAI / 通义 / Moonshot / 智谱，"
         + "以及本机/自建端点（LM Studio 等，它们都提供 OpenAI 兼容端点）。"
     }
@@ -101,7 +101,7 @@ struct SettingsTab: View {
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiPresetText: String {
-        "只填「API 地址 + 模型名」（**不碰密钥**），字段仍可自由编辑；"
+        "只填「API 地址 + 模型名」（不碰密钥），字段仍可自由编辑；"
         + "模型名会变，请以服务商文档为准。"
     }
 
@@ -130,20 +130,20 @@ struct SettingsTab: View {
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiProfilesText: String {
-        "方案 = 地址 / 密钥 / 模型名 / 通道 / 检索 / 思考模式 / 输出上限 **一整套**。"
-        + "选中一个会把它填进下面的输入框（**还要点「保存」才生效**，与「转换时用当前值」一致）。"
-        + "「保存」时若「方案名」非空，就存成那一份（**同名覆盖**，不会越存越多）。"
+        "方案 = 地址 / 密钥 / 模型名 / 通道 / 检索 / 思考模式 / 输出上限 一整套。"
+        + "选中一个会把它填进下面的输入框（还要点「保存」才生效，与「转换时用当前值」一致）。"
+        + "「保存」时若「方案名」非空，就存成那一份（同名覆盖，不会越存越多）。"
     }
 
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiProfilesText2: String {
         "留空 = 只更新「当前配置」（与从前一样）；填了就会在下拉里多出一份，"
-        + "下次打开 App 还在。⚠️ 方案里**含密钥**，与当前配置写在同一个 0600 文件里。"
+        + "下次打开 App 还在。⚠️ 方案里含密钥，与当前配置写在同一个 0600 文件里。"
     }
 
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiProfilesText3: String {
-        "OpenAI 兼容的 base URL，**要带服务商的版本路径**"
+        "OpenAI 兼容的 base URL，要带服务商的版本路径"
         + "（如 https://api.deepseek.com/v1；不含 /chat/completions，本工具会自动补上）"
     }
 
@@ -223,22 +223,22 @@ struct SettingsTab: View {
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiChannelText: String {
-        "`chat`（默认）= `{地址}/chat/completions`，请求体与从前**逐字节相同**；"
+        "`chat`（默认）= `{地址}/chat/completions`，请求体与从前逐字节相同；"
         + "`responses` = `{地址}/responses`（标准 Responses API）——"
-        + "**只有它**才有「服务端检索工具」这个概念。"
+        + "只有它才有「服务端检索工具」这个概念。"
         + "⚠️ Responses 的路径是 `{地址}/responses`：DeepSeek 文档给的 base 是 "
         + "https://api.deepseek.com（不带 /v1），OpenAI 要带 /v1，按服务商文档填。"
     }
 
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiChannelText2: String {
-        "勾上 = 转换时给端点加 `tools:[{\"type\":\"web_search\"}]`，并要求模型**先查官方来源**、"
+        "勾上 = 转换时给端点加 `tools:[{\"type\":\"web_search\"}]`，并要求模型先查官方来源、"
         + "把实际打开的页面 URL 写成每条上方的 `% 来源：…`；查不到的字段照旧省略并写 "
-        + "`% ⚠ 待核实：…`（铁律不变：**只写来源确认过的值**）。\n"
-        + "⚠️ **勾了不等于查到了**：DeepSeek 官方兼容性表把 Responses 的 `web_search` 列为"
-        + "「**忽略**」的内置工具（不报错、也不检索；其官方新闻亦写明「API 暂不支持搜索功能」）。"
-        + "所以请点上面的「测试连接 / 体检」，看 **⑤ 检索探针** 的实测结论——"
-        + "本工具绝不假装已联网：跑完引擎会在日志与「六、合并记录」里报**检索证据**"
+        + "`% ⚠ 待核实：…`（铁律不变：只写来源确认过的值）。\n"
+        + "⚠️ 勾了不等于查到了：DeepSeek 官方兼容性表把 Responses 的 `web_search` 列为"
+        + "「忽略」的内置工具（不报错、也不检索；其官方新闻亦写明「API 暂不支持搜索功能」）。"
+        + "所以请点上面的「测试连接 / 体检」，看 ⑤ 检索探针 的实测结论——"
+        + "本工具绝不假装已联网：跑完引擎会在日志与「六、合并记录」里报检索证据"
         + "（0 个 `web_search_call` = 本次只能凭记忆）。"
     }
 
@@ -276,14 +276,14 @@ struct SettingsTab: View {
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiFutureKnobsText: String {
-        "**一般不用改**（两栏都留空就是今天的正确行为，命令行与从前逐字节相同）。"
-        + "将来服务商把内置检索工具**换成别的名字**（例如 `web_search_preview`，"
-        + "OpenAI 自己就有一个这种名字）或**换了路径**时，改这两栏即可，不必等新版本：\n"
+        "一般不用改（两栏都留空就是今天的正确行为，命令行与从前逐字节相同）。"
+        + "将来服务商把内置检索工具换成别的名字（例如 `web_search_preview`，"
+        + "OpenAI 自己就有一个这种名字）或换了路径时，改这两栏即可，不必等新版本：\n"
         + "· 检索工具名 → 引擎 `SLCN_LLM_SEARCH_TOOL` / `--llm-search-tool`"
         + "（引擎默认 `web_search`）；\n"
         + "· 响应路径 → 引擎 `SLCN_LLM_RESPONSES_PATH` / `--llm-responses-path`"
         + "（引擎默认 `/responses`，缺前导 `/` 会自动补）。\n"
-        + "⚠️ 改的是**请求形状**，不改变能力：端点到底会不会真的联网仍由上面的"
+        + "⚠️ 改的是请求形状，不改变能力：端点到底会不会真的联网仍由上面的"
         + "「⑤ 检索探针」实测（判据是回复里有没有 `web_search_call`）+ 转换日志里的"
         + "「检索证据」为准——本工具绝不假装已联网。"
     }
@@ -332,7 +332,7 @@ struct SettingsTab: View {
     //    （CI macos-14 报 unable to type-check ... in reasonable time）。Group 不引入布局。
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var aiRequestKnobsText: String {
-        "「跟随端点默认」= **不发送** thinking 字段（DeepSeek 文档 2026-10："
+        "「跟随端点默认」= 不发送 thinking 字段（DeepSeek 文档 2026-10："
         + "thinking 默认就是开启，推理 token 按输出计费）；"
         + "参考文献核实是纯抽取/规范化任务，「关闭」既省钱也更确定。"
         + "本机/自建端点可能不认这个字段，那就保持「跟随端点默认」。"
@@ -342,7 +342,7 @@ struct SettingsTab: View {
     private var aiRequestKnobsText2: String {
         "默认 2048（= 引擎默认值，防啰嗦模型把预算烧在推理上、返回半截 bibtex）；"
         + "填 0 = 不封顶；留空 = 不设置该变量（效果同 2048）。"
-        + "**转换时用的是上面这些输入框里的当前值**：地址/密钥/模型与这两个旋钮同一口径，"
+        + "转换时用的是上面这些输入框里的当前值：地址/密钥/模型与这两个旋钮同一口径，"
         + "改完直接去「初排转换」就生效；点「保存」只是把它写进 ai.json，供下次启动读回。"
     }
 
@@ -407,7 +407,7 @@ struct SettingsTab: View {
                 // ⚠️ 语义（2026-10-15 用户实测报的 bug，第 62 条）：「清空」只清**界面上的输入框**，
                 //    磁盘上已保存的 ai.json 不动（从前这里会顺手落盘，一按就把配置抹了）。
                 //    说明就贴在这一行按钮旁边，免得编辑以为按了等于「把配置删了」而不敢按。
-                Text("只清空输入框，**不动**已保存的配置；点「保存」才会覆盖")
+                Text("只清空输入框，不动已保存的配置；点「保存」才会覆盖".plainMarkdown)
                     .font(.caption).foregroundStyle(.tertiary)
 
                 if tester.running {
@@ -485,7 +485,7 @@ struct SettingsTab: View {
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var secretWarningText2: String {
         "工具自身不会打印完整密钥：界面上只显示前 4 位（如 sk-a…），"
-        + "日志里只写「已配置密钥」；密钥**不进命令行参数**"
+        + "日志里只写「已配置密钥」；密钥不进命令行参数"
         + "（走环境变量 SLCN_LLM_KEY 传给子进程，避免在 ps 里被同机其它用户看到），"
         + "也不会写进任何产物文件。"
     }
@@ -513,7 +513,7 @@ struct SettingsTab: View {
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
     private var privacyText: String {
         "① 编辑部规范文本（《文献核实任务书》里那份固定的核实口径）；\n"
-        + "② 参考文献条目原文（**逐条**发，不拼成整篇）。"
+        + "② 参考文献条目原文（逐条发，不拼成整篇）。"
     }
 
     /// 长文案：提出来是为了让旧版 Swift 的类型检查器别超时（第 101 条）；文本**逐字未动**。
@@ -530,7 +530,7 @@ struct SettingsTab: View {
             Text(privacyText)
                 .font(.caption).foregroundStyle(.secondary)
                 .padding(.leading, 12)
-            Text("**不发送**：正文、摘要、作者信息、稿件全文 —— 都留在本机。")
+            Text("不发送：正文、摘要、作者信息、稿件全文 —— 都留在本机。".plainMarkdown)
                 .font(.caption).bold().foregroundStyle(.secondary)
             Text(privacyText2)
                 .font(.caption).foregroundStyle(.secondary)
@@ -547,7 +547,7 @@ struct SettingsTab: View {
     private var usageCommandText: String {
         "「初排转换」页 → 勾选「用 AI 处理参考文献」→ 转换命令会带上 "
         + "--verify-refs 与 --llm-base/--llm-model；"
-        + "**密钥不进命令行**，而是通过环境变量 SLCN_LLM_KEY 传给子进程"
+        + "密钥不进命令行，而是通过环境变量 SLCN_LLM_KEY 传给子进程"
         + "（argv 在 ps 里对同机所有用户可见，环境变量不会）。"
         + "AI 建议写进同目录的《…_文献核实.md》，标为「AI 建议（须人工核实）」。"
     }
@@ -568,7 +568,7 @@ struct SettingsTab: View {
         + "（也可用环境变量 SLCN_LLM_WEB_SEARCH=1）。第 70 条的两个高级旋钮同理："
         + "`--llm-search-tool` / `--llm-responses-path`"
         + "（也可用环境变量 SLCN_LLM_SEARCH_TOOL / SLCN_LLM_RESPONSES_PATH）。"
-        + "**默认值/留空时不加任何参数**：命令行与从前逐字节相同。"
+        + "默认值/留空时不加任何参数：命令行与从前逐字节相同。"
         + "想手工验证端点支不支持检索，可以跑：\n"
         + "    python3 -m slcn.llm --probe --base <地址> --model <模型> --json\n"
         + "（退出码 0 支持 / 1 不支持 / 2 其他错误；密钥用 SLCN_LLM_KEY，别写进命令行。）"
@@ -663,7 +663,7 @@ enum AIConnectionTester {
         ]
         if unsaved {
             lines.append("⚠ 有未保存的修改：①② 用的是上面填的地址/模型，两个旋钮同理 —— "
-                         + "转换时都用**当前填的值**，不是已保存的值；"
+                         + "转换时都用当前填的值，不是已保存的值；"
                          + "点「保存」只为了让下次启动仍读回这些值。")
         }
         return lines.joined(separator: "\n")

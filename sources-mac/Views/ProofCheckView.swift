@@ -30,7 +30,7 @@ struct ProofCheckView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
 
-            Text(help)
+            Text(help.plainMarkdown)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

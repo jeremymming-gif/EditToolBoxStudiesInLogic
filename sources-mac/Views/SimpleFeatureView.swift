@@ -18,11 +18,14 @@ struct SimpleFeatureView: View {
     @ObservedObject var log: LogStore
     /// 点击「运行」时执行；在工作线程中被调用
     let action: (_ path: String, _ log: Logger) -> Void
+    /// 「撤销」按钮（只有「删除临时文件」页用；移入回收目录后可一键还原）
+    var undoTitle: String? = nil
+    var onUndo: ((_ folder: String, _ artifactPath: String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
 
-            Text(help)
+            Text(help.plainMarkdown)     // SwiftUI 的 Text(String) 不解析 markdown（见 String.plainMarkdown）
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -55,6 +58,20 @@ struct SimpleFeatureView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            } else if let ok = model.resultOK {
+                // 完成横幅（UI 方案第 1 件）：状态 + 用时 + 产物路径（可点开 / 可复制）
+                ResultBanner(
+                    ok: ok,
+                    seconds: model.resultSeconds,
+                    path: model.resultPath,
+                    undoTitle: undoTitle,
+                    onUndo: {
+                        if let folder = Optional(model.path.trimmingCharacters(in: .whitespacesAndNewlines)),
+                           let p = model.resultPath, let handler = onUndo {
+                            handler(folder, p)
+                        }
+                    }
+                )
             }
 
             Spacer()
@@ -79,12 +96,30 @@ struct SimpleFeatureView: View {
     private func execute() {
         let target = model.path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return }
-        let logger = Logger(store: log)
+        // 抓**最后一行 = 契约行**：填完成横幅的状态与产物路径（EngineOutput 与 Windows 同一套判据）
+        final class LineBox: @unchecked Sendable { var last = "" }
+        let box = LineBox()
+        let logger = Logger(store: log) { line in
+            let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { box.last = t }
+        }
         let runner = model
         runner.running = true
+        runner.resultOK = nil
+        runner.resultPath = nil
+        let started = Date()
         DispatchQueue.global(qos: .userInitiated).async {
             action(target, logger)
-            DispatchQueue.main.async { runner.running = false }
+            let seconds = Date().timeIntervalSince(started)
+            let last = box.last
+            let ok = EngineOutput.indicatesSuccess(last)
+            let path = ok ? EngineOutput.artifactPath(from: last) : nil
+            DispatchQueue.main.async {
+                runner.running = false
+                runner.resultSeconds = seconds
+                runner.resultPath = path
+                runner.resultOK = ok
+            }
         }
     }
 }
@@ -96,10 +131,61 @@ struct SimpleTab: View {
     let pickKind: PickKind
     @ObservedObject var log: LogStore
     let action: (_ path: String, _ log: Logger) -> Void
+    var undoTitle: String? = nil
+    var onUndo: ((_ folder: String, _ artifactPath: String) -> Void)? = nil
 
     @StateObject private var model = PathRunnerModel()
 
     var body: some View {
-        SimpleFeatureView(model: model, help: help, pickKind: pickKind, log: log, action: action)
+        SimpleFeatureView(model: model, help: help, pickKind: pickKind, log: log,
+                          action: action, undoTitle: undoTitle, onUndo: onUndo)
+    }
+}
+
+/// 完成横幅（UI 方案第 1 件）：状态 + 用时 + 产物路径（在访达中显示 / 复制路径）。
+///
+/// 编辑最常问的两句是「跑完了吗」「产物在哪」—— 引擎的契约行里本来就有产物路径，
+/// 界面把它做成**常驻 + 可点开 + 可复制**，比让人翻日志强得多。
+struct ResultBanner: View {
+
+    let ok: Bool
+    let seconds: Double
+    let path: String?
+    var undoTitle: String? = nil
+    var onUndo: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(ok ? "✅ 完成" : "❌ 失败 / 有错误")
+                .font(.callout).fontWeight(.medium)
+                .foregroundStyle(ok ? Color.green : Color.red)
+            if seconds >= 1 {
+                Text(String(format: "用时 %.1f 秒", seconds))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let p = path {
+                Text(p)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(p)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            if let p = path {
+                Button("在访达中显示") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+                }
+                Button("复制路径") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(p, forType: .string)
+                }
+            }
+            if let title = undoTitle, let onUndo {
+                Button(title, action: onUndo)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }

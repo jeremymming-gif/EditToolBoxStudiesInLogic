@@ -377,6 +377,11 @@ _RESULT_1_DEFAULT = "❗ 完成，但有需要处理的结果（退出码 1，�
 #: （`2026年第5期(90)`），字符集一排除括号就把路径截断了（第一版就这么错的）。
 _PATH_START = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
 
+#: 路径后面允许出现、且表示"路径到此为止"的字符（全角/半角括号、标点、空白、引号）。
+#: 见 `artifact_path()` 里的注释：不要求边界的话会退化成父目录。
+#: ⚠️ 必须同时含**左括号**：尾部注释形如 `（共 176 页）`，路径紧挨的是 `（` 不是 `）`。
+_PATH_BOUNDARY = set("（）()「」『』【】[]{}”。.…，,；;：: \t\n\r\"'")
+
 
 def artifact_path(last_line: str) -> str:
     """从引擎的**契约行**（stdout 最后一行）里抠出产物路径；抠不到返回空串。
@@ -394,6 +399,12 @@ def artifact_path(last_line: str) -> str:
         rest = line[m.start():]
         for end in range(len(rest), 0, -1):
             cand = rest[:end].rstrip("。.…")
+            # ⚠️ 候选必须停在**边界字符**上（结尾 / 空格 / 括号 / 标点）。
+            #    否则「路径不存在」会退化成"存在的父目录"——`/tmp/不存在/xyz` 会被
+            #    抠成 `/tmp`，横幅显示一个**错路径**比不显示更糟（2026-10-17 双侧测试抓出）。
+            nxt = rest[end] if end < len(rest) else ""
+            if nxt and nxt not in _PATH_BOUNDARY:
+                continue
             if os.path.exists(cand):
                 if len(cand) > len(best):
                     best = cand

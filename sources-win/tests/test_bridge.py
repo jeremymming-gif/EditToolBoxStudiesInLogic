@@ -177,6 +177,8 @@ _ap_cases = [
     (f"完成。合并文件：{_ap_pdf}（共 176 页）", _ap_pdf),
     (f"完成。生成目录 2 份（{_ap_dir}）", _ap_dir),
     ("没有路径的一行", ""),
+    # 反例：路径不存在时**不许**退回"存在的父目录"（`/tmp` 是存在的！）
+    (f"完成。产物目录：{_ap_dir}/不存在的子目录_zzz", ""),
 ]
 check("(b) 能从契约行里抠出产物路径（含带括号的期目录名 / 尾部注释 / 全角右括号）",
       all(E.artifact_path(line) == want for line, want in _ap_cases),

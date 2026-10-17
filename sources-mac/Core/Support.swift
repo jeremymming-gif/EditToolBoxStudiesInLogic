@@ -142,6 +142,70 @@ enum EngineLocator {
     }
 }
 
+extension String {
+    /// 去掉界面文案里的 markdown 记号（`\*\*强调\*\*`、反引号代码）。
+    ///
+    /// SwiftUI 的 `Text(String)` **不解析** markdown（只有 `LocalizedStringKey` 才解析），
+    /// 字符串里写着 `**一期的目录**` 就会把星号原样画出来 —— 编辑看到「选**一期的目录**」。
+    /// 与 Windows 侧同一个毛病（那边 2026-10-17 截图发现后加了 `plain()`）。只用于**界面文案**；
+    /// 运行日志保持引擎原文（那是证据，两侧一致）。
+    var plainMarkdown: String {
+        replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+    }
+}
+
+/// 从引擎的**契约行**（stdout 最后一行）里抠出产物路径 —— 与 Windows 侧
+/// `sources-win/engine.py` 的 `artifact_path()` 同一套判据（两平台不许有两份判据）：
+/// 对每个「路径起点」取**文件系统上真的存在的最长前缀**，这样路径里的括号、尾巴上的
+/// `（共 176 页）` / `）` / `。` 都不会误伤；期目录名里就带半角括号（`2026年第5期(90)`）。
+enum EngineOutput {
+
+    /// 路径后面允许出现、且表示"路径到此为止"的字符（与 Windows 侧 `_PATH_BOUNDARY` 同一套）。
+    /// ⚠️ 必须同时含**左括号**：尾部注释形如 `（共 176 页）`，路径紧挨的是 `（` 不是 `）`。
+    static let pathBoundary: Set<Character> = Set("（）()「」『』【】[]{}”。.…，,；;：: \t\n\r\"'")
+
+    static func artifactPath(from line: String) -> String? {
+        guard !line.isEmpty else { return nil }
+        let scalars = Array(line)
+        var best = ""
+        var i = 0
+        while i < scalars.count {
+            var start: Int? = nil
+            if scalars[i] == "/" {
+                start = i
+            } else if scalars[i].isASCII, scalars[i].isLetter,
+                      i + 1 < scalars.count, scalars[i + 1] == ":",
+                      i + 2 < scalars.count, scalars[i + 2] == "/" || scalars[i + 2] == "\\" {
+                start = i                       // Windows 盘符（C:\ 或 C:/）
+            }
+            guard let begin = start else { i += 1; continue }
+            var end = scalars.count
+            while end > begin {
+                let candidate = String(scalars[begin..<end])
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "。.…"))
+                // ⚠️ 候选必须停在**边界字符**上（结尾 / 空格 / 括号 / 标点），
+                //    否则「路径不存在」会退化成"存在的父目录"（`/tmp/x` → `/tmp`），
+                //    横幅显示一个错路径比不显示更糟。与 Windows 侧同一判据（2026-10-17）。
+                let nextScalar = end < scalars.count ? scalars[end] : nil
+                let atBoundary = nextScalar == nil || EngineOutput.pathBoundary.contains(nextScalar!)
+                if atBoundary, FileManager.default.fileExists(atPath: candidate) {
+                    if candidate.count > best.count { best = candidate }
+                    break
+                }
+                end -= 1
+            }
+            i += 1
+        }
+        return best.isEmpty ? nil : best
+    }
+
+    /// 契约行是不是「成功」：引擎成功时最后一行固定以 `完成。` 开头（`docs/ENGINE_API.md` 五）。
+    static func indicatesSuccess(_ line: String) -> Bool {
+        line.trimmingCharacters(in: .whitespaces).hasPrefix("完成。")
+    }
+}
+
 enum Shell {
 
     static let extraPaths = [

@@ -68,21 +68,30 @@ struct MainWindow: View {
                     .tabItem { Text("合并文件") }
 
                 // ---------- 8. 删除临时文件 ----------
+                // UI 方案第 3 件：**先确认、再移入 .toolbox-trash（可撤销）**，不再直接删；
+                // 跑完横幅上有「撤销清理」，把文件搬回原处（引擎侧保证不覆盖已有文件）。
                 SimpleTab(
                     help: """
                     使用说明：输入路径，例如：
                     …/Studies_in_Logic_Database/2026年第5期(90)
 
-                    点击运行则可删除此文件夹内及子文件夹内所有临时文件：
+                    点击运行会**先确认**，再把此文件夹内及子文件夹内的临时文件
+                    **移入同目录的 .toolbox-trash/**（可撤销，不会直接删掉）：
                     .aux, .bbl, .bcf, .blg, .out, .run.xml, .synctex.gz, .DS_Store
-                    在更换设备并要修改 tex 或 bib 时使用，避免编译出现问题；
-                    也会顺手清掉 macOS 访达生成的 .DS_Store。
+                    不会动 .tex / .pdf / .sty / .bib / .log，也不进 original/（作者来稿）。
+                    在更换设备并要修改 tex 或 bib 时使用，避免编译出现问题。
                     """,
                     pickKind: .directory,
-                    log: log
-                ) { path, logger in
-                    DeleteTempFeature.run(folderPath: path, log: logger)
-                }
+                    log: log,
+                    action: { path, logger in
+                        DeleteTempFeature.run(folderPath: path, log: logger)
+                    },
+                    undoTitle: "撤销清理",
+                    onUndo: { folder, trashDir in
+                        DeleteTempFeature.restore(folderPath: folder, trashDir: trashDir,
+                                                  log: Logger(store: log))
+                    }
+                )
                 .tabItem { Text("删除临时文件") }
 
                 // ---------- 9. 设置 ----------

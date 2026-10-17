@@ -42,8 +42,13 @@ func readSource(_ rel: String) -> String {
 print("── (a) 删除临时文件 → cleantemp.py ──")
 let cleanTool = toolbox.appendingPathComponent("Engine/cleantemp.py").path
 check("(a) 生产源码里的 Engine/cleantemp.py 真的在", FileManager.default.fileExists(atPath: cleanTool))
-check("(a) argv = `--folder <目录>`",
-      DeleteTempFeature.arguments(folderPath: "/期 90") == ["--folder", "/期 90"])
+check("(a) argv：默认走**移入回收目录**（`--trash`，UI 方案第 3 件）",
+      DeleteTempFeature.arguments(folderPath: "/期 90") == ["--folder", "/期 90", "--trash"])
+check("(a) 老行为（直接删）仍可拼出来：`trash: false` 时不带 `--trash`",
+      DeleteTempFeature.arguments(folderPath: "/期 90", trash: false) == ["--folder", "/期 90"])
+check("(a) 撤销：`--folder <目录> --restore <回收目录>`",
+      DeleteTempFeature.restoreArguments(folderPath: "/期 90", trashDir: "/期 90/.toolbox-trash/1")
+      == ["--folder", "/期 90", "--restore", "/期 90/.toolbox-trash/1"])
 check("(a) 从 convert.py 的目录里找到 cleantemp.py",
       DeleteTempFeature.locateTool(convertTool: convertTool) == cleanTool)
 check("(a) 反例：引擎没找到 → nil", DeleteTempFeature.locateTool(convertTool: nil) == nil)
@@ -54,8 +59,42 @@ let cleanSrc = readSource("Features/DeleteTempFeature.swift")
 check("(a) Swift 侧**不再自带**后缀清单（`suffixes = [...]` 已随逻辑删掉）",
       !cleanSrc.contains("static let suffixes"))
 check("(a) Swift 侧**不再**直接删文件（没有 `removeItem`）", !cleanSrc.contains("removeItem"))
+check("(a) 界面对话框说清「可撤销」且按钮是动词（不是「确定吗」）",
+      cleanSrc.contains("移入回收目录") && cleanSrc.contains("可撤销"))
+check("(a) 横幅上的「撤销清理」接在删除页（`onUndo`）",
+      readSource("Views/MainWindow.swift").contains("undoTitle: \"撤销清理\"")
+      && readSource("Views/MainWindow.swift").contains("DeleteTempFeature.restore"))
 check("(a) 界面调用点未变（`SimpleTab` 里仍是 `DeleteTempFeature.run(folderPath:log:)`）",
       readSource("Views/MainWindow.swift").contains("DeleteTempFeature.run(folderPath: path, log: logger)"))
+
+// ── (a2) 完成横幅：契约行 → 状态 + 产物路径（UI 方案第 1 件，mac 侧）────────────
+print("── (a2) 完成横幅：从契约行抠产物路径 ──")
+let tmpDir = FileManager.default.temporaryDirectory
+    .appendingPathComponent("cutover_banner_\(UUID().uuidString)").path
+try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+let issueName = "2026年第5期(99)"                 // 真实期目录名里带半角括号
+let issueDir = (tmpDir as NSString).appendingPathComponent(issueName)
+try? FileManager.default.createDirectory(atPath: issueDir, withIntermediateDirectories: true)
+let reportFile = (issueDir as NSString).appendingPathComponent("信息检查.txt")
+FileManager.default.createFile(atPath: reportFile, contents: Data("x".utf8))
+let pdfFile = (tmpDir as NSString).appendingPathComponent("合并.pdf")
+FileManager.default.createFile(atPath: pdfFile, contents: Data("%PDF-1.4\n".utf8))
+
+check("(a2) 契约行「产物目录：<带括号的期目录>」能抠出完整路径（不靠路径字符集截断）",
+      EngineOutput.artifactPath(from: "完成。产物目录：\(issueDir)") == issueDir,
+      EngineOutput.artifactPath(from: "完成。产物目录：\(issueDir)") ?? "<nil>")
+check("(a2) 契约行「（报告：…）」能抠出文件路径",
+      EngineOutput.artifactPath(from: "完成。检查 2 篇（报告：\(reportFile)）") == reportFile)
+check("(a2) 尾部注释不影响：`合并文件：<pdf>（共 176 页）`",
+      EngineOutput.artifactPath(from: "完成。合并文件：\(pdfFile)（共 176 页）") == pdfFile)
+check("(a2) 反例：路径不存在 → nil（界面就只显示状态、不给按钮，不猜）",
+      EngineOutput.artifactPath(from: "完成。产物目录：/tmp/绝对不存在的目录_zzz") == nil)
+check("(a2) 反例：路径不存在时**不许**退回「存在的父目录」（/tmp 是存在的！）",
+      EngineOutput.artifactPath(from: "完成。产物目录：/tmp/绝对不存在的目录_zzz/更深一层") == nil)
+check("(a2) 反例：没有路径的一行 → nil", EngineOutput.artifactPath(from: "没有路径的一行") == nil)
+check("(a2) 成功判定：契约行以 `完成。` 开头 = 成功",
+      EngineOutput.indicatesSuccess("完成。检查 1 篇") && !EngineOutput.indicatesSuccess("程序错误"))
+try? FileManager.default.removeItem(atPath: tmpDir)
 
 // ── (b) 编译全部 ─────────────────────────────────────────────────────────
 print("\n── (b) 编译全部 → compileall.py ──")

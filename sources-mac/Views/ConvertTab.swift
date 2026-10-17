@@ -84,9 +84,9 @@ struct ConvertTab: View {
                             // 只在 AI 勾着时可见：没勾 AI 就没有合并通道，这个开关无从谈起。
                             Toggle("保留原 reference.bib（不并入 AI 结果）",
                                    isOn: binding(.keepOriginalBib, \.keepOriginalBib))
-                            Text("勾上 = 只出《文献核实任务书》（引擎侧 --no-ai-merge）：AI 结果**不**写进产物，"
+                            Text("勾上 = 只出《文献核实任务书》（引擎侧 --no-ai-merge）：AI 结果不写进产物，"
                                  + "reference.bib 一个字节都不动。不勾时 AI 结果会并入交付的 reference.bib，"
-                                 + "合并**之前**的那份会先备份成 reference.bib.ai前（要回滚就把它覆盖回去）。")
+                                 + "合并之前的那份会先备份成 reference.bib.ai前（要回滚就把它覆盖回去）。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 18)
@@ -303,7 +303,7 @@ struct ConvertTab: View {
                  + "并把通过安全校验的结果并入 reference.bib）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("⚠ 工具只做**初排**。数字前缀、目录顺序在三校/蓝样阶段再加。")
+            Text("⚠ 工具只做初排。数字前缀、目录顺序在三校/蓝样阶段再加。".plainMarkdown)
                 .font(.caption)
                 .foregroundStyle(.orange)
         }
@@ -355,34 +355,34 @@ struct ConvertTab: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("✔ 已配置 \(settings.aiSummary)（密钥 \(AppSettings.mask(settings.aiKey))）"
                          + " —— 转换时加 --verify-refs：在本机直连这个端点，按《文献核实任务书》的同一份"
-                         + "规范逐条生成修订后的 bib，并把通过安全校验的条目**并入交付的 reference.bib**"
+                         + "规范逐条生成修订后的 bib，并把通过安全校验的条目并入交付的 reference.bib"
                          + "（合并前先备份成 reference.bib.ai前；理由与逐条记录写进《…_文献核实.md》"
                          + "的「六、合并记录」）。")
                         .foregroundStyle(.green)
                     if settings.aiEngineKnobs.usesWebSearch {
-                        Text("🌐 本次**已开启联网检索**（通道 responses + web_search）：引擎会带上"
-                             + "服务端检索工具，并要求模型**先查官方来源、把打开的页面 URL 写进每条上方的 "
-                             + "`% 来源：` 标注**，查不到的字段照旧省略并写 `% ⚠ 待核实：…`。")
+                        Text("🌐 本次已开启联网检索（通道 responses + web_search）：引擎会带上"
+                             + "服务端检索工具，并要求模型先查官方来源、把打开的页面 URL 写进每条上方的 "
+                             + "`% 来源：` 标注，查不到的字段照旧省略并写 `% ⚠ 待核实：…`。")
                             .foregroundStyle(.green)
                         Text("⚠ 但「勾了开关」不等于「端点真的会查」：DeepSeek 官方文档把 Responses 的 "
-                             + "`web_search` 列为**被忽略**的内置工具（不报错、也不检索）。请到「设置」页点"
-                             + "「测试连接 / 体检」看 **⑤ 检索探针** 的实测结论；本次跑完引擎会在日志与"
-                             + "「六、合并记录」里报**检索证据**（0 次 = 只能凭记忆）——本工具绝不假装已联网。")
+                             + "`web_search` 列为被忽略的内置工具（不报错、也不检索）。请到「设置」页点"
+                             + "「测试连接 / 体检」看 ⑤ 检索探针 的实测结论；本次跑完引擎会在日志与"
+                             + "「六、合并记录」里报检索证据（0 次 = 只能凭记忆）——本工具绝不假装已联网。")
                             .foregroundStyle(.orange)
                     } else if settings.aiProtocol == .responses {
-                        Text("⚠ 通道是 responses，但**没开「联网检索」**：本次模型只能凭记忆作答"
+                        Text("⚠ 通道是 responses，但没开「联网检索」：本次模型只能凭记忆作答"
                              + "（任务书里同样写明）。要真联网请在「设置」页勾上「联网检索」，"
                              + "并先跑一次 ⑤ 检索探针确认端点支持。")
                             .foregroundStyle(.orange)
                     } else {
-                        Text("⚠ **本次不是联网核实**（通道 chat、未启用检索）：模型只能凭记忆作答。"
+                        Text("⚠ 本次不是联网核实（通道 chat、未启用检索）：模型只能凭记忆作答。"
                              + "卷/期/页码/出版地想真查官方来源，请到「设置」页把「通道」改成 responses、"
                              + "勾上「联网检索」，并先跑一次 ⑤ 检索探针确认端点支持（DeepSeek 的 API "
-                             + "目前**不支持**搜索，探针会如实报「不支持」）。")
+                             + "目前不支持搜索，探针会如实报「不支持」）。")
                             .foregroundStyle(.orange)
                     }
                     Text("AI 调用失败、回复被截断、或没有任何一条通过安全校验时，"
-                         + "reference.bib **一个字节都不会改**（详见下方日志）。"
+                         + "reference.bib 一个字节都不会改（详见下方日志）。"
                          + "无论哪种通道，并完之后都必须人工过一遍。")
                         .foregroundStyle(.secondary)
                 }
