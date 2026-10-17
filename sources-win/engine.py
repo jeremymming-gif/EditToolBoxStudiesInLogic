@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 #: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
-           "infocheck.py", "toc.py")
+           "infocheck.py", "toc.py", "publish.py")
 
 
 # ── 定位引擎与解释器 ─────────────────────────────────────────────────────

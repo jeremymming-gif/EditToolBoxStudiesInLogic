@@ -111,10 +111,10 @@ check("(b) 外壳入口表与**打包 dispatcher** 的 `ENTRIES` 逐项一致"
       "（少一项 = 那个标签页在用户机器上直接退出 2）",
       set(E.ENTRIES) == set(_DISP.ENTRIES),
       f"外壳 {len(E.ENTRIES)} 个 {E.ENTRIES} ／ dispatcher {len(_DISP.ENTRIES)} 个 {_DISP.ENTRIES}")
-check("(b) 八个入口名字都在表里（写错名字 = 同上；2026-10-17 起是八个）",
+check("(b) 九个入口名字都在表里（写错名字 = 同上；2026-10-17 起是九个，含本期出刊）",
       set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
                          "cleantemp.py", "compileall.py", "proofcheck.py",
-                         "infocheck.py", "toc.py"}, f"{E.ENTRIES}")
+                         "infocheck.py", "toc.py", "publish.py"}, f"{E.ENTRIES}")
 
 c7 = E.infocheck_call(folder=r"E:\\期\\90", preview=True)
 check("(b) 检查tex信息：`--folder` + `--preview`（界面表格用）",
