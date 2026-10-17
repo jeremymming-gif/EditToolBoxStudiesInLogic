@@ -588,8 +588,17 @@ class SettingsTab(ttk.Frame):
             var = tk.StringVar(value=str(cfg.get("api", {}).get(key, "") or cfg.get(key, "")))
             self.vars[key] = var
             show = "•" if key == "key" else ""
-            tk.Entry(self, textvariable=var, width=52, show=show).grid(
-                row=row, column=1, padx=10, pady=3, sticky="ew")
+            entry = tk.Entry(self, textvariable=var, width=52, show=show)
+            entry.grid(row=row, column=1, padx=10, pady=3, sticky="ew")
+            if key == "key":
+                self.key_entry = entry                      # 显示/隐藏要切它的 show 属性
+                self.v_show_key = tk.BooleanVar(value=False)
+                tools = ttk.Frame(self)
+                tools.grid(row=row, column=1, padx=10, sticky="e")
+                tk.Checkbutton(tools, text="显示密钥", variable=self.v_show_key,
+                               command=self._toggle_key_visible).pack(side="right")
+                tk.Button(tools, text="清除密钥", width=10, command=self._clear_key).pack(
+                    side="right", padx=6)
             ttk.Label(self, text=hint, foreground="#666").grid(
                 row=row + 1, column=1, padx=10, sticky="w")
             row += 2
@@ -605,9 +614,32 @@ class SettingsTab(ttk.Frame):
         tk.Entry(opts, textvariable=self.v_maxtok, width=10).pack(side="left", padx=(4, 12))
         _check(opts, "允许联网检索", self.v_web).pack(side="left")
 
+        # 密钥常驻状态行：说清「已存/末四位/只在本机」—— 隐藏字段光靠打码，编辑不知道配没配对
+        self.key_status = ttk.Label(self, text="", wraplength=760, justify="left",
+                                    foreground=theme.COLOR["muted"])
+        self.key_status.grid(row=row, column=1, padx=10, pady=(0, 4), sticky="w"); row += 1
         tk.Button(self, text="保存设置", width=14, command=self.save).grid(
             row=row, column=1, padx=10, pady=10, sticky="w")
         self.refresh_status()
+        self.refresh_key_status()
+
+    def _toggle_key_visible(self) -> None:
+        """眼睛开关：只切输入框的显示方式，**不落盘**。"""
+        self.key_entry.config(show="" if self.v_show_key.get() else "•")
+
+    def _clear_key(self) -> None:
+        """清空密钥（只清界面输入框；点「保存」才真正覆盖磁盘 —— 与 mac 同一口径）。"""
+        self.vars["key"].set("")
+        self.refresh_key_status()
+
+    def refresh_key_status(self) -> None:
+        key = self.vars["key"].get().strip()
+        if not key:
+            self.key_status.config(text="密钥：未配置（本机/自建端点通常不需要）")
+            return
+        tail = key[-4:] if len(key) >= 8 else "…"
+        self.key_status.config(
+            text=f"密钥：已保存 · 末四位 {tail} · 只存在本机设置文件里，不会上传、不进命令行")
 
     def refresh_status(self) -> None:
         st = E.status()
@@ -636,7 +668,11 @@ class SettingsTab(ttk.Frame):
         except Exception as e:  # noqa: BLE001
             messagebox.showerror(APP_TITLE, f"保存失败：{e}")
             return
-        messagebox.showinfo(APP_TITLE, f"已保存到：\n{path}")
+        # 保存回执：**写进窗口**而不是弹窗（静默成功/静默失败在用户眼里一样 —— 方案 §4）
+        self.refresh_key_status()
+        self.log(f"✅ 已保存设置（{time.strftime('%H:%M:%S')}，仅存在本机：{path}）") if hasattr(self, "log") else None
+        self.key_status.config(
+            text=f"✅ 已保存 · {time.strftime('%H:%M:%S')}（仅存在本机：{path}）")
 
 
 class MainWindow(tk.Tk):
