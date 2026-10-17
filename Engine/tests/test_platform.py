@@ -318,6 +318,25 @@ print("\n── (g) 打包 dispatcher 的入口表（Windows 包只认表里的�
 import engine_main as _em  # noqa: E402  模块级只定义 ENTRIES/USAGE，没有副作用
 
 CLIS = [f for f in ENTRY_FILES if f != "engine_main.py"]
+# ── 打包白名单守卫（2026-10-17 macOS 实例测试）──────────────────────────
+# `build.sh` 打包 Engine 用的是**白名单**：2026-10-17 新增 `publish.py` 时只改了
+# `engine_main.ENTRIES`、漏了 build.sh → v1.0.10 的 mac 包里「本期出刊」直接报
+# 「未找到出刊编排引擎 Engine/publish.py」（界面在、引擎不在）。
+# ⚠️ 这与案例 106 同型：`gen_docs` 的「App 包内一致性」只比对**已有文件**是否一致，
+#    **发现不了"少了一个文件"**。所以必须单独钉住"白名单覆盖全部交付 CLI"。
+try:
+    from pathlib import Path as _P
+    _repo = _P(__file__).resolve().parent.parent.parent
+    _build_sh = _repo / "build.sh"
+    if _build_sh.exists():
+        _bs = _build_sh.read_text(encoding="utf-8")
+        _not_packaged = [n for n in ENTRY_FILES if n not in _bs]
+        check("(g) `build.sh` 打包白名单覆盖**全部**交付 CLI"
+              "（少一个 = 那个入口在 mac 包里根本不存在）",
+              not _not_packaged, f"build.sh 未提及: {_not_packaged}")
+except Exception as _e:  # noqa: BLE001
+    print(f"SKIP  (g) build.sh 白名单守卫（{_e}）")
+
 check("(g) dispatcher 的 `ENTRIES` 覆盖**全部**交付 CLI"
       "（漏一个 = 那个入口在 Windows 包里「不认识的入口」退出 2）",
       set(_em.ENTRIES) == set(CLIS), f"CLI {sorted(CLIS)} ／ dispatcher {sorted(_em.ENTRIES)}")
