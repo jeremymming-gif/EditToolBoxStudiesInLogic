@@ -32,6 +32,8 @@ final class PathRunnerModel: ObservableObject {
     @Published var resultPath: String? = nil
     /// 用时（秒）
     @Published var resultSeconds: Double = 0
+    /// 本次运行的开始时间（运行中算"已用 X 秒"）
+    @Published var startedAt: Date? = nil
 }
 
 // MARK: - AI 的两个「请求体旋钮」（设置页 → 引擎）

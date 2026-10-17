@@ -52,11 +52,24 @@ struct SimpleFeatureView: View {
             .foregroundStyle(.tertiary)
 
             if model.running {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在运行，请查看下方运行日志…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // UI 方案第 2 件：不确定进度条 + 秒表（不知道总量就不编百分比，只证明"在动"）
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在运行，请查看下方运行日志…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let t0 = model.startedAt {
+                            TimelineView(.periodic(from: t0, by: 0.5)) { context in
+                                Text(String(format: "已用 %.1f 秒",
+                                            context.date.timeIntervalSince(t0)))
+                                    .font(.caption)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    ProgressView().progressViewStyle(.linear)
                 }
             } else if let ok = model.resultOK {
                 // 完成横幅（UI 方案第 1 件）：状态 + 用时 + 产物路径（可点开 / 可复制）
@@ -108,6 +121,7 @@ struct SimpleFeatureView: View {
         runner.resultOK = nil
         runner.resultPath = nil
         let started = Date()
+        runner.startedAt = started
         DispatchQueue.global(qos: .userInitiated).async {
             action(target, logger)
             let seconds = Date().timeIntervalSince(started)
@@ -116,6 +130,7 @@ struct SimpleFeatureView: View {
             let path = ok ? EngineOutput.artifactPath(from: last) : nil
             DispatchQueue.main.async {
                 runner.running = false
+                runner.startedAt = nil
                 runner.resultSeconds = seconds
                 runner.resultPath = path
                 runner.resultOK = ok

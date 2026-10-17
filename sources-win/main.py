@@ -23,6 +23,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import filedialog as fd
+from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -81,6 +82,8 @@ class TabPage(ttk.Frame):
         # 产物路径，界面把它做成**常驻 + 可点开 + 可复制**，比让人翻日志强得多。
         self.result_bar = ttk.Frame(self)
         self.result_bar.grid(row=row, column=0, padx=10, pady=(0, 6), sticky="w"); row += 1
+        # 不确定进度条（不知道总量就不编百分比，只表示"在动"）
+        self.progress = ttk.Progressbar(self.result_bar, mode="indeterminate", length=110)
         self.result_label = ttk.Label(self.result_bar, text="", wraplength=460, justify="left")
         self.result_label.pack(side="left")
         self.open_btn = tk.Button(self.result_bar, text="打开产物", width=10,
@@ -111,10 +114,20 @@ class TabPage(ttk.Frame):
         return {}
 
     # ── 完成横幅：运行中显示秒表，跑完显示状态 + 产物路径 ───────────────────
-    def show_running(self, seconds: float) -> None:
-        """运行中：常驻一条"正在运行 + 已用秒表"（进度不能停，见 UI 方案第 2 件）。"""
+    def show_running(self, seconds: float, phase: str = "") -> None:
+        """运行中：常驻一条"正在运行 + 已用秒表 + 当前阶段"＋不确定进度条。
+
+        UI 方案第 2 件：>10 秒的动作必须有"在动"的证据。引擎的阶段行（①②…）本来就在
+        日志里流式输出，这里把**最新一行**当阶段显示 —— 不需要知道总量，也**不编百分比**。
+        """
         self._result_path = ""
-        self.result_label.config(text=f"⏳ 正在运行…（已用 {seconds:.1f} 秒）")
+        text = f"⏳ 正在运行…（已用 {seconds:.1f} 秒）"
+        if phase:
+            text += f"｜{phase[:70]}"
+        self.result_label.config(text=text)
+        if not self.progress.winfo_ismapped():
+            self.progress.pack(side="left", padx=(8, 0))
+            self.progress.start(18)
         self.open_btn.config(state="disabled")
         self.copy_btn.config(state="disabled")
         self.result_bar.grid()
@@ -129,6 +142,8 @@ class TabPage(ttk.Frame):
         shown = text + (f"｜用时 {seconds:.1f} 秒" if seconds >= 1 else "")
         if path:
             shown += f"｜产物：{path}"
+        self.progress.stop()
+        self.progress.pack_forget()
         self.result_label.config(text=shown)
         self.open_btn.config(state="normal" if path else "disabled")
         self.copy_btn.config(state="normal" if path else "disabled")
@@ -643,6 +658,7 @@ class MainWindow(tk.Tk):
         self._proc: subprocess.Popen | None = None
         self._running_tab = None
         self._t0 = 0.0
+        self._phase = ""
         self._q: queue.Queue[str] = queue.Queue()
         self._busy = False
 
@@ -689,9 +705,25 @@ class MainWindow(tk.Tk):
         self.nav.selection_set("tab:0")
         self.show_tab(0)
 
-        self.output = tk.Text(self, height=18, wrap="none")
+        self.output = tk.Text(self, height=18, wrap="none",
+                              font=tkfont.nametofont("TkFixedFont"))   # 等宽：日志对齐
         self.output.pack(side="bottom", fill="both", expand=False)
         self.output.configure(state="disabled")
+        # 级别色（UI 方案 §2-8：普通/琥珀/红三档；颜色**不是唯一**区分手段 ——
+        # 行首本来就有 ✅/⚠/❌ 符号，色弱用户也能读）
+        self.output.tag_configure("err", foreground=theme.COLOR["error"])
+        self.output.tag_configure("warn", foreground=theme.COLOR["warn"])
+        self.output.tag_configure("ok", foreground=theme.COLOR["ok"])
+        # 日志工具条：自动滚动开关（上翻看旧日志时别被强拉到底）、跳到最新、复制全部、当前阶段
+        self.log_tools = ttk.Frame(self)
+        self.log_tools.pack(side="bottom", fill="x", padx=10, pady=(2, 0))
+        self.v_autoscroll = tk.BooleanVar(value=True)
+        ttk.Checkbutton(self.log_tools, text="自动滚动", variable=self.v_autoscroll).pack(side="left")
+        tk.Button(self.log_tools, text="跳到最新", command=lambda: self.output.see("end")).pack(
+            side="left", padx=6)
+        tk.Button(self.log_tools, text="复制全部", command=self._copy_log).pack(side="left")
+        self.phase_label = ttk.Label(self.log_tools, text="", foreground=theme.COLOR["muted"])
+        self.phase_label.pack(side="left", padx=12)
 
         self.log(f"{APP_TITLE}")
         self.log(E.status().describe())
@@ -726,11 +758,32 @@ class MainWindow(tk.Tk):
             self.tabs[int(iid.split(":", 1)[1])].tkraise()
 
     # ── 日志 ──
+    @staticmethod
+    def _level_tag(text: str) -> str:
+        """按内容判级别（与 mac 侧同一套词表：前缀符号 + 关键中文）。
+        颜色只是辅助 —— 行首符号本来就在，色弱可读。"""
+        if any(k in text for k in ("❌", "程序错误", "未找到", "启动失败")):
+            return "err"
+        if any(k in text for k in ("⚠", "警告")):
+            return "warn"
+        if any(k in text for k in ("✅", "完成。")):
+            return "ok"
+        return ""
+
     def log(self, text: str) -> None:
         self.output.configure(state="normal")
-        self.output.insert("end", text + "\n")
-        self.output.see("end")
+        self.output.insert("end", text + "\n", self._level_tag(text))
+        if self.v_autoscroll.get():          # 上翻看旧日志时别把人强拉到底
+            self.output.see("end")
         self.output.configure(state="disabled")
+
+    def _copy_log(self) -> None:
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self.output.get("1.0", "end-1c"))
+            self.log("（已复制全部运行日志到剪贴板）")
+        except tk.TclError:
+            pass
 
     def _drain(self) -> None:
         """把工作线程放进队列的日志搬到界面上（Tkinter 不是线程安全的）。"""
@@ -759,11 +812,13 @@ class MainWindow(tk.Tk):
                         tab.show_result(text, path, seconds)
                     continue
                 self.log(line)
+                if self._busy:
+                    self._phase = line.strip()          # 当前阶段 = 最新一行（引擎的阶段行）
         except queue.Empty:
             pass
-        # 秒表：运行中每 80ms 刷一次（进度"在动"要看得见 —— UI 方案第 2 件）
+        # 秒表 + 当前阶段：运行中每 80ms 刷一次（进度"在动"要看得见 —— UI 方案第 2 件）
         if self._busy and self._running_tab is not None:
-            self._running_tab.show_running(time.monotonic() - self._t0)
+            self._running_tab.show_running(time.monotonic() - self._t0, self._phase)
         self.after(80, self._drain)
 
     # ── 运行 ──
