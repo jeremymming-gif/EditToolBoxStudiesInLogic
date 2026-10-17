@@ -446,17 +446,27 @@ def stage_original(
     # 避免同一个文件既平铺一份、又随目录一份。
     if copy_dir and files:
         parent = os.path.dirname(os.path.abspath(files[0][0]))
-        if parent and os.path.isdir(parent) and not dest_abs.startswith(parent + os.sep):
-            sub = os.path.join(dest, os.path.basename(parent))
-            if os.path.abspath(sub) != dest_abs:
-                if os.path.exists(sub):
-                    shutil.rmtree(sub)
-                shutil.copytree(parent, sub)
-                copied_dir = os.path.abspath(parent)
-                n = sum(len(f) for _, _, f in os.walk(sub))
-                copied.append(f"{os.path.basename(parent)}/")
+        parent_abs = os.path.abspath(parent) if parent else ""
+        if parent and os.path.isdir(parent):
+            if parent_abs == dest_abs or parent_abs.startswith(dest_abs + os.sep):
+                # 源目录本来就在 original/ 内（重跑上次归档的多文件稿）→ 不能再整目录复制：
+                # 否则 sub 恰等于 parent，下面 rmtree(sub) 会把源目录删掉（第 120 条评审发现）。
                 if verbose:
-                    print(f"   · {os.path.basename(parent)}/  （整目录，{n} 个文件）")
+                    print("   · 源文件已在 original/ 内：跳过整目录归档")
+            elif not dest_abs.startswith(parent_abs + os.sep):
+                sub = os.path.join(dest, os.path.basename(parent))
+                sub_abs = os.path.abspath(sub)
+                if sub_abs not in (parent_abs, dest_abs) and not parent_abs.startswith(
+                    sub_abs + os.sep
+                ):
+                    if os.path.exists(sub):
+                        shutil.rmtree(sub)
+                    shutil.copytree(parent, sub)
+                    copied_dir = parent_abs
+                    n = sum(len(f) for _, _, f in os.walk(sub))
+                    copied.append(f"{os.path.basename(parent)}/")
+                    if verbose:
+                        print(f"   · {os.path.basename(parent)}/  （整目录，{n} 个文件）")
 
     for path, role in files:
         if not path or not os.path.exists(path):
@@ -864,7 +874,7 @@ def main() -> int:
     ap.add_argument("--no-original", action="store_true",
                     help="不把源稿归档到 original/（默认会归档）")
     ap.add_argument("--copy-dir", action="store_true",
-                    help="连源文件所在整个目录一起归档（LaTeX 投稿常是一个文件夹）")
+                    help="连源文件所在整个目录一起归档（LaTeX 投稿常是一个文件夹）；多文件 LaTeX 稿自动启用")
     ap.add_argument("--dry-run", action="store_true", help="只显示将要做什么，不写任何文件")
     ap.add_argument("--force", action="store_true", help="目标文件夹已存在时覆盖（默认拒绝）")
     ap.add_argument("--list-templates", action="store_true", help="列出可用模板后退出")
@@ -1117,10 +1127,15 @@ def main() -> int:
     # ⑧ 源稿归档到 original/（与往期文件夹命名一致）
     if not args.no_original:
         print("\n⑧ 归档源稿到 original/")
+        # 第 120 条：多文件 LaTeX 稿（展开了 \input）的正文来自整个文件夹，只归档主文件
+        # 会丢分节稿 —— 这种情况自动按整目录归档（等价 --copy-dir）。
+        auto_copy_dir = bool(getattr(res, "expanded_inputs", 0)) and not args.copy_dir
+        if auto_copy_dir:
+            print("   （正文源是多文件稿：已按整目录归档，同 --copy-dir）")
         stage_original(
             out_dir,
             [(source, "正文源")] + ([(metadata, "元数据源")] if metadata else []),
-            copy_dir=args.copy_dir,
+            copy_dir=args.copy_dir or auto_copy_dir,
         )
 
     if res.warnings:

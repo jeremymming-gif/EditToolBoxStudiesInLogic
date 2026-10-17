@@ -306,7 +306,11 @@ def pick_main_docx(paths: list[str]) -> tuple[str, str]:
 
 
 def extract_body(path: str) -> str:
-    text = open(path, encoding="utf-8", errors="replace").read()
+    return extract_body_text(open(path, encoding="utf-8", errors="replace").read())
+
+
+def extract_body_text(text: str) -> str:
+    """从整份 `.tex` 文本里取正文（第 120 条起：多文件稿先展开 `\\input` 再走这里）。"""
     i = text.find("\\begin{document}")
     body = text[i + len("\\begin{document}") :] if i >= 0 else text
     # 去掉标题页打印与非原创文章信息

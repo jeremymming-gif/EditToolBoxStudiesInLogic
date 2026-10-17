@@ -73,6 +73,7 @@ esac
 QUICK=(
   test_bib_protection_forms     # 纯字符串判据（bib 保护写法），无文件/子进程依赖
   test_infocheck_toc            # 合成期目录快照 + 仓库内 fixtures；Swift 真差分缺席即 SKIP
+  test_latex_preamble           # 纯文本判据 + 合成 .tex 构建；不读语料、不跑 TeX
   test_merge_into               # 合成 bib，全在 mktemp 目录里；不碰真实产物
   test_merge_record_provenance  # 同上；真产物那组靠 SLCN_BO_CHEN_DIR，默认缺席即 SKIP
   test_mock_keyed_responses     # 只打 127.0.0.1 的瞬时 mock（自起自停），不跑 convert/TeX/语料

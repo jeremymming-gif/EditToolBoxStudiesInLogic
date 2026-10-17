@@ -78,6 +78,9 @@
    静态守卫在 `Engine/tests/test_platform.py` 的 (d) 组。
 4. **改完要跑的守卫**：`Engine/tests/test_docs_consistency.py`（AUTO 块不过期 / 引用路径存在 / 条目号可查 / 案例零丢失）、
    `Engine/tests/test_platform.py`；重活还要走 `Engine/README.md` 的「固定验收链条」。本文件自己的路径引用也在 (b) 组检查范围内。
+5. **LaTeX 前言依赖迁移只增不改**（第 120 条）：只搬模板没有的宏包 / tikz 库 / 定义；模板管理的包
+   （ctex / fontspec / geometry / hyperref / biblatex / 本刊 sty）不搬；Word 通道产物必须零变化。
+   位置：`Engine/slcn/preamble.py`；`Engine/tests/test_latex_preamble.py`。
 
 ## 七、这份清单自己怎么维护
 

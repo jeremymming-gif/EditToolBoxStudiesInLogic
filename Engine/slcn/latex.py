@@ -263,28 +263,71 @@ def replace_macro_value(text: str, name: str, new_value: str) -> str:
 _INPUT_RE = re.compile(r"\\(?:input|include)\s*\{([^{}]+)\}")
 
 
-def expand_inputs(path: str, text: str | None = None, _depth: int = 0) -> str:
+def _active_input_matches(text: str) -> list[re.Match]:
+    """返回**没被注释掉**的 \\input/\\include 匹配（注释里的命令不生效）。"""
+    out: list[re.Match] = []
+    for m in _INPUT_RE.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        i = line_start
+        commented = False
+        while i < m.start():
+            ch = text[i]
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "%":
+                commented = True
+                break
+            i += 1
+        if not commented:
+            out.append(m)
+    return out
+
+
+def count_active_inputs(text: str) -> int:
+    """可生效的 \\input/\\include 数量（注释掉的不算；第 120 条）。"""
+    return len(_active_input_matches(text))
+
+
+def expand_inputs(
+    path: str, text: str | None = None, _depth: int = 0, _stats: dict | None = None
+) -> str:
     """递归展开 \\input{...} / \\include{...}，把正文真正读进来。
 
     为什么必须有这个：实测全库 194 份成品 tex 里有 10 份把正文拆到了外部文件，
     而且好几份就叫 `copy_from_word_body.tex`（手工从 Word 转出来后另存的）。
     不展开的话，这些文章的「正文」只有一行 \\input，比对结果会假性跌到 6%。
+
+    **被 `%` 注释掉的不展开**（第 120 条）：作者把旧附录注释掉是常态，展开它等于
+    把本应排除的内容带进正文（合成稿实测会泄漏）。
     """
+    if _stats is not None and _depth == 0:
+        _stats.setdefault("expanded", 0)
     if _depth > 6:
         return text or ""
     if text is None:
         text = open(path, encoding="utf-8", errors="replace").read()
     base = os.path.dirname(os.path.abspath(path))
+    matches = _active_input_matches(text)
+    if not matches:
+        return text
 
-    def repl(m: re.Match) -> str:
+    parts: list[str] = []
+    last = 0
+    for m in matches:
+        parts.append(text[last : m.start()])
         rel = m.group(1).strip()
         cand = rel if os.path.splitext(rel)[1] else rel + ".tex"
         target = os.path.join(base, cand)
-        if not os.path.exists(target):
-            return m.group(0)  # 找不到就原样保留，便于发现缺文件
-        return expand_inputs(target, _depth=_depth + 1)
-
-    return _INPUT_RE.sub(repl, text)
+        if os.path.exists(target):
+            parts.append(expand_inputs(target, _depth=_depth + 1, _stats=_stats))
+            if _stats is not None:
+                _stats["expanded"] = _stats.get("expanded", 0) + 1
+        else:
+            parts.append(m.group(0))  # 找不到就原样保留，便于发现缺文件
+        last = m.end()
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def split_body(text: str) -> tuple[str, str]:

@@ -8,16 +8,19 @@ import shutil
 from dataclasses import dataclass, field
 
 from . import paths as P
+from . import preamble as PRE
 from . import rules as R
 from . import templates as T
 from .latex import (
     collect_custom_macros,
+    count_active_inputs,
+    expand_inputs,
     find_all_macros,
     insert_body,
     parse_macros,
     set_field,
 )
-from .sources import extract_bibkeys_from_body, extract_body
+from .sources import extract_bibkeys_from_body, extract_body_text
 
 HYPERREF_ANCHOR = r"\usepackage[pdfborder=0,CJKbookmarks=true]{hyperref}"
 
@@ -395,7 +398,7 @@ def insert_custom_macros(template_text: str, macros: list[tuple[str, str, str]])
     block = "\n".join(src for _, _, src in add)
     lines = template_text.split("\n")
     for idx, ln in enumerate(lines):
-        if HYPERREF_ANCHOR in ln:
+        if HYPERREF_ANCHOR in ln or PRE.is_hyperref_line(ln):
             lines.insert(idx + 1, block)
             return "\n".join(lines), [n for _, n, _ in add]
     # 退路：插到 \begin{document} 之前
@@ -427,6 +430,8 @@ class BuildResult:
     # 两份都留空（下游按「没有原文」处理，不写占位符）。
     ref_raw_lines: list[str] = field(default_factory=list)
     ref_raw_by_key: dict[str, str] = field(default_factory=dict)
+    # 第 120 条：正文源是多文件稿时展开了几处 \input/\include（0 = 单文件 / Word）。
+    expanded_inputs: int = 0
 
 
 def _citation_points(source_body: str, unmatched: list[str]) -> list[tuple[str, int, str]]:
@@ -606,13 +611,61 @@ def build_latex(
     tpl_defaults = template_defaults(tpl)
     say(f"   模板字段 {len(tpl_fields)} 个")
 
+    # ── ②′ 前言依赖迁移（第 120 条）─────────────────────────────────────
+    # 作者常交「完整模板稿」：正文依赖前言里的宏包 / tikz 库 / 定义。换成新版模板
+    # 骨架后这些不跟着走就编译失败，而且报错离真正原因很远（\llbracket undefined、
+    # Unknown arrow tip kind 'Stealth'…）。只搬模板没有的，且一律不碰模板管理项。
+    try:
+        sty_text = open(tpl_sel.sty, encoding="utf-8", errors="replace").read()
+    except OSError:
+        sty_text = ""
+    meta_text = (
+        open(meta_src, encoding="utf-8", errors="replace").read()
+        if os.path.exists(meta_src) else ""
+    )
+    # 前言本身也可能用 \input 拆文件（多文件稿常把宏包/命令放 preamble.tex）；
+    # 展开后再做依赖/宏/元数据判据（注释掉的不展开，见 latex.expand_inputs）。
+    if meta_src.lower().endswith(".tex") and count_active_inputs(meta_text):
+        meta_text = expand_inputs(meta_src, meta_text)
+    # 正文在这里先取一次（第 120 条）：多文件 `.tex` 稿先展开 \input/\include；
+    # 后面前言依赖判据、④ 的宏筛选、⑤ 的正文迁移都复用这一份，避免重复读文件。
+    raw_body = open(body_path, encoding="utf-8", errors="replace").read()
+    expanded_inputs = 0
+    if body_path.lower().endswith(".tex") and count_active_inputs(raw_body):
+        stats: dict = {}
+        raw_body = expand_inputs(body_path, raw_body, _stats=stats)
+        expanded_inputs = stats.get("expanded", 0)  # 只算真正展开成功的（注释/缺失不算）
+    body = extract_body_text(raw_body)
+    pre_plan = PRE.plan_migration(
+        meta_text, tpl, sty_text, tpl_sel.sty_name, body
+    )
+    if pre_plan.lines:
+        tpl = PRE.insert_lines(tpl, pre_plan.lines, HYPERREF_ANCHOR)
+        bits = []
+        manual_pkgs = [p for p in pre_plan.packages if p not in pre_plan.auto_packages]
+        if manual_pkgs:
+            bits.append(f"宏包 {len(manual_pkgs)} 个（{'、'.join(manual_pkgs)}）")
+        if pre_plan.tikz_libs:
+            bits.append(f"tikz 库 {len(pre_plan.tikz_libs)} 个（{'、'.join(pre_plan.tikz_libs)}）")
+        if pre_plan.definitions:
+            bits.append(f"定义 {len(pre_plan.definitions)} 个（{'、'.join(pre_plan.definitions)}）")
+        if pre_plan.auto_packages:
+            bits.append(
+                f"按正文符号依赖自动补宏包：{'、'.join(pre_plan.auto_packages)}"
+            )
+        say("   前言依赖迁移：" + "；".join(bits))
+    else:
+        say("   前言依赖：无需迁移")
+    if pre_plan.skipped:
+        show = "、".join(pre_plan.skipped[:12]) + (" …" if len(pre_plan.skipped) > 12 else "")
+        say(f"   · 模板已提供、未重复搬：{show}")
+
     say("③ 搬运元数据")
     missing: list[str] = []
     src_macros: dict = {}
     # 真正从元数据源搬进来的字段 → 值（下面判「未识别」用）
     moved_vals: dict[str, str] = {}
     if os.path.exists(meta_src):
-        meta_text = open(meta_src, encoding="utf-8", errors="replace").read()
         src_macros = parse_macros(meta_text)
         moved = 0
         for name, m in src_macros.items():
@@ -673,14 +726,46 @@ def build_latex(
         warnings.append(missing_note(undetected))
 
     say("④ 搬运自定义命令（正文依赖，漏搬会编译失败）")
-    custom = collect_custom_macros(
-        open(meta_src, encoding="utf-8", errors="replace").read() if os.path.exists(meta_src) else ""
+    # 第 120 条：先取正文（`.tex` 多文件稿先展开 \input/\include），再判「哪些宏正文
+    # 真的用得到」——没用到的定义不搬（07 Yiyan_Wang 的 \ar 就是这样避开 xy 冲突的），
+    # 与模板/宏包重名的宏自动改名（\prop → \slcnprop），正文同步改。
+    custom = collect_custom_macros(meta_text)
+    existing_names = PRE.defined_names(tpl) | PRE.defined_names(sty_text)
+    # 可达文本 = 正文 + 已搬进模板的元数据字段值 + 已迁移的前言定义体：
+    # 只管正文会漏掉「宏只用在摘要/题名里」的稿（会 undefined），2026-10-17 评审指出。
+    reach = "\n".join(
+        [body]
+        + list(moved_vals.values())
+        + list(pre_plan.lines)
     )
-    tpl, added = insert_custom_macros(tpl, custom)
+    selected, renames = PRE.select_custom_macros(custom, reach, existing_names)
+    if renames:
+        body = PRE.apply_renames(body, renames)
+        # 元数据字段值/前言定义体已在 tpl 里 → 整份模板同步改名（词边界，不碰 \proposal 等）
+        tpl = PRE.apply_renames(tpl, renames)
+        warnings.append(
+            "宏名冲突，已自动改名（正文与定义同步）："
+            + "、".join(f"\\{o} → \\{n}" for o, n in renames.items())
+        )
+    renamed_macros = []
+    for kind, name, src in selected:
+        new_name = renames.get(name, name)
+        snippet = PRE.apply_renames(src, renames)
+        if new_name != name and kind == "renewcommand":
+            # 改成新名字后模板里没有它，\renewcommand 会 undefined → 降为 \newcommand
+            snippet = re.sub(r"^\s*\\renewcommand", r"\\newcommand", snippet, count=1)
+            kind = "newcommand"
+        renamed_macros.append((kind, new_name, snippet))
+    tpl, added = insert_custom_macros(tpl, renamed_macros)
     say(f"   新增自定义命令 {len(added)} 个：{'、'.join(added) if added else '（无）'}")
+    if len(custom) > len(selected):
+        kept = {name for _kind, name, _src in selected}
+        skipped = [name for _kind, name, _src in custom if name not in kept]
+        say(f"   · 正文未用到、未搬：{len(skipped)} 个（{'、'.join(skipped)}）")
 
     say("⑤ 迁移正文")
-    body = extract_body(body_path)
+    if expanded_inputs:
+        say(f"   多文件正文源：已展开 {expanded_inputs} 处 \\input/\\include")
     say(f"   正文 {len(body)} 字符")
     tpl = insert_body(tpl, body)
 
@@ -702,6 +787,7 @@ def build_latex(
     _atomic_write(tex_path, tpl, newline="\n", log=say)
     say(f"   {P.rel(tex_path)}")
 
+    used_keys = extract_bibkeys_from_body(body)
     bib_out = None
     if bib_path:
         from .bibnorm import normalize_bib
@@ -712,11 +798,15 @@ def build_latex(
         _atomic_write(bib_out, bib_text, newline="\n", log=say)
         say(f"   {P.rel(bib_out)}（{len(notes)} 处规范化）")
 
-        used = extract_bibkeys_from_body(body)
         have = set(re.findall(r"@\w+\{([^,]+),", bib_text))
-        lack = used - have
+        lack = used_keys - have
         if lack:
             warnings.append(f"正文引用但 bib 里没有的键 {len(lack)} 个：" + "、".join(sorted(lack)[:8]))
+    elif used_keys:
+        warnings.append(
+            f"源目录没有 .bib：正文有 {len(used_keys)} 个引用键，未生成 reference.bib"
+            "（LaTeX 稿的参考文献库通常随稿提交；请向作者补要，或用「已有的 .bib」指定）"
+        )
 
     sty_out = os.path.join(out_dir, os.path.basename(tpl_sel.sty))
     shutil.copy2(tpl_sel.sty, sty_out)
@@ -733,6 +823,7 @@ def build_latex(
         warnings=warnings,
         missing_fields=missing,
         bib_keys_used=extract_bibkeys_from_body(body),
+        expanded_inputs=expanded_inputs,
     )
 
 

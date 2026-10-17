@@ -86,6 +86,7 @@ APP_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "engine_main.py",
              "slcn/infocheck.py", "slcn/toc.py", "slcn/toctemplate.py",
              "slcn/content_templates.py",
              "slcn/proofcheck.py", "slcn/pdfmerge.py", "slcn/platform.py",
+             "slcn/preamble.py",
              "slcn/llm.py", "slcn/docxsource.py",
              "slcn/refmark.py", "slcn/bibparse.py", "slcn/bibreport.py", "slcn/aibib.py",
              # 这两条也是「改了就必进包、否则行为不对」的模块，漏检过一次（第 66 条：

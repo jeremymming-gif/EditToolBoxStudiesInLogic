@@ -160,6 +160,33 @@ $PY convert.py \
 $PY convert.py --source X.docx --out Y --dry-run
 ```
 
+#### LaTeX 通道补充说明（第 120 条，2026-10-17 基于期 89 五篇真实 LaTeX 来稿）
+
+作者交来的 `.tex` 可以是**纯正文稿**（配合 `--metadata` 给上一轮模板稿），也可以是
+**完整模板稿**（正文、元数据、前言依赖都在同一份文件里）；引擎在 ①～⑦ 里多做三件事：
+
+1. **多文件正文自动展开**：正文里的 `\input{...}` / `\include{...}` 会递归读入（找不到的
+   原样保留并在编译时报错）；日志写「已展开 N 处」。这种情况**源文件所在整个目录**会一起
+   归档到 `original/`（等价 `--copy-dir`，多文件稿只归档主文件会丢分节稿）。
+2. **前言依赖迁移**：从作者稿前言（`--metadata` 给了旧模板稿时取旧模板稿的前言）搬走
+   模板没有的东西——`\usepackage`（模板已加载的同名包不重复、`ctex`/`fontspec`/`geometry`/
+   `hyperref`/`biblatex`/本刊 sty 等模板管理项不搬；带选项的包保留选项）、
+   `\usetikzlibrary{...}`、`\newtheorem` / `\newenvironment`（按环境名去重）、
+   `\DeclareMathOperator`、`\newcolumntype`、`\definecolor`。另外**正文用到的常见符号宏**
+   会按内置对照补包（`\llbracket`/`\rrbracket` → `stmaryrd`、`\mathscr` → `mathrsfs`、
+   `\multirow` → `multirow`、`\bm` → `bm`、`\textcolor` → `xcolor`…；只补符号类，
+   不碰版面级宏包）。日志会列出「前言依赖迁移：宏包 N 个…」与「模板已提供、未重复搬：…」。
+3. **自定义命令按正文可达搬 + 冲突自动改名**：只搬**正文真的用到**的 `\newcommand`
+   （传递闭包：A 用到 B 就 B 也搬；正文没用到的不搬——实测 07 Yiyan_Wang 的 `\ar` 就是
+   这样避开 xy 宏包冲突的）；与模板/宏包已定义名字冲突的（如模板 `\newtheorem{prop}`
+   占住 `\prop`）自动改名（`\prop → \slcnprop`）并**正文与定义同步改**，
+  日志与「⚠ 注意事项」里明写改名记录。
+
+**边界（如实说清）**：这是**纯离线判据**，不解析 TeX 发行版里宏包自带的定义。若作者前言
+**重定义了宏包已提供的命令**且正文确实用到（不是 `\prop` 这种模板文本能看到的），仍可能报
+`already defined`——这种情况日志会保留原始 TeX 报错，由编辑手工处理。源目录没有 `.bib`
+而正文有 `\cite` 时，会明确警告「未生成 reference.bib（需作者补交参考文献库）」，不再静默。
+
 | 参数 | 说明 |
 |---|---|
 | `--source` | **必填**。`.docx` / `.doc` / `.tex` |
@@ -185,7 +212,7 @@ $PY convert.py --source X.docx --out Y --dry-run
 | `--llm-search-tool` | responses 通道 `tools[].type` 的**工具名**（默认 `web_search`）。也可用环境变量 `SLCN_LLM_SEARCH_TOOL`。**将来服务商换了名字**（如 `web_search_preview`）改这一项即可（§3.7，第 70 条） |
 | `--llm-responses-path` | responses 的**路径**，拼在 base 之后（默认 `/responses`）。也可用环境变量 `SLCN_LLM_RESPONSES_PATH`；缺前导 `/` 会自动补。**默认/不传时 URL 与请求体逐字节不变**（§3.7，第 70 条） |
 | `--clean` | 清理编译中间文件，规则与 EditToolBox「删除临时文件」一致 |
-| `--copy-dir` | 连源文件所在整个目录一起归档到 `original/` |
+| `--copy-dir` | 连源文件所在整个目录一起归档到 `original/`（多文件 LaTeX 稿自动启用，无需手工加） |
 | `--no-original` | 不建立 `original/`（默认建立） |
 | `--force` | 目标文件夹已存在时覆盖（默认**拒绝**，防误伤已有稿件目录）。GUI 里对应「高级选项 → 覆盖已存在的输出目录（--force）」 |
 
@@ -791,6 +818,7 @@ mac 走 `--search-refs` argv、Windows 走 `SLCN_SEARCH_REFS` 环境变量，默
 | **公式重排** | 人工会把 `split` 改成 `aligned` 并重排，属编辑判断 |
 | **英文稿章节层级** | 已能认 `1.` / `1）`，但部分英文稿（如 01 Wenfang_Wang、06 Zhixi_Chen）仍有大量 L3，疑似元数据或参考文献结构差异，**待个案排查** |
 | **PDF 源稿** | 22 篇只有 PDF，本期不处理（需 OCR / Mathpix 路线） |
+| **LaTeX 前言依赖** | ✅ **已支持迁移**（第 120 条）：多文件 `\input` 展开、宏包 / tikz 库 / `\newtheorem` 等定义、符号宏自动补包；**边界**：纯离线不解析宏包内部定义，作者重定义宏包命令且正文被用到时仍可能 `already defined`（日志保留原报错，交编辑手工处理） |
 | **规则覆盖率** | 净命中规则 6 条；L2 仍有约 100–150 块/篇待处理，多为语义驱动的标点重排 |
 
 ---
