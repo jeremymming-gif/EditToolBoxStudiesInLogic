@@ -225,7 +225,7 @@ def parse_reference_line(line: str) -> RefEntry | None:
         # 没有 [M]/[J] 标识的，退化为「作者. 年份. 其余」
         m2 = re.match(r"^(?P<author>.+?)[\.。]\s*(?P<year>\d{4}[a-z]?)[\.。]\s*(?P<rest>.*)$", s)
         if not m2:
-            return None
+            return _parse_reference_line_cn(s)     # 中文逗号风格兜底（2026-10-17）
         e = RefEntry(raw=s, author=m2.group("author").strip(), year=m2.group("year"))
         rest = m2.group("rest")
         # 从出版信息里猜类型：含「出版社/ Press/ University」→ 书，含卷期 → 期刊
@@ -242,6 +242,47 @@ def parse_reference_line(line: str) -> RefEntry | None:
         kind=m.group("kind"),
         rest=m.group("rest").strip(),
     )
+    e.key = make_key(e)
+    return e
+
+
+#: 中文逗号风格（本刊作者来稿里极常见）：
+#:   `陈清泚，“论证研究的认知社会学路径”，《自然辩证法研究》，2020年第2期，第103–108页。`
+#:   `张建军，逻辑悖论研究引论，北京：人民出版社，2014年。`
+#:   `王雪君、郭佳宏，“对‘意外考试’悖论的一种非确定论解释”，世界哲学，2022年第1期，第152-159页。`
+#: 特征：作者到第一个**中文逗号**，题名到第二个，年份在后面的部分。英文/GB 风格走上面的 `_REF_RE`。
+_REF_CN_RE = re.compile(
+    r"^(?P<author>[^，。；;]{2,60})[，,]\s*"
+    r"(?P<title>.+?)[，,]\s*"
+    r"(?P<rest>.*?(?:19|20)\d{2}.*)$"
+)
+
+
+def _parse_reference_line_cn(s: str) -> RefEntry | None:
+    """中文逗号风格的单条文献（2026-10-17 实例测试：用户 10 篇里 2 篇整份列表都这种格式）。
+
+    ⚠️ 只应在**参考文献区**的行上调用（正文段落也含逗号+年份，直接全篇跑会误判）。
+    """
+    # ⚠️ 编号清单（`[12] 作者，题名，…` / `12. 作者…`）有**专门的通道**（`_numbered_refs`），
+    #    这里必须让路：2026-10-17 第一版没让路，把 `test_cn_journal_numbered` 的 4 条端到端
+    #    断言打红了（编号条目被这里当成普通中文条目，通道就收不到了）。
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+        return None
+    m = _REF_CN_RE.match(s)
+    if not m:
+        return None
+    rest = m.group("rest")
+    ym = re.search(r"(?:19|20)\d{2}", rest)
+    if not ym:
+        return None
+    title = m.group("title").strip().strip("《》")
+    kind = "M"
+    if "学位论文" in s or "博士论文" in s or "硕士论文" in s:
+        kind = "D"
+    elif "《" in s or re.search(r"第?\d+[期卷]", s):
+        kind = "J"
+    e = RefEntry(raw=s, author=m.group("author").strip(), year=ym.group(0),
+                 title=title, kind=kind, rest=rest.strip())
     e.key = make_key(e)
     return e
 
