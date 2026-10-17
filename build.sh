@@ -76,7 +76,10 @@ if [ -f "$CONVERT_SRC/convert.py" ]; then
   [ -f "$CONVERT_SRC/mergepdf.py" ] && cp "$CONVERT_SRC/mergepdf.py" "$DEST/"
   # 期目录级动作与一校核查（第 91/92 条，2026-10-15 从 mac 版搬进引擎）：
   # mac 界面暂时还走 Swift 那份，但打进包零成本，将来加标签页时不必再改打包逻辑。
-  for _extra in cleantemp.py compileall.py proofcheck.py infocheck.py toc.py engine_main.py; do
+  # ⚠️ 白名单必须覆盖**所有交付 CLI**：2026-10-17 加了 `publish.py`（本期出刊向导）但这里漏了，
+  #    包里的 app 报「未找到出刊编排引擎 Engine/publish.py」——实例测试当场抓到。
+  #    加新入口时，`Engine/tests/test_platform.py` 的 ENTRY_FILES 与这里**两处都要改**。
+  for _extra in cleantemp.py compileall.py proofcheck.py infocheck.py toc.py publish.py engine_main.py; do
     [ -f "$CONVERT_SRC/$_extra" ] && cp "$CONVERT_SRC/$_extra" "$DEST/"
   done
   cp -R "$CONVERT_SRC/slcn" "$DEST/slcn"
