@@ -203,6 +203,13 @@ def _check(parent: tk.Widget, text: str, var: tk.BooleanVar) -> tk.Checkbutton:
 class ConvertTab(TabPage):
     name = "初排转换"
     pick = "file"
+
+    def __init__(self, parent, name, on_run, on_stop, cfg=None, ai_knobs_sink=None):
+        # cfg：AI 的两个旋钮（思考模式/最长输出）现在放在**这一页**（UI 方案 §4：
+        # 任务相关选项就地改，别让人去设置页找上下文）。值仍以 cfg 为准（运行时就地读）。
+        self.cfg = cfg or {}
+        self.ai_knobs_sink = ai_knobs_sink or (lambda *_a: None)
+        super().__init__(parent, name, on_run, on_stop)
     instruction = ("使用说明：选作者的稿件（.docx / .doc / .tex），再选一个输出根目录，"
                    "产物会写到「输出目录/<作者名>/」。\n"
                    "勾了「出文献核实任务书」会同时生成《…_文献核实.md》；"
@@ -249,6 +256,22 @@ class ConvertTab(TabPage):
                                   ("责任编辑", self.v_editor, 8), ("基金", self.v_grants, 20)):
             ttk.Label(row2, text=label).pack(side="left", padx=(8, 2))
             tk.Entry(row2, textvariable=var, width=width).pack(side="left")
+
+        # AI 的两个旋钮（2026-10-17 从「设置」页挪到这里 —— 方案 §4：任务选项就地改，
+        # 别让人去设置页找上下文）。留空 = 不发送该字段（引擎默认行为）。
+        ai_cfg = self.cfg.get("api") or {}
+        row3 = ttk.Frame(parent)
+        row3.pack(anchor="w", pady=(4, 0))
+        ttk.Label(row3, text="AI 核实用：思考模式").pack(side="left")
+        self.v_thinking = tk.StringVar(value=str(ai_cfg.get("thinking", "")))
+        tk.Entry(row3, textvariable=self.v_thinking, width=10).pack(side="left", padx=(4, 12))
+        ttk.Label(row3, text="最长输出").pack(side="left")
+        self.v_maxtok = tk.StringVar(value=str(ai_cfg.get("maxTokens", "")))
+        tk.Entry(row3, textvariable=self.v_maxtok, width=10).pack(side="left", padx=(4, 12))
+        ttk.Label(row3, text="留空 = 用端点默认值", foreground=theme.COLOR["muted"]).pack(side="left")
+        for _v in (self.v_thinking, self.v_maxtok):
+            _v.trace_add("write", lambda *_: self.ai_knobs_sink(
+                self.v_thinking.get().strip(), self.v_maxtok.get().strip()))
 
     def extra_args(self) -> dict:
         return {"compile_pdf": self.v_compile.get(), "clean": self.v_clean.get(),
@@ -605,15 +628,11 @@ class SettingsTab(ttk.Frame):
                 row=row + 1, column=1, padx=10, sticky="w")
             row += 2
 
-        self.v_thinking = tk.StringVar(value=str(cfg.get("api", {}).get("thinking", "")))
-        self.v_maxtok = tk.StringVar(value=str(cfg.get("api", {}).get("maxTokens", "")))
+        # 方案 §4「设置页不吓人」：只留**必需**项。思考模式/最长输出是任务相关选项，
+        # 已挪到「初排转换」页的 AI 区域（那里才知道上下文）。
         self.v_web = tk.BooleanVar(value=bool(cfg.get("api", {}).get("webSearch", False)))
         opts = ttk.Frame(self)
         opts.grid(row=row, column=1, padx=10, pady=6, sticky="w"); row += 1
-        ttk.Label(opts, text="思考模式").pack(side="left")
-        tk.Entry(opts, textvariable=self.v_thinking, width=18).pack(side="left", padx=(4, 12))
-        ttk.Label(opts, text="最长输出").pack(side="left")
-        tk.Entry(opts, textvariable=self.v_maxtok, width=10).pack(side="left", padx=(4, 12))
         _check(opts, "允许联网检索", self.v_web).pack(side="left")
 
         # 密钥常驻状态行：说清「已存/末四位/只在本机」—— 隐藏字段光靠打码，编辑不知道配没配对
@@ -721,8 +740,7 @@ class SettingsTab(ttk.Frame):
                     os.environ.pop("SLCN_ENGINE", None)
             else:
                 self.cfg.setdefault("api", {})[key] = var.get().strip()
-        self.cfg.setdefault("api", {})["thinking"] = self.v_thinking.get().strip()
-        self.cfg.setdefault("api", {})["maxTokens"] = self.v_maxtok.get().strip()
+        # thinking/maxTokens 不再由本页负责（input 在「初排转换」页，改即写进 cfg）
         self.cfg["api"]["webSearch"] = bool(self.v_web.get())
         try:
             path = S.save(self.cfg)
@@ -777,7 +795,8 @@ class MainWindow(tk.Tk):
         self.content.rowconfigure(0, weight=1)
         self.content.columnconfigure(0, weight=1)
 
-        self.convert_tab = ConvertTab(self.content, "初排转换", self.start, self.stop)
+        self.convert_tab = ConvertTab(self.content, "初排转换", self.start, self.stop,
+                                      cfg=self.cfg, ai_knobs_sink=self._set_ai_knobs)
         self.checkbib_tab = CheckBibTab(self.content, "文献回读校验", self.start, self.stop)
         self.merge_tab = MergeTab(self.content, "合并文件", self.start, self.stop)
         self.proof_tab = ProofCheckTab(self.content, "一校核查", self.start, self.stop)
@@ -840,6 +859,12 @@ class MainWindow(tk.Tk):
     def tab_texts(self) -> list[str]:
         """全部页的名字（按侧栏顺序）—— 测试与自检用（Notebook 换成 Treeview 后的稳定接口）。"""
         return [t.name for t in self.tabs]
+
+    def _set_ai_knobs(self, thinking: str, maxtok: str) -> None:
+        """初排转换页的两个 AI 旋钮 → cfg["api"]（运行时就地读，不用先保存）。"""
+        api = self.cfg.setdefault("api", {})
+        api["thinking"] = thinking
+        api["maxTokens"] = maxtok
 
     def current_tab(self):
         """当前显示的页（快捷键要操作它）。"""
