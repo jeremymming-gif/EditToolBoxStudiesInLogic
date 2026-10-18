@@ -1192,6 +1192,8 @@ def main() -> int:
     ap.add_argument("--bibdb-path", default="", metavar="PATH",
                     help="引用库文件路径（隐含启用；默认 笔记仓/bib_db/bibliography.jsonl）。"
                          "指错/读不了 → 告警并按原流程核实（不中断）。")
+    ap.add_argument("--end-list-priority", action="store_true",
+                    help="C 类可选开关（默认关）：文末清单优先，脚注文献不再逐条提升")
     ap.add_argument("--no-bibdb", action="store_true",
                     help="关闭引用库查库（本次一律不查库；输出与接入前逐字节相同）。")
     # P1（2026-10-17，第 71 条起）：自动检索证据 = DeepSeek Search API（独立原始 JSON API），
@@ -1469,6 +1471,8 @@ def main() -> int:
                 # overrides 只在 build.py 已支持该关键字时才传（见 overrides_kwargs），
                 # 旧引擎配新界面不会崩，只是这次覆盖不生效并在日志里说明。
                 **overrides_kwargs(build_docx, overrides),
+                # 第四十六批 C 类可选开关（默认关）：命令行 --end-list-priority 才生效
+                end_list_priority=getattr(args, "end_list_priority", False),
             )
         else:
             _bib_path = find_bib(source, args.bib)

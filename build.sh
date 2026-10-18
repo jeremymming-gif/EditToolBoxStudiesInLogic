@@ -5,6 +5,18 @@ set -euo pipefail
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJ"
 
+# O13（第四十六批）：构建起点（末尾 manifest 的 started_at / duration）。
+# 只是证据，不参与任何构建判定。
+BUILD_START_ISO="$(date "+%Y-%m-%dT%H:%M:%S%z")"
+# 引擎 py 指纹也在**开始时**算（并发写者窗口里结束态可能已变；构建打包用的是开始附近那份）。
+BUILD_ENGINE_SHA=""
+RR_PY="$PROJ/Engine/tools/run_record.py"
+if [ -f "$RR_PY" ]; then
+  RR_PY_BIN="/opt/homebrew/bin/python3.14"
+  [ -x "$RR_PY_BIN" ] || RR_PY_BIN="python3"
+  BUILD_ENGINE_SHA="$("$RR_PY_BIN" -c "import sys; sys.path.insert(0, '$PROJ/Engine/tools'); import run_record; print(run_record.engine_py_sha256())" 2>/dev/null || true)"
+fi
+
 export CLANG_MODULE_CACHE_PATH="$PROJ/.mc"
 export SWIFT_MODULE_CACHE_PATH="$PROJ/.mc"
 mkdir -p "$PROJ/.mc" "$PROJ/.build"
@@ -129,10 +141,41 @@ if [ -d "$APP/Contents/Resources/Engine" ]; then
   echo "▶ 包内引擎一致性 cmp（白名单 28 个文件）…"
   PY_CMP="/opt/homebrew/bin/python3.14"
   [ -x "$PY_CMP" ] || PY_CMP="python3"
-  "$PY_CMP" "$PROJ/Engine/tools/gen_docs.py" --cmp-app
+  # O13：包一层只为了**拿到结果写 manifest**（判定/输出/退出码语义完全不变：
+  # 失败照样非 0 退出、不打印「构建完成」）。
+  if CMP_OUT="$("$PY_CMP" "$PROJ/Engine/tools/gen_docs.py" --cmp-app 2>&1)"; then
+    CMP_RESULT="ok"
+  else
+    CMP_RESULT="FAIL"
+  fi
+  echo "$CMP_OUT"
+  if [ "$CMP_RESULT" != "ok" ]; then
+    echo "❌ 包内引擎 cmp 失败 —— 构建未通过（包内引擎与仓库不一致）"
+    exit 1
+  fi
 else
   echo "⚠ 包内没有 Engine/（上面的打包被跳过），跳过包内 cmp"
+  CMP_RESULT="skipped"
 fi
 
 SIZE=$(du -sh "$APP" | cut -f1)
 echo "✅ 构建完成：$APP  ($SIZE)"
+
+# ── O13（第四十六批）：build 重活指纹落盘 ─────────────────────────────────
+# 写 /tmp/audit_lead/runs/<时间戳>-build.json：App 构建时间/版本/包内文件数/cmp 结果 +
+# 命令/引擎 py 指纹/二进制 sha/退出码。**纯证据**：run_record 缺失、写失败都只告警，
+# 不影响构建结果与退出码（set -e 下用 `|| true` 兜住记录那一行）。
+if [ -f "$RR_PY" ]; then
+  REC_PY="/opt/homebrew/bin/python3.14"
+  [ -x "$REC_PY" ] || REC_PY="python3"
+  APP_BIN="$APP/Contents/MacOS/$BINARY"
+  APP_MTIME="$(stat -f "%Sm" -t "%Y-%m-%dT%H:%M:%S%z" "$APP_BIN" 2>/dev/null || echo unknown)"
+  APP_PY_FILES="$(find "$APP/Contents/Resources/Engine" -name '*.py' 2>/dev/null | wc -l | tr -d ' ')"
+  "$REC_PY" "$RR_PY" --record-only --label build --started-at "$BUILD_START_ISO" \
+    --command "bash build.sh" --exit-code 0 --artifact "$APP_BIN" \
+    --engine-sha "$BUILD_ENGINE_SHA" \
+    --meta "app_version=$APP_VERSION" --meta "app_mtime=$APP_MTIME" \
+    --meta "app_py_files=$APP_PY_FILES" --meta "cmp_result=$CMP_RESULT" || true
+else
+  echo "⚠ 未找到 Engine/tools/run_record.py，跳过 build manifest（不影响构建）"
+fi

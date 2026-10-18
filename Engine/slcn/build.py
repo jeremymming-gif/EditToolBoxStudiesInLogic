@@ -692,6 +692,8 @@ def build_latex(
         raw_body = expand_inputs(body_path, raw_body, _stats=stats)
         expanded_inputs = stats.get("expanded", 0)  # 只算真正展开成功的（注释/缺失不算）
     body = extract_body_text(raw_body)
+    # 第四十六批②：参考文献**之后**的附录内容（extract_body_text 会截掉，86-05 实测）
+    _post_bib_tail = _latex_post_bibliography_tail(raw_body)
     pre_plan = PRE.plan_migration(
         meta_text, tpl, sty_text, tpl_sel.sty_name, body,
         source_dir=os.path.dirname(os.path.abspath(body_path)),
@@ -917,6 +919,10 @@ def build_latex(
             )
     say(f"   正文 {len(body)} 字符")
     tpl = insert_body(tpl, body)
+    if _post_bib_tail:
+        tpl = _insert_post_bibliography(tpl, _post_bib_tail)
+        say(f"   参考文献后内容迁移：附录/致谢 {len(_post_bib_tail)} 字符"
+            "（源稿 \\printbibliography 之后）")
 
     say("⑥ 套用预校正规则")
     res = R.apply_rules(tpl, lang=lang, safe_only=True)
@@ -1048,6 +1054,110 @@ def editorial_fields(meta: dict | None) -> dict[str, str]:
     if m.get("grants"):
         out["mygrants"] = m["grants"]
     return out
+
+
+# ── 第四十六批②：LaTeX 稿「参考文献之后的内容」（附录/致谢）迁移 ────────────
+# `sources.extract_body_text()` 会**截到参考文献之前**（第 121 条：\bibliographystyle
+# 等要留在正文外）。副作用：作者把附录写在 `\printbibliography` 之后时，整段附录被
+# 静默丢掉 —— 86-05 WeiNong_Li 实测丢了 3 个附录小节（人工 26 页 vs 生成 20 页，
+# 正文文本只有人工的 66.7%）。这里把「参考文献命令之后到 \end{document}」的内容
+# 取出来，插到模板自己的 `\printbibliography` 之后（表格/公式等原样保留）。
+# 纪律：只在**确实有非注释内容**时生效；Word 通道与无附录稿逐字节不变。
+_LATEX_BIB_MARKERS = (
+    "\\printbibliography",
+    "\\bibliographystyle",
+    "\\bibliography{",
+    "\\begin{thebibliography}",
+)
+
+
+def _active_find(text: str, needle: str, start: int = 0) -> int:
+    r"""查找 `needle` 的**非注释行**出现位置（行首 `%` 视为注释；找不到返回 -1）。
+
+    第四十六批回归（86-05 实测）：源稿在注释里贴了 biblatex 迁移示例
+    （`%\bibliographystyle{…}` / `%\begin{thebibliography}` / `%\bibitem …`），
+    旧实现 `body.find()` 命中注释里的 `\bibliographystyle` → 把「参考文献之后」的
+    起点定在注释区，再被防御性 `\bibitem` 检查判空 → **附录整段不迁移**（页数回退）。
+    这里只认非注释位置的标记。
+    """
+    pos = text.find(needle, start)
+    while pos >= 0:
+        line_start = text.rfind("\n", 0, pos) + 1
+        if not text[line_start:pos].lstrip().startswith("%"):
+            return pos
+        pos = text.find(needle, pos + len(needle))
+    return -1
+
+
+def _latex_post_bibliography_tail(raw: str) -> str:
+    r"""源稿 `.tex` 里「第一个参考文献命令**之后**」的内容（去注释/空行后非空才返回）。"""
+    i = raw.find("\\begin{document}")
+    body = raw[i + len("\\begin{document}"):] if i >= 0 else raw
+    j = len(body)
+    bib_env_end = -1
+    for mk in _LATEX_BIB_MARKERS:
+        k = _active_find(body, mk)
+        if 0 <= k < j:
+            j = k
+            if mk == "\\begin{thebibliography}":
+                bib_env_end = _active_find(body, "\\end{thebibliography}", k)
+    if j < 0:
+        return ""
+    if bib_env_end >= 0:
+        # 第四十六批回归（89-05 实测）：源稿用**手写 thebibliography**（15 个 \bibitem）。
+        # 旧实现把它当参考文献「命令」→ 只去掉 begin 行、把 \bibitem 体整体迁进模板 →
+        # 产物有 \bibitem 无环境 → `! Lonely \item`（47 错、rc 2）。
+        # 修法：**整环境跳过**，只把 \end{thebibliography} 之后的内容当附录 tail；
+        # 找不到 \end（环境不完整）→ 不迁移（保守，绝不搬 bibitem 体）。
+        start = bib_env_end + len("\\end{thebibliography}")
+        k_end = body.find("\\end{document}", start)
+        tail = body[start:k_end] if k_end >= 0 else body[start:]
+    else:
+        k_end = body.find("\\end{document}", j)
+        tail = body[j:k_end] if k_end >= 0 else body[j:]
+        nl = tail.find("\n")                 # 去掉参考文献命令所在的那一行
+        if nl < 0:
+            return ""
+        tail = tail[nl + 1:]
+    # 4) 先去注释行，再做 \bibitem 防御（注释里的示例不能触发不迁移，86-05 实测）
+    _lines = [ln for ln in tail.split("\n") if not ln.strip().startswith("%")]
+    _active_tail = "\n".join(_lines)
+    if _active_find(_active_tail, "\\bibitem") >= 0 or \
+            _active_find(_active_tail, "\\begin{thebibliography}") >= 0:
+        return ""
+    # 第四十六批回归（88-04/87-1/88-05/89-02/89-06/89-07 + 89-05 实测）：
+    # 作者交的「完整模板稿」在 \printbibliography 之后常跟着**模板自带尾部块**
+    # （2.8 作者信息 / 2.9 编辑部信息，`\ifthenelse{\equal{\myarticletype}…}` /
+    #  `\myfirstauthor`…），88-04 实测迁进产物后与模板尾部重复 → `\mytitleCN` /
+    # `\printtitlepageCN` undefined、rc 0→2；89-05 的英文题名/摘要块同理（模板会
+    # 自动印，迁了会重复）。这些都不是「附录」——extract_body_text 本来就该截掉。
+    # 判据：**只有含 `\appendix` 的 tail 才是真附录**（86-05 实测为 `\appendix` 开头）。
+    if _active_find(_active_tail, "\\appendix") < 0:
+        return ""
+    tail = _active_tail
+    keep = [ln for ln in tail.split("\n")
+            if ln.strip() and not ln.strip().startswith("%")]
+    if sum(len(x) for x in keep) < 20:       # 只剩零星命令/空白 → 不迁移
+        return ""
+    # 附录段首的 `\clearpage`/`\newpage` 在模板里紧跟参考文献之后，会多印一页空白
+    keep = [ln for ln in keep if ln.strip() not in ("\\clearpage", "\\newpage")]
+    if sum(len(x) for x in keep) < 20:
+        return ""
+    return "\n".join(keep).strip("\n")
+
+
+def _insert_post_bibliography(template_text: str, tail: str) -> str:
+    r"""把附录内容插到模板 `\printbibliography` 之后（找不到就插在 `\end{document}` 前）。"""
+    lines = template_text.split("\n")
+    for idx, ln in enumerate(lines):
+        if "\\printbibliography" in ln and not ln.strip().startswith("%"):
+            # 与人工成品 tex 顺序一致：附录在参考文献**之前**（86-05 WeiNong_Li.tex 实测）
+            lines[idx] = tail.strip("\n") + "\n\n" + ln
+            return "\n".join(lines)
+    j = template_text.find("\\end{document}")
+    if j >= 0:
+        return template_text[:j] + "\n" + tail.strip("\n") + "\n" + template_text[j:]
+    return template_text.rstrip("\n") + "\n" + tail.strip("\n") + "\n"
 
 
 # ── 第 76 条：英文元数据第二源用到的字段（顺序 = 日志与合并顺序）──────────────
@@ -1356,6 +1466,7 @@ def build_docx(
     proof_autofix: bool = True,
     dash_hints: bool = True,
     bib_zero_cites_hints: bool = True,
+    end_list_priority: bool = False,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1383,6 +1494,12 @@ def build_docx(
                    bib 条数>0 而正文 `\\parencite/\\cite` 数=0 时（biblatex 只打印被引
                    条目 → PDF 参考文献区会是空的），在初排日志**置顶**提示 + 计数，
                    供编辑人工补引用/核对体例。**纯日志，产物逐字节不变**；False=不打印。
+    end_list_priority  **文末清单优先（C 类可选开关，第四十六批；默认 False=关）**：
+                   True 且源稿存在文末清单（人年制/编号清单）时，脚注里的文献条目
+                   **不再逐条提升**为 bib（只保留编号清单键对应的条目）；默认关时
+                   与现行为逐字节一致（`footnotes.footnote_promotion_allowed` 恒 True）。
+                   ⚠️ 启用需与 docxsource 的脚注渲染配套（避免悬空 `\\parencite`），
+                   该配套在批 47 处理；本参数只接线、不改默认。
     """
     from .docxsource import (
         link_citations,
@@ -1415,6 +1532,26 @@ def build_docx(
     else:
         say(f"   参考文献 {len(doc.refs)} 条"
             + (f" + 编号清单/脚注 {len(doc.bib_entries)} 条" if doc.bib_entries else ""))
+    # 第四十六批（C 类可选开关，默认关）：文末清单优先——脚注文献不再逐条提升。
+    # 判据与过滤在 `slcn/footnotes.py`（bib-refs 实现）；默认 False 时
+    # `footnote_promotion_allowed()` 恒 True → 本块不执行，产物逐字节不变。
+    if end_list_priority:
+        from .footnotes import filter_footnote_entries, footnote_promotion_allowed
+
+        _has_end_list = bool(doc.refs or doc.ref_raw_lines or doc.ref_key_by_num)
+        if not footnote_promotion_allowed(
+                has_end_list=_has_end_list, end_list_priority=end_list_priority):
+            _keep = set(doc.ref_key_by_num.values())
+            _before = len(doc.bib_entries)
+            doc.bib_entries = filter_footnote_entries(doc.bib_entries, _keep)
+            _dropped = _before - len(doc.bib_entries)
+            if _dropped:
+                say(f"   文末清单优先：脚注文献 {_before} 条 → 保留 "
+                    f"{len(doc.bib_entries)} 条（过滤 {_dropped} 条）")
+                warnings.append(
+                    f"文末清单优先（--end-list-priority）：脚注文献 {_before} 条中"
+                    f"过滤 {_dropped} 条，只保留与文末清单编号对应的条目")
+
     if doc.n_math:
         # ⚠️ 这条以前写的是「PoC 尚未转换」——**早就过时了**，公式其实已经转好
         # （OMML → LaTeX 数学环境，见 docxxml.omml_to_latex）。留着会让编辑误以为

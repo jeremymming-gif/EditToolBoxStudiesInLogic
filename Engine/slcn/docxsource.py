@@ -2395,7 +2395,7 @@ SHAPE_PLACEHOLDER = (
 )
 
 
-def table_env(tbl, idx: int) -> str:
+def table_env(tbl, idx: int, img_names: dict[str, str] | None = None) -> str:
     """把 Word 表格转成 LaTeX table + tabular。
 
     格式对齐人工成品惯例（见 Haiting_Huang / Yingying_Tang）：
@@ -2413,37 +2413,62 @@ def table_env(tbl, idx: int) -> str:
     ncol = max(tbl.ncols, 1)
     # 单元格文字长（>18 字）的列改用 p{} 定宽，否则 \\hline 之间会被撑爆版心
     long_col = [
-        any(len(r[i].text) > 18 for r in tbl.rows if i < len(r))
+        any(
+            len(r[i].text) > 18
+            or any(sg.kind == "image" for sg in r[i].segs)   # 含图列用 p{} 定宽
+            for r in tbl.rows if i < len(r)
+        )
         for i in range(ncol)
     ]
     any_long = any(long_col)
+    # 第四十六批②续：含图片的表格必须能**跨页**（图片纵向排列后单行会超过一页，
+    # 普通 tabular 不能跨页 → 图被裁掉、页数不增；86-01 实测 17 张图全挤在 p8 被切）。
+    # 人工成品正是跨页表格（表头每页重复）。模板已加载 longtable（SLCN-MIX/SLEN）。
+    has_img = any(
+        any(sg.kind == "image" and (img_names or {}).get(sg.rid) for sg in c.segs)
+        for r in tbl.rows for c in r
+    )
 
-    lines = ["\n\\begin{table}[htbp]", "  \\centering"]
     if any_long:
         w = round(0.92 / ncol, 3)
-        colspec = "|" + "|".join(f"p{{{w}\\textwidth}}" for _ in range(ncol)) + "|"
+        colspec = "|" + "|".join("p{" + str(w) + "\\textwidth}" for _ in range(ncol)) + "|"
     else:
         colspec = "|" + "|".join("c" for _ in range(ncol)) + "|"
-    lines.append(f"  \\begin{{tabular}}{{{colspec}}}")
-    lines.append("  \\hline")
 
-    for r in tbl.rows:
+    def _row_tex(r) -> str:
         cells = []
         used = 0
         for c in r:
-            txt = render_cell(c)
+            txt = render_cell(c, img_names)
             if c.colspan > 1:
                 cells.append(f"\\multicolumn{{{c.colspan}}}{{|c|}}{{{txt}}}")
                 used += c.colspan
             else:
                 cells.append(txt)
                 used += 1
-        while used < ncol:  # 补齐缺格，否则 tabular 会错位
+        while used < ncol:  # 补齐缺格，否则表格会错位
             cells.append("")
             used += 1
-        lines.append("  " + " & ".join(cells) + " \\\\")
-        lines.append("  \\hline")
+        return "  " + " & ".join(cells) + " \\\\"
 
+    if has_img:
+        head = _row_tex(tbl.rows[0]) if tbl.rows else ""
+        lines = ["\n\\begin{longtable}{" + colspec + "}",
+                 f"  \\caption{{【需补充表题】}}\\label{{tab:{idx}}}\\\\",
+                 "  \\hline", head, "  \\hline", "  \\endfirsthead",
+                 "  \\hline", head, "  \\hline", "  \\endhead"]
+        for r in tbl.rows[1:]:
+            lines.append(_row_tex(r))
+            lines.append("  \\hline")
+        lines.append("\\end{longtable}\n")
+        return "\n".join(lines)
+
+    lines = ["\n\\begin{table}[htbp]", "  \\centering"]
+    lines.append(f"  \\begin{{tabular}}{{{colspec}}}")
+    lines.append("  \\hline")
+    for r in tbl.rows:
+        lines.append(_row_tex(r))
+        lines.append("  \\hline")
     lines.append("  \\end{tabular}")
     lines.append("  \\caption{【需补充表题】}")
     lines.append(f"  \\label{{tab:{idx}}}")
@@ -2451,14 +2476,26 @@ def table_env(tbl, idx: int) -> str:
     return "\n".join(lines)
 
 
-def render_cell(cell) -> str:
-    """渲染一个单元格。"""
+def render_cell(cell, img_names: dict[str, str] | None = None) -> str:
+    """渲染一个单元格（文字 / 公式 / **图片**）。
+
+    第四十六批②续：表格单元格内嵌图片（86-01 实测 18 张）旧实现直接丢弃；这里按
+    `img_names`（rId → figN.ext）输出 `\\includegraphics`。**无图单元格**的输出与
+    从前逐字节相同（只有 text/math 分支）。
+    """
     parts = []
     for sg in cell.segs:
         if sg.kind == "text":
             parts.append(escape_latex(sg.text).replace("\n", " ").strip())
         elif sg.kind == "math":
             parts.append(f"${sg.text}$")
+        elif sg.kind == "image":
+            _name = (img_names or {}).get(sg.rid)
+            if _name:
+                # 每张图独占一行（`\par`）：原稿一张/多张图在单元格里是**纵向排列**的
+                # （86-01 实测人工 PDF 把 17 张图分摊在 3 页；inline 塞进一段会全挤在
+                #  一页、页面高度不增）。`width=\linewidth` 按图像列宽排。
+                parts.append(f"\\includegraphics[width=0.8\\linewidth]{{{_name}}}\\par")
     return " ".join(p for p in parts if p).strip()
 
 
@@ -3009,8 +3046,26 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     media_map = read_media(path)
     img_names: dict[str, str] = {}
     seq_img = 0
-    for q in body_paras:
-        for sg in q.segs:
+    # 第四十六批②续（86-01 实测）：图片不只在正文段落里——**表格单元格里也可能有**
+    # （`<w:drawing>` 全在 `<w:tc>` 内时，旧实现只遍历 body_paras（不含 Table）→
+    #  18 张全丢、只剩正文 1 张，而人工成品是 18 条 \includegraphics）。
+    # 按 blocks 的文档顺序收集（含 Table 的 cell.segs）；fig 序号与 extract_media()
+    # 的导出顺序一致（导出按 doc.images 顺序，二者同源）。
+    from .docxxml import Table as _Table
+
+    def _iter_block_segs(_b):
+        if isinstance(_b, _Table):
+            for _row in _b.rows:
+                for _cell in _row:
+                    yield from _cell.segs
+        else:
+            yield from _b.segs
+
+    _pos = {id(b): k for k, b in enumerate(blocks)}
+    _bstart = _pos.get(id(body_paras[0]), 0) if body_paras else len(blocks)
+    _bend = (_pos.get(id(body_paras[-1]), len(blocks) - 1) + 1) if body_paras else len(blocks)
+    for _b in blocks[_bstart:_bend]:
+        for sg in _iter_block_segs(_b):
             if sg.kind == "image" and sg.rid in media_map and sg.rid not in img_names:
                 seq_img += 1
                 ext = os.path.splitext(media_map[sg.rid])[1].lower() or ".png"
@@ -3082,7 +3137,7 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         idx += 1
         if isinstance(para, Table):
             tab_idx += 1
-            out.append(table_env(para, tab_idx))
+            out.append(table_env(para, tab_idx, img_names))
             doc.warnings.append(
                 f"表格 {tab_idx}：{para.nrows} 行 × {para.ncols} 列已转为 tabular"
                 + ("（含合并单元格，请核对）" if para.merged else "")

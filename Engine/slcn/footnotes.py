@@ -87,8 +87,9 @@ def ref_span(text: str) -> int:
 #: 脚注里的「（[20]，第36页；[21]，第8页）」是引用定位，不是文献条目）
 _CN_STRONG = re.compile(
     r"第\s*\d+\s*期|学报|期刊|出版社|印书馆|书局|博士论文|硕士学位论文|硕士论文|"
-    r"论文集|载于|收录于|人民出版社|大学出版社")
-_CN_YEAR = re.compile(r"(?:19|20)\d{2}\s*年")
+    r"论文集|载于|收录于|人民出版社|大学出版社|论坛|会议|大会|报告")
+#: 年份后可以是「年」，也可以直接是「第N期」（86-03 实测 `2010第1期` 无「年」字）
+_CN_YEAR = re.compile(r"(?:19|20)\d{2}\s*(?:年|第)")
 
 
 def _looks_cn_biblio(text: str) -> bool:
@@ -100,7 +101,7 @@ def _looks_cn_biblio(text: str) -> bool:
         return False
     # 纯引用定位（`（[20]，第36页；[21]，第8页）`）没有年份/强标记，已被上一条排除；
     # 这里再要求句末是句号/页码结尾，避免把「……2013年，参见第5页。」式注释当文献。
-    return t.endswith(("。", "页。", "页", "。]", "．"))
+    return t.endswith(("。", "页。", "页", "。]", "．", "."))
 
 
 def looks_classical(ref: str) -> bool:
@@ -149,6 +150,47 @@ def classify(text: str) -> Footnote:
     fn.kind = "mixed" if tail else "pure_ref"
     fn.locator = extract_locator(head)
     return fn
+
+
+# ── C 类口径开关（第 46 批；**默认关**，等编辑部/用户拍板后才启用）──────────────
+#
+# 背景（90-06/90-07、86-07 实测）：Word 稿同时有「文末参考文献区/编号清单」与
+# 「脚注式引注」时，引擎把**两路都**生成 bib 条目 → 参考文献区比人工成品多出
+# 10–47 条（人工只保留文末清单）。编辑部尚未拍板是否一律「文末清单优先」，
+# 因此这里只提供**判据**（默认行为不变），接线由 build.py 在拍板后加 3–5 行：
+#
+#     from .footnotes import footnote_promotion_allowed
+#     has_end_list = bool(doc.refs or doc.ref_raw_lines or doc.ref_key_by_num)
+#     if not footnote_promotion_allowed(has_end_list=has_end_list,
+#                                       end_list_priority=getattr(args, "end_list_priority", False)):
+#         keep = set(doc.ref_key_by_num.values())
+#         doc.bib_entries = [e for e in doc.bib_entries if e[0] in keep]
+#
+# ⚠️ 拍板启用时还需 docxsource 的渲染一并改（脚注引注仍渲染为脚注文本，而不是
+#    留下悬空 `\parencite`）——那是 engine-core 的写范围，见批 46 报告。
+
+
+def footnote_promotion_allowed(*, has_end_list: bool,
+                               end_list_priority: bool = False) -> bool:
+    """脚注文献是否**逐条提升**为 bib 条目（C 类口径判据）。
+
+    · 默认（`end_list_priority=False`）→ 始终 True：与现行为逐字节一致；
+    · 开启且**存在文末清单**（人年制/编号清单任一路）→ False：只保留文末清单；
+    · 开启但**没有文末清单**（纯脚注体例，如 86-03）→ 仍 True：否则参考文献全空。
+    """
+    if end_list_priority and has_end_list:
+        return False
+    return True
+
+
+def filter_footnote_entries(entries: list[tuple[str, dict, str]],
+                            keep_keys: set[str]) -> list[tuple[str, dict, str]]:
+    """给 build.py 接线用：文末清单优先时，只保留编号清单键对应的 bib 条目。
+
+    （脚注条目与编号清单条目在 `doc.bib_entries` 里混排；编号清单键来自
+    `doc.ref_key_by_num.values()`，人年制条目不在 `bib_entries` 里。）
+    """
+    return [entry for entry in entries if entry[0] in keep_keys]
 
 
 # ── 页码定位 ──────────────────────────────────────────────────────────────

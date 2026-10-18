@@ -468,6 +468,24 @@ try:
           and _sim_large.get("l2") is None)
     check("O10 compute_similarity：不同大稿 raw<1（可区分）",
           batch.compute_similarity("甲\n" * 20000, "乙\n" * 20000, "auto")["raw"] < 0.5)
+    check("O12 分层验收：mid/full 档 + repo 扫描解析",
+          batch.tier_issue_arg("mid") == "86,87,88,89,90"
+          and batch.tier_repo_scan("mid", False) is False
+          and batch.tier_repo_scan("mid", True) is True
+          and batch.tier_repo_scan("full", False) is True)
+    _c = {}
+    _r1, _h1 = batch.similarity_cached("甲。", "甲。", "auto", _c)
+    _r2, _h2 = batch.similarity_cached("甲。", "甲。", "auto", _c)
+    _r3, _h3 = batch.similarity_cached("甲。乙。", "甲。", "auto", _c)
+    check("O12 相似度缓存：按 (人工 sha, 生成 sha, 口径) 命中/失效",
+          _h1 is False and _h2 is True and _h3 is False
+          and _r2.get("mode") == _r1.get("mode")
+          and batch.similarity_cache_key("m", "g", "auto") == batch.similarity_cache_key("m", "g", "auto")
+          and batch.similarity_cache_key("m", "g", "auto") != batch.similarity_cache_key("m", "g", "full"))
+    check("O12 CLI：--tier 默认 mid / full 可解析 / --no-similarity-cache",
+          batch.build_parser().parse_args([]).tier == "mid"
+          and batch.build_parser().parse_args(["--tier", "full"]).tier == "full"
+          and batch.build_parser().parse_args(["--no-similarity-cache"]).no_similarity_cache is True)
     check("O10 CLI：--no-similarity / --full-similarity 互斥可解析",
           batch.build_parser().parse_args(["--no-similarity"]).no_similarity is True
           and batch.build_parser().parse_args(["--full-similarity"]).full_similarity is True

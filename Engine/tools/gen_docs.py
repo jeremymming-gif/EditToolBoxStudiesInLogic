@@ -62,6 +62,19 @@ PY = "/opt/homebrew/bin/python3.14"
 BEGIN = "<!-- AUTO:STATE:BEGIN -->"
 END = "<!-- AUTO:STATE:END -->"
 
+# ── O13（第四十六批）：重活证据落盘（`run_record.py` 与本脚本同目录）──────────
+# 每次运行**尽力**写一份 manifest（label=gen_docs-write / gen_docs-check）到
+# `/tmp/audit_lead/runs/`：记录耗时 / 是否 --check / 是否跑了套件 / README 是否变化 +
+# 引擎 py 指纹。**纯证据**：工具缺失或写失败只告警，绝不影响本脚本的计算、输出与退出码。
+# `SLCN_RUN_RECORD=0` 可关闭（需要完全静默的调用方/测试用）。
+try:
+    _TOOLS_DIR = Path(__file__).resolve().parent
+    if str(_TOOLS_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOLS_DIR))
+    import run_record as _run_record
+except Exception:  # noqa: BLE001 —— 证据工具不可用不能拖垮 gen_docs
+    _run_record = None
+
 ENGINE = Path(__file__).resolve().parents[1]          # …/<项目>/Engine
 # 仓库根**问 git 要**，不按目录层数推：稿件仓里是 `<仓>/Engine`（要往上两级），
 # 拆仓后的工具仓里是 `<仓>/Engine`（只往上一级）。按层数推的话，公开仓里会算到仓库外一层，
@@ -428,7 +441,7 @@ def split_block(text: str) -> tuple[str, str, str]:
     return text[:i], text[i:j], text[j:]
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main_impl(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="生成/校验 README.md 的「当前状态」AUTO 块")
     ap.add_argument("--check", action="store_true", help="只校验，不一致就退出 1 并打印 diff")
     ap.add_argument("--no-test-runs", action="store_true",
@@ -522,6 +535,68 @@ def main(argv: list[str] | None = None) -> int:
         print("PASS  已就地更新 AUTO 块（块外内容逐字节未动）")
     print(f"      退出码提示：{'各项检查通过' if all_ok else '有 ❌ 项，见块内'}")
     return 0 if all_ok else 1
+
+
+def _record_run(*, label: str, rc: int, started: float, args: list[str],
+                check_mode: bool, no_test_runs: bool, readme_changed: bool,
+                engine_sha: str | None = None) -> None:
+    """O13：尽力写一份 manifest；任何异常只告警，**绝不改变退出码**。"""
+    if _run_record is None or os.environ.get("SLCN_RUN_RECORD") == "0":
+        return
+    try:
+        _run_record.write_manifest(
+            label=label,
+            command=f"{Path(PY).name} tools/gen_docs.py" + (" " + " ".join(args) if args else ""),
+            started_at=started,
+            artifact=README,
+            exit_code=rc,
+            engine_sha=engine_sha,
+            meta={
+                "mode": label.rsplit("-", 1)[-1],       # write / check
+                "check": check_mode,
+                "no_test_runs": no_test_runs,
+                "tests_ran": not no_test_runs,
+                "readme_changed": readme_changed,
+            },
+        )
+    except Exception as e:  # noqa: BLE001 —— 证据记录失败不影响主流程
+        print(f"⚠ gen_docs: manifest 记录失败（忽略）：{type(e).__name__}: {e}", file=sys.stderr)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """入口：记录一次运行（O13）后转 `_main_impl`；计算/输出/退出码原样不变。"""
+    t0 = time.time()
+    args = list(sys.argv[1:] if argv is None else argv)
+    check_mode = "--check" in args
+    no_test_runs = "--no-test-runs" in args
+    cmp_app = "--cmp-app" in args
+    # 指纹在**开始时**算好：并发写者窗口里「结束态」可能已不是本次跑的那份代码。
+    engine_sha = None
+    if _run_record is not None and not cmp_app:
+        try:
+            engine_sha = _run_record.engine_py_sha256()
+        except Exception:  # noqa: BLE001
+            engine_sha = None
+    try:
+        before = README.read_bytes() if README.is_file() else b""
+    except OSError:
+        before = b""
+    label = "gen_docs-cmp-app" if cmp_app else ("gen_docs-check" if check_mode else "gen_docs-write")
+    rc = 1
+    try:
+        rc = _main_impl(argv)
+        return rc
+    finally:
+        changed = False
+        try:
+            after = README.read_bytes() if README.is_file() else b""
+            changed = after != before
+        except OSError:
+            pass
+        # cmp-app 是 build.sh 的内部调用（build 自己有 manifest），不重复记录
+        if not cmp_app:
+            _record_run(label=label, rc=rc, started=t0, args=args, check_mode=check_mode,
+                        no_test_runs=no_test_runs, readme_changed=changed, engine_sha=engine_sha)
 
 
 if __name__ == "__main__":

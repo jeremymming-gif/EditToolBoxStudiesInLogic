@@ -1140,6 +1140,38 @@ def compute_similarity(man_text: str, gen_text: str, requested: str = "auto") ->
     return _fast_similarity(man_text, gen_text)
 
 
+def tier_issue_arg(tier: str) -> str:
+    """O12 分层：中间验收固定 5 期（4.2 min）；全量档=同 5 期 + --repo-scan（最终只跑一次）。"""
+    return "86,87,88,89,90"
+
+
+def tier_repo_scan(tier: str, explicit_repo_scan: bool = False) -> bool:
+    """full 档强制 repo 扫描；mid 档尊重显式 --repo-scan（兼容旧命令）。"""
+    return bool(explicit_repo_scan) or tier == "full"
+
+
+def similarity_cache_key(man_text: str, gen_text: str, requested: str) -> str:
+    """缓存键 = sha256(人工 tex) + sha256(生成 tex) + 口径（内容变则失效，无需额外版本号）。"""
+    h = hashlib.sha256()
+    h.update((man_text or "").encode("utf-8", "replace")); h.update(b"\0")
+    h.update((gen_text or "").encode("utf-8", "replace")); h.update(b"\0")
+    h.update((requested or "auto").encode("utf-8"))
+    return h.hexdigest()[:32]
+
+
+def similarity_cached(man_text: str, gen_text: str, requested: str,
+                      cache: dict | None = None) -> tuple[dict, bool]:
+    """按 (人工 sha, 生成 sha, 口径) 取相似度；命中返回 (result, True)，否则计算并写回 cache。"""
+    if cache is None:
+        return compute_similarity(man_text, gen_text, requested), False
+    key = similarity_cache_key(man_text, gen_text, requested)
+    if key in cache:
+        return dict(cache[key]), True
+    sim = compute_similarity(man_text, gen_text, requested)
+    cache[key] = sim
+    return sim, False
+
+
 def convert_common_args(case: CaseSpec, src: Path, out_root: Path,
                         workspace: Path, use_metadata: bool = True) -> tuple[list[str], dict]:
     """拼 `convert.py` 的公共参数（source/out/name/附加源/extra_args），纯函数便于单测。
@@ -1213,7 +1245,8 @@ def ensure_docx(src: Path, workdir: Path, logs_dir: Path, env: dict) -> tuple[Pa
 
 def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
              py: str, env: dict, timeout: float, compare: bool,
-             use_metadata: bool = True, similarity: str = "auto") -> dict:
+             use_metadata: bool = True, similarity: str = "auto",
+             sim_cache: dict | None = None) -> dict:
     """跑一个案例：pass1 转换+编译 → 两遍 sha → 判据采集 → 人工对照。"""
     author, key = case.author, case.key
     out_name = sanitize_output_name(author)   # 产物目录名（repo 作者名可能含空格/中文）
@@ -1304,12 +1337,16 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     man = manual_metrics(case, man_root, workdir, py, env, logs_dir) if compare else None
     m["manual"] = man
 
-    # 6b) 相似度（O10：auto 大稿降级 fast；--no-similarity / --full-similarity 可覆盖）
+    # 6b) 相似度（O10：auto 大稿降级 fast；O12：按 (人工 sha, 生成 sha, 口径) 缓存）
     if man and man.get("exists", {}).get("tex") and tex_p.is_file():
         try:
-            m["similarity"] = compute_similarity(read_text(man["tex"]), gen_tex_text, similarity)
+            man_text = read_text(man["tex"])
+            sim, hit = similarity_cached(man_text, gen_tex_text, similarity, sim_cache)
+            m["similarity"] = sim
+            m["sim_cache"] = "hit" if hit else "miss"
         except Exception as exc:  # noqa: BLE001
             m["similarity"] = {"mode": "error", "error": str(exc)[:120]}
+            m["sim_cache"] = "error"
 
     # 7) 文献回读校验（生成 bib vs 人工 bib；键方案不同，闭合以直接计算为准）
     if man and man.get("exists", {}).get("bib") and bib_p.is_file():
@@ -1397,6 +1434,11 @@ def render_report(run: dict) -> str:
                  + ("（`--no-similarity` 已跳过）" if run.get("similarity_mode") == "none"
                     else "（`--full-similarity` 全文指标）" if run.get("similarity_mode") == "full"
                     else "（O10 auto：ref+gen > 30000 字符降级行级/前缀快速指标，mode 列标注）"))
+    lines.append(f"- 验收档：`{run.get('tier', 'mid')}`（mid=5 期 4–5 min 中间验收；full=5 期 + repo 扫描，最终只跑一次）")
+    _sc = run.get("similarity_cache") or {}
+    if _sc.get("enabled"):
+        lines.append(f"- 相似度缓存：命中 {_sc.get('hits', 0)} / 计算 {_sc.get('misses', 0)}"
+                     f"（key = 人工+生成 tex sha + 口径；文件 `{_sc.get('path')}`）")
     if run.get("metadata_disabled"):
         lines.append("- **A2-only 口径**：`--no-metadata` 已启用——manifest 的附加源（如 90-03 的 "
                      "`yalcin puzzle.tex`）**不传给** `convert.py`，用于单独评估引擎通用发现规则；"
@@ -1684,6 +1726,16 @@ def run_batch(args: argparse.Namespace) -> int:
     man_repo = Path(args.manuscripts).expanduser() if args.manuscripts else MANUSCRIPTS_DEFAULT
     man_roots = {issue: man_repo / sub for issue, sub in MANUAL_ROOTS.items()}
 
+    # O12 分层验收：tier 必须在 load_cases / repo 扫描之前解析（决定默认 5 期 与 full 的 repo 扫描）
+    tier = getattr(args, "tier", "mid") or "mid"
+    if tier not in ("mid", "full"):
+        print(f"[用法] --tier 只接受 mid/full：{tier}", file=sys.stderr)
+        return 2
+    if not getattr(args, "issues", ""):
+        args.issues = tier_issue_arg(tier)
+    if tier_repo_scan(tier, bool(getattr(args, "repo_scan", False))):
+        args.repo_scan = True
+
     cases = load_cases(args)
     repo_stats: dict = {}
     if getattr(args, "repo_scan", False) and not args.case:
@@ -1716,9 +1768,17 @@ def run_batch(args: argparse.Namespace) -> int:
     metadata_disabled = bool(getattr(args, "no_metadata", False))
     sim_mode = ("none" if getattr(args, "no_similarity", False)
                 else ("full" if getattr(args, "full_similarity", False) else "auto"))
+    sim_cache: dict | None = None
+    sim_cache_path = Path(getattr(args, "similarity_cache", "") or (out_root / "similarity-cache.json"))
+    if sim_mode != "none" and not getattr(args, "no_similarity_cache", False):
+        try:
+            sim_cache = json.loads(sim_cache_path.read_text(encoding="utf-8")) if sim_cache_path.is_file() else {}
+        except (OSError, ValueError):
+            sim_cache = {}
     run: dict = {
         "run_id": args.label or out_root.name,
         "metadata_disabled": metadata_disabled, "similarity_mode": sim_mode,
+        "tier": tier, "similarity_cache_path": str(sim_cache_path) if sim_cache is not None else "",
         "started": now_iso(), "out_dir": str(out_root), "python": py,
         "engine_version": ENGINE_VERSION, "git_head": repo_start["head"],
         "repo_start": repo_start, "workspaces": {k: str(v) for k, v in workspaces.items()},
@@ -1742,7 +1802,8 @@ def run_batch(args: argparse.Namespace) -> int:
         else:
             m = run_case(case, ws, mroot, out_root, py, env,
                          argv_timeout(args.timeout), compare=not args.no_compare,
-                         use_metadata=not metadata_disabled, similarity=sim_mode)
+                         use_metadata=not metadata_disabled, similarity=sim_mode,
+                         sim_cache=sim_cache)
             m["channel"] = "latex" if str(m.get("source", "")).endswith(".tex") else "word"
             if (m.get("plan") or {}).get("ai_zero") is False and not m.get("skipped"):
                 run["zero_cost"]["violations"].append(case.key)
@@ -1759,6 +1820,17 @@ def run_batch(args: argparse.Namespace) -> int:
     run["finished"] = now_iso()
     run["repo_end"] = git_fingerprint()
     totals = build_summary(run)
+    hit = sum(1 for m in run["cases"].values() if m.get("sim_cache") == "hit")
+    miss = sum(1 for m in run["cases"].values() if m.get("sim_cache") == "miss")
+    run["similarity_cache"] = {"path": str(sim_cache_path) if sim_cache is not None else "",
+                               "hits": hit, "misses": miss,
+                               "enabled": sim_cache is not None}
+    if sim_cache is not None:
+        try:
+            sim_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            sim_cache_path.write_text(json.dumps(sim_cache, ensure_ascii=False), encoding="utf-8")
+        except OSError as exc:  # noqa: BLE001
+            print(f"[缓存] 写入失败（不影响结果）：{exc}", file=sys.stderr)
     run["elapsed_total_s"] = round(time.time() - started, 1)
     run["throughput_per_min"] = round(totals["ran"] / max(run["elapsed_total_s"] / 60, 0.01), 1)
     run["dashboard"] = build_dashboard(run)
@@ -1973,6 +2045,18 @@ def run_self_test() -> int:
           and similarity_choice("aa", "bb", "none") == "none"
           and compute_similarity("x", "x", "none") == {"mode": "skipped"}
           and compute_similarity("a\n" * 20000, "a\n" * 20000, "auto")["mode"] == "fast")
+    _sim_cache: dict = {}
+    _r1, _h1 = similarity_cached("甲。", "甲。", "auto", _sim_cache)
+    _r2, _h2 = similarity_cached("甲。", "甲。", "auto", _sim_cache)
+    _r3, _h3 = similarity_cached("甲。乙。", "甲。", "auto", _sim_cache)
+    check("O12 分层验收：tier 解析 + 相似度缓存命中/失效",
+          tier_issue_arg("mid") == "86,87,88,89,90"
+          and tier_repo_scan("mid", False) is False
+          and tier_repo_scan("full", False) is True
+          and tier_repo_scan("mid", True) is True
+          and similarity_cache_key("m", "g", "auto") == similarity_cache_key("m", "g", "auto")
+          and similarity_cache_key("m", "g", "auto") != similarity_cache_key("m", "g", "full")
+          and _h1 is False and _h2 is True and _h3 is False)
     check("benchmark：issue code 解析 + dashboard 聚合 + 估计函数",
           _parse_issue_code("2026年第2期(87)") == "87"
           and _parse_issue_code("2022年第6A期(67A)") == "67A"
@@ -1995,7 +2079,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="批量实例测试：转换→编译→两遍 sha256→一校/回读→人工对照→P0/P1/P2 报告"
                     "（零付费、只读输入、产物只写 /tmp）",
     )
-    ap.add_argument("--issues", default="90,87,88,89",
+    ap.add_argument("--tier", choices=("mid", "full"), default="mid",
+                    help="验收档：mid=5 期（默认，中间验收 4–5 min）；full=5 期+repo 扫描（最终只跑一次）")
+    ap.add_argument("--similarity-cache", default="",
+                    help="相似度缓存 JSON 路径（默认 <out>/similarity-cache.json）")
+    ap.add_argument("--no-similarity-cache", action="store_true", help="禁用相似度缓存")
+    ap.add_argument("--issues", default="",
                     help="只跑这些期（逗号分隔；默认 90,87,88,89）")
     ap.add_argument("--case", default="",
                     help="只跑一个案例：`90/05` 或 `87-3` 或作者名（如 Beibei_Gao）")
