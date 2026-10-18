@@ -3,7 +3,7 @@
 #   pwsh -ExecutionPolicy Bypass -File build-win.ps1
 #
 # 产出（都在 build\dist\ 下）：
-#   SLCNEngine.exe      引擎（**八个** CLI 入口冻成一个；用户机器上不需要装 Python）
+#   SLCNEngine.exe      引擎（**十个** CLI 入口冻成一个；用户机器上不需要装 Python）
 #   编辑部工具箱.exe     界面（Tkinter 外壳；它会在自己旁边找 SLCNEngine.exe）
 #
 # ⚠️ 本文件存为 **UTF-8 带 BOM**：Windows PowerShell 5.1 读不带 BOM 的 .ps1
@@ -56,14 +56,16 @@ Write-Host "▶ 装依赖（Windows 轮子）…" -ForegroundColor Cyan
 & $VenvPip install --disable-pip-version-check --quiet --upgrade pip
 & $VenvPip install --disable-pip-version-check --quiet lxml pypdf pypinyin pyinstaller
 
-# ── ② 冻结引擎：八个 CLI 入口 → 一个 exe ────────────────────────────────
+# ── ② 冻结引擎：十个 CLI 入口 → 一个 exe ────────────────────────────────
 # ⚠️ 这张表必须与 `Engine/engine_main.py: ENTRIES` **逐项一致**（配对守卫在
 #    tests/test_bridge.py 的 (b) 组）。少一项的后果不是"少个功能"，而是那个标签页
 #    在用户机器上直接「❌ 不认识的入口」退出 2 —— 2026-10-17 v1.0.1 实测：
 #    表停在"三个入口"，9 个标签页坏了 5 个（下面 hidden-import 与 ④ 自检都按它走）。
+# 第 132 条：`bibdb.py`（引用库 CLI）也在表里 —— Windows「引用库」5 页的数据源。
+# 漏了它，那 5 页在用户机器上全部「❌ 不认识的入口」退出 2。
 $Entries = @("convert.py", "checkbib.py", "mergepdf.py",
-             "cleantemp.py", "publish.py", "compileall.py", "proofcheck.py",
-             "infocheck.py", "toc.py")
+             "cleantemp.py", "compileall.py", "proofcheck.py",
+             "infocheck.py", "toc.py", "publish.py", "bibdb.py")
 
 Write-Host "▶ 冻结引擎 → SLCNEngine.exe…" -ForegroundColor Cyan
 Push-Location $EngineDir

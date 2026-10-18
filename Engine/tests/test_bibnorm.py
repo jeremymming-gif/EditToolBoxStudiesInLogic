@@ -14,7 +14,9 @@ r"""bibnorm：**整行注释**的旧条目不得被当成真条目（**第 133 �
   ② `split_entries()`：注释掉的空键条目/完整旧条目不进；正常条目顺序与数量不变；
   ③ `normalize_bib()`：最小复现不再输出 `@article{,`；重复键只剩一条；字段值里
      `50\%` / `A % B` 不受影响；条目体内整行注释掉的字段不变成真字段；
-  ④ 边界：空 bib / 只有注释的 bib 返回空文本；无注释 bib 结果与从前一致（结构/顺序）。
+  ④ 边界：空 bib / 只有注释的 bib 返回空文本；无注释 bib 结果与从前一致（结构/顺序）；
+  ⑤ `bibcheck.split_entries()` 与 bibnorm **同一口径**（第 133 条遗留）：注释掉的
+     非空键条目也不进、正常条目/顺序不变、行内 `%` 不受影响、`check()` 总数不含注释条目。
 
 只写内存；不联网、不读稿件库、不跑 corpus.py / build.sh。
 
@@ -30,6 +32,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from slcn import bibcheck  # noqa: E402
 from slcn import bibnorm  # noqa: E402
 
 FAILS = []
@@ -167,6 +170,35 @@ check("④ Word 通道窄版 move_book_editions：正常条目照旧、版次照
       "title = {Book, (2nd)}" in _we_out and "@article{b," in _we_out
       and "由文末参考文献区生成" not in _we_out,
       repr(_we_out)[:120])
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ bibcheck.split_entries 与 bibnorm 口径统一（第 133 条遗留）
+# ══════════════════════════════════════════════════════════════════════════
+_COMMENTED_NONEMPTY = """% @misc{z16,
+%   author = {旧},
+%   title = {注释掉的旧条目},
+% }
+@misc{z16,
+  author = {新}
+}
+"""
+_bc = bibcheck.split_entries(_COMMENTED_NONEMPTY)
+check("⑤ bibcheck.split_entries：注释掉的**非空键**条目不进（z16 只剩真实那条）",
+      [k for _e, k, _b in _bc] == ["z16"], str([(e, k) for e, k, _b in _bc]))
+_bc2 = bibcheck.split_entries(
+    "% 头\n@book{a, title={A}}\n% 中间注释\n@article{b, title={B}}\n% @article{,\n% }\n")
+check("⑤ bibcheck.split_entries：正常条目不被误删、顺序不变",
+      [k for _e, k, _b in _bc2] == ["a", "b"], str([k for _e, k, _b in _bc2]))
+_bc3 = bibcheck.split_entries("@misc{a, note={50\\%}, title={A % B}}\n")
+check("⑤ bibcheck.split_entries：行内/字段值内 `%` 不影响条目",
+      len(_bc3) == 1 and _bc3[0][1] == "a")
+_bc4 = bibcheck.split_entries("% @misc{z16,\n% }\n@misc{real, title={X}}\n")
+check("⑤ bibcheck.split_entries：返回值结构不变（仍是 (类型, 键, 字段体) 三元组）",
+      all(len(e) == 3 and isinstance(e[0], str) and isinstance(e[1], str)
+          for e in _bc4) and [k for _e, k, _b in _bc4] == ["real"])
+_rep = bibcheck.check(_COMMENTED_NONEMPTY)
+check("⑤ check() 的条目总数不再把注释掉的旧条目算进去（total = 1）",
+      _rep.total == 1, str(_rep.total))
 
 print()
 print(f"\n{'=' * 66}")

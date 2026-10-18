@@ -75,6 +75,12 @@ def apply(root: tk.Misc) -> None:
     style.configure("TFrame", background=COLOR["bg"])
     style.configure("TLabel", background=COLOR["bg"], foreground=COLOR["fg"])
     style.configure("Muted.TLabel", background=COLOR["bg"], foreground=COLOR["muted"])
+    # 第 132 条：引用库 5 页的页标题/小节标题。字号从 base 派生（跟随系统缩放），
+    # 不写死 px —— 与上面「文字缩放」的取舍一致。
+    style.configure("Heading.TLabel", background=COLOR["bg"], foreground=COLOR["fg"],
+                    font=(None, base + 3, "bold"))
+    style.configure("Section.TLabel", background=COLOR["bg"], foreground=COLOR["fg"],
+                    font=(None, base + 1, "bold"))
     style.configure("TNotebook", background=COLOR["bg"], borderwidth=0)
     style.configure("TNotebook.Tab", padding=(12, 6))
     style.map("TNotebook.Tab",

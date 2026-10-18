@@ -38,6 +38,8 @@ import zipfile
 from dataclasses import dataclass, field
 
 from . import paths as P
+# 第 134 条：附件结构校验与 bibnorm 共用「整行注释」口径（同一份实现，避免分叉）
+from .bibnorm import strip_bib_comments
 
 # 各角色的文件名线索（**仅作辅助**，主判据是内容）
 _NAME_HINT = {
@@ -169,6 +171,165 @@ def _looks_like_footnotes(text: str) -> bool:
     return len(lines) >= 3 and numbered / len(lines) > 0.4
 
 
+# ── 第 134 条（2026-10-18）：参考文献附件的结构校验 ─────────────────────────
+# 真实稿 2023(71)04：convert ⑦ 自动选中 `预处理/用于上传text2bib.txt`（text2bib 的
+# 中间产物：两条文献挤一行、含 `\href{a}{b}`）；footref 把它拆成 `title = {...}{...}`
+# 这种嵌套花括号，biber 直接语法报错、**整份 bib 报废**（19 页 vs 人工 20 页）。
+# 所以附件不能「扫到就并」：先按下面这些**保守、可解释**的判据过一遍。
+_BIB_ENTRY = re.compile(
+    r"(?m)^[ \t]*@([A-Za-z]+)\s*\{\s*([^,\s][^,]*?)\s*,"
+)
+_TEXT_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+_TEXT_TYPE_MARK = re.compile(r"\[\s*[A-Z]{1,3}\s*\]")
+
+
+def count_bibtex_entries(text: str) -> int:
+    """文本里「key 非空的 `@entry`」条数（BibTeX 附件的最硬特征；整行注释不算）。"""
+    return len(_BIB_ENTRY.findall(strip_bib_comments(text or "")))
+
+
+def looks_like_bibtex(text: str) -> bool:
+    """文本是不是 BibTeX（至少 1 条 key 非空的 `@entry`）。"""
+    return count_bibtex_entries(text) > 0
+
+
+def attachment_kind(path: str, text: str) -> str:
+    """附件类型：`"bib"`（真 BibTeX：扩展名 .bib 或内容有 @entry）或 `"text"`（纯文献清单）。"""
+    if os.path.splitext(path)[1].lower() == ".bib":
+        return "bib"
+    return "bib" if looks_like_bibtex(text) else "text"
+
+
+def text_attachment_issue(text: str) -> str:
+    """纯文本参考文献附件的结构校验；返回拒绝原因（空串 = 通过）。
+
+    判据（保守、可解释；只按**整行**判，不做行内截断）：
+
+      · 含 `\\href{...}`：脚注/编号清单解析器会把 `\\href{a}{b}` 拆进字段 →
+        产物出现 `title = {...}{...}` 这种嵌套花括号 → biber 语法报错、整份 bib 报废
+        （71/04 实测）；
+      · 含相邻的 `}{`：同上，非法 BibTeX 结构；
+      · 疑似「一行两条文献」：同一行 ≥2 个 `[J]/[M]/[A]…` 类型标记且 ≥2 个年份，
+        或一行 ≥2 个年份且长度 ≥500 字符——text2bib 中间产物常见的两条挤一行，
+        解析器会把两条揉成一条。
+
+    边界：正常的中文/英文文献清单（`[N] 作者, 年, 题名, 刊名, 卷(期): 页` 或
+    「作者，年：《题名》，刊名，年期。」）逐行只有 1 条，不命中。
+    """
+    t = text or ""
+    if re.search(r"\\href\s*\{", t):
+        return "含 \\href{...}（会被拆成嵌套花括号，biber 会报废）"
+    if re.search(r"\}\s*\{", t):
+        return "含相邻花括号 }{（非法 BibTeX 嵌套结构）"
+    for line in t.splitlines():
+        if not line.strip() or line.lstrip().startswith("%"):
+            continue
+        years = len(_TEXT_YEAR.findall(line))
+        marks = len(_TEXT_TYPE_MARK.findall(line))
+        if (marks >= 2 and years >= 2) or (years >= 2 and len(line) >= 500):
+            return f"疑似一行两条文献（类型标记 {marks} 个 / 年份 {years} 个）"
+    return ""
+
+
+def bib_attachment_issue(text: str) -> str:
+    """BibTeX 附件的结构校验；返回拒绝原因（空串 = 通过）。
+
+    只做最低限度检查（不重写解析器）：至少 1 条 key 非空的 `@entry`、花括号配平、
+    字段区不出现相邻花括号 `}{`（那会让 biber 认为值后面还有东西）。
+    """
+    t = strip_bib_comments(text or "")  # 注释掉的旧条目不算（第 133 条同一口径）
+    if count_bibtex_entries(t) < 1:
+        return "没有可解析出非空 key 的 BibTeX 条目"
+    depth = 0
+    for ch in t:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                return "花括号不配平（多出右花括号）"
+    if depth != 0:
+        return "花括号不配平（缺右花括号）"
+    if re.search(r"\}\s*\{", t):
+        return "含相邻花括号 }{（非法 BibTeX 嵌套结构）"
+    return ""
+
+
+def _name_bib_hint(name: str) -> int:
+    """文件名偏好：真 bib/参考文献附件优先（0 = 最优先）。"""
+    base = os.path.basename(name).lower()
+    if os.path.splitext(base)[1] == ".bib":
+        return 0
+    if "bib" in base or "reference" in base or "参考文献" in base:
+        return 0
+    return 1
+
+
+def select_refs_attachment(
+    items: list[SourceFile], *, allow_bibtex: bool = True
+) -> tuple[SourceFile | None, list[str], list[str]]:
+    """从扫描清单里挑参考文献附件（第 134 条；保守、可解释）。
+
+    返回 `(采用的文件 | None, 采用说明, 跳过说明)`（说明里带文件名与原因，供 convert 打印）。
+
+    优先级：
+      1. 真 BibTeX（`.bib` 扩展名 / 内容有非空 key 的 `@entry`）—— 按文件名线索排序；
+      2. 纯文本文献清单 —— 文件名带 bib/reference/参考文献 的优先，其次按扫描置信度/长度；
+    两者都要过对应的结构校验；不过的进「跳过说明」，继续看下一个候选。
+    `allow_bibtex=False`（Word 通道的旧行为）时**不把 BibTeX 文件当附件**，只看文本清单。
+    """
+    cands = [s for s in items if s.role == "refs"]
+    if not cands:
+        return None, [], []
+    adopted: list[str] = []
+    skipped: list[str] = []
+    bib_cands: list[SourceFile] = []
+    text_cands: list[SourceFile] = []
+    for s in cands:
+        kind = s.fields.get("refs_kind") or attachment_kind(s.path, s.fields.get("_text", ""))
+        if kind == "bib":
+            if allow_bibtex:
+                bib_cands.append(s)
+            else:
+                # Word 通道保留旧行为：BibTeX 文件从前**不**被当附件（那时 .bib 甚至不在
+                # 扫描范围内、BibTeX 文本也多半判「未识别」），不能因为本批识别能力变强
+                # 就突然把它塞进 Word 产物。
+                skipped.append(f"{s.name}（Word 通道不把 BibTeX 文件当参考文献附件）")
+        else:
+            text_cands.append(s)
+    bib_cands.sort(key=lambda s: (_name_bib_hint(s.name), -s.score, -s.chars))
+    text_cands.sort(key=lambda s: (_name_bib_hint(s.name), -s.score, -s.chars))
+
+    # 先把**全部**候选校验一遍（坏候选的跳过原因要一个不漏地写进日志），再择优：
+    # 真 BibTeX > 文本清单；同类按文件名线索/扫描置信度/长度。
+    ok_bib: list[SourceFile] = []
+    for s in bib_cands:
+        issue = bib_attachment_issue(s.fields.get("_text", ""))
+        if issue:
+            skipped.append(f"{s.name}（{issue}）")
+        else:
+            ok_bib.append(s)
+    ok_text: list[SourceFile] = []
+    for s in text_cands:
+        issue = text_attachment_issue(s.fields.get("_text", ""))
+        if issue:
+            skipped.append(f"{s.name}（{issue}）")
+        else:
+            ok_text.append(s)
+    if ok_bib:
+        chosen = ok_bib[0]
+        adopted.append(
+            f"{chosen.name}（BibTeX 附件："
+            f"{count_bibtex_entries(chosen.fields.get('_text', ''))} 条）"
+        )
+        return chosen, adopted, skipped
+    if ok_text:
+        chosen = ok_text[0]
+        adopted.append(f"{chosen.name}（文本清单：{chosen.reason or '按内容识别'}）")
+        return chosen, adopted, skipped
+    return None, adopted, skipped
+
+
 def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
     """扫描目录，按内容判定每个文件的角色。"""
     out: list[SourceFile] = []
@@ -204,8 +365,9 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
                 sf.fields["paras"] = npar
                 sf.n_refs = _count_ref_lines(txt)
                 sf.fields["_text"] = txt
+                sf.fields["refs_kind"] = "text"
                 candidates.append(sf)
-            elif ext in (".tex", ".txt", ".md", ".rtf"):
+            elif ext in (".tex", ".txt", ".md", ".rtf", ".bib"):
                 try:
                     txt = open(full, encoding="utf-8", errors="replace").read()
                 except OSError:
@@ -213,13 +375,21 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
                 sf.chars = len(txt)
                 sf.n_refs = _count_ref_lines(txt)
                 sf.fields["_text"] = txt
+                # 第 134 条：真 BibTeX（.bib 或内容有非空 key 的 @entry）单列一类，
+                # 附件选择时优先于纯文本清单；Word 通道仍按旧口径不消费它。
+                sf.fields["refs_kind"] = (
+                    "bib" if (ext == ".bib" or looks_like_bibtex(txt)) else "text"
+                )
                 candidates.append(sf)
 
     if not candidates:
         return out
 
     # ── 判定 ──────────────────────────────────────────────────────────
-    max_chars = max(c.chars for c in candidates)
+    # 第 134 条：真 BibTeX 附件（.bib / @entry 文本）不参与「最长文本=正文」的基准——
+    # 一份很大的 .bib 不该把真正文的判据顶歪。
+    _main_pool = [c for c in candidates if c.fields.get("refs_kind") != "bib"]
+    max_chars = max((c.chars for c in (_main_pool or candidates)), default=0)
     for c in candidates:
         txt = c.fields.get("_text", "")
         lines = max(1, len([l for l in txt.split("\n") if l.strip()]))
@@ -231,7 +401,14 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
         # ⚠️ 顺序要紧：**先排除表格类**，再判正文。
         # 实测 `符号整体替换.docx` 有 13173 字符，比真正文（11528）还长——
         # 若先判「字符最多」，它会被误当成正文。
-        if _looks_like_symbol_table(txt):
+        # 第 134 条：真 BibTeX 附件先于一切文本判据（它的 `field = value` 行也可能
+        # 命中「两列对照」之类的启发式；实测 77/04 的 `48312-271746-BIB.txt` 就被旧
+        # 判据判成「未识别」而让 text2bib 中间产物捡了便宜）。
+        if c.fields.get("refs_kind") == "bib":
+            n_bib = count_bibtex_entries(txt)
+            c.role, c.score = "refs", 0.95
+            c.reason = f"BibTeX 附件：{n_bib} 条可解析条目（非空 key）"
+        elif _looks_like_symbol_table(txt):
             c.role, c.score = "symbols", 0.8
             c.reason = "大量短行两列对照，像符号替换表"
         elif c.n_refs >= 5 and c.n_refs / lines > 0.35:
@@ -269,11 +446,13 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
 
     out.extend(candidates)
 
-    # 若一个 main 都没有，把最长的那个顶上
+    # 若一个 main 都没有，把最长的那个顶上（**纯 BibTeX 附件不当正文**：它不可能是一篇稿子）
     if not any(s.role == "main" for s in out):
-        longest = max(candidates, key=lambda c: c.chars)
-        longest.role, longest.score = "main", 0.5
-        longest.reason += "；未识别出正文，按最长文本顶替"
+        pool = [c for c in candidates if c.fields.get("refs_kind") != "bib"]
+        if pool:
+            longest = max(pool, key=lambda c: c.chars)
+            longest.role, longest.score = "main", 0.5
+            longest.reason += "；未识别出正文，按最长文本顶替"
 
     # 多个完整稿件版本 → 必须让用户选，工具不替编辑做这个判断
     mains = [c for c in candidates if c.role == "main"]

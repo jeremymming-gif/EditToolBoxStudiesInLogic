@@ -53,6 +53,17 @@ def clear_env(*names: str) -> dict:
     return {n: os.environ.pop(n, "") for n in names}
 
 
+def _raises_value_error(func, *args, **kwargs) -> bool:
+    """调用必须抛 ValueError（参数拼装层的反例测试用）。"""
+    try:
+        func(*args, **kwargs)
+    except ValueError:
+        return True
+    except Exception:  # noqa: BLE001  别的异常不算「通过了反例」
+        return False
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────
 print("── (a) 定位引擎与解释器 ──")
 eng = E.slcn_engine()
@@ -114,10 +125,11 @@ check("(b) 外壳入口表与**打包 dispatcher** 的 `ENTRIES` 逐项一致"
       "（少一项 = 那个标签页在用户机器上直接退出 2）",
       set(E.ENTRIES) == set(_DISP.ENTRIES),
       f"外壳 {len(E.ENTRIES)} 个 {E.ENTRIES} ／ dispatcher {len(_DISP.ENTRIES)} 个 {_DISP.ENTRIES}")
-check("(b) 九个入口名字都在表里（写错名字 = 同上；2026-10-17 起是九个，含本期出刊）",
+check("(b) 十个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py）",
       set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
                          "cleantemp.py", "compileall.py", "proofcheck.py",
-                         "infocheck.py", "toc.py", "publish.py"}, f"{E.ENTRIES}")
+                         "infocheck.py", "toc.py", "publish.py", "bibdb.py"},
+      f"{E.ENTRIES}")
 
 c7 = E.infocheck_call(folder=r"E:\\期\\90", preview=True)
 check("(b) 检查tex信息：`--folder` + `--preview`（界面表格用）",
@@ -389,9 +401,31 @@ shutil.rmtree(work, ignore_errors=True)
 print("\n── (f) 界面文件：语法/导入检查（不开窗口）──")
 main_py = SHELL / "main.py"
 src = main_py.read_text(encoding="utf-8")
+# 第 132 条：引用库 5 页在独立文件（main.py 已经 1300+ 行）；它同样属于「界面」，
+# 静态守卫必须一起扫 —— 只扫 main.py 会漏掉新文件里的经典控件/写死颜色。
+ui_py = SHELL / "bibdb_ui.py"
+ui_src = ui_py.read_text(encoding="utf-8") if ui_py.exists() else ""
+all_src = src + "\n" + ui_src
 import ast  # noqa: E402
 ast.parse(src)
 check("(f) `main.py` 语法正确", True)
+check("(f) 引用库界面文件 `bibdb_ui.py` 存在且语法正确（第 132 条拆文件）",
+      bool(ui_src) and (ast.parse(ui_src) or True))
+check("(f) `bibdb_ui.py` 里 5 个页面类都在（库概况/查库/入藏/待裁决/引用库设置）",
+      all(f"class BibDb{name}Page(BibDbPage)" in ui_src
+          for name in ("Stats", "Query", "Import", "Review", "Settings")),
+      [name for name in ("Stats", "Query", "Import", "Review", "Settings")
+       if f"class BibDb{name}Page(BibDbPage)" not in ui_src])
+check("(f) `main.py` 只建对象、不复制引用库页面代码（5 页都从 `bibdb_ui` 建）",
+      all(f"B.BibDb{name}Page(" in src
+          for name in ("Stats", "Query", "Import", "Review", "Settings")))
+check("(f) 引用库界面把引擎调用委托给 `engine.py`（出现 E.bibdb_*/E.run_call，"
+      "不自己拼 bibdb.py 命令行）",
+      "E.bibdb_stats_call(" in ui_src and "E.bibdb_query_call(" in ui_src
+      and "E.bibdb_import_bib_call(" in ui_src and "E.bibdb_report_call(" in ui_src
+      and "E.run_call(" in ui_src and "E.parse_json_lines(" in ui_src
+      and "pypdf" not in ui_src,
+      "")
 check("(f) 界面里**没有**复制引擎逻辑（不 import pypdf / 不自己拼 PDF）",
       "pypdf" not in src and "PdfWriter" not in src)
 check("(f) 界面把逻辑都委托给 `engine.py`（八个入口各一处调用）",
@@ -420,18 +454,19 @@ check("(f) 停止走**整棵进程树**（只 terminate 直接子进程时，xel
 _theme_src = (SHELL / "theme.py").read_text(encoding="utf-8")
 # ⚠️ 用 `(?<![\w.])` 卡住前缀：裸字符串 `"tk.Button("` 会命中 `ttk.Button(` 里的那几个字符，
 #    于是守卫永远是绿的（假保证）。2026-10-17 第一版就这么写过，当场被自己抓到。
-_classic = re.findall(r"(?<![\w.])tk\.(?:Button|Entry|Checkbutton)\(", src)
-check("(f) 没有 Tk 经典控件按钮/输入框/勾选框了（clam 只管得到 ttk 控件的外观）",
+_classic = re.findall(r"(?<![\w.])tk\.(?:Button|Entry|Checkbutton)\(", all_src)
+check("(f) 没有 Tk 经典控件按钮/输入框/勾选框了（clam 只管得到 ttk 控件的外观；"
+      "main.py 与 bibdb_ui.py 一起扫）",
       not _classic, f"还有 {len(_classic)} 处")
 check("(f) `tk.Listbox` 保留（Tk 无 ttk 对等物）但色板取自 `theme.style_listbox`",
       "tk.Listbox(" in src and "theme.style_listbox(" in src
       and "def style_listbox" in _theme_src)
 check("(f) 日志框 `tk.Text` 保留，颜色/字体取自 theme（bg 白、等宽字体）",
       "tk.Text(" in src and 'theme.COLOR["text_bg"]' in src and "theme.mono_font()" in src)
-check("(f) 主文件里**没有**写死的颜色（#555/#666/#b00 之类）—— 一律 theme.COLOR[...]",
+check("(f) 界面文件里**没有**写死的颜色（#555/#666/#b00 之类）—— 一律 theme.COLOR[...]",
       not re.findall(
           r'(?:fg|bg|foreground|background|insertbackground|selectbackground)="#[0-9a-fA-F]{3,6}"',
-          src))
+          all_src))
 check("(f) U4 接线：`is_summary_line` / `_render_log` / 摘要·原始 / `logShowRaw` / 空状态占位",
       "E.is_summary_line(" in src and "_render_log" in src and "Toolbutton" in src
       and "摘要" in src and "原始" in src and "logShowRaw" in src
@@ -540,6 +575,29 @@ else:
         app.log("✅ 清空后的第一条")
         app.update()
         print("占位消失=%d" % int(M.LOG_PLACEHOLDER not in app.output.get("1.0", "end")))
+        # ── 第 132 条：引用库 5 页（真窗口证据）──
+        # 只做**不跑引擎**的交互：切到「引用库设置」页（on_activate 只做文件系统探测）、
+        # 改两项设置并保存，验证 (a) 页能建出来 (b) 设置真的落到 settings.json
+        # (c) 非法上限不落盘。跑引擎的读库/查库在 (i) 组用临时库验（不在窗口里依赖真实库）。
+        app.show_tab(13)
+        app.update()
+        bs = app.bibdb_settings_tab
+        bs.max_var.set("0")
+        bs.notes_var.set("/绝对不存在的笔记仓_zzz")
+        bs.save()
+        app.update()
+        _cfg2 = json.load(open(S.config_path(), encoding="utf-8"))
+        print("引用库设置落盘=%d" % int(
+            _cfg2.get("bibdb", {}).get("verifyMax") == 0
+            and str(_cfg2.get("notesRepoPath", "")).endswith("绝对不存在的笔记仓_zzz")))
+        bs.max_var.set("不是整数")
+        bs.save()
+        app.update()
+        _cfg3 = json.load(open(S.config_path(), encoding="utf-8"))
+        print("非法上限不落盘=%d" % int(_cfg3.get("bibdb", {}).get("verifyMax") == 0))
+        print("引用库页=" + "|".join(tabs[9:14]))
+        print("引用库侧栏=" + "|".join(
+            app.nav.item(x, "text") for x in app.nav.get_children()))
         app.destroy()
         print("窗口建成")
         print("标签页：" + "|".join(tabs))
@@ -558,13 +616,25 @@ else:
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
-        check("(g) 十个页都在（侧边栏顺序：单篇 4 + 整期 5 + 设置）",
-              "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|删除临时文件|本期出刊|设置"
-              in out, out.strip()[-160:])
-        check("(g) **分组侧边栏**：两层结构（单篇稿件 / 整期装配 / 设置），不是 9 个平级标签",
-              "侧栏=单篇稿件|整期装配|设置" in out, [l for l in out.splitlines() if l.startswith("侧栏")])
+        check("(g) 十五个页都在（侧边栏顺序：单篇 4 + 整期 5 + 引用库 5 + 设置）",
+              "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|"
+              "删除临时文件|本期出刊|库概况|查库|入藏|待裁决|引用库设置|设置"
+              in out, out.strip()[-220:])
+        check("(g) **分组侧边栏**：两层结构（单篇稿件 / 整期装配 / 引用库 / 设置），"
+              "不是 14 个平级标签",
+              "侧栏=单篇稿件|整期装配|引用库|设置" in out,
+              [l for l in out.splitlines() if l.startswith(("侧栏", "引用库侧栏"))])
+        check("(g) 引用库 5 页在侧栏里（顺序：库概况/查库/入藏/待裁决/引用库设置）",
+              "引用库页=库概况|查库|入藏|待裁决|引用库设置" in out,
+              [l for l in out.splitlines() if l.startswith("引用库页")])
         check("(g) 切页会同步侧栏选中态", "切页=tab:4" in out,
               [l for l in out.splitlines() if l.startswith("切页")])
+        check("(g) 「引用库设置」页能把设置写进 settings.json（第 132 条）",
+              "引用库设置落盘=1" in out,
+              [l for l in out.splitlines() if l.startswith("引用库设置落盘")])
+        check("(g) 非法核实上限**不落盘**（界面红字提示，旧值保留）",
+              "非法上限不落盘=1" in out,
+              [l for l in out.splitlines() if l.startswith("非法上限不落盘")])
         check("(g) **真跑一次「检查tex信息」→ 表格被填上**（H2 回归守卫：修之前恒为 0 行）",
               "表格行数=1" in out,
               [l for l in out.splitlines() if l.startswith("表格行数")])
@@ -636,6 +706,226 @@ else:
           _marker("占位不进全文"))
     check("(h) 第一条真实日志到达时占位让位", _marker("占位消失") == "1",
           _marker("占位消失"))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (i) 引用库（第 132 条）：笔记仓探测 / 库文件 / 参数默认零变化 / CLI 冒烟 ──")
+
+# 用**合成路径**验自动探测：真机/CI 上笔记仓可能不存在（公开仓 checkout 里没有），
+# 不能只在「开发机恰好有笔记仓」时才算过 —— 下面这套目录结构任何机器都造得出来。
+_probe = tempfile.mkdtemp(prefix="slcn_notes_probe_")
+_prog = os.path.join(_probe, "dist", "bin")
+os.makedirs(_prog, exist_ok=True)
+_syn_notes = os.path.join(_probe, "EditToolBox-notes")
+os.makedirs(os.path.join(_syn_notes, "cases"), exist_ok=True)
+_syn_db_dir = os.path.join(_syn_notes, "bib_db")
+os.makedirs(_syn_db_dir, exist_ok=True)
+_syn_db = os.path.join(_syn_db_dir, "bibliography.jsonl")
+with open(_syn_db, "w", encoding="utf-8") as _fh:
+    _fh.write("{}\n")
+with open(os.path.join(_syn_db_dir, "CONFLICTS.md"), "w", encoding="utf-8") as _fh:
+    _fh.write("xyz")
+
+check("(i) 自动探测（纯函数，合成路径）：从程序目录向上找到同级 EditToolBox-notes",
+      E.detect_notes_repo(_prog) == os.path.abspath(_syn_notes),
+      f"{E.detect_notes_repo(_prog)}")
+_isolated = os.path.join(tempfile.mkdtemp(prefix="slcn_no_notes_"), "a", "b")
+os.makedirs(_isolated, exist_ok=True)
+check("(i) 自动探测：路径里没有笔记仓 → 返回 None（不猜、不静默用错目录）",
+      E.detect_notes_repo(_isolated) is None, f"{E.detect_notes_repo(_isolated)}")
+check("(i) 手动指定优先：有效的笔记仓路径直接用",
+      E.effective_notes_repo(_syn_notes) == os.path.abspath(_syn_notes))
+check("(i) 手动指定**无效** → 回落自动探测（不会拿一个引擎会拒绝的路径去覆盖）",
+      E.effective_notes_repo("/绝对不存在的笔记仓_zzz") == E.detect_notes_repo())
+check("(i) 笔记仓判据要求引擎真的接受：有 cases/ 或 bib_db/ 或 HANDOFF.md，"
+      "空目录不算",
+      E.looks_like_notes_repo(_syn_notes)
+      and not E.looks_like_notes_repo(os.path.join(_probe, "随便一个空目录")))
+
+check("(i) 库文件位置固定为 <笔记仓>/bib_db/bibliography.jsonl（引擎定义，外壳不另立规矩）",
+      E.bibdb_db_path(_syn_notes) == _syn_db)
+_infos = {info["name"]: info for info in E.bibdb_report_files(_syn_notes)}
+check("(i) 清单文件状态（待裁决页只读展示）：存在的给字节数、缺的标不存在",
+      _infos.get("CONFLICTS.md", {}).get("exists") is True
+      and _infos["CONFLICTS.md"]["bytes"] == 3
+      and _infos.get("DUPLICATES.md", {}).get("exists") is False,
+      str({name: (info["exists"], info["bytes"]) for name, info in _infos.items()}))
+
+# SLCN_NOTES：外壳把它传给所有引擎子进程（核实链路与 bibdb.py 都认这一个变量）
+_saved_notes_env = os.environ.pop("SLCN_NOTES", None)
+try:
+    _env_notes = E.env_for_run({}, notes=_syn_notes)
+    check("(i) `env_for_run` 把生效的笔记仓注入 `SLCN_NOTES`（引擎靠它定位引用库）",
+          _env_notes.get("SLCN_NOTES") == os.path.abspath(_syn_notes),
+          _env_notes.get("SLCN_NOTES", ""))
+    os.environ["SLCN_NOTES"] = "/用户显式设的笔记仓"
+    _env_notes2 = E.env_for_run({}, notes=_syn_notes)
+    check("(i) 环境里**已经显式设了** `SLCN_NOTES` → 不覆盖（用户/CI 优先）",
+          _env_notes2.get("SLCN_NOTES") == "/用户显式设的笔记仓")
+finally:
+    os.environ.pop("SLCN_NOTES", None)
+    if _saved_notes_env is not None:
+        os.environ["SLCN_NOTES"] = _saved_notes_env
+
+check("(i) 笔记仓/引擎脚本能定位（打包或开发形态都行；找不到时界面给可读错误）",
+      bool(E.bibdb_tool()), str(E.bibdb_tool()))
+
+# 从路径推断来源期/篇目录名：判据与引擎 paths.ISSUE_RE / bibdb 作者目录正则同一口径
+_infer_cases = [
+    (r"D:\稿件\2026年第2期(87)\02 Kun_Xing\reference.bib", ("2026年第2期(87)", "02 Kun_Xing")),
+    ("/库/2025年第6期(85)/07-A_Author/x.bib", ("2025年第6期(85)", "07-A_Author")),
+    ("/库/2026年第5期(90)/main.tex", ("2026年第5期(90)", "")),
+    ("/tmp/随便一个目录/x.bib", ("", "")),
+    ("", ("", "")),
+]
+_bad_infer = [(path, want, E.infer_issue_and_slug(path))
+              for path, want in _infer_cases if E.infer_issue_and_slug(path) != want]
+check("(i) 从路径推断来源期/篇目录名（认不出就留空，**绝不猜**）",
+      not _bad_infer, str(_bad_infer[:2]))
+
+check("(i) 从输出里解析 JSON：取**最后一段**可解析对象（JSON 前面可能有告警行）",
+      E.parse_json_lines(["[警告] 某条 bib 有语法问题", "{", '  "written": false', "}"])
+      == {"written": False}
+      and E.parse_json_lines(["没有 JSON"]) is None)
+
+# ── 命令行：引用库 CLI 的参数拼装（判据仍在引擎，这里只查 argv 契约）──
+_c_dry = E.bibdb_import_bib_call(bib="/a.bib", issue="2026年第1期(86)",
+                                 slug="01 A_B", dry_run=True, db="/db/b.jsonl")
+check("(i) 入藏单篇：`import-bib --bib … --issue … --slug … --verified --json --db … --dry-run`",
+      _c_dry.entry == "bibdb.py" and "--import-bib" not in _c_dry.argv
+      and "import-bib" in _c_dry.argv and "--dry-run" in _c_dry.argv
+      and "--verified" in _c_dry.argv and "--issue" in _c_dry.argv
+      and "--json" in _c_dry.argv and "--db" in _c_dry.argv,
+      _c_dry.display[:140])
+check("(i) 确认入藏（dry_run=False）**不带** `--dry-run`（这一次真的写库）",
+      "--dry-run" not in E.bibdb_import_bib_call(bib="/a.bib", dry_run=False).argv)
+check("(i) 查库 key/DOI 不带 `--limit`；题名模糊查询才带（且带 --bibtex/--json）",
+      "--limit" not in E.bibdb_query_call("key", "Foo2020").argv
+      and "--limit" not in E.bibdb_query_call("doi", "10.1/x").argv
+      and "--limit" in E.bibdb_query_call("title", "A Test").argv
+      and "--bibtex" in E.bibdb_query_call("key", "Foo2020").argv
+      and "--json" in E.bibdb_query_call("key", "Foo2020").argv)
+check("(i) 未知查库方式 → ValueError（界面不许把错参数发给引擎）",
+      _raises_value_error(E.bibdb_query_call, "author", "x"))
+check("(i) 重新生成清单：`report --json --db … --out …`（只写 .md/.csv，不改库）",
+      "report" in E.bibdb_report_call(out_dir="/n/bib_db", db="/db/b.jsonl").argv
+      and "--out" in E.bibdb_report_call(out_dir="/n/bib_db").argv)
+
+# ── convert：**默认一个参数都不加**（旧行为逐字节不变），设过才传 ──
+_legacy = E.convert_call(source="a.docx", out="/o", verify_refs=True)
+_NEW_FLAGS = ("--verify-max", "--verify-plan", "--verify-all-refs", "--no-bibdb",
+              "--bibdb-path")
+check("(i) 默认（没碰过引用库设置）convert 命令行**不出现**任何新参数"
+      "（逐字节与接入引用库之前相同）",
+      all(flag not in _legacy.argv for flag in _NEW_FLAGS) and "--verify-refs" in _legacy.argv,
+      _legacy.display[:120])
+_full = E.convert_call(source="a.docx", out="/o", verify_refs=True, verify_max=0,
+                       verify_plan=True, verify_all_refs=True, no_bibdb=True)
+check("(i) 设过引用库设置才传：`--verify-plan`（替代 --verify-refs）+ "
+      "`--verify-max 0` + `--verify-all-refs` + `--no-bibdb`",
+      "--verify-plan" in _full.argv and "--verify-refs" not in _full.argv
+      and _full.argv[_full.argv.index("--verify-max") + 1] == "0"
+      and "--verify-all-refs" in _full.argv and "--no-bibdb" in _full.argv,
+      _full.display[:140])
+check("(i) 不执行核实（verify_refs=False）时，成本闸门参数一个都不传"
+      "（引擎只会打「本次忽略」告警，外壳不该发噪声）",
+      all(flag not in E.convert_call(source="a", out="/o", verify_max=0, verify_plan=True,
+                                     verify_all_refs=True, no_bibdb=True).argv
+          for flag in _NEW_FLAGS))
+check("(i) 非法核实上限（负数/非整数）→ ValueError，不许悄悄传给引擎",
+      _raises_value_error(E.convert_call, source="a", out="/o", verify_refs=True,
+                          verify_max=-1)
+      and _raises_value_error(E.convert_call, source="a", out="/o", verify_refs=True,
+                              verify_max="120"))
+
+# ── settings.py：引用库设置的默认值与纯逻辑 ──
+check("(i) settings 默认 = 一个参数都不加：verifyMax=None / plan=all=False / lookup=True",
+      S.DEFAULTS["bibdb"] == {"verifyMax": None, "verifyPlan": False,
+                              "verifyAllRefs": False, "lookupEnabled": True}
+      and S.DEFAULTS["notesRepoPath"] == "")
+check("(i) `bibdb_convert_args({})` 返回空 dict（默认零参数）",
+      S.bibdb_convert_args({}) == {}, str(S.bibdb_convert_args({})))
+check("(i) `bibdb_convert_args` 把设过的值翻成 convert 关键字参数",
+      S.bibdb_convert_args({"bibdb": {"verifyMax": 0, "verifyPlan": True,
+                                      "verifyAllRefs": True, "lookupEnabled": False}})
+      == {"verify_max": 0, "verify_plan": True, "verify_all_refs": True, "no_bibdb": True})
+check("(i) 「核实上限」输入解析：留空=不传、0=不限、负数/非整数=红字且不落盘",
+      S.parse_verify_max("") == (None, None)
+      and S.parse_verify_max("0") == (0, None)
+      and S.parse_verify_max("120") == (120, None)
+      and S.parse_verify_max("-1")[0] is None and "负数" in (S.parse_verify_max("-1")[1] or "")
+      and S.parse_verify_max("abc")[0] is None
+      and "整数" in (S.parse_verify_max("abc")[1] or ""))
+check("(i) 旧配置文件缺 bibdb/notesRepoPath 字段 → 合并默认值不炸（向后兼容）",
+      S._merge_defaults({})["bibdb"]["verifyMax"] is None
+      and S._merge_defaults({})["notesRepoPath"] == ""
+      and S._merge_defaults({"bibdb": {"verifyMax": -3, "verifyPlan": "x"}})["bibdb"]
+      == {"verifyMax": None, "verifyPlan": False, "verifyAllRefs": False,
+          "lookupEnabled": True})
+
+# ── 真跑 bibdb.py（**临时库**，与 mac 第二十八批的 CLI 冒烟同一口径）──
+def run_capture(call) -> tuple[int, list[str]]:
+    collected: list[str] = []
+    return E.run_call(call, on_line=collected.append), collected
+
+
+_cli_root = tempfile.mkdtemp(prefix="slcn_bibdb_cli_")
+_cli_db = os.path.join(_cli_root, "db", "bibliography.jsonl")
+_cli_bib = os.path.join(_cli_root, "reference.bib")
+with open(_cli_bib, "w", encoding="utf-8") as _fh:
+    _fh.write("@article{Foo2020,\n  author = {Foo, Bar},\n"
+              "  title = {A Test Article for the Library},\n"
+              "  journal = {Journal of Tests},\n  year = {2020},\n"
+              "  doi = {10.1000/test.1}\n}\n")
+_rc, _lines = run_capture(E.bibdb_import_bib_call(
+    bib=_cli_bib, issue="2026年第1期(86)", slug="01 Bar_Foo", dry_run=True, db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+check("(i) CLI 冒烟：import-bib --dry-run --json 退出 0、JSON 可用、written=false",
+      _rc == 0 and isinstance(_payload, dict) and _payload.get("dry_run") is True
+      and _payload.get("written") is False,
+      f"rc={_rc} tail={E.output_tail(_lines)}")
+check("(i) **dry-run 绝不写库**：库文件没有被创建（连接收它的目录都不该被建出来）",
+      not os.path.exists(_cli_db) and not os.path.isdir(os.path.dirname(_cli_db)),
+      f"exists={os.path.exists(_cli_db)} "
+      f"dir={os.path.isdir(os.path.dirname(_cli_db))}")
+_rc, _lines = run_capture(E.bibdb_import_bib_call(
+    bib=_cli_bib, issue="2026年第1期(86)", slug="01 Bar_Foo", dry_run=False, db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+check("(i) CLI 冒烟：确认入藏真的写库（written=true、库文件出现）",
+      _rc == 0 and isinstance(_payload, dict) and _payload.get("written") is True
+      and os.path.isfile(_cli_db), f"rc={_rc} tail={E.output_tail(_lines)}")
+
+_rc, _lines = run_capture(E.bibdb_stats_call(db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+check("(i) CLI 冒烟：stats --json 读回「1 条、已核实 1」",
+      _rc == 0 and isinstance(_payload, dict) and _payload.get("records") == 1
+      and _payload.get("verified") == 1,
+      f"rc={_rc} {(_payload or {}).get('records')}/{(_payload or {}).get('verified')}")
+
+_rc, _lines = run_capture(E.bibdb_query_call("key", "Foo2020", db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+_hits = (_payload or {}).get("hits") or []
+check("(i) CLI 冒烟：query --key --bibtex 命中 1 条、带回可复制的 BibTeX",
+      _rc == 0 and len(_hits) == 1 and "@article" in str(_hits[0].get("bibtex", ""))
+      and "Foo2020" in str(_hits[0].get("bibtex", "")),
+      f"rc={_rc} hits={len(_hits)}")
+
+_rc, _lines = run_capture(E.bibdb_lint_call(db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+check("(i) CLI 冒烟：lint --json 有结构（ok 字段；退出码 1 = 库有 error，不是程序错）",
+      isinstance(_payload, dict) and "ok" in _payload and _rc in (0, 1),
+      f"rc={_rc} ok={(_payload or {}).get('ok')}")
+
+_cli_out = os.path.join(_cli_root, "list_out")
+_rc, _lines = run_capture(E.bibdb_report_call(out_dir=_cli_out, db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+_expected_reports = ("CONFLICTS.md", "DUPLICATES.md", "duplicates.csv")
+check("(i) CLI 冒烟：report 只写三个清单文件（CONFLICTS.md / DUPLICATES.md / duplicates.csv）",
+      _rc == 0 and all(os.path.isfile(os.path.join(_cli_out, name))
+                       for name in _expected_reports),
+      f"rc={_rc} out={sorted(os.listdir(_cli_out)) if os.path.isdir(_cli_out) else '（目录不存在）'}")
+
+shutil.rmtree(_probe, ignore_errors=True)
+shutil.rmtree(_cli_root, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

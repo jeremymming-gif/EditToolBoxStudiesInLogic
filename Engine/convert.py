@@ -63,6 +63,7 @@ from slcn import aibib as _aibib  # noqa: E402
 from slcn import bibcheck as _bibcheck  # noqa: E402
 from slcn import bibdb as _bibdb  # noqa: E402
 from slcn import naming as N  # noqa: E402
+from slcn import paths as _paths  # noqa: E402
 from slcn import sources as _sources  # noqa: E402
 from slcn import templates as T  # noqa: E402
 from slcn.build import build_docx, build_latex  # noqa: E402
@@ -361,6 +362,141 @@ def find_bib(source: str, explicit: str | None) -> str | None:
         return None
     ref = [c for c in cands if os.path.basename(c).lower() == "reference.bib"]
     return (ref or cands)[0]
+
+
+# ── 第 134 条（2026-10-18）：参考文献附件的「选择 / 校验 / 合并」 ─────────────
+#
+# 真实稿 2023(71)04：convert ⑦ 自动把 `预处理/用于上传text2bib.txt`（text2bib 的中间
+# 产物——两条文献挤一行、含 `\href{a}{b}`）当参考文献附件并入 → 产物出现
+# `title = {...}{...}` 嵌套花括号 → biber 行级语法错、**整份 bib 报废**（19 页 vs 20 页）。
+# 修法三条（保守、可解释）：
+#   ① 有「真 .bib」就**不自动**合并附件：--bib / 源里 \addbibresource / \bibliography
+#      指向且文件存在 / 同目录自动发现的 .bib（find_bib）；
+#   ② 没有真 bib 时，候选附件先过结构校验（`multisource.select_refs_attachment()`）：
+#      真 BibTeX 优先，纯文本清单次之，不合格的候选跳过并在日志写明原因；
+#   ③ 合并时对 BibTeX 附件按条目原文直入（按键 + 内容指纹去重），对文本清单沿用
+#      footref 解析，但逐条做「渲染后结构校验」，不合格的条目不写进产物。
+_DECL_BIBADD_RE = re.compile(
+    r"\\addbibresource\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}"
+)
+_DECL_BIBLIO_RE = re.compile(r"\\bibliography\s*\{([^}]+)\}")
+
+
+def declared_bib_path(source: str) -> str | None:
+    """LaTeX 源里 `\\addbibresource` / `\\bibliography` 声明且**文件确实存在**的 .bib。"""
+    if os.path.splitext(source)[1].lower() not in TEX_EXT:
+        return None
+    try:
+        text = open(source, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    src_dir = os.path.dirname(os.path.abspath(source))
+    names: list[str] = []
+    for m in _DECL_BIBADD_RE.finditer(text):
+        names.append(m.group(1).strip())
+    for m in _DECL_BIBLIO_RE.finditer(text):
+        names.extend(x.strip() for x in m.group(1).split(",") if x.strip())
+    for name in names:
+        if not name:
+            continue
+        cand = name if os.path.splitext(name)[1] else name + ".bib"
+        path = os.path.join(src_dir, cand)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def real_bib_path(source: str, explicit_bib: str | None = None) -> str | None:
+    """「真 .bib」判定（第 134 条）：决定**不要**自动合并参考文献附件。
+
+    优先级：`--bib` 显式指定 → LaTeX 源里的 `\\addbibresource` / `\\bibliography`
+    （文件存在）→ 同目录自动发现（`find_bib(source, None)`，如 `reference.bib`）。
+    Word 通道不走这条（它的 bib 由文档内容生成，旧行为不变）。
+    """
+    if os.path.splitext(source)[1].lower() not in TEX_EXT:
+        return None
+    if explicit_bib:
+        p = os.path.abspath(explicit_bib)
+        if os.path.isfile(p):
+            return p
+    declared = declared_bib_path(source)
+    if declared:
+        return declared
+    return find_bib(source, None)
+
+
+def bib_entry_structurally_safe(entry: str) -> bool:
+    """渲染后的 BibTeX 条目最低结构校验（第 134 条）。
+
+    花括号配平、字段区无相邻 `}{`——71/04 的坏条目就是 `title = {A}{B}` 这种形状
+    （biber: "found {...}, expected end of entry"）。
+    """
+    if "}{" in entry:
+        return False
+    depth = 0
+    for ch in entry:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def bib_attachment_entries(text: str) -> list[tuple[str, str, str, str]]:
+    """把 BibTeX 附件拆成 [(类型, 键, 字段体, 条目原文)]。
+
+    第 134 条：条目按**原文直入**（不改写作者字段/顺序），只做去重与结构校验。
+    """
+    from slcn.bibnorm import split_entries as split_raw
+
+    out: list[tuple[str, str, str, str]] = []
+    for head, fields, tail in split_raw(text):
+        m = re.match(r"@(\w+)\s*\{\s*([^,]+)\s*,", head)
+        if not m:
+            continue
+        key = m.group(2).strip()
+        if not key:
+            continue
+        out.append((m.group(1), key, fields, head + fields + tail))
+    return out
+
+
+def merge_bib_attachment(bibp: str, have: str, bib_text: str) -> tuple[int, int, int]:
+    """把 BibTeX 附件按条目原文并入 `bibp`；返回 (新增, 重复跳过, 结构不合格跳过)。
+
+    第 134 条：按键 + 「作者+年份+题名」内容指纹去重；渲染后结构校验不合格的条目不写
+    （错误条目会让 biber 报语法错、**整份 bib 报废**——71/04 的教训）。
+    """
+    from slcn.bibcheck import fields_of as _fields_of
+    from slcn.bibcheck import split_entries as _split3
+
+    have = have or ""
+    have_keys = {k for _t, k, _b in _split3(have)} if have else set()
+    seen = _bib_fingerprints(have) if have else set()
+    added: list[str] = []
+    skipped_dup = 0
+    skipped_bad = 0
+    for _etype, key, fields, raw in bib_attachment_entries(bib_text):
+        if key in have_keys:
+            skipped_dup += 1
+            continue
+        if not bib_entry_structurally_safe(raw):
+            skipped_bad += 1
+            continue
+        f = _fields_of(fields)
+        fp = _ref_fingerprint(f.get("author", ""), f.get("title", ""), f.get("year", ""))
+        if fp != ("", "", "") and fp in seen:
+            skipped_dup += 1
+            continue
+        seen.add(fp)
+        have_keys.add(key)
+        added.append(raw if raw.endswith("}") else raw + "}")
+    if added:
+        with open(bibp, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\n% ── 由参考文献附件合并 ──\n" + "\n".join(added) + "\n")
+    return len(added), skipped_dup, skipped_bad
 
 
 # ── 第 76 条：英文元数据第二源定位（**同样只在同目录下查找**）──────────────
@@ -918,8 +1054,11 @@ def main() -> int:
     ap.add_argument("--scan", action="store_true",
                     help="只扫描源文件所在目录，列出各文件角色（正文/参考文献/脚注/图）后退出")
     ap.add_argument("--refs", default=None,
-                    help="参考文献附件（docx/txt）。全库 28%% 的稿件把参考文献放在单独文件里，"
-                         "用这个参数挂上才能替换正文引用")
+                    help="参考文献附件（docx/txt/bib）。全库 28%% 的稿件把参考文献放在单独文件里，"
+                         "用这个参数挂上才能替换正文引用。第 134 条起自动发现改保守：有真 .bib"
+                         "（--bib / 源内 addbibresource / 同目录 .bib）时不自动合并附件，需要"
+                         "合并请显式给本参数；无真 bib 时自动挑（真 BibTeX 优先，文本清单须过"
+                         "结构校验），日志写采用/跳过原因")
     ap.add_argument("--verify-refs", action="store_true",
                     help="生成《文献核实任务书》markdown（写明编辑部规范、查证来源优先级与回答格式）。"
                          "若另配了 --llm-base/--llm-key/--llm-model（或环境变量 SLCN_LLM_*），"
@@ -1055,6 +1194,7 @@ def main() -> int:
         args.source if os.path.isdir(args.source)
         else os.path.dirname(os.path.abspath(args.source))
     )
+    refs_auto = False  # 第 134 条：附件是自动挑的还是用户 --refs 显式给的
     _inventory = multisource.scan(_src_dir)
     # ── 第 76 条：把「英文摘要 docx」从【未识别】改判为明确角色 en_abstract ──
     # ⚠️ `--scan` 走的是 `multisource.scan()`（不是 `sources.identify()`），而
@@ -1071,10 +1211,35 @@ def main() -> int:
             for x in _mains:
                 print(f"      · {x.name}（{x.chars} 字符）")
         if not args.refs:
-            _rf = multisource.pick(_inventory, "refs")
-            if _rf:
-                args.refs = _rf.path
-                print(f"  → 自动采用参考文献附件：{_rf.name}（{_rf.reason}）")
+            # 第 134 条：附件选择保守化——
+            #   · 已有「真 .bib」（--bib / 源内 \addbibresource / 同目录 .bib）时**不自动**
+            #     合并附件（需要合并的人会显式 --refs）；71/04 就属于这种：正文同目录本来
+            #     就有 reference.bib，再去并 `预处理/用于上传text2bib.txt` 是纯帮倒忙。
+            #   · 没有真 bib 时才挑文本/BibTeX 附件，且候选要过结构校验；
+            #     每个被跳过的候选都写明原因（日志可解释）。
+            _src_is_tex = os.path.splitext(args.source)[1].lower() in TEX_EXT
+            _real_bib = real_bib_path(args.source, args.bib)
+            if _real_bib:
+                # 已有「真 .bib」：直接使用，**不自动**合并附件（第 134 条）。
+                # 日志逐个列出被跳过的候选附件，便于编辑理解「为什么这次没并」。
+                _rel_real = _paths.rel(_real_bib, _src_dir)
+                print(f"  · 参考文献：{_rel_real}（真 .bib 直接使用；自动附件不合并）")
+                for _c in _inventory:
+                    if _c.role != "refs":
+                        continue
+                    if os.path.realpath(_c.path) == os.path.realpath(_real_bib):
+                        continue
+                    print(f"      - 跳过参考文献附件：{_c.name}（已有真 .bib，需合并请显式 --refs）")
+            else:
+                _rf, _adopt, _skipped_refs = multisource.select_refs_attachment(
+                    _inventory, allow_bibtex=_src_is_tex
+                )
+                for _sk in _skipped_refs:
+                    print(f"  · 跳过参考文献附件：{_sk}")
+                if _rf:
+                    args.refs = _rf.path
+                    refs_auto = True
+                    print("  → 自动采用参考文献附件：" + "；".join(_adopt or [_rf.name]))
 
     if args.list_templates:
         for lang, t in T.PRESETS.items():
@@ -1216,69 +1381,125 @@ def main() -> int:
     #
     # 实测 02 Zixin_Luo：正文 docx 里没有参考文献，全在 `附件一 完整参考文献.docx`。
     # 不合并的话引用全部无法替换（22 处）。
+    #
+    # 第 134 条（2026-10-18）：附件不能「扫到就并」——
+    #   · 有真 .bib（--bib / 源内 \addbibresource / 同目录 .bib）时，**自动挑的附件跳过**
+    #     （71/04 正文目录本来就有 reference.bib，再并 text2bib 中间产物只会帮倒忙）；
+    #   · 没有真 bib 时才并：BibTeX 附件按原文直入，纯文本清单先过结构校验；
+    #   · 合并结果逐条再做结构校验，坏条目（嵌套花括号等）不写进产物（biber 会整份报废）。
     if args.refs and os.path.exists(args.refs):
         from slcn import footref
+        from slcn.multisource import (
+            _docx_text,
+            attachment_kind,
+            bib_attachment_issue,
+            text_attachment_issue,
+        )
 
         print("\n⑦ 合并参考文献附件")
-        txt = ""
-        if args.refs.lower().endswith((".docx", ".doc")):
-            from slcn.multisource import _docx_text
-
-            txt, _ = _docx_text(args.refs)
+        _real = real_bib_path(source, args.bib)
+        if refs_auto and _real:
+            print(
+                "   · 跳过自动参考文献附件：已有真 .bib"
+                f"（{_paths.rel(_real, os.path.dirname(os.path.abspath(source)))}）"
+                "——不盲目合并；确实要合并请显式 --refs"
+            )
         else:
-            txt = open(args.refs, encoding="utf-8", errors="replace").read()
-
-        # 编号清单（`[1] 作者, 年, "题名", 刊名, 卷(期): 页`）优先；
-        # 否则按「整条 in note」的脚注体例处理
-        items = footref.parse_numbered_list(txt)
-        if not items:
-            items = footref.parse_note(txt)
-        if items:
-            # 正文没解析出参考文献时工具不会建 bib，这里补建一个
-            bibp = res.bib_path or os.path.join(out_dir, f"{stem}.bib")
-            have = ""
-            if os.path.exists(bibp):
-                have = open(bibp, encoding="utf-8", errors="replace").read()
-            elif not res.bib_path:
-                with open(bibp, "w", encoding="utf-8", newline="\n") as f:
-                    f.write("% 由参考文献附件生成\n\n")
-                res = res.__class__(**{**res.__dict__, "bib_path": bibp})
-            added = []
-            # 去重不能只比键：附件条目用 `a1…`，而正文文末那条编号清单解析出来的是
-            # `Beall2000` 这种键——**同一份文献、两个键**。
-            # 实测 02 Zixin_Luo：正文自带 19 条编号清单，附件又是同一份，
-            # 只按键去重会让参考文献翻倍成 38 条。这里按「作者+年份+题名」的内容指纹去重。
-            seen = _bib_fingerprints(have)
-            skipped_dup = 0
-            for i, r in enumerate(items, 1):
-                key = f"a{i}"
-                if f"{{{key}," in have:
-                    continue
-                fp = _ref_fingerprint(r.author, r.title, r.year)
-                if fp in seen:
-                    skipped_dup += 1
-                    continue
-                seen.add(fp)
-                fields = "\n".join(
-                    f"  {n.ljust(9)} = {{{getattr(r, n)}}},"
-                    for n in ("author", "title", "journal", "booktitle", "volume",
-                              "number", "pages", "publisher", "address", "year")
-                    if getattr(r, n)
-                )
-                added.append(f"@{r.etype}{{{key},\n{fields}\n}}")
-            if added:
-                with open(bibp, "a", encoding="utf-8", newline="\n") as f:
-                    f.write("\n% ── 由参考文献附件合并 ──\n" + "\n".join(added) + "\n")
-                print(f"   从附件合并 {len(added)} 条 → {os.path.basename(bibp)}")
-                if skipped_dup:
-                    print(f"   （另有 {skipped_dup} 条与正文已解析出的条目重复，已跳过）")
-                print(f"   ⚠ 引用键需人工对齐：附件条目键为 a1、a2…，正文引用需相应调整")
-            elif skipped_dup:
-                print(f"   附件 {skipped_dup} 条与正文已解析出的条目重复，无需合并")
+            txt = ""
+            if args.refs.lower().endswith((".docx", ".doc")):
+                txt, _ = _docx_text(args.refs)
             else:
-                print("   附件条目与现有 bib 无新增")
-        else:
-            print(f"   ⚠ 未能从 {os.path.basename(args.refs)} 解析出条目")
+                try:
+                    txt = open(args.refs, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    txt = ""
+            _kind = attachment_kind(args.refs, txt)
+            _issue = (
+                bib_attachment_issue(txt) if _kind == "bib"
+                else text_attachment_issue(txt)
+            )
+            if _issue:
+                print(
+                    f"   ⚠ 跳过参考文献附件 {os.path.basename(args.refs)}：{_issue}"
+                    "（不硬并坏附件；可整理后再用 --refs 指定）"
+                )
+            elif _kind == "bib":
+                # 真 BibTeX 附件：按条目原文直入（键 + 内容指纹去重）
+                bibp = res.bib_path or os.path.join(out_dir, f"{stem}.bib")
+                have = ""
+                if os.path.exists(bibp):
+                    have = open(bibp, encoding="utf-8", errors="replace").read()
+                elif not res.bib_path:
+                    with open(bibp, "w", encoding="utf-8", newline="\n") as f:
+                        f.write("% 由参考文献附件生成\n\n")
+                    res = res.__class__(**{**res.__dict__, "bib_path": bibp})
+                added, skipped_dup, skipped_bad = merge_bib_attachment(bibp, have, txt)
+                if added:
+                    print(f"   从附件合并 {added} 条（BibTeX 直入）→ {os.path.basename(bibp)}")
+                if skipped_dup:
+                    print(f"   （另有 {skipped_dup} 条与现有 bib 重复（键/内容指纹），已跳过）")
+                if skipped_bad:
+                    print(f"   ⚠ 另有 {skipped_bad} 条结构不合格（嵌套花括号等），未写入")
+                if not (added or skipped_dup or skipped_bad):
+                    print("   附件条目与现有 bib 无新增")
+            else:
+                # 纯文本清单：编号清单（`[1] 作者, 年, "题名", 刊名, 卷(期): 页`）优先；
+                # 否则按「整条 in note」的脚注体例处理
+                items = footref.parse_numbered_list(txt)
+                if not items:
+                    items = footref.parse_note(txt)
+                if items:
+                    # 正文没解析出参考文献时工具不会建 bib，这里补建一个
+                    bibp = res.bib_path or os.path.join(out_dir, f"{stem}.bib")
+                    have = ""
+                    if os.path.exists(bibp):
+                        have = open(bibp, encoding="utf-8", errors="replace").read()
+                    elif not res.bib_path:
+                        with open(bibp, "w", encoding="utf-8", newline="\n") as f:
+                            f.write("% 由参考文献附件生成\n\n")
+                        res = res.__class__(**{**res.__dict__, "bib_path": bibp})
+                    added = []
+                    skipped_bad = 0
+                    # 去重不能只比键：附件条目用 `a1…`，而正文文末那条编号清单解析出来的
+                    # 是 `Beall2000` 这种键——**同一份文献、两个键**。实测 02 Zixin_Luo：
+                    # 只按键去重会让参考文献翻倍成 38 条。这里按「作者+年份+题名」内容指纹去重。
+                    seen = _bib_fingerprints(have)
+                    skipped_dup = 0
+                    for i, r in enumerate(items, 1):
+                        key = f"a{i}"
+                        if f"{{{key}," in have:
+                            continue
+                        fp = _ref_fingerprint(r.author, r.title, r.year)
+                        if fp in seen:
+                            skipped_dup += 1
+                            continue
+                        seen.add(fp)
+                        fields = "\n".join(
+                            f"  {n.ljust(9)} = {{{getattr(r, n)}}},"
+                            for n in ("author", "title", "journal", "booktitle", "volume",
+                                      "number", "pages", "publisher", "address", "year")
+                            if getattr(r, n)
+                        )
+                        entry_text = f"@{r.etype}{{{key},\n{fields}\n}}"
+                        # 第 134 条：渲染后结构校验（坏条目会让 biber 整份报废）
+                        if not bib_entry_structurally_safe(entry_text):
+                            skipped_bad += 1
+                            continue
+                        added.append(entry_text)
+                    if added:
+                        with open(bibp, "a", encoding="utf-8", newline="\n") as f:
+                            f.write("\n% ── 由参考文献附件合并 ──\n" + "\n".join(added) + "\n")
+                        print(f"   从附件合并 {len(added)} 条 → {os.path.basename(bibp)}")
+                    if skipped_dup:
+                        print(f"   （另有 {skipped_dup} 条与正文已解析出的条目重复，已跳过）")
+                    if skipped_bad:
+                        print(f"   ⚠ 另有 {skipped_bad} 条结构不合格（嵌套花括号等），未写入")
+                    if not (added or skipped_dup or skipped_bad):
+                        print("   附件条目与现有 bib 无新增")
+                    elif added:
+                        print("   ⚠ 引用键需人工对齐：附件条目键为 a1、a2…，正文引用需相应调整")
+                else:
+                    print(f"   ⚠ 未能从 {os.path.basename(args.refs)} 解析出条目")
 
     # ⑧ 源稿归档到 original/（与往期文件夹命名一致）
     if not args.no_original:

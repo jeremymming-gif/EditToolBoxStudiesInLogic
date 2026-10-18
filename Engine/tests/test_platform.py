@@ -103,12 +103,34 @@ check("(a) `engine_main.py --version` 在窄编码控制台下不崩、且版本
 
 # 静态守卫：**每一个**交付入口都要调 utf8_stdio()，别只修被抓到的那一个。
 ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "compileall.py",
-                "publish.py",
-               "cleantemp.py", "infocheck.py", "toc.py", "engine_main.py"]
+               "publish.py", "cleantemp.py", "infocheck.py", "toc.py",
+               # 第 132 条：`bibdb.py` 两个平台**都**交付（mac 包 + Windows 分发器）。
+               # 从前它被当成「mac 专属」，本测试还专门守卫「不进 Windows ENTRIES」——
+               # Windows 版引用库做完后那条守卫必须反过来，否则一改 ENTRIES 就红。
+               "bibdb.py",
+               "engine_main.py"]
+def _calls_utf8_stdio(tree: ast.AST) -> bool:
+    """入口是否调了 `utf8_stdio()` —— 两种写法都认：
+
+    · `_plat.utf8_stdio()`（模块方式 import，convert.py 等入口的写法）；
+    · `utf8_stdio()`（`from slcn.platform import utf8_stdio`，bibdb.py 的写法）。
+    只认前者会把「用 from-import 的正确实现」误判成没调（第 132 条把 bibdb.py 纳入
+    交付入口时实测：它一直是调了的，但 AST 里是 Name 而不是 Attribute）。
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if getattr(func, "attr", None) == "utf8_stdio":
+            return True
+        if isinstance(func, ast.Name) and func.id == "utf8_stdio":
+            return True
+    return False
+
+
 _missing = []
 for _f in ENTRY_FILES:
-    _ok = any(isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "utf8_stdio"
-              for n in ast.walk(ast.parse((ENGINE / _f).read_text(encoding="utf-8"))))
+    _ok = _calls_utf8_stdio(ast.parse((ENGINE / _f).read_text(encoding="utf-8")))
     if not _ok:
         _missing.append(_f)
 check(f"(a) {len(ENTRY_FILES)} 个交付入口**全部**调了 utf8_stdio()（漏一个就是一处崩溃）",
@@ -302,7 +324,7 @@ def bare_relpath(path: pathlib.Path) -> list[str]:
 
 
 DELIVERY = SHIPPED + ["cleantemp.py", "compileall.py", "infocheck.py", "mergepdf.py",
-                      "proofcheck.py", "toc.py", "engine_main.py"]
+                      "proofcheck.py", "toc.py", "bibdb.py", "engine_main.py"]
 bad_rel = []
 for rel_p in DELIVERY:
     if rel_p.endswith("paths.py"):        # 唯一实现点：它包的就是 `os.path.relpath`
@@ -344,12 +366,13 @@ check("(g) `ENTRIES` 里每个名字都真的有对应文件（防写错名）",
       all((ENGINE / e).is_file() for e in _em.ENTRIES),
       repr([e for e in _em.ENTRIES if not (ENGINE / e).is_file()]))
 
-# ── mac 包专属 CLI（第 132 条）：bibdb.py ─────────────────────────────────
-# 它进 **mac app 包**（GUI「引用库」5 页的数据源：库概况/查库/入藏/待裁决/设置），
-# 但**不是**交付入口：`engine_main.ENTRIES` 是 Windows 分发器，而引用库界面本轮
-# 只做 mac。所以它**不进 ENTRY_FILES**（进去会要求两平台一致，且要给 utf8_stdio 等
-# 交付口径），但**打包白名单与包内一致性比对必须覆盖它**——漏了的表现是包里这 5 页
-# 全部「未找到 Engine/bibdb.py」（与 publish.py 那次同型，见上方注释）。
+# ── 两平台共同交付的 CLI（第 132 条）：bibdb.py ───────────────────────────
+# 它同时进 **mac app 包**与 **Windows 包**（两边 GUI 的「引用库」5 页：库概况/查库/
+# 入藏/待裁决/设置，数据源都是这一份 CLI）。所以它既在 ENTRY_FILES（交付口径：
+# utf8_stdio、open() 编码、build.sh 白名单），也必须在 Windows 分发器 `ENTRIES` 里。
+# ⚠️ 从前本测试钉的是「bibdb.py 刻意**不进** Windows ENTRIES（引用库只做 mac）」；
+#    Windows 版做完后那条守卫必须删掉/反转 —— 留着的话，谁把 bibdb.py 加进分发器
+#    都会被测试判红，而漏加的后果是 Windows「引用库」5 页全废（与 publish.py 同型）。
 _MAC_ONLY_CLI = "bibdb.py"
 if "_build_sh" not in globals():
     _build_sh = None                     # 读 build.sh 失败时上面已 SKIP，这里也别把测试弄崩
@@ -368,9 +391,18 @@ if _build_sh is not None and _build_sh.exists():
     check("(g) mac 专属 CLI `bibdb.py` 也调了 utf8_stdio()"
           "（GUI 用管道读它的中文 JSON；窄编码下不许崩）",
           "utf8_stdio(" in _bibdb_text)
-check("(g) `bibdb.py` 刻意**不**进 Windows 分发器 `ENTRIES`（引用库界面本轮只做 mac）",
-      _MAC_ONLY_CLI not in _em.ENTRIES,
-      "若将来做 Windows 版引用库，应同时改 engine_main.ENTRIES 与 sources-win/")
+check("(g) `bibdb.py` **两个平台都交付**：Windows 分发器 `ENTRIES` 也认它"
+      "（漏了 = Windows「引用库」5 页全部「❌ 不认识的入口」退出 2）",
+      _MAC_ONLY_CLI in _em.ENTRIES,
+      f"dispatcher ENTRIES = {_em.ENTRIES}")
+# 别再只断言「进不进」：名字写错（如 bibdb）也会让分发器拒收。文件存在性已由
+# 上面 `all((ENGINE / e).is_file())` 守；这里再钉一次名字的**拼写**与交付口径。
+check("(g) `bibdb.py` 的入口名与文件逐字一致，且在 `sources-win/engine.py` 的 ENTRIES 里"
+      "（外壳/dispatcher 两份表由 sources-win/tests/test_bridge.py (b) 逐项比）",
+      (_MAC_ONLY_CLI in _em.ENTRIES)
+      and (ENGINE / _MAC_ONLY_CLI).is_file()
+      and (_MAC_ONLY_CLI in (ENGINE.parent / "sources-win" / "engine.py")
+           .read_text(encoding="utf-8")))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

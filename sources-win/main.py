@@ -27,6 +27,7 @@ from tkinter import messagebox, ttk
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import bibdb_ui as B  # noqa: E402  第 132 条：引用库 5 页（拆文件，见 bibdb_ui.py 抬头）
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
 import theme  # noqa: E402
@@ -226,7 +227,9 @@ class ConvertTab(TabPage):
                    "⚠️ 正文里读不出第一作者姓名时（部分 LaTeX 投稿就是这样），**必须**填"
                    "「输出名」或「作者」，否则引擎会拒绝转换并提示要这两个参数。\n"
                    "第二行是编辑侧出版信息（卷/期/年/页码…）：不填也能转，但 PDF 页眉会是"
-                   "「xxxx 年第 x 期，1–10」占位，得手工改 .tex。")
+                   "「xxxx 年第 x 期，1–10」占位，得手工改 .tex。\n"
+                   "核实成本闸门（上限 / 先算账 / 全量 / 先查库）在「引用库 → 引用库设置」页；"
+                   "默认值 = 一个参数都不加（与接入引用库之前逐字节相同）。")
 
     def build_options(self, parent: ttk.Frame) -> None:
         row1 = ttk.Frame(parent)
@@ -282,14 +285,42 @@ class ConvertTab(TabPage):
             _v.trace_add("write", lambda *_: self.ai_knobs_sink(
                 self.v_thinking.get().strip(), self.v_maxtok.get().strip()))
 
+        # 第 132 条：把「当前核实范围」就地显示（方案 §4：任务相关选项就地改，别去设置页找）；
+        # 值仍以「引用库设置」页为准，这里只是**每进本页刷新一次**的只读回显。
+        row4 = ttk.Frame(parent)
+        row4.pack(anchor="w", pady=(4, 0))
+        self.bibdb_hint = ttk.Label(row4, text="", style="Muted.TLabel",
+                                    wraplength=780, justify="left")
+        self.bibdb_hint.pack(anchor="w")
+        self.refresh_bibdb_hint()
+
+    def refresh_bibdb_hint(self) -> None:
+        """回显「引用库 → 引用库设置」里的成本闸门/查库开关（只读，不写配置）。"""
+        opts = self.cfg.get("bibdb") or {}
+        text = "核实范围：" + S.verify_max_summary(self.cfg)
+        if opts.get("verifyAllRefs"):
+            text += "；已允许全量核实"
+        if opts.get("verifyPlan"):
+            text += "；先算账（本次只打印计划，不真正核实）"
+        if opts.get("lookupEnabled") is False:
+            text += "；本次不查引用库（--no-bibdb）"
+        text += "（在「引用库 → 引用库设置」改；默认 = 一个参数都不加）"
+        self.bibdb_hint.config(text=text)
+
+    def on_activate(self) -> None:
+        self.refresh_bibdb_hint()
+
     def extra_args(self) -> dict:
-        return {"compile_pdf": self.v_compile.get(), "clean": self.v_clean.get(),
+        args = {"compile_pdf": self.v_compile.get(), "clean": self.v_clean.get(),
                 "verify_refs": self.v_refs.get(), "source_pdf": self.v_srcpdf.get(),
                 "name": self.v_name.get().strip(), "author": self.v_author.get().strip(),
                 "vol": self.v_vol.get().strip(), "issue": self.v_issue.get().strip(),
                 "year": self.v_year.get().strip(), "pages": self.v_pages.get().strip(),
                 "received": self.v_received.get().strip(),
                 "editor": self.v_editor.get().strip(), "grants": self.v_grants.get().strip()}
+        # 第 132 条：引用库设置 → convert 参数。默认返回空 dict（一个参数都不加）。
+        args.update(S.bibdb_convert_args(self.cfg))
+        return args
 
 
 class CheckBibTab(TabPage):
@@ -297,7 +328,19 @@ class CheckBibTab(TabPage):
     pick = "file"
     instruction = ("使用说明：选编辑改完交回的 .bib（或产物目录里的 reference.bib）。\n"
                    "勾了「并回产物」会把交回的条目并进产物的 reference.bib —— "
-                   "并入前引擎会自动留一份 `reference.bib.ai前` 备份。")
+                   "并入前引擎会自动留一份 `reference.bib.ai前` 备份。\n"
+                   "第 132 条：「入藏到引用库」把**产物** reference.bib 按往期成品 bib 入库"
+                   "（verified=true）——编辑交回的那份是待核对稿，不要入。")
+
+    def __init__(self, parent, name, on_run, on_stop, *, log=None, post=None, cfg=None):
+        # 「入藏到引用库」要后台跑引擎再回主线程更新界面：`post` 是主窗口的队列入口，
+        # `log` 是运行日志。Tkinter 不是线程安全的（见 main.MainWindow._worker 的注释）。
+        self._log = log or (lambda _text: None)
+        self._post = post or (lambda _item: None)
+        self.cfg = cfg or {}
+        self._importing = False
+        self._import_where = ""
+        super().__init__(parent, name, on_run, on_stop)
 
     def build_options(self, parent: ttk.Frame) -> None:
         row1 = ttk.Frame(parent)
@@ -316,6 +359,77 @@ class CheckBibTab(TabPage):
                                   ("产物目录", self.v_out, 18)):
             ttk.Label(row2, text=label).pack(side="left", padx=(8, 2))
             ttk.Entry(row2, textvariable=var, width=width).pack(side="left")
+
+        # 第 132 条：把产物 bib 入藏到引用库（复用「引用库 → 入藏」的引擎调用，
+        # 这里只做「取路径 → 推断期/篇 → 后台跑 → 显示结果」，判据一行都不在这儿）。
+        row3 = ttk.Frame(parent)
+        row3.pack(anchor="w", pady=(4, 0))
+        self.import_btn = ttk.Button(row3, text="入藏到引用库", width=14,
+                                     command=self.import_to_library)
+        self.import_btn.pack(side="left")
+        self.import_status = ttk.Label(row3, text="", style="Muted.TLabel",
+                                       wraplength=620, justify="left")
+        self.import_status.pack(side="left", padx=(8, 0))
+
+    # ── 入藏到引用库（第 132 条）──
+    def import_to_library(self) -> None:
+        """把**产物** reference.bib 按「往期成品 bib」入藏（`import-bib --verified`）。
+
+        为什么只认「原件 .bib」：编辑交回的 .bib 是待核对的稿子，不能当成品入
+        `verified=true`（那会把没核对完的内容当成已核实事实）；产物的
+        `reference.bib` 才是准备随本期出版的那份 —— 与 mac `CheckBibView` 同一口径。
+        """
+        if self._importing:
+            return
+        bib = self.v_original.get().strip().strip('"')
+        if not bib or not os.path.isfile(bib):
+            messagebox.showwarning(APP_TITLE, "先在「原件 .bib」填产物目录里的 reference.bib"
+                                              " —— 要入藏的是它，不是编辑交回的那份。")
+            return
+        notes = E.effective_notes_repo(self.cfg.get("notesRepoPath", ""))
+        if not notes:
+            messagebox.showwarning(APP_TITLE, "找不到私有笔记仓，无法确定引用库位置。\n"
+                                              "请到「引用库 → 引用库设置」页指定笔记仓路径。")
+            return
+        issue, slug = E.infer_issue_and_slug(bib)
+        self._import_where = " / ".join(part for part in (issue, slug) if part) \
+            or "（未从路径推断出期/篇）"
+        try:
+            call = E.bibdb_import_bib_call(
+                bib=bib, issue=issue, slug=slug, dry_run=False,
+                db=E.bibdb_db_path(notes) or "", verified=True)
+        except RuntimeError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self._importing = True
+        self.import_btn.config(state="disabled")
+        self.import_status.config(text="⏳ 正在入藏到引用库…",
+                                  foreground=theme.COLOR["muted"])
+        self._log(f"引用库入藏（产物 bib → 已核实）：{bib}")
+        B.run_engine_async(post=self._post, call=call, on_result=self._on_import_result,
+                           log=self._log, api=self.cfg.get("api"),
+                           notes=self.cfg.get("notesRepoPath", ""))
+
+    def _on_import_result(self, code: int, lines: list) -> None:
+        """入藏结果回主线程（`B.run_engine_async` 的约定：这里已经在 UI 线程）。"""
+        self._importing = False
+        self.import_btn.config(state="normal")
+        payload = E.parse_json_lines(lines)
+        if code != 0 or not isinstance(payload, dict):
+            text = E.output_tail(lines, count=2)
+            self.import_status.config(text=f"❌ 入藏失败：{text}",
+                                      foreground=theme.COLOR["error"])
+            self._log(f"❌ 入藏到引用库失败：{text}")
+            return
+        report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+        line = B.summary_line(report)
+        self.import_status.config(text="✅ 已入藏：" + line,
+                                  foreground=theme.COLOR["ok"])
+        self._log(f"  来源：{self._import_where}")
+        self._log("  " + line)
+        if not payload.get("db_existed"):
+            self._log("  （本次新建了引用库文件）")
+        self._log("  （库变了：建议到「引用库 → 待裁决」页重新生成清单。）")
 
     def extra_args(self) -> dict:
         return {"merge_into_same_dir": self.v_merge.get(),
@@ -878,7 +992,9 @@ class MainWindow(tk.Tk):
 
         self.convert_tab = ConvertTab(self.content, "初排转换", self.start, self.stop,
                                       cfg=self.cfg, ai_knobs_sink=self._set_ai_knobs)
-        self.checkbib_tab = CheckBibTab(self.content, "文献回读校验", self.start, self.stop)
+        # CheckBibTab 多两样：「入藏到引用库」按钮要写运行日志 + 后台线程回传（第 132 条）。
+        self.checkbib_tab = CheckBibTab(self.content, "文献回读校验", self.start, self.stop,
+                                        log=self.log, post=self.post, cfg=self.cfg)
         self.merge_tab = MergeTab(self.content, "合并文件", self.start, self.stop)
         self.proof_tab = ProofCheckTab(self.content, "一校核查", self.start, self.stop)
         self.info_tab = InfoCheckTab(self.content, "检查tex信息", self.start, self.stop)
@@ -886,16 +1002,31 @@ class MainWindow(tk.Tk):
         self.compile_tab = CompileAllTab(self.content, "编译全部", self.start, self.stop)
         self.clean_tab = CleanTab(self.content, "删除临时文件", self.start, self.stop)
         self.publish_tab = PublishTab(self.content, "本期出刊", self.start, self.stop)
+        # ── 第 132 条：「引用库」5 页（与 mac 同口径；数据源是 Engine/bibdb.py）──
+        # 页面在 bibdb_ui.py（main.py 已经 1300+ 行，别继续膨胀）；这里只建对象、排进侧栏。
+        self.bibdb_stats_tab = B.BibDbStatsPage(self.content, app=self)
+        self.bibdb_query_tab = B.BibDbQueryPage(self.content, app=self)
+        self.bibdb_import_tab = B.BibDbImportPage(self.content, app=self)
+        self.bibdb_review_tab = B.BibDbReviewPage(self.content, app=self)
+        self.bibdb_settings_tab = B.BibDbSettingsPage(self.content, app=self)
         self.settings_tab = SettingsTab(self.content, self.cfg, lambda: None,
                                         post=self._q.put)
         self.tabs = [self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
                      self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
-                     self.publish_tab, self.settings_tab]
+                     self.publish_tab,
+                     # 第 132 条：引用库分组（9..13）；「设置」仍是组外底部（14）
+                     self.bibdb_stats_tab, self.bibdb_query_tab, self.bibdb_import_tab,
+                     self.bibdb_review_tab, self.bibdb_settings_tab,
+                     self.settings_tab]
         for tab in self.tabs:                     # 全部叠在同一格里，切页 = tkraise
             tab.grid(row=0, column=0, sticky="nsew")
 
         #: 分组 → 页（顺序就是侧栏里的顺序；`设置` 单独放在最下面，照 WinUI 的惯例）
-        self.nav_groups = [("单篇稿件", (0, 1, 2, 3)), ("整期装配", (4, 5, 6, 7, 8))]
+        #: 第 132 条起多一个与另两组**平行**的顶级分组「引用库」（按使用顺序排：
+        #: 看概况 → 查库 → 入藏 → 待裁决 → 设置）。设置仍是组外的配置入口。
+        self.nav_groups = [("单篇稿件", (0, 1, 2, 3)),
+                           ("整期装配", (4, 5, 6, 7, 8)),
+                           ("引用库", (9, 10, 11, 12, 13))]
         for title, idxs in self.nav_groups:
             group = self.nav.insert("", "end", text=title, open=True)
             for i in idxs:
@@ -978,7 +1109,7 @@ class MainWindow(tk.Tk):
 
     def _hotkey_run(self) -> str:
         tab = self.current_tab()
-        if not isinstance(tab, SettingsTab) and not self._busy:
+        if isinstance(tab, TabPage) and not self._busy:
             self.start(tab)
         return "break"
 
@@ -992,12 +1123,28 @@ class MainWindow(tk.Tk):
         return "break"
 
     def show_tab(self, index: int) -> None:
-        """切到第 `index` 页（侧栏选中态与内容一起变）。"""
-        self._current = index
-        self.tabs[index].tkraise()
+        """切到第 `index` 页（侧栏选中态与内容一起变，并触发该页的 `on_activate`）。"""
+        self._show(index)
         want = f"tab:{index}"
         if self.nav.selection() != (want,):          # 已经有就别再 set（见 _on_nav 的注释）
             self.nav.selection_set(want)
+
+    def _show(self, index: int) -> None:
+        """切页的唯一实现：更新 `_current`、tkraise、调页面钩子。
+
+        `_current` 必须在这里同步：从前只有 `show_tab()` 写它，鼠标点侧栏走
+        `_on_nav` 时 `_current` 停在旧页 —— 于是 Ctrl+R 跑的是**上一页**（第 132 条
+        一并修掉）；「库概况/待裁决」也靠 `on_activate` 在切到本页时读库/刷新清单。
+        """
+        self._current = index
+        tab = self.tabs[index]
+        tab.tkraise()
+        hook = getattr(tab, "on_activate", None)
+        if callable(hook):
+            try:
+                hook()
+            except Exception as exc:  # noqa: BLE001  钩子出错不许把切页弄崩
+                self.log(f"❌ 切到「{tab.name}」时出错：{exc}")
 
     def _on_nav(self, _event=None) -> None:
         """侧栏选中 → 切内容。⚠️ **这里绝不回写** `selection_set`。
@@ -1011,8 +1158,24 @@ class MainWindow(tk.Tk):
         if not sel:
             return
         iid = sel[0]
-        if iid.startswith("tab:"):
-            self.tabs[int(iid.split(":", 1)[1])].tkraise()
+        if not iid.startswith("tab:"):
+            return
+        index = int(iid.split(":", 1)[1])
+        # show_tab() 会先写 _current 再 set 选中态，事件回来时 index == _current
+        # → 只 tkraise，不重复触发 on_activate（避免「库概况」一次切页读两遍库）。
+        if index == self._current:
+            self.tabs[index].tkraise()
+        else:
+            self._show(index)
+
+    # ── 后台线程 → 主线程的唯一通道（第 132 条）──
+    def post(self, item) -> None:
+        """把一条队列消息交给 `_drain`（工作线程只许调它，绝不许直接碰控件）。
+
+        `bibdb_ui.run_async` 用 `("__CALL__", callback, args)` 把「后台跑完引擎后的
+        收尾」送回主线程执行 —— Tkinter 不是线程安全的（见 `_worker` 的注释）。
+        """
+        self._q.put(item)
 
     # ── 日志 ──
     @staticmethod
@@ -1187,6 +1350,15 @@ class MainWindow(tk.Tk):
                 if isinstance(line, tuple) and line[0] == "__KEYSTATUS__":
                     self.settings_tab.key_status.config(text=str(line[1]))
                     continue
+                if isinstance(line, tuple) and line[0] == "__CALL__":
+                    # 第 132 条：引用库页面在后台线程跑完引擎后，把「结果回填」送回主线程。
+                    # 回调里只碰控件；它自己抛的异常在这里兜住，别让 Tk 的事件循环断掉。
+                    _tag, callback, args = line
+                    try:
+                        callback(*args)
+                    except Exception as exc:  # noqa: BLE001
+                        self.log(f"❌ 界面回调出错：{exc}")
+                    continue
                 if isinstance(line, tuple) and line[0] == "__RESULT__":
                     _tag, tab, text, path, seconds, undo = line
                     if isinstance(undo, tuple) and len(undo) == 2:
@@ -1316,7 +1488,8 @@ class MainWindow(tk.Tk):
 
         try:
             code = E.run_call(call, on_line=_on_line, api=self.cfg.get("api"),
-                              on_proc=lambda p: setattr(self, "_proc", p))
+                              on_proc=lambda p: setattr(self, "_proc", p),
+                              notes=self.cfg.get("notesRepoPath", ""))
         except Exception as e:  # noqa: BLE001
             self._q.put(f"❌ 启动失败：{e}")
             code = -1

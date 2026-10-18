@@ -46,7 +46,26 @@ DEFAULTS: dict = {
     # U4（2026-10-17 第十五批）日志两层：True = 显示「原始」层，False = 摘要（默认折叠原始）。
     # 放在顶层而不是 options：它是**界面偏好**，不是任务选项。
     "logShowRaw": False,
+    # ── 第 132 条：引用库（核实成本闸门 / 先查库 / 笔记仓路径）──
+    # 默认值刻意是「**一个参数都不加**」：
+    #   · verifyMax=None         → 不传 --verify-max（引擎默认 120 条；0 = 不限）
+    #   · verifyPlan=False       → 不传 --verify-plan（照常核实）
+    #   · verifyAllRefs=False    → 不传 --verify-all-refs（受上限约束）
+    #   · lookupEnabled=True     → 不传 --no-bibdb（引擎默认就是「库存在就查」）
+    # 于是没碰过这些设置的用户，convert 命令行与接入引用库之前**逐字节相同**。
+    "bibdb": {
+        "verifyMax": None,
+        "verifyPlan": False,
+        "verifyAllRefs": False,
+        "lookupEnabled": True,
+    },
+    # 手动指定的私有笔记仓（引用库在 <它>/bib_db/）；空 = 自动探测（第 132 条）。
+    "notesRepoPath": "",
 }
+
+#: 引擎侧的默认核实上限（`Engine/slcn/refmark.py` 的 DEFAULT_VERIFY_MAX，只有一处）。
+#: 这里只是给界面显示「留空 = 引擎默认 120 条」，**不参与判定**。
+DEFAULT_VERIFY_MAX = 120
 
 
 def config_dir() -> str:
@@ -77,6 +96,22 @@ def _merge_defaults(raw: dict) -> dict:
     for key in ("logShowRaw",):
         if isinstance(raw.get(key), bool):
             out[key] = raw[key]
+    # 第 132 条：引用库设置。**逐键校验**，不信配置文件里的任意垃圾：
+    # verifyMax 只收 ≥0 的 int（None = 没设过）；三个开关只收 bool。
+    got_bibdb = raw.get("bibdb")
+    if isinstance(got_bibdb, dict):
+        for key in DEFAULTS["bibdb"]:
+            if key not in got_bibdb:
+                continue
+            value = got_bibdb[key]
+            if key == "verifyMax":
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    out["bibdb"][key] = value
+                continue
+            if isinstance(value, bool):
+                out["bibdb"][key] = value
+    if isinstance(raw.get("notesRepoPath"), str):
+        out["notesRepoPath"] = raw["notesRepoPath"]
     return out
 
 
@@ -119,3 +154,63 @@ def mask_key(key: str) -> str:
     if not key:
         return ""
     return key[:4] + "…" if len(key) > 4 else "…"
+
+
+# ── 第 132 条：引用库设置 → 外壳/引擎（纯函数，桥接测试直接打这些）──────────
+# 为什么要有这一层：界面（引用库设置页）只负责把文本写进 cfg，而「哪些值真的进
+# convert 的 argv」必须**只有一处判据** —— 否则设置页说一套、转换页传另一套。
+# 与 mac 侧 `BibDbSettings`（UserDefaults → ConvertFeature.arguments）同一职责。
+
+def parse_verify_max(text: str) -> tuple[int | None, str | None]:
+    """解析「核实上限」输入框：返回 `(要保存的值, 错误提示)`。
+
+    · 留空 → `(None, None)`：没设过 → **不传** `--verify-max`（引擎默认 120 条）；
+    · 合法非负整数 → `(n, None)`（0 = 不限，会被真的传下去）；
+    · 非法 → `(None, 错误话术)`：**不落盘**，界面红字提示留在输入框里让编辑改。
+    """
+    value = (text or "").strip()
+    if not value:
+        return None, None
+    try:
+        number = int(value)
+    except ValueError:
+        return None, f"上限必须是整数（0 = 不限；留空 = 引擎默认 {DEFAULT_VERIFY_MAX} 条）"
+    if number < 0:
+        return None, "上限不能是负数（要「不限」请填 0）"
+    return number, None
+
+
+def verify_max_text(cfg: dict) -> str:
+    """设置页输入框的初始文本：设过就显示数字，没设过显示空（占位提示引擎默认）。"""
+    value = (cfg or {}).get("bibdb", {}).get("verifyMax")
+    return "" if value is None else str(value)
+
+
+def verify_max_summary(cfg: dict) -> str:
+    """一行摘要（转换页/设置页的「当前生效值」共用）。"""
+    value = (cfg or {}).get("bibdb", {}).get("verifyMax")
+    if value is None:
+        return f"引擎默认 {DEFAULT_VERIFY_MAX} 条（本次不传 --verify-max）"
+    return "不限（--verify-max 0）" if value == 0 else f"{value} 条（--verify-max）"
+
+
+def bibdb_convert_args(cfg: dict) -> dict:
+    """引用库设置 → `engine.convert_call()` 的额外参数（**默认返回空 dict**）。
+
+    只在 `verifyMax` 真的设过 / 开关真的偏离默认时才给键，这样「没碰过设置」的
+    用户传进 `convert_call` 的 kwargs 为空 → 命令行逐字节不变（第 132 条的红线）。
+    `lookupEnabled=True`（默认）**不产生任何参数**：查库是引擎默认行为，只有显式关
+    才传 `--no-bibdb`。
+    """
+    opts = (cfg or {}).get("bibdb") or {}
+    args: dict = {}
+    max_refs = opts.get("verifyMax")
+    if isinstance(max_refs, int) and not isinstance(max_refs, bool) and max_refs >= 0:
+        args["verify_max"] = max_refs
+    if opts.get("verifyPlan") is True:
+        args["verify_plan"] = True
+    if opts.get("verifyAllRefs") is True:
+        args["verify_all_refs"] = True
+    if opts.get("lookupEnabled") is False:
+        args["no_bibdb"] = True
+    return args

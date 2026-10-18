@@ -14,13 +14,17 @@
   `slcn_python()` 依次尝试
     ① 环境变量 `SLCN_PYTHON`
     ② 已经装了 Python 的开发机：`python` / `python3` / Windows 的 `py` 启动器
-    ③ **冻结引擎**：`SLCNEngine.exe`（把八个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
+    ③ **冻结引擎**：`SLCNEngine.exe`（把十个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
        本文件的 `ENTRIES` 必须与它的 `ENTRIES` 逐项一致 —— 由 tests/test_bridge.py 守着）
+       第 132 条起 `bibdb.py`（引用库 CLI）也在表里：Windows「引用库」5 页的数据源，
+       四处入口表（外壳 `ENTRIES` / dispatcher `ENTRIES` / build-win.ps1 / 桥接断言）
+       必须一起改 —— 少一处，用户机器上那 5 页全部「❌ 不认识的入口」退出 2。
   —— 顺序上「先找真 Python」是因为开发机上改完代码就能验证；发布包走 ③，用户机器上不需要装 Python。
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -29,10 +33,11 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-#: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）
+#: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）。
+#: 第 132 条加了 `bibdb.py`（引用库）——它与 mac 包共用同一份 CLI，Windows 侧不重写判据。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
-           "infocheck.py", "toc.py", "publish.py")
+           "infocheck.py", "toc.py", "publish.py", "bibdb.py")
 
 
 # ── 日志分层（U4：摘要 / 原始两层，默认折叠原始）─────────────────────────
@@ -128,6 +133,190 @@ def frozen_engine_exe() -> str | None:
     return None
 
 
+# ── 引用库（第 132 条）：笔记仓 / 库文件 / 清单文件的定位 ────────────────
+# 为什么由**外壳**算这些路径：引擎在发布形态里位于 `dist/`（PyInstaller 临时目录），
+# 从那儿往上找不到仓库根；而引用库按 `SLCN_NOTES` 定位
+# `<笔记仓>/bib_db/bibliography.jsonl`（`Engine/slcn/paths.py: notes_root`）。
+# 这与 mac 侧 `sources-mac/Core/Support.swift: EngineLocator` 是同一套职责划分：
+# 外壳负责「库在哪」，引擎负责「库怎么读、怎么判」—— 判据一行都不在这份文件里。
+#
+# ⚠️ 下面几个是**纯函数**（不碰 Tk、不读全局状态），路径可传合成目录做测试：
+#    真机/CI 上找不到笔记仓时的行为（回落、不静默写错地方）必须能离开 Windows 验证。
+
+NOTES_DIRNAME = "EditToolBox-notes"
+BIBDB_DIRNAME = "bib_db"
+BIBDB_FILENAME = "bibliography.jsonl"
+#: 待裁决清单（`bibdb.py report` 的产物；「待裁决」页只读展示、不改库）
+BIBDB_REPORT_FILES = ("CONFLICTS.md", "DUPLICATES.md", "duplicates.csv")
+
+
+def looks_like_notes_repo(path: str) -> bool:
+    """这个目录像不像**私有笔记仓**（有引用库 / 案例法 / 交接说明之一）。
+
+    判据比 mac 侧多一条 `cases/`：引擎 `slcn/paths.py: notes_root()` 对显式
+    `SLCN_NOTES` 的验收标准就是「里面有 cases/ 目录」—— 注入一个引擎会拒绝的路径，
+    等于把引擎自己「向上找同级笔记仓」的兜底也关掉（环境变量优先，找不到就返回 None）。
+    所以这里只认引擎真的会接受的目录：**不静默写错地方**比多认出几个候选重要。
+    """
+    if not path or not os.path.isdir(path):
+        return False
+    return (os.path.isdir(os.path.join(path, "cases"))
+            or os.path.isfile(os.path.join(path, BIBDB_DIRNAME, BIBDB_FILENAME))
+            or os.path.isfile(os.path.join(path, "HANDOFF.md")))
+
+
+def _notes_start_dirs() -> list[str]:
+    """自动探测的起点（按可信度）：exe 所在目录 → 外壳目录 → 引擎目录。"""
+    starts: list[str] = []
+    if getattr(sys, "frozen", False):
+        starts.append(os.path.dirname(sys.executable))
+    starts.append(_shell_dir())
+    engine = slcn_engine()
+    if engine:
+        starts.append(engine)
+    return [p for p in starts if p]
+
+
+def detect_notes_repo(start_dir: str | None = None, *, max_up: int = 8) -> str | None:
+    """**只做自动探测**：从起点逐级向上，找同级的 `EditToolBox-notes`（找不到返回 None）。
+
+    镜像 mac `EngineLocator.detectedNotesRepo()`：每一层查两个位置 ——
+    「父目录下的同名目录」（仓库并排的默认布局）与「当前目录下的同名目录」
+    （exe 就放在笔记仓里面那种放法）。最多上 8 层，防止在根目录死循环。
+    """
+    starts = [start_dir] if start_dir else _notes_start_dirs()
+    for start in starts:
+        directory = os.path.abspath(os.path.expanduser(start))
+        for _ in range(max_up):
+            parent = os.path.dirname(directory)
+            for candidate in (os.path.join(parent, NOTES_DIRNAME),
+                              os.path.join(directory, NOTES_DIRNAME)):
+                if looks_like_notes_repo(candidate):
+                    return os.path.abspath(candidate)
+            if parent == directory:          # 已经到根
+                break
+            directory = parent
+    return None
+
+
+def manual_notes_valid(manual: str) -> bool:
+    """手动指定的笔记仓路径是否有效（空串由调用方解释成「没填」）。"""
+    text = (manual or "").strip().strip('"')
+    if not text:
+        return False
+    return looks_like_notes_repo(os.path.abspath(os.path.expanduser(text)))
+
+
+def effective_notes_repo(manual: str = "", start_dir: str | None = None) -> str | None:
+    """**当前生效的笔记仓**：手动指定（且真的有效）优先 → 自动探测。
+
+    ⚠️ 无效的手动路径**不注入** `SLCN_NOTES`，而是回落自动探测 —— 界面同时显示红字。
+    这比「照存照传」好：传一个引擎拒绝的路径会静默关掉库查找（编辑以为设置生效了，
+    其实核实链路一次都没查到库）。
+    """
+    if manual_notes_valid(manual):
+        return os.path.abspath(os.path.expanduser(manual.strip().strip('"')))
+    return detect_notes_repo(start_dir)
+
+
+def notes_dir(notes_root: str | None) -> str | None:
+    """引用库目录 `<笔记仓>/bib_db`（清单文件都在这里）。"""
+    if not notes_root:
+        return None
+    return os.path.join(notes_root, BIBDB_DIRNAME)
+
+
+def bibdb_db_path(notes_root: str | None) -> str | None:
+    """引用库文件路径 `<笔记仓>/bib_db/bibliography.jsonl`（位置由引擎定义，外壳不另立规矩）。"""
+    directory = notes_dir(notes_root)
+    return os.path.join(directory, BIBDB_FILENAME) if directory else None
+
+
+def _file_info(path: str, name: str) -> dict:
+    """一个文件的只读状态（存在 / 字节数 / 修改时间）；不抛异常（清单没生成是常态）。"""
+    info = {"name": name, "path": path, "exists": False, "bytes": 0, "mtime": 0.0}
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return info
+    if os.path.isfile(path):
+        info.update(exists=True, bytes=stat.st_size, mtime=stat.st_mtime)
+    return info
+
+
+def bibdb_report_files(notes_root: str | None) -> list[dict]:
+    """「待裁决」页要显示的三个清单文件的当前状态（**只 stat，不跑引擎**）。"""
+    directory = notes_dir(notes_root)
+    if not directory:
+        return []
+    return [_file_info(os.path.join(directory, name), name) for name in BIBDB_REPORT_FILES]
+
+
+def infer_issue_and_slug(raw_path: str) -> tuple[str, str]:
+    """从 bib 路径推断「来源期」与「篇目录名」（认不出返回两个空串，**绝不猜**）。
+
+    例：`…/2026年第2期(87)/02 Kun_Xing/reference.bib` → (`2026年第2期(87)`, `02 Kun_Xing`)。
+    判据与引擎 `Engine/slcn/paths.py: ISSUE_RE`、`Engine/slcn/bibdb.py` 的作者目录
+    正则**同一口径**（期 = `20xx年第…`；篇 = 两位数字 + 空格/下划线/短横）。
+    为什么故意不猜：来源是库里的**审计凭据**，写错的来源比空来源更糟
+    （mac 侧 `BibDbFeature.inferIssueAndSlug` 就是这条纪律，两侧逐字对齐）。
+    """
+    text = (raw_path or "").strip()
+    if not text:
+        return "", ""
+    parts = text.replace("\\", "/").split("/")     # Windows 路径也按 / 拆（用户可能手填）
+    for index, part in enumerate(parts):
+        if not re.match(r"^\d{4}年第", part):
+            continue
+        slug = ""
+        if index + 1 < len(parts) and re.match(r"^\d{2}[\s_-]", parts[index + 1]):
+            slug = parts[index + 1]
+        return part, slug
+    return "", ""
+
+
+def parse_json_lines(lines) -> dict | None:
+    """从引擎输出里找**最后一段完整 JSON 对象**；没有返回 None。
+
+    为什么不能直接 `json.loads("\\n".join(lines))`：`run_call` 把 stderr 并进了
+    stdout，而 `bibdb.py --json` 的 JSON 是**多行缩进**格式（`indent=2`），前面可能
+    还有告警行/中文提示。做法与 mac `BibDbFeature.jsonObject` 相同：从后往前找
+    行首 `{`，把从那里到结尾的整段拿去解析，第一个解析成功的对象就是它。
+    """
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    rows = list(lines or [])
+    for index in range(len(rows) - 1, -1, -1):
+        if not rows[index].lstrip().startswith("{"):
+            continue
+        try:
+            payload = json.loads("\n".join(rows[index:]))
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def output_tail(lines, *, count: int = 1) -> str:
+    """引擎输出最后几条非空行（失败时给编辑看的原因；CLI 的中文报错都走 stderr）。"""
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    rows = [line.strip() for line in (lines or []) if str(line).strip()]
+    return " ／ ".join(rows[-count:]) if rows else "（引擎没有任何输出）"
+
+
+def bibdb_tool() -> str | None:
+    """引用库 CLI 的位置（给「库概况/设置」页显示；冻结形态显示 dispatcher exe）。"""
+    if frozen_engine_exe():
+        return frozen_engine_exe()
+    engine = slcn_engine()
+    if not engine:
+        return None
+    script = os.path.join(engine, "bibdb.py")
+    return script if os.path.isfile(script) else None
+
+
 # ── 拼命令行（纯函数，测试直接打这些）──────────────────────────────────
 
 @dataclass
@@ -162,7 +351,9 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  author: str = "", name: str = "",
                  vol: str = "", issue: str = "", year: str = "", pages: str = "",
                  received: str = "", editor: str = "", grants: str = "",
-                 lang: str = "", extra: str = "") -> EngineCall:
+                 lang: str = "", extra: str = "",
+                 verify_max: int | None = None, verify_plan: bool = False,
+                 verify_all_refs: bool = False, no_bibdb: bool = False) -> EngineCall:
     """「初排转换」：`convert.py --source … --out …`（参数与 mac 界面一致）。
 
     ⚠️ `author` / `name` 不是可选项而是**某一类稿件的活路**：正文里读不出第一作者姓名时
@@ -170,15 +361,35 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     界面若没有这两个输入框，这类稿（本刊真实的 LaTeX 投稿里就有）**整页做不了**
     （2026-10-17 审计实测：`2026年第5期(90)/03 Liang_Zhang/…/main.tex` 等 2 篇 rc=2）。
     出版信息（vol/issue/…）缺了不报错，但 PDF 页眉会是「xxxx 年第 x 期，1–10」占位。
+
+    第 132 条的核实成本闸门（`verify_max` / `verify_plan` / `verify_all_refs` /
+    `no_bibdb`）**默认全是 None/False = 一个参数都不加** —— 没碰过「引用库设置」的
+    用户，命令行与接入引用库之前逐字节相同。它们只在**这次真的执行核实**
+    （`verify_refs=True`）时才进 argv：引擎对单独出现的一律只打「本次忽略」告警，
+    外壳不该发这种噪声。`--verify-plan` 与 `--verify-refs` **二选一**（前者只算账就
+    退出 0；两个都传会让日志说不清到底核不核）。
     """
     cmd = _base_cmd("convert.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
     cmd += ["--source", source, "--out", out]
-    for flag, on in (("--compile", compile_pdf), ("--clean", clean),
-                     ("--verify-refs", verify_refs), ("--source-pdf", source_pdf)):
+    for flag, on in (("--compile", compile_pdf), ("--clean", clean)):
         if on:
             cmd.append(flag)
+    if verify_refs:
+        cmd.append("--verify-plan" if verify_plan else "--verify-refs")
+        if verify_max is not None:
+            if not isinstance(verify_max, int) or isinstance(verify_max, bool) or verify_max < 0:
+                raise ValueError(f"--verify-max 必须是 ≥0 的整数（0 = 不限）：{verify_max!r}")
+            cmd += ["--verify-max", str(verify_max)]
+        if verify_all_refs:
+            cmd.append("--verify-all-refs")
+        # 查库默认就是开（引擎默认行为）；只有显式关闭才传 `--no-bibdb`，
+        # 于是默认命令行里连这个开关都没有 —— 「默认零参数」的判据见 test_bridge (i)。
+        if no_bibdb:
+            cmd.append("--no-bibdb")
+    if source_pdf:
+        cmd.append("--source-pdf")
     if bib:
         cmd += ["--bib", bib]
     if metadata:
@@ -330,12 +541,119 @@ def toc_preview_call(*, report: str) -> EngineCall:
     return EngineCall(cmd, "toc.py", "目录预览")
 
 
+# ── 引用库 CLI（第 132 条）：`bibdb.py` 的薄参数拼装 ────────────────────────
+# 纪律与 mac `sources-mac/Features/BibDbFeature.swift` 相同：**外壳不判定**
+# 「什么算已核实 / 冲突怎么留档 / 题名相似度多少算命中」—— 那些判据只在
+# `Engine/slcn/bibdb.py`。这里只把界面取值拼成 argv，再把 `--json` 读回来显示。
+
+def _bibdb_cmd() -> list[str]:
+    cmd = _base_cmd("bibdb.py")
+    if cmd is None:
+        raise RuntimeError("找不到引用库脚本 Engine/bibdb.py：请先在「设置」里指定 Engine 目录，"
+                           "或确认 SLCNEngine.exe 已随包一起安装。")
+    return cmd
+
+
+def bibdb_stats_call(db: str = "") -> EngineCall:
+    """库概况：`bibdb.py stats --json`（条数/期数/最近更新/冲突数/库大小）。"""
+    cmd = _bibdb_cmd() + ["stats", "--json"]
+    if db:
+        cmd += ["--db", db]
+    return EngineCall(cmd, "bibdb.py", "引用库 · 库概况")
+
+
+def bibdb_lint_call(db: str = "") -> EngineCall:
+    """库体检：`bibdb.py lint --json`（退出码 1 = 库有 error，**不是程序出错**）。"""
+    cmd = _bibdb_cmd() + ["lint", "--json"]
+    if db:
+        cmd += ["--db", db]
+    return EngineCall(cmd, "bibdb.py", "引用库 · 体检")
+
+
+#: 查库模式 → CLI 参数（与 `bibdb.py query` 的三个互斥参数一一对应）
+QUERY_FLAGS = {"key": "--key", "doi": "--doi", "title": "--title"}
+
+
+def bibdb_query_call(mode: str, text: str, db: str = "", limit: int = 20) -> EngineCall:
+    """查库：`bibdb.py query --key/--doi/--title … --bibtex --json`。
+
+    `--limit` 只对题名模糊查询有意义（key/DOI 是精确查询，传了反而误导）。
+    """
+    flag = QUERY_FLAGS.get(mode)
+    if flag is None:
+        raise ValueError(f"未知的查库方式：{mode!r}（只认 key/doi/title）")
+    cmd = _bibdb_cmd() + ["query", flag, text, "--bibtex", "--json"]
+    if mode == "title":
+        cmd += ["--limit", str(max(1, int(limit)))]
+    if db:
+        cmd += ["--db", db]
+    return EngineCall(cmd, "bibdb.py", f"引用库 · 查库（{mode}）")
+
+
+def bibdb_import_bib_call(*, bib: str, issue: str = "", slug: str = "",
+                          dry_run: bool = True, db: str = "",
+                          verified: bool = True) -> EngineCall:
+    """入藏单篇 `.bib`：`bibdb.py import-bib --bib … [--issue … --slug …] --verified …`。
+
+    `dry_run=True` = 「预览」按钮：引擎照常解析/查重/算冲突，但**库一个字节都不写**
+    （库文件不存在也不会新建）。只有「确认入藏」才用 `dry_run=False` 真正写库。
+    """
+    cmd = _bibdb_cmd() + ["import-bib", "--bib", bib]
+    if verified:
+        cmd.append("--verified")
+    if issue:
+        cmd += ["--issue", issue]
+    if slug:
+        cmd += ["--slug", slug]
+    cmd.append("--json")
+    if db:
+        cmd += ["--db", db]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "bibdb.py", "引用库 · 入藏预览" if dry_run else "引用库 · 入藏")
+
+
+def bibdb_import_dir_call(*, root: str, dry_run: bool = True, db: str = "") -> EngineCall:
+    """入藏整期目录：`bibdb.py import-dir --root … [--dry-run] --json`。
+
+    `root` 可以是一期目录（只导入这一期）或稿件库根（导入全部期）；
+    哪份 bib 算成品 bib、成品期算不算 verified，判据在引擎（与种子导入同一份）。
+    """
+    cmd = _bibdb_cmd() + ["import-dir", "--root", root, "--json"]
+    if db:
+        cmd += ["--db", db]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "bibdb.py", "引用库 · 入藏预览" if dry_run else "引用库 · 入藏")
+
+
+def bibdb_report_call(*, out_dir: str, db: str = "") -> EngineCall:
+    """重新生成待裁决清单：`bibdb.py report --json --out <笔记仓>/bib_db`。
+
+    只写 `CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv` 三个文件，
+    **不改库本体**（引擎保证幂等：同一份库重复生成逐字节相同）。
+    """
+    cmd = _bibdb_cmd() + ["report", "--json"]
+    if db:
+        cmd += ["--db", db]
+    if out_dir:
+        cmd += ["--out", out_dir]
+    return EngineCall(cmd, "bibdb.py", "引用库 · 生成待裁决清单")
+
+
 # ── 环境变量与执行 ───────────────────────────────────────────────────────
 
-def env_for_run(api: dict | None = None, engine: str | None = None) -> dict:
+def env_for_run(api: dict | None = None, engine: str | None = None,
+                notes: str = "") -> dict:
     """子进程的环境：UTF-8、无缓冲、vendor 依赖，以及**只走环境变量的密钥**。
 
     ⚠️ 密钥**绝不进 argv**：命令行参数在任务管理器 / `wmic process` 里谁都能看见。
+
+    第 132 条：还把**私有笔记仓路径**注入 `SLCN_NOTES`（引擎按它定位
+    `<笔记仓>/bib_db/bibliography.jsonl`；核实链路与 `bibdb.py` 都认这一个变量）。
+    顺序与 mac `Shell.environment()` 一致：**环境里已经显式设了就不覆盖**（用户/CI
+    优先），否则 `notes`（界面「引用库设置」里的手动指定，无效时自动回落探测）优先，
+    最后才是从程序/exe 位置向上自动探测。找不到就不设 —— 引擎会优雅跳过查库。
     """
     env = dict(os.environ)
     engine = engine or slcn_engine()
@@ -362,6 +680,11 @@ def env_for_run(api: dict | None = None, engine: str | None = None) -> dict:
     # 走环境变量而非 argv：Windows 的 `wmic process` 同机可见，与密钥同一条纪律。
     if api.get("searchRefs"):
         env["SLCN_SEARCH_REFS"] = "1"
+    # 第 132 条：笔记仓路径（引用库位置）。空/无效 → 回落自动探测；都没有就不设。
+    if "SLCN_NOTES" not in env:
+        notes_root = effective_notes_repo(notes)
+        if notes_root:
+            env["SLCN_NOTES"] = notes_root
     return env
 
 
@@ -399,13 +722,14 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_call(call: EngineCall, *, on_line=None, cwd: str | None = None,
-             api: dict | None = None, on_proc=None) -> int:
+             api: dict | None = None, on_proc=None, notes: str = "") -> int:
     """跑一次引擎调用，逐行回调日志；返回退出码（**只看 0 / 非 0**）。
 
     `stderr` 合并进 `stdout`：引擎的致命错误走 stderr，编辑在同一个日志框里才看得见。
     `on_proc(proc)` 在进程刚起来时回调 —— 界面拿它做「停止」按钮（`proc.terminate()`）。
+    `notes` = 界面「引用库设置」里的手动笔记仓路径（见 `env_for_run`；第 132 条）。
     """
-    env = env_for_run(api)
+    env = env_for_run(api, notes=notes)
     proc = subprocess.Popen(
         call.argv, cwd=cwd or None, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

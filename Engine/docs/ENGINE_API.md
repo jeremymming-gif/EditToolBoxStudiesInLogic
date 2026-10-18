@@ -15,14 +15,14 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
 ```text
 <仓库>/Engine/                 ← 唯一一份逻辑（convert.py + checkbib.py + mergepdf.py
                                                  + cleantemp.py + compileall.py + proofcheck.py + slcn/）
-<仓库>/Engine/engine_main.py   ← 打包用：把**八个** CLI 冻成**一个** exe 的分发入口（第 89 条）
+<仓库>/Engine/engine_main.py   ← 打包用：把**十个** CLI 冻成**一个** exe 的分发入口（第 89 条）
 <仓库>/Engine/vendor/          ← 随包依赖（pypdf / pypinyin / lxml）
 <仓库>/sources-mac/                ← mac 外壳（SwiftUI）
 <仓库>/sources-win/           ← Windows 外壳（Tkinter，见 §七）
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
-发布形态下这八个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §八·打包）。
+发布形态下这十个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
 ⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-win/engine.py: ENTRIES` **必须逐项一致**：
 漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页）；
 配对守卫在 `sources-win/tests/test_bridge.py` 与 `Engine/tests/test_platform.py` (g) 组。
@@ -51,7 +51,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--source` | **必填**。`.docx` / `.doc` / `.tex` |
 | `--out` | **必填**。产物写到 `<out>/<作者名>/` |
 | `--metadata` | LaTeX 多源合并的元数据源；**Word 源**时指到 `.docx` 会被当「英文元数据第二源」（第 76 条） |
-| `--refs` / `--bib` / `--name` / `--author` / `--lang` / `--sty` / `--skeleton` | 见 `convert.py --help` |
+| `--refs` / `--bib` / `--name` / `--author` / `--lang` / `--sty` / `--skeleton` | 见 `convert.py --help`。⚠️ 第 134 条起 `--refs` 的自动发现改保守：**有真 `.bib`**（`--bib` / 源内 `\addbibresource` / `\bibliography` 指向且文件存在 / 同目录 `.bib`）时**不自动合并**附件（要合并请显式 `--refs`）；无真 bib 时自动挑候选（真 BibTeX 优先，文本清单须过结构校验：拒 `\href{...}` / 相邻 `}{` / 疑似一行两条），日志逐条写「采用 / 跳过 + 原因」 |
 | `--vol --issue --year --pages --received --editor --grants` | 编辑侧出版信息，不填就留模板默认值 |
 | `--compile` `--clean` `--source-pdf` | 编译出 PDF / 清中间文件 / 导出原稿 PDF（供矢量形状截图） |
 | `--verify-refs` `--no-ai-merge` | 出《文献核实任务书》/ 只出任务书不并 bib（第 64 条）。⚠️ 第 128 条起任务书、检索与 AI **默认只覆盖正文引用到的条目**（不是全量，见下一行） |
@@ -97,12 +97,21 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | 行首 `   ⚠ 本地旧文件重定义了模板命令` | 第 130 条：本地旧文件里覆盖现行模板命令的 `\renewcommand`（正文用到）**未搬**（模板优先），同时进「⚠ 注意事项」 |
 | 行首 `   正文里出现 N 处自定义定义` | 第 130 条：正文区（`\begin{document}` 之后）的定义**保留原样**（不迁移），只是提示建议移到导言区；Word 通道不出现 |
 | 行首 `   ⚠ 定义缺失预检：` | 第 130 条：编译前核对正文用到的环境是否被「模板 + 迁移结果 + 正文自身定义」覆盖；缺失只警告（同时进「⚠ 注意事项」）、**不阻断出稿**，退出码不变 |
+| 行首 `  · 参考文献：` / `  → 自动采用参考文献附件：` / `  · 跳过参考文献附件：` | **参考文献附件选择**（第 134 条）：有真 `.bib` 时说明直接使用、逐个列出被跳过的附件；无真 bib 时说明采用的候选；被结构校验拒绝的候选写明原因（`\href{...}` / 相邻 `}{` / 疑似一行两条） |
+| 行首 `   从附件合并 N 条` / `   ⚠ 跳过参考文献附件` | 第 134 条：合并结果（BibTeX 直入 / 文本清单）与「不硬并坏附件」的警告；坏条目（嵌套花括号等）不会写进产物 |
 | `完成。产物目录：<绝对路径>` | **最后一行**（外壳用它做「打开产物目录」按钮） |
 
 **LaTeX 定义位置加固（第 130 条，2026-10-18）**：LaTeX 通道的 stdout 可能多出上表几行
 （Word 通道**没有**）。它们全是**新增行**：不改任何既有契约行、退出码、产物路径与文件名；
 普通稿子（没有本地支撑文件、正文无自定义定义、环境全可解析）日志与产物逐字节不变。
 口径见 `docs/RULES.md` §八、`docs/GUIDE.md` §3.1；回归见 `tests/test_latex_preamble.py` ⑦ 组。
+
+**参考文献附件选择（第 134 条，2026-10-18）**：`convert.py` ⑦ 的**自动**附件发现改为
+「有真 `.bib` 就不并」（`--refs` 显式给时才并）；没有真 bib 时优先真 BibTeX、文本清单须过
+结构校验，坏候选跳过并写明原因；合并结果逐条再做「渲染后结构校验」（坏条目不写，防 biber
+整份报废）。全是**日志行**：不改退出码、产物路径与既有契约行；默认没有附件候选的稿子输出
+逐字节不变。口径见 `docs/RULES.md` §四.9；回归见 `tests/test_refs_attach.py`；
+真实稿 2023(71)04 用默认路径编过（biber 0 错、20 页 = 人工）。
 
 **核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的
 条目**」——⑪ 跑前会在 stdout 打一行
@@ -290,7 +299,7 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
   pyinstaller --onefile --console --name SLCNEngine engine_main.py
   ```
 
-  支持八个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+  支持十个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
   `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`sources-win/build-win.ps1` ②④），
   自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
   这样用户机器上**不需要装 Python**；界面壳另冻一个 exe，两者放同一目录即可

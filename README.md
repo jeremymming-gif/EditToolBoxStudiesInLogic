@@ -8,8 +8,9 @@
 - **一个引擎，两个外壳**：所有逻辑都在 Python 引擎（`Engine/`）里，界面只负责取值、拼参数、显示日志。
 - **macOS 外壳**：SwiftUI（`sources-mac/`），构建出 `dist/编辑部工具箱.app`。
 - **Windows 外壳**：Tkinter（`sources-win/`），打成两个 exe，用户机器**不需要装 Python**；
-  10 页（分组侧边栏，与 macOS 版对等）：初排转换 / 文献回读校验 / 一校核查 / 合并文件 /
-  检查tex信息 / 编译全部 / 生成目录 / 删除临时文件 / 本期出刊 / 设置。
+  15 页（四组侧边栏，与 macOS 版对等）：初排转换 / 文献回读校验 / 一校核查 / 合并文件 /
+  检查tex信息 / 编译全部 / 生成目录 / 删除临时文件 / 本期出刊 / 库概况 / 查库 / 入藏 / 待裁决 /
+  引用库设置 / 设置。
 - 参考文献环节可选接大模型（**用你自己的 API key**，密钥只存本机、只走环境变量，绝不进命令行）。
 
 > 这是编辑部的工作工具，不是通用软件：默认模板、字段规范、判据都按本刊体例写死，
@@ -65,7 +66,7 @@ open dist/编辑部工具箱.app
 ```powershell
 cd sources-win
 pwsh -ExecutionPolicy Bypass -File build-win.ps1
-# 产出：build\dist\SLCNEngine.exe（引擎，八个 CLI 冻成一个）与 build\dist\编辑部工具箱.exe（界面）
+# 产出：build\dist\SLCNEngine.exe（引擎，十个 CLI 冻成一个）与 build\dist\编辑部工具箱.exe（界面）
 ```
 
 ### 命令行（引擎单独用也成）
@@ -99,7 +100,7 @@ Engine/                  引擎（Python，唯一一份逻辑）
 ├── proofcheck.py        一校核查：按《排校手册》《流程化经验书》逐条核查初排稿
 ├── compileall.py        编译一期里所有文章的 .tex（xelatex → biber → xelatex ×2）
 ├── cleantemp.py         删除编译临时文件（不删 .tex / .pdf / .log）
-├── engine_main.py       打包入口：把上面八个 CLI 冻成一个 exe（`ENTRIES` 要与外壳一致）
+├── engine_main.py       打包入口：把上面十个 CLI 冻成一个 exe（`ENTRIES` 要与外壳一致）
 ├── slcn/                解析、规范、bib 判据、AI 任务书与合并等模块
 ├── docs/                GUIDE（用法）/ RULES（判据）/ ENGINE_API（对外壳的契约）
 │                        （内部仓另有 cases/：案例法，含作者信息，不随公开仓发布）

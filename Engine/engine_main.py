@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把八个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
+"""把十个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
 
     SLCNEngine.exe convert.py   --source "<稿件.docx>" --out "<输出目录>" --compile
     SLCNEngine.exe checkbib.py  --returned "<交回.bib>" --merge-into "<产物 reference.bib>"
@@ -7,7 +7,7 @@
     SLCNEngine.exe proofcheck.py --folder "<期目录>"
     SLCNEngine.exe --version
 
-**为什么要它**：Windows 上不该要求编辑先装 Python。把八个入口冻成一个
+**为什么要它**：Windows 上不该要求编辑先装 Python。把十个入口冻成一个
 `SLCNEngine.exe`（PyInstaller `--onefile`），Tkinter 外壳直接调这个 exe
 （见 `sources-win/engine.py: frozen_engine_exe()`），用户机器上零依赖。
 
@@ -32,10 +32,11 @@ sys.path.insert(0, HERE)
 
 #: 允许通过本 exe 调用的入口（键 = 命令行里写的名字）。
 #: 顺序与 `sources-win/engine.py: ENTRIES` 相同 —— 那条一致性由测试守着，别只改一边。
+#: 第 132 条加了 `bibdb.py`（引用库）：mac 包与 Windows 包共用同一份 CLI，
+#: Windows「引用库」5 页（库概况/查库/入藏/待裁决/设置）全靠它。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
-           "cleantemp.py",
-    "publish.py", "compileall.py", "proofcheck.py",
-           "infocheck.py", "toc.py")
+           "cleantemp.py", "compileall.py", "proofcheck.py",
+           "infocheck.py", "toc.py", "publish.py", "bibdb.py")
 
 USAGE = f"""SLCN 引擎（打包版）
 

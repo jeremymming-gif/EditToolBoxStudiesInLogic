@@ -20,6 +20,7 @@
 | **条目 → 源稿原文**的映射（任务书「源稿原文」行与 AI 预跑都用它） | `slcn/docxsource.py`（`DocxDoc.ref_raw_by_key` / `_numbered_refs`）、`slcn/footref.py`（`split_numbered_raw`）、`slcn/build.py`（`BuildResult.ref_raw_lines` / `ref_raw_by_key`）、`slcn/refmark.py`（`_norm_raw_line` / `_entry_block`） | 本文 §五 | 第 68 条 |
 | bib 归一化 / `userf` / `\bibitem` 转换 | `slcn/bibnorm.py`（`detect_userf()` / `normalize_bib()` / `_clean_field_value()` / `DROP_FIELDS`） | 本文 §四.1 | 第 20/32 条 |
 | **bib 整行注释不算条目**（第 133 条） | `slcn/bibnorm.py`（`strip_bib_comments()` / `split_entries()`） | 本文 §四.8 | 第 133 条 |
+| **参考文献附件的选择/校验/合并**（第 134 条） | `convert.py`（`real_bib_path()` / `bib_attachment_entries()` / `merge_bib_attachment()` / `bib_entry_structurally_safe()`）、`slcn/multisource.py`（`select_refs_attachment()` / `text_attachment_issue()` / `bib_attachment_issue()` / `looks_like_bibtex()`） | 本文 §四.9 | 第 134 条 |
 | **AI 结果并入 `reference.bib`**（2026-10-15） | `slcn/aibib.py`（`merge()` / 注释归位 / 字段顺序重排 / `render_merge_section()`；手动通道 = `merge_returned_bib()` / `apply_merge_to_file()` / `write_merge_record()`）+ `convert.py`（`apply_ai_merge()`，回滚副本 `reference.bib.ai前`）+ `checkbib.py --merge-into` | 本文 §五 | 第 64/65 条 |
 | **英文作者一律倒装**（2026-10-15） | `slcn/bibnorm.py`（`normalize_author_field()` / `author_is_inverted()`）+ `slcn/bibcheck.py`（`author_form_issues()` / `translation_marking_issues()` / `author_has_role_mark()`）+ `tests/test_authornorm.py` | 本文 §四.7 | 第 63/64 条 |
 | 字段完整性 + 类型统一 + 引用双向核对 | `slcn/bibcheck.py`（`REQUIRED` / `TYPE_ALIASES` / `check()` / `check_citations()`） | 本文 §四.2–4 | 第 21/22/25/26 条 |
@@ -506,9 +507,53 @@ pbpaste | python3 checkbib.py --returned-stdin --list-keys      # 例：20 条�
 报错、**整份 bib 报废**（2023(71)04 实测：115 处 undefined citation、参考文献区未生成、
 19 页 vs 人工 20 页）。
 
+**两套 parser 已统一（2026-10-18 补）**：`slcn/bibcheck.py: split_entries()`（供
+checkbib / bibreport / aibib / convert 的核实范围与内容指纹使用）**也**先过
+`strip_bib_comments()`，与 `bibnorm` 同一口径——从前的第二套实现会把 `% @misc{z16,`
+这类**非空键**注释条目算进去（checkbib 的条目总数/问题清单会凭空多一条）。
+不存在的循环 import：`bibnorm` 顶层只 import `re`，对 `bibcheck` 的引用是函数内懒加载。
+
 **边界**：只认整行注释；「字段值里整行以 `%` 开头」的极端写法会被当注释删掉（与 TeX
 的整行注释口径一致）。不影响 Word 通道（`reference.bib` 由 `refs_to_bib()` 直接渲染，
-`move_book_editions()` 的窄口径行为不变）。回归：`tests/test_bibnorm.py`。
+`move_book_editions()` 的窄口径行为不变）。回归：`tests/test_bibnorm.py`（①–⑤ 组）。
+
+
+### 9. 参考文献附件的选择 / 校验 / 合并（第 134 条，2026-10-18）
+
+**口径**（权威实现：`convert.py` 的 `real_bib_path()` / `bib_attachment_entries()` /
+`merge_bib_attachment()` / `bib_entry_structurally_safe()`，以及
+`slcn/multisource.py` 的 `looks_like_bibtex()` / `text_attachment_issue()` /
+`bib_attachment_issue()` / `select_refs_attachment()`）：
+
+1. **有「真 .bib」就不自动并附件**：`--bib` 显式指定 → LaTeX 源里 `\addbibresource` /
+   `\bibliography` 指向且**文件存在** → 同目录自动发现的 `.bib`（`find_bib()`）三者任一命中
+   时，⑦ **只记日志、不合并**自动挑到的附件（确实要合并请显式 `--refs`）。Word 通道不走
+   这条规则（它的 bib 由文档内容生成，旧行为不变）。
+2. **没有真 bib 时才挑附件**，优先级：真 BibTeX（`.bib` 扩展名或内容有**非空 key 的
+   `@entry`**）> 纯文本文献清单；同类再按文件名含 bib/reference/参考文献、扫描置信度、
+   长度排序。每个候选都要过结构校验，**不合格的跳过并写明原因**。
+3. **文本附件结构校验**（保守、只按整行判）：拒绝含 `\href{...}`、相邻花括号 `}{`、
+   疑似「一行两条文献」（同一行 ≥2 个 `[J]/[M]/…` 类型标记且 ≥2 个年份，或 ≥2 个年份且
+   该行 ≥500 字符）。
+4. **合并**：BibTeX 附件按条目**原文直入**（键 + 「作者+年份+题名」内容指纹去重，不改写
+   作者字段）；文本清单沿用 `footref` 解析，但逐条做「渲染后结构校验」，坏条目（嵌套
+   花括号等）**不写**进产物。
+
+**为什么**：71/04 的正文目录里放着 text2bib 的中间产物 `预处理/用于上传text2bib.txt`
+（两条文献挤一行、含 `\href{a}{b}`），⑦ 从前「扫到就并」→ 产物 `title = {...}{...}` 嵌套
+花括号 → biber 行级语法错、**整份 bib 报废**（115 处 undefined citation、19 页 vs 人工
+20 页）；而该稿正文目录本来就有 `reference.bib`（源里也写了 `\addbibresource`），附件合并
+纯属帮倒忙。
+
+**边界 / 已知取舍**：① 只做**整行**判据，不做行内聪明截断；② 文本清单「一行两条」是
+启发式（极长的正常单条也可能命中 500 字符规则而整份被跳过——保守优先，日志会写明原因，
+可用 `--refs` 手工指定并人工整理）；③ Word 通道对 BibTeX 附件**保持旧行为**（不消费），
+避免产物变化；④ 没有真 bib 且所有候选都不合格时**不合并**（宁可少条目，不让 biber 报废），
+日志给「跳过 + 原因」。
+
+**回归**：`tests/test_refs_attach.py`（①–④ 组：结构校验 / 选择优先级 / 真 bib 判定与合并
+辅助 / convert 端到端）；真实稿 2023(71)04 用 convert 默认路径编译通过（biber 0 错、
+undefined citation 0、参考文献区生成、20 页 = 人工 20 页）。
 
 
 ---

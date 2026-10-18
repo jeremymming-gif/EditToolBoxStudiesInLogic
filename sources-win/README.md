@@ -5,7 +5,8 @@
 
 ```text
 sources-win/            ← 本目录：Tkinter 界面（取值 → 拼参数 → 显示日志）
-├── main.py              界面：分组侧边栏（两组的 9 页）+ 底部实时日志
+├── main.py              界面：分组侧边栏（三组 + 设置）+ 底部实时日志
+├── bibdb_ui.py          第 132 条：引用库 5 页（库概况/查库/入藏/待裁决/设置）
 ├── theme.py             clam 主题 + 色板 + 字阶/间距（两平台同一套观感的前提）
 ├── engine.py            **与引擎之间的唯一桥梁**（不含 tkinter，所以能离开窗口测试）
 ├── settings.py          本地配置（%APPDATA%\EditToolBox\settings.json；POSIX 上 0600，Windows 靠该目录的 ACL）
@@ -30,24 +31,31 @@ python main.py
 
 **用户机器**（发布形态，不需要装 Python）：见下面「打包」。
 
-## 九个页面（与 mac 版功能对等）
+## 十五个页面（与 mac 版功能对等）
 
 界面用**分组侧边栏**（2026-10-17 起；UI 方案候选 B）：一层是组、二层是页 ——
 「单篇稿件」= 初排转换 / 文献回读校验 / 合并文件 / 一校核查；
-「整期装配」= 检查tex信息 / 生成目录 / 编译全部 / 删除临时文件；「设置」单独在底部。
-（从前是 9 个平级标签：WinUI 的判据是「左侧导航适合 5–10 个同等重要分类」，而这 9 个
-其实是三层，平级呈现会让人找不到"一次转换"该从哪进去。）
+「整期装配」= 检查tex信息 / 生成目录 / 编译全部 / 删除临时文件 / 本期出刊；
+「引用库」= 库概况 / 查库 / 入藏 / 待裁决 / 引用库设置（第 132 条）；
+「设置」单独在底部。
+（从前是 9 个平级标签：WinUI 的判据是「左侧导航适合 5–10 个同等重要分类」，而它们
+其实分层，平级呈现会让人找不到"一次转换"该从哪进去。）
 
 | 标签页 | 调哪个引擎入口 | 说明 |
 |---|---|---|
 | 初排转换 | `convert.py --source … --out …` | 作者稿件（.docx/.doc/.tex）→ 符合本刊规范的初排稿；可同时出《文献核实任务书》 |
-| 文献回读校验 | `checkbib.py --returned …` | 编辑改完交回的 .bib 体检；可**并回**产物 `reference.bib`（并入前自动备份 `.ai前`） |
+| 文献回读校验 | `checkbib.py --returned …` | 编辑改完交回的 .bib 体检；可**并回**产物 `reference.bib`（并入前自动备份 `.ai前`）；产物 bib 可一键「入藏到引用库」 |
 | 合并文件 | `mergepdf.py --folder …` | 把一期的扉页/目录/各篇/封底合并成一个 PDF 并重建书签（编委页、封底、嵌套书签都是开关） |
 | **一校核查** | `proofcheck.py --tex …` | 一校之后按《排校手册》《流程化经验书》逐条核查（26 条规则）；默认只报不改，可另存改后稿 |
 | **检查tex信息** | `infocheck.py --folder …` | 汇总各篇卷期年/页码/题目/作者/字号/行距并与 PDF 实际页数对比；界面用 `--preview` 填表格（不落文件） |
 | **生成目录** | `toc.py --report …` | 从中英文检查报告生成两份目录 .tex（模板继承上一期成品）；「读取篇目」用 `--preview`，勾选写入 `目录设置.json` |
 | **编译全部** | `compileall.py --folder …` | 对每个 `NN 作者/` 跑 xelatex → biber → xelatex ×2；跳过 `000 目录`，某篇失败只停那一篇 |
 | **删除临时文件** | `cleantemp.py --folder …` | 递归删编译中间文件（不删 `.tex/.pdf/.log`）；默认先预演 |
+| **库概况** | `bibdb.py stats/lint --json` | 引用库条数/期数/最近更新/冲突数/lint 结果；只读，可打开库文件夹 |
+| **查库** | `bibdb.py query --key/--doi/--title --bibtex --json` | 按 key（含别名）/DOI/题名模糊查，选中复制 BibTeX；只读 |
+| **入藏** | `bibdb.py import-bib/import-dir --dry-run --json` | 先 dry-run 预览（**不写库**）再确认导入（`--verified`）；来源期/篇从路径推断、可改 |
+| **待裁决** | `bibdb.py report --out … --json` | 只读展示并重新生成 `CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv`（不改库本体） |
+| **引用库设置** | —（写 settings.json，由初排转换拼参数） | 核实上限 `--verify-max`、先算账 `--verify-plan`、全量 `--verify-all-refs`、先查库开关（关 = `--no-bibdb`）、笔记仓路径；**默认一个参数都不加** |
 | 设置 | — | 引擎状态、API 地址/Key/模型、检索工具；密钥只落本机并打码显示 |
 
 参数与退出码的权威说明在 [`Engine/docs/ENGINE_API.md`](../Engine/docs/ENGINE_API.md)。
@@ -57,11 +65,12 @@ python main.py
 两块分开冻：**引擎冻成一个 exe**，界面冻成另一个。用户机器上零 Python 依赖。
 
 **不要手打 PyInstaller 命令** —— 用 `build-win.ps1`（唯一一份逻辑：`--hidden-import` 逐入口、
-模板一起打包，末尾还会**逐入口 + 一次最小转换**自检）：
+模板一起打包，末尾还会**逐入口 + 一次最小转换**自检；第 132 条起入口表含
+`bibdb.py`，漏了它引用库 5 页在用户机器上全是「不认识的入口」）：
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File build-win.ps1
-# → build\dist\SLCNEngine.exe（引擎，八个入口冻成一个）
+# → build\dist\SLCNEngine.exe（引擎，十个入口冻成一个）
 # → build\dist\编辑部工具箱.exe（界面；它会在自己旁边找 SLCNEngine.exe）
 ```
 
@@ -85,10 +94,11 @@ pwsh -ExecutionPolicy Bypass -File build-win.ps1
 |---|---|
 | 功能实现在界面进程里直接跑（`merge.py` / `outinfo.py` / `c_bibtex.py` …） | 一律**起子进程调引擎 CLI**（`engine.py`），界面不复制任何逻辑 |
 | 日志靠 `out_txt.insert(...)` 就地打印 | 逐行读子进程 stdout（`PYTHONUNBUFFERED=1`），**实时**显示，可「停止」 |
-| 7 个标签页各自一套实现 | **9 个标签页**，每页都起子进程调同一个引擎入口（界面里不放文档逻辑） |
+| 7 个标签页各自一套实现 | **十五个页面**，每页都起子进程调同一个引擎入口（界面里不放文档逻辑） |
 
 **功能已对齐**：mac 版的每一项，本壳都有一页，且都起子进程调同一个引擎入口
-（2026-10-15/16 分三批搬完：合并文件、删除临时文件、编译全部、一校核查、检查tex信息、生成目录）。
+（2026-10-15/16 分三批搬完：合并文件、删除临时文件、编译全部、一校核查、检查tex信息、
+生成目录；第 132 条补齐引用库 5 页）。
 **没有任何一页在 Windows 侧另写逻辑** —— 这是"两个平台算出来的结果一致"的唯一保证。
 
 ## 测试
@@ -104,7 +114,7 @@ python tests\test_bridge.py
 没有 POSIX 权限位，靠 `%APPDATA%` 的用户 ACL —— 见 `settings.py` 抬头**）、
 真跑一次合并（收到实时日志与契约行）、
 以及**真开一次窗口**（控件参数写错只有那一步抓得到；没有显示器时自动 SKIP）。
-（本机 mac 上 57 项断言；Windows 上还会多跑 `(d)` 的配置目录分支。）
+（本机 mac 上 100+ 项断言，含引用库 CLI 的临时库冒烟；Windows 上还会多跑 `(d)` 的配置目录分支。）
 
 ## 归属声明（MIT）
 

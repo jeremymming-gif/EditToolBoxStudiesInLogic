@@ -39,7 +39,8 @@ from __future__ import annotations
 import re
 
 # 第 84 条：SEP 词条的判据与常量只有一份（在 bibnorm 里，规范化也用同一份）
-from .bibnorm import is_sep_entry  # noqa: E402
+# 第 133 条：整行 `%` 注释的口径也只有一份（`strip_bib_comments`；2 个 split_entries 共用）
+from .bibnorm import is_sep_entry, strip_bib_comments  # noqa: E402
 from dataclasses import dataclass, field
 
 # ── 各类型的必备字段 ──────────────────────────────────────────────────────
@@ -110,7 +111,14 @@ _ENT = re.compile(r"@(\w+)\s*\{\s*([^,]+),")
 
 
 def split_entries(bib: str) -> list[tuple[str, str, str]]:
-    """切成 [(类型, 键, 字段体), ...]，花括号配平感知。"""
+    r"""切成 [(类型, 键, 字段体), ...]，花括号配平感知。
+
+    第 133 条（2026-10-18）：**整行 `%` 注释先剥掉**再拆（复用 `bibnorm.strip_bib_comments`，
+    与 `bibnorm.split_entries()` 同一口径）——`% @misc{z16,` 这类注释掉的旧条目不再被算成
+    条目；从前 checkbib / 核实范围 / 内容指纹 都会把不存在的条目当真。行内/字段值内的 `%`
+    （`note={50\%}`）不受影响。
+    """
+    bib = strip_bib_comments(bib)
     out = []
     for m in _ENT.finditer(bib):
         i = m.end()

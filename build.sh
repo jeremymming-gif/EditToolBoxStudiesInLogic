@@ -79,9 +79,10 @@ if [ -f "$CONVERT_SRC/convert.py" ]; then
   # ⚠️ 白名单必须覆盖**所有交付 CLI**：2026-10-17 加了 `publish.py`（本期出刊向导）但这里漏了，
   #    包里的 app 报「未找到出刊编排引擎 Engine/publish.py」——实例测试当场抓到。
   #    加新入口时，`Engine/tests/test_platform.py` 的 ENTRY_FILES 与这里**两处都要改**。
-  # 第 132 条：`bibdb.py` 是 mac 界面「引用库」5 页（库概况/查库/入藏/待裁决/设置）的数据源，
-  # 漏了它 = 包里这 5 页全部报「未找到 Engine/bibdb.py」。它**不是** Windows 交付入口
-  # （不进 `engine_main.ENTRIES`），所以只加在这个 mac 白名单里，不进 ENTRY_FILES。
+  # 第 132 条：`bibdb.py` 是两个平台界面「引用库」5 页（库概况/查库/入藏/待裁决/设置）
+  # 的数据源，漏了它 = mac 包里这 5 页全部报「未找到 Engine/bibdb.py」。
+  # Windows 包同样交付它（`engine_main.ENTRIES` / `sources-win/engine.py` 四处入口表）。
+  # 它也是**交付入口**：`test_platform.py` 的 ENTRY_FILES 与这里两处都要改。
   for _extra in cleantemp.py compileall.py proofcheck.py infocheck.py toc.py publish.py engine_main.py bibdb.py; do
     [ -f "$CONVERT_SRC/$_extra" ] && cp "$CONVERT_SRC/$_extra" "$DEST/"
   done

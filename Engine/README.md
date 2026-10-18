@@ -2,7 +2,7 @@
 
 把作者提交的 **LaTeX 源文件**或 **Word 文稿**，转换为符合《逻辑学研究》标准的**可编译初排稿**
 （`.tex` + `.bib` + `.pdf`）。引擎是 Python（`convert.py` + `slcn/`），界面是 SwiftUI
-（`sources-mac/`，9 个标签页），构建时引擎被打包进 App 的 `Resources/Engine/`。
+（`sources-mac/`，15 个页面/四组侧边栏），构建时引擎被打包进 App 的 `Resources/Engine/`。
 它**只服务「初排」这一个环节**：一校~四校、目录序号前缀（三校/蓝样后才由人工加）、蓝样都不归它管。
 
 **本文件只是入口**：这是什么 → 红线 → 怎么跑 → 该读哪份文档 → 当前状态 → 验收链条 → 维护规则。
@@ -29,7 +29,7 @@ Bo_Chen/
 ```
 
 **仓库地图（目录级）**：`Engine/` 引擎（Python，唯一一份逻辑）｜`sources-mac/` 界面
-（SwiftUI，9 个标签页）｜`Engine/docs/` 文档｜`<期号>目录/` 真实稿件（**只读**）｜
+（SwiftUI，15 个页面）｜`Engine/docs/` 文档｜`<期号>目录/` 真实稿件（**只读**）｜
 `编辑笔记/` 模板与《排校手册》（规范的权威文本）。
 
 ---
@@ -83,7 +83,7 @@ python3 -m pip install --target vendor -r requirements.txt
 **源文件必须显式给（`--source` 必填）**，工具不做自动发现；`run_poc.py` / `corpus.py` 的自动发现
 **只给回归用**。完整参数表、依赖、GUI 各页在干什么、报错对照，见
 [`docs/GUIDE.md`](docs/GUIDE.md) 与 **[`使用说明.md`](../使用说明.md)**（后者是面向编辑的操作手册）。
-GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标签页按编辑流程排（初排转换 → 文献回读校验 → …）。
+GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页面按编辑流程分组排（单篇稿件 → 整期装配 → 引用库 → 设置）。
 
 ---
 
@@ -118,21 +118,21 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**49 套件 / 2140 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**50 套件 / 2175 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
 `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibdb` 147
-`test_bibdb_verify` 54 ｜ `test_bibnorm` 18 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 118
+`test_bibdb_verify` 54 ｜ `test_bibnorm` 23 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 118
 `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 34
 `test_coauthor_en` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_en_abstract_sibling` 5 ｜ `test_en_slot_placeholder` 9
 `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 36
 `test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_preamble` 106 ｜ `test_llm_error` 10
 `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62
 `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51
-`test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 39
-`test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_search_refs` 54
-`test_selfcheck` 17 ｜ `test_sep_style` 25 ｜ `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
-`test_verify_scope` 75
+`test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 40
+`test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_attach` 29
+`test_search_refs` 54 ｜ `test_selfcheck` 17 ｜ `test_sep_style` 25 ｜ `test_tail_block` 45
+`test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
 
 **普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
 
@@ -157,7 +157,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 12:45:12`；`HEAD` = `443f4c1`；`git status --porcelain` **28** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 14:21:33`；`HEAD` = `f425991`；`git status --porcelain` **23** 行
 <!-- AUTO:STATE:END -->
 
 ---
