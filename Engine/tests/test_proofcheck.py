@@ -63,12 +63,13 @@ check("(a) ZH-08 中文旁的半角短杠 → 报（标为噪声大）",
       len(hits_of("具-体。\n", "ZH-08")) == 1
       and next(r for r in P.RULES if r.id == "ZH-08").noisy)
 
-# ZH-08 窄子集（2026-10-18 rules-docs Phase1）：只把「汉字-汉字」当可自动改。
-# 依据：期 87 人工成品 CJK-CJK 76/76 改 `\cndash `；latin/math/digit/可选参数类
+# ZH-08 窄子集（2026-10-18 rules-docs Phase1；第四十二批按手册口径改为 `\edash`）：
+# 只把「汉字-汉字」当可自动改，替换成**短横** `\edash`（手册：人名/编号用短横；
+# 双短横 `\cndash` **只用于页码范围**，见 ZH-09）。latin/math/digit/可选参数类
 # 人工一律保留 ASCII 短杠（Phase0 报告 /tmp/audit_lead/rules-docs-phase0.md）。
 zh08_narrow = [h for h in hits_of("马丁-洛夫类型论\n", "ZH-08") if h.fixable]
-check("(a) ZH-08 窄子集：`马丁-洛夫`（CJK-CJK）→ 可自动改，替换 `丁\\cndash `",
-      len(zh08_narrow) == 1 and zh08_narrow[0].replacement == "丁\\cndash ")
+check("(a) ZH-08 窄子集：`马丁-洛夫`（CJK-CJK）→ 可自动改，替换 `丁\\edash `（手册口径）",
+      len(zh08_narrow) == 1 and zh08_narrow[0].replacement == "丁\\edash ")
 for _tex, _why in (
         ("would-反事实条件句\n", "latin-CJK"),
         ("$\\phi$-世界\n", "math-CJK"),
@@ -81,6 +82,10 @@ check("(a) ZH-08 反例：`第8-12页` 归 ZH-09（页码规则），ZH-08 不�
       not hits_of("第8-12页。\n", "ZH-08"))
 check("(a) ZH-08 窄子集只在 --fix 面；初排白名单 INITIAL_LAYOUT_FIXABLE **不含** ZH-08",
       "ZH-08" not in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ("ZH-08",))
+check("(a) 同一份稿里两种连接号不混：中文复合词 → `\\edash `，页码范围 → `\\cndash `（手册口径）",
+      P.apply_fixes("马丁-洛夫类型论见第8-12页。\n",
+                    P.check("马丁-洛夫类型论见第8-12页。\n", lang="zh"))[0]
+      == "马丁\\edash 洛夫类型论见第8\\cndash 12页。\n")
 
 check("(a) ZH-09 第8-12页 → 报，建议用 \\cndash",
       [h.replacement for h in hits_of("第8-12页。\n", "ZH-09")] == ["第8\\cndash 12页"])
@@ -203,14 +208,15 @@ check("(c) 输入文本没有被就地改动（apply_fixes 返回新字符串）
       tex.startswith("令 $P$ 命题变元的无穷集合, 公式集"))
 
 # ZH-08 窄子集（--fix 口径） vs 初排接线（白名单口径）——2026-10-18 rules-docs Phase1
+# 第四十二批：替换目标按手册口径改为短横 `\edash `（`\cndash` 只给页码范围）
 mix = "马丁-洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
 mix_rep = P.check(mix, lang="zh")
 mix_out, mix_applied = P.apply_fixes(mix, mix_rep)
-check("(c) ZH-08 窄子集在 --fix 里自动改：只有 CJK-CJK 那一处变成 `\\cndash `",
-      mix_out == "马丁\\cndash 洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
+check("(c) ZH-08 窄子集在 --fix 里自动改：只有 CJK-CJK 那一处变成 `\\edash `",
+      mix_out == "马丁\\edash 洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
       and [h.rule_id for h in mix_applied] == ["ZH-08"], mix_out.strip())
 w_out, w_applied = P.apply_fixes(mix, mix_rep, rule_ids=P.INITIAL_LAYOUT_FIXABLE)
-check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 **一处都不改**（口径未拍板，默认初排不启用）",
+check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 **一处都不改**（默认初排不启用，Lead 决定）",
       w_out == mix and not w_applied, f"applied={[h.rule_id for h in w_applied]}")
 check("(c) 初排白名单仍报其他 fixable 规则（ZH-01/06/09/14 都在名单里）",
       set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-14"}

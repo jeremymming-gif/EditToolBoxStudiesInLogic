@@ -54,6 +54,12 @@ def _tex_stats(path: str) -> dict:
     my_macros = {k: v for k, v in macros.items() if k.startswith("my")}
     has_docclass = "\\documentclass" in text
     has_begin_doc = "\\begin{document}" in text
+    # 宏定义数（**不含 \usepackage**：只有宏包行的是「主文件」而不是「前言源」）。
+    # 期 90/03 的 `yalcin puzzle.tex:224` 定义了 \val，同处还有 \e/\A/\pair/\set；
+    # 「有 \documentclass + 作者宏定义」才是正文片段的前言源（见 discover_latex_sources）。
+    n_defs = len(re.findall(
+        r"\\(?:newcommand|renewcommand|providecommand|DeclareMathOperator|"
+        r"newenvironment|renewenvironment|def)\b", text))
     # 正文体量：去掉前导区后的字符数
     body_start = text.find("\\begin{document}")
     body = text[body_start:] if body_start >= 0 else text
@@ -66,6 +72,7 @@ def _tex_stats(path: str) -> dict:
         "my_names": set(my_macros),
         "has_docclass": has_docclass,
         "has_begin_doc": has_begin_doc,
+        "n_defs": n_defs,
         "body_chars": len(body),
         "n_paras": len(paras),
         "n_cite": len(__import__("re").findall(r"\\[a-zA-Z]*cite", text)),
@@ -234,6 +241,150 @@ def identify(article_dir: str, verbose: bool = False) -> SourceSet:
                 mark += " ←正文源"
             print(f"    {P.rel(c.path, article_dir):50s} [{c.role}] {c.reason}{mark}")
     return ss
+
+
+# ── LaTeX 多文件源发现（第四十二批 A2）────────────────────────────────────
+#
+# 背景（期 90/03 Liang_Zhang）：作者目录里两个 .tex 角色完全不同——
+#   main.tex            纯正文片段：无 \documentclass、无宏定义（50 段正文）
+#   yalcin puzzle.tex   上一轮按旧模板排的完整稿：\documentclass + 41 个 SCLN 模板宏 +
+#                       作者自定义宏（\val/\e/\A/\pair/\set，`yalcin puzzle.tex:224`）
+# `convert.py` 的设计是**不做自动发现**（`--source/--metadata` 显式给出，见
+# `require_source()` 的说明）；`sources.identify()` 是给回归器/取数工具做的角色识别，
+# 它只认「>=5 个 \my* 宏 = 元数据稿」这一条，对「有 \documentclass、只有作者宏的前言
+# 文件」没有专门判据。本函数把「正文 + 前言」的组合判据收在一处，供需要自动发现能力
+# 的调用方（批量测试驱动 / 界面 / 将来的 convert 自动配源）复用。
+#
+# ⚠️ **不改变 `identify()` 的既有输出**：corpus 的 21 篇 LaTeX 产物因此逐字节不变；
+#    本函数只在被显式调用时生效，且「判不准」时保持旧行为并给 warning（不许静默改）。
+
+@dataclass
+class LatexSourcePlan:
+    """一次「LaTeX 正文 + 前言/元数据源」的发现结果（可解释、可打印）。"""
+    body: SourceFile | None = None
+    metadata: SourceFile | None = None
+    note: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+def _tex_files(root: str) -> list[tuple[str, dict]]:
+    """扫描 root（有 `original/` 就只看它，与 identify 同口径）里的 .tex → [(path, stats)]。"""
+    original = os.path.join(root, "original")
+    roots = [original] if os.path.isdir(original) else [root]
+    seen: set[str] = set()
+    out: list[tuple[str, dict]] = []
+    for r in roots:
+        for dp, dns, fs in os.walk(r):
+            dns[:] = [d for d in dns if d not in _JUNK_DIRS]
+            for f in fs:
+                p = os.path.join(dp, f)
+                if is_junk(p) or os.path.splitext(f)[1].lower() not in TEX_EXT:
+                    continue
+                ap = os.path.abspath(p)
+                if ap in seen:
+                    continue
+                seen.add(ap)
+                st = _tex_stats(p)
+                if st:
+                    out.append((p, st))
+    return sorted(out, key=lambda t: t[0])
+
+
+def discover_latex_sources(source: str) -> LatexSourcePlan:
+    """给一个 `.tex`（或目录）发现「正文源 + 前言/元数据源」。
+
+    判据（最小、可解释）：
+      ① **正文源**：调用方显式给的 `.tex` 永远优先（`--source` 的语义，不替换）；
+         目录输入时沿用 `identify()` 的正文源；
+      ② **前言/元数据源**：优先沿用 `identify()` 已有结论（含 >=5 个 SCLN 模板宏的
+         旧模板稿，如 90-03 的 `yalcin puzzle.tex`）；
+      ③ 否则找「含 `\\documentclass` 且有宏定义（`\\newcommand/\\def/\\newenvironment/
+         \\DeclareMathOperator`）」的**另一个** .tex 当前言源；恰好 1 个才自动用；
+      ④ 多个前言候选 / 既无模板宏也无 `\\documentclass` 前言文件 / 纯片段 → **不猜**，
+         保持旧行为（`metadata=None`）并写 `warnings`（调用方必须打印出来）。
+
+    返回 `LatexSourcePlan`（`body`/`metadata`/`note`/`warnings`）。
+    """
+    plan = LatexSourcePlan()
+    src = os.path.abspath(source)
+    if os.path.isdir(src):
+        root, explicit = src, None
+    else:
+        root, explicit = os.path.dirname(src), src
+
+    ident = identify(root, verbose=False)
+    tex = _tex_files(root)
+
+    # ① 正文源
+    if explicit:
+        st = _tex_stats(explicit) if os.path.isfile(explicit) else {}
+        complete = bool(st.get("has_docclass") and st.get("has_begin_doc"))
+        plan.body = SourceFile(
+            explicit, "metadata" if complete else "body",
+            "调用方显式指定的完整稿（正文+前言同源）" if complete else "调用方显式指定的正文片段",
+        )
+    elif ident.body is not None:
+        plan.body = ident.body
+        plan.body.role = "body"
+
+    # ② 前言/元数据源：先沿用 identify 的结论（90-03 属这类）
+    ident_meta = ident.metadata
+    if ident_meta is not None and (
+            explicit is None or os.path.abspath(ident_meta.path) != explicit):
+        plan.metadata = ident_meta
+        plan.note = (f"正文源 {os.path.basename(plan.body.path) if plan.body else '（未定）'}；"
+                     f"前言/元数据源 {os.path.basename(ident_meta.path)}"
+                     f"（identify：{ident_meta.reason}）")
+        return plan
+
+    # ③ 显式给的是完整稿 → 正文与前言同源
+    if plan.body is not None and plan.body.role == "metadata":
+        plan.metadata = plan.body
+        plan.note = "单文件完整稿：正文与前言同源（无需 --metadata）"
+        return plan
+
+    # ④ 找「有 \documentclass + 宏定义」的前言候选
+    #    再加一条「前言体量」闸门：候选的正文体量必须明显小于本稿正文（否则它是
+    #    **另一份完整旧版稿**，不是前言——绝不能拿它当元数据源，90-03 的 yalcin 稿
+    #    正文只有标题页 2587 字符 / 本稿正文 27266 字符，命中；另一份完整稿不命中）。
+    _max_body = max((st.get("body_chars", 0) for _p, st in tex), default=0)
+    _pre_max = max(3000, int(_max_body * 0.4))
+    preambles = [
+        (p, st) for p, st in tex
+        if (explicit is None or os.path.abspath(p) != explicit)
+        and st.get("has_docclass") and (st.get("n_defs", 0) >= 1 or st.get("n_my", 0) >= 1)
+        and st.get("body_chars", 0) <= _pre_max
+    ]
+    if len(preambles) == 1:
+        p, st = preambles[0]
+        plan.metadata = SourceFile(
+            p, "metadata",
+            f"含 \\documentclass 与 {st.get('n_defs', 0)} 处宏定义的前言源", st.get("n_defs", 0),
+        )
+        plan.note = (f"正文片段 {os.path.basename(plan.body.path) if plan.body else '（未定）'} "
+                     "无 \\documentclass；"
+                     f"前言源 {os.path.basename(p)}（{st.get('n_defs', 0)} 处宏定义）")
+    elif len(preambles) > 1:
+        plan.warnings.append(
+            "发现多个前言候选（含 \\documentclass + 宏定义），不猜，保持旧行为："
+            + "、".join(os.path.basename(p) for p, _ in preambles)
+            + "；请用 --metadata 指定"
+        )
+    elif plan.body is not None:
+        plan.warnings.append(
+            "正文源没有 \\documentclass，同目录也没有含宏定义的前言文件："
+            "保持旧行为（无元数据源），请确认或 --metadata 指定"
+        )
+    if plan.body is None:
+        plan.warnings.append(
+            "没有可判定的正文源（候选 .tex 都含 \\documentclass，或都没有正文结构信号）："
+            "请用 --source 显式指定正文文件"
+        )
+    if plan.note == "":
+        plan.note = ("正文与前言同源（单文件）"
+                     if plan.body is not None and plan.body.role == "body"
+                     else "未发现可用正文源")
+    return plan
 
 
 # 文件名里出现这些词，基本可断定不是正文

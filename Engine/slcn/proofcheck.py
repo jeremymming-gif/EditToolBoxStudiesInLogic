@@ -270,8 +270,9 @@ def _zh08_narrow(m: re.Match, tex: str) -> bool:
     r"""ZH-08 的**窄子集**判据：短杠左右紧邻都是汉字，且不在命令可选参数里。
 
     为什么只做这一窄类（2026-10-18 rules-docs Phase0 实测）：期 87 人工成品里
-    `马丁-洛夫` / `斯托奈克-刘易斯` / `语用-辩证` 一类 CJK-CJK 复合词 76/76 改成
-    `\cndash `；而同一条规则命中的 latin-CJK（`would-反事实`）、math-CJK
+    `马丁-洛夫` / `斯托奈克-刘易斯` / `语用-辩证` 一类 CJK-CJK 复合词 76/76 改成了连接号
+    （旧口径 `\cndash `；按手册应为 `\edash `，见 `_zh08_connector_replace`）；
+    而同一条规则命中的 latin-CJK（`would-反事实`）、math-CJK
     （`$\phi$-世界`/`$\infty$-群胚`）、digit-CJK（`2-群胚`）、CJK-digit（`\item[模仿-1：]`）
     人工成品**一律保留 ASCII 短杠**（24/24、16/16、3/3、2/2）——自动改这些就是制造新错。
     """
@@ -285,13 +286,20 @@ def _zh08_narrow(m: re.Match, tex: str) -> bool:
 
 
 def _zh08_connector_replace(m: re.Match) -> str:
-    r"""窄子集替换：`汉字-汉字` → `汉字\cndash 汉字`（`\cndash` 后**保留一个空格**）。
+    r"""窄子集替换：`汉字-汉字` → `汉字\edash 汉字`（**短横 `\edash`**，手册口径）。
 
-    人工成品一律 `马丁\cndash 洛夫`（`\cndash ` 带空格；全库 410 处 CJK-CJK 都这样），
-    所以替换串不能紧贴汉字、也不能用 `{}`。本函数只在 `_zh08_narrow` 为真时被调用，
-    此时 `group(1)`（命中「汉字-」方向）必非空。
+    依据（用户 2026-10-18 拍板「按手册规范」，手册原文
+    `编辑笔记/排版手册/排版手册源码/edit_handbook.tex` 第 317-321 行）：
+    - **短横 `\edash`**：人名与编号（`表2\edash 9`、`2022\edash 10\edash 08`、`3-a`、
+      `A\edash 级别`、`让\edash 雅克·卢梭`）；
+    - **双短横 `\cndash`**：**只用于页码范围**（`第8\cndash 12页`；见 ZH-09 / `zh-pagerange-*`）；
+    - **一字线 `—`**：半个破折号（`北京—上海`）。
+    所以 ZH-08 的中文复合词/人名用 `\edash`，**不是** `\cndash`（期 87 人工成品的
+    `马丁\cndash 洛夫` 属旧口径，已按拍板改正）。`\edash` 后保留一个空格：LaTeX 控制词后
+    的空格被吞掉、视觉与手册源码 `让\edash 雅克·卢梭` 一致；不写成 `{}` 以免多出空组。
+    本函数只在 `_zh08_narrow` 为真时被调用，此时 `group(1)`（命中「汉字-」方向）必非空。
     """
-    return (m.group(1) or "") + "\\cndash "
+    return (m.group(1) or "") + "\\edash "
 
 
 def _zh19_abbrev_token(tex: str, start: int, end: int) -> str:
@@ -361,8 +369,8 @@ RULES: list[Rule] = [
          "确认是英文括注（保留）还是漏改的中文括号（改全角）", langs=("zh",), noisy=True),
     Rule("ZH-08", "中文旁的半角短杠", "经验书 预校正·中文（检索英文短杠）＋手册·连字符",
          rf"(?:([{CJK}])[ \t]{{0,3}}-|-[ \t]{{0,3}}([{CJK}]))",
-         "判断是「短横」（\\edash）、「双短横」（\\cndash）还是一字线「—」；"
-         "汉字-汉字 这类中文复合词/人名可由 --fix 自动改 \\cndash（默认初排不启用）",
+         "判断是「短横」（\\edash：人名/编号/日期）、「双短横」（\\cndash：**只有页码范围**）"
+         "还是一字线「—」；汉字-汉字 这类中文复合词/人名可由 --fix 自动改 \\edash（默认初排不启用）",
          langs=("zh",), noisy=True, fixable=True,
          fixable_when=_zh08_narrow, replace=_zh08_connector_replace),
     Rule("ZH-09", "「第N-N页」缺双短横命令", "经验书 预校正·中文（检索 第\\d*-\\d*页）＋手册·连字符",
@@ -433,8 +441,10 @@ RULES: list[Rule] = [
 ]
 
 #: **初排转换可以默认自动套用的 fixable 白名单**（engine-core 在 `slcn/build.py` 接线时用）。
-#: ⚠️ 故意**不含 ZH-08**：连接号口径（手册说人名用短横 `-`、期 87 人工成品人名用 `\cndash`）
-#: 尚未由编辑部拍板，默认初排不得改产物 —— ZH-08 的窄子集只在人工点「一校核查 --fix」时生效。
+#: ⚠️ 故意**不含 ZH-08**：连接号口径已按手册拍板（人名/编号用短横 `\edash`，双短横
+#: `\cndash` **只给页码范围**；用户 2026-10-18 决定），但默认初排是否启用仍待本批回归 +
+#: 顾问意见（Lead 决定）—— 在拍板前默认初排不得改产物，ZH-08 的窄子集只在人工点
+#: 「一校核查 --fix」时生效。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06",
     "ZH-09", "ZH-14", "EN-01", "EN-02", "EN-03",

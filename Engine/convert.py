@@ -202,9 +202,16 @@ def _bib_fingerprints(bib_text: str) -> set[tuple[str, str, str]]:
 
 
 def require_source(path: str) -> str:
-    """强制校验源文件。这是「不替用户默认填充」的第一道关口。"""
+    r"""强制校验源文件。这是「不替用户默认填充」的第一道关口。
+
+    口径（第四十二批 A2 起）：本工具**不做源文件挑选**（`--source` 必须显式给出，
+    绝不按文件名/大小猜哪份是正文）；但 **LaTeX 前言源可以自动配**——正文片段
+    （无 `\documentclass`）且同目录恰有 1 个可信前言文件时，自动当 `--metadata` 用，
+    判不准就 warning + 保持旧行为（见 `slcn.sources.discover_latex_sources`）。
+    """
     if not path:
-        die("必须用 --source 显式指定源文件（.docx 或 .tex）。本工具不做自动发现。")
+        die("必须用 --source 显式指定源文件（.docx 或 .tex）。"
+            "本工具不做源文件挑选（LaTeX 前言源可自动配，见 --metadata 说明）。")
     p = os.path.abspath(path)
     if not os.path.exists(p):
         die(f"源文件不存在：{p}")
@@ -1290,6 +1297,17 @@ def main() -> int:
     metadata = os.path.abspath(args.metadata) if args.metadata else None
     if metadata and not os.path.exists(metadata):
         die(f"--metadata 指定的文件不存在：{metadata}")
+    # 第四十二批 A2：LaTeX 多文件稿自动配「前言源」（正文片段 + 含 \documentclass/宏定义的
+    # 前言文件，如期 90/03 的 main.tex + yalcin puzzle.tex）。判据与可解释说明见
+    # `slcn.sources.discover_latex_sources()`；显式 --metadata 永远优先；判不准只 warning、保持旧行为。
+    if not metadata and os.path.splitext(source)[1].lower() == ".tex":
+        _plan = _sources.discover_latex_sources(source)
+        for _w in _plan.warnings:
+            print(f"  ⚠ {_w}")
+        if _plan.metadata is not None and os.path.abspath(_plan.metadata.path) != source:
+            metadata = os.path.abspath(_plan.metadata.path)
+            print(f"前言源    {metadata}")
+            print(f"          （自动发现：{_plan.note}）")
 
     # 第 76 条：Word 通道的英文元数据第二源（仅同目录；LaTeX 通道不用这个）。
     # 在**转换之前**就定下来，好让下面「源文件 / 第二源」两行日志把来源交代清楚。

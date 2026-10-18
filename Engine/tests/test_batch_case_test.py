@@ -9,7 +9,9 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
 ④ 零付费安全网（`sanitize_env` 清付费变量、`assert_zero_cost_args` 黑名单）；
 ⑤ 内置 manifest（期 90 十篇在前 → 期 87 子案例 1–9 在后、编号↔作者映射）；
 ⑥ 源文件自动发现（manifest 覆盖 / main.tex 优先 / Word 排除「作者信息/英文摘要」）；
-⑦ 报告渲染 smoke（总表/明细/附录都出现该案例）。
+⑦ 报告渲染 smoke（总表/明细/附录都出现该案例）；
+⑧ manifest 附加源 `metadata`（--metadata 拼装 / 文件不存在安全回退 / `--no-metadata` A2-only 口径 /
+   JSON manifest 字段解析 / report 附录显示）。
 
 只写临时目录；不读真实语料、不跑 xelatex、不联网、不读稿件库 —— `cd Engine` 下秒级可跑。
 
@@ -22,6 +24,7 @@ import os
 import sys
 import tempfile
 import shutil
+import types
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # 不在 tools/ 下留 __pycache__（写范围只有两个文件）
@@ -70,6 +73,9 @@ check("期 87 人工 bib 文件名特例（sub5/sub8 用作者名）",
       and {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-8"] == "Runcheng_Liang.bib")
 check("期 90 人工目录 = 01..10 作者名",
       {c.key: c.manual_dir for c in cases if c.issue == "90"}["90-05"] == "05 Beibei_Gao")
+check("默认清单：仅 90-03 声明附加源 metadata=yalcin puzzle.tex",
+      next(c for c in cases if c.key == "90-03").metadata == "yalcin puzzle.tex"
+      and sum(1 for c in cases if c.metadata) == 1)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) 分级：干净案例 / 各类 P0 / P1 / P2
@@ -308,6 +314,64 @@ try:
     check("ensure_docx：.docx 原样返回（needed=False）",
           info["needed"] is False and info["ok"] is True and docx_p is not None)
 
+    # ── ⑧ manifest 附加源（metadata / --metadata / --no-metadata）──
+    meta_p = mk("Liang_Zhang/yalcin puzzle.tex", 400)
+    main_p = mk("Liang_Zhang/main.tex", 600)
+
+    def case_meta(**kw):
+        base = dict(key="t-meta", issue="t", author="Liang_Zhang",
+                    author_dir="Liang_Zhang", metadata="yalcin puzzle.tex")
+        base.update(kw)
+        return batch.CaseSpec(**base)
+
+    args, minfo = batch.convert_common_args(case_meta(), main_p, TMP / "out", TMP)
+    check("附加源：文件存在 → 命令含 `--metadata <绝对路径>`",
+          "--metadata" in args and args[args.index("--metadata") + 1] == str(meta_p)
+          and minfo["found"] and minfo["declared"])
+    check("附加源：相对路径按「工作区根 → 作者目录」解析到作者目录",
+          minfo["path"] == str(meta_p))
+    args0, minfo0 = batch.convert_common_args(
+        case_meta(metadata=""), main_p, TMP / "out", TMP)
+    check("附加源：字段为空 → 不传 --metadata（单源默认不变）",
+          "--metadata" not in args0 and minfo0["declared"] is False)
+    args_bad, minfo_bad = batch.convert_common_args(
+        case_meta(metadata="nope/no-such.tex"), main_p, TMP / "out", TMP)
+    check("附加源：文件不存在 → 安全回退（不传、fallback=True、note 含「回退」）",
+          "--metadata" not in args_bad and minfo_bad["fallback"] is True
+          and "回退" in minfo_bad["note"])
+    args_abs, minfo_abs = batch.convert_common_args(
+        case_meta(metadata=str(meta_p)), main_p, TMP / "out", TMP)
+    check("附加源：绝对路径直接用",
+          minfo_abs["path"] == str(meta_p) and "--metadata" in args_abs)
+    # --no-metadata（A2-only 口径）
+    args_nm, minfo_nm = batch.convert_common_args(
+        case_meta(), main_p, TMP / "out", TMP, use_metadata=False)
+    check("--no-metadata：不传 --metadata 且 info.disabled=True",
+          "--metadata" not in args_nm and minfo_nm.get("disabled") is True)
+    # extra_args 里已带 --metadata → 不重复追加
+    args_dup, _ = batch.convert_common_args(
+        case_meta(extra_args=("--metadata", "x.tex")), main_p, TMP / "out", TMP)
+    check("extra_args 已带 --metadata → 不重复追加（只出现一次）",
+          args_dup.count("--metadata") == 1)
+    # --no-metadata 同时剔除 extra_args 里的 --metadata（含其值）
+    args_nm2, _ = batch.convert_common_args(
+        case_meta(extra_args=("--metadata", "x.tex", "--lang", "zh")),
+        main_p, TMP / "out", TMP, use_metadata=False)
+    check("--no-metadata 同时剔除 extra_args 的 --metadata 及值参数",
+          "--metadata" not in args_nm2 and "x.tex" not in args_nm2 and "--lang" in args_nm2)
+    # JSON manifest 字段解析
+    man_json = TMP / "manifest.json"
+    man_json.write_text(
+        '{"cases": [{"key": "t-j", "issue": "t", "author": "A", "author_dir": "A", '
+        '"manual_dir": "", "source": "", "metadata": "yalcin puzzle.tex", '
+        '"extra_args": []}]}', encoding="utf-8")
+    loaded = batch.load_cases(types.SimpleNamespace(manifest=str(man_json), issues="", case=""))
+    check("JSON manifest：metadata 字段被解析", len(loaded) == 1
+          and loaded[0].metadata == "yalcin puzzle.tex")
+    check("CLI：--no-metadata 开关可解析（默认关）",
+          batch.build_parser().parse_args([]).no_metadata is False
+          and batch.build_parser().parse_args(["--no-metadata"]).no_metadata is True)
+
     # ── 6) 报告渲染 smoke（单案例，不跑任何子进程）
     run = {
         "run_id": "unit-test", "started": batch.now_iso(),
@@ -320,6 +384,8 @@ try:
          "product_dir": "/tmp/x/t-1", "source": "/tmp/x/Bo_Chen.docx",
          "source_note": "自动发现", "elapsed_s": 1.0, "level": "✅",
          "convert": {"compile_ok": True}, "findings": [],
+         "metadata": {"declared": True, "found": True, "fallback": False,
+                      "path": "/tmp/x/yalcin puzzle.tex", "note": "附加源 --metadata"},
          "manual": {**MAN, "dir": "/tmp/man", "proof": {"hits": 2}}}
     run["cases"]["t-1"] = m
     batch.build_summary(run)
@@ -329,6 +395,8 @@ try:
                                     "零付费", "t-1", "Bo_Chen")))
     check("报告渲染：干净案例标 ✅",
           "**✅**" in report or "| ✅ |" in report)
+    check("报告附录：显示附加源（--metadata）",
+          "附加源（--metadata）" in report and "yalcin puzzle.tex" in report)
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 

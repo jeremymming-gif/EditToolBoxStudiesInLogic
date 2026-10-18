@@ -28,6 +28,9 @@ r"""批量实例测试驱动 `tools/batch_case_test.py`（Phase1，2026-10-18，
     # 单案例（05 Beibei_Gao 精确回归）
     ... --case 90/05 --out /tmp/batch_case_test/beibei
 
+    # 关闭 manifest 附加源（模拟「只靠引擎通用发现」的 A2-only 口径；期 90/03 对照用）
+    ... --issues 90 --no-metadata --out /tmp/batch_case_test/a2-only
+
     # 快速自检（不读真实稿、不跑 xelatex，秒级）
     ... --self-test
 
@@ -51,9 +54,18 @@ manifest（`--manifest file.json`，可选；缺省用内置期 87/90 清单，�
       {"key": "88-01", "issue": "88", "author": "Tuomo_Aho",
        "author_dir": "Tuomo_Aho", "workspace": "/abs/path/macCaseTest88",
        "source": "Tuomo_Aho/xxx.docx",        # 省略=在工作区按规则自动发现
+       "metadata": "yalcin puzzle.tex",       # 可选：附加源（convert.py --metadata）
        "manual_dir": "01 Tuomo_Aho",          # 相对稿件仓期目录；省略=不做人工对照
        "manual_bib": "reference.bib", "extra_args": []}
     ]}
+
+**附加源（`metadata`）判据**：LaTeX 多文件稿常把「正文片段」和「模板/宏定义」分成两个 `.tex`
+（如期 90/03：`main.tex` 是纯正文片段，作者宏 `\\val/\\e/\\A` 定义在同目录 `yalcin puzzle.tex:224`；
+`convert.py` 的标准用法是 `--source main.tex --metadata "yalcin puzzle.tex"`）。manifest 的
+`metadata` 字段就是给这类稿准备的：**非空** → 命令追加 `--metadata <解析到的绝对路径>`；
+解析顺序 = 绝对路径直接用 → 工作区根 → 作者目录 → 源文件所在目录；
+**文件不存在 → 安全回退**：不传 `--metadata`、在 metrics/报告里写醒目 note（不阻断案例、不静默）；
+`extra_args` 里已自带 `--metadata` 时不重复追加。字段为空 = 单源（默认行为不变）。
 
 判据与分级（可单测的纯函数 `grade_case()`）：
 
@@ -79,6 +91,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -164,6 +177,7 @@ class CaseSpec:
     manual_dir: str = ""
     manual_bib: str = "reference.bib"
     source: str = ""                     # 相对工作区；空 = 自动发现
+    metadata: str = ""                   # 附加源/元数据源（convert.py --metadata）；空 = 单源
     extra_args: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
@@ -171,6 +185,7 @@ class CaseSpec:
             "key": self.key, "issue": self.issue, "author": self.author,
             "author_dir": self.author_dir, "manual_dir": self.manual_dir,
             "manual_bib": self.manual_bib, "source": self.source,
+            "metadata": self.metadata,
             "extra_args": list(self.extra_args),
         }
 
@@ -184,8 +199,9 @@ def default_cases() -> list[CaseSpec]:
         ("07", "Liangying_Zhao"), ("08", "Yanlin_Liao"), ("09", "Jiawei_Chu"),
         ("10", "Bo_Chen"),
     ):
+        extra = {"metadata": "yalcin puzzle.tex"} if no == "03" else {}
         cases.append(CaseSpec(key=f"90-{no}", issue="90", author=author,
-                              author_dir=author, manual_dir=f"{no} {author}"))
+                              author_dir=author, manual_dir=f"{no} {author}", **extra))
     for sub, (no, author) in enumerate((
         ("02", "Kun_Xing"), ("03", "Wenjing_Du"), ("04", "Fayang_Ye"),
         ("05", "Pengfei_Song"), ("06", "Ruixue_Tang"), ("07", "Guangwu_Feng"),
@@ -693,6 +709,88 @@ def discover_source(case: CaseSpec, workspace: Path) -> tuple[Path | None, str]:
     return pick, f"自动发现（Word 主文件）：{pick.name}"
 
 
+def resolve_metadata_source(case: CaseSpec, workspace: Path) -> tuple[Path | None, dict]:
+    """解析 manifest 的 `metadata`（附加源/元数据源），返回 (路径|None, info dict)。
+
+    判据（与模块 docstring 一致）：
+    - 空字符串 → 不传 `--metadata`（单源），info["declared"]=False；
+    - 绝对路径 → 直接用；
+    - 相对路径 → 依次尝试「工作区根 → 作者目录 → 源文件所在目录」；
+    - **文件不存在 → 安全回退**：返回 None 且 info["fallback"]=True、info["note"] 写明尝试过的
+      候选路径（案例照常跑、不阻断；报告附录会显示该 note，不静默）。
+    """
+    info: dict = {"declared": bool(case.metadata), "found": False, "fallback": False,
+                  "path": None, "note": ""}
+    if not case.metadata:
+        info["note"] = "未声明附加源（单源）"
+        return None, info
+    raw = Path(case.metadata)
+    if raw.is_absolute():
+        candidates = [raw]
+    else:
+        candidates = [workspace / raw, workspace / case.author_dir / raw]
+        if case.source:
+            candidates.append((workspace / case.source).parent / raw)
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for c in candidates:
+        key = str(c)
+        if key not in seen:
+            seen.add(key)
+            uniq.append(c)
+    for c in uniq:
+        if c.is_file():
+            info.update(found=True, path=str(c), note=f"附加源 --metadata：{c}")
+            return c, info
+    info["fallback"] = True
+    info["note"] = ("⚠ manifest 声明了附加源但文件不存在（尝试过："
+                    + "、".join(str(c) for c in uniq) + "）→ 安全回退为单源")
+    return None, info
+
+
+def convert_common_args(case: CaseSpec, src: Path, out_root: Path,
+                        workspace: Path, use_metadata: bool = True) -> tuple[list[str], dict]:
+    """拼 `convert.py` 的公共参数（source/out/name/附加源/extra_args），纯函数便于单测。
+
+    `metadata` 只在文件解析成功时追加；`extra_args` 里已显式带 `--metadata` 时不重复追加
+    （避免同一选项两次、语义含糊），此时 info["note"] 标明「由 extra_args 提供」。
+
+    `use_metadata=False`（CLI `--no-metadata`）：**忽略** manifest 的 metadata 字段，并从
+    `extra_args` 里剔除 `--metadata`/`--metadata=…`（含其后一个值参数）——用于「A2-only」
+    对照口径：模拟不传附加源、只靠引擎通用发现（engine-core 另卡）的行为。
+    """
+    args = ["--source", str(src), "--out", str(out_root), "--name", case.author]
+    extra = list(case.extra_args)
+    if not use_metadata:
+        cleaned: list[str] = []
+        skip_next = False
+        for a in extra:
+            if skip_next:
+                skip_next = False
+                continue
+            if a == "--metadata":
+                skip_next = True
+                continue
+            if a.startswith("--metadata="):
+                continue
+            cleaned.append(a)
+        if len(cleaned) != len(extra):
+            extra = cleaned
+        args += extra
+        meta_info = {"declared": bool(case.metadata), "found": False, "fallback": False,
+                     "path": None, "disabled": True,
+                     "note": "已按 --no-metadata 禁用附加源（A2-only 口径：不传 --metadata）"}
+        return args, meta_info
+    args += extra
+    has_meta_arg = any(a == "--metadata" or a.startswith("--metadata=") for a in extra)
+    meta_path, meta_info = resolve_metadata_source(case, workspace)
+    if meta_path is not None and not has_meta_arg:
+        args += ["--metadata", str(meta_path)]
+    elif has_meta_arg:
+        meta_info = {**meta_info, "note": "附加源由 extra_args 提供（未重复追加）"}
+    return args, meta_info
+
+
 def ensure_docx(src: Path, workdir: Path, logs_dir: Path, env: dict) -> tuple[Path | None, dict]:
     """`.doc` → `/tmp` 副本 `.docx`（LibreOffice；绝不改 Desktop 源文件）。"""
     info: dict = {"needed": True, "ok": False, "source": str(src), "error": ""}
@@ -721,7 +819,8 @@ def ensure_docx(src: Path, workdir: Path, logs_dir: Path, env: dict) -> tuple[Pa
 
 
 def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
-             py: str, env: dict, timeout: float, compare: bool) -> dict:
+             py: str, env: dict, timeout: float, compare: bool,
+             use_metadata: bool = True) -> dict:
     """跑一个案例：pass1 转换+编译 → 两遍 sha → 判据采集 → 人工对照。"""
     author, key = case.author, case.key
     t0 = time.time()
@@ -749,8 +848,9 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
                   "findings": [], "level": "SKIP", "elapsed_s": time.time() - t0})
         return m
 
-    common = ["--source", str(src), "--out", str(products), "--name", author]
-    common += list(case.extra_args)
+    common, meta_info = convert_common_args(case, src, products, workspace,
+                                            use_metadata=use_metadata)
+    m["metadata"] = meta_info
 
     # 零付费安全网：任何命令都不得触碰 --verify-refs / --llm-*（构造后断言）
     cmd1 = [py, "convert.py", *common, "--compile"]
@@ -884,6 +984,10 @@ def render_report(run: dict) -> str:
                  "**未传**任何 `--verify-refs` / `--llm-*` 参数。")
     lines.append(f"- 逐案例断言：{totals.get('ran', 0)} 个案例日志均含「预计 AI：0 次」"
                  if totals.get("zero_cost_ok") else "- ⚠ 见 P0 `ZERO_COST` 明细")
+    if run.get("metadata_disabled"):
+        lines.append("- **A2-only 口径**：`--no-metadata` 已启用——manifest 的附加源（如 90-03 的 "
+                     "`yalcin puzzle.tex`）**不传给** `convert.py`，用于单独评估引擎通用发现规则；"
+                     "若引擎修复不到会退回旧行为（rc=2 等），属预期。")
     lines.append("")
     lines.append("## 2. 确定性（两遍 sha256）")
     lines.append("")
@@ -975,6 +1079,12 @@ def render_report(run: dict) -> str:
         lines.append(f"### {m['key']} {m['author']}（{m.get('level')}，{m.get('elapsed_s')}s）")
         lines.append("")
         lines.append(f"- 源：`{m.get('source')}`（{m.get('source_note', '')}）")
+        meta = m.get("metadata") or {}
+        if meta.get("declared"):
+            if meta.get("found"):
+                lines.append(f"- 附加源（--metadata）：`{meta.get('path')}`")
+            else:
+                lines.append(f"- {meta.get('note')}")
         if (m.get("doc_convert") or {}).get("needed"):
             lines.append(f"- .doc→docx：{'✅' if m['doc_convert'].get('ok') else '❌'} "
                          f"`{m['doc_convert'].get('path', '')}`")
@@ -1107,8 +1217,10 @@ def run_batch(args: argparse.Namespace) -> int:
     order = {issue: i for i, issue in enumerate(DEFAULT_ISSUE_ORDER)}
     cases.sort(key=lambda c: (order.get(c.issue, len(order)), c.key))
 
+    metadata_disabled = bool(getattr(args, "no_metadata", False))
     run: dict = {
         "run_id": args.label or out_root.name,
+        "metadata_disabled": metadata_disabled,
         "started": now_iso(), "out_dir": str(out_root), "python": py,
         "engine_version": ENGINE_VERSION, "git_head": repo_start["head"],
         "repo_start": repo_start, "workspaces": {k: str(v) for k, v in workspaces.items()},
@@ -1129,7 +1241,8 @@ def run_batch(args: argparse.Namespace) -> int:
                  "findings": [], "elapsed_s": 0.0}
         else:
             m = run_case(case, ws, man_roots.get(case.issue, man_repo), out_root, py, env,
-                         argv_timeout(args.timeout), compare=not args.no_compare)
+                         argv_timeout(args.timeout), compare=not args.no_compare,
+                         use_metadata=not metadata_disabled)
             m["channel"] = "latex" if str(m.get("source", "")).endswith(".tex") else "word"
             if (m.get("plan") or {}).get("ai_zero") is not True and not m.get("skipped"):
                 run["zero_cost"]["violations"].append(case.key)
@@ -1188,6 +1301,7 @@ def load_cases(args: argparse.Namespace) -> list[CaseSpec]:
                 manual_dir=str(it.get("manual_dir", "")),
                 manual_bib=str(it.get("manual_bib", "reference.bib")),
                 source=str(it.get("source", "")),
+                metadata=str(it.get("metadata", "")),
                 extra_args=tuple(it.get("extra_args") or ()),
             ))
     else:
@@ -1294,6 +1408,33 @@ def run_self_test() -> int:
     check("默认 out 根不在仓库/Desktop",
           DEFAULT_OUT_ROOT == Path("/tmp/batch_case_test")
           and not str(DEFAULT_OUT_ROOT).startswith(str(ROOT)))
+
+    d3 = next(c for c in default_cases() if c.key == "90-03")
+    check("90-03 manifest 声明附加源 metadata=yalcin puzzle.tex",
+          d3.metadata == "yalcin puzzle.tex"
+          and sum(1 for c in default_cases() if c.metadata) == 1)
+    with tempfile.TemporaryDirectory(prefix="slcn_selftest_") as td:
+        ws = Path(td)
+        (ws / "Liang_Zhang").mkdir(parents=True, exist_ok=True)
+        meta = ws / "Liang_Zhang" / "yalcin puzzle.tex"
+        meta.write_text("\\documentclass{x}", encoding="utf-8")
+        src = ws / "Liang_Zhang" / "main.tex"
+        src.write_text("body", encoding="utf-8")
+        spec3 = CaseSpec(key="t-90-03", issue="90", author="Liang_Zhang",
+                         author_dir="Liang_Zhang", metadata="yalcin puzzle.tex")
+        args, info = convert_common_args(spec3, src, ws / "out", ws)
+        check("附加源：文件存在 → 命令含 --metadata <绝对路径>",
+              "--metadata" in args and args[args.index("--metadata") + 1] == str(meta)
+              and info["found"])
+        args2, info2 = convert_common_args(spec3, src, ws / "out", ws, use_metadata=False)
+        check("--no-metadata：A2-only 口径不传 --metadata",
+              "--metadata" not in args2 and info2.get("disabled") is True)
+        spec_bad = CaseSpec(key="t-bad", issue="90", author="X", author_dir="X",
+                            metadata="nope.tex")
+        args3, info3 = convert_common_args(spec_bad, src, ws / "out", ws)
+        check("附加源文件不存在 → 安全回退（不传、note 写明候选）",
+              "--metadata" not in args3 and info3["fallback"] is True
+              and "回退" in info3["note"])
     print()
     print(f"失败 {len(fails)} 项" + (f"：{fails}" if fails else "（全部通过）"))
     return 1 if fails else 0
@@ -1326,6 +1467,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--python", default="", help="子进程解释器（默认当前解释器）")
     ap.add_argument("--timeout", type=float, default=600.0, help="单案例子进程超时秒（默认 600）")
     ap.add_argument("--no-compare", action="store_true", help="不读稿件仓人工成品（只做绝对判据）")
+    ap.add_argument("--no-metadata", action="store_true",
+                    help="忽略 manifest 的附加源（--metadata），模拟仅靠引擎通用发现（A2-only 口径）")
     ap.add_argument("--self-test", action="store_true", help="跑内置自检（不读真实稿）")
     return ap
 
