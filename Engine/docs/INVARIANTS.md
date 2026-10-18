@@ -106,6 +106,16 @@
    位置：`sources-mac/Views/MainWindow.swift`（`PageVisible`）、`sources-mac/Views/PathDropField.swift`、
    `sources-mac/Core/ViewModels.swift`（`EditorsProbeModel.refresh`）、
    `sources-mac/Views/ContentTab.swift`（`loadReport`）；案例 126。
+9. **LaTeX 自定义定义的位置加固只增不改**（第 130 条）：本地支撑文件（同目录
+   `.cls` / `.sty` / `.def` / `.cfg`）里的定义只搬「正文用到 + 模板没有」；`\renewcommand`
+   覆盖模板命令时**不搬但必须显式日志/警告**（不许静默或半静默改语义）；正文区定义
+   **不迁移**、只提示；环境级「定义缺失预检」只警告、**不阻断出稿**；Word 通道产物零变化。
+   **第 130 条补丁**：源目录有同名 `.sty` 时 `\usepackage` 包行**不迁**（按支撑文件差集搬定义）；
+   `\newcounter{X}` 只在「正文或已迁移定义体用到」时搬、先于用它的环境定义（`[父计数器]`
+   一起搬并排前）。位置：`Engine/slcn/preamble.py`（`local_support_files` /
+   `scan_support_definitions` / `counter_uses` / `_plan_local_definitions` /
+   `missing_environments`）、`Engine/slcn/build.py`（②′ 与 ⑤）；
+   `Engine/tests/test_latex_preamble.py` ⑦ 组；`Engine/docs/RULES.md` §八。
 
 ## 七、这份清单自己怎么维护
 

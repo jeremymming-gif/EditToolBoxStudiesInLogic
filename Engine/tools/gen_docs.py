@@ -91,6 +91,9 @@ APP_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "engine_main.py",
              "slcn/refmark.py", "slcn/bibparse.py", "slcn/bibreport.py", "slcn/aibib.py",
              # 第 129 条：引用库接入核实链路（评分/判定在 slcn/bibdb.py，改错会多花钱）。
              "slcn/bibdb.py",
+             # 第 132 条：mac 界面「引用库」5 页的数据源（只进 mac 包、不进 Windows
+             # 分发器；build.sh 的白名单与 tests/test_platform.py 的 (g) 组一起钉着）。
+             "bibdb.py",
              # 这两条也是「改了就必进包、否则行为不对」的模块，漏检过一次（第 66 条：
              # 解析器修好了但包内还是旧版），所以一并纳入比对。
              "slcn/footref.py", "slcn/build.py"]

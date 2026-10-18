@@ -389,10 +389,15 @@ def insert_custom_macros(template_text: str, macros: list[tuple[str, str, str]])
     """把旧稿的自定义命令插进模板的 2.5 节。
 
     正文依赖这些命令（如 \\val、\\e、\\A），漏搬会直接编译失败。只搬模板里
-    还没有的，避免重复定义。
+    还没有的，避免重复定义。**例外（第 130 条）**：`\\renewcommand` 同名时允许插入——
+    它就是来覆盖的（作者前言覆盖本地旧 sty 的定义，与旧稿编译顺序一致）。本地迁移
+    定义插在 hyperref 之前，这里插在它之后 → 后定义生效。
     """
     existing = set(parse_macros(template_text))
-    add = [(k, n, src) for k, n, src in macros if n not in existing]
+    add = [
+        (k, n, src) for k, n, src in macros
+        if n not in existing or k == "renewcommand"
+    ]
     if not add:
         return template_text, []
 
@@ -661,6 +666,32 @@ def build_latex(
     if pre_plan.skipped:
         show = "、".join(pre_plan.skipped[:12]) + (" …" if len(pre_plan.skipped) > 12 else "")
         say(f"   · 模板已提供、未重复搬：{show}")
+    # ── 第 130 条：本地支撑文件（.cls/.sty/.def/.cfg）的定义迁移明细 ──
+    if pre_plan.local_packages:
+        show = "、".join(pre_plan.local_packages)
+        say(f"   本地旧模板 .sty（源目录有同名文件，包行不迁、按差集搬定义）：{show}")
+    if pre_plan.support_files:
+        say(f"   本地支撑文件：{'、'.join(pre_plan.support_files)}")
+    if pre_plan.counter_definitions:
+        say(f"   计数器迁移 {len(pre_plan.counter_definitions)} 个："
+            f"{'、'.join(pre_plan.counter_definitions)}")
+    if pre_plan.local_definitions:
+        items = [f"{name}（{origin}）" for name, origin in pre_plan.local_definitions]
+        say(f"   本地旧模板定义迁入 {len(items)} 个：{'、'.join(items)}")
+    if pre_plan.converted_renews:
+        show = "、".join(pre_plan.converted_renews[:12])
+        say(f"   · 模板缺、由 \\renewcommand 降为 \\newcommand 迁入：{show}")
+        warnings.append(
+            "本地旧文件里的 \\renewcommand 在新模板中没有对应命令，已降为 \\newcommand 迁入"
+            f"（请核对语义）：{'、'.join(pre_plan.converted_renews)}"
+        )
+    if pre_plan.overrides:
+        show = "、".join(pre_plan.overrides[:12])
+        say(f"   ⚠ 本地旧文件重定义了模板命令、未搬（模板优先）：{show}")
+        warnings.append(
+            "本地旧文件重定义了模板命令、未搬（保留现行模板，正文用到时按模板定义走）"
+            f"：{'、'.join(pre_plan.overrides)}；语义可能与作者原稿不同，请人工核对"
+        )
 
     say("③ 搬运元数据")
     missing: list[str] = []
@@ -731,8 +762,20 @@ def build_latex(
     # 第 120 条：先取正文（`.tex` 多文件稿先展开 \input/\include），再判「哪些宏正文
     # 真的用得到」——没用到的定义不搬（07 Yiyan_Wang 的 \ar 就是这样避开 xy 冲突的），
     # 与模板/宏包重名的宏自动改名（\prop → \slcnprop），正文同步改。
-    custom = collect_custom_macros(meta_text)
+    # 第 130 条：**正文区**（\begin{document} 之后）的自定义定义不迁移——正文整段
+    # 照搬已经带着它们；再从 meta_text 里搬一遍会在产物里重复定义（\newcommand 直接
+    # `already defined`）。纯正文稿（没有 \begin{document}）仍按全文收，保持旧行为。
+    macro_scope = (
+        PRE.source_preamble(meta_text)
+        if "\\begin{document}" in meta_text
+        else meta_text
+    )
+    custom = collect_custom_macros(macro_scope)
     existing_names = PRE.defined_names(tpl) | PRE.defined_names(sty_text)
+    # 第 130 条：本地支撑文件搬进来的同名宏**不算冲突**——作者前言里的 `\renewcommand`
+    # 本来就是覆盖旧 sty 的那个定义（旧稿编译时也是这个先后顺序）。把它排除在改名判据外，
+    # 前言里的重定义按 TeX 顺序自然覆盖；否则会被改名成一个没人用的新名字（语义丢失）。
+    existing_names -= {name for name, _origin in pre_plan.local_definitions}
     # 可达文本 = 正文 + 已搬进模板的元数据字段值 + 已迁移的前言定义体：
     # 只管正文会漏掉「宏只用在摘要/题名里」的稿（会 undefined），2026-10-17 评审指出。
     reach = "\n".join(
@@ -768,6 +811,23 @@ def build_latex(
     say("⑤ 迁移正文")
     if expanded_inputs:
         say(f"   多文件正文源：已展开 {expanded_inputs} 处 \\input/\\include")
+    # ── 第 130 条：正文区的自定义定义（不迁移，只提示）+ 定义缺失预检 ──
+    # 正文是整段照搬的，正文里的定义本来就跟着走；但按本刊惯例定义该放导言区，
+    # 所以只打一行提示、不做任何猜测性搬动。
+    body_defs = PRE.scan_support_definitions(body)
+    if body_defs:
+        say(f"   正文里出现 {len(body_defs)} 处自定义定义（保留原样，建议移到导言区）")
+    missing_envs = PRE.missing_environments(
+        body, tpl + "\n" + sty_text, {d.name for d in body_defs}
+    )
+    if missing_envs:
+        show = "、".join(missing_envs[:12]) + (" …" if len(missing_envs) > 12 else "")
+        say(f"   ⚠ 定义缺失预检：正文用到的环境在「模板+迁移结果」里找不到定义：{show}")
+        warnings.append(
+            "定义缺失预检：正文用到的环境在「模板+迁移结果」里找不到定义："
+            f"{show}（宏包自带的环境纯离线无法核对，可能误报；**不阻断出稿**，"
+            "若编译报 Environment … undefined 请人工核对）"
+        )
     say(f"   正文 {len(body)} 字符")
     tpl = insert_body(tpl, body)
 

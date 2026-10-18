@@ -139,6 +139,15 @@ enum EngineLocator {
            !custom.isEmpty, fm.fileExists(atPath: custom) {
             return custom
         }
+        return detectedNotesRepo()
+    }
+
+    /// **只做自动探测**、不看用户的「手动指定」（第 132 条）。
+    ///
+    /// 为什么要把两份拆开：「引用库设置」页要同时显示「自动探测到的是哪」与「手动填的是哪」，
+    /// 编辑才能判断该不该手填。`notesRepo()` 保持原语义（手动优先）不变，
+    /// 所有既有调用方（`Shell.environment()` 的 `SLCN_NOTES` 注入等）行为一字未动。
+    static func detectedNotesRepo() -> String? {
         guard let engine = convertTool() else { return nil }
         var dir = (engine as NSString).deletingLastPathComponent
         for _ in 0..<8 {

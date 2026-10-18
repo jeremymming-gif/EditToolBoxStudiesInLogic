@@ -14,6 +14,9 @@ struct MainWindow: View {
 
     @StateObject private var log = LogStore()
     @StateObject private var settings = AppSettings()
+    /// 「引用库」分组的设置（核实成本闸门 / 查库开关 / 笔记仓路径，第 132 条）。
+    /// 与 `settings` 分开：这些是引用库自己的行为偏好，不混进 AI 配置那一组。
+    @StateObject private var bibdb = BibDbSettings()
     /// 「一校核查」页的界面状态（本机没有 @State 宏，状态一律由 ObservableObject 承载）
     @StateObject private var proofModel = ProofCheckModel()
 
@@ -32,6 +35,13 @@ struct MainWindow: View {
                         Label(page.title, systemImage: page.symbol).tag(page)
                     }
                 }
+                // 第 132 条：引用库是与「单篇稿件 / 整期装配」**平行**的顶级分组，
+                // 放在整期装配之后、「设置」之前（设置仍是组外的配置入口）。
+                Section("引用库") {
+                    ForEach(NavPage.library) { page in
+                        Label(page.title, systemImage: page.symbol).tag(page)
+                    }
+                }
                 Section {
                     Label(NavPage.settings.title, systemImage: NavPage.settings.symbol)
                         .tag(NavPage.settings)
@@ -44,7 +54,7 @@ struct MainWindow: View {
                 // 全部页面都建好、只显示当前那页：这样切页**不会丢状态**
                 // （编辑正在敲的路径/选项都还在 —— 与原来 TabView 的行为一致）。
                 ZStack {
-                    ConvertTab(log: log, settings: settings)
+                    ConvertTab(log: log, settings: settings, bibdb: bibdb)
                         .pageVisible(selection == .convert)
                     CheckBibView(log: log)
                         .pageVisible(selection == .checkbib)
@@ -62,6 +72,19 @@ struct MainWindow: View {
                         .pageVisible(selection == .cleantemp)
                     publishPage
                         .pageVisible(selection == .publish)
+                    // 第 132 条：引用库 5 页。同样走 `.pageVisible`（案例 126：隐藏页会抢
+                    // 拖拽命中，必须让隐藏页整体移出命中范围；**不要**改成条件渲染，
+                    // 那会丢页面状态、也会让切换页时重新读库）。
+                    BibDbStatsView(log: log, bibdb: bibdb, isActive: selection == .bibstats)
+                        .pageVisible(selection == .bibstats)
+                    BibDbQueryView(log: log, bibdb: bibdb, isActive: selection == .bibquery)
+                        .pageVisible(selection == .bibquery)
+                    BibDbImportView(log: log, bibdb: bibdb, isActive: selection == .bibimport)
+                        .pageVisible(selection == .bibimport)
+                    BibDbReviewView(log: log, bibdb: bibdb, isActive: selection == .bibreview)
+                        .pageVisible(selection == .bibreview)
+                    BibDbSettingsView(log: log, bibdb: bibdb)
+                        .pageVisible(selection == .bibsettings)
                     SettingsTab(settings: settings)
                         .pageVisible(selection == .settings)
                 }
@@ -144,6 +167,8 @@ enum NavPage: String, CaseIterable, Identifiable {
     case convert, checkbib, proofcheck, merge
     case infocheck, compile, toc, cleantemp
     case publish
+    // 第 132 条：引用库（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置）
+    case bibstats, bibquery, bibimport, bibreview, bibsettings
     case settings
 
     var id: String { rawValue }
@@ -159,6 +184,11 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .toc: return "生成目录"
         case .cleantemp: return "删除临时文件"
         case .publish: return "本期出刊"
+        case .bibstats: return "库概况"
+        case .bibquery: return "查库"
+        case .bibimport: return "入藏"
+        case .bibreview: return "待裁决"
+        case .bibsettings: return "引用库设置"
         case .settings: return "设置"
         }
     }
@@ -175,6 +205,11 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .toc: return "list.number"
         case .cleantemp: return "trash"
         case .publish: return "square.stack.3d.up.forward"
+        case .bibstats: return "books.vertical"
+        case .bibquery: return "text.magnifyingglass"
+        case .bibimport: return "tray.and.arrow.down"
+        case .bibreview: return "exclamationmark.triangle"
+        case .bibsettings: return "slider.horizontal.3"
         case .settings: return "gearshape"
         }
     }
@@ -187,6 +222,10 @@ enum NavPage: String, CaseIterable, Identifiable {
 
     /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件。
     static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .publish]
+
+    /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待裁决 → 设置。
+    /// 排序就是使用顺序：先知道库里有什么，再查/入藏，有冲突才去待裁决。
+    static let library: [NavPage] = [.bibstats, .bibquery, .bibimport, .bibreview, .bibsettings]
 }
 
 /// 只显示当前页：隐藏的页面保留状态但不可点、不进无障碍树

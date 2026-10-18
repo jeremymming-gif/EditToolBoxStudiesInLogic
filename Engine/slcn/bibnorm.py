@@ -6,6 +6,12 @@
   3. Word 文档末尾的人年制参考文献 ——需结构化（最难，PoC 先做中文条目）
 
 清理规则来自对 03 Liang_Zhang 与 10 Bo_Chen 两份人工成品的实测比对。
+
+**第 133 条（2026-10-18）：整行 `%` 注释不算条目**。作者 `.bib` 里常见注释掉的模板/
+重复条目（`% @article{,`、`% @misc{z16,`）；`split_entries()` 从前全文匹配 `@\\w+\\s*\\{`、
+不跳注释，产物 `reference.bib` 会带空键/重复键，biber 语法报错**整份 bib 报废**
+（2023(71)04：115 处 undefined citation、参考文献区未生成）。现在先 `strip_bib_comments()`
+（只清「行首可选空白 + `%` 到行尾」，行内/值内 `%` 不动）再拆条目。
 """
 
 from __future__ import annotations
@@ -497,8 +503,30 @@ def normalize_bib(text: str) -> tuple[str, list[str]]:
     return "\n".join(out), notes
 
 
+def strip_bib_comments(text: str) -> str:
+    r"""把 **整行注释**（行首可选空白后以 `%` 开头，到行尾）替换成空串，换行原样保留。
+
+    为什么只认整行（第 133 条，2026-10-18）：BibTeX/biber 的注释语义是「`%` 起到行尾」。
+    作者交来的 `.bib` 里常见**整行注释掉的旧模板/重复条目**（如 `% @article{,`、
+    `% @misc{z16,`）。`split_entries()` 用全文正则 `@\w+\s*\{` 会把注释里的 `@` 当成
+    真条目（而且匹配从 `@` 起、`% ` 前缀被丢掉）→ 产物 `reference.bib` 出现空键
+    `@article{,` 或重复键 → biber 语法报错、**整份 bib 报废**（2023(71)04 实测：
+    115 处 undefined citation、参考文献区未生成）。
+
+    **不做行内截断**（不猜 `%` 在行中算什么）：`note = {50\%}`、`title = {A % B}` 这类
+    行内/值内 `%` 原样保留。代价是「字段值里整行以 `%` 开头」的极端写法会被当注释删掉
+    ——与 TeX 的整行注释口径一致，已写进文档边界。
+    """
+    return re.sub(r"(?m)^[ \t]*%[^\r\n]*", "", text)
+
+
 def split_entries(text: str) -> list[tuple[str, str, str]]:
-    """把 bib 拆成 [(条目头, 字段体, 尾), ...]，非条目文本并入前一项。"""
+    """把 bib 拆成 [(条目头, 字段体, 尾), ...]，非条目文本不随条目返回。
+
+    第 133 条：先剥掉**整行 `%` 注释**（`strip_bib_comments()`），注释掉的旧条目不会被
+    当成真条目；返回值结构与顺序不变（正常 bib 的结果与从前逐字节相同）。
+    """
+    text = strip_bib_comments(text)
     result: list[tuple[str, str, str]] = []
     for m in re.finditer(r"@\w+\s*\{", text):
         start = m.start()

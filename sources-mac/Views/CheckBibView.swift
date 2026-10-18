@@ -43,6 +43,12 @@ final class CheckBibModel: ObservableObject {
     @Published var mergedManuscriptDir: String? = nil
     /// U3：本次运行的取消句柄（体检 / 并回 / 重新编译共用一个；运行中主按钮变成「取消」）
     var cancel: RunCancel? = nil
+
+    // ── 第 132 条：把产物 bib 入藏到引用库 ──
+    /// 是否正在入藏（与体检/并回/编译互斥：这些动作都不该并发改同一篇稿子的相关文件）
+    @Published var libraryImporting = false
+    /// 上一次入藏的结果话术（✅ 成功 / ⚠ 失败）
+    @Published var libraryMessage = ""
 }
 
 /// 「文献回读校验」页：编辑拿《文献核实任务书》改完参考文献交回 `.bib` 后，
@@ -213,7 +219,32 @@ struct CheckBibView: View {
                                   + "让 PDF 反映并回后的 reference.bib")
                     }
 
+                    // 第 132 条：把产物 bib 入藏到编辑部引用库（复用「入藏」页的 Feature）。
+                    // 只用「任务书前的原件 .bib」那一栏（= 产物 reference.bib）：
+                    // 编辑交回的 bib 是待核对的，不能当成品入 verified。
+                    if productBibPath != nil {
+                        Button("入藏到引用库") { importToLibrary() }
+                            .disabled(model.running || model.libraryImporting)
+                            .help("把「任务书前的原件 .bib」（产物 reference.bib）按往期成品 bib"
+                                  + "入藏到引用库（verified=true）；来源期/篇从路径推断。"
+                                  + "建议在并回并确认后再点。")
+                    }
+                    if model.libraryImporting {
+                        ProgressView().controlSize(.small)
+                        Text("正在入藏…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Spacer()
+                }
+
+                if !model.libraryMessage.isEmpty {
+                    Text(model.libraryMessage)
+                        .font(.caption)
+                        .foregroundStyle(model.libraryMessage.hasPrefix("✅") ? Color.green : Color.red)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(20)
@@ -461,6 +492,50 @@ struct CheckBibView: View {
                     m.mergedManuscriptDir = (PathKit.normalize(target) as NSString).deletingLastPathComponent
                 }
                 m.running = false
+            }
+        }
+    }
+
+    // MARK: - 入藏到引用库（第 132 条）
+
+    /// 「入藏到引用库」的来源：产物里的 `reference.bib`（界面「任务书前的原件 .bib」一栏）。
+    private var productBibPath: String? {
+        let text = model.original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        let path = PathKit.normalize(text)
+        guard PathKit.exists(path), !PathKit.isDirectory(path) else { return nil }
+        return path
+    }
+
+    /// 把产物 bib 作为「往期成品 bib」入藏（`import-bib --verified --json`）。
+    /// 判据/参数拼装全在 `BibDbFeature`（与「引用库 → 入藏」页同一份），这里只负责
+    /// 「取路径 → 推断期/篇 → 后台跑 → 写运行日志 → 回填状态」。
+    private func importToLibrary() {
+        guard let bib = productBibPath, !model.libraryImporting else { return }
+        let inferred = BibDbFeature.inferIssueAndSlug(from: bib)
+        let logger = Logger(store: log, startedAt: Date())
+        let model = self.model
+        model.libraryImporting = true
+        model.libraryMessage = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = BibDbFeature.importBib(bibPath: bib, issue: inferred.issue,
+                                                 slug: inferred.slug, dryRun: false)
+            DispatchQueue.main.async {
+                model.libraryImporting = false
+                if let error = outcome.error {
+                    model.libraryMessage = "⚠ 入藏失败：" + error
+                    logger("❌ 入藏到引用库失败：\(error)\n")
+                    return
+                }
+                let summary = outcome.summary?.line ?? "（引擎没有返回计数）"
+                model.libraryMessage = "✅ 已入藏：" + summary
+                logger("引用库入藏（产物 bib → 已核实）：\(bib)\n")
+                let whereText = [inferred.issue, inferred.slug]
+                    .filter { !$0.isEmpty }.joined(separator: " / ")
+                logger("  来源  \(whereText.isEmpty ? "（未从路径推断出期/篇）" : whereText)\n")
+                logger("  " + summary + "\n")
+                if !outcome.dbExisted { logger("  （本次新建了引用库文件）\n") }
+                logger("  （库变了：建议到「引用库 → 待裁决」页重新生成清单。）\n")
             }
         }
     }

@@ -344,6 +344,34 @@ check("(g) `ENTRIES` 里每个名字都真的有对应文件（防写错名）",
       all((ENGINE / e).is_file() for e in _em.ENTRIES),
       repr([e for e in _em.ENTRIES if not (ENGINE / e).is_file()]))
 
+# ── mac 包专属 CLI（第 132 条）：bibdb.py ─────────────────────────────────
+# 它进 **mac app 包**（GUI「引用库」5 页的数据源：库概况/查库/入藏/待裁决/设置），
+# 但**不是**交付入口：`engine_main.ENTRIES` 是 Windows 分发器，而引用库界面本轮
+# 只做 mac。所以它**不进 ENTRY_FILES**（进去会要求两平台一致，且要给 utf8_stdio 等
+# 交付口径），但**打包白名单与包内一致性比对必须覆盖它**——漏了的表现是包里这 5 页
+# 全部「未找到 Engine/bibdb.py」（与 publish.py 那次同型，见上方注释）。
+_MAC_ONLY_CLI = "bibdb.py"
+if "_build_sh" not in globals():
+    _build_sh = None                     # 读 build.sh 失败时上面已 SKIP，这里也别把测试弄崩
+if _build_sh is not None and _build_sh.exists():
+    check("(g) `build.sh` 打包白名单含 mac 专属 CLI `bibdb.py`"
+          "（漏了 = 包里「引用库」5 页全废）",
+          _MAC_ONLY_CLI in _bs, "build.sh 未提及 bibdb.py")
+    try:
+        _gd = (ENGINE / "tools" / "gen_docs.py").read_text(encoding="utf-8")
+        check("(g) `gen_docs.py` 的 `APP_FILES` 含 `bibdb.py`"
+              "（包内一致性比对覆盖它；`gen_docs` 只比已有文件，发现不了缺文件）",
+              f'"{_MAC_ONLY_CLI}"' in _gd, "gen_docs.py APP_FILES 未提及 bibdb.py")
+    except OSError as _e:  # noqa: BLE001
+        print(f"SKIP  (g) gen_docs APP_FILES 守卫（{_e}）")
+    _bibdb_text = (ENGINE / _MAC_ONLY_CLI).read_text(encoding="utf-8")
+    check("(g) mac 专属 CLI `bibdb.py` 也调了 utf8_stdio()"
+          "（GUI 用管道读它的中文 JSON；窄编码下不许崩）",
+          "utf8_stdio(" in _bibdb_text)
+check("(g) `bibdb.py` 刻意**不**进 Windows 分发器 `ENTRIES`（引用库界面本轮只做 mac）",
+      _MAC_ONLY_CLI not in _em.ENTRIES,
+      "若将来做 Windows 版引用库，应同时改 engine_main.ENTRIES 与 sources-win/")
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:

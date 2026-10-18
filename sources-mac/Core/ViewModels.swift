@@ -952,3 +952,151 @@ final class EditorsProbeModel: ObservableObject {
         }
     }
 }
+
+/// 「引用库」设置（第 132 条）：核实成本闸门 + 查库开关 + 引用库（笔记仓）路径。
+///
+/// 为什么存 `UserDefaults` 而不是 `ai.json`：这几项是**本机行为偏好**（上限、要不要先算账、
+/// 查不查库、笔记仓在哪），与 AI 连接参数/密钥不是一回事。`UserDefaults` 逐键读写，
+/// 旧版本没有这些键时自然回落默认值，不需要像 `ai.json` 那样整体迁移。
+///
+/// ⚠️ 生效方式：本类只负责「存 / 读 / 校验」；真正生效是「初排转换」页在**运行时现取**
+/// 这些值、拼进引擎 argv（见 `ConvertTab.run()` 与 `ConvertFeature.arguments(_:)`）——
+/// 与 AI 那组旋钮同一口径：改了立刻影响下一次转换，不必重启 App。
+/// ⚠️ 笔记仓路径的键名沿用 `notesRepoPath`（`EngineLocator.notesRepoOverrideKey`）：
+/// 它原来就是「设置」页手动指定笔记仓用的，这里**不新开键**，否则同一件事会有两个真相。
+final class BibDbSettings: ObservableObject {
+
+    // MARK: - UserDefaults 键名（**不要改**：改了老用户设过的值就丢）
+
+    /// 核实条数上限（Int；0 = 不限）。缺省 120（= 引擎 `_refmark.DEFAULT_VERIFY_MAX`）
+    static let verifyMaxKey = "bibdbVerifyMax"
+    /// 核实前先算账（Bool，`--verify-plan`）
+    static let verifyPlanKey = "bibdbVerifyPlan"
+    /// 允许全量核实（Bool，`--verify-all-refs`）
+    static let verifyAllRefsKey = "bibdbVerifyAllRefs"
+    /// 核实前先查引用库（Bool，缺省 true；关 → `--no-bibdb`）
+    static let lookupKey = "bibdbLookupEnabled"
+    /// 手动指定的笔记仓路径（String；缺省 = 自动探测）。与 `EngineLocator` 共用的键。
+    static let notesRepoKey = EngineLocator.notesRepoOverrideKey
+
+    /// 引擎侧的默认核实上限（`slcn/refmark.py: DEFAULT_VERIFY_MAX`，**只有一处**；
+    /// 这里只是把「留空/没设过」的显示值与引擎对齐，不参与判定）。
+    static let defaultVerifyMax = 120
+
+    // MARK: - 界面状态（@Published；本机没有 @State 宏，见文件抬头说明）
+
+    /// 上限输入框的**原样**文本（允许非法/空，界面负责红字提示；非法值不落盘）
+    @Published var verifyMaxText: String = String(BibDbSettings.defaultVerifyMax)
+    /// 核实前先算账（只算不核）
+    @Published var verifyPlan: Bool = false
+    /// 允许全量核实（越过上限闸门）
+    @Published var verifyAllRefs: Bool = false
+    /// 核实前先查引用库（关 = 本次一律不查库）
+    @Published var lookupEnabled: Bool = true
+    /// 手动指定的笔记仓路径（原样文本；空 = 自动探测）
+    @Published var notesRepoPath: String = ""
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // 上限：只在**用户设过**时才用盘上的值；没设过（旧版本）用引擎默认 120。
+        // 用 `object(forKey:)` 而不是 `integer(forKey:)` 区分「0」与「没这个键」。
+        if defaults.object(forKey: Self.verifyMaxKey) != nil {
+            let stored = defaults.integer(forKey: Self.verifyMaxKey)
+            verifyMaxText = String(max(0, stored))
+        } else {
+            verifyMaxText = String(Self.defaultVerifyMax)
+        }
+        verifyPlan = defaults.bool(forKey: Self.verifyPlanKey)
+        verifyAllRefs = defaults.bool(forKey: Self.verifyAllRefsKey)
+        // 「核实前先查引用库」的默认必须是**开**（引擎默认也是「库存在就查」）：
+        // 只有用户显式关过才读回 false。
+        if let stored = defaults.object(forKey: Self.lookupKey) as? Bool {
+            lookupEnabled = stored
+        } else {
+            lookupEnabled = true
+        }
+        notesRepoPath = defaults.string(forKey: Self.notesRepoKey) ?? ""
+    }
+
+    // MARK: - 上限的解析口径（纯逻辑；非法值**当场上红字**、不落盘）
+
+    /// 合法上限；`nil` = 留空或非法/负数（**不传 `--verify-max`**，引擎用默认 120）
+    var verifyMaxValue: Int? {
+        let text = verifyMaxText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let number = Int(text), number >= 0 else { return nil }
+        return number
+    }
+
+    /// 输入非法时的中文说明（界面红字）；合法/留空时 nil
+    var verifyMaxHint: String? {
+        let text = verifyMaxText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return nil }        // 留空 = 引擎默认，不算错
+        guard let number = Int(text) else {
+            return "上限必须是整数（0 = 不限；留空 = 引擎默认 \(Self.defaultVerifyMax)）"
+        }
+        guard number >= 0 else {
+            return "上限不能是负数（要「不限」请填 0）"
+        }
+        return nil
+    }
+
+    /// 一行摘要（转换页/设置页显示）：`120 条（0 = 不限）`
+    var verifyMaxSummary: String {
+        guard let value = verifyMaxValue else {
+            return "（输入无效：本次不传 --verify-max，引擎按默认 \(Self.defaultVerifyMax) 条）"
+        }
+        return value == 0 ? "不限" : "\(value) 条"
+    }
+
+    // MARK: - 写盘（逐项立即落盘；非法输入**保留在输入框**但不写盘）
+
+    /// 更新上限输入：合法（含留空）才落盘；非法值保留在输入框让编辑改。
+    func updateVerifyMax(_ raw: String) {
+        verifyMaxText = raw
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            defaults.removeObject(forKey: Self.verifyMaxKey)
+            return
+        }
+        guard let number = Int(text), number >= 0 else { return }
+        defaults.set(number, forKey: Self.verifyMaxKey)
+    }
+
+    func updateVerifyPlan(_ on: Bool) {
+        verifyPlan = on
+        defaults.set(on, forKey: Self.verifyPlanKey)
+    }
+
+    func updateVerifyAllRefs(_ on: Bool) {
+        verifyAllRefs = on
+        defaults.set(on, forKey: Self.verifyAllRefsKey)
+    }
+
+    func updateLookup(_ on: Bool) {
+        lookupEnabled = on
+        defaults.set(on, forKey: Self.lookupKey)
+    }
+
+    /// 更新手动笔记仓路径：留空 = 恢复自动探测（**删键**，别存空串占位）；
+    /// 填了就把 `~` 展开后存（`EngineLocator` 只按字面路径判存在，不替用户展开）。
+    func updateNotesRepoPath(_ raw: String) {
+        notesRepoPath = raw
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            defaults.removeObject(forKey: Self.notesRepoKey)
+            return
+        }
+        defaults.set((text as NSString).expandingTildeInPath, forKey: Self.notesRepoKey)
+    }
+
+    /// 手动路径是否有效：nil = 没填（走自动探测）；true/false = 填了、目录在不在。
+    /// 「不合法也照样存」是刻意的：编辑可能先把路径写下来、稍后再接上那台机器；
+    /// 界面负责显示红字，引擎侧 `notesRepo()` 对不存在的手动路径会自动回落自动探测。
+    var manualNotesPathValid: Bool? {
+        let text = notesRepoPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return PathKit.isDirectory((text as NSString).expandingTildeInPath)
+    }
+}

@@ -22,6 +22,9 @@ struct ConvertTab: View {
     /// AI 配置（地址/密钥/模型）来自「设置」页，与 MainWindow 共用同一个实例：
     /// 设置页改完立刻在这里生效，不用重启 App。
     @ObservedObject var settings: AppSettings
+    /// 第 132 条：引用库设置（核实上限 / 先算账 / 全量 / 查不查库 / 手动库路径）。
+    /// 与「引用库设置」页共用同一实例；本页在**点击转换时现取**（与 AI 旋钮同一口径）。
+    @ObservedObject var bibdb: BibDbSettings
 
     @StateObject private var model = ConvertModel()
     /// 责编名单（采集 + 自定义 + 默认），见 EditorStore.swift
@@ -77,6 +80,9 @@ struct ConvertTab: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 18)
                         }
+                        // 第 132 条：核实成本闸门提示（值来自「引用库设置」页，点击转换时现取）。
+                        // 写在这里而不是设置页：编辑勾「生成任务书」时就该看见「这次核多少条」。
+                        verifyGateHint
                         // 与之配套的 AI 开关：勾上就是「任务书 + 按同一份规范在本机直连 AI 预跑」。
                         // 不勾也能单独出任务书，所以两个开关不冲突：勾哪个都会加 --verify-refs。
                         Toggle("用 AI 处理参考文献（需在「设置」里配置）",
@@ -347,6 +353,33 @@ struct ConvertTab: View {
                 set: { model.options = ConvertFeature.toggled(which, to: $0, in: model.options) })
     }
 
+    /// 第 132 条：核实成本闸门的**当前生效值**提示（只显示，不在这里改）。
+    ///
+    /// 为什么挨着「生成核实任务书」放：编辑勾这个开关时就该知道「这次会核多少条」。
+    /// 超上限时引擎会**先退出 2**（有意为之的成本闸门）——这句提醒必须写在开关旁边，
+    /// 而不是等跑完去日志里才看见（退出 2 看起来很像程序错误）。
+    @ViewBuilder private var verifyGateHint: some View {
+        let db = BibDbFeature.existingDBPath()
+        VStack(alignment: .leading, spacing: 2) {
+            Text("核实范围：上限 \(bibdb.verifyMaxSummary)"
+                 + (bibdb.verifyAllRefs ? "；已允许全量核实" : "；超过上限会先退出 2（成本闸门）")
+                 + (bibdb.verifyPlan ? "；**先算账**（本次只打印计划，不真正核实）" : ""))
+                .font(.caption)
+                .foregroundStyle(bibdb.verifyPlan ? Color.orange : Color.secondary)
+            Text(bibdb.lookupEnabled
+                 ? (db == nil
+                    ? "引用库：已开启查库，但库文件不存在（引擎会跳过查库，不影响出稿）。"
+                    : "引用库：核实前先查库（命中已核实条目的键不调检索/AI）。")
+                 : "引用库：本次**不查库**（--no-bibdb）。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Text("以上值来自「引用库 → 引用库设置」，点击转换时现取。")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(.leading, 18)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     /// AI 开关下面那行说明。
     ///
     /// 勾了但没配置时**必须显式提示**（编辑部要求：不许静默忽略）：
@@ -439,6 +472,15 @@ struct ConvertTab: View {
         // 在日志里说明「本次不传」（界面另有红字）。
         o.llmSearchTool = settings.aiSearchTool.trimmingCharacters(in: .whitespacesAndNewlines)
         o.llmResponsesPath = settings.aiResponsesPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 第 132 条：核实成本闸门 + 引用库开关同样**现取**（设置页改完立刻生效）。
+        // `verifyMaxValue` 对非法输入返回 nil = 不传该参数（引擎用默认 120；界面另有红字）。
+        o.verifyMax = bibdb.verifyMaxValue
+        o.verifyPlan = bibdb.verifyPlan
+        o.verifyAllRefs = bibdb.verifyAllRefs
+        o.noBibdb = !bibdb.lookupEnabled
+        // 手动库文件只在「查库开着 + 文件真的存在」时显式传 --bibdb-path：
+        // 指一个不存在的库只会让引擎多打一条告警，不如不传（自动探测/ SLCN_NOTES 兜底）。
+        o.bibdbPath = (bibdb.lookupEnabled ? (BibDbFeature.existingDBPath() ?? "") : "")
         // 两个「请求体旋钮」（思考模式 / 输出上限）同样**现取**：与上面三项同一口径，
         // 设置页改完立刻生效，不必先点「保存」（保存只影响下次启动读回的值）。
         // ⚠️ 必须在主线程上取好再传：@Published 的值属于主线程，而 run() 在后台队列

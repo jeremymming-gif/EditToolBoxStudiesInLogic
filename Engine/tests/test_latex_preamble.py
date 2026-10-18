@@ -19,15 +19,26 @@ r"""LaTeX 前言依赖迁移 + 多文件正文（**第 120 条**，2026-10-17 ma
      宏名冲突自动改名（正文与定义同步）；元数据源前言同样参与迁移。
   ④ 默认行为：没有额外依赖的稿子，产物与从前一样（无新增包、无改名、无展开标记）。
 
+之后追加（只增不改）：
+
+  ⑤ 评审补钉（2026-10-17 独立评审发现的问题逐条钉住）。
+  ⑥ 本地旧 .sty 的定理环境迁移（第 127 条，期 87 02 Kun_Xing）。
+  ⑦ **定义位置加固**（第 130 条，2026-10-18）：本地 .sty 的六类定义 + 普通宏、
+     本地 .cls / 嵌套 .def、正文区定义提示（不迁移）、定义缺失预检、Word 通道零变化；
+     补丁：`\newcounter` 依赖迁移与顺序、本地非标准命名 .sty 的包行不迁（按差集搬定义）。
+
 只写临时目录；不联网、不读稿件库、不跑 corpus.py / build.sh。
 
 用法：
     cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_latex_preamble.py
 """
+import inspect
 import os
 import shutil
 import sys
 import tempfile
+import zipfile
+from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
@@ -37,6 +48,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 
 from slcn import build  # noqa: E402
 from slcn import preamble as PRE  # noqa: E402
+from slcn.latex import expand_inputs  # noqa: E402
 
 FAILS = []
 
@@ -412,7 +424,391 @@ check("⑥ 本地旧 .sty：旧 sty 的版式重定义不搬（proof）",
 check("⑥ 本地旧 .sty：旧 sty 不作为宏包搬（不出现 \\usepackage{SLCN}）",
       "\\usepackage{SLCN}" not in _tex6)
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑦ 本地支撑文件 + 定义位置加固（第 130 条，2026-10-18）
+# ══════════════════════════════════════════════════════════════════════════
+# 缺口：定义不在 .tex 导言区，而在作者同目录的旧 .sty（普通宏/算子/列类型/颜色）、
+# 本地 .cls / .def / .cfg，或干脆写在正文区。真稿形态：
+#   · 2023 年第 4 期 04：本地 SLCN.sty 的 \definitionnamechange，正文 8 处；
+#   · 2024 年第 2 期 05：本地 SLCN-MIX.sty 的 \cp/\cpp，正文 12/15 处。
+# 判据：仍只搬「正文用到 + 模板没有」；\renewcommand 覆盖模板命令时不许静默。
+
+# ── ⑦-1 本地 .sty 的五类定义 + 普通宏（正文可达 + 模板缺 + 传递闭包）──────
+write("defscope/SLCN-MIX.sty", r"""% 旧版本刊模板 sty（第 130 条合成夹具）
+\newcommand{\definitionnamechange}[1]{%
+  \renewcommand{\definitionname}{#1}%
+}
+\DeclareMathOperator{\varr}{\mathrm{Var}}
+\newcolumntype{Z}{>{\centering\arraybackslash}X}
+\definecolor{deepblue}{RGB}{0,0,139}
+\newtheorem{fact}{\hspace{2em}{\bf{事实}}}
+\newenvironment{myquote}{\begin{quote}\small}{\end{quote}}
+\newcommand{\outercmd}{\innercmd}
+\newcommand{\innercmd}{I}
+\newcommand{\unusedcmd}{U}
+\newcommand{\cndash}{--}
+\renewcommand{\edash}{-}
+""")
+write("defscope/main.tex", r"""\documentclass{article}
+\usepackage{SLCN-MIX}
+\usepackage{array}
+\usepackage{xcolor}
+\begin{document}
+\definitionnamechange{(5)\textsf{定义}}
+$\varr(x)$，\outercmd，\cndash，\edash。
+\begin{fact}事实正文。\end{fact}
+\begin{myquote}引用。\end{myquote}
+\begin{tabular}{Z}
+a
+\end{tabular}
+\textcolor{deepblue}{蓝}
+\end{document}
+""")
+_res7, _tex7 = build_one("defscope/main.tex", "defscope")
+check("⑦ 本地 .sty：普通宏按正文可达搬（真稿形态 \\definitionnamechange）",
+      "\\newcommand{\\definitionnamechange}" in _tex7)
+check("⑦ 本地 .sty：\\DeclareMathOperator 搬", "\\DeclareMathOperator{\\varr}" in _tex7)
+check("⑦ 本地 .sty：\\newcolumntype 搬（正文 tabular 列格式用到 Z）",
+      "\\newcolumntype{Z}" in _tex7)
+check("⑦ 本地 .sty：\\definecolor 搬（正文 \\textcolor 用到 deepblue）",
+      "\\definecolor{deepblue}" in _tex7)
+check("⑦ 本地 .sty：定理环境搬（fact）", "\\newtheorem{fact}" in _tex7)
+check("⑦ 本地 .sty：普通环境搬（myquote）", "\\newenvironment{myquote}" in _tex7)
+check("⑦ 本地 .sty：传递闭包（\\outercmd 用到 \\innercmd，两条都搬）",
+      "\\newcommand{\\outercmd}" in _tex7 and "\\newcommand{\\innercmd}" in _tex7)
+check("⑦ 本地 .sty：正文没用到的不搬（unusedcmd）", "unusedcmd" not in _tex7)
+check("⑦ 本地 .sty：模板已有的普通定义不重复搬、日志明列（cndash）",
+      "\\newcommand{\\cndash}" not in _tex7
+      and any("cndash" in ln and "模板已提供" in ln for ln in _res7.log),
+      str([ln for ln in _res7.log if "模板已提供" in ln])[:200])
+check("⑦ 本地 .sty：\\renewcommand 覆盖模板命令时不静默（edash → 醒目警告、未搬）",
+      not any("\\renewcommand{\\edash}" in ln for ln in _res7.log)
+      and "\\renewcommand{\\edash}" not in _tex7
+      and any("重定义了模板命令" in w and "edash" in w for w in _res7.warnings),
+      str([w for w in _res7.warnings if "重定义" in w])[:200])
+check("⑦ 本地 .sty：宏体里的嵌套 \\renewcommand 不算覆盖（definitionname 不误报）",
+      not any("definitionname" in w and "重定义" in w for w in _res7.warnings))
+check("⑦ 旧接口 local_sty_text() 仍可用（第 127 条兼容）",
+      "\\definitionnamechange" in PRE.local_sty_text(
+          open(os.path.join(SRC_DIR, "defscope/main.tex"), encoding="utf-8").read(),
+          os.path.join(SRC_DIR, "defscope")))
+_nested = PRE.scan_support_definitions(
+    "\\newcommand{\\definitionnamechange}[1]{%\n"
+    "  \\renewcommand{\\definitionname}{#1}%\n}\n")
+check("⑦ scan_support_definitions()：只收顶层宏（嵌套定义被过滤）",
+      [(d.kind, d.name) for d in _nested] == [("newcommand", "definitionnamechange")],
+      str([(d.kind, d.name) for d in _nested]))
+
+# ── ⑦-2 共享计数器闭包 + 插入顺序（[axmx] 计数器排在定理前）─────────────
+write("defscope/counter.sty", r"""\newtheorem{thmx}[axmx]{定理X}
+\newtheorem{axmx}{公理X}
+""")
+write("defscope/counter.tex", r"""\documentclass{article}
+\usepackage{counter}
+\begin{document}
+\begin{thmx}定理正文。\end{thmx}
+\end{document}
+""")
+_res8, _tex8 = build_one("defscope/counter.tex", "counter")
+check("⑦ 定理共享计数器：正文只用 thmx，但 [axmx] 跟着搬",
+      "\\newtheorem{axmx}" in _tex8 and "\\newtheorem{thmx}" in _tex8)
+check("⑦ 定理共享计数器：计数器定义排在定理定义之前（否则 [axmx] 找不到）",
+      _tex8.find("\\newtheorem{axmx}") < _tex8.find("\\newtheorem{thmx}"),
+      f"{_tex8.find('\\newtheorem{axmx}')} / {_tex8.find('\\newtheorem{thmx}')}")
+
+# ── ⑦-3 模板缺的 \renewcommand → 降为 \newcommand 迁入（显式警告）─────────
+write("defscope/renewconv.sty", r"""\renewcommand{\brandnewcmd}{N}
+""")
+write("defscope/renewconv.tex", r"""\documentclass{article}
+\usepackage{renewconv}
+\begin{document}
+正文用 \brandnewcmd。
+\end{document}
+""")
+_res9, _tex9 = build_one("defscope/renewconv.tex", "renewconv")
+check("⑦ 模板缺的 \\renewcommand：降为 \\newcommand 迁入",
+      "\\newcommand{\\brandnewcmd}" in _tex9
+      and "\\renewcommand{\\brandnewcmd}" not in _tex9)
+check("⑦ 模板缺的 \\renewcommand：日志与警告都写明（不静默）",
+      any("降为 \\newcommand" in ln for ln in _res9.log)
+      and any("降为 \\newcommand" in w and "brandnewcmd" in w for w in _res9.warnings))
+
+# 作者前言里的 \renewcommand 覆盖本地旧 sty 的同名定义 → 不算「撞名」，按 TeX 顺序覆盖
+# （否则会被改名成没人用的新名字：旧稿编译时本来就是 sty 先定义、前言后覆盖）。
+write("defscope/override2/SLCN-MIX.sty", r"""\newcommand{\sharedcmd}{S}
+""")
+write("defscope/override2/main.tex", r"""\documentclass{article}
+\usepackage{SLCN-MIX}
+\renewcommand{\sharedcmd}{T}
+\begin{document}
+正文用 \sharedcmd。
+\end{document}
+""")
+_res_ov, _tex_ov = build_one("defscope/override2/main.tex", "override2")
+check("⑦ 前言 \\renewcommand 覆盖本地旧 sty 定义：不误判撞名、不丢语义（\\sharedcmd）",
+      "\\renewcommand{\\sharedcmd}" in _tex_ov
+      and "\\newcommand{\\slcnsharedcmd}" not in _tex_ov
+      and not any("宏名冲突" in w for w in _res_ov.warnings),
+      str([w for w in _res_ov.warnings if "宏名冲突" in w])[:160])
+check("⑦ 前言 \\renewcommand 覆盖本地旧 sty 定义：sty 定义在前、前言覆盖在后",
+      _tex_ov.find("\\newcommand{\\sharedcmd}") < _tex_ov.find("\\renewcommand{\\sharedcmd}"),
+      f"{_tex_ov.find('\\newcommand{\\sharedcmd}')} / "
+      f"{_tex_ov.find('\\renewcommand{\\sharedcmd}')}")
+
+# ── ⑦-4 本地 .cls + 类里 \input 的 .def（同规则：正文用到 + 模板缺）─────
+write("defscope/MyJournal.cls", r"""\NeedsTeXFormat{LaTeX2e}
+\ProvidesClass{MyJournal}
+\LoadClass{article}
+\input{classdefs.def}
+\newcommand{\classcmd}{C}
+\newtheorem{lemma2}{引理}
+\newcommand{\classunused}{X}
+""")
+write("defscope/classdefs.def", r"""\newcommand{\deffilecmd}{D}
+\DeclareMathOperator{\rank}{rank}
+""")
+write("defscope/extra.cfg", r"""\newcommand{\cfgcmd}{F}
+""")
+write("defscope/macrodefs.sty", r"""\newcommand{\styfilecmd}{S}
+""")
+write("defscope/classmain.tex", r"""\documentclass[b5paper,10.5t]{MyJournal}
+\input{extra.cfg}
+\input{macrodefs.sty}
+\begin{document}
+正文用 \classcmd、\deffilecmd、\cfgcmd、\styfilecmd，$\rank(A)$。
+\begin{lemma2}引理。\end{lemma2}
+\end{document}
+""")
+_class_path = os.path.join(SRC_DIR, "defscope/classmain.tex")
+_class_src = open(_class_path, encoding="utf-8").read()
+_class_exp = expand_inputs(_class_path, _class_src)
+check("⑦ 前言 \\input{*.cfg} / \\input{*.sty} 由 expand_inputs 展开",
+      "\\newcommand{\\cfgcmd}" in _class_exp
+      and "\\newcommand{\\styfilecmd}" in _class_exp
+      and "\\input{extra.cfg}" not in _class_exp
+      and "\\input{macrodefs.sty}" not in _class_exp)
+_res10, _tex10 = build_one("defscope/classmain.tex", "classmain")
+check("⑦ 本地 .cls：\\newcommand 定义迁入（classcmd）", "\\newcommand{\\classcmd}" in _tex10)
+check("⑦ 本地 .cls：定理环境定义迁入（lemma2）", "\\newtheorem{lemma2}" in _tex10)
+check("⑦ 本地 .cls：类里 \\input 的 .def 定义迁入（deffilecmd / rank）",
+      "\\newcommand{\\deffilecmd}" in _tex10
+      and "\\DeclareMathOperator{\\rank}" in _tex10)
+check("⑦ 本地 .cls：正文没用到的不搬（classunused）", "classunused" not in _tex10)
+check("⑦ 前言 \\input 的 .cfg/.sty 里的定义参与迁移（cfgcmd / styfilecmd）",
+      "\\newcommand{\\cfgcmd}" in _tex10 and "\\newcommand{\\styfilecmd}" in _tex10)
+
+# ── ⑦-5 正文区定义：不迁移、只提示（正文整段照搬已保留）─────────────────
+write("defscope/bodydef.tex", r"""\documentclass{article}
+\begin{document}
+\newcommand{\inbodycmd}{B}
+\newenvironment{bodyenv}{}{\relax}
+正文用 \inbodycmd。
+\begin{bodyenv}正文里定义的环境。\end{bodyenv}
+\end{document}
+""")
+_res11, _tex11 = build_one("defscope/bodydef.tex", "bodydef")
+check("⑦ 正文区定义：日志打一行「正文里出现 N 处…建议移到导言区」",
+      any("正文里出现 2 处自定义定义（保留原样，建议移到导言区）" in ln
+          for ln in _res11.log),
+      str([ln for ln in _res11.log if "正文里出现" in ln]))
+check("⑦ 正文区定义：不迁移（产物里只出现正文那一份，不重复定义）",
+      _tex11.count("\\newcommand{\\inbodycmd}") == 1
+      and _tex11.count("\\newenvironment{bodyenv}") == 1,
+      f"{_tex11.count('\\newcommand{\\inbodycmd}')} / "
+      f"{_tex11.count('\\newenvironment{bodyenv}')}")
+check("⑦ 正文区自身定义的环境不算缺失（bodyenv 不进预检警告）",
+      not any("bodyenv" in w for w in _res11.warnings))
+
+# ── ⑦-6 定义缺失预检：醒目警告、不阻断出稿、基础环境不误报 ────────────────
+write("defscope/missenv.tex", r"""\documentclass{article}
+\begin{document}
+\begin{itemize}\item 列表。\end{itemize}
+\begin{equation}x\end{equation}
+\begin{theorem}模板定理环境。\end{theorem}
+\begin{nosuchenv}没定义的环境。\end{nosuchenv}
+\end{document}
+""")
+_res12, _tex12 = build_one("defscope/missenv.tex", "missenv")
+check("⑦ 缺失预检：正文用到的未知环境进警告（nosuchenv）",
+      any("定义缺失预检" in w and "nosuchenv" in w for w in _res12.warnings),
+      str([w for w in _res12.warnings if "预检" in w])[:220])
+check("⑦ 缺失预检：日志有醒目 ⚠ 行",
+      any("⚠ 定义缺失预检" in ln for ln in _res12.log))
+_miss_warns = [w for w in _res12.warnings if "定义缺失预检" in w]
+check("⑦ 缺失预检：内核/模板环境不误报（itemize / equation / theorem 不在缺失清单）",
+      bool(_miss_warns)
+      and all("itemize" not in w and "equation" not in w and "theorem" not in w
+              for w in _miss_warns),
+      str(_miss_warns)[:220])
+check("⑦ 缺失预检不阻断出稿：.tex 照常写出",
+      os.path.isfile(_res12.tex_path) and len(_tex12) > 1000,
+      f"{os.path.isfile(_res12.tex_path)} / {len(_tex12)}")
+check("⑦ 预检函数：正文定义可当覆盖（extra_names）",
+      PRE.missing_environments(
+          "\\begin{bodyenv}x\\end{bodyenv}", "\\begin{document}",
+          {"bodyenv"}) == [])
+check("⑦ 预检白名单：模板用 \\renewenvironment 定义的 proof 不误报（英文模板形态）",
+      PRE.missing_environments(
+          "\\begin{proof}x\\end{proof}",
+          "\\renewenvironment{proof}[1][Proof.]{}{}") == [])
+
+# ── ⑦-6b 撞名改名复用既有逻辑（本地支撑文件在场时照样生效）─────────────────
+write("defscope/rename/SLCN-MIX.sty", r"""\newcommand{\localnewcmd}{L}
+""")
+write("defscope/rename/main.tex", r"""\documentclass{article}
+\usepackage{SLCN-MIX}
+\newcommand{\prop}{\mathsf{Prop}}
+\begin{document}
+正文用 \localnewcmd 与 $\prop$。
+\end{document}
+""")
+_res_rn, _tex_rn = build_one("defscope/rename/main.tex", "rename")
+check("⑦ 撞名改名复用既有逻辑：本地支撑文件在场时，作者宏 \\prop → \\slcnprop 照旧",
+      "\\newcommand{\\slcnprop}" in _tex_rn
+      and "\\newcommand{\\prop}" not in _tex_rn
+      and "$\\slcnprop$" in _tex_rn,
+      str([w for w in _res_rn.warnings if "宏名冲突" in w])[:160])
+check("⑦ 撞名改名与本地定义迁移共存（localnewcmd 也搬）",
+      "\\newcommand{\\localnewcmd}" in _tex_rn)
+
+# ── ⑦-9 \newcounter 迁移（第 130 条补丁，2023(71)04 的 liju/userinput 残留）─────
+# 判据：只在「正文或已迁移定义体用到」时搬（\theX / \setcounter{X} / \value{X}…）；
+# 顺序在使用它的环境定义之前；`\newcounter{X}[Y]` 的父计数器一起搬且排在前面。
+write("defscope/counter2/main.tex", r"""\documentclass{article}
+\newcounter{userinput}
+\newcounter{myctr}
+\newcounter{unusedctr}
+\newcounter{parentonly}
+\newcounter{child}[parentonly]
+\newcounter{macroctr}
+\newenvironment{liju}[1]{\setcounter{userinput}{#1}（\theuserinput）}{}
+\newcommand{\macroctruse}{\themacroctr}
+\begin{document}
+\begin{liju}{3}例句。\end{liju}
+正文计数 \themyctr，还有 \thechild，以及 \macroctruse。
+\end{document}
+""")
+_res_ct, _tex_ct = build_one("defscope/counter2/main.tex", "counter2")
+check("⑦ \\newcounter：正文/已迁环境体用到的计数器搬（userinput / myctr）",
+      "\\newcounter{userinput}" in _tex_ct and "\\newcounter{myctr}" in _tex_ct)
+check("⑦ \\newcounter：正文没用到的不搬（unusedctr）", "unusedctr" not in _tex_ct)
+check("⑦ \\newcounter：`[父计数器]` 的父计数器一起搬（parentonly）",
+      "\\newcounter{parentonly}" in _tex_ct
+      and _tex_ct.find("\\newcounter{parentonly}") < _tex_ct.find("\\newcounter{child}"),
+      f"{_tex_ct.find('\\newcounter{parentonly}')} / {_tex_ct.find('\\newcounter{child}')}")
+check("⑦ \\newcounter：计数器排在用它的环境定义之前（userinput < liju）",
+      _tex_ct.find("\\newcounter{userinput}") < _tex_ct.find("\\newenvironment{liju}"),
+      f"{_tex_ct.find('\\newcounter{userinput}')} / {_tex_ct.find('\\newenvironment{liju}')}")
+check("⑦ \\newcounter：日志明列（计数器迁移 5 个）",
+      any("计数器迁移 5 个" in ln for ln in _res_ct.log),
+      str([ln.strip() for ln in _res_ct.log if "计数器" in ln]))
+check("⑦ \\newcounter：作者宏定义体里用到的计数器也搬（macroctr，与 ④ 的宏一起）",
+      "\\newcounter{macroctr}" in _tex_ct
+      and "\\newcommand{\\macroctruse}" in _tex_ct)
+write("defscope/ctrdup/main.tex", r"""\documentclass{article}
+\newcounter{prop}
+\begin{document}
+正文 \theprop。
+\end{document}
+""")
+_res_cd, _tex_cd = build_one("defscope/ctrdup/main.tex", "ctrdup")
+check("⑦ \\newcounter：模板已有同名计数器（prop 定理计数器）不重复搬",
+      "\\newcounter{prop}" not in _tex_cd)
+# 本地支撑文件里的计数器：与正文可达判据同一套（localenv 体里 stepcounter）
+write("defscope/localctr/localctr.sty", r"""\newcounter{localctr}
+\newcounter{localunused}
+\newcounter{localparent}
+\newcounter{localchild}[localparent]
+\newenvironment{localenv}{\stepcounter{localctr}（\thelocalctr）\thelocalchild}{}
+""")
+write("defscope/localctr/main.tex", r"""\documentclass{article}
+\usepackage{localctr}
+\begin{document}
+\begin{localenv}例子。\end{localenv}
+\end{document}
+""")
+_res_lc, _tex_lc = build_one("defscope/localctr/main.tex", "localctr")
+check("⑦ 本地 .sty 里的 \\newcounter：被本地环境体用到 → 与定义一起搬、顺序在前",
+      "\\newcounter{localctr}" in _tex_lc
+      and "\\newenvironment{localenv}" in _tex_lc
+      and _tex_lc.find("\\newcounter{localctr}") < _tex_lc.find("\\newenvironment{localenv}"))
+check("⑦ 本地 .sty 里的 \\newcounter：没用到的不搬（localunused）",
+      "localunused" not in _tex_lc)
+check("⑦ 本地 .sty 里的 \\newcounter：`[父计数器]` 也搬且排在前面（localparent < localchild）",
+      "\\newcounter{localparent}" in _tex_lc
+      and "\\newcounter{localchild}" in _tex_lc
+      and _tex_lc.find("\\newcounter{localparent}") < _tex_lc.find("\\newcounter{localchild}"))
+
+# ── ⑦-10 本地非标准命名 .sty：不迁包行、按支撑文件差集搬定义（77/04 SLCN2）──
+write("defscope/localpkg/SLCN2.sty", r"""\newcommand{\localpkgcmd}{S}
+\newcounter{localpkgctr}
+\newcommand{\unusedlocalpkg}{U}
+\renewcommand{\cndash}{--}
+""")
+write("defscope/localpkg/command.sty", r"""\newcommand{\cmdA}{\rightarrow}
+""")
+write("defscope/localpkg/main.tex", r"""\documentclass{article}
+\usepackage{SLCN2}
+\usepackage{multirow}
+\input{command.sty}
+\begin{document}
+正文用 \localpkgcmd、\cmdA、\cndash，计数 \thelocalpkgctr。
+\end{document}
+""")
+_res_lp, _tex_lp = build_one("defscope/localpkg/main.tex", "localpkg")
+check("⑦ 本地非标准 .sty：\\usepackage{SLCN2} 的包行**不迁**（模板负责顶部加载）",
+      "\\usepackage{SLCN2}" not in _tex_lp)
+check("⑦ 本地非标准 .sty：日志写明包行不迁、只按差集搬定义",
+      any("本地旧模板 .sty" in ln and "SLCN2" in ln and "包行不迁" in ln
+          for ln in _res_lp.log),
+      str([ln.strip() for ln in _res_lp.log if "包行不迁" in ln])[:160])
+check("⑦ 本地非标准 .sty：定义仍按差集迁入（localpkgcmd / 计数器）",
+      "\\newcommand{\\localpkgcmd}" in _tex_lp
+      and "\\newcounter{localpkgctr}" in _tex_lp
+      and "unusedlocalpkg" not in _tex_lp)
+check("⑦ 本地非标准 .sty：\\renewcommand 覆盖模板命令的判据照旧（cndash 模板优先+告警）",
+      not any("\\renewcommand{\\cndash}" in ln for ln in _res_lp.log)
+      and any("重定义了模板命令" in w and "cndash" in w for w in _res_lp.warnings),
+      str([w for w in _res_lp.warnings if "重定义" in w])[:160])
+check("⑦ 本地非标准 .sty：非本地宏包照旧迁移（multirow）",
+      "\\usepackage{multirow}" in _tex_lp)
+check("⑦ 本地非标准 .sty：\\input{command.sty} 的本地文件支持未回退（cmdA 迁入）",
+      "\\newcommand{\\cmdA}" in _tex_lp)
+
+# ── ⑦-7 Word 通道零变化（新增逻辑只在 LaTeX 通道；Word 产物/日志不夹带）──
+_docx_src = inspect.getsource(build.build_docx)
+check("⑦ Word 通道零变化：build_docx 不经过第 130 条的新逻辑",
+      not any(k in _docx_src for k in
+              ("scan_support_definitions", "missing_environments", "local_support_files")))
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def _make_docx(paras):
+    ps = "".join(f"<w:p><w:r><w:t>{escape(t)}</w:t></w:r></w:p>" for t in paras)
+    xml = f'<w:document xmlns:w="{_W_NS}"><w:body>{ps}</w:body></w:document>'
+    fd, path = tempfile.mkstemp(prefix="slcn_word130_", suffix=".docx")
+    os.close(fd)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", xml)
+    return path
+
+
+_docx_path = _make_docx(
+    ["论一个平凡的题目", "张三", "中山大学哲学系", "author@univ.edu.cn",
+     "摘要：本文讨论一个平凡的问题。", "关键词：逻辑", "正文第一段。", "正文第二段。"])
+_docx_out = os.path.join(TMP, "out_word130")
+_docx_res = build.build_docx(_docx_path, _docx_out, basename="word", verbose=False)
+_docx_tex = open(_docx_res.tex_path, encoding="utf-8").read()
+check("⑦ Word 通道零变化：日志里没有正文定义提示 / 本地支撑文件 / 缺失预检",
+      not any(k in ln for ln in _docx_res.log
+              for k in ("正文里出现", "本地支撑文件", "定义缺失预检")))
+check("⑦ Word 通道零变化：warnings 里没有定义缺失预检",
+      not any("定义缺失预检" in w for w in _docx_res.warnings))
+check("⑦ Word 通道零变化：产物照常（含正文与模板字段）",
+      "正文第一段。" in _docx_tex and "\\begin{document}" in _docx_tex)
+
 shutil.rmtree(TMP, ignore_errors=True)
+
 
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

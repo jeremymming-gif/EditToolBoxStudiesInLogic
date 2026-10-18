@@ -22,6 +22,12 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
   (j) 默认路径：笔记仓定位（显式且严格）；找不到时**明确报错**，不静默写别处
   (k) CLI 端到端：init / import-bib / query / stats / lint / import-dir 的退出码与输出
   (l) 真实稿件库抽查：**SKIP when absent**（公开仓/CI 没有稿件库），只读
+  (m) 待裁决清单：`report` / `report-conflicts` / `report-duplicates` 生成
+      CONFLICTS.md / DUPLICATES.md / duplicates.csv（中文、可勾选、按期→篇→条目、
+      重复生成逐字节不变、空库/缺库处理）
+  (n) 界面用的 CLI 能力（第 132 条）：`--dry-run` 预览（**一个字节都不写**、带逐条
+      changes、库不存在也不新建）、`import-dir --root` 给**一期目录**（只导入这一期）、
+      `query --bibtex`（命中带可直接复制的 BibTeX）
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -714,6 +720,239 @@ with tempfile.TemporaryDirectory(prefix="bibdb_cli_") as tmp:
           (r.stdout + r.stderr)[-200:])
     r = run_cli("import-dir", "--root", os.path.join(tmp, "不存在"), "--db", db2)
     check("(k) `import-dir` 根不存在 → 退出 2", r.returncode == 2)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (m) 待裁决清单：report / report-conflicts / report-duplicates ──")
+
+
+def _read_text(path: str) -> str:
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_report_") as tmp:
+    db = os.path.join(tmp, "db.jsonl")
+    store = bibdb.Store.load(db, create=True)
+    # 记录 A：已核实基线（来源期 74）
+    store.import_bib_text("""@article{Quine1970,
+  author  = {Quine, W. V. O.},
+  title   = {Philosophy of Logic},
+  journal = {Mind},
+  volume  = {79},
+  pages   = {1--20},
+  year    = {1970}
+}
+""", {"kind": "published-bib", "issue": "2024年第1期(74)",
+      "slug": "01 A", "file": "a.bib"}, verified=True)
+    # 记录 B：同作品不同 key（供「重复候选对」；内容不同才会成为两条记录）
+    store.import_bib_text("""@article{Quine70,
+  author    = {Quine, Willard Van Orman},
+  title     = {Philosophy of logic},
+  publisher = {Prentice-Hall},
+  year      = {1970}
+}
+""", {"kind": "published-bib", "issue": "2024年第2期(75)",
+      "slug": "02 B", "file": "b.bib"}, verified=True)
+    # 同 key 同作品、字段不同（新一期）→ 产生 1 条冲突留档
+    store.import_bib_text("""@article{Quine1970,
+  author  = {Quine, W. V. O.},
+  title   = {Philosophy of Logic},
+  journal = {Mind (new series)},
+  volume  = {79},
+  pages   = {1--20},
+  year    = {1970}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "03 C", "file": "c.bib"}, verified=True)
+    store.save()
+
+    out = os.path.join(tmp, "reports")
+    r = run_cli("report", "--db", db, "--out", out)
+    conflicts_md = os.path.join(out, "CONFLICTS.md")
+    duplicates_md = os.path.join(out, "DUPLICATES.md")
+    duplicates_csv = os.path.join(out, "duplicates.csv")
+    check("(m) `report` 退出 0 且生成三个清单文件",
+          r.returncode == 0 and os.path.isfile(conflicts_md)
+          and os.path.isfile(duplicates_md) and os.path.isfile(duplicates_csv),
+          (r.stdout + r.stderr)[-300:])
+    text = _read_text(conflicts_md) if os.path.isfile(conflicts_md) else ""
+    check("(m) CONFLICTS.md：中文标题 + 按期→篇→条目组织 + 编号",
+          "字段冲突待裁决清单" in text and "### 期：2025年第1期(80)" in text
+          and "#### 篇：03 C" in text and "##### C001 · `Quine1970`" in text, text[:300])
+    check("(m) CONFLICTS.md：列 bib key / 题名 / 作者 / 年份",
+          "`Quine1970`" in text and "Philosophy of Logic" in text
+          and "Quine, W. V. O." in text and "1970" in text)
+    check("(m) CONFLICTS.md：**已核实旧值 vs 新稿值** 都写清",
+          "已核实旧值 = `Mind`" in text and "新稿值 = `Mind (new series)`" in text
+          and "journal" in text, text[-1500:])
+    check("(m) CONFLICTS.md：两个来源（新稿期/篇/文件 + 库内已核实来源）",
+          "**冲突来源（新稿）**：2025年第1期(80) / 03 C / c.bib" in text
+          and "2024年第1期(74) / 01 A / a.bib" in text)
+    check("(m) CONFLICTS.md：逐条可勾选（保留旧值/采用新稿值/仍需查证）",
+          "- [ ] 保留旧值（建议默认）" in text
+          and "- [ ] 采用新稿值" in text and "- [ ] 仍需人工查证" in text)
+    check("(m) CONFLICTS.md：带统计摘要 + 默认建议 + 裁决方法章节",
+          "待裁决冲突项：**1** 条" in text and "默认保留旧值 **1** 条" in text
+          and "## 裁决方法" in text and "--force" in text)
+    dup_text = _read_text(duplicates_md) if os.path.isfile(duplicates_md) else ""
+    check("(m) DUPLICATES.md：明确「仅供参考，不自动合并」+ 候选对表",
+          "仅供参考，不自动合并" in dup_text and "| # | 相似度 | key A | key B |" in dup_text)
+    check("(m) DUPLICATES.md：列出 key/题名/作者/年份/来源期/相似度",
+          "Quine1970" in dup_text and "Quine70" in dup_text
+          and "1.0000" in dup_text and "2024年第1期(74)" in dup_text
+          and "Philosophy of Logic" in dup_text, dup_text[-900:])
+    raw_csv = read_bytes(duplicates_csv) if os.path.isfile(duplicates_csv) else b""
+    check("(m) duplicates.csv：UTF-8 带 BOM（Excel 打开中文不乱码）",
+          raw_csv.startswith(b"\xef\xbb\xbf"))
+    rows: list[dict] = []
+    if raw_csv:
+        import csv
+        with open(duplicates_csv, encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    expected_columns = {"pair_no", "similarity", "key_a", "key_b", "title_a", "title_b",
+                        "author_a", "author_b", "year_a", "year_b", "issues_a", "issues_b"}
+    check("(m) duplicates.csv：全量行 + 列齐全（相似度降序）",
+          len(rows) == 1 and expected_columns <= set(rows[0].keys())
+          and rows[0]["key_a"] == "Quine1970" and rows[0]["key_b"] == "Quine70",
+          str(rows[0] if rows else None)[:300])
+
+    # 幂等：同一份库重复生成 → 文件逐字节相同、CLI 明说未重写
+    digest_before = {pathlib.Path(path).name: hashlib.sha256(read_bytes(path)).hexdigest()
+                     for path in (conflicts_md, duplicates_md, duplicates_csv)}
+    r2 = run_cli("report", "--db", db, "--out", out)
+    digest_after = {pathlib.Path(path).name: hashlib.sha256(read_bytes(path)).hexdigest()
+                    for path in (conflicts_md, duplicates_md, duplicates_csv)}
+    check("(m) 重复 `report`：三个文件逐字节不变（清单无生成时间）",
+          r2.returncode == 0 and digest_before == digest_after)
+    check("(m) 重复 `report`：CLI 明说「内容未变（未重写）」",
+          "未重写" in r2.stdout, r2.stdout[-300:])
+
+    # 单独子命令
+    out_conf = os.path.join(tmp, "only_conflicts")
+    r3 = run_cli("report-conflicts", "--db", db, "--out", out_conf)
+    check("(m) `report-conflicts` 只生成 CONFLICTS.md",
+          r3.returncode == 0 and os.path.isfile(os.path.join(out_conf, "CONFLICTS.md"))
+          and not os.path.exists(os.path.join(out_conf, "DUPLICATES.md")))
+    out_dup = os.path.join(tmp, "only_duplicates")
+    r4 = run_cli("report-duplicates", "--db", db, "--out", out_dup)
+    check("(m) `report-duplicates` 只生成 DUPLICATES.md + duplicates.csv",
+          r4.returncode == 0 and os.path.isfile(os.path.join(out_dup, "DUPLICATES.md"))
+          and os.path.isfile(os.path.join(out_dup, "duplicates.csv"))
+          and not os.path.exists(os.path.join(out_dup, "CONFLICTS.md")))
+
+    # 空库：仍能出清单（0 条），不报错
+    empty_db = os.path.join(tmp, "empty.jsonl")
+    bibdb.Store.load(empty_db, create=True).save()
+    out_empty = os.path.join(tmp, "empty_reports")
+    r5 = run_cli("report", "--db", empty_db, "--out", out_empty)
+    empty_text = _read_text(os.path.join(out_empty, "CONFLICTS.md")) if r5.returncode == 0 else ""
+    check("(m) 空库 `report`：退出 0、冲突清单写「（无…）」",
+          r5.returncode == 0 and "（无：引用库当前没有字段冲突。）" in empty_text,
+          (r5.stdout + r5.stderr)[-200:])
+    r6 = run_cli("report", "--db", os.path.join(tmp, "missing.jsonl"), "--out", out)
+    check("(m) 库不存在时 `report` 退出 2（明确报错）", r6.returncode == 2
+          and "引用库不存在" in (r6.stdout + r6.stderr))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (n) 界面用的 CLI 能力：--dry-run / 单期 import-dir / --bibtex ──")
+
+with tempfile.TemporaryDirectory(prefix="bibdb_gui_") as tmp:
+    db = os.path.join(tmp, "gui.jsonl")
+    bib = write(os.path.join(tmp, "gui.bib"), BASE_BIB)
+
+    # ── dry-run：只算不写（库不存在也不能被新建）──
+    r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
+                "--slug", "02 Kun_Xing", "--verified", "--dry-run", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(n) import-bib --dry-run --json 退出 0、标 dry_run/written/db_existed",
+          r.returncode == 0 and payload.get("dry_run") is True
+          and payload.get("written") is False and payload.get("db_existed") is False,
+          (r.stdout + r.stderr)[:300])
+    check("(n) dry-run **不新建库文件**（一个字节都不写）", not os.path.exists(db))
+    check("(n) dry-run 的 report 计数与逐条 changes 都在",
+          payload.get("report", {}).get("new") == 2
+          and len(payload.get("changes") or []) == 2
+          and {row["key"] for row in payload["changes"]} == {"Smith2020", "Jones2019"},
+          json.dumps(payload.get("report"), ensure_ascii=False))
+
+    # ── 真正导入 → 再 dry-run：库文件不变、明细为空 ──
+    r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
+                "--slug", "02 Kun_Xing", "--verified", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(n) 真导入：written=true、库文件出现", r.returncode == 0
+          and payload.get("written") is True and os.path.isfile(db))
+    digest = read_bytes(db)
+    r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
+                "--slug", "02 Kun_Xing", "--verified", "--dry-run", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(n) 幂等输入的 dry-run：merged=2、changes 为空、库文件逐字节不变",
+          r.returncode == 0 and payload.get("report", {}).get("merged") == 2
+          and not payload.get("changes") and read_bytes(db) == digest,
+          (r.stdout + r.stderr)[:300])
+
+    # ── 人读输出：明说「预览 / 未写库」──
+    db_human = os.path.join(tmp, "gui_human.jsonl")
+    r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
+                "--slug", "02 Kun_Xing", "--verified", "--dry-run", "--db", db_human)
+    check("(n) 人读 dry-run：明说「预览」「未写库」，且库没被建出来",
+          r.returncode == 0 and "预览（dry-run" in r.stdout and "未写库" in r.stdout
+          and not os.path.exists(db_human), (r.stdout + r.stderr)[:300])
+
+    # ── import-dir：--root 给**一期目录**时只导入这一期（界面「入藏」选整期根目录）──
+    root = os.path.join(tmp, "稿件库")
+    make_issue(root, "2026年第2期(87)", "02 Kun_Xing", "reference.bib", BASE_BIB)
+    make_issue(root, "2025年第1期(80)", "01 Other_Author", "reference.bib",
+               "@article{Other2020, author = {Other, O.}, title = {Elsewhere}, year = {2020}}\n")
+    issue_dir = os.path.join(root, "2026年第2期(87)")
+    db_issue = os.path.join(tmp, "gui_issue.jsonl")
+    r = run_cli("import-dir", "--root", issue_dir, "--dry-run", "--json", "--db", db_issue)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(n) import-dir --root 一期目录：scope=issue、只列这一期、dry-run 不建库",
+          r.returncode == 0 and payload.get("scope") == "issue"
+          and [issue["issue"] for issue in payload["result"]["issues"]]
+          == ["2026年第2期(87)"]
+          and payload.get("written") is False and not os.path.exists(db_issue),
+          (r.stdout + r.stderr)[:400])
+    r = run_cli("import-dir", "--root", issue_dir, "--json", "--db", db_issue)
+    check("(n) import-dir 单期真导入：成品期入 verified",
+          r.returncode == 0 and bibdb.Store.load(db_issue).get("Smith2020")["verified"] is True)
+    check("(n) 单期导入**只**有这一期的条目（别的期没被带进来）",
+          bibdb.Store.load(db_issue).get("Other2020") is None)
+
+    # ── query --bibtex ──
+    r = run_cli("query", "--key", "Smith2020", "--bibtex", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    hit = (payload.get("hits") or [{}])[0]
+    text = hit.get("bibtex") or ""
+    check("(n) query --bibtex --json：命中带可直接复制的 BibTeX 段",
+          r.returncode == 0 and text.startswith("@article{Smith2020,")
+          and "title = {A Theory of Everything}" in text
+          and "doi = " in text, text[:200])
+    r = run_cli("query", "--key", "Smith2020", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(n) 不带 --bibtex 时 JSON 与从前一样（没有 bibtex 键）",
+          "bibtex" not in (payload.get("hits") or [{}])[0])
+    r = run_cli("query", "--key", "Smith2020", "--bibtex", "--db", db)
+    check("(n) 人读 --bibtex：打「BibTeX：」块", r.returncode == 0
+          and "BibTeX：" in r.stdout and "@article{Smith2020," in r.stdout,
+          (r.stdout + r.stderr)[-200:])
+
+    # ── dry-run 不碰稿件库（只读）──
+    snapshot = {str(path): hashlib.sha256(read_bytes(str(path))).hexdigest()
+                for path in pathlib.Path(root).rglob("*") if path.is_file()}
+    r = run_cli("import-dir", "--root", root, "--dry-run", "--json",
+                "--db", os.path.join(tmp, "gui_root.jsonl"))
+    after = {str(path): hashlib.sha256(read_bytes(str(path))).hexdigest()
+             for path in pathlib.Path(root).rglob("*") if path.is_file()}
+    check("(n) 稿件库 dry-run 只读：文件一个字节都没变",
+          r.returncode == 0 and snapshot == after)
+    empty_root = os.path.join(tmp, "空目录")
+    os.makedirs(empty_root, exist_ok=True)
+    r = run_cli("import-dir", "--root", empty_root, "--dry-run", "--json",
+                "--db", os.path.join(tmp, "gui_root2.jsonl"))
+    check("(n) 既不是稿件库根也不是期目录：扫到 0 期、退出 0（不崩）",
+          r.returncode == 0 and json.loads(r.stdout)["result"]["issues"] == [])
 
 
 # ─────────────────────────────────────────────────────────────────────────

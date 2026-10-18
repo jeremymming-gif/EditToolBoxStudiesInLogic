@@ -58,6 +58,21 @@ enum ConvertFeature {
         /// 界面开关「保留原 reference.bib（不并入 AI 结果）」→ `--no-ai-merge`。
         /// 只在勾了「用 AI 处理参考文献」时才显示（没勾 AI 就压根没有合并通道）。
         var keepOriginalBib = false // --no-ai-merge
+        // ── 第 132 条：核实成本闸门 + 引用库（由「引用库设置」页存 UserDefaults，
+        //    `ConvertTab.run()` 在运行时现取）。默认值 = **一个参数都不加**，
+        //    所以没碰过这些设置的用户，命令行与接入前逐字节相同。
+        /// 核实条数上限 → `--verify-max`（nil = 不传，引擎用默认 120；0 = 不限）
+        var verifyMax: Int? = nil
+        /// 核实前先算账 → `--verify-plan`（引擎打印核实计划后退出 0；**本次不真正核实**）
+        var verifyPlan = false
+        /// 允许全量核实 → `--verify-all-refs`（越过上限闸门）
+        var verifyAllRefs = false
+        /// 本次不查引用库 → `--no-bibdb`
+        var noBibdb = false
+        /// 手动指定的引用库文件 → `--bibdb-path`。空 = 不传（引擎按 `SLCN_NOTES` 自动找）。
+        /// 只在「查库开着 + 库文件确实存在」时由界面填进来：指一个不存在的库只会让引擎
+        /// 多打一条告警，不如不传。
+        var bibdbPath = ""
         // 编辑侧出版信息（作者稿里没有；缺了 PDF 页眉会是「xxxx 年第 x 期，1–10」）
         var vol = ""             // --vol
         var issue = ""           // --issue
@@ -241,10 +256,31 @@ enum ConvertFeature {
         // 所以「未配置 AI 却勾了开关」的结果是：只出任务书（这正是界面文案承诺的行为）。
         // 界面上的联动（`toggled`）保证了勾 AI 时这个值一定是 true；这里再兜一次，
         // 是因为 argv 是**引擎真正收到的东西**，界面状态与它必须一致。
-        if o.verifyRefs || o.useAI { a.append("--verify-refs") }
-        // 「保留原 reference.bib（不并入 AI 结果）」只在 AI 勾着时有意义：
-        // 没勾 AI 就压根没有合并通道，加 --no-ai-merge 只是噪声（也会让日志说谎）。
-        if o.useAI && o.keepOriginalBib { a.append("--no-ai-merge") }
+        //
+        // 第 132 条「先算账」：引擎在 `--verify-plan` 分支里打印核实计划后**直接 exit 0**，
+        // 根本走不到真正的核实。所以本次到底传哪个，由本函数这一处决定 ——
+        // 两个都传只会让人以为「又要核实」，日志也说不清；**只传 --verify-plan**。
+        if o.verifyRefs || o.useAI {
+            if o.verifyPlan {
+                a.append("--verify-plan")
+            } else {
+                a.append("--verify-refs")
+                // 「保留原 reference.bib（不并入 AI 结果）」只在 AI 勾着时有意义：
+                // 没勾 AI 就压根没有合并通道，加 --no-ai-merge 只是噪声（也会让日志说谎）。
+                if o.useAI && o.keepOriginalBib { a.append("--no-ai-merge") }
+            }
+        }
+        // 成本闸门与引用库开关：只在**真的执行核实**（任务书 / AI）时传 ——
+        // 引擎对这些参数单独出现时只会打一行「本次忽略」的告警，界面不该发这种噪声。
+        if o.verifyRefs || o.useAI {
+            if let maxRefs = o.verifyMax { a += ["--verify-max", String(maxRefs)] }
+            if o.verifyAllRefs { a.append("--verify-all-refs") }
+            if o.noBibdb {
+                a.append("--no-bibdb")
+            } else if !o.bibdbPath.isEmpty {
+                a += ["--bibdb-path", o.bibdbPath]
+            }
+        }
         if o.useAI {
             // 只有勾了开关才把 AI 配置传下去（不勾就完全不碰这些参数）。
             // 地址/模型为空时 add() 会自动跳过 —— 引擎侧对空值会回落到环境变量
@@ -288,6 +324,37 @@ enum ConvertFeature {
         }
         if o.force { a.append("--force") }
         return a
+    }
+
+    /// 第 132 条：把「本次核实的成本闸门与引用库设置」写进运行日志（纯展示）。
+    ///
+    /// 为什么必须打：这些值存在 UserDefaults 里、由界面现取拼 argv；编辑看日志要能回答
+    /// 「这次核多少条、查不查库、库在哪」。尤其「先算账」开着时引擎只打印计划就退出 0，
+    /// 不写一行说明的话，日志看起来就像「转换成功但什么都没做」。
+    private static func logVerifyGate(_ o: Options, log: Logger) {
+        guard o.verifyRefs || o.useAI else { return }
+        let maxText: String
+        if let maxRefs = o.verifyMax {
+            maxText = maxRefs == 0 ? "不限（--verify-max 0）" : "\(maxRefs) 条（--verify-max）"
+        } else {
+            maxText = "引擎默认 120 条（本次不传 --verify-max）"
+        }
+        log("  核实   范围上限 \(maxText)\n")
+        if o.verifyPlan {
+            log("  核实   **只算账**（--verify-plan）：本次只打印核实范围与预计次数，"
+                + "不生成任务书、不检索、不调用 AI；要真正核实请到「引用库设置」关掉「先算账」再跑。\n")
+        }
+        if o.verifyAllRefs {
+            log("  核实   **允许全量核实**（--verify-all-refs）：越过上限闸门，"
+                + "未被正文引用的条目也会核（会多花钱）。\n")
+        }
+        if o.noBibdb {
+            log("  引用库 本次**不查库**（--no-bibdb）：输出与接入引用库之前一致。\n")
+        } else if !o.bibdbPath.isEmpty {
+            log("  引用库 核实前先查库（--bibdb-path \(o.bibdbPath)）\n")
+        } else {
+            log("  引用库 核实前先查库（自动：按 SLCN_NOTES 找笔记仓的 bib_db/bibliography.jsonl）\n")
+        }
     }
 
     /// 把「用 AI 处理参考文献」这一项的实际效果写进日志。
@@ -381,6 +448,7 @@ enum ConvertFeature {
         // 没传（`nil`）才回落到读「设置」页保存过的 ai.json。见 `effectiveKnobs`。
         let knobs = effectiveKnobs(liveKnobs)
         logAI(o, knobs: knobs, log: log)
+        logVerifyGate(o, log: log)
         for w in knobWarnings(knobs) { log(w) }
         log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n\n")
 

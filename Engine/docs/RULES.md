@@ -19,6 +19,7 @@
 | 编辑部 bib 规范（写进任务书、也是给 AI 的 system prompt） | `slcn/refmark.py`（`SPEC_MD` / `SOURCES_MD` / `FORMAT_MD`；⑪ 逐条请求 = `entry_prompt()`） | 本文 §五 | 第 41/61/68 条 |
 | **条目 → 源稿原文**的映射（任务书「源稿原文」行与 AI 预跑都用它） | `slcn/docxsource.py`（`DocxDoc.ref_raw_by_key` / `_numbered_refs`）、`slcn/footref.py`（`split_numbered_raw`）、`slcn/build.py`（`BuildResult.ref_raw_lines` / `ref_raw_by_key`）、`slcn/refmark.py`（`_norm_raw_line` / `_entry_block`） | 本文 §五 | 第 68 条 |
 | bib 归一化 / `userf` / `\bibitem` 转换 | `slcn/bibnorm.py`（`detect_userf()` / `normalize_bib()` / `_clean_field_value()` / `DROP_FIELDS`） | 本文 §四.1 | 第 20/32 条 |
+| **bib 整行注释不算条目**（第 133 条） | `slcn/bibnorm.py`（`strip_bib_comments()` / `split_entries()`） | 本文 §四.8 | 第 133 条 |
 | **AI 结果并入 `reference.bib`**（2026-10-15） | `slcn/aibib.py`（`merge()` / 注释归位 / 字段顺序重排 / `render_merge_section()`；手动通道 = `merge_returned_bib()` / `apply_merge_to_file()` / `write_merge_record()`）+ `convert.py`（`apply_ai_merge()`，回滚副本 `reference.bib.ai前`）+ `checkbib.py --merge-into` | 本文 §五 | 第 64/65 条 |
 | **英文作者一律倒装**（2026-10-15） | `slcn/bibnorm.py`（`normalize_author_field()` / `author_is_inverted()`）+ `slcn/bibcheck.py`（`author_form_issues()` / `translation_marking_issues()` / `author_has_role_mark()`）+ `tests/test_authornorm.py` | 本文 §四.7 | 第 63/64 条 |
 | 字段完整性 + 类型统一 + 引用双向核对 | `slcn/bibcheck.py`（`REQUIRED` / `TYPE_ALIASES` / `check()` / `check_citations()`） | 本文 §四.2–4 | 第 21/22/25/26 条 |
@@ -26,6 +27,7 @@
 | **英文稿脚注/参考文献/小标题判据**（第 121 条） | `slcn/docxsource.py`（`_entry_is_note_only()` / `_looks_short_bibliographic_note()` / `_parse_reference_line_en_fullname()` / `classify_en_heading()` / `_looks_plain_en_title()`；只对全英文稿生效，中文稿逐字节不变） | 本文 §一；`docs/GUIDE.md` §3.11 | 第 121 条 |
 | **LaTeX 正文图片复制 / 无花括号新命令 / `\bibliographystyle` 截断**（第 121 条） | `slcn/latex.py`（`copy_referenced_graphics()` / `find_all_macros()`）、`slcn/sources.py`、`slcn/build.py` | `docs/GUIDE.md` §3.1 | 第 121 条 |
 | **英文省略号后紧跟字母要隔离**（第 121 条） | `slcn/rules.py::en-ellipsis-letter`（只在后接字母时写 `\ldots{}`，其余逐字节不变） | `docs/GUIDE.md` §3.1 | 第 121 条 |
+| **LaTeX 自定义定义的位置**（第 130 条，本地 sty/cls/def/cfg、`\newcounter`、本地包行、正文区、缺失预检） | `slcn/preamble.py`（`local_support_files()` / `scan_support_definitions()` / `missing_environments()` / `plan_migration(source_dir=)`）、`slcn/build.py`（②′ 与 ⑤） | 本文 §八；`docs/GUIDE.md` §3.1 | 第 130 条 |
 | **参考文献键的生成与稳定性**（钉死「不可复现」） | `slcn/docxsource.py`（`make_key()` / `_make_key_core()` / `_dedupe_keys()` / `_strip_zero_width()`；兜底键用 `zlib.crc32`，**不许**用内置 `hash()`） | 本文 §四.2 末「键的稳定性」 | 第 74 条 |
 | **第一作者单位**（脚注「作者简介」句里也抓） | `slcn/docxsource.py`（`_clean_affil_line()` = 旧口径 `_clean_affil_line_strict()` 优先，空了才走 `_clean_affil_by_sentence()`） | `docs/GUIDE.md`「GUI 各页速查」 | 第 75 条 |
 | **Word 通道的英文元数据第二源** | `slcn/sources.py`（`en_metadata_sheet()`）+ `slcn/build.py`（`build_docx(metadata_path=…)` / `_merge_en_metadata_source()`）+ `convert.py`（`find_en_metadata()` / `mark_en_abstract_roles()`） | `docs/GUIDE.md` §3.8 | 第 76 条 |
@@ -491,6 +493,23 @@ pbpaste | python3 checkbib.py --returned-stdin --list-keys      # 例：20 条�
   原来 `title = {张建军、万林（译）}`，现在作者保留 `阿斯海姆（著），张建军、万林（译）`、
   题名是 `指称与意向性`）。
 
+### 8. bib 文件的整行注释（第 133 条，2026-10-18）
+
+**口径**：`.bib` 里**整行注释**（行首可选空白后以 `%` 开头，到行尾）不算条目、不算字段；
+行内/字段值内的 `%`（`note = {50\%}`、`title = {A % B}`）**原样保留**，不做「聪明的行内
+截断」。权威实现：`slcn/bibnorm.py: strip_bib_comments()`（`split_entries()` 拆条目前先过
+一遍它）。
+
+**为什么**：作者交来的旧模板稿 `.bib` 里常见注释掉的旧条目/空键模板
+（`% @article{,`、`% @misc{z16,`）。从前 `split_entries()` 全文正则匹配 `@\w+\s*\{`、
+不跳过 `%` 注释行，产物 `reference.bib` 会出现空键 `@article{,` + 重复键 → biber 语法
+报错、**整份 bib 报废**（2023(71)04 实测：115 处 undefined citation、参考文献区未生成、
+19 页 vs 人工 20 页）。
+
+**边界**：只认整行注释；「字段值里整行以 `%` 开头」的极端写法会被当注释删掉（与 TeX
+的整行注释口径一致）。不影响 Word 通道（`reference.bib` 由 `refs_to_bib()` 直接渲染，
+`move_book_editions()` 的窄口径行为不变）。回归：`tests/test_bibnorm.py`。
+
 
 ---
 
@@ -674,3 +693,57 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 **矢量形状** 9 篇 **89% 检出**（7/9 篇 100%，需人工截图）。
 两篇样板稿（端到端含真编译）：`03 Liang_Zhang` 98.15% / 18 页 = 人工 18 页；
 `10 Bo_Chen` 97.19% / 20 页 = 人工 20 页。完整报告 `out/REPORT.md`，全库明细 `out/corpus/corpus.csv`。
+
+---
+
+## 八、LaTeX 自定义定义的位置（第 130 条，2026-10-18）
+
+**问题**：作者的自定义定义不一定在 `.tex` 导言区——可能在同目录的旧版 `.sty`（普通宏 /
+算子 / 列类型 / 颜色，不只是定理环境）、本地 `.cls`、被它们 `\input` 的 `.def` / `.cfg`，
+甚至写在 `\begin{document}` 之后的正文区。这些位置第 120/127 条只覆盖了一部分。
+
+**口径**（权威实现：`slcn/preamble.py`、`slcn/build.py`）：
+
+1. **本地支撑文件**：读作者稿同目录、由前言加载的 `.cls`（`\documentclass{本地类}`）/
+   `.sty`（`\usepackage`）/ 前言里直接 `\input` 的 `.sty|.def|.cfg`，并递归读它们内部
+   `\input` / `\RequirePackage` 的**同目录**文件；**只读同目录，不查 TeX 发行版**。
+2. **迁移判据仍是两条**：`正文真正用到`（宏按 `\名字`、环境按 `\begin{env}`、颜色按颜色
+   命令参数、列类型按 tabular 列格式）+ `模板没有`。旧文件常是旧版完整模板，整份搬会破坏
+   现行模板；模板已有的名字一律不搬（模板权威）。正文用到但模板已有的本地定义会**显式
+   记录**在「模板已提供、未重复搬」里。
+3. **`\renewcommand` 的判据**（不许静默）：覆盖模板命令且正文用到 → **不搬**（模板优先），
+   但必须进日志 +「⚠ 注意事项」；模板里**没有**对应命令 → 降为 `\newcommand` 迁入，
+   并警告「请核对语义」。`\renewenvironment` 属版式重定义，**不搬**、不在日志里逐条报。
+4. **本地非标准命名的旧模板 `.sty`**（第 130 条补丁）：`\usepackage{名字}` 若作者源目录
+   同目录存在 `名字.sty` → **不迁该包行**（顶部加载交给现行模板），文件按本地支撑文件差集
+   搬定义；日志写「包行不迁、按差集搬定义」。否则产物会 `\usepackage` 一个没被复制进产物
+   目录的文件（`File … not found`）。注意这与 `\input{command.sty}` 的本地文件支持是两条路
+   （后者由 `expand_inputs` 展开），互不回退。
+5. **`\newcounter{X}` 依赖迁移**（第 130 条补丁）：只有「正文或已迁移定义体用到」才搬——
+   用到形态 = `\theX` / `\value{X}` / `\setcounter{X}` / `\stepcounter{X}` / `\addtocounter{X}` /
+   `\refstepcounter{X}` / `\usecounter{X}` / `\arabic{X}` / `\roman{X}` / `\Roman{X}` /
+   `\alph{X}` / `\Alph{X}` / `\fnsymbol{X}`（计数器名不是控制序列，不能按 `\名字` 判）。
+   计数器统一排在定义块之前；`\newcounter{X}[Y]` 的父计数器 Y 一起搬且排在 X 之前。
+   模板已有同名计数器（显式 `\newcounter` 或 `\newtheorem` 隐式创建）不重复搬。
+6. **正文区定义**：不迁移（正文整段照搬已保留），build 日志打一行
+   「正文里出现 N 处自定义定义（保留原样，建议移到导言区）」；不做猜测性搬动。
+7. **定义缺失预检**：编译前把正文 `\begin{env}` 集合与「模板 + 迁移结果 + 正文自身定义」
+   核对，缺失 → 日志醒目警告 + 「⚠ 注意事项」，**不阻断出稿**（退出码不变）。宏级缺失
+   不做预检（离线看不到宏包内部定义，误报会更多）；环境级用内置
+   `BASE_ENVIRONMENTS`（内核/模板类/常用宏包环境）压误报。
+8. **Word 通道零变化**：上述逻辑只在 LaTeX 通道；Word 通道的产物、日志、退出码不变。
+
+**边界（如实说清）**：纯离线判据不解析 TeX 发行版/宏包自带的定义，`BASE_ENVIRONMENTS`
+之外的宏包自带环境仍可能被预检报成缺失（只是提示）；`\def` / `\let` / `\newif` /
+`\renewenvironment` 不搬；`\newcounter` 只在「正文或已迁定义体用到」时搬（没用到不搬；
+跨「作者前言 ↔ 本地 sty」两组的计数器依赖不闭合）；本地非标准 `.sty` 的包行不迁后，
+该文件里 `\def` 类定义与它自己 `\usepackage` 的宏包不跟着走；本地支撑文件只认**同目录**；
+没有 `\begin{document}` 的纯正文稿无法区分前言/正文，沿用第 120 条旧行为（整份按正文
+可达收宏）。
+
+**回归**：`tests/test_latex_preamble.py` ⑦ 组（合成夹具：本地 sty 五类 + 普通宏、撞名
+跳过与 `\renewcommand` 警告、共享计数器闭包、本地 cls + 嵌套 def、正文区提示、缺失预检、
+`\newcounter` 迁移与顺序、本地非标准 `.sty` 包行不迁、Word 通道零变化）。真实稿只读抽查
+（2023 年第 4 期 04 稿的 `\definitionnamechange` + `\newcounter{userinput}`、2024 年第 2 期
+05 稿的 `\cp` / `\cpp`、2024 年第 4 期 04 稿的 `SLCN2.sty`）已验证迁入；公开仓不记作者
+姓名与稿件片段。
