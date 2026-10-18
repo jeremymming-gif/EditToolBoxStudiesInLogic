@@ -25,7 +25,7 @@ description: 联网与费用、API key 安全、编译失败、打不开怎么�
 
 ## API key 存在哪里？安全吗？
 
-只存本机（macOS 在应用支持目录的 `ai.json`，Windows 在本地配置目录），由外壳通过**环境变量**传给引擎，
+只存本机（macOS 在应用支持目录的 `ai.json`，Windows 在 `%APPDATA%\EditToolBox\settings.json`），由外壳通过**环境变量**传给引擎，
 不进命令行（`ps` / 任务管理器看不到）；不会上传到任何第三方。
 
 ## 引用库在哪里？会不会把数据传到公网？
@@ -39,7 +39,7 @@ description: 联网与费用、API key 安全、编译失败、打不开怎么�
 
 ## 编译失败怎么办？
 
-先看运行日志里的 xelatex/biber 报错行；最常见是没装 TeX Live、缺少宏包或 `.bib` 有语法问题。
+先看运行日志里的 xelatex/biber 报错行；最常见是没装 TeX 发行版（TeX Live / MiKTeX / MacTeX）、缺少宏包或 `.bib` 有语法问题。
 转换产物与 `.log` 会保留在输出目录，便于排查。
 
 ## 能用于其他期刊吗？
@@ -47,9 +47,9 @@ description: 联网与费用、API key 安全、编译失败、打不开怎么�
 默认模板、字段规范与判据按《逻辑学研究》体例写死；换刊需要改 `Engine/slcn/` 的规则与
 `编辑笔记/模板文件/` 的模板。
 
-## macOS 打不开 / Windows 提示威胁怎么办？
+## Windows 提示威胁 / macOS 打不开怎么办？
 
-这是未签名（ad-hoc 签名）应用的正常提示：macOS **右键 → 打开**，Windows **更多信息 → 仍要运行**。
+这是未签名（ad-hoc 签名）应用的正常提示：Windows **更多信息 → 仍要运行**，macOS **右键 → 打开**。
 原因与接受后果见仓库 `RELEASING.md`。
 
 ## 怎么反馈问题？

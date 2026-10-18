@@ -148,8 +148,8 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 | 英文题名 `title_en` | 79 | 0 | 53 |
 | 英文摘要 `abstract_en` | 75 | 0 | 57 |
 
-- `n_headings` 合计 **545**；`n_bib` 合计 **1526**
-- sha256[:12]：`docx_audit.csv` = `5710b55e2167`，`docx_audit.txt` = `4a70cfe4c67a`（与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
+- `n_headings` 合计 **586**；`n_bib` 合计 **2059**
+- sha256[:12]：`docx_audit.csv` = `0aac0777fa61`，`docx_audit.txt` = `59e1a092dc7c`（与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
 **corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **88.83%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
@@ -157,7 +157,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 16:30:13`；`HEAD` = `22c3cc5`；`git status --porcelain` **2** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 16:53:07`；`HEAD` = `20e3e30`；`git status --porcelain` **11** 行
 <!-- AUTO:STATE:END -->
 
 ---

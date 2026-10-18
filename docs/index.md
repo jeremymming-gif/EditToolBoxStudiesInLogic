@@ -12,7 +12,7 @@ hero:
       text: 快速上手
       link: /guide/quickstart
     - theme: alt
-      text: 下载最新版
+      text: 下载最新版（Windows / macOS）
       link: https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest
 features:
   - icon:
@@ -42,7 +42,7 @@ features:
 ## 从作者来稿到可编译初排稿
 
 <div class="steps">
-  <div class="step"><span class="num">1</span><strong>拖入源文件</strong><span>Word 或 LaTeX 稿件拖进「初排转换」，再选输出目录。</span></div>
+  <div class="step"><span class="num">1</span><strong>拖入 / 选择源文件</strong><span>Word 或 LaTeX 稿件拖进「初排转换」（Windows 版点「浏览…」选择），再选输出目录。</span></div>
   <div class="step"><span class="num">2</span><strong>补齐信息</strong><span>按日志提示覆盖题名/作者/单位等；出版信息可一次填好。</span></div>
   <div class="step"><span class="num">3</span><strong>运行并编译</strong><span>得到可编译的 .tex + reference.bib，每一步都有日志。</span></div>
 </div>
@@ -50,13 +50,14 @@ features:
 ## 下载与安装
 
 <div class="download-row">
-  <a href="https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest">⬇️ 下载最新版（macOS / Windows）</a>
+  <a href="https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest">⬇️ 下载最新版（Windows / macOS）</a>
+  <a href="/EditToolBoxStudiesInLogic/guide/install#windows">🪟 Windows 安装</a>
   <a href="/EditToolBoxStudiesInLogic/guide/install">安装说明</a>
 </div>
 
-- **macOS**：解压后把 App 放进「应用程序」；首次打开如被拦截，**右键 → 打开**。
-- **Windows**：解压即用，**不需要另装 Python**；SmartScreen 选「更多信息 → 仍要运行」。
-- 编译 LaTeX 需要本机安装 TeX Live / MacTeX。
+- **Windows**：下载 `EditToolBox-<版本>-Windows-x64.zip`，解压即用，**不需要另装 Python**（两个 exe 放同一个文件夹）；首次运行 SmartScreen 选「更多信息 → 仍要运行」。
+- **macOS**（Apple 芯片）：解压后把 App 放进「应用程序」；首次打开如被拦截，**右键 → 打开**。
+- 编译 LaTeX 需要本机安装 TeX Live（Windows 可用 MiKTeX，macOS 可用 MacTeX）。
 
 ## 文档
 

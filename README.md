@@ -3,7 +3,9 @@
 《逻辑学研究》编辑部自用的稿件处理工具箱。把作者提交的 **Word / LaTeX 文稿**转成符合本刊
 排版规范的**可编译初排稿**，并处理参考文献核实、整期 PDF 合并等编辑环节。
 
-> 🌐 **项目主页**：<https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/>（功能总览、安装、快速上手、FAQ）
+> 🌐 **项目主页** <https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/> ｜ ⬇️ **下载** <https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest> ｜ 🪟 **Windows 安装** <https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install#windows>
+>
+> 主页含功能总览、Windows 优先的安装说明、快速上手与 FAQ；**Windows 版解压即用，不需要另装 Python**。
 
 - **一个引擎，两个外壳**：所有逻辑都在 Python 引擎（`Engine/`）里，界面只负责取值、拼参数、显示日志。
 - **macOS 外壳**：SwiftUI（`sources-mac/`），构建出 `dist/编辑部工具箱.app`。

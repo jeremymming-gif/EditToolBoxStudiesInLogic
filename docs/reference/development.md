@@ -24,6 +24,10 @@ docs/           本站（VitePress 文档站）
 # macOS App（产物 dist/编辑部工具箱.app）
 bash build.sh
 
+# Windows 包（在 Windows 上；产物 sources-win/build/dist/ 下的两个 exe）
+cd sources-win
+pwsh -ExecutionPolicy Bypass -File build-win.ps1
+
 # 引擎测试（依赖装进 Engine/vendor）
 cd Engine
 python3 -m pip install --target vendor -r requirements.txt
@@ -51,7 +55,7 @@ npm run docs:build    # 产出 docs/.vitepress/dist
 
 ## 参与与红线
 
-- 作者来稿目录**只读**；试验输出写到 `out/` 或 `/tmp/`；
+- 作者来稿目录**只读**；试验输出写到 `out/` 或临时目录（macOS/Linux `/tmp/`，Windows `%TEMP%`）；
 - 公开仓库不放入作者姓名、未发表稿件片段、API 密钥；
 - 修改引擎逻辑要跑隔离普查、反例测试、全库回归与文档一致性检查（见仓库 `AGENTS.md`）；
 - 更多约定：`Engine/docs/INVARIANTS.md`、`RELEASING.md`。

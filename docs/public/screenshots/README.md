@@ -1,7 +1,7 @@
 # 界面截图（占位）
 
-主页与功能页的截图在**软件优化完成后**补入。用户提供的截图暂存目录：
-`/Users/zhangwenming/Documents/GitHub/EditToolBoxWebFig`。
+主页与功能页的截图在**软件优化完成后**补入。用户提供的截图暂存在与工具箱仓并排的
+`EditToolBoxWebFig` 目录（同级路径，按本机实际位置替换）。
 
 放入 `docs/public/screenshots/` 后，在 Markdown 里按如下方式引用（VitePress 的 `public` 会映射到站点根）：
 

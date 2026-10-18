@@ -8,6 +8,9 @@ description: 把已核实的参考文献沉淀成编辑部资产，核实前先�
 引用库（bib 库）把**已核实的参考文献**沉淀下来：以后核实新稿时先查库，命中就走现成版本，
 不再重复花钱检索、也让体例更统一。
 
+两个平台的界面都有同一套**五个页面**（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置），
+底层是同一份 `Engine/bibdb.py`（macOS 包与 Windows 包都随包交付）。
+
 ## 五个页面
 
 | 页面 | 作用 |
@@ -57,3 +60,7 @@ python3 Engine/bibdb.py import-bib --bib /path/to/reference.bib --issue "2026年
 # 重新生成待裁决清单
 python3 Engine/bibdb.py report --out ../EditToolBox-notes/bib_db
 ```
+
+> Windows 上把 `python3` 换成 `python`，示例路径 `/path/to/...` 换成本机路径（如 `C:\...\reference.bib`）。
+> 打包版：Windows 用与界面 exe 同目录的 `SLCNEngine.exe bibdb.py …`；macOS 的引擎随 App 放在
+> `Contents/Resources/Engine/`，用 `python3` 直接跑其中的 `bibdb.py` 即可。
