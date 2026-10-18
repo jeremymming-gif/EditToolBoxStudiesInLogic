@@ -2097,6 +2097,30 @@ def figure_env(names: list[str], idx: int) -> str:
     return "\n".join(lines)
 
 
+def hoist_quote_fallback(latex: str, quoted: str) -> tuple[str, bool]:
+    """引文被行内标记（斜体 / 公式 / 脚注）切开时的退化替换：只替换第一处长引文。
+
+    `render_para` 正常路径是精确替换 `“<content>”`；内容被 `\textit{}` 等标记切开时
+    精确串对不上，才走这里。
+
+    ⚠️ 第一处匹配里若含 `\\footnote`，说明**脚注标记插在引文中间**（Word 稿很常见：
+       脚注挂在引文第 20 个字后面）。这时整段替换会把脚注正文一起吃掉，而正则实际
+       匹配到的是脚注正文里的一对**短引号** → 引文被重复一遍、多出一个 `}`、
+       整篇编译失败（`! Too many }'s`）。实测期 87 子案例 3（04 Fayang_Ye，案例 141）。
+       此时**放弃提升**（保持原文内联）——人工成品也是这么处理的。
+
+    返回 (新文本, 是否替换)。替换必须用字符串切片而不是 `re.sub` 的替换串：
+    `quoted` 里含 `\\hfill`，而 `\\h` 在 re 替换串里是非法转义（实测 2 篇抛
+    bad escape \\h）。
+    """
+    m = re.search(r"“[^”]{20,}”", latex)
+    if not m:
+        return latex, False
+    if "\\footnote" in m.group(0):
+        return latex, False
+    return latex[: m.start()] + quoted + latex[m.end():], True
+
+
 def render_para(
     para, fn_objs: dict, bib_sink: list, keymap: dict,
     fn_pages: dict | None = None, quote_threshold: int = 105,
@@ -2213,10 +2237,12 @@ def render_para(
         if target in latex:
             latex = latex.replace(target, quoted, 1)
         else:
-            # 引文被斜体等标记切开时，退化匹配引号之间的原文
-            # 必须用 lambda 作替换：quoted 里含 \hfill，而 \h 在 re.sub 的
-            # **替换串**里是非法转义，会直接抛 bad escape \h。实测全库 2 篇栽在这里。
-            latex = re.sub(r"“[^”]{20,}”", lambda _m: quoted, latex, count=1)
+            # 引文被斜体/公式/脚注标记切开时，退化匹配（见 hoist_quote_fallback 注释）
+            latex, _hoisted = hoist_quote_fallback(latex, quoted)
+            if not _hoisted:
+                notes.append(
+                    "引文内含脚注标记，未提升为 quotation 环境（保持原文内联，避免脚注被拆）"
+                )
         if consumed_fid:
             keymap.pop(consumed_fid, None)  # 已产出，避免 bib 重复
 
@@ -2242,7 +2268,38 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         return doc
 
     with __import__("zipfile").ZipFile(path) as z:
-        doc.n_math = z.read("word/document.xml").decode("utf-8").count("<m:oMath>")
+        _docxml = z.read("word/document.xml").decode("utf-8")
+        doc.n_math = _docxml.count("<m:oMath>")
+        # 期 87 子案例 2（03 Wenjing_Du）实测：作者用 MathType 写公式，docx 里是
+        # `<w:object>` + `word/embeddings/*.bin`，不是 OMML → 解析不到、**静默丢失**，
+        # PDF 里公式位置全空、页数少 2 页。这里如实计数并警告（不阻断出稿）。
+        from .docxxml import ole_object_stats, symbol_run_stats
+
+        n_ole, n_embed = ole_object_stats(_docxml, z.namelist())
+        # 期 87 子案例 3（04 Fayang_Ye 的 .doc）实测：用 LogicA 等「逻辑符号字体」插入
+        # 的 →/∼/∧ 是 `<w:sym>` run，既不是文字也不是 OMML → 静默丢失。
+        # 字体的 char→Unicode 映射是字体私有的，不能硬猜；只计数并警告人工核对。
+        _font = symbol_run_stats(_docxml)
+        try:
+            _font_fn = symbol_run_stats(z.read("word/footnotes.xml").decode("utf-8"))
+        except KeyError:
+            _font_fn = {}
+        for k, v in _font_fn.items():
+            _font[k] = _font.get(k, 0) + v
+    if n_ole:
+        doc.warnings.append(
+            f"发现 {n_ole} 处 MathType/OLE 公式对象（word/embeddings 共 {n_embed} 个）："
+            "它们是 OLE 包不是 OMML，Word 通道无法解析，这些公式会从产物中丢失；"
+            "请让作者另存为 OMML（或提供 MathType→TeX 版）后重跑"
+        )
+    if _font:
+        _n_sym = sum(_font.values())
+        _fonts = "、".join(f"{k} {v} 处" for k, v in sorted(_font.items(), key=lambda kv: -kv[1]))
+        doc.warnings.append(
+            f"发现 {_n_sym} 处符号字体字符（<w:sym>：{_fonts}）：Word 通道不解析这类"
+            "字符（既非文字也非 OMML，字体 char→Unicode 映射是字体私有的），"
+            "→/∼/∧ 等逻辑符号可能从产物中丢失；请人工核对正文符号"
+        )
 
     plains = [p.plain for p in paras]
 

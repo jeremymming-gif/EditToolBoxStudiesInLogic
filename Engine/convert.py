@@ -328,7 +328,15 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
                 else:
                     a = collapsed
                 a = a.strip(" .、—-")
-                if a and len(a) <= 40 and not a.endswith(("。", "：", ":")):
+                # 英文作者行常带单位序号（`Niu Ju 1`、`Yingjin Xu1`）：尾部数字不是姓名
+                # 的一部分，先去掉再做可信度判断（否则会被误判成「不像人名」而继续找，
+                # 反而落到下一段正文上）。
+                a = re.sub(r"[\s\d]+$", "", a).strip()
+                # 第 141 条：加人名可信度闸门——旧判据只看长度/句尾标点，会把正文句
+                # `贝叶斯主义认为…` 或摘要行剩下的单字 `摘` 当作者（期 87 子案例 2/3）。
+                # 不是人名就继续找下一段；全都不是 → 返回空串，由上层报错要求 --name。
+                if (a and len(a) <= 40 and not a.endswith(("。", "：", ":"))
+                        and N.looks_like_person_name(a)):
                     return a, f"Word 文稿第 {i + 1} 段：{line[:44]}"
         except Exception:  # noqa: BLE001
             pass
@@ -708,8 +716,36 @@ def pdf_page_count(pdf_path: str) -> int:
         return 0
 
 
+_STALE_COMPILE_EXTS = (".aux", ".bbl", ".bcf", ".blg", ".run.xml", ".out", ".toc")
+
+
+def clean_stale_compile_artifacts(out_dir: str, stem: str) -> list[str]:
+    """删掉上一轮编译留下的中间产物，返回被删文件名（第 141 条，2026-10-18）。
+
+    为什么必须删：第一次 xelatex 会**读旧的 `.bbl`**（biber 还没重跑）。若上一版
+    residue 里有坏数据（实测期 87 子案例 9：旧 `.bbl` 的 author 带裸 `&`，新版已修好
+    bib，但旧 `.bbl` 让 step 1 就报 `Misplaced alignment tab`），convert 会判「编译
+    未通过」——其实只是没先清干净。重跑同一目录是编辑的常规操作（反复出稿/改稿），
+    不能把上一轮残留算到这一轮头上。
+
+    只删本工具自己会生成的中间文件；`.pdf`、`.tex`、`.bib`、`SLCN-MIX.sty` 一律不动。
+    """
+    removed: list[str] = []
+    for ext in _STALE_COMPILE_EXTS:
+        p = os.path.join(out_dir, stem + ext)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+                removed.append(os.path.basename(p))
+            except OSError:
+                pass
+    return removed
+
+
 def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:
     """xelatex → biber -l=zh_pinyin → xelatex ×2。"""
+    # 先清上一轮中间产物：否则第一次 xelatex 会读到旧 .bbl/.aux（见上面注释）
+    clean_stale_compile_artifacts(out_dir, stem)
     steps = [
         ["xelatex", "-interaction=nonstopmode", f"{stem}.tex"],
         ["biber", "-l=zh_pinyin", stem],

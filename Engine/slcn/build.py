@@ -692,6 +692,23 @@ def build_latex(
             "本地旧文件重定义了模板命令、未搬（保留现行模板，正文用到时按模板定义走）"
             f"：{'、'.join(pre_plan.overrides)}；语义可能与作者原稿不同，请人工核对"
         )
+    # ── 第 141 条：模板用 biblatex 时，natbib/gbt7714 包行不迁 + 正文命令改写 ──
+    if pre_plan.replaced_packages:
+        body, n_natbib = PRE.rewrite_natbib_commands(body)
+        show = "、".join(pre_plan.replaced_packages)
+        say(f"   biblatex 取代 {show}：包行未迁移；正文 natbib 引用命令改写 {n_natbib} 处")
+        warnings.append(
+            f"模板已用 biblatex，作者 {show} 的包行未迁移，正文 natbib 引用命令已改写为"
+            f" biblatex 等价命令（{n_natbib} 处）——请核对引用样式（圆括号/叙述式）"
+        )
+    # ── 第 141 条：与模板已加载宏包重合同名命令的作者宏包不迁（bbding / marvosym）──
+    if pre_plan.conflicts:
+        show = "；".join(pre_plan.conflicts)
+        say(f"   ⚠ 与模板宏包冲突、未迁移：{show}")
+        warnings.append(
+            f"以下作者宏包与模板已加载宏包重合同名命令，未迁移：{show}。"
+            "若正文用到该宏包的专有命令，编译会报 Undefined control sequence，请按需人工补"
+        )
 
     say("③ 搬运元数据")
     missing: list[str] = []

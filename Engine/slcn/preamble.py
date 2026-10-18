@@ -67,6 +67,35 @@ TEMPLATE_MANAGED_PACKAGES = frozenset({
     "biblatex",
 })
 
+# 与模板的 biblatex **互斥**的参考文献宏包（第 141 条，2026-10-18）。
+# 模板 SLCN-MIX / SLEN 都在导言区 `\usepackage[backend=biber,...]{biblatex}`；
+# 作者若写 natbib / gbt7714（前者最常见），把包行照搬过来就是
+# `Package biblatex Error: Incompatible package 'natbib'` + `\bibhang already defined`
+# + 编译失败（期 87 子案例 4 / 05 Pengfei_Song 实测）。
+# 处理：包行不迁；正文里的 natbib 专用引用命令改写成 biblatex 的等价命令，
+# 作者用的裸 `\cite` 在 biblatex 里本来就有定义，不用改。
+BIBLATEX_REPLACED_PACKAGES = frozenset({"natbib", "gbt7714"})
+
+# natbib 专用命令 → biblatex 等价命令（只收语义一一对应的；`\cite` 不在此列）。
+NATBIB_TO_BIBLATEX = {
+    "citep": "parencite",      # (Author, Year) 圆括号引用
+    "citet": "textcite",       # Author (Year) 叙述式引用
+    "citealt": "cite",         # Author, Year（无外层括号）
+    "citealp": "parencite",    # 无外层括号场景，退化为圆括号引用（人工复核）
+}
+
+# 与**模板已加载宏包**重合同名命令的作者宏包（第 141 条，2026-10-18）。
+# 判据：只要模板里出现 `trigger` 里的任一宏包名，就说明该命令已由模板定义，
+# 作者再 `\usepackage` 这个包会在加载时报 `Command \X already defined` → 整篇失败。
+# 实测：期 87 子案例 4（05 Pengfei_Song）作者前言有 `\usepackage{bbding}`，而模板
+# SLCN-MIX/SLEN 都加载 marvosym（`\Cross` 由它定义）→ `Command \Cross already defined`。
+# 处理：整包不迁 + 明确警告（作者若真用到 bbding 专有符号，编译会在正文处报
+# Undefined control sequence，编辑按警告补即可；这比「加载阶段直接炸掉」可诊断）。
+PACKAGE_COMMAND_CONFLICTS: dict[str, tuple[str, str]] = {
+    # 作者包 → (原因, 模板里触发冲突的宏包名)
+    "bbding": ("模板已通过 marvosym 定义了 \\Cross 等命令", "marvosym"),
+}
+
 # 常用「符号宏 → 宏包」对照（第 120 条，2026-10-17）。只收**符号类、不改变版面**的窄口
 # 映射：作者正文用了这些宏、但作者前言与模板都没加载对应宏包时自动补上。实测 02
 # Xiaoxuan_Fu 正文用了 \llbracket / \rrbracket（来自 stmaryrd），而它们只藏在作者同目录
@@ -164,11 +193,34 @@ class PreamblePlan:
     converted_renews: list[str] = field(default_factory=list)  # 模板缺 → 由 \renewcommand 降为 \newcommand
     local_packages: list[str] = field(default_factory=list)  # 源目录有同名 .sty：不迁包行，只按差集搬定义
     counter_definitions: list[str] = field(default_factory=list)  # 第 130 条补丁：迁入的 \newcounter
+    # 第 141 条：被模板 biblatex 取代、未迁移的参考文献宏包（natbib / gbt7714）
+    replaced_packages: list[str] = field(default_factory=list)
+    # 第 141 条：与模板已加载宏包重合同名命令、未迁移的作者宏包（人类可读说明）
+    conflicts: list[str] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
         return not self.lines
 
+
+def rewrite_natbib_commands(text: str) -> tuple[str, int]:
+    """把 natbib 专用引用命令改写成 biblatex 等价命令（第 141 条）。
+
+    只在「模板用 biblatex、作者用了 natbib/gbt7714」时由 `build.py` 调用；
+    映射见 `NATBIB_TO_BIBLATEX`（`\\cite` 不在其中——biblatex 本来就定义它）。
+
+    返回 (新文本, 改写处数)。`\\citestyle{numbers}` / `\\setcitestyle` 这类**排版设置**
+    命令不在此处理：它们只在作者导言区，包行不迁时整行已被丢掉。
+    """
+    total = 0
+    out = text
+    for natbib, biblatex in NATBIB_TO_BIBLATEX.items():
+        # 负向环视避免误伤 \citestyle / \citepunct / \citetext 这类前缀相同的命令；
+        # 星号形式（\citep*）一并保留（biblatex 对应命令同样有星号语义）。
+        pat = re.compile(r"\\" + natbib + r"(?![A-Za-z])(\*?)")
+        out, n = pat.subn(lambda m, cmd=biblatex: "\\" + cmd + m.group(1), out)
+        total += n
+    return out, total
 
 
 def _line_comment_pos(text: str, pos: int) -> int | None:
@@ -903,6 +955,9 @@ def plan_migration(
     # 计数器已由 defined_names 的定理环境名覆盖）。当前两套模板都没有显式 newcounter。
     names |= counter_names(skeleton_text) | counter_names(sty_text)
     skipped: list[str] = []
+    template_has_biblatex = bool(
+        {"biblatex"} & (package_names(skeleton_text) | package_names(sty_text))
+    )
 
     for raw in pre.splitlines():
         clean = _clean_line(raw)
@@ -917,6 +972,20 @@ def plan_migration(
                 if p in loaded:
                     skipped.append(p)
                     continue
+                # 第 141 条：模板已用 biblatex 时，natbib / gbt7714 与它互斥 → 包行不迁。
+                # 正文里的 natbib 专用引用命令由 rewrite_natbib_commands() 改写。
+                if p in BIBLATEX_REPLACED_PACKAGES and template_has_biblatex:
+                    if p not in plan.replaced_packages:
+                        plan.replaced_packages.append(p)
+                    continue
+                # 第 141 条：与模板已加载宏包重合同名命令 → 整包不迁（否则加载阶段
+                # 就报 `Command \X already defined`，整篇编译失败）。
+                if p in PACKAGE_COMMAND_CONFLICTS:
+                    reason, trigger = PACKAGE_COMMAND_CONFLICTS[p]
+                    tpl_pkgs = package_names(skeleton_text) | package_names(sty_text)
+                    if trigger in tpl_pkgs:
+                        plan.conflicts.append(f"{p}（{reason}）")
+                        continue
                 # 第 130 条补丁：源目录里就有同名 .sty → 它是作者的旧模板/本地包，
                 # **不迁包行**（顶部加载交给模板），文件按「本地支撑文件」差集搬定义。
                 # 否则产物会 \usepackage 一个没被复制进产物目录的文件（File not found）。

@@ -1,0 +1,137 @@
+#!/usr/bin/env python3.14
+r"""OMML 公式转换：**Unicode 数学命令与后续字母的粘连**（第 141 条，2026-10-18）。
+
+缺陷
+----
+`slcn/docxxml.py::_math_to_tex()` 想把 `∃`→`\exists`、`¬`→`\lnot` 之后与后面的字母
+之间补一个空格（防 `\landA` 粘连），判据写成了 `cmd.isalpha()`。但 `cmd` 以反斜杠开头，
+`"\exists".isalpha()` **恒为 False** → 永远不补空格 → `∃q` 变 `\existsq`、`¬q` 变
+`\lnotq`，xelatex 报 Undefined control sequence，整篇编译失败。
+
+实测：期 87 子案例 5（06 Ruixue_Tang）正文 135 处 OMML 公式，产物里出现
+`$\existsq\in K_{n-1}$` / `$...⊩\lnotq$` → 转换 rc=2、PDF 未通过。
+
+本套件钉住：
+  ① 命令与后续字母之间**必须有空格**（`∃q` / `¬q` / `∀x`）；
+  ② `\sqrt{}` 这类以 `}` 结尾的命令不补空格（`√x` → `\sqrt{}x`）；
+  ③ 旧缺陷的负例不出现（`\existsq` / `\lnotq` 不得出现）；
+  ④ 强制符号 `⊩` 映射到 `\Vdash`（此前原样留在数学模式里 → `Missing character`）；
+  ⑤ OMML 节点端到端（合成 `<m:oMath>`：∃、q 分属两个 `<m:r>`）；
+  ⑥ `ole_object_stats()`：MathType/OLE 对象计数（w:object 与 word/embeddings）。
+
+只写内存/临时目录；不跑 xelatex、不读稿件库、不跑 corpus.py / build.sh。
+
+用法：
+    cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_docx_math_spacing.py
+"""
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ENGINE = os.path.dirname(_HERE)
+for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from slcn import rules  # noqa: E402
+from slcn.docxxml import (_math_to_tex, ole_object_stats, omml_to_latex,  # noqa: E402
+                         symbol_run_stats)
+
+FAILS = []
+M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+
+
+def check(name, cond, detail=""):
+    print(("PASS  " if cond else "FAIL  ") + name + ("  " + detail if detail else ""))
+    if not cond:
+        FAILS.append(name)
+    return bool(cond)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ① 命令后必须补空格（旧实现恒不补）
+# ══════════════════════════════════════════════════════════════════════════
+check("① ∃q → `\\exists q`（不是 `\\existsq`）",
+      _math_to_tex("∃q") == r"\exists q", repr(_math_to_tex("∃q")))
+check("① ¬q → `\\lnot q`（不是 `\\lnotq`）",
+      _math_to_tex("¬q") == r"\lnot q", repr(_math_to_tex("¬q")))
+check("① ∀x → `\\forall x`", _math_to_tex("∀x") == r"\forall x",
+      repr(_math_to_tex("∀x")))
+check("① 连续符号：∃q∈K → `\\exists q\\in K`（反斜杠本身即命令边界）",
+      _math_to_tex("∃q∈K") == r"\exists q\in K", repr(_math_to_tex("∃q∈K")))
+check("③ 旧缺陷负例不出现（不得有 \\existsq / \\lnotq）",
+      "\\existsq" not in _math_to_tex("∃q") and "\\lnotq" not in _math_to_tex("¬q"))
+
+# ══════════════════════════════════════════════════════════════════════════
+# ② 以 } 结尾的命令不补空格
+# ══════════════════════════════════════════════════════════════════════════
+check("② √x → `\\sqrt{}x`（`}` 结尾命令自带定界，不补空格）",
+      _math_to_tex("√x") == r"\sqrt{}x", repr(_math_to_tex("√x")))
+
+# ══════════════════════════════════════════════════════════════════════════
+# ④ 强制符号 ⊩ → \Vdash（模板已加载 amssymb）
+# ══════════════════════════════════════════════════════════════════════════
+check("④ ⊩ 映射到 \\Vdash",
+      _math_to_tex("⊩") == r"\Vdash", repr(_math_to_tex("⊩")))
+check("④ ⊩ 与后续字母之间补空格（⊩q → `\\Vdash q`）",
+      _math_to_tex("⊩q") == r"\Vdash q", repr(_math_to_tex("⊩q")))
+check("④ 对偶符号映射（⊬→\\nvdash、⊭→\\nvDash）",
+      rules.UNICODE_MATH.get("⊬") == r"\nvdash" and rules.UNICODE_MATH.get("⊭") == r"\nvDash")
+check("④ 正文里的 ⊩ 也包成数学模式（normalize_unicode_math）",
+      rules.normalize_unicode_math("A⊩B")[0] == r"A$\Vdash$B",
+      rules.normalize_unicode_math("A⊩B")[0])
+check("④ ⊨ 仍映射 \\models（旧映射不回退）",
+      _math_to_tex("⊨") == r"\models", repr(_math_to_tex("⊨")))
+check("④ ≃ 映射 \\simeq（子案例 3：正文 `$A$≃$B$` 不再 Missing character）",
+      rules.UNICODE_MATH.get("≃") == r"\simeq"
+      and rules.normalize_unicode_math("A≃B")[0] == r"A$\simeq$B",
+      rules.normalize_unicode_math("A≃B")[0])
+check("④ ∼ 映射 \\sim、≅ 映射 \\cong",
+      rules.UNICODE_MATH.get("∼") == r"\sim"
+      and rules.UNICODE_MATH.get("≅") == r"\cong")
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ OMML 端到端：∃ / q 分属两个 <m:r>
+# ══════════════════════════════════════════════════════════════════════════
+_OMML = (
+    f'<m:oMath xmlns:m="{M_NS}">'
+    "<m:r><m:t>∃</m:t></m:r><m:r><m:t>q</m:t></m:r>"
+    "<m:r><m:t>∈</m:t></m:r><m:r><m:t>K</m:t></m:r>"
+    "</m:oMath>"
+)
+_el = ET.fromstring(_OMML)
+_tex = _math_to_tex(omml_to_latex(_el))
+check("⑤ 合成 oMath（∃ + q + ∈ + K）→ `\\exists q\\in K`",
+      _tex == r"\exists q\in K", repr(_tex))
+check("⑤ 端到端不粘命令（无 \\existsq）", "\\existsq" not in _tex)
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ MathType/OLE 对象计数（静默丢公式的告警依据）
+# ══════════════════════════════════════════════════════════════════════════
+_xml = "<w:document><w:object/><w:object/><w:drawing/></w:document>"
+_names = ["word/document.xml", "word/embeddings/oleObject1.bin",
+          "word/embeddings/oleObject2.bin", "word/embeddings/"]
+check("⑥ ole_object_stats：w:object 计数 = 2、embeddings 文件 = 2（目录项不算）",
+      ole_object_stats(_xml, _names) == (2, 2), str(ole_object_stats(_xml, _names)))
+check("⑥ ole_object_stats：普通 docx（无 OLE）返回 (0, 0)",
+      ole_object_stats("<w:document/>", ["word/document.xml"]) == (0, 0))
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑦ 符号字体字符（<w:sym>）计数（子案例 3 的 39 处 LogicA 符号）
+# ══════════════════════════════════════════════════════════════════════════
+_sym_xml = (
+    '<w:document><w:r><w:sym w:font="LogicA" w:char="0022"/></w:r>'
+    '<w:r><w:sym w:font="LogicA" w:char="005e"/></w:r>'
+    '<w:r><w:sym w:font="Wingdings" w:char="0040"/></w:r></w:document>'
+)
+check("⑦ symbol_run_stats：按字体计数（LogicA 2、Wingdings 1）",
+      symbol_run_stats(_sym_xml) == {"LogicA": 2, "Wingdings": 1},
+      str(symbol_run_stats(_sym_xml)))
+check("⑦ symbol_run_stats：无 <w:sym> 返回空 dict",
+      symbol_run_stats("<w:document><w:r><w:t>文字</w:t></w:r></w:document>") == {})
+
+print()
+print(f"\n{'=' * 66}")
+print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))
+sys.exit(1 if FAILS else 0)

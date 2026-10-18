@@ -168,8 +168,14 @@ def _math_to_tex(raw: str) -> str:
         ch = raw[i]
         if ch in UNICODE_MATH:
             cmd = UNICODE_MATH[ch]
-            # 命令与后面的字母之间要有空格，避免 \\landA 这种粘连
-            if cmd.endswith("}") or not cmd.isalpha():
+            # 命令与后面的字母之间要有空格，避免 `\landA` 这种粘连。
+            #
+            # ⚠️ 判据是**命令最后一个字符**是不是字母，不是 `cmd.isalpha()`：
+            #    `cmd` 以反斜杠开头，`"\exists".isalpha()` 恒为 False，于是永远不加空格，
+            #    实测把 `∃q` 变成 `\existsq`、`¬q` 变成 `\lnotq` → 未定义控制序列、
+            #    整篇编译失败（期 87 子案例 5 / 06 Ruixue_Tang，案例 141）。
+            #    `\sqrt{}` 这类以 `}` 结尾的命令自带定界，后面直接接字母是对的。
+            if cmd.endswith("}") or not cmd[-1].isalpha():
                 out.append(cmd)
             else:
                 out.append(cmd + " ")
@@ -177,6 +183,50 @@ def _math_to_tex(raw: str) -> str:
             out.append(ch)
         i += 1
     return "".join(out).strip()
+
+
+def ole_object_stats(document_xml: str, names: list[str]) -> tuple[int, int]:
+    """数 Word 里的 **MathType / OLE 内嵌对象**，返回 (w:object 数, embeddings 文件数)。
+
+    为什么需要它：作者用 MathType 写的公式在 docx 里是「OLE 包 + 预览图」
+    （`<w:object>` + `word/embeddings/oleObject*.bin`），**不是** OMML；
+    解析器只认 `<m:oMath>`，于是这些公式会**静默从产物里消失**——不报错、日志也不提。
+    期 87 子案例 2（03 Wenjing_Du）实测：`w:object` 561 处、embeddings 567 个、
+    OMML 0 处，产物 PDF 少 2 页且正文里所有公式位置都是空的。
+
+    调用方（`docxsource.parse_docx`）据此给编辑一条警告；本函数保持纯函数，便于测试。
+    """
+    n_objects = document_xml.count("<w:object")
+    n_embeddings = sum(
+        1 for n in names if n.startswith("word/embeddings/") and not n.endswith("/")
+    )
+    return n_objects, n_embeddings
+
+
+_SYM_TAG = re.compile(r"<w:sym\b[^>]*?/?>")
+_SYM_FONT = re.compile(r'w:font="([^"]*)"')
+
+
+def symbol_run_stats(xml_text: str) -> dict[str, int]:
+    """数 Word **符号字体字符**（`<w:sym w:font="LogicA" w:char="0022"/>`），按字体累计。
+
+    为什么需要它：Word 里用「逻辑符号字体」（LogicA 等）插入的字符**不是** `<w:t>`
+    文字、也不是 OMML 公式，而是 `<w:sym>` 符号 run。解析器只读 `<w:t>`/`<m:t>`，
+    这些字符会**静默丢失**（不报错、日志也不提）。
+
+    期 87 子案例 3（04 Fayang_Ye 的 .doc）实测 39 处 LogicA 符号：`→`（3）、
+    `∼`、`∧`/`⊢` 等全部消失，产物正文变成 `$f:A$$B$` 这种缺符号的样子；
+    人工成品是 `$f:A\to B$`。字体的 char→Unicode 映射是**字体私有**的（LogicA 的
+    0x22 才是 `→`），不能靠猜硬编；所以这里只计数、由调用方警告编辑人工核对。
+
+    返回 {字体名: 次数}；无 `<w:sym>` 返回空 dict。纯函数，便于测试。
+    """
+    out: dict[str, int] = {}
+    for tag in _SYM_TAG.findall(xml_text):
+        m = _SYM_FONT.search(tag)
+        font = m.group(1) if m else "(unknown)"
+        out[font] = out.get(font, 0) + 1
+    return out
 
 
 # ── 段落读取 ──────────────────────────────────────────────────────────────

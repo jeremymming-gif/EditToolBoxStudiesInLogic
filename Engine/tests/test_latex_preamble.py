@@ -807,6 +807,86 @@ check("⑦ Word 通道零变化：warnings 里没有定义缺失预检",
 check("⑦ Word 通道零变化：产物照常（含正文与模板字段）",
       "正文第一段。" in _docx_tex and "\\begin{document}" in _docx_tex)
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑧ natbib 与模板 biblatex 冲突（第 141 条，2026-10-18；期 87 子案例 4 实测）
+# ══════════════════════════════════════════════════════════════════════════
+# 症状：作者 LaTeX 稿前言写 `\usepackage[numbers,sort&compress]{natbib}`，正文用
+# `\cite`；引擎把 natbib 当普通宏包照搬进产物 → 模板的 biblatex 报
+# `Package biblatex Error: Incompatible package 'natbib'` + `\bibhang already defined`
+# → 整篇编译失败（05 Pengfei_Song）。
+# 修法：模板已用 biblatex 时，natbib/gbt7714 包行不迁；正文 natbib 专用引用命令
+# 改写成 biblatex 等价命令。
+_natbib_src = r"""\documentclass{article}
+\usepackage[numbers,sort&compress]{natbib}
+\citestyle{numbers}
+\begin{document}
+正文\citep{a1}与\citet[p.~3]{a2}，还有\citep*{a3}；\citestyle{numbers} 不应被改写。
+\end{document}
+"""
+write("natbib/main.tex", _natbib_src)
+_plan = PRE.plan_migration(
+    _natbib_src,
+    "\\documentclass{article}\n\\usepackage{biblatex}\n",
+    "\\usepackage{biblatex}\n",
+    "SLCN-MIX",
+    body_text="正文\\citep{a1}与\\citet[p.~3]{a2}",
+)
+check("⑧ 模板用 biblatex 时 natbib 包行不迁（replaced_packages 记录）",
+      _plan.replaced_packages == ["natbib"]
+      and not any("natbib" in ln for ln in _plan.lines), str(_plan.lines))
+_rw, _n = PRE.rewrite_natbib_commands(_natbib_src)
+check("⑧ natbib 引用命令改写：\\citep→\\parencite、\\citet→\\textcite、星级保留",
+      "\\parencite{a1}" in _rw and "\\textcite[p.~3]{a2}" in _rw
+      and "\\parencite*{a3}" in _rw and _n == 3, f"n={_n}")
+check("⑧ 前缀相同的 natbib 排版命令不被误伤（\\citestyle 原样）",
+      _rw.count("\\citestyle{numbers}") == 2)
+# 反例：模板不用 biblatex 时，natbib 仍按原逻辑迁移（不能一刀切全丢）
+_plan2 = PRE.plan_migration(
+    _natbib_src, "\\documentclass{article}\n", "", "othertemplate", body_text="")
+check("⑧ 反例：模板不用 biblatex 时 natbib 照旧迁移",
+      not _plan2.replaced_packages
+      and any("natbib" in ln for ln in _plan2.lines), str(_plan2.lines))
+# 端到端：产物里没有 natbib 包行，引用命令是 biblatex 的
+_res8, _tex8 = build_one("natbib/main.tex", "natbib")
+check("⑧ 端到端：产物不出现 natbib 包行",
+      "usepackage" not in "".join(
+          ln for ln in _tex8.splitlines() if "natbib" in ln and not ln.lstrip().startswith("%")))
+check("⑧ 端到端：正文引用已改写为 biblatex 命令",
+      "\\parencite{a1}" in _tex8 and "\\textcite[p.~3]{a2}" in _tex8)
+check("⑧ 端到端：日志/warnings 明确说明 biblatex 取代 natbib",
+      any("biblatex 取代" in ln for ln in _res8.log)
+      and any("biblatex" in w for w in _res8.warnings))
+
+# ── 第 141 条附：bbding 与模板 marvosym 的 \Cross 重名 ─────────────────────
+# 症状：模板 SLCN-MIX/SLEN 都 `\usepackage{marvosym}`（定义 `\Cross`= \mvchr{134}）；
+# 作者前言 `\usepackage{bbding}` 也被迁过去 → 加载 bbding 时报
+# `Command \Cross already defined`，整篇编译失败（05 Pengfei_Song）。
+_bbding_src = r"""\documentclass{article}
+\usepackage{bbding}
+\begin{document}
+正文。
+\end{document}
+"""
+write("bbding/main.tex", _bbding_src)
+_plan_c = PRE.plan_migration(
+    _bbding_src, "\\usepackage{marvosym}\n", "\\usepackage{marvosym}\n",
+    "SLCN-MIX", body_text="正文。",
+)
+check("⑧ 模板加载 marvosym 时 bbding 整包不迁（conflicts 记录原因）",
+      any("bbding" in c for c in _plan_c.conflicts)
+      and not any("bbding" in ln for ln in _plan_c.lines), str(_plan_c.conflicts))
+_res_c, _tex_c = build_one("bbding/main.tex", "bbding")
+check("⑧ 端到端：产物不出现 bbding 包行", "\\usepackage{bbding}" not in _tex_c)
+check("⑧ 端到端：warnings 说明与模板宏包冲突",
+      any("重合同名命令" in w and "bbding" in w for w in _res_c.warnings),
+      str(_res_c.warnings))
+# 反例：模板没加载 marvosym 时 bbding 照旧迁移（不能一刀切）
+_plan_c2 = PRE.plan_migration(
+    _bbding_src, "\\documentclass{article}\n", "", "othertemplate", body_text="正文。")
+check("⑧ 反例：模板无 marvosym 时 bbding 照旧迁移",
+      not _plan_c2.conflicts and any("bbding" in ln for ln in _plan_c2.lines),
+      str(_plan_c2.lines))
+
 shutil.rmtree(TMP, ignore_errors=True)
 
 

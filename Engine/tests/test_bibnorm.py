@@ -200,6 +200,39 @@ _rep = bibcheck.check(_COMMENTED_NONEMPTY)
 check("⑤ check() 的条目总数不再把注释掉的旧条目算进去（total = 1）",
       _rep.total == 1, str(_rep.total))
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ expand_note_entries 写回的字段要转义（第 141 条，期 87 子案例 9 实测）
+# ══════════════════════════════════════════════════════════════════════════
+# 症状：Word 脚注体例的条目（整条在 note 里）被 expand_note_entries 拆成结构化字段时，
+#       **原样**把解析值写进 .bib —— 既不转义 &（LaTeX 特殊字符），也不把 `A & B`
+#       规范成 BibTeX 的 `A and B`。实测 10 Wei_Chen 的 author
+#       `van Eemeren, F. H. & van Haaften, T.` 原样落进 bib，biblatex 在
+#       `\namepartsuffix` 里遇到 `&` 报 Misplaced alignment tab，整篇编译失败。
+_NOTE_BIB = """@misc{ref03,
+  note      = {Frans H. van Eemeren \\& T. van Haaften, “The Making of Argumentation Theory: A Pragma-dialectical View”, Argumentation, Vol. 37, No. 3, 2003, pp. 341--376},
+}
+"""
+_exp_out, _exp_notes = bibnorm.expand_note_entries(_NOTE_BIB)
+check("⑥ expand_note_entries 拆出结构化条目（仍是 1 条）",
+      len(_exp_notes) == 1 and "@misc{ref03," in _exp_out, str(_exp_notes))
+# author 里的 `&` 必须变成 BibTeX 的 `and`（不能是裸 `&`，也不能是转义后的 `\&` 当分隔符）
+_auth_line = [ln for ln in _exp_out.splitlines() if ln.strip().startswith("author")][0]
+check("⑥ author 字段里的 `&` 规范成 `and`（不出现裸 &）",
+      "&" not in _auth_line and " and " in _auth_line, _auth_line.strip())
+check("⑥ 其它字段里的 & / % / _ 等被转义（note 里的 `\\&` 保持不重复转义）",
+      "\\&" in _exp_out and "\\\\&" not in _exp_out, repr(_exp_out)[:200])
+# 反例：本来正常的条目逐字不变（不因为多转义一道而改坏）
+_OK_BIB = """@book{b1,
+  author = {Dillard, J. P.},
+  title  = {Book}
+}
+"""
+_ok_out, _ok_notes = bibnorm.expand_note_entries(_OK_BIB)
+check("⑥ 反例：已结构化条目原样保留（不重复转义）",
+      _ok_notes == [] and "author = {Dillard, J. P.}" in _ok_out
+      and "\\\\&" not in _ok_out
+      and _ok_out.count("@book{b1,") == 1, repr(_ok_out)[:120])
+
 print()
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

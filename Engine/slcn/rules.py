@@ -117,11 +117,21 @@ UNICODE_MATH = {
     "≤": r"\leq", "≥": r"\geq", "≠": r"\neq", "≈": r"\approx", "≡": r"\equiv",
     "→": r"\to", "←": r"\leftarrow", "↔": r"\leftrightarrow", "⇒": r"\Rightarrow",
     "⇔": r"\Leftrightarrow", "↦": r"\mapsto",
+    # 同伦/同构「等价」符号：`≃` 在 Word 稿里常作为**普通文字**夹在两个公式之间
+    # （`$A$≃$B$`），不映射就原样留在正文 → xelatex 报 Missing character（Times 无此字形）。
+    # 实测期 87 子案例 3（04 Fayang_Ye，案例 141）；均由模板已加载的 amssymb 提供。
+    "≃": r"\simeq", "≅": r"\cong", "∼": r"\sim", "≉": r"\not\approx",
     "∈": r"\in", "∉": r"\notin", "∋": r"\ni",
     "⊆": r"\subseteq", "⊂": r"\subset", "⊇": r"\supseteq", "⊃": r"\supset",
     "∪": r"\cup", "∩": r"\cap", "∅": r"\varnothing",
     "∀": r"\forall", "∃": r"\exists", "¬": r"\lnot", "∧": r"\land", "∨": r"\lor",
     "⊥": r"\perp", "⊤": r"\top", "⊢": r"\vdash", "⊨": r"\models",
+    # 强制（forcing / 语义后承）符号：`⊩` 是 OMML 稿里最常见的「双竖线带短横」，
+    # 不映射就原样留在数学模式里 → xelatex 报 Missing character，PDF 里是空白
+    # （期 87 子案例 5 / 06 Ruixue_Tang，案例 141）。后六个是对偶/否定形式，
+    # 均由模板已加载的 amssymb 提供（模板第 21 行 `amsmath,amssymb,...`）。
+    "⊩": r"\Vdash", "⊪": r"\Vvdash", "⊫": r"\VDash",
+    "⊬": r"\nvdash", "⊭": r"\nvDash", "⊮": r"\nVdash", "⊯": r"\nVDash",
     "∞": r"\infty", "∑": r"\sum", "∏": r"\prod", "√": r"\sqrt{}",
     "ℵ": r"\aleph", "℘": r"\wp", "⊕": r"\oplus", "⊗": r"\otimes",
     "□": r"\Box", "◇": r"\Diamond", "⋄": r"\diamond",

@@ -637,6 +637,7 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
     而本模块自己的 `split_entries` 返回 `(条目头, 字段体, 尾)`——**签名不同，别混用**。
     """
     from . import footref
+    from .footnotes import _bib_escape, normalize_authors
     from .bibcheck import fields_of, split_entries as split3
 
     out: list[str] = []
@@ -654,6 +655,16 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
             k = key if len(parsed) == 1 else f"{key}{chr(96 + i2)}"
             vals = {fld: getattr(p, fld) for fld in _BIB_FIELDS if getattr(p, fld)}
             vals["note"] = f["note"].strip().replace("\n", " ")
+            # 第 141 条（2026-10-18，期 87 子案例 9 / 10 Wei_Chen）：写回 .bib 前必须
+            # ① 把 author 里的 `&` 规范成 BibTeX 的 `and`（否则 biblatex 在
+            #    `\namepartsuffix` 里遇到 `&` 报 Misplaced alignment tab，整篇编译失败）；
+            # ② 转义 LaTeX 特殊字符（`& % $ # _`）。从前的实现两件都没做，
+            #    解析出的原值直接落进产物。
+            if vals.get("author"):
+                vals["author"] = normalize_authors(vals["author"])
+            if vals.get("editor"):
+                vals["editor"] = normalize_authors(vals["editor"])
+            vals = {n: _bib_escape(str(v)) for n, v in vals.items()}
             lines = "\n".join(f"  {n.ljust(9)} = {{{v}}}," for n, v in vals.items())
             out.append(f"@{p.etype}{{{k},\n{lines}\n}}")
         notes.append(f"{key}: 从 note 拆出 {len(parsed)} 条（原文保留在 note）")

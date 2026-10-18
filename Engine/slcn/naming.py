@@ -229,6 +229,65 @@ def validate_name(name: str) -> str:
 
 _TEX_AUTHOR_RE = re.compile(r"\\kaishu\s*|\\heiti\s*|\\songti\s*|\\bf\s*|\{\s*|\}\s*")
 
+# 中文姓名里不可能出现的标点（出现即说明这段是正文/摘要，不是人名）
+_NAME_BAD_PUNCT = set("：:；;。.，,、？！?!（）()《》“”\"'…—-–/\\")
+
+
+def looks_like_person_name(name: str) -> bool:
+    """Word 通道「这一段像不像人名」的保守闸门（第 141 条，2026-10-18）。
+
+    为什么需要：`convert.author_from_source()` 的 Word 启发式是「第 1–5 段里找一段
+    看着像姓名的」，旧判据只看长度 ≤40、不以句号/冒号结尾——于是**把正文当作者**：
+
+      · 期 87 子案例 2（03 Wenjing_Du）源稿没写作者，第 4 段正文被当成作者，
+        输出名推导成 `Yesizhuyirenwei_Bei`（「贝叶斯主义认为」）；
+      · 子案例 3（04 Fayang_Ye）第 2 段 `摘  要：…` 中间有空格，摘要行判据没命中，
+        单字「摘」被当作者。
+
+    这与 `naming.py` 的原则冲突：「能确定才输出，不能确定就报错让用户显式指定，
+    绝不靠猜」。故加闸门：**中文候选**必须是 2–6 字纯汉字（含间隔号的名字放宽到
+    4–14 字）且不含中文标点；**拉丁/其它候选沿用旧的宽松口径**（真实英文姓名形态多，
+    收紧误伤面大，且没实测到对应缺陷）。
+
+    反例（应当返回 False）：`贝叶斯主义认为`、`摘`、`数学基础是数学哲学研究中的重要问题`、
+    `摘  要：数学基础是…`。正例：`陈波`、`唐瑞雪`、`冯光武`、`阿依古丽·买买提`、
+    `Michael Rathjen`、`Wen-fang Wang`。
+    """
+    s = (name or "").strip()
+    if not s:
+        return False
+    compact = re.sub(r"\s+", "", s)
+    cjk = [ch for ch in compact if "\u4e00" <= ch <= "\u9fff"]
+    if not cjk:
+        # 拉丁姓名：每个词首字母大写（允许 van/von/de 等小写介词/冠词），允许首字母
+        # 缩写点与连字符。反例：`Over the past decades`（小写实词 the/past/decades）、
+        # `School of Philosophy`（of）、`1`（纯数字）、`1. 引言`（标点）。
+        # 这条比中文分支宽松一点（真实英文姓名形态多），但足以挡住整句正文。
+        if any(ch in _NAME_BAD_PUNCT and ch not in ".-'" for ch in s):
+            return False
+        tokens = [t for t in re.split(r"\s+", s.strip()) if t]
+        if not tokens or len(tokens) > 5:
+            return False
+        particles = {"van", "von", "de", "der", "den", "da", "di", "la", "le",
+                     "du", "dos", "ten", "ter", "bin", "al", "el"}
+        for t in tokens:
+            core = t.strip(".-'")
+            if not core:
+                return False
+            if core.lower() in particles:
+                continue
+            if not core[0].isupper():
+                return False
+        return True
+    # 中文（含少数民族间隔号姓名）：标点即正文
+    if any(ch in _NAME_BAD_PUNCT for ch in compact):
+        return False
+    if "·" in compact or "•" in compact:
+        return 4 <= len(compact) <= 14
+    if len(cjk) != len(compact):
+        return False  # 中英混排多半是正文片段
+    return 2 <= len(cjk) <= 6
+
 
 def author_from_tex_metadata(text: str) -> str:
     """从含 SLCN 模板宏的 tex 里取第一作者（\\myfirstauthor）。"""
