@@ -42,8 +42,15 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     report      [--out DIR]                 一次生成全部待裁决清单（推荐）
     report-conflicts  [--out DIR]           字段冲突待裁决清单 CONFLICTS.md（中文、可勾选）
     report-duplicates [--out DIR]           同作品不同 key 候选对 DUPLICATES.md + duplicates.csv
+    normalize-authors [--dry-run | --apply --backup PATH] [--report PATH | --out-dir DIR]
+                [--json-out PATH] [--json]
+                                            B2 英文作者倒装（姓, 名缩写）：默认 dry-run；
+                                            --apply 才写库（只改 author；中文/机构/others 跳过）
     normalize   [--report PATH | --out-dir DIR] [--json-out PATH] [--json]
-                                            B1 确定性规范化 dry-run（只出报告，**绝不写库**）
+                [--apply --backup PATH]
+                                            B1 确定性规范化：默认 dry-run（只出报告、绝不写库）；
+                                            --apply 才写库（只改安全条目的 entry_type/fields/
+                                            content_sha256/updated_at；须先 --backup 备份）
 
 用法示例（在本目录下跑）
 ------------------------
@@ -62,6 +69,13 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     /opt/homebrew/bin/python3.14 bibdb.py report --out ../EditToolBox-notes/bib_db
     /opt/homebrew/bin/python3.14 bibdb.py normalize --out-dir ../EditToolBox-notes/bib_db
     # ↑ B1 dry-run 报告（B1-normalize-dryrun.md/.json）；只读库、不写 bibliography.jsonl
+    cp ../EditToolBox-notes/bib_db/bibliography.jsonl /tmp/before_B1.jsonl
+    /opt/homebrew/bin/python3.14 bibdb.py normalize --apply --backup /tmp/before_B1.jsonl \
+        --report ../EditToolBox-notes/bib_db/B1-apply-2026-10-18.md
+    # ↑ 真正 apply（只改安全条目；解析失败/高危形状/待裁决冲突字段 → 跳过并列清单）
+    /opt/homebrew/bin/python3.14 bibdb.py normalize-authors --out-dir ../EditToolBox-notes/bib_db
+    /opt/homebrew/bin/python3.14 bibdb.py normalize-authors --apply --backup /tmp/before_B2.jsonl \
+        --report ../EditToolBox-notes/bib_db/B2-author-normalize-2026-10-18.md
     # ↑ 生成 CONFLICTS.md / DUPLICATES.md / duplicates.csv（同一份库重复生成逐字节相同）
 
 退出码
@@ -71,7 +85,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
 `report*` 退出 2（先 init/import）；`import-bib` / `import-dir` 会自动建库。
 `report*` 只写清单文件（可重复生成、内容幂等），不改库本体；`resolve` 才写库
 （只改 `conflicts[]` 的裁决元数据，**不改字段值**；`--dry-run` 不写）。
-`normalize` 是**纯 dry-run**：只写报告文件，绝不写 `bibliography.jsonl`。
+`normalize` 默认是**纯 dry-run**：只写报告文件，绝不写 `bibliography.jsonl`；
+`--apply` 才写库（且必须先用 `--backup` 指定备份、sha256 与当前库一致才允许执行）。
 `--dry-run`（预览）：照常解析/查重/算冲突，但**一个字节都不写**（库文件不存在也不会
 新建），`--json` 里带 `dry_run=true` 与逐条 `changes` 明细；界面「入藏」页的
 「预览」按钮用的就是它。`--bibtex`（query）：每条命中多带一份可直接复制的 BibTeX。
@@ -1432,6 +1447,7 @@ def collect_normalize_rows(store: "bibdb.Store") -> list[dict]:
             "issues": issues, "slug": str(sources[0].get("slug") or "") if sources else "",
             "status": "format", "rules": [], "risks": [], "diff": {},
             "notes": [], "error": "",
+            "normalized_fields": None, "normalized_entry_type": "",
         }
         raw_fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
         for name, value in raw_fields.items():
@@ -1460,6 +1476,8 @@ def collect_normalize_rows(store: "bibdb.Store") -> list[dict]:
                 row["error"] = f"规范化改变了 key：{key!r} → {after.key!r}"
                 rows.append(row)
                 continue
+            row["normalized_fields"] = dict(sorted(after.fields.items()))
+            row["normalized_entry_type"] = str(after.etype or "").strip().lower()
             before_fields = bibdb.canonical_fields(before.fields)
             after_fields = bibdb.canonical_fields(after.fields)
             if str(before.etype or "").lower() != str(after.etype or "").lower():
@@ -1535,6 +1553,212 @@ def _normalize_issue_text(row: dict) -> str:
     if issues:
         return "；".join(issues) + (f" / {slug}" if slug else "")
     return "（无来源记录）"
+
+
+def _normalize_pending_conflict_fields(record: dict) -> set[str]:
+    """该记录**待裁决**冲突涉及的字段集合（apply 不能碰这些字段，否则冲突旧值过期）。"""
+    names: set[str] = set()
+    for conflict in record.get("conflicts") or []:
+        if isinstance(conflict, dict) and bibdb.conflict_is_pending(conflict):
+            names |= set(bibdb.conflict_fields(conflict))
+    return names
+
+
+def _raw_field_diff(old_fields: dict, new_fields: dict) -> dict[str, dict]:
+    """只按原始字符串比较的字段差异（用于「仅格式/原始值」的行）。"""
+    diff: dict[str, dict] = {}
+    for name in sorted(set(old_fields) | set(new_fields)):
+        old_value = str(old_fields.get(name, ""))
+        new_value = str(new_fields.get(name, ""))
+        if old_value != new_value:
+            diff[name] = {"old": old_value, "new": new_value}
+    return diff
+
+
+def apply_normalize_rows(store: "bibdb.Store", rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把安全条目的规范化结果写进库（**只改 entry_type/fields/content_sha256/updated_at**）。
+
+    逐条结构安全：解析失败（`status="error"`）或存在高危形状风险（`risks`）→ **不 apply**，
+    返回在 skipped 里；待裁决冲突字段将被改动的也不 apply（避免冲突旧值过期）。
+    返回 (applied, skipped)。
+    """
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    now = bibdb._now_iso()
+    for row in rows:
+        key = str(row["key"])
+        record = store.get(key)
+        if record is None:
+            skipped.append({"key": key, "reason": "库内找不到该记录（不应发生）"})
+            continue
+        if row["status"] == "error":
+            skipped.append({"key": key,
+                            "reason": row.get("error") or "重建/规范化/解析失败"})
+            continue
+        if row["risks"]:
+            skipped.append({"key": key,
+                            "reason": "高危形状风险：" + "；".join(row["risks"])})
+            continue
+        after_fields = dict(sorted((row.get("normalized_fields") or {}).items()))
+        after_type = str(row.get("normalized_entry_type") or "").strip().lower()
+        old_fields = dict(record.get("fields") or {})
+        old_type = str(record.get("entry_type") or "").strip().lower()
+        if after_fields == old_fields and after_type == old_type:
+            continue                       # 语义与原始值都无需改动（仅有/无排版差异）
+        pending = _normalize_pending_conflict_fields(record)
+        diff = (row["diff"] if row["diff"]
+                else _raw_field_diff(old_fields, after_fields))
+        overlap = sorted(set(diff) & pending)
+        if overlap:
+            skipped.append({"key": key,
+                            "reason": "待裁决冲突字段将被改动（先处理冲突）："
+                                      + "、".join(overlap)})
+            continue
+        record["entry_type"] = after_type or record.get("entry_type")
+        record["fields"] = after_fields
+        record["content_sha256"] = bibdb.content_sha256(record["entry_type"], after_fields)
+        record["updated_at"] = now
+        applied.append({
+            "key": key,
+            "entry_type": record["entry_type"],
+            "semantic": row["status"] == "semantic",
+            "rules": list(row["rules"]),
+            "diff": diff,
+        })
+    if applied:
+        store.dirty = True          # 上面直接改了 record dict，save() 靠 dirty 判断
+        store.save()
+    return applied, skipped
+
+
+def _normalize_verification(path: str, skipped_keys: set[str]) -> dict:
+    """apply 后重跑 dry-run 做二次校验：剩余语义变更应为 0（被排除的条目除外）。"""
+    store = bibdb.Store.load(path)
+    rows = collect_normalize_rows(store)
+    stats = _normalize_stats(rows)
+    remaining = [row for row in stats["semantic_rows"] if row["key"] not in skipped_keys]
+    return {
+        "records": stats["records"],
+        "semantic": stats["semantic"],
+        "format_only": stats["format_only"],
+        "errors": stats["errors"],
+        "semantic_excluding_skipped": len(remaining),
+        "remaining_keys": [row["key"] for row in remaining][:20],
+        "error_keys": [row["key"] for row in stats["error_rows"]],
+    }
+
+
+def build_normalize_apply_md(db_path: str, stats: dict, applied: list[dict],
+                             skipped: list[dict], verification: dict,
+                             sha_before: str, sha_after: str,
+                             backup_path: str, backup_sha: str) -> str:
+    """生成 B1 apply 报告（中文人读：改了什么/跳过了什么/二次校验）。"""
+    db_label = os.path.basename(db_path) or db_path
+    field_count = sum(len(item["diff"]) for item in applied)
+    semantic_count = sum(1 for item in applied if item["semantic"])
+    raw_count = len(applied) - semantic_count
+    lines: list[str] = [
+        "# 引用库 · B1 确定性规范化 apply 报告",
+        "",
+        "> 本报告由 `bibdb.py normalize --apply` 生成：**已把安全条目的规范化结果写进库**。",
+        "> 只更新 `entry_type` / `fields` / `content_sha256` / `updated_at`；",
+        "> `verified` / `method` / `sources` / `conflicts` / `aliases` / 创建时间**未动**。",
+        "",
+        f"- 数据来源：引用库 `{db_label}`",
+        f"- 库 sha256（apply 前）：`{sha_before or '（读不到）'}`",
+        f"- 库 sha256（apply 后）：`{sha_after or '（读不到）'}`",
+        f"- apply 前备份：`{backup_path or '（未提供）'}`"
+        f"（sha256 `{backup_sha or '（未提供）'}`，与 apply 前一致 = 可回滚）",
+        f"- 库记录：**{stats['records']}** 条",
+        f"- 本次 apply：**{len(applied)}** 条（语义变更 {semantic_count} 条 + "
+        f"仅原始值/格式 {raw_count} 条；共改 **{field_count}** 处字段）",
+        f"- **未 apply / 需人工处理：{len(skipped)} 条**（逐条见下）",
+        f"- 二次校验（apply 后重跑 dry-run）：语义变更 **{verification['semantic']}** 条"
+        f"（**排除条目后剩余 {verification['semantic_excluding_skipped']} 条**）/ "
+        f"仅格式 {verification['format_only']} / 异常 {verification['errors']}",
+        "",
+        "> ⚠️ 库存 `fields` 字典、不存 BibTeX 排版：所谓「仅格式变化」在库里没有落盘差异，"
+        "**不需要 apply**；本报告只列真正改了字段的条目。",
+        "",
+        "## apply 明细（按库内 key 排序）",
+        "",
+        "| # | 库内 key | 类型 | 字段变更（旧值 → 新值） | 规则 |",
+        "|---|---|---|---|---|",
+    ]
+    for index, item in enumerate(applied, start=1):
+        changes = []
+        for name, values in item["diff"].items():
+            old_value = _md_code(_clip(values.get("old") or "（空）", 50))
+            new_value = _md_code(_clip(values.get("new") or "（空）", 50))
+            changes.append(f"{name}：{old_value} → {new_value}")
+        lines.append(
+            f"| A{index:04d} | `{_md_escape(item['key'])}` | {_md_escape(item['entry_type'])} | "
+            f"{'<br>'.join(changes) or '（仅类型）'} | "
+            f"{_md_escape('；'.join(item['rules']) or '（无）', width=50)} |")
+    if not applied:
+        lines.append("| — | （无） | — | — | — |")
+    lines += [
+        "",
+        f"## 未 apply / 需人工处理清单（{len(skipped)} 条，不能静默吞掉）",
+        "",
+    ]
+    if skipped:
+        for item in skipped:
+            lines.append(f"- `{_md_escape(item['key'])}`：{_md_escape(item['reason'])}")
+    else:
+        lines.append("（无）")
+    lines += [
+        "",
+        "## 二次校验（apply 后重跑 dry-run）",
+        "",
+        "| 指标 | 数值 |",
+        "|---|---|",
+        f"| 记录数 | {verification['records']} |",
+        f"| 语义变更 | {verification['semantic']}（排除未 apply 条目后 "
+        f"**{verification['semantic_excluding_skipped']}**） |",
+        f"| 仅格式变化 / 无需改动 | {verification['format_only']} |",
+        f"| 异常 | {verification['errors']} |",
+        "",
+    ]
+    if verification["remaining_keys"]:
+        lines += ["剩余语义变更 key（前 20 个，应全部在未 apply 清单里）：",
+                  "", "、".join(f"`{key}`" for key in verification["remaining_keys"]), ""]
+    lines += [
+        "## 回滚方法（如需）",
+        "",
+        f"```bash",
+        f"cp {backup_path or '/tmp/bibliography_before_B1_apply.jsonl'} "
+        f"../EditToolBox-notes/bib_db/bibliography.jsonl",
+        "```",
+        "",
+        f"（备份 sha256：`{backup_sha or '（未提供）'}`）",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_normalize_apply_json(path: str, stats: dict, applied: list[dict],
+                               skipped: list[dict], verification: dict,
+                               sha_before: str, sha_after: str,
+                               backup_path: str, backup_sha: str) -> str:
+    """B1 apply 的机器可读摘要（applied / skipped / 二次校验）。"""
+    payload = {
+        "tool": "bibdb.py normalize --apply",
+        "db": os.path.basename(path) or path,
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "backup_path": backup_path,
+        "backup_sha256": backup_sha,
+        "records": stats["records"],
+        "applied": len(applied),
+        "applied_semantic": sum(1 for item in applied if item["semantic"]),
+        "applied_field_changes": sum(len(item["diff"]) for item in applied),
+        "skipped": len(skipped),
+        "applied_entries": applied,
+        "skipped_entries": skipped,
+        "verification": verification,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def build_normalize_md(store: "bibdb.Store", db_path: str, rows: list[dict],
@@ -1692,6 +1916,70 @@ def build_normalize_json(db_path: str, rows: list[dict], stats: dict,
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
+def _cmd_normalize_apply(path: str, store: "bibdb.Store", args,
+                          sha_before: str, rows: list[dict], stats: dict) -> int:
+    """`normalize --apply` 的执行部分：安全条目写库 + 报告 + 二次校验。"""
+    backup_path = str(getattr(args, "backup", "") or "")
+    backup_sha = bibdb.db_sha256(backup_path) if backup_path else ""
+    applied, skipped = apply_normalize_rows(store, rows)
+    sha_after = bibdb.db_sha256(path)
+    verification = _normalize_verification(path, {item["key"] for item in skipped})
+    report_path = str(args.report or "")
+    out_dir = str(args.out_dir or "")
+    if not report_path and out_dir:
+        report_path = os.path.join(out_dir, "B1-apply-report.md")
+    json_path = str(args.json_out or "")
+    if not json_path and out_dir:
+        json_path = os.path.join(out_dir, "B1-apply-report.json")
+    written: list[dict] = []
+    if report_path:
+        written.append(_write_report(
+            report_path,
+            build_normalize_apply_md(path, stats, applied, skipped, verification,
+                                     sha_before, sha_after, backup_path, backup_sha)))
+    if json_path:
+        written.append(_write_report(
+            json_path,
+            build_normalize_apply_json(path, stats, applied, skipped, verification,
+                                       sha_before, sha_after, backup_path, backup_sha)))
+    payload = {
+        "db": path,
+        "mode": "apply",
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "backup_path": backup_path,
+        "backup_sha256": backup_sha,
+        "records": stats["records"],
+        "applied": len(applied),
+        "applied_semantic": sum(1 for item in applied if item["semantic"]),
+        "applied_field_changes": sum(len(item["diff"]) for item in applied),
+        "skipped": len(skipped),
+        "skipped_entries": skipped,
+        "verification": verification,
+        "written": written,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"库 sha256（apply 前/后）：{sha_before} / {sha_after}")
+    print(f"备份：{backup_path}（sha256: {backup_sha}，与 apply 前一致）")
+    print(f"记录：{stats['records']} 条 → apply {len(applied)} 条"
+          f"（语义 {payload['applied_semantic']} + 仅原始值 {len(applied)-payload['applied_semantic']}；"
+          f"共改 {payload['applied_field_changes']} 处字段）；未 apply {len(skipped)} 条")
+    print(f"二次校验（重跑 dry-run）：语义变更 {verification['semantic']} 条"
+          f"（排除未 apply 后剩余 {verification['semantic_excluding_skipped']} 条）/ "
+          f"仅格式 {verification['format_only']} / 异常 {verification['errors']}")
+    for item in written:
+        state = "已写入" if item["written"] else "内容未变（未重写）"
+        print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
+    if skipped:
+        print("   未 apply（需人工处理）：" + "、".join(item["key"] for item in skipped[:10])
+              + ("…" if len(skipped) > 10 else ""))
+    print("   （只改了 entry_type/fields/content_sha256/updated_at；其余元数据未动）")
+    return 0
+
+
 def cmd_normalize(args) -> int:
     """B1 确定性规范化 dry-run：只出报告，**绝不写 bibliography.jsonl**。"""
     try:
@@ -1699,7 +1987,28 @@ def cmd_normalize(args) -> int:
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
+    apply_mode = bool(getattr(args, "apply", False))
     sha_before = bibdb.db_sha256(path)
+    if apply_mode:
+        if bool(getattr(args, "dry_run", False)):
+            print("✗ --apply 与 --dry-run 互斥：一次只能选一种模式", file=sys.stderr)
+            return 2
+        backup_path = str(getattr(args, "backup", "") or "")
+        if not backup_path:
+            print("✗ --apply 会写真实库，必须先备份并用 --backup PATH 指定备份文件"
+                  "（例：cp bibliography.jsonl /tmp/xxx.jsonl）", file=sys.stderr)
+            return 2
+        if not os.path.isfile(backup_path):
+            print(f"✗ 备份文件不存在：{backup_path}", file=sys.stderr)
+            return 2
+        backup_sha = bibdb.db_sha256(backup_path)
+        if backup_sha != sha_before:
+            print(f"✗ 备份 sha256 与当前库不一致（备份 {backup_sha} / 当前 {sha_before}）——"
+                  "请重新备份", file=sys.stderr)
+            return 2
+        rows = collect_normalize_rows(store)
+        stats = _normalize_stats(rows)
+        return _cmd_normalize_apply(path, store, args, sha_before, rows, stats)
     rows = collect_normalize_rows(store)
     stats = _normalize_stats(rows)
     sha_after = bibdb.db_sha256(path)
@@ -1755,6 +2064,383 @@ def cmd_normalize(args) -> int:
         print(f"   ⚠️ 高危形状风险：涉及 {stats['risky_records']} 条记录（见报告「高危形状风险」节）")
     print("   （dry-run：未修改 bibliography.jsonl；--apply 留给用户拍板后的批次）")
     return 0
+
+# ── B2：作者倒装批处理（normalize-authors，第 136 条后续）──────────────────────
+#
+# 编辑部 2026-10-15 决定：英文 `author` 一律倒装成「姓, 名缩写」；中文/日文不倒装。
+# 复用 `slcn.bibnorm` 的同一份实现（检查器/规范化器同源）：
+#   · `normalize_author_field()` 已处理：多作者 `and`、虚词（van/de/von）、
+#     全名缩成首字母、花括号/LaTeX 保护原样、CJK 原样、已倒装原样（幂等）、
+#     「全有或全无」（一段判不准整条不动）；
+#   · 本 CLI 再加一层**保守跳过**：疑似机构/组织作者、`and others`、邮箱/网址、
+#     待裁决冲突字段 → 不进 apply（宁可漏改，不改错学术事实）。
+# 默认 dry-run；`--apply` 才写库，且只改 `author` 字段（+ content_sha256/updated_at）。
+# `editor` **不动**：同一套倒装规则也适用 editor，但本批按任务口径只处理 author
+# （editor 样本/风险另批评估）；如需同批处理需用户拍板。
+
+AUTHOR_REPORT_DRY = "B2-author-normalize-dryrun.md"
+AUTHOR_REPORT_APPLY = "B2-author-normalize-apply.md"
+
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+#: 机构/组织作者的明显词（人名里一般不会出现；命中就整条不动）
+_INSTITUTION_RE = re.compile(
+    r"\b(?:Association|Society|Organization|Organisation|Institute|University|Universit[äa]t|"
+    r"College|School|Department|Faculty|Center|Centre|Committee|Council|Group|Team|Consortium|"
+    r"Network|Agency|Office|Bureau|Board|Panel|Project|Workshop|Conference|Congress|Foundation|"
+    r"Corporation|Company|Inc|Ltd|Press|Publishing|Ministry|Government|Bank|Laboratory|Lab|"
+    r"Commission|Federation|Union|Academy|Trust|Forum|Initiative|Platform|Alliance|Coalition|"
+    r"Staff|Members|Contributors|Editors|Editorial)\b", re.I)
+
+
+def _author_skip_reason(value: str) -> str:
+    """作者值不适合（或不必要）倒装时的中文原因（空串 = 可以倒装）。"""
+    text = (value or "").strip()
+    if not text:
+        return "空值"
+    if _CJK_RE.search(text):
+        return "含中文/日文（不倒装）"
+    if _INSTITUTION_RE.search(text):
+        return "疑似机构/组织作者（不推断）"
+    if re.search(r"@|https?://", text):
+        return "含邮箱/网址（不推断）"
+    if "and others" in text.lower():
+        return "含 `and others`（保持原样）"
+    if "{" in text or "\\" in text:
+        return "含花括号/LaTeX 保护（保持原样）"
+    if "," in text:
+        return "已倒装或含逗号（保持原样）"
+    words = text.split()
+    if len(words) < 2:
+        return "单名/只有一个词（保持原样）"
+    return ""       # 结构上可以尝试倒装（最终由 bibnorm 判准不准）
+
+
+def collect_author_rows(store: "bibdb.Store") -> list[dict]:
+    """逐条计算 author 倒装结果（不改库）。
+
+    返回行：`key` / `old` / `new` / `status`（change / skip）/ `reason` / `issues`。
+    """
+    rows: list[dict] = []
+    for record in store.records():
+        fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        if "author" not in fields:
+            continue
+        old = str(fields.get("author") or "")
+        row = {
+            "key": str(record.get("key") or ""),
+            "old": old,
+            "new": old,
+            "status": "skip",
+            "reason": "",
+            "issues": _record_issues(record),
+        }
+        reason = _author_skip_reason(old)
+        if not reason:
+            pending = _normalize_pending_conflict_fields(record)
+            if "author" in pending:
+                reason = "待裁决冲突字段（先处理冲突）"
+        if reason:
+            row["reason"] = reason
+            rows.append(row)
+            continue
+        new = bibnorm.normalize_author_field(old)
+        if new == old:
+            row["reason"] = _author_skip_reason(old) or "规范化器判不准（保持原样）"
+            rows.append(row)
+            continue
+        row["status"] = "change"
+        row["new"] = new
+        rows.append(row)
+    rows.sort(key=lambda item: item["key"])
+    return rows
+
+
+def _author_stats(rows: list[dict]) -> dict:
+    changes = [row for row in rows if row["status"] == "change"]
+    skips = [row for row in rows if row["status"] == "skip"]
+    reasons: dict[str, int] = {}
+    for row in skips:
+        reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+    return {
+        "with_author": len(rows),
+        "changes": len(changes),
+        "skips": len(skips),
+        "reasons": dict(sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "change_rows": changes,
+        "skip_rows": skips,
+    }
+
+
+def build_author_report_md(db_path: str, stats: dict, sha_before: str,
+                           sha_after: str, *, applied: bool,
+                           skipped_apply: list[dict] | None = None,
+                           verification: dict | None = None,
+                           backup_path: str = "", backup_sha: str = "") -> str:
+    """B2 作者倒装报告（dry-run / apply 共用；apply 版多二次校验与备份信息）。"""
+    db_label = os.path.basename(db_path) or db_path
+    title = ("# 引用库 · B2 作者倒装 apply 报告" if applied
+             else "# 引用库 · B2 作者倒装 dry-run 报告")
+    lines: list[str] = [title, ""]
+    if applied:
+        lines += [
+            "> 本报告由 `bibdb.py normalize-authors --apply` 生成：**已把安全条目的英文作者倒装写进库**。",
+            "> 只改 `author` 字段 + `content_sha256` + `updated_at`；其余字段与元数据未动。",
+            "> 中文/日文、机构、`and others`、花括号/LaTeX 保护、已倒装、判不准 → **跳过**。",
+            "",
+            f"- 库 sha256（apply 前）：`{sha_before or '（读不到）'}`",
+            f"- 库 sha256（apply 后）：`{sha_after or '（读不到）'}`",
+            f"- apply 前备份：`{backup_path or '（未提供）'}`（sha256 `{backup_sha or '（未提供）'}`）",
+        ]
+    else:
+        lines += [
+            "> 本报告由 `bibdb.py normalize-authors` 生成：**dry-run 只算不写**，不会修改",
+            "> `bibliography.jsonl`。只处理 `author` 字段（`editor` 本批不动）。",
+            "> 跳过口径：中文/日文、机构、`and others`、花括号/LaTeX 保护、已倒装、判不准 → 原样不动。",
+            "",
+            f"- 库 sha256：`{sha_before or '（读不到）'}`（dry-run 后未变：{sha_before == sha_after}）",
+        ]
+    lines += [
+        f"- 有 `author` 字段的记录：**{stats['with_author']}** 条",
+        f"- {'已倒装' if applied else '将倒装'}：**{stats['changes']}** 条",
+        f"- 跳过：**{stats['skips']}** 条（按原因见下表）",
+        "",
+        "## 跳过原因分类",
+        "",
+        "| 原因 | 条数 |",
+        "|---|---|",
+    ]
+    for reason, count in stats["reasons"].items():
+        lines.append(f"| {_md_escape(reason)} | {count} |")
+    if not stats["reasons"]:
+        lines.append("| （无） | 0 |")
+    sample_label = "已倒装样例（前 20，旧 → 新）" if applied else "将倒装样例（前 20，旧 → 新）"
+    lines += ["", f"## {sample_label}", "",
+              "| # | 库内 key | 旧值 | 新值 |", "|---|---|---|---|"]
+    for index, row in enumerate(stats["change_rows"][:20], start=1):
+        lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
+                     f"`{_md_escape(row['old'], width=60)}` | `{_md_escape(row['new'], width=60)}` |")
+    if not stats["change_rows"]:
+        lines.append("| — | （无） | — | — |")
+    lines += ["", "## 跳过样例（前 20）", "",
+              "| # | 库内 key | author 原值 | 原因 |", "|---|---|---|---|"]
+    for index, row in enumerate(stats["skip_rows"][:20], start=1):
+        lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
+                     f"`{_md_escape(row['old'], width=60)}` | {_md_escape(row['reason'])} |")
+    if not stats["skip_rows"]:
+        lines.append("| — | （无） | — | — |")
+    if applied:
+        lines += ["", "## 二次校验（apply 后重跑 dry-run）", ""]
+        if verification is not None:
+            lines += [
+                f"- 仍将倒装（排除未 apply 的跳过条目后）：**{verification['remaining']}** 条（应为 0）",
+                f"- 跳过：{verification['skips']} 条；有 author 的记录：{verification['with_author']} 条",
+                "",
+            ]
+            if verification.get("remaining_keys"):
+                lines += ["剩余 key（前 20）：", "",
+                          "、".join(f"`{key}`" for key in verification["remaining_keys"]), ""]
+        if skipped_apply:
+            shown = skipped_apply[:50]
+            lines += [f"## 本次未 apply 的条目（前 {len(shown)} 条；共 {len(skipped_apply)} 条）", ""]
+            for item in shown:
+                lines.append(f"- `{_md_escape(item['key'])}`：{_md_escape(item['reason'])}")
+            if len(skipped_apply) > len(shown):
+                lines.append(f"- …（其余 {len(skipped_apply) - len(shown)} 条略："
+                             "完整跳过清单见 `--json-out` 的 JSON 汇总或上面「跳过原因分类」）")
+            lines.append("")
+        lines += ["## 回滚方法（如需）", "",
+                  "```bash",
+                  f"cp {backup_path or '/tmp/bibliography_before_B2_authors.jsonl'} "
+                  "../EditToolBox-notes/bib_db/bibliography.jsonl",
+                  "```", "",
+                  f"（备份 sha256：`{backup_sha or '（未提供）'}`）", ""]
+    return "\n".join(lines)
+
+
+def _author_verification(path: str, skip_keys: set[str]) -> dict:
+    store = bibdb.Store.load(path)
+    rows = collect_author_rows(store)
+    stats = _author_stats(rows)
+    remaining = [row for row in stats["change_rows"] if row["key"] not in skip_keys]
+    return {
+        "with_author": stats["with_author"],
+        "changes": stats["changes"],
+        "skips": stats["skips"],
+        "remaining": len(remaining),
+        "remaining_keys": [row["key"] for row in remaining][:20],
+    }
+
+
+def apply_author_rows(store: "bibdb.Store", rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把安全的 author 倒装结果写进库（只改 author + content_sha256 + updated_at）。"""
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    now = bibdb._now_iso()
+    for row in rows:
+        if row["status"] != "change":
+            skipped.append({"key": row["key"], "reason": row["reason"]})
+            continue
+        record = store.get(row["key"])
+        if record is None:
+            skipped.append({"key": row["key"], "reason": "库内找不到该记录（不应发生）"})
+            continue
+        pending = _normalize_pending_conflict_fields(record)
+        if "author" in pending:
+            skipped.append({"key": row["key"], "reason": "待裁决冲突字段（先处理冲突）"})
+            continue
+        fields = dict(record.get("fields") or {})
+        fields["author"] = row["new"]
+        record["fields"] = dict(sorted(fields.items()))
+        record["content_sha256"] = bibdb.content_sha256(record.get("entry_type") or "",
+                                                        record["fields"])
+        record["updated_at"] = now
+        applied.append({"key": row["key"], "old": row["old"], "new": row["new"]})
+    if applied:
+        store.dirty = True
+        store.save()
+    return applied, skipped
+
+
+def build_author_json(path: str, stats: dict, sha_before: str, sha_after: str,
+                      *, applied: bool, applied_rows: list[dict] | None = None,
+                      skipped_apply: list[dict] | None = None,
+                      verification: dict | None = None,
+                      backup_path: str = "", backup_sha: str = "") -> str:
+    payload = {
+        "tool": "bibdb.py normalize-authors" + (" --apply" if applied else "（dry-run）"),
+        "db": os.path.basename(path) or path,
+        "mode": "apply" if applied else "dry-run",
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "db_unchanged": sha_before == sha_after,
+        "backup_path": backup_path,
+        "backup_sha256": backup_sha,
+        "with_author": stats["with_author"],
+        "changes": stats["changes"],
+        "skips": stats["skips"],
+        "reasons": stats["reasons"],
+        "change_entries": applied_rows if applied_rows is not None else [
+            {"key": row["key"], "old": row["old"], "new": row["new"]}
+            for row in stats["change_rows"]],
+        "skipped_entries": skipped_apply if applied_rows is not None else [
+            {"key": row["key"], "old": row["old"], "reason": row["reason"]}
+            for row in stats["skip_rows"]],
+        "verification": verification,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _write_author_reports(args, store, path: str, sha_before: str, stats: dict,
+                          *, applied: bool, applied_rows=None, skipped_apply=None,
+                          verification=None, backup_path="", backup_sha="") -> list[dict]:
+    report_path = str(getattr(args, "report", "") or "")
+    out_dir = str(getattr(args, "out_dir", "") or "")
+    default_name = AUTHOR_REPORT_APPLY if applied else AUTHOR_REPORT_DRY
+    if not report_path and out_dir:
+        report_path = os.path.join(out_dir, default_name)
+    # 只有显式给 --json-out 才写 JSON（--out-dir 只写 Markdown，避免把逐条全量明细塞进笔记仓）
+    json_path = str(getattr(args, "json_out", "") or "")
+    sha_after = bibdb.db_sha256(path)
+    written: list[dict] = []
+    if report_path:
+        written.append(_write_report(report_path, build_author_report_md(
+            path, stats, sha_before, sha_after, applied=applied,
+            skipped_apply=skipped_apply, verification=verification,
+            backup_path=backup_path, backup_sha=backup_sha)))
+    if json_path:
+        written.append(_write_report(json_path, build_author_json(
+            path, stats, sha_before, sha_after, applied=applied,
+            applied_rows=applied_rows, skipped_apply=skipped_apply,
+            verification=verification, backup_path=backup_path, backup_sha=backup_sha)))
+    return written
+
+
+def cmd_normalize_authors(args) -> int:
+    """B2 作者倒装：默认 dry-run；`--apply` 才写库（只改 author）。"""
+    apply_mode = bool(getattr(args, "apply", False))
+    if apply_mode and bool(getattr(args, "dry_run", False)):
+        print("✗ --apply 与 --dry-run 互斥：一次只能选一种模式", file=sys.stderr)
+        return 2
+    try:
+        path, store = _open_store(args)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    sha_before = bibdb.db_sha256(path)
+    backup_path = str(getattr(args, "backup", "") or "")
+    backup_sha = ""
+    if apply_mode:
+        if not backup_path:
+            print("✗ --apply 会写真实库，必须先备份并用 --backup PATH 指定", file=sys.stderr)
+            return 2
+        if not os.path.isfile(backup_path):
+            print(f"✗ 备份文件不存在：{backup_path}", file=sys.stderr)
+            return 2
+        backup_sha = bibdb.db_sha256(backup_path)
+        if backup_sha != sha_before:
+            print(f"✗ 备份 sha256 与当前库不一致（备份 {backup_sha} / 当前 {sha_before}）",
+                  file=sys.stderr)
+            return 2
+    rows = collect_author_rows(store)
+    stats = _author_stats(rows)
+    if not apply_mode:
+        written = _write_author_reports(args, store, path, sha_before, stats,
+                                        applied=False)
+        sha_after = bibdb.db_sha256(path)
+        payload = {
+            "db": path, "mode": "dry-run",
+            "sha256_before": sha_before, "sha256_after": sha_after,
+            "db_unchanged": sha_before == sha_after,
+            "with_author": stats["with_author"], "changes": stats["changes"],
+            "skips": stats["skips"], "reasons": stats["reasons"],
+            "written": written,
+        }
+        if args.json:
+            _print_json(payload)
+            return 0
+        print(f"库：{path}")
+        print(f"库 sha256：{sha_before}（dry-run 未改动：{sha_before == sha_after}）")
+        print(f"有 author 的记录：{stats['with_author']} 条 → 将倒装 {stats['changes']} 条 / "
+              f"跳过 {stats['skips']} 条")
+        for item in written:
+            print(f"   已写入：{item['path']}（{item['bytes']:,} 字节）")
+        print("   跳过原因 Top：" + "、".join(
+            f"{reason} {count}" for reason, count in list(stats["reasons"].items())[:6]))
+        print("   （dry-run：未修改 bibliography.jsonl；--apply 才写库）")
+        return 0
+    applied_rows, skipped_apply = apply_author_rows(store, rows)
+    verification = _author_verification(path, {item["key"] for item in skipped_apply})
+    written = _write_author_reports(args, store, path, sha_before, stats,
+                                    applied=True, applied_rows=applied_rows,
+                                    skipped_apply=skipped_apply,
+                                    verification=verification,
+                                    backup_path=backup_path, backup_sha=backup_sha)
+    sha_after = bibdb.db_sha256(path)
+    payload = {
+        "db": path, "mode": "apply",
+        "sha256_before": sha_before, "sha256_after": sha_after,
+        "backup_path": backup_path, "backup_sha256": backup_sha,
+        "with_author": stats["with_author"], "applied": len(applied_rows),
+        "skipped": len(skipped_apply), "reasons": stats["reasons"],
+        "applied_entries": applied_rows, "skipped_entries": skipped_apply,
+        "verification": verification, "written": written,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"库 sha256（apply 前/后）：{sha_before} / {sha_after}")
+    print(f"备份：{backup_path}（sha256: {backup_sha}）")
+    print(f"有 author 的记录：{stats['with_author']} 条 → 已倒装 {len(applied_rows)} 条 / "
+          f"跳过 {len(skipped_apply)} 条")
+    print(f"二次校验（重跑 dry-run）：剩余将倒装 {verification['remaining']} 条（应为 0）")
+    for item in written:
+        print(f"   已写入：{item['path']}（{item['bytes']:,} 字节）")
+    print("   跳过原因 Top：" + "、".join(
+        f"{reason} {count}" for reason, count in list(stats["reasons"].items())[:6]))
+    print("   （只改了 author / content_sha256 / updated_at；其余元数据未动）")
+    return 0
+
 
 # ── 入口 ────────────────────────────────────────────────────────────────────
 
@@ -1892,8 +2578,15 @@ def build_parser() -> argparse.ArgumentParser:
         "normalize", parents=[common],
         help="B1 确定性规范化 dry-run（逐条重建→bibnorm.normalize_bib→比较；只出报告，"
              "**绝不写 bibliography.jsonl**）")
-    norm.add_argument("--dry-run", action="store_true",
-                      help="显式写一次 dry-run（默认就是；本命令从不写库，此开关只为兼容口径）")
+    mode = norm.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true",
+                      help="显式 dry-run（默认就是；与 --apply 互斥）")
+    mode.add_argument("--apply", action="store_true",
+                      help="**真正写库**（默认 dry-run）：只改安全条目的 "
+                           "entry_type/fields/content_sha256/updated_at；必须先 --backup")
+    norm.add_argument("--backup", default="", metavar="PATH",
+                      help="--apply 前须先 cp 库文件；这里指定备份路径并校验 sha256 与当前库一致"
+                           "（防误 apply）")
     norm.add_argument("--report", default="", metavar="PATH",
                       help="Markdown 报告输出路径（不写则只打印摘要）")
     norm.add_argument("--out-dir", default="", metavar="DIR",
@@ -1902,6 +2595,25 @@ def build_parser() -> argparse.ArgumentParser:
                       help="另写 JSON 摘要文件（可选；--out-dir 时默认写同名 .json）")
     norm.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
     norm.set_defaults(func=cmd_normalize)
+
+    # ── B2 作者倒装（第 136 条后续）：默认 dry-run，--apply 才写库 ──────────
+    auth = sub.add_parser(
+        "normalize-authors", parents=[common],
+        help="B2 英文作者倒装（姓, 名缩写）：默认 dry-run；--apply 才写库，只改 author")
+    amode = auth.add_mutually_exclusive_group()
+    amode.add_argument("--dry-run", action="store_true", help="显式 dry-run（默认就是）")
+    amode.add_argument("--apply", action="store_true",
+                       help="真正写库：只改安全条目的 author（+ content_sha256/updated_at），"
+                            "必须先 --backup")
+    auth.add_argument("--backup", default="", metavar="PATH",
+                      help="--apply 前须先 cp 库文件；这里指定备份路径并校验 sha256")
+    auth.add_argument("--report", default="", metavar="PATH",
+                      help="Markdown 报告路径（dry-run 默认 B2-author-normalize-dryrun.md；"
+                           "apply 默认 B2-author-normalize-apply.md）")
+    auth.add_argument("--out-dir", default="", metavar="DIR", help="报告输出目录")
+    auth.add_argument("--json-out", default="", metavar="PATH", help="另写 JSON 摘要文件")
+    auth.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
+    auth.set_defaults(func=cmd_normalize_authors)
     return parser
 
 

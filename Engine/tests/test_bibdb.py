@@ -39,6 +39,12 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
   (q) `resolve --action adopt`（逐字段采用新稿值，第 135 条）：只改该冲突字段、删空字段、
       重算 content_sha256、`adopted` 标记、重叠默认拒绝 / `--allow-overlap` 标 `superseded`、
       幂等、dry-run 不写库、未知指纹/缺指纹/`--allow-overlap` 误用退出 2、报告统计
+  (r) `normalize --apply`（B1 落库）：只改安全条目（entry_type/fields/content_sha256/
+      updated_at）、保留其余元数据、跳过坏条目并列清单、apply 后二次校验、幂等、
+      `--apply` 必须带匹配 sha 的 `--backup`、与 `--dry-run` 互斥
+  (s) `normalize-authors`（B2 作者倒装）：Given Surname/多作者/particles → 姓, 名；
+      CJK/机构/`and others`/花括号/已倒装/单名 → 跳过；apply 只改 author + sha/updated_at；
+      dry-run 不写、`--backup` 门禁、幂等、二次校验 0
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -1628,6 +1634,297 @@ with tempfile.TemporaryDirectory(prefix="bibdb_adopt_") as tmp:
                 "--incoming-sha256", "abcdef12", "--db", db)
     check("(q) 未知 key → 退出 2", r.returncode == 2
           and "没有记录 key" in (r.stdout + r.stderr))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (r) normalize --apply：B1 落库（安全条目）──")
+
+with tempfile.TemporaryDirectory(prefix="bibdb_apply_") as tmp:
+    db = _make_normalize_db(os.path.join(tmp, "apply.jsonl"))
+    store = bibdb.Store.load(db)
+    for key in [rec["key"] for rec in store.records()]:
+        store.get(key)["updated_at"] = "2000-01-01T00:00:00+08:00"
+    store.dirty = True
+    store.save()
+    store = bibdb.Store.load(db)
+    before_records = {key: json.loads(json.dumps(store.get(key)))
+                      for key in ("Format2001", "Cn2020", "EngBook1999",
+                                  "Risk2001", "Bad1999")}
+    digest_before = read_bytes(db)
+    backup = os.path.join(tmp, "backup.jsonl")
+    with open(backup, "wb") as fh:
+        fh.write(read_bytes(db))
+    report = os.path.join(tmp, "B1-apply.md")
+    json_out = os.path.join(tmp, "B1-apply.json")
+
+    # ── 缺备份 / 备份 sha 不符 / 与 --dry-run 互斥 → 退出 2，库不变 ──
+    r = run_cli("normalize", "--db", db, "--apply", "--report", report)
+    check("(r) --apply 不带 --backup → 退出 2，库文件不变",
+          r.returncode == 2 and "backup" in (r.stdout + r.stderr)
+          and read_bytes(db) == digest_before)
+    wrong = write(os.path.join(tmp, "wrong_backup.jsonl"), '{"version":1}\n')
+    r = run_cli("normalize", "--db", db, "--apply", "--backup", wrong,
+                "--report", report)
+    check("(r) --backup 与当前库 sha 不一致 → 退出 2（防误 apply）",
+          r.returncode == 2 and "不一致" in (r.stdout + r.stderr)
+          and read_bytes(db) == digest_before)
+    r = run_cli("normalize", "--db", db, "--apply", "--backup", backup,
+                "--dry-run", "--report", report)
+    check("(r) --apply 与 --dry-run 互斥 → 退出 2", r.returncode == 2
+          and ("互斥" in (r.stdout + r.stderr)
+               or "not allowed with argument" in (r.stdout + r.stderr))
+          and read_bytes(db) == digest_before)
+
+    # ── 真正 apply ──
+    r = run_cli("normalize", "--db", db, "--apply", "--backup", backup,
+                "--report", report, "--json-out", json_out, "--json")
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    store_after = bibdb.Store.load(db)
+    cn = store_after.get("Cn2020")
+    eng = store_after.get("EngBook1999")
+    check("(r) apply 成功：退出 0、只 apply 安全条目（语义 2 条）+ 跳过 2 条",
+          r.returncode == 0 and payload.get("applied") == 2
+          and payload.get("applied_semantic") == 2
+          and payload.get("skipped") == 2, json.dumps(payload, ensure_ascii=False)[:400])
+    check("(r) 安全条目：补 userf / 版次并入 title 真正落库",
+          cn["fields"].get("userf") == "cn"
+          and eng["fields"].get("title") == "A Book About Logic, (2nd Edition)"
+          and "edition" not in eng["fields"],
+          f"{cn['fields']} / {eng['fields']}")
+    check("(r) content_sha256 已按新 fields 重算（等于 content_sha256()）",
+          cn["content_sha256"]
+          == bibdb.content_sha256(cn["entry_type"], cn["fields"])
+          and eng["content_sha256"]
+          == bibdb.content_sha256(eng["entry_type"], eng["fields"]))
+    check("(r) 只改了 fields/type/sha/updated_at：verified/sources/conflicts/aliases 不变",
+          all(cn[k] == before_records["Cn2020"][k]
+              for k in ("verified", "verified_at", "method", "sources",
+                        "conflicts", "aliases", "created_at"))
+          and all(eng[k] == before_records["EngBook1999"][k]
+                  for k in ("verified", "sources", "conflicts", "aliases")),
+          "元数据对比")
+    check("(r) updated_at 已更新", cn["updated_at"] != before_records["Cn2020"]["updated_at"])
+    check("(r) 坏条目未 apply：Risk2001 / Bad1999 字段逐字不变",
+          store_after.get("Risk2001")["fields"]
+          == before_records["Risk2001"]["fields"]
+          and store_after.get("Bad1999")["fields"]
+          == before_records["Bad1999"]["fields"])
+    check("(r) 无需改动的 Format2001 未被 apply（fields/updated_at 不变）",
+          store_after.get("Format2001")["fields"]
+          == before_records["Format2001"]["fields"]
+          and store_after.get("Format2001")["updated_at"]
+          == before_records["Format2001"]["updated_at"])
+    check("(r) 二次校验：排除未 apply 后剩余语义变更 = 0",
+          payload["verification"]["semantic_excluding_skipped"] == 0
+          and payload["verification"]["error_keys"] == ["Bad1999"],
+          str(payload.get("verification"))[:300])
+    check("(r) skips 清单点名 Risk2001（高危）与 Bad1999（解析失败）",
+          {item["key"] for item in payload["skipped_entries"]}
+          == {"Risk2001", "Bad1999"}
+          and any("posted-at" in item["reason"] for item in payload["skipped_entries"]))
+    report_text = _read_text(report) if os.path.isfile(report) else ""
+    check("(r) apply 报告：sha 前/后、备份路径、apply 明细、未 apply 清单、二次校验",
+          "apply 报告" in report_text and "库 sha256（apply 前）" in report_text
+          and "备份" in report_text and "apply 明细" in report_text
+          and "未 apply / 需人工处理清单" in report_text
+          and "二次校验" in report_text
+          and "semantic_excluding_skipped" not in report_text, report_text[:600])
+    payload_json = json.loads(_read_text(json_out)) if os.path.isfile(json_out) else {}
+    check("(r) apply JSON：applied/skipped/verification/backup 都在",
+          payload_json.get("applied") == 2 and payload_json.get("skipped") == 2
+          and payload_json.get("backup_sha256")
+          == payload_json.get("sha256_before")
+          and payload_json["verification"]["semantic_excluding_skipped"] == 0)
+    # ── 幂等：再 apply 一次（用 apply 后的库做备份）→ 0 变更、库字节不变 ──
+    backup2 = os.path.join(tmp, "backup2.jsonl")
+    with open(backup2, "wb") as fh:
+        fh.write(read_bytes(db))
+    digest_after_apply = read_bytes(db)
+    r = run_cli("normalize", "--db", db, "--apply", "--backup", backup2,
+                "--json", "--report", report)
+    payload2 = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(r) 二次 apply 幂等：applied=0、库文件逐字节不变",
+          r.returncode == 0 and payload2.get("applied") == 0
+          and read_bytes(db) == digest_after_apply, json.dumps(payload2, ensure_ascii=False)[:300])
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (s) normalize-authors：B2 作者倒装（dry-run + apply）──")
+
+
+def _make_author_db(path: str) -> str:
+    """合成库：可倒装 / 多作者 / 虚词 / 跳过（CJK、机构、others、花括号、已倒装、单名）。"""
+    store = bibdb.Store.load(path, create=True)
+    store.import_bib_text("""
+@article{Good1,
+  author  = {John Smith},
+  title   = {First},
+  journal = {J},
+  year    = {2001}
+}
+@article{Multi2,
+  author  = {J. P. Dillard and C. Segrin},
+  title   = {Second},
+  journal = {J},
+  year    = {2002}
+}
+@article{Particle3,
+  author  = {B. C. van Fraassen},
+  title   = {Third},
+  journal = {J},
+  year    = {2003}
+}
+@article{Inverted4,
+  author  = {Smith, John},
+  title   = {Fourth},
+  journal = {J},
+  year    = {2004}
+}
+@article{Chinese5,
+  author  = {张三 and 李四},
+  title   = {第五},
+  journal = {J},
+  year    = {2005}
+}
+@article{Institution6,
+  author  = {World Health Organization},
+  title   = {Sixth},
+  journal = {J},
+  year    = {2006}
+}
+@article{Others7,
+  author  = {J. Smith and others},
+  title   = {Seventh},
+  journal = {J},
+  year    = {2007}
+}
+@article{Braces8,
+  author  = {{van Fraassen}, B. C.},
+  title   = {Eighth},
+  journal = {J},
+  year    = {2008}
+}
+@article{Single9,
+  author  = {Plato},
+  title   = {Ninth},
+  journal = {J},
+  year    = {2009}
+}
+@book{EditorOnly10,
+  editor  = {John Smith},
+  title   = {Tenth},
+  publisher = {P},
+  year    = {2010}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "01 Base", "file": "base.bib"}, verified=True)
+    store.save()
+    return path
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_authors_") as tmp:
+    db = _make_author_db(os.path.join(tmp, "authors.jsonl"))
+    store = bibdb.Store.load(db)
+    for key in [rec["key"] for rec in store.records()]:
+        store.get(key)["updated_at"] = "2000-01-01T00:00:00+08:00"
+    store.dirty = True
+    store.save()
+    store = bibdb.Store.load(db)
+    before = {key: json.loads(json.dumps(store.get(key)))
+              for key in ("Good1", "Multi2", "Particle3", "Inverted4",
+                          "Chinese5", "Institution6", "Others7", "Braces8",
+                          "Single9", "EditorOnly10")}
+    digest_before = read_bytes(db)
+    out_dry = os.path.join(tmp, "dry")
+    r = run_cli("normalize-authors", "--db", db, "--out-dir", out_dry, "--json")
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    dry_text = _read_text(os.path.join(out_dry, "B2-author-normalize-dryrun.md"))         if os.path.isfile(os.path.join(out_dry, "B2-author-normalize-dryrun.md")) else ""
+    check("(s) dry-run：退出 0、生成 B2 dry-run 报告、库文件不变",
+          r.returncode == 0 and os.path.isfile(os.path.join(out_dry, "B2-author-normalize-dryrun.md"))
+          and read_bytes(db) == digest_before)
+    check("(s) dry-run 统计：3 条将倒装（Given Surname / 多作者 / particles），其余跳过",
+          payload.get("with_author") == 9 and payload.get("changes") == 3
+          and payload.get("skips") == 6 and payload.get("db_unchanged") is True,
+          json.dumps(payload, ensure_ascii=False)[:400])
+    check("(s) 跳过原因分类覆盖 CJK/机构/and others/花括号/已倒装/单名",
+          {"含中文/日文（不倒装）", "疑似机构/组织作者（不推断）",
+           "含 `and others`（保持原样）", "含花括号/LaTeX 保护（保持原样）",
+           "已倒装或含逗号（保持原样）", "单名/只有一个词（保持原样）"}
+          <= set(payload.get("reasons") or {}), str(payload.get("reasons"))[:400])
+    check("(s) dry-run 报告：标题/样例/跳过原因/说明不写库",
+          "B2 作者倒装 dry-run 报告" in dry_text and "将倒装样例" in dry_text
+          and "跳过原因分类" in dry_text and "dry-run 只算不写" in dry_text
+          and "editor" in dry_text, dry_text[:500])
+    # ── apply 门禁 ──
+    r = run_cli("normalize-authors", "--db", db, "--apply")
+    check("(s) --apply 不带 --backup → 退出 2，库不变",
+          r.returncode == 2 and "backup" in (r.stdout + r.stderr)
+          and read_bytes(db) == digest_before)
+    wrong = write(os.path.join(tmp, "wrong.jsonl"), '{"version":1}\n')
+    r = run_cli("normalize-authors", "--db", db, "--apply", "--backup", wrong)
+    check("(s) --backup sha 不符 → 退出 2", r.returncode == 2
+          and "不一致" in (r.stdout + r.stderr))
+    backup = os.path.join(tmp, "backup.jsonl")
+    with open(backup, "wb") as fh:
+        fh.write(read_bytes(db))
+    r = run_cli("normalize-authors", "--db", db, "--apply", "--backup", backup,
+                "--dry-run")
+    check("(s) --apply 与 --dry-run 互斥 → 退出 2", r.returncode == 2
+          and ("互斥" in (r.stdout + r.stderr)
+               or "not allowed with argument" in (r.stdout + r.stderr)))
+    # ── 真正 apply ──
+    report = os.path.join(tmp, "B2-apply.md")
+    r = run_cli("normalize-authors", "--db", db, "--apply", "--backup", backup,
+                "--report", report, "--json")
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    after = bibdb.Store.load(db)
+    check("(s) apply：3 条倒装、6 条跳过、退出 0",
+          r.returncode == 0 and payload.get("applied") == 3
+          and payload.get("skipped") == 6 and payload.get("verification", {})
+          .get("remaining") == 0, json.dumps(payload, ensure_ascii=False)[:400])
+    check("(s) Given Surname → Surname, Given（含中名首字母）",
+          after.get("Good1")["fields"]["author"] == "Smith, J."
+          and after.get("Multi2")["fields"]["author"]
+          == "Dillard, J. P. and Segrin, C."
+          and after.get("Particle3")["fields"]["author"] == "van Fraassen, B. C.",
+          f"{after.get('Good1')['fields']['author']} | "
+          f"{after.get('Multi2')['fields']['author']} | "
+          f"{after.get('Particle3')['fields']['author']}")
+    check("(s) 跳过项 author 一字不变（CJK/机构/others/花括号/已倒装/单名）",
+          all(after.get(key)["fields"].get("author") == before[key]["fields"]["author"]
+              for key in ("Inverted4", "Chinese5", "Institution6", "Others7",
+                          "Braces8", "Single9")))
+    check("(s) apply 只改 author：其它字段/verified/sources/conflicts/aliases 不变",
+          after.get("Good1")["fields"] == {**before["Good1"]["fields"],
+                                           "author": "Smith, J."}
+          and all(after.get("Good1")[k] == before["Good1"][k]
+                  for k in ("verified", "verified_at", "method", "sources",
+                            "conflicts", "aliases", "created_at")))
+    check("(s) content_sha256 重算 + updated_at 更新",
+          after.get("Good1")["content_sha256"]
+          == bibdb.content_sha256(after.get("Good1")["entry_type"],
+                                  after.get("Good1")["fields"])
+          and after.get("Good1")["updated_at"]
+          != before["Good1"]["updated_at"])
+    check("(s) editor 字段本批不动（EditorOnly10 无 author、editor 原样）",
+          after.get("EditorOnly10")["fields"].get("author") is None
+          and after.get("EditorOnly10")["fields"]["editor"] == "John Smith"
+          and after.get("EditorOnly10")["updated_at"]
+          == before["EditorOnly10"]["updated_at"])
+    applied_text = _read_text(report) if os.path.isfile(report) else ""
+    check("(s) apply 报告：sha 前/后、备份、已倒装样例、跳过原因、二次校验",
+          "B2 作者倒装 apply 报告" in applied_text and "库 sha256（apply 前）" in applied_text
+          and "备份" in applied_text and "已倒装样例" in applied_text
+          and "跳过原因分类" in applied_text and "二次校验" in applied_text,
+          applied_text[:500])
+    # ── 幂等：再 apply 一次（用当前库做备份）→ applied=0、库字节不变 ──
+    backup2 = os.path.join(tmp, "backup2.jsonl")
+    with open(backup2, "wb") as fh:
+        fh.write(read_bytes(db))
+    digest_after = read_bytes(db)
+    r = run_cli("normalize-authors", "--db", db, "--apply", "--backup", backup2, "--json")
+    payload2 = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(s) 二次 apply 幂等：applied=0、库文件逐字节不变",
+          r.returncode == 0 and payload2.get("applied") == 0
+          and read_bytes(db) == digest_after, json.dumps(payload2, ensure_ascii=False)[:300])
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (l) 真实稿件库抽查（SKIP when absent，只读） ──")
