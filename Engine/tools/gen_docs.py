@@ -49,6 +49,7 @@ import argparse
 import csv
 import difflib
 import hashlib
+import json
 import os
 import re
 import statistics
@@ -96,6 +97,18 @@ AUDIT_CSV = ENGINE / "out" / "docx_audit.csv"
 AUDIT_TXT = ENGINE / "out" / "docx_audit.txt"
 CORPUS_CSV = ENGINE / "out" / "corpus" / "corpus.csv"
 CORPUS_DIR = ENGINE / "out" / "corpus"
+
+# ── O14（第四十七批）：AUTO 输入冻结 `out/auto-inputs.json` ──────────────────
+# 写模式把「AUTO 块依赖的输入」的 sha（corpus/audit/engine py/tests）+ 测试计数缓存
+# + 写出的块指纹落盘；`--check` 据此走**快速通道**（输入未变 → 不跑套件直接 PASS），
+# 写模式在 engine/tests 未变时**复用测试计数**（corpus/audit 变了也不再整跑套件）。
+# 背景：批46 O5=0 的「AUTO-corpus 循环」——重跑 corpus → AUTO corpus sha 变 → 再 gen_docs+build。
+# `Engine/out/` 是 gitignore 的产物目录；测试可用 SLCN_AUTO_INPUTS 指向临时文件。
+AUTO_INPUTS = Path(os.environ.get("SLCN_AUTO_INPUTS") or (ENGINE / "out" / "auto-inputs.json"))
+AUTO_INPUTS_SCHEMA = 1
+_LAST_TEST_ROWS: list[tuple[str, int, int]] | None = None
+_FAST_PATH_USED = False
+_CACHED_TESTS_USED = False
 
 # App 包内的引擎副本。**两种布局都要认**（2026-10-15/16 拆仓前后）：
 #   新（公开仓，当前）：`<公开仓>/dist/编辑部工具箱.app/…`   ← REPO 就是项目根
@@ -315,14 +328,165 @@ def git_block() -> list[str]:
 
 
 # ── 组装 ──────────────────────────────────────────────────────────────────
-def build_block(run_test_suites: bool = True) -> tuple[str, bool]:
+def _sha256_file(p: Path) -> str:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _corpus_tex_manifest() -> tuple[str, int]:
+    """`out/corpus/**/*.tex` 的相对路径 + 内容 sha 聚合（占位符那一行的输入）。"""
+    h = hashlib.sha256()
+    n = 0
+    if CORPUS_DIR.is_dir():
+        for p in sorted(CORPUS_DIR.rglob("*.tex")):
+            h.update(p.relative_to(CORPUS_DIR).as_posix().encode("utf-8"))
+            h.update(b"\0")
+            h.update(_sha256_file(p).encode("utf-8"))
+            h.update(b"\0")
+            n += 1
+    return h.hexdigest(), n
+
+
+def _tests_manifest() -> tuple[str, int]:
+    """参与测试计数的套件文件（路径+内容 sha 聚合）。"""
+    h = hashlib.sha256()
+    files = test_files()
+    for f in files:
+        h.update(f.relative_to(ENGINE).as_posix().encode("utf-8"))
+        h.update(b"\0")
+        h.update(_sha256_file(f).encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest(), len(files)
+
+
+def _manuscripts_info() -> tuple[str, str]:
+    """稿件库路径 + 期目录指纹（测试套件会读真实语料；期目录增删/改名会让 SKIP 计数变化）。"""
+    try:
+        if str(ENGINE) not in sys.path:
+            sys.path.insert(0, str(ENGINE))
+        from slcn import paths as _p  # noqa: PLC0415
+        root = _p.manuscripts_root()
+    except Exception:  # noqa: BLE001 —— 探测失败按「本仓」口径，不影响主流程
+        root = None
+    base = Path(root) if root else REPO
+    try:
+        names = sorted(p.name for p in base.iterdir()
+                       if p.is_dir() and "年第" in p.name and "期" in p.name)
+        return str(base), hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
+    except OSError:
+        return str(base), ""
+
+
+def collect_auto_inputs() -> dict:
+    """AUTO 块的输入清单（O14）：每个数据源的 sha + 环境前提 + 稿件库指纹。"""
+    env_ok, missing = environment_complete()
+    tex_sha, tex_n = _corpus_tex_manifest()
+    tests_sha, tests_n = _tests_manifest()
+    manuscripts_root, manuscripts_fp = _manuscripts_info()
+    return {
+        "schema": AUTO_INPUTS_SCHEMA,
+        "corpus_csv_sha256": _sha256_file(CORPUS_CSV),
+        "corpus_tex_manifest_sha256": tex_sha,
+        "corpus_tex_files": tex_n,
+        "audit_csv_sha256": _sha256_file(AUDIT_CSV),
+        "audit_txt_sha256": _sha256_file(AUDIT_TXT),
+        "tests_manifest_sha256": tests_sha,
+        "tests_files": tests_n,
+        "engine_py_sha256": (_run_record.engine_py_sha256() if _run_record is not None else ""),
+        "env_complete": env_ok,
+        "env_missing": missing,
+        "manuscripts_root": manuscripts_root,
+        "manuscripts_fingerprint": manuscripts_fp,
+    }
+
+
+def inputs_sha(inputs: dict) -> str:
+    return hashlib.sha256(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def load_auto_inputs() -> dict | None:
+    try:
+        data = json.loads(AUTO_INPUTS.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def cached_test_rows(inputs_now: dict, project: dict | None) -> list | None:
+    """写模式复用测试计数：**只有 engine/tests/稿件库/环境前提都没变**时才允许。
+
+    测试计数只取决于这几项（同一环境下）；corpus/audit 变了不影响计数。
+    """
+    if not project or project.get("schema") != AUTO_INPUTS_SCHEMA:
+        return None
+    old = project.get("inputs") or {}
+    keys = ("engine_py_sha256", "tests_manifest_sha256", "env_complete", "manuscripts_fingerprint")
+    if any(old.get(k) != inputs_now.get(k) for k in keys):
+        return None
+    rows = project.get("test_rows")
+    return rows if isinstance(rows, list) and rows else None
+
+
+def fast_check_ok(old_body: str, project: dict | None, inputs_now: dict) -> bool:
+    """`--check` 快速通道：输入指纹未变 **且** README 块指纹 == 上次写出的块指纹。
+
+    成立时可直接 PASS（不必重跑套件）；任一项对不上都回退到「现算 + 逐行比对」。
+    """
+    if not project or project.get("schema") != AUTO_INPUTS_SCHEMA:
+        return False
+    if not inputs_now.get("env_complete"):
+        return False
+    if inputs_sha(project.get("inputs") or {}) != inputs_sha(inputs_now):
+        return False
+    stored = project.get("block_sha256")
+    if not stored:
+        return False
+    return hashlib.sha256(normalize_for_check(old_body, lenient=False).encode("utf-8")).hexdigest() == stored
+
+
+def save_auto_inputs(inputs: dict, rows: list | None, block_body: str) -> None:
+    """写 `out/auto-inputs.json`（AUTO 输入清单 + 测试计数缓存 + 块指纹）；失败只告警。"""
+    try:
+        AUTO_INPUTS.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": AUTO_INPUTS_SCHEMA,
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "inputs": inputs,
+            "inputs_sha256": inputs_sha(inputs),
+            "test_rows": [list(r) for r in (rows or [])],
+            "block_sha256": hashlib.sha256(
+                normalize_for_check(block_body, lenient=False).encode("utf-8")).hexdigest(),
+        }
+        tmp = AUTO_INPUTS.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, AUTO_INPUTS)
+    except Exception as e:  # noqa: BLE001 —— 证据/缓存失败不得影响主流程
+        print(f"⚠ gen_docs: 写 AUTO 输入清单失败（忽略）：{type(e).__name__}: {e}", file=sys.stderr)
+
+
+def build_block(run_test_suites: bool = True,
+                cached_test_rows_in: list | None = None) -> tuple[str, bool]:
+    global _LAST_TEST_ROWS
     ok = True
-    if run_test_suites:
+    if cached_test_rows_in is not None:
+        # O14：engine/tests 未变 → 测试计数直接复用（corpus/audit 变化不必整跑套件）
+        global _CACHED_TESTS_USED
+        rows = [(str(n), int(p), int(f)) for n, p, f in cached_test_rows_in]
+        total = sum(p for _, p, _ in rows)
+        _LAST_TEST_ROWS = rows
+        _CACHED_TESTS_USED = True
+        print("提示  测试计数复用 out/auto-inputs.json 缓存（engine/tests 未变；本次未跑套件）",
+              file=sys.stderr)
+    elif run_test_suites:
         rows, total = run_tests()
+        _LAST_TEST_ROWS = rows
     else:
         # `--no-test-runs`：**不跑**套件，只保留套件清单的行数与形状（比对前测试行会被整段剔除）。
         # 用 0 而不是真值，是为了"绝不把占位数字写进 README"——写模式禁用本开关，见 main()。
         rows, total = [(f.stem, 0, 0) for f in test_files()], 0
+        _LAST_TEST_ROWS = None
     bad = [(n, f) for n, p, f in rows if f]
     # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
     #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
@@ -470,26 +634,26 @@ def _main_impl(argv: list[str] | None = None) -> int:
         print(f"FAIL  README.md 里找不到 {BEGIN} / {END}")
         return 1
     head, old, tail = split_block(text)
-    # 现算（跑测试 + 读产物 + cmp + 只读 git）；`--no-test-runs` 只用于校验，写模式必须现跑测试
-    new, all_ok = build_block(run_test_suites=not a.no_test_runs)
-    if not a.check:
-        # ⚠️ 块里的「红线只读快照」记着 `git status --porcelain` 的行数，而**写 README 本身
-        #    就会让这个数字变**（README 从「干净」变成「已修改」）—— 自指，跑一遍不收敛。
-        #    第四十一批 O1：**不再重算整块**（那会再跑一整遍套件；干净树过期时共 3 遍 ≈180s）。
-        #    只就地替换那一行（两条只读 git 命令），测试/普查/corpus/App 各块只算一次。
-        for _ in range(3):
-            probe = "\n" + new
-            stable = head + probe + tail
-            if stable == read_readme():
-                break
-            README.write_text(stable, encoding="utf-8")
-            git_line = git_block()[0]        # 只刷新本机状态行（index mtime / HEAD / status 行数）
-            new = GIT_LINE.sub(lambda _m: git_line, new)
-    new_body = "\n" + new
 
     if a.check:
         complete, missing = environment_complete()
         lenient = not complete
+        # O14（第四十七批）快速通道：`out/auto-inputs.json` 的输入指纹未变 **且** README 块指纹
+        # 等于上次写出的块 → 直接 PASS，**不跑套件**（严格模式下这是 ~90s/次 的节省）。
+        # 任何一项对不上（输入变了/块被改过/缓存损坏）都回退到下面的「现算 + 逐行比对」。
+        if not lenient:
+            project = load_auto_inputs()
+            if project:
+                inputs_now = collect_auto_inputs()
+                if fast_check_ok(old, project, inputs_now):
+                    global _FAST_PATH_USED
+                    _FAST_PATH_USED = True
+                    print("PASS  AUTO 块与上次写入一致；输入指纹未变"
+                          "（快速通道：corpus/audit/engine/tests 均未变，未跑套件）")
+                    return 0
+        # 现算（跑测试 + 读产物 + 只读 git）；`--no-test-runs` 只用于校验，写模式必须现跑测试
+        new, all_ok = build_block(run_test_suites=not a.no_test_runs)
+        new_body = "\n" + new
         # 第四十一批 O2：`--no-test-runs` 时把「测试」两行整段剔除后再比（不跑套件）。
         # 这两行的守卫交给**独立**的 `gen_docs.py --check`（CI ci.yml 独立步骤 /
         # 发版前 `selfcheck.py --full` 严格模式 / 手工显式跑）——分工见 test_docs_consistency.py。
@@ -526,6 +690,24 @@ def _main_impl(argv: list[str] | None = None) -> int:
             print("      " + line)
         return 1
 
+    # ── 写模式（O14：engine/tests/稿件库/环境都没变时，**复用测试计数缓存**）──
+    inputs_now = collect_auto_inputs()
+    cached = cached_test_rows(inputs_now, load_auto_inputs())
+    new, all_ok = build_block(run_test_suites=True, cached_test_rows_in=cached)
+    # ⚠️ 块里的「红线只读快照」记着 `git status --porcelain` 的行数，而**写 README 本身
+    #    就会让这个数字变**（README 从「干净」变成「已修改」）—— 自指，跑一遍不收敛。
+    #    第四十一批 O1：**不再重算整块**（那会再跑一整遍套件；干净树过期时共 3 遍 ≈180s）。
+    #    只就地替换那一行（两条只读 git 命令），测试/普查/corpus/App 各块只算一次。
+    for _ in range(3):
+        probe = "\n" + new
+        stable = head + probe + tail
+        if stable == read_readme():
+            break
+        README.write_text(stable, encoding="utf-8")
+        git_line = git_block()[0]        # 只刷新本机状态行（index mtime / HEAD / status 行数）
+        new = GIT_LINE.sub(lambda _m: git_line, new)
+    new_body = "\n" + new
+
     if old == new_body:
         print("PASS  AUTO 块已是最新，未改动 README.md")
     else:
@@ -533,6 +715,14 @@ def _main_impl(argv: list[str] | None = None) -> int:
         after_head, after, after_tail = split_block(read_readme())
         assert (head, tail) == (after_head, after_tail), "块外内容被改动了 —— 这是 bug"
         print("PASS  已就地更新 AUTO 块（块外内容逐字节未动）")
+    # O14：写模式输出 AUTO 输入清单（corpus/audit/engine/tests 的 sha + 测试计数缓存 + 块指纹）
+    save_auto_inputs(inputs_now, _LAST_TEST_ROWS, new_body)
+    try:
+        shown = AUTO_INPUTS.relative_to(REPO)
+    except ValueError:
+        shown = AUTO_INPUTS
+    print(f"      AUTO 输入清单：{shown}（inputs sha {inputs_sha(inputs_now)[:12]}；"
+          f"测试计数{'复用缓存' if cached else '现跑'}）")
     print(f"      退出码提示：{'各项检查通过' if all_ok else '有 ❌ 项，见块内'}")
     return 0 if all_ok else 1
 
@@ -546,6 +736,7 @@ def _record_run(*, label: str, rc: int, started: float, args: list[str],
     try:
         _run_record.write_manifest(
             label=label,
+            purpose="gen-docs",
             command=f"{Path(PY).name} tools/gen_docs.py" + (" " + " ".join(args) if args else ""),
             started_at=started,
             artifact=README,
@@ -555,7 +746,11 @@ def _record_run(*, label: str, rc: int, started: float, args: list[str],
                 "mode": label.rsplit("-", 1)[-1],       # write / check
                 "check": check_mode,
                 "no_test_runs": no_test_runs,
-                "tests_ran": not no_test_runs,
+                # O14：快速通道 / 缓存命中时**没有跑套件**，manifest 如实记；
+                # 未跑套件的 `--check` 仍是有意义的 PASS（输入冻结的等价性由 test_docs_consistency 覆盖）。
+                "tests_ran": (not no_test_runs and not _FAST_PATH_USED and not _CACHED_TESTS_USED),
+                "fast_path": _FAST_PATH_USED,
+                "cached_tests": _CACHED_TESTS_USED,
                 "readme_changed": readme_changed,
             },
         )

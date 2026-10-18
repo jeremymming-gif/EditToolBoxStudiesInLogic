@@ -48,6 +48,8 @@ def run_rr(args, cwd=_ENGINE, timeout=120):
 
 
 def manifests(d=_TMP):
+    if not os.path.isdir(d):
+        return []
     return sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".json"))
 
 
@@ -92,26 +94,34 @@ try:
     check("① --tee 日志已落盘且含输出",
           os.path.isfile(tee) and "hello-manifest" in open(tee, encoding="utf-8").read())
     check("① 无残留 .tmp（原子写）", not [x for x in os.listdir(d1) if x.endswith(".tmp")])
+    check("① purpose 默认 unspecified", m.get("purpose") == "unspecified", m.get("purpose"))
 
     # ── ② 二次运行不覆盖 ────────────────────────────────────────────────
     first = ms[0] if ms else None
     first_bytes = open(first, "rb").read() if first else b""
-    rc2, _, _ = run_rr(["--label", "unit-ok", "--out-dir", d1, "--", sys.executable, "-c", "print('second')"])
+    rc2, _, _ = run_rr(["--label", "unit-ok", "--out-dir", d1, "--purpose", "verify-build",
+                        "--", sys.executable, "-c", "print('second')"])
     ms2 = manifests(d1)
     check("② 二次同 label 生成新文件（不覆盖）", rc2 == 0 and len(ms2) == 2, ms2)
     check("② 先前的 manifest 逐字节未变", bool(first) and os.path.isfile(first)
           and open(first, "rb").read() == first_bytes)
+    new_manifests = [x for x in ms2 if x != first]
+    check("② --purpose 写入新 manifest（verify-build）",
+          bool(new_manifests) and load(new_manifests[0]).get("purpose") == "verify-build",
+          load(new_manifests[0]).get("purpose") if new_manifests else None)
 
     # ── ③ 失败退出仍写 manifest ─────────────────────────────────────────
     d2 = os.path.join(_TMP, "fail")
     os.makedirs(d2)
-    rc, out, err = run_rr(["--label", "unit-fail", "--out-dir", d2,
+    rc, out, err = run_rr(["--label", "unit-fail", "--out-dir", d2, "--purpose", "verify-build",
                            "--", sys.executable, "-c", "import sys; sys.exit(3)"])
     ms = manifests(d2)
     mf = load(ms[0]) if ms else {}
     check("③ 命令失败时包装器退出码透传（3）", rc == 3, f"rc={rc}")
     check("③ 失败仍写出 manifest 且 exit_code=3", len(ms) == 1 and mf.get("exit_code") == 3,
           {k: mf.get(k) for k in ("exit_code",)})
+    check("③ 失败 manifest 仍带 purpose（verify-build）", mf.get("purpose") == "verify-build",
+          mf.get("purpose"))
 
     # ── ④ record-only（build.sh 末尾用）─────────────────────────────────
     d3 = os.path.join(_TMP, "rec")
@@ -120,7 +130,7 @@ try:
     rc, out, err = run_rr(["--record-only", "--label", "unit-rec", "--out-dir", d3,
                            "--started-at", started, "--command", "bash build.sh",
                            "--exit-code", "7", "--engine-sha", precomputed_sha,
-                           "--meta", "app_version=1.2.1"])
+                           "--purpose", "real-build", "--meta", "app_version=1.2.1"])
     ms = manifests(d3)
     mr = load(ms[0]) if ms else {}
     check("④ record-only 成功且不执行命令", rc == 0 and len(ms) == 1, f"rc={rc}")
@@ -130,9 +140,22 @@ try:
     check("④ record-only meta 透传", (mr.get("meta") or {}).get("app_version") == "1.2.1", mr.get("meta"))
     check("④ --engine-sha（开始时算好的指纹）原样写入", mr.get("engine_py_sha256") == precomputed_sha,
           mr.get("engine_py_sha256"))
-    rc_bad, _, _ = run_rr(["--record-only", "--label", "x", "--out-dir", d3])   # 缺 --started-at
+    check("④ record-only purpose（real-build）", mr.get("purpose") == "real-build", mr.get("purpose"))
+    # 真跑 / 验证跑可机读区分：同目录里再来一条 verify-build 的**失败**构建
+    rc, _, _ = run_rr(["--record-only", "--label", "unit-rec", "--out-dir", d3,
+                       "--started-at", started, "--command", "bash build.sh",
+                       "--exit-code", "1", "--purpose", "verify-build",
+                       "--meta", "failed=true"])
+    ms = manifests(d3)
+    purposes = sorted(load(x).get("purpose") for x in ms)
+    failed = [x for x in ms if load(x).get("exit_code") == 1]
+    check("④ 同目录并存 real-build 与 verify-build（O5 计数可机读）",
+          rc == 0 and purposes == ["real-build", "verify-build"], purposes)
+    check("④ build 失败留痕：记录 exit_code=1 的 manifest", bool(failed), [load(x).get("exit_code") for x in ms])
+    d3b = os.path.join(_TMP, "rec-bad")     # 独立目录：断言「参数错误 → 一个文件都不写」
+    rc_bad, _, _ = run_rr(["--record-only", "--label", "x", "--out-dir", d3b])   # 缺 --started-at
     check("④ record-only 缺 --started-at → 参数错误（非 0，不写文件）",
-          rc_bad != 0 and len(manifests(d3)) == 1, f"rc={rc_bad}")
+          rc_bad != 0 and len(manifests(d3b)) == 0, f"rc={rc_bad}")
 
     # ── ⑤ artifact 不存在 → null ────────────────────────────────────────
     d4 = os.path.join(_TMP, "noart")

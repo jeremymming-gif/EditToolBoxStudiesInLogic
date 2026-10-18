@@ -170,6 +170,7 @@ def write_manifest(*, label: str, command: str, started_at: float, finished_at: 
                    duration_s: float | None = None, out_dir: str | os.PathLike | None = None,
                    artifact: str | os.PathLike | None = None, exit_code: int = 0,
                    meta: dict | None = None, engine_sha: str | None = None,
+                   purpose: str = "unspecified",
                    repo: Path = REPO, engine: Path = ENGINE) -> str | None:
     """写一份 manifest，返回路径（失败返回 None —— **绝不抛异常**）。
 
@@ -178,6 +179,10 @@ def write_manifest(*, label: str, command: str, started_at: float, finished_at: 
 
     `engine_sha`：**建议调用方在重活开始时算好传入**（`engine_py_sha256()`）—— 并发写者
     窗口里「结束态」的指纹可能已经不是重活跑的那份代码；收口冻结时两者相同。
+
+    `purpose`（O14，第四十七批）：这次重活的**目的**，用于机读区分「真跑」与「验证跑」，
+    例如 `real-build` / `verify-build` / `real-corpus` / `verify-corpus` / `gen-docs` / `full`。
+    没有该字段时 O5 审计会把验证构建也算进「真实重活次数」（批46 实测 6 条 build vs 真实 3 次）。
     """
     try:
         fin = time.time() if finished_at is None else finished_at
@@ -188,6 +193,7 @@ def write_manifest(*, label: str, command: str, started_at: float, finished_at: 
         m.setdefault("git_dirty_count", git_dirty_count(repo))
         payload = {
             "label": label,
+            "purpose": purpose,
             "started_at": _iso(started_at),
             "finished_at": _iso(fin),
             "duration_s": round(float(dur), 3),
@@ -262,6 +268,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--exit-code", type=int, default=None, help="record-only：退出码（默认 0）")
     ap.add_argument("--engine-sha", default=None,
                     help="重活**开始**时算好的 Engine py 指纹（并发写者下应尽量传；缺省=当前态现算）")
+    ap.add_argument("--purpose", default="unspecified",
+                    help="这次重活的目的（O14，机读区分真跑/验证跑）：real-build / verify-build / "
+                         "real-corpus / verify-corpus / gen-docs / full …（默认 unspecified）")
     ap.add_argument("--quiet", action="store_true", help="不打印 manifest 路径")
     ap.add_argument("cmd", nargs=argparse.REMAINDER, help="（wrap 模式）-- 之后的命令")
     a = ap.parse_args(argv)
@@ -275,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
         path = write_manifest(label=a.label, command=a.command or "", started_at=started,
                               out_dir=a.out_dir, artifact=a.artifact,
                               exit_code=(0 if a.exit_code is None else a.exit_code), meta=meta,
-                              engine_sha=a.engine_sha or None)
+                              engine_sha=a.engine_sha or None, purpose=a.purpose)
         if path and not a.quiet:
             print(f"◆ manifest: {path}", file=sys.stderr)
         return 0
@@ -289,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     rc = _run_wrapped(cmd, a.tee)
     path = write_manifest(label=a.label, command=" ".join(shlex.quote(x) for x in cmd),
                           started_at=started, out_dir=a.out_dir, artifact=a.artifact,
-                          exit_code=rc, meta=meta)
+                          exit_code=rc, meta=meta, purpose=a.purpose)
     if path and not a.quiet:
         print(f"◆ manifest: {path}", file=sys.stderr)
     return rc

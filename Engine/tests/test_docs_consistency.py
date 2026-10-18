@@ -46,6 +46,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
 import re
 import subprocess
@@ -152,6 +153,47 @@ else:
     except Exception as _e:  # noqa: BLE001  README 结构异常/写盘失败也要还原并报错
         _readme_path.write_bytes(_original)
         check(f"(a2) 反例执行异常：{type(_e).__name__}: {_e}", False)
+
+# ── (e) O14 AUTO 输入冻结（`out/auto-inputs.json`）─────────────────────────
+# 写模式把「AUTO 依赖的输入」指纹 + 测试计数缓存 + 块指纹写进 out/auto-inputs.json；
+# `--check` 据此走快速通道（输入未变 → 不跑套件直接 PASS）。本项用纯函数断言：
+# ① 清单字段齐全/指纹确定；② 缓存失效条件（engine/tests 变了必须重跑套件）；
+# ③ 快速通道命中/不命中的三种情形（输入变、块被改）。
+print("\n── (e) AUTO 输入冻结（O14）──")
+if not _complete:
+    print("SKIP  (e) AUTO 输入冻结：本机前提不全（与 (a) 同因），跳过")
+else:
+    try:
+        _inputs = _G.collect_auto_inputs()
+        _need = {"corpus_csv_sha256", "corpus_tex_manifest_sha256", "audit_csv_sha256",
+                 "audit_txt_sha256", "tests_manifest_sha256", "engine_py_sha256",
+                 "env_complete", "manuscripts_fingerprint"}
+        check("(e1) AUTO 输入清单字段齐全", _need <= set(_inputs),
+              f"缺 {sorted(_need - set(_inputs))}")
+        check("(e2) 输入指纹确定性（两次采集相同）",
+              _G.inputs_sha(_inputs) == _G.inputs_sha(_G.collect_auto_inputs()))
+        _proj = {"schema": _G.AUTO_INPUTS_SCHEMA, "inputs": _inputs,
+                 "test_rows": [["test_x", 1, 0]], "block_sha256": "0" * 64}
+        check("(e3) engine/tests 未变 → 可复用测试计数缓存（写模式不整跑套件）",
+              _G.cached_test_rows(_inputs, _proj) == [["test_x", 1, 0]])
+        check("(e4) engine 变了 → 缓存失效（必须重跑套件）",
+              _G.cached_test_rows(dict(_inputs, engine_py_sha256="deadbeef"), _proj) is None)
+        check("(e5) 测试集变了 → 缓存失效（必须重跑套件）",
+              _G.cached_test_rows(dict(_inputs, tests_manifest_sha256="cafe"), _proj) is None)
+        _h, _blk, _t = _G.split_block((ENGINE / "README.md").read_text(encoding="utf-8"))
+        _blk_sha = hashlib.sha256(
+            _G.normalize_for_check(_blk, lenient=False).encode("utf-8")).hexdigest()
+        _proj2 = dict(_proj, block_sha256=_blk_sha)
+        check("(e6) 输入指纹与块指纹都一致 → --check 快速通道命中（不跑套件）",
+              _G.fast_check_ok(_blk, _proj2, _inputs))
+        check("(e7) 输入变了 → 快速通道不命中（回退到现算比对）",
+              not _G.fast_check_ok(_blk, _proj2, dict(_inputs, engine_py_sha256="deadbeef")))
+        check("(e8) 块被改过 → 快速通道不命中（文档漂移仍会被抓）",
+              not _G.fast_check_ok(_blk, dict(_proj, block_sha256="0" * 64), _inputs))
+        check("(e9) 输入清单落在 gitignore 的 out/ 产物目录（不入库）",
+              _G.AUTO_INPUTS.name == "auto-inputs.json")
+    except Exception as _e:  # noqa: BLE001  AUTO 冻结逻辑异常也要如实报
+        check(f"(e) AUTO 输入冻结检查异常：{type(_e).__name__}: {_e}", False)
 
 # ── (b) 引用存在性 ─────────────────────────────────────────────────────────
 print("\n── (b) 文档里引用的路径必须存在 ──")

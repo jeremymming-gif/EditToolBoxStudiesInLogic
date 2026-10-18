@@ -1299,6 +1299,10 @@ def _incollection_pub_addr(rest: str) -> tuple[str, str]:
 # ── 文档解析 ──────────────────────────────────────────────────────────────
 
 _HEAD1 = re.compile(r"^[一二三四五六七八九十]+[、\.]\s*")
+# 访谈体/无顿号稿的「一 标题」型（87-9 实测：`一 非形式逻辑` / `二 修辞论证理论`）。
+# 与 `一、` 同族，但作者用空格分隔；只在**短行、无句末标点、后接汉字标题**时认，
+# 避免把正文里的「一 个…」误判成标题（判据在 ⑥ 的 branch 里）。
+_HEAD_CN_SPACE = re.compile(r"^([一二三四五六七八九十]{1,2})\s+(?P<t>[\u4e00-\u9fff][^。！？；]{1,38})$")
 _HEAD2 = re.compile(r"^（[一二三四五六七八九十]+）\s*")
 
 # 新式中文标题：`1 引言` / `2 论证行动生成问题研究现状`（阿拉伯数字 + 空格，**不带点**）。
@@ -2492,10 +2496,21 @@ def render_cell(cell, img_names: dict[str, str] | None = None) -> str:
         elif sg.kind == "image":
             _name = (img_names or {}).get(sg.rid)
             if _name:
-                # 每张图独占一行（`\par`）：原稿一张/多张图在单元格里是**纵向排列**的
-                # （86-01 实测人工 PDF 把 17 张图分摊在 3 页；inline 塞进一段会全挤在
-                #  一页、页面高度不增）。`width=\linewidth` 按图像列宽排。
-                parts.append(f"\\includegraphics[width=0.8\\linewidth]{{{_name}}}\\par")
+                _h = getattr(sg, "h_pt", 0.0)
+                if 0 < _h <= 60:
+                    # 第四十七批：表内 VML 公式图 → 行内原尺寸 + 缺文件占位
+                    parts.append(
+                        "\\IfFileExists{" + _name + "}{\\includegraphics[height="
+                        + f"{_h:.2f}" + "pt]{" + _name + "}}"
+                        "{\\fbox{\\scriptsize 公式图缺失}}")
+                else:
+                    # 每张图独占一行（`\par`）：原稿图在单元格里是**纵向排列**的
+                    # （86-01 实测人工 PDF 把 17 张图分摊在 3 页；inline 塞进一段会全挤在
+                    #  一页、页面高度不增）。`width=\linewidth` 按图像列宽排。
+                    parts.append(
+                        "\\IfFileExists{" + _name + "}{\\includegraphics"
+                        "[width=0.8\\linewidth]{" + _name + "}}"
+                        "{\\fbox{\\scriptsize 公式图缺失}}\\par")
     return " ".join(p for p in parts if p).strip()
 
 
@@ -2641,7 +2656,19 @@ def render_para(
             shape_buf.append(1)
         elif seg.kind == "image":
             name = img_names.get(seg.rid, "")
-            if name:
+            if not name:
+                continue
+            _h = getattr(seg, "h_pt", 0.0)
+            if 0 < _h <= 60:
+                # 第四十七批：VML 公式图（MathType 预览图）→ **行内**按原尺寸渲染。
+                # `\IfFileExists`：soffice 缺失/转换失败时显示「公式图缺失」占位，
+                # 不阻断出稿（外部可选依赖，见 docxxml._soffice_bin）。
+                out.append(
+                    "\\IfFileExists{" + name + "}{\\raisebox{-0.22\\height}"
+                    "{\\includegraphics[height=" + f"{_h:.2f}" + "pt]{" + name + "}}}"
+                    "{\\fbox{\\scriptsize 公式图缺失}}"
+                )
+            else:
                 fig_buf.append(name)
         elif seg.kind == "footnote":
             flush_figs(fig_buf)  # 图片与脚注之间断开
@@ -2984,8 +3011,48 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     for _fid, _segs in fn_segs.items():
         if any(sg.kind == "math" for sg in _segs):
             fn_objs[_fid].note_latex = _footnote_latex(_segs)
+    # 第四十七批（86-07 实测）：中文**论述性脚注**（长散文 + 行内引用）被 classify()
+    # 误判成 pure_ref → 渲染时被提升成行内 `\parencite`，脚注散文整段丢失
+    # （86-07：29 条脚注人工 PDF 全印、引擎只印 11 条，丢 18 条/2 页）。
+    # 判据：含中文、汉字 ≥15、总长 ≥40 → 按**纯注释**处理（保留原文；引用在
+    # ⑤.3b 用 link_citations 就地替换），且**不生成 bib 条目**（人工成品同样不把
+    # 这些论述脚注当 bib 条目）。英文论述性脚注已有第 121 条同类降级。
+    for _fid, _f in list(fn_objs.items()):
+        if _f.kind != "pure_ref":
+            continue
+        _txt = _f.text or ""
+        _cjk_n = len(re.findall(r"[\u4e00-\u9fa5]", _txt))
+        # 必须同时有「行内作者-年引用」——这才是**论述性脚注**的特征；
+        # 中文文献条目型脚注（《…》，出版社，年）不含括号引用，保持 pure_ref 进 bib
+        # （否则 86-03 的 21 条中文文献脚注会被误降级、bib 从 22 掉到 1，实测回归）。
+        # 论述性特征：① 行内**作者-年引用**（括号里任意位置含年份，覆盖
+        # `(Cook, 2010)` / `(陈波, 2018，第三节)` / `(Burgess, 2009, p. 129)`）；
+        # 或 ② 多句散文（≥2 个句号）。中文文献条目型脚注通常两者都不满足
+        # （86-03 的 21 条文献脚注实测不满足 → 不会被误降级、bib 保持 22）。
+        _inline_cite = re.search(
+            r"[（(][^（）()]{0,100}?(?:19|20)\d{2}[^（）()]{0,40}?[）)]", _txt)
+        _multi_sentence = (_txt.count("。") >= 2)
+        # 中文文献条目还要认「书名号」与「年份+期号」形态：86-03 有 1 条脚注把
+        # **两条中文文献**合在一起（`…，逻辑学研究，2018 年第 1 期。麦劲恒：《…》…`），
+        # 旧标记漏了书名号 → 被误当论述脚注降级、bib 22→21。这里补上（86-07 的
+        # 论述脚注实测都不含书名号/期号，不受影响）。
+        _ref_marker = re.search(
+            r"出版社|学报|期刊|\[[MJDC]\]|博士论文|硕士论文|《[^》]{2,}》|"
+            r"(?:19|20)\d{2}\s*年?\s*第\s*\d+\s*[期卷]", _txt)
+        if _cjk_n >= 15 and len(_txt) >= 40 and (
+                _inline_cite or (_multi_sentence and not _ref_marker)):
+            _f.kind = "pure_note"
+            _f.note = _txt
+            _f.ref = ""
+            _f.entry = None
+            setattr(_f, "_discursive_cjk", True)
+
     used_keys: set[str] = set()
     keymap: dict[int, str] = {}
+    # 第四十七批（88-02 实测）：同一文献被**多条脚注反复引用**时逐条提升 → bib 重复
+    # （88-02 有 19 条重复：同一作品不同页码各生成一条），参考文献区多 2 页。
+    # 按「作者+年+题名前 30 字」指纹去重：重复引用复用已有键，不再新增 bib 条目。
+    _bib_fp: dict[tuple[str, str, str], str] = {}
     seq = 0
     for fid in sorted(fn_objs):
         f = fn_objs[fid]
@@ -3017,7 +3084,33 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
             seq += 1
             entry = _e0
             f.entry = entry
+            # 第四十七批：重复引用同一文献 → 复用已有键（不新增 bib 条目）。
+            # 只在 author/year/title 三者都有时去重（信息不足的不猜）。
+            _fp = None
+            # 优先级：**清洗后的原文**（去掉页码定位后比较）——同一作品被不同页码引用时
+            # 只有 `p. 13` / `p. 6` 不同，归一到同一指纹；parsed 字段做兜底。
+            _raw_norm = re.sub(
+                r"\bpp?\.?\s*\d+(?:\s*[-–—]\s*\d+)?|第\s*\d+(?:\s*[-–—]\s*\d+)?\s*页",
+                "", (f.ref or "").lower())
+            _raw_norm = re.sub(r"\s+", "", _raw_norm)
+            if _raw_norm:
+                _fp = ("raw", _raw_norm, "")
+            elif entry.get("author") and entry.get("title"):
+                _fp = (
+                    "fields",
+                    re.sub(r"\W+", "", str(entry.get("author", "")).lower()),
+                    re.sub(r"\W+", "", str(entry.get("title", "")).lower())[:30]
+                    + "|" + str(entry.get("year", "") or ""),
+                )
+            if _fp and _fp in _bib_fp:
+                f.key = _bib_fp[_fp]
+                keymap[fid] = f.key
+                if f.ref:
+                    doc.ref_raw_by_key[f.key] = f.ref
+                continue
             f.key = make_key(entry, seq, used_keys)
+            if _fp:
+                _bib_fp[_fp] = f.key
             keymap[fid] = f.key
             doc.bib_entries.append((f.key, entry, f.ref))
             # 「条目 → 源稿原文」：脚注体例（第 68 条）。原文取 `f.ref` = `classify()`
@@ -3032,8 +3125,10 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     # 人年制引用也替换成 \parencite——人工成品在脚注里同样做了引用替换。
     # 只处理**不含中文**的注释，中文脚注体例保持逐字节不变。
     for _f in fn_objs.values():
-        if (_f.kind == "pure_note" and not _has_cjk(_f.text)
-                and not getattr(_f, "note_latex", "")):
+        if (_f.kind == "pure_note" and not getattr(_f, "note_latex", "")
+                and (not _has_cjk(_f.text) or getattr(_f, "_discursive_cjk", False))):
+            # 第四十七批：英文注释（第 121 条既有）与**中文论述性脚注**（86-07：
+            # classify 误判 pure_ref 后降级）都做行内引用替换，保留散文原文。
             try:
                 _esc = escape_latex(_f.text)
                 _f.note_latex = link_citations(_esc, doc.refs)[0]
@@ -3069,6 +3164,10 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
             if sg.kind == "image" and sg.rid in media_map and sg.rid not in img_names:
                 seq_img += 1
                 ext = os.path.splitext(media_map[sg.rid])[1].lower() or ".png"
+                if ext in (".wmf", ".emf"):
+                    # 第四十七批（87-2 实测）：MathType 公式预览图是 WMF/EMF，XeLaTeX
+                    # 不能直接嵌入；`extract_media()` 会用 soffice 转成同名 figN.pdf。
+                    ext = ".pdf"
                 img_names[sg.rid] = f"fig{seq_img}{ext}"
     doc.images = [(media_map[r], n) for r, n in img_names.items() if r in media_map]
 
@@ -3175,6 +3274,15 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         plain = escape_latex(para.plain).strip()
         if _HEAD1.match(plain):
             h = _HEAD1.sub("", plain).strip()
+            doc.headings.append((1, h))
+            out.append(f"\n\\section{{{h}}}\n")
+        elif (m_sp := _HEAD_CN_SPACE.match(plain)) and not plain.rstrip().endswith(
+                ("。", "，", ",", "；", ";", "：", ":")) and not m_sp.group("t").startswith(
+                ("个", "些", "种", "般", "旦", "直", "定", "方", "部", "边", "时",
+                 "系", "起", "次", "年", "月", "日", "人", "事", "项", "条", "段",
+                 "步", "层", "类", "是", "为", "般", "切")):
+            # 87-9 访谈体：`一 非形式逻辑`（一/二/三 + 空格 + 短标题）
+            h = m_sp.group("t").strip()
             doc.headings.append((1, h))
             out.append(f"\n\\section{{{h}}}\n")
         elif _HEAD2.match(plain):

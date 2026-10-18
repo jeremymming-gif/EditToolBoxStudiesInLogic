@@ -52,6 +52,14 @@ W_T = f"{{{W_NS}}}t"
 W_P = f"{{{W_NS}}}p"
 M_OMATH = f"{{{M_NS}}}oMath"
 
+# ── 第四十七批：VML 图片（MathType/OLE 公式的预览图）──
+# 87-2 实测：561 个公式全是 MathType OLE 对象（<w:object><v:shape style="width:11.3pt;
+# height:15.05pt"><v:imagedata r:id="rIdN"/> + <o:OLEObject ProgID="Equation.DSMT4">），
+# 预览图是 word/media 下 235 个 WMF；旧实现只认 DrawingML <w:drawing> → 全丢。
+V_NS = "urn:schemas-microsoft-com:vml"
+V_IMAGEDATA = f"{{{V_NS}}}imagedata"
+R_ID = f"{{{R_NS}}}id"
+
 # ── 第四十四批①：OMML 复杂结构（nary 求和体 / m:d 定界符）──
 # nary 的算子字符 → LaTeX（OMML 用 Unicode 字符；缺省 ∑）
 NARY_OP = {
@@ -556,6 +564,10 @@ class Seg:
     # 第四十四批①：行间公式（`m:oMathPara` 里的 `m:oMath`）→ 渲染成 `\[...\]`
     # （旧实现整篇都按行内 `$...$`；90/07 的 display 公式因此丢失）。
     display: bool = False
+    # 第四十七批：VML 图片（MathType 公式预览图）宽高（pt，来自 v:shape style）。
+    # 有尺寸 → 行内公式图按原尺寸渲染；无尺寸 → 走原 figure 分组。
+    w_pt: float = 0.0
+    h_pt: float = 0.0
 
 
 @dataclass
@@ -693,6 +705,31 @@ def _run_segments(r, handled_math: set) -> list[Seg]:
             seen_drawings.add(c)
             handle_drawing(c)
 
+    # 第四十七批：VML 图片（MathType/OLE 公式预览图，`<v:imagedata r:id>`）。
+    # 87-2 实测 561 个 OLE 公式、235 个 WMF 预览图；旧实现只认 `<w:drawing>` → 全丢。
+    # 尺寸从最近的 `<v:shape style="width:XXpt;height:YYpt">` 取，供行内公式渲染。
+    _seen_vml: set = set()
+    for iv in r.iter(V_IMAGEDATA):
+        if iv in _seen_vml:
+            continue
+        _seen_vml.add(iv)
+        rid = iv.get(R_ID)
+        if not rid:
+            continue
+        w_pt = h_pt = 0.0
+        anc = iv.getparent()
+        while anc is not None and _tag(anc) != "shape":
+            anc = anc.getparent()
+        if anc is not None:
+            style = anc.get("style") or ""
+            mw = re.search(r"width:\s*([\d.]+)pt", style)
+            mh = re.search(r"height:\s*([\d.]+)pt", style)
+            if mw:
+                w_pt = float(mw.group(1))
+            if mh:
+                h_pt = float(mh.group(1))
+        out.append(Seg("image", rid=rid, w_pt=w_pt, h_pt=h_pt))
+
     # ⚠️ <w:drawing> 常被包在 <mc:AlternateContent><mc:Choice> 里，
     #    不是 <w:r> 的直接子元素——只遍历直接子节点会完全漏掉它们。
     #    实测 03 HaoJian_Xiao 的 6 个矢量形状就是这么漏掉的。
@@ -774,30 +811,108 @@ def read_media(path: str) -> dict[str, str]:
     return out
 
 
+def _soffice_bin() -> str:
+    r"""找 LibreOffice 的 soffice（WMF/EMF → PDF 转换用；找不到返回 ""）。
+
+    ⚠️ 这是**可选外部依赖**（不是默认依赖）：用户机器没装 LibreOffice 时，
+    公式图片转不出来 → 渲染端 `\IfFileExists` 显示「公式图缺失」占位 + warning，
+    **不阻断出稿**（详见 build.py 的 warning 与报告 §依赖）。
+    """
+    import shutil
+
+    cands = [
+        os.environ.get("SLCN_SOFFICE", ""),
+        shutil.which("soffice") or "",
+        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    ]
+    for c in cands:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return ""
+
+
+def _convert_wmf_batch(items: list[tuple[str, bytes]], workdir: str, timeout: int = 600) -> dict[str, str]:
+    """把 [(sha, wmf/emf bytes)] 批量转成 PDF，返回 {sha: pdf 路径}（失败项不出现）。
+
+    用一次 soffice 调用处理所有文件（启动开销是主要成本）；按**内容 sha 去重**——
+    同一公式图片重复出现（87-2: 561 处引用、235 个文件，内容还有重复）只转一次。
+    """
+    import hashlib
+    import subprocess
+    import tempfile
+
+    soffice = _soffice_bin()
+    if not soffice or not items:
+        return {}
+    tmpdir = tempfile.mkdtemp(prefix="slcn_wmf_", dir=workdir)
+    sha2input: dict[str, str] = {}
+    for sha, data in items:
+        if sha in sha2input:
+            continue
+        inp = os.path.join(tmpdir, f"in{len(sha2input)}")
+        with open(inp, "wb") as f:
+            f.write(data)
+        sha2input[sha] = inp
+    # 按扩展名给 soffice 识别（写回 .wmf/.emf）
+    for sha, data in items:
+        pass
+    cmd = [soffice, "--headless", "--norestore", "--convert-to", "pdf", "--outdir", tmpdir,
+           *sha2input.values()]
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except Exception:  # noqa: BLE001 —— 转换失败不阻断出稿（渲染端显示占位）
+        return {}
+    out: dict[str, str] = {}
+    for sha, inp in sha2input.items():
+        pdf = os.path.splitext(inp)[0] + ".pdf"
+        if os.path.isfile(pdf):
+            out[sha] = pdf
+    return out
+
+
 def extract_media(path: str, out_dir: str, mapping: dict[str, str]) -> dict[str, str]:
-    """把用到的图片从 docx 里解出来，返回 {原文件名: 导出后的文件名}。
+    r"""把用到的图片从 docx 里解出来，返回 {原文件名: 导出后的文件名}。
 
     导出名统一为 fig1.png / fig2.png …（按在正文里出现的先后），
     因为原文件名（image1.png）没有信息量。
+
+    第四十七批（87-2 实测）：MathType 公式预览图是 **WMF**，XeLaTeX 不能直接嵌入
+    → 用 soffice 批量转 PDF（按内容 sha 去重；无 soffice 时**不写文件**，渲染端
+    `\IfFileExists` 显示「公式图缺失」占位 + build warning，不阻断出稿）。
     """
+    import hashlib
     import shutil
 
     os.makedirs(out_dir, exist_ok=True)
     exported: dict[str, str] = {}
+    pending: list[tuple[str, str, str, bytes]] = []  # (fname, new_name, sha, data)
     seq = 0
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
         for _rid, fname in mapping.items():
-            if fname in exported:
+            if fname in exported or any(p[0] == fname for p in pending):
                 continue
             src = f"word/media/{fname}"
             if src not in names:
                 continue
             seq += 1
             ext = os.path.splitext(fname)[1].lower() or ".png"
-            new_name = f"fig{seq}{ext}"
-            with z.open(src) as fsrc, open(os.path.join(out_dir, new_name), "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst)
+            data = z.read(src)
+            if ext in (".wmf", ".emf"):
+                pending.append((fname, f"fig{seq}.pdf", hashlib.sha256(data).hexdigest(), data))
+            else:
+                new_name = f"fig{seq}{ext}"
+                with open(os.path.join(out_dir, new_name), "wb") as fdst:
+                    fdst.write(data)
+                exported[fname] = new_name
+    if pending:
+        by_sha = {sha: data for _f, _n, sha, data in pending}
+        sha2pdf = _convert_wmf_batch([(sha, data) for sha, data in by_sha.items()], out_dir)
+        for fname, new_name, sha, _data in pending:
+            pdf = sha2pdf.get(sha)
+            if not pdf:
+                continue  # 占位由渲染端 IfFileExists 显示 + build warning
+            shutil.copyfile(pdf, os.path.join(out_dir, new_name))
             exported[fname] = new_name
     return exported
 
@@ -957,7 +1072,8 @@ def merge_segs(segs: list[Seg]) -> list[Seg]:
             out[-1].text += s.text
         else:
             out.append(Seg(s.kind, s.text, s.italic, s.bold, s.fid, s.rid,
-                           getattr(s, "display", False)))
+                           getattr(s, "display", False),
+                           getattr(s, "w_pt", 0.0), getattr(s, "h_pt", 0.0)))
     return out
 
 

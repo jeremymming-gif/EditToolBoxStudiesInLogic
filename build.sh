@@ -17,6 +17,42 @@ if [ -f "$RR_PY" ]; then
   BUILD_ENGINE_SHA="$("$RR_PY_BIN" -c "import sys; sys.path.insert(0, '$PROJ/Engine/tools'); import run_record; print(run_record.engine_py_sha256())" 2>/dev/null || true)"
 fi
 
+# ── O14（第四十七批）：purpose 标记 + **失败也留 manifest**（ERR trap）────────
+# 真跑 / 验证跑用环境变量区分（O5 计数可机读）：
+#   SLCN_BUILD_PURPOSE=verify-build bash build.sh    # 验证构建
+#   （不设时默认 real-build；其它候选值见 run_record.py --purpose 的说明）
+# 失败路径也写一条 manifest（failed=true + 真实 exit_code + 失败命令），纯证据：
+# 记录代码全部 `|| true`，**不改变构建判定与退出码**（trap 执行完 shell 仍以原码退出）。
+BUILD_PURPOSE="${SLCN_BUILD_PURPOSE:-real-build}"
+_record_build_manifest() {
+  local rc="${1:-1}"
+  local failed_step="${2:-}"
+  if [ ! -f "$RR_PY" ]; then
+    echo "⚠ 未找到 Engine/tools/run_record.py，跳过 build manifest（不影响构建）"
+    return 0
+  fi
+  local rec_py="/opt/homebrew/bin/python3.14"
+  [ -x "$rec_py" ] || rec_py="python3"
+  local app="${APP:-$PROJ/dist/${APP_NAME:-编辑部工具箱}.app}"
+  local app_bin="$app/Contents/MacOS/${BINARY:-Toolbox}"
+  local app_mtime="unknown" app_py_files="0" failed="false"
+  if [ -f "$app_bin" ]; then
+    app_mtime="$(stat -f "%Sm" -t "%Y-%m-%dT%H:%M:%S%z" "$app_bin" 2>/dev/null || echo unknown)"
+  fi
+  if [ -d "$app/Contents/Resources/Engine" ]; then
+    app_py_files="$(find "$app/Contents/Resources/Engine" -name '*.py' 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  [ "$rc" = "0" ] || failed="true"
+  "$rec_py" "$RR_PY" --record-only --label build --purpose "$BUILD_PURPOSE" \
+    --started-at "$BUILD_START_ISO" --command "bash build.sh" --exit-code "$rc" \
+    --artifact "$app_bin" --engine-sha "$BUILD_ENGINE_SHA" \
+    --meta "app_version=${APP_VERSION:-unknown}" --meta "app_mtime=$app_mtime" \
+    --meta "app_py_files=$app_py_files" --meta "cmp_result=${CMP_RESULT:-not-run}" \
+    --meta "failed=$failed" --meta "failed_step=${failed_step:0:120}" || true
+  return 0
+}
+trap '_record_build_manifest $? "$BASH_COMMAND"' ERR
+
 export CLANG_MODULE_CACHE_PATH="$PROJ/.mc"
 export SWIFT_MODULE_CACHE_PATH="$PROJ/.mc"
 mkdir -p "$PROJ/.mc" "$PROJ/.build"
@@ -151,6 +187,7 @@ if [ -d "$APP/Contents/Resources/Engine" ]; then
   echo "$CMP_OUT"
   if [ "$CMP_RESULT" != "ok" ]; then
     echo "❌ 包内引擎 cmp 失败 —— 构建未通过（包内引擎与仓库不一致）"
+    _record_build_manifest 1 "cmp-app 失败"      # O14：失败也留 manifest
     exit 1
   fi
 else
@@ -161,21 +198,9 @@ fi
 SIZE=$(du -sh "$APP" | cut -f1)
 echo "✅ 构建完成：$APP  ($SIZE)"
 
-# ── O13（第四十六批）：build 重活指纹落盘 ─────────────────────────────────
-# 写 /tmp/audit_lead/runs/<时间戳>-build.json：App 构建时间/版本/包内文件数/cmp 结果 +
-# 命令/引擎 py 指纹/二进制 sha/退出码。**纯证据**：run_record 缺失、写失败都只告警，
-# 不影响构建结果与退出码（set -e 下用 `|| true` 兜住记录那一行）。
-if [ -f "$RR_PY" ]; then
-  REC_PY="/opt/homebrew/bin/python3.14"
-  [ -x "$REC_PY" ] || REC_PY="python3"
-  APP_BIN="$APP/Contents/MacOS/$BINARY"
-  APP_MTIME="$(stat -f "%Sm" -t "%Y-%m-%dT%H:%M:%S%z" "$APP_BIN" 2>/dev/null || echo unknown)"
-  APP_PY_FILES="$(find "$APP/Contents/Resources/Engine" -name '*.py' 2>/dev/null | wc -l | tr -d ' ')"
-  "$REC_PY" "$RR_PY" --record-only --label build --started-at "$BUILD_START_ISO" \
-    --command "bash build.sh" --exit-code 0 --artifact "$APP_BIN" \
-    --engine-sha "$BUILD_ENGINE_SHA" \
-    --meta "app_version=$APP_VERSION" --meta "app_mtime=$APP_MTIME" \
-    --meta "app_py_files=$APP_PY_FILES" --meta "cmp_result=$CMP_RESULT" || true
-else
-  echo "⚠ 未找到 Engine/tools/run_record.py，跳过 build manifest（不影响构建）"
-fi
+# ── O13/O14（第四十六/四十七批）：build 重活指纹落盘 ──────────────────────
+# 写 /tmp/audit_lead/runs/<时间戳>-build.json：purpose（real-build / verify-build）、
+# App 时间/版本/包内文件数/cmp 结果、命令/引擎 py 指纹/二进制 sha/退出码。
+# **纯证据**：run_record 缺失、写失败都只告警，不影响构建结果与退出码。
+_record_build_manifest 0
+trap - ERR

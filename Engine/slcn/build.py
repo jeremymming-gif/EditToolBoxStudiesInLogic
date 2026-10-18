@@ -1805,10 +1805,17 @@ def build_docx(
             docx_path, out_dir,
             {f"r{i}": src for i, (src, _n) in enumerate(doc.images)},
         )
+        _miss = len(doc.images) - len(exported)
         if exported:
             say(f"   {len(exported)} 个图片：" + "、".join(sorted(exported.values())))
-        else:
-            warnings.append("docx 里声明了图片但未能导出（media 文件缺失）")
+        if _miss > 0:
+            # 第四十七批：MathType 公式图（WMF/EMF）需要 LibreOffice soffice 转换；
+            # 无 soffice / 转换失败 → 图片文件不落盘，产物里是「公式图缺失」占位。
+            # **不阻断出稿**（外部可选依赖，见 docxxml._soffice_bin）。
+            warnings.append(
+                f"{_miss} 个公式/图片未能导出（WMF/EMF 需要 LibreOffice soffice 转换；"
+                "未安装或转换失败时产物里为「公式图缺失」占位，请安装 LibreOffice 后重跑）"
+            )
 
     sty_out = os.path.join(out_dir, os.path.basename(tpl_sel.sty))
     shutil.copy2(tpl_sel.sty, sty_out)
