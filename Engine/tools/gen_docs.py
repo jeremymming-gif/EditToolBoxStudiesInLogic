@@ -187,7 +187,7 @@ def corpus_block() -> tuple[list[str], bool]:
         med[ch] = f"{100 * statistics.median(v):.2f}%" if v else "—"
     txt = (f"**corpus 回归**（`out/corpus/corpus.csv`）：成功 **{len(good)} / {len(rows)}** 篇；"
            f"裸相似度中位 LaTeX **{med['LaTeX']}**、Word **{med['Word']}**"
-           f"（Word 有已知抖动，比对请看逐篇明细）")
+           f"（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）")
     return [txt], True
 
 

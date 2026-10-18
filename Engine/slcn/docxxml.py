@@ -221,8 +221,12 @@ class Para:
         return it / sum(len(s.text) for s in t)
 
 
-def _run_segments(r) -> list[Seg]:
-    """拆一个 <w:r>。里面可能有普通文字，也可能内嵌 <m:oMath>。"""
+def _run_segments(r, handled_math: set) -> list[Seg]:
+    """拆一个 <w:r>。里面可能有普通文字，也可能内嵌 <m:oMath>。
+
+    `handled_math` 是本段落里**已经由这里处理过**的 <m:oMath>，供外层
+    `_para_segments()` 跳过、避免同一节点被处理两次（见那里的注释）。
+    """
     rpr = None
     for c in r:
         if c.tag == f"{{{W_NS}}}rPr":
@@ -248,13 +252,18 @@ def _run_segments(r) -> list[Seg]:
                 return
         out.append(Seg("shape"))
 
-    seen_drawings: set[int] = set()
+    # ⚠️ 这里存**元素本身**而不是 id()：lxml 的元素代理是临时对象，没有引用会被回收，
+    #    同一个 XML 节点再访问时会换一个新代理、id() 也随之变化（还会被别的节点复用）。
+    #    用 id() 去重就成了「看内存分配脸色」的随机行为（R5，第 125 条）。集合持有元素 =
+    #    持有代理引用，同一节点始终是同一个代理，身份比较才是确定的。
+    seen_drawings: set = set()
     for c in r:
         t = c.tag
         if t == W_T:
             if c.text:
                 out.append(Seg("text", c.text, italic, bold))
         elif t == M_OMATH:
+            handled_math.add(c)
             tex = _math_to_tex(omml_to_latex(c))
             if tex:
                 out.append(Seg("math", tex, italic, bold))
@@ -263,15 +272,15 @@ def _run_segments(r) -> list[Seg]:
             if fid is not None:
                 out.append(Seg("footnote", fid=int(fid)))
         elif t == W_DRAWING:
-            seen_drawings.add(id(c))
+            seen_drawings.add(c)
             handle_drawing(c)
 
     # ⚠️ <w:drawing> 常被包在 <mc:AlternateContent><mc:Choice> 里，
     #    不是 <w:r> 的直接子元素——只遍历直接子节点会完全漏掉它们。
     #    实测 03 HaoJian_Xiao 的 6 个矢量形状就是这么漏掉的。
     for d in r.iter(W_DRAWING):
-        if id(d) not in seen_drawings:
-            seen_drawings.add(id(d))
+        if d not in seen_drawings:
+            seen_drawings.add(d)
             handle_drawing(d)
     return out
 
@@ -281,17 +290,21 @@ def _para_segments(p) -> list[Seg]:
 
     注意 <m:oMath> 既可能出现在 <w:r> 内部，也可能是 <w:p> 的直接子元素，
     所以统一用 iter() 按顺序走一遍，再用 <w:r> 边界处理格式。
+
+    ⚠️ 去重必须用**元素身份**、且只登记 `_run_segments()` 真正处理过的公式
+    （<w:r> 的直接子 <m:oMath>）。曾经的做法是「把 run 里所有 oMath 都登记、
+    靠 id() 判断」，但：① lxml 代理会被回收重建，id() 随机漂移（R5，第 125 条）；
+    ② 登记范围过大——`<w:r>→<m:oMathPara>→<m:oMath>`（Word 文本框里的公式）并不由
+    `_run_segments()` 处理，却会被当成已处理，命中 id 巧合时整条公式从产物里消失。
     """
     segs: list[Seg] = []
-    seen_math: set[int] = set()
+    handled_math: set = set()
     for el in p.iter():
         if el.tag == W_R:
-            # <w:r> 里可能内嵌 <m:oMath>，一并取走并登记，避免下面重复处理
-            for sub in el.iter(M_OMATH):
-                seen_math.add(id(sub))
-            segs.extend(_run_segments(el))
-        elif el.tag == M_OMATH and id(el) not in seen_math:
-            # <m:oMath> 也可能是 <w:p> 的直接子元素（独立公式行）
+            # <w:r> 里可能内嵌 <m:oMath>，由 _run_segments 取走并登记，避免下面重复处理
+            segs.extend(_run_segments(el, handled_math))
+        elif el.tag == M_OMATH and el not in handled_math:
+            # <m:oMath> 也可能不在 run 的直接子级（独立公式行 / 文本框里的公式）
             tex = _math_to_tex(omml_to_latex(el))
             if tex:
                 segs.append(Seg("math", tex))

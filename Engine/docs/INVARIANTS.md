@@ -86,6 +86,12 @@
    必须逐字节不变（用例一 10 篇回归 10/10 相同）。位置：`Engine/slcn/docxsource.py`
    （`doc_is_en` / `_entry_is_note_only` / `_looks_short_bibliographic_note`）；
    `Engine/tests/test_english_manuscripts.py`。
+7. **解析去重不许用 `id()`/`hash()` 记住 lxml 元素**（第 125 条）：lxml 的元素代理是临时对象，
+   被回收后同一 XML 节点会换新代理、`id()` 漂移且会被其它节点复用 → 产物随机丢/重公式（R5）。
+   要记住元素就存**元素本身**（集合持有引用 = 身份稳定）；且去重只覆盖「真正处理过的节点」
+   （`_para_segments` 只跳过 `_run_segments` 收了直接子 `<m:oMath>` 的那些）。
+   位置：`Engine/slcn/docxxml.py` 的 `_run_segments` / `_para_segments`；
+   `Engine/tests/test_docxxml_deterministic.py`（AST 静态守卫 + 合成夹具 + 真实稿抽查）。
 
 ## 七、这份清单自己怎么维护
 

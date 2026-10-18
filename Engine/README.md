@@ -118,19 +118,20 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**44 套件 / 1767 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**45 套件 / 1781 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
 `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibreport_note_and_clause` 49
 `test_checkbib` 118 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39
-`test_cn_journal_numbered` 34 ｜ `test_coauthor_en` 16 ｜ `test_en_abstract_sibling` 5 ｜ `test_en_slot_placeholder` 9
-`test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 36
-`test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_preamble` 45 ｜ `test_llm_error` 10
-`test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62
-`test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51
-`test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 35
-`test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_search_refs` 54
-`test_selfcheck` 17 ｜ `test_sep_style` 25 ｜ `test_tail_block` 45 ｜ `test_unmatched_in_report` 70
+`test_cn_journal_numbered` 34 ｜ `test_coauthor_en` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_en_abstract_sibling` 5
+`test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12
+`test_incollection_fields` 36 ｜ `test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_preamble` 45
+`test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
+`test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
+`test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36
+`test_platform` 35 ｜ `test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
+`test_search_refs` 54 ｜ `test_selfcheck` 17 ｜ `test_sep_style` 25 ｜ `test_tail_block` 45
+`test_unmatched_in_report` 70
 
 **普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
 
@@ -149,13 +150,13 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 - `n_headings` 合计 **545**；`n_bib` 合计 **1526**
 - sha256[:12]：`docx_audit.csv` = `5710b55e2167`，`docx_audit.txt` = `4a70cfe4c67a`（与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **88.83%**（Word 有已知抖动，比对请看逐篇明细）
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **88.83%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
 **App 包内一致性**（`dist/编辑部工具箱.app/Contents/Resources/Engine/` vs 仓库）：✅ **25/25** 个**引擎文件** `cmp` 全同（`README.md` 不在比对内 —— 块就写在它里面，见 `tools/gen_docs.py` 的注释；文档改动同样要 `./build.sh` 一次才进包）
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-17 23:29:38`；`HEAD` = `8807a8f`；`git status --porcelain` **7** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 01:05:56`；`HEAD` = `f8a5de7`；`git status --porcelain` **7** 行
 <!-- AUTO:STATE:END -->
 
 ---
@@ -169,8 +170,9 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 3. **代表稿** —— `convert.py` 跑三篇代表稿：`03 Liang_Zhang`（LaTeX 通道）、
    `10 Bo_Chen`（Word 通道）、`Lu_Jiang`（脚注体例 + 英文稿），人眼核版面与页数。
 4. **`corpus.py` 回归** —— `$PY corpus.py`（默认 `--jobs auto` 并行；`--jobs 1` = 旧串行）；
-   判据看**逐篇明细**而不是中位数（`05 Yang_Hu` 有已知的非确定性抖动（R5），
-   根因见 `HANDOFF.md` 风险表 / 第九节）。
+   判据看**逐篇明细**而不是中位数。R5 的「`docxxml` 用 `id()` 去重、`05 Yang_Hu` ±0.03pp 抖动」
+   已在**第 125 条**修掉（去重改用元素身份）：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，
+   不一致即回归。
 5. **重建 App + 包内 `cmp`** —— `cd EditToolBox && ./build.sh`，然后逐个 `cmp`
    包内 `Resources/Engine/` 的引擎文件与仓库同名文件（「包内引擎过期」是本项目踩过的坑）。
    ⚠️ `build.sh` 是**共享资源**：并行会话时必须**串行**，不要两边同时构建。
