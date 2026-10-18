@@ -36,6 +36,9 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
   (p) B1 确定性规范化 dry-run（`normalize`）：逐条重建→`bibnorm.normalize_bib()`→比较；
       语义变更/仅格式/异常三类、规则与字段分类、高危形状风险、报告要素、
       幂等、**绝不写 bibliography.jsonl**、`--json` 摘要
+  (q) `resolve --action adopt`（逐字段采用新稿值，第 135 条）：只改该冲突字段、删空字段、
+      重算 content_sha256、`adopted` 标记、重叠默认拒绝 / `--allow-overlap` 标 `superseded`、
+      幂等、dry-run 不写库、未知指纹/缺指纹/`--allow-overlap` 误用退出 2、报告统计
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -1103,7 +1106,8 @@ with tempfile.TemporaryDirectory(prefix="bibdb_resolve_") as tmp:
     check("(o) 头部统计区分待裁决/已裁决（1 条待裁决 / 1 条已裁决保留旧值）",
           "待裁决冲突项：**1** 条" in text2
           and "已裁决（不在下面明细里）：**1** 条"
-          and "保留旧值 1 / 采用新值 0 / 待人工 0" in text2, text2[:700])
+          and "保留旧值 1 / 采用新值·逐字段 0 / 采用新值·整条 0 / 待人工 0 / "
+              "被 adopt 取代 0" in text2, text2[:800])
 
     # ── defer：标记待人工查证 → 两条都从待裁决区消失 ──
     r = run_cli("resolve", "--key", "Beta2001", "--action", "defer",
@@ -1122,8 +1126,9 @@ with tempfile.TemporaryDirectory(prefix="bibdb_resolve_") as tmp:
     check("(o) 全部裁决后：待裁决明细为空、统计为 0 / 2（保留旧值1、待人工1）",
           "待裁决冲突项：**0** 条" in text3
           and "已裁决（不在下面明细里）：**2** 条" in text3
-          and "保留旧值 1 / 采用新值 0 / 待人工 1" in text3
-          and "（无：所有冲突都已裁决" in text3, text3[:800])
+          and "保留旧值 1 / 采用新值·逐字段 0 / 采用新值·整条 0 / 待人工 1 / "
+              "被 adopt 取代 0" in text3
+          and "（无：所有冲突都已裁决" in text3, text3[:900])
 
     # ── 报告在「已裁决」状态下重复生成逐字节相同 ──
     digest = {pathlib.Path(path).name: hashlib.sha256(read_bytes(path)).hexdigest()
@@ -1398,6 +1403,231 @@ with tempfile.TemporaryDirectory(prefix="bibdb_normalize_") as tmp:
     r5 = run_cli("normalize", "--db", db, "--apply")
     check("(p) 不认识的 `--apply` → 用法错误退出 2（本任务不实现 apply）",
           r5.returncode == 2)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (q) resolve --action adopt：逐字段采用新稿值 ──")
+
+
+def _make_adopt_db(path: str) -> str:
+    """合成库：一条记录 3 个来源不同、字段有重叠的待裁决冲突 + 一条「新稿删字段」。"""
+    store = bibdb.Store.load(path, create=True)
+    base = {"kind": "published-bib", "issue": "2023年第1期(68)",
+            "slug": "01 Base", "file": "base.bib"}
+    store.import_bib_text("""@article{Adopt3000,
+  author    = {Adopt, Ann},
+  title     = {Adoption Work},
+  journal   = {Journal Old},
+  volume    = {3},
+  pages     = {1--10},
+  publisher = {Base Press},
+  year      = {2000}
+}
+@article{DropField2001,
+  author = {Drop, Dan},
+  title  = {Droppable Pages},
+  journal = {Journal Old},
+  pages  = {5--6},
+  year   = {2001}
+}
+""", base, verified=True)
+    # 冲突 1（来源期 2025-1）：只差 journal；与冲突 3 的 journal 重叠
+    store.import_bib_text("""@article{Adopt3000,
+  author    = {Adopt, Ann},
+  title     = {Adoption Work},
+  journal   = {Journal New},
+  volume    = {3},
+  pages     = {1--10},
+  publisher = {Base Press},
+  year      = {2000}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "02 A", "file": "a.bib"}, verified=True)
+    # 冲突 2（来源期 2025-2）：差 pages/volume，不与冲突 1 重叠
+    store.import_bib_text("""@article{Adopt3000,
+  author    = {Adopt, Ann},
+  title     = {Adoption Work},
+  journal   = {Journal Old},
+  volume    = {4},
+  pages     = {20--30},
+  publisher = {Base Press},
+  year      = {2000}
+}
+""", {"kind": "published-bib", "issue": "2025年第2期(81)",
+      "slug": "03 B", "file": "b.bib"}, verified=True)
+    # 冲突 3（来源期 2026-1）：差 journal/publisher；journal 与冲突 1 重叠
+    store.import_bib_text("""@article{Adopt3000,
+  author    = {Adopt, Ann},
+  title     = {Adoption Work},
+  journal   = {Journal Third},
+  volume    = {3},
+  pages     = {1--10},
+  publisher = {Third Press},
+  year      = {2000}
+}
+""", {"kind": "published-bib", "issue": "2026年第1期(86)",
+      "slug": "04 C", "file": "c.bib"}, verified=True)
+    # DropField：新稿没有 pages → 冲突 incoming 为空（adopt 应删除该字段）
+    store.import_bib_text("""@article{DropField2001,
+  author  = {Drop, Dan},
+  title   = {Droppable Pages},
+  journal = {Journal Old},
+  year    = {2001}
+}
+""", {"kind": "published-bib", "issue": "2025年第3期(82)",
+      "slug": "05 D", "file": "d.bib"}, verified=True)
+    store.save()
+    return path
+
+
+def _pending(store, key):
+    record = store.get(key)
+    return [c for c in (record.get("conflicts") or [])
+            if bibdb.conflict_is_pending(c)]
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_adopt_") as tmp:
+    db = _make_adopt_db(os.path.join(tmp, "adopt.jsonl"))
+    store = bibdb.Store.load(db)
+    adopt_conflicts = _pending(store, "Adopt3000")
+    drop_conflicts = _pending(store, "DropField2001")
+    check("(q) 夹具：Adopt3000 三条待裁决冲突、DropField2001 一条（incoming 空）",
+          len(adopt_conflicts) == 3 and len(drop_conflicts) == 1
+          and drop_conflicts[0]["field_diff"].get("pages", {}).get("incoming") == "",
+          f"{len(adopt_conflicts)} / {len(drop_conflicts)}")
+    sha_journal = adopt_conflicts[0]["incoming_sha256"]
+    sha_pages = adopt_conflicts[1]["incoming_sha256"]
+    sha_overlap = adopt_conflicts[2]["incoming_sha256"]
+    record_before = json.loads(json.dumps(store.get("Adopt3000")))
+    digest_before = read_bytes(db)
+
+    # ── 默认拒绝重叠（不 --allow-overlap）→ 退出 2 且库不变 ──
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--incoming-sha256", sha_journal[:12], "--db", db)
+    check("(q) adopt 与其它待裁决冲突字段重叠 → 默认拒绝、退出 2、给指引",
+          r.returncode == 2
+          and "重叠" in (r.stdout + r.stderr)
+          and "allow-overlap" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-400:])
+    check("(q) 拒绝时库文件逐字节不变", read_bytes(db) == digest_before)
+
+    # ── dry-run + --allow-overlap：只报将改哪些字段，不写库 ──
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--incoming-sha256", sha_journal[:12], "--allow-overlap",
+                "--dry-run", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(q) adopt --dry-run --json：退出 0、标 dry_run、只列本条冲突",
+          r.returncode == 0 and payload.get("dry_run") is True
+          and payload.get("action") == "adopt" and payload.get("count") == 1,
+          json.dumps(payload, ensure_ascii=False)[:400])
+    check("(q) --dry-run 输出将改的字段旧→新（journal）与将重算的 content_sha256",
+          payload.get("adopted_fields", {}).get("journal", {}).get("new") == "Journal New"
+          and payload.get("adopted_fields", {}).get("journal", {}).get("old") == "Journal Old"
+          and payload.get("content_sha256_before") != payload.get("content_sha256_after"))
+    check("(q) --dry-run 报出重叠冲突（将被标 superseded）且库文件不变",
+          len(payload.get("overlapping") or []) == 1
+          and payload.get("superseded") == []
+          and read_bytes(db) == digest_before)
+    r_human = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                      "--incoming-sha256", sha_journal[:12], "--allow-overlap",
+                      "--dry-run", "--db", db)
+    check("(q) 人读 dry-run：明说「逐字段」「将被标 superseded」、不写库",
+          r_human.returncode == 0 and "逐字段" in r_human.stdout
+          and "将被标 `superseded`" in r_human.stdout
+          and read_bytes(db) == digest_before, r_human.stdout[-500:])
+
+    # ── 真正 adopt（--allow-overlap）：只改本条字段 + 重叠标 superseded ──
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--incoming-sha256", sha_journal[:12], "--allow-overlap",
+                "--note", "用户裁决：采用新稿 journal", "--db", db)
+    store_after = bibdb.Store.load(db)
+    record_after = store_after.get("Adopt3000")
+    check("(q) adopt 成功：退出 0、journal 采用新值、其它字段不动",
+          r.returncode == 0
+          and record_after["fields"]["journal"] == "Journal New"
+          and record_after["fields"]["volume"] == "3"
+          and record_after["fields"]["pages"] == "1--10"
+          and record_after["fields"]["publisher"] == "Base Press"
+          and record_after["fields"]["title"] == record_before["fields"]["title"],
+          json.dumps(record_after["fields"], ensure_ascii=False))
+    check("(q) content_sha256 已按新 fields 重算（与 content_sha256() 一致且已变）",
+          record_after["content_sha256"]
+          == bibdb.content_sha256(record_after["entry_type"], record_after["fields"])
+          and record_after["content_sha256"] != record_before["content_sha256"])
+    adopted_conflict = [c for c in record_after["conflicts"]
+                        if c.get("incoming_sha256") == sha_journal][0]
+    check("(q) 本条冲突标 adopted + resolved_at + note 追加",
+          adopted_conflict["resolution"] == "adopted"
+          and adopted_conflict.get("resolved_at")
+          and "采用新稿值（逐字段" in (adopted_conflict.get("note") or ""))
+    overlap_conflict = [c for c in record_after["conflicts"]
+                        if c.get("incoming_sha256") == sha_overlap][0]
+    check("(q) 重叠冲突被标 superseded + resolved_at + 说明「被 adopt 取代」",
+          overlap_conflict["resolution"] == "superseded"
+          and overlap_conflict.get("resolved_at")
+          and "取代" in (overlap_conflict.get("note") or ""),
+          overlap_conflict.get("note", "")[:120])
+    check("(q) 非重叠的待裁决冲突保持 pending（不被误标）",
+          any(c.get("incoming_sha256") == sha_pages and bibdb.conflict_is_pending(c)
+              for c in record_after["conflicts"]))
+    check("(q) 人读输出显示字段旧→新与 content_sha256 变化",
+          "Journal Old" in r.stdout and "Journal New" in r.stdout
+          and "content_sha256" in r.stdout, r.stdout[-600:])
+
+    # ── 幂等：同指纹重复 adopt → 无变化、库文件不动 ──
+    digest_after_adopt = read_bytes(db)
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--incoming-sha256", sha_journal[:12], "--db", db)
+    check("(q) 重复同指纹 adopt 幂等：退出 0、说「无变化」、库文件不动",
+          r.returncode == 0 and "无变化" in r.stdout
+          and read_bytes(db) == digest_after_adopt, r.stdout[-300:])
+
+    # ── 报告：已裁决统计分 adopted / superseded ──
+    out_rep = os.path.join(tmp, "reports")
+    run_cli("report-conflicts", "--db", db, "--out", out_rep)
+    report_text = _read_text(os.path.join(out_rep, "CONFLICTS.md"))
+    check("(q) 报告已裁决统计区分 adopted / superseded",
+          "采用新值·逐字段 1" in report_text and "被 adopt 取代 1" in report_text,
+          [line for line in report_text.splitlines() if "已裁决（不在下面明细里）" in line])
+    check("(q) 报告待裁决区只剩非重叠那条（C 编号稳定的 3 条里只显示 1 条）",
+          report_text.count("`Adopt3000`") >= 1
+          and "采用新稿值（逐字段" not in report_text)
+
+    # ── 非重叠冲突可正常 adopt ──
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--incoming-sha256", sha_pages[:12], "--db", db)
+    record2 = bibdb.Store.load(db).get("Adopt3000")
+    check("(q) 非重叠冲突 adopt：pages/volume 按新稿更新",
+          r.returncode == 0 and record2["fields"]["pages"] == "20--30"
+          and record2["fields"]["volume"] == "4",
+          json.dumps(record2["fields"], ensure_ascii=False))
+
+    # ── incoming 为空 → adopt 删除该字段 ──
+    drop_sha = drop_conflicts[0]["incoming_sha256"]
+    r = run_cli("resolve", "--key", "DropField2001", "--action", "adopt",
+                "--incoming-sha256", drop_sha[:12], "--db", db)
+    drop_record = bibdb.Store.load(db).get("DropField2001")
+    check("(q) incoming 为空 → adopt 把该字段从记录里删掉",
+          r.returncode == 0 and "pages" not in drop_record["fields"]
+          and drop_record["fields"].get("title") == "Droppable Pages",
+          json.dumps(drop_record["fields"], ensure_ascii=False))
+
+    # ── 参数/指纹错误 → 退出 2 ──
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--incoming-sha256", "00000000", "--db", db)
+    check("(q) 未知指纹 → 退出 2", r.returncode == 2
+          and "没有以" in (r.stdout + r.stderr))
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "adopt",
+                "--all-fields", "--db", db)
+    check("(q) adopt 不给指纹（给 --all-fields）→ 退出 2",
+          r.returncode == 2 and "incoming-sha256" in (r.stdout + r.stderr),
+          (r.stdout + r.stderr)[-200:])
+    r = run_cli("resolve", "--key", "Adopt3000", "--action", "keep",
+                "--all-fields", "--allow-overlap", "--db", db)
+    check("(q) `--allow-overlap` 误用于 keep → 退出 2", r.returncode == 2
+          and "只用于" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-200:])
+    r = run_cli("resolve", "--key", "NoSuchKey", "--action", "adopt",
+                "--incoming-sha256", "abcdef12", "--db", db)
+    check("(q) 未知 key → 退出 2", r.returncode == 2
+          and "没有记录 key" in (r.stdout + r.stderr))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (l) 真实稿件库抽查（SKIP when absent，只读） ──")

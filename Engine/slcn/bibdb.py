@@ -501,10 +501,17 @@ HIT_MISS = "miss"            # 库内没有线索
 RESOLUTION_KEPT = "kept-existing"
 RESOLUTION_DEFERRED = "deferred"
 RESOLUTION_FORCED = "forced-replaced"
+#: 第 135 条（task-13，2026-10-18）：**逐字段**采用新稿值（只改该冲突 field_diff 的字段）
+RESOLUTION_ADOPTED = "adopted"
+#: 同记录其它待裁决冲突的字段被 adopt 覆盖、旧基线已过期 → 标「被取代」（不算人工裁决对象）
+RESOLUTION_SUPERSEDED = "superseded"
 ACTION_KEEP = "keep"
 ACTION_DEFER = "defer"
-#: 人工可用的裁决动作（采用新值走 import-bib --force，不在这里）
-RESOLVE_ACTIONS = {ACTION_KEEP: RESOLUTION_KEPT, ACTION_DEFER: RESOLUTION_DEFERRED}
+ACTION_ADOPT = "adopt"
+#: 人工可用的裁决动作：keep / defer / adopt（整条替换仍走 import-bib --force）
+RESOLVE_ACTIONS = {ACTION_KEEP: RESOLUTION_KEPT,
+                   ACTION_DEFER: RESOLUTION_DEFERRED,
+                   ACTION_ADOPT: RESOLUTION_ADOPTED}
 
 
 def _fields_equivalent(name: str, first: str, second: str) -> bool:
@@ -1011,16 +1018,125 @@ class Store:
 
     # -- 冲突裁决（第 130 条，2026-10-18）-----------------------------------
 
+    def _apply_adopt(self, record: dict, conflict: dict, result: dict, now: str,
+                     *, note: str, dry_run: bool,
+                     allow_overlap: bool) -> dict:
+        """`resolve --action adopt` 的执行部分：**逐字段**把 incoming 写进记录。
+
+        只改这条冲突 `field_diff` 涉及的字段：`incoming` 有值 → 覆盖；为空 → 从记录里
+        删掉（新稿没有这个字段；`$entry_type` 除外——条目类型为空时不动）。随后重算
+        `content_sha256`，把冲突标 `adopted`；重叠的其它待裁决冲突按 `allow_overlap`
+        决定「拒绝」还是标 `superseded`。`dry_run` 只算不写（不碰记录/冲突/时间戳）。
+        """
+        key = str(record.get("key") or "")
+        diff = conflict.get("field_diff")
+        if not isinstance(diff, dict) or not diff:
+            raise BibDBError(
+                f"记录 `{key}` 的这条冲突没有字段差异，无法 adopt（可改用 keep/defer）")
+        planned: dict[str, dict] = {}
+        for name, values in diff.items():
+            pair = values if isinstance(values, dict) else {}
+            old_value = pair.get("existing", "")
+            new_value = pair.get("incoming", "")
+            planned[name] = {
+                "old": old_value,
+                "new": new_value,
+                "remove": name != "$entry_type" and not str(new_value or "").strip(),
+            }
+        adopted_fields = set(planned)
+        overlapping: list[dict] = []
+        for index, other in enumerate(record.get("conflicts") or []):
+            if not isinstance(other, dict) or other is conflict:
+                continue
+            if not conflict_is_pending(other):
+                continue
+            shared = sorted(set(conflict_fields(other)) & adopted_fields)
+            if shared:
+                overlapping.append({
+                    "index": index,
+                    "fields": conflict_fields(other),
+                    "shared": shared,
+                    "incoming_sha256": str(other.get("incoming_sha256") or ""),
+                })
+        # 预算 adopt 后的 entry_type/fields/content_sha256（dry-run 也要能报出「将变成什么」）
+        candidate_etype = str(record.get("entry_type") or "")
+        candidate_fields = dict(record.get("fields") or {})
+        for name, change in planned.items():
+            if name == "$entry_type":
+                if str(change["new"] or "").strip():
+                    candidate_etype = str(change["new"]).strip().lower()
+            elif change["remove"]:
+                candidate_fields.pop(name, None)
+            else:
+                candidate_fields[name] = str(change["new"])
+        candidate_fields = dict(sorted(candidate_fields.items()))
+        sha_before = str(record.get("content_sha256") or "")
+        sha_after = content_sha256(candidate_etype, candidate_fields)
+        result.update({
+            "adopted_fields": planned,
+            "adopted_field_names": [name for name in planned if name != "$entry_type"],
+            "content_sha256_before": sha_before,
+            "content_sha256_after": sha_after,
+            "overlapping": overlapping,
+            "superseded": [],
+        })
+        if overlapping and not allow_overlap:
+            detail = "；".join(
+                f"#{item['index']}（共享 {('、'.join(item['shared']))}，"
+                f"指纹 {item['incoming_sha256'][:12]}）" for item in overlapping)
+            raise BibDBError(
+                f"记录 `{key}` 还有 {len(overlapping)} 条待裁决冲突与本条 adopt 的字段重叠："
+                f"{detail}。这些冲突的旧值会被本次更新覆盖——请先用 keep/defer 或按指纹"
+                "逐条处理，或加 `--allow-overlap` 把重叠冲突标 `superseded` 后再 adopt。")
+        if dry_run:
+            return result
+
+        record["entry_type"] = candidate_etype
+        record["fields"] = candidate_fields
+        record["content_sha256"] = sha_after
+        field_text = "、".join(f"`{name}`" for name in planned)
+        old_note = str(conflict.get("note") or "")
+        conflict["resolution"] = RESOLUTION_ADOPTED
+        conflict["resolved_at"] = now
+        conflict["note"] = (
+            (old_note + "；" if old_note else "")
+            + f"人工裁决：采用新稿值（逐字段：{field_text}）"
+            + (f"；备注：{note.strip()}" if note.strip() else ""))
+        for item in overlapping:
+            other = record["conflicts"][item["index"]]
+            other_note = str(other.get("note") or "")
+            other["resolution"] = RESOLUTION_SUPERSEDED
+            other["resolved_at"] = now
+            other["note"] = (
+                (other_note + "；" if other_note else "")
+                + "被同一记录 adopt 的裁决取代（共享字段："
+                + "、".join(item["shared"]) + "）：旧基线已更新，本条差异不再适用")
+            result["superseded"].append(item)
+        record["updated_at"] = now
+        self.dirty = True
+        result["changed"] = True
+        return result
+
     def resolve_conflicts(self, key: str, action: str, *, fields=None,
                           all_fields: bool = False, note: str = "",
                           dry_run: bool = False,
-                          incoming_sha256: str = "") -> dict:
-        """把一条记录的**待裁决**冲突标记为已裁决（只改 conflicts[] 元数据，**不改字段值**）。
+                          incoming_sha256: str = "",
+                          allow_overlap: bool = False) -> dict:
+        """把一条记录的**待裁决**冲突标记为已裁决。
 
-        `action="keep"` → `resolution="kept-existing"`（保留库内已核实旧值）
+        `action="keep"`  → `resolution="kept-existing"`（保留库内已核实旧值，**不改字段**）
         `action="defer"` → `resolution="deferred"`（待人工查证：先移出待裁决清单）
-        **采用新稿值不走这里**——用 `import-bib --force`（会把被替换的冲突标
-        `forced-replaced` 并记 `resolved_at`）。
+        `action="adopt"` → **逐字段采用新稿值**：按冲突指纹精确定位**一条**冲突，把该冲突
+        `field_diff` 里每个字段的 `incoming` 写进库记录 `fields`（`incoming` 为空 = 该字段
+        在新稿里没有 → 从记录里删掉；`$entry_type` = 改条目类型），重算 `content_sha256`，
+        并把该冲突标 `resolution="adopted"` + `resolved_at`。
+        ⚠️ adopt **必须**给 `incoming_sha256`（一条冲突 = 一个指纹），不给就报错。
+        整条替换仍走 `import-bib --force`（那会把被替换的旧冲突标 `forced-replaced`）。
+
+        **adopt 的重叠保护**（第 135 条）：同一记录其它**待裁决**冲突若与本条 adopt 的字段
+        有交集，它们的 `existing` 旧值已过期 → 默认**拒绝并报错**（先 keep/defer 或按指纹
+        逐条处理）；`allow_overlap=True` 时把这些重叠冲突标 `resolution="superseded"` +
+        `resolved_at`（报告里注明「被更新的裁决取代」），再执行 adopt。
 
         选择规则（三选一，CLI 层强制互斥）：
           · `--all-fields`：该记录**所有待裁决**冲突；
@@ -1040,8 +1156,10 @@ class Store:
             raise BibDBError("resolve 需要 --key（库内记录 key，见 CONFLICTS.md）")
         if action not in RESOLVE_ACTIONS:
             raise BibDBError(
-                f"未知裁决动作 {action!r}（只支持 keep / defer；"
-                "采用新稿值请用 import-bib --force）")
+                f"未知裁决动作 {action!r}（只支持 keep / defer / adopt；"
+                "整条替换请用 import-bib --force）")
+        if allow_overlap and action != ACTION_ADOPT:
+            raise BibDBError("--allow-overlap 只用于 --action adopt（其它动作没有重叠问题）")
         record = self._by_key.get(record_key)
         if record is None:
             raise BibDBError(
@@ -1052,6 +1170,13 @@ class Store:
             raise BibDBError(f"记录 `{record_key}` 没有字段冲突，无需裁决")
 
         sha_prefix = str(incoming_sha256 or "").strip().lower()
+        if action == ACTION_ADOPT and not sha_prefix:
+            raise BibDBError(
+                "--action adopt 必须用 --incoming-sha256（冲突指纹）精确定位**一条**冲突；"
+                "字段/整条之外的批量 adopt 不支持（避免误改）")
+        if action == ACTION_ADOPT and (all_fields or fields):
+            raise BibDBError(
+                "--action adopt 只接受 --incoming-sha256；不要同时给 --fields / --all-fields")
         wanted: list[str] = []
         available = sorted({
             field for conflict in conflicts if isinstance(conflict, dict)
@@ -1146,14 +1271,24 @@ class Store:
                 hit = [conflict for conflict in resolved_conflicts
                        if set(conflict_fields(conflict)) & set(wanted)]
             if hit:
+                actions = sorted({str(conflict.get("resolution") or "")
+                                  for conflict in hit})
+                if action == ACTION_ADOPT and actions != [RESOLUTION_ADOPTED]:
+                    raise BibDBError(
+                        f"记录 `{record_key}` 的这条冲突已裁决为 "
+                        f"{'、'.join(actions)}，不能再用 adopt 改判；"
+                        "如需改为采用新稿值，请人工处理（先撤销裁决）")
                 result["already"] = True
                 result["resolved_count"] = len(hit)
-                result["resolved_actions"] = sorted(
-                    {str(conflict.get("resolution") or "") for conflict in hit})
+                result["resolved_actions"] = actions
                 return result
             raise BibDBError(f"记录 `{record_key}` 当前没有可裁决的冲突")
 
         result["resolved_at"] = now
+        if action == ACTION_ADOPT:
+            return self._apply_adopt(record, selected[0][1], result, now,
+                                     note=note, dry_run=bool(dry_run),
+                                     allow_overlap=bool(allow_overlap))
         if dry_run:
             return result     # --dry-run：只算不写库（不改冲突、不动 updated_at）
 

@@ -32,11 +32,13 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                 [--limit N] [--threshold X] [--min-score X] [--bibtex] [--json]
     stats       [--json]
     lint        [--json]                    重复 key / 字段冲突 / 缺来源 / verified 无记录 …
-    resolve     --key K --action keep|defer
+    resolve     --key K --action keep|defer|adopt
                 (--all-fields | --fields F1,F2 | --incoming-sha256 SHA)
-                [--note TEXT] [--dry-run] [--json]
-                                            记录冲突裁决（keep=保留旧值 / defer=待人工；
-                                            不改字段值）；采用新值仍走 import-bib --force
+                [--allow-overlap] [--note TEXT] [--dry-run] [--json]
+                                            记录冲突裁决：keep=保留旧值 / defer=待人工 /
+                                            adopt=**逐字段采用新稿值**（改 fields、重算 sha，
+                                            必须用指纹；重叠冲突默认拒绝或用 --allow-overlap
+                                            标 superseded）；整条替换仍走 import-bib --force
     report      [--out DIR]                 一次生成全部待裁决清单（推荐）
     report-conflicts  [--out DIR]           字段冲突待裁决清单 CONFLICTS.md（中文、可勾选）
     report-duplicates [--out DIR]           同作品不同 key 候选对 DUPLICATES.md + duplicates.csv
@@ -55,6 +57,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     /opt/homebrew/bin/python3.14 bibdb.py stats
     /opt/homebrew/bin/python3.14 bibdb.py lint
     /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action keep --all-fields
+    /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action adopt \
+        --incoming-sha256 <指纹> [--allow-overlap] [--dry-run]
     /opt/homebrew/bin/python3.14 bibdb.py report --out ../EditToolBox-notes/bib_db
     /opt/homebrew/bin/python3.14 bibdb.py normalize --out-dir ../EditToolBox-notes/bib_db
     # ↑ B1 dry-run 报告（B1-normalize-dryrun.md/.json）；只读库、不写 bibliography.jsonl
@@ -581,7 +585,10 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
     n_kept = resolved_actions.get("kept-existing", 0)
     n_deferred = resolved_actions.get("deferred", 0)
     n_forced = resolved_actions.get("forced-replaced", 0)
-    n_other = len(resolved) - n_kept - n_deferred - n_forced
+    n_adopted = resolved_actions.get("adopted", 0)
+    n_superseded = resolved_actions.get("superseded", 0)
+    n_other = (len(resolved) - n_kept - n_deferred - n_forced
+               - n_adopted - n_superseded)
     lines: list[str] = [
         "# 参考文献库 · 字段冲突待裁决清单（CONFLICTS.md）",
         "",
@@ -589,7 +596,9 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
         "> 遇到「同一作品、不同期成品 bib 字段写法不同」时，库**不会静默改掉已核实的旧值**，",
         "> 只把差异留档进 `conflicts`。本文件把那些差异逐条翻成中文，供编辑裁决。",
         ">",
-        "> **第 130 条起裁决结果会存进库**（`conflicts[].resolution` / `resolved_at` / `note`），",
+        "> **第 130 条起裁决结果会存进库**（`conflicts[].resolution` / `resolved_at` / `note`）；",
+        "> 第 135 条起 `adopt` 可**逐字段**采用新稿值（`adopted`），它覆盖掉的其它冲突标",
+        "> `superseded`（被更新的裁决取代）。",
         "> 重新生成清单**不会丢**；本文件只显示**待裁决**条目。清单里的 `- [ ]` 只是草稿",
         "> 标记（重新生成就没了）——要把决定写进库，见文末「裁决方法」里的 `resolve`。",
         "",
@@ -602,7 +611,8 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
         f"**{len({(item['issue'], item['slug']) for item in pending})}** 篇稿子、"
         f"**{len(issues_pending)}** 期",
         f"- 已裁决（不在下面明细里）：**{len(resolved)}** 条"
-        f"（保留旧值 {n_kept} / 采用新值 {n_forced} / 待人工 {n_deferred}"
+        f"（保留旧值 {n_kept} / 采用新值·逐字段 {n_adopted} / 采用新值·整条 {n_forced} / "
+        f"待人工 {n_deferred} / 被 adopt 取代 {n_superseded}"
         + (f" / 其它 {n_other}" if n_other else "") + "）",
         f"- 冲突总数：**{len(items)}** 条（共 **{total_fields}** 处字段差异），涉及 "
         f"**{len(records_with)}** 条库记录、**{len(slugs)}** 篇稿子、**{len(issues_all)}** 期",
@@ -1187,15 +1197,29 @@ def _print_written(written: list[dict]) -> None:
 
 
 def cmd_resolve(args) -> int:
-    """把某条记录的待裁决冲突标记为已裁决（只改 conflicts 元数据，不改字段值）。"""
+    """记录冲突裁决：keep/defer 只改 conflicts 元数据；adopt **逐字段**改 fields。"""
     fields = [part.strip() for part in (args.fields or "").split(",") if part.strip()]
+    if args.action == "adopt":
+        if not (args.incoming_sha256 or "").strip():
+            print("✗ --action adopt 必须配合 --incoming-sha256（冲突指纹）精确定位一条冲突",
+                  file=sys.stderr)
+            return 2
+        if args.all_fields or fields:
+            print("✗ --action adopt 只接受 --incoming-sha256；不要同时给 --fields / --all-fields",
+                  file=sys.stderr)
+            return 2
+    elif args.allow_overlap:
+        print("✗ --allow-overlap 只用于 --action adopt（keep/defer 没有重叠问题）",
+              file=sys.stderr)
+        return 2
     try:
         path, store = _open_store(args)
         result = store.resolve_conflicts(
             args.key, args.action, fields=fields,
             all_fields=bool(args.all_fields), note=args.note or "",
             dry_run=bool(args.dry_run),
-            incoming_sha256=args.incoming_sha256 or "")
+            incoming_sha256=args.incoming_sha256 or "",
+            allow_overlap=bool(args.allow_overlap))
         written = False if args.dry_run else store.save()
         totals = conflict_totals(store)
     except bibdb.BibDBError as exc:
@@ -1224,6 +1248,23 @@ def cmd_resolve(args) -> int:
         sha_text = (f"；incoming_sha256={item['incoming_sha256'][:12]}…"
                     if item["incoming_sha256"] else "")
         print(f"   - 冲突 #{item['index']} 字段：{fields_text}{sha_text}")
+    if result["action"] == "adopt":
+        print("采用新稿值（**逐字段**；只改这些字段）：")
+        for name, change in (result.get("adopted_fields") or {}).items():
+            if change.get("remove"):
+                print(f"   - {name}：`{change['old']}` → （删除：新稿无此字段）")
+            else:
+                print(f"   - {name}：`{change['old']}` → `{change['new']}`")
+        print(f"   content_sha256：{result['content_sha256_before'][:12]}… → "
+              f"{result['content_sha256_after'][:12]}…")
+        if result.get("overlapping"):
+            if result.get("superseded"):
+                names = "、".join(f"#{item['index']}" for item in result["superseded"])
+                print(f"   ⚠️ 重叠冲突已标 `superseded`（被本次 adopt 取代）：{names}")
+            else:
+                names = "、".join(f"#{item['index']}" for item in result["overlapping"])
+                print(f"   ⚠️ 有 {len(result['overlapping'])} 条重叠冲突将被标 `superseded`"
+                      f"（--dry-run 未写）：{names}")
     if args.dry_run:
         print("（--dry-run：只算不写库；去掉该开关才会写）")
     else:
@@ -1799,8 +1840,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="把冲突标记为已裁决（keep=保留旧值 / defer=待人工查证；不改字段值）")
     resolve.add_argument("--key", required=True,
                          help="库内记录 key（CONFLICTS.md 里「库内记录」那个键，可能带 -2 后缀）")
-    resolve.add_argument("--action", required=True, choices=["keep", "defer"],
-                         help="keep=保留库内已核实旧值；defer=待人工查证（先从清单移走）")
+    resolve.add_argument("--action", required=True, choices=["keep", "defer", "adopt"],
+                         help="keep=保留库内已核实旧值；defer=待人工查证（先从清单移走）；"
+                              "adopt=**逐字段采用新稿值**（只改该冲突字段，必须配 "
+                              "--incoming-sha256；整条替换仍用 import-bib --force）")
     selector = resolve.add_mutually_exclusive_group(required=True)
     selector.add_argument("--all-fields", action="store_true",
                           help="该记录**所有**待裁决冲突")
@@ -1814,6 +1857,9 @@ def build_parser() -> argparse.ArgumentParser:
                                "同一记录有多条来源不同的冲突时用它，避免 --fields 误伤")
     resolve.add_argument("--note", default="",
                          help="裁决备注（写进 conflicts[].note，便于审计）")
+    resolve.add_argument("--allow-overlap", action="store_true",
+                         help="仅 --action adopt：把同记录中字段重叠的其它待裁决冲突标为 "
+                              "superseded（默认遇到重叠直接拒绝，先 keep/defer 逐条处理）")
     resolve.add_argument("--dry-run", action="store_true", help="只算不写库")
     resolve.add_argument("--json", action="store_true", help="机器可读输出")
     resolve.set_defaults(func=cmd_resolve)

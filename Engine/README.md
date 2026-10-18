@@ -118,10 +118,10 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**50 套件 / 2223 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**50 套件 / 2245 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
-`test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibdb` 195
+`test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibdb` 217
 `test_bibdb_verify` 54 ｜ `test_bibnorm` 23 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 118
 `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 34
 `test_coauthor_en` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_en_abstract_sibling` 5 ｜ `test_en_slot_placeholder` 9
@@ -157,7 +157,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 15:00:13`；`HEAD` = `5d4fb6c`；`git status --porcelain` **3** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 15:44:27`；`HEAD` = `33c24e1`；`git status --porcelain` **4** 行
 <!-- AUTO:STATE:END -->
 
 ---
