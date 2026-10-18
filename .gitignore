@@ -39,3 +39,8 @@ __pycache__/
 
 # tools/ 里编译出来的诊断工具（源码 dump_outline.swift 已提交，可重新编译）
 tools/dump_outline
+
+# 项目主页（VitePress）构建产物与依赖
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/

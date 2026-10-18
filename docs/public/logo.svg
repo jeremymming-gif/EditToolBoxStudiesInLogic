@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="编辑部工具箱">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3451b2"/>
+      <stop offset="1" stop-color="#5672cd"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#g)"/>
+  <!-- 稿纸 -->
+  <rect x="34" y="26" width="60" height="76" rx="8" fill="#ffffff" opacity="0.95"/>
+  <rect x="44" y="40" width="40" height="4" rx="2" fill="#3451b2" opacity="0.85"/>
+  <rect x="44" y="52" width="40" height="4" rx="2" fill="#3451b2" opacity="0.55"/>
+  <rect x="44" y="64" width="28" height="4" rx="2" fill="#3451b2" opacity="0.55"/>
+  <!-- 工具箱扣件 -->
+  <path d="M52 26v-5a6 6 0 0 1 6-6h12a6 6 0 0 1 6 6v5" fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+</svg>

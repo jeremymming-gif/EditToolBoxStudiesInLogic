@@ -1,0 +1,155 @@
+/**
+ * 项目主页自定义样式（VitePress 默认主题之上做少量增强）。
+ * 原则：只做「文档站该有的克制」——不加花哨动效，保持与 VitePress 默认一致的节奏。
+ */
+
+:root {
+  /* 品牌色沿用 VitePress 靛蓝；只把首页按钮/链接强调得更清楚一点 */
+  --vp-c-brand-1: #3451b2;
+  --vp-c-brand-2: #3a5ccc;
+  --vp-c-brand-3: #5672cd;
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #3451b2 30%, #5672cd);
+}
+
+/* 首页：功能卡片下方的小节标题与正文宽度 */
+.home-section {
+  max-width: 1152px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.home-section h2 {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 56px;
+  font-size: 24px;
+  letter-spacing: -0.01em;
+}
+
+.home-section > p {
+  color: var(--vp-c-text-2);
+  max-width: 720px;
+}
+
+/* 首页：三步流程图（纯 CSS，不引图片） */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 24px 0 8px;
+}
+
+@media (max-width: 767px) {
+  .steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+.step {
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 18px 20px;
+  background: var(--vp-c-bg-soft);
+}
+
+.step .num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--vp-c-brand-1);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.step strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.step span {
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 首页：文档入口卡片 */
+.doc-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 20px 0 8px;
+}
+
+@media (max-width: 767px) {
+  .doc-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.doc-card {
+  display: block;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 18px 20px;
+  text-decoration: none !important;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.doc-card:hover {
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+
+.doc-card strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--vp-c-text-1);
+}
+
+.doc-card span {
+  color: var(--vp-c-text-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* 截图占位：等界面稳定后再替换成真实截图（任务约定：软件优化完成后再补） */
+.shot-placeholder {
+  margin: 20px 0;
+  border: 1px dashed var(--vp-c-divider);
+  border-radius: 12px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--vp-c-text-3);
+  background: var(--vp-c-bg-soft);
+  font-size: 14px;
+}
+
+/* 文档内：下载按钮并排 */
+.download-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 18px 0;
+}
+
+.download-row a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  padding: 10px 18px;
+  text-decoration: none !important;
+  background: var(--vp-c-bg-soft);
+  font-weight: 500;
+}
+
+.download-row a:hover {
+  border-color: var(--vp-c-brand-1);
+}
