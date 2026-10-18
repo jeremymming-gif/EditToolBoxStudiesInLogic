@@ -831,44 +831,111 @@ def _soffice_bin() -> str:
     return ""
 
 
-def _convert_wmf_batch(items: list[tuple[str, bytes]], workdir: str, timeout: int = 600) -> dict[str, str]:
-    """把 [(sha, wmf/emf bytes)] 批量转成 PDF，返回 {sha: pdf 路径}（失败项不出现）。
+def _normalize_pdf_bytes(data: bytes) -> bytes:
+    r"""去掉 soffice 导出的 PDF 里**易变元数据**（CreationDate/ModDate/ID…）。
 
-    用一次 soffice 调用处理所有文件（启动开销是主要成本）；按**内容 sha 去重**——
-    同一公式图片重复出现（87-2: 561 处引用、235 个文件，内容还有重复）只转一次。
+    实测：同一个 WMF 用 soffice 转两次，PDF 字节不同（时间戳/文档 ID）→ 图片文件
+    sha 不稳定，干扰 baseline `--verify-plan`/产物对拍。用 pypdf 读入重写并清 metadata
+    后，两次结果**逐字节相同**（本机验证）。pypdf 不可用时原样返回（不阻断出稿）。
     """
-    import hashlib
+    import io
+
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception:  # noqa: BLE001 —— 可选依赖，缺了就不归一化
+        return data
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.metadata = None
+        bio = io.BytesIO()
+        writer.write(bio)
+        return bio.getvalue()
+    except Exception:  # noqa: BLE001 —— 归一化失败不阻断出稿
+        return data
+
+
+def _wmf_cache_dir() -> str:
+    """WMF→PDF 转换缓存目录（系统临时目录，按输入内容 sha 复用）。
+
+    缓存让「同一输入两次构建」的图片字节一致（加上 metadata 归一化双保险），
+    也省掉重复转换时间（87-2 的 230 个 WMF）。
+    """
+    import tempfile
+
+    d = os.environ.get("SLCN_WMF_CACHE") or os.path.join(
+        tempfile.gettempdir(), "slcn_wmf_cache")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _convert_wmf_batch(items: list[tuple[str, bytes]]) -> dict[str, bytes]:
+    r"""把 [(sha, wmf/emf bytes)] 批量转成 PDF，返回 {sha: 归一化后的 PDF 字节}。
+
+    · 一次 soffice 调用处理所有文件（启动开销是主要成本）；按内容 sha 去重；
+    · 转换结果先查/写**内容 sha 缓存**（`_wmf_cache_dir()`），再 metadata 归一化；
+    · 临时目录建在**系统临时目录**、`finally` 清理（不落到产物目录，
+      避免 `slcn_wmf_*` 残留干扰 baseline --verify-plan 覆盖）。
+    失败项不出现在返回 dict（渲染端 `\IfFileExists` 占位 + build warning）。
+    """
+    import shutil
     import subprocess
     import tempfile
 
     soffice = _soffice_bin()
     if not soffice or not items:
         return {}
-    tmpdir = tempfile.mkdtemp(prefix="slcn_wmf_", dir=workdir)
-    sha2input: dict[str, str] = {}
+    cache = _wmf_cache_dir()
+    out: dict[str, bytes] = {}
+    pending: list[tuple[str, bytes]] = []
     for sha, data in items:
-        if sha in sha2input:
-            continue
-        inp = os.path.join(tmpdir, f"in{len(sha2input)}")
-        with open(inp, "wb") as f:
-            f.write(data)
-        sha2input[sha] = inp
-    # 按扩展名给 soffice 识别（写回 .wmf/.emf）
-    for sha, data in items:
-        pass
-    cmd = [soffice, "--headless", "--norestore", "--convert-to", "pdf", "--outdir", tmpdir,
-           *sha2input.values()]
+        cache_file = os.path.join(cache, sha + ".pdf")
+        if os.path.isfile(cache_file):
+            try:
+                with open(cache_file, "rb") as f:
+                    out[sha] = f.read()
+                continue
+            except OSError:
+                pass
+        pending.append((sha, data))
+    if not pending:
+        return out
+    tmpdir = tempfile.mkdtemp(prefix="slcn_wmf_")
     try:
-        subprocess.run(cmd, capture_output=True, timeout=timeout)
-    except Exception:  # noqa: BLE001 —— 转换失败不阻断出稿（渲染端显示占位）
-        return {}
-    out: dict[str, str] = {}
-    for sha, inp in sha2input.items():
-        pdf = os.path.splitext(inp)[0] + ".pdf"
-        if os.path.isfile(pdf):
-            out[sha] = pdf
+        sha2input: dict[str, str] = {}
+        for sha, data in pending:
+            if sha in sha2input:
+                continue
+            inp = os.path.join(tmpdir, f"in{len(sha2input)}")
+            with open(inp, "wb") as f:
+                f.write(data)
+            sha2input[sha] = inp
+        cmd = [soffice, "--headless", "--norestore", "--convert-to", "pdf",
+               "--outdir", tmpdir, *sha2input.values()]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=600)
+        except Exception:  # noqa: BLE001 —— 转换失败不阻断出稿
+            return out
+        for sha, inp in sha2input.items():
+            pdf = os.path.splitext(inp)[0] + ".pdf"
+            if not os.path.isfile(pdf):
+                continue
+            with open(pdf, "rb") as f:
+                data = _normalize_pdf_bytes(f.read())
+            out[sha] = data
+            try:
+                cache_file = os.path.join(cache, sha + ".pdf")
+                tmp_cache = cache_file + ".tmp"
+                with open(tmp_cache, "wb") as f:
+                    f.write(data)
+                os.replace(tmp_cache, cache_file)
+            except OSError:
+                pass
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return out
-
 
 def extract_media(path: str, out_dir: str, mapping: dict[str, str]) -> dict[str, str]:
     r"""把用到的图片从 docx 里解出来，返回 {原文件名: 导出后的文件名}。
@@ -880,10 +947,17 @@ def extract_media(path: str, out_dir: str, mapping: dict[str, str]) -> dict[str,
     → 用 soffice 批量转 PDF（按内容 sha 去重；无 soffice 时**不写文件**，渲染端
     `\IfFileExists` 显示「公式图缺失」占位 + build warning，不阻断出稿）。
     """
+    import glob
     import hashlib
     import shutil
 
     os.makedirs(out_dir, exist_ok=True)
+    # 清理历史版本在**产物目录**里留下的临时转换目录（旧实现没有 finally 清理）
+    for _stale in glob.glob(os.path.join(out_dir, "slcn_wmf_*")):
+        try:
+            shutil.rmtree(_stale, ignore_errors=True)
+        except OSError:
+            pass
     exported: dict[str, str] = {}
     pending: list[tuple[str, str, str, bytes]] = []  # (fname, new_name, sha, data)
     seq = 0
@@ -907,12 +981,13 @@ def extract_media(path: str, out_dir: str, mapping: dict[str, str]) -> dict[str,
                 exported[fname] = new_name
     if pending:
         by_sha = {sha: data for _f, _n, sha, data in pending}
-        sha2pdf = _convert_wmf_batch([(sha, data) for sha, data in by_sha.items()], out_dir)
+        sha2pdf = _convert_wmf_batch([(sha, data) for sha, data in by_sha.items()])
         for fname, new_name, sha, _data in pending:
             pdf = sha2pdf.get(sha)
             if not pdf:
                 continue  # 占位由渲染端 IfFileExists 显示 + build warning
-            shutil.copyfile(pdf, os.path.join(out_dir, new_name))
+            with open(os.path.join(out_dir, new_name), "wb") as f:
+                f.write(pdf)
             exported[fname] = new_name
     return exported
 

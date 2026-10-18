@@ -616,6 +616,7 @@ def build_latex(
     verbose: bool = True,
     dash_hints: bool = True,
     bib_zero_cites_hints: bool = True,
+    breakable_algorithm: bool = False,
 ) -> BuildResult:
     """LaTeX 通道：多源合并成初排稿。
 
@@ -637,6 +638,10 @@ def build_latex(
                    bib 条数>0 而正文 `\\parencite/\\cite` 数=0 时（biblatex 只打印被引
                    条目 → PDF 参考文献区会是空的），在初排日志**置顶**提示 + 计数，
                    供编辑人工补引用/核对体例。**纯日志，产物逐字节不变**；False=不打印。
+    breakable_algorithm  **algorithm 去浮动（第四十八批 dry-run 可选开关，默认关）**：
+                   True = 源稿 `algorithm` 浮动体改为 `breakablealgorithm`（可跨页，
+                   88-04 人工成品同款写法）并在导言区注入环境定义；默认 False 时
+                   产物与从前逐字节一致。**默认行为改动需 Lead 批准后才接线 CLI。**
     """
     log: list[str] = []
     warnings: list[str] = []
@@ -918,7 +923,12 @@ def build_latex(
                 + "。若作者源稿确实没提供，请人工确认后再加包（不要无脑加）"
             )
     say(f"   正文 {len(body)} 字符")
+    if breakable_algorithm:
+        body = _to_breakable_algorithms(body)
+        say("   algorithm 去浮动：algorithm → breakablealgorithm（可选开关，默认关）")
     tpl = insert_body(tpl, body)
+    if breakable_algorithm:
+        tpl = _inject_breakable_algorithm_def(tpl)
     if _post_bib_tail:
         tpl = _insert_post_bibliography(tpl, _post_bib_tail)
         say(f"   参考文献后内容迁移：附录/致谢 {len(_post_bib_tail)} 字符"
@@ -1144,6 +1154,55 @@ def _latex_post_bibliography_tail(raw: str) -> str:
     if sum(len(x) for x in keep) < 20:
         return ""
     return "\n".join(keep).strip("\n")
+
+
+# ── 第四十八批④（dry-run，可选开关默认关）：algorithm 浮动体 → 可断页环境 ──
+# 88-04 人工成品把源稿 3 个 `algorithm` 浮动体改成 `breakablealgorithm`（可跨页、
+# 无浮动留白）；人工 tex 里自带该环境定义（不在模板/源稿里）。本开关 = 同一变换：
+#   ① `\begin{algorithm}` / `\end{algorithm}` → `breakablealgorithm`；
+#   ② 产物导言区注入人工同款环境定义（`\newenvironment{breakablealgorithm}`）。
+# **默认关**：不改默认布局行为，等 Lead/用户拍板（dry-run 报告见批48）。
+_BREAKABLE_ALGORITHM_DEF = r"""\makeatletter
+\newenvironment{breakablealgorithm}
+{% \begin{breakablealgorithm}
+        \begin{center}
+            \refstepcounter{algorithm}% New algorithm
+            \hrule height.8pt depth0pt \kern2pt% \@fs@pre for \@fs@ruled
+            \parskip 0pt
+            \renewcommand{\caption}[2][\relax]{% Make a new \caption
+                {\raggedright\textbf{\fname@algorithm~\thealgorithm} ##2\par}%
+                \ifx\relax##1\relax % #1 is \relax
+                \addcontentsline{loa}{algorithm}{\protect\numberline{\thealgorithm}##2}%
+                \else % #1 is not \relax
+                \addcontentsline{loa}{algorithm}{\protect\numberline{\thealgorithm}##1}%
+                \fi
+                \kern2pt\hrule\kern2pt
+            }
+        }
+        {% \end{breakablealgorithm}
+        \kern2pt\hrule\relax% \@fs@post for \@fs@ruled
+    \end{center}
+}
+\makeatother
+"""
+
+
+def _to_breakable_algorithms(body: str) -> str:
+    r"""把 `algorithm` 浮动体降为 `breakablealgorithm`（保留 caption/label/算法体）。"""
+    body = re.sub(r"\\begin\{algorithm\}(\[[^\]]*\])?", r"\\begin{breakablealgorithm}", body)
+    return body.replace("\\end{algorithm}", "\\end{breakablealgorithm}")
+
+
+def _inject_breakable_algorithm_def(template_text: str) -> str:
+    r"""导言区（`\begin{document}` 前）插入 breakablealgorithm 环境定义（只插一次）。"""
+    if "newenvironment{breakablealgorithm}" in template_text:
+        return template_text
+    lines = template_text.split("\n")
+    for idx, ln in enumerate(lines):
+        if ln.strip().startswith("\\begin{document}"):
+            lines.insert(idx, _BREAKABLE_ALGORITHM_DEF + "\n")
+            return "\n".join(lines)
+    return template_text
 
 
 def _insert_post_bibliography(template_text: str, tail: str) -> str:

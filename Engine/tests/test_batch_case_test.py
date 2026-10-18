@@ -13,7 +13,8 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
 ⑧ manifest 附加源 `metadata`（--metadata 拼装 / 文件不存在安全回退 / `--no-metadata` A2-only 口径 /
    JSON manifest 字段解析 / report 附录显示）；
 ⑨ 全量基准（repo 扫描 / 失败聚类 dashboard / dashboard.csv / cases.csv / 预计耗时 / 88+89 manifest）；
-⑩ O10 相似度性能（auto/fast/full/none 口径、阈值降级、86 期 manifest、CLI 开关）。
+⑩ O10 相似度性能（auto/fast/full/none 口径、阈值降级、86 期 manifest、CLI 开关）；
+⑪ 工具健壮性（`slcn_*` 临时目录清理 / 图片型产物 sha note，tex/bib 优先）。
 
 只写临时目录；不读真实语料、不跑 xelatex、不联网、不读稿件库 —— `cd Engine` 下秒级可跑。
 
@@ -352,6 +353,20 @@ try:
           batch.sha_verdict(0, True, True, {"t": "a"}, {"t": "a"}) is True
           and batch.sha_verdict(0, True, True, {"t": "a"}, {"t": "b"}) is False
           and batch.sha_verdict(2, False, False, {}, {}) is None)
+    _prod = TMP / "prod_media"
+    _prod.mkdir(parents=True, exist_ok=True)
+    (_prod / "slcn_wmf_abc").mkdir(exist_ok=True)
+    (_prod / "slcn_wmf_abc" / "x.pdf").write_bytes(b"x")
+    (_prod / "fig1.pdf").write_bytes(b"fig")
+    (_prod / "Case.pdf").write_bytes(b"main")
+    _removed = batch.clean_slcn_temp_dirs(_prod)
+    _mm1 = batch.media_sha_map(_prod, "Case")
+    (_prod / "fig1.pdf").write_bytes(b"fig2")
+    _mm2 = batch.media_sha_map(_prod, "Case")
+    check("工具：清理 slcn_* 临时目录 + 图片 sha 映射（主 PDF/slcn_* 排除）",
+          _removed == ["slcn_wmf_abc"] and not (_prod / "slcn_wmf_abc").exists()
+          and "fig1.pdf" in _mm1 and "Case.pdf" not in _mm1
+          and batch.media_sha_diff(_mm1, _mm2) == ["fig1.pdf"])
     check("plan_ai_status：预计 AI=0→True、非0→False、plan 失败→None（不算违规）",
           batch.plan_ai_status(0, 0) is True
           and batch.plan_ai_status(0, 3) is False
@@ -585,6 +600,7 @@ try:
          "metadata": {"declared": True, "found": True, "fallback": False,
                       "path": "/tmp/x/yalcin puzzle.tex", "note": "附加源 --metadata"},
          "manual": {**MAN, "dir": "/tmp/man", "proof": {"hits": 2}}}
+    m["sha_note"] = "tex/bib 相同，仅 2 个图片文件字节不同（测试）"
     run["cases"]["t-1"] = m
     batch.build_summary(run)
     run["zero_cost_unverified"] = ["t-1"]
@@ -606,6 +622,8 @@ try:
           "附加源（--metadata）" in report and "yalcin puzzle.tex" in report)
     check("报告：零付费未验证案例单列（不误报违规）",
           "零付费断言未验证" in report)
+    check("报告：图片型产物 sha note 可见 + totals.sha_notes 计数",
+          "图片文件字节不同" in report and run["totals"].get("sha_notes") == 1)
     check("报告：全量基准看板与 Top10 根因段出现",
           "全量基准看板" in report and "前 10 根因" in report and "CONVERT_RC" in report)
 finally:

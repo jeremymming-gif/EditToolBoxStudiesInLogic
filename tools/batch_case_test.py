@@ -91,6 +91,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1092,6 +1093,56 @@ def sha_verdict(convert_rc: int | None, tex_exists: bool, bib_exists: bool,
     return None
 
 
+TEMP_DIR_PREFIX = "slcn_"          # 引擎 soffice WMF/EMF 转换临时目录（slcn_wmf_*）
+MEDIA_SUFFIXES = {".pdf", ".jpg", ".jpeg", ".png", ".wmf", ".emf", ".bmp", ".gif"}
+
+
+def clean_slcn_temp_dirs(prod: Path) -> list[str]:
+    """删除产物目录下 `slcn_*` 临时目录（soffice WMF 转换残留）。
+
+    pass2 `--verify-plan` 的覆盖检查会因「目录含非本工具文件」拒绝覆盖（87-2 误判 PLAN 拒绝）；
+    pass2 前清理这些临时目录即可。只删 `prod` 下、名字以 `slcn_` 开头的**目录**，不碰其它文件。
+    """
+    removed: list[str] = []
+    if not prod.is_dir():
+        return removed
+    for child in sorted(prod.iterdir()):
+        if child.is_dir() and child.name.startswith(TEMP_DIR_PREFIX):
+            shutil.rmtree(child, ignore_errors=True)
+            if not child.exists():
+                removed.append(child.name)
+    return removed
+
+
+def media_sha_map(prod: Path, out_name: str) -> dict:
+    """产物目录内图片型文件 sha 映射（排除主 PDF 与 `slcn_*` 临时目录）。
+
+    用于「图片型产物仅图片字节不同、tex/bib 相同 → 标 note 不判 FAIL」：sha 判定仍以 tex/bib 为准。
+    """
+    out: dict = {}
+    if not prod.is_dir():
+        return out
+    for f in sorted(prod.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(prod)
+        if any(part.startswith(TEMP_DIR_PREFIX) for part in rel.parts):
+            continue
+        if rel.as_posix() == f"{out_name}.pdf":
+            continue
+        if f.suffix.lower() in MEDIA_SUFFIXES:
+            try:
+                out[rel.as_posix()] = sha256_file(f)
+            except OSError:
+                pass
+    return out
+
+
+def media_sha_diff(before: dict, after: dict) -> list[str]:
+    """图片哈希差异（新增/删除/改动）列表；tex/bib 相同时用于生成 sha note。"""
+    return sorted(k for k in (set(before) | set(after)) if before.get(k) != after.get(k))
+
+
 def plan_ai_status(plan_rc: int | None, ai_n: int | None) -> bool | None:
     """零付费断言：True=确认「预计 AI：0 次」；False=确认非 0；None=未验证（plan 未成功）。"""
     if plan_rc != 0 or ai_n is None:
@@ -1307,6 +1358,11 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     m["biber"] = biber_stats(read_text(prod / f"{out_name}.blg")) if (prod / f"{out_name}.blg").is_file() else {}
 
     # 3) 两遍确定性：pass2 = --verify-plan（产物照常写出，重跑同目录）
+    #    pass2 前清理 `slcn_*` 临时目录（soffice WMF 转换残留）——否则 --verify-plan 覆盖检查会误判拒绝
+    media_before = media_sha_map(prod, out_name)
+    cleaned = clean_slcn_temp_dirs(prod)
+    if cleaned:
+        m["preclean_dirs"] = cleaned
     sha_before = {"tex": sha256_file(tex_p), "bib": sha256_file(bib_p)}
     pass2_log = logs_dir / "convert" / f"{key}_pass2_plan.log"
     rc2, txt2, t2 = run_cmd(cmd2,
@@ -1320,6 +1376,15 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     }
     m["sha_before"], m["sha_after"] = sha_before, sha_after
     m["sha_ok"] = sha_verdict(rc1, tex_p.is_file(), bib_p.is_file(), sha_before, sha_after)
+    # 图片型产物：tex/bib 相同但图片字节不同（soffice PDF 时间戳）→ 只标 note，不判 NONDETERMINISTIC
+    media_after = media_sha_map(prod, out_name)
+    if m.get("sha_ok") is True and media_before:
+        md = media_sha_diff(media_before, media_after)
+        if md:
+            m["sha_media_diff_n"] = len(md)
+            m["sha_media_diff"] = md[:20]
+            m["sha_note"] = (f"tex/bib 相同，仅 {len(md)} 个图片文件字节不同"
+                             "（soffice 时间戳可能；按 tex/bib 判确定）")
 
     # 4) 引用闭合（复用引擎键解析）
     gen_tex_text = read_text(tex_p)
@@ -1453,6 +1518,16 @@ def render_report(run: dict) -> str:
         sha_mark = "✅" if m.get("sha_ok") is True else ("❌" if m.get("sha_ok") is False else "—（未判）")
         lines.append(f"| {m['key']} | {m['author']} | `{_short(sb.get('tex'))}` | `{_short(sa.get('tex'))}` | "
                      f"`{_short(sb.get('bib'))}` | `{_short(sa.get('bib'))}` | {sha_mark} |")
+    _sha_notes = [m for m in ordered if m.get("sha_note")]
+    if _sha_notes:
+        lines.append("")
+        for m in _sha_notes:
+            lines.append(f"- {m['key']}：{m['sha_note']}")
+    _pre = [m for m in ordered if m.get("preclean_dirs")]
+    if _pre:
+        lines.append("")
+        lines.append("- pass2 前已清理 `slcn_*` 临时目录（避免 `--verify-plan` 覆盖误判）："
+                     + "；".join(f"{m['key']}({len(m['preclean_dirs'])})" for m in _pre))
     lines.append("")
     lines.append("## 3. 总表")
     lines.append("")
@@ -1669,6 +1744,7 @@ def build_summary(run: dict) -> dict:
         "p0_new": sum(1 for k, f in findings if f["level"] == "P0" and not is_known(k, f["code"])),
         "sha_ok": sum(1 for m in cases if m.get("sha_ok") is True),
         "sha_checked": sum(1 for m in cases if m.get("sha_ok") is not None),
+        "sha_notes": sum(1 for m in cases if m.get("sha_note")),
         "zero_cost_ok": not any((m.get("plan") or {}).get("ai_zero") is False
                                 for m in cases if not m.get("skipped")),
         "zero_cost_verified": sum(1 for m in cases if (m.get("plan") or {}).get("ai_zero") is True),
@@ -2057,6 +2133,22 @@ def run_self_test() -> int:
           and similarity_cache_key("m", "g", "auto") == similarity_cache_key("m", "g", "auto")
           and similarity_cache_key("m", "g", "auto") != similarity_cache_key("m", "g", "full")
           and _h1 is False and _h2 is True and _h3 is False)
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _td:
+        _prod = Path(_td) / "prods"
+        _prod.mkdir()
+        (_prod / "slcn_wmf_abc").mkdir()
+        (_prod / "slcn_wmf_abc" / "x.pdf").write_bytes(b"x")
+        (_prod / "fig1.pdf").write_bytes(b"fig")
+        (_prod / "Case.pdf").write_bytes(b"main")
+        _removed = clean_slcn_temp_dirs(_prod)
+        _mm1 = media_sha_map(_prod, "Case")
+        (_prod / "fig1.pdf").write_bytes(b"fig2")
+        _mm2 = media_sha_map(_prod, "Case")
+    check("工具：清理 slcn_* 临时目录 + 图片 sha 映射（tex/bib 优先，图片差异只做 note）",
+          _removed == ["slcn_wmf_abc"] and not (_prod / "slcn_wmf_abc").exists()
+          and "fig1.pdf" in _mm1 and "Case.pdf" not in _mm1
+          and media_sha_diff(_mm1, _mm2) == ["fig1.pdf"])
     check("benchmark：issue code 解析 + dashboard 聚合 + 估计函数",
           _parse_issue_code("2026年第2期(87)") == "87"
           and _parse_issue_code("2022年第6A期(67A)") == "67A"

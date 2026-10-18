@@ -64,3 +64,21 @@ Word 公式（OMML）的**可选**新转换后端（`docxxml.omml_to_latex(..., 
 - 完整许可证文本：`Engine/vendor_omml/LICENSE-omml2mathml-Apache-2.0.txt`、`LICENSE-py-mathml-to-latex-MIT.md`；归属声明 `Engine/vendor_omml/NOTICE`；来源/校验和/更新策略 `Engine/vendor_omml/SOURCES.md`。
 - **上游均不再维护**（XSL 2007 beta；py 2024-11 最后提交）→ 本项目**不追随上游更新**，行为由 `Engine/tests/test_omml_stack.py` 的 149 条真实公式 fixture 锁住；升级须同时更新 `SOURCES.md` 校验和与 fixture 断言。
 - 打包：`build.sh` / Windows 打包白名单（`tools/gen_docs.py` 的 `APP_FILES`）在**启用 OMML 栈**（默认切换）那一批需要把 `Engine/vendor_omml/` 纳入；默认关闭时 App 包不含它也能正常工作（会自动回退旧实现）。
+
+## 6. 外部可选程序：LibreOffice（**不随包分发**）
+
+本工具箱在两类**可选**场景会调用用户本机安装的 LibreOffice（`soffice`）：
+
+1. **Word 的 MathType/OLE 公式图**（预览图 WMF/EMF → PDF）。XeLaTeX 不能直接嵌入 WMF/EMF，
+   引擎用 `soffice --headless --norestore --convert-to pdf` 批量转换后插入（第四十七批）；
+2. 「导出原稿 PDF」（把 Word 原稿转 PDF，供矢量形状人工截图）。
+
+- **本项目不打包、不分发 LibreOffice 的任何文件**，也不静态/动态链接它 —— 只在运行时起子进程
+  调用用户自己的安装（定位顺序：`SLCN_SOFFICE` 环境变量 → `PATH` → 三平台常见安装位置，
+  见 `Engine/slcn/platform.py:SOFFICE_CANDIDATES`）。
+- LibreOffice 的许可证（MPL-2.0，部分组件 LGPLv3）与版权归 The Document Foundation 及其贡献者；
+  用户通过各自发行渠道（官网 / Homebrew / winget / 发行版包管理器）自行安装并遵守其许可证。
+- **fail-soft**：找不到 `soffice` 时引擎不报错、不阻断出稿 —— 公式图位置显示「公式图缺失」占位
+  并写初排日志 warning（`\IfFileExists` + `\fbox` 占位，见 `Engine/slcn/docxsource.py`、
+  `Engine/slcn/build.py`）；「导出原稿 PDF」步骤则跳过并返回说明。检查/安装命令见
+  `使用说明.md` §一「Word 公式图（MathType）与 LibreOffice（可选依赖）」。

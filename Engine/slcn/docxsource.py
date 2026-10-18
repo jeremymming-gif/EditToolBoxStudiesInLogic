@@ -2762,8 +2762,10 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     if n_ole:
         doc.warnings.append(
             f"发现 {n_ole} 处 MathType/OLE 公式对象（word/embeddings 共 {n_embed} 个）："
-            "它们是 OLE 包不是 OMML，Word 通道无法解析，这些公式会从产物中丢失；"
-            "请让作者另存为 OMML（或提供 MathType→TeX 版）后重跑"
+            "它们是 OLE 包不是 OMML，Word 通道不解析 OLE 本体，但已自动取**预览图**"
+            "（WMF/EMF）转 PDF 后按原尺寸出图；若本机没有 LibreOffice（soffice），"
+            "公式图位置会显示「公式图缺失」占位，安装 LibreOffice 后重跑即可；"
+            "如需公式可编辑，请让作者另存为 OMML（或提供 MathType→TeX 版）"
         )
     if _font:
         _n_sym = sum(_font.values())
@@ -3039,8 +3041,16 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         _ref_marker = re.search(
             r"出版社|学报|期刊|\[[MJDC]\]|博士论文|硕士论文|《[^》]{2,}》|"
             r"(?:19|20)\d{2}\s*年?\s*第\s*\d+\s*[期卷]", _txt)
-        if _cjk_n >= 15 and len(_txt) >= 40 and (
-                _inline_cite or (_multi_sentence and not _ref_marker)):
+        # 第四十八批（86-07 实测）：短论述脚注（如「详细的证明过程可参见(Schurz,
+        # 2022)第三节。」CJK 仅 10 字）此前 CJK≥15 门槛漏掉 → 散文被丢弃。
+        # 放宽只对**半角括号 + 拉丁作者-年**的引用生效（86-07 型）；中文文献脚注
+        # （90-06/90-07 的人年制条目、全角括号/中文作者）保持 pure_ref 进 bib，
+        # 避免把文献脚注误降级（实测 90-06 bib 38→25、90-07 51→26 的回归）。
+        _short_ascii_cite = (_cjk_n < 15 and re.search(
+            r"\([^()]*[A-Za-z][^()]{0,80}?(?:19|20)\d{2}[^()]{0,40}\)", _txt))
+        if _cjk_n >= 5 and len(_txt) >= 12 and (
+                (_cjk_n >= 15 and (_inline_cite or (_multi_sentence and not _ref_marker)))
+                or _short_ascii_cite):
             _f.kind = "pure_note"
             _f.note = _txt
             _f.ref = ""
@@ -3053,6 +3063,7 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     # （88-02 有 19 条重复：同一作品不同页码各生成一条），参考文献区多 2 页。
     # 按「作者+年+题名前 30 字」指纹去重：重复引用复用已有键，不再新增 bib 条目。
     _bib_fp: dict[tuple[str, str, str], str] = {}
+    _bib_loose: dict[tuple[str, str], tuple[str, str]] = {}
     seq = 0
     for fid in sorted(fn_objs):
         f = fn_objs[fid]
@@ -3102,8 +3113,29 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
                     re.sub(r"\W+", "", str(entry.get("title", "")).lower())[:30]
                     + "|" + str(entry.get("year", "") or ""),
                 )
+            # 第四十八批（88-02 实测 57 vs 人工 43）：版本/年份缺失导致同一作品指纹不同。
+            # 宽松指纹 = 作者姓氏 + 题名（不含年份/版本），**仅当一方缺年份**时归并；
+            # 两边年份都不同（不同版次/不同作品）不合并——不猜题名/不改条目内容。
+            _loose = None
+            _author = str(entry.get("author", "") or "")
+            _title = str(entry.get("title", "") or "")
+            _year = str(entry.get("year", "") or "")
+            if _author and _title:
+                _loose = (
+                    re.sub(r"[^\w\u4e00-\u9fa5]+", "", _author.lower())[:40],
+                    re.sub(r"[^\w\u4e00-\u9fa5]+", "", _title.lower())[:50],
+                )
             if _fp and _fp in _bib_fp:
                 f.key = _bib_fp[_fp]
+                keymap[fid] = f.key
+                if f.ref:
+                    doc.ref_raw_by_key[f.key] = f.ref
+                continue
+            if _loose and _loose in _bib_loose:
+                # 同作者+同题名（前后去标点/大小写归一，**不改题名、不猜年份**）视为
+                # 同一作品的不同版次/页码引用 → 归并（不改变已保留条目内容）。
+                _key0, _year0 = _bib_loose[_loose]
+                f.key = _key0
                 keymap[fid] = f.key
                 if f.ref:
                     doc.ref_raw_by_key[f.key] = f.ref
@@ -3111,6 +3143,8 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
             f.key = make_key(entry, seq, used_keys)
             if _fp:
                 _bib_fp[_fp] = f.key
+            if _loose and _loose not in _bib_loose:
+                _bib_loose[_loose] = (f.key, _year)
             keymap[fid] = f.key
             doc.bib_entries.append((f.key, entry, f.ref))
             # 「条目 → 源稿原文」：脚注体例（第 68 条）。原文取 `f.ref` = `classify()`

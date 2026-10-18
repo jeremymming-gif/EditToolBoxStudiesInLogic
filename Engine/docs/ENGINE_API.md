@@ -265,7 +265,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 |---|---|---|---|
 | Python | ≥ 3.11（开发机 3.14） | 同（PyInstaller 打进去） | 同 |
 | TeX | TeX Live / MacTeX（`xelatex` + `biber` 在 PATH） | TeX Live / MiKTeX（同上） | TeX Live |
-| LibreOffice | 可选（只有「导出原稿 PDF」用） | 可选 | 可选 |
+| LibreOffice | 可选（「导出原稿 PDF」＋ Word 的 MathType/OLE 公式图 WMF/EMF → PDF） | 可选（同） | 可选（同） |
 | `vendor/` | mac 轮子（`lxml` 是编译件） | **必须是 Windows 轮子**（打包时按平台装） | Linux 轮子 |
 
 **引擎已经做掉的平台事**（`slcn/platform.py`）：
@@ -275,6 +275,12 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
    `UnicodeEncodeError` **崩在转换中途**；macOS/Linux 上是空操作。
 2. **LibreOffice 定位**：`find_soffice()` = `SLCN_SOFFICE` 环境变量 → `PATH` → **三平台**常见安装位置
    （Windows 的安装器**不**把 `soffice` 写进 PATH；macOS 的 `.app` 同理）。
+   **fail-soft（第四十七批起）**：缺 `soffice` 时**不报错、不阻断出稿** —— Word 通道把 MathType/OLE
+   公式的 WMF/EMF 预览图渲染成 `\IfFileExists{figN.pdf}{\includegraphics…}{\fbox{\scriptsize 公式图缺失}}`
+   占位（`slcn/docxsource.py`），并在初排「注意事项」里 warning
+   `N 个公式/图片未能导出（WMF/EMF 需要 LibreOffice soffice 转换…）`（`slcn/build.py`）。
+   LibreOffice **不随包分发**，用户自查自装（`soffice --version`；见 `使用说明.md` §一）。
+   同理，「导出原稿 PDF」（矢量形状人工截图用）也依赖它，缺它时该步骤跳过并返回说明字符串。
 3. **`file://` URI**：LibreOffice 的 `-env:UserInstallation=` 只认 URI，
    Windows 盘符与**带空格的路径**都必须转义 —— 统一走 `platform.file_uri()`（`Path.as_uri()`）。
 4. **文本 IO 一律显式 `encoding=`**：交付模块里**没有**一处「文本模式 `open()` 不写编码」
