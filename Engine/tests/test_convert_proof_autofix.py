@@ -34,8 +34,11 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
         sys.path.insert(0, _p)
 
 from slcn import build, proofcheck  # noqa: E402
-from slcn.build import _PROOF_AUTOFIX_IDS, _autofix_proof  # noqa: E402
+from slcn.build import _PROOF_AUTOFIX_IDS, _autofix_proof, _dash_hints  # noqa: E402
+from slcn import paths as _paths  # noqa: E402
 from slcn.docxxml import W_NS  # noqa: E402
+
+_manuscripts = _paths.manuscripts_root()
 
 FAILS = []
 
@@ -159,6 +162,132 @@ try:
     os.unlink(_DOCX)
 except OSError:
     pass
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑧ ZH-08 连接号：初排日志「待人工判断」提示（第四十三批）
+#    —— 只写日志、不改产物；引擎不做语义自动分类（人名短横 vs 地名一字线不可靠区分）
+# ══════════════════════════════════════════════════════════════════════════
+_DASH_NEEDLE = "ZH-08 连接号待人工判断"
+_GUIDE_NEEDLE = "判断指引"
+_GUIDE_TEXT = "人名 / 编号 / 日期 / 字母序号 → 短横 \\edash；地名 / 路线 / 区间等 → 一字线"
+
+
+def _hint_lines(res) -> list[str]:
+    return [ln for ln in res.log if _DASH_NEEDLE in ln]
+
+
+# ⑧-1 单元：屏蔽区（数学/注释）不算；命中数与 proofcheck 同口径
+_tex8 = "正文 马丁-洛夫 与 $甲-乙$ 与 % 甲-乙\n北京-上海 区间"
+_hints8 = _dash_hints(_tex8, "zh")
+_pc8 = sum(1 for h in proofcheck.check(_tex8, lang="zh").hits if h.rule_id == "ZH-08")
+check("⑧ 单元：_dash_hints 命中数 = proofcheck ZH-08 数（同一判据）",
+      len(_hints8) == _pc8 == 2, f"{len(_hints8)} vs {_pc8}")
+check("⑧ 单元：数学 $甲-乙$ / 注释 % 甲-乙 不进提示（屏蔽层生效）",
+      all("甲-乙" not in ctx or "马丁-洛夫" in ctx or "北京-上海" in ctx
+          for _line, ctx in _hints8),
+      repr([c for _l, c in _hints8]))
+
+# ⑧-2/⑧-3 端到端 Word 通道：命中→日志含指引+上下文；开关关→无提示；产物逐字节不变
+def _sha_file(path: str) -> str:
+    import hashlib
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+_DOCX8 = make_docx([
+    "连接号待判断的测试稿", "张三",
+    "摘要：测试 ZH-08 提示。", "关键词：连接号",
+    "第一段：关于让-雅克·卢梭的讨论，以及北京-上海的路线。",
+    "第二段：该方案在假设-演绎法框架下成立。",
+])
+
+
+def _build8(flag: bool):
+    with tempfile.TemporaryDirectory() as tmp:
+        res = build.build_docx(docx_path=_DOCX8, out_dir=tmp, basename="Dash", lang="zh",
+                               verbose=False, dash_hints=flag)
+        return open(res.tex_path, encoding="utf-8").read(), res, _sha_file(res.tex_path)
+
+
+_tex8on, _res8on, _sha8on = _build8(True)
+_tex8off, _res8off, _sha8off = _build8(False)
+_on_lines = _hint_lines(_res8on)
+check("⑧ 合成稿：日志出现「ZH-08 连接号待人工判断：N 处」", bool(_on_lines), repr(_res8on.log[-8:]))
+if _on_lines:
+    _n_log = int(__import__("re").search(r"(\d+) 处", _on_lines[0]).group(1))
+    _n_pc = sum(1 for h in proofcheck.check(_tex8on, lang="zh").hits if h.rule_id == "ZH-08")
+    check("⑧ 合成稿：日志 N = proofcheck ZH-08 数", _n_log == _n_pc > 0, f"{_n_log} vs {_n_pc}")
+else:
+    _n_pc = 0
+check("⑧ 合成稿：日志含判断指引（edash/一字线口径）",
+      any(_GUIDE_NEEDLE in ln for ln in _res8on.log)
+      and any("\\edash" in ln and "一字线" in ln for ln in _res8on.log),
+      repr([ln for ln in _res8on.log if _GUIDE_NEEDLE in ln]))
+check("⑧ 合成稿：上下文样例含实际命中（让-雅克 / 北京-上海 / 假设-演绎 至少 1 处）",
+      any(("让-雅克" in ln) or ("北京-上海" in ln) or ("假设-演绎" in ln) for ln in _res8on.log),
+      repr([ln for ln in _res8on.log if ln.strip().startswith("· 第")][:3]))
+check("⑧ 开关关（dash_hints=False）→ 无任何 ZH-08 提示行", _hint_lines(_res8off) == [],
+      repr(_hint_lines(_res8off)))
+check("⑧ 产物逐字节不变：dash_hints 开/关 tex sha256 相同",
+      _sha8on == _sha8off, f"{_sha8on[:16]} vs {_sha8off[:16]}")
+
+# ⑧-4 无命中 → 不打印（同一套日志里没有任何 ZH-08 提示）
+_DOCX8N = make_docx(["无连接号的测试稿", "张三", "摘要：测试。", "关键词：无",
+                     "正文没有任何需要判断的连接号。"])
+with tempfile.TemporaryDirectory() as _tmp8n:
+    _res8n = build.build_docx(docx_path=_DOCX8N, out_dir=_tmp8n, basename="NoDash",
+                              lang="zh", verbose=False)
+check("⑧ 无命中：日志不打印 ZH-08 提示", _hint_lines(_res8n) == [], repr(_res8n.log[-5:]))
+try:
+    os.unlink(_DOCX8)
+    os.unlink(_DOCX8N)
+except OSError:
+    pass
+
+# ⑧-5 LaTeX 通道同样适用（只写日志、产物不变）
+_tex_src8 = os.path.join(tempfile.mkdtemp(dir="/tmp"), "body8.tex")
+open(_tex_src8, "w", encoding="utf-8").write(
+    "\\documentclass{ctexart}\n\\begin{document}\n"
+    "关于让-雅克·卢梭与北京-上海的讨论。\n\\end{document}\n")
+try:
+    with tempfile.TemporaryDirectory() as _t8a, tempfile.TemporaryDirectory() as _t8b:
+        _ra = build.build_latex(_tex_src8, _t8a, basename="L", lang="zh",
+                                verbose=False, dash_hints=True)
+        _rb = build.build_latex(_tex_src8, _t8b, basename="L", lang="zh",
+                                verbose=False, dash_hints=False)
+        _sha_a = _sha_file(_ra.tex_path)
+        _sha_b = _sha_file(_rb.tex_path)
+        _la_hint = _hint_lines(_ra)
+        _lb_hint = _hint_lines(_rb)
+    check("⑧ LaTeX 通道：日志同样输出 ZH-08 提示", bool(_la_hint), repr(_la_hint[:1]))
+    check("⑧ LaTeX 通道：开关关→无提示", _lb_hint == [])
+    check("⑧ LaTeX 通道：产物逐字节不变（开/关 sha 相同）", _sha_a == _sha_b)
+finally:
+    try:
+        os.unlink(_tex_src8)
+    except OSError:
+        pass
+
+# ⑧-6 真实稿 pin：日志命中数 = proofcheck ZH-08 数（期 87 Word 稿；无稿件库时 SKIP）
+if _manuscripts is not None:
+    _real_dir = os.path.join(_manuscripts, "2026年第2期(87)", "06 Ruixue_Tang")
+    if os.path.isdir(_real_dir):
+        _ss8 = __import__("slcn.sources", fromlist=["identify"]).identify(_real_dir, verbose=False)
+        if _ss8.docx:
+            with tempfile.TemporaryDirectory() as _t8:
+                _r8 = build.build_docx(_ss8.docx, _t8, basename="Real", lang="zh",
+                                       verbose=False)
+                _t8tex = open(_r8.tex_path, encoding="utf-8").read()
+            _rl = _hint_lines(_r8)
+            _rn = int(__import__("re").search(r"(\d+) 处", _rl[0]).group(1)) if _rl else 0
+            _rpc = sum(1 for h in proofcheck.check(_t8tex, lang="zh").hits if h.rule_id == "ZH-08")
+            check("⑧ 真实稿（期87 Ruixue_Tang）：日志命中数 = proofcheck ZH-08 数",
+                  _rn == _rpc > 0, f"{_rn} vs {_rpc}")
+        else:
+            print("SKIP  ⑧ 真实稿 pin（该篇不是 Word 稿）")
+    else:
+        print("SKIP  ⑧ 真实稿 pin（本机没有该稿）")
+else:
+    print("SKIP  ⑧ 真实稿 pin（本机没有稿件库）")
 
 print()
 print("=" * 78)

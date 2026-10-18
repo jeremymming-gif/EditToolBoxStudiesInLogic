@@ -414,12 +414,34 @@ else:
 # ══ ⑥ 反例 4：LaTeX 通道行为不变 ══════════════════════════════════════════
 print("\n── ⑥ 反例 4：LaTeX 通道（build_latex 的 metadata 语义）不变 ──")
 
-_sig_latex = list(inspect.signature(build.build_latex).parameters)
+# 第四十三批 ZH-08 日志提示给 `build_latex` **尾部**新增了 keyword-only 参数
+# `dash_hints: bool = True` —— 属 INVARIANTS §六.1「只增不改」的**合法扩展**：
+# 既有参数的位置/顺序/默认值逐字不变，新参数一律 keyword-only 且有默认值
+# （老调用方不传也能跑；案例 156）。所以本断言从「整张形参表逐字未动」改为
+# 「**前缀**逐字未动 + 尾部只允许新增 keyword-only 带默认值的参数」。
+_LATEX_BASE_PARAMS = ["body_path", "out_dir", "metadata_path", "bib_path", "basename",
+                      "lang", "sty", "skeleton", "meta", "overrides", "verbose"]
+_LATEX_BASE_DEFAULTS = {  # 既有参数的默认值必须逐字保留（INVARIANTS §六.1）
+    "body_path": inspect.Parameter.empty, "out_dir": inspect.Parameter.empty,
+    "metadata_path": None, "bib_path": None, "basename": "output", "lang": "zh",
+    "sty": None, "skeleton": None, "meta": None, "overrides": None, "verbose": True,
+}
+_sig_latex_all = inspect.signature(build.build_latex).parameters
 _sig_docx = inspect.signature(build.build_docx).parameters
-check("⑥ `build_latex` 的形参表逐字未动（metadata_path 仍是第 3 个、默认 None）",
-      _sig_latex == ["body_path", "out_dir", "metadata_path", "bib_path", "basename",
-                     "lang", "sty", "skeleton", "meta", "overrides", "verbose"],
+_sig_latex = list(_sig_latex_all)
+check("⑥ `build_latex` 形参表**前缀**逐字未动（既有 11 个参数顺序/默认不变；"
+      "第四十三批仅尾部新增 keyword-only `dash_hints=True`，属只增不改，案例 156）",
+      _sig_latex[:len(_LATEX_BASE_PARAMS)] == _LATEX_BASE_PARAMS
+      and all(_sig_latex_all[n].default == d for n, d in _LATEX_BASE_DEFAULTS.items()),
       f"{_sig_latex}")
+_extra_latex = _sig_latex[len(_LATEX_BASE_PARAMS):]
+check("⑥ 守卫：`build_latex` 的新增参数必须 **keyword-only 且有默认值**"
+      "（防止将来加必填参数破坏老调用方；INVARIANTS §六.1；案例 156）",
+      all(_sig_latex_all[n].kind is inspect.Parameter.KEYWORD_ONLY
+          and _sig_latex_all[n].default is not inspect.Parameter.empty
+          for n in _extra_latex),
+      f"新增={_extra_latex} 详情="
+      f"{ {n: (_sig_latex_all[n].kind.name, _sig_latex_all[n].default) for n in _extra_latex} }")
 check("⑥ 新参数只加在 `build_docx` 上，且**带默认值 None**（老调用方行为不变）",
       "metadata_path" in _sig_docx
       and _sig_docx["metadata_path"].default is None

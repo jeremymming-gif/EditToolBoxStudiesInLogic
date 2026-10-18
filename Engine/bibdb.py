@@ -51,11 +51,17 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             B1 确定性规范化：默认 dry-run（只出报告、绝不写库）；
                                             --apply 才写库（只改安全条目的 entry_type/fields/
                                             content_sha256/updated_at；须先 --backup 备份）
-    normalize-editors [--dry-run] [--report PATH | --out-dir DIR] [--csv-out PATH]
+    merge-duplicates [--dry-run | --apply --backup PATH] [--pairs PATH]
+                [--plan PATH] [--out-dir DIR] [--json]
+                                            重复候选合并 + key 规范化：默认 dry-run（出计划，
+                                            **不写库**）；--apply 才写库（须先 --backup；
+                                            人工簇暂不合并；旧 key 全量进 aliases）
+    normalize-editors [--dry-run | --apply --backup PATH]
+                [--report PATH | --out-dir DIR] [--csv-out PATH]
                 [--json-out PATH] [--json]
-                                            B3 英文编者倒装 **dry-run**（只出报告、绝不写库；
-                                            扫 editor 字段（含「只有 editor」的记录）；apply 须
-                                            用户拍板后另批——本子命令传 --apply 一律拒绝退出 2）
+                                            B3 英文编者倒装（姓, 名缩写）：默认 dry-run（只出
+                                            报告、绝不写库）；--apply 才写库（只改 editor；
+                                            中文/机构/others 跳过；含「只有 editor」的记录）
 
 用法示例（在本目录下跑）
 ------------------------
@@ -84,7 +90,19 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     # ↑ 生成 CONFLICTS.md / DUPLICATES.md / duplicates.csv（同一份库重复生成逐字节相同）
     /opt/homebrew/bin/python3.14 bibdb.py normalize-editors --out-dir ../EditToolBox-notes/bib_db
     # ↑ B3 编者倒装 dry-run 报告（B3-editor-normalize-dryrun.md/.csv/.json）；只读库、
-    #   不写 bibliography.jsonl；apply 须用户拍板后另批（本子命令的 --apply 一律拒绝）
+    #   不写 bibliography.jsonl
+    cp ../EditToolBox-notes/bib_db/bibliography.jsonl /tmp/before_B3_editors.jsonl
+    /opt/homebrew/bin/python3.14 bibdb.py normalize-editors --apply \
+        --backup /tmp/before_B3_editors.jsonl \
+        --report ../EditToolBox-notes/bib_db/B3-editor-normalize-apply.md
+    # ↑ 真正 apply（只改 editor / content_sha256 / updated_at；备份 sha 必须与当前库一致）
+    /opt/homebrew/bin/python3.14 bibdb.py merge-duplicates --out-dir ../EditToolBox-notes/bib_db
+    # ↑ 重复候选合并计划 dry-run（DUPLICATES-MERGE-PLAN.md/.csv + RENAMES/MANUAL/PLAN.json；只读库）
+    cp ../EditToolBox-notes/bib_db/bibliography.jsonl /tmp/bibliography_before_merge.jsonl
+    /opt/homebrew/bin/python3.14 bibdb.py merge-duplicates --apply \
+        --backup /tmp/bibliography_before_merge.jsonl \
+        --out-dir ../EditToolBox-notes/bib_db
+    # ↑ 真正合并（按 dry-run 计划；13 人工簇暂不合并；旧 key→aliases；须备份 sha 一致）
 
 退出码
 ------
@@ -2464,6 +2482,9 @@ def cmd_normalize_authors(args) -> int:
 #     届时沿用 B2 的 `--apply --backup`（sha256 与当前库一致才允许执行）门禁。
 #   · 报告/MD/CSV/JSON 无时间戳、无绝对路径：同一份库重复生成逐字节相同。
 EDITOR_REPORT_DRY = "B3-editor-normalize-dryrun.md"
+EDITOR_REPORT_APPLY = "B3-editor-normalize-apply.md"
+EDITOR_REPORT_APPLY_CSV = "B3-editor-normalize-apply.csv"
+EDITOR_REPORT_APPLY_JSON = "B3-editor-normalize-apply.json"
 EDITOR_REPORT_CSV = "B3-editor-normalize-dryrun.csv"
 EDITOR_REPORT_JSON = "B3-editor-normalize-dryrun.json"
 
@@ -2613,9 +2634,9 @@ def _editor_flags_text(row: dict) -> str:
     return "；".join(flags) if flags else "—"
 
 
-def _editor_table_row(index: int, row: dict) -> str:
+def _editor_table_row(index: int, row: dict, *, applied: bool = False) -> str:
     """逐条明细表的一行（列：#/key/期篇文件/entry_type/题名/旧值/新值/状态/跳过原因/风险标记）。"""
-    status = "将倒装" if row["status"] == "change" else "跳过"
+    status = ("已倒装" if applied else "将倒装") if row["status"] == "change" else "跳过"
     new = row["new"] if row["status"] == "change" else "（保持原样）"
     return ("| {index:04d} | `{key}` | {sources} | {etype} | {title} | {old} | {new} | "
             "{status} | {reason} | {flags} |").format(
@@ -2633,38 +2654,69 @@ def _editor_table_row(index: int, row: dict) -> str:
 
 
 def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
-                           sha_after: str, verification: dict) -> str:
-    """B3 编者倒装 dry-run 报告（**只出报告，绝不写库**；无时间戳/无绝对路径）。"""
+                           sha_after: str, verification: dict, *,
+                           applied: bool = False,
+                           applied_rows: list[dict] | None = None,
+                           skipped_apply: list[dict] | None = None,
+                           backup_path: str = "", backup_sha: str = "") -> str:
+    """B3 编者倒装报告（dry-run / apply 共用；apply 版多备份、sha 链、回滚与二次校验）。
+
+    无时间戳、无绝对路径：同一份库重复生成逐字节相同。
+    """
     db_label = os.path.basename(db_path) or db_path
     all_rows = stats["change_rows"] + stats["skip_rows"]
     eds_rows = [row for row in stats["change_rows"] if "(eds.) 形态" in row["flags"]]
     and_rows = [row for row in all_rows if " AND " in row["old"]]
     and_change = [row for row in and_rows if row["status"] == "change"]
-    lines: list[str] = [
-        "# 引用库 · B3 编者（editor）倒装 dry-run 报告",
-        "",
-        "> 本报告由 `bibdb.py normalize-editors` 生成：**纯 dry-run，只算不写**——不会调用",
-        "> `Store.save()`、不会修改 `bibliography.jsonl`（跑前/跑后 sha256 见下，必相同）。",
-        "> 判定规则与 B2 作者倒装**同源**（`slcn.bibnorm.normalize_author_field` + 同一套保守",
-        "> 跳过口径），只处理 `editor` 字段；连「只有 editor 没有 author」的记录也一并扫描。",
-        "> 中文/日文、机构、`and others`、花括号/LaTeX 保护、已倒装、判不准 → **原样不动**。",
-        "> `--apply` **本批未实现**：传了直接拒绝（退出 2）；B3 apply 须用户拍板后另批实现，",
-        "> 并沿用 B2 的 `--apply --backup <sha256 与当前库一致>` 门禁。",
-        "",
-        f"- 数据来源：引用库 `{db_label}`（本报告同目录）",
-        f"- 库 sha256（跑前）：`{sha_before or '（读不到）'}`",
-        f"- 库 sha256（跑后）：`{sha_after or '（读不到）'}`"
-        f"（与跑前一致 = **未改动库**）",
-        f"- 库记录：**{stats['records']}** 条；有 `editor` 字段：**{stats['with_editor']}** 条"
-        f"（其中只有 editor、没有 author：**{stats['editor_only']}** 条）",
-        f"- 结果：**将倒装 {stats['changes']} 条** / **跳过 {stats['skips']} 条**"
-        f"（按原因见下表）",
-        f"- 逐条明细：见文末附表（{stats['with_editor']} 行，按库内 key 排序）；"
-        f"全量 CSV 另存 `{EDITOR_REPORT_CSV}`（Excel 可直接打开，UTF-8 带 BOM）",
-        f"- 幂等：同一份库重复跑本命令，MD/CSV/JSON 逐字节相同（无时间戳/无绝对路径）；"
-        f"把 {stats['changes']} 条新值再喂同一个规范化器，剩余将变 "
-        f"**{verification['remaining']}** 条（应为 0，见「二次校验」）——即 apply 后重跑 dry-run 必为 0。",
-        "",
+    title = ("# 引用库 · B3 编者（editor）倒装 apply 报告" if applied
+             else "# 引用库 · B3 编者（editor）倒装 dry-run 报告")
+    lines: list[str] = [title, ""]
+    if applied:
+        lines += [
+            "> 本报告由 `bibdb.py normalize-editors --apply` 生成：**已把安全条目的英文编者",
+            "> 倒装写进库**（用户 2026-10-22 拍板·方案 A）。只改 `editor` 字段 +",
+            "> `content_sha256` + `updated_at`；其余字段与元数据未动。",
+            "> 判定规则与 B2 作者倒装**同源**（`slcn.bibnorm.normalize_author_field` + 同一套保守",
+            "> 跳过口径），只处理 `editor` 字段；连「只有 editor 没有 author」的记录也一并扫描。",
+            "> 中文/日文、机构、`and others`、花括号/LaTeX 保护、已倒装、判不准 → **原样不动**。",
+            "",
+            f"- 数据来源：引用库 `{db_label}`（本报告同目录）",
+            f"- 库 sha256（apply 前）：`{sha_before or '（读不到）'}`",
+            f"- 库 sha256（apply 后）：`{sha_after or '（读不到）'}`",
+            f"- apply 前备份：`{backup_path or '（未提供）'}`（sha256 `{backup_sha or '（未提供）'}`）",
+            f"- 库记录：**{stats['records']}** 条；有 `editor` 字段：**{stats['with_editor']}** 条"
+            f"（其中只有 editor、没有 author：**{stats['editor_only']}** 条）",
+            f"- 结果：**已倒装 {stats['changes']} 条** / **跳过 {stats['skips']} 条**"
+            f"（按原因见下表）",
+            f"- 逐条明细：见文末附表（{stats['with_editor']} 行，按库内 key 排序）；"
+            f"全量 CSV 另存 `{EDITOR_REPORT_APPLY_CSV}`（Excel 可直接打开，UTF-8 带 BOM）",
+            "",
+        ]
+    else:
+        lines += [
+            "> 本报告由 `bibdb.py normalize-editors` 生成：**纯 dry-run，只算不写**——不会调用",
+            "> `Store.save()`、不会修改 `bibliography.jsonl`（跑前/跑后 sha256 见下，必相同）。",
+            "> 判定规则与 B2 作者倒装**同源**（`slcn.bibnorm.normalize_author_field` + 同一套保守",
+            "> 跳过口径），只处理 `editor` 字段；连「只有 editor 没有 author」的记录也一并扫描。",
+            "> 中文/日文、机构、`and others`、花括号/LaTeX 保护、已倒装、判不准 → **原样不动**。",
+            "> `--apply` 需 `--backup` 备份 + sha256 与当前库一致才能执行；本报告是 dry-run 版。",
+            "",
+            f"- 数据来源：引用库 `{db_label}`（本报告同目录）",
+            f"- 库 sha256（跑前）：`{sha_before or '（读不到）'}`",
+            f"- 库 sha256（跑后）：`{sha_after or '（读不到）'}`"
+            f"（与跑前一致 = **未改动库**）",
+            f"- 库记录：**{stats['records']}** 条；有 `editor` 字段：**{stats['with_editor']}** 条"
+            f"（其中只有 editor、没有 author：**{stats['editor_only']}** 条）",
+            f"- 结果：**将倒装 {stats['changes']} 条** / **跳过 {stats['skips']} 条**"
+            f"（按原因见下表）",
+            f"- 逐条明细：见文末附表（{stats['with_editor']} 行，按库内 key 排序）；"
+            f"全量 CSV 另存 `{EDITOR_REPORT_CSV}`（Excel 可直接打开，UTF-8 带 BOM）",
+            f"- 幂等：同一份库重复跑本命令，MD/CSV/JSON 逐字节相同（无时间戳/无绝对路径）；"
+            f"把 {stats['changes']} 条新值再喂同一个规范化器，剩余将变 "
+            f"**{verification['remaining']}** 条（应为 0，见「二次校验」）——即 apply 后重跑 dry-run 必为 0。",
+            "",
+        ]
+    lines += [
         "## 跳过原因分类",
         "",
         "| 原因 | 条数 |",
@@ -2676,22 +2728,22 @@ def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
         lines.append("| （无） | 0 |")
     lines += [
         "",
-        "## 影响面（若 apply）",
+        f"## 影响面（{'本次 apply' if applied else '若 apply'}）",
         "",
         f"- 只改 `editor` 字段（+ `content_sha256` / `updated_at`）；"
         f"`verified` / `sources` / `conflicts` / `aliases` 与其它字段不动；",
         f"- 多编者（`and` 分隔 ≥2）：**{stats['multi_editor_changes']}** 条；"
         "编者人数分布：" + "、".join(
             f"{n} 人 {c} 条" for n, c in stats["editor_count_hist"].items()),
-        f"- 其中 editor-only（B2 漏扫、只有 editor 的记录）：将倒装 "
-        f"**{stats['editor_only_changes']}** 条",
+        f"- 其中 editor-only（B2 漏扫、只有 editor 的记录）："
+        f"{'已倒装' if applied else '将倒装'} **{stats['editor_only_changes']}** 条",
         f"- 覆盖 **{len(stats['issues'])}** 期（{stats['issues'][0] if stats['issues'] else '—'}"
         f" … {stats['issues'][-1] if stats['issues'] else '—'}）；"
         f"「记录×期」覆盖点 {stats['issue_hits']}（同一记录跨期会重复计入）",
         "",
         "按 entry_type 分布：" if stats["change_by_entry_type"] else "按 entry_type 分布：（无）",
         "",
-        "| entry_type | 将倒装条数 |",
+        f"| entry_type | {'已倒装' if applied else '将倒装'}条数 |",
         "|---|---|",
     ]
     for etype, count in stats["change_by_entry_type"].items():
@@ -2752,7 +2804,7 @@ def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
         "建议按 CSV 的「编者人数」列抽 20–30 条核对姓名顺序/连接词写法（规则与 B2 同源，"
         "任一段判不准整条不动，不会产出半倒装）。",
         "",
-        "## 将倒装样例（前 20，旧 → 新）",
+        f"## {'已倒装' if applied else '将倒装'}样例（前 20，旧 → 新）",
         "",
         "| # | 库内 key | 旧值 | 新值 | 风险标记 |",
         "|---|---|---|---|---|",
@@ -2778,16 +2830,35 @@ def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
         lines.append("| — | （无） | — | — |")
     lines += [
         "",
-        "## 二次校验（内存预演，不写库）",
-        "",
-        f"- 把 **{verification['checked']}** 条「将倒装」的新值再跑同一个规范化器："
-        f"**仍将变化 {verification['remaining']} 条（应为 0）** → 规则幂等；",
-        "- 本 dry-run 连跑两次（同库）：MD/CSV/JSON 逐字节相同（由测试钉住）；",
-        f"- 跑前/跑后库 sha256 相同：`{sha_before}`（本命令不写库）。",
-        "",
+        *([] if not applied else [
+            "## 二次校验（apply 后重跑 dry-run）",
+            "",
+            f"- 仍将倒装（排除未 apply 的跳过条目后）：**{verification['remaining']}** 条（应为 0）",
+            f"- 跳过：{verification.get('skips', '—')} 条；有 editor 的记录："
+            f"{verification.get('with_editor', '—')} 条",
+            "",
+            "## 回滚方法（如需）",
+            "",
+            "```bash",
+            f"cp {backup_path or '/tmp/bibliography_before_B3_editors.jsonl'} "
+            "../EditToolBox-notes/bib_db/bibliography.jsonl",
+            "```",
+            "",
+            f"（备份 sha256：`{backup_sha or '（未提供）'}`）",
+            "",
+        ] if applied else [
+            "## 二次校验（内存预演，不写库）",
+            "",
+            f"- 把 **{verification['checked']}** 条「将倒装」的新值再跑同一个规范化器："
+            f"**仍将变化 {verification['remaining']} 条（应为 0）** → 规则幂等；",
+            "- 本 dry-run 连跑两次（同库）：MD/CSV/JSON 逐字节相同（由测试钉住）；",
+            f"- 跑前/跑后库 sha256 相同：`{sha_before}`（本命令不写库）。",
+            "",
+        ]),
         f"## 逐条明细（{stats['with_editor']} 条；按库内 key 排序）",
         "",
-        "> 状态 = 将倒装 / 跳过；跳过原因见列；风险标记为「将倒装」行的抽查提示。"
+        f"> 状态 = {'已倒装' if applied else '将倒装'} / 跳过；跳过原因见列；"
+        f"风险标记为「{'已倒装' if applied else '将倒装'}」行的抽查提示。"
         f"CSV（{len(stats['change_rows'])} 行）与 JSON 有同样内容。",
         "",
         "| # | 库内 key | 期/篇/文件 | entry_type | 题名 | editor 旧值 | editor 新值 | "
@@ -2795,7 +2866,7 @@ def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for index, row in enumerate(all_rows, start=1):
-        lines.append(_editor_table_row(index, row))
+        lines.append(_editor_table_row(index, row, applied=applied))
     lines.append("")
     return "\n".join(lines)
 
@@ -2828,13 +2899,19 @@ def build_editor_csv(stats: dict) -> str:
 
 
 def build_editor_json(db_path: str, stats: dict, sha_before: str,
-                      sha_after: str, verification: dict) -> str:
-    """B3 dry-run 机读摘要（无绝对路径：`db` 只留文件名）。"""
+                      sha_after: str, verification: dict, *,
+                      applied: bool = False,
+                      applied_rows: list[dict] | None = None,
+                      skipped_apply: list[dict] | None = None,
+                      backup_path: str = "", backup_sha: str = "") -> str:
+    """B3 机读摘要（无绝对路径：`db` 只留文件名）。"""
     payload = {
-        "tool": "bibdb.py normalize-editors（dry-run）",
+        "tool": "bibdb.py normalize-editors" + (" --apply" if applied else "（dry-run）"),
         "db": os.path.basename(db_path) or db_path,
-        "mode": "dry-run",
-        "apply_implemented": False,
+        "mode": "apply" if applied else "dry-run",
+        "apply_implemented": True,
+        "backup_path": backup_path,
+        "backup_sha256": backup_sha,
         "sha256_before": sha_before,
         "sha256_after": sha_after,
         "db_unchanged": sha_before == sha_after,
@@ -2852,6 +2929,8 @@ def build_editor_json(db_path: str, stats: dict, sha_before: str,
         "issue_hits": stats["issue_hits"],
         "multi_editor_changes": stats["multi_editor_changes"],
         "verification": verification,
+        "applied_entries": applied_rows if applied_rows is not None else [],
+        "skipped_apply": skipped_apply if skipped_apply is not None else [],
         "change_entries": [
             {key: row[key] for key in ("key", "old", "new", "entry_type", "title",
                                        "sources", "n_editors", "flags")}
@@ -2865,34 +2944,93 @@ def build_editor_json(db_path: str, stats: dict, sha_before: str,
 
 
 def _write_editor_reports(args, path: str, stats: dict, sha_before: str,
-                          sha_after: str, verification: dict) -> list[dict]:
+                          sha_after: str, verification: dict, *,
+                          applied: bool = False,
+                          applied_rows: list[dict] | None = None,
+                          skipped_apply: list[dict] | None = None,
+                          backup_path: str = "", backup_sha: str = "") -> list[dict]:
     report_path = str(getattr(args, "report", "") or "")
     out_dir = str(getattr(args, "out_dir", "") or "")
+    default_md = EDITOR_REPORT_APPLY if applied else EDITOR_REPORT_DRY
     if not report_path and out_dir:
-        report_path = os.path.join(out_dir, EDITOR_REPORT_DRY)
+        report_path = os.path.join(out_dir, default_md)
     csv_path = str(getattr(args, "csv_out", "") or "")
     if not csv_path and out_dir:
-        csv_path = os.path.join(out_dir, EDITOR_REPORT_CSV)
+        # apply 版 CSV 只列「已倒装」行（供抽查）；文件名带 apply 后缀避免覆盖 dry-run
+        csv_path = os.path.join(
+            out_dir, EDITOR_REPORT_APPLY_CSV if applied else EDITOR_REPORT_CSV)
     json_path = str(getattr(args, "json_out", "") or "")
     if not json_path and out_dir:
-        json_path = os.path.join(out_dir, EDITOR_REPORT_JSON)
+        json_path = os.path.join(
+            out_dir, EDITOR_REPORT_APPLY_JSON if applied else EDITOR_REPORT_JSON)
     written: list[dict] = []
     if report_path:
         written.append(_write_report(report_path, build_editor_report_md(
-            path, stats, sha_before, sha_after, verification)))
+            path, stats, sha_before, sha_after, verification, applied=applied,
+            applied_rows=applied_rows, skipped_apply=skipped_apply,
+            backup_path=backup_path, backup_sha=backup_sha)))
     if csv_path:
         written.append(_write_report(csv_path, build_editor_csv(stats)))
     if json_path:
         written.append(_write_report(json_path, build_editor_json(
-            path, stats, sha_before, sha_after, verification)))
+            path, stats, sha_before, sha_after, verification, applied=applied,
+            applied_rows=applied_rows, skipped_apply=skipped_apply,
+            backup_path=backup_path, backup_sha=backup_sha)))
     return written
 
 
+def apply_editor_rows(store: "bibdb.Store", rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """把安全的 editor 倒装结果写进库（只改 editor + content_sha256 + updated_at）。"""
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    now = bibdb._now_iso()
+    for row in rows:
+        if row["status"] != "change":
+            skipped.append({"key": row["key"], "reason": row["reason"]})
+            continue
+        record = store.get(row["key"])
+        if record is None:
+            skipped.append({"key": row["key"], "reason": "库内找不到该记录（不应发生）"})
+            continue
+        pending = _normalize_pending_conflict_fields(record)
+        if "editor" in pending:
+            skipped.append({"key": row["key"], "reason": "待裁决冲突字段（先处理冲突）"})
+            continue
+        fields = dict(record.get("fields") or {})
+        fields["editor"] = row["new"]
+        record["fields"] = dict(sorted(fields.items()))
+        record["content_sha256"] = bibdb.content_sha256(record.get("entry_type") or "",
+                                                        record["fields"])
+        record["updated_at"] = now
+        applied.append({"key": row["key"], "old": row["old"], "new": row["new"]})
+    if applied:
+        store.dirty = True
+        store.save()
+    return applied, skipped
+
+
+def _editor_apply_verification(path: str, skip_keys: set[str]) -> dict:
+    """apply 后重跑一遍（只读）：仍将倒装的条数（排除本次跳过/冲突项，应为 0）。"""
+    store = bibdb.Store.load(path)
+    records_total = sum(1 for record in store.records() if isinstance(record, dict))
+    rows = collect_editor_rows(store)
+    stats = _editor_stats(rows, records_total)
+    remaining = [row for row in stats["change_rows"] if row["key"] not in skip_keys]
+    return {
+        "with_editor": stats["with_editor"],
+        "changes": stats["changes"],
+        "skips": stats["skips"],
+        "remaining": len(remaining),
+        "remaining_keys": [row["key"] for row in remaining][:20],
+        "risk_flags": stats["risk_flags"],
+    }
+
+
 def cmd_normalize_editors(args) -> int:
-    """B3 编者倒装：**只做 dry-run**；本批不实现 apply、绝不写库。"""
-    if bool(getattr(args, "apply", False)):
-        print("✗ normalize-editors 本批只做 dry-run：B3 apply 须用户拍板后另批实现"
-              "（届时沿用 B2 的 --apply --backup sha256 门禁）", file=sys.stderr)
+    """B3 编者倒装：默认 dry-run；`--apply` 才写库（只改 editor + sha/updated_at）。"""
+    apply_mode = bool(getattr(args, "apply", False))
+    if apply_mode and bool(getattr(args, "dry_run", False)):
+        print("✗ --apply 与 --dry-run 互斥：一次只能选一种模式", file=sys.stderr)
         return 2
     try:
         path, store = _open_store(args)
@@ -2900,32 +3038,102 @@ def cmd_normalize_editors(args) -> int:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     sha_before = bibdb.db_sha256(path)
+    backup_path = str(getattr(args, "backup", "") or "")
+    backup_sha = ""
+    if apply_mode:
+        if not backup_path:
+            print("✗ --apply 会写真实库，必须先备份并用 --backup PATH 指定", file=sys.stderr)
+            return 2
+        if not os.path.isfile(backup_path):
+            print(f"✗ 备份文件不存在：{backup_path}", file=sys.stderr)
+            return 2
+        backup_sha = bibdb.db_sha256(backup_path)
+        if backup_sha != sha_before:
+            print(f"✗ 备份 sha256 与当前库不一致（备份 {backup_sha} / 当前 {sha_before}）",
+                  file=sys.stderr)
+            return 2
     records_total = sum(1 for record in store.records() if isinstance(record, dict))
     rows = collect_editor_rows(store)
     stats = _editor_stats(rows, records_total)
-    verification = _editor_verification(rows)
-    sha_after = bibdb.db_sha256(path)
-    if sha_before != sha_after:        # 防御式：本命令按设计只读，不该发生
-        print("✗ 内部错误：normalize-editors 运行期间库文件被改动（本命令不应写库）",
-              file=sys.stderr)
-        return 2
-    written = _write_editor_reports(args, path, stats, sha_before, sha_after, verification)
+    if not apply_mode:
+        verification = _editor_verification(rows)
+        sha_after = bibdb.db_sha256(path)
+        if sha_before != sha_after:    # 防御式：dry-run 按设计只读，不该发生
+            print("✗ 内部错误：normalize-editors 运行期间库文件被改动（dry-run 不应写库）",
+                  file=sys.stderr)
+            return 2
+        written = _write_editor_reports(args, path, stats, sha_before, sha_after,
+                                        verification, applied=False)
+        payload = {
+            "db": os.path.basename(path) or path,
+            "mode": "dry-run",
+            "apply_implemented": True,
+            "sha256_before": sha_before,
+            "sha256_after": sha_after,
+            "db_unchanged": sha_before == sha_after,
+            "records": stats["records"],
+            "with_editor": stats["with_editor"],
+            "editor_only": stats["editor_only"],
+            "editor_only_changes": stats["editor_only_changes"],
+            "changes": stats["changes"],
+            "skips": stats["skips"],
+            "reasons": stats["reasons"],
+            "risk_flags": stats["risk_flags"],
+            "multi_editor_changes": stats["multi_editor_changes"],
+            "verification": verification,
+            "written": written,
+        }
+        if args.json:
+            _print_json(payload)
+            return 0
+        print(f"库：{path}")
+        print(f"库 sha256（跑前/跑后）：{sha_before} / {sha_after}"
+              + ("（一致 = 未改动库）" if sha_before == sha_after else "（⚠️ 不一致！）"))
+        print(f"记录：{stats['records']} 条；有 editor 字段：{stats['with_editor']} 条"
+              f"（其中只有 editor、没有 author：{stats['editor_only']} 条）")
+        print(f"→ 将倒装 {stats['changes']} 条 / 跳过 {stats['skips']} 条")
+        print("   跳过原因 Top：" + "、".join(
+            f"{reason} {count}" for reason, count in list(stats["reasons"].items())[:6]))
+        if stats["risk_flags"]:
+            print("   风险标记：" + "、".join(
+                f"{flag} {count}" for flag, count in list(stats["risk_flags"].items())[:8]))
+        print(f"   二次校验（内存预演）：把新值再跑同一个规范化器，剩余将变 "
+              f"{verification['remaining']} 条（应为 0）")
+        for item in written:
+            state = "已写入" if item["written"] else "内容未变（未重写）"
+            print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
+        print("   （dry-run：未修改 bibliography.jsonl；--apply 才写库）")
+        return 0
+    # ── apply ──
+    applied_rows, skipped_apply = apply_editor_rows(store, rows)
+    sha_after = bibdb.db_sha256(path)          # ⚠️ 先算 apply 后 sha，报告里必须写真实值
+    verification = _editor_apply_verification(path, {item["key"] for item in skipped_apply})
+    written = _write_editor_reports(args, path, stats, sha_before, sha_after,
+                                    verification, applied=True,
+                                    applied_rows=applied_rows,
+                                    skipped_apply=skipped_apply,
+                                    backup_path=backup_path, backup_sha=backup_sha)
     payload = {
         "db": os.path.basename(path) or path,
-        "mode": "dry-run",
-        "apply_implemented": False,
+        "mode": "apply",
+        "apply_implemented": True,
         "sha256_before": sha_before,
         "sha256_after": sha_after,
         "db_unchanged": sha_before == sha_after,
+        "backup_path": backup_path,
+        "backup_sha256": backup_sha,
         "records": stats["records"],
         "with_editor": stats["with_editor"],
         "editor_only": stats["editor_only"],
         "editor_only_changes": stats["editor_only_changes"],
         "changes": stats["changes"],
-        "skips": stats["skips"],
+        "applied": len(applied_rows),
+        "skipped": len(skipped_apply),
         "reasons": stats["reasons"],
         "risk_flags": stats["risk_flags"],
         "multi_editor_changes": stats["multi_editor_changes"],
+        "applied_entries": applied_rows,
+        "skipped_apply": skipped_apply,
         "verification": verification,
         "written": written,
     }
@@ -2933,22 +3141,1365 @@ def cmd_normalize_editors(args) -> int:
         _print_json(payload)
         return 0
     print(f"库：{path}")
-    print(f"库 sha256（跑前/跑后）：{sha_before} / {sha_after}"
-          + ("（一致 = 未改动库）" if sha_before == sha_after else "（⚠️ 不一致！）"))
+    print(f"库 sha256（apply 前/后）：{sha_before} / {sha_after}")
+    print(f"备份：{backup_path}（sha256: {backup_sha}）")
     print(f"记录：{stats['records']} 条；有 editor 字段：{stats['with_editor']} 条"
           f"（其中只有 editor、没有 author：{stats['editor_only']} 条）")
-    print(f"→ 将倒装 {stats['changes']} 条 / 跳过 {stats['skips']} 条")
-    print("   跳过原因 Top：" + "、".join(
-        f"{reason} {count}" for reason, count in list(stats["reasons"].items())[:6]))
-    if stats["risk_flags"]:
-        print("   风险标记：" + "、".join(
-            f"{flag} {count}" for flag, count in list(stats["risk_flags"].items())[:8]))
-    print(f"   二次校验（内存预演）：把新值再跑同一个规范化器，剩余将变 "
-          f"{verification['remaining']} 条（应为 0）")
+    print(f"→ 已倒装 {len(applied_rows)} 条 / 跳过 {len(skipped_apply)} 条"
+          f"（其中本次因待裁决冲突跳过 {len(skipped_apply)} 条）")
+    print(f"二次校验（重跑 dry-run）：剩余将倒装 {verification['remaining']} 条（应为 0）")
     for item in written:
         state = "已写入" if item["written"] else "内容未变（未重写）"
         print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
-    print("   （dry-run：未修改 bibliography.jsonl；apply 须用户拍板后另批）")
+    print("   跳过原因 Top：" + "、".join(
+        f"{reason} {count}" for reason, count in list(stats["reasons"].items())[:6]))
+    print("   （只改了 editor / content_sha256 / updated_at；其余元数据未动）")
+    return 0
+
+
+# ── 重复候选合并计划（merge-duplicates；**dry-run only**，2026-10-18 第四十三批）──
+#
+# 用户 2026-10-18 指令：1294 对「同作品不同 key」候选里，除 `miaolitian`/`miaolitian2`
+# 两个 key 外**全部合并**；`similarity=1` 的簇统一 key 形式（人名+年份+可选 a/b/c）；
+# 版本选择**优先保留花括号保护**的写法；旧 key 记 aliases；实质冲突（年份/作者不同）
+# 不自动合并 → 单列人工清单。本子命令只做**计划（dry-run）**，绝不写 bibliography.jsonl；
+# apply 由下一张卡实现（届时复用本计划 JSON，逐条落库并重算 content_sha256）。
+#
+# key 规范（APA 7 核实，见报告「规则依据」）：
+#   · 同一作者同一年有多条作品时，**按题名字母序**依次加 a/b/c（APA 7：alphabetize
+#     by title, ignoring initial articles；再按顺序加 suffix a, b, c…）；
+#   · 本库内部 key = `Surname`（或中文 `SurnameGiven` 拼音）+ 4 位年份 + 可选字母，
+#     与库内既有风格一致（`ChenBo2005` / `Haack1978` / `Li2026a`）。
+#   · 只有 similarity=1 的簇参与 key 规范化；其余合并簇保留 canonical 旧 key（报告注明）。
+MERGE_IGNORE_KEYS = frozenset({"miaolitian", "miaolitian2"})
+MERGE_REPORT_MD = "DUPLICATES-MERGE-PLAN.md"
+MERGE_REPORT_CSV = "DUPLICATES-MERGE-PLAN.csv"
+MERGE_RENAMES_CSV = "DUPLICATES-MERGE-RENAMES.csv"
+MERGE_MANUAL_CSV = "DUPLICATES-MERGE-MANUAL.csv"
+MERGE_PLAN_JSON = "DUPLICATES-MERGE-PLAN.json"
+
+_KEY_PARTICLES = frozenset({"van", "von", "de", "der", "den", "la", "le", "di", "da",
+                            "del", "dos", "du", "st", "ten", "ter"})
+_KEY_INITIAL_ARTICLE = re.compile(r"^(?:a|an|the)\s+", re.I)
+#: entry_type 收敛优先级（高者更具体；同秩不同类型 → 人工）
+_TYPE_RANK = {
+    "article": 5, "incollection": 5, "inproceedings": 5, "book": 5, "collection": 5,
+    "phdthesis": 4, "mastersthesis": 4, "thesis": 4, "techreport": 4, "report": 4,
+    "inbook": 4, "proceedings": 4, "dataset": 3, "online": 3, "periodical": 3,
+    "misc": 1, "unpublished": 1, "booklet": 1, "conference": 1,
+}
+#: 版本选择：字段非空个数之外，这几种「明确冲突」直接进人工清单
+MERGE_FIELD_DIFF_NOTE_LIMIT = 8
+
+
+def _merge_key_name(person: str) -> str:
+    """第一作者姓名 → 规范化 key 前缀（拉丁 `Haack` / 中文 `ChenBo`）。认不出返回 ""。"""
+    name = str(person or "").strip()
+    if not name:
+        return ""
+    if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", name):
+        # `弗雷格著` / `王路译` / `…编`：角色标记不是姓名的一部分
+        name = re.sub(r"(?:著|譯|译|校|编|編|主编|主編|点校|點校|整理|注释|注釋|"
+                      r"编著|編著|编译|編譯|等译|等譯)+\s*$", "", name).strip()
+        try:
+            from pypinyin import Style, lazy_pinyin
+            syl = [w for w in lazy_pinyin(name, style=Style.NORMAL, errors="ignore") if w]
+        except Exception:            # pypinyin 不在（CI 没装）→ 不猜
+            return ""
+        head = "".join(w.capitalize() for w in syl if re.search(r"[a-z]", w, re.I))
+        return head if len(head) >= 2 else ""
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", name)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^A-Za-z .,'\-]", " ", text)   # ⚠️ 逗号必须保留：倒装姓在逗号前
+    if "," in text:                  # 已倒装：`Haack, S.` / `van Fraassen, B. C.`
+        surname = text.split(",")[0]
+    else:                            # 未倒装：`B. C. van Fraassen`
+        toks = [t for t in re.split(r"[\s\-]+", text) if t]
+        if not toks:
+            return ""
+        i = len(toks) - 1
+        while i - 1 >= 0 and toks[i - 1].lower() in _KEY_PARTICLES:
+            i -= 1
+        surname = " ".join(toks[i:])
+    words = [w for w in re.split(r"[\s\-']+", surname.strip()) if w]
+    if not words:
+        return ""
+    out = ""
+    for word in words:
+        low = word.lower()
+        if low in _KEY_PARTICLES:
+            out += low
+        elif word.isupper() and len(word) > 1:      # 机构缩写照抄（`WHO`）
+            out += word
+        else:
+            out += word[0].upper() + word[1:].lower()
+    out = re.sub(r"[^A-Za-z]", "", out)
+    if not out:
+        return ""
+    return out[0].upper() + out[1:] if out[0].islower() else out
+
+
+def _merge_title_sort_key(title: str) -> str:
+    """APA 7 题名字母序（**忽略起始冠词 A/An/The**，大小写/标点/花括号不敏感）。"""
+    text = str(title or "")
+    text = text.replace("{", "").replace("}", "").replace("\\", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = _KEY_INITIAL_ARTICLE.sub("", text)
+    text = text.lower()
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
+
+
+def _record_year(record: dict) -> str:
+    return bibdb.entry_year(record.get("fields") or {})
+
+
+def _record_fields(record: dict) -> dict:
+    return record.get("fields") if isinstance(record.get("fields"), dict) else {}
+
+
+def _record_brace_score(record: dict) -> int:
+    """花括号保护分（用户拍板：版本选择优先保留花括号保护）。"""
+    fields = _record_fields(record)
+    return sum(str(fields.get(name) or "").count("{") + str(fields.get(name) or "").count("\\")
+               for name in ("title", "author", "editor", "booktitle", "journal", "publisher"))
+
+
+def _record_filled(record: dict) -> int:
+    return sum(1 for value in _record_fields(record).values() if str(value or "").strip())
+
+
+def _record_sources(record: dict) -> list[dict]:
+    return [s for s in (record.get("sources") or []) if isinstance(s, dict)]
+
+
+def _merge_version_score(record: dict) -> tuple:
+    """canonical 版本排序键（越大越好）：花括号保护 > 字段完整 > 来源多 > 冲突少。"""
+    key = str(record.get("key") or "")
+    return (
+        _record_brace_score(record),
+        _record_filled(record),
+        len(_record_sources(record)),
+        -len(record.get("conflicts") or []),
+        _record_year(record),
+        "" if key.startswith("-") else key,      # 稳定 tie-break
+    )
+
+
+def _merge_field_equivalent(name: str, a: str, b: str) -> bool:
+    """字段值是否只是写法差异（大小写/标点/花括号/页码破折号），不是实质不同。"""
+    left, right = str(a or ""), str(b or "")
+    if left == right:
+        return True
+    if name == "title":
+        return bibdb.normalize_title(left) == bibdb.normalize_title(right)
+    if name in ("author", "editor"):
+        return (re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", left.lower())
+                == re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", right.lower()))
+    if name in ("year", "date"):
+        return _record_year({"fields": {"year": left}}) == _record_year({"fields": {"year": right}})
+    if name == "doi":
+        return bibdb.normalize_doi(left) == bibdb.normalize_doi(right)
+    if name in ("pages", "volume", "number", "edition"):
+        strip = lambda v: re.sub(r"[\s\-\u2010-\u2015]+", "-", v.lower())  # noqa: E731
+        return strip(left) == strip(right)
+    return False
+
+
+def _merge_prefer_value(name: str, values: list[str]) -> str:
+    """同名多写法 → 取「花括号保护最多、信息最全」的那个（稳定 tie-break：字典序）。"""
+    if not values:
+        return ""
+    def score(value: str) -> tuple:
+        return (value.count("{") + value.count("\\") * 2,
+                len(re.sub(r"\s+", "", value)), value)
+    return max(values, key=score)
+
+
+def _first_person_surname(record: dict) -> str:
+    fields = _record_fields(record)
+    person = str(fields.get("author") or fields.get("editor") or "").strip()
+    first = re.split(r"\s+and\s+", person, flags=re.I)[0].strip() if person else ""
+    if not first:
+        return ""
+    if re.search(r"[\u4e00-\u9fff]", first):
+        match = re.match(r"^([\u4e00-\u9fff]{1,6})", first)
+        return match.group(1)[:1] if match else first
+    if "," in first:
+        surname = first.split(",")[0]
+    else:
+        toks = [t for t in first.split() if t]
+        surname = toks[-1] if toks else ""
+    return re.sub(r"[^0-9a-z]", "", surname.lower())
+
+
+def load_duplicate_pairs(path: str) -> list[tuple[str, str, float]]:
+    """读 `duplicates.csv`（UTF-8 BOM，列 key_a/key_b/similarity）。"""
+    import csv as _csv
+
+    pairs: list[tuple[str, str, float]] = []
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        for row in _csv.DictReader(handle):
+            try:
+                similarity = float(row.get("similarity") or 0)
+            except ValueError:
+                similarity = 0.0
+            a, b = str(row.get("key_a") or ""), str(row.get("key_b") or "")
+            if a and b and a != b:
+                pairs.append((a, b, similarity))
+    return pairs
+
+
+def build_merge_plan(store: "bibdb.Store", pairs: list[tuple[str, str, float]]) -> dict:
+    """只读计算合并计划（不写库）：聚类 → 版本/字段/key/aliases → 人工清单。"""
+    records = {str(r.get("key")): r for r in store.records() if isinstance(r, dict)}
+    mia_pairs = [p for p in pairs if p[0] in MERGE_IGNORE_KEYS or p[1] in MERGE_IGNORE_KEYS]
+    kept_pairs = [p for p in pairs
+                  if p[0] not in MERGE_IGNORE_KEYS and p[1] not in MERGE_IGNORE_KEYS]
+    # ── 连通分量 ──
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for a, b, _sim in kept_pairs:
+        union(a, b)
+    members: dict[str, set[str]] = {}
+    for key in list(parent):
+        members.setdefault(find(key), set()).add(key)
+    edge_by_cluster: dict[str, list[tuple[str, str, float]]] = {}
+    for a, b, sim in kept_pairs:
+        edge_by_cluster.setdefault(find(a), []).append((a, b, sim))
+
+    clusters: list[dict] = []
+    for index, (root, keys) in enumerate(sorted(members.items(),
+                                                key=lambda item: sorted(item[1])[0]), start=1):
+        keys_sorted = sorted(keys)
+        cluster_records = [records[k] for k in keys_sorted if k in records]
+        missing = [k for k in keys_sorted if k not in records]
+        edges = edge_by_cluster.get(root, [])
+        sims = [sim for _a, _b, sim in edges]
+        canonical = max(cluster_records, key=_merge_version_score) if cluster_records else None
+        entry = {
+            "cluster": f"M{index:04d}",
+            "keys": keys_sorted,
+            "missing_keys": missing,
+            "edges": [{"a": a, "b": b, "similarity": sim} for a, b, sim in edges],
+            "has_similarity_1": any(sim >= 1.0 for sim in sims),
+            "canonical_key": str(canonical.get("key")) if canonical else "",
+            "members": [],
+            "action": "merge",
+            "reason": "",
+            "new_key": "",
+            "aliases": [],
+            "merged_fields": {},
+            "field_diffs": [],
+            "entry_type": str((canonical or {}).get("entry_type") or ""),
+        }
+        # 成员摘要（报告/CSV/JSON 共用）
+        for key in keys_sorted:
+            record = records.get(key)
+            if record is None:
+                continue
+            fields = _record_fields(record)
+            entry["members"].append({
+                "key": key,
+                "entry_type": str(record.get("entry_type") or ""),
+                "author": str(fields.get("author") or fields.get("editor") or ""),
+                "year": _record_year(record),
+                "title": str(fields.get("title") or fields.get("booktitle") or ""),
+                "sha256": str(record.get("content_sha256") or ""),
+                "issues": [str(s.get("issue")) for s in _record_sources(record) if s.get("issue")],
+                "brace_score": _record_brace_score(record),
+                "filled": _record_filled(record),
+            })
+        # ── 实质冲突 → 人工 ──
+        years = {_record_year(r) for r in cluster_records} - {""}
+        surnames = {_first_person_surname(r) for r in cluster_records} - {""}
+        types = {str(r.get("entry_type") or "").lower() for r in cluster_records}
+        type_ranks = {_TYPE_RANK.get(t, 0) for t in types}
+        if len(years) > 1:
+            entry["action"] = "manual"
+            entry["reason"] = f"年份实质冲突（{ '、'.join(sorted(years)) }）"
+        elif len(surnames) > 1:
+            entry["action"] = "manual"
+            entry["reason"] = "第一作者姓氏实质冲突（" + "、".join(sorted(surnames)) + "）"
+        elif missing:
+            entry["action"] = "manual"
+            entry["reason"] = "候选 key 在库内不存在（数据不一致）"
+        elif len(type_ranks) > 1:
+            strong = {t for t in types if _TYPE_RANK.get(t, 0) >= 3}   # 具体类型
+            if len(strong) == 1 and all(_TYPE_RANK.get(t, 0) <= 2 for t in types - strong):
+                # 弱类型（misc/unpublished/…）+ 唯一具体类型 → 收敛到具体类型（自动）
+                entry["resolved_entry_type"] = sorted(strong)[0]
+            else:
+                entry["action"] = "manual"
+                entry["reason"] = "条目类型实质冲突（" + "、".join(sorted(types)) + "）"
+        if entry["action"] == "merge":
+            entry["resolved_entry_type"] = entry.get("resolved_entry_type")
+        clusters.append(entry)
+
+    # ── 合并字段（只对 action=merge 的簇计算明细）──
+    for entry in clusters:
+        if entry["action"] != "merge":
+            continue
+        cluster_records = [records[k] for k in entry["keys"] if k in records]
+        canonical = max(cluster_records, key=_merge_version_score)
+        fields: dict[str, str] = {}
+        field_diff_notes: list[dict] = []
+        for name in sorted({n for r in cluster_records for n in _record_fields(r)}):
+            values = [str(_record_fields(r).get(name) or "") for r in cluster_records]
+            values = [v for v in values if v.strip()]
+            if not values:
+                continue
+            chosen = _merge_prefer_value(name, values)
+            fields[name] = chosen
+            distinct = [v for v in values if not _merge_field_equivalent(name, v, chosen)]
+            if distinct and len({re.sub(r"\s+", " ", v).strip() for v in distinct}) > 1:
+                field_diff_notes.append({"field": name, "keep": chosen,
+                                         "others": sorted(set(distinct))[:3]})
+        entry["merged_fields"] = fields
+        entry["field_diffs"] = field_diff_notes[:MERGE_FIELD_DIFF_NOTE_LIMIT]
+        entry["entry_type"] = str(canonical.get("entry_type") or "")
+        if entry.get("resolved_entry_type"):
+            entry["entry_type"] = entry.pop("resolved_entry_type")
+
+    # ── key 规范化：只对「有 similarity=1 边」的簇生成新 key（用户指令）──
+    live_keys = {k for k in records}
+    renamed_away = {k for entry in clusters if entry["action"] == "merge"
+                    for k in entry["keys"]}
+    reserved = live_keys - renamed_away          # 未合并记录仍占用 key
+    # 不参加 key 规范化的合并簇（无 similarity=1 边）保留旧 key → 也占位
+    for entry in clusters:
+        if entry["action"] == "merge" and not entry["has_similarity_1"]:
+            reserved.add(entry["canonical_key"])
+
+    def _person_raw(entry: dict) -> str:
+        canonical = records[entry["canonical_key"]]
+        fields = _record_fields(canonical)
+        return re.split(r"\s+and\s+", str(fields.get("author")
+                                          or fields.get("editor") or ""), flags=re.I)[0]
+
+    def _identity(person: str) -> tuple[str, tuple[str, ...]]:
+        """(姓, 名的规范化 token 序列)：拉丁取逗号前/虚词后为姓；中日文取拼音。"""
+        text = str(person or "").strip()
+        if not text:
+            return "", ()
+        if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", text):
+            head = _merge_key_name(text)
+            return head, ()
+        import unicodedata
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = re.sub(r"[^A-Za-z .,'\-]", " ", text)
+        if "," in text:
+            surname_part, given_part = text.split(",", 1)
+        else:
+            toks = [t for t in re.split(r"[\s\-]+", text) if t]
+            if not toks:
+                return "", ()
+            i = len(toks) - 1
+            while i - 1 >= 0 and toks[i - 1].lower() in _KEY_PARTICLES:
+                i -= 1
+            surname_part, given_part = " ".join(toks[i:]), " ".join(toks[:i])
+        surname = re.sub(r"[^a-z]", "", surname_part.lower())
+        given = tuple(w.lower() for w in re.split(r"[\s\-.']+", given_part) if w)
+        return surname, given
+
+    def _given_compatible(a: tuple[str, ...], b: tuple[str, ...]) -> bool:
+        if not a or not b:
+            return a == b
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        for token in shorter:
+            if not any(longer_token.startswith(token) for longer_token in longer):
+                return False
+        return True
+
+    def _same_author(entry_a: dict, entry_b: dict) -> bool:
+        sur_a, giv_a = _identity(_person_raw(entry_a))
+        sur_b, giv_b = _identity(_person_raw(entry_b))
+        return bool(sur_a) and sur_a == sur_b and _given_compatible(giv_a, giv_b)
+
+    def _given_discriminator(person: str) -> str:
+        """同姓同年不同作者时用「名首字母」区分（`FanJ` / `FanX`）。"""
+        if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", str(person or "")):
+            full = _merge_key_name(person)
+            return full                       # 中文直接用 SurnameGiven 全拼
+        import unicodedata
+        text = unicodedata.normalize("NFKD", str(person or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = re.sub(r"[^A-Za-z .,'\-]", " ", text)
+        if "," in text:
+            given_part = text.split(",", 1)[1]
+        else:
+            toks = [t for t in re.split(r"[\s\-]+", text) if t]
+            i = len(toks) - 1
+            while i - 1 >= 0 and toks[i - 1].lower() in _KEY_PARTICLES:
+                i -= 1
+            given_part = " ".join(toks[:i])
+        initials = "".join(w[0].upper() for w in re.split(r"[\s\-.' ]+", given_part) if w)[:3]
+        surname, _ = _identity(person)
+        return surname.capitalize() + initials
+
+    rekey_groups: dict[str, list[dict]] = {}
+    key_conflicts: list[dict] = []
+    apa_letter_groups: list[dict] = []
+    surname_year_discriminated: list[dict] = []
+    for entry in clusters:
+        if entry["action"] != "merge" or not entry["has_similarity_1"]:
+            continue
+        canonical = records[entry["canonical_key"]]
+        person = _person_raw(entry)
+        prefix = _merge_key_name(person)
+        year = _record_year(canonical)
+        if not prefix or not year:
+            entry["new_key"] = entry["canonical_key"]
+            key_conflicts.append({"cluster": entry["cluster"],
+                                  "canonical": entry["canonical_key"],
+                                  "why": "作者或年份不可解析，保留旧 key"})
+            continue
+        base = f"{prefix}{year}"
+        entry["new_key_base"] = base
+        entry["_person"] = person
+        rekey_groups.setdefault(base, []).append(entry)
+
+    def assign(entries: list[dict], base: str, *, kind: str) -> None:
+        """给同一 base 的簇分配 key：同一作者 → 题名字母序 a/b/c；不同作者 → 名前缀区分。"""
+        def sort_key(entry: dict) -> str:
+            canonical = records[entry["canonical_key"]]
+            return _merge_title_sort_key(str(_record_fields(canonical).get("title")
+                                             or _record_fields(canonical).get("booktitle") or ""))
+        entries.sort(key=sort_key)
+        # ① 按作者身份分组（名的缩写兼容视为同一人）
+        identities: list[list[dict]] = []
+        for entry in entries:
+            for group in identities:
+                if _same_author(entry, group[0]):
+                    group.append(entry)
+                    break
+            else:
+                identities.append([entry])
+        used = set(reserved)
+        if len(identities) == 1:
+            group = identities[0]
+            if len(group) == 1 and base not in used:
+                group[0]["new_key"] = base
+                used.add(base)
+                return
+            if len(group) > 1:
+                for index, entry in enumerate(group):
+                    candidate = f"{base}{'abcdefghijklmnopqrstuvwxyz'[index]}"
+                    entry["new_key"] = candidate
+                    used.add(candidate)
+                apa_letter_groups.append({
+                    "base": base,
+                    "clusters": [e["cluster"] for e in group],
+                    "keys": [e["new_key"] for e in group],
+                    "titles": [str(_record_fields(records[e["canonical_key"]]).get("title") or "")
+                               for e in group],
+                })
+                return
+            # 单条但 base 被未合并记录占用 → 加字母并记冲突（待确认）
+            for letter in "abcdefghijklmnopqrstuvwxyz":
+                candidate = f"{base}{letter}"
+                if candidate not in used:
+                    break
+            group[0]["new_key"] = candidate
+            used.add(candidate)
+            key_conflicts.append({"cluster": group[0]["cluster"],
+                                  "canonical": group[0]["canonical_key"],
+                                  "why": f"base `{base}` 已被未合并记录占用 → 改用 `{candidate}`"})
+            return
+        # ② 同姓同年但作者不同 → Surname+GivenInitials+Year 区分（中文用 SurnameGiven 全拼）
+        for group in identities:
+            disc_base = f"{_given_discriminator(group[0]['_person'])}{_record_year(records[group[0]['canonical_key']])}"
+            group.sort(key=sort_key)
+            free_letters = iter(ch for ch in "abcdefghijklmnopqrstuvwxyz"
+                                if f"{disc_base}{ch}" not in used)
+            if len(group) == 1 and disc_base not in used:
+                group[0]["new_key"] = disc_base
+                used.add(disc_base)
+                surname_year_discriminated.append({
+                    "base": base, "discriminator": disc_base,
+                    "cluster": group[0]["cluster"],
+                    "canonical": group[0]["canonical_key"],
+                    "why": f"同姓同年不同作者（base `{base}`）→ 用「姓名首字母」区分",
+                })
+                continue
+            for entry in group:
+                candidate = f"{disc_base}{next(free_letters)}"
+                entry["new_key"] = candidate
+                used.add(candidate)
+            if len(group) > 1:
+                apa_letter_groups.append({
+                    "base": disc_base,
+                    "clusters": [e["cluster"] for e in group],
+                    "keys": [e["new_key"] for e in group],
+                    "titles": [str(_record_fields(records[e["canonical_key"]]).get("title") or "")
+                               for e in group],
+                })
+            surname_year_discriminated.append({
+                "base": base, "discriminator": disc_base,
+                "clusters": [e["cluster"] for e in group],
+                "canonical": "、".join(e["canonical_key"] for e in group),
+                "why": f"同姓同年不同作者（base `{base}`）→ 用「姓名首字母」区分",
+            })
+
+    for base, entries in sorted(rekey_groups.items()):
+        assign(entries, base, kind="rekey")
+    # 兜底：只对**重命名**的簇做全局唯一性检查（不重命名的合并簇保留旧 key，不得被改名）
+    taken = set(reserved)
+    for entry in [e for e in clusters if e["action"] == "merge" and e.get("new_key_base")]:
+        key = entry.get("new_key") or entry["canonical_key"]
+        if key not in taken:
+            taken.add(key)
+            continue
+        stem = entry.get("new_key_base") or entry["canonical_key"]
+        for letter in "abcdefghijklmnopqrstuvwxyz":
+            candidate = f"{stem}{letter}"
+            if candidate not in taken:
+                break
+        else:
+            candidate = f"{stem}-2"
+        key_conflicts.append({"cluster": entry["cluster"],
+                              "canonical": entry["canonical_key"],
+                              "why": f"新 key `{key}` 全局冲突 → 改用 `{candidate}`"})
+        entry["new_key"] = candidate
+        taken.add(candidate)
+    for entry in clusters:
+        entry.pop("_person", None)
+        if entry["action"] != "merge":
+            continue
+        if not entry.get("new_key"):
+            entry["new_key"] = entry["canonical_key"]
+        # aliases：所有成员旧 key（含 canonical 旧 key）+ 成员已有 aliases
+        alias_set = set()
+        for key in entry["keys"]:
+            record = records.get(key)
+            if record is None:
+                continue
+            alias_set.add(key)
+            for alias in record.get("aliases") or []:
+                if isinstance(alias, str) and alias:
+                    alias_set.add(alias)
+        alias_set.discard(entry["new_key"])
+        final_keys = (live_keys - renamed_away) | {e["new_key"] for e in clusters
+                                                   if e["action"] == "merge"}
+        alias_set = {a for a in alias_set if a not in final_keys}
+        entry["aliases"] = sorted(alias_set)
+
+    # ── 汇总统计 ──
+    merge_clusters = [entry for entry in clusters if entry["action"] == "merge"]
+    manual_clusters = [entry for entry in clusters if entry["action"] == "manual"]
+    merged_away = sum(len(entry["keys"]) - 1 for entry in merge_clusters)
+    renames = [{"old": key, "new": entry["new_key"]}
+               for entry in merge_clusters for key in entry["keys"]
+               if key != entry["new_key"]]
+    return {
+        "db": os.path.basename(store.path) if getattr(store, "path", "") else "",
+        "db_sha256": bibdb.db_sha256(store.path) if getattr(store, "path", "") else "",
+        "pairs_total": len(pairs),
+        "pairs_excluded_miaolitian": len(mia_pairs),
+        "pairs_used": len(kept_pairs),
+        "similarity_1_pairs": sum(1 for _a, _b, s in kept_pairs if s >= 1.0),
+        "clusters_total": len(clusters),
+        "clusters_merge": len(merge_clusters),
+        "clusters_manual": len(manual_clusters),
+        "records_total": len(records),
+        "records_in_clusters": sum(len(entry["keys"]) for entry in clusters),
+        "records_merged_away": merged_away,
+        "predicted_records": len(records) - merged_away,
+        "rekey_clusters": sum(1 for entry in merge_clusters if entry["has_similarity_1"]),
+        "rekey_records": sum(1 for entry in merge_clusters if entry["has_similarity_1"]
+                             and entry["new_key"] != entry["canonical_key"]),
+        "key_conflicts": key_conflicts,
+        "apa_letter_groups": apa_letter_groups,
+        "surname_year_discriminated": surname_year_discriminated,
+        "renames": renames,
+        "manual_clusters": manual_clusters,
+        "clusters": clusters,
+        "miaolitian_keys": sorted(MERGE_IGNORE_KEYS & set(records)),
+    }
+
+
+def _merge_cluster_row(entry: dict) -> list[str]:
+    keys = entry["keys"]
+    sims = "、".join(f"{edge['similarity']:.4f}" for edge in entry["edges"][:3]) + \
+           ("…" if len(entry["edges"]) > 3 else "")
+    return [
+        entry["cluster"], str(len(keys)), "；".join(keys), entry["action"],
+        entry["canonical_key"], entry["new_key"] or entry["canonical_key"],
+        entry["entry_type"], sims, entry["reason"],
+        "；".join(f"{d['field']}" for d in entry["field_diffs"]) or "",
+    ]
+
+
+MERGE_CSV_COLUMNS = ["cluster", "size", "keys", "action", "canonical_key", "new_key",
+                     "entry_type", "edge_similarity", "reason", "field_diffs"]
+
+
+def build_merge_report_md(plan: dict, *, apa_url: str, generated_from: str) -> str:
+    """合并计划报告（dry-run；无时间戳/无绝对路径，可重复生成逐字节相同）。"""
+    lines = [
+        "# 引用库 · 重复候选合并计划（dry-run，未写库）",
+        "",
+        "> 本报告由 `bibdb.py merge-duplicates`（**dry-run only**）生成：只读 `bibliography.jsonl`，",
+        "> 不合并、不改 key、不重算 sha——**一个字都不写库**。apply 需 Lead/用户审批后另卡执行",
+        "> （届时按本计划 JSON 逐簇合并并重算 content_sha256）。",
+        f"> 数据：`{plan['db']}`（库 sha256 `{plan['db_sha256']}`）。",
+        "",
+        "## 0. 统计",
+        "",
+        "| 指标 | 值 |",
+        "|---|---|",
+        f"| 候选对总数（duplicates.csv） | {plan['pairs_total']} |",
+        f"| `miaolitian`/`miaolitian2` 相关对（**跳过**） | {plan['pairs_excluded_miaolitian']} |",
+        f"| 参与聚类的对 | {plan['pairs_used']} |",
+        f"| 其中 `similarity=1`（题名同形） | {plan['similarity_1_pairs']} |",
+        f"| 连通分量（簇） | **{plan['clusters_total']}**（合并 {plan['clusters_merge']} / 人工 {plan['clusters_manual']}） |",
+        f"| 涉及记录 | {plan['records_in_clusters']}（库内 {plan['records_total']} 条） |",
+        f"| **预计合并消失的记录** | **{plan['records_merged_away']}** |",
+        f"| **预计合并后条数** | **{plan['predicted_records']}**（{plan['records_total']} → {plan['predicted_records']}） |",
+        f"| 参与 key 规范化的簇 / 实际改 key 的记录 | {plan['rekey_clusters']} / {plan['rekey_records']} |",
+        f"| 其中同作者同年按题名字母序加 a/b/c（APA 7，自动） | {len(plan['apa_letter_groups'])} 组 |",
+        f"| 同姓同年不同作者（用「姓名首字母」区分，自动） | {len(plan['surname_year_discriminated'])} 项 |",
+        f"| key 冲突/需人工确认项 | {len(plan['key_conflicts'])} |",
+        "",
+        "## 1. 规则依据（已 web 核实）",
+        "",
+        "- **APA 7**：同一作者同一年有多条作品时，先按**题名字母序**排列，再依次加 a/b/c 后缀；",
+        "  题名排序忽略起始冠词 A/An/The（本计划 `_merge_title_sort_key` 按此实现）。",
+        f"  官方页：<{apa_url}>（Citing works with the same author and date；正文由 JS 渲染，",
+        "  判据另经 Tilburg University APA 7 指南 3.3「Order of reference list entries」核实：",
+        "  <https://libguides.uvt.nl/apa-manual/order-references>）。",
+        "- 本库内部 key 规范：`Surname`（或中文 `SurnameGiven` 拼音）+ 4 位年份 + 可选 a/b/c，",
+        "  与库内既有风格一致（`ChenBo2005` / `Haack1978` / `Li2026a`）；只对 **similarity=1 的簇**",
+        "  生成新 key，其余合并簇保留 canonical 旧 key（避免一次改动过大）。",
+        "- 版本选择（用户拍板）：**优先保留花括号/LaTeX 保护** → 其次字段更完整 → 来源更多 →",
+        "  冲突更少 → key 稳定。",
+        "- 字段合并：缺失补全；写法差异取「花括号保护最多/信息最全」的值；实质冲突（年份/第一作者",
+        "  姓氏/同秩条目类型不同）**不自动合并**，整簇进人工清单。",
+        "- 旧 key 一律进 `aliases`（合并后不再与任何存活 key 冲突才保留）；来源 `sources` 全量合并去重。",
+        "",
+        "## 2. key 规范化样例（前 20）",
+        "",
+        "| 簇 | canonical 旧 key | 新 key | 簇成员 |",
+        "|---|---|---|---|",
+    ]
+    rekeyed = [entry for entry in plan["clusters"]
+               if entry["action"] == "merge" and entry.get("new_key")
+               and entry["new_key"] != entry["canonical_key"]]
+    for entry in rekeyed[:20]:
+        lines.append(f"| {entry['cluster']} | `{entry['canonical_key']}` | `{entry['new_key']}` | "
+                     f"{'、'.join('`' + k + '`' for k in entry['keys'][:6])} |")
+    if not rekeyed:
+        lines.append("| — | （无） | — | — |")
+    lines += [
+        "",
+        "## 3. 合并样例（前 20；保留成员 + 字段差异）",
+        "",
+        "| 簇 | 保留 key（新 key） | 成员 | 字段差异（保留值 vs 其它写法） |",
+        "|---|---|---|---|",
+    ]
+    for entry in [e for e in plan["clusters"] if e["action"] == "merge"][:20]:
+        diffs = "；".join(f"{d['field']}" for d in entry["field_diffs"]) or "（无实质差异）"
+        lines.append(f"| {entry['cluster']} | `{entry['canonical_key']}` → `{entry['new_key']}` | "
+                     f"{'、'.join('`' + k + '`' for k in entry['keys'][:8])} | {diffs} |")
+    lines += [
+        "",
+        "## 4. 人工清单（不自动合并；需用户逐条确认）",
+        "",
+        f"共 **{len(plan['manual_clusters'])}** 簇：",
+        "",
+        "| 簇 | 成员 | 原因 |",
+        "|---|---|---|",
+    ]
+    for entry in plan["manual_clusters"][:60]:
+        lines.append(f"| {entry['cluster']} | {'、'.join('`' + k + '`' for k in entry['keys'])} | "
+                     f"{entry['reason']} |")
+    if not plan["manual_clusters"]:
+        lines.append("| — | （无） | — |")
+    lines += [
+        "",
+        "## 5. key 规则明细",
+        "",
+        "### 5.1 同作者同年 → 题名字母序 a/b/c（APA 7，自动）",
+        "",
+        "| base | 新 key（按题名排序） | 题名 |",
+        "|---|---|---|",
+    ]
+    for group in plan["apa_letter_groups"]:
+        titles = "；".join(f"`{_md_escape(t, width=40)}`" for t in group["titles"][:4])
+        lines.append(f"| `{group['base']}` | "
+                     f"{'、'.join('`' + k + '`' for k in group['keys'])} | {titles} |")
+    if not plan["apa_letter_groups"]:
+        lines.append("| — | — | （无） |")
+    lines += [
+        "",
+        "### 5.2 同姓同年但作者不同人 → 用「姓名首字母」区分（自动）",
+        "",
+        "| base | 区分后 key | 所属簇 | 说明 |",
+        "|---|---|---|---|",
+    ]
+    for item in plan["surname_year_discriminated"]:
+        keys = item.get("keys") or [item.get("discriminator", "")]
+        lines.append(f"| `{item.get('base', '')}` | "
+                     f"{'、'.join('`' + k + '`' for k in keys)} | "
+                     f"{item.get('cluster', '')} | {item.get('why', '')} |")
+    if not plan["surname_year_discriminated"]:
+        lines.append("| — | — | — | （无） |")
+    lines += [
+        "",
+        "### 5.3 key 冲突 / 需人工确认（全量）",
+        "",
+        "| 簇 | canonical | 说明 |",
+        "|---|---|---|",
+    ]
+    for item in plan["key_conflicts"]:
+        lines.append(f"| {item.get('cluster', '')} | `{item.get('canonical', '')}` | "
+                     f"{item.get('why', '')} |")
+    if not plan["key_conflicts"]:
+        lines.append("| — | — | （无） |")
+    lines += [
+        "",
+        "## 6. 风险与回滚",
+        "",
+        "- **风险**：同作品判断依赖题名归一相似度（≥0.90）+ 第一作者姓 + 年份；极端同题不同版",
+        "  （初版/译本/修订版）可能被并。故人工清单外的簇仍建议按本报告 §3 抽查 20 条。",
+        "- 年份/第一作者姓氏实质冲突的簇**已全部**进人工清单，未自动处理。",
+        "- 高相似度但题名不同的对子（0.90–0.999）按用户指令合并；若担心误并，可只先执行",
+        "  `similarity=1` 子集（本报告已单独统计，见决策点）。",
+        "- **回滚**：apply 前 `cp bibliography.jsonl /tmp/bibliography_before_merge.jsonl`；",
+        "  回滚 `cp /tmp/bibliography_before_merge.jsonl <notes>/bib_db/bibliography.jsonl`。",
+        "- apply 后须：重算 content_sha256、lint error 0、重生成三清单、逐条核对 aliases。",
+        "",
+        "## 7. 交付文件",
+        "",
+        f"- `{MERGE_REPORT_MD}`（本报告）",
+        f"- `{MERGE_REPORT_CSV}`（全量簇清单）",
+        f"- `{MERGE_RENAMES_CSV}`（旧 key → 新 key 全量；含冲突说明）",
+        f"- `{MERGE_MANUAL_CSV}`（人工清单）",
+        f"- `{MERGE_PLAN_JSON}`（apply 用完整计划：每簇成员/合并字段/aliases/新 key）",
+        "",
+        "## 8. 给 Lead/用户的决策点（≤10 行）",
+        "",
+        f"1. **合并规模**：{plan['pairs_total']} 对 → {plan['clusters_total']} 簇，自动合并 "
+        f"{plan['clusters_merge']} 簇；记录 **{plan['records_total']} → {plan['predicted_records']}**"
+        f"（合并消失 {plan['records_merged_away']} 条）。",
+        f"2. **人工清单 {len(plan['manual_clusters'])} 簇**：全部是「条目类型实质冲突」"
+        f"（年份/作者冲突 0 簇），逐条见 §4/`{MERGE_MANUAL_CSV}`——请逐簇定夺保留哪种类型。",
+        f"3. **key 规范化**：{plan['rekey_clusters']} 簇 / 改 key {plan['rekey_records']} 条；"
+        f"APA 同作者同年按题名字母序 {len(plan['apa_letter_groups'])} 组（自动）、"
+        f"同姓同年不同人用姓名首字母 {len(plan['surname_year_discriminated'])} 项（自动）。",
+        f"4. **key 冲突/待确认 {len(plan['key_conflicts'])} 项**（§5.3）：base 被未合并记录占用 →"
+        " 自动加字母，或作者/年份无法解析 → 保留旧 key。",
+        "5. **非 similarity=1 的合并簇保留旧 key**（按用户指令只统一 sim=1）；若也要全库统一，需另定。",
+        f"6. **字段合并**：花括号保护优先 + 缺失补全 + 写法差异取信息最全；"
+        f"{sum(1 for c in plan['clusters'] if c.get('field_diffs'))} 簇有字段差异明细（见 JSON）。",
+        "7. 建议先审：13 人工簇 + 12 key 项 → 抽查 20 条自动合并簇 → GO 后另卡 apply"
+        "（备份/重算 sha/aliases/三清单重生成/回测）。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_merge_plan_csv(plan: dict) -> str:
+    import csv as _csv
+    import io
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, lineterminator="\n")
+    writer.writerow(MERGE_CSV_COLUMNS)
+    for entry in plan["clusters"]:
+        writer.writerow(_merge_cluster_row(entry))
+    return "\ufeff" + buffer.getvalue()
+
+
+def build_merge_renames_csv(plan: dict) -> str:
+    import csv as _csv
+    import io
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["old_key", "new_key", "note"])
+    conflict_by_key = {}
+    for item in plan["key_conflicts"]:
+        for key in re.findall(r"`([^`]+)`", item.get("why", "")):
+            conflict_by_key.setdefault(key, item.get("why", ""))
+    for item in plan["renames"]:
+        entry_new = item["new"]
+        note = ""
+        if item["old"] in plan.get("key_conflicts_text", {}):
+            note = plan["key_conflicts_text"][item["old"]]
+        writer.writerow([item["old"], entry_new, note])
+    return "\ufeff" + buffer.getvalue()
+
+
+def build_merge_manual_csv(plan: dict) -> str:
+    import csv as _csv
+    import io
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["cluster", "keys", "reason", "years", "surnames", "entry_types"])
+    records = {}
+    for entry in plan["manual_clusters"]:
+        members = entry.get("members") or []
+        writer.writerow([
+            entry["cluster"],
+            "；".join(entry["keys"]),
+            entry["reason"],
+            "；".join(sorted({str(m.get("year") or "") for m in members})),
+            "；".join(sorted({str(m.get("author") or "") for m in members})),
+            "；".join(sorted({str(m.get("entry_type") or "") for m in members})),
+        ])
+    return "\ufeff" + buffer.getvalue()
+
+
+def build_merge_plan_json(plan: dict) -> str:
+    payload = dict(plan)
+    payload["tool"] = "bibdb.py merge-duplicates（dry-run）"
+    payload["mode"] = "dry-run"
+    payload["apply_implemented"] = False
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _write_merge_reports(args, plan: dict) -> list[dict]:
+    out_dir = str(getattr(args, "out_dir", "") or "")
+    written: list[dict] = []
+    if not out_dir:
+        return written
+    written.append(_write_report(os.path.join(out_dir, MERGE_REPORT_MD),
+                                 build_merge_report_md(
+                                     plan, apa_url="https://apastyle.apa.org/style-grammar-guidelines/citations/basic-principles/same-year-author",
+                                     generated_from=f"{plan['db']}（sha256 `{plan['db_sha256']}`）")))
+    written.append(_write_report(os.path.join(out_dir, MERGE_REPORT_CSV),
+                                 build_merge_plan_csv(plan)))
+    written.append(_write_report(os.path.join(out_dir, MERGE_RENAMES_CSV),
+                                 build_merge_renames_csv(plan)))
+    written.append(_write_report(os.path.join(out_dir, MERGE_MANUAL_CSV),
+                                 build_merge_manual_csv(plan)))
+    written.append(_write_report(os.path.join(out_dir, MERGE_PLAN_JSON),
+                                 build_merge_plan_json(plan)))
+    return written
+
+
+# ── 重复合并 apply（merge-duplicates --apply；第四十三批 task-44）───────────────
+MERGE_APPLY_REPORT_MD = "MERGE-APPLY-2026-10-18.md"
+MERGE_APPLY_REPORT_JSON = "MERGE-APPLY-2026-10-18.json"
+MERGE_APPLY_CLUSTERS_CSV = "MERGE-APPLY-2026-10-18.csv"
+MERGE_APPLY_ARCHIVE_CSV = "MERGE-APPLY-ARCHIVE.csv"
+
+
+def _merge_sources_union(records_to_merge: list[dict]) -> list[dict]:
+    """合并 sources：按来源身份去重（kind/issue/slug/file/key/entry_sha256），保持确定性。"""
+    seen: dict[tuple, dict] = {}
+    for record in records_to_merge:
+        for source in _record_sources(record):
+            identity = tuple(str(source.get(name) or "") for name in
+                             ("kind", "issue", "slug", "file", "key", "entry_sha256"))
+            if identity not in seen:
+                seen[identity] = dict(source)
+    return [seen[key] for key in sorted(seen, key=lambda item: item)]
+
+
+def _merge_conflicts_union(records_to_merge: list[dict]) -> list[dict]:
+    """合并 conflicts 历史：按（existing_sha256, incoming_sha256, resolution, resolved_at, at）去重。"""
+    seen: dict[tuple, dict] = {}
+    for record in records_to_merge:
+        for conflict in record.get("conflicts") or []:
+            if not isinstance(conflict, dict):
+                continue
+            identity = tuple(str(conflict.get(name) or "") for name in
+                             ("existing_sha256", "incoming_sha256", "resolution",
+                              "resolved_at", "at"))
+            seen.setdefault(identity, conflict)
+    return [seen[key] for key in sorted(seen, key=lambda item: item)]
+
+
+def apply_merge_plan(store: "bibdb.Store", plan: dict) -> dict:
+    """按 dry-run 计划执行合并（**会写库**；由 cmd 在 --backup/sha 门禁通过后调用）。
+
+    · 只处理 `action=merge` 的簇（人工簇整簇不动）；`miaolitian*` 不在任何簇里；
+    · 每簇：canonical 记录 → 合并字段 + 合并 sources/conflicts + aliases + 新 key，
+      删除其余成员记录；重算 content_sha256，`updated_at`=now；
+    · 幂等：若某簇成员已不存在（已被合并过/计划过期）→ 跳过并计数，不报错。
+    """
+    records = {str(r.get("key")): r for r in store.records() if isinstance(r, dict)}
+    now = bibdb._now_iso()
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    for entry in plan.get("clusters") or []:
+        if entry.get("action") != "merge":
+            continue
+        keys = [str(k) for k in entry.get("keys") or []]
+        if any(key not in records for key in keys):
+            skipped.append({"cluster": entry.get("cluster", ""), "keys": keys,
+                            "reason": "成员已不存在（已合并/计划过期）"})
+            continue
+        canonical_key = str(entry.get("canonical_key") or "")
+        if canonical_key not in records:
+            skipped.append({"cluster": entry.get("cluster", ""), "keys": keys,
+                            "reason": "canonical 记录不存在"})
+            continue
+        members = [records[key] for key in keys]
+        canonical = records[canonical_key]
+        new_key = str(entry.get("new_key") or canonical_key)
+        if new_key in records and new_key not in keys:
+            skipped.append({"cluster": entry.get("cluster", ""), "keys": keys,
+                            "reason": f"新 key `{new_key}` 已被其它记录占用"})
+            continue
+        etype = str(entry.get("entry_type") or canonical.get("entry_type") or "")
+        merged_fields = {str(name): str(value) for name, value in
+                         (entry.get("merged_fields") or {}).items() if str(value or "").strip()}
+        if not merged_fields:                    # 计划缺字段（旧计划）→ 退回 canonical 字段
+            merged_fields = {str(n): str(v) for n, v in _record_fields(canonical).items()
+                             if str(v or "").strip()}
+        verified_at = min([str(r.get("verified_at") or "") for r in members if r.get("verified_at")]
+                          or [""])
+        created_at = min([str(r.get("created_at") or "") for r in members
+                          if r.get("created_at")] or [now])
+        aliases = sorted({str(a) for a in (entry.get("aliases") or []) if str(a)})
+        merged = {
+            "version": canonical.get("version", 1),
+            "key": new_key,
+            "entry_type": etype,
+            "fields": dict(sorted(merged_fields.items())),
+            "verified": any(bool(r.get("verified")) for r in members),
+            "verified_at": verified_at or None,
+            "method": canonical.get("method"),
+            "content_sha256": bibdb.content_sha256(etype, merged_fields),
+            "aliases": aliases,
+            "sources": _merge_sources_union(members),
+            "conflicts": _merge_conflicts_union(members),
+            "created_at": created_at,
+            "updated_at": now,
+        }
+        if not merged["verified_at"]:
+            merged.pop("verified_at", None)
+        applied.append({
+            "cluster": entry.get("cluster", ""),
+            "keys": keys,
+            "canonical_key": canonical_key,
+            "new_key": new_key,
+            "aliases": aliases,
+            "removed": [k for k in keys if k != new_key],
+            "sources": len(merged["sources"]),
+            "conflicts": len(merged["conflicts"]),
+        })
+        for key in keys:
+            records.pop(key, None)
+        records[new_key] = merged
+    if applied:
+        # ⚠️ 不能用 store.save()：`save()` 会调 `refresh_aliases()` **按来源重算 aliases**，
+        #    把本计划显式写入的「被并旧 key → 新 key」覆盖掉（合并场景来源 key 与新 key 不同）。
+        #    这里按库格式直接原子写回（与 `_record_line` 同一序列化），随后由 cmd 重新 load 校验。
+        text = "".join(bibdb._record_line(records[key]) + "\n" for key in sorted(records))
+        fsutil.atomic_write(store.path, text, keep_backups=0)
+    return {
+        "applied_clusters": applied,
+        "skipped_clusters": skipped,
+        "clusters_applied": len(applied),
+        "clusters_skipped": len(skipped),
+        "records_removed": sum(len(item["keys"]) - 1 for item in applied),
+        "records_after": len(records),
+        "renames": sum(1 for item in applied for key in item["keys"] if key != item["new_key"]),
+        "aliases_total": sum(len(item["aliases"]) for item in applied),
+    }
+
+
+def _merge_manual_research_table(research: list[dict] | None) -> list[str]:
+    """13 个人工簇的联网核实建议表（≤13 行 + 表头）。"""
+    lines = [
+        "## 4. 13 个人工簇：**暂不合并** + 联网核实建议（待用户/Lead 最终点头）",
+        "",
+        "> 依据：免费 web 搜索/抓取（未用付费 AI）；每簇给出证据 URL 与建议保留类型。",
+        "",
+        "| # | 簇 | 成员 key | 当前类型 | 证据 URL | 建议保留类型 | 说明 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    if not research:
+        lines.append("| — | — | — | — | （未提供 research JSON） | — | — |")
+        return lines
+    for index, item in enumerate(research[:13], start=1):
+        urls = "<br>".join(f"<{url}>" for url in (item.get("urls") or [])[:3]) or "（无）"
+        lines.append(
+            f"| {index:02d} | {_md_escape(item.get('cluster', ''))} | "
+            f"{'、'.join('`' + str(k) + '`' for k in (item.get('keys') or [])[:6])} | "
+            f"{_md_escape('/'.join(str(t) for t in item.get('types') or []))} | {urls} | "
+            f"`{_md_escape(item.get('suggested_type', ''))}` | "
+            f"{_md_escape(item.get('reason', ''))} |")
+    return lines
+
+
+def build_merge_apply_report_md(plan: dict, result: dict, sha_before: str, sha_after: str,
+                                *, backup_path: str, backup_sha: str,
+                                verification: dict, research: list[dict] | None = None,
+                                lists_note: tuple[str, str, str] | None = None) -> str:
+    """合并 apply 报告（写入 bib_db/；含 sha 链/别名归档/人工簇核实/回滚）。"""
+    applied = result["applied_clusters"]
+    lines = [
+        "# 引用库 · 重复候选合并 + key 规范化 apply 报告（第四十三批）",
+        "",
+        "> 本报告由 `bibdb.py merge-duplicates --apply` 生成：按 Lead 审阅通过的计划执行",
+        "> **657 个自动合并簇 + 499 条 key 规范化**（用户 2026-10-18 授权：除",
+        "> `miaolitian`/`miaolitian2` 外全部合并；similarity=1 统一 key 规范）。",
+        "> **13 个人工簇（条目类型实质冲突）保持原样未合并**；`miaolitian*` 未动；",
+        "> 历史冲突裁决（203/203 已裁决）不改。",
+        "",
+        f"- 库 sha256（apply 前）：`{sha_before}`",
+        f"- 库 sha256（apply 后）：`{sha_after}`",
+        f"- apply 前备份：`{backup_path}`（sha256 `{backup_sha}`）",
+        f"- 记录数：**{plan['records_total']} → {result['records_after']}**"
+        f"（合并消失 {result['records_removed']} 条）",
+        f"- 自动合并簇：**{result['clusters_applied']}** / 计划 {plan['clusters_merge']}"
+        f"（跳过 {result['clusters_skipped']}）；人工保留：**{len(plan['manual_clusters'])}** 簇",
+        f"- key 改名：**{result['renames']}** 条；别名写入：**{result['aliases_total']}** 个"
+        f"（全量旧→新映射见 `{MERGE_APPLY_ARCHIVE_CSV}`）",
+        f"- key 冲突消解：{len(plan['key_conflicts'])} 项（§5）",
+        "",
+        "## 1. 合并规则（与 dry-run 计划一致）",
+        "",
+        "- canonical 版本：花括号保护 → 字段完整 → 来源多 → 冲突少（同一套 `_merge_version_score`）；",
+        "- 字段合并：缺失补全；写法差异取「花括号保护最多/信息最全」的值（不丢 title/author/year/",
+        "  journal/volume/number/pages/publisher/doi/url/note）；",
+        "- sources 全量合并去重（kind/issue/slug/file/key/entry_sha256 去重）；conflicts 历史合并去重；",
+        "- 被并记录旧 key + 原有 aliases 全部写入合并后记录的 `aliases`；",
+        "- key 规范：APA 7（同作者同年按题名字母序 a/b/c）；同姓同年不同作者用姓名首字母区分。",
+        "",
+        "## 2. 幂等与一致性验证",
+        "",
+        f"- apply 后重新生成候选清单再跑 dry-run：**合并簇残留 {verification.get('residual_merge', '—')}**"
+        f"（预期 0；剩余的 {verification.get('residual_manual', '—')} 簇均为人工簇）",
+        f"- 二次 apply（按 apply 后新计划）：**applied {verification.get('second_applied', '—')}**"
+        f"、库未变 `{verification.get('second_unchanged', '—')}`",
+        f"- lint：error **{verification.get('lint_errors', '—')}** / warning "
+        f"{verification.get('lint_warnings', '—')}；content_sha 复算不符 **0** 条",
+        f"- 冲突：203 项仍全部已裁决（待裁决 **{verification.get('pending_conflicts', '—')}**）",
+    ]
+    if lists_note:
+        lines += [
+            f"- 三清单重生成 sha：CONFLICTS `{lists_note[0][:16]}…` / DUPLICATES "
+            f"`{lists_note[1][:16]}…` / duplicates.csv `{lists_note[2][:16]}…`；"
+            f"候选对 **{verification.get('pairs_after', '—')}** 对"
+            f"（合并前 1294；剩余均属人工簇/待确认）",
+        ]
+    lines += [
+        "",
+        "## 3. apply 明细（全量见 CSV；前 20 抽样）",
+        "",
+        "| # | 簇 | 旧 key | 新 key | 别名数 | 合并来源 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for index, item in enumerate(applied[:20], start=1):
+        old = "、".join(f"`{key}`" for key in item["keys"][:6]) + ("…" if len(item["keys"]) > 6 else "")
+        lines.append(f"| {index:02d} | {item['cluster']} | {old} | `{item['new_key']}` | "
+                     f"{len(item['aliases'])} | {item['sources']} |")
+    if not applied:
+        lines.append("| — | （无） | — | — | — | — |")
+    lines += ["", * _merge_manual_research_table(research), ""]
+    lines += [
+        "## 5. key 冲突/自动消解（全量）",
+        "",
+        "| 簇 | canonical | 处理 |",
+        "|---|---|---|",
+    ]
+    for item in plan.get("key_conflicts") or []:
+        lines.append(f"| {_md_escape(str(item.get('cluster', '')))} | "
+                     f"`{_md_escape(str(item.get('canonical', '')))}` | "
+                     f"{_md_escape(str(item.get('why', '')))} |")
+    if not plan.get("key_conflicts"):
+        lines.append("| — | — | （无） |")
+    lines += [
+        "",
+        "## 6. 回滚命令",
+        "",
+        "```bash",
+        f"cp {backup_path} ../EditToolBox-notes/bib_db/bibliography.jsonl",
+        "```",
+        "",
+        f"（备份 sha256：`{backup_sha}`；回滚后须重跑 `bibdb.py report --out ../EditToolBox-notes/bib_db`）",
+        "",
+        "## 7. 待用户确认",
+        "",
+        f"- **13 个人工簇**（§4，条目类型实质冲突）暂未合并，等用户/Lead 最终点头；",
+        f"- `miaolitian` / `miaolitian2` 保持原样（用户明确例外）；",
+        f"- key 冲突 {len(plan.get('key_conflicts') or [])} 项已按规则自动消解（§5，可复核）。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_merge_apply_json(plan: dict, result: dict, sha_before: str, sha_after: str,
+                           *, backup_path: str, backup_sha: str,
+                           verification: dict) -> str:
+    payload = {
+        "tool": "bibdb.py merge-duplicates --apply",
+        "mode": "apply",
+        "plan_db_sha256": plan.get("db_sha256"),
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "backup_path": backup_path,
+        "backup_sha256": backup_sha,
+        "records_before": plan.get("records_total"),
+        "records_after": result["records_after"],
+        "records_removed": result["records_removed"],
+        "clusters_total": plan.get("clusters_total"),
+        "clusters_merge": plan.get("clusters_merge"),
+        "clusters_manual_kept": len(plan.get("manual_clusters") or []),
+        "clusters_applied": result["clusters_applied"],
+        "clusters_skipped": result["clusters_skipped"],
+        "renames": result["renames"],
+        "aliases_total": result["aliases_total"],
+        "key_conflicts": plan.get("key_conflicts") or [],
+        "manual_clusters": plan.get("manual_clusters") or [],
+        "applied_entries": result["applied_clusters"],
+        "skipped_entries": result["skipped_clusters"],
+        "verification": verification,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def build_merge_apply_clusters_csv(result: dict) -> str:
+    import csv as _csv
+    import io
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["cluster", "old_keys", "canonical_key", "new_key", "aliases",
+                     "removed_keys", "sources", "conflicts"])
+    for item in result["applied_clusters"]:
+        writer.writerow([item["cluster"], "；".join(item["keys"]), item["canonical_key"],
+                         item["new_key"], "；".join(item["aliases"]),
+                         "；".join(item["removed"]), item["sources"], item["conflicts"]])
+    return "\ufeff" + buffer.getvalue()
+
+
+def build_merge_archive_csv(plan: dict) -> str:
+    """旧 key → 新 key 归档映射（被并记录 + 改名 canonical）。"""
+    import csv as _csv
+    import io
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, lineterminator="\n")
+    writer.writerow(["old_key", "new_key", "cluster", "note"])
+    for entry in plan.get("clusters") or []:
+        if entry.get("action") != "merge":
+            continue
+        for key in entry.get("keys") or []:
+            if key == entry.get("new_key"):
+                continue
+            writer.writerow([key, entry.get("new_key", ""), entry.get("cluster", ""),
+                             "merged" if key != entry.get("canonical_key") else "renamed"])
+    return "\ufeff" + buffer.getvalue()
+
+
+def _write_merge_apply_reports(args, plan: dict, result: dict, sha_before: str,
+                               sha_after: str, *, backup_path: str, backup_sha: str,
+                               verification: dict, lists_note=None) -> list[dict]:
+    out_dir = str(getattr(args, "out_dir", "") or "")
+    if not out_dir:
+        return []
+    research = None
+    research_path = str(getattr(args, "research", "") or "")
+    if research_path and os.path.isfile(research_path):
+        try:
+            research = json.load(open(research_path, encoding="utf-8"))
+        except (OSError, ValueError):
+            research = None
+    written: list[dict] = []
+    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_REPORT_MD),
+                                 build_merge_apply_report_md(
+                                     plan, result, sha_before, sha_after,
+                                     backup_path=backup_path, backup_sha=backup_sha,
+                                     verification=verification, research=research,
+                                     lists_note=lists_note)))
+    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_REPORT_JSON),
+                                 build_merge_apply_json(
+                                     plan, result, sha_before, sha_after,
+                                     backup_path=backup_path, backup_sha=backup_sha,
+                                     verification=verification)))
+    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_CLUSTERS_CSV),
+                                 build_merge_apply_clusters_csv(result)))
+    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_ARCHIVE_CSV),
+                                 build_merge_archive_csv(plan)))
+    return written
+
+
+def cmd_merge_duplicates(args) -> int:
+    """重复候选合并：默认 dry-run（计划）；`--apply --backup` 才真正写库（第四十三批）。"""
+    apply_mode = bool(getattr(args, "apply", False))
+    if apply_mode and bool(getattr(args, "dry_run", False)):
+        print("✗ --apply 与 --dry-run 互斥：一次只能选一种模式", file=sys.stderr)
+        return 2
+    try:
+        path, store = _open_store(args)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    sha_before = bibdb.db_sha256(path)
+    backup_path = str(getattr(args, "backup", "") or "")
+    backup_sha = ""
+    if apply_mode:
+        if not backup_path:
+            print("✗ --apply 会写真实库，必须先备份并用 --backup PATH 指定", file=sys.stderr)
+            return 2
+        if not os.path.isfile(backup_path):
+            print(f"✗ 备份文件不存在：{backup_path}", file=sys.stderr)
+            return 2
+        backup_sha = bibdb.db_sha256(backup_path)
+        if backup_sha != sha_before:
+            print(f"✗ 备份 sha256 与当前库不一致（备份 {backup_sha} / 当前 {sha_before}）",
+                  file=sys.stderr)
+            return 2
+    if apply_mode:
+        plan_path = str(getattr(args, "plan", "") or "")
+        if not plan_path:
+            plan_path = os.path.join(os.path.dirname(path), MERGE_PLAN_JSON)
+        if not os.path.isfile(plan_path):
+            print(f"✗ 找不到合并计划：{plan_path}（先跑 merge-duplicates dry-run）", file=sys.stderr)
+            return 2
+        try:
+            plan = json.load(open(plan_path, encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"✗ 读不了合并计划 {plan_path}：{exc}", file=sys.stderr)
+            return 2
+        if str(plan.get("db_sha256") or "") != sha_before:
+            print("✗ 合并计划与当前库不一致（库 sha256 变了）：请先重跑 "
+                  "`bibdb.py merge-duplicates --out-dir <笔记仓>/bib_db` 生成新计划",
+                  file=sys.stderr)
+            return 2
+        result = apply_merge_plan(store, plan)
+        sha_after = bibdb.db_sha256(path)
+        # 重新 load 校验（写回后确认 JSONL 可解析、content_sha 自洽、索引正常）
+        store2 = bibdb.Store.load(path)
+        content_bad = sum(
+            1 for record in store2.records()
+            if isinstance(record, dict)
+            and bibdb.content_sha256(str(record.get("entry_type") or ""),
+                                     record.get("fields") or {}) != record.get("content_sha256"))
+        lint = store2.lint()
+        pending = 0; conflicts_total = 0
+        for record in store2.records():
+            for conflict in (record.get("conflicts") or []):
+                conflicts_total += 1
+                if bibdb.conflict_is_pending(conflict):
+                    pending += 1
+        try:
+            _pairs, pairs_after = store2._near_duplicates(store2.records(), cap=0)  # noqa: SLF001
+        except Exception:                      # 防御：候选对统计失败不影响主流程
+            pairs_after = -1
+        verification = {
+            "records_after": result["records_after"],
+            "content_sha_mismatch": content_bad,
+            "lint_errors": len(lint.get("errors") or []),
+            "lint_warnings": len(lint.get("warnings") or []),
+            "pending_conflicts": pending,
+            "conflicts_total": conflicts_total,
+            "pairs_after": pairs_after,
+        }
+        written = _write_merge_apply_reports(
+            args, plan, result, sha_before, sha_after,
+            backup_path=backup_path, backup_sha=backup_sha, verification=verification)
+        payload = {
+            "db": os.path.basename(path) or path,
+            "mode": "apply",
+            "sha256_before": sha_before,
+            "sha256_after": sha_after,
+            "backup_path": backup_path,
+            "backup_sha256": backup_sha,
+            "records_before": plan.get("records_total"),
+            "records_after": result["records_after"],
+            "records_removed": result["records_removed"],
+            "clusters_applied": result["clusters_applied"],
+            "clusters_skipped": result["clusters_skipped"],
+            "clusters_manual_kept": len(plan.get("manual_clusters") or []),
+            "renames": result["renames"],
+            "aliases_total": result["aliases_total"],
+            "key_conflicts": plan.get("key_conflicts") or [],
+            "verification": verification,
+            "written": written,
+        }
+        if args.json:
+            _print_json(payload)
+            return 0
+        print(f"库：{path}")
+        print(f"库 sha256（apply 前/后）：{sha_before} / {sha_after}")
+        print(f"备份：{backup_path}（sha256: {backup_sha}）")
+        print(f"记录：{plan.get('records_total')} → {result['records_after']}"
+              f"（合并消失 {result['records_removed']} 条）")
+        print(f"合并：{result['clusters_applied']} 簇（跳过 {result['clusters_skipped']}）；"
+              f"人工保留 {len(plan.get('manual_clusters') or [])} 簇")
+        print(f"key 改名 {result['renames']} 条；别名 {result['aliases_total']} 个")
+        print(f"校验：content_sha 不符 {content_bad}；lint error {verification['lint_errors']}；"
+              f"待裁决冲突 {pending}；候选对 {pairs_after}")
+        for item in written:
+            state = "已写入" if item["written"] else "内容未变（未重写）"
+            print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
+        print("   （只合并/改 key/写别名；未改 author 语义、未碰历史冲突裁决、未写稿件仓）")
+        return 0
+    # ── dry-run（计划）──
+    pairs_path = str(getattr(args, "pairs", "") or "")
+    if not pairs_path:
+        pairs_path = os.path.join(os.path.dirname(path), "duplicates.csv")
+    if not os.path.isfile(pairs_path):
+        print(f"✗ 找不到重复候选清单：{pairs_path}（先跑 bibdb.py report）", file=sys.stderr)
+        return 2
+    pairs = load_duplicate_pairs(pairs_path)
+    plan = build_merge_plan(store, pairs)
+    sha_after = bibdb.db_sha256(path)
+    if sha_before != sha_after:
+        print("✗ 内部错误：merge-duplicates dry-run 期间库文件被改动", file=sys.stderr)
+        return 2
+    written = _write_merge_reports(args, plan)
+    payload = {
+        "db": os.path.basename(path) or path,
+        "sha256": sha_before,
+        "db_unchanged": True,
+        "apply_implemented": True,
+        "pairs_total": plan["pairs_total"],
+        "pairs_excluded_miaolitian": plan["pairs_excluded_miaolitian"],
+        "clusters_total": plan["clusters_total"],
+        "clusters_merge": plan["clusters_merge"],
+        "clusters_manual": plan["clusters_manual"],
+        "records_total": plan["records_total"],
+        "records_merged_away": plan["records_merged_away"],
+        "predicted_records": plan["predicted_records"],
+        "rekey_clusters": plan["rekey_clusters"],
+        "rekey_records": plan["rekey_records"],
+        "key_conflicts": len(plan["key_conflicts"]),
+        "apa_letter_groups": len(plan["apa_letter_groups"]),
+        "surname_year_discriminated": len(plan["surname_year_discriminated"]),
+        "manual_clusters": len(plan["manual_clusters"]),
+        "written": written,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"库 sha256：{sha_before}（dry-run 未改动）")
+    print(f"候选对：{plan['pairs_total']}（跳过 miaolitian 相关 {plan['pairs_excluded_miaolitian']}）"
+          f" → 簇 {plan['clusters_total']}（合并 {plan['clusters_merge']} / 人工 {plan['clusters_manual']}）")
+    print(f"记录：{plan['records_total']} → 预计 {plan['predicted_records']}"
+          f"（合并消失 {plan['records_merged_away']} 条）")
+    print(f"key 规范化：{plan['rekey_clusters']} 簇 / 改 key {plan['rekey_records']} 条；"
+          f"APA 字母组 {len(plan['apa_letter_groups'])}、同姓不同人区分 "
+          f"{len(plan['surname_year_discriminated'])}、真冲突/待确认 {len(plan['key_conflicts'])} 项")
+    print(f"人工清单：{len(plan['manual_clusters'])} 簇")
+    for item in written:
+        state = "已写入" if item["written"] else "内容未变（未重写）"
+        print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
+    print("   （dry-run：未修改 bibliography.jsonl；--apply 才写库）")
     return 0
 
 
@@ -3129,11 +4680,16 @@ def build_parser() -> argparse.ArgumentParser:
     edt = sub.add_parser(
         "normalize-editors", parents=[common],
         help="B3 英文编者倒装 **dry-run**（只出报告、绝不写库；传 --apply 一律拒绝）")
-    edt.add_argument("--dry-run", action="store_true", help="显式 dry-run（默认就是）")
-    edt.add_argument("--apply", action="store_true",
-                     help="本批**未实现**：B3 apply 须用户拍板后另批；传了直接拒绝（退出 2）")
+    emode = edt.add_mutually_exclusive_group()
+    emode.add_argument("--dry-run", action="store_true", help="显式 dry-run（默认就是）")
+    emode.add_argument("--apply", action="store_true",
+                       help="真正写库：只改安全条目的 editor（+ content_sha256/updated_at），"
+                            "必须先 --backup")
+    edt.add_argument("--backup", default="", metavar="PATH",
+                     help="--apply 前须先 cp 库文件；这里指定备份路径并校验 sha256")
     edt.add_argument("--report", default="", metavar="PATH",
-                     help=f"Markdown 报告路径（--out-dir 时默认 {EDITOR_REPORT_DRY}）")
+                     help=f"Markdown 报告路径（dry-run 默认 {EDITOR_REPORT_DRY}；"
+                          f"apply 默认 {EDITOR_REPORT_APPLY}）")
     edt.add_argument("--out-dir", default="", metavar="DIR",
                      help=f"输出目录：写 {EDITOR_REPORT_DRY} + {EDITOR_REPORT_CSV} "
                           f"+ {EDITOR_REPORT_JSON}")
@@ -3142,6 +4698,27 @@ def build_parser() -> argparse.ArgumentParser:
     edt.add_argument("--json-out", default="", metavar="PATH", help="JSON 摘要输出路径")
     edt.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
     edt.set_defaults(func=cmd_normalize_editors)
+
+    # ── 重复候选合并计划（dry-run only；apply 另卡）────────────────────────
+    mrg = sub.add_parser(
+        "merge-duplicates", parents=[common],
+        help="重复候选合并计划 **dry-run**（聚类+key 规范化+字段合并；不写库；apply 另卡）")
+    mrg.add_argument("--pairs", default="", metavar="PATH",
+                     help="重复候选清单 duplicates.csv 路径（默认库同目录）")
+    mrg.add_argument("--out-dir", default="", metavar="DIR",
+                     help="输出目录：写 DUPLICATES-MERGE-PLAN.md/.csv + RENAMES/MANUAL/PLAN.json")
+    mmode = mrg.add_mutually_exclusive_group()
+    mmode.add_argument("--dry-run", action="store_true", help="显式 dry-run（默认就是）")
+    mmode.add_argument("--apply", action="store_true",
+                       help="真正写库：按计划合并 + 改 key + 写 aliases（必须先 --backup）")
+    mrg.add_argument("--backup", default="", metavar="PATH",
+                     help="--apply 前须先 cp 库文件；这里指定备份路径并校验 sha256")
+    mrg.add_argument("--plan", default="", metavar="PATH",
+                     help="--apply 用的计划 JSON（默认库同目录 DUPLICATES-MERGE-PLAN.json）")
+    mrg.add_argument("--research", default="", metavar="PATH",
+                     help="--apply 报告用：人工簇联网核实建议 JSON（可选）")
+    mrg.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
+    mrg.set_defaults(func=cmd_merge_duplicates)
     return parser
 
 

@@ -84,6 +84,7 @@ manifest（`--manifest file.json`，可选；缺省用内置期 87/90 清单，�
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -110,6 +111,8 @@ for _p in (str(ENGINE), str(VENDOR)):
 
 try:  # 引擎（唯一一份文档逻辑）：判据尽量复用，不另写一套
     from slcn import __version__ as ENGINE_VERSION
+    from slcn import score as _score
+    from slcn import sources as _sources
     from slcn.bibcheck import check as _bib_check
     from slcn.bibcheck import cited_keys as _cited_keys
     from slcn.bibcheck import entry_keys as _entry_keys
@@ -134,13 +137,22 @@ DEFAULT_OUT_ROOT = Path("/tmp/batch_case_test")
 DEFAULT_WORKSPACES = {
     "90": HOME / "Desktop" / "macCaseTest",
     "87": HOME / "Desktop" / "macCaseTest87",
+    "88": HOME / "Desktop" / "macCaseTest88",   # 7 篇英文（Word/LaTeX 混合）
+    "89": HOME / "Desktop" / "macCaseTest89",   # 5 篇 LaTeX 子集
 }
 MANUSCRIPTS_DEFAULT = ROOT.parent / "Studies_in_Logic_Database"
 MANUAL_ROOTS = {
     "90": "2026年第5期(90)",
     "87": "2026年第2期(87)",
+    "88": "2026年第3期(88)",
+    "89": "2026年第4期(89)",
 }
-DEFAULT_ISSUE_ORDER = ("90", "87")  # 期 90 先跑（未测面最大，风险前置）
+DEFAULT_ISSUE_ORDER = ("90", "87", "88", "89", "repo")  # 已知工作区先跑，repo 扫描最后
+
+# 全量基准（task-40）：repo 扫描时跳过 Desktop 已覆盖的期（避免重复跑）
+REPO_SKIP_ISSUE_CODES = frozenset({"87", "88", "89", "90"})
+# 估算用：单案例「转换+编译+算账+一校/回读+人工对照」的经验耗时（秒；由 19 篇实测 ≈7.3s 放大）
+BENCH_EST_SEC_PER_CASE = 8.5
 
 # 付费相关环境变量：启动即清空（前缀 + 显式名单）
 PAID_ENV_PREFIXES = ("SLCN_LLM_", "SLCN_SEARCH_", "SLCN_AI_")
@@ -176,8 +188,10 @@ class CaseSpec:
     author_dir: str
     manual_dir: str = ""
     manual_bib: str = "reference.bib"
-    source: str = ""                     # 相对工作区；空 = 自动发现
+    source: str = ""                     # 相对工作区（或绝对路径）；空 = 自动发现
     metadata: str = ""                   # 附加源/元数据源（convert.py --metadata）；空 = 单源
+    workspace: str = ""                  # 绝对路径：覆盖 issue 级工作区（repo 扫描案例用）
+    manual_root: str = ""                # 绝对路径：覆盖 issue 级人工成品根（repo 扫描案例用）
     extra_args: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
@@ -185,7 +199,8 @@ class CaseSpec:
             "key": self.key, "issue": self.issue, "author": self.author,
             "author_dir": self.author_dir, "manual_dir": self.manual_dir,
             "manual_bib": self.manual_bib, "source": self.source,
-            "metadata": self.metadata,
+            "metadata": self.metadata, "workspace": self.workspace,
+            "manual_root": self.manual_root,
             "extra_args": list(self.extra_args),
         }
 
@@ -213,6 +228,30 @@ def default_cases() -> list[CaseSpec]:
         cases.append(CaseSpec(key=f"87-{sub}", issue="87", author=author,
                               author_dir=str(sub), manual_dir=f"{no} {author}",
                               manual_bib=manual_bib))
+    # 期 88（7 篇英文：Word/LaTeX 混合；源文件来自历史用例，映射见 /tmp/case88_TEST_REPORT.md）
+    for no, author, source in (
+        ("01", "Tuomo_Aho", "original/CONSEQ2026FINAL.docx"),
+        ("02", "Lu_Jiang", "lujiang/Ockham Semantics Submission Studies in Logic revised version May 25 2026 source file.docx"),
+        ("03", "Zhentao_Zhang", "origin/main.tex"),
+        ("04", "Chen_Liu", "Chenliu/SLEN_template.tex"),
+        ("05", "YouAn_Su", "youansu/main.tex"),
+        ("06", "Zhixi_Chen", "zhixichen/Revised Manuscript 5.23.docx"),
+        ("07", "Hu_Liu", "huliu/Approved+2025+Williamson+Interview.docx"),
+    ):
+        cases.append(CaseSpec(key=f"88-{no}", issue="88", author=author,
+                              author_dir=author, manual_dir=f"{no} {author}",
+                              source=source))
+    # 期 89（5 篇 LaTeX 子集；多文件稿由引擎 A2 自动配前言源）
+    for no, author, source in (
+        ("01", "Fenrong_Liu", "Fenrong_Liu/main_CN.tex"),
+        ("02", "Xiaoxuan_Fu", "偏好逻辑特刊/SLCN_template.tex"),
+        ("05", "Zhen_Liang", "original/社群动态偏好逻辑的公理化研究（修改版）.tex"),
+        ("06", "Dazhu_Li", "层级选举模型中的偏好聚合及其规范性质分析/submission-final submssion.tex"),
+        ("07", "Yiyan_Wang", "(Latex版)_逻辑学研究_从个体偏好到集体理性__revision_1_/WANGYIYAN.tex"),
+    ):
+        cases.append(CaseSpec(key=f"89-{no}", issue="89", author=author,
+                              author_dir=author, manual_dir=f"{no} {author}",
+                              source=source))
     return cases
 
 
@@ -424,6 +463,8 @@ def log_stats(text: str) -> dict:
         "undefined_citation": len(re.findall(r"Citation '[^']*'[^\n]*undefined", text)),
         "undefined_reference": len(re.findall(r"Reference '[^']*'[^\n]*undefined", text)),
         "missing_char": len(re.findall(r"Missing character:", text)),
+        "missing_char_samples": [f"U+{cp}" for cp in re.findall(
+            r"Missing character: There is no .*?\(U\+([0-9A-Fa-f]{4,6})\)", text)][:6],
         "overfull": len(re.findall(r"Overfull \\[hv]box", text)),
         "underfull": len(re.findall(r"Underfull \\[hv]box", text)),
         "log_pages": int(pages_m.group(1)) if pages_m else None,
@@ -556,7 +597,7 @@ def grade_case(m: dict, man: dict | None) -> list[Finding]:
     if m.get("sha_ok") is False:
         out.append(_p0(m, "NONDETERMINISTIC", "两遍 .tex/.bib sha256 不一致"))
     plan = m.get("plan") or {}
-    if plan.get("ai_zero") is not True:
+    if plan.get("ai_zero") is False:
         out.append(_p0(m, "ZERO_COST", f"零付费断言失败（预计 AI={plan.get('ai')}，rc={plan.get('rc')}）"))
     closure = m.get("closure") or {}
     if closure.get("n_dangling"):
@@ -683,6 +724,257 @@ def manual_metrics(case: CaseSpec, man_root: Path, workdir: Path,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 全量基准（task-40）：repo 扫描 / 失败聚类 / dashboard / CSV
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 根因聚类元数据：code → (中文标签, 建议承接角色, 预估工作量 S/M/L)
+CLUSTER_META: dict[str, tuple[str, str, str]] = {
+    "CONVERT_RC": ("转换失败（rc≠0）", "engine-core", "M"),
+    "TEX_ERROR": ("LaTeX 编译错误", "engine-core", "M"),
+    "UNDEF_CITE": ("未定义引用（citation）", "bib-refs", "S"),
+    "UNDEF_REF": ("未定义交叉引用（reference）", "engine-core", "S"),
+    "MISSING_CHAR": ("缺字符（字体/数学模式）", "engine-core", "S"),
+    "BIBER_ERROR": ("biber 错误", "bib-refs", "S"),
+    "NONDETERMINISTIC": ("两遍 sha256 不一致", "engine-core", "M"),
+    "ZERO_COST": ("零付费断言失败", "case-lab", "S"),
+    "DANGLING_CITE": ("悬空引用（正文键不在 bib）", "bib-refs", "S"),
+    "NO_CITES": ("正文 0 引用（参考文献区空）", "bib-refs", "M"),
+    "DOC_CONVERT": (".doc→docx 失败", "engine-core", "S"),
+    "PAGE_DIFF": ("页数偏差", "engine-core", "M"),
+    "BIB_COUNT_DIFF": ("文献条数偏差", "bib-refs", "M"),
+    "CITE_DIFF": ("正文引用数偏差", "bib-refs", "M"),
+    "SECTION_DIFF": ("节结构偏差", "engine-core", "M"),
+    "PLACEHOLDER": ("元数据占位符（未识别）", "engine-core", "M"),
+    "PROOF_FIXABLE": ("一校可自动改残留", "engine-core", "S"),
+    "BIB_FIELDS": ("bib 必补字段过多", "bib-refs", "L"),
+    "UNUSED_BIB_EXCESS": ("未引用条目过多", "bib-refs", "M"),
+    "UNUSED_BIB_MINOR": ("未引用条目小幅多出", "bib-refs", "S"),
+    "ZH08_HYPHEN": ("中文旁半角短杠（口径待迁移）", "rules-docs", "S"),
+}
+LEVEL_WEIGHT = {"P0": 100, "P1": 10, "P2": 1}
+
+
+def _parse_issue_code(issue_dir_name: str) -> str:
+    """从期目录名 `20xx年第N期(87)` 里取 issue code（`87` / `67A`）。"""
+    m = re.search(r"\((\d+[A-Za-z]?)\)\s*$", issue_dir_name)
+    return m.group(1) if m else ""
+
+
+def scan_repo_cases(repo_root: Path,
+                    skip_codes: set[str] | None = None) -> tuple[list[CaseSpec], dict]:
+    """只读扫描稿件仓，返回「有源稿 + 有人工成品 tex」的期篇 CaseSpec（+ 统计）。
+
+    判据（全部只读，不写稿件仓）：
+    - 期目录名 `20xx年第N期(NN)`；**跳过 Desktop 工作区已覆盖的 issue**（默认 87/88/89/90）；
+    - 篇目录名 `NN 作者`，必须存在 `<作者>.tex` 人工成品；
+    - 源稿用**引擎 `sources.identify()`** 识别（与 corpus/回归器同一套逻辑，不另写判据）；
+      若识别出的正文源 == 人工成品 tex → 视为「无源稿」跳过（不能拿人工成品当输入）；
+    - 人工 bib：`reference.bib` 优先，否则 `<作者>.bib`。
+    """
+    skip = set(REPO_SKIP_ISSUE_CODES if skip_codes is None else skip_codes)
+    cases: list[CaseSpec] = []
+    stats = {"issues": 0, "articles": 0, "cases": 0,
+             "skipped_no_manual_tex": 0, "skipped_no_source": 0,
+             "skipped_manual_is_source": 0, "by_channel": {"word": 0, "latex": 0}}
+    for issue_dir in sorted(repo_root.glob("20*")):
+        if not issue_dir.is_dir():
+            continue
+        if _parse_issue_code(issue_dir.name) in skip:
+            continue
+        stats["issues"] += 1
+        for art in sorted(issue_dir.iterdir()):
+            if not art.is_dir() or art.name.startswith("000"):
+                continue
+            m = re.match(r"^(\d{2})\s+(.+)$", art.name)
+            if not m:
+                continue
+            stats["articles"] += 1
+            no, author = m.group(1), m.group(2).strip()
+            manual_tex = art / f"{author}.tex"
+            if not manual_tex.is_file():
+                stats["skipped_no_manual_tex"] += 1
+                continue
+            try:
+                ss = _sources.identify(str(art))
+            except Exception:  # noqa: BLE001 - 识别失败按「无源稿」跳过
+                ss = None
+            # 源稿候选：Word 优先（identify 的 ss.docx = 挑出的正文 docx），否则 tex 正文源
+            word_src = getattr(ss, "docx", None) if ss is not None else None
+            body = ss.body.path if (ss is not None and ss.body is not None) else None
+            cand = None
+            if word_src:
+                cand = Path(word_src)
+            elif body:
+                cand = Path(body)
+            if cand is None:
+                stats["skipped_no_source"] += 1
+                continue
+            body_p = cand.resolve()
+            if body_p == manual_tex.resolve():
+                stats["skipped_manual_is_source"] += 1
+                continue
+            ch = "word" if body_p.suffix.lower() in (".docx", ".doc") else "latex"
+            mb = art / "reference.bib"
+            if not mb.is_file():
+                alt = art / f"{author}.bib"
+                if alt.is_file():
+                    mb = alt
+                else:  # 兜底：目录内最大 .bib（如 rongliwu.bib / dissertation5.bib）
+                    bibs = sorted(art.glob("*.bib"), key=lambda p: p.stat().st_size, reverse=True)
+                    if bibs:
+                        mb = bibs[0]
+            cases.append(CaseSpec(
+                key=f"repo-{_parse_issue_code(issue_dir.name)}-{no}", issue="repo",
+                author=author, author_dir=".",
+                manual_dir=str(art.relative_to(repo_root)), manual_bib=mb.name,
+                source=str(body_p), workspace=str(art.resolve()),
+                manual_root=str(repo_root.resolve())))
+            stats["cases"] += 1
+            stats["by_channel"][ch] += 1
+    return cases, stats
+
+
+def error_profile(m: dict) -> dict:
+    """失败/缺字的第一现场签名（dashboard 根因聚类用）。"""
+    log = m.get("log") or {}
+    rc = m.get("convert_rc")
+    out = {"code": "", "signature": ""}
+    errors = log.get("errors") or []
+    if rc not in (0, None):
+        out["code"] = "E_CONVERT_RC"
+        out["signature"] = (errors[0] if errors else f"rc={rc}")[:100]
+    elif log.get("n_errors"):
+        out["code"] = "E_TEX"
+        out["signature"] = (errors[0] if errors else "")[:100]
+    elif (m.get("biber") or {}).get("errors"):
+        out["code"] = "E_BIBER"
+        out["signature"] = str(((m.get("biber") or {}).get("error_lines") or [""])[0])[:100]
+    elif log.get("missing_char"):
+        out["code"] = "E_MISSING_CHAR"
+        out["signature"] = ",".join((log.get("missing_char_samples") or [])[:4])
+    elif rc == 0 and "pdf_pages" in m and not m.get("pdf_pages") and not m.get("skipped"):
+        out["code"] = "E_NO_PDF"
+    return out
+
+
+def build_dashboard(run: dict) -> list[dict]:
+    """把 findings 按 (P0/P1/P2 × 根因 code) 聚合，按「严重度加权 × 影响篇数」排序。"""
+    recs: dict[tuple[str, str], dict] = {}
+    for key in run.get("case_order", []):
+        m = run["cases"].get(key) or {}
+        if m.get("skipped"):
+            continue
+        ep = error_profile(m)
+        for f in m.get("findings") or []:
+            code = f["code"]
+            ck = (f["level"], code)
+            rec = recs.setdefault(ck, {"level": f["level"], "code": code,
+                                       "cases": [], "count": 0,
+                                       "signatures": [], "examples": []})
+            rec["cases"].append(key)
+            rec["count"] += 1
+            sig = ep.get("signature") if code in ("CONVERT_RC", "TEX_ERROR", "MISSING_CHAR") else ""
+            if sig and sig not in rec["signatures"]:
+                rec["signatures"].append(sig)
+            if len(rec["examples"]) < 3:
+                rec["examples"].append(f"{key}: {str(f.get('detail', ''))[:120]}")
+    rows: list[dict] = []
+    for (_level, code), rec in recs.items():
+        label, owner, effort = CLUSTER_META.get(code, (code, "待定", "?"))
+        case_keys = sorted(set(rec["cases"]))
+        rows.append({
+            "rank": 0, "level": rec["level"], "cluster_code": code, "cluster": label,
+            "owner": owner, "effort": effort,
+            "cases_count": len(case_keys), "findings_count": rec["count"],
+            "case_keys": ";".join(case_keys[:12]) + (";…" if len(case_keys) > 12 else ""),
+            "signatures": " | ".join(rec["signatures"][:3]),
+            "examples": " | ".join(rec["examples"]),
+            "priority": LEVEL_WEIGHT.get(rec["level"], 1) * len(case_keys),
+        })
+    rows.sort(key=lambda r: (-r["priority"], r["level"], r["cluster_code"]))
+    for i, r in enumerate(rows, 1):
+        r["rank"] = i
+    return rows
+
+
+def write_dashboard_csv(path: Path, rows: list[dict]) -> None:
+    fields = ["rank", "level", "cluster_code", "cluster", "owner", "effort",
+              "cases_count", "findings_count", "priority", "case_keys",
+              "signatures", "examples"]
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: r.get(k, "") for k in fields})
+
+
+def write_cases_csv(path: Path, run: dict) -> None:
+    fields = ["key", "issue", "author", "channel", "level", "convert_rc",
+              "pdf_pages", "manual_pages", "bib_entries", "manual_bib_entries",
+              "cite", "manual_cite", "section", "manual_section",
+              "equation", "tabular", "figure", "missing_char", "n_errors",
+              "undef_cite", "undef_ref", "dangling", "unused", "placeholder",
+              "sim_raw", "sim_content", "l2", "l3", "elapsed_s",
+              "error_code", "error_signature", "findings"]
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for key in run.get("case_order", []):
+            m = run["cases"].get(key) or {}
+            if m.get("skipped"):
+                w.writerow({"key": key, "issue": m.get("issue", ""), "author": m.get("author", ""),
+                            "level": "SKIP", "error_code": m.get("skipped", "")})
+                continue
+            man = m.get("manual") or {}
+            tex = m.get("tex") or {}
+            log = m.get("log") or {}
+            bib = m.get("bib") or {}
+            clo = m.get("closure") or {}
+            sim = m.get("similarity") or {}
+            ep = m.get("error_profile") or {}
+            w.writerow({
+                "key": key, "issue": m.get("issue", ""), "author": m.get("author", ""),
+                "channel": m.get("channel", ""), "level": m.get("level", ""),
+                "convert_rc": m.get("convert_rc"), "pdf_pages": m.get("pdf_pages"),
+                "manual_pages": man.get("pages"), "bib_entries": bib.get("entries"),
+                "manual_bib_entries": man.get("bib_entries"), "cite": tex.get("cite"),
+                "manual_cite": man.get("cite"), "section": tex.get("section"),
+                "manual_section": man.get("section"), "equation": tex.get("equation"),
+                "tabular": tex.get("tabular"), "figure": tex.get("figure"),
+                "missing_char": log.get("missing_char"), "n_errors": log.get("n_errors"),
+                "undef_cite": log.get("undefined_citation"),
+                "undef_ref": log.get("undefined_reference"),
+                "dangling": clo.get("n_dangling"), "unused": clo.get("n_unused"),
+                "placeholder": tex.get("placeholder_any"),
+                "sim_raw": sim.get("raw"), "sim_content": sim.get("content"),
+                "l2": sim.get("l2"), "l3": sim.get("l3"),
+                "elapsed_s": m.get("elapsed_s"),
+                "error_code": ep.get("code", ""), "error_signature": ep.get("signature", ""),
+                "findings": ";".join(f"{x['level']}:{x['code']}" for x in m.get("findings") or []),
+            })
+
+
+def estimate_bench(cases: list[CaseSpec]) -> dict:
+    """重活窗口申请用：篇数、按 issue/通道、预计耗时（秒/分钟）。"""
+    by_issue: dict[str, int] = {}
+    by_channel = {"word": 0, "latex": 0, "other": 0}
+    for c in cases:
+        by_issue[c.issue] = by_issue.get(c.issue, 0) + 1
+        sfx = Path(c.source).suffix.lower() if c.source else ""
+        if sfx in (".docx", ".doc"):
+            by_channel["word"] += 1
+        elif sfx == ".tex":
+            by_channel["latex"] += 1
+        else:
+            by_channel["other"] += 1
+    n = len(cases)
+    sec = n * BENCH_EST_SEC_PER_CASE
+    return {"cases": n, "by_issue": by_issue, "by_channel": by_channel,
+            "est_seconds": round(sec, 1), "est_minutes": round(sec / 60, 1),
+            "assumption_sec_per_case": BENCH_EST_SEC_PER_CASE}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 主流程：跑一个案例
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -690,7 +982,8 @@ def manual_metrics(case: CaseSpec, man_root: Path, workdir: Path,
 def discover_source(case: CaseSpec, workspace: Path) -> tuple[Path | None, str]:
     """在工作区 <author_dir>/ 里找主文件（可用 manifest 的 source 覆盖）。"""
     if case.source:
-        p = workspace / case.source
+        raw = Path(case.source)
+        p = raw if raw.is_absolute() else (workspace / case.source)
         return (p, f"manifest: {case.source}") if p.is_file() else (None, f"manifest 指定的源不存在：{p}")
     d = workspace / case.author_dir
     if not d.is_dir():
@@ -748,6 +1041,33 @@ def resolve_metadata_source(case: CaseSpec, workspace: Path) -> tuple[Path | Non
     return None, info
 
 
+def sanitize_output_name(author: str) -> str:
+    """convert.py `--name` 只允许字母/数字/下划线且以字母开头；repo 作者名可能带空格或中文。
+
+    只影响**产物目录名**；人工成品核对仍用原始作者名（`<Author>.tex` 不动）。
+    """
+    s = re.sub(r"[^A-Za-z0-9_]+", "_", author or "").strip("_")
+    s = re.sub(r"_+", "_", s) or "Case"
+    if not s[0].isalpha():
+        s = "A_" + s
+    return s
+
+
+def sha_verdict(convert_rc: int | None, tex_exists: bool, bib_exists: bool,
+                before: dict, after: dict) -> bool | None:
+    """两遍确定性判定：只在转换成功且产物存在时判 True/False，否则 None（失败案例无法判）。"""
+    if convert_rc == 0 and tex_exists and bib_exists:
+        return before == after
+    return None
+
+
+def plan_ai_status(plan_rc: int | None, ai_n: int | None) -> bool | None:
+    """零付费断言：True=确认「预计 AI：0 次」；False=确认非 0；None=未验证（plan 未成功）。"""
+    if plan_rc != 0 or ai_n is None:
+        return None
+    return ai_n == 0
+
+
 def convert_common_args(case: CaseSpec, src: Path, out_root: Path,
                         workspace: Path, use_metadata: bool = True) -> tuple[list[str], dict]:
     """拼 `convert.py` 的公共参数（source/out/name/附加源/extra_args），纯函数便于单测。
@@ -759,7 +1079,8 @@ def convert_common_args(case: CaseSpec, src: Path, out_root: Path,
     `extra_args` 里剔除 `--metadata`/`--metadata=…`（含其后一个值参数）——用于「A2-only」
     对照口径：模拟不传附加源、只靠引擎通用发现（engine-core 另卡）的行为。
     """
-    args = ["--source", str(src), "--out", str(out_root), "--name", case.author]
+    args = ["--source", str(src), "--out", str(out_root), "--name",
+            sanitize_output_name(case.author)]
     extra = list(case.extra_args)
     if not use_metadata:
         cleaned: list[str] = []
@@ -823,6 +1144,7 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
              use_metadata: bool = True) -> dict:
     """跑一个案例：pass1 转换+编译 → 两遍 sha → 判据采集 → 人工对照。"""
     author, key = case.author, case.key
+    out_name = sanitize_output_name(author)   # 产物目录名（repo 作者名可能含空格/中文）
     t0 = time.time()
     m: dict = {
         "key": key, "issue": case.issue, "author": author,
@@ -868,16 +1190,16 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     cl = convert_log_stats(txt1)
     m["convert"] = cl
 
-    prod = products / author
-    tex_p, bib_p, pdf_p, log_p = (prod / f"{author}.tex", prod / "reference.bib",
-                                  prod / f"{author}.pdf", prod / f"{author}.log")
+    prod = products / out_name
+    tex_p, bib_p, pdf_p, log_p = (prod / f"{out_name}.tex", prod / "reference.bib",
+                                  prod / f"{out_name}.pdf", prod / f"{out_name}.log")
     m["product_dir"] = str(prod)
     m["pdf_pages"] = pdf_pages(pdf_p)
     m["tex"] = tex_stats(read_text(tex_p)) if tex_p.is_file() else {}
     gen_bib_text = read_text(bib_p)
     m["bib"] = bib_stats(gen_bib_text) if bib_p.is_file() else {}
     m["log"] = log_stats(read_text(log_p)) if log_p.is_file() else {}
-    m["biber"] = biber_stats(read_text(prod / f"{author}.blg")) if (prod / f"{author}.blg").is_file() else {}
+    m["biber"] = biber_stats(read_text(prod / f"{out_name}.blg")) if (prod / f"{out_name}.blg").is_file() else {}
 
     # 3) 两遍确定性：pass2 = --verify-plan（产物照常写出，重跑同目录）
     sha_before = {"tex": sha256_file(tex_p), "bib": sha256_file(bib_p)}
@@ -887,12 +1209,12 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     sha_after = {"tex": sha256_file(tex_p), "bib": sha256_file(bib_p)}
     ai_zero, ai_n = parse_plan_ai(txt2)
     m["plan"] = {
-        "rc": rc2, "elapsed_s": round(t2, 1), "ai": ai_n, "ai_zero": ai_zero,
+        "rc": rc2, "elapsed_s": round(t2, 1), "ai": ai_n,
+        "ai_zero": plan_ai_status(rc2, ai_n),
         "search_line": next((ln.strip() for ln in txt2.splitlines() if "预计检索" in ln), ""),
     }
     m["sha_before"], m["sha_after"] = sha_before, sha_after
-    m["sha_ok"] = (sha_before == sha_after
-                   and sha_before.get("tex") is not None and sha_before.get("bib") is not None)
+    m["sha_ok"] = sha_verdict(rc1, tex_p.is_file(), bib_p.is_file(), sha_before, sha_after)
 
     # 4) 引用闭合（复用引擎键解析）
     gen_tex_text = read_text(tex_p)
@@ -910,6 +1232,18 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     man = manual_metrics(case, man_root, workdir, py, env, logs_dir) if compare else None
     m["manual"] = man
 
+    # 6b) 相似度（生成 vs 人工正文；复用引擎 slcn.score，与 corpus 同一口径）
+    if man and man.get("exists", {}).get("tex") and tex_p.is_file():
+        try:
+            sc = _score.score(read_text(man["tex"]), gen_tex_text)
+            m["similarity"] = {"raw": round(float(sc.raw_ratio), 4),
+                               "content": round(float(sc.char_accuracy), 4),
+                               "l2": int(getattr(sc, "l2_blocks", 0) or 0),
+                               "l3": int(getattr(sc, "l3_blocks", 0) or 0),
+                               "ref_chars": int(getattr(sc, "ref_chars", 0) or 0)}
+        except Exception as exc:  # noqa: BLE001
+            m["similarity"] = {"error": str(exc)[:120]}
+
     # 7) 文献回读校验（生成 bib vs 人工 bib；键方案不同，闭合以直接计算为准）
     if man and man.get("exists", {}).get("bib") and bib_p.is_file():
         md = logs_dir / "bib" / f"{key}.md"
@@ -924,6 +1258,7 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     findings = grade_case(m, man)
     m["findings"] = [f.to_dict() for f in findings]
     m["level"] = case_level(findings)
+    m["error_profile"] = error_profile(m)
     m["elapsed_s"] = round(time.time() - t0, 1)
     m["finished"] = now_iso()
     return m
@@ -974,7 +1309,12 @@ def render_report(run: dict) -> str:
     lines.append(f"- 零付费：{'✅ 全部案例「预计 AI：0 次」' if totals.get('zero_cost_ok') else '❌ 有案例不满足（见 P0 明细）'}；"
                  f"清空付费环境变量 {len(run.get('zero_cost', {}).get('cleared', []))} 个。")
     lines.append(f"- 确定性：两遍 `.tex/.bib` sha256 一致 "
-                 f"{totals.get('sha_ok', 0)}/{totals.get('ran', 0)} 个案例。")
+                 f"{totals.get('sha_ok', 0)}/{totals.get('sha_checked', 0)} 个**可判**案例"
+                 f"（转换失败案例不参与判定）。")
+    if totals.get("zero_cost_unverified"):
+        lines.append(f"- ⚠ 零付费断言未验证 {len(totals['zero_cost_unverified'])} 个案例"
+                     f"（`--verify-plan` 未成功，非「已确认违规」）：{', '.join(totals['zero_cost_unverified'][:8])}"
+                     + ("…" if len(totals["zero_cost_unverified"]) > 8 else ""))
     lines.append("")
     lines.append("## 1. 环境与零付费证据")
     lines.append("")
@@ -982,8 +1322,10 @@ def render_report(run: dict) -> str:
     lines.append(f"- 清空的环境变量：`{', '.join(zc.get('cleared', [])) or '（无）'}`")
     lines.append(f"- 子进程只传：`convert.py --verify-plan --search-refs`（另加来源/作者/输出参数）；"
                  "**未传**任何 `--verify-refs` / `--llm-*` 参数。")
-    lines.append(f"- 逐案例断言：{totals.get('ran', 0)} 个案例日志均含「预计 AI：0 次」"
-                 if totals.get("zero_cost_ok") else "- ⚠ 见 P0 `ZERO_COST` 明细")
+    lines.append(f"- 逐案例断言：{totals.get('zero_cost_verified', 0)}/{totals.get('ran', 0)} 个案例"
+                 f"日志确认「预计 AI：0 次」；未验证 {len(totals.get('zero_cost_unverified') or [])} 个"
+                 f"（转换/算账未成功，见报告 §9b 明细）"
+                 + ("" if totals.get("zero_cost_ok") else "；❌ 有已确认违规，见 P0 `ZERO_COST`"))
     if run.get("metadata_disabled"):
         lines.append("- **A2-only 口径**：`--no-metadata` 已启用——manifest 的附加源（如 90-03 的 "
                      "`yalcin puzzle.tex`）**不传给** `convert.py`，用于单独评估引擎通用发现规则；"
@@ -995,8 +1337,9 @@ def render_report(run: dict) -> str:
     lines.append("|---|---|---|---|---|---|---|")
     for m in ordered:
         sb, sa = m.get("sha_before") or {}, m.get("sha_after") or {}
+        sha_mark = "✅" if m.get("sha_ok") is True else ("❌" if m.get("sha_ok") is False else "—（未判）")
         lines.append(f"| {m['key']} | {m['author']} | `{_short(sb.get('tex'))}` | `{_short(sa.get('tex'))}` | "
-                     f"`{_short(sb.get('bib'))}` | `{_short(sa.get('bib'))}` | {'✅' if m.get('sha_ok') else '❌'} |")
+                     f"`{_short(sb.get('bib'))}` | `{_short(sa.get('bib'))}` | {sha_mark} |")
     lines.append("")
     lines.append("## 3. 总表")
     lines.append("")
@@ -1108,6 +1451,62 @@ def render_report(run: dict) -> str:
         if m.get("findings"):
             lines.append("- 判级：" + "；".join(f"{f['level']} {f['code']}" for f in m["findings"]))
         lines.append("")
+    dash = run.get("dashboard") or []
+    if dash:
+        bench_ch = (run.get("bench_by_channel") or {})
+        if not bench_ch:
+            bench_ch = {"word": sum(1 for m in ordered if (m.get("channel") == "word")),
+                        "latex": sum(1 for m in ordered if (m.get("channel") == "latex"))}
+        lines.append("## 9b. 全量基准看板（P0/P1/P2 × 根因聚类）")
+        lines.append("")
+        lines.append(f"- 篇数 **{totals.get('ran', 0)}**（SKIP {totals.get('skipped', 0)}）；"
+                     f"通道 Word {bench_ch.get('word', '—')} / LaTeX {bench_ch.get('latex', '—')}；"
+                     f"**P0 {totals.get('p0', 0)} / P1 {totals.get('p1', 0)} / P2 {totals.get('p2', 0)}**；"
+                     f"总耗时 {run.get('elapsed_total_s', '—')}s，吞吐 {run.get('throughput_per_min', '—')} 篇/分钟")
+        lines.append("")
+        rs = run.get("repo_scan") or {}
+        if rs:
+            lines.append(f"- repo 扫描：期 {rs.get('issues')} / 篇 {rs.get('articles')} → 可测 "
+                         f"**{rs.get('cases')}**；跳过（无人工成品 tex {rs.get('skipped_no_manual_tex')} / "
+                         f"无源稿 {rs.get('skipped_no_source')} / 源=成品 {rs.get('skipped_manual_is_source')}）")
+            lines.append("")
+        lines.append("| 排名 | 级别 | 根因聚类 | 影响篇数 | 条数 | 建议承接 | 预估 | 优先级分 | 签名/样例 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
+        for r in dash:
+            lines.append(f"| {r['rank']} | **{r['level']}** | {r['cluster']}（`{r['cluster_code']}`） | "
+                         f"{r['cases_count']} | {r['findings_count']} | {r['owner']} | {r['effort']} | "
+                         f"{r['priority']} | {(r['signatures'] or r['examples'])[:160]} |")
+        lines.append("")
+        lines.append("## 9c. 前 10 根因与修复优先级建议")
+        lines.append("")
+        for r in dash[:10]:
+            lines.append(f"{r['rank']}. **[{r['level']}] {r['cluster']}**（{r['cases_count']} 篇 / "
+                         f"{r['findings_count']} 条，优先级分 {r['priority']}）→ 建议 **{r['owner']}**"
+                         f"（预估 {r['effort']}）；证据：{(r['signatures'] or r['examples'])[:220]}")
+        lines.append("")
+        ranked = []
+        for m in ordered:
+            if m.get("skipped"):
+                continue
+            p0 = sum(1 for f in m.get("findings") or [] if f["level"] == "P0")
+            p1 = sum(1 for f in m.get("findings") or [] if f["level"] == "P1")
+            p2 = sum(1 for f in m.get("findings") or [] if f["level"] == "P2")
+            ranked.append((3 * p0 + 2 * p1 + p2, m, p0, p1, p2))
+        ranked.sort(key=lambda x: (-x[0], x[1]["key"]))
+        lines.append("### 受影响最大的篇（严重度加权 Top 10）")
+        lines.append("")
+        lines.append("| 案例 | 作者 | 级别 | P0/P1/P2 | 加权分 | 关键判据 |")
+        lines.append("|---|---|---|---|---|---|")
+        for score, m, p0, p1, p2 in ranked[:10]:
+            man = m.get("manual") or {}
+            tex = m.get("tex") or {}
+            log = m.get("log") or {}
+            codes = "；".join(f"{f['level']}:{f['code']}" for f in m.get("findings") or [])[:140]
+            lines.append(f"| {m['key']} | {m['author']} | {m.get('level')} | {p0}/{p1}/{p2} | {score} | "
+                         f"rc={m.get('convert_rc')} 页 {_fmt(m.get('pdf_pages'))}/{_fmt(man.get('pages'))} "
+                         f"bib {_fmt((m.get('bib') or {}).get('entries'))}/{_fmt(man.get('bib_entries'))} "
+                         f"缺字 {_fmt(log.get('missing_char'))}；{codes} |")
+        lines.append("")
     lines.append("## 10. 复现方式")
     lines.append("")
     lines.append("```bash")
@@ -1155,9 +1554,14 @@ def build_summary(run: dict) -> dict:
         "p2": sum(1 for _k, f in findings if f["level"] == "P2"),
         "p0_known": sum(1 for k, f in findings if f["level"] == "P0" and is_known(k, f["code"])),
         "p0_new": sum(1 for k, f in findings if f["level"] == "P0" and not is_known(k, f["code"])),
-        "sha_ok": sum(1 for m in cases if m.get("sha_ok")),
-        "zero_cost_ok": all((m.get("plan") or {}).get("ai_zero")
-                            for m in cases if not m.get("skipped")),
+        "sha_ok": sum(1 for m in cases if m.get("sha_ok") is True),
+        "sha_checked": sum(1 for m in cases if m.get("sha_ok") is not None),
+        "zero_cost_ok": not any((m.get("plan") or {}).get("ai_zero") is False
+                                for m in cases if not m.get("skipped")),
+        "zero_cost_verified": sum(1 for m in cases if (m.get("plan") or {}).get("ai_zero") is True),
+        "zero_cost_unverified": [m["key"] for m in cases
+                                 if not m.get("skipped")
+                                 and (m.get("plan") or {}).get("ai_zero") is None],
     }
     run["totals"] = totals
     return totals
@@ -1210,12 +1614,33 @@ def run_batch(args: argparse.Namespace) -> int:
     man_roots = {issue: man_repo / sub for issue, sub in MANUAL_ROOTS.items()}
 
     cases = load_cases(args)
+    repo_stats: dict = {}
+    if getattr(args, "repo_scan", False) and not args.case:
+        repo_cases, repo_stats = scan_repo_cases(man_repo)
+        cases.extend(repo_cases)
+        print(f"[repo 扫描] 期 {repo_stats['issues']} / 篇 {repo_stats['articles']} → "
+              f"可测 {repo_stats['cases']}（跳过：无人工成品 tex {repo_stats['skipped_no_manual_tex']}、"
+              f"无源稿 {repo_stats['skipped_no_source']}、源=成品 {repo_stats['skipped_manual_is_source']}）")
     if not cases:
         print("[用法] 没有可跑的案例（检查 --issues / --manifest / --case）", file=sys.stderr)
         return 2
-    # 期 90 先、期 87 后（内置顺序已满足；--manifest 时也按 issue 顺序稳定排序）
+    # 期 90 → 87 → 88 → 89 → repo（内置顺序已满足；--manifest 时也按 issue 顺序稳定排序）
     order = {issue: i for i, issue in enumerate(DEFAULT_ISSUE_ORDER)}
     cases.sort(key=lambda c: (order.get(c.issue, len(order)), c.key))
+
+    if getattr(args, "inventory", False):
+        est = estimate_bench(cases)
+        print(f"[盘点] 可测 {est['cases']} 篇；通道 Word {est['by_channel']['word']} / "
+              f"LaTeX {est['by_channel']['latex']} / 未知 {est['by_channel']['other']}")
+        print(f"[盘点] 按 issue：{est['by_issue']}")
+        print(f"[盘点] 预计耗时 {est['est_seconds']}s ≈ {est['est_minutes']} min"
+              f"（按 {est['assumption_sec_per_case']}s/篇串行估算，含转换+编译+算账+一校/回读+人工对照）")
+        if repo_stats:
+            print(f"[盘点] repo 扫描统计：{json.dumps(repo_stats, ensure_ascii=False)}")
+        return 0
+    if getattr(args, "limit", 0):
+        cases = cases[:args.limit]
+        print(f"[限制] 只跑前 {len(cases)} 个案例（--limit）")
 
     metadata_disabled = bool(getattr(args, "no_metadata", False))
     run: dict = {
@@ -1224,7 +1649,8 @@ def run_batch(args: argparse.Namespace) -> int:
         "started": now_iso(), "out_dir": str(out_root), "python": py,
         "engine_version": ENGINE_VERSION, "git_head": repo_start["head"],
         "repo_start": repo_start, "workspaces": {k: str(v) for k, v in workspaces.items()},
-        "manuscripts": str(man_repo), "zero_cost": {"cleared": cleared, "violations": []},
+        "manuscripts": str(man_repo), "repo_scan": repo_stats,
+        "zero_cost": {"cleared": cleared, "violations": []},
         "cases": {}, "case_order": [c.key for c in cases],
         "args": vars(args),
     }
@@ -1233,18 +1659,19 @@ def run_batch(args: argparse.Namespace) -> int:
         f"{c.issue}/{c.key.split('-', 1)[-1]} {c.author}" for c in cases))
 
     for i, case in enumerate(cases, 1):
-        ws = workspaces.get(case.issue)
+        ws = Path(case.workspace) if case.workspace else workspaces.get(case.issue)
+        mroot = Path(case.manual_root) if case.manual_root else man_roots.get(case.issue, man_repo)
         print(f"[{i}/{len(cases)}] {case.key} {case.author} …", flush=True)
         if ws is None:
             m = {"key": case.key, "issue": case.issue, "author": case.author,
                  "skipped": f"没有工作区映射（--workspace {case.issue}=DIR）", "level": "SKIP",
                  "findings": [], "elapsed_s": 0.0}
         else:
-            m = run_case(case, ws, man_roots.get(case.issue, man_repo), out_root, py, env,
+            m = run_case(case, ws, mroot, out_root, py, env,
                          argv_timeout(args.timeout), compare=not args.no_compare,
                          use_metadata=not metadata_disabled)
             m["channel"] = "latex" if str(m.get("source", "")).endswith(".tex") else "word"
-            if (m.get("plan") or {}).get("ai_zero") is not True and not m.get("skipped"):
+            if (m.get("plan") or {}).get("ai_zero") is False and not m.get("skipped"):
                 run["zero_cost"]["violations"].append(case.key)
         run["cases"][case.key] = m
         if m.get("skipped"):
@@ -1259,6 +1686,9 @@ def run_batch(args: argparse.Namespace) -> int:
     run["finished"] = now_iso()
     run["repo_end"] = git_fingerprint()
     totals = build_summary(run)
+    run["elapsed_total_s"] = round(time.time() - started, 1)
+    run["throughput_per_min"] = round(totals["ran"] / max(run["elapsed_total_s"] / 60, 0.01), 1)
+    run["dashboard"] = build_dashboard(run)
     if run["repo_start"] != run["repo_end"]:
         print("[⚠] 基线期间仓库状态发生变化（git status/HEAD），报告已记录；确定性可能受影响")
 
@@ -1266,6 +1696,8 @@ def run_batch(args: argparse.Namespace) -> int:
     summary["cases"] = run["cases"]
     (out_root / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_dashboard_csv(out_root / "dashboard.csv", run["dashboard"])
+    write_cases_csv(out_root / "cases.csv", run)
     report = render_report(run)
     (out_root / "report.md").write_text(report, encoding="utf-8")
 
@@ -1275,7 +1707,9 @@ def run_batch(args: argparse.Namespace) -> int:
     print(f"完成：{totals['ran']}/{totals['total']} 案例（SKIP {totals['skipped']}）；"
           f"P0 {totals['p0']}（新增 {totals['p0_new']}，已知 {totals['p0_known']}）/"
           f"P1 {totals['p1']} / P2 {totals['p2']}；"
-          f"sha 一致 {totals['sha_ok']}/{totals['ran']}；零付费 {'✅' if totals['zero_cost_ok'] else '❌'}")
+          f"sha 一致 {totals['sha_ok']}/{totals.get('sha_checked', 0)}（可判案例）；"
+          f"零付费 {'✅' if totals['zero_cost_ok'] else '❌'}"
+          f"（已验证 {totals.get('zero_cost_verified', 0)}，未验证 {len(totals.get('zero_cost_unverified') or [])}）")
     print(f"耗时 {elapsed:.1f}s；报告 {out_root / 'report.md'}；数据 {out_root / 'summary.json'}")
     return 0
 
@@ -1393,10 +1827,13 @@ def run_self_test() -> int:
         r"\parencite{A} \parencite{B}", "@article{A,\n title={t}\n}") == {
             "n_cited": 2, "n_bib": 1, "dangling": ["B"], "unused": [],
             "n_dangling": 1, "n_unused": 0})
-    check("默认清单：期 90 十篇在前、期 87 九篇在后",
-          [c.issue for c in default_cases()[:10]] == ["90"] * 10
-          and [c.issue for c in default_cases()[10:]] == ["87"] * 9
-          and len(default_cases()) == 19)
+    dc = default_cases()
+    check("默认清单：90(10)→87(9)→88(7)→89(5) 共 31 篇",
+          [c.issue for c in dc[:10]] == ["90"] * 10
+          and [c.issue for c in dc[10:19]] == ["87"] * 9
+          and [c.issue for c in dc[19:26]] == ["88"] * 7
+          and [c.issue for c in dc[26:]] == ["89"] * 5
+          and len(dc) == 31)
     check("期 87 子案例编号 ↔ 作者映射（1=Kun_Xing … 9=Wei_Chen）",
           [c.author for c in default_cases() if c.issue == "87"] ==
           ["Kun_Xing", "Wenjing_Du", "Fayang_Ye", "Pengfei_Song", "Ruixue_Tang",
@@ -1435,6 +1872,32 @@ def run_self_test() -> int:
         check("附加源文件不存在 → 安全回退（不传、note 写明候选）",
               "--metadata" not in args3 and info3["fallback"] is True
               and "回退" in info3["note"])
+
+    _dash = build_dashboard(
+        {"case_order": ["a", "b"],
+         "cases": {
+             "a": {"convert_rc": 2,
+                   "log": {"errors": ["Undefined control sequence."]},
+                   "findings": [{"level": "P0", "code": "CONVERT_RC", "detail": "rc=2"},
+                                {"level": "P1", "code": "PAGE_DIFF", "detail": "页差 1"}]},
+             "b": {"convert_rc": 0, "log": {},
+                   "findings": [{"level": "P1", "code": "PAGE_DIFF", "detail": "页差 1"}]},
+         }})
+    check("输出名 sanitize / sha 判定 / 零付费判定（失败案例不算违规）",
+          sanitize_output_name("Liwu Rong") == "Liwu_Rong"
+          and sanitize_output_name("Bo_Chen") == "Bo_Chen"
+          and sanitize_output_name("1st Case") == "A_1st_Case"
+          and sha_verdict(0, True, True, {"tex": "a", "bib": "b"}, {"tex": "a", "bib": "b"}) is True
+          and sha_verdict(2, False, False, {}, {}) is None
+          and plan_ai_status(0, 0) is True
+          and plan_ai_status(0, 3) is False
+          and plan_ai_status(2, None) is None)
+    check("benchmark：issue code 解析 + dashboard 聚合 + 估计函数",
+          _parse_issue_code("2026年第2期(87)") == "87"
+          and _parse_issue_code("2022年第6A期(67A)") == "67A"
+          and estimate_bench([CaseSpec(key="x", issue="repo", author="A", author_dir=".",
+                                       source="/tmp/a.docx")])["est_minutes"] == round(8.5 / 60, 1)
+          and [r["level"] for r in _dash][:2] == ["P0", "P1"])
     print()
     print(f"失败 {len(fails)} 项" + (f"：{fails}" if fails else "（全部通过）"))
     return 1 if fails else 0
@@ -1451,8 +1914,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="批量实例测试：转换→编译→两遍 sha256→一校/回读→人工对照→P0/P1/P2 报告"
                     "（零付费、只读输入、产物只写 /tmp）",
     )
-    ap.add_argument("--issues", default="90,87",
-                    help="只跑这些期（逗号分隔；默认 90,87 = 期 90 先、期 87 后）")
+    ap.add_argument("--issues", default="90,87,88,89",
+                    help="只跑这些期（逗号分隔；默认 90,87,88,89）")
     ap.add_argument("--case", default="",
                     help="只跑一个案例：`90/05` 或 `87-3` 或作者名（如 Beibei_Gao）")
     ap.add_argument("--workspace", action="append", metavar="ISSUE=DIR",
@@ -1469,6 +1932,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-compare", action="store_true", help="不读稿件仓人工成品（只做绝对判据）")
     ap.add_argument("--no-metadata", action="store_true",
                     help="忽略 manifest 的附加源（--metadata），模拟仅靠引擎通用发现（A2-only 口径）")
+    ap.add_argument("--repo-scan", action="store_true",
+                    help="只读扫描稿件仓，把「有源稿+有人工成品 tex」的期篇并入全量基准")
+    ap.add_argument("--inventory", action="store_true",
+                    help="只盘点篇数/通道/预计耗时（不跑转换；重活窗口申请用）")
+    ap.add_argument("--limit", type=int, default=0, help="只跑前 N 个案例（冒烟用）")
     ap.add_argument("--self-test", action="store_true", help="跑内置自检（不读真实稿）")
     return ap
 

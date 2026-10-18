@@ -11,7 +11,8 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
 ⑥ 源文件自动发现（manifest 覆盖 / main.tex 优先 / Word 排除「作者信息/英文摘要」）；
 ⑦ 报告渲染 smoke（总表/明细/附录都出现该案例）；
 ⑧ manifest 附加源 `metadata`（--metadata 拼装 / 文件不存在安全回退 / `--no-metadata` A2-only 口径 /
-   JSON manifest 字段解析 / report 附录显示）。
+   JSON manifest 字段解析 / report 附录显示）；
+⑨ 全量基准（repo 扫描 / 失败聚类 dashboard / dashboard.csv / cases.csv / 预计耗时 / 88+89 manifest）。
 
 只写临时目录；不读真实语料、不跑 xelatex、不联网、不读稿件库 —— `cd Engine` 下秒级可跑。
 
@@ -58,10 +59,16 @@ print(f"已加载 {_TOOL}")
 # 1) 内置 manifest
 # ─────────────────────────────────────────────────────────────────────────────
 cases = batch.default_cases()
-check("默认清单 19 个案例", len(cases) == 19)
-check("期 90 十篇在前、期 87 九篇在后",
+check("默认清单 31 个案例（90:10 + 87:9 + 88:7 + 89:5）", len(cases) == 31)
+check("清单顺序：90(10)→87(9)→88(7)→89(5)",
       [c.issue for c in cases[:10]] == ["90"] * 10
-      and [c.issue for c in cases[10:]] == ["87"] * 9)
+      and [c.issue for c in cases[10:19]] == ["87"] * 9
+      and [c.issue for c in cases[19:26]] == ["88"] * 7
+      and [c.issue for c in cases[26:]] == ["89"] * 5)
+check("期 88/89 源映射与工作区（抽查 3 篇）",
+      {c.key: c.source for c in cases}["88-01"] == "original/CONSEQ2026FINAL.docx"
+      and {c.key: c.source for c in cases}["89-07"].endswith("WANGYIYAN.tex")
+      and {c.key: c.author for c in cases}["88-06"] == "Zhixi_Chen")
 check("期 87 子案例 1–9 ↔ 作者映射",
       [c.author for c in cases if c.issue == "87"] ==
       ["Kun_Xing", "Wenjing_Du", "Fayang_Ye", "Pengfei_Song", "Ruixue_Tang",
@@ -314,6 +321,141 @@ try:
     check("ensure_docx：.docx 原样返回（needed=False）",
           info["needed"] is False and info["ok"] is True and docx_p is not None)
 
+    # ── ⑨ 全量基准：repo 扫描 / 聚类 / CSV / 估计 / 绝对 source ──
+    check("_parse_issue_code 提取 issue code",
+          batch._parse_issue_code("2026年第2期(87)") == "87"
+          and batch._parse_issue_code("2022年第6A期(67A)") == "67A"
+          and batch._parse_issue_code("abc") == "")
+    check("输出名 sanitize：空格/非法字符/首位数字",
+          batch.sanitize_output_name("Liwu Rong") == "Liwu_Rong"
+          and batch.sanitize_output_name("Yu Chen") == "Yu_Chen"
+          and batch.sanitize_output_name("Bo_Chen") == "Bo_Chen"
+          and batch.sanitize_output_name("1st Case") == "A_1st_Case"
+          and batch.sanitize_output_name("") == "Case")
+    check("sha_verdict：成功才判 True/False，失败= None（不误判 NONDETERMINISTIC）",
+          batch.sha_verdict(0, True, True, {"t": "a"}, {"t": "a"}) is True
+          and batch.sha_verdict(0, True, True, {"t": "a"}, {"t": "b"}) is False
+          and batch.sha_verdict(2, False, False, {}, {}) is None)
+    check("plan_ai_status：预计 AI=0→True、非0→False、plan 失败→None（不算违规）",
+          batch.plan_ai_status(0, 0) is True
+          and batch.plan_ai_status(0, 3) is False
+          and batch.plan_ai_status(2, None) is None
+          and batch.plan_ai_status(0, None) is None)
+    _out = batch.convert_common_args(
+        batch.CaseSpec(key="n", issue="repo", author="Liwu Rong", author_dir="."),
+        docx_p, TMP / "out", TMP)[0]
+    check("convert_common_args：--name 用 sanitize 输出名",
+          _out[_out.index("--name") + 1] == "Liwu_Rong")
+
+    # 合成「稿件仓」：不依赖引擎 identify 的内部判据（monkeypatch 成固定返回）
+    repo = TMP / "repo"
+    art = repo / "2020年第1期(60)" / "01 Alice"
+    (art / "original").mkdir(parents=True)
+    (art / "Alice.tex").write_text("manual", encoding="utf-8")
+    fake_src = art / "original" / "Alice_source.docx"
+    fake_src.write_text("src", encoding="utf-8")
+    (repo / "2020年第1期(60)" / "02 Bob").mkdir(parents=True)
+    (repo / "2020年第1期(60)" / "02 Bob" / "Bob.tex").write_text("x", encoding="utf-8")
+    carol = repo / "2020年第1期(60)" / "03 Carol"
+    carol.mkdir(parents=True)
+    (carol / "Carol.tex").write_text("x", encoding="utf-8")
+    (repo / "2020年第1期(60)" / "04 NoManual").mkdir(parents=True)
+    (repo / "2026年第5期(90)" / "01 Skip").mkdir(parents=True)
+    (repo / "2026年第5期(90)" / "01 Skip" / "Skip.tex").write_text("x", encoding="utf-8")
+
+    _orig_identify = batch._sources.identify
+
+    def _fake_identify(article_dir):
+        p = Path(article_dir)
+        if p.name == "01 Alice":
+            return types.SimpleNamespace(body=types.SimpleNamespace(path=str(fake_src)))
+        if p.name == "03 Carol":   # 识别的正文源 = 人工成品自身 → 必须跳过
+            return types.SimpleNamespace(body=types.SimpleNamespace(path=str(p / "Carol.tex")))
+        return types.SimpleNamespace(body=None)
+
+    batch._sources.identify = _fake_identify
+    try:
+        repo_cases, repo_stats = batch.scan_repo_cases(repo)
+    finally:
+        batch._sources.identify = _orig_identify
+    check("repo 扫描：可测 1 篇（60-01），Desktop 已覆盖期被跳过",
+          [c.key for c in repo_cases] == ["repo-60-01"]
+          and repo_cases[0].workspace == str(art.resolve())
+          and repo_cases[0].manual_dir.endswith("01 Alice")
+          and repo_cases[0].manual_root == str(repo.resolve())
+          and repo_cases[0].source == str(fake_src.resolve())
+          and repo_stats["skipped_no_manual_tex"] == 1
+          and repo_stats["skipped_manual_is_source"] == 1
+          and repo_stats["skipped_no_source"] == 1)
+
+    # 人工 bib 兜底：目录里只有 rongliwu.bib 时也能找到
+    art_bib = repo / "2020年第1期(60)" / "05 BibOnly"
+    art_bib.mkdir(parents=True)
+    (art_bib / "BibOnly.tex").write_text("manual", encoding="utf-8")
+    (art_bib / "rongliwu.bib").write_text("@book{a, title={T}}", encoding="utf-8")
+    fake_src2 = art_bib / "BibOnly_source.docx"
+    fake_src2.write_text("src", encoding="utf-8")
+    _orig2 = batch._sources.identify
+
+    def _fake2(article_dir):
+        p = Path(article_dir)
+        if p.name == "05 BibOnly":
+            return types.SimpleNamespace(body=types.SimpleNamespace(path=str(fake_src2)))
+        return _orig2(article_dir)
+
+    batch._sources.identify = _fake2
+    try:
+        cases_bib, _st = batch.scan_repo_cases(repo)
+    finally:
+        batch._sources.identify = _orig2
+    bib_case = [c for c in cases_bib if c.author == "BibOnly"]
+    check("repo 扫描：人工 bib 兜底目录内最大 .bib",
+          len(bib_case) == 1 and bib_case[0].manual_bib == "rongliwu.bib")
+
+    est = batch.estimate_bench(repo_cases + [batch.CaseSpec(
+        key="w", issue="repo", author="W", author_dir=".", source="/tmp/a.docx")])
+    check("estimate_bench：篇数/通道/预计耗时",
+          est["cases"] == 2 and est["by_channel"]["word"] == 2
+          and est["est_seconds"] == round(2 * batch.BENCH_EST_SEC_PER_CASE, 1))
+    check("error_profile：rc≠0 / 编译错误 / 缺字 / 干净",
+          batch.error_profile({"convert_rc": 2, "log": {"errors": ["Undefined control sequence."]}})["code"] == "E_CONVERT_RC"
+          and batch.error_profile({"convert_rc": 0, "log": {"errors": ["x"], "n_errors": 1}})["code"] == "E_TEX"
+          and batch.error_profile({"convert_rc": 0, "log": {"missing_char": 2,
+                                                           "missing_char_samples": ["U+FF1D"]}})["code"] == "E_MISSING_CHAR"
+          and batch.error_profile({"convert_rc": 0, "log": {}})["code"] == "")
+    fake_run = {"case_order": ["a", "b"],
+                "cases": {"a": {"key": "a", "author": "A", "issue": "repo", "channel": "word",
+                                "convert_rc": 2, "pdf_pages": None, "level": "P0",
+                                "log": {"errors": ["Undefined control sequence."], "n_errors": 1},
+                                "findings": [{"level": "P0", "code": "CONVERT_RC", "detail": "rc=2"},
+                                             {"level": "P1", "code": "PAGE_DIFF", "detail": "页差 1"}],
+                                "manual": {"pages": 10}},
+                          "b": {"key": "b", "author": "B", "issue": "repo", "channel": "latex",
+                                "convert_rc": 0, "pdf_pages": 9, "level": "P1",
+                                "log": {}, "tex": {"cite": 5}, "bib": {"entries": 3},
+                                "manual": {"pages": 9, "bib_entries": 3, "cite": 5},
+                                "findings": [{"level": "P1", "code": "PAGE_DIFF", "detail": "页差 1"}]}}}
+    dash = batch.build_dashboard(fake_run)
+    check("dashboard：按严重度加权排序 + owner/effort 元数据",
+          [r["level"] for r in dash] == ["P0", "P1"]
+          and dash[0]["cases_count"] == 1 and dash[1]["cases_count"] == 2
+          and dash[0]["owner"] == "engine-core" and dash[1]["owner"] == "engine-core"
+          and dash[0]["rank"] == 1)
+    dpath = TMP / "dashboard.csv"; cpath = TMP / "cases.csv"
+    batch.write_dashboard_csv(dpath, dash); batch.write_cases_csv(cpath, fake_run)
+    check("dashboard.csv / cases.csv 写出且表头正确",
+          "cluster_code" in dpath.read_text(encoding="utf-8-sig").splitlines()[0]
+          and "error_code" in cpath.read_text(encoding="utf-8-sig").splitlines()[0]
+          and len(dpath.read_text(encoding="utf-8-sig").splitlines()) == 3)
+    check("绝对 source 的 discover_source 直接用",
+          batch.discover_source(batch.CaseSpec(
+              key="abs", issue="repo", author="A", author_dir=".",
+              source=str(docx_p)), TMP)[0] == docx_p)
+    check("CLI：--repo-scan / --inventory / --limit 可解析",
+          batch.build_parser().parse_args(["--repo-scan"]).repo_scan is True
+          and batch.build_parser().parse_args(["--inventory"]).inventory is True
+          and batch.build_parser().parse_args(["--limit", "3"]).limit == 3)
+
     # ── ⑧ manifest 附加源（metadata / --metadata / --no-metadata）──
     meta_p = mk("Liang_Zhang/yalcin puzzle.tex", 400)
     main_p = mk("Liang_Zhang/main.tex", 600)
@@ -389,6 +531,15 @@ try:
          "manual": {**MAN, "dir": "/tmp/man", "proof": {"hits": 2}}}
     run["cases"]["t-1"] = m
     batch.build_summary(run)
+    run["zero_cost_unverified"] = ["t-1"]
+    run["totals"]["zero_cost_unverified"] = ["t-1"]   # render_report 从 totals 读
+    run["elapsed_total_s"] = 1.0
+    run["throughput_per_min"] = 60.0
+    run["dashboard"] = [{"rank": 1, "level": "P0", "cluster_code": "CONVERT_RC",
+                         "cluster": "转换失败（rc≠0）", "owner": "engine-core",
+                         "effort": "M", "cases_count": 1, "findings_count": 1,
+                         "case_keys": "t-1", "signatures": "Undefined control sequence.",
+                         "examples": "", "priority": 100}]
     report = batch.render_report(run)
     check("报告渲染：含标题/总表/附录/零付费段",
           all(s in report for s in ("批量实例测试报告", "总表", "每案例附录",
@@ -397,6 +548,10 @@ try:
           "**✅**" in report or "| ✅ |" in report)
     check("报告附录：显示附加源（--metadata）",
           "附加源（--metadata）" in report and "yalcin puzzle.tex" in report)
+    check("报告：零付费未验证案例单列（不误报违规）",
+          "零付费断言未验证" in report)
+    check("报告：全量基准看板与 Top10 根因段出现",
+          "全量基准看板" in report and "前 10 根因" in report and "CONVERT_RC" in report)
 finally:
     shutil.rmtree(TMP, ignore_errors=True)
 

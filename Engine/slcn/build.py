@@ -574,6 +574,7 @@ def build_latex(
     meta: dict | None = None,
     overrides: dict | None = None,
     verbose: bool = True,
+    dash_hints: bool = True,
 ) -> BuildResult:
     """LaTeX 通道：多源合并成初排稿。
 
@@ -588,6 +589,9 @@ def build_latex(
     overrides      手工覆盖 {title_cn, author_cn, affiliation_cn, email,
                    abstract_cn, title_en, abstract_en}；**非空值优先于元数据源**，
                    被覆盖的字段不再算「未识别」。None / 空 dict = 与从前逐字一致。
+    dash_hints     **ZH-08 连接号待人工判断**的日志提示（第四十三批，默认开）：
+                   True = 命中数 + 前 20 条上下文 + 判断指引写进初排日志；
+                   False = 不打印。**纯日志，产物逐字节不变**（引擎不做语义自动分类）。
     """
     log: list[str] = []
     warnings: list[str] = []
@@ -859,6 +863,14 @@ def build_latex(
 
     audit = R.audit(tpl, lang=lang)
 
+    # ZH-08 连接号：只提示人工判断，不改产物（第四十三批）。
+    #    ⚠️ 纯日志，异常绝不阻断出稿（与 ⑤′ 自动改同一纪律）。
+    if dash_hints and lang == "zh":
+        try:
+            _report_dash_hints(tpl, lang, say)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"ZH-08 连接号提示未执行（不影响出稿）：{type(e).__name__}: {e}")
+
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
     # 第 121 条：正文 `\includegraphics` 引用的图片从源目录复制进产物目录，
@@ -1054,6 +1066,51 @@ def _merge_en_metadata_source(
 _PROOF_AUTOFIX_IDS: tuple[str, ...] = ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06")
 
 
+# ── ZH-08 连接号：只提示、不自动分类（第四十三批）────────────────────────
+#
+# 用户 2026-10-22 拍板：引擎**无法可靠区分**「人名内部短横」（让-雅克·卢梭，应写
+# `\edash`）与「地名/路线/区间的一字线」（北京-上海，应写一字线）——那需要语义/知识库，
+# 正则与词表都会错。所以 ZH-08 **不做默认自动改**（E1 白名单也不含它），改为在初排
+# 日志里给「可发现性提示」：命中数 + 前 20 条上下文 + 判断指引，交人工编辑逐条判断。
+# ⚠️ 只写日志，**产物逐字节不变**（本模块所有 ZH-08 代码都不修改 tpl）。
+_DASH_GUIDE = ("人名 / 编号 / 日期 / 字母序号 → 短横 \\edash；"
+               "地名 / 路线 / 区间等 → 一字线（——）")
+
+
+def _dash_hints(tex: str, lang: str) -> list[tuple[int, str]]:
+    """收集 ZH-08（中文旁的半角短杠）命中，返回 `[(行号, 上下文)]`；**只读不改文本**。
+
+    屏蔽区（数学/命令/注释/verbatim）由 `proofcheck.check()` 的三层掩码保证，
+    这里不复刻判据（同一判据只有一份，见 INVARIANTS 四.1）。
+    上下文 = 命中前后各 10 字（换行显示为 ⏎），便于日志里一眼定位。
+    """
+    from . import proofcheck as _pc   # 惰性 import（无环；与前两个 helper 同风格）
+
+    rep = _pc.check(tex, lang=lang)
+    out: list[tuple[int, str]] = []
+    for h in rep.hits:
+        if h.rule_id != "ZH-08":
+            continue
+        a, b = max(0, h.start - 10), min(len(tex), h.end + 10)
+        out.append((h.line, tex[a:b].replace("\n", "⏎")))
+    return out
+
+
+def _report_dash_hints(tex: str, lang: str, say, limit: int = 20) -> int:
+    """把 ZH-08 提示写进初排日志（无命中不打印），返回命中数。"""
+    hints = _dash_hints(tex, lang)
+    if not hints:
+        return 0
+    say(f"   一校提示：ZH-08 连接号待人工判断 {len(hints)} 处"
+        "（只提示，未改任何字符）")
+    say(f"   判断指引：{_DASH_GUIDE}")
+    for line, ctx in hints[:limit]:
+        say(f"   · 第{line}行：{ctx}")
+    if len(hints) > limit:
+        say(f"   · ……另有 {len(hints) - limit} 处（可用 proofcheck.py 看全部）")
+    return len(hints)
+
+
 def _autofix_proof(tex: str, lang: str) -> tuple[str, dict[str, int]]:
     """把一校 fixable 窄集套到初排稿上，返回 (新文本, {规则 id: 改动数})。
 
@@ -1144,6 +1201,7 @@ def build_docx(
     metadata_path: str | None = None,
     verbose: bool = True,
     proof_autofix: bool = True,
+    dash_hints: bool = True,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1163,6 +1221,10 @@ def build_docx(
                     自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 这 6 条确定性替换；
                     False = 与接入前逐字节相同（`corpus.py --no-proof-autofix` 消融用）。
                     只影响中文 Word 通道；LaTeX 通道与英文稿不受影响。
+    dash_hints       **ZH-08 连接号待人工判断**的日志提示（第四十三批，默认开）：
+                    True = 命中数 + 前 20 条上下文（前后各 10 字）+ 判断指引；
+                    False = 不打印。**纯日志，产物逐字节不变**——引擎不做语义自动分类
+                    （人名短横 \\edash vs 地名/路线一字线，正则/词表都不可靠）。
     """
     from .docxsource import (
         link_citations,
@@ -1381,6 +1443,14 @@ def build_docx(
     tpl, _nx_tab, _nx_fig = _add_xrefs(tpl)
     if _nx_tab or _nx_fig:
         say(f"   图表交叉引用：表 {_nx_tab} 处、图 {_nx_fig} 处")
+
+    # ZH-08 连接号：只提示人工判断，不改产物（第四十三批）。
+    #    ⚠️ 纯日志，异常绝不阻断出稿（与 ⑤′ 自动改同一纪律）。
+    if dash_hints and lang == "zh":
+        try:
+            _report_dash_hints(tpl, lang, say)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"ZH-08 连接号提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 
     audit = R.audit(tpl, lang=lang)
 
