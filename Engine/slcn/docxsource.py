@@ -302,8 +302,11 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
         kind = "M"
         if re.search(r"\(\d+\)|\bvol\b|\d+\s*[-–]\s*\d+", after):
             kind = "J"
+    # ⚠️ P0-2（期 87 sub5/sub2 实测）：`rest` 必须是**题名之后**的出版信息；旧实现
+    #    存的是**含引号题名的整段 rest**，而 `refs_to_bib()` 的期刊正则要求 rest 以刊名
+    #    开头 → journal/volume/number/pages 永不命中（22 条里丢 18 条 pages）。
     e = RefEntry(raw=s, author=authors, year=year, title=title.strip().strip("《》"),
-                 kind=kind, rest=rest)
+                 kind=kind, rest=after)
     e.key = make_key(e)
     return e
 
@@ -331,6 +334,16 @@ def _looks_short_bibliographic_note(text: str) -> bool:
         return True
     # 期刊卷期写法（`83 (323)` / `Vol. 68 (1)`）
     if re.search(r"\b(?:Vol|vol|No|no)\.?\s*\d+|\d+\s*\(\d+\)", t):
+        return True
+    # P0-6（期 87 sub9 实测）：`M. Bolduc & David A. Frank (eds.), The Intellectual and
+    # Cultural Origins of … 1933-1958, Brill Academic Pub, 2023.` —— 出版社写作
+    # `Brill Academic Pub`，既没有页码/引号/卷期，旧信号全落空 → 被当成散文注释、
+    # 整条不进 bib。补三个「像文献」信号（都要求**同时**出现年份，避免误伤散文）。
+    if re.search(r"\(eds?\.\)|\beds?\.|\bEdited by\b", t, re.I):
+        return True
+    if (re.search(r"\b(?:19|20)\d{2}\b", t)
+            and re.search(r"\b(?:Pub|Press|Publishing|Verlag|Books?|University|"
+                          r"Academic|Brill|Routledge|Blackwell|Springer|Wiley)\b", t)):
         return True
     return False
 
@@ -508,15 +521,8 @@ def _numbered_refs(
     used: set[str] = set()
     # ⚠️ 用 `split_numbered_raw`（与 `parse_numbered_list` 同一套切分）：编号与原文**同源**，
     #    不会出现「这条原文配到另一条条目上」。`split_numbered_raw` 已按同一口径过滤短段。
-    for num, (raw, seg) in enumerate(footref.split_numbered_raw("\n".join(lines)), 1):
-        it = footref.parse_numbered_item(seg)
-        # ⚠️ 题名短于 4 字通常是「切错了」（把译者/刊名切成了题名），跳过更安全。
-        #    但中文著/译体例是**例外**（第 64 条）：`亚里士多德（著），张竹明（译），工具论，…`
-        #    的真题名可能只有 3 个字——此时作者段带「（著）/（译）」标记、题名是**下一**段，
-        #    按长度丢掉整条会让正文的 `\parencite` 悬空（实测 1 篇：反推数学与无穷 kxj.docx）。
-        if not it.title or (len(it.title) < 4 and not _has_role_mark(it.author, both=True)):
-            continue
-        entry = {
+    def _entry_dict(it) -> dict:
+        return {
             "_type": it.etype,
             "author": it.author, "title": it.title,
             "journal": it.journal, "booktitle": it.booktitle,
@@ -524,9 +530,59 @@ def _numbered_refs(
             "publisher": it.publisher, "address": it.address,
             "year": it.year, "note": it.note,
         }
+
+    # P0-5a（期 87 sub7 实测）：编号清单**第一个标记之前**的无编号条目（作者漏编号）
+    # 旧实现整段丢弃。这里把标题行去掉后、首标记之前的内容按行补成第 1..n 条；
+    # 这类条目没有编号，**不写 num2key**（不能影响正文编号→键映射）。
+    text_all = "\n".join(lines)
+    first_mark = re.search(r"(?:^|\n)\s*[\[\(（]\s*\d{1,3}\s*[\]\)）]", text_all)
+    # ⚠️ 只有「确实存在编号标记」时，首个标记前那一行才是「漏编号的第 1 条」；
+    #    整份没有编号的（人年制英文/中文清单）必须交给 `parse_reference_line` 通道，
+    #    否则会被当成 N 条无编号条目、覆盖掉正确解析（期 88 Tuomo_Aho 实测）。
+    prefix = text_all[: first_mark.start()] if first_mark else ""
+    prefix_lines = [
+        line.strip() for line in prefix.splitlines()
+        if line.strip() and not re.match(r"^\s*(?:参考文献|References?|参考书目)\s*$", line, re.I)
+    ]
+    for raw_line in prefix_lines:
+        if len(raw_line) <= 12:
+            continue
+        it0 = footref.parse_numbered_item(raw_line)
+        if not it0.title or not (it0.year or it0.author):
+            continue
+        entry0 = _entry_dict(it0)
+        key0 = _fn_make_key(entry0, len(out) + 1, used)
+        out.append((key0, entry0, raw_line))
+        raw_by_key[key0] = raw_line
+
+    for seq, (raw, seg) in enumerate(footref.split_numbered_raw("\n".join(lines)), 1):
+        # 编号取**原文标号本身**（`[2]` → 2），不能用 enumerate 的位置：
+        # 清单允许首条无编号（P0-5）时，位置与正文里的编号会差 1。
+        _nm = re.match(r"^\s*[\[\(（]\s*(\d{1,3})\s*[\]\)）]", raw)
+        num = int(_nm.group(1)) if _nm else seq
+        it = footref.parse_numbered_item(seg)
+        # ⚠️ 题名短于 4 字通常是「切错了」（把译者/刊名切成了题名）。
+        #    但中文著/译体例是**例外**（第 64 条）：`亚里士多德（著），张竹明（译），工具论，…`
+        #    的真题名可能只有 3 个字——此时作者段带「（著）/（译）」标记、题名是**下一**段，
+        #    按长度丢掉整条会让正文的 `\parencite` 悬空（实测 1 篇：反推数学与无穷 kxj.docx）。
+        #    P0-4b（期 87 sub8）：**不再静默丢**——切错的条目保留并写 note，交人工核对。
+        if not it.title:
+            continue
+        short_title = (len(it.title) < 4
+                       and not _has_role_mark(it.author, both=True))
+        # 只有单侧著/译标记（如「（著）」没有「（译）」）时，短题名几乎肯定是把
+        # 译者/刊名切错了——维持旧行为**丢弃**（测试 test_authornorm ⑤c /
+        # test_ref_raw_lines 反例）；P0-4 的「保留+note」只针对无角色标记的情形。
+        if short_title and _has_role_mark(it.author):
+            continue
+        entry = _entry_dict(it)
+        if short_title:
+            entry["note"] = (f"题名解析可疑（{it.title}），已保留原条目，"
+                             "请按源稿原文核对题名")
         key = _fn_make_key(entry, len(out) + 1, used)
         out.append((key, entry, it.title))
-        num2key[num] = key
+        if _nm:                       # 只有带标号的条目才进「编号→键」映射
+            num2key[num] = key
         raw_by_key[key] = raw
     return out, num2key, raw_by_key
 
@@ -658,7 +714,7 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
         if jm is None:  # 无卷号形态：`Mind 85: 112-119`
             jm = re.match(
                 r"^(?P<journal>[^,，]+?)\s*[,，]?\s*(?P<volume>\d+)?\s*[:：]\s*"
-                r"(?P<pages>[\d\-\u2013\u2014]+)\s*$",
+                r"(?P<pages>[\d\-\u2013\u2014]+)\s*[.。]?\s*$",
                 rest,
             )
         if jm and etype == "article":
@@ -706,6 +762,10 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
                 if caddr:
                     fields.append(("address", escape_bib_value(caddr)))
             fields.append(("year", e.year))
+            # P0-2 兜底：@article 但期刊卷期页没解析出来时，把 rest 原文塞进 note，
+            # 不再静默丢（期 87 sub5 有 18 条 pages 丢失且无任何痕迹）。
+            if etype == "article" and not any(k == "journal" for k, _ in fields) and rest:
+                fields.append(("note", escape_bib_value(rest)))
             # ⚠️ 案例 81 的**第二半：本轮故意不动**（明写在此，不悄悄丢）。
             #     `rest` 里那些「版次 / 中译加注」现在仍只在这条 note 判据下兜底：
             #     `pub or addr` 一真就 `note = ""`，于是
@@ -2269,7 +2329,7 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
 
     with __import__("zipfile").ZipFile(path) as z:
         _docxml = z.read("word/document.xml").decode("utf-8")
-        doc.n_math = _docxml.count("<m:oMath>")
+        doc.n_math = len(re.findall(r"<m:oMath(?![A-Za-z])[^>]*>", _docxml))
         # 期 87 子案例 2（03 Wenjing_Du）实测：作者用 MathType 写公式，docx 里是
         # `<w:object>` + `word/embeddings/*.bin`，不是 OMML → 解析不到、**静默丢失**，
         # PDF 里公式位置全空、页数少 2 页。这里如实计数并警告（不阻断出稿）。
@@ -2526,6 +2586,11 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
                 f.ref = ""
                 f.entry = None
                 doc.footnote_notes += 1
+                # P0-6b：降级不能静默——把「被判成注释、没进 bib」的脚注写进 warning，
+                # 编辑/报告才看得见（sub9 少 1 条就是这么漏掉的）。
+                doc.warnings.append(
+                    f"脚注 {fid} 的文献条目未进 bib（parse_entry 只能得到 note，"
+                    f"按注释处理）：{f.text.strip()[:80]}")
                 continue
             seq += 1
             entry = _e0

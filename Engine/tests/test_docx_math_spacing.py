@@ -35,8 +35,8 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
         sys.path.insert(0, _p)
 
 from slcn import rules  # noqa: E402
-from slcn.docxxml import (_math_to_tex, ole_object_stats, omml_to_latex,  # noqa: E402
-                         symbol_run_stats)
+from slcn.docxxml import (count_omml, _math_to_tex, _run_segments, ole_object_stats,  # noqa: E402
+                         omml_to_latex, symbol_run_stats, W_NS)
 
 FAILS = []
 M_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
@@ -125,11 +125,35 @@ _sym_xml = (
     '<w:r><w:sym w:font="LogicA" w:char="005e"/></w:r>'
     '<w:r><w:sym w:font="Wingdings" w:char="0040"/></w:r></w:document>'
 )
-check("⑦ symbol_run_stats：按字体计数（LogicA 2、Wingdings 1）",
-      symbol_run_stats(_sym_xml) == {"LogicA": 2, "Wingdings": 1},
+check("⑦ LogicA 已知符号已映射进正文 → 不再计为静默丢失（只余 Wingdings 1）",
+      symbol_run_stats(_sym_xml) == {"Wingdings": 1},
       str(symbol_run_stats(_sym_xml)))
+check("⑦ LogicA 未列入映射的序号仍计数（防漏报）",
+      symbol_run_stats('<w:document><w:sym w:font="LogicA" w:char="00FF"/></w:document>')
+      == {"LogicA": 1},
+      str(symbol_run_stats('<w:document><w:sym w:font="LogicA" w:char="00FF"/></w:document>')))
 check("⑦ symbol_run_stats：无 <w:sym> 返回空 dict",
       symbol_run_stats("<w:document><w:r><w:t>文字</w:t></w:r></w:document>") == {})
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑧ <w:sym> → 正文 Unicode（LogicA 私有序号映射；子案例 3 的 39 处符号）
+# ══════════════════════════════════════════════════════════════════════════
+_logica_cases = {"0022": "→", "0040": "=", "004E": "∼", "0052": "∈",
+                 "005D": "∅", "005E": "∞"}
+for _code, _ch in _logica_cases.items():
+    _run = ET.fromstring(
+        f'<w:r xmlns:w="{W_NS}"><w:sym w:font="LogicA" w:char="{_code}"/></w:r>')
+    _segs = _run_segments(_run, set())
+    check(f"⑧ LogicA {_code} → {_ch!r}",
+          len(_segs) == 1 and _segs[0].kind == "text" and _segs[0].text == _ch,
+          repr([(x.kind, x.text) for x in _segs]))
+
+# ⑨ oMath 计数：带属性也算、oMathPara 不计（子案例 3 的 74 vs 1）
+_math_xml = ('<w:document><m:oMath><m:r/></m:oMath>'
+             '<m:oMath xmlns:m="x" foo="1"><m:r/></m:oMath>'
+             '<m:oMathPara><m:oMath/></m:oMathPara></w:document>')
+check("⑨ count_omml：带属性 oMath 计入、oMathPara 本身不计（=3，含其中嵌套 oMath）",
+      count_omml(_math_xml) == 3, str(count_omml(_math_xml)))
 
 print()
 print(f"\n{'=' * 66}")

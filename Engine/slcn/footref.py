@@ -95,11 +95,15 @@ def _year(text: str) -> str:
     return ys[-1] if ys else ""
 
 
+#: 页码前的可选字母前缀（`S362-S378` 这种增刊页码，期 87 sub2 Fitelson 实测）。
+_PAGE_NUM = r"[A-Z]?\d{1,5}"
+
+
 def _pages(text: str) -> str:
-    m = re.search(r"[：:]\s*(\d{1,4})\s*[-–—~]\s*(\d{1,4})", text)
+    m = re.search(r"[：:]\s*(" + _PAGE_NUM + r")\s*[-–—~]\s*(" + _PAGE_NUM + r")", text)
     if m:
         return f"{m.group(1)}--{m.group(2)}"
-    m = re.search(r"[，,]\s*(\d{1,4})\s*[-–—~]\s*(\d{1,4})\s*[.。]?$", text)
+    m = re.search(r"[，,]\s*(" + _PAGE_NUM + r")\s*[-–—~]\s*(" + _PAGE_NUM + r")\s*[.。]?$", text)
     if m:
         return f"{m.group(1)}--{m.group(2)}"
     m = re.search(r"\bpp?\.\s*(\d{1,4})\s*[-–—~]\s*(\d{1,4})", text)
@@ -113,7 +117,8 @@ def _pages(text: str) -> str:
 
 
 def _vol_issue(text: str) -> tuple[str, str]:
-    m = re.search(r"[，,]\s*(\d{1,3})\s*\(\s*(\d{1,3}[^)]*)\)", text)
+    # 期号允许非纯数字：`66(Supplement)`（期 87 sub2 Fitelson 实测）。
+    m = re.search(r"[，,]\s*(\d{1,4})\s*\(\s*([^)]+?)\s*\)", text)
     if m:
         return m.group(1), re.sub(r"^0+(?=\d)", "", m.group(2).strip())
     m = re.search(r"[，,]\s*(?:Vol\.?\s*)?(\d{1,3})\s*[，,]\s*(?:No\.?\s*)?(\d{1,3})?[：:]", text)
@@ -150,12 +155,59 @@ _PUB_CUES = (
 )
 
 
+#: 出版地候选里不该出现的「题名/机构」词：命中说明冒号左边其实是题名副题或机构，
+#: 不是出版地（期 87 sub7 `…Dignaga School: Critique of Indian Realism, Bharatiya…Press`
+#: 的 publisher 被错拆成 `Critique…Press`、address 被错拆成 `Dignaga School`）。
+_PLACE_REJECT = re.compile(
+    r"\b(?:School|Institute|University|Department|Faculty|Center|Centre|Society|"
+    r"Association|Journal|Press|Publishing|Studies|Logic|Theory|Conflict|Critique|"
+    r"Realism|Analysis|Buddhist|Indian|Philosophy|History|Edition|Vol|No)\b", re.I)
+
+
+def _looks_like_place(candidate: str) -> bool:
+    """这段文字像不像「出版地」（`New York` / `Cambridge, MA` / `London`）。"""
+    text = candidate.strip(" ,，.")
+    if not text or len(text) > 40:
+        return False
+    if _PLACE_REJECT.search(text):
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]*", text)
+    if not 1 <= len(words) <= 4:
+        return False
+    allowed_lower = {"of", "the", "and", "on", "in", "upon", "de", "la", "van"}
+    if any(w[0].islower() and w not in allowed_lower for w in words):
+        return False
+    return True
+
+
+def _looks_pub_segment(seg: str) -> bool:
+    """这一段是不是出版信息（出版社/年份/期号/页码/`in …`），而不是题名的延续。
+
+    期 87 sub7 实测：`The Philosophy of Nyaya-Vaisesika, and Its Conflict with the
+    Buddhist Dignaga School: Critique of Indian Realism, Bharatiya Vidya Prakashan
+    Press.` 按逗号切后，题名被拆成 3 段；不并回去，title 只剩前半、后两段还会被
+    `_pub_addr` 从冒号处误拆成 publisher/address。
+    """
+    text = seg.strip().strip(" .。")
+    if not text:
+        return True
+    if re.search(_PUB_CUES, text):
+        return True
+    if re.match(r"^(?:1[89]|20)\d{2}\b", text):
+        return True
+    if re.match(r"^(?:第\s*\d+|pp?\.\s*\d|Vol\.?|No\.?|in\s|In\s|载\s|见\s)", text):
+        return True
+    if re.match(r"^[A-Z][A-Za-z.\- ]{1,20}[:：]\s*[A-Z]", text) and "," in text:
+        return True
+    return False
+
+
 def _pub_addr(text: str) -> tuple[str, str]:
     """`出版地: 出版社` 或 `Place: Publisher`。"""
     m = re.search(r"([^，,。:：()（）]{2,28})\s*[：:]\s*([^，,。]{2,48})", text)
     if m:
         a, p = m.group(1).strip(), m.group(2).strip()
-        if re.search(r"(出版社|Press|University|Verlag|Book|Publishing|Wiley|Springer|Routledge|Blackwell)", p):
+        if re.search(r"(出版社|印书馆|书局|出版公司|Press|University|Verlag|Book|Publishing|Wiley|Springer|Routledge|Blackwell)", p):
             return p, a
     m = re.search(r"\b([A-Z][A-Za-z.\- ]{2,24})[:：]\s*([A-Z][A-Za-z&.\- ]{2,36}(?:Press|University|Verlag|Books?|Publishing))", text)
     if m:
@@ -168,9 +220,22 @@ def _pub_addr(text: str) -> tuple[str, str]:
         text,
     )
     if m and re.search(_PUB_CUES, m.group(2)):
-        return m.group(2).strip(), m.group(1).strip()
+        addr, pub = m.group(1).strip(), m.group(2).strip()
+        # 出版社一侧若还带逗号（题名/副题混进来），只取最后一个命中出版社线索的段，
+        # 且**不猜**出版地（宁缺勿错）。
+        if "," in pub or "，" in pub:
+            tails = [x.strip() for x in re.split(r"[,，]", pub) if x.strip()]
+            if tails and re.search(_PUB_CUES, tails[-1]):
+                return tails[-1], ""
+        if _looks_like_place(addr):
+            return pub, addr
+        return pub, ""
     # 只有出版社、没写出版地：`…, Waveland Press.`（可能就在串首）
     m = re.search(r"(?:^|[,，])\s*([A-Z][A-Za-z&.\- ]{2,60}?(?:" + _PUB_CUES + r"))\s*[.。]?\s*$", text)
+    if m:
+        return m.group(1).strip(), ""
+    # 中文「只有出版社」：`商务印书馆，1980年`（无冒号、无出版地）
+    m = re.search(r"(?:^|[，,])\s*([\u4e00-\u9fff·]{2,30}(?:出版社|印书馆|书局|出版公司))", text)
     if m:
         return m.group(1).strip(), ""
     return "", ""
@@ -490,9 +555,115 @@ def _cn_journal_before_year(t: str) -> tuple[str, str]:
     return "", ""
 
 
+# ── P0-4（期 87 sub8 实测）：APA 体例编号清单 ──────────────────────────────
+#   源稿：`Bailin, S., Case, R., Coombs, J. R., & Daniels, L. B. (1999a).
+#          Common misconceptions of critical thinking. Journal of Curriculum
+#          Studies, 31(3), 269–283.`
+#   旧实现无引号分支按逗号切 → author=Bailin、title=S.，随后被 `len(title)<4`
+#   整条丢弃（26 条里丢 5 条、且无 warning）。APA 有**可判定的固定形状**：
+#   `作者段 (YYYY[a-z]?). 题名. 刊名, 卷(期), 页.`，单独成一条分支最安全。
+_APA_YEAR = re.compile(r"\(\s*(?P<year>(?:19|20)\d{2}[a-z]?)\s*\)\s*[.。]?\s*")
+_APA_INITIALS = re.compile(r"^(?:[A-Z]\.\s*)+$")
+_APA_TAIL = re.compile(
+    r"^(?P<title>.+?[.?!。？！])\s+"
+    r"(?P<journal>[A-Z][^,.]{1,90}?)\s*,\s*"
+    r"(?P<volume>\d{1,4})(?:\s*\((?P<number>[^)]+)\))?\s*,\s*"
+    r"(?P<pages>[A-Z]?\d{1,5}\s*[-–—]\s*[A-Z]?\d{1,5})\s*[.。]?\s*$")
+
+
+def _split_apa_title_pub(after: str) -> tuple[str, str]:
+    """APA 书/章节：`Title (Vol. 7). Windsor, ON, Canada: University of Windsor.`
+    → (Title (Vol. 7), Windsor, ON, Canada: University of Windsor)。
+
+    判据：切点后的尾巴含出版社线索词（Press/Publishing/University/…）——宁可认不出，
+    也不把副题里的句点当切点（题名里带句点的书不少）。
+    """
+    for m in re.finditer(r"\.\s+", after):
+        head = after[: m.start()]
+        if head.count("(") > head.count(")"):     # 括号里的句点（`(Vol. 7)`）不是切点
+            continue
+        tail = after[m.end():].strip()
+        if not tail or len(tail) > 120:
+            continue
+        if re.search(r"\b(?:Press|Publishing|Publishers?|Pub|University|Universit[äa]t|"
+                     r"Routledge|Blackwell|Springer|Wiley|Books?|Verlag|Hackett|SAGE|Sage|"
+                     r"Erlbaum|Pearson|Longman|McGraw|Elsevier|Rowman|Bloomsbury|Palgrave)\b",
+                     tail):
+            return after[: m.start()].strip(), tail
+    return after.strip(), ""
+
+
+def _apa_authors(pre: str) -> str:
+    """`Bailin, S., Case, R., & Daniels, L. B.` → `Bailin, S. and Case, R. and Daniels, L. B.`"""
+    text = re.sub(r"\s*&\s*", " and ", pre.strip())
+    parts = [x.strip() for x in re.split(r",\s*", text) if x.strip()]
+    names: list[str] = []
+    i = 0
+    while i < len(parts):
+        surname = re.sub(r"^(?:and\s+)", "", parts[i], flags=re.I).strip()
+        i += 1
+        if not surname:
+            continue
+        given = ""
+        if i < len(parts) and _APA_INITIALS.match(parts[i]):
+            given = re.sub(r"\s+", " ", parts[i]).strip()
+            i += 1
+        names.append(f"{surname}, {given}" if given else surname)
+    return " and ".join(names)
+
+
+def _parse_apa_item(t: str) -> Parsed | None:
+    """识别并解析 APA 体例条目；不是 APA 形状返回 None（绝不抢其它体例）。"""
+    m = _APA_YEAR.search(t)
+    if not m:
+        return None
+    pre = t[: m.start()].strip().rstrip(", ")
+    after = t[m.end():].strip()
+    # 作者段必须像 APA：有逗号 + 至少一个「X.」缩写，且不以年份/数字开头。
+    if "," not in pre or not re.search(r"[A-Z]\.", pre) or re.search(r"^\d", pre):
+        return None
+    author = _apa_authors(pre)
+    if not author:
+        return None
+    p = Parsed()
+    p.author = author
+    p.year = m.group("year")
+    tail = _APA_TAIL.match(after)
+    if tail:
+        p.title = re.sub(r"[.。]\s*$", "", tail.group("title").strip())
+        p.journal = tail.group("journal").strip().rstrip(",;")
+        p.volume = tail.group("volume")
+        p.number = (tail.group("number") or "").strip()
+        p.pages = re.sub(r"\s*[-–—]\s*", "--", tail.group("pages").strip())
+        p.etype = "article"
+    else:
+        title, pubpart = _split_apa_title_pub(after)
+        p.title = title
+        if pubpart:
+            if re.search(r"[:：]", pubpart):
+                p.address, p.publisher = [
+                    x.strip().rstrip(".") for x in re.split(r"[:：]", pubpart, maxsplit=1)]
+            else:
+                p.publisher = pubpart.strip().rstrip(".")
+        p.etype = "book" if p.publisher else "misc"
+    p.confidence = "high" if (p.title and (p.journal or p.publisher)) else "low"
+    return p
+
+
 def parse_numbered_item(seg: str) -> Parsed:
     """解析 `作者, 年份, "题名", 刊名, 卷(期): 页` 这种。"""
     t = seg.strip().rstrip(".。")
+    apa = _parse_apa_item(t)
+    if apa is not None:
+        return apa
+    if not _title_quoted(t):
+        # `郑伟宏. 《佛家逻辑通论》. 上海：复旦大学出版社，1996年，第45-78页.`
+        # 是「作者. 《题名》. 出版信息」句点体例；归一成逗号体例再走无引号分支，
+        # 否则按逗号切会把作者/题名/出版地全塞进作者、把页码当题名（期 87 sub7）。
+        _bm = re.match(
+            r"^(?P<a>[^《》]{1,80}?)[.。]\s*(?P<t>《[^》]{2,80}》)[.。]\s*(?P<r>.+)$", t)
+        if _bm:
+            t = f"{_bm.group('a').strip()}，{_bm.group('t').strip()}，{_bm.group('r').strip()}"
     p = Parsed()
     q = _title_quoted(t)
     if q:
@@ -526,10 +697,30 @@ def parse_numbered_item(seg: str) -> Parsed:
         n_auth = _translation_author_segments(parts)
         p.author = "，".join(parts[:n_auth]) if parts else ""
         body = [x for x in parts[n_auth:] if not re.fullmatch(r"(19|20)\d{2}\s*年?", x)]
+        # `作者：《题名》`（期 87 sub7 `[12] 虞愚：《印度逻辑推理与推论式的发展》,哲学研究，…`）
+        # 没有逗号分隔作者与题名，整段被当成题名——按「冒号 + 书名号」拆开。
         if body:
-            p.title = body[0]
+            cm = re.match(r"^(.{1,30}?)[：:]\s*(《[^》]{2,80}》.*)$", body[0])
+            if cm and not body[0].startswith("《"):
+                p.author = cm.group(1).strip()
+                body[0] = cm.group(2).strip()
+        # `D.N.Shastri，1957. The Philosophy…`：无引号体例把「年份. 题名」整段当题名，
+        # 年份混进 title（期 87 sub7 P0-5）。剥掉前缀年份并记进 year。
+        year_prefix = ""
+        if body:
+            ym_prefix = re.match(r"^((?:19|20)\d{2}[a-z]?)\s*[.。]\s*(.+)$", body[0])
+            if ym_prefix:
+                year_prefix = ym_prefix.group(1)
+                body[0] = ym_prefix.group(2).strip()
+        if body:
+            p.title = body[0].strip("《》〈〉").strip()
+            # 英文题名常含逗号：把被逗号切开的副题并回 title，直到遇到出版信息。
+            if year_prefix:
+                joiner = "，" if re.search(r"[\u4e00-\u9fff]", p.title) else ", "
+                while len(body) > 1 and not _looks_pub_segment(body[1]):
+                    p.title = p.title.rstrip(" ,，") + joiner + body.pop(1).strip()
         rest = "，".join(body[1:])
-        ym = re.search(r"((?:19|20)\d{2})", t)
+        ym = re.search(r"((?:19|20)\d{2})", year_prefix or t)
         if ym:
             p.year = ym.group(1)
 

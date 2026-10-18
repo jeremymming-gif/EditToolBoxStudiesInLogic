@@ -204,7 +204,29 @@ def ole_object_stats(document_xml: str, names: list[str]) -> tuple[int, int]:
 
 
 _SYM_TAG = re.compile(r"<w:sym\b[^>]*?/?>")
+_W_SYM_LOCAL = "sym"
+#: LogicA 字体是「私有序号」字体；下列序号是从期 87 子案例 3（04 Fayang_Ye）
+#: 的 docx 与人工成品 .tex 逐处对照得出的（不是猜测）：示例 `f:A→B`、`0=∅`、
+#: `∞-群胚`、`a∈A`、`f∼g`。未列出的字体/序号仍走 `symbol_run_stats()` 警告。
+LOGICA_SYM_CHARS = {
+    "0022": "→",  # f:A→B / H:A×[0,1]→B
+    "0040": "=",  # 0=∅
+    "004E": "∼",  # f∼g
+    "0052": "∈",  # a∈A
+    "005D": "∅",  # 0=∅ / {∅}
+    "005E": "∞",  # ∞-群胚
+}
 _SYM_FONT = re.compile(r'w:font="([^"]*)"')
+_SYM_CHAR = re.compile(r'w:char="([0-9A-Fa-f]+)"')
+
+
+def count_omml(xml_text: str) -> int:
+    """数 `<m:oMath>` 个数（**带属性也算**；`<m:oMathPara>` 不计）。
+
+    旧代码用 `xml.count("<m:oMath>")`，Word 给 oMath 带属性时（或 .doc→docx 后
+    公式被拆成 `<m:oMath ...>`）会漏计——期 87 子案例 3 实测 74 个 oMath 只数到 1。
+    """
+    return len(re.findall(r"<m:oMath(?![A-Za-z])[^>]*>", xml_text))
 
 
 def symbol_run_stats(xml_text: str) -> dict[str, int]:
@@ -225,6 +247,10 @@ def symbol_run_stats(xml_text: str) -> dict[str, int]:
     for tag in _SYM_TAG.findall(xml_text):
         m = _SYM_FONT.search(tag)
         font = m.group(1) if m else "(unknown)"
+        ch = _SYM_CHAR.search(tag)
+        code = ch.group(1).upper() if ch else ""
+        if font == "LogicA" and code in LOGICA_SYM_CHARS:
+            continue  # 已映射进正文，不再算「静默丢失」
         out[font] = out.get(font, 0) + 1
     return out
 
@@ -312,6 +338,11 @@ def _run_segments(r, handled_math: set) -> list[Seg]:
         if t == W_T:
             if c.text:
                 out.append(Seg("text", c.text, italic, bold))
+        elif t == f"{{{W_NS}}}{_W_SYM_LOCAL}":
+            font = c.get(f"{{{W_NS}}}font", "")
+            char = str(c.get(f"{{{W_NS}}}char", "")).upper()
+            if font == "LogicA" and char in LOGICA_SYM_CHARS:
+                out.append(Seg("text", LOGICA_SYM_CHARS[char], italic, bold))
         elif t == M_OMATH:
             handled_math.add(c)
             tex = _math_to_tex(omml_to_latex(c))
