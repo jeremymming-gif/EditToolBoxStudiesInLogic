@@ -239,6 +239,86 @@ def _in_any(pos: int, spans: list[tuple[int, int]]) -> bool:
     return any(a <= pos < b for a, b in spans)
 
 
+#: 常见**固定缩写**（不是人名首字母）：`U.S.` / `Q.E.D.` / `P.S.` 这类不该按 ZH-19 报。
+#: 依据：经验书原话「若为英文缩写如 e.g. 则忽略」；只读实测（2026-10-18，rules-docs Phase0）——
+#: 稿件仓约稿成品层仍有 48 处 `[A-Z].[A-Z]` 残留，其中 `U.S` / `M.A` / `Q.E` 反复出现，
+#: 而 `H.T.`（Colebrooke）/`H.P.`（Grice）才是要报的人名首字母。
+ZH19_ABBREV_DENY = frozenset({
+    "U.S", "U.K", "U.N", "A.D", "B.C", "M.A", "B.A", "Q.E.D", "P.S", "P.R.C",
+})
+
+
+def _is_cjk(ch: str) -> bool:
+    return bool(ch) and "\u4e00" <= ch <= "\u9fff"
+
+
+def _optional_arg_spans(tex: str) -> list[tuple[int, int]]:
+    r"""命令的可选参数 `[...]` 区间（如 `\item[模仿-1：]`）。
+
+    ZH-08 的自动改要跳过这些位置：`模仿-1` 是 enumerate 标签，不是中文连接号；
+    期 87 sub4 人工成品在 `\item[模仿-1：]` 处保留 ASCII 短杠（2/2）。
+    """
+    spans: list[tuple[int, int]] = []
+    for m in re.finditer(r"\\[a-zA-Z@]+\*?\s*\[[^\]]*\]", tex):
+        open_at = tex.find("[", m.start(), m.end())
+        if open_at >= 0:
+            spans.append((open_at, m.end()))
+    return spans
+
+
+def _zh08_narrow(m: re.Match, tex: str) -> bool:
+    r"""ZH-08 的**窄子集**判据：短杠左右紧邻都是汉字，且不在命令可选参数里。
+
+    为什么只做这一窄类（2026-10-18 rules-docs Phase0 实测）：期 87 人工成品里
+    `马丁-洛夫` / `斯托奈克-刘易斯` / `语用-辩证` 一类 CJK-CJK 复合词 76/76 改成
+    `\cndash `；而同一条规则命中的 latin-CJK（`would-反事实`）、math-CJK
+    （`$\phi$-世界`/`$\infty$-群胚`）、digit-CJK（`2-群胚`）、CJK-digit（`\item[模仿-1：]`）
+    人工成品**一律保留 ASCII 短杠**（24/24、16/16、3/3、2/2）——自动改这些就是制造新错。
+    """
+    if any(a <= m.start() < b for a, b in _optional_arg_spans(tex)):
+        return False
+    if m.group(1) is not None:                 # 命中「汉字-」：右侧紧邻必须是汉字
+        return m.end() < len(tex) and _is_cjk(tex[m.end()])
+    if m.start() == 0:                         # 命中「-汉字」：左侧紧邻必须是汉字
+        return False
+    return _is_cjk(tex[m.start() - 1])
+
+
+def _zh08_connector_replace(m: re.Match) -> str:
+    r"""窄子集替换：`汉字-汉字` → `汉字\cndash 汉字`（`\cndash` 后**保留一个空格**）。
+
+    人工成品一律 `马丁\cndash 洛夫`（`\cndash ` 带空格；全库 410 处 CJK-CJK 都这样），
+    所以替换串不能紧贴汉字、也不能用 `{}`。本函数只在 `_zh08_narrow` 为真时被调用，
+    此时 `group(1)`（命中「汉字-」方向）必非空。
+    """
+    return (m.group(1) or "") + "\\cndash "
+
+
+def _zh19_abbrev_token(tex: str, start: int, end: int) -> str:
+    """命中所在的整串大写缩写（只含 `A-Z` 与 `.`），如 `U.S` / `Q.E.D` / `J.N`。"""
+    a, b = start, end
+    while a > 0 and tex[a - 1].isascii() and (tex[a - 1].isupper() or tex[a - 1] == "."):
+        a -= 1
+    while b < len(tex) and tex[b].isascii() and (tex[b].isupper() or tex[b] == "."):
+        b += 1
+    return tex[a:b].rstrip(".")
+
+
+def _zh19_accept(m: re.Match, tex: str) -> bool:
+    r"""ZH-19 的降噪判据：固定缩写（`U.S.`/`Q.E.D.`/`P.S.` 等）**不报**。
+
+    人名缩写（`J.N.` / `H.T.` / `H.P.`）才报。判不准的一律保留（报出来让人看）：
+    本规则**只报不改**，多报的代价小于漏报。
+    """
+    token = _zh19_abbrev_token(tex, m.start(), m.end())
+    if token in ZH19_ABBREV_DENY:
+        return False
+    # 「缩写 + 括号数字」是标号（`P.S.(9)`），不是人名首字母
+    if tex[m.end():m.end() + 1] in ("(", "（"):
+        return False
+    return True
+
+
 def _line_is_ascii(m: re.Match, tex: str, threshold: float = 0.70) -> bool:
     r"""命中所在的**那一行**是否以 ASCII 字母/空白为主。
 
@@ -280,8 +360,11 @@ RULES: list[Rule] = [
          rf"(?:[{CJK}][ \t]{{0,3}}\(|\)[ \t]{{0,3}}[{CJK}])",
          "确认是英文括注（保留）还是漏改的中文括号（改全角）", langs=("zh",), noisy=True),
     Rule("ZH-08", "中文旁的半角短杠", "经验书 预校正·中文（检索英文短杠）＋手册·连字符",
-         rf"(?:[{CJK}][ \t]{{0,3}}-|-[ \t]{{0,3}}[{CJK}])",
-         "判断是「短横」（\\edash）、「双短横」（\\cndash）还是一字线「—」", langs=("zh",), noisy=True),
+         rf"(?:([{CJK}])[ \t]{{0,3}}-|-[ \t]{{0,3}}([{CJK}]))",
+         "判断是「短横」（\\edash）、「双短横」（\\cndash）还是一字线「—」；"
+         "汉字-汉字 这类中文复合词/人名可由 --fix 自动改 \\cndash（默认初排不启用）",
+         langs=("zh",), noisy=True, fixable=True,
+         fixable_when=_zh08_narrow, replace=_zh08_connector_replace),
     Rule("ZH-09", "「第N-N页」缺双短横命令", "经验书 预校正·中文（检索 第\\d*-\\d*页）＋手册·连字符",
          r"第[ \t]{0,3}(\d+)[ \t]{0,3}-[ \t]{0,3}(\d+)[ \t]{0,3}页", "范围页码用双短横：第8\\cndash 12页",
          langs=("zh",), fixable=True,
@@ -319,8 +402,8 @@ RULES: list[Rule] = [
          "手册 §校对规范·常规 3（楷体环境中的英文、数字、标点用 \\textup 调正）",
          r"", "用 \\textup{} 包住（\\ct 等命令自带）", langs=("zh",)),
     Rule("ZH-19", "人名缩写之间缺空格", "经验书 预校正·共通（检索 \\.[A-Z]，人名中要有空格）",
-         r"[A-Z]\.[A-Z]", "人名缩写之间加空格：J. N. （若为英文缩写如 e.g. 则忽略）",
-         langs=("zh", "en")),
+         r"[A-Z]\.[A-Z]", "人名缩写之间加空格：J. N. （固定缩写 U.S./Q.E.D. 等不报；本规则只报不改）",
+         langs=("zh", "en"), accept=_zh19_accept),
 
     Rule("ZH-20", "楷体环境里用 \\textbf 加粗", "手册 §校对规范·常规 3（楷体环境下的加粗用 \\textsf）",
          r"\\textbf\{", "楷体环境（quotation / quote）内改用 \\textsf{}", langs=("zh",), scope="raw"),
@@ -348,6 +431,17 @@ RULES: list[Rule] = [
          r"\\includegraphics(?:\[[^\]]*\])?\{[^}]*\.(?:jpg|jpeg|png)\}",
          "尽量换成矢量图（pdf）", langs=("zh", "en"), scope="raw"),
 ]
+
+#: **初排转换可以默认自动套用的 fixable 白名单**（engine-core 在 `slcn/build.py` 接线时用）。
+#: ⚠️ 故意**不含 ZH-08**：连接号口径（手册说人名用短横 `-`、期 87 人工成品人名用 `\cndash`）
+#: 尚未由编辑部拍板，默认初排不得改产物 —— ZH-08 的窄子集只在人工点「一校核查 --fix」时生效。
+INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
+    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06",
+    "ZH-09", "ZH-14", "EN-01", "EN-02", "EN-03",
+)
+
+#: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
+OPT_IN_FIXABLE: tuple[str, ...] = ("ZH-08",)
 
 
 # ── 检查 ─────────────────────────────────────────────────────────────────
@@ -413,13 +507,19 @@ def check(tex: str, lang: str = "zh") -> Report:
 
 # ── 自动改（白名单：fixable 且替换无歧义）────────────────────────────────
 
-def apply_fixes(tex: str, rep: Report) -> tuple[str, list[Hit]]:
+def apply_fixes(tex: str, rep: Report,
+                rule_ids: tuple[str, ...] | None = None) -> tuple[str, list[Hit]]:
     r"""把 `fixable` 的命中改掉，返回 (新文本, 实际改动的命中)。
 
     从后往前替换（偏移不变）；与已改区间**重叠**的命中跳过，避免连锁错位。
     位置类规则（脚注/引文移到标点前）不在这里做 —— 需要括号配对，见 `move_marks_before_punct()`。
+
+    `rule_ids`：只动这些规则（`None` = 全部 fixable，即 `--fix` 的默认口径）。
+    初排转换接线时必须传 `INITIAL_LAYOUT_FIXABLE` —— 那里的默认产物不许被
+    `OPT_IN_FIXABLE`（ZH-08 连接号）改掉（口径未拍板，见该常量注释）。
     """
-    todo = [h for h in rep.hits if h.fixable and h.replacement is not None]
+    todo = [h for h in rep.hits if h.fixable and h.replacement is not None
+            and (rule_ids is None or h.rule_id in rule_ids)]
     applied: list[Hit] = []
     out = tex
     last_start = len(tex) + 1

@@ -51,6 +51,7 @@ python main.py
 | **生成目录** | `toc.py --report …` | 从中英文检查报告生成两份目录 .tex（模板继承上一期成品）；「读取篇目」用 `--preview`，勾选写入 `目录设置.json` |
 | **编译全部** | `compileall.py --folder …` | 对每个 `NN 作者/` 跑 xelatex → biber → xelatex ×2；跳过 `000 目录`，某篇失败只停那一篇 |
 | **删除临时文件** | `cleantemp.py --folder …` | 递归删编译中间文件（不删 `.tex/.pdf/.log`）；默认先预演 |
+| **本期出刊** | `publish.py --folder …` | 一个入口按顺序跑完四步：检查tex信息 → 生成目录 → 合并整期 PDF → 编译全部；某步退出码 2 即中止、1 = 橙色警告并继续（可 `--only`/`--from` 单步重跑） |
 | **库概况** | `bibdb.py stats/lint --json` | 引用库条数/期数/最近更新/冲突数/lint 结果；只读，可打开库文件夹 |
 | **查库** | `bibdb.py query --key/--doi/--title --bibtex --json` | 按 key（含别名）/DOI/题名模糊查，选中复制 BibTeX；只读 |
 | **入藏** | `bibdb.py import-bib/import-dir --dry-run --json` | 先 dry-run 预览（**不写库**）再确认导入（`--verified`）；来源期/篇从路径推断、可改 |

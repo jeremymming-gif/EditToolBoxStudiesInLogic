@@ -118,22 +118,23 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**55 套件 / 2382 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**60 套件 / 2527 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
-`test_authornorm` 73 ｜ `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45
-`test_bibdb` 247 ｜ `test_bibdb_verify` 54 ｜ `test_bibnorm` 27 ｜ `test_bibreport_note_and_clause` 49
-`test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39
-`test_cn_journal_numbered` 34 ｜ `test_coauthor_en` 16 ｜ `test_convert_compile_clean` 5 ｜ `test_docx_math_spacing` 30
-`test_docx_quote_footnote` 13 ｜ `test_docxxml_deterministic` 14 ｜ `test_en_abstract_sibling` 5 ｜ `test_en_slot_placeholder` 9
-`test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 36
-`test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10
-`test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62
-`test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51
-`test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 40
-`test_proofcheck` 73 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_attach` 29
-`test_refs_p0_2026_10_18` 21 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 17 ｜ `test_sep_style` 25
-`test_tail_block` 45 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
+`test_authornorm` 73 ｜ `test_bare_email` 30 ｜ `test_batch_case_test` 0 ｜ `test_bib_key_determinism` 26
+`test_bib_protection_forms` 45 ｜ `test_bibdb` 262 ｜ `test_bibdb_verify` 54 ｜ `test_bibnorm` 27
+`test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28
+`test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 34 ｜ `test_coauthor_en` 16 ｜ `test_convert_compile_clean` 5
+`test_convert_proof_autofix` 21 ｜ `test_docx_labels` 7 ｜ `test_docx_math_spacing` 41 ｜ `test_docx_quote_footnote` 13
+`test_docxxml_deterministic` 14 ｜ `test_en_abstract_sibling` 5 ｜ `test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28
+`test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 36 ｜ `test_infocheck_toc` 63
+`test_issue_tools` 69 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
+`test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
+`test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18
+`test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 40 ｜ `test_proofcheck` 98
+`test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_attach` 29 ｜ `test_refs_p0_2026_10_18` 21
+`test_refs_p1_2026_10_18` 52 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 17 ｜ `test_sep_style` 25
+`test_tail_block` 45 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75 ｜ `test_xref_autoref` 14
 
 **普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
 
@@ -152,13 +153,13 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 - `n_headings` 合计 **586**；`n_bib` 合计 **2088**
 - sha256[:12]：`docx_audit.csv` = `9b5724721aba`，`docx_audit.txt` = `5fea71efc1a7`（与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **88.83%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **88.84%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
 **App 包内一致性**（`dist/编辑部工具箱.app/Contents/Resources/Engine/` vs 仓库）：✅ **27/27** 个**引擎文件** `cmp` 全同（`README.md` 不在比对内 —— 块就写在它里面，见 `tools/gen_docs.py` 的注释；文档改动同样要 `./build.sh` 一次才进包）
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 19:08:00`；`HEAD` = `10ae7b2`；`git status --porcelain` **10** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 19:42:56`；`HEAD` = `d384831`；`git status --porcelain` **29** 行
 <!-- AUTO:STATE:END -->
 
 ---

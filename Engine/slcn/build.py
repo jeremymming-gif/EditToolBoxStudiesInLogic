@@ -1038,6 +1038,98 @@ def _merge_en_metadata_source(
     return filled
 
 
+# ── 一校「可自动改」子集接进初排（期 87 P1-6）────────────────────────────
+#
+# 为什么需要：一校核查（`slcn/proofcheck.py`）把「顿号后紧跟引号」「中文之间的半角
+# 逗号/句号/冒号/分号/问叹号」标成 fixable，但**只在一校 --fix 时**才动手；期 87 生成稿
+# 实测仍残留 20 处（ZH-06×19 + ZH-01×1），全库初排稿（Word 通道）残留 123 处/29 篇，
+# 人工成品这些位置逐处为 0 —— 同一判据在工具内两处实现不一致（笔记仓案例 142 / P1-6）。
+#
+# 口径（Lead 批准）：**只用窄集 ZH-01..ZH-06**。ZH-08（连接号）、ZH-09/14、EN-01..03
+# 本批没有消融与人工对照，不得默认改产物；rules-docs 的宽常量 `INITIAL_LAYOUT_FIXABLE`
+# 仅供后批参考，这里**不** import 使用。
+#
+# 实现刻意只用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
+# `apply_fixes(tex, sub)`），不传 rules-docs 新增的 `rule_ids` 参数 → 回滚免疫。
+_PROOF_AUTOFIX_IDS: tuple[str, ...] = ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06")
+
+
+def _autofix_proof(tex: str, lang: str) -> tuple[str, dict[str, int]]:
+    """把一校 fixable 窄集套到初排稿上，返回 (新文本, {规则 id: 改动数})。
+
+    ⚠️ 只动 `_PROOF_AUTOFIX_IDS`；`apply_fixes` 内部从后往前替换、与已改区间重叠的跳过，
+       输入字符串不被就地修改。异常由调用方兜住（本函数不静默吞错）。
+    """
+    from . import proofcheck as _pc   # 惰性 import：proofcheck 只依赖 re/dataclass，无环
+
+    rep = _pc.check(tex, lang=lang)
+    sub = _pc.Report(
+        hits=[h for h in rep.hits if h.rule_id in _PROOF_AUTOFIX_IDS], lang=lang
+    )
+    new, applied = _pc.apply_fixes(tex, sub)
+    hits: dict[str, int] = {}
+    for h in applied:
+        hits[h.rule_id] = hits.get(h.rule_id, 0) + 1
+    return new, hits
+
+
+# ── 图表交叉引用接进初排（期 87 P2-2）──────────────────────────────────────
+#
+# Word 稿正文写的是纯文本「表1」「图1」；表格/图片渲染时才产出 `\caption` + `\label`
+# （`docxsource.table_env` / `figure_env`）。人工成品会把正文改成 `表~\ref{tb1}` 这种
+# 交叉引用（期 87 子案例 2 人工 11 处、生成 0 处 → 一校 ZH-16 自然不触发，见笔记仓
+# 期87 报告 §P2-2）。这里在写出前做一次**保守**替换：
+#   · 只在**存在对应 `\label{tab:N}`/`\label{fig:N}`** 时才替换 → 绝不产生 undefined reference；
+#   · 用 `proofcheck.visible_mask` 屏蔽数学/注释/verbatim/命令名与键参数（等长掩码，坐标可直接落原 tex）；
+#   · 行首题注「表N：/图N：」（Word 题注段落残留，如期 87 sub2 两处）**不碰**；
+#   · 已写成 `表~\ref{…}`/`表\ref{…}` 的跳过（幂等）；
+#   · 「式(N)」不做：Word 通道行内公式无 equation 编号环境（另批）。
+_XREF_LABEL_RE = re.compile(r"\\label\{(tab|fig):(\d+)\}")
+_XREF_CAPTION_LINE_RE = re.compile(r"(?m)^[ \t]*[表图][ \t]{0,3}\d+[ \t]{0,3}[：:]")
+_XREF_NUM_RE = re.compile(r"([表图])[ \t]{0,3}(\d+)")
+_XREF_KIND = {"表": "tab", "图": "fig"}
+
+
+def _add_xrefs(tex: str) -> tuple[str, int, int]:
+    """正文「表N/图N」→「表~\\\\ref{tab:N}」「图~\\\\ref{fig:N}」，返回 (新文本, 表数, 图数)。
+
+    没有 label 的稿（LaTeX 通道、无图表 Word 稿）→ 原样返回，逐字节不变。
+    """
+    from .proofcheck import visible_mask   # 只读 import（rules-docs 冻结的公开函数）
+
+    labels: dict[str, set[str]] = {"tab": set(), "fig": set()}
+    for m in _XREF_LABEL_RE.finditer(tex):
+        labels[m.group(1)].add(m.group(2))
+    if not labels["tab"] and not labels["fig"]:
+        return tex, 0, 0
+
+    masked = visible_mask(tex)
+    # 行首题注也挖掉（等长替换成空格；坐标仍与 tex 一一对应）
+    for m in _XREF_CAPTION_LINE_RE.finditer(masked):
+        masked = masked[:m.start()] + " " * (m.end() - m.start()) + masked[m.end():]
+
+    todo: list[tuple[int, int, str]] = []
+    n_tab = n_fig = 0
+    for m in _XREF_NUM_RE.finditer(masked):
+        kind = _XREF_KIND[m.group(1)]
+        num = m.group(2)
+        if num not in labels[kind]:
+            continue
+        tail = tex[m.end():m.end() + 8].lstrip(" \t")
+        if tail.startswith("~\\ref") or tail.startswith("\\ref"):
+            continue                      # 幂等：已经是交叉引用
+        todo.append((m.start(), m.end(), f"{m.group(1)}~\\ref{{{kind}:{num}}}"))
+        if kind == "tab":
+            n_tab += 1
+        else:
+            n_fig += 1
+
+    out = tex
+    for start, end, repl in reversed(todo):
+        out = out[:start] + repl + out[end:]
+    return out, n_tab, n_fig
+
+
 def build_docx(
     docx_path: str,
     out_dir: str,
@@ -1051,6 +1143,7 @@ def build_docx(
     overrides: dict | None = None,
     metadata_path: str | None = None,
     verbose: bool = True,
+    proof_autofix: bool = True,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1066,6 +1159,10 @@ def build_docx(
                     按「仅同目录」口径发现，与 `find_bib()` 同一纪律）。
                     默认 None = 不接第二源 = 与从前逐字节相同（`corpus.py` /
                     `run_poc.py` 等既有调用方不带这个参数，行为不变）。
+    proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6）：True（默认）= 生成后
+                    自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 这 6 条确定性替换；
+                    False = 与接入前逐字节相同（`corpus.py --no-proof-autofix` 消融用）。
+                    只影响中文 Word 通道；LaTeX 通道与英文稿不受影响。
     """
     from .docxsource import (
         link_citations,
@@ -1265,6 +1362,26 @@ def build_docx(
     for rid, n in sorted(res.applied.items(), key=lambda x: -x[1]):
         say(f"   · {rid:24s} ×{n}")
 
+    # ⑤′ 一校可自动改子集（期 87 P1-6）：只做 ZH-01..ZH-06 六条确定性替换。
+    #    ⚠️ 失败绝不阻断出稿：只写 warning，产物照常生成（编辑宁可多检查，不能没稿）。
+    _pf: dict[str, int] = {}
+    if proof_autofix and lang == "zh":
+        try:
+            tpl, _pf = _autofix_proof(tpl, lang)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"一校可自动改子集未执行（不影响出稿）：{type(e).__name__}: {e}")
+        else:
+            if _pf:
+                say(f"   一校可自动改子集补齐 {sum(_pf.values())} 处")
+                for rid, n in sorted(_pf.items(), key=lambda x: -x[1]):
+                    say(f"   · {rid:24s} ×{n}")
+
+    # ⑤″ 图表交叉引用（期 87 P2-2）：正文「表N/图N」→「表~\ref{tab:N}」。
+    #     只在存在对应 \label 时替换（无 label 稿逐字节不变；图 label 由 P2-0 保证全局唯一）。
+    tpl, _nx_tab, _nx_fig = _add_xrefs(tpl)
+    if _nx_tab or _nx_fig:
+        say(f"   图表交叉引用：表 {_nx_tab} 处、图 {_nx_fig} 处")
+
     audit = R.audit(tpl, lang=lang)
 
     say("⑥ 写出文件")
@@ -1350,7 +1467,7 @@ def build_docx(
         sty_path=sty_out,
         template=T.describe(tpl_sel),
         log=log,
-        rule_hits=res.applied,
+        rule_hits={**res.applied, **_pf},
         audit=audit,
         warnings=warnings,
         missing_fields=[

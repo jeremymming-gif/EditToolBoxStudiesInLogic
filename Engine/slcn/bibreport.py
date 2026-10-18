@@ -123,6 +123,8 @@ class Report:
     cited: set[str] = field(default_factory=set)
     n_cite_cmds: int = 0
     diff: list[DiffRow] = field(default_factory=list)
+    #: diff 匹配统计（P1-1/P2-5）：{"key": N, "title": M, "degraded": bool, "overlap": x}
+    match_stats: dict = field(default_factory=dict)
 
     def add(self, key: str, section: str, level: str, detail: str) -> None:
         self.findings.append(Finding(key, section, level, detail))
@@ -482,6 +484,16 @@ def check_citations(rep: Report, tex: str, entries: list[Entry]) -> None:
             LEVEL_INFO,
             "正文里没有找到任何 `\\cite` / `\\parencite` 命令，引用闭合无从核对",
         )
+        if bibkeys:
+            # P2-4（2026-10-18）：bib 有条目但正文 0 引用命令 → 参考文献区会是空的，
+            # 这是**内容缺失**（期 87 sub5/sub7 实测），从 hint 升 problem。
+            rep.add(
+                "",
+                "cite",
+                LEVEL_PROBLEM,
+                f"正文里没有找到任何引用命令，但参考文献里有 {len(bibkeys)} 条 —— "
+                f"**PDF 参考文献区会是空的**：请补正文引用（或删掉未引用的条目）",
+            )
     for k in sorted(rep.cited - bibkeys):
         rep.add(
             k,
@@ -530,6 +542,16 @@ def check_diff(rep: Report, orig_entries: list[Entry], entries: list[Entry]) -> 
     for e in entries:
         nmap.setdefault(e.key, e)
     rows: dict[str, DiffRow] = {}
+    nkeys = [e.key for e in entries if e.key]
+    oks, nks = set(okeys), set(nkeys)
+    overlap = (len(oks & nks) / max(len(oks), 1)) if oks else 1.0
+    # P1-1/P2-5（2026-10-18）：key 方案不通用时（Word 通道按键重新造键，与人工键
+    # 100% 不同）**自动降级 title 匹配**：按 title 配上的对子只做字段比对、不再报
+    # 「疑似改了 key」，并把「按 key / 按 title」两套统计写进报告。
+    degraded = (bool(nkeys) and overlap < 0.5
+                and max(len(oks), len(nkeys)) >= 8)   # 小清单仍按旧口径（改 key=问题）
+    title_pairs: list[tuple[str, str]] = []
+    silenced = {"drop": 0, "howpublished": 0}
 
     def compare_fields(o: Entry, n: Entry, row: DiffRow) -> None:
         """逐字段比对（类型 + 字段增删改），把发现写进 rep 并更新 row。"""
@@ -558,8 +580,30 @@ def check_diff(rep: Report, orig_entries: list[Entry], entries: list[Entry]) -> 
                 )
 
         of, nf = o.fields, n.fields
+        from . import bibnorm as _bibnorm     # 本刊规范口径（DROP_FIELDS / SEP 判据）
         for name in of:
             if name not in nf:
+                # P1-5（2026-10-18）：本刊规范本来就不收的字段 + SEP 的 howpublished→url，
+                # 白名单静音（旧行为会把 49 urldate + 47 howpublished 报成「字段被删」假差异）。
+                if name in _bibnorm.DROP_FIELDS:
+                    silenced["drop"] += 1
+                    row.notes.append(f"去掉 {name}（本刊规范）")
+                    rep.add(
+                        k, "diff", LEVEL_INFO,
+                        f"按本刊规范不写 `{name}`（DROP_FIELDS，原件有 = "
+                        f"{{{_clip(of[name], 30)}}}）：静音，不计假差异",
+                    )
+                    continue
+                if (name == "howpublished" and nf.get("url", "").strip()
+                        and _bibnorm.is_sep_entry(of)):
+                    silenced["howpublished"] += 1
+                    row.notes.append("howpublished→url（规范）")
+                    rep.add(
+                        k, "diff", LEVEL_INFO,
+                        f"按规范 `howpublished` → `url`（SEP 词条，第 84 条）：原件 = "
+                        f"{{{_clip(of[name], 30)}}}，退回版已写 url ——静音，不计假差异",
+                    )
+                    continue
                 if name in ("doi", "isbn"):
                     rep.add(
                         k, "diff", LEVEL_INFO,
@@ -622,19 +666,29 @@ def check_diff(rep: Report, orig_entries: list[Entry], entries: list[Entry]) -> 
                 continue
             cand = [nk for nk in only_new if nk not in used and sig == matcher(nmap[nk])]
             if cand:
-                renamed[ok] = cand[0]
-                used.add(cand[0])
-                rep.add(
-                    ok, "diff", LEVEL_PROBLEM,
-                    f"疑似改了 key：`{ok}` → `{cand[0]}`（{why}）。任务书第三节第 "
-                    f"{clause_no('key_unchanged')} 条：**key 一律不改**"
-                    f"——正文里的 `\\parencite{{{ok}}}` 会全部悬空",
-                )
+                nk = cand[0]
+                renamed[ok] = nk
+                used.add(nk)
+                if degraded:
+                    # 降级模式：键不同是**生成方案差异**，不是「改 key」错误 → 只算提示
+                    title_pairs.append((ok, nk))
+                    rep.add(
+                        ok, "diff", LEVEL_INFO,
+                        f"按 {why} 匹配：`{ok}` ↔ `{nk}`（两套键方案不同；key 重叠率低 → "
+                        f"自动降级 title 匹配，不计「改 key」问题）",
+                    )
+                else:
+                    rep.add(
+                        ok, "diff", LEVEL_PROBLEM,
+                        f"疑似改了 key：`{ok}` → `{nk}`（{why}）。任务书第三节第 "
+                        f"{clause_no('key_unchanged')} 条：**key 一律不改**"
+                        f"——正文里的 `\\parencite{{{ok}}}` 会全部悬空",
+                    )
                 row = DiffRow(
-                    key=cand[0], kind="renamed", old_key=ok, otype=o.etype, ntype=nmap[cand[0]].etype
+                    key=nk, kind="renamed", old_key=ok, otype=o.etype, ntype=nmap[nk].etype
                 )
-                rows[cand[0]] = row
-                compare_fields(o, nmap[cand[0]], row)
+                rows[nk] = row
+                compare_fields(o, nmap[nk], row)
                 if row.kind == "changed":  # 改名本身是最响亮的问题，状态仍标 renamed
                     row.kind = "renamed"
                 break
@@ -656,6 +710,27 @@ def check_diff(rep: Report, orig_entries: list[Entry], entries: list[Entry]) -> 
         rep.add(nk, "diff", LEVEL_INFO, f"新增条目：`{nk}`（原件里没有；请确认是补的文献还是误加）")
 
     rep.diff = [rows[k] for k in rows]
+    rep.match_stats = {
+        "key": len(oks & nks),
+        "title": len(title_pairs),
+        "degraded": degraded,
+        "overlap": round(overlap, 4),
+        "silenced": silenced,
+    }
+    if degraded:
+        rep.add(
+            "", "diff", LEVEL_INFO,
+            f"diff 匹配口径：key 重叠率 {overlap:.0%} < 50% → **自动降级 title 匹配**；"
+            f"按 key 匹配 {len(oks & nks)} 条 / 按 title 匹配 {len(title_pairs)} 条。"
+            "键不同不再报「改 key」问题（生成方案差异，不代表编辑改键）。",
+        )
+    if silenced["drop"] or silenced["howpublished"]:
+        rep.add(
+            "", "diff", LEVEL_INFO,
+            f"diff 静音口径（P1-5）：按本刊规范不写 DROP_FIELDS 字段 "
+            f"{silenced['drop']} 处、SEP `howpublished`→`url` "
+            f"{silenced['howpublished']} 处，均不计假差异。",
+        )
 
 
 # ── 组装 + 渲染 ───────────────────────────────────────────────────────────
@@ -789,6 +864,19 @@ def render(
     L.append(
         f"- 正文（--tex）：`{rep.tex}`" if rep.tex else "- 正文（--tex）：**未提供**（不做引用键闭合核对）"
     )
+    stats = rep.match_stats or {}
+    if stats.get("degraded"):
+        L.append(
+            f"- diff 匹配：**按 key {stats.get('key', 0)} 条 / 按 title "
+            f"{stats.get('title', 0)} 条**（key 重叠率 {stats.get('overlap', 0):.0%} < 50% → "
+            "自动降级 title 匹配；键不同不计「改 key」问题）"
+        )
+    if stats.get("silenced"):
+        sil = stats["silenced"]
+        L.append(
+            f"- diff 静音：DROP_FIELDS {sil.get('drop', 0)} 处 / SEP "
+            f"howpublished→url {sil.get('howpublished', 0)} 处（本刊规范，不计假差异）"
+        )
     for nt in rep.notes:
         L.append(f"- 说明：{nt}")
     L.append("")

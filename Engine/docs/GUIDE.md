@@ -13,7 +13,7 @@
 > ⚠️ **两条红线**（原文在下面「三、用法」末尾）：**原稿只读**；**稿件仓不做任何 git 写操作**
 > （工具箱仓与笔记仓的提交口径另见仓库根 `AGENTS.md` 红线 3）。
 
-## GUI 各页在干什么（速查）
+## GUI 各页在干什么（速查，15 页）
 
 App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + 右侧当前功能页 + 下方运行日志**」
 （`sources-mac/Views/MainWindow.swift`，Windows 版同一套结构）。侧边栏按用途分三组——
@@ -43,6 +43,11 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 生成目录 | 按模板继承生成中英文目录（条目断行/栏目行在引擎侧） | `sources-mac/Features/TocFeature.swift`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
 | 删除临时文件 | 清编译中间文件（与 `slcn/clean.py` 逐项一致） | `sources-mac/Features/DeleteTempFeature.swift` |
 | 本期出刊 | 一个入口按顺序跑四步（检查tex信息 → 生成目录 → 合并整期 → 编译全部）；失败即中止，退出码 1 = 橙色警告并继续（规则在引擎侧） | `sources-mac/Features/PublishFeature.swift`、`Engine/publish.py` |
+| 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单 | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件 | `sources-mac/Views/BibDbReviewView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 引用库设置（引用库） | 引用库路径 / 数据库位置 / 规范化（B1/B2/B3）的 dry-run 与 apply 入口；本机偏好写 `settings.json`，**只有 dry-run 默认安全** | `sources-mac/Views/BibDbSettingsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 设置 | AI 端点配置（明文存本机用户目录）+ 请求旋钮（思考模式 / 输出上限 / **通道** / **联网检索**）+ 体检（①②③④ + **⑤ 检索探针**）+ 隐私文案；「保存」才落盘、「清空」只清输入框（见下表后说明）。保存/测试按钮**固定在本页底部**、不需要滚到页面末尾 | `sources-mac/Views/SettingsTab.swift`，第 47/58/62/69 条 |
 
 > **「保存」与「清空」的语义（2026-10-15 用户实测报的 bug，见第 62 条）**

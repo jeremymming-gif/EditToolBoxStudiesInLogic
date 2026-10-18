@@ -59,7 +59,8 @@ TRANSLATED_NAMES = {
 }
 
 # 参考文献类型标识 → BibLaTeX 条目类型
-TYPE_MAP = {"M": "book", "J": "article", "C": "incollection", "D": "phdthesis", "N": "newspaper", "R": "report"}
+TYPE_MAP = {"M": "book", "J": "article", "C": "incollection", "P": "inproceedings",
+            "D": "phdthesis", "N": "newspaper", "R": "report"}
 
 PUNCT_TO_STRIP = " \t\u3000.,，。;；:：、"
 
@@ -287,27 +288,22 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
     year = m.group("year")
     rest = m.group("rest").strip()
     qm = _QUOTED.match(rest)
-    if qm:                                   # 有引号 → 题名在引号里，类型看出版信息
+    if qm:                                   # 有引号 → 题名在引号里，出版信息在引号之后
         title = qm.group("title").strip()
         after = rest[qm.end():].lstrip(",，. ")
-        kind = "M"
-        if re.search(r"\(\d+\)|\bvol\b|\d+\s*[-–]\s*\d+", after):
-            kind = "J"
-        elif "Press" in after or "出版社" in after:
-            kind = "M"
     else:                                    # 无引号 → 题名到下一个逗号（书常用）
         parts = [x.strip() for x in re.split(r"[,，]", rest, maxsplit=1)]
         title = parts[0]
         after = parts[1] if len(parts) > 1 else ""
-        kind = "M"
-        if re.search(r"\(\d+\)|\bvol\b|\d+\s*[-–]\s*\d+", after):
-            kind = "J"
     # ⚠️ P0-2（期 87 sub5/sub2 实测）：`rest` 必须是**题名之后**的出版信息；旧实现
     #    存的是**含引号题名的整段 rest**，而 `refs_to_bib()` 的期刊正则要求 rest 以刊名
     #    开头 → journal/volume/number/pages 永不命中（22 条里丢 18 条 pages）。
+    # T13（2026-10-18）：类型不再用「卷期正则命中」猜，统一交给 `_finalize_en_entry()`
+    # （`footref.classify_entry_type()` 同源判据 + author 统一倒装）。
     e = RefEntry(raw=s, author=authors, year=year, title=title.strip().strip("《》"),
-                 kind=kind, rest=after)
-    e.key = make_key(e)
+                 kind="M", rest=after)
+    e.key = make_key(e)          # 键在倒装**之前**生成：key 方案不变（产物差异最小）
+    _finalize_en_entry(e)
     return e
 
 
@@ -419,11 +415,10 @@ def _parse_reference_line_en_fullname(s: str) -> RefEntry | None:
     tm = re.split(r"\.\s+(?=[A-Z])", rest, maxsplit=1)
     title = tm[0].rstrip(".").strip()
     after = tm[1] if len(tm) > 1 else ""
-    kind = "M"
-    if re.search(r"\(\d+\)|\bVol\b|\bvol\b|\bpp?\.\s*\d+|\d+\s*[-–]\s*\d+|Journal|Review", after):
-        kind = "J"
-    e = RefEntry(raw=s, author=authors, year=year, title=title, kind=kind, rest=rest)
-    e.key = make_key(e)
+    # T13：类型走 `footref.classify_entry_type()`（出版信息特征），author 出口统一倒装
+    e = RefEntry(raw=s, author=authors, year=year, title=title, kind="M", rest=after)
+    e.key = make_key(e)          # 键在倒装**之前**生成：key 方案不变（产物差异最小）
+    _finalize_en_entry(e)
     return e
 
 
@@ -683,6 +678,116 @@ def _dedupe_keys(refs: list[RefEntry]) -> None:
                 e.key = make_key(e, chr(ord("a") + i))
 
 
+#: 期刊出版信息正则（refs_to_bib 与 T13 分类共用同一份——判据只有一处实现）。
+_EN_JOURNAL_RE = re.compile(
+    r"^(?P<journal>[^,，]+?)\s*[,，]\s*"
+    r"(?:(?P<year>(?:19|20)\d{2})\s*[,，]?\s*)?"
+    r"(?P<volume>\d+)\s*\((?P<number>[^)]*)\)\s*[:：]\s*"
+    r"(?P<pages>[\d\-\u2013\u2014]+)"
+)
+#: 无卷号形态：`Mind 85: 112-119`
+_EN_JOURNAL_RE2 = re.compile(
+    r"^(?P<journal>[^,，]+?)\s*[,，]?\s*(?P<volume>\d+)?\s*[:：]\s*"
+    r"(?P<pages>[\d\-\u2013\u2014]+)\s*[.。]?\s*$"
+)
+
+# ── T13（2026-10-18）：英文人年制条目接 T12 同源判据 ──────────────────────────
+#
+# 旧实现用「卷期正则是否命中 / 有没有 Press 词」猜 kind（只有 M/J/C 三种），
+# 实测期 87 sub2/sub5/sub6/sub8 的类型错（@book→@misc、@article→@incollection、
+# @misc→@book 等）。T13 把**唯一判据**接过来：
+#   · 类型：`slcn/footref.py: classify_entry_type(fields, raw=原文)`（与编号清单/脚注通道同源）；
+#   · author：出口统一 `normalize_authors → normalize_author_field`（与 T12 同一 helper，
+#     也即 `_bib_author()` 的同源顺序），只改英文路径。
+_KIND_BY_ETYPE = {"book": "M", "article": "J", "incollection": "C",
+                  "inproceedings": "P", "phdthesis": "D", "report": "R"}
+
+
+def _en_entry_fields(e: RefEntry) -> dict:
+    """英文 RefEntry 的出版信息 → `classify_entry_type()` 需要的 fields。
+
+    复用 `refs_to_bib()` 的同一批提取器（期刊正则 / `_split_publisher()` /
+    `_incollection_book_editor()`），**不新写解析逻辑**；判据本身在 footref。
+    """
+    from . import footref
+
+    rest = re.sub(r"^[.。]\s*", "", (e.rest or "").strip())
+    fields: dict[str, str] = {}
+    jm = _EN_JOURNAL_RE.match(rest) or _EN_JOURNAL_RE2.match(rest)
+    if jm:
+        gd = jm.groupdict()
+        fields["journal"] = (gd.get("journal") or "").strip()
+        fields["volume"] = gd.get("volume") or ""
+        fields["number"] = gd.get("number") or ""
+        fields["pages"] = (gd.get("pages") or "").replace("-", "--")
+    else:
+        # 页码带字母前缀/期号带英文词的期刊形态（`66(Supplement): S362-S378`，
+        # 期 87 sub2 Fitelson1999 实测）`_EN_JOURNAL_RE` 的纯数字页匹配不上；
+        # 判**类型**时仍要认出这是期刊（字段提取仍走 refs_to_bib 原口径，不扩范围）。
+        mj = re.match(
+            r"^(?P<journal>[^,，]+?)\s*[,，]\s*\d+\s*\([^)]*\)\s*[:：]\s*"
+            r"(?P<pages>[A-Za-z]?\d[A-Za-z0-9\-–—]*)\s*[.。]?\s*$", rest)
+        if mj:
+            fields["journal"] = mj.group("journal").strip()
+            fields["pages"] = mj.group("pages").replace("-", "--")
+    pub, addr = _split_publisher(rest)
+
+    def _plausible_pub(v: str) -> bool:
+        """出版社/出版地不可是 `S362-S378` / `66(Supplement)` 这类页码/卷号（期 87 Fitelson 实测）。"""
+        return bool(v) and not re.search(r"\d", v) and bool(re.search(r"[A-Za-z\u4e00-\u9fff]", v))
+
+    if _plausible_pub(pub):
+        fields["publisher"] = pub
+    if _plausible_pub(addr):
+        fields["address"] = addr
+    bt, _ed = _incollection_book_editor(rest)
+    if bt:
+        fields["booktitle"] = bt
+    if not fields.get("publisher"):
+        # 「出版地: 出版社」形态（`Oxford: Clarendon.` / `New York, NY: Basic Books`）——
+        # `_split_publisher()` 只认出版社线索词，Clarendon 这类会漏；这里用 T12 的
+        # `looks_like_place_publisher()`（同一判据）补一次。
+        pp = footref.looks_like_place_publisher(rest.strip().rstrip("."))
+        if pp:
+            fields["address"], fields["publisher"] = pp
+        else:
+            m = re.search(
+                r"([A-Z][A-Za-z.\- ]{1,28}(?:,\s*[A-Z]{2})?)\s*[:：]\s*"
+                r"([A-Z][A-Za-z&.'\- ]{2,60})\s*[.。]?\s*$", rest)
+            if m:
+                fields["address"], fields["publisher"] = (
+                    m.group(1).strip(), m.group(2).strip())
+    if re.search(r"\bin\b|\(eds?\.?\)|\(Eds?\.?\)|edited\s+by", rest, re.I):
+        fields["note"] = rest
+    return fields
+
+
+#: 机构/组织作者（不推断倒装；人名里一般不会出现）
+_EN_ORG_RE = re.compile(
+    r"\b(?:Organization|Organisation|Association|Society|Institute|University|College|"
+    r"Department|Faculty|Center|Centre|Committee|Council|Group|Consortium|Network|"
+    r"Agency|Office|Bureau|Board|Panel|Project|Foundation|Corporation|Company|Inc|Ltd|"
+    r"Press|Publishing|Ministry|Government|Laboratory|Commission|Federation|Union|"
+    r"Academy|WHO|UNESCO|ISO)\b", re.I)
+
+
+def _finalize_en_entry(e: RefEntry) -> RefEntry:
+    """英文人年制条目**出口一次**：按出版信息特征重判类型 + author 统一倒装（T13）。
+
+    author 倒装走 T12 同源 helper（`normalize_authors → normalize_author_field`）；
+    **机构/组织作者不倒装**（反例：`World Health Organization` 保持原样）。
+    """
+    from . import footref
+    from .bibnorm import normalize_author_field
+    from .footnotes import normalize_authors
+
+    etype, _reason = footref.classify_entry_type(_en_entry_fields(e), raw=e.raw or "")
+    e.kind = _KIND_BY_ETYPE.get(etype, "M")
+    if e.author and not _EN_ORG_RE.search(e.author):
+        e.author = normalize_author_field(normalize_authors(e.author))
+    return e
+
+
 def refs_to_bib(refs: list[RefEntry]) -> str:
     """把条目列表转成 .bib 文本。
 
@@ -704,19 +809,9 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
         # rest 常以「. 」开头（`. Mind, 85(337): 112-119.`），必须先剥掉，
         # 否则下面的期刊正则匹配不到——实测所有期刊条目都因此丢了卷/期/页。
         rest = re.sub(r"^[.。]\s*", "", e.rest.strip())
-        jm = re.match(
-            r"^(?P<journal>[^,，]+?)\s*[,，]\s*"
-            r"(?:(?P<year>(?:19|20)\d{2})\s*[,，]?\s*)?"
-            r"(?P<volume>\d+)\s*\((?P<number>[^)]*)\)\s*[:：]\s*"
-            r"(?P<pages>[\d\-\u2013\u2014]+)",
-            rest,
-        )
+        jm = _EN_JOURNAL_RE.match(rest)
         if jm is None:  # 无卷号形态：`Mind 85: 112-119`
-            jm = re.match(
-                r"^(?P<journal>[^,，]+?)\s*[,，]?\s*(?P<volume>\d+)?\s*[:：]\s*"
-                r"(?P<pages>[\d\-\u2013\u2014]+)\s*[.。]?\s*$",
-                rest,
-            )
+            jm = _EN_JOURNAL_RE2.match(rest)
         if jm and etype == "article":
             gd = jm.groupdict()
             fields.append(("journal", escape_bib_value(gd["journal"].strip())))
@@ -2185,6 +2280,7 @@ def render_para(
     para, fn_objs: dict, bib_sink: list, keymap: dict,
     fn_pages: dict | None = None, quote_threshold: int = 105,
     img_names: dict | None = None,
+    fig_counter: list[int] | None = None,
 ) -> tuple[str, list[str]]:
     """把一段 XML 片段渲染成 LaTeX。
 
@@ -2192,6 +2288,13 @@ def render_para(
     - OMML 公式 → $...$
     - 脚注 → 按分类分别处理（见 slcn/footnotes.py）
     - 超过三行的引文 → 提升为 quotation 环境（见 slcn/quotations.py）
+
+    fig_counter  **文档级图序号计数器**（P2-0）：`parse_docx()` 在整篇范围内持有同一个
+                 `[0]` 并传进来，图 `\\label{fig:N}` 的 N 才是文档内唯一的（旧实现把
+                 `fig_seq` 放在本函数内、每个段落从 1 重来 → 多段有图时 label 全叫
+                 `fig:1`，实测 corpus 12 篇有图 label 的产物里 6 篇重复，
+                 `2025_04_YingJin_Xu` 6 个全是 fig:1）。默认 None = 保留段落内计数
+                 （只给不传计数器的旧调用方/单测用，行为与从前逐字节相同）。
 
     返回 (LaTeX, 提示列表)。
     """
@@ -2230,8 +2333,15 @@ def render_para(
     def flush_figs(buf: list[str]) -> None:
         nonlocal fig_seq
         if buf:
-            fig_seq += 1
-            out.append(figure_env(list(buf), fig_seq))
+            # P2-0：优先用**文档级**计数器（parse_docx 传同一个 [0]）→ 图 label 全局唯一；
+            # 没传（旧调用方/单测）才退回段落内计数，行为与从前一致。
+            if fig_counter is not None:
+                fig_counter[0] += 1
+                seq = fig_counter[0]
+            else:
+                fig_seq += 1
+                seq = fig_seq
+            out.append(figure_env(list(buf), seq))
             buf.clear()
 
     fig_buf: list[str] = []
@@ -2686,6 +2796,7 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     fn_pages = {fid: f.locator for fid, f in fn_objs.items()}
     out: list[str] = []
     tab_idx = 0
+    fig_counter = [0]   # P2-0：文档级图序号（整篇唯一；表序号 tab_idx 一直是文档级）
     # body_paras 不含表格，需换回 blocks 的下标才能让表格落到正确位置
     pos_in_blocks = {id(b): k for k, b in enumerate(blocks) if not isinstance(b, Table)}
     start_block = pos_in_blocks.get(id(body_paras[0]), 0) if body_paras else len(blocks)
@@ -2727,7 +2838,7 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         if any(idx > k and idx < k + c for k, c in fig_marks.items()):
             continue  # 已被上一张图的占位吸收
         latex, notes = render_para(para, fn_objs, doc.bib_entries, keymap, fn_pages,
-                                   quote_threshold, img_names)
+                                   quote_threshold, img_names, fig_counter=fig_counter)
         doc.warnings.extend(notes)
         if not latex.strip():
             continue

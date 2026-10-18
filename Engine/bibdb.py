@@ -51,6 +51,11 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             B1 确定性规范化：默认 dry-run（只出报告、绝不写库）；
                                             --apply 才写库（只改安全条目的 entry_type/fields/
                                             content_sha256/updated_at；须先 --backup 备份）
+    normalize-editors [--dry-run] [--report PATH | --out-dir DIR] [--csv-out PATH]
+                [--json-out PATH] [--json]
+                                            B3 英文编者倒装 **dry-run**（只出报告、绝不写库；
+                                            扫 editor 字段（含「只有 editor」的记录）；apply 须
+                                            用户拍板后另批——本子命令传 --apply 一律拒绝退出 2）
 
 用法示例（在本目录下跑）
 ------------------------
@@ -77,6 +82,9 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     /opt/homebrew/bin/python3.14 bibdb.py normalize-authors --apply --backup /tmp/before_B2.jsonl \
         --report ../EditToolBox-notes/bib_db/B2-author-normalize-2026-10-18.md
     # ↑ 生成 CONFLICTS.md / DUPLICATES.md / duplicates.csv（同一份库重复生成逐字节相同）
+    /opt/homebrew/bin/python3.14 bibdb.py normalize-editors --out-dir ../EditToolBox-notes/bib_db
+    # ↑ B3 编者倒装 dry-run 报告（B3-editor-normalize-dryrun.md/.csv/.json）；只读库、
+    #   不写 bibliography.jsonl；apply 须用户拍板后另批（本子命令的 --apply 一律拒绝）
 
 退出码
 ------
@@ -2442,6 +2450,508 @@ def cmd_normalize_authors(args) -> int:
     return 0
 
 
+# ── B3：编者倒装 dry-run（normalize-editors；只出报告，**绝不写库**）───────────
+#
+# 编辑部 2026-10-15 决定：英文 `author` / `editor` **一律倒装**成「姓, 名缩写」。
+# B2（`normalize-authors`）只做了 author，editor 留到 B3（交接提示词原文：
+# 「editor 倒装（B3）：先 dry-run 报告、用户拍板后 apply；规则同 B2」）。
+#
+# 本批**只实现 dry-run**，绝不 apply / 绝不写 `bibliography.jsonl`：
+#   · 判定与 B2 完全同源：`_author_skip_reason()` + `slcn.bibnorm.normalize_author_field()`，
+#     只把字段名换成 `editor`；连「只有 editor 没有 author」的记录也会被扫到
+#     （B2 的采集器硬编码 `author`，会漏掉这类记录；本库当前 29 条）。
+#   · **不实现可执行的 --apply**：传了就明确拒绝（退出 2）。B3 apply 须用户拍板后另批，
+#     届时沿用 B2 的 `--apply --backup`（sha256 与当前库一致才允许执行）门禁。
+#   · 报告/MD/CSV/JSON 无时间戳、无绝对路径：同一份库重复生成逐字节相同。
+EDITOR_REPORT_DRY = "B3-editor-normalize-dryrun.md"
+EDITOR_REPORT_CSV = "B3-editor-normalize-dryrun.csv"
+EDITOR_REPORT_JSON = "B3-editor-normalize-dryrun.json"
+
+#: 编者标记（`(ed.)` / `(eds.)` / `(editors)` / `（编）` / `主编`）——只做风险标记，不改判定。
+_EDITOR_MARK_RE = re.compile(r"\(\s*(?:eds?|editors?|编|主编|主編|編)\.?\s*\)", re.I)
+#: 粘连首字母（`M.C.` / `J.A.`）：规范化器会拆成 `M. C.`，报告里标出来供抽查。
+_GLUED_INITIALS_RE = re.compile(r"(?<=[A-Za-z]\.)(?=[A-Za-z])")
+
+
+def _role_part_count(value: str) -> int:
+    """`A and B` 形式里的人名个数（用于「多编者」风险标记）。"""
+    return len([part for part in re.split(r"\s+and\s+", value or "", flags=re.I)
+                if part.strip()])
+
+
+def _editor_risk_flags(record: dict, old: str, new: str) -> list[str]:
+    """B3 风险标记（只记号，不参与判定；顺序固定 → 报告可逐字节复现）。"""
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    flags: list[str] = []
+    editors_n = _role_part_count(old)
+    if editors_n >= 2:
+        flags.append(f"多编者({editors_n})")
+    if _EDITOR_MARK_RE.search(old or ""):
+        flags.append("(eds.) 形态")
+    if not str(fields.get("author") or "").strip():
+        flags.append("仅 editor")
+    if _GLUED_INITIALS_RE.search(old or ""):
+        flags.append("粘连缩写")
+    if " AND " in (old or ""):
+        flags.append("大写 AND")
+    # 只对「将倒装」行标：倒装后的值会带花括号保护（如 `{Kaulbach (eds.)}, F.`）
+    if new != old and "{" in (new or ""):
+        flags.append("倒装后加花括号")
+    return flags
+
+
+def collect_editor_rows(store: "bibdb.Store") -> list[dict]:
+    """逐条计算 editor 倒装结果（**不改库**）。
+
+    行字段与 B2 的 `collect_author_rows` 对齐，另带 B3 报告需要的来源/题名/风险标记：
+    `key` / `old` / `new` / `status`（change/skip）/ `reason` / `issues`（记录出现过的期）/
+    `sources`（期/篇/文件文本）/ `entry_type` / `title` / `n_editors` / `has_author` / `flags`。
+    """
+    rows: list[dict] = []
+    for record in store.records():
+        fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        if "editor" not in fields:
+            continue
+        old = str(fields.get("editor") or "")
+        row = {
+            "key": str(record.get("key") or ""),
+            "old": old,
+            "new": old,
+            "status": "skip",
+            "reason": "",
+            "issues": _record_issues(record),
+            "sources": [_source_text(source) for source in _record_sources(record)],
+            "entry_type": str(record.get("entry_type") or ""),
+            "title": str(fields.get("title") or fields.get("booktitle") or ""),
+            "n_editors": _role_part_count(old),
+            "has_author": bool(str(fields.get("author") or "").strip()),
+        }
+        reason = _author_skip_reason(old)
+        if not reason:
+            pending = _normalize_pending_conflict_fields(record)
+            if "editor" in pending:
+                reason = "待裁决冲突字段（先处理冲突）"
+        if reason:
+            row["reason"] = reason
+            row["flags"] = _editor_risk_flags(record, old, old)
+            rows.append(row)
+            continue
+        new = bibnorm.normalize_author_field(old)
+        if new == old:
+            row["reason"] = _author_skip_reason(old) or "规范化器判不准（保持原样）"
+            row["flags"] = _editor_risk_flags(record, old, old)
+            rows.append(row)
+            continue
+        row["status"] = "change"
+        row["new"] = new
+        row["flags"] = _editor_risk_flags(record, old, new)
+        rows.append(row)
+    rows.sort(key=lambda item: item["key"])
+    return rows
+
+
+def _editor_stats(rows: list[dict], records_total: int) -> dict:
+    changes = [row for row in rows if row["status"] == "change"]
+    skips = [row for row in rows if row["status"] == "skip"]
+    reasons: dict[str, int] = {}
+    for row in skips:
+        reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
+    flags: dict[str, int] = {}
+    for row in changes:
+        for flag in row["flags"]:
+            flags[flag] = flags.get(flag, 0) + 1
+    by_type: dict[str, int] = {}
+    count_hist: dict[str, int] = {}
+    issues: set[str] = set()
+    issue_hits = 0
+    for row in changes:
+        by_type[row["entry_type"]] = by_type.get(row["entry_type"], 0) + 1
+        count_hist[str(row["n_editors"])] = count_hist.get(str(row["n_editors"]), 0) + 1
+        issues |= set(row["issues"])
+        issue_hits += len(row["issues"])
+    return {
+        "records": records_total,
+        "with_editor": len(rows),
+        "editor_only": sum(1 for row in rows if not row["has_author"]),
+        "editor_only_changes": sum(1 for row in changes if not row["has_author"]),
+        "changes": len(changes),
+        "skips": len(skips),
+        "reasons": dict(sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "risk_flags": dict(sorted(flags.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "change_by_entry_type": dict(sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "editor_count_hist": dict(sorted(count_hist.items(), key=lambda kv: int(kv[0]))),
+        "issues": sorted(issues, key=_issue_sort_key),
+        "issue_hits": issue_hits,
+        "multi_editor_changes": sum(1 for row in changes if row["n_editors"] >= 2),
+        "change_rows": changes,
+        "skip_rows": skips,
+    }
+
+
+def _editor_verification(rows: list[dict]) -> dict:
+    """二次幂等预演（内存里做，不写库）：把「新值」再喂同一个规范化器，应 0 条再变。"""
+    changes = [row for row in rows if row["status"] == "change"]
+    remaining = [row for row in changes
+                 if bibnorm.normalize_author_field(row["new"]) != row["new"]]
+    return {
+        "checked": len(changes),
+        "remaining": len(remaining),
+        "remaining_keys": [row["key"] for row in remaining][:20],
+    }
+
+
+def _editor_sources_text(row: dict) -> str:
+    sources = row.get("sources") or []
+    shown = "；".join(sources[:3])
+    if len(sources) > 3:
+        shown += f"；…（另 {len(sources) - 3} 条）"
+    return shown or "（未记录来源）"
+
+
+def _editor_flags_text(row: dict) -> str:
+    flags = row.get("flags") or []
+    return "；".join(flags) if flags else "—"
+
+
+def _editor_table_row(index: int, row: dict) -> str:
+    """逐条明细表的一行（列：#/key/期篇文件/entry_type/题名/旧值/新值/状态/跳过原因/风险标记）。"""
+    status = "将倒装" if row["status"] == "change" else "跳过"
+    new = row["new"] if row["status"] == "change" else "（保持原样）"
+    return ("| {index:04d} | `{key}` | {sources} | {etype} | {title} | {old} | {new} | "
+            "{status} | {reason} | {flags} |").format(
+        index=index,
+        key=_md_escape(row["key"]),
+        sources=_md_escape(_editor_sources_text(row)),
+        etype=_md_escape(row["entry_type"]),
+        title=_md_escape(row["title"], width=50),
+        old=f"`{_md_escape(row['old'], width=60)}`",
+        new=f"`{_md_escape(new, width=60)}`",
+        status=status,
+        reason=_md_escape(row["reason"] or "—"),
+        flags=_md_escape(_editor_flags_text(row)),
+    )
+
+
+def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
+                           sha_after: str, verification: dict) -> str:
+    """B3 编者倒装 dry-run 报告（**只出报告，绝不写库**；无时间戳/无绝对路径）。"""
+    db_label = os.path.basename(db_path) or db_path
+    all_rows = stats["change_rows"] + stats["skip_rows"]
+    eds_rows = [row for row in stats["change_rows"] if "(eds.) 形态" in row["flags"]]
+    and_rows = [row for row in all_rows if " AND " in row["old"]]
+    and_change = [row for row in and_rows if row["status"] == "change"]
+    lines: list[str] = [
+        "# 引用库 · B3 编者（editor）倒装 dry-run 报告",
+        "",
+        "> 本报告由 `bibdb.py normalize-editors` 生成：**纯 dry-run，只算不写**——不会调用",
+        "> `Store.save()`、不会修改 `bibliography.jsonl`（跑前/跑后 sha256 见下，必相同）。",
+        "> 判定规则与 B2 作者倒装**同源**（`slcn.bibnorm.normalize_author_field` + 同一套保守",
+        "> 跳过口径），只处理 `editor` 字段；连「只有 editor 没有 author」的记录也一并扫描。",
+        "> 中文/日文、机构、`and others`、花括号/LaTeX 保护、已倒装、判不准 → **原样不动**。",
+        "> `--apply` **本批未实现**：传了直接拒绝（退出 2）；B3 apply 须用户拍板后另批实现，",
+        "> 并沿用 B2 的 `--apply --backup <sha256 与当前库一致>` 门禁。",
+        "",
+        f"- 数据来源：引用库 `{db_label}`（本报告同目录）",
+        f"- 库 sha256（跑前）：`{sha_before or '（读不到）'}`",
+        f"- 库 sha256（跑后）：`{sha_after or '（读不到）'}`"
+        f"（与跑前一致 = **未改动库**）",
+        f"- 库记录：**{stats['records']}** 条；有 `editor` 字段：**{stats['with_editor']}** 条"
+        f"（其中只有 editor、没有 author：**{stats['editor_only']}** 条）",
+        f"- 结果：**将倒装 {stats['changes']} 条** / **跳过 {stats['skips']} 条**"
+        f"（按原因见下表）",
+        f"- 逐条明细：见文末附表（{stats['with_editor']} 行，按库内 key 排序）；"
+        f"全量 CSV 另存 `{EDITOR_REPORT_CSV}`（Excel 可直接打开，UTF-8 带 BOM）",
+        f"- 幂等：同一份库重复跑本命令，MD/CSV/JSON 逐字节相同（无时间戳/无绝对路径）；"
+        f"把 {stats['changes']} 条新值再喂同一个规范化器，剩余将变 "
+        f"**{verification['remaining']}** 条（应为 0，见「二次校验」）——即 apply 后重跑 dry-run 必为 0。",
+        "",
+        "## 跳过原因分类",
+        "",
+        "| 原因 | 条数 |",
+        "|---|---|",
+    ]
+    for reason, count in stats["reasons"].items():
+        lines.append(f"| {_md_escape(reason)} | {count} |")
+    if not stats["reasons"]:
+        lines.append("| （无） | 0 |")
+    lines += [
+        "",
+        "## 影响面（若 apply）",
+        "",
+        f"- 只改 `editor` 字段（+ `content_sha256` / `updated_at`）；"
+        f"`verified` / `sources` / `conflicts` / `aliases` 与其它字段不动；",
+        f"- 多编者（`and` 分隔 ≥2）：**{stats['multi_editor_changes']}** 条；"
+        "编者人数分布：" + "、".join(
+            f"{n} 人 {c} 条" for n, c in stats["editor_count_hist"].items()),
+        f"- 其中 editor-only（B2 漏扫、只有 editor 的记录）：将倒装 "
+        f"**{stats['editor_only_changes']}** 条",
+        f"- 覆盖 **{len(stats['issues'])}** 期（{stats['issues'][0] if stats['issues'] else '—'}"
+        f" … {stats['issues'][-1] if stats['issues'] else '—'}）；"
+        f"「记录×期」覆盖点 {stats['issue_hits']}（同一记录跨期会重复计入）",
+        "",
+        "按 entry_type 分布：" if stats["change_by_entry_type"] else "按 entry_type 分布：（无）",
+        "",
+        "| entry_type | 将倒装条数 |",
+        "|---|---|",
+    ]
+    for etype, count in stats["change_by_entry_type"].items():
+        lines.append(f"| {_md_escape(etype)} | {count} |")
+    lines += [
+        "",
+        "风险标记计数（仅「将倒装」行；同一条可命中多个标记）：",
+        "",
+        "| 风险标记 | 条数 |",
+        "|---|---|",
+    ]
+    for flag, count in stats["risk_flags"].items():
+        lines.append(f"| {_md_escape(flag)} | {count} |")
+    if not stats["risk_flags"]:
+        lines.append("| （无） | 0 |")
+    lines += [
+        "",
+        "## ⚠️ 需要用户拍板的 3 个点",
+        "",
+        f"### ① `(eds.)` / `(ed.)` 形态：{len(eds_rows)} 条（编者标记会被并进姓）",
+        "",
+    ]
+    if eds_rows:
+        lines += ["| # | 库内 key | 期/篇/文件 | 旧值 | 同规则将改为 |", "|---|---|---|---|---|"]
+        for index, row in enumerate(eds_rows, start=1):
+            lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
+                         f"{_md_escape(_editor_sources_text(row))} | "
+                         f"`{_md_escape(row['old'], width=60)}` | "
+                         f"`{_md_escape(row['new'], width=60)}` |")
+        lines += [
+            "",
+            "- **方案 A（默认建议，与 B2 同规则自动改）**：沿用 B2 先例（作者字段也这么处理，"
+            "如已落库的 `{Borchert (ed.)}, D.`），一次批处理、不单列人工清单；",
+            "- **方案 B（保守）**：这 2 条不自动改，另列「人工处理清单」，由编辑决定编者标记写法；"
+            "其余条目照常。",
+            "- 影响：`(eds.)` 会被并进姓（例：`{Kaulbach (eds.)}, F.`），与 B2 已落库的作者形态一致。",
+        ]
+    else:
+        lines += ["（本库无此类条目）"]
+    lines += [
+        "",
+        f"### ② 大写分隔符 `AND`：默认**不动**（{len(and_rows)} 条 editor 值含大写 `AND`）",
+        "",
+        "- 默认与 B2 一致：**不改分隔符大小写**（BibTeX 按 `and` 关键字分词，大小写不影响语义）；"
+        "如要统一小写 `and`，需拍板后另加规则。",
+    ]
+    if and_rows:
+        lines += ["", "| 库内 key | 状态 | editor 原值 |", "|---|---|---|"]
+        for row in and_rows:
+            status = "将倒装（保留大写 AND）" if row["status"] == "change" else "跳过"
+            lines.append(f"| `{_md_escape(row['key'])}` | {status} | "
+                         f"`{_md_escape(row['old'], width=80)}` |")
+    lines += [
+        "",
+        "### ③ 多编者：建议抽查范围",
+        "",
+        f"- 将倒装行中 **{stats['multi_editor_changes']}** 条是多编者（`and` 分隔）；"
+        "建议按 CSV 的「编者人数」列抽 20–30 条核对姓名顺序/连接词写法（规则与 B2 同源，"
+        "任一段判不准整条不动，不会产出半倒装）。",
+        "",
+        "## 将倒装样例（前 20，旧 → 新）",
+        "",
+        "| # | 库内 key | 旧值 | 新值 | 风险标记 |",
+        "|---|---|---|---|---|",
+    ]
+    for index, row in enumerate(stats["change_rows"][:20], start=1):
+        lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
+                     f"`{_md_escape(row['old'], width=60)}` | "
+                     f"`{_md_escape(row['new'], width=60)}` | "
+                     f"{_md_escape(_editor_flags_text(row))} |")
+    if not stats["change_rows"]:
+        lines.append("| — | （无） | — | — | — |")
+    lines += [
+        "",
+        "## 跳过样例（前 20）",
+        "",
+        "| # | 库内 key | editor 原值 | 原因 |",
+        "|---|---|---|---|",
+    ]
+    for index, row in enumerate(stats["skip_rows"][:20], start=1):
+        lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
+                     f"`{_md_escape(row['old'], width=60)}` | {_md_escape(row['reason'])} |")
+    if not stats["skip_rows"]:
+        lines.append("| — | （无） | — | — |")
+    lines += [
+        "",
+        "## 二次校验（内存预演，不写库）",
+        "",
+        f"- 把 **{verification['checked']}** 条「将倒装」的新值再跑同一个规范化器："
+        f"**仍将变化 {verification['remaining']} 条（应为 0）** → 规则幂等；",
+        "- 本 dry-run 连跑两次（同库）：MD/CSV/JSON 逐字节相同（由测试钉住）；",
+        f"- 跑前/跑后库 sha256 相同：`{sha_before}`（本命令不写库）。",
+        "",
+        f"## 逐条明细（{stats['with_editor']} 条；按库内 key 排序）",
+        "",
+        "> 状态 = 将倒装 / 跳过；跳过原因见列；风险标记为「将倒装」行的抽查提示。"
+        f"CSV（{len(stats['change_rows'])} 行）与 JSON 有同样内容。",
+        "",
+        "| # | 库内 key | 期/篇/文件 | entry_type | 题名 | editor 旧值 | editor 新值 | "
+        "状态 | 跳过原因 | 风险标记 |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for index, row in enumerate(all_rows, start=1):
+        lines.append(_editor_table_row(index, row))
+    lines.append("")
+    return "\n".join(lines)
+
+
+EDITOR_CSV_COLUMNS = ["#", "库内 key", "期/篇/文件", "entry_type", "题名",
+                      "editor 旧值", "editor 新值", "编者人数", "风险标记"]
+
+
+def build_editor_csv(stats: dict) -> str:
+    """B3 全量 CSV（**只含「将倒装」行**，供编辑逐条审；UTF-8 带 BOM）。"""
+    import csv as _csv
+    import io
+
+    buffer = io.StringIO()
+    writer = _csv.writer(buffer, lineterminator="\n")
+    writer.writerow(EDITOR_CSV_COLUMNS)
+    for index, row in enumerate(stats["change_rows"], start=1):
+        writer.writerow([
+            index,
+            row["key"],
+            "；".join(row["sources"]),
+            row["entry_type"],
+            row["title"],
+            row["old"],
+            row["new"],
+            row["n_editors"],
+            "；".join(row["flags"]),
+        ])
+    return "\ufeff" + buffer.getvalue()  # BOM：Excel 直接打开不乱码
+
+
+def build_editor_json(db_path: str, stats: dict, sha_before: str,
+                      sha_after: str, verification: dict) -> str:
+    """B3 dry-run 机读摘要（无绝对路径：`db` 只留文件名）。"""
+    payload = {
+        "tool": "bibdb.py normalize-editors（dry-run）",
+        "db": os.path.basename(db_path) or db_path,
+        "mode": "dry-run",
+        "apply_implemented": False,
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "db_unchanged": sha_before == sha_after,
+        "records": stats["records"],
+        "with_editor": stats["with_editor"],
+        "editor_only": stats["editor_only"],
+        "editor_only_changes": stats["editor_only_changes"],
+        "changes": stats["changes"],
+        "skips": stats["skips"],
+        "reasons": stats["reasons"],
+        "risk_flags": stats["risk_flags"],
+        "change_by_entry_type": stats["change_by_entry_type"],
+        "editor_count_hist": stats["editor_count_hist"],
+        "issues_touched": stats["issues"],
+        "issue_hits": stats["issue_hits"],
+        "multi_editor_changes": stats["multi_editor_changes"],
+        "verification": verification,
+        "change_entries": [
+            {key: row[key] for key in ("key", "old", "new", "entry_type", "title",
+                                       "sources", "n_editors", "flags")}
+            for row in stats["change_rows"]],
+        "skipped_entries": [
+            {key: row[key] for key in ("key", "old", "reason", "entry_type", "title",
+                                       "sources", "n_editors", "flags")}
+            for row in stats["skip_rows"]],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _write_editor_reports(args, path: str, stats: dict, sha_before: str,
+                          sha_after: str, verification: dict) -> list[dict]:
+    report_path = str(getattr(args, "report", "") or "")
+    out_dir = str(getattr(args, "out_dir", "") or "")
+    if not report_path and out_dir:
+        report_path = os.path.join(out_dir, EDITOR_REPORT_DRY)
+    csv_path = str(getattr(args, "csv_out", "") or "")
+    if not csv_path and out_dir:
+        csv_path = os.path.join(out_dir, EDITOR_REPORT_CSV)
+    json_path = str(getattr(args, "json_out", "") or "")
+    if not json_path and out_dir:
+        json_path = os.path.join(out_dir, EDITOR_REPORT_JSON)
+    written: list[dict] = []
+    if report_path:
+        written.append(_write_report(report_path, build_editor_report_md(
+            path, stats, sha_before, sha_after, verification)))
+    if csv_path:
+        written.append(_write_report(csv_path, build_editor_csv(stats)))
+    if json_path:
+        written.append(_write_report(json_path, build_editor_json(
+            path, stats, sha_before, sha_after, verification)))
+    return written
+
+
+def cmd_normalize_editors(args) -> int:
+    """B3 编者倒装：**只做 dry-run**；本批不实现 apply、绝不写库。"""
+    if bool(getattr(args, "apply", False)):
+        print("✗ normalize-editors 本批只做 dry-run：B3 apply 须用户拍板后另批实现"
+              "（届时沿用 B2 的 --apply --backup sha256 门禁）", file=sys.stderr)
+        return 2
+    try:
+        path, store = _open_store(args)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    sha_before = bibdb.db_sha256(path)
+    records_total = sum(1 for record in store.records() if isinstance(record, dict))
+    rows = collect_editor_rows(store)
+    stats = _editor_stats(rows, records_total)
+    verification = _editor_verification(rows)
+    sha_after = bibdb.db_sha256(path)
+    if sha_before != sha_after:        # 防御式：本命令按设计只读，不该发生
+        print("✗ 内部错误：normalize-editors 运行期间库文件被改动（本命令不应写库）",
+              file=sys.stderr)
+        return 2
+    written = _write_editor_reports(args, path, stats, sha_before, sha_after, verification)
+    payload = {
+        "db": os.path.basename(path) or path,
+        "mode": "dry-run",
+        "apply_implemented": False,
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "db_unchanged": sha_before == sha_after,
+        "records": stats["records"],
+        "with_editor": stats["with_editor"],
+        "editor_only": stats["editor_only"],
+        "editor_only_changes": stats["editor_only_changes"],
+        "changes": stats["changes"],
+        "skips": stats["skips"],
+        "reasons": stats["reasons"],
+        "risk_flags": stats["risk_flags"],
+        "multi_editor_changes": stats["multi_editor_changes"],
+        "verification": verification,
+        "written": written,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"库 sha256（跑前/跑后）：{sha_before} / {sha_after}"
+          + ("（一致 = 未改动库）" if sha_before == sha_after else "（⚠️ 不一致！）"))
+    print(f"记录：{stats['records']} 条；有 editor 字段：{stats['with_editor']} 条"
+          f"（其中只有 editor、没有 author：{stats['editor_only']} 条）")
+    print(f"→ 将倒装 {stats['changes']} 条 / 跳过 {stats['skips']} 条")
+    print("   跳过原因 Top：" + "、".join(
+        f"{reason} {count}" for reason, count in list(stats["reasons"].items())[:6]))
+    if stats["risk_flags"]:
+        print("   风险标记：" + "、".join(
+            f"{flag} {count}" for flag, count in list(stats["risk_flags"].items())[:8]))
+    print(f"   二次校验（内存预演）：把新值再跑同一个规范化器，剩余将变 "
+          f"{verification['remaining']} 条（应为 0）")
+    for item in written:
+        state = "已写入" if item["written"] else "内容未变（未重写）"
+        print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
+    print("   （dry-run：未修改 bibliography.jsonl；apply 须用户拍板后另批）")
+    return 0
+
+
 # ── 入口 ────────────────────────────────────────────────────────────────────
 
 
@@ -2614,6 +3124,24 @@ def build_parser() -> argparse.ArgumentParser:
     auth.add_argument("--json-out", default="", metavar="PATH", help="另写 JSON 摘要文件")
     auth.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
     auth.set_defaults(func=cmd_normalize_authors)
+
+    # ── B3 编者倒装（dry-run only；apply 须用户拍板后另批实现）────────────────
+    edt = sub.add_parser(
+        "normalize-editors", parents=[common],
+        help="B3 英文编者倒装 **dry-run**（只出报告、绝不写库；传 --apply 一律拒绝）")
+    edt.add_argument("--dry-run", action="store_true", help="显式 dry-run（默认就是）")
+    edt.add_argument("--apply", action="store_true",
+                     help="本批**未实现**：B3 apply 须用户拍板后另批；传了直接拒绝（退出 2）")
+    edt.add_argument("--report", default="", metavar="PATH",
+                     help=f"Markdown 报告路径（--out-dir 时默认 {EDITOR_REPORT_DRY}）")
+    edt.add_argument("--out-dir", default="", metavar="DIR",
+                     help=f"输出目录：写 {EDITOR_REPORT_DRY} + {EDITOR_REPORT_CSV} "
+                          f"+ {EDITOR_REPORT_JSON}")
+    edt.add_argument("--csv-out", default="", metavar="PATH",
+                     help="全量 CSV 输出路径（只含「将倒装」行；UTF-8 带 BOM）")
+    edt.add_argument("--json-out", default="", metavar="PATH", help="JSON 摘要输出路径")
+    edt.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
+    edt.set_defaults(func=cmd_normalize_editors)
     return parser
 
 

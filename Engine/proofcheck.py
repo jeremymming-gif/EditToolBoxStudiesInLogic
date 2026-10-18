@@ -98,7 +98,15 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
         if not hits:
             continue
         head = hits[0]
-        flag = "（可自动改）" if head.fixable else ""
+        # 混合规则（如 ZH-08：只有「汉字-汉字」窄子集可自动改，其余只报）要标出可改条数，
+        # 不能因为 hits[0] 不可改就把整节标成「只报」、也不能反过来让人以为全都能改。
+        n_fix = sum(1 for h in hits if h.fixable)
+        if n_fix == len(hits):
+            flag = "（可自动改）"
+        elif n_fix:
+            flag = f"（可自动改 {n_fix}/{len(hits)} 处，其余需人工判断）"
+        else:
+            flag = ""
         out += [f"### `{rid}` {head.title}{flag} —— {len(hits)} 处", "",
                 f"依据：{head.basis}", "",
                 f"建议：{head.advice}", "",
@@ -149,7 +157,13 @@ def main(argv: list[str] | None = None) -> int:
     if not by:
         print("  ✅ 没有命中任何规则。")
     for rid, hits in by.items():
-        flag = "（可自动改）" if hits[0].fixable else ""
+        n_fix = sum(1 for h in hits if h.fixable)
+        if n_fix == len(hits):
+            flag = "（可自动改）"
+        elif n_fix:
+            flag = f"（可自动改 {n_fix}/{len(hits)} 处）"
+        else:
+            flag = ""
         print(f"  {rid}  {len(hits):3d} 处  {hits[0].title}{flag}")
         for h in hits[:3]:
             print(f"        第 {h.line} 行：{h.text[:52]}")

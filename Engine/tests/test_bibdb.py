@@ -44,7 +44,12 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
       `--apply` 必须带匹配 sha 的 `--backup`、与 `--dry-run` 互斥
   (s) `normalize-authors`（B2 作者倒装）：Given Surname/多作者/particles → 姓, 名；
       CJK/机构/`and others`/花括号/已倒装/单名 → 跳过；apply 只改 author + sha/updated_at；
-      dry-run 不写、`--backup` 门禁、幂等、二次校验 0
+      dry-run 不写、`--backup` 门禁、幂等、二次校验 0；**不动 editor**（交给 (t)）
+  (t) `normalize-editors`（B3 编者倒装 **dry-run only**）：扫 `editor` 字段（含
+      「只有 editor 没有 author」的记录）、跳过分类、风险标记（多编者/`(eds.)`/
+      editor-only/大写 `AND`/粘连缩写）、MD+CSV+JSON 三件报告、**绝不写库**
+      （跑前/跑后 sha 相同）、`--apply` 一律拒绝、两次 dry-run 逐字节相同（幂等）、
+      报告无绝对路径/无时间戳
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -54,6 +59,7 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -1904,7 +1910,8 @@ with tempfile.TemporaryDirectory(prefix="bibdb_authors_") as tmp:
                                   after.get("Good1")["fields"])
           and after.get("Good1")["updated_at"]
           != before["Good1"]["updated_at"])
-    check("(s) editor 字段本批不动（EditorOnly10 无 author、editor 原样）",
+    check("(s) normalize-authors 不动 editor（editor 归 B3 normalize-editors 批处理；"
+          "EditorOnly10 原样）",
           after.get("EditorOnly10")["fields"].get("author") is None
           and after.get("EditorOnly10")["fields"]["editor"] == "John Smith"
           and after.get("EditorOnly10")["updated_at"]
@@ -1925,6 +1932,215 @@ with tempfile.TemporaryDirectory(prefix="bibdb_authors_") as tmp:
     check("(s) 二次 apply 幂等：applied=0、库文件逐字节不变",
           r.returncode == 0 and payload2.get("applied") == 0
           and read_bytes(db) == digest_after, json.dumps(payload2, ensure_ascii=False)[:300])
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (t) normalize-editors：B3 编者倒装 dry-run（只出报告、绝不写库）──")
+
+
+def _make_editor_db(path: str) -> str:
+    """合成库：editor 可倒装/多编者/虚词/(eds.)/大写 AND/editor-only + 各类跳过。"""
+    store = bibdb.Store.load(path, create=True)
+    store.import_bib_text("""
+@book{EdGood1,
+  editor    = {John Smith},
+  title     = {Editor One},
+  publisher = {P},
+  year      = {2001}
+}
+@book{EdMulti2,
+  editor    = {J. P. Dillard and C. Segrin},
+  title     = {Editor Two},
+  publisher = {P},
+  year      = {2002}
+}
+@book{EdParticle3,
+  editor    = {B. C. van Fraassen},
+  title     = {Editor Three},
+  publisher = {P},
+  year      = {2003}
+}
+@book{EdInverted4,
+  editor    = {Smith, John},
+  title     = {Editor Four},
+  publisher = {P},
+  year      = {2004}
+}
+@book{EdChinese5,
+  editor    = {张三 and 李四},
+  title     = {第五},
+  publisher = {P},
+  year      = {2005}
+}
+@book{EdInstitution6,
+  editor    = {World Health Organization},
+  title     = {Editor Six},
+  publisher = {P},
+  year      = {2006}
+}
+@book{EdOthers7,
+  editor    = {J. Smith and others},
+  title     = {Editor Seven},
+  publisher = {P},
+  year      = {2007}
+}
+@book{EdBraces8,
+  editor    = {{van Fraassen}, B. C.},
+  title     = {Editor Eight},
+  publisher = {P},
+  year      = {2008}
+}
+@book{EdSingle9,
+  editor    = {Plato},
+  title     = {Editor Nine},
+  publisher = {P},
+  year      = {2009}
+}
+@book{EdOnly10,
+  editor    = {Gottlob Frege},
+  title     = {Editor Ten},
+  publisher = {P},
+  year      = {2010}
+}
+@book{EdParen11,
+  editor    = {H. Hermes and F. Kambartel and F. Kaulbach(eds.)},
+  title     = {Editor Eleven},
+  publisher = {P},
+  year      = {2011}
+}
+@book{EdAnd12,
+  editor    = {J.A. Carter AND E. Gordon AND B. Jarvis},
+  title     = {Editor Twelve},
+  publisher = {P},
+  year      = {2012}
+}
+@book{EdAuthor13,
+  author    = {John Smith},
+  editor    = {Jane Doe},
+  title     = {Editor Thirteen},
+  publisher = {P},
+  year      = {2013}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "01 Base", "file": "base.bib"}, verified=True)
+    store.save()
+    return path
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
+    db = _make_editor_db(os.path.join(tmp, "editors.jsonl"))
+    digest_before = read_bytes(db)
+    out_dry = os.path.join(tmp, "dry")
+    md_path = os.path.join(out_dry, "B3-editor-normalize-dryrun.md")
+    csv_path = os.path.join(out_dry, "B3-editor-normalize-dryrun.csv")
+    json_path = os.path.join(out_dry, "B3-editor-normalize-dryrun.json")
+    r = run_cli("normalize-editors", "--db", db, "--out-dir", out_dry, "--json")
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    dry_text = _read_text(md_path) if os.path.isfile(md_path) else ""
+    check("(t) dry-run：退出 0、MD/CSV/JSON 三件都生成、库文件逐字节不变",
+          r.returncode == 0 and os.path.isfile(md_path) and os.path.isfile(csv_path)
+          and os.path.isfile(json_path) and read_bytes(db) == digest_before,
+          (r.stdout + r.stderr)[:300])
+    check("(t) 统计：13 条有 editor（12 条 editor-only）→ 7 将倒装 / 6 跳过；"
+          "跑前=跑后 sha、db_unchanged",
+          payload.get("with_editor") == 13 and payload.get("editor_only") == 12
+          and payload.get("changes") == 7 and payload.get("skips") == 6
+          and payload.get("db_unchanged") is True
+          and payload.get("sha256_before") == payload.get("sha256_after")
+          and payload.get("mode") == "dry-run"
+          and payload.get("apply_implemented") is False,
+          json.dumps(payload, ensure_ascii=False)[:400])
+    check("(t) 跳过原因分类覆盖 CJK/机构/and others/花括号/已倒装/单名",
+          {"含中文/日文（不倒装）", "疑似机构/组织作者（不推断）",
+           "含 `and others`（保持原样）", "含花括号/LaTeX 保护（保持原样）",
+           "已倒装或含逗号（保持原样）", "单名/只有一个词（保持原样）"}
+          <= set(payload.get("reasons") or {}), str(payload.get("reasons"))[:400])
+    risk = payload.get("risk_flags") or {}
+    check("(t) 风险标记：多编者/(eds.)/仅 editor/大写 AND 都标出",
+          risk.get("(eds.) 形态") == 1 and risk.get("仅 editor") == 6
+          and risk.get("大写 AND") == 1
+          and any(key.startswith("多编者(") for key in risk), str(risk)[:400])
+    json_text = _read_text(json_path) if os.path.isfile(json_path) else ""
+    json_payload = json.loads(json_text) if json_text else {}
+    change_map = {row["key"]: row for row in json_payload.get("change_entries") or []}
+    check("(t) B2 漏扫的 editor-only 记录被扫到：EdOnly10 → Frege, G.（标记「仅 editor」）",
+          change_map.get("EdOnly10", {}).get("new") == "Frege, G."
+          and "仅 editor" in (change_map.get("EdOnly10", {}).get("flags") or []), 
+          json.dumps(change_map.get("EdOnly10"), ensure_ascii=False)[:300])
+    check("(t) 报告：标题/sha 跑前=跑后=未改动库/拍板 3 点/逐条明细/二次校验",
+          "B3 编者（editor）倒装 dry-run 报告" in dry_text
+          and payload.get("sha256_before") in dry_text
+          and "未改动库" in dry_text and "需要用户拍板的 3 个点" in dry_text
+          and "(eds.)" in dry_text and "大写分隔符" in dry_text
+          and "逐条明细" in dry_text and "二次校验" in dry_text,
+          dry_text[:400])
+    check("(t) (eds.) 两条形态与「自动改 vs 列人工」两方案、大写 AND 保留单列",
+          "EdParen11" in dry_text and "{Kaulbach (eds.)}, F." in dry_text
+          and "方案 A" in dry_text and "方案 B" in dry_text
+          and "EdAnd12" in dry_text
+          and "Carter, J. A. AND Gordon, E. AND Jarvis, B." in dry_text)
+    csv_text = _read_text(csv_path) if os.path.isfile(csv_path) else ""
+    check("(t) CSV：UTF-8 BOM、7 行全量「将倒装」+ 表头 9 列",
+          os.path.isfile(csv_path) and read_bytes(csv_path)[:3] == b"\xef\xbb\xbf"
+          and len(csv_text.lstrip("\ufeff").splitlines()) == 7 + 1
+          and csv_text.lstrip("\ufeff").splitlines()[0].count(",") == 8,
+          (csv_text.splitlines()[0] if csv_text else "")[:120])
+    check("(t) 报告/CSV/JSON 无绝对路径、无时间戳（可逐字节复现）",
+          tmp not in dry_text and tmp not in csv_text and tmp not in json_text
+          and datetime.date.today().isoformat() not in dry_text)
+    check("(t) 报告逐条明细覆盖全部 13 条 editor 记录",
+          sum(1 for line in dry_text.splitlines() if line.startswith("| 00")
+              or (line.startswith("| 0") and "`Ed" in line)) >= 13,
+          str(sum(1 for line in dry_text.splitlines() if "| `Ed" in line)))
+    # ── 幂等：同库连跑两次，MD/CSV/JSON 逐字节相同、库仍不变 ──
+    out_dry2 = os.path.join(tmp, "dry2")
+    r2 = run_cli("normalize-editors", "--db", db, "--out-dir", out_dry2, "--json")
+    same = all(read_bytes(os.path.join(out_dry, name))
+               == read_bytes(os.path.join(out_dry2, name))
+               for name in ("B3-editor-normalize-dryrun.md",
+                            "B3-editor-normalize-dryrun.csv",
+                            "B3-editor-normalize-dryrun.json"))
+    check("(t) 二次 dry-run 幂等：三件输出逐字节相同、库文件逐字节不变",
+          r2.returncode == 0 and same and read_bytes(db) == digest_before,
+          (r2.stdout + r2.stderr)[:300])
+    # ── 绝不 apply：传 --apply 一律拒绝，库不变 ──
+    r = run_cli("normalize-editors", "--db", db, "--apply")
+    check("(t) --apply 本批未实现 → 退出 2、明确提示 dry-run、库不变",
+          r.returncode == 2 and "dry-run" in (r.stdout + r.stderr)
+          and read_bytes(db) == digest_before, (r.stdout + r.stderr)[:300])
+    backup = os.path.join(tmp, "backup.jsonl")
+    with open(backup, "wb") as fh:
+        fh.write(read_bytes(db))
+    r = run_cli("normalize-editors", "--db", db, "--apply", "--backup", backup)
+    check("(t) --apply --backup 也拒绝（apply 未实现，不走任何写库分支）",
+          r.returncode == 2 and read_bytes(db) == digest_before,
+          (r.stdout + r.stderr)[:300])
+    # ── 无 --out-dir 只打印摘要（不写任何文件）──
+    before_files = set(os.listdir(tmp))
+    r = run_cli("normalize-editors", "--db", db)
+    check("(t) 不给 --out-dir：退出 0、只打印摘要、不落任何报告文件",
+          r.returncode == 0 and "将倒装 7 条 / 跳过 6 条" in r.stdout
+          and set(os.listdir(tmp)) == before_files, r.stdout[:300])
+    # ── 真库只读抽查（SKIP when absent）：数字与 Phase0 审计一致 ──
+    try:
+        real_db = bibdb.default_db_path()
+    except Exception:                     # 笔记仓不存在（CI/公开仓）→ 正常跳过
+        real_db = ""
+    if not real_db or not os.path.isfile(real_db):
+        skip("(t) 真实引用库只读抽查", "库文件不存在（CI 上正常）")
+    else:
+        real_sha = bibdb.db_sha256(real_db)
+        r = run_cli("normalize-editors", "--db", real_db, "--json")
+        real = json.loads(r.stdout) if r.returncode == 0 else {}
+        check("(t) 真实库只读：7950 条 → editor 971（editor-only 29）→ 498/473、库 sha 不变",
+              r.returncode == 0 and real.get("records") == 7950
+              and real.get("with_editor") == 971 and real.get("editor_only") == 29
+              and real.get("changes") == 498 and real.get("skips") == 473
+              and real.get("db_unchanged") is True
+              and bibdb.db_sha256(real_db) == real_sha,
+              json.dumps({k: real.get(k) for k in
+                          ("records", "with_editor", "editor_only", "changes",
+                           "skips", "db_unchanged")}, ensure_ascii=False))
+
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (l) 真实稿件库抽查（SKIP when absent，只读） ──")

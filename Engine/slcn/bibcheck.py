@@ -630,6 +630,14 @@ def check_citations(latex: str, bib: str, window: int = 80,
 
     for k in sorted(ck - ek):
         problems.append(f"① 悬空引用：正文引用了 {{{k}}}，但参考文献里没有这一条")
+    if ek and not ck:
+        # P2-4（2026-10-18）：bib 有条目、正文 0 引用命令 → **内容缺失**（PDF 参考文献区
+        # 会是空的），从逐条 hint 升为一条 problem；有引用时下面逐条提示保持不变。
+        problems.append(
+            f"② 正文 0 引用：参考文献有 {len(ek)} 条，但正文没有任何 `\\parencite` / `\\cite` "
+            f"命令 —— **PDF 参考文献区会是空的**（这不是「条目多余」，是正文引用没接上，"
+            f"必须人工补引用或删条目）"
+        )
     for k in sorted(ek - ck):
         line = f"② 冗余条目：{{{k}}} 在参考文献里，但正文从未引用"
         if unmatched:

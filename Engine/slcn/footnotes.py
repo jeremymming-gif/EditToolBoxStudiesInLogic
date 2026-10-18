@@ -196,8 +196,8 @@ _ART_CN = re.compile(
 )
 
 
-def parse_entry(ref: str) -> dict:
-    """把一条文献解析成 bib 字段。解析不出来就整条塞进 note，绝不丢内容。"""
+def _parse_entry_impl(ref: str) -> dict:
+    """把一条文献解析成 bib 字段（旧实现；出口的 P1-2 类型订正见 `parse_entry`）。"""
     s = re.sub(r"\s+", " ", ref).strip().rstrip(".")
 
     m = _ART_CN.match(s)
@@ -251,6 +251,19 @@ def parse_entry(ref: str) -> dict:
 
     # 解析不出来：保留原文，人工/AI 再订正
     return {"_type": "misc", "note": s}
+
+
+def parse_entry(ref: str) -> dict:
+    """把一条文献解析成 bib 字段；解析不出来就整条塞进 note，绝不丢内容。
+
+    P1-2（2026-10-18）：出口统一走 `footref.refine_entry_fields()`——把「刊名格其实是
+    出版地/出版社」的挪回 `address`/`publisher`，并按**出版信息特征**重判 `_type`
+    （`Oxford: Clarendon` → @book、`in … (eds.), pp.` → @incollection 等）。
+    判据只有一份：`slcn/footref.classify_entry_type()`（下一卡 docxsource 复用同一函数）。
+    """
+    from . import footref
+
+    return footref.refine_entry_fields(_parse_entry_impl(ref), raw=ref)
 
 
 # ── 生成键 ────────────────────────────────────────────────────────────────
@@ -449,7 +462,15 @@ def entry_to_bib(key: str, entry: dict, raw: str = "") -> str:
         v = entry.get(k)
         if not v:
             continue
-        if k in ("author", "editor"):
+        if k == "author":
+            # P1-3（2026-10-18）：author 是编辑部硬规则（英文一律倒装），出口统一到一处，
+            # 与 bibnorm.normalize_author_field 同源；先拆 `逗号+and` 混写/`&`（同
+            # docxsource._bib_author 的顺序），再倒装；中文/日文与花括号保护由 bibnorm 跳过。
+            from .bibnorm import normalize_author_field
+
+            v = normalize_author_field(normalize_authors(str(v)))
+        elif k == "editor":
+            # 本卡只改 author；editor 归 B3 批处理（此处保持旧行为：只规范 and 分隔）
             v = normalize_authors(str(v))
         lines.append(f"  {k.ljust(width)} = {{{_bib_escape(str(v))}}},")
         wrote = True

@@ -71,6 +71,21 @@ BIB_BEALL = """\
 """
 TEX_BEALL = "……哈克从非形式论证和形式论证的角度解读逻辑多元论……" + RAW_BEAL + "。"
 OLD_LINE = "② 冗余条目：{Beall2006} 在参考文献里，但正文从未引用"
+
+# ⚠️ 2026-10-18 第四十批 P2-4（bib-refs T12，**有意变更**）：
+# `bibcheck.check_citations()` 在「bib 条数>0 且正文引用命令=0」时，会在历史
+# 「② 冗余条目」提示**之前**新增一条 problem：
+#   「② 正文 0 引用：参考文献有 N 条，但正文没有任何 `\parencite` / `\cite` 命令
+#     —— **PDF 参考文献区会是空的**（…）」
+# 本测试据此按新契约断言：**0 引用**时 = 新 problem 行 + 历史 ② hint（两条）；
+# **有引用**时文案/条数逐字不变（下面各处旧断言均保留）。
+P24_PREFIX = "② 正文 0 引用："
+
+
+def split_p24(items):
+    """把 P2-4 新增行与历史行分开：(p24 行列表, 去掉 p24 后的历史行列表)。"""
+    return ([c for c in items if c.startswith(P24_PREFIX)],
+            [c for c in items if not c.startswith(P24_PREFIX)])
 SECTION_HEAD = "  ── 正文里没转成引用的引用点（"
 
 # 含全部四种引用点的正文：给 (b) 的四个门槛用（每条都真实出现，便于逐个开合证据）
@@ -101,8 +116,11 @@ BIB_WILL = """\
 print("── (a) `check_citations(tex, bib)` 旧调用逐字不变 ──")
 
 _old = bibcheck.check_citations(TEX_BEALL, BIB_BEALL)
-check("(a) 两个位置参数的旧调用只报 ②，且文案逐字是历史那一句",
-      _old == [OLD_LINE], repr(_old))
+_p24_old, _hist_old = split_p24(_old)
+check("(a) 两个位置参数的旧调用：0 引用时 = P2-4 problem 行 + 历史 ② hint 两条"
+      "（第四十批 P2-4 有意变更）",
+      len(_p24_old) == 1 and "PDF 参考文献区会是空的" in _p24_old[0]
+      and _hist_old == [OLD_LINE], repr(_old))
 check("(a) `unmatched=None` 与不传参逐字节相同",
       bibcheck.check_citations(TEX_BEALL, BIB_BEALL, unmatched=None) == _old)
 check("(a) `unmatched=[]` 与不传参逐字节相同（空清单不是「有清单」）",
@@ -132,31 +150,44 @@ check("(a) ③ 不受新参数影响：给了 unmatched 也照样报",
 print("\n── (b) ② 文案保留 + 提示只在可核证据全齐时追加 ──")
 
 _hinted = bibcheck.check_citations(TEX_BEALL, BIB_BEALL, unmatched=[RAW_BEAL])
-check("(b) 有证据 → 条数不变（还是 1 条）", len(_hinted) == 1, repr(_hinted))
+_p24_hinted, _hist_hinted = split_p24(_hinted)
+check("(b) 有证据 → P2-4 problem 行 + 历史 hint 共 2 条（第四十批 P2-4 有意变更）",
+      len(_hinted) == 2 and len(_p24_hinted) == 1 and len(_hist_hinted) == 1,
+      repr(_hinted))
+_hinted_line = _hist_hinted[0]
 check("(b) ② 的原文案**逐字保留**，提示只是追加在它后面",
-      _hinted[0].startswith(OLD_LINE), repr(_hinted[0][:40]))
-check("(b) 提示里逐字带上那处引用原文", RAW_BEAL in _hinted[0])
+      _hinted_line.startswith(OLD_LINE), repr(_hinted_line[:40]))
+check("(b) 提示里逐字带上那处引用原文", RAW_BEAL in _hinted_line)
 check("(b) 提示写明证据：年份 2006 一致 + 姓名「Beal」与作者姓氏「Beall」同前 4 个字符",
-      "年份 2006" in _hinted[0] and "「Beal」" in _hinted[0] and "「Beall」" in _hinted[0]
-      and "同前 4 个字符" in _hinted[0], repr(_hinted[0]))
-check("(b) 提示明说「不是条目多余」（不许误诊）", "不是条目多余" in _hinted[0])
+      "年份 2006" in _hinted_line and "「Beal」" in _hinted_line
+      and "「Beall」" in _hinted_line and "同前 4 个字符" in _hinted_line,
+      repr(_hinted_line))
+check("(b) 提示明说「不是条目多余」（不许误诊）", "不是条目多余" in _hinted_line)
 
 # 门槛①：引用原文必须**逐字**出现在正文里（找不到片段就不许提示）
 _notintex = bibcheck.check_citations("正文里没有那处引用。", BIB_BEALL, unmatched=[RAW_BEAL])
-check("(b) 反例：引用原文不在正文里 → 不提示（可在原文里核，是不许猜的底线）",
-      _notintex == [OLD_LINE], repr(_notintex))
+_p24_ni, _hist_ni = split_p24(_notintex)
+check("(b) 反例：引用原文不在正文里 → 不提示（历史 ② hint 保留不动；P2-4 行另算）",
+      len(_p24_ni) == 1 and _hist_ni == [OLD_LINE], repr(_notintex))
 # 门槛②：年份 token 必须逐字相同
 _will = bibcheck.check_citations(TEX_ALL, BIB_WILL, unmatched=[RAW_WILL])
+_p24_will, _hist_will = split_p24(_will)
 check("(b) 反例：`Williamson 2017` vs 条目 year=2007 → 不提示",
-      _will == ["② 冗余条目：{Williamson2007} 在参考文献里，但正文从未引用"], repr(_will))
+      len(_p24_will) == 1
+      and _hist_will == ["② 冗余条目：{Williamson2007} 在参考文献里，但正文从未引用"],
+      repr(_will))
 # 门槛③：姓名必须有够长的共有前缀
 _smith = bibcheck.check_citations(TEX_ALL, BIB_BEALL, unmatched=["（Smith 2006）"])
+_p24_smith, _hist_smith = split_p24(_smith)
 check("(b) 反例：`Smith 2006` 与本条作者 Beall 毫无共同前缀 → 不提示",
-      _smith == [OLD_LINE], repr(_smith))
+      len(_p24_smith) == 1 and _hist_smith == [OLD_LINE], repr(_smith))
 # 中文姓名：CJK 门槛是 2 个汉字
 _chen = bibcheck.check_citations(TEX_ALL, BIB_CHEN, unmatched=["（陈波 2005）"])
+_p24_chen, _hist_chen = split_p24(_chen)
+_chen_line = _hist_chen[0] if _hist_chen else ""
 check("(b) CJK：`（陈波 2005）` 与本条作者「陈波」命中（CJK 门槛 2 字）",
-      len(_chen) == 1 and "⚠" in _chen[0] and "「陈波」" in _chen[0], repr(_chen))
+      len(_p24_chen) == 1 and len(_hist_chen) == 1
+      and "⚠" in _chen_line and "「陈波」" in _chen_line, repr(_chen))
 
 check("(b) 前缀判据的边界：ASCII 要 ≥ 4 个字符（3 个不算证据）",
       bibcheck._prefix_evidence("Bea", "Beall") == 0

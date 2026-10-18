@@ -234,13 +234,62 @@ def _sym_code(code: str) -> str:
     return code
 
 
+#: 公式 run 里按「文字」处理、包进 `\text{}` 的标点/符号。
+#: CJK 基本区/扩展 A/扩展 B+、CJK 兼容表意、〇(U+3007) 走范围判断，不在这里列。
+_MATH_TEXT_PUNCT = "（）［］｛｝，。；：：、“”‘’《》〈〉「」『』【】…—～·！？"
+
+#: 留在数学模式会**把产物改坏**的 ASCII 特殊字符：`%` 会把本行余下全变注释、`$` 破坏
+#: 数学开关、`#` 是宏参数、`&` 是对齐符 → 按文字处理并转义。
+#: ⚠️ `_ ^ { } ~ \` 刻意不在这里：`_`/`^` 在公式里通常就是作者要的上标/下标语义
+#:    （`$x_1$`），`{`/`}`/`\` 则永远走数学分支 → 本批「改动要小」不动（卡要求）。
+_MATH_TEXT_SPECIALS = {"%": "\\%", "&": "\\&", "#": "\\#", "$": "\\$"}
+
+
+def _is_math_text_char(ch: str) -> bool:
+    """公式 run 里的字符是否该包进 `\text{}`（文字语境）。"""
+    if not ch:
+        return False
+    if "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf":   # CJK 基本区 / 扩展 A
+        return True
+    if ch in ("\u3007", "\u3000"):                                 # 〇 / 全角空格
+        return True
+    if "\uf900" <= ch <= "\ufaff":                                 # CJK 兼容表意
+        return True
+    if "\U00020000" <= ch <= "\U0002fa1f":                          # CJK 扩展 B+
+        return True
+    if "\uff00" <= ch <= "\uffef":                                 # 全角块（含 ＝ U+FF1D）
+        return True
+    if ch in _MATH_TEXT_SPECIALS:                                  # % & # $ → 转义
+        return True
+    return ch in _MATH_TEXT_PUNCT
+
+
+def _escape_math_text(seg: str) -> str:
+    r"""`\text{}` 内的转义。
+
+    · ASCII 特殊字符按 `_MATH_TEXT_SPECIALS` 转义（`\text{%}` 仍是 LaTeX 注释符，必须 `\%`）；
+    · **U+3000 全角空格 → `\hspace{1em}`**：实测在 `\text{}` 里会走拉丁字体报
+      `Missing character: no 　 (U+3000)`（xelatex + ctex 探针，2026-10-18 验证）；
+    · 其余字符原样。`\`、`}` 永远走数学分支、进不到这里——旧实现那两条
+      `.replace("\\", "\\textbackslash{}")` / `.replace("}", "\\}")` 是**死代码**，
+      本函数取代它，行为逐字节不变（C-4 清理，产物不变由测试 ⑪ 钉住）。
+    """
+    out: list[str] = []
+    for ch in seg:
+        if ch == "\u3000":
+            out.append("\\hspace{1em}")
+        else:
+            out.append(_MATH_TEXT_SPECIALS.get(ch, ch))
+    return "".join(out)
+
+
 def _math_text_latex(text: str) -> str:
-    """公式 run 里的中文/全角标点包进 `\text{}`。
+    """公式 run 里的中文/全角字符/ASCII 特殊字符包进 `\text{}`（或转义）。
 
     Word 公式里常把「（x是具有“p→p”形式的命题→x是真的）」整段塞进 `<m:t>`；
-    不包 `\text{}` 时 xelatex 会在 Times New Roman 里找汉字 → Missing character，
-    PDF 乱码/缺字（期 90/05 Beibei_Gao 实测）。只包 CJK/全角标点段，
-    数学符号（→、∈ 等）仍留给 `_math_to_tex` 处理。
+    不包 `\text{}` 时 xelatex 会在 Times New Roman 里找汉字/全角字符 → Missing character，
+    PDF 乱码/缺字（期 90/05 Beibei_Gao；期 90/07 Liangying_Zhao 的 `＝` U+FF1D 实测 2 处）。
+    分类判据见 `_is_math_text_char`；数学符号（→、∈ 等）仍留给 `_math_to_tex` 处理。
     """
     if not text:
         return text
@@ -253,22 +302,21 @@ def _math_text_latex(text: str) -> str:
         if buf:
             seg = "".join(buf)
             if in_text:
-                out.append("\\text{" + seg.replace("\\", "\\textbackslash{}")
-                           .replace("}", "\\}") + "}")
+                out.append("\\text{" + _escape_math_text(seg) + "}")
             else:
                 out.append(seg)
             buf = []
             in_text = False
 
     for ch in text:
-        cjk = ("\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf"
-               or ch in "（）［］｛｝，。；：：、“”‘’《》〈〉「」『』【】…—～·！？")
-        if cjk != in_text:
+        is_text = _is_math_text_char(ch)
+        if is_text != in_text:
             flush()
-            in_text = cjk
+            in_text = is_text
         buf.append(ch)
     flush()
     return "".join(out)
+
 _SYM_FONT = re.compile(r'w:font="([^"]*)"')
 _SYM_CHAR = re.compile(r'w:char="([0-9A-Fa-f]+)"')
 

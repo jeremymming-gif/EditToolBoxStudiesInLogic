@@ -302,16 +302,165 @@ def _invert_en_author(s: str) -> str:
     """英文作者一律倒装成 `姓, 名`（编辑部 2026-10-15 决定；权威实现 `slcn/bibnorm.py`）。
 
     中/日文姓名与判不准的一律原样返回（见 `bibnorm.normalize_author_field` 的注释）。
+    P1-3（2026-10-18）：先走 `footnotes.normalize_authors` 把「逗号 + and」混写、
+    `&` 分隔、中文逗号等**拆成 BibTeX `and`**，再整条倒装——否则含逗号的多作者串
+    会被倒装器当成「已经倒装」而整条跳过（Word 通道部分条目没倒装的根因之一）。
 
     ⚠️ **函数内 import**：`bibnorm.expand_note_entries()` 会反过来调本模块的
     `parse_note()`，模块级互相 import 会成环——`bibnorm` 那边也是函数内 import 的同一理由。
     """
     from .bibnorm import normalize_author_field
+    from .footnotes import normalize_authors
 
-    return normalize_author_field(s)
+    return normalize_author_field(normalize_authors(s))
 
 
-# ── 中文译著 / 整理本：`原作者（著），译者（译）` ────────────────────────────
+# ── 条目类型：按「出版信息特征」判定（P1-2，2026-10-18）────────────────────
+#
+# 旧判据以「卷期正则是否命中」为主，实测三类错（期 87 子案例 2/3/7/8/9）：
+#   · 书只有「出版地: 出版社」（`Oxford: Clarendon` / `Paramus: Prentice Hall`）
+#     → 这一格被当成 journal，条目落成 @misc，出版社整条丢失；
+#   · 期刊条目没有页码/卷号 → 落成 @misc，journal 整个丢掉；
+#   · `in … (eds.), pp. N` 的析出文献 → 落成 @book（排版样式错）。
+# 现在把「出版信息特征」收成一个**可复用**判据：`classify_entry_type(fields, raw=…)`。
+# 落点：`footref.parse_numbered_item`（编号清单/脚注体例）与
+# `footnotes.parse_entry` 的出口都调用它；下一卡 `docxsource.refs_to_bib`（人年制通道）
+# 可直接 import 本函数，签名保持 dict 字段 + 原文，不依赖本模块的 Parsed。
+_PLACE_PUB = re.compile(
+    r"^\s*([A-Z][A-Za-z.\- ]{1,28}?(?:,\s*[A-Z]{2})?)\s*:\s*"
+    r"([A-Z][A-Za-z&.'\- ]{2,60}?)\s*[.。]?\s*$")
+#: 期刊线索（英文刊名常见词 + 中文刊名后缀）；只在「没有刊名格」时才当补充证据。
+_SERIAL_CUE = re.compile(
+    r"\b(?:Journal|Review|Quarterly|Transactions|Proceedings|Bulletin|Annals|Letters|"
+    r"Magazine|Zeitschrift|Revue)\b|学报|学刊|研究|评论|论丛", re.I)
+#: 会议论文集线索 → @inproceedings（比 @incollection 更具体）
+_PROCEEDINGS_CUE = re.compile(
+    r"\b(?:Proceedings|Conference|Symposium|Workshop|Congress)\b|会议论文集|会议录|研讨会", re.I)
+#: 容器线索：`in X (eds.)` / `（编）` / `主编` / `edited by`（析出文献）
+_CONTAINER_CUE = re.compile(
+    r"(?:\(eds?\.?\)|\(Eds?\.?\)|（编）|主编|edited\s+by)", re.I)
+#: 页码线索：`pp. 1–2` / `(pp. 39–53)` —— 与容器线索同时出现才算 booktitle
+_PAGES_CUE = re.compile(r"\(pp?\.\s*\d|\bpp?\.\s*\d", re.I)
+#: 「只有出版社、没有刊名线索」的出版社词（`Springer` 被误当刊名的实测来源）
+_PUBLISHER_ONLY_CUE = re.compile(
+    r"^(?:[A-Z][A-Za-z&.'\- ]{1,40}?(?:Press|Publishing|Books?|Verlag|Publisher))$"
+    r"|^(?:Springer|Routledge|Blackwell|Wiley|Elsevier|Palgrave|Macmillan|Pearson|"
+    r"Longman|McGraw|Hackett|Rowman|Bloomsbury|SAGE|Sage|Clarendon|Erlbaum)$", re.I)
+
+
+def looks_like_place_publisher(value: str) -> tuple[str, str] | None:
+    """`Oxford: Clarendon` / `Paramus: Prentice Hall` → (出版地, 出版社)。
+
+    只认「**ASCII 首字母大写**的短地名 : 短社名」且不含年份/页码/卷期/期刊线索词；
+    不是这种形状（或像刊名）一律返回 None——宁可漏认，不瞎改字段。
+    """
+    text = (value or "").strip().strip(" .。")
+    if not text or len(text) > 70:
+        return None
+    m = _PLACE_PUB.match(text)
+    if not m:
+        return None
+    if re.search(r"(?:1[89]|20)\d{2}|pp?\.|\d+\s*\(", text):
+        return None
+    addr, pub = m.group(1).strip(), m.group(2).strip()
+    if _SERIAL_CUE.search(pub):
+        return None
+    return addr, pub
+
+
+def _publisher_only_journal(value: str) -> bool:
+    """`journal` 那一格其实写着出版社（`Springer` / `Routledge` / `… Press`）。"""
+    text = (value or "").strip()
+    if not text or _SERIAL_CUE.search(text):
+        return False
+    return bool(_PUBLISHER_ONLY_CUE.match(text))
+
+
+def _has_container(fields: dict, raw: str = "") -> bool:
+    """是不是「析出文献」（有容器书/论文集线索）。
+
+    判据：`booktitle` 非空；或文中有 `(eds.)/（编）/主编/edited by` 且同时有
+    页码线索/出版社/`in` 结构——只凭一个 `(eds.)` 不升级（可能只是注释）。
+    """
+    if str(fields.get("booktitle") or "").strip():
+        return True
+    blob = " ".join(str(fields.get(k) or "") for k in ("address", "note", "publisher", "journal"))
+    blob = f"{blob} {raw}".strip()
+    if not _CONTAINER_CUE.search(blob):
+        return False
+    return bool(_PAGES_CUE.search(blob) or str(fields.get("publisher") or "").strip()
+                or re.search(r"\bin\s+", blob, re.I))
+
+
+def classify_entry_type(fields: dict | None = None, *, raw: str = "") -> tuple[str, str]:
+    """按「出版信息特征」判定 BibTeX 类型，返回 `(etype, 依据)`。
+
+    可复用（下一卡 `docxsource.refs_to_bib` 直接调用）：只读 `fields` 字典与原文，不碰解析器。
+    优先级（前者更具体）：
+      ① 会议论文集证据 → `inproceedings`
+      ② 容器线索（`booktitle` / `in … (eds.)` + 页码）→ `incollection`
+      ③ 刊名格（含「刊名格其实是出版社」的两种情况）→ `book` / `article`
+      ④ 出版社 → `book`
+      ⑤ 只有刊名线索词 + 页码/卷 → `article`
+      ⑥ 其余 → `misc`（不猜）
+    """
+    f = fields or {}
+    journal = str(f.get("journal") or "").strip()
+    booktitle = str(f.get("booktitle") or "").strip()
+    publisher = str(f.get("publisher") or "").strip()
+    address = str(f.get("address") or "").strip()
+    pages = str(f.get("pages") or "").strip()
+    volume = str(f.get("volume") or "").strip()
+    blob = " ".join(x for x in (journal, booktitle, address, publisher,
+                                str(f.get("note") or ""), raw) if x)
+    place_pub = looks_like_place_publisher(journal) if not publisher else None
+    if place_pub:
+        return "book", "刊名格实为『出版地: 出版社』"
+    if _publisher_only_journal(journal) and not publisher:
+        return "book", "刊名格实为出版社"
+    if _PROCEEDINGS_CUE.search(blob) and (_has_container(f, raw) or publisher):
+        return "inproceedings", "会议论文集线索"
+    if booktitle or _has_container(f, raw):
+        return "incollection", "容器（析出文献）线索"
+    if journal:
+        return "article", "有刊名"
+    if publisher:
+        return "book", "有出版社/出版地"
+    if volume and pages:
+        # 旧判据 `p.pages and v`（期 87 sub2 Taroni2021 实测）：刊名含逗号时解析器
+        # 抓不到 journal，但卷号+页码齐全 → 仍是期刊文章（不能因此退化成 misc）。
+        return "article", "有卷号+页码（刊名未捕获）"
+    if _SERIAL_CUE.search(blob) and (pages or volume):
+        return "article", "刊名线索 + 页码/卷"
+    note = str(f.get("note") or "")
+    if (re.search(r"\bVol\.?\s*\d|\bNo\.?\s*\d", note)
+            and re.search(r"\bpp?\.\s*\d", note)):
+        # 期 87 sub9 实测：编号清单的卷期页落在 note 里（`Argumentation, Vol. 37,
+        # No. 3, 2003, pp. 341–376`），刊名没结构化 → 仍是期刊文章。
+        return "article", "note 里有卷/期/页（刊名未结构化）"
+    return "misc", "出版信息不足"
+
+
+def refine_entry_fields(fields: dict, *, raw: str = "") -> dict:
+    """按出版信息特征订正条目（供 `footnotes.parse_entry` 的出口调用）。
+
+    · 刊名格里写成「出版地: 出版社」/ 出版社名的 → 挪到 `address`/`publisher`，类型按书；
+    · 类型重判交给 `classify_entry_type()`；**只改 `_type`（与必要的字段挪位），其余字段不动**。
+    """
+    out = dict(fields or {})
+    journal = str(out.get("journal") or "").strip()
+    if journal and not out.get("publisher"):
+        place_pub = looks_like_place_publisher(journal)
+        if place_pub:
+            out["address"], out["publisher"] = place_pub
+            del out["journal"]
+        elif _publisher_only_journal(journal):
+            out["publisher"] = journal
+            del out["journal"]
+    etype, _reason = classify_entry_type(out, raw=raw)
+    out["_type"] = etype
+    return out
+
 #
 # 《排校手册》源码 `reference.bib` 的实例：`黑格尔（著），杨一之（译）`、
 # `焦循（著），沈文倬（点校）`。这里的**中文逗号不是**「作者 → 题名」的分界，
@@ -782,20 +931,21 @@ def parse_numbered_item(seg: str) -> Parsed:
                 p.journal = cj
                 p.number = p.number or cnum
 
-    if re.search(r"\bin\b|（ed|ed\.\)|\(ed", rest) or p.publisher and not p.pages:
-        p.etype = "incollection" if re.search(r"\bin\b", rest) else "book"
-    # 期刊判据：**有刊名 + 卷/期/页之一**即可。
-    # 旧判据要求「页码与卷号同时具备」，于是作者没写页码的期刊条目（实测
-    # 09 Jiawei_Chu 有 `Communication Monographs, 56(1).` 这种）被判成 misc，
-    # 而 misc 的字段序里没有 journal/volume/number —— 这些信息会被整个丢掉。
-    if p.journal and (p.volume or p.number or p.pages):
-        p.etype = "article"
-    elif p.pages and v:
-        p.etype = "article"
-    elif p.publisher and p.etype != "incollection":
-        # ⚠️ 不能无条件覆盖：`in … eds.` 已经判成 incollection 的条目，
-        #    常同时带 publisher，早先会被这一支改回 book（实测 09 Jiawei_Chu 第 8 条）。
-        p.etype = "book"
+    # P1-2（2026-10-18）：类型统一走「出版信息特征」判据，不再按卷期正则命中与否。
+    # 先纠正两个把出版社塞进 journal 格的老问题（`Oxford: Clarendon` / `Springer`），
+    # 再交给可复用判据（下一卡 docxsource 也用同一个函数）。
+    if p.journal and not p.publisher:
+        place_pub = looks_like_place_publisher(p.journal)
+        if place_pub:
+            p.address, p.publisher = place_pub
+            p.journal = ""
+        elif _publisher_only_journal(p.journal):
+            p.publisher, p.journal = p.journal, ""
+    p.etype, _etype_reason = classify_entry_type({
+        "journal": p.journal, "booktitle": p.booktitle, "publisher": p.publisher,
+        "address": p.address, "pages": p.pages, "volume": p.volume,
+        "number": p.number, "note": p.note,
+    }, raw=t)
     if not p.title:
         p.title = rest
 

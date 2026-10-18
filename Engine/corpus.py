@@ -67,6 +67,8 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "corpus")
 # 可由 --sty / --skeleton 覆盖；None 表示按语种取默认（中文 SLCN-MIX，英文 SLEN）
 STY: str | None = None
 SKELETON: str | None = None
+# 初排是否套用一校可自动改子集（期 87 P1-6）；`--no-proof-autofix` 置 False（消融/对照）
+PROOF_AUTOFIX = True
 
 
 @dataclass
@@ -165,6 +167,7 @@ def run_one(issue: str, slug: str, target: str) -> Row:
         res = build_docx(
             docx_path=ss.docx, out_dir=out_dir, basename=base,
             lang=lang, sty=STY, skeleton=SKELETON, verbose=False,
+            proof_autofix=PROOF_AUTOFIX,
         )
     else:
         return Row(issue, slug, "无可用源", lang, False, error="original/ 里既无模板稿也无 docx")
@@ -217,10 +220,10 @@ def run_one(issue: str, slug: str, target: str) -> Row:
     )
 
 
-def _worker_init(sty, skeleton) -> None:
-    """进程池初始化：把 main() 里解析的全局样式/骨架带进子进程。"""
-    global STY, SKELETON
-    STY, SKELETON = sty, skeleton
+def _worker_init(sty, skeleton, proof_autofix) -> None:
+    """进程池初始化：把 main() 里解析的全局样式/骨架/自动改开关带进子进程。"""
+    global STY, SKELETON, PROOF_AUTOFIX
+    STY, SKELETON, PROOF_AUTOFIX = sty, skeleton, proof_autofix
 
 
 def _worker_run(item: tuple[str, str, str]) -> Row:
@@ -243,7 +246,7 @@ def pct(xs: list[float], p: float) -> float:
 
 
 def main() -> int:
-    global STY, SKELETON
+    global STY, SKELETON, PROOF_AUTOFIX
     import argparse
 
     if not _require_manuscripts():
@@ -254,8 +257,11 @@ def main() -> int:
     ap.add_argument("--skeleton", default=None, help="覆盖骨架模板（默认按语种自动选）")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 篇（调试用）")
     ap.add_argument("--jobs", default="auto", help="进程数：auto（默认，min(8, CPU)）/ 1 / N；1 = 串行")
+    ap.add_argument("--no-proof-autofix", action="store_true",
+                    help="初排不套用一校可自动改子集（ZH-01..06；消融/对照用，默认开）")
     args = ap.parse_args()
     STY, SKELETON = args.sty, args.skeleton
+    PROOF_AUTOFIX = not args.no_proof_autofix
 
     items = collect()
     if args.limit:
@@ -293,7 +299,7 @@ def main() -> int:
         with concurrent.futures.ProcessPoolExecutor(
                 max_workers=jobs,
                 initializer=_worker_init,
-                initargs=(STY, SKELETON)) as ex:
+                initargs=(STY, SKELETON, PROOF_AUTOFIX)) as ex:
             futures = [ex.submit(_worker_run, it) for it in items]
             for fut in concurrent.futures.as_completed(futures):
                 done += 1

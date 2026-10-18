@@ -174,6 +174,46 @@ check("⑩ F072/F073 → ⟨/⟩ 并保留中间文字",
       "".join(x.text for x in _segs2 if x.kind == "text") == "⟨雪是白的⟩",
       repr([(x.kind, x.text) for x in _segs2]))
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑪ 公式内「仍会漏」的字符：全角块/〇/U+3000 → \text{}；ASCII 特殊字符 → 转义
+#    （期 90/07 Liangying_Zhao 的 `＝` U+FF1D 实测 2 处 Missing character；
+#      期 87 报告 §C 的 C-1/C-2；E2 task-13）
+# ══════════════════════════════════════════════════════════════════════════
+check("⑩ 回归锚点：原夹具输出逐字节不变（C-4 死代码清理不改变行为）",
+      _math_text_latex("（x是具有“p→p”形式的命题）")
+      == "\\text{（}x\\text{是具有“}p→p\\text{”形式的命题）}",
+      repr(_math_text_latex("（x是具有“p→p”形式的命题）")))
+
+check("⑪ 全角块 U+FF00–FFEF（＝）→ 包进 \\text{}（不再留在数学模式 → 期90/07 Missing char 归零）",
+      _math_text_latex("a＝b") == "a\\text{＝}b", repr(_math_text_latex("a＝b")))
+check("⑪ 全角数字连段（第２章）→ 整段一个 \\text{}",
+      _math_text_latex("第２章") == "\\text{第２章}", repr(_math_text_latex("第２章")))
+check("⑪ 〇(U+3007) → 包进 \\text{}（CJK 符号区不在 4E00-9FFF 里）",
+      _math_text_latex("〇是零") == "\\text{〇是零}", repr(_math_text_latex("〇是零")))
+check("⑪ U+3000 全角空格 → \\hspace{1em}（实测在 \\text{} 里会 Missing char）",
+      _math_text_latex("甲\u3000乙") == "\\text{甲\\hspace{1em}乙}",
+      repr(_math_text_latex("甲\u3000乙")))
+check("⑪ ASCII `%` 必须转义（否则整行变注释、编译坏）",
+      _math_text_latex("占100%") == "\\text{占}100\\text{\\%}",
+      repr(_math_text_latex("占100%")))
+check("⑪ ASCII `&` `#` `$` 同样转义（对齐符/宏参数/数学开关）",
+      _math_text_latex("a&b#c$d") == "a\\text{\\&}b\\text{\\#}c\\text{\\$}d",
+      repr(_math_text_latex("a&b#c$d")))
+check("⑪ 反例：`_ ^` 保持数学语义（不包 \\text{}，`$x_1$` 不是文字）",
+      _math_text_latex("变量_a") == "\\text{变量}_a",
+      repr(_math_text_latex("变量_a")))
+check("⑪ 反例：`\\` / `{` / `}` 仍走数学分支（旧实现的 textbackslash 是死代码）",
+      _math_text_latex("中文\\指令") == "\\text{中文}\\\\text{指令}"
+      and _math_text_latex("集合{x}") == "\\text{集合}{x}",
+      repr((_math_text_latex("中文\\指令"), _math_text_latex("集合{x}"))))
+check("⑪ 反例：数学符号映射不受影响（→/∈ 仍留给 _math_to_tex）",
+      _math_text_latex("p→p∈A") == "p→p∈A", repr(_math_text_latex("p→p∈A")))
+check("⑪ 确定性：同一输入重复调用输出逐字节相同（纯函数；且 `%` 只转义一次，不双转义）",
+      _math_text_latex("占100%") == _math_text_latex("占100%")
+      and _math_text_latex("占100%").count("\\%") == 1
+      and "\\\\%" not in _math_text_latex("占100%"),
+      repr(_math_text_latex("占100%")))
+
 print()
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

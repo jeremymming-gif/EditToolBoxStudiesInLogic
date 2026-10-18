@@ -62,6 +62,26 @@ check("(a) ZH-07 中文旁的半角括号 → 报（标为噪声大）",
 check("(a) ZH-08 中文旁的半角短杠 → 报（标为噪声大）",
       len(hits_of("具-体。\n", "ZH-08")) == 1
       and next(r for r in P.RULES if r.id == "ZH-08").noisy)
+
+# ZH-08 窄子集（2026-10-18 rules-docs Phase1）：只把「汉字-汉字」当可自动改。
+# 依据：期 87 人工成品 CJK-CJK 76/76 改 `\cndash `；latin/math/digit/可选参数类
+# 人工一律保留 ASCII 短杠（Phase0 报告 /tmp/audit_lead/rules-docs-phase0.md）。
+zh08_narrow = [h for h in hits_of("马丁-洛夫类型论\n", "ZH-08") if h.fixable]
+check("(a) ZH-08 窄子集：`马丁-洛夫`（CJK-CJK）→ 可自动改，替换 `丁\\cndash `",
+      len(zh08_narrow) == 1 and zh08_narrow[0].replacement == "丁\\cndash ")
+for _tex, _why in (
+        ("would-反事实条件句\n", "latin-CJK"),
+        ("$\\phi$-世界\n", "math-CJK"),
+        ("或$\\infty$-群胚\n", "math-CJK（v1.2.1 的 ∞ 形态）"),
+        ("2-群胚与2-范畴\n", "digit-CJK"),
+        ("\\item[模仿-1：]\n", "CJK-digit（enumerate 标签）")):
+    check(f"(a) ZH-08 反例：{_why} 自动改 0 处（人工成品保留 ASCII 短杠）",
+          not [h for h in hits_of(_tex, "ZH-08") if h.fixable])
+check("(a) ZH-08 反例：`第8-12页` 归 ZH-09（页码规则），ZH-08 不报",
+      not hits_of("第8-12页。\n", "ZH-08"))
+check("(a) ZH-08 窄子集只在 --fix 面；初排白名单 INITIAL_LAYOUT_FIXABLE **不含** ZH-08",
+      "ZH-08" not in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ("ZH-08",))
+
 check("(a) ZH-09 第8-12页 → 报，建议用 \\cndash",
       [h.replacement for h in hits_of("第8-12页。\n", "ZH-09")] == ["第8\\cndash 12页"])
 check("(a) ZH-09 反例：已是第8\\cndash 12页 → 不报", not hits_of("第8\\cndash 12页。\n", "ZH-09"))
@@ -94,6 +114,19 @@ check("(a) ZH-16 图表引用缺波浪号 → 报", len(hits_of("如表\\ref{tab
 check("(a) ZH-17 caption 里用 \\\\ → 报",
       len(hits_of("\\caption{第一行\\\\第二行}\n", "ZH-17")) == 1)
 check("(a) ZH-19 人名缩写 J.N. → 报", len(hits_of("J.N. Mohanty 说。\n", "ZH-19")) == 1)
+check("(a) ZH-19 人名缩写 H.T / H.P（期 87 真实样本）→ 报，且仍**只报不改**",
+      len(hits_of("（H.T.Colebrooke）\n", "ZH-19")) == 1
+      and len(hits_of("（H.P. Grice）\n", "ZH-19")) == 1
+      and not any(h.fixable for h in hits_of("（H.T.Colebrooke）\n", "ZH-19")))
+# ZH-19 降噪（2026-10-18 rules-docs Phase1）：固定缩写不报。
+# 依据：经验书「若为英文缩写如 e.g. 则忽略」＋稿件仓约稿成品层残留 U.S/M.A/Q.E 等（Phase0 报告 b2）。
+for _tex in ("（U.S. Congress）\n", "U.K. 政府\n", "（U.N. 决议）\n", "（A.D. 500）\n",
+             "（B.C. 300）\n", "M.A. thesis\n", "B.A. 学位\n", "$Q.E.D.$\n",
+             "P.S.(9)\n", "（P.R.C. 民法典）\n"):
+    check(f"(a) ZH-19 反例：固定缩写/标号 {_tex.strip()!r} → 不报",
+          not hits_of(_tex, "ZH-19"))
+check("(a) ZH-19 反例：`e.g.`（小写缩写）本来就不匹配", not hits_of("e.g. this\n", "ZH-19"))
+
 
 # 英文稿（手册 §英文文章；经验书 预校正·英文）
 # 替换只覆盖命中片段（`n(2` → `n (2`），所以断言也只看片段
@@ -168,6 +201,37 @@ check("(c) 中文行**不因英文规则被改**（语言判据拦住）",
       == "他说“甲”，这是‘乙’——对不对？\n")
 check("(c) 输入文本没有被就地改动（apply_fixes 返回新字符串）",
       tex.startswith("令 $P$ 命题变元的无穷集合, 公式集"))
+
+# ZH-08 窄子集（--fix 口径） vs 初排接线（白名单口径）——2026-10-18 rules-docs Phase1
+mix = "马丁-洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
+mix_rep = P.check(mix, lang="zh")
+mix_out, mix_applied = P.apply_fixes(mix, mix_rep)
+check("(c) ZH-08 窄子集在 --fix 里自动改：只有 CJK-CJK 那一处变成 `\\cndash `",
+      mix_out == "马丁\\cndash 洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
+      and [h.rule_id for h in mix_applied] == ["ZH-08"], mix_out.strip())
+w_out, w_applied = P.apply_fixes(mix, mix_rep, rule_ids=P.INITIAL_LAYOUT_FIXABLE)
+check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 **一处都不改**（口径未拍板，默认初排不启用）",
+      w_out == mix and not w_applied, f"applied={[h.rule_id for h in w_applied]}")
+check("(c) 初排白名单仍报其他 fixable 规则（ZH-01/06/09/14 都在名单里）",
+      set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-14"}
+      and "ZH-08" in P.OPT_IN_FIXABLE)
+
+# `apply_fixes(..., rule_ids=…)` 契约（engine-core E1 接线用）：**显式窄子集**只改这些 id。
+# E1 的首批窄白名单 = ZH-01..06（EN-03/ZH-14 留后批）；这里直接按 id 元组验，不依赖宽常量。
+e1_narrow = ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06")
+e1_tex = "甲,乙 与 丙、“丁”，以及 $\\{x|x\\}$ 和第8-12页。\n"
+e1_out, e1_applied = P.apply_fixes(e1_tex, P.check(e1_tex, lang="zh"), rule_ids=e1_narrow)
+check("(c) 显式窄子集 rule_ids：只改 ZH-01/ZH-06，ZH-09/ZH-14 **不动**（E1 契约）",
+      "甲，乙" in e1_out and "丙“丁”" in e1_out
+      and "第8-12页" in e1_out and "\\{x|x\\}" in e1_out
+      and sorted({h.rule_id for h in e1_applied}) == ["ZH-01", "ZH-06"],
+      f"applied={sorted({h.rule_id for h in e1_applied})}")
+check("(c) rule_ids 按显式子集工作：传单个 id 只改它；传空元组 = 一处不改",
+      sorted({h.rule_id for h in P.apply_fixes(e1_tex, P.check(e1_tex, lang="zh"),
+                                               rule_ids=("ZH-06",))[1]}) == ["ZH-06"]
+      and P.apply_fixes(e1_tex, P.check(e1_tex, lang="zh"), rule_ids=())[1] == [])
+
+
 
 # 位置移动：脚注/引文移到标点之前（函数手册 §常规 4.1 / 5.1）
 moved, logs = P.move_marks_before_punct("甲说，\\footnote{嵌套{花}括号}不对。见，\\parencite{a,b}那里。\n")

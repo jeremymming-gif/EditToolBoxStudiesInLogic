@@ -191,7 +191,7 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
 - **`--detect`**：只探测不合并，输出「会插哪一份编委页/封底页、扉页页数」的 JSON ——
   界面运行前的预览用它，**别在界面里自己扫文件**（否则会出现"预览说找到 A、合并时插了 B"）。
 
-## 五、入口 4–8：期目录级的动作、一校核查、检查tex信息与生成目录（第 91、92、94 条）
+## 五、入口 4–10：期目录级的动作、一校核查、检查tex信息、生成目录、本期出刊与引用库（第 91、92、94、132 条）
 
 ```bash
 python3 cleantemp.py   --folder "<期目录>" [--dry-run] [--trash]
@@ -202,6 +202,8 @@ python3 infocheck.py   --folder "<期目录>" [--out-dir <目录>]
 python3 infocheck.py   --folder "<期目录>" --preview   # 界面用：检查结果 JSON（不写任何文件）
 python3 toc.py         --report "<信息检查.txt>" [--template <期目录>] [--settings <目录设置.json>]
 python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用：篇目清单 + 模板来源（JSON）
+python3 publish.py     --folder "<期目录>" [--only N] [--from N]   # 本期出刊向导（一步跑完一期）
+python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命令见下）
 ```
 
 | 入口 | 干什么 | 退出码 | 最后一行（外壳靠它拿结果） |
@@ -212,11 +214,18 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（26 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改** | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
 | `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、或报告不可用 | `完成。生成目录 N 份（<目录>）` |
+| `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；`stats` 概况；`lint` 体检；`resolve` 记录冲突裁决（keep/defer/adopt）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup` 并校验 sha256）。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定 | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
 
 **产物**：
 - `cleantemp` / `compileall`：原地操作（前者删文件、后者生成 `.pdf` 与 `.log`）。
 - `proofcheck`：同目录写 `<stem>_一校核查.md`（报告）；
   加 `--fix` 时**另写** `<stem>_一校核查后.tex`——**输入文件一个字节都不动**。
+  `--fix` 只改 `fixable` 命中（`slcn/proofcheck.py` 的 `RULES` 里标 `fixable=True` 的那些）；
+  `slcn/proofcheck.py` 导出 `apply_fixes(tex, rep, rule_ids=…)` —— `rule_ids` 传显式 id 子集时
+  只改这些规则（E1 首批窄白名单 = `ZH-01..06`；传 `()` = 一处不改）。另导出两个常量：
+  `INITIAL_LAYOUT_FIXABLE`（初排转换接线的**完整建议集**，后批再扩；**不含 ZH-08**）
+  与 `OPT_IN_FIXABLE`（只在人工 `--fix` 时生效，目前是 `ZH-08` 的汉字-汉字窄子集，
+  2026-10-18 起；连接号口径未拍板前默认初排不改产物）。
 - `infocheck`：期目录根下写 `信息检查<时间戳>.txt`（**CRLF**，与原版/mac 版逐字节一致）
   与 `.json`（结构化，供 toc 与界面用）；可用 `--out-dir` 挪走。
 - `toc`：报告同目录写 `Chinese Content_<时间戳>.tex` 与 `contents_<时间戳>.tex`
@@ -228,9 +237,11 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
 `toc` 的篇目预览必须调 `--preview`（**别在界面里自己解析报告**），否则会出现
 「清单里勾了 3 篇、生成时只认 2 篇」这种对不上的情况。
 
-**mac 界面的切换进度（第 95 条起，按用户定的顺序，第 99 条完成）**：**九页全部改调引擎** ——
+**mac 界面的切换进度（第 95 条起，按用户定的顺序，第 99 条完成；引用库 5 页按第 132 条补）**：
+**十五页全部改调引擎** ——
 初排转换 / 文献回读校验 / 一校核查 / 生成目录（95）/ 检查tex信息（96）/
-删除临时文件 + 编译全部（98）/ **合并文件（99）**。
+删除临时文件 + 编译全部（98）/ **合并文件（99）** / **本期出刊** /
+**引用库 5 页**（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置，第 132 条）。
 `sources-mac/` 里已经**没有任何文档逻辑**：界面只做「取值 → 拼参数 → 显示日志/表格」。
 切一个删一份 Swift 逻辑（`ContentFeature.swift` + `TocTemplate.swift` 已在第 95 条删除；
 `InfoCheckFeature.swift` 在第 96 条瘦身成"只拼参数 + 解产物"）。
@@ -243,7 +254,9 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
 ## 六、开发用入口（**不随 App 分发**）
 
 `docx_audit.py`（全库体例普查，**冻结基线**：改解析器必须 `--out-dir /tmp/…` 或 `SLCN_AUDIT_OUT`）、
-`corpus.py`（全库回归，约 10 分钟）、`ablation.py` / `ablation_corpus.py`（规则消融）。
+`corpus.py`（全库回归，约 10 分钟）、`ablation.py` / `ablation_corpus.py`（规则消融：单篇版会过拟合、
+**规则取舍以 `ablation_corpus.py` 全库抽样为准**）、`eval_quotation.py`（引文环境转换专项评测：
+查全率 / 查准率）、`run_poc.py`（端到端 PoC 驱动 + 打分报告）、`refaudit.py`（全库参考文献质量普查，纯离线）。
 这些只在开发机跑，**不要**打进 Release 资产。
 
 ## 七、平台矩阵（第 86 条：引擎平台中立化的口径）
@@ -307,7 +320,7 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
 - **Release 资产命名建议**（同一 tag 下）：
   `SLCN-<版本>-macOS-arm64.dmg`、`SLCN-<版本>-Windows-x64-setup.exe`、
   `SLCN-<版本>-source.zip`、`latest.json`。
-- **升级提示**：`latest.json` 里放 `{ "version": "1.2.0", "macos": "<url>", "windows": "<url>",
+- **升级提示**：`latest.json` 里放 `{ "version": "1.2.1", "macos": "<url>", "windows": "<url>",
   "notes": "<一句话>" }`；外壳启动时比对 `__version__`，**只提示、不自动替换**
   （编辑部机器上自动替换会撞权限与杀软，得不偿失）。
 - **签名**：macOS 侧**不买开发者账号**（2026-10-15 决定）⇒ 下载的 `.app` 会被 Gatekeeper 拦，
