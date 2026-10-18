@@ -13,6 +13,14 @@ WHY：手抄的数字必然过期，而且过期了没人知道。所以这块�
     /opt/homebrew/bin/python3.14 tools/gen_docs.py --check    # 只校验，不一致 → 打印 diff 并退出 1
     /opt/homebrew/bin/python3.14 tools/gen_docs.py --check --no-test-runs
                                                               # 只校验：不跑套件（测试计数行不参与比对）
+    /opt/homebrew/bin/python3.14 tools/gen_docs.py --cmp-app   # 只比对 App 包内引擎白名单（毫秒级）
+
+**第四十四批③a（O9）：App 包内一致性已移出 AUTO 块** ——
+它依赖「本机是否刚 `./build.sh` 过」，留在 AUTO 里会让测试计数（经 `test_selfcheck` →
+`selfcheck` 的 App cmp）依赖 App 新鲜度，引擎改动批被迫「gen_docs×2 + build×2」。
+现在：AUTO 不再有这一行（历史行由 `normalize_for_check` 删除式归一化，迁移期不误红）；
+包内一致性由 **`build.sh` 末尾** `--cmp-app`（白名单 `APP_FILES` 28 个文件，毫秒级）判定并报错，
+`selfcheck` 的同类检查可用 `--skip-app` 跳过（`test_selfcheck` 用它）。
 
 **第四十一批 O1/O2（性能，语义不变）**：
 * **写模式不再重算整块**：块里的「红线只读快照」含 `git status --porcelain` 的行数，而写 README
@@ -46,6 +54,7 @@ import re
 import statistics
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -111,7 +120,10 @@ APP_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "engine_main.py",
              "bibdb.py",
              # 这两条也是「改了就必进包、否则行为不对」的模块，漏检过一次（第 66 条：
              # 解析器修好了但包内还是旧版），所以一并纳入比对。
-             "slcn/footref.py", "slcn/build.py"]
+             "slcn/footref.py", "slcn/build.py",
+             # 第四十四批③a（O9/F4）：`slcn/sources.py` 是源识别（original/ 下每个文件扮演什么
+             # 角色）的唯一出处；第四十二批 mac-shell 发现白名单漏了它 → 27→28。
+             "slcn/sources.py"]
 
 
 def sha12(p: Path) -> str:
@@ -230,32 +242,52 @@ def placeholder_block() -> list[str]:
             + ("" if CORPUS_DIR.is_dir() else "（`out/corpus/` 不存在）")]
 
 
-# ── App 包内一致性：包内 5 个**引擎代码**文件 vs 仓库同名文件 ────────────────
-# ⚠️ 这里**故意不比对 README.md**：AUTO 块就写在 README 里，把它算进比对会形成
-#    「自引用死循环」—— 一旦把 ✅ 写进块，README 立刻与包内副本不同，`--check` 永远失败
-#    （2026-10-15 实测踩到）。README 的同步交给 `./build.sh`：它是文档、不影响引擎行为，
-#    所以不参与本行的判定；引擎代码必须逐个 `cmp` 全同（「包内引擎过期」是本项目踩过的坑）。
-def app_block() -> tuple[list[str], bool]:
-    if not APP_ENGINE.is_dir():
-        return [f"**App 包内一致性**：`{APP_ENGINE.relative_to(REPO)}` 不存在"
-                "（还没 `./build.sh` 过；构建后本行会变成 `cmp` 结果）"], True
-    same, diff = [], []
+# ── App 包内一致性：**已移出 AUTO 块**（第四十四批③a / O9）────────────────
+# 从前这一行由 AUTO 块现算，而 AUTO 的测试计数会跑 `test_selfcheck` → 它又跑 `selfcheck`
+# （含 App 包内 cmp）→ 引擎改动后、App 还没重建时出现 **FAIL 瞬态**：AUTO 记下 FAIL，
+# 必须先 `./build.sh` 再重算、然后再 build 一次，形成「gen_docs×2 + build×2」的循环依赖。
+# 现在：
+#   · AUTO 块**不再有**这一行（README 里的历史行由 normalize_for_check **删除式**归一化，
+#     迁移期 `--check` 不会因此红）；
+#   · 包内一致性改由 **`build.sh` 末尾**调用 `gen_docs.py --cmp-app`（毫秒级）判定并报错；
+#   · `selfcheck.py` 的同类检查保留（`--skip-app` 可跳过，供 `test_selfcheck` 用）。
+# 单一出处仍是下面的 `APP_FILES`（build.sh / selfcheck / 本脚本共用）。
+def app_cmp(app_dir: Path | None = None) -> tuple[bool, list[str], list[str]]:
+    """比对**包内引擎**与仓库同名文件（白名单 APP_FILES）。返回 (ok, same, diff)。
+
+    `app_dir` = 包内 `…/Resources/Engine`；None 时用默认 App 布局（`APP_ENGINE`）。
+    纯读文件、毫秒级；供 `--cmp-app`（build.sh 末尾）与 selfcheck 共用。
+    """
+    target = Path(app_dir) if app_dir is not None else APP_ENGINE
+    same: list[str] = []
+    diff: list[str] = []
+    if not target.is_dir():
+        return False, same, list(APP_FILES)          # 目录都不存在 = 全部未进包
     for rel in APP_FILES:
-        a, b = APP_ENGINE / rel, ENGINE / rel
+        a, b = target / rel, ENGINE / rel
         if a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes():
             same.append(rel)
         else:
             diff.append(rel)
-    if not diff:
-        txt = (f"**App 包内一致性**（`dist/编辑部工具箱.app/Contents/Resources/Engine/` vs 仓库）："
-               f"✅ **{len(same)}/{len(APP_FILES)}** 个**引擎文件** `cmp` 全同"
-               "（`README.md` 不在比对内 —— 块就写在它里面，见 `tools/gen_docs.py` 的注释；"
-               "文档改动同样要 `./build.sh` 一次才进包）")
-        return [txt], True
-    txt = (f"**App 包内一致性**（`dist/编辑部工具箱.app/Contents/Resources/Engine/` vs 仓库）："
-           f"❌ **{len(diff)}/{len(APP_FILES)}** 个**引擎文件**不同 —— 包内已过期，"
-           f"下次 `./build.sh` 会同步：" + "、".join(f"`{d}`" for d in diff))
-    return [txt], False
+    return (not diff), same, diff
+
+
+def print_app_cmp(ok: bool, same: list[str], diff: list[str], app_dir: Path,
+                  elapsed_ms: float) -> int:
+    """打印 cmp 结论（✅/❌）并返回退出码。build.sh 末尾与 --cmp-app 共用。"""
+    if ok:
+        try:
+            shown = str(app_dir.relative_to(REPO))
+        except ValueError:
+            shown = str(app_dir)
+        print(f"✅ App 包内引擎 cmp：{len(same)}/{len(APP_FILES)} 个文件逐字节相同"
+              f"（`{shown}`；{elapsed_ms:.1f} ms）")
+        return 0
+    print(f"❌ App 包内引擎过期：{len(diff)}/{len(APP_FILES)} 个文件不同"
+          f"（{elapsed_ms:.1f} ms）——包内引擎与仓库不一致，请重新 `./build.sh`："
+          + "、".join(f"`{d}`" for d in diff[:8])
+          + (f"…（共 {len(diff)} 个）" if len(diff) > 8 else ""))
+    return 1
 
 
 # ── 红线只读快照（只读 git 命令）───────────────────────────────────────────
@@ -295,11 +327,9 @@ def build_block(run_test_suites: bool = True) -> tuple[str, bool]:
         sub, sub_ok = fn()
         lines += sub + [""]
         ok = ok and sub_ok
-    # App 包内过期只标 ❌、**不算退出码失败**：清掉它要跑 ./build.sh，而 build.sh 是共享资源，
-    # 有时会（像本轮只改文档那样）有意推迟到下一次构建。若把它算成失败，
-    # test_docs_consistency 就永远红着，反而没人看真正的失败。
-    sub, _ = app_block()
-    lines += sub + [""]
+    # App 包内一致性**不在 AUTO 块里**（第四十四批③a / O9）：它依赖「本机是否刚 build 过」，
+    # 放进 AUTO 会让 gen_docs 的测试计数（经 test_selfcheck → selfcheck）依赖 App 新鲜度，
+    # 形成「gen_docs×2 + build×2」的循环依赖。现在由 build.sh 末尾 `--cmp-app` 守卫（见 app_cmp）。
     lines += placeholder_block() + [""]
     lines += git_block()
     if bad:
@@ -307,15 +337,11 @@ def build_block(run_test_suites: bool = True) -> tuple[str, bool]:
     return "\n".join(lines).rstrip() + "\n", ok
 
 
-# ── 「App 包内一致性」那一行**不参与 --check 的比对** ─────────────────────
-# 它报告的是**本机构建状态**（`dist/` 在不在、包内引擎是否过期），不是仓库事实：
-# 同一个提交，在构建过的机器上写「28 同 / 0 异 ✅」、在刚克隆的机器上写「还没构建」。
-# 所以：
-#   · 行**留在块里**（对读者有用，`build.sh` 之后 `gen_docs` 会刷新它）；
-#   · 但 `--check` 比对前把它归一化掉 —— 否则**新克隆第一次跑看门狗必红**
-#     （2026-10-15 拆仓实测：公开仓克隆下来就报 (a) 失败）。
-APP_LINE = re.compile(r"^\*\*App 包内一致性\*\*.*$", re.M)
-_APP_PLACEHOLDER = "**App 包内一致性**：（本机构建状态，不参与校验）"
+# ── 「App 包内一致性」那一行**已移出 AUTO**（第四十四批③a / O9）──────────────
+# 历史 README 块里可能还有这一行；这里保留**删除式**归一化只为迁移兼容 ——
+# 比对前把该行连同其后的空行一起删掉，于是「代码已移除该行、README 尚未用新 gen_docs
+# 重生成」的窗口里 `--check` 也不会误红。重生成之后块里不再有这行，正则自然匹配不到。
+APP_LINE = re.compile(r"^\*\*App 包内一致性\*\*.*(?:\n\n)?", re.M)
 # 「红线只读快照」整行同理：`.git/index` 的 mtime 与 `git status` 的行数都是**本机工作区**
 # 状态，同一个提交在干净克隆里与在开发机上写得不一样 → 不参与 --check。
 GIT_LINE = re.compile(r"^\*\*红线只读快照\*\*.*$", re.M)
@@ -369,7 +395,8 @@ def environment_complete() -> tuple[bool, list[str]]:
 
 
 def normalize_for_check(body: str, lenient: bool = False) -> str:
-    out = GIT_LINE.sub(_GIT_PLACEHOLDER, APP_LINE.sub(_APP_PLACEHOLDER, body))
+    # APP_LINE 用**删除**（迁移兼容，见上面的注释）；GIT_LINE 仍是占位符替换。
+    out = GIT_LINE.sub(_GIT_PLACEHOLDER, APP_LINE.sub("", body))
     if lenient:
         out = TEST_SUMMARY_LINE.sub(_TEST_PLACEHOLDER, out)
         out = TEST_BREAKDOWN_LINE.sub(_TEST_PLACEHOLDER, out)
@@ -408,9 +435,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="（只能配 --check）不跑套件：AUTO 的「测试」计数行不参与比对。"
                          "供 full 套件 / selfcheck quick 去掉重复的一遍套件；"
                          "测试计数守卫由独立的 `gen_docs.py --check` 负责")
+    ap.add_argument("--cmp-app", action="store_true",
+                    help="只比对 App 包内引擎白名单（APP_FILES，28 个）与仓库；毫秒级。"
+                         "build.sh 末尾用；不读写 README")
+    ap.add_argument("--app-dir", default=None,
+                    help="（配 --cmp-app）覆盖包内 Engine 目录，供反例测试模拟「包内过期」")
     a = ap.parse_args(argv)
     if a.no_test_runs and not a.check:
         ap.error("--no-test-runs 只能与 --check 一起用：写模式必须现算测试计数")
+
+    if a.cmp_app:
+        # O9（第四十四批③a）：包内一致性的**唯一守卫**。build.sh 末尾调用；
+        # 不依赖 README/AUTO，也不跑套件 → 毫秒级，不会再把 gen_docs 拖进 build 循环。
+        _app_dir = Path(a.app_dir) if a.app_dir else APP_ENGINE
+        _t0 = time.perf_counter()
+        _ok, _same, _diff = app_cmp(_app_dir)
+        return print_app_cmp(_ok, _same, _diff, _app_dir, (time.perf_counter() - _t0) * 1000)
 
     text = read_readme()
     if BEGIN not in text or END not in text:
@@ -458,14 +498,11 @@ def main(argv: list[str] | None = None) -> int:
                       "按设计不参与校验）")
             else:
                 print("PASS  AUTO 块与现算结果逐字一致")
-            # ⚠️ `--check` 只回答"块过期了吗"。`all_ok` 里还混着一条**本机状态**：
-            #    「App 包内一致性」（`app_block()`）—— 它自己写着"不参与校验"，
-            #    却曾经让 --check 退出 1：于是同一屏里既 `PASS 块一致` 又 `exit=1`，
-            #    读的人（和另一个 AI 会话）会当成"文档数字过期"去查错方向。
-            #    现在它只作为**提示**出现，退出码只看块是否过期（2026-10-17）。
+            # ⚠️ `--check` 只回答"块过期了吗"。`all_ok` 里还混着块内其它 ❌（普查三态交叉核对）；
+            #    App 包内一致性已从 AUTO 移出（build.sh 末尾 cmp 守卫），不再影响本退出码。
             if not all_ok:
-                print("提示  块本身一致；另有 ❌ 项只与**本机构建状态**有关"
-                      "（多半是包内引擎过期）—— 跑一次 `./build.sh` 即可，不影响 --check 的结论")
+                print("提示  块文本本身一致；块内另有 ❌ 项（多为普查三态交叉核对）—— "
+                      "见块内标记，不影响 --check 的结论")
             return 0
         print("FAIL  AUTO 块已过期（README 里的是旧数字）—— 跑 `tools/gen_docs.py` 更新")
         # ⚠️ diff 要打**归一化后**的文本：否则会把"按设计不参与校验"的行也列出来，
@@ -483,8 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         after_head, after, after_tail = split_block(read_readme())
         assert (head, tail) == (after_head, after_tail), "块外内容被改动了 —— 这是 bug"
         print("PASS  已就地更新 AUTO 块（块外内容逐字节未动）")
-    print(f"      退出码提示：{'各项检查通过' if all_ok else '有 ❌ 项，见块内'}"
-          f"{'' if all_ok else '（若只有「App 包内一致性」是 ❌，跑 ./build.sh 即可）'}")
+    print(f"      退出码提示：{'各项检查通过' if all_ok else '有 ❌ 项，见块内'}")
     return 0 if all_ok else 1
 
 

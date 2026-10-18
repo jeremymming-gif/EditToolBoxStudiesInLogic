@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 import zipfile
 from dataclasses import dataclass, field
 
@@ -51,18 +52,164 @@ W_T = f"{{{W_NS}}}t"
 W_P = f"{{{W_NS}}}p"
 M_OMATH = f"{{{M_NS}}}oMath"
 
+# ── 第四十四批①：OMML 复杂结构（nary 求和体 / m:d 定界符）──
+# nary 的算子字符 → LaTeX（OMML 用 Unicode 字符；缺省 ∑）
+NARY_OP = {
+    "∑": r"\sum", "∏": r"\prod", "∐": r"\coprod",
+    "∫": r"\int", "∬": r"\iint", "∭": r"\iiint", "∮": r"\oint",
+    "⋃": r"\bigcup", "⋂": r"\bigcap", "⋁": r"\bigvee", "⋀": r"\bigwedge",
+    "⨁": r"\bigoplus", "⨂": r"\bigotimes", "⨀": r"\bigodot",
+    "⨄": r"\biguplus", "⨆": r"\bigsqcup",
+}
+
+def _delim_tex(name: str, default: str) -> str:
+    r"""定界符 → LaTeX，并在**控制词定界符后补分隔**。
+
+    `\left\langle`/`\right\rangle` 等以字母结尾：后接字母内容（`\left\langlec`）会被
+    TeX 并成未定义控制词 `\langlec` → `Undefined control sequence` + `Missing delimiter`
+    （第四十四批回归：87-5 Ruixue_Tang l.387）。补一个数学模式空格即解决（空格不进版面）。
+    """
+    tex = DELIM_LATEX.get(name, default)
+    return tex + " " if tex and tex[-1].isascii() and tex[-1].isalpha() else tex
+
+
+def _script_base(b: str) -> str:
+    """给 sSub/sSup 的**基**加分组，避免双重上下标。
+
+    基已带上下标（以 `}` 结尾，如 `P_{r}`）时再挂 `_`/`^` 会 `! Double subscript.`
+    （第四十四批回归：repo-69-01 CiHua_Xu 的 `{∑}_{t'∈T} P_{r}_{(t')}`）。
+    人工/作者 LaTeX（`copy_fom_word.tex`）同款写法是 `{P_r}_{(t')}` → 这里输出 `{P_{r}}_{(t')}`。
+    """
+    return "{" + b + "}" if b and b.endswith("}") else b
+
+
+# m:d 的 begChr/endChr → LaTeX 定界符（Word 两种尖括号码位都收）
+DELIM_LATEX = {
+    "(": "(", ")": ")", "[": "[", "]": "]",
+    "{": r"\{", "}": r"\}", "": ".",
+    "⟨": r"\langle", "⟩": r"\rangle",
+    "〈": r"\langle", "〉": r"\rangle",
+    "〈": r"\langle", "〉": r"\rangle",
+    "|": "|", "‖": r"\|", "∥": r"\|",
+    "⌊": r"\lfloor", "⌋": r"\rfloor", "⌈": r"\lceil", "⌉": r"\rceil",
+}
+
 # ⚠️ 必须按**带命名空间的完整标签**判断，不能用本地名：
 #    Word 的文字 run 是 <w:r>，OMML 的公式 run 是 <m:r>，去掉命名空间后都叫 "r"，
 #    只比本地名会把公式里的 <m:t>¬</m:t> 又当成普通文字读一遍，
 #    结果输出成 `否定$\lnot$¬`（符号重复）。这是实测踩到的坑。
 
 
-def omml_to_latex(el) -> str:
+# ── 第四十四批②：纯 Python OMML→MathML→LaTeX 栈（task-50，**默认关闭**）────
+#
+# 为什么存在：现有 `_conv()` 是自研启发式，结构覆盖有限（组件评估实测缺 nary 体/
+# m:d 定界符/oMathPara display 等）。`vendor_omml/` 里 vendored 了
+#   omml2mml.xsl（Apache-2.0，Microsoft Office Beta 070708 派生）
+#   + mathml_to_latex（MIT，纯标准库）→ 149/149 真实公式可转、结构覆盖更强。
+#
+# ⚠️ 切换纪律（Lead 2026-10-19 拍板）：**第一批默认关**（`USE_OMML_STACK = False`），
+#    只落代码/测试/fixture，产物逐字节不变；是否默认切换由后续回归+五期对照决定。
+#    开关打开后仍保留旧 `_conv()` 作 fallback：新栈异常/空串 → 回退旧实现并 warning。
+USE_OMML_STACK = False
+
+#: None = 未加载；False = 加载失败（不再重试）；tuple = (XSLT, MathMLToLaTeX 类)
+_OMML_STACK: object = None
+_MATHML_WRAP = '<math xmlns="http://www.w3.org/1998/Math/MathML">%s</math>'
+_OMML_CJK_RUN = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+"
+    r"(?:[ \t]*[\u3400-\u4dbf\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+)*")
+
+
+def _omml_stack_mathit_cjk(tex: str) -> str:
+    r"""`\mathit{会 碎}` → `\text{会碎}`（mathml-to-latex 会把 CJK 塞进 \mathit）。"""
+    def repl(m: re.Match) -> str:
+        inner = m.group(1)
+        if not _OMML_CJK_RUN.match(inner.replace(" ", "")):
+            return m.group(0)
+        return "\\text{" + inner.replace(" ", "") + "}"
+    return re.sub(r"\\mathit\{([^{}]*)\}", repl, tex)
+
+
+def _postprocess_omml_stack(tex: str) -> str:
+    r"""OMML 栈输出的最小后处理（组件评估 §2.6 清单，~50 行）。
+
+    CJK 两形态 → `\text{}`（去空格）；花括号定界符补转义；mfenced 空定界符清理；
+    `\underset{…}{lim}` → `\lim_{…}`；去掉 U+2061；全角 ＝ → =；空白归一。
+    """
+    t = tex
+    t = t.replace("\u2061", "")
+    t = t.replace("\u2329", "\\langle ").replace("\u232a", "\\rangle ")
+    t = t.replace("\u27e8", "\\langle ").replace("\u27e9", "\\rangle ")
+    t = t.replace("\uff1d", "=")
+    t = _omml_stack_mathit_cjk(t)
+    t = _OMML_CJK_RUN.sub(lambda m: "\\text{" + re.sub(r"\s+", "", m.group(0)) + "}", t)
+    t = t.replace("\\left{", "\\left\\{").replace("\\right}", "\\right\\}")
+    t = re.sub(r"\\left\((?:\s*)\\right\.", r"\\left(", t)
+    t = re.sub(r"\\left\.(?:\s*)\\right\)", r"\\right)", t)
+    t = re.sub(r"\\underset\{([^{}]*)\}\{\\lim\}", r"\\lim_{\1}", t)
+    t = re.sub(r"\\underset\{([^{}]*)\}\{lim\}", r"\\lim_{\1}", t)
+    t = re.sub(r"\\left\s*\.\s*\\right\s*\.", "", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _load_omml_stack():
+    """惰性加载 vendored 栈；失败返回 False（只尝试一次，不拖慢 Word 通道）。"""
+    global _OMML_STACK
+    if _OMML_STACK is not None:
+        return _OMML_STACK
+    try:
+        import sys as _sys
+
+        from lxml import etree as _etree
+
+        vendor = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "vendor_omml")
+        if vendor not in _sys.path:
+            _sys.path.insert(0, vendor)
+        from mathml_to_latex.converter import MathMLToLaTeX  # noqa: PLC0415
+
+        xsl = _etree.XSLT(_etree.parse(os.path.join(vendor, "omml2mml.xsl")))
+        _OMML_STACK = (xsl, MathMLToLaTeX)
+    except Exception:  # noqa: BLE001 —— vendored 栈缺失/损坏时静默降级为旧实现
+        _OMML_STACK = False
+    return _OMML_STACK
+
+
+def _omml_stack_to_latex(el) -> str | None:
+    """用 vendored 栈转换一个公式元素；失败/空串返回 None（调用方回退旧实现）。"""
+    loaded = _load_omml_stack()
+    if not loaded:
+        return None
+    xsl, conv = loaded  # type: ignore[misc]
+    try:
+        from lxml import etree as _etree  # noqa: PLC0415
+
+        frag = str(xsl(_etree.fromstring(_etree.tostring(el))))
+    except Exception:  # noqa: BLE001
+        return None
+    frag = re.sub(r"^<\?xml[^>]*\?>", "", frag).strip()
+    if not frag:
+        return None
+    try:
+        tex = conv.convert(_MATHML_WRAP % frag)
+    except Exception:  # noqa: BLE001
+        return None
+    tex = _postprocess_omml_stack(tex or "")
+    return tex or None
+
+
+def omml_to_latex(el, *, use_omml_stack: bool = False) -> str:
     """把一段 `<m:oMath>` 转成 LaTeX 片段（不含外层 $）。
 
-    覆盖 Word 公式编辑器最常见的结构。遇到不认识的结构就退化取其中的文字，
-    宁可少几个排版细节，也绝不丢内容。
+    默认走自研启发式 `_conv()`（产物与从前逐字节相同）。`use_omml_stack=True`
+    （或全局 `USE_OMML_STACK`）时先试 vendored 的 OMML→MathML→LaTeX 栈（task-50，
+    **Lead 未批准前不得改默认**）；新栈失败/空串 → 回退旧实现并 warning。
     """
+    if use_omml_stack or USE_OMML_STACK:
+        tex = _omml_stack_to_latex(el)
+        if tex:
+            return tex
+        warnings.warn("OMML 栈转换失败，已回退旧实现", RuntimeWarning, stacklevel=2)
     return _conv(el).strip()
 
 
@@ -95,7 +242,7 @@ def _conv(el) -> str:
                 b = _conv(k)
             elif _tag(k) == "sub":
                 s = _conv(k)
-        return f"{b}_{{{s}}}"
+        return f"{_script_base(b)}_{{{s}}}"
 
     if name == "sSup":
         b = s = ""
@@ -104,7 +251,7 @@ def _conv(el) -> str:
                 b = _conv(k)
             elif _tag(k) == "sup":
                 s = _conv(k)
-        return f"{b}^{{{s}}}"
+        return f"{_script_base(b)}^{{{s}}}"
 
     if name == "sSubSup":
         b = sb = sp = ""
@@ -116,7 +263,7 @@ def _conv(el) -> str:
                 sb = _conv(k)
             elif t == "sup":
                 sp = _conv(k)
-        return f"{b}_{{{sb}}}^{{{sp}}}"
+        return f"{_script_base(b)}_{{{sb}}}^{{{sp}}}"
 
     if name == "rad":  # 根号
         deg = e = ""
@@ -127,12 +274,25 @@ def _conv(el) -> str:
                 e = _conv(k)
         return f"\\sqrt[{deg}]{{{e}}}" if deg else f"\\sqrt{{{e}}}"
 
-    if name == "d":  # 括号
+    if name == "d":  # 定界符：读 m:begChr / m:endChr（缺省圆括号）
+        # 第四十四批①（87/06 实测）：旧实现硬编码 `\left(...\right)`，把
+        # 6 个花括号 / 2 个方括号 / 1 个尖括号**全变成圆括号**（定界符与内容一起丢）。
         inner = ""
+        beg, end = "(", ")"
         for k in kids:
-            if _tag(k) == "e":
+            t = _tag(k)
+            if t == "dPr":
+                for c in k:
+                    ct = _tag(c)
+                    if ct == "begChr":
+                        beg = str(c.get(f"{{{M_NS}}}val") or "")
+                    elif ct == "endChr":
+                        end = str(c.get(f"{{{M_NS}}}val") or "")
+            elif t == "e":
                 inner = _conv(k)
-        return f"\\left({inner}\\right)"
+        lb = _delim_tex(beg, "(")   # 未知定界符回落圆括号（与旧行为一致）
+        rb = _delim_tex(end, ")")
+        return f"\\left{lb}{inner}\\right{rb}"
 
     if name in ("acc", "bar"):  # 重音
         base = ""
@@ -141,14 +301,32 @@ def _conv(el) -> str:
                 base = _conv(k)
         return f"\\overline{{{base}}}"
 
-    if name == "nary":  # 求和/积分等
-        op = "\\sum"
+    if name == "nary":  # 求和/积分等：算子 + 上下限 + **求和体**
+        # 第四十四批①（90/07 实测）：旧实现只输出算子，`m:sub`/`m:sup`/`m:e`
+        # 全丢 → 生成 `{∑ }`，公式内容整段消失。
+        op = r"\sum"
+        sub = sup = body = ""
         for k in kids:
-            if _tag(k) == "naryPr":
+            t = _tag(k)
+            if t == "naryPr":
                 for c in k:
                     if _tag(c) == "chr":
-                        op = str(c.get(f"{{{M_NS}}}val") or "∑")
-        return op
+                        val = str(c.get(f"{{{M_NS}}}val") or "")
+                        op = NARY_OP.get(val, r"\sum" if not val else op)
+            elif t == "sub":
+                sub = _conv(k)
+            elif t == "sup":
+                sup = _conv(k)
+            elif t == "e":
+                body = _conv(k)
+        out = op
+        if sub:
+            out += f"_{{{sub}}}"
+        if sup:
+            out += f"^{{{sup}}}"
+        if body:
+            out = out + " " + body
+        return out
 
     if name in ("func", "limLow", "limUpp", "groupChr", "box", "borderBox", "phant"):
         return "".join(_conv(k) for k in kids)
@@ -304,7 +482,11 @@ def _math_text_latex(text: str) -> str:
             if in_text:
                 out.append("\\text{" + _escape_math_text(seg) + "}")
             else:
-                out.append(seg)
+                # 第四十四批①补：`<m:t>` 里的字面花括号必须转义——OMML 的分组/上下标
+                # 都是 XML 元素，文本里的 `{`/`}` 是作者手打的字面字符；原样输出会在
+                # 数学模式里提前闭合分组 → `! Extra }, or forgotten $` / `Missing $`
+                # （repo-73-05 Yang_Hu：`\{$f(α)$,$f(β₃)}\subset P$` 型）。
+                out.append(seg.replace("{", "\\{").replace("}", "\\}"))
             buf = []
             in_text = False
 
@@ -371,6 +553,9 @@ class Seg:
     bold: bool = False
     fid: int | None = None  # kind == 'footnote' 时的脚注 id
     rid: str = ""  # kind == 'image' 时的关系 id（rIdN）
+    # 第四十四批①：行间公式（`m:oMathPara` 里的 `m:oMath`）→ 渲染成 `\[...\]`
+    # （旧实现整篇都按行内 `$...$`；90/07 的 display 公式因此丢失）。
+    display: bool = False
 
 
 @dataclass
@@ -497,7 +682,10 @@ def _para_segments(p) -> list[Seg]:
             # <m:oMath> 也可能不在 run 的直接子级（独立公式行 / 文本框里的公式）
             tex = _math_to_tex(omml_to_latex(el))
             if tex:
-                segs.append(Seg("math", tex))
+                # 父节点是 <m:oMathPara> = 行间公式（display），渲染成 \[...\]
+                parent = el.getparent()
+                display = parent is not None and _tag(parent) == "oMathPara"
+                segs.append(Seg("math", tex, display=display))
     return segs
 
 
@@ -725,7 +913,8 @@ def merge_segs(segs: list[Seg]) -> list[Seg]:
                 and out[-1].italic == s.italic and out[-1].bold == s.bold):
             out[-1].text += s.text
         else:
-            out.append(Seg(s.kind, s.text, s.italic, s.bold, s.fid, s.rid))
+            out.append(Seg(s.kind, s.text, s.italic, s.bold, s.fid, s.rid,
+                           getattr(s, "display", False)))
     return out
 
 

@@ -93,6 +93,23 @@ def escape_latex(s: str) -> str:
     return s.replace("\x00", r"\textbackslash{}")
 
 
+def _footnote_latex(segs) -> str:
+    r"""脚注片段 → LaTeX（**含公式的脚注**专用）：文字转义、公式原样 `$…$`。
+
+    第四十四批①（83/05、87/06 实测）：旧路径先把脚注片段 `segs_to_text()` 成
+    `$…$` 文本，再在渲染时 `escape_latex(fn.text)` → `$` 变 `\$`、`\phi` 变
+    `\textbackslash{}phi`，编译报 `Missing $ inserted`（83/05 rc=2 的真因）。
+    这里按片段原样渲染；**只有含公式的脚注**走这条路径（其余脚注逐字节不变）。
+    """
+    parts: list[str] = []
+    for sg in segs:
+        if sg.kind == "text":
+            parts.append(escape_latex(sg.text))
+        elif sg.kind == "math":
+            parts.append(f"${sg.text}$")
+    return "".join(parts)
+
+
 def escape_bib_value(s: str) -> str:
     """转义 bib 字段值里的 LaTeX 特殊字符（保留已有的 \\& 等）。"""
     out = []
@@ -2360,7 +2377,11 @@ def render_para(
             else:
                 out.append(t)
         elif seg.kind == "math":
-            out.append(f"${seg.text}$")
+            # 第四十四批①：行间公式（m:oMathPara）→ `\[...\]`，行内仍 `$...$`
+            if getattr(seg, "display", False):
+                out.append(f"\\[{seg.text}\\]")
+            else:
+                out.append(f"${seg.text}$")
         elif seg.kind == "shape":
             shape_buf.append(1)
         elif seg.kind == "image":
@@ -2672,6 +2693,11 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     fn_objs = {fid: classify(segs_to_text(segs)) for fid, segs in fn_segs.items()}
     for fid, f in fn_objs.items():
         f.fid = fid  # classify() 不知道 id，这里回填，否则 keymap 查不到
+    # 第四十四批①：含公式的脚注按 segs 渲染 LaTeX（渲染分支优先用 note_latex），
+    # 避免 `$…$` 被后面的 escape_latex(fn.text) 二次转义（83/05、87/06 编译失败真因）。
+    for _fid, _segs in fn_segs.items():
+        if any(sg.kind == "math" for sg in _segs):
+            fn_objs[_fid].note_latex = _footnote_latex(_segs)
     used_keys: set[str] = set()
     keymap: dict[int, str] = {}
     seq = 0

@@ -202,9 +202,10 @@ check("⑪ ASCII `&` `#` `$` 同样转义（对齐符/宏参数/数学开关）"
 check("⑪ 反例：`_ ^` 保持数学语义（不包 \\text{}，`$x_1$` 不是文字）",
       _math_text_latex("变量_a") == "\\text{变量}_a",
       repr(_math_text_latex("变量_a")))
-check("⑪ 反例：`\\` / `{` / `}` 仍走数学分支（旧实现的 textbackslash 是死代码）",
+check("⑪ 反例：`\\` 仍走数学分支；`{`/`}` 改为转义（第四十四批①补：OMML 文本里的"
+      "花括号是字面字符，原样输出会 `Extra }`/`Missing $`，repo-73-05 实测）",
       _math_text_latex("中文\\指令") == "\\text{中文}\\\\text{指令}"
-      and _math_text_latex("集合{x}") == "\\text{集合}{x}",
+      and _math_text_latex("集合{x}") == "\\text{集合}\\{x\\}",
       repr((_math_text_latex("中文\\指令"), _math_text_latex("集合{x}"))))
 check("⑪ 反例：数学符号映射不受影响（→/∈ 仍留给 _math_to_tex）",
       _math_text_latex("p→p∈A") == "p→p∈A", repr(_math_text_latex("p→p∈A")))

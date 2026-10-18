@@ -575,6 +575,7 @@ def build_latex(
     overrides: dict | None = None,
     verbose: bool = True,
     dash_hints: bool = True,
+    bib_zero_cites_hints: bool = True,
 ) -> BuildResult:
     """LaTeX 通道：多源合并成初排稿。
 
@@ -592,6 +593,10 @@ def build_latex(
     dash_hints     **ZH-08 连接号待人工判断**的日志提示（第四十三批，默认开）：
                    True = 命中数 + 前 20 条上下文 + 判断指引写进初排日志；
                    False = 不打印。**纯日志，产物逐字节不变**（引擎不做语义自动分类）。
+    bib_zero_cites_hints  **B 类可发现性提示**（第四十四批④，默认开）：
+                   bib 条数>0 而正文 `\\parencite/\\cite` 数=0 时（biblatex 只打印被引
+                   条目 → PDF 参考文献区会是空的），在初排日志**置顶**提示 + 计数，
+                   供编辑人工补引用/核对体例。**纯日志，产物逐字节不变**；False=不打印。
     """
     log: list[str] = []
     warnings: list[str] = []
@@ -871,6 +876,22 @@ def build_latex(
         except Exception as e:  # noqa: BLE001
             warnings.append(f"ZH-08 连接号提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 
+    # 第四十四批④：B 类可发现性提示（初排阶段可见；纯日志、产物逐字节不变）
+    if bib_zero_cites_hints:
+        _n_bib_tex = 0
+        if bib_path:
+            try:
+                _n_bib_tex = len(re.findall(
+                    r"@\w+\{",
+                    open(bib_path, encoding="utf-8", errors="replace").read(),
+                ))
+            except OSError:
+                _n_bib_tex = 0
+        try:
+            _report_bib_zero_cites(tpl, _n_bib_tex, say, warnings, log)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"B 类提示未执行（不影响出稿）：{type(e).__name__}: {e}")
+
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
     # 第 121 条：正文 `\includegraphics` 引用的图片从源目录复制进产物目录，
@@ -1111,6 +1132,78 @@ def _report_dash_hints(tex: str, lang: str, say, limit: int = 20) -> int:
     return len(hints)
 
 
+
+# ── 第四十四批④：B 类可发现性提示（初排阶段：bib>0 且正文 0 引用）─────────
+# 用户 2026-10-18 已同意；**纯日志，产物逐字节不变**（同 ZH-08 提示的纪律）。
+# 判据刻意**不猜**「正文编号 ↔ 文献条目」映射（那需要语义/知识库，必错），只报事实：
+# biblatex 只打印**被引用**的条目 → bib 再全、正文 0 引用时 PDF 参考文献区必空。
+# 触发样例（O10）：90-04/90-08/87-5/87-7（源稿正文编号引用 ↔ 无编号清单体例）；
+# 反例：90-06（脚注体例，正文有 30 处引用 → 不提示）、空 bib、数学区间内的反斜杠。
+_BIB_ZERO_CITES_GUIDE = (
+    "不自动猜「正文编号 ↔ 文献条目」映射；请人工补 \\parencite{键}，"
+    "或核对源稿体例（编号引用 / 人年制）"
+)
+
+_COMMENT_RE = re.compile(r"(?<!\\)%[^\n]*")
+_VERBATIM_RE = re.compile(
+    r"\\begin\{((?:verbatim|lstlisting|minted|Verbatim)\*?)\}.*?\\end\{\1\}", re.S)
+_MATH_ENV_RE = re.compile(
+    r"\\begin\{((?:equation|align|gather|multline|eqnarray|displaymath|math)\*?)\}"
+    r".*?\\end\{\1\}", re.S)
+_MATH_DELIM_RE = re.compile(r"\$[^$\n]*\$|\\\[.*?\\\]|\\\(.*?\\\)", re.S)
+_CITE_CMD_RE = re.compile(
+    r"\\(?:parencite|Parencite|textcite|Textcite|footcite|footfullcite|Footcite|"
+    r"autocite|Autocite|smartcite|supercite|cite|citep|citet|Cite|Citep|Citet|nocite)"
+    r"\*?\s*(?:\[[^\]]*\]\s*)*\{"
+)
+
+
+def _count_cite_commands(tex: str) -> int:
+    r"""数**正文**里的引用命令（`\parencite/\cite/\footcite/\nocite` 等）。
+
+    注释 / verbatim / 数学区间先掩码：判据只认正文里真正的引用命令，
+    不把「注释掉的样例」「数学区间里的反斜杠」「preamble 定义」当成引用。
+    （`\nocite{*}` 也算「有引用」——它让 biblatex 打印全部条目，参考文献区不空。）
+    """
+    body = tex.split("\\begin{document}", 1)[-1]
+    s = _COMMENT_RE.sub("", body)
+    for pat in (_VERBATIM_RE, _MATH_ENV_RE, _MATH_DELIM_RE):
+        s = pat.sub("", s)
+    return len(_CITE_CMD_RE.findall(s))
+
+
+def _bib_zero_cites_hint(tex: str, n_bib: int) -> list[str] | None:
+    """B 类判据：生成稿 bib 条数>0 且正文引用命令数=0 → 醒目提示行；否则 None。"""
+    if n_bib <= 0:
+        return None
+    if _count_cite_commands(tex) > 0:
+        return None
+    return [
+        f"⚠️ [B 类提示] 生成稿 bib 有 {n_bib} 条，但正文 0 处 \\parencite/\\cite"
+        " → PDF 参考文献区会是空的",
+        f"   处理建议：{_BIB_ZERO_CITES_GUIDE}（提示可用 bib_zero_cites_hints=False 关闭）",
+    ]
+
+
+def _report_bib_zero_cites(tex: str, n_bib: int, say, warnings: list[str],
+                           log: list[str]) -> bool:
+    """把 B 类提示写进初排日志**顶部**与 warnings 首位；只读 tex，不改产物。"""
+    lines = _bib_zero_cites_hint(tex, n_bib)
+    if not lines:
+        return False
+    for ln in lines:
+        say(ln)
+    # 置顶：编辑器先看到的应该是这条（同 ZH-08 提示只写日志的纪律）
+    for ln in reversed(lines):
+        try:
+            log.remove(ln)
+        except ValueError:
+            pass
+        log.insert(0, ln)
+    warnings.insert(0, lines[0])
+    return True
+
+
 def _autofix_proof(tex: str, lang: str) -> tuple[str, dict[str, int]]:
     """把一校 fixable 窄集套到初排稿上，返回 (新文本, {规则 id: 改动数})。
 
@@ -1202,6 +1295,7 @@ def build_docx(
     verbose: bool = True,
     proof_autofix: bool = True,
     dash_hints: bool = True,
+    bib_zero_cites_hints: bool = True,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1225,6 +1319,10 @@ def build_docx(
                     True = 命中数 + 前 20 条上下文（前后各 10 字）+ 判断指引；
                     False = 不打印。**纯日志，产物逐字节不变**——引擎不做语义自动分类
                     （人名短横 \\edash vs 地名/路线一字线，正则/词表都不可靠）。
+    bib_zero_cites_hints  **B 类可发现性提示**（第四十四批④，默认开）：
+                   bib 条数>0 而正文 `\\parencite/\\cite` 数=0 时（biblatex 只打印被引
+                   条目 → PDF 参考文献区会是空的），在初排日志**置顶**提示 + 计数，
+                   供编辑人工补引用/核对体例。**纯日志，产物逐字节不变**；False=不打印。
     """
     from .docxsource import (
         link_citations,
@@ -1302,6 +1400,14 @@ def build_docx(
         unmatched_points = _citation_points(doc.body, unmatched)
         if unmatched:
             warnings.append(f"{len(unmatched)} 处引用未能匹配到参考文献：" + "、".join(unmatched[:6]))
+
+    # 第四十四批④：B 类可发现性提示（初排阶段可见；纯日志、产物逐字节不变）
+    if bib_zero_cites_hints:
+        try:
+            _report_bib_zero_cites(body, len(doc.refs) + len(doc.bib_entries),
+                                   say, warnings, log)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"B 类提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 
     say("③ 载入模板并填入元数据（模板用户可选）")
     tpl, tpl_sel = _prepare_template(lang, sty, skeleton, say)

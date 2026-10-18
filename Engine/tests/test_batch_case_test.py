@@ -12,7 +12,8 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
 ⑦ 报告渲染 smoke（总表/明细/附录都出现该案例）；
 ⑧ manifest 附加源 `metadata`（--metadata 拼装 / 文件不存在安全回退 / `--no-metadata` A2-only 口径 /
    JSON manifest 字段解析 / report 附录显示）；
-⑨ 全量基准（repo 扫描 / 失败聚类 dashboard / dashboard.csv / cases.csv / 预计耗时 / 88+89 manifest）。
+⑨ 全量基准（repo 扫描 / 失败聚类 dashboard / dashboard.csv / cases.csv / 预计耗时 / 88+89 manifest）；
+⑩ O10 相似度性能（auto/fast/full/none 口径、阈值降级、86 期 manifest、CLI 开关）。
 
 只写临时目录；不读真实语料、不跑 xelatex、不联网、不读稿件库 —— `cd Engine` 下秒级可跑。
 
@@ -59,12 +60,27 @@ print(f"已加载 {_TOOL}")
 # 1) 内置 manifest
 # ─────────────────────────────────────────────────────────────────────────────
 cases = batch.default_cases()
-check("默认清单 31 个案例（90:10 + 87:9 + 88:7 + 89:5）", len(cases) == 31)
-check("清单顺序：90(10)→87(9)→88(7)→89(5)",
+check("默认清单 41 个案例（90:10 + 87:9 + 88:7 + 89:5 + 86:10）", len(cases) == 41)
+check("清单顺序：90(10)→87(9)→88(7)→89(5)→86(10)",
       [c.issue for c in cases[:10]] == ["90"] * 10
       and [c.issue for c in cases[10:19]] == ["87"] * 9
       and [c.issue for c in cases[19:26]] == ["88"] * 7
-      and [c.issue for c in cases[26:]] == ["89"] * 5)
+      and [c.issue for c in cases[26:31]] == ["89"] * 5
+      and [c.issue for c in cases[31:]] == ["86"] * 10)
+_86 = {c.key: c for c in cases if c.issue == "86"}
+check("86 期 manifest：10 篇映射（1..10 ↔ 稿件仓 01..10，4/5 LaTeX）",
+      len(_86) == 10
+      and _86["86-01"].author == "Yu_Chen" and _86["86-01"].author_dir == "1"
+      and _86["86-05"].author == "WeiNong_Li" and _86["86-05"].source.endswith("qiudejun0724.tex")
+      and _86["86-10"].author == "Qiqi_Wang" and _86["86-10"].author_dir == "10"
+      and _86["86-04"].source.endswith(".tex") and _86["86-05"].source.endswith(".tex")
+      and _86["86-01"].manual_dir == "01 Yu_Chen")
+check("86 期人工 bib：05/08 用作者名 bib，其余 reference.bib",
+      {k: c.manual_bib for k, c in _86.items()}["86-05"] == "WeiNong_Li.bib"
+      and {k: c.manual_bib for k, c in _86.items()}["86-08"] == "LingXin_Cai.bib"
+      and {k: c.manual_bib for k, c in _86.items()}["86-01"] == "reference.bib")
+check("期 90 默认工作区 = ~/Desktop/macCaseTest90（用户已迁移）",
+      batch.DEFAULT_WORKSPACES["90"].name == "macCaseTest90")
 check("期 88/89 源映射与工作区（抽查 3 篇）",
       {c.key: c.source for c in cases}["88-01"] == "original/CONSEQ2026FINAL.docx"
       and {c.key: c.source for c in cases}["89-07"].endswith("WANGYIYAN.tex")
@@ -435,6 +451,27 @@ try:
                                 "log": {}, "tex": {"cite": 5}, "bib": {"entries": 3},
                                 "manual": {"pages": 9, "bib_entries": 3, "cite": 5},
                                 "findings": [{"level": "P1", "code": "PAGE_DIFF", "detail": "页差 1"}]}}}
+    # ⑩ O10 相似度口径
+    check("O10 similarity_choice：小稿 full / 大稿 fast / 显式覆盖",
+          batch.similarity_choice("aa", "bb", "auto") == "full"
+          and batch.similarity_choice("甲" * 20000, "乙" * 20000, "auto") == "fast"
+          and batch.similarity_choice("aa", "bb", "full") == "full"
+          and batch.similarity_choice("aa", "bb", "none") == "none"
+          and batch.similarity_choice("aa", "bb", None) == "full")
+    _sim_none = batch.compute_similarity("x", "x", "none")
+    _sim_small = batch.compute_similarity("甲。\n乙。", "甲。\n乙。", "auto")
+    _sim_large = batch.compute_similarity("a\n" * 20000, "a\n" * 20000, "auto")
+    check("O10 compute_similarity：none=skipped / 小稿 full≈1 / 大稿 fast（精度标注）",
+          _sim_none == {"mode": "skipped"}
+          and _sim_small["mode"] == "full" and _sim_small["raw"] >= 0.99
+          and _sim_large["mode"] == "fast" and _sim_large["raw"] >= 0.99
+          and _sim_large.get("l2") is None)
+    check("O10 compute_similarity：不同大稿 raw<1（可区分）",
+          batch.compute_similarity("甲\n" * 20000, "乙\n" * 20000, "auto")["raw"] < 0.5)
+    check("O10 CLI：--no-similarity / --full-similarity 互斥可解析",
+          batch.build_parser().parse_args(["--no-similarity"]).no_similarity is True
+          and batch.build_parser().parse_args(["--full-similarity"]).full_similarity is True
+          and batch.build_parser().parse_args([]).no_similarity is False)
     dash = batch.build_dashboard(fake_run)
     check("dashboard：按严重度加权排序 + owner/effort 元数据",
           [r["level"] for r in dash] == ["P0", "P1"]
@@ -443,9 +480,10 @@ try:
           and dash[0]["rank"] == 1)
     dpath = TMP / "dashboard.csv"; cpath = TMP / "cases.csv"
     batch.write_dashboard_csv(dpath, dash); batch.write_cases_csv(cpath, fake_run)
-    check("dashboard.csv / cases.csv 写出且表头正确",
+    check("dashboard.csv / cases.csv 写出且表头正确（含 sim_mode）",
           "cluster_code" in dpath.read_text(encoding="utf-8-sig").splitlines()[0]
           and "error_code" in cpath.read_text(encoding="utf-8-sig").splitlines()[0]
+          and "sim_mode" in cpath.read_text(encoding="utf-8-sig").splitlines()[0]
           and len(dpath.read_text(encoding="utf-8-sig").splitlines()) == 3)
     check("绝对 source 的 discover_source 直接用",
           batch.discover_source(batch.CaseSpec(

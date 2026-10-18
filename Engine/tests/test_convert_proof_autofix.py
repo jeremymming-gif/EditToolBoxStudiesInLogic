@@ -34,7 +34,8 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
         sys.path.insert(0, _p)
 
 from slcn import build, proofcheck  # noqa: E402
-from slcn.build import _PROOF_AUTOFIX_IDS, _autofix_proof, _dash_hints  # noqa: E402
+from slcn.build import (_PROOF_AUTOFIX_IDS, _autofix_proof, _bib_zero_cites_hint,  # noqa: E402
+                          _count_cite_commands, _dash_hints, _report_bib_zero_cites)
 from slcn import paths as _paths  # noqa: E402
 from slcn.docxxml import W_NS  # noqa: E402
 
@@ -288,6 +289,131 @@ if _manuscripts is not None:
         print("SKIP  ⑧ 真实稿 pin（本机没有该稿）")
 else:
     print("SKIP  ⑧ 真实稿 pin（本机没有稿件库）")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑨ 第四十四批④：B 类可发现性提示（bib>0 且正文 0 引用；纯日志、产物不变）
+#    背景：期 90 P0-B（案例 145）——源稿「正文编号引用 ↔ 无编号清单」体例，
+#    biblatex 只打印被引条目 → PDF 参考文献区空的，但初排阶段编辑看不到。
+#    判据刻意不猜「编号 ↔ 条目」映射；90-06 是脚注引注路径（有 30 处引用）→ 不误报。
+# ══════════════════════════════════════════════════════════════════════════
+_B_NEEDLE = "[B 类提示]"
+
+
+def _b_hint_lines(res) -> list[str]:
+    return [ln for ln in res.log if _B_NEEDLE in ln]
+
+
+check("⑨ 单元：常见引用命令都计数（\\parencite/\\cite/\\footcite/\\nocite）",
+      _count_cite_commands(
+          "见\\parencite{a}、\\cite{b}、\\footcite{c}、\\textcite{d}、\\nocite{*}") == 5,
+      str(_count_cite_commands("见\\parencite{a}、\\cite{b}、\\footcite{c}、\\textcite{d}、\\nocite{*}")))
+check("⑨ 单元：注释里的引用不计数", _count_cite_commands("% 样例 \\parencite{a}\n正文") == 0)
+check("⑨ 单元：数学区间里的反斜杠不计数（反例：数学区间不误报）",
+      _count_cite_commands("$x=\\cal{cite}$ 与 \\[ \\foo{cite} \\]") == 0)
+check("⑨ 单元：verbatim 里不计数",
+      _count_cite_commands("\\begin{verbatim}\n\\cite{a}\n\\end{verbatim}") == 0)
+check("⑨ 单元：preamble 里的定义不计数（只看 \\begin{document} 之后）",
+      _count_cite_commands(
+          "\\newcommand{\\x}{\\cite{a}}\n\\begin{document}\n正文无引用\n\\end{document}") == 0)
+
+check("⑨ 判据：bib=0 → 不提示（空 bib 不误报）", _bib_zero_cites_hint("正文", 0) is None)
+check("⑨ 判据：有引用 → 不提示", _bib_zero_cites_hint("见\\parencite{a}", 5) is None)
+_b_hint = _bib_zero_cites_hint("正文没有引用命令", 2)
+check("⑨ 判据：bib=2 且 0 引用 → 提示含条数 + PDF 参考文献区为空 + 人工补引用建议",
+      _b_hint is not None and "2 条" in _b_hint[0]
+      and "PDF 参考文献区会是空的" in _b_hint[0] and "人工补" in _b_hint[1],
+      repr(_b_hint))
+
+_b_log: list[str] = []
+_b_warn: list[str] = []
+_rep_hit = _report_bib_zero_cites("正文", 3, _b_log.append, _b_warn, _b_log)
+check("⑨ 提示写进初排日志**顶部**（log[0]）与 warnings 首位",
+      _rep_hit and _b_log[0].startswith("⚠️ [B 类提示]") and _b_warn[0].startswith("⚠️ [B 类提示]"),
+      repr(_b_log[:2]))
+check("⑨ 无命中时不写日志/warnings",
+      _report_bib_zero_cites("见\\parencite{k}", 3, _b_log.append, _b_warn, _b_log) is False
+      and len(_b_log) == 2)
+
+# ⑨-1 LaTeX 通道：合成 body + 有 1 条 bib 但 0 引用 → 提示；开关关→无提示；产物 sha 相同
+_B_TMP = tempfile.mkdtemp(dir="/tmp")
+_B_TEX = os.path.join(_B_TMP, "body.tex")
+open(_B_TEX, "w", encoding="utf-8").write(
+    "\\documentclass{ctexart}\n\\title{测试稿}\n\\author{张三}\n"
+    "\\begin{document}\n\\maketitle\n正文没有任何引用命令。\n\\end{document}\n")
+_B_BIB = os.path.join(_B_TMP, "refs.bib")
+open(_B_BIB, "w", encoding="utf-8").write(
+    "@article{k1, title={T}, author={A}, year={2020}}\n")
+try:
+    with tempfile.TemporaryDirectory() as _bt1, tempfile.TemporaryDirectory() as _bt2:
+        _bl_on = build.build_latex(_B_TEX, _bt1, bib_path=_B_BIB, basename="L", lang="zh",
+                                   verbose=False, bib_zero_cites_hints=True)
+        _bl_off = build.build_latex(_B_TEX, _bt2, bib_path=_B_BIB, basename="L", lang="zh",
+                                    verbose=False, bib_zero_cites_hints=False)
+        _bl_sha_on = _sha_file(_bl_on.tex_path)
+        _bl_sha_off = _sha_file(_bl_off.tex_path)
+    check("⑨ LaTeX 通道：bib>0 且 0 引用 → 日志顶部出现 B 类提示",
+          bool(_b_hint_lines(_bl_on)) and _bl_on.log[0].startswith("⚠️ [B 类提示]"),
+          repr(_bl_on.log[:2]))
+    check("⑨ LaTeX 通道：开关关 → 无提示", _b_hint_lines(_bl_off) == [])
+    check("⑨ LaTeX 通道：产物逐字节不变（提示开/关 sha256 相同）",
+          _bl_sha_on == _bl_sha_off, f"{_bl_sha_on[:16]} vs {_bl_sha_off[:16]}")
+finally:
+    for _p in (_B_TEX, _B_BIB):
+        try:
+            os.unlink(_p)
+        except OSError:
+            pass
+    try:
+        os.rmdir(_B_TMP)
+    except OSError:
+        pass
+
+# ⑨-2 真实稿 pin（期90/87 的 P0-B 案例；无稿件库时 SKIP）
+if _manuscripts is not None:
+    import slcn.sources as _sources
+
+    _REAL_B_CASES = (
+        ("2026年第5期(90)", "04 Haiting_Huang", True, "90-04"),
+        ("2026年第5期(90)", "06 Yingying_Tang", False, "90-06 脚注引注路径（有 30 处引用）"),
+        ("2026年第5期(90)", "08 Yanlin_Liao", True, "90-08"),
+        ("2026年第2期(87)", "06 Ruixue_Tang", True, "87-5"),
+        ("2026年第2期(87)", "08 Ran_Ren", True, "87-7"),
+    )
+    for _iss, _slug, _expect_b, _label in _REAL_B_CASES:
+        _rd = os.path.join(_manuscripts, _iss, _slug)
+        if not os.path.isdir(_rd):
+            print(f"SKIP  ⑨ 真实稿 {_label}（本机没有该稿）")
+            continue
+        _ssb = _sources.identify(_rd, verbose=False)
+        if not _ssb.docx:
+            print(f"SKIP  ⑨ 真实稿 {_label}（不是 Word 稿）")
+            continue
+        with tempfile.TemporaryDirectory() as _bt:
+            _rb = build.build_docx(_ssb.docx, _bt, basename="Real", lang="zh", verbose=False)
+        _got_b = bool(_b_hint_lines(_rb))
+        check(f"⑨ 真实稿 {_label}：B 类提示{'出现' if _expect_b else '**不出现**（不误报）'}",
+              _got_b == _expect_b,
+              repr((_got_b, _rb.log[:2])))
+
+    # ⑨-3 真实稿产物 sha 不变（90-04：提示开/关逐字节相同）
+    _rd_b = os.path.join(_manuscripts, "2026年第5期(90)", "04 Haiting_Huang")
+    if os.path.isdir(_rd_b):
+        _ssb2 = _sources.identify(_rd_b, verbose=False)
+        if _ssb2.docx:
+            with tempfile.TemporaryDirectory() as _b1, tempfile.TemporaryDirectory() as _b2:
+                _r_on = build.build_docx(_ssb2.docx, _b1, basename="R", lang="zh",
+                                         verbose=False, bib_zero_cites_hints=True)
+                _r_off = build.build_docx(_ssb2.docx, _b2, basename="R", lang="zh",
+                                          verbose=False, bib_zero_cites_hints=False)
+                _on_sha = _sha_file(_r_on.tex_path)
+                _off_sha = _sha_file(_r_off.tex_path)
+            check("⑨ 真实稿 90-04：产物逐字节不变（提示开/关 sha256 相同）",
+                  _on_sha == _off_sha and bool(_b_hint_lines(_r_on))
+                  and _b_hint_lines(_r_off) == [],
+                  f"{_on_sha[:16]} vs {_off_sha[:16]}")
+else:
+    print("SKIP  ⑨ 真实稿 pin（本机没有稿件库）")
 
 print()
 print("=" * 78)

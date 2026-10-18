@@ -50,3 +50,17 @@ Copyright (c) 2024 chenphilo
    **绝不能**为了发 Release 而把整个仓库公开。拆仓方案见 `Engine/docs/ENGINE_API.md` §八
    与 `docs/cases/62+.md` 的相关条目。
 3. **署名**：公开仓库的 README 里应保留第 1 节的 MIT 声明与上游链接。
+
+## 5. 公式转换：OMML→MathML→LaTeX 栈（`Engine/vendor_omml/`，第四十四批②）
+
+Word 公式（OMML）的**可选**新转换后端（`docxxml.omml_to_latex(..., use_omml_stack=True)`；
+默认 `USE_OMML_STACK = False`，不改变现有产物）。源码逐字节 vendored，不装包、无新运行时：
+
+| 组件 | 版本/提交 | 许可证 | 用途 |
+|---|---|---|---|
+| `omml2mml.xsl`（[scienceai/omml2mathml](https://github.com/scienceai/omml2mathml)，npm 1.3.0） | master；源自 Microsoft Office 随附 XSLT（Beta 070708） | **Apache-2.0** | OMML → MathML（XSLT 1.0，用仓库已有 `lxml.etree.XSLT`） |
+| [`mathml_to_latex`](https://github.com/asnunes/py-mathml-to-latex) | `187138aac0e5c6c180906868ecb70396909516c8`（2024-11-09） | **MIT**（Copyright (c) 2024 Alexandre Nunes） | MathML → LaTeX（纯标准库） |
+
+- 完整许可证文本：`Engine/vendor_omml/LICENSE-omml2mathml-Apache-2.0.txt`、`LICENSE-py-mathml-to-latex-MIT.md`；归属声明 `Engine/vendor_omml/NOTICE`；来源/校验和/更新策略 `Engine/vendor_omml/SOURCES.md`。
+- **上游均不再维护**（XSL 2007 beta；py 2024-11 最后提交）→ 本项目**不追随上游更新**，行为由 `Engine/tests/test_omml_stack.py` 的 149 条真实公式 fixture 锁住；升级须同时更新 `SOURCES.md` 校验和与 fixture 断言。
+- 打包：`build.sh` / Windows 打包白名单（`tools/gen_docs.py` 的 `APP_FILES`）在**启用 OMML 栈**（默认切换）那一批需要把 `Engine/vendor_omml/` 纳入；默认关闭时 App 包不含它也能正常工作（会自动回退旧实现）。

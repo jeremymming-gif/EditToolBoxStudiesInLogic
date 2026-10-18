@@ -48,16 +48,26 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
+# 第四十四批③c（O11）：真实稿一律用引擎自己的**稿件库锚点**解析（与其它套件一致）——
+# `slcn.paths.manuscripts_root()`：SLCN_MANUSCRIPTS → 向上找 → 同级目录（三仓并排默认命中）。
+# 从前这里用 `_REPO`（工具箱仓的上一级）拼 `2026年第5期(90)/…`，实际稿在
+# `<GitHub>/Studies_in_Logic_Database/…` → 9 条真实语料断言全 SKIP。CI/公开仓没有
+# 稿件库时 `manuscripts_root()` 返回 None → 真实语料断言仍**优雅 SKIP**（与以前一致）。
+# 注：真正的赋值在 import 之后（此时 `_paths` 还不可用）。
+_MANUSCRIPTS = None
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from slcn import build, multisource, sources  # noqa: E402
+from slcn import paths as _paths  # noqa: E402
 from slcn.docxsource import parse_docx  # noqa: E402
 from slcn.latex import parse_macros  # noqa: E402
 
 import convert  # noqa: E402
+
+# 稿件库锚点（import 后再取；无稿件库 = None → 真实语料断言 SKIP）
+_MANUSCRIPTS = _paths.manuscripts_root()
 
 FAILS = []
 SKIPS = []
@@ -75,15 +85,26 @@ def skip(name, why):
     SKIPS.append(name)
 
 
+def _corpus_dir(rel_dir: str) -> str:
+    """稿件库锚点下的相对目录；没有稿件库返回 ""（调用方据此 SKIP）。"""
+    return os.path.join(_MANUSCRIPTS, rel_dir) if _MANUSCRIPTS else ""
+
+
 def find(rel_dir, needle):
     """在语料目录下按文件名片段找稿子；跳过 Word 的 `~$` 锁文件/坏 zip。"""
-    hits = [x for x in glob.glob(os.path.join(_REPO, rel_dir, "**", "*.docx"), recursive=True)
+    root = _corpus_dir(rel_dir)
+    if not root:
+        return ""
+    hits = [x for x in glob.glob(os.path.join(root, "**", "*.docx"), recursive=True)
             if needle in os.path.basename(x) and zipfile.is_zipfile(x)]
     return hits[0] if hits else ""
 
 
 def one(rel_dir, needle, ext="*.docx"):
-    hits = [x for x in glob.glob(os.path.join(_REPO, rel_dir, "**", ext), recursive=True)
+    root = _corpus_dir(rel_dir)
+    if not root:
+        return ""
+    hits = [x for x in glob.glob(os.path.join(root, "**", ext), recursive=True)
             if needle in os.path.basename(x)]
     return hits[0] if hits else ""
 
@@ -139,7 +160,7 @@ BC_EN = find("2026年第5期(90)/10 Bo_Chen/original", "英文摘要")
 GF_BODY = find("2026年第2期(87)/07 Guangwu_Feng/original", "格赖斯和布兰顿")
 GD_BODY = find("2024年第4期(77)/05 Guoping_Du/original", "排中律-LJXYJ")
 YX_CN = find("2025年第6期(85)/04 YingJin_Xu/original", "汉语摘要")
-LZ_DIR = os.path.join(_REPO, "2026年第5期(90)/03 Liang_Zhang/original")
+LZ_DIR = _corpus_dir("2026年第5期(90)/03 Liang_Zhang/original")
 LZ_META = one("2026年第5期(90)/03 Liang_Zhang/original", "yalcin puzzle", "*.tex")
 LZ_BODY = one("2026年第5期(90)/03 Liang_Zhang/original", "main", "*.tex")
 

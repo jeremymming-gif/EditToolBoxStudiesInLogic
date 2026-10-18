@@ -3351,6 +3351,133 @@ def load_duplicate_pairs(path: str) -> list[tuple[str, str, float]]:
     return pairs
 
 
+def _merge_cluster_fields(cluster_records: list[dict]) -> tuple[dict[str, str], list[dict]]:
+    """簇内字段合并（缺失补全 + 花括号/信息最全优先），返回 (fields, 字段差异明细)。"""
+    fields: dict[str, str] = {}
+    field_diff_notes: list[dict] = []
+    for name in sorted({n for r in cluster_records for n in _record_fields(r)}):
+        values = [str(_record_fields(r).get(name) or "") for r in cluster_records]
+        values = [v for v in values if v.strip()]
+        if not values:
+            continue
+        chosen = _merge_prefer_value(name, values)
+        fields[name] = chosen
+        distinct = [v for v in values if not _merge_field_equivalent(name, v, chosen)]
+        if distinct and len({re.sub(r"\s+", " ", v).strip() for v in distinct}) > 1:
+            field_diff_notes.append({"field": name, "keep": chosen,
+                                     "others": sorted(set(distinct))[:3]})
+    return fields, field_diff_notes
+
+
+def apply_merge_decisions(plan: dict, decisions: list[dict], store: "bibdb.Store") -> tuple[list[dict], list[dict]]:
+    """把「人工簇」按 decisions（{keys, entry_type, note?, doubt?}）改成可合并簇。
+
+    返回 (decided_entries, skipped_decisions)。规则：
+      · canonical 取**建议类型对应**的记录（没有则退回计划 canonical）；
+      · 字段合并仍按统一规则（花括号保护优先/缺失补全）；类型 = 建议类型；
+      · key：similarity=1 簇按规范改名，其余保留 canonical 旧 key；旧 key 全进 aliases；
+      · 未给 decision 的人工簇（如 Segerberg）**保持 manual 不动**。
+    """
+    records = {str(r.get("key")): r for r in store.records() if isinstance(r, dict)}
+    by_keys = {tuple(sorted(str(k) for k in (c.get("keys") or []))): c
+               for c in plan.get("clusters") or []}
+    live_keys = set(records)
+    merged_entries = [c for c in plan.get("clusters") or [] if c.get("action") == "merge"]
+    decided: list[dict] = []
+    skipped: list[dict] = []
+    for decision in decisions:
+        keys = tuple(sorted(str(k) for k in (decision.get("keys") or [])))
+        entry = by_keys.get(keys)
+        if entry is None or entry.get("action") != "manual":
+            # 允许「人工簇的子集」决策（Segerberg：按类型拆成 thesis / book 两条，只并书版 3 条）
+            parent = next((c for c in plan.get("clusters") or []
+                           if c.get("action") == "manual"
+                           and set(keys) <= set(str(k) for k in c.get("keys") or [])), None)
+            if parent is not None:
+                entry = dict(parent)
+                entry["keys"] = list(keys)
+                entry["cluster"] = parent["cluster"]
+                entry.pop("members", None)
+                parent["keys"] = [k for k in parent["keys"] if k not in keys]
+                plan["clusters"].append(entry)
+                if not parent["keys"]:
+                    plan["clusters"].remove(parent)
+                    if parent in (plan.get("manual_clusters") or []):
+                        plan["manual_clusters"].remove(parent)
+            else:
+                skipped.append({"keys": list(keys), "reason": "计划中找不到对应的人工簇"})
+                continue
+        cluster_records = [records[k] for k in keys if k in records]
+        if len(cluster_records) != len(keys):
+            skipped.append({"keys": list(keys), "reason": "成员不在库内"})
+            continue
+        wanted = str(decision.get("entry_type") or "").strip().lower()
+        typed = [r for r in cluster_records
+                 if str(r.get("entry_type") or "").strip().lower() == wanted]
+        canonical = (max(typed, key=_merge_version_score) if typed
+                     else max(cluster_records, key=_merge_version_score))
+        fields, diff_notes = _merge_cluster_fields(cluster_records)
+        entry["action"] = "merge"
+        entry["entry_type"] = wanted or str(canonical.get("entry_type") or "")
+        entry["canonical_key"] = str(canonical.get("key"))
+        entry["merged_fields"] = fields
+        entry["field_diffs"] = diff_notes[:MERGE_FIELD_DIFF_NOTE_LIMIT]
+        entry["decision"] = {"entry_type": entry["entry_type"],
+                             "note": str(decision.get("note") or ""),
+                             "doubt": bool(decision.get("doubt")),
+                             "new_key": str(decision.get("new_key") or "")}
+        merged_entries.append(entry)
+        decided.append(entry)
+    # key / aliases（仅对本次新并入的簇；已 apply 过的批次不再处理）
+    renamed_away = {k for entry in merged_entries for k in entry["keys"]}
+    reserved = live_keys - renamed_away
+    used = set(reserved)
+    for entry in merged_entries:
+        if entry.get("new_key"):
+            used.add(entry["new_key"])
+    for entry in decided:
+        canonical = records[entry["canonical_key"]]
+        person = re.split(r"\s+and\s+",
+                          str(_record_fields(canonical).get("author")
+                              or _record_fields(canonical).get("editor") or ""), flags=re.I)[0]
+        prefix = _merge_key_name(person)
+        year = _record_year(canonical)
+        base = f"{prefix}{year}" if prefix and year else ""
+        if entry.get("has_similarity_1") and base:
+            key = base
+            if key in used:
+                for letter in "abcdefghijklmnopqrstuvwxyz":
+                    candidate = f"{base}{letter}"
+                    if candidate not in used:
+                        key = candidate
+                        break
+        else:
+            key = str(entry.get("canonical_key") or "")
+        override = str(entry.get("decision", {}).get("new_key") or "")
+        if override:
+            key = override
+        entry["new_key"] = key
+        used.add(key)
+    final_keys = reserved | {entry["new_key"] for entry in merged_entries}
+    for entry in decided:
+        aliases = set(str(k) for k in entry["keys"])
+        for key in entry["keys"]:
+            record = records.get(key) or {}
+            for alias in record.get("aliases") or []:
+                if isinstance(alias, str) and alias:
+                    aliases.add(alias)
+        aliases.discard(entry["new_key"])
+        entry["aliases"] = sorted(a for a in aliases if a not in final_keys)
+    decided_keys = {entry["cluster"] for entry in decided}
+    plan["manual_clusters"] = [c for c in plan.get("manual_clusters") or []
+                               if c.get("cluster") not in decided_keys]
+    plan["clusters_merge"] = sum(1 for c in plan["clusters"] if c.get("action") == "merge")
+    plan["records_merged_away"] = sum(len(c["keys"]) - 1 for c in plan["clusters"]
+                                      if c.get("action") == "merge")
+    plan["predicted_records"] = len(records) - plan["records_merged_away"]
+    return decided, skipped
+
+
 def build_merge_plan(store: "bibdb.Store", pairs: list[tuple[str, str, float]]) -> dict:
     """只读计算合并计划（不写库）：聚类 → 版本/字段/key/aliases → 人工清单。"""
     records = {str(r.get("key")): r for r in store.records() if isinstance(r, dict)}
@@ -3454,22 +3581,10 @@ def build_merge_plan(store: "bibdb.Store", pairs: list[tuple[str, str, float]]) 
         if entry["action"] != "merge":
             continue
         cluster_records = [records[k] for k in entry["keys"] if k in records]
-        canonical = max(cluster_records, key=_merge_version_score)
-        fields: dict[str, str] = {}
-        field_diff_notes: list[dict] = []
-        for name in sorted({n for r in cluster_records for n in _record_fields(r)}):
-            values = [str(_record_fields(r).get(name) or "") for r in cluster_records]
-            values = [v for v in values if v.strip()]
-            if not values:
-                continue
-            chosen = _merge_prefer_value(name, values)
-            fields[name] = chosen
-            distinct = [v for v in values if not _merge_field_equivalent(name, v, chosen)]
-            if distinct and len({re.sub(r"\s+", " ", v).strip() for v in distinct}) > 1:
-                field_diff_notes.append({"field": name, "keep": chosen,
-                                         "others": sorted(set(distinct))[:3]})
+        fields, field_diff_notes = _merge_cluster_fields(cluster_records)
         entry["merged_fields"] = fields
         entry["field_diffs"] = field_diff_notes[:MERGE_FIELD_DIFF_NOTE_LIMIT]
+        canonical = max(cluster_records, key=_merge_version_score)
         entry["entry_type"] = str(canonical.get("entry_type") or "")
         if entry.get("resolved_entry_type"):
             entry["entry_type"] = entry.pop("resolved_entry_type")
@@ -3999,6 +4114,10 @@ MERGE_APPLY_REPORT_MD = "MERGE-APPLY-2026-10-18.md"
 MERGE_APPLY_REPORT_JSON = "MERGE-APPLY-2026-10-18.json"
 MERGE_APPLY_CLUSTERS_CSV = "MERGE-APPLY-2026-10-18.csv"
 MERGE_APPLY_ARCHIVE_CSV = "MERGE-APPLY-ARCHIVE.csv"
+MERGE_APPLY2_REPORT_MD = "MERGE-APPLY2-2026-10-19.md"
+MERGE_APPLY2_REPORT_JSON = "MERGE-APPLY2-2026-10-19.json"
+MERGE_APPLY2_CLUSTERS_CSV = "MERGE-APPLY2-2026-10-19.csv"
+MERGE_APPLY2_ARCHIVE_CSV = "MERGE-APPLY2-ARCHIVE.csv"
 
 
 def _merge_sources_union(records_to_merge: list[dict]) -> list[dict]:
@@ -4145,11 +4264,15 @@ def _merge_manual_research_table(research: list[dict] | None) -> list[str]:
 def build_merge_apply_report_md(plan: dict, result: dict, sha_before: str, sha_after: str,
                                 *, backup_path: str, backup_sha: str,
                                 verification: dict, research: list[dict] | None = None,
-                                lists_note: tuple[str, str, str] | None = None) -> str:
+                                lists_note: tuple[str, str, str] | None = None,
+                                decisions: list[dict] | None = None,
+                                skipped_decisions: list[dict] | None = None,
+                                batch: int = 1) -> str:
     """合并 apply 报告（写入 bib_db/；含 sha 链/别名归档/人工簇核实/回滚）。"""
     applied = result["applied_clusters"]
+    batch_label = "（第四十四批 · 第二批：13 人工簇按建议合并）" if batch == 2 else "（第四十三批）"
     lines = [
-        "# 引用库 · 重复候选合并 + key 规范化 apply 报告（第四十三批）",
+        f"# 引用库 · 重复候选合并 + key 规范化 apply 报告{batch_label}",
         "",
         "> 本报告由 `bibdb.py merge-duplicates --apply` 生成：按 Lead 审阅通过的计划执行",
         "> **657 个自动合并簇 + 499 条 key 规范化**（用户 2026-10-18 授权：除",
@@ -4207,7 +4330,35 @@ def build_merge_apply_report_md(plan: dict, result: dict, sha_before: str, sha_a
                      f"{len(item['aliases'])} | {item['sources']} |")
     if not applied:
         lines.append("| — | （无） | — | — | — | — |")
-    lines += ["", * _merge_manual_research_table(research), ""]
+    if decisions:
+        lines += [
+            "## 3b. 本次人工簇决策（用户 2026-10-19 拍板「按建议合并」）",
+            "",
+            "| 簇 | 成员 key | 选定类型 | 备注 |",
+            "|---|---|---|---|",
+        ]
+        for item in decisions:
+            note = str(item.get("note") or "")
+            if item.get("doubt"):
+                note = ("⚠ 存疑：" + note).strip()
+            lines.append(f"| {_md_escape(str(item.get('cluster', '')))} | "
+                         f"{'、'.join('`' + str(k) + '`' for k in item.get('keys') or [])} | "
+                         f"`{_md_escape(str(item.get('entry_type', '')))}` | {_md_escape(note)} |")
+        for item in skipped_decisions or []:
+            lines.append(f"| （跳过） | {'、'.join('`' + str(k) + '`' for k in item.get('keys') or [])} | — | "
+                         f"{_md_escape(str(item.get('reason', '')))} |")
+        lines.append("")
+    if batch == 2:
+        lines += [
+            "## 4. 人工簇处理结果",
+            "",
+            "- 12 个按用户拍板建议类型合并（§3b）；**M0009 Segerberg 保持 `Segerberg1971`（phdthesis）与",
+            "  `Segerberg1971b`（book 版）两条不合并**（用户 2026-10-18 已拆分）；",
+            "- 剩余人工簇：M0009 一组（候选对中仍有其内部 6 对，见后文清单校验）。",
+            "",
+        ]
+    else:
+        lines += ["", * _merge_manual_research_table(research), ""]
     lines += [
         "## 5. key 冲突/自动消解（全量）",
         "",
@@ -4306,10 +4457,17 @@ def build_merge_archive_csv(plan: dict) -> str:
 
 def _write_merge_apply_reports(args, plan: dict, result: dict, sha_before: str,
                                sha_after: str, *, backup_path: str, backup_sha: str,
-                               verification: dict, lists_note=None) -> list[dict]:
+                               verification: dict, lists_note=None,
+                               decisions: list[dict] | None = None,
+                               skipped_decisions: list[dict] | None = None,
+                               batch: int = 1) -> list[dict]:
     out_dir = str(getattr(args, "out_dir", "") or "")
     if not out_dir:
         return []
+    md_name = MERGE_APPLY2_REPORT_MD if batch == 2 else MERGE_APPLY_REPORT_MD
+    json_name = MERGE_APPLY2_REPORT_JSON if batch == 2 else MERGE_APPLY_REPORT_JSON
+    csv_name = MERGE_APPLY2_CLUSTERS_CSV if batch == 2 else MERGE_APPLY_CLUSTERS_CSV
+    archive_name = MERGE_APPLY2_ARCHIVE_CSV if batch == 2 else MERGE_APPLY_ARCHIVE_CSV
     research = None
     research_path = str(getattr(args, "research", "") or "")
     if research_path and os.path.isfile(research_path):
@@ -4318,20 +4476,21 @@ def _write_merge_apply_reports(args, plan: dict, result: dict, sha_before: str,
         except (OSError, ValueError):
             research = None
     written: list[dict] = []
-    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_REPORT_MD),
+    written.append(_write_report(os.path.join(out_dir, md_name),
                                  build_merge_apply_report_md(
                                      plan, result, sha_before, sha_after,
                                      backup_path=backup_path, backup_sha=backup_sha,
                                      verification=verification, research=research,
-                                     lists_note=lists_note)))
-    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_REPORT_JSON),
+                                     lists_note=lists_note, decisions=decisions,
+                                     skipped_decisions=skipped_decisions, batch=batch)))
+    written.append(_write_report(os.path.join(out_dir, json_name),
                                  build_merge_apply_json(
                                      plan, result, sha_before, sha_after,
                                      backup_path=backup_path, backup_sha=backup_sha,
                                      verification=verification)))
-    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_CLUSTERS_CSV),
+    written.append(_write_report(os.path.join(out_dir, csv_name),
                                  build_merge_apply_clusters_csv(result)))
-    written.append(_write_report(os.path.join(out_dir, MERGE_APPLY_ARCHIVE_CSV),
+    written.append(_write_report(os.path.join(out_dir, archive_name),
                                  build_merge_archive_csv(plan)))
     return written
 
@@ -4379,6 +4538,27 @@ def cmd_merge_duplicates(args) -> int:
                   "`bibdb.py merge-duplicates --out-dir <笔记仓>/bib_db` 生成新计划",
                   file=sys.stderr)
             return 2
+        decisions_path = str(getattr(args, "decisions", "") or "")
+        decided_rows: list[dict] = []
+        skipped_decisions: list[dict] = []
+        if decisions_path:
+            if not os.path.isfile(decisions_path):
+                print(f"✗ 找不到决策文件：{decisions_path}", file=sys.stderr)
+                return 2
+            try:
+                decisions_raw = json.load(open(decisions_path, encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                print(f"✗ 读不了决策文件 {decisions_path}：{exc}", file=sys.stderr)
+                return 2
+            if isinstance(decisions_raw, dict):
+                decisions_raw = decisions_raw.get("decisions") or []
+            decided, skipped_decisions = apply_merge_decisions(plan, decisions_raw, store)
+            decided_rows = [{"cluster": entry.get("cluster"), "keys": entry.get("keys"),
+                             "entry_type": entry.get("entry_type"),
+                             "new_key": entry.get("new_key"),
+                             "note": (entry.get("decision") or {}).get("note", ""),
+                             "doubt": (entry.get("decision") or {}).get("doubt", False)}
+                            for entry in decided]
         result = apply_merge_plan(store, plan)
         sha_after = bibdb.db_sha256(path)
         # 重新 load 校验（写回后确认 JSONL 可解析、content_sha 自洽、索引正常）
@@ -4410,7 +4590,9 @@ def cmd_merge_duplicates(args) -> int:
         }
         written = _write_merge_apply_reports(
             args, plan, result, sha_before, sha_after,
-            backup_path=backup_path, backup_sha=backup_sha, verification=verification)
+            backup_path=backup_path, backup_sha=backup_sha, verification=verification,
+            decisions=decided_rows or None, skipped_decisions=skipped_decisions or None,
+            batch=2 if decisions_path else 1)
         payload = {
             "db": os.path.basename(path) or path,
             "mode": "apply",
@@ -4427,6 +4609,8 @@ def cmd_merge_duplicates(args) -> int:
             "renames": result["renames"],
             "aliases_total": result["aliases_total"],
             "key_conflicts": plan.get("key_conflicts") or [],
+            "decisions": decided_rows,
+            "skipped_decisions": skipped_decisions,
             "verification": verification,
             "written": written,
         }
@@ -4441,6 +4625,10 @@ def cmd_merge_duplicates(args) -> int:
         print(f"合并：{result['clusters_applied']} 簇（跳过 {result['clusters_skipped']}）；"
               f"人工保留 {len(plan.get('manual_clusters') or [])} 簇")
         print(f"key 改名 {result['renames']} 条；别名 {result['aliases_total']} 个")
+        if decided_rows:
+            print(f"人工簇决策合并：{len(decided_rows)} 簇 → "
+                  + "、".join(f"{item['cluster']}→`{item['new_key']}`({item['entry_type']})"
+                              for item in decided_rows))
         print(f"校验：content_sha 不符 {content_bad}；lint error {verification['lint_errors']}；"
               f"待裁决冲突 {pending}；候选对 {pairs_after}")
         for item in written:
@@ -4717,6 +4905,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="--apply 用的计划 JSON（默认库同目录 DUPLICATES-MERGE-PLAN.json）")
     mrg.add_argument("--research", default="", metavar="PATH",
                      help="--apply 报告用：人工簇联网核实建议 JSON（可选）")
+    mrg.add_argument("--decisions", default="", metavar="PATH",
+                     help="--apply 用：人工簇决策 JSON（[{keys, entry_type, note?, doubt?}]；"
+                          "第二批合并用；未列出的 manual 簇保持不动）")
     mrg.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
     mrg.set_defaults(func=cmd_merge_duplicates)
     return parser

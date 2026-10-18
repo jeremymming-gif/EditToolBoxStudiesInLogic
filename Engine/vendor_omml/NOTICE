@@ -1,0 +1,16 @@
+本目录（Engine/vendor_omml/）包含以下第三方作品，随本工具箱（MIT）一起分发：
+
+1. omml2mml.xsl
+   来源：https://github.com/scienceai/omml2mathml （npm: omml2mathml@1.3.0）
+   许可：Apache License 2.0（见 LICENSE-omml2mathml-Apache-2.0.txt）
+   说明：该 XSLT 是对 Microsoft Office 随附的 omml2mml.xsl（Beta 070708）的移植；
+         上游 README 原文："This is by and large a port of the omml2mathml.xsl XSLT
+         that Microsoft ships with Office"。
+   修改：未修改（逐字节 vendored）。
+
+2. mathml_to_latex/（Python 包）
+   来源：https://github.com/asnunes/py-mathml-to-latex （commit 187138aac0e5c6c180906868ecb70396909516c8）
+   许可：MIT（见 LICENSE-py-mathml-to-latex-MIT.md，Copyright (c) 2024 Alexandre Nunes）
+   修改：未修改（逐字节 vendored）。
+
+本工具箱自身为 MIT 许可（仓库根 LICENSE）。Apache-2.0 与 MIT 兼容。

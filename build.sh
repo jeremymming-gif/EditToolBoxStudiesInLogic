@@ -119,5 +119,20 @@ fi
 echo "▶ ad-hoc 签名…"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "  （签名跳过，不影响本机运行）"
 
+# ── 包内引擎一致性 cmp（第四十四批③a / O9，毫秒级）────────────────────────
+# 从前这条检查在 gen_docs 的 AUTO 块里（要跑 test_selfcheck→selfcheck 才触发）：
+# 引擎改动后、App 尚未重建时出现 FAIL 瞬态 → AUTO 记下 FAIL → 必须再 gen_docs、再 build，
+# 形成「gen_docs×2 + build×2」循环。现在：AUTO 不再含这行，**构建末尾直接 cmp** 白名单
+# （`gen_docs.APP_FILES`，28 个文件，单一出处）。失败 → 本脚本非 0 退出（不打印「构建完成」），
+# 成功 → 打印「✅ 28/28 … 毫秒级」。只读、不依赖稿件库。
+if [ -d "$APP/Contents/Resources/Engine" ]; then
+  echo "▶ 包内引擎一致性 cmp（白名单 28 个文件）…"
+  PY_CMP="/opt/homebrew/bin/python3.14"
+  [ -x "$PY_CMP" ] || PY_CMP="python3"
+  "$PY_CMP" "$PROJ/Engine/tools/gen_docs.py" --cmp-app
+else
+  echo "⚠ 包内没有 Engine/（上面的打包被跳过），跳过包内 cmp"
+fi
+
 SIZE=$(du -sh "$APP" | cut -f1)
 echo "✅ 构建完成：$APP  ($SIZE)"

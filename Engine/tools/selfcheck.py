@@ -20,11 +20,15 @@ App 包内 cmp、docx_audit、corpus、Swift/桥梁测试），但**没有一条
 `gen_docs --check` 不再重复跑一整遍套件（实测省 ~45–50s/次）；AUTO 测试计数行的守卫由
 full 档（`selfcheck.py --full` 用 `--strict-tests`）与独立的 `gen_docs.py --check` 负责。
 
+**第四十四批③a（O9）**：App 包内一致性检查可用 `--skip-app` 跳过（`test_selfcheck` ③ 用它），
+拆掉「test_selfcheck × App 新鲜度」的循环依赖；构建后的守卫在 `build.sh` 末尾
+（`gen_docs.py --cmp-app`，白名单 28 个文件，毫秒级）。反例测试见 `tests/test_selfcheck.py`。
+
 **检查清单**：
   1. 环境（Python 版本、vendor、目录结构）；
   2. 全部引擎模块 import 冒烟（`slcn/*.py`）；
   3. 引擎套件 quick/full（`tools/run_engine_tests.sh`）；
-  4. 文档看门狗（AUTO 块 / 路径 / 编号 / App 包内一致性，`tests/test_docs_consistency.py`）；
+  4. 文档看门狗（AUTO 块 / 路径 / 编号，`tests/test_docs_consistency.py`）；
   5. 代码健康（超长函数 >150 行、全仓只出现 1 次的函数=死代码候选、TODO/FIXME）——**只警告**；
   6. 案例引用（公开仓代码/文档里的 `第 N 条` 是否都能在笔记仓案例里找到）+ 案例库体检
      （`tools/case_audit.py --check`）；没有笔记仓时 SKIP（公开仓/CI 正常）；
@@ -190,6 +194,13 @@ def scan_code_health() -> None:
                 continue
             todos += len(re.findall(r"\b(TODO|FIXME|XXX|HACK)\b", text))
     # 死代码候选：函数名在全仓（含测试/工具）只出现一次（= 只有定义）
+    # ⚠️ 第四十四批③a：从前这里是「每个函数名一次 `re.findall(5MB 文本)`」，
+    #    几百个定义 × 5MB ≈ **24s**，quick 自查一半时间耗在这（O9 反例测试一跑三遍更明显）。
+    #    改成**先词法切一次、再查计数**（等价：`\bname\b` 对 Python 标识符就是整词匹配），
+    #    结果完全相同，耗时从 ~24s 降到 ~0.1s。
+    import collections
+
+    ident_count = collections.Counter(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", all_text))
     defs: list[tuple[str, str]] = []
     for f in src_files:
         try:
@@ -204,7 +215,7 @@ def scan_code_health() -> None:
     for path, name in defs:
         if name in ("main", "__init__"):
             continue
-        if len(re.findall(r"\b" + re.escape(name) + r"\b", all_text)) <= 1:
+        if ident_count.get(name, 0) <= 1:
             dead.append(f"{path}::{name}")
     long_funcs.sort(reverse=True)
     print(f"WARN  代码健康：超长函数(>{LONG_FUNC_LINES} 行) {len(long_funcs)} 个；"
@@ -278,7 +289,16 @@ def check_cases() -> None:
 
 
 def check_app_bundle() -> None:
-    app_engine = os.path.join(REPO, "dist", "编辑部工具箱.app", "Contents", "Resources", "Engine")
+    """App 包内引擎与仓库逐字节比对（白名单 = `gen_docs.APP_FILES`，28 个）。
+
+    第四十四批③a（O9）：本项在 selfcheck 里保留，但可被 `--skip-app` 跳过 ——
+    `test_selfcheck` ③ 必须用它，否则「引擎改动后、App 还没重建」的瞬态会让该套件红，
+    进而让 gen_docs 的 AUTO 记下 FAIL，逼出「gen_docs×2 + build×2」循环。
+    包内一致性的**构建后守卫**在 `build.sh` 末尾（`gen_docs.py --cmp-app`，毫秒级）。
+    测试钩子：`SLCN_APP_DIR` 可覆盖包内 Engine 目录（供反例测试模拟「包内过期」）。
+    """
+    app_engine = os.environ.get("SLCN_APP_DIR") or os.path.join(
+        REPO, "dist", "编辑部工具箱.app", "Contents", "Resources", "Engine")
     if not os.path.isdir(app_engine):
         SKIPS.append("App 包内一致性（本机没有 dist/App；CI 正常）")
         print("SKIP  App 包内一致性（没有 dist/App）")
@@ -291,22 +311,13 @@ def check_app_bundle() -> None:
         "_slcn_gen_docs", os.path.join(HERE, "gen_docs.py"))
     gd = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gd)
-    bad = []
-    for rel in gd.APP_FILES:
-        if not _same(os.path.join(ENGINE, rel), os.path.join(app_engine, rel)):
-            bad.append(rel)
+    ok, same, bad = gd.app_cmp(app_engine)
     if bad:
         FAILS.append(f"App 包内引擎过期：{bad[:5]}")
-        print(f"FAIL  App 包内一致性（{len(bad)} 个文件不同）")
+        print(f"FAIL  App 包内一致性（{len(bad)}/{len(gd.APP_FILES)} 个文件不同："
+              + "、".join(bad[:5]) + "）")
     else:
-        print("PASS  App 包内一致性（引擎文件与仓库逐字节相同）")
-
-
-def _same(a: str, b: str) -> bool:
-    try:
-        return open(a, "rb").read() == open(b, "rb").read()
-    except OSError:
-        return False
+        print(f"PASS  App 包内一致性（{len(same)}/{len(gd.APP_FILES)} 个引擎文件与仓库逐字节相同）")
 
 
 def check_deep() -> None:
@@ -345,6 +356,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-tests", action="store_true", help="不跑引擎套件")
     ap.add_argument("--skip-docs", action="store_true", help="不跑文档看门狗")
     ap.add_argument("--no-cases", action="store_true", help="不查案例库（CI/无笔记仓时）")
+    ap.add_argument("--skip-app", action="store_true",
+                    help="不查 App 包内一致性（O9：test_selfcheck 用它拆掉对 App 新鲜度的依赖；"
+                         "构建后守卫在 build.sh 末尾的 gen_docs.py --cmp-app）")
     ap.add_argument("--deep", action="store_true", help="加 docx_audit 全库体检")
     ap.add_argument("--corpus", action="store_true", help="加 corpus 全库回归（慢）")
     args = ap.parse_args(argv)
@@ -372,7 +386,11 @@ def main(argv: list[str] | None = None) -> int:
         check_cases()
     else:
         SKIPS.append("案例检查（--no-cases）")
-    check_app_bundle()
+    if not args.skip_app:
+        check_app_bundle()
+    else:
+        SKIPS.append("App 包内一致性（--skip-app；构建后由 build.sh 末尾 cmp 守卫）")
+        print("SKIP  App 包内一致性（--skip-app；构建后由 build.sh 末尾 cmp 守卫）")
     if args.deep:
         check_deep()
     if args.corpus:

@@ -2208,7 +2208,8 @@ with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
         _states = {
             (7950, 971, 29, 498, 473),      # B3 apply 前
             (7950, 971, 29, 0, 971),        # B3 apply 后
-            (7067, 908, 24, 0, 908),        # 重复合并 apply 后（7950-883，editor 记录随合并减少）
+            (7067, 908, 24, 0, 908),        # 第一批合并 apply 后（7950-883）
+            (7051, 905, 24, 0, 905),        # 第二批合并 apply 后（7067-16，含 Segerberg 书版子集）
         }
         _state = (real.get("records"), real.get("with_editor"), real.get("editor_only"),
                   real.get("changes"), real.get("skips"))

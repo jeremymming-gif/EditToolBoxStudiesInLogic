@@ -289,6 +289,67 @@ with tempfile.TemporaryDirectory(prefix="bibdb_merge_apply_") as tmp:
           r.returncode == 0 and p2.get("clusters_applied") == 0
           and read_bytes(db) == digest_after, json.dumps(p2, ensure_ascii=False)[:200])
 
+# ══ ⑨ 第二批：人工簇按 decisions 合并（第四十四批） ══
+print("\n── ⑨ --decisions：人工簇按建议类型合并 ──")
+
+with tempfile.TemporaryDirectory(prefix="bibdb_merge_decisions_") as tmp:
+    db = os.path.join(tmp, "decisions.jsonl")
+    pairs_path = os.path.join(tmp, "duplicates.csv")
+    # 两条同作品记录但类型不同（article vs report）→ dry-run 判 manual
+    TYPED = """\
+@article{confA1,
+  author = {John Smith}, title = {Typed Work}, journal = {J}, year = {2003}
+}
+@report{confA2,
+  author = {Smith, John}, title = {{Typed Work}}, year = {2003}
+}
+@article{keepB1,
+  author = {Ann Lee}, title = {Keep Thesis}, journal = {J}, year = {2004}
+}
+@report{keepB2,
+  author = {Lee, Ann}, title = {{Keep Thesis}}, year = {2004}
+}
+"""
+    store = bibdb.Store.load(db, create=True)
+    store.import_bib_text(TYPED, SOURCE, verified=True)
+    store.save()
+    with open(pairs_path, "w", encoding="utf-8-sig", newline="") as fh:
+        fh.write("pair_no,similarity,key_a,key_b\n"
+                 "D0001,1.0000,confA1,confA2\nD0002,1.0000,keepB1,keepB2\n")
+    out1 = os.path.join(tmp, "plan")
+    run_cli("merge-duplicates", "--db", db, "--pairs", pairs_path,
+            "--out-dir", out1)
+    plan = json.load(open(os.path.join(out1, "DUPLICATES-MERGE-PLAN.json"), encoding="utf-8"))
+    manual = {tuple(c["keys"]): c for c in plan["manual_clusters"]}
+    check("⑨ dry-run：两簇因类型冲突判人工（未合并）",
+          len(manual) == 2 and all(c["action"] == "manual" for c in plan["clusters"]))
+    decisions = [{"keys": list(manual[("confA1", "confA2")]["keys"]),
+                  "entry_type": "report", "note": "按建议合并"}]
+    decisions_path = os.path.join(tmp, "decisions.json")
+    with open(decisions_path, "w", encoding="utf-8") as fh:
+        json.dump(decisions, fh, ensure_ascii=False)
+    backup = os.path.join(tmp, "backup.jsonl")
+    with open(backup, "wb") as fh:
+        fh.write(read_bytes(db))
+    r = run_cli("merge-duplicates", "--db", db, "--apply", "--backup", backup,
+                "--plan", os.path.join(out1, "DUPLICATES-MERGE-PLAN.json"),
+                "--decisions", decisions_path,
+                "--out-dir", os.path.join(tmp, "applied2"), "--json")
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    after = bibdb.Store.load(db)
+    merged = next((rec for rec in after.records()
+                   if "Typed Work" in str((rec.get("fields") or {}).get("title", ""))), None)
+    check("⑨ decisions 合并：1 簇、记录 4→3、类型=report、人工簇（未给 decision）保持两条",
+          r.returncode == 0 and payload.get("clusters_applied") == 1
+          and payload.get("records_after") == 3
+          and merged is not None and merged["entry_type"] == "report"
+          and after.get("keepB1") is not None and after.get("keepB2") is not None,
+          json.dumps(payload, ensure_ascii=False)[:300])
+    md2 = os.path.join(tmp, "applied2", "MERGE-APPLY2-2026-10-19.md")
+    check("⑨ 第二批报告：含决策表/类型存疑标注/回滚命令",
+          os.path.isfile(md2) and "本次人工簇决策" in open(md2, encoding="utf-8").read()
+          and "回滚" in open(md2, encoding="utf-8").read())
+
 print()
 if FAILS:
     print(f"失败 {len(FAILS)} 项：{FAILS!r}")

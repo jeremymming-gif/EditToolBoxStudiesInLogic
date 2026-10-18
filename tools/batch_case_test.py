@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import hashlib
 import json
 import os
@@ -135,10 +136,11 @@ except Exception:  # pragma: no cover
 HOME = Path.home()
 DEFAULT_OUT_ROOT = Path("/tmp/batch_case_test")
 DEFAULT_WORKSPACES = {
-    "90": HOME / "Desktop" / "macCaseTest",
+    "90": HOME / "Desktop" / "macCaseTest90",   # 用户 2026-10-18 迁移（旧 macCaseTest 已不存在）
     "87": HOME / "Desktop" / "macCaseTest87",
     "88": HOME / "Desktop" / "macCaseTest88",   # 7 篇英文（Word/LaTeX 混合）
     "89": HOME / "Desktop" / "macCaseTest89",   # 5 篇 LaTeX 子集
+    "86": HOME / "Desktop" / "macCaseTest86",   # 10 篇（第四十四批新增；Word/LaTeX 混合）
 }
 MANUSCRIPTS_DEFAULT = ROOT.parent / "Studies_in_Logic_Database"
 MANUAL_ROOTS = {
@@ -146,8 +148,13 @@ MANUAL_ROOTS = {
     "87": "2026年第2期(87)",
     "88": "2026年第3期(88)",
     "89": "2026年第4期(89)",
+    "86": "2026年第1期(86)",
 }
-DEFAULT_ISSUE_ORDER = ("90", "87", "88", "89", "repo")  # 已知工作区先跑，repo 扫描最后
+DEFAULT_ISSUE_ORDER = ("90", "87", "88", "89", "86", "repo")  # 已知工作区先跑，repo 扫描最后
+
+# O10（第四十四批）：相似度性能阈值——ref+gen 超过该字符数时降级为行级/前缀快速指标
+SIM_FULL_MAX_CHARS = 30000
+SIM_FAST_CAP = 20000
 
 # 全量基准（task-40）：repo 扫描时跳过 Desktop 已覆盖的期（避免重复跑）
 REPO_SKIP_ISSUE_CODES = frozenset({"87", "88", "89", "90"})
@@ -252,6 +259,29 @@ def default_cases() -> list[CaseSpec]:
         cases.append(CaseSpec(key=f"89-{no}", issue="89", author=author,
                               author_dir=author, manual_dir=f"{no} {author}",
                               source=source))
+    # 期 86（第四十四批新增；Desktop macCaseTest86 子案例 1..10 ↔ 稿件仓 01..10，
+    # 映射按人工成品 PDF 标题核对；4/5 为 LaTeX，5 带 SLCN.sty+bib）
+    for no, author, source in (
+        ("01", "Yu_Chen", "1/广义论证理论视域下视频公益广告的多模态说服传播【修改稿3】.docx"),
+        ("02", "Han_Mei", "2/以广义论证为视角解读《孙子兵法》战略三篇论证 - 洁净修改稿.docx"),
+        ("03", "Xiaohua_Wu", "3/(修改定稿1）广义论证视域下苗族“蒙脸”占卜仪式的说理研究——基于“问亡灵”仪轨的“细描”.docx"),
+        ("04", "Zuojun_Xiong", "4/SL-Logic of Secrets and Exclusive Knowledge .tex"),
+        ("05", "WeiNong_Li", "5/qiudejun0724.tex"),
+        ("06", "Zhenzhong_Zhou", "6/真理论的目标、结构与方法 - 稿件作者校对.docx"),
+        ("07", "Long_Chen", "7/返修版（无修订标记）-驳斥逻辑多元论—基于逻辑中隐式与显式立场.docx"),
+        ("08", "LingXin_Cai", "8/密涅瓦猫头鹰问题的困境与自然规范性出路 20260114.docx"),
+        ("09", "Zhien_Bei", "9/《命题的优先性》述评（最新修改版）.docx"),
+        ("10", "Qiqi_Wang", "10/专访蒂莫西·威廉姆森教授（校正0916）.docx"),
+    ):
+        idx = str(int(no))
+        manual_bib = "reference.bib"
+        if no == "05":
+            manual_bib = "WeiNong_Li.bib"
+        elif no == "08":
+            manual_bib = "LingXin_Cai.bib"
+        cases.append(CaseSpec(key=f"86-{no}", issue="86", author=author,
+                              author_dir=idx, manual_dir=f"{no} {author}",
+                              source=source, manual_bib=manual_bib))
     return cases
 
 
@@ -914,7 +944,7 @@ def write_cases_csv(path: Path, run: dict) -> None:
               "cite", "manual_cite", "section", "manual_section",
               "equation", "tabular", "figure", "missing_char", "n_errors",
               "undef_cite", "undef_ref", "dangling", "unused", "placeholder",
-              "sim_raw", "sim_content", "l2", "l3", "elapsed_s",
+              "sim_mode", "sim_raw", "sim_content", "l2", "l3", "elapsed_s",
               "error_code", "error_signature", "findings"]
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
@@ -946,6 +976,7 @@ def write_cases_csv(path: Path, run: dict) -> None:
                 "undef_ref": log.get("undefined_reference"),
                 "dangling": clo.get("n_dangling"), "unused": clo.get("n_unused"),
                 "placeholder": tex.get("placeholder_any"),
+                "sim_mode": sim.get("mode", ""),
                 "sim_raw": sim.get("raw"), "sim_content": sim.get("content"),
                 "l2": sim.get("l2"), "l3": sim.get("l3"),
                 "elapsed_s": m.get("elapsed_s"),
@@ -1068,6 +1099,47 @@ def plan_ai_status(plan_rc: int | None, ai_n: int | None) -> bool | None:
     return ai_n == 0
 
 
+def similarity_choice(man_text: str, gen_text: str, requested: str = "auto") -> str:
+    """相似度口径：none/full/auto——auto 时 ref+gen > SIM_FULL_MAX_CHARS 降级 fast。"""
+    if requested in ("none", "full"):
+        return requested
+    total = len(man_text or "") + len(gen_text or "")
+    return "full" if total <= SIM_FULL_MAX_CHARS else "fast"
+
+
+def _fast_similarity(man_text: str, gen_text: str) -> dict:
+    """O10 快速指标：行级 difflib + 前缀 quick_ratio（O(n)，不再做全文 token 级比对）。
+
+    精度与 `slcn.score` 的全文指标不同（content 为上界近似），报告/cases.csv 用 `mode` 标注；
+    只用于「大差异大稿」的排序参考，不影响 P0/P1/P2 判定（分级不读相似度）。
+    """
+    ref_n = _score.normalize_ws(man_text or "")
+    gen_n = _score.normalize_ws(gen_text or "")
+    raw = difflib.SequenceMatcher(None, ref_n.split("\n"), gen_n.split("\n"),
+                                  autojunk=False).ratio()
+    ref_c = ref_n.replace("\n", "")
+    gen_c = gen_n.replace("\n", "")
+    content = difflib.SequenceMatcher(
+        None, ref_c[:SIM_FAST_CAP], gen_c[:SIM_FAST_CAP], autojunk=False).quick_ratio()
+    return {"mode": "fast", "raw": round(raw, 4), "content": round(content, 4),
+            "l2": None, "l3": None, "ref_chars": len(ref_c)}
+
+
+def compute_similarity(man_text: str, gen_text: str, requested: str = "auto") -> dict:
+    """按口径算相似度：none=跳过；full=引擎 slcn.score；auto=小稿 full、大稿 fast。"""
+    mode = similarity_choice(man_text, gen_text, requested)
+    if mode == "none":
+        return {"mode": "skipped"}
+    if mode == "full":
+        sc = _score.score(man_text, gen_text)
+        return {"mode": "full", "raw": round(float(sc.raw_ratio), 4),
+                "content": round(float(sc.char_accuracy), 4),
+                "l2": int(getattr(sc, "l2_blocks", 0) or 0),
+                "l3": int(getattr(sc, "l3_blocks", 0) or 0),
+                "ref_chars": int(getattr(sc, "ref_chars", 0) or 0)}
+    return _fast_similarity(man_text, gen_text)
+
+
 def convert_common_args(case: CaseSpec, src: Path, out_root: Path,
                         workspace: Path, use_metadata: bool = True) -> tuple[list[str], dict]:
     """拼 `convert.py` 的公共参数（source/out/name/附加源/extra_args），纯函数便于单测。
@@ -1141,7 +1213,7 @@ def ensure_docx(src: Path, workdir: Path, logs_dir: Path, env: dict) -> tuple[Pa
 
 def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
              py: str, env: dict, timeout: float, compare: bool,
-             use_metadata: bool = True) -> dict:
+             use_metadata: bool = True, similarity: str = "auto") -> dict:
     """跑一个案例：pass1 转换+编译 → 两遍 sha → 判据采集 → 人工对照。"""
     author, key = case.author, case.key
     out_name = sanitize_output_name(author)   # 产物目录名（repo 作者名可能含空格/中文）
@@ -1232,17 +1304,12 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     man = manual_metrics(case, man_root, workdir, py, env, logs_dir) if compare else None
     m["manual"] = man
 
-    # 6b) 相似度（生成 vs 人工正文；复用引擎 slcn.score，与 corpus 同一口径）
+    # 6b) 相似度（O10：auto 大稿降级 fast；--no-similarity / --full-similarity 可覆盖）
     if man and man.get("exists", {}).get("tex") and tex_p.is_file():
         try:
-            sc = _score.score(read_text(man["tex"]), gen_tex_text)
-            m["similarity"] = {"raw": round(float(sc.raw_ratio), 4),
-                               "content": round(float(sc.char_accuracy), 4),
-                               "l2": int(getattr(sc, "l2_blocks", 0) or 0),
-                               "l3": int(getattr(sc, "l3_blocks", 0) or 0),
-                               "ref_chars": int(getattr(sc, "ref_chars", 0) or 0)}
+            m["similarity"] = compute_similarity(read_text(man["tex"]), gen_tex_text, similarity)
         except Exception as exc:  # noqa: BLE001
-            m["similarity"] = {"error": str(exc)[:120]}
+            m["similarity"] = {"mode": "error", "error": str(exc)[:120]}
 
     # 7) 文献回读校验（生成 bib vs 人工 bib；键方案不同，闭合以直接计算为准）
     if man and man.get("exists", {}).get("bib") and bib_p.is_file():
@@ -1326,6 +1393,10 @@ def render_report(run: dict) -> str:
                  f"日志确认「预计 AI：0 次」；未验证 {len(totals.get('zero_cost_unverified') or [])} 个"
                  f"（转换/算账未成功，见报告 §9b 明细）"
                  + ("" if totals.get("zero_cost_ok") else "；❌ 有已确认违规，见 P0 `ZERO_COST`"))
+    lines.append(f"- 相似度口径：`{run.get('similarity_mode', 'auto')}`"
+                 + ("（`--no-similarity` 已跳过）" if run.get("similarity_mode") == "none"
+                    else "（`--full-similarity` 全文指标）" if run.get("similarity_mode") == "full"
+                    else "（O10 auto：ref+gen > 30000 字符降级行级/前缀快速指标，mode 列标注）"))
     if run.get("metadata_disabled"):
         lines.append("- **A2-only 口径**：`--no-metadata` 已启用——manifest 的附加源（如 90-03 的 "
                      "`yalcin puzzle.tex`）**不传给** `convert.py`，用于单独评估引擎通用发现规则；"
@@ -1643,9 +1714,11 @@ def run_batch(args: argparse.Namespace) -> int:
         print(f"[限制] 只跑前 {len(cases)} 个案例（--limit）")
 
     metadata_disabled = bool(getattr(args, "no_metadata", False))
+    sim_mode = ("none" if getattr(args, "no_similarity", False)
+                else ("full" if getattr(args, "full_similarity", False) else "auto"))
     run: dict = {
         "run_id": args.label or out_root.name,
-        "metadata_disabled": metadata_disabled,
+        "metadata_disabled": metadata_disabled, "similarity_mode": sim_mode,
         "started": now_iso(), "out_dir": str(out_root), "python": py,
         "engine_version": ENGINE_VERSION, "git_head": repo_start["head"],
         "repo_start": repo_start, "workspaces": {k: str(v) for k, v in workspaces.items()},
@@ -1669,7 +1742,7 @@ def run_batch(args: argparse.Namespace) -> int:
         else:
             m = run_case(case, ws, mroot, out_root, py, env,
                          argv_timeout(args.timeout), compare=not args.no_compare,
-                         use_metadata=not metadata_disabled)
+                         use_metadata=not metadata_disabled, similarity=sim_mode)
             m["channel"] = "latex" if str(m.get("source", "")).endswith(".tex") else "word"
             if (m.get("plan") or {}).get("ai_zero") is False and not m.get("skipped"):
                 run["zero_cost"]["violations"].append(case.key)
@@ -1828,12 +1901,13 @@ def run_self_test() -> int:
             "n_cited": 2, "n_bib": 1, "dangling": ["B"], "unused": [],
             "n_dangling": 1, "n_unused": 0})
     dc = default_cases()
-    check("默认清单：90(10)→87(9)→88(7)→89(5) 共 31 篇",
+    check("默认清单：90(10)→87(9)→88(7)→89(5)→86(10) 共 41 篇",
           [c.issue for c in dc[:10]] == ["90"] * 10
           and [c.issue for c in dc[10:19]] == ["87"] * 9
           and [c.issue for c in dc[19:26]] == ["88"] * 7
-          and [c.issue for c in dc[26:]] == ["89"] * 5
-          and len(dc) == 31)
+          and [c.issue for c in dc[26:31]] == ["89"] * 5
+          and [c.issue for c in dc[31:]] == ["86"] * 10
+          and len(dc) == 41)
     check("期 87 子案例编号 ↔ 作者映射（1=Kun_Xing … 9=Wei_Chen）",
           [c.author for c in default_cases() if c.issue == "87"] ==
           ["Kun_Xing", "Wenjing_Du", "Fayang_Ye", "Pengfei_Song", "Ruixue_Tang",
@@ -1892,6 +1966,13 @@ def run_self_test() -> int:
           and plan_ai_status(0, 0) is True
           and plan_ai_status(0, 3) is False
           and plan_ai_status(2, None) is None)
+    check("O10 相似度：口径选择 + fast/full/none 行为",
+          similarity_choice("aa", "bb", "auto") == "full"
+          and similarity_choice("甲" * 20000, "乙" * 20000, "auto") == "fast"
+          and similarity_choice("aa", "bb", "full") == "full"
+          and similarity_choice("aa", "bb", "none") == "none"
+          and compute_similarity("x", "x", "none") == {"mode": "skipped"}
+          and compute_similarity("a\n" * 20000, "a\n" * 20000, "auto")["mode"] == "fast")
     check("benchmark：issue code 解析 + dashboard 聚合 + 估计函数",
           _parse_issue_code("2026年第2期(87)") == "87"
           and _parse_issue_code("2022年第6A期(67A)") == "67A"
@@ -1930,6 +2011,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--python", default="", help="子进程解释器（默认当前解释器）")
     ap.add_argument("--timeout", type=float, default=600.0, help="单案例子进程超时秒（默认 600）")
     ap.add_argument("--no-compare", action="store_true", help="不读稿件仓人工成品（只做绝对判据）")
+    sim_g = ap.add_mutually_exclusive_group()
+    sim_g.add_argument("--no-similarity", action="store_true",
+                       help="跳过相似度计算（最快；相似度列留空）")
+    sim_g.add_argument("--full-similarity", action="store_true",
+                       help="强制全文 slcn.score 指标（最慢，仅校准时用）")
     ap.add_argument("--no-metadata", action="store_true",
                     help="忽略 manifest 的附加源（--metadata），模拟仅靠引擎通用发现（A2-only 口径）")
     ap.add_argument("--repo-scan", action="store_true",
