@@ -44,3 +44,7 @@ tools/dump_outline
 docs/node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+
+# 部分 mac 用户的全局 gitignore 有 `Icon?` 规则，会误伤站点图标目录 → 显式反忽略
+!docs/public/icons/
+!docs/public/icons/**
