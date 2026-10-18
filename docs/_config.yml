@@ -1,0 +1,9 @@
+title: 编辑部工具箱
+description: 《逻辑学研究》编辑部的稿件处理工具箱 —— Word/LaTeX 初排、参考文献核实、整期装配与引用库。
+theme: jekyll-theme-cayman
+show_downloads: true
+github:
+  repository_url: https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic
+  # 两个下载按钮都指到「最新 release」页面（里面有 mac / Windows 两个包）
+  zip_url: https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest
+  tar_url: https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest
