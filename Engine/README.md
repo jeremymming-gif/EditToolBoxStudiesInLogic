@@ -118,14 +118,14 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**45 套件 / 1781 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**45 套件 / 1786 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_authornorm` 70
 `test_bare_email` 30 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibreport_note_and_clause` 49
 `test_checkbib` 118 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39
 `test_cn_journal_numbered` 34 ｜ `test_coauthor_en` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_en_abstract_sibling` 5
 `test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12
-`test_incollection_fields` 36 ｜ `test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_preamble` 45
+`test_incollection_fields` 36 ｜ `test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_preamble` 50
 `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
 `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
 `test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36
@@ -156,7 +156,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，9 个标�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**250 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 01:05:56`；`HEAD` = `f8a5de7`；`git status --porcelain` **7** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-18 11:32:38`；`HEAD` = `e9c67d0`；`git status --porcelain` **4** 行
 <!-- AUTO:STATE:END -->
 
 ---

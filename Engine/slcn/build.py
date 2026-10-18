@@ -638,7 +638,8 @@ def build_latex(
         expanded_inputs = stats.get("expanded", 0)  # 只算真正展开成功的（注释/缺失不算）
     body = extract_body_text(raw_body)
     pre_plan = PRE.plan_migration(
-        meta_text, tpl, sty_text, tpl_sel.sty_name, body
+        meta_text, tpl, sty_text, tpl_sel.sty_name, body,
+        source_dir=os.path.dirname(os.path.abspath(body_path)),
     )
     if pre_plan.lines:
         tpl = PRE.insert_lines(tpl, pre_plan.lines, HYPERREF_ANCHOR)

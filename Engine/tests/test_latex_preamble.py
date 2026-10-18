@@ -377,6 +377,41 @@ check("⑤ 无 .bib 而正文有引用时明确警告（不再静默）",
 check("⑤ BuildResult 默认 expanded_inputs=0（Word 通道不受影响）",
       build.BuildResult("t", None, None).expanded_inputs == 0)
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ 本地旧 .sty 的定理环境迁移（第 127 条，期 87 02 Kun_Xing 实测）
+# ══════════════════════════════════════════════════════════════════════════
+# 作者交来的是旧版本刊模板稿：`\usepackage{SLCN}` 的同目录 `SLCN.sty` 里定义了
+# 一批定理环境（模板 SLCN-MIX 没有 fact）。旧 sty 被当「模板管理的包」整份跳过 →
+# 正文 `\begin{fact}` 编译失败（Environment fact undefined）。修法：从本地旧 sty
+# 里**只搬正文用到、模板又缺的定理/环境定义**；旧 sty 对版式的重定义不许搬。
+write("oldsty/SLCN.sty", r"""\newtheoremstyle{mythm}{3pt}{3pt}{}{}{\bfseries}{}{5mm}{}
+\theoremstyle{mythm}
+\newtheorem{definition}{\hspace{2em}{\bf{定义}}}
+\newtheorem{fact}{\hspace{2em}{\bf{事实}}}
+\newtheorem{unusedenv}{\hspace{2em}{\bf{没用}}}
+\renewenvironment{proof}[1][证明]{\textbf{#1:~~~}}{\hfill$\square$}
+""")
+write("oldsty/main.tex", r"""\documentclass{article}
+\usepackage{SLCN}
+\begin{document}
+\begin{fact}\label{F1}
+事实正文。
+\end{fact}
+\end{document}
+""")
+_res6, _tex6 = build_one("oldsty/main.tex", "oldsty")
+check("⑥ 本地旧 .sty：正文用到的 fact 定义被搬进产物",
+      "\\newtheorem{fact}" in _tex6)
+check("⑥ 本地旧 .sty：未用到的定义不搬（unusedenv）",
+      "unusedenv" not in _tex6)
+check("⑥ 本地旧 .sty：模板已有的 definition 不重复搬（模板那份在 SLCN-MIX.sty 里，.tex 里应为 0）",
+      _tex6.count("\\newtheorem{definition}") == 0,
+      str(_tex6.count("\\newtheorem{definition}")))
+check("⑥ 本地旧 .sty：旧 sty 的版式重定义不搬（proof）",
+      "\\renewenvironment{proof}" not in _tex6)
+check("⑥ 本地旧 .sty：旧 sty 不作为宏包搬（不出现 \\usepackage{SLCN}）",
+      "\\usepackage{SLCN}" not in _tex6)
+
 shutil.rmtree(TMP, ignore_errors=True)
 
 print(f"\n{'=' * 66}")

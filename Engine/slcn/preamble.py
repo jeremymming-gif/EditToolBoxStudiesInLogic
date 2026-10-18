@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -287,12 +288,42 @@ def tikz_lib_names(text: str) -> set[str]:
     return out
 
 
+def local_sty_text(source_text: str, source_dir: str) -> str:
+    """作者稿同目录下、被 `\\usepackage` 引用的本地 .sty 文件的文本。
+
+    第 127 条（期 87 02 Kun_Xing 实测）：作者交来的是**旧版本刊模板稿**，
+    `\\usepackage{SLCN}` 引用的同目录 `SLCN.sty` 里定义了一批定理环境
+    （`\\newtheorem{fact}{事实}` 等），而现行模板 SLCN-MIX 里没有 `fact`。
+    旧 .sty 被当成「模板管理的包」整份跳过 → 正文 `\\begin{fact}` 编译失败。
+    这里只取文本，由 `plan_migration` **只搬正文真正用到、模板又缺的定义**；
+    旧 sty 里对版式的重定义（如 `\\renewenvironment{proof}`）不搬。
+    """
+    if not source_dir or not os.path.isdir(source_dir):
+        return ""
+    pre = source_preamble(source_text)
+    chunks: list[str] = []
+    seen: set[str] = set()
+    for pkg in sorted(package_names(pre)):
+        for cand in (f"{pkg}.sty", f"{pkg.lower()}.sty"):
+            path = os.path.join(source_dir, cand)
+            if os.path.isfile(path) and path not in seen:
+                seen.add(path)
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        chunks.append(f.read())
+                except OSError:
+                    pass
+                break
+    return "\n".join(chunks)
+
+
 def plan_migration(
     source_text: str,
     skeleton_text: str,
     sty_text: str,
     template_sty_name: str = "",
     body_text: str = "",
+    source_dir: str = "",
 ) -> PreamblePlan:
     """把作者稿前言与模板做差集，返回要插入的依赖行。
 
@@ -355,6 +386,20 @@ def plan_migration(
         plan.lines.append(item.source.strip())
         plan.definitions.append(item.name)
         names.add(item.name)
+
+    # 本地旧 .sty 里的定理/环境定义：只搬「正文确实 \\begin{...} 用到、模板又没有」的
+    # （第 127 条）。旧 sty 往往还把版式重定义了一遍，整份搬会破坏现行模板。
+    if source_dir:
+        env_used = set(re.findall(
+            r"\\begin\s*\{\s*([A-Za-z@][A-Za-z@0-9]*)\s*\}", body_text or ""))
+        for item in scan_preamble(local_sty_text(source_text, source_dir)):
+            if item.kind not in ("newtheorem", "newenvironment"):
+                continue
+            if item.name in names or item.name not in env_used:
+                continue
+            plan.lines.append(item.source.strip())
+            plan.definitions.append(item.name)
+            names.add(item.name)
 
     # 正文里用到、但作者前言/模板都没加载对应宏包的**符号类**宏 → 自动补宏包。
     # ⚠️ 作者自己 `\newcommand{\llbracket}` 时不能再补 stmaryrd（会 already defined；

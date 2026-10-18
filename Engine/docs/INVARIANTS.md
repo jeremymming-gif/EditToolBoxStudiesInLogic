@@ -80,7 +80,11 @@
    `Engine/tests/test_platform.py`；重活还要走 `Engine/README.md` 的「固定验收链条」。本文件自己的路径引用也在 (b) 组检查范围内。
 5. **LaTeX 前言依赖迁移只增不改**（第 120 条）：只搬模板没有的宏包 / tikz 库 / 定义；模板管理的包
    （ctex / fontspec / geometry / hyperref / biblatex / 本刊 sty）不搬；Word 通道产物必须零变化。
-   位置：`Engine/slcn/preamble.py`；`Engine/tests/test_latex_preamble.py`。
+   **第 127 条补充**：模板管理项被跳过时，其**定义**仍要按差集核对——作者同目录、被
+   `\usepackage` 引用的本地旧 `.sty` 里，正文 `\begin{env}` 用到而模板缺的
+   `\newtheorem`/`\newenvironment` 要搬；旧 sty 的版式重定义（`\renewenvironment` 等）不搬。
+   位置：`Engine/slcn/preamble.py`（`local_sty_text` / `plan_migration(source_dir=)`）；
+   `Engine/tests/test_latex_preamble.py` ⑥ 组。
 6. **英文稿判据只作用于全英文稿**（第 121 条）：英文脚注降级 / 英文全名参考文献 / 无样式小标题
    三条判据都以「正文无汉字」为前提，或以「不含中文」为逐条条件——中文稿（含中英混排）产物
    必须逐字节不变（用例一 10 篇回归 10/10 相同）。位置：`Engine/slcn/docxsource.py`
