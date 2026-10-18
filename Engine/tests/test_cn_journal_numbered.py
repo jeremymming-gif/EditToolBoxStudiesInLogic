@@ -256,6 +256,19 @@ check("⑦ 写歪一条后，编号清单收下 4 条（漏括号已补，不再
 check("⑦ 四条都在（含写歪的 Title Two）",
       sum(1 for t in _titles2 if t in ("Title One", "Title Two", "Title Three", "Title Four")) == 4,
       str(_titles2))
+# 第四十五批 A2 回归（task-58）：新增的「引号题名 + URL / APA」人年制兜底也不得
+# 抢编号清单行（曾把 `[1] … “Title”, …` 解析成 refs=4 → 编号通道被覆盖条数挤掉）。
+NUM_LOOSE_SHAPED = [
+    "[1] A. Author, 2020, “Title One”, https://example.org/one.",
+    "[2] B. Author, 2021, “Title Two”, Unpublished manuscript.",
+]
+src2b = make_docx(["论编号清单与引号题名兜底", "作者",
+                   "摘要：测试。", "关键词：测试"] + BODY + ["参考文献"] + NUM_LOOSE_SHAPED)
+doc2b = parse_docx(src2b)
+check("⑦ 新兜底（引号题名+URL 形态）不抢编号清单：bib_entries=2、refs=0",
+      len(doc2b.bib_entries) == 2 and len(doc2b.refs) == 0,
+      f"bib_entries={len(doc2b.bib_entries)} refs={len(doc2b.refs)}")
+
 # 反例：真正的中文逗号风格（**不带编号**）仍走人年制通道，不能反过来被编号通道吞掉
 CN_PLAIN = [
     "陈清泚，“论证研究的认知社会学路径”，《自然辩证法研究》，2020年第2期，第103–108页。",

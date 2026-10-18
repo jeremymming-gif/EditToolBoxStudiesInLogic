@@ -1344,9 +1344,11 @@ with tempfile.TemporaryDirectory(prefix="bibdb_normalize_") as tmp:
     check("(p) `normalize --out-dir --json` 退出 0、生成 md + json 报告",
           r.returncode == 0 and os.path.isfile(report_md) and os.path.isfile(report_json),
           (r.stdout + r.stderr)[-400:])
-    check("(p) --json 摘要：记录数 / 语义 3 / 仅格式 1 / 异常 1",
-          payload.get("records") == 5 and payload.get("semantic") == 3
-          and payload.get("format_only") == 1 and payload.get("errors") == 1
+    # 第四十五批：连字符字段（posted-at）现在能被正确解析 → Risk2001 由「语义变更」
+    # 降为「仅格式变化」；语义 2 / 仅格式 2 / 异常 1。
+    check("(p) --json 摘要：记录数 / 语义 2 / 仅格式 2 / 异常 1",
+          payload.get("records") == 5 and payload.get("semantic") == 2
+          and payload.get("format_only") == 2 and payload.get("errors") == 1
           and payload.get("db_unchanged") is True,
           json.dumps({k: payload.get(k) for k in
                       ("records", "semantic", "format_only", "errors", "db_unchanged")},
@@ -1359,7 +1361,7 @@ with tempfile.TemporaryDirectory(prefix="bibdb_normalize_") as tmp:
     check("(p) 报告头部：标题 + 跑前/跑后 sha256 + 三类统计",
           "B1 确定性规范化 dry-run 报告" in text
           and "库 sha256（跑前）" in text and "库 sha256（跑后）" in text
-          and "语义变更 3 条" in text and "仅格式变化 1 条" in text
+          and "语义变更 2 条" in text and "仅格式变化 2 条" in text
           and "异常 1 条" in text and "未改动库" in text, text[:800])
     check("(p) 报告头部写明「dry-run 不写库 / 无时间戳 / --apply 留给后续批次」",
           "dry-run 只算不写" in text and "不含生成时间戳" in text
@@ -1372,18 +1374,18 @@ with tempfile.TemporaryDirectory(prefix="bibdb_normalize_") as tmp:
           and "版次（`edition`）" in text, text[:1800])
     check("(p) 高危形状风险：非标准字段名 `posted-at` 被点名",
           "高危形状风险" in text and "`posted-at`" in text and "拆分/改名" in text)
-    check("(p) 逐条语义变更明细含三个 key 与旧值→新值",
-          "逐条语义变更（3 条" in text
-          and all(key in text for key in ("Cn2020", "EngBook1999", "Risk2001"))
+    check("(p) 逐条语义变更明细含两个 key 与旧值→新值",
+          "逐条语义变更（2 条" in text
+          and all(key in text for key in ("Cn2020", "EngBook1999"))
           and "→" in text, text[-1800:])
-    check("(p) 异常清单：Bad1999 + 未配对引号原因（不静默吞）",
+    check("(p) 异常清单：Bad1999 + 引号未闭合原因（不静默吞）",
           "异常清单（1 条" in text and "Bad1999" in text
-          and "未配对的引号" in text, text[-1200:])
+          and ("未配对的引号" in text or "引号值未闭合" in text), text[-1200:])
     payload_json = json.loads(_read_text(report_json)) if os.path.isfile(report_json) else {}
     check("(p) JSON 报告：语义/异常逐条明细 + 库未改动",
           payload_json.get("db_unchanged") is True
           and {row["key"] for row in payload_json.get("semantic_entries") or []}
-          == {"Cn2020", "EngBook1999", "Risk2001"}
+          == {"Cn2020", "EngBook1999"}
           and [row["key"] for row in payload_json.get("error_entries") or []] == ["Bad1999"],
           json.dumps(payload_json, ensure_ascii=False)[:300])
     check("(p) JSON 报告带高风险记录数与风险分布（posted-at 与 值内嵌 name= 都被点名）",

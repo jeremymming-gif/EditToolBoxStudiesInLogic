@@ -43,7 +43,17 @@ _KANA = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 
 # 应从条目里删除的字段（编辑部惯例）
-DROP_FIELDS = {"urldate", "file", "abstract", "keywords", "timestamp", "owner", "groups"}
+DROP_FIELDS = {
+    "urldate", "file", "abstract", "keywords", "timestamp", "owner", "groups",
+    # Web of Science 导出（89-06 实测）：人工成品全部删除；不删会以 `2013 = {18}` /
+    # `usage-count-since-2013` 之类字段进产物（前者是非法字段名，biber 整份报废）
+    "affiliation", "affiliations", "research-areas", "web-of-science-categories",
+    "web-of-science-index", "orcid-numbers", "number-of-cited-references",
+    "times-cited", "usage-count-last-180-days", "usage-count-since-2013",
+    "journal-iso", "doc-delivery-number", "unique-id", "da",
+}
+# 前缀型垃圾字段（Zotero/Mendeley 的 bdsk-*：bdsk-url-1 等，人工成品不保留）
+DROP_FIELD_PREFIXES = ("bdsk-",)
 
 _MONTHS = {
     "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
@@ -54,7 +64,7 @@ _MONTHS = {
 def _clean_field_value(name: str, value: str) -> str | None:
     """清理单个字段值，返回 None 表示应删除该字段。"""
     v = value.strip()
-    if name in DROP_FIELDS:
+    if name in DROP_FIELDS or name.startswith(DROP_FIELD_PREFIXES):
         return None
     if name == "month":
         # ⚠️ 不要转成数字！实测人工成品保留 `nov` / `jul` 这种写法，
@@ -520,13 +530,45 @@ def strip_bib_comments(text: str) -> str:
     return re.sub(r"(?m)^[ \t]*%[^\r\n]*", "", text)
 
 
+_NON_BIB_ENTRY = re.compile(r"@(?:comment|string|preamble)\s*\{", re.I)
+
+
+def _strip_non_bib_blocks(text: str) -> str:
+    r"""删掉 `@comment{…}` / `@string{…}` / `@preamble{…}` 块（花括号配平）。
+
+    88-05 实测：JabRef 在文件末尾写 `@Comment{jabref-meta: databaseType:bibtex;}`，
+    该条目**没有逗号**；旧 `split_entries` 用「body.find(',')」会把紧随其后的
+    `@InProceedings{Mkrtychev1997_LP,` 的键一起吞进 head → 整条文献丢失、
+    正文 `\cite{Mkrtychev1997_LP}` 变成悬空引用。非文献块不是条目，直接删除。
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _NON_BIB_ENTRY.finditer(text):
+        if m.start() < pos:
+            continue
+        out.append(text[pos:m.start()])
+        depth = 0
+        j = m.end() - 1
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        pos = min(len(text), j + 1)
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def split_entries(text: str) -> list[tuple[str, str, str]]:
     """把 bib 拆成 [(条目头, 字段体, 尾), ...]，非条目文本不随条目返回。
 
     第 133 条：先剥掉**整行 `%` 注释**（`strip_bib_comments()`），注释掉的旧条目不会被
     当成真条目；返回值结构与顺序不变（正常 bib 的结果与从前逐字节相同）。
     """
-    text = strip_bib_comments(text)
+    text = _strip_non_bib_blocks(strip_bib_comments(text))
     result: list[tuple[str, str, str]] = []
     for m in re.finditer(r"@\w+\s*\{", text):
         start = m.start()
@@ -553,7 +595,7 @@ def split_entries(text: str) -> list[tuple[str, str, str]]:
 def parse_fields(fields: str) -> list[tuple[str, str]]:
     """解析 'name = {value}' 序列。"""
     out: list[tuple[str, str]] = []
-    for m in re.finditer(r"(\w+)\s*=\s*", fields):
+    for m in re.finditer(r"(?<![A-Za-z0-9_-])([A-Za-z][\w-]*)\s*=\s*", fields):
         name = m.group(1)
         i = m.end()
         while i < len(fields) and fields[i] not in "{\"":
@@ -575,7 +617,26 @@ def parse_fields(fields: str) -> list[tuple[str, str]]:
                 j += 1
             out.append((name, fields[i + 1 : j]))
         else:  # "..." 形式
-            j = fields.index('"', i + 1)
+            # ⚠️ 引号值里允许 `{...}` 组（如 `G{\"a}rdenfors`）与 `\"` 转义引号：
+            #    不能简单找下一个 `"`，否则 `Alchourr\'{o}n, C. and G{\"a}rdenfors, P.` 会被
+            #    截成 `G{\`（第 45 批 89-01 的 biber syntax error 根因）。
+            j = i + 1
+            depth = 0
+            while j < len(fields):
+                char = fields[j]
+                if char == "\\":
+                    j += 2
+                    continue
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth = max(0, depth - 1)
+                elif char == '"' and depth == 0:
+                    break
+                j += 1
+            if j >= len(fields):
+                # 引号未闭合：保持旧契约（norm 命令要把它标成「异常」而不是静默截断）
+                raise ValueError(f"字段 {name} 的引号值未闭合")
             out.append((name, fields[i + 1 : j]))
     return out
 

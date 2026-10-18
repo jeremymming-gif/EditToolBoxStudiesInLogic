@@ -365,18 +365,66 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
 # ── 参考文献定位（仅在同目录下查找，不做跨目录搜索） ──────────────────────
 
 
-def find_bib(source: str, explicit: str | None) -> str | None:
-    if explicit:
-        p = os.path.abspath(explicit)
-        if not os.path.exists(p):
-            die(f"--bib 指定的文件不存在：{p}")
-        return p
-    d = os.path.dirname(source)
-    cands = [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.lower().endswith(".bib")]
+def _bib_candidates(directory: str) -> list[str]:
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    return [os.path.join(directory, f) for f in names if f.lower().endswith(".bib")]
+
+
+def _pick_bib(cands: list[str]) -> str | None:
     if not cands:
         return None
     ref = [c for c in cands if os.path.basename(c).lower() == "reference.bib"]
     return (ref or cands)[0]
+
+
+def bib_search_dirs(source: str) -> list[tuple[str, str]]:
+    """`.bib` 的保守搜索链：源稿同目录 → 父目录（稿件根，限 1 层）。
+
+    第四十五批 A2（89-05 Zhen_Liang 实测）：源稿在 `original/` 子目录里，而
+    `reference.bib` 在**稿件根目录**（上一级）——旧实现只搜源目录 → 无 bib、
+    15 个键全悬空、30 处 undefined citation。只加一层父目录，不做递归搜索：
+    `.bib` 是作者/编辑明确放在稿件根的文件，跨目录乱搜会认错别人的 bib。
+    """
+    d = os.path.dirname(os.path.abspath(source))
+    out = [(d, "源稿同目录")]
+    parent = os.path.dirname(d)
+    if parent and parent != d:
+        out.append((parent, "源稿父目录（稿件根，限 1 层）"))
+    return out
+
+
+def find_bib_ex(source: str, explicit: str | None) -> tuple[str | None, str]:
+    """同 `find_bib()`，额外返回命中来源（日志用）。"""
+    if explicit:
+        p = os.path.abspath(explicit)
+        if not os.path.exists(p):
+            die(f"--bib 指定的文件不存在：{p}")
+        return p, "显式 --bib"
+    for directory, label in bib_search_dirs(source):
+        hit = _pick_bib(_bib_candidates(directory))
+        if hit:
+            return hit, label
+    return None, ""
+
+
+def find_bib(source: str, explicit: str | None) -> str | None:
+    return find_bib_ex(source, explicit)[0]
+
+
+def bib_origin(source: str, path: str | None) -> str:
+    """bib 路径 → 人话来源（源稿同目录 / 父目录 / 源内声明 / 其它）。"""
+    if not path:
+        return ""
+    d = os.path.dirname(os.path.abspath(source))
+    pd = os.path.dirname(os.path.abspath(path))
+    if pd == d:
+        return "源稿同目录"
+    if pd == os.path.dirname(d):
+        return "源稿父目录（稿件根，限 1 层）"
+    return "源内声明 / 显式指定"
 
 
 # ── 第 134 条（2026-10-18）：参考文献附件的「选择 / 校验 / 合并」 ─────────────
@@ -415,9 +463,11 @@ def declared_bib_path(source: str) -> str | None:
         if not name:
             continue
         cand = name if os.path.splitext(name)[1] else name + ".bib"
-        path = os.path.join(src_dir, cand)
-        if os.path.isfile(path):
-            return path
+        # 第四十五批 A2：源稿在 original/ 子目录、bib 在稿件根时也能找到（与 find_bib 同口径）
+        for directory in (src_dir, os.path.dirname(os.path.abspath(src_dir))):
+            path = os.path.join(directory, cand)
+            if os.path.isfile(path):
+                return path
     return None
 
 
@@ -1266,7 +1316,8 @@ def main() -> int:
                 # 已有「真 .bib」：直接使用，**不自动**合并附件（第 134 条）。
                 # 日志逐个列出被跳过的候选附件，便于编辑理解「为什么这次没并」。
                 _rel_real = _paths.rel(_real_bib, _src_dir)
-                print(f"  · 参考文献：{_rel_real}（真 .bib 直接使用；自动附件不合并）")
+                _origin = bib_origin(args.source, _real_bib)
+                print(f"  · 参考文献：{_rel_real}（{_origin}；真 .bib 直接使用；自动附件不合并）")
                 for _c in _inventory:
                     if _c.role != "refs":
                         continue
@@ -1420,10 +1471,14 @@ def main() -> int:
                 **overrides_kwargs(build_docx, overrides),
             )
         else:
+            _bib_path = find_bib(source, args.bib)
+            if _bib_path:
+                print(f"  · 参考文献：{os.path.basename(_bib_path)}"
+                      f"（{bib_origin(source, _bib_path)}）")
             res = build_latex(
                 source, out_dir,
                 metadata_path=metadata,
-                bib_path=find_bib(source, args.bib),
+                bib_path=_bib_path,
                 basename=stem, lang=lang,
                 sty=sel.sty, skeleton=sel.skeleton, verbose=True, meta=meta,
                 **overrides_kwargs(build_latex, overrides),

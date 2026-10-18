@@ -119,6 +119,8 @@ def split_entries(bib: str) -> list[tuple[str, str, str]]:
     （`note={50\%}`）不受影响。
     """
     bib = strip_bib_comments(bib)
+    from .bibnorm import _strip_non_bib_blocks
+    bib = _strip_non_bib_blocks(bib)
     out = []
     for m in _ENT.finditer(bib):
         i = m.end()

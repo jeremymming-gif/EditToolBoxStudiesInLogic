@@ -247,7 +247,13 @@ def parse_reference_line(line: str) -> RefEntry | None:
             return (_parse_reference_line_en(s)
                     or _parse_reference_line_en_fullname(s)   # 英文全名 + 年份在后（06 型）
                     or _parse_reference_line_cn2(s)     # 中文、年份在第 2 段
-                    or _parse_reference_line_cn(s))     # 中文、年份在其余部分
+                    or _parse_reference_line_cn(s)      # 中文、年份在其余部分
+                    # 第四十五批 A2：个人年制鲁棒性（5 期 BIB_COUNT 缺口实测）
+                    or _parse_reference_line_apa(s)       # APA：作者 (年份). 题名…
+                    or _parse_reference_line_cn_colon(s)  # 中文冒号式：作者：书名，年，出版
+                    or _parse_reference_line_cn_apa(s)   # 中文 APA：作者. (年). 题名. 刊名
+                    or _parse_reference_line_year_end(s)  # 英文、年份在行尾（旧版 APA/德式）
+                    or _parse_reference_line_loose(s))    # 引号题名 + URL/无卷期（SEP/philarchive）
         e = RefEntry(raw=s, author=m2.group("author").strip(), year=m2.group("year"))
         rest = m2.group("rest")
         # 从出版信息里猜类型：含「出版社/ Press/ University」→ 书，含卷期 → 期刊
@@ -503,6 +509,218 @@ def _parse_reference_line_cn(s: str) -> RefEntry | None:
     e = RefEntry(raw=s, author=m.group("author").strip(), year=ym.group(0),
                  title=title, kind=kind, rest=rest.strip())
     e.key = make_key(e)
+    return e
+
+
+#: 编号清单行前缀（含**写歪的** `[2 Author…` 少括号）：人年制新兜底一律让路，
+#: 由 `_numbered_refs()` 收（案例 116 的 ① 契约：编号清单 4 条必须进 bib_entries）。
+_NUMBERED_PREFIX_RE = re.compile(
+    r"^\s*(?:\[\s*\d+|（\s*\d+|\(\s*\d+|\d+\s*[.、])"
+)
+
+
+# ── 第四十五批 A2：个人年制解析鲁棒性（5 期 BIB_COUNT 6 篇实测） ────────────
+# 失败行样例（bib-refs 报回 /tmp/audit_lead/batch45-bib.md）：
+#   86-07/86-08（英文 APA 清单 38/31 行整份 0 条）：
+#     `Beall, J. C., & Restall, G. (2000). Logical pluralism. Australasian Journal of
+#      Philosophy, 78(4), 475–493.`
+#   86-02（中文冒号式 4 条）：`王先谦：荀子集解，1988年，北京：中华书局。`
+#   87-5（2 条）：`A. Hájek, “Most counterfactuals are false”, (2019-08-28)[…]. https://…`
+#     `P. Rysiew, “Epistemic Contextualism”, in … (eds.), The Stanford Encyclopedia of
+#      Philosophy, https://…/win2023/…`
+#   88-01（4 条）：年份区间（`1929-1931`）、年份在行尾（德式）、APA 编辑行、残行。
+# 纪律：**只按行内证据解析**（作者/年份/题名都要在行里出现）；解析失败保留原文，
+# 由调用方 warning + `ref_raw_lines` 交人工/AI。全部为**新增兜底**，排在既有解析器
+# 之后——已能解析的行不会走到这里，产物逐字节不变。
+_APA_YEAR_RE = re.compile(
+    r"^(?P<authors>.+?)\s*[(（]\s*(?P<year>(?:19|20)\d{2})"
+    r"(?:\s*[-–—]\s*(?:19|20)\d{2})?[a-z]?\s*[)）]\s*[.。]?\s*(?P<rest>.+)$"
+)
+_APA_YEAR_RANGE_RE = re.compile(
+    r"^(?P<authors>.+?)[.。]\s*(?P<year>(?:19|20)\d{2})"
+    r"\s*[-–—]\s*(?:19|20)\d{2}[.。]\s*(?P<rest>.+)$"
+)
+_EN_SENTENCE_END = re.compile(r"(?<=[.?!])[\s\n]+(?=[A-Z“\"(\[])")
+
+
+def _clean_apa_authors(pre: str) -> str:
+    """APA 作者串 → bib author 字段（`&` → `and`，去尾标点）。"""
+    x = pre.strip()
+    x = re.sub(r"[,，]\s*&\s*", " and ", x)      # `Beall, J. C., & Restall, G.`
+    x = re.sub(r"\s+&\s+", " and ", x)          # `A & B`
+    x = re.sub(r",\s*,", ",", x)
+    return x.strip(" ,;.")
+
+
+def _apa_kind(after: str) -> str:
+    """按行内出版信息判类型：有卷(期)/页码像期刊，`In …(Eds.)`/出版社像书。"""
+    a = after.strip()
+    if re.search(r"\(\s*Eds?\.\s*\)|^\s*In\s+", a):
+        return "M"
+    if re.search(r",\s*\d+\s*(?:\(\d+\))?\s*,\s*\d+", a) or re.search(r"\d+\s*\(\d+\)\s*[,:]", a):
+        return "J"
+    return "M"
+
+
+def _parse_reference_line_apa(s: str) -> RefEntry | None:
+    r"""APA 风格：`作者列表 (年份). 题名. 出版信息`（英文；86-07/86-08 整份清单）。"""
+    if re.search(r"[\u4e00-\u9fa5]", s):
+        return None
+    if _NUMBERED_PREFIX_RE.match(s):
+        return None
+    m = _APA_YEAR_RE.match(s) or _APA_YEAR_RANGE_RE.match(s)
+    if not m:
+        return None
+    authors = _clean_apa_authors(m.group("authors"))
+    if not authors or len(authors) > 240 or not re.search(r"[A-Za-z]", authors):
+        return None
+    rest = m.group("rest").strip()
+    if len(rest) < 3:
+        return None
+    chunks = _EN_SENTENCE_END.split(rest, maxsplit=1)
+    title = chunks[0].rstrip(". ").strip()
+    after = chunks[1].strip() if len(chunks) > 1 else ""
+    if not title or len(title) > 300:
+        return None
+    kind = _apa_kind(after)
+    e = RefEntry(raw=s, author=authors, year=m.group("year"),
+                 title=title, kind=kind, rest=after)
+    e.key = make_key(e)
+    _finalize_en_entry(e)
+    e.kind = kind          # `_finalize_en_entry` 的通用分类会把期刊判成书，这里按行内证据保留
+    return e
+
+
+_CN_COLON_RE = re.compile(r"^(?P<author>[^：:]{2,60}?)\s*[：:]\s*(?P<rest>.+)$")
+
+
+def _parse_reference_line_cn_colon(s: str) -> RefEntry | None:
+    r"""中文冒号式：`作者（编/撰）：《书名》，年份，出版地：出版社。`（86-02 实测）。"""
+    if not re.search(r"[\u4e00-\u9fa5]", s):
+        return None
+    if _NUMBERED_PREFIX_RE.match(s):
+        return None
+    m = _CN_COLON_RE.match(s)
+    if not m:
+        return None
+    author = m.group("author").strip()
+    rest = m.group("rest").strip()
+    ym = re.search(r"((?:19|20)\d{2})", rest)
+    if not ym or len(rest) < 6:
+        return None
+    qm = re.search(r"《([^》]+)》", rest)
+    if qm:
+        title = qm.group(1).strip()
+    else:
+        title = re.split(r"[，,。]", rest, maxsplit=1)[0].strip()
+    if not title or len(title) > 200:
+        return None
+    kind = "M"
+    if re.search(r"学位论文|博士论文|硕士论文", rest):
+        kind = "D"
+    elif re.search(r"学报|期刊|杂志|第?\s*\d+\s*[期卷]", rest):
+        kind = "J"
+    e = RefEntry(raw=s, author=author, year=ym.group(1), title=title, kind=kind, rest=rest)
+    e.key = make_key(e)
+    return e
+
+
+_EN_YEAR_END_RE = re.compile(
+    r"^(?P<author>[A-Z][^,]{1,40}(?:,\s*[^,]{1,60})?),\s*"
+    r"(?P<rest>.+?(?P<year>(?:19|20)\d{2})[^\d]*)$"
+)
+
+
+def _parse_reference_line_year_end(s: str) -> RefEntry | None:
+    r"""英文、**年份在行尾**（旧版 APA / 德式书目，88-01 Osma 实测）。
+
+    `Osma, Wilhelm von, De Consequentiis — Über die Folgerungen, hrsg. F. Schupp,
+     Meiner, Hamburg 1991.` → author=Osma, Wilhelm von / year=1991。
+    """
+    if re.search(r"[\u4e00-\u9fa5]", s) or len(s) < 20:
+        return None
+    if _NUMBERED_PREFIX_RE.match(s):
+        return None
+    # 引号题名的行交给 loose 解析（作者/题名切分更可靠；本解析器会把题名当成作者一部分）
+    if _QUOTED_TITLE_RE.match(s):
+        return None
+    m = _EN_YEAR_END_RE.match(s)
+    if not m:
+        return None
+    rest = m.group("rest").strip()
+    if len(rest) < 8:
+        return None
+    parts = [x.strip() for x in re.split(r"[,，]", rest, maxsplit=1)]
+    title = parts[0]
+    after = parts[1] if len(parts) > 1 else ""
+    if not title:
+        return None
+    e = RefEntry(raw=s, author=m.group("author").strip(), year=m.group("year"),
+                 title=title, kind="M", rest=after)
+    e.key = make_key(e)
+    _finalize_en_entry(e)
+    return e
+
+
+_CN_APA_RE = re.compile(
+    r"^(?P<author>[\u4e00-\u9fa5、，,A-Za-z][^.。]{0,40}?)[.。]\s*"
+    r"[(（](?P<year>(?:19|20)\d{2})[)）]\s*[.。]\s*(?P<rest>.+)$"
+)
+
+
+def _parse_reference_line_cn_apa(s: str) -> RefEntry | None:
+    r"""中文 APA 风格：`作者. (年份). 题名. 刊名, 卷(期), 页码.`（86-07 实测）。"""
+    if not re.search(r"[\u4e00-\u9fa5]", s):
+        return None
+    if _NUMBERED_PREFIX_RE.match(s):
+        return None
+    m = _CN_APA_RE.match(s)
+    if not m:
+        return None
+    rest = m.group("rest").strip()
+    if len(rest) < 4:
+        return None
+    title = re.split(r"[.。]", rest, maxsplit=1)[0].strip()
+    if not title or len(title) > 200:
+        return None
+    kind = "J" if re.search(r"学报|期刊|杂志|,\s*\d+", rest) else "M"
+    e = RefEntry(raw=s, author=m.group("author").strip(), year=m.group("year"),
+                 title=title, kind=kind, rest=rest)
+    e.key = make_key(e)
+    return e
+
+
+_QUOTED_TITLE_RE = re.compile(
+    r'^(?P<author>.{2,160}?)[,，]\s*[“"「『](?P<title>.+?)[”"」』]\s*[,，]?\s*(?P<rest>.*)$'
+)
+
+
+def _parse_reference_line_loose(s: str) -> RefEntry | None:
+    r"""引号题名 + URL/无常规卷期的行（87-5 SEP / philarchive 实测）。
+
+    `A. Hájek, “Most counterfactuals are false”, (2019-08-28)[2015-05-15]. https://…`
+    `P. Rysiew, “Epistemic Contextualism”, in … (eds.), The Stanford Encyclopedia of
+     Philosophy, https://…/win2023/…`（年份取行内 `win2023` 的 2023）
+    """
+    if _NUMBERED_PREFIX_RE.match(s):     # 编号清单行走 `_numbered_refs()`（案例 116 契约）
+        return None
+    m = _QUOTED_TITLE_RE.match(s)
+    if not m:
+        return None
+    author = m.group("author").strip().rstrip(",，")
+    title = m.group("title").strip()
+    rest = m.group("rest").strip()
+    if not author or not title or len(title) > 300:
+        return None
+    ym = re.search(r"((?:19|20)\d{2})", rest) or re.search(r"(?:19|20)\d{2}", s)
+    if not ym:
+        return None
+    year = ym.group(1) if ym.groups() else ym.group(0)
+    kind = "J" if re.search(r"Journal|Review|Studies|Proceedings|Quarterly", rest) else "M"
+    e = RefEntry(raw=s, author=author, year=year, title=title, kind=kind, rest=rest)
+    e.key = make_key(e)
+    _finalize_en_entry(e)
+    e.kind = kind          # 同 APA：类型以行内证据为准
     return e
 
 
@@ -2533,6 +2751,30 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     if ref_start >= 0:
         ref_end = tail_start if tail_start > ref_start else len(plains)
         section = [t.strip() for t in plains[ref_start + 1 : ref_end] if t.strip()]
+        # 第四十五批 A2：① 纯「参考文献/References」标题行不是条目，剔掉（86-08 实测）；
+        # ② 文末元数据块没被 locate_tail_block 认出来时（88-06 实测：标题/作者/摘要
+        #    紧跟在文献区后且无「参考文献」标题），从「摘要/Abstract」标签行开始截断，
+        #    否则题名、作者、摘要会被当成文献行（全是解析失败 + 污染 ref_raw_lines）。
+        section = [t for t in section if t.strip().lower().rstrip(":：") not in _REF_HEADS]
+        _tail_cut = next(
+            (i for i, t in enumerate(section)
+             if re.match(r"^\s*(?:摘\s*要|Abstract)\s*[:：]?", t) and i > 0),
+            None,
+        )
+        if _tail_cut:
+            # 从「摘要」标签往前吃掉紧邻的**元数据行**（中文题名 / 作者姓名）：
+            # 短、含中文、不含年份、不是以文献年份/出版信息结尾——文献条目一定有年份或
+            # 卷期/页码，这类行是文末块的表头（88-06 实测：`论证能力研究：…` / `陈志喜`）。
+            _cut = _tail_cut
+            while _cut > 0:
+                _prev = section[_cut - 1].strip()
+                if (len(_prev) <= 80 and re.search(r"[\u4e00-\u9fa5]", _prev)
+                        and not re.search(r"(?:19|20)\d{2}", _prev)
+                        and not re.search(r"\d+\s*[（(]\d", _prev)):
+                    _cut -= 1
+                    continue
+                break
+            section = section[:_cut]
         # 原文留档（解析器吃掉的那份 `section`，同一顺序、同一口径）：一条都没解析
         # 出来时，refmark 第四节会把这份原文交给编辑的 AI 结构化——**不是**在这里
         # 再写一个解析器。解析成功时它也照样留着，但下游用不到。
@@ -2550,6 +2792,13 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
             if e:
                 doc.refs.append(e)
         _dedupe_keys(doc.refs)
+        # 第四十五批 A2：没解析出来的文献行**保留原文 + warning**（不猜、不丢）。
+        _unparsed = [ln for ln in section if parse_reference_line(ln) is None]
+        if _unparsed and (doc.refs or entries):
+            doc.warnings.append(
+                f"文末参考文献区有 {len(_unparsed)} 行未能按行内证据解析"
+                f"（原文已保留、交人工/AI 核对）：首行「{_unparsed[0][:80]}」"
+            )
         if len(entries) > len(doc.refs):
             # 编号清单解释力更强 → 以它为准；逗号兜底误吃的那几条丢掉（它们本就是清单行）
             doc.refs = []

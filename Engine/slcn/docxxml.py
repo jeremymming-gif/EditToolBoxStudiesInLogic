@@ -585,6 +585,49 @@ class Para:
         return it / sum(len(s.text) for s in t)
 
 
+# ── 第四十五批 A：源稿正文里的「手打数学符号 / 不可渲染字符」─────────────
+# 88-02 Lu_Jiang 实测（5 期基准 P0 MISSING_CHAR）：作者把模态必然算子手打成 ◻
+# （U+25FB，Times/宋体都没有字形）→ xelatex 报 12 处 Missing character；人工成品
+# 同一位置写作 `$\Box$`。同一段还夹带 1 个变体选择符 U+E0176（不可见，无字形）。
+# 88-07 Hu_Liu 实测：正文有 1 个私用区字符 U+F0A7（任何字体都没有；人工成品此位置
+# 没有该字符，直接是 `Q11: Your book…`）→ 丢弃。
+# ⚠️ 只收「有实测证据」的字符，不做全量私用区清理（避免误删正常内容）。
+TEXT_MATH_SYMBOLS = {"\u25fb": r"\Box"}
+_DROP_TEXT_CHARS = {"\uf0a7"}
+
+
+def _is_variation_selector(ch: str) -> bool:
+    """变体选择符（不可见格式字符）：U+FE00–FE0F / U+E0100–E01EF。"""
+    o = ord(ch)
+    return 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF
+
+
+def _split_text_run(text: str, italic: bool, bold: bool) -> list["Seg"]:
+    """把一段 `<w:t>` 拆成 text/math 片段：手打数学符号转命令、不可渲染字符丢弃。
+
+    没有特殊字符时输出与从前完全相同的一个 text Seg（逐字节不变）。
+    """
+    out: list[Seg] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if buf:
+            out.append(Seg("text", "".join(buf), italic, bold))
+            buf.clear()
+
+    for ch in text:
+        sym = TEXT_MATH_SYMBOLS.get(ch)
+        if sym is not None:
+            flush()
+            out.append(Seg("math", sym, italic, bold))
+        elif ch in _DROP_TEXT_CHARS or _is_variation_selector(ch):
+            continue
+        else:
+            buf.append(ch)
+    flush()
+    return out
+
+
 def _run_segments(r, handled_math: set) -> list[Seg]:
     """拆一个 <w:r>。里面可能有普通文字，也可能内嵌 <m:oMath>。
 
@@ -625,7 +668,7 @@ def _run_segments(r, handled_math: set) -> list[Seg]:
         t = c.tag
         if t == W_T:
             if c.text:
-                out.append(Seg("text", c.text, italic, bold))
+                out.extend(_split_text_run(c.text, italic, bold))
         elif t == f"{{{W_NS}}}{_W_SYM_LOCAL}":
             font = c.get(f"{{{W_NS}}}font", "")
             raw_char = str(c.get(f"{{{W_NS}}}char", "")).upper()

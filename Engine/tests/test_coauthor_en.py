@@ -112,8 +112,20 @@ check("① `;` 分隔的作者列表也认", build.en_coauthor_values(
     "Jingru Kou; Yetao Liu", "", 2).get("mysecondauthorEN") == "Yetao Liu")
 check("① 逗号**不**当分隔符（`Kou, Jingru` 是一个倒装姓名，切开就成了两个作者）",
       build.en_coauthor_values("Kou, Jingru", "", 2) == {}, "")
-check("① 一行两个名字但**没有**分隔符 → 不猜（`Jingru Kou Yetao Liu`）",
-      build.en_coauthor_values("Jingru Kou Yetao Liu", "", 2) == {}, "")
+# 案例 163 / 第四十五批 Lead 裁决：连写英文作者串**在严格条件下**按声明作者数等分。
+# 背景：90-01 Jingru_Kou 源稿英文作者行 `Jingru Kou Yetao Liu`（无 and/&/;），
+# 旧契约一律不猜 → 第二作者英文姓名永远占位符；新增「等分」行为，但判据收紧：
+# 词数=2×声明作者数、每词 Title-case 姓名形态、无小写功能词/中缀，否则仍不猜。
+check("① 连写两姓名 + 声明 2 作者（案例 163）→ 按作者数等分，第二作者 = `Yetao Liu`",
+      build.en_coauthor_values("Jingru Kou Yetao Liu", "", 2)
+      == {"mysecondauthorEN": "Yetao Liu"}, "")
+check("① 反例：声明 3 作者但只有 4 个词（段数不符）→ 不猜",
+      build.en_coauthor_values("Jingru Kou Yetao Liu", "", 3) == {}, "")
+check("① 反例：词数对但含小写功能词/中缀（van / 小写姓名）→ 不猜",
+      build.en_coauthor_values("Jingru Kou van Yetao Liu", "", 3) == {}
+      and build.en_coauthor_values("Jingru Kou yetao Liu", "", 2) == {}, "")
+check("① 反例：6 个词/3 作者但每段不全是 Title-case 姓名形态（小写词）→ 不猜",
+      build.en_coauthor_values("jingru kou yetao liu x y", "", 3) == {}, "")
 check("① 段数与中文作者数不一致 → 不填（3 个名字 / 2 个作者）",
       build.en_coauthor_values("A One and B Two and C Three", "", 2) == {}, "")
 check("① 单作者稿 → 空 dict（产物逐字节不变的结构性保证）",

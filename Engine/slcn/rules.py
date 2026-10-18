@@ -134,7 +134,8 @@ UNICODE_MATH = {
     "⊬": r"\nvdash", "⊭": r"\nvDash", "⊮": r"\nVdash", "⊯": r"\nVDash",
     "∞": r"\infty", "∑": r"\sum", "∏": r"\prod", "√": r"\sqrt{}",
     "ℵ": r"\aleph", "℘": r"\wp", "⊕": r"\oplus", "⊗": r"\otimes",
-    "□": r"\Box", "◇": r"\Diamond", "⋄": r"\diamond",
+    "□": r"\Box", "◻": r"\Box",  # ◻=U+25FB：88-02 Lu_Jiang 源稿手打（字体无字形）
+    "◇": r"\Diamond", "⋄": r"\diamond",
     "∴": r"\therefore", "∵": r"\because", "∅": r"\varnothing",
     "⟨": r"\langle", "⟩": r"\rangle",  # 期 90/05 Beibei_Gao（LogicA F072/F073）
     "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",

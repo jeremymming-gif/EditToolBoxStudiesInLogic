@@ -538,6 +538,42 @@ for _p in _TMP:
     except OSError:
         pass
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑬ 第四十五批 A：连写英文作者串按作者数等分（90-01 实测）
+#    源稿英文作者是 `Jingru Kou Yetao Liu`（无 and/&/;），旧逻辑整串进不了第二作者
+#    槽位 → 模板印占位符；人工成品是 `\mysecondauthorEN{Yetao Liu}`。
+# ══════════════════════════════════════════════════════════════════════════
+from slcn.build import _split_en_names_by_count  # noqa: E402
+
+check("⑬ 2 个作者、4 个词（每人 2 词）→ 逐字定位拆分",
+      _split_en_names_by_count("Jingru Kou Yetao Liu", 2) == ["Jingru Kou", "Yetao Liu"],
+      repr(_split_en_names_by_count("Jingru Kou Yetao Liu", 2)))
+check("⑬ 反例：词数不匹配作者数 → 不猜（返回空）",
+      _split_en_names_by_count("Jingru Kou Yetao Liu", 3) == []
+      and _split_en_names_by_count("Lu Jiang", 2) == [])
+check("⑬ 反例：含小写/虚词 → 不猜（保守判据）",
+      _split_en_names_by_count("Jingru Kou and Yetao Liu", 2) == [])
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑭ 第四十五批 A：正文环境宏包写在本地 .sty 时补迁移（86-05 algorithm 实测）
+# ══════════════════════════════════════════════════════════════════════════
+import tempfile as _tf  # noqa: E402
+
+from slcn import preamble as _PRE  # noqa: E402
+
+_sty_dir = _tf.mkdtemp(dir="/tmp")
+open(os.path.join(_sty_dir, "SLCN.sty"), "w", encoding="utf-8").write(
+    "\\usepackage{algorithm}\n\\usepackage{algpseudocode}\n")
+_main = "\\documentclass{article}\n\\usepackage{SLCN}\n\\begin{document}\nX\n\\end{document}\n"
+_body = ("\\begin{algorithm}[H]\n\\caption{测试}\n\\begin{algorithmic}[1]\n"
+         "\\State X\n\\end{algorithmic}\n\\end{algorithm}\n")
+_lines_env = _PRE.env_package_lines(_main, _sty_dir, _body)
+check("⑭ 正文用 algorithm/algorithmic、包行在本地 .sty → 找到 algorithm+algpseudocode",
+      "\\usepackage{algorithm}" in _lines_env
+      and "\\usepackage{algpseudocode}" in _lines_env, repr(_lines_env))
+check("⑭ 反例：源稿没写过该包行 → 返回空（不无脑加包）",
+      _PRE.env_package_lines(_main, _sty_dir, "正文没有任何算法环境") == [])
+
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")
       + (f"｜SKIP {len(SKIPS)} 项" if SKIPS else ""))

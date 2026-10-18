@@ -55,6 +55,14 @@ from .latex import (
 
 # 模板自己管理的宏包：作者稿里即使写了也不搬（选项/顺序与模板冲突，且模板是权威）。
 # 当前 .sty 的名字（如 SLCN-MIX）由调用方追加进来。
+# 第四十五批 A（86-05 WeiNong_Li 实测）：正文环境 → 提供该环境的宏包。
+# 作者常把宏包行写进同目录旧 .sty 而不是主前言；换用新模板后环境就没了。
+# 只收「已实测需要 + 与模板无冲突」的环境；其余仍走定义缺失预检 warning。
+ENV_PACKAGE_HINTS = {
+    "algorithm": ("algorithm",),
+    "algorithmic": ("algpseudocode", "algorithmic"),
+}
+
 TEMPLATE_MANAGED_PACKAGES = frozenset({
     "SLCN",
     "SLCN-MIX",
@@ -186,6 +194,8 @@ class PreamblePlan:
     definitions: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     auto_packages: list[str] = field(default_factory=list)  # 按正文符号依赖自动补的宏包
+    # 第四十五批 A：按**正文环境依赖**从源稿本地支撑文件补的宏包（86-05 algorithm）
+    env_packages: list[str] = field(default_factory=list)
     # 第 130 条：本地支撑文件（.cls/.sty/.def/.cfg）的读取与迁移明细
     support_files: list[str] = field(default_factory=list)      # 读到的本地文件名
     local_definitions: list[tuple[str, str]] = field(default_factory=list)  # (名, 来源)
@@ -536,6 +546,45 @@ def local_support_files(source_text: str, source_dir: str) -> list[tuple[str, st
         if found:
             roots.append(found)
     return _read_support_files(roots, source_dir)
+
+
+_PKG_LINE_SCAN_RE = re.compile(
+    r"\\(?:usepackage|RequirePackage)\s*(\[[^\]]*\])?\s*\{([^}]*)\}"
+)
+
+
+def env_package_lines(source_text: str, source_dir: str, body_text: str) -> list[str]:
+    r"""正文用到、模板缺环境时，从**源稿确实写过**的本地支撑文件里取宏包行。
+
+    第四十五批 A（86-05 WeiNong_Li 实测）：正文用 `algorithm`/`algorithmic`，宏包行
+    写在作者同目录的旧 `SLCN.sty`（`\usepackage{algorithm}` / `\usepackage{algpseudocode}`）
+    而不是主前言；初排换成现行模板后编译报
+    `Environment algorithm undefined` / `\caption outside float`，整篇 rc=2。
+
+    判据：① 环境在 `ENV_PACKAGE_HINTS` 里有实测对应；② 该包行**源稿里确实存在**
+    （主前言或本地 .sty）；③ 过滤交给 `plan_migration`（模板已提供/冲突/同名本地包）。
+    源稿没有 → 返回空列表，由 `build.py` 的定义缺失预检给 warning + 建议，**不加包**。
+    """
+    want: set[str] = set()
+    for env in used_environments(body_text):
+        want.update(ENV_PACKAGE_HINTS.get(env, ()))
+    if not want:
+        return []
+    texts = [source_preamble(source_text)]
+    if source_dir:
+        texts.extend(text for _n, text in local_support_files(source_text, source_dir))
+    found: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        for m in _PKG_LINE_SCAN_RE.finditer(strip_comments(text)):
+            opts = m.group(1) or ""
+            for p in [x.strip() for x in m.group(2).split(",") if x.strip()]:
+                if p in want and p not in seen:
+                    seen.add(p)
+                    found.append(f"\\usepackage{opts}{{{p}}}")
+    return found
 
 
 def local_sty_text(source_text: str, source_dir: str) -> str:
@@ -1087,6 +1136,35 @@ def plan_migration(
             plan.lines.append(f"\\usepackage{{{pkg}}}")
             plan.packages.append(pkg)
             plan.auto_packages.append(pkg)
+            loaded.add(pkg)
+
+    # 第四十五批 A：正文环境用到的宏包写在**本地支撑文件**里时补迁移（86-05 实测）。
+    if body_text and source_dir:
+        for line in env_package_lines(source_text, source_dir, body_text):
+            m = _PKG_LINE_RE.match(line)
+            if not m:
+                continue
+            pkg = (m.group(2) or "").split(",")[0].strip()
+            if not pkg or pkg in loaded:
+                skipped.append(pkg)
+                continue
+            if pkg in BIBLATEX_REPLACED_PACKAGES and template_has_biblatex:
+                if pkg not in plan.replaced_packages:
+                    plan.replaced_packages.append(pkg)
+                continue
+            if pkg in PACKAGE_COMMAND_CONFLICTS:
+                reason, trigger = PACKAGE_COMMAND_CONFLICTS[pkg]
+                tpl_pkgs = package_names(skeleton_text) | package_names(sty_text)
+                if trigger in tpl_pkgs:
+                    plan.conflicts.append(f"{pkg}（{reason}）")
+                    continue
+            if _resolve_local_file(source_dir, pkg, exts=(".sty",)):
+                if pkg not in plan.local_packages:
+                    plan.local_packages.append(pkg)
+                continue
+            plan.lines.append(line)
+            plan.packages.append(pkg)
+            plan.env_packages.append(pkg)
             loaded.add(pkg)
 
     plan.skipped = sorted(set(skipped))

@@ -67,6 +67,7 @@ r"""退回版 .bib 核对（**纯离线**）。
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import os
 
@@ -257,6 +258,74 @@ def _merge_main(a, texts: dict[str, str | None], notes: list[str]) -> int:
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+_PAGE_LIKE_KEY = re.compile(r"^pp?\d{1,4}$")
+
+
+def _batch45_notices(rep: "Report", texts: dict[str, str | None]) -> None:
+    r"""第 45 批发现性提示（**只加提示，不改任何数据**）。
+
+    这三类现象在 5 期基准里都已被人工确认，但修复方向需要用户拍板或源稿改动：
+      ① 页码被写进引用键（90-03：`\cite{Yalcin2007, p985}`）→ 悬空引用其实是笔误；
+      ② 正文用编号引用 `[N]` 但没有任何 `\cite` 命令（86-02/87-5/87-7/90-04/90-08，
+         P0-1 体例）→ 参考文献区会是空的；工具**不猜映射**；
+      ③ 脚注/编号清单被逐条提升为 bib（90-06/90-07，C 类口径）+ 文末清单与脚注
+         双通道产生的内容重复条目 → 只报数量，不自动改。
+    """
+    from slcn import bibcheck
+    from slcn.bibparse import LEVEL_INFO
+
+    bib = texts.get("returned") or ""
+    tex = texts.get("tex") or ""
+    if not bib:
+        return
+    keys = bibcheck.entry_keys(bib)
+    entries = list(bibcheck.split_entries(bib))
+    # ① 页码型悬空键
+    if tex:
+        cited = bibcheck.cited_keys(tex)
+        dangling = sorted(cited - keys)
+        page_like = [k for k in dangling if _PAGE_LIKE_KEY.match(k)]
+        if page_like:
+            rep.add("", "cite", LEVEL_INFO,
+                    "疑似把页码范围写进引用键：" + "、".join(f"`{k}`" for k in page_like)
+                    + "（LaTeX 会把 `\\cite{X, p985}` 解析成两个键；建议作者改成"
+                    " `\\cite[985]{X}`。源稿笔误，工具不自动改）")
+        # ② 正文有编号引用但没有 cite 命令
+        n_cite = int(getattr(rep, "n_cite_cmds", 0) or 0)
+        numbered = re.findall(r"\[\s*\d{1,3}\s*(?:[，,–-]\s*\d{1,3}\s*)?\]", tex)
+        if n_cite == 0 and numbered:
+            rep.add("", "cite", LEVEL_INFO,
+                    f"正文有 {len(numbered)} 处编号引用（如 `{numbered[0]}`）但没有任何 "
+                    "`\\cite` 命令 → 参考文献区会是空的（P0-1 体例：编号↔文献对照缺失，"
+                    "工具**不猜映射**，需编辑按原稿补对照或改成人年制）")
+    # ③ note-only 条目（脚注/编号清单提升）与内容重复条目
+    note_only = 0
+    fingerprints: dict[tuple, int] = {}
+    for etype, key, body in entries:
+        fields = bibcheck.fields_of(body)
+        if not any(fields.get(name) for name in ("author", "editor", "title")):
+            if fields.get("note", "").strip():
+                note_only += 1
+            continue
+        author = bibcheck.first_author_surname(fields) if hasattr(bibcheck, "first_author_surname") else ""
+        title = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "",
+                       (fields.get("title") or "").lower())
+        year = re.sub(r"\D", "", fields.get("year") or "")
+        if title and year:
+            fp = (author, year, title)
+            fingerprints[fp] = fingerprints.get(fp, 0) + 1
+    dup_groups = [n for n in fingerprints.values() if n > 1]
+    if note_only:
+        rep.add("", "spec", LEVEL_INFO,
+                f"{note_only} 条「只有 note、没有结构化 author/title」条目：脚注/编号清单"
+                "引注被逐条提升为 bib 时常见（C 类口径，需用户确认是否保留为参考文献）")
+    if dup_groups:
+        rep.add("", "spec", LEVEL_INFO,
+                f"{len(dup_groups)} 组文献内容重复（同作者+年份+题名出现多条，共 "
+                f"{sum(dup_groups)} 条）：可能同一文献从「文末清单」与「脚注引注」两条通道"
+                "各生成一条；工具不自动合并（C 类口径）")
+
+
 def main(argv: list[str] | None = None) -> int:
     # 第 86 条：Windows 上把 stdout 切到 UTF-8（否则中文报告经管道会乱码/报错）。
     _plat.utf8_stdio()
@@ -375,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
             f"核对过程内部出错（{type(e).__name__}: {e}）——报告可能不完整，请把这条和 bib 文件一起回报",
         )
     rep.notes = notes + rep.notes
+    _batch45_notices(rep, texts)
 
     text = render(rep)
     if a.out:

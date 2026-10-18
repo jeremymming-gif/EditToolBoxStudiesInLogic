@@ -271,6 +271,43 @@ def coauthor_slot_count(field_values: dict[str, str]) -> int:
                if is_parsed(field_values.get(_AUTHOR_MACRO(word))))
 
 
+#: 英文姓名里不该出现在「连写作者串」中的小写功能词/中缀（Lead 裁决，案例 163）。
+_EN_NAME_STOP_WORDS = frozenset({
+    "and", "or", "et", "al", "van", "von", "de", "der", "den", "del", "della",
+    "di", "da", "du", "la", "le", "bin", "ibn", "of", "the", "with", "for",
+})
+
+
+def _split_en_names_by_count(author_en: str, n: int) -> list[str]:
+    r"""把**连写成一个字段**的英文作者串按声明作者数等分（2 词/人）。
+
+    第四十五批 A（90-01 Jingru_Kou 实测）：源稿英文作者行是 `Jingru Kou Yetao Liu`
+    （没有 and/&/; 分隔符），旧逻辑 `_split_en_list` 只按显式分隔符切 → 整串进不了
+    第二作者槽位，模板印占位符；人工成品是 `\mysecondauthorEN{Yetao Liu}`。
+
+    **严格判据（案例 163 / 第四十五批 Lead 裁决）**，任一不满足就**不猜**（返回 []）：
+      ① 词数恰好 = 2 × 声明作者数（2–5 位作者）；
+      ② 每个词都是 Title-case 姓名形态（首字母大写、其余为字母/`'`/`-`，可带缩写句点）；
+      ③ 不含小写功能词/连写中缀（and/van/von/de/der/la/le/et al…）；
+      ④ 每段第二个词是「姓」形态（去标点后 ≥2 字母）。
+    """
+    words = (author_en or "").split()
+    if not (2 <= n <= 5) or len(words) != 2 * n:
+        return []
+    for w in words:
+        if not re.fullmatch(r"[A-Z][^\W\d_]*\.?", w):
+            return []
+        if w.rstrip(".").lower() in _EN_NAME_STOP_WORDS:
+            return []
+    pairs: list[str] = []
+    for i in range(n):
+        given, family = words[2 * i], words[2 * i + 1]
+        if len(family.rstrip(".")) < 2:
+            return []
+        pairs.append(f"{given} {family}")
+    return pairs
+
+
 def en_coauthor_values(
     author_en: str, affiliation_en: str, n_authors: int
 ) -> dict[str, str]:
@@ -294,6 +331,9 @@ def en_coauthor_values(
     if n <= 1:
         return out
     names = _split_en_list(author_en, _EN_AUTHOR_SEP)
+    if len(names) == 1 and n > 1:
+        # 连写的英文作者串（无显式分隔符）→ 按作者数等分；不满足保守判据就不猜。
+        names = _split_en_names_by_count(author_en, n) or names
     if len(names) == n:
         for word, nm in zip(_ORDINALS[1:], names[1:]):
             if nm:
@@ -659,7 +699,8 @@ def build_latex(
     if pre_plan.lines:
         tpl = PRE.insert_lines(tpl, pre_plan.lines, HYPERREF_ANCHOR)
         bits = []
-        manual_pkgs = [p for p in pre_plan.packages if p not in pre_plan.auto_packages]
+        manual_pkgs = [p for p in pre_plan.packages
+                       if p not in pre_plan.auto_packages and p not in pre_plan.env_packages]
         if manual_pkgs:
             bits.append(f"宏包 {len(manual_pkgs)} 个（{'、'.join(manual_pkgs)}）")
         if pre_plan.tikz_libs:
@@ -669,6 +710,11 @@ def build_latex(
         if pre_plan.auto_packages:
             bits.append(
                 f"按正文符号依赖自动补宏包：{'、'.join(pre_plan.auto_packages)}"
+            )
+        # 第四十五批 A：正文环境用到的宏包写在作者本地 .sty 里时补迁移（86-05 实测）
+        if pre_plan.env_packages:
+            bits.append(
+                f"按正文环境依赖补宏包：{'、'.join(pre_plan.env_packages)}"
             )
         say("   前言依赖迁移：" + "；".join(bits))
     else:
@@ -855,6 +901,20 @@ def build_latex(
             f"{show}（宏包自带的环境纯离线无法核对，可能误报；**不阻断出稿**，"
             "若编译报 Environment … undefined 请人工核对）"
         )
+        # 第四十五批 A：已知对应宏包的环境给出**具体建议**；源稿没提供包时只提示，
+        # 绝不替作者无脑加包（86-05 的 algorithm 已按源稿旧 .sty 迁移；这里兜底其余）。
+        _env_hints = [
+            e + " → " + " / ".join(
+                "\\usepackage{" + _p + "}" for _p in PRE.ENV_PACKAGE_HINTS[e]
+            )
+            for e in missing_envs if e in PRE.ENV_PACKAGE_HINTS
+        ]
+        if _env_hints:
+            warnings.append(
+                "定义缺失预检（可修）：以下环境需要对应宏包，但模板与源稿均未加载："
+                + "；".join(_env_hints)
+                + "。若作者源稿确实没提供，请人工确认后再加包（不要无脑加）"
+            )
     say(f"   正文 {len(body)} 字符")
     tpl = insert_body(tpl, body)
 

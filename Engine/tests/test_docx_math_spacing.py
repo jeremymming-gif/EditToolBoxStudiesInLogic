@@ -215,6 +215,27 @@ check("⑪ 确定性：同一输入重复调用输出逐字节相同（纯函数
       and "\\\\%" not in _math_text_latex("占100%"),
       repr(_math_text_latex("占100%")))
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑫ 第四十五批 A：正文 `<w:t>` 里的手打数学符号 / 不可渲染字符
+#    88-02 Lu_Jiang：◻(U+25FB) 字体无字形 → 编译 Missing character；人工成品写 $\Box$。
+#    同段夹带变体选择符 U+E0176；88-07 Hu_Liu：私用区 U+F0A7（无字体、人工成品无）。
+# ══════════════════════════════════════════════════════════════════════════
+from slcn.docxxml import _split_text_run  # noqa: E402
+
+_segs12 = _split_text_run("必然算子◻P 与变体" + chr(0xE0176) + "选择符以及" + chr(0xF0A7) + "私用字符", False, False)
+_kinds12 = [(sg.kind, sg.text) for sg in _segs12]
+check("⑫ ◻ 转数学 `\\Box`（不再是字体里没有的原始字符）",
+      ("math", r"\Box") in _kinds12, repr(_kinds12))
+check("⑫ 变体选择符 U+E0176 / 私用区 U+F0A7 被丢弃（不可见/无字体，人工成品也无）",
+      all(chr(0xE0176) not in t and chr(0xF0A7) not in t for _k, t in _kinds12), repr(_kinds12))
+check("⑫ 普通文字逐字节保留（只拆特殊字符）",
+      "".join(t for k, t in _kinds12 if k == "text") == "必然算子P 与变体选择符以及私用字符",
+      repr("".join(t for k, t in _kinds12 if k == "text")))
+_segs12b = _split_text_run("普通文本", True, True)
+check("⑫ 无特殊字符：仍是一个 text Seg（与从前逐字节相同）",
+      [(sg.kind, sg.text, sg.italic, sg.bold) for sg in _segs12b] == [("text", "普通文本", True, True)],
+      repr(_segs12b))
+
 print()
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

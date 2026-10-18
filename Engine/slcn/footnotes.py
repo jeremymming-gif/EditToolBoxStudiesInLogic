@@ -48,6 +48,11 @@ BIB_MARKERS = [
 ]
 
 _SENT_END = re.compile(r"[.。]\s+|$")
+#: 作者信息/基金/通讯类脚注：即使含年份、单位名，也**绝不能**当文献提升（87-7 实测：
+#: 「作者简介：任然，（1984-）… 唐山师范学院…」曾被当成 ref → 多出 junk bib 条目）
+_AUTHOR_INFO = re.compile(
+    r"作者简介|作者信息|基金项目|通讯作者|通信作者|收稿日期|录用日期|"
+    r"E-?mail|电子邮箱|邮箱[:：]|\bDOI\b.*作者|项目编号")
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
 
 
@@ -78,6 +83,26 @@ def ref_span(text: str) -> int:
     return m.end() if m else len(text)
 
 
+#: 强标记：中文期刊/出版机构/学位论文/论文集（单靠「第N页」会被正文定位误伤——90-08 实测
+#: 脚注里的「（[20]，第36页；[21]，第8页）」是引用定位，不是文献条目）
+_CN_STRONG = re.compile(
+    r"第\s*\d+\s*期|学报|期刊|出版社|印书馆|书局|博士论文|硕士学位论文|硕士论文|"
+    r"论文集|载于|收录于|人民出版社|大学出版社")
+_CN_YEAR = re.compile(r"(?:19|20)\d{2}\s*年")
+
+
+def _looks_cn_biblio(text: str) -> bool:
+    """中文脚注文献判据：**年份 + 强标记**，且不是作者信息/纯定位。"""
+    t = text.strip()
+    if not t or len(t) > 220:
+        return False
+    if not _CN_YEAR.search(t) or not _CN_STRONG.search(t):
+        return False
+    # 纯引用定位（`（[20]，第36页；[21]，第8页）`）没有年份/强标记，已被上一条排除；
+    # 这里再要求句末是句号/页码结尾，避免把「……2013年，参见第5页。」式注释当文献。
+    return t.endswith(("。", "页。", "页", "。]", "．"))
+
+
 def looks_classical(ref: str) -> bool:
     """判断是不是古典/一手文献（Ockham, SL II, 1, OP I, 242.）。
 
@@ -97,7 +122,19 @@ def classify(text: str) -> Footnote:
     """给一条脚注分类并拆分。"""
     t = re.sub(r"\s+", " ", text).strip()
     fn = Footnote(fid=-1, text=t)
+    if _AUTHOR_INFO.search(t):
+        fn.kind = "pure_note"
+        fn.note = t
+        return fn
     end = ref_span(t)
+    if end < 0 and _looks_cn_biblio(t):
+        # 中文脚注文献：`杨正文：鼓藏节仪式与苗族社会组织，西南民族学院学报，2000年第5期，
+        # 第13-26页。`——旧判据的年份 `\b(19|20)\d{2}\b` 在「2000年」处没有词边界，
+        # 也没有「第N期」标记 → 整条被判 pure_note 丢掉（86-03 实测 34 条中文脚注文献只
+        # 认出 8 条，人工成品 22 条）。这里补一条**中文期刊/出版社**判据，且要求年份+强标记。
+        fn.kind = "pure_ref"
+        fn.ref = re.sub(r"^\s*\[\s*\d+\s*\]\s*", "", t)
+        return fn
     if end < 0:
         fn.kind = "pure_note"
         fn.note = t
