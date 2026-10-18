@@ -3,9 +3,18 @@
 
 用法：cd EditToolBox/Engine && PYTHONPATH="$PWD/vendor" python3.14 tests/test_docs_consistency.py
 
+    # 默认即「低成本模式」：内部 gen_docs --check 用 --no-test-runs（不重复跑套件）。
+    # 发版前要严格验证 AUTO 的测试计数行时（等价于老行为）：
+    PYTHONPATH="$PWD/vendor" python3.14 tests/test_docs_consistency.py --strict-tests
+
 四件事，每一件都是「文档结构不许退化」的机器证明：
 
 (a) `tools/gen_docs.py --check` 通过 —— README 的 AUTO 块**不过期**（数字现算，手抄必被抓）。
+    **第四十一批 O2（性能）分工**：本测试默认用 `gen_docs.py --check --no-test-runs` ——
+    full runner 刚刚已经跑过**同一批**套件，再让 gen_docs 跑一遍等于 full 双重耗时（实测
+    121s→61s）。代价是 AUTO 的「测试」计数行不在本项重复验证；它由**独立**的
+    `gen_docs.py --check` 兜住（CI `ci.yml` 的独立步骤 / 发版前 `selfcheck.py --full` 的严格模式 /
+    开发者手工显式跑）。AUTO 的**非测试行**（普查/corpus/占位符）本项仍严格比对 —— 反例见 (a2)。
 (b) **引用存在性** —— README / AGENTS.md / HANDOFF.md / docs/** 里出现的
     `Engine/…`、`slcn/…`、`tools/…`、`tests/…`、`docs/…`、`EditToolBox/…`、`编辑笔记/…`
     形态的路径**必须真实存在**（相对仓库根 / `EditToolBox/` / `EditToolBox/Engine/` 三个根里
@@ -36,10 +45,21 @@
 """
 from __future__ import annotations
 
+import argparse
 import pathlib
 import re
 import subprocess
 import sys
+
+# 第四十一批 O2：默认低成本（内部 gen_docs --check 不跑套件）；`--strict-tests` 切回老行为。
+# 保留 `--no-test-runs` 显式开关，让调用方（selfcheck quick）能自证"我知道自己在跳过重复套件"。
+_AP = argparse.ArgumentParser(add_help=True, description="文档一致性看门狗")
+_AP.add_argument("--no-test-runs", action="store_true",
+                 help="内部 gen_docs --check 不跑套件（默认即此模式；保留显式开关便于调用方自证）")
+_AP.add_argument("--strict-tests", action="store_true",
+                 help="反选：内部 gen_docs --check 跑套件做严格 AUTO 校验（发版前用）")
+_ARGS = _AP.parse_args()
+_STRICT_TESTS = _ARGS.strict_tests
 
 HERE = pathlib.Path(__file__).resolve().parent      # …/EditToolBox/Engine/tests
 ENGINE = HERE.parent                                # …/<项目>/Engine
@@ -86,11 +106,52 @@ if not _complete:
     print(f"SKIP  (a) AUTO 块严格校验：本机缺 {'、'.join(_missing)} —— "
           "测试计数与依赖稿件库的数字会变，这一项只在前提齐全的机器上有意义")
 else:
-    p = subprocess.run([PY, str(ENGINE / "tools" / "gen_docs.py"), "--check"],
+    _gen_docs_cmd = [PY, str(ENGINE / "tools" / "gen_docs.py"), "--check"]
+    if not _STRICT_TESTS:
+        # 低成本模式（默认）：不跑套件；测试计数行由独立的 gen_docs --check 守卫（见文件头 O2 分工）
+        _gen_docs_cmd.append("--no-test-runs")
+    p = subprocess.run(_gen_docs_cmd,
                        cwd=str(ENGINE), capture_output=True, text=True, encoding="utf-8", errors="replace")
     tail = "｜".join((p.stdout + p.stderr).strip().split("\n")[-1:])[:200]
-    check("(a) gen_docs.py --check 通过（README 的 AUTO 块 = 现算结果）", p.returncode == 0,
-          f"exit={p.returncode} {tail}")
+    _mode = "严格（含套件）" if _STRICT_TESTS else "低成本（--no-test-runs）"
+    check(f"(a) gen_docs.py --check 通过（{_mode}；README 的 AUTO 块 = 现算结果）",
+          p.returncode == 0, f"exit={p.returncode} {tail}")
+
+# ── (a2) 反例：--no-test-runs 仍必须抓住「非测试行」的漂移 ─────────────────
+# O2 把「测试计数行」排除出本项比对，但**不能**顺带把非测试行也放宽。本反例证明：
+# 故意改一行 AUTO 非测试行（普查行）→ `--check --no-test-runs` 必须退出 1 且指出过期；
+# 随后**逐字节还原** README（finally 保证，异常路径也还原）。
+if not _complete:
+    print("SKIP  (a2) 反例：本机前提不全（与 (a) 同因），跳过")
+else:
+    _readme_path = ENGINE / "README.md"
+    _original = _readme_path.read_bytes()
+    try:
+        _text = _original.decode("utf-8")
+        _i = _text.index(_G.BEGIN) + len(_G.BEGIN)
+        _j = _text.index(_G.END)
+        _head, _body, _tail = _text[:_i], _text[_i:_j], _text[_j:]
+        _m = re.search(r"^\*\*普查\*\*.*$", _body, re.M)
+        if not _m:
+            check("(a2) 反例：AUTO 块里找不到可改写的非测试行", False)
+        else:
+            _mutated = _body[:_m.start()] + _m.group(0) + "（反例探针）" + _body[_m.end():]
+            _readme_path.write_bytes((_head + _mutated + _tail).encode("utf-8"))
+            try:
+                _p2 = subprocess.run(
+                    [PY, str(ENGINE / "tools" / "gen_docs.py"), "--check", "--no-test-runs"],
+                    cwd=str(ENGINE), capture_output=True, text=True,
+                    encoding="utf-8", errors="replace")
+                _out2 = _p2.stdout + _p2.stderr
+                check("(a2) 反例：改 AUTO 非测试行 → --no-test-runs 仍判过期（exit 1）",
+                      _p2.returncode == 1 and "反例探针" in _out2 and "过期" in _out2,
+                      f"exit={_p2.returncode} " + "｜".join(_out2.strip().split("\n")[:2])[:200])
+            finally:
+                _readme_path.write_bytes(_original)   # 无论断言结果如何都还原
+            check("(a2b) 反例探针已逐字节还原 README", _readme_path.read_bytes() == _original)
+    except Exception as _e:  # noqa: BLE001  README 结构异常/写盘失败也要还原并报错
+        _readme_path.write_bytes(_original)
+        check(f"(a2) 反例执行异常：{type(_e).__name__}: {_e}", False)
 
 # ── (b) 引用存在性 ─────────────────────────────────────────────────────────
 print("\n── (b) 文档里引用的路径必须存在 ──")

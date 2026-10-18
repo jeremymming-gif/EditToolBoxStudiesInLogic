@@ -146,6 +146,10 @@ git tag "$V" && git push origin "$V"
 > **不变量**：tag 名、`Engine/slcn/__init__.py` 的 `__version__`、资产里 zip 的版本号必须**同一个数**
 > （zip 名与 `latest.json` 都从它们现取）。发 `v1.0.1` 时的完整验收：五个 job 全绿、
 > 资产齐（2 个 zip ＋ `FIRST-OPEN-*.txt` ＋ `latest.json`）、三个下载链接 curl 200。
+>
+> **发版前必须有一次严格测试计数校验**（第四十一批 O2 后）：`cd Engine && python3.14 tools/gen_docs.py --check`
+> （默认严格，会跑套件，约 61s）或 `python3.14 tools/selfcheck.py --full --strict-tests`。原因：`full` 档内
+> `test_docs_consistency` 默认用 `--no-test-runs`（不重复跑套件），AUTO 的「测试计数行」不再由它守卫。
 
 `.github/workflows/release.yml` 会：
 

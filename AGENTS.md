@@ -89,12 +89,15 @@ CI 上就是这样，所以 CI 不该因为它们红。
    **已在第 125 条修掉**：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，不一致即回归。
    历史基线数字的 ±0.03pp 抖动（`05 Yang_Hu`）见 `EditToolBox-notes/cases/62+.md` 第 122/125 条。
 5. **重建 App + 包内 cmp**：`./build.sh` 之后逐个比对包内引擎文件与仓库同名文件（"包内引擎过期"踩过）。
-6. **文档一致性**：`python3 tests/test_docs_consistency.py`（含 `tools/gen_docs.py --check`）。
+6. **文档一致性**：`python3 tests/test_docs_consistency.py`（第四十一批 O2 起默认 `--no-test-runs`：
+   不重复跑套件，**AUTO 的「测试计数行」不在此校验**）；**因此 full 之外必须显式跑一次
+   `python3 tools/gen_docs.py --check`（默认严格，跑套件，约 61s）**——它是测试计数行的唯一严格守卫
+   （发版前必跑；`selfcheck --full --strict-tests` 亦可）。
 7. **Swift 改动**：`bash tools/run_swift_tests.sh`（6 个测试台 0 FAIL）。
 
 > 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README 已与仓库不同，下次 `./build.sh` 会同步"。
-> **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick）/`--full`（发版前）——覆盖本清单
-> 的离线部分（套件/文档/App 包内 cmp/代码健康/案例引用与案例库体检）。
+> **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick，第四十一批 O3 起不再整跑套件）/
+> `--full`（发版前，含严格测试计数校验）——覆盖本清单的离线部分。
 
 ## 文档维护
 

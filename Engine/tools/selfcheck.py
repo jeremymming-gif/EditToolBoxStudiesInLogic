@@ -16,6 +16,10 @@ App 包内 cmp、docx_audit、corpus、Swift/桥梁测试），但**没有一条
     PYTHONPATH="$PWD/vendor" python3.14 tools/selfcheck.py --deep     # 再加 docx_audit 全库体检（~6s）
     PYTHONPATH="$PWD/vendor" python3.14 tools/selfcheck.py --corpus   # 再加 corpus 全库回归（约 2-9 分钟）
 
+**第四十一批 O3（性能，语义不变）**：quick 档的文档看门狗传 `--no-test-runs` —— 它内部的
+`gen_docs --check` 不再重复跑一整遍套件（实测省 ~45–50s/次）；AUTO 测试计数行的守卫由
+full 档（`selfcheck.py --full` 用 `--strict-tests`）与独立的 `gen_docs.py --check` 负责。
+
 **检查清单**：
   1. 环境（Python 版本、vendor、目录结构）；
   2. 全部引擎模块 import 冒烟（`slcn/*.py`）；
@@ -117,8 +121,17 @@ def check_tests(level: str) -> None:
         print(f"FAIL  引擎套件（{level}）")
 
 
-def check_docs() -> None:
-    rc, out = run([sys.executable, os.path.join(ENGINE, "tests", "test_docs_consistency.py")])
+def check_docs(strict_tests: bool = False) -> None:
+    """文档看门狗。
+
+    第四十一批 O3：quick 档默认传 `--no-test-runs` —— 文档看门狗内部的 `gen_docs --check`
+    不再重复跑一整遍套件（省 ~45–50s/次；测试计数行由 full 档/独立 gen_docs --check 守卫）。
+    `--full`（发版前）用 `--strict-tests` 保留老的严格校验。
+    """
+    cmd = [sys.executable, os.path.join(ENGINE, "tests", "test_docs_consistency.py")]
+    if not strict_tests:
+        cmd.append("--no-test-runs")
+    rc, out = run(cmd)
     if rc == 0 and "失败 0 项" in out:
         print("PASS  文档看门狗（AUTO/路径/编号/App 包内一致）")
     else:
@@ -350,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         SKIPS.append("引擎套件（嵌套调用时跳过，防递归）")
         print("SKIP  引擎套件（嵌套调用，防递归）")
     if not args.skip_docs and os.environ.get("SLCN_SELFCHECK_NESTED") != "1":
-        check_docs()
+        check_docs(strict_tests=args.full)
     elif not args.skip_docs:
         SKIPS.append("文档看门狗（嵌套调用时跳过）")
         print("SKIP  文档看门狗（嵌套调用，防递归）")

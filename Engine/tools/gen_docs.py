@@ -11,6 +11,21 @@ WHY：手抄的数字必然过期，而且过期了没人知道。所以这块�
     cd Engine
     /opt/homebrew/bin/python3.14 tools/gen_docs.py            # 就地更新 AUTO 块（块外一字不动）
     /opt/homebrew/bin/python3.14 tools/gen_docs.py --check    # 只校验，不一致 → 打印 diff 并退出 1
+    /opt/homebrew/bin/python3.14 tools/gen_docs.py --check --no-test-runs
+                                                              # 只校验：不跑套件（测试计数行不参与比对）
+
+**第四十一批 O1/O2（性能，语义不变）**：
+* **写模式不再重算整块**：块里的「红线只读快照」含 `git status --porcelain` 的行数，而写 README
+  本身会让这个数字变（自指）。从前靠「写完再 `build_block()` 一遍、直到稳定」收敛 —— 每次
+  重算都要**再跑一整遍套件**，于是干净树过期时跑 3 遍（≈180s）、README 已脏时 2 遍（≈120s）。
+  现在写循环只**就地替换**那一行（只跑两条只读 git 命令），测试/普查/corpus/App 各块**只算一次**。
+* **`--no-test-runs` 只给"校验"用**：full 套件里的 `test_docs_consistency.py` 刚刚已经跑过同一批
+  套件，再让本脚本的 `--check` 跑一遍等于 full 双重耗时。该模式下**不跑套件**、比对时把 AUTO 的
+  「测试」计数行整段剔除；**非测试行（普查/corpus/占位符等）仍严格比对**（反例测试见
+  `tests/test_docs_consistency.py` 的 (a2)）。**测试计数行的守卫**由**独立**的
+  `gen_docs.py --check`（CI `ci.yml` 的独立步骤 / 发版前 `selfcheck.py --full` 的严格模式 /
+  手工显式跑）负责 —— 分工写在 `test_docs_consistency.py` 的 (a) 注释里。
+* 写模式**不允许** `--no-test-runs`（写出去的数字必须是现算的，不能是占位值）。
 
 约定
 ----
@@ -113,14 +128,18 @@ def sh(cmd: list[str], cwd: Path | None = None) -> str:
 SELF_REFERENTIAL = {"test_docs_consistency.py"}
 
 
+def test_files() -> list[Path]:
+    """参与 AUTO「测试」计数的套件清单（排除自指的 test_docs_consistency.py）。"""
+    return [f for f in sorted((ENGINE / "tests").glob("test_*.py"))
+            if f.name not in SELF_REFERENTIAL]
+
+
 def run_tests() -> tuple[list[tuple[str, int, int]], int]:
     if os.environ.get("SLCN_GEN_DOCS_NESTED"):
         sys.exit("gen_docs.py 被递归调用（SLCN_GEN_DOCS_NESTED 已置位）—— 检查测试清单")
     env = dict(os.environ, PYTHONPATH=str(ENGINE / "vendor"), SLCN_GEN_DOCS_NESTED="1")
     rows = []
-    for f in sorted((ENGINE / "tests").glob("test_*.py")):
-        if f.name in SELF_REFERENTIAL:
-            continue
+    for f in test_files():
         p = subprocess.run([PY, "-u", str(f)], cwd=str(ENGINE), env=env,
                            capture_output=True, text=True, encoding="utf-8", errors="replace")
         out = p.stdout + p.stderr
@@ -251,9 +270,14 @@ def git_block() -> list[str]:
 
 
 # ── 组装 ──────────────────────────────────────────────────────────────────
-def build_block() -> tuple[str, bool]:
+def build_block(run_test_suites: bool = True) -> tuple[str, bool]:
     ok = True
-    rows, total = run_tests()
+    if run_test_suites:
+        rows, total = run_tests()
+    else:
+        # `--no-test-runs`：**不跑**套件，只保留套件清单的行数与形状（比对前测试行会被整段剔除）。
+        # 用 0 而不是真值，是为了"绝不把占位数字写进 README"——写模式禁用本开关，见 main()。
+        rows, total = [(f.stem, 0, 0) for f in test_files()], 0
     bad = [(n, f) for n, p, f in rows if f]
     # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
     #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
@@ -303,6 +327,9 @@ _GIT_PLACEHOLDER = "**红线只读快照**：（本机工作区状态，不参�
 # 那种情况下把它们也归一化掉，否则 CI 永远红，久而久之就没人看 CI 了。
 TEST_SUMMARY_LINE = re.compile(r"^\*\*测试\*\*（.*$", re.M)
 TEST_BREAKDOWN_LINE = re.compile(r"^`test_[a-z0-9_]+` \d+( ｜ `test_[a-z0-9_]+` \d+)*$", re.M)
+# ⚠️ 明细的**第一行**带前缀（`套件明细：`test_…` 45 ｜ …`），不匹配上面的纯明细正则 ——
+#    `strip_test_lines()` 必须单独认它，否则 --no-test-runs 会把这一行留在比对里而误红。
+TEST_BREAKDOWN_HEAD = "套件明细："
 _TEST_PLACEHOLDER = "**测试**：（计数随本机前提浮动，本次不参与校验）"
 
 
@@ -349,6 +376,20 @@ def normalize_for_check(body: str, lenient: bool = False) -> str:
     return out
 
 
+def strip_test_lines(body: str) -> str:
+    """把 AUTO 的「测试」两行（摘要 + 套件明细）**整段删除**（`--no-test-runs` 的比对口径）。
+
+    为什么删除而不是像宽松模式那样替换成占位符：占位符的**条数**会随套件数变化
+    （新增/删除一个 test_*.py 就同红），而本模式下这两行的语义就是"不参与比对"。
+    只删行、不动其余结构 —— 两边用同一函数处理，剩下的空白行也仍然对齐。
+    """
+    keep = [ln for ln in body.split("\n")
+            if not TEST_SUMMARY_LINE.match(ln)
+            and not TEST_BREAKDOWN_LINE.match(ln)
+            and not ln.startswith(TEST_BREAKDOWN_HEAD)]
+    return "\n".join(keep)
+
+
 def read_readme() -> str:
     return README.read_text(encoding="utf-8")
 
@@ -363,41 +404,56 @@ def split_block(text: str) -> tuple[str, str, str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="生成/校验 README.md 的「当前状态」AUTO 块")
     ap.add_argument("--check", action="store_true", help="只校验，不一致就退出 1 并打印 diff")
+    ap.add_argument("--no-test-runs", action="store_true",
+                    help="（只能配 --check）不跑套件：AUTO 的「测试」计数行不参与比对。"
+                         "供 full 套件 / selfcheck quick 去掉重复的一遍套件；"
+                         "测试计数守卫由独立的 `gen_docs.py --check` 负责")
     a = ap.parse_args(argv)
+    if a.no_test_runs and not a.check:
+        ap.error("--no-test-runs 只能与 --check 一起用：写模式必须现算测试计数")
 
     text = read_readme()
     if BEGIN not in text or END not in text:
         print(f"FAIL  README.md 里找不到 {BEGIN} / {END}")
         return 1
     head, old, tail = split_block(text)
-    new, all_ok = build_block()          # 现算（跑测试 + 读产物 + cmp + 只读 git）
+    # 现算（跑测试 + 读产物 + cmp + 只读 git）；`--no-test-runs` 只用于校验，写模式必须现跑测试
+    new, all_ok = build_block(run_test_suites=not a.no_test_runs)
     if not a.check:
         # ⚠️ 块里的「红线只读快照」记着 `git status --porcelain` 的行数，而**写 README 本身
         #    就会让这个数字变**（README 从「干净」变成「已修改」）—— 自指，跑一遍不收敛。
-        #    所以写完再算一遍，直到稳定（最多 3 轮）。2026-10-15 实测：不收敛的话，
-        #    紧接着跑 `--check` 会报「块已过期」，而块其实是刚写的。
+        #    第四十一批 O1：**不再重算整块**（那会再跑一整遍套件；干净树过期时共 3 遍 ≈180s）。
+        #    只就地替换那一行（两条只读 git 命令），测试/普查/corpus/App 各块只算一次。
         for _ in range(3):
             probe = "\n" + new
             stable = head + probe + tail
             if stable == read_readme():
                 break
             README.write_text(stable, encoding="utf-8")
-            again, all_ok2 = build_block()
-            if again == new:
-                break
-            new, all_ok = again, all_ok2
+            git_line = git_block()[0]        # 只刷新本机状态行（index mtime / HEAD / status 行数）
+            new = GIT_LINE.sub(lambda _m: git_line, new)
     new_body = "\n" + new
 
     if a.check:
         complete, missing = environment_complete()
         lenient = not complete
-        old_cmp = normalize_for_check(old, lenient)
-        new_cmp = normalize_for_check(new_body, lenient)
+        # 第四十一批 O2：`--no-test-runs` 时把「测试」两行整段剔除后再比（不跑套件）。
+        # 这两行的守卫交给**独立**的 `gen_docs.py --check`（CI ci.yml 独立步骤 /
+        # 发版前 `selfcheck.py --full` 严格模式 / 手工显式跑）——分工见 test_docs_consistency.py。
+        old_for_cmp, new_for_cmp = old, new_body
+        if a.no_test_runs:
+            old_for_cmp = strip_test_lines(old_for_cmp)
+            new_for_cmp = strip_test_lines(new_for_cmp)
+        old_cmp = normalize_for_check(old_for_cmp, lenient)
+        new_cmp = normalize_for_check(new_for_cmp, lenient)
         if lenient:
             print(f"⚠️  宽松校验（缺 {'、'.join(missing)}）：测试计数与依赖稿件库的数字**不参与比对**；"
                   "本机要拿到严格校验，请让稿件库可发现（设 SLCN_MANUSCRIPTS 或把两仓并排放）")
         if old_cmp == new_cmp:
-            if old != new_body:
+            if a.no_test_runs:
+                print("PASS  AUTO 块非测试行与现算结果一致（--no-test-runs：本次未跑套件，"
+                      "测试计数行不参与比对）")
+            elif old != new_body:
                 print("PASS  AUTO 块与现算结果一致（差异只在本机状态那几行——"
                       "按设计不参与校验）")
             else:
