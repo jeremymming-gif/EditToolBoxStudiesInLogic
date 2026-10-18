@@ -1192,6 +1192,11 @@ def main() -> int:
     ap.add_argument("--bibdb-path", default="", metavar="PATH",
                     help="引用库文件路径（隐含启用；默认 笔记仓/bib_db/bibliography.jsonl）。"
                          "指错/读不了 → 告警并按原流程核实（不中断）。")
+    ap.add_argument("--c-class-union", action="store_true",
+                    help="C 类新口径（第四十九批，默认关）：纯引用脚注→正文 \\parencite、"
+                         "并集参考文献；关=旧行为逐字节不变")
+    ap.add_argument("--number-cite-map", action="store_true",
+                    help="NO_CITES-B（默认关）：正文裸编号 [N] 映射为第 N 条 \\parencite")
     ap.add_argument("--end-list-priority", action="store_true",
                     help="C 类可选开关（默认关）：文末清单优先，脚注文献不再逐条提升")
     ap.add_argument("--no-bibdb", action="store_true",
@@ -1473,6 +1478,8 @@ def main() -> int:
                 **overrides_kwargs(build_docx, overrides),
                 # 第四十六批 C 类可选开关（默认关）：命令行 --end-list-priority 才生效
                 end_list_priority=getattr(args, "end_list_priority", False),
+                number_cite_map=getattr(args, "number_cite_map", False),
+                c_class_union=getattr(args, "c_class_union", False),
             )
         else:
             _bib_path = find_bib(source, args.bib)

@@ -322,7 +322,8 @@ check("⑨ 判据：有引用 → 不提示", _bib_zero_cites_hint("见\\parenci
 _b_hint = _bib_zero_cites_hint("正文没有引用命令", 2)
 check("⑨ 判据：bib=2 且 0 引用 → 提示含条数 + PDF 参考文献区为空 + 人工补引用建议",
       _b_hint is not None and "2 条" in _b_hint[0]
-      and "PDF 参考文献区会是空的" in _b_hint[0] and "人工补" in _b_hint[1],
+      and "PDF 参考文献区会是空的" in _b_hint[0]
+      and any("人工补" in ln for ln in _b_hint),
       repr(_b_hint))
 
 _b_log: list[str] = []
@@ -331,9 +332,11 @@ _rep_hit = _report_bib_zero_cites("正文", 3, _b_log.append, _b_warn, _b_log)
 check("⑨ 提示写进初排日志**顶部**（log[0]）与 warnings 首位",
       _rep_hit and _b_log[0].startswith("⚠️ [B 类提示]") and _b_warn[0].startswith("⚠️ [B 类提示]"),
       repr(_b_log[:2]))
+_b_log2: list[str] = []
+_b_warn2: list[str] = []
 check("⑨ 无命中时不写日志/warnings",
-      _report_bib_zero_cites("见\\parencite{k}", 3, _b_log.append, _b_warn, _b_log) is False
-      and len(_b_log) == 2)
+      _report_bib_zero_cites("见\\parencite{k}", 3, _b_log2.append, _b_warn2, _b_log2) is False
+      and _b_log2 == [] and _b_warn2 == [])
 
 # ⑨-1 LaTeX 通道：合成 body + 有 1 条 bib 但 0 引用 → 提示；开关关→无提示；产物 sha 相同
 _B_TMP = tempfile.mkdtemp(dir="/tmp")

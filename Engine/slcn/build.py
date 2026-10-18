@@ -963,8 +963,11 @@ def build_latex(
                 ))
             except OSError:
                 _n_bib_tex = 0
+        _n_end_list = (len(doc.refs) if doc.refs
+                       else len(doc.ref_key_by_num)) if "doc" in locals() else 0
         try:
-            _report_bib_zero_cites(tpl, _n_bib_tex, say, warnings, log)
+            _report_bib_zero_cites(tpl, _n_bib_tex, say, warnings, log,
+                                   n_end_list=_n_end_list)
         except Exception as e:  # noqa: BLE001
             warnings.append(f"B 类提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 
@@ -1401,23 +1404,111 @@ def _count_cite_commands(tex: str) -> int:
     return len(_CITE_CMD_RE.findall(s))
 
 
-def _bib_zero_cites_hint(tex: str, n_bib: int) -> list[str] | None:
-    """B 类判据：生成稿 bib 条数>0 且正文引用命令数=0 → 醒目提示行；否则 None。"""
+# 正文里「裸编号引用」`[1]` / `[2-4]` / `[2,3]`（前面不能是反斜杠，避免误吃
+# `\\[2pt]`、`\\[` 数学等 LaTeX 可选参数）。NO_CITES A/B 共用。
+_NUMBER_CITE_RE = re.compile(r"(?<!\\)\[(\d{1,3})(?:\s*[-–—~,，]\s*(\d{1,3}))*\]")
+
+
+def _number_cite_stats(tex: str) -> tuple[int, int, list[str]]:
+    """正文裸编号引用统计：返回 (出现次数, 最大编号, 前 5 个示例文本)。"""
+    body = tex.split("\\begin{document}", 1)[-1]
+    s = _COMMENT_RE.sub("", body)
+    for pat in (_VERBATIM_RE, _MATH_ENV_RE, _MATH_DELIM_RE):
+        s = pat.sub("", s)
+    found = _NUMBER_CITE_RE.findall(s)
+    nums: list[int] = []
+    for m in _NUMBER_CITE_RE.finditer(s):
+        nums.append(int(m.group(1)))
+        if m.group(2):
+            nums.append(int(m.group(2)))
+    examples = [m.group(0) for m in list(_NUMBER_CITE_RE.finditer(s))[:5]]
+    return len(found), (max(nums) if nums else 0), examples
+
+
+def _map_number_citations(
+        body: str, ref_key_by_num: dict[int, str]) -> tuple[str, int, list[str]]:
+    r"""NO_CITES-B（第四十九批，`--number-cite-map` 默认关）：裸编号引用 `[N]` → `\parencite`。
+
+    只在「**正文只有 [N]、没有真引用命令、文末清单编号 1..N 有序**」时映射；任何一条
+    不满足都**原样返回** + warning（越界/混用真引用/清单无序/编号缺条→不猜）。
+    返回 (新正文, 映射处数, warnings)。纯文本替换，不改其它内容。
+    """
+    if not ref_key_by_num:
+        return body, 0, ["编号引用映射跳过：源稿没有可映射的编号清单"]
+    keys = sorted(ref_key_by_num)
+    if keys != list(range(1, len(keys) + 1)):
+        return body, 0, ["编号引用映射跳过：文末清单编号不是 1..N 有序（不映射）"]
+    if _CITE_CMD_RE.search(body):
+        return body, 0, ["编号引用映射跳过：正文已含真引用命令（混用不映射，避免二次包裹）"]
+    matches = list(_NUMBER_CITE_RE.finditer(body))
+    if not matches:
+        return body, 0, []
+    bad: list[str] = []
+    for m in matches:
+        if int(m.group(1)) not in ref_key_by_num:
+            bad.append(m.group(0))
+        if m.group(2) and int(m.group(2)) not in ref_key_by_num:
+            bad.append(m.group(0))
+    if bad:
+        return body, 0, [
+            f"编号引用映射跳过：{len(bad)} 处 [N] 越界/清单缺条"
+            f"（示例：{'、'.join(bad[:3])}）"
+        ]
+    n_mapped = [0]
+
+    def _repl(m: re.Match) -> str:
+        n1 = int(m.group(1))
+        n2 = int(m.group(2)) if m.group(2) else None
+        nums = list(range(n1, n2 + 1)) if n2 is not None and n2 > n1 else [n1]
+        if n2 is not None and n2 < n1:
+            nums = [n1, n2]
+        n_mapped[0] += 1
+        ks = ",".join(ref_key_by_num[n] for n in nums)
+        return f"\\parencite{{{ks}}}"
+
+    new_body = _NUMBER_CITE_RE.sub(_repl, body)
+    return new_body, n_mapped[0], [
+        f"编号引用映射（--number-cite-map）：{n_mapped[0]} 处 [N] → \\parencite"
+        "（第 N 条对应文末清单；请人工核对编号体例）"
+    ]
+
+
+def _bib_zero_cites_hint(tex: str, n_bib: int,
+                         n_end_list: int = 0) -> list[str] | None:
+    r"""B 类判据：生成稿 bib 条数>0 且正文引用命令数=0 → 醒目提示行；否则 None。
+
+    第四十九批 NO_CITES-A：提示里加「正文裸编号 [N]」统计（出现次数/最大编号/
+    前几个示例）与文末清单条数，让编辑一眼看出「引用其实是 [N] 编号体例」还是
+    「真的一条引用都没有」。**纯日志，产物逐字节不变**。
+    """
     if n_bib <= 0:
         return None
     if _count_cite_commands(tex) > 0:
         return None
-    return [
+    n_num, max_num, examples = _number_cite_stats(tex)
+    lines = [
         f"⚠️ [B 类提示] 生成稿 bib 有 {n_bib} 条，但正文 0 处 \\parencite/\\cite"
         " → PDF 参考文献区会是空的",
-        f"   处理建议：{_BIB_ZERO_CITES_GUIDE}（提示可用 bib_zero_cites_hints=False 关闭）",
     ]
+    if n_num:
+        lines.append(
+            f"   正文裸编号引用 [N]：{n_num} 处，最大编号 [{max_num}]，"
+            f"示例：{'、'.join(examples)}"
+        )
+    else:
+        lines.append("   正文未发现裸编号引用 [N]")
+    if n_end_list:
+        lines.append(f"   文末清单条数：{n_end_list} 条")
+    lines.append(
+        f"   处理建议：{_BIB_ZERO_CITES_GUIDE}（提示可用 bib_zero_cites_hints=False 关闭）"
+    )
+    return lines
 
 
 def _report_bib_zero_cites(tex: str, n_bib: int, say, warnings: list[str],
-                           log: list[str]) -> bool:
+                           log: list[str], n_end_list: int = 0) -> bool:
     """把 B 类提示写进初排日志**顶部**与 warnings 首位；只读 tex，不改产物。"""
-    lines = _bib_zero_cites_hint(tex, n_bib)
+    lines = _bib_zero_cites_hint(tex, n_bib, n_end_list=n_end_list)
     if not lines:
         return False
     for ln in lines:
@@ -1526,6 +1617,8 @@ def build_docx(
     dash_hints: bool = True,
     bib_zero_cites_hints: bool = True,
     end_list_priority: bool = False,
+    number_cite_map: bool = False,
+    c_class_union: bool = False,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1559,6 +1652,16 @@ def build_docx(
                    与现行为逐字节一致（`footnotes.footnote_promotion_allowed` 恒 True）。
                    ⚠️ 启用需与 docxsource 的脚注渲染配套（避免悬空 `\\parencite`），
                    该配套在批 47 处理；本参数只接线、不改默认。
+    number_cite_map  **NO_CITES-B 编号引用映射（第四十九批；默认 False=关）**：
+                   True 且「正文只有裸编号 [N]、无真引用命令、文末清单编号 1..N
+                   有序」时，把 [N] 映射成 `\\parencite{第N条键}`；越界/混用/无序
+                   一律不映射并 warning。默认关 → 产物逐字节不变。
+    c_class_union   **C 类新口径开关（第四十九批；默认 False=关）**：
+                   True 时按用户拍板新口径渲染：pure_citation/reference_entry →
+                   正文 `\\parencite[页码]{键}` 并删脚注；mixed → 保留脚注 + 「请人工
+                   核对」warning 列表；note_only 原样；参考文献 = 脚注引注 ∪ 文末清单
+                   （bib-refs `union_entries`）。**本批默认关**：关时旧行为逐字节不变；
+                   默认 ON 留待 v7 复测后单独切换。
     """
     from .docxsource import (
         link_citations,
@@ -1576,7 +1679,8 @@ def build_docx(
             print("   " + s)
 
     say("① 解析 Word 文稿")
-    doc = parse_docx(docx_path, quote_threshold=quote_threshold)
+    doc = parse_docx(docx_path, quote_threshold=quote_threshold,
+                     c_class_union=c_class_union)
     warnings.extend(doc.warnings)
     # ── 第 76 条：英文元数据第二源（同目录的「英文摘要」docx）──
     # 放在「题名/作者」那几行日志之前，日志读起来就是「这次英文题名是从哪来的」。
@@ -1594,7 +1698,7 @@ def build_docx(
     # 第四十六批（C 类可选开关，默认关）：文末清单优先——脚注文献不再逐条提升。
     # 判据与过滤在 `slcn/footnotes.py`（bib-refs 实现）；默认 False 时
     # `footnote_promotion_allowed()` 恒 True → 本块不执行，产物逐字节不变。
-    if end_list_priority:
+    if end_list_priority and not c_class_union:
         from .footnotes import filter_footnote_entries, footnote_promotion_allowed
 
         _has_end_list = bool(doc.refs or doc.ref_raw_lines or doc.ref_key_by_num)
@@ -1610,6 +1714,32 @@ def build_docx(
                 warnings.append(
                     f"文末清单优先（--end-list-priority）：脚注文献 {_before} 条中"
                     f"过滤 {_dropped} 条，只保留与文末清单编号对应的条目")
+
+    # 第四十九批（C 类新口径）：混合型脚注（说明文字+引用）→ 「请人工核对」清单。
+    # **纯日志/warning，不改产物**。渲染已在 docxsource 保留 \footnote。
+    _mixed = getattr(doc, "mixed_footnotes", None) or [] if c_class_union else []
+    _cc_warns = (getattr(doc, "c_class_warnings", None) or []) if c_class_union else []
+    _cc_unmatched = [w for w in _cc_warns if getattr(w, "code", "") == "citation_unmatched"]
+    _cc_conflict = [w for w in _cc_warns if getattr(w, "code", "") == "field_conflict"]
+    if _cc_unmatched:
+        _u = "；".join(
+            f"#{getattr(w, 'fid', '?')}「{str(getattr(w, 'text', ''))[:40]}」"
+            for w in _cc_unmatched[:6])
+        warnings.append(
+            f"纯引用脚注 {len(_cc_unmatched)} 条无法匹配完整条目（不编造，脚注原文已保留）："
+            f"{_u}" + ("…" if len(_cc_unmatched) > 6 else ""))
+    if _cc_conflict:
+        warnings.append(
+            f"并集合并时 {len(_cc_conflict)} 条文献字段冲突（已按文末清单优先，请人工核对）："
+            + "；".join(str(getattr(w, "text", ""))[:40] for w in _cc_conflict[:4]))
+    if _mixed:
+        _head = "；".join(f"#{fid}「{snippet}」" for fid, snippet in _mixed[:6])
+        warnings.append(
+            f"混合型脚注 {len(_mixed)} 条（说明文字+引用，已保留脚注）：请人工核对"
+            f"引用与说明文字是否对应——{_head}"
+            + ("…" if len(_mixed) > 6 else "")
+        )
+        say(f"   混合型脚注 {len(_mixed)} 条：已保留脚注，warning 列「请人工核对」清单")
 
     if doc.n_math:
         # ⚠️ 这条以前写的是「PoC 尚未转换」——**早就过时了**，公式其实已经转好
@@ -1659,9 +1789,25 @@ def build_docx(
 
     # 第四十四批④：B 类可发现性提示（初排阶段可见；纯日志、产物逐字节不变）
     if bib_zero_cites_hints:
+        # Word 通道没有 bib_path（bib 由 doc.refs + doc.bib_entries 生成）
+        _n_bib_tex = len(doc.refs) + len(doc.bib_entries)
+        # 第四十九批 NO_CITES-B（默认关）：裸编号引用 [N] → \parencite（不猜编号）
+        if number_cite_map:
+            try:
+                body, _n_mapped, _map_warnings = _map_number_citations(
+                    body, doc.ref_key_by_num)
+                warnings.extend(_map_warnings)
+                if _n_mapped:
+                    say(f"②.6 编号引用映射（--number-cite-map）：{_n_mapped} 处 [N] → \\parencite")
+            except Exception as e:  # noqa: BLE001 —— 映射失败不阻断出稿
+                warnings.append(f"编号引用映射未执行（不影响出稿）：{type(e).__name__}: {e}")
+        _n_end_list = (len(doc.refs) if doc.refs
+                       else len(doc.ref_key_by_num))
         try:
-            _report_bib_zero_cites(body, len(doc.refs) + len(doc.bib_entries),
-                                   say, warnings, log)
+            _report_bib_zero_cites(body, _n_bib_tex or (len(doc.refs) + len(doc.bib_entries)),
+                                   say, warnings, log, n_end_list=_n_end_list)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"B 类提示未执行（不影响出稿）：{type(e).__name__}: {e}")
         except Exception as e:  # noqa: BLE001
             warnings.append(f"B 类提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 

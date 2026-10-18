@@ -216,6 +216,12 @@ class DocxDoc:
     images: list[tuple[str, str]] = field(default_factory=list)
     # 正文里的纯文本编号引用：{编号 → bib 键}（来自文末那份 `[N] …` 清单）
     ref_key_by_num: dict[int, str] = field(default_factory=dict)
+    # 第四十九批（C 类新口径）：混合型脚注（说明文字+引用）清单 → build 汇总
+    # 「请人工核对」warning；元素 (fid, 片段)。纯日志，不影响产物。
+    mixed_footnotes: list[tuple[int, str]] = field(default_factory=list)
+    # 第四十九批 C 类新口径：FootnoteWarning 列表（mixed_manual_check /
+    # citation_unmatched / field_conflict），build 汇总成中文 warning。
+    c_class_warnings: list = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -2568,6 +2574,7 @@ def render_para(
     fn_pages: dict | None = None, quote_threshold: int = 105,
     img_names: dict | None = None,
     fig_counter: list[int] | None = None,
+    c_class_union: bool = False,
 ) -> tuple[str, list[str]]:
     """把一段 XML 片段渲染成 LaTeX。
 
@@ -2677,17 +2684,35 @@ def render_para(
             fn = fn_objs.get(seg.fid)
             if fn is None:
                 continue
-            if fn.kind == "pure_ref":
-                # 纯文献引用：从脚注**提升到正文**，与人工成品一致
+            if fn.kind in ("pure_ref", "pure_citation", "pure_citation_matched"):
+                # 第四十九批（C 类新口径，**开关默认 OFF**）：ON 时纯引用脚注 →
+                # 正文 \parencite，脚注删除；页码进可选参数 `[p.13]`（biblatex
+                # 样式自己产生括号）。OFF 时保持旧行为（中文括号包裹）逐字节不变。
                 key = keymap.get(fn.fid, "")
                 loc = f"[{fn.locator}]" if fn.locator else ""
-                out.append(f"（\\parencite{loc}{{{key}}}）")
-            elif fn.kind == "mixed":
-                # 混合：文献剥离成 \parencite，注释原样保留，仍在一个 \footnote 内
-                key = keymap.get(fn.fid, "")
-                loc = f"[{fn.locator}]" if fn.locator else ""
-                note = escape_latex(fn.note)
-                out.append(f"\\footnote{{cf. \\parencite{loc}{{{key}}}. {note} }}")
+                if c_class_union:
+                    out.append(f"\\parencite{loc}{{{key}}}")
+                else:
+                    out.append(f"（\\parencite{loc}{{{key}}}）")
+            elif fn.kind in ("citation_unmatched", "mixed_manual"):
+                # C 类新口径：未匹配短引用/混合型 → 保留脚注原文（不编造条目不丢内容）
+                body_note = (getattr(fn, "note_latex", "")
+                             or escape_latex(fn.note or getattr(fn, "ref_raw", "")
+                                             or fn.text))
+                out.append(f"\\footnote{{{body_note}}}")
+            elif fn.kind in ("mixed", "mixed_citation"):
+                if c_class_union:
+                    # ON：混合型（说明文字+引用）→ 保留脚注，说明文字原样
+                    #（引用已由 link_citations 替换），build 汇总「请人工核对」warning。
+                    body_note = (getattr(fn, "note_latex", "")
+                                 or escape_latex(fn.note or fn.text))
+                    out.append(f"\\footnote{{{body_note}}}")
+                else:
+                    # OFF：旧行为（逐字节不变）
+                    key = keymap.get(fn.fid, "")
+                    loc = f"[{fn.locator}]" if fn.locator else ""
+                    note = escape_latex(fn.note)
+                    out.append(f"\\footnote{{cf. \\parencite{loc}{{{key}}}. {note} }}")
             else:
                 # 纯注释 / 古典文献：原样保留（英文注释已预先转义+替换引用）
                 body_note = getattr(fn, "note_latex", "") or escape_latex(fn.text)
@@ -2722,7 +2747,8 @@ def render_para(
     return latex, notes
 
 
-def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
+def parse_docx(path: str, quote_threshold: int = 105,
+               c_class_union: bool = False) -> DocxDoc:
     """解析 Word 文稿。
 
     ⚠️ 用 slcn/docxxml 直接读 XML，**不用 python-docx 的 paragraph.text**。
@@ -3019,7 +3045,7 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
     # 判据：含中文、汉字 ≥15、总长 ≥40 → 按**纯注释**处理（保留原文；引用在
     # ⑤.3b 用 link_citations 就地替换），且**不生成 bib 条目**（人工成品同样不把
     # 这些论述脚注当 bib 条目）。英文论述性脚注已有第 121 条同类降级。
-    for _fid, _f in list(fn_objs.items()):
+    for _fid, _f in ([] if c_class_union else list(fn_objs.items())):
         if _f.kind != "pure_ref":
             continue
         _txt = _f.text or ""
@@ -3057,6 +3083,74 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
             _f.entry = None
             setattr(_f, "_discursive_cjk", True)
 
+    # 第四十九批（C 类新口径，**开关默认 OFF**）：ON 时用 bib-refs 新分类器
+    # `classify_citation()` 重分类，并做短引用匹配（不编造）。映射结果复用旧渲染/条目
+    # 机制：reference_entry → pure_ref；pure_citation 命中 → pure_citation_matched
+    #（正文 parencite）；未命中 → citation_unmatched（保留脚注 + warning）；mixed →
+    # mixed_manual（保留脚注 + 核对 warning）；note_only → pure_note。
+    if c_class_union:
+        from .footnotes import (CITATION_ENTRY, CITATION_MIXED, CITATION_NOTE,
+                                CITATION_PURE, FootnoteWarning,
+                                classify_citation, resolve_citation,
+                                union_entries)
+        _candidates: list[tuple[str, dict, str]] = []
+        for _k, _e, _raw in doc.bib_entries:
+            _candidates.append((_k, _e, _raw))
+        for _r in doc.refs:
+            _candidates.append((_r.key, {"author": _r.author, "year": _r.year,
+                                         "title": _r.title, "type": _r.kind}, _r.raw))
+        for _fid, _fn in list(fn_objs.items()):
+            _new = classify_citation(_fn.text)
+            _new.fid = int(_fid)
+            _kind = _new.kind_new
+            if _kind == CITATION_ENTRY:
+                _new.kind = "pure_ref"
+                _new.ref = _new.ref_raw or _new.ref
+                _new.entry = _new.entry or {}
+            elif _kind == CITATION_PURE:
+                _key, _warn = resolve_citation(_new, _candidates)
+                if _key:
+                    _new.kind = "pure_citation_matched"
+                    _new.key = _key
+                else:
+                    _new.kind = "citation_unmatched"
+                    doc.c_class_warnings.append(_warn)
+                    doc.footnote_notes += 1
+            elif _kind == CITATION_MIXED:
+                _new.kind = "mixed_manual"
+                try:
+                    _new.note_latex = link_citations(
+                        escape_latex(_new.note or _new.ref_raw or _new.text),
+                        doc.refs)[0]
+                except Exception:  # noqa: BLE001
+                    _new.note_latex = ""
+                doc.c_class_warnings.append(FootnoteWarning(
+                    "mixed_manual_check", fid=int(_fid),
+                    text=(_new.text or "")[:200],
+                    reason="说明文字+引用：脚注保留，请人工核对引用与说明是否对应",
+                    author=str((_new.entry or {}).get("author", "")),
+                    title=str((_new.entry or {}).get("title", "")),
+                    year=str((_new.entry or {}).get("year", "")),
+                    locator=_new.locator))
+            elif _kind == CITATION_NOTE:
+                _new.kind = "pure_note"
+                _new.note = _new.note or _new.text
+            fn_objs[_fid] = _new
+        # 短引用命中 → keymap（正文渲染用 `\parencite[locator]{key}`）
+        for _fid, _fn in fn_objs.items():
+            if _fn.kind == "pure_citation_matched" and getattr(_fn, "key", ""):
+                keymap[_fid] = _fn.key
+
+    # 第四十九批：混合型脚注清单（渲染保留脚注 + build 汇总「请人工核对」warning）。
+    # **仅新口径开关 ON 时**收集：默认 OFF 时旧行为/产物/warning 逐字节不变。
+    if c_class_union:
+        doc.mixed_footnotes = [
+            (int(fid), (fn.text or "").strip()[:40])
+            for fid, fn in fn_objs.items()
+            if fn.kind in ("mixed", "mixed_manual")
+        ]
+
+    _end_entries_snapshot: list[tuple[str, dict, str]] = list(doc.bib_entries)
     used_keys: set[str] = set()
     keymap: dict[int, str] = {}
     # 第四十七批（88-02 实测）：同一文献被**多条脚注反复引用**时逐条提升 → bib 重复
@@ -3155,11 +3249,27 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         else:
             doc.footnote_notes += 1
 
+    if c_class_union:
+        # 第四十九批 C 类新口径：并集 = 文末清单（编号清单条目）∪ 脚注条目，
+        # 由 bib-refs `union_entries()` 按「作者+题名+年份+类型」指纹合并（忽略页码/
+        # 版次；文末版本优先、缺字段互补；冲突进 warning）。**开关默认 OFF**。
+        from .footnotes import union_entries as _union_entries
+
+        _new_entries = doc.bib_entries[len(_end_entries_snapshot):]
+        doc.bib_entries = _union_entries(
+            list(_end_entries_snapshot), list(_new_entries),
+            warnings=doc.c_class_warnings)
+        if doc.bib_entries:
+            say_union = (f"   并集参考文献（C 类新口径）：文末清单 "
+                         f"{len(_end_entries_snapshot)} 条 + 脚注条目 "
+                         f"{len(_new_entries)} 条 → {len(doc.bib_entries)} 条")
+            doc.warnings.append(say_union)
+
     # ⑤.3b 第 121 条：英文纯注释（含上一步由英文散文脚注降级来的）里的
     # 人年制引用也替换成 \parencite——人工成品在脚注里同样做了引用替换。
     # 只处理**不含中文**的注释，中文脚注体例保持逐字节不变。
     for _f in fn_objs.values():
-        if (_f.kind == "pure_note" and not getattr(_f, "note_latex", "")
+        if (_f.kind in ("pure_note", "mixed") and not getattr(_f, "note_latex", "")
                 and (not _has_cjk(_f.text) or getattr(_f, "_discursive_cjk", False))):
             # 第四十七批：英文注释（第 121 条既有）与**中文论述性脚注**（86-07：
             # classify 误判 pure_ref 后降级）都做行内引用替换，保留散文原文。
@@ -3301,7 +3411,8 @@ def parse_docx(path: str, quote_threshold: int = 105) -> DocxDoc:
         if any(idx > k and idx < k + c for k, c in fig_marks.items()):
             continue  # 已被上一张图的占位吸收
         latex, notes = render_para(para, fn_objs, doc.bib_entries, keymap, fn_pages,
-                                   quote_threshold, img_names, fig_counter=fig_counter)
+                                   quote_threshold, img_names, fig_counter=fig_counter,
+                                   c_class_union=c_class_union)
         doc.warnings.extend(notes)
         if not latex.strip():
             continue

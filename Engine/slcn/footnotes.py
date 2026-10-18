@@ -64,6 +64,11 @@ class Footnote:
     ref: str = ""  # 文献部分
     note: str = ""  # 注释部分
     locator: str = ""  # \parencite[...] 里的页码定位
+    #: 第四十九批 C 类新口径：`classify_citation()` 的 kind
+    #: （pure_citation / reference_entry / mixed / note_only）。
+    kind_new: str = ""
+    #: 纯引用体原文（新口径：把「文献引用那段」原样带出，供并集/warning 用）
+    ref_raw: str = ""
     # 第 121 条：英文纯注释的「已转义 + 引用已替换」版本（空 = 渲染时按 text 转义）
     note_latex: str = ""
     key: str = ""  # bib 键（生成后回填）
@@ -150,6 +155,371 @@ def classify(text: str) -> Footnote:
     fn.kind = "mixed" if tail else "pure_ref"
     fn.locator = extract_locator(head)
     return fn
+
+
+# ── C 类新口径（第 49 批，用户 2026-10-19 拍板；新 API 默认即新口径）────────────
+#
+# 最终参考文献 = 脚注引注文献 ∪ 文末清单；纯引用型脚注 → 正文 `\parencite[locator]{key}`
+# （脚注不保留）；混合型（说明+引用）→ 脚注保留 + warning；note_only 原样。
+# ⚠️ 兼容：旧 `classify()` 仍返回旧 kind（pure_ref/mixed/pure_note/classical），
+#    现有 docxsource 渲染未切换前不会被新 API 影响；engine-core 接线时改用
+#    `classify_citation()` + `union_entries()` 即可（接口见批 49 报告）。
+
+CITATION_PURE = "pure_citation"       # 纯引用（短引用/页码级，可整体转正文 parencite）
+CITATION_ENTRY = "reference_entry"    # 脚注里是完整文献条目
+CITATION_MIXED = "mixed"              # 说明文字 + 引用（脚注保留 + 人工核对）
+CITATION_NOTE = "note_only"           # 纯说明/古典文献（不进参考文献）
+
+#: 散文判据：正文+引用的混合型脚注常见特征（批 47 论述性脚注实测）
+_PROSE_CUES = re.compile(
+    r"(笔者|作者认为|我们认为|参见|参阅|指出|所谓|这里|正如|不过|因此|当然|显然|"
+    r"据此|也就是说|例如|即|换言之|反过来说|一方面|另一方面|总之|可见)")
+
+
+def _looks_prose(text: str) -> bool:
+    """「说明文字 + 引用」判据：句子标点/篇幅/论述性用语。"""
+    t = text.strip()
+    if not t:
+        return False
+    if len(t) > 260:
+        return True
+    if t.count("。") >= 1:
+        return True
+    return bool(_PROSE_CUES.search(t[:120]))
+
+
+def _entry_complete(entry: dict | None) -> bool:
+    """完整条目判据：题名 + 作者 + 出版语境（年/刊名/书名/出版社/卷）。
+
+    只有「作者+题名+页码」的短引用（如 `Cf. Watson, “Free Agency,” p. 215.`）**不是**
+    完整条目 → pure_citation，交给 resolve_citation 匹配；避免把页码级引注当新文献。
+    """
+    if not entry:
+        return False
+    if not str(entry.get("title") or "").strip():
+        return False
+    if not str(entry.get("author") or entry.get("editor") or "").strip():
+        return False
+    context = any(str(entry.get(name) or "").strip() for name in
+                  ("year", "journal", "booktitle", "publisher", "address", "volume"))
+    return context
+
+
+def classify_citation(text: str) -> Footnote:
+    """C 类新口径分类（第四十九批接口，engine-core 接线用）。
+
+    返回 `Footnote`，`kind_new` ∈ {pure_citation, reference_entry, mixed, note_only}，
+    并带 `ref_raw` / `entry` / `note` / `locator`：
+      · pure_citation：短引用（作者+年/页码），`entry=None`，待 union 匹配；
+      · reference_entry：脚注里是完整条目，`entry` = parse_entry() 字段；
+      · mixed：说明文字 + 引用（`note`=说明，`ref_raw`=引用片段），脚注保留 + warning；
+      · note_only：纯说明/古典文献。
+    """
+    legacy = classify(text)
+    fn = Footnote(fid=legacy.fid, text=legacy.text, kind=legacy.kind, ref=legacy.ref,
+                  note=legacy.note, locator=legacy.locator, note_latex=legacy.note_latex)
+    if legacy.kind in ("pure_note", "classical"):
+        fn.kind_new = CITATION_NOTE
+        fn.note = legacy.note or legacy.text
+        fn.ref_raw = ""
+        return fn
+    if legacy.kind == "mixed":
+        fn.kind_new = CITATION_MIXED
+        fn.ref_raw = legacy.ref
+        return fn
+    head = legacy.ref or ""
+    if _looks_prose(head):
+        fn.kind_new = CITATION_MIXED
+        fn.ref_raw = head
+        fn.note = legacy.note or ""
+        return fn
+    entry = parse_entry(head)
+    if not _entry_complete(entry):
+        # 英文脚注条目：parse_entry 的严格通道可能只给 note；这里补 footref 的宽松解析，
+        # 只用于「是不是完整条目」判定与并集候选（不编造字段）。
+        try:
+            from . import footref
+            parsed = footref.parse_one(head)
+            if parsed is None:
+                _many = footref.parse_note(head)
+                parsed = _many[0] if _many else None
+            if parsed is not None:
+                import dataclasses as _dc
+                candidate = {k: v for k, v in _dc.asdict(parsed).items() if v}
+                if _entry_complete(candidate):
+                    entry = candidate
+        except Exception:  # noqa: BLE001 —— 解析失败就按短引用处理
+            pass
+    if _entry_complete(entry):
+        fn.kind_new = CITATION_ENTRY
+        fn.entry = entry
+    else:
+        fn.kind_new = CITATION_PURE
+    fn.ref_raw = head
+    fn.locator = extract_locator(head) or legacy.locator
+    return fn
+
+
+#: 第四十九批 C 类新口径**总开关**：按 Lead 07:45 决定**默认关**（峰谷批再切默认 ON）。
+#: 默认关 = 现有 docxsource/build 一行未改、所有产物逐字节不变；
+#: 启用方式：engine-core 接线时把 `c_class_union_enabled(True)`（或传 `--c-class-union`）。
+C_CLASS_UNION_DEFAULT = False
+
+
+def c_class_union_enabled(flag: bool | None = None) -> bool:
+    """C 类并集是否启用（默认关；`flag` 显式传入时以调用方为准）。"""
+    return C_CLASS_UNION_DEFAULT if flag is None else bool(flag)
+
+
+# ── 并集构建（第四十九批接口）────────────────────────────────────────────────
+#
+# 指纹 =（第一作者姓归一 + 题名归一 + 4 位年份 + 类型族），**忽略**
+# pages/page/edition/volume/number/publisher/address/locator；
+# 同文献仅页码不同 → 合并为 1 条参考文献（正文各处各自 parencite[locator]）。
+# 并集：文末清单优先（字段更全/文末版本），脚注补充缺失字段；冲突记 warning。
+
+_TYPE_FAMILY = {
+    "article": "article", "incollection": "incollection", "inproceedings": "incollection",
+    "inbook": "incollection", "book": "book", "collection": "book", "proceedings": "book",
+    "phdthesis": "thesis", "mastersthesis": "thesis", "thesis": "thesis",
+    "techreport": "report", "report": "report", "misc": "misc", "unpublished": "misc",
+    "online": "misc", "dataset": "misc", "booklet": "misc",
+}
+
+
+_CN_DIGITS = {"零": "0", "一": "1", "二": "2", "三": "3", "四": "4", "五": "5",
+              "六": "6", "七": "7", "八": "8", "九": "9", "十": "10",
+              "上": "上", "下": "下", "中": "中"}
+
+
+def _norm_volume(value: object) -> str:
+    """卷号/册号归一：`第一卷`/`第1卷`/`Vol.1`/`1`/`Volume 1` → 统一数字串。
+
+    ⚠️ 用户 2026-10-19 澄清：卷号不同的同书是**不同文献**（如《亚里士多德全集》
+    第一卷 vs 第二卷），必须参与判重；页码/页码定位仍不进指纹。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    low = text.lower()
+    digits = re.search(r"\d+", low)
+    if digits:
+        return str(int(digits.group(0)))
+    for cn, num in _CN_DIGITS.items():
+        if cn in text:
+            return num
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", low)[:12]
+
+
+def _norm_edition(value: object) -> str:
+    """版次归一：`2nd ed.`/`第二版`/`2` → 数字串；无版次 → ""。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    low = text.lower()
+    digits = re.search(r"\d+", low)
+    if digits:
+        return str(int(digits.group(0)))
+    for cn, num in _CN_DIGITS.items():
+        if cn in text:
+            return num
+    if "first" in low:
+        return "1"
+    if "second" in low:
+        return "2"
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", low)[:12]
+
+
+@dataclass
+class FootnoteWarning:
+    """C 类并集/分类的 warning（build/report 消费；不编造、不静默）。"""
+    code: str                    # mixed_manual_check / citation_unmatched / field_conflict
+    fid: int = -1
+    text: str = ""
+    reason: str = ""
+    author: str = ""
+    title: str = ""
+    year: str = ""
+    locator: str = ""
+
+
+def _norm_fp(text: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(text or "").lower())
+
+
+def entry_fingerprint(entry: dict) -> tuple:
+    """去重指纹：第一作者姓 + 题名 + 年份 + 类型族 + **卷号** + **版次**。
+
+    · 卷号/版次参与判重（用户 2026-10-19 澄清：同书不同卷/不同版是不同文献）；
+    · **页码/页码定位（pages/page/locator）不参与**——同文献不同页码必须能合并。
+    """
+    entry = entry or {}
+    author = str(entry.get("author") or entry.get("editor") or "")
+    first = re.split(r"\s+and\s+", author, flags=re.I)[0].strip()
+    if "," in first:
+        surname = first.split(",")[0]
+    else:
+        toks = [t for t in re.split(r"\s+", first) if t]
+        surname = toks[-1] if toks else ""
+    title = str(entry.get("title") or entry.get("booktitle") or "")
+    year = re.sub(r"\D", "", str(entry.get("year") or ""))[:4]
+    etype = str(entry.get("etype") or entry.get("entry_type") or "").lower()
+    return (_norm_fp(surname), _norm_fp(title), year, _TYPE_FAMILY.get(etype, etype),
+            _norm_volume(entry.get("volume")), _norm_edition(entry.get("edition")))
+
+
+def union_entries(end_list_entries: list[tuple[str, dict, str]],
+                  footnote_entries: list[tuple[str, dict, str]],
+                  *, warnings: list[FootnoteWarning] | None = None) -> list[tuple[str, dict, str]]:
+    """并集构建：文末清单 ∪ 脚注条目（按指纹合并，文末版本优先）。
+
+    · 返回 `[(key, entry, raw), ...]`（可直接赋给 `doc.bib_entries` 风格）；
+    · 同指纹：文末条目保留、脚注缺字段补进文末条目；字段冲突记 field_conflict warning；
+    · 同文献仅页码/版次不同 → 指纹相同 → 合并 1 条（脚注条目含 locator 由正文 parencite 带走）；
+    · 不做「编造」：调用方无法解析的短引用不在这里生成条目（用 FootnoteWarning 报）。
+    """
+    warnings = warnings if warnings is not None else []
+    merged: list[tuple[str, dict, str]] = []
+    by_fp: dict[tuple, int] = {}
+    by_base: dict[tuple, list[int]] = {}
+
+    def _add(key, entry, raw):
+        fp = entry_fingerprint(entry)
+        by_fp.setdefault(fp, len(merged))
+        by_base.setdefault(fp[:4], []).append(len(merged))
+        merged.append((key, dict(entry), raw))
+
+    for key, entry, raw in end_list_entries:
+        fp = entry_fingerprint(entry)
+        if fp in by_fp:
+            _fill_missing(merged[by_fp[fp]][1], entry)
+            continue
+        _add(key, entry, raw)
+    for key, entry, raw in footnote_entries:
+        fp = entry_fingerprint(entry)
+        vol = fp[4]
+        ed = fp[5]
+        # ① 完全同指纹（含卷号/版次）→ 合并；文末版本优先、脚注补缺、冲突记 warning
+        if fp in by_fp:
+            target = merged[by_fp[fp]][1]
+            for name, value in entry.items():
+                if not value:
+                    continue
+                existing = target.get(name)
+                if not existing:
+                    target[name] = value
+                elif str(existing) != str(value) and name not in (
+                        "locator", "pages", "page", "volume", "edition"):
+                    warnings.append(FootnoteWarning(
+                        "field_conflict", text=str(raw)[:200],
+                        reason=f"文末与脚注字段 {name} 不一致，保留文末值",
+                        title=str(entry.get("title") or ""), year=str(entry.get("year") or "")))
+            continue
+        # ② 基础身份相同（作者/题名/年/类型）但卷号或版次不同 → 处理规则（用户拍板）：
+        base = fp[:4]
+        partial = False
+        for index in by_base.get(base, []):
+            other = merged[index][1]
+            other_vol = _norm_volume(other.get("volume"))
+            other_ed = _norm_edition(other.get("edition"))
+            if other_vol and vol and other_vol != vol:
+                partial = True   # 卷号都不同 → 不同文献（合法，不 warning）
+                continue
+            if other_ed and ed and other_ed != ed:
+                partial = True   # 版次不同 → 不同文献（合法）
+                continue
+            if (bool(other_vol) != bool(vol)) or (bool(other_ed) != bool(ed)):
+                # 一方有卷号/版次、另一方没有 → **不自动合并**，记录 warning 交调用方决定
+                warnings.append(FootnoteWarning(
+                    "field_conflict", text=str(raw)[:200],
+                    reason=("卷号信息不完整（文末与脚注一方缺失），不自动合并，保留两条待人工确认"
+                            if bool(other_vol) != bool(vol)
+                            else "版次信息不完整（文末与脚注一方缺失），不自动合并，保留两条待人工确认"),
+                    title=str(entry.get("title") or ""), year=str(entry.get("year") or "")))
+                partial = True
+                continue
+        _add(key, entry, raw)
+    return merged
+
+
+def _title_similarity(a: str, b: str) -> float:
+    import difflib
+    na, nb = _norm_fp(a), _norm_fp(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def _surname(entry_or_author) -> str:
+    if isinstance(entry_or_author, dict):
+        author = str(entry_or_author.get("author") or entry_or_author.get("editor") or "")
+    else:
+        author = str(entry_or_author or "")
+    first = re.split(r"\s+and\s+", author, flags=re.I)[0].strip()
+    if "," in first:
+        return _norm_fp(first.split(",")[0])
+    toks = [t for t in re.split(r"\s+", first) if t]
+    return _norm_fp(toks[-1]) if toks else ""
+
+
+def _completeness(entry: dict) -> int:
+    return sum(1 for name in ("author", "title", "year", "journal", "booktitle",
+                              "publisher", "address", "volume", "pages")
+               if str(entry.get(name) or "").strip())
+
+
+def resolve_citation(citation: Footnote,
+                     entries: list[tuple[str, dict, str]],
+                     *, title_threshold: float = 0.9) -> tuple[str | None, FootnoteWarning | None]:
+    """短引用 → 已存在条目 key（作者-年 + 题名相似度 + 字段完整度）；不编造。
+
+    返回 `(key|None, warning|None)`：
+      · 命中 → `(key, None)`（正文转 `\\parencite[locator]{key}`）；
+      · 未命中 → `(None, FootnoteWarning("citation_unmatched", ...))`——调用方保留原脚注/正文
+        原样，**不生成条目、不臆造字段**（用户 2026-10-19 方案 1）。
+    判据：作者姓必须相等；年份相等优先；题名相似度 ≥ threshold；多候选取字段最完整。
+    """
+    author = str(citation.entry.get("author", "") if citation.entry else "")
+    title = str((citation.entry or {}).get("title") or "")
+    year = re.sub(r"\D", "", str((citation.entry or {}).get("year") or ""))[:4]
+    surname = _surname(author or citation.ref_raw)
+    best = None
+    for key, entry, _raw in entries:
+        if surname and _surname(entry) != surname:
+            continue
+        candidate_year = re.sub(r"\D", "", str(entry.get("year") or ""))[:4]
+        if year and candidate_year and year != candidate_year:
+            continue
+        similarity = _title_similarity(title, str(entry.get("title") or ""))
+        if title and similarity < title_threshold:
+            continue
+        # 卷号/版次：双方都有且不同 → 不同文献；一方缺失不阻断短引用匹配（记录不猜）
+        cit_vol = _norm_volume((citation.entry or {}).get("volume"))
+        cand_vol = _norm_volume(entry.get("volume"))
+        if citation.entry and cit_vol and cand_vol and cit_vol != cand_vol:
+            continue
+        cit_ed = _norm_edition((citation.entry or {}).get("edition"))
+        cand_ed = _norm_edition(entry.get("edition"))
+        if citation.entry and cit_ed and cand_ed and cit_ed != cand_ed:
+            continue
+        score = (1 if year and candidate_year == year else 0, similarity,
+                 _completeness(entry))
+        if best is None or score > best[0]:
+            best = (score, key)
+    if best is not None:
+        return best[1], None
+    return None, FootnoteWarning(
+        "citation_unmatched", fid=citation.fid, text=citation.text[:200],
+        reason="纯引用无法匹配完整条目（不编造：保留原脚注/正文原样）",
+        author=author, title=title, year=year, locator=citation.locator)
+
+
+def _fill_missing(target: dict, source: dict) -> None:
+    for name, value in source.items():
+        if value and not target.get(name):
+            target[name] = value
 
 
 # ── C 类口径开关（第 46 批；**默认关**，等编辑部/用户拍板后才启用）──────────────
