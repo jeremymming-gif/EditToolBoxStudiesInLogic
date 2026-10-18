@@ -254,8 +254,8 @@ _tex1 = os.path.join(TMP, "out1", "Test", "Test.tex")
 check("④-1 有真 .bib：convert 成功、日志写明「真 .bib 直接使用/不合并附件」",
       _rc == 0 and "真 .bib 直接使用" in _log, _log[-300:])
 check("④-1 有真 .bib：坏候选与好候选都被跳过并写明原因",
-      "跳过参考文献附件：预处理/用于上传text2bib.txt" in _log
-      and "跳过参考文献附件：原稿/bib.txt" in _log)
+      "跳过参考文献附件：" + os.path.join("预处理", "用于上传text2bib.txt") in _log
+      and "跳过参考文献附件：" + os.path.join("原稿", "bib.txt") in _log)
 check("④-1 有真 .bib：产物 reference.bib 没有「由参考文献附件合并」段",
       os.path.isfile(_out1)
       and "由参考文献附件合并" not in open(_out1, encoding="utf-8").read(),
@@ -274,7 +274,7 @@ for _f in sorted(os.listdir(_out2dir)) if os.path.isdir(_out2dir) else []:
         _merged_bib = os.path.join(_out2dir, _f)
 check("④-2 无真 bib：自动采用正常文本附件、跳过坏候选（含原因）",
       _rc2 == 0 and "自动采用参考文献附件" in _log2
-      and "跳过参考文献附件：预处理/用于上传text2bib.txt" in _log2, _log2[-400:])
+      and ("跳过参考文献附件：" + os.path.join("预处理", "用于上传text2bib.txt")) in _log2, _log2[-400:])
 check("④-2 无真 bib：文本附件条目真的并进了 bib（有「由参考文献附件合并」段）",
       _merged_bib is not None
       and "由参考文献附件合并" in open(_merged_bib, encoding="utf-8").read(),
