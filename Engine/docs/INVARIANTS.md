@@ -92,6 +92,16 @@
    （`_para_segments` 只跳过 `_run_segments` 收了直接子 `<m:oMath>` 的那些）。
    位置：`Engine/slcn/docxxml.py` 的 `_run_segments` / `_para_segments`；
    `Engine/tests/test_docxxml_deterministic.py`（AST 静态守卫 + 合成夹具 + 真实稿抽查）。
+8. **GUI 拖拽与「路径一变就跑引擎」的纪律**（第 126 条）：① **隐藏页面必须真正移出命中范围**——
+   `opacity(0)` / `allowsHitTesting(false)` **挡不住拖拽命中**，隐藏页会抢走文件 drop；
+   `PageVisible` 用 `offset(x: -100000)` + 可见页 `zIndex(1)`。② **路径输入框必须用
+   `DroppablePathField`**（AppKit `NSTextField` 自实现拖拽接收）：SwiftUI `TextField` 会吞掉
+   落在框上的文件拖拽（行级目标 `isTargeted=true` 但 `perform` 永不触发）。③ **严禁**在
+   `onChange` / 拖放回调里**同步跑子进程**：拖放落地发生在 CoreDrag 提交动画事务里，
+   主线程阻塞会重入并 SIGSEGV；一律后台线程 + 世代号、结果回主线程。
+   位置：`sources-mac/Views/MainWindow.swift`（`PageVisible`）、`sources-mac/Views/PathDropField.swift`、
+   `sources-mac/Core/ViewModels.swift`（`EditorsProbeModel.refresh`）、
+   `sources-mac/Views/ContentTab.swift`（`loadReport`）；案例 126。
 
 ## 七、这份清单自己怎么维护
 

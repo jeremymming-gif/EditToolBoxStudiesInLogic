@@ -36,6 +36,23 @@ enum PathDrop {
     static func describe(_ kind: PickKind) -> String {
         kind == .directory ? "文件夹" : "文件"
     }
+
+    /// 统一的「落地」处理：行级 SwiftUI dropDestination 与 AppKit 路径输入框共用（案例 126）。
+    /// 返回是否接受；类型不符时写日志（如果调用方给了 logger）并拒绝。
+    @discardableResult
+    static func receive(_ url: URL, kind: PickKind, label: String?, log: Logger?,
+                        setPath: (String) -> Void, onAccept: (() -> Void)?) -> Bool {
+        let where_ = label.map { "「\($0)」" } ?? ""
+        guard accepts(url, kind: kind) else {
+            let got = Self.kind(of: url).map(Self.describe) ?? "无法识别的项目"
+            log?("（拖入的\(got)\(where_)用不上：这里要\(Self.describe(kind))）\n")
+            return false
+        }
+        setPath(url.path)
+        log?("拖入\(where_)：\(url.path)\n")
+        onAccept?()
+        return true
+    }
 }
 
 /// 拖动悬停状态（见上面关于 `@State` 的说明）
@@ -78,16 +95,8 @@ private struct PathDropModifier: ViewModifier {
             }
             .dropDestination(for: URL.self) { urls, _ in
                 guard let url = urls.first else { return false }
-                let where_ = label.map { "「\($0)」" } ?? ""
-                guard PathDrop.accepts(url, kind: kind) else {
-                    let got = PathDrop.kind(of: url).map(PathDrop.describe) ?? "无法识别的项目"
-                    log?("（拖入的\(got)\(where_)用不上：这里要\(PathDrop.describe(kind))）\n")
-                    return false
-                }
-                path = url.path
-                log?("拖入\(where_)：\(url.path)\n")
-                onAccept?()
-                return true
+                return PathDrop.receive(url, kind: kind, label: label, log: log,
+                                        setPath: { path = $0 }, onAccept: onAccept)
             } isTargeted: { flag in
                 hover.targeted = flag
             }

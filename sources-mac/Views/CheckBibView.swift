@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// 「文献回读校验」页的界面状态。
 /// 与 ConvertModel 同理，用 ObservableObject 而不是 @State ——
@@ -217,6 +218,27 @@ struct CheckBibView: View {
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        // 案例 126：把文件拖到本页**任意空白处**也当作「交回的 .bib」。
+        // 行级目标（三个路径栏）由 LabeledPathRow / DroppablePathField 负责；
+        // 这里兜住页面空白区域，避免拖到页面上但没对准输入框时毫无反应。
+        .onDrop(of: [UTType.fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first else { return false }
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                var url: URL?
+                if let data = item as? Data, let s = String(data: data, encoding: .utf8) {
+                    url = URL(string: s)
+                } else if let u = item as? URL {
+                    url = u
+                }
+                guard let u = url else { return }
+                DispatchQueue.main.async {
+                    PathDrop.receive(u, kind: .file, label: "本页空白处", log: Logger(store: log),
+                                     setPath: { model.returned = $0 },
+                                     onAccept: { autofill() })
+                }
+            }
+            return true
         }
         // 选好「交回的 .bib」（浏览、拖入、手打都算）后尽力而为地猜另两栏
         .onChange(of: model.returned) { _ in

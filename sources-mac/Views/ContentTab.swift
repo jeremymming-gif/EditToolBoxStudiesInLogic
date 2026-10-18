@@ -43,9 +43,11 @@ struct ContentTab: View {
 
                 // ---------- 报告路径 ----------
                 HStack(spacing: 8) {
-                    TextField("输入检查报告的路径或拖进来", text: $model.path)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(model.running)
+                    DroppablePathField(text: $model.path, placeholder: "输入检查报告的路径或拖进来",
+                                       disabled: model.running) { url in
+                        PathDrop.receive(url, kind: .file, label: nil, log: nil,
+                                         setPath: { model.path = $0 }, onAccept: { loadReport() })
+                    }
                     Button("浏览…") { browse() }.disabled(model.running)
                     // U3：运行中主按钮变成「取消」（取消 = 杀整棵进程树，见 RunCancel）
                     if model.running {
@@ -219,16 +221,25 @@ struct ContentTab: View {
 
         // 篇目清单与模板说明都**由引擎算**（`toc.py --preview`）：解析口径必须与真正生成时一致，
         // 否则会出现「清单里勾了 3 篇、生成时只认 2 篇」。界面不再自己解析报告。
-        if let preview = TocFeature.preview(reportPath: target) {
-            model.rows = preview.articles.map { item in
-                TocArticleRow(id: item.name,
-                              title: item.title,
-                              selected: settings.contains(item.name))
+        // 案例 126：这里要跑引擎子进程，**不能**在主线程同步做（拖拽落下时会把 main runloop
+        // 卡在 drop 提交动画事务里 → 闪退）。放后台，结果回主线程；路径已变则丢弃。
+        let m = model
+        DispatchQueue.global(qos: .userInitiated).async {
+            let preview = TocFeature.preview(reportPath: target)
+            DispatchQueue.main.async {
+                guard PathKit.normalize(m.path) == target else { return }
+                if let preview {
+                    m.rows = preview.articles.map { item in
+                        TocArticleRow(id: item.name,
+                                      title: item.title,
+                                      selected: settings.contains(item.name))
+                    }
+                    m.templateNote = preview.templateNote
+                } else {
+                    m.rows = []
+                    m.templateNote = "读不到报告预览（引擎未找到或报告格式不对），请看下方日志"
+                }
             }
-            model.templateNote = preview.templateNote
-        } else {
-            model.rows = []
-            model.templateNote = "读不到报告预览（引擎未找到或报告格式不对），请看下方日志"
         }
     }
 

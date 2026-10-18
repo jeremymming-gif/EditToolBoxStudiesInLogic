@@ -472,8 +472,10 @@ struct LabeledPathRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.callout).bold()
             HStack(spacing: 8) {
-                TextField(placeholder, text: $path)
-                    .textFieldStyle(.roundedBorder)
+                DroppablePathField(text: $path, placeholder: placeholder) { url in
+                    PathDrop.receive(url, kind: kind, label: title, log: logger,
+                                     setPath: { path = $0 }, onAccept: nil)
+                }
                 Button("浏览…") { browse() }
                 if !path.isEmpty {
                     Button {

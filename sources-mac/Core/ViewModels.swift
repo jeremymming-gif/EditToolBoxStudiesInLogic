@@ -926,14 +926,29 @@ final class EditorsProbeModel: ObservableObject {
     /// 是否已经扫描过（用于区分"没勾选"和"勾了但没找到"）
     @Published var scanned: Bool = false
 
+    /// 上一次探测的世代号：路径连续变化时只认最后一次结果。
+    private var generation = 0
+
     func refresh(path: String, enabled: Bool) {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard enabled, !trimmed.isEmpty, PathKit.isDirectory(trimmed) else {
+            generation += 1
             probe = nil
             scanned = false
             return
         }
-        probe = MergeFeature.detect(folderPath: trimmed)
+        // 案例 126：探测要跑引擎子进程（`mergepdf.py --detect`），**绝不能在主线程同步做**——
+        // 拖拽落下时 SwiftUI 在 CoreDrag 的 drop 提交动画事务里触发表单更新，主线程一阻塞
+        // 就会重入提交动画并 SIGSEGV（2026-10-18 实测闪退）。放后台队列，结果回主线程。
+        generation += 1
+        let gen = generation
         scanned = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = MergeFeature.detect(folderPath: trimmed)
+            DispatchQueue.main.async {
+                guard let self, gen == self.generation else { return }
+                self.probe = result
+            }
+        }
     }
 }

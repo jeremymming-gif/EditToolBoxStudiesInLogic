@@ -26,9 +26,11 @@ struct InfoCheckView: View {
             .textSelection(.enabled)
 
             HStack(spacing: 8) {
-                TextField("输入路径或浏览选择路径", text: $model.path)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(model.running)
+                DroppablePathField(text: $model.path, placeholder: "输入路径或浏览选择路径",
+                                   disabled: model.running) { url in
+                    PathDrop.receive(url, kind: .directory, label: nil, log: nil,
+                                     setPath: { model.path = $0 }, onAccept: nil)
+                }
                 Button("浏览…") { browse() }
                     .disabled(model.running)
                 // U3：运行中主按钮变成「取消」（取消 = 杀整棵进程树，见 RunCancel）

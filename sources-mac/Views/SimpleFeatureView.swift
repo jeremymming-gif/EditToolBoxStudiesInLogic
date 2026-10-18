@@ -32,9 +32,11 @@ struct SimpleFeatureView: View {
                 .textSelection(.enabled)
 
             HStack(spacing: 8) {
-                TextField("输入路径或浏览选择路径", text: $model.path)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(model.running)
+                DroppablePathField(text: $model.path, placeholder: "输入路径或浏览选择路径",
+                                   disabled: model.running) { url in
+                    PathDrop.receive(url, kind: pickKind, label: nil, log: nil,
+                                     setPath: { model.path = $0 }, onAccept: nil)
+                }
                 Button("浏览…") { browse() }
                     .disabled(model.running)
                 // U3：运行中主按钮变成「取消」（不是把主按钮灰掉、另放一个不起眼的按钮）。

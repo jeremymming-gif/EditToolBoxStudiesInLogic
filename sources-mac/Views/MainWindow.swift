@@ -199,6 +199,13 @@ private struct PageVisible: ViewModifier {
             .opacity(visible ? 1 : 0)
             .allowsHitTesting(visible)
             .accessibilityHidden(!visible)
+            // 案例 126：`opacity(0)+allowsHitTesting(false)` **挡不住拖拽命中测试**——
+            // 隐藏页仍会被选为拖拽目标、把拖到可见页上的文件/文件夹吃掉（探针实测：
+            // 隐藏页 dropDestination 收到 DROP，可见页毫无反应）。
+            // 两个保险一起上：① 把隐藏页整体平移到窗口外（结构上让拖拽/鼠标命中不到它）；
+            // ② 可见页放到 z 轴最上层。
+            .offset(x: visible ? 0 : -100_000)
+            .zIndex(visible ? 1 : 0)
     }
 }
 

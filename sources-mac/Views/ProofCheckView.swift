@@ -37,9 +37,11 @@ struct ProofCheckView: View {
                 .textSelection(.enabled)
 
             HStack(spacing: 8) {
-                TextField("输入初排稿 .tex 的路径，或浏览选择", text: $model.tex)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(model.running)
+                DroppablePathField(text: $model.tex, placeholder: "输入初排稿 .tex 的路径，或浏览选择",
+                                   disabled: model.running) { url in
+                    PathDrop.receive(url, kind: .file, label: nil, log: nil,
+                                     setPath: { model.tex = $0 }, onAccept: nil)
+                }
                 Button("浏览…") { browse() }
                     .disabled(model.running)
                 // U3：运行中主按钮变成「取消」（取消 = 杀整棵进程树，见 RunCancel）
