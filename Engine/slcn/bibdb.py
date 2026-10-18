@@ -492,6 +492,20 @@ HIT_SAFE = "safe"            # 安全命中：可跳过检索+AI
 HIT_CANDIDATE = "candidate"  # 只是候选：仍走检索+AI
 HIT_MISS = "miss"            # 库内没有线索
 
+#: 冲突裁决状态（第 130 条，2026-10-18；task-11 起持久化到 conflicts[]）：
+#:   · kept-existing     —— 人工裁决「保留库内已核实旧值」（导入时默认值也是这个，
+#:                          但**只有带 resolved_at 的才算已裁决**）
+#:   · deferred          —— 人工标记「待人工查证」（已裁决但未定论；先从待裁决清单移走）
+#:   · forced-replaced   —— 人工 `import-bib --force` 采用新稿值（旧字段留档）
+#:   · replaced-unverified —— 内部状态：未核实条目被新导入替换（不是人工裁决）
+RESOLUTION_KEPT = "kept-existing"
+RESOLUTION_DEFERRED = "deferred"
+RESOLUTION_FORCED = "forced-replaced"
+ACTION_KEEP = "keep"
+ACTION_DEFER = "defer"
+#: 人工可用的裁决动作（采用新值走 import-bib --force，不在这里）
+RESOLVE_ACTIONS = {ACTION_KEEP: RESOLUTION_KEPT, ACTION_DEFER: RESOLUTION_DEFERRED}
+
 
 def _fields_equivalent(name: str, first: str, second: str) -> bool:
     """两个字段值是否**语义等价**（大小写/花括号/页码破折号这类排版差异不算差异）。
@@ -578,8 +592,22 @@ def validate_record(record: object) -> list[str]:
             problems.append("verified=true 但没有 method（核实方式缺失）")
     if not isinstance(record.get("aliases", []), list):
         problems.append("aliases 不是数组")
-    if not isinstance(record.get("conflicts", []), list):
+    conflicts = record.get("conflicts", [])
+    if not isinstance(conflicts, list):
         problems.append("conflicts 不是数组")
+    else:
+        for index, conflict in enumerate(conflicts):
+            if not isinstance(conflict, dict):
+                problems.append(f"conflicts[{index}] 不是对象")
+                continue
+            if "resolution" in conflict and not isinstance(conflict["resolution"], str):
+                problems.append(f"conflicts[{index}].resolution 不是字符串")
+            if "resolved_at" in conflict and not isinstance(conflict["resolved_at"], str):
+                problems.append(f"conflicts[{index}].resolved_at 不是字符串")
+            if "note" in conflict and not isinstance(conflict["note"], str):
+                problems.append(f"conflicts[{index}].note 不是字符串")
+            if "field_diff" in conflict and not isinstance(conflict["field_diff"], dict):
+                problems.append(f"conflicts[{index}].field_diff 不是对象")
     return problems
 
 
@@ -656,6 +684,29 @@ def _field_diff(record: dict, new_fields: dict, new_etype: str) -> dict[str, dic
         diff["$entry_type"] = {"existing": record.get("entry_type"),
                                "incoming": str(new_etype or "").lower()}
     return diff
+
+
+def conflict_is_pending(conflict: object) -> bool:
+    """这个冲突**是否待人工裁决**：以 `resolved_at` 为准（不是看 resolution）。
+
+    为什么要看 `resolved_at`：导入时「已核实条目保留原字段」也会写
+    `resolution="kept-existing"`（这是导入策略，不是人的裁决），那时还没有 `resolved_at`。
+    只有 `bibdb.py resolve` / `import-bib --force` 写入的裁决才带 `resolved_at`——
+    两者分开，才能既向后兼容旧库、又把「待裁决」算得准。
+    """
+    if not isinstance(conflict, dict):
+        return False
+    return not str(conflict.get("resolved_at") or "").strip()
+
+
+def conflict_fields(conflict: object) -> list[str]:
+    """这条冲突涉及哪些字段（`field_diff` 的键名，`$entry_type` 表示条目类型）。"""
+    if not isinstance(conflict, dict):
+        return []
+    diff = conflict.get("field_diff")
+    if not isinstance(diff, dict):
+        return []
+    return sorted(str(name) for name in diff)
 
 
 class UpsertResult:
@@ -922,8 +973,14 @@ class Store:
     def _record_conflict(self, record: dict, diff: dict, *, old_sha: str,
                          incoming_sha: str, source: dict, note: str,
                          resolution: str, now: str,
-                         max_conflicts: int = 50) -> bool:
-        """记一条字段冲突（同一个 incoming 内容只记一次 → 重跑幂等）。"""
+                         max_conflicts: int = 50,
+                         resolved: bool = False) -> bool:
+        """记一条字段冲突（同一个 incoming 内容只记一次 → 重跑幂等）。
+
+        `resolved=True` 时同时写 `resolved_at`（人工裁决产生的新冲突，例如
+        `import-bib --force` 采用新稿值的记录）；导入时自动记的冲突**不带**它，
+        表示「待人工裁决」。
+        """
         conflicts = record.setdefault("conflicts", [])
         for existing in conflicts:
             if (isinstance(existing, dict)
@@ -934,7 +991,7 @@ class Store:
             return False
         if not diff:
             diff = {"$content": {"existing": old_sha, "incoming": incoming_sha}}
-        conflicts.append({
+        entry = {
             "at": now,
             "resolution": resolution,
             "note": note,
@@ -942,8 +999,177 @@ class Store:
             "incoming_sha256": incoming_sha,
             "field_diff": diff,
             "source": source,
-        })
+        }
+        if resolved:
+            entry["resolved_at"] = now
+            # 第 130 条：`--force` 采用新稿值时另记的**审计条目**（旧值留档）。
+            # 它只是那次替换的证据、不是一条独立的「待裁决项」，所以清单/编号把它排除；
+            # 否则每做一次 force 都会在中间插一条，把后面条目的 C 编号挤动。
+            entry["recorded_by"] = "force"
+        conflicts.append(entry)
         return True
+
+    # -- 冲突裁决（第 130 条，2026-10-18）-----------------------------------
+
+    def resolve_conflicts(self, key: str, action: str, *, fields=None,
+                          all_fields: bool = False, note: str = "",
+                          dry_run: bool = False,
+                          incoming_sha256: str = "") -> dict:
+        """把一条记录的**待裁决**冲突标记为已裁决（只改 conflicts[] 元数据，**不改字段值**）。
+
+        `action="keep"` → `resolution="kept-existing"`（保留库内已核实旧值）
+        `action="defer"` → `resolution="deferred"`（待人工查证：先移出待裁决清单）
+        **采用新稿值不走这里**——用 `import-bib --force`（会把被替换的冲突标
+        `forced-replaced` 并记 `resolved_at`）。
+
+        选择规则（三选一，CLI 层强制互斥）：
+          · `--all-fields`：该记录**所有待裁决**冲突；
+          · `--fields title,author`：只选 `field_diff` 里包含这些字段的待裁决冲突
+            （一条冲突可能跨多个字段，选中即整条标记）；
+          · `--incoming-sha256 SHA`：按**冲突指纹**精确选**一条**（至少 8 位十六进制
+            前缀，须在本记录冲突里唯一）——同一记录有多条来源不同的冲突、字段又重叠时，
+            只有指纹能避免 `--fields` 误伤其它条。
+        幂等：同一动作重复执行 → `already=True, count=0`，不报错、不改库。
+        未知 key / 未知字段 / 没有冲突 → 抛 `BibDBError`（CLI 转退出码 2）。
+
+        返回 dict（`count` / `matched` / `changed` / `already` / `dry_run` /
+        `resolution` / `resolved_at` / `available_fields` …），供 CLI 打印与 `--json`。
+        """
+        record_key = str(key or "").strip()
+        if not record_key:
+            raise BibDBError("resolve 需要 --key（库内记录 key，见 CONFLICTS.md）")
+        if action not in RESOLVE_ACTIONS:
+            raise BibDBError(
+                f"未知裁决动作 {action!r}（只支持 keep / defer；"
+                "采用新稿值请用 import-bib --force）")
+        record = self._by_key.get(record_key)
+        if record is None:
+            raise BibDBError(
+                f"引用库里没有记录 key `{record_key}`——请用 CONFLICTS.md 里"
+                "「库内记录」那个键（跨期撞车的记录可能带 -2 后缀）")
+        conflicts = record.get("conflicts")
+        if not isinstance(conflicts, list) or not conflicts:
+            raise BibDBError(f"记录 `{record_key}` 没有字段冲突，无需裁决")
+
+        sha_prefix = str(incoming_sha256 or "").strip().lower()
+        wanted: list[str] = []
+        available = sorted({
+            field for conflict in conflicts if isinstance(conflict, dict)
+            for field in conflict_fields(conflict)
+        })
+        preselected: list[tuple[int, dict]] = []
+        if sha_prefix:
+            # 精确指定「一条」冲突：同一记录可能有多条待裁决冲突（来源不同），
+            # `--fields` 只能按字段挑，会同时命中字段重叠的其它条；指纹才能精确到条。
+            if len(sha_prefix) < 8 or len(sha_prefix) > 64 \
+                    or any(ch not in "0123456789abcdef" for ch in sha_prefix):
+                raise BibDBError(
+                    "--incoming-sha256 需要至少 8 位十六进制前缀"
+                    "（完整值见 query --key … --json 的 conflicts[].incoming_sha256）")
+            matched = [
+                (index, conflict) for index, conflict in enumerate(conflicts)
+                if isinstance(conflict, dict)
+                and str(conflict.get("incoming_sha256") or "").lower().startswith(sha_prefix)
+            ]
+            if not matched:
+                raise BibDBError(
+                    f"记录 `{record_key}` 里没有以 `{sha_prefix}` 开头的冲突指纹"
+                    "（用 query --key … --json 看 conflicts[].incoming_sha256）")
+            if len(matched) > 1:
+                raise BibDBError(
+                    f"冲突指纹前缀 `{sha_prefix}` 匹配到 {len(matched)} 条冲突，请多给几位")
+            preselected = matched
+        else:
+            for name in (fields or []):
+                name = str(name).strip()
+                if not name:
+                    continue
+                if name == "entry_type":   # 对编辑友好：--fields entry_type = $entry_type
+                    name = "$entry_type"
+                wanted.append(name)
+            wanted = sorted(set(wanted))
+            if not all_fields and not wanted:
+                raise BibDBError(
+                    "resolve 必须给 --fields（逗号分隔，如 title,author）、--all-fields，"
+                    "或 --incoming-sha256（按冲突指纹精确定位）")
+            if wanted:
+                unknown = [name for name in wanted if name not in available]
+                if unknown:
+                    raise BibDBError(
+                        f"记录 `{record_key}` 的冲突里没有这些字段：{'、'.join(unknown)}"
+                        f"（可用字段：{'、'.join(available) or '无'}）")
+            preselected = [(index, conflict) for index, conflict in enumerate(conflicts)
+                           if isinstance(conflict, dict)]
+
+        selected: list[tuple[int, dict]] = []
+        for index, conflict in preselected:
+            if not conflict_is_pending(conflict):
+                continue
+            if sha_prefix or all_fields or (set(conflict_fields(conflict)) & set(wanted)):
+                selected.append((index, conflict))
+
+        now = _now_iso()
+        target = RESOLVE_ACTIONS[action]
+        result: dict = {
+            "key": record_key,
+            "action": action,
+            "resolution": target,
+            "all_fields": bool(all_fields),
+            "fields": wanted,
+            "available_fields": available,
+            "incoming_sha256": sha_prefix,
+            "dry_run": bool(dry_run),
+            "count": len(selected),
+            "matched": [
+                {"index": index,
+                 "fields": conflict_fields(conflict),
+                 "incoming_sha256": str(conflict.get("incoming_sha256") or ""),
+                 "resolution_before": str(conflict.get("resolution") or "")}
+                for index, conflict in selected
+            ],
+            "changed": False,
+            "already": False,
+            "resolved_at": "",
+        }
+        if not selected:
+            # 幂等：这些冲突/字段此前已裁决过 → 无变化成功（不是错误）。
+            resolved_conflicts = [
+                conflict for conflict in conflicts
+                if isinstance(conflict, dict) and not conflict_is_pending(conflict)
+            ]
+            if sha_prefix:
+                hit = [conflict for _index, conflict in preselected
+                       if not conflict_is_pending(conflict)]
+            elif all_fields:
+                hit = resolved_conflicts
+            else:
+                hit = [conflict for conflict in resolved_conflicts
+                       if set(conflict_fields(conflict)) & set(wanted)]
+            if hit:
+                result["already"] = True
+                result["resolved_count"] = len(hit)
+                result["resolved_actions"] = sorted(
+                    {str(conflict.get("resolution") or "") for conflict in hit})
+                return result
+            raise BibDBError(f"记录 `{record_key}` 当前没有可裁决的冲突")
+
+        result["resolved_at"] = now
+        if dry_run:
+            return result     # --dry-run：只算不写库（不改冲突、不动 updated_at）
+
+        adjudication_note = (
+            "人工裁决：保留库内已核实旧值" if action == ACTION_KEEP
+            else "人工裁决：待人工查证（先从待裁决清单移走）")
+        extra = f"；备注：{note.strip()}" if note.strip() else ""
+        for _index, conflict in selected:
+            old_note = str(conflict.get("note") or "")
+            conflict["resolution"] = target
+            conflict["resolved_at"] = now
+            conflict["note"] = (old_note + "；" if old_note else "") + adjudication_note + extra
+        record["updated_at"] = now
+        self.dirty = True
+        result["changed"] = True
+        return result
 
     # -- upsert -------------------------------------------------------------
 
@@ -1024,13 +1250,29 @@ class Store:
         diff = _field_diff(record, fields, entry_type)
 
         if force:                                   # 人工裁决：强制覆盖（旧字段留档）
+            # 第 130 条：`--force` 的语义 = 人工**采用新稿值**。因此：
+            #   ① 记录里原来「待裁决」的冲突（都基于被替换掉的旧基线）不再适用 ——
+            #      统一标 `forced-replaced` 并写 `resolved_at`，否则它们会以「待裁决」
+            #      身份继续挂在清单里，和新基线对照毫无意义；
+            #   ② 这次替换本身记一条 `forced-replaced` 冲突（旧字段全量留档），也带
+            #      `resolved_at`，可审计。
+            for old_conflict in record.get("conflicts") or []:
+                if not isinstance(old_conflict, dict) or not conflict_is_pending(old_conflict):
+                    continue
+                old_note = str(old_conflict.get("note") or "")
+                old_conflict["resolution"] = RESOLUTION_FORCED
+                old_conflict["resolved_at"] = now
+                old_conflict["note"] = (
+                    (old_note + "；" if old_note else "")
+                    + "随 import-bib --force 采用新稿值：旧基线已被替换，本条差异不再适用"
+                )
             self._replace_content(record, entry_type, fields, sha)
             self._append_source(record, source)
             if verified:
                 self._mark_verified(record, source, now)
             self._record_conflict(record, diff, old_sha=old_sha, incoming_sha=sha,
-                                  source=source, note="人工 --force 覆盖",
-                                  resolution="forced-replaced", now=now)
+                                  source=source, note="人工 --force 覆盖（采用新稿值）",
+                                  resolution=RESOLUTION_FORCED, now=now, resolved=True)
             record["updated_at"] = now
             self.dirty = True
             return UpsertResult("updated", record["key"])

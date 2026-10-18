@@ -28,6 +28,11 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
   (n) 界面用的 CLI 能力（第 132 条）：`--dry-run` 预览（**一个字节都不写**、带逐条
       changes、库不存在也不新建）、`import-dir --root` 给**一期目录**（只导入这一期）、
       `query --bibtex`（命中带可直接复制的 BibTeX）
+  (o) 冲突裁决持久化（第 130 条）：`resolve` keep/defer（不改字段值）、幂等、
+      `--dry-run` 不写库、`--json`、未知 key/字段退出 2；`import-bib --force` 把
+      被替换的旧冲突标 `forced-replaced` 并记 `resolved_at`；报告**编号稳定**
+      （Cxxx 按全部冲突固定分配，裁决一条后其余编号不变）、已裁决不出现在待裁决区、
+      头部统计区分待裁决/已裁决
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -954,6 +959,309 @@ with tempfile.TemporaryDirectory(prefix="bibdb_gui_") as tmp:
     check("(n) 既不是稿件库根也不是期目录：扫到 0 期、退出 0（不崩）",
           r.returncode == 0 and json.loads(r.stdout)["result"]["issues"] == [])
 
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (o) 冲突裁决持久化（resolve）与清单稳定编号 ──")
+
+
+def _make_conflict_db(path: str) -> str:
+    """合成库：Alpha2000（2025 期新稿起冲突）+ Beta2001（2026 期新稿起冲突）。"""
+    store = bibdb.Store.load(path, create=True)
+    base = {"kind": "published-bib", "issue": "2023年第1期(68)",
+            "slug": "01 Base", "file": "base.bib"}
+    store.import_bib_text("""@article{Alpha2000,
+  author  = {Alpha, Ann},
+  title   = {First Work},
+  journal = {Mind},
+  volume  = {1},
+  year    = {2000}
+}
+@article{Beta2001,
+  author  = {Beta, Bob},
+  title   = {Second Work},
+  journal = {Journal One},
+  year    = {2001}
+}
+""", base, verified=True)
+    # Alpha 的冲突来源期 2025 → 排序在前（C001）
+    store.import_bib_text("""@article{Alpha2000,
+  author  = {Alpha, Ann},
+  title   = {First Work},
+  journal = {Mind (new series)},
+  volume  = {2},
+  year    = {2000}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "02 A2", "file": "a2.bib"}, verified=True)
+    # Beta 的冲突来源期 2026 → 排序在后（C002）
+    store.import_bib_text("""@article{Beta2001,
+  author  = {Beta, Bob},
+  title   = {Second Work},
+  journal = {Journal Two},
+  year    = {2001}
+}
+""", {"kind": "published-bib", "issue": "2026年第1期(86)",
+      "slug": "03 B2", "file": "b2.bib"}, verified=True)
+    store.save()
+    return path
+
+
+def _cmap(report_path: str) -> list[tuple[str, str]]:
+    """从生成的清单里取 [(C 编号, 库内 key), ...]（明细区顺序）。"""
+    import re as _re
+    text = _read_text(report_path)
+    return _re.findall(r"^##### C(\d+) · `([^`]+)`", text, _re.M)
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_resolve_") as tmp:
+    db = _make_conflict_db(os.path.join(tmp, "resolve.jsonl"))
+    out1 = os.path.join(tmp, "r1")
+    r = run_cli("report-conflicts", "--db", db, "--out", out1)
+    text1 = _read_text(os.path.join(out1, "CONFLICTS.md"))
+    check("(o) 初始清单：两条冲突按 C001/C002 排列、均为待裁决",
+          r.returncode == 0 and _cmap(os.path.join(out1, "CONFLICTS.md"))
+          == [("001", "Alpha2000"), ("002", "Beta2001")]
+          and "待裁决冲突项：**2** 条" in text1
+          and "已裁决（不在下面明细里）：**0** 条" in text1, text1[:600])
+    check("(o) 清单里写明「裁决结果存进库、勾选只是草稿」",
+          "裁决结果会存进库" in text1 and "勾选只是草稿" in text1
+          and "resolve --key" in text1)
+    check("(o) 每条待裁决项带「冲突指纹」（可用 --incoming-sha256 精确定位）",
+          text1.count("- **冲突指纹**：`") == 2
+          and "--incoming-sha256" in text1, text1[:800])
+
+    # ── 错误路径：未知 key / 未知字段 → 退出 2 ──
+    r = run_cli("resolve", "--key", "NoSuchKey", "--action", "keep",
+                "--all-fields", "--db", db)
+    check("(o) 未知 key → 退出 2 且给提示", r.returncode == 2
+          and "没有记录 key" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-200:])
+    r = run_cli("resolve", "--key", "Alpha2000", "--action", "keep",
+                "--fields", "no-such-field", "--db", db)
+    check("(o) 未知字段 → 退出 2 且列出可用字段", r.returncode == 2
+          and "没有这些字段" in (r.stdout + r.stderr)
+          and "journal" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-300:])
+    r = run_cli("resolve", "--key", "Alpha2000", "--action", "keep", "--db", db)
+    check("(o) 既不给 --fields 也不给 --all-fields → 用法错误退出 2",
+          r.returncode == 2, (r.stdout + r.stderr)[-200:])
+
+    # ── --dry-run：只算不写（库文件逐字节不变）──
+    digest_before = read_bytes(db)
+    r = run_cli("resolve", "--key", "Alpha2000", "--action", "keep",
+                "--all-fields", "--dry-run", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    check("(o) resolve --dry-run --json：退出 0、count=1、changed=false、dry_run=true",
+          r.returncode == 0 and payload.get("count") == 1
+          and payload.get("changed") is False and payload.get("dry_run") is True
+          and payload.get("written") is False, json.dumps(payload, ensure_ascii=False)[:400])
+    check("(o) resolve --dry-run **不写库**（库文件逐字节不变）",
+          read_bytes(db) == digest_before)
+    r = run_cli("resolve", "--key", "Alpha2000", "--action", "keep",
+                "--all-fields", "--dry-run", "--db", db)
+    check("(o) 人读 --dry-run 明说「只算不写库」", r.returncode == 0
+          and "--dry-run" in r.stdout and "只算不写库" in r.stdout, r.stdout[-300:])
+
+    # ── keep：写进库（resolution=kept-existing + resolved_at），字段值不变 ──
+    store_before = bibdb.Store.load(db)
+    fields_before = json.loads(json.dumps(store_before.get("Alpha2000")["fields"]))
+    sha_before = store_before.get("Alpha2000")["content_sha256"]
+    r = run_cli("resolve", "--key", "Alpha2000", "--action", "keep",
+                "--all-fields", "--note", "编辑确认：保留出版版本", "--json", "--db", db)
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    store_after = bibdb.Store.load(db)
+    conflict = store_after.get("Alpha2000")["conflicts"][0]
+    check("(o) resolve keep：退出 0、written=true、命中 1 条",
+          r.returncode == 0 and payload.get("written") is True
+          and payload.get("count") == 1 and payload.get("changed") is True,
+          json.dumps(payload, ensure_ascii=False)[:300])
+    check("(o) keep 写入 resolution=kept-existing + resolved_at + note（备注保留）",
+          conflict["resolution"] == "kept-existing" and conflict.get("resolved_at")
+          and "编辑确认：保留出版版本" in (conflict.get("note") or ""),
+          json.dumps(conflict, ensure_ascii=False)[:400])
+    check("(o) resolve **不改字段值**（fields/content_sha256 逐字不变）",
+          store_after.get("Alpha2000")["fields"] == fields_before
+          and store_after.get("Alpha2000")["content_sha256"] == sha_before)
+
+    # ── 幂等：同一动作再执行 → 无变化、库字节不变 ──
+    digest_after_keep = read_bytes(db)
+    r = run_cli("resolve", "--key", "Alpha2000", "--action", "keep",
+                "--all-fields", "--db", db)
+    check("(o) 重复 keep 幂等：退出 0、说「无变化」、库文件不动",
+          r.returncode == 0 and "无变化" in r.stdout
+          and read_bytes(db) == digest_after_keep, r.stdout[-300:])
+
+    # ── 编号稳定：裁决 C001 后，剩余条目仍是 C002（不重排）──
+    out2 = os.path.join(tmp, "r2")
+    r = run_cli("report-conflicts", "--db", db, "--out", out2)
+    text2 = _read_text(os.path.join(out2, "CONFLICTS.md"))
+    check("(o) 裁决一条后：明细只剩 C002（编号不变、不重排）",
+          r.returncode == 0 and _cmap(os.path.join(out2, "CONFLICTS.md"))
+          == [("002", "Beta2001")] and "C001" not in text2.split("## 待裁决明细")[1],
+          str(_cmap(os.path.join(out2, "CONFLICTS.md"))))
+    check("(o) 头部统计区分待裁决/已裁决（1 条待裁决 / 1 条已裁决保留旧值）",
+          "待裁决冲突项：**1** 条" in text2
+          and "已裁决（不在下面明细里）：**1** 条"
+          and "保留旧值 1 / 采用新值 0 / 待人工 0" in text2, text2[:700])
+
+    # ── defer：标记待人工查证 → 两条都从待裁决区消失 ──
+    r = run_cli("resolve", "--key", "Beta2001", "--action", "defer",
+                "--fields", "journal", "--db", db)
+    check("(o) resolve defer --fields journal：退出 0、命中 1 条、人读明说已写库",
+          r.returncode == 0 and "命中" in r.stdout and "已写库" in r.stdout, r.stdout[-400:])
+    check("(o) resolve 人读输出带当前「待裁决 / 已裁决」计数",
+          "当前：冲突 2 条（待裁决 0 / 已裁决 2）" in r.stdout, r.stdout[-400:])
+    out3 = os.path.join(tmp, "r3")
+    r = run_cli("report-conflicts", "--db", db, "--out", out3)
+    text3 = _read_text(os.path.join(out3, "CONFLICTS.md"))
+    store3 = bibdb.Store.load(db)
+    check("(o) defer 写入 resolution=deferred + resolved_at",
+          store3.get("Beta2001")["conflicts"][0]["resolution"] == "deferred"
+          and store3.get("Beta2001")["conflicts"][0].get("resolved_at"))
+    check("(o) 全部裁决后：待裁决明细为空、统计为 0 / 2（保留旧值1、待人工1）",
+          "待裁决冲突项：**0** 条" in text3
+          and "已裁决（不在下面明细里）：**2** 条" in text3
+          and "保留旧值 1 / 采用新值 0 / 待人工 1" in text3
+          and "（无：所有冲突都已裁决" in text3, text3[:800])
+
+    # ── 报告在「已裁决」状态下重复生成逐字节相同 ──
+    digest = {pathlib.Path(path).name: hashlib.sha256(read_bytes(path)).hexdigest()
+              for path in (os.path.join(out3, "CONFLICTS.md"),)}
+    r = run_cli("report-conflicts", "--db", db, "--out", out3)
+    digest2 = {pathlib.Path(path).name: hashlib.sha256(read_bytes(path)).hexdigest()
+               for path in (os.path.join(out3, "CONFLICTS.md"),)}
+    check("(o) 已裁决状态重复生成清单逐字节相同", r.returncode == 0 and digest == digest2)
+
+# ── import-bib --force：被替换的旧冲突 → forced-replaced + resolved_at ──
+with tempfile.TemporaryDirectory(prefix="bibdb_resolve_force_") as tmp:
+    db = os.path.join(tmp, "force.jsonl")
+    store = bibdb.Store.load(db, create=True)
+    store.import_bib_text("""@article{Gamma2010,
+  author  = {Gamma, Gina},
+  title   = {Third Work},
+  journal = {Journal Old},
+  volume  = {1},
+  year    = {2010}
+}
+""", {"kind": "published-bib", "issue": "2023年第1期(68)",
+      "slug": "01 Base", "file": "base.bib"}, verified=True)
+    store.import_bib_text("""@article{Gamma2010,
+  author  = {Gamma, Gina},
+  title   = {Third Work},
+  journal = {Journal New},
+  volume  = {2},
+  year    = {2010}
+}
+""", {"kind": "published-bib", "issue": "2024年第1期(74)",
+      "slug": "02 Newer", "file": "newer.bib"}, verified=True)
+    # 第二条记录（冲突来源期更晚 → 编号 C002）：force 之后它的编号必须仍是 C002
+    store.import_bib_text("""@article{Zeta2012,
+  author  = {Zeta, Zoe},
+  title   = {Fifth Work},
+  journal = {Journal Z1},
+  year    = {2012}
+}
+""", {"kind": "published-bib", "issue": "2023年第1期(68)",
+      "slug": "01 Base", "file": "base.bib"}, verified=True)
+    store.import_bib_text("""@article{Zeta2012,
+  author  = {Zeta, Zoe},
+  title   = {Fifth Work},
+  journal = {Journal Z2},
+  year    = {2012}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "04 Z", "file": "z.bib"}, verified=True)
+    store.save()
+    before_dir = os.path.join(tmp, "before_reports")
+    run_cli("report-conflicts", "--db", db, "--out", before_dir)
+    before_map = _cmap(os.path.join(before_dir, "CONFLICTS.md"))
+    check("(o) force 前：Gamma=C001、Zeta=C002",
+          before_map == [("001", "Gamma2010"), ("002", "Zeta2012")], str(before_map))
+    one = write(os.path.join(tmp, "one.bib"), """@article{Gamma2010,
+  author  = {Gamma, Gina},
+  title   = {Third Work},
+  journal = {Journal Chosen},
+  volume  = {3},
+  year    = {2010}
+}
+""")
+    r = run_cli("import-bib", "--bib", one, "--issue", "2026年第1期(86)",
+                "--slug", "09 Adjudicated", "--force", "--db", db)
+    store_force = bibdb.Store.load(db)
+    conflicts = store_force.get("Gamma2010")["conflicts"]
+    check("(o) import-bib --force：退出 0、记录字段采用新值",
+          r.returncode == 0 and store_force.get("Gamma2010")["fields"]["journal"]
+          == "Journal Chosen")
+    forced = [c for c in conflicts if c.get("resolution") == "forced-replaced"]
+    check("(o) force 后被替换的旧冲突与本次替换都标 forced-replaced + resolved_at",
+          len(forced) >= 2 and all(c.get("resolved_at") for c in forced),
+          json.dumps(conflicts, ensure_ascii=False)[:600])
+    check("(o) force 后没有遗留「待裁决」冲突（都带了 resolved_at）",
+          all(c.get("resolved_at") for c in conflicts),
+          str([c.get("resolution") for c in conflicts]))
+    out = os.path.join(tmp, "force_reports")
+    r = run_cli("report-conflicts", "--db", db, "--out", out)
+    force_text = _read_text(os.path.join(out, "CONFLICTS.md"))
+    after_map = _cmap(os.path.join(out, "CONFLICTS.md"))
+    check("(o) force 后清单：待裁决只剩 1 条、已裁决含「采用新值」≥1",
+          r.returncode == 0 and "待裁决冲突项：**1** 条" in force_text
+          and "采用新值" in force_text
+          and "已裁决（不在下面明细里）：" in force_text, force_text[:800])
+    check("(o) force 不挤动后面条目的编号：Zeta 仍是 C002（force 审计条目不编号）",
+          after_map == [("002", "Zeta2012")], str(after_map))
+
+# ── 冲突指纹：同一记录多条来源不同的冲突，精确裁决一条（--fields 会误伤）──
+with tempfile.TemporaryDirectory(prefix="bibdb_resolve_sha_") as tmp:
+    db = os.path.join(tmp, "sha.jsonl")
+    store = bibdb.Store.load(db, create=True)
+    store.import_bib_text("""@article{Delta2015,
+  author  = {Delta, Dan},
+  title   = {Fourth Work},
+  journal = {Journal Old},
+  year    = {2015}
+}
+""", {"kind": "published-bib", "issue": "2023年第1期(68)",
+      "slug": "01 Base", "file": "base.bib"}, verified=True)
+    # 两条来源不同的冲突：字段都含 author（--fields author 会同时命中两条）
+    store.import_bib_text("""@article{Delta2015,
+  author  = {Delta, Daniel},
+  title   = {Fourth Work},
+  journal = {Journal Old},
+  year    = {2015}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "02 A", "file": "a.bib"}, verified=True)
+    store.import_bib_text("""@article{Delta2015,
+  author  = {Delta, D.},
+  title   = {Fourth Work},
+  journal = {Journal Old},
+  year    = {2015}
+}
+""", {"kind": "published-bib", "issue": "2026年第1期(86)",
+      "slug": "03 B", "file": "b.bib"}, verified=True)
+    store.save()
+    record = bibdb.Store.load(db).get("Delta2015")
+    pending = [c for c in record["conflicts"] if bibdb.conflict_is_pending(c)]
+    check("(o) 同一记录有 2 条待裁决冲突（都含 author 字段）",
+          len(pending) == 2
+          and all("author" in (c.get("field_diff") or {}) for c in pending),
+          str([c.get("incoming_sha256", "")[:8] for c in pending]))
+    target_sha = str(pending[1].get("incoming_sha256") or "")
+    r = run_cli("resolve", "--key", "Delta2015", "--action", "keep",
+                "--incoming-sha256", target_sha[:10], "--db", db)
+    record_after = bibdb.Store.load(db).get("Delta2015")
+    still_pending = [c for c in record_after["conflicts"]
+                     if bibdb.conflict_is_pending(c)]
+    check("(o) --incoming-sha256 只裁决指纹那一条（另一条仍待裁决）",
+          r.returncode == 0 and len(still_pending) == 1
+          and still_pending[0].get("incoming_sha256") == pending[0].get("incoming_sha256"),
+          (r.stdout + r.stderr)[-300:])
+    r = run_cli("resolve", "--key", "Delta2015", "--action", "keep",
+                "--incoming-sha256", "00000000", "--db", db)
+    check("(o) 指纹不匹配 → 退出 2", r.returncode == 2
+          and "没有以" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-200:])
+    r = run_cli("resolve", "--key", "Delta2015", "--action", "keep",
+                "--incoming-sha256", "abc", "--db", db)
+    check("(o) 指纹太短（<8 位）→ 退出 2", r.returncode == 2
+          and "至少 8 位" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-200:])
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (l) 真实稿件库抽查（SKIP when absent，只读） ──")

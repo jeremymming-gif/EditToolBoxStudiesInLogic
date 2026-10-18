@@ -32,6 +32,11 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                 [--limit N] [--threshold X] [--min-score X] [--bibtex] [--json]
     stats       [--json]
     lint        [--json]                    重复 key / 字段冲突 / 缺来源 / verified 无记录 …
+    resolve     --key K --action keep|defer
+                (--all-fields | --fields F1,F2 | --incoming-sha256 SHA)
+                [--note TEXT] [--dry-run] [--json]
+                                            记录冲突裁决（keep=保留旧值 / defer=待人工；
+                                            不改字段值）；采用新值仍走 import-bib --force
     report      [--out DIR]                 一次生成全部待裁决清单（推荐）
     report-conflicts  [--out DIR]           字段冲突待裁决清单 CONFLICTS.md（中文、可勾选）
     report-duplicates [--out DIR]           同作品不同 key 候选对 DUPLICATES.md + duplicates.csv
@@ -47,6 +52,7 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     /opt/homebrew/bin/python3.14 bibdb.py query --title "A Theory of Everything" --author Smith
     /opt/homebrew/bin/python3.14 bibdb.py stats
     /opt/homebrew/bin/python3.14 bibdb.py lint
+    /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action keep --all-fields
     /opt/homebrew/bin/python3.14 bibdb.py report --out ../EditToolBox-notes/bib_db
     # ↑ 生成 CONFLICTS.md / DUPLICATES.md / duplicates.csv（同一份库重复生成逐字节相同）
 
@@ -55,7 +61,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
 `0` = 成功（查询 0 命中、lint 只有 warning 也算成功）；`1` = `lint` 有 error；
 `2` = 用法 / IO / 库结构错误（消息在 stderr）。库文件不存在时 `query/stats/lint` /
 `report*` 退出 2（先 init/import）；`import-bib` / `import-dir` 会自动建库。
-`report*` 只写清单文件（可重复生成、内容幂等），不改库本体。
+`report*` 只写清单文件（可重复生成、内容幂等），不改库本体；`resolve` 才写库
+（只改 `conflicts[]` 的裁决元数据，**不改字段值**；`--dry-run` 不写）。
 `--dry-run`（预览）：照常解析/查重/算冲突，但**一个字节都不写**（库文件不存在也不会
 新建），`--json` 里带 `dry_run=true` 与逐条 `changes` 明细；界面「入藏」页的
 「预览」按钮用的就是它。`--bibtex`（query）：每条命中多带一份可直接复制的 BibTeX。
@@ -440,6 +447,8 @@ def collect_conflict_items(store: "bibdb.Store") -> list[dict]:
 
     每条带：期/篇/文件（冲突来源）、库内记录（key/题名/作者/年份）、逐字段
     旧值 vs 新稿值、库内已核实来源、建议默认、来源 key 等；排序键 = 期→篇→条目 key。
+    另带 `pending`（是否待裁决，按 `conflicts[].resolved_at` 判断）与 `stable_no`
+    （**按全部冲突含已裁决分配的固定编号 Cxxx**，第 130 条）。
     """
     items: list[dict] = []
     for record in store.records():
@@ -450,6 +459,10 @@ def collect_conflict_items(store: "bibdb.Store") -> list[dict]:
         title, author, year = _record_brief(record)
         for conflict in conflicts:
             if not isinstance(conflict, dict):
+                continue
+            # 第 130 条：`recorded_by="force"` 是 --force 的**审计留档**（旧值证据），
+            # 不是待裁决项；清单/编号都排除它，保证 force 不会挤动其它条目的 C 编号。
+            if str(conflict.get("recorded_by") or "") == "force":
                 continue
             source = conflict.get("source") if isinstance(conflict.get("source"), dict) else {}
             diff = conflict.get("field_diff") if isinstance(conflict.get("field_diff"), dict) else {}
@@ -485,6 +498,11 @@ def collect_conflict_items(store: "bibdb.Store") -> list[dict]:
                 "source_key": str(source.get("key") or ""),
                 "at": str(conflict.get("at") or ""),
                 "resolution": str(conflict.get("resolution") or ""),
+                "incoming_sha256": str(conflict.get("incoming_sha256") or ""),
+                # 第 130 条：以 resolved_at 判断是否已裁决（导入时默认的 kept-existing 不算）
+                "pending": bibdb.conflict_is_pending(conflict),
+                "resolved_at": str(conflict.get("resolved_at") or ""),
+                "resolution_note": str(conflict.get("note") or ""),
                 "diff": {name: {"old": (values or {}).get("existing", ""),
                                 "new": (values or {}).get("incoming", "")}
                          for name, values in diff.items()},
@@ -501,6 +519,10 @@ def collect_conflict_items(store: "bibdb.Store") -> list[dict]:
     items.sort(key=lambda item: (_issue_sort_key(item["issue"] or "（无期）"),
                                  item["slug"], item["record_key"],
                                  item["at"], item["bib_key"]))
+    # 第 130 条：**编号按全部冲突（含已裁决）固定分配**。裁决只让条目从明细消失，
+    # 不会让后面的条目改号——用户按 Cxxx 记下的决定不会错位。
+    for index, item in enumerate(items, start=1):
+        item["stable_no"] = index
     return items
 
 
@@ -511,14 +533,32 @@ def _count_by(values) -> dict[str, int]:
     return counted
 
 
-def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
-    """生成 `CONFLICTS.md`：中文、按期→篇→条目、逐条可勾选的冲突裁决清单。"""
-    stats = store.stats()
+def conflict_totals(store: "bibdb.Store") -> dict:
+    """冲突总数 / 待裁决 / 已裁决（CLI 打印与清单头部共用的现算数字）。"""
     items = collect_conflict_items(store)
+    pending = sum(1 for item in items if item["pending"])
+    return {"total": len(items), "pending": pending, "resolved": len(items) - pending}
+
+
+def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
+    """生成 `CONFLICTS.md`：中文、按期→篇→条目、**只显示待裁决项**的裁决清单。
+
+    第 130 条（2026-10-18）起：
+      · 裁决结果持久化在库里（`conflicts[].resolution` + `resolved_at` + `note`），
+        重新生成清单**不会丢**；清单里的 `- [ ]` 只是草稿标记，要写进库请用 `resolve`；
+      · 编号 `Cxxx` 按**全部冲突（含已裁决）**固定分配：已裁决项从明细消失，其余编号不变。
+    """
+    stats = store.stats()
+    items = collect_conflict_items(store)          # 含已裁决；stable_no 已按全量分配
+    pending = [item for item in items if item["pending"]]
+    resolved = [item for item in items if not item["pending"]]
     records_with = {item["record_key"] for item in items}
-    issues = _count_by(item["issue"] or "（无期）" for item in items)
     slugs = {(item["issue"], item["slug"]) for item in items}
-    field_counts = _count_by(name for item in items for name in item["diff"])
+    issues_all = _count_by(item["issue"] or "（无期）" for item in items)
+    issues_pending = _count_by(item["issue"] or "（无期）" for item in pending)
+    issues_resolved = _count_by(item["issue"] or "（无期）" for item in resolved)
+    field_counts = _count_by(name for item in pending for name in item["diff"])
+    resolved_actions = _count_by(item["resolution"] or "（未标记）" for item in resolved)
     kinds = {"both": 0, "old_empty": 0, "new_empty": 0}
     for item in items:
         for values in item["diff"].values():
@@ -528,65 +568,89 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
                 kinds["old_empty"] += 1
             else:
                 kinds["new_empty"] += 1
-    advice_counts = _count_by(item["advice"] for item in items)
-    n_default = sum(1 for item in items if item["advice"].startswith("保留旧值"))
-    n_can_adopt = len(items) - n_default
+    n_default = sum(1 for item in pending if item["advice"].startswith("保留旧值"))
+    n_can_adopt = len(pending) - n_default
     total_fields = sum(len(item["diff"]) for item in items)
+    pending_fields = sum(len(item["diff"]) for item in pending)
     db_label = os.path.basename(db_path) or db_path
+    n_kept = resolved_actions.get("kept-existing", 0)
+    n_deferred = resolved_actions.get("deferred", 0)
+    n_forced = resolved_actions.get("forced-replaced", 0)
+    n_other = len(resolved) - n_kept - n_deferred - n_forced
     lines: list[str] = [
         "# 参考文献库 · 字段冲突待裁决清单（CONFLICTS.md）",
         "",
         "> **这份清单是给人看的**：编辑部引用库（`bibliography.jsonl`）里**已核实条目**",
         "> 遇到「同一作品、不同期成品 bib 字段写法不同」时，库**不会静默改掉已核实的旧值**，",
         "> 只把差异留档进 `conflicts`。本文件把那些差异逐条翻成中文，供编辑裁决。",
+        ">",
+        "> **第 130 条起裁决结果会存进库**（`conflicts[].resolution` / `resolved_at` / `note`），",
+        "> 重新生成清单**不会丢**；本文件只显示**待裁决**条目。清单里的 `- [ ]` 只是草稿",
+        "> 标记（重新生成就没了）——要把决定写进库，见文末「裁决方法」里的 `resolve`。",
         "",
         f"- 数据来源：引用库 `{db_label}`（本清单同目录；sha256 见下）",
         f"- 库内容 sha256：`{stats.get('sha256') or '（读不到）'}`",
         f"- 库记录：**{stats.get('records', 0)}** 条（已核实 {stats.get('verified', 0)} / "
         f"未核实 {stats.get('unverified', 0)}）",
-        f"- 待裁决冲突项：**{len(items)}** 条（共 **{total_fields}** 处字段差异），涉及 "
-        f"**{len(records_with)}** 条库记录、**{len(slugs)}** 篇稿子、**{len(issues)}** 期",
-        f"- 差异字段分布：" + "、".join(
+        f"- 待裁决冲突项：**{len(pending)}** 条（共 **{pending_fields}** 处字段差异），涉及 "
+        f"**{len({item['record_key'] for item in pending})}** 条库记录、"
+        f"**{len({(item['issue'], item['slug']) for item in pending})}** 篇稿子、"
+        f"**{len(issues_pending)}** 期",
+        f"- 已裁决（不在下面明细里）：**{len(resolved)}** 条"
+        f"（保留旧值 {n_kept} / 采用新值 {n_forced} / 待人工 {n_deferred}"
+        + (f" / 其它 {n_other}" if n_other else "") + "）",
+        f"- 冲突总数：**{len(items)}** 条（共 **{total_fields}** 处字段差异），涉及 "
+        f"**{len(records_with)}** 条库记录、**{len(slugs)}** 篇稿子、**{len(issues_all)}** 期",
+        f"- 待裁决的差异字段分布：" + ("、".join(
             f"{_FIELD_LABELS.get(name, name)}{count}"
-            for name, count in sorted(field_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12]),
-        f"- 差异类型：两版都有值 **{kinds['both']}** 处；旧有新无 **{kinds['new_empty']}** 处；"
+            for name, count in sorted(field_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:12])
+            or "（无）"),
+        f"- 差异类型（全部冲突）：两版都有值 **{kinds['both']}** 处；旧有新无 **{kinds['new_empty']}** 处；"
         f"旧无新有 **{kinds['old_empty']}** 处",
-        f"- 建议分布：默认保留旧值 **{n_default}** 条；旧值为空、新稿补全可考虑采用 "
+        f"- 建议分布（仅待裁决）：默认保留旧值 **{n_default}** 条；旧值为空、新稿补全可考虑采用 "
         f"**{n_can_adopt}** 条（逐条看下列「建议」）",
+        f"- 编号规则：**Cxxx 按全部 {len(items)} 条冲突固定分配**（含已裁决）——裁决一条只是"
+        "让它从明细消失，**其余编号不变**（用户已记下的编号不会错位）。",
         "",
-        "> ⚠️ **这里只留档、不自动改库**：勾选/裁决后由维护者用命令改库（见文末「裁决方法」）。",
-        "> 同一份库重复生成必须**逐字节相同**（本文件不含生成时间，翻 diff 不会因重跑而变化）。",
+        "> ⚠️ **这里只留档、不自动改库**：裁决由维护者用 `resolve` / `import-bib --force` 写进库",
+        "> （见文末「裁决方法」）。同一份库重复生成必须**逐字节相同**（本文件不含生成时间）。",
         "",
         "## 怎么读这份清单",
         "",
-        "每条待裁决项包含：",
+        "每条**待裁决**项包含：",
         "",
         "1. **库内记录**：库里已核实的版本（题名/作者/年份）；",
         "2. **冲突来源（新稿）**：这次想让库改字段的那份稿子 bib（期 / 篇 / 文件）；",
         "3. **库内已核实来源**：旧值当初来自哪几期成品 bib；",
         "4. **逐字段差异**：`已核实旧值（库）` vs `新稿值`；",
-        "5. **建议**与**勾选框**：一般默认「保留旧值」，除非新值明显更完整；",
-        "6. 每条的 bib key：在库里可能带 `-2` 后缀（跨期撞车时加过），用 `库内记录` 那个键查。",
+        "5. **建议**与**三选一勾选框**：一般默认「保留旧值」，除非新值明显更完整；",
+        "6. 每条的 bib key：在库里可能带 `-2` 后缀（跨期撞车时加过），用 `库内记录` 那个键查；",
+        "7. 编号 Cxxx 是**固定编号**（按全部冲突分配）：本项裁决后从明细消失，其它编号不变；",
+        "8. **冲突指纹**（每条下方 16 位十六进制）用于把「这一条」精确交给 `resolve`——",
+        "   同一记录有多条来源不同的冲突时，`--fields` 可能同时命中多条，用指纹才精确。",
         "",
         "**裁决总则**：已核实旧值是**已出版成品**里的人工核对结果，默认保留；只有新稿值"
         "明显更完整/更准确（旧值为空、旧值是笔误、旧值来自转引来源）时才采用新值。"
-        "拿不准就勾「仍需人工查证」，不要为了消差异而改学术事实。",
+        "拿不准就标「待人工查证」（defer），不要为了消差异而改学术事实。",
         "",
         "## 统计（按期）",
         "",
-        "| 期 | 待裁决条数 |",
-        "|---|---|",
+        "| 期 | 待裁决 | 已裁决 |",
+        "|---|---|---|",
     ]
-    for issue in sorted(issues, key=_issue_sort_key):
-        lines.append(f"| {_md_escape(issue)} | {issues[issue]} |")
-    lines += ["", f"## 待裁决明细（{len(items)} 条）", ""]
-    if not items:
-        lines += ["（无：引用库当前没有字段冲突。）", ""]
+    for issue in sorted(issues_all, key=_issue_sort_key):
+        lines.append(f"| {_md_escape(issue)} | {issues_pending.get(issue, 0)} | "
+                     f"{issues_resolved.get(issue, 0)} |")
+    lines += ["", f"## 待裁决明细（{len(pending)} 条；编号按全部冲突固定）", ""]
+    if not pending:
+        if not items:
+            lines += ["（无：引用库当前没有字段冲突。）", ""]
+        else:
+            lines += ["（无：所有冲突都已裁决——保留旧值的按库内旧值生效，采用新值的已并入库，"
+                      "待人工的等在人工查证。）", ""]
     current_issue = None
     current_slug = None
-    index = 0
-    for item in items:
-        index += 1
+    for item in pending:
         issue_name = item["issue"] or "（无期——手工导入/未记录来源）"
         if issue_name != current_issue:
             current_issue = issue_name
@@ -600,7 +664,7 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
         title = _md_escape(item["title"])
         author = _md_escape(item["author"])
         year = f" · {_md_escape(item['year'])}" if item["year"] else ""
-        lines.append(f"##### C{index:03d} · `{_md_escape(item['record_key'])}`"
+        lines.append(f"##### C{item['stable_no']:03d} · `{_md_escape(item['record_key'])}`"
                      f"（{_md_escape(item['entry_type'] or '未知类型')}）")
         lines.append("")
         lines.append(f"- **库内记录**：{title} · {author}{year}")
@@ -609,6 +673,10 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
         key_note = (f"（原 bib key `{_md_escape(original_key)}`）"
                     if original_key and original_key != item["record_key"] else "")
         lines.append(f"- **冲突来源（新稿）**：{_md_escape(incoming)}{key_note}")
+        if item["incoming_sha256"]:
+            lines.append(f"- **冲突指纹**：`{item['incoming_sha256'][:16]}`"
+                         "（`resolve --incoming-sha256` 可精确指定本项；"
+                         "同一记录有多条冲突时用它，避免 `--fields` 误伤其它条）")
         if item["library_sources"]:
             shown = item["library_sources"][:3]
             sources_text = "；".join(_source_text(source) for source in shown)
@@ -625,7 +693,7 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
             new = _md_code(values["new"]) if values["new"] else "（空）"
             lines.append(f"  - {_field_label(name)}：已核实旧值 = {old}；新稿值 = {new}")
         lines.append(f"- **建议**：{_md_escape(item['advice'])}")
-        lines.append("- **裁决（勾选一项）**：")
+        lines.append("- **裁决（勾选只是草稿；写进库用下方 resolve 命令）**：")
         lines.append("  - [ ] 保留旧值（建议默认）")
         lines.append("  - [ ] 采用新稿值（确认新值更完整/更准确）")
         lines.append("  - [ ] 仍需人工查证（先不改库）")
@@ -634,20 +702,29 @@ def build_conflicts_md(store: "bibdb.Store", db_path: str) -> str:
         "",
         "---",
         "",
-        "## 裁决方法（维护者用；编辑只需在上面的勾选框里记录决定）",
+        "## 裁决方法（维护者用；编辑只需记录决定，交给维护者执行）",
+        "",
+        "第 130 条起，裁决结果**写进库**（`conflicts[].resolution` + `resolved_at` + `note`）：",
+        "重新生成清单不会丢，已裁决项从明细消失但**编号不变**。",
         "",
         "1. **先看差异**：",
         "   `python3 Engine/bibdb.py query --key <库内记录 key> --json`（`conflicts` 里有完整留档）。",
-        "2. **决定「采用新稿值」时**（默认保留旧值，除非新值明显更完整）：",
-        "   把该条从冲突来源 bib 里**单独摘出来**存成 `/tmp/one.bib`（只留这一条），然后",
-        "   `python3 Engine/bibdb.py import-bib --bib /tmp/one.bib \\",
-        "       --issue \"<期>\" --slug \"<篇>\" --force`",
-        "   —— `--force` 会把旧字段全量写进 `conflicts`（resolution=`forced-replaced`）留档。",
-        "   ⚠️ 不要直接对整份 BibTeX 用 `--force`：那会把该 bib 里**所有**与库不一致的条目一起改掉。",
-        "3. **决定「保留旧值」时**：什么都不用做；本条继续留在 `conflicts` 里（不影响查询/命中）。",
-        "4. **改完**：重跑 `python3 Engine/bibdb.py lint`（error 必须 0）并**重新生成本清单**；",
-        "   本文件里已裁决的条目会消失（或变为 `forced-replaced` 留档，按实现而定）。",
-        "5. 不推荐手改 `bibliography.jsonl`：记录里有 `content_sha256`，手改字段会让 `lint` 报 error。",
+        "2. **保留旧值**（keep）：",
+        "   `python3 Engine/bibdb.py resolve --key <库内记录 key> --action keep --all-fields`",
+        "   只裁决部分字段可用 `--fields title,publisher`（一条冲突跨多字段时，选中即整条标记）；",
+        "   同一记录有多条冲突时用**冲突指纹精确指定**：",
+        "   `python3 Engine/bibdb.py resolve --key <库内记录 key> --action keep --incoming-sha256 <指纹>`,",
+        "3. **待人工查证**（defer；先从待裁决清单移走）：",
+        "   `python3 Engine/bibdb.py resolve --key <库内记录 key> --action defer --all-fields`",
+        "4. **采用新稿值**：把该条从冲突来源 bib 里**单独摘出来**存成 `/tmp/one.bib`，再",
+        "   `python3 Engine/bibdb.py import-bib --bib /tmp/one.bib --issue \"<期>\" --slug \"<篇>\" --force`",
+        "   —— `--force` 会把被替换的旧冲突标 `forced-replaced` 并记 `resolved_at`（旧字段留档）。",
+        "   ⚠️ 不要对整份 bib 用 `--force`：那会把该 bib 里**所有**与库不一致的条目一起改掉。",
+        "5. 可选：`--note \"…\"` 写裁决备注；`--dry-run` 只算不写；`--json` 机读；",
+        "   同一裁决重复执行是**幂等**的（无变化、不报错）。",
+        "6. **改完**：重跑 `python3 Engine/bibdb.py lint`（error 必须 0）并**重新生成清单**",
+        "   （`report-conflicts --out ../EditToolBox-notes/bib_db`）——已裁决项消失、编号不变。",
+        "7. 不推荐手改 `bibliography.jsonl`：记录里有 `content_sha256`，手改会让 `lint` 报 error。",
         "",
     ]
     return "\n".join(lines)
@@ -1104,22 +1181,72 @@ def _print_written(written: list[dict]) -> None:
     print("   （清单不含生成时间：同一份库重复生成逐字节相同）")
 
 
+def cmd_resolve(args) -> int:
+    """把某条记录的待裁决冲突标记为已裁决（只改 conflicts 元数据，不改字段值）。"""
+    fields = [part.strip() for part in (args.fields or "").split(",") if part.strip()]
+    try:
+        path, store = _open_store(args)
+        result = store.resolve_conflicts(
+            args.key, args.action, fields=fields,
+            all_fields=bool(args.all_fields), note=args.note or "",
+            dry_run=bool(args.dry_run),
+            incoming_sha256=args.incoming_sha256 or "")
+        written = False if args.dry_run else store.save()
+        totals = conflict_totals(store)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    payload = {"db": path, "written": written, **result, "totals": totals}
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"记录：`{result['key']}`；动作：{result['action']} → "
+          f"resolution=`{result['resolution']}`")
+    if result["already"]:
+        print(f"无变化：这些冲突此前已裁决过（{result.get('resolved_count', 0)} 条；"
+              f"已有裁决：{'、'.join(result.get('resolved_actions') or []) or '—'}）。")
+        return 0
+    if result.get("incoming_sha256"):
+        target = f"冲突指纹 `{result['incoming_sha256']}`（精确一条）"
+    elif result["all_fields"]:
+        target = "该记录**所有**待裁决冲突"
+    else:
+        target = f"含字段 {('、'.join(result['fields']))} 的待裁决冲突"
+    print(f"命中：{target} 共 {result['count']} 条")
+    for item in result["matched"]:
+        fields_text = "、".join(item["fields"]) or "（内容）"
+        sha_text = (f"；incoming_sha256={item['incoming_sha256'][:12]}…"
+                    if item["incoming_sha256"] else "")
+        print(f"   - 冲突 #{item['index']} 字段：{fields_text}{sha_text}")
+    if args.dry_run:
+        print("（--dry-run：只算不写库；去掉该开关才会写）")
+    else:
+        print("已写库。" if written else "库无变化（未重写）。")
+    print(f"当前：冲突 {totals['total']} 条（待裁决 {totals['pending']} / "
+          f"已裁决 {totals['resolved']}）")
+    print("提示：清单里的勾选只是草稿；本次裁决已写进 conflicts[].resolution/resolved_at，"
+          "重新生成清单不会丢。")
+    return 0
+
+
 def cmd_report_conflicts(args) -> int:
     try:
         path, store = _open_store(args)
         out_dir = _resolve_report_out(args)
         written, _rows = _generate_reports(store, path, out_dir, duplicates=False)
         stats = store.stats()
+        totals = conflict_totals(store)
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     if args.json:
         _print_json({"db": path, "reports": written,
-                     "conflicts": stats["conflicts"]})
+                     "conflicts": stats["conflicts"], "totals": totals})
         return 0
     print(f"库：{path}")
-    print(f"冲突：{stats['conflicts']['records']} 条记录 / "
-          f"{stats['conflicts']['total']} 条待裁决项（已核实旧值不会被静默覆盖）")
+    print(f"冲突：{stats['conflicts']['records']} 条记录 / {totals['total']} 条冲突"
+          f"（**待裁决 {totals['pending']}** / 已裁决 {totals['resolved']}）")
     _print_written(written)
     return 0
 
@@ -1148,16 +1275,18 @@ def cmd_report(args) -> int:
         out_dir = _resolve_report_out(args)
         written, rows = _generate_reports(store, path, out_dir)
         stats = store.stats()
+        totals = conflict_totals(store)
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     if args.json:
         _print_json({"db": path, "reports": written,
-                     "conflicts": stats["conflicts"], "pairs": len(rows)})
+                     "conflicts": stats["conflicts"], "totals": totals,
+                     "pairs": len(rows)})
         return 0
     print(f"库：{path}")
-    print(f"字段冲突：{stats['conflicts']['records']} 条记录 / "
-          f"{stats['conflicts']['total']} 条待裁决项（清单：CONFLICTS.md）")
+    print(f"字段冲突：{stats['conflicts']['records']} 条记录 / {totals['total']} 条冲突"
+          f"（待裁决 {totals['pending']} / 已裁决 {totals['resolved']}；清单：CONFLICTS.md）")
     print(f"同作品不同 key 候选对：{len(rows)} 对（清单：DUPLICATES.md + duplicates.csv；"
           "仅供参考，不自动合并）")
     _print_written(written)
@@ -1241,6 +1370,31 @@ def build_parser() -> argparse.ArgumentParser:
                           help="库体检（重复 key / 字段冲突 / 缺来源 / verified 无记录 …）")
     lint.add_argument("--json", action="store_true", help="机器可读输出")
     lint.set_defaults(func=cmd_lint)
+
+    # ── 冲突裁决持久化（第 130 条）：把「保留旧值 / 待人工」写进库，重新生成清单不丢 ──
+    resolve = sub.add_parser(
+        "resolve", parents=[common],
+        help="把冲突标记为已裁决（keep=保留旧值 / defer=待人工查证；不改字段值）")
+    resolve.add_argument("--key", required=True,
+                         help="库内记录 key（CONFLICTS.md 里「库内记录」那个键，可能带 -2 后缀）")
+    resolve.add_argument("--action", required=True, choices=["keep", "defer"],
+                         help="keep=保留库内已核实旧值；defer=待人工查证（先从清单移走）")
+    selector = resolve.add_mutually_exclusive_group(required=True)
+    selector.add_argument("--all-fields", action="store_true",
+                          help="该记录**所有**待裁决冲突")
+    selector.add_argument("--fields", default="",
+                          help="只裁决 field_diff 含这些字段的冲突（逗号分隔，如 "
+                               "title,author,$entry_type；一条冲突跨多字段时整条标记）")
+    selector.add_argument("--incoming-sha256", default="", metavar="SHA",
+                          help="按**冲突指纹**精确标记一条冲突（CONFLICTS.md 里每条的"
+                               "「冲突指纹」，或 query --key … --json 的 "
+                               "conflicts[].incoming_sha256；至少 8 位十六进制前缀且须唯一）。"
+                               "同一记录有多条来源不同的冲突时用它，避免 --fields 误伤")
+    resolve.add_argument("--note", default="",
+                         help="裁决备注（写进 conflicts[].note，便于审计）")
+    resolve.add_argument("--dry-run", action="store_true", help="只算不写库")
+    resolve.add_argument("--json", action="store_true", help="机器可读输出")
+    resolve.set_defaults(func=cmd_resolve)
 
     # ── 待裁决清单（第 129 条后续）：给人看的中文清单，可重复生成、逐字节幂等 ──
     report = sub.add_parser(
