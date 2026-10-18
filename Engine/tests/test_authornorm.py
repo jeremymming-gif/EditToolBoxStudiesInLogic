@@ -356,6 +356,18 @@ if os.path.isfile(FINAL_BIB):
 else:
     SKIPS.append("真实成品 reference.bib 不存在")
 
+# ══ ⑥ 英文作者名规范：SURNAME Given → Given Surname（期90/05 Beibei_Gao）════
+from slcn.naming import normalize_english_author  # noqa: E402
+check("⑥ GAO Bei-bei（有中文名 高贝贝）→ Beibei Gao",
+      normalize_english_author("GAO Bei-bei", "高贝贝") == "Beibei Gao",
+      normalize_english_author("GAO Bei-bei", "高贝贝"))
+check("⑥ 无中文名时交换顺序、保留常规连字符",
+      normalize_english_author("SMITH John", "") == "John Smith",
+      normalize_english_author("SMITH John", ""))
+check("⑥ 已是 Given Surname 的写法原样返回",
+      normalize_english_author("Beibei Gao", "高贝贝") == "Beibei Gao",
+      normalize_english_author("Beibei Gao", "高贝贝"))
+
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")
       + (f"｜SKIP {len(SKIPS)} 项" if SKIPS else ""))

@@ -155,6 +155,19 @@ PROSE = ("See also the discussion in the previous chapter, which argues that the
 check("P0-6 反例：普通英文散文仍不被认作文献",
       _looks_short_bibliographic_note(PROSE) is False)
 
+# ══ P0-7：漏写右括号的编号标记 `[13 J. Ross…` 不再整条丢（期90/05 Beibei_Gao）══
+_bad = (
+    "[1] A. Armour-Garb, 2010, “Horwichian Minimalism”, Analysis, 70(4): 693-703.\n"
+    "[12] P. Raatikainen, 2005, “On Horwich’s way out”, Analysis, 65(3): 175–177.\n"
+    "[13 J. Ross, M. Schroeder, 2014, “Belief, Credence, and Pragmatic Encroachment”, "
+    "Philosophy and Phenomenological Research, 88(2): 259–288.\n"
+    "[14] L. Savage, 1972, The Foundations of Statistics. New York: Dover."
+)
+_out = _numbered_refs(_bad.splitlines())[0]
+check("P0-7 漏括号 [13 仍解析为 4 条（13 号不丢）",
+      len(_out) == 4 and any("Ross" in (e.get("author") or "") for _k, e, _r in _out),
+      str([(e.get("author"), e.get("title")) for _k, e, _r in _out]))
+
 print()
 if FAILS:
     print(f"失败 {len(FAILS)} 项：" + repr(FAILS))

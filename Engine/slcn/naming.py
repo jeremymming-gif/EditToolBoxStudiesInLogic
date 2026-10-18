@@ -114,6 +114,34 @@ def surname_pinyin(sur: str) -> str:
     return "".join(out)
 
 
+def normalize_english_author(name: str, chinese_name: str = "") -> str:
+    """把源稿里的英文作者名规范成编辑部体例「Given Surname」。
+
+    实测期 90/05 Beibei_Gao：源 docx 写 `GAO Bei-bei`，人工成品是 `Beibei Gao`。
+    规则：
+      · 形如 `SURNAME Given...`（姓氏全大写）→ 交换为 `Given SURNAME`；
+      · 有中文姓名时按中文拼音重建（`高贝贝` → `Beibei Gao`，顺带去掉拼音连字符）；
+      · 其它写法原样返回（不猜）。
+    """
+    text = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not text:
+        return ""
+    m = re.match(r"^([A-Z][A-Za-z'’\-]{1,})\s+(.+)$", text)
+    if not m or not m.group(1).isupper():
+        return text
+    surname, given = m.group(1), m.group(2).strip()
+    if chinese_name and re.search(r"[\u4e00-\u9fff]", chinese_name):
+        try:
+            cn_sur, cn_given = split_chinese_name(chinese_name)
+            given_py = _cap("".join(_pinyin(cn_given)))
+            sur_py = _cap(surname_pinyin(cn_sur))
+            return f"{given_py} {sur_py}"
+        except Exception:  # noqa: BLE001
+            pass
+    given = re.sub(r"-", "", given) if re.fullmatch(r"[A-Z][a-z]+(?:-[A-Z][a-z]+)+", given) else given
+    return f"{given} {surname.title()}"
+
+
 def chinese_to_folder(name: str) -> str:
     """陈波 → Bo_Chen。"""
     sur, given = split_chinese_name(name)

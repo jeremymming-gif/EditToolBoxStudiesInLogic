@@ -74,7 +74,7 @@ def _conv(el) -> str:
         return "".join(_conv(k) for k in kids)
 
     if name == "r":  # 一个数学 run
-        return "".join((k.text or "") for k in kids if _tag(k) == "t")
+        return _math_text_latex("".join((k.text or "") for k in kids if _tag(k) == "t"))
 
     if name == "t":
         return el.text or ""
@@ -215,7 +215,60 @@ LOGICA_SYM_CHARS = {
     "0052": "∈",  # a∈A
     "005D": "∅",  # 0=∅ / {∅}
     "005E": "∞",  # ∞-群胚
+    # 期 90/05 Beibei_Gao 实测：Word 把 LogicA 的 ⟨/⟩ 存成 F072/F073，
+    # 人工成品写成 `\langle` / `\rangle`（`命题⟨雪是白的→…⟩`）。
+    "72": "⟨",
+    "73": "⟩",
 }
+#: 其它字体里语义明确的符号（只收无歧义的）。
+FONT_SYM_CHARS = {
+    "Symbol": {"20": " "},  # Symbol F020 = 空格占位
+}
+
+
+def _sym_code(code: str) -> str:
+    """Word 的 `w:char` 常带字体私有前缀（LogicA 的 `F072` → 实际 0x72）。"""
+    code = str(code or "").strip().upper()
+    if len(code) == 4 and code.startswith("F0"):
+        return code[2:]
+    return code
+
+
+def _math_text_latex(text: str) -> str:
+    """公式 run 里的中文/全角标点包进 `\text{}`。
+
+    Word 公式里常把「（x是具有“p→p”形式的命题→x是真的）」整段塞进 `<m:t>`；
+    不包 `\text{}` 时 xelatex 会在 Times New Roman 里找汉字 → Missing character，
+    PDF 乱码/缺字（期 90/05 Beibei_Gao 实测）。只包 CJK/全角标点段，
+    数学符号（→、∈ 等）仍留给 `_math_to_tex` 处理。
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    buf: list[str] = []
+    in_text = False
+
+    def flush() -> None:
+        nonlocal buf, in_text
+        if buf:
+            seg = "".join(buf)
+            if in_text:
+                out.append("\\text{" + seg.replace("\\", "\\textbackslash{}")
+                           .replace("}", "\\}") + "}")
+            else:
+                out.append(seg)
+            buf = []
+            in_text = False
+
+    for ch in text:
+        cjk = ("\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf"
+               or ch in "（）［］｛｝，。；：：、“”‘’《》〈〉「」『』【】…—～·！？")
+        if cjk != in_text:
+            flush()
+            in_text = cjk
+        buf.append(ch)
+    flush()
+    return "".join(out)
 _SYM_FONT = re.compile(r'w:font="([^"]*)"')
 _SYM_CHAR = re.compile(r'w:char="([0-9A-Fa-f]+)"')
 
@@ -248,9 +301,11 @@ def symbol_run_stats(xml_text: str) -> dict[str, int]:
         m = _SYM_FONT.search(tag)
         font = m.group(1) if m else "(unknown)"
         ch = _SYM_CHAR.search(tag)
-        code = ch.group(1).upper() if ch else ""
+        code = _sym_code(ch.group(1)) if ch else ""
         if font == "LogicA" and code in LOGICA_SYM_CHARS:
             continue  # 已映射进正文，不再算「静默丢失」
+        if font in FONT_SYM_CHARS and code in FONT_SYM_CHARS[font]:
+            continue
         out[font] = out.get(font, 0) + 1
     return out
 
@@ -340,9 +395,15 @@ def _run_segments(r, handled_math: set) -> list[Seg]:
                 out.append(Seg("text", c.text, italic, bold))
         elif t == f"{{{W_NS}}}{_W_SYM_LOCAL}":
             font = c.get(f"{{{W_NS}}}font", "")
-            char = str(c.get(f"{{{W_NS}}}char", "")).upper()
-            if font == "LogicA" and char in LOGICA_SYM_CHARS:
-                out.append(Seg("text", LOGICA_SYM_CHARS[char], italic, bold))
+            raw_char = str(c.get(f"{{{W_NS}}}char", "")).upper()
+            char = _sym_code(raw_char)
+            mapped = ""
+            if font == "LogicA":
+                mapped = LOGICA_SYM_CHARS.get(char) or LOGICA_SYM_CHARS.get(raw_char, "")
+            elif font in FONT_SYM_CHARS:
+                mapped = FONT_SYM_CHARS[font].get(char) or FONT_SYM_CHARS[font].get(raw_char, "")
+            if mapped:
+                out.append(Seg("text", mapped, italic, bold))
         elif t == M_OMATH:
             handled_math.add(c)
             tex = _math_to_tex(omml_to_latex(c))

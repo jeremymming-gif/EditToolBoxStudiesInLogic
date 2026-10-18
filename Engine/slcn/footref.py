@@ -463,6 +463,19 @@ def parse_note(text: str) -> list[Parsed]:
 _NUM_ITEM = re.compile(r"^\s*[\[\(（]?\s*(\d{1,3})\s*[\]\)）]?\s*[.、]?\s*", re.M)
 
 
+_BAD_MARKER = re.compile(r"(?m)^(\s*)\[(\d{1,3})(?=[ \t]+[^\s\[\]()（）])")
+
+
+def _normalize_numbered_markers(text: str) -> str:
+    """补全漏写的 `]`：`[13 J. Ross…` → `[13] J. Ross…`。
+
+    实测期 90/05 Beibei_Gao：源稿第 13 条写成 `[13 J. Ross, …`（缺右括号），
+    旧正则按 `[13]` 切分只认到 22 条，正文 `[13]` 因此越界、清单少 1 条。
+    只认「行首 `[数字` + 空格 + 非括号字符」，正常 `[13]` 不会命中。
+    """
+    return _BAD_MARKER.sub(lambda m: f"{m.group(1)}[{m.group(2)}] ", text)
+
+
 def split_numbered_raw(text: str) -> list[tuple[str, str]]:
     """把编号清单拆成条目，并**一并带出原文**：`[(整条原文含 [N] 标号, 解析用段), …]`。
 
@@ -476,6 +489,7 @@ def split_numbered_raw(text: str) -> list[tuple[str, str]]:
     两套切分迟早分叉，那时「这条原文」和「这条条目」就对不上了。`split_numbered` 是它的
     薄包装，只为兼容旧调用方（返回值形状不变）。
     """
+    text = _normalize_numbered_markers(text)
     marks = list(re.finditer(r"(?:^|\n)\s*[\[\(（]\s*(\d{1,3})\s*[\]\)）]", text))
     if len(marks) < 2:
         return []

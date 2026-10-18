@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .naming import normalize_english_author
 import os
 import re
 import shutil
@@ -1188,7 +1189,7 @@ def build_docx(
     # 只在**纯中文姓名**时拆分——`Jiawei Chu` 这种英文名拆开就错了。
     fields.update(author_fields(author))
     # 文末中英元数据块里常同时有英文作者、单位、邮箱（09 Jiawei_Chu 就是）
-    fields["myfirstauthorEN"] = doc.author_en
+    fields["myfirstauthorEN"] = normalize_english_author(doc.author_en, doc.author)
     fields["myfirstaffiliation"] = doc.affiliation_cn
     fields["myfirstaffiliationEN"] = doc.affiliation_en
     fields["myfirstemail"] = doc.email

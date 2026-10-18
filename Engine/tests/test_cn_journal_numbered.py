@@ -237,8 +237,8 @@ print("\n── ⑦ 编号清单写歪一条 → 两条通道按覆盖条数取�
 # （`[13 J. Ross…` 少了 `]`），中文/英文逗号兜底把它误吃成 1 条 → `doc.refs` 非空
 # → 旧逻辑「if not doc.refs」再也没走编号通道 → 整份 22 条只剩 1 条、正文引用全部没替换。
 # 修法：两条通道都跑，**编号清单收得更多就以它为准**（见 docxsource.parse_docx ②）。
-# 已知限制：写歪的那条本身会被 `split_numbered_raw` 并进上一条（属切分层，另案），
-# 本测试守的是「不能因为它**整份清单**改走兜底通道」。
+# 2026-10-18 第三十八批：写歪的那条已由 `_normalize_numbered_markers()` 补 `]` 收下
+# （期 90/05 Beibei_Gao 实测），因此期望从 3 条改为 4 条。
 MALFORMED = [
     "[1] A. Author, 2020, “Title One”, Analysis, 1(2): 3-4.",
     "[2 B. Author, 2021, “Title Two”, Synthese, 2(3): 5-6.",   # ← 少了 `](写歪一条)
@@ -250,11 +250,11 @@ src2 = make_docx(["论编号清单与逗号兜底的取舍", "作者",
                  + BODY + ["参考文献"] + MALFORMED)
 doc2 = parse_docx(src2)
 _titles2 = [e.get("title") or "" for _k, e, _r in doc2.bib_entries]
-check("⑦ 写歪一条后，编号清单仍收下其余 3 条（不再被逗号兜底抢走）",
-      len(doc2.bib_entries) == 3 and len(doc2.refs) == 0,
+check("⑦ 写歪一条后，编号清单收下 4 条（漏括号已补，不再被逗号兜底抢走）",
+      len(doc2.bib_entries) == 4 and len(doc2.refs) == 0,
       f"bib_entries={len(doc2.bib_entries)} refs={len(doc2.refs)} titles={_titles2}")
-check("⑦ 正常那 3 条一条不少",
-      sum(1 for t in _titles2 if t in ("Title One", "Title Three", "Title Four")) == 3,
+check("⑦ 四条都在（含写歪的 Title Two）",
+      sum(1 for t in _titles2 if t in ("Title One", "Title Two", "Title Three", "Title Four")) == 4,
       str(_titles2))
 # 反例：真正的中文逗号风格（**不带编号**）仍走人年制通道，不能反过来被编号通道吞掉
 CN_PLAIN = [

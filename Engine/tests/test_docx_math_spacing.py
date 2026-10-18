@@ -155,6 +155,25 @@ _math_xml = ('<w:document><m:oMath><m:r/></m:oMath>'
 check("⑨ count_omml：带属性 oMath 计入、oMathPara 本身不计（=3，含其中嵌套 oMath）",
       count_omml(_math_xml) == 3, str(count_omml(_math_xml)))
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑩ 公式里的中文/全角标点 → \text{}；LogicA F072/F073 → ⟨⟩（期90/05 Beibei_Gao）
+# ══════════════════════════════════════════════════════════════════════════
+from slcn.docxxml import _math_text_latex  # noqa: E402
+check("⑩ 公式中文包 \text{}、箭头仍留给数学命令",
+      _math_text_latex("（x是具有“p→p”形式的命题）")
+      == "\\text{（}x\\text{是具有“}p→p\\text{”形式的命题）}",
+      repr(_math_text_latex("（x是具有“p→p”形式的命题）")))
+_sym2 = '<w:document><w:sym w:font="LogicA" w:char="F072"/><w:sym w:font="LogicA" w:char="F073"/></w:document>'
+check("⑩ LogicA F072/F073 已映射，不再计缺失",
+      symbol_run_stats(_sym2) == {}, str(symbol_run_stats(_sym2)))
+_run2 = ET.fromstring(
+    f'<w:r xmlns:w="{W_NS}"><w:sym w:font="LogicA" w:char="F072"/>'
+    f'<w:t>雪是白的</w:t><w:sym w:font="LogicA" w:char="F073"/></w:r>')
+_segs2 = _run_segments(_run2, set())
+check("⑩ F072/F073 → ⟨/⟩ 并保留中间文字",
+      "".join(x.text for x in _segs2 if x.kind == "text") == "⟨雪是白的⟩",
+      repr([(x.kind, x.text) for x in _segs2]))
+
 print()
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

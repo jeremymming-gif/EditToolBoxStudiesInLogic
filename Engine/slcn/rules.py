@@ -136,6 +136,7 @@ UNICODE_MATH = {
     "ℵ": r"\aleph", "℘": r"\wp", "⊕": r"\oplus", "⊗": r"\otimes",
     "□": r"\Box", "◇": r"\Diamond", "⋄": r"\diamond",
     "∴": r"\therefore", "∵": r"\because", "∅": r"\varnothing",
+    "⟨": r"\langle", "⟩": r"\rangle",  # 期 90/05 Beibei_Gao（LogicA F072/F073）
     "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",
     "ε": r"\varepsilon", "θ": r"\theta", "λ": r"\lambda", "μ": r"\mu",
     "π": r"\pi", "σ": r"\sigma", "φ": r"\varphi", "ϕ": r"\phi",
