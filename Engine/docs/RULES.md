@@ -172,6 +172,28 @@ b 与 d **不是两种排版体例**，而是同一份清单的两种题名写�
   （原文逐字节未动），原因写进任务书「六、合并记录」。白名单是第 72 条起的**第五条**硬保障，
   与「key 不可改 / 恰好一条 / 不增删条目 / 未返回条目不动」并存；「来源说明」（无 URL）照旧放行。
   默认关闭时提示词与产物与从前逐字节相同（回归见 `tests/test_evidence_injection.py`）。
+- **核实条目范围 = 正文引用到的键（第 128 条，2026-10-18）**：任务书逐条清单、`--search-refs`
+  检索与 AI 预跑**默认只覆盖正文引用到的条目**（LaTeX / Word 都以**产物 `.tex`** 的引用命令
+  为准；`\nocite{*}` = 全量，BibTeX 语义如此）。正文解析不出引用键时**退回全量 + 警告**
+  （不许静默「一条都不核」）；全量必须 `--verify-all-refs` 显式承认，本次条数默认上限
+  `--verify-max`（120，`0` = 不限），超了退出 2、先看账再花钱。⚠️ 这是**条目范围**的口径，
+  与上面的「核实范围 = 所有字段」（第 69 条，字段粒度）**不是一回事**，两者并存。
+  权威实现 `slcn/refmark.py: resolve_verify_scope()`（范围判定只有这一份）；
+  用法见 `docs/GUIDE.md` §3.10，回归见 `tests/test_verify_scope.py`。
+- **先查编辑部引用库，命中已核实 → 跳过检索与 AI（第 129 条，2026-10-18）**：核实链路
+  （`convert.py` ⑪，`--verify-refs` / `--verify-plan`）默认先查**编辑部自己的引用库**
+  （私有笔记仓 `EditToolBox-notes/bib_db/bibliography.jsonl`；来源 = 往期已出版期的成品 bib）。
+  判定**保守**（误判比漏查更糟）：只有 ① DOI 精确命中 `verified=true` 记录、或
+  ② 题名高置信（bibdb 的 0.90 阈值）+ 第一作者姓/年份相容 + `verified=true` 才算
+  **安全命中**，该键**不调 Search API、不调 AI**；**key 命中只算候选**（key 多为 per-paper）
+  仍走检索/AI；库内未核实/低置信同样只算候选。安全命中**不改 `reference.bib`**：库版本与
+  稿件条目的字段差异只写进任务书「五、库内已核实（无需再查）」，由编辑裁决；
+  「六、合并记录」把「库内命中（未调 AI）」与「正文未引用（范围外）」分开统计。
+  默认口径 = 执行核实且默认库存在时**自动启用**（库/笔记仓不存在时静默跳过；显式
+  `--bibdb` / `--bibdb-path` 才告警），`--no-bibdb` 显式关；**不核实路径逐字节不变**。
+  权威实现 `slcn/bibdb.py: Store.match_reference()`（判定只有这一份）＋
+  `slcn/bibdb.py: default_db_path()`（库位置锚点）；
+  用法见 `docs/GUIDE.md` §3.10，回归见 `tests/test_bibdb_verify.py`。
 
 
 （照抄第 21 条；权威实现 `slcn/bibcheck.py: REQUIRED` / `check()` / `unify_types()`）

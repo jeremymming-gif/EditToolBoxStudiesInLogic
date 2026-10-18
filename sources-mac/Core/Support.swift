@@ -123,6 +123,45 @@ enum EngineLocator {
         return nil
     }
 
+    /// 「设置」页里可选的私有笔记仓路径（键名固定；老用户没有这个键时自动探测）。
+    static let notesRepoOverrideKey = "notesRepoPath"
+
+    /// 找私有笔记仓（案例法 / 引用库 `bib_db/` 所在）。
+    ///
+    /// 为什么外壳要找它：引用库接进核实链路后（第 129 条），引擎要按 `SLCN_NOTES` 定位
+    /// `<笔记仓>/bib_db/bibliography.jsonl`。仓库并排布局时笔记仓是**引擎仓的同级目录**
+    /// （`GitHub/EditToolBox-notes`），而 app 包内引擎在 `dist/…/Resources/Engine`，
+    /// 引擎自己的 `paths.py` 从包内往上 4 层找不到仓库根 —— 所以由外壳算好、用环境变量传进去。
+    /// 顺序：用户指定 → 从引擎目录逐级向上找「同级 `EditToolBox-notes`」。
+    static func notesRepo() -> String? {
+        let fm = FileManager.default
+        if let custom = UserDefaults.standard.string(forKey: notesRepoOverrideKey),
+           !custom.isEmpty, fm.fileExists(atPath: custom) {
+            return custom
+        }
+        guard let engine = convertTool() else { return nil }
+        var dir = (engine as NSString).deletingLastPathComponent
+        for _ in 0..<8 {
+            let parent = (dir as NSString).deletingLastPathComponent
+            for candidate in [
+                (parent as NSString).appendingPathComponent("EditToolBox-notes"),
+                (dir as NSString).appendingPathComponent("EditToolBox-notes"),
+            ] where looksLikeNotesRepo(candidate) {
+                return candidate
+            }
+            if parent == dir { break }
+            dir = parent
+        }
+        return nil
+    }
+
+    /// 判据：有引用库或交接说明才算笔记仓（避免把同名空目录当真）。
+    private static func looksLikeNotesRepo(_ path: String) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: path + "/bib_db/bibliography.jsonl")
+            || fm.fileExists(atPath: path + "/HANDOFF.md")
+    }
+
     /// 找可用的 python3（引擎跑在它上面）。
     static func locatePython(toolDir: String) -> String? {
         let candidates = [
@@ -283,6 +322,11 @@ enum Shell {
         // 运行日志要等缓冲满或进程结束才刷得出来，界面看着就像「卡住了」。
         // 设这个变量让引擎逐行输出，日志才是实时的（GUI 侧本来就是逐块读，见 run()）。
         env["PYTHONUNBUFFERED"] = "1"
+        // 第 129 条：把私有笔记仓路径传给引擎 → 参考文献核实可先查编辑部引用库
+        // （`<笔记仓>/bib_db/bibliography.jsonl`）。用户已显式设了 SLCN_NOTES 就不覆盖。
+        if env["SLCN_NOTES"] == nil, let notes = EngineLocator.notesRepo() {
+            env["SLCN_NOTES"] = notes
+        }
         return env
     }
 

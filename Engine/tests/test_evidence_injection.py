@@ -247,10 +247,14 @@ else:
         env["PYTHONPATH"] = os.pathsep.join([os.path.join(_ENGINE, "vendor"), _ENGINE])
 
         def _run(out_dir: str, extra: list[str]) -> subprocess.CompletedProcess:
+            # ⚠️ 第 129 条起 `--verify-refs` 会在默认引用库存在时自动查库；本套件量的是
+            #    「证据注入 + URL 白名单」，而合成稿里的条目（高贝贝 2021 / 陈波 2022 等）
+            #    在本机种子库里可能已核实 → 会被跳过 AI 调用，改变 prompt/合并记录断言。
+            #    显式 `--no-bibdb` 把引用库钉死为关（引用库接入另有 test_bibdb_verify.py）。
             return subprocess.run(
                 [sys.executable, "convert.py", "--source", docx, "--out", out_dir,
                  "--verify-refs", "--llm-base", mock.base, "--llm-key", "k-test",
-                 "--llm-model", "mock-chat"] + extra,
+                 "--llm-model", "mock-chat", "--no-bibdb"] + extra,
                 cwd=_ENGINE, env=env, capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=240)
 

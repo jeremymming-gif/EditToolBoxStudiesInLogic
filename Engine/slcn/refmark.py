@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from . import bibcheck
 
@@ -349,6 +350,184 @@ SEARCH_MD = """\
 """
 
 
+# ── 核实范围与成本闸门（第 128 条，2026-10-18）───────────────────────────────
+#
+# 期 87 子案例 1 实测：源 `.bib` **377 条**、正文只引用 **31 个**唯一键，但任务书 +
+# 检索 + AI 把 **376 条**全核了（检索 418 次请求 ≈ ¥1.845、AI 376 次调用 /
+# 2,538,740 prompt tokens；且模型 deepseek-flash 忽略 web_search → 0 条真实检索证据）。
+# 要防的不是「核实」本身，而是**为正文根本没用到的条目付钱**。
+#
+# 所以口径改为：
+#   · 默认只核**正文引用到的键**（LaTeX 用 `bibcheck.cited_keys`；`\nocite{*}` = 全量）；
+#   · Word 通道以**产物 `.tex`** 的正文为准（引用在 `build_docx` 里替换完才落到 tex；
+#     `docxsource.link_citations()` 的 `used` 集合只是局部变量、没有对外暴露，
+#     `BuildResult.bib_keys_used` 在 Word 通道又只是「文末参考文献区的全部键」而非引用键，
+#     都不能直接复用——见 `docs/GUIDE.md` §3.10）；
+#   · 正文一个引用键都解析不出来时**退回全量 + 警告**（不能静默「什么都不核」）；
+#   · 本次核实条数默认上限 `DEFAULT_VERIFY_MAX` 条，超了先退出 2 看账；全量必须显式
+#     `--verify-all-refs` 承认（`--verify-max 0` = 不限）。
+#
+# 判定只有 `resolve_verify_scope()` 这一份实现：convert.py 只负责读 tex、打印与闸门。
+DEFAULT_VERIFY_MAX = 120
+
+MODE_EMPTY = "empty"        # bib 一条条目都没有（无从核实）
+MODE_CITED = "cited"        # 只核正文引用到的键（默认）
+MODE_NOCITE = "nocite"      # 正文 `\nocite{*}` → 全量
+MODE_ALL_REFS = "all-refs"  # --verify-all-refs 显式全量
+MODE_FALLBACK = "fallback"  # 解析不出引用键 → 退回全量（旧行为）+ 警告
+
+
+@dataclass(frozen=True)
+class VerifyScope:
+    """「本次核实哪些条目」的判定结果（纯数据；判定见 `resolve_verify_scope`）。"""
+
+    n_bib: int                    # 源 bib 条数
+    n_cited: int                  # 正文引用到、且 bib 里存在的条数
+    n_cited_missing: int          # 正文引用到、但 bib 里没有的键数
+    n_scope: int                  # 本次核实条数
+    mode: str
+    #: None = **全量**核实；frozenset = 只核这些键（`MODE_EMPTY` 时是空集）
+    scope_keys: frozenset[str] | None
+    verify_max: int               # 0 = 不限
+    explicit_all: bool            # 用户是否显式加了 --verify-all-refs
+    over_limit: bool              # 未显式全量、且 n_scope 超上限 → 调用方退出 2
+    cited_missing: tuple[str, ...] = ()
+
+    @property
+    def skipped(self) -> int:
+        """被跳过的「正文未引用」条数。"""
+        return self.n_bib - self.n_scope
+
+    def keeps(self, key: str) -> bool:
+        """这个 bib 键是否在本次核实范围内。"""
+        return self.scope_keys is None or key in self.scope_keys
+
+
+def cited_keys_from_body(latex: str) -> tuple[set[str], bool]:
+    r"""从**产物正文**取正文引用到的 bib 键：返回 (键集合, 是否有 `\nocite{*}`)。
+
+    `\nocite{*}` 是 BibTeX 的「列出全部条目」指令，语义就是**全量引用** → 返回空键集 +
+    True，由调用方走全量；`\nocite{a,b}` 与普通 cite 一样只算 a、b（`bibcheck.cited_keys`
+    的抽取口径不变，这里只多判一个 `*`）。
+    """
+    keys = bibcheck.cited_keys(latex)
+    if "*" in keys:
+        return set(), True
+    return keys, False
+
+
+def resolve_verify_scope(
+    bib_keys,
+    cited_keys,
+    *,
+    nocite_all: bool = False,
+    explicit_all: bool = False,
+    verify_max: int = DEFAULT_VERIFY_MAX,
+) -> VerifyScope:
+    """判定本次核实范围（纯函数；convert.py 与测试共用这一份）。
+
+    判定顺序（每一步的理由都来自期 87 子案例 1 的实测，见上面的块注释）：
+      ① bib 空 → 什么都不核（`MODE_EMPTY`）；
+      ② `\nocite{*}` 或 `--verify-all-refs` → 全量（`MODE_NOCITE` / `MODE_ALL_REFS`）；
+         其中 `--verify-all-refs` 是**显式承认**，越过上限闸门；`\nocite{*}` 只是稿件
+         的语义要求，仍受闸门约束（它最可能出现在「377 条 bib + 全量 nocite」的稿子里，
+         正是这条闸门要挡的成本）。
+      ③ 正文引用到的键在 bib 里存在 → 只核这些（`MODE_CITED`，默认）；
+      ④ 一个都对不上 → **退回全量**（`MODE_FALLBACK`）：宁可多花钱并**大声警告**，
+         也不能因为解析不出引用键就静默「一条都不核」（那才是「静默假装」）。
+    """
+    if verify_max < 0:
+        raise ValueError("verify_max 必须 ≥ 0（0 = 不限）")
+    bib = {str(k) for k in bib_keys}
+    cited = {str(k) for k in cited_keys}
+    in_bib = cited & bib
+    missing = tuple(sorted(cited - bib))
+    n_bib, n_cited = len(bib), len(in_bib)
+
+    if n_bib == 0:
+        return VerifyScope(0, n_cited, len(missing), 0, MODE_EMPTY,
+                           frozenset(), verify_max, explicit_all, False, missing)
+
+    if nocite_all or explicit_all:
+        mode = MODE_ALL_REFS if explicit_all else MODE_NOCITE
+        # `\nocite{*}` 的语义就是「正文引用了全部条目」→ n_cited 按全量报。
+        n_cited_reported = n_bib if nocite_all and not explicit_all else n_cited
+        over = (not explicit_all) and verify_max > 0 and n_bib > verify_max
+        return VerifyScope(n_bib, n_cited_reported, len(missing), n_bib, mode, None,
+                           verify_max, explicit_all, over, missing)
+
+    if in_bib:
+        n_scope = len(in_bib)
+        over = verify_max > 0 and n_scope > verify_max
+        return VerifyScope(n_bib, n_cited, len(missing), n_scope, MODE_CITED,
+                           frozenset(in_bib), verify_max, explicit_all, over, missing)
+
+    # ④ 退回全量（旧行为）+ 警告：调用方必须把 fallback 原因说出来。
+    over = verify_max > 0 and n_bib > verify_max
+    return VerifyScope(n_bib, 0, len(missing), n_bib, MODE_FALLBACK, None,
+                       verify_max, explicit_all, over, missing)
+
+
+def scope_log_line(scope: VerifyScope) -> str:
+    """跑前量化那一行：「源 bib N 条；正文引用 M 条 → 本次核实 M 条（跳过 N-M 条未引用）」。
+
+    正常路径（`MODE_CITED`）的措辞是需求原话；其余模式各自把**为什么不是这个数字**
+    写在同一行里——只报一个数字、不解释来源，正是「看不见的跳过」要防的东西。
+    """
+    skipped = scope.skipped
+    if scope.mode == MODE_EMPTY:
+        n_cited = scope.n_cited + scope.n_cited_missing
+        return (f"源 bib 0 条；正文引用 {n_cited} 条 → 本次核实 0 条"
+                "（bib 里没有条目，无从核实）")
+    if scope.mode == MODE_CITED:
+        return (f"源 bib {scope.n_bib} 条；正文引用 {scope.n_cited} 条 → "
+                f"本次核实 {scope.n_scope} 条（跳过 {skipped} 条未引用）")
+    if scope.mode == MODE_NOCITE:
+        return (f"源 bib {scope.n_bib} 条；正文含 `\\nocite{{*}}`（语义 = 引用全部）→ "
+                f"本次核实 {scope.n_scope} 条（跳过 0 条）")
+    if scope.mode == MODE_ALL_REFS:
+        return (f"源 bib {scope.n_bib} 条；正文引用 {scope.n_cited} 条 → "
+                f"本次核实 {scope.n_scope} 条（--verify-all-refs 显式全量；跳过 0 条）")
+    # MODE_FALLBACK：把「为什么退回全量」放在同一行，避免编辑以为这是默认的「只核引用」。
+    why = ("正文没有引用键" if not scope.cited_missing
+           else f"正文引用的 {scope.n_cited_missing} 个键都不在 bib 里")
+    return (f"源 bib {scope.n_bib} 条；{why} → 本次**退回全量**核实 {scope.n_scope} 条"
+            "（与旧行为相同；见下面警告）")
+
+
+def limit_guidance(scope: VerifyScope, *, search_enabled: bool = False) -> str:
+    """超上限时的退出 2 文案：说清拦了什么、为什么、以及三条可操作的路。
+
+    写进 `convert.die()`（stderr + 退出码 2）。措辞刻意给**三条**互斥的出路，
+    而不是替用户选一条：是否全量是编辑部的成本决定，工具只负责先拦下。
+    """
+    n = scope.n_scope
+    max_s = "不限" if scope.verify_max == 0 else str(scope.verify_max)
+    why = {
+        MODE_NOCITE: f"正文 `\\nocite{{*}}` 要求核实**全部** {n} 条；",
+        MODE_FALLBACK: f"正文没能解析出引用键，退回**全量**核实 {n} 条；",
+    }.get(scope.mode, "")
+    lines = [
+        f"本次核实 {n} 条 > 上限 {max_s} 条（--verify-max，默认 {DEFAULT_VERIFY_MAX}；"
+        "0 = 不限）：已**拦下**，未生成任务书、未检索、未调用 AI（先看账再花钱）。",
+        f"（{why}源 bib {scope.n_bib} 条，正文引用 {scope.n_cited} 条。）",
+        "三条路，按你的意图选一条：",
+        f"  1) 只核正文引用到的 {scope.n_cited} 条就够 → 调高上限："
+        f"--verify-max {n}（或 --verify-max 0 不限）；",
+        f"  2) 这次就是要**全量**核 {scope.n_bib} 条 → 显式加 --verify-all-refs"
+        "（承认全量、越过闸门）；",
+        "  3) 先不花钱看账 → --verify-plan（只打印条数与预计检索/AI 次数后退出 0）。",
+    ]
+    if search_enabled:
+        n_q = 2 * n
+        lines.append(f"预计检索：≤ {n_q} 次查询（每条最多 2 次；"
+                     f"¥5/1000 次成功 → ≤¥{n_q * 5 / 1000:.2f}）。")
+    else:
+        lines.append("预计检索：0 次（本次未启用 --search-refs）。")
+    lines.append(f"预计 AI：≤ {n} 次调用（每条一次请求；token 费按模型计费）。")
+    return "\n".join(lines)
+
+
 def _entry_block(
     etype: str,
     key: str,
@@ -573,6 +752,78 @@ def _fence_for(text: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+def _bibdb_source_text(record: dict, *, limit: int = 2) -> str:
+    """库记录的来源摘要：`2025年第6期(85)/01 Xiaoyang_Wang/name.bib`（多份时截断）。
+
+    为什么写来源：任务书这一节的用途是「编辑一眼能核对库版本从哪来」——只写「已核实」
+    而不给出处，就等于要求编辑无条件相信一个黑盒。
+    """
+    places: list[str] = []
+    for source in record.get("sources") or []:
+        if not isinstance(source, dict):
+            continue
+        where = "/".join(str(source.get(k)) for k in ("issue", "slug", "file")
+                         if source.get(k))
+        if where and where not in places:
+            places.append(where)
+    if not places:
+        return ""
+    text = f"库内来源：{'、'.join(places[:limit])}"
+    if len(places) > limit:
+        text += f" 等 {len(places)} 份"
+    return text
+
+
+def _bibdb_hits_section(hits: list[dict]) -> list[str]:
+    r"""任务书「五、库内已核实（无需再查）」一节（第 129 条，2026-10-18）。
+
+    只列**安全命中**（DOI 精确 / 题名高置信+作者年份相容+已核实）的条目。这一节存在
+    本身就是「本次为什么没花钱」的审计材料：这些键**没有**调检索/AI，`reference.bib`
+    也**没改**；库版本与稿件条目的字段差异只作提示，由编辑裁决是否统一。
+    """
+    lines = [
+        "",
+        "## 五、库内已核实（无需再查）",
+        "",
+        f"> 下列 **{len(hits)} 条**已在编辑部引用库中核实（往期已出版期的成品 bib / 人工核实），"
+        "本次**未调用检索/AI**，`reference.bib` **未改动**。",
+        "> 下方「库版本字段差异」只是提示：库版本与稿件版本不一致时是否统一，由编辑裁决"
+        "（本工具不改稿）。",
+        "",
+    ]
+    for hit in hits:
+        key = str(hit.get("key") or "")
+        record = hit.get("record") or {}
+        record_key = str(hit.get("record_key") or record.get("key") or "")
+        via = {
+            "doi": "DOI 精确命中",
+            "title": "题名高置信 + 第一作者姓/年份相容",
+        }.get(str(hit.get("hit") or ""), "库内命中")
+        head = f"- `{key}`"
+        if record_key and record_key != key:
+            head += f"（库内键 `{record_key}`）"
+        head += f"：{via}"
+        source = _bibdb_source_text(record)
+        if source:
+            head += f"；{source}"
+        lines.append(head)
+        diff = hit.get("field_diff") or {}
+        if diff:
+            pieces = []
+            for name, values in list(diff.items())[:6]:
+                library = str(values.get("library") if isinstance(values, dict) else "")
+                manuscript = str(values.get("manuscript")
+                                 if isinstance(values, dict) else "")
+                pieces.append(f"`{name}`：库 {library or '（空）'}"
+                              f" / 稿件 {manuscript or '（空）'}")
+            more = f"；…另有 {len(diff) - 6} 个字段差异" if len(diff) > 6 else ""
+            lines.append(f"  - ⚠️ 库版本字段差异（待编辑裁决）：{'；'.join(pieces)}{more}")
+        else:
+            lines.append("  - 字段与库内记录一致（无差异）")
+    lines.append("")
+    return lines
+
+
 def _raw_refs_section(raw_ref_lines: list[str]) -> list[str]:
     """第五节：文献区的**原文**（只在一条都没解析出来时追加）。
 
@@ -611,7 +862,9 @@ def build(bib_text: str, stem: str, note: str = "",
           raw_by_key: dict[str, str] | None = None,
           search_note: str = "",
           evidence: dict[str, dict] | None = None,
-          evidence_note: str = "") -> str:
+          evidence_note: str = "",
+          cite_keys: set[str] | None = None,
+          bibdb_hits: list[dict] | None = None) -> str:
     """生成整份 markdown 任务书。
 
     `raw_ref_lines` = 源稿参考文献区的**原文行**（`DocxDoc.ref_raw_lines`）。
@@ -631,15 +884,47 @@ def build(bib_text: str, stem: str, note: str = "",
     一小段「🔎 自动检索证据」（含来源 URL / 权威度 / 匹配分 / 用过的 query）；
     `evidence_note` 是写进头部的检索统计（次数/命中分布/费用）。两者都不给（默认）时，
     任务书与旧签名调用**逐字节相同**——这是「默认关闭、零行为变化」的硬要求。
+
+    `cite_keys` = **本次只核哪些键**（第 128 条成本闸门；`VerifyScope.scope_keys`）。
+    **默认 None = 全量**（旧签名调用逐字节相同）；给了集合就只列这些条目、只统计它们的
+    离线问题与作者体例，并在头部加一行「本次核实范围」说明跳过了多少条（数字**不许手抄**，
+    由本函数现算）——编辑拿到任务书时必须一眼看出「这不是全量」。
+
+    `bibdb_hits` = **命中编辑部引用库已核实**的条目（第 129 条；`slcn/bibdb.py`
+    `match_reference()` 的 safe 结果）。给了就加一节「五、库内已核实（无需再查）」，
+    逐个列出 key / 库内来源期·篇·文件 / **库版本字段差异（提示，待编辑裁决）**。
+    这些键本次**没调检索/AI、reference.bib 没改**。默认 None = 旧输出逐字节相同。
     """
     raw_by_key = raw_by_key or {}
     rep = bibcheck.check(bib_text)
-    entries = list(bibcheck.split_entries(bib_text))
+    entries_all = list(bibcheck.split_entries(bib_text))
     # 英文作者一律倒装是**硬规则**（第一节第 2 条），逐条点给 AI 看——
     # 2026-10-15 实测的教训：规范里写「两种写法都对 / 非必要不修改」时，AI 会**照抄**
     # 源稿的「名 姓」，人工成品却是倒装式，15 处里差 14 处。所以这里必须出声。
     # ⚠️ `bibcheck.check()` 刻意**不含**这条（它被冻结基线的 docx_audit 用着），见其注释。
-    form = bibcheck.author_form_issues(bib_text)
+    form_all = bibcheck.author_form_issues(bib_text)
+
+    # ── 第 128 条：范围过滤（默认 None = 全量，与旧调用逐字节相同）──────────────
+    scope_line = ""
+    if cite_keys is None:
+        entries = entries_all
+        issues = rep.issues
+        form = form_all
+        n_must = rep.n_must
+        n_nice = sum(1 for i in rep.issues if i.severity == "nice")
+        n_total = rep.total
+    else:
+        keep = set(cite_keys)
+        entries = [e for e in entries_all if e[1] in keep]
+        issues = [i for i in rep.issues if i.key in keep]
+        form = [i for i in form_all if i.key in keep]
+        n_total, n_must = len(entries), sum(1 for i in issues if i.severity == "must")
+        n_nice = sum(1 for i in issues if i.severity == "nice")
+        scope_line = (
+            f"- ❗ **本次核实范围**：只核**正文引用到的 {n_total} 条**"
+            f"（源 bib 共 {len(entries_all)} 条；跳过 {len(entries_all) - n_total} 条"
+            "**正文未引用**的条目——它们不在下面的清单里，AI 建议也不改动它们；"
+            "要全量核实加 `--verify-all-refs`）")
 
     L: list[str] = [
         f"# 参考文献核实任务书 · {stem}",
@@ -655,9 +940,11 @@ def build(bib_text: str, stem: str, note: str = "",
         L += ["", *[ln for ln in evidence_note.splitlines() if ln.strip()]]
     L += [
         "",
-        f"- 条目总数：**{rep.total}**",
-        f"- 离线核对：必补字段 **{rep.n_must}** 项，建议核对 {sum(1 for i in rep.issues if i.severity == 'nice')} 项",
+        f"- 条目总数：**{n_total}**",
+        f"- 离线核对：必补字段 **{n_must}** 项，建议核对 {n_nice} 项",
     ]
+    if scope_line:
+        L.append(scope_line)
     if form:
         L.append(f"- ❗ 作者体例：**{len(form)}** 条英文 `author`/`editor` **未倒装**，"
                  "必须改写成 `姓, 名`（第一节第 2 条：这是硬规则，不是「修改」）")
@@ -668,12 +955,15 @@ def build(bib_text: str, stem: str, note: str = "",
     for etype_raw, key, body in entries:
         etype = bibcheck.TYPE_ALIASES.get(etype_raw.lower(), etype_raw.lower())
         # 第 68 条：这一条的源稿原文（拿不到就是空串，`_entry_block` 不写任何多余内容）。
-        L.append(_entry_block(etype, key, body, rep.issues + form,
+        L.append(_entry_block(etype, key, body, issues + form,
                               raw=raw_by_key.get(key, ""),
                               evidence=(evidence or {}).get(key)))
     # 第四节**只在**「bib 一条都没有 + 有文献区原文」时追加：这批稿子（全库 14 篇有
     # 文献区却 `n_bib = 0`，其中 9 篇确实有 10–27 行候选条目）交给编辑的 AI 去结构化。
     # 条目解析得出来时这一节不出现——任务书里已经有逐条清单，再贴原文只会打架。
+    if bibdb_hits:
+        # 第 129 条：安全命中（已核实）的条目单独一节——它们本次不调检索/AI、bib 未改。
+        L += _bibdb_hits_section(list(bibdb_hits))
     if not entries and raw_ref_lines:
         L += _raw_refs_section(list(raw_ref_lines))
     return "\n".join(L)

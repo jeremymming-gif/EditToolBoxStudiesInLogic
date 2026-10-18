@@ -89,6 +89,8 @@ APP_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "engine_main.py",
              "slcn/preamble.py",
              "slcn/llm.py", "slcn/docxsource.py",
              "slcn/refmark.py", "slcn/bibparse.py", "slcn/bibreport.py", "slcn/aibib.py",
+             # 第 129 条：引用库接入核实链路（评分/判定在 slcn/bibdb.py，改错会多花钱）。
+             "slcn/bibdb.py",
              # 这两条也是「改了就必进包、否则行为不对」的模块，漏检过一次（第 66 条：
              # 解析器修好了但包内还是旧版），所以一并纳入比对。
              "slcn/footref.py", "slcn/build.py"]

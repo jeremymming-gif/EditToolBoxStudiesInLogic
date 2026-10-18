@@ -165,6 +165,49 @@ _SEARCH_ON = {"1", "true", "yes", "on"}
 DEFAULT_SEARCH_TOOL = "web_search"
 DEFAULT_RESPONSES_PATH = "/responses"
 
+# ── 模型能力前置提示（第 128 条，2026-10-18）────────────────────────────────
+#
+# 「开了联网检索」只是我们**发了工具**；有些模型会把 `web_search` **静默忽略**并照样
+# 回 200（不报错、不检索）——DeepSeek 官方兼容性表（2026-10）就把 `web_search` 列为「忽略」。
+# 等到跑完才从 `LAST_SEARCH` 发现 0 次检索，钱已经花了、任务书也生成了（期 87 子案例 1：
+# deepseek-flash + 376 条全核 + 0 条真实检索证据）。所以已知会忽略的模型要在
+# **AI 批量开始前**就出声；事后提示（「0 个 web_search_call」）仍然保留，两者不互相替代。
+#
+# 判据**只认已知**：这里不猜任何未列出的模型（模型名可配、端点会升级；乱猜会变成噪音，
+# 编辑会学会无视这类警告）。匹配用「包含 + 大小写无关」：模型名常带日期/版本后缀
+# （`deepseek-flash-2026-01`、`deepseek/deepseek-chat`）。
+KNOWN_WEB_SEARCH_IGNORED = ("deepseek-flash", "deepseek-chat")
+#: 已知会**真检索**的模型。只用于提示语里给一条可操作的出路，不是判据。
+KNOWN_WEB_SEARCH_WORKS = ("deepseek-v4-pro",)
+
+
+def ignores_web_search(model: str) -> bool:
+    """这个模型名是否**已知**会静默忽略内置 `web_search` 工具。
+
+    前缀/包含匹配、大小写无关；空串与未列入的模型一律 False（**不猜**）。
+    """
+    m = (model or "").strip().lower()
+    return bool(m) and any(pat in m for pat in KNOWN_WEB_SEARCH_IGNORED)
+
+
+def web_search_capability_warning(model: str) -> str:
+    """已知模型会忽略 `web_search` → 一段给编辑看的警告（AI 批量开始**前**打）。
+
+    未列入的模型返回空串：本工具只对**已知**能力边界出声，不预测未知端点。
+    返回的是**一句连着的文案**（调用方决定前缀与缩进，不在这里拼控制台格式）。
+    """
+    if not ignores_web_search(model):
+        return ""
+    works = "、".join(f"`{x}`" for x in KNOWN_WEB_SEARCH_WORKS)
+    return (
+        f"当前模型 `{model}` **已知会静默忽略**内置检索工具 `web_search`"
+        "（官方兼容性表把 web_search 列为「忽略」；实测 HTTP 200，但回复里没有 "
+        "`web_search_call`）→ 本次**几乎不会有任何真实检索证据**，结果只能按「凭记忆」"
+        "对待，卷/期/页码/出版地务必人工抽查。要真联网核实：换 "
+        f"{works}（已知会真检索），或把《文献核实任务书》交给编辑自己的联网 AI。"
+    )
+
+
 # 工具类型名允许的形状：JSON 里的一个「名字」，必须以字母/数字开头，其余只允许
 # `_ - . :`。为什么**不**去校验「是不是已知工具名」：将来服务商怎么命名，我们不可能预知
 # （第 70 条存在的理由就是这个），所以只排除**结构上不可能成立**的值 —— 空白、引号、

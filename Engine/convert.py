@@ -60,6 +60,8 @@ from slcn import platform as _plat  # noqa: E402
 from slcn import refmark as _refmark  # noqa: E402
 from slcn import search as _search  # noqa: E402
 from slcn import aibib as _aibib  # noqa: E402
+from slcn import bibcheck as _bibcheck  # noqa: E402
+from slcn import bibdb as _bibdb  # noqa: E402
 from slcn import naming as N  # noqa: E402
 from slcn import sources as _sources  # noqa: E402
 from slcn import templates as T  # noqa: E402
@@ -705,13 +707,21 @@ def _ensure_vendor() -> None:
 def apply_ai_merge(bib_path: str, taskbook_path: str, replies: dict[str, str],
                    stem: str, out_dir: str,
                    *, rejected: dict[str, str] | None = None,
-                   provenance: str = "") -> dict:
+                   provenance: str = "",
+                   out_of_scope: set[str] | None = None,
+                   bibdb_hits: set[str] | None = None) -> dict:
     """并入 + 回滚副本 + 回读校验报告 + 任务书「合并记录」。
 
     `replies` 只放**正常收尾**的回复；`rejected` 放「AI 确实回了、但返回不完整
     （截断/内容过滤/中断）」的键 → 中文原因，它们**不并入**，但原因要写进合并记录。
     `provenance` = 本次核实通道的一行说明（协议 + 是否联网检索 + 模型名），写进
     「六、合并记录」——**留档**要让编辑事后能分清「联网查过的」与「凭记忆写的」。
+    `out_of_scope` = **本次核实范围之外**的 bib 键（正文未引用；第 128 条）：传下去让
+    「六、合并记录」把它们与「AI 没返回/被挡下」分开统计——346 条未引用条目不该被写成
+    346 次 AI 失败。默认 None = 全量范围（旧行为，输出逐字节相同）。
+    `bibdb_hits` = **命中编辑部引用库、本次没调 AI** 的 bib 键（第 129 条）：传下去让
+    「六、合并记录」把「库内命中（未调 AI）」单独统计一行，而不是把它们写成「AI 未返回」。
+    默认 None / 空集 = 旧输出逐字节相同。
 
     返回一份中文摘要 dict（`n_merged` / `n_skipped` / `rollback` / `report` /
     `conclusion` / `error`），由调用方决定怎么打印（0 条并入时不许像成功）。
@@ -733,9 +743,13 @@ def apply_ai_merge(bib_path: str, taskbook_path: str, replies: dict[str, str],
         out["n_merged"], out["n_skipped"] = result.n_merged, result.n_skipped
 
         # 任务书的「合并记录」：**不管并进去几条都写**——被挡下来的原因必须留下来给人看。
+        # ⚠️ 第 128 条：范围外的键单独传下去（否则 346 条「正文没引用」会被写成
+        #    346 次「AI 未返回」）。
         if taskbook_path and os.path.exists(taskbook_path):
             with open(taskbook_path, "a", encoding="utf-8", newline="\n") as f:
-                f.write("\n" + aibib.render_merge_section(result, provenance=provenance) + "\n")
+                f.write("\n" + aibib.render_merge_section(
+                    result, provenance=provenance, out_of_scope=out_of_scope,
+                    bibdb_hits=bibdb_hits) + "\n")
 
         if result.n_merged == 0:
             out["error"] = "没有任何条目通过安全校验，reference.bib **未改动**"
@@ -768,6 +782,93 @@ def apply_ai_merge(bib_path: str, taskbook_path: str, replies: dict[str, str],
     except Exception as e:  # noqa: BLE001  附加通道，任何意外都不许连累出稿
         out["error"] = f"{type(e).__name__}: {e}"
         return out
+
+
+# ── 编辑部引用库（bib_db）接入（第 129 条，2026-10-18）──────────────────────
+#
+# 目标：**命中已核实条目 → 该键不调 Search API、不调 AI**（省钱 + 体例统一 + 可审计）。
+# 但判定必须**保守**（把不同文献误判成「已核实」比漏查更糟）：
+#   · 安全命中 = DOI 精确命中已核实记录；或题名高置信（bibdb 的 0.90 阈值）+ 第一作者姓 /
+#     年份相容 + verified=true；
+#   · key 命中只算**候选**（BibTeX key 多为 per-paper，同 key 不保证同文献），仍走检索；
+#   · 安全命中只跳过「检索/AI」，**绝不改 reference.bib**；字段差异只写进任务书提示。
+# 判定实现在 `slcn/bibdb.py: Store.match_reference()`（只有一份），这里只做开关解析、
+# 逐条编排与打印——与将来的其他调用方共用同一份判定，不写第二遍。
+
+
+def resolve_bibdb(args):
+    """解析引用库开关 → `(store|None, 库路径, 告警文本)`。
+
+    口径（第 129 条）：
+      · `--no-bibdb` → 明确关闭（本次一律不查库；输出与接入前逐字节相同）；
+      · `--bibdb-path PATH` → 用指定库（隐含启用；指错/读不了 → 告警，**不中断出稿**）；
+      · `--bibdb` → 启用默认库（`slcn.bibdb.default_db_path()`）；
+      · **默认（不传以上参数）**：执行核实时默认库存在就自动启用；笔记仓/库不存在时
+        **静默跳过**（公开仓 / CI / 没建库的机器上行为零变化），只有显式要求
+        （`--bibdb` / `--bibdb-path`）才告警。
+    """
+    if getattr(args, "no_bibdb", False):
+        return None, "", ""
+    explicit = bool(getattr(args, "bibdb", False) or getattr(args, "bibdb_path", ""))
+    path = str(getattr(args, "bibdb_path", "") or "")
+    if not path:
+        try:
+            path = _bibdb.default_db_path()
+        except _bibdb.BibDBError as exc:
+            if explicit:
+                return None, "", f"引用库不可用：{exc}"
+            return None, "", ""
+    if not os.path.isfile(path):
+        if explicit:
+            return None, path, f"引用库文件不存在：{path}——本次不查库（核实按原流程）"
+        return None, path, ""
+    try:
+        store = _bibdb.Store.load(path)
+    except _bibdb.BibDBError as exc:
+        if explicit:
+            return None, path, f"引用库读取失败：{exc}——本次不查库（核实按原流程）"
+        return None, path, ""
+    return store, path, ""
+
+
+def classify_bibdb(store, entries):
+    """对本次核实范围内的条目逐条查库 → `(安全命中, 候选, 未命中 keys)`（第 129 条）。
+
+    查库是**附加通道**：任何意外都不许连累出稿——异常一律按「未命中」处理。
+    """
+    safe: dict[str, dict] = {}
+    candidates: dict[str, dict] = {}
+    missed: list[str] = []
+    for etype, key, body in entries:
+        try:
+            match = store.match_reference(_bibcheck.fields_of(body), key=key,
+                                          entry_type=etype)
+        except Exception:  # noqa: BLE001  附加通道，任何意外都不许连累出稿
+            missed.append(key)
+            continue
+        if match.get("status") == _bibdb.HIT_SAFE:
+            safe[key] = match
+        elif match.get("status") == _bibdb.HIT_CANDIDATE:
+            candidates[key] = match
+        else:
+            missed.append(key)
+    return safe, candidates, missed
+
+
+def bibdb_log_line(safe, candidates, missed, store, path) -> str:
+    """跑前那一行「引用库：命中 X / 候选 Y / 未命中 Z（库 n 条，path）」（第 129 条）。"""
+    try:
+        n_records = len(store.records())
+    except Exception:  # noqa: BLE001
+        n_records = 0
+    return (f"引用库：命中 {len(safe)} 条已核实（跳过检索+AI）、"
+            f"候选 {len(candidates)}、未命中 {len(missed)}"
+            f"（库 {n_records} 条，{path}）")
+
+
+def bibdb_taskbook_hits(entries, safe) -> list[dict]:
+    """任务书「五、库内已核实（无需再查）」的条目（按逐条清单顺序，不手抄统计）。"""
+    return [safe[key] for _etype, key, _body in entries if key in safe]
 
 
 def main() -> int:
@@ -832,11 +933,41 @@ def main() -> int:
     ap.add_argument("--no-ai-merge", action="store_true",
                     help="只出《文献核实任务书》，**不**把 AI 结果并入 reference.bib"
                          "（旧行为；界面「保留原 reference.bib（不并入 AI 结果）」= 这个开关）")
+    # ── 第 128 条（2026-10-18）：核实**范围**与成本闸门──────────────────────────
+    # 期 87 子案例 1 实测：源 bib 377 条、正文只引用 31 个键，但任务书 + 检索 + AI 把
+    # 376 条全核了（检索 418 次 ≈ ¥1.845、AI 376 次调用 / 2,538,740 prompt tokens）。
+    # 默认口径改为「只核正文引用到的键」；要全量必须**显式**说（--verify-all-refs），
+    # 且默认有上限（--verify-max，超了先退出 2 看账）。范围判定在 slcn/refmark.py，
+    # 这里只负责读产物 tex、打印与闸门（判定只有一份实现）。
+    ap.add_argument("--verify-all-refs", action="store_true",
+                    help="核实 bib 里的**全部**条目（显式全量；默认只核实正文引用到的键）。"
+                         "越过 --verify-max 闸门；正文 `\\nocite{*}` 本身也要求全量。")
+    ap.add_argument("--verify-max", type=int, default=None,
+                    help=f"本次核实条数上限（默认 {_refmark.DEFAULT_VERIFY_MAX}）：超过且未加 "
+                         "--verify-all-refs → 退出 2 并给出指引；0 = 不限。")
+    ap.add_argument("--verify-plan", action="store_true",
+                    help="只打印核实范围与预计检索/AI 次数后退出 0（不生成任务书、不检索、"
+                         "不调用 AI；转换产物照常写出）。可单独使用，不必再加 --verify-refs。")
+    # ── 第 129 条（2026-10-18）：编辑部引用库（bib_db）─────────────────────────
+    # 命中已核实条目 → 该键不调检索 API / 不调 AI（省钱 + 体例统一 + 可审计）。
+    # **默认口径**：执行核实（--verify-refs / --verify-plan）且默认库存在时**自动启用**
+    # （默认库 = `slcn.bibdb.default_db_path()`，即笔记仓 bib_db/bibliography.jsonl）；
+    # 笔记仓/库不存在时优雅跳过（公开仓/CI 行为零变化）。--no-bibdb 显式关。
+    ap.add_argument("--bibdb", action="store_true",
+                    help="启用编辑部引用库查库（默认：执行核实时若默认库存在就自动启用；"
+                         "命中已核实条目的键不调检索/AI，仍逐条写进任务书「五、库内已核实」）。"
+                         "库缺失/读不了时只告警、不中断出稿。")
+    ap.add_argument("--bibdb-path", default="", metavar="PATH",
+                    help="引用库文件路径（隐含启用；默认 笔记仓/bib_db/bibliography.jsonl）。"
+                         "指错/读不了 → 告警并按原流程核实（不中断）。")
+    ap.add_argument("--no-bibdb", action="store_true",
+                    help="关闭引用库查库（本次一律不查库；输出与接入前逐字节相同）。")
     # P1（2026-10-17，第 71 条起）：自动检索证据 = DeepSeek Search API（独立原始 JSON API），
     # **不改模型提示词、不改转换产物**，只把「每条文献在公开网页上的候选来源」写进任务书。
     # 默认关；不开启时产物与从前的调用**逐字节相同**（任务书里一个字段都不多）。
     ap.add_argument("--search-refs", action="store_true",
-                    help="（附加，默认关）用 DeepSeek Search API 为每条参考文献检索证据，"
+                    help="（附加，默认关）用 DeepSeek Search API 为**本次核实范围内**的参考文献"
+                         "检索证据（默认只含正文引用到的条目，见 --verify-all-refs/--verify-max），"
                          "写进《文献核实任务书》（来源 URL/权威度/匹配分/用过的 query）。"
                          "地址与密钥复用 --llm-base/--llm-key（或 SLCN_LLM_*；也可用 "
                          "SLCN_SEARCH_BASE/SLCN_SEARCH_KEY 单独指定）；"
@@ -893,10 +1024,28 @@ def main() -> int:
             print(f"{name}\t{n}")
         return 0
 
-    if args.search_refs and not args.verify_refs:
+    if args.search_refs and not (args.verify_refs or args.verify_plan):
         # 显式提示、继续跑：`--search-refs` 只在生成任务书时有落点（逐条清单）。
         print("⚠ --search-refs 只配合 --verify-refs（没有任务书就没有逐条清单可挂证据）；"
               "本次忽略检索，转换照常进行。", file=sys.stderr, flush=True)
+
+    # 第 128 条：成本闸门的参数校验/提示。默认值（None）= 120，显式传 -1 是用法错误。
+    if args.verify_max is not None and args.verify_max < 0:
+        ap.error("--verify-max 必须 ≥ 0（0 = 不限）")
+    if (args.verify_all_refs or args.verify_max is not None) \
+            and not (args.verify_refs or args.verify_plan):
+        print("⚠ --verify-all-refs / --verify-max 只配合 --verify-refs（或 --verify-plan）；"
+              "本次忽略。", file=sys.stderr, flush=True)
+    verify_max = (_refmark.DEFAULT_VERIFY_MAX if args.verify_max is None
+                  else args.verify_max)
+
+    # 第 129 条：引用库开关。与核实范围闸门同一口径——只配合核实入口；不核实时报一句就忽略。
+    if args.no_bibdb and (args.bibdb or args.bibdb_path):
+        ap.error("--no-bibdb 与 --bibdb/--bibdb-path 不能同时给（要关就别指库）")
+    if (args.bibdb or args.bibdb_path or args.no_bibdb) \
+            and not (args.verify_refs or args.verify_plan):
+        print("⚠ --bibdb / --bibdb-path / --no-bibdb 只配合 --verify-refs（或 --verify-plan）；"
+              "本次忽略。", file=sys.stderr, flush=True)
 
     # --scan：只列出源文件角色就退出（不需要 --out）
     # 非 --scan 时也扫一遍：自动挑出参考文献附件（全库 28% 的稿件把它单独放一个文件）
@@ -1167,7 +1316,10 @@ def main() -> int:
     #    （回滚副本 `reference.bib.ai前` + 离线回读校验报告 + 任务书「六、合并记录」）。
     #    因此这一节必须在**编译之前**跑，PDF 才会反映并入结果——见上面 ⑨/⑩ 挪走的说明。
     #    要退回旧行为：`--no-ai-merge`（只出任务书）。没配 LLM 时行为与从前一字不差。
-    if args.verify_refs:
+    # ⚠️ `--verify-plan` 也进这一块：它要算「本次会核实多少条」，而引用键只有在**转换之后**
+    #    （build 已把正文引用替换成 `\parencite`、写进产物 .tex）才拿得准。所以它是
+    #    「照常转换、只算账」而不是 --dry-run：--dry-run 在 ⑤ 之前就退出，那时还没有 bib/tex。
+    if args.verify_refs or args.verify_plan:
         from slcn import llm
         from slcn.bibcheck import split_entries
 
@@ -1222,16 +1374,114 @@ def main() -> int:
                            "> 逐条来源标注见每条上方的 `% 来源：…`；"
                            "本次是否真的联网核实，以下面的通道说明与合并记录为准。")
 
+        # ── 第 128 条（2026-10-18）：核实范围 = **正文引用到的键** + 成本闸门 ──────
+        #
+        # 期 87 子案例 1 实测：源 bib 377 条、正文只引用 31 个键，任务书 + 检索 + AI 却把
+        # 376 条全核了（检索 418 次 ≈ ¥1.845、AI 376 次调用 / 2,538,740 prompt tokens）。
+        # 所以先算账、再花钱：范围判定只有 `_refmark.resolve_verify_scope()` 一份实现，
+        # 这里只负责「从产物 .tex 取引用键」+ 打印 + 闸门。
+        #
+        # 为什么读**产物 .tex** 而不是 `BuildResult.bib_keys_used`：
+        #   · LaTeX 通道的 `bib_keys_used` 与 `bibcheck.cited_keys` 同源，但**不含**
+        #     `\nocite{*}`（`sources.extract_bibkeys_from_body` 的正则不认 nocite）；
+        #   · Word 通道的 `bib_keys_used` 是 `{e.key for e in doc.refs}` —— 那是**文末
+        #     参考文献区的全部键**，不是正文引用键（脚注体例的 bib_entries 还不在里面），
+        #     直接拿来当引用键会把「没被引用的条目」也核了；
+        #   · `docxsource.link_citations()` 里的 `used` 只是局部变量、没有对外暴露。
+        # 产物 .tex 是 build 已替换完引用的最终正文，两个通道同一口径（见 GUIDE §3.10）。
+        entries_all = list(split_entries(bib_text))
+        tex_text = ""
+        if res.tex_path and os.path.exists(res.tex_path):
+            tex_text = open(res.tex_path, encoding="utf-8", errors="replace").read()
+        cited, nocite_all = _refmark.cited_keys_from_body(tex_text)
+        scope = _refmark.resolve_verify_scope(
+            [k for _et, k, _b in entries_all], cited,
+            nocite_all=nocite_all,
+            explicit_all=bool(args.verify_all_refs),
+            verify_max=verify_max,
+        )
+        search_enabled = bool(args.search_refs) or _search.refs_enabled_from_env()
+
+        if args.verify_plan:
+            print("\n⑪·核实计划（--verify-plan：只算账；不生成任务书、不检索、不调用 AI）")
+        # 「源 bib N 条；正文引用 M 条 → 本次核实 M 条（跳过 N-M 条未引用）」
+        print("   " + _refmark.scope_log_line(scope))
+        if scope.mode == _refmark.MODE_FALLBACK:
+            # 边界：正文一个引用键都没解析出来（没有 \parencite/\nocite、或引用没替换完）。
+            # 这时**退回全量 + 大声警告**——宁可多花钱，也不能静默「一条都不核」。
+            print("   ⚠ 未能从产物正文解析出引用键（正文没有 `\\parencite`/`\\nocite`，"
+                  "或引用没完成替换）——本次**退回全量**核实（与旧行为相同）；"
+                  "成本按全量计，请留意下面的上限。")
+        if scope.cited_missing:
+            more = " …" if len(scope.cited_missing) > 6 else ""
+            print(f"   （正文有 {len(scope.cited_missing)} 个引用键在 bib 里不存在，"
+                  f"无从核实：{'、'.join(scope.cited_missing[:6])}{more}）")
+        if scope.over_limit:
+            if args.verify_plan:
+                print("   ⚠ 本次核实条数**超过上限** → 实际执行会被闸门拦下（退出 2）。")
+                print("      要全量请加 --verify-all-refs；要调上限用 --verify-max N（0 = 不限）。")
+            else:
+                die(_refmark.limit_guidance(scope, search_enabled=search_enabled))
+        # 本次真正要核实的条目（`keeps()` 对全量模式恒 True；范围只有一份判定）。
+        entries = [e for e in entries_all if scope.keeps(e[1])]
+
+        # ── 第 129 条（2026-10-18）：先查编辑部引用库 ─────────────────────────
+        # 命中已核实条目 → 该键**不调检索 API、不调 AI**；key 命中只算候选（BibTeX key
+        # 多为 per-paper，同 key 不保证同文献）——仍走检索。判定实现在
+        # `slcn/bibdb.py: Store.match_reference()`（只有一份），这里只编排/打印。
+        bibdb_store, bibdb_path, bibdb_warning = None, "", ""
+        bibdb_safe: dict[str, dict] = {}
+        bibdb_candidates: dict[str, dict] = {}
+        bibdb_missed: list[str] = []
+        bibdb_store, bibdb_path, bibdb_warning = resolve_bibdb(args)
+        if bibdb_warning:
+            print(f"   ⚠ {bibdb_warning}")
+        if bibdb_store is not None:
+            bibdb_safe, bibdb_candidates, bibdb_missed = classify_bibdb(bibdb_store, entries)
+            print("   " + bibdb_log_line(bibdb_safe, bibdb_candidates, bibdb_missed,
+                                       bibdb_store, bibdb_path))
+            if bibdb_safe:
+                print(f"   （其中 {len(bibdb_safe)} 条命中库内已核实：不调检索/AI，"
+                      "字段差异只写进任务书「五、库内已核实」——**不改 reference.bib**）")
+        # 真正要送检索/AI 的条目 = 本次核实范围 - 安全命中。
+        ai_entries = [e for e in entries if e[1] not in bibdb_safe]
+
+        if args.verify_plan:
+            max_s = "不限" if scope.verify_max == 0 else str(scope.verify_max)
+            print(f"   条数上限：{max_s}（--verify-max，默认 "
+                  f"{_refmark.DEFAULT_VERIFY_MAX}；0 = 不限）")
+            # 第 129 条：预计检索/AI 次数按**库内命中扣减后**的条数算（省钱要能看见）。
+            n_ai = len(ai_entries)
+            if bibdb_store is not None and bibdb_safe:
+                print(f"   引用库已核实：{len(bibdb_safe)} 条（不检索、不调 AI）"
+                      f"→ 下列预计按扣减后的 {n_ai} 条算")
+            if search_enabled:
+                n_q = 2 * n_ai
+                print(f"   预计检索：≤ {n_q} 次查询（每条最多 2 次；"
+                      f"¥5/1000 次成功 → ≤¥{n_q * 5 / 1000:.2f}）")
+            else:
+                print("   预计检索：0 次（未启用 --search-refs）")
+            if cfg.ready:
+                print(f"   预计 AI：≤ {n_ai} 次调用（每条一次请求；"
+                      f"token 费按模型 `{cfg.model}` 计）")
+            else:
+                print("   预计 AI：0 次（未配置 LLM：只出任务书，由编辑交给自己的 AI）")
+            print("   （转换产物已照常写出；实际执行请用 --verify-refs）")
+            return 0
+
         # ── P1（第 71 条起）：自动检索证据（默认关；--search-refs / SLCN_SEARCH_REFS=1）──
         # 只在生成任务书时有落点：每条文献上方多一段「🔎 自动检索证据」。
         # **不改模型提示词、不改 reference.bib/tex**（P2 才考虑把证据喂给模型）。
-        entries = list(split_entries(bib_text))
-        search_enabled = bool(args.search_refs) or _search.refs_enabled_from_env()
+        # ⚠️ 第 128 条起只对**本次核实范围**内的条目检索（`entries` 已按范围过滤）——
+        #    检索是**按次计费**的，没引用的条目连证据都不该买。
         evidence: dict[str, dict] | None = None
         evidence_note = ""
         if search_enabled:
-            if not entries:
-                print("   检索证据：本次 bib 里没有可核实的条目，跳过检索。", flush=True)
+            if not ai_entries:
+                # 第 129 条：范围内条目全部命中库内已核实 → 检索也一起省掉（按次计费）。
+                print("   检索证据：本次范围内条目"
+                      + ("全部命中引用库已核实" if entries else "为空")
+                      + "，跳过检索。", flush=True)
             else:
                 base, skey = _search.config_from_env(args.llm_base, args.llm_key)
                 if not base or not skey:
@@ -1244,7 +1494,7 @@ def main() -> int:
                           f"每条最多 2 次查询、count=5；计费 ¥5/1000 次成功。"
                           "证据默认不改任何转换产物，仅写进任务书。", flush=True)
                     client = _search.SearchClient(base, skey)
-                    keys = [k for _et, k, _b in entries]
+                    keys = [k for _et, k, _b in ai_entries]
                     evidence = _search.gather_evidence(
                         bib_text, keys, client, log=lambda m: print(m, flush=True))
                     summary = _search.stats_summary(client, evidence)
@@ -1260,15 +1510,22 @@ def main() -> int:
         #    或有原文」都生成；两种旧情形的产物逐字节不变（第五节只在「0 条 + 有原文」时追加）。
         if res.bib_path or raw_ref_lines:
             print("\n⑪ 生成参考文献核实任务书", flush=True)
+            # 第 128 条：只把**本次核实范围**内的条目列进逐条清单（`scope_keys=None` = 全量，
+            # 与旧行为逐字节相同；给了集合则任务书头部多一行「本次核实范围」说明）。
             md = _refmark.build(bib_text, stem, raw_ref_lines=raw_ref_lines,
                                 raw_by_key=raw_by_key, search_note=search_note,
-                                evidence=evidence, evidence_note=evidence_note)
+                                evidence=evidence, evidence_note=evidence_note,
+                                cite_keys=(scope.scope_keys
+                                           if scope.mode == _refmark.MODE_CITED else None),
+                                bibdb_hits=(bibdb_taskbook_hits(entries, bibdb_safe)
+                                            if bibdb_safe else None))
             path = os.path.join(out_dir, f"{stem}_文献核实.md")
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(md)
             print(f"   {os.path.basename(path)}（{md.count(chr(10))} 行）")
             # 逐条原文的覆盖情况当场说清楚：编辑要能看出「这份任务书里有几条是带原文的」。
-            n_with_raw = sum(1 for _et, k, _b in split_entries(bib_text) if raw_by_key.get(k))
+            # （按**本次核实范围**数：没进任务书的条目算进来会让人以为任务书缺了内容。）
+            n_with_raw = sum(1 for _et, k, _b in entries if raw_by_key.get(k))
             if raw_by_key:
                 print(f"   其中 {n_with_raw} 条附上了源稿原文"
                       "（解析可能有遗漏，任务书里已写明以原文为准）")
@@ -1280,16 +1537,48 @@ def main() -> int:
             # 「文献区一条都没解析出来」的稿子没有可预跑的条目：必须在这里单独收口，
             # 否则会掉进下面 `n_got == 0` 的失败分支，报一次**根本没发生**的「AI 调用失败」。
             print("   （bib 里没有可核实的条目：只出任务书，由编辑交给自己的 AI）")
+        elif not ai_entries:
+            # ── 第 129 条：本次范围内条目**全部**命中库内已核实 → 不检索、不调 AI ──
+            # reference.bib **一个字都不改**（库内命中只作核实证据；字段差异已写进任务书
+            # 「五、库内已核实」）。有配置 LLM 时仍写「六、合并记录」，把「库内命中
+            # （未调 AI）」与「范围外」分开留档——留档要能看出「为什么这次没花钱」。
+            print(f"   ✅ 引用库：本次核实范围内 {len(entries)} 条全部命中已核实记录"
+                  " → **不调用检索/AI**。", flush=True)
+            print("      reference.bib **未改动**（库内命中只作核实证据；"
+                  "字段差异见任务书「五、库内已核实」）。")
+            if cfg.ready and res.bib_path and not args.no_ai_merge:
+                # `--no-ai-merge`（「只出任务书」）时连合并记录也不追加——与旧语义一致。
+                prov = (f"本次核实通道：**未调用 AI**（{len(bibdb_safe)} 条全部命中编辑部"
+                        f"引用库 `{bibdb_path}` 的已核实记录；检索 0 次 / AI 0 次）")
+                apply_ai_merge(res.bib_path, path, {}, stem, out_dir,
+                               provenance=prov,
+                               out_of_scope={k for _et, k, _b in entries_all
+                                             if not scope.keeps(k)},
+                               bibdb_hits=set(bibdb_safe))
         elif cfg.ready:
             # 只打印地址与模型名（诊断「地址填错」全靠它）。**绝不打印 cfg.key。**
             # `flush=True`：这一节最慢（逐条联网），进度必须**当场**出现在运行日志里，
             # 不能等 Python 的块缓冲（GUI 用管道接 stdout，默认 8KB 才刷一次）。
-            print(f"   已配置 LLM（{cfg.model} @ {cfg.base}）：按同一份规范自动跑 {len(entries)} 条…"
+            print(f"   已配置 LLM（{cfg.model} @ {cfg.base}）：按同一份规范自动跑 {len(ai_entries)} 条…"
                   f"（每条一次请求，默认超时 60 秒；每条**开始前**会打一行 `[i/N] 键名`，"
                   f"看到它就知道卡在哪一条）", flush=True)
             # **本次核实通道**：编辑看日志第一眼要能回答「这次到底联网了没有」。
             # 这一行与任务书头部、合并记录用的是同一个 `channel` 字符串（单一出处）。
             print(f"   本次核实通道：{channel}")
+            # ── 第 128 条：**模型能力前置提示**（必须在 AI 批量开始**前**打）─────────
+            # 「开了检索开关」只是我们发了工具；已知会静默忽略 web_search 的模型
+            # （deepseek-flash / deepseek-chat 等）即使 HTTP 200 也不会真检索。等到跑完
+            # 才从「0 个 web_search_call」发现，钱已经花了、任务书也生成了（期 87 子案例 1）。
+            # 判据只在 llm.py（`ignores_web_search`）；这里只负责在正确的时机出声。
+            # ⚠️ 事后提示（下面「检索证据」收尾）**保留**，两者不互相替代。
+            if cfg.uses_web_search:
+                cap = llm.web_search_capability_warning(cfg.model)
+                if cap:
+                    print("   ⚠⚠ **模型能力前置提示**（AI 批量开始前）：" + cap, flush=True)
+                    if evidence:
+                        print(f"      （本次另有 --search-refs 的自动检索证据 {len(evidence)} 条，"
+                              "会作为数据注入逐条提示词；但模型**内置**联网仍会被忽略）",
+                              flush=True)
             # 检索开关只对 responses 通道有意义（chat 通道的 tools 是 function calling，
             # 要在客户端自己执行，不是检索）——见 `slcn/llm.py: LLMConfig.uses_web_search`。
             system = _refmark.SPEC_MD + "\n" + _refmark.SOURCES_MD + "\n" + _refmark.FORMAT_MD
@@ -1352,12 +1641,12 @@ def main() -> int:
             # 并进去等于把残缺当完整（「假完整比明显缺失更危险」，第 54/59 条）。
             replies: dict[str, str] = {}
             unclean_replies: dict[str, str] = {}
-            for et, k, body in entries:
+            for et, k, body in ai_entries:
                 n_try += 1
                 # 进度：**发起请求之前**先打一行，这样「卡住」时能一眼看出卡在哪一条
                 # （界面上一条请求最长可能等 60 秒，中间没有任何输出会很像是死掉了）。
                 # `flush=True` 是硬要求：GUI 用管道收 stdout，块缓冲会把这一行压到后面去。
-                print(f"   [{n_try}/{len(entries)}] {k}：正在核实…", flush=True)
+                print(f"   [{n_try}/{len(ai_entries)}] {k}：正在核实…", flush=True)
                 # 第 68 条：把这一条的**源稿原文**一并交给模型（没有原文时 `entry_prompt`
                 # 返回的字符串与从前逐字节相同）。第 66 条的教训是：解析器丢字段时，
                 # 模型只能「如实」报告我们丢的信息——看上去像模型不行，其实喂的是残缺件。
@@ -1478,14 +1767,14 @@ def main() -> int:
                           "如 DeepSeek 的 deepseek-flash 会忽略它、deepseek-v4-pro 才真检索。")
                     print("     请把本次结果当成**凭记忆**的修订：卷/期/页码/出版地务必人工抽查，"
                           "或把《文献核实任务书》交给编辑自己的联网 AI。")
-            n_left = len(entries) - n_try
+            n_left = len(ai_entries) - n_try
             if n_got:
                 with open(path, "a", encoding="utf-8", newline="\n") as f:
                     f.write("\n".join(advice) + "\n")
                 print(f"   已追加 {n_got} 条 AI 建议到同一个 markdown（标为「须人工核实」）")
                 if fail_streak:
                     print(f"   ⚠ 另有 {fail_streak + n_left} 条没有返回内容"
-                          f"（连续 {fail_streak} 条失败后已提前停止，未跑完 {len(entries)} 条）")
+                          f"（连续 {fail_streak} 条失败后已提前停止，未跑完 {len(ai_entries)} 条）")
 
                 # ── 把 AI 结果**并入 reference.bib**（2026-10-15 用户决定；第 64 条）──
                 #
@@ -1519,7 +1808,15 @@ def main() -> int:
                                               cfg.uses_web_search, n_search)
                     mg = apply_ai_merge(res.bib_path or "", path, replies,
                                         stem, out_dir, rejected=rejected_all,
-                                        provenance=prov)
+                                        provenance=prov,
+                                        # 第 128 条：范围外的键（正文未引用）不该出现在
+                                        # 「六、合并记录」的逐条跳过里（那是「没让 AI 做」，
+                                        # 不是「AI 没返回」）。
+                                        out_of_scope={k for _et, k, _b in entries_all
+                                                      if not scope.keeps(k)},
+                                        # 第 129 条：库内命中（未调 AI）单独统计，别写成
+                                        # 「AI 未返回」。
+                                        bibdb_hits=set(bibdb_safe))
                     if mg["n_merged"]:
                         print(f"   ✅ 已并入 {mg['n_merged']} 条 / 跳过 {mg['n_skipped']} 条"
                               f"（逐条原因见任务书「六、合并记录」）")

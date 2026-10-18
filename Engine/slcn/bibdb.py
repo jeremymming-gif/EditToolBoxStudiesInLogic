@@ -1,0 +1,1789 @@
+r"""编辑部引用库（`bib_db`）：把「已核实的参考文献」沉淀成可查、可审计的库。
+
+为什么要有它
+------------
+核实参考文献（`slcn/aibib.py` / `slcn/search.py` / 联网 AI）是**最花钱**的一步：
+同一条经典文献，这一期查过、下一期作者又列一遍，还要再查。编辑部于是决定建一个
+**自己的引用库**：以后核实文献**先查库**，命中已核实条目就不必再调 Search API / AI
+（省钱 + 体例统一 + 可审计）。库放在**私有笔记仓** `EditToolBox-notes/bib_db/`
+（JSONL 进 git，自带版本历史），由本模块与开发用 CLI `Engine/bibdb.py`、
+种子工具 `Engine/tools/bibdb_seed.py` 三处共用。
+
+来源口径（谁能算「已核实」）
+----------------------------
+  · **往期已出版期的成品 bib**（各期作者目录里、终稿 `.tex` 实际引用的那份 `.bib`，
+    人工核对过）→ `verified=true`、`method="published-bib"`；
+  · 编辑**人工核实**过的条目 → `source.kind="verified"`；
+  · **AI 结果不得直接入 verified**（AI 的答案只是候选，要么人工复核，要么等它随某期
+    出版成为成品 bib —— 这是本库唯一的价值前提）。
+未核实条目也可以入库（`verified=false`），但查询结果会明确标出，调用方不得据此跳过核实。
+
+一条记录（JSONL 一行；`sort_keys` 固定顺序，便于 git diff）
+------------------------------------------------------------
+    {
+      "version": 1,                       # 记录 schema 版本（见 README 的迁移约定）
+      "key": "Smith2020",                 # 库内唯一键：首次入库的 BibTeX key；
+                                          #   跨期撞 key 且不是同一作品时加 `-2`/`-3` 后缀
+      "entry_type": "article",
+      "fields": {"author": "...", ...},   # 规范化后的字段（见 canonical_fields()）
+      "verified": true,
+      "verified_at": "2026-10-18T12:00:00+08:00",
+      "method": "published-bib",          # published-bib / verified；未核实为 null
+      "content_sha256": "…",              # entry_type+fields 的规范化摘要（幂等/去重用）
+      "aliases": ["Smith20"],             # 同一记录用过的其它 BibTeX key（全库唯一时才记）
+      "sources": [{"kind": "published-bib", "issue": "...", "slug": "...",
+                   "file": "...", "key": "Smith2020",       # 原始 bib 里的 key
+                   "entry_sha256": "…",                     # 该来源条目入库时的内容摘要
+                   "imported_at": "..."}],
+      "conflicts": [{"at": "...", "resolution": "kept-existing",
+                     "field_diff": {"pages": {"existing": "...", "incoming": "..."}},
+                     "existing_sha256": "...", "incoming_sha256": "...",
+                     "source": {...}}],
+      "created_at": "...", "updated_at": "..."
+    }
+
+`source` 为什么是**列表**：同一条经典文献会在不同期出现，需要保留**每一份来源**
+（可追溯、冲突裁决时能看出是哪一期带来的差异）；任务书里的 `source` 单数字段是
+单来源简化版，这里按「保留两份来源」的实际要求落成 `sources: []`。
+
+幂等与冲突（upsert 的全部规则）
+-------------------------------
+  1. **内容先行**：库里已有同内容条目 → 只并来源（不新建记录、不碰字段）；
+  1b. 同一份**来源条目**重跑（`sources[].entry_sha256` 与本次内容摘要相同）→ **跳过**，
+      不重写时间戳、不重复追加来源（种子工具第二次运行 git 零 diff 靠的就是它）；
+  2. 同 key 不同内容、且能判定是**同一作品**（题名归一化相似度 ≥0.90 + 第一作者姓 +
+     年份相容）→ 记录 `conflicts`，**已核实条目的字段不静默覆盖**（保留原字段 +
+     追加来源），由人裁决；
+  3. 同 key 不同内容、判定不是同一作品（跨期 paper-local key 撞车，如两篇都用 `a1`）→
+     **新条目加后缀**（`a1-2`），不丢任何一条（`aliases` 由来源原始 key 推导；
+     撞车的 key 不记别名，避免按 key 假命中）；
+  4. 内容完全相同的不同 key → 合并为一条，另一个 key 若全库唯一则进 `aliases`；
+  5. 未核实条目被已核实内容命中 → 升级为 `verified`（并保留旧字段快照）；
+  6. `force=True`（CLI `--force`）才允许覆盖已核实条目，且旧字段全量进 `conflicts`。
+
+查询（为什么按这个优先级）
+--------------------------
+  · **key 精确**最快，但 BibTeX key 常常是**per-paper**的（`a1`…），所以还要查 aliases；
+  · **DOI 精确**最可靠（归一化大小写、`https://doi.org/` / `doi:` 前缀、尾标点）；
+  · **题名 + 第一作者姓 + 年份模糊**（`difflib` 字符相似度与词重叠取大，阈值 0.90）：
+    低于阈值只标 `confidence="low"` 返回，**绝不**当成「已核实命中」；
+  · 返回值一律带 `score` 与 `verified`，调用方自己决定要不要省掉 API。
+
+只读/写入的边界
+----------------
+  · 本模块**不读稿件仓以外的任何东西**、不联网、不调模型（只 import 标准库 +
+    `slcn.bibparse` / `slcn.bibnorm` / `slcn.paths` / `slcn.fsutil`）；
+  · 扫描稿件仓（`scan_manuscripts()` / `import_manuscripts()`）**只读**，一个字节都不写；
+  · 写库是**原子写**（`slcn.fsutil.atomic_write`，不产生 `.bak` 垃圾），按 key 排序输出。
+
+常用入口
+--------
+    from slcn import bibdb
+    db = bibdb.Store.load(bibdb.default_db_path())          # 默认 笔记仓/bib_db/bibliography.jsonl
+    db.query_doi("10.1000/xyz")                             # → 命中列表（含 verified/score）
+    db.query_title("The Title", author="Smith", year="2020")
+    db.import_bib_text(text, {"kind": "published-bib", "issue": "...", "slug": "...",
+                              "file": "reference.bib"}, verified=True)
+    db.stats(); db.lint()
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import difflib
+import hashlib
+import json
+import os
+import re
+import unicodedata
+from collections import Counter
+
+from . import bibcheck, bibnorm, bibparse, fsutil, paths
+
+#: 记录 schema 版本（改动字段语义/新增必填字段时 +1，README 里写迁移约定）
+SCHEMA_VERSION = 1
+
+#: 默认存储位置（私有笔记仓）：`<notes>/bib_db/bibliography.jsonl`
+DB_DIRNAME = "bib_db"
+DB_FILENAME = "bibliography.jsonl"
+
+#: 来源种类：往期成品 bib / 人工标记已核实 / 普通导入（未核实）
+KIND_PUBLISHED = "published-bib"
+KIND_VERIFIED = "verified"
+KIND_IMPORTED = "imported"
+_SOURCE_KINDS = (KIND_PUBLISHED, KIND_VERIFIED, KIND_IMPORTED)
+
+#: 模糊查询：题名相似度的「高置信」阈值；低于它只标 low，不当命中
+FUZZY_TITLE_THRESHOLD = 0.90
+#: 模糊查询：低于这个综合分的候选**不返回**（宁缺毋滥）
+FUZZY_MIN_SCORE = 0.60
+#: 模糊查询：题名本身至少要有这么像（否则作者+年份再准也不可疑）
+_TITLE_GATE = 0.50
+
+#: 期刊/软件元数据字段：对「这是一条什么文献」没有意义，入库时直接丢掉
+#: （前一半复用 `slcn.bibnorm.DROP_FIELDS`，后半是 JabRef/Zotero 的私有字段）
+_DROP_FIELDS = frozenset(bibnorm.DROP_FIELDS) | frozenset({
+    "date-added", "date-modified", "sortkey", "key", "bibsource", "biburl",
+    "bdsk-url-1", "bdsk-file-1", "bdsk-url-2", "bdsk-file-2",
+})
+
+#: 计算 content_sha256 时忽略的字段：同一作品在不同期的排版层差异（标点偏好、访问日期）
+_IDENTITY_IGNORE = frozenset({"userf", "urldate"})
+
+#: lint 用的「已知 BibTeX 类型」（含编辑部往期写法的几种）；其它类型只警告不阻断
+KNOWN_ENTRY_TYPES = frozenset(bibcheck.REQUIRED) | frozenset({
+    "collection", "dataset", "manual", "booklet", "periodical", "online",
+    "unpublished", "conference", "electronic", "www", "webpage", "inbook",
+})
+
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_DASH_RE = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015]")
+_LATEX_CMD_RE = re.compile(r"\\[a-zA-Z]+\*?")
+_AUTHOR_SEP_RE = re.compile(r"\s+and\s+|\s*;\s*|\s*&\s*", re.I)
+_DOI_PREFIX_RE = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", re.I)
+_DOI_IN_URL_RE = re.compile(r"doi\.org/([^\s#?]+)", re.I)
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+_YEAR_RE = re.compile(r"(1[5-9]\d{2}|20\d{2})")
+
+#: 稿件仓目录识别（与 `slcn/paths.py` 同一判据）：`20xx年第N期(…)`
+_AUTHOR_DIR_RE = re.compile(r"^\d{2}[\s_-]")
+_ISSUE_YEAR_RE = re.compile(r"^(\d{4})年第")
+_BIBREF_RE = re.compile(
+    r"\\addbibresource\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}"
+    r"|\\bibliography\s*\{([^}]*)\}"
+)
+
+
+# ── 异常 ────────────────────────────────────────────────────────────────────
+
+
+class BibDBError(Exception):
+    """引用库的用法 / IO / 结构错误。CLI 捕获后打中文说明并以退出码 2 结束。"""
+
+
+class NotesRootMissing(BibDBError):
+    """找不到私有笔记仓（默认库在 `EditToolBox-notes/bib_db/`）。"""
+
+
+def _now_iso() -> str:
+    """本地时区、到秒的 ISO 时间戳（人读 + 可排序；跟 `fsutil` 的时间戳口径一致）。"""
+    return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+# ── 默认路径 ────────────────────────────────────────────────────────────────
+
+
+def default_db_path(notes_root: str | None = None) -> str:
+    """默认库文件：`<笔记仓>/bib_db/bibliography.jsonl`。
+
+    ⚠️ **笔记仓找不到时明确报错**（`NotesRootMissing`），绝不悄悄写到别处 ——
+    这是任务书点名的要求：引用库一旦写错位置，就在 git 里丢了审计历史。
+    笔记仓的判据沿用 `slcn/paths.py`（环境变量 `SLCN_NOTES` 优先且严格；否则同级目录，
+    要求里面有 `cases/`）。
+    """
+    root = notes_root if notes_root is not None else paths.notes_root()
+    if not root:
+        raise NotesRootMissing(
+            "找不到私有笔记仓，无法确定引用库位置（默认放在 EditToolBox-notes/bib_db/）。\n"
+            "  请设环境变量 SLCN_NOTES=<笔记仓路径>（该目录下要有 cases/ 子目录），"
+            "或用 --db <库文件路径> 显式指定。\n"
+            f"  {paths.describe_notes()}"
+        )
+    return os.path.join(os.path.abspath(root), DB_DIRNAME, DB_FILENAME)
+
+
+def init_db(path: str | None = None) -> tuple[str, bool]:
+    """初始化库文件（父目录 + 空 JSONL）。返回 `(路径, 是否新建)`。
+
+    已存在时**一个字都不动**（幂等；重复 init 不是错误）。
+    """
+    db_path = os.path.abspath(path or default_db_path())
+    if os.path.isfile(db_path):
+        return db_path, False
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    fsutil.atomic_write(db_path, "", keep_backups=0)
+    return db_path, True
+
+
+def db_sha256(path: str) -> str:
+    """库文件的内容 sha256（空串表示文件不存在）。"""
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+# ── 字段规范化（唯一实现：复用 slcn/bibnorm.py 的编辑规则） ─────────────────
+
+
+def canonical_field_name(name: str) -> str:
+    """字段名小写 + 编辑部别名归一（`issue→number`、`journaltitle→journal`…）。"""
+    low = str(name or "").strip().lower()
+    return bibnorm.FIELD_ALIASES.get(low, low)
+
+
+def _squash(value: object) -> str:
+    """折叠空白：同一份 bib 换了换行/缩进不该被当成「内容变了」。"""
+    return re.sub(r"\s+", " ", str(value if value is not None else "")).strip()
+
+
+def canonical_fields(fields: dict) -> dict[str, str]:
+    """条目字段 → 规范化字段（丢软件元数据、别名归一、值清理、键排序）。
+
+    **值清理复用** `slcn.bibnorm._clean_field_value()`：体例规则只允许有一份实现
+    （`bibnorm` 是编辑部规范的权威实现，`checkbib.py` 也走它）。
+    """
+    out: dict[str, str] = {}
+    for name, value in (fields or {}).items():
+        canon = canonical_field_name(name)
+        if not canon or canon in _DROP_FIELDS:
+            continue
+        raw = str(value if value is not None else "")
+        cleaned = bibnorm._clean_field_value(canon, raw)
+        if cleaned is None:
+            continue
+        value_norm = _squash(cleaned)
+        if not value_norm:
+            continue
+        if canon == "year" and not re.fullmatch(r"\d{4}", value_norm):
+            # 源 bib 有 `\hspace{-0.3em}2021` 这类脏值：bibnorm 的「只留数字」规则会得到
+            # `032021`。入库字段是**给人看的核实记录**，这里退回抽第一个四位年份；
+            # 抽不出就当脏值原样留着（lint 会警告）。
+            match = _YEAR_RE.search(raw)
+            if match:
+                value_norm = match.group(1)
+        if canon == "doi":
+            value_norm = normalize_doi(value_norm)
+            if not value_norm:
+                continue
+        out[canon] = value_norm
+    return dict(sorted(out.items()))
+
+
+def content_sha256(entry_type: str, fields: dict) -> str:
+    """条目的规范化内容摘要（幂等去重与「同 key 同内容」判据的唯一实现）。
+
+    排除 `_IDENTITY_IGNORE`（排版层差异）；对规范化后的字段按名排序，所以
+    同一份 bib 重排字段/换行不会变摘要。
+    """
+    canon = canonical_fields(fields or {})
+    payload = [
+        str(entry_type or "").strip().lower(),
+        [[name, value] for name, value in sorted(canon.items())
+         if name not in _IDENTITY_IGNORE],
+    ]
+    blob = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+# ── 查询用的文本归一（题名 / 作者 / 年份 / DOI） ────────────────────────────
+
+
+def _latex_plain(value: object) -> str:
+    """把 BibTeX 值里常见的 LaTeX 装饰降成纯文本 —— **只用于比较**，不改库里的字段。"""
+    s = str(value if value is not None else "")
+    s = re.sub(r"\\href\s*\{[^}]*\}\s*\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\url\s*\{([^}]*)\}", r"\1", s)
+    s = _LATEX_CMD_RE.sub("", s)          # `\textup` / `\emph` / `\hspace` …
+    s = s.replace("{", "").replace("}", "")
+    s = re.sub(r"\\(.)", r"\1", s)         # `\"o` → `"o`（之后标点过滤会清掉引号）
+    return s
+
+
+def normalize_title(value: object) -> str:
+    """题名归一：去 LaTeX/花括号、去重音（NFKD）、小写、去标点、压空白。
+
+    只用于**相似度比较**；库里的 `fields.title` 保持规范化的原文（不清洗内容）。
+    """
+    s = _latex_plain(value)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = _DASH_RE.sub("-", s.lower())
+    s = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in text.split() if t]
+
+
+def _seq_ratio(a: str, b: str) -> float:
+    """`difflib` 字符相似度；`real_quick_ratio` 只用于剪掉明显不相似的对（是上界）。"""
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    if matcher.real_quick_ratio() < 0.4:
+        return matcher.real_quick_ratio()
+    return matcher.ratio()
+
+
+def title_similarity(a: object, b: object) -> float:
+    """两个题名的相似度（0–1）：字符比例与词重叠取大；一方完整包含另一方取 0.95。
+
+    包含判据加了长度门槛（较短题名 ≥12 字且占较长题名 ≥60%）——否则题名 `Logic`
+    会命中 `Logic and Language` 这种完全不同的作品（假高置信比低置信更糟）。
+    """
+    na, nb = normalize_title(a), normalize_title(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(shorter) >= 12 and len(shorter) >= 0.6 * len(longer) and shorter in longer:
+        return 0.95
+    ratio = _seq_ratio(na, nb)
+    ta, tb = _tokens(na), _tokens(nb)
+    if ta and tb:
+        dice = 2.0 * len(set(ta) & set(tb)) / (len(ta) + len(tb))
+        ratio = max(ratio, dice)
+    return round(ratio, 6)
+
+
+def first_author_surname(value: object) -> str:
+    """第一位作者的「姓」（比较用）：`Last, First` 取逗号前；`First Last` 取末词；
+    含汉字/假名则用整个姓名（中文姓名不分倒装）。"""
+    text = _latex_plain(value)
+    text = re.sub(r"\([^)]*\)", " ", text)          # `(eds.)` / `（著）` 之类
+    first = _AUTHOR_SEP_RE.split(text.strip())[0].strip() if text.strip() else ""
+    if not first:
+        return ""
+    if _CJK_RE.search(first):
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", first)
+    if "," in first:
+        surname = first.split(",")[0]
+    else:
+        toks = [t for t in first.split() if t]
+        while len(toks) > 1 and toks[-1].lower().rstrip(".") in {
+            "jr", "sr", "ii", "iii", "iv",
+        }:
+            toks.pop()
+        surname = toks[-1] if toks else ""
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", surname.lower())
+
+
+def entry_year(fields: dict) -> str:
+    """条目年份：`year` 优先，`date` 兜底；从值里抽第一个四位年份（源 bib 有
+    `\\hspace{-0.3em}2021` 这类脏值，不能直接当数字用）。"""
+    for name in ("year", "date"):
+        raw = str((fields or {}).get(name) or "")
+        match = _YEAR_RE.search(raw)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _surnames_match(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if _CJK_RE.search(a + b):          # 中文/日文姓名：只认完全相同，不做包含判断
+        return False
+    if min(len(a), len(b)) >= 3:
+        return a in b or b in a        # `van Fraassen` vs `Fraassen`
+    return False
+
+
+def normalize_doi(value: object) -> str:
+    """DOI 归一（精确查询/入库都用它）：小写、去 `https://doi.org/` 与 `doi:` 前缀、
+    去尾标点。DOI 本身大小写不敏感。"""
+    s = _squash(value)
+    s = _DOI_PREFIX_RE.sub("", s)
+    s = s.strip().strip(".,;)")
+    return s.lower()
+
+
+def _doi_from_url(value: object) -> str:
+    """从 `url` 字段里抽 DOI（作者常把 DOI 写成 `https://doi.org/…`）。"""
+    match = _DOI_IN_URL_RE.search(str(value or ""))
+    return normalize_doi(match.group(1)) if match else ""
+
+
+def works_match(fields_a: dict, fields_b: dict) -> bool:
+    """两条记录是否**同一作品**（用于「同 key 不同字段」的冲突分类）。
+
+    判据（全满足才算；宁可判成「不同作品」多留一条，也不误合并两份学术事实）：
+      ① 题名归一后相似度 ≥ 0.90；
+      ② 第一作者姓相同（双方都有时才检查；用包含关系容忍 `van Fraassen`/`Fraassen`）；
+      ③ 年份相容（双方都有时必须相同 —— 1944 与 1964 很可能是不同版本/不同文献）。
+    """
+    title_a = (fields_a or {}).get("title")
+    title_b = (fields_b or {}).get("title")
+    if not normalize_title(title_a) or not normalize_title(title_b):
+        return False
+    if title_similarity(title_a, title_b) < FUZZY_TITLE_THRESHOLD:
+        return False
+    surname_a = first_author_surname((fields_a or {}).get("author")
+                                     or (fields_a or {}).get("editor"))
+    surname_b = first_author_surname((fields_b or {}).get("author")
+                                     or (fields_b or {}).get("editor"))
+    if surname_a and surname_b and not _surnames_match(surname_a, surname_b):
+        return False
+    year_a = entry_year(fields_a or {})
+    year_b = entry_year(fields_b or {})
+    if year_a and year_b and year_a != year_b:
+        return False
+    return True
+
+
+def _score_record_title(wanted_title: str, surname: str, wanted_year: str,
+                        record: dict, *,
+                        threshold: float = FUZZY_TITLE_THRESHOLD,
+                        min_score: float = FUZZY_MIN_SCORE) -> dict | None:
+    """给「稿件题名 vs 库记录」打一个命中分（`query_title` 与 `match_reference` 共用）。
+
+    返回 None = 题名太不像/综合分不到 `min_score`；否则返回带 `score` / `confidence` /
+    `verified` / `author_match` / `year_match` 的命中 dict（**判定只有这一份**）。
+    `confidence="high"` 的充要条件：题名相似度 ≥ `threshold`，且作者/年份（若查询方提供）
+    没有冲突——「高置信」是 `match_reference` 敢跳过检索/AI 的前提。
+    """
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    record_title = fields.get("title")
+    if not record_title:
+        return None
+    similarity = title_similarity(wanted_title, record_title)
+    if similarity < _TITLE_GATE:
+        return None
+    parts: dict[str, float] = {"title": round(similarity, 3)}
+    weight_sum = 0.6
+    score_sum = 0.6 * similarity
+    author_ok: bool | None = None
+    year_ok: bool | None = None
+    if surname:
+        record_surname = first_author_surname(fields.get("author") or fields.get("editor"))
+        author_ok = bool(record_surname) and _surnames_match(surname, record_surname)
+        parts["author"] = 1.0 if author_ok else 0.0
+        weight_sum += 0.25
+        score_sum += 0.25 * parts["author"]
+    if wanted_year:
+        record_year = entry_year(fields)
+        year_ok = bool(record_year) and record_year == wanted_year
+        parts["year"] = 1.0 if year_ok else 0.0
+        weight_sum += 0.15
+        score_sum += 0.15 * parts["year"]
+    score = score_sum / weight_sum if weight_sum else 0.0
+    if score < min_score:
+        return None
+    high = (similarity >= threshold
+            and author_ok is not False and year_ok is not False)
+    return {
+        "key": record["key"],
+        "score": round(score, 4),
+        "confidence": "high" if high else "low",
+        "verified": record.get("verified") is True,
+        "title_similarity": round(similarity, 4),
+        "author_match": author_ok,
+        "year_match": year_ok,
+        "score_parts": parts,
+        "record": record,
+    }
+
+
+# ── 查库命中判定（convert.py ⑪ 核实链路用；第 129 条）─────────────────────────
+#
+# 口径（**保守**：把不同文献误判成「已核实」比漏查更糟）：
+#   · 安全命中 = DOI 精确命中**已核实**记录；或题名高置信（≥0.90）+ 第一作者姓/年份
+#     **相容** + verified=true。只有安全命中的键才跳过检索 API 与 AI；
+#   · key 命中只算**候选**：BibTeX key 多为 per-paper（`a1`…），同 key 不保证同文献，
+#     仍走检索；候选只用于日志/任务书提示；
+#   · 命中但库内未核实 / 题名低置信 → 候选（不跳过任何步骤）。
+# 判定只有本模块这一份实现；convert.py 只负责编排。
+
+HIT_SAFE = "safe"            # 安全命中：可跳过检索+AI
+HIT_CANDIDATE = "candidate"  # 只是候选：仍走检索+AI
+HIT_MISS = "miss"            # 库内没有线索
+
+
+def _fields_equivalent(name: str, first: str, second: str) -> bool:
+    """两个字段值是否**语义等价**（大小写/花括号/页码破折号这类排版差异不算差异）。
+
+    为什么需要：任务书里的「库版本字段差异」是给编辑裁决用的提示；把
+    `{A}n algebraic` 与 `an algebraic`、`45-67` 与 `45--67` 也列出来只会淹没真正的差异。
+    """
+    if first == second:
+        return True
+    if not first or not second:
+        return False
+    if name == "title":
+        return normalize_title(first) == normalize_title(second)
+    if name in ("author", "editor"):
+        return _squash(first).lower() == _squash(second).lower()
+    if name in ("year", "date"):
+        return bool(entry_year({"year": first})) and \
+            entry_year({"year": first}) == entry_year({"year": second})
+    if name == "doi":
+        return normalize_doi(first) == normalize_doi(second)
+    if name in ("pages", "volume", "number", "edition"):
+        strip = lambda v: re.sub(r"[\s\-\u2010-\u2015]+", "-", _squash(v).lower())  # noqa: E731
+        return strip(first) == strip(second)
+    return False
+
+
+def entry_field_diff(entry_fields: dict, record_fields: dict,
+                     *, entry_type: str = "") -> dict[str, dict]:
+    """稿件条目 vs 库记录的**规范化字段差异**（只提示，绝不据此改稿）。
+
+    返回 `{字段: {"library": 库值, "manuscript": 稿件值}}`；`entry_type` 不同时以
+    `$entry_type` 单列。`userf`/`urldate` 这类排版层差异不算（与内容摘要同一口径），
+    大小写/花括号/页码破折号等**语义等价**的写法差异也不算（`_fields_equivalent`）。
+    """
+    library = canonical_fields(record_fields or {})
+    manuscript = canonical_fields(entry_fields or {})
+    diff: dict[str, dict] = {}
+    for name in sorted(set(library) | set(manuscript)):
+        if name in _IDENTITY_IGNORE:
+            continue
+        before = library.get(name, "")
+        after = manuscript.get(name, "")
+        if not _fields_equivalent(name, before, after):
+            diff[name] = {"library": before, "manuscript": after}
+    return diff
+
+
+# ── 记录结构 ────────────────────────────────────────────────────────────────
+
+
+def validate_record(record: object) -> list[str]:
+    """检查一条记录的**结构**（不重算 hash；`lint()` 才做内容级核对）。
+
+    返回问题列表（空 = 合格）。这些判据也是「库被手工改坏」时的第一道看门狗。
+    """
+    if not isinstance(record, dict):
+        return ["不是 JSON 对象"]
+    problems: list[str] = []
+    key = record.get("key")
+    if not isinstance(key, str) or not key.strip():
+        problems.append("缺少非空字符串 key")
+    version = record.get("version")
+    if not isinstance(version, int) or version < 1:
+        problems.append("缺少合法的 version")
+    if not isinstance(record.get("entry_type"), str):
+        problems.append("entry_type 不是字符串")
+    if not isinstance(record.get("fields"), dict):
+        problems.append("fields 不是对象")
+    if not isinstance(record.get("verified"), bool):
+        problems.append("verified 不是布尔值")
+    sha = record.get("content_sha256")
+    if not isinstance(sha, str) or not _HEX64_RE.match(sha):
+        problems.append("content_sha256 不是 64 位十六进制")
+    sources = record.get("sources")
+    if not isinstance(sources, list) or not sources:
+        problems.append("缺来源（sources 为空）")
+    elif not all(isinstance(s, dict) and str(s.get("kind") or "").strip()
+                 for s in sources):
+        problems.append("sources 里有条目缺 kind")
+    if record.get("verified") is True:
+        if not str(record.get("verified_at") or "").strip():
+            problems.append("verified=true 但没有 verified_at（核实记录缺失）")
+        if not str(record.get("method") or "").strip():
+            problems.append("verified=true 但没有 method（核实方式缺失）")
+    if not isinstance(record.get("aliases", []), list):
+        problems.append("aliases 不是数组")
+    if not isinstance(record.get("conflicts", []), list):
+        problems.append("conflicts 不是数组")
+    return problems
+
+
+def _record_line(record: dict) -> str:
+    """记录 → 一行 JSONL（键排序 + 紧凑分隔，保证同样内容永远是同样的字节）。"""
+    return json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _clean_source(source: object, now: str) -> dict:
+    """来源字典规范化（缺省字段补 null；`imported_at` 只在首次入库时确定）。"""
+    if not isinstance(source, dict):
+        raise BibDBError("source 必须是字典")
+    kind = str(source.get("kind") or "").strip()
+    if kind not in _SOURCE_KINDS:
+        raise BibDBError(f"未知 source.kind：{kind!r}（允许 {_SOURCE_KINDS}）")
+    return {
+        "kind": kind,
+        "issue": source.get("issue") or None,
+        "slug": source.get("slug") or None,
+        "file": source.get("file") or None,
+        #: 这条来源在**原始 bib 里的 key**（可能因跨期撞车被加后缀；alias 由它推导）
+        "key": str(source.get("key") or "").strip() or None,
+        #: 该来源条目**入库时的内容摘要**：重跑时据此判断「这条来源已经处理过、内容没变」
+        #: → 直接跳过（这是种子导入逐字节幂等的关键，见 import_bib_text）
+        "entry_sha256": str(source.get("entry_sha256") or "") or None,
+        "imported_at": str(source.get("imported_at") or now),
+    }
+
+
+def _source_identity(source: dict) -> tuple[str, str, str, str, str]:
+    """来源同一性（忽略 imported_at）——重复导入同一份 bib 不重复追加来源。
+
+    含原始 key：同一份 bib 里两条**不同 key** 的条目若内容相同，来源仍要各记各的
+    （否则 alias 推导会丢一半）。
+    """
+    return (
+        str(source.get("kind") or ""),
+        str(source.get("issue") or ""),
+        str(source.get("slug") or ""),
+        str(source.get("file") or ""),
+        str(source.get("key") or ""),
+    )
+
+
+def _new_record(key: str, entry_type: str, fields: dict[str, str], sha: str,
+                source: dict, *, verified: bool, now: str) -> dict:
+    return {
+        "version": SCHEMA_VERSION,
+        "key": key,
+        "entry_type": str(entry_type or "").strip().lower(),
+        "fields": fields,
+        "verified": bool(verified),
+        "verified_at": now if verified else None,
+        "method": (str(source.get("kind") or "") or None) if verified else None,
+        "content_sha256": sha,
+        "aliases": [],
+        "sources": [source],
+        "conflicts": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _field_diff(record: dict, new_fields: dict, new_etype: str) -> dict[str, dict]:
+    """逐字段 diff（冲突记录用）：只列值不同的字段；类型不同单列 `$entry_type`。"""
+    old_fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    diff: dict[str, dict] = {}
+    for name in sorted(set(old_fields) | set(new_fields)):
+        before = old_fields.get(name, "")
+        after = new_fields.get(name, "")
+        if before != after:
+            diff[name] = {"existing": before, "incoming": after}
+    if str(record.get("entry_type") or "").lower() != str(new_etype or "").lower():
+        diff["$entry_type"] = {"existing": record.get("entry_type"),
+                               "incoming": str(new_etype or "").lower()}
+    return diff
+
+
+class UpsertResult:
+    """一次 upsert 的结果（给导入统计与测试用）。"""
+
+    __slots__ = ("status", "key", "reason", "sources_added", "conflict", "disambiguated")
+
+    def __init__(self, status: str, key: str = "", *, reason: str = "",
+                 sources_added: int = 0, conflict: bool = False,
+                 disambiguated: bool = False):
+        self.status = status
+        self.key = key
+        self.reason = reason
+        self.sources_added = sources_added
+        self.conflict = conflict
+        self.disambiguated = disambiguated
+
+
+class ImportReport:
+    """一次导入（一份 bib / 一批期目录）的统计。"""
+
+    def __init__(self) -> None:
+        self.entries = 0            # 解析出的条目数（含被跳过的）
+        self.new = 0                # 新入库
+        self.merged = 0             # 命中已有条目（含幂等跳过、别名/来源追加）
+        self.updated = 0            # 已有条目被更新（升级为已核实 / 强制覆盖）
+        self.conflicts = 0          # 记录了字段冲突的条目数
+        self.disambiguated = 0      # 跨期 key 撞车 → 加后缀的新条目
+        self.sources_added = 0      # 追加到已有条目上的来源数
+        self.findings = 0           # bibparse 报的语法发现数（不阻断导入，如实计数）
+        self.skipped: Counter[str] = Counter()
+        self.warnings: list[str] = []
+
+    def add_result(self, result: UpsertResult) -> None:
+        if result.status == "skipped":
+            self.skipped[result.reason or "其它"] += 1
+            return
+        if result.status == "new":
+            self.new += 1
+            if result.disambiguated:
+                self.disambiguated += 1
+        elif result.status == "merged":
+            self.merged += 1
+        elif result.status == "updated":
+            self.updated += 1
+        elif result.status == "conflict":
+            self.conflicts += 1
+        self.sources_added += result.sources_added
+
+    def merge(self, other: "ImportReport") -> None:
+        for name in ("entries", "new", "merged", "updated", "conflicts",
+                     "disambiguated", "sources_added", "findings"):
+            setattr(self, name, getattr(self, name) + getattr(other, name))
+        self.skipped.update(other.skipped)
+        self.warnings.extend(other.warnings)
+
+    def summary(self) -> dict:
+        return {
+            "entries": self.entries,
+            "new": self.new,
+            "merged": self.merged,
+            "updated": self.updated,
+            "conflicts": self.conflicts,
+            "disambiguated": self.disambiguated,
+            "sources_added": self.sources_added,
+            "findings": self.findings,
+            "skipped": dict(sorted(self.skipped.items())),
+            "warnings": list(self.warnings),
+        }
+
+# ── 引用库本体 ──────────────────────────────────────────────────────────────
+
+
+class Store:
+    """一个 JSONL 引用库。`load()` 读入内存，`save()` 原子写回（按 key 排序）。"""
+
+    def __init__(self, path: str) -> None:
+        self.path = os.path.abspath(path) if path else ""
+        self._records: list[dict] = []
+        self._by_key: dict[str, dict] = {}
+        self._by_alias: dict[str, list[dict]] = {}
+        self._by_content: dict[str, dict] = {}
+        self._by_source: dict[tuple, tuple[dict, str]] = {}   # 来源身份 → (记录, 入库摘要)
+        # 查库用的懒建索引（`convert.py` ⑪ 逐条匹配时才建一次；只读，导入期间不建）
+        self._doi_index: dict[str, list[dict]] | None = None
+        self._block_surname: dict[str, list[dict]] | None = None
+        self._block_year: dict[str, list[dict]] | None = None
+        self.problems: list[str] = []
+        self.dirty = False
+        self.aliases_dirty = False     # aliases 只在 save()/refresh_aliases() 时按来源重算
+
+    # -- 读写 ---------------------------------------------------------------
+
+    @classmethod
+    def load(cls, path: str, *, create: bool = False, lenient: bool = False) -> "Store":
+        """读库。`create=True` 时文件不存在返回空库（导入用）；`lenient=True` 时
+        结构问题只记进 `problems` 不抛异常（`lint` 用）。"""
+        store = cls(path)
+        if not os.path.isfile(store.path):
+            if create:
+                return store
+            raise BibDBError(
+                f"引用库不存在：{store.path}\n"
+                "  先跑 `bibdb.py init`，或 `tools/bibdb_seed.py` 生成种子库。"
+            )
+        store._read()
+        if store.problems and not lenient:
+            preview = "；".join(store.problems[:3])
+            more = (f"……另有 {len(store.problems) - 3} 处"
+                    if len(store.problems) > 3 else "")
+            raise BibDBError(
+                f"引用库有 {len(store.problems)} 处结构问题（{preview}{more}）。"
+                "先跑 `bibdb.py lint` 看全部。"
+            )
+        return store
+
+    def _read(self) -> None:
+        try:
+            with open(self.path, encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError as exc:
+            raise BibDBError(f"读不了引用库：{self.path}（{exc}）") from exc
+        for lineno, line in enumerate(lines, start=1):
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError as exc:
+                self.problems.append(f"第 {lineno} 行不是合法 JSON：{exc}")
+                continue
+            if not isinstance(record, dict):
+                self.problems.append(f"第 {lineno} 行不是 JSON 对象")
+                continue
+            for problem in validate_record(record):
+                self.problems.append(f"第 {lineno} 行：{problem}")
+            self._records.append(record)
+        self._reindex()
+
+    def _reindex(self) -> None:
+        self._by_key = {}
+        self._by_alias = {}
+        self._by_content = {}
+        self._by_source = {}
+        for index, record in enumerate(self._records, start=1):
+            key = record.get("key") if isinstance(record, dict) else None
+            if not isinstance(key, str) or not key:
+                continue
+            if key in self._by_key:
+                self.problems.append(f"第 {index} 条记录：key 重复 `{key}`（后者被忽略）")
+                continue
+            self._by_key[key] = record
+            sha = record.get("content_sha256")
+            if isinstance(sha, str) and sha:
+                self._by_content.setdefault(sha, record)
+            aliases = record.get("aliases")
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    if isinstance(alias, str) and alias:
+                        self._by_alias.setdefault(alias, []).append(record)
+            for source in record.get("sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                identity = _source_identity(source)
+                if identity not in self._by_source:
+                    self._by_source[identity] = (
+                        record, str(source.get("entry_sha256") or ""))
+
+    def refresh_aliases(self) -> bool:
+        """按各来源里的**原始 BibTeX key** 重算 aliases（确定性：只依赖最终来源集）。
+
+        规则：只有**全库唯一指向一条记录**的 key 才记成别名。paper-local key（两篇都用
+        `a1` 指不同文献）**绝不能**当别名 —— 否则将来「先查库按 key 命中就跳过核实」会
+        假命中另一篇文献的引用，这是比漏查更糟的错误。撞车的 key 不记；查询请走 DOI/题名。
+        """
+        owners: dict[str, set[str]] = {}
+        for record in self._by_key.values():
+            key = str(record.get("key") or "")
+            if not key:
+                continue
+            owners.setdefault(key, set()).add(key)
+            for source in record.get("sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                source_key = source.get("key")
+                if isinstance(source_key, str) and source_key:
+                    owners.setdefault(source_key, set()).add(key)
+        changed = False
+        for key, record in self._by_key.items():
+            aliases = sorted(
+                alias for alias, group in owners.items()
+                if len(group) == 1 and key in group and alias != key
+            )
+            if record.get("aliases") != aliases:
+                record["aliases"] = aliases
+                changed = True
+        if changed:
+            self.aliases_dirty = True
+            self._by_alias = {}
+            for record in self._by_key.values():
+                for alias in record.get("aliases") or []:
+                    self._by_alias.setdefault(alias, []).append(record)
+        return changed
+
+    def save(self, *, force: bool = False) -> bool:
+        """按 key 排序原子写回。返回是否真的写了（无改动时不重写 → git 零 diff）。"""
+        if self.problems:
+            raise BibDBError(
+                f"库有 {len(self.problems)} 处结构问题，拒绝覆盖写（先 lint 修好）："
+                f"{'；'.join(self.problems[:3])}"
+            )
+        self.refresh_aliases()
+        if not self.dirty and not self.aliases_dirty and not force \
+                and os.path.isfile(self.path):
+            return False
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        text = "".join(_record_line(self._by_key[key]) + "\n"
+                       for key in sorted(self._by_key))
+        fsutil.atomic_write(self.path, text, keep_backups=0)
+        self.dirty = False
+        self.aliases_dirty = False
+        return True
+
+    # -- 程序化修改 ---------------------------------------------------------
+
+    def _insert(self, record: dict) -> None:
+        self._records.append(record)
+        self._by_key[record["key"]] = record
+        self._by_content.setdefault(record["content_sha256"], record)
+        for source in record.get("sources") or []:
+            if isinstance(source, dict):
+                identity = _source_identity(source)
+                self._by_source.setdefault(
+                    identity, (record, str(source.get("entry_sha256") or "")))
+        self.dirty = True
+
+    def _append_source(self, record: dict, source: dict) -> bool:
+        sources = record.setdefault("sources", [])
+        wanted = _source_identity(source)
+        for existing in sources:
+            if isinstance(existing, dict) and _source_identity(existing) == wanted:
+                return False
+        sources.append(source)
+        self._by_source.setdefault(
+            wanted, (record, str(source.get("entry_sha256") or "")))
+        return True
+
+    def _processed_sha(self, source: dict) -> tuple[dict | None, str]:
+        """这条来源之前处理过吗？返回 (记录, 当时的内容摘要) 或 (None, "")。"""
+        return self._by_source.get(_source_identity(source), (None, ""))
+
+    def _mark_verified(self, record: dict, source: dict, now: str) -> None:
+        record["verified"] = True
+        record["verified_at"] = now
+        kind = str(source.get("kind") or "")
+        record["method"] = kind if kind in (KIND_PUBLISHED, KIND_VERIFIED) else KIND_VERIFIED
+
+    def _replace_content(self, record: dict, entry_type: str, fields: dict,
+                         sha: str) -> None:
+        record["entry_type"] = str(entry_type or "").strip().lower()
+        record["fields"] = fields
+        record["content_sha256"] = sha
+
+    def _record_conflict(self, record: dict, diff: dict, *, old_sha: str,
+                         incoming_sha: str, source: dict, note: str,
+                         resolution: str, now: str,
+                         max_conflicts: int = 50) -> bool:
+        """记一条字段冲突（同一个 incoming 内容只记一次 → 重跑幂等）。"""
+        conflicts = record.setdefault("conflicts", [])
+        for existing in conflicts:
+            if (isinstance(existing, dict)
+                    and existing.get("incoming_sha256") == incoming_sha
+                    and existing.get("resolution") == resolution):
+                return False
+        if len(conflicts) >= max_conflicts:
+            return False
+        if not diff:
+            diff = {"$content": {"existing": old_sha, "incoming": incoming_sha}}
+        conflicts.append({
+            "at": now,
+            "resolution": resolution,
+            "note": note,
+            "existing_sha256": old_sha,
+            "incoming_sha256": incoming_sha,
+            "field_diff": diff,
+            "source": source,
+        })
+        return True
+
+    # -- upsert -------------------------------------------------------------
+
+    def import_entry(self, raw_key: str, entry_type: str, raw_fields: dict,
+                     source: dict, *, verified: bool, force: bool = False,
+                     now: str | None = None) -> UpsertResult:
+        """导入一条条目（幂等 upsert；规则见模块头「幂等与冲突」）。
+
+        ⚠️ **内容判据先行**：只要库里已有同内容条目就直接并来源，不管这个 key 当前有没有
+        被占用。这是「同一批 bib 用不同顺序/重复导入都得到同一个库」的关键 —— 否则
+        首轮导入时某条 key 还没被占用、库里也还没有那条内容，条目会先建成一条记录，
+        第二轮同样的输入却命中「已存在的内容」走另一条分支，文件就不再逐字节相同。
+        """
+        now = now or _now_iso()
+        key = str(raw_key or "").strip()
+        if not key:
+            return UpsertResult("skipped", reason="没有 key")
+        entry_type = str(entry_type or "").strip().lower()
+        fields = canonical_fields(raw_fields or {})
+        sha = content_sha256(entry_type, fields)
+        source = _clean_source(source, now)
+
+        # ① 同内容 → 并来源（幂等；也吸收「不同期不同 key 指同一作品」的重复）
+        content_hit = self._by_content.get(sha)
+        if content_hit is not None:
+            return self._merge_into(content_hit, source, verified, now)
+        # ② 同 key → 冲突 / 覆盖 / key 撞车
+        existing = self._by_key.get(key)
+        if existing is not None:
+            return self._upsert_existing(existing, entry_type, fields, sha,
+                                         source, verified, force, now)
+        # ③ 全新条目
+        return self._insert_new(key, entry_type, fields, sha, source, verified, now)
+
+    def _insert_new(self, key: str, entry_type: str, fields: dict, sha: str,
+                    source: dict, verified: bool, now: str) -> UpsertResult:
+        record = _new_record(key, entry_type, fields, sha, source,
+                             verified=verified, now=now)
+        self._insert(record)
+        return UpsertResult("new", key)
+
+    def _disambiguate(self, key: str, entry_type: str, fields: dict, sha: str,
+                      source: dict, verified: bool, now: str) -> UpsertResult:
+        """跨期 key 撞车（不同作品同名 key）→ 新条目加 `-2`/`-3` 后缀。
+
+        原 key 不写死进 aliases：alias 由 `refresh_aliases()` 从各来源的原始 key 推导，
+        只有「全库唯一指向一条记录」的 key 才当别名（详见该方法的注释）。
+        """
+        suffix = 2
+        while f"{key}-{suffix}" in self._by_key:
+            suffix += 1
+        new_key = f"{key}-{suffix}"
+        result = self._insert_new(new_key, entry_type, fields, sha, source,
+                                  verified, now)
+        result.disambiguated = True
+        return result
+
+    def _merge_into(self, record: dict, source: dict, verified: bool,
+                    now: str) -> UpsertResult:
+        """内容相同 → 只补来源（或未核实→已核实升级），不动字段、不重复建条目。"""
+        changed = self._append_source(record, source)
+        sources_added = 1 if changed else 0
+        if verified and record.get("verified") is not True:
+            self._mark_verified(record, source, now)
+            changed = True
+        if changed:
+            record["updated_at"] = now
+            self.dirty = True
+        return UpsertResult("merged", str(record.get("key") or ""),
+                            sources_added=sources_added)
+
+    def _upsert_existing(self, record: dict, entry_type: str, fields: dict, sha: str,
+                         source: dict, verified: bool, force: bool,
+                         now: str) -> UpsertResult:
+        if record.get("content_sha256") == sha:     # 上游内容判据的兜底（防御式）
+            return self._merge_into(record, source, verified, now)
+        old_sha = str(record.get("content_sha256") or "")
+        diff = _field_diff(record, fields, entry_type)
+
+        if force:                                   # 人工裁决：强制覆盖（旧字段留档）
+            self._replace_content(record, entry_type, fields, sha)
+            self._append_source(record, source)
+            if verified:
+                self._mark_verified(record, source, now)
+            self._record_conflict(record, diff, old_sha=old_sha, incoming_sha=sha,
+                                  source=source, note="人工 --force 覆盖",
+                                  resolution="forced-replaced", now=now)
+            record["updated_at"] = now
+            self.dirty = True
+            return UpsertResult("updated", record["key"])
+
+        if not works_match(record.get("fields") or {}, fields):
+            # 同 key 但**不是同一作品**（paper-local key 撞车）→ 各留各的
+            return self._disambiguate(self._key_of(record), entry_type, fields, sha,
+                                      source, verified, now)
+        if record.get("verified") is not True:
+            # 未核实条目 → 新导入的内容更新它（若新来源已核实，同时升级）
+            self._replace_content(record, entry_type, fields, sha)
+            self._append_source(record, source)
+            if verified:
+                self._mark_verified(record, source, now)
+            self._record_conflict(record, diff, old_sha=old_sha, incoming_sha=sha,
+                                  source=source, note="未核实条目被新导入替换",
+                                  resolution="replaced-unverified", now=now)
+            record["updated_at"] = now
+            self.dirty = True
+            return UpsertResult("updated", record["key"])
+        # 已核实条目：**不静默覆盖**，记冲突留人裁决
+        added = self._record_conflict(record, diff, old_sha=old_sha, incoming_sha=sha,
+                                      source=source, note="已核实条目保留原字段",
+                                      resolution="kept-existing", now=now)
+        appended = self._append_source(record, source)
+        if appended or added:
+            record["updated_at"] = now
+            self.dirty = True
+        return UpsertResult("conflict", record["key"], conflict=added,
+                            sources_added=1 if appended else 0)
+
+    @staticmethod
+    def _key_of(record: dict) -> str:
+        return str(record.get("key") or "")
+
+    # -- 导入 ---------------------------------------------------------------
+
+    def import_bib_text(self, text: str, source: dict, *, verified: bool,
+                        force: bool = False) -> ImportReport:
+        """导入一份 .bib 文本；任何输入都不抛异常（坏条目记进 skipped）。"""
+        report = ImportReport()
+        entries, findings = bibparse.parse_entries(text or "")
+        report.entries = len(entries)
+        report.findings = len(findings)
+        now = _now_iso()
+        base_source = _clean_source(source, now)
+        seen_keys: set[str] = set()
+        for entry in entries:
+            if entry.broken:
+                report.skipped["条目结构损坏（花括号/引号不配平）"] += 1
+                continue
+            key = (entry.key or "").strip()
+            if not key:
+                report.skipped["没有 key"] += 1
+                continue
+            if key in seen_keys:
+                # BibTeX 语义：同一份 bib 里重复的 key 只有第一条生效（往期 bib 里确实有
+                # 这种情况，如 2024年第3期(76)/06 的 reference.bib 拼接了两版）。
+                report.skipped["同一份 bib 里 key 重复"] += 1
+                continue
+            seen_keys.add(key)
+            sha = content_sha256(entry.etype, entry.fields)
+            entry_source = dict(base_source)
+            entry_source["key"] = key
+            entry_source["entry_sha256"] = sha
+            record, processed_sha = self._processed_sha(entry_source)
+            if record is not None and processed_sha == sha and not force:
+                # 这条来源上一轮已经按**同样的内容**处理过（重跑种子库的常态）：
+                # 直接记「已存在」并跳过，不再触碰库 —— 保证同输入重跑逐字节相同。
+                report.add_result(UpsertResult("merged", str(record.get("key") or "")))
+                continue
+            result = self.import_entry(key, entry.etype, entry.fields, entry_source,
+                                       verified=verified, force=force, now=now)
+            report.add_result(result)
+        return report
+
+    # -- 查询 ---------------------------------------------------------------
+
+    def records(self) -> list[dict]:
+        """按 key 排序的全部记录（只读快照；统计/测试用，别直接改返回的 dict）。"""
+        return [self._by_key[key] for key in sorted(self._by_key)]
+
+    def get(self, key: str) -> dict | None:
+        """按库内 key 精确取一条（不含 alias）。"""
+        return self._by_key.get(key)
+
+    def query_key(self, key: str) -> dict:
+        """key 精确查询（先 canonical key，再 aliases；多条 alias 命中标 ambiguous）。"""
+        wanted = str(key or "").strip()
+        if not self._by_alias and any(
+                isinstance(source, dict) and source.get("key")
+                for record in self._by_key.values()
+                for source in record.get("sources") or []):
+            self.refresh_aliases()          # 刚导入还没 save 时也能按别名查
+        hits: list[dict] = []
+        record = self._by_key.get(wanted)
+        if record is not None:
+            hits.append({"key": record["key"], "hit": "key", "record": record})
+        for record in self._by_alias.get(wanted, []):
+            if record.get("key") == wanted:
+                continue
+            hits.append({"key": record["key"], "hit": "alias", "record": record})
+        return {
+            "query": {"key": wanted},
+            "hits": hits,
+            "count": len(hits),
+            "ambiguous": len(hits) > 1,
+        }
+
+    def query_doi(self, doi: str) -> dict:
+        """DOI 精确查询（大小写/前缀归一；`url` 里写 doi.org 链接的也认）。"""
+        wanted = normalize_doi(doi)
+        hits: list[dict] = []
+        if wanted:
+            for record in self._by_key.values():
+                fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+                stored = normalize_doi(fields.get("doi") or "")
+                if stored and stored == wanted:
+                    hits.append({"key": record["key"], "hit": "doi", "record": record})
+                    continue
+                if not stored and _doi_from_url(fields.get("url")) == wanted:
+                    hits.append({"key": record["key"], "hit": "url-doi", "record": record})
+        hits.sort(key=lambda hit: (hit["record"].get("verified") is not True,
+                                   hit["key"]))
+        return {"query": {"doi": wanted or str(doi or "")}, "hits": hits,
+                "count": len(hits), "ambiguous": len(hits) > 1}
+
+    # -- 查库命中（第 129 条；convert.py ⑪ 核实链路）-------------------------
+
+    def _ensure_indexes(self) -> None:
+        """懒建 DOI / 作者姓 / 年份索引（只读；首次 match_reference 时建一次）。"""
+        if self._doi_index is not None:
+            return
+        doi_index: dict[str, list[dict]] = {}
+        block_surname: dict[str, list[dict]] = {}
+        block_year: dict[str, list[dict]] = {}
+        for record in self._by_key.values():
+            fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+            entry_doi = normalize_doi(fields.get("doi") or "") or _doi_from_url(fields.get("url"))
+            if entry_doi:
+                doi_index.setdefault(entry_doi, []).append(record)
+            surname = first_author_surname(fields.get("author") or fields.get("editor"))
+            if surname:
+                block_surname.setdefault(surname, []).append(record)
+            year = entry_year(fields)
+            if year:
+                block_year.setdefault(year, []).append(record)
+        for bucket in list(doi_index.values()):
+            bucket.sort(key=lambda r: (r.get("verified") is not True, str(r.get("key") or "")))
+        self._doi_index = doi_index
+        self._block_surname = block_surname
+        self._block_year = block_year
+
+    def _candidate_records(self, surname: str, year: str) -> list[dict]:
+        """题名模糊匹配用的候选池：先按（第一作者姓, 年份）收窄，收不到再退回年份/全库。
+
+        收窄只是为了**快**（库 8000 条逐条 `difflib` 要 0.4 秒/条）；判据一字不少——
+        收窄漏掉的（姓氏拼写不同）由下面的退回逻辑兜底。
+        """
+        self._ensure_indexes()
+        assert self._block_surname is not None and self._block_year is not None
+        if surname:
+            pool = list(self._block_surname.get(surname, ()))
+            if pool:
+                if year:
+                    year_pool = [r for r in pool
+                                 if entry_year(r.get("fields") or {}) == year]
+                    if year_pool:
+                        return year_pool
+                return pool
+        if year:
+            pool = list(self._block_year.get(year, ()))
+            if pool:
+                return pool
+        return list(self._by_key.values())
+
+    def match_reference(self, fields: dict, *, key: str = "",
+                        entry_type: str = "") -> dict:
+        """把**稿件里的一条 bib 条目**拿去查库，返回命中判定（第 129 条）。
+
+        返回 dict（`status` ∈ `safe` / `candidate` / `miss`）：
+
+          · `status="safe"`：可以**跳过检索 API 与 AI** —— DOI 精确命中已核实记录，
+            或题名高置信 + 作者/年份相容 + `verified=true`；
+          · `status="candidate"`：库里有线索但不够安全（key 命中 / 未核实 / 低置信），
+            **仍要走检索+AI**；`hit` 说明是哪种线索；
+          · `status="miss"`：库内没有线索。
+
+        另带 `record_key`（库内的键，可能因撞车带 `-2` 后缀）、`record`（整条库记录）、
+        `title_similarity` / `score` / `reason`（中文说明，写进日志/任务书），以及
+        `field_diff`（稿件 vs 库记录的字段差异，**只提示、不改稿**）。
+        """
+        self._ensure_indexes()
+        assert self._doi_index is not None
+        canon = canonical_fields(fields or {})
+        entry_key = str(key or "").strip()
+        out: dict = {
+            "status": HIT_MISS, "key": entry_key, "record_key": "", "hit": "",
+            "title_similarity": 0.0, "score": 0.0, "field_diff": {},
+            "reason": "引用库未命中", "record": None,
+        }
+
+        def _fill(record: dict, *, status: str, hit: str, score: float,
+                  title_sim: float, reason: str) -> dict:
+            out.update({
+                "status": status, "hit": hit, "record": record,
+                "record_key": str(record.get("key") or ""), "score": round(score, 4),
+                "title_similarity": round(title_sim, 4),
+                "field_diff": entry_field_diff(canon, record.get("fields") or {},
+                                               entry_type=entry_type),
+                "reason": reason,
+            })
+            return out
+
+        # ① DOI 精确：DOI 是作品的唯一标识，命中已核实记录即可跳过检索+AI。
+        entry_doi = normalize_doi(canon.get("doi") or "") or _doi_from_url(canon.get("url"))
+        if entry_doi:
+            doi_hits = self._doi_index.get(entry_doi) or []
+            verified = [r for r in doi_hits if r.get("verified") is True]
+            if verified:
+                record = verified[0]
+                sim = title_similarity(canon.get("title") or "",
+                                       (record.get("fields") or {}).get("title") or "")
+                return _fill(record, status=HIT_SAFE, hit="doi", score=1.0,
+                             title_sim=sim,
+                             reason=f"DOI `{entry_doi}` 精确命中库内已核实条目")
+            if doi_hits:
+                record = doi_hits[0]
+                return _fill(record, status=HIT_CANDIDATE, hit="doi", score=0.5,
+                             title_sim=title_similarity(
+                                 canon.get("title") or "",
+                                 (record.get("fields") or {}).get("title") or ""),
+                             reason=f"DOI `{entry_doi}` 命中库内条目但**未核实**（仍走检索）")
+
+        # ② 题名高置信 + 第一作者姓/年份相容 + 已核实。
+        title = canon.get("title") or ""
+        if title:
+            author = canon.get("author") or canon.get("editor") or ""
+            year = entry_year(canon)
+            surname = first_author_surname(author)
+            scored_hits: list[dict] = []
+            for record in self._candidate_records(surname, year):
+                hit = _score_record_title(title, surname, year, record)
+                if hit is not None:
+                    scored_hits.append(hit)
+            scored_hits.sort(key=lambda h: (-h["score"], not h["verified"], h["key"]))
+            safe_hits = [h for h in scored_hits if h["verified"] and h["confidence"] == "high"]
+            if safe_hits:
+                best = safe_hits[0]
+                return _fill(best["record"], status=HIT_SAFE, hit="title",
+                             score=best["score"],
+                             title_sim=best["title_similarity"],
+                             reason=(f"题名高置信（相似度 {best['title_similarity']:.3f}）+ "
+                                     "作者/年份相容，库内已核实"))
+            if scored_hits:
+                best = scored_hits[0]
+                why = ("库内未核实" if not best["verified"]
+                       else "题名置信度不足或作者/年份不符")
+                return _fill(best["record"], status=HIT_CANDIDATE, hit="title",
+                             score=best["score"],
+                             title_sim=best["title_similarity"],
+                             reason=f"题名有库内候选，但{why}（仍走检索）")
+
+        # ③ key 命中只算候选（per-paper key 不保证同一文献）——仍走检索+AI。
+        if entry_key:
+            key_hits = self.query_key(entry_key)["hits"]
+            if key_hits:
+                record = key_hits[0]["record"]
+                how = "库内 key（或别名）命中" if key_hits[0]["hit"] == "key" else "别名命中"
+                return _fill(record, status=HIT_CANDIDATE, hit="key", score=0.4,
+                             title_sim=title_similarity(
+                                 canon.get("title") or "",
+                                 (record.get("fields") or {}).get("title") or ""),
+                             reason=f"{how}，但 BibTeX key 多为 per-paper，只作候选（仍走检索）")
+
+        return out
+
+    def query_title(self, title: str, *, author: str = "", year: str = "",
+                    limit: int = 10, threshold: float = FUZZY_TITLE_THRESHOLD,
+                    min_score: float = FUZZY_MIN_SCORE) -> dict:
+        """题名（+第一作者姓+年份）模糊查询：返回带 `score`/`confidence` 的候选。
+
+        `confidence="high"` 的充要条件：题名相似度 ≥ `threshold`（默认 0.90），
+        且没提供的约束不算违背。低置信度**照实返回**（编辑自己判断），绝不冒充命中。
+        """
+        wanted_title = _squash(title)
+        query = {"title": wanted_title, "author": _squash(author),
+                 "year": entry_year({"year": year}) or _squash(year),
+                 "threshold": threshold, "min_score": min_score}
+        if not wanted_title:
+            return {"query": query, "hits": [], "count": 0, "ambiguous": False,
+                    "error": "题名为空"}
+        surname = first_author_surname(author)
+        wanted_year = entry_year({"year": year}) or ""
+        weighted: list[tuple[float, float, dict]] = []
+        for record in self._by_key.values():
+            hit = _score_record_title(wanted_title, surname, wanted_year, record,
+                                      threshold=threshold, min_score=min_score)
+            if hit is not None:
+                weighted.append((hit["score"], hit["title_similarity"], hit))
+        weighted.sort(key=lambda item: (-item[0], not item[2]["verified"], item[2]["key"]))
+        hits = [item[2] for item in weighted[:max(0, int(limit))]]
+        return {
+            "query": query,
+            "hits": hits,
+            "count": len(hits),
+            "high": sum(1 for hit in hits if hit["confidence"] == "high"),
+            "ambiguous": len(hits) > 1,
+        }
+
+    # -- 统计 / lint --------------------------------------------------------
+
+    def stats(self) -> dict:
+        """库概况（CLI `stats` 与 README/报告的数字唯一来源）。"""
+        records = [self._by_key[key] for key in sorted(self._by_key)]
+        total = len(records)
+        verified = sum(1 for record in records if record.get("verified") is True)
+        methods: Counter[str] = Counter()
+        types: Counter[str] = Counter()
+        issues: set[str] = set()
+        files: set[tuple] = set()
+        source_count = 0
+        alias_records = alias_total = 0
+        conflict_records = conflict_total = 0
+        created: list[str] = []
+        updated: list[str] = []
+        shas: list[str] = []
+        for record in records:
+            method = str(record.get("method") or "")
+            if method:
+                methods[method] += 1
+            types[str(record.get("entry_type") or "")] += 1
+            for source in record.get("sources") or []:
+                if not isinstance(source, dict):
+                    continue
+                source_count += 1
+                if source.get("issue"):
+                    issues.add(str(source["issue"]))
+                if source.get("issue") or source.get("file"):
+                    files.add((source.get("issue"), source.get("slug"), source.get("file")))
+            aliases = record.get("aliases")
+            if isinstance(aliases, list) and aliases:
+                alias_records += 1
+                alias_total += len(aliases)
+            conflicts = record.get("conflicts")
+            if isinstance(conflicts, list) and conflicts:
+                conflict_records += 1
+                conflict_total += len(conflicts)
+            for name, bucket in (("created_at", created), ("updated_at", updated)):
+                value = record.get(name)
+                if isinstance(value, str) and value:
+                    bucket.append(value)
+            sha = record.get("content_sha256")
+            if isinstance(sha, str) and sha:
+                shas.append(sha)
+        size = os.path.getsize(self.path) if os.path.isfile(self.path) else 0
+        return {
+            "path": self.path,
+            "exists": os.path.isfile(self.path),
+            "bytes": size,
+            "sha256": db_sha256(self.path) if os.path.isfile(self.path) else "",
+            "records": total,
+            "verified": verified,
+            "unverified": total - verified,
+            "methods": dict(sorted(methods.items())),
+            "entry_types": dict(types.most_common()),
+            "sources": source_count,
+            "issues": len(issues),
+            "issue_list": sorted(issues),
+            "files": len(files),
+            "aliases": {"records": alias_records, "total": alias_total},
+            "conflicts": {"records": conflict_records, "total": conflict_total},
+            "duplicate_content": len(shas) - len(set(shas)),
+            "created_range": [min(created), max(created)] if created else [],
+            "updated_newest": max(updated) if updated else "",
+            "dirty": self.dirty,
+        }
+
+    def _near_duplicates(self, records: list[dict], *, cap: int = 10) -> tuple[list, int]:
+        """疑似重复条目：同一作品（题名+第一作者+年份）用了不同 key（lint 警告用）。
+
+        分桶判据 =（第一作者姓, 年份），桶内两两算题名相似度；桶太大（>200 条）跳过
+        ——那种桶只可能是异常数据，逐对算没有意义。
+        """
+        blocks: dict[tuple[str, str], list[dict]] = {}
+        for record in records:
+            fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+            surname = first_author_surname(fields.get("author") or fields.get("editor"))
+            year = entry_year(fields)
+            if not surname and not year:
+                continue
+            blocks.setdefault((surname, year), []).append(record)
+        pairs: list[tuple[str, str]] = []
+        for block in blocks.values():
+            if len(block) < 2 or len(block) > 200:
+                continue
+            for i in range(len(block)):
+                for j in range(i + 1, len(block)):
+                    first, second = block[i], block[j]
+                    if first.get("content_sha256") == second.get("content_sha256"):
+                        continue
+                    if works_match(first.get("fields") or {}, second.get("fields") or {}):
+                        pairs.append((str(first.get("key")), str(second.get("key"))))
+        pairs.sort()
+        return pairs[:cap], len(pairs)
+
+    def lint(self) -> dict:
+        """库体检：重复 key / 字段冲突 / 缺来源 / verified 无核实记录 / 摘要不符 …
+        返回 `{"ok": bool, "errors": [...], "warnings": [...], "counts": {...}}`。
+
+        **errors 必须为 0** 才能当「库是好的」；warnings 是给人看的待办。
+        """
+        errors: list[str] = list(self.problems)
+        warnings: list[str] = []
+        records = [record for record in self._records if isinstance(record, dict)]
+        canonical_keys = set(self._by_key)
+        sha_owner: dict[str, list[str]] = {}
+        alias_owner: dict[str, list[str]] = {}
+        conflicts_records = conflicts_total = 0
+        unverified = 0
+        missing_title = missing_author = missing_year = bad_doi = 0
+        unknown_types: Counter[str] = Counter()
+        conflict_rows: list[str] = []
+        for record in records:
+            key = str(record.get("key") or "（无 key）")
+            fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+            stored = record.get("content_sha256")
+            if isinstance(stored, str) and _HEX64_RE.match(stored):
+                actual = content_sha256(str(record.get("entry_type") or ""), fields)
+                if actual != stored:
+                    errors.append(f"{key}：content_sha256 与字段内容不一致（库被手工改过？）")
+                else:
+                    sha_owner.setdefault(actual, []).append(key)
+            aliases = [alias for alias in (record.get("aliases") or [])
+                       if isinstance(alias, str) and alias]
+            if len(set(aliases)) != len(aliases):
+                warnings.append(f"{key}：aliases 里有重复项")
+            for alias in aliases:
+                alias_owner.setdefault(alias, []).append(key)
+                if alias == key:
+                    warnings.append(f"{key}：aliases 里出现了自己的 key")
+            conflicts = record.get("conflicts") or []
+            if isinstance(conflicts, list) and conflicts:
+                conflicts_records += 1
+                conflicts_total += len(conflicts)
+                if len(conflict_rows) < 20:
+                    conflict_rows.append(f"{key}（{len(conflicts)} 条）")
+            if record.get("verified") is not True:
+                unverified += 1
+            if not fields.get("title"):
+                missing_title += 1
+            if not (fields.get("author") or fields.get("editor")):
+                missing_author += 1
+            if not entry_year(fields):
+                missing_year += 1
+            doi = fields.get("doi") or ""
+            if doi and not normalize_doi(doi):
+                bad_doi += 1
+            etype = str(record.get("entry_type") or "").lower()
+            if etype not in KNOWN_ENTRY_TYPES:
+                unknown_types[etype] += 1
+        # 内容完全重复（正常 upsert 不会产生；只可能是手工编辑/旧版本遗留）
+        for owners in sha_owner.values():
+            if len(owners) > 1:
+                warnings.append(f"内容完全相同的多条记录：{'、'.join(owners[:5])}")
+        # alias 撞车：alias 指向多条记录，或 alias 与别的记录的 canonical key 相同
+        for alias, owners in sorted(alias_owner.items()):
+            unique = sorted(set(owners))
+            if len(unique) > 1:
+                warnings.append(f"alias `{alias}` 指向多条记录（{ '、'.join(unique[:5]) }）"
+                                "：按 alias 查询会标 ambiguous")
+            elif alias in canonical_keys and alias not in unique:
+                warnings.append(f"alias `{alias}` 与另一条记录的 key 重名")
+        pairs, pair_total = self._near_duplicates(records)
+        if pair_total:
+            sample = "；".join(f"{first}≈{second}" for first, second in pairs[:5])
+            warnings.append(f"同一作品的多条记录（不同 key）{pair_total} 对：{sample}"
+                            + ("……" if pair_total > 5 else "")
+                            + "（经典文献在多期被重复引用是常态；查询会按题名/DOI 命中，"
+                              "需要合并时另开批次做冲突裁决，不算错误）")
+        if conflicts_records:
+            warnings.append(f"字段冲突待裁决：{conflicts_records} 条记录 / {conflicts_total} 处差异"
+                            f"（例：{'、'.join(conflict_rows[:5])}）")
+        if unverified:
+            warnings.append(f"未核实条目 {unverified} 条（查询结果会标 verified=false）")
+        if missing_title:
+            warnings.append(f"缺 title 的条目 {missing_title} 条")
+        if missing_author:
+            warnings.append(f"缺 author/editor 的条目 {missing_author} 条")
+        if missing_year:
+            warnings.append(f"缺可用年份的条目 {missing_year} 条")
+        if bad_doi:
+            warnings.append(f"doi 字段归一后为空（疑似脏值）{bad_doi} 条")
+        for etype, count in unknown_types.most_common(10):
+            warnings.append(f"不常见的 entry_type `{etype}`：{count} 条（可能是笔误，"
+                            "见 bibcheck 的类型表）")
+        counts = {
+            "records": len(self._by_key),
+            "raw_lines": len(records),
+            "verified": len(self._by_key) - unverified,
+            "unverified": unverified,
+            "errors": len(errors),
+            "warnings": len(warnings),
+            "conflicts": {"records": conflicts_records, "total": conflicts_total},
+            "near_duplicates": pair_total,
+        }
+        return {"ok": not errors, "errors": errors[:200],
+                "warnings": warnings[:100], "counts": counts}
+
+
+# ── 稿件仓只读扫描（种子导入 / import-dir 共用） ────────────────────────────
+
+
+class BibFile:
+    """稿件仓里「某篇稿子的成品 bib」：终稿 `.tex` 实际引用的那一份。"""
+
+    __slots__ = ("issue", "slug", "file", "path", "how", "warning")
+
+    def __init__(self, issue: str, slug: str, file: str, path: str,
+                 how: str, warning: str = "") -> None:
+        self.issue = issue
+        self.slug = slug
+        self.file = file
+        self.path = path
+        self.how = how            # tex-ref / tex-ref-basename / fallback-author / …
+        self.warning = warning
+
+    @property
+    def rel(self) -> str:
+        return f"{self.slug}/{self.file}"
+
+
+class IssueScan:
+    """一期只读扫描的结果（成品期证据 + 要导入的 bib + 跳过的作者目录）。"""
+
+    __slots__ = ("issue", "path", "finished", "evidence", "files", "skipped")
+
+    def __init__(self, issue: str, path: str, finished: bool, evidence: str,
+                 files: list[BibFile], skipped: list[dict]) -> None:
+        self.issue = issue
+        self.path = path
+        self.finished = finished
+        self.evidence = evidence
+        self.files = files
+        self.skipped = skipped
+
+
+def _norm_token(text: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(text or "").lower())
+
+
+def _primary_tex_files(author_dir: str, slug: str) -> list[str]:
+    """优先取与作者目录同名的那份终稿 `.tex`（老期有多份辅助 tex 的干扰）。"""
+    texs = sorted(
+        name for name in os.listdir(author_dir)
+        if name.lower().endswith(".tex") and os.path.isfile(os.path.join(author_dir, name))
+    )
+    tag = _norm_token(slug[2:]) if len(slug) > 2 else _norm_token(slug)
+    matched = [name for name in texs if _norm_token(os.path.splitext(name)[0]) == tag]
+    return matched or texs
+
+
+def _bib_refs(tex_text: str) -> list[str]:
+    """从 `.tex` 里取 `\\addbibresource{…}` / `\\bibliography{…}` 的文件名（补 `.bib`）。"""
+    refs: list[str] = []
+    for match in _BIBREF_RE.finditer(tex_text or ""):
+        value = (match.group(1) or match.group(2) or "").strip()
+        for one in re.split(r"[,\s]+", value):
+            one = one.strip()
+            if not one:
+                continue
+            refs.append(one if one.lower().endswith(".bib") else one + ".bib")
+    return refs
+
+
+def _select_bib(author_dir: str, slug: str) -> tuple[str | None, str, str]:
+    """挑出这篇稿子的「成品 bib」。返回 `(文件名|None, 判据, 告警)`。
+
+    判据优先级（前三级是**终稿 tex 自己指定**的那份，最可信）：
+      1. `tex-ref`：tex 引用的文件名在作者目录里一字不差存在；
+      2. `tex-ref-basename` / `tex-ref-case`：大小写/相对路径差异；
+      3. `fallback-author`：bib 名与作者目录同名（老期 `Wenzhong Ma.bib` 这种）；
+      4. `fallback-only` / `fallback-reference`：目录里只有一份 / 叫 `reference.bib`。
+    找不到返回 `(None, 原因, "")`——**不猜**，让调用方如实跳过。
+    """
+    try:
+        names = os.listdir(author_dir)
+    except OSError:
+        return None, "作者目录读不了", ""
+    bibs = sorted(name for name in names
+                  if name.lower().endswith(".bib")
+                  and os.path.isfile(os.path.join(author_dir, name)))
+    texs = _primary_tex_files(author_dir, slug)
+    refs: list[str] = []
+    for name in texs:
+        try:
+            with open(os.path.join(author_dir, name), encoding="utf-8",
+                      errors="replace") as handle:
+                refs.extend(_bib_refs(handle.read()))
+        except OSError:
+            continue
+    if not bibs:
+        return None, "作者目录里没有 .bib", ""
+    for ref in refs:
+        if os.path.isfile(os.path.join(author_dir, ref)):
+            return ref, "tex-ref", ""
+        base = os.path.basename(ref)
+        if os.path.isfile(os.path.join(author_dir, base)):
+            return base, "tex-ref-basename", ""
+    lower_map = {name.lower(): name for name in bibs}
+    for ref in refs:
+        hit = lower_map.get(os.path.basename(ref).lower())
+        if hit:
+            return hit, "tex-ref-case", ""
+    tag = _norm_token(slug[2:]) if len(slug) > 2 else _norm_token(slug)
+    for name in bibs:
+        if _norm_token(os.path.splitext(name)[0]) == tag:
+            return name, "fallback-author", "终稿 tex 引用的 bib 不在目录里，按文件名匹配"
+    if len(bibs) == 1:
+        return bibs[0], "fallback-only", "终稿 tex 引用的 bib 不在目录里，取目录里唯一的 .bib"
+    if "reference.bib" in bibs:
+        return "reference.bib", "fallback-reference", \
+            "终稿 tex 引用的 bib 不在目录里，退回 reference.bib（需人工确认）"
+    return None, f"无法判定成品 bib（目录里有 {len(bibs)} 份：{', '.join(bibs)}）", ""
+
+
+def _issue_is_finished(issue_path: str) -> tuple[bool, str]:
+    """一期是否「成品期」（可入 verified）的证据：`000 …` 目录（中英文目录）存在。
+
+    为什么用这条：本刊每期定稿后都会在期目录建 `000 Table of Contents/`（往期 27 期
+    全部符合，命名规范见稿件仓 README）；没有目录的期还在排，bib 可能继续改，
+    不能算「已出版期」。证据字符串原样进报告，便于人工复核。
+    """
+    try:
+        names = os.listdir(issue_path)
+    except OSError:
+        return False, "期目录读不了"
+    toc = next((name for name in sorted(names)
+                if name.startswith("000") and os.path.isdir(
+                    os.path.join(issue_path, name))), "")
+    if toc:
+        return True, toc
+    return False, "缺 `000 …` 目录（未定稿/非成品期）"
+
+
+def scan_manuscripts(root: str, *, through_year: int | None = None,
+                     finished_only: bool = False) -> list[IssueScan]:
+    """**只读**扫描稿件仓各期，返回每期要导入的成品 bib 与跳过原因。
+
+    判据与 `slcn/paths.py` 同源（`20xx年第N期(…)` 是期目录；`NN ` 开头是文章目录），
+    不写任何文件。`through_year` 只扫 ≤ 指定年份的期（对应「往期已出版」口径）；
+    `finished_only` 跳过没有成品期证据的期。
+    """
+    if not os.path.isdir(root):
+        raise BibDBError(f"稿件库根目录不存在或不是目录：{root}")
+    scans: list[IssueScan] = []
+    for name in sorted(os.listdir(root)):
+        issue_path = os.path.join(root, name)
+        if not (paths.ISSUE_RE.match(name) and os.path.isdir(issue_path)):
+            continue
+        year_match = _ISSUE_YEAR_RE.match(name)
+        year = int(year_match.group(1)) if year_match else 0
+        if through_year and year > through_year:
+            continue
+        finished, evidence = _issue_is_finished(issue_path)
+        if finished_only and not finished:
+            continue
+        files: list[BibFile] = []
+        skipped: list[dict] = []
+        for slug in sorted(os.listdir(issue_path)):
+            author_dir = os.path.join(issue_path, slug)
+            if not (_AUTHOR_DIR_RE.match(slug) and os.path.isdir(author_dir)):
+                continue
+            selected, how, warning = _select_bib(author_dir, slug)
+            if selected is None:
+                skipped.append({"slug": slug, "reason": how})
+                continue
+            files.append(BibFile(name, slug, selected, os.path.join(author_dir, selected),
+                                 how, warning))
+        scans.append(IssueScan(name, issue_path, finished, evidence, files, skipped))
+    return scans
+
+
+def read_bib_text(path: str) -> tuple[str, str]:
+    """读一份 `.bib` 的文本（UTF-8），返回 `(文本, 告警)`。
+
+    往期 bib 里存在**源文件本身带 U+FFFD 替换字符**的文件（2026年第4期(89)/01
+    Fenrong_Liu 的 reference.bib 就有 2 个）——它不是编码错误，但字段确实可能不完整，
+    所以如实告警、照常导入。真正非 UTF-8 的文件用替换字符读入并告警（不因一个坏字节
+    丢掉整份参考文献）。
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+    except UnicodeDecodeError:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        return text, "不是 UTF-8 编码，已按替换字符读入（字段可能不完整）"
+    except OSError as exc:
+        raise BibDBError(f"读不了 bib：{path}（{exc}）") from exc
+    if "\ufffd" in text:
+        return text, "含 U+FFFD 替换字符（源文件可能曾被错误编码保存过，字段可能不完整）"
+    return text, ""
+
+
+def import_manuscripts(store: Store, root: str, *, force: bool = False,
+                       through_year: int | None = None,
+                       finished_only: bool = False) -> dict:
+    """只读扫描稿件仓 → 入 `store`（内存；是否落盘由调用方 `store.save()` 决定）。
+
+    成品期（有 `000 …` 目录）的 bib 入 `verified=true / published-bib`；未定稿期只入
+    `verified=false`。返回逐期明细 + 总计，供种子工具/CLI 打印。
+    """
+    scans = scan_manuscripts(root, through_year=through_year,
+                             finished_only=finished_only)
+    total = ImportReport()
+    issue_rows: list[dict] = []
+    warnings: list[str] = []
+    for scan in scans:
+        issue_report = ImportReport()
+        file_rows: list[dict] = []
+        for bib_file in scan.files:
+            try:
+                text, text_warning = read_bib_text(bib_file.path)
+            except BibDBError as exc:
+                issue_report.skipped["文件读不了"] += 1
+                warnings.append(f"{scan.issue}/{bib_file.rel}：{exc}")
+                continue
+            if text_warning:
+                warnings.append(f"{scan.issue}/{bib_file.rel}：{text_warning}")
+            if bib_file.warning:
+                warnings.append(f"{scan.issue}/{bib_file.rel}：{bib_file.warning}")
+            source = {
+                "kind": KIND_PUBLISHED if scan.finished else KIND_IMPORTED,
+                "issue": scan.issue,
+                "slug": bib_file.slug,
+                "file": bib_file.file,
+                "imported_at": _now_iso(),
+            }
+            report = store.import_bib_text(text, source, verified=scan.finished,
+                                           force=force)
+            issue_report.merge(report)
+            file_rows.append({"slug": bib_file.slug, "file": bib_file.file,
+                              "how": bib_file.how, "report": report.summary()})
+        total.merge(issue_report)
+        issue_rows.append({
+            "issue": scan.issue,
+            "path": scan.path,
+            "finished": scan.finished,
+            "evidence": scan.evidence,
+            "files": file_rows,
+            "skipped": scan.skipped,
+            "report": issue_report.summary(),
+        })
+    return {"root": os.path.abspath(root), "issues": issue_rows,
+            "total": total.summary(), "warnings": warnings}

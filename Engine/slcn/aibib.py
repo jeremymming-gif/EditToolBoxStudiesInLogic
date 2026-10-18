@@ -839,7 +839,9 @@ def merge(original_bib: str, replies: dict[str, str]) -> MergeResult:
 
 
 def render_merge_section(result: MergeResult, rollback_name: str = "reference.bib.ai前",
-                         *, producer: str = "`convert.py`", provenance: str = "") -> str:
+                         *, producer: str = "`convert.py`", provenance: str = "",
+                         out_of_scope: set[str] | frozenset[str] | None = None,
+                         bibdb_hits: set[str] | frozenset[str] | None = None) -> str:
     """渲染任务书的 `## 六、合并记录（本次已并入 reference.bib）` 一节。
 
     为什么要有这一节：AI 的结果这次真的进产物了，编辑**必须**能一眼看出
@@ -854,12 +856,36 @@ def render_merge_section(result: MergeResult, rollback_name: str = "reference.bi
     而合并记录是**留档**的——编辑事后翻这份 markdown 时要能回答「这些条目是联网查过的，
     还是模型凭记忆写的」。空串时这一行**不出现**（旧调用逐字节不变）。
 
+    `out_of_scope`（第 128 条，默认 None）＝**本次核实范围之外**的 bib 键（正文未引用）。
+    为什么要单独传：范围外的条目本来就没让 AI 处理（任务书里也不在逐条清单里），若不分开，
+    合并记录会把它们逐条写成「AI 未返回这一条」——346 条未引用条目就会被误读成 346 次
+    AI 失败。给了这一组键就：① 逐条跳过清单里**不列**它们；② 头部的「跳过 N 条 / 共 M 个键」
+    按**范围内**统计；③ 多一行「范围外：另有 N 条……」的汇总。默认 None 时输出与从前逐字节相同。
+
+    `bibdb_hits`（第 129 条，默认 None）＝**命中编辑部引用库已核实、本次没调 AI** 的 bib 键。
+    与 `out_of_scope` 同理分开统计：这些键不是「AI 没返回」，而是**根本没让 AI 做**
+    （库内已核实可跳过检索/AI）。给了就：① 逐条跳过清单不列它们；② 头部多一行
+    「库内命中：N 条（未调 AI）」；③ 「本次」的计数按**真正交给 AI 的键**重算。
+    默认 None / 空集 → 旧输出逐字节相同。
+
     第 79 条之后，每条并入的条目还会带上（都走既有的 `notes` / `warnings` 两个通道，
     渲染格式一字未改）：
       · `% 来源` 注释的逐条说明（缺陷 A：没这一行，「联网查过」与「凭记忆写的」在留档里
         长得一模一样）；
       · 「本次改了 X，而该条自己的 `% ⚠ 待核实` 说 X 查不到」的⚠️矛盾警告（缺陷 B，只报不改）。
     """
+    # 第 128 条：范围外的键 = 本次**没有**交给 AI 的条目。默认 None / 空集 → 旧输出逐字节不变。
+    out_keys = {str(k) for k in (out_of_scope or ())}
+    in_scope = [r for r in result.records if r.key not in out_keys]
+    n_out = len(result.records) - len(in_scope)
+    # 第 129 条：库内命中（已核实、未调 AI）也单独统计——它们同样不该写成「AI 未返回」。
+    bibdb_keys = {str(k) for k in (bibdb_hits or ())}
+    if bibdb_keys:
+        bibdb_records = [r for r in in_scope if r.key in bibdb_keys]
+        ai_records = [r for r in in_scope if r.key not in bibdb_keys]
+    else:
+        bibdb_records, ai_records = [], in_scope
+    n_bibdb = len(bibdb_records)
     L: list[str] = [
         ("## 六、合并记录（本次已并入 reference.bib）" if result.n_merged
          else "## 六、合并记录（本次未并入 reference.bib）"),
@@ -874,9 +900,26 @@ def render_merge_section(result: MergeResult, rollback_name: str = "reference.bi
         "> ⚠️ **这是机器按 AI 回复直接改出来的 bib**：校对仍要人工过一遍。"
         f"回滚副本 `{rollback_name}` 是本次合并**之前**的那份。",
         "",
-        f"- 本次：**并入 {result.n_merged} 条** / 跳过 {result.n_skipped} 条"
-        f"（逐条见下；共 {len(result.records)} 个键）",
     ]
+    if n_out or n_bibdb:
+        # 范围内计数：`result.n_skipped` 含范围外/库内命中条目，这里必须按「交给 AI 的」重算。
+        n_skip_in = sum(1 for r in ai_records if not r.merged)
+        L.append(
+            f"- 本次（交给 AI）：**并入 {result.n_merged} 条** / 跳过 {n_skip_in} 条"
+            f"（逐条见下；共 {len(ai_records)} 个键）")
+        if n_bibdb:
+            L.append(
+                f"- 库内命中：另有 **{n_bibdb} 条**在编辑部引用库中**已核实**、"
+                "**未调用 AI**（`reference.bib` 未改动；逐条见任务书「五、库内已核实」）")
+        if n_out:
+            L.append(
+                f"- 范围外：另有 **{n_out} 条**正文**未引用**的条目**没有**交给 AI 处理"
+                "（任务书逐条清单里也没有它们；要全量核实加 `--verify-all-refs`；"
+                "这些条目**逐字节未动**）")
+    else:
+        L.append(
+            f"- 本次：**并入 {result.n_merged} 条** / 跳过 {result.n_skipped} 条"
+            f"（逐条见下；共 {len(result.records)} 个键）")
     if result.n_merged:
         L.append(f"- 回滚副本：`{rollback_name}`（下一次运行会覆盖它）")
     else:
@@ -887,8 +930,8 @@ def render_merge_section(result: MergeResult, rollback_name: str = "reference.bi
         L.append(f"- **{provenance}**")
     L.append("")
 
-    merged = [r for r in result.records if r.merged]
-    skipped = [r for r in result.records if not r.merged]
+    merged = [r for r in ai_records if r.merged]
+    skipped = [r for r in ai_records if not r.merged]
 
     L.append(f"### 已并入（{len(merged)} 条）")
     L.append("")

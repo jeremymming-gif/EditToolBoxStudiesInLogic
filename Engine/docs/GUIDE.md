@@ -681,7 +681,7 @@ PYTHONPATH="$PWD/vendor" python3 mergepdf.py --folder "<期目录>" --editors-pa
   名字含「编委」；封底 `cover+bottom*` → 名字同时含 cover 与 bottom。工具箱自己的 `合并*.pdf` 一律排除；
 - **缺文件不会中断**（缺哪篇打哪篇的 `⚠`），最后一行是 `完成。合并文件：<路径>（共 N 页）`。
 
-### 3.10 自动检索证据：`--search-refs`（P1/P2，2026-10-17，第 71/72 条起）
+### 3.10 自动检索证据与核实范围：`--search-refs`（P1/P2，第 71/72 条起）＋ 成本闸门（第 128 条）
 
 背景（P0 实测见案例 117）：DeepSeek 2026-10-17 上线**独立 Search / Fetch API**
 （`POST {base}/v1/tools/search`、`/v1/tools/fetch`；结果带 `authority` / `rerank_score` /
@@ -733,6 +733,82 @@ Windows `api.searchRefs` → 环境变量 `SLCN_SEARCH_REFS=1`）。⚠️ 它�
 后者是模型内置工具（需 v4-pro 才真查），前者是工具自己的 Search API（flash/v4-pro 都能用）。
 mac 走 `--search-refs` argv、Windows 走 `SLCN_SEARCH_REFS` 环境变量，默认都**不加**——
 默认命令行/环境变量与从前逐字节相同。
+
+**核实范围与成本闸门（第 128 条，2026-10-18；`--verify-all-refs` / `--verify-max` /
+`--verify-plan`）**：期 87 子案例 1 实测——源 `.bib` 377 条、正文只引用 **31 个**唯一键，
+但任务书 + 检索 + AI 把 **376 条**全核了（检索 418 次 ≈ ¥1.845、AI 376 次调用 /
+2,538,740 prompt tokens；且模型 `deepseek-flash` 忽略 `web_search` → 0 条真实检索证据）。
+所以 ⑪ 在**花钱之前**先算范围、先看账：
+
+```bash
+$PY convert.py --source X.docx --out Y --verify-refs                     # 默认：只核正文引用到的条目
+$PY convert.py --source X.docx --out Y --verify-refs --verify-plan       # 只算账（不生成任务书/不检索/不调 AI）
+$PY convert.py --source X.docx --out Y --verify-refs --verify-all-refs --verify-max 0   # 显式全量、不限
+```
+
+- **默认只核「正文引用到的键」**：范围 = 产物 `.tex` 里 `\parencite` 等引用命令的键 ∩ bib 的键；
+  正文里的 `\nocite{*}` = 全量（BibTeX 语义：声明引用全部条目）。跑前日志打一行
+  「源 bib N 条；正文引用 M 条 → 本次核实 M 条（跳过 N-M 条未引用）」；任务书头部也写一行
+  「本次核实范围：只核正文引用到的 M 条（源 bib 共 N 条；跳过 N-M 条）」，编辑一眼能看出
+  这份**不是全量**；AI 并入后的任务书「六、合并记录」也把**范围外**的条目单独写一行汇总，
+  不会把它们逐条记成「AI 未返回」（那是「没让 AI 做」，不是「AI 做失败」）。
+- **Word 通道同样以产物 `.tex` 为准**：Word 的引用是 `build_docx` 替换完才落到 `.tex` 里的
+  （`docxsource.link_citations()` 的 `used` 只是局部变量、没对外暴露；`BuildResult.bib_keys_used`
+  在 Word 通道是「文末参考文献区的**全部**键」而不是引用键，两者都不能直接当范围）。
+- **边界：正文解析不出引用键**（没有 `\parencite`、引用没替换完、或引用的键都不在 bib 里）→
+  **退回全量 + 醒目警告**（与旧行为相同），绝不静默「一条都不核」；量化行会写明「退回全量」。
+- **上限闸门**：本次核实条数默认上限 = `--verify-max`（默认 120；`0` = 不限）；超了且没加
+  `--verify-all-refs` → **退出码 2**（stderr 给三条路：`--verify-max N` 调上限 /
+  `--verify-all-refs` 显式全量 / `--verify-plan` 先看账），**没生成任务书、没检索、没调 AI**。
+  `--verify-all-refs` = 显式承认全量、越过闸门。
+- **`--verify-plan`**：只打印核实范围、上限与预计检索/AI 次数后**退出 0**（不生成任务书、
+  不检索、不调 AI；**转换产物照常写出**）。⚠️ 它不是 `--dry-run`：引用键要等转换把
+  「（作者 年份）」替换成 `\parencite` 之后才拿得准，所以 `--dry-run` 里算不出这个数。
+- **模型能力前置提示（第 128 条）**：开了「联网检索」、且模型**已知会静默忽略** `web_search`
+  （`deepseek-flash` / `deepseek-chat` 这类；判据在 `slcn/llm.py: ignores_web_search()`）时，
+  在 **AI 批量开始前**打一行 `⚠⚠ 模型能力前置提示`：说明本次几乎不会有真实检索证据、
+  结果只能按「凭记忆」对待，并给出「换 `deepseek-v4-pro`」或「把任务书交给编辑自己的联网 AI」
+  两条路。**事后提示照旧保留**：跑完若收到 0 个 `web_search_call`，仍会明写「按凭记忆对待」。
+- **默认路径零变化**：不加新参数时 `.tex` / `reference.bib` **逐字节不变**（回归见
+  `tests/test_verify_scope.py` (d)：同一份源稿加不加 `--verify-refs`，转换产物逐字节相同）。
+
+**先查编辑部引用库（第 129 条，2026-10-18）**：核实链路第一步先查**编辑部自己的引用库**
+（私有笔记仓 `EditToolBox-notes/bib_db/bibliography.jsonl`；内容 = 往期已出版期的成品 bib
+沉淀，schema/来源口径/维护方式见该目录 `README.md`）。命中**已核实**条目 → 该键
+**不调检索 API、不调 AI**（省钱 + 体例统一 + 可审计）。判定刻意**保守**——把不同文献
+误判成「已核实」比漏查更糟，所以：
+
+- **安全命中（才允许跳过检索/AI）**：① DOI 精确命中 `verified=true` 记录；或
+  ② 题名高置信（bibdb 的 0.90 阈值）+ **第一作者姓 / 年份相容** + `verified=true`；
+- **key 命中只算候选**：BibTeX key 多为 per-paper（`a1`…），同 key 不保证同文献 →
+  **仍走检索 + AI**；库内未核实、题名低置信同样只算候选；
+- 安全命中**不改 `reference.bib`**：库版本与稿件条目的字段差异只写进任务书
+  「**五、库内已核实（无需再查）**」一节（列出 key / 库内来源期·篇·文件 / 差异提示），
+  是否按库版本统一由编辑裁决；
+- 跑前 stdout 多一行：`引用库：命中 X 条已核实（跳过检索+AI）、候选 Y、未命中 Z（库 n 条，<path>）`；
+  `--verify-plan` 的**预计检索 / 预计 AI 次数按扣减后的条数算**（日志里另起一行写明扣减了多少）；
+- 任务书「六、合并记录」把「**库内命中（未调 AI）**」与「正文未引用（范围外）」**分开统计**，
+  不把它们写成「AI 未返回/失败」；全部命中时**一次 AI 都不调**，只写这一节留档。
+
+开关（**默认口径 = 执行核实且默认库存在时自动启用**）：
+
+```bash
+$PY convert.py --source X.docx --out Y --verify-refs                  # 默认：有库就自动查
+$PY convert.py --source X.docx --out Y --verify-refs --verify-plan    # 计划里已按扣减后算
+$PY convert.py --source X.docx --out Y --verify-refs --bibdb          # 显式要求查库（库缺失只告警）
+$PY convert.py --source X.docx --out Y --verify-refs --bibdb-path /path/to/bibliography.jsonl
+$PY convert.py --source X.docx --out Y --verify-refs --no-bibdb       # 显式关：与接入前逐字节相同
+```
+
+- 默认库 = `slcn.bibdb.default_db_path()`（`<笔记仓>/bib_db/bibliography.jsonl`；笔记仓由
+  `SLCN_NOTES` / 同级目录解析）。**笔记仓或默认库不存在时静默跳过**——公开仓/CI/没建库的
+  机器上行为与从前零变化；只有显式 `--bibdb` / `--bibdb-path` 指错时才告警（且**不中断出稿**）。
+- **不核实（默认）路径逐字节不变**；`--no-bibdb` 与接入前输出（stdout/任务书/产物）逐字节相同。
+- 引用库怎么来：公开仓 `Engine/tools/bibdb_seed.py` 只读扫描稿件仓往期成品 bib 生成
+  （可重复运行幂等），维护/冲突裁决见笔记仓 `bib_db/README.md`；
+  开发用 CLI 是 `Engine/bibdb.py`（`stats` / `lint` / `query`，不进发布包）。
+- 保守判定的代价要如实说：**库内没有的新文献一律走原流程**（不会因为查库失败而跳过核实）；
+  跨库同名作品/简写差异可能命中不到（宁可漏，不可错）。回归见 `tests/test_bibdb_verify.py`。
 
 ---
 

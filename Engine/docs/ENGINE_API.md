@@ -54,8 +54,10 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--refs` / `--bib` / `--name` / `--author` / `--lang` / `--sty` / `--skeleton` | 见 `convert.py --help` |
 | `--vol --issue --year --pages --received --editor --grants` | 编辑侧出版信息，不填就留模板默认值 |
 | `--compile` `--clean` `--source-pdf` | 编译出 PDF / 清中间文件 / 导出原稿 PDF（供矢量形状截图） |
-| `--verify-refs` `--no-ai-merge` | 出《文献核实任务书》/ 只出任务书不并 bib（第 64 条） |
-| `--search-refs` | 用 DeepSeek 独立 Search API 给每条参考文献检索证据：写进任务书 +（P2，第 72 条起）注入 AI 逐条提示词 + 合并前校验 `% 来源：` URL 白名单（默认关；开启时才计费 ¥5/1000 次；地址/密钥复用 `--llm-*`，也可 `SLCN_SEARCH_BASE` / `SLCN_SEARCH_KEY`；环境变量 `SLCN_SEARCH_REFS=1`）。外壳：mac 在 AI 运行时传 `--search-refs`；Windows 把 `SLCN_SEARCH_REFS=1` 放进子进程环境 |
+| `--verify-refs` `--no-ai-merge` | 出《文献核实任务书》/ 只出任务书不并 bib（第 64 条）。⚠️ 第 128 条起任务书、检索与 AI **默认只覆盖正文引用到的条目**（不是全量，见下一行） |
+| `--verify-all-refs` `--verify-max N` `--verify-plan` | **核实范围与成本闸门（第 128 条）**。默认只核**正文引用到的键**（产物 `.tex` 的 cite 命令；`\nocite{*}` = 全量；解析不出引用键时退回全量并警告）。`--verify-all-refs` = 显式全量（越过闸门）；`--verify-max` = 本次条数上限（**默认 120**，`0` = 不限），超过且未显式全量 → **退出 2**（stderr 给三条可操作的路，任务书/检索/AI 一律没开始）；`--verify-plan` = 只打印范围与预计检索/AI 次数后**退出 0**（不生成任务书、不检索、不调 AI；转换产物照常写出，**不是** `--dry-run`）。外壳不传时行为与默认值相同（老外壳兼容） |
+| `--search-refs` | 用 DeepSeek 独立 Search API 给**本次核实范围内**的参考文献检索证据：写进任务书 +（P2，第 72 条起）注入 AI 逐条提示词 + 合并前校验 `% 来源：` URL 白名单（默认关；开启时才计费 ¥5/1000 次；地址/密钥复用 `--llm-*`，也可 `SLCN_SEARCH_BASE` / `SLCN_SEARCH_KEY`；环境变量 `SLCN_SEARCH_REFS=1`）。外壳：mac 在 AI 运行时传 `--search-refs`；Windows 把 `SLCN_SEARCH_REFS=1` 放进子进程环境 |
+| `--bibdb` `--bibdb-path PATH` `--no-bibdb` | **编辑部引用库（第 129 条）**。执行核实（`--verify-refs` / `--verify-plan`）时**默认**在默认库存在时自动查库（默认库 = 笔记仓 `bib_db/bibliography.jsonl`，`slcn.bibdb.default_db_path()`）：命中**已核实**条目的键**不调检索/AI**、**不改 `reference.bib`**，字段差异只写进任务书「五、库内已核实」。`--bibdb` = 显式启用（库缺失/读不了只告警、不中断出稿）；`--bibdb-path` = 指定库文件（隐含启用）；`--no-bibdb` = 显式关闭（输出与接入前逐字节相同）。笔记仓/默认库不存在时**静默跳过**（公开仓/CI 行为零变化）；不核实时这些参数只提示忽略。判定保守：key 命中只算候选（仍走检索），详见 `docs/GUIDE.md` §3.10 |
 | `--llm-base --llm-model --llm-protocol --llm-web-search --llm-search-tool --llm-responses-path` | AI 通道（密钥走环境变量） |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
 
@@ -65,6 +67,10 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 消息走 stderr；stdout 的**最后一行仍是契约行** `完成。产物目录：…`）。
 这条路 2026-10-17 之前是 `return 0`：界面上显示 ✅ 完成，而 PDF 其实没编出来
 （案例第 107 条）。
+⚠️ 具体到 `--verify-refs`（第 128 条）：本次核实条数超过 `--verify-max` 且未加
+`--verify-all-refs` → **退出码 2**（闸门在生成任务书 / 检索 / 调 AI **之前**；stderr 给出
+「调上限 / 显式全量 / 先看账」三条路，stdout 已有跑前量化行）。**这不是 `--compile` 那种
+「做完了但失败」**：转换产物照常写出，只是核实这一步没开始。
 
 **产物写入（2026-10-17 起）**：生成/覆盖 `.tex`/`.bib`/报告这类产物时走 `slcn/fsutil.py` 的 `atomic_write()`
 —— 先写同目录 `.tmp-<pid>`、`fsync` 后 `os.replace`（POSIX `rename(2)` 保证读者只看到完整旧版
@@ -82,7 +88,31 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | 行首 `   [i/N] <key>：正在核实…` | 第 82 条的**逐条进度**（最慢的一步在等端点时唯一的活动迹象） |
 | 行首 `❌` | 致命错误（同时走 stderr） |
 | 行首 `⚠` | 警告；收尾还会汇总在「⚠ 注意事项：」一节 |
+| 行首 `   ⚠⚠` | **模型能力前置提示**（第 128 条）：开了联网检索、且模型**已知会静默忽略** `web_search`（如 `deepseek-flash` / `deepseek-chat`）时，在 **AI 批量开始前** 打一行；跑完后「0 个 `web_search_call` → 按凭记忆对待」的事后提示**照旧保留** |
+| 行首 `   引用库：` | **引用库查库统计**（第 129 条）：`引用库：命中 X 条已核实（跳过检索+AI）、候选 Y、未命中 Z（库 n 条，<path>）`。只在执行核实且启用查库时出现；`--no-bibdb` / 库缺失时不出现（老外壳不受影响） |
 | `完成。产物目录：<绝对路径>` | **最后一行**（外壳用它做「打开产物目录」按钮） |
+
+**核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的
+条目**」——⑪ 跑前会在 stdout 打一行
+`源 bib N 条；正文引用 M 条 → 本次核实 M 条（跳过 N-M 条未引用）`；
+任务书逐条清单、`--search-refs` 检索与 AI 预跑都只覆盖这 M 条；转换产物（`.tex` /
+`reference.bib`）不受影响（不加新参数时逐字节不变）。全量核实用 `--verify-all-refs`
+（越上限用 `--verify-max` 调，`0` = 不限）；`--verify-plan` 只算账退出 0。
+口径细节见 `docs/GUIDE.md` §3.10，回归见 `tests/test_verify_scope.py`。
+
+**先查编辑部引用库（第 129 条，2026-10-18）**：执行核实时，⑪ 先查编辑部自己的引用库
+（私有笔记仓 `bib_db/bibliography.jsonl`；来源 = 往期已出版期的成品 bib）。**安全命中**
+（DOI 精确命中已核实记录；或题名高置信 + 第一作者姓/年份相容 + `verified=true`）的键
+**不调检索 API、不调 AI**，且**不改 `reference.bib`**；库版本与稿件条目的字段差异只写进
+任务书「五、库内已核实（无需再查）」，由编辑裁决。**key 命中只算候选**（BibTeX key 多为
+per-paper），仍走检索/AI；库内未核实/低置信同样只算候选。跑前 stdout 多一行
+`引用库：命中 X 条已核实（跳过检索+AI）、候选 Y、未命中 Z（库 n 条，<path>）`；
+`--verify-plan` 的预计检索/AI 次数按**扣减后**的条数算；任务书「六、合并记录」把
+「库内命中（未调 AI）」与「正文未引用（范围外）」分开统计。默认口径 = 执行核实且默认库
+存在时**自动启用**（笔记仓/库不存在时静默跳过）；`--bibdb` 显式启用（库缺失只告警，
+不中断出稿）、`--bibdb-path` 指定库文件、`--no-bibdb` 显式关（输出与接入前逐字节相同）。
+**不核实（默认）路径逐字节不变**。库的 schema/来源口径/种子导入见笔记仓
+`bib_db/README.md`；用法见 `docs/GUIDE.md` §3.10；回归见 `tests/test_bibdb_verify.py`。
 
 **产物**（`<out>/<Author_Name>/`）：
 
@@ -266,6 +296,15 @@ python3 toc.py         --report "<信息检查.txt>" --preview     # 界面用�
 ## 十、兼容性纪律（改引擎时自查）
 
 1. **只增不改**：新增参数必须带默认值；不改既有参数的默认行为。
+   ⚠️ **唯一的故意例外**（第 128 条，2026-10-18，用户拍板的成本闸门）：`--verify-refs` 的
+   **核实范围**从「全量」改成「正文引用到的条目」（`--verify-all-refs` 显式恢复全量，
+   `--verify-max` 控上限）。这不属于接口漂移：转换产物（`.tex` / `reference.bib`）**逐字节
+   不变**，任务书/检索/AI 的「覆盖哪些条目」才是新口径；老外壳不传新参数也能跑。
+   ⚠️ **第二个故意例外**（第 129 条，2026-10-18）：`--verify-refs` / `--verify-plan` 在
+   **默认引用库存在**时**自动查库**，命中已核实条目会少调检索/AI，任务书多一节
+   「五、库内已核实」、合并记录多行分类统计。转换产物（`.tex` / `reference.bib`）仍然
+   **逐字节不变**；`--no-bibdb` 可恢复接入前行为（含 stdout/任务书逐字节相同）。
+   老外壳不传新参数也能跑（只是会利用引用库省钱）。
 2. **stdout 只增不改**：外壳认的那几类行（§二）不许改语义；新信息一律**新增**行。
 3. **产物路径不许改**：`<out>/<作者名>/…` 的布局与文件名是契约的一部分。
    （历史上 `reference.bib.ai前`、`_文献核实.md`、`_回读校验报告.md` 都是这么定下来的。）
