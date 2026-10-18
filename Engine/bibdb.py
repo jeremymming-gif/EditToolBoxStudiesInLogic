@@ -40,6 +40,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     report      [--out DIR]                 一次生成全部待裁决清单（推荐）
     report-conflicts  [--out DIR]           字段冲突待裁决清单 CONFLICTS.md（中文、可勾选）
     report-duplicates [--out DIR]           同作品不同 key 候选对 DUPLICATES.md + duplicates.csv
+    normalize   [--report PATH | --out-dir DIR] [--json-out PATH] [--json]
+                                            B1 确定性规范化 dry-run（只出报告，**绝不写库**）
 
 用法示例（在本目录下跑）
 ------------------------
@@ -54,6 +56,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     /opt/homebrew/bin/python3.14 bibdb.py lint
     /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action keep --all-fields
     /opt/homebrew/bin/python3.14 bibdb.py report --out ../EditToolBox-notes/bib_db
+    /opt/homebrew/bin/python3.14 bibdb.py normalize --out-dir ../EditToolBox-notes/bib_db
+    # ↑ B1 dry-run 报告（B1-normalize-dryrun.md/.json）；只读库、不写 bibliography.jsonl
     # ↑ 生成 CONFLICTS.md / DUPLICATES.md / duplicates.csv（同一份库重复生成逐字节相同）
 
 退出码
@@ -63,6 +67,7 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
 `report*` 退出 2（先 init/import）；`import-bib` / `import-dir` 会自动建库。
 `report*` 只写清单文件（可重复生成、内容幂等），不改库本体；`resolve` 才写库
 （只改 `conflicts[]` 的裁决元数据，**不改字段值**；`--dry-run` 不写）。
+`normalize` 是**纯 dry-run**：只写报告文件，绝不写 `bibliography.jsonl`。
 `--dry-run`（预览）：照常解析/查重/算冲突，但**一个字节都不写**（库文件不存在也不会
 新建），`--json` 里带 `dry_run=true` 与逐条 `changes` 明细；界面「入藏」页的
 「预览」按钮用的就是它。`--bibtex`（query）：每条命中多带一份可直接复制的 BibTeX。
@@ -80,7 +85,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from slcn import bibdb, fsutil, paths  # noqa: E402
+from slcn import bibdb, bibnorm, bibparse, fsutil, paths  # noqa: E402
 from slcn.platform import utf8_stdio  # noqa: E402
 
 
@@ -1293,6 +1298,423 @@ def cmd_report(args) -> int:
     return 0
 
 
+
+# ── B1：引用库确定性规范化 · dry-run 报告（normalize 子命令，第 131 条后续）─────
+#
+# 用途：回答「如果对引用库做一次确定性规范化（B1），会发生什么？」——**只出报告，不动库**。
+# 做法：每条记录按库内 `fields` 重建 BibTeX → `bibnorm.normalize_bib()`（编辑部唯一的
+# 规范化实现）→ 解析回字段 → 逐条比较：
+#   · **语义变更**：规范化后字段值/字段集合**真变化**（大小写/空白/对齐不算）；
+#   · **仅格式变化**：只有缩进 / 字段名对齐等序列化差异；
+#   · **异常**：重建或解析失败（不能静默吞掉）。
+# 报告**不含生成时间戳**（同一份库重复生成逐字节相同）；本命令**绝不写 bibliography.jsonl**
+# （连 `Store.save()` 都不会调），`--apply` 留给用户拍板后的批次。
+
+NORMALIZE_REPORT_NAME = "B1-normalize-dryrun.md"
+NORMALIZE_JSON_NAME = "B1-normalize-dryrun.json"
+
+#: 标准 BibTeX 字段名形状（`posted-at` / `citeulike-article-id` / `reviewed-author` 等
+#: 含连字符的名字会让 `bibnorm.parse_fields`（正则 `(\w+)\s*=`）拆错/改名/丢字段）。
+_BAD_FIELD_NAME_RE = re.compile(r"^\w+$")
+#: 字段值里出现 `name = value` 形状（如 note 里写 `URL = \url{…}`）会被 parse_fields 当成新字段
+_EMBEDDED_ASSIGN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*\s*=\s*[{\"\\]")
+
+
+def _build_bib_entry(record: dict) -> str:
+    """按库内 entry_type/key/fields **重建**一条 BibTeX（给规范化做输入）。"""
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    body = ",\n".join(f"  {name} = {{{value}}}" for name, value in fields.items())
+    return f"@{record.get('entry_type') or 'misc'}{{{record.get('key')},\n{body}\n}}\n"
+
+
+def _unescaped(value: str, char: str) -> int:
+    r"""数一个字段值里**未转义**的某字符出现次数（`\{` / `\"` 不算）。"""
+    return len(re.findall(r"(?<!\\)" + re.escape(char), value))
+
+
+def _value_shape_risks(name: str, value: str) -> list[str]:
+    """字段值形状风险（B1 apply 前必须先人工处理的那几类）。"""
+    risks: list[str] = []
+    text = str(value if value is not None else "")
+    if not _BAD_FIELD_NAME_RE.match(name):
+        risks.append(f"字段名含连字符/非 \\w+：`{name}`（会被拆分/改名）")
+    if _EMBEDDED_ASSIGN_RE.search(text):
+        risks.append(f"字段值内嵌 `name = …`：`{name}`（会被拆成额外字段）")
+    if _unescaped(text, "{") != _unescaped(text, "}"):
+        risks.append(f"字段值花括号不配平：`{name}`（源数据疑似损坏）")
+    return risks
+
+
+def _normalize_rule(note: str) -> str:
+    """`bibnorm.normalize_bib()` 的一条改动说明 → 报告里的规则分类（中文）。"""
+    message = str(note or "").split(": ", 1)[-1]
+    if message.startswith("补 userf"):
+        return "补 userf = {cn/jp}（中日文标点体例）"
+    if "版次并入 title" in message:
+        return "英文书版次并入 title"
+    if message.startswith("SEP 条目"):
+        return "SEP 词条修正（howpublished→url）"
+    if "合并重复字段" in message:
+        return "合并重复字段"
+    if message.startswith("删除字段"):
+        return "删除软件元数据字段"
+    if "值已清理" in message:
+        return "字段值清理（页码/年份/期号等）"
+    if "字段 " in message and " → " in message:
+        return "字段别名归一"
+    return "其它规范化规则"
+
+
+def _normalize_error_reason(exc: BaseException) -> str:
+    """异常 → 给人看的中文原因（已知两类：字段值里未配对引号会让 parse_fields 抛 ValueError）。"""
+    message = str(exc)
+    if isinstance(exc, ValueError) and "substring not found" in message:
+        return ("`bibnorm.parse_fields` 解析失败：字段值里有未配对的引号"
+                "（源数据疑似损坏，需人工修正后才能规范化）")
+    return f"{type(exc).__name__}: {message}"
+
+
+def collect_normalize_rows(store: "bibdb.Store") -> list[dict]:
+    """对库里每条记录做一次规范化模拟，返回逐条结果（不改库）。
+
+    每条：`status` ∈ semantic / format / error；`diff`（语义字段旧→新）；`rules`
+    （规则分类）；`risks`（高危形状风险）；`notes`（bibnorm 原始说明）；
+    `issues` / `slug`（来源期/篇，给人定位）。
+    """
+    rows: list[dict] = []
+    for record in store.records():
+        key = str(record.get("key") or "")
+        issues = _record_issues(record)
+        sources = _record_sources(record)
+        row: dict = {
+            "key": key, "entry_type": str(record.get("entry_type") or ""),
+            "issues": issues, "slug": str(sources[0].get("slug") or "") if sources else "",
+            "status": "format", "rules": [], "risks": [], "diff": {},
+            "notes": [], "error": "",
+        }
+        raw_fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        for name, value in raw_fields.items():
+            row["risks"].extend(_value_shape_risks(str(name), str(value)))
+        row["risks"] = sorted(set(row["risks"]))
+        try:
+            rebuilt = _build_bib_entry(record)
+            before_entries, _findings = bibparse.parse_entries(rebuilt)
+            if len(before_entries) != 1:
+                row["status"] = "error"
+                row["error"] = f"按库内字段重建后解析出 {len(before_entries)} 条（应为 1 条）"
+                rows.append(row)
+                continue
+            before = before_entries[0]
+            normalized, notes = bibnorm.normalize_bib(rebuilt)
+            row["notes"] = list(notes)
+            after_entries, _findings2 = bibparse.parse_entries(normalized)
+            if len(after_entries) != 1:
+                row["status"] = "error"
+                row["error"] = f"规范化后解析出 {len(after_entries)} 条（应为 1 条）"
+                rows.append(row)
+                continue
+            after = after_entries[0]
+            if after.key != key:
+                row["status"] = "error"
+                row["error"] = f"规范化改变了 key：{key!r} → {after.key!r}"
+                rows.append(row)
+                continue
+            before_fields = bibdb.canonical_fields(before.fields)
+            after_fields = bibdb.canonical_fields(after.fields)
+            if str(before.etype or "").lower() != str(after.etype or "").lower():
+                before_fields["$entry_type"] = str(before.etype or "").lower()
+                after_fields["$entry_type"] = str(after.etype or "").lower()
+            diff: dict[str, dict] = {}
+            for name in sorted(set(before_fields) | set(after_fields)):
+                old_value = before_fields.get(name, "")
+                new_value = after_fields.get(name, "")
+                if old_value != new_value:
+                    diff[name] = {"old": old_value, "new": new_value}
+            row["diff"] = diff
+            rules = sorted({_normalize_rule(note) for note in notes})
+            if row["risks"] and not rules:
+                rules = ["非标准字段名/字段值形状导致静默变化（建议人工核对）"]
+            if not rules:
+                rules = ["其它语义变化（bibnorm 无说明，需人工核对）"]
+            if diff:
+                row["status"] = "semantic"
+                row["rules"] = rules
+            else:
+                row["status"] = "format"
+                row["rules"] = (rules if notes
+                                else ["序列化（缩进/字段名对齐，无字段变化）"])
+        except Exception as exc:  # noqa: BLE001  附加报告：单条异常不许中断整份报告
+            row["status"] = "error"
+            row["error"] = _normalize_error_reason(exc)
+        rows.append(row)
+    rows.sort(key=lambda item: item["key"])
+    return rows
+
+
+def _normalize_stats(rows: list[dict]) -> dict:
+    """汇总统计（语义/仅格式/异常 + 规则/字段/风险分布；全部现算，不硬编码）。"""
+    semantic = [row for row in rows if row["status"] == "semantic"]
+    format_only = [row for row in rows if row["status"] == "format"]
+    errors = [row for row in rows if row["status"] == "error"]
+    rule_entries: dict[str, int] = {}
+    for row in semantic:
+        for rule in row["rules"]:
+            rule_entries[rule] = rule_entries.get(rule, 0) + 1
+    format_rule_entries: dict[str, int] = {}
+    for row in format_only:
+        for rule in row["rules"]:
+            format_rule_entries[rule] = format_rule_entries.get(rule, 0) + 1
+    field_entries: dict[str, int] = {}
+    for row in semantic:
+        for name in row["diff"]:
+            field_entries[_field_label(name)] = field_entries.get(_field_label(name), 0) + 1
+    risk_entries: dict[str, int] = {}
+    for row in rows:
+        for risk in row["risks"]:
+            risk_entries[risk] = risk_entries.get(risk, 0) + 1
+    return {
+        "records": len(rows),
+        "semantic": len(semantic),
+        "format_only": len(format_only),
+        "errors": len(errors),
+        "risky_records": sum(1 for row in rows if row["risks"]),
+        "rules": dict(sorted(rule_entries.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "format_rules": dict(sorted(format_rule_entries.items(),
+                                    key=lambda kv: (-kv[1], kv[0]))),
+        "fields": dict(sorted(field_entries.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "risks": dict(sorted(risk_entries.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "semantic_rows": semantic,
+        "error_rows": errors,
+    }
+
+
+def _normalize_issue_text(row: dict) -> str:
+    issues = row.get("issues") or []
+    slug = row.get("slug") or ""
+    if issues:
+        return "；".join(issues) + (f" / {slug}" if slug else "")
+    return "（无来源记录）"
+
+
+def build_normalize_md(store: "bibdb.Store", db_path: str, rows: list[dict],
+                       stats: dict, sha_before: str, sha_after: str) -> str:
+    """生成 `B1-normalize-dryrun.md`：中文人读报告（统计/规则/逐条变更/异常）。"""
+    db_label = os.path.basename(db_path) or db_path
+    same = sha_before == sha_after
+    lines: list[str] = [
+        "# 引用库 · B1 确定性规范化 dry-run 报告",
+        "",
+        "> 本报告由 `bibdb.py normalize` 生成：**dry-run 只算不写** —— 不会修改",
+        "> `bibliography.jsonl`（连 `Store.save()` 都不会调用）；`--apply` 留给用户拍板后的批次。",
+        "> 报告**不含生成时间戳**：同一份库重复生成逐字节相同。",
+        "",
+        f"- 数据来源：引用库 `{db_label}`（本报告同目录）",
+        f"- 库 sha256（跑前）：`{sha_before or '（读不到）'}`",
+        f"- 库 sha256（跑后）：`{sha_after or '（读不到）'}`"
+        + ("（与跑前一致 = **未改动库**）" if same else "（⚠️ 与跑前不同！）"),
+        f"- 库记录：**{stats['records']}** 条",
+        f"- 结果：**语义变更 {stats['semantic']} 条** / **仅格式变化 {stats['format_only']} 条** / "
+        f"**异常 {stats['errors']} 条**",
+        "- 判定口径：语义变更 = 规范化后字段值/字段集合真变化（用 `canonical_fields()` 比较，"
+        "大小写/空白/字段名对齐不算）；仅格式变化 = 只有序列化（缩进/字段名对齐）差异。",
+        "",
+    ]
+    if not same:
+        lines += ["> ⚠️ **本次运行前后库 sha256 不同——理论上不可能（本命令不写库）**，"
+                  "先停下检查环境/并发，不要相信下面的数字。", ""]
+    lines += [
+        "## 规则分类汇总（按条目；一条条目可能命中多条规则）",
+        "",
+        "| 规则 | 语义变更条目数 |",
+        "|---|---|",
+    ]
+    for rule, count in stats["rules"].items():
+        lines.append(f"| {_md_escape(rule)} | {count} |")
+    for rule, count in stats["format_rules"].items():
+        lines.append(f"| {_md_escape(rule)}（仅格式） | {count} |")
+    if not stats["rules"] and not stats["format_rules"]:
+        lines.append("| （无） | 0 |")
+    lines += [
+        "",
+        "## 语义变更涉及的字段分布（按条目）",
+        "",
+        "| 字段 | 条目数 |",
+        "|---|---|",
+    ]
+    for name, count in stats["fields"].items():
+        lines.append(f"| {_md_escape(name)} | {count} |")
+    if not stats["fields"]:
+        lines.append("| （无） | 0 |")
+    if stats["risks"]:
+        lines += [
+            "",
+            "## ⚠️ 高危形状风险（B1 apply 前必须先人工处理）",
+            "",
+            "> 这些是 `bibnorm.normalize_bib()`（`parse_fields` 只认 `\\w+` 字段名、"
+            "只认顶层 `name = value`）对**非标准字段名 / 值内嵌套赋值 / 损坏值**的已知局限：",
+            "> 直接 apply 会把字段改名/拆出额外字段/丢字段。下表是**涉及条目数**：",
+            "",
+            "| 风险 | 涉及条目数 |",
+            "|---|---|",
+        ]
+        for risk, count in stats["risks"].items():
+            lines.append(f"| {_md_escape(risk)} | {count} |")
+    lines += [
+        "",
+        f"## 逐条语义变更（{stats['semantic']} 条；按库内 key 排序）",
+        "",
+        "> 仅列**字段真变化**的条目；仅格式变化的 "
+        f"{stats['format_only']} 条只统计不逐条列（全是缩进/字段名对齐差异）。",
+        "",
+        "| # | 库内 key | 来源期 / 篇 | 字段变更（旧值 → 新值） | 规则/说明 |",
+        "|---|---|---|---|---|",
+    ]
+    for index, row in enumerate(stats["semantic_rows"], start=1):
+        changes = []
+        for name, values in row["diff"].items():
+            old_value = _md_code(_clip(values.get("old") or "（空）", 60))
+            new_value = _md_code(_clip(values.get("new") or "（空）", 60))
+            changes.append(f"{name}：{old_value} → {new_value}")
+        rules_text = "；".join(row["rules"])
+        if row["risks"]:
+            rules_text = "⚠️ " + rules_text
+        lines.append(
+            f"| B{index:04d} | `{_md_escape(row['key'])}` | {_md_escape(_normalize_issue_text(row), width=40)} | "
+            f"{'<br>'.join(changes)} | {_md_escape(rules_text, width=70)} |")
+    if not stats["semantic_rows"]:
+        lines.append("| — | （无） | — | — | — |")
+    lines += [
+        "",
+        f"## 异常清单（{stats['errors']} 条；重建/解析失败，不能静默吞掉）",
+        "",
+    ]
+    if stats["error_rows"]:
+        for row in stats["error_rows"]:
+            lines.append(f"- `{_md_escape(row['key'])}`（{_md_escape(_normalize_issue_text(row))}）："
+                         f"{_md_escape(row['error'])}")
+    else:
+        lines.append("（无）")
+    lines += [
+        "",
+        "---",
+        "",
+        "## 说明与限制",
+        "",
+        "1. **本报告未修改库**：跑前/跑后 sha256 相同（见头部）；`bibliography.jsonl` 一个字节未动。",
+        "2. 规范化实现 = `slcn/bibnorm.py: normalize_bib()`（编辑部唯一实现，与初排转换同一份）。",
+        "3. 「语义变更」≠「必须改」：补 `userf`、版次并入 title、SEP `howpublished→url` 等都是",
+        "   **编辑部既定规范**；但 apply 前要先把「高危形状风险」里的非标准字段/损坏值修掉。",
+        "4. **不提供 `--apply`**（本任务不做）：是否应用、按什么顺序应用由用户拍板后另开批次。",
+        "5. 重新生成：`cd Engine && python3 bibdb.py normalize --out-dir ../EditToolBox-notes/bib_db`",
+        "   （同一份库重复生成逐字节相同）。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_normalize_json(db_path: str, rows: list[dict], stats: dict,
+                         sha_before: str, sha_after: str) -> str:
+    """生成 `B1-normalize-dryrun.json`：机器可读摘要 + 逐条语义变更/异常明细。"""
+    payload = {
+        "tool": "bibdb.py normalize（B1 dry-run，不写库）",
+        "db": os.path.basename(db_path) or db_path,
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "db_unchanged": sha_before == sha_after,
+        "records": stats["records"],
+        "semantic": stats["semantic"],
+        "format_only": stats["format_only"],
+        "errors": stats["errors"],
+        "risky_records": stats["risky_records"],
+        "rules": stats["rules"],
+        "format_rules": stats["format_rules"],
+        "fields": stats["fields"],
+        "risks": stats["risks"],
+        "semantic_entries": [
+            {
+                "key": row["key"],
+                "entry_type": row["entry_type"],
+                "issues": row["issues"],
+                "slug": row["slug"],
+                "rules": row["rules"],
+                "risks": row["risks"],
+                "diff": row["diff"],
+            }
+            for row in stats["semantic_rows"]
+        ],
+        "error_entries": [
+            {"key": row["key"], "issues": row["issues"], "slug": row["slug"],
+             "error": row["error"], "risks": row["risks"]}
+            for row in stats["error_rows"]
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def cmd_normalize(args) -> int:
+    """B1 确定性规范化 dry-run：只出报告，**绝不写 bibliography.jsonl**。"""
+    try:
+        path, store = _open_store(args)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    sha_before = bibdb.db_sha256(path)
+    rows = collect_normalize_rows(store)
+    stats = _normalize_stats(rows)
+    sha_after = bibdb.db_sha256(path)
+    if sha_before != sha_after:        # 防御式：本命令按设计只读，不该发生
+        print("✗ 内部错误：normalize 运行期间库文件被改动（本命令不应写库）", file=sys.stderr)
+        return 2
+    report_path = str(args.report or "")
+    out_dir = str(args.out_dir or "")
+    if not report_path and out_dir:
+        report_path = os.path.join(out_dir, NORMALIZE_REPORT_NAME)
+    json_path = str(args.json_out or "")
+    if not json_path and out_dir:
+        json_path = os.path.join(out_dir, NORMALIZE_JSON_NAME)
+    written: list[dict] = []
+    report_md = ""
+    if report_path:
+        report_md = build_normalize_md(store, path, rows, stats, sha_before, sha_after)
+        written.append(_write_report(report_path, report_md))
+    if json_path:
+        written.append(_write_report(json_path,
+                                     build_normalize_json(path, rows, stats,
+                                                          sha_before, sha_after)))
+    payload = {
+        "db": path,
+        "sha256_before": sha_before,
+        "sha256_after": sha_after,
+        "db_unchanged": sha_before == sha_after,
+        "records": stats["records"],
+        "semantic": stats["semantic"],
+        "format_only": stats["format_only"],
+        "errors": stats["errors"],
+        "risky_records": stats["risky_records"],
+        "rules": stats["rules"],
+        "fields": stats["fields"],
+        "risks": stats["risks"],
+        "written": written,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"库 sha256（跑前/跑后）：{sha_before} / {sha_after}"
+          + ("（一致 = 未改动库）" if sha_before == sha_after else "（⚠️ 不一致！）"))
+    print(f"记录：{stats['records']} 条 → 语义变更 {stats['semantic']} / "
+          f"仅格式 {stats['format_only']} / 异常 {stats['errors']}")
+    for item in written:
+        state = "已写入" if item["written"] else "内容未变（未重写）"
+        print(f"   {state}：{item['path']}（{item['bytes']:,} 字节，sha256: {item['sha256']}）")
+    if stats["rules"]:
+        top = "、".join(f"{rule} {count}" for rule, count in list(stats["rules"].items())[:6])
+        print(f"   规则 Top：{top}")
+    if stats["risks"]:
+        print(f"   ⚠️ 高危形状风险：涉及 {stats['risky_records']} 条记录（见报告「高危形状风险」节）")
+    print("   （dry-run：未修改 bibliography.jsonl；--apply 留给用户拍板后的批次）")
+    return 0
+
 # ── 入口 ────────────────────────────────────────────────────────────────────
 
 
@@ -1418,6 +1840,22 @@ def build_parser() -> argparse.ArgumentParser:
                     help="输出目录（默认 = 库文件所在目录）")
     rd.add_argument("--json", action="store_true", help="机器可读输出")
     rd.set_defaults(func=cmd_report_duplicates)
+
+    # ── B1 确定性规范化 dry-run（第 131 条后续）：只出报告、绝不写库 ──────────
+    norm = sub.add_parser(
+        "normalize", parents=[common],
+        help="B1 确定性规范化 dry-run（逐条重建→bibnorm.normalize_bib→比较；只出报告，"
+             "**绝不写 bibliography.jsonl**）")
+    norm.add_argument("--dry-run", action="store_true",
+                      help="显式写一次 dry-run（默认就是；本命令从不写库，此开关只为兼容口径）")
+    norm.add_argument("--report", default="", metavar="PATH",
+                      help="Markdown 报告输出路径（不写则只打印摘要）")
+    norm.add_argument("--out-dir", default="", metavar="DIR",
+                      help=f"输出目录：写 {NORMALIZE_REPORT_NAME} + {NORMALIZE_JSON_NAME}")
+    norm.add_argument("--json-out", default="", metavar="PATH",
+                      help="另写 JSON 摘要文件（可选；--out-dir 时默认写同名 .json）")
+    norm.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
+    norm.set_defaults(func=cmd_normalize)
     return parser
 
 

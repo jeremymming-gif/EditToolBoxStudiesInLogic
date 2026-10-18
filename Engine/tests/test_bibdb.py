@@ -33,6 +33,9 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
       被替换的旧冲突标 `forced-replaced` 并记 `resolved_at`；报告**编号稳定**
       （Cxxx 按全部冲突固定分配，裁决一条后其余编号不变）、已裁决不出现在待裁决区、
       头部统计区分待裁决/已裁决
+  (p) B1 确定性规范化 dry-run（`normalize`）：逐条重建→`bibnorm.normalize_bib()`→比较；
+      语义变更/仅格式/异常三类、规则与字段分类、高危形状风险、报告要素、
+      幂等、**绝不写 bibliography.jsonl**、`--json` 摘要
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -1262,6 +1265,139 @@ with tempfile.TemporaryDirectory(prefix="bibdb_resolve_sha_") as tmp:
                 "--incoming-sha256", "abc", "--db", db)
     check("(o) 指纹太短（<8 位）→ 退出 2", r.returncode == 2
           and "至少 8 位" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-200:])
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (p) B1 确定性规范化 dry-run（normalize）：只出报告、绝不写库 ──")
+
+
+def _make_normalize_db(path: str) -> str:
+    """合成库：仅格式 / 语义变更（补 userf、版次并入）/ 高危字段名 / 异常值。"""
+    store = bibdb.Store.load(path, create=True)
+    store.import_bib_text("""
+@article{Format2001,
+  author  = {Doe, Jane},
+  title   = {A Plain English Article},
+  journal = {Some Journal},
+  year    = {2001}
+}
+@article{Cn2020,
+  author  = {张三},
+  title   = {中文题名测试},
+  journal = {逻辑学研究},
+  year    = {2020}
+}
+@book{EngBook1999,
+  author    = {Smith, John},
+  title     = {A Book About Logic},
+  publisher = {Oxford University Press},
+  year      = {1999},
+  edition   = {2nd Edition}
+}
+@article{Risk2001,
+  author  = {Doe, Jane},
+  title   = {Native Field Name},
+  journal = {Journal},
+  year    = {2001},
+  posted-at = {2007-10-08 10:42:18}
+}
+""", {"kind": "published-bib", "issue": "2025年第1期(80)",
+      "slug": "01 Base", "file": "base.bib"}, verified=True)
+    # 异常：字段值里有未配对引号 → normalize_bib 的 parse_fields 抛 ValueError
+    store.import_bib_text("""@article{Bad1999,
+  author = {Smith, John},
+  title  = {Bad Entry},
+  annote = {doi = "10.1/x},
+  year   = {1999}
+}
+""", {"kind": "published-bib", "issue": "2025年第2期(81)",
+      "slug": "02 Bad", "file": "bad.bib"}, verified=True)
+    store.save()
+    return path
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_normalize_") as tmp:
+    db = _make_normalize_db(os.path.join(tmp, "norm.jsonl"))
+    digest_before = read_bytes(db)
+    out = os.path.join(tmp, "b1")
+    r = run_cli("normalize", "--db", db, "--out-dir", out, "--json")
+    payload = json.loads(r.stdout) if r.returncode == 0 else {}
+    report_md = os.path.join(out, "B1-normalize-dryrun.md")
+    report_json = os.path.join(out, "B1-normalize-dryrun.json")
+    text = _read_text(report_md) if os.path.isfile(report_md) else ""
+    check("(p) `normalize --out-dir --json` 退出 0、生成 md + json 报告",
+          r.returncode == 0 and os.path.isfile(report_md) and os.path.isfile(report_json),
+          (r.stdout + r.stderr)[-400:])
+    check("(p) --json 摘要：记录数 / 语义 3 / 仅格式 1 / 异常 1",
+          payload.get("records") == 5 and payload.get("semantic") == 3
+          and payload.get("format_only") == 1 and payload.get("errors") == 1
+          and payload.get("db_unchanged") is True,
+          json.dumps({k: payload.get(k) for k in
+                      ("records", "semantic", "format_only", "errors", "db_unchanged")},
+                     ensure_ascii=False))
+    check("(p) --json 摘要：库 sha 跑前 = 跑后（未写库）",
+          payload.get("sha256_before") == payload.get("sha256_after")
+          and payload.get("sha256_before") == hashlib.sha256(digest_before).hexdigest())
+    check("(p) **绝不写 bibliogranphy.jsonl**：库文件逐字节不变",
+          read_bytes(db) == digest_before)
+    check("(p) 报告头部：标题 + 跑前/跑后 sha256 + 三类统计",
+          "B1 确定性规范化 dry-run 报告" in text
+          and "库 sha256（跑前）" in text and "库 sha256（跑后）" in text
+          and "语义变更 3 条" in text and "仅格式变化 1 条" in text
+          and "异常 1 条" in text and "未改动库" in text, text[:800])
+    check("(p) 报告头部写明「dry-run 不写库 / 无时间戳 / --apply 留给后续批次」",
+          "dry-run 只算不写" in text and "不含生成时间戳" in text
+          and "--apply" in text and "未修改库" in text)
+    check("(p) 规则分类表：补 userf / 英文书版次并入 title",
+          "补 userf = {cn/jp}" in text and "英文书版次并入 title" in text
+          and "| 规则 | 语义变更条目数 |" in text)
+    check("(p) 字段分布表：userf / title / edition / posted-at",
+          "标点体例（`userf`）" in text and "题名（`title`）" in text
+          and "版次（`edition`）" in text, text[:1800])
+    check("(p) 高危形状风险：非标准字段名 `posted-at` 被点名",
+          "高危形状风险" in text and "`posted-at`" in text and "拆分/改名" in text)
+    check("(p) 逐条语义变更明细含三个 key 与旧值→新值",
+          "逐条语义变更（3 条" in text
+          and all(key in text for key in ("Cn2020", "EngBook1999", "Risk2001"))
+          and "→" in text, text[-1800:])
+    check("(p) 异常清单：Bad1999 + 未配对引号原因（不静默吞）",
+          "异常清单（1 条" in text and "Bad1999" in text
+          and "未配对的引号" in text, text[-1200:])
+    payload_json = json.loads(_read_text(report_json)) if os.path.isfile(report_json) else {}
+    check("(p) JSON 报告：语义/异常逐条明细 + 库未改动",
+          payload_json.get("db_unchanged") is True
+          and {row["key"] for row in payload_json.get("semantic_entries") or []}
+          == {"Cn2020", "EngBook1999", "Risk2001"}
+          and [row["key"] for row in payload_json.get("error_entries") or []] == ["Bad1999"],
+          json.dumps(payload_json, ensure_ascii=False)[:300])
+    check("(p) JSON 报告带高风险记录数与风险分布（posted-at 与 值内嵌 name= 都被点名）",
+          payload_json.get("risky_records") == 2
+          and any("posted-at" in label for label in (payload_json.get("risks") or {}))
+          and any("annote" in label for label in (payload_json.get("risks") or {})),
+          str(payload_json.get("risks"))[:300])
+    # 幂等：同一份库重复生成 → md/json 逐字节相同、CLI 明说未重写
+    md_digest = hashlib.sha256(read_bytes(report_md)).hexdigest()
+    json_digest = hashlib.sha256(read_bytes(report_json)).hexdigest()
+    r2 = run_cli("normalize", "--db", db, "--out-dir", out)
+    check("(p) 重复 `normalize`：md / json 逐字节相同 + 明说「内容未变」",
+          r2.returncode == 0
+          and hashlib.sha256(read_bytes(report_md)).hexdigest() == md_digest
+          and hashlib.sha256(read_bytes(report_json)).hexdigest() == json_digest
+          and "内容未变" in r2.stdout, r2.stdout[-300:])
+    check("(p) 重复运行后库文件仍逐字节不变", read_bytes(db) == digest_before)
+    # --dry-run 显式开关 + --report 自定义路径
+    custom = os.path.join(tmp, "custom_report.md")
+    r3 = run_cli("normalize", "--db", db, "--dry-run", "--report", custom)
+    check("(p) `--dry-run --report PATH`：退出 0、写到指定路径、不写库",
+          r3.returncode == 0 and os.path.isfile(custom)
+          and read_bytes(db) == digest_before, (r3.stdout + r3.stderr)[-300:])
+    # 库不存在 → 退出 2
+    r4 = run_cli("normalize", "--db", os.path.join(tmp, "missing.jsonl"))
+    check("(p) 库不存在时 normalize 退出 2", r4.returncode == 2
+          and "引用库不存在" in (r4.stdout + r4.stderr))
+    # 不提供 --apply（本任务不做）→ 不认识的参数退出 2
+    r5 = run_cli("normalize", "--db", db, "--apply")
+    check("(p) 不认识的 `--apply` → 用法错误退出 2（本任务不实现 apply）",
+          r5.returncode == 2)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (l) 真实稿件库抽查（SKIP when absent，只读） ──")
