@@ -1618,7 +1618,7 @@ def build_docx(
     bib_zero_cites_hints: bool = True,
     end_list_priority: bool = False,
     number_cite_map: bool = False,
-    c_class_union: bool = False,
+    c_class_union: bool | None = None,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1656,13 +1656,15 @@ def build_docx(
                    True 且「正文只有裸编号 [N]、无真引用命令、文末清单编号 1..N
                    有序」时，把 [N] 映射成 `\\parencite{第N条键}`；越界/混用/无序
                    一律不映射并 warning。默认关 → 产物逐字节不变。
-    c_class_union   **C 类新口径开关（第四十九批；默认 False=关）**：
-                   True 时按用户拍板新口径渲染：pure_citation/reference_entry →
-                   正文 `\\parencite[页码]{键}` 并删脚注；mixed → 保留脚注 + 「请人工
-                   核对」warning 列表；note_only 原样；参考文献 = 脚注引注 ∪ 文末清单
-                   （bib-refs `union_entries`）。**默认关**（v7 实测非 5 篇过并：
-                   87-9/88-02 等 bib 大幅缩水+undef/dangling，需先修指纹/键一致性）；
-                   关时旧行为逐字节不变；`--c-class-union` 显式 opt-in。
+    c_class_union   **C 类新口径开关（第四十九批；第五十二批起默认 ON）**：
+                    None（默认）→ 按 `footnotes.C_CLASS_UNION_DEFAULT`（=True）渲染
+                    新口径；True/False 显式开关；False = 回退旧行为（逐字节不变，
+                    v8 基线对照用）。新口径：pure_citation/reference_entry → 正文
+                    `\\parencite[页码]{键}` 并删脚注；mixed → 保留脚注 + 「请人工核对」
+                    warning 列表；note_only 原样；参考文献 = 脚注引注 ∪ 文末清单
+                    （bib-refs `union_entries`）；无法匹配不编造。CLI 回退开关
+                    `--no-c-class-union`。低层 `parse_docx()` 默认仍 False
+                    （docx_audit 冻结基线不变）。
     """
     from .docxsource import (
         link_citations,
@@ -1670,9 +1672,11 @@ def build_docx(
         parse_docx,
         refs_to_bib,
     )
+    from .footnotes import c_class_union_enabled
 
-    # 第四十九批②：C 类新口径**默认 OFF**（v7 实测非 5 篇过并，暂不默认开启）；
-    # `--c-class-union` 显式 opt-in。
+    # 第五十二批 phaseB（用户拍板，v9b 全量 PASS 后）：默认 ON；None 按总开关解析，
+    # False/True 为显式回退/开启（`--no-c-class-union` / `--c-class-union`）。
+    c_class_union = c_class_union_enabled(c_class_union)
 
     log: list[str] = []
     warnings: list[str] = []

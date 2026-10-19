@@ -64,16 +64,19 @@ fn = F.Footnote(fid=4, text="Cook, 2010.", kind="pure_citation", ref="Cook, 2010
 tex, _notes = render_para(_para(4), {4: fn}, [], {}, {}, c_class_union=True)
 check("④ 缺键时不崩（空键也不 panic，输出可编译占位）", isinstance(tex, str), repr(tex[-120:]))
 
-# ⑤a 默认 OFF（v7 实测非 5 篇过并 → 第四十九批回退默认 OFF）
+# ⑤a 第五十二批 phaseB 起默认 ON：build_docx 签名默认 None（按总开关解析），
+#    显式 False 仍可回退旧行为（见 test_batch52_default_on.py 的解析语义测试）。
 import inspect as _inspect
 _sig = _inspect.signature(build.build_docx)
-check("⑤a build_docx(c_class_union=False) 默认关（C 类 opt-in）",
-      _sig.parameters["c_class_union"].default is False)
+check("⑤a build_docx 默认 None（由 C_CLASS_UNION_DEFAULT 解析）",
+      _sig.parameters["c_class_union"].default is None)
+from slcn import footnotes as _F  # noqa: E402
+check("⑤a C 类总开关默认开（None → ON）", _F.c_class_union_enabled(None) is True)
 
-# ⑤ 默认 OFF：旧行为逐字节不变（pure_ref 仍中文括号包裹、mixed 仍 cf. 格式）
+# ⑤ 低层 render_para 默认仍 OFF（docxsource 低层默认不变）：旧行为逐字节不变
 fn = F.Footnote(fid=5, text="Cook, 2010.", kind="pure_ref", ref="Cook, 2010.")
 tex, _notes = render_para(_para(5), {5: fn}, [("K1", {}, "")], {5: "K1"}, {})
-check("⑤ 默认 OFF：pure_ref 保持旧格式（（\\parencite{...}）），开关默认关不改变产物",
+check("⑤ 低层默认 OFF：pure_ref 保持旧格式（（\\parencite{...}）），回退路径不变",
       "（\\parencite{K1}）" in tex, repr(tex))
 
 print()

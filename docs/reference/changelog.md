@@ -9,6 +9,14 @@ description: 当前版本与历史 Release。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
 
+## 未发布（2026-10-19，第 52 批）
+
+- **C 类新口径默认开启**：Word 稿脚注文献按四类处理——纯引用脚注 → 正文 `\parencite[页码]{键}`
+  （删脚注）；完整文献条目型并入并集参考文献；混合型保留脚注并出「请人工核对」warning；
+  纯说明脚注原样。参考文献 = 脚注引注 ∪ 文末清单，按（作者 + 题名 + 年份 + 类型）去重，
+  同作品仅页码不同合并 1 条。匹配不到完整条目的纯引用不编造（保留脚注 + warning）。
+  命令行 `--no-c-class-union` 可回退旧行为；GUI 无开关，默认即新口径。
+
 ## 1.2.1（2026-10-18）
 
 - **Word 通道实例修复（期 87 / 期 90）**：公式里的中文包 `\text{}`（不再 `Missing character` / 乱码）；

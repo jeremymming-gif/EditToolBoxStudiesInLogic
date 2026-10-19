@@ -237,6 +237,27 @@ $PY convert.py --source X.docx --out Y --dry-run
 TeX 发行版；没有 `\begin{document}` 的纯正文稿无法区分前言/正文，沿用旧行为（整份按正文
 可达收宏，见第 120 条）。
 
+#### C 类新口径：脚注分类 + 并集参考文献（第 52 批，2026-10-19 默认开启）
+
+C 类口径从第 52 批起**默认开启**（v9b 41 篇全量 PASS 后用户拍板），只影响 **Word 通道**；
+LaTeX 通道不变。开关解析链：`convert.py` → `build.build_docx(c_class_union=None)` →
+`slcn.footnotes.c_class_union_enabled()` —— None 取总开关 `C_CLASS_UNION_DEFAULT=True`，
+显式 False（`--no-c-class-union`）回退旧行为（v8 基线逐字节不变）。低层 `parse_docx()` 默认仍
+False：`docx_audit` 的冻结基线不随总开关变。
+
+- **四类分类**（`classify_citation()`）：`pure_citation` 纯引用 → 正文 `\parencite[页码]{键}`、
+  删脚注；`reference_entry` 完整文献条目 → 删脚注 + 正文 parencite，条目进并集 bib；
+  `mixed` 说明+引用 → 保留脚注 + `mixed_manual_check` warning（build 汇总成「请人工核对」清单）；
+  `note_only` 纯说明/古典文献 → 原样保留。`pure_citation` 匹配不到完整条目 →
+  `citation_unmatched`：保留脚注、**不编造**，出 warning。
+- **并集 bib**（`union_entries()`）：文末清单 ∪ 脚注条目；指纹 = 第一作者姓 + 题名 + 4 位年份 +
+  类型族 + 卷号 + 版次（页码/定位不参与），同作品仅页码不同合并 1 条、正文各处
+  `\parencite[页码]`；文末版本优先、缺字段互补，字段冲突记 `field_conflict` warning；并集改键
+  通过 keymap 回写正文，避免 undef/dangling。
+- **验收（第 52 批 v9b）**：41/41 rc=0、compile_ok、undef/dangling 与 v8 相同、P0 集合无新增；
+  专项验证纯引用→parencite、混合脚注保留 + warning、并集 bib 去重、无脚注稿零变化。
+- **回退**：命令行 `--no-c-class-union`；GUI 无开关，默认即新口径。
+
 | 参数 | 说明 |
 |---|---|
 | `--source` | **必填**。`.docx` / `.doc` / `.tex` |
@@ -265,6 +286,8 @@ TeX 发行版；没有 `\begin{document}` 的纯正文稿无法区分前言/正�
 | `--copy-dir` | 连源文件所在整个目录一起归档到 `original/`（多文件 LaTeX 稿自动启用，无需手工加） |
 | `--no-original` | 不建立 `original/`（默认建立） |
 | `--force` | 目标文件夹已存在时覆盖（默认**拒绝**，防误伤已有稿件目录）。GUI 里对应「高级选项 → 覆盖已存在的输出目录（--force）」 |
+| `--c-class-union` | 显式启用 C 类新口径（**默认已开**，一般不用加；脚本里显式写便于自证）。见本节「C 类新口径」 |
+| `--no-c-class-union` | **回退旧行为**：脚注文献按旧规则提升、不做并集（产物与 v8 基线逐字节一致）。GUI 无开关，默认即新口径 |
 
 ### 开发者用的环境变量（不装工具箱也用不到）
 

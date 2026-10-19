@@ -1,10 +1,11 @@
 #!/usr/bin/env python3.14
-"""第四十九批①：C 类新口径基础设施的回归测试（分类器 / 并集 / warning / 开关默认关）。
+"""第四十九批①：C 类新口径基础设施的回归测试（分类器 / 并集 / warning / 开关默认）。
 
 钉住：
   ① `classify_citation()` 四种 kind（pure_citation / reference_entry / mixed / note_only）
      与字段（ref_raw / entry / note / locator），旧 `classify()` 行为不变；
-  ② `c_class_union_enabled()` **默认关**（Lead 07:45 决定：默认切换放下一峰谷批）；
+  ② `c_class_union_enabled()` **默认开**（第五十二批 phaseB：用户拍板切默认 ON；
+     显式 False 回退旧行为）；
   ③ `entry_fingerprint()` 忽略页码/版次；`union_entries()` 同文献合并 1 条、
      文末版本优先、脚注补缺、字段冲突 → warning；
   ④ `resolve_citation()`：作者-年+题名相似度+完整度匹配；**不编造**——匹配失败返回
@@ -60,12 +61,12 @@ check("① 旧 classify() 仍返回旧 kind（现网 docxsource 未切换不被�
       footnotes.classify("Cf. Gary Watson, “Free Agency,” p. 215.").kind in
       ("pure_ref", "mixed", "pure_note", "classical"))
 
-# ── ② 开关默认关（v7 过度合并后回退；保留显式 True 试开）─────────────────
-check("② C 类总开关默认关（v7 后保底：旧行为/产物不变）",
-      footnotes.c_class_union_enabled() is False
-      and footnotes.c_class_union_enabled(None) is False)
-check("② 显式传 True 可试开（下一窗口修好后重试默认 ON）",
-      footnotes.c_class_union_enabled(True) is True)
+# ── ② 开关默认开（第五十二批 phaseB：v9b PASS 后用户拍板切默认 ON）─────────
+check("② C 类总开关默认开（None 缺省 → ON）",
+      footnotes.c_class_union_enabled() is True
+      and footnotes.c_class_union_enabled(None) is True)
+check("② 显式 False 回退旧行为", footnotes.c_class_union_enabled(False) is False)
+check("② 显式 True 显式开", footnotes.c_class_union_enabled(True) is True)
 
 # ── ③ 指纹/并集 ─────────────────────────────────────────────────────────
 base = {"author": "Watson, Gary", "title": "Free Agency", "year": "1975",

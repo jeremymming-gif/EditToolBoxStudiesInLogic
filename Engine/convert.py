@@ -67,6 +67,7 @@ from slcn import paths as _paths  # noqa: E402
 from slcn import sources as _sources  # noqa: E402
 from slcn import templates as T  # noqa: E402
 from slcn.build import build_docx, build_latex  # noqa: E402
+from slcn.footnotes import c_class_union_enabled  # noqa: E402
 from slcn.latex import parse_macros  # noqa: E402
 
 WORD_EXT = {".docx", ".doc"}
@@ -1100,6 +1101,30 @@ def bibdb_taskbook_hits(entries, safe) -> list[dict]:
     return [safe[key] for _etype, key, _body in entries if key in safe]
 
 
+def resolve_c_class_union(args) -> bool:
+    """C 类新口径最终取值（第五十二批 phaseB）：None/缺省 → 默认 ON；False → 旧行为。
+
+    `--c-class-union`（store_true，default=None）显式开；`--no-c-class-union`
+    （store_false）回退。解析交给 `footnotes.c_class_union_enabled()`（唯一总开关），
+    命令行这一层**不硬编码默认值**。
+    """
+    return c_class_union_enabled(getattr(args, "c_class_union", None))
+
+
+def _add_c_class_union_args(ap: argparse.ArgumentParser) -> None:
+    """注册 C 类口径两个开关（抽成函数供测试直接跑 argparse 语义）。
+
+    默认 None 而不是 False：最终开/关由 `C_CLASS_UNION_DEFAULT` 决定，
+    这样「默认 ON」只有一处出处（第五十二批 phaseB 切换）。
+    """
+    ap.add_argument("--c-class-union", dest="c_class_union", action="store_true",
+                    default=None,
+                    help="C 类新口径（默认开）：纯引用脚注→正文 \\parencite、"
+                         "并集参考文献、混合脚注保留+人工核对 warning")
+    ap.add_argument("--no-c-class-union", dest="c_class_union", action="store_false",
+                    help="回退旧口径（C 类关闭，等价于 v8 行为；对照/应急用）")
+
+
 def main() -> int:
     # 第 86 条：Windows 的 stdout 默认是控制台代码页（cp936），中文日志会被管道接走后
     # 乱码甚至 UnicodeEncodeError 崩在半路。这里**第一步**就切到 UTF-8（mac 上是空操作）。
@@ -1192,13 +1217,9 @@ def main() -> int:
     ap.add_argument("--bibdb-path", default="", metavar="PATH",
                     help="引用库文件路径（隐含启用；默认 笔记仓/bib_db/bibliography.jsonl）。"
                          "指错/读不了 → 告警并按原流程核实（不中断）。")
-    # 第四十九批②：C 类新口径**默认 OFF**（v7 实测非 5 篇过并，暂不默认开启）。
-    # `--c-class-union` 显式 opt-in；`--no-c-class-union` 保留为兼容 no-op（默认即关）。
-    ap.add_argument("--c-class-union", dest="c_class_union", action="store_true",
-                    default=False,
-                    help="C 类新口径 opt-in（默认关）：纯引用脚注→正文 \\parencite、并集参考文献")
-    ap.add_argument("--no-c-class-union", dest="c_class_union", action="store_false",
-                    help="(兼容 no-op，默认即关) 不回退任何行为")
+    # 第五十二批 phaseB（用户拍板，v9b 全量 PASS 后）：C 类新口径**默认 ON**。
+    # `--no-c-class-union` 回退旧行为（v8 基线对照/应急）；`--c-class-union` 显式开。
+    _add_c_class_union_args(ap)
     ap.add_argument("--number-cite-map", action="store_true",
                     help="NO_CITES-B（默认关）：正文裸编号 [N] 映射为第 N 条 \\parencite")
     ap.add_argument("--end-list-priority", action="store_true",
@@ -1483,7 +1504,7 @@ def main() -> int:
                 # 第四十六批 C 类可选开关（默认关）：命令行 --end-list-priority 才生效
                 end_list_priority=getattr(args, "end_list_priority", False),
                 number_cite_map=getattr(args, "number_cite_map", False),
-                c_class_union=getattr(args, "c_class_union", False),
+                c_class_union=resolve_c_class_union(args),
             )
         else:
             _bib_path = find_bib(source, args.bib)

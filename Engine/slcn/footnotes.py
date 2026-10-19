@@ -269,17 +269,18 @@ def classify_citation(text: str) -> Footnote:
     return fn
 
 
-#: 第四十九/五十批 C 类新口径**总开关**：**默认关**（v7 实测默认 ON 过度合并：
-#: 87-9 8→1、88-02 43→24 → undef/dangling 新 P0，本批不能默认开）。
-#: 匹配增强/分类器/并集已保留；显式传 True 可试开（`c_class_union_enabled(True)` /
-#: engine-core `--c-class-union`）。下一窗口修「指纹作者+题名非空、resolve 后统一回写键、
-#: 回归集」后再重试默认 ON。
-#: ⚠️ 本文件未改旧 `classify()`；默认路径由 engine-core 在 build/docxsource 接线。
-C_CLASS_UNION_DEFAULT = False
+#: 第四十九/五十批 C 类新口径**总开关**：第五十二批（v9b 全量 PASS 后，用户拍板）
+#: **默认开**。切换依据：v9b 41/41 rc=0、compile_ok、undef/dangling 与 v8 相同、
+#: P0 集合与 v8 相同、四专项/回归全过、U1（脚注公式二次转义）已修。
+#: 显式传 False（CLI `--no-c-class-union` / build_docx(c_class_union=False)）回退旧行为，
+#: 旧行为逐字节不变（v8 基线仍可复现，供回退/对照）。
+#: ⚠️ 本文件未改旧 `classify()`；低层 `parse_docx()` 默认仍 False（docx_audit
+#: 冻结基线不能变），只有 build_docx / convert CLI 这一层把 None 解析成默认开。
+C_CLASS_UNION_DEFAULT = True
 
 
 def c_class_union_enabled(flag: bool | None = None) -> bool:
-    """C 类并集是否启用（**默认关**；显式传 True 可试开，传 False 为保底旧行为）。"""
+    """C 类新口径是否启用（**默认开**；传 False 回退旧行为，传 True 显式开）。"""
     return C_CLASS_UNION_DEFAULT if flag is None else bool(flag)
 
 

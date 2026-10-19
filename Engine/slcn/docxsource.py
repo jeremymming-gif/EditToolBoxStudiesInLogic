@@ -3103,6 +3103,14 @@ def parse_docx(path: str, quote_threshold: int = 105,
         for _fid, _fn in list(fn_objs.items()):
             _new = classify_citation(_fn.text)
             _new.fid = int(_fid)
+            # 第五十二批 U1（87-5、90-04 实测）：上面 ④.5 已在**旧对象**上按 math segs
+            # 预渲染 note_latex（`$…$` 已受保护）；用 classify_citation 新建 Footnote 后
+            # 必须继承，否则保留脚注的各分支（pure_note / citation_unmatched /
+            # mixed_manual）渲染时回落 escape_latex(fn.text) → 公式被二次转义
+            #（`$..$`→`\$..\$`、`\phi`→`\textbackslash{}phi`）。
+            _old_note_latex = getattr(_fn, "note_latex", "") or ""
+            if _old_note_latex:
+                _new.note_latex = _old_note_latex
             _kind = _new.kind_new
             if _kind == CITATION_ENTRY:
                 _new.kind = "pure_ref"
@@ -3120,11 +3128,13 @@ def parse_docx(path: str, quote_threshold: int = 105,
             elif _kind == CITATION_MIXED:
                 _new.kind = "mixed_manual"
                 try:
-                    _new.note_latex = link_citations(
-                        escape_latex(_new.note or _new.ref_raw or _new.text),
-                        doc.refs)[0]
+                    # U1：含公式的混合脚注同样复用旧对象预渲染的 note_latex
+                    # （数学已受保护；引用替换照做，避免二次转义）。
+                    _mixed_src = _old_note_latex or escape_latex(
+                        _new.note or _new.ref_raw or _new.text)
+                    _new.note_latex = link_citations(_mixed_src, doc.refs)[0]
                 except Exception:  # noqa: BLE001
-                    _new.note_latex = ""
+                    _new.note_latex = _old_note_latex
                 doc.c_class_warnings.append(FootnoteWarning(
                     "mixed_manual_check", fid=int(_fid),
                     text=(_new.text or "")[:200],
