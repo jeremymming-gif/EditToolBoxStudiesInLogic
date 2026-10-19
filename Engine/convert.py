@@ -158,7 +158,8 @@ def is_own_product(name: str, stem: str) -> bool:
     # 并入 AI 结果时留下的回滚副本 `reference.bib.ai前`（2026-10-15，第 64 条）：
     # 不认它的话，**第二次跑同一篇稿子会被自己的回滚副本拦下**（「含非本工具的文件」）。
     if name.endswith(".ai前"):
-        return name[: -len(".ai前")] in ("reference.bib", f"{stem}.bib")
+        # 第五十七批：低置信 META/FN 建议改写输出 .tex 前也留 `.ai前`（与 bib 同构）。
+        return name[: -len(".ai前")] in ("reference.bib", f"{stem}.bib", f"{stem}.tex")
     if name.lower().endswith(".sty"):
         return True
     if any(name == f"{stem}{suf}" for suf in _OWN_STEM_SUFFIXES):
@@ -1030,6 +1031,22 @@ def _coop_find_bib(state: dict, stage_dir: str, stem: str) -> str:
     return ""
 
 
+def _coop_find_tex(state: dict, stage_dir: str, stem: str) -> str:
+    """找暂存目录里的输出 .tex；状态里有绝对路径就优先信它（第五十七批）。"""
+    p = str(state.get("tex") or "")
+    if p and os.path.isfile(p):
+        return p
+    cand = os.path.join(stage_dir, f"{stem}.tex")
+    if os.path.isfile(cand):
+        return cand
+    try:
+        texs = [os.path.join(stage_dir, n) for n in sorted(os.listdir(stage_dir))
+                if n.endswith(".tex") and os.path.isfile(os.path.join(stage_dir, n))]
+    except OSError:
+        return ""
+    return texs[0] if len(texs) == 1 else ""
+
+
 def _coop_locate_state(args) -> tuple[str, dict | None, list[str]]:
     """找 ph1 暂存目录：显式 --coop-stage > --name 推默认 > 扫 `<out>/*_待核/`。
 
@@ -1193,21 +1210,45 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     elif parse_report.replies and args.no_ai_merge:
         print("   （--no-ai-merge：本次**不**把回填的文献字段并入 reference.bib）")
 
-    # ② 低置信建议：默认只写文件；--coop-apply 才动 reference.bib
+    # ② 低置信建议：默认只写文件；--coop-apply 才动产物
+    #    BIB-* → reference.bib（第五十四批）；META-* / FN-* → 输出 .tex（第五十七批）。
     apply_summary: dict | None = None
     if args.coop_apply:
         if args.no_ai_merge:
             print("   （--coop-apply 被 --no-ai-merge 覆盖：低置信建议只记录，不改产物）")
-        elif not bib_path:
-            print("   ⚠ --coop-apply：暂存目录里没有 reference.bib，低置信建议只记录")
         else:
-            apply_summary = coop.apply_bib_suggestions(
-                bib_path, low_report.suggestions, low_items)
-            if apply_summary.get("n_applied"):
-                print(f"   ✅ --coop-apply：已应用 {apply_summary['n_applied']} 条低置信建议"
-                      f"（备份 {os.path.basename(apply_summary.get('rollback') or '')}）")
+            _apply_parts: list[dict] = []
+            _low_by_id = {str(it["id"]): it for it in low_items}
+            # 只把文献字段建议交给 bib 应用器（其余交给 tex 应用器，避免重复记「待人工」）。
+            _bib_sugs = {
+                _id: _sugs for _id, _sugs in low_report.suggestions.items()
+                if str((_low_by_id.get(_id) or {}).get("kind") or "") == "bib_entry"
+            }
+            if not bib_path:
+                print("   ⚠ --coop-apply：暂存目录里没有 reference.bib，文献字段建议只记录")
+            elif _bib_sugs:
+                _bib_apply = coop.apply_bib_suggestions(bib_path, _bib_sugs, low_items)
+                _apply_parts.append(_bib_apply)
+                if _bib_apply.get("n_applied"):
+                    print(f"   ✅ --coop-apply：已应用 {_bib_apply['n_applied']} 条文献字段建议"
+                          f"（备份 {os.path.basename(_bib_apply.get('rollback') or '')}）")
+                else:
+                    print(f"   ⚠ --coop-apply：{_bib_apply.get('error') or '没有可应用的建议'}")
+            _tex_path = _coop_find_tex(state, stage_dir, stem)
+            if not _tex_path:
+                print("   ⚠ --coop-apply：暂存目录里找不到输出 .tex，元数据/脚注建议只记录")
             else:
-                print(f"   ⚠ --coop-apply：{apply_summary.get('error') or '没有可应用的建议'}")
+                _tex_apply = coop.apply_tex_suggestions(
+                    _tex_path, low_report.suggestions, low_items,
+                    taskbook_keys=keys, bib_path=bib_path)
+                _apply_parts.append(_tex_apply)
+                if _tex_apply.get("n_applied"):
+                    print(f"   ✅ --coop-apply：已应用到 .tex {_tex_apply['n_applied']} 条"
+                          f"（备份 {os.path.basename(_tex_apply.get('rollback_tex') or '')}）")
+                elif _tex_apply.get("error"):
+                    print(f"   ⚠ --coop-apply：{_tex_apply['error']}")
+            if _apply_parts:
+                apply_summary = coop.merge_apply_summaries(*_apply_parts)
     sug_md, sug_jsonl = coop.write_suggestions(stage_dir, stem, low_items, low_report)
     print(f"   低置信建议（默认不改产物）：{os.path.basename(sug_md)} / "
           f"{os.path.basename(sug_jsonl)}")
@@ -2646,11 +2687,21 @@ def main() -> int:
         bib_text2 = ""
         if res.bib_path and os.path.isfile(res.bib_path):
             bib_text2 = open(res.bib_path, encoding="utf-8", errors="replace").read()
+        # 第五十七批：META-LABEL-* 需要「人话标签 → 输出 tex 的 \\my* 宏名」映射，
+        # 才能在 --coop-apply 时真正写进产物（build 的 undetected_fields 提供）；
+        # META 项同时记下初排时 tex 里的字段值，ph2 应用前比对「产物有没有被改过」。
+        _tex_cur: dict[str, str] = {}
+        try:
+            _tex_cur = _coop.read_tex_field_values(getattr(res, "tex_path", "") or "")
+        except OSError:
+            _tex_cur = {}
         coop_low_items = _coop.collect_low_confidence(
             warnings=res.warnings,
             missing_fields=getattr(res, "missing_fields", ()) or (),
             raw_ref_lines=getattr(res, "ref_raw_lines", ()) or (),
             bib_text=bib_text2,
+            label_targets=dict(getattr(res, "undetected_fields", ()) or ()),
+            current_fields=_tex_cur,
         )
         section = _coop.render_low_confidence_section(coop_low_items)
         if not coop_taskbook_path:

@@ -201,8 +201,14 @@ def test_low_confidence_collect(tmp: str) -> None:
     check("③-4 元数据源缺失 → META-元数据源", "META-元数据源" in ids)
     check("③-5 文献区原文行 → BIB-LINE-NN", "BIB-LINE-01" in ids)
     fn = next(it for it in items if it["id"] == "FN-12")
-    check("③-6 每项都有原文片段/允许 field",
-          fn["evidence"] == "张三 2020" and fn["fields"] == ["note"])
+    # 第五十七批：citation_unmatched 项多一个 match_key（窄口径可应用）；mixed_manual 仍只有 note。
+    check("③-6 每项都有原文片段/允许 field（citation_unmatched 含 match_key）",
+          fn["evidence"] == "张三 2020"
+          and fn["fields"] == ["note", "match_key"]
+          and fn["subkind"] == "citation_unmatched" and fn["target"] == ".tex")
+    mixed = next(it for it in items if it["id"] == "FN-7")
+    check("③-6b 混合型脚注只允许 note（不参与应用）",
+          mixed["fields"] == ["note"] and mixed["subkind"] == "mixed_manual")
 
     bib = "".join([_entry("k1", "有题名"), "@article{k2,\n  author = {李四},\n}\n"])
     items2 = coop.collect_low_confidence(warnings=[], bib_text=bib)

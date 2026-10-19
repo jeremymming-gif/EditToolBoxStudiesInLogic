@@ -20,7 +20,7 @@ r"""第五十四批：AI 协同初排（两段式）的纯逻辑。
   `unknown` 报告，不生成回复；
 * **拒绝比误收好**：重复键、截断、span 不在原文里、枚举值不认识——整条拒绝并写原因；
 * **默认不改产物**：低置信建议默认只写 `…_AI建议.md/.jsonl`；只有显式 `--coop-apply`
-  才动 `reference.bib`，并且沿用 `aibib.merge()` 的四条硬保障（key 不变 / 恰好一条 /
+  才动 `reference.bib` / 输出 `.tex`，并且沿用 `aibib.merge()` 的四条硬保障（key 不变 / 恰好一条 /
   不增删条目 / 未返回的条目逐字节不动）。
 """
 
@@ -57,6 +57,24 @@ BIB_FIELDS = (
     "address", "edition", "volume", "number", "pages", "year", "userf",
 )
 META_FIELDS = ("value",)
+#: 第五十七批：--coop-apply 的应用目标（记录/jsonl 用；BIB 沿用旧口径）。
+TARGET_BIB = "reference.bib"
+TARGET_TEX = ".tex"
+#: 第五十七批：编辑侧出版信息字段（META-<macro> 的应用白名单之一）。
+EDITORIAL_TEX_FIELDS = ("myvolnumber", "myissnumber", "mypubyear",
+                        "myfirstpage", "mylastpage", "mypages",
+                        "receiveddate", "myeditor", "mygrants")
+#: 第五十七批：只有「纯引用脚注没匹配上」允许提升为正文 \parencite（窄口径）。
+FN_APPLICABLE_SUBKINDS = ("citation_unmatched",)
+#: FN 项的 field 白名单：citation_unmatched 多一个 match_key（locator 放在同一 JSON 里）。
+FN_FIELDS_MATCH = ("note", "match_key")
+#: 页码线索：evidence 含这些而回复没给 locator → 拒绝（不丢页码）。
+_PAGE_HINT_RE = re.compile(r"(第\s*\d+\s*[页頁]|[pP]{1,2}\.\s*~?\s*\d+|\d+\s*[-–—]\s*\d+\s*[页頁])")
+_LOCATOR_RE = re.compile(r"^\d{1,4}(?:\s*[-–—~]\s*\d{1,4})?$")
+#: 旧状态（没有 ph1 初排取值）时允许覆盖的模板默认值/占位（绝不覆盖真实编辑值）。
+_TEMPLATE_PLACEHOLDERS = {"x", "xxxx", "xxxx-xx-xx", "null", "1", "10"}
+#: 可直接定位到 tex 脚注的 FN 项（FN-<fid>；FN-W 只有 warning 文本，无法定位）。
+_FN_FID_RE = re.compile(r"^FN-(\d+)$")
 
 #: 低置信项种类 → 中文标签（任务书里显示）。
 KIND_LABEL = {
@@ -70,7 +88,8 @@ KIND_LABEL = {
 _CC_KEYS = ("混合型脚注", "纯引用脚注", "mixed_manual", "citation_unmatched")
 _FID_RE = re.compile(r"#(\d+)\s*「([^」]*)」")
 _EDITORIAL_MISSING_RE = re.compile(r"以下编辑侧字段需人工填写[：:]\s*([^\n]+)")
-_UNDETECTED_RE = re.compile(r"未识别\s*\d+\s*个字段[^\n：:]*[：:]\s*([^\n]+)")
+_UNDETECTED_RE = re.compile(
+    r"(?:请手工填写或用[^\n：:]*覆盖|未识别\s*\d+\s*个字段[^\n：:]*)[：:]\s*([^\n]+)")
 _META_SOURCE_RE = re.compile(r"元数据源不存在[^\n]*")
 
 
@@ -388,11 +407,19 @@ def aibib_parse(key: str, reply: str) -> str | None:
 
 
 def _new_item(id_: str, kind: str, evidence: str, need: str, *, fields: list[str],
-              key: str = "", title: str = "") -> dict:
+              key: str = "", title: str = "", subkind: str = "",
+              target: str = "", macro: str = "", current: str = "") -> dict:
+    """一项低置信项。第五十七批增三个**附加**键（旧状态没有就按空串处理）：
+
+    · `subkind`：C 类子类（`citation_unmatched` / `mixed_manual`），决定 FN 能否应用；
+    · `target`：可应用的产物（`reference.bib` / `.tex` / 空=只记录）；
+    · `macro`：META 项要写入的输出 tex `\\my*` 宏名（LABEL 项由 ph1 映射而来）。
+    """
     return {
         "id": id_, "kind": kind, "title": title or KIND_LABEL.get(kind, kind),
         "evidence": str(evidence or ""), "need": need,
         "fields": list(fields), "key": key, "status": "pending",
+        "subkind": subkind, "target": target, "macro": macro, "current": current,
     }
 
 
@@ -400,6 +427,8 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
                            missing_fields: Iterable[str] = (),
                            raw_ref_lines: Iterable[str] = (),
                            bib_text: str = "",
+                           label_targets: dict[str, str] | None = None,
+                           current_fields: dict[str, str] | None = None,
                            max_items: int = 80) -> list[dict]:
     """从转换结果里收集「机器可读 ID」的低置信项（纯函数、顺序确定）。
 
@@ -412,6 +441,10 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
 
     每项都带 `evidence`（原文片段）与 `fields`（允许 AI 回复的 field 白名单），
     解析时 **span 必须是 evidence 的子串**——只抽不编。
+
+    第五十七批附加：`label_targets` = {人话标签: 输出 tex 的 \\my* 宏名}（来自
+    `BuildResult.undetected_fields`），把 `META-LABEL-N` 映射到可写字段；C 类项带
+    `subkind`，只有 citation_unmatched 的 FN 项允许 `match_key` 应用。
     """
     items: dict[str, dict] = {}
     order: list[str] = []
@@ -431,6 +464,8 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
     missing_fields = [str(f) for f in missing_fields or [] if str(f).strip()]
     raw_ref_lines = [str(x).strip() for x in raw_ref_lines or [] if str(x).strip()]
     bib_text = str(bib_text or "")
+    label_targets = {str(k): str(v) for k, v in (label_targets or {}).items()}
+    current_fields = {str(k): str(v) for k, v in (current_fields or {}).items()}
 
     # ① C 类脚注/引用
     seq = 0
@@ -438,19 +473,28 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
         if not any(k in w for k in _CC_KEYS):
             continue
         hits = _FID_RE.findall(w)
-        kind = "citation_unmatched" if "未匹配" in w or "citation_unmatched" in w else "mixed_manual"
+        # build.py 的两条 warning 文案（唯一出处）：纯引用脚注…「无法匹配完整条目」/
+        # 混合型脚注…「说明文字+引用」。第五十七批修正：旧判据找「未匹配」，而 build 的
+        # 纯引用脚注文案是「无法匹配完整条目」，于是 citation_unmatched 全被判成
+        # mixed_manual、FN 永远不可应用——这里按真实文案判，并保留旧关键词兜底。
+        kind = ("citation_unmatched"
+                if ("纯引用脚注" in w or "citation_unmatched" in w or "未匹配" in w)
+                else "mixed_manual")
+        fn_fields = list(FN_FIELDS_MATCH) if kind in FN_APPLICABLE_SUBKINDS else ["note"]
         if hits:
             for fid, snippet in hits:
                 add(_new_item(
                     f"FN-{fid}", "footnote", snippet,
                     f"核对该脚注引用（{kind}）与正文/文献表是否对应；只抽取，不补造。",
-                    fields=["note"], title=f"脚注 #{fid}（{kind}）"))
+                    fields=fn_fields, title=f"脚注 #{fid}（{kind}）",
+                    subkind=kind, target=TARGET_TEX))
         else:
             seq += 1
             add(_new_item(
                 f"FN-W{seq}", "footnote", _clip(w, 400),
                 f"核对该脚注/引用问题（{kind}）；原文片段见任务书。",
-                fields=["note"], title=f"脚注问题（{kind}）"))
+                fields=["note"], title=f"脚注问题（{kind}）",
+                subkind=kind, target=TARGET_TEX))
 
     # ② 文献条目缺字段（可安全落到 reference.bib 的一类）
     entries = parse_bib_blocks(bib_text)
@@ -472,7 +516,8 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
         add(_new_item(
             f"BIB-{key}", "bib_entry", block.text,
             "该条目缺必填字段（" + "、".join(fields) + "）；请只根据原文/来源补，查不到就回 unresolved。",
-            fields=fields, key=key, title=f"文献条目 `{key}` 缺字段"))
+            fields=fields, key=key, title=f"文献条目 `{key}` 缺字段",
+            target=TARGET_BIB))
 
     # ③ 文献区解析失败行（整片没解析出条目时逐行交给 AI 结构化）
     if not by_key and raw_ref_lines:
@@ -487,7 +532,8 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
         add(_new_item(
             f"META-{f}", "metadata", f,
             f"元数据字段 `{f}` 缺失；请给出值，或回 unresolved。",
-            fields=[f] + list(META_FIELDS), title=f"元数据 `{f}`"))
+            fields=[f] + list(META_FIELDS), title=f"元数据 `{f}`",
+            target=TARGET_TEX, macro=f, current=current_fields.get(f, "")))
 
     label_seq = 0
     for w in warnings:
@@ -499,7 +545,8 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
                     add(_new_item(
                         f"META-{f}", "metadata", w,
                         f"编辑侧字段 `{f}` 需人工填写；请给出值，或回 unresolved。",
-                        fields=[f] + list(META_FIELDS), title=f"元数据 `{f}`"))
+                        fields=[f] + list(META_FIELDS), title=f"元数据 `{f}`",
+                        target=TARGET_TEX, macro=f, current=current_fields.get(f, "")))
         m = _UNDETECTED_RE.search(w)
         if m:
             for label in re.split(r"[、,，]\s*", m.group(1)):
@@ -510,7 +557,9 @@ def collect_low_confidence(*, warnings: Iterable[str] = (),
                 add(_new_item(
                     f"META-LABEL-{label_seq}", "metadata", label,
                     f"字段「{label}」未识别，产物里已写占位符；请给出值，或回 unresolved。",
-                    fields=["value"], title=f"元数据「{label}」"))
+                    fields=["value"], title=f"元数据「{label}」",
+                    target=TARGET_TEX, macro=label_targets.get(label, ""),
+                    current=current_fields.get(label_targets.get(label, ""), "")))
         if _META_SOURCE_RE.search(w):
             add(_new_item(
                 "META-元数据源", "metadata", w,
@@ -539,7 +588,11 @@ def render_low_confidence_section(items: Iterable[dict]) -> str:
          "> · `verdict=corrected` 时 `field` 与 `value` 必填，且 `field` 必须是该项列出的允许值；",
          "> · **同一个 ID 可以分别回多个字段**：每个字段一个 JSON 对象"
          "（同一 `(id, field)` 只能回一次，`verdict` 必须一致）；",
-         "> · `span` **必须逐字抄自该项「原文片段」**（工具会做子串校验；对不上整条拒绝）。"]
+         "> · `span` **必须逐字抄自该项「原文片段」**（工具会做子串校验；对不上整条拒绝）。",
+         "> · `META-…` 项：`field` 用该项列出的宏名或 `value`，`value` 填要写进产物的值；",
+         "> · `FN-…` 纯引用脚注项：如能确定对应文献键且该键在第三节里，"
+         "回 `{\"field\": \"match_key\", \"value\": \"<键>\", \"locator\": \"<页码>\"}`"
+         "（原文片段含页码时必须给 `locator`）；拿不准就回 `unresolved`，**不要猜**。"]
     if not items:
         L += ["", "本次初排**没有发现**需要外部核实的低置信项。", ""]
         return "\n".join(L)
@@ -589,6 +642,8 @@ def render_backfill_section() -> str:
         "会把它们一起读取、一起解析。",
         "- **两块都要交**：只交 JSON 会让 `reference.bib` 一条都不并入（文献回填 0 条），"
         "本轮文献核实等于白做；只交 BibTeX 则附一的低置信项得不到回复。",
+        "- **拿不准就回 `unresolved`**：附一里任何一项没有把握，请回 `verdict=unresolved`"
+        "（不要猜值）；只有 `corrected` 且通过校验的建议才会在 `--coop-apply` 时写进产物。",
         "- 导入后若要把低置信建议也落到产物：运行第二段时勾选「一键修改产物」"
         "（`--coop-apply`）；不勾选时建议只写进 `…_AI建议.md` / `.jsonl`，不改产物。",
         "",
@@ -739,6 +794,9 @@ def _validate_suggestion(item: dict, obj: dict) -> tuple[bool, dict, str]:
         "note": _clip(obj.get("note") or "", 300),
         "key": item.get("key", ""),
     }
+    # 第五十七批：FN 的 match_key 允许在同一 JSON 里带 `locator`（页码定位）。
+    if field_ == "match_key":
+        out["locator"] = _clip(obj.get("locator") or "", 40)
     return True, out, ""
 
 
@@ -747,8 +805,10 @@ def render_suggestions_md(*, stem: str, items: Iterable[dict], report: LowConfRe
     by_id = {str(it["id"]): it for it in items}
     L = [f"# AI 协同建议 · {stem}", "",
          "> 由编辑回填的外部 chat 回复解析而来。**默认不改任何转换产物**；",
-         "> 只有运行 `--coop-apply` 时，通过校验的文献字段建议才会写进 `reference.bib`",
-         "> （并留 `.ai前` 回滚副本）。", ""]
+         "> 只有运行 `--coop-apply` 时，通过校验的建议才会写进产物（写前各留 `.ai前`）：",
+         "> BIB 字段 → `reference.bib`；META 元数据 → 输出 `.tex` 的 `\\my*` 字段；",
+         "> FN 匹配（仅 citation_unmatched + `match_key`）→ `.tex` 里的 `\\footnote` 提升为 `\\parencite`。",
+         ""]
     L += [f"- 接受：**{report.n_ok}** 条", f"- 拒绝：**{len(report.rejected)}** 条",
           f"- 未回填：**{len(report.missing)}** 条",
           f"- 白名单外 ID：**{len(report.unknown)}** 个", ""]
@@ -798,12 +858,19 @@ def write_suggestions(stage_dir: str, stem: str, items: Iterable[dict],
     md_path = os.path.join(stage_dir, f"{stem}{SUGGESTIONS_SUFFIX}.md")
     jsonl_path = os.path.join(stage_dir, f"{stem}{SUGGESTIONS_SUFFIX}.jsonl")
     atomic_write_text(md_path, render_suggestions_md(stem=stem, items=items, report=report))
+    def _target(it: dict) -> str:
+        return {"bib_entry": TARGET_BIB, "metadata": TARGET_TEX,
+                "footnote": TARGET_TEX}.get(str(it.get("kind") or ""), "")
+
     lines: list[str] = []
     for id_ in list(by_id):
         if id_ in report.suggestions:
             # 同一个 ID 的每个 field 各占一行。
             for sug in report.suggestions[id_]:
-                lines.append(json.dumps(dict(sug, status="accepted"), ensure_ascii=False))
+                # 第五十七批：加 target（可应用的产物）；旧读法只取 status/field，不受影响。
+                lines.append(json.dumps(dict(sug, status="accepted",
+                                             target=_target(by_id[id_])),
+                                        ensure_ascii=False))
             continue
         elif id_ in report.rejected:
             rec = {"id": id_, "kind": by_id[id_].get("kind", ""),
@@ -992,6 +1059,334 @@ def restore_bib_backup(bib_path: str) -> bool:
     return True
 
 
+# ── 第五十七批：META / FN 建议落到输出 .tex（只有 --coop-apply 才走）────────
+
+
+def read_tex_field_values(tex_path: str) -> dict[str, str]:
+    """读输出 tex 里所有 `\\my*` 字段的最终值（ph1 记进 META 项，供 ph2 判「是否被改过」）。"""
+    from slcn import latex as _latex
+
+    if not tex_path or not os.path.isfile(tex_path):
+        return {}
+    try:
+        with open(tex_path, encoding="utf-8", errors="replace", newline="") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    return {name: str(m.value or "") for name, m in _latex.parse_macros(text).items()}
+
+
+def _tex_escape(text: str) -> str:
+    """按 `docxsource.escape_latex` 同口径转义纯文本（锚点匹配与元数据值共用）。"""
+    pairs = (("\\", r"\textbackslash{}"), ("&", r"\&"), ("%", r"\%"), ("$", r"\$"),
+             ("#", r"\#"), ("_", r"\_"), ("{", r"\{"), ("}", r"\}"),
+             ("~", r"\textasciitilde{}"), ("^", r"\textasciicircum{}"))
+    s = str(text or "").replace("\\", "\x00")
+    for raw, esc in pairs:
+        if raw == "\\":
+            continue
+        s = s.replace(raw, esc)
+    return s.replace("\x00", r"\textbackslash{}")
+
+
+def _meta_target_macro(item: dict, id_: str) -> str:
+    """META 项 → 输出 tex 的 \\my* 宏名（ph1 记录优先；旧状态从 id 后缀兜底）。"""
+    m = str((item or {}).get("macro") or "").strip()
+    if m:
+        return m
+    if id_.startswith("META-LABEL-"):
+        return ""                     # 旧状态没有 label→macro 映射：只记录
+    if id_.startswith("META-"):
+        cand = id_[len("META-"):].strip()
+        if re.fullmatch(r"my[A-Za-z0-9_]+", cand):
+            return cand
+    return ""
+
+
+def _meta_value_reject(value: str, macro: str) -> str:
+    """META 值的字段级校验；返回空串 = 可应用。"""
+    v = str(value or "").strip()
+    if not v:
+        return "元数据值为空"
+    if len(v) > 1200:
+        return "元数据值过长（>1200 字符）"
+    if any(ch in v for ch in "\\{}\n\r\t"):
+        return "元数据值含反斜杠/花括号/换行，拒绝（避免破坏 .tex）"
+    if macro in ("myvolnumber", "myissnumber"):
+        if not re.fullmatch(r"\d{1,4}", v):
+            return f"{macro} 只接受 1–4 位数字（收到 `{_clip(v, 20)}`）"
+    elif macro == "mypubyear":
+        if not re.fullmatch(r"(?:19|20)\d{2}", v):
+            return "mypubyear 只接受 19xx/20xx 四位年份"
+    elif macro in ("myfirstpage", "mylastpage", "mypages"):
+        if not re.fullmatch(r"\d{1,5}", v) or (macro == "mypages" and int(v) <= 0):
+            return f"{macro} 只接受正整数（收到 `{_clip(v, 20)}`）"
+    elif macro == "receiveddate":
+        if not (re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", v)
+                or re.fullmatch(r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日", v)):
+            return "receiveddate 只接受 YYYY-MM-DD 或「YYYY年M月D日」"
+    return ""
+
+
+def _iter_tex_footnotes(tex: str) -> Iterable[tuple[int, int, int]]:
+    r"""扫出 tex 里所有 `\footnote{…}` 的 `(命令起点, 正文起点, 正文终点)`（brace 感知）。"""
+    i, n = 0, len(tex)
+    key = "\\footnote"
+    while i < n:
+        j = tex.find(key, i)
+        if j < 0:
+            return
+        k = j + len(key)
+        while k < n and tex[k] in " \t":
+            k += 1
+        if k >= n or tex[k] != "{":
+            i = j + len(key)
+            continue
+        depth, m = 0, k
+        while m < n:
+            if _escaped(tex, m):
+                m += 1
+                continue
+            if tex[m] == "{":
+                depth += 1
+            elif tex[m] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            m += 1
+        if m >= n:
+            return
+        yield j, k + 1, m
+        i = m + 1
+
+
+def _squeeze(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def apply_tex_suggestions(tex_path: str, suggestions: dict[str, list[dict]],
+                          items: Iterable[dict], *, taskbook_keys: Iterable[str] = (),
+                          bib_path: str = "") -> dict:
+    """把通过校验的 META / FN 建议落到输出 `.tex`（只有 `--coop-apply` 才走）。
+
+    只处理两类：
+      · `kind=metadata` + `verdict=corrected` → 写 `\\my*` 字段（白名单 + 占位/编辑值闸）；
+      · `kind=footnote` + `subkind=citation_unmatched` + `field=match_key` → 用 span 锚点
+        在 tex 里**唯一定位** `\\footnote{…}`，改写为 `\\parencite[loc]{key}`。
+
+    其余（mixed_manual / FN-W / note / confirmed / unresolved / BIB-*）一律只记录。
+    **0 条可写时不碰文件、不留回滚副本**；有写入才 `copy2` 一次 `<tex>.ai前`。
+    返回 `{n_applied, n_skipped, rollback_tex, applied, skipped, error}`。
+    """
+    from slcn import latex as _latex
+
+    out: dict = {"n_applied": 0, "n_skipped": 0, "rollback_tex": "",
+                 "applied": [], "skipped": [], "error": ""}
+    by_id = {str(it["id"]): it for it in items}
+    meta_groups: dict[str, list[dict]] = {}   # macro -> [{id, sug}]
+    fn_cands: list[dict] = []
+
+    def skip(id_: str, reason: str) -> None:
+        out["skipped"].append({"id": id_, "target": TARGET_TEX, "reason": reason})
+
+    for id_, sug_value in suggestions.items():
+        sugs = [sug_value] if isinstance(sug_value, dict) else list(sug_value or [])
+        it = by_id.get(id_) or {}
+        kind = str(it.get("kind") or "")
+        if kind not in ("metadata", "footnote"):
+            continue
+        for sug in sugs:
+            if sug.get("verdict") != "corrected":
+                skip(id_, "不是 corrected（只记录，待人工）")
+                continue
+            if kind == "metadata":
+                macro = _meta_target_macro(it, id_)
+                if not macro:
+                    skip(id_, "该项没有可写的模板字段（旧状态缺映射或「元数据源」），只记录")
+                    continue
+                meta_groups.setdefault(macro, []).append({"id": id_, "sug": sug})
+            else:
+                if not _FN_FID_RE.match(id_):
+                    skip(id_, "FN-W 项没有可定位的脚注，只记录")
+                    continue
+                if str(it.get("subkind") or "") not in FN_APPLICABLE_SUBKINDS:
+                    skip(id_, "只有 citation_unmatched 脚注支持提升（mixed_manual 等只记录）")
+                    continue
+                if str(sug.get("field") or "") != "match_key":
+                    skip(id_, "脚注项只支持 field=match_key 应用（其它只记录）")
+                    continue
+                fn_cands.append({"id": id_, "item": it, "sug": sug})
+
+    if not meta_groups and not fn_cands:
+        out["n_skipped"] = len(out["skipped"])
+        return out
+
+    if not tex_path or not os.path.isfile(tex_path):
+        for group in meta_groups.values():
+            for ent in group:
+                skip(ent["id"], "暂存目录里没有输出 .tex")
+        for cand in fn_cands:
+            skip(cand["id"], "暂存目录里没有输出 .tex")
+        out["n_skipped"] = len(out["skipped"])
+        out["error"] = "暂存目录里没有输出 .tex，元数据/脚注建议未应用"
+        return out
+
+    with open(tex_path, encoding="utf-8", errors="replace", newline="") as f:
+        tex = f.read()
+    macros = _latex.parse_macros(tex)
+    applied: list[dict] = []
+
+    # ① META：先分组查冲突/占位/编辑值，再逐字段写；每次写后回读校验。
+    for macro, entries in meta_groups.items():
+        # 白名单：编辑侧出版字段 ∪ ph1 记录的 META-LABEL 映射（其余一律不改）。
+        allowed = macro in EDITORIAL_TEX_FIELDS or any(
+            str(ent["id"]).startswith("META-LABEL-")
+            and str((by_id.get(ent["id"]) or {}).get("macro") or "") == macro
+            for ent in entries)
+        if not allowed:
+            for ent in entries:
+                skip(ent["id"], f"`{macro}` 不在元数据应用白名单（只记录）")
+            continue
+        cand_vals = {str(ent["sug"].get("value") or "").strip() for ent in entries}
+        if len(cand_vals) > 1:
+            for ent in entries:
+                skip(ent["id"], f"同一字段 `{macro}` 收到多个不同值，拒绝全部")
+            continue
+        value = next(iter(cand_vals))
+        why = _meta_value_reject(value, macro)
+        if why:
+            for ent in entries:
+                skip(ent["id"], why)
+            continue
+        m = macros.get(macro)
+        if m is None:
+            for ent in entries:
+                skip(ent["id"], f"输出 .tex 里没有字段 `{macro}`")
+            continue
+        cur = str(m.value or "").strip()
+        # 初排时该字段的值（ph1 记录）；与当前 tex 不一致 = 产物在初排后被改过 → 拒绝。
+        item_cur = str((by_id.get(entries[0]["id"]) or {}).get("current") or "")
+        if any(str((by_id.get(ent["id"]) or {}).get("current") or "") != item_cur
+               for ent in entries):
+            for ent in entries:
+                skip(ent["id"], f"`{macro}` 分组内初排取值不一致，拒绝")
+            continue
+        if item_cur:
+            if cur != item_cur:
+                for ent in entries:
+                    skip(ent["id"], f"`{macro}` 输出 .tex 与初排时取值不一致，拒绝覆盖")
+                continue
+        else:
+            # 旧状态（批54–56 的 ph1 没有记录初排取值）：只允许写模板默认/空/占位值。
+            if cur and cur != "null" and "未识别" not in cur \
+                    and cur not in _TEMPLATE_PLACEHOLDERS:
+                for ent in entries:
+                    skip(ent["id"], f"`{macro}` 已有取值（非占位），拒绝覆盖")
+                continue
+        escaped = _tex_escape(value)
+        try:
+            new_tex = _latex.set_field(tex, macro, escaped)
+        except (KeyError, ValueError) as e:
+            for ent in entries:
+                skip(ent["id"], f"字段 `{macro}` 改写失败：{e}")
+            continue
+        if str(_latex.get_macro_value(new_tex, macro) or "").strip() != escaped.strip():
+            for ent in entries:
+                skip(ent["id"], f"字段 `{macro}` 改写后校验不一致，放弃")
+            continue
+        tex = new_tex
+        for ent in entries:
+            applied.append({"id": ent["id"], "target": TARGET_TEX, "field": macro,
+                            "macro": macro, "value": value})
+
+    # ② FN：用 span 在 tex 里唯一定位 \footnote{…} → 正文 \parencite。
+    tb_keys = {str(k) for k in taskbook_keys}
+    bib_keys: set[str] = set()
+    if bib_path and os.path.isfile(bib_path):
+        try:
+            with open(bib_path, encoding="utf-8", errors="replace") as f:
+                bib_keys = {b.key for b in parse_bib_blocks(f.read()) if b.closed}
+        except OSError:
+            bib_keys = set()
+    for cand in fn_cands:
+        id_, it, sug = cand["id"], cand["item"], cand["sug"]
+        key = str(sug.get("value") or "").strip()
+        if not re.fullmatch(r"[^\s{},%#\\]+", key):
+            skip(id_, f"匹配键 `{_clip(key, 40)}` 含非法字符，拒绝")
+            continue
+        if key not in tb_keys or (bib_keys and key not in bib_keys):
+            skip(id_, f"匹配键 `{key}` 不在任务书键/当前 reference.bib 里，拒绝")
+            continue
+        evidence = str(it.get("evidence") or "")
+        locator = str(sug.get("locator") or "").strip()
+        if _PAGE_HINT_RE.search(evidence) and not locator:
+            skip(id_, "原文片段含页码线索但未给 locator（不丢页码），拒绝")
+            continue
+        if locator:
+            if not _LOCATOR_RE.match(locator):
+                skip(id_, f"locator `{_clip(locator, 30)}` 不是页码/页码区间，拒绝")
+                continue
+            locator = re.sub(r"\s*[-–—~]\s*", "--", locator)
+        needle = _squeeze(_tex_escape(evidence))
+        if not needle:
+            skip(id_, "该项没有可用锚点（evidence 为空），拒绝")
+            continue
+        hits = [(a, b, c) for (a, b, c) in _iter_tex_footnotes(tex)
+                if needle in _squeeze(tex[b:c])]
+        if len(hits) != 1:
+            skip(id_, f"脚注定位失败（escape 后锚点命中 {len(hits)} 处，需恰好 1 处）")
+            continue
+        a, _b, c = hits[0]
+        cmd = f"\\parencite[{locator}]{{{key}}}" if locator else f"\\parencite{{{key}}}"
+        tex = tex[:a] + cmd + tex[c + 1:]
+        applied.append({"id": id_, "target": TARGET_TEX, "field": "match_key",
+                        "macro": "", "value": key, "key": key, "locator": locator})
+
+    out["applied"] = applied
+    out["n_applied"] = len(applied)
+    out["n_skipped"] = len(out["skipped"])
+    if not applied:
+        out["error"] = "没有可安全应用到 .tex 的元数据/脚注建议（产物未改动）"
+        return out
+    rollback = tex_path + ".ai前"
+    shutil.copy2(tex_path, rollback)
+    with open(tex_path, "w", encoding="utf-8", newline="") as f:
+        f.write(tex)
+    out["rollback_tex"] = rollback
+    return out
+
+
+def restore_tex_backup(tex_path: str) -> bool:
+    """把 `<tex>.ai前` 拷回去（第五十七批：元数据/脚注建议应用的可逆入口）。"""
+    rb = tex_path + ".ai前"
+    if not os.path.exists(rb):
+        return False
+    shutil.copy2(rb, tex_path)
+    return True
+
+
+def merge_apply_summaries(*parts: dict | None) -> dict:
+    """合并「文献字段应用」与「.tex 元数据/脚注应用」两份总结（键向后兼容）。"""
+    out: dict = {"n_applied": 0, "n_skipped": 0, "rollback": "", "rollback_tex": "",
+                 "applied": [], "skipped": [], "error": ""}
+    errs: list[str] = []
+    for p in parts:
+        if not p:
+            continue
+        out["n_applied"] += int(p.get("n_applied") or 0)
+        out["n_skipped"] += int(p.get("n_skipped") or 0)
+        if p.get("rollback"):
+            out["rollback"] = p["rollback"]
+        if p.get("rollback_tex"):
+            out["rollback_tex"] = p["rollback_tex"]
+        out["applied"] += list(p.get("applied") or [])
+        out["skipped"] += list(p.get("skipped") or [])
+        if p.get("error"):
+            errs.append(str(p["error"]))
+    out["error"] = "；".join(errs)
+    return out
+
+
 # ── 两段式状态 / 指纹 ────────────────────────────────────────────────────
 
 
@@ -1134,7 +1529,7 @@ def make_stats(*, bib_total: int, bib_replied: int, low_total: int,
       · `bib_total` / `bib_replied` / `bib_pending`：文献条目总数 / 回填成功数 / 未回填数；
       · `low_total`：任务书「附一」里的低置信**项数**（ID 数，不是回复条数）；
       · `low_replied`：通过校验的低置信**回复条数**（同一 ID 多字段各算一条）；
-      · `low_applied`：其中真正落到 `reference.bib` 的条数（仅 `--coop-apply`）；
+      · `low_applied`：其中真正落到产物的条数（`reference.bib` 字段 / 输出 `.tex` 元数据与脚注；仅 `--coop-apply`）
       · `low_pending_manual`：仅记录、待人工的回复条数（unresolved / 不可应用 / 未勾 apply）。
     """
     bib_total = max(0, int(bib_total or 0))
@@ -1324,12 +1719,22 @@ def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
                      f"待人工 {len(apply_summary.get('skipped') or [])} 条")
             if apply_summary.get("rollback"):
                 L.append(f"- 应用前备份：`{os.path.basename(apply_summary['rollback'])}`")
+            if apply_summary.get("rollback_tex"):
+                L.append("- 应用前备份（.tex）：`"
+                         f"{os.path.basename(apply_summary['rollback_tex'])}`")
             # 「逐条记录」：哪一条、哪个键、哪个字段、改成什么，必须写得出来。
             if apply_summary.get("applied"):
                 L.append("- 已应用（逐条）：")
                 for a in apply_summary["applied"]:
-                    L.append(f"  - `{a.get('id', '')}`（键 `{a.get('key', '')}`）："
-                             f"`{a.get('field', '')}` ← {_code_span(a.get('value', ''), 200)}")
+                    if str(a.get("target") or "") == TARGET_TEX:
+                        loc = f"（定位 `{a['locator']}`）" if a.get("locator") else ""
+                        L.append(f"  - `{a.get('id', '')}`（.tex `"
+                                 f"{a.get('macro', '') or a.get('field', '')}`）："
+                                 f"`{a.get('field', '')}` ← "
+                                 f"{_code_span(a.get('value', ''), 200)}{loc}")
+                    else:
+                        L.append(f"  - `{a.get('id', '')}`（键 `{a.get('key', '')}`）："
+                                 f"`{a.get('field', '')}` ← {_code_span(a.get('value', ''), 200)}")
             if apply_summary.get("skipped"):
                 L.append("- 未应用（待人工）：")
                 for a in apply_summary["skipped"]:

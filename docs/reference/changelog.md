@@ -9,8 +9,15 @@ description: 当前版本与历史 Release。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
 
-## 未发布（2026-10-19，第 52–56 批）
+## 未发布（2026-10-19，第 52–57 批）
 
+- **低置信建议三类应用（第 57 批）**：`--coop-apply` 从「只应用文献字段」扩展为三类——
+  ① `BIB-*` → `reference.bib`（沿用四条安全校验）；② `META-*` → 输出 `.tex` 的 `\my*` 元数据
+  （只填空/模板占位，编辑侧已有值不覆盖，值过格式校验）；③ `FN-*` 窄口径：仅 `citation_unmatched`
+  纯引用脚注按回填的 `match_key`（键须在任务书与当前 bib 内）提升为正文 `\parencite[loc]{key}`
+  （原文含页码线索必须给 `locator`）。有写入才备份 `<名>.tex.ai前`（与 `reference.bib.ai前` 同构，
+  进最终交付目录、`--clean` 不删、可恢复）；其余建议只列清单待人工。无新 CLI 参数，
+  状态 schema 1 / `stats` 7 键不变，GUI 仅文案同步。
 - **C 类新口径默认开启**：Word 稿脚注文献按四类处理——纯引用脚注 → 正文 `\parencite[页码]{键}`
   （删脚注）；完整文献条目型并入并集参考文献；混合型保留脚注并出「请人工核对」warning；
   纯说明脚注原样。参考文献 = 脚注引注 ∪ 文末清单，按（作者 + 题名 + 年份 + 类型）去重，
@@ -19,7 +26,7 @@ description: 当前版本与历史 Release。
 - **AI 协同初排（两段式，第 54–56 批）**：外部 chat 免费流程——第一段 `--coop-taskbook-only` 只写暂存目录
   `<输出目录>/<名_姓>_待核/` + 《AI 核实任务书》（含「附一、初排低置信项」），编辑把任务书交给自己的 chat
   模型并回填；第二段 `--coop-replies` 校验指纹后并入文献字段、出低置信建议，`--coop-apply` 才改
-  `reference.bib`（先备份 `.ai前`，只应用文献字段；FN/META/BIB-LINE 只列建议待人工），最后编译并原子交付、
+  `reference.bib`（先备份 `.ai前`；第 54–56 批只应用文献字段，第 57 批扩展为三类，见上），最后编译并原子交付、
   生成 `_AI协同记录.md`。软件本身不上传内容、不调用 API、零费用；直连 API 通道另有 token 预算闸。
 - **GUI 接入两段式（第 55–56 批，macOS + Windows 对等）**：「初排转换」页新增默认关闭的
   「AI 协同初排（两段式；外部 chat 免费流程）」勾选与状态区——第一段后「待人工核实（未交付）」，

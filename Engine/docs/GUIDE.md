@@ -258,7 +258,7 @@ False：`docx_audit` 的冻结基线不随总开关变。
   专项验证纯引用→parencite、混合脚注保留 + warning、并集 bib 去重、无脚注稿零变化。
 - **回退**：命令行 `--no-c-class-union`；GUI 无开关，默认即新口径。
 
-#### 两段式 AI 协同初排（第五十四～五十六批；外部 chat 免费流程）
+#### 两段式 AI 协同初排（第五十四～五十七批；外部 chat 免费流程）
 
 编辑用自己的 chat 模型（豆包/千问/DeepSeek 等）核实任务书；**软件本身不上传任何内容、不调用 API、
 不产生费用**。只有走 `--llm-*` 直连 API 通道时才有 token 预算闸（见下）。
@@ -275,12 +275,13 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 # 第 56 批：--coop-replies 可重复（chat 把 JSON 与 BibTeX 拆成两个文件时两块都传）
 $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
     --coop-replies "<回填A>" [--coop-replies "<回填B>" …] [--coop-apply] [--compile] [--clean]
-# → 最终目录 + _AI协同记录.md；--compile 才编译；--coop-apply 才改 reference.bib
+# → 最终目录 + _AI协同记录.md；--compile 才编译；--coop-apply 才改 reference.bib 与输出 .tex
 ```
 
 - **ph1**：初排产物、任务书、`_AI协同状态.json` 只写暂存目录（默认 `<out>/<名>_待核/`，
   `--coop-stage` 可改）；**最终交付目录不写、不打印交付成功**。任务书末尾多「附一、初排低置信项」
-  机器可读节（ID `FN-…` / `BIB-…` / `META-…`）；第 56 批起还多「附二、回填说明」——把回填
+  机器可读节（ID `FN-…` / `BIB-…` / `META-…`；第 57 批起 FN 纯引用项给 `match_key` 白名单、
+  META 项记目标 `\my*` 宏名，旧状态缺映射的只记录）；第 56 批起还多「附二、回填说明」——把回填
   **=完整 BibTeX（一个代码块）+ 附一 JSON 两部分、都要交**写死，并说明 chat 拆成多文件也可一起导入。
   协同任务书里第三节第 10 条限定为「**文献条目部分**只输出 bibtex 代码块」，附一 JSON 按附一格式
   单独回复（非协同任务书逐字节不变）。隐含 `--verify-refs`；与 `--no-ai-merge` 组合时
@@ -288,7 +289,8 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 - **ph2**：`--source` 仍**必填**（重算参数用）；从暂存目录读 `_AI协同状态.json` 校验**指纹**
   （源稿/参数变了拒绝继续，退出 2、产物不动）；解析回填（文献键回复用 `@type{键, …}` bibtex 块；
   低置信项按任务书 JSON 格式，同一 ID 可分字段多条）→ 并入 `reference.bib` → 低置信建议默认只写
-  `<名>_AI建议.md/.jsonl`；编译在 promote 之前（需 `--compile`）；**原子交付**（旧目录先备份、
+  `<名>_AI建议.md/.jsonl`（第 57 批起 accepted 行带 `target`）；`--coop-apply` 时才再应用
+  META/FN 建议到输出 `.tex`（见下条）；编译在 promote 之前（需 `--compile`）；**原子交付**（旧目录先备份、
   失败不破坏既有产物）；成功后写 `_AI协同记录.md`（回填/并入/拒绝/待人工计数）。
   **第 56 批起**：① `--coop-replies` **可重复**（按命令行顺序读入、同一真实路径去重；多目录时显示名
   带目录前缀；**只传一个路径的旧行为逐字节不变**）；② `--clean` 生效——编译后先按 `slcn.clean`
@@ -297,9 +299,17 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
   low_pending_manual`，**schema 仍是 1**，旧状态无此节 → 外壳回退估算）；④ 解析后若「显式给了回填、
   但一条文献条目都没确认」→ 日志 `⚠⚠⚠` 醒目 warning（可能漏导入 bibtex/bib），并写 `stats` 警示口径；
   ⑤ 最终摘要统一为「回填：x 条（未回填 y 条）；低置信回复：z 条（可应用 a / 仅记录待人工 b）」。
-- **`--coop-apply`**：只把**通过校验**的低置信建议也应用到产物——先备份 `reference.bib.ai前`，
-  只应用 `kind=bib_entry` 且 `verdict=corrected` 的文献字段（沿用 `aibib.merge()` 硬保障：
-  键不变 / 恰好一条 / 不增删条目）；FN / META / BIB-LINE 建议只列清单等人工。**不加此开关，
+- **`--coop-apply`（第 57 批起三类应用）**：只把**通过校验**的低置信建议也应用到产物——
+  ① `BIB-*`（`corrected` 的文献字段）→ `reference.bib`，先备份 `reference.bib.ai前`，沿用
+  `aibib.merge()` 硬保障（键不变 / 恰好一条 / 不增删条目）；
+  ② `META-*`（`corrected`）→ 输出 `.tex` 的 `\my*` 字段：只改编辑侧出版字段白名单 ∪ 初排记录的
+  「未识别字段→宏」；编辑侧已有值、或初排后产物被改过的不覆盖（只填空/模板占位），值过格式校验
+  （非空、无换行/花括号/反斜杠；卷/期/年/页/日期须符合数字格式）；
+  ③ `FN-*` 窄口径：仅 `citation_unmatched` 纯引用脚注 + 回复 `field=match_key` + 键在任务书与当前
+  `reference.bib` 里 → 用原文片段锚点**唯一命中** tex 里的 `\footnote{…}`，提升为
+  `\parencite[loc]{key}`（原文含页码线索时必须给 `locator`，不丢页码）。
+  有写入才把输出 `.tex` 备份成 `<名>.tex.ai前`（0 条不写盘、不留备份）。其余（`mixed_manual` /
+  `FN-W` / `note` / `BIB-LINE` / `confirmed` / `unresolved`）只列清单待人工。**不加此开关，
   产物不因低置信建议改变**。若同时给 `--no-ai-merge`，`--coop-apply` 不生效（只记录建议）。
 - **失败边界**：回填全部无效、指纹不符、编译失败 → 非 0 退出，最终交付目录**保持原样**。
 - **预算闸只约束直连 API 通道**（`--llm-*` 自动预跑）：`--ai-budget-tokens`（单篇，默认 30000）/
@@ -327,7 +337,9 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 - **GUI 限制（如实，不夸大）**：① 建议清单 / 建议摘要**第二段跑完才生成**（`_AI建议.md/.jsonl`）；
   ② `--coop-apply` 的决定**必须在点「运行第二段」之前**做——`phase=done` 后同一回填重跑是**幂等早退**，
   回头再勾无效，需重跑第一段（两壳都是「先加回填清单 → 勾 apply → 运行第二段」）；
-  ③ `--coop-apply` 当前**只应用文献字段**（`FN-*` / `META-*` / `BIB-LINE` 只列建议待人工）；
+  ③ `--coop-apply` 应用到产物的是三类：`BIB-*`→`reference.bib`；`META-*`→输出 `.tex` 的 `\my*`；
+     `FN-*` 仅 `citation_unmatched` 纯引用脚注→`.tex` 正文 `\parencite`（写前各留 `.ai前`；
+     其余 `mixed_manual` / `FN-W` / `BIB-LINE` 及未通过校验项只列建议待人工）；
   ④ GUI **未做任务书自动分片**（多片回填需手动拆分，或多文件 / 目录 / 剪贴板一起导入）；
   ⑤ 第一段不写最终交付目录，**未跑第二段不算交付**；
   ⑥ **回填两部分都要交**（完整 BibTeX + 附一 JSON）：只交一部分 → 文献回填 0/y + 橙色警告，
@@ -367,7 +379,7 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 | `--coop-taskbook-only` | **AI 协同初排第一段**：初排产物 + 《AI 核实任务书》只写暂存目录（默认 `<out>/<名>_待核/`），**不写最终交付目录、不调用任何 API**；隐含 `--verify-refs`，任务书末尾加「附一、初排低置信项」；第 56 批起另加「附二、回填说明」（回填=完整 BibTeX + 附一 JSON 两部分），协同任务书第三节第 10 条只限定文献条目部分 |
 | `--coop-stage` | 协同初排的暂存目录（默认 `<out>/<名>_待核/`），ph1/ph2 通用；状态文件 `_AI协同状态.json` 写在这里、不随交付进最终目录 |
 | `--coop-replies` | **第二段**：读入外部 chat 回填（`.md/.txt/.bib/.json` 等文件或目录，目录按文件名排序）→ 校验指纹 → 并入文献字段 / 写低置信建议 →（`--compile` 时）编译 →（`--clean` 时先清中间文件）→ 原子交付。**第 56 批起可重复**（`--coop-replies A --coop-replies B`，按命令行顺序、同一真实路径去重；只传一个路径行为不变）。回填全无效或指纹不符退出 2、产物不动；`--source` 仍必填 |
-| `--coop-apply` | 配合 `--coop-replies`：把**通过校验**的低置信建议也应用到产物（先备份 `reference.bib.ai前`；只应用文献字段建议，脚注/元数据/文献区原文仍列待人工）。默认只写 `<名>_AI建议.md/.jsonl`；给 `--no-ai-merge` 时不生效 |
+| `--coop-apply` | 配合 `--coop-replies`：把**通过校验**的低置信建议也应用到产物——`BIB-*`→`reference.bib`（先备份 `reference.bib.ai前`）、`META-*`→输出 `.tex` 的 `\my*` 元数据（编辑侧已有值不覆盖）、`FN-*` 仅 `citation_unmatched` 纯引用脚注→`.tex` 正文 `\parencite`（`.tex` 写前备份 `<名>.tex.ai前`；0 条不写盘）。其余（`mixed_manual` / `FN-W` / `BIB-LINE`）只列待人工。默认只写 `<名>_AI建议.md/.jsonl`；给 `--no-ai-merge` 时不生效 |
 | `--ai-budget-tokens` | 单篇**直连 API 通道** token 预算（默认 30000；0 = 不限）；超预计用量先打印账、退出 2、不发起请求。外部 chat 回填不产生费用 |
 | `--ai-batch-budget-tokens` | 单批**直连 API 通道** token 预算（默认 1000000；0 = 不限），行为同上 |
 
@@ -1090,7 +1102,7 @@ $PY convert.py --source X.docx --out Y --verify-refs --no-bibdb       # 显式�
 | **LaTeX 前言依赖** | ✅ **已支持迁移**（第 120 条）：多文件 `\input` 展开、宏包 / tikz 库 / `\newtheorem` 等定义、符号宏自动补包；**边界**：纯离线不解析宏包内部定义，作者重定义宏包命令且正文被用到时仍可能 `already defined`（日志保留原报错，交编辑手工处理） |
 | **LaTeX 定义位置** | ✅ **已支持加固**（第 130 条）：本地 `.sty` 五类定义 + 普通宏、本地 `.cls` / `.def` / `.cfg`、正文区定义提示（不迁移）、编译前环境缺失预检；**边界**：纯离线不解析宏包内部定义（预检对宏包自带环境可能误报、只警告不阻断），`\def` / `\let` / `\renewenvironment` 不搬 |
 | **规则覆盖率** | 净命中规则 6 条；L2 仍有约 100–150 块/篇待处理，多为语义驱动的标点重排 |
-| **两段式协同 GUI（第 55–56 批）** | 建议清单/建议摘要**第二段跑完才生成**；`--coop-apply` 须在点「运行第二段」**前**勾（`phase=done` 后重跑幂等早退）；只自动应用文献字段（FN / META / BIB-LINE 只列建议）；GUI 未做任务书自动分片；第一段只写暂存目录、未跑第二段不算交付；**回填两部分都要交**（完整 BibTeX + 附一 JSON），只交一部分 → 文献回填 0/y + 橙色警告（第 56 批） |
+| **两段式协同 GUI（第 55–57 批）** | 建议清单/建议摘要**第二段跑完才生成**；`--coop-apply` 须在点「运行第二段」**前**勾（`phase=done` 后重跑幂等早退）；第 57 批起三类应用（`BIB-*`→bib、`META-*`→`.tex` 的 `\my*`、`FN-*` 窄口径→`.tex` 的 `\parencite`；写前各留 `.ai前`；其余只列建议）；GUI 未做任务书自动分片；第一段只写暂存目录、未跑第二段不算交付；**回填两部分都要交**（完整 BibTeX + 附一 JSON），只交一部分 → 文献回填 0/y + 橙色警告（第 56 批） |
 
 ---
 

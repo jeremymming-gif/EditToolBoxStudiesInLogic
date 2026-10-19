@@ -389,8 +389,9 @@ class ConvertTab(TabPage):
         self.v_coop_apply = tk.BooleanVar(value=False)
         _check(run2, "一键修改产物（--coop-apply）", self.v_coop_apply).pack(
             side="left", padx=(10, 0))
-        ttk.Label(run2, text="应用前先备份 reference.bib.ai前（可恢复）；"
-                             "应用决定须在运行前勾选，第二段交付后重跑是幂等早退",
+        ttk.Label(run2, text="应用前先备份 reference.bib.ai前 / <名>.tex.ai前（可恢复）；"
+                             "文献字段→bib、元数据→.tex 的 \\my*、citation_unmatched 脚注→.tex 的 "
+                             "\\parencite；须在运行前勾选，交付后重跑是幂等早退",
                   style="Muted.TLabel").pack(side="left", padx=(6, 0))
         self.v_coop_summary = tk.StringVar(value="")
         ttk.Label(self.coop_panel, textvariable=self.v_coop_summary, style="Muted.TLabel",

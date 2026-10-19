@@ -512,8 +512,8 @@ enum ConvertFeature {
             for path in o.coopRepliesPaths { log("          \(path)\n") }
             log("  暂存   \(o.coopStage)\n")
             log("  应用   " + (o.coopApply
-                ? "开（--coop-apply：先备份 reference.bib.ai前；只应用文献字段建议，"
-                  + "脚注/元数据/文献区原文仍列待人工）\n"
+                ? "开（--coop-apply：先备份 reference.bib.ai前；应用 BIB 文献字段、META 元数据"
+                  + "与 FN 脚注匹配建议（.tex 另留 <名>.tex.ai前），其余仍列待人工）\n"
                 : "关：只写建议清单，**不改产物**（要应用请在跑第二段前勾选）\n"))
             log("  清理   " + (o.clean
                 ? "开（--clean：编译后清理暂存目录的中间文件，再交付）\n"

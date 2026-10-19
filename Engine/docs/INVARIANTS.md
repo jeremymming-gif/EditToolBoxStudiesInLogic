@@ -48,6 +48,7 @@
    `Engine/tests/test_issue_tools.py` 校验 `cleantemp --dry-run` 的契约行落在最后一行、`compileall --only` 空集退出 0。
 5. **产物布局与文件名是契约的一部分**（`<out>/<作者名>/…`、`reference.bib.ai前`、`_文献核实.md`、`_回读校验报告.md`），不许改。
    位置：`Engine/docs/ENGINE_API.md` 二「产物」、十.3。
+   第 57 批起协同交付还多 `<名>.tex.ai前`（低置信 META/FN 建议改写输出 `.tex` 前的备份）：与 bib 备份同构——有写入才复制、随原子交付进最终目录、`--clean` 不删（不在 `Engine/slcn/clean.py` 的中间文件后缀表里）；bib 用 `slcn/coop.py` 的 `restore_bib_backup()` 复原、`.tex` 用 `restore_tex_backup()`；两份备份各自只代表「本次之前」。
 
 ## 四、判据与体例的权威位置
 

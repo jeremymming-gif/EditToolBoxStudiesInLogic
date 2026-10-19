@@ -466,6 +466,10 @@ class BuildResult:
     audit: list[tuple[str, str, int, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     missing_fields: list[str] = field(default_factory=list)
+    # 第五十七批：未识别字段的 (人话标签, 模板 macro) 对。coop 任务书的
+    # META-LABEL-* 要把标签映射回输出 tex 的 \my* 宏名，才能应用元数据建议。
+    # **纯附加、默认空**：非协同路径的产物/行为逐字节不变。
+    undetected_fields: list[tuple[str, str]] = field(default_factory=list)
     bib_keys_used: set[str] = field(default_factory=set)
     template: str = ""  # 本次采用的模板说明（版面样式 + 骨架）
     # 「条目 → 源稿原文行」的两份材料（第 68 条），**纯附加**、默认空：
@@ -827,6 +831,7 @@ def build_latex(
     # ── 必填字段解析不出来 → 写占位符 + 警告，不许留模板默认值 ──
     #    清单 = 文章级/第一作者字段 + 「确实存在的合著者」的单位与邮箱
     undetected: list[str] = []
+    undetected_pairs: list[tuple[str, str]] = []
     for name, label in REQUIRED_FIELDS["en" if is_en else "zh"] + coauthor_fields(moved_vals):
         if name not in tpl_fields:
             continue
@@ -834,6 +839,7 @@ def build_latex(
             continue
         tpl = set_field(tpl, name, missing_placeholder(name, label))
         undetected.append(label)
+        undetected_pairs.append((label, name))
     if undetected:
         say(f"   ⚠ 未识别 {len(undetected)} 个字段，已在产物中写占位符：{'、'.join(undetected)}")
         warnings.append(missing_note(undetected))
@@ -1021,6 +1027,7 @@ def build_latex(
         audit=audit,
         warnings=warnings,
         missing_fields=missing,
+        undetected_fields=undetected_pairs,
         bib_keys_used=extract_bibkeys_from_body(body),
         expanded_inputs=expanded_inputs,
     )
@@ -1893,6 +1900,7 @@ def build_docx(
     # ── 必填字段解析不出来 → 写占位符 + 警告，不许留模板默认值 ──
     #    清单 = 文章级/第一作者字段 + 「确实存在的合著者」的单位与邮箱
     undetected: list[str] = []
+    undetected_pairs: list[tuple[str, str]] = []
     for name, label in REQUIRED_FIELDS["en" if is_en else "zh"] + coauthor_fields(fields):
         if name in ov or name not in tpl_fields:
             continue
@@ -1900,6 +1908,7 @@ def build_docx(
             continue
         fields[name] = missing_placeholder(name, label)
         undetected.append(label)
+        undetected_pairs.append((label, name))
     if undetected:
         say(f"   ⚠ 未识别 {len(undetected)} 个字段，已在产物中写占位符：{'、'.join(undetected)}")
         warnings.append(missing_note(undetected))
@@ -2070,6 +2079,7 @@ def build_docx(
         bib_keys_used={e.key for e in doc.refs},
         # 第 68 条：把「条目 → 源稿原文」两份材料带出去（⑪ 的任务书与 AI 预跑要用），
         # 只做浅拷贝，不改 doc 本身。
+        undetected_fields=undetected_pairs,
         ref_raw_lines=list(doc.ref_raw_lines),
         ref_raw_by_key=dict(doc.ref_raw_by_key),
     )
