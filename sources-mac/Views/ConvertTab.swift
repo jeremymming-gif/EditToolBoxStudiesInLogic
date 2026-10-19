@@ -14,6 +14,25 @@ final class ConvertModel: ObservableObject {
     @Published var showAdvanced = false
     /// U3：本次运行的取消句柄（运行中「开始转换」变成「取消」）
     var cancel: RunCancel? = nil
+
+    // MARK: - 第 55 批：两段式「AI 协同初排」的界面状态机
+    //
+    // `coopStage` 由**扫描暂存目录**得出（只读引擎写的 `_AI协同状态.json`），
+    // 是按钮组与状态文案的唯一依据：没有它 = 尚未初排；`phase=ph1` = 待人工核实
+    // （**未交付**）；`phase=done` = 已交付。**绝不**把暂存目录当交付目录展示。
+
+    /// 当前源稿在输出目录下匹配到的暂存目录（最近修改的那个）
+    @Published var coopStage: CoopFeature.StageState? = nil
+    /// 匹配到的候选数（>1 时界面提示「已选最近的」）
+    @Published var coopCandidates = 0
+    /// 「一键修改产物（--coop-apply）」—— 默认不勾；必须在跑第二段**之前**决定
+    @Published var coopApply = false
+    /// 第二段成功后才有的建议摘要（从 `<stem>_AI建议.jsonl` 统计）
+    @Published var coopSuggestions: CoopFeature.SuggestionsSummary? = nil
+    /// 协同记录文件（已交付且文件确实存在时非空）
+    @Published var coopRecordPath = ""
+    /// 最近一次协同运行的失败说明（退出码 + 日志尾部）
+    @Published var coopFailure = ""
 }
 
 struct ConvertTab: View {
@@ -25,6 +44,8 @@ struct ConvertTab: View {
     /// 第 132 条：引用库设置（核实上限 / 先算账 / 全量 / 查不查库 / 手动库路径）。
     /// 与「引用库设置」页共用同一实例；本页在**点击转换时现取**（与 AI 旋钮同一口径）。
     @ObservedObject var bibdb: BibDbSettings
+    /// 第 55 批：AI 预算闸（单篇/单批 token）。点击转换时现取；只约束直连 API 通道。
+    @ObservedObject var budget: AIBudgetSettings
 
     @StateObject private var model = ConvertModel()
     /// 责编名单（采集 + 自定义 + 默认），见 EditorStore.swift
@@ -80,6 +101,15 @@ struct ConvertTab: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 18)
                         }
+                        if model.options.coop {
+                            // 第 55 批：两段式第一段**一定**出任务书（引擎隐含 --verify-refs），
+                            // 所以这个勾选框的状态在协同模式下不改变行为 —— 必须说清楚，不许让界面说谎。
+                            Text("两段式第一段一定会生成《文献核实任务书》（引擎隐含 --verify-refs）；"
+                                 + "上面的勾选状态在协同模式下不改变行为。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 18)
+                        }
                         // 第 132 条：核实成本闸门提示（值来自「引用库设置」页，点击转换时现取）。
                         // 写在这里而不是设置页：编辑勾「生成任务书」时就该看见「这次核多少条」。
                         verifyGateHint
@@ -95,6 +125,19 @@ struct ConvertTab: View {
                             Text("勾上 = 只出《文献核实任务书》（引擎侧 --no-ai-merge）：AI 结果不写进产物，"
                                  + "reference.bib 一个字节都不动。不勾时 AI 结果会并入交付的 reference.bib，"
                                  + "合并之前的那份会先备份成 reference.bib.ai前（要回滚就把它覆盖回去）。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 18)
+                        }
+                        // ---------- 第 55 批：两段式「AI 协同初排」开关（默认关） ----------
+                        // 默认关 → 协同相关字段一个都不进 argv，转换行为与批 54 逐字节相同。
+                        Toggle("AI 协同初排（两段式；外部 chat 免费流程）",
+                               isOn: $model.options.coop)
+                            .onChange(of: model.options.coop) { on in
+                                if on { refreshCoopStage() }
+                            }
+                        if model.options.coop {
+                            Text(coopToggleHintText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 18)
@@ -294,7 +337,11 @@ struct ConvertTab: View {
                             Button {
                                 run(scanOnly: false)
                             } label: {
-                                Label("开始转换", systemImage: "wand.and.stars")
+                                Label(model.options.coop
+                                      ? "开始第一段（出任务书）"
+                                      : "开始转换",
+                                      systemImage: model.options.coop
+                                      ? "doc.badge.gearshape" : "wand.and.stars")
                             }
                             .keyboardShortcut(.return, modifiers: .command)
                             .disabled(model.options.source.isEmpty || model.options.out.isEmpty)
@@ -305,9 +352,22 @@ struct ConvertTab: View {
                             Text("运行中…（点「取消」可中止）").foregroundStyle(.secondary)
                         }
                     }
+
+                    // ---------- 第 55 批：两段式状态区 ----------
+                    if model.options.coop {
+                        coopPanel
+                    }
                 }
                 .padding(16)
             }
+        }
+        // 第 55 批：勾着协同开关时，源稿/输出目录一改就重新定位暂存目录
+        // （编辑可能先初排、再换输出目录继续——状态区必须跟着事实走）。
+        .onChange(of: model.options.source) { _ in
+            if model.options.coop { refreshCoopStage() }
+        }
+        .onChange(of: model.options.out) { _ in
+            if model.options.coop { refreshCoopStage() }
         }
     }
 
@@ -397,6 +457,13 @@ struct ConvertTab: View {
     ///   ④ 失败时的安全行为：调用失败 / 回复被截断 / 一条都没通过安全校验 → bib 一字节不改。
     @ViewBuilder private var aiHint: some View {
         if model.options.useAI {
+            if model.options.coop {
+                // 第 55 批：协同模式下直连 API 全程不生效（`CoopFeature.prepare` 强制关闭），
+                // 不许让「已配置 AI」这行绿色文案误导编辑以为本次会调 API。
+                Text("⚠ 已勾「AI 协同初排（两段式）」：本次**不传任何 --llm-* 参数**，"
+                     + "直连 API 不生效（两段式全程不调用 API；外部 chat 由编辑自己操作）。")
+                    .foregroundStyle(.orange)
+            }
             if settings.aiConfigured {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("✔ 已配置 \(settings.aiSummary)（密钥 \(AppSettings.mask(settings.aiKey))）"
@@ -453,6 +520,252 @@ struct ConvertTab: View {
         }
     }
 
+    // MARK: - 第 55 批：两段式「AI 协同初排」
+
+    /// 勾上两段式后、开关下面那行说明。**必须说清三件事**（用户 2026-10-19 口径）：
+    /// 软件零上传/零费用；第一段不交付；直连 API 开关在协同模式下不生效。
+    private var coopToggleHintText: String {
+        "软件不上传、不调用 API、零费用：第一段只在本机生成暂存目录 + 任务书，"
+        + "任务书由编辑自己交给外部 chat（豆包/千问/DeepSeek 等）核实；"
+        + "把回复导入后跑第二段，**这时才交付**。\n"
+        + "⚠ 勾着两段式时「用 AI 处理参考文献」的直连 API 通道本次不生效（不传 --llm-*）；"
+        + "「只扫描源稿」不受影响。"
+    }
+
+    /// 还没找到暂存目录时的一行说明。
+    private var coopNoStageText: String {
+        "尚未初排：点上方「开始第一段（出任务书）」→ 打开任务书去外部 chat 核实 → "
+        + "「导入 AI 回复…」→ 运行第二段。第一段跑完前不会写最终交付目录。"
+    }
+
+    /// 「一键修改产物」勾选框旁边必须写清的限制（引擎批 54 现状，不夸大）。
+    private var coopApplyHintText: String {
+        "勾上 = 引擎 `--coop-apply`：把**通过校验的文献字段**建议写进 reference.bib，"
+        + "写前先备份 `reference.bib.ai前`（可恢复）。脚注 / 元数据 / 文献区原文建议"
+        + "**只列清单待人工**（引擎当前只应用文献字段）。\n"
+        + "⚠ 这个决定必须在跑第二段**之前**做：引擎 phase=done 后同一回填重跑是幂等早退，"
+        + "看到建议再回头勾已经晚了。"
+    }
+
+    /// 建议摘要的时间点说明 —— 建议 jsonl 是**第二段**才生成的，别在导入时就承诺能看到。
+    private var coopSuggestionsTimingText: String {
+        "建议清单（`_AI建议.md/.jsonl`）在第二段跑完后才生成；现在看不到是正常的。"
+        + "第二段成功后这里会显示「通过校验 / 拒绝 / 待人工」计数。"
+    }
+
+    /// 已交付状态下的一行提示。
+    private var coopDeliveredText: String {
+        "已交付。若还要改回填内容或换了源稿：重新跑第一段会重置暂存目录状态；"
+        + "对同一份回填重跑第二段是幂等早退（不会重复应用）。"
+    }
+
+    /// 两段式的状态区：状态行 + 按钮组（按钮可见性完全由 `coopStage.phase` 决定）。
+    @ViewBuilder private var coopPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            Text("AI 协同初排（两段式）").font(.callout).bold()
+            if !model.coopFailure.isEmpty {
+                Text(model.coopFailure)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let stage = model.coopStage {
+                coopStagePanel(stage)
+            } else {
+                Text(coopNoStageText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// 暂存目录状态面板。**第一段状态只叫「暂存目录」**，绝不写成交付目录。
+    @ViewBuilder private func coopStagePanel(_ stage: CoopFeature.StageState) -> some View {
+        Text("状态：" + CoopFeature.stageStatusText(stage))
+            .font(.callout).bold()
+        if model.coopCandidates > 1 {
+            Text("发现 \(model.coopCandidates) 个匹配的暂存目录，已选最近修改的一个：\(stage.stageDir)")
+                .font(.caption).foregroundStyle(.orange)
+        }
+        if stage.phase == "done" {
+            coopDeliveredPanel(stage)
+        } else {
+            coopPendingPanel(stage)
+        }
+    }
+
+    /// 已交付：只显示**最终目录**与协同记录（暂存目录可以仍在，但不作为交付物展示）。
+    @ViewBuilder private func coopDeliveredPanel(_ stage: CoopFeature.StageState) -> some View {
+        Text("交付目录：\(stage.deliveredTo.isEmpty ? stage.finalDir : stage.deliveredTo)")
+            .font(.system(.caption, design: .monospaced))
+            .textSelection(.enabled)
+        HStack(spacing: 10) {
+            Button("打开交付目录") { openPath(stage.deliveredTo.isEmpty ? stage.finalDir : stage.deliveredTo) }
+            if !model.coopRecordPath.isEmpty {
+                Button("打开协同记录") { openPath(model.coopRecordPath) }
+            }
+        }
+        if let suggestions = model.coopSuggestions {
+            Text("建议摘要：" + suggestions.summary)
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Text(coopDeliveredText)
+            .font(.caption).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// 待人工核实（ph1 / ph2 未完成）：暂存目录 + 任务书 + 回填 + 一键修改产物 + 第二段。
+    @ViewBuilder private func coopPendingPanel(_ stage: CoopFeature.StageState) -> some View {
+        Text("暂存目录（**未交付**，不是最终产物）：\(stage.stageDir)")
+            .font(.system(.caption, design: .monospaced))
+            .textSelection(.enabled)
+        HStack(spacing: 10) {
+            if !stage.taskbook.isEmpty {
+                Button("打开任务书") { openPath(stage.taskbook) }
+            }
+            Button("打开暂存目录") { openPath(stage.stageDir) }
+            Button("导入 AI 回复…") { importReplies() }
+            if model.running {
+                ProgressView().controlSize(.small)
+            }
+        }
+        Text("回填：" + (model.options.coopReplies.isEmpty
+                        ? "（尚未选择；可多选同一目录下的回复文件，或选整个目录）"
+                        : model.options.coopReplies))
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(model.options.coopReplies.isEmpty ? Color.secondary : Color.primary)
+            .textSelection(.enabled)
+        Toggle("一键修改产物（--coop-apply；默认不勾）", isOn: $model.coopApply)
+            .toggleStyle(.checkbox)
+        Text(coopApplyHintText)
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        Button {
+            runSecondPhase()
+        } label: {
+            Label("运行第二段（续跑 → 编译 → 交付）", systemImage: "square.and.arrow.down.on.square")
+        }
+        .disabled(model.running || model.options.coopReplies.isEmpty || model.options.source.isEmpty)
+        Text(coopSuggestionsTimingText)
+            .font(.caption).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        Text("第一段不写最终交付目录；第二段成功后才交付。失败时最终目录保持原样。")
+            .font(.caption).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// 扫描当前源稿对应的暂存目录并刷新状态（勾开关 / 改源稿 / 改输出目录 / 跑完一段时调用）。
+    private func refreshCoopStage() {
+        guard !model.running else { return }
+        let source = CoopFeature.normalizePath(model.options.source)
+        let out = CoopFeature.normalizePath(model.options.out)
+        guard !source.isEmpty, !out.isEmpty else {
+            model.coopStage = nil
+            model.coopCandidates = 0
+            return
+        }
+        apply(CoopFeature.refresh(outRoot: out, source: source))
+    }
+
+    /// 把一次扫描结果写进界面状态（主线程）。
+    private func apply(_ refresh: CoopFeature.StageRefresh) {
+        model.coopStage = refresh.selected
+        model.coopCandidates = refresh.stages.count
+        model.coopSuggestions = refresh.suggestions
+        model.coopRecordPath = refresh.recordExists ? (refresh.selected?.recordPath ?? "") : ""
+    }
+
+    /// 在访达里打开文件/目录（失败不静默：写进运行日志）。
+    private func openPath(_ path: String) {
+        guard !path.isEmpty else {
+            log.append("⚠ 要打开的路径为空。\n")
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            log.append("⚠ 路径不存在：\(path)\n")
+        }
+    }
+
+    /// 「导入 AI 回复…」：选文件（可多选同一目录下的多个）或整个目录。
+    /// 引擎 `--coop-replies` 只接受**一个**文件或目录；多选文件时取它们共同的父目录
+    /// （并写日志说明引擎会读入该目录下全部可读文本），避免静默只取第一个。
+    private func importReplies() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.title = "选择 AI 回复文件（可多选同一目录下的文件）或整个回复目录"
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        guard !urls.isEmpty else { return }
+        var path = ""
+        if urls.count == 1 {
+            path = urls[0].path
+        } else {
+            let dirs = urls.filter { isDirectory($0.path) }
+            let parents = Set(urls.map { ($0.path as NSString).deletingLastPathComponent })
+            if dirs.isEmpty && parents.count == 1 {
+                path = parents.first ?? ""
+                log.append("（已多选 \(urls.count) 个回复文件：引擎按目录读入 \(path) 下全部可读文本）\n")
+            } else {
+                model.coopFailure = "导入失败：引擎的 --coop-replies 只接受一个文件或一个目录。"
+                    + "请只选一个文件 / 一个目录，或多选**同一目录下**的回复文件。"
+                return
+            }
+        }
+        model.coopFailure = ""
+        model.options.coopReplies = path
+        log.append("回填已选择：\(path)\n")
+    }
+
+    private func isDirectory(_ path: String) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    /// 统一的运行外壳：后台跑引擎 → 后台扫描暂存目录 → 主线程收尾。
+    /// （第 55 批把「跑完第一段后刷新状态」集中在这里，普通转换也走同一条路。）
+    private func startRun(_ o: ConvertFeature.Options, knobs: AIEngineKnobs,
+                          onFinish: @escaping (Int32) -> Void) {
+        // U3：每次转换一个取消句柄；`Shell.run` 把 python 子进程注册进 logger.cancel。
+        let cancel = RunCancel()
+        model.cancel = cancel
+        model.running = true
+        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
+        let m = model
+        let coop = o.coopPhase
+        let source = o.source
+        let outRoot = o.out
+        DispatchQueue.global(qos: .userInitiated).async {
+            let status = ConvertFeature.run(options: o, knobs: knobs, log: logger)
+            // 第 55 批：协同模式跑完后在**后台线程**读文件（JSON/建议清单都很小），
+            // 主线程只做赋值 —— 不在主线程做文件 IO。
+            var refresh: CoopFeature.StageRefresh? = nil
+            if coop != .off {
+                refresh = CoopFeature.refresh(outRoot: outRoot, source: source)
+            }
+            DispatchQueue.main.async {
+                m.running = false
+                if let refresh = refresh { self.apply(refresh) }
+                onFinish(status)
+            }
+        }
+    }
+
+    private func appendFailure(_ text: String) {
+        let tail = CoopFeature.logTail(log.text)
+        model.coopFailure = text + (tail.isEmpty ? "" : "\n日志尾部：\n" + tail)
+    }
+
     private func run(scanOnly: Bool) {
         var o = model.options
         o.scanOnly = scanOnly
@@ -481,22 +794,68 @@ struct ConvertTab: View {
         // 手动库文件只在「查库开着 + 文件真的存在」时显式传 --bibdb-path：
         // 指一个不存在的库只会让引擎多打一条告警，不如不传（自动探测/ SLCN_NOTES 兜底）。
         o.bibdbPath = (bibdb.lookupEnabled ? (BibDbFeature.existingDBPath() ?? "") : "")
+        // 第 55 批：AI 预算闸（直连 API 通道；默认值不传、协同模式不传）。
+        // 非法输入 → nil = 不传该参数（引擎用默认；设置页另有红字）。
+        o.aiBudgetTokens = budget.articleValue
+        o.aiBatchBudgetTokens = budget.batchValue
         // 两个「请求体旋钮」（思考模式 / 输出上限）同样**现取**：与上面三项同一口径，
         // 设置页改完立刻生效，不必先点「保存」（保存只影响下次启动读回的值）。
         // ⚠️ 必须在主线程上取好再传：@Published 的值属于主线程，而 run() 在后台队列
         //    上执行（AIEngineKnobs 是值类型，跨线程传是安全的）。
         let knobs = settings.aiEngineKnobs
-        // U3：每次转换一个取消句柄；`Shell.run` 把 python 子进程注册进 logger.cancel。
-        let cancel = RunCancel()
-        model.cancel = cancel
-        model.running = true
-        let logger = Logger(store: log, startedAt: Date(), cancel: cancel)
-        let m = model
-        DispatchQueue.global(qos: .userInitiated).async {
-            ConvertFeature.run(options: o, knobs: knobs, log: logger)
-            DispatchQueue.main.async { m.running = false }
+        // 第 55 批：两段式。**扫描模式忽略协同**（只扫描源稿不转换，勾着也按普通扫描走）。
+        let coopOn = o.coop && !scanOnly
+        o = CoopFeature.prepare(o, phase: coopOn ? .first : .off)
+        model.coopFailure = ""
+        if coopOn { model.coopSuggestions = nil }   // 新一轮初排：旧建议不算数
+        startRun(o, knobs: knobs) { status in
+            guard coopOn else { return }
+            if status == 0 {
+                log.append("（界面）第一段完成：状态「待人工核实（**未交付**）」。"
+                           + "下一步：打开任务书 → 外部 chat 核实 → 导入回复 → 运行第二段。\n")
+            } else if status != Shell.cancelledStatus {
+                appendFailure("第一段失败（退出码 \(status)）；最终交付目录本次未写。")
+            }
         }
     }
+
+    /// 第二段：用当前暂存目录 + 已导入回填续跑并交付。
+    /// `--coop-apply` 必须在**启动前**由勾选框决定（引擎 phase=done 后重跑是幂等早退）。
+    private func runSecondPhase() {
+        guard let stage = model.coopStage else {
+            model.coopFailure = "还没有可续跑的暂存目录：请先运行第一段。"
+            return
+        }
+        guard !model.options.source.isEmpty, !model.options.out.isEmpty else {
+            model.coopFailure = "第二段需要源文件与输出目录（与第一段相同）。"
+            return
+        }
+        let replies = model.options.coopReplies.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !replies.isEmpty else {
+            model.coopFailure = "请先「导入 AI 回复…」选择外部 chat 的回复文件或目录。"
+            return
+        }
+        var o = model.options
+        o.scanOnly = false
+        o.coopReplies = replies
+        o.coopStage = stage.stageDir
+        o.coopApply = model.coopApply     // ⚠ 运行前定格：之后改勾选不影响本次
+        o = CoopFeature.prepare(o, phase: .second)
+        model.coopFailure = ""
+        model.coopSuggestions = nil       // 新摘要等第二段成功后从 jsonl 读
+        startRun(o, knobs: settings.aiEngineKnobs) { status in
+            if status == 0 {
+                let summary = model.coopSuggestions?.summary ?? "（未找到建议清单）"
+                log.append("（界面）第二段完成：已交付。建议摘要：\(summary)\n")
+                if model.coopRecordPath.isEmpty {
+                    log.append("（界面）⚠ 已交付但没找到 `_AI协同记录.md`，请查看交付目录。\n")
+                }
+            } else if status != Shell.cancelledStatus {
+                appendFailure("第二段失败（退出码 \(status)）；最终交付目录保持原样（引擎保证不 promote）。")
+            }
+        }
+    }
+
 }
 
 /// 一行「标签 + 路径输入 + 浏览按钮」。与 SimpleFeatureView 的选择方式保持一致（NSOpenPanel）。

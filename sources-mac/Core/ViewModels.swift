@@ -1100,3 +1100,143 @@ final class BibDbSettings: ObservableObject {
         return PathKit.isDirectory((text as NSString).expandingTildeInPath)
     }
 }
+
+/// 第 55 批：AI 预算闸（单篇 / 单批 token 预算）的本机偏好。
+///
+/// 与 `BibDbSettings` **同一模式**（UserDefaults 逐键存、输入非法当场上红字且不落盘）：
+/// 为什么不用 `ai.json`：这两项是「本机花多少钱」的行为偏好，不是 AI 连接参数，
+/// 与密钥那组分开存；旧版本没有这两个键时自然回落引擎默认（30000 / 1000000）。
+///
+/// ⚠️ 生效方式：本类只负责存 / 读 / 校验。真正传给引擎是「初排转换」页在**运行时现取**
+/// （`ConvertTab.run()` → `ConvertFeature.Options.aiBudgetTokens/…` → `arguments()`），
+/// 且只有**非两段式 + 勾了「用 AI 处理参考文献」+ 值 ≠ 引擎默认**时才拼进 argv ——
+/// 于是「没碰过这两栏」的用户命令行与批 54 逐字节相同。外部 chat 两段式零费用，不传。
+final class AIBudgetSettings: ObservableObject {
+
+    // MARK: - UserDefaults 键名（**不要改**：改了老用户设过的值就丢）
+
+    /// 单篇直连 API 通道的 token 预算（Int；0 = 不限）。缺省 30000（= 引擎默认）
+    static let articleKey = "aiBudgetTokens"
+    /// 单批直连 API 通道的 token 预算（Int；0 = 不限）。缺省 1000000（= 引擎默认）
+    static let batchKey = "aiBudgetBatchTokens"
+
+    /// 引擎侧默认值（`convert.py --ai-budget-tokens` / `--ai-batch-budget-tokens` 的 default，
+    /// **只有一处**；这里只是让「不传 = 用默认」的显示值与引擎对齐，不参与判定）。
+    static let defaultArticle = 30000
+    static let defaultBatch = 1000000
+
+    // MARK: - 界面状态（@Published；本机没有 @State 宏，见文件抬头说明）
+
+    /// 单篇预算输入框的**原样**文本（允许非法/空，界面负责红字提示；非法值不落盘）
+    @Published var articleText: String = String(AIBudgetSettings.defaultArticle)
+    /// 单批预算输入框的原样文本
+    @Published var batchText: String = String(AIBudgetSettings.defaultBatch)
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // 用 `object(forKey:)` 而不是 `integer(forKey:)` 区分「0」与「没这个键」。
+        if defaults.object(forKey: Self.articleKey) != nil {
+            articleText = String(max(0, defaults.integer(forKey: Self.articleKey)))
+        } else {
+            articleText = String(Self.defaultArticle)
+        }
+        if defaults.object(forKey: Self.batchKey) != nil {
+            batchText = String(max(0, defaults.integer(forKey: Self.batchKey)))
+        } else {
+            batchText = String(Self.defaultBatch)
+        }
+    }
+
+    // MARK: - 解析口径（纯逻辑；非法值当场上红字、不落盘）
+
+    /// 一个预算输入框的解析结果（与 `AIMaxTokens.Parsed` 同一模式）。
+    enum Parsed: Equatable {
+        /// 留空 → **不传**该参数（引擎用默认；等价于默认值本身）
+        case unset
+        /// 合法非负整数（`0` = 不限）
+        case value(Int)
+        /// 非整数 / 负数 → 拒绝保存，并附一句中文提示
+        case invalid(String)
+    }
+
+    static func parse(_ raw: String) -> Parsed {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return .unset }
+        guard let n = Int(t) else {
+            return .invalid("预算必须是整数（0 = 不限；留空 = 引擎默认），现在填的是「\(t)」。")
+        }
+        guard n >= 0 else {
+            return .invalid("预算不能是负数（要「不限」请填 0），现在填的是「\(t)」。")
+        }
+        return .value(n)
+    }
+
+    /// 单篇预算的引擎值：`nil` = 不传（留空或非法；引擎用默认 30000）
+    var articleValue: Int? {
+        if case .value(let v) = Self.parse(articleText) { return v }
+        return nil
+    }
+
+    /// 单批预算的引擎值：`nil` = 不传（留空或非法；引擎用默认 1000000）
+    var batchValue: Int? {
+        if case .value(let v) = Self.parse(batchText) { return v }
+        return nil
+    }
+
+    var articleHint: String? {
+        if case .invalid(let h) = Self.parse(articleText) { return h }
+        return nil
+    }
+
+    var batchHint: String? {
+        if case .invalid(let h) = Self.parse(batchText) { return h }
+        return nil
+    }
+
+    /// 一行摘要（转换页/设置页显示）
+    var articleSummary: String {
+        switch Self.parse(articleText) {
+        case .unset: return "默认 \(Self.defaultArticle)（未设置）"
+        case .value(let v): return v == 0 ? "不限" : "\(v) tokens"
+        case .invalid: return "（输入无效：本次不传 --ai-budget-tokens，引擎按默认 \(Self.defaultArticle)）"
+        }
+    }
+
+    var batchSummary: String {
+        switch Self.parse(batchText) {
+        case .unset: return "默认 \(Self.defaultBatch)（未设置）"
+        case .value(let v): return v == 0 ? "不限" : "\(v) tokens"
+        case .invalid: return "（输入无效：本次不传 --ai-batch-budget-tokens，引擎按默认 \(Self.defaultBatch)）"
+        }
+    }
+
+    // MARK: - 写盘（逐项立即落盘；非法输入**保留在输入框**但不写盘）
+
+    /// 更新单篇预算输入：合法（含留空）才落盘；非法值保留在输入框让编辑改。
+    func updateArticle(_ raw: String) {
+        articleText = raw
+        switch Self.parse(raw) {
+        case .unset:
+            defaults.removeObject(forKey: Self.articleKey)
+        case .value(let n):
+            defaults.set(n, forKey: Self.articleKey)
+        case .invalid:
+            break      // 非法值不落盘（界面上有红字说明）
+        }
+    }
+
+    /// 更新单批预算输入（同一口径）。
+    func updateBatch(_ raw: String) {
+        batchText = raw
+        switch Self.parse(raw) {
+        case .unset:
+            defaults.removeObject(forKey: Self.batchKey)
+        case .value(let n):
+            defaults.set(n, forKey: Self.batchKey)
+        case .invalid:
+            break
+        }
+    }
+}

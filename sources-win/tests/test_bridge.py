@@ -14,7 +14,10 @@
   (f) 界面文件：语法 / 导入检查（不开窗口）；
   (g) 真开一次窗口（控件参数写错只有这一步抓得到；缺 tkinter 时 SKIP）；
   (h) 日志「摘要 / 原始」两层（U4）：跨平台夹具 `tools/log_cases.json` 逐条过，
-      并在 (g) 的真窗口里验证能切模式、能看到折叠提示、偏好能落盘、空状态占位不进复制内容。
+      并在 (g) 的真窗口里验证能切模式、能看到折叠提示、偏好能落盘、空状态占位不进复制内容；
+  (i) 引用库（第 132 条）：笔记仓探测 / 库文件 / 参数默认零变化 / CLI 冒烟；
+  (j) 两段式 AI 协同初排（第五十五批）：两段 argv 契约、默认 argv 零变化、暂存目录发现、
+      建议摘要、回复导入、AI token 预算设置（纯逻辑，全部 headless）。
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ REPO = SHELL.parent                       # ← 仓根；从前写成 `.parent.p
                                           #   于是 (g) 组给的 PYTHONPATH 指到了不存在的目录
 sys.path.insert(0, str(SHELL))
 
+import coop as C  # noqa: E402  第五十五批：两段式协同的纯逻辑（无 tkinter）
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
 
@@ -411,6 +415,13 @@ ast.parse(src)
 check("(f) `main.py` 语法正确", True)
 check("(f) 引用库界面文件 `bibdb_ui.py` 存在且语法正确（第 132 条拆文件）",
       bool(ui_src) and (ast.parse(ui_src) or True))
+# 第五十五批：两段式协同的纯逻辑单独一个文件，且**不许** import tkinter（headless 可测）。
+coop_py = SHELL / "coop.py"
+coop_src = coop_py.read_text(encoding="utf-8") if coop_py.exists() else ""
+check("(f) 协同纯逻辑文件 `coop.py` 存在、语法正确、不 import tkinter（可 headless 测试）",
+      bool(coop_src) and bool(ast.parse(coop_src))
+      and not re.search(r"^\s*(?:import|from)\s+tkinter", coop_src, re.M),
+      f"{len(coop_src)} 字符")
 check("(f) `bibdb_ui.py` 里 5 个页面类都在（库概况/查库/入藏/待裁决/引用库设置）",
       all(f"class BibDb{name}Page(BibDbPage)" in ui_src
           for name in ("Stats", "Query", "Import", "Review", "Settings")),
@@ -512,7 +523,7 @@ else:
                  "\\title{测试题名}\\author{张三}\n\\maketitle\n正文。\n\\end{document}\n")
 
     prog = textwrap.dedent("""
-        import json, os, sys, time
+        import json, os, shutil, sys, tempfile, time
         sys.path.insert(0, os.getcwd())
         import settings as S
         # U4 的「摘要/原始」切换会**写配置**：把配置路径指到临时目录，
@@ -598,6 +609,107 @@ else:
         print("引用库页=" + "|".join(tabs[9:14]))
         print("引用库侧栏=" + "|".join(
             app.nav.item(x, "text") for x in app.nav.get_children()))
+        # ── 第五十五批：两段式协同 + AI 预算（真窗口证据）──
+        app.show_tab(0)
+        app.update()
+        ct = app.convert_tab
+        print("协同默认关=%d" % int(not ct.v_coop.get()))
+        print("协同面板默认隐藏=%d" % int(not ct.coop_panel.winfo_ismapped()))
+        ct.v_coop.set(True)
+        ct._toggle_coop_panel()
+        app.update()
+        print("协同面板显示=%d" % int(bool(ct.coop_panel.winfo_ismapped())))
+        print("协同按钮齐全=%d" % int(all(
+            w.cget("text") in ("打开任务书", "打开暂存目录", "打开交付目录",
+                              "打开协同记录", "打开建议清单", "导入 AI 回复并运行第二段…")
+            for w in (ct.coop_taskbook_btn, ct.coop_stage_btn, ct.coop_deliver_btn,
+                      ct.coop_record_btn, ct.coop_suggest_btn, ct.coop_import_btn))))
+        print("协同按钮默认禁用=%d" % int(all(
+            str(w.cget("state")) == "disabled"
+            for w in (ct.coop_taskbook_btn, ct.coop_stage_btn, ct.coop_deliver_btn,
+                      ct.coop_record_btn, ct.coop_suggest_btn, ct.coop_import_btn))))
+        ct.v_coop.set(False)
+        ct._toggle_coop_panel()
+        app.update()
+        # 设置页预算：非法不落盘（红字）/ 合法（含 0 = 不限）落盘
+        app.show_tab(14)
+        app.update()
+        st2 = app.settings_tab
+        st2.v_budget.set("abc")
+        st2.save()
+        app.update()
+        _cfg4 = json.load(open(S.config_path(), encoding="utf-8"))
+        print("预算非法不落盘=%d" % int(
+            _cfg4.get("api", {}).get("budgetTokens") == 30000
+            and "整数" in st2.budget_error.cget("text")))
+        st2.v_budget.set("0")
+        st2.v_batch_budget.set("1000000")
+        st2.save()
+        app.update()
+        _cfg5 = json.load(open(S.config_path(), encoding="utf-8"))
+        print("预算落盘=%d" % int(
+            _cfg5.get("api", {}).get("budgetTokens") == 0
+            and "预算" not in st2.budget_error.cget("text")))
+        # ── 协同状态机（真控件）：用合成暂存目录驱动「待人工核实 → 已交付」两态 ──
+        app.show_tab(0)
+        app.update()
+        _coop_root = tempfile.mkdtemp(prefix="slcn_win_coop_ui_")
+        _coop_src = os.path.join(_coop_root, "稿.docx")
+        open(_coop_src, "w", encoding="utf-8").write("x")
+        _coop_out = os.path.join(_coop_root, "期")
+        _coop_stage = os.path.join(_coop_out, "A_待核")
+        os.makedirs(_coop_stage)
+        _coop_taskbook = os.path.join(_coop_stage, "A_文献核实.md")
+        open(_coop_taskbook, "w", encoding="utf-8").write("# 任务书\\n")
+        open(os.path.join(_coop_stage, "A_AI建议.md"), "w",
+             encoding="utf-8").write("建议\\n")
+        _coop_final = os.path.join(_coop_out, "A")
+        os.makedirs(_coop_final)
+
+        def _coop_state(phase, delivered=""):
+            data = {"schema": 1, "phase": phase,
+                    "source": {"path": os.path.abspath(_coop_src)},
+                    "params": {"out_root": os.path.abspath(_coop_out), "stem": "A"},
+                    "taskbook": _coop_taskbook,
+                    "final_dir": _coop_final}
+            if delivered:
+                data["delivered_to"] = os.path.abspath(delivered)
+            with open(os.path.join(_coop_stage, M.C.STATE_NAME), "w",
+                      encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+
+        _coop_state("ph1")
+        ct.entry.delete(0, "end")
+        ct.entry.insert(0, _coop_src)
+        ct._coop_out = _coop_out
+        ct.v_coop.set(True)
+        ct._toggle_coop_panel()
+        ct.apply_coop_result({"phase": "ph1", "stage": M.C.load_stage(_coop_stage)}, 0)
+        app.update()
+        print("协同状态待核=" + ct.v_coop_status.get())
+        print("协同待核按钮=%d" % int(
+            str(ct.coop_taskbook_btn.cget("state")) == "normal"
+            and str(ct.coop_stage_btn.cget("state")) == "normal"
+            and str(ct.coop_import_btn.cget("state")) == "normal"
+            and str(ct.coop_deliver_btn.cget("state")) == "disabled"))
+        _coop_state("done", delivered=_coop_final)
+        open(os.path.join(_coop_final, M.C.RECORD_NAME), "w",
+             encoding="utf-8").write("# 协同记录\\n")
+        ct.apply_coop_result(
+            {"phase": "ph2", "stage": M.C.load_stage(_coop_stage),
+             "suggestions": {"accepted": 2, "rejected": 1, "missing": 3,
+                             "total": 6, "exists": True, "path": "x"}}, 0)
+        app.update()
+        print("协同状态已交付=" + ct.v_coop_status.get())
+        print("协同已交付按钮=%d" % int(
+            str(ct.coop_deliver_btn.cget("state")) == "normal"
+            and str(ct.coop_record_btn.cget("state")) == "normal"
+            and str(ct.coop_suggest_btn.cget("state")) == "normal"
+            and str(ct.coop_import_btn.cget("state")) == "disabled"))
+        print("协同摘要=" + ct.v_coop_summary.get())
+        ct.v_coop.set(False)
+        ct._toggle_coop_panel()
+        shutil.rmtree(_coop_root, ignore_errors=True)
         app.destroy()
         print("窗口建成")
         print("标签页：" + "|".join(tabs))
@@ -646,6 +758,25 @@ else:
         check("(g) 没有可比对的 PDF 页数时，顶部提示**不许**说「相符」（不许假绿）",
               "未验证" in out or "相符" not in out,
               [l for l in out.splitlines() if l.startswith("顶部提示")])
+        check("(g) 协同操作区默认隐藏：勾「AI 协同初排（两段式）」才展开，"
+              "六个按钮默认禁用（第一段还没跑）",
+              "协同默认关=1" in out and "协同面板默认隐藏=1" in out
+              and "协同面板显示=1" in out and "协同按钮齐全=1" in out
+              and "协同按钮默认禁用=1" in out,
+              [l for l in out.splitlines() if l.startswith(("协同默认", "协同面板", "协同按钮"))])
+        check("(g) 设置页 AI 预算：非法值红字**不落盘**、合法值（0 = 不限）落盘",
+              "预算非法不落盘=1" in out and "预算落盘=1" in out,
+              [l for l in out.splitlines() if l.startswith("预算")])
+        check("(g) 协同状态机（真控件）：ph1 → 「待人工核实（未交付）」+ 任务书/暂存/"
+              "第二段按钮可用，交付按钮禁用",
+              any(l.startswith("协同状态待核=") and "待人工核实（未交付）" in l
+                  for l in out.splitlines()) and "协同待核按钮=1" in out,
+              [l for l in out.splitlines() if l.startswith("协同状态")])
+        check("(g) 协同状态机（真控件）：ph2 成功 → 「已交付」+ 交付/记录/建议按钮可用、"
+              "第二段按钮禁用（交付后才算交付）",
+              any(l.startswith("协同状态已交付=") and "已交付" in l
+                  for l in out.splitlines()) and "协同已交付按钮=1" in out,
+              [l for l in out.splitlines() if l.startswith(("协同状态", "协同已交付"))])
     shutil.rmtree(gdir, ignore_errors=True)
     shutil.rmtree(gcfg, ignore_errors=True)
 
@@ -926,6 +1057,257 @@ check("(i) CLI 冒烟：report 只写三个清单文件（CONFLICTS.md / DUPLICA
 
 shutil.rmtree(_probe, ignore_errors=True)
 shutil.rmtree(_cli_root, ignore_errors=True)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (j) 两段式 AI 协同初排（第五十五批）：argv / 状态发现 / 建议摘要 / 预算 ──")
+
+# ── 两段 argv 契约（CLI 批54 冻结，外壳只拼参数）──
+_j_base = E._base_cmd("convert.py") or []
+_j_default = E.convert_call(source="a.docx", out="/o", compile_pdf=True, verify_refs=True)
+check("(j) 默认 convert argv 与批54 **逐字节相同**（不勾两段式、没设预算时一个参数都不加）",
+      _j_default.argv == _j_base + ["--source", "a.docx", "--out", "/o",
+                                    "--compile", "--verify-refs"],
+      _j_default.display[:140])
+check("(j) 默认 argv 里没有任何协同/预算参数",
+      not any(a.startswith("--coop") or a.startswith("--ai-budget")
+              or a.startswith("--ai-batch") for a in _j_default.argv))
+
+_j_ph1 = E.convert_call(source="/稿/a.docx", out="/期", compile_pdf=True, verify_refs=False,
+                        verify_plan=True, coop_taskbook_only=True, coop_stage="/期/A_待核")
+check("(j) 第一段 argv = 现有参数 + --verify-refs --no-ai-merge --coop-taskbook-only "
+      "--coop-stage",
+      _j_ph1.argv == _j_base + ["--source", "/稿/a.docx", "--out", "/期", "--compile",
+                                "--verify-refs", "--no-ai-merge", "--coop-taskbook-only",
+                                "--coop-stage", "/期/A_待核"], _j_ph1.display[:180])
+check("(j) 第一段**绝不**传 --verify-plan（引擎该分支写任务书前就 return 0），"
+      "也不传 --llm-*/--search-refs（外部 chat 通道不调 API）",
+      "--verify-plan" not in _j_ph1.argv
+      and not any(a.startswith("--llm-") or a == "--search-refs" for a in _j_ph1.argv))
+check("(j) 页面没勾「出文献核实任务书」也强制 --verify-refs（第一段的全部产出就是任务书）",
+      "--verify-refs" in _j_ph1.argv)
+_j_ph1_no_stage = E.convert_call(source="a", out="/o", coop_taskbook_only=True)
+check("(j) 没给 --coop-stage 时第一段不带它（引擎用默认 `<out>/<stem>_待核/`）",
+      "--coop-stage" not in _j_ph1_no_stage.argv)
+
+_j_ph2 = E.convert_call(source="/稿/a.docx", out="/期", coop_replies="/回填",
+                        coop_stage="/期/A_待核", coop_apply=True, compile_pdf=True,
+                        verify_refs=True, name="A", author="某", clean=True,
+                        ai_budget_tokens=0)
+check("(j) 第二段 argv 是最小集（页面参数/--clean/--verify-refs/预算一律不带，引擎从状态继承）",
+      _j_ph2.argv == _j_base + ["--source", "/稿/a.docx", "--out", "/期",
+                                "--coop-replies", "/回填", "--coop-stage", "/期/A_待核",
+                                "--coop-apply", "--compile"], _j_ph2.display[:180])
+check("(j) 第二段 label 写明「AI 协同初排·第二段」（日志里两段分得清）",
+      _j_ph2.label == "AI 协同初排·第二段", _j_ph2.label)
+check("(j) 不勾「一键修改产物」时第二段不带 --coop-apply",
+      "--coop-apply" not in E.convert_call(source="a", out="/o", coop_replies="/r").argv)
+check("(j) 参数组合反例 → ValueError（两段同给 / 只有 --coop-apply / --coop-stage 不配两段式）",
+      _raises_value_error(E.convert_call, source="a", out="/o",
+                          coop_taskbook_only=True, coop_replies="/r")
+      and _raises_value_error(E.convert_call, source="a", out="/o", coop_apply=True)
+      and _raises_value_error(E.convert_call, source="a", out="/o", coop_stage="/s"))
+
+# ── 预算参数：值 != 引擎默认才传；协同两段（外部 chat）一个都不传 ──
+_j_budget = E.convert_call(source="a", out="/o", ai_budget_tokens=0,
+                           ai_batch_budget_tokens=500)
+check("(j) 预算 kwargs 只在给了值时进 argv（0 = 不限，要真的传 \"0\"）",
+      _j_budget.argv[_j_budget.argv.index("--ai-budget-tokens") + 1] == "0"
+      and _j_budget.argv[_j_budget.argv.index("--ai-batch-budget-tokens") + 1] == "500")
+_j_ph1_budget = E.convert_call(source="a", out="/o", coop_taskbook_only=True,
+                               ai_budget_tokens=0, ai_batch_budget_tokens=7)
+check("(j) 协同两段是外部 chat 通道 → 预算参数一个都不传（软件零费用）",
+      "--ai-budget-tokens" not in _j_ph1_budget.argv
+      and "--ai-batch-budget-tokens" not in _j_ph1_budget.argv)
+check("(j) 非法预算（负数/非整数/bool）→ ValueError，不许悄悄发给引擎",
+      _raises_value_error(E.convert_call, source="a", out="/o", ai_budget_tokens=-1)
+      and _raises_value_error(E.convert_call, source="a", out="/o", ai_budget_tokens="30000")
+      and _raises_value_error(E.convert_call, source="a", out="/o",
+                              ai_batch_budget_tokens=True))
+
+# ── settings.py：预算默认值 / 解析 / 合并 / 传 CLI 规则（纯函数）──
+check("(j) settings 默认预算 = 引擎 argparse 默认 30000 / 1000000（两处口径一致）",
+      S.DEFAULTS["api"]["budgetTokens"] == S.AI_BUDGET_DEFAULT == 30000
+      and S.DEFAULTS["api"]["batchBudgetTokens"] == S.AI_BATCH_BUDGET_DEFAULT == 1000000)
+check("(j) 预算输入解析：留空 = 默认、0 = 不限、负数/非整数 = 红字不落盘",
+      S.parse_budget_tokens("", 30000) == (30000, None)
+      and S.parse_budget_tokens("0", 30000) == (0, None)
+      and S.parse_budget_tokens("50000", 30000) == (50000, None)
+      and S.parse_budget_tokens("-1", 30000)[0] is None
+      and "负数" in (S.parse_budget_tokens("-1", 30000)[1] or "")
+      and S.parse_budget_tokens("abc", 30000)[0] is None
+      and "整数" in (S.parse_budget_tokens("abc", 30000)[1] or ""))
+check("(j) 旧配置/垃圾值合并：非法预算回落默认、合法值保留（0 也算合法）",
+      S._merge_defaults({})["api"]["budgetTokens"] == 30000
+      and S._merge_defaults({"api": {"budgetTokens": 0}})["api"]["budgetTokens"] == 0
+      and S._merge_defaults({"api": {"budgetTokens": "30000",
+                                     "batchBudgetTokens": -1}})["api"]["batchBudgetTokens"]
+      == 1000000)
+_j_ai = {"api": {**S.DEFAULTS["api"], "base": "https://api.example.com", "model": "m"}}
+check("(j) 直连 API 就绪判据 = 地址 + 模型名（与引擎 LLMConfig.ready 同口径；密钥可空）",
+      S.ai_configured(_j_ai)
+      and not S.ai_configured({"api": {**_j_ai["api"], "model": ""}})
+      and not S.ai_configured({}))
+check("(j) 预算传 CLI 规则：未配置 API / 值 == 默认 / 协同两段 → 一个都**不传**",
+      S.ai_budget_convert_args({}) == {}
+      and S.ai_budget_convert_args(_j_ai) == {}
+      and S.ai_budget_convert_args({"api": {**_j_ai["api"], "model": ""}}) == {}
+      and S.ai_budget_convert_args(
+          {"api": {**_j_ai["api"], "budgetTokens": 0}}, coop=True) == {})
+_j_ai2 = {"api": {**_j_ai["api"], "budgetTokens": 0, "batchBudgetTokens": 2}}
+check("(j) 值 != 引擎默认才传（0 真的要传；单批不同也各自传）",
+      S.ai_budget_convert_args(_j_ai2) == {"ai_budget_tokens": 0,
+                                           "ai_batch_budget_tokens": 2})
+check("(j) 设置 → argv 直通：`ai_budget_convert_args` 的 kwargs 真的进 convert 命令行",
+      E.convert_call(source="a", out="/o", **S.ai_budget_convert_args(_j_ai2)).argv
+      == _j_base + ["--source", "a", "--out", "/o",
+                    "--ai-budget-tokens", "0", "--ai-batch-budget-tokens", "2"])
+
+# ── coop.py：状态发现 / 建议摘要 / 多选回复（headless，合成暂存目录）──
+_j_root = tempfile.mkdtemp(prefix="slcn_bridge_coop_")
+try:
+    _j_src = os.path.join(_j_root, "稿.docx")
+    with open(_j_src, "w", encoding="utf-8") as _fh:
+        _fh.write("x")
+    _j_out = os.path.join(_j_root, "2026年第5期(99)")
+    os.makedirs(_j_out, exist_ok=True)
+    _j_stage = os.path.join(_j_out, "A_待核")
+    os.makedirs(_j_stage, exist_ok=True)
+    _j_taskbook = os.path.join(_j_stage, "A_文献核实.md")
+    with open(_j_taskbook, "w", encoding="utf-8") as _fh:
+        _fh.write("# 任务书\n")
+
+    def _write_state(phase: str, *, source=None, out_root=None, delivered="") -> None:
+        state = {
+            "schema": 1, "phase": phase,
+            "source": {"path": os.path.abspath(source or _j_src)},
+            "params": {"out_root": os.path.abspath(out_root or _j_out), "stem": "A"},
+            "taskbook": _j_taskbook,
+            "final_dir": os.path.join(_j_out, "A"),
+        }
+        if delivered:
+            state["delivered_to"] = os.path.abspath(delivered)
+        with open(os.path.join(_j_stage, C.STATE_NAME), "w", encoding="utf-8") as _fh:
+            json.dump(state, _fh, ensure_ascii=False)
+
+    _write_state("ph1")
+    _j_found = C.discover_stage(_j_out, source=_j_src)
+    check("(j) 暂存目录发现：扫 `<out>/*_待核/` 按 state.source.path + params.out_root 匹配；"
+          "ph1 → 「待人工核实（未交付）」",
+          _j_found is not None and _j_found.stage_dir == os.path.abspath(_j_stage)
+          and _j_found.status_text == C.STATUS_PENDING
+          and _j_found.stem == "A" and _j_found.taskbook == _j_taskbook,
+          str(_j_found))
+    check("(j) 状态文案口径（两壳一致，与 mac `CoopFeature.stageStatusText` 对齐）："
+          "ph1 → 待人工核实（未交付）；ph2 → 上次第二段未完成；done → 已交付；"
+          "没有状态 → 尚未初排；不认识 → 状态未知（不猜）",
+          (C.status_text("ph1"), C.status_text("ph2"), C.status_text("done"),
+           C.status_text(None), C.status_text("weird"))
+          == (C.STATUS_PENDING, C.STATUS_PH2, C.STATUS_DELIVERED,
+              C.STATUS_NOT_STARTED, "状态未知（weird）"))
+    check("(j) 源稿对不上 / 状态里的 out_root 对不上 → 不认（绝不猜另一个暂存目录）",
+          C.discover_stage(_j_out, source=os.path.join(_j_root, "别的稿.docx")) is None)
+    _write_state("ph1", out_root=os.path.join(_j_root, "另一期"))
+    check("(j) out_root 不匹配 → 不认（同一输出根里可能躺着别的期目录的暂存）",
+          C.discover_stage(_j_out, source=_j_src) is None)
+    _write_state("done", delivered=os.path.join(_j_out, "A"))
+    _j_done = C.load_stage(_j_stage)
+    check("(j) phase=done → 「已交付」；交付目录只认 `delivered_to`（ph1 阶段为空，不许冒充交付）",
+          _j_done is not None and _j_done.status_text == C.STATUS_DELIVERED
+          and _j_done.delivery_dir == os.path.abspath(os.path.join(_j_out, "A"))
+          and _j_done.record_path.endswith(C.RECORD_NAME))
+    with open(os.path.join(_j_stage, "A_AI建议.jsonl"), "w", encoding="utf-8") as _fh:
+        _fh.write('{"status": "accepted", "id": "L1", "field": "year"}\n'
+                  '{"status": "accepted", "id": "L1", "field": "pages"}\n'
+                  '{"status": "rejected", "id": "L2", "reason": "span 不在原文"}\n'
+                  '{"status": "missing", "id": "L3"}\n'
+                  "不是 JSON 的坏行（忽略）\n")
+    _j_sum = C.suggestions_summary(_j_stage, "A")
+    check("(j) 建议摘要：从 `<stage>/<stem>_AI建议.jsonl` 统计 accepted/rejected/missing"
+          "（坏行忽略，不炸）",
+          (_j_sum["accepted"], _j_sum["rejected"], _j_sum["missing"], _j_sum["total"])
+          == (2, 1, 1, 4), str(_j_sum))
+    check("(j) 建议摘要文案含「接受/拒绝/待人工」三个数；没有清单时说清第二段后才有",
+          "接受 2" in C.suggestions_text(_j_sum)
+          and "拒绝 1" in C.suggestions_text(_j_sum)
+          and "待人工 1" in C.suggestions_text(_j_sum)
+          and "第二段成功后生成"
+          in C.suggestions_text(C.suggestions_summary(_j_stage, "没有这篇")))
+    # 多个候选（同一篇稿改过输出名）：取状态文件**最近修改**的一个，候选数交给界面提示
+    _j_stage2 = os.path.join(_j_out, "A2_待核")
+    os.makedirs(_j_stage2, exist_ok=True)
+    with open(os.path.join(_j_stage, C.STATE_NAME), encoding="utf-8") as _fh:
+        _j_state_done = json.load(_fh)
+    with open(os.path.join(_j_stage2, C.STATE_NAME), "w", encoding="utf-8") as _fh:
+        json.dump(_j_state_done, _fh, ensure_ascii=False)
+    os.utime(os.path.join(_j_stage2, C.STATE_NAME),
+             (os.path.getmtime(os.path.join(_j_stage, C.STATE_NAME)) + 10,) * 2)
+    _j_multi = C.discover_stage(_j_out, source=_j_src)
+    check("(j) 多个匹配暂存目录（同稿改过输出名）→ 取状态文件最近修改的一个，"
+          "候选数交给界面提示（不静默挑错）",
+          _j_multi is not None and _j_multi.stage_dir == os.path.abspath(_j_stage2)
+          and _j_multi.found == 2,
+          str(_j_multi and (_j_multi.stage_dir, _j_multi.found)))
+    with open(os.path.join(_j_stage2, C.STATE_NAME), "w", encoding="utf-8") as _fh:
+        json.dump({"schema": 1, "params": {"stem": "A2"}}, _fh)   # 没有 phase
+    _j_after = C.discover_stage(_j_out, source=_j_src)
+    check("(j) 状态文件没有 `phase` → 不算可续跑（与 mac parseState 同口径）",
+          C.load_stage(_j_stage2) is None
+          and _j_after is not None
+          and _j_after.stage_dir != os.path.abspath(_j_stage2))
+    shutil.rmtree(_j_stage2, ignore_errors=True)
+
+    _j_r1 = os.path.join(_j_root, "回复1.md")
+    _j_r2 = os.path.join(_j_root, "回复2.md")
+    for _p in (_j_r1, _j_r2):
+        with open(_p, "w", encoding="utf-8") as _fh:
+            _fh.write("x")
+    _j_rdir = C.prepare_replies([_j_r1, _j_r2])
+    check("(j) 多选回复文件 → 汇入临时目录（引擎 `--coop-replies` 只接受单个 FILE|DIR）",
+          os.path.isdir(_j_rdir) and sorted(os.listdir(_j_rdir)) == ["回复1.md", "回复2.md"])
+    check("(j) 单一路径原样返回（文件或目录）；空选择 → ValueError",
+          C.prepare_replies([_j_r1]) == _j_r1
+          and C.prepare_replies([_j_out]) == _j_out
+          and _raises_value_error(C.prepare_replies, []))
+    shutil.rmtree(_j_rdir, ignore_errors=True)
+finally:
+    shutil.rmtree(_j_root, ignore_errors=True)
+
+# ── main.py 源码守卫：协同 UI 的接线点（真窗口在 (g)；这里防「没接上」）──
+_src_55 = (SHELL / "main.py").read_text(encoding="utf-8")
+check("(j) 初排转换页：默认关的「AI 协同初排（两段式）」+ 协同操作区默认隐藏",
+      "AI 协同初排（两段式）" in _src_55 and "self.v_coop" in _src_55
+      and "coop_panel.pack_forget()" in _src_55)
+check("(j) 协同操作区按钮齐全（打开任务书/暂存目录/交付目录/协同记录/建议清单 + "
+      "导入 AI 回复并运行第二段…）",
+      all(k in _src_55 for k in ("打开任务书", "打开暂存目录", "打开交付目录",
+                                 "打开协同记录", "打开建议清单",
+                                 "导入 AI 回复并运行第二段…")))
+check("(j) 第二段复用第一段选定的输出根（`_coop_out` + `set_coop_out`），"
+      "第一段走 `coop_ph1_call`",
+      "_coop_out" in _src_55 and "tab.set_coop_out(out)" in _src_55
+      and "coop_ph1_call(out)" in _src_55 and "coop_ph2_call(" in _src_55)
+check("(j) 源稿改过 → 第二段先报「请重新运行第一段」（不拿旧暂存硬续跑）",
+      "源稿与第一段时不一致" in _src_55)
+check("(j) 「一键修改产物（--coop-apply）」默认不勾 + 说明 `.ai前` 备份；"
+      "应用决定在运行前定（勾选值在拼 argv 时取）",
+      "一键修改产物（--coop-apply）" in _src_55 and "v_coop_apply" in _src_55
+      and ".ai前" in _src_55 and "coop_apply=bool(self.v_coop_apply.get())" in _src_55)
+check("(j) 协同结果经队列回主线程（`__COOP__` + `apply_coop_result`），不跨线程碰控件",
+      '"__COOP__"' in _src_55 and "apply_coop_result" in _src_55
+      and "C.load_stage" in _src_55 and "C.discover_stage" in _src_55)
+check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
+      "与 mac 强制 useAI=false 同口径）",
+      "api=None if coop_phase else" in _src_55)
+check("(j) 失败提示含**退出码 + 日志尾部**（`E.output_tail(tail…)`），不只一句「失败」",
+      "E.output_tail(tail" in _src_55)
+check("(j) 设置页有单篇/单批 token 预算输入 + 红字错误位；隐私文案讲清"
+      "「外部 chat 不上传任何内容、零费用」",
+      "单篇 token 预算" in _src_55 and "单批 token 预算" in _src_55
+      and "budget_error" in _src_55 and "不上传任何内容" in _src_55
+      and "零费用" in _src_55)
+check("(j) 三个纯逻辑模块都不 import tkinter（engine/settings/coop 可 headless 测）",
+      all(not re.search(r"^\s*(?:import|from)\s+tkinter", (SHELL / name).read_text(
+          encoding="utf-8"), re.M) for name in ("engine.py", "settings.py", "coop.py")))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

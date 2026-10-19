@@ -345,6 +345,13 @@ def _base_cmd(entry: str) -> list[str] | None:
     return [py, os.path.join(engine, entry)]
 
 
+def _nonneg_int(value, flag: str) -> int:
+    """预算/上限参数校验收口：必须是 ≥0 的 int（bool 不算；0 = 不限）。"""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{flag} 必须是 ≥0 的整数（0 = 不限）：{value!r}")
+    return value
+
+
 def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  clean: bool = False, verify_refs: bool = False,
                  source_pdf: bool = False, bib: str = "", metadata: str = "",
@@ -353,7 +360,13 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  received: str = "", editor: str = "", grants: str = "",
                  lang: str = "", extra: str = "",
                  verify_max: int | None = None, verify_plan: bool = False,
-                 verify_all_refs: bool = False, no_bibdb: bool = False) -> EngineCall:
+                 verify_all_refs: bool = False, no_bibdb: bool = False,
+                 # ── 第五十四批（CLI）/ 第五十五批（GUI 接入）：两段式 AI 协同初排 ──
+                 coop_taskbook_only: bool = False, coop_stage: str = "",
+                 coop_replies: str = "", coop_apply: bool = False,
+                 # ── 第五十五批：直接 API 通道的 token 预算闸（引擎默认 30000/1000000）──
+                 ai_budget_tokens: int | None = None,
+                 ai_batch_budget_tokens: int | None = None) -> EngineCall:
     """「初排转换」：`convert.py --source … --out …`（参数与 mac 界面一致）。
 
     ⚠️ `author` / `name` 不是可选项而是**某一类稿件的活路**：正文里读不出第一作者姓名时
@@ -368,20 +381,74 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     （`verify_refs=True`）时才进 argv：引擎对单独出现的一律只打「本次忽略」告警，
     外壳不该发这种噪声。`--verify-plan` 与 `--verify-refs` **二选一**（前者只算账就
     退出 0；两个都传会让日志说不清到底核不核）。
+
+    ── 两段式 AI 协同初排（CLI 批54 冻结；本函数是外壳侧唯一拼装点）──────────
+    `coop_taskbook_only=True` = **第一段**：现有参数 + `--verify-refs --no-ai-merge
+    --coop-taskbook-only`（`--coop-stage` 可选）。第一段**绝不**传 `--verify-plan`
+    （引擎该分支在写任务书/状态前就退出 0，传了等于没跑），也不传任何
+    `--llm-*`/`--search-refs`（外部 chat 通道，软件不调 API、不上传内容）。
+    第一段即使页面没勾「出文献核实任务书」也强制带 `--verify-refs`：任务书就是这一段的
+    全部产出（引擎自己也会把它当隐含开关）。scan-only 时界面不建 coop 参数（本函数不看）。
+
+    `coop_replies` 非空 = **第二段**：只传最小集
+    `--source/--out/--coop-replies [--coop-stage] [--coop-apply] [--compile]`，
+    其余页面参数一律**不传** —— 引擎会从状态文件继承 ph1 的关键参数并做指纹校验
+    （多传反而可能改变指纹、把正常续跑误拒）。
+
+    `ai_budget_tokens` / `ai_batch_budget_tokens`：只约束**直接 API 通道**（默认
+    30000 / 1000000；0 = 不限）。**默认 None = 不传**；且 coop 两段都不传（外部 chat
+    零费用）。「值 != 引擎默认才传」的取舍在 `settings.ai_budget_convert_args()`，
+    本函数只负责在给了值时进 argv（非法值 ValueError，不让编辑器把错参数发给引擎）。
     """
     cmd = _base_cmd("convert.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+
+    # ── 参数组合先校验，别把自相矛盾的命令行发给引擎 ──
+    if coop_taskbook_only and coop_replies:
+        raise ValueError("--coop-taskbook-only 与 --coop-replies 是两个阶段，不能同时给")
+    if coop_apply and not coop_replies:
+        raise ValueError("--coop-apply 只配合 --coop-replies（先回填回复，才谈得上应用建议）")
+    if coop_stage and not (coop_taskbook_only or coop_replies):
+        raise ValueError("--coop-stage 只配合两段式协同初排（第一段或第二段）")
+    if ai_budget_tokens is not None:
+        _nonneg_int(ai_budget_tokens, "--ai-budget-tokens")
+    if ai_batch_budget_tokens is not None:
+        _nonneg_int(ai_batch_budget_tokens, "--ai-batch-budget-tokens")
+
     cmd += ["--source", source, "--out", out]
+
+    # ── 第二段：最小集，别的页面参数一个都不带（指纹/继承由引擎负责）──
+    if coop_replies:
+        cmd += ["--coop-replies", coop_replies]
+        if coop_stage:
+            cmd += ["--coop-stage", coop_stage]
+        if coop_apply:
+            cmd.append("--coop-apply")
+        if compile_pdf:
+            cmd.append("--compile")
+        return EngineCall(cmd, "convert.py", "AI 协同初排·第二段")
+
     for flag, on in (("--compile", compile_pdf), ("--clean", clean)):
         if on:
             cmd.append(flag)
-    if verify_refs:
+
+    if coop_taskbook_only:
+        # 第一段：强制出任务书；--verify-plan / --llm-* / --search-refs 一律不传。
+        cmd.append("--verify-refs")
+        if verify_max is not None:
+            cmd += ["--verify-max", str(_nonneg_int(verify_max, "--verify-max"))]
+        if verify_all_refs:
+            cmd.append("--verify-all-refs")
+        if no_bibdb:
+            cmd.append("--no-bibdb")
+        cmd += ["--no-ai-merge", "--coop-taskbook-only"]
+        if coop_stage:
+            cmd += ["--coop-stage", coop_stage]
+    elif verify_refs:
         cmd.append("--verify-plan" if verify_plan else "--verify-refs")
         if verify_max is not None:
-            if not isinstance(verify_max, int) or isinstance(verify_max, bool) or verify_max < 0:
-                raise ValueError(f"--verify-max 必须是 ≥0 的整数（0 = 不限）：{verify_max!r}")
-            cmd += ["--verify-max", str(verify_max)]
+            cmd += ["--verify-max", str(_nonneg_int(verify_max, "--verify-max"))]
         if verify_all_refs:
             cmd.append("--verify-all-refs")
         # 查库默认就是开（引擎默认行为）；只有显式关闭才传 `--no-bibdb`，
@@ -400,6 +467,12 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                       ("--editor", editor), ("--grants", grants), ("--lang", lang)):
         if val:
             cmd += [flag, val]
+    # 预算闸只约束直接 API 通道；协同两段是外部 chat 通道，一个字节都不传。
+    if not coop_taskbook_only:
+        if ai_budget_tokens is not None:
+            cmd += ["--ai-budget-tokens", str(ai_budget_tokens)]
+        if ai_batch_budget_tokens is not None:
+            cmd += ["--ai-batch-budget-tokens", str(ai_batch_budget_tokens)]
     if extra.strip():
         cmd += extra.split()
     return EngineCall(cmd, "convert.py", "初排转换")

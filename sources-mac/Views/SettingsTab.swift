@@ -36,6 +36,9 @@ final class AIPresetModel: ObservableObject {
 struct SettingsTab: View {
 
     @ObservedObject var settings: AppSettings
+    /// 第 55 批：AI 预算闸（单篇 / 单批 token；只约束直连 API 通道）。
+    /// 与「初排转换」页共用同一实例，转换时**现取**（与 AI 旋钮同一口径）。
+    @ObservedObject var budget: AIBudgetSettings
     @StateObject private var tester = AITestModel()
     @StateObject private var preset = AIPresetModel()
 
@@ -101,6 +104,7 @@ struct SettingsTab: View {
             aiChannelSection
             aiFutureKnobsSection
             aiRequestKnobsSection
+            aiBudgetSection
         }
     }
 
@@ -427,6 +431,66 @@ struct SettingsTab: View {
         }
     }
 
+    // MARK: - 第 55 批：AI 预算闸（只约束直连 API 通道）
+    //
+    // 为什么放在「请求体旋钮」下面：它们回答的是同一个问题——「这次直连 API 会花多少」。
+    // 外部 chat 两段式流程不产生 API 费用，所以这两栏对它**不生效**（界面必须如实说）。
+
+    /// 预算说明长文案（提出来避免旧版 Swift 类型检查超时，见文件里同类写法）。
+    private var aiBudgetText: String {
+        "只约束「用 AI 处理参考文献」这条**直连 API** 通道：超过预计用量时引擎先打印账、"
+        + "退出 2，不发起任何请求（不会静默超支）。默认 30000 / 1000000，0 = 不限；"
+        + "留空 = 不传参数、引擎用默认。\n"
+        + "外部 chat 的「AI 协同初排（两段式）」由编辑自己在豆包/千问/DeepSeek 等里操作，"
+        + "**软件零上传、零 API、零费用**，这两栏的预算对它不生效。"
+    }
+
+    private var aiBudgetSection: some View {
+        Group {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("单篇预算").frame(width: 76, alignment: .trailing)
+                TextField(String(AIBudgetSettings.defaultArticle),
+                          text: Binding(get: { budget.articleText },
+                                        set: { budget.updateArticle($0) }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                Text("tokens（0 = 不限；默认 \(AIBudgetSettings.defaultArticle)）")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            if let hint = budget.articleHint {
+                Text("⚠ " + hint)
+                    .font(.caption).foregroundStyle(.red)
+                    .padding(.leading, 86)
+                Text("（填成这样时不会落盘，转换时也不会把它发给引擎。）")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .padding(.leading, 86)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("单批预算").frame(width: 76, alignment: .trailing)
+                TextField(String(AIBudgetSettings.defaultBatch),
+                          text: Binding(get: { budget.batchText },
+                                        set: { budget.updateBatch($0) }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                Text("tokens（0 = 不限；默认 \(AIBudgetSettings.defaultBatch)）")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            if let hint = budget.batchHint {
+                Text("⚠ " + hint)
+                    .font(.caption).foregroundStyle(.red)
+                    .padding(.leading, 86)
+                Text("（填成这样时不会落盘，转换时也不会把它发给引擎。）")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .padding(.leading, 86)
+            }
+            Text(aiBudgetText)
+                .font(.caption).foregroundStyle(.tertiary)
+                .padding(.leading, 86)
+        }
+    }
+
     // MARK: - 固定底部操作条（保存 / 测试连接）
 
     /// 页面底部**常驻**操作条：位置由 `body` 的 `safeAreaInset(edge: .bottom)` 决定，
@@ -591,6 +655,10 @@ struct SettingsTab: View {
                 .padding(.leading, 12)
             Text("不发送：正文、摘要、作者信息、稿件全文 —— 都留在本机。".plainMarkdown)
                 .font(.caption).bold().foregroundStyle(.secondary)
+            Text("两段式「AI 协同初排」（外部 chat，第 55 批）：软件**零上传、零 API、零费用** —— "
+                 + "任务书由编辑自己交给外部 chat 模型，工具本身不发送任何内容。"
+                 + "直连 API 通道只发「条目/片段」（参考文献条目原文 + 规范文本），不发正文全文。")
+                .font(.caption).foregroundStyle(.secondary)
             Text(privacyText2)
                 .font(.caption).foregroundStyle(.secondary)
         }

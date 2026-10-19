@@ -57,12 +57,14 @@ run_one() {
 
 echo "▶ 编译并运行 Swift 测试台（生产源码本身）"
 run_one ai_settings Core/ViewModels.swift Core/Support.swift Core/Log.swift \
-  Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CheckBibFeature.swift \
-  Features/MergeFeature.swift Views/SettingsTab.swift "$PROJ"/tools/ai_settings_test/main.swift
+  Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
+  Features/CheckBibFeature.swift Features/MergeFeature.swift Views/SettingsTab.swift \
+  "$PROJ"/tools/ai_settings_test/main.swift
 run_one ai_store Core/ViewModels.swift Core/Support.swift Core/Log.swift \
   Features/InfoCheckFeature.swift Features/MergeFeature.swift "$PROJ"/tools/ai_store_test/main.swift
 run_one proofcheck Core/ViewModels.swift Core/Support.swift Core/Log.swift \
-  Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/ProofCheckFeature.swift \
+  Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
+  Features/ProofCheckFeature.swift \
   Features/MergeFeature.swift "$PROJ"/tools/proofcheck_test/main.swift
 run_one toc Core/Support.swift Core/Log.swift Core/ViewModels.swift \
   Features/InfoCheckFeature.swift Features/TocSettings.swift Features/TocFeature.swift \

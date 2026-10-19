@@ -28,6 +28,7 @@ from tkinter import messagebox, ttk
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bibdb_ui as B  # noqa: E402  第 132 条：引用库 5 页（拆文件，见 bibdb_ui.py 抬头）
+import coop as C  # noqa: E402  第 55 批：两段式 AI 协同初排的纯逻辑（无 tkinter）
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
 import theme  # noqa: E402
@@ -45,6 +46,24 @@ def plain(text: str) -> str:
 
 
 APP_TITLE = "编辑部工具箱（Windows）"
+
+
+def open_path(path: str) -> None:
+    """在访达 / 资源管理器里打开一个路径（文件则定位到它所在的目录）。
+
+    完成横幅的「打开产物」、协同面板的「打开任务书/暂存目录/交付目录…」共用这一处，
+    免得两个地方对「文件还是目录」的判法慢慢分叉。
+    """
+    if not path:
+        return
+    try:
+        target = path if os.path.isdir(path) else os.path.dirname(path)
+        if os.name == "nt":
+            os.startfile(target)                      # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["open", target])
+    except Exception as e:                            # noqa: BLE001
+        messagebox.showerror(APP_TITLE, f"打不开：\n{path}\n\n{e}")
 
 #: 内存里保留的日志行上限（整期编译一次能吐几千行；超了从最旧的丢起，
 #: 与 mac 侧 `LogStore.limit`（40 万字符）同一个精神 —— 宁可丢最旧，也别无限涨）。
@@ -173,17 +192,7 @@ class TabPage(ttk.Frame):
 
     def _open_result(self) -> None:
         """在访达 / 资源管理器里打开产物（文件就定位到它所在的目录）。"""
-        p = self._result_path
-        if not p:
-            return
-        try:
-            target = p if os.path.isdir(p) else os.path.dirname(p)
-            if os.name == "nt":
-                os.startfile(target)                      # type: ignore[attr-defined]
-            else:
-                subprocess.Popen(["open", target])
-        except Exception as e:                            # noqa: BLE001
-            messagebox.showerror(APP_TITLE, f"打不开产物目录：\n{target}\n\n{e}")
+        open_path(self._result_path)
 
     def _copy_result(self) -> None:
         if not self._result_path:
@@ -205,9 +214,10 @@ class TabPage(ttk.Frame):
         return self.entry.get().strip().strip('"')
 
 
-def _check(parent: tk.Widget, text: str, var: tk.BooleanVar) -> ttk.Checkbutton:
+def _check(parent: tk.Widget, text: str, var: tk.BooleanVar,
+           command=None) -> ttk.Checkbutton:
     """勾选框统一走 ttk（clam 才管得到它的底色/字体；经典控件的锚点是 ttk 不支持的）。"""
-    return ttk.Checkbutton(parent, text=text, variable=var)
+    return ttk.Checkbutton(parent, text=text, variable=var, command=command)
 
 
 class ConvertTab(TabPage):
@@ -219,6 +229,12 @@ class ConvertTab(TabPage):
         # 任务相关选项就地改，别让人去设置页找上下文）。值仍以 cfg 为准（运行时就地读）。
         self.cfg = cfg or {}
         self.ai_knobs_sink = ai_knobs_sink or (lambda *_a: None)
+        # ── 第五十五批：两段式 AI 协同初排的界面状态 ──
+        # `_coop_out` = 第一段选定的输出根目录（第二段**复用**，不再弹目录选择）；
+        # `_coop_stage` = 从暂存目录发现的状态（第二段/各「打开…」按钮都靠它）。
+        self._coop_out = ""
+        self._coop_stage: C.CoopStage | None = None
+        self._coop_replies = ""
         super().__init__(parent, name, on_run, on_stop)
     instruction = ("使用说明：选作者的稿件（.docx / .doc / .tex），再选一个输出根目录，"
                    "产物会写到「输出目录/<作者名>/」。\n"
@@ -229,7 +245,10 @@ class ConvertTab(TabPage):
                    "第二行是编辑侧出版信息（卷/期/年/页码…）：不填也能转，但 PDF 页眉会是"
                    "「xxxx 年第 x 期，1–10」占位，得手工改 .tex。\n"
                    "核实成本闸门（上限 / 先算账 / 全量 / 先查库）在「引用库 → 引用库设置」页；"
-                   "默认值 = 一个参数都不加（与接入引用库之前逐字节相同）。")
+                   "默认值 = 一个参数都不加（与接入引用库之前逐字节相同）。\n"
+                   "勾「AI 协同初排（两段式）」= 第一段只把初排产物 + 《文献核实任务书》"
+                   "写进暂存目录就暂停（软件不调用任何 API、不上传任何内容）；"
+                   "编辑拿任务书去外部 chat 核实后，把回复文件/目录导入，再运行第二段才交付。")
 
     def build_options(self, parent: ttk.Frame) -> None:
         row1 = ttk.Frame(parent)
@@ -294,6 +313,52 @@ class ConvertTab(TabPage):
         self.bibdb_hint.pack(anchor="w")
         self.refresh_bibdb_hint()
 
+        # ── 第五十五批：两段式 AI 协同初排（默认关；勾上才展开操作区）──────────
+        # 用户口径（2026-10-19）：第一段只写暂存目录 + 任务书并暂停；编辑拿任务书去
+        # 外部 chat（豆包/千问/DeepSeek…）核实 —— **软件不上传任何内容、零费用**；
+        # 回填后导入回复跑第二段，第二段成功才交付。
+        row5 = ttk.Frame(parent)
+        row5.pack(anchor="w", pady=(8, 0))
+        self.v_coop = tk.BooleanVar(value=False)
+        _check(row5, "AI 协同初排（两段式）", self.v_coop,
+               command=self._toggle_coop_panel).pack(side="left")
+        ttk.Label(row5, text="（软件不调用 API、不上传任何内容；外部 chat 核实后导入回复再跑第二段）",
+                  style="Muted.TLabel").pack(side="left", padx=(8, 0))
+
+        self.coop_panel = ttk.Frame(parent)
+        self.v_coop_status = tk.StringVar(value="状态：未运行")
+        ttk.Label(self.coop_panel, textvariable=self.v_coop_status).pack(anchor="w")
+        btns = ttk.Frame(self.coop_panel)
+        btns.pack(anchor="w", pady=(2, 0))
+        self.coop_taskbook_btn = ttk.Button(btns, text="打开任务书", width=12,
+                                            state="disabled", command=self._open_coop_taskbook)
+        self.coop_stage_btn = ttk.Button(btns, text="打开暂存目录", width=12,
+                                         state="disabled", command=self._open_coop_stage_dir)
+        self.coop_deliver_btn = ttk.Button(btns, text="打开交付目录", width=12,
+                                           state="disabled", command=self._open_coop_delivery)
+        self.coop_record_btn = ttk.Button(btns, text="打开协同记录", width=12,
+                                          state="disabled", command=self._open_coop_record)
+        self.coop_suggest_btn = ttk.Button(btns, text="打开建议清单", width=12,
+                                           state="disabled", command=self._open_coop_suggestions)
+        for _btn in (self.coop_taskbook_btn, self.coop_stage_btn, self.coop_deliver_btn,
+                     self.coop_record_btn, self.coop_suggest_btn):
+            _btn.pack(side="left", padx=(0, 6))
+        run2 = ttk.Frame(self.coop_panel)
+        run2.pack(anchor="w", pady=(4, 0))
+        self.coop_import_btn = ttk.Button(run2, text="导入 AI 回复并运行第二段…",
+                                          state="disabled", command=self._run_coop_ph2)
+        self.coop_import_btn.pack(side="left")
+        self.v_coop_apply = tk.BooleanVar(value=False)
+        _check(run2, "一键修改产物（--coop-apply）", self.v_coop_apply).pack(
+            side="left", padx=(10, 0))
+        ttk.Label(run2, text="应用前先备份 reference.bib.ai前（可恢复）；"
+                             "应用决定须在运行前勾选，第二段交付后重跑是幂等早退",
+                  style="Muted.TLabel").pack(side="left", padx=(6, 0))
+        self.v_coop_summary = tk.StringVar(value="")
+        ttk.Label(self.coop_panel, textvariable=self.v_coop_summary, style="Muted.TLabel",
+                  wraplength=820, justify="left").pack(anchor="w", pady=(3, 0))
+        self.coop_panel.pack_forget()              # 默认隐藏，勾上「两段式」才出现
+
     def refresh_bibdb_hint(self) -> None:
         """回显「引用库 → 引用库设置」里的成本闸门/查库开关（只读，不写配置）。"""
         opts = self.cfg.get("bibdb") or {}
@@ -307,8 +372,191 @@ class ConvertTab(TabPage):
         text += "（在「引用库 → 引用库设置」改；默认 = 一个参数都不加）"
         self.bibdb_hint.config(text=text)
 
+    # ── 第五十五批：两段式 AI 协同初排（判据/发现/摘要都在 coop.py；这里只取值/显示）──
+    def coop_enabled(self) -> bool:
+        return bool(self.v_coop.get())
+
+    def coop_out_root(self) -> str:
+        """第一段选定的输出根目录（第二段复用，不再弹目录选择）。"""
+        return self._coop_out
+
+    def set_coop_out(self, out: str) -> None:
+        self._coop_out = out or ""
+
+    def _toggle_coop_panel(self) -> None:
+        if self.coop_enabled():
+            self.coop_panel.pack(anchor="w", pady=(2, 0))
+        else:
+            self.coop_panel.pack_forget()
+
+    def _ensure_coop_stage(self) -> C.CoopStage | None:
+        """当前暂存目录：按输出根 + 源稿**重新发现**（源稿/输出目录改过就不认旧的）。"""
+        if self._coop_out:
+            found = C.discover_stage(self._coop_out, source=self.path())
+            if found is not None:
+                self._coop_stage = found
+        return self._coop_stage
+
+    def _refresh_coop_buttons(self, stage: C.CoopStage | None = None) -> None:
+        """按暂存目录当前状态启用/禁用各按钮（找不到的路径一律禁用，不给假按钮）。"""
+        stage = stage if stage is not None else self._coop_stage
+
+        def _on(path: str) -> str:
+            return "normal" if path and os.path.exists(path) else "disabled"
+
+        self.coop_taskbook_btn.config(state=_on(stage.taskbook if stage else ""))
+        self.coop_stage_btn.config(state="normal" if stage else "disabled")
+        delivered = bool(stage and stage.delivery_dir)
+        self.coop_deliver_btn.config(
+            state=_on(stage.delivery_dir if delivered else ""))
+        self.coop_record_btn.config(state=_on(stage.record_path if delivered else ""))
+        self.coop_suggest_btn.config(state=_on(stage.suggestions_md if stage else ""))
+        self.coop_import_btn.config(
+            state="normal" if (stage and not delivered) else "disabled")
+
+    def apply_coop_result(self, payload: dict, code: int) -> None:
+        """工作线程跑完后的协同结果 → 界面状态（只能主线程调；`_worker` 经队列送来）。"""
+        phase = str(payload.get("phase") or "")
+        stage = payload.get("stage")
+        if not isinstance(stage, C.CoopStage):
+            stage = None
+        if stage is not None:
+            self._coop_stage = stage
+        cand = ("（发现 %d 个匹配的暂存目录，已选最近修改的一个）" % stage.found
+                if stage is not None and stage.found > 1 else "")
+        if code == 0 and phase == "ph1" and stage is not None:
+            self.v_coop_status.set(f"状态：{stage.status_text}")
+            self.v_coop_summary.set(
+                f"暂存目录：{stage.stage_dir}｜任务书："
+                f"{os.path.basename(stage.taskbook) or '（未找到）'}{cand}"
+                "｜下一步：把任务书交给外部 chat 核实，回填后点「导入 AI 回复并运行第二段…」"
+                "（第二段成功才算交付；最终交付目录本次未写）")
+        elif code == 0 and phase == "ph2" and stage is not None:
+            self.v_coop_status.set(f"状态：{C.STATUS_DELIVERED}")
+            self.v_coop_summary.set(
+                f"交付目录：{stage.delivery_dir}｜"
+                f"{C.suggestions_text(payload.get('suggestions') or {})}"
+                f"｜协同记录：{C.RECORD_NAME}{cand}")
+        else:
+            why = payload.get("error") or f"退出码 {code}"
+            self.v_coop_status.set(f"状态：{C.STATUS_FAILED}（{why}）")
+            if stage is not None:
+                self.v_coop_summary.set(
+                    f"暂存目录仍在：{stage.stage_dir}（**未交付**，原因见运行日志）")
+            else:
+                self.v_coop_summary.set(
+                    "详见运行日志；没有发现可续跑的暂存目录（第一段可能没跑成）")
+        self._refresh_coop_buttons(stage)
+
+    # 「打开…」按钮：路径一律来自状态文件（引擎写、界面只读），不存在就明说，不猜。
+    def _coop_open(self, path: str) -> None:
+        if not path:
+            messagebox.showinfo(APP_TITLE, "还没有可打开的文件：请先运行第一段（或第二段）。")
+            return
+        if not os.path.exists(path):
+            messagebox.showwarning(APP_TITLE, f"文件/目录不存在（可能已被移动）：\n{path}")
+            return
+        open_path(path)
+
+    def _open_coop_taskbook(self) -> None:
+        stage = self._ensure_coop_stage()
+        self._coop_open(stage.taskbook if stage else "")
+
+    def _open_coop_stage_dir(self) -> None:
+        stage = self._ensure_coop_stage()
+        self._coop_open(stage.stage_dir if stage else "")
+
+    def _open_coop_delivery(self) -> None:
+        stage = self._ensure_coop_stage()
+        self._coop_open(stage.delivery_dir if stage else "")
+
+    def _open_coop_record(self) -> None:
+        stage = self._ensure_coop_stage()
+        self._coop_open(stage.record_path if stage else "")
+
+    def _open_coop_suggestions(self) -> None:
+        stage = self._ensure_coop_stage()
+        if not stage:
+            self._coop_open("")
+            return
+        # 清单有 .md + .jsonl 两份：优先给人看的 .md（jsonl 是机器可读的逐条记录）
+        self._coop_open(stage.suggestions_md if os.path.exists(stage.suggestions_md)
+                        else stage.suggestions_jsonl)
+
+    def _pick_replies(self) -> str:
+        """选回复：整目录 或 多选文件（多选由 `coop.prepare_replies` 拼成引擎吃的单路径）。"""
+        if messagebox.askyesno(
+                APP_TITLE,
+                "AI 回复是一个目录吗？\n\n"
+                "「是」：选一个目录（读入里面全部 .md/.txt/.bib/.json，按文件名排序）\n"
+                "「否」：选一个或多个回复文件"):
+            return fd.askdirectory(title="选择 AI 回复目录") or ""
+        files = fd.askopenfilenames(
+            title="选择 AI 回复文件（可多选）",
+            filetypes=[("回复文本", ("*.md", "*.txt", "*.bib", "*.json", "*.jsonl")),
+                       ("全部文件", "*.*")])
+        paths = [p for p in (files or ()) if p]
+        if not paths:
+            return ""
+        try:
+            return C.prepare_replies(paths)
+        except (OSError, ValueError) as e:  # noqa: BLE001
+            messagebox.showerror(APP_TITLE, f"读取所选回复文件失败：\n{e}")
+            return ""
+
+    def coop_ph1_call(self, out: str) -> E.EngineCall:
+        """第一段 argv：页面现有参数 + `--verify-refs --no-ai-merge --coop-taskbook-only`。"""
+        args = self.extra_args()
+        args.pop("verify_plan", None)      # 第一段绝不传 --verify-plan（引擎会提前 return 0）
+        args["coop_taskbook_only"] = True
+        return E.convert_call(source=self.path(), out=out, **args)
+
+    def coop_ph2_call(self, replies: str) -> E.EngineCall:
+        """第二段 argv（最小集）：只带引擎续跑所需的参数，其余由状态文件继承。"""
+        stage = self._coop_stage
+        if stage is None or not self._coop_out:
+            raise ValueError("还没有第一段生成的暂存目录：请先勾选「AI 协同初排（两段式）」"
+                             "并运行第一段")
+        # 源稿改过就**不能**拿旧暂存续跑（引擎会因指纹不符拒绝，界面先讲清楚）。
+        state_source = str((stage.state.get("source") or {}).get("path") or "")
+        current = os.path.abspath(self.path()) if self.path() else ""
+        if (state_source and current
+                and os.path.normcase(os.path.abspath(state_source)) != os.path.normcase(current)):
+            raise ValueError("源稿与第一段时不一致（暂存目录属于另一份稿）："
+                             "请重新运行第一段")
+        return E.convert_call(source=self.path(), out=self._coop_out,
+                              coop_replies=replies, coop_stage=stage.stage_dir,
+                              coop_apply=bool(self.v_coop_apply.get()),
+                              compile_pdf=bool(self.v_compile.get()))
+
+    def _run_coop_ph2(self) -> None:
+        """「导入 AI 回复并运行第二段…」：先选回复、再定 --coop-apply，然后才跑。"""
+        stage = self._ensure_coop_stage()
+        if stage is None or not self._coop_out:
+            messagebox.showwarning(
+                APP_TITLE,
+                "还没有可续跑的暂存目录：请先勾选「AI 协同初排（两段式）」并点「运行」"
+                "跑第一段（任务书/暂存目录出来后这个按钮才能用）。")
+            return
+        if stage.delivery_dir:
+            messagebox.showinfo(APP_TITLE, "这篇已经交付过了。要重新处理请重新运行第一段"
+                                           "（第一段会覆盖暂存目录）。")
+            return
+        replies = self._pick_replies()
+        if not replies:
+            return
+        try:
+            call = self.coop_ph2_call(replies)
+        except ValueError as e:
+            messagebox.showwarning(APP_TITLE, str(e))
+            return
+        self._coop_replies = replies
+        self.on_run(self, call)          # MainWindow.start(tab, call)：显式传入第二段调用
+
     def on_activate(self) -> None:
         self.refresh_bibdb_hint()
+        self._ensure_coop_stage()          # 切回本页时重新扫一次暂存目录（源稿可能改过）
+        self._refresh_coop_buttons()
 
     def extra_args(self) -> dict:
         args = {"compile_pdf": self.v_compile.get(), "clean": self.v_clean.get(),
@@ -320,6 +568,9 @@ class ConvertTab(TabPage):
                 "editor": self.v_editor.get().strip(), "grants": self.v_grants.get().strip()}
         # 第 132 条：引用库设置 → convert 参数。默认返回空 dict（一个参数都不加）。
         args.update(S.bibdb_convert_args(self.cfg))
+        # 第五十五批：直连 API 的 token 预算。两段式 = 外部 chat（零费用）→ 一个都不传；
+        # 非 coop 时也只在「配置了 API 且值 != 引擎默认」才给键（默认 argv 逐字节不变）。
+        args.update(S.ai_budget_convert_args(self.cfg, coop=self.coop_enabled()))
         return args
 
 
@@ -820,6 +1071,35 @@ class SettingsTab(ttk.Frame):
         _check(opts, "检索参考文献证据（DeepSeek 独立 Search API，按次计费；默认关）",
                self.v_searchrefs).pack(side="left", padx=(16, 0))
 
+        # ── 第五十五批：AI 直连 API 的 token 预算闸（默认 30000 / 1000000；0 = 不限）──
+        # 只约束「直连 API」通道；两段式外部 chat 由编辑自己操作、软件零上传零费用。
+        api_cfg = cfg.get("api") or {}
+        self.v_budget = tk.StringVar(
+            value=str(api_cfg.get("budgetTokens", S.AI_BUDGET_DEFAULT)))
+        self.v_batch_budget = tk.StringVar(
+            value=str(api_cfg.get("batchBudgetTokens", S.AI_BATCH_BUDGET_DEFAULT)))
+        budget_row = ttk.Frame(self)
+        budget_row.grid(row=row, column=1, padx=10, pady=(6, 0), sticky="w"); row += 1
+        ttk.Label(budget_row, text="单篇 token 预算").pack(side="left")
+        ttk.Entry(budget_row, textvariable=self.v_budget, width=10).pack(
+            side="left", padx=(4, 14))
+        ttk.Label(budget_row, text="单批 token 预算").pack(side="left")
+        ttk.Entry(budget_row, textvariable=self.v_batch_budget, width=12).pack(
+            side="left", padx=(4, 10))
+        ttk.Label(budget_row, text="0 = 不限", style="Muted.TLabel").pack(side="left")
+        ttk.Label(
+            self,
+            text=(f"默认 {S.AI_BUDGET_DEFAULT} / {S.AI_BATCH_BUDGET_DEFAULT}；"
+                  "只约束「直连 API」通道（超预计用量先打印账、不发起请求），"
+                  "直连也只发条目/片段、不发正文全文。两段式外部 chat 流程由编辑自己操作，"
+                  "软件不上传任何内容、零费用，预算不参与。"),
+            style="Muted.TLabel", wraplength=760, justify="left").grid(
+            row=row, column=1, padx=10, sticky="w"); row += 1
+        # 非法值红字提示（不落盘）：颜色取 theme，不写死色号（(f) 组有守卫）
+        self.budget_error = ttk.Label(self, text="", foreground=theme.COLOR["error"],
+                                      wraplength=760, justify="left")
+        self.budget_error.grid(row=row, column=1, padx=10, pady=(0, 4), sticky="w"); row += 1
+
         # 密钥常驻状态行：说清「已存/末四位/只在本机」—— 隐藏字段光靠打码，编辑不知道配没配对
         self.key_status = ttk.Label(self, text="", wraplength=760, justify="left",
                                     style="Muted.TLabel")
@@ -916,6 +1196,15 @@ class SettingsTab(ttk.Frame):
         self.status_label.config(text=text)
 
     def save(self) -> None:
+        # 第五十五批：预算输入先校验 —— 非法值**不落盘**（红字提示，旧值保留）；
+        # 其他设置照常保存，不让一个填错的预算把整页保存卡死。
+        budget_article, err_article = S.parse_budget_tokens(
+            self.v_budget.get(), S.AI_BUDGET_DEFAULT)
+        budget_batch, err_batch = S.parse_budget_tokens(
+            self.v_batch_budget.get(), S.AI_BATCH_BUDGET_DEFAULT)
+        errors = [e for e in (err_article, err_batch) if e]
+        self.budget_error.config(
+            text=("；".join(errors) + "（本次未保存预算，其他设置照常保存）") if errors else "")
         for key, var in self.vars.items():
             if key == "engineDir":
                 self.cfg["engineDir"] = var.get().strip()
@@ -929,6 +1218,9 @@ class SettingsTab(ttk.Frame):
         # thinking/maxTokens 不再由本页负责（input 在「初排转换」页，改即写进 cfg）
         self.cfg["api"]["webSearch"] = bool(self.v_web.get())
         self.cfg["api"]["searchRefs"] = bool(self.v_searchrefs.get())
+        if not errors:
+            self.cfg["api"]["budgetTokens"] = budget_article
+            self.cfg["api"]["batchBudgetTokens"] = budget_batch
         try:
             path = S.save(self.cfg)
         except Exception as e:  # noqa: BLE001
@@ -1370,6 +1662,15 @@ class MainWindow(tk.Tk):
                     else:
                         tab.show_result(text, path, seconds)
                     continue
+                if isinstance(line, tuple) and line[0] == "__COOP__":
+                    # 第五十五批：两段式协同跑完后，由工作线程把「发现到的暂存目录/
+                    # 建议摘要」送回主线程再更新界面（Tk 控件只在主线程碰）。
+                    _tag, tab, payload, code = line
+                    try:
+                        tab.apply_coop_result(payload, code)
+                    except Exception as exc:  # noqa: BLE001
+                        self.log(f"❌ 协同状态界面更新失败：{exc}")
+                    continue
                 self.log(line)
                 if self._busy:
                     self._phase = line.strip()          # 当前阶段 = 最新一行（引擎的阶段行）
@@ -1412,6 +1713,10 @@ class MainWindow(tk.Tk):
             out = fd.askdirectory(title="选择输出根目录（产物写到 <输出目录>/<作者名>/）")
             if not out:
                 raise ValueError("没有选输出目录")
+            if tab.coop_enabled():
+                # 第五十五批：两段式第一段。**记住输出根** —— 第二段复用，不再弹目录选择。
+                tab.set_coop_out(out)
+                return tab.coop_ph1_call(out)
             return E.convert_call(source=path, out=out, **opts)
         if isinstance(tab, InfoCheckTab):
             # ⚠️ 不带 `--preview`：这一次跑还要把《信息检查…txt/.json》落到目录里
@@ -1478,16 +1783,61 @@ class MainWindow(tk.Tk):
         path = tab.path()
         threading.Thread(target=self._worker, args=(call, tab, path), daemon=True).start()
 
+    @staticmethod
+    def _argv_value(argv: list[str], flag: str) -> str:
+        """取命令行里 `flag` 后面的值（没有就返回空串；不猜、不抛）。"""
+        try:
+            index = argv.index(flag)
+        except ValueError:
+            return ""
+        return argv[index + 1] if index + 1 < len(argv) else ""
+
+    @staticmethod
+    def _coop_payload(call: E.EngineCall, phase: str, code: int) -> dict:
+        """跑完两段式的一步后，把界面要的状态从**引擎写的状态文件**里读出来。
+
+        发现规则与引擎同一口径（`coop.py: discover_stage`：source + out_root 都匹配）。
+        第一段失败但暂存目录已写（如编译失败退出 2）时仍返回 stage —— 界面会显示
+        「失败」但允许打开任务书/暂存目录，**不把暂存目录当交付目录**。
+        """
+        out = MainWindow._argv_value(call.argv, "--out")
+        source = MainWindow._argv_value(call.argv, "--source")
+        stage_dir = MainWindow._argv_value(call.argv, "--coop-stage")
+        stage = C.load_stage(stage_dir) if stage_dir else None
+        if stage is None:
+            stage = C.discover_stage(out, source=source)
+        payload: dict = {"phase": phase, "stage": stage}
+        if stage is not None and phase == "ph2" and code == 0:
+            payload["suggestions"] = C.suggestions_summary(stage.stage_dir, stage.stem)
+        if stage is None:
+            payload["error"] = ("没有发现暂存目录（第一段可能没跑成，见上面的日志）"
+                                if phase == "ph1"
+                                else "暂存目录不见了（可能已被移动/删除）")
+        return payload
+
     def _worker(self, call: E.EngineCall, tab=None, path: str = "") -> None:
         last = {"line": ""}
+        tail: list[str] = []                 # 失败时给界面看「日志尾部」（只留最后几行）
 
         def _on_line(line: str) -> None:
             self._q.put(line)
             if line.strip():
                 last["line"] = line          # 契约行 = stdout 最后一行（ENGINE_API 五）
+                tail.append(line)
+                if len(tail) > 8:
+                    del tail[0]
 
+        # 第五十五批：两段式协同**绝不**把 API 配置传给子进程（外部 chat 通道零上传/
+        # 零费用；与 mac `CoopFeature.prepare` 强制 useAI=false 同一口径）。
+        coop_phase = ""
+        if isinstance(tab, ConvertTab):
+            if "--coop-taskbook-only" in call.argv:
+                coop_phase = "ph1"
+            elif "--coop-replies" in call.argv:
+                coop_phase = "ph2"
         try:
-            code = E.run_call(call, on_line=_on_line, api=self.cfg.get("api"),
+            code = E.run_call(call, on_line=_on_line,
+                              api=None if coop_phase else self.cfg.get("api"),
                               on_proc=lambda p: setattr(self, "_proc", p),
                               notes=self.cfg.get("notesRepoPath", ""))
         except Exception as e:  # noqa: BLE001
@@ -1497,19 +1847,36 @@ class MainWindow(tk.Tk):
             payload = self._info_report_payload(path)
             if payload:
                 self._q.put(("__REPORT__", tab, payload))
+        coop_payload: dict | None = None
+        result = E.result_text(call.entry, code)
+        if coop_phase:
+            try:
+                coop_payload = self._coop_payload(call, coop_phase, code)
+            except Exception as e:  # noqa: BLE001  读状态失败不许把 worker 弄死
+                coop_payload = {"phase": coop_phase, "stage": None,
+                                "error": f"读取协同状态失败：{e}"}
+            if code != 0:
+                detail = E.output_tail(tail, count=2)
+                coop_payload["error"] = (f"退出码 {code}｜{detail}" if detail
+                                         else f"退出码 {code}")
+            elif coop_payload.get("stage") is not None:
+                result = ("✅ 初排完成 · 待人工核实（未交付）" if coop_phase == "ph1"
+                          else "✅ 已交付")
         # ⚠️ 退出码 1 在引擎里常常是「有结果」而不是失败（INVARIANTS 三.2）：
         #    checkbib 并回 / proofcheck 有命中 / compileall 有失败 / toc 只出一份。
         #    从前一律写「❌ 失败（退出码 1）」，与上一行引擎自己打的「完成。…」自相矛盾
         #    （2026-10-17 审计实测，H3）。文案与 mac 各页逐字对齐，且在 bridge 里有守卫。
-        self._q.put(f"{E.result_text(call.entry, code)}（退出码 {code}）")
+        self._q.put(f"{result}（退出码 {code}）")
         if tab is not None:
             path = E.artifact_path(last["line"]) if code == 0 else ""
             undo = None
             # 清理跑完 → 给一个「撤销清理」按钮：把回收目录里的东西搬回去
             if isinstance(tab, CleanTab) and code == 0 and path and "--trash" in call.argv:
                 undo = ("撤销清理", path)
-            self._q.put(("__RESULT__", tab, E.result_text(call.entry, code),
+            self._q.put(("__RESULT__", tab, result,
                          path, time.monotonic() - self._t0, undo))
+            if coop_payload is not None:
+                self._q.put(("__COOP__", tab, coop_payload, code))
         self._q.put("__DONE__")
 
     def _set_busy(self, busy: bool) -> None:

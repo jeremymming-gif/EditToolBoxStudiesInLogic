@@ -25,6 +25,8 @@ import CryptoKit          // (h1) 只用来算 ai.json 的 sha256（纯本地，
 //                                     AIMaxTokens / AIEngineKnobs / AppSettings
 //   sources-mac/Features/ConvertFeature.swift   engineEnvironment / knobWarnings /
 //                                     effectiveKnobs（两个旋钮的「现取 or 回落」）
+//   sources-mac/Features/CoopFeature.swift  第 55 批两段式协同的纯逻辑（argv / 暂存目录
+//                                     发现 / 建议 jsonl 摘要 / 路径标准化）
 //   sources-mac/Views/ConvertTab.swift    run(): settings.aiEngineKnobs → run(knobs:)
 //                                     （源码级接线检查，见 T-g）
 //   sources-mac/Views/SettingsTab.swift   AIConnectionTester's pure checklist builders
@@ -2016,6 +2018,316 @@ check("m12-mask", "方案里的密钥只经 mask() 显示（前 4 位），与�
       AppSettings.mask("sk-M-1111") == AppSettings.mask("sk-M-1111")
         && !AppSettings.mask("sk-M-1111").contains("1111"),
       "mask(\(sm.aiProfiles[0].key))=\(AppSettings.mask(sm.aiProfiles[0].key))")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (n) 第 55 批：两段式「AI 协同初排」—— argv / 暂存目录发现 / 建议摘要 / 预算设置
+//     引擎契约由批 54 冻结（Engine/ 零 diff），这里钉住「界面承诺 = 引擎真收到的东西」。
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-n  第 55 批：两段式协同 argv（ph1/ph2 / 默认零变化 / 预算闸）")
+
+let coopRoot = base.appendingPathComponent("coop").path
+wipe(coopRoot); mkdir(coopRoot, 0o700)
+let coopSrc = coopRoot + "/main.docx"
+let coopOut = coopRoot + "/issue90"
+let coopReplies = coopRoot + "/replies"
+let coopStage = coopOut + "/Bo_Chen_待核"
+
+// n0 默认零变化 —— 不勾两段式时 argv 与批 54 完全一致（没有 coop / 预算参数）
+let n0Default = ConvertFeature.arguments(ConvertFeature.Options())
+check("n0-default", "不勾两段式：默认 argv 逐字节不变（只有 --compile --clean）",
+      n0Default == ["--compile", "--clean"], "argv=\(n0Default)")
+var n0 = ConvertFeature.Options()
+n0.source = coopSrc; n0.out = coopOut
+n0.verifyRefs = true; n0.useAI = true; n0.llmBase = "https://api.example.com/v1"
+n0.llmModel = "m"; n0.aiBudgetTokens = AIBudgetSettings.defaultArticle
+n0.aiBatchBudgetTokens = AIBudgetSettings.defaultBatch
+let n0Argv = ConvertFeature.arguments(n0)
+let n0Forbidden = ["--coop-taskbook-only", "--coop-stage", "--coop-replies", "--coop-apply",
+                   "--ai-budget-tokens", "--ai-batch-budget-tokens"]
+check("n0-no-coop-flags", "普通转换（勾 AI、预算=引擎默认）：没有任何 coop 旗标，也没有预算参数",
+      n0Forbidden.allSatisfy { !n0Argv.contains($0) } && n0Argv.contains("--verify-refs"),
+      "argv=\(n0Argv)")
+
+// n1 ph1：现有参数 + --verify-refs --no-ai-merge --coop-taskbook-only；
+//    **绝不** --verify-plan / --llm-* / --search-refs（第一段不调用 API）
+var n1 = ConvertFeature.Options()
+n1.source = coopSrc; n1.out = coopOut; n1.compile = false
+n1.verifyRefs = true; n1.verifyPlan = true; n1.useAI = true; n1.keepOriginalBib = true
+n1.llmBase = "https://api.example.com/v1"; n1.llmModel = "m"; n1.searchRefs = true
+n1 = CoopFeature.prepare(n1, phase: .first)
+let n1Argv = ConvertFeature.arguments(n1)
+check("n1-ph1-flags", "ph1：三个契约旗标都在，顺序固定（追加在现有参数之后）",
+      n1Argv.suffix(3) == ["--verify-refs", "--no-ai-merge", "--coop-taskbook-only"],
+      "tail=\(Array(n1Argv.suffix(3)))")
+let n1Forbidden = ["--verify-plan", "--llm-base", "--llm-model", "--llm-protocol",
+                   "--llm-web-search", "--search-refs", "--ai-budget-tokens"]
+check("n1-ph1-no-plan-no-api", "ph1：**不传** --verify-plan，也不传任何 --llm-*/--search-refs/预算参数",
+      n1Forbidden.allSatisfy { !n1Argv.contains($0) }, "argv=\(n1Argv)")
+check("n1-prepare", "CoopFeature.prepare(.first)：路径标准化 + 强制 useAI/searchRefs=false（两段式不调 API）",
+      n1.useAI == false && n1.searchRefs == false && n1.source == CoopFeature.normalizePath(coopSrc),
+      "useAI=\(n1.useAI) searchRefs=\(n1.searchRefs) source=\(n1.source)")
+
+// n1b 自定义暂存目录 → --coop-stage
+var n1b = ConvertFeature.Options()
+n1b.source = coopSrc; n1b.out = coopOut; n1b.coopStage = coopStage
+n1b = CoopFeature.prepare(n1b, phase: .first)
+let n1bArgv = ConvertFeature.arguments(n1b)
+let n1bStage = CoopFeature.normalizePath(coopStage)
+check("n1b-ph1-stage", "ph1 + 自定义暂存目录 → 恰好带 `--coop-stage <标准化绝对路径>`",
+      n1bArgv.contains("--coop-stage") && n1bArgv.last == n1bStage,
+      "tail=\(Array(n1bArgv.suffix(2)))")
+
+// n2 「只扫描源稿」不受两段式影响：勾着协同也只走普通 --scan 路径
+var n2 = ConvertFeature.Options()
+n2.source = coopSrc; n2.scanOnly = true; n2.coopPhase = .first; n2.verifyRefs = true
+let n2Argv = ConvertFeature.arguments(n2)
+check("n2-scan-ignores-coop", "scanOnly + 两段式：本次按普通扫描走（--scan），**没有**任何 coop 旗标",
+      n2Argv.contains("--scan")
+        && !n2Argv.contains("--coop-taskbook-only") && !n2Argv.contains("--coop-stage")
+        && !n2Argv.contains("--coop-replies"),
+      "argv=\(n2Argv)")
+
+// n3 ph2：最小集（source/out/replies/stage/apply/compile），其余普通参数一个都不带
+var n3 = ConvertFeature.Options()
+n3.source = coopSrc; n3.out = coopOut
+n3.coopReplies = coopReplies; n3.coopStage = coopStage
+n3.coopPhase = .second; n3.coopApply = true; n3.compile = false
+n3.verifyRefs = true; n3.useAI = true; n3.llmBase = "https://api.example.com/v1"
+n3.clean = true; n3.verifyMax = 5; n3.name = "X"; n3.lang = "zh"; n3.sourcePdf = true
+let n3Argv = ConvertFeature.arguments(n3)
+let n3Want = ["--source", CoopFeature.normalizePath(coopSrc),
+              "--out", CoopFeature.normalizePath(coopOut),
+              "--coop-replies", CoopFeature.normalizePath(coopReplies),
+              "--coop-stage", CoopFeature.normalizePath(coopStage),
+              "--coop-apply"]
+check("n3-ph2-minimal", "ph2：argv 恰好是最小集（compile 关 → 无 --compile；无 --verify-refs/--clean/--name/--llm-*）",
+      n3Argv == n3Want, "argv=\(n3Argv)")
+var n3c = n3
+n3c.compile = true
+let n3cArgv = ConvertFeature.arguments(n3c)
+check("n3b-ph2-compile", "ph2 + 页面「生成后立即编译」→ 末尾多一个 --compile",
+      n3cArgv == n3Want + ["--compile"], "tail=\(Array(n3cArgv.suffix(2)))")
+
+// n4 预算闸：仅「非协同 + 勾 AI + 值 ≠ 引擎默认」时传；0 要传 "0"
+var n4 = ConvertFeature.Options()
+n4.source = coopSrc; n4.out = coopOut; n4.useAI = true; n4.llmBase = "b"; n4.llmModel = "m"
+n4.aiBudgetTokens = 12345; n4.aiBatchBudgetTokens = 500000
+let n4Argv = ConvertFeature.arguments(n4)
+check("n4-budget-custom", "非协同 + 勾 AI + 自定义预算 → 两个预算参数都在",
+      n4Argv.contains("--ai-budget-tokens") && n4Argv.contains("12345")
+        && n4Argv.contains("--ai-batch-budget-tokens") && n4Argv.contains("500000"),
+      "argv=\(n4Argv)")
+var n4z = n4; n4z.aiBudgetTokens = 0; n4z.aiBatchBudgetTokens = 0
+let n4zArgv = ConvertFeature.arguments(n4z)
+check("n4-budget-zero", "预算填 0（= 不限）→ 原样传 \"0\"（不会被当成「用默认」而丢掉）",
+      n4zArgv.contains("--ai-budget-tokens") && n4zArgv.contains("0")
+        && n4zArgv.contains("--ai-batch-budget-tokens"),
+      "argv=\(n4zArgv)")
+var n4noAI = ConvertFeature.Options()
+n4noAI.source = coopSrc; n4noAI.out = coopOut; n4noAI.useAI = false
+n4noAI.aiBudgetTokens = 12345; n4noAI.aiBatchBudgetTokens = 500000
+check("n4-budget-needs-ai", "没勾 AI → 预算参数不传（它只约束直连 API 通道）",
+      !ConvertFeature.arguments(n4noAI).contains("--ai-budget-tokens"),
+      "argv=\(ConvertFeature.arguments(n4noAI))")
+var n4coop = ConvertFeature.Options()
+n4coop.source = coopSrc; n4coop.out = coopOut; n4coop.verifyRefs = true
+n4coop.aiBudgetTokens = 12345; n4coop.aiBatchBudgetTokens = 500000
+n4coop = CoopFeature.prepare(n4coop, phase: .first)
+check("n4-budget-no-coop", "两段式（外部 chat 零费用）→ 预算参数一个都不传",
+      !ConvertFeature.arguments(n4coop).contains("--ai-budget-tokens")
+        && !ConvertFeature.arguments(n4coop).contains("--ai-batch-budget-tokens"),
+      "argv=\(ConvertFeature.arguments(n4coop))")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (o) 第 55 批：AI 预算设置（AIBudgetSettings，UserDefaults 逐键；非法不落盘）
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-o  第 55 批：AI 预算设置（单篇 / 单批）")
+
+check("o-parse", "解析口径：空=不传；0=不限；负数/非整数=拒绝",
+      AIBudgetSettings.parse("") == .unset
+        && AIBudgetSettings.parse("0") == .value(0)
+        && AIBudgetSettings.parse(" 12345 ") == .value(12345)
+        && { if case .invalid = AIBudgetSettings.parse("-5") { return true }; return false }()
+        && { if case .invalid = AIBudgetSettings.parse("1e5") { return true }; return false }(),
+      "parse(\"\")=\(AIBudgetSettings.parse("")) parse(\"0\")=\(AIBudgetSettings.parse("0"))")
+
+let budgetSuite = "cn.edu.sysu.logic.toolbox.tests.aiBudget"
+let bDefaults = UserDefaults(suiteName: budgetSuite)!
+bDefaults.removePersistentDomain(forName: budgetSuite)
+let b0 = AIBudgetSettings(defaults: bDefaults)
+check("o-defaults", "默认 30000 / 1000000（= 引擎默认）；不传参数 → 命令行与批54 相同",
+      b0.articleText == "30000" && b0.batchText == "1000000"
+        && b0.articleValue == AIBudgetSettings.defaultArticle
+        && b0.batchValue == AIBudgetSettings.defaultBatch
+        && b0.articleHint == nil && b0.batchHint == nil,
+      "article=\(b0.articleText) batch=\(b0.batchText)")
+
+b0.updateArticle("abc")
+check("o-invalid", "非法输入：当场红字提示、value=nil，且**不落盘**",
+      b0.articleHint != nil && b0.articleValue == nil
+        && bDefaults.object(forKey: AIBudgetSettings.articleKey) == nil,
+      "hint=\(b0.articleHint ?? "<nil>") stored=\(bDefaults.object(forKey: AIBudgetSettings.articleKey) ?? "<nil>")")
+b0.updateBatch("-1")
+check("o-negative", "负数同样拒绝（0 = 不限，负数不是）",
+      b0.batchHint != nil && b0.batchValue == nil
+        && bDefaults.object(forKey: AIBudgetSettings.batchKey) == nil,
+      "hint=\(b0.batchHint ?? "<nil>")")
+
+b0.updateArticle("0"); b0.updateBatch("50000")
+let bBack = AIBudgetSettings(defaults: bDefaults)
+check("o-persist", "合法值立刻逐键落盘（0 也存；0 显示为「不限」）",
+      bDefaults.integer(forKey: AIBudgetSettings.articleKey) == 0
+        && bBack.articleText == "0" && bBack.articleValue == 0
+        && bBack.articleSummary.contains("不限")
+        && bBack.batchText == "50000",
+      "article=\(bBack.articleText) batch=\(bBack.batchText)")
+b0.updateArticle("")
+let bCleared = AIBudgetSettings(defaults: bDefaults)
+check("o-clear", "留空 = 恢复「不传参数」（删键，不存空串占位）",
+      bDefaults.object(forKey: AIBudgetSettings.articleKey) == nil
+        && bCleared.articleText == "30000" && bCleared.articleValue == AIBudgetSettings.defaultArticle,
+      "article=\(bCleared.articleText)")
+bDefaults.removePersistentDomain(forName: budgetSuite)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (p) 第 55 批：暂存目录发现（只读 `_AI协同状态.json`）+ 建议摘要
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-p  第 55 批：暂存目录发现 / 建议摘要 / 状态文案")
+
+func writeCoopState(_ dir: String, source: String, outRoot: String, stem: String,
+                    phase: String, deliveredTo: String = "", mtime: TimeInterval? = nil) {
+    mkdir(dir, 0o700)
+    var obj: [String: Any] = [
+        "schema": 1,
+        "phase": phase,
+        "source": ["path": source, "sha256": "deadbeef"],
+        "params": ["out_root": outRoot, "stem": stem, "source": source],
+        "taskbook": dir + "/" + stem + "_文献核实.md",
+        "stage_dir": dir,
+        "final_dir": outRoot + "/" + stem,
+    ]
+    if !deliveredTo.isEmpty { obj["delivered_to"] = deliveredTo }
+    let data = try! JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
+    writeRaw(dir + "/" + CoopFeature.stateFileName, String(data: data, encoding: .utf8)!)
+    if let mtime = mtime {
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: mtime)],
+            ofItemAtPath: dir + "/" + CoopFeature.stateFileName)
+    }
+}
+
+let discRoot = coopRoot + "/discovery"
+let dOutA = discRoot + "/issue90"
+let dOutB = discRoot + "/issue91"
+let dSrc = discRoot + "/src/main.docx"
+mkdir(discRoot, 0o700)
+writeCoopState(dOutA + "/Bo_Chen_待核", source: dSrc, outRoot: dOutA,
+               stem: "Bo_Chen", phase: "ph1", mtime: 1000)
+writeCoopState(dOutA + "/Li_Si_待核", source: discRoot + "/src/other.docx",
+               outRoot: dOutA, stem: "Li_Si", phase: "ph1", mtime: 2000)
+writeCoopState(dOutB + "/Bo_Chen_待核", source: dSrc, outRoot: dOutB,
+               stem: "Bo_Chen", phase: "ph1", mtime: 3000)
+mkdir(dOutA + "/Broken_待核", 0o700)
+writeRaw(dOutA + "/Broken_待核/" + CoopFeature.stateFileName, "not a json {")
+
+let coopD1 = CoopFeature.discoverStages(outRoot: dOutA, source: dSrc)
+check("p1-discover", "按 `source.path` + `params.out_root` 匹配：只找到属于当前源稿的那个暂存目录",
+      coopD1.count == 1 && coopD1[0].stem == "Bo_Chen" && coopD1[0].phase == "ph1"
+        && coopD1[0].stageDir == CoopFeature.normalizePath(dOutA + "/Bo_Chen_待核")
+        && coopD1[0].taskbook.hasSuffix("Bo_Chen_文献核实.md"),
+      "found=\(coopD1.map { "\($0.stem)@\($0.phase)" })")
+check("p2-decoy", "反例：别的源稿 / 别的输出根 / 坏 JSON 都不算（不猜）",
+      !coopD1.contains { $0.stem == "Li_Si" }
+        && CoopFeature.discoverStages(outRoot: dOutB, source: dSrc).count == 1,
+      "outA=\(coopD1.count) outB=\(CoopFeature.discoverStages(outRoot: dOutB, source: dSrc).count)")
+
+// 路径标准化：状态文件里写 `./` / `..` 变体也要认得出是同一份
+writeCoopState(dOutA + "/Bo_Chen2_待核", source: discRoot + "/src/../src/main.docx",
+               outRoot: dOutA + "/.", stem: "Bo_Chen2", phase: "done",
+               deliveredTo: dOutA + "/Bo_Chen2", mtime: 5000)
+let coopD2 = CoopFeature.discoverStages(outRoot: dOutA, source: dSrc)
+check("p3-normalize", "路径标准化：`..` / `./` 变体仍匹配同一源稿与输出根；多个候选取最近修改的",
+      coopD2.count == 2 && coopD2[0].stem == "Bo_Chen2" && coopD2[0].delivered,
+      "found=\(coopD2.map { $0.stem })")
+check("p4-done-record", "phase=done → delivered=true，协同记录指向 `delivered_to/_AI协同记录.md`",
+      coopD2[0].recordPath == CoopFeature.normalizePath(dOutA + "/Bo_Chen2") + "/" + CoopFeature.recordFileName
+        && CoopFeature.stageStatusText(coopD2[0]) == "已交付"
+        && CoopFeature.stageStatusText(coopD1[0]).contains("未交付")
+        && CoopFeature.stageStatusText(nil) == "尚未初排",
+      "record=\(coopD2[0].recordPath) status=\(CoopFeature.stageStatusText(coopD2[0]))")
+check("p5-load-missing", "没有状态文件 / 坏 JSON → nil（界面显示「尚未初排」而不是崩）",
+      CoopFeature.loadStage(stageDir: discRoot + "/nope") == nil
+        && CoopFeature.loadStage(stageDir: dOutA + "/Broken_待核") == nil,
+      "missing=\(CoopFeature.loadStage(stageDir: discRoot + "/nope") == nil)")
+
+// 建议摘要：ph2 之后才有的 jsonl（accepted 按**字段**计数；rejected/missing 按条）
+let coopSugStage = coopD1[0]
+let coopSugPath = coopSugStage.suggestionsJSONLPath
+let coopSugLines = [
+    "{\"id\":\"BIB-1\",\"field\":\"year\",\"status\":\"accepted\"}",
+    "{\"id\":\"BIB-1\",\"field\":\"pages\",\"status\":\"accepted\"}",
+    "{\"id\":\"FN-3\",\"kind\":\"footnote\",\"status\":\"rejected\",\"reason\":\"证据不足\"}",
+    "{\"id\":\"META-4\",\"kind\":\"metadata\",\"status\":\"missing\"}",
+    "这一行不是 JSON（坏行要被计数而不是静默吞掉）",
+]
+writeRaw(coopSugPath, coopSugLines.joined(separator: "\n") + "\n")
+let coopSug = CoopFeature.suggestionsSummary(coopSugStage)
+check("q1-suggestions", "建议 jsonl 摘要：accepted 按字段计 2 / rejected 1 / missing 1 / 坏行 1",
+      coopSug != nil && coopSug!.accepted == 2 && coopSug!.rejected == 1 && coopSug!.missing == 1
+        && coopSug!.malformed == 1 && coopSug!.total == 4
+        && coopSug!.summary.contains("通过校验 2"),
+      "summary=\(coopSug?.summary ?? "<nil>")")
+check("q2-suggestions-missing", "还没有建议清单（未跑第二段）→ nil，界面不显示假摘要",
+      CoopFeature.suggestionsSummary(path: coopRoot + "/nope.jsonl") == nil
+        && CoopFeature.suggestionsSummary(coopD1[0]).map { $0.malformed } == 1,
+      "nil-path=\(CoopFeature.suggestionsSummary(path: coopRoot + "/nope.jsonl") == nil)")
+
+// refresh：发现 + 建议 + 记录三件事的合并结果（界面刷新状态只用这一个入口）
+let coopRefresh = CoopFeature.refresh(outRoot: dOutA, source: dSrc)
+check("q3-refresh", "refresh()：selected = 最近修改的候选，建议摘要与记录存在性一并带出",
+      coopRefresh.selected?.stem == "Bo_Chen2" && coopRefresh.suggestions == nil
+        && coopRefresh.recordExists == false && coopRefresh.stages.count == 2,
+      "selected=\(coopRefresh.selected?.stem ?? "<nil>") stages=\(coopRefresh.stages.count)")
+
+// 失败提示：日志尾部（退出码之外的诊断信息，界面必须给）
+let coopTailText = "x\n\n  步骤  \n+  1.2s  ❌ 编译未通过\n+ 12.3s  y\n"
+check("q4-logtail", "失败日志尾部：取最后 N 行、去掉时间戳前缀、逐行截断",
+      CoopFeature.logTail(coopTailText, maxLines: 2) == "❌ 编译未通过\ny",
+      "tail=\(CoopFeature.logTail(coopTailText, maxLines: 2))")
+
+// 源码级接线：UI 必须真的走这些纯函数（界面照抄判据 = 双份真相）
+let convTabSrc2 = readSrc("Views/ConvertTab.swift")
+let convFeatSrc2 = readSrc("Features/ConvertFeature.swift")
+let setTabSrc2 = readSrc("Views/SettingsTab.swift")
+check("r1-ui-coop", "ConvertTab：有「AI 协同初排（两段式）」开关 + 导入回复 + --coop-apply 勾选 + 「未交付」口径",
+      convTabSrc2.contains("AI 协同初排（两段式；外部 chat 免费流程）")
+        && convTabSrc2.contains("导入 AI 回复…")
+        && convTabSrc2.contains("--coop-apply")
+        && convTabSrc2.contains("未交付")
+        && convTabSrc2.contains("CoopFeature.refresh("),
+      "toggle=\(convTabSrc2.contains("AI 协同初排（两段式")) import=\(convTabSrc2.contains("导入 AI 回复…")) "
+        + "apply=\(convTabSrc2.contains("--coop-apply")) 未交付=\(convTabSrc2.contains("未交付"))")
+check("r2-feature-wiring", "ConvertFeature.arguments：ph1/ph2 两段分派都交给 CoopFeature（判据只有一份）",
+      convFeatSrc2.contains("CoopFeature.firstPhaseFlags(o)")
+        && convFeatSrc2.contains("CoopFeature.secondPhaseArguments(o)"),
+      "first=\(convFeatSrc2.contains("CoopFeature.firstPhaseFlags(o)")) "
+        + "second=\(convFeatSrc2.contains("CoopFeature.secondPhaseArguments(o)"))")
+check("r3-settings-budget", "SettingsTab：单篇/单批预算输入走 update 方法（非法不落盘）+ 隐私口径「零上传/零费用」",
+      setTabSrc2.contains("budget.updateArticle(")
+        && setTabSrc2.contains("budget.updateBatch(")
+        && setTabSrc2.contains("外部 chat")
+        && setTabSrc2.contains("零上传")
+        && setTabSrc2.contains("条目/片段"),
+      "article=\(setTabSrc2.contains("budget.updateArticle(")) "
+        + "batch=\(setTabSrc2.contains("budget.updateBatch(")) "
+        + "零上传=\(setTabSrc2.contains("零上传"))")
+let testRunnerSrc = (try? String(contentsOfFile: projFile("tools/run_swift_tests.sh"),
+                                 encoding: .utf8)) ?? ""
+check("r4-runner", "run_swift_tests.sh 的编译清单已加入 CoopFeature.swift（仍 6 台）",
+      testRunnerSrc.contains("Features/CoopFeature.swift")
+        && testRunnerSrc.components(separatedBy: "run_one ").count - 1 == 6,
+      "listed=\(testRunnerSrc.contains("Features/CoopFeature.swift")) "
+        + "harnesses=\(testRunnerSrc.components(separatedBy: "run_one ").count - 1)")
 
 print("")
 print("================================================================")

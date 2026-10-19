@@ -32,7 +32,10 @@ API_KEYS = ("base", "key", "model", "protocol", "thinking",
 DEFAULTS: dict = {
     # webSearch 与 searchRefs 是**布尔**（其余是字符串）——两个检索开关独立：
     # webSearch = 模型内置检索工具；searchRefs = 工具自己用 DeepSeek Search API 检索证据。
-    "api": {**{k: "" for k in API_KEYS}, "webSearch": False, "searchRefs": False},
+    # budgetTokens / batchBudgetTokens 是**非负整数**（0 = 不限），只约束直连 API 通道
+    # （第五十五批；两段式外部 chat 流程零费用，不传这两个参数）。
+    "api": {**{k: "" for k in API_KEYS}, "webSearch": False, "searchRefs": False,
+            "budgetTokens": 30000, "batchBudgetTokens": 1000000},
     "options": {
         "convertCompile": True,      # 初排转换默认编译 PDF（编辑最常要的产物）
         "convertClean": False,       # 默认保留中间文件，便于排查
@@ -67,6 +70,12 @@ DEFAULTS: dict = {
 #: 这里只是给界面显示「留空 = 引擎默认 120 条」，**不参与判定**。
 DEFAULT_VERIFY_MAX = 120
 
+#: 引擎 `convert.py` 的 `--ai-budget-tokens` / `--ai-batch-budget-tokens` **argparse 默认值**
+#: （第五十四批；两处口径必须一致）。设置页默认显示这两个数；传 CLI 的规则是
+#: 「值 != 这里的默认才传」——于是没动过预算的用户，命令行与批54 逐字节相同。
+AI_BUDGET_DEFAULT = 30000
+AI_BATCH_BUDGET_DEFAULT = 1000000
+
 
 def config_dir() -> str:
     if sys.platform.startswith("win"):
@@ -89,6 +98,12 @@ def _merge_defaults(raw: dict) -> dict:
         got = raw.get(section)
         if isinstance(got, dict):
             out[section].update({k: v for k, v in got.items() if k in out[section]})
+    # 第五十五批：AI 预算只收**非负整数**（0 = 不限）。配置文件是编辑能手改的文本，
+    # 也可能是旧版本留下的垃圾 —— 非法值回默认，绝不让它进 argv（引擎会拒绝）。
+    for key in ("budgetTokens", "batchBudgetTokens"):
+        value = out["api"].get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            out["api"][key] = DEFAULTS["api"][key]
     if isinstance(raw.get("engineDir"), str):
         out["engineDir"] = raw["engineDir"]
     # 顶层布尔偏好（U4：日志「摘要/原始」选择）—— 从前面板外键会在这里被丢掉，
@@ -213,4 +228,62 @@ def bibdb_convert_args(cfg: dict) -> dict:
         args["verify_all_refs"] = True
     if opts.get("lookupEnabled") is False:
         args["no_bibdb"] = True
+    return args
+
+
+# ── 第五十五批：AI 直连 API 的 token 预算闸（纯函数，桥接测试直接打这些）──────
+# 为什么单独一层：设置页只负责把文本写进 cfg，而「哪些值真的进 convert 的 argv」
+# 必须只有一处判据 —— 与 mac 侧同一规则（默认零变化 + 0 = 不限）。
+
+def parse_budget_tokens(text: str, default: int) -> tuple[int | None, str | None]:
+    """解析预算输入框：返回 `(要保存的值, 错误提示)`。
+
+    · 留空 → `(default, None)`：用引擎默认（不传 CLI 参数）；
+    · 合法非负整数 → `(n, None)`（0 = 不限，会**真的**传下去）；
+    · 非法（负数/非整数）→ `(None, 错误话术)`：**不落盘**，界面红字提示。
+    """
+    value = (text or "").strip()
+    if not value:
+        return default, None
+    try:
+        number = int(value)
+    except ValueError:
+        return None, f"预算必须是整数（默认 {default}；0 = 不限）"
+    if number < 0:
+        return None, "预算不能是负数（要「不限」请填 0）"
+    return number, None
+
+
+def ai_configured(cfg: dict) -> bool:
+    """直连 API 通道是否可用：**地址 + 模型名**（密钥可空——本机/自建端点不要密钥）。
+
+    口径与引擎 `slcn/llm.py` 的 `LLMConfig.ready`（`base and model`）一致：
+    界面说「预算生效」时引擎那边必须真的会走直连调用。
+    """
+    api = (cfg or {}).get("api") or {}
+    return bool(str(api.get("base", "")).strip() and str(api.get("model", "")).strip())
+
+
+def ai_budget_convert_args(cfg: dict, *, coop: bool = False) -> dict:
+    """预算设置 → `engine.convert_call()` 的 kwargs（**默认返回空 dict**）。
+
+    规则（两壳一致，见 `drafts/batch55-gui-plan.md` §3.2）：
+      · 两段式协同（`coop=True`）= 外部 chat 通道，软件零费用 → 一个参数都不传；
+      · 直连 API 没配置（地址/模型缺一）→ 不传（引擎不会发起调用，传了只是噪声）；
+      · 值 == 引擎默认（30000 / 1000000）→ 不传（命令行与批54 逐字节相同）；
+      · 值 != 默认才传；**0 要真的传**（0 = 不限，不能当默认值省掉）。
+    """
+    if coop:
+        return {}
+    if not ai_configured(cfg):
+        return {}
+    api = (cfg or {}).get("api") or {}
+    args: dict = {}
+    for key, default, name in (("budgetTokens", AI_BUDGET_DEFAULT, "ai_budget_tokens"),
+                               ("batchBudgetTokens", AI_BATCH_BUDGET_DEFAULT,
+                                "ai_batch_budget_tokens")):
+        value = api.get(key)
+        if (isinstance(value, int) and not isinstance(value, bool)
+                and value >= 0 and value != default):
+            args[name] = value
     return args

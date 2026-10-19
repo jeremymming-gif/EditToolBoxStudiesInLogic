@@ -91,6 +91,24 @@ enum ConvertFeature {
         var abstractCn = ""      // --abstract-cn（中文摘要）
         var titleEn = ""         // --title-en（英文题名）
         var abstractEn = ""      // --abstract-en（英文摘要）
+        // ── 第 55 批：两段式「AI 协同初排」（外部 chat 免费流程；默认关）
+        //    默认值下 `arguments()` 一个协同参数都不加 → 命令行与批 54 逐字节相同。
+        /// 界面勾选「AI 协同初排（两段式）」。**不直接进 argv**：真正跑哪一段由
+        /// `coopPhase` 决定（`CoopFeature.prepare` 在运行时按段设置）。
+        var coop = false
+        /// 本次运行属于两段式的哪一段（`.off` = 普通转换，批 54 行为）。
+        var coopPhase: CoopFeature.Phase = .off
+        /// 第二段的回填输入 → `--coop-replies`（文件或目录；空 = 不传，界面会拦）
+        var coopReplies = ""
+        /// 第一段自定义暂存目录 → `--coop-stage`；第二段由暂存目录发现结果填。
+        var coopStage = ""
+        /// 第二段「一键修改产物」→ `--coop-apply`（默认不勾；**必须在跑第二段前决定**）
+        var coopApply = false
+        /// 第 55 批：直连 API 通道的单篇 token 预算 → `--ai-budget-tokens`。
+        /// `nil` / 等于引擎默认（30000）时不传；仅非协同 + 勾了 AI 时传（外部 chat 零费用）。
+        var aiBudgetTokens: Int? = nil
+        /// 直连 API 通道的单批 token 预算 → `--ai-batch-budget-tokens`（默认 1000000）
+        var aiBatchBudgetTokens: Int? = nil
 
         /// AI 是否已配置到「可以调用」：**地址 + 模型名**（密钥可空——本机/自建端点不要密钥）。
         /// 口径与引擎 `slcn/llm.py` 的 `LLMConfig.ready`（`base and model`）保持一致，
@@ -220,6 +238,12 @@ enum ConvertFeature {
     /// 映射（`--verify-refs` / `--no-ai-merge` / 没勾 AI 时两个都不出现），
     /// 那是「界面承诺 = 引擎真收到的东西」的唯一机器证据。其余照旧由 `run()` 调用。
     static func arguments(_ o: Options) -> [String] {
+        // 第 55 批：`--scan`（只扫描源稿）不是转换，两段式对它没有意义 ——
+        // 勾着协同也一律按普通扫描走（「只扫描源稿」不受 coop 影响）。
+        let coop: CoopFeature.Phase = o.scanOnly ? .off : o.coopPhase
+        // 第二段是**最小集**：输出名/语种/模板/元数据由引擎从暂存状态继承，
+        // GUI 这里不重复拼（重复拼反而容易与 ph1 的指纹对不上）。
+        if coop == .second { return CoopFeature.secondPhaseArguments(o) }
         var a: [String] = []
         func add(_ flag: String, _ value: String) {
             guard !value.isEmpty else { return }
@@ -260,7 +284,13 @@ enum ConvertFeature {
         // 第 132 条「先算账」：引擎在 `--verify-plan` 分支里打印核实计划后**直接 exit 0**，
         // 根本走不到真正的核实。所以本次到底传哪个，由本函数这一处决定 ——
         // 两个都传只会让人以为「又要核实」，日志也说不清；**只传 --verify-plan**。
-        if o.verifyRefs || o.useAI {
+        // 第 55 批：两段式第一段的三个旗标由 `CoopFeature.firstPhaseFlags` 拼
+        // （纯函数、headless 有断言）。**绝不**走 --verify-plan：引擎在那个分支里
+        // 打印核实计划后直接退出 0，根本走不到「写任务书」这一步，第一段会白跑。
+        // 也绝不传 --llm-* / --search-refs：第一段明确不调用 API（外部 chat 零上传/零费用）。
+        if coop == .first {
+            a += CoopFeature.firstPhaseFlags(o)
+        } else if o.verifyRefs || o.useAI {
             if o.verifyPlan {
                 a.append("--verify-plan")
             } else {
@@ -270,9 +300,9 @@ enum ConvertFeature {
                 if o.useAI && o.keepOriginalBib { a.append("--no-ai-merge") }
             }
         }
-        // 成本闸门与引用库开关：只在**真的执行核实**（任务书 / AI）时传 ——
+        // 成本闸门与引用库开关：只在**真的执行核实**（任务书 / AI / 两段式第一段）时传 ——
         // 引擎对这些参数单独出现时只会打一行「本次忽略」的告警，界面不该发这种噪声。
-        if o.verifyRefs || o.useAI {
+        if coop == .first || o.verifyRefs || o.useAI {
             if let maxRefs = o.verifyMax { a += ["--verify-max", String(maxRefs)] }
             if o.verifyAllRefs { a.append("--verify-all-refs") }
             if o.noBibdb {
@@ -281,7 +311,9 @@ enum ConvertFeature {
                 a += ["--bibdb-path", o.bibdbPath]
             }
         }
-        if o.useAI {
+        // 第 55 批：协同模式**不传**任何直连 API 参数（两段式全程不调用 API；
+        // `CoopFeature.prepare` 还会把 useAI 置 false，这里是第二道防线）。
+        if o.useAI && coop == .off {
             // 只有勾了开关才把 AI 配置传下去（不勾就完全不碰这些参数）。
             // 地址/模型为空时 add() 会自动跳过 —— 引擎侧对空值会回落到环境变量
             // SLCN_LLM_BASE/KEY/MODEL，与命令行不传该参数完全等价。
@@ -316,6 +348,15 @@ enum ConvertFeature {
             if let p = AIAdvancedKnobs.envValue(AIAdvancedKnobs.parseResponsesPath(o.llmResponsesPath)) {
                 add("--llm-responses-path", p)
             }
+            // 第 55 批：直连 API 通道的 token 预算闸。**只在「值 ≠ 引擎默认」时传**：
+            // 不传 = 引擎用 30000 / 1000000，命令行与从前逐字节相同；显式设 0 要传 "0"（不限）。
+            // 外部 chat 两段式流程零费用，所以协同模式下这两个参数一个都不加。
+            if let v = o.aiBudgetTokens, v != AIBudgetSettings.defaultArticle {
+                a += ["--ai-budget-tokens", String(v)]
+            }
+            if let v = o.aiBatchBudgetTokens, v != AIBudgetSettings.defaultBatch {
+                a += ["--ai-batch-budget-tokens", String(v)]
+            }
         }
         if o.sourcePdf { a.append("--source-pdf") }
         if o.scanOnly { a.append("--scan") }
@@ -331,8 +372,10 @@ enum ConvertFeature {
     /// 为什么必须打：这些值存在 UserDefaults 里、由界面现取拼 argv；编辑看日志要能回答
     /// 「这次核多少条、查不查库、库在哪」。尤其「先算账」开着时引擎只打印计划就退出 0，
     /// 不写一行说明的话，日志看起来就像「转换成功但什么都没做」。
-    private static func logVerifyGate(_ o: Options, log: Logger) {
-        guard o.verifyRefs || o.useAI else { return }
+    private static func logVerifyGate(_ o: Options, log: Logger,
+                                      coop: CoopFeature.Phase = .off) {
+        // 两段式第一段一定会出任务书（引擎隐含 --verify-refs），所以这些设置同样要打出来。
+        guard coop == .first || o.verifyRefs || o.useAI else { return }
         let maxText: String
         if let maxRefs = o.verifyMax {
             maxText = maxRefs == 0 ? "不限（--verify-max 0）" : "\(maxRefs) 条（--verify-max）"
@@ -414,11 +457,16 @@ enum ConvertFeature {
 
     /// - Parameter knobs: 界面上的**当前**旋钮值（`ConvertTab` 在主线程现取）。
     ///   `nil` = 回落到读已保存的 `ai.json`，见 `effectiveKnobs(_:storeDirectory:)`。
+    /// - Returns: 引擎退出码（0 = 成功；`Shell.cancelledStatus` = 用户取消；-1 = 启动失败）。
+    ///   第 55 批起返回值给「两段式」状态机用（跑完第一段后要扫描暂存目录、刷新界面）；
+    ///   普通转换的调用方照旧可以忽略返回值。
+    @discardableResult
     static func run(options o: Options, knobs liveKnobs: AIEngineKnobs? = nil,
-                    log: Logger) {
+                    log: Logger) -> Int32 {
+        let coop: CoopFeature.Phase = o.scanOnly ? .off : o.coopPhase
         guard !o.source.isEmpty else {
             log("请先选择源文件（Word 文稿或 LaTeX 文件）。\n")
-            return
+            return -1
         }
         guard let tool = locateTool() else {
             log("未找到转换引擎 Engine/convert.py。\n")
@@ -429,27 +477,53 @@ enum ConvertFeature {
             log("「设置」页底部「转换引擎」一行只读显示当前解析到的实际路径："
                 + "若那里显示「未找到 Engine/convert.py」，说明两处都没命中，"
                 + "请重新用 build.sh 构建，或把 Engine 目录放进 app 包的 Resources 内。\n")
-            return
+            return -1
         }
         let toolDir = (tool as NSString).deletingLastPathComponent
         guard let py = locatePython(toolDir: toolDir) else {
             log("未找到 python3。请先安装（brew install python3）。\n")
-            return
+            return -1
         }
 
         log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
-        log("初排转换\n")
+        // 第 55 批：标题按段写清楚 —— 第一段**不是**交付，日志里不许出现「产物目录」。
+        switch coop {
+        case .first: log("AI 协同初排·第一段（出任务书；不调用 API、不交付）\n")
+        case .second: log("AI 协同初排·第二段（回填 → 续跑 → 交付）\n")
+        case .off: log("初排转换\n")
+        }
         log("  工具   \(tool)\n")
         log("  解释器 \(py)\n")
         log("  源文件 \(o.source)\n")
-        if !o.scanOnly { log("  输出到 \(o.out)\n") }
+        if coop == .first {
+            log("  输出到 **暂存目录**（第一段不写最终交付目录；跑完自动定位 `<out>/*_待核/`）\n")
+        } else if !o.scanOnly {
+            log("  输出到 \(o.out)\n")
+        }
+        if coop == .first {
+            log("  模式   AI 协同初排·**第一段**：只写暂存目录 + 《文献核实任务书》，"
+                + "**不调用任何 API**、不写最终交付目录（外部 chat 由编辑自己操作："
+                + "软件零上传、零费用）。\n")
+            if !o.coopStage.isEmpty { log("  暂存   \(o.coopStage)（--coop-stage 自定义）\n") }
+        } else if coop == .second {
+            log("  回填   \(o.coopReplies)\n")
+            log("  暂存   \(o.coopStage)\n")
+            log("  应用   " + (o.coopApply
+                ? "开（--coop-apply：先备份 reference.bib.ai前；只应用文献字段建议，"
+                  + "脚注/元数据/文献区原文仍列待人工）\n"
+                : "关：只写建议清单，**不改产物**（要应用请在跑第二段前勾选）\n"))
+        }
         // 两个「请求体旋钮」在**启动子进程前**解析一次。
         // 优先用调用方现取的界面值（与 base/key/model 同一口径：改了没保存也生效）；
         // 没传（`nil`）才回落到读「设置」页保存过的 ai.json。见 `effectiveKnobs`。
         let knobs = effectiveKnobs(liveKnobs)
-        logAI(o, knobs: knobs, log: log)
-        logVerifyGate(o, log: log)
-        for w in knobWarnings(knobs) { log(w) }
+        if coop == .off {
+            logAI(o, knobs: knobs, log: log)
+        }
+        logVerifyGate(o, log: log, coop: coop)
+        if coop == .off {
+            for w in knobWarnings(knobs) { log(w) }
+        }
         log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n\n")
 
         // 依赖 pypinyin（项目本地 vendor/），用 PYTHONPATH 挂上。
@@ -481,17 +555,36 @@ enum ConvertFeature {
         // U3：用户取消 → 只说「已取消」，**不许**讲成失败（产物可能只写了一半）
         if status == Shell.cancelledStatus {
             log("⏹ 已取消（用户终止；本次产物可能不完整，需要时重新运行即可）。\n")
-            return
+            return status
         }
         if status == 0 {
-            log("✅ 完成。\n")
-            if !o.scanOnly {
-                log("产物目录：\(o.out)\n")
+            // 第 55 批：两段式**第一段不是交付** —— 不许出现「产物目录」这种说法；
+            // 第二段才说「已交付」，且交付目录由引擎日志/状态文件给出，不由界面瞎猜。
+            switch coop {
+            case .first:
+                log("✅ 第一段完成：**待人工核实（未交付）**。\n")
+                log("   暂存目录里有初排产物 + 《文献核实任务书》；最终交付目录本次**未写**。\n")
+                log("   下一步：打开任务书交给外部 chat → 导入回复 → 运行第二段（才交付）。\n")
+            case .second:
+                log("✅ 第二段完成：**已交付**（最终目录与协同记录见上方引擎日志）。\n")
+            case .off:
+                log("✅ 完成。\n")
+                if !o.scanOnly {
+                    log("产物目录：\(o.out)\n")
+                }
             }
         } else if status == -1 {
             log("❌ 启动失败。\n")
         } else {
-            log("❌ 转换失败（退出码 \(status)）。\n")
+            switch coop {
+            case .first:
+                log("❌ 第一段失败（退出码 \(status)）；最终交付目录本次**未写**。\n")
+            case .second:
+                log("❌ 第二段失败（退出码 \(status)）；最终交付目录保持原样（引擎保证不 promote）。\n")
+            case .off:
+                log("❌ 转换失败（退出码 \(status)）。\n")
+            }
         }
+        return status
     }
 }

@@ -17,6 +17,9 @@ struct MainWindow: View {
     /// 「引用库」分组的设置（核实成本闸门 / 查库开关 / 笔记仓路径，第 132 条）。
     /// 与 `settings` 分开：这些是引用库自己的行为偏好，不混进 AI 配置那一组。
     @StateObject private var bibdb = BibDbSettings()
+    /// 第 55 批：AI 预算闸（单篇/单批 token；只约束直连 API 通道）。
+    /// 与「设置」「初排转换」两页共用同一实例，转换时现取。
+    @StateObject private var budget = AIBudgetSettings()
     /// 「一校核查」页的界面状态（本机没有 @State 宏，状态一律由 ObservableObject 承载）
     @StateObject private var proofModel = ProofCheckModel()
 
@@ -54,7 +57,7 @@ struct MainWindow: View {
                 // 全部页面都建好、只显示当前那页：这样切页**不会丢状态**
                 // （编辑正在敲的路径/选项都还在 —— 与原来 TabView 的行为一致）。
                 ZStack {
-                    ConvertTab(log: log, settings: settings, bibdb: bibdb)
+                    ConvertTab(log: log, settings: settings, bibdb: bibdb, budget: budget)
                         .pageVisible(selection == .convert)
                     CheckBibView(log: log)
                         .pageVisible(selection == .checkbib)
@@ -85,7 +88,7 @@ struct MainWindow: View {
                         .pageVisible(selection == .bibreview)
                     BibDbSettingsView(log: log, bibdb: bibdb)
                         .pageVisible(selection == .bibsettings)
-                    SettingsTab(settings: settings)
+                    SettingsTab(settings: settings, budget: budget)
                         .pageVisible(selection == .settings)
                 }
                 .frame(minHeight: 300)
