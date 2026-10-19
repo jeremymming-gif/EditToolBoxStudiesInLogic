@@ -3280,9 +3280,24 @@ def parse_docx(path: str, quote_threshold: int = 105,
         from .footnotes import union_entries as _union_entries
 
         _new_entries = doc.bib_entries[len(_end_entries_snapshot):]
+        # 第五十批（v7 键一致性）：union 可能把旧键并到保留键 → bib-refs 通过
+        # `keymap` 回传 old_key→new_key；这里把正文/编号清单/脚注 keymap 同步改写，
+        # 保证正文 cite 的键全部指向并集后的最终键（否则 undef/dangling）。
+        _union_alias: dict[str, str] = {}
         doc.bib_entries = _union_entries(
             list(_end_entries_snapshot), list(_new_entries),
-            warnings=doc.c_class_warnings)
+            warnings=doc.c_class_warnings, keymap=_union_alias)
+        if _union_alias:
+            for _fid, _k in list(keymap.items()):
+                keymap[_fid] = _union_alias.get(_k, _k)
+            for _fid, _fn in fn_objs.items():
+                if getattr(_fn, "key", ""):
+                    _fn.key = _union_alias.get(_fn.key, _fn.key)
+            for _num, _k in list(doc.ref_key_by_num.items()):
+                doc.ref_key_by_num[_num] = _union_alias.get(_k, _k)
+            for _old, _newk in _union_alias.items():
+                if _old in doc.ref_raw_by_key and _newk not in doc.ref_raw_by_key:
+                    doc.ref_raw_by_key[_newk] = doc.ref_raw_by_key.pop(_old)
         # 中文文献条目型兜底（86-03）：解析字段可能为空 → 指纹相同被 union 合并成 1 条；
         # 这里把丢掉的 guard 条目按原键补回（内容来自原文，仍由 entry_to_bib 兜底渲染）。
         _now_keys = {k for k, _e, _r in doc.bib_entries}

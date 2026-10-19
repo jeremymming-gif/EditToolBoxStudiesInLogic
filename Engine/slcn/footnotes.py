@@ -173,7 +173,8 @@ CITATION_NOTE = "note_only"           # 纯说明/古典文献（不进参考文
 #: 散文判据：正文+引用的混合型脚注常见特征（批 47 论述性脚注实测）
 _PROSE_CUES = re.compile(
     r"(笔者|作者认为|我们认为|参见|参阅|指出|所谓|这里|正如|不过|因此|当然|显然|"
-    r"据此|也就是说|例如|即|换言之|反过来说|一方面|另一方面|总之|可见)")
+    r"据此|也就是说|例如|即|换言之|反过来说|一方面|另一方面|总之|可见|"
+    r"认为|指出|主张|强调)")
 
 
 def _looks_prose(text: str) -> bool:
@@ -183,7 +184,9 @@ def _looks_prose(text: str) -> bool:
         return False
     if len(t) > 260:
         return True
-    if t.count("。") >= 1:
+    # 单句末「。」是中文文献条目的正常结尾，**不能**当散文判据（86-03 回归）：
+    # 只认「≥2 个句末标点」或论述性用语。
+    if t.rstrip().count("。") >= 2:
         return True
     return bool(_PROSE_CUES.search(t[:120]))
 
@@ -250,6 +253,12 @@ def classify_citation(text: str) -> Footnote:
                     entry = candidate
         except Exception:  # noqa: BLE001 —— 解析失败就按短引用处理
             pass
+    if not _entry_complete(entry):
+        # 中文脚注条目：parse_entry/parse_one 可能只给 note；用原文抽字段兜底
+        # （只用于判定「完整条目」与并集候选；字段全部来自原文，不编造）
+        extra = _extract_raw_fields(head)
+        if _entry_complete(extra):
+            entry = extra
     if _entry_complete(entry):
         fn.kind_new = CITATION_ENTRY
         fn.entry = entry
@@ -350,30 +359,47 @@ def _norm_fp(text: str) -> str:
     return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(text or "").lower())
 
 
-def entry_fingerprint(entry: dict) -> tuple:
+_PLACEHOLDER_TOKENS = {"未识别", "无", "none", "null", "n/a", "na", "tbd", "untitled",
+                       "佚名", "unknown", "佚名氏"}
+
+
+def entry_fingerprint(entry: dict) -> tuple | None:
     """去重指纹：第一作者姓 + 题名 + 年份 + 类型族 + **卷号** + **版次**。
 
-    · 卷号/版次参与判重（用户 2026-10-19 澄清：同书不同卷/不同版是不同文献）；
-    · **页码/页码定位（pages/page/locator）不参与**——同文献不同页码必须能合并。
+    ⚠️ **安全闸（第五十批修 v7 过并）**：
+      · author 空/占位、或 title 空/占位/仅页码 → 返回 **None**（该条禁止参与合并）；
+      · 归一后题名 < 4 字（如「逻辑」「Table」）→ **None**（不足单独作依据）；
+      · 卷号/版次参与判重；页码/页码定位不参与（同文献不同页码必须能合并）。
     """
     entry = entry or {}
-    author = str(entry.get("author") or entry.get("editor") or "")
+    author = str(entry.get("author") or entry.get("editor") or "").strip()
+    title = str(entry.get("title") or entry.get("booktitle") or "").strip()
+    if not author or not title:
+        return None
+    author_norm = _norm_fp(author)
+    title_norm = _norm_fp(title)
+    if author_norm in _PLACEHOLDER_TOKENS or title_norm in _PLACEHOLDER_TOKENS:
+        return None
+    if len(title_norm) < 4:
+        return None
+    if re.fullmatch(r"(?:pp?\.?\s*\d+(?:\s*[-\u2013]\s*\d+)?|\d+(?:\s*[-\u2013]\s*\d+)?)", title.strip()):
+        return None
     first = re.split(r"\s+and\s+", author, flags=re.I)[0].strip()
     if "," in first:
         surname = first.split(",")[0]
     else:
         toks = [t for t in re.split(r"\s+", first) if t]
         surname = toks[-1] if toks else ""
-    title = str(entry.get("title") or entry.get("booktitle") or "")
     year = re.sub(r"\D", "", str(entry.get("year") or ""))[:4]
     etype = str(entry.get("etype") or entry.get("entry_type") or "").lower()
-    return (_norm_fp(surname), _norm_fp(title), year, _TYPE_FAMILY.get(etype, etype),
+    return (_norm_fp(surname), title_norm, year, _TYPE_FAMILY.get(etype, etype),
             _norm_volume(entry.get("volume")), _norm_edition(entry.get("edition")))
 
 
 def union_entries(end_list_entries: list[tuple[str, dict, str]],
                   footnote_entries: list[tuple[str, dict, str]],
-                  *, warnings: list[FootnoteWarning] | None = None) -> list[tuple[str, dict, str]]:
+                  *, warnings: list[FootnoteWarning] | None = None,
+                  keymap: dict[str, str] | None = None) -> list[tuple[str, dict, str]]:
     """并集构建：文末清单 ∪ 脚注条目（按指纹合并，文末版本优先）。
 
     · 返回 `[(key, entry, raw), ...]`（可直接赋给 `doc.bib_entries` 风格）；
@@ -382,29 +408,39 @@ def union_entries(end_list_entries: list[tuple[str, dict, str]],
     · 不做「编造」：调用方无法解析的短引用不在这里生成条目（用 FootnoteWarning 报）。
     """
     warnings = warnings if warnings is not None else []
+    keymap = keymap if keymap is not None else {}
     merged: list[tuple[str, dict, str]] = []
     by_fp: dict[tuple, int] = {}
     by_base: dict[tuple, list[int]] = {}
 
     def _add(key, entry, raw):
         fp = entry_fingerprint(entry)
+        if fp is None:
+            merged.append((key, dict(entry), raw))   # 指纹不可用 → 永不合并
+            return
         by_fp.setdefault(fp, len(merged))
         by_base.setdefault(fp[:4], []).append(len(merged))
         merged.append((key, dict(entry), raw))
 
     for key, entry, raw in end_list_entries:
         fp = entry_fingerprint(entry)
-        if fp in by_fp:
+        if fp is not None and fp in by_fp:
             _fill_missing(merged[by_fp[fp]][1], entry)
+            keymap.setdefault(key, merged[by_fp[fp]][0])
             continue
         _add(key, entry, raw)
     for key, entry, raw in footnote_entries:
         fp = entry_fingerprint(entry)
+        if fp is None:
+            # 指纹不可用（author/title 空/占位/仅页码/题名<4 字）→ 禁止合并
+            merged.append((key, dict(entry), raw))
+            continue
         vol = fp[4]
         ed = fp[5]
         # ① 完全同指纹（含卷号/版次）→ 合并；文末版本优先、脚注补缺、冲突记 warning
-        if fp in by_fp:
+        if fp is not None and fp in by_fp:
             target = merged[by_fp[fp]][1]
+            keymap.setdefault(key, merged[by_fp[fp]][0])
             for name, value in entry.items():
                 if not value:
                     continue
@@ -419,7 +455,10 @@ def union_entries(end_list_entries: list[tuple[str, dict, str]],
                         title=str(entry.get("title") or ""), year=str(entry.get("year") or "")))
             continue
         # ② 基础身份相同（作者/题名/年/类型）但卷号或版次不同 → 处理规则（用户拍板）：
-        base = fp[:4]
+        base = fp[:4] if fp is not None else None
+        if base is None:
+            _add(key, entry, raw)
+            continue
         partial = False
         for index in by_base.get(base, []):
             other = merged[index][1]
@@ -510,6 +549,10 @@ def _extract_raw_fields(raw: str) -> dict:
         head = re.sub(r"(主编|编著|编译|著|编|译|校|等)+$", "", head.strip())
         if head:
             fields["author"] = head[:30]
+        # 中文「作者：题名，期刊…」式：冒号后到下一个逗号/句号是题名
+        m = re.match(r"[^：:]*[：:]([^，,。；;]{2,80})", raw)
+        if m:
+            fields.setdefault("title", m.group(1).strip())
     else:
         body = re.sub(r"^(Cf\.|cf\.|See|see|参见|参阅|转引自|引自)\s*", "", raw)
         head = re.split(r"[,”\"‘《,]", body)[0]
@@ -649,7 +692,8 @@ def resolve_citation(citation: Footnote,
                      entries: list[tuple[str, dict, str]],
                      *, title_threshold: float = 0.9,
                      index: dict | None = None,
-                     stats: dict | None = None) -> tuple[str | None, FootnoteWarning | None]:
+                     stats: dict | None = None,
+                     keymap: dict[str, str] | None = None) -> tuple[str | None, FootnoteWarning | None]:
     """短引用 → 已存在条目 key（分档匹配：作者-年+题名相似度+字段完整度）；不编造。
 
     分档：① 完整指纹（含卷/版）② 姓+年+题名≥阈值 ③ 姓+题名≥阈值（一方缺年）
@@ -764,7 +808,9 @@ def resolve_citation(citation: Footnote,
                 locator=citation.locator)
     if stats is not None:
         stats["tier"] = best_tier
-    return best_key, None
+    # 被并键不得再被 cite：返回并集**最终键**（union_entries 的 old→new 映射）
+    final_key = (keymap or {}).get(best_key, best_key)
+    return final_key, None
 
 
 def _fill_missing(target: dict, source: dict) -> None:

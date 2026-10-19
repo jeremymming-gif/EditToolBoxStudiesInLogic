@@ -179,6 +179,39 @@ check("⑤ 作者拼写容错（Waston/Watson）→ 命中",
                                  [("W1975", {"author": "Watson, G.", "title": "Free Agency",
                                              "year": "1975"}, "")])[0] == "W1975")
 
+# ── ⑥ 第五十批：过并防护 + old→new 键映射（v7 回归 87-9/88-02/86-03）────────
+empty_entries = [("n1", {}, ""), ("n2", {"note": "基于表象"}, ""),
+                 ("n3", {"author": "", "title": "p. 36"}, "")]
+check("⑥ 66-1 空 author/title/仅页码条目 → 指纹 None、禁止合并（87-9 8→1 回归）",
+      all(footnotes.entry_fingerprint(e) is None for _k, e, _r in empty_entries)
+      and len(footnotes.union_entries([], empty_entries)) == 3)
+short_title = [("s1", {"author": "陈波", "title": "逻辑", "year": "2018"}, ""),
+               ("s2", {"author": "陈波", "title": "逻辑", "year": "2018"}, "")]
+check("⑥ 题名 <4 字不单独作依据（不合并）",
+      len(footnotes.union_entries([], short_title)) == 2)
+page_like = [("p1", {"author": "Watson, G.", "title": "pp. 61-62", "year": "1975"}, "")]
+check("⑥ 题名仅为页码 → 指纹 None", footnotes.entry_fingerprint(page_like[0][1]) is None)
+end_k = [("W1975", {"author": "Watson, Gary", "title": "Free Agency", "year": "1975",
+                    "publisher": "J"}, "")]
+foot_k = [("ref01", {"author": "Gary Watson", "title": "Free Agency", "year": "1975",
+                     "publisher": "J", "pages": "215"}, "")]
+keymap = {}
+merged_k = footnotes.union_entries(end_k, foot_k, keymap=keymap)
+check("⑥ 并集提供 old→new 键映射：ref01 → W1975、只保留 1 条",
+      merged_k and merged_k[0][0] == "W1975" and keymap.get("ref01") == "W1975")
+cit_ref = footnotes.Footnote(fid=3, text="Watson, “Free Agency,” p. 215.",
+                             kind_new=footnotes.CITATION_PURE,
+                             ref_raw="Watson, “Free Agency,” p. 215.")
+cit_ref.entry = {"author": "Gary Watson", "title": "Free Agency", "year": "1975"}
+key_final, _w = footnotes.resolve_citation(
+    cit_ref, end_k + foot_k, keymap={"ref01": "W1975"})
+check("⑥ resolve_citation 返回并集**最终键**（被并键不得再被 cite）",
+      key_final == "W1975")
+cn_ref = footnotes.classify_citation(
+    "杨正文：鼓藏节仪式与苗族社会组织，西南民族学院学报，2000年第5期，第13-26页。")
+check("⑥ 中文文献脚注（句末「。」）→ reference_entry（86-03 不误判 mixed）",
+      cn_ref.kind_new == footnotes.CITATION_ENTRY, cn_ref.kind_new)
+
 print()
 if FAILS:
     print(f"失败 {len(FAILS)} 项：{FAILS!r}")
