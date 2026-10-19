@@ -359,6 +359,21 @@ EditToolBox 的 `DeleteTempFeature.swift`：
 删掉 `.bbl`/`.bcf` 不影响后续重编——已验证再跑一遍
 `xelatex → biber → xelatex ×2` 仍得到 18 页、零报错。
 
+#### 审阅件集合 + 交付清单（2026-10-19，task-79 方案 C）
+
+- **审阅件集合**（一篇交付/交接时应齐）：`<名_姓>.tex`、`<名_姓>.pdf`（`--compile` 时）、
+  `reference.bib`、模板 `.sty`、`.log`、`original/`；本次生成过的另带 `<名>_文献核实.md`、
+  `<名>_一校核查.md`、`<名>_回读校验报告.md`、`<名>_参考文献核对.txt`。
+- **保留策略**：沿用上面 `--clean` 删除表——只删编译中间件
+  （`.aux .bbl .bcf .blg .out .run.xml .synctex.gz .DS_Store`），保留 `.tex/.pdf/.sty/.bib/.log`
+  与 `original/`；**`.log` 不删**（排错要）、**`original/` 不动**（工具只读、永不删）。
+- **交付清单**：每篇一份 `交付清单.md`（复制模板：[`DELIVERY-CHECKLIST.md`](DELIVERY-CHECKLIST.md)），
+  记录稿件标识、模板/源稿 sha256、审阅件、已生成/已跳过、人工确认勾选（bib 已核 / 一校已处理 /
+  图表公式已看 / 三校后编号目录已定）、保留清理状态与备注。**清单只记录：不自动生成、不改变
+  任何现有行为**；sha 用 `shasum -a 256 <文件>`（macOS）或 `certutil -hashfile <文件> SHA256`（Windows）。
+- 模板原始文件：`编辑笔记/模板文件/SLCN-MIX.sty`（中文默认）/ `SLEN.sty`（英文默认）；记录时可对照
+  产物内 `.sty` 的 sha 是否一致。
+
 #### ⚠️ 目录名不带序号前缀——这是刻意的
 
 本工具**只用于初排环节**，输出 `Bo_Chen/`，**不加数字前缀**。
