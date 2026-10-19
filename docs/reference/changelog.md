@@ -9,8 +9,14 @@ description: 当前版本与历史 Release。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
 
-## 未发布（2026-10-19，第 52–57 批）
+## 未发布（2026-10-19，第 52–58 批）
 
+- **初排默认只读引用库比对 + 安全命中增强 + Mac 默认任务书（第 58 批，2026-10-20）**：初排不传
+  `--verify-refs` 也会只读比对编辑部引用库，日志多一行「引用库比对：命中 X / 候选 Y / 未命中 Z
+  （只读，不改产物）」；新增 `--no-bibdb-verify` 关闭（无库/无 bib 静默；`.tex`/`reference.bib`/任务书/argv
+  与从前相同）。引用库安全命中补「译著/CJK 作者责任标记」规则（题名≥0.98+年+出版社+标记归一相容；
+  命中仍只跳过检索/AI、不改稿；84 篇成品 bib 计数不变，Bo_Chen 初排 safe 84%→96%、候选 4→1）。
+  macOS「生成参考文献核实任务书」改为默认勾选、对齐 Windows（会话态、无持久化）。
 - **低置信建议三类应用（第 57 批）**：`--coop-apply` 从「只应用文献字段」扩展为三类——
   ① `BIB-*` → `reference.bib`（沿用四条安全校验）；② `META-*` → 输出 `.tex` 的 `\my*` 元数据
   （只填空/模板占位，编辑侧已有值不覆盖，值过格式校验）；③ `FN-*` 窄口径：仅 `citation_unmatched`

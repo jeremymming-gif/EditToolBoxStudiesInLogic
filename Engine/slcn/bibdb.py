@@ -67,6 +67,9 @@ r"""编辑部引用库（`bib_db`）：把「已核实的参考文献」沉淀�
   · **DOI 精确**最可靠（归一化大小写、`https://doi.org/` / `doi:` 前缀、尾标点）；
   · **题名 + 第一作者姓 + 年份模糊**（`difflib` 字符相似度与词重叠取大，阈值 0.90）：
     低于阈值只标 `confidence="low"` 返回，**绝不**当成「已核实命中」；
+  · **译著/CJK 安全命中**（批58）：题名相似度 ≥0.98 + 年份一致 + 出版社一致/包含 +
+    责任标记（`（著）/（译）`）归一后第一作者姓名相容 → `hit="translation"`（仍属
+    `safe`，只用于跳过检索/AI，**不改稿**）；任一条缺/矛盾 → 照旧候选；
   · 返回值一律带 `score` 与 `verified`，调用方自己决定要不要省掉 API。
 
 只读/写入的边界
@@ -119,6 +122,16 @@ FUZZY_TITLE_THRESHOLD = 0.90
 FUZZY_MIN_SCORE = 0.60
 #: 模糊查询：题名本身至少要有这么像（否则作者+年份再准也不可疑）
 _TITLE_GATE = 0.50
+
+#: 译著/CJK 安全命中（批58，2026-10-20）：题名相似度下限。译著作者名常带
+#: `（著）/（译）` 责任标记，或稿件只写姓氏而库内是「罗姆·哈瑞（著） and 邱仁宗（译）」，
+#: 姓名字面比较必然失败；只有在**题名几乎相同 + 年份/出版社双重见证**时才认作同一作品。
+TRANSLATION_TITLE_THRESHOLD = 0.98
+#: 译著/CJK 作者名里的责任方式标记（半角括号 `(eds.)` 由 `first_author_surname` 先剥；
+#: 这里补**全角括号**与常见中英文标记）。只用于姓名比较，不改库字段。
+_ROLE_MARKER_RE = re.compile(
+    r"[（(]\s*(?:著|译|編|编|编著|主编|校注|校订|校|修订|注|"
+    r"eds?\.?|ed\.?|trans\.?|comp(?:s|iled)?\.?|hrsg\.?)\s*[）)]", re.I)
 
 #: 期刊/软件元数据字段：对「这是一条什么文献」没有意义，入库时直接丢掉
 #: （前一半复用 `slcn.bibnorm.DROP_FIELDS`，后半是 JabRef/Zotero 的私有字段）
@@ -383,6 +396,95 @@ def _surnames_match(a: str, b: str) -> bool:
     return False
 
 
+def strip_author_roles(value: object) -> str:
+    """去掉姓名里的**责任方式标记**（`（著）`/`（译）`/`(eds.)`…），只用于姓名比较。
+
+    典型差异（批58 审计的 3 条译著候选）：稿件 `哈瑞`、库内成品 bib
+    `罗姆·哈瑞（著） and 邱仁宗（译）`。库里的 `fields.author` 保持原样，不做清洗。
+    """
+    return _ROLE_MARKER_RE.sub(" ", _latex_plain(value))
+
+
+def _cjk_author_surname(value: object) -> str:
+    """CJK 第一作者姓名（先剥责任标记）：`罗姆·哈瑞（著）` → `罗姆哈瑞`。"""
+    return first_author_surname(strip_author_roles(value))
+
+
+def _translation_surname_match(entry_author: object, record_author: object) -> bool:
+    """译著/CJK 第一作者姓名相容（**保守**，批58）：
+
+      · 两侧都必须含 CJK（英文姓名差异不走这条，避免放宽普通作者匹配）；
+      · 剥掉责任标记（著/译/编）后**相等**；或
+      · 短名（≥2 字）是长名的一截，**且**原始 author 里确实出现过责任标记
+        （`哈瑞` ⊂ `罗姆·哈瑞（著）`；防止把两个普通不同姓名当成同一人）。
+    """
+    a = _cjk_author_surname(entry_author)
+    b = _cjk_author_surname(record_author)
+    if not a or not b:
+        return False
+    if not (_CJK_RE.search(a) and _CJK_RE.search(b)):
+        return False
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) >= 2 and short in long:
+        raw = f"{_latex_plain(entry_author)}\n{_latex_plain(record_author)}"
+        if _ROLE_MARKER_RE.search(raw):
+            return True
+    return False
+
+
+def _publisher_key(value: object) -> str:
+    """出版社归一（比较用）：去 LaTeX/重音、小写、去标点空白。"""
+    s = _latex_plain(value)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", s.lower())
+
+
+def _publishers_match(entry_fields: dict, record_fields: dict) -> bool:
+    """出版社一致/包含（译著安全命中的**第二重见证**，批58）。
+
+    不接受空值：一方没写出版社就无法作证，退回候选（宁缺毋滥）。
+    包含只在较短一方够长时才认（ASCII ≥4、CJK ≥2），防 `Press` 这类泛词误配。
+    """
+    a = _publisher_key((entry_fields or {}).get("publisher") or "")
+    b = _publisher_key((record_fields or {}).get("publisher") or "")
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    need = 2 if _CJK_RE.search(short) else 4
+    return len(short) >= need and short in long
+
+
+def _translation_safe_hit(entry_fields: dict, hit: dict) -> bool:
+    """题名命中能否升级为**译著/CJK 安全命中**（批58；`match_reference` 专用）。
+
+    五重见证全满足才返回 True（任何一条缺/矛盾 → False，仍走检索）：
+      ① 库记录 `verified=true`；
+      ② 题名相似度 ≥ `TRANSLATION_TITLE_THRESHOLD`（0.98）；
+      ③ 年份**双方都有且相等**；
+      ④ 出版社一致/包含；⑤ 第一作者按 `_translation_surname_match` 相容。
+    """
+    record = (hit or {}).get("record") or {}
+    record_fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    if record.get("verified") is not True:
+        return False
+    if float((hit or {}).get("title_similarity") or 0.0) < TRANSLATION_TITLE_THRESHOLD:
+        return False
+    entry_year_value = entry_year(entry_fields or {})
+    record_year_value = entry_year(record_fields)
+    if not entry_year_value or not record_year_value or entry_year_value != record_year_value:
+        return False
+    if not _publishers_match(entry_fields or {}, record_fields):
+        return False
+    entry_author = (entry_fields or {}).get("author") or (entry_fields or {}).get("editor")
+    record_author = record_fields.get("author") or record_fields.get("editor")
+    return _translation_surname_match(entry_author, record_author)
+
+
 def normalize_doi(value: object) -> str:
     """DOI 归一（精确查询/入库都用它）：小写、去 `https://doi.org/` 与 `doi:` 前缀、
     去尾标点。DOI 本身大小写不敏感。"""
@@ -482,7 +584,8 @@ def _score_record_title(wanted_title: str, surname: str, wanted_year: str,
 #
 # 口径（**保守**：把不同文献误判成「已核实」比漏查更糟）：
 #   · 安全命中 = DOI 精确命中**已核实**记录；或题名高置信（≥0.90）+ 第一作者姓/年份
-#     **相容** + verified=true。只有安全命中的键才跳过检索 API 与 AI；
+#     **相容** + verified=true；或译著/CJK 专项（批58：题名 ≥0.98 + 年份/出版社一致 +
+#     责任标记归一后作者姓名相容，`hit="translation"`）。只有安全命中的键才跳过检索与 AI；
 #   · key 命中只算**候选**：BibTeX key 多为 per-paper（`a1`…），同 key 不保证同文献，
 #     仍走检索；候选只用于日志/任务书提示；
 #   · 命中但库内未核实 / 题名低置信 → 候选（不跳过任何步骤）。
@@ -1591,7 +1694,8 @@ class Store:
         返回 dict（`status` ∈ `safe` / `candidate` / `miss`）：
 
           · `status="safe"`：可以**跳过检索 API 与 AI** —— DOI 精确命中已核实记录，
-            或题名高置信 + 作者/年份相容 + `verified=true`；
+            或题名高置信 + 作者/年份相容 + `verified=true`，或译著/CJK 专项
+            （`hit="translation"`：题名 ≥0.98 + 年份/出版社一致 + 责任标记归一后作者相容）；
           · `status="candidate"`：库里有线索但不够安全（key 命中 / 未核实 / 低置信），
             **仍要走检索+AI**；`hit` 说明是哪种线索；
           · `status="miss"`：库内没有线索。
@@ -1662,6 +1766,19 @@ class Store:
                              title_sim=best["title_similarity"],
                              reason=(f"题名高置信（相似度 {best['title_similarity']:.3f}）+ "
                                      "作者/年份相容，库内已核实"))
+            # ②b 译著/CJK（批58）：题名几乎相同 + 年份/出版社双重见证 + 责任标记
+            #     （`（著）/（译）`）归一后作者相容 → 安全命中。只救「作者写法差异」这一类；
+            #     年份/出版社矛盾、作者完全不同的照旧留候选（下面 ②c 的候选分支）。
+            translation_hits = [h for h in scored_hits if _translation_safe_hit(canon, h)]
+            if translation_hits:
+                best = sorted(translation_hits,
+                              key=lambda h: (-h["title_similarity"], -h["score"], h["key"]))[0]
+                return _fill(best["record"], status=HIT_SAFE, hit="translation",
+                             score=best["score"],
+                             title_sim=best["title_similarity"],
+                             reason=(f"译著/CJK 作者写法差异：题名相似度 "
+                                     f"{best['title_similarity']:.3f} + 年份/出版社一致，"
+                                     "责任标记（著/译）归一后第一作者姓名相容，库内已核实"))
             if scored_hits:
                 best = scored_hits[0]
                 why = ("库内未核实" if not best["verified"]

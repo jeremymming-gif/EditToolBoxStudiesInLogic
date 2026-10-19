@@ -57,7 +57,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--verify-refs` `--no-ai-merge` | 出《文献核实任务书》/ 只出任务书不并 bib（第 64 条）。⚠️ 第 128 条起任务书、检索与 AI **默认只覆盖正文引用到的条目**（不是全量，见下一行） |
 | `--verify-all-refs` `--verify-max N` `--verify-plan` | **核实范围与成本闸门（第 128 条）**。默认只核**正文引用到的键**（产物 `.tex` 的 cite 命令；`\nocite{*}` = 全量；解析不出引用键时退回全量并警告）。`--verify-all-refs` = 显式全量（越过闸门）；`--verify-max` = 本次条数上限（**默认 120**，`0` = 不限），超过且未显式全量 → **退出 2**（stderr 给三条可操作的路，任务书/检索/AI 一律没开始）；`--verify-plan` = 只打印范围与预计检索/AI 次数后**退出 0**（不生成任务书、不检索、不调 AI；转换产物照常写出，**不是** `--dry-run`）。外壳不传时行为与默认值相同（老外壳兼容） |
 | `--search-refs` | 用 DeepSeek 独立 Search API 给**本次核实范围内**的参考文献检索证据：写进任务书 +（P2，第 72 条起）注入 AI 逐条提示词 + 合并前校验 `% 来源：` URL 白名单（默认关；开启时才计费 ¥5/1000 次；地址/密钥复用 `--llm-*`，也可 `SLCN_SEARCH_BASE` / `SLCN_SEARCH_KEY`；环境变量 `SLCN_SEARCH_REFS=1`）。外壳：mac 在 AI 运行时传 `--search-refs`；Windows 把 `SLCN_SEARCH_REFS=1` 放进子进程环境 |
-| `--bibdb` `--bibdb-path PATH` `--no-bibdb` | **编辑部引用库（第 129 条）**。执行核实（`--verify-refs` / `--verify-plan`）时**默认**在默认库存在时自动查库（默认库 = 笔记仓 `bib_db/bibliography.jsonl`，`slcn.bibdb.default_db_path()`）：命中**已核实**条目的键**不调检索/AI**、**不改 `reference.bib`**，字段差异只写进任务书「五、库内已核实」。`--bibdb` = 显式启用（库缺失/读不了只告警、不中断出稿）；`--bibdb-path` = 指定库文件（隐含启用）；`--no-bibdb` = 显式关闭（输出与接入前逐字节相同）。笔记仓/默认库不存在时**静默跳过**（公开仓/CI 行为零变化）；不核实时这些参数只提示忽略。判定保守：key 命中只算候选（仍走检索），详见 `docs/GUIDE.md` §3.10 |
+| `--bibdb` `--bibdb-path PATH` `--no-bibdb` | **编辑部引用库（第 129 条）**。执行核实（`--verify-refs` / `--verify-plan`）时**默认**在默认库存在时自动查库（默认库 = 笔记仓 `bib_db/bibliography.jsonl`，`slcn.bibdb.default_db_path()`）：命中**已核实**条目的键**不调检索/AI**、**不改 `reference.bib`**，字段差异只写进任务书「五、库内已核实」。`--bibdb` = 显式启用（库缺失/读不了只告警、不中断出稿）；`--bibdb-path` = 指定库文件（隐含启用）；`--no-bibdb` = 显式关闭（输出与接入前逐字节相同）。笔记仓/默认库不存在时**静默跳过**（公开仓/CI 行为零变化）；不核实时这些参数只提示忽略。判定保守：key 命中只算候选（仍走检索），详见 `docs/GUIDE.md` §3.10。第 58 批另加 `--no-bibdb-verify` = 关闭**初排默认只读比对**（只影响日志一行；见下「引用库比对」行） |
 | `--llm-base --llm-model --llm-protocol --llm-web-search --llm-search-tool --llm-responses-path` | AI 通道（密钥走环境变量） |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
 
@@ -90,6 +90,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | 行首 `⚠` | 警告；收尾还会汇总在「⚠ 注意事项：」一节 |
 | 行首 `   ⚠⚠` | **模型能力前置提示**（第 128 条）：开了联网检索、且模型**已知会静默忽略** `web_search`（如 `deepseek-flash` / `deepseek-chat`）时，在 **AI 批量开始前** 打一行；跑完后「0 个 `web_search_call` → 按凭记忆对待」的事后提示**照旧保留** |
 | 行首 `   引用库：` | **引用库查库统计**（第 129 条）：`引用库：命中 X 条已核实（跳过检索+AI）、候选 Y、未命中 Z（库 n 条，<path>）`。只在执行核实且启用查库时出现；`--no-bibdb` / 库缺失时不出现（老外壳不受影响） |
+| 行首 `   引用库比对：` | **初排默认只读比对**（第 58 批）：未执行核实时，默认库存在且产物 bib 有条目时打一行 `引用库比对：命中 X / 候选 Y / 未命中 Z（只读，不改产物）`；无库/无 bib/读库失败静默；`--no-bibdb-verify` / `--no-bibdb` 关闭。只增这一行，产物/任务书不变 |
 | 行首 `   本地支撑文件：` | **定义位置加固**（第 130 条，仅 LaTeX 通道）：本次读了哪些本地 `.cls` / `.sty` / `.def` / `.cfg`（作者稿同目录）。Word 通道不出现 |
 | 行首 `   本地旧模板 .sty（源目录有同名文件` | **本地非标准命名旧模板**（第 130 条补丁）：该 `\usepackage` 的包行**不迁**（模板负责顶部加载），文件按支撑文件差集搬定义 |
 | 行首 `   计数器迁移 N 个：` | **`\newcounter` 迁移**（第 130 条补丁）：只在「正文或已迁移定义体用到」时搬；先于用它的环境定义 |

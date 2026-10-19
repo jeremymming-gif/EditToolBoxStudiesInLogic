@@ -25,7 +25,15 @@ enum ConvertFeature {
         var sty = ""             // --sty
         var compile = true       // --compile
         var clean = true         // --clean
-        var verifyRefs = false   // --verify-refs（生成《文献核实任务书》）
+        /// 生成《文献核实任务书》→ `--verify-refs`。**默认开**（批 58 与 Windows 对齐：
+        /// `sources-win/main.py` 的「出文献核实任务书」勾选框默认 `True`）。理据：引擎只在
+        /// `--verify-refs` 分支里查编辑部引用库，默认关会让编辑以为「初排根本没比对」。
+        /// ⚠️ 这是本页开关的**初值**，不是持久化开关：本勾选框没有 UserDefaults 键，每次启动
+        /// 都是新的 `Options`（`ConvertTab` 用 `@StateObject ConvertModel` 持有本次会话状态），
+        /// 所以不存在「覆盖老用户已保存选择」；用户运行中取消勾选照常生效并原样传给 argv。
+        /// 「查不查引用库」另有持久化开关 `BibDbSettings.lookupEnabled`（缺省 true、显式关过
+        /// 读回 false）——它与本默认值正交，不会被这次改动覆盖（关着仍传 `--no-bibdb`）。
+        var verifyRefs = true    // --verify-refs（生成《文献核实任务书》，批 58 默认开）
         var sourcePdf = false    // --source-pdf
         var quoteThreshold = 105 // --quote-threshold
         var scanOnly = false     // --scan

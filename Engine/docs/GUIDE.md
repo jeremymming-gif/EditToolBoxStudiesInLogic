@@ -34,7 +34,7 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 
 | 页面 | 干什么 | 细节/权威实现 |
 |---|---|---|
-| 初排转换 | 选源文件 → 出初排稿（本文件「三、用法」的 GUI 形态）；勾「用 AI 处理参考文献」且「设置」页配好端点时，**AI 返回的条目会按四条安全校验并入 `reference.bib`**（回滚副本 `reference.bib.ai前`，见 §3.5）。**能不能联网核实**由「设置」页的「通道 / 联网检索」决定，并写进任务书头部与「六、合并记录」（§3.7）。⚠ 勾上它 → **自动勾上并锁定**「生成参考文献核实任务书」（AI 建议与「六、合并记录」都写在那份任务书里，不生成就没有审阅材料）；想只要任务书、不动 bib，勾「**保留原 reference.bib（不并入 AI 结果）**」（= `--no-ai-merge`，只在勾了 AI 时显示）。第 55 批起另有**默认关闭**的「AI 协同初排（两段式）」：第一段只写暂存目录 + 任务书 → 导入外部 chat 回复 → 第二段才交付（见 §3.1「两段式 AI 协同初排」）；第 56 批起回填支持**多文件/目录/剪贴板**一起导入、第二段沿用页面「清理编译中间文件」（`--clean`），摘要按「文献回填 x/y｜低置信回复 a」显示、0 回填有橙色警告 | `sources-mac/Views/ConvertTab.swift`、`sources-mac/Features/ConvertFeature.swift`、`sources-mac/Features/CoopFeature.swift`、第 64 条 |
+| 初排转换 | 选源文件 → 出初排稿（本文件「三、用法」的 GUI 形态）；第 58 批起两壳「生成参考文献核实任务书」**默认勾选**（会话态、非持久化；CLI `--verify-refs` 默认仍关），初排**默认只读比对引用库**（日志一行，见 §3.10）；勾「用 AI 处理参考文献」且「设置」页配好端点时，**AI 返回的条目会按四条安全校验并入 `reference.bib`**（回滚副本 `reference.bib.ai前`，见 §3.5）。**能不能联网核实**由「设置」页的「通道 / 联网检索」决定，并写进任务书头部与「六、合并记录」（§3.7）。⚠ 勾上它 → **自动勾上并锁定**「生成参考文献核实任务书」（AI 建议与「六、合并记录」都写在那份任务书里，不生成就没有审阅材料）；想只要任务书、不动 bib，勾「**保留原 reference.bib（不并入 AI 结果）**」（= `--no-ai-merge`，只在勾了 AI 时显示）。第 55 批起另有**默认关闭**的「AI 协同初排（两段式）」：第一段只写暂存目录 + 任务书 → 导入外部 chat 回复 → 第二段才交付（见 §3.1「两段式 AI 协同初排」）；第 56 批起回填支持**多文件/目录/剪贴板**一起导入、第二段沿用页面「清理编译中间文件」（`--clean`），摘要按「文献回填 x/y｜低置信回复 a」显示、0 回填有橙色警告 | `sources-mac/Views/ConvertTab.swift`、`sources-mac/Features/ConvertFeature.swift`、`sources-mac/Features/CoopFeature.swift`、第 64 条 |
 | 文献回读校验 | 编辑交回的 `.bib` 做离线体检（语法/规范/引用闭合/与原件 diff，**不联网核实真伪**）；可填「报告输出（可选）」= 文件路径或已存在的目录（留空 = 自动落点，行为不变）；**英文作者未倒装算问题**、中文译著缺「（著）/（译）」算提示（第 63 条）。体检成功后出现「**并回**」按钮：把交回的 `.bib` 并进「原件 .bib」那一栏指定的产物 `reference.bib`（与自动通道同一份合并核心；原文件先备份为 `.ai前`），并回后可「**重新编译该篇**」。报告与「初排转换」并入后自检的报告是**同一份实现**（第 64 条） | `checkbib.py`、`slcn/bibreport.py`、`slcn/aibib.py`、第 55/57/63/64 条 |
 | 一校核查 | 选初排稿 `.tex`，按 26 条规则逐条核查（脚注/引用位置、半角标点、图表引用间隔、英文弯引号…），默认只报不改；可勾「顺手把无歧义的改掉」（另存新文件，输入文件不动）。报告写稿件同目录 `<名字>_一校核查.md` | `sources-mac/Features/ProofCheckFeature.swift`、`Engine/slcn/proofcheck.py`、`Engine/docs/PROOF_RULES.md` |
 | 合并文件 | 把各篇合成一期（扉页 → 编委页 → 中英目录 → 各篇 → 封底，重建书签） | `sources-mac/Features/MergeFeature.swift` |
@@ -360,6 +360,7 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 | `--dry-run` | 只打印计划，不写文件 |
 | `--verify-refs` | 生成《参考文献核实任务书》markdown（交给编辑各自的 AI 核实）。**配了 LLM 时**还会自动预跑一遍，并把通过安全校验的条目**并入 `reference.bib`**（见 §3.5） |
 | `--no-ai-merge` | 只出任务书，**不**把 AI 结果并入 `reference.bib`（旧行为，逐字节相同）。GUI 里对应「保留原 reference.bib（不并入 AI 结果）」（只在勾了 AI 时显示） |
+| `--no-bibdb-verify` | 关闭**初排默认**的只读引用库比对（第 58 批，默认开）：只影响日志一行，`.tex`/`reference.bib`/任务书/argv 不变；无库时本来就静默。**不影响** `--verify-refs` / `--verify-plan` 的核实行为（见 §3.10） |
 | `--vol` / `--issue` / `--year` | 卷号 / 期号 / 出版年（**编辑侧**，作者稿里没有） |
 | `--pages` | 起止页，如 `137-152` → 自动算 `myfirstpage/mylastpage/mypages`（152-137+1=16） |
 | `--received` | 收稿日期，如 `2025-09-19` |
@@ -959,6 +960,9 @@ $PY convert.py --source X.docx --out Y --verify-refs --verify-all-refs --verify-
 
 - **安全命中（才允许跳过检索/AI）**：① DOI 精确命中 `verified=true` 记录；或
   ② 题名高置信（bibdb 的 0.90 阈值）+ **第一作者姓 / 年份相容** + `verified=true`；
+  ③ 第 58 批新增**译著 / CJK 作者安全命中**：题名相似度 ≥0.98 + 年份相同 + 出版社一致 +
+  第一作者按「（著）/（译）/（编）/（eds.）」责任标记归一后相容（仍须 `verified=true`；命中仍只跳过
+  检索/AI、**不改稿**。实测 84 篇成品 bib 计数不变，Bo_Chen 初排产物 safe 84%→96%、候选 4→1）；
 - **key 命中只算候选**：BibTeX key 多为 per-paper（`a1`…），同 key 不保证同文献 →
   **仍走检索 + AI**；库内未核实、题名低置信同样只算候选；
 - 安全命中**不改 `reference.bib`**：库版本与稿件条目的字段差异只写进任务书
@@ -969,6 +973,12 @@ $PY convert.py --source X.docx --out Y --verify-refs --verify-all-refs --verify-
 - 任务书「六、合并记录」把「**库内命中（未调 AI）**」与「正文未引用（范围外）」**分开统计**，
   不把它们写成「AI 未返回/失败」；全部命中时**一次 AI 都不调**，只写这一节留档。
 
+**初排默认只读比对（第 58 批，2026-10-20）**：不执行核实时（不传 `--verify-refs` / `--verify-plan`），
+初排也会读默认库比对产物 `reference.bib`，**只**在默认库存在且有条目时打一行
+`引用库比对：命中 X / 候选 Y / 未命中 Z（只读，不改产物）`；`--no-bibdb-verify`（或 `--no-bibdb`）
+关闭，无库 / 无 bib / 读库失败**完全静默**。只增日志：`.tex` / `reference.bib` / 任务书 / argv 一律不变；
+执行核实时仍走上面旧口径（打印 `引用库：命中 X 条已核实…` 并写任务书第五节），不重复跑。
+
 开关（**默认口径 = 执行核实且默认库存在时自动启用**）：
 
 ```bash
@@ -977,12 +987,13 @@ $PY convert.py --source X.docx --out Y --verify-refs --verify-plan    # 计划�
 $PY convert.py --source X.docx --out Y --verify-refs --bibdb          # 显式要求查库（库缺失只告警）
 $PY convert.py --source X.docx --out Y --verify-refs --bibdb-path /path/to/bibliography.jsonl
 $PY convert.py --source X.docx --out Y --verify-refs --no-bibdb       # 显式关：与接入前逐字节相同
+$PY convert.py --source X.docx --out Y --no-bibdb-verify             # 第 58 批：关闭初排默认只读比对（不核实路径）
 ```
 
 - 默认库 = `slcn.bibdb.default_db_path()`（`<笔记仓>/bib_db/bibliography.jsonl`；笔记仓由
   `SLCN_NOTES` / 同级目录解析）。**笔记仓或默认库不存在时静默跳过**——公开仓/CI/没建库的
   机器上行为与从前零变化；只有显式 `--bibdb` / `--bibdb-path` 指错时才告警（且**不中断出稿**）。
-- **不核实（默认）路径逐字节不变**；`--no-bibdb` 与接入前输出（stdout/任务书/产物）逐字节相同。
+- **不核实（默认）路径产物逐字节不变**；第 58 批起日志默认多一行只读比对（见上），`--no-bibdb-verify` 或 `--no-bibdb` 关掉后，stdout/任务书/产物与接入前逐字节相同。
 - 引用库怎么来：公开仓 `Engine/tools/bibdb_seed.py` 只读扫描稿件仓往期成品 bib 生成
   （可重复运行幂等），维护/冲突裁决见笔记仓 `bib_db/README.md`；
   开发用 CLI 是 `Engine/bibdb.py`（`stats` / `lint` / `query`，不进发布包）。

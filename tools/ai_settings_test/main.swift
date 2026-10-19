@@ -2032,10 +2032,14 @@ let coopOut = coopRoot + "/issue90"
 let coopReplies = coopRoot + "/replies"
 let coopStage = coopOut + "/Bo_Chen_待核"
 
-// n0 默认零变化 —— 不勾两段式时 argv 与批 54 完全一致（没有 coop / 预算参数）
-let n0Default = ConvertFeature.arguments(ConvertFeature.Options())
-check("n0-default", "不勾两段式：默认 argv 逐字节不变（只有 --compile --clean）",
-      n0Default == ["--compile", "--clean"], "argv=\(n0Default)")
+// n0 默认基线 —— 不勾两段式时没有 coop / 预算参数；**批 58 起「生成文献核实任务书」默认开**
+// （对齐 Windows `main.py` 的 `v_refs=True`），所以默认 argv 多一个 --verify-refs。
+let n0Defaults = ConvertFeature.Options()
+check("n0-default-value", "批58：不碰任何开关时「生成文献核实任务书」默认 true（对齐 Windows）",
+      n0Defaults.verifyRefs, "verifyRefs=\(n0Defaults.verifyRefs)")
+let n0Default = ConvertFeature.arguments(n0Defaults)
+check("n0-default", "不勾两段式：默认 argv = --compile --clean --verify-refs（批58 任务书默认开）",
+      n0Default == ["--compile", "--clean", "--verify-refs"], "argv=\(n0Default)")
 var n0 = ConvertFeature.Options()
 n0.source = coopSrc; n0.out = coopOut
 n0.verifyRefs = true; n0.useAI = true; n0.llmBase = "https://api.example.com/v1"
@@ -2576,9 +2580,10 @@ check("s8-no-parent-folding", "源码里不再有「折叠成父目录」的旧�
         && !s56TabSrc.contains("引擎按目录读入"),
       "oldFunc=\(s56TabSrc.contains("private func importReplies")) "
         + "oldButton=\(s56TabSrc.contains("导入 AI 回复…"))")
-// 普通转换零变化：默认 argv 仍逐字节不变（coop 列表字段不影响默认路径）
-check("s8-default-argv", "默认 Options 的 argv 仍只有 --compile --clean（批56 改动不碰默认路径）",
-      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"],
+// 普通转换零变化：coop 列表字段不影响默认路径；批58 起任务书默认开 → 默认 argv 多 --verify-refs
+check("s8-default-argv", "默认 Options 的 argv = --compile --clean --verify-refs"
+      + "（批56 列表字段不碰默认路径；批58 任务书默认开）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean", "--verify-refs"],
       "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
 
 print("")

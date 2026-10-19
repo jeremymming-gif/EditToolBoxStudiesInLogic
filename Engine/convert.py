@@ -1420,6 +1420,45 @@ def bibdb_log_line(safe, candidates, missed, store, path) -> str:
             f"（库 {n_records} 条，{path}）")
 
 
+def bibdb_readonly_scan(args, res) -> dict:
+    """第五十八批：初排转换**默认**的只读引用库比对（只打一行汇总，绝不改产物/任务书）。
+
+    Lead 2026-10-20 拍板口径：
+      · 默认**开**（无新参数时）；`--no-bibdb-verify` 或 `--no-bibdb` 关闭；
+      · `--verify-refs` / `--verify-plan` 不做（核实分支自己查库并打印明细，避免重复计算）；
+      · 无 `reference.bib` / 无条目 / 库不存在 / 读库失败 → **完全静默**
+        （公开仓、CI、没建库的机器上日志零变化）；
+      · 只读：命中**不改稿**（沿用「库命中不自动改产物」的产品哲学）。
+
+    返回 `{done, store, path, entries, safe, candidates, missed}`（测试/调试用）。
+    """
+    out = {"done": False, "store": None, "path": "", "entries": [],
+           "safe": {}, "candidates": {}, "missed": []}
+    if getattr(args, "no_bibdb_verify", False) or getattr(args, "no_bibdb", False):
+        return out
+    try:
+        bib_path = str(getattr(res, "bib_path", "") or "")
+        if not bib_path or not os.path.isfile(bib_path):
+            return out
+        from slcn.bibcheck import split_entries
+
+        with open(bib_path, encoding="utf-8", errors="replace") as f:
+            entries = split_entries(f.read())
+        if not entries:
+            return out
+        store, path, _warning = resolve_bibdb(args)
+        if store is None:
+            return out
+        safe, candidates, missed = classify_bibdb(store, entries)
+        print(f"   引用库比对：命中 {len(safe)} / 候选 {len(candidates)} / 未命中 {len(missed)}"
+              "（只读，不改产物）", flush=True)
+        out.update(done=True, store=store, path=path, entries=entries,
+                   safe=safe, candidates=candidates, missed=missed)
+    except Exception:  # noqa: BLE001  只读附加通道：任何意外都不许连累出稿
+        return out
+    return out
+
+
 def bibdb_taskbook_hits(entries, safe) -> list[dict]:
     """任务书「五、库内已核实（无需再查）」的条目（按逐条清单顺序，不手抄统计）。"""
     return [safe[key] for _etype, key, _body in entries if key in safe]
@@ -1579,6 +1618,10 @@ def main() -> int:
                     help="C 类可选开关（默认关）：文末清单优先，脚注文献不再逐条提升")
     ap.add_argument("--no-bibdb", action="store_true",
                     help="关闭引用库查库（本次一律不查库；输出与接入前逐字节相同）。")
+    ap.add_argument("--no-bibdb-verify", action="store_true",
+                    help="关闭「初排默认只读引用库比对」（默认开：只打一行 "
+                         "命中/候选/未命中 汇总，不改任何产物；无引用库时自动静默跳过；"
+                         "不影响 --verify-refs/--verify-plan 的核实行为）。")
     # P1（2026-10-17，第 71 条起）：自动检索证据 = DeepSeek Search API（独立原始 JSON API），
     # **不改模型提示词、不改转换产物**，只把「每条文献在公开网页上的候选来源」写进任务书。
     # 默认关；不开启时产物与从前的调用**逐字节相同**（任务书里一个字段都不多）。
@@ -2092,6 +2135,12 @@ def main() -> int:
         print("\n⚠ 注意事项：")
         for w in res.warnings:
             print(f"  · {w}")
+
+    # 第五十八批：默认初排的**只读**引用库比对（只打一行汇总，不改任何产物）。
+    # 用户反馈「初排感觉没查引用库」：此前只有 --verify-refs/--verify-plan 分支才查库。
+    # 核实分支自己会查库并打印明细（第 129 条），这里不重复跑；无库时静默。
+    if not (args.verify_refs or args.verify_plan):
+        bibdb_readonly_scan(args, res)
 
     # ⚠️ ⑨ 编译 / ⑩ 导出原稿 PDF **挪到了 ⑪ 之后**（2026-10-15，见下面第 ⑪ 节末尾）：
     #    用户决定「AI 结果要进产物」，而并进去的条目必须体现在 PDF 里——所以顺序必须是
