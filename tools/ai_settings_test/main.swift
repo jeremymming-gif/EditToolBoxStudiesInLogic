@@ -2087,10 +2087,11 @@ check("n2-scan-ignores-coop", "scanOnly + 两段式：本次按普通扫描走�
         && !n2Argv.contains("--coop-replies"),
       "argv=\(n2Argv)")
 
-// n3 ph2：最小集（source/out/replies/stage/apply/compile），其余普通参数一个都不带
+// n3 ph2：最小集（source/out/replies/stage/apply/compile/clean），其余普通参数一个都不带。
+//    批 56 起：回填是**列表**（每项一个 --coop-replies）；--clean 随页面「清理编译中间文件」。
 var n3 = ConvertFeature.Options()
 n3.source = coopSrc; n3.out = coopOut
-n3.coopReplies = coopReplies; n3.coopStage = coopStage
+n3.coopRepliesPaths = [coopReplies]; n3.coopStage = coopStage
 n3.coopPhase = .second; n3.coopApply = true; n3.compile = false
 n3.verifyRefs = true; n3.useAI = true; n3.llmBase = "https://api.example.com/v1"
 n3.clean = true; n3.verifyMax = 5; n3.name = "X"; n3.lang = "zh"; n3.sourcePdf = true
@@ -2099,14 +2100,16 @@ let n3Want = ["--source", CoopFeature.normalizePath(coopSrc),
               "--out", CoopFeature.normalizePath(coopOut),
               "--coop-replies", CoopFeature.normalizePath(coopReplies),
               "--coop-stage", CoopFeature.normalizePath(coopStage),
-              "--coop-apply"]
-check("n3-ph2-minimal", "ph2：argv 恰好是最小集（compile 关 → 无 --compile；无 --verify-refs/--clean/--name/--llm-*）",
+              "--coop-apply",
+              "--clean"]
+check("n3-ph2-minimal", "ph2：argv 恰好是最小集（compile 关 → 无 --compile；无 --verify-refs/--name/--llm-*）",
       n3Argv == n3Want, "argv=\(n3Argv)")
 var n3c = n3
 n3c.compile = true
 let n3cArgv = ConvertFeature.arguments(n3c)
-check("n3b-ph2-compile", "ph2 + 页面「生成后立即编译」→ 末尾多一个 --compile",
-      n3cArgv == n3Want + ["--compile"], "tail=\(Array(n3cArgv.suffix(2)))")
+check("n3b-ph2-compile", "ph2 + 页面「生成后立即编译」→ --compile 在 --clean 之前",
+      n3cArgv == n3Want.dropLast() + ["--compile", "--clean"],
+      "tail=\(Array(n3cArgv.suffix(3)))")
 
 // n4 预算闸：仅「非协同 + 勾 AI + 值 ≠ 引擎默认」时传；0 要传 "0"
 var n4 = ConvertFeature.Options()
@@ -2299,14 +2302,16 @@ check("q4-logtail", "失败日志尾部：取最后 N 行、去掉时间戳前�
 let convTabSrc2 = readSrc("Views/ConvertTab.swift")
 let convFeatSrc2 = readSrc("Features/ConvertFeature.swift")
 let setTabSrc2 = readSrc("Views/SettingsTab.swift")
-check("r1-ui-coop", "ConvertTab：有「AI 协同初排（两段式）」开关 + 导入回复 + --coop-apply 勾选 + 「未交付」口径",
+check("r1-ui-coop", "ConvertTab：有「AI 协同初排（两段式）」开关 + 多路回填导入（批56）+ --coop-apply 勾选 + 「未交付」口径",
       convTabSrc2.contains("AI 协同初排（两段式；外部 chat 免费流程）")
-        && convTabSrc2.contains("导入 AI 回复…")
+        && convTabSrc2.contains("添加文件…")
+        && convTabSrc2.contains("添加目录…")
+        && convTabSrc2.contains("从剪贴板导入")
         && convTabSrc2.contains("--coop-apply")
         && convTabSrc2.contains("未交付")
         && convTabSrc2.contains("CoopFeature.refresh("),
-      "toggle=\(convTabSrc2.contains("AI 协同初排（两段式")) import=\(convTabSrc2.contains("导入 AI 回复…")) "
-        + "apply=\(convTabSrc2.contains("--coop-apply")) 未交付=\(convTabSrc2.contains("未交付"))")
+      "toggle=\(convTabSrc2.contains("AI 协同初排（两段式")) files=\(convTabSrc2.contains("添加文件…")) "
+        + "clipboard=\(convTabSrc2.contains("从剪贴板导入")) apply=\(convTabSrc2.contains("--coop-apply"))")
 check("r2-feature-wiring", "ConvertFeature.arguments：ph1/ph2 两段分派都交给 CoopFeature（判据只有一份）",
       convFeatSrc2.contains("CoopFeature.firstPhaseFlags(o)")
         && convFeatSrc2.contains("CoopFeature.secondPhaseArguments(o)"),
@@ -2328,6 +2333,253 @@ check("r4-runner", "run_swift_tests.sh 的编译清单已加入 CoopFeature.swif
         && testRunnerSrc.components(separatedBy: "run_one ").count - 1 == 6,
       "listed=\(testRunnerSrc.contains("Features/CoopFeature.swift")) "
         + "harnesses=\(testRunnerSrc.components(separatedBy: "run_one ").count - 1)")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (s) 第 56 批：回填导入重构（多路径 / 剪贴板 / 已选清单 / stats 摘要 / 0 回填警示）
+//     用户真测：DeepSeek 回了 json + txt 两个文件，批55 多选折叠成父目录 → 只导入了 json、
+//     丢掉 9 条 BibTeX → 文献回填 0/9 却显示「待人工 0」；ph2 也没传 --clean。
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-s  第 56 批：多路径回填 / 剪贴板 / 已选清单 / stats 摘要 / 0 回填警示")
+
+let s56Root = base.appendingPathComponent("batch56").path
+wipe(s56Root); mkdir(s56Root, 0o700)
+let s56Json = s56Root + "/deepseek_json_20261019_a89ebb.json"
+let s56Txt = s56Root + "/deepseek_bibtex_20261019_b4a25e.txt"
+let s56Dir = s56Root + "/replies_dir"
+writeRaw(s56Json, "[]"); writeRaw(s56Txt, "@article{key,\n}\n"); mkdir(s56Dir, 0o700)
+func cp(_ raw: String) -> String { CoopFeature.normalizePath(raw) }
+
+// s1 多路径 ph2：**每个已选路径各一个 --coop-replies**（顺序 = 已选顺序），不再折叠父目录；
+//    --clean 随页面「清理编译中间文件」开关（批56 起 ph2 也生效）。
+var s56a = ConvertFeature.Options()
+s56a.source = coopSrc; s56a.out = coopOut; s56a.coopStage = coopStage
+s56a.coopRepliesPaths = [s56Json, s56Txt, s56Dir]
+s56a.coopPhase = .second; s56a.coopApply = true; s56a.compile = true; s56a.clean = true
+let s56aArgv = ConvertFeature.arguments(s56a)
+let s56aWant = ["--source", cp(coopSrc), "--out", cp(coopOut),
+                "--coop-replies", cp(s56Json),
+                "--coop-replies", cp(s56Txt),
+                "--coop-replies", cp(s56Dir),
+                "--coop-stage", cp(coopStage), "--coop-apply", "--compile", "--clean"]
+check("s1-multi-replies", "多路径回填：三个路径各一个 --coop-replies（按已选顺序）+ --coop-apply/--compile/--clean",
+      s56aArgv == s56aWant, "argv=\(s56aArgv)")
+var s56b = s56a; s56b.compile = false; s56b.clean = false
+let s56bArgv = ConvertFeature.arguments(s56b)
+check("s1b-clean-off", "页面「清理编译中间文件」关 → ph2 **不传** --clean（批55 行为；批56 才支持该开关）",
+      !s56bArgv.contains("--clean") && !s56bArgv.contains("--compile")
+        && s56bArgv.filter { $0 == "--coop-replies" }.count == 3,
+      "argv=\(s56bArgv)")
+var s56c = s56a; s56c.coopRepliesPaths = []
+check("s1c-no-replies", "回填清单为空 → argv 里没有一个 --coop-replies（按钮也会 disabled，这里只钉 argv 不发明参数）",
+      ConvertFeature.arguments(s56c).filter { $0 == "--coop-replies" }.isEmpty,
+      "argv=\(ConvertFeature.arguments(s56c))")
+// 单路径仍只有一个 flag（不重复、不折叠）
+var s56d = s56a; s56d.coopRepliesPaths = [s56Txt]
+check("s1d-single", "单路径：恰好一个 --coop-replies（与批55 的语义衔接）",
+      ConvertFeature.arguments(s56d).filter { $0 == "--coop-replies" }.count == 1
+        && ConvertFeature.arguments(s56d).contains(cp(s56Txt)),
+      "argv=\(ConvertFeature.arguments(s56d))")
+
+// s2 已选清单纯逻辑：累加 / 去重 / 移除 / 清空 / 文件与目录混合计数
+var s56sel = CoopFeature.RepliesSelection()
+check("s2-empty", "空清单：summary 明确说「尚未选择任何回填」（界面据此显示橙色提示）",
+      s56sel.isEmpty && s56sel.summary == "尚未选择任何回填"
+        && s56sel.fileCount == 0 && s56sel.directoryCount == 0,
+      "summary=\(s56sel.summary)")
+let s56okJson = s56sel.add(CoopFeature.ReplyItem(path: s56Json, isDirectory: false))
+let s56okTxt = s56sel.add(CoopFeature.ReplyItem(path: s56Txt, isDirectory: false))
+let s56okDir = s56sel.add(CoopFeature.ReplyItem(path: s56Dir, isDirectory: true))
+check("s2-accumulate", "多次导入累加：文件 2 + 目录 1 → 「已选 3 项（文件 2 / 目录 1）」",
+      s56okJson && s56okTxt && s56okDir
+        && s56sel.count == 3 && s56sel.fileCount == 2 && s56sel.directoryCount == 1
+        && s56sel.summary == "已选 3 项（文件 2 / 目录 1）",
+      "summary=\(s56sel.summary)")
+let s56dup = s56sel.add(CoopFeature.ReplyItem(path: s56Json, isDirectory: false))
+check("s2-dedupe", "同一路径重复加入 → 返回 false、清单不重复（引擎侧也会按真实路径去重）",
+      !s56dup && s56sel.count == 3, "count=\(s56sel.count) dupAdded=\(s56dup)")
+let s56rm = s56sel.remove(path: s56Txt)
+check("s2-remove", "逐项移除：移除一项后清单 2 项、顺序保持",
+      s56rm?.path == cp(s56Txt) && s56sel.count == 2
+        && s56sel.paths == [s56Json, s56Dir],
+      "paths=\(s56sel.paths)")
+s56sel.clear()
+check("s2-clear", "「全部清除」→ 空清单（界面据此把第二段按钮 disable）",
+      s56sel.isEmpty && s56sel.paths.isEmpty, "summary=\(s56sel.summary)")
+
+// s3 剪贴板：临时 .md 命名（纯逻辑）+ 文本校验 + 草稿识别
+let s56stamp = "20261019-221530"
+let s56clip1 = CoopFeature.clipboardDraftPath(directory: s56Root, timestamp: s56stamp, index: 1)
+let s56clip2 = CoopFeature.clipboardDraftPath(directory: s56Root, timestamp: s56stamp, index: 2)
+check("s3-naming", "剪贴板草稿命名：前缀 + 时间戳 + 序号 + .md（同秒重复粘贴不覆盖）",
+      s56clip1.hasSuffix("/slcn-coop-clipboard-20261019-221530-1.md")
+        && s56clip2.hasSuffix("/slcn-coop-clipboard-20261019-221530-2.md")
+        && s56clip1 != s56clip2
+        && CoopFeature.clipboardDraftFileName(timestamp: "", index: 0)
+            == "slcn-coop-clipboard-00000000-000000-1.md",
+      "1=\((s56clip1 as NSString).lastPathComponent) 2=\((s56clip2 as NSString).lastPathComponent)")
+let s56clipPath = CoopFeature.clipboardDraftPath(directory: s56Root, timestamp: s56stamp, index: 3)
+writeRaw(s56clipPath, "# 剪贴板回填\n@article{a,\n}\n")
+var s56sel2 = CoopFeature.RepliesSelection()
+s56sel2.add(CoopFeature.ReplyItem(path: s56clipPath, isDirectory: false))
+s56sel2.add(CoopFeature.ReplyItem(path: s56Json, isDirectory: false))
+check("s3-draft", "草稿识别：只有剪贴板临时 .md 算草稿（移除/清空时只删它，不碰用户文件）",
+      CoopFeature.isClipboardDraft(s56clipPath) && !CoopFeature.isClipboardDraft(s56Json)
+        && s56sel2.clipboardDraftCount == 1
+        && s56sel2.summary == "已选 2 项（文件 2 / 目录 0 / 剪贴板草稿 1）",
+      "draft=\(CoopFeature.isClipboardDraft(s56clipPath)) jsonDraft=\(CoopFeature.isClipboardDraft(s56Json))")
+check("s3-text", "剪贴板文本校验：空/纯空白 → nil（红字提示）；正常文本保留换行",
+      CoopFeature.clipboardText(nil) == nil
+        && CoopFeature.clipboardText("   \n\t") == nil
+        && CoopFeature.clipboardText("a\nb") == "a\nb",
+      "nil→nil text=\(String(describing: CoopFeature.clipboardText("a\nb")))")
+
+// s4 state.stats 解析 + 成功摘要口径（用户真测：9/9 + 低置信 22 项）
+let s56Out = s56Root + "/issue90"
+let s56Final = s56Out + "/Bo_Chen"
+let s56Stage = s56Out + "/Bo_Chen_待核"
+mkdir(s56Stage, 0o700); mkdir(s56Final, 0o700)
+let s56State: [String: Any] = [
+    "schema": 1, "phase": "done",
+    "source": ["path": coopSrc, "sha256": "x"],
+    "params": ["out_root": s56Out, "stem": "Bo_Chen"],
+    "taskbook": s56Stage + "/Bo_Chen_文献核实.md",
+    "stage_dir": s56Stage, "final_dir": s56Final, "delivered_to": s56Final,
+    "stats": ["bib_total": 9, "bib_replied": 9, "bib_pending": 0,
+              "low_total": 22, "low_replied": 9, "low_applied": 9,
+              "low_pending_manual": 13],
+]
+let s56StateData = try! JSONSerialization.data(withJSONObject: s56State, options: [.sortedKeys])
+writeRaw(s56Stage + "/" + CoopFeature.stateFileName, String(data: s56StateData, encoding: .utf8)!)
+writeRaw(s56Final + "/" + CoopFeature.recordFileName,
+         "# AI 协同记录 · Bo_Chen\n\n## 一、外部 chat 回填（文献字段）\n\n"
+         + "- 解析到 9 条，拒绝 0 条，未回填 0 条\n\n## 二、reference.bib 并入\n\n"
+         + "- 并入：**9** 条\n- 跳过：**0** 条\n")
+writeRaw(s56Stage + "/Bo_Chen_AI建议.md", "# 建议清单\n")
+let s56Loaded = CoopFeature.loadStage(stageDir: s56Stage)
+check("s4-stats-parse", "state.stats 解析：文献 9/9、低置信 22（回复 9 / 应用 9 / 待人工 13）",
+      s56Loaded?.stats == CoopFeature.CoopStats(
+        bibTotal: 9, bibReplied: 9, bibPending: 0,
+        lowTotal: 22, lowReplied: 9, lowApplied: 9, lowPendingManual: 13),
+      "stats=\(String(describing: s56Loaded?.stats))")
+let s56Result = s56Loaded.map { CoopFeature.loadResult($0) }
+check("s4-summary", "成功摘要固定口径：「文献回填 9/9（并入 9 条，未回填 0）｜低置信回复 9（应用 9 / 仅记录待人工 13）」",
+      s56Result?.summaryLine == "文献回填 9/9（并入 9 条，未回填 0）｜低置信回复 9（应用 9 / 仅记录待人工 13）"
+        && s56Result?.merged == 9 && s56Result?.zeroBibWarning == nil
+        && s56Result?.stats.legacy == false,
+      "summary=\(s56Result?.summaryLine ?? "<nil>")")
+check("s4-suggestions-path", "「打开建议清单」路径：暂存目录里的 `<stem>_AI建议.md` 优先",
+      s56Result?.suggestionsMarkdownPath == s56Stage + "/Bo_Chen_AI建议.md",
+      "path=\(s56Result?.suggestionsMarkdownPath ?? "<nil>")")
+
+// s5 文献回填 0/N → 橙色警告文案固定（不再出现误导性的「待人工 0」）
+let s56ZeroState: [String: Any] = [
+    "schema": 1, "phase": "done",
+    "source": ["path": coopSrc, "sha256": "x"],
+    "params": ["out_root": s56Out, "stem": "Bo_Chen0"],
+    "taskbook": "", "stage_dir": s56Stage + "0", "final_dir": s56Final + "0",
+    "delivered_to": s56Final + "0",
+    "stats": ["bib_total": 9, "bib_replied": 0, "bib_pending": 9,
+              "low_total": 22, "low_replied": 9, "low_applied": 9,
+              "low_pending_manual": 13],
+]
+mkdir(s56Stage + "0", 0o700); mkdir(s56Final + "0", 0o700)
+let s56ZeroData = try! JSONSerialization.data(withJSONObject: s56ZeroState, options: [.sortedKeys])
+writeRaw(s56Stage + "0/" + CoopFeature.stateFileName,
+         String(data: s56ZeroData, encoding: .utf8)!)
+writeRaw(s56Final + "0/" + CoopFeature.recordFileName,
+         "# AI 协同记录 · Bo_Chen0\n\n## 一、外部 chat 回填（文献字段）\n\n"
+         + "- 解析到 0 条，拒绝 0 条，未回填 9 条\n")
+let s56ZeroLoaded = CoopFeature.loadStage(stageDir: s56Stage + "0")
+let s56ZeroResult = s56ZeroLoaded.map { CoopFeature.loadResult($0) }
+check("s5-zero-warning", "文献回填 0/9 → 橙色警告（固定文案），摘要明确 0/9、并入 0 条",
+      s56ZeroResult?.zeroBibWarning == CoopFeature.zeroBibRepliesWarning
+        && s56ZeroResult?.summaryLine.contains("文献回填 0/9（并入 0 条，未回填 9）") == true
+        && s56ZeroResult?.stats.zeroBibReplies == true,
+      "warning=\(s56ZeroResult?.zeroBibWarning ?? "<nil>")")
+check("s5-no-fake-pending", "反例：不是 0 回填时**不显示**警告（9/9 那组 zeroBibWarning=nil）",
+      s56Result?.zeroBibWarning == nil,
+      "zero=\(s56Result?.zeroBibWarning ?? "<nil>")")
+
+// s6 旧状态（没有 stats）优雅回退：从协同记录/旧 state 字段推算，并标 legacy
+let s56LegacyStage = s56Out + "/Legacy_待核"
+mkdir(s56LegacyStage, 0o700)
+mkdir(s56Final + "/Legacy", 0o700)
+let s56LegacyState: [String: Any] = [
+    "schema": 1, "phase": "done",
+    "source": ["path": coopSrc, "sha256": "x"],
+    "params": ["out_root": s56Out, "stem": "Legacy"],
+    "taskbook": "", "stage_dir": s56LegacyStage,
+    "final_dir": s56Final + "/Legacy", "delivered_to": s56Final + "/Legacy",
+    "keys": ["bib": ["a", "b", "c", "d"], "low_confidence": ["FN-1", "META-2"]],
+    "replied": ["a", "b"], "applied_low_confidence": 1,
+]
+let s56LegacyData = try! JSONSerialization.data(withJSONObject: s56LegacyState, options: [.sortedKeys])
+writeRaw(s56LegacyStage + "/" + CoopFeature.stateFileName,
+         String(data: s56LegacyData, encoding: .utf8)!)
+writeRaw(s56Final + "/Legacy/" + CoopFeature.recordFileName,
+         "# AI 协同记录 · Legacy\n\n## 一、外部 chat 回填（文献字段）\n\n"
+         + "- 解析到 2 条，拒绝 1 条，未回填 1 条\n\n## 二、reference.bib 并入\n\n"
+         + "- 并入：**2** 条\n")
+let s56LegacyLoaded = CoopFeature.loadStage(stageDir: s56LegacyStage)
+let s56LegacyResult = s56LegacyLoaded.map { CoopFeature.loadResult($0) }
+check("s6-legacy-fallback", "旧状态无 stats → 从协同记录推算文献 2/4（并入 2），标 legacy（界面注明估算）",
+      s56LegacyResult?.stats.legacy == true
+        && s56LegacyResult?.stats.bibTotal == 4
+        && s56LegacyResult?.stats.bibReplied == 2
+        && s56LegacyResult?.stats.bibPending == 1
+        && s56LegacyResult?.merged == 2
+        && s56LegacyResult?.summaryLine.contains("文献回填 2/4") == true,
+      "summary=\(s56LegacyResult?.summaryLine ?? "<nil>")")
+check("s6-stats-fromjson", "CoopStats.fromJSON：没有 stats 对象 → nil（旧状态不崩）；字段全缺也 nil",
+      CoopFeature.CoopStats.fromJSON(nil) == nil
+        && CoopFeature.CoopStats.fromJSON(["foo": 1]) == nil
+        && CoopFeature.CoopStats.fromJSON(["bib_total": 3])?.bibTotal == 3,
+      "nil→nil partial=\(String(describing: CoopFeature.CoopStats.fromJSON(["bib_total": 3])))")
+
+// s7 第二段按钮启用/禁用判据（无回填必须 disable 且提示明确）
+let s56RunStage = s56Loaded
+check("s7-can-run", "第二段判据：有回填 + 未交付 → true；无回填 / 无暂存 / 已交付 → false",
+      CoopFeature.canRunSecondPhase(replyCount: 2, stage: s56Loaded) == false  // phase=done
+        && CoopFeature.canRunSecondPhase(replyCount: 2, stage: nil) == false
+        && CoopFeature.canRunSecondPhase(replyCount: 0, stage: s56LegacyLoaded) == false,
+      "done=\(CoopFeature.canRunSecondPhase(replyCount: 2, stage: s56Loaded)) "
+        + "nil=\(CoopFeature.canRunSecondPhase(replyCount: 2, stage: nil))")
+// 造一个 ph1 状态的 stage：有回填才允许跑
+var s56Ph1 = CoopFeature.StageState()
+s56Ph1.phase = "ph1"
+check("s7-ph1-can-run", "ph1 暂存目录 + 已选 2 项 → 可以跑第二段；0 项 → 禁用并给「尚未选择任何回填」提示",
+      CoopFeature.canRunSecondPhase(replyCount: 2, stage: s56Ph1)
+        && !CoopFeature.canRunSecondPhase(replyCount: 0, stage: s56Ph1)
+        && CoopFeature.secondPhaseDisabledHint(replyCount: 0, stage: s56Ph1)?
+            .contains("尚未选择任何回填") == true
+        && CoopFeature.secondPhaseDisabledHint(replyCount: 2, stage: s56Ph1) == nil,
+      "hint=\(CoopFeature.secondPhaseDisabledHint(replyCount: 0, stage: s56Ph1) ?? "<nil>")")
+
+// s8 源码级接线：界面真的用纯逻辑（防「两套真相」）
+let s56TabSrc = readSrc("Views/ConvertTab.swift")
+let s56ConvSrc = readSrc("Features/ConvertFeature.swift")
+check("s8-tab-wiring", "ConvertTab：多文件/目录/剪贴板导入 + 已选清单移除/清除 + 第二段判据 + 0 回填警告 + 打开建议清单",
+      s56TabSrc.contains("添加文件…") && s56TabSrc.contains("添加目录…")
+        && s56TabSrc.contains("从剪贴板导入") && s56TabSrc.contains("全部清除")
+        && s56TabSrc.contains("CoopFeature.canRunSecondPhase(")
+        && s56TabSrc.contains("zeroBibWarning") && s56TabSrc.contains("打开建议清单")
+        && s56TabSrc.contains("CoopFeature.clipboardDraftPath("),
+      "files=\(s56TabSrc.contains("添加文件…")) clipboard=\(s56TabSrc.contains("从剪贴板导入")) "
+        + "clear=\(s56TabSrc.contains("全部清除")) warn=\(s56TabSrc.contains("zeroBibWarning"))")
+check("s8-feature-wiring", "ConvertFeature：ph2 传回填列表（o.coopRepliesPaths）且日志按项列出；不再有单值字段",
+      s56ConvSrc.contains("o.coopRepliesPaths") && s56ConvSrc.contains("每个各传一个 --coop-replies")
+        && !s56ConvSrc.contains("var coopReplies = "),
+      "paths=\(s56ConvSrc.contains("o.coopRepliesPaths")) log=\(s56ConvSrc.contains("每个各传一个 --coop-replies"))")
+check("s8-no-parent-folding", "源码里不再有「折叠成父目录」的旧实现（批55 的 importReplies 已删）",
+      !s56TabSrc.contains("private func importReplies")
+        && !s56TabSrc.contains("导入 AI 回复…")
+        && !s56TabSrc.contains("引擎按目录读入"),
+      "oldFunc=\(s56TabSrc.contains("private func importReplies")) "
+        + "oldButton=\(s56TabSrc.contains("导入 AI 回复…"))")
+// 普通转换零变化：默认 argv 仍逐字节不变（coop 列表字段不影响默认路径）
+check("s8-default-argv", "默认 Options 的 argv 仍只有 --compile --clean（批56 改动不碰默认路径）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"],
+      "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
 
 print("")
 print("================================================================")

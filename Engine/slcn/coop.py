@@ -7,10 +7,11 @@ r"""第五十四批：AI 协同初排（两段式）的纯逻辑。
        → 初排产物与《AI 核实任务书》写进暂存目录（默认 `<out>/<stem>_待核/`），
          **不写最终交付目录**；任务书末尾多一节「初排低置信项」。
     ② 编辑把任务书交给任意 chat 模型（豆包/千问/DeepSeek…，免费、无 API），
-       把模型回复粘贴/保存成文件或目录。
-    ③ `convert.py --coop-replies <FILE|DIR> [--coop-apply]`
+       把模型回复粘贴/保存成文件或目录。**回填有两部分**（第三节完整 BibTeX +
+       附一 JSON）；chat 客户端拆成多个文件时，第五十六批起可一次传多个路径。
+    ③ `convert.py --coop-replies <FILE|DIR> [--coop-replies <FILE|DIR> …] [--coop-apply]`
        → 解析回填文本、校验、并入文献字段；`--coop-apply` 时才应用低置信建议；
-         最后才编译并**原子 promote** 到最终交付目录。
+         最后才编译（`--clean` 时清中间文件）并**原子 promote** 到最终交付目录。
 
 本模块的设计纪律：
 
@@ -46,6 +47,9 @@ RECORD_NAME = "_AI协同记录.md"
 SUGGESTIONS_SUFFIX = "_AI建议"
 
 SECTION_TITLE = "## 附一、初排低置信项（AI 协同核实；机器可读 ID）"
+#: 第五十六批：任务书末尾的「回填说明」——把「回填=两部分」讲清楚，防止模型/编辑
+#: 只交 JSON（真实用户 2026-10-19 22:00 首测：只导入 json → 文献回填 0/9）。
+SECTION_BACKFILL_TITLE = "## 附二、回填说明（AI 协同初排专用）"
 
 VERDICTS = ("confirmed", "corrected", "unresolved")
 BIB_FIELDS = (
@@ -126,12 +130,41 @@ def _is_coop_artifact_name(name: str) -> bool:
             or SUGGESTIONS_SUFFIX in name)
 
 
-def load_reply_texts(path: str) -> list[tuple[str, str]]:
-    """读取回填文件或目录，返回 `[(显示名, 文本)]`（目录按文件名排序）。
+def _real_key(path: str) -> str:
+    """同一真实路径的判定键（`realpath`，解析符号链接/`.`/`..`）。"""
+    try:
+        return os.path.realpath(os.path.abspath(path))
+    except OSError:
+        return os.path.abspath(path)
 
-    目录里只收常见文本后缀；读不出的文件**不静默跳过**——返回一个空文本条目，
-    由解析报告写明「读不了」，免得编辑以为自己的回填被吃掉了。
-    """
+
+def dedupe_reply_paths(paths: Iterable[str]) -> list[str]:
+    """按命令行顺序去重（**同一真实路径只读一次**；空串跳过）。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in paths or []:
+        s = str(p or "").strip()
+        if not s:
+            continue
+        key = _real_key(s)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def format_reply_paths(paths: str | Iterable[str]) -> str:
+    """给日志/报错用的一行路径清单（单个路径时与批55 的 str 打印一致）。"""
+    if isinstance(paths, os.PathLike):
+        return os.fspath(paths)
+    if isinstance(paths, str):
+        return paths
+    return "、".join(str(p) for p in paths or [])
+
+
+def _load_one_reply_path(path: str) -> list[tuple[str, str]]:
+    """读取**一个**回填路径（批55 的行为，逐字节保持不变）。"""
     p = os.path.abspath(path)
     if os.path.isfile(p):
         files = [p]
@@ -152,6 +185,38 @@ def load_reply_texts(path: str) -> list[tuple[str, str]]:
                 out.append((_rel(f, p if os.path.isdir(p) else os.path.dirname(p)), fh.read()))
         except OSError as e:
             out.append((os.path.basename(f), f"[无法读取：{type(e).__name__}: {e}]"))
+    return out
+
+
+def load_reply_texts(path: str | Iterable[str]) -> list[tuple[str, str]]:
+    """读取回填**一个或多个**路径，返回 `[(显示名, 文本)]`。
+
+    · 单个路径（str / 长度 1 的序列）→ 与批55 **完全一致**（顺序、显示名、digest 都不变）；
+    · 多个路径 → 按**命令行顺序**读入；目录仍按文件名排序；目录里读出的文件显示名带
+      「目录名/相对路径」前缀（如 `replies-a/x.md`），让多目录下的同名文件不混；
+      显式给的文件仍只用文件名（与批55 单路径一致）；
+    · 同一**真实路径**（`realpath`）出现多次 → 只读一次，顺序以第一次出现为准。
+    目录里只收常见文本后缀；读不出的文件**不静默跳过**——返回一个空文本条目，
+    由解析报告写明「读不了」，免得编辑以为自己的回填被吃掉了。
+    """
+    if isinstance(path, os.PathLike):
+        path = os.fspath(path)
+    if isinstance(path, str):
+        return _load_one_reply_path(path)
+    items = dedupe_reply_paths(path)
+    if len(items) <= 1:
+        return _load_one_reply_path(items[0]) if items else []
+    out: list[tuple[str, str]] = []
+    for p in items:
+        ab = os.path.abspath(p)
+        if not os.path.isdir(ab):
+            # 显式给的文件：显示名就是文件名（与批55 单路径一致）。
+            out += _load_one_reply_path(p)
+            continue
+        # 目录：显示名统一带「目录名/相对路径」（多目录下同名文件能分清来源）。
+        label = os.path.basename(ab) or ab
+        for name, text in _load_one_reply_path(p):
+            out.append((f"{label}/{name}", text))
     return out
 
 
@@ -497,6 +562,37 @@ def render_low_confidence_section(items: Iterable[dict]) -> str:
         L.append(f"- 允许的 field：{fields or '（无）'}")
         L.append("")
     return "\n".join(L)
+
+
+def render_backfill_section() -> str:
+    """任务书里的「附二、回填说明」：回填**两部分**都要交（第五十六批）。
+
+    为什么必须有这一节：真实用户首测（2026-10-19 22:00）里，DeepSeek 按任务书把回答
+    拆成了「JSON 低置信回复 + 完整 BibTeX」两个文件；旧 GUI 只能导入一个路径，用户只导
+    了 JSON → 文献回填 0/9。任务书本身要先把「回填=两部分、可放同一回复、多文件也行」
+    写死，模型和编辑才不会只交一半。
+    """
+    return "\n".join([
+        "", "---", "", SECTION_BACKFILL_TITLE, "",
+        "> 本次回填**包含两部分，请都交回来**（只交一部分会白跑一轮核实）：",
+        "",
+        "1. **文献条目部分**：按第三节规范输出的**完整 BibTeX**——把所有应核条目"
+        "（包括没有改动的）写进**一个**代码块（`bibtex` 围栏，格式同第三节示例）。",
+        "2. **低置信项部分**：按「附一、初排低置信项」规定格式回复的 **JSON**——"
+        "每项一个 JSON 对象（`verdict` / `field` / `value` / `span`），"
+        "可以放在 `json` 围栏里，也可以直接贴。",
+        "",
+        "- **推荐**：两部分写在**同一条回复**里（同一段文字即可，前后顺序不限）。",
+        "- 如果 chat 客户端把回复拆成**多个文件**（例如一个 `.json` + 一个 `.txt`/`.md`），"
+        "**不影响使用**：本工具支持一次导入**多个文件/目录**"
+        "（也可以把文件放进同一个目录一次导入；GUI 还支持从剪贴板导入），"
+        "会把它们一起读取、一起解析。",
+        "- **两块都要交**：只交 JSON 会让 `reference.bib` 一条都不并入（文献回填 0 条），"
+        "本轮文献核实等于白做；只交 BibTeX 则附一的低置信项得不到回复。",
+        "- 导入后若要把低置信建议也落到产物：运行第二段时勾选「一键修改产物」"
+        "（`--coop-apply`）；不勾选时建议只写进 `…_AI建议.md` / `.jsonl`，不改产物。",
+        "",
+    ])
 
 
 _JSON_DECODER = json.JSONDecoder()
@@ -1026,8 +1122,40 @@ def check_ph2(state: dict | None, current_params: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def make_stats(*, bib_total: int, bib_replied: int, low_total: int,
+               low_replied: int, low_applied: int) -> dict:
+    """ph2 的**机器可读**回填统计（第五十六批；写进状态 JSON 的 `stats`）。
+
+    为什么需要它：批55 的 GUI 摘要只统计 `…_AI建议.jsonl` 的 accepted，于是真实首测里
+    「文献回填 0/9、低置信 22 条里 13 条待人工」被显示成「待人工 0」——编辑以为全成了。
+    这里把**任务书口径**的分子分母一次算清，界面直接读数而不是自己数文件。
+
+    字段（schema 仍是 1，旧状态没有这一节 → 外壳按「统计不可用」回退）：
+      · `bib_total` / `bib_replied` / `bib_pending`：文献条目总数 / 回填成功数 / 未回填数；
+      · `low_total`：任务书「附一」里的低置信**项数**（ID 数，不是回复条数）；
+      · `low_replied`：通过校验的低置信**回复条数**（同一 ID 多字段各算一条）；
+      · `low_applied`：其中真正落到 `reference.bib` 的条数（仅 `--coop-apply`）；
+      · `low_pending_manual`：仅记录、待人工的回复条数（unresolved / 不可应用 / 未勾 apply）。
+    """
+    bib_total = max(0, int(bib_total or 0))
+    bib_replied = max(0, int(bib_replied or 0))
+    low_total = max(0, int(low_total or 0))
+    low_replied = max(0, int(low_replied or 0))
+    low_applied = max(0, int(low_applied or 0))
+    return {
+        "bib_total": bib_total,
+        "bib_replied": bib_replied,
+        "bib_pending": max(0, bib_total - bib_replied),
+        "low_total": low_total,
+        "low_replied": low_replied,
+        "low_applied": min(low_applied, low_replied),
+        "low_pending_manual": max(0, low_replied - low_applied),
+    }
+
+
 def mark_state_ph2(state: dict, *, replies_digest: str, replied: list[str],
-                   applied: int, rejected: int, pending: list[str]) -> dict:
+                   applied: int, rejected: int, pending: list[str],
+                   stats: dict | None = None) -> dict:
     st = dict(state)
     st["phase"] = "ph2"
     st["replied"] = list(dict.fromkeys(replied))
@@ -1035,6 +1163,9 @@ def mark_state_ph2(state: dict, *, replies_digest: str, replied: list[str],
     st["replies_sha256"] = replies_digest
     st["applied_low_confidence"] = int(applied)
     st["rejected"] = int(rejected)
+    if stats is not None:
+        # 第五十六批：只增字段、不升 schema——旧外壳忽略它，新外壳从它读「x/y」口径。
+        st["stats"] = {k: int(v) for k, v in stats.items()}
     st.setdefault("history", []).append(
         {"at": _now(), "event": "ph2", "replies_sha256": replies_digest,
          "applied": int(applied), "rejected": int(rejected)})

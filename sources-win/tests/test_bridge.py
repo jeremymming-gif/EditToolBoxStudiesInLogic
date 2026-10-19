@@ -621,9 +621,15 @@ else:
         print("协同面板显示=%d" % int(bool(ct.coop_panel.winfo_ismapped())))
         print("协同按钮齐全=%d" % int(all(
             w.cget("text") in ("打开任务书", "打开暂存目录", "打开交付目录",
-                              "打开协同记录", "打开建议清单", "导入 AI 回复并运行第二段…")
+                              "打开协同记录", "打开建议清单",
+                              "添加回填文件…", "添加回填目录…", "从剪贴板导入",
+                              "移除选中", "全部清除", "运行第二段…")
             for w in (ct.coop_taskbook_btn, ct.coop_stage_btn, ct.coop_deliver_btn,
-                      ct.coop_record_btn, ct.coop_suggest_btn, ct.coop_import_btn))))
+                      ct.coop_record_btn, ct.coop_suggest_btn, ct.coop_import_btn,
+                      ct.coop_remove_btn, ct.coop_clear_btn))))
+        print("回填按钮存在=%d" % int(all(hasattr(ct, name) for name in (
+            "_add_coop_files", "_add_coop_dir", "_import_clipboard_reply",
+            "_remove_selected_coop_replies", "_clear_coop_replies"))))
         print("协同按钮默认禁用=%d" % int(all(
             str(w.cget("state")) == "disabled"
             for w in (ct.coop_taskbook_btn, ct.coop_stage_btn, ct.coop_deliver_btn,
@@ -666,7 +672,7 @@ else:
         _coop_final = os.path.join(_coop_out, "A")
         os.makedirs(_coop_final)
 
-        def _coop_state(phase, delivered=""):
+        def _coop_state(phase, delivered="", stats=None):
             data = {"schema": 1, "phase": phase,
                     "source": {"path": os.path.abspath(_coop_src)},
                     "params": {"out_root": os.path.abspath(_coop_out), "stem": "A"},
@@ -674,6 +680,8 @@ else:
                     "final_dir": _coop_final}
             if delivered:
                 data["delivered_to"] = os.path.abspath(delivered)
+            if stats is not None:
+                data["stats"] = dict(stats)
             with open(os.path.join(_coop_stage, M.C.STATE_NAME), "w",
                       encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False)
@@ -690,15 +698,41 @@ else:
         print("协同待核按钮=%d" % int(
             str(ct.coop_taskbook_btn.cget("state")) == "normal"
             and str(ct.coop_stage_btn.cget("state")) == "normal"
-            and str(ct.coop_import_btn.cget("state")) == "normal"
             and str(ct.coop_deliver_btn.cget("state")) == "disabled"))
-        _coop_state("done", delivered=_coop_final)
-        open(os.path.join(_coop_final, M.C.RECORD_NAME), "w",
-             encoding="utf-8").write("# 协同记录\\n")
-        ct.apply_coop_result(
-            {"phase": "ph2", "stage": M.C.load_stage(_coop_stage),
-             "suggestions": {"accepted": 2, "rejected": 1, "missing": 3,
-                             "total": 6, "exists": True, "path": "x"}}, 0)
+        print("无回填禁用=%d" % int(
+            str(ct.coop_import_btn.cget("state")) == "disabled"))
+        # 批56：已选清单（文件多选 + 剪贴板可混合、累加；可移除/清空）
+        _coop_r1 = os.path.join(_coop_root, "deepseek_json.json")
+        _coop_r2 = os.path.join(_coop_root, "deepseek_bibtex.txt")
+        for _p in (_coop_r1, _coop_r2):
+            open(_p, "w", encoding="utf-8").write("x")
+        ct.add_coop_replies([_coop_r1, _coop_r2])
+        app.update()
+        print("已选计数=%d" % ct._coop_sel.count)
+        print("已选清单行数=%d" % ct.coop_list.size())
+        print("已选后可运行=%d" % int(
+            str(ct.coop_import_btn.cget("state")) == "normal"))
+        app.clipboard_clear()
+        app.clipboard_append("剪贴板回填：附一 JSON 内容")
+        ct._import_clipboard_reply()
+        app.update()
+        print("剪贴板导入=%d" % int(
+            ct._coop_sel.count == 3 and ct.coop_list.get(2).endswith(".md")))
+        ct._clear_coop_replies()
+        app.update()
+        print("清空后禁用=%d" % int(
+            ct._coop_sel.count == 0
+            and str(ct.coop_import_btn.cget("state")) == "disabled"))
+        # 批56：成功摘要（stats 口径）——有回填、不警告
+        _coop_state("done", delivered=_coop_final,
+                    stats={"bib_total": 9, "bib_replied": 9, "bib_pending": 0,
+                           "low_total": 22, "low_replied": 13, "low_applied": 9,
+                           "low_pending_manual": 13})
+        open(os.path.join(_coop_final, M.C.RECORD_NAME), "w", encoding="utf-8").write(
+            "- 并入：**9** 条")
+        _stage_obj = M.C.load_stage(_coop_stage)
+        ct.apply_coop_result({"phase": "ph2", "stage": _stage_obj,
+                              "summary": M.C.summarize_stage(_stage_obj)}, 0)
         app.update()
         print("协同状态已交付=" + ct.v_coop_status.get())
         print("协同已交付按钮=%d" % int(
@@ -707,6 +741,22 @@ else:
             and str(ct.coop_suggest_btn.cget("state")) == "normal"
             and str(ct.coop_import_btn.cget("state")) == "disabled"))
         print("协同摘要=" + ct.v_coop_summary.get())
+        print("摘要含stats=%d" % int(
+            "文献回填 9/9（并入 9 条，未回填 0）" in ct.v_coop_summary.get()
+            and "低置信回复 13（应用 9 / 仅记录待人工 13）" in ct.v_coop_summary.get()))
+        print("无警告=%d" % int(ct.v_coop_warn.get() == ""))
+        # 批56：0/9 文献回填 → 橙色警示（用户只导入了 json 的现场）
+        _coop_state("done", delivered=_coop_final,
+                    stats={"bib_total": 9, "bib_replied": 0, "bib_pending": 9,
+                           "low_total": 22, "low_replied": 1, "low_applied": 9,
+                           "low_pending_manual": 13})
+        _stage_obj2 = M.C.load_stage(_coop_stage)
+        ct.apply_coop_result({"phase": "ph2", "stage": _stage_obj2,
+                              "summary": M.C.summarize_stage(_stage_obj2)}, 0)
+        app.update()
+        print("0回填警告=%d" % int(
+            "本次没有文献条目回填" in ct.v_coop_warn.get()
+            and "可能漏导入" in ct.v_coop_warn.get()))
         ct.v_coop.set(False)
         ct._toggle_coop_panel()
         shutil.rmtree(_coop_root, ignore_errors=True)
@@ -759,24 +809,39 @@ else:
               "未验证" in out or "相符" not in out,
               [l for l in out.splitlines() if l.startswith("顶部提示")])
         check("(g) 协同操作区默认隐藏：勾「AI 协同初排（两段式）」才展开，"
-              "六个按钮默认禁用（第一段还没跑）",
+              "打开/回填/运行按钮默认禁用（第一段还没跑）",
               "协同默认关=1" in out and "协同面板默认隐藏=1" in out
               and "协同面板显示=1" in out and "协同按钮齐全=1" in out
-              and "协同按钮默认禁用=1" in out,
-              [l for l in out.splitlines() if l.startswith(("协同默认", "协同面板", "协同按钮"))])
+              and "回填按钮存在=1" in out and "协同按钮默认禁用=1" in out,
+              [l for l in out.splitlines()
+               if l.startswith(("协同默认", "协同面板", "协同按钮", "回填按钮"))])
         check("(g) 设置页 AI 预算：非法值红字**不落盘**、合法值（0 = 不限）落盘",
               "预算非法不落盘=1" in out and "预算落盘=1" in out,
               [l for l in out.splitlines() if l.startswith("预算")])
-        check("(g) 协同状态机（真控件）：ph1 → 「待人工核实（未交付）」+ 任务书/暂存/"
-              "第二段按钮可用，交付按钮禁用",
+        check("(g) 协同状态机（真控件）：ph1 → 「待人工核实（未交付）」+ 任务书/暂存"
+              "按钮可用、交付按钮禁用；**没有回填时运行第二段按钮禁用**",
               any(l.startswith("协同状态待核=") and "待人工核实（未交付）" in l
-                  for l in out.splitlines()) and "协同待核按钮=1" in out,
-              [l for l in out.splitlines() if l.startswith("协同状态")])
+                  for l in out.splitlines()) and "协同待核按钮=1" in out
+              and "无回填禁用=1" in out,
+              [l for l in out.splitlines()
+               if l.startswith(("协同状态", "无回填"))])
+        check("(g) 批56 已选清单（真控件）：文件多选 + 剪贴板可混合累加（2 → 3 项），"
+              "清单可见、加入后可运行、清空后禁用",
+              "已选计数=2" in out and "已选清单行数=2" in out
+              and "已选后可运行=1" in out and "剪贴板导入=1" in out
+              and "清空后禁用=1" in out,
+              [l for l in out.splitlines()
+               if l.startswith(("已选", "剪贴板", "清空"))])
         check("(g) 协同状态机（真控件）：ph2 成功 → 「已交付」+ 交付/记录/建议按钮可用、"
-              "第二段按钮禁用（交付后才算交付）",
+              "第二段按钮禁用；摘要按 stats 显示「文献回填 9/9…」且无 0 回填警告",
               any(l.startswith("协同状态已交付=") and "已交付" in l
-                  for l in out.splitlines()) and "协同已交付按钮=1" in out,
-              [l for l in out.splitlines() if l.startswith(("协同状态", "协同已交付"))])
+                  for l in out.splitlines()) and "协同已交付按钮=1" in out
+              and "摘要含stats=1" in out and "无警告=1" in out,
+              [l for l in out.splitlines()
+               if l.startswith(("协同状态", "协同已交付", "摘要", "无警告"))])
+        check("(g) 批56 0/9 文献回填 → 橙色警示出现（「本次没有文献条目回填…可能漏导入」）",
+              "0回填警告=1" in out,
+              [l for l in out.splitlines() if l.startswith("0回填")])
     shutil.rmtree(gdir, ignore_errors=True)
     shutil.rmtree(gcfg, ignore_errors=True)
 
@@ -1089,16 +1154,50 @@ _j_ph1_no_stage = E.convert_call(source="a", out="/o", coop_taskbook_only=True)
 check("(j) 没给 --coop-stage 时第一段不带它（引擎用默认 `<out>/<stem>_待核/`）",
       "--coop-stage" not in _j_ph1_no_stage.argv)
 
+_j_ph2_single = E.convert_call(source="/稿/a.docx", out="/期", coop_replies="/回填",
+                               coop_stage="/期/A_待核", coop_apply=True, compile_pdf=True,
+                               verify_refs=True, name="A", author="某",
+                               ai_budget_tokens=0)
+check("(j) 第二段单路径 argv 与批55 **逐字节相同**（最小集；页面参数/--verify-refs/"
+      "--clean/预算一律不带，引擎从状态继承）",
+      _j_ph2_single.argv == _j_base + ["--source", "/稿/a.docx", "--out", "/期",
+                                       "--coop-replies", "/回填",
+                                       "--coop-stage", "/期/A_待核",
+                                       "--coop-apply", "--compile"],
+      _j_ph2_single.display[:180])
 _j_ph2 = E.convert_call(source="/稿/a.docx", out="/期", coop_replies="/回填",
                         coop_stage="/期/A_待核", coop_apply=True, compile_pdf=True,
-                        verify_refs=True, name="A", author="某", clean=True,
-                        ai_budget_tokens=0)
-check("(j) 第二段 argv 是最小集（页面参数/--clean/--verify-refs/预算一律不带，引擎从状态继承）",
-      _j_ph2.argv == _j_base + ["--source", "/稿/a.docx", "--out", "/期",
-                                "--coop-replies", "/回填", "--coop-stage", "/期/A_待核",
-                                "--coop-apply", "--compile"], _j_ph2.display[:180])
+                        clean=True)
+check("(j) 批56：页面「清理临时文件」开着时第二段末尾带 `--clean`"
+      "（交付目录不再留 .aux/.bbl/… 中间文件）",
+      _j_ph2.argv[-5:] == ["--coop-stage", "/期/A_待核", "--coop-apply",
+                           "--compile", "--clean"]
+      and "--clean" in _j_ph2.argv, _j_ph2.display[:180])
+_j_ph2_multi = E.convert_call(
+    source="/稿/a.docx", out="/期",
+    coop_replies=["/下载/deepseek_json_a.json", "/下载/deepseek_bibtex_b.txt"],
+    coop_stage="/期/A_待核", clean=True)
+check("(j) 批56：多路径按已选顺序输出**重复** `--coop-replies`（多选文件不再折叠父目录/"
+      "不再复制临时目录）",
+      _j_ph2_multi.argv == _j_base + [
+          "--source", "/稿/a.docx", "--out", "/期",
+          "--coop-replies", "/下载/deepseek_json_a.json",
+          "--coop-replies", "/下载/deepseek_bibtex_b.txt",
+          "--coop-stage", "/期/A_待核", "--clean"], _j_ph2_multi.display[:200])
+check("(j) 3 个路径 → 3 个 `--coop-replies` flag（每个路径独立传）",
+      E.convert_call(source="a", out="/o", coop_replies=["/r1", "/r2", "/r3"]).argv.count(
+          "--coop-replies") == 3)
+check("(j) 空列表 / 列表含空串 / 含全空白 → ValueError（不许静默丢回填）",
+      _raises_value_error(E.convert_call, source="a", out="/o", coop_replies=[])
+      and _raises_value_error(E.convert_call, source="a", out="/o",
+                              coop_replies=["/r1", ""])
+      and _raises_value_error(E.convert_call, source="a", out="/o",
+                              coop_replies=["/r1", "   "]))
+check("(j) 列表项去首尾空白；tuple 也接受（界面传 list，脚本可传 tuple）",
+      E.convert_call(source="a", out="/o", coop_replies=(" /r1 ", " /r2 ")).argv[
+          -4:] == ["--coop-replies", "/r1", "--coop-replies", "/r2"])
 check("(j) 第二段 label 写明「AI 协同初排·第二段」（日志里两段分得清）",
-      _j_ph2.label == "AI 协同初排·第二段", _j_ph2.label)
+      _j_ph2_single.label == "AI 协同初排·第二段", _j_ph2_single.label)
 check("(j) 不勾「一键修改产物」时第二段不带 --coop-apply",
       "--coop-apply" not in E.convert_call(source="a", out="/o", coop_replies="/r").argv)
 check("(j) 参数组合反例 → ValueError（两段同给 / 只有 --coop-apply / --coop-stage 不配两段式）",
@@ -1226,10 +1325,11 @@ try:
           "（坏行忽略，不炸）",
           (_j_sum["accepted"], _j_sum["rejected"], _j_sum["missing"], _j_sum["total"])
           == (2, 1, 1, 4), str(_j_sum))
-    check("(j) 建议摘要文案含「接受/拒绝/待人工」三个数；没有清单时说清第二段后才有",
+    check("(j) 建议清单文案含「接受/拒绝/未回填」三个数（清单口径，不是成功摘要）；"
+          "没有清单时说清第二段后才有",
           "接受 2" in C.suggestions_text(_j_sum)
           and "拒绝 1" in C.suggestions_text(_j_sum)
-          and "待人工 1" in C.suggestions_text(_j_sum)
+          and "未回填 1" in C.suggestions_text(_j_sum)
           and "第二段成功后生成"
           in C.suggestions_text(C.suggestions_summary(_j_stage, "没有这篇")))
     # 多个候选（同一篇稿改过输出名）：取状态文件**最近修改**的一个，候选数交给界面提示
@@ -1256,19 +1356,128 @@ try:
           and _j_after.stage_dir != os.path.abspath(_j_stage2))
     shutil.rmtree(_j_stage2, ignore_errors=True)
 
-    _j_r1 = os.path.join(_j_root, "回复1.md")
-    _j_r2 = os.path.join(_j_root, "回复2.md")
-    for _p in (_j_r1, _j_r2):
-        with open(_p, "w", encoding="utf-8") as _fh:
+    # ── 批56：state.stats 成功摘要 / 旧状态回退 / 0 回填警示 ──
+    _j_stats_stage = os.path.join(_j_root, "统计_待核")
+    _j_stats_final = os.path.join(_j_root, "统计")
+    os.makedirs(_j_stats_stage, exist_ok=True)
+    os.makedirs(_j_stats_final, exist_ok=True)
+    _j_stats = {"bib_total": 9, "bib_replied": 9, "bib_pending": 0,
+                "low_total": 22, "low_replied": 13, "low_applied": 9,
+                "low_pending_manual": 13}
+    _j_state_stats = {"schema": 1, "phase": "done",
+                      "source": {"path": os.path.abspath(_j_src)},
+                      "params": {"out_root": os.path.abspath(_j_out), "stem": "统计"},
+                      "taskbook": "", "final_dir": _j_stats_final,
+                      "delivered_to": _j_stats_final, "stats": dict(_j_stats),
+                      "applied_low_confidence": 9}
+    _j_stats_state_path = os.path.join(_j_stats_stage, C.STATE_NAME)
+    with open(_j_stats_state_path, "w", encoding="utf-8") as _fh:
+        json.dump(_j_state_stats, _fh, ensure_ascii=False)
+    with open(os.path.join(_j_stats_final, C.RECORD_NAME), "w", encoding="utf-8") as _fh:
+        _fh.write("## 二、reference.bib 并入\n\n- 并入：**9** 条\n")
+    _j_stage_obj = C.load_stage(_j_stats_stage)
+    check("(j) stats 读取：批56 状态文件的 7 个字段全收；与 mac 同口径（任一新字段存在即解析、"
+          "缺的按 0）；完全没有 stats → None 回退旧状态",
+          C.state_stats(_j_state_stats) == _j_stats
+          and C.state_stats({"stats": {"bib_total": 9}}) == {
+              "bib_total": 9, "bib_replied": 0, "bib_pending": 0, "low_total": 0,
+              "low_replied": 0, "low_applied": 0, "low_pending_manual": 0}
+          and C.state_stats({"stats": {"bib_total": 9, "low_applied": "9"}})["low_applied"] == 0
+          and C.state_stats({}) is None)
+    _j_summary = C.summarize_stage(_j_stage_obj)
+    check("(j) 成功摘要口径（与 mac 逐字一致）：「文献回填 9/9（并入 9 条，未回填 0）｜"
+          "低置信回复 13（应用 9 / 仅记录待人工 13）」",
+          _j_summary["text"] == C.stats_line(_j_stats, merged=9)
+          and _j_summary["text"] == ("文献回填 9/9（并入 9 条，未回填 0）｜"
+                                     "低置信回复 13（应用 9 / 仅记录待人工 13）"),
+          _j_summary["text"])
+    check("(j) 有文献回填时**不**显示 0 回填警告（只有 bib_total>0 且 replied=0 才橙色警示）；"
+          "新 stats 不标 legacy",
+          _j_summary["warning"] == "" and C.bib_zero_warning(_j_stats) == ""
+          and _j_summary["legacy"] is False)
+    _j_zero = dict(_j_stats, bib_replied=0, bib_pending=9)
+    check("(j) 0/9 文献回填 → 橙色警示点名「可能漏导入 bibtex/bib、可重新初排后再导入」",
+          "本次没有文献条目回填" in C.bib_zero_warning(_j_zero)
+          and "可能漏导入" in C.bib_zero_warning(_j_zero)
+          and "重新初排" in C.bib_zero_warning(_j_zero))
+    check("(j) bib_total=0（没有文献键）不误报 0 回填警告",
+          C.bib_zero_warning({"bib_total": 0, "bib_replied": 0}) == "")
+    with open(os.path.join(_j_stats_final, C.RECORD_NAME), "w", encoding="utf-8") as _fh:
+        _fh.write("- 解析到 8 条，拒绝 0 条，未回填 1 条\n"
+                  "- 接受 12 条，拒绝 1 条，未回填 9 条\n"
+                  "- 并入：**7** 条\n")
+    _j_rec = C.stats_from_record(os.path.join(_j_stats_final, C.RECORD_NAME),
+                                 state=_j_state_stats)
+    check("(j) 旧状态回退：解析 `_AI协同记录.md` 的解析/低置信 summary 行 + 并入数",
+          _j_rec == {"bib_total": 9, "bib_replied": 8, "bib_pending": 1,
+                     "low_total": 22, "low_replied": 13, "low_applied": 9,
+                     "low_pending_manual": 13}, str(_j_rec))
+    _j_no_stats = {key: value for key, value in _j_state_stats.items() if key != "stats"}
+    with open(_j_stats_state_path, "w", encoding="utf-8") as _fh:
+        json.dump(_j_no_stats, _fh, ensure_ascii=False)
+    _j_old_summary = C.summarize_stage(C.load_stage(_j_stats_stage))
+    check("(j) 旧状态（无 stats）仍给摘要：从 record 回退，并入 z 取记录里的 7；"
+          "并标「估算」（legacy=True）",
+          _j_old_summary["text"].startswith("文献回填 8/9（并入 7 条，未回填 1）")
+          and _j_old_summary["legacy"] is True, _j_old_summary["text"])
+    with open(_j_stats_state_path, "w", encoding="utf-8") as _fh:
+        json.dump({"schema": 1, "phase": "done",
+                   "source": {"path": os.path.abspath(_j_src)},
+                   "params": {"out_root": os.path.abspath(_j_out), "stem": "统计"},
+                   "taskbook": "", "final_dir": _j_stats_final,
+                   "delivered_to": _j_stats_final,
+                   "keys": {"bib": ["K1", "K2"], "low_confidence": ["L1", "L2", "L3"]},
+                   "replied": ["K1"], "applied_low_confidence": 1},
+                  _fh, ensure_ascii=False)
+    try:
+        os.remove(os.path.join(_j_stats_final, C.RECORD_NAME))
+    except OSError:
+        pass
+    _j_deep = C.summarize_stage(C.load_stage(_j_stats_stage))
+    check("(j) 最老状态（无 stats 无 record）→ 按 keys/replied/建议清单回退，仍给三组数；"
+          "并入数读不到时明确说「并入条数见协同记录」（不拿回填数冒充并入数）",
+          _j_deep["stats"]["bib_total"] == 2 and _j_deep["stats"]["bib_replied"] == 1
+          and "文献回填 1/2" in _j_deep["text"]
+          and "并入条数见协同记录" in _j_deep["text"]
+          and "低置信回复" in _j_deep["text"], _j_deep["text"])
+    shutil.rmtree(_j_stats_stage, ignore_errors=True)
+    shutil.rmtree(_j_stats_final, ignore_errors=True)
+
+    # ── 批56：已选回填清单 + 剪贴板回填命名（纯逻辑，与 mac 同语义）──
+    _j_r1 = os.path.join(_j_root, "回复1.json")
+    _j_r2 = os.path.join(_j_root, "回复2.txt")
+    for _path in (_j_r1, _j_r2):
+        with open(_path, "w", encoding="utf-8") as _fh:
             _fh.write("x")
-    _j_rdir = C.prepare_replies([_j_r1, _j_r2])
-    check("(j) 多选回复文件 → 汇入临时目录（引擎 `--coop-replies` 只接受单个 FILE|DIR）",
-          os.path.isdir(_j_rdir) and sorted(os.listdir(_j_rdir)) == ["回复1.md", "回复2.md"])
-    check("(j) 单一路径原样返回（文件或目录）；空选择 → ValueError",
-          C.prepare_replies([_j_r1]) == _j_r1
-          and C.prepare_replies([_j_out]) == _j_out
-          and _raises_value_error(C.prepare_replies, []))
-    shutil.rmtree(_j_rdir, ignore_errors=True)
+    _j_sel = C.ReplySelection()
+    check("(j) 已选清单：文件/目录/剪贴板可混合、累加；空串跳过；标题「已选 N 项」",
+          _j_sel.add([_j_r1, _j_out, ""]) == (2, 1) and _j_sel.count == 2
+          and _j_sel.label() == "已选 2 项", str(_j_sel.paths))
+    check("(j) 已选清单去重（同一路径按绝对/normcase 判等；重复导入不重复传）",
+          _j_sel.add([_j_r1, "  "]) == (0, 2) and _j_sel.count == 2)
+    check("(j) 已选清单可按路径/下标移除、清空（界面「移除选中 / 全部清除」的纯逻辑）",
+          _j_sel.remove(_j_out) and _j_sel.remove_index(0) == _j_r1
+          and _j_sel.count == 0 and _j_sel.clear() == 0)
+    _j_clip_dir = tempfile.mkdtemp(prefix="slcn_bridge_clip_")
+    try:
+        _j_clip = C.write_clipboard_reply("回填 JSON 内容", _j_clip_dir)
+        _j_clip2 = C.write_clipboard_reply("回填 BibTeX 内容", _j_clip_dir)
+        check("(j) 剪贴板回填命名纯逻辑：`回填剪贴板-YYYYmmdd-HHMMSS-<seq>.md`"
+              "（同秒多次粘贴序号递增、不覆盖）",
+              re.search(r"回填剪贴板-\d{8}-\d{6}-1\.md$",
+                        os.path.basename(_j_clip)) is not None
+              and re.search(r"回填剪贴板-\d{8}-\d{6}-2\.md$",
+                            os.path.basename(_j_clip2)) is not None
+              and open(_j_clip, encoding="utf-8").read().strip() == "回填 JSON 内容")
+        check("(j) 空剪贴板/纯空白 → ValueError（界面红字提示，不生成空回填文件）",
+              _raises_value_error(C.write_clipboard_reply, "  \n ", _j_clip_dir))
+        check("(j) 剪贴板回填加入已选清单后按顺序作为独立 --coop-replies 传给引擎",
+              C.ReplySelection().add([_j_clip, _j_clip2]) == (2, 0)
+              and E.convert_call(source="a", out="/o",
+                                 coop_replies=[_j_clip, _j_clip2]).argv.count(
+                                     "--coop-replies") == 2)
+    finally:
+        shutil.rmtree(_j_clip_dir, ignore_errors=True)
 finally:
     shutil.rmtree(_j_root, ignore_errors=True)
 
@@ -1278,10 +1487,23 @@ check("(j) 初排转换页：默认关的「AI 协同初排（两段式）」+ �
       "AI 协同初排（两段式）" in _src_55 and "self.v_coop" in _src_55
       and "coop_panel.pack_forget()" in _src_55)
 check("(j) 协同操作区按钮齐全（打开任务书/暂存目录/交付目录/协同记录/建议清单 + "
-      "导入 AI 回复并运行第二段…）",
+      "回填导入：添加文件/目录/剪贴板/移除选中/全部清除/运行第二段）",
       all(k in _src_55 for k in ("打开任务书", "打开暂存目录", "打开交付目录",
                                  "打开协同记录", "打开建议清单",
-                                 "导入 AI 回复并运行第二段…")))
+                                 "添加回填文件…", "添加回填目录…", "从剪贴板导入",
+                                 "移除选中", "全部清除", "运行第二段…")))
+check("(j) 批56：已选清单可见（「已选 N 项」+ Listbox），不再复制临时目录/折叠父目录",
+      "已选 " in _src_55 and "self.v_coop_sel" in _src_55
+      and "self.coop_list" in _src_55 and "ReplySelection" in _src_55
+      and "prepare_replies" not in _src_55)
+check("(j) 批56：第二段把**已选清单**按顺序传给引擎（重复 --coop-replies）+ "
+      "页面 clean 开着时带 --clean",
+      "coop_replies=paths" in _src_55
+      and "clean=bool(self.v_clean.get())" in _src_55)
+check("(j) 批56：成功摘要读 `summarize_stage`（stats 口径）+ 0 回填橙色警告"
+      "（theme 颜色，不写死色号）",
+      "C.summarize_stage" in _src_55 and "v_coop_warn" in _src_55
+      and 'theme.COLOR["warn"]' in _src_55)
 check("(j) 第二段复用第一段选定的输出根（`_coop_out` + `set_coop_out`），"
       "第一段走 `coop_ph1_call`",
       "_coop_out" in _src_55 and "tab.set_coop_out(out)" in _src_55

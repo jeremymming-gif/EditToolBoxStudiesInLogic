@@ -352,6 +352,24 @@ def _nonneg_int(value, flag: str) -> int:
     return value
 
 
+def _coop_reply_paths(value) -> list[str]:
+    """规整 --coop-replies：str / list[str] → 非空路径列表（空列表/含空串 → ValueError）。
+
+    批55 单路径与批56 多路径的**唯一**入口：单路径必须与批55 的 argv 逐字节相同
+    （一个 `--coop-replies`），多路径按界面里已选的顺序输出**重复**的 flag。
+    引擎批56 起 `--coop-replies` 是 `append`：给多个文件/目录 = 一次读到全部回填。
+    """
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        paths = [str(path).strip() for path in value]
+        if not paths or any(not path for path in paths):
+            raise ValueError("--coop-replies 至少要一个非空路径，且列表里不能有空字符串")
+        return paths
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  clean: bool = False, verify_refs: bool = False,
                  source_pdf: bool = False, bib: str = "", metadata: str = "",
@@ -363,7 +381,7 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  verify_all_refs: bool = False, no_bibdb: bool = False,
                  # ── 第五十四批（CLI）/ 第五十五批（GUI 接入）：两段式 AI 协同初排 ──
                  coop_taskbook_only: bool = False, coop_stage: str = "",
-                 coop_replies: str = "", coop_apply: bool = False,
+                 coop_replies: "str | list[str]" = "", coop_apply: bool = False,
                  # ── 第五十五批：直接 API 通道的 token 预算闸（引擎默认 30000/1000000）──
                  ai_budget_tokens: int | None = None,
                  ai_batch_budget_tokens: int | None = None) -> EngineCall:
@@ -390,10 +408,14 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     第一段即使页面没勾「出文献核实任务书」也强制带 `--verify-refs`：任务书就是这一段的
     全部产出（引擎自己也会把它当隐含开关）。scan-only 时界面不建 coop 参数（本函数不看）。
 
-    `coop_replies` 非空 = **第二段**：只传最小集
-    `--source/--out/--coop-replies [--coop-stage] [--coop-apply] [--compile]`，
+    `coop_replies` 非空（str 或 list[str]）= **第二段**：只传最小集
+    `--source/--out/--coop-replies… [--coop-stage] [--coop-apply] [--compile] [--clean]`，
     其余页面参数一律**不传** —— 引擎会从状态文件继承 ph1 的关键参数并做指纹校验
     （多传反而可能改变指纹、把正常续跑误拒）。
+    批56 起 `--coop-replies` **可重复**：`list[str]` 按顺序逐项输出（引擎一次读入全部
+    文件/目录，解决「只导入 json 丢了 bibtex」）。单路径仍是一个 flag，argv 与批55
+    逐字节相同；空列表/列表含空串属调用方 bug → ValueError（不许静默丢回填）。
+    `clean=True` 时第二段末尾带 `--clean`（引擎在编译后、promote 前清中间文件）。
 
     `ai_budget_tokens` / `ai_batch_budget_tokens`：只约束**直接 API 通道**（默认
     30000 / 1000000；0 = 不限）。**默认 None = 不传**；且 coop 两段都不传（外部 chat
@@ -403,13 +425,14 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     cmd = _base_cmd("convert.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    reply_paths = _coop_reply_paths(coop_replies)
 
     # ── 参数组合先校验，别把自相矛盾的命令行发给引擎 ──
-    if coop_taskbook_only and coop_replies:
+    if coop_taskbook_only and reply_paths:
         raise ValueError("--coop-taskbook-only 与 --coop-replies 是两个阶段，不能同时给")
-    if coop_apply and not coop_replies:
+    if coop_apply and not reply_paths:
         raise ValueError("--coop-apply 只配合 --coop-replies（先回填回复，才谈得上应用建议）")
-    if coop_stage and not (coop_taskbook_only or coop_replies):
+    if coop_stage and not (coop_taskbook_only or reply_paths):
         raise ValueError("--coop-stage 只配合两段式协同初排（第一段或第二段）")
     if ai_budget_tokens is not None:
         _nonneg_int(ai_budget_tokens, "--ai-budget-tokens")
@@ -419,14 +442,17 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     cmd += ["--source", source, "--out", out]
 
     # ── 第二段：最小集，别的页面参数一个都不带（指纹/继承由引擎负责）──
-    if coop_replies:
-        cmd += ["--coop-replies", coop_replies]
+    if reply_paths:
+        for reply in reply_paths:
+            cmd += ["--coop-replies", reply]
         if coop_stage:
             cmd += ["--coop-stage", coop_stage]
         if coop_apply:
             cmd.append("--coop-apply")
         if compile_pdf:
             cmd.append("--compile")
+        if clean:
+            cmd.append("--clean")
         return EngineCall(cmd, "convert.py", "AI 协同初排·第二段")
 
     for flag, on in (("--compile", compile_pdf), ("--clean", clean)):

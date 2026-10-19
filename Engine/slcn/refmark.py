@@ -232,6 +232,18 @@ SOURCES_MD = """\
    （第三节第 11 条）。检索不到就照旧省略字段 + `% ⚠ 待核实：…`，**不要**用记忆顶替检索结果。
 """
 
+# 第五十六批：两段式协同（`--coop-taskbook-only`）的任务书末尾还有「附一、初排低置信项」
+# 要求模型回一段 JSON。旧的第 10 条「输出**只包含**那个 bibtex 代码块」是**绝对**措辞，
+# 与附一直接打架——真实用户首测（2026-10-19 22:00）里 DeepSeek 就把回答拆成
+# 「JSON + BibTeX」两个文件。协同任务书里把第 10 条限定在「文献条目部分」，并指明
+# 附一的 JSON 按附一格式单独回复；**非协同任务书一个字都不改**（保持批55 前语义）。
+_ITEM10_PLAIN = "10. 输出**只包含那个 bibtex 代码块**，不要额外的前言后语。"
+_ITEM10_COOP = (
+    "10. **文献条目部分**的输出只包含那个 bibtex 代码块，不要额外的前言后语；"
+    "任务书末尾「附一、初排低置信项」要求的 JSON 回复，按附一规定的格式**单独给出**，"
+    "**不受本条限制**（两部分都要交，见文末「附二、回填说明」）。"
+)
+
 FORMAT_MD = """\
 ## 三、请交付**完整、可直接编译的 .bib 文本**
 
@@ -864,7 +876,8 @@ def build(bib_text: str, stem: str, note: str = "",
           evidence: dict[str, dict] | None = None,
           evidence_note: str = "",
           cite_keys: set[str] | None = None,
-          bibdb_hits: list[dict] | None = None) -> str:
+          bibdb_hits: list[dict] | None = None,
+          coop: bool = False) -> str:
     """生成整份 markdown 任务书。
 
     `raw_ref_lines` = 源稿参考文献区的**原文行**（`DocxDoc.ref_raw_lines`）。
@@ -894,7 +907,13 @@ def build(bib_text: str, stem: str, note: str = "",
     `match_reference()` 的 safe 结果）。给了就加一节「五、库内已核实（无需再查）」，
     逐个列出 key / 库内来源期·篇·文件 / **库版本字段差异（提示，待编辑裁决）**。
     这些键本次**没调检索/AI、reference.bib 没改**。默认 None = 旧输出逐字节相同。
+
+    `coop` = **两段式协同初排**（第五十六批；`--coop-taskbook-only`）的任务书：
+    只改第三节第 10 条——把「只输出那个 bibtex 代码块」限定为**文献条目部分**，并指明
+    任务书末尾「附一、初排低置信项」的 JSON 按附一格式单独回复。默认 False =
+    与旧输出**逐字节相同**（非协同任务书里没有附一，不能提它）。
     """
+    format_md = FORMAT_MD.replace(_ITEM10_PLAIN, _ITEM10_COOP) if coop else FORMAT_MD
     raw_by_key = raw_by_key or {}
     rep = bibcheck.check(bib_text)
     entries_all = list(bibcheck.split_entries(bib_text))
@@ -950,7 +969,7 @@ def build(bib_text: str, stem: str, note: str = "",
                  "必须改写成 `姓, 名`（第一节第 2 条：这是硬规则，不是「修改」）")
     if note:
         L += ["", note]
-    L += ["", "---", "", SPEC_MD, SOURCES_MD, "---", "", FORMAT_MD, "---", "", "## 四、逐条清单", ""]
+    L += ["", "---", "", SPEC_MD, SOURCES_MD, "---", "", format_md, "---", "", "## 四、逐条清单", ""]
 
     for etype_raw, key, body in entries:
         etype = bibcheck.TYPE_ALIASES.get(etype_raw.lower(), etype_raw.lower())

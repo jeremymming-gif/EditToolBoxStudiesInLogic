@@ -1116,7 +1116,8 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     except OSError as e:
         die(f"读不了回填路径：{e}")
     if not texts:
-        die(f"回填路径里没有可读文本：{args.coop_replies}（支持 .md/.txt/.bib/.json 等）")
+        die(f"回填路径里没有可读文本：{coop.format_reply_paths(args.coop_replies)}"
+            "（支持 .md/.txt/.bib/.json 等）")
 
     keys = [str(k) for k in (state.get("keys") or {}).get("bib") or []]
     low_items = list(state.get("low_confidence") or [])
@@ -1124,7 +1125,11 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     low_report = coop.parse_low_confidence(texts, low_items)
     digest = coop.replies_digest(texts)
 
-    print(f"   回填来源：{len(texts)} 个（按文件名排序读入）")
+    # 第五十六批：--coop-replies 可重复。回填来源要能看出「读了几个路径」，否则
+    # 「chat 把回复拆成 json+txt 两个文件、只导了一个」在日志里看不出来。
+    _n_paths = len(args.coop_replies or [])
+    print(f"   回填来源：{len(texts)} 个文本 / {_n_paths} 个路径"
+          "（多路径按命令行顺序；目录内按文件名排序；同一路径去重）")
     print(f"   文献字段：{parse_report.summary()}")
     print(f"   低置信项：{low_report.summary()}")
 
@@ -1151,6 +1156,14 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     if not parse_report.replies and not low_report.suggestions:
         die("回填回复**全部无效**或没有命中任务书里的任何键/ID；"
             "最终交付目录与 reference.bib 均未改动。请检查回填文件后重试。")
+
+    # 第五十六批：真实首测（2026-10-19 22:00）里，chat 把回复拆成「JSON + BibTeX」两个
+    # 文件，GUI 只导入了 JSON → 文献回填 0/9，而摘要只显示低置信的 accepted（22），
+    # 编辑以为全成了。所以「一篇 bib 都没回填」必须在解析后、交付前**醒目**打出来。
+    if len(keys) > 0 and parse_report.n_ok == 0:
+        print("   " + "⚠" * 3 + " 本次未收到任何文献条目回填，reference.bib 不会并入 AI 修订；"
+              "若外部 chat 已返回 bibtex/bib，可能漏导入——"
+              "--coop-replies 可重复传多个文件/目录")
 
     bib_path = _coop_find_bib(state, stage_dir, stem)
     taskbook = str(state.get("taskbook") or "")
@@ -1210,17 +1223,34 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         compiled = f"✅ {os.path.basename(info)}（{max(1, os.path.getsize(info) // 1024)} KB）"
         print(f"   {compiled}")
 
+    # ③′ --clean（第五十六批）：先把暂存目录里的编译中间文件清掉，再原子 promote。
+    #    批55 的 ph2 完全不看 --clean，真实用户交付目录里多出了
+    #    .aux/.bbl/.bcf/.blg/.out/.run.xml 六个中间文件；清理规则复用 slcn.clean
+    #    （只删后缀表里的，.tex/.bib/.pdf/.log/状态/记录/建议/.ai前 一律不动）。
+    if args.clean:
+        print("\n⑫ 清理编译中间文件（--clean；再原子交付）")
+        _n_cleaned, _ = _clean.clean(stage_dir, log=lambda s: print(f"   {s}"))
+        if _n_cleaned == 0:
+            print("   （没有需要清理的文件）")
+
     # ④ 记录 + 状态（记录随交付走；状态文件留在暂存目录）
     pending = [k for k in keys if k in parse_report.missing]
     pending += [str(it["id"]) for it in low_items
                 if str(it["id"]) not in low_report.suggestions]
+    # 第五十六批：机器可读统计（schema 仍 1，仅增字段）——GUI 靠它显示
+    # 「文献回填 x/y（未回填 n）｜低置信回复 a（应用 b / 仅记录待人工 c）」，
+    # 而不是只数 jsonl 的 accepted（那会把 0/9 回填显示成「待人工 0」）。
+    _stats = coop.make_stats(
+        bib_total=len(keys), bib_replied=parse_report.n_ok,
+        low_total=len(low_items), low_replied=low_report.n_ok,
+        low_applied=int((apply_summary or {}).get("n_applied") or 0))
     try:
         st2 = coop.mark_state_ph2(
             state, replies_digest=digest,
             replied=sorted(parse_report.replies), applied=int(
                 (apply_summary or {}).get("n_applied") or 0),
             rejected=len(parse_report.rejected) + len(low_report.rejected),
-            pending=pending)
+            pending=pending, stats=_stats)
         coop.save_state(stage_dir, st2)
     except OSError as e:
         print(f"   ⚠ 状态文件写入失败（不影响本次交付）：{type(e).__name__}: {e}")
@@ -1256,8 +1286,11 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
 
     if promoted.get("backup"):
         print(f"   旧交付目录已备份：{os.path.basename(promoted['backup'])}")
-    print(f"   回填：{parse_report.n_ok} 条；低置信建议：接受 {low_report.n_ok} 条、"
-          f"拒绝 {len(low_report.rejected)} 条、待人工 {len(pending)} 条")
+    # 第五十六批：最终摘要统一为「x/y + 可应用/待人工」口径（数字全部来自状态 stats）。
+    print(f"   回填：{_stats['bib_replied']} 条（未回填 {_stats['bib_pending']} 条）；"
+          f"低置信回复：{_stats['low_replied']} 条"
+          f"（可应用 {_stats['low_applied']} 条 / "
+          f"仅记录待人工 {_stats['low_pending_manual']} 条）")
     print(f"   协同记录：{coop.RECORD_NAME}")
     print("═" * 74)
     print(f"完成。产物目录：{final_dir}")
@@ -1451,10 +1484,13 @@ def main() -> int:
     ap.add_argument("--coop-stage", default=None, metavar="DIR",
                     help="协同初排的暂存目录（默认 `<out>/<stem>_待核/`）；"
                          "状态文件 `_AI协同状态.json` 写在这里，不随交付进入最终目录。")
-    ap.add_argument("--coop-replies", default=None, metavar="FILE|DIR",
+    ap.add_argument("--coop-replies", action="append", default=None, metavar="PATH",
                     help="AI 协同初排·第二段：读入编辑回填的外部 chat 回复（文件或目录，"
-                         "目录按文件名排序），校验指纹后解析/并入文献字段、写低置信建议，"
-                         "编译并原子交付到最终目录。回复全部无效/指纹不符时退出 2、产物不动。")
+                         "目录按文件名排序）。**可重复**：--coop-replies A --coop-replies B "
+                         "一次传多个文件/目录（chat 客户端把 JSON 与 BibTeX 拆成两个文件时"
+                         "两块都要传进来；同一真实路径自动去重）。校验指纹后解析/并入"
+                         "文献字段、写低置信建议，编译并原子交付到最终目录；"
+                         "回复全部无效/指纹不符时退出 2、产物不动。")
     ap.add_argument("--coop-apply", action="store_true",
                     help="配合 --coop-replies：把**通过校验**的低置信建议也应用到产物"
                          "（先备份 `reference.bib.ai前`、逐条记录；只应用可安全落盘的"
@@ -2240,7 +2276,11 @@ def main() -> int:
                                 cite_keys=(scope.scope_keys
                                            if scope.mode == _refmark.MODE_CITED else None),
                                 bibdb_hits=(bibdb_taskbook_hits(entries, bibdb_safe)
-                                            if bibdb_safe else None))
+                                            if bibdb_safe else None),
+                                # 第五十六批：协同任务书把第三节第 10 条限定为
+                                # 「文献条目部分」，并指明附一的 JSON 按附一格式回复
+                                # （非协同任务书逐字节不变）。
+                                coop=bool(args.coop_taskbook_only))
             path = os.path.join(out_dir, f"{stem}_文献核实.md")
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(md)
@@ -2624,6 +2664,9 @@ def main() -> int:
                 "> 请按 ID 逐条回复 JSON（格式见下）。\n")
         with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
             f.write("\n" + section + "\n")
+            # 第五十六批：附二把「回填=完整 BibTeX + 附一 JSON 两部分」写死，
+            # 防止模型/编辑只交一半（真实首测：只导入 JSON → 文献回填 0/9）。
+            f.write("\n" + _coop.render_backfill_section() + "\n")
         if not coop_bib_keys and bib_text2:
             coop_bib_keys = [b.key for b in _coop.parse_bib_blocks(bib_text2) if b.closed]
         coop_params = _coop.build_params(

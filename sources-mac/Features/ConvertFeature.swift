@@ -98,8 +98,10 @@ enum ConvertFeature {
         var coop = false
         /// 本次运行属于两段式的哪一段（`.off` = 普通转换，批 54 行为）。
         var coopPhase: CoopFeature.Phase = .off
-        /// 第二段的回填输入 → `--coop-replies`（文件或目录；空 = 不传，界面会拦）
-        var coopReplies = ""
+        /// 第二段的回填输入 → **每个路径一个** `--coop-replies`（文件/目录可混合、按顺序）。
+        /// 批 56 起是**列表**：用户真测时 chat 把回填拆成 JSON + BibTeX 两个文件，
+        /// 批 55 只能传一个（多选被折叠成父目录）→ 丢掉了 BibTeX 回填。空 = 不传（界面会拦）。
+        var coopRepliesPaths: [String] = []
         /// 第一段自定义暂存目录 → `--coop-stage`；第二段由暂存目录发现结果填。
         var coopStage = ""
         /// 第二段「一键修改产物」→ `--coop-apply`（默认不勾；**必须在跑第二段前决定**）
@@ -506,12 +508,16 @@ enum ConvertFeature {
                 + "软件零上传、零费用）。\n")
             if !o.coopStage.isEmpty { log("  暂存   \(o.coopStage)（--coop-stage 自定义）\n") }
         } else if coop == .second {
-            log("  回填   \(o.coopReplies)\n")
+            log("  回填   \(o.coopRepliesPaths.count) 项（每个各传一个 --coop-replies）\n")
+            for path in o.coopRepliesPaths { log("          \(path)\n") }
             log("  暂存   \(o.coopStage)\n")
             log("  应用   " + (o.coopApply
                 ? "开（--coop-apply：先备份 reference.bib.ai前；只应用文献字段建议，"
                   + "脚注/元数据/文献区原文仍列待人工）\n"
                 : "关：只写建议清单，**不改产物**（要应用请在跑第二段前勾选）\n"))
+            log("  清理   " + (o.clean
+                ? "开（--clean：编译后清理暂存目录的中间文件，再交付）\n"
+                : "关（--clean 不传：交付目录会保留编译中间文件）\n"))
         }
         // 两个「请求体旋钮」在**启动子进程前**解析一次。
         // 优先用调用方现取的界面值（与 base/key/model 同一口径：改了没保存也生效）；

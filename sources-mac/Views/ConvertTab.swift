@@ -27,12 +27,20 @@ final class ConvertModel: ObservableObject {
     @Published var coopCandidates = 0
     /// 「一键修改产物（--coop-apply）」—— 默认不勾；必须在跑第二段**之前**决定
     @Published var coopApply = false
-    /// 第二段成功后才有的建议摘要（从 `<stem>_AI建议.jsonl` 统计）
+    /// 第二段成功后才有的建议摘要（从 `<stem>_AI建议.jsonl` 统计；仅界面辅助信息）
     @Published var coopSuggestions: CoopFeature.SuggestionsSummary? = nil
     /// 协同记录文件（已交付且文件确实存在时非空）
     @Published var coopRecordPath = ""
     /// 最近一次协同运行的失败说明（退出码 + 日志尾部）
     @Published var coopFailure = ""
+    // ---- 第 56 批：回填导入重构（多文件 / 目录 / 剪贴板 + 已选清单） ----
+    /// 已选回填（文件/目录/剪贴板草稿可混合、可多次导入累加、可逐项移除/清空）。
+    /// **不再折叠成父目录**：每一项按顺序各传一个 `--coop-replies`。
+    @Published var replies = CoopFeature.RepliesSelection()
+    /// 第二段成功后读 state.stats 的结果摘要（旧状态回退 record/旧 state）
+    @Published var coopResult: CoopFeature.CoopResult? = nil
+    /// 剪贴板草稿序号（每次粘贴递增，同秒重复粘贴也不会互相覆盖）
+    var clipboardSequence = 0
 }
 
 struct ConvertTab: View {
@@ -528,6 +536,8 @@ struct ConvertTab: View {
         "软件不上传、不调用 API、零费用：第一段只在本机生成暂存目录 + 任务书，"
         + "任务书由编辑自己交给外部 chat（豆包/千问/DeepSeek 等）核实；"
         + "把回复导入后跑第二段，**这时才交付**。\n"
+        + "⚠ 回填**必须含两部分**：① 第三节完整 BibTeX（一个代码块）② 附一 JSON 逐项；"
+        + "可放同一文件，也可拆成多个文件/目录甚至粘贴剪贴板，一起导入即可。\n"
         + "⚠ 勾着两段式时「用 AI 处理参考文献」的直连 API 通道本次不生效（不传 --llm-*）；"
         + "「只扫描源稿」不受影响。"
     }
@@ -535,7 +545,7 @@ struct ConvertTab: View {
     /// 还没找到暂存目录时的一行说明。
     private var coopNoStageText: String {
         "尚未初排：点上方「开始第一段（出任务书）」→ 打开任务书去外部 chat 核实 → "
-        + "「导入 AI 回复…」→ 运行第二段。第一段跑完前不会写最终交付目录。"
+        + "回来「添加文件…/添加目录…/从剪贴板导入」→ 运行第二段。第一段跑完前不会写最终交付目录。"
     }
 
     /// 「一键修改产物」勾选框旁边必须写清的限制（引擎批 54 现状，不夸大）。
@@ -547,10 +557,16 @@ struct ConvertTab: View {
         + "看到建议再回头勾已经晚了。"
     }
 
-    /// 建议摘要的时间点说明 —— 建议 jsonl 是**第二段**才生成的，别在导入时就承诺能看到。
+    /// 建议清单的时间点说明 —— 建议 jsonl 是**第二段**才生成的，别在导入时就承诺能看到。
     private var coopSuggestionsTimingText: String {
         "建议清单（`_AI建议.md/.jsonl`）在第二段跑完后才生成；现在看不到是正常的。"
-        + "第二段成功后这里会显示「通过校验 / 拒绝 / 待人工」计数。"
+        + "第二段成功后这里会按引擎统计显示「文献回填 x/y」与「低置信回复」计数。"
+    }
+
+    /// 回填导入区的一句话说明（多选/目录/剪贴板都会一起交给引擎）。
+    private var coopRepliesHintText: String {
+        "多个文件 / 目录 / 剪贴板草稿都会**一起**交给引擎（按下面清单顺序逐个传 --coop-replies），"
+        + "不会再折叠成父目录。回填=完整 BibTeX + 附一 JSON 两部分，缺一部分会导致漏回填。"
     }
 
     /// 已交付状态下的一行提示。
@@ -601,6 +617,10 @@ struct ConvertTab: View {
     }
 
     /// 已交付：只显示**最终目录**与协同记录（暂存目录可以仍在，但不作为交付物展示）。
+    ///
+    /// 第 56 批：成功摘要改读 `state.stats`（旧状态回退 record/旧 state），口径固定为
+    /// 「文献回填 x/y（并入 z 条，未回填 n）｜低置信回复 a（应用 b / 仅记录待人工 c）」；
+    /// 文献回填 0/N 时**橙色警告**（用户真测就栽在「只导入 JSON、丢了 BibTeX」却看到全绿）。
     @ViewBuilder private func coopDeliveredPanel(_ stage: CoopFeature.StageState) -> some View {
         Text("交付目录：\(stage.deliveredTo.isEmpty ? stage.finalDir : stage.deliveredTo)")
             .font(.system(.caption, design: .monospaced))
@@ -610,17 +630,36 @@ struct ConvertTab: View {
             if !model.coopRecordPath.isEmpty {
                 Button("打开协同记录") { openPath(model.coopRecordPath) }
             }
+            if let result = model.coopResult,
+               !result.suggestionsMarkdownPath.isEmpty,
+               FileManager.default.fileExists(atPath: result.suggestionsMarkdownPath) {
+                Button("打开建议清单") { openPath(result.suggestionsMarkdownPath) }
+            }
         }
-        if let suggestions = model.coopSuggestions {
-            Text("建议摘要：" + suggestions.summary)
-                .font(.caption).foregroundStyle(.secondary)
+        if let result = model.coopResult {
+            Text(result.summaryLine)
+                .font(.callout).bold()
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let warning = result.zeroBibWarning {
+                Text("⚠ " + warning)
+                    .font(.callout).bold()
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if result.stats.legacy {
+                Text("（旧状态文件没有 stats 字段：部分计数为估算，准确数字见协同记录与建议清单。）")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         Text(coopDeliveredText)
             .font(.caption).foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// 待人工核实（ph1 / ph2 未完成）：暂存目录 + 任务书 + 回填 + 一键修改产物 + 第二段。
+    /// 待人工核实（ph1 / ph2 未完成）：暂存目录 + 任务书 + 回填导入（多文件/目录/剪贴板）
+    /// + 已选清单（可移除/清空）+ 一键修改产物 + 第二段。
     @ViewBuilder private func coopPendingPanel(_ stage: CoopFeature.StageState) -> some View {
         Text("暂存目录（**未交付**，不是最终产物）：\(stage.stageDir)")
             .font(.system(.caption, design: .monospaced))
@@ -630,17 +669,46 @@ struct ConvertTab: View {
                 Button("打开任务书") { openPath(stage.taskbook) }
             }
             Button("打开暂存目录") { openPath(stage.stageDir) }
-            Button("导入 AI 回复…") { importReplies() }
             if model.running {
                 ProgressView().controlSize(.small)
             }
         }
-        Text("回填：" + (model.options.coopReplies.isEmpty
-                        ? "（尚未选择；可多选同一目录下的回复文件，或选整个目录）"
-                        : model.options.coopReplies))
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(model.options.coopReplies.isEmpty ? Color.secondary : Color.primary)
-            .textSelection(.enabled)
+        Divider().padding(.vertical, 2)
+        Text("回填导入").font(.callout).bold()
+        HStack(spacing: 8) {
+            Button("添加文件…") { addReplyFiles() }
+            Button("添加目录…") { addReplyDirectory() }
+            Button("从剪贴板导入") { importClipboard() }
+            if !model.replies.isEmpty {
+                Button("全部清除") { clearReplies() }
+            }
+            Spacer()
+        }
+        .disabled(model.running)
+        Text(model.replies.summary)
+            .font(.caption).bold()
+            .foregroundStyle(model.replies.isEmpty ? Color.secondary : Color.primary)
+        ForEach(Array(model.replies.items.enumerated()), id: \.element.path) { index, item in
+            HStack(spacing: 6) {
+                Text(CoopFeature.isClipboardDraft(item.path) ? "📋" : (item.isDirectory ? "📁" : "📄"))
+                    .font(.caption)
+                Text(item.displayName).font(.caption)
+                Text(item.path)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                Spacer(minLength: 4)
+                Button("移除") { removeReply(at: index) }
+                    .buttonStyle(.borderless)
+                    .disabled(model.running)
+            }
+            .padding(.leading, 12)
+        }
+        Text(coopRepliesHintText)
+            .font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         Toggle("一键修改产物（--coop-apply；默认不勾）", isOn: $model.coopApply)
             .toggleStyle(.checkbox)
         Text(coopApplyHintText)
@@ -651,7 +719,14 @@ struct ConvertTab: View {
         } label: {
             Label("运行第二段（续跑 → 编译 → 交付）", systemImage: "square.and.arrow.down.on.square")
         }
-        .disabled(model.running || model.options.coopReplies.isEmpty || model.options.source.isEmpty)
+        .disabled(model.running
+                  || !CoopFeature.canRunSecondPhase(replyCount: model.replies.count, stage: stage))
+        if let hint = CoopFeature.secondPhaseDisabledHint(replyCount: model.replies.count, stage: stage) {
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(model.replies.isEmpty ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         Text(coopSuggestionsTimingText)
             .font(.caption).foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -668,16 +743,18 @@ struct ConvertTab: View {
         guard !source.isEmpty, !out.isEmpty else {
             model.coopStage = nil
             model.coopCandidates = 0
+            model.coopResult = nil
             return
         }
         apply(CoopFeature.refresh(outRoot: out, source: source))
     }
 
-    /// 把一次扫描结果写进界面状态（主线程）。
+    /// 把一次扫描结果写进界面状态（主线程；IO 已在后台线程完成）。
     private func apply(_ refresh: CoopFeature.StageRefresh) {
         model.coopStage = refresh.selected
         model.coopCandidates = refresh.stages.count
         model.coopSuggestions = refresh.suggestions
+        model.coopResult = refresh.result
         model.coopRecordPath = refresh.recordExists ? (refresh.selected?.recordPath ?? "") : ""
     }
 
@@ -695,41 +772,86 @@ struct ConvertTab: View {
         }
     }
 
-    /// 「导入 AI 回复…」：选文件（可多选同一目录下的多个）或整个目录。
-    /// 引擎 `--coop-replies` 只接受**一个**文件或目录；多选文件时取它们共同的父目录
-    /// （并写日志说明引擎会读入该目录下全部可读文本），避免静默只取第一个。
-    private func importReplies() {
+    /// 「添加文件…」：支持多选；**每个文件各算一项**（不再折叠父目录、不复制临时目录）。
+    /// 引擎批 56 起 `--coop-replies` 可重复，界面按已选顺序为每个路径各传一个 flag。
+    private func addReplyFiles() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
-        panel.canChooseDirectories = true
+        panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.title = "选择 AI 回复文件（可多选同一目录下的文件）或整个回复目录"
+        panel.title = "选择一个或多个 AI 回复文件（可按住 ⌘ 多选；JSON 与 BibTeX 可分开选）"
         guard panel.runModal() == .OK else { return }
-        let urls = panel.urls
-        guard !urls.isEmpty else { return }
-        var path = ""
-        if urls.count == 1 {
-            path = urls[0].path
-        } else {
-            let dirs = urls.filter { isDirectory($0.path) }
-            let parents = Set(urls.map { ($0.path as NSString).deletingLastPathComponent })
-            if dirs.isEmpty && parents.count == 1 {
-                path = parents.first ?? ""
-                log.append("（已多选 \(urls.count) 个回复文件：引擎按目录读入 \(path) 下全部可读文本）\n")
-            } else {
-                model.coopFailure = "导入失败：引擎的 --coop-replies 只接受一个文件或一个目录。"
-                    + "请只选一个文件 / 一个目录，或多选**同一目录下**的回复文件。"
-                return
-            }
+        var added = 0
+        var duplicated = 0
+        for url in panel.urls {
+            let item = CoopFeature.ReplyItem(path: url.path, isDirectory: false)
+            if model.replies.add(item) { added += 1 } else { duplicated += 1 }
         }
         model.coopFailure = ""
-        model.options.coopReplies = path
-        log.append("回填已选择：\(path)\n")
+        log.append("回填：新增 \(added) 个文件"
+                   + (duplicated > 0 ? "（\(duplicated) 个已在清单里，未重复添加）" : "")
+                   + "；\(model.replies.summary)\n")
     }
 
-    private func isDirectory(_ path: String) -> Bool {
-        var isDir: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+    /// 「添加目录…」：目录整体作为一个路径（引擎会读入该目录下全部可读文本）。
+    private func addReplyDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = "选择一个 AI 回复目录（目录下全部 .md/.txt/.bib/.json 会被一起读入）"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let item = CoopFeature.ReplyItem(path: url.path, isDirectory: true)
+        model.coopFailure = ""
+        if model.replies.add(item) {
+            log.append("回填：已添加目录 \(url.path)；\(model.replies.summary)\n")
+        } else {
+            log.append("回填：该目录已在清单里，未重复添加。\n")
+        }
+    }
+
+    /// 「从剪贴板导入」：读 UTF-8 文本 → 存成临时 `.md` → 加入已选清单。
+    /// 空/非文本给红字提示（不静默）；重复粘贴生成多个临时文件（序号递增）。
+    private func importClipboard() {
+        guard let text = CoopFeature.clipboardText(NSPasteboard.general.string(forType: .string)) else {
+            model.coopFailure = "剪贴板里没有可导入的文本：先把外部 chat 的回复复制到剪贴板再点这里。"
+            return
+        }
+        let stamp = CoopFeature.clipboardTimestamp()
+        model.clipboardSequence += 1
+        let path = CoopFeature.clipboardDraftPath(directory: NSTemporaryDirectory(),
+                                                  timestamp: stamp,
+                                                  index: model.clipboardSequence)
+        do {
+            try text.write(toFile: path, atomically: true, encoding: .utf8)
+        } catch {
+            model.coopFailure = "剪贴板文本写入临时文件失败：\(error.localizedDescription)"
+            return
+        }
+        model.replies.add(CoopFeature.ReplyItem(path: path, isDirectory: false))
+        model.coopFailure = ""
+        log.append("回填：剪贴板文本已存成临时文件并加入清单：\(path)\n")
+    }
+
+    /// 移除已选清单里的一项（剪贴板草稿顺带删掉临时文件；用户自己选的文件**不删**）。
+    private func removeReply(at index: Int) {
+        guard let item = model.replies.remove(at: index) else { return }
+        if CoopFeature.isClipboardDraft(item.path) {
+            try? FileManager.default.removeItem(atPath: item.path)
+        }
+        log.append("回填：已移除 \(item.path)\n")
+    }
+
+    /// 清空已选清单（只清清单与剪贴板临时文件，不碰用户文件）。
+    private func clearReplies() {
+        let drafts = model.replies.items
+            .filter { CoopFeature.isClipboardDraft($0.path) }
+            .map { $0.path }
+        let count = model.replies.count
+        model.replies.clear()
+        for path in drafts { try? FileManager.default.removeItem(atPath: path) }
+        model.coopFailure = ""
+        log.append("回填：已清空已选清单（\(count) 项；\(drafts.count) 个剪贴板临时文件已删）。\n")
     }
 
     /// 统一的运行外壳：后台跑引擎 → 后台扫描暂存目录 → 主线程收尾。
@@ -819,8 +941,13 @@ struct ConvertTab: View {
         }
     }
 
-    /// 第二段：用当前暂存目录 + 已导入回填续跑并交付。
-    /// `--coop-apply` 必须在**启动前**由勾选框决定（引擎 phase=done 后重跑是幂等早退）。
+    /// 第二段：用当前暂存目录 + 已选回填（每个路径一个 --coop-replies）续跑并交付。
+    ///
+    /// 第 56 批要点：
+    ///   · 回填 = `model.replies` 里的**每一项**（文件/目录/剪贴板可混合、按顺序），
+    ///     不再折叠成父目录；空清单由按钮 disabled 拦住，这里再兜一次并说明原因。
+    ///   · `--coop-apply` 必须在**启动前**由勾选框决定（引擎 phase=done 后重跑是幂等早退）。
+    ///   · `--clean` 随页面「清理编译中间文件」开关走（ph2 也生效，否则交付目录会留中间文件）。
     private func runSecondPhase() {
         guard let stage = model.coopStage else {
             model.coopFailure = "还没有可续跑的暂存目录：请先运行第一段。"
@@ -830,23 +957,31 @@ struct ConvertTab: View {
             model.coopFailure = "第二段需要源文件与输出目录（与第一段相同）。"
             return
         }
-        let replies = model.options.coopReplies.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !replies.isEmpty else {
-            model.coopFailure = "请先「导入 AI 回复…」选择外部 chat 的回复文件或目录。"
+        let paths = model.replies.paths
+        guard !paths.isEmpty else {
+            model.coopFailure = CoopFeature.secondPhaseDisabledHint(replyCount: 0, stage: stage)
+                ?? "尚未选择任何回填。"
             return
         }
         var o = model.options
         o.scanOnly = false
-        o.coopReplies = replies
+        o.coopRepliesPaths = paths
         o.coopStage = stage.stageDir
         o.coopApply = model.coopApply     // ⚠ 运行前定格：之后改勾选不影响本次
         o = CoopFeature.prepare(o, phase: .second)
         model.coopFailure = ""
-        model.coopSuggestions = nil       // 新摘要等第二段成功后从 jsonl 读
+        model.coopSuggestions = nil       // 新摘要等第二段成功后从 state.stats/jsonl 读
+        model.coopResult = nil
         startRun(o, knobs: settings.aiEngineKnobs) { status in
             if status == 0 {
-                let summary = model.coopSuggestions?.summary ?? "（未找到建议清单）"
-                log.append("（界面）第二段完成：已交付。建议摘要：\(summary)\n")
+                if let result = model.coopResult {
+                    log.append("（界面）第二段完成：已交付。\(result.summaryLine)\n")
+                    if let warning = result.zeroBibWarning {
+                        log.append("（界面）⚠ \(warning)\n")
+                    }
+                } else {
+                    log.append("（界面）第二段完成：已交付（未读到 state.stats，详见协同记录）。\n")
+                }
                 if model.coopRecordPath.isEmpty {
                     log.append("（界面）⚠ 已交付但没找到 `_AI协同记录.md`，请查看交付目录。\n")
                 }
