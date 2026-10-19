@@ -417,6 +417,16 @@ else:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(
             [os.path.join(_ENGINE, "vendor"), _ENGINE])
+        # 批61 修复（task-34，**测试 hermetic**）：本机存在真实笔记仓 `bib_db/` 时，
+        # `convert.py --verify-refs` 会先查引用库；fixture 里的引用一旦被判 safe 就按
+        # 设计**跳过检索**（n_search=0），于是 (h) 的断言随机器而变（CI 无笔记仓不触发）。
+        # 这里把子进程的 SLCN_NOTES 指向「空笔记仓」（有 cases/、无 bib_db/）→ 固定为
+        # CI 的**无库口径**；同时清掉继承来的 SLCN_* 旋钮，避免本机配置再改变行为。
+        for _key in [k for k in env if k.startswith("SLCN_")]:
+            env.pop(_key, None)
+        _empty_notes = os.path.join(tmp, "notes_empty")
+        os.makedirs(os.path.join(_empty_notes, "cases"), exist_ok=True)
+        env["SLCN_NOTES"] = _empty_notes
 
         def _run(out_dir: str, extra: list[str]) -> subprocess.CompletedProcess:
             return subprocess.run(

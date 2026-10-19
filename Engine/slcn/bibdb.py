@@ -70,6 +70,10 @@ r"""编辑部引用库（`bib_db`）：把「已核实的参考文献」沉淀�
   · **译著/CJK 安全命中**（批58）：题名相似度 ≥0.98 + 年份一致 + 出版社一致/包含 +
     责任标记（`（著）/（译）`）归一后第一作者姓名相容 → `hit="translation"`（仍属
     `safe`，只用于跳过检索/AI，**不改稿**）；任一条缺/矛盾 → 照旧候选；
+  · **写法归一二判 / 内容指纹**（批61）：题名写法变体（全角标点/书名号/副标题/版次/
+    尾部括号/「, in 书名」）≥0.98 且 ≥2 条见证、任何矛盾即否决 →
+    `hit="title-normalized"`；与已核实记录**逐字段内容指纹一致** → `hit="content-identical"`
+    （都仍属 `safe`，只跳过检索/AI，不改稿）；
   · 返回值一律带 `score` 与 `verified`，调用方自己决定要不要省掉 API。
 
 只读/写入的边界
@@ -132,6 +136,29 @@ TRANSLATION_TITLE_THRESHOLD = 0.98
 _ROLE_MARKER_RE = re.compile(
     r"[（(]\s*(?:著|译|編|编|编著|主编|校注|校订|校|修订|注|"
     r"eds?\.?|ed\.?|trans\.?|comp(?:s|iled)?\.?|hrsg\.?)\s*[）)]", re.I)
+
+#: 批61（2026-10-20）：题名写法归一二判的门槛（与译著专项同口径：只认「几乎同一题名」）
+TITLE_SAME_THRESHOLD = 0.98
+#: 版次后缀（第2版 / 修订版 / (2nd) / 2nd ed. …）：只从题名**末尾**剥，匹配用、不改库值
+_EDITION_TAIL_RE = re.compile(
+    r"(?:\s*[,，;；]\s*)?(?:"
+    r"[（(]\s*(?:第[一二三四五六七八九十0-9]+版|修订版|增订版|第[一二三四五六七八九十0-9]+次印刷|"
+    r"\d+(?:st|nd|rd|th)?\s*(?:ed(?:ition)?|rev(?:ised)?)?\.?|"
+    r"(?:second|third|fourth|fifth|sixth|revised|new|updated)\s*(?:ed(?:ition)?)?\.?)\s*[）)]"
+    r"|第[一二三四五六七八九十0-9]+版|修订版|增订版"
+    r"|[,，]\s*\d+(?:st|nd|rd|th)\s*(?:ed(?:ition)?)?\.?"
+    r")\s*$", re.I)
+#: 题名尾部括号说明（`(2nd)` / `（修订版）` / `(上)`…）：剥掉后做题名变体（只用于匹配）
+_TAIL_PAREN_RE = re.compile(r"\s*[（(][^（）()]{0,80}[）)]\s*$")
+#: 「章节题名, in 书名」的容器尾巴：比较前截掉容器部分（只用于匹配）
+_IN_CONTAINER_RE = re.compile(r"[,，;；]\s*[\"“”'‘’]?\s*(?:in|In|IN|见|载)\s+")
+#: 匹配用的全角/中式标点折叠（只影响比较，不改库字段）：全角→半角、CJK 标点→空白
+_MATCH_PUNCT_MAP = str.maketrans({
+    "：": ":", "，": " ", "。": " ", "、": " ", "；": " ", "！": " ", "？": " ",
+    "（": "(", "）": ")", "“": '"', "”": '"', "‘": "'", "’": "'",
+    "《": " ", "》": " ", "〈": " ", "〉": " ", "「": " ", "」": " ",
+    "『": " ", "』": " ", "—": " ", "–": " ", "·": " ", "…": " ", "\u00a0": " ",
+})
 
 #: 期刊/软件元数据字段：对「这是一条什么文献」没有意义，入库时直接丢掉
 #: （前一半复用 `slcn.bibnorm.DROP_FIELDS`，后半是 JabRef/Zotero 的私有字段）
@@ -485,6 +512,123 @@ def _translation_safe_hit(entry_fields: dict, hit: dict) -> bool:
     return _translation_surname_match(entry_author, record_author)
 
 
+def _match_title_forms(value: object) -> set[str]:
+    """题名的**写法变体**集合（批61，只用于匹配）：全角/中式标点折叠、书名号/引号、
+    版次后缀、尾部括号说明、副标题分隔符、章节题名的「, in 书名」尾巴、去空白。
+
+    库里 `fields.title` 一个字节都不改；这里只生成比较用的规范形。
+    """
+    raw = _latex_plain(value).translate(_MATCH_PUNCT_MAP)
+    forms: set[str] = set()
+
+    def add(text: str) -> None:
+        norm = normalize_title(text)
+        if norm:
+            forms.add(norm)
+
+    add(raw)
+    folded = raw
+    for _ in range(3):                       # 反复剥「(2nd)」「, 修订版」这类尾巴
+        stripped = _EDITION_TAIL_RE.sub("", _TAIL_PAREN_RE.sub("", folded))
+        if stripped == folded:
+            break
+        folded = stripped
+    add(folded)
+    add(_IN_CONTAINER_RE.split(folded, 1)[0])
+    for sep in (":", "："):
+        if sep in folded:
+            add(folded.split(sep, 1)[0])
+            break
+    for form in list(forms):                 # 再补「去空白」形（CJK 排版常多空格）
+        forms.add(form.replace(" ", ""))
+    return forms
+
+
+def _match_first_author_name(value: object) -> str:
+    """第一作者「姓」的匹配归一（批61），比 `first_author_surname` 多处理：
+
+      · 中文作者分隔符（`，`/`、`/`；`）与尾部「等/等著/等译」；
+      · 英文「姓在前、名缩写在后」写法（`Ujjwal K. C.` → `ujjwal`）；
+    只用于匹配，不改库字段。返回空串 = 无法作证。
+    """
+    text = strip_author_roles(value)
+    first = _AUTHOR_SEP_RE.split(text.strip())[0] if text.strip() else ""
+    if not first:
+        return ""
+    if _CJK_RE.search(first):
+        for sep in ("，", "、", ",", "；", ";"):
+            first = first.split(sep)[0]
+        first = re.sub(r"(?:等|等著|等编|等译|et\s+al\.?|etc\.?)$",
+                       "", first.strip(), flags=re.I)
+        return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", first)
+    toks = [t for t in first.split() if t]
+    if len(toks) >= 2:
+        tails = toks[1:]
+        if (all(len(t.strip(".").replace(".", "")) <= 2 for t in tails)
+                and len(toks[0]) >= 2 and not toks[0][0].islower()):
+            return first_author_surname(toks[0])
+    return first_author_surname(first)
+
+
+def _match_authors_compatible(entry_author: object, record_author: object) -> bool | None:
+    """作者姓名相容（匹配用，批61）：None = 一方为空、无法作证。"""
+    a = _match_first_author_name(entry_author)
+    b = _match_first_author_name(record_author)
+    if not a or not b:
+        return None
+    if a == b:
+        return True
+    if _CJK_RE.search(a + b):
+        return _translation_surname_match(entry_author, record_author)
+    return _surnames_match(a, b)
+
+
+def _match_title_witnesses(entry_fields: dict, record: dict) -> list[str] | None:
+    """题名写法归一二判的见证检查（批61，保守）。返回见证名列表，None = 不通过。
+
+    通过条件（缺一不可）：① 题名变体有交集（只回收「几乎同一题名」）；
+    ② 至少**两条**见证（题名 + 年份/作者/出版社之一）；③ **任何一方有值却矛盾 → 否决**
+    （年份不同 / 作者不符 / 出版社不符——宁缺毋滥，矛盾时保持候选仍走检索/AI）。
+    """
+    record_fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    entry_title = str((entry_fields or {}).get("title") or "")
+    record_title = str(record_fields.get("title") or "")
+    if not entry_title.strip() or not record_title.strip():
+        return None
+    entry_forms = _match_title_forms(entry_title)
+    record_forms = _match_title_forms(record_title)
+    if not entry_forms or not record_forms:
+        return None
+    matched = max((title_similarity(a, b)
+                   for a in entry_forms for b in record_forms), default=0.0)
+    if matched < TITLE_SAME_THRESHOLD:
+        return None
+    witnesses = ["title"]
+    year_a = entry_year(entry_fields or {})
+    year_b = entry_year(record_fields)
+    if year_a and year_b:
+        if year_a != year_b:
+            return None
+        witnesses.append("year")
+    author_a = ((entry_fields or {}).get("author")
+                or (entry_fields or {}).get("editor") or "")
+    author_b = record_fields.get("author") or record_fields.get("editor") or ""
+    compatible = _match_authors_compatible(author_a, author_b)
+    if compatible is False:
+        return None
+    if compatible is True:
+        witnesses.append("author")
+    publisher_a = str((entry_fields or {}).get("publisher") or "").strip()
+    publisher_b = str(record_fields.get("publisher") or "").strip()
+    if publisher_a and publisher_b:
+        if not _publishers_match(entry_fields or {}, record_fields):
+            return None
+        witnesses.append("publisher")
+    if len(witnesses) < 2:
+        return None
+    return witnesses
+
+
 def normalize_doi(value: object) -> str:
     """DOI 归一（精确查询/入库都用它）：小写、去 `https://doi.org/` 与 `doi:` 前缀、
     去尾标点。DOI 本身大小写不敏感。"""
@@ -585,7 +729,9 @@ def _score_record_title(wanted_title: str, surname: str, wanted_year: str,
 # 口径（**保守**：把不同文献误判成「已核实」比漏查更糟）：
 #   · 安全命中 = DOI 精确命中**已核实**记录；或题名高置信（≥0.90）+ 第一作者姓/年份
 #     **相容** + verified=true；或译著/CJK 专项（批58：题名 ≥0.98 + 年份/出版社一致 +
-#     责任标记归一后作者姓名相容，`hit="translation"`）。只有安全命中的键才跳过检索与 AI；
+#     责任标记归一后作者姓名相容，`hit="translation"`）；或题名写法归一二判 / 内容指纹
+#     （批61：≥0.98 变体 + ≥2 见证无矛盾 → `hit="title-normalized"`；逐字段内容指纹一致
+#     → `hit="content-identical"`）。只有安全命中的键才跳过检索与 AI；
 #   · key 命中只算**候选**：BibTeX key 多为 per-paper（`a1`…），同 key 不保证同文献，
 #     仍走检索；候选只用于日志/任务书提示；
 #   · 命中但库内未核实 / 题名低置信 → 候选（不跳过任何步骤）。
@@ -904,6 +1050,7 @@ class Store:
         self._doi_index: dict[str, list[dict]] | None = None
         self._block_surname: dict[str, list[dict]] | None = None
         self._block_year: dict[str, list[dict]] | None = None
+        self._title_match_index: dict[str, list[dict]] | None = None
         self.problems: list[str] = []
         self.dirty = False
         self.aliases_dirty = False     # aliases 只在 save()/refresh_aliases() 时按来源重算
@@ -1658,11 +1805,20 @@ class Store:
             year = entry_year(fields)
             if year:
                 block_year.setdefault(year, []).append(record)
+        title_match_index: dict[str, list[dict]] = {}
+        for record in self._by_key.values():
+            # 只有已核实记录才值得做「写法归一题名」索引（未核实记录不允许跳过检索/AI）
+            if record.get("verified") is not True:
+                continue
+            fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+            for form in _match_title_forms(fields.get("title") or ""):
+                title_match_index.setdefault(form, []).append(record)
         for bucket in list(doi_index.values()):
             bucket.sort(key=lambda r: (r.get("verified") is not True, str(r.get("key") or "")))
         self._doi_index = doi_index
         self._block_surname = block_surname
         self._block_year = block_year
+        self._title_match_index = title_match_index
 
     def _candidate_records(self, surname: str, year: str) -> list[dict]:
         """题名模糊匹配用的候选池：先按（第一作者姓, 年份）收窄，收不到再退回年份/全库。
@@ -1687,6 +1843,53 @@ class Store:
                 return pool
         return list(self._by_key.values())
 
+    def _content_identity_record(self, canon: dict, entry_type: str) -> dict | None:
+        """批61：与库内**已核实**记录的**内容指纹完全一致** → 同一条记录（保守判定）。
+
+        内容指纹 = `content_sha256()`（逐字段规范化后的 SHA256，入库幂等判据同一份实现）。
+        它比「题名 ≥0.98」更强：所有字段（作者/年份/出版社/期刊/卷页/题名…）都相等，
+        不存在模糊空间；所以题名写法差异、甚至题名缺失（成品 bib 里旧的中文条目常有
+        整条引文塞进 `author`、title 为空）的条目，只要内容与历期成品 bib 里那条完全
+        相同，就是**同一条记录**（库里也没有第二份判别依据）。要求：
+          · 库记录 `verified=true`；
+          · 至少有 author/editor/title 之一作为身份锚（防止只有 type 的空条目对空）。
+        """
+        sha = content_sha256(entry_type, canon)
+        record = self._by_content.get(sha)
+        if record is None or record.get("verified") is not True:
+            return None
+        if not any(str((canon or {}).get(k) or "").strip()
+                   for k in ("author", "editor", "title")):
+            return None
+        return record
+
+    def _match_title_normalized(self, canon: dict) -> dict | None:
+        """批61：题名写法归一二判（`hit="title-normalized"`）→ `{"record","witnesses"}`。
+
+        用写法变体（全角标点/书名号/副标题/版次/尾部括号/「, in 书名」…）做 O(1) 索引，
+        命中后按 `_match_title_witnesses` 保守复核（≥2 条见证、任何矛盾即否决）。
+        只在已核实记录里找；`query_title`（GUI 查库）不走这里，口径不放宽。
+        """
+        title = str((canon or {}).get("title") or "").strip()
+        if not title:
+            return None
+        self._ensure_indexes()
+        assert self._title_match_index is not None
+        best: tuple[int, dict, list[str]] | None = None
+        for form in _match_title_forms(title):
+            for record in self._title_match_index.get(form, ()):
+                witnesses = _match_title_witnesses(canon, record)
+                if not witnesses:
+                    continue
+                candidate = (len(witnesses), record, witnesses)
+                if best is None or candidate[0] > best[0] or (
+                        candidate[0] == best[0]
+                        and str(record.get("key")) < str(best[1].get("key"))):
+                    best = candidate
+        if best is None:
+            return None
+        return {"record": best[1], "witnesses": best[2]}
+
     def match_reference(self, fields: dict, *, key: str = "",
                         entry_type: str = "") -> dict:
         """把**稿件里的一条 bib 条目**拿去查库，返回命中判定（第 129 条）。
@@ -1695,7 +1898,9 @@ class Store:
 
           · `status="safe"`：可以**跳过检索 API 与 AI** —— DOI 精确命中已核实记录，
             或题名高置信 + 作者/年份相容 + `verified=true`，或译著/CJK 专项
-            （`hit="translation"`：题名 ≥0.98 + 年份/出版社一致 + 责任标记归一后作者相容）；
+            （`hit="translation"`：题名 ≥0.98 + 年份/出版社一致 + 责任标记归一后作者相容），
+            或题名写法归一二判（`hit="title-normalized"`）、内容指纹一致
+            （`hit="content-identical"`）；
           · `status="candidate"`：库里有线索但不够安全（key 命中 / 未核实 / 低置信），
             **仍要走检索+AI**；`hit` 说明是哪种线索；
           · `status="miss"`：库内没有线索。
@@ -1746,6 +1951,18 @@ class Store:
                                  (record.get("fields") or {}).get("title") or ""),
                              reason=f"DOI `{entry_doi}` 命中库内条目但**未核实**（仍走检索）")
 
+        # ①b 批61：与库内已核实记录的**内容指纹完全一致** → 同一条记录（逐字段相等，
+        #     比题名匹配更强；题名缺失/写法差异的条目靠这条，见 `_content_identity_record`）。
+        content_record = self._content_identity_record(canon, entry_type)
+        if content_record is not None:
+            return _fill(content_record, status=HIT_SAFE, hit="content-identical",
+                         score=1.0,
+                         title_sim=title_similarity(
+                             canon.get("title") or "",
+                             (content_record.get("fields") or {}).get("title") or ""),
+                         reason="全字段规范化内容与库内已核实记录完全一致"
+                                "（内容指纹命中，即同一条记录）")
+
         # ② 题名高置信 + 第一作者姓/年份相容 + 已核实。
         title = canon.get("title") or ""
         if title:
@@ -1779,6 +1996,19 @@ class Store:
                              reason=(f"译著/CJK 作者写法差异：题名相似度 "
                                      f"{best['title_similarity']:.3f} + 年份/出版社一致，"
                                      "责任标记（著/译）归一后第一作者姓名相容，库内已核实"))
+            # ②c 批61：题名写法归一二判（per-paper key 碰撞 / 题名写法差异）。只在
+            #     题名变体≥0.98 且 ≥2 条见证、无矛盾证据时判 safe（见 `_match_title_witnesses`）。
+            normalized = self._match_title_normalized(canon)
+            if normalized is not None:
+                record = normalized["record"]
+                return _fill(record, status=HIT_SAFE, hit="title-normalized",
+                             score=0.98,
+                             title_sim=title_similarity(
+                                 title, (record.get("fields") or {}).get("title") or ""),
+                             reason=("题名写法归一后一致（全角/书名号/副标题/版次等）"
+                                     " + 独立见证（"
+                                     + "、".join(normalized["witnesses"][1:])
+                                     + "），无矛盾证据，库内已核实"))
             if scored_hits:
                 best = scored_hits[0]
                 why = ("库内未核实" if not best["verified"]
