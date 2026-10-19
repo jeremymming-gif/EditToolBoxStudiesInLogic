@@ -308,6 +308,30 @@ class ConvertTab(TabPage):
             _v.trace_add("write", lambda *_: self.ai_knobs_sink(
                 self.v_thinking.get().strip(), self.v_maxtok.get().strip()))
 
+        # ── 批60：全文 AI 核查（直连 API，会产生费用；默认不勾、**会话态**）─────────
+        # 用户 2026-10-20 授权全文外发；Lead 拍板「每次运行主动同意」——**不写 settings.json**
+        # （与 mac `Options.llmFulltext`、批59 coopFulltext 同一模式：默认每次都不勾最安全）。
+        # 勾了才在 ⑪（本次真的走直连 AI：非两段式 + `--verify-refs` 且不是 `--verify-plan`）
+        # 追加 `--llm-fulltext`；report-only：只生成《…_AI全文复核.md》，不改正文/reference.bib。
+        row_ft = ttk.Frame(parent)
+        row_ft.pack(anchor="w", pady=(4, 0))
+        self.v_llm_fulltext = tk.BooleanVar(value=False)
+        _check(row_ft, "全文 AI 核查（直连 API，会产生费用）",
+               self.v_llm_fulltext).pack(side="left")
+        self.llm_fulltext_hint = ttk.Label(
+            parent,
+            # 逐字对齐 mac `ConvertTab.swift`（批60）的三行说明：两壳同口径，改文案必须两边
+            # 同时改；这里只讲「会发生什么/不勾会怎样/前提是什么」，判据不抄进外壳。
+            text="⚠ 勾上后会产生费用：引擎把稿件正文按片（每片 ≤3 万字）直接发送到"
+                 "「设置」里配置的 AI 端点，每片一次请求；不勾（默认）时正文一个字节都不外发。\n"
+                 "范围：只生成核查报告《…_AI全文复核.md》，不改正文、不改 reference.bib"
+                 "（report-only）；两段式协同模式下本轮不生效（那条流程正文只进本机任务书）。\n"
+                 "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。"
+                 "另请确认预算够——「设置」页的「单篇预算」（默认 30000）可能不够全文分片，"
+                 "请按日志提示调大（0 = 不限）。",
+            style="Muted.TLabel", wraplength=820, justify="left")
+        self.llm_fulltext_hint.pack(anchor="w")
+
         # 第 132 条：把「当前核实范围」就地显示（方案 §4：任务相关选项就地改，别去设置页找）；
         # 值仍以「引用库设置」页为准，这里只是**每进本页刷新一次**的只读回显。
         row4 = ttk.Frame(parent)
@@ -735,6 +759,10 @@ class ConvertTab(TabPage):
         # 第五十五批：直连 API 的 token 预算。两段式 = 外部 chat（零费用）→ 一个都不传；
         # 非 coop 时也只在「配置了 API 且值 != 引擎默认」才给键（默认 argv 逐字节不变）。
         args.update(S.ai_budget_convert_args(self.cfg, coop=self.coop_enabled()))
+        # 批60：全文 AI 核查（直连 API）—— **会话态**（每次新开窗口都默认不勾，不落盘）。
+        # 只把「用户勾没勾」交给 `convert_call`；「是否真的进 argv」（仅 ⑪ 直连路径）在
+        # engine.py 的拼装点一处收口，coop/普通转换天然不受影响。
+        args["llm_fulltext"] = bool(self.v_llm_fulltext.get())
         return args
 
 
@@ -1255,7 +1283,8 @@ class SettingsTab(ttk.Frame):
             self,
             text=(f"默认 {S.AI_BUDGET_DEFAULT} / {S.AI_BATCH_BUDGET_DEFAULT}；"
                   "只约束「直连 API」通道（超预计用量先打印账、不发起请求），"
-                  "直连也只发条目/片段、不发正文全文。两段式外部 chat 流程由编辑自己操作，"
+                  "直连默认只发条目/片段；勾选「初排转换」页「全文 AI 核查（直连 API）」后"
+                  "才会把正文分片发送（默认不勾、不持久化）。两段式外部 chat 流程由编辑自己操作，"
                   "软件不上传任何内容、零费用，预算不参与。"),
             style="Muted.TLabel", wraplength=760, justify="left").grid(
             row=row, column=1, padx=10, sticky="w"); row += 1
@@ -1936,6 +1965,16 @@ class MainWindow(tk.Tk):
             self.log(f"❌ 准备运行失败：{e}")
             return
         self.log(f"\n▶ {call.label}：{call.display}")
+        # 批60：全文 AI 核查（直连 API）真的进了 argv（= 本次跑 ⑪ 直连通道）时，
+        # 日志先讲清「会花钱 / report-only」；端点没配就更要提前说（引擎会 exit 2、零请求）。
+        if "--llm-fulltext" in call.argv:
+            if S.ai_configured(self.cfg):
+                self.log("  全文核查 **直连 API**（--llm-fulltext）：正文按片发送到上面这个端点，"
+                         "**会产生费用**；只生成《…_AI全文复核.md》核查报告，**不改产物**"
+                         "（不改正文、不写 reference.bib）。")
+            else:
+                self.log("⚠ 已勾「全文 AI 核查（直连 API）」但端点未配置：引擎会**直接退出 2**"
+                         "（不会发出任何请求）；请先到「设置」页填地址与模型名。")
         self._running_tab = tab
         self._t0 = time.monotonic()
         tab.show_running(0.0)

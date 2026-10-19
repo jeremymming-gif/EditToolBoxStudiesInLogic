@@ -2130,6 +2130,60 @@ check("n59-ui-wiring", "源码级接线：ConvertTab 有「全文 AI 核查（�
       "tab=\(n59TabSrc.contains("全文 AI 核查（任务书附正文）")) "
         + "picker=\(n59TabSrc.contains("coopFulltextScope")) flag=\(n59ConvSrc.contains("\"--coop-fulltext\""))")
 
+// ═══════════════════════════════════════════════════════════════════════════
+// (n60) 第 60 批：全文 AI 核查（直连 API）—— 默认不勾 / --llm-fulltext 映射 / 仅 ⑪
+// ═══════════════════════════════════════════════════════════════════════════
+check("n60-default-off", "批60：默认不勾「全文 AI 核查（直连 API）」→ 默认 argv 不含 --llm-fulltext",
+      ConvertFeature.Options().llmFulltext == false
+        && !ConvertFeature.arguments(ConvertFeature.Options()).contains("--llm-fulltext"),
+      "llmFulltext=\(ConvertFeature.Options().llmFulltext) "
+        + "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
+check("n60-b59-default-unchanged", "批60 默认不勾：普通默认 argv 与批59 逐字节一致（--compile --clean --verify-refs）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean", "--verify-refs"],
+      "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
+// ⑪ = 勾「用 AI 处理参考文献」+ 已配置端点 + 非两段式（batch59 的 coop 通道另有 --coop-fulltext）
+var n60AI = ConvertFeature.Options()
+n60AI.useAI = true; n60AI.llmBase = "https://api.example.com/v1"; n60AI.llmModel = "m"
+check("n60-ai-off", "⑪ 已配置端点但**不勾**全文核查 → argv 不含 --llm-fulltext",
+      !ConvertFeature.arguments(n60AI).contains("--llm-fulltext"),
+      "argv=\(ConvertFeature.arguments(n60AI))")
+var n60On = n60AI; n60On.llmFulltext = true
+let n60OnArgv = ConvertFeature.arguments(n60On)
+check("n60-ai-on", "⑪ 勾选全文核查 → argv 恰好含一次 --llm-fulltext（--verify-refs/--llm-* 契约不变）",
+      n60OnArgv.filter { $0 == "--llm-fulltext" }.count == 1
+        && n60OnArgv.contains("--verify-refs") && n60OnArgv.contains("--llm-base"),
+      "argv=\(n60OnArgv)")
+var n60NoAI = ConvertFeature.Options(); n60NoAI.llmFulltext = true
+check("n60-needs-ai", "没勾「用 AI 处理参考文献」时**不传** --llm-fulltext（只有 ⑪ 通道识别）",
+      !ConvertFeature.arguments(n60NoAI).contains("--llm-fulltext"),
+      "argv=\(ConvertFeature.arguments(n60NoAI))")
+var n60Ph1 = ConvertFeature.Options()
+n60Ph1.source = coopSrc; n60Ph1.out = coopOut; n60Ph1.llmFulltext = true
+n60Ph1 = CoopFeature.prepare(n60Ph1, phase: .first)
+check("n60-coop-ph1-ignores", "两段式第一段不传 --llm-fulltext（通道① 只走 --coop-fulltext）",
+      !ConvertFeature.arguments(n60Ph1).contains("--llm-fulltext"),
+      "argv=\(ConvertFeature.arguments(n60Ph1))")
+var n60Ph2 = ConvertFeature.Options()
+n60Ph2.source = coopSrc; n60Ph2.out = coopOut
+n60Ph2.coopRepliesPaths = [coopReplies]; n60Ph2.coopStage = coopStage; n60Ph2.llmFulltext = true
+n60Ph2 = CoopFeature.prepare(n60Ph2, phase: .second)
+check("n60-coop-ph2-ignores", "两段式第二段不传 --llm-fulltext",
+      !ConvertFeature.arguments(n60Ph2).contains("--llm-fulltext"),
+      "argv=\(ConvertFeature.arguments(n60Ph2))")
+let n60TabSrc = readSrc("Views/ConvertTab.swift")
+let n60ConvSrc = readSrc("Features/ConvertFeature.swift")
+check("n60-ui-wiring", "源码级接线：ConvertTab 有「全文 AI 核查（直连 API，会产生费用）」复选框（默认不勾），"
+      + "ConvertFeature 拼 --llm-fulltext",
+      n60TabSrc.contains("全文 AI 核查（直连 API，会产生费用）")
+        && n60TabSrc.contains("llmFulltext")
+        && n60ConvSrc.contains("\"--llm-fulltext\""),
+      "tab=\(n60TabSrc.contains("全文 AI 核查（直连 API，会产生费用）")) "
+        + "bind=\(n60TabSrc.contains("llmFulltext")) flag=\(n60ConvSrc.contains("\"--llm-fulltext\""))")
+// 设置持久化：会话态（与批59 coopFulltext 同模式），不新增 UserDefaults/ai.json 键 → 老用户设置零覆盖
+check("n60-no-hidden-default", "不新增持久化键/隐藏默认：该开关只在 Options 会话态，源码无 llmFulltext 持久化键",
+      !n60ConvSrc.contains("llmFulltextKey") && !n60TabSrc.contains("llmFulltextKey"),
+      "convKeys=\(n60ConvSrc.contains("llmFulltextKey")) tabKeys=\(n60TabSrc.contains("llmFulltextKey"))")
+
 // n2 「只扫描源稿」不受两段式影响：勾着协同也只走普通 --scan 路径
 var n2 = ConvertFeature.Options()
 n2.source = coopSrc; n2.scanOnly = true; n2.coopPhase = .first; n2.verifyRefs = true

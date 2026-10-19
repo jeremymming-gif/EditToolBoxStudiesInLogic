@@ -164,6 +164,8 @@ def is_own_product(name: str, stem: str) -> bool:
         return True
     if any(name == f"{stem}{suf}" for suf in _OWN_STEM_SUFFIXES):
         return True
+    if name == f"{stem}{LLM_FULLTEXT_REPORT_SUFFIX}":
+        return True
     base, dot, ext = name.rpartition(".")
     if dot and base.lower().startswith("fig") and base[3:].isdigit():
         return ("." + ext.lower()) in _IMG_SUFFIXES
@@ -1465,6 +1467,255 @@ def bibdb_taskbook_hits(entries, safe) -> list[dict]:
     return [safe[key] for _etype, key, _body in entries if key in safe]
 
 
+# ── 第六十批：全文 AI 核查·通道②（直连 API；report-only；默认关）────────────
+#
+# 用户 2026-10-20 授权全文外发 AI，但要求**可选项**：`--llm-fulltext` 默认不带=关，
+# 只在 ⑪（`--verify-refs` 直连 AI 路径）生效。本通道**只出报告、不改产物**
+# （reference.bib / .tex 一字不动）；自动应用需用户另行拍板，本批不做。
+# 回复只接受附一 JSON 契约里的**既有低置信 ID**（白名单沿用 coop.parse_low_confidence），
+# 不新增改正文类建议；超时/HTTP 错/截断/JSON 不过一律 fail-soft（该片标不可用、照常出稿）。
+
+#: 每片正文的上限字符数（≈10k tokens；片数随正文长度增加，预算闸按片数×单片估算）。
+LLM_FULLTEXT_CHUNK_CHARS = 30000
+#: report-only 报告文件名后缀（`<stem>_AI全文复核.md`，属本工具产物，--clean 不清）。
+LLM_FULLTEXT_REPORT_SUFFIX = "_AI全文复核.md"
+
+#: 全文复核专用提示词（追加在 ⑪ 现有规范材料之后；不改既有 entry_prompt 口径）。
+LLM_FULLTEXT_RUBRIC = """\
+## 全文复核专用说明（本次用户已显式授权发送稿件正文）
+
+> 用户消息里会给出**稿件正文的节选**（可能分多片，每片单独一次请求）与本片的低置信项清单。
+> 请只依据给出的正文与清单，按「附一、初排低置信项」规定的 JSON 格式逐条回复；
+> 文献条目部分仍按第三节 BibTeX 规范输出。
+> **不要改写、复述或补写正文**，也不要把正文里没有依据的推断当成建议；拿不准就回 `unresolved`。
+> 引用键只能取自任务书/正文里已有的键，**不许新造 key**。"""
+
+
+def split_fulltext_chunks(body: str, max_chars: int = LLM_FULLTEXT_CHUNK_CHARS) -> list[str]:
+    """按段落把正文切成 ≤max_chars 字符的片（单段超长则硬切；顺序保存、不丢内容）。
+
+    为什么按段落：LaTeX/Word 正文一行一段，按段落切不会把一句/一个公式切两半；
+    单段本身超过上限（极长的表格/整篇不分段）时只能按字符硬切——**显式接受**这种
+    边界，因为 AI 读片不需要结构完整，而“不丢内容”比“切得漂亮”重要。
+    """
+    text = str(body or "").strip()
+    if not text:
+        return []
+    max_chars = max(1000, int(max_chars or LLM_FULLTEXT_CHUNK_CHARS))
+    chunks: list[str] = []
+    cur = ""
+    for para in re.split(r"\n\s*\n", text):
+        piece = para.strip("\n")
+        if not piece:
+            continue
+        while len(piece) > max_chars:
+            if cur:
+                chunks.append(cur)
+                cur = ""
+            chunks.append(piece[:max_chars])
+            piece = piece[max_chars:]
+        if not cur:
+            cur = piece
+        elif len(cur) + 2 + len(piece) <= max_chars:
+            cur += "\n\n" + piece
+        else:
+            chunks.append(cur)
+            cur = piece
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _fulltext_chunk_items(chunk: str, low_items: list[dict], *, first: bool) -> list[dict]:
+    """挑出「本片涉及」的低置信项：evidence 片段能在本片正文里找到的（前缀命中）。
+
+    元数据/文献条目类（evidence 是字段名/条目原文，不在正文里）统一挂到**第一片**——
+    否则后面的片永远看不到它们，AI 也不会回。顺序保持 low_items 原序（结果确定）。
+    """
+    squeezed = " ".join(str(chunk or "").split())
+    picked: list[dict] = []
+    for it in low_items:
+        ev = " ".join(str(it.get("evidence") or "").split())
+        if ev and ev[:80] in squeezed:
+            picked.append(it)
+    if first:
+        seen = {str(it.get("id")) for it in picked}
+        for it in low_items:
+            if str(it.get("id")) in seen:
+                continue
+            if str(it.get("kind") or "") in ("metadata", "bib_entry", "bib_line"):
+                picked.append(it)
+    return picked
+
+
+def _llm_fulltext_system() -> str:
+    """全文通道的 system：沿用 ⑪ 既有全稿复核规范 + 全文专用说明（不改既有常量）。"""
+    return "\n".join((_refmark.SPEC_MD, _refmark.SOURCES_MD, _refmark.FORMAT_MD,
+                      LLM_FULLTEXT_RUBRIC))
+
+
+def _llm_fulltext_user(idx: int, total: int, chunk: str, items: list[dict]) -> str:
+    """全文通道的 user：本片正文 + 本片涉及的低置信项（附一格式清单）。"""
+    parts = [f"## 本片正文（第 {idx}/{total} 片，共 {len(chunk)} 字符）", "",
+             "```text", chunk, "```", ""]
+    if items:
+        parts += ["## 本片需要核对的低置信项（只按附一 JSON 格式逐条回复）", "",
+                  _coop.render_low_confidence_section(items)]
+    else:
+        parts += ["## 本片没有需要核对的低置信项（无需回复 JSON）"]
+    return "\n".join(parts)
+
+
+def _llm_fulltext_review(cfg, chunks: list[str], items_per_chunk: list[list[dict]],
+                         *, max_tokens: int | None, thinking: dict | None,
+                         timeout: int | None = None) -> dict:
+    """逐片调用直连 LLM 做全文复核（report-only）；任何单片失败都 fail-soft。
+
+    返回 `{n_chunks, n_requests, n_suggestions, chunks, failures}`；每个 chunk 记录
+    `{index, chars, n_items, status(ok|unavailable), accepted, rejected, unknown, error}`。
+    `accepted` 里的每条建议都带 `id/verdict/field/value/span/note/locator`（来自
+    `coop.parse_low_confidence` 的校验结果，**未通过校验的一律不进来**）。
+    """
+    from slcn import llm as _llm
+
+    result: dict = {"n_chunks": len(chunks), "n_requests": 0, "n_suggestions": 0,
+                    "chunks": [], "failures": []}
+    system = _llm_fulltext_system()
+    send_thinking = thinking
+    thinking_warned = False
+    for i, chunk in enumerate(chunks, 1):
+        items = items_per_chunk[i - 1] if i - 1 < len(items_per_chunk) else []
+        user = _llm_fulltext_user(i, len(chunks), chunk, items)
+        entry: dict = {"index": i, "chars": len(chunk), "n_items": len(items),
+                       "status": "", "accepted": [], "rejected": {},
+                       "unknown": [], "error": "", "tokens": {}}
+        kwargs: dict = {"response_format": None, "max_tokens": max_tokens,
+                        "thinking": send_thinking}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            got = _llm.complete(cfg, system, user, **kwargs)
+        except Exception as e:  # noqa: BLE001  附加通道：任何意外都不许连累出稿
+            got = None
+            entry["error"] = f"{type(e).__name__}: {e}"
+        result["n_requests"] += 1
+        # thinking 是可选扩展：端点 400 拒收时（判据在 llm.thinking_rejected）本条
+        # 去掉字段重试一次，成功则本次运行余下分片也不再发它（与 ⑪ 逐条通道同口径）。
+        if got is None and send_thinking is not None and _llm.thinking_rejected():
+            if not thinking_warned:
+                print("   ⚠ 端点不支持 thinking 字段（HTTP 400），全文复核改为不带该字段重试；"
+                      "本次运行其余分片也不再发送它")
+                thinking_warned = True
+            send_thinking = None
+            kwargs["thinking"] = None
+            result["n_requests"] += 1
+            try:
+                got = _llm.complete(cfg, system, user, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                got = None
+                entry["error"] = f"{type(e).__name__}: {e}"
+        if not got:
+            entry["status"] = "unavailable"
+            entry["error"] = entry["error"] or str(_llm.LAST_ERROR or "连接失败/超时/空回复")
+            result["failures"].append(entry)
+            result["chunks"].append(entry)
+            continue
+        finish = str(getattr(_llm, "LAST_FINISH", "") or "")
+        if finish not in ("", "stop"):
+            entry["status"] = "unavailable"
+            entry["error"] = f"返回未正常结束（finish_reason={finish}），内容不完整"
+            result["failures"].append(entry)
+            result["chunks"].append(entry)
+            continue
+        try:
+            use = dict(getattr(_llm, "LAST_USAGE", {}) or {})
+        except Exception:  # noqa: BLE001
+            use = {}
+        entry["tokens"] = {k: int(v) for k, v in use.items()
+                           if k in ("prompt_tokens", "completion_tokens",
+                                    "reasoning_tokens", "total_tokens")}
+        # 先判「回复里到底有没有 JSON 对象」：没有任何 JSON = 该片不可用；
+        # 有 JSON 但只覆盖部分 ID 时仍算成功（未覆盖的项就是 missing，不报错）。
+        _n_json = sum(1 for _ in _coop.iter_json_objects(got))
+        if _n_json == 0:
+            entry["status"] = "unavailable"
+            entry["error"] = "回复里没有可解析的 JSON 低置信项（不是附一格式）"
+            result["failures"].append(entry)
+            result["chunks"].append(entry)
+            continue
+        report = _coop.parse_low_confidence([(f"chunk-{i}", got)], items)
+        entry["status"] = "ok"
+        entry["accepted"] = [dict(sug) for sug_list in report.suggestions.values()
+                             for sug in sug_list]
+        entry["rejected"] = dict(report.rejected)
+        entry["unknown"] = list(report.unknown)
+        result["n_suggestions"] += report.n_ok
+        result["chunks"].append(entry)
+    return result
+
+
+def render_llm_fulltext_report(*, stem: str, cfg, est: dict, result: dict,
+                               body_chars: int) -> str:
+    """`<stem>_AI全文复核.md`：参数/分片/预算/逐条建议（**不落正文全文**）。"""
+    L = [f"# AI 全文复核（直连 API，report-only）· {stem}", "",
+         "> **本报告只列建议，不自动修改 `reference.bib` / 输出 `.tex`**；"
+         "自动应用需用户另行拍板（本批不开放）。",
+         "> 通过校验的建议仍须人工核对；未通过校验/未解析的回复已按 fail-soft 跳过。", "",
+         f"- 端点：`{cfg.base}`（模型 `{cfg.model}`，通道 `{cfg.protocol}`）",
+         f"- 正文：{int(body_chars)} 字 → **{result.get('n_chunks', 0)} 片**"
+         f"（每片 ≤{LLM_FULLTEXT_CHUNK_CHARS} 字符）",
+         f"- 预算估算：{est.get('n_calls', 0)} 次调用 / prompt {est.get('prompt_tokens', 0)}"
+         f" + completion {est.get('completion_tokens', 0)} = {est.get('total_tokens', 0)} tokens",
+         f"- 结果：**{result.get('n_suggestions', 0)}** 条通过校验建议；"
+         f"{len(result.get('failures') or [])} 片 AI 建议不可用", ""]
+    L += ["## 一、逐条建议（通过校验）", ""]
+    n = result.get("n_chunks", 0)
+    found = False
+    for ch in result.get("chunks") or []:
+        for sug in ch.get("accepted") or []:
+            found = True
+            L += [f"### `{sug.get('id', '')}` — 来源分片 {ch['index']}/{n}", "",
+                  f"- verdict：`{sug.get('verdict', '')}`",
+                  f"- field：`{sug.get('field') or '—'}`",
+                  f"- value：{_coop._code_span(str(sug.get('value') or ''), 300)}",
+                  f"- span：{_coop._code_span(str(sug.get('span') or ''), 300)}"]
+            if sug.get("locator"):
+                L.append(f"- locator：`{sug['locator']}`")
+            if sug.get("note"):
+                L.append(f"- 说明：{sug['note']}")
+            L.append("")
+    if not found:
+        L += ["（无）", ""]
+    L += ["## 二、分片明细", ""]
+    for ch in result.get("chunks") or []:
+        if ch.get("status") == "ok":
+            note = (f"✅ 通过校验 {len(ch.get('accepted') or [])} 条"
+                    f"、被拒 {len(ch.get('rejected') or {})} 条"
+                    f"、白名单外 {len(ch.get('unknown') or [])} 个")
+        else:
+            note = f"⚠ AI 建议不可用（{ch.get('error') or '未知原因'}）"
+        tk = ch.get("tokens") or {}
+        tk_s = (f"，tokens {tk.get('prompt_tokens', 0)}+{tk.get('completion_tokens', 0)}"
+                if tk else "")
+        L.append(f"- 分片 {ch['index']}/{n}：{ch['chars']} 字符、"
+                 f"{ch['n_items']} 条低置信 ID → {note}{tk_s}")
+    L += ["", "## 三、被拒绝 / 白名单外（仅记录）", ""]
+    any_rej = False
+    for ch in result.get("chunks") or []:
+        for rid, why in (ch.get("rejected") or {}).items():
+            any_rej = True
+            L.append(f"- `{rid}`（分片 {ch['index']}）：{why}")
+        for uid in ch.get("unknown") or []:
+            any_rej = True
+            L.append(f"- `{uid}`（分片 {ch['index']}）：白名单外 ID（任务书里没有，已忽略）")
+    if not any_rej:
+        L += ["（无）"]
+    L += ["", "> 本报告由 `convert.py --llm-fulltext` 生成；"
+          "正文内容不写入本报告（只在本次请求中发送给所配置的端点）。", ""]
+    return "\n".join(L)
+
+
+
 def resolve_c_class_union(args) -> bool:
     """C 类新口径最终取值（第五十二批 phaseB）：None/缺省 → 默认 ON；False → 旧行为。
 
@@ -1665,6 +1916,14 @@ def main() -> int:
                     help="responses 通道 tools[].type 的工具名（默认 web_search；也可用环境变量 "
                          "SLCN_LLM_SEARCH_TOOL）。将来服务商换了名字（如 web_search_preview）"
                          "只改这一项，不必改代码。")
+    ap.add_argument("--llm-fulltext", action="store_true",
+                    help="（第六十批，可选，默认关）全文 AI 核查的**直连 API**通道："
+                         "把稿件正文分片（≤30000 字符/片）发给已配置的 LLM，逐片核对"
+                         "低置信项，生成 `<输出名>_AI全文复核.md`。**report-only："
+                         "不自动改 reference.bib/.tex**（自动应用需另行拍板）；"
+                         "受 --ai-budget-tokens 预算闸约束（超限退出 2、零请求）；"
+                         "超时/HTTP 错/截断/JSON 不过按 fail-soft 继续出稿。"
+                         "只配合 --verify-refs；不能与 --verify-plan/协同两段同用。")
     ap.add_argument("--llm-responses-path", default=None,
                     help="responses 的路径，拼在 base 之后（默认 /responses；也可用环境变量 "
                          "SLCN_LLM_RESPONSES_PATH）。缺前导 / 会自动补上。")
@@ -1702,6 +1961,30 @@ def main() -> int:
     if args.coop_fulltext and not args.coop_taskbook_only:
         ap.error("--coop-fulltext 只配合 --coop-taskbook-only（第一段任务书附正文；"
                  "回填解析/应用阶段不使用全文）")
+    if args.llm_fulltext:
+        # 第六十批：全文 AI 核查（直连 API）只在 ⑪ 的 --verify-refs 路径生效。
+        if args.coop_taskbook_only or args.coop_replies:
+            ap.error("--llm-fulltext 只走直连 API 的 ⑪ 核实路径，不能与协同两段式"
+                     "（--coop-taskbook-only/--coop-replies）同用")
+        if args.verify_plan:
+            ap.error("--llm-fulltext 不能与 --verify-plan 同用（只算账模式不发起请求）")
+        if not args.verify_refs:
+            ap.error("--llm-fulltext 只配合 --verify-refs（直连 AI 的 ⑪ 核实路径；"
+                     "单独给本开关不会触发任何核查）")
+        from slcn import llm as _llm_chk
+
+        _cfg_chk = _llm_chk.config_from_env(
+            args.llm_base, args.llm_key, args.llm_model,
+            protocol=args.llm_protocol,
+            web_search=(True if args.llm_web_search else None),
+            search_tool=args.llm_search_tool,
+            responses_path=args.llm_responses_path,
+        )
+        if not _llm_chk.available(_cfg_chk):
+            die("--llm-fulltext 需要可用的直连 LLM 配置，本次**未发起任何请求**。\n"
+                "  请先在「设置」页或命令行配置 --llm-base/--llm-key/--llm-model"
+                "（或用环境变量 SLCN_LLM_BASE/SLCN_LLM_KEY/SLCN_LLM_MODEL）；"
+                "也可改用通道①：--coop-taskbook-only --coop-fulltext {context,full}")
     if args.ai_budget_tokens is not None and args.ai_budget_tokens < 0:
         ap.error("--ai-budget-tokens 必须 ≥ 0（0 = 不限）")
     if args.ai_batch_budget_tokens is not None and args.ai_batch_budget_tokens < 0:
@@ -2225,6 +2508,47 @@ def main() -> int:
         else:
             channel = "chat（未启用检索：模型只能凭记忆）"
 
+        # ── 第六十批：全文 AI 核查（直连 API；report-only；默认关）─────────────
+        # 预算闸放在**任何请求之前**：先分片、估账，超限打印预计账并 return 2（零请求）。
+        ft_chunks: list[str] = []
+        ft_items_per_chunk: list[list[dict]] = []
+        ft_est: dict = {}
+        ft_max_tokens: int | None = None
+        ft_thinking: dict | None = None
+        if args.llm_fulltext:
+            # 低置信项：与协同 ph1 同一收集器（ID 白名单沿用 coop.parse_low_confidence）。
+            _ft_low = _coop.collect_low_confidence(
+                warnings=res.warnings,
+                missing_fields=getattr(res, "missing_fields", ()) or (),
+                raw_ref_lines=raw_ref_lines,
+                bib_text=bib_text,
+                label_targets=dict(getattr(res, "undetected_fields", ()) or ()),
+            )
+            ft_chunks = split_fulltext_chunks(getattr(res, "body_text", "") or "")
+            ft_items_per_chunk = [
+                _fulltext_chunk_items(_chunk, _ft_low, first=(_i == 0))
+                for _i, _chunk in enumerate(ft_chunks)
+            ]
+            _, ft_max_tokens, ft_thinking = llm.request_params_from_env()
+            _ft_prompts = [
+                _llm_fulltext_user(_i + 1, len(ft_chunks), _chunk, ft_items_per_chunk[_i])
+                for _i, _chunk in enumerate(ft_chunks)
+            ]
+            ft_est = _coop.estimate_api_budget(_llm_fulltext_system(), _ft_prompts,
+                                               ft_max_tokens)
+            _ft_why = _coop.budget_exceeded(ft_est, args.ai_budget_tokens,
+                                            args.ai_batch_budget_tokens)
+            if _ft_why:
+                print("\n⛔ " + _ft_why)
+                print(f"   全文复核预计用量：{ft_est['n_calls']} 次调用 / "
+                      f"prompt {ft_est['prompt_tokens']} + completion "
+                      f"{ft_est['completion_tokens']} = {ft_est['total_tokens']} tokens")
+                print("   （本次**没有发起任何请求**；放宽预算请调大参数，0 = 不限）")
+                return 2
+            print(f"   全文复核（report-only，不改产物）：正文 "
+                  f"{len(getattr(res, 'body_text', '') or '')} 字 → {len(ft_chunks)} 片；"
+                  f"预计 {ft_est['n_calls']} 次调用 / {ft_est['total_tokens']} tokens")
+
         # 任务书头部：配了 LLM 才替换掉那句「工具不做联网核实」（那时它不成立）。
         # 没配 LLM 时**不传** search_note → 头部与从前逐字节相同。
         search_note = ""
@@ -2742,6 +3066,28 @@ def main() -> int:
             print("   （未启用联网检索：本工具不联网核实，任务书由编辑的联网 AI 或人工复核）")
             print("   （要自动预跑：界面「设置」页填 API 地址/密钥/模型，"
                   "或命令行 --llm-base/--llm-key/--llm-model、环境变量 SLCN_LLM_*）")
+
+        # ── 第六十批：全文复核的实际请求与报告（report-only）────────────────────
+        if args.llm_fulltext:
+            _ft_result = _llm_fulltext_review(
+                cfg, ft_chunks, ft_items_per_chunk,
+                max_tokens=ft_max_tokens, thinking=ft_thinking)
+            _ft_path = os.path.join(out_dir, f"{stem}{LLM_FULLTEXT_REPORT_SUFFIX}")
+            with open(_ft_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(render_llm_fulltext_report(
+                    stem=stem, cfg=cfg, est=ft_est, result=_ft_result,
+                    body_chars=len(getattr(res, "body_text", "") or "")))
+            _ft_fail = len(_ft_result.get("failures") or [])
+            print(f"   🤖 AI 全文复核（report-only，不改产物）："
+                  f"{_ft_result.get('n_suggestions', 0)} 条建议 / "
+                  f"{_ft_result.get('n_requests', 0)} 次请求、{_ft_fail} 片不可用")
+            print(f"   报告：{os.path.basename(_ft_path)}"
+                  "（通过校验的建议仍须人工核对；自动应用未开放）")
+            if ft_chunks and not _ft_result.get("n_suggestions"):
+                print("   ⚠ 本次没有拿到通过校验的建议（原因见报告分片明细）")
+            if _ft_fail:
+                print("   ⚠ 部分分片 AI 建议不可用（超时/HTTP 错/截断/JSON 不过）——"
+                      "已按 fail-soft 继续出稿，产物不受影响")
 
     # ── 第五十四批：第一段收尾——任务书追加「初排低置信项」+ 写状态 JSON ────────
     if args.coop_taskbook_only:

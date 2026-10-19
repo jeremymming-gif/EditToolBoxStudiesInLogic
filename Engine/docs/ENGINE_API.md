@@ -59,6 +59,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--search-refs` | 用 DeepSeek 独立 Search API 给**本次核实范围内**的参考文献检索证据：写进任务书 +（P2，第 72 条起）注入 AI 逐条提示词 + 合并前校验 `% 来源：` URL 白名单（默认关；开启时才计费 ¥5/1000 次；地址/密钥复用 `--llm-*`，也可 `SLCN_SEARCH_BASE` / `SLCN_SEARCH_KEY`；环境变量 `SLCN_SEARCH_REFS=1`）。外壳：mac 在 AI 运行时传 `--search-refs`；Windows 把 `SLCN_SEARCH_REFS=1` 放进子进程环境 |
 | `--bibdb` `--bibdb-path PATH` `--no-bibdb` | **编辑部引用库（第 129 条）**。执行核实（`--verify-refs` / `--verify-plan`）时**默认**在默认库存在时自动查库（默认库 = 笔记仓 `bib_db/bibliography.jsonl`，`slcn.bibdb.default_db_path()`）：命中**已核实**条目的键**不调检索/AI**、**不改 `reference.bib`**，字段差异只写进任务书「五、库内已核实」。`--bibdb` = 显式启用（库缺失/读不了只告警、不中断出稿）；`--bibdb-path` = 指定库文件（隐含启用）；`--no-bibdb` = 显式关闭（输出与接入前逐字节相同）。笔记仓/默认库不存在时**静默跳过**（公开仓/CI 行为零变化）；不核实时这些参数只提示忽略。判定保守：key 命中只算候选（仍走检索），详见 `docs/GUIDE.md` §3.10。第 58 批另加 `--no-bibdb-verify` = 关闭**初排默认只读比对**（只影响日志一行；见下「引用库比对」行） |
 | `--llm-base --llm-model --llm-protocol --llm-web-search --llm-search-tool --llm-responses-path` | AI 通道（密钥走环境变量） |
+| `--llm-fulltext` | **直连 API 全文核查（第 60 批，可选、默认关）**：只配合 `--verify-refs` 的 ⑪ 直连路径；把正文按 ≤3 万字符/片发到配置端点（每片一次请求、**会产生 API 费用**），生成 `<名>_AI全文复核.md`（report-only：不改 `reference.bib`/`.tex`、报告不落正文全文、**自动应用未实现**）。未配置端点 / 预算超限 / 与 `--verify-plan` 或两段式同用 → 退出 2 且零请求；单片失败 fail-soft（退出码 0）。不勾时正文一个字节都不外发 |
 | `--coop-fulltext {context,full}` | 第 59 批，可选、**默认关**。只配合 `--coop-taskbook-only`：第一段任务书在「附二」后追加「附三、正文全文/引用上下文」；`context` = 引用/脚注锚点前后各 300 字窗口合并（上限 4 万字符≈13k tokens）、`full` = 正文全文（上限 8 万字符≈27k tokens），超限显式截断。只写本机任务书（软件零上传），不新增改正文类建议；其他组合退出 2。见下方「两段式协同 argv 契约」 |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
 
@@ -91,6 +92,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | 行首 `⚠` | 警告；收尾还会汇总在「⚠ 注意事项：」一节 |
 | 行首 `   ⚠⚠` | **模型能力前置提示**（第 128 条）：开了联网检索、且模型**已知会静默忽略** `web_search`（如 `deepseek-flash` / `deepseek-chat`）时，在 **AI 批量开始前** 打一行；跑完后「0 个 `web_search_call` → 按凭记忆对待」的事后提示**照旧保留** |
 | 行首 `   引用库：` | **引用库查库统计**（第 129 条）：`引用库：命中 X 条已核实（跳过检索+AI）、候选 Y、未命中 Z（库 n 条，<path>）`。只在执行核实且启用查库时出现；`--no-bibdb` / 库缺失时不出现（老外壳不受影响） |
+| 行首 `   全文复核（report-only` / `   🤖 AI 全文复核` | **直连 API 全文核查（第 60 批，`--llm-fulltext`，默认关）**：跑前打「正文 N 字 → M 片；预计 X 次调用 / Y tokens」，跑完打「N 条建议 / M 次请求、K 片不可用」；只出 `<名>_AI全文复核.md`、不改产物；单片失败 fail-soft（退出码 0）；预算超限 / 未配置端点 → 退出 2、零请求 |
 | 行首 `   引用库比对：` | **初排默认只读比对**（第 58 批）：未执行核实时，默认库存在且产物 bib 有条目时打一行 `引用库比对：命中 X / 候选 Y / 未命中 Z（只读，不改产物）`；无库/无 bib/读库失败静默；`--no-bibdb-verify` / `--no-bibdb` 关闭。只增这一行，产物/任务书不变 |
 | 行首 `   本地支撑文件：` | **定义位置加固**（第 130 条，仅 LaTeX 通道）：本次读了哪些本地 `.cls` / `.sty` / `.def` / `.cfg`（作者稿同目录）。Word 通道不出现 |
 | 行首 `   本地旧模板 .sty（源目录有同名文件` | **本地非标准命名旧模板**（第 130 条补丁）：该 `\usepackage` 的包行**不迁**（模板负责顶部加载），文件按支撑文件差集搬定义 |
@@ -121,8 +123,8 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 `--coop-fulltext` **只能随第一段**（否则 exit 2）、**默认不传**；两壳只在两段式面板勾选「全文 AI 核查」且
 第一段时追加 `--coop-fulltext context|full`，第二段与普通转换绝不带（mac `tools/ai_settings_test` / win
 `sources-win/tests/test_bridge.py` 钉住）。任务书 = `refmark` 任务书 + 附一 + 附二 +（可选）附三；
-**附三只用于回答附一、不新增改正文类建议**，默认关时任务书/stdout 与批 58 逐字节相同；
-通道②（直连 API 自动发全文）尚未实现。
+**附三只用于回答附一、不新增改正文类建议**，默认关时任务书/stdout 与批 58 逐字节相同。
+通道②（直连 API 全文核查）由第 60 批的 `--llm-fulltext` 提供：默认关、report-only、会外发正文并产生费用。
 
 **核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的
 条目**」——⑪ 跑前会在 stdout 打一行
@@ -156,6 +158,7 @@ reference.bib.ai前           本次合并**之前**的那一份（回滚用；�
 SLCN-MIX.sty / SLEN.sty      与 --sty 一致
 original/                    源稿归档副本（只读副本，不是原件）
 <Name>_文献核实.md           任务书（含「六、合并记录」）
+<Name>_AI全文复核.md        全文复核报告（--llm-fulltext 才有；report-only，不落正文）
 <Name>_回读校验报告.md       并入后自检（结论一行同时打在 stdout）
 <Name>_参考文献核对.txt      离线核对（缺哪些字段 / 引用对不对得上）
 <Name>.log                   xelatex 日志（**故意不删**）

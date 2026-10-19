@@ -55,6 +55,11 @@
 7. **全文附三是可选通道、默认关**（第 59 批）：`--coop-fulltext {context,full}` 只配合 `--coop-taskbook-only`，只把正文/引用上下文写进任务书「附三」（context 4 万字符 / full 8 万字符上限，超限显式截断）；默认不带 flag 时任务书/产物/stdout 与批 58 逐字节相同。
    state schema 仍 1、`fulltext` 仅启用时写且**不入 fingerprint**，协同记录只记 mode/字数/截断/估算、**不落正文**。
    位置：`Engine/convert.py` 的 `--coop-fulltext`、`Engine/slcn/coop.py` 的 `extract_fulltext()`；`Engine/tests/test_batch59_coop_fulltext.py`。
+8. **直连 API 全文核查是 report-only 的可选通道**（第 60 批）：`--llm-fulltext` 默认关、只配合 `--verify-refs`
+   的 ⑪ 直连路径（未配置端点 / 与 `--verify-plan` / 两段式同用 → exit 2 且零请求）；只生成
+   `<名>_AI全文复核.md`（逐条建议/分片，**不落正文全文**），**不修改 `reference.bib`/`.tex`**，自动应用未实现；
+   单片失败 fail-soft（标「AI 建议不可用」，退出码 0）；预算闸超限 exit 2 零请求。
+   位置：`Engine/convert.py` 的 `--llm-fulltext` / `render_llm_fulltext_report()`；`Engine/tests/test_batch60_llm_fulltext.py`。
 
 ## 四、判据与体例的权威位置
 

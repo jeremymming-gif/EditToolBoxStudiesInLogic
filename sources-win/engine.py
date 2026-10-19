@@ -379,6 +379,8 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  lang: str = "", extra: str = "",
                  verify_max: int | None = None, verify_plan: bool = False,
                  verify_all_refs: bool = False, no_bibdb: bool = False,
+                 # ── 批60：全文 AI 核查（直连 API；valueless flag，仅 ⑪ 生效）──
+                 llm_fulltext: bool = False,
                  # ── 第五十四批（CLI）/ 第五十五批（GUI 接入）：两段式 AI 协同初排 ──
                  coop_taskbook_only: bool = False, coop_stage: str = "",
                  coop_replies: "str | list[str]" = "", coop_apply: bool = False,
@@ -414,6 +416,15 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     上下文附进任务书；软件仍不调 API、零上传）。**默认空串 = 一个字节都不加**
     （argv 与批58 逐字节相同）；非法取值 / 普通转换 / 第二段传入一律 ValueError
     —— 第二段从状态文件继承，绝不带这个 flag。
+
+    批60「全文 AI 核查（直连 API）」：`llm_fulltext=True` 表示编辑本次在界面上勾了
+    「全文 AI 核查（直连 API，会产生费用）」；**只有本次真的跑 ⑪ 直连通道**
+    （非两段式 + `verify_refs` 且 `verify_plan=False`）才在 `--verify-refs` 之后追加
+    无取值的 `--llm-fulltext`。默认 False = 一个字节都不加（argv 与批59 逐字节相同）；
+    普通转换 / 只算账 / 两段式（ph1/ph2）**都不加**（引擎在同一批里对这些非法组合
+    exit 2，外壳在拼装点就**不制造**这些组合，不需要在这些路径传）。
+    引擎 report-only：只写 `<stem>_AI全文复核.md`，不改 reference.bib/.tex；
+    端点未配置时引擎 exit 2、零请求 —— 外壳不替引擎判定，日志另给一行提示。
 
     `coop_replies` 非空（str 或 list[str]）= **第二段**：只传最小集
     `--source/--out/--coop-replies… [--coop-stage] [--coop-apply] [--compile] [--clean]`，
@@ -497,6 +508,11 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
         # 于是默认命令行里连这个开关都没有 —— 「默认零参数」的判据见 test_bridge (i)。
         if no_bibdb:
             cmd.append("--no-bibdb")
+        # 批60：全文 AI 核查（直连 API）只在**本次真的跑 ⑪ 直连 AI** 时追加：
+        # `--verify-refs` 且不是 `--verify-plan`（后者只算账就退出 0、不发任何请求）。
+        # 两段式走上面 coop 分支、普通转换没有 ⑪ —— 都不带，自然满足「不影响」。
+        if llm_fulltext and not verify_plan:
+            cmd.append("--llm-fulltext")
     if source_pdf:
         cmd.append("--source-pdf")
     if bib:

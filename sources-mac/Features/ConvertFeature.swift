@@ -66,6 +66,12 @@ enum ConvertFeature {
         /// 界面开关「保留原 reference.bib（不并入 AI 结果）」→ `--no-ai-merge`。
         /// 只在勾了「用 AI 处理参考文献」时才显示（没勾 AI 就压根没有合并通道）。
         var keepOriginalBib = false // --no-ai-merge
+        /// 第 60 批：全文 AI 核查（直连 API）→ `--llm-fulltext`。**只在 ⑪ 直连通道**
+        /// （勾了「用 AI 处理参考文献」+ 非两段式）搭配 `--llm-*` 端点时传；引擎未配置端点
+        /// 会直接 exit 2（零请求）。**默认不勾**：不勾时 argv 与批 59 逐字节相同；勾了
+        /// **会产生费用**（正文分片直发端点），引擎 report-only（只生成
+        /// `…_AI全文复核.md`，不改正文/不改 reference.bib）。会话态：不写 UserDefaults。
+        var llmFulltext = false // --llm-fulltext（默认关）
         // ── 第 132 条：核实成本闸门 + 引用库（由「引用库设置」页存 UserDefaults，
         //    `ConvertTab.run()` 在运行时现取）。默认值 = **一个参数都不加**，
         //    所以没碰过这些设置的用户，命令行与接入前逐字节相同。
@@ -380,6 +386,12 @@ enum ConvertFeature {
             if o.llmWebSearch { a.append("--llm-web-search") }
             // P2（第 72 条起）：检索证据（DeepSeek 独立 Search API；默认关不加参数）。
             if o.searchRefs { a.append("--search-refs") }
+            // 第 60 批：全文 AI 核查（直连 API）→ `--llm-fulltext`。**默认不勾 → 一个参数都不加**
+            // （默认 argv 与批 59 逐字节相同）。只在这一支（= ⑪ 直连 AI 通道）里传：
+            // 普通转换没勾 AI 走不到这里；两段式（coop != .off）也不传（那是外部 chat 流程，
+            // 正文通道是另一批的 `--coop-fulltext`，两者不许混）。
+            // 未配置端点时引擎自己 exit 2（零请求）—— 壳子不重复判定，日志另有一行提示（logAI）。
+            if o.llmFulltext { a.append("--llm-fulltext") }
             // 第 70 条的两个「未来兼容」旋钮：**留空或填了用不了的值都不传**（第一种是
             // 「用引擎默认」，第二种由 `knobWarnings` 说明），所以两栏都空时命令行与从前
             // **逐字节相同**。这里刻意用解析器（而不是 `add` 的单纯非空判断），
@@ -498,6 +510,12 @@ enum ConvertFeature {
                 log("  文献   AI 结果会并入 reference.bib（回滚副本 reference.bib.ai前）；"
                     + "AI 调用失败 / 一条都没通过安全校验时，bib **一字节不改**\n")
             }
+            // 第 60 批：全文 AI 核查（直连 API）—— **会产生费用**，日志必须写明「发正文、report-only」。
+            if o.llmFulltext {
+                log("  全文核查 **直连 API**（--llm-fulltext）：正文按片发送到上面这个端点，"
+                    + "**会产生费用**；只生成《…_AI全文复核.md》核查报告，**不改产物**"
+                    + "（不改正文、不写 reference.bib）。\n")
+            }
         } else {
             log("  文献   生成《文献核实任务书》\n")
             log("⚠ 已勾选「用 AI 处理参考文献」，但「设置」页还没配置 API 地址与模型名，\n")
@@ -505,6 +523,11 @@ enum ConvertFeature {
             log("  reference.bib **一字节不改**。\n")
             log("  要启用：打开「设置」标签页填写 API 地址（如 https://api.deepseek.com/v1）\n")
             log("  与模型名（如 deepseek-flash），可点「测试连接 / 体检」自检。\n")
+            // 第 60 批：勾了全文核查却没端点 —— 引擎会 exit 2（零请求），日志先说明白。
+            if o.llmFulltext {
+                log("⚠ 已勾「全文 AI 核查（直连 API）」但端点未配置：引擎会**直接退出 2**"
+                    + "（不会发出任何请求）；请先到「设置」页填地址与模型名。\n")
+            }
         }
     }
 

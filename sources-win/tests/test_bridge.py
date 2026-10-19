@@ -18,7 +18,8 @@
   (i) 引用库（第 132 条）：笔记仓探测 / 库文件 / 参数默认零变化 / CLI 冒烟；
   (j) 两段式 AI 协同初排（第五十五批）：两段 argv 契约、默认 argv 零变化、暂存目录发现、
       建议摘要、回复导入、AI token 预算设置（纯逻辑，全部 headless）；批59 全文 AI 核查
-      范围映射（默认关；仅第一段带 `--coop-fulltext context|full`）。
+      范围映射（默认关；仅第一段带 `--coop-fulltext context|full`）；批60 直连全文核查
+      （`--llm-fulltext`，默认关、会话态；只在 ⑪ 直连通道追加）。
 """
 from __future__ import annotations
 
@@ -641,6 +642,24 @@ else:
         print("全文核查文案=%d" % int(
             "零上传" in ct.coop_fulltext_hint.cget("text")
             and "零费用" in ct.coop_fulltext_hint.cget("text")))
+        # 批60：全文 AI 核查（直连 API）——默认不勾、**会话态**；勾选 → ⑪ argv 追加
+        # 无取值的 --llm-fulltext，取消后复原；settings.json 里不该出现这个偏好。
+        print("直连全文默认关=%d" % int(not ct.v_llm_fulltext.get()))
+        _llm_off = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        ct.v_llm_fulltext.set(True)
+        _llm_on = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        ct.v_llm_fulltext.set(False)
+        _llm_back = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        print("直连全文默认argv=%d" % int("--llm-fulltext" not in _llm_off.argv))
+        print("直连全文映射=%d" % int("--llm-fulltext" in _llm_on.argv))
+        print("直连全文取消复原=%d" % int(
+            "--llm-fulltext" not in _llm_back.argv and _llm_back.argv == _llm_off.argv))
+        print("直连全文文案=%d" % int(
+            "会产生费用" in ct.llm_fulltext_hint.cget("text")
+            and "不改 reference.bib" in ct.llm_fulltext_hint.cget("text")))
+        print("直连全文不落盘=%d" % int(
+            "llmFulltext" not in json.dumps(
+                json.load(open(S.config_path(), encoding="utf-8")), ensure_ascii=False)))
         print("协同按钮齐全=%d" % int(all(
             w.cget("text") in ("打开任务书", "打开暂存目录", "打开交付目录",
                               "打开协同记录", "打开建议清单",
@@ -844,6 +863,12 @@ else:
               and "全文核查context=1" in out and "全文核查full=1" in out
               and "全文核查取消复原=1" in out and "全文核查文案=1" in out,
               [l for l in out.splitlines() if l.startswith("全文核查")])
+        check("(g) 批60 全文 AI 核查（直连 API，真控件）：默认不勾（会话态，不写 settings.json）；"
+              "勾选后 ⑪ argv 追加 --llm-fulltext，取消后复原；提示讲清费用/不改产物",
+              "直连全文默认关=1" in out and "直连全文默认argv=1" in out
+              and "直连全文映射=1" in out and "直连全文取消复原=1" in out
+              and "直连全文文案=1" in out and "直连全文不落盘=1" in out,
+              [l for l in out.splitlines() if l.startswith("直连全文")])
         check("(g) 设置页 AI 预算：非法值红字**不落盘**、合法值（0 = 不限）落盘",
               "预算非法不落盘=1" in out and "预算落盘=1" in out,
               [l for l in out.splitlines() if l.startswith("预算")])
@@ -1231,6 +1256,39 @@ check("(j) 批59：范围常量与引擎 argparse 取值逐字一致（context/f
       C.FULLTEXT_MODES == ("context", "full")
       and C.FULLTEXT_CONTEXT == "context" and C.FULLTEXT_FULL == "full")
 
+# ── 批60：全文 AI 核查（直连 API，--llm-fulltext；默认关；仅 ⑪ 直连通道）──
+_j_llm_58 = E.convert_call(source="a.docx", out="/o", compile_pdf=True, verify_refs=True)
+check("(j) 批60：不勾「全文 AI 核查（直连 API）」→ ⑪ argv 与批59 **逐字节相同**"
+      "（一个 --llm-fulltext 都没有）",
+      _j_llm_58.argv == _j_base + ["--source", "a.docx", "--out", "/o",
+                                   "--compile", "--verify-refs"]
+      and "--llm-fulltext" not in _j_llm_58.argv, _j_llm_58.display[:180])
+_j_llm_on = E.convert_call(source="a.docx", out="/o", compile_pdf=True,
+                           verify_refs=True, llm_fulltext=True)
+check("(j) 批60：勾选且跑 ⑪ → 在 --verify-refs 之后**恰好**追加一次无取值的 "
+      "`--llm-fulltext`（引擎 action=store_true；后面不接取值）",
+      _j_llm_on.argv == _j_base + ["--source", "a.docx", "--out", "/o", "--compile",
+                                   "--verify-refs", "--llm-fulltext"]
+      and _j_llm_on.argv.count("--llm-fulltext") == 1, _j_llm_on.display[:180])
+check("(j) 批60：勾了但本次**不是 ⑪** → 一个字节都不加（普通转换 / 先算账 / 两段式 "
+      "ph1、ph2 都不受影响；引擎会把这些组合判 exit 2，外壳在拼装点就**不制造**它们）",
+      "--llm-fulltext" not in E.convert_call(source="a", out="/o",
+                                             llm_fulltext=True).argv
+      and "--llm-fulltext" not in E.convert_call(
+          source="a", out="/o", verify_refs=True, verify_plan=True,
+          llm_fulltext=True).argv
+      and "--llm-fulltext" not in E.convert_call(
+          source="a", out="/o", verify_refs=True, coop_taskbook_only=True,
+          llm_fulltext=True).argv
+      and "--llm-fulltext" not in E.convert_call(
+          source="a", out="/o", coop_replies="/回填", llm_fulltext=True).argv)
+_j_llm_budget = E.convert_call(source="a", out="/o", verify_refs=True,
+                               llm_fulltext=True, ai_budget_tokens=0)
+check("(j) 批60：全文 flag 与既有直连预算参数同路（`--llm-fulltext` 不影响 "
+      "`--ai-budget-tokens` 的拼装/位置契约）",
+      "--llm-fulltext" in _j_llm_budget.argv
+      and _j_llm_budget.argv[_j_llm_budget.argv.index("--ai-budget-tokens") + 1] == "0")
+
 _j_ph2_single = E.convert_call(source="/稿/a.docx", out="/期", coop_replies="/回填",
                                coop_stage="/期/A_待核", coop_apply=True, compile_pdf=True,
                                verify_refs=True, name="A", author="某",
@@ -1604,6 +1662,23 @@ check("(j) 批59：全文 AI 核查面板默认不勾（复选框 + 「引用上
       and "默认不勾：任务书不含正文" in _src_55
       and "已获授权，不再弹二次确认" in _src_55
       and "第二段续跑与交付不受影响" in _src_55)
+check("(j) 批60：初排页「全文 AI 核查（直连 API，会产生费用）」默认不勾；提示与 mac "
+      "逐字对齐（会产生费用/每片 ≤3 万字/report-only 不改 reference.bib/未配置端点退出 2）；"
+      "勾选值经 `extra_args` 交给拼装点",
+      "全文 AI 核查（直连 API，会产生费用）" in _src_55
+      and "self.v_llm_fulltext = tk.BooleanVar(value=False)" in _src_55
+      and 'args["llm_fulltext"] = bool(self.v_llm_fulltext.get())' in _src_55
+      and "每片 ≤3 万字" in _src_55 and "不改 reference.bib" in _src_55
+      and "直接退出 2" in _src_55 and "report-only" in _src_55)
+check("(j) 批60：**会话态不落盘**（Lead 拍板：正文外发+费用属每次运行的主动同意）——"
+      "`llmFulltext` 不进 settings.py / settings.json 写入路径（main.py 只准在注释里"
+      "提 mac 的同名字段）；真进 argv 时日志说明「会产生费用、report-only」与"
+      "「端点未配置会 exit 2」",
+      "llmFulltext" not in (SHELL / "settings.py").read_text(encoding="utf-8")
+      and _src_55.count("llmFulltext") == 1
+      and "Options.llmFulltext" in _src_55
+      and '"--llm-fulltext" in call.argv' in _src_55
+      and "但端点未配置" in _src_55 and "会产生费用" in _src_55)
 check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
       "与 mac 强制 useAI=false 同口径）",
       "api=None if coop_phase else" in _src_55)
