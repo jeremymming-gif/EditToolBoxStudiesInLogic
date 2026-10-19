@@ -9,8 +9,16 @@ description: 当前版本与历史 Release。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
 
-## 未发布（2026-10-20，第 52–61 批）
+## 未发布（2026-10-20，第 52–62 批）
 
+- **文献核实入口收敛 B（第 62 批，2026-10-20，未发版）**：初排页移除独立的「生成/出文献核实任务书」勾选，
+  普通初排默认 argv 不再含 `--verify-refs`（**不再默认生成 `<名>_文献核实.md`**）；需要任务书用两段式第一段
+  （任务书 = 第一段产物）或 CLI `--verify-refs`。Windows 新增显式「用 AI 处理参考文献（直连 API，会产生费用）」
+  勾选（默认不勾、会话态；取消此前「配好端点即隐式跑 AI」的行为）；勾选后内部自动带 `--verify-refs`，行为/产物
+  与批61 一致。两段式 ph1 仍固定带 `--verify-refs --no-ai-merge --coop-taskbook-only`；引用库只读比对日志照旧。
+  「文献回读校验」页保留全部能力（离线体检/并回/入藏/重新编译），页顶标题改为「回读/比对报告查看器
+  （高级：手动并回，离线）」（侧栏短名不变），不再引导生成任务书。引擎零改动，CLI `--verify-refs` /
+  `--no-ai-merge` / `checkbib.py` 全兼容。
 - **引用库命中二次判定 / 写法归一（第 61 批，2026-10-20）**：新增 `hit=title-normalized`（题名写法归一后
   ≥0.98 + 年/作者/出版社至少再一条见证，任一见证矛盾即否决）与 `hit=content-identical`（与库内 verified
   记录逐字段内容指纹完全相同）；两条仍只跳过检索/AI 与任务书核实、**不改产物**；`query_title` 不放宽。
@@ -35,7 +43,7 @@ description: 当前版本与历史 Release。
   （只读，不改产物）」；新增 `--no-bibdb-verify` 关闭（无库/无 bib 静默；`.tex`/`reference.bib`/任务书/argv
   与从前相同）。引用库安全命中补「译著/CJK 作者责任标记」规则（题名≥0.98+年+出版社+标记归一相容；
   命中仍只跳过检索/AI、不改稿；84 篇成品 bib 计数不变，Bo_Chen 初排 safe 84%→96%、候选 4→1）。
-  macOS「生成参考文献核实任务书」改为默认勾选、对齐 Windows（会话态、无持久化）。
+  macOS「生成参考文献核实任务书」改为默认勾选、对齐 Windows（会话态、无持久化）。（第 62 批已随入口收敛移除该勾选，见上。）
 - **低置信建议三类应用（第 57 批）**：`--coop-apply` 从「只应用文献字段」扩展为三类——
   ① `BIB-*` → `reference.bib`（沿用四条安全校验）；② `META-*` → 输出 `.tex` 的 `\my*` 元数据
   （只填空/模板占位，编辑侧已有值不覆盖，值过格式校验）；③ `FN-*` 窄口径：仅 `citation_unmatched`

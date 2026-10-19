@@ -80,6 +80,9 @@ class TabPage(ttk.Frame):
 
     instruction = ""
     pick = "dir"          # 'dir' | 'file'
+    #: 页内长标题（可选）。批62：侧栏保持短名（185px 宽带不动长串），
+    #: 「文献回读校验」这类页的定位长标题在**正文顶部**显示 —— 与 mac 同做法。
+    page_title = ""
 
     def __init__(self, parent, name, on_run, on_stop):
         super().__init__(parent)
@@ -88,6 +91,10 @@ class TabPage(ttk.Frame):
         self.on_stop = on_stop
         self.columnconfigure(0, weight=1)
         row = 0
+
+        if self.page_title:
+            ttk.Label(self, text=self.page_title, style="Heading.TLabel").grid(
+                row=row, column=0, padx=10, pady=(10, 2), sticky="w"); row += 1
 
         ttk.Label(self, text="输入路径，或点「浏览」选择：").grid(
             row=row, column=0, padx=10, pady=(10, 2), sticky="w"); row += 1
@@ -241,8 +248,10 @@ class ConvertTab(TabPage):
         super().__init__(parent, name, on_run, on_stop)
     instruction = ("使用说明：选作者的稿件（.docx / .doc / .tex），再选一个输出根目录，"
                    "产物会写到「输出目录/<作者名>/」。\n"
-                   "勾了「出文献核实任务书」会同时生成《…_文献核实.md》；"
-                   "联网核实需要先在「设置」里填好 API 配置。\n"
+                   "批62 入口收敛：普通转换**不再**默认生成《文献核实任务书》、也不调用 AI；"
+                   "需要核实就勾下面「用 AI 处理参考文献（直连 API）」（产生费用）"
+                   "或「AI 协同初排（两段式）」（外部 chat，零费用）；"
+                   "CLI 高级用法仍可用 `--verify-refs`。\n"
                    "⚠️ 正文里读不出第一作者姓名时（部分 LaTeX 投稿就是这样），**必须**填"
                    "「输出名」或「作者」，否则引擎会拒绝转换并提示要这两个参数。\n"
                    "第二行是编辑侧出版信息（卷/期/年/页码…）：不填也能转，但 PDF 页眉会是"
@@ -262,11 +271,12 @@ class ConvertTab(TabPage):
 
         self.v_compile = tk.BooleanVar(value=True)
         self.v_clean = tk.BooleanVar(value=False)
-        self.v_refs = tk.BooleanVar(value=True)
+        # 批62（入口收敛 B）：独立「出文献核实任务书」勾选**不再暴露**。字段保留兼容旧设置/
+        # 旧调用（界面默认 false）；任务书改由「用 AI 处理参考文献」或两段式第一段产出。
+        self.v_refs = tk.BooleanVar(value=False)
         self.v_srcpdf = tk.BooleanVar(value=False)
         _check(row1, "编译 PDF", self.v_compile).pack(side="left")
         _check(row1, "清理临时文件", self.v_clean).pack(side="left")
-        _check(row1, "出文献核实任务书", self.v_refs).pack(side="left")
         _check(row1, "导出原稿 PDF", self.v_srcpdf).pack(side="left")
 
         # 「输出名 / 作者」决定产物目录名；正文读不出姓名时它们是**唯一活路**（H1）
@@ -308,18 +318,36 @@ class ConvertTab(TabPage):
             _v.trace_add("write", lambda *_: self.ai_knobs_sink(
                 self.v_thinking.get().strip(), self.v_maxtok.get().strip()))
 
+        # ── 批62：入口收敛 B —— 直连 AI 从「配了端点就隐式跑」改为**显式主动勾选** ──
+        # 勾上 = 本次走 ⑪（内部自动带 `--verify-refs`：出任务书 + 按同一份规范直连核实/并入）；
+        # 不勾 = 普通初排：不联网、不出《文献核实任务书》（批62 的行为变化，文档会写清）。
+        # label 与 mac 逐字一致；会话态、默认不勾（涉及费用与未刊稿外发，每次运行都由编辑主动勾）。
+        ai_row = ttk.Frame(parent)
+        ai_row.pack(anchor="w", pady=(4, 0))
+        self.v_ai = tk.BooleanVar(value=False)
+        _check(ai_row, "用 AI 处理参考文献（直连 API，会产生费用）", self.v_ai,
+               command=self._toggle_ai_options).pack(side="left")
+        ttk.Label(ai_row, text="（需先在「设置」里配置端点；勾上才联网）",
+                  style="Muted.TLabel").pack(side="left", padx=(8, 0))
+        # 动态提示（与 mac 一样按「配置没配置端点」给不同颜色的话，不抄判据只读配置）。
+        self.ai_hint = ttk.Label(parent, text="", wraplength=820, justify="left",
+                                 foreground=theme.COLOR["ok"])
+
         # ── 批60：全文 AI 核查（直连 API，会产生费用；默认不勾、**会话态**）─────────
         # 用户 2026-10-20 授权全文外发；Lead 拍板「每次运行主动同意」——**不写 settings.json**
         # （与 mac `Options.llmFulltext`、批59 coopFulltext 同一模式：默认每次都不勾最安全）。
         # 勾了才在 ⑪（本次真的走直连 AI：非两段式 + `--verify-refs` 且不是 `--verify-plan`）
         # 追加 `--llm-fulltext`；report-only：只生成《…_AI全文复核.md》，不改正文/reference.bib。
-        row_ft = ttk.Frame(parent)
+        # 批62：整块**只在「用 AI 处理参考文献」勾着时展开**（与 mac 的嵌套结构一致）——
+        # 未勾 AI 时既看不到、也一个参数都不传（`llm_fulltext` 进了 extra_args 也不会生效）。
+        self.llm_fulltext_box = ttk.Frame(parent)
+        row_ft = ttk.Frame(self.llm_fulltext_box)
         row_ft.pack(anchor="w", pady=(4, 0))
         self.v_llm_fulltext = tk.BooleanVar(value=False)
         _check(row_ft, "全文 AI 核查（直连 API，会产生费用）",
                self.v_llm_fulltext).pack(side="left")
         self.llm_fulltext_hint = ttk.Label(
-            parent,
+            self.llm_fulltext_box,
             # 逐字对齐 mac `ConvertTab.swift`（批60）的三行说明：两壳同口径，改文案必须两边
             # 同时改；这里只讲「会发生什么/不勾会怎样/前提是什么」，判据不抄进外壳。
             text="⚠ 勾上后会产生费用：引擎把稿件正文按片（每片 ≤3 万字）直接发送到"
@@ -331,6 +359,7 @@ class ConvertTab(TabPage):
                  "请按日志提示调大（0 = 不限）。",
             style="Muted.TLabel", wraplength=820, justify="left")
         self.llm_fulltext_hint.pack(anchor="w")
+        self._toggle_ai_options()          # 默认不勾 → 提示/全文核查区全部收起
 
         # 第 132 条：把「当前核实范围」就地显示（方案 §4：任务相关选项就地改，别去设置页找）；
         # 值仍以「引用库设置」页为准，这里只是**每进本页刷新一次**的只读回显。
@@ -354,6 +383,14 @@ class ConvertTab(TabPage):
                   style="Muted.TLabel").pack(side="left", padx=(8, 0))
 
         self.coop_panel = ttk.Frame(parent)
+        # 批62（入口收敛 B）：任务书入口收敛到两段式/直连 AI/CLI，独立勾选已隐藏。
+        # 文案与 mac 逐字一致（「=」半角、`--verify-refs` 无反引号）。
+        self.coop_guide = ttk.Label(
+            self.coop_panel,
+            text="文献核实任务书 = 两段式第一段产物；普通转换如需任务书请用两段式或 "
+                 "CLI --verify-refs（高级）",
+            style="Muted.TLabel", wraplength=820, justify="left")
+        self.coop_guide.pack(anchor="w")
         self.v_coop_status = tk.StringVar(value="状态：未运行")
         ttk.Label(self.coop_panel, textvariable=self.v_coop_status).pack(anchor="w")
         btns = ttk.Frame(self.coop_panel)
@@ -481,6 +518,49 @@ class ConvertTab(TabPage):
             self.coop_panel.pack(anchor="w", pady=(2, 0))
         else:
             self.coop_panel.pack_forget()
+        self._refresh_ai_hint()            # 批62：协同模式下直连 AI 不生效，提示要跟着变
+
+    # ── 批62：入口收敛 B —— 直连 AI 显式勾选（说明与全文核查区按需展开）──────────
+    def _toggle_ai_options(self) -> None:
+        """勾「用 AI 处理参考文献」才展开直连说明与「全文 AI 核查」区（默认全部收起）。"""
+        on = bool(self.v_ai.get())
+        self._refresh_ai_hint()
+        if on:
+            self.ai_hint.pack(anchor="w")
+            self.llm_fulltext_box.pack(anchor="w")
+        else:
+            self.ai_hint.pack_forget()
+            self.llm_fulltext_box.pack_forget()
+
+    def _refresh_ai_hint(self) -> None:
+        """批62：AI 勾选下的动态提示（配置了端点=会直连核实；没配=只出任务书，不调模型）。"""
+        if self.v_ai.get() and getattr(self, "v_coop", None) is not None \
+                and self.v_coop.get():
+            self.ai_hint.config(
+                text="⚠ 已勾「AI 协同初排（两段式）」：本次直连 API 不生效"
+                     "（两段式全程不调用 API，外部 chat 由编辑自己操作）；"
+                     "「用 AI 处理参考文献」的勾选不影响两段的产物。",
+                foreground=theme.COLOR["warn"])
+            return
+        api = self.cfg.get("api") or {}
+        if S.ai_configured(self.cfg):
+            base = str(api.get("base", "") or "").strip()
+            model = str(api.get("model", "") or "").strip()
+            key = str(api.get("key", "") or "").strip()
+            self.ai_hint.config(
+                text=("✔ 已配置 " + (model or "（未填模型名）") + " @ " + base
+                      + (f"（密钥 {S.mask_key(key)}）" if key else "")
+                      + " —— 转换时内部加 --verify-refs：在本机直连这个端点，按《文献核实任务书》"
+                      "同一份规范生成修订，并把通过安全校验的条目并入交付的 reference.bib"
+                      "（合并前先备份 reference.bib.ai前；逐条记录写进《…_文献核实.md》）。"
+                      "会产生 API 费用；并完之后都必须人工过一遍。"),
+                foreground=theme.COLOR["ok"])
+        else:
+            self.ai_hint.config(
+                text="⚠ 端点还没配置：本次只会生成《文献核实任务书》，不会调用任何模型、"
+                     "reference.bib 一个字节不改。请到「设置」页填写 API 地址与模型名"
+                     "（「测试连接」可自检），配好后再回来运行。",
+                foreground=theme.COLOR["warn"])
 
     def _ensure_coop_stage(self) -> C.CoopStage | None:
         """当前暂存目录：按输出根 + 源稿**重新发现**（源稿/输出目录改过就不认旧的）。"""
@@ -742,6 +822,7 @@ class ConvertTab(TabPage):
 
     def on_activate(self) -> None:
         self.refresh_bibdb_hint()
+        self._refresh_ai_hint()            # 批62：设置页可能刚改过端点，提示要刷新
         self._ensure_coop_stage()          # 切回本页时重新扫一次暂存目录（源稿可能改过）
         self._refresh_coop_buttons()
         self._refresh_coop_replies()
@@ -763,17 +844,28 @@ class ConvertTab(TabPage):
         # 只把「用户勾没勾」交给 `convert_call`；「是否真的进 argv」（仅 ⑪ 直连路径）在
         # engine.py 的拼装点一处收口，coop/普通转换天然不受影响。
         args["llm_fulltext"] = bool(self.v_llm_fulltext.get())
+        # 批62：初排页不再暴露独立任务书勾选；⑪ 直连 AI 入口 = 「用 AI 处理参考文献」。
+        # `verify_refs` 仍原样传（字段保留兼容，界面恒 false）；`use_ai` 让拼装点内部
+        # 等价成 --verify-refs（普通转换两者皆 false → argv 与入口收敛前「不勾」时逐字节相同）。
+        args["use_ai"] = bool(self.v_ai.get())
         return args
 
 
 class CheckBibTab(TabPage):
+    # 批62（入口收敛 B）：侧栏短名保持不动（长串在 185px 侧栏会截断；与 mac 同做法：
+    # 长定位标题放正文顶部 `page_title`）。能力一个未删：离线体检/并回/入藏引用库。
     name = "文献回读校验"
+    page_title = "回读/比对报告查看器（高级：手动并回，离线）"
     pick = "file"
-    instruction = ("使用说明：选编辑改完交回的 .bib（或产物目录里的 reference.bib）。\n"
-                   "勾了「并回产物」会把交回的条目并进产物的 reference.bib —— "
-                   "并入前引擎会自动留一份 `reference.bib.ai前` 备份。\n"
-                   "第 132 条：「入藏到引用库」把**产物** reference.bib 按往期成品 bib 入库"
-                   "（verified=true）——编辑交回的那份是待核对稿，不要入。")
+    instruction = (
+        "用途：对一份外部改过 / 交回的 .bib 做离线体检——语法、编辑部规范、引用键闭合，"
+        "以及与基准 reference.bib 的逐字段对比（改 key 会让正文引用悬空，是最危险的一类）。"
+        "需要时可把通过核对的条目手动并回产物（高级操作：并回前自动备份 .ai前）。\n"
+        "本页不生成《文献核实任务书》：需要任务书请走「初排转换 → AI 协同初排（两段式）」"
+        "的第一段产物，或命令行 --verify-refs（高级）。AI 交回的修订须人工核对；"
+        "本页不联网、不调任何模型，也不能判断文献真伪。\n"
+        "第 132 条：「入藏到引用库」把**产物** reference.bib 按往期成品 bib 入库"
+        "（verified=true）——编辑交回的那份是待核对稿，不要入。")
 
     def __init__(self, parent, name, on_run, on_stop, *, log=None, post=None, cfg=None):
         # 「入藏到引用库」要后台跑引擎再回主线程更新界面：`post` 是主窗口的队列入口，

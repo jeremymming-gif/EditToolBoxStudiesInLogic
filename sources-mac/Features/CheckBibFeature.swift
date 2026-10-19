@@ -1,6 +1,8 @@
 import Foundation
 
-/// 「文献回读校验」—— 调用 Engine/checkbib.py 给编辑交回的 `.bib` 做一次**离线体检**。
+/// 「回读/比对报告查看器（高级：手动并回，离线）」—— 调用 Engine/checkbib.py 给外部改过 /
+/// 交回的 `.bib` 做一次**离线体检**（批 62 入口收敛：本页不再是「生成任务书」的入口，
+/// 任务书只由两段式第一段或 CLI `--verify-refs` 产生；本页能力一个不少）。
 ///
 /// 为什么 shell 出去调 Python，而不是用 Swift 重写
 /// ------------------------------------------------
@@ -435,7 +437,7 @@ enum CheckBibFeature {
                         out: outPath)
 
         log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
-        log("文献回读校验\n")
+        log("回读/比对报告查看器\n")
         log("  工具   \(tool)\n")
         log("  解释器 \(py)\n")
         log(isPaste

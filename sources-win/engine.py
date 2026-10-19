@@ -379,6 +379,8 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  lang: str = "", extra: str = "",
                  verify_max: int | None = None, verify_plan: bool = False,
                  verify_all_refs: bool = False, no_bibdb: bool = False,
+                 # ── 批62：入口收敛 B —— 界面「用 AI 处理参考文献」→ 内部强制 ⑪ ──
+                 use_ai: bool = False,
                  # ── 批60：全文 AI 核查（直连 API；valueless flag，仅 ⑪ 生效）──
                  llm_fulltext: bool = False,
                  # ── 第五十四批（CLI）/ 第五十五批（GUI 接入）：两段式 AI 协同初排 ──
@@ -399,17 +401,25 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     第 132 条的核实成本闸门（`verify_max` / `verify_plan` / `verify_all_refs` /
     `no_bibdb`）**默认全是 None/False = 一个参数都不加** —— 没碰过「引用库设置」的
     用户，命令行与接入引用库之前逐字节相同。它们只在**这次真的执行核实**
-    （`verify_refs=True`）时才进 argv：引擎对单独出现的一律只打「本次忽略」告警，
-    外壳不该发这种噪声。`--verify-plan` 与 `--verify-refs` **二选一**（前者只算账就
-    退出 0；两个都传会让日志说不清到底核不核）。
+    （`verify_refs=True` 或 `use_ai=True`）时才进 argv：引擎对单独出现的一律只打
+    「本次忽略」告警，外壳不该发这种噪声。`--verify-plan` 与 `--verify-refs`
+    **二选一**（前者只算账就退出 0；两个都传会让日志说不清到底核不核）。
+
+    批62「入口收敛 B」：初排页**不再暴露**独立「出文献核实任务书」勾选；`verify_refs`
+    字段保留兼容旧设置/旧调用，但界面默认传 False。直连 AI 路径由 `use_ai=True`
+    （= 勾「用 AI 处理参考文献（直连 API）」，显式主动勾选）驱动，本函数内部把它
+    **等价**成 `verify_refs=True` —— argv/产物与批61 的 AI 路径逐字节相同
+    （`--verify-refs` 由引擎内部隐含出任务书）。普通转换（两者皆 False）是批62 的
+    行为变化：argv 不含 `--verify-refs`、默认产物不再有 `<stem>_文献核实.md`；
+    两段式第一段照旧强制带 `--verify-refs`（任务书就是第一段的产物）。
 
     ── 两段式 AI 协同初排（CLI 批54 冻结；本函数是外壳侧唯一拼装点）──────────
     `coop_taskbook_only=True` = **第一段**：现有参数 + `--verify-refs --no-ai-merge
     --coop-taskbook-only`（`--coop-stage` 可选）。第一段**绝不**传 `--verify-plan`
     （引擎该分支在写任务书/状态前就退出 0，传了等于没跑），也不传任何
     `--llm-*`/`--search-refs`（外部 chat 通道，软件不调 API、不上传内容）。
-    第一段即使页面没勾「出文献核实任务书」也强制带 `--verify-refs`：任务书就是这一段的
-    全部产出（引擎自己也会把它当隐含开关）。scan-only 时界面不建 coop 参数（本函数不看）。
+    批62 起初排页不再暴露独立勾选，但第一段**照旧强制**带 `--verify-refs`：任务书就是
+    这一段的全部产出（引擎自己也会把它当隐含开关）。scan-only 时界面不建 coop 参数（本函数不看）。
 
     批59「全文 AI 核查」：`coop_fulltext="context"|"full"` **仅第一段有效**，在
     `--coop-taskbook-only` 之后追加 `--coop-fulltext context|full`（引擎把正文/引用
@@ -419,7 +429,7 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
 
     批60「全文 AI 核查（直连 API）」：`llm_fulltext=True` 表示编辑本次在界面上勾了
     「全文 AI 核查（直连 API，会产生费用）」；**只有本次真的跑 ⑪ 直连通道**
-    （非两段式 + `verify_refs` 且 `verify_plan=False`）才在 `--verify-refs` 之后追加
+    （非两段式 + `verify_refs`/`use_ai` 且 `verify_plan=False`）才在 `--verify-refs` 之后追加
     无取值的 `--llm-fulltext`。默认 False = 一个字节都不加（argv 与批59 逐字节相同）；
     普通转换 / 只算账 / 两段式（ph1/ph2）**都不加**（引擎在同一批里对这些非法组合
     exit 2，外壳在拼装点就**不制造**这些组合，不需要在这些路径传）。
@@ -444,6 +454,9 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
     reply_paths = _coop_reply_paths(coop_replies)
+    # 批62：`use_ai`（勾「用 AI 处理参考文献」）= 内部强制 ⑪ 直连通道 —— 与显式
+    # `verify_refs` 完全等价（argv 逐字节相同）；普通转换两者皆 False → 不带 --verify-refs。
+    verify = bool(verify_refs or use_ai)
 
     # ── 参数组合先校验，别把自相矛盾的命令行发给引擎 ──
     if coop_taskbook_only and reply_paths:
@@ -498,7 +511,7 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
             cmd += ["--coop-fulltext", coop_fulltext]
         if coop_stage:
             cmd += ["--coop-stage", coop_stage]
-    elif verify_refs:
+    elif verify:
         cmd.append("--verify-plan" if verify_plan else "--verify-refs")
         if verify_max is not None:
             cmd += ["--verify-max", str(_nonneg_int(verify_max, "--verify-max"))]

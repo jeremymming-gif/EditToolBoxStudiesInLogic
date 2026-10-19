@@ -54,7 +54,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--refs` / `--bib` / `--name` / `--author` / `--lang` / `--sty` / `--skeleton` | 见 `convert.py --help`。⚠️ 第 134 条起 `--refs` 的自动发现改保守：**有真 `.bib`**（`--bib` / 源内 `\addbibresource` / `\bibliography` 指向且文件存在 / 同目录 `.bib`）时**不自动合并**附件（要合并请显式 `--refs`）；无真 bib 时自动挑候选（真 BibTeX 优先，文本清单须过结构校验：拒 `\href{...}` / 相邻 `}{` / 疑似一行两条），日志逐条写「采用 / 跳过 + 原因」 |
 | `--vol --issue --year --pages --received --editor --grants` | 编辑侧出版信息，不填就留模板默认值 |
 | `--compile` `--clean` `--source-pdf` | 编译出 PDF / 清中间文件 / 导出原稿 PDF（供矢量形状截图） |
-| `--verify-refs` `--no-ai-merge` | 出《文献核实任务书》/ 只出任务书不并 bib（第 64 条）。⚠️ 第 128 条起任务书、检索与 AI **默认只覆盖正文引用到的条目**（不是全量，见下一行） |
+| `--verify-refs` `--no-ai-merge` | 出《文献核实任务书》/ 只出任务书不并 bib（第 64 条）。**GUI 契约（第 62 批）**：普通初排默认 argv **不含** `--verify-refs`；两段式第一段固定带 `--verify-refs --no-ai-merge --coop-taskbook-only`；GUI 勾「用 AI 处理参考文献（直连 API，会产生费用）」时内部自动带 `--verify-refs`。CLI 行为完全兼容、未改。⚠️ 第 128 条起任务书、检索与 AI **默认只覆盖正文引用到的条目**（不是全量，见下一行） |
 | `--verify-all-refs` `--verify-max N` `--verify-plan` | **核实范围与成本闸门（第 128 条）**。默认只核**正文引用到的键**（产物 `.tex` 的 cite 命令；`\nocite{*}` = 全量；解析不出引用键时退回全量并警告）。`--verify-all-refs` = 显式全量（越过闸门）；`--verify-max` = 本次条数上限（**默认 120**，`0` = 不限），超过且未显式全量 → **退出 2**（stderr 给三条可操作的路，任务书/检索/AI 一律没开始）；`--verify-plan` = 只打印范围与预计检索/AI 次数后**退出 0**（不生成任务书、不检索、不调 AI；转换产物照常写出，**不是** `--dry-run`）。外壳不传时行为与默认值相同（老外壳兼容） |
 | `--search-refs` | 用 DeepSeek 独立 Search API 给**本次核实范围内**的参考文献检索证据：写进任务书 +（P2，第 72 条起）注入 AI 逐条提示词 + 合并前校验 `% 来源：` URL 白名单（默认关；开启时才计费 ¥5/1000 次；地址/密钥复用 `--llm-*`，也可 `SLCN_SEARCH_BASE` / `SLCN_SEARCH_KEY`；环境变量 `SLCN_SEARCH_REFS=1`）。外壳：mac 在 AI 运行时传 `--search-refs`；Windows 把 `SLCN_SEARCH_REFS=1` 放进子进程环境 |
 | `--bibdb` `--bibdb-path PATH` `--no-bibdb` | **编辑部引用库（第 129 条）**。执行核实（`--verify-refs` / `--verify-plan`）时**默认**在默认库存在时自动查库（默认库 = 笔记仓 `bib_db/bibliography.jsonl`，`slcn.bibdb.default_db_path()`）：命中**已核实**条目的键**不调检索/AI**、**不改 `reference.bib`**，字段差异只写进任务书「五、库内已核实」。`--bibdb` = 显式启用（库缺失/读不了只告警、不中断出稿）；`--bibdb-path` = 指定库文件（隐含启用）；`--no-bibdb` = 显式关闭（输出与接入前逐字节相同）。笔记仓/默认库不存在时**静默跳过**（公开仓/CI 行为零变化）；不核实时这些参数只提示忽略。判定保守：key 命中只算候选（仍走检索），详见 `docs/GUIDE.md` §3.10。第 58 批另加 `--no-bibdb-verify` = 关闭**初排默认只读比对**（只影响日志一行；见下「引用库比对」行） |
@@ -62,6 +62,13 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--llm-fulltext` | **直连 API 全文核查（第 60 批，可选、默认关）**：只配合 `--verify-refs` 的 ⑪ 直连路径；把正文按 ≤3 万字符/片发到配置端点（每片一次请求、**会产生 API 费用**），生成 `<名>_AI全文复核.md`（report-only：不改 `reference.bib`/`.tex`、报告不落正文全文、**自动应用未实现**）。未配置端点 / 预算超限 / 与 `--verify-plan` 或两段式同用 → 退出 2 且零请求；单片失败 fail-soft（退出码 0）。不勾时正文一个字节都不外发 |
 | `--coop-fulltext {context,full}` | 第 59 批，可选、**默认关**。只配合 `--coop-taskbook-only`：第一段任务书在「附二」后追加「附三、正文全文/引用上下文」；`context` = 引用/脚注锚点前后各 300 字窗口合并（上限 4 万字符≈13k tokens）、`full` = 正文全文（上限 8 万字符≈27k tokens），超限显式截断。只写本机任务书（软件零上传），不新增改正文类建议；其他组合退出 2。见下方「两段式协同 argv 契约」 |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
+
+**GUI 契约（第 62 批入口收敛 B）**：初排页移除独立「生成/出文献核实任务书」勾选，普通初排默认 argv 不含
+`--verify-refs`（**不再默认生成 `<Name>_文献核实.md`**）；需要任务书 → 两段式第一段，或 CLI `--verify-refs`（高级）。
+Windows 新增显式「用 AI 处理参考文献（直连 API，会产生费用）」勾选（默认不勾、会话态），勾上后内部带
+`--verify-refs`（行为/产物与批61 一致）；此前「配好端点即隐式跑 AI」的行为取消。`--no-ai-merge` / `checkbib.py`
+CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/比对报告查看器（高级：手动并回，离线）」，侧栏短名不变）
+仍调用独立的 `checkbib.py`，能力全保留。
 
 **退出码**：`0` = 成功；`2` = 用法/IO/致命错误（`die()`，消息在 **stderr**）。
 **没有 1**：中途某一步失败也算失败，一律 2 —— 外壳判「成功」只看 `0`。
@@ -157,7 +164,7 @@ reference.bib                参考文献（勾了 AI 并回时**已被机器改
 reference.bib.ai前           本次合并**之前**的那一份（回滚用；重跑会覆盖）
 SLCN-MIX.sty / SLEN.sty      与 --sty 一致
 original/                    源稿归档副本（只读副本，不是原件）
-<Name>_文献核实.md           任务书（含「六、合并记录」）
+<Name>_文献核实.md           任务书（含「六、合并记录」；两段式第一段 / CLI --verify-refs 才生成，第 62 批起普通初排默认不生成）
 <Name>_AI全文复核.md        全文复核报告（--llm-fulltext 才有；report-only，不落正文）
 <Name>_回读校验报告.md       并入后自检（结论一行同时打在 stdout）
 <Name>_参考文献核对.txt      离线核对（缺哪些字段 / 引用对不对得上）
@@ -165,6 +172,9 @@ original/                    源稿归档副本（只读副本，不是原件）
 ```
 
 ## 三、入口 2：`checkbib.py`（文献回读校验 / 并回）
+
+> GUI（第 62 批）：页顶标题「**回读/比对报告查看器（高级：手动并回，离线）**」，侧栏短名仍「文献回读校验」；
+> 本页不生成任务书，体检/粘贴预览/并回/入藏引用库/重新编译该篇等能力全部保留；CLI 与本页调用方式未变。
 
 ```bash
 python3 checkbib.py --returned <交回.bib> [--original <原件.bib>] [--tex <正文.tex>] [--out <报告.md | 目录>]

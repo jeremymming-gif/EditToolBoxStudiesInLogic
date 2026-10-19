@@ -19,7 +19,8 @@
   (j) 两段式 AI 协同初排（第五十五批）：两段 argv 契约、默认 argv 零变化、暂存目录发现、
       建议摘要、回复导入、AI token 预算设置（纯逻辑，全部 headless）；批59 全文 AI 核查
       范围映射（默认关；仅第一段带 `--coop-fulltext context|full`）；批60 直连全文核查
-      （`--llm-fulltext`，默认关、会话态；只在 ⑪ 直连通道追加）。
+      （`--llm-fulltext`，默认关、会话态；只在 ⑪ 直连通道追加）；批62 入口收敛 B
+      （普通默认无 --verify-refs，`use_ai` 内部等价 ⑪；回读页长标题）。
 """
 from __future__ import annotations
 
@@ -615,6 +616,49 @@ else:
         app.show_tab(0)
         app.update()
         ct = app.convert_tab
+        # ── 批62：入口收敛 B（真窗口证据）──
+        # 独立「出文献核实任务书」勾选隐藏（字段保留、默认 false）；普通初排默认 argv
+        # 无 --verify-refs；勾「用 AI 处理参考文献」→ 内部自动带（⑪）；AI 说明/全文区
+        # 按勾选展开收起；两段式面板有引导文案；回读页长标题在正文顶部、侧栏短名不变。
+        print("入口收敛默认关=%d" % int(not ct.v_ai.get() and not ct.v_refs.get()))
+        _hidden_refs = []
+
+        def _walk_labels(w):
+            for _ch in w.winfo_children():
+                try:
+                    if "出文献核实任务书" in str(_ch.cget("text")):
+                        _hidden_refs.append(str(_ch.cget("text")))
+                except Exception:  # noqa: BLE001  不是带 text 的控件
+                    pass
+                _walk_labels(_ch)
+
+        _walk_labels(ct)
+        _b62_off = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        ct.v_ai.set(True)
+        ct._toggle_ai_options()
+        app.update()
+        _b62_on = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        print("入口收敛隐藏勾选=%d" % int(not _hidden_refs))
+        print("入口收敛AI展开=%d" % int(bool(ct.ai_hint.winfo_ismapped())
+                                        and bool(ct.llm_fulltext_box.winfo_ismapped())))
+        print("入口收敛AI提示=%d" % int("已配置" in ct.ai_hint.cget("text")
+                                        or "端点还没配置" in ct.ai_hint.cget("text")))
+        print("入口收敛默认argv=%d" % int("--verify-refs" not in _b62_off.argv))
+        print("入口收敛AIargv=%d" % int("--verify-refs" in _b62_on.argv
+                                        and "--llm-fulltext" not in _b62_on.argv))
+        print("入口收敛协同引导=" + ct.coop_guide.cget("text"))
+        ct.v_ai.set(False)
+        ct._toggle_ai_options()
+        app.update()
+        _b62_back = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        print("入口收敛取消复原=%d" % int(_b62_back.argv == _b62_off.argv
+                                        and not ct.ai_hint.winfo_ismapped()))
+        print("回读页标题=" + app.checkbib_tab.page_title)
+        print("回读页引导=%d" % int(
+            app.checkbib_tab.name == "文献回读校验"
+            and "本页不生成《文献核实任务书》" in app.checkbib_tab.instruction
+            and "手动并回" in app.checkbib_tab.instruction
+            and "离线体检" in app.checkbib_tab.instruction))
         print("协同默认关=%d" % int(not ct.v_coop.get()))
         print("协同面板默认隐藏=%d" % int(not ct.coop_panel.winfo_ismapped()))
         ct.v_coop.set(True)
@@ -644,14 +688,21 @@ else:
             and "零费用" in ct.coop_fulltext_hint.cget("text")))
         # 批60：全文 AI 核查（直连 API）——默认不勾、**会话态**；勾选 → ⑪ argv 追加
         # 无取值的 --llm-fulltext，取消后复原；settings.json 里不该出现这个偏好。
+        # 批62 起全文核查区只在「用 AI 处理参考文献」勾着时展开/生效，先勾 AI 再验映射。
         print("直连全文默认关=%d" % int(not ct.v_llm_fulltext.get()))
         _llm_off = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        ct.v_ai.set(True)
+        ct._toggle_ai_options()
         ct.v_llm_fulltext.set(True)
         _llm_on = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
         ct.v_llm_fulltext.set(False)
+        _llm_ai_only = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
+        ct.v_ai.set(False)
+        ct._toggle_ai_options()
         _llm_back = M.E.convert_call(source="a.docx", out="/o", **ct.extra_args())
         print("直连全文默认argv=%d" % int("--llm-fulltext" not in _llm_off.argv))
         print("直连全文映射=%d" % int("--llm-fulltext" in _llm_on.argv))
+        print("直连全文需AI=%d" % int("--llm-fulltext" not in _llm_ai_only.argv))
         print("直连全文取消复原=%d" % int(
             "--llm-fulltext" not in _llm_back.argv and _llm_back.argv == _llm_off.argv))
         print("直连全文文案=%d" % int(
@@ -867,8 +918,22 @@ else:
               "勾选后 ⑪ argv 追加 --llm-fulltext，取消后复原；提示讲清费用/不改产物",
               "直连全文默认关=1" in out and "直连全文默认argv=1" in out
               and "直连全文映射=1" in out and "直连全文取消复原=1" in out
+              and "直连全文需AI=1" in out
               and "直连全文文案=1" in out and "直连全文不落盘=1" in out,
               [l for l in out.splitlines() if l.startswith("直连全文")])
+        check("(g) 批62 入口收敛 B（真控件）：独立「出文献核实任务书」勾选已隐藏；普通初排默认 "
+              "argv 无 --verify-refs；勾「用 AI 处理参考文献」后内部自动带（⑪），AI 说明/"
+              "全文区按勾选展开收起；协同面板有引导文案；回读页长标题在正文顶部、侧栏短名不变",
+              "入口收敛默认关=1" in out and "入口收敛隐藏勾选=1" in out
+              and "入口收敛AI展开=1" in out and "入口收敛AI提示=1" in out
+              and "入口收敛默认argv=1" in out and "入口收敛AIargv=1" in out
+              and "入口收敛取消复原=1" in out
+              and any(l.startswith("入口收敛协同引导=") and "两段式第一段产物" in l
+                      and "--verify-refs" in l for l in out.splitlines())
+              and "回读页标题=回读/比对报告查看器（高级：手动并回，离线）" in out
+              and "回读页引导=1" in out,
+              [l for l in out.splitlines()
+               if l.startswith(("入口收敛", "回读页"))])
         check("(g) 设置页 AI 预算：非法值红字**不落盘**、合法值（0 = 不限）落盘",
               "预算非法不落盘=1" in out and "预算落盘=1" in out,
               [l for l in out.splitlines() if l.startswith("预算")])
@@ -1289,6 +1354,38 @@ check("(j) 批60：全文 flag 与既有直连预算参数同路（`--llm-fullte
       "--llm-fulltext" in _j_llm_budget.argv
       and _j_llm_budget.argv[_j_llm_budget.argv.index("--ai-budget-tokens") + 1] == "0")
 
+# ── 批62：入口收敛 B（普通默认无 --verify-refs；use_ai 内部等价 ⑪）──
+_j62_default = E.convert_call(source="a.docx", out="/o", compile_pdf=True)
+check("(j) 批62：普通初排默认 argv **不含 --verify-refs**（入口收敛的行为变化："
+      "默认不再出《文献核实任务书》；argv 与「不勾任务书」时逐字节相同）",
+      _j62_default.argv == _j_base + ["--source", "a.docx", "--out", "/o", "--compile"]
+      and "--verify-refs" not in _j62_default.argv, _j62_default.display[:180])
+_j62_ai = E.convert_call(source="a.docx", out="/o", compile_pdf=True, use_ai=True)
+check("(j) 批62：勾「用 AI 处理参考文献」→ 内部等价 ⑪：argv 与批61 的 AI 路径"
+      "**逐字节相同**（内部自动带 --verify-refs，不带 --verify-plan）",
+      _j62_ai.argv == _j_base + ["--source", "a.docx", "--out", "/o", "--compile",
+                                 "--verify-refs"]
+      and _j62_ai.argv == E.convert_call(source="a.docx", out="/o", compile_pdf=True,
+                                         verify_refs=True).argv, _j62_ai.display[:180])
+check("(j) 批62：`verify_refs` 字段保留兼容旧设置/旧调用（显式 True 行为不变；"
+      "B 只是界面不再默认提供，普通转换默认值是 False）",
+      "--verify-refs" in E.convert_call(source="a", out="/o", verify_refs=True).argv
+      and "--verify-refs" not in E.convert_call(source="a", out="/o").argv)
+check("(j) 批62 边界：coop ph1 仍**强制** --verify-refs（任务书是第一段产物）、ph2 绝不带、"
+      "先算账时仍只带 --verify-plan（不假装核实）；这些不随入口收敛改变",
+      "--verify-refs" in E.convert_call(source="a", out="/o", use_ai=True,
+                                       coop_taskbook_only=True).argv
+      and "--verify-refs" not in E.convert_call(source="a", out="/o",
+                                                coop_replies="/r", use_ai=True).argv
+      and E.convert_call(source="a", out="/o", use_ai=True,
+                         verify_plan=True).argv[-1] == "--verify-plan")
+check("(j) 批62：批60 全文直连也随入口收敛 —— 只有 ⑪（use_ai/verify_refs）时才追加 "
+      "`--llm-fulltext`；普通转换传了 llm_fulltext=True 也不进 argv",
+      "--llm-fulltext" in E.convert_call(source="a", out="/o", use_ai=True,
+                                         llm_fulltext=True).argv
+      and "--llm-fulltext" not in E.convert_call(source="a", out="/o",
+                                                 llm_fulltext=True).argv)
+
 _j_ph2_single = E.convert_call(source="/稿/a.docx", out="/期", coop_replies="/回填",
                                coop_stage="/期/A_待核", coop_apply=True, compile_pdf=True,
                                verify_refs=True, name="A", author="某",
@@ -1679,6 +1776,24 @@ check("(j) 批60：**会话态不落盘**（Lead 拍板：正文外发+费用属
       and "Options.llmFulltext" in _src_55
       and '"--llm-fulltext" in call.argv' in _src_55
       and "但端点未配置" in _src_55 and "会产生费用" in _src_55)
+check("(j) 批62：初排页**不再暴露**独立「出文献核实任务书」勾选（`v_refs` 字段保留、"
+      "默认 False）；新增「用 AI 处理参考文献（直连 API，会产生费用）」显式勾选"
+      "（默认不勾、会话态），勾选值经 `extra_args` 的 `use_ai` 交给拼装点",
+      '_check(row1, "出文献核实任务书"' not in _src_55
+      and "self.v_refs = tk.BooleanVar(value=False)" in _src_55
+      and "用 AI 处理参考文献（直连 API，会产生费用）" in _src_55
+      and "self.v_ai = tk.BooleanVar(value=False)" in _src_55
+      and 'args["use_ai"] = bool(self.v_ai.get())' in _src_55
+      and "self.v_ai.set(True)" not in _src_55)   # 只由用户点勾，代码不得偷偷打开
+check("(j) 批62：两段式面板引导文案与 mac 逐字一致；回读页定位改为"
+      "「回读/比对报告查看器（高级：手动并回，离线）」但侧栏短名不变、能力保留"
+      "（并回/入藏/离线体检），并明确「本页不生成任务书」",
+      "文献核实任务书 = 两段式第一段产物" in _src_55
+      and "CLI --verify-refs（高级）" in _src_55
+      and 'page_title = "回读/比对报告查看器（高级：手动并回，离线）"' in _src_55
+      and 'name = "文献回读校验"' in _src_55
+      and "本页不生成《文献核实任务书》" in _src_55
+      and "并回产物 reference.bib" in _src_55 and "入藏到引用库" in _src_55)
 check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
       "与 mac 强制 useAI=false 同口径）",
       "api=None if coop_phase else" in _src_55)

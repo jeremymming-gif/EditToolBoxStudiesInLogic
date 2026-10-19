@@ -25,15 +25,16 @@ enum ConvertFeature {
         var sty = ""             // --sty
         var compile = true       // --compile
         var clean = true         // --clean
-        /// 生成《文献核实任务书》→ `--verify-refs`。**默认开**（批 58 与 Windows 对齐：
-        /// `sources-win/main.py` 的「出文献核实任务书」勾选框默认 `True`）。理据：引擎只在
-        /// `--verify-refs` 分支里查编辑部引用库，默认关会让编辑以为「初排根本没比对」。
-        /// ⚠️ 这是本页开关的**初值**，不是持久化开关：本勾选框没有 UserDefaults 键，每次启动
-        /// 都是新的 `Options`（`ConvertTab` 用 `@StateObject ConvertModel` 持有本次会话状态），
-        /// 所以不存在「覆盖老用户已保存选择」；用户运行中取消勾选照常生效并原样传给 argv。
-        /// 「查不查引用库」另有持久化开关 `BibDbSettings.lookupEnabled`（缺省 true、显式关过
-        /// 读回 false）——它与本默认值正交，不会被这次改动覆盖（关着仍传 `--no-bibdb`）。
-        var verifyRefs = true    // --verify-refs（生成《文献核实任务书》，批 58 默认开）
+        /// 生成《文献核实任务书》→ `--verify-refs`。**批 62 起内部默认 false**：初排页的
+        /// 独立勾选已隐藏（入口收敛 B），本字段只保留给既有调用方/脚本兼容，不再暴露给用户。
+        /// 现在真正会带这个旗标的只有两条语义入口：
+        ///   · 「用 AI 处理参考文献」（`useAI`，= ⑪ 直连 AI 通道）→ `arguments()` 自动带
+        ///     （AI 逐条建议与「六、合并记录」都写在这份任务书里）；
+        ///   · 两段式第一段（`coopPhase == .first`）→ 由 `CoopFeature.firstPhaseFlags` 带。
+        /// 普通初排转换**不再带**该旗标（默认产物不再有 `<stem>_文献核实.md`；引用库只读比对
+        /// 由引擎默认路径输出，与本旗标无关）。需要任务书的高级用法：两段式或 CLI `--verify-refs`。
+        /// 会话态：本字段不写 UserDefaults/ai.json。
+        var verifyRefs = false   // --verify-refs（批62 起默认关；勾选入口收敛到两段式/⑪）
         var sourcePdf = false    // --source-pdf
         var quoteThreshold = 105 // --quote-threshold
         var scanOnly = false     // --scan
@@ -172,23 +173,22 @@ enum ConvertFeature {
     ///
     /// 联动规则（**方案 A**，用户 2026-10-15 决定）只有这一份实现，SwiftUI 只负责绑定：
     ///
-    ///   · 勾上「用 AI 处理参考文献」→ **自动把「生成参考文献核实任务书」勾上**，
-    ///     界面同时把它置灰（`verifyRefsLocked`）。为什么必须绑在一起：AI 的逐条建议
-    ///     与「六、合并记录」**都写在这份任务书里**，不生成它，编辑手上就只剩一份被
-    ///     机器改过的 `reference.bib`、没有任何审阅材料 —— 这正是第 64 条那套保障
-    ///     要避免的局面。
-    ///   · 取消 AI 勾选 → 任务书开关恢复可操作，**不改它的值**（用户明确要求：
-    ///     不许顺手把编辑原来勾的选择抹掉；他想取消就自己再点一下）。
-    ///   · 置灰期间任务书若被程序化改掉（旧界面、脚本、`@Published` 直接赋值），
-    ///     拉回 `true` —— 「AI 开着但不出任务书」是自相矛盾的状态，合并记录会无处可写。
+    ///   · 勾上「用 AI 处理参考文献」→ 内部 `verifyRefs = true`。批 62 起该值不再由独立
+    ///     勾选控制（入口已收敛），但 **⑪ 直连 AI 路径必须带 `--verify-refs`**：AI 的逐条
+    ///     建议与「六、合并记录」**都写在这份任务书里**，不生成它就没有审阅材料 —— 这正是
+    ///     第 64 条那套保障要避免的局面。
+    ///   · 取消 AI 勾选 → **不写** `verifyRefs`：普通转换从此不默认出任务书（批 62 入口收敛），
+    ///     保留旧调用方显式设过的值，界面不再展示这个开关。
+    ///   · `.verifyRefs` 分支保留兼容（旧脚本/既有调用方仍可显式设）；AI 开着时仍只允许
+    ///     `true` ——「AI 开着但不出任务书」是自相矛盾的状态，合并记录会无处可写。
     static func toggled(_ which: Checkbox, to on: Bool, in o: Options) -> Options {
         var n = o
         switch which {
         case .useAI:
             n.useAI = on
-            if on { n.verifyRefs = true }      // 取消时**不写** verifyRefs（保留编辑的选择）
+            if on { n.verifyRefs = true }      // 取消时**不写** verifyRefs（批62：普通转换不再默认出任务书）
         case .verifyRefs:
-            n.verifyRefs = n.useAI ? true : on // 被 AI 锁住时只允许 true
+            n.verifyRefs = n.useAI ? true : on // 被 AI 锁住时只允许 true（旧调用方兼容分支）
         case .keepOriginalBib:
             n.keepOriginalBib = on
         }

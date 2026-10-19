@@ -1070,12 +1070,20 @@ check("i5b-searchrefs-needs-ai", "没勾「用 AI」时**不传** --search-refs�
 
 // i6: 源码级接线：SwiftUI 只绑定纯函数，联动逻辑只有一份
 let tabSrc = readSrc("Views/ConvertTab.swift")
-check("i6-bind", "ConvertTab 的复选框绑定走 `ConvertFeature.toggled(...)` + `verifyRefsLocked(...)`",
-      tabSrc.contains("ConvertFeature.toggled(") && tabSrc.contains("ConvertFeature.verifyRefsLocked("),
-      "toggled=\(tabSrc.contains("ConvertFeature.toggled(")) locked=\(tabSrc.contains("verifyRefsLocked("))")
-check("i6-ui", "界面有：置灰说明 + 新开关「保留原 reference.bib（不并入 AI 结果）」",
-      tabSrc.contains("自动勾上并锁定") && tabSrc.contains("保留原 reference.bib（不并入 AI 结果）"),
-      "锁定说明=\(tabSrc.contains("自动勾上并锁定")) 新开关=\(tabSrc.contains("保留原 reference.bib（不并入 AI 结果）"))")
+check("i6-bind", "ConvertTab 的复选框绑定走 `ConvertFeature.toggled(...)`；批62 起不再绑定独立任务书勾选",
+      tabSrc.contains("ConvertFeature.toggled(")
+        && !tabSrc.contains("verifyRefsLocked(")
+        && !tabSrc.contains("binding(.verifyRefs"),
+      "toggled=\(tabSrc.contains("ConvertFeature.toggled(")) "
+        + "locked=\(tabSrc.contains("verifyRefsLocked(")) "
+        + "bindVerifyRefs=\(tabSrc.contains("binding(.verifyRefs"))")
+check("i6-ui", "界面保留「保留原 reference.bib（不并入 AI 结果）」开关；批62 起独立任务书勾选/置灰说明已移除",
+      tabSrc.contains("保留原 reference.bib（不并入 AI 结果）")
+        && !tabSrc.contains("自动勾上并锁定")
+        && !tabSrc.contains("生成参考文献核实任务书（交给自己的 AI 核实）"),
+      "keepBib=\(tabSrc.contains("保留原 reference.bib（不并入 AI 结果）")) "
+        + "lockText=\(tabSrc.contains("自动勾上并锁定")) "
+        + "oldToggle=\(tabSrc.contains("生成参考文献核实任务书（交给自己的 AI 核实）"))")
 check("i6-hint", "AI 开关的说明按事实把「意图」与「限制」分开写（第 69 条改文案）："
       + "并入交付文件 / 未开检索时**明说这次不是联网核实** / 失败时 bib 不改 / "
       + "开了检索时说的是「真的联网」并指明要看 ⑤ 探针",
@@ -2032,14 +2040,14 @@ let coopOut = coopRoot + "/issue90"
 let coopReplies = coopRoot + "/replies"
 let coopStage = coopOut + "/Bo_Chen_待核"
 
-// n0 默认基线 —— 不勾两段式时没有 coop / 预算参数；**批 58 起「生成文献核实任务书」默认开**
-// （对齐 Windows `main.py` 的 `v_refs=True`），所以默认 argv 多一个 --verify-refs。
+// n0 默认基线 —— 批 62 入口收敛：普通初排**不再默认带 --verify-refs**（独立任务书勾选已隐藏），
+// 默认 argv 回到编译/清理两项；任务书只由 ⑪（useAI）或两段式第一段产生。
 let n0Defaults = ConvertFeature.Options()
-check("n0-default-value", "批58：不碰任何开关时「生成文献核实任务书」默认 true（对齐 Windows）",
-      n0Defaults.verifyRefs, "verifyRefs=\(n0Defaults.verifyRefs)")
+check("n0-default-value", "批62：不碰任何开关时内部 verifyRefs=false（独立勾选已隐藏；字段保留兼容旧脚本）",
+      n0Defaults.verifyRefs == false, "verifyRefs=\(n0Defaults.verifyRefs)")
 let n0Default = ConvertFeature.arguments(n0Defaults)
-check("n0-default", "不勾两段式：默认 argv = --compile --clean --verify-refs（批58 任务书默认开）",
-      n0Default == ["--compile", "--clean", "--verify-refs"], "argv=\(n0Default)")
+check("n0-default", "普通初排默认 argv = --compile --clean（不再含 --verify-refs；批62 入口收敛）",
+      n0Default == ["--compile", "--clean"], "argv=\(n0Default)")
 var n0 = ConvertFeature.Options()
 n0.source = coopSrc; n0.out = coopOut
 n0.verifyRefs = true; n0.useAI = true; n0.llmBase = "https://api.example.com/v1"
@@ -2092,8 +2100,8 @@ check("n59-default-off", "批59：默认不勾「全文 AI 核查」→ ph1 argv
       !n59DefaultArgv.contains("--coop-fulltext")
         && n59DefaultArgv.suffix(3) == ["--verify-refs", "--no-ai-merge", "--coop-taskbook-only"],
       "tail=\(Array(n59DefaultArgv.suffix(3))) fulltext=\(n59DefaultArgv.contains("--coop-fulltext"))")
-check("n59-b58-default-unchanged", "批59 默认不勾：普通转换默认 argv 与批58 逐字节一致（--compile --clean --verify-refs）",
-      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean", "--verify-refs"],
+check("n59-b58-default-unchanged", "批62 起普通默认 argv = --compile --clean（不再默认带 --verify-refs；批62 入口收敛）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"],
       "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
 check("n59-scope-default", "范围默认 = 引用上下文（引擎值 context；上限数字只是文案，壳子不替引擎算）",
       ConvertFeature.Options().coopFulltextScope == .context
@@ -2138,8 +2146,8 @@ check("n60-default-off", "批60：默认不勾「全文 AI 核查（直连 API�
         && !ConvertFeature.arguments(ConvertFeature.Options()).contains("--llm-fulltext"),
       "llmFulltext=\(ConvertFeature.Options().llmFulltext) "
         + "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
-check("n60-b59-default-unchanged", "批60 默认不勾：普通默认 argv 与批59 逐字节一致（--compile --clean --verify-refs）",
-      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean", "--verify-refs"],
+check("n60-b59-default-unchanged", "批62 起普通默认 argv = --compile --clean（不再默认带 --verify-refs）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"],
       "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
 // ⑪ = 勾「用 AI 处理参考文献」+ 已配置端点 + 非两段式（batch59 的 coop 通道另有 --coop-fulltext）
 var n60AI = ConvertFeature.Options()
@@ -2683,11 +2691,78 @@ check("s8-no-parent-folding", "源码里不再有「折叠成父目录」的旧�
         && !s56TabSrc.contains("引擎按目录读入"),
       "oldFunc=\(s56TabSrc.contains("private func importReplies")) "
         + "oldButton=\(s56TabSrc.contains("导入 AI 回复…"))")
-// 普通转换零变化：coop 列表字段不影响默认路径；批58 起任务书默认开 → 默认 argv 多 --verify-refs
-check("s8-default-argv", "默认 Options 的 argv = --compile --clean --verify-refs"
-      + "（批56 列表字段不碰默认路径；批58 任务书默认开）",
-      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean", "--verify-refs"],
+// 普通转换零变化：coop 列表字段不影响默认路径；批62 入口收敛后默认 argv 不含 --verify-refs
+check("s8-default-argv", "默认 Options 的 argv = --compile --clean"
+      + "（批56 列表字段不碰默认路径；批62 普通转换不再默认出任务书）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"],
       "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (m62) 第 62 批：文献核实入口收敛 B —— 隐藏独立勾选 / 普通转换不带 --verify-refs /
+//       ⑪(useAI) 与 coop ph1 仍带 / CheckBib 页改为回读比对查看器（能力不减）
+// ═══════════════════════════════════════════════════════════════════════════
+// 默认值：内部 false（字段保留兼容旧脚本），普通转换 argv 只有编译/清理
+let m62Default = ConvertFeature.Options()
+check("m62-default-field", "批62：Options.verifyRefs 默认 false（字段保留兼容旧调用方/脚本）",
+      m62Default.verifyRefs == false, "verifyRefs=\(m62Default.verifyRefs)")
+check("m62-plain-no-flag", "普通初排转换不再带 --verify-refs（默认产物无 <stem>_文献核实.md）",
+      !ConvertFeature.arguments(m62Default).contains("--verify-refs"),
+      "argv=\(ConvertFeature.arguments(m62Default))")
+// ⑪ 直连 AI：内部仍自动带 --verify-refs（行为/产物与批61 一致）
+var m62AI = ConvertFeature.Options()
+m62AI.useAI = true; m62AI.llmBase = "https://api.example.com/v1"; m62AI.llmModel = "m"
+check("m62-ai-keeps-taskbook", "⑪（useAI）内部仍自动带 --verify-refs（产物与批61 完全一致）",
+      ConvertFeature.arguments(m62AI).contains("--verify-refs"),
+      "argv=\(ConvertFeature.arguments(m62AI))")
+var m62AIkeep = m62AI; m62AIkeep.keepOriginalBib = true
+check("m62-ai-keep-original", "⑪ + 保留原 bib → --verify-refs 与 --no-ai-merge 都在（行为不变）",
+      ConvertFeature.arguments(m62AIkeep).contains("--verify-refs")
+        && ConvertFeature.arguments(m62AIkeep).contains("--no-ai-merge"),
+      "argv=\(ConvertFeature.arguments(m62AIkeep))")
+// 两段式：ph1 仍带、ph2 不带
+var m62Ph1 = ConvertFeature.Options(); m62Ph1.source = coopSrc; m62Ph1.out = coopOut
+m62Ph1 = CoopFeature.prepare(m62Ph1, phase: .first)
+check("m62-coop-ph1", "两段式第一段仍带 --verify-refs（任务书 = ph1 产物）",
+      ConvertFeature.arguments(m62Ph1).contains("--verify-refs"),
+      "argv=\(ConvertFeature.arguments(m62Ph1))")
+var m62Ph2 = ConvertFeature.Options(); m62Ph2.source = coopSrc; m62Ph2.out = coopOut
+m62Ph2.coopRepliesPaths = [coopReplies]; m62Ph2.coopStage = coopStage
+m62Ph2 = CoopFeature.prepare(m62Ph2, phase: .second)
+check("m62-coop-ph2", "两段式第二段不带 --verify-refs（最小集契约不变）",
+      !ConvertFeature.arguments(m62Ph2).contains("--verify-refs"),
+      "argv=\(ConvertFeature.arguments(m62Ph2))")
+// 源码级：独立勾选已从界面移除；字段/toggled 分支保留兼容；两段式面板有引导文案
+let m62TabSrc = readSrc("Views/ConvertTab.swift")
+let m62ConvSrc = readSrc("Features/ConvertFeature.swift")
+check("m62-ui-hidden", "批62：初排页不再暴露独立「生成文献核实任务书」勾选（无 Toggle/绑定/置灰说明）",
+      !m62TabSrc.contains("生成参考文献核实任务书（交给自己的 AI 核实）")
+        && !m62TabSrc.contains("binding(.verifyRefs") && !m62TabSrc.contains("自动勾上并锁定"),
+      "oldToggle=\(m62TabSrc.contains("生成参考文献核实任务书（交给自己的 AI 核实）")) "
+        + "bind=\(m62TabSrc.contains("binding(.verifyRefs"))")
+check("m62-legacy-compat", "Options.verifyRefs 字段与 toggled(.verifyRefs) 分支保留（旧设置/脚本兼容）",
+      m62ConvSrc.contains("var verifyRefs = false") && m62ConvSrc.contains("case .verifyRefs"),
+      "field=\(m62ConvSrc.contains("var verifyRefs = false")) "
+        + "case=\(m62ConvSrc.contains("case .verifyRefs"))")
+check("m62-coop-guidance", "两段式面板有引导：任务书 = 两段式第一段产物；普通转换请用两段式或 CLI --verify-refs",
+      m62TabSrc.contains("文献核实任务书 = 两段式第一段产物")
+        && m62TabSrc.contains("--verify-refs（高级）"),
+      "guidance=\(m62TabSrc.contains("文献核实任务书 = 两段式第一段产物"))")
+// CheckBib 页：标题/引导改为回读比对查看器；能力（体检/并回/入藏/重新编译）一个不少
+let m62CheckBibSrc = readSrc("Views/CheckBibView.swift")
+let m62CheckBibFeat = readSrc("Features/CheckBibFeature.swift")
+check("m62-checkbib-title", "CheckBib 页标题 = 回读/比对报告查看器（高级：手动并回，离线）；不再引导“生成任务书”",
+      m62CheckBibSrc.contains("回读/比对报告查看器（高级：手动并回，离线）")
+        && !m62CheckBibSrc.contains("使用说明：编辑拿《文献核实任务书》改完参考文献后交回"),
+      "title=\(m62CheckBibSrc.contains("回读/比对报告查看器（高级：手动并回，离线）"))")
+check("m62-checkbib-capabilities", "CheckBib 页能力保留：并回 / 入藏引用库 / 重新编译该篇入口仍在，Feature 仍调 checkbib.py（--merge-into）",
+      m62CheckBibSrc.contains("并回") && m62CheckBibSrc.contains("入藏")
+        && m62CheckBibSrc.contains("重新编译")
+        && m62CheckBibFeat.contains("--merge-into") && m62CheckBibFeat.contains("checkbib.py"),
+      "view 并回=\(m62CheckBibSrc.contains("并回")) 入藏=\(m62CheckBibSrc.contains("入藏")) "
+        + "重编译=\(m62CheckBibSrc.contains("重新编译")) feature=\(m62CheckBibFeat.contains("--merge-into"))")
+check("m62-checkbib-log-title", "CheckBib 运行日志标题同步为「回读/比对报告查看器」（只改定位文案）",
+      m62CheckBibFeat.contains("log(\"回读/比对报告查看器"),
+      "logTitle=\(m62CheckBibFeat.contains("log(\"回读/比对报告查看器"))")
 
 print("")
 print("================================================================")

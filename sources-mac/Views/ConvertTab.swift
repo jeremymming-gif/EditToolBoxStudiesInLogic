@@ -96,34 +96,20 @@ struct ConvertTab: View {
                         Toggle("生成后立即编译 PDF（XeLaTeX → biber → XeLaTeX ×2）",
                                isOn: $model.options.compile)
                         Toggle("清理编译中间文件（保留 .log）", isOn: $model.options.clean)
-                        Toggle("生成参考文献核实任务书（交给自己的 AI 核实）",
-                               isOn: binding(.verifyRefs, \.verifyRefs))
-                            // 勾了「用 AI 处理参考文献」时这份任务书**必出**（用户 2026-10-15 方案 A）：
-                            // AI 的逐条建议与「六、合并记录」都写在里面，不生成就没有审阅材料。
-                            .disabled(ConvertFeature.verifyRefsLocked(model.options))
-                        if ConvertFeature.verifyRefsLocked(model.options) {
-                            Text("↑ 已随「用 AI 处理参考文献」自动勾上并锁定 —— AI 的逐条建议与"
-                                 + "「六、合并记录」都写在这份《文献核实任务书》里，不生成它就没有审阅材料。"
-                                 + "取消下面那行的 AI 勾选即可重新操作。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 18)
-                        }
-                        if model.options.coop {
-                            // 第 55 批：两段式第一段**一定**出任务书（引擎隐含 --verify-refs），
-                            // 所以这个勾选框的状态在协同模式下不改变行为 —— 必须说清楚，不许让界面说谎。
-                            Text("两段式第一段一定会生成《文献核实任务书》（引擎隐含 --verify-refs）；"
-                                 + "上面的勾选状态在协同模式下不改变行为。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 18)
-                        }
+                        // 批 62 入口收敛（B 方案）：独立的「生成文献核实任务书」勾选已隐藏，
+                        // 本页只保留两个语义入口 —— 两段式（任务书 = 第一段产物）与 ⑪ 直连 AI
+                        // （内部自动带 --verify-refs，产物/行为与批61 一致）。
+                        // `Options.verifyRefs` 字段保留给旧脚本/既有调用方，界面不再绑定它；
+                        // 普通初排转换不再带 --verify-refs（默认产物无 <stem>_文献核实.md）。
                         // 第 132 条：核实成本闸门提示（值来自「引用库设置」页，点击转换时现取）。
-                        // 写在这里而不是设置页：编辑勾「生成任务书」时就该看见「这次核多少条」。
-                        verifyGateHint
-                        // 与之配套的 AI 开关：勾上就是「任务书 + 按同一份规范在本机直连 AI 预跑」。
-                        // 不勾也能单独出任务书，所以两个开关不冲突：勾哪个都会加 --verify-refs。
-                        Toggle("用 AI 处理参考文献（需在「设置」里配置）",
+                        // 只有真的会核实（⑪ / 两段式）时才显示，免得普通转换看到不相干的数字。
+                        if model.options.useAI || model.options.coop {
+                            verifyGateHint
+                        }
+                        // 「用 AI 处理参考文献」：勾上就是「任务书 + 按同一份规范在本机直连 AI 预跑」
+                        // （引擎侧自动带 --verify-refs；批 62 起这是普通初排唯一出任务书的入口）。
+                        // 批 62 文案与 Win 逐字对齐（Lead 口径）：标签点明「直连 API，会产生费用」。
+                        Toggle("用 AI 处理参考文献（直连 API，会产生费用）",
                                isOn: binding(.useAI, \.useAI))
                         aiHint
                         if model.options.useAI {
@@ -399,7 +385,8 @@ struct ConvertTab: View {
                 .font(.callout)
             Text("会自动处理：公式（OMML→LaTeX）、表格（→tabular）、内嵌图片（直接提取原图）、"
                  + "矢量图形（检出并置占位）、脚注、引用环境、参考文献"
-                 + "（生成《文献核实任务书》；在「设置」里配好 AI 还可自动预跑一遍，"
+                 + "（默认只做引用库只读比对；需要《文献核实任务书》请用「AI 协同初排（两段式）」"
+                 + "第一段，或在「设置」里配好 AI 勾「用 AI 处理参考文献」在本机直连预跑，"
                  + "并把通过安全校验的结果并入 reference.bib）。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -595,6 +582,12 @@ struct ConvertTab: View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
             Text("AI 协同初排（两段式）").font(.callout).bold()
+            // 批 62 入口收敛：任务书从此只有“两段式第一段”这一个界面入口（plus ⑪ 直连 AI）。
+            Text("文献核实任务书 = 两段式第一段产物；普通转换如需任务书请用两段式或 CLI "
+                 + "--verify-refs（高级）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if !model.coopFailure.isEmpty {
                 Text(model.coopFailure)
                     .font(.system(.caption, design: .monospaced))
