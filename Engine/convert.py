@@ -1308,7 +1308,8 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         low_report=low_report, merge_summary=merge_summary,
         apply_summary=apply_summary, final_dir=final_dir,
         no_ai_merge=bool(args.no_ai_merge), compiled=compiled,
-        backup=promoted.get("backup", ""))
+        backup=promoted.get("backup", ""),
+        fulltext=state.get("fulltext"))
     # 记录是在 promote 之后写的：把它也放进最终目录（暂存目录里同样留一份）。
     try:
         final_record = os.path.join(final_dir, coop.RECORD_NAME)
@@ -1561,6 +1562,14 @@ def main() -> int:
                          "（默认 `<out>/<stem>_待核/`，可 --coop-stage 覆盖），"
                          "**不写最终交付目录、不打印交付成功、不自动调用 API**。"
                          "隐含 --verify-refs；任务书末尾增加「初排低置信项」机器可读一节。")
+    ap.add_argument("--coop-fulltext", choices=["context", "full"], default=None,
+                    metavar="{context,full}",
+                    help="（第五十九批，可选，默认关）第一段任务书在附二之后追加"
+                         "「附三、正文全文/引用上下文」，供外部 chat 核对附一各项："
+                         "context=引用/脚注锚点前后各 300 字窗口合并（上限 4 万字符≈13k tokens）；"
+                         "full=正文全文（上限 8 万字符≈27k tokens）；超限显式截断。"
+                         "仅配合 --coop-taskbook-only；不新增改正文类建议（回复格式/校验/"
+                         "`--coop-apply` 与从前一致）。")
     ap.add_argument("--coop-stage", default=None, metavar="DIR",
                     help="协同初排的暂存目录（默认 `<out>/<stem>_待核/`）；"
                          "状态文件 `_AI协同状态.json` 写在这里，不随交付进入最终目录。")
@@ -1690,6 +1699,9 @@ def main() -> int:
         ap.error("--coop-taskbook-only 与 --coop-replies 是两个阶段，不能同时给")
     if args.coop_apply and not args.coop_replies:
         ap.error("--coop-apply 只配合 --coop-replies（先回填回复，才谈得上应用建议）")
+    if args.coop_fulltext and not args.coop_taskbook_only:
+        ap.error("--coop-fulltext 只配合 --coop-taskbook-only（第一段任务书附正文；"
+                 "回填解析/应用阶段不使用全文）")
     if args.ai_budget_tokens is not None and args.ai_budget_tokens < 0:
         ap.error("--ai-budget-tokens 必须 ≥ 0（0 = 不限）")
     if args.ai_batch_budget_tokens is not None and args.ai_batch_budget_tokens < 0:
@@ -2767,6 +2779,28 @@ def main() -> int:
             # 第五十六批：附二把「回填=完整 BibTeX + 附一 JSON 两部分」写死，
             # 防止模型/编辑只交一半（真实首测：只导入 JSON → 文献回填 0/9）。
             f.write("\n" + _coop.render_backfill_section() + "\n")
+        # 第五十九批：附三、正文全文/引用上下文（--coop-fulltext；默认关）。
+        # **只进任务书**：回复 JSON 契约/校验/--coop-apply 完全不变，不新增改正文类建议。
+        coop_fulltext_info: dict | None = None
+        if args.coop_fulltext:
+            try:
+                _ft = _coop.extract_fulltext(
+                    getattr(res, "body_text", "") or "", mode=args.coop_fulltext)
+            except (ValueError, TypeError) as e:  # noqa: BLE001  附加通道，不连累出稿
+                print(f"   ⚠ 附三跳过：{type(e).__name__}: {e}")
+                _ft = {}
+            if _ft.get("chars"):
+                with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
+                    f.write("\n" + _coop.render_fulltext_section(_ft) + "\n")
+                coop_fulltext_info = {k: _ft[k] for k in
+                                      ("mode", "chars", "truncated", "tokens_est")}
+                _ft_note = ("已截断" if _ft.get("truncated")
+                            else f"{_ft.get('windows', 0)} 段窗口"
+                            if args.coop_fulltext == "context" else "全文")
+                print(f"   任务书附三：正文{_ft_note}，{_ft['chars']} 字"
+                      f"（约 {_ft['tokens_est']} tokens）")
+            else:
+                print("   任务书附三跳过：本次没有可用正文（源稿解析失败/LaTeX 无正文）")
         if not coop_bib_keys and bib_text2:
             coop_bib_keys = [b.key for b in _coop.parse_bib_blocks(bib_text2) if b.closed]
         coop_params = _coop.build_params(
@@ -2786,6 +2820,10 @@ def main() -> int:
         )
         coop_state["reference_bib"] = os.path.abspath(res.bib_path) if res.bib_path else ""
         coop_state["tex"] = os.path.abspath(res.tex_path) if getattr(res, "tex_path", "") else ""
+        # 第五十九批：附三元信息（模式/字数/截断/估算）——**不落正文**；
+        # 只在启用 --coop-fulltext 时写，旧状态无此键按「未启用」处理；schema 仍 1。
+        if coop_fulltext_info is not None:
+            coop_state["fulltext"] = coop_fulltext_info
         state_file = _coop.save_state(out_dir, coop_state)
         print(f"\n⑬ AI 协同初排·第一段（已暂停，等待回填）")
         print(f"   暂存目录：{out_dir}")

@@ -650,6 +650,101 @@ def render_backfill_section() -> str:
     ])
 
 
+# ── 第五十九批：全文 AI 核查（通道①：任务书附三；默认关）────────────────
+
+
+#: 两档模式：`context`（引用/脚注锚点窗口，默认推荐）/ `full`（正文全文）。
+FULLTEXT_MODES = ("context", "full")
+#: 两档字符上限（coop.estimate_tokens 按 3 字符/1 token 估算）。
+FULLTEXT_LIMITS = {"context": 40000, "full": 80000}
+#: `context` 档：每个锚点前后各取多少字符。
+FULLTEXT_WINDOW = 300
+#: 合并窗口时允许的最大间隙（小于它的两个窗口并成一段，避免碎片化）。
+FULLTEXT_MERGE_GAP = 120
+#: 任务书「附三」小节标题（与附一/附二同一层级）。
+FULLTEXT_TITLE = "## 附三、正文全文/引用上下文（AI 协同初排专用）"
+
+#: 引用/脚注锚点：\parencite/\citep/\autocite/\textcite/\footnote 等。
+_FULLTEXT_ANCHOR_RE = re.compile(r"\\(?:[A-Za-z]*cite[A-Za-z]*|footnote)\b")
+#: 整行 `%` 注释（本工具写的说明行）不发给外部 AI，省体积。
+_TEX_COMMENT_LINE_RE = re.compile(r"(?m)^[ \t]*%[^\n]*\n?")
+
+
+def extract_fulltext(body_text: str, mode: str = "context") -> dict:
+    """从正文文本提取「附三」内容（第五十九批；默认关，只有 --coop-fulltext 才调用）。
+
+    · `context`：在 `\\parencite`/`\\footnote` 等锚点前后各取 `FULLTEXT_WINDOW` 字，
+      相邻/重叠窗口合并；上限 `FULLTEXT_LIMITS["context"]`。
+    · `full`：正文全文；上限 `FULLTEXT_LIMITS["full"]`。
+    · 超限**显式截断**并留标记（不静默丢）；整行 `%` 注释先剥掉；围栏 ``` 做替换，防止
+      破坏任务书的 ```text 代码块。
+    返回 `{mode, text, chars, truncated, tokens_est, orig_chars, windows}`。
+    """
+    if mode not in FULLTEXT_MODES:
+        raise ValueError(f"未知全文模式：{mode!r}（只支持 {'/'.join(FULLTEXT_MODES)}）")
+    body = _TEX_COMMENT_LINE_RE.sub("", str(body_text or ""))
+    body = body.replace("```", "ˋˋˋ")
+    limit = FULLTEXT_LIMITS[mode]
+    windows = 0
+    if mode == "full" or not body:
+        text = body
+        windows = 1 if body else 0
+    else:
+        spans: list[tuple[int, int]] = []
+        for m in _FULLTEXT_ANCHOR_RE.finditer(body):
+            spans.append((max(0, m.start() - FULLTEXT_WINDOW),
+                          min(len(body), m.end() + FULLTEXT_WINDOW)))
+        merged: list[tuple[int, int]] = []
+        for a, b in spans:
+            if merged and a <= merged[-1][1] + FULLTEXT_MERGE_GAP:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        windows = len(merged)
+        if merged:
+            # 窗口之间用「…」标记断开（提示这是节选，不是连续正文）。
+            text = "\n\n…\n\n".join(body[a:b] for a, b in merged)
+        else:
+            # 正文里没有任何引用/脚注锚点：退回全文（仍受上限约束），不产出空附三。
+            text = body
+    orig = len(text)
+    truncated = orig > limit
+    if truncated:
+        text = text[:limit] + (
+            "\n…（已截断：原 %d 字，保留前 %d 字；需要更长内容请改用 full 档或自行分段）"
+            % (orig, limit))
+    return {"mode": mode, "text": text, "chars": len(text),
+            "truncated": truncated, "tokens_est": estimate_tokens(text),
+            "orig_chars": orig, "windows": windows}
+
+
+def render_fulltext_section(info: dict) -> str:
+    """任务书「附三、正文全文/引用上下文」：正文 + 用途/边界说明（第二段任务书专用）。"""
+    mode = str(info.get("mode") or "context")
+    text = str(info.get("text") or "")
+    chars = int(info.get("chars") or len(text))
+    tokens = int(info.get("tokens_est") or 0)
+    if mode == "full":
+        mode_note = "正文全文"
+    else:
+        mode_note = ("正文节选：引用/脚注锚点前后各 %d 字窗口合并（共 %d 段）"
+                     % (FULLTEXT_WINDOW, int(info.get("windows") or 0)))
+    trunc = ""
+    if info.get("truncated"):
+        trunc = ("\n> ⚠ 本次正文**超长已截断**（原 %d 字，保留前 %d 字）——"
+                 "请优先核对附一列出的项。" % (int(info.get("orig_chars") or 0),
+                                              FULLTEXT_LIMITS.get(mode, chars)))
+    return "\n".join([
+        "", "---", "", FULLTEXT_TITLE, "",
+        "> 下面是本次稿件正文（" + mode_note + f"；{chars} 字，约 {tokens} tokens）。",
+        "> 用途：核对「附一、初排低置信项」里的引用/脚注/元数据时提供上下文。",
+        "> **请只按附一规定的 JSON 格式回复**（文献条目仍按第三节 BibTeX 格式）；",
+        "> **不要改写、复述或补写正文**，也不要把正文内容当成修改建议。",
+        "> 拿不准的项请回 `unresolved`（不要猜）。" + trunc,
+        "", "```text", text, "```", "",
+    ])
+
+
 _JSON_DECODER = json.JSONDecoder()
 
 
@@ -1685,9 +1780,18 @@ def budget_exceeded(estimate: dict, article_limit: int, batch_limit: int) -> str
 def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
                   low_report: LowConfReport | None, merge_summary: dict | None,
                   apply_summary: dict | None, final_dir: str,
-                  no_ai_merge: bool, compiled: str, backup: str = "") -> str:
+                  no_ai_merge: bool, compiled: str, backup: str = "",
+                  fulltext: dict | None = None) -> str:
     L = [f"# AI 协同记录 · {stem}", "",
          f"- 阶段：`{phase}`", f"- 交付目录：`{final_dir}`", ""]
+    if fulltext:
+        # 第五十九批：只记模式/字数/估算/是否截断，**不落正文**（全文在任务书里）。
+        _ft = (f"- 任务书附三（正文）：`{fulltext.get('mode', '')}`，"
+               f"{int(fulltext.get('chars') or 0)} 字"
+               f"（约 {int(fulltext.get('tokens_est') or 0)} tokens）")
+        if fulltext.get("truncated"):
+            _ft += "，**已截断**"
+        L += [_ft, ""]
     if parse_report is not None:
         L += ["## 一、外部 chat 回填（文献字段）", "",
               f"- {parse_report.summary()}",

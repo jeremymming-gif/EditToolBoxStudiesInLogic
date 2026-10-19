@@ -17,7 +17,8 @@
       并在 (g) 的真窗口里验证能切模式、能看到折叠提示、偏好能落盘、空状态占位不进复制内容；
   (i) 引用库（第 132 条）：笔记仓探测 / 库文件 / 参数默认零变化 / CLI 冒烟；
   (j) 两段式 AI 协同初排（第五十五批）：两段 argv 契约、默认 argv 零变化、暂存目录发现、
-      建议摘要、回复导入、AI token 预算设置（纯逻辑，全部 headless）。
+      建议摘要、回复导入、AI token 预算设置（纯逻辑，全部 headless）；批59 全文 AI 核查
+      范围映射（默认关；仅第一段带 `--coop-fulltext context|full`）。
 """
 from __future__ import annotations
 
@@ -619,6 +620,27 @@ else:
         ct._toggle_coop_panel()
         app.update()
         print("协同面板显示=%d" % int(bool(ct.coop_panel.winfo_ismapped())))
+        # 批59：全文 AI 核查（默认关；勾选 + 范围 → ph1 argv 追加 --coop-fulltext）
+        print("全文核查默认关=%d" % int(
+            not ct.v_coop_fulltext.get()
+            and ct.v_coop_fulltext_scope.get() == M.C.FULLTEXT_CONTEXT))
+        _ft_off = ct.coop_ph1_call("/期").argv
+        ct.v_coop_fulltext.set(True)
+        _ft_ctx = ct.coop_ph1_call("/期").argv
+        ct.v_coop_fulltext_scope.set(M.C.FULLTEXT_FULL)
+        _ft_full = ct.coop_ph1_call("/期").argv
+        ct.v_coop_fulltext.set(False)
+        _ft_back = ct.coop_ph1_call("/期").argv
+        print("全文核查默认argv=%d" % int("--coop-fulltext" not in _ft_off))
+        print("全文核查context=%d" % int(
+            M.MainWindow._argv_value(_ft_ctx, "--coop-fulltext") == "context"))
+        print("全文核查full=%d" % int(
+            M.MainWindow._argv_value(_ft_full, "--coop-fulltext") == "full"))
+        print("全文核查取消复原=%d" % int(
+            "--coop-fulltext" not in _ft_back and _ft_back == _ft_off))
+        print("全文核查文案=%d" % int(
+            "零上传" in ct.coop_fulltext_hint.cget("text")
+            and "零费用" in ct.coop_fulltext_hint.cget("text")))
         print("协同按钮齐全=%d" % int(all(
             w.cget("text") in ("打开任务书", "打开暂存目录", "打开交付目录",
                               "打开协同记录", "打开建议清单",
@@ -815,6 +837,13 @@ else:
               and "回填按钮存在=1" in out and "协同按钮默认禁用=1" in out,
               [l for l in out.splitlines()
                if l.startswith(("协同默认", "协同面板", "协同按钮", "回填按钮"))])
+        check("(g) 批59 全文 AI 核查（真控件）：默认不勾、范围默认「引用上下文」；"
+              "勾选后 ph1 argv 追加 --coop-fulltext context/full，取消后 argv 与批58"
+              "逐字节相同；文案讲清「零上传、零费用」",
+              "全文核查默认关=1" in out and "全文核查默认argv=1" in out
+              and "全文核查context=1" in out and "全文核查full=1" in out
+              and "全文核查取消复原=1" in out and "全文核查文案=1" in out,
+              [l for l in out.splitlines() if l.startswith("全文核查")])
         check("(g) 设置页 AI 预算：非法值红字**不落盘**、合法值（0 = 不限）落盘",
               "预算非法不落盘=1" in out and "预算落盘=1" in out,
               [l for l in out.splitlines() if l.startswith("预算")])
@@ -1153,6 +1182,54 @@ check("(j) 页面没勾「出文献核实任务书」也强制 --verify-refs（�
 _j_ph1_no_stage = E.convert_call(source="a", out="/o", coop_taskbook_only=True)
 check("(j) 没给 --coop-stage 时第一段不带它（引擎用默认 `<out>/<stem>_待核/`）",
       "--coop-stage" not in _j_ph1_no_stage.argv)
+
+# ── 批59：全文 AI 核查（默认关；仅第一段追加 --coop-fulltext context|full）──
+_j_ph1_58 = E.convert_call(source="/稿/a.docx", out="/期", compile_pdf=True,
+                           verify_plan=True, coop_taskbook_only=True,
+                           coop_stage="/期/A_待核")
+check("(j) 批59：不勾「全文 AI 核查」→ 第一段 argv 与批58 **逐字节相同**"
+      "（一个 --coop-fulltext 都没有；默认零变化）",
+      _j_ph1_58.argv == _j_ph1.argv and "--coop-fulltext" not in _j_ph1_58.argv,
+      _j_ph1_58.display[:190])
+_j_ft_ctx = E.convert_call(source="/稿/a.docx", out="/期", compile_pdf=True,
+                           coop_taskbook_only=True, coop_stage="/期/A_待核",
+                           coop_fulltext="context")
+check("(j) 批59：勾选「引用上下文」→ `--coop-fulltext context` 追加在 "
+      "--coop-taskbook-only 之后、--coop-stage 之前（其余 argv 逐字节不变）",
+      _j_ft_ctx.argv == _j_base + [
+          "--source", "/稿/a.docx", "--out", "/期", "--compile", "--verify-refs",
+          "--no-ai-merge", "--coop-taskbook-only", "--coop-fulltext", "context",
+          "--coop-stage", "/期/A_待核"], _j_ft_ctx.display[:200])
+_j_ft_full = E.convert_call(source="/稿/a.docx", out="/期", compile_pdf=True,
+                            coop_taskbook_only=True, coop_stage="/期/A_待核",
+                            coop_fulltext="full")
+check("(j) 批59：勾选「全文」→ 同一位置是 `--coop-fulltext full`"
+      "（两种范围只差取值，位置/其余参数不变）",
+      _j_ft_full.argv == _j_base + [
+          "--source", "/稿/a.docx", "--out", "/期", "--compile", "--verify-refs",
+          "--no-ai-merge", "--coop-taskbook-only", "--coop-fulltext", "full",
+          "--coop-stage", "/期/A_待核"]
+      and _j_ft_full.argv.index("--coop-fulltext")
+      == _j_ft_ctx.argv.index("--coop-fulltext"), _j_ft_full.display[:200])
+check("(j) 批59：--coop-fulltext 只在第一段有效 —— 普通转换 / 第二段传入 → ValueError",
+      _raises_value_error(E.convert_call, source="a", out="/o", coop_fulltext="full")
+      and _raises_value_error(E.convert_call, source="a", out="/o",
+                              coop_replies="/回填", coop_fulltext="context"))
+check("(j) 批59：非法范围（引擎只认 context/full）→ ValueError，不许发出去",
+      _raises_value_error(E.convert_call, source="a", out="/o",
+                          coop_taskbook_only=True, coop_fulltext="正文")
+      and _raises_value_error(E.convert_call, source="a", out="/o",
+                              coop_taskbook_only=True, coop_fulltext="FULL"))
+check("(j) 批59：`C.coop_fulltext_mode` 不勾=空串（默认零变化）；勾选按范围映射；"
+      "未知范围回落 context（宁可少发正文）",
+      C.coop_fulltext_mode(False, C.FULLTEXT_FULL) == ""
+      and C.coop_fulltext_mode(False, C.FULLTEXT_CONTEXT) == ""
+      and C.coop_fulltext_mode(True, C.FULLTEXT_CONTEXT) == "context"
+      and C.coop_fulltext_mode(True, C.FULLTEXT_FULL) == "full"
+      and C.coop_fulltext_mode(True, "其他") == "context")
+check("(j) 批59：范围常量与引擎 argparse 取值逐字一致（context/full，面板单选顺序）",
+      C.FULLTEXT_MODES == ("context", "full")
+      and C.FULLTEXT_CONTEXT == "context" and C.FULLTEXT_FULL == "full")
 
 _j_ph2_single = E.convert_call(source="/稿/a.docx", out="/期", coop_replies="/回填",
                                coop_stage="/期/A_待核", coop_apply=True, compile_pdf=True,
@@ -1517,6 +1594,16 @@ check("(j) 「一键修改产物（--coop-apply）」默认不勾 + 说明 `.ai�
 check("(j) 协同结果经队列回主线程（`__COOP__` + `apply_coop_result`），不跨线程碰控件",
       '"__COOP__"' in _src_55 and "apply_coop_result" in _src_55
       and "C.load_stage" in _src_55 and "C.discover_stage" in _src_55)
+check("(j) 批59：全文 AI 核查面板默认不勾（复选框 + 「引用上下文/全文」单选；静态说明"
+      "与 mac 逐字一致：默认不勾/零上传/零费用/不再弹二次确认/仅第一段生效）；"
+      "ph1 拼 argv 走 `C.coop_fulltext_mode`",
+      "全文 AI 核查（任务书附正文）" in _src_55
+      and "self.v_coop_fulltext = tk.BooleanVar(value=False)" in _src_55
+      and "引用上下文（默认" in _src_55 and "全文（约 8 万字上限）" in _src_55
+      and 'args["coop_fulltext"] = C.coop_fulltext_mode(self.v_coop_fulltext.get()' in _src_55
+      and "默认不勾：任务书不含正文" in _src_55
+      and "已获授权，不再弹二次确认" in _src_55
+      and "第二段续跑与交付不受影响" in _src_55)
 check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
       "与 mac 强制 useAI=false 同口径）",
       "api=None if coop_phase else" in _src_55)

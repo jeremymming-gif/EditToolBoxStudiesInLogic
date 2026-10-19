@@ -114,6 +114,14 @@ enum ConvertFeature {
         var coopStage = ""
         /// 第二段「一键修改产物」→ `--coop-apply`（默认不勾；**必须在跑第二段前决定**）
         var coopApply = false
+        /// 第 59 批：全文 AI 核查（任务书附正文）→ 两段式第一段 `--coop-fulltext context|full`。
+        /// **默认不勾**：不勾时一个参数都不加 → 普通/协同默认 argv 与批 58 逐字节相同。
+        /// 只属于第一段（引擎仅在 `--coop-taskbook-only` 下识别该旗标）；第二段 argv 由
+        /// `CoopFeature.secondPhaseArguments` 拼最小集，天然不含它。软件零上传/零费用：
+        /// 正文只写进本机任务书，发不发由编辑自己把它复制给外部 chat。
+        var coopFulltext = false
+        /// 第 59 批：全文核查范围（**仅** `coopFulltext == true` 时进 argv）。
+        var coopFulltextScope: FulltextScope = .context
         /// 第 55 批：直连 API 通道的单篇 token 预算 → `--ai-budget-tokens`。
         /// `nil` / 等于引擎默认（30000）时不传；仅非协同 + 勾了 AI 时传（外部 chat 零费用）。
         var aiBudgetTokens: Int? = nil
@@ -127,6 +135,26 @@ enum ConvertFeature {
             !llmBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !llmModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
+    }
+
+    /// 第 59 批：全文 AI 核查的**范围**（引擎契约 `--coop-fulltext {context,full}`）。
+    ///
+    /// 这里只做界面显示与参数映射，不参与任何判定：正文截断/字数上限由引擎按实际
+    /// token 预算决定，壳子**不替引擎算**（否则两处口径迟早分叉）。
+    enum FulltextScope: String, CaseIterable, Equatable {
+        case context
+        case full
+
+        /// 界面单选文案（两壳一致；括号里的上限是引擎侧设计值，不是壳子在限制）。
+        var title: String {
+            switch self {
+            case .context: return "引用上下文（默认，约 4 万字上限）"
+            case .full: return "全文（约 8 万字上限）"
+            }
+        }
+
+        /// 原样交给引擎的参数值（契约固定小写 `context` / `full`）。
+        var flagValue: String { rawValue }
     }
 
     // MARK: - 开关联动（纯函数，headless 可验证）
@@ -300,6 +328,14 @@ enum ConvertFeature {
         // 也绝不传 --llm-* / --search-refs：第一段明确不调用 API（外部 chat 零上传/零费用）。
         if coop == .first {
             a += CoopFeature.firstPhaseFlags(o)
+            // 第 59 批：全文 AI 核查（任务书附正文）。**默认不勾 → 一个参数都不加**
+            // （默认 argv 与批 58 逐字节相同）；勾了才把范围原样交给引擎
+            // `--coop-fulltext context|full`。只属于第一段：ph2 由
+            // `CoopFeature.secondPhaseArguments` 拼最小集，天然不含该旗标；
+            // 普通转换（coop == .off）也走不到这里 → 不传。
+            if o.coopFulltext {
+                a += ["--coop-fulltext", o.coopFulltextScope.flagValue]
+            }
         } else if o.verifyRefs || o.useAI {
             if o.verifyPlan {
                 a.append("--verify-plan")
@@ -407,6 +443,13 @@ enum ConvertFeature {
             log("  引用库 核实前先查库（--bibdb-path \(o.bibdbPath)）\n")
         } else {
             log("  引用库 核实前先查库（自动：按 SLCN_NOTES 找笔记仓的 bib_db/bibliography.jsonl）\n")
+        }
+        // 第 59 批：全文 AI 核查（任务书附正文）——勾了才打这一行，不勾不刷屏；
+        // 编辑看日志要能回答「这次正文会不会进任务书」，而不是去猜复选框状态。
+        if coop == .first && o.coopFulltext {
+            log("  全文核查 任务书附正文（--coop-fulltext \(o.coopFulltextScope.flagValue)）："
+                + "正文/引用上下文只写进本机《文献核实任务书》，软件零上传、零费用；"
+                + "由你自己复制给外部 chat 核实。\n")
         }
     }
 

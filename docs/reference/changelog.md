@@ -9,8 +9,14 @@ description: 当前版本与历史 Release。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
 
-## 未发布（2026-10-19，第 52–58 批）
+## 未发布（2026-10-20，第 52–59 批）
 
+- **全文 AI 核查通道①（第 59 批，2026-10-20，可选、默认关）**：两段式初排可加 `--coop-fulltext {context,full}`，
+  任务书在「附二」后多「附三、正文全文/引用上下文」——`context` = 引用/脚注锚点前后各 300 字窗口合并
+  （上限 4 万字符≈13k tokens），`full` = 正文全文（上限 8 万字符≈27k tokens），超限显式截断；只写本机任务书，
+  由编辑自己复制给外部 chat（软件零上传、零费用），复用原回复契约与 `--coop-apply`，不新增改正文类建议；
+  默认不加时任务书/产物/stdout 与批 58 逐字节相同；两壳两段式面板加默认不勾的复选框 + 范围单选 + 隐私提示。
+  ⚠ 直连 API 自动发全文（通道②）尚未实现。
 - **初排默认只读引用库比对 + 安全命中增强 + Mac 默认任务书（第 58 批，2026-10-20）**：初排不传
   `--verify-refs` 也会只读比对编辑部引用库，日志多一行「引用库比对：命中 X / 候选 Y / 未命中 Z
   （只读，不改产物）」；新增 `--no-bibdb-verify` 关闭（无库/无 bib 静默；`.tex`/`reference.bib`/任务书/argv

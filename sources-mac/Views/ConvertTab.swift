@@ -588,6 +588,28 @@ struct ConvertTab: View {
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // ---------- 第 59 批：全文 AI 核查（任务书附正文；默认不勾） ----------
+            // 默认不勾 → 一个参数都不加（默认 argv 与批 58 逐字节相同）。
+            Divider()
+            Toggle("全文 AI 核查（任务书附正文）", isOn: $model.options.coopFulltext)
+                .toggleStyle(.checkbox)
+            if model.options.coopFulltext {
+                Picker("核查范围", selection: $model.options.coopFulltextScope) {
+                    ForEach(ConvertFeature.FulltextScope.allCases, id: \.self) { scope in
+                        Text(scope.title).tag(scope)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .padding(.leading, 18)
+            }
+            Text("默认不勾：任务书不含正文，与从前一致（软件零上传、零费用）。\n"
+                 + "勾上后引擎会把正文/引用上下文写进本机《文献核实任务书》（范围见上）："
+                 + "文件只留在本机，由你自己复制给外部 chat 做全文核查——软件仍不上传、不调用 API。"
+                 + "已获授权，不再弹二次确认。\n"
+                 + "⚠ 只对「开始第一段（出任务书）」生效；第二段续跑与交付不受影响。")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let stage = model.coopStage {
                 coopStagePanel(stage)
             } else {

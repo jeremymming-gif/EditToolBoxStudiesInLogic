@@ -17,6 +17,9 @@
      移除、清空）的纯逻辑；剪贴板文本落成有确定命名规则的临时 `.md`。
      引擎批56 起 `--coop-replies` 可重复，界面把「已选这份清单」按顺序交给引擎，
      **不再**复制到临时目录、也不再折叠成父目录（批55 的 `prepare_replies` 已删）。
+  4. **全文 AI 核查范围映射**（批59）：面板复选框 + 「引用上下文 / 全文」单选 →
+     `--coop-fulltext context|full`；**不勾一律空串**（默认零变化），第二段从不带。
+     判据不在外壳：正文抽取/窗口合并/截断上限全在引擎（`slcn/coop.py`）。
 
 显示口径（两壳一致，见 `drafts/coop-workflow-design.md` §3 与 mac `CoopFeature`）：
   `ph1` → 「待人工核实（未交付）」；`ph2` → 「上次第二段未完成（可重跑第二段）」；
@@ -42,6 +45,13 @@ STAGE_SUFFIX = "_待核"
 #: 剪贴板回填临时文件的命名前缀（批56）。
 CLIPBOARD_PREFIX = "回填剪贴板"
 
+#: 批59「全文 AI 核查」的两种范围 = 引擎 `--coop-fulltext` 的合法取值（外壳协议固定）。
+#: `context` = 引用/脚注锚点 ±窗口（引擎上限 40,000 字符）；`full` = 正文全文（80,000）。
+FULLTEXT_CONTEXT = "context"
+FULLTEXT_FULL = "full"
+#: 全部取值（顺序 = 面板单选顺序）；不勾选时一个都不传（默认零变化）。
+FULLTEXT_MODES = (FULLTEXT_CONTEXT, FULLTEXT_FULL)
+
 #: 状态文案（两壳必须一致；`drafts/batch55-gui-plan.md` §3.1 与 mac `CoopFeature` 同一口径）。
 STATUS_PENDING = "待人工核实（未交付）"
 STATUS_PH2 = "上次第二段未完成（可重跑第二段）"
@@ -66,6 +76,19 @@ def status_text(phase: str | None) -> str:
     if not phase:
         return STATUS_NOT_STARTED
     return f"状态未知（{phase}）"
+
+
+def coop_fulltext_mode(enabled: bool, scope: str = FULLTEXT_CONTEXT) -> str:
+    """界面「全文 AI 核查」勾选 + 范围 → `--coop-fulltext` 的取值（批59，纯逻辑）。
+
+    **不勾 = 空串**：调用方（`ConvertTab.coop_ph1_call`）据此不追加任何 argv，
+    argv 与批58 逐字节相同（默认零变化）；引擎缺省本来也不带这个 flag。
+    不认识的 scope（理论上面板单选给不出来）一律回落 `context`：引用上下文外发的
+    正文比全文少，宁可少发 —— 隐私侧的错误只能往「少」的方向错。
+    """
+    if not enabled:
+        return ""
+    return FULLTEXT_FULL if str(scope or "") == FULLTEXT_FULL else FULLTEXT_CONTEXT
 
 
 def _same_path(a: str, b: str) -> bool:

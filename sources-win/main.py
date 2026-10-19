@@ -347,6 +347,31 @@ class ConvertTab(TabPage):
         for _btn in (self.coop_taskbook_btn, self.coop_stage_btn, self.coop_deliver_btn,
                      self.coop_record_btn, self.coop_suggest_btn):
             _btn.pack(side="left", padx=(0, 6))
+        # ── 批59：全文 AI 核查（任务书附正文；默认关，软件零上传/零费用）─────────
+        # 用户 2026-10-20 授权全文外发（可选即可），但**默认不勾**；勾了才在 ph1 的
+        # argv 追加 `--coop-fulltext context|full`（引擎把正文/引用上下文附进任务书，
+        # 之后由编辑自己复制给外部 chat）。范围默认「引用上下文」（外发得更少）。
+        full_row = ttk.Frame(self.coop_panel)
+        full_row.pack(anchor="w", pady=(4, 0))
+        self.v_coop_fulltext = tk.BooleanVar(value=False)
+        _check(full_row, "全文 AI 核查（任务书附正文）", self.v_coop_fulltext).pack(side="left")
+        self.v_coop_fulltext_scope = tk.StringVar(value=C.FULLTEXT_CONTEXT)
+        for _text, _value in (("引用上下文（默认，约 4 万字上限）", C.FULLTEXT_CONTEXT),
+                              ("全文（约 8 万字上限）", C.FULLTEXT_FULL)):
+            ttk.Radiobutton(full_row, text=_text, value=_value,
+                            variable=self.v_coop_fulltext_scope).pack(
+                                side="left", padx=(10, 0))
+        self.coop_fulltext_hint = ttk.Label(
+            self.coop_panel,
+            # 静态提示与 mac `ConvertTab.swift` 的全文核查说明**逐字一致**（批59；两壳同口径，
+            # 改文案必须两边同时改，否则「两个平台算出来的结果一致」就破了）。
+            text="默认不勾：任务书不含正文，与从前一致（软件零上传、零费用）。\n"
+                 "勾上后引擎会把正文/引用上下文写进本机《文献核实任务书》（范围见上）："
+                 "文件只留在本机，由你自己复制给外部 chat 做全文核查——软件仍不上传、不调用 API。"
+                 "已获授权，不再弹二次确认。\n"
+                 "⚠ 只对「开始第一段（出任务书）」生效；第二段续跑与交付不受影响。",
+            style="Muted.TLabel", wraplength=820, justify="left")
+        self.coop_fulltext_hint.pack(anchor="w")
         # ── 批56：回填导入（多文件/目录/剪贴板 → 已选清单；可移除/清空）──────────
         # 用户实测：mac 上多选两个文件被折叠成父目录、只导入了 json 丢了 bibtex。
         # 这里把「已选清单」做成可见、可改的：每个路径按顺序作为一个 `--coop-replies`
@@ -617,10 +642,16 @@ class ConvertTab(TabPage):
         self._refresh_coop_replies()
 
     def coop_ph1_call(self, out: str) -> E.EngineCall:
-        """第一段 argv：页面现有参数 + `--verify-refs --no-ai-merge --coop-taskbook-only`。"""
+        """第一段 argv：页面现有参数 + `--verify-refs --no-ai-merge --coop-taskbook-only`。
+
+        批59：勾了「全文 AI 核查」再追加 `--coop-fulltext context|full`；不勾时值是空串，
+        argv 与批58 逐字节相同（默认零变化）。范围/勾选的映射在 `coop.coop_fulltext_mode`。
+        """
         args = self.extra_args()
         args.pop("verify_plan", None)      # 第一段绝不传 --verify-plan（引擎会提前 return 0）
         args["coop_taskbook_only"] = True
+        args["coop_fulltext"] = C.coop_fulltext_mode(self.v_coop_fulltext.get(),
+                                                     self.v_coop_fulltext_scope.get())
         return E.convert_call(source=self.path(), out=out, **args)
 
     def coop_ph2_call(self, replies) -> E.EngineCall:

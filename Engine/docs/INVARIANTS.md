@@ -52,6 +52,9 @@
 6. **引用库只读比对只增日志**（第 58 批）：初排默认（未执行核实）在默认库存在时多打一行
    `引用库比对：命中 X / 候选 Y / 未命中 Z（只读，不改产物）`；不改 `.tex`/`reference.bib`/任务书/状态/argv，无库静默，`--no-bibdb-verify` / `--no-bibdb` 关闭。
    位置：`Engine/convert.py` 的 `bibdb_readonly_scan()`；`Engine/tests/test_batch58_bibdb_auto.py`。
+7. **全文附三是可选通道、默认关**（第 59 批）：`--coop-fulltext {context,full}` 只配合 `--coop-taskbook-only`，只把正文/引用上下文写进任务书「附三」（context 4 万字符 / full 8 万字符上限，超限显式截断）；默认不带 flag 时任务书/产物/stdout 与批 58 逐字节相同。
+   state schema 仍 1、`fulltext` 仅启用时写且**不入 fingerprint**，协同记录只记 mode/字数/截断/估算、**不落正文**。
+   位置：`Engine/convert.py` 的 `--coop-fulltext`、`Engine/slcn/coop.py` 的 `extract_fulltext()`；`Engine/tests/test_batch59_coop_fulltext.py`。
 
 ## 四、判据与体例的权威位置
 

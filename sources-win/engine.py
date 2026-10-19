@@ -382,6 +382,7 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
                  # ── 第五十四批（CLI）/ 第五十五批（GUI 接入）：两段式 AI 协同初排 ──
                  coop_taskbook_only: bool = False, coop_stage: str = "",
                  coop_replies: "str | list[str]" = "", coop_apply: bool = False,
+                 coop_fulltext: str = "",
                  # ── 第五十五批：直接 API 通道的 token 预算闸（引擎默认 30000/1000000）──
                  ai_budget_tokens: int | None = None,
                  ai_batch_budget_tokens: int | None = None) -> EngineCall:
@@ -407,6 +408,12 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     `--llm-*`/`--search-refs`（外部 chat 通道，软件不调 API、不上传内容）。
     第一段即使页面没勾「出文献核实任务书」也强制带 `--verify-refs`：任务书就是这一段的
     全部产出（引擎自己也会把它当隐含开关）。scan-only 时界面不建 coop 参数（本函数不看）。
+
+    批59「全文 AI 核查」：`coop_fulltext="context"|"full"` **仅第一段有效**，在
+    `--coop-taskbook-only` 之后追加 `--coop-fulltext context|full`（引擎把正文/引用
+    上下文附进任务书；软件仍不调 API、零上传）。**默认空串 = 一个字节都不加**
+    （argv 与批58 逐字节相同）；非法取值 / 普通转换 / 第二段传入一律 ValueError
+    —— 第二段从状态文件继承，绝不带这个 flag。
 
     `coop_replies` 非空（str 或 list[str]）= **第二段**：只传最小集
     `--source/--out/--coop-replies… [--coop-stage] [--coop-apply] [--compile] [--clean]`，
@@ -434,6 +441,13 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
         raise ValueError("--coop-apply 只配合 --coop-replies（先回填回复，才谈得上应用建议）")
     if coop_stage and not (coop_taskbook_only or reply_paths):
         raise ValueError("--coop-stage 只配合两段式协同初排（第一段或第二段）")
+    # 批59：--coop-fulltext 只在第一段（--coop-taskbook-only）成立；第二段不带（状态继承）。
+    if coop_fulltext:
+        if not coop_taskbook_only:
+            raise ValueError("--coop-fulltext 只在两段式第一段（--coop-taskbook-only）有效："
+                             "第二段由状态文件继承，普通转换不该带它")
+        if coop_fulltext not in ("context", "full"):
+            raise ValueError(f"--coop-fulltext 只接受 context / full：{coop_fulltext!r}")
     if ai_budget_tokens is not None:
         _nonneg_int(ai_budget_tokens, "--ai-budget-tokens")
     if ai_batch_budget_tokens is not None:
@@ -469,6 +483,8 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
         if no_bibdb:
             cmd.append("--no-bibdb")
         cmd += ["--no-ai-merge", "--coop-taskbook-only"]
+        if coop_fulltext:                 # 批59：默认空串 → 一个字节都不加
+            cmd += ["--coop-fulltext", coop_fulltext]
         if coop_stage:
             cmd += ["--coop-stage", coop_stage]
     elif verify_refs:

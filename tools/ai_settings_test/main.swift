@@ -2081,6 +2081,55 @@ check("n1b-ph1-stage", "ph1 + 自定义暂存目录 → 恰好带 `--coop-stage 
       n1bArgv.contains("--coop-stage") && n1bArgv.last == n1bStage,
       "tail=\(Array(n1bArgv.suffix(2)))")
 
+// ═══════════════════════════════════════════════════════════════════════════
+// (n59) 第 59 批：全文 AI 核查（任务书附正文）—— 默认零变化 / context|full 映射 / 仅 ph1
+// ═══════════════════════════════════════════════════════════════════════════
+var n59Default = ConvertFeature.Options()
+n59Default.source = coopSrc; n59Default.out = coopOut
+n59Default = CoopFeature.prepare(n59Default, phase: .first)
+let n59DefaultArgv = ConvertFeature.arguments(n59Default)
+check("n59-default-off", "批59：默认不勾「全文 AI 核查」→ ph1 argv 仍是批58 的三个契约旗标（不含 --coop-fulltext）",
+      !n59DefaultArgv.contains("--coop-fulltext")
+        && n59DefaultArgv.suffix(3) == ["--verify-refs", "--no-ai-merge", "--coop-taskbook-only"],
+      "tail=\(Array(n59DefaultArgv.suffix(3))) fulltext=\(n59DefaultArgv.contains("--coop-fulltext"))")
+check("n59-b58-default-unchanged", "批59 默认不勾：普通转换默认 argv 与批58 逐字节一致（--compile --clean --verify-refs）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean", "--verify-refs"],
+      "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
+check("n59-scope-default", "范围默认 = 引用上下文（引擎值 context；上限数字只是文案，壳子不替引擎算）",
+      ConvertFeature.Options().coopFulltextScope == .context
+        && ConvertFeature.FulltextScope.context.flagValue == "context"
+        && ConvertFeature.FulltextScope.full.flagValue == "full",
+      "default=\(ConvertFeature.Options().coopFulltextScope.rawValue)")
+var n59Ctx = n59Default; n59Ctx.coopFulltext = true; n59Ctx.coopFulltextScope = .context
+let n59CtxArgv = ConvertFeature.arguments(n59Ctx)
+check("n59-context", "勾选 + 引用上下文 → 恰好追加 `--coop-fulltext context`（在 ph1 旗标之后）",
+      n59CtxArgv.suffix(2) == ["--coop-fulltext", "context"], "tail=\(Array(n59CtxArgv.suffix(5)))")
+var n59Full = n59Default; n59Full.coopFulltext = true; n59Full.coopFulltextScope = .full
+let n59FullArgv = ConvertFeature.arguments(n59Full)
+check("n59-full", "勾选 + 全文 → 恰好追加 `--coop-fulltext full`",
+      n59FullArgv.suffix(2) == ["--coop-fulltext", "full"], "tail=\(Array(n59FullArgv.suffix(5)))")
+var n59Ph2 = ConvertFeature.Options()
+n59Ph2.source = coopSrc; n59Ph2.out = coopOut
+n59Ph2.coopRepliesPaths = [coopReplies]; n59Ph2.coopStage = coopStage
+n59Ph2.coopFulltext = true; n59Ph2.coopFulltextScope = .full
+n59Ph2 = CoopFeature.prepare(n59Ph2, phase: .second)
+check("n59-ph2-ignores", "第二段不受影响：即使勾着全文核查，ph2 argv 也不含 --coop-fulltext",
+      !ConvertFeature.arguments(n59Ph2).contains("--coop-fulltext"),
+      "argv=\(ConvertFeature.arguments(n59Ph2))")
+var n59Plain = ConvertFeature.Options(); n59Plain.coopFulltext = true
+check("n59-plain-ignores", "普通转换（非两段式）不传 --coop-fulltext（引擎只在 --coop-taskbook-only 下识别）",
+      !ConvertFeature.arguments(n59Plain).contains("--coop-fulltext"),
+      "argv=\(ConvertFeature.arguments(n59Plain))")
+let n59TabSrc = readSrc("Views/ConvertTab.swift")
+let n59ConvSrc = readSrc("Features/ConvertFeature.swift")
+check("n59-ui-wiring", "源码级接线：ConvertTab 有「全文 AI 核查（任务书附正文）」复选框 + 范围单选，"
+      + "ConvertFeature 拼 --coop-fulltext",
+      n59TabSrc.contains("全文 AI 核查（任务书附正文）")
+        && n59TabSrc.contains("coopFulltextScope")
+        && n59ConvSrc.contains("\"--coop-fulltext\""),
+      "tab=\(n59TabSrc.contains("全文 AI 核查（任务书附正文）")) "
+        + "picker=\(n59TabSrc.contains("coopFulltextScope")) flag=\(n59ConvSrc.contains("\"--coop-fulltext\""))")
+
 // n2 「只扫描源稿」不受两段式影响：勾着协同也只走普通 --scan 路径
 var n2 = ConvertFeature.Options()
 n2.source = coopSrc; n2.scanOnly = true; n2.coopPhase = .first; n2.verifyRefs = true

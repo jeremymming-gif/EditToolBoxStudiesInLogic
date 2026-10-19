@@ -483,6 +483,10 @@ class BuildResult:
     ref_raw_by_key: dict[str, str] = field(default_factory=dict)
     # 第 120 条：正文源是多文件稿时展开了几处 \input/\include（0 = 单文件 / Word）。
     expanded_inputs: int = 0
+    # 第五十九批：**正文文本**（含 \parencite/\footnote 等命令），供两段式协同初排的
+    # 「任务书附三、正文全文/引用上下文」使用（--coop-fulltext；默认关）。
+    # **纯附加、默认空**：不参与渲染，也不改任何产物/日志。
+    body_text: str = ""
 
 
 def _citation_points(source_body: str, unmatched: list[str]) -> list[tuple[str, int, str]]:
@@ -1030,6 +1034,7 @@ def build_latex(
         undetected_fields=undetected_pairs,
         bib_keys_used=extract_bibkeys_from_body(body),
         expanded_inputs=expanded_inputs,
+        body_text=str(body or ""),
     )
 
 
@@ -2080,6 +2085,8 @@ def build_docx(
         # 第 68 条：把「条目 → 源稿原文」两份材料带出去（⑪ 的任务书与 AI 预跑要用），
         # 只做浅拷贝，不改 doc 本身。
         undetected_fields=undetected_pairs,
+        # 第五十九批：正文文本供 --coop-fulltext 附三用（纯附加，不改产物）。
+        body_text=str(body or ""),
         ref_raw_lines=list(doc.ref_raw_lines),
         ref_raw_by_key=dict(doc.ref_raw_by_key),
     )
