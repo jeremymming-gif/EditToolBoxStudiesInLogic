@@ -289,17 +289,27 @@ if not _real_path or not os.path.isfile(_real_path):
     SKIPS.append("(g) 默认引用库不存在（公开仓/CI 常态）")
     print("SKIP  (g) 默认引用库不存在 —— 跳过真实库抽测")
 else:
-    _real = bibdb.Store.load(_real_path)
-    _real_rec = _real.get("HaRui1998")
-    check("(g) 真实库内有 HaRui1998（《科学哲学导论》译著）", _real_rec is not None)
-    if _real_rec is not None:
-        _rm = _real.match_reference(ENTRY_HARUI, key="HaRui1998")
-        check("(g) 真实库：哈瑞《科学哲学导论》→ safe/translation",
-              _rm["status"] == bibdb.HIT_SAFE and _rm["hit"] == "translation",
-              f"{_rm['status']}/{_rm['hit']}")
-        _rf = (_real_rec.get("fields") or {})
-        check("(g) 真实库记录字段未被本批改动（姓名为「（著）/（译）」原样）",
-              "（著）" in str(_rf.get("author") or "") and _real.dirty is False)
+    # Hermetic（批58 CI 修复，2026-10-20）：真实库只做**可跳过的抽样**——库不可读、
+    # 或库内没有这条样本时 SKIP 而不是 FAIL（CI/公开仓/别人的笔记仓不该因库内容不同而红）。
+    try:
+        _real = bibdb.Store.load(_real_path)
+    except Exception as _exc:  # noqa: BLE001
+        _real = None
+        SKIPS.append(f"(g) 真实引用库读不了：{type(_exc).__name__}")
+        print(f"SKIP  (g) 真实引用库读不了：{type(_exc).__name__}")
+    if _real is not None:
+        _real_rec = _real.get("HaRui1998")
+        if _real_rec is None:
+            SKIPS.append("(g) 真实引用库内没有 HaRui1998 样本")
+            print("SKIP  (g) 真实引用库内没有 HaRui1998 样本")
+        else:
+            _rm = _real.match_reference(ENTRY_HARUI, key="HaRui1998")
+            check("(g) 真实库：哈瑞《科学哲学导论》→ safe/translation",
+                  _rm["status"] == bibdb.HIT_SAFE and _rm["hit"] == "translation",
+                  f"{_rm['status']}/{_rm['hit']}")
+            _rf = (_real_rec.get("fields") or {})
+            check("(g) 真实库记录字段未被本批改动（姓名为「（著）/（译）」原样）",
+                  "（著）" in str(_rf.get("author") or "") and _real.dirty is False)
 
 # ══ 汇总 ═══════════════════════════════════════════════════════════════════
 print("\n" + "=" * 66)

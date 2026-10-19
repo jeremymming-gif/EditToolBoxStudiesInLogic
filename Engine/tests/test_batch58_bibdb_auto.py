@@ -5,8 +5,14 @@ Lead 2026-10-20 拍板口径（全部离线：不联网、不调付费 API、不
   · 默认开：无新参数时自动做一次只读比对，**只打一行汇总**（命中/候选/未命中），
     不改 reference.bib / .tex / 任务书；
   · `--no-bibdb-verify` / `--no-bibdb` 关闭；无引用库时**完全静默**；
-  · `--verify-refs` / `--verify-plan` 行为不变、也不重复打印默认汇总行；
-  · 产物与 HEAD（`git archive HEAD` 旧引擎）逐字节相同；无库时**日志也**逐字节相同。
+  · `--verify-refs` / `--verify-plan` 行为不变、也不重复打印默认汇总行。
+
+**Hermetic（批58 CI 修复，2026-10-20）**：本套件**不再**用 `git archive HEAD` 造「旧引擎」
+做对照——那依赖工作树 HEAD 与可达父提交：本地 HEAD 还是批57 时能过，推送后 HEAD 已含
+批58，「旧引擎」= 新引擎，CI（depth=1）里连父提交都没有。现在改成**同一引擎自对照**：
+同一 fixture、同一 Engine，跑两次只差一个开关（默认 vs `--no-bibdb-verify` / `--no-bibdb`），
+断言「日志只差恰好一行汇总、其余行逐字节相同、产物树逐字节相同」。
+因此结果与 HEAD、git 历史、CI checkout 深度都无关。
 
 用法：
     cd Engine && PYTHONPATH=.:vendor python3 tests/test_batch58_bibdb_auto.py
@@ -21,12 +27,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(_ENGINE)
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -136,14 +140,12 @@ def build_library(tmp: str) -> str:
     return path
 
 
-def run_convert(out_dir: str, extra: list[str], *, env: dict, engine: str = _ENGINE,
+def run_convert(out_dir: str, extra: list[str], *, env: dict,
                 source: str, bib: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, os.path.join(engine, "convert.py"),
+        [sys.executable, os.path.join(_ENGINE, "convert.py"),
          "--source", source, "--out", out_dir, "--bib", bib, "--name", "Test_Author",
          "--author", "张三", "--lang", "zh", "--no-original"] + extra,
-        # cwd 固定为当前 Engine（新旧引擎都从同一处起算相对路径），否则日志里的
-        # `../../…` 层数会因 cwd 不同而非「只多一行汇总」。
         cwd=_ENGINE, env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=240)
 
@@ -159,54 +161,31 @@ def make_env(notes: str | None) -> dict:
     return env
 
 
-def ensure_head_engine(tmp: str) -> str:
-    """`git archive HEAD` 解到临时目录 → 旧引擎路径（对照用）。失败返回空串（SKIP）。"""
-    dest = os.path.join(tmp, "head")
-    try:
-        tar = subprocess.run(["git", "-C", _REPO, "archive", "HEAD"],
-                             capture_output=True, timeout=120)
-        if tar.returncode != 0:
-            return ""
-        os.makedirs(dest, exist_ok=True)
-        p = os.path.join(tmp, "head.tar")
-        with open(p, "wb") as f:
-            f.write(tar.stdout)
-        with tarfile.open(p) as tf:
-            tf.extractall(dest)
-        if not os.path.isfile(os.path.join(dest, "Engine", "convert.py")):
-            return ""
-        return os.path.join(dest, "Engine")
-    except Exception:  # noqa: BLE001
-        return ""
-
-
 _SUMMARY_RE = re.compile(r"引用库比对：命中 (\d+) / 候选 (\d+) / 未命中 (\d+)（只读，不改产物）")
 
 
 def _strip_summary(stdout: str) -> str:
-    # 用 split("\n")（不是 splitlines）保留结尾换行，才能与 HEAD stdout 逐字节比较。
+    # 用 split("\n")（不是 splitlines）保留结尾换行，才能做逐字节比较。
     return "\n".join(ln for ln in stdout.split("\n") if "引用库比对：" not in ln)
 
 
-def _same_run_pair(tmp: str, tag: str, extra: list[str], *, env: dict,
-                   source: str, bib: str, head: str,
-                   head_extra: list[str] | None = None
-                   ) -> tuple[subprocess.CompletedProcess, dict,
-                              subprocess.CompletedProcess, dict]:
-    """同路径先后跑「新引擎 / HEAD 引擎」，返回 (new_proc, new_snap, head_proc, head_snap)。
+def run_pair(tmp: str, tag: str, extra_on: list[str], extra_off: list[str], *,
+             env: dict, source: str, bib: str
+             ) -> tuple[subprocess.CompletedProcess, dict,
+                        subprocess.CompletedProcess, dict]:
+    """**同一引擎**在同一 fixture 上连跑两次（只差开关），返回 (on_proc, on_snap, off_proc, off_snap)。
 
-    `head_extra`：HEAD 旧引擎不认识第五十八批的新参数，对照跑默认用 `[]`
-    （语义上就是「批57 的默认转换」）。
+    `on` 默认就是「默认转换」（无开关）；`off` 是关闭默认比对的对照组。
+    产物树两次都重建、各自快照——用来断言「比对只读、不改产物」。
+    与 HEAD / git 历史无关（CI depth=1 也能跑）。
     """
     out = os.path.join(tmp, tag, "out")
-    shutil.rmtree(out, ignore_errors=True)
-    new = run_convert(out, extra, env=env, source=source, bib=bib)
-    new_snap = snapshot(os.path.join(out, "Test_Author"))
-    shutil.rmtree(out, ignore_errors=True)
-    old = run_convert(out, list(head_extra or []), env=env, engine=head,
-                      source=source, bib=bib)
-    old_snap = snapshot(os.path.join(out, "Test_Author"))
-    return new, new_snap, old, old_snap
+    results: list[tuple[subprocess.CompletedProcess, dict[str, str]]] = []
+    for extras in (extra_on, extra_off):
+        shutil.rmtree(out, ignore_errors=True)
+        proc = run_convert(out, extras, env=env, source=source, bib=bib)
+        results.append((proc, snapshot(os.path.join(out, "Test_Author"))))
+    return results[0][0], results[0][1], results[1][0], results[1][1]
 
 
 # ── ① 参数与帮助 ─────────────────────────────────────────────────────────
@@ -222,68 +201,76 @@ def test_help(env: dict) -> None:
           "--no-bibdb-verify" in out and "只读引用库比对" in out and "默认开" in out)
 
 
-# ── ② 有库：默认打印一行汇总、产物与 HEAD 逐字节相同 ──────────────────────
+# ── ② 有库：默认打印一行汇总、只读不改产物（同一引擎自对照）──────────────
 
 
-def test_default_with_db(tmp: str, env_db: dict, head: str, source: str, bib: str) -> None:
-    new, new_snap, old, old_snap = _same_run_pair(
-        tmp, "withdb", [], env=env_db, source=source, bib=bib, head=head)
-    m = _SUMMARY_RE.search(new.stdout)
-    check("②-1 默认转换退出 0", new.returncode == 0, (new.stdout + new.stderr)[-400:])
+def test_default_with_db(tmp: str, env_db: dict, env_nodb: dict,
+                         source: str, bib: str) -> None:
+    on, on_snap, off, off_snap = run_pair(
+        tmp, "withdb", [], ["--no-bibdb-verify"],
+        env=env_db, source=source, bib=bib)
+    m = _SUMMARY_RE.search(on.stdout)
+    check("②-1 默认转换退出 0", on.returncode == 0, (on.stdout + on.stderr)[-400:])
     check("②-2 默认转换打印「引用库比对：命中 1 / 候选 1 / 未命中 1」",
           m is not None and m.group(1, 2, 3) == ("1", "1", "1"),
-          new.stdout[-600:])
+          on.stdout[-600:])
     check("②-3 汇总行注明「只读，不改产物」", m is not None and "只读，不改产物" in m.group(0))
-    check("②-4 汇总行只出现一次", new.stdout.count("引用库比对：") == 1)
-    check("②-5 有库时产物树与 HEAD 旧引擎逐字节相同", new_snap == old_snap,
-          f"new={len(new_snap)} head={len(old_snap)}")
-    check("②-6 有库时日志 = HEAD 日志 + 恰好一行汇总（其余逐字节相同）",
-          _strip_summary(new.stdout) == old.stdout)
-    check("②-7 HEAD 旧引擎（批57）默认转换不打印该行",
-          "引用库比对：" not in old.stdout)
+    check("②-4 汇总行只出现一次", on.stdout.count("引用库比对：") == 1)
+    check("②-5 默认与 --no-bibdb-verify 两次运行的产物树逐字节相同",
+          on_snap == off_snap, f"on={len(on_snap)} off={len(off_snap)}")
+    check("②-6 默认日志 = --no-bibdb-verify 日志 + 恰好一行汇总（其余逐字节相同）",
+          _strip_summary(on.stdout) == off.stdout
+          and on.stdout.count("引用库比对：") == 1)
+    nodb = run_convert(os.path.join(tmp, "nodb_line", "out"), [],
+                       env=env_nodb, source=source, bib=bib)
+    check("②-7 无库 fixture 与 --no-bibdb-verify 输出都不含「引用库比对：」行",
+          "引用库比对：" not in nodb.stdout
+          and "引用库比对：" not in off.stdout)
 
 
-# ── ③ 无库：完全静默，日志/产物都与 HEAD 逐字节相同 ──────────────────────
+# ── ③ 无库：完全静默，日志/产物与关闭时一致（同一引擎自对照）────────────
 
 
-def test_default_no_db(tmp: str, env_nodb: dict, head: str, source: str, bib: str) -> None:
-    new, new_snap, old, old_snap = _same_run_pair(
-        tmp, "nodb", [], env=env_nodb, source=source, bib=bib, head=head)
-    check("③-1 无库时默认转换退出 0", new.returncode == 0, (new.stdout + new.stderr)[-400:])
-    check("③-2 无库时没有任何「引用库」输出", "引用库" not in new.stdout)
-    check("③-3 无库时日志与 HEAD **逐字节**相同（静默零噪声）", new.stdout == old.stdout)
-    check("③-4 无库时产物树与 HEAD 逐字节相同", new_snap == old_snap)
+def test_default_no_db(tmp: str, env_nodb: dict, source: str, bib: str) -> None:
+    on, on_snap, off, off_snap = run_pair(
+        tmp, "nodb", [], ["--no-bibdb-verify"],
+        env=env_nodb, source=source, bib=bib)
+    check("③-1 无库时默认转换退出 0", on.returncode == 0, (on.stdout + on.stderr)[-400:])
+    check("③-2 无库时没有任何「引用库」输出", "引用库" not in on.stdout)
+    check("③-3 无库时默认与 --no-bibdb-verify 日志**逐字节**相同（静默零噪声）",
+          on.stdout == off.stdout)
+    check("③-4 无库时两次运行产物树逐字节相同", on_snap == off_snap)
 
 
-# ── ④ 关闭开关 ───────────────────────────────────────────────────────────
+# ── ④ 关闭开关（同一引擎自对照）──────────────────────────────────────────
 
 
-def test_opt_out(tmp: str, env_db: dict, env_nodb: dict, head: str,
-                 source: str, bib: str) -> None:
-    new, new_snap, old, old_snap = _same_run_pair(
-        tmp, "optout", ["--no-bibdb-verify"], env=env_db, source=source, bib=bib,
-        head=head, head_extra=[])
-    check("④-1 --no-bibdb-verify 退出 0", new.returncode == 0)
-    check("④-2 --no-bibdb-verify 不打印汇总行", "引用库比对：" not in new.stdout)
-    check("④-3 --no-bibdb-verify 时日志与 HEAD 逐字节相同", new.stdout == old.stdout)
-    check("④-4 --no-bibdb-verify 时产物树与 HEAD 逐字节相同", new_snap == old_snap)
+def test_opt_out(tmp: str, env_db: dict, env_nodb: dict, source: str, bib: str) -> None:
+    on, on_snap, off, off_snap = run_pair(
+        tmp, "optout", [], ["--no-bibdb-verify"],
+        env=env_db, source=source, bib=bib)
+    check("④-1 --no-bibdb-verify 退出 0", off.returncode == 0)
+    check("④-2 --no-bibdb-verify 不打印汇总行", "引用库比对：" not in off.stdout)
+    check("④-3 --no-bibdb-verify 日志 = 默认日志删去汇总行（其余逐字节相同）",
+          _strip_summary(on.stdout) == off.stdout)
+    check("④-4 --no-bibdb-verify 产物树与默认转换逐字节相同", off_snap == on_snap)
 
-    new2, new2_snap, old2, old2_snap = _same_run_pair(
-        tmp, "nobibdb", ["--no-bibdb"], env=env_db, source=source, bib=bib,
-        head=head, head_extra=[])
+    on2, on2_snap, off2, off2_snap = run_pair(
+        tmp, "nobibdb", [], ["--no-bibdb"],
+        env=env_db, source=source, bib=bib)
     check("④-5 --no-bibdb 关闭默认比对（静默、退出 0）",
-          new2.returncode == 0 and "引用库比对：" not in new2.stdout)
-    check("④-6 --no-bibdb 时产物与 HEAD 逐字节相同", new2_snap == old2_snap)
+          off2.returncode == 0 and "引用库比对：" not in off2.stdout)
+    check("④-6 --no-bibdb 产物与默认转换逐字节相同", off2_snap == on2_snap)
 
     # 显式 --bibdb-path（不经 SLCN_NOTES）：默认比对仍生效
     lib_path = os.path.join(tmp, "notes", "bib_db", "bibliography.jsonl")
-    new3, new3_snap, old3, old3_snap = _same_run_pair(
-        tmp, "path", ["--bibdb-path", lib_path], env=env_nodb,
-        source=source, bib=bib, head=head, head_extra=[])
+    r3 = run_convert(os.path.join(tmp, "path", "out"), ["--bibdb-path", lib_path],
+                     env=env_nodb, source=source, bib=bib)
+    m3 = _SUMMARY_RE.search(r3.stdout)
     check("④-7 显式 --bibdb-path 时默认比对也生效（命中 1/候选 1/未命中 1）",
-          _SUMMARY_RE.search(new3.stdout) is not None
-          and _SUMMARY_RE.search(new3.stdout).group(1, 2, 3) == ("1", "1", "1"))
-    check("④-8 显式 --bibdb-path 时产物与 HEAD 逐字节相同", new3_snap == old3_snap)
+          m3 is not None and m3.group(1, 2, 3) == ("1", "1", "1"), r3.stdout[-500:])
+    check("④-8 显式 --bibdb-path 时产物与默认转换逐字节相同",
+          snapshot(os.path.join(tmp, "path", "out", "Test_Author")) == on2_snap)
     check("④-9 --no-bibdb-verify + --bibdb-path → 仍静默",
           "引用库比对：" not in run_convert(
               os.path.join(tmp, "both"), ["--bibdb-path", lib_path, "--no-bibdb-verify"],
@@ -293,7 +280,7 @@ def test_opt_out(tmp: str, env_db: dict, env_nodb: dict, head: str,
 # ── ⑤ --verify-refs / --verify-plan 行为不变、不重复打印 ─────────────────
 
 
-def test_verify_paths(tmp: str, env_db: dict, head: str, source: str, bib: str) -> None:
+def test_verify_paths(tmp: str, env_db: dict, source: str, bib: str) -> None:
     lib_path = os.path.join(tmp, "notes", "bib_db", "bibliography.jsonl")
     out = os.path.join(tmp, "verify", "out")
     shutil.rmtree(out, ignore_errors=True)
@@ -417,15 +404,11 @@ def main() -> int:
         empty_notes = os.path.join(tmp, "empty_notes")
         os.makedirs(os.path.join(empty_notes, "cases"), exist_ok=True)  # 无 bib_db/
         env_nodb = make_env(empty_notes)
-        head = ensure_head_engine(tmp)
-        if not head:
-            skip("HEAD 对照（②/③/④)", "git archive HEAD 失败")
-        else:
-            test_help(env_db)
-            test_default_with_db(tmp, env_db, head, source, bib)
-            test_default_no_db(tmp, env_nodb, head, source, bib)
-            test_opt_out(tmp, env_db, env_nodb, head, source, bib)
-        test_verify_paths(tmp, env_db, head or "", source, bib)
+        test_help(env_db)
+        test_default_with_db(tmp, env_db, env_nodb, source, bib)
+        test_default_no_db(tmp, env_nodb, source, bib)
+        test_opt_out(tmp, env_db, env_nodb, source, bib)
+        test_verify_paths(tmp, env_db, source, bib)
         test_degrade(tmp, env_nodb, source, bib)
         test_helper(tmp, env_db, source, bib)
     finally:
