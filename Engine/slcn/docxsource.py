@@ -3099,6 +3099,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         for _r in doc.refs:
             _candidates.append((_r.key, {"author": _r.author, "year": _r.year,
                                          "title": _r.title, "type": _r.kind}, _r.raw))
+        _guard_entries: list[int] = []   # 中文文献条目型兜底 fid（union 前按指纹会被合并）
         for _fid, _fn in list(fn_objs.items()):
             _new = classify_citation(_fn.text)
             _new.fid = int(_fid)
@@ -3135,11 +3136,29 @@ def parse_docx(path: str, quote_threshold: int = 105,
             elif _kind == CITATION_NOTE:
                 _new.kind = "pure_note"
                 _new.note = _new.note or _new.text
+            # 第四十九批引擎侧边界保护（86-03 实测）：中文**文献条目型**脚注
+            # （源稿形如 `[] 胡炳年、陈彦瑾，“…”，逻辑学研究，2018 年第 1 期。`）会被
+            # 新分类器判成 mixed/note_only → bib 22→1。带 `[编号]` 开头 + 文献标记
+            # （书名号/出版社/学报/期号/年份）时按 reference_entry 处理，进并集 bib。
+            # 只在带编号前缀时兜底，不影响 86-07 论述脚注 / 90-06/07 短引用。
+            if (_new.kind in ("mixed", "mixed_manual", "pure_note")
+                    and re.match(r"^\s*\[\s*[^\]]*\]", _new.text or "")
+                    and re.search(r"《[^》]{2,}》|出版社|学报|期刊|\[[MJDC]\]|"
+                                  r"(?:19|20)\d{2}\s*年?\s*第\s*\d+\s*[期卷]",
+                                  _new.text or "")):
+                _txt_clean = re.sub(r"^\s*\[\s*[^\]]*\]\s*", "",
+                                    _new.text or "").strip()
+                try:
+                    _e = parse_entry(_txt_clean)
+                except Exception:  # noqa: BLE001
+                    _e = {}
+                # 与旧口径一致：解析字段为空也照样进 bib（旧行为 86-03 就是 22 条），
+                # 空字段由 bibnorm/编辑侧兜底，不能因为 entry 空就丢条目。
+                _new.kind = "pure_ref"
+                _new.ref = _txt_clean
+                _new.entry = _e or {}
+                _guard_entries.append(int(_fid))
             fn_objs[_fid] = _new
-        # 短引用命中 → keymap（正文渲染用 `\parencite[locator]{key}`）
-        for _fid, _fn in fn_objs.items():
-            if _fn.kind == "pure_citation_matched" and getattr(_fn, "key", ""):
-                keymap[_fid] = _fn.key
 
     # 第四十九批：混合型脚注清单（渲染保留脚注 + build 汇总「请人工核对」warning）。
     # **仅新口径开关 ON 时**收集：默认 OFF 时旧行为/产物/warning 逐字节不变。
@@ -3153,6 +3172,11 @@ def parse_docx(path: str, quote_threshold: int = 105,
     _end_entries_snapshot: list[tuple[str, dict, str]] = list(doc.bib_entries)
     used_keys: set[str] = set()
     keymap: dict[int, str] = {}
+    if c_class_union:
+        # 短引用命中 → keymap（正文渲染用 `\\parencite[locator]{key}`）
+        for _fid, _fn in fn_objs.items():
+            if _fn.kind == "pure_citation_matched" and getattr(_fn, "key", ""):
+                keymap[_fid] = _fn.key
     # 第四十七批（88-02 实测）：同一文献被**多条脚注反复引用**时逐条提升 → bib 重复
     # （88-02 有 19 条重复：同一作品不同页码各生成一条），参考文献区多 2 页。
     # 按「作者+年+题名前 30 字」指纹去重：重复引用复用已有键，不再新增 bib 条目。
@@ -3259,6 +3283,17 @@ def parse_docx(path: str, quote_threshold: int = 105,
         doc.bib_entries = _union_entries(
             list(_end_entries_snapshot), list(_new_entries),
             warnings=doc.c_class_warnings)
+        # 中文文献条目型兜底（86-03）：解析字段可能为空 → 指纹相同被 union 合并成 1 条；
+        # 这里把丢掉的 guard 条目按原键补回（内容来自原文，仍由 entry_to_bib 兜底渲染）。
+        _now_keys = {k for k, _e, _r in doc.bib_entries}
+        for _gfid in _guard_entries:
+            _gf = fn_objs.get(_gfid)
+            if _gf is None or not getattr(_gf, "key", ""):
+                continue
+            if _gf.key in _now_keys:
+                continue
+            doc.bib_entries.append((_gf.key, _gf.entry or {}, getattr(_gf, "ref", "")))
+            _now_keys.add(_gf.key)
         if doc.bib_entries:
             say_union = (f"   并集参考文献（C 类新口径）：文末清单 "
                          f"{len(_end_entries_snapshot)} 条 + 脚注条目 "

@@ -1192,9 +1192,13 @@ def main() -> int:
     ap.add_argument("--bibdb-path", default="", metavar="PATH",
                     help="引用库文件路径（隐含启用；默认 笔记仓/bib_db/bibliography.jsonl）。"
                          "指错/读不了 → 告警并按原流程核实（不中断）。")
-    ap.add_argument("--c-class-union", action="store_true",
-                    help="C 类新口径（第四十九批，默认关）：纯引用脚注→正文 \\parencite、"
-                         "并集参考文献；关=旧行为逐字节不变")
+    # 第四十九批②：C 类新口径**默认 OFF**（v7 实测非 5 篇过并，暂不默认开启）。
+    # `--c-class-union` 显式 opt-in；`--no-c-class-union` 保留为兼容 no-op（默认即关）。
+    ap.add_argument("--c-class-union", dest="c_class_union", action="store_true",
+                    default=False,
+                    help="C 类新口径 opt-in（默认关）：纯引用脚注→正文 \\parencite、并集参考文献")
+    ap.add_argument("--no-c-class-union", dest="c_class_union", action="store_false",
+                    help="(兼容 no-op，默认即关) 不回退任何行为")
     ap.add_argument("--number-cite-map", action="store_true",
                     help="NO_CITES-B（默认关）：正文裸编号 [N] 映射为第 N 条 \\parencite")
     ap.add_argument("--end-list-priority", action="store_true",

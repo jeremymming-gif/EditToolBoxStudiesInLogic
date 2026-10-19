@@ -1660,8 +1660,9 @@ def build_docx(
                    True 时按用户拍板新口径渲染：pure_citation/reference_entry →
                    正文 `\\parencite[页码]{键}` 并删脚注；mixed → 保留脚注 + 「请人工
                    核对」warning 列表；note_only 原样；参考文献 = 脚注引注 ∪ 文末清单
-                   （bib-refs `union_entries`）。**本批默认关**：关时旧行为逐字节不变；
-                   默认 ON 留待 v7 复测后单独切换。
+                   （bib-refs `union_entries`）。**默认关**（v7 实测非 5 篇过并：
+                   87-9/88-02 等 bib 大幅缩水+undef/dangling，需先修指纹/键一致性）；
+                   关时旧行为逐字节不变；`--c-class-union` 显式 opt-in。
     """
     from .docxsource import (
         link_citations,
@@ -1669,6 +1670,9 @@ def build_docx(
         parse_docx,
         refs_to_bib,
     )
+
+    # 第四十九批②：C 类新口径**默认 OFF**（v7 实测非 5 篇过并，暂不默认开启）；
+    # `--c-class-union` 显式 opt-in。
 
     log: list[str] = []
     warnings: list[str] = []

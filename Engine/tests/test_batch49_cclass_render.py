@@ -14,6 +14,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from slcn import build  # noqa: E402
 from slcn import footnotes as F  # noqa: E402
 from slcn.docxxml import Para, Seg  # noqa: E402
 from slcn.docxsource import render_para  # noqa: E402
@@ -62,6 +63,12 @@ check("③ mixed_citation 别名 → 保留 \\footnote（不再丢说明文字/�
 fn = F.Footnote(fid=4, text="Cook, 2010.", kind="pure_citation", ref="Cook, 2010.")
 tex, _notes = render_para(_para(4), {4: fn}, [], {}, {}, c_class_union=True)
 check("④ 缺键时不崩（空键也不 panic，输出可编译占位）", isinstance(tex, str), repr(tex[-120:]))
+
+# ⑤a 默认 OFF（v7 实测非 5 篇过并 → 第四十九批回退默认 OFF）
+import inspect as _inspect
+_sig = _inspect.signature(build.build_docx)
+check("⑤a build_docx(c_class_union=False) 默认关（C 类 opt-in）",
+      _sig.parameters["c_class_union"].default is False)
 
 # ⑤ 默认 OFF：旧行为逐字节不变（pure_ref 仍中文括号包裹、mixed 仍 cf. 格式）
 fn = F.Footnote(fid=5, text="Cook, 2010.", kind="pure_ref", ref="Cook, 2010.")

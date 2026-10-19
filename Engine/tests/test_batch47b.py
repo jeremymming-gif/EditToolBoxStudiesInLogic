@@ -80,7 +80,9 @@ with zipfile.ZipFile(_d2, "w") as z:
     z.writestr("word/footnotes.xml", _FN)
 try:
     with tempfile.TemporaryDirectory() as t:
-        _r2 = build.build_docx(_d2, t, basename="F", lang="zh", verbose=False)
+        # 该边界属**旧口径**（C 类默认 ON 后由新分类器接管，另测）；这里固定旧路径
+        _r2 = build.build_docx(_d2, t, basename="F", lang="zh", verbose=False,
+                               c_class_union=False)
         _t2 = open(_r2.tex_path, encoding="utf-8").read()
         _bib2 = open(_r2.bib_path, encoding="utf-8").read() if _r2.bib_path else ""
     check("② 中文文献条目型脚注（含书名号/期号）不被降级成脚注散文（86-03 边界）",

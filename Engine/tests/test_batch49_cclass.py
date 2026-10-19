@@ -60,11 +60,11 @@ check("① 旧 classify() 仍返回旧 kind（现网 docxsource 未切换不被�
       footnotes.classify("Cf. Gary Watson, “Free Agency,” p. 215.").kind in
       ("pure_ref", "mixed", "pure_note", "classical"))
 
-# ── ② 开关默认关 ─────────────────────────────────────────────────────────
-check("② C 类总开关默认关（默认行为/产物不变）",
+# ── ② 开关默认关（v7 过度合并后回退；保留显式 True 试开）─────────────────
+check("② C 类总开关默认关（v7 后保底：旧行为/产物不变）",
       footnotes.c_class_union_enabled() is False
       and footnotes.c_class_union_enabled(None) is False)
-check("② 显式传 True 才启用（下一峰谷批由 engine-core 接线）",
+check("② 显式传 True 可试开（下一窗口修好后重试默认 ON）",
       footnotes.c_class_union_enabled(True) is True)
 
 # ── ③ 指纹/并集 ─────────────────────────────────────────────────────────
@@ -148,6 +148,36 @@ key3, _w3 = footnotes.resolve_citation(
     citation3, [("T1", {"author": "苗力田", "title": "亚里士多德全集",
                         "year": "1990", "volume": "第一卷"}, "")])
 check("④ 双方卷号不同 → 不匹配（不误挂到另一卷）", key3 is None)
+
+# ── ⑤ resolve_citation 匹配率增强（第五十批：候选扩展/作者归一/题名部分/年份强约束）──
+def _cite(text, entry=None):
+    f = footnotes.Footnote(fid=1, text=text, kind_new=footnotes.CITATION_PURE,
+                           ref_raw=text)
+    f.entry = entry
+    return f
+
+entries_zh = [("Chen2018", {"author": "陈波", "title": "逻辑学导论", "year": "2018"}, "")]
+check("⑤ 中文短引用「（陈波，2018）」→ 命中", 
+      footnotes.resolve_citation(_cite("陈波，2018，第3页。"), entries_zh)[0] == "Chen2018")
+entries_en = [("Cook2010", {"author": "Cook, R. T.", "title": "Let a Thousand Flowers Bloom",
+                            "year": "2010"}, "")]
+check("⑤ 缩写作者「Cook 2010」→ 命中", 
+      footnotes.resolve_citation(_cite("Cook 2010"), entries_en)[0] == "Cook2010")
+entries_multi = [("Smith2019", {"author": "Smith, J. and Jones, A.",
+                                "title": "Collective Reasoning", "year": "2019"}, "")]
+check("⑤ 多作者「Smith et al. 2019」→ 命中（首作者姓）",
+      footnotes.resolve_citation(_cite("Smith et al. 2019"), entries_multi)[0] == "Smith2019")
+check("⑤ 同姓不同年 → 不匹配（年份强约束）",
+      footnotes.resolve_citation(_cite("Smith et al. 2018"), entries_multi)[0] is None)
+entries_partial = [("Wolf1987", {"author": "Wolf, S.", "title": "Sanity and the Metaphysics of Responsibility",
+                                 "year": "1987"}, "")]
+check("⑤ 题名残缺/部分匹配（引号内题名前缀）→ 命中",
+      footnotes.resolve_citation(_cite("Susan Wolf, “Sanity and the Metaphysics of Responsibility,” p. 50."),
+                                 entries_partial)[0] == "Wolf1987")
+check("⑤ 作者拼写容错（Waston/Watson）→ 命中",
+      footnotes.resolve_citation(_cite("Gary Waston, “Free Agency,” p. 215."),
+                                 [("W1975", {"author": "Watson, G.", "title": "Free Agency",
+                                             "year": "1975"}, "")])[0] == "W1975")
 
 print()
 if FAILS:

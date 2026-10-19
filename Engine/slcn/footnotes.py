@@ -260,14 +260,17 @@ def classify_citation(text: str) -> Footnote:
     return fn
 
 
-#: 第四十九批 C 类新口径**总开关**：按 Lead 07:45 决定**默认关**（峰谷批再切默认 ON）。
-#: 默认关 = 现有 docxsource/build 一行未改、所有产物逐字节不变；
-#: 启用方式：engine-core 接线时把 `c_class_union_enabled(True)`（或传 `--c-class-union`）。
+#: 第四十九/五十批 C 类新口径**总开关**：**默认关**（v7 实测默认 ON 过度合并：
+#: 87-9 8→1、88-02 43→24 → undef/dangling 新 P0，本批不能默认开）。
+#: 匹配增强/分类器/并集已保留；显式传 True 可试开（`c_class_union_enabled(True)` /
+#: engine-core `--c-class-union`）。下一窗口修「指纹作者+题名非空、resolve 后统一回写键、
+#: 回归集」后再重试默认 ON。
+#: ⚠️ 本文件未改旧 `classify()`；默认路径由 engine-core 在 build/docxsource 接线。
 C_CLASS_UNION_DEFAULT = False
 
 
 def c_class_union_enabled(flag: bool | None = None) -> bool:
-    """C 类并集是否启用（默认关；`flag` 显式传入时以调用方为准）。"""
+    """C 类并集是否启用（**默认关**；显式传 True 可试开，传 False 为保底旧行为）。"""
     return C_CLASS_UNION_DEFAULT if flag is None else bool(flag)
 
 
@@ -470,50 +473,298 @@ def _completeness(entry: dict) -> int:
                if str(entry.get(name) or "").strip())
 
 
+_FULLWIDTH = str.maketrans({src: dst for src, dst in zip(
+    "０１２３４５６７８９（）［］，。；：、“”‘’",
+    "0123456789()[],.;:," + '"' + '"' + "'" + "'" )})
+
+
+def _author_surname(text: str) -> str:
+    """作者归一：中文去「主编/著/编/译/等」；英文取姓（逗号前 / 末词）；全半角+标点归一。"""
+    text = str(text or "").translate(_FULLWIDTH).strip()
+    text = re.sub(r"^(Cf\.|cf\.|参见|参阅|转引自|引自)\s*", "", text)
+    if re.search(r"[\u4e00-\u9fff]", text):
+        head = re.split(r"[，,。；;：:（(《]| and | 等", text)[0]
+        head = re.sub(r"(主编|编著|编译|著|编|译|校|等)+$", "", head.strip())
+        return _norm_fp(head)[:12]
+    first = re.split(r"\s+and\s+", text, flags=re.I)[0]
+    if "," in first:
+        first = first.split(",")[0]
+    toks = [t for t in re.split(r"\s+", first.strip(" .,;:")) if t]
+    if not toks:
+        return ""
+    surname = toks[-1]
+    # 荷兰/德语虚词并入姓（van Fraassen / von Wright）
+    if len(toks) >= 2 and toks[-2].lower() in ("van", "von", "de", "der", "den", "la", "le"):
+        surname = toks[-2] + surname
+    return _norm_fp(surname)[:12]
+
+
+def _extract_raw_fields(raw: str) -> dict:
+    """从原文（脚注引用/note-only 条目）抽 author/title/year/volume/edition（不编造）。"""
+    fields: dict = {}
+    raw = str(raw or "").strip()
+    if not raw:
+        return fields
+    if re.search(r"[\u4e00-\u9fff]", raw):
+        head = re.split(r"[：:《（(]", raw)[0]
+        head = re.sub(r"(主编|编著|编译|著|编|译|校|等)+$", "", head.strip())
+        if head:
+            fields["author"] = head[:30]
+    else:
+        body = re.sub(r"^(Cf\.|cf\.|See|see|参见|参阅|转引自|引自)\s*", "", raw)
+        head = re.split(r"[,”\"‘《,]", body)[0]
+        words = [w for w in re.split(r"\s+", head.strip()) if w]
+        name = []
+        for word in words[:6]:
+            if re.fullmatch(r"[A-Z]\.?", word) or re.fullmatch(r"[A-Z][a-z'\-]+", word) \
+                    or re.fullmatch(r"[A-Z][A-Z'\-]+", word):
+                name.append(word)
+            else:
+                break
+        if name:
+            fields["author"] = " ".join(name)
+    for pat in (r"[“\"‘]([^”\"’]{2,120})[”\"’]", r"《([^》]{2,120})》"):
+        m = re.search(pat, raw)
+        if m:
+            fields["title"] = m.group(1)
+            break
+    if not fields.get("title") and not re.search(r"[\u4e00-\u9fff]", raw):
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) >= 2 and 2 < len(parts[1]) <= 120 \
+                and not re.match(r"^(?:pp?\.\s*\d|[0-9]+\s*[-\u2013]\s*\d+)", parts[1]):
+            fields["title"] = parts[1]
+    m = re.search(r"(?:19|20)\d{2}", raw)
+    if m:
+        fields["year"] = m.group(0)
+    m = re.search(r"(第\s*[0-9一二三四五六七八九十]+\s*[卷册]|(?:Vol|vol|Volume)\.?\s*[0-9]+)", raw)
+    if m:
+        fields["volume"] = m.group(1)
+    m = re.search(r"(第\s*[0-9一二三四五六七八九十]+\s*版|[0-9]+(?:st|nd|rd|th)\s*(?:ed\.?)?)", raw, re.I)
+    if m:
+        fields["edition"] = m.group(1)
+    return fields
+
+
+def _enrich_entry(entry: dict, raw: str) -> dict:
+    """候选扩展：note-only 条目用原文补 author/title/year（不覆盖已有字段）。"""
+    merged = dict(entry or {})
+    if not merged.get("author") or not merged.get("title"):
+        extra = _extract_raw_fields(str(merged.get("note") or raw or ""))
+        for name, value in extra.items():
+            merged.setdefault(name, value)
+    return merged
+
+
+def _extract_citation_fields(citation: Footnote) -> dict:
+    """从短引用原文抽 author/title/year/volume/edition（不编造：只抽原文可见信息）。"""
+    raw = str(citation.ref_raw or citation.ref or citation.text or "").strip()
+    fields = dict(citation.entry or {})
+    if not fields.get("author") or not fields.get("title"):
+        for name, value in _extract_raw_fields(raw).items():
+            fields.setdefault(name, value)
+    if False:  # 旧内联解析保留为空（已由 _extract_raw_fields 覆盖）
+        pass
+    if not fields.get("author"):
+        if re.search(r"[\u4e00-\u9fff]", raw):
+            head = re.split(r"[：:《（(]", raw)[0]
+            head = re.sub(r"(主编|编著|编译|著|编|译|校|等)+$", "", head.strip())
+            if head:
+                fields["author"] = head[:30]
+        else:
+            body = re.sub(r"^(Cf\.|cf\.|See|see|参见|参阅|转引自|引自)\s*", "", raw)
+            m = re.match(r"((?:[A-Z]\.\s*)*[A-Z][A-Za-z'\-]+(?:\s+(?:[A-Z]\.\s*)?[A-Z][A-Za-z'\-]+)*)", body)
+            if m:
+                fields["author"] = m.group(1)
+    if not fields.get("title"):
+        for pat in (r"[“\"‘]([^”\"’]{2,120})[”\"’]", r"《([^》]{2,120})》"):
+            m = re.search(pat, raw)
+            if m:
+                fields["title"] = m.group(1)
+                break
+        if not fields.get("title") and not re.search(r"[\u4e00-\u9fff]", raw):
+            # `Author, Title, Journal…` 无引号写法：取第一个逗号后到第二个逗号/年份
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) >= 2 and 2 < len(parts[1]) <= 120 \
+                    and not re.match(r"^(?:pp?\.\s*\d|[0-9]+\s*[-\u2013]\s*\d+)", parts[1]):
+                fields["title"] = parts[1]
+    if not fields.get("year"):
+        m = re.search(r"(?:19|20)\d{2}", raw)
+        if m:
+            fields["year"] = m.group(0)
+    if not fields.get("volume"):
+        m = re.search(r"(第\s*[0-9一二三四五六七八九十]+\s*[卷册]|(?:Vol|vol|Volume)\.?\s*[0-9]+)", raw)
+        if m:
+            fields["volume"] = m.group(1)
+    if not fields.get("edition"):
+        m = re.search(r"(第\s*[0-9一二三四五六七八九十]+\s*版|[0-9]+(?:st|nd|rd|th)\s*(?:ed\.?)?)", raw, re.I)
+        if m:
+            fields["edition"] = m.group(1)
+    return fields
+
+
+def _surname_similarity(a: str, b: str) -> float:
+    import difflib
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _title_match_tier(cit_title: str, cand_title: str) -> float:
+    """题名相似度：精确 1.0；包含 0.95；token/序列 0~1。"""
+    a, b = _norm_fp(cit_title), _norm_fp(cand_title)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    if a in b or b in a:
+        return 0.95
+    import difflib
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    # token 交集（英文词级）补充
+    ta = set(re.findall(r"[a-z]+", cit_title.lower()))
+    tb = set(re.findall(r"[a-z]+", cand_title.lower()))
+    if ta and tb:
+        score = len(ta & tb) / max(1, min(len(ta), len(tb)))
+        ratio = max(ratio, score)
+    return ratio
+
+
+def build_citation_index(entries: list[tuple[str, dict, str]]) -> dict:
+    """作者-年索引（surname → 条目下标；surname+year → 下标），供 resolve 候选扩展。"""
+    index: dict = {"by_surname": {}, "by_surname_year": {}}
+    for i, (_key, entry, _raw) in enumerate(entries):
+        entry = _enrich_entry(entry, _raw)
+        surname = _author_surname(entry.get("author") or entry.get("editor") or "")
+        year = re.sub(r"\D", "", str(entry.get("year") or ""))[:4]
+        if surname:
+            index["by_surname"].setdefault(surname, []).append(i)
+            if year:
+                index["by_surname_year"].setdefault((surname, year), []).append(i)
+    return index
+
+
 def resolve_citation(citation: Footnote,
                      entries: list[tuple[str, dict, str]],
-                     *, title_threshold: float = 0.9) -> tuple[str | None, FootnoteWarning | None]:
-    """短引用 → 已存在条目 key（作者-年 + 题名相似度 + 字段完整度）；不编造。
+                     *, title_threshold: float = 0.9,
+                     index: dict | None = None,
+                     stats: dict | None = None) -> tuple[str | None, FootnoteWarning | None]:
+    """短引用 → 已存在条目 key（分档匹配：作者-年+题名相似度+字段完整度）；不编造。
 
-    返回 `(key|None, warning|None)`：
-      · 命中 → `(key, None)`（正文转 `\\parencite[locator]{key}`）；
-      · 未命中 → `(None, FootnoteWarning("citation_unmatched", ...))`——调用方保留原脚注/正文
-        原样，**不生成条目、不臆造字段**（用户 2026-10-19 方案 1）。
-    判据：作者姓必须相等；年份相等优先；题名相似度 ≥ threshold；多候选取字段最完整。
+    分档：① 完整指纹（含卷/版）② 姓+年+题名≥阈值 ③ 姓+题名≥阈值（一方缺年）
+          ④ 姓+年唯一候选（候选仅 1 条）；题目/年份/卷版冲突直接拒绝。
+    返回 `(key|None, warning|None)`；失败 = `citation_unmatched`（调用方保留原脚注/正文）。
     """
-    author = str(citation.entry.get("author", "") if citation.entry else "")
-    title = str((citation.entry or {}).get("title") or "")
-    year = re.sub(r"\D", "", str((citation.entry or {}).get("year") or ""))[:4]
-    surname = _surname(author or citation.ref_raw)
-    best = None
-    for key, entry, _raw in entries:
-        if surname and _surname(entry) != surname:
-            continue
-        candidate_year = re.sub(r"\D", "", str(entry.get("year") or ""))[:4]
-        if year and candidate_year and year != candidate_year:
-            continue
-        similarity = _title_similarity(title, str(entry.get("title") or ""))
-        if title and similarity < title_threshold:
-            continue
-        # 卷号/版次：双方都有且不同 → 不同文献；一方缺失不阻断短引用匹配（记录不猜）
-        cit_vol = _norm_volume((citation.entry or {}).get("volume"))
+    fields = _extract_citation_fields(citation)
+    surname = _author_surname(fields.get("author") or "")
+    title = str(fields.get("title") or "")
+    year = re.sub(r"\D", "", str(fields.get("year") or ""))[:4]
+    vol = _norm_volume(fields.get("volume"))
+    ed = _norm_edition(fields.get("edition"))
+    if index is None:
+        index = build_citation_index(entries)
+    candidates: list[int] = []
+    if surname:
+        candidates = list(index["by_surname"].get(surname, []))
+        if not candidates:
+            # 姓拼写容错（Waston/Watson 类）：相似度 ≥0.8 或前缀 4 字符相同
+            candidates = [i for i, (_k, entry, _r) in enumerate(entries)
+                          if _surname_similarity(
+                              surname, _author_surname(_enrich_entry(entry, _r).get("author")
+                                                       or _enrich_entry(entry, _r).get("editor") or "")) >= 0.8]
+    if not candidates:
+        return None, FootnoteWarning(
+            "citation_unmatched", fid=citation.fid, text=citation.text[:200],
+            reason="纯引用无法匹配完整条目（作者不匹配，不编造）",
+            author=str(fields.get("author") or ""), title=title, year=year,
+            locator=citation.locator)
+    scored: list[tuple[tuple, str]] = []
+    volume_ambiguous = False
+    for i in candidates:
+        key, entry, _raw = entries[i]
+        entry = _enrich_entry(entry, _raw)
+        cand_surname = _author_surname(entry.get("author") or entry.get("editor") or "")
+        cand_year = re.sub(r"\D", "", str(entry.get("year") or ""))[:4]
+        cand_title = str(entry.get("title") or "")
+        if year and cand_year and year != cand_year:
+            continue                      # 年份强约束：不同年不匹配
         cand_vol = _norm_volume(entry.get("volume"))
-        if citation.entry and cit_vol and cand_vol and cit_vol != cand_vol:
-            continue
-        cit_ed = _norm_edition((citation.entry or {}).get("edition"))
         cand_ed = _norm_edition(entry.get("edition"))
-        if citation.entry and cit_ed and cand_ed and cit_ed != cand_ed:
+        if vol and cand_vol and vol != cand_vol:
+            continue                      # 卷号强约束
+        if ed and cand_ed and ed != cand_ed:
+            continue                      # 版次强约束
+        if not vol and not cand_vol and title:
+            # 题名相同但对方有卷号 → 无法唯一确定是哪一卷 → 不猜
+            same_title = [j for j in candidates
+                          if _norm_fp(str(entries[j][1].get("title") or "")) == _norm_fp(title)
+                          and _norm_volume(entries[j][1].get("volume"))]
+            if len(same_title) >= 1 and not vol:
+                volume_ambiguous = True
+        sim = _title_match_tier(title, cand_title) if title else 0.0
+        surname_ok = _surname_similarity(surname, cand_surname) >= 0.8
+        if not surname_ok:
             continue
-        score = (1 if year and candidate_year == year else 0, similarity,
-                 _completeness(entry))
-        if best is None or score > best[0]:
-            best = (score, key)
-    if best is not None:
-        return best[1], None
-    return None, FootnoteWarning(
-        "citation_unmatched", fid=citation.fid, text=citation.text[:200],
-        reason="纯引用无法匹配完整条目（不编造：保留原脚注/正文原样）",
-        author=author, title=title, year=year, locator=citation.locator)
+        if title:
+            if sim < title_threshold:
+                continue
+            tier = 1 if (year and cand_year == year and sim >= 0.999) else (
+                2 if (year and cand_year == year) else 3)
+        else:
+            # 无题名（仅作者+页码）：姓+年精确，或同姓唯一候选（作者可唯一确定）
+            if year and cand_year == year:
+                tier = 4
+            elif not year:
+                same_surname = [j for j in candidates
+                                if _surname_similarity(surname, _author_surname(
+                                    _enrich_entry(entries[j][1], entries[j][2]).get("author")
+                                    or _enrich_entry(entries[j][1], entries[j][2]).get("editor") or "")) >= 0.8]
+                # 候选扩展：同姓候选里**有题名**的若只剩一种作品 → 可唯一确定
+                named = {}
+                for j in same_surname:
+                    e = _enrich_entry(entries[j][1], entries[j][2])
+                    title_j = str(e.get("title") or "")
+                    if title_j:
+                        named.setdefault(entry_fingerprint(e), (j, e))
+                if len(named) == 1:
+                    only = next(iter(named.values()))
+                    scored.append(((4, -_completeness(only[1]), 0.0), entries[only[0]][0]))
+                    continue
+                elif len(same_surname) == 1:
+                    tier = 4
+                else:
+                    continue
+            else:
+                continue
+        scored.append(((tier, -sim, -_completeness(entry)), key))
+    if stats is not None:
+        stats["candidates"] = len(candidates)
+    if not scored:
+        if stats is not None:
+            stats["tier"] = 0
+        reason = ("多个候选卷号无法唯一确定（不猜）" if volume_ambiguous
+                  else "纯引用无法匹配完整条目（作者/题名/年份/卷版不匹配，不编造）")
+        return None, FootnoteWarning(
+            "citation_unmatched", fid=citation.fid, text=citation.text[:200],
+            reason=reason, author=str(fields.get("author") or ""), title=title,
+            year=year, locator=citation.locator)
+    scored.sort(key=lambda item: (item[0], item[1]))
+    best_tier, best_key = scored[0][0][0], scored[0][1]
+    # 同档多候选且卷号不一致 → 歧义，不猜
+    top = [key for score, key in scored if score[0] == best_tier]
+    if len(top) > 1 and best_tier <= 3:
+        vols = {_norm_volume(next(e for k, e, _ in entries if k == key).get("volume"))
+                for key in top}
+        if len(vols) > 1:
+            return None, FootnoteWarning(
+                "citation_unmatched", fid=citation.fid, text=citation.text[:200],
+                reason="同作者/年/题名有多个卷号候选，无法唯一确定（不猜）",
+                author=str(fields.get("author") or ""), title=title, year=year,
+                locator=citation.locator)
+    if stats is not None:
+        stats["tier"] = best_tier
+    return best_key, None
 
 
 def _fill_missing(target: dict, source: dict) -> None:
