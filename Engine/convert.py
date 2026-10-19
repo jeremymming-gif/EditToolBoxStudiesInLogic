@@ -62,6 +62,7 @@ from slcn import search as _search  # noqa: E402
 from slcn import aibib as _aibib  # noqa: E402
 from slcn import bibcheck as _bibcheck  # noqa: E402
 from slcn import bibdb as _bibdb  # noqa: E402
+from slcn import coop as _coop  # noqa: E402
 from slcn import naming as N  # noqa: E402
 from slcn import paths as _paths  # noqa: E402
 from slcn import sources as _sources  # noqa: E402
@@ -1014,6 +1015,255 @@ def apply_ai_merge(bib_path: str, taskbook_path: str, replies: dict[str, str],
         return out
 
 
+# ── 第五十四批：AI 协同初排·第二段（回填 → 并入/建议 → 编译 → 原子交付）──────
+
+
+def _coop_find_bib(state: dict, stage_dir: str, stem: str) -> str:
+    """找暂存目录里的 reference.bib；状态里有绝对路径就优先信它。"""
+    p = str(state.get("reference_bib") or "")
+    if p and os.path.isfile(p):
+        return p
+    for cand in ("reference.bib", f"{stem}.bib"):
+        q = os.path.join(stage_dir, cand)
+        if os.path.isfile(q):
+            return q
+    return ""
+
+
+def _coop_locate_state(args) -> tuple[str, dict | None, list[str]]:
+    """找 ph1 暂存目录：显式 --coop-stage > --name 推默认 > 扫 `<out>/*_待核/`。
+
+    返回 `(选中目录, 状态, 所有候选目录)`；候选 >1 且用户没指定时返回状态 None
+    （让调用方报「请用 --coop-stage/--name 明确一个」）。
+    """
+    from slcn import coop
+
+    out_root = os.path.abspath(args.out)
+    cands: list[str] = []
+    if args.coop_stage:
+        cands.append(os.path.abspath(args.coop_stage))
+    else:
+        if args.name:
+            cands.append(os.path.join(out_root, f"{args.name}_待核"))
+        if os.path.isdir(out_root):
+            cands += [
+                os.path.join(out_root, d) for d in sorted(os.listdir(out_root))
+                if d.endswith("_待核") and os.path.isdir(os.path.join(out_root, d))
+            ]
+    seen: list[str] = []
+    found: list[tuple[str, dict]] = []
+    for c in cands:
+        if c in seen:
+            continue
+        seen.append(c)
+        st = coop.load_state(c)
+        if st is not None:
+            found.append((c, st))
+    if len(found) == 1:
+        return found[0][0], found[0][1], seen
+    if not found:
+        return "", None, seen
+    if args.coop_stage or args.name:
+        return found[0][0], found[0][1], seen
+    return "", None, seen
+
+
+def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
+                     final_dir: str, stage_dir: str, stem: str,
+                     lang: str, sty: str, skeleton: str) -> int:
+    """`--coop-replies` 的全部收尾逻辑（见模块头注释的第三段）。
+
+    任何一步失败都**不 promote**：最终交付目录要么是旧的那一份，要么根本不存在。
+    """
+    from slcn import coop
+
+    print("\n⑬ AI 协同初排·第二段（外部 chat 回填）")
+    if args.dry_run:
+        print("（--dry-run：只显示将要做什么，不解析/不并入/不交付）")
+        return 0
+    state = coop.load_state(stage_dir)
+    if state is None:
+        die(f"暂存目录里没有可读的 `{coop.STATE_NAME}`：{stage_dir}\n"
+            "  请先运行第一段：--verify-refs --no-ai-merge --coop-taskbook-only")
+
+    params = coop.build_params(
+        source=source, metadata=metadata, out_root=out_root, stem=stem,
+        lang=lang, sty=sty, skeleton=skeleton,
+        verify_refs=bool(args.verify_refs), no_ai_merge=bool(args.no_ai_merge),
+        end_list_priority=bool(getattr(args, "end_list_priority", False)),
+        number_cite_map=bool(getattr(args, "number_cite_map", False)),
+        c_class_union=resolve_c_class_union(args), stage_dir=stage_dir,
+    )
+    ok, why = coop.check_ph2(state, params)
+    if not ok:
+        die(why)
+
+    # 最终目录已有内容时，只有「全是本工具产物」才允许原子替换；否则要 --force。
+    if os.path.isdir(final_dir) and not args.force:
+        foreign = [c for c in sorted(os.listdir(final_dir))
+                   if not is_own_product(c, stem) and not c.startswith(".")
+                   and c not in ("_AI协同记录.md",)
+                   and c != f"{stem}_文献核实.md"
+                   and not c.startswith(f"{stem}_AI建议.")]
+        if foreign:
+            die(f"最终交付目录已存在，且含非本工具的文件，拒绝原子替换：{final_dir}\n"
+                f"  不属于本工具产物的 {len(foreign)} 项："
+                f"{'、'.join(foreign[:6])}{' …' if len(foreign) > 6 else ''}\n"
+                "  确认要覆盖请加 --force。")
+
+    try:
+        texts = coop.load_reply_texts(args.coop_replies)
+    except OSError as e:
+        die(f"读不了回填路径：{e}")
+    if not texts:
+        die(f"回填路径里没有可读文本：{args.coop_replies}（支持 .md/.txt/.bib/.json 等）")
+
+    keys = [str(k) for k in (state.get("keys") or {}).get("bib") or []]
+    low_items = list(state.get("low_confidence") or [])
+    parse_report = coop.parse_replies(texts, keys)
+    low_report = coop.parse_low_confidence(texts, low_items)
+    digest = coop.replies_digest(texts)
+
+    print(f"   回填来源：{len(texts)} 个（按文件名排序读入）")
+    print(f"   文献字段：{parse_report.summary()}")
+    print(f"   低置信项：{low_report.summary()}")
+
+    if state.get("phase") == "done":
+        if state.get("replies_sha256") == digest:
+            print("   （幂等：这份回填已经处理并交付过，本次未重复应用任何改动）")
+            print("═" * 74)
+            print(f"完成。产物目录：{state.get('delivered_to') or final_dir}")
+            return 0
+        die("这个暂存目录已经完成并交付过，且本次回填内容与上次不同；"
+            "为避免重复并入，拒绝继续。要重新处理请先重新初排（--coop-taskbook-only）。")
+
+    for k, why2 in parse_report.rejected.items():
+        print(f"   ⚠ 拒绝 `{k}`：{why2}")
+    for k, why2 in low_report.rejected.items():
+        print(f"   ⚠ 拒绝低置信项 `{k}`：{why2}")
+    if parse_report.unknown:
+        print(f"   ⚠ 任务书外的文献键 {len(parse_report.unknown)} 个（已忽略，不猜）："
+              + "、".join(parse_report.unknown[:6]))
+    if low_report.unknown:
+        print(f"   ⚠ 任务书外的低置信 ID {len(low_report.unknown)} 个（已忽略，不猜）："
+              + "、".join(low_report.unknown[:6]))
+
+    if not parse_report.replies and not low_report.suggestions:
+        die("回填回复**全部无效**或没有命中任务书里的任何键/ID；"
+            "最终交付目录与 reference.bib 均未改动。请检查回填文件后重试。")
+
+    bib_path = _coop_find_bib(state, stage_dir, stem)
+    taskbook = str(state.get("taskbook") or "")
+    merge_summary: dict | None = None
+
+    # ① 文献字段并入（复用既有的 apply_ai_merge：四条硬保障 + 回滚副本 + 回读报告）
+    if parse_report.replies and not args.no_ai_merge:
+        if not bib_path:
+            merge_summary = {"n_merged": 0, "n_skipped": 0, "rollback": "", "report": "",
+                             "conclusion": "", "error": "暂存目录里没有 reference.bib，无从并入"}
+            print("   ⚠ 暂存目录里没有 reference.bib：文献字段未并入")
+        else:
+            print(f"   把 {len(parse_report.replies)} 条回填回复并入 {os.path.basename(bib_path)}…")
+            merge_summary = apply_ai_merge(
+                bib_path, taskbook, parse_report.replies, stem, stage_dir,
+                rejected=parse_report.rejected,
+                provenance="外部 chat 回填（编辑粘贴；本工具**未调用 API**）",
+            )
+            if merge_summary.get("n_merged"):
+                print(f"   ✅ 已并入 {merge_summary['n_merged']} 条 / 跳过 "
+                      f"{merge_summary['n_skipped']} 条（逐条原因见任务书「六、合并记录」）")
+                if merge_summary.get("rollback"):
+                    print(f"   回滚副本：{os.path.basename(merge_summary['rollback'])}")
+            else:
+                print(f"   ⚠ {merge_summary.get('error') or '没有任何条目通过安全校验'}"
+                      "（reference.bib 未改动）")
+    elif parse_report.replies and args.no_ai_merge:
+        print("   （--no-ai-merge：本次**不**把回填的文献字段并入 reference.bib）")
+
+    # ② 低置信建议：默认只写文件；--coop-apply 才动 reference.bib
+    apply_summary: dict | None = None
+    if args.coop_apply:
+        if args.no_ai_merge:
+            print("   （--coop-apply 被 --no-ai-merge 覆盖：低置信建议只记录，不改产物）")
+        elif not bib_path:
+            print("   ⚠ --coop-apply：暂存目录里没有 reference.bib，低置信建议只记录")
+        else:
+            apply_summary = coop.apply_bib_suggestions(
+                bib_path, low_report.suggestions, low_items)
+            if apply_summary.get("n_applied"):
+                print(f"   ✅ --coop-apply：已应用 {apply_summary['n_applied']} 条低置信建议"
+                      f"（备份 {os.path.basename(apply_summary.get('rollback') or '')}）")
+            else:
+                print(f"   ⚠ --coop-apply：{apply_summary.get('error') or '没有可应用的建议'}")
+    sug_md, sug_jsonl = coop.write_suggestions(stage_dir, stem, low_items, low_report)
+    print(f"   低置信建议（默认不改产物）：{os.path.basename(sug_md)} / "
+          f"{os.path.basename(sug_jsonl)}")
+
+    # ③ 编译（必须在 promote 之前；编译失败时不交付）
+    compiled = "未请求 --compile"
+    if args.compile:
+        print("\n⑨ 编译（暂存目录）")
+        ok, info = compile_pdf(stage_dir, stem)
+        if not ok:
+            die(f"编译未通过，**未交付**：{info}\n"
+                f"  暂存目录保留在 {stage_dir}；最终交付目录未改动。")
+        compiled = f"✅ {os.path.basename(info)}（{max(1, os.path.getsize(info) // 1024)} KB）"
+        print(f"   {compiled}")
+
+    # ④ 记录 + 状态（记录随交付走；状态文件留在暂存目录）
+    pending = [k for k in keys if k in parse_report.missing]
+    pending += [str(it["id"]) for it in low_items
+                if str(it["id"]) not in low_report.suggestions]
+    try:
+        st2 = coop.mark_state_ph2(
+            state, replies_digest=digest,
+            replied=sorted(parse_report.replies), applied=int(
+                (apply_summary or {}).get("n_applied") or 0),
+            rejected=len(parse_report.rejected) + len(low_report.rejected),
+            pending=pending)
+        coop.save_state(stage_dir, st2)
+    except OSError as e:
+        print(f"   ⚠ 状态文件写入失败（不影响本次交付）：{type(e).__name__}: {e}")
+
+    # ⑤ 原子 promote：失败不破坏既有最终目录
+    print(f"\n⑬ 原子交付 → {final_dir}")
+    try:
+        promoted = coop.promote_stage(stage_dir, final_dir, exclude=(coop.STATE_NAME,))
+    except Exception as e:  # noqa: BLE001  交付失败必须收口，最终目录保持原样
+        die(f"原子交付失败（最终交付目录保持原样）：{type(e).__name__}: {e}\n"
+            f"  可修复后重跑 --coop-replies；暂存目录仍在 {stage_dir}")
+    record = coop.write_record(
+        stage_dir, stem=stem, phase="done", parse_report=parse_report,
+        low_report=low_report, merge_summary=merge_summary,
+        apply_summary=apply_summary, final_dir=final_dir,
+        no_ai_merge=bool(args.no_ai_merge), compiled=compiled,
+        backup=promoted.get("backup", ""))
+    # 记录是在 promote 之后写的：把它也放进最终目录（暂存目录里同样留一份）。
+    try:
+        final_record = os.path.join(final_dir, coop.RECORD_NAME)
+        with open(record, encoding="utf-8") as f:
+            text = f.read()
+        with open(final_record, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    except OSError as e:
+        print(f"   ⚠ 协同记录复制进交付目录失败：{type(e).__name__}: {e}")
+
+    try:
+        st3 = coop.mark_state_done(st2, final_dir=final_dir)
+        coop.save_state(stage_dir, st3)
+    except OSError as e:
+        print(f"   ⚠ 状态文件写入失败：{type(e).__name__}: {e}")
+
+    if promoted.get("backup"):
+        print(f"   旧交付目录已备份：{os.path.basename(promoted['backup'])}")
+    print(f"   回填：{parse_report.n_ok} 条；低置信建议：接受 {low_report.n_ok} 条、"
+          f"拒绝 {len(low_report.rejected)} 条、待人工 {len(pending)} 条")
+    print(f"   协同记录：{coop.RECORD_NAME}")
+    print("═" * 74)
+    print(f"完成。产物目录：{final_dir}")
+    return 0
+
+
 # ── 编辑部引用库（bib_db）接入（第 129 条，2026-10-18）──────────────────────
 #
 # 目标：**命中已核实条目 → 该键不调 Search API、不调 AI**（省钱 + 体例统一 + 可审计）。
@@ -1190,6 +1440,32 @@ def main() -> int:
     ap.add_argument("--no-ai-merge", action="store_true",
                     help="只出《文献核实任务书》，**不**把 AI 结果并入 reference.bib"
                          "（旧行为；界面「保留原 reference.bib（不并入 AI 结果）」= 这个开关）")
+    # ── 第五十四批（2026-10-19 用户拍板）：两段式「AI 协同初排」──────────────
+    # 外部 chat 通道（豆包/千问/DeepSeek 等，免费、无 API）：初排只出任务书并暂停在
+    # 暂存目录；编辑回填回复后第二次运行才继续转换、并入、交付。GUI 下一批接契约。
+    ap.add_argument("--coop-taskbook-only", action="store_true",
+                    help="AI 协同初排·第一段：初排产物 + 《AI 核实任务书》只写暂存目录"
+                         "（默认 `<out>/<stem>_待核/`，可 --coop-stage 覆盖），"
+                         "**不写最终交付目录、不打印交付成功、不自动调用 API**。"
+                         "隐含 --verify-refs；任务书末尾增加「初排低置信项」机器可读一节。")
+    ap.add_argument("--coop-stage", default=None, metavar="DIR",
+                    help="协同初排的暂存目录（默认 `<out>/<stem>_待核/`）；"
+                         "状态文件 `_AI协同状态.json` 写在这里，不随交付进入最终目录。")
+    ap.add_argument("--coop-replies", default=None, metavar="FILE|DIR",
+                    help="AI 协同初排·第二段：读入编辑回填的外部 chat 回复（文件或目录，"
+                         "目录按文件名排序），校验指纹后解析/并入文献字段、写低置信建议，"
+                         "编译并原子交付到最终目录。回复全部无效/指纹不符时退出 2、产物不动。")
+    ap.add_argument("--coop-apply", action="store_true",
+                    help="配合 --coop-replies：把**通过校验**的低置信建议也应用到产物"
+                         "（先备份 `reference.bib.ai前`、逐条记录；只应用可安全落盘的"
+                         "文献字段建议，脚注/元数据建议仍列待人工）。默认只写 `…_AI建议.md`/jsonl。")
+    # 预算闸：只约束**直接 API 通道**（--llm-* 自动预跑）。外部 chat 通道无 API 费用。
+    ap.add_argument("--ai-budget-tokens", type=int, default=30000, metavar="N",
+                    help="单篇直接 API 通道的 token 预算（默认 30000；0 = 不限）。"
+                         "超过预计用量时先打印账、退出 2，不发起任何请求。")
+    ap.add_argument("--ai-batch-budget-tokens", type=int, default=1000000, metavar="N",
+                    help="单批直接 API 通道的 token 预算（默认 1000000；0 = 不限）。"
+                         "超过预计用量时先打印账、退出 2。外部 chat 通道不产生费用。")
     # ── 第 128 条（2026-10-18）：核实**范围**与成本闸门──────────────────────────
     # 期 87 子案例 1 实测：源 bib 377 条、正文只引用 31 个键，但任务书 + 检索 + AI 把
     # 376 条全核了（检索 418 次 ≈ ¥1.845、AI 376 次调用 / 2,538,740 prompt tokens）。
@@ -1288,6 +1564,51 @@ def main() -> int:
             print(f"{name}\t{n}")
         return 0
 
+    # ── 第五十四批：AI 协同初排的参数组合（先校验，别让半截运行改产物）────────
+    # 用户口径（2026-10-19）：默认不改产物；`--coop-apply` 是显式的「一键修改产物」。
+    if args.coop_taskbook_only and args.coop_replies:
+        ap.error("--coop-taskbook-only 与 --coop-replies 是两个阶段，不能同时给")
+    if args.coop_apply and not args.coop_replies:
+        ap.error("--coop-apply 只配合 --coop-replies（先回填回复，才谈得上应用建议）")
+    if args.ai_budget_tokens is not None and args.ai_budget_tokens < 0:
+        ap.error("--ai-budget-tokens 必须 ≥ 0（0 = 不限）")
+    if args.ai_batch_budget_tokens is not None and args.ai_batch_budget_tokens < 0:
+        ap.error("--ai-batch-budget-tokens 必须 ≥ 0（0 = 不限）")
+    if args.coop_stage and not (args.coop_taskbook_only or args.coop_replies):
+        print("⚠ --coop-stage 只配合 --coop-taskbook-only / --coop-replies；本次忽略。",
+              file=sys.stderr, flush=True)
+    if args.coop_taskbook_only and not args.verify_refs:
+        # 第一段的全部意义就是「出任务书然后暂停」；不勾 --verify-refs 也把它当作勾了。
+        args.verify_refs = True
+        print("  （--coop-taskbook-only 隐含 --verify-refs：本次只出核实任务书，不自动调用 API）")
+    if args.coop_taskbook_only:
+        # 外部 chat 通道：**绝不**自动预跑 API（用户明确要的「暂停」语义）。
+        args.no_ai_merge = True
+
+    # ── 第五十四批：第二段先定位暂存状态，再把 ph1 的关键参数继承下来 ──────────
+    # 为什么必须在这里做：主流程会重新推导输出名/语种/模板，ph2 的命令行通常只给
+    # `--source/--out/--coop-replies`。若拿重新推导的值去对指纹，正常的续跑会被误拒；
+    # 反过来，用户**显式**改 `--name/--metadata` 时仍要能检出差异 → 只填空缺。
+    if args.coop_replies:
+        _stage0, _state0, _matches = _coop_locate_state(args)
+        if _state0 is None:
+            die("找不到可续跑的协同初排暂存目录（没有 `_AI协同状态.json`）。\n"
+                f"  已查：{'、'.join(_matches) if _matches else '（无）'}\n"
+                "  请先运行第一段：--verify-refs --no-ai-merge --coop-taskbook-only；"
+                "或用 --coop-stage 指定暂存目录。")
+        args.coop_stage = _stage0
+        _sp = _state0.get("params") or {}
+        if not args.name and _sp.get("stem"):
+            args.name = _sp["stem"]
+        if args.metadata is None and _sp.get("metadata"):
+            args.metadata = _sp["metadata"]
+        if args.lang is None and _sp.get("lang"):
+            args.lang = _sp["lang"]
+        if args.sty is None and _sp.get("sty"):
+            args.sty = _sp["sty"]
+        if args.skeleton is None and _sp.get("skeleton"):
+            args.skeleton = _sp["skeleton"]
+
     if args.search_refs and not (args.verify_refs or args.verify_plan):
         # 显式提示、继续跑：`--search-refs` 只在生成任务书时有落点（逐条清单）。
         print("⚠ --search-refs 只配合 --verify-refs（没有任务书就没有逐条清单可挂证据）；"
@@ -1383,7 +1704,8 @@ def main() -> int:
     # 第四十二批 A2：LaTeX 多文件稿自动配「前言源」（正文片段 + 含 \documentclass/宏定义的
     # 前言文件，如期 90/03 的 main.tex + yalcin puzzle.tex）。判据与可解释说明见
     # `slcn.sources.discover_latex_sources()`；显式 --metadata 永远优先；判不准只 warning、保持旧行为。
-    if not metadata and os.path.splitext(source)[1].lower() == ".tex":
+    if (not metadata and not args.coop_replies
+            and os.path.splitext(source)[1].lower() == ".tex"):
         _plan = _sources.discover_latex_sources(source)
         for _w in _plan.warnings:
             print(f"  ⚠ {_w}")
@@ -1445,7 +1767,28 @@ def main() -> int:
     else:
         out_dir = os.path.join(out_root, name)
     stem = name
-    print(f"输出到    {out_dir}{os.sep}{stem}.tex")
+    final_dir = out_dir
+
+    # ── 第五十四批：两段式 AI 协同初排的目录分流（默认路径一个字节都不改）──────
+    #   · 第一段（--coop-taskbook-only）：本次转换写**暂存目录**，最终目录不碰；
+    #   · 第二段（--coop-replies）：不在主流程里重新转换，直接走协同收尾
+    #     `run_coop_replies()`（读状态 → 解析回填 → 并入/建议 → 编译 → 原子 promote）。
+    coop_stage = ""
+    if args.coop_taskbook_only or args.coop_replies:
+        coop_stage = (os.path.abspath(args.coop_stage) if args.coop_stage
+                      else os.path.join(out_root, f"{stem}_待核"))
+    if args.coop_replies:
+        return run_coop_replies(
+            args, source=source, metadata=metadata or "", out_root=out_root,
+            final_dir=final_dir, stage_dir=coop_stage, stem=stem,
+            lang=lang, sty=sel.sty, skeleton=sel.skeleton,
+        )
+    if args.coop_taskbook_only:
+        out_dir = coop_stage
+        print(f"输出到    {out_dir}{os.sep}{stem}.tex")
+        print("          （**暂存**：协同初排第一段；最终交付目录本次不写）")
+    else:
+        print(f"输出到    {out_dir}{os.sep}{stem}.tex")
 
     # 正文信息手工覆盖（选填）：填了就以人工值为准，空值不覆盖。
     # 声明在 dry-run 之前，方便「先看一眼会怎么做」时也能确认覆盖值收对了。
@@ -1454,6 +1797,13 @@ def main() -> int:
         print("正文覆盖  " + "、".join(_OVERRIDE_FIELDS[k] for k in overrides)
               + f"（{len(overrides)} 项，人工值优先）")
 
+    def _coop_own_artifact(name_: str) -> bool:
+        """暂存目录里的协同文件也算「本工具产物」（只用于协同模式的重跑判断）。"""
+        if name_ in ("_AI协同状态.json", "_AI协同记录.md"):
+            return True
+        return (name_.startswith(f"{stem}_AI建议.")
+                or name_ in (f"{stem}_文献核实.md",))
+
     if os.path.exists(out_dir) and not args.force:
         contents = sorted(os.listdir(out_dir))
         # 用户**显式选了这个目录**（名字与输出名一致）时，意图明确，不必再拦。
@@ -1461,7 +1811,8 @@ def main() -> int:
         # 允许的情况：空的、只有系统垃圾文件（.DS_Store）、或只含本工具自己的产物。
         # 判定规则见文件头的 `is_own_product()`（本工具产物 + 编译中间文件）。
         foreign = [c for c in contents
-                   if not is_own_product(c, stem) and not c.startswith(".")]
+                   if not is_own_product(c, stem) and not c.startswith(".")
+                   and not (args.coop_taskbook_only and _coop_own_artifact(c))]
         # 判据只有一条：**目录里有没有不属于本工具的东西**。
         #   · 只有本工具的产物 → 直接覆盖，这就是「重跑一次」的常见情形，不该拦。
         #   · 混着别人的文件 → 拦住，那才可能是编辑部已有的稿件目录。
@@ -1685,6 +2036,11 @@ def main() -> int:
     # ⚠️ `--verify-plan` 也进这一块：它要算「本次会核实多少条」，而引用键只有在**转换之后**
     #    （build 已把正文引用替换成 `\parencite`、写进产物 .tex）才拿得准。所以它是
     #    「照常转换、只算账」而不是 --dry-run：--dry-run 在 ⑤ 之前就退出，那时还没有 bib/tex。
+    # 第五十四批：第一段的任务书路径/文献键/低置信项在这里收集，块外写状态。
+    coop_taskbook_path = ""
+    coop_bib_keys: list[str] = []
+    coop_low_items: list[dict] = []
+
     if args.verify_refs or args.verify_plan:
         from slcn import llm
         from slcn.bibcheck import split_entries
@@ -1888,6 +2244,8 @@ def main() -> int:
             path = os.path.join(out_dir, f"{stem}_文献核实.md")
             with open(path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(md)
+            coop_taskbook_path = path
+            coop_bib_keys = [k for _et, k, _b in entries]
             print(f"   {os.path.basename(path)}（{md.count(chr(10))} 行）")
             # 逐条原文的覆盖情况当场说清楚：编辑要能看出「这份任务书里有几条是带原文的」。
             # （按**本次核实范围**数：没进任务书的条目算进来会让人以为任务书缺了内容。）
@@ -1912,7 +2270,8 @@ def main() -> int:
                   " → **不调用检索/AI**。", flush=True)
             print("      reference.bib **未改动**（库内命中只作核实证据；"
                   "字段差异见任务书「五、库内已核实」）。")
-            if cfg.ready and res.bib_path and not args.no_ai_merge:
+            if cfg.ready and res.bib_path and not args.no_ai_merge \
+                    and not args.coop_taskbook_only:
                 # `--no-ai-merge`（「只出任务书」）时连合并记录也不追加——与旧语义一致。
                 prov = (f"本次核实通道：**未调用 AI**（{len(bibdb_safe)} 条全部命中编辑部"
                         f"引用库 `{bibdb_path}` 的已核实记录；检索 0 次 / AI 0 次）")
@@ -1921,7 +2280,7 @@ def main() -> int:
                                out_of_scope={k for _et, k, _b in entries_all
                                              if not scope.keeps(k)},
                                bibdb_hits=set(bibdb_safe))
-        elif cfg.ready:
+        elif cfg.ready and not args.coop_taskbook_only:
             # 只打印地址与模型名（诊断「地址填错」全靠它）。**绝不打印 cfg.key。**
             # `flush=True`：这一节最慢（逐条联网），进度必须**当场**出现在运行日志里，
             # 不能等 Python 的块缓冲（GUI 用管道接 stdout，默认 8KB 才刷一次）。
@@ -1973,6 +2332,26 @@ def main() -> int:
             # 「prompt 里没有 json 字样」400 掉（DeepSeek）。JSON 模式（SLCN_LLM_JSON）
             # 默认关闭，留给将来需要结构化返回的调用。
             _, max_tokens, thinking = llm.request_params_from_env()
+            # ── 第五十四批（2026-10-19）：直接 API 通道的**预算闸** ──────────────
+            # 只约束 `cfg.ready` 的自动预跑；外部 chat 通道（--coop-*）不产生 API 费用，
+            # 根本不会走到这里。超限时先打印预计账、退出 2——**一个请求都不发**。
+            _budget_prompts = [
+                _refmark.entry_prompt(et, k, body, raw_by_key.get(k, ""),
+                                      search=cfg.uses_web_search,
+                                      evidence=(evidence or {}).get(k))
+                for et, k, body in ai_entries
+            ]
+            _budget_est = _coop.estimate_api_budget(system, _budget_prompts, max_tokens)
+            _budget_why = _coop.budget_exceeded(
+                _budget_est, args.ai_budget_tokens, args.ai_batch_budget_tokens)
+            if _budget_why:
+                print("\n⛔ " + _budget_why)
+                print(f"   预计用量：{_budget_est['n_calls']} 次调用 / "
+                      f"prompt {_budget_est['prompt_tokens']} + completion "
+                      f"{_budget_est['completion_tokens']} = "
+                      f"{_budget_est['total_tokens']} tokens")
+                print("   （本次**没有发起任何请求**；放宽预算请调大参数，0 = 不限）")
+                return 2
             # 本次运行**实际**发送的 thinking：端点若拒收这个字段（400），本条去掉它重试
             # 一次后置 None —— 剩下的条目也不再发它，避免每条都白撞一次 400。
             send_thinking = thinking
@@ -2209,6 +2588,11 @@ def main() -> int:
                           "默认超时 60 秒/条，不再逐条空等）")
                 print(f"     《文献核实任务书》已生成：{path}")
                 print("     可照常交给编辑自己的 AI 核实；转换产物不受影响。")
+        elif args.coop_taskbook_only:
+            # 外部 chat 通道：**不自动预跑**（这正是「两段式」要的暂停点）。
+            print("   （AI 协同初排：本次**不调用任何 API**；"
+                  "请把任务书交给编辑自己的 chat 模型，回填后运行 --coop-replies）")
+            print("   （「暂停/继续」的语义：初排产物只写暂存目录，最终交付目录本次不写）")
         else:
             print("   （未配置 LLM：只出任务书，由编辑交给自己的 AI）")
             print("   （未配置时**不会**并入 reference.bib：bib 与从前逐字节相同）")
@@ -2216,6 +2600,57 @@ def main() -> int:
             print("   （未启用联网检索：本工具不联网核实，任务书由编辑的联网 AI 或人工复核）")
             print("   （要自动预跑：界面「设置」页填 API 地址/密钥/模型，"
                   "或命令行 --llm-base/--llm-key/--llm-model、环境变量 SLCN_LLM_*）")
+
+    # ── 第五十四批：第一段收尾——任务书追加「初排低置信项」+ 写状态 JSON ────────
+    if args.coop_taskbook_only:
+        bib_text2 = ""
+        if res.bib_path and os.path.isfile(res.bib_path):
+            bib_text2 = open(res.bib_path, encoding="utf-8", errors="replace").read()
+        coop_low_items = _coop.collect_low_confidence(
+            warnings=res.warnings,
+            missing_fields=getattr(res, "missing_fields", ()) or (),
+            raw_ref_lines=getattr(res, "ref_raw_lines", ()) or (),
+            bib_text=bib_text2,
+        )
+        section = _coop.render_low_confidence_section(coop_low_items)
+        if not coop_taskbook_path:
+            # 极端情形：bib 与文献区原文都没有（任务书主流程不生成）——仍给一份
+            # 只含低置信项的任务书，保证「第一段一定有交付物」。
+            coop_taskbook_path = os.path.join(out_dir, f"{stem}_文献核实.md")
+            _coop.atomic_write_text(
+                coop_taskbook_path,
+                f"# 参考文献核实任务书 · {stem}\n\n"
+                "> 本次没有可解析的参考文献条目；下面只列初排低置信项。\n"
+                "> 请按 ID 逐条回复 JSON（格式见下）。\n")
+        with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\n" + section + "\n")
+        if not coop_bib_keys and bib_text2:
+            coop_bib_keys = [b.key for b in _coop.parse_bib_blocks(bib_text2) if b.closed]
+        coop_params = _coop.build_params(
+            source=source, metadata=metadata or "", out_root=out_root, stem=stem,
+            lang=lang, sty=sel.sty, skeleton=sel.skeleton,
+            verify_refs=bool(args.verify_refs), no_ai_merge=bool(args.no_ai_merge),
+            end_list_priority=bool(getattr(args, "end_list_priority", False)),
+            number_cite_map=bool(getattr(args, "number_cite_map", False)),
+            c_class_union=resolve_c_class_union(args), stage_dir=out_dir,
+        )
+        coop_state = _coop.build_state(
+            params=coop_params, taskbook_path=coop_taskbook_path, stage_dir=out_dir,
+            final_dir=final_dir, bib_keys=coop_bib_keys, low_items=coop_low_items,
+            budget_article=args.ai_budget_tokens,
+            budget_batch=args.ai_batch_budget_tokens,
+            engine_version=ENGINE_VERSION,
+        )
+        coop_state["reference_bib"] = os.path.abspath(res.bib_path) if res.bib_path else ""
+        coop_state["tex"] = os.path.abspath(res.tex_path) if getattr(res, "tex_path", "") else ""
+        state_file = _coop.save_state(out_dir, coop_state)
+        print(f"\n⑬ AI 协同初排·第一段（已暂停，等待回填）")
+        print(f"   暂存目录：{out_dir}")
+        print(f"   核实任务书：{os.path.basename(coop_taskbook_path)}"
+              f"（含「初排低置信项」{len(coop_low_items)} 项）")
+        print(f"   状态文件：{os.path.basename(state_file)}")
+        print("   最终交付目录本次**未写**；把任务书交给任意 chat 模型，"
+              "回填后运行 --coop-replies <文件或目录> 继续。")
 
     # ⑨ 编译（**放在 ⑪ 之后**：并进 reference.bib 的 AI 结果要体现在 PDF 里）
     compile_failed = ""
@@ -2262,6 +2697,21 @@ def main() -> int:
         n, _ = _clean.clean(out_dir, log=lambda s: print(f"   {s}"))
         if n == 0:
             print("   （没有需要清理的文件）")
+
+    # ── 第五十四批：第一段收口——**不打印交付成功**，最后一行指向暂存目录 ──────
+    if args.coop_taskbook_only:
+        print()
+        print("═" * 74)
+        if compile_failed:
+            print(f"\n❌ 协同初排已完成转换，但 ⑨ 编译未通过（退出码 2）：{compile_failed}",
+                  file=sys.stderr)
+            print(f"暂存目录：{out_dir}")
+            return 2
+        print("   协同初排第一段完成（**尚未交付**）：产物与任务书都在暂存目录。")
+        print("   下一步：编辑把任务书交给任意 chat 模型核实 → 回填后运行 --coop-replies。")
+        print("═" * 74)
+        print(f"暂存目录：{out_dir}")
+        return 0
 
     print()
     print("═" * 74)
