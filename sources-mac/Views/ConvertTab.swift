@@ -66,6 +66,11 @@ struct ConvertTab: View {
     /// 责编名单（采集 + 自定义 + 默认），见 EditorStore.swift
     @StateObject private var editors = EditorStore()
     
+    // 批63b 发布修复（2026-10-20）：`body` 单个表达式太大 —— GitHub macos-14 runner 的
+    // 旧编译器类型检查超时（"unable to type-check this expression in reasonable time"，
+    // `./build.sh` 在 CI 红；本机新 Xcode 能过，所以测试台没暴露）。这里把 body 拆成
+    // 若干小 section（纯表达式拆分：**行为/文案/布局零变化**，只是把一个大表达式变成
+    // 多个小表达式）。新增/改界面时也请继续按 section 拆，别再把 body 堆大。
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
 
@@ -76,324 +81,22 @@ struct ConvertTab: View {
 
                     Divider()
 
-                    // ---------- 源文件（必填） ----------
-                    LabeledPathRow(
-                        title: "源文件（必填）",
-                        placeholder: "Word 文稿（.docx）或 LaTeX 文件（.tex）",
-                        path: $model.options.source,
-                        kind: .file,
-                        logStore: log
-                    )
-
-                    // ---------- 输出目录（必填） ----------
-                    LabeledPathRow(
-                        title: "输出目录（必填）",
-                        placeholder: "初排稿的输出位置，例如 …/2026年第5期(90)（工具会在其下建 名_姓/；不要选 03 名_姓，会多套一层）",
-                        path: $model.options.out,
-                        kind: .directory,
-                        logStore: log
-                    )
+                    sourceAndOutputSection
 
                     Text("源文件与输出目录都可以直接从访达拖进来（高级选项里的路径同理）")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
 
-                    // ---------- 常勾选项 ----------
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle("生成后立即编译 PDF（XeLaTeX → biber → XeLaTeX ×2）",
-                               isOn: $model.options.compile)
-                        Toggle("清理编译中间文件（保留 .log）", isOn: $model.options.clean)
-                        // 批 62 入口收敛（B 方案）：独立的「生成文献核实任务书」勾选已隐藏，
-                        // 本页只保留两个语义入口 —— 两段式（任务书 = 第一段产物）与 ⑪ 直连 AI
-                        // （内部自动带 --verify-refs，产物/行为与批61 一致）。
-                        // `Options.verifyRefs` 字段保留给旧脚本/既有调用方，界面不再绑定它；
-                        // 普通初排转换不再带 --verify-refs（默认产物无 <stem>_文献核实.md）。
-                        // 第 132 条：核实成本闸门提示（值来自「引用库设置」页，点击转换时现取）。
-                        // 只有真的会核实（⑪ / 两段式）时才显示，免得普通转换看到不相干的数字。
-                        if model.options.useAI || model.options.coop {
-                            verifyGateHint
-                        }
-                        // 「用 AI 处理参考文献」：勾上就是「任务书 + 按同一份规范在本机直连 AI 预跑」
-                        // （引擎侧自动带 --verify-refs；批 62 起这是普通初排唯一出任务书的入口）。
-                        // 批 62 文案与 Win 逐字对齐（Lead 口径）：标签点明「直连 API，会产生费用」。
-                        Toggle("用 AI 处理参考文献（直连 API，会产生费用）",
-                               isOn: binding(.useAI, \.useAI))
-                        aiHint
-                        if model.options.useAI {
-                            // 只在 AI 勾着时可见：没勾 AI 就没有合并通道，这个开关无从谈起。
-                            Toggle("保留原 reference.bib（不并入 AI 结果）",
-                                   isOn: binding(.keepOriginalBib, \.keepOriginalBib))
-                            Text("勾上 = 只出《文献核实任务书》（引擎侧 --no-ai-merge）：AI 结果不写进产物，"
-                                 + "reference.bib 一个字节都不动。不勾时 AI 结果会并入交付的 reference.bib，"
-                                 + "合并之前的那份会先备份成 reference.bib.ai前（要回滚就把它覆盖回去）。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 18)
-                            // ---------- 第 60 批：全文 AI 核查（直连 API，会产生费用；默认不勾） ----------
-                            // 默认不勾 → 一个参数都不加（默认 argv 与批 59 逐字节相同）。
-                            Toggle("全文 AI 核查（直连 API，会产生费用）",
-                                   isOn: $model.options.llmFulltext)
-                            Text("⚠ 勾上后会产生费用：引擎把稿件正文按片直接发送到"
-                                 + "「设置」里配置的 AI 端点，每片一次请求；不勾（默认）时正文一个字节都不外发。\n"
-                                 + "范围：通过批 57 安全闸的 BIB/META/FN 建议会**自动应用**"
-                                 + "（先备份 .ai前、0 条不写、冲突拒绝；可在「设置 → 全文核查结果自动应用」关闭），"
-                                 + "《…_AI全文复核.md》报告照常生成；两段式协同模式下本轮不生效。\n"
-                                 + "上限：「设置」里的「API 核查字符上限」默认 40000 字符（0 = 不限）；"
-                                 + "「单篇预算」（默认 30000 tokens）不够时请按日志提示调大。\n"
-                                 + "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 18)
-                        }
-                        // ---------- 第 55 批：两段式「AI 协同初排」开关（默认关） ----------
-                        // 默认关 → 协同相关字段一个都不进 argv，转换行为与批 54 逐字节相同。
-                        Toggle("AI 协同初排（两段式；外部 chat 免费流程）",
-                               isOn: $model.options.coop)
-                            .onChange(of: model.options.coop) { on in
-                                if on { refreshCoopStage() }
-                            }
-                        if model.options.coop {
-                            Text(coopToggleHintText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 18)
-                        }
-                        Toggle("导出原稿 PDF（供矢量图形人工截图）",
-                               isOn: $model.options.sourcePdf)
-                    }
-                    .toggleStyle(.checkbox)
+                    commonOptionsSection
 
-                    // ---------- 高级 ----------
-                    // 批 63 B1：系统 DisclosureGroup 在 macOS 上只有 chevron 是命中区，
-                    // 点「高级选项」文字/整行没反应（用户反馈）。改成普通 Button(.plain)
-                    // 铺满整行：点文字或行内空白都能开合；withAnimation 保留展开动画；
-                    // 状态仍是 `model.showAdvanced`（全仓仅此一处引用），无其它回归。
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) { model.showAdvanced.toggle() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "chevron.right")
-                                .rotationEffect(.degrees(model.showAdvanced ? 90 : 0))
-                            Text("高级选项")
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    advancedToggleButton
                     if model.showAdvanced {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Toggle("覆盖已存在的输出目录（--force）",
-                                   isOn: $model.options.force)
-                                .toggleStyle(.checkbox)
-                            Text("目标目录里混着非本工具的文件时（例如手工 latexmk 留下的 "
-                                 + ".fdb_latexmk/.fls），默认会被拦下以防误伤已有稿件目录；"
-                                 + "勾选后照常写入：同名产物被覆盖，目录里的其它文件不会被删。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            LabeledPathRow(
-                                title: "参考文献附件",
-                                placeholder: "留空则自动识别（全库 37% 的稿件把文献单独放一个文件）",
-                                path: $model.options.refs,
-                                kind: .file,
-                                logStore: log
-                            )
-                            LabeledPathRow(
-                                title: "元数据文件",
-                                // 批63b：placeholder 按源稿通道动态变（LaTeX / Word 的既有能力不同）。
-                                placeholder: metadataFilePlaceholder,
-                                path: $model.options.metadata,
-                                kind: .file,
-                                allowedExtensions: ["tex", "docx"],
-                                logStore: log
-                            )
-                            LabeledPathRow(
-                                title: "已有的 .bib",
-                                placeholder: "指定后不再自动生成",
-                                path: $model.options.bib,
-                                kind: .file,
-                                logStore: log
-                            )
-
-                            HStack(spacing: 12) {
-                                Text("输出名")
-                                TextField("留空则按第一作者自动命名（如 Chen_Bo）",
-                                          text: $model.options.name)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            HStack(spacing: 12) {
-                                Text("第一作者")
-                                TextField("留空则从源文件提取",
-                                          text: $model.options.author)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            HStack(spacing: 12) {
-                                Text("语种")
-                                Picker("", selection: $model.options.lang) {
-                                    Text("自动判断").tag("")
-                                    Text("中文（SLCN-MIX.sty）").tag("zh")
-                                    Text("英文（SLEN.sty）").tag("en")
-                                }
-                                .labelsHidden()
-                                .frame(width: 240)
-                            }
-                            Divider().padding(.vertical, 2)
-                            Text("出版信息（选填；填了 PDF 页眉/页码才是最终形态）")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            HStack(spacing: 12) {
-                                Text("卷 / 期 / 年")
-                                TextField("19", text: $model.options.vol)
-                                    .textFieldStyle(.roundedBorder).frame(width: 60)
-                                TextField("5", text: $model.options.issue)
-                                    .textFieldStyle(.roundedBorder).frame(width: 60)
-                                TextField("2026", text: $model.options.pubYear)
-                                    .textFieldStyle(.roundedBorder).frame(width: 70)
-                            }
-                            HStack(spacing: 12) {
-                                Text("起止页")
-                                TextField("137-152", text: $model.options.pages)
-                                    .textFieldStyle(.roundedBorder).frame(width: 110)
-                                Text("收稿日期")
-                                TextField("2025-09-19", text: $model.options.received)
-                                    .textFieldStyle(.roundedBorder).frame(width: 110)
-                                Text("责编")
-                                Picker("", selection: $model.options.editor) {
-                                    Text("未指定").tag("")
-                                    ForEach(editors.allNames, id: \.self) { n in
-                                        Text(editors.defaultName == n ? "\(n)（默认）" : n).tag(n)
-                                    }
-                                    Text("自定义…").tag("__custom__")
-                                }
-                                .labelsHidden()
-                                .frame(width: 130)
-                                if model.options.editor == "__custom__" {
-                                    TextField("新责编姓名", text: $editors.newName)
-                                        .textFieldStyle(.roundedBorder).frame(width: 90)
-                                    Button("添加") {
-                                        editors.addCustom(editors.newName)
-                                        let n = editors.newName.trimmingCharacters(in: .whitespacesAndNewlines)
-                                        if !n.isEmpty { model.options.editor = n }
-                                        editors.newName = ""
-                                    }
-                                }
-                                Button(editors.defaultName == model.options.editor && !model.options.editor.isEmpty
-                                       ? "已设为默认 ✓" : "设为默认") {
-                                    editors.setDefault(model.options.editor)
-                                }
-                                .disabled(model.options.editor.isEmpty || model.options.editor == "__custom__")
-                            }
-                            HStack(spacing: 12) {
-                                Text("基金项目")
-                                TextField("选填，如：国家社会科学基金项目“…”（23BZX113）。",
-                                          text: $model.options.grants)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            Divider().padding(.vertical, 2)
-                            // ---------- 批63b：人工填写元数据（推荐入口；.doc/.docx 自动识别已取消） ----------
-                            metadataFormSection
-                            Divider().padding(.vertical, 2)
-                            // 批63b：下面这 7 个内联字段保留（旧路径向后兼容）；**表单激活时整体置灰**，
-                            // 且运行前 GUI 会把「表单已填的同名字段」清零——同一字段只保留一个来源。
-                            Group {
-                            // ---------- 正文信息手工覆盖（兜底输入路径） ----------
-                            // 引擎按版面启发式解析题名/作者/摘要，总有解析不出来或
-                            // 解析错的稿子。这里是编辑的兜底：填了就覆盖自动解析结果，
-                            // 不用等程序修。全部留空 = 不覆盖，与旧版行为一致。
-                            Text("正文信息覆盖（选填；解析失败或解析不对时手工填入，"
-                                 + "填了即以人工值为准）")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            HStack(spacing: 12) {
-                                Text("中文题名")
-                                TextField("留空则用自动解析结果", text: $model.options.titleCn)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            HStack(spacing: 12) {
-                                Text("第一作者")
-                                TextField("留空则用自动解析结果",
-                                          text: $model.options.authorCn)
-                                    .textFieldStyle(.roundedBorder).frame(width: 180)
-                                Text("单位")
-                                TextField("如：中山大学逻辑与认知研究所",
-                                          text: $model.options.affiliationCn)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            HStack(spacing: 12) {
-                                Text("邮箱")
-                                TextField("如：someone@example.com", text: $model.options.email)
-                                    .textFieldStyle(.roundedBorder).frame(width: 240)
-                            }
-                            HStack(spacing: 12) {
-                                Text("中文摘要")
-                                TextField("留空则用自动解析结果", text: $model.options.abstractCn)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            HStack(spacing: 12) {
-                                Text("英文题名")
-                                TextField("留空则用自动解析结果", text: $model.options.titleEn)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            HStack(spacing: 12) {
-                                Text("英文摘要")
-                                TextField("留空则用自动解析结果", text: $model.options.abstractEn)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            Text("⚠ 手工覆盖的生效取决于引擎版本：用旧版引擎时日志会提示"
-                                 + "「尚不支持 overrides 参数」，此时不影响转换本身。")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                            }
-                            .disabled(model.metadataForm.hasAnyValue)
-                            HStack(spacing: 12) {
-                                Text("引用环境阈值")
-                                TextField("105", value: $model.options.quoteThreshold, format: .number)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 80)
-                                Text("字符（超过此长度提升为引用环境）")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.top, 8)
+                        advancedOptionsSection
                     }
 
                     Divider()
 
-                    // ---------- 运行 ----------
-                    HStack(spacing: 12) {
-                        Button {
-                            run(scanOnly: true)
-                        } label: {
-                            Label("只扫描源稿", systemImage: "doc.text.magnifyingglass")
-                        }
-                        .disabled(model.running || model.options.source.isEmpty)
-
-                        // U3：运行中主按钮变成「取消」（不是灰掉另放一个按钮）。
-                        // 取消 = 杀整棵进程树（Python 起的 xelatex 一起停，见 `RunCancel`）。
-                        if model.running {
-                            Button {
-                                model.cancel?.cancel()
-                            } label: {
-                                Label("取消", systemImage: "stop.circle")
-                            }
-                        } else {
-                            Button {
-                                run(scanOnly: false)
-                            } label: {
-                                Label(model.options.coop
-                                      ? "开始第一段（出任务书）"
-                                      : "开始转换",
-                                      systemImage: model.options.coop
-                                      ? "doc.badge.gearshape" : "wand.and.stars")
-                            }
-                            .keyboardShortcut(.return, modifiers: .command)
-                            .disabled(model.options.source.isEmpty || model.options.out.isEmpty)
-                        }
-
-                        if model.running {
-                            ProgressView().controlSize(.small)
-                            Text("运行中…（点「取消」可中止）").foregroundStyle(.secondary)
-                        }
-                    }
+                    runButtonsSection
 
                     // ---------- 第 55 批：两段式状态区 ----------
                     if model.options.coop {
@@ -427,6 +130,399 @@ struct ConvertTab: View {
             MetadataFormSheet(form: $model.metadataForm)
         }
     }
+
+    // MARK: - 初排页 section（body 拆分；顺序 = 界面自上而下）
+
+    /// 源文件 + 输出目录（两个必填路径）。
+    private var sourceAndOutputSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // ---------- 源文件（必填） ----------
+            LabeledPathRow(
+                title: "源文件（必填）",
+                placeholder: "Word 文稿（.docx）或 LaTeX 文件（.tex）",
+                path: $model.options.source,
+                kind: .file,
+                logStore: log
+            )
+
+            // ---------- 输出目录（必填） ----------
+            LabeledPathRow(
+                title: "输出目录（必填）",
+                placeholder: "初排稿的输出位置，例如 …/2026年第5期(90)（工具会在其下建 名_姓/；不要选 03 名_姓，会多套一层）",
+                path: $model.options.out,
+                kind: .directory,
+                logStore: log
+            )
+        }
+    }
+
+    /// 常勾选项（编译/清理/AI/协同/原稿 PDF）。
+    @ViewBuilder private var commonOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("生成后立即编译 PDF（XeLaTeX → biber → XeLaTeX ×2）",
+                   isOn: $model.options.compile)
+            Toggle("清理编译中间文件（保留 .log）", isOn: $model.options.clean)
+            // 批 62 入口收敛（B 方案）：独立的「生成文献核实任务书」勾选已隐藏，
+            // 本页只保留两个语义入口 —— 两段式（任务书 = 第一段产物）与 ⑪ 直连 AI
+            // （内部自动带 --verify-refs，产物/行为与批61 一致）。
+            // `Options.verifyRefs` 字段保留给旧脚本/既有调用方，界面不再绑定它；
+            // 普通初排转换不再带 --verify-refs（默认产物无 <stem>_文献核实.md）。
+            // 第 132 条：核实成本闸门提示（值来自「引用库设置」页，点击转换时现取）。
+            // 只有真的会核实（⑪ / 两段式）时才显示，免得普通转换看到不相干的数字。
+            if model.options.useAI || model.options.coop {
+                verifyGateHint
+            }
+            // 「用 AI 处理参考文献」：勾上就是「任务书 + 按同一份规范在本机直连 AI 预跑」
+            // （引擎侧自动带 --verify-refs；批 62 起这是普通初排唯一出任务书的入口）。
+            // 批 62 文案与 Win 逐字对齐（Lead 口径）：标签点明「直连 API，会产生费用」。
+            Toggle("用 AI 处理参考文献（直连 API，会产生费用）",
+                   isOn: binding(.useAI, \.useAI))
+            aiHint
+            aiExtraTogglesSection
+            coopToggleRow
+            Toggle("导出原稿 PDF（供矢量图形人工截图）",
+                   isOn: $model.options.sourcePdf)
+        }
+        .toggleStyle(.checkbox)
+    }
+
+    /// 勾「用 AI 处理参考文献」后才出现的两个附加开关（保留原 bib / 全文 AI 核查）。
+    @ViewBuilder private var aiExtraTogglesSection: some View {
+        if model.options.useAI {
+            // 只在 AI 勾着时可见：没勾 AI 就没有合并通道，这个开关无从谈起。
+            Toggle("保留原 reference.bib（不并入 AI 结果）",
+                   isOn: binding(.keepOriginalBib, \.keepOriginalBib))
+            Text("勾上 = 只出《文献核实任务书》（引擎侧 --no-ai-merge）：AI 结果不写进产物，"
+                 + "reference.bib 一个字节都不动。不勾时 AI 结果会并入交付的 reference.bib，"
+                 + "合并之前的那份会先备份成 reference.bib.ai前（要回滚就把它覆盖回去）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 18)
+            // ---------- 第 60 批：全文 AI 核查（直连 API，会产生费用；默认不勾） ----------
+            // 默认不勾 → 一个参数都不加（默认 argv 与批 59 逐字节相同）。
+            Toggle("全文 AI 核查（直连 API，会产生费用）",
+                   isOn: $model.options.llmFulltext)
+            Text("⚠ 勾上后会产生费用：引擎把稿件正文按片直接发送到"
+                 + "「设置」里配置的 AI 端点，每片一次请求；不勾（默认）时正文一个字节都不外发。\n"
+                 + "范围：通过批 57 安全闸的 BIB/META/FN 建议会**自动应用**"
+                 + "（先备份 .ai前、0 条不写、冲突拒绝；可在「设置 → 全文核查结果自动应用」关闭），"
+                 + "《…_AI全文复核.md》报告照常生成；两段式协同模式下本轮不生效。\n"
+                 + "上限：「设置」里的「API 核查字符上限」默认 40000 字符（0 = 不限）；"
+                 + "「单篇预算」（默认 30000 tokens）不够时请按日志提示调大。\n"
+                 + "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 18)
+        }
+    }
+
+    /// 两段式「AI 协同初排」开关（默认关）+ 勾上后的说明。
+    @ViewBuilder private var coopToggleRow: some View {
+        // 默认关 → 协同相关字段一个都不进 argv，转换行为与批 54 逐字节相同。
+        Toggle("AI 协同初排（两段式；外部 chat 免费流程）",
+               isOn: $model.options.coop)
+            .onChange(of: model.options.coop) { on in
+                if on { refreshCoopStage() }
+            }
+        if model.options.coop {
+            Text(coopToggleHintText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 18)
+        }
+    }
+
+    /// 「高级选项」整行按钮（批 63 B1：点文字/整行都能开合；状态仍是 model.showAdvanced）。
+    private var advancedToggleButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { model.showAdvanced.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .rotationEffect(.degrees(model.showAdvanced ? 90 : 0))
+                Text("高级选项")
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 高级选项展开后的全部内容。
+    private var advancedOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            advancedPathsSection
+            advancedNamingSection
+            advancedPublicationSection
+            advancedMetadataSection
+        }
+        .padding(.top, 8)
+    }
+
+    /// 高级：覆盖开关 + 三个附件/元数据路径。
+    private var advancedPathsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("覆盖已存在的输出目录（--force）",
+                   isOn: $model.options.force)
+                .toggleStyle(.checkbox)
+            Text("目标目录里混着非本工具的文件时（例如手工 latexmk 留下的 "
+                 + ".fdb_latexmk/.fls），默认会被拦下以防误伤已有稿件目录；"
+                 + "勾选后照常写入：同名产物被覆盖，目录里的其它文件不会被删。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledPathRow(
+                title: "参考文献附件",
+                placeholder: "留空则自动识别（全库 37% 的稿件把文献单独放一个文件）",
+                path: $model.options.refs,
+                kind: .file,
+                logStore: log
+            )
+            LabeledPathRow(
+                title: "元数据文件",
+                // 批63b：placeholder 按源稿通道动态变（LaTeX / Word 的既有能力不同）。
+                placeholder: metadataFilePlaceholder,
+                path: $model.options.metadata,
+                kind: .file,
+                allowedExtensions: ["tex", "docx"],
+                logStore: log
+            )
+            LabeledPathRow(
+                title: "已有的 .bib",
+                placeholder: "指定后不再自动生成",
+                path: $model.options.bib,
+                kind: .file,
+                logStore: log
+            )
+        }
+    }
+
+    /// 高级：输出名 / 第一作者 / 语种。
+    private var advancedNamingSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Text("输出名")
+                TextField("留空则按第一作者自动命名（如 Chen_Bo）",
+                          text: $model.options.name)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 12) {
+                Text("第一作者")
+                TextField("留空则从源文件提取",
+                          text: $model.options.author)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 12) {
+                Text("语种")
+                Picker("", selection: $model.options.lang) {
+                    Text("自动判断").tag("")
+                    Text("中文（SLCN-MIX.sty）").tag("zh")
+                    Text("英文（SLEN.sty）").tag("en")
+                }
+                .labelsHidden()
+                .frame(width: 240)
+            }
+        }
+    }
+
+    /// 高级：出版信息（卷/期/年、起止页/收稿/责编、基金项目）。
+    private var advancedPublicationSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider().padding(.vertical, 2)
+            Text("出版信息（选填；填了 PDF 页眉/页码才是最终形态）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Text("卷 / 期 / 年")
+                TextField("19", text: $model.options.vol)
+                    .textFieldStyle(.roundedBorder).frame(width: 60)
+                TextField("5", text: $model.options.issue)
+                    .textFieldStyle(.roundedBorder).frame(width: 60)
+                TextField("2026", text: $model.options.pubYear)
+                    .textFieldStyle(.roundedBorder).frame(width: 70)
+            }
+            pagesAndEditorRow
+            HStack(spacing: 12) {
+                Text("基金项目")
+                TextField("选填，如：国家社会科学基金项目“…”（23BZX113）。",
+                          text: $model.options.grants)
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+
+    /// 起止页 / 收稿日期 / 责编（含自定义名单与默认值按钮）。
+    private var pagesAndEditorRow: some View {
+        HStack(spacing: 12) {
+            Text("起止页")
+            TextField("137-152", text: $model.options.pages)
+                .textFieldStyle(.roundedBorder).frame(width: 110)
+            Text("收稿日期")
+            TextField("2025-09-19", text: $model.options.received)
+                .textFieldStyle(.roundedBorder).frame(width: 110)
+            editorControls
+        }
+    }
+
+    @ViewBuilder private var editorControls: some View {
+        Text("责编")
+        Picker("", selection: $model.options.editor) {
+            Text("未指定").tag("")
+            ForEach(editors.allNames, id: \.self) { n in
+                Text(editors.defaultName == n ? "\(n)（默认）" : n).tag(n)
+            }
+            Text("自定义…").tag("__custom__")
+        }
+        .labelsHidden()
+        .frame(width: 130)
+        if model.options.editor == "__custom__" {
+            TextField("新责编姓名", text: $editors.newName)
+                .textFieldStyle(.roundedBorder).frame(width: 90)
+            addEditorButton
+        }
+        setDefaultEditorButton
+    }
+
+    private var addEditorButton: some View {
+        Button("添加") {
+            editors.addCustom(editors.newName)
+            let n = editors.newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !n.isEmpty { model.options.editor = n }
+            editors.newName = ""
+        }
+    }
+
+    private var setDefaultEditorButton: some View {
+        Button(editors.defaultName == model.options.editor && !model.options.editor.isEmpty
+               ? "已设为默认 ✓" : "设为默认") {
+            editors.setDefault(model.options.editor)
+        }
+        .disabled(model.options.editor.isEmpty || model.options.editor == "__custom__")
+    }
+
+    /// 高级：批63b 人工填写元数据入口 + 旧 7 个内联覆盖字段 + 引用环境阈值。
+    private var advancedMetadataSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider().padding(.vertical, 2)
+            // ---------- 批63b：人工填写元数据（推荐入口；.doc/.docx 自动识别已取消） ----------
+            metadataFormSection
+            Divider().padding(.vertical, 2)
+            // 批63b：下面这 7 个内联字段保留（旧路径向后兼容）；**表单激活时整体置灰**，
+            // 且运行前 GUI 会把「表单已填的同名字段」清零——同一字段只保留一个来源。
+            inlineOverrideSection
+            HStack(spacing: 12) {
+                Text("引用环境阈值")
+                TextField("105", value: $model.options.quoteThreshold, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+                Text("字符（超过此长度提升为引用环境）")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// 旧「正文信息覆盖」7 个内联字段（表单激活时整体置灰；运行前按字段清零避免双源）。
+    private var inlineOverrideSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // ---------- 正文信息手工覆盖（兜底输入路径） ----------
+            // 引擎按版面启发式解析题名/作者/摘要，总有解析不出来或
+            // 解析错的稿子。这里是编辑的兜底：填了就覆盖自动解析结果，
+            // 不用等程序修。全部留空 = 不覆盖，与旧版行为一致。
+            Text("正文信息覆盖（选填；解析失败或解析不对时手工填入，"
+                 + "填了即以人工值为准）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Text("中文题名")
+                TextField("留空则用自动解析结果", text: $model.options.titleCn)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 12) {
+                Text("第一作者")
+                TextField("留空则用自动解析结果",
+                          text: $model.options.authorCn)
+                    .textFieldStyle(.roundedBorder).frame(width: 180)
+                Text("单位")
+                TextField("如：中山大学逻辑与认知研究所",
+                          text: $model.options.affiliationCn)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 12) {
+                Text("邮箱")
+                TextField("如：someone@example.com", text: $model.options.email)
+                    .textFieldStyle(.roundedBorder).frame(width: 240)
+            }
+            HStack(spacing: 12) {
+                Text("中文摘要")
+                TextField("留空则用自动解析结果", text: $model.options.abstractCn)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 12) {
+                Text("英文题名")
+                TextField("留空则用自动解析结果", text: $model.options.titleEn)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack(spacing: 12) {
+                Text("英文摘要")
+                TextField("留空则用自动解析结果", text: $model.options.abstractEn)
+                    .textFieldStyle(.roundedBorder)
+            }
+            Text("⚠ 手工覆盖的生效取决于引擎版本：用旧版引擎时日志会提示"
+                 + "「尚不支持 overrides 参数」，此时不影响转换本身。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .disabled(model.metadataForm.hasAnyValue)
+    }
+
+    /// 运行按钮区（只扫描 / 开始转换 / 取消 / 进度）。
+    private var runButtonsSection: some View {
+        HStack(spacing: 12) {
+            scanOnlyButton
+            primaryRunButton
+            runningProgress
+        }
+    }
+
+    private var scanOnlyButton: some View {
+        Button {
+            run(scanOnly: true)
+        } label: {
+            Label("只扫描源稿", systemImage: "doc.text.magnifyingglass")
+        }
+        .disabled(model.running || model.options.source.isEmpty)
+    }
+
+    /// U3：运行中主按钮变成「取消」（不是灰掉另放一个按钮）。
+    /// 取消 = 杀整棵进程树（Python 起的 xelatex 一起停，见 `RunCancel`）。
+    @ViewBuilder private var primaryRunButton: some View {
+        if model.running {
+            Button {
+                model.cancel?.cancel()
+            } label: {
+                Label("取消", systemImage: "stop.circle")
+            }
+        } else {
+            Button {
+                run(scanOnly: false)
+            } label: {
+                Label(model.options.coop
+                      ? "开始第一段（出任务书）"
+                      : "开始转换",
+                      systemImage: model.options.coop
+                      ? "doc.badge.gearshape" : "wand.and.stars")
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(model.options.source.isEmpty || model.options.out.isEmpty)
+        }
+    }
+
+    @ViewBuilder private var runningProgress: some View {
+        if model.running {
+            ProgressView().controlSize(.small)
+            Text("运行中…（点「取消」可中止）").foregroundStyle(.secondary)
+        }
+    }
+
 
     private var helpBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
