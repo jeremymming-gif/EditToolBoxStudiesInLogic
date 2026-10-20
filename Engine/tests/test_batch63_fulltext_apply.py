@@ -233,6 +233,24 @@ def ensure_head_engine(tmp: str) -> str:
         return ""
 
 
+def _head_supports_flag(engine: str, flag: str) -> bool:
+    """HEAD 旧引擎的 convert.py 是否支持某个 flag（按源码判断，不执行引擎）。
+
+    为什么要判断能力而不是写死命令行：`git archive HEAD` 取到的是**当前提交**——
+    批63 提交前 HEAD=批62（裸 `--llm-fulltext` 就是 report-only），提交后 HEAD=批63
+    （裸旗标=默认自动应用，必须显式 `--no-llm-fulltext-apply` 才是同一口径）。
+    按能力选对照命令，两种 HEAD 下 ②-4/②-5 都是「report-only 与旧引擎逐字节相同」的
+    有效守卫；HEAD==工作树时它退化为**同代码回归守卫**（仍能挡住后续改动悄悄改掉
+    report-only 行为），所以不 skip。
+    """
+    try:
+        with open(os.path.join(engine, "convert.py"), encoding="utf-8",
+                  errors="replace") as f:
+            return flag in f.read()
+    except OSError:
+        return False
+
+
 # ── ① 默认开：BIB 自动应用 + 报告 + .ai前 可逆 ───────────────────────────
 
 
@@ -308,9 +326,13 @@ def test_report_only_compat(tmp: str, head: str) -> None:
             return
         shutil.rmtree(out, ignore_errors=True)
         # 同一个 mock 进程（端口/端点 URL 相同）才谈得上逐字节对比。
-        r_old = run_convert(src, out, bibp, ["--verify-refs", "--llm-fulltext"],
-                            env=env, engine=head)
-    check("②-4 产物/报告与 HEAD（批60）逐字节相同",
+        # 旧引擎的对照命令**按 HEAD 能力选**：批60 用裸 --llm-fulltext（=report-only），
+        # 批63+ 必须显式 --no-llm-fulltext-apply 才是同一口径（见 _head_supports_flag）。
+        _old_args = ["--verify-refs", "--llm-fulltext"]
+        if _head_supports_flag(head, "--no-llm-fulltext-apply"):
+            _old_args.append("--no-llm-fulltext-apply")
+        r_old = run_convert(src, out, bibp, _old_args, env=env, engine=head)
+    check("②-4 产物/报告与 HEAD（report-only 口径）逐字节相同",
           snapshot(out_dir(out)) == snap, sorted(set(snapshot(out_dir(out))) ^ set(snap)))
     check("②-5 日志与 HEAD 逐字节相同", r.stdout == r_old.stdout)
 
