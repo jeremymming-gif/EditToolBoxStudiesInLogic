@@ -561,7 +561,7 @@ import tempfile as _tf  # noqa: E402
 
 from slcn import preamble as _PRE  # noqa: E402
 
-_sty_dir = _tf.mkdtemp(dir="/tmp")
+_sty_dir = _tf.mkdtemp()
 open(os.path.join(_sty_dir, "SLCN.sty"), "w", encoding="utf-8").write(
     "\\usepackage{algorithm}\n\\usepackage{algpseudocode}\n")
 _main = "\\documentclass{article}\n\\usepackage{SLCN}\n\\begin{document}\nX\n\\end{document}\n"

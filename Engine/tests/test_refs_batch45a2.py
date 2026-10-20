@@ -156,7 +156,7 @@ finally:
 # ══════════════════════════════════════════════════════════════════════════
 # ⑥ 89-05 型：`.bib` 在源稿父目录（稿件根）→ find_bib 能找到并记录来源
 # ══════════════════════════════════════════════════════════════════════════
-_root = tempfile.mkdtemp(dir="/tmp")
+_root = tempfile.mkdtemp()
 _orig = os.path.join(_root, "original"); os.makedirs(_orig)
 _src = os.path.join(_orig, "main.tex")
 open(_src, "w", encoding="utf-8").write("\\documentclass{article}\n\\\\begin{document}x\\end{document}\n")

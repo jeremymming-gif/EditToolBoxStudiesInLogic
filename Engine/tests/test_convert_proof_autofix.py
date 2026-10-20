@@ -245,7 +245,7 @@ except OSError:
     pass
 
 # ⑧-5 LaTeX 通道同样适用（只写日志、产物不变）
-_tex_src8 = os.path.join(tempfile.mkdtemp(dir="/tmp"), "body8.tex")
+_tex_src8 = os.path.join(tempfile.mkdtemp(), "body8.tex")
 open(_tex_src8, "w", encoding="utf-8").write(
     "\\documentclass{ctexart}\n\\begin{document}\n"
     "关于让-雅克·卢梭与北京-上海的讨论。\n\\end{document}\n")
@@ -339,7 +339,7 @@ check("⑨ 无命中时不写日志/warnings",
       and _b_log2 == [] and _b_warn2 == [])
 
 # ⑨-1 LaTeX 通道：合成 body + 有 1 条 bib 但 0 引用 → 提示；开关关→无提示；产物 sha 相同
-_B_TMP = tempfile.mkdtemp(dir="/tmp")
+_B_TMP = tempfile.mkdtemp()
 _B_TEX = os.path.join(_B_TMP, "body.tex")
 open(_B_TEX, "w", encoding="utf-8").write(
     "\\documentclass{ctexart}\n\\title{测试稿}\n\\author{张三}\n"

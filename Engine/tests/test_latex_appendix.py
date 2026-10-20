@@ -112,7 +112,7 @@ check("③ 插到模板 \\printbibliography **之前**（与人工成品顺序�
       and _out.index("附录正文") < _out.index("\\printbibliography"), repr(_out))
 
 # ④b 端到端（手写 bib + 附录混排）：bib 环境不迁移、附录迁移、无坏 \bibitem
-_tmp_manual = tempfile.mkdtemp(dir="/tmp")
+_tmp_manual = tempfile.mkdtemp()
 _body_manual = os.path.join(_tmp_manual, "body.tex")
 open(_body_manual, "w", encoding="utf-8").write(_SRC_MANUAL)
 try:
@@ -129,7 +129,7 @@ finally:
         pass
 
 # ④ 端到端：合成源稿 → 产物含附录；无附录稿不含多余内容
-_tmp = tempfile.mkdtemp(dir="/tmp")
+_tmp = tempfile.mkdtemp()
 _body = os.path.join(_tmp, "body.tex")
 open(_body, "w", encoding="utf-8").write(_SRC)
 try:
