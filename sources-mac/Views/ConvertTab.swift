@@ -92,9 +92,11 @@ struct ConvertTab: View {
         + "上限：「设置」里的「API 核查字符上限」默认 40000 字符（0 = 不限）；"
         + "「单篇预算」（默认 30000 tokens）不够时请按日志提示调大。\n"
         + "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。"
+    // 批67（B-017）：旧「正文信息覆盖」不再是常驻入口——只在**两段式**模式作兜底显示
+    // （普通转换的唯一人工元数据入口是「填写元数据…」表单）。
     private static let inlineOverrideHeaderText: String =
-        "正文信息覆盖（选填；解析失败或解析不对时手工填入，"
-        + "填了即以人工值为准）"
+        "正文信息覆盖（两段式兜底；只覆盖第一作者/题名/摘要/单位/邮箱；"
+        + "多作者请改用 `.tex` 元数据文件）"
     private static let inlineOverrideWarningText: String =
         "⚠ 手工覆盖的生效取决于引擎版本：用旧版引擎时日志会提示"
         + "「尚不支持 overrides 参数」，此时不影响转换本身。"
@@ -114,12 +116,16 @@ struct ConvertTab: View {
         "⚠ 工具只做初排。数字前缀、目录顺序在三校/蓝样阶段再加。"
     private static let metadataFormTitleText: String =
         "元数据（推荐人工填写；值直接写入交付产物，留空 = 不覆盖）"
+    // B-017：普通转换的常驻上限说明（与表单内、docs 同口径；明细来自纯逻辑常量）。
+    private static let metadataFormLimitText: String = MetadataForm.limitSummary
+    private static let metadataFormCoopFallbackTitleText: String =
+        "元数据（两段式协同：人工元数据表单不适用）"
     private static let metadataFormCoopHintText: String =
-        "⚠ 两段式协同暂不支持人工填写元数据（引擎会明确退出 2）：请改用普通转换，"
-        + "或保留 `.tex` 元数据文件；已填内容本次不会被下传。"
+        "⚠ 两段式协同暂不支持人工填写元数据（引擎会直接退出 2）：表单入口按模式让位，"
+        + "本次不会下传表单内容。请按下面「正文信息覆盖」兜底字段填第一作者/题名/摘要/单位/邮箱"
+        + "（第一段生效；第二段从暂存状态继承，不用重填），或改用普通转换/`.tex` 元数据文件。"
     private static let metadataFormPriorityHintText: String =
-        "表单优先于下面置灰的「正文信息覆盖」内联字段与 `.tex` 元数据文件；"
-        + "临时 JSON 只在本次运行有效，跑完即删。"
+        "表单优先于 `.tex` 元数据文件；临时 JSON 只在本次运行有效，跑完即删。"
     // AI 说明文案（批63b R2：View 本体在 `ConvertAiHintViews.swift`，文案常量留在本文件，
     // 因为既有源码级断言（tools/ai_settings_test i6-hint）按 ConvertTab 源码检查这些句子）。
     static let aiCoopInactiveText: String =
@@ -163,7 +169,11 @@ struct ConvertTab: View {
         + "「测试连接」可用后再回来勾选。"
     private static let coopMetadataUnsupportedLogText: String =
         "元数据：⚠ 两段式协同暂不支持人工填写元数据（引擎会直接退出 2），"
-        + "本次**未下传**表单内容；请改用普通转换，或保留 .tex 元数据文件。\n"
+        + "本次**未下传**表单内容；请改用普通转换，或在「正文信息覆盖」兜底字段里填，"
+        + "或保留 .tex 元数据文件。\n"
+    private static let scanOnlyMetadataIgnoredLogText: String =
+        "元数据：只扫描源稿不产出交付物，本次不下传人工填写内容"
+        + "（用「开始转换」跑才生效）。\n"
     private static let coopFirstPhaseDoneLogText: String =
         "（界面）第一段完成：状态「待人工核实（**未交付**）」。"
         + "下一步：打开任务书 → 外部 chat 核实 → 导入回复 → 运行第二段。\n"
@@ -549,34 +559,80 @@ struct ConvertTab: View {
         EditorControlsRow(editors: editors, selection: $model.options.editor)
     }
 
-    /// 高级：批63b 人工填写元数据入口 + 旧 7 个内联覆盖字段 + 引用环境阈值。
+    /// 高级：元数据入口（B-017：普通=表单 / 两段式=内联兜底）+ 引用环境阈值。
     private var advancedMetadataSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider().padding(.vertical, 2)
-            // ---------- 批63b：人工填写元数据（推荐入口；.doc/.docx 自动识别已取消） ----------
-            metadataFormSection
+            metadataEntrySection
             Divider().padding(.vertical, 2)
-            // 批63b：下面这 7 个内联字段保留（旧路径向后兼容）；**表单激活时整体置灰**，
-            // 且运行前 GUI 会把「表单已填的同名字段」清零——同一字段只保留一个来源。
-            inlineOverrideSection
-            HStack(spacing: 12) {
-                Text("引用环境阈值")
-                TextField("105", value: $model.options.quoteThreshold, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 80)
-                Text("字符（超过此长度提升为引用环境）")
-                    .foregroundStyle(.secondary)
-            }
+            quoteThresholdRow
         }
     }
 
-    /// 旧「正文信息覆盖」7 个内联字段（表单激活时整体置灰；运行前按字段清零避免双源）。
+    /// B-017：**单一元数据入口**。路由判据只有一份——
+    /// `MetadataForm.entryMode(scanOnly:coop:)`（纯逻辑，`tools/ai_settings_test` 直接断言）：
+    ///   · 普通转换 → 只显示「填写元数据…」表单（旧 7 内联字段不渲染）；
+    ///   · 两段式协同 → 表单不适用（引擎对 JSON + 协同明确 exit 2），只显示旧 7 内联兜底。
+    @ViewBuilder private var metadataEntrySection: some View {
+        if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop) == .inlineFallback {
+            coopMetadataFallbackSection
+        } else {
+            metadataFormSection
+        }
+    }
+
+    /// 两段式：人工元数据表单不适用 → 说明 + 「已填表单不下传」提醒 + 旧内联兜底。
+    private var coopMetadataFallbackSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(Self.metadataFormCoopFallbackTitleText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(Self.metadataFormCoopHintText)
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.metadataForm.hasAnyValue {
+                coopFormValuesRow
+            }
+            inlineOverrideSection
+        }
+    }
+
+    /// 两段式下表单已填内容不会下传：明确提醒 + 一键清空（绝不静默丢值）。
+    private var coopFormValuesRow: some View {
+        HStack(spacing: 12) {
+            Text(coopFormValuesNotAttachedText())
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("清空表单") { model.metadataForm = MetadataForm() }
+        }
+    }
+
+    private func coopFormValuesNotAttachedText() -> String {
+        "已填表单：" + model.metadataForm.summaryLine() + "（两段式不下传，本次不会写进产物）"
+    }
+
+    /// 高级：引用环境阈值（原与元数据同段；B-017 拆成小 View 保持表达式小）。
+    private var quoteThresholdRow: some View {
+        HStack(spacing: 12) {
+            Text("引用环境阈值")
+            TextField("105", value: $model.options.quoteThreshold, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 80)
+            Text("字符（超过此长度提升为引用环境）")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// 旧「正文信息覆盖」7 个内联字段（B-017 起只作**两段式兜底**显示；普通转换不渲染）。
+    /// 表单与内联不再同时可编辑；运行前 GUI 仍会按字段清零（防御旧调用方/旧状态双源）。
     private var inlineOverrideSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // ---------- 正文信息手工覆盖（兜底输入路径） ----------
+            // ---------- 正文信息手工覆盖（两段式兜底输入路径） ----------
             // 引擎按版面启发式解析题名/作者/摘要，总有解析不出来或
-            // 解析错的稿子。这里是编辑的兜底：填了就覆盖自动解析结果，
-            // 不用等程序修。全部留空 = 不覆盖，与旧版行为一致。
+            // 解析错的稿子。这里是两段式下的兜底：填了就覆盖自动解析结果。
+            // 全部留空 = 不覆盖，与旧版行为一致。
             Text(Self.inlineOverrideHeaderText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -619,7 +675,8 @@ struct ConvertTab: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
-        .disabled(model.metadataForm.hasAnyValue)
+        // B-017：本 section 只在两段式模式渲染，而两段式**不下传**表单 →
+        // 不能再按「表单有值」置灰（否则用户两段式下两个入口都不可用）。
     }
 
     /// 运行按钮区（只扫描 / 开始转换 / 取消 / 进度）。
@@ -718,14 +775,24 @@ struct ConvertTab: View {
         return Self.metadataPlaceholderLatexText
     }
 
-    /// 批63b：初排页「人工填写元数据」入口（表单在 sheet 里；这里只放入口 + 摘要 + 约束提示）。
+    /// 普通转换：初排页**唯一**的人工元数据入口（表单在 sheet 里；这里放入口 + 摘要 +
+    /// 常驻上限说明）。B-017：旧 7 内联字段在此模式不再渲染。
     private var metadataFormSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Self.metadataFormTitleText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             metadataFormEntryRow
-            metadataFormModeHint
+            Text(Self.metadataFormLimitText)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.metadataForm.hasAnyValue {
+                Text(Self.metadataFormPriorityHintText)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -747,22 +814,8 @@ struct ConvertTab: View {
         } label: {
             Label("填写元数据…", systemImage: "square.and.pencil")
         }
-        // 批63b v1：两段式协同**不支持**人工元数据（引擎对 JSON + 协同明确 exit 2）。
-        .disabled(model.options.coop)
-    }
-
-    @ViewBuilder private var metadataFormModeHint: some View {
-        if model.options.coop {
-            Text(Self.metadataFormCoopHintText)
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-        } else if model.metadataForm.hasAnyValue {
-            Text(Self.metadataFormPriorityHintText)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        // B-017：普通模式唯一入口。两段式模式**整段不渲染**（引擎对 JSON + 协同 exit 2），
+        // 不再靠「禁用按钮」表达——禁用但旁边的兜底字段也置灰时用户会卡死。
     }
 
     /// 复选框 → 选项的绑定：联动规则的**唯一**实现在 `ConvertFeature.toggled(_:to:in:)`
@@ -1346,7 +1399,9 @@ struct ConvertTab: View {
                                     to o: inout ConvertFeature.Options) -> MetadataJSONAttachment {
         guard model.metadataForm.hasAnyValue else { return .notNeeded }
         guard MetadataForm.shouldAttach(scanOnly: scanOnly, coop: coopOn) else {
+            // 两段式 / 只扫描都不下传表单；**不静默**（B-017：只扫描这条也补一句）。
             if coopOn { log.append(Self.coopMetadataUnsupportedLogText) }
+            else if scanOnly { log.append(Self.scanOnlyMetadataIgnoredLogText) }
             return .notNeeded
         }
         guard let json = model.metadataForm.jsonString() else { return .notNeeded }
@@ -1368,14 +1423,13 @@ struct ConvertTab: View {
 
     private func metadataAttachedLogText() -> String {
         "元数据：" + model.metadataForm.summaryLine()
-            + "（人工填写表单优先于内联覆盖字段与 .tex 元数据文件；"
-            + "临时 JSON 运行结束即删除）\n"
+            + "（人工填写表单优先于 `.tex` 元数据文件；临时 JSON 运行结束即删除）\n"
     }
 
-    /// 批63b：表单优先于旧 7 个内联覆盖字段——表单**填了的字段**在 GUI 侧清零对应内联值
-    /// （界面上内联字段也已置灰）。逐字段清零而不是一刀切：避免丢掉「先填内联、
-    /// 后只填了表单作者」这类混合输入的值。只在表单**真的下传**时清零：
-    /// 两段式/只扫描下传不了表单，内联值必须原样保留（否则就静默丢值了）。
+    /// 批63b：表单优先于旧 7 个内联覆盖字段——表单**填了的字段**在 GUI 侧清零对应内联值。
+    /// 逐字段清零而不是一刀切：避免丢掉「先填内联、后只填了表单作者」这类混合输入的值。
+    /// 只在表单**真的下传**时清零：两段式/只扫描下传不了表单，内联值必须原样保留。
+    /// B-017 起普通模式已不渲染内联字段，本函数保留作**防御**（旧状态/旧调用方双源保护）。
     private func clearOverriddenInlineFields(in o: inout ConvertFeature.Options) {
         for field in MetadataForm.InlineOverrideField.allCases
         where model.metadataForm.coversInlineOverride(field) {

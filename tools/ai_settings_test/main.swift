@@ -2798,13 +2798,12 @@ check("q63b-meta-empty",
 let q63bFormSrc = readSrc("Features/MetadataFormFeature.swift")
 let q63bSheetSrc = readSrc("Views/MetadataFormSheet.swift")
 check("q63b-ui-wiring",
-      "初排页：高级选项内「填写元数据…」+ sheet + 摘要/清空 + 协同时禁用入口",
+      "初排页：高级选项内「填写元数据…」+ sheet + 摘要/清空（B-017 起普通模式唯一入口）",
       q63TabSrc.contains("填写元数据…")
         && q63TabSrc.contains("model.showMetadataForm = true")
         && q63TabSrc.contains(".sheet(isPresented: $model.showMetadataForm)")
         && q63TabSrc.contains("MetadataFormSheet(form: $model.metadataForm)")
-        && q63TabSrc.contains("summaryLine()")
-        && q63TabSrc.contains(".disabled(model.options.coop)"),
+        && q63TabSrc.contains("summaryLine()"),
       "button=\(q63TabSrc.contains("填写元数据…")) sheet=\(q63TabSrc.contains(".sheet("))")
 check("q63b-ui-fields",
       "sheet 字段齐全：中英文题名/摘要/关键词 + 中英文姓名/邮箱 + 添加作者 + 添加单位（两语言）",
@@ -2812,9 +2811,11 @@ check("q63b-ui-fields",
        "添加作者", "添加单位", "中文姓名", "英文姓名", "邮箱", "第一作者"]
         .allSatisfy { q63bSheetSrc.contains($0) },
       "len=\(q63bSheetSrc.count)")
-check("q63b-ui-inline-priority",
-      "内联 7 覆盖字段保留但表单激活时置灰；界面写明「表单优先」",
-      q63TabSrc.contains(".disabled(model.metadataForm.hasAnyValue)")
+check("q67-ui-inline-fallback",
+      "B-017：旧 7 内联字段保留但只在两段式兜底渲染；不再被『表单有值』置灰"
+        + "（两段式不下传表单，置灰会让两个入口都不可用）",
+      !q63TabSrc.contains(".disabled(model.metadataForm.hasAnyValue)")
+        && q63TabSrc.contains("两段式兜底")
         && q63TabSrc.contains("表单优先"),
       "disabled=\(q63TabSrc.contains(".disabled(model.metadataForm.hasAnyValue)"))")
 check("q63b-doc-entry-removed",
@@ -2853,6 +2854,109 @@ check("q63b-form-log-text",
       q63bFormSrc.contains("将写入") && q63bFormSrc.contains("位作者")
         && q63bFormSrc.contains("项字段"),
       "len=\(q63bFormSrc.count)")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (q67) 批67 B-017：初排页元数据入口合并（单一入口）+ 模板上限说明/达限提示
+//        方案A：不改模板/引擎；普通转换只显示表单，两段式只显示旧 7 内联兜底。
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-q67  B-017：单一元数据入口（路由判据）/ 模板上限说明 / 达限可操作提示")
+
+check("q67-entry-mode",
+      "单入口路由纯逻辑：普通转换 → formOnly；两段式 → inlineFallback；只扫描忽略协同 → formOnly"
+        + "（与 arguments() 的「只扫描时协同被忽略」同口径）",
+      MetadataForm.entryMode(scanOnly: false, coop: false) == .formOnly
+        && MetadataForm.entryMode(scanOnly: false, coop: true) == .inlineFallback
+        && MetadataForm.entryMode(scanOnly: true, coop: true) == .formOnly,
+      "normal=\(MetadataForm.entryMode(scanOnly: false, coop: false)) "
+        + "coop=\(MetadataForm.entryMode(scanOnly: false, coop: true)) "
+        + "scan=\(MetadataForm.entryMode(scanOnly: true, coop: true))")
+
+check("q67-limit-summary",
+      "上限常驻说明（入口旁/表单内同口径）：作者 5 位=模板 \\myfirstauthor…\\myfifthauthor 硬槽位、"
+        + "不是可调设置；每位作者每语言单位 ≤3 行（版式容量，第 4 行溢版）",
+      MetadataForm.limitSummary.contains("5 位")
+        && MetadataForm.limitSummary.contains("myfirstauthor")
+        && MetadataForm.limitSummary.contains("3 行")
+        && MetadataForm.limitSummary.contains("不是可调设置")
+        && MetadataForm.limitSummary.contains("溢版"),
+      "limit=\(MetadataForm.limitSummary)")
+
+var q67NoLimit = MetadataForm()
+check("q67-limit-hints-empty",
+      "未达上限：limitHints() 为空、两个 reached 判据为 false（界面不显示多余提示）",
+      q67NoLimit.limitHints().isEmpty && !q67NoLimit.reachedAuthorLimit
+        && !q67NoLimit.reachedAffiliationLimit(authorIndex: 0, language: .cn)
+        && !q67NoLimit.reachedAffiliationLimit(authorIndex: 0, language: .en),
+      "hints=\(q67NoLimit.limitHints())")
+
+var q67Author = MetadataForm()
+for _ in 0..<3 { _ = q67Author.addAuthor() }   // 4 位（未达限）
+let q67Author4 = q67Author.limitHints()
+_ = q67Author.addAuthor()                      // 5 位（达限；第 6 次会被拒）
+let q67Author5 = q67Author.limitHints()
+check("q67-author-limit-hint",
+      "作者达限（5 位）：addAuthor 第 6 次被拒（阻止）+ 可操作提示（删空行/合并同单位作者/移致谢）；"
+        + "未达限时无提示",
+      q67Author4.isEmpty
+        && q67Author.reachedAuthorLimit
+        && !q67Author.addAuthor()
+        && q67Author5.count == 1
+        && q67Author5[0].contains("作者已达模板上限 5 位")
+        && q67Author5[0].contains("合并同单位作者")
+        && q67Author5[0].contains("致谢"),
+      "hints4=\(q67Author4) hints5=\(q67Author5)")
+
+var q67Aff = MetadataForm()
+let q67AffID = q67Aff.authors[0].id
+_ = q67Aff.addAffiliation(authorID: q67AffID, language: .cn)
+_ = q67Aff.addAffiliation(authorID: q67AffID, language: .cn)
+let q67Aff2 = q67Aff.limitHints()
+_ = q67Aff.addAffiliation(authorID: q67AffID, language: .cn)
+let q67Aff3 = q67Aff.limitHints()
+check("q67-aff-limit-hint",
+      "单位达限（每语言 3 行）：第 4 次 addAffiliation 被拒（阻止）+ 可操作提示"
+        + "（删空行/合并写到一行/脚注）；中文满不影响英文",
+      q67Aff2.isEmpty
+        && q67Aff.reachedAffiliationLimit(authorIndex: 0, language: .cn)
+        && !q67Aff.reachedAffiliationLimit(authorIndex: 0, language: .en)
+        && !q67Aff.addAffiliation(authorID: q67AffID, language: .cn)
+        && q67Aff3.count == 1
+        && q67Aff3[0].contains("中文单位已到 3 行上限")
+        && q67Aff3[0].contains("合并写到一行")
+        && q67Aff3[0].contains("脚注"),
+      "hints2=\(q67Aff2) hints3=\(q67Aff3)")
+
+check("q67-ui-single-entry",
+      "ConvertTab 接线路由：唯一判据 entryMode → 普通渲染表单 / 两段式渲染内联兜底；"
+        + "入口旁常驻上限说明；两段式「人工元数据表单不适用」说明与已填表单不下传提醒；"
+        + "只扫描也有不下传日志（不静默）",
+      q63TabSrc.contains("MetadataForm.entryMode(scanOnly: false, coop: model.options.coop)")
+        && q63TabSrc.contains("metadataFormSection")
+        && q63TabSrc.contains("coopMetadataFallbackSection")
+        && q63TabSrc.contains("MetadataForm.limitSummary")
+        && q63TabSrc.contains("人工元数据表单不适用")
+        && q63TabSrc.contains("已填表单")
+        && q63TabSrc.contains("只扫描源稿不产出交付物，本次不下传人工填写内容"),
+      "entry=\(q63TabSrc.contains("MetadataForm.entryMode")) fallback=\(q63TabSrc.contains("coopMetadataFallbackSection"))")
+
+check("q67-ui-sheet-limits",
+      "表单内上限交互：作者区/单位行显示计数与常驻上限说明；达限时橙色可操作提示 + 按钮 help（无需猜原因）",
+      q63bSheetSrc.contains("MetadataForm.limitSummary")
+        && q63bSheetSrc.contains("reachedAuthorLimit")
+        && q63bSheetSrc.contains("MetadataForm.authorLimitHint()")
+        && q63bSheetSrc.contains("reachedAffiliationLimit")
+        && q63bSheetSrc.contains("MetadataForm.affiliationLimitHint(")
+        && q63bSheetSrc.contains(".help("),
+      "len=\(q63bSheetSrc.count)")
+
+check("q67-argv-default-zero-change",
+      "B-017 默认路径零变化：不填任何输入时 argv 仍 = [--compile, --clean]（无 --metadata-json / 无 7 覆盖参数），"
+        + "Options() 的 7 个内联字段全空",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"]
+        && !ConvertFeature.arguments(ConvertFeature.Options()).contains("--metadata-json")
+        && ConvertFeature.Options().titleCn.isEmpty
+        && ConvertFeature.Options().abstractEn.isEmpty,
+      "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
 
 // ═══════════════════════════════════════════════════════════════════════════
 // (p) 第 55 批：暂存目录发现（只读 `_AI协同状态.json`）+ 建议摘要

@@ -34,6 +34,90 @@ struct MetadataForm: Equatable {
     /// 与引擎对齐的 JSON schema 版本。
     static let schemaVersion = 1
 
+    // MARK: - B-017：单一元数据入口路由（View 只按它分支，不写第二份判据）
+
+    /// 初排页人工元数据入口的**唯一**路由结果。
+    ///
+    /// - `formOnly`：只显示「填写元数据…」表单。普通转换（`coop == false`）走这里；
+    ///   「只扫描源稿」也按普通处理（引擎 `--scan` 在消费 overrides 之前就 `return 0`，
+    ///   人工元数据对它没有意义，入口不因此消失——扫描只是当次动作）。
+    /// - `inlineFallback`：表单不适用，显示旧「正文信息覆盖」7 内联字段兜底。
+    ///   两段式协同走这里：引擎对 `--metadata-json` + 协同**明确 exit 2**（批63b v1 不支持）。
+    enum MetadataEntryMode: Equatable {
+        case formOnly
+        case inlineFallback
+    }
+
+    /// 本次运行的入口路由；与 `ConvertFeature.arguments()` 的
+    /// `let coop = o.scanOnly ? .off : o.coopPhase` 同口径（只扫描时协同被忽略）。
+    static func entryMode(scanOnly: Bool, coop: Bool) -> MetadataEntryMode {
+        (coop && !scanOnly) ? .inlineFallback : .formOnly
+    }
+
+    // MARK: - B-017：模板上限说明与达限提示（纯逻辑；界面与日志共用这一份文案）
+
+    /// 常驻上限说明之一：作者上限 = 模板**硬槽位**（不是可调设置）。
+    static let authorLimitSummary =
+        "作者上限 \(maxAuthors) 位：模板只有 \\myfirstauthor…\\myfifthauthor 五个槽位，"
+        + "不是可调设置。"
+    /// 常驻上限说明之二：单位行数 = 版式容量。
+    static let affiliationLimitSummary =
+        "单位上限：每位作者每种语言最多 \(maxAffiliationsPerLanguage) 行"
+        + "（模板版式容量，第 \(maxAffiliationsPerLanguage + 1) 行起会溢版）。"
+    /// 入口旁/表单内的一行式常驻说明。
+    static let limitSummary = authorLimitSummary + affiliationLimitSummary
+
+    /// 作者槽位是否已满（`addAuthor` 会被拒；界面据此显示可操作提示）。
+    var reachedAuthorLimit: Bool { authors.count >= Self.maxAuthors }
+
+    /// 某位作者某种语言的单位行是否已满（`addAffiliation` 会被拒；界面据此显示提示）。
+    func reachedAffiliationLimit(authorIndex: Int,
+                                 language: AffiliationLanguage) -> Bool {
+        guard authorIndex >= 0, authorIndex < authors.count else { return false }
+        switch language {
+        case .cn: return authors[authorIndex].affiliationsCN.count
+            >= Self.maxAffiliationsPerLanguage
+        case .en: return authors[authorIndex].affiliationsEN.count
+            >= Self.maxAffiliationsPerLanguage
+        }
+    }
+
+    /// 作者达限时的可操作提示（`reachedAuthorLimit == true` 时显示）。
+    static func authorLimitHint() -> String {
+        "作者已达模板上限 \(maxAuthors) 位：第 \(maxAuthors + 1) 位没有槽位。"
+            + "请先删掉空作者行；确需更多署名请合并同单位作者，"
+            + "或把补充信息移到正文致谢/前言（模板按连续作者数排版）。"
+    }
+
+    /// 单位达限时的可操作提示（`reachedAffiliationLimit == true` 时显示）。
+    static func affiliationLimitHint(authorIndex: Int,
+                                     language: AffiliationLanguage) -> String {
+        let lang = language == .cn ? "中文" : "英文"
+        return "第 \(authorIndex + 1) 位作者的\(lang)单位已到 "
+            + "\(maxAffiliationsPerLanguage) 行上限：第 "
+            + "\(maxAffiliationsPerLanguage + 1) 行起会溢版。"
+            + "请删掉空行，或把多个单位合并写到一行（也可移入脚注）。"
+    }
+
+    /// 全部达限提示（空数组 = 未达上限）。给测试/日志用；界面按上面两个判据就地取。
+    ///
+    /// 为什么单独于 `warnings()`：上限不是「内容有问题」（不阻断、不出橙色告警），
+    /// 而是**模板/版式硬约束**；这里给的是「接下来能怎么做」，不是错误清单。
+    /// 计数包含空行（加行按钮按槽位拦住），所以文案同时提示「先删空行」。
+    func limitHints() -> [String] {
+        var out: [String] = []
+        if reachedAuthorLimit {
+            out.append(Self.authorLimitHint())
+        }
+        for i in authors.indices {
+            for language in AffiliationLanguage.allCases
+            where reachedAffiliationLimit(authorIndex: i, language: language) {
+                out.append(Self.affiliationLimitHint(authorIndex: i, language: language))
+            }
+        }
+        return out
+    }
+
     // MARK: - 子模型
 
     struct Affiliation: Identifiable, Equatable {

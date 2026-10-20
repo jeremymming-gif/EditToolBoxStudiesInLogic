@@ -174,7 +174,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**248 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-20 18:46:39`；`HEAD` = `215a361`；`git status --porcelain` **19** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-20 22:51:38`；`HEAD` = `8a4ab36`；`git status --porcelain` **8** 行
 <!-- AUTO:STATE:END -->
 
 ---

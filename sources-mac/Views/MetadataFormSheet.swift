@@ -109,25 +109,45 @@ struct MetadataFormSheet: View {
 
     private var authorsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                sectionTitle("作者（1–\(MetadataForm.maxAuthors) 位）")
-                Spacer()
-                Button {
-                    _ = form.addAuthor()
-                } label: {
-                    Label("添加作者", systemImage: "plus.circle")
-                }
-                .disabled(form.authors.count >= MetadataForm.maxAuthors)
-            }
+            authorsHeader
+            Text(MetadataForm.limitSummary)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(form.authors.indices, id: \.self) { index in
                 authorCard(index: index)
             }
-            if form.authors.count >= MetadataForm.maxAuthors {
-                Text("已达模板作者槽位上限 \(MetadataForm.maxAuthors) 位。")
+            if form.reachedAuthorLimit {
+                Text(MetadataForm.authorLimitHint())
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var authorsHeader: some View {
+        HStack {
+            sectionTitle("作者（最多 \(MetadataForm.maxAuthors) 位）")
+            Text("\(form.authors.count)/\(MetadataForm.maxAuthors)")
+                .font(.caption2)
+                .foregroundStyle(form.reachedAuthorLimit ? .orange : .secondary)
+            Spacer()
+            addAuthorButton
+        }
+    }
+
+    private var addAuthorButton: some View {
+        Button {
+            _ = form.addAuthor()
+        } label: {
+            Label("添加作者", systemImage: "plus.circle")
+        }
+        .disabled(form.reachedAuthorLimit)
+        // 达限时鼠标悬停给出原因与降级建议（按钮已灰，不点也看得到为什么）。
+        .help(form.reachedAuthorLimit
+              ? MetadataForm.authorLimitHint()
+              : "作者最多 \(MetadataForm.maxAuthors) 位（模板槽位上限）")
     }
 
     private func authorCard(index: Int) -> some View {
@@ -171,9 +191,14 @@ struct MetadataFormSheet: View {
         let placeholder = language == .cn
             ? "如：中山大学逻辑与认知研究所"
             : "如：Institute of Logic and Cognition, Sun Yat-sen University"
+        let reached = form.reachedAffiliationLimit(authorIndex: index, language: language)
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title).font(.caption).foregroundStyle(.secondary)
+                Text("\(affiliationCount(index: index, language: language))"
+                     + "/\(MetadataForm.maxAffiliationsPerLanguage)")
+                    .font(.caption2)
+                    .foregroundStyle(reached ? .orange : .secondary)
                 Spacer()
                 Button {
                     _ = form.addAffiliation(authorID: form.authors[index].id, language: language)
@@ -182,8 +207,10 @@ struct MetadataFormSheet: View {
                 }
                 .buttonStyle(.borderless)
                 .font(.caption)
-                .disabled(affiliationCount(index: index, language: language)
-                          >= MetadataForm.maxAffiliationsPerLanguage)
+                .disabled(reached)
+                .help(reached
+                      ? MetadataForm.affiliationLimitHint(authorIndex: index, language: language)
+                      : "每位作者每种语言最多 \(MetadataForm.maxAffiliationsPerLanguage) 行单位")
             }
             ForEach(affiliationIDs(index: index, language: language), id: \.self) { affID in
                 HStack(spacing: 8) {
@@ -199,6 +226,12 @@ struct MetadataFormSheet: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
                 }
+            }
+            if reached {
+                Text(MetadataForm.affiliationLimitHint(authorIndex: index, language: language))
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.leading, 6)
