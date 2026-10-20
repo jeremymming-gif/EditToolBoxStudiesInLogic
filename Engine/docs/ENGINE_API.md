@@ -50,7 +50,8 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 |---|---|
 | `--source` | **必填**。`.docx` / `.doc` / `.tex` |
 | `--out` | **必填**。产物写到 `<out>/<作者名>/` |
-| `--metadata` | LaTeX 多源合并的元数据源；**Word 源**时指到 `.docx` 会被当「英文元数据第二源」（第 76 条，行为不变）。**第 63 批 E2**：**仅 LaTeX 通道**的 `--metadata` 支持 `.tex` / `.docx`（`.docx` → Word 解析器提取题名/作者/单位/邮箱/摘要/关键词 → 临时 `.tex`；多作者只填第一作者槽位；不承诺 Word→LaTeX 全文转换、不搬前言依赖；0 字段/坏 docx/未知二进制 → exit 2）；老式 `.doc` → exit 2 提示另存（Mac GUI 先转临时 `.docx`）；**两段式 + Word 元数据文件 → exit 2**。`.tex`/无元数据逐字节不变。详见下「元数据文件契约」 |
+| `--metadata` | 元数据文件（上一轮模板稿等）。**第 63b 批起元数据推荐路线 = GUI「填写元数据…」表单 → `--metadata-json`**；**`.doc/.docx` 自动元数据识别已取消**（B2 方案回退、GUI 入口撤下）。**Word 源**指到 `.docx` 仍当「英文元数据第二源」（第 76 条，行为不变）。**第 63 批 E2 的 `.docx` 能力保留、但降级为高级兜底**：**仅 LaTeX 通道**支持 `.tex` / `.docx`（`.docx` → Word 解析器提取题名/作者/单位/邮箱/摘要/关键词 → 临时 `.tex`；多作者只填第一作者槽位；不承诺 Word→LaTeX 全文转换、不搬前言依赖；0 字段/坏 docx/未知二进制 → exit 2）；**`.docx` = CLI 高级、GUI 不提供、不推荐**；老式 `.doc` 任何通道都不再转换（直接给 → exit 2 提示另存 `.docx`/`.tex`；第 63b 批起 GUI 的 `textutil` 转换已撤）；**两段式 + Word 元数据文件 → exit 2**。`.tex`/无元数据逐字节不变。详见下「元数据文件契约」 |
+| `--metadata-json` | **第 63b 批（GUI 人工元数据）**：结构化 JSON 文件（多作者 1–5 / 每位多单位 / 中英题名摘要关键词 / 邮箱），供 GUI「填写元数据…」表单下传，也是 CLI 高级入口。**优先级最高**（> 旧 7 个覆盖参数 > `--metadata` 元数据文件）；空值不覆盖、缺字段仍写「【未识别…】」占位；坏 JSON/文件不存在/类型错/作者 >5/作者跳号/两段式同用 → **exit 2 且不产生产物**；不传时产物/argv/stdout 与批 63 逐字节相同。结构/映射/错误清单见下「`--metadata-json` 契约」 |
 | `--refs` / `--bib` / `--name` / `--author` / `--lang` / `--sty` / `--skeleton` | 见 `convert.py --help`。⚠️ 第 134 条起 `--refs` 的自动发现改保守：**有真 `.bib`**（`--bib` / 源内 `\addbibresource` / `\bibliography` 指向且文件存在 / 同目录 `.bib`）时**不自动合并**附件（要合并请显式 `--refs`）；无真 bib 时自动挑候选（真 BibTeX 优先，文本清单须过结构校验：拒 `\href{...}` / 相邻 `}{` / 疑似一行两条），日志逐条写「采用 / 跳过 + 原因」 |
 | `--vol --issue --year --pages --received --editor --grants` | 编辑侧出版信息，不填就留模板默认值 |
 | `--compile` `--clean` `--source-pdf` | 编译出 PDF / 清中间文件 / 导出原稿 PDF（供矢量形状截图） |
@@ -65,15 +66,90 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--coop-fulltext {context,full}` | 第 59 批，可选、**默认关**；第 63 批起**取消 4 万/8 万字符截断**。只配合 `--coop-taskbook-only`：第一段任务书在「附二」后追加「附三、正文全文/引用上下文」；`context` = 引用/脚注锚点前后各 300 字窗口合并、`full` = 正文全文，**整篇写入、不再截断**（保留体积估算/超长提示）。只写本机任务书（软件零上传），不新增改正文类建议；其他组合退出 2。见下方「两段式协同 argv 契约」 |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
 
-**元数据文件（`--metadata`）契约（第 63 批 E2，给外壳与脚本用）**：**仅 LaTeX 通道**（`.tex` 源）。
+**元数据文件（`--metadata`）契约（第 63 批 E2；第 63b 批降级为高级兜底）**：
+
+> **第 63b 批口径修订（用户 2026-10-20 拍板）**：**元数据推荐路线 = GUI 人工填写**（初排页「填写元数据…」→
+> `--metadata-json`，契约见下）。**`.doc/.docx` 自动元数据识别已取消**（B2 方案回退：用户真测两例 Word 稿均
+> 未识别出元数据）；Mac GUI 的 `.doc/.docx` 元数据入口与 `.doc→.docx` 的 `textutil` 转换已撤下。
+> 引擎侧 `.docx` 通道**保留**（不改代码、不删既有能力），但用途降级为 **CLI 高级兜底、GUI 不提供、不推荐**；
+> `.tex` 元数据文件保留为高级兜底。下文 `.docx` 细节仍然成立（面向 CLI/脚本）。
+
+**仅 LaTeX 通道**（`.tex` 源）。
 `.docx` → 用 Word 通道解析器提取题名/作者/单位/邮箱/摘要/关键词（中英都取）→ 按目标模板语种合成
 **临时 `.tex`**（只写 `\my*` 元数据宏，`atexit` 清理）；stdout 打
 `元数据源（Word）  <abs>` / `  提取字段 N 个：…` / `  临时 .tex：<path>（运行结束自动清理）`。
 **多作者只填第一作者槽位**（`myfirstauthor`）；**只取元数据，不做 Word→LaTeX 全文转换、不搬前言依赖**。
 错误一律 exit 2（`die()`，stderr）：提取 0 字段 / `.docx` 损坏或不是有效 Word / 未知二进制文件 / 老式 `.doc`
-（提示另存 `.docx`/`.tex`，Mac GUI 会自动转）/ **两段式（`--coop-taskbook-only`/`--coop-replies`）+ Word 元数据文件**
+（提示另存 `.docx`/`.tex`；第 63b 批起 GUI 不再自动转 `.doc`）/ **两段式（`--coop-taskbook-only`/`--coop-replies`）+ Word 元数据文件**
 （临时文件无法跨进程复用；改用 `.tex` 元数据或先跑普通转换）。`.tex` 元数据 / 不给 `--metadata` → 与批62
 逐字节相同；Word 源 + `.docx` 英文第二源（第 76 条）不变。GUI↔CLI 见下。
+
+
+**`--metadata-json` 契约（第 63b 批，GUI 人工元数据；给外壳与脚本用）**：
+
+`--metadata-json <file>` 读一个 **UTF-8（可带 BOM）JSON 文件**，把人工填写的元数据写进产物（`.tex` 的 `\my*` 宏；
+Word 通道同样生效）。这是 GUI「填写元数据…」表单的下传方式，也是 CLI 高级入口。JSON 文件引擎**只读**，
+不改不删（临时文件由 GUI 自己清理）。
+
+结构（**全部可选；空串/空数组/缺键 = 未提供 = 不覆盖**）：
+
+```json
+{"schema_version": 1,
+ "title_cn": "", "title_en": "",
+ "running_title_cn": "", "running_title_en": "",
+ "abstract_cn": "", "abstract_en": "",
+ "keywords_cn": "", "keywords_en": "",
+ "authors": [{"name_cn": "", "name_en": "",
+              "affiliations_cn": ["", ""], "affiliations_en": ["", ""],
+              "email": ""}]}
+```
+
+**归一化与校验**：
+
+- 顶层必须是对象；`title_*` / `running_title_*` / `abstract_*` / `keywords_*` 必须是字符串；缺省 / `null` = 未提供；
+  空白串折叠后为空 = 未提供（**不会用空值覆盖**自动解析结果）。
+- `authors` 必须是数组（可省略）；每项是对象，`name_cn` / `name_en` / `email` 为字符串；
+  `affiliations_*` 为**字符串或字符串数组**（数组逐项去空白、丢空项；多单位由引擎用 `\\` 拼接，见映射表）。
+- **作者 1–5 位**（模板 `myfirstauthor…myfifthauthor` 上限）：数组**尾部空作者**由引擎丢弃；
+  **中间空作者 → exit 2**（槽位不能跳号，否则模板按连续作者数选排版分支、后面作者不落版）；
+  **>5 位 → exit 2**（不静默截断）。
+- `schema_version` 不是 1 → warning 后**仍按 1 解析**；未知键 → warning（列出键名、本次忽略），不报错。
+- 全部字段为空 / 没有可写作者 → warning「没有可写入的字段 / 作者（按未提供处理）」，产物与不传该参数一致。
+- 文件不存在 / 不可读 / JSON 语法错（报 `文件:行:列`）/ 顶层不是对象 / 字段类型错（报路径，如
+  `authors[1].affiliations_cn 必须是字符串数组`）→ **exit 2，不产生产物目录**。
+- **两段式协同（`--coop-taskbook-only` / `--coop-replies`）+ `--metadata-json` → exit 2**（v1 不支持：
+  第二段按暂存状态重跑，JSON 无法跨进程保留）。
+
+**映射（`is_en = "mytitleCN" in tpl_fields`，与 `build.py` 现有分流同源）**：
+
+| JSON | CN 模板（中文稿）落点 | EN 模板（英文稿）落点 |
+|---|---|---|
+| `title_cn` / `title_en` | `mytitle` / `mytitleEN` | `mytitleCN` / `mytitle` |
+| `abstract_cn` / `abstract_en` | `myabstract` / `myabstractEN` | `myabstractCN` / `myabstract` |
+| `keywords_cn` | `mykeywords` | 无槽位 → warning「英文模板无关键词字段，关键词需人工放置」 |
+| `keywords_en` | 无槽位 → warning（中文模板无英文关键词槽） | 无槽位 → warning（英文模板全篇无关键词槽位） |
+| `running_title_cn` / `_en` | `myrunningtitle`（缺省 = 主语言标题首行） | 同左（缺省 = `title_en` 首行） |
+| `authors[i].name_cn` | i=0 `myfirstauthor`（带 `\kaishu ` 前缀）；i≥1 `my{second…fifth}author` | i=0 `myfirstauthorCN`；i≥1 `my{…}authorCN` |
+| `authors[i].name_en` | i=0 `myfirstauthorEN`；i≥1 `my{…}authorEN` | i=0 `myfirstauthor`；i≥1 `my{…}author` |
+| `authors[i].affiliations_cn[]` | i=0 `myfirstaffiliation`；i≥1 `my{…}affiliation`（`\\` 连接） | i=0 `myfirstaffiliationCN`；i≥1 `my{…}affiliationCN` |
+| `authors[i].affiliations_en[]` | i=0 `myfirstaffiliationEN`；i≥1 `my{…}affiliationEN` | i=0 `myfirstaffiliation`；i≥1 `my{…}affiliation` |
+| `authors[i].email` | `my{first…fifth}email`（中英页共用） | 同左 |
+
+补充口径：
+
+- **转义**：题名/摘要/关键词折叠空白后转义 `& % $ # _ { } ~ ^ \`；单位逐项转义后按 `\\` 连接（首尾不留 `\\`）。
+- **缺字段仍占位**：声明了某作者但缺该语言姓名/单位/邮箱时，对该作者**模板里存在的槽位**写
+  `【未识别：…，请手工填写】`（与自动解析的占位文案同源）；EN 模板的 `my<N>authorCN/affiliationCN` 补充占位
+  **只在给了本参数时**生效（默认路径不动）。
+- **优先级（低→高）**：源稿解析 < `--metadata` 元数据文件（含 Word 元数据/英文第二源）< 旧 7 个覆盖参数
+  < **`--metadata-json`**。同时给旧覆盖参数与本参数时，重复字段以本参数为准（warning 列出字段）；
+  本参数作者数少于源稿解析出的作者槽位时**不清空**未声明槽位，只 warning「源稿/元数据里还有第 N 位作者槽位」。
+- **输出名/作者名推导不变**（仍看 `--source` / `--name` / `--author`）；JSON 只影响产物字段。
+- **stdout**：convert 层多一行 `人工元数据（--metadata-json）：N 位作者、M 项输入字段[（优先于 --metadata 元数据文件[；重复字段以本参数为准]）]`；
+  build 层多一行 `人工元数据：写入 N 位作者 / X 个模板字段`；未知键/关键词无处落版等走 `⚠`。
+- **默认零变化**：不传 `--metadata-json` 时产物/argv/stdout 与批 63 **逐字节相同**（JSON 全空同样按未提供处理）。
+- **新旧引擎错配**：新 GUI + 旧引擎会因 argparse 不认识 `--metadata-json` 直接 **exit 2**（`unrecognized arguments`）——
+  官方 App 包内引擎与仓库一致时不会遇到（GUI 侧不做 `--help` 探测）。
 
 **GUI 契约（第 62 批入口收敛 B）**：初排页移除独立「生成/出文献核实任务书」勾选，普通初排默认 argv 不含
 `--verify-refs`（**不再默认生成 `<Name>_文献核实.md`**）；需要任务书 → 两段式第一段，或 CLI `--verify-refs`（高级）。
@@ -82,11 +158,26 @@ Windows 新增显式「用 AI 处理参考文献（直连 API，会产生费用�
 CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/比对报告查看器（高级：手动并回，离线）」，侧栏短名不变）
 仍调用独立的 `checkbib.py`，能力全保留。
 
-**GUI↔CLI 契约（第 63 批）**：Mac「设置」页「API 核查字符上限」→ `--llm-fulltext-max-chars N`（默认 40000，0 = 不限；
-与默认相同则两壳都不拼）；「全文核查结果自动应用」→ 开 = 不拼（引擎默认开）/ 关 = `--no-llm-fulltext-apply`。
-初排页「高级选项」整行/文字可点（B1，纯 UI、不改 argv）；「元数据文件」选择器支持 `.tex` / `.doc` / `.docx`（B2）：
-`.doc` 由 Mac GUI 用 macOS 自带 `textutil` 先转成临时 `.docx` 再传 `--metadata`（原文件不动；**CLI 直接传 `.doc` 引擎 exit 2**）；**两段式 + Word 元数据文件 → exit 2**（临时文件无法跨进程复用），两段式请用 `.tex` 元数据。
-默认路径零变化：不加 `--llm-fulltext` 且两栏保持默认时，argv/产物/stdout 与批62 逐字节相同。
+**GUI↔CLI 契约（第 63 批，第 63b 批修订）**：Mac「设置」页「API 核查字符上限」→ `--llm-fulltext-max-chars N`（默认 40000，
+0 = 不限；与默认相同则两壳都不拼）；「全文核查结果自动应用」→ 开 = 不拼（引擎默认开）/ 关 = `--no-llm-fulltext-apply`。
+初排页「高级选项」整行/文字可点（B1，纯 UI、不改 argv）。
+
+**元数据 GUI↔CLI（第 63b 批）**：
+
+- **推荐路线 =「填写元数据…」表单**：初排页「高级选项」内按钮 → sheet（中英文题名 / 多行中英文摘要 / 中英文关键词；
+  作者 1–5，每位中英文姓名 + 邮箱 + 单位 CN/EN 动态行）。表单非空 → GUI 写临时 JSON
+  `/tmp/slcn_metadata_<源稿名>_<时间戳>_<pid>.json` → `--metadata-json`；**运行结束（含失败/取消）即删**；
+  表单全空 → 不建文件、不传参（默认 argv 逐字节不变）。GUI 日志先打 `元数据：将写入 N 位作者 / M 项字段（…）`
+  （与引擎的 `人工元数据  …` 行不同层）。
+- **表单优先**：表单激活时内联 7 个覆盖字段置灰，且 GUI 对表单**已填的同名字段**逐字段清零、不再拼旧参数
+  （同一字段只有一个来源）；`.tex` 元数据文件优先级低于表单（引擎按 `--metadata-json` 最高处理并 warning 说明）。
+- **`.doc/.docx` 自动识别已撤下**：LaTeX 源的「元数据文件」**只接受 `.tex`**（picker 显示 `.tex`/`.docx`；选中/拖入
+  `.docx` 等其它类型时界面立即拦下、写日志并清空该路径）；**Word 源 `.docx` 的「英文元数据第二源」
+  （第 76 条）行为不变**，可显式指定；`.doc` 不再转临时 `.docx`（提示另存 `.docx`）。CLI 高级兜底见上「元数据文件契约」。
+- **两段式协同 v1 不支持人工元数据**：协同模式下「填写元数据…」按钮禁用、运行时不传 `--metadata-json` 并写日志
+  （引擎对二者同用也明确 exit 2）；请改用普通转换或 `.tex` 元数据文件。
+- **本次运行有效**：表单值不持久化（只在当前 App 会话内存里）；不改变默认路径。
+默认路径零变化：不加 `--llm-fulltext`、两栏保持默认、表单全空且元数据文件留空时，argv/产物/stdout 与批 63 逐字节相同。
 
 **退出码**：`0` = 成功；`2` = 用法/IO/致命错误（`die()`，消息在 **stderr**）。
 **没有 1**：中途某一步失败也算失败，一律 2 —— 外壳判「成功」只看 `0`。
@@ -119,6 +210,7 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 | 行首 `   引用库：` | **引用库查库统计**（第 129 条）：`引用库：命中 X 条已核实（跳过检索+AI）、候选 Y、未命中 Z（库 n 条，<path>）`。只在执行核实且启用查库时出现；`--no-bibdb` / 库缺失时不出现（老外壳不受影响） |
 | 行首 `   全文复核（` / `   🤖 AI 全文复核` | **直连 API 全文核查（第 60 批，`--llm-fulltext`，默认关；第 63 批起默认自动应用）**：跑前打「正文 N 字 → M 片；预计 X 次调用 / Y tokens」，跑完打「N 条建议 / M 次请求、K 片不可用」+ 自动应用逐条记录；产物 `<名>_AI全文复核.md`；第 63 批起通过批57安全闸的 BIB/META/FN **默认写入产物**（`--no-llm-fulltext-apply` 关）；单片失败 fail-soft（退出码 0）；预算超限 / 未配置端点 → 退出 2、零请求 |
 | 行首 `   引用库比对：` | **初排默认只读比对**（第 58 批）：未执行核实时，默认库存在且产物 bib 有条目时打一行 `引用库比对：命中 X / 候选 Y / 未命中 Z（只读，不改产物）`；无库/无 bib/读库失败静默；`--no-bibdb-verify` / `--no-bibdb` 关闭。只增这一行，产物/任务书不变 |
+| 行首 `人工元数据（--metadata-json）：` / `   人工元数据：` | **人工元数据（第 63b 批）**：给了 `--metadata-json` 才出现。convert 层：`人工元数据（--metadata-json）：N 位作者、M 项输入字段[（优先于 --metadata 元数据文件[；重复字段以本参数为准]）]`；build 层：`人工元数据：写入 N 位作者 / X 个模板字段`。未知键/关键词无处落版/作者槽位少于源稿等提示走 `⚠`。不给该参数时 stdout 与批 63 逐字节相同 |
 | 行首 `   本地支撑文件：` | **定义位置加固**（第 130 条，仅 LaTeX 通道）：本次读了哪些本地 `.cls` / `.sty` / `.def` / `.cfg`（作者稿同目录）。Word 通道不出现 |
 | 行首 `   本地旧模板 .sty（源目录有同名文件` | **本地非标准命名旧模板**（第 130 条补丁）：该 `\usepackage` 的包行**不迁**（模板负责顶部加载），文件按支撑文件差集搬定义 |
 | 行首 `   计数器迁移 N 个：` | **`\newcounter` 迁移**（第 130 条补丁）：只在「正文或已迁移定义体用到」时搬；先于用它的环境定义 |
@@ -378,6 +470,8 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 ## 十、兼容性纪律（改引擎时自查）
 
 1. **只增不改**：新增参数必须带默认值；不改既有参数的默认行为。
+   例：**`--metadata-json`（第 63b 批）**不传时产物/argv/stdout 与批 63 逐字节相同；
+   老外壳不传它也能跑（只是用不上人工填写的元数据）。
    ⚠️ **唯一的故意例外**（第 128 条，2026-10-18，用户拍板的成本闸门）：`--verify-refs` 的
    **核实范围**从「全量」改成「正文引用到的条目」（`--verify-all-refs` 显式恢复全量，
    `--verify-max` 控上限）。这不属于接口漂移：转换产物（`.tex` / `reference.bib`）**逐字节

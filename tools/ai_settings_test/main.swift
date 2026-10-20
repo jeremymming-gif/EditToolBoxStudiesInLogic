@@ -2410,26 +2410,6 @@ check("q63-settings-clear", "留空 = 删键回默认（不存空串）；自动
       "maxChars=\(q63bCleared.fulltextMaxCharsText) apply=\(q63bCleared.fulltextAutoApply)")
 q63Defaults.removePersistentDomain(forName: q63Suite)
 
-// ── B2：元数据 .doc → 临时 .docx（纯判定/路径；textutil 调用在 GUI 层）
-let q63DocPath = "/Users/x/元数据.doc"
-let q63Plan = ConvertFeature.metadataConversionPlan(q63DocPath, temporaryDirectory: "/tmp/q63")
-check("q63-b2-doc-plan", ".doc → 生成临时 .docx 计划；textutil 参数固定（原文件不动）",
-      q63Plan != nil
-        && q63Plan?.source == q63DocPath
-        && q63Plan?.output == "/tmp/q63/slcn_metadata_元数据.docx"
-        && (q63Plan?.textutilArguments ?? []) == ["-convert", "docx", "-output",
-                                                  "/tmp/q63/slcn_metadata_元数据.docx", q63DocPath],
-      "plan=\(String(describing: q63Plan))")
-check("q63-b2-doc-upper", ".DOC 大写同样识别（pathExtension 大小写不敏感）",
-      ConvertFeature.metadataConversionPlan("A.DOC", temporaryDirectory: "/tmp/q63") != nil,
-      "upper=\(String(describing: ConvertFeature.metadataConversionPlan("A.DOC", temporaryDirectory: "/tmp/q63")))")
-check("q63-b2-passthrough", ".docx / .tex / 空路径 / 无扩展名 一律透传（nil = 不转换）",
-      ConvertFeature.metadataConversionPlan("a.docx", temporaryDirectory: "/tmp/q63") == nil
-        && ConvertFeature.metadataConversionPlan("a.tex", temporaryDirectory: "/tmp/q63") == nil
-        && ConvertFeature.metadataConversionPlan("", temporaryDirectory: "/tmp/q63") == nil
-        && ConvertFeature.metadataConversionPlan("noext", temporaryDirectory: "/tmp/q63") == nil,
-      "ok")
-
 // ── 源码级接线（不依赖窗口手点；屏幕锁定时作为等价证据）
 let q63TabSrc = readSrc("Views/ConvertTab.swift")
 let q63ConvSrc = readSrc("Features/ConvertFeature.swift")
@@ -2442,14 +2422,6 @@ check("q63-b1-hit-area", "B1：高级选项换成整行 Button(.plain)（chevron
         && !q63TabSrc.contains("DisclosureGroup(\"高级选项\""),
       "toggle=\(q63TabSrc.contains("model.showAdvanced.toggle()")) "
         + "shape=\(q63TabSrc.contains(".contentShape(Rectangle())"))")
-check("q63-b2-ui-wiring", "B2：run() 里调 textutil 转 .doc；占位文案列出 .tex / .doc / .docx；跑完清理临时文件",
-      q63TabSrc.contains("metadataConversionPlan")
-        && q63TabSrc.contains("/usr/bin/textutil")
-        && q63TabSrc.contains(".doc 已转成临时 .docx")
-        && q63TabSrc.contains(".tex / .doc / .docx")
-        && q63TabSrc.contains("removeItem(atPath: temp)"),
-      "plan=\(q63TabSrc.contains("metadataConversionPlan")) "
-        + "textutil=\(q63TabSrc.contains("/usr/bin/textutil"))")
 check("q63-copy-no-limit", "批63 文案：外部 chat 不再写「约 4/8 万字上限」，改为不设上限",
       !q63ConvSrc.contains("约 4 万字上限") && !q63ConvSrc.contains("约 8 万字上限")
         && q63ConvSrc.contains("不设上限"),
@@ -2468,6 +2440,419 @@ check("q63-settings-ui", "设置页新增 aiFulltextSection：API 核查字符�
         && q63VmSrc.contains("llmFulltextAutoApply")
         && q63VmSrc.contains("llmFulltextMaxChars"),
       "section=\(q63SettingsSrc.contains("aiFulltextSection"))")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (q63b) 批63b：初排页人工元数据表单（多作者/多单位）→ 临时 JSON → --metadata-json
+//        + `.doc/.docx` 自动识别撤下（Word 源 .docx「第二源」既有能力保留）
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-q63b  批63b：人工元数据表单 / JSON / argv / 元数据文件三通道 / 临时文件")
+
+// ── 表单模型：默认空、作者/单位上限、首作者锁删
+var q63bF = MetadataForm()
+check("q63b-default-empty",
+      "空白表单：hasAnyValue=false、authors 恒 1 位（第一作者槽位）、jsonString=nil（不建文件不传参）",
+      !q63bF.hasAnyValue && q63bF.authors.count == 1 && q63bF.jsonString() == nil
+        && q63bF.authorCountForWrite == 0 && q63bF.filledFieldCount == 0
+        && MetadataForm.maxAuthors == 5 && MetadataForm.maxAffiliationsPerLanguage == 3,
+      "hasAny=\(q63bF.hasAnyValue) authors=\(q63bF.authors.count) "
+        + "json=\(String(describing: q63bF.jsonString()))")
+
+var q63bCap = MetadataForm()
+var q63bCapAdded = 0
+for _ in 0..<10 { if q63bCap.addAuthor() { q63bCapAdded += 1 } }
+check("q63b-author-cap",
+      "作者上限 5（模板槽位）：addAuthor 到 5 停，第 6 次返回 false 且数量不变",
+      q63bCapAdded == MetadataForm.maxAuthors - 1
+        && q63bCap.authors.count == MetadataForm.maxAuthors,
+      "added=\(q63bCapAdded) count=\(q63bCap.authors.count)")
+
+var q63bLock = MetadataForm()
+let q63bLockID = q63bLock.authors[0].id
+let q63bRmFirst = q63bLock.removeAuthor(at: 0)
+check("q63b-author-first-locked",
+      "第一位（第一作者）不可删：removeAuthor(0)=false 且身份不变（结构上保证「至少 1 位作者」）",
+      q63bRmFirst == false && q63bLock.authors.count == 1
+        && q63bLock.authors[0].id == q63bLockID,
+      "removed=\(q63bRmFirst) count=\(q63bLock.authors.count)")
+
+var q63bDel = MetadataForm()
+_ = q63bDel.addAuthor(); _ = q63bDel.addAuthor()
+q63bDel.authors[0].nameCN = "甲"; q63bDel.authors[1].nameCN = "乙"; q63bDel.authors[2].nameCN = "丙"
+let q63bRmMiddle = q63bDel.removeAuthor(at: 1)
+check("q63b-author-remove",
+      "删除追加作者：removeAuthor(1) 生效，后面的作者保持顺序/身份（不塌索引）",
+      q63bRmMiddle && q63bDel.authors.count == 2 && q63bDel.authors[1].nameCN == "丙",
+      "ok=\(q63bRmMiddle) names=\(q63bDel.authors.map(\.nameCN))")
+
+// ── 单位动态行：每种语言上限 3、可删、CN/EN 互不影响、纯空白视为空
+var q63bAff = MetadataForm()
+let q63bAffAuthor = q63bAff.authors[0].id
+var q63bAffAdded = 0
+for _ in 0..<10 { if q63bAff.addAffiliation(authorID: q63bAffAuthor, language: .cn) { q63bAffAdded += 1 } }
+check("q63b-aff-cap",
+      "单位行上限 3/语言：第 4 次 addAffiliation 被拒（防 PDF 溢版；引擎侧数组不设上限）",
+      q63bAffAdded == MetadataForm.maxAffiliationsPerLanguage
+        && q63bAff.authors[0].affiliationsCN.count == MetadataForm.maxAffiliationsPerLanguage,
+      "added=\(q63bAffAdded)")
+let q63bAffID = q63bAff.authors[0].affiliationsCN[1].id
+let q63bAffRemoved = q63bAff.removeAffiliation(authorID: q63bAffAuthor, language: .cn,
+                                              affiliationID: q63bAffID)
+check("q63b-aff-edit",
+      "单位动态行可删除；CN / EN 两个语言列表互不影响",
+      q63bAffRemoved && q63bAff.authors[0].affiliationsCN.count == 2
+        && q63bAff.authors[0].affiliationsEN.isEmpty,
+      "cn=\(q63bAff.authors[0].affiliationsCN.count) en=\(q63bAff.authors[0].affiliationsEN.count)")
+
+var q63bBlank = MetadataForm()
+q63bBlank.authors[0].nameCN = "张三"
+_ = q63bBlank.addAffiliation(authorID: q63bBlank.authors[0].id, language: .cn)
+_ = q63bBlank.addAffiliation(authorID: q63bBlank.authors[0].id, language: .en)
+q63bBlank.authors[0].affiliationsCN[0].text = "   "
+q63bBlank.authors[0].affiliationsEN[0].text = "\n"
+let q63bBlankJSON = q63bBlank.jsonString() ?? ""
+check("q63b-blank-trim",
+      "纯空白单位/姓名视为空：不出现在 JSON（空值=不覆盖），也不会让作者变「非空」",
+      !q63bBlankJSON.contains("affiliations_cn") && !q63bBlankJSON.contains("affiliations_en")
+        && q63bBlankJSON.contains("\"name_cn\":\"张三\"")
+        && (q63bBlank.jsonObject()?["authors"] as? [[String: Any]])?.count == 1,
+      "json=\(q63bBlankJSON)")
+
+// ── 空档/尾部空作者：压缩（引擎对「中间空作者」明确 exit 2，GUI 不产生空档）
+var q63bGap = MetadataForm()
+_ = q63bGap.addAuthor(); _ = q63bGap.addAuthor()
+q63bGap.authors[0].nameCN = "甲"
+q63bGap.authors[2].nameCN = "丙"
+let q63bGapAuthors = (q63bGap.jsonObject()?["authors"] as? [[String: Any]]) ?? []
+let q63bGapWarn = q63bGap.warnings()
+check("q63b-gap-compressed",
+      "空档作者压缩：中间全空作者被忽略，作者顺序 甲→丙 保持，并给 warning（引擎直传会 exit 2）",
+      q63bGapAuthors.count == 2
+        && (q63bGapAuthors.first?["name_cn"] as? String) == "甲"
+        && (q63bGapAuthors.last?["name_cn"] as? String) == "丙"
+        && q63bGapWarn.contains { $0.contains("第 2 位作者为空") },
+      "authors=\(q63bGapAuthors.count) warnings=\(q63bGapWarn)")
+
+var q63bTail = MetadataForm()
+_ = q63bTail.addAuthor()
+q63bTail.authors[0].nameCN = "甲"
+check("q63b-tail-empty",
+      "尾部空作者丢弃：JSON 只有 1 位作者，summaryLine 报「1 位作者」",
+      (q63bTail.jsonObject()?["authors"] as? [[String: Any]])?.count == 1
+        && q63bTail.authorCountForWrite == 1,
+      "N=\(q63bTail.authorCountForWrite)")
+
+// ── JSON schema（engine-core 定稿：schema_version + 平铺字段 + authors[]）
+var q63bFull = MetadataForm()
+q63bFull.titleCN = " 中文题名 "
+q63bFull.titleEN = "English Title"
+q63bFull.abstractCN = "摘要第一行\n摘要第二行"
+q63bFull.abstractEN = "Abstract body"
+q63bFull.keywordsCN = "逻辑；语义"
+q63bFull.keywordsEN = "logic; semantics"
+q63bFull.authors[0].nameCN = "张三"
+q63bFull.authors[0].nameEN = "Zhang San"
+q63bFull.authors[0].email = "zhang@example.com"
+_ = q63bFull.addAffiliation(authorID: q63bFull.authors[0].id, language: .cn)
+_ = q63bFull.addAffiliation(authorID: q63bFull.authors[0].id, language: .cn)
+_ = q63bFull.addAffiliation(authorID: q63bFull.authors[0].id, language: .en)
+q63bFull.authors[0].affiliationsCN[0].text = "中山大学逻辑与认知研究所"
+q63bFull.authors[0].affiliationsCN[1].text = "中山大学哲学系"
+q63bFull.authors[0].affiliationsEN[0].text = "Institute of Logic and Cognition, SYSU"
+let q63bFullText = q63bFull.jsonString() ?? ""
+let q63bFullObj = q63bFull.jsonObject() ?? [:]
+let q63bFullAuthors = (q63bFullObj["authors"] as? [[String: Any]]) ?? []
+let q63bFullA0 = q63bFullAuthors.first ?? [:]
+check("q63b-json-schema",
+      "JSON schema（engine-core 定稿）：schema_version=1 + 中英题名/摘要/关键词（已 trim）+ "
+        + "authors[{name_cn,name_en,affiliations_cn[],affiliations_en[],email}]",
+      (q63bFullObj["schema_version"] as? Int) == 1
+        && (q63bFullObj["title_cn"] as? String) == "中文题名"
+        && (q63bFullObj["title_en"] as? String) == "English Title"
+        && (q63bFullObj["abstract_cn"] as? String) == "摘要第一行\n摘要第二行"
+        && (q63bFullObj["abstract_en"] as? String) == "Abstract body"
+        && (q63bFullObj["keywords_cn"] as? String) == "逻辑；语义"
+        && (q63bFullObj["keywords_en"] as? String) == "logic; semantics"
+        && q63bFullAuthors.count == 1
+        && (q63bFullA0["name_cn"] as? String) == "张三"
+        && (q63bFullA0["name_en"] as? String) == "Zhang San"
+        && (q63bFullA0["email"] as? String) == "zhang@example.com"
+        && (q63bFullA0["affiliations_cn"] as? [String])
+            == ["中山大学逻辑与认知研究所", "中山大学哲学系"]
+        && (q63bFullA0["affiliations_en"] as? [String])
+            == ["Institute of Logic and Cognition, SYSU"],
+      "json=\(q63bFullText)")
+check("q63b-json-deterministic",
+      "同一表单两次 jsonString() 逐字节相同（.sortedKeys；断言/排障可复现）",
+      q63bFull.jsonString() == q63bFullText
+        && q63bFullText.contains("\"schema_version\":1"),
+      "len=\(q63bFullText.count)")
+
+var q63bMin = MetadataForm()
+q63bMin.titleCN = "只有题名"
+let q63bMinObj = q63bMin.jsonObject() ?? [:]
+check("q63b-json-omit-empty",
+      "空值=不覆盖：没填的键一律不出现（不写空串/空数组；authors 全空时连键都不写）",
+      q63bMinObj["authors"] == nil
+        && q63bMinObj["title_en"] == nil && q63bMinObj["abstract_cn"] == nil
+        && q63bMinObj["keywords_en"] == nil
+        && (q63bMinObj["schema_version"] as? Int) == 1,
+      "keys=\(q63bMinObj.keys.sorted())")
+
+var q63bEsc = MetadataForm()
+q63bEsc.titleCN = "引号「测试」与\"双引号\"及\\反斜杠"
+q63bEsc.abstractCN = "第一行\n第二行\t制表"
+let q63bEscText = q63bEsc.jsonString() ?? ""
+let q63bEscParsed = json(q63bEscText)
+check("q63b-json-escape",
+      "中文/引号/换行/制表符走 JSONSerialization 编码后可被标准 JSON 解析（不手拼字符串）",
+      (q63bEscParsed["title_cn"] as? String) == q63bEsc.titleCN
+        && (q63bEscParsed["abstract_cn"] as? String) == q63bEsc.abstractCN,
+      "parsed=\(q63bEscParsed.keys.sorted())")
+
+// ── 临时 JSON：命名 / 原子写盘 / 清理（含所有结束路径的清理由 ConvertTab.run 驱动）
+let q63bDir = "/tmp/q63b_swift_test"
+wipe(q63bDir); mkdir(q63bDir, 0o700)
+let q63bPath = MetadataForm.tempFilePath(directory: q63bDir, stem: "/x/张三 论文.docx",
+                                         timestamp: "20261020-183000", pid: 4242)
+check("q63b-temp-path",
+      "临时 JSON 命名：slcn_metadata_<源稿名>_<时间戳>_<pid>.json（中文保留、扩展名去掉）",
+      q63bPath == q63bDir + "/slcn_metadata_张三 论文_20261020-183000_4242.json",
+      "path=\(q63bPath)")
+let q63bPath2 = MetadataForm.tempFilePath(directory: q63bDir, stem: "目录/张三:论文.docx",
+                                          timestamp: "20261020-183001", pid: 4242)
+check("q63b-temp-path-sanitize",
+      "临时文件名去掉路径分隔符/冒号；两次（不同时间戳）不撞名",
+      q63bPath2 == q63bDir + "/slcn_metadata_张三_论文_20261020-183001_4242.json"
+        && q63bPath2 != q63bPath,
+      "path2=\(q63bPath2)")
+
+var q63bWrite = MetadataForm()
+q63bWrite.titleCN = "临时文件测试"
+var q63bWrote = false
+do { try q63bWrite.writeJSON(to: q63bPath); q63bWrote = true } catch { q63bWrote = false }
+let q63bJSONBack = json(rawFile(q63bPath))
+check("q63b-temp-write",
+      "临时 JSON 原子写入后磁盘上可解析（UTF-8），内容与 jsonObject 一致",
+      q63bWrote && exists(q63bPath) && (q63bJSONBack["title_cn"] as? String) == "临时文件测试",
+      "wrote=\(q63bWrote) exists=\(exists(q63bPath))")
+
+var q63bEmptyThrow = false
+do { try MetadataForm().writeJSON(to: q63bDir + "/should_not_exist.json") }
+catch { q63bEmptyThrow = true }
+check("q63b-temp-empty",
+      "空表单不写文件：writeJSON 抛 nothingToWrite（不会生成空 JSON / 空参数）",
+      q63bEmptyThrow && !exists(q63bDir + "/should_not_exist.json"),
+      "threw=\(q63bEmptyThrow)")
+
+MetadataForm.removeTemporaryFile(q63bPath)
+MetadataForm.removeTemporaryFile(q63bPath)   // 幂等
+MetadataForm.removeTemporaryFile("")         // 空路径不崩
+check("q63b-temp-cleanup",
+      "临时 JSON 清理：删除后不存在；重复清理 / 空路径都不崩（成功/失败/取消都走同一清理）",
+      !exists(q63bPath),
+      "exists=\(exists(q63bPath))")
+wipe(q63bDir)
+
+// ── 校验：只提示不阻断
+var q63bEmail = MetadataForm()
+q63bEmail.authors[0].nameCN = "张三"
+q63bEmail.authors[0].email = "bad@@example"
+let q63bEmailWarn = q63bEmail.warnings()
+check("q63b-validate-email",
+      "邮箱格式可疑：只 warning 不阻断（hasAnyValue 仍 true、JSON 里的值照写）",
+      q63bEmailWarn.contains { $0.contains("邮箱格式可疑") } && q63bEmail.hasAnyValue
+        && ((q63bEmail.jsonObject()?["authors"] as? [[String: Any]])?.first?["email"] as? String)
+            == "bad@@example",
+      "warnings=\(q63bEmailWarn)")
+
+var q63bEmailOK = MetadataForm()
+q63bEmailOK.authors[0].nameCN = "张三"
+q63bEmailOK.authors[0].email = "a@example.com"
+check("q63b-validate-email-ok",
+      "合法邮箱 / 空邮箱都不产生邮箱警告（姓名齐全时 warnings 为空）",
+      q63bEmailOK.warnings().isEmpty,
+      "warnings=\(q63bEmailOK.warnings())")
+
+var q63bNoName = MetadataForm()
+_ = q63bNoName.addAffiliation(authorID: q63bNoName.authors[0].id, language: .cn)
+q63bNoName.authors[0].affiliationsCN[0].text = "某大学"
+check("q63b-validate-noname",
+      "作者只有单位没有姓名：warning 提示补姓名（不阻断；引擎写占位）",
+      q63bNoName.warnings().contains { $0.contains("没有姓名") },
+      "warnings=\(q63bNoName.warnings())")
+
+var q63bNoAuthor = MetadataForm()
+q63bNoAuthor.titleCN = "只有标题"
+check("q63b-validate-noauthor",
+      "只填标题/摘要、不填作者：warning 说明作者仍由引擎解析；JSON 不写 authors 键",
+      q63bNoAuthor.warnings().contains { $0.contains("未填写作者") }
+        && q63bNoAuthor.jsonObject()?["authors"] == nil,
+      "warnings=\(q63bNoAuthor.warnings())")
+
+// ── 统计行（运行日志精确数字）：标题(1) + 作者1(姓名2+邮箱1+单位CN2+单位EN1=6) + 作者2(姓名CN 1) = 8
+var q63bSum = MetadataForm()
+q63bSum.titleCN = "题名"
+q63bSum.authors[0].nameCN = "张三"
+q63bSum.authors[0].nameEN = "Zhang San"
+q63bSum.authors[0].email = "z@e.cn"
+_ = q63bSum.addAffiliation(authorID: q63bSum.authors[0].id, language: .cn)
+_ = q63bSum.addAffiliation(authorID: q63bSum.authors[0].id, language: .cn)
+_ = q63bSum.addAffiliation(authorID: q63bSum.authors[0].id, language: .en)
+q63bSum.authors[0].affiliationsCN[0].text = "单位一"
+q63bSum.authors[0].affiliationsCN[1].text = "单位二"
+q63bSum.authors[0].affiliationsEN[0].text = "Aff 1"
+_ = q63bSum.addAuthor()
+q63bSum.authors[1].nameCN = "李四"
+check("q63b-summary",
+      "运行日志「将写入 N 位作者 / M 项字段」：N=2、M=8（纯函数，精确数字）",
+      q63bSum.summaryLine() == "将写入 2 位作者 / 8 项字段",
+      "line=\(q63bSum.summaryLine())")
+
+// ── 内联 7 覆盖字段：表单填了的字段才覆盖（GUI 逐字段清零的依据）
+check("q63b-inline-priority-model",
+      "表单优先判据：题目/第一作者姓名/单位/邮箱填了 → 对应内联字段清零；没填的（英文题名/摘要）不动",
+      q63bSum.coversInlineOverride(.titleCN)
+        && q63bSum.coversInlineOverride(.authorCN)
+        && q63bSum.coversInlineOverride(.affiliationCN)
+        && q63bSum.coversInlineOverride(.email)
+        && !q63bSum.coversInlineOverride(.titleEN)
+        && !q63bSum.coversInlineOverride(.abstractCN),
+      "covers=\(MetadataForm.InlineOverrideField.allCases.map { "\($0.rawValue)=\(q63bSum.coversInlineOverride($0))" })")
+
+// ── argv 映射：无表单逐字节不变；有表单紧跟 --metadata；协同/扫描不传
+let q63bBase = ConvertFeature.Options()
+check("q63b-argv-default-identical",
+      "不填表单的 argv 与批63 逐字节相同：默认 = --compile --clean（没有 --metadata-json）",
+      ConvertFeature.arguments(q63bBase) == ["--compile", "--clean"],
+      "argv=\(ConvertFeature.arguments(q63bBase))")
+
+var q63bArgvOpts = ConvertFeature.Options()
+q63bArgvOpts.source = "/tmp/a.docx"
+q63bArgvOpts.out = "/tmp/out"
+q63bArgvOpts.metadata = "/tmp/meta.tex"
+q63bArgvOpts.metadataJSON = "/tmp/meta.json"
+let q63bArgs = ConvertFeature.arguments(q63bArgvOpts)
+let q63bMetaIdx = q63bArgs.firstIndex(of: "--metadata") ?? -1
+check("q63b-argv-json",
+      "--metadata-json 紧跟在 --metadata 之后（引擎优先级 JSON > 旧 7 参数 > --metadata）；"
+        + "空路径时 add() 自动跳过",
+      q63bMetaIdx >= 0 && q63bMetaIdx + 3 < q63bArgs.count
+        && q63bArgs[q63bMetaIdx + 1] == "/tmp/meta.tex"
+        && q63bArgs[q63bMetaIdx + 2] == "--metadata-json"
+        && q63bArgs[q63bMetaIdx + 3] == "/tmp/meta.json",
+      "argv=\(q63bArgs)")
+
+var q63bScanOpts = q63bArgvOpts; q63bScanOpts.scanOnly = true
+var q63bPh1Opts = q63bArgvOpts; q63bPh1Opts.coopPhase = .first
+var q63bPh2Opts = q63bArgvOpts; q63bPh2Opts.coopPhase = .second
+check("q63b-argv-not-coop-scan",
+      "两段式（ph1/ph2）与「只扫描源稿」都不传 --metadata-json（引擎对 JSON+协同 exit 2；扫描不产出交付物）",
+      !ConvertFeature.arguments(q63bScanOpts).contains("--metadata-json")
+        && !ConvertFeature.arguments(q63bPh1Opts).contains("--metadata-json")
+        && !ConvertFeature.arguments(q63bPh2Opts).contains("--metadata-json"),
+      "scan=\(ConvertFeature.arguments(q63bScanOpts)) ph2=\(ConvertFeature.arguments(q63bPh2Opts))")
+check("q63b-attach-rule",
+      "下传规则纯函数：普通转换 true；只扫描 / 两段式 false（GUI 与 argv 用同一判据）",
+      MetadataForm.shouldAttach(scanOnly: false, coop: false)
+        && !MetadataForm.shouldAttach(scanOnly: true, coop: false)
+        && !MetadataForm.shouldAttach(scanOnly: false, coop: true),
+      "ok")
+
+// ── 元数据文件三通道（Lead 修正：不能一刀切砍掉 Word 源 .docx「英文元数据第二源」）
+var q63bLatexDocxWhy = ""
+if case .ignored(let why) = ConvertFeature.metadataPathVerdict(metadata: "/x/英摘.docx",
+                                                               source: "/x/稿.tex") {
+    q63bLatexDocxWhy = why
+}
+check("q63b-meta-latex-docx",
+      "LaTeX 源 + .docx/.doc 元数据：拦下并明确「已取消 .doc/.docx 自动元数据识别」，引导人工表单/ .tex",
+      q63bLatexDocxWhy.contains("已取消 .doc/.docx 自动元数据识别")
+        && q63bLatexDocxWhy.contains("填写元数据")
+        && q63bLatexDocxWhy.contains("未使用该文件"),
+      "why=\(q63bLatexDocxWhy)")
+check("q63b-meta-latex-tex",
+      "LaTeX 源 + .tex 元数据：照旧透传（高级兜底）",
+      ConvertFeature.metadataPathVerdict(metadata: "/x/m.tex", source: "/x/稿.tex") == .accepted,
+      "ok")
+check("q63b-meta-word-docx",
+      "Word 源 + .docx / .tex：照旧透传（.docx = 第 76 条「英文元数据第二源」，行为不变）",
+      ConvertFeature.metadataPathVerdict(metadata: "/x/英摘.docx", source: "/x/稿.docx") == .accepted
+        && ConvertFeature.metadataPathVerdict(metadata: "/x/m.tex", source: "/x/稿.DOCX") == .accepted,
+      "ok")
+var q63bWordDocWhy = ""
+if case .ignored(let why) = ConvertFeature.metadataPathVerdict(metadata: "/x/元数据.doc",
+                                                               source: "/x/稿.docx") {
+    q63bWordDocWhy = why
+}
+check("q63b-meta-word-doc",
+      "Word 源 + .doc：拦下并提示先另存为 .docx（`.doc→.docx` textutil 转换已整体删除）",
+      q63bWordDocWhy.contains("另存为 .docx") && q63bWordDocWhy.contains("未使用该文件"),
+      "why=\(q63bWordDocWhy)")
+check("q63b-meta-empty",
+      "空元数据路径 = 没选 = 通过；源稿未选时先放行（run() 按当时源稿再判一次）",
+      ConvertFeature.metadataPathVerdict(metadata: "", source: "/x/稿.tex") == .accepted
+        && ConvertFeature.metadataPathVerdict(metadata: "   ", source: "") == .accepted,
+      "ok")
+
+// ── 源码级接线（等价证据；Web/CI 上不开窗口）
+let q63bFormSrc = readSrc("Features/MetadataFormFeature.swift")
+let q63bSheetSrc = readSrc("Views/MetadataFormSheet.swift")
+check("q63b-ui-wiring",
+      "初排页：高级选项内「填写元数据…」+ sheet + 摘要/清空 + 协同时禁用入口",
+      q63TabSrc.contains("填写元数据…")
+        && q63TabSrc.contains("model.showMetadataForm = true")
+        && q63TabSrc.contains(".sheet(isPresented: $model.showMetadataForm)")
+        && q63TabSrc.contains("MetadataFormSheet(form: $model.metadataForm)")
+        && q63TabSrc.contains("summaryLine()")
+        && q63TabSrc.contains(".disabled(model.options.coop)"),
+      "button=\(q63TabSrc.contains("填写元数据…")) sheet=\(q63TabSrc.contains(".sheet("))")
+check("q63b-ui-fields",
+      "sheet 字段齐全：中英文题名/摘要/关键词 + 中英文姓名/邮箱 + 添加作者 + 添加单位（两语言）",
+      ["中文题名", "英文题名", "中文摘要", "英文摘要", "中文关键词", "英文关键词",
+       "添加作者", "添加单位", "中文姓名", "英文姓名", "邮箱", "第一作者"]
+        .allSatisfy { q63bSheetSrc.contains($0) },
+      "len=\(q63bSheetSrc.count)")
+check("q63b-ui-inline-priority",
+      "内联 7 覆盖字段保留但表单激活时置灰；界面写明「表单优先」",
+      q63TabSrc.contains(".disabled(model.metadataForm.hasAnyValue)")
+        && q63TabSrc.contains("表单优先"),
+      "disabled=\(q63TabSrc.contains(".disabled(model.metadataForm.hasAnyValue)"))")
+check("q63b-doc-entry-removed",
+      "`.doc/.docx` 识别入口彻底撤下：无 textutil / metadataConversionPlan / convertMetadataDoc / .doc 转临时 docx 文案",
+      !q63TabSrc.contains("/usr/bin/textutil")
+        && !q63TabSrc.contains("metadataConversionPlan")
+        && !q63TabSrc.contains("convertMetadataDoc")
+        && !q63TabSrc.contains(".doc 已转成临时 .docx")
+        && !q63ConvSrc.contains("metadataConversionPlan")
+        && !q63ConvSrc.contains("MetadataConversion"),
+      "tab_clean=\(!q63TabSrc.contains("/usr/bin/textutil")) conv_clean=\(!q63ConvSrc.contains("metadataConversionPlan"))")
+check("q63b-metadata-file-ui",
+      "元数据文件 picker 限 .tex/.docx；placeholder 按源稿通道动态变（LaTeX 写已取消、Word 写第二源）",
+      q63TabSrc.contains("allowedExtensions: [\"tex\", \"docx\"]")
+        && q63TabSrc.contains("metadataFilePlaceholder")
+        && q63TabSrc.contains(".doc/.docx 自动识别已取消")
+        && q63TabSrc.contains("英文元数据第二源"),
+      "picker=\(q63TabSrc.contains("allowedExtensions")) placeholder=\(q63TabSrc.contains("metadataFilePlaceholder"))")
+check("q63b-run-wiring",
+      "run()：verdict 双拦截 + 临时 JSON（写失败中止不静默）+ 内联逐字段清零 + 日志「N 位作者 / M 项字段」+ 结束清理",
+      q63TabSrc.contains("metadataPathVerdict")
+        && q63TabSrc.contains("metadataJSONTempPath")
+        && q63TabSrc.contains("MetadataForm.removeTemporaryFile(temp)")
+        && q63TabSrc.contains("不会静默丢掉已填内容")
+        && q63TabSrc.contains("coversInlineOverride")
+        && q63TabSrc.contains("两段式协同暂不支持人工填写元数据"),
+      "verdict=\(q63TabSrc.contains("metadataPathVerdict")) cleanup=\(q63TabSrc.contains("removeTemporaryFile(temp)"))")
+check("q63b-conv-wiring",
+      "ConvertFeature：Options.metadataJSON + arguments() 加 --metadata-json（仅 coop==off && !scanOnly）",
+      q63ConvSrc.contains("var metadataJSON = \"\"")
+        && q63ConvSrc.contains("add(\"--metadata-json\", o.metadataJSON)")
+        && q63ConvSrc.contains("if coop == .off && !o.scanOnly"),
+      "opt=\(q63ConvSrc.contains("var metadataJSON")) flag=\(q63ConvSrc.contains("--metadata-json"))")
+check("q63b-form-log-text",
+      "统计/日志文案在纯逻辑里：包含「将写入」「位作者」「项字段」",
+      q63bFormSrc.contains("将写入") && q63bFormSrc.contains("位作者")
+        && q63bFormSrc.contains("项字段"),
+      "len=\(q63bFormSrc.count)")
 
 // ═══════════════════════════════════════════════════════════════════════════
 // (p) 第 55 批：暂存目录发现（只读 `_AI协同状态.json`）+ 建议摘要

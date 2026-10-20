@@ -377,6 +377,199 @@ def coauthor_fields(field_values: dict[str, str]) -> tuple[tuple[str, str], ...]
     return tuple(out)
 
 
+# ── 结构化人工元数据（--metadata-json，批63b）──────────────────────────────
+# GUI「填写元数据」表单 → 临时 JSON → convert.py 校验/归一化 → 本文件的 dict：
+#   {"title_cn": "…", …, "authors": [{"name_cn": "…", "name_en": "…",
+#     "affiliations_cn": ["…"], "affiliations_en": ["…"], "email": "…"}]}
+# 只处理**非空**值：空串/空列表 = 未提供 = 不覆盖（与 --title-cn 等同一口径）。
+# 多单位：模板 sty 把单位排在 minipage/footnote 里，字段内 `\\` 即换行
+# （模板注释口径 CN_template.tex:147 / EN_template.tex:63）。逐项转义后用 `\\`
+# 连接，**首尾不留 `\\`**（尾部 `\\` 会多印一个空行，2026-10-20 xelatex 实测）。
+_JSON_TEX_BREAK = "\\\\"
+
+_META_JSON_SCALARS = (
+    "title_cn", "title_en", "running_title_cn", "running_title_en",
+    "abstract_cn", "abstract_en", "keywords_cn", "keywords_en",
+)
+
+
+def _meta_clean(value) -> str:
+    """结构化字段的纯文本清理：折叠空白（含换行，避免 `\\newcommand` 参数断行）。"""
+    return " ".join(str(value or "").split())
+
+
+def _meta_esc(value) -> str:
+    """纯文本 → LaTeX：清理 + 转义特殊字符（`& % $ # _ { } ~ ^ \\`）。"""
+    from .docxsource import escape_latex
+
+    return escape_latex(_meta_clean(value))
+
+
+def _meta_affils(value) -> list[str]:
+    """单位字段归一化：字符串/数组/None → 非空字符串列表。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    return [t for t in (_meta_clean(v) for v in value) if t]
+
+
+def _join_affiliations(units) -> str:
+    """单位数组 → 模板字段值：逐项转义后按 `\\` 连接（首尾不留 `\\`）。"""
+    return _JSON_TEX_BREAK.join(_meta_esc(u) for u in _meta_affils(units))
+
+
+def _slot(kind: str, word: str, suffix: str = "") -> str:
+    """作者槽位宏名：`myfirstauthor`… / `myfirstaffiliation`… / `myfirstemail`…（+EN/CN）。
+
+    第一作者是 `myfirstauthor`（不是 `myauthor`）；`_AUTHOR_MACRO` 只覆盖 author 一类，
+    这里把 affiliation/email 也统一成一个拼法，避免调用方各拼字符串。
+    """
+    return (f"my{word}{kind}" if word else f"myfirst{kind}") + suffix
+
+
+def structured_meta_authors(structured: dict | None) -> list[dict]:
+    """JSON `authors` → 归一化作者列表（尾部空作者不占槽位）。"""
+    raw = (structured or {}).get("authors") or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        out.append({
+            "name_cn": _meta_clean(item.get("name_cn")),
+            "name_en": _meta_clean(item.get("name_en")),
+            "affiliations_cn": _meta_affils(item.get("affiliations_cn")),
+            "affiliations_en": _meta_affils(item.get("affiliations_en")),
+            "email": _meta_clean(item.get("email")),
+        })
+    while out and not any(out[-1].values()):
+        out.pop()
+    if len(out) > 5:
+        # 直调 API 也不静默截断：模板只有 myfirstauthor…myfifthauthor 五个槽位。
+        # CLI `--metadata-json` 在 convert 侧先校验并 exit 2，故正常输入到不了这里。
+        raise ValueError(
+            f"结构化人工元数据给了 {len(out)} 位作者："
+            "模板最多 5 位作者（myfirstauthor…myfifthauthor），请删减")
+    return out
+
+
+def structured_fields(
+    structured: dict | None, is_en: bool, tpl_fields,
+) -> tuple[dict[str, str], tuple[tuple[str, str], ...], list[str], int]:
+    """结构化人工元数据 → (模板字段, 补充占位符, 警告, 作者数)。
+
+    **优先级最高**（高于 `--metadata` 元数据文件与旧 7 个覆盖参数）；空值不覆盖。
+    缺字段的占位符由 build 的占位符循环写，这里只给出**补充清单**（主要覆盖
+    EN 模板的 `my<N>authorCN/affiliationCN` —— 它们不在 REQUIRED_FIELDS 里）。
+    映射口径（批63b 审计 §3.3）：
+      · 中英题名/摘要按模板分流，与 `override_fields()` 同源；
+      · 关键词只有 CN 模板有 `mykeywords`；EN 模板无任何关键词槽位 → 警告；
+      · 每位作者：主语言姓名/单位 → 无后缀槽位；另一语言 → EN/CN 后缀槽位；
+        邮箱中英页共用（`my<N>email`）；多单位用 `\\` 连接（模板支持）。
+
+    返回值第 4 项 = **JSON 里的有效作者条目数**（尾部空作者已丢弃；模板上限 5，
+    >5 直接 `ValueError("…最多 5 位作者…")`，**不静默截断**——直调 API 也一样；
+    CLI `--metadata-json` 在 convert 侧先 exit 2，故正常路径 ≤5）。
+
+    Raises:
+        ValueError: 作者数 > 5（模板只有 myfirstauthor…myfifthauthor 五个槽位）。
+    """
+    fields: dict[str, str] = {}
+    pairs: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    if not structured:
+        return fields, (), warnings, 0
+
+    def put(name: str, value: str) -> None:
+        if value and name in tpl_fields:
+            fields[name] = value
+
+    def miss(name: str, label: str) -> None:
+        if name in tpl_fields and name not in fields:
+            pairs.append((name, label))
+
+    # ── 文章级：标题/摘要/页眉标题/关键词 ──
+    title_cn = _meta_esc(structured.get("title_cn"))
+    title_en = _meta_esc(structured.get("title_en"))
+    abs_cn = _meta_esc(structured.get("abstract_cn"))
+    abs_en = _meta_esc(structured.get("abstract_en"))
+    if is_en:
+        put("mytitle", title_en)
+        put("mytitleCN", title_cn)
+        put("myabstract", abs_en)
+        put("myabstractCN", abs_cn)
+    else:
+        put("mytitle", title_cn)
+        put("mytitleEN", title_en)
+        put("myabstract", abs_cn)
+        put("myabstractEN", abs_en)
+    # 页眉标题：显式给优先，否则取主语言标题（GUI v1 不暴露该字段）。
+    run_cn = _meta_esc(structured.get("running_title_cn"))
+    run_en = _meta_esc(structured.get("running_title_en"))
+    running = (run_en if is_en else run_cn) or (title_en if is_en else title_cn)
+    if running:
+        put("myrunningtitle", running)
+    kw_cn = _meta_esc(structured.get("keywords_cn"))
+    kw_en = _meta_esc(structured.get("keywords_en"))
+    if is_en:
+        if kw_cn or kw_en:
+            warnings.append(
+                "英文模板无关键词字段，关键词需人工放置："
+                + _meta_clean(structured.get("keywords_cn")
+                              or structured.get("keywords_en"))[:40] + "…"
+            )
+    else:
+        put("mykeywords", kw_cn)
+        if kw_en:
+            warnings.append(
+                "中文模板无英文关键词字段，英文关键词需人工放置："
+                + _meta_clean(structured.get("keywords_en"))[:40] + "…"
+            )
+
+    # ── 作者 1–5：主语言槽位 / 另一语言槽位 / 邮箱（中英页共用）──
+    authors = structured_meta_authors(structured)
+    for i, a in enumerate(authors[:5]):
+        word = _ORDINALS[i]
+        label = _AUTHOR_SLOTS[i][1]
+        main_name = a["name_en"] if is_en else a["name_cn"]
+        other_name = a["name_cn"] if is_en else a["name_en"]
+        main_affs = a["affiliations_en"] if is_en else a["affiliations_cn"]
+        other_affs = a["affiliations_cn"] if is_en else a["affiliations_en"]
+        main_slot = _slot("author", word)
+        other_slot = _slot("author", word, "CN" if is_en else "EN")
+        main_aff_slot = _slot("affiliation", word)
+        other_aff_slot = _slot("affiliation", word, "CN" if is_en else "EN")
+        email_slot = _slot("email", word)
+        if main_name:
+            # CN 模板主语言名与人工成品一致带 `\kaishu`（页眉/标题页同款）。
+            put(main_slot, _meta_esc(main_name) if is_en
+                else f"\\kaishu {_meta_esc(main_name)}")
+        else:
+            miss(main_slot, label)
+        if other_name:
+            put(other_slot, _meta_esc(other_name))
+        else:
+            # zh 模板第一作者的英文槽位由 REQUIRED_FIELDS 兜；EN 模板的 CN 槽位
+            # 不在 REQUIRED_FIELDS 里（既有口径，默认路径不动）→ 这里补占位。
+            miss(other_slot, label + ("中文姓名" if is_en else "英文姓名"))
+        if main_affs:
+            put(main_aff_slot, _join_affiliations(main_affs))
+        else:
+            miss(main_aff_slot, label + "单位")
+        if other_affs:
+            put(other_aff_slot, _join_affiliations(other_affs))
+        else:
+            miss(other_aff_slot, label + ("中文单位" if is_en else "英文单位"))
+        if a["email"]:
+            put(email_slot, _meta_esc(a["email"]))
+        else:
+            miss(email_slot, label + "邮箱")
+    return fields, tuple(pairs), warnings, len(authors)
+
 
 def override_fields(
     overrides: dict | None, is_en: bool
@@ -625,6 +818,7 @@ def build_latex(
     dash_hints: bool = True,
     bib_zero_cites_hints: bool = True,
     breakable_algorithm: bool = False,
+    structured: dict | None = None,
 ) -> BuildResult:
     """LaTeX 通道：多源合并成初排稿。
 
@@ -639,6 +833,11 @@ def build_latex(
     overrides      手工覆盖 {title_cn, author_cn, affiliation_cn, email,
                    abstract_cn, title_en, abstract_en}；**非空值优先于元数据源**，
                    被覆盖的字段不再算「未识别」。None / 空 dict = 与从前逐字一致。
+    structured     结构化人工元数据（`--metadata-json`，批63b / GUI 表单）：
+                   authors[1-5]（中英姓名、多单位、邮箱）+ 中英标题/摘要/关键词/
+                   页眉标题。**优先级最高**（> overrides > 元数据文件 > 源稿解析）；
+                   空值不覆盖，缺字段仍写「【未识别…】」占位。None / 空 dict =
+                   与从前逐字一致（默认零变化）。
     dash_hints     **ZH-08 连接号待人工判断**的日志提示（第四十三批，默认开）：
                    True = 命中数 + 前 20 条上下文 + 判断指引写进初排日志；
                    False = 不打印。**纯日志，产物逐字节不变**（引擎不做语义自动分类）。
@@ -832,11 +1031,47 @@ def build_latex(
     if ov:
         say(f"   手工覆盖 {len(ov)} 个字段：{'、'.join(ov)}")
 
+    # ── 结构化人工元数据（--metadata-json，批63b）：优先级最高 ──
+    #    人工 JSON > 旧 7 个覆盖参数 > --metadata 元数据文件 > 源稿解析；
+    #    非空值才写、空值不覆盖；显式给的值不再被占位符覆盖。
+    structured_keys: set[str] = set()
+    structured_pairs: tuple[tuple[str, str], ...] = ()
+    if structured:
+        _sf, structured_pairs, _sw, _n_sa = structured_fields(
+            structured, is_en, tpl_fields)
+        clash = sorted(set(ov) & set(_sf))
+        if clash:
+            warnings.append(
+                "同时给出 --title-cn 等手工覆盖与 --metadata-json：以下字段以 "
+                "--metadata-json 为准：" + "、".join(clash))
+        for k, v in _sf.items():
+            tpl = set_field(tpl, k, v)
+            moved_vals[k] = v
+        structured_keys = set(_sf)
+        if _sf:
+            say(f"   人工元数据：写入 {_n_sa} 位作者 / {len(_sf)} 个模板字段")
+        warnings.extend(_sw)
+        # R4（Lead 拍板）：JSON 作者数少于源稿时**不清空**后续槽位，只提示。
+        _n_slots = coauthor_slot_count(moved_vals)
+        if _n_slots > _n_sa:
+            warnings.append(
+                f"人工元数据只给了 {_n_sa} 位作者，但源稿/元数据里还有第 "
+                f"{_n_slots} 位作者的槽位：未声明的后续作者保持原样，请核对")
+
     # ── 必填字段解析不出来 → 写占位符 + 警告，不许留模板默认值 ──
     #    清单 = 文章级/第一作者字段 + 「确实存在的合著者」的单位与邮箱
     undetected: list[str] = []
     undetected_pairs: list[tuple[str, str]] = []
-    for name, label in REQUIRED_FIELDS["en" if is_en else "zh"] + coauthor_fields(moved_vals):
+    _cand = list(REQUIRED_FIELDS["en" if is_en else "zh"])
+    _cand += list(coauthor_fields(moved_vals))
+    _seen = {n for n, _ in _cand}
+    for _p in structured_pairs:
+        if _p[0] not in _seen:
+            _cand.append(_p)
+            _seen.add(_p[0])
+    for name, label in _cand:
+        if name in structured_keys:
+            continue
         if name not in tpl_fields:
             continue
         if is_parsed(moved_vals.get(name), name, tpl_defaults):
@@ -1631,6 +1866,7 @@ def build_docx(
     end_list_priority: bool = False,
     number_cite_map: bool = False,
     c_class_union: bool | None = None,
+    structured: dict | None = None,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -1639,6 +1875,10 @@ def build_docx(
                     abstract_cn, title_en, abstract_en}；**非空值优先于解析结果**
                     （源稿里读不到时代编辑填，如 --title-cn），被覆盖的字段不再算
                     「未识别」。None / 空 dict = 与从前逐字一致。
+    structured      **结构化人工元数据**（`--metadata-json`，批63b / GUI 表单，
+                    同一份 JSON 两个通道通用）：authors[1-5] + 中英标题/摘要/
+                    关键词。优先级最高（> overrides > 英文第二源 > 源稿解析）；
+                    空值不覆盖，缺字段仍写「【未识别…】」占位。None = 默认零变化。
     metadata_path   **英文元数据第二源**（可选，第 76 条）：同目录那份「英文摘要」
                     docx。正文 docx 自身读不出英文题名/摘要/作者时，用它的英文字段补；
                     正文**已有**的英文真值一个字符都不动（案例 52 的文末英文块）。
@@ -1893,11 +2133,39 @@ def build_docx(
     if ov:
         say(f"   手工覆盖 {len(ov)} 个字段：{'、'.join(ov)}")
 
+    # ── 结构化人工元数据（--metadata-json，批63b）：优先级最高 ──
+    #    人工 JSON > 旧 7 个覆盖参数 > 英文元数据第二源/源稿解析；空值不覆盖。
+    structured_keys: set[str] = set()
+    structured_pairs: tuple[tuple[str, str], ...] = ()
+    _n_sa = 0
+    _has_structured = bool(structured)
+    if structured:
+        _sf, structured_pairs, _sw, _n_sa = structured_fields(
+            structured, is_en, tpl_fields)
+        clash = sorted(set(ov) & set(_sf))
+        if clash:
+            warnings.append(
+                "同时给出 --title-cn 等手工覆盖与 --metadata-json：以下字段以 "
+                "--metadata-json 为准：" + "、".join(clash))
+        fields.update(_sf)
+        structured_keys = set(_sf)
+        if _sf:
+            say(f"   人工元数据：写入 {_n_sa} 位作者 / {len(_sf)} 个模板字段")
+        warnings.extend(_sw)
+        # R4（Lead 拍板）：JSON 作者数少于源稿时**不清空**后续槽位，只提示。
+        _n_slots = coauthor_slot_count(fields)
+        if _n_slots > _n_sa:
+            warnings.append(
+                f"人工元数据只给了 {_n_sa} 位作者，但源稿/元数据里还有第 "
+                f"{_n_slots} 位作者的槽位：未声明的后续作者保持原样，请核对")
+
     # ── 英文合著者槽位（GAP 2）：源稿给了**可靠**的英译名/单位就填，否则留给
     #    下面的占位符清单。放在手工覆盖之后：覆盖里的作者名才是最终的中文作者列表。
     #    ⚠️ 绝不把第一作者的单位复制给第二作者（人工成品里两份相同是巧合，不是规则）。
+    #    --metadata-json 已显式给的人工值不被源稿推导覆盖（批63b）。
     n_cn_authors = coauthor_slot_count(fields)
     en_slots = en_coauthor_values(doc.author_en, doc.affiliation_en, n_cn_authors)
+    en_slots = {k: v for k, v in en_slots.items() if k not in structured_keys}
     if en_slots:
         fields.update(en_slots)
         say(f"   英文合著者槽位按源稿填入 {len(en_slots)} 项：{'、'.join(en_slots)}")
@@ -1906,8 +2174,15 @@ def build_docx(
     #    清单 = 文章级/第一作者字段 + 「确实存在的合著者」的单位与邮箱
     undetected: list[str] = []
     undetected_pairs: list[tuple[str, str]] = []
-    for name, label in REQUIRED_FIELDS["en" if is_en else "zh"] + coauthor_fields(fields):
-        if name in ov or name not in tpl_fields:
+    _cand = list(REQUIRED_FIELDS["en" if is_en else "zh"])
+    _cand += list(coauthor_fields(fields))
+    _seen = {n for n, _ in _cand}
+    for _p in structured_pairs:
+        if _p[0] not in _seen:
+            _cand.append(_p)
+            _seen.add(_p[0])
+    for name, label in _cand:
+        if name in ov or name in structured_keys or name not in tpl_fields:
             continue
         if is_parsed(fields.get(name), name, tpl_defaults):
             continue

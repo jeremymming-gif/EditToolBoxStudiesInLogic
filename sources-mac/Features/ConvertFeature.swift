@@ -16,7 +16,11 @@ enum ConvertFeature {
     struct Options {
         var source = ""          // --source（必填）
         var out = ""             // --out（必填）
-        var metadata = ""        // --metadata
+        var metadata = ""        // --metadata（批63b：LaTeX 源只收 .tex；Word 源 .docx 第二源照旧）
+        /// 批63b：人工填写元数据的临时 JSON 路径（--metadata-json；空 = 不传）。
+        /// 由 `run()` 写成 `/tmp` 文件、运行结束清理；只在普通转换下传
+        /// （两段式协同引擎会 exit 2；只扫描源稿不产出交付物）。
+        var metadataJSON = ""
         var bib = ""             // --bib
         var refs = ""            // --refs
         var author = ""          // --author
@@ -174,37 +178,54 @@ enum ConvertFeature {
         var flagValue: String { rawValue }
     }
 
-    // MARK: - 第 63 批 B2：元数据文件 `.doc` → 临时 `.docx`（GUI 侧最小适配，纯逻辑）
+    // MARK: - 批63b：元数据文件三通道处置（`.doc/.docx` 自动识别撤下，但 Word 第二源保留）
 
-    /// 「元数据文件」选中的是老式 Word `.doc`（大小写不敏感；`.docx` 不算）时，需要先用
-    /// macOS 自带 `textutil` 转成临时 `.docx` 再交给引擎 `--metadata`（引擎侧 .docx 元数据
-    /// 支持由 engine-core 同批实现）。**不做 Word→LaTeX 全文转换**，只取元数据。
-    ///
-    /// 这里只放**纯判定/路径**；真正的 `textutil` 调用、失败提示与临时文件清理在
-    /// `ConvertTab.run()`（GUI 层）——因此本函数可被 `tools/ai_settings_test` 直接验证。
-    struct MetadataConversion: Equatable {
-        /// 用户选的 `.doc`（原始路径，原文件一个字节都不动）
-        let source: String
-        /// 临时 `.docx` 目标路径（系统临时目录）
-        let output: String
-        /// `textutil` 的完整参数（固定形态；测试直接断言，不在 GUI 里手写）
-        var textutilArguments: [String] {
-            ["-convert", "docx", "-output", output, source]
-        }
+    /// 元数据文件路径的处置结果（纯判定；GUI 只负责把 `.ignored` 的说明写进日志并清空路径）。
+    enum MetadataPathVerdict: Equatable {
+        /// 原样传给引擎 `--metadata`
+        case accepted
+        /// 不传该文件；`why` 是给编辑看的日志说明（**不许静默**）
+        case ignored(String)
     }
 
-    /// 转换计划：不是 `.doc`（或空路径）→ nil（`.docx` / `.tex` 一律透传）。
-    static func metadataConversionPlan(_ rawPath: String,
-                                       temporaryDirectory: String = NSTemporaryDirectory())
-        -> MetadataConversion? {
-        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return nil }
-        // ⚠ 用 pathExtension 比较（不是 hasSuffix）：大小写不敏感，天然排除 `.docx`。
-        guard (path as NSString).pathExtension.lowercased() == "doc" else { return nil }
-        let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-        let out = (temporaryDirectory as NSString)
-            .appendingPathComponent("slcn_metadata_\(String(stem.prefix(80))).docx")
-        return MetadataConversion(source: path, output: out)
+    /// 批63b 三通道口径（用户 2026-10-20 拍板 + Lead 修正，防止砍掉既有能力）：
+    ///   · **LaTeX 源**：`--metadata` 只接受 `.tex`。`.doc/.docx` 自动识别已取消
+    ///     （B2 方案回退：用户真测两例 Word 稿均未识别出元数据），选中后被拦下并明确提示
+    ///     改用「填写元数据…」表单或 `.tex`；
+    ///   · **Word 源**：`.docx` 是**既有**「英文元数据第二源」（第 76 条，行为不变），
+    ///     `.tex` 照旧透传（引擎会提示后回退同目录自动找）；`.doc` 被拦下并提示先另存为 `.docx`；
+    ///   · `.doc → .docx` 的 textutil 转换已整体删除，**任何通道都不再转**；
+    ///   · 源稿还没选（无法判断通道）→ 先放行，`run()` 时按当时源稿再判一次。
+    static func metadataPathVerdict(metadata rawMetadata: String,
+                                    source rawSource: String) -> MetadataPathVerdict {
+        let metadata = rawMetadata.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !metadata.isEmpty else { return .accepted }
+        let metaExt = (metadata as NSString).pathExtension.lowercased()
+        let source = rawSource.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !source.isEmpty else { return .accepted }
+        let sourceExt = (source as NSString).pathExtension.lowercased()
+        let wordSource = (sourceExt == "doc" || sourceExt == "docx")
+
+        if wordSource {
+            switch metaExt {
+            case "docx", "tex":
+                return .accepted
+            case "doc":
+                return .ignored("Word 源稿的元数据文件请先另存为 .docx"
+                                + "（批63b 起不再把 .doc 转成临时 .docx）；本次未使用该文件")
+            default:
+                return .ignored("Word 源稿的元数据文件只支持 .docx（英文元数据第二源）"
+                                + "或 .tex；本次未使用该文件")
+            }
+        }
+        guard metaExt == "tex" else {
+            if metaExt == "doc" || metaExt == "docx" {
+                return .ignored("批63b 起已取消 .doc/.docx 自动元数据识别（用户拍板），"
+                                + "请用「填写元数据…」表单或 .tex 元数据文件；本次未使用该文件")
+            }
+            return .ignored("LaTeX 源稿的元数据文件只支持 .tex；本次未使用该文件")
+        }
+        return .accepted
     }
 
     // MARK: - 开关联动（纯函数，headless 可验证）
@@ -339,6 +360,13 @@ enum ConvertFeature {
         add("--source", o.source)
         if !o.scanOnly { add("--out", o.out) }
         add("--metadata", o.metadata)
+        // 批63b：人工填写元数据 → 临时 JSON（引擎优先级最高：JSON > 旧 7 参数 > --metadata）。
+        // **只在普通转换下传**：两段式协同引擎对 JSON 明确 exit 2（v1 不支持），
+        // 只扫描源稿不产出交付物、传了也没意义。默认空路径时 add() 自动跳过 →
+        // 「没打开过表单」的 argv 与批63 逐字节相同。
+        if coop == .off && !o.scanOnly {
+            add("--metadata-json", o.metadataJSON)
+        }
         add("--bib", o.bib)
         add("--refs", o.refs)
         add("--author", o.author)

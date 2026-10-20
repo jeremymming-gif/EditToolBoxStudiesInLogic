@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 「初排转换」页：选源文件 → 选输出目录 → 转换出符合期刊模板的 LaTeX 初排稿。
 ///
@@ -12,6 +13,12 @@ final class ConvertModel: ObservableObject {
     @Published var options = ConvertFeature.Options()
     @Published var running = false
     @Published var showAdvanced = false
+    /// 批63b：初排页「人工填写元数据」表单。值只在本次 App 会话内有效（不做持久化），
+    /// 运行前写成 `/tmp` 临时 JSON 传给引擎 `--metadata-json`，跑完即删；
+    /// 不填 = 与从前完全一样（默认 argv 逐字节不变）。
+    @Published var metadataForm = MetadataForm()
+    /// 表单 sheet 是否打开
+    @Published var showMetadataForm = false
     /// U3：本次运行的取消句柄（运行中「开始转换」变成「取消」）
     var cancel: RunCancel? = nil
 
@@ -192,9 +199,11 @@ struct ConvertTab: View {
                             )
                             LabeledPathRow(
                                 title: "元数据文件",
-                                placeholder: "从已有的 .tex / .doc / .docx 里取标题/作者等信息",
+                                // 批63b：placeholder 按源稿通道动态变（LaTeX / Word 的既有能力不同）。
+                                placeholder: metadataFilePlaceholder,
                                 path: $model.options.metadata,
                                 kind: .file,
+                                allowedExtensions: ["tex", "docx"],
                                 logStore: log
                             )
                             LabeledPathRow(
@@ -280,6 +289,12 @@ struct ConvertTab: View {
                                     .textFieldStyle(.roundedBorder)
                             }
                             Divider().padding(.vertical, 2)
+                            // ---------- 批63b：人工填写元数据（推荐入口；.doc/.docx 自动识别已取消） ----------
+                            metadataFormSection
+                            Divider().padding(.vertical, 2)
+                            // 批63b：下面这 7 个内联字段保留（旧路径向后兼容）；**表单激活时整体置灰**，
+                            // 且运行前 GUI 会把「表单已填的同名字段」清零——同一字段只保留一个来源。
+                            Group {
                             // ---------- 正文信息手工覆盖（兜底输入路径） ----------
                             // 引擎按版面启发式解析题名/作者/摘要，总有解析不出来或
                             // 解析错的稿子。这里是编辑的兜底：填了就覆盖自动解析结果，
@@ -327,6 +342,8 @@ struct ConvertTab: View {
                                  + "「尚不支持 overrides 参数」，此时不影响转换本身。")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                            }
+                            .disabled(model.metadataForm.hasAnyValue)
                             HStack(spacing: 12) {
                                 Text("引用环境阈值")
                                 TextField("105", value: $model.options.quoteThreshold, format: .number)
@@ -394,6 +411,21 @@ struct ConvertTab: View {
         .onChange(of: model.options.out) { _ in
             if model.options.coop { refreshCoopStage() }
         }
+        // 批63b：`.doc/.docx` 自动识别已撤下（Word 源的 .docx「第二源」照旧）。picker 已限
+        // .tex/.docx，拖拽/粘贴/旧草稿仍可能带进别的类型 → 立刻拦下并写日志（不静默）。
+        // run() 里按「源稿通道」还有第二道判定（选源稿之前 picker 可能先选元数据文件）。
+        .onChange(of: model.options.metadata) { path in
+            guard !path.isEmpty else { return }
+            if case .ignored(let why) = ConvertFeature.metadataPathVerdict(
+                metadata: path, source: model.options.source) {
+                log.append("元数据文件：\(why)。\n")
+                model.options.metadata = ""
+            }
+        }
+        // 批63b：人工填写元数据表单（sheet）。表单值不持久化，只在本次 App 会话内有效。
+        .sheet(isPresented: $model.showMetadataForm) {
+            MetadataFormSheet(form: $model.metadataForm)
+        }
     }
 
     private var helpBlock: some View {
@@ -428,6 +460,55 @@ struct ConvertTab: View {
         let vendor = dir + "/vendor"
         editors.harvest(source: model.options.source, tool: tool, python: py, toolDir: dir,
                         vendor: FileManager.default.fileExists(atPath: vendor) ? vendor : nil)
+    }
+
+    /// 批63b：「元数据文件」占位文案按**源稿通道**动态变（两通道既有能力不同，不能一刀切）。
+    ///
+    ///   · LaTeX 源：`.doc/.docx` 自动识别已取消（用户拍板）→ 引导用表单或同目录 `.tex`；
+    ///   · Word 源：`.docx` 是既有「英文元数据第二源」（第 76 条，行为不变）→ 引导显式指定。
+    private var metadataFilePlaceholder: String {
+        let ext = ((model.options.source as NSString).pathExtension).lowercased()
+        if ext == "doc" || ext == "docx" {
+            return "留空自动找英文元数据第二源；.docx 可显式指定（.doc 请先另存为 .docx）"
+        }
+        return "留空用人工填写或同目录 .tex；.doc/.docx 自动识别已取消（请用「填写元数据…」）"
+    }
+
+    /// 批63b：初排页「人工填写元数据」入口（表单在 sheet 里；这里只放入口 + 摘要 + 约束提示）。
+    @ViewBuilder private var metadataFormSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("元数据（推荐人工填写；值直接写入交付产物，留空 = 不覆盖）")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Button {
+                    model.showMetadataForm = true
+                } label: {
+                    Label("填写元数据…", systemImage: "square.and.pencil")
+                }
+                // 批63b v1：两段式协同**不支持**人工元数据（引擎对 JSON + 协同明确 exit 2）。
+                .disabled(model.options.coop)
+                if model.metadataForm.hasAnyValue {
+                    Text(model.metadataForm.summaryLine())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("清空") { model.metadataForm = MetadataForm() }
+                }
+            }
+            if model.options.coop {
+                Text("⚠ 两段式协同暂不支持人工填写元数据（引擎会明确退出 2）：请改用普通转换，"
+                     + "或保留 `.tex` 元数据文件；已填内容本次不会被下传。")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if model.metadataForm.hasAnyValue {
+                Text("表单优先于下面置灰的「正文信息覆盖」内联字段与 `.tex` 元数据文件；"
+                     + "临时 JSON 只在本次运行有效，跑完即删。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     /// 复选框 → 选项的绑定：联动规则的**唯一**实现在 `ConvertFeature.toggled(_:to:in:)`
@@ -971,14 +1052,13 @@ struct ConvertTab: View {
         // `fulltextMaxCharsValue`：nil = 不传（引擎默认 40000）；0 = 显式不限。
         o.llmFulltextMaxChars = budget.fulltextMaxCharsValue
         o.llmFulltextApply = budget.fulltextAutoApply
-        // 批 63 B2：元数据文件选的是老式 .doc → 先转成临时 .docx 再交给引擎。
-        // 纯判定/路径在 ConvertFeature.metadataConversionPlan（headless 有断言）；
-        // 这里只做「调 textutil + 失败提示」，临时文件在本次运行结束时清理。
-        var metadataTempPath: String? = nil
-        if let plan = ConvertFeature.metadataConversionPlan(o.metadata) {
-            guard let temp = convertMetadataDoc(plan) else { return }
-            o.metadata = plan.output
-            metadataTempPath = temp
+        // 批63b：元数据文件按「源稿通道」处置（三通道口径见 ConvertFeature.metadataPathVerdict）：
+        // LaTeX 源只收 .tex；Word 源的 .docx（英文元数据第二源，第 76 条）与 .tex 照旧；
+        // .doc 任何通道都不再转（textutil 整体删除）。拦下时写日志，不静默。
+        if case .ignored(let why) = ConvertFeature.metadataPathVerdict(
+            metadata: o.metadata, source: o.source) {
+            log.append("元数据文件：\(why)。\n")
+            o.metadata = ""
         }
         // 两个「请求体旋钮」（思考模式 / 输出上限）同样**现取**：与上面三项同一口径，
         // 设置页改完立刻生效，不必先点「保存」（保存只影响下次启动读回的值）。
@@ -987,13 +1067,58 @@ struct ConvertTab: View {
         let knobs = settings.aiEngineKnobs
         // 第 55 批：两段式。**扫描模式忽略协同**（只扫描源稿不转换，勾着也按普通扫描走）。
         let coopOn = o.coop && !scanOnly
+        // 批63b：人工填写元数据 → 临时 JSON（--metadata-json，引擎侧优先级最高）。
+        // 只在普通转换下传（两段式引擎会 exit 2；只扫描不产出交付物）；写失败直接中止——
+        // 绝不静默丢掉编辑刚填的元数据。
+        var metadataJSONTempPath: String? = nil
+        if model.metadataForm.hasAnyValue {
+            if !MetadataForm.shouldAttach(scanOnly: scanOnly, coop: coopOn) {
+                if coopOn {
+                    log.append("元数据：⚠ 两段式协同暂不支持人工填写元数据（引擎会直接退出 2），"
+                               + "本次**未下传**表单内容；请改用普通转换，或保留 .tex 元数据文件。\n")
+                }
+            } else if let json = model.metadataForm.jsonString() {
+                let path = MetadataForm.tempFilePath(stem: o.source)
+                do {
+                    try json.write(toFile: path, atomically: true, encoding: .utf8)
+                } catch {
+                    log.append("元数据：临时 JSON 写入失败（\(error.localizedDescription)）；"
+                               + "本次未开始转换（不会静默丢掉已填内容）。\n")
+                    return
+                }
+                o.metadataJSON = path
+                metadataJSONTempPath = path
+                log.append("元数据：" + model.metadataForm.summaryLine()
+                           + "（人工填写表单优先于内联覆盖字段与 .tex 元数据文件；"
+                           + "临时 JSON 运行结束即删除）\n")
+                for w in model.metadataForm.warnings() {
+                    log.append("元数据：⚠ \(w)\n")
+                }
+                // 批63b：表单优先于旧 7 个内联覆盖字段——表单**填了的字段**在 GUI 侧清零对应内联值
+                // （界面上内联字段也已置灰）。逐字段清零而不是一刀切：避免丢掉「先填内联、
+                // 后只填了表单作者」这类混合输入的值。只在表单**真的下传**时清零：
+                // 两段式/只扫描下传不了表单，内联值必须原样保留（否则就静默丢值了）。
+                for field in MetadataForm.InlineOverrideField.allCases
+                where model.metadataForm.coversInlineOverride(field) {
+                    switch field {
+                    case .titleCN: o.titleCn = ""
+                    case .authorCN: o.authorCn = ""
+                    case .affiliationCN: o.affiliationCn = ""
+                    case .email: o.email = ""
+                    case .abstractCN: o.abstractCn = ""
+                    case .titleEN: o.titleEn = ""
+                    case .abstractEN: o.abstractEn = ""
+                    }
+                }
+            }
+        }
         o = CoopFeature.prepare(o, phase: coopOn ? .first : .off)
         model.coopFailure = ""
         if coopOn { model.coopSuggestions = nil }   // 新一轮初排：旧建议不算数
         startRun(o, knobs: knobs) { status in
-            // 批 63 B2：临时 .docx 只服务本次运行，跑完（含失败/取消）立刻清理。
-            if let temp = metadataTempPath {
-                try? FileManager.default.removeItem(atPath: temp)
+            // 批63b：临时 JSON 只服务本次运行，跑完（含失败/取消）立刻清理。
+            if let temp = metadataJSONTempPath {
+                MetadataForm.removeTemporaryFile(temp)
             }
             guard coopOn else { return }
             if status == 0 {
@@ -1003,25 +1128,6 @@ struct ConvertTab: View {
                 appendFailure("第一段失败（退出码 \(status)）；最终交付目录本次未写。")
             }
         }
-    }
-
-    /// 批 63 B2：把用户选的 `.doc` 用 macOS 自带 `textutil` 转成临时 `.docx`。
-    ///
-    /// - Returns: 临时文件路径（供运行结束清理）；转换失败/启动失败返回 nil 并**写日志**
-    ///   提示改用 `.docx` 或 `.tex`（本次直接不跑，不把二进制 .doc 交给引擎）。
-    ///   原文件一个字节都不动；**不做 Word→LaTeX 全文转换**（只取元数据）。
-    private func convertMetadataDoc(_ plan: ConvertFeature.MetadataConversion) -> String? {
-        let result = Shell.capture("/usr/bin/textutil", plan.textutilArguments)
-        let wrote = FileManager.default.fileExists(atPath: plan.output)
-        guard let result, result.status == 0, wrote else {
-            let why = result.map { "退出码 \($0.status)" } ?? "无法启动 /usr/bin/textutil"
-            try? FileManager.default.removeItem(atPath: plan.output)   // 清掉可能的半成品
-            log.append("元数据文件：.doc 转 .docx 失败（\(why)）。\n"
-                       + "  请把该文件另存为 .docx 或 .tex 后在「元数据文件」里重选；本次未开始转换。\n")
-            return nil
-        }
-        log.append("元数据文件：.doc 已转成临时 .docx（原文件不动）：\(plan.output)\n")
-        return plan.output
     }
 
     /// 第二段：用当前暂存目录 + 已选回填（每个路径一个 --coop-replies）续跑并交付。
@@ -1082,6 +1188,10 @@ struct LabeledPathRow: View {
     let placeholder: String
     @Binding var path: String
     let kind: PickKind
+    /// 批63b：可选的扩展名白名单（如 `["tex", "docx"]`）。空数组 = 不限制（既有调用方零变化）。
+    /// 只影响「浏览…」的 NSOpenPanel 过滤；拖拽类型由 `PathDrop` 只判文件/目录，
+    /// 更细的通行/拦截由各页自己的纯函数判定（如 `ConvertFeature.metadataPathVerdict`）。
+    var allowedExtensions: [String] = []
     /// 拖拽落地 / 被拒时写进运行日志（可为 nil）。不能静默——
     /// 编辑拖了没反应时，日志里要能看出是「类型不对」还是「压根没收到拖拽」。
     var logStore: LogStore? = nil
@@ -1116,8 +1226,16 @@ struct LabeledPathRow: View {
         panel.canChooseDirectories = (kind == .directory)
         panel.allowsMultipleSelection = false
         if kind == .file {
-            panel.allowedContentTypes = []
-            panel.allowsOtherFileTypes = true
+            if allowedExtensions.isEmpty {
+                panel.allowedContentTypes = []
+                panel.allowsOtherFileTypes = true
+            } else {
+                // 批63b：只让 picker 显示白名单类型（取舍判据仍在各页的纯函数里，不在这里）。
+                panel.allowedContentTypes = allowedExtensions.compactMap {
+                    UTType(filenameExtension: $0)
+                }
+                panel.allowsOtherFileTypes = false
+            }
         }
         if panel.runModal() == .OK, let url = panel.url {
             path = url.path

@@ -58,7 +58,8 @@ run_one() {
 echo "▶ 编译并运行 Swift 测试台（生产源码本身）"
 run_one ai_settings Core/ViewModels.swift Core/Support.swift Core/Log.swift \
   Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
-  Features/CheckBibFeature.swift Features/MergeFeature.swift Views/SettingsTab.swift \
+  Features/CheckBibFeature.swift Features/MergeFeature.swift \
+  Features/MetadataFormFeature.swift Views/SettingsTab.swift \
   "$PROJ"/tools/ai_settings_test/main.swift
 run_one ai_store Core/ViewModels.swift Core/Support.swift Core/Log.swift \
   Features/InfoCheckFeature.swift Features/MergeFeature.swift "$PROJ"/tools/ai_store_test/main.swift

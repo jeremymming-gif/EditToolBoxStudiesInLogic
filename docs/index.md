@@ -43,7 +43,7 @@ features:
 
 <div class="steps">
   <div class="step"><span class="num">1</span><strong>拖入 / 选择源文件</strong><span>Word 或 LaTeX 稿件拖进「初排转换」（Windows 版点「浏览…」选择），再选输出目录。</span></div>
-  <div class="step"><span class="num">2</span><strong>补齐信息</strong><span>按日志提示覆盖题名/作者/单位等；出版信息可一次填好。</span></div>
+  <div class="step"><span class="num">2</span><strong>补齐信息</strong><span>用「高级选项 → 填写元数据…」填题名/作者（1–5 位、可多单位）/摘要/关键词；出版信息可一次填好。</span></div>
   <div class="step"><span class="num">3</span><strong>运行并编译</strong><span>得到可编译的 .tex + reference.bib，每一步都有日志。</span></div>
 </div>
 

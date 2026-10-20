@@ -897,6 +897,190 @@ def overrides_kwargs(fn, overrides: dict[str, str]) -> dict:
     return {}
 
 
+# ── 结构化人工元数据（--metadata-json，批63b）──────────────────────────────
+#
+# GUI「填写元数据」表单（用户 2026-10-20 拍板：取消 .doc/.docx 自动识别，改人工
+# 填写）→ 临时 JSON → 本模块校验/归一化 → build 侧 `structured=` 关键字。结构
+# （全部可选；空串/空数组 = 未提供 = 不覆盖）::
+#
+#     {"schema_version": 1,
+#      "title_cn": "", "title_en": "",
+#      "running_title_cn": "", "running_title_en": "",
+#      "abstract_cn": "", "abstract_en": "",
+#      "keywords_cn": "", "keywords_en": "",
+#      "authors": [{"name_cn": "", "name_en": "",
+#                   "affiliations_cn": [""], "affiliations_en": [""],
+#                   "email": ""}]}
+#
+# 作者 1–5（模板 myfirstauthor…myfifthauthor 上限）；多单位用数组，build 侧按
+# 模板口径用 `\\` 连接（sty 把单位排在 minipage/footnote 里）。缺字段仍由 build
+# 写「【未识别…】」占位；优先级**高于** --metadata 元数据文件与旧 7 个覆盖参数。
+# 坏 JSON / 不存在 / 类型错 = exit 2（die），绝不静默继续。
+class MetadataJSONError(ValueError):
+    """`--metadata-json` 读取/校验失败：调用方 `die()` → exit 2。"""
+
+
+#: 文章级标量键（值只收字符串；空串=未提供）。
+_METADATA_JSON_SCALARS = (
+    "title_cn", "title_en", "running_title_cn", "running_title_en",
+    "abstract_cn", "abstract_en", "keywords_cn", "keywords_en",
+)
+#: 单个作者的键。
+_METADATA_JSON_AUTHOR_KEYS = (
+    "name_cn", "name_en", "email", "affiliations_cn", "affiliations_en",
+)
+#: 模板作者槽位上限（myfirstauthor…myfifthauthor）。
+_MAX_JSON_AUTHORS = 5
+
+
+def _json_clean(value) -> str:
+    """折叠空白（含换行）：`\\newcommand` 参数不能带空行。"""
+    return " ".join(str(value or "").split())
+
+
+def _json_affil_list(value, where: str) -> list[str]:
+    """单位字段：字符串/字符串数组/None → 非空字符串列表；其它类型明确报错。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        s = _json_clean(value)
+        return [s] if s else []
+    if not isinstance(value, (list, tuple)):
+        raise MetadataJSONError(f"--metadata-json 的 {where} 必须是字符串数组")
+    out: list[str] = []
+    for k, item in enumerate(value):
+        if item is None:
+            continue
+        if not isinstance(item, str):
+            raise MetadataJSONError(f"--metadata-json 的 {where}[{k}] 必须是字符串")
+        s = _json_clean(item)
+        if s:
+            out.append(s)
+    return out
+
+
+def _normalize_json_author(raw, idx: int) -> tuple[dict, list[str]]:
+    """一位作者 → (归一化 dict, 未识别键列表)。"""
+    if not isinstance(raw, dict):
+        raise MetadataJSONError(f"--metadata-json 的 authors[{idx}] 必须是对象")
+    unknown = sorted(k for k in raw if k not in _METADATA_JSON_AUTHOR_KEYS)
+    author: dict = {}
+    for key in ("name_cn", "name_en", "email"):
+        v = raw.get(key)
+        if v is None:
+            author[key] = ""
+        elif isinstance(v, str):
+            author[key] = _json_clean(v)
+        else:
+            raise MetadataJSONError(
+                f"--metadata-json 的 authors[{idx}].{key} 必须是字符串")
+    author["affiliations_cn"] = _json_affil_list(
+        raw.get("affiliations_cn"), f"authors[{idx}].affiliations_cn")
+    author["affiliations_en"] = _json_affil_list(
+        raw.get("affiliations_en"), f"authors[{idx}].affiliations_en")
+    return author, unknown
+
+
+def load_metadata_json(path: str) -> tuple[dict | None, list[str]]:
+    """读 + 校验 + 归一化 `--metadata-json`；返回 (归一化 dict 或 None, 警告列表)。
+
+    None = 没有可写入的字段（空对象/全空）→ 调用方按「未提供」处理（产物与
+    没有这个参数一致，只在日志里多一行提示）。格式问题一律抛
+    `MetadataJSONError`（调用方 die → exit 2）。
+    """
+    import json as _json
+
+    p = os.path.abspath(path)
+    if not os.path.exists(p):
+        raise MetadataJSONError(f"--metadata-json 指定的文件不存在：{p}")
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            raw_text = f.read()
+    except OSError as e:
+        raise MetadataJSONError(
+            f"--metadata-json 读取失败：{type(e).__name__}: {e}") from e
+    try:
+        data = _json.loads(raw_text)
+    except _json.JSONDecodeError as e:
+        raise MetadataJSONError(
+            f"--metadata-json 不是合法 JSON"
+            f"（{os.path.basename(p)}:{e.lineno}:{e.colno}）：{e.msg}") from e
+    if not isinstance(data, dict):
+        raise MetadataJSONError("--metadata-json 顶层必须是 JSON 对象（{…}）")
+
+    warnings: list[str] = []
+    _known = _METADATA_JSON_SCALARS + ("schema_version", "authors")
+    unknown = sorted(k for k in data if k not in _known)
+    if unknown:
+        warnings.append(
+            "--metadata-json 里有未识别的键（本次忽略）：" + "、".join(unknown))
+    if data.get("schema_version") is not None and data.get("schema_version") != 1:
+        warnings.append(
+            f"--metadata-json 的 schema_version={data.get('schema_version')!r} "
+            "不是 1（仍按 1 解析）")
+
+    out: dict = {}
+    for key in _METADATA_JSON_SCALARS:
+        v = data.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            raise MetadataJSONError(f"--metadata-json 的 {key} 必须是字符串")
+        if _json_clean(v):
+            out[key] = _json_clean(v)
+
+    raw_authors = data.get("authors")
+    if raw_authors is None:
+        raw_authors = []
+    if not isinstance(raw_authors, (list, tuple)):
+        raise MetadataJSONError("--metadata-json 的 authors 必须是数组")
+    authors: list[dict] = []
+    for idx, item in enumerate(raw_authors):
+        author, a_unknown = _normalize_json_author(item, idx)
+        if a_unknown:
+            warnings.append(
+                f"--metadata-json 的 authors[{idx}] 有未识别的键（本次忽略）："
+                + "、".join(a_unknown))
+        authors.append(author)
+    while authors and not any(authors[-1].values()):
+        authors.pop()
+    for idx, author in enumerate(authors):
+        if not any(author.values()):
+            raise MetadataJSONError(
+                f"--metadata-json 的第 {idx + 1} 位作者为空，但后面还有作者："
+                "作者槽位不能跳号（请删除空行或补全前一位作者）")
+    if len(authors) > _MAX_JSON_AUTHORS:
+        raise MetadataJSONError(
+            f"--metadata-json 给了 {len(authors)} 位作者：模板最多 "
+            f"{_MAX_JSON_AUTHORS} 位（myfirstauthor…myfifthauthor），请删减")
+    if authors:
+        out["authors"] = authors
+    if not out:
+        warnings.append(
+            "--metadata-json 没有可写入的字段 / 作者（按未提供处理）")
+        return None, warnings
+    return out, warnings
+
+
+def supports_structured(fn) -> bool:
+    """探测 build 入口是否接受 `structured=` 关键字（老引擎兼容，同 overrides）。"""
+    try:
+        return "structured" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def structured_kwargs(fn, structured: dict | None) -> dict:
+    """按入口是否支持 `structured=` 组装关键字；不支持就提示后不传（不崩）。"""
+    if not structured:
+        return {}
+    if supports_structured(fn):
+        return {"structured": structured}
+    print(f"  ⚠ {getattr(fn, '__name__', 'build')} 尚不支持 structured 参数，"
+          "本次人工元数据未生效（需 build.py 增加 structured: dict | None = None）")
+    return {}
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────
 
 
@@ -1831,6 +2015,14 @@ def main() -> int:
     ap.add_argument("--abstract-cn", default=None, help="【覆盖】中文摘要")
     ap.add_argument("--title-en", default=None, help="【覆盖】英文题名")
     ap.add_argument("--abstract-en", default=None, help="【覆盖】英文摘要")
+    # 批63b（用户 2026-10-20 拍板）：GUI「填写元数据」表单 → 临时 JSON。
+    # 多作者/多单位/中英标题摘要关键词一次给全；优先级最高（> --metadata 与上面
+    # 7 个覆盖参数）。空值不覆盖；缺字段仍写「【未识别…】」占位。
+    ap.add_argument("--metadata-json", default=None,
+                    help="【GUI 人工元数据】结构化 JSON（多作者 1–5 / 多单位 / 中英标题"
+                         "摘要关键词）。结构见 ENGINE_API「--metadata-json 契约」；"
+                         "优先级最高（> --metadata 与 --title-cn 等）；空值不覆盖；"
+                         "坏 JSON/不存在/超 5 作者/作者跳号 → exit 2")
     ap.add_argument("--list-editors", action="store_true",
                     help="只列出全库出现过的「责任编辑」姓名（每行「姓名<TAB>篇数」），供界面下拉用")
     ap.add_argument("--compile", action="store_true", help="生成后立即编译出 PDF")
@@ -2189,6 +2381,21 @@ def main() -> int:
     metadata = os.path.abspath(args.metadata) if args.metadata else None
     if metadata and not os.path.exists(metadata):
         die(f"--metadata 指定的文件不存在：{metadata}")
+    # 批63b：GUI 人工元数据（结构化 JSON）——优先级最高；坏 JSON/不存在 exit 2。
+    # 协同两段式第二段按暂存状态重跑（参数存 state 里，不含 JSON）→ 明确不支持，
+    # 与 Word 元数据文件同一先例，绝不静默丢元数据。
+    structured_meta: dict | None = None
+    if args.metadata_json:
+        if args.coop_taskbook_only or args.coop_replies:
+            die("--metadata-json 暂不支持协同两段式"
+                "（第二段按暂存状态重跑，人工元数据无法跨进程保留）："
+                "请先完成两段式，或改用普通转换 / .tex 元数据文件。")
+        try:
+            structured_meta, _mj_warnings = load_metadata_json(args.metadata_json)
+        except MetadataJSONError as e:
+            die(str(e))
+        for _w in _mj_warnings:
+            print(f"  ⚠ {_w}")
     # 批63 E2（用户 Q3）：LaTeX 通道的 --metadata 接受 Word 元数据文件——.docx 用现有
     # Word 通道解析器抽字段、合成**临时 .tex**（\my* 宏），后续流程完全不变；
     # .doc / 二进制明确报错 exit 2（Mac 界面会先转 .docx）；.tex 原样、逐字节零变化。
@@ -2306,6 +2513,19 @@ def main() -> int:
     if overrides:
         print("正文覆盖  " + "、".join(_OVERRIDE_FIELDS[k] for k in overrides)
               + f"（{len(overrides)} 项，人工值优先）")
+    if structured_meta:
+        _n_auth = len(structured_meta.get("authors") or [])
+        _n_items = (len([k for k in structured_meta if k != "authors"])
+                    + sum(1 for a in structured_meta.get("authors") or []
+                          if any(a.values())))
+        _prio = []
+        if args.metadata:
+            _prio.append("优先于 --metadata 元数据文件")
+        if overrides:
+            _prio.append("重复字段以本参数为准")
+        print("人工元数据（--metadata-json）："
+              + f"{_n_auth} 位作者、{_n_items} 项输入字段"
+              + (f"（{'；'.join(_prio)}）" if _prio else ""))
 
     def _coop_own_artifact(name_: str) -> bool:
         """暂存目录里的协同文件也算「本工具产物」（只用于协同模式的重跑判断）。"""
@@ -2362,6 +2582,7 @@ def main() -> int:
                 # overrides 只在 build.py 已支持该关键字时才传（见 overrides_kwargs），
                 # 旧引擎配新界面不会崩，只是这次覆盖不生效并在日志里说明。
                 **overrides_kwargs(build_docx, overrides),
+                **structured_kwargs(build_docx, structured_meta),
                 # 第四十六批 C 类可选开关（默认关）：命令行 --end-list-priority 才生效
                 end_list_priority=getattr(args, "end_list_priority", False),
                 number_cite_map=getattr(args, "number_cite_map", False),
@@ -2379,6 +2600,7 @@ def main() -> int:
                 basename=stem, lang=lang,
                 sty=sel.sty, skeleton=sel.skeleton, verbose=True, meta=meta,
                 **overrides_kwargs(build_latex, overrides),
+                **structured_kwargs(build_latex, structured_meta),
             )
     except Exception as e:  # noqa: BLE001
         die(f"生成失败：{type(e).__name__}: {e}")
