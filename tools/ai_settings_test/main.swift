@@ -2959,6 +2959,95 @@ check("q67-argv-default-zero-change",
       "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
 
 // ═══════════════════════════════════════════════════════════════════════════
+// (q69) 批69 B-111：高级选项「第一作者」→ 表单第一作者中文姓名（单向预填）
+//        spec: EditToolBox-notes/drafts/specs/b69-B111-author-prefill.md
+//        只读 Options.author（语义不变：仍只用于输出名/--author）；只改表单会话态 →
+//        不写 JSON、不改 argv；默认转换 argv/产物逐字节不变。
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-q69  B-111：第一作者单向预填（空则填 / 已填不覆盖 / 双空不变 / 作者空不变）")
+
+// ① 表单空 + 高级选项非空 → 预填第一作者中文姓名
+let q69Empty = MetadataForm()
+let q69Filled = MetadataForm.prefillFirstAuthorCN(from: "张三", current: q69Empty)
+check("q69-prefill-when-empty",
+      "① 表单第一作者中文姓名为空 + 高级选项「第一作者」非空 → 预填该值"
+        + "（只动第一作者中文姓名；英文姓名/题名等其余状态不变）",
+      q69Filled.authors.count == 1
+        && q69Filled.authors[0].nameCN == "张三"
+        && q69Filled.authors[0].trimmedNameCN == "张三"
+        && q69Filled.authors[0].nameEN.isEmpty
+        && q69Filled.titleCN.isEmpty,
+      "nameCN=\(q69Filled.authors[0].nameCN)")
+
+// ② 表单已填 → 不覆盖（含用户手动改过的值）
+var q69Manual = MetadataForm()
+q69Manual.titleCN = "已有题名"
+q69Manual.authors[0].nameCN = "李四"
+let q69Kept = MetadataForm.prefillFirstAuthorCN(from: "张三", current: q69Manual)
+check("q69-no-overwrite",
+      "② 表单第一作者中文姓名已填 → 不覆盖（以表单当前值为准；用户手动改过的值同样保留）",
+      q69Kept.authors[0].nameCN == "李四"
+        && q69Kept.titleCN == "已有题名"
+        && q69Kept == q69Manual,
+      "nameCN=\(q69Kept.authors[0].nameCN)")
+
+// ③ 两处都空 → 不变（表单仍视为全空 = 不下传 --metadata-json）
+let q69BothEmpty = MetadataForm()
+let q69BothEmptyAfter = MetadataForm.prefillFirstAuthorCN(from: "", current: q69BothEmpty)
+check("q69-both-empty",
+      "③ 表单空 + 高级选项空 → 完全不变（hasAnyValue 仍 false → 不写临时 JSON/不传 --metadata-json）",
+      q69BothEmptyAfter == q69BothEmpty
+        && !q69BothEmptyAfter.hasAnyValue
+        && !q69BothEmpty.hasAnyValue,
+      "hasAnyValue=\(q69BothEmptyAfter.hasAnyValue)")
+
+// ④ 高级选项空 / 全空白 → 不变（不把空白当姓名）
+let q69OnlyEmptyAuthor = MetadataForm()
+let q69OnlyEmptyAuthorAfter = MetadataForm.prefillFirstAuthorCN(from: "   ",
+                                                                current: q69OnlyEmptyAuthor)
+check("q69-author-empty-no-change",
+      "④ 高级选项「第一作者」为空 / 全空白 → 不变（不能把空白写成姓名）",
+      q69OnlyEmptyAuthorAfter == q69OnlyEmptyAuthor
+        && q69OnlyEmptyAuthorAfter.authors[0].nameCN.isEmpty,
+      "nameCN='\(q69OnlyEmptyAuthorAfter.authors[0].nameCN)'")
+
+// 接线（等价证据）：唯一入口在 showMetadataForm = true 之前调用纯逻辑预填
+let q69PreRange = q63TabSrc.range(of: "MetadataForm.prefillFirstAuthorCN(")
+let q69ShowRange = q63TabSrc.range(of: "model.showMetadataForm = true")
+let q69OrderOK = q69PreRange != nil && q69ShowRange != nil
+    && q69PreRange!.lowerBound < q69ShowRange!.lowerBound
+check("q69-ui-wiring",
+      "打开表单入口（ConvertTab「填写元数据…」）在 showMetadataForm = true 前调用纯逻辑预填；"
+        + "表单仍只有这一个打开入口（不新增入口，B-017 单一入口不变）",
+      q69OrderOK
+        && q63TabSrc.contains("from: model.options.author")
+        && q63TabSrc.contains("current: model.metadataForm")
+        && q63TabSrc.contains("MetadataFormSheet(form: $model.metadataForm)"),
+      "prefillBeforeShow=\(q69OrderOK)")
+
+// Options.author 语义不变：仍只用于输出名 → --author（不产生 --author-cn / --metadata-json）
+var q69Opts = ConvertFeature.Options()
+q69Opts.author = "张三"
+let q69OptsArgv = ConvertFeature.arguments(q69Opts)
+check("q69-options-author-semantics",
+      "Options.author 语义不变：仍只喂 --author（输出名推导）；不自动产生 --author-cn、"
+        + "不写 --metadata-json（预填只在 GUI 表单会话态，不入 argv）",
+      q69OptsArgv == ["--author", "张三", "--compile", "--clean"]
+        && !q69OptsArgv.contains("--author-cn")
+        && !q69OptsArgv.contains("--metadata-json")
+        && q63ConvSrc.contains("add(\"--author\", o.author)"),
+      "argv=\(q69OptsArgv)")
+
+// 默认零变化：不填任何输入时 argv 仍 = [--compile, --clean]
+check("q69-default-argv-zero-change",
+      "B-111 默认路径零变化：Options() 默认 argv 仍 = [--compile, --clean]"
+        + "（预填纯函数不读/不改 Options，也不触发临时 JSON）",
+      ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"]
+        && !ConvertFeature.arguments(ConvertFeature.Options()).contains("--metadata-json")
+        && MetadataForm.prefillFirstAuthorCN(from: "", current: MetadataForm()).jsonString() == nil,
+      "argv=\(ConvertFeature.arguments(ConvertFeature.Options()))")
+
+// ═══════════════════════════════════════════════════════════════════════════
 // (p) 第 55 批：暂存目录发现（只读 `_AI协同状态.json`）+ 建议摘要
 // ═══════════════════════════════════════════════════════════════════════════
 section("T-p  第 55 批：暂存目录发现 / 建议摘要 / 状态文案")

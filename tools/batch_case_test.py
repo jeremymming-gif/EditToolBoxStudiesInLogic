@@ -71,12 +71,15 @@ manifest（`--manifest file.json`，可选；缺省用内置期 87/90 清单，�
 
 * **P0**（内容/可用性硬失败）：转换 rc≠0、无 PDF、编译 `!` 错误、undefined citation/reference、
   `Missing character`>0、两遍 sha256 不一致、零付费断言失败、悬空引用>0、生成正文 0 引用但
-  bib>0、biber ERROR、`.doc→docx` 失败、页数/文献数与人工差超阈值。
-* **P1**（体例/结构）：页数差 1、文献数差 1–2、正文引用数差>10%、占位符>0、节结构差≥1、
-  一校「可自动改」残留、未引用条目比人工多>5、必补字段比人工多>10。
+  bib>0、biber ERROR、`.doc→docx` 失败、文献数与人工差超阈值。
+  **批69 B-019（用户 2026-10-21 批准）起：页数差不再进 P0**（PAGE_DIFF 一律 P1，finding、
+  页差数字与说明全部保留）；**案例级例外**见 `DEMOTE_TO_P1`（目前仅 88-06 BIB_COUNT_DIFF）。
+* **P1**（体例/结构）：页数差（任意，B-019 起一律 P1）、文献数差 1–2、正文引用数差>10%、
+  占位符>0、节结构差≥1、一校「可自动改」残留、未引用条目比人工多>5、必补字段比人工多>10。
 * **P2**（增强/提示）：未引用条目小幅多出、中文旁半角短杠（ZH-08）比人工多等。
 
-已知缺口（Phase0 盘点 + 案例 141–144 登记）写在 `KNOWN` 里，报告里标「已知」，不吞掉。
+已知缺口（Phase0 盘点 + 案例 141–144 登记）写在 `KNOWN` 里，报告里标「已知」，不吞掉
+（批69 B-019 起 PAGE_DIFF 条目只作说明，不再参与 P0 计数）。
 
 本脚本只写 /tmp 并输出报告；不写三仓、不 commit/push、不 spawn 子智能体。
 """
@@ -172,13 +175,22 @@ PAID_ENV_NAMES = frozenset(
 # 判据阈值（单测直接引用；改口径只改这里）
 # ─────────────────────────────────────────────────────────────────────────────
 
-PAGE_DIFF_P1 = 1        # 页数差 1 → P1
-PAGE_DIFF_P0 = 2        # 页数差 >=2 → P0（未登记原因时）
+# 批69 B-019（用户 2026-10-21 批准）：页数差一律 P1（finding、页差数字与说明保留），
+# 不再有「页数差 >=2 → P0」阈值；KNOWN 里的 PAGE_DIFF 条目随之变成说明性（不参与 P0 计数）。
+PAGE_DIFF_LEVEL = "P1"
 BIB_DIFF_P1_MAX = 2     # 文献条数差 1–2 → P1
 BIB_DIFF_P0_MIN = 3     # 文献条数差 >=3 → P0（未登记原因时）
 CITE_REL_DIFF = 0.10    # 正文引用数相对差 >10% → P1
 UNUSED_EXCESS_P1 = 5    # 未引用条目比人工多 >5 → P1；多 1–5 → P2
 BIB_MUST_EXCESS = 10    # 必补字段数比人工多 >10 → P1
+
+# 案例级降级（批69 B-019，用户 2026-10-21 批准）：只把**该案例该 finding**从 P0 降为 P1，
+# 不全局放宽 BIB_COUNT_DIFF（其他真实解析缺陷口径不变）。key → code → 写进 detail 的说明。
+DEMOTE_TO_P1: dict[str, dict[str, str]] = {
+    "88-06": {
+        "BIB_COUNT_DIFF": "人工多列，以源稿清单为准（B-019 抽样结论）",
+    },
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 内置 manifest：期 90 十篇（先）→ 期 87 子案例 1–9（后）
@@ -293,6 +305,8 @@ def default_cases() -> list[CaseSpec]:
 
 # 已知缺口（Phase0 盘点 §4.2/§4.3 + 案例 141–144 登记）：code → 说明。
 # 报告里给 finding 标「已知」；**不 suppress**（基线要看见真实状态，修完应自然消失）。
+# 批69 B-019 起：PAGE_DIFF 一律 P1，本表中 PAGE_DIFF 条目只作说明（不再参与 P0 计数）；
+# 其余条目口径不变。
 KNOWN: dict[str, dict[str, str]] = {
     "87-2": {
         "PAGE_DIFF": "MathType/OLE 公式丢失（源文件能力，案例 141 已登记）",
@@ -607,9 +621,15 @@ def _p0(m: dict, code: str, detail: str) -> Finding:
     return Finding("P0", code, detail)
 
 
+def demote_to_p1(key: str, code: str) -> str | None:
+    """案例级 P0→P1 降级说明（B-019 用户批准）；该案例该 code 不降级返回 None。"""
+    return DEMOTE_TO_P1.get(key or "", {}).get(code)
+
+
 def grade_case(m: dict, man: dict | None) -> list[Finding]:
     """把一例 metrics 判成 P0/P1/P2（man=None 时只做绝对判据）。"""
     out: list[Finding] = []
+    case_key = m.get("key") or ""   # B-019 案例级降级用（summary 里的 m 自带 key）
 
     # ── P0：绝对判据（不依赖人工成品）──────────────────────────────────
     if m.get("skipped"):
@@ -652,18 +672,21 @@ def grade_case(m: dict, man: dict | None) -> list[Finding]:
         gen_pages = m.get("pdf_pages")
         if man_pages and gen_pages:
             diff = abs(gen_pages - man_pages)
-            if diff >= PAGE_DIFF_P0:
-                out.append(_p0(m, "PAGE_DIFF", f"页数 {gen_pages} vs 人工 {man_pages}（差 {diff}）"))
-            elif diff == PAGE_DIFF_P1:
-                out.append(Finding("P1", "PAGE_DIFF", f"页数 {gen_pages} vs 人工 {man_pages}（差 1）"))
+            if diff:  # B-019：页差一律 P1（finding/页差数字/说明保留，不再因页差进 P0）
+                out.append(Finding(PAGE_DIFF_LEVEL, "PAGE_DIFF",
+                                   f"页数 {gen_pages} vs 人工 {man_pages}（差 {diff}）"))
         man_bib = man.get("bib_entries")
         gen_bib = (m.get("bib") or {}).get("entries")
         if man_bib and gen_bib is not None:
             diff = abs(gen_bib - man_bib)
-            if diff >= BIB_DIFF_P0_MIN:
-                out.append(_p0(m, "BIB_COUNT_DIFF", f"文献 {gen_bib} 条 vs 人工 {man_bib} 条（差 {diff}）"))
+            detail = f"文献 {gen_bib} 条 vs 人工 {man_bib} 条（差 {diff}）"
+            demote = demote_to_p1(case_key, "BIB_COUNT_DIFF") if diff >= BIB_DIFF_P0_MIN else None
+            if demote:
+                out.append(Finding("P1", "BIB_COUNT_DIFF", f"{detail}；{demote}"))
+            elif diff >= BIB_DIFF_P0_MIN:
+                out.append(_p0(m, "BIB_COUNT_DIFF", detail))
             elif diff:
-                out.append(Finding("P1", "BIB_COUNT_DIFF", f"文献 {gen_bib} 条 vs 人工 {man_bib} 条（差 {diff}）"))
+                out.append(Finding("P1", "BIB_COUNT_DIFF", detail))
         man_cite = man.get("cite") or 0
         gen_cite = tex.get("cite") or 0
         if man_cite > 0 and gen_cite > 0:
@@ -2021,14 +2044,23 @@ def run_self_test() -> int:
     check("零付费断言失败 → P0 ZERO_COST",
           any(f.code == "ZERO_COST" for f in grade_case(
               dict(clean, plan={"ai_zero": False, "ai": 3, "rc": 0}), man)))
-    check("页数差 1 → P1 / 差 2 → P0",
+    check("页数差 1/2/5 → 一律 P1 PAGE_DIFF（B-019：页差不再进 P0）",
           any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
               dict(clean, pdf_pages=17), man))
-          and any(f.level == "P0" and f.code == "PAGE_DIFF" for f in grade_case(
-              dict(clean, pdf_pages=18), man)))
-    check("文献差 3 → P0 BIB_COUNT_DIFF",
+          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+              dict(clean, pdf_pages=18), man))
+          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+              dict(clean, pdf_pages=21), man))
+          and not any(f.level == "P0" for f in grade_case(
+              dict(clean, pdf_pages=21), man)))
+    check("文献差 3 → P0 BIB_COUNT_DIFF（非 88-06 口径不变）",
           any(f.level == "P0" and f.code == "BIB_COUNT_DIFF" for f in grade_case(
               dict(clean, bib={"entries": 23}), man)))
+    check("88-06 文献差 3 → P1 BIB_COUNT_DIFF（B-019 案例级：人工多列，以源稿清单为准）",
+          any(f.level == "P1" and f.code == "BIB_COUNT_DIFF" for f in grade_case(
+              dict(clean, key="88-06", bib={"entries": 23}), man))
+          and not any(f.level == "P0" for f in grade_case(
+              dict(clean, key="88-06", bib={"entries": 23}), man)))
     check("正文 0 引用但 bib>0 → P0 NO_CITES",
           any(f.code == "NO_CITES" for f in grade_case(
               dict(clean, tex={**clean["tex"], "cite": 0}), man)))
@@ -2069,6 +2101,12 @@ def run_self_test() -> int:
           is_known("87-5", "NO_CITES") is not None
           and any(f.level == "P0" and f.code == "NO_CITES" for f in grade_case(
               dict(clean, tex={**clean["tex"], "cite": 0}), man)))
+    check("B-019：known PAGE_DIFF 只作说明、不进 P0（87-9 页差 3 → P1）",
+          is_known("87-9", "PAGE_DIFF") is not None
+          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+              dict(clean, key="87-9", pdf_pages=19), man))
+          and not any(f.level == "P0" for f in grade_case(
+              dict(clean, key="87-9", pdf_pages=19), man)))
     check("默认 out 根不在仓库/Desktop",
           DEFAULT_OUT_ROOT == Path("/tmp/batch_case_test")
           and not str(DEFAULT_OUT_ROOT).startswith(str(ROOT)))

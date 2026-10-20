@@ -3,8 +3,9 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
 
 钉住：
 ① 判据分级：P0/P1/P2 的边界（rc / PDF / `!` 错误 / undefined / 缺字 / 确定性 / 零付费 /
-   悬空引用 / 正文 0 引用 / 页数差 / 文献差 / 引用差 / 占位符 / 节结构 / 未引用条目）；
-② 已知缺口标注（`KNOWN`）**不 suppress**，只打标；
+   悬空引用 / 正文 0 引用 / 页数差（B-019 起一律 P1）/ 文献差（88-06 案例级降 P1）/
+   引用差 / 占位符 / 节结构 / 未引用条目）；
+② 已知缺口标注（`KNOWN`）**不 suppress**，只打标（B-019 起 PAGE_DIFF 条目只作说明、不进 P0）；
 ③ 解析器（`--verify-plan` 的「预计 AI：0 次」、xelatex 日志、一校 md、回读校验 md、bib 闭合）；
 ④ 零付费安全网（`sanitize_env` 清付费变量、`assert_zero_cost_args` 黑名单）；
 ⑤ 内置 manifest（期 90 十篇在前 → 期 87 子案例 1–9 在后、编号↔作者映射）；
@@ -165,12 +166,22 @@ check("正文 0 引用但 bib>0 → P0 NO_CITES",
 check(".doc→docx 失败 → P0 DOC_CONVERT",
       has(dict(CLEAN, doc_convert={"needed": True, "ok": False, "error": "no soffice"}),
           "DOC_CONVERT"))
-check("页数差 1 → P1 PAGE_DIFF / 差 2 → P0",
+check("页数差 1 → P1 PAGE_DIFF；差 2/5 也一律 P1（B-019：页差不再进 P0）",
       has(dict(CLEAN, pdf_pages=17), "PAGE_DIFF", "P1")
-      and has(dict(CLEAN, pdf_pages=18), "PAGE_DIFF", "P0"))
-check("文献差 1–2 → P1 / 差 3+ → P0",
+      and has(dict(CLEAN, pdf_pages=18), "PAGE_DIFF", "P1")
+      and not has(dict(CLEAN, pdf_pages=18), "PAGE_DIFF", "P0")
+      and has(dict(CLEAN, pdf_pages=21), "PAGE_DIFF", "P1")
+      and batch.PAGE_DIFF_LEVEL == "P1")
+check("文献差 1–2 → P1 / 差 3+ → P0（非 88-06 口径不变）",
       has(dict(CLEAN, bib={"entries": 21, "must_missing": 0}), "BIB_COUNT_DIFF", "P1")
       and has(dict(CLEAN, bib={"entries": 23, "must_missing": 0}), "BIB_COUNT_DIFF", "P0"))
+check("88-06 文献差 3 → P1 BIB_COUNT_DIFF（B-019 案例级：人工多列，以源稿清单为准）",
+      has(dict(CLEAN, key="88-06", bib={"entries": 23, "must_missing": 0}),
+          "BIB_COUNT_DIFF", "P1")
+      and not has(dict(CLEAN, key="88-06", bib={"entries": 23, "must_missing": 0}),
+                  "BIB_COUNT_DIFF", "P0")
+      and batch.demote_to_p1("88-06", "BIB_COUNT_DIFF") is not None
+      and batch.demote_to_p1("86-10", "BIB_COUNT_DIFF") is None)
 check("正文引用数差 >10% → P1 CITE_DIFF",
       has(dict(CLEAN, tex={**CLEAN["tex"], "cite": 16}), "CITE_DIFF", "P1"))
 check("正文引用差 ≤10% 不判",
@@ -203,6 +214,10 @@ check("KNOWN 登记 87-5 NO_CITES（P0 仍会被判出）",
       batch.is_known("87-5", "NO_CITES") is not None
       and ("P0", "NO_CITES") in codes(dict(CLEAN, tex={**CLEAN["tex"], "cite": 0})))
 check("KNOWN 没登记的案例不误标", batch.is_known("90-05", "NO_CITES") is None)
+check("known PAGE_DIFF 只作说明、不进 P0（B-019；87-9 页差 3 → P1）",
+      batch.is_known("87-9", "PAGE_DIFF") is not None
+      and ("P1", "PAGE_DIFF") in codes(dict(CLEAN, key="87-9", pdf_pages=19))
+      and ("P0", "PAGE_DIFF") not in codes(dict(CLEAN, key="87-9", pdf_pages=19)))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3) 解析器

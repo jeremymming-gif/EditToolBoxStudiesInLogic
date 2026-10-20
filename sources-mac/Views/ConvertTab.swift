@@ -810,6 +810,12 @@ struct ConvertTab: View {
 
     private var metadataFormButton: some View {
         Button {
+            // B-111：打开表单时**单向预填**——仅当表单「第一作者中文姓名」为空、且高级选项
+            // 「第一作者」(`options.author`) 已填时，用其预填；不覆盖已填值。
+            // 只改内存里的表单会话态（不写 JSON、不改 argv），`Options.author` 语义不变。
+            model.metadataForm = MetadataForm.prefillFirstAuthorCN(
+                from: model.options.author,
+                current: model.metadataForm)
             model.showMetadataForm = true
         } label: {
             Label("填写元数据…", systemImage: "square.and.pencil")

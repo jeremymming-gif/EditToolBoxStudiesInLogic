@@ -54,6 +54,32 @@ struct MetadataForm: Equatable {
         (coop && !scanOnly) ? .inlineFallback : .formOnly
     }
 
+    // MARK: - B-111：高级选项「第一作者」→ 表单第一作者中文姓名（单向预填）
+
+    /// 打开表单前的**单向**预填：仅当表单「第一作者中文姓名」为空、且高级选项
+    /// 「第一作者」（`ConvertFeature.Options.author`，仍只用于输出名/`--author`）非空时，
+    /// 用后者预填第一作者的中文姓名。
+    ///
+    /// 规则（spec b69-B111）：
+    /// 1. 表单空 + 高级选项非空 → 返回预填后的表单；
+    /// 2. 表单已填 → 原样返回（**不覆盖**用户输入，含用户手动改过的值）；
+    /// 3. 两处都空 → 原样返回；
+    /// 4. 高级选项空/全空白 → 原样返回。
+    ///
+    /// 纯逻辑：只读 `optionsAuthor`、只复制并改内存里的表单会话态；不写临时 JSON、
+    /// 不碰 `Options`/argv，所以默认转换 (`argv == ["--compile","--clean"]`) 逐字节不变。
+    /// 结构上 `authors[0]` 固定是第一作者（`removeAuthor` 拒绝 index 0）。
+    static func prefillFirstAuthorCN(from optionsAuthor: String,
+                                     current: MetadataForm) -> MetadataForm {
+        let candidate = Affiliation.trim(optionsAuthor)
+        guard !candidate.isEmpty,
+              !current.authors.isEmpty,
+              current.authors[0].trimmedNameCN.isEmpty else { return current }
+        var out = current
+        out.authors[0].nameCN = candidate
+        return out
+    }
+
     // MARK: - B-017：模板上限说明与达限提示（纯逻辑；界面与日志共用这一份文案）
 
     /// 常驻上限说明之一：作者上限 = 模板**硬槽位**（不是可调设置）。

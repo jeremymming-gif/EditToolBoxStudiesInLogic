@@ -8,7 +8,7 @@
 
 | 项 | 用途 | owner | 最后提交 | 测试/验证 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| `ai_settings_test/`（`main.swift` 2938 行） | mac 设置/argv 契约测试台 | mac-shell | 2026-10-20 | `bash tools/run_swift_tests.sh`（CI `ci.yml`） | active | 体量大，考虑拆分/共享 helper（单独立项，不在治理批做） |
+| `ai_settings_test/`（`main.swift` 3027 行） | mac 设置/argv 契约测试台 | mac-shell | 2026-10-21 | `bash tools/run_swift_tests.sh`（CI `ci.yml`） | active | 体量大，考虑拆分/共享 helper（单独立项，不在治理批做） |
 | `ai_store_test/` | mac AI 存储测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
 | `cutover_test/` | mac 切换测试台 | mac-shell | 2026-10-17 | `run_swift_tests.sh`（CI） | active | — |
 | `infocheck_test/` | mac 信息核查测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
@@ -18,7 +18,7 @@
 | `mock_llm_server.py` | 本机假 LLM 端点（零付费测试） | engine-core | 2026-10-17 | `Engine/tests/` 引用（test_aibib、test_batch60/63 等） | active | 开发期零付费的关键工具 |
 | `case_audit.py` | 笔记仓案例库体检（编号/索引/状态/相似度，跨仓） | case-lab | 2026-10-18 | 自带 `--check`；`AGENTS.md`/`selfcheck.py` 引用 | active | 操作笔记仓 `cases/`；跨仓需路径说明 |
 | `gen_case_index.py` | 生成/校验案例索引（跨仓） | case-lab | 2026-10-18 | CI `--check`；`selfcheck.py` 引用 | active | 操作笔记仓 `cases/` |
-| `batch_case_test.py` | 期目录/子案例自动测试 + 5 期/全量基准 | case-lab | 2026-10-19 | 自有单测 `Engine/tests/test_batch_case_test.py` | active | case-lab 的基准唯一入口；5 期复测命令见 `PRODUCT-QUALITY.md` §4（笔记仓） |
+| `batch_case_test.py` | 期目录/子案例自动测试 + 5 期/全量基准 | case-lab | 2026-10-21 | 自有单测 `Engine/tests/test_batch_case_test.py` | active | case-lab 的基准唯一入口；5 期复测命令见 `PRODUCT-QUALITY.md` §4（笔记仓）；**B-019 判据分级已落库（PAGE_DIFF→P1、88-06 案例级→P1，2026-10-21）** |
 | `gen_templates.py` | 从 Windows 原版程序提取 LaTeX 模板 → 生成 Swift 源 | rules-docs | 2026-10-16 | 生成物 `sources-mac/Features/ContentTemplates.swift` 在仓 | **dormant** | 5+ 批未用；仅换模板时用；保留不删 |
 | `sync_templates.sh` | 稿件仓《编辑笔记/模板文件》→ 本仓同步（发布带副本） | rules-docs | 2026-10-16 | 人工 `--apply` 预演；无自动测试 | **dormant** | 5+ 批未用；模板更新时才用；保留不删 |
 | `build_cli.sh` | 构建 CLI 测试工具（与 App 共用同一份功能代码） | engine-core | 2026-10-16 | `Engine/tests/test_infocheck_toc.py` 引用；产物 `toolbox-cli` | active | 与 `build.sh` 分工：只构建 CLI 回归工具 |
@@ -52,4 +52,4 @@
 - [x] 补齐每项「最后提交」与「测试/验证方式」（本表）
 - [ ] 休眠项：每 5 批 prune 时复核（进 `TECH-ADVISOR.md` §6 深审：批75）
 - [ ] 跨仓工具（`case_audit.py`/`gen_case_index.py`）是否迁回笔记仓或加 `--notes-dir` 说明（P2，需单独立项）
-- [ ] `ai_settings_test/main.swift`（2938 行）是否抽公共 helper/拆分（P2，需单独立项，不在治理批做）
+- [ ] `ai_settings_test/main.swift`（3027 行）是否抽公共 helper/拆分（P2，需单独立项，不在治理批做）
