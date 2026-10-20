@@ -696,3 +696,10 @@ enum CoopFeature {
     }
 
 }
+
+// 批63b 发布修复 R2：把「阶段 == "done"」的字符串比较放在 feature 层。
+// 旧 Xcode 对 String 相等比较的**首次**重载解析要花 ~6ms，且会被算进首个使用它的函数；
+// 放进 CoopFeature 后，ConvertTab 的 View 函数不再承担这笔一次性开销。
+extension CoopFeature.StageState {
+    var isDelivered: Bool { phase == "done" }
+}

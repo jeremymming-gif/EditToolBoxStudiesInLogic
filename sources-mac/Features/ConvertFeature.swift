@@ -178,6 +178,15 @@ enum ConvertFeature {
         var flagValue: String { rawValue }
     }
 
+    // MARK: - 批63b R2：运行收尾判断（给 View 层用；避免 View 文件里做 Int32 比较）
+
+    /// 引擎退出码 0 = 成功。（放在 feature 层：旧 Xcode 对 `==` 的**首次**重载解析
+    /// 要花 ~6ms 并算到首个使用它的函数头上，View 文件里不再直接比 Int32。）
+    static func isSuccessStatus(_ status: Int32) -> Bool { status == 0 }
+
+    /// 用户取消（不是失败，产物可能不完整）。
+    static func isCancelledStatus(_ status: Int32) -> Bool { status == Shell.cancelledStatus }
+
     // MARK: - 批63b：元数据文件三通道处置（`.doc/.docx` 自动识别撤下，但 Word 第二源保留）
 
     /// 元数据文件路径的处置结果（纯判定；GUI 只负责把 `.ignored` 的说明写进日志并清空路径）。
