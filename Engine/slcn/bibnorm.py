@@ -730,3 +730,587 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
             out.append(f"@{p.etype}{{{k},\n{lines}\n}}")
         notes.append(f"{key}: 从 note 拆出 {len(parsed)} 条（原文保留在 note）")
     return "\n\n".join(out) + "\n", notes
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 批68 B-021：Word 通道文献区解析修复（86-10 / 90-06 / 90-07 三条真实缺陷）
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 三条缺陷的**根因都在 `docxsource` 的文献区行级解析**（一批 68 暂不下沉，登记为
+# 技术债；本批与 B-022 并行、文件互斥，故只在 bib-refs 自己的模块里做**解析结果
+# 修复**）：
+#   · `_numbered_refs()` 一条编号 = 一条条目 → 同一行里的第 2 条起被吞并（86-10：
+#     编号 [4] 一行 3 条、[13] 一行 3 条 → 生成 15 vs 人工 18）；
+#   · 人年制行解析按逗号切段 → `X著，Y译，《书名》，出版社，年。` 的**题名位被译者
+#     占用**（90-06：title={周煦良、汤永宽译}，rest={《存在主义…》…}）；
+#   · 编号清单里中文条目 `作者：《题名》，《期刊》，年` 的字段被切错（90-07：
+#     author={陈晓平：《…》} / title={期刊名} / title={译者}）；
+#   · 只有 note 的脚注引注条目（题名/作者空）仍进了 bib → 参考文献区出现**空题名
+#     碎片**（90-06 的 ref01–03、90-07 的 ref03–05）。
+#
+# 修法纪律（spec §4）：**不重写解析器**；只做形状识别 + 有证据的合并；任何一步判据
+# 不满足 → **保留原条目 + warning**（不猜、不丢、不编造）。四条判据互相独立，
+# 未命中的文档三个属性（`doc.refs`/`doc.bib_entries`/`doc.body`）逐字节不变。
+#
+# ⚠️ 调用点在 `build.build_docx()`（`parse_docx()` 之后、正文引用替换与 bib 写出之前）；
+#    `docx_audit` / `parse_docx` 原路径不经过这里，故冻结基线不受影响。
+
+_ENTRY_KIND_TO_TYPE = {
+    "M": "book", "J": "article", "C": "incollection", "P": "inproceedings",
+    "D": "phdthesis", "N": "newspaper", "R": "report",
+}
+
+#: 号码行 `[12] …`（也接受全角括号/圆括号；与 docxsource 的编号口径一致）
+_NUMBERED_HEAD_RE = re.compile(r"^\s*[\[\(（]\s*(\d{1,3})\s*[\]\)）]\s*(.+)$", re.S)
+
+#: 编号清单里「作者,YYYY,」形态的年份位（用于找同段多文献的段边界）
+_YEAR_IN_LINE_RE = re.compile(r",\s*((?:19|20)\d{2})\s*[,，]")
+
+_NAME_SEG = r"[A-Z][A-Za-z.'\-]*(?:\s*,\s*[A-Z][A-Za-z.'\-]*)*"
+_NAME_RE = re.compile(rf"^{_NAME_SEG}(?:\s*(?:&|and)\s*{_NAME_SEG})*$")
+
+_CN_VOL_RE = re.compile(
+    r"^(第[一二三四五六七八九十百\d]+[卷版册]|[上下中]卷|修订版|增订版)")
+
+_CN_CITE_RE = re.compile(r"^\s*(?:Cf\.?|参见|见)\s*", re.I)
+
+
+def _has_cjk(s: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fa5]", s or ""))
+
+
+def _norm_key(s: str) -> str:
+    """比较用的归一：只留字母/数字/汉字（题名/作者模糊匹配）。"""
+    return re.sub(r"[^\w\u4e00-\u9fa5]+", "", (s or "").lower())
+
+
+def _looks_like_name(s: str) -> bool:
+    """同段多文献的段首：`Surname, I.` / `Surname.I` / `A, B` / `A & B` 形态。"""
+    s = s.strip()
+    if not s or len(s) > 60 or not re.match(r"^[A-Z]", s):
+        return False
+    if len(re.sub(r"[^A-Za-z]", "", s)) < 2:
+        return False
+    return bool(_NAME_RE.fullmatch(s))
+
+
+def _multi_ref_anchor(rest: str, end: int) -> int | None:
+    """从年份位 `,YYYY,` 往回找该段的段首（最近的 `;；.。` 之后若像姓名）。"""
+    for b in range(end - 1, max(0, end - 90) - 1, -1):
+        if rest[b] in ";；.。":
+            if _looks_like_name(rest[b + 1:end]):
+                return b + 1
+    return None
+
+
+def _looks_multi_ref(rest: str) -> bool:
+    """行内是否有 ≥2 个 `姓名,YYYY,` 形态（用于「疑似多文献」的 warning 判据）。"""
+    toks = list(_YEAR_IN_LINE_RE.finditer(rest))
+    return len(toks) >= 2 and _looks_like_name(rest[:toks[0].start()])
+
+
+def _split_multi_ref_line(rest: str) -> list[str] | None:
+    """把一条编号行正文按 `姓名,YYYY` 锚点切成多段；不像多文献则返回 None。
+
+    只认**英文式** `Surname, Initials, YYYY,` 锚点（中文多文献同段不会用这种混排，
+    宁可不拆也不误拆）；首段必须从行首起、每段至少 12 字符，否则整体放弃。
+    """
+    toks = list(_YEAR_IN_LINE_RE.finditer(rest))
+    if len(toks) < 2:
+        return None
+    if not _looks_like_name(rest[:toks[0].start()]):
+        return None
+    starts = [0]
+    for tok in toks[1:]:
+        a = _multi_ref_anchor(rest, tok.start())
+        if a is None or a <= starts[-1]:
+            return None
+        starts.append(a)
+    bounds = starts + [len(rest)]
+    chunks: list[str] = []
+    for i in range(len(starts)):
+        chunk = rest[bounds[i]:bounds[i + 1]].strip()
+        chunk = re.sub(r"[\s;；.。，,]+$", "", chunk)
+        if len(chunk) < 12:
+            return None
+        chunks.append(chunk)
+    return chunks
+
+
+def _split_address_publisher(rest: str) -> tuple[str, str]:
+    """从 `出版地: 出版社` / `出版社，年` 里拆出地址与出版社（拆不出返回空串）。"""
+    rest = re.sub(r"^[.。]\s*", "", rest or "").strip()
+    m = re.search(r"([^:：,，]{2,30})[:：]\s*([^,，.。；;]{2,60})", rest)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    parts = [p.strip(" .，,。") for p in re.split(r"[，,]", rest) if p.strip()]
+    parts = [p for p in parts if not re.fullmatch(r"(?:19|20)\d{2}[年.]?", p)]
+    if parts:
+        cand = parts[0]
+        if cand and not re.search(r"\d", cand) and len(cand) <= 60:
+            return "", cand
+    return "", ""
+
+
+def _strip_title_quotes(title: str) -> str:
+    t = (title or "").strip()
+    t = re.sub(r'^[“"\'‘]+', "", t)
+    t = re.sub(r'[”"\'’]+$', "", t)
+    return t.strip().rstrip(",，。.")
+
+
+def _entry_from_refentry(e) -> dict:
+    """把行解析器给的 `RefEntry` 转成 bib 条目 dict（编号清单通道同形）。"""
+    etype = _ENTRY_KIND_TO_TYPE.get(str(getattr(e, "kind", "") or "").upper(), "book")
+    d: dict = {
+        "_type": etype,
+        "author": (getattr(e, "author", "") or "").strip(),
+        "title": _strip_title_quotes(getattr(e, "title", "") or ""),
+        "year": str(getattr(e, "year", "") or ""),
+    }
+    rest = re.sub(r"^[.。]\s*", "", (getattr(e, "rest", "") or "").strip())
+    if etype == "book":
+        addr, pub = _split_address_publisher(rest)
+        if addr:
+            d["address"] = addr
+        if pub:
+            d["publisher"] = pub
+    elif etype == "article":
+        m = re.search(
+            r"^(?P<j>[^,，]+?)\s*[,，]\s*(?P<v>\d+)\s*"
+            r"(?:\((?P<n>[^)]*)\))?\s*[:：]\s*(?P<p>[A-Za-z]?\d[\w\-–—]*)\s*[.。]?\s*$",
+            rest)
+        if m:
+            d["journal"] = m.group("j").strip()
+            d["volume"] = m.group("v")
+            if m.group("n"):
+                d["number"] = m.group("n")
+            d["pages"] = m.group("p").replace("-", "--")
+        elif rest:
+            d["note"] = rest
+    elif rest:
+        d["note"] = rest
+    return d
+
+
+def _parse_cn_numbered_line(raw: str) -> dict | None:
+    """解析中文编号条目：`作者：《题名》，《期刊》，年` / `作者：《书名》，译者译，地：社，年`。
+
+    只认**行内证据**（题名来自《》、年份来自行内 4 位数字、期刊/出版社来自显式
+    标点段）；① 译著、② 期刊论文、③ 编著章节 三种形态之外一律返回 None（保留原条目）。
+    """
+    m = _NUMBERED_HEAD_RE.match(raw or "")
+    s = (m.group(2) if m else (raw or "")).strip()
+    if not _has_cjk(s) or "《" not in s:
+        return None
+    colon = re.search(r"[：:]", s)
+    if not colon:
+        return None
+    author = s[:colon.start()].strip()
+    if not author or len(author) > 30 or "《" in author:
+        return None
+    body = s[colon.end():].strip()
+    tm = re.search(r"《([^》]{1,120})》", body)
+    if not tm:
+        return None
+    title = tm.group(1).strip()
+    tail = body[tm.end():].strip()
+    # 题名后的卷次/版次：`（第四版）` 或直接 `第三卷`
+    vm = re.match(r"^[（(]([^）)]{1,20})[）)]", tail)
+    if vm:
+        title += f"（{vm.group(1).strip()}）"
+        tail = tail[vm.end():].strip()
+    else:
+        vm = _CN_VOL_RE.match(tail)
+        if vm:
+            title += f"（{vm.group(1)}）"
+            tail = tail[vm.end():].strip()
+    tail = tail.lstrip("，,。.；;、 ")
+    years = re.findall(r"(?:19|20)\d{2}", s)
+    if not years:
+        return None
+    d: dict = {"author": author, "title": title, "year": years[-1]}
+    # ① 译著：`译者译，出版地：出版社，年`
+    mt = re.match(r"^([\u4e00-\u9fa5•·、\s]{1,40}?(?:等)?译)\s*[，,]\s*(.+)$", tail)
+    if mt:
+        trans = re.sub(r"\s+", "", mt.group(1))
+        d["_type"] = "book"
+        d["author"] = f"{author}（著），{trans[:-1]}（译）"
+        addr, pub = _split_address_publisher(mt.group(2))
+        if addr:
+            d["address"] = addr
+        if pub:
+            d["publisher"] = pub
+        return d
+    # ② 期刊论文：`《刊名》年/期`
+    mj = re.match(r"^《([^》]{1,60})》(.*)$", tail)
+    if mj:
+        d["_type"] = "article"
+        d["journal"] = mj.group(1).strip()
+        rest = mj.group(2).strip().lstrip("，,。. ")
+        mn = re.search(r"第\s*(\d+)\s*期", rest)
+        if mn:
+            d["number"] = mn.group(1)
+        mv = re.search(r"第\s*(\d+)\s*卷", rest)
+        if mv:
+            d["volume"] = mv.group(1)
+        return d
+    # ③ 编著章节：`编者（主编）：《书名》卷次，出版信息`
+    me = re.match(
+        r"^([^：:《，,]{1,20})\s*(?:（主编）|\(主编\)|主编)?\s*[：:]\s*《([^》]{1,80})》(.*)$",
+        tail)
+    if me:
+        d["_type"] = "incollection"
+        editor, booktitle, rest = me.group(1).strip(), me.group(2).strip(), me.group(3)
+        mv = _CN_VOL_RE.match(rest.strip())
+        if mv:
+            booktitle += f"（{mv.group(1)}）"
+            rest = rest.strip()[mv.end():]
+        d["booktitle"] = booktitle
+        if editor:
+            d["note"] = f"{editor}（主编）"
+        addr, pub = _split_address_publisher(rest.lstrip("，,。. "))
+        if addr:
+            d["address"] = addr
+        if pub:
+            d["publisher"] = pub
+        return d
+    return None
+
+
+def _author_surname(a: str) -> str:
+    s = _CN_CITE_RE.sub("", (a or "").strip())
+    s = re.sub(r"[（(][^）)]*[）)]", "", s).strip(" ,，.。;；")
+    if not s:
+        return ""
+    if "," in s:
+        return _norm_key(s.split(",", 1)[0])
+    if _has_cjk(s):
+        return _norm_key(s[:4])
+    toks = [t for t in re.split(r"\s+", s) if t]
+    return _norm_key(toks[-1]) if toks else ""
+
+
+def _fragment_identity(text: str) -> tuple[str, str] | None:
+    """从「只有 note 的脚注条目」正文里抽 (作者, 题名)；抽不出返回 None。"""
+    t = (text or "").strip()
+    if not t:
+        return None
+    t = _CN_CITE_RE.sub("", t)
+    if _has_cjk(t) and "《" in t:
+        d = _parse_cn_numbered_line(t)
+        if d and d.get("title"):
+            return str(d.get("author") or ""), str(d["title"])
+        m = re.search(r"^(.{1,30}?)[：:]\s*《([^》]{2,120})》", t)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+    # 引号题名形态优先（`Surname, I., “Title,”…`）：比整行解析器更能扛缺年份的短引注
+    m = re.search(
+        r'^(.{2,40}?),\s*(?:[A-Z][\w.\- ]{0,20},\s*)?[“"]([^”"]{4,150})[”"]', t)
+    if m:
+        return m.group(1).strip(), m.group(2).strip().rstrip(",，")
+    try:
+        from .docxsource import parse_reference_line
+
+        e = parse_reference_line(t)
+        if e is not None and (e.title or "").strip() and (e.author or "").strip():
+            return e.author.strip(), _strip_title_quotes(e.title)
+    except Exception:  # noqa: BLE001  解析器异常只是「这条修不了」，不外抛
+        pass
+    return None
+
+
+def _looks_like_ref_text(t: str) -> bool:
+    """note 文本是否**像**文献条目（用来区分「真碎片」与普通说明性脚注）。"""
+    return bool(re.search(r"(?:19|20)\d{2}|《|Vol\.|pp?\.\s*\d|[“”\"]|\[[MJDC]\]",
+                          t or ""))
+
+
+def _match_target(author: str, title: str,
+                  candidates: list[tuple[str, str, str]]) -> str | None:
+    """按「题名相似度 + 作者姓氏」在既有条目里找碎片应并入的目标；找不到返回 None。"""
+    import difflib
+
+    tt = _norm_key(title)
+    if len(tt) < 4:
+        return None
+    an = _author_surname(author)
+    best: str | None = None
+    best_score = 0.0
+    for key, a2, t2 in candidates:
+        nt = _norm_key(t2)
+        if len(nt) < 4:
+            continue
+        if tt == nt:
+            score = 1.0
+        elif (len(tt) >= 6 and len(nt) >= 6
+              and (tt in nt or nt in tt)):
+            score = 0.96 if min(len(tt), len(nt)) >= 8 else 0.9
+        else:
+            score = difflib.SequenceMatcher(None, tt, nt).ratio()
+        a2n = _author_surname(a2)
+        if an and a2n and an != a2n:
+            if tt != nt:      # 作者不同时只有「题名完全相同」才敢并
+                continue
+            score -= 0.05
+        if score > best_score:
+            best, best_score = key, score
+    return best if best_score >= 0.88 else None
+
+
+def _entry_author_title(entry: dict) -> tuple[str, str]:
+    return str(entry.get("author") or ""), str(entry.get("title") or "")
+
+
+def _rewrite_body_cites(body: str, keymap: dict[str, str]) -> str:
+    """把正文 `\\parencite[loc]{旧键}` 里的旧键改写成并集后的仍存活键。"""
+    for old, new in keymap.items():
+        pat = re.compile(
+            r"\\(parencite|cite|textcite|footcite|autocite)((?:\[[^\]]*\])*)\{"
+            + re.escape(old) + r"\}")
+        body = pat.sub(
+            lambda m, _new=new: "\\" + m.group(1) + m.group(2) + "{" + _new + "}", body)
+    return body
+
+
+def _repair_word_refs_impl(doc) -> tuple[list[str], list[str]]:
+    notes: list[str] = []
+    warnings: list[str] = []
+    refs = list(getattr(doc, "refs", []) or [])
+    entries = list(getattr(doc, "bib_entries", []) or [])
+    body = getattr(doc, "body", "") or ""
+    raw_by_key = dict(getattr(doc, "ref_raw_by_key", {}) or {})
+    num2key = dict(getattr(doc, "ref_key_by_num", {}) or {})
+    if not refs and not entries:
+        return notes, warnings
+    numbered_keys = set(num2key.values())
+
+    # ── ① 同段多文献：编号行里 ≥2 条文献 → 逐段解析（86-10 型）──────────
+    existing_titles = {_norm_key(_entry_author_title(e)[1]) for _k, e, _r in entries}
+    existing_titles |= {_norm_key(getattr(r, "title", "")) for r in refs}
+    existing_titles.discard("")
+    out_entries: list[tuple[str, dict, str]] = []
+    used_keys = {k for k, _e, _r in entries} | {getattr(r, "key", "") for r in refs}
+    extra_added = 0
+    for key, ent, raw in entries:
+        out_entries.append((key, ent, raw))
+        full = raw_by_key.get(key, "")
+        if key not in numbered_keys and not full:
+            continue
+        hm = _NUMBERED_HEAD_RE.match(full)
+        if not hm:
+            continue
+        chunks = _split_multi_ref_line(hm.group(2))
+        if not chunks or len(chunks) < 2:
+            if _looks_multi_ref(hm.group(2)):
+                warnings.append(
+                    f"同段多文献行按判据拆不动（已保留原条目，请人工核对）：{full[:60]}…")
+            continue
+        parsed: list[dict] = []
+        try:
+            from .docxsource import parse_reference_line
+        except Exception:  # noqa: BLE001
+            parse_reference_line = None  # type: ignore[assignment]
+        for chunk in chunks:
+            e = parse_reference_line(chunk) if parse_reference_line else None
+            if e is None or not (getattr(e, "title", "") or "").strip():
+                parsed = []
+                break
+            parsed.append(_entry_from_refentry(e))
+        if len(parsed) != len(chunks) or not parsed:
+            warnings.append(
+                f"同段多文献行按判据拆不动（已保留原条目，请人工核对）：{full[:60]}…")
+            continue
+        # 首段是本来就存在的那条 → 用行内证据把字段归位（题名/出版信息不再串行）
+        old_ent = out_entries[-1][1]
+        new_first = dict(parsed[0])
+        new_first.setdefault("note", old_ent.get("note", ""))
+        out_entries[-1] = (key, new_first, raw)
+        n_new = 0
+        for extra in parsed[1:]:
+            tkey = _norm_key(extra.get("title", ""))
+            if not tkey or tkey in existing_titles:
+                continue      # 同一行里重复引用的同一文献（如 [13] 里的已有条目）→ 不重复加
+            try:
+                from .footnotes import make_key as _mk
+
+                ekey = _mk(extra, len(out_entries) + 1, used_keys)
+            except Exception:  # noqa: BLE001
+                ekey = f"repair{len(out_entries) + 1}"
+                while ekey in used_keys:
+                    ekey += "x"
+                used_keys.add(ekey)
+            out_entries.append((ekey, extra, ""))
+            existing_titles.add(tkey)
+            n_new += 1
+            notes.append(
+                f"{key}: 同段多文献 → 拆出新条目 {ekey}"
+                f"（《{str(extra.get('title', ''))[:40]}》）")
+        if n_new:
+            extra_added += n_new
+    entries = out_entries
+    if extra_added:
+        notes.append(f"同段多文献：编号清单共拆出 {extra_added} 条被吞并的文献")
+
+    # ── ② 中文编号条目字段归位（90-07 型）───────────────────────────────
+    fixed_cn = 0
+    fixed_keys: list[str] = []
+    for i, (key, ent, raw) in enumerate(entries):
+        if key not in numbered_keys:
+            continue
+        full = raw_by_key.get(key, "")
+        if not full:
+            continue
+        title = str(ent.get("title") or "")
+        author = str(ent.get("author") or "")
+        fragment = (
+            not title
+            or "》" in title
+            or title.strip().endswith("译")
+            or "：" in author
+            or "《" in author
+        )
+        if not fragment:
+            continue
+        parsed = _parse_cn_numbered_line(full)
+        if parsed is None:
+            continue
+        entries[i] = (key, parsed, raw)
+        fixed_cn += 1
+        fixed_keys.append(key)
+    if fixed_cn:
+        notes.append(
+            f"中文编号条目字段归位：{fixed_cn} 条"
+            + ("（" + "、".join(fixed_keys[:6]) + ("…" if len(fixed_keys) > 6 else "") + "）"
+               if fixed_keys else ""))
+
+    # ── ③ 译著拆条归位：`X著，Y译，《书名》，…`（90-06 型）────────────
+    fixed_tr = 0
+    for r in refs:
+        title = str(getattr(r, "title", "") or "").strip()
+        author = str(getattr(r, "author", "") or "").strip()
+        rest = str(getattr(r, "rest", "") or "").strip()
+        if not (title.endswith("译") and author.endswith("著") and "《" not in title):
+            continue
+        tm = re.match(r"^《([^》]{1,120})》\s*(.*)$", rest.lstrip("，,。. "))
+        if tm is None:
+            continue
+        r.title = tm.group(1).strip()
+        r.author = author[:-1].strip(" ，,、")
+        r.kind = "M"
+        r.rest = tm.group(2).strip(" ，,。.；;")
+        fixed_tr += 1
+        notes.append(
+            f"{getattr(r, 'key', '')}: 译著拆条归位（题名←《{r.title[:40]}》，译者串不再占题名位）")
+    if fixed_tr:
+        notes.append(f"译著拆条：{fixed_tr} 条题名/作者归位")
+
+    # ── ④ 空题名脚注碎片合并（90-06 / 90-07 型）────────────────────────
+    # 只在**存在文末清单**（人年制 refs 或编号清单）时启用：碎片是「脚注引注没并回
+    # 文末书目」，没有文末清单的文档（全脚注体例）里的重复条目属于另一类缺陷
+    # （脚注指纹去重），不在 B-021 三条根因内 —— 保持默认零变化。
+    if not refs and not num2key:
+        return notes, warnings
+    candidates: list[tuple[str, str, str]] = []
+    cand_keys: set[str] = set()
+    for r in refs:
+        k = getattr(r, "key", "")
+        a, t = _entry_author_title(
+            {"author": getattr(r, "author", ""), "title": getattr(r, "title", "")})
+        if k and t:
+            candidates.append((k, a, t))
+            cand_keys.add(k)
+    for k, e, _r in entries:
+        a, t = _entry_author_title(e)
+        if t:
+            candidates.append((k, a, t))
+            cand_keys.add(k)
+    keymap: dict[str, str] = {}
+    kept: list[tuple[str, dict, str]] = []
+    for key, ent, raw in entries:
+        title = str(ent.get("title") or "").strip()
+        if title:
+            kept.append((key, ent, raw))
+            continue
+        ftext = str(ent.get("note") or raw or "")
+        ident = _fragment_identity(ftext)
+        if ident is None:
+            if _looks_like_ref_text(ftext):
+                warnings.append(
+                    f"空题名脚注条目 {key} 无法从原文抽取作者/题名，已保留原条目："
+                    f"{ftext[:60]}")
+            kept.append((key, ent, raw))
+            continue
+        target = _match_target(ident[0], ident[1], candidates)
+        if target is None or target == key:
+            warnings.append(
+                f"空题名脚注条目 {key} 未找到对应书目条目，已保留原条目（不猜）："
+                f"{str(ent.get('note') or raw or '')[:60]}")
+            kept.append((key, ent, raw))
+            continue
+        keymap[key] = target
+        raw_by_key.pop(key, None)
+        notes.append(
+            f"{key}: 空题名碎片并入 {target}"
+            f"（《{ident[1][:40]}》）")
+    if keymap:
+        body = _rewrite_body_cites(body, keymap)
+        entries = kept
+        notes.append(
+            "空题名碎片合并："
+            + "、".join(f"{o}→{n}" for o, n in keymap.items())
+            + "（正文引用键同步改写）")
+
+    if notes:
+        try:
+            doc.refs = refs
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            doc.bib_entries = entries
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            doc.body = body
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            doc.ref_raw_by_key = raw_by_key
+        except Exception:  # noqa: BLE001
+            pass
+    return notes, warnings
+
+
+def repair_word_refs(doc) -> tuple[list[str], list[str]]:
+    r"""Word 文献区解析结果修复（批68 B-021；三条真实缺陷的最小侵入修法）。
+
+    参数 `doc` 是 `docxsource.parse_docx()` 的返回值（只用到 `refs` / `bib_entries`
+    / `body` / `ref_raw_by_key` / `ref_key_by_num`）。**原地修改**上述三个属性，
+    返回 `(改动说明, 告警)` 两组字符串给调用方写日志/warning。
+
+    纪律：
+      · 默认零变化——四类判据都不命中的文档，三个属性一个字节都不动；
+      · fail-soft——内部异常时回滚到调用前快照，只返回一条 warning，**不阻断出稿**；
+      · 判据失败 → 保留原条目 + warning（不猜、不丢原文）。
+    """
+    import copy as _copy
+
+    refs = getattr(doc, "refs", None)
+    entries = getattr(doc, "bib_entries", None)
+    if not refs and not entries:
+        return [], []
+    snap_refs = _copy.deepcopy(refs) if refs is not None else None
+    snap_entries = _copy.deepcopy(entries) if entries is not None else None
+    snap_body = getattr(doc, "body", "")
+    snap_raw = dict(getattr(doc, "ref_raw_by_key", {}) or {})
+    try:
+        return _repair_word_refs_impl(doc)
+    except Exception as e:  # noqa: BLE001  fail-soft：修复失败不得阻断出稿
+        try:
+            doc.refs = snap_refs
+            doc.bib_entries = snap_entries
+            doc.body = snap_body
+            doc.ref_raw_by_key = snap_raw
+        except Exception:  # noqa: BLE001
+            pass
+        return [], [f"文献解析修复未执行（不影响出稿）：{type(e).__name__}: {e}"]

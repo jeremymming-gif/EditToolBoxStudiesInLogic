@@ -2747,6 +2747,250 @@ def render_para(
     return latex, notes
 
 
+# ── B-022（批68）：Word 自动编号清单「物化」────────────────────────────────
+#
+# 根因（90-04 / 90-08 / 86-02 / 86-08 四例，批67 用户截图纠正后查 XML 确认）：
+# 文末参考文献是 **Word 自动编号**（段落 `w:numPr` + `word/numbering.xml` 的
+# `lvlText="[%1]"`、`numFmt=decimal`）——显示出来的 `[1][2]…` **不在段落文字里**。
+# 引擎只读段落文字（`Para.plain`）→ 清单会被当成「无编号的人年制清单」→ 正文 `[n]`
+# 不映射 → 0 条 `\cite` → PDF 参考文献区空白。
+#
+# 方案：解析文献区之前，按 Word 的计数规则把序号**物化**成 `[N] ` 前缀，交给既有的
+# `_numbered_refs` 编号清单通道（案例 116 契约）；下游 `ref_key_by_num` →
+# `link_numbered_citations` 的正文映射完全沿用，不另写一套映射。
+#
+# 安全闸（不满足 → **不物化、不猜**；只对「≥2 条且已对上清单」的才 warning）：
+#   ① 只认 `numFmt=decimal`、`ilvl=0`、`lvlText` 为 `%1`/`[%1]`/`（%1）`/`[]%1` 类白名单
+#      （多级/字母/罗马数字一律不猜）；
+#   ② 编号必须从 **1 起连续**（Word 计数器跨列表续号 → 对不上 1..N → 不猜）；
+#   ③ 文献区**每一条**带编号的段落都要对上原文（对不上 → 整份不物化，绝不部分编号）；
+#   ④ **正文确实用 `[n]` 引用**（作者-年制的稿子物化了也用不上，保持默认零变化）。
+# 物化后 parse_docx 末尾还有一道「正文 [n] 闭合」安全闸（条数/范围/键存在，见那里）。
+
+#: 允许的 Word 编号格式（numFmt）。decimal 是本刊中文/英文文献清单的常见形态。
+_AUTO_NUM_FMT_OK = frozenset({"decimal"})
+#: 允许的 lvlText 形态：前缀 `[]`/`[`/`【`/`［`/`（`/`(` + `%1` + 后缀 `]`/`】`/`］`/`）`/`)`/`.`/`、`。
+_AUTO_NUM_LVL_RE = re.compile(r"^(?:\[\]|\[|【|［|（|\()?%1(?:[\]】］）)]|\.|、)?$")
+#: 正文里的纯文本编号引用（与后面的 `_NUM_GROUP` 同口径；这里只作「是否编号体例」证据）
+_PRE_NUM_RE = re.compile(r"\[\s*(\d{1,3}(?:\s*[，,、]\s*\d{1,3})*)\s*\]")
+
+
+def _xml_para_text(p) -> str:
+    """段落里所有 `<w:t>` 的文字（与 `Para.plain` 同口径：不含公式/脚注标记）。"""
+    texts = [t.text or "" for t in p.iter(
+        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t")]
+    return "".join(texts)
+
+
+def _docx_numbering_defs(numbering_xml: bytes) -> dict[str, tuple[str, str, int]]:
+    """读 `word/numbering.xml` → `{numId: (numFmt, lvlText, start)}`（只取 ilvl=0）。"""
+    from lxml import etree
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    def q(tag: str) -> str:
+        return f"{{{W}}}{tag}"
+
+    root = etree.fromstring(numbering_xml)
+    abstract: dict[str, tuple[str, str, int]] = {}
+    for an in root.iter(q("abstractNum")):
+        aid = an.get(q("abstractNumId"))
+        if aid is None:
+            continue
+        for lvl in an.findall(q("lvl")):
+            if (lvl.get(q("ilvl")) or "0") != "0":
+                continue
+            fmt = lvl.find(q("numFmt"))
+            txt = lvl.find(q("lvlText"))
+            st = lvl.find(q("start"))
+            start = 1
+            if st is not None and (st.get(q("val")) or "").isdigit():
+                start = int(st.get(q("val")))
+            abstract[aid] = (
+                (fmt.get(q("val")) or "") if fmt is not None else "",
+                # Word 常把分隔空格写进 lvlText（`[%1] `、`%1 `，86-06/75-01 实测）
+                ((txt.get(q("val")) or "").replace("\u00a0", " ").strip())
+                if txt is not None else "",
+                start,
+            )
+            break
+    out: dict[str, tuple[str, str, int]] = {}
+    for n in root.iter(q("num")):
+        nid = n.get(q("numId"))
+        a = n.find(q("abstractNumId"))
+        if nid is None or a is None:
+            continue
+        defs = abstract.get(a.get(q("val")) or "", ("", "", 1))
+        fmt, ltxt, start = defs
+        # Word「重新开始编号」= 该 num 上带 lvlOverride/startOverride（案例仅出现于
+        # 分节场景）；没有 override 时从 abstracts 的 start 起算。
+        for lo in n.findall(q("lvlOverride")):
+            if (lo.get(q("ilvl")) or "0") != "0":
+                continue
+            so = lo.find(q("startOverride"))
+            if so is not None and (so.get(q("val")) or "").isdigit():
+                start = int(so.get(q("val")))
+        out[nid] = (fmt, ltxt, start)
+    return out
+
+
+def _auto_numbered_ref_items(
+    path: str, docxml: str = "",
+) -> tuple[list[tuple[str, str]], list[str], list[int]]:
+    """取「第一个参考文献标题之后」的 Word 自动编号段落：`[(纯文字, 编号串)]`。
+
+    返回 `(可物化条目, 可疑项说明, 标题之前的正文编号 [n])`。`可疑项` = 带编号但
+    格式/层级不在白名单的段落（出现在文献区时整份不物化，见
+    `_materialize_auto_numbered_refs`）；`标题之前的编号`是「正文是不是用 [n] 引用」
+    的证据（作者-年制的稿子这里为空——那种稿子物化了也用不上，保持默认零变化）。
+    编号按 Word 语义在**整篇文档**内按 numId 连续累计（标题之前的编号也推进计数器）。
+    """
+    if not docxml:
+        try:
+            import zipfile as _zipfile
+
+            with _zipfile.ZipFile(path) as _z:
+                docxml = _z.read("word/document.xml").decode("utf-8")
+        except Exception:  # noqa: BLE001 —— docx 结构异常：不物化（不阻断出稿）
+            return [], [], []
+    if "numPr" not in docxml:
+        return [], [], []      # 快路径：全文没有 Word 列表（绝大多数稿子）
+    import zipfile
+
+    from lxml import etree
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    def q(tag: str) -> str:
+        return f"{{{W}}}{tag}"
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            defs: dict[str, tuple[str, str, int]] = {}
+            if "word/numbering.xml" in z.namelist():
+                defs = _docx_numbering_defs(z.read("word/numbering.xml"))
+    except Exception:  # noqa: BLE001 —— docx 结构异常：不物化（不阻断出稿）
+        return [], [], []
+    if not defs:
+        return [], [], []
+    try:
+        doc = etree.fromstring(docxml.encode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return [], [], []
+    body = doc.find(q("body"))
+    if body is None:
+        return [], [], []
+    items: list[tuple[str, str]] = []
+    bad: list[str] = []
+    pre_nums: list[int] = []
+    head_seen = False
+    counters: dict[str, int] = {}
+    for p in body:
+        if p.tag != q("p"):
+            continue
+        text = _xml_para_text(p).strip()
+        if not head_seen:
+            # 标题之前的段落：收集正文 `[n]`（是否编号体例的证据）
+            for grp in _PRE_NUM_RE.findall(text):
+                pre_nums.extend(int(x) for x in re.split(r"[，,、]", grp) if x.strip())
+        if not head_seen and text.lower().rstrip(":：") in _REF_HEADS:
+            head_seen = True
+            continue                    # 标题行本身不是条目
+        pr = p.find(q("pPr"))
+        num_pr = pr.find(q("numPr")) if pr is not None else None
+        if num_pr is None:
+            continue
+        nid_el = num_pr.find(q("numId"))
+        if nid_el is None:
+            continue
+        nid = nid_el.get(q("val")) or ""
+        if nid not in defs:
+            continue                    # numId=0 等「无列表」定义（86-08 实测 100 处）
+        il_el = num_pr.find(q("ilvl"))
+        ilvl = int(il_el.get(q("val")) or 0) if il_el is not None else 0
+        if ilvl != 0:
+            if head_seen:
+                bad.append(f"「{text[:30]}」为多级编号（ilvl={ilvl}）")
+            continue
+        fmt, ltxt, start = defs[nid]
+        counters[nid] = counters[nid] + 1 if nid in counters else start
+        if not head_seen:
+            continue                    # 标题之前：只推进计数器（Word 连续累计）
+        if fmt not in _AUTO_NUM_FMT_OK or not _AUTO_NUM_LVL_RE.match(ltxt or ""):
+            bad.append(f"「{text[:30]}」编号格式 {fmt or '?'}/{ltxt or '?'} 不在白名单")
+            continue
+        if not text:
+            bad.append("文献区里有一条**空段落**带自动编号（无法对应原文）")
+            continue
+        items.append((text, str(counters[nid])))
+    return items, bad, pre_nums
+
+
+def _materialize_auto_numbered_refs(
+    path: str, section: list[str], docxml: str = "",
+) -> tuple[list[str], str, int]:
+    """把文献区里 Word 自动编号的序号物化成 `[N] ` 前缀。
+
+    返回 `(解析用 section, warning|'', 物化条数)`。物化为 **0** 时原样返回
+    （默认路径零变化：不含自动编号清单的稿子走不到这里）。
+    """
+    try:
+        items, bad, pre_nums = _auto_numbered_ref_items(path, docxml)
+    except Exception:  # noqa: BLE001 —— 不阻断出稿
+        return section, "", 0
+    if len(items) < 2:                  # 1 条也走不了编号清单通道（_numbered_refs 要求 ≥2 标记）
+        if bad and len(pre_nums) >= 2:
+            return section, (
+                f"文末参考文献带 Word 自动编号，但 {len(bad)} 条编号格式/层级不在白名单"
+                f"（{bad[0]}）→ 不猜清单序号，正文 [n] 保持原文，请人工核对"
+            ), 0
+        return section, "", 0
+    if len(pre_nums) < 2:
+        # 正文没有 `[n]` 编号引用（作者-年制稿）：物化了也用不上，保持默认路径零变化。
+        return section, "", 0
+    # 目标：把 items 按**文档顺序**对到 section 行（空段落已被过滤），要求编号 1..N 连续。
+    matched: list[tuple[int, str]] = []
+    cursor = 0
+    for text, label in items:
+        found = -1
+        for j in range(cursor, len(section)):
+            if section[j] == text:
+                found = j
+                break
+        if found < 0:
+            break
+        if label != str(len(matched) + 1):   # 不是从 1 起连续 → 续号/错序，不猜
+            break
+        matched.append((found, label))
+        cursor = found + 1
+    if len(matched) < 2:
+        return section, (
+            "Word 自动编号清单与文献区对不上（编号不是从 1 起的连续序号 / 续号 / "
+            "清单不是文献列表）→ 不猜清单序号，正文 [n] 保持原文，请人工核对"
+        ), 0
+    n = len(matched)
+    pre_ok = min(pre_nums) >= 1 and max(pre_nums) == n
+    if len(matched) != len(items) or bad or not pre_ok:
+        why: list[str] = []
+        if len(matched) != len(items):
+            why.append(f"清单 {len(items)} 条只对上文献区 {len(matched)} 条")
+        if bad:
+            why.append(f"{len(bad)} 条编号不可物化（{bad[0]}）")
+        if not pre_ok:
+            why.append(f"正文编号最大 [{max(pre_nums)}] 与清单 {n} 条不闭合")
+        return section, (
+            "Word 自动编号清单未物化（不猜，正文 [n] 保持原文）：" + "；".join(why)
+            + "；请人工核对文末清单编号与正文引用"
+        ), 0
+    out = list(section)
+    for j, label in matched:
+        out[j] = f"[{label}] {out[j]}"
+    return out, (
+        f"文末参考文献为 Word 自动编号：已物化 {n} 条序号"
+        f"（[1]…[{n}]），正文 [n] 按该清单映射"
+    ), n
+
+
 def parse_docx(path: str, quote_threshold: int = 105,
                c_class_union: bool = False) -> DocxDoc:
     """解析 Word 文稿。
@@ -2840,6 +3084,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
     tail_start = locate_tail_block(plains, ref_start)
     tail = parse_tail_metadata(plains, tail_start) if tail_start >= 0 else {}
 
+    _auto_materialized = 0      # B-022：Word 自动编号清单物化条数（0 = 没命中）
     if ref_start >= 0:
         ref_end = tail_start if tail_start > ref_start else len(plains)
         section = [t.strip() for t in plains[ref_start + 1 : ref_end] if t.strip()]
@@ -2871,6 +3116,12 @@ def parse_docx(path: str, quote_threshold: int = 105,
         # 出来时，refmark 第四节会把这份原文交给编辑的 AI 结构化——**不是**在这里
         # 再写一个解析器。解析成功时它也照样留着，但下游用不到。
         doc.ref_raw_lines = list(section)
+        # B-022（批68）：Word 自动编号清单物化——序号不在段落文字里（见上方常量注释）。
+        # 只影响**解析输入**：`ref_raw_lines` 与 `parse_reference_line` 兜底仍用原文。
+        _section_parse, _auto_warn, _auto_materialized = _materialize_auto_numbered_refs(
+            path, section, _docxml)
+        if _auto_warn:
+            doc.warnings.append(_auto_warn)
         # 两条体例：`[N] 作者, 年份, "题名", 刊名…`（编号清单通道 `_numbered_refs`）
         # 与「作者. 年份. 题名[M]. …」/中文逗号风格（人年制通道 `parse_reference_line`）。
         # ⚠️ 取舍必须**按覆盖条数取优**，不能只看"人年制有没有解析出东西"：
@@ -2878,7 +3129,16 @@ def parse_docx(path: str, quote_threshold: int = 105,
         #    编号写歪了（`[13 J. Ross…` 少了 `]`），逗号兜底把它误吃成 1 条 → `doc.refs` 非空
         #    → 旧逻辑「if not doc.refs」就**再也不敢走编号通道** → 整份 22 条只剩 1 条、
         #    正文引用全部没替换。裸的"先来先得"在两种格式混排/写歪时都会踩这个坑。
-        entries, num2key, raw_by_key = _numbered_refs(section)
+        entries, num2key, raw_by_key = _numbered_refs(_section_parse)
+        if _auto_materialized and len(num2key) < _auto_materialized:
+            # 物化成功但有条目解析不出键（编号→键不齐）→ 不猜映射：退回**原文口径**重解析，
+            # 通道取舍与默认路径完全一致（只多一条 warning），正文 [n] 保持原文。
+            doc.warnings.append(
+                f"Word 自动编号清单 {_auto_materialized} 条中只解析出 {len(num2key)} 条"
+                "编号条目 → 不猜编号映射（正文 [n] 保持原文），请人工核对文末清单"
+            )
+            _auto_materialized = 0
+            entries, num2key, raw_by_key = _numbered_refs(section)
         for ln in section:
             e = parse_reference_line(ln)
             if e:
@@ -2891,8 +3151,10 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 f"文末参考文献区有 {len(_unparsed)} 行未能按行内证据解析"
                 f"（原文已保留、交人工/AI 核对）：首行「{_unparsed[0][:80]}」"
             )
-        if len(entries) > len(doc.refs):
-            # 编号清单解释力更强 → 以它为准；逗号兜底误吃的那几条丢掉（它们本就是清单行）
+        if len(entries) > len(doc.refs) or (_auto_materialized and entries):
+            # 编号清单解释力更强 → 以它为准；逗号兜底误吃的那几条丢掉（它们本就是清单行）。
+            # B-022：物化成功时**等条数也优先编号通道**——只有它有「编号→键」映射，
+            # 人年制通道对 Word 自动编号稿拿不到正文 [n] 的对应关系（86-08 实测 31 vs 31）。
             doc.refs = []
             doc.bib_entries.extend(entries)
             doc.ref_key_by_num = num2key
@@ -3204,8 +3466,11 @@ def parse_docx(path: str, quote_threshold: int = 105,
             # 「有文末参考文献区」的英文稿（refs 非空）里，脚注的散文/引注一律不算条目；
             # 没有文末区的短引注（`Cf. X 2012.`，中文稿里的英文脚注常见）保留旧行为，
             # 避免正文引用全丢。
+            # B-022（批68）：文献区走 Word 自动编号物化时 `doc.refs` 会被清空、
+            # 条目改由 `doc.bib_entries` 承载——判据里的「有文末区」必须把物化算上，
+            # 否则 73/05、73/06 实测会把脚注散文当 bib 条目、原文从正文里抽走。
             _downgrade = (_entry_is_note_only(_e0) and not _has_cjk(f.text)
-                          and ((doc_is_en and bool(doc.refs))
+                          and ((doc_is_en and bool(doc.refs or _auto_materialized))
                                or (not _looks_short_bibliographic_note(f.text)
                                    and len(f.text.strip()) >= 90)))
             if _downgrade:

@@ -196,8 +196,12 @@ try:
             if not os.path.isfile(_src2):
                 skip(f"⑦ 真实稿 {_k}", "源稿不在本机"); continue
             _doc = docxsource.parse_docx(_src2)
-            check(f"⑦ 真实稿 {_k}：人年制解析条数 = {_min}（修复前 "
-                  f"低值见 benchmark）", len(_doc.refs) == _min, str(len(_doc.refs)))
+            # B-022 意图变化（批68）：文末为 **Word 自动编号**的稿子改走「编号清单」通道，
+            # 条目落在 `doc.bib_entries`、`doc.refs` 为空（86-08=31、86-02=13 实测）；
+            # 其余 4 篇仍是人年制 `doc.refs` 非空，断言口径不变。
+            _n_parsed = len(_doc.refs) or len(_doc.bib_entries)
+            check(f"⑦ 真实稿 {_k}：解析条数 = {_min}（修复前 "
+                  f"低值见 benchmark）", _n_parsed == _min, str(_n_parsed))
 except Exception as _e:  # noqa: BLE001
     skip("⑦ 真实稿 pin", f"{type(_e).__name__}: {_e}")
 

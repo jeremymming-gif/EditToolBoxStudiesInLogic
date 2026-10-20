@@ -376,10 +376,13 @@ finally:
 if _manuscripts is not None:
     import slcn.sources as _sources
 
+    # B-022 意图变化（批68）：90-04/90-08 的文末参考文献是 **Word 自动编号**，批68 物化
+    # 清单序号后正文 `[n]` → `\parencite`，「bib>0 但 0 引用」的 B 类提示不应再出现；
+    # 其余 3 例（90-06 脚注引注、87-5/87-7 无编号清单）口径不变。
     _REAL_B_CASES = (
-        ("2026年第5期(90)", "04 Haiting_Huang", True, "90-04"),
+        ("2026年第5期(90)", "04 Haiting_Huang", False, "90-04（B-022 后已有 \\parencite）"),
         ("2026年第5期(90)", "06 Yingying_Tang", False, "90-06 脚注引注路径（有 30 处引用）"),
-        ("2026年第5期(90)", "08 Yanlin_Liao", True, "90-08"),
+        ("2026年第5期(90)", "08 Yanlin_Liao", False, "90-08（B-022 后已有 \\parencite）"),
         ("2026年第2期(87)", "06 Ruixue_Tang", True, "87-5"),
         ("2026年第2期(87)", "08 Ran_Ren", True, "87-7"),
     )
@@ -411,8 +414,10 @@ if _manuscripts is not None:
                                           verbose=False, bib_zero_cites_hints=False)
                 _on_sha = _sha_file(_r_on.tex_path)
                 _off_sha = _sha_file(_r_off.tex_path)
-            check("⑨ 真实稿 90-04：产物逐字节不变（提示开/关 sha256 相同）",
-                  _on_sha == _off_sha and bool(_b_hint_lines(_r_on))
+            # B-022 意图变化（批68）：90-04 已有 \parencite → B 类提示不再出现；
+            # 「提示开关不影响产物」的硬判据（sha 相同）保留。
+            check("⑨ 真实稿 90-04：产物逐字节不变（提示开/关 sha256 相同）+ B-022 后无 B 提示",
+                  _on_sha == _off_sha and not _b_hint_lines(_r_on)
                   and _b_hint_lines(_r_off) == [],
                   f"{_on_sha[:16]} vs {_off_sha[:16]}")
 else:

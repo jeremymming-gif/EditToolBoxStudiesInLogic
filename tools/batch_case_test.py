@@ -250,6 +250,10 @@ def default_cases() -> list[CaseSpec]:
                               author_dir=author, manual_dir=f"{no} {author}",
                               source=source))
     # 期 89（5 篇 LaTeX 子集；多文件稿由引擎 A2 自动配前言源）
+    # 批68 B-018：89-05 的 Desktop 复测副本缺稿件根 `reference.bib`（引擎父目录搜索在真实
+    # 稿件仓布局正常，批67 定性），复测 manifest 显式指定稿件仓人工 bib（**只读**；
+    # sha256 d201436d5e7027debe84ab0ae837c1ec6e4d0f4af0376fa606302a11e9d9f5ba，3917B/15 条）。
+    _bib89_05 = MANUSCRIPTS_DEFAULT / "2026年第4期(89)" / "05 Zhen_Liang" / "reference.bib"
     for no, author, source in (
         ("01", "Fenrong_Liu", "Fenrong_Liu/main_CN.tex"),
         ("02", "Xiaoxuan_Fu", "偏好逻辑特刊/SLCN_template.tex"),
@@ -257,9 +261,10 @@ def default_cases() -> list[CaseSpec]:
         ("06", "Dazhu_Li", "层级选举模型中的偏好聚合及其规范性质分析/submission-final submssion.tex"),
         ("07", "Yiyan_Wang", "(Latex版)_逻辑学研究_从个体偏好到集体理性__revision_1_/WANGYIYAN.tex"),
     ):
+        extra = ("--bib", str(_bib89_05)) if no == "05" and _bib89_05.is_file() else ()
         cases.append(CaseSpec(key=f"89-{no}", issue="89", author=author,
                               author_dir=author, manual_dir=f"{no} {author}",
-                              source=source))
+                              source=source, extra_args=extra))
     # 期 86（第四十四批新增；Desktop macCaseTest86 子案例 1..10 ↔ 稿件仓 01..10，
     # 映射按人工成品 PDF 标题核对；4/5 为 LaTeX，5 带 SLCN.sty+bib）
     for no, author, source in (

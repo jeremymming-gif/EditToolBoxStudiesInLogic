@@ -1942,6 +1942,16 @@ def build_docx(
     doc = parse_docx(docx_path, quote_threshold=quote_threshold,
                      c_class_union=c_class_union)
     warnings.extend(doc.warnings)
+    # 批68 B-021（bib-refs）：Word 文献区解析结果修复（86-10/90-06/90-07 三条真实
+    # 缺陷；保守判据+失败保留原条目，默认零变化、fail-soft 不阻断出稿）。详见 bibnorm。
+    from .bibnorm import repair_word_refs
+
+    _bib_repair_notes, _bib_repair_warns = repair_word_refs(doc)
+    warnings.extend(_bib_repair_warns)
+    if _bib_repair_notes:
+        say(f"   文献解析修复：{len(_bib_repair_notes)} 条")
+        for _rep in _bib_repair_notes:
+            say(f"   · {_rep}")
     # ── 第 76 条：英文元数据第二源（同目录的「英文摘要」docx）──
     # 放在「题名/作者」那几行日志之前，日志读起来就是「这次英文题名是从哪来的」。
     _merge_en_metadata_source(doc, docx_path, metadata_path, say, warnings)

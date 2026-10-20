@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import paths as P
-from .latex import parse_macros
+from .latex import parse_macros, strip_comments
 
 TEX_EXT = {".tex"}
 DOC_EXT = {".docx", ".doc"}
@@ -485,11 +485,17 @@ def extract_body_text(text: str) -> str:
 
 
 def extract_bibkeys_from_body(body: str) -> set[str]:
-    """取正文里引用到的所有 bib key。"""
+    """取正文里引用到的所有 bib key。
+
+    B-018（批68）：先按 LaTeX 语义剥注释再抽键（`\\%` 转义不误剥）。`build.py` 的
+    「正文引用但 bib 里没有的键」告警与「源目录没有 .bib」告警都走这里——90-03 注释行
+    里的 `p985` 曾让 convert 出假告警。
+    """
     import re
 
     keys: set[str] = set()
-    for m in re.finditer(r"\\(?:parencite|textcite|cite|autocite|footcite)\*?(?:\[[^\]]*\])*\{([^{}]*)\}", body):
+    for m in re.finditer(r"\\(?:parencite|textcite|cite|autocite|footcite)\*?(?:\[[^\]]*\])*\{([^{}]*)\}",
+                         strip_comments(body)):
         for k in m.group(1).split(","):
             k = k.strip()
             if k:

@@ -41,6 +41,7 @@ import re
 # 第 84 条：SEP 词条的判据与常量只有一份（在 bibnorm 里，规范化也用同一份）
 # 第 133 条：整行 `%` 注释的口径也只有一份（`strip_bib_comments`；2 个 split_entries 共用）
 from .bibnorm import is_sep_entry, strip_bib_comments  # noqa: E402
+from .latex import strip_comments
 from dataclasses import dataclass, field
 
 # ── 各类型的必备字段 ──────────────────────────────────────────────────────
@@ -509,9 +510,13 @@ _CITE = re.compile(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\{([^{}]*)\}")
 
 
 def cited_keys(latex: str) -> set[str]:
-    """取正文里引用到的所有 bib 键。"""
+    """取正文里引用到的所有 bib 键。
+
+    B-018（批68）：先按 LaTeX 语义剥注释（`latex.strip_comments`，`\\%` 转义不误剥）。
+    90-03 的 `p985` 只出现在整行 `%` 注释的草稿段落里，未剥注释 → 假悬空引用。
+    """
     keys: set[str] = set()
-    for m in _CITE.finditer(latex):
+    for m in _CITE.finditer(strip_comments(latex)):
         for k in m.group(1).split(","):
             k = k.strip()
             if k:
