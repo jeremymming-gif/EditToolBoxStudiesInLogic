@@ -105,6 +105,7 @@ struct SettingsTab: View {
             aiFutureKnobsSection
             aiRequestKnobsSection
             aiBudgetSection
+            aiFulltextSection
         }
     }
 
@@ -486,6 +487,54 @@ struct SettingsTab: View {
                     .padding(.leading, 86)
             }
             Text(aiBudgetText)
+                .font(.caption).foregroundStyle(.tertiary)
+                .padding(.leading, 86)
+        }
+    }
+
+    // MARK: - 第 63 批：直连 API 全文核查的上限 / 自动应用
+    //
+    // 放在预算闸下面：同属「这次直连 API 会花多少、会改什么」的旋钮。
+    // 上限只约束直连 API（--llm-fulltext）；外部 chat 通道批 63 起不设字符上限。
+
+    /// 说明长文案（提出来避免旧版 Swift 类型检查超时，见文件里同类写法）。
+    private var aiFulltextText: String {
+        "「API 核查字符上限」只约束「全文 AI 核查（直连 API）」这条通道：正文总字符超过上限时"
+        + "引擎会先说明再处理。0 = 不限；留空 = 用引擎默认 \(AIBudgetSettings.defaultFulltextMaxChars)；"
+        + "非法输入不落盘。外部 chat 通道不设字符上限（保留体积估算/超长提示）。\n"
+        + "「自动应用」默认开：通过批 57 安全闸的 BIB/META/FN 建议会写进产物（先备份 .ai前、"
+        + "0 条不写、冲突拒绝、逐条记录）；《…_AI全文复核.md》报告照常生成。关掉 = 只出报告"
+        + "（与旧版 report-only 相同；转换时传 --no-llm-fulltext-apply）。"
+    }
+
+    private var aiFulltextSection: some View {
+        Group {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("核查上限").frame(width: 76, alignment: .trailing)
+                TextField(String(AIBudgetSettings.defaultFulltextMaxChars),
+                          text: Binding(get: { budget.fulltextMaxCharsText },
+                                        set: { budget.updateFulltextMaxChars($0) }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                Text("字符（0 = 不限；留空 = 默认 \(AIBudgetSettings.defaultFulltextMaxChars)）")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+            }
+            if let hint = budget.fulltextMaxCharsHint {
+                Text("⚠ " + hint)
+                    .font(.caption).foregroundStyle(.red)
+                    .padding(.leading, 86)
+                Text("（填成这样时不会落盘，转换时也不会把它发给引擎。）")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .padding(.leading, 86)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("自动应用").frame(width: 76, alignment: .trailing)
+                Toggle("全文核查结果自动应用（走安全闸，默认开）",
+                       isOn: Binding(get: { budget.fulltextAutoApply },
+                                     set: { budget.updateFulltextAutoApply($0) }))
+            }
+            Text(aiFulltextText)
                 .font(.caption).foregroundStyle(.tertiary)
                 .padding(.leading, 86)
         }

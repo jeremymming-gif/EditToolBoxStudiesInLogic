@@ -1655,19 +1655,48 @@ def _llm_fulltext_review(cfg, chunks: list[str], items_per_chunk: list[list[dict
 
 
 def render_llm_fulltext_report(*, stem: str, cfg, est: dict, result: dict,
-                               body_chars: int) -> str:
-    """`<stem>_AI全文复核.md`：参数/分片/预算/逐条建议（**不落正文全文**）。"""
-    L = [f"# AI 全文复核（直连 API，report-only）· {stem}", "",
-         "> **本报告只列建议，不自动修改 `reference.bib` / 输出 `.tex`**；"
-         "自动应用需用户另行拍板（本批不开放）。",
-         "> 通过校验的建议仍须人工核对；未通过校验/未解析的回复已按 fail-soft 跳过。", "",
+                               body_chars: int, max_chars: int = 0,
+                               truncated: bool = False,
+                               chunk_chars: int = LLM_FULLTEXT_CHUNK_CHARS,
+                               apply_summary: dict | None = None) -> str:
+    """`<stem>_AI全文复核.md`：参数/分片/预算/逐条建议（**不落正文全文**）。
+
+    批63：`apply_summary` 不为 None = 自动应用已开启（默认）；为 None 时报告与批60
+    **逐字节相同**（`--no-llm-fulltext-apply` 的 report-only 兼容承诺）。
+    """
+    if apply_summary is None:
+        _title = "AI 全文复核（直连 API，report-only）"
+        _notes = ["> **本报告只列建议，不自动修改 `reference.bib` / 输出 `.tex`**；"
+                  "自动应用需用户另行拍板（本批不开放）。",
+                  "> 通过校验的建议仍须人工核对；未通过校验/未解析的回复已按 fail-soft 跳过。",
+                  ""]
+    else:
+        _n_app = int(apply_summary.get("n_applied") or 0)
+        _n_skip = int(apply_summary.get("n_skipped") or 0)
+        _bk = str(apply_summary.get("rollback")
+                  or apply_summary.get("rollback_tex") or "")
+        _kept = str(apply_summary.get("backup_kept") or "")
+        _title = "AI 全文复核（直连 API，自动应用）"
+        _notes = ["> **自动应用已开启（批63 默认开）**：只有 BIB/META/FN 会写进产物，"
+                  "且全走批57 安全闸（0 条不写、写前 `.ai前`、冲突/漂移拒绝、逐条记录）。",
+                  f"> 本次自动应用 **{_n_app}** 条 / 跳过 **{_n_skip}** 条"
+                  + (f"；回滚副本 `{os.path.basename(_bk)}`" if _bk else "")
+                  + (f"；沿用已存在的 `{os.path.basename(_kept)}`（未覆盖）"
+                     if _kept else "") + "。",
+                  "> 通过校验的建议仍须人工核对；未通过校验/未解析的回复已按 fail-soft 跳过。",
+                  ""]
+    L = [f"# {_title}· {stem}", ""] + _notes + [
          f"- 端点：`{cfg.base}`（模型 `{cfg.model}`，通道 `{cfg.protocol}`）",
          f"- 正文：{int(body_chars)} 字 → **{result.get('n_chunks', 0)} 片**"
-         f"（每片 ≤{LLM_FULLTEXT_CHUNK_CHARS} 字符）",
+         f"（每片 ≤{chunk_chars} 字符）",
          f"- 预算估算：{est.get('n_calls', 0)} 次调用 / prompt {est.get('prompt_tokens', 0)}"
          f" + completion {est.get('completion_tokens', 0)} = {est.get('total_tokens', 0)} tokens",
          f"- 结果：**{result.get('n_suggestions', 0)}** 条通过校验建议；"
          f"{len(result.get('failures') or [])} 片 AI 建议不可用", ""]
+    if truncated:
+        L.append(f"- ⚠ **字符上限**：正文 {int(body_chars)} 字 > "
+                 f"`--llm-fulltext-max-chars` {int(max_chars)} 字 → 本次"
+                 f"**只覆盖前 {int(max_chars)} 字**（显式截断，不静默；0 = 不限）")
     L += ["## 一、逐条建议（通过校验）", ""]
     n = result.get("n_chunks", 0)
     found = False
@@ -1710,6 +1739,23 @@ def render_llm_fulltext_report(*, stem: str, cfg, est: dict, result: dict,
             L.append(f"- `{uid}`（分片 {ch['index']}）：白名单外 ID（任务书里没有，已忽略）")
     if not any_rej:
         L += ["（无）"]
+    if apply_summary is not None:
+        L += ["", "## 四、自动应用记录（批63；仅 BIB/META/FN，批57 安全闸）", ""]
+        _applied = list(apply_summary.get("applied") or [])
+        if _applied:
+            for _a in _applied:
+                L.append(f"- ✅ `{_a.get('id', '')}` → "
+                         f"{_a.get('target') or _a.get('macro') or '产物'}"
+                         f"：`{_a.get('field') or _a.get('macro') or ''}`"
+                         f" = {_coop._code_span(str(_a.get('value') or ''), 120)}")
+        else:
+            L.append("（无：0 条不写盘）")
+        _skipped = list(apply_summary.get("skipped") or [])
+        if _skipped:
+            L.append(f"- 跳过 {len(_skipped)} 条（逐条原因）：")
+            for _s in _skipped:
+                L.append(f"  - `{_s.get('id', '')}`：{_s.get('reason') or '待人工'}")
+        L.append("")
     L += ["", "> 本报告由 `convert.py --llm-fulltext` 生成；"
           "正文内容不写入本报告（只在本次请求中发送给所配置的端点）。", ""]
     return "\n".join(L)
@@ -1755,7 +1801,11 @@ def main() -> int:
                     version=f"SLCN 引擎 {ENGINE_VERSION} ｜ {_plat.describe()}")
     ap.add_argument("--source", required=True, help="【必填】源文件（.docx / .doc / .tex）")
     ap.add_argument("--out", default=None, help="【必填】输出根目录，将在其下建立 <作者名>/ 文件夹")
-    ap.add_argument("--metadata", default=None, help="LaTeX 多源合并时的元数据源（上一轮模板稿）")
+    ap.add_argument("--metadata", default=None,
+                    help="LaTeX 多源合并时的元数据源（上一轮模板稿）。也可给 Word `.docx`："
+                         "自动提取题名/作者/单位/邮箱/摘要/关键词，按语种写成临时元数据"
+                         "（批63；**只取元数据字段，不做 Word→LaTeX 全文转换**）；"
+                         "老式 `.doc` 请先另存 `.docx`/`.tex`（Mac 界面会自动转换）。")
     ap.add_argument("--bib", default=None, help="参考文献库 .bib（默认取源文件同目录下的）")
     ap.add_argument("--author", default=None, help="第一作者姓名（源里读不到时必须提供）")
     ap.add_argument("--name", default=None, help="直接指定输出名，如 Bo_Chen（跳过姓名推导）")
@@ -1815,10 +1865,11 @@ def main() -> int:
                          "隐含 --verify-refs；任务书末尾增加「初排低置信项」机器可读一节。")
     ap.add_argument("--coop-fulltext", choices=["context", "full"], default=None,
                     metavar="{context,full}",
-                    help="（第五十九批，可选，默认关）第一段任务书在附二之后追加"
-                         "「附三、正文全文/引用上下文」，供外部 chat 核对附一各项："
-                         "context=引用/脚注锚点前后各 300 字窗口合并（上限 4 万字符≈13k tokens）；"
-                         "full=正文全文（上限 8 万字符≈27k tokens）；超限显式截断。"
+                    help="（第五十九批；第六十三批起**不设字符上限**）第一段任务书在附二之后"
+                         "追加「附三、正文全文/引用上下文」，供外部 chat 核对附一各项："
+                         "context=引用/脚注锚点前后各 300 字窗口合并（约 4 万字符起只提示）；"
+                         "full=正文全文（约 8 万字符起只提示）。**不截断、整篇发送**，"
+                         "只保留体积估算与超长提示（外部 chat 有长度限制时请自行分段）。"
                          "仅配合 --coop-taskbook-only；不新增改正文类建议（回复格式/校验/"
                          "`--coop-apply` 与从前一致）。")
     ap.add_argument("--coop-stage", default=None, metavar="DIR",
@@ -1917,13 +1968,30 @@ def main() -> int:
                          "SLCN_LLM_SEARCH_TOOL）。将来服务商换了名字（如 web_search_preview）"
                          "只改这一项，不必改代码。")
     ap.add_argument("--llm-fulltext", action="store_true",
-                    help="（第六十批，可选，默认关）全文 AI 核查的**直连 API**通道："
-                         "把稿件正文分片（≤30000 字符/片）发给已配置的 LLM，逐片核对"
-                         "低置信项，生成 `<输出名>_AI全文复核.md`。**report-only："
-                         "不自动改 reference.bib/.tex**（自动应用需另行拍板）；"
+                    help="（第六十批；第六十三批起**默认自动应用**）全文 AI 核查的"
+                         "**直连 API**通道：把稿件正文分片发给已配置的 LLM，逐片核对"
+                         "低置信项，生成 `<输出名>_AI全文复核.md`。默认把通过校验的"
+                         "BIB/META/FN 建议自动应用到产物（走与 --coop-apply 相同的安全闸："
+                         "0 条不写、写前 `.ai前`、冲突拒绝、逐条记录）；要批60 的"
+                         "report-only 口径加 --no-llm-fulltext-apply。"
                          "受 --ai-budget-tokens 预算闸约束（超限退出 2、零请求）；"
                          "超时/HTTP 错/截断/JSON 不过按 fail-soft 继续出稿。"
                          "只配合 --verify-refs；不能与 --verify-plan/协同两段同用。")
+    ap.add_argument("--llm-fulltext-apply", dest="llm_fulltext_apply",
+                    action="store_true", default=None,
+                    help="（第六十三批）配合 --llm-fulltext：把通过校验的低置信建议"
+                         "**自动应用**到产物（默认开；只有 --llm-fulltext 时生效）。"
+                         "仅 BIB/META/FN，全走批57 安全闸（0 条不写、写前 `.ai前`、"
+                         "冲突/漂移拒绝、逐条记录）；`.ai前` 已存在时不覆盖。")
+    ap.add_argument("--no-llm-fulltext-apply", dest="llm_fulltext_apply",
+                    action="store_false",
+                    help="配合 --llm-fulltext：只出报告、不改产物"
+                         "（= 第六十批的 report-only 口径）。")
+    ap.add_argument("--llm-fulltext-max-chars", type=int, default=40000, metavar="N",
+                    help="（第六十三批）--llm-fulltext 发送正文的字符上限"
+                         "（默认 40000；0 = 不限）。超限时**显式截断**前 N 字并在"
+                         "日志/报告里醒目告警（不静默、退出码不变）；"
+                         "分片大小取 min(30000, N)。")
     ap.add_argument("--llm-responses-path", default=None,
                     help="responses 的路径，拼在 base 之后（默认 /responses；也可用环境变量 "
                          "SLCN_LLM_RESPONSES_PATH）。缺前导 / 会自动补上。")
@@ -1985,6 +2053,11 @@ def main() -> int:
                 "  请先在「设置」页或命令行配置 --llm-base/--llm-key/--llm-model"
                 "（或用环境变量 SLCN_LLM_BASE/SLCN_LLM_KEY/SLCN_LLM_MODEL）；"
                 "也可改用通道①：--coop-taskbook-only --coop-fulltext {context,full}")
+    if args.llm_fulltext_max_chars is not None and args.llm_fulltext_max_chars < 0:
+        ap.error("--llm-fulltext-max-chars 必须 ≥ 0（0 = 不限）")
+    if args.llm_fulltext_apply is not None and not args.llm_fulltext:
+        print("⚠ --llm-fulltext-apply/--no-llm-fulltext-apply 只配合 --llm-fulltext；"
+              "本次忽略。", file=sys.stderr, flush=True)
     if args.ai_budget_tokens is not None and args.ai_budget_tokens < 0:
         ap.error("--ai-budget-tokens 必须 ≥ 0（0 = 不限）")
     if args.ai_batch_budget_tokens is not None and args.ai_batch_budget_tokens < 0:
@@ -2116,6 +2189,28 @@ def main() -> int:
     metadata = os.path.abspath(args.metadata) if args.metadata else None
     if metadata and not os.path.exists(metadata):
         die(f"--metadata 指定的文件不存在：{metadata}")
+    # 批63 E2（用户 Q3）：LaTeX 通道的 --metadata 接受 Word 元数据文件——.docx 用现有
+    # Word 通道解析器抽字段、合成**临时 .tex**（\my* 宏），后续流程完全不变；
+    # .doc / 二进制明确报错 exit 2（Mac 界面会先转 .docx）；.tex 原样、逐字节零变化。
+    _meta_word_tmp = ""
+    if metadata and os.path.splitext(source)[1].lower() not in WORD_EXT:
+        from slcn import metadocx as _metadocx
+
+        if (args.coop_taskbook_only or args.coop_replies) and \
+                os.path.splitext(metadata)[1].lower() in (".docx", ".doc"):
+            die("--metadata 指向 Word 文件时暂不支持协同两段式"
+                "（第一段的临时元数据文件在进程结束会清理，第二段无法复用）："
+                "请改用 .tex 元数据文件，或先跑一次普通转换。")
+        try:
+            _meta_lang = args.lang or detect_lang(source, None)[0]
+            metadata, _meta_fields, _meta_word_tmp = _metadocx.adapt_metadata(
+                metadata, lang=_meta_lang)
+        except _metadocx.MetadataError as e:
+            die(str(e))
+        if _meta_word_tmp:
+            print(f"元数据源（Word）  {os.path.abspath(args.metadata)}")
+            print(f"  提取字段 {len(_meta_fields)} 个：{'、'.join(_meta_fields)}")
+            print(f"  临时 .tex：{_meta_word_tmp}（运行结束自动清理）")
     # 第四十二批 A2：LaTeX 多文件稿自动配「前言源」（正文片段 + 含 \documentclass/宏定义的
     # 前言文件，如期 90/03 的 main.tex + yalcin puzzle.tex）。判据与可解释说明见
     # `slcn.sources.discover_latex_sources()`；显式 --metadata 永远优先；判不准只 warning、保持旧行为。
@@ -2516,15 +2611,31 @@ def main() -> int:
         ft_max_tokens: int | None = None
         ft_thinking: dict | None = None
         if args.llm_fulltext:
+            # 批63：正文字符上限（默认 40000；0 = 不限）。超限**显式截断**并醒目告警，
+            # 不静默丢、也不 exit2（exit2 只留给非法配置/预算超限）。
+            _ft_body = getattr(res, "body_text", "") or ""
+            _ft_cap = int(args.llm_fulltext_max_chars or 0)
+            _ft_truncated = False
+            if _ft_cap > 0 and len(_ft_body) > _ft_cap:
+                _ft_truncated = True
+                print(f"   ⚠ 全文复核：正文 {len(_ft_body)} 字 > 上限 {_ft_cap} 字"
+                      f"（--llm-fulltext-max-chars）→ **只发送前 {_ft_cap} 字**"
+                      "（显式截断，退出码不变；0 = 不限）")
+                _ft_body = _ft_body[:_ft_cap]
+            _ft_chunk_chars = (min(LLM_FULLTEXT_CHUNK_CHARS, _ft_cap) if _ft_cap > 0
+                               else LLM_FULLTEXT_CHUNK_CHARS)
             # 低置信项：与协同 ph1 同一收集器（ID 白名单沿用 coop.parse_low_confidence）。
+            # 批63：META 项要能走批57 安全闸，必须带初排时 tex 里的当前值（判漂移）。
             _ft_low = _coop.collect_low_confidence(
                 warnings=res.warnings,
                 missing_fields=getattr(res, "missing_fields", ()) or (),
                 raw_ref_lines=raw_ref_lines,
                 bib_text=bib_text,
                 label_targets=dict(getattr(res, "undetected_fields", ()) or ()),
+                current_fields=_coop.read_tex_field_values(
+                    getattr(res, "tex_path", "") or ""),
             )
-            ft_chunks = split_fulltext_chunks(getattr(res, "body_text", "") or "")
+            ft_chunks = split_fulltext_chunks(_ft_body, _ft_chunk_chars)
             ft_items_per_chunk = [
                 _fulltext_chunk_items(_chunk, _ft_low, first=(_i == 0))
                 for _i, _chunk in enumerate(ft_chunks)
@@ -3067,22 +3178,64 @@ def main() -> int:
             print("   （要自动预跑：界面「设置」页填 API 地址/密钥/模型，"
                   "或命令行 --llm-base/--llm-key/--llm-model、环境变量 SLCN_LLM_*）")
 
-        # ── 第六十批：全文复核的实际请求与报告（report-only）────────────────────
+        # ── 第六十三批：全文复核的实际请求、自动应用与报告 ─────────────────────
         if args.llm_fulltext:
             _ft_result = _llm_fulltext_review(
                 cfg, ft_chunks, ft_items_per_chunk,
                 max_tokens=ft_max_tokens, thinking=ft_thinking)
+            # 批63（用户 2026-10-20 拍板）：默认自动应用（仅 BIB/META/FN，走批57安全闸）。
+            # 显式 --no-llm-fulltext-apply = 批60 的 report-only；--no-ai-merge 同样只出报告。
+            _ft_apply_on = (args.llm_fulltext_apply is not False
+                            and not args.no_ai_merge)
+            _ft_apply: dict | None = None
+            if _ft_apply_on:
+                _ft_accepted = [dict(sug)
+                                for _ch in _ft_result.get("chunks") or []
+                                for sug in (_ch.get("accepted") or [])]
+                _ft_apply = _coop.apply_fulltext_suggestions(
+                    accepted=_ft_accepted, items=_ft_low,
+                    bib_path=str(getattr(res, "bib_path", "") or ""),
+                    tex_path=str(getattr(res, "tex_path", "") or ""),
+                    taskbook_keys=[str(k) for _et, k, _b in entries])
+            elif args.llm_fulltext_apply is None and args.no_ai_merge:
+                print("   （--no-ai-merge：全文复核只出报告，不自动应用）")
             _ft_path = os.path.join(out_dir, f"{stem}{LLM_FULLTEXT_REPORT_SUFFIX}")
             with open(_ft_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(render_llm_fulltext_report(
                     stem=stem, cfg=cfg, est=ft_est, result=_ft_result,
-                    body_chars=len(getattr(res, "body_text", "") or "")))
+                    body_chars=len(getattr(res, "body_text", "") or ""),
+                    max_chars=_ft_cap, truncated=_ft_truncated,
+                    chunk_chars=_ft_chunk_chars, apply_summary=_ft_apply))
             _ft_fail = len(_ft_result.get("failures") or [])
-            print(f"   🤖 AI 全文复核（report-only，不改产物）："
-                  f"{_ft_result.get('n_suggestions', 0)} 条建议 / "
-                  f"{_ft_result.get('n_requests', 0)} 次请求、{_ft_fail} 片不可用")
-            print(f"   报告：{os.path.basename(_ft_path)}"
-                  "（通过校验的建议仍须人工核对；自动应用未开放）")
+            if _ft_apply_on:
+                print(f"   🤖 AI 全文复核（自动应用已开，仅 BIB/META/FN）："
+                      f"{_ft_result.get('n_suggestions', 0)} 条建议 / "
+                      f"{_ft_result.get('n_requests', 0)} 次请求、{_ft_fail} 片不可用")
+                print(f"   报告：{os.path.basename(_ft_path)}"
+                      "（通过校验的建议仍须人工核对；自动应用记录见报告）")
+            else:
+                # ⚠️ 以下两句与批60 **逐字节相同**（report-only 口径的兼容承诺）。
+                print(f"   🤖 AI 全文复核（report-only，不改产物）："
+                      f"{_ft_result.get('n_suggestions', 0)} 条建议 / "
+                      f"{_ft_result.get('n_requests', 0)} 次请求、{_ft_fail} 片不可用")
+                print(f"   报告：{os.path.basename(_ft_path)}"
+                      "（通过校验的建议仍须人工核对；自动应用未开放）")
+            if _ft_apply is not None:
+                _n_app = int(_ft_apply.get("n_applied") or 0)
+                _n_skip = int(_ft_apply.get("n_skipped") or 0)
+                if _n_app:
+                    _bk = str(_ft_apply.get("rollback")
+                              or _ft_apply.get("rollback_tex") or "")
+                    _kept = str(_ft_apply.get("backup_kept") or "")
+                    print(f"   ✅ 自动应用 {_n_app} 条建议（批57 安全闸；跳过 {_n_skip} 条）"
+                          + (f"，备份 {os.path.basename(_bk)}" if _bk else "")
+                          + (f"；沿用已存在的 {os.path.basename(_kept)}（未覆盖）"
+                             if _kept else ""))
+                else:
+                    print(f"   （自动应用：0 条可写（0 条不写盘），跳过 {_n_skip} 条"
+                          "——原因见报告）")
+                if _ft_apply.get("error"):
+                    print(f"   ⚠ 自动应用：{_ft_apply['error']}")
             if ft_chunks and not _ft_result.get("n_suggestions"):
                 print("   ⚠ 本次没有拿到通过校验的建议（原因见报告分片明细）")
             if _ft_fail:
@@ -3140,9 +3293,9 @@ def main() -> int:
                     f.write("\n" + _coop.render_fulltext_section(_ft) + "\n")
                 coop_fulltext_info = {k: _ft[k] for k in
                                       ("mode", "chars", "truncated", "tokens_est")}
-                _ft_note = ("已截断" if _ft.get("truncated")
-                            else f"{_ft.get('windows', 0)} 段窗口"
-                            if args.coop_fulltext == "context" else "全文")
+                _ft_note = ("超长（未截断，整篇发送）" if _ft.get("over_limit")
+                            else (f"{_ft.get('windows', 0)} 段窗口"
+                                  if args.coop_fulltext == "context" else "全文"))
                 print(f"   任务书附三：正文{_ft_note}，{_ft['chars']} 字"
                       f"（约 {_ft['tokens_est']} tokens）")
             else:

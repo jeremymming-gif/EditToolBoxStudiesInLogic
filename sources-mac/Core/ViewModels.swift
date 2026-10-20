@@ -1125,12 +1125,26 @@ final class AIBudgetSettings: ObservableObject {
     static let defaultArticle = 30000
     static let defaultBatch = 1000000
 
+    // MARK: - 第 63 批：直连 API「全文核查」的上限 / 自动应用（同一持久化模式）
+
+    /// 全文核查的正文总字符上限（Int；0 = 不限）。缺省 40000（= 引擎默认）；
+    /// 留空 = 不传（引擎用默认）。**不要改键名**：改了老用户设过的值就丢。
+    static let fulltextMaxCharsKey = "llmFulltextMaxChars"
+    /// 全文核查结果自动应用（Bool；**缺键 = true** = 引擎默认自动应用）。
+    static let fulltextAutoApplyKey = "llmFulltextAutoApply"
+    /// 引擎侧默认值（`convert.py --llm-fulltext-max-chars` 的 default，只有一处）。
+    static let defaultFulltextMaxChars = 40000
+
     // MARK: - 界面状态（@Published；本机没有 @State 宏，见文件抬头说明）
 
     /// 单篇预算输入框的**原样**文本（允许非法/空，界面负责红字提示；非法值不落盘）
     @Published var articleText: String = String(AIBudgetSettings.defaultArticle)
     /// 单批预算输入框的原样文本
     @Published var batchText: String = String(AIBudgetSettings.defaultBatch)
+    /// 第 63 批：全文核查正文总字符上限输入框的原样文本（非法/空保留在框里；非法不落盘）
+    @Published var fulltextMaxCharsText: String = String(AIBudgetSettings.defaultFulltextMaxChars)
+    /// 第 63 批：「全文核查结果自动应用」开关（默认开 = 引擎默认；关掉才传关闭旗标）
+    @Published var fulltextAutoApply: Bool = true
 
     private let defaults: UserDefaults
 
@@ -1146,6 +1160,15 @@ final class AIBudgetSettings: ObservableObject {
             batchText = String(max(0, defaults.integer(forKey: Self.batchKey)))
         } else {
             batchText = String(Self.defaultBatch)
+        }
+        // 第 63 批：全文核查上限 / 自动应用（缺键 = 引擎默认；自动应用缺键 = true）。
+        if defaults.object(forKey: Self.fulltextMaxCharsKey) != nil {
+            fulltextMaxCharsText = String(max(0, defaults.integer(forKey: Self.fulltextMaxCharsKey)))
+        } else {
+            fulltextMaxCharsText = String(Self.defaultFulltextMaxChars)
+        }
+        if defaults.object(forKey: Self.fulltextAutoApplyKey) != nil {
+            fulltextAutoApply = defaults.bool(forKey: Self.fulltextAutoApplyKey)
         }
     }
 
@@ -1238,5 +1261,61 @@ final class AIBudgetSettings: ObservableObject {
         case .invalid:
             break
         }
+    }
+
+    // MARK: - 第 63 批：全文核查上限 / 自动应用（同一解析/落盘口径）
+
+    /// 全文核查字符上限的解析结果（与 `Parsed` 同一模式；0 = 不限、留空 = 不传）。
+    static func parseFulltextMaxChars(_ raw: String) -> Parsed {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return .unset }
+        guard let n = Int(t) else {
+            return .invalid("上限必须是整数（0 = 不限；留空 = 引擎默认 \(Self.defaultFulltextMaxChars)），"
+                            + "现在填的是「\(t)」。")
+        }
+        guard n >= 0 else {
+            return .invalid("上限不能是负数（要「不限」请填 0），现在填的是「\(t)」。")
+        }
+        return .value(n)
+    }
+
+    /// 引擎值：nil = 不传（留空/非法；引擎用默认 40000）；0 = 显式不限。
+    var fulltextMaxCharsValue: Int? {
+        if case .value(let v) = Self.parseFulltextMaxChars(fulltextMaxCharsText) { return v }
+        return nil
+    }
+
+    var fulltextMaxCharsHint: String? {
+        if case .invalid(let h) = Self.parseFulltextMaxChars(fulltextMaxCharsText) { return h }
+        return nil
+    }
+
+    /// 一行摘要（设置页可显示；测试也用它钉「0 = 不限」的文案）。
+    var fulltextMaxCharsSummary: String {
+        switch Self.parseFulltextMaxChars(fulltextMaxCharsText) {
+        case .unset: return "默认 \(Self.defaultFulltextMaxChars)（未设置）"
+        case .value(let v): return v == 0 ? "不限" : "\(v) 字符"
+        case .invalid:
+            return "（输入无效：本次不传 --llm-fulltext-max-chars，引擎按默认 \(Self.defaultFulltextMaxChars)）"
+        }
+    }
+
+    /// 更新上限输入：合法（含留空）才落盘；非法值保留在输入框让编辑改。
+    func updateFulltextMaxChars(_ raw: String) {
+        fulltextMaxCharsText = raw
+        switch Self.parseFulltextMaxChars(raw) {
+        case .unset:
+            defaults.removeObject(forKey: Self.fulltextMaxCharsKey)
+        case .value(let n):
+            defaults.set(n, forKey: Self.fulltextMaxCharsKey)
+        case .invalid:
+            break      // 非法值不落盘（界面上有红字说明）
+        }
+    }
+
+    /// 更新「自动应用」开关：立即落盘（true 也显式存，读回口径一致；缺键 = true）。
+    func updateFulltextAutoApply(_ on: Bool) {
+        fulltextAutoApply = on
+        defaults.set(on, forKey: Self.fulltextAutoApplyKey)
     }
 }

@@ -3,8 +3,8 @@ r"""第五十九批：全文 AI 核查通道①（`--coop-fulltext {context,full
 
 Lead 2026-10-20 拍板（全部离线：不联网、不调付费 API、不读稿件库、不跑 TeX）：
   · 默认关：不带 flag 时任务书/产物/日志与 HEAD（`git archive HEAD`）**逐字节相同**；
-  · `context`：引用/脚注锚点 ±300 字窗口合并，上限 4 万字符，超限显式截断；
-  · `full`：正文全文，上限 8 万字符，超限显式截断；
+  · `context`：引用/脚注锚点 ±300 字窗口合并；约 4 万字符起只提示（批63：不截断）；
+  · `full`：正文全文；约 8 万字符起只提示（批63：**不截断、整篇发送**，保留 tokens_est）；
   · 仅 `--coop-taskbook-only` 有效，非法组合退出 2；
   · 任务书附二之后追加附三；state 增 fulltext {mode,chars,truncated,tokens_est}
     （schema 仍 1、不入指纹）；协同记录只记元信息、不落正文；回复契约/--coop-apply 不变。
@@ -204,14 +204,15 @@ def test_extract_unit() -> None:
           "```" not in coop.extract_fulltext("正文```代码```\\parencite{k1}", "context")["text"])
     big = ("填充。" * 200 + r"\parencite{k1}") * 80      # 锚点密集 → 窗口合并成超长
     bi = coop.extract_fulltext(big, "context")
-    check("①-9 context 超 4 万字 → 显式截断且留标记",
-          bi["truncated"] and "已截断：原" in bi["text"]
-          and bi["chars"] <= coop.FULLTEXT_LIMITS["context"] + 120
-          and bi["orig_chars"] > coop.FULLTEXT_LIMITS["context"])
+    check("①-9 context 超 4 万字 → 不截断（批63），只标 over_limit",
+          bi["truncated"] is False and "已截断" not in bi["text"]
+          and bi["over_limit"] is True
+          and bi["chars"] == bi["orig_chars"] > coop.FULLTEXT_LIMITS["context"])
     bf = coop.extract_fulltext("Z" * (coop.FULLTEXT_LIMITS["full"] + 5000), "full")
-    check("①-10 full 超 8 万字 → 显式截断且留标记",
-          bf["truncated"] and "已截断：原" in bf["text"]
-          and bf["chars"] <= coop.FULLTEXT_LIMITS["full"] + 120)
+    check("①-10 full 超 8 万字 → 不截断、内容完整（整篇发送）",
+          bf["truncated"] is False and "已截断" not in bf["text"]
+          and bf["over_limit"] is True and bf["chars"] > coop.FULLTEXT_LIMITS["full"]
+          and bf["text"].startswith("Z"))
     check("①-11 tokens_est == estimate_tokens(text)",
           bi["tokens_est"] == coop.estimate_tokens(bi["text"])
           and info["tokens_est"] == coop.estimate_tokens(info["text"]))
@@ -245,7 +246,9 @@ def test_render_unit() -> None:
     check("②-5 full 模式注明全文", "正文全文" in coop.render_fulltext_section(
         coop.extract_fulltext("正文", "full")))
     trunc = coop.extract_fulltext("T" * (coop.FULLTEXT_LIMITS["full"] + 1000), "full")
-    check("②-6 截断时任务书有醒目提示", "已截断" in coop.render_fulltext_section(trunc))
+    _sec = coop.render_fulltext_section(trunc)
+    check("②-6 超阈值时任务书有「超长但不截断」提示",
+          "不截断" in _sec and "整篇发送" in _sec and "已截断" not in _sec)
 
 
 # ── ③ CLI：无 flag 与 HEAD 逐字节相同（默认关零变化）─────────────────────
@@ -335,20 +338,23 @@ def test_cli_full_and_truncate(tmp: str) -> None:
     p2 = _ph1(s2, b2, o2, ["--coop-fulltext", "context"])
     tb2 = read(_taskbook(o2))
     ft2 = _state(o2).get("fulltext") or {}
-    check("⑤-5 context 超 4 万 → state.truncated=True", p2.returncode == 0
-          and ft2.get("truncated") is True and ft2.get("chars", 0) > 0, str(ft2))
-    check("⑤-6 任务书有显式截断标记（原 X 字/保留前 Y 字）",
-          "已截断：原" in tb2 and "保留前" in tb2)
-    check("⑤-7 context chars 不超过上限+标记长度",
-          ft2["chars"] <= coop.FULLTEXT_LIMITS["context"] + 200)
+    check("⑤-5 context 超 4 万 → state.truncated=False、chars>4 万（不截断）",
+          p2.returncode == 0 and ft2.get("truncated") is False
+          and ft2.get("chars", 0) > coop.FULLTEXT_LIMITS["context"], str(ft2))
+    check("⑤-6 任务书提示超长但明确「不截断」（不再有截断标记）",
+          "不截断" in tb2 and "已截断：原" not in tb2)
+    check("⑤-7 不截断时 chars 反映真实正文（不丢内容）",
+          ft2["chars"] > coop.FULLTEXT_LIMITS["context"])
 
     big_full = ("\\documentclass{article}\\title{测试题名}\\author{张三}\\begin{document}\n"
                 + "长文填充。" * 20000 + "\n\\end{document}\n")
     s3, b3, o3 = _fixture(tmp, "bigfull", body=big_full)
     p3 = _ph1(s3, b3, o3, ["--coop-fulltext", "full"])
     ft3 = _state(o3).get("fulltext") or {}
-    check("⑤-8 full 超 8 万 → 截断（显式标记）", p3.returncode == 0
-          and ft3.get("truncated") is True and ft3.get("chars", 0) > 0, str(ft3))
+    check("⑤-8 full 超 8 万 → 不截断（truncated=False），state 仍四键",
+          p3.returncode == 0 and ft3.get("truncated") is False
+          and ft3.get("chars", 0) > coop.FULLTEXT_LIMITS["full"]
+          and set(ft3) == {"mode", "chars", "truncated", "tokens_est"}, str(ft3))
 
 
 # ── ⑥ CLI：非法组合退出 2 ───────────────────────────────────────────────

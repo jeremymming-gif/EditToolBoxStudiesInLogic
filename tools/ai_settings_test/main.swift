@@ -2308,6 +2308,168 @@ check("o-clear", "留空 = 恢复「不传参数」（删键，不存空串占�
 bDefaults.removePersistentDomain(forName: budgetSuite)
 
 // ═══════════════════════════════════════════════════════════════════════════
+// (q63) 第 63 批：全文核查上限 / 自动应用 / B1 整行可点 / B2 .doc 元数据
+// ═══════════════════════════════════════════════════════════════════════════
+section("T-q63  第 63 批：API 核查上限 / 自动应用 / B1 整行可点 / B2 .doc 元数据")
+
+// ── argv：--llm-fulltext-max-chars（引擎默认 40000；0 显式传；只属于 --llm-fulltext）
+var q63AI = ConvertFeature.Options()
+q63AI.useAI = true; q63AI.llmBase = "https://api.example.com/v1"; q63AI.llmModel = "m"
+q63AI.llmFulltext = true
+check("q63-maxchars-default", "批63：上限留空/默认 40000 → 不传 --llm-fulltext-max-chars（默认 argv 不变）",
+      q63AI.llmFulltextMaxChars == nil
+        && AIBudgetSettings.defaultFulltextMaxChars == 40000
+        && !ConvertFeature.arguments(q63AI).contains("--llm-fulltext-max-chars"),
+      "default=\(AIBudgetSettings.defaultFulltextMaxChars) argv=\(ConvertFeature.arguments(q63AI))")
+var q63Custom = q63AI; q63Custom.llmFulltextMaxChars = 50000
+let q63CustomArgv = ConvertFeature.arguments(q63Custom)
+check("q63-maxchars-custom", "自定义上限 50000 → 恰好一组 --llm-fulltext-max-chars 50000",
+      q63CustomArgv.filter { $0 == "--llm-fulltext-max-chars" }.count == 1
+        && q63CustomArgv.contains("50000"),
+      "argv=\(q63CustomArgv)")
+var q63Zero = q63AI; q63Zero.llmFulltextMaxChars = 0
+let q63ZeroArgv = ConvertFeature.arguments(q63Zero)
+let q63ZeroIdx = q63ZeroArgv.firstIndex(of: "--llm-fulltext-max-chars")
+check("q63-maxchars-zero", "上限填 0（= 不限）→ 显式传 \"0\"（不能被当成「用默认」丢掉）",
+      q63ZeroIdx != nil && q63ZeroArgv[q63ZeroIdx! + 1] == "0",
+      "argv=\(q63ZeroArgv)")
+var q63DefaultValue = q63AI; q63DefaultValue.llmFulltextMaxChars = 40000
+check("q63-maxchars-default-value", "显式填 40000（= 引擎默认）→ 也不传（与留空等价）",
+      !ConvertFeature.arguments(q63DefaultValue).contains("--llm-fulltext-max-chars"),
+      "argv=\(ConvertFeature.arguments(q63DefaultValue))")
+var q63NoFulltext = ConvertFeature.Options()
+q63NoFulltext.useAI = true; q63NoFulltext.llmBase = "https://api.example.com/v1"
+q63NoFulltext.llmModel = "m"; q63NoFulltext.llmFulltextMaxChars = 50000
+check("q63-maxchars-needs-fulltext", "没勾全文核查 → 上限参数不传（只属于 --llm-fulltext）",
+      !ConvertFeature.arguments(q63NoFulltext).contains("--llm-fulltext-max-chars"),
+      "argv=\(ConvertFeature.arguments(q63NoFulltext))")
+
+// ── argv：--no-llm-fulltext-apply（自动应用默认开 → 不传；关掉才传）
+check("q63-apply-default-on", "批63：自动应用默认开（llmFulltextApply=true）→ 不传 --no-llm-fulltext-apply",
+      q63AI.llmFulltextApply
+        && !ConvertFeature.arguments(q63AI).contains("--no-llm-fulltext-apply"),
+      "apply=\(q63AI.llmFulltextApply) argv=\(ConvertFeature.arguments(q63AI))")
+var q63ApplyOff = q63AI; q63ApplyOff.llmFulltextApply = false
+let q63ApplyOffArgv = ConvertFeature.arguments(q63ApplyOff)
+check("q63-apply-off", "关掉自动应用 → 恰好一个 --no-llm-fulltext-apply",
+      q63ApplyOffArgv.filter { $0 == "--no-llm-fulltext-apply" }.count == 1,
+      "argv=\(q63ApplyOffArgv)")
+var q63ApplyNoFulltext = q63NoFulltext; q63ApplyNoFulltext.llmFulltextApply = false
+check("q63-apply-needs-fulltext", "没勾全文核查 → 也不传 --no-llm-fulltext-apply",
+      !ConvertFeature.arguments(q63ApplyNoFulltext).contains("--no-llm-fulltext-apply"),
+      "argv=\(ConvertFeature.arguments(q63ApplyNoFulltext))")
+var q63Coop = ConvertFeature.Options()
+q63Coop.source = coopSrc; q63Coop.out = coopOut; q63Coop.llmFulltext = true
+q63Coop.llmFulltextMaxChars = 50000; q63Coop.llmFulltextApply = false
+q63Coop = CoopFeature.prepare(q63Coop, phase: .first)
+let q63CoopArgv = ConvertFeature.arguments(q63Coop)
+check("q63-coop-ignores-new-flags", "两段式第一段：上限/自动应用旗标都不传（只走 --coop-fulltext）",
+      !q63CoopArgv.contains("--llm-fulltext-max-chars")
+        && !q63CoopArgv.contains("--no-llm-fulltext-apply"),
+      "argv=\(q63CoopArgv)")
+
+// ── 设置持久化：UserDefaults（key llmFulltextMaxChars / llmFulltextAutoApply）
+let q63Suite = "cn.edu.sysu.logic.toolbox.tests.aiFulltext"
+let q63Defaults = UserDefaults(suiteName: q63Suite)!
+q63Defaults.removePersistentDomain(forName: q63Suite)
+let q63b0 = AIBudgetSettings(defaults: q63Defaults)
+check("q63-settings-defaults", "批63 设置默认：上限 40000、自动应用开；缺键不落盘（老用户零覆盖）",
+      q63b0.fulltextMaxCharsText == "40000"
+        && q63b0.fulltextMaxCharsValue == AIBudgetSettings.defaultFulltextMaxChars
+        && q63b0.fulltextAutoApply
+        && q63b0.fulltextMaxCharsHint == nil
+        && q63Defaults.object(forKey: AIBudgetSettings.fulltextMaxCharsKey) == nil
+        && q63Defaults.object(forKey: AIBudgetSettings.fulltextAutoApplyKey) == nil,
+      "maxChars=\(q63b0.fulltextMaxCharsText) apply=\(q63b0.fulltextAutoApply)")
+q63b0.updateFulltextMaxChars("abc")
+check("q63-settings-invalid", "非法上限：红字提示、value=nil、**不落盘**",
+      q63b0.fulltextMaxCharsHint != nil && q63b0.fulltextMaxCharsValue == nil
+        && q63Defaults.object(forKey: AIBudgetSettings.fulltextMaxCharsKey) == nil,
+      "hint=\(q63b0.fulltextMaxCharsHint ?? "<nil>")")
+q63b0.updateFulltextMaxChars("-1")
+check("q63-settings-negative", "负数上限拒绝（0 = 不限，负数不是）",
+      q63b0.fulltextMaxCharsHint != nil && q63b0.fulltextMaxCharsValue == nil,
+      "hint=\(q63b0.fulltextMaxCharsHint ?? "<nil>")")
+q63b0.updateFulltextMaxChars("0"); q63b0.updateFulltextAutoApply(false)
+let q63bBack = AIBudgetSettings(defaults: q63Defaults)
+check("q63-settings-persist", "0 也落盘（摘要显示「不限」）；自动应用关掉后读回 false",
+      q63Defaults.integer(forKey: AIBudgetSettings.fulltextMaxCharsKey) == 0
+        && q63bBack.fulltextMaxCharsValue == 0
+        && q63bBack.fulltextMaxCharsSummary.contains("不限")
+        && q63bBack.fulltextAutoApply == false
+        && q63Defaults.bool(forKey: AIBudgetSettings.fulltextAutoApplyKey) == false,
+      "maxChars=\(q63bBack.fulltextMaxCharsText) apply=\(q63bBack.fulltextAutoApply)")
+q63b0.updateFulltextMaxChars("")
+q63b0.updateFulltextAutoApply(true)
+let q63bCleared = AIBudgetSettings(defaults: q63Defaults)
+check("q63-settings-clear", "留空 = 删键回默认（不存空串）；自动应用可恢复 true",
+      q63Defaults.object(forKey: AIBudgetSettings.fulltextMaxCharsKey) == nil
+        && q63bCleared.fulltextMaxCharsText == "40000"
+        && q63bCleared.fulltextAutoApply == true
+        && q63Defaults.bool(forKey: AIBudgetSettings.fulltextAutoApplyKey) == true,
+      "maxChars=\(q63bCleared.fulltextMaxCharsText) apply=\(q63bCleared.fulltextAutoApply)")
+q63Defaults.removePersistentDomain(forName: q63Suite)
+
+// ── B2：元数据 .doc → 临时 .docx（纯判定/路径；textutil 调用在 GUI 层）
+let q63DocPath = "/Users/x/元数据.doc"
+let q63Plan = ConvertFeature.metadataConversionPlan(q63DocPath, temporaryDirectory: "/tmp/q63")
+check("q63-b2-doc-plan", ".doc → 生成临时 .docx 计划；textutil 参数固定（原文件不动）",
+      q63Plan != nil
+        && q63Plan?.source == q63DocPath
+        && q63Plan?.output == "/tmp/q63/slcn_metadata_元数据.docx"
+        && (q63Plan?.textutilArguments ?? []) == ["-convert", "docx", "-output",
+                                                  "/tmp/q63/slcn_metadata_元数据.docx", q63DocPath],
+      "plan=\(String(describing: q63Plan))")
+check("q63-b2-doc-upper", ".DOC 大写同样识别（pathExtension 大小写不敏感）",
+      ConvertFeature.metadataConversionPlan("A.DOC", temporaryDirectory: "/tmp/q63") != nil,
+      "upper=\(String(describing: ConvertFeature.metadataConversionPlan("A.DOC", temporaryDirectory: "/tmp/q63")))")
+check("q63-b2-passthrough", ".docx / .tex / 空路径 / 无扩展名 一律透传（nil = 不转换）",
+      ConvertFeature.metadataConversionPlan("a.docx", temporaryDirectory: "/tmp/q63") == nil
+        && ConvertFeature.metadataConversionPlan("a.tex", temporaryDirectory: "/tmp/q63") == nil
+        && ConvertFeature.metadataConversionPlan("", temporaryDirectory: "/tmp/q63") == nil
+        && ConvertFeature.metadataConversionPlan("noext", temporaryDirectory: "/tmp/q63") == nil,
+      "ok")
+
+// ── 源码级接线（不依赖窗口手点；屏幕锁定时作为等价证据）
+let q63TabSrc = readSrc("Views/ConvertTab.swift")
+let q63ConvSrc = readSrc("Features/ConvertFeature.swift")
+let q63SettingsSrc = readSrc("Views/SettingsTab.swift")
+let q63VmSrc = readSrc("Core/ViewModels.swift")
+check("q63-b1-hit-area", "B1：高级选项换成整行 Button(.plain)（chevron 旋转 + contentShape + withAnimation）",
+      q63TabSrc.contains("model.showAdvanced.toggle()")
+        && q63TabSrc.contains(".contentShape(Rectangle())")
+        && q63TabSrc.contains("withAnimation(")
+        && !q63TabSrc.contains("DisclosureGroup(\"高级选项\""),
+      "toggle=\(q63TabSrc.contains("model.showAdvanced.toggle()")) "
+        + "shape=\(q63TabSrc.contains(".contentShape(Rectangle())"))")
+check("q63-b2-ui-wiring", "B2：run() 里调 textutil 转 .doc；占位文案列出 .tex / .doc / .docx；跑完清理临时文件",
+      q63TabSrc.contains("metadataConversionPlan")
+        && q63TabSrc.contains("/usr/bin/textutil")
+        && q63TabSrc.contains(".doc 已转成临时 .docx")
+        && q63TabSrc.contains(".tex / .doc / .docx")
+        && q63TabSrc.contains("removeItem(atPath: temp)"),
+      "plan=\(q63TabSrc.contains("metadataConversionPlan")) "
+        + "textutil=\(q63TabSrc.contains("/usr/bin/textutil"))")
+check("q63-copy-no-limit", "批63 文案：外部 chat 不再写「约 4/8 万字上限」，改为不设上限",
+      !q63ConvSrc.contains("约 4 万字上限") && !q63ConvSrc.contains("约 8 万字上限")
+        && q63ConvSrc.contains("不设上限"),
+      "noLimit=\(q63ConvSrc.contains("不设上限"))")
+check("q63-copy-auto-apply", "批63 文案/日志：直连通道写明自动应用（安全闸），不再说 report-only 不改产物",
+      q63ConvSrc.contains("--no-llm-fulltext-apply")
+        && q63ConvSrc.contains("自动应用")
+        && q63TabSrc.contains("自动应用")
+        && !q63ConvSrc.contains("只生成《…_AI全文复核.md》核查报告"),
+      "flag=\(q63ConvSrc.contains("--no-llm-fulltext-apply"))")
+check("q63-settings-ui", "设置页新增 aiFulltextSection：API 核查字符上限 + 自动应用 Toggle（默认开）",
+      q63SettingsSrc.contains("aiFulltextSection")
+        && q63SettingsSrc.contains("核查上限")
+        && q63SettingsSrc.contains("全文核查结果自动应用")
+        && q63SettingsSrc.contains("fulltextAutoApply")
+        && q63VmSrc.contains("llmFulltextAutoApply")
+        && q63VmSrc.contains("llmFulltextMaxChars"),
+      "section=\(q63SettingsSrc.contains("aiFulltextSection"))")
+
+// ═══════════════════════════════════════════════════════════════════════════
 // (p) 第 55 批：暂存目录发现（只读 `_AI协同状态.json`）+ 建议摘要
 // ═══════════════════════════════════════════════════════════════════════════
 section("T-p  第 55 批：暂存目录发现 / 建议摘要 / 状态文案")

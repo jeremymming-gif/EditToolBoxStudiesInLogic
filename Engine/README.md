@@ -127,14 +127,15 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**86 套件 / 3400 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**90 套件 / 3494 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
 `test_authornorm` 73 ｜ `test_bare_email` 30 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10
 `test_batch47b` 4 ｜ `test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8
 `test_batch49_no_cites` 10 ｜ `test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 100
 `test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 66 ｜ `test_batch58_bibdb_auto` 38 ｜ `test_batch58_bibdb_hits` 54
-`test_batch59_coop_fulltext` 56 ｜ `test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch_case_test` 0
+`test_batch59_coop_fulltext` 56 ｜ `test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14
+`test_batch63_chat_no_limit` 17 ｜ `test_batch63_fulltext_apply` 36 ｜ `test_batch63_metadata_docx` 27 ｜ `test_batch_case_test` 0
 `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibdb` 272 ｜ `test_bibdb_verify` 54
 `test_bibnorm` 27 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27
 `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19
@@ -173,7 +174,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**248 处 / 55 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-20 02:51:08`；`HEAD` = `ecd3d34`；`git status --porcelain` **14** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-20 12:58:07`；`HEAD` = `6b39093`；`git status --porcelain` **20** 行
 <!-- AUTO:STATE:END -->
 
 ---

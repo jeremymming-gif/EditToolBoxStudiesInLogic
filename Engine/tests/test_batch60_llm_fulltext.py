@@ -247,8 +247,11 @@ def test_help_and_invalid(tmp: str) -> None:
                        encoding="utf-8", errors="replace", timeout=120)
     out = r.stdout + r.stderr
     check("①-1 --help 退出 0", r.returncode == 0)
-    check("①-2 --help 含 --llm-fulltext 且写明 report-only/预算闸",
-          "--llm-fulltext" in out and "report-only" in out and "预算闸" in out)
+    check("①-2 --help 含 --llm-fulltext/--no-llm-fulltext-apply/--llm-fulltext-max-chars，"
+          "写明 report-only 与预算闸",
+          all(k in out for k in ("--llm-fulltext", "--no-llm-fulltext-apply",
+                                 "--llm-fulltext-max-chars"))
+          and "report-only" in out and "预算闸" in out)
 
     src, bibp, o = fixture(tmp, "bad", _BODY_ONLY)
     env = make_env()
@@ -317,7 +320,10 @@ def test_active_success(tmp: str) -> None:
     base = snapshot(out_dir(os.path.join(tmp, "ok", "out_off")))
     with Mock(mode="replay", replies=replies) as mock:
         env = make_env(mock)
-        r = run_convert(src, out, bibp, ["--verify-refs", "--llm-fulltext"], env=env)
+        # 第六十三批：默认自动应用 → 本组断言的是批60 report-only 口径，显式关掉。
+        r = run_convert(src, out, bibp,
+                        ["--verify-refs", "--llm-fulltext", "--no-llm-fulltext-apply"],
+                        env=env)
         st = mock.stats()
         rep = read(report_path(out)) if os.path.isfile(report_path(out)) else ""
     check("③-1 启用后退出 0", r.returncode == 0, (r.stdout + r.stderr)[-400:])
@@ -361,7 +367,8 @@ def test_multi_chunk(tmp: str) -> None:
     replies = write(os.path.join(tmp, "replies_multi.json"),
                     json.dumps({"": _JSON_REPLY}, ensure_ascii=False))
     with Mock(mode="replay", replies=replies) as mock:
-        r = run_convert(src, out, bibp, ["--verify-refs", "--llm-fulltext"],
+        r = run_convert(src, out, bibp,
+                        ["--verify-refs", "--llm-fulltext", "--no-llm-fulltext-apply"],
                         env=make_env(mock))
         st = mock.stats()
     rep = read(report_path(out)) if os.path.isfile(report_path(out)) else ""

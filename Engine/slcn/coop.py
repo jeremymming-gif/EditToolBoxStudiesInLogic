@@ -655,7 +655,8 @@ def render_backfill_section() -> str:
 
 #: 两档模式：`context`（引用/脚注锚点窗口，默认推荐）/ `full`（正文全文）。
 FULLTEXT_MODES = ("context", "full")
-#: 两档字符上限（coop.estimate_tokens 按 3 字符/1 token 估算）。
+#: 两档的「超长提示阈值」（批63 用户 2026-10-20 拍板：chat 通道**不再截断**，
+#: 这两个数只用来在任务书里提示「正文较长」；`coop.estimate_tokens` 按 3 字符/1 token 估算）。
 FULLTEXT_LIMITS = {"context": 40000, "full": 80000}
 #: `context` 档：每个锚点前后各取多少字符。
 FULLTEXT_WINDOW = 300
@@ -674,17 +675,18 @@ def extract_fulltext(body_text: str, mode: str = "context") -> dict:
     """从正文文本提取「附三」内容（第五十九批；默认关，只有 --coop-fulltext 才调用）。
 
     · `context`：在 `\\parencite`/`\\footnote` 等锚点前后各取 `FULLTEXT_WINDOW` 字，
-      相邻/重叠窗口合并；上限 `FULLTEXT_LIMITS["context"]`。
-    · `full`：正文全文；上限 `FULLTEXT_LIMITS["full"]`。
-    · 超限**显式截断**并留标记（不静默丢）；整行 `%` 注释先剥掉；围栏 ``` 做替换，防止
-      破坏任务书的 ```text 代码块。
-    返回 `{mode, text, chars, truncated, tokens_est, orig_chars, windows}`。
+      相邻/重叠窗口合并；`FULLTEXT_LIMITS["context"]` 只作**超长提示阈值**。
+    · `full`：正文全文；`FULLTEXT_LIMITS["full"]` 只作**超长提示阈值**。
+    · **批63（用户 2026-10-20 拍板）起不截断**：整篇交给外部 chat，只保留体积估算与
+      「超长提示」；`truncated` 键保留（恒 False）以免破坏 state schema。
+    整行 `%` 注释先剥掉；围栏 ``` 做替换，防止破坏任务书的 ```text 代码块。
+    返回 `{mode, text, chars, truncated, tokens_est, orig_chars, windows, over_limit}`。
     """
     if mode not in FULLTEXT_MODES:
         raise ValueError(f"未知全文模式：{mode!r}（只支持 {'/'.join(FULLTEXT_MODES)}）")
     body = _TEX_COMMENT_LINE_RE.sub("", str(body_text or ""))
     body = body.replace("```", "ˋˋˋ")
-    limit = FULLTEXT_LIMITS[mode]
+    over_at = FULLTEXT_LIMITS[mode]        # 批63：只用于「超长提示」，不再截断
     windows = 0
     if mode == "full" or not body:
         text = body
@@ -708,14 +710,12 @@ def extract_fulltext(body_text: str, mode: str = "context") -> dict:
             # 正文里没有任何引用/脚注锚点：退回全文（仍受上限约束），不产出空附三。
             text = body
     orig = len(text)
-    truncated = orig > limit
-    if truncated:
-        text = text[:limit] + (
-            "\n…（已截断：原 %d 字，保留前 %d 字；需要更长内容请改用 full 档或自行分段）"
-            % (orig, limit))
+    # 批63（用户 2026-10-20 拍板）：chat 通道**不设字符上限**——整篇交给外部 chat。
+    # `truncated` 恒 False（键保留：state schema 不破坏）；超过阈值只给体积估算/超长提示。
+    over_limit = orig > over_at
     return {"mode": mode, "text": text, "chars": len(text),
-            "truncated": truncated, "tokens_est": estimate_tokens(text),
-            "orig_chars": orig, "windows": windows}
+            "truncated": False, "tokens_est": estimate_tokens(text),
+            "orig_chars": orig, "windows": windows, "over_limit": over_limit}
 
 
 def render_fulltext_section(info: dict) -> str:
@@ -729,18 +729,19 @@ def render_fulltext_section(info: dict) -> str:
     else:
         mode_note = ("正文节选：引用/脚注锚点前后各 %d 字窗口合并（共 %d 段）"
                      % (FULLTEXT_WINDOW, int(info.get("windows") or 0)))
-    trunc = ""
-    if info.get("truncated"):
-        trunc = ("\n> ⚠ 本次正文**超长已截断**（原 %d 字，保留前 %d 字）——"
-                 "请优先核对附一列出的项。" % (int(info.get("orig_chars") or 0),
-                                              FULLTEXT_LIMITS.get(mode, chars)))
+    long_hint = ""
+    if info.get("over_limit"):
+        long_hint = ("\n> ℹ️ 正文较长（原 %d 字，超过 %d 字的常规提示阈值）："
+                     "本次**不截断、整篇发送**；若外部 chat 有长度限制，请自行分段粘贴。"
+                     % (int(info.get("orig_chars") or 0),
+                        FULLTEXT_LIMITS.get(mode, chars)))
     return "\n".join([
         "", "---", "", FULLTEXT_TITLE, "",
         "> 下面是本次稿件正文（" + mode_note + f"；{chars} 字，约 {tokens} tokens）。",
         "> 用途：核对「附一、初排低置信项」里的引用/脚注/元数据时提供上下文。",
         "> **请只按附一规定的 JSON 格式回复**（文献条目仍按第三节 BibTeX 格式）；",
         "> **不要改写、复述或补写正文**，也不要把正文内容当成修改建议。",
-        "> 拿不准的项请回 `unresolved`（不要猜）。" + trunc,
+        "> 拿不准的项请回 `unresolved`（不要猜）。" + long_hint,
         "", "```text", text, "```", "",
     ])
 
@@ -1063,7 +1064,8 @@ def set_bib_field(entry_text: str, field_: str, value: str) -> str:
 
 
 def apply_bib_suggestions(bib_path: str, suggestions: dict[str, list[dict]],
-                          items: Iterable[dict]) -> dict:
+                          items: Iterable[dict],
+                          *, preserve_existing_backup: bool = False) -> dict:
     """把通过校验的低置信建议落到 `reference.bib`（复用 aibib 的四条硬保障）。
 
     只应用 `kind=bib_entry` 且 `verdict=corrected` 的建议；其他（脚注/元数据/文献区
@@ -1075,7 +1077,7 @@ def apply_bib_suggestions(bib_path: str, suggestions: dict[str, list[dict]],
     from slcn import aibib
 
     out: dict = {"n_applied": 0, "n_skipped": 0, "rollback": "",
-                 "applied": [], "skipped": [], "error": ""}
+                 "applied": [], "skipped": [], "error": "", "backup_kept": ""}
     by_id = {str(it["id"]): it for it in items}
     if not bib_path or not os.path.exists(bib_path):
         out["error"] = "本次没有 reference.bib，无从应用低置信建议"
@@ -1126,7 +1128,22 @@ def apply_bib_suggestions(bib_path: str, suggestions: dict[str, list[dict]],
         out["error"] = "低置信建议没有一条通过 aibib 安全校验（reference.bib 未改动）"
         out["n_skipped"] = len(out["skipped"])
         return out
+    _backup = bib_path + ".ai前"
+    _existing = b""
+    if preserve_existing_backup and os.path.exists(_backup):
+        try:
+            with open(_backup, "rb") as _f:
+                _existing = _f.read()
+        except OSError:
+            _existing = b""
     out["rollback"] = aibib.apply_merge_to_file(bib_path, result)
+    if _existing:
+        # 批63：已有 `.ai前`（如 ⑪ 逐条 AI 合并留下的回滚点）**不覆盖**——
+        # 否则回滚点会跳到「上一次写之后」，编辑就退不回最初的原件了。
+        with open(_backup, "wb") as _f:
+            _f.write(_existing)
+        out["rollback"] = ""
+        out["backup_kept"] = _backup
     for rec in result.records:
         if rec.key not in intended:
             # 没被本次建议点名的条目只是「未返回/保持原样」，不是待人工项；
@@ -1261,7 +1278,8 @@ def _squeeze(text: str) -> str:
 
 def apply_tex_suggestions(tex_path: str, suggestions: dict[str, list[dict]],
                           items: Iterable[dict], *, taskbook_keys: Iterable[str] = (),
-                          bib_path: str = "") -> dict:
+                          bib_path: str = "",
+                          preserve_existing_backup: bool = False) -> dict:
     """把通过校验的 META / FN 建议落到输出 `.tex`（只有 `--coop-apply` 才走）。
 
     只处理两类：
@@ -1276,7 +1294,7 @@ def apply_tex_suggestions(tex_path: str, suggestions: dict[str, list[dict]],
     from slcn import latex as _latex
 
     out: dict = {"n_applied": 0, "n_skipped": 0, "rollback_tex": "",
-                 "applied": [], "skipped": [], "error": ""}
+                 "applied": [], "skipped": [], "error": "", "backup_kept": ""}
     by_id = {str(it["id"]): it for it in items}
     meta_groups: dict[str, list[dict]] = {}   # macro -> [{id, sug}]
     fn_cands: list[dict] = []
@@ -1444,10 +1462,14 @@ def apply_tex_suggestions(tex_path: str, suggestions: dict[str, list[dict]],
         out["error"] = "没有可安全应用到 .tex 的元数据/脚注建议（产物未改动）"
         return out
     rollback = tex_path + ".ai前"
-    shutil.copy2(tex_path, rollback)
+    # 批63：`.ai前` 已存在（另一条 AI 通道写下的回滚点）时**不覆盖**，报告注明。
+    if preserve_existing_backup and os.path.exists(rollback):
+        out["backup_kept"] = rollback
+    else:
+        shutil.copy2(tex_path, rollback)
+        out["rollback_tex"] = rollback
     with open(tex_path, "w", encoding="utf-8", newline="") as f:
         f.write(tex)
-    out["rollback_tex"] = rollback
     return out
 
 
@@ -1460,10 +1482,55 @@ def restore_tex_backup(tex_path: str) -> bool:
     return True
 
 
+# ── 第六十三批：通道②（直连 API 全文复核）的自动应用 ─────────────────────
+
+
+def apply_fulltext_suggestions(*, accepted: Iterable[dict], items: Iterable[dict],
+                               bib_path: str, tex_path: str,
+                               taskbook_keys: Iterable[str] = ()) -> dict:
+    """把通道②已通过校验的建议按 BIB/META/FN 分派到批57 安全闸（仅此三类）。
+
+    批63（用户 2026-10-20 拍板）：默认开。**完全复用** `--coop-apply` 的两个应用器，
+    因此「0 条不写盘 / 写前 `.ai前` / 冲突与漂移拒绝 / 白名单 / 逐条记录」与批57
+    只有一份实现。与批57 的唯一差别：`preserve_existing_backup=True`——`.ai前`
+    已存在（⑪ 逐条 AI 合并留下的回滚点）时不覆盖（报告注明）。
+    返回 `merge_apply_summaries` 形状（含 applied/skipped/rollback/backup_kept/error）。
+    """
+    items = list(items)
+    by_id = {str(it["id"]): it for it in items}
+    bib_sugs: dict[str, list[dict]] = {}
+    tex_sugs: dict[str, list[dict]] = {}
+    other: list[dict] = []
+    for sug in accepted:
+        id_ = str(sug.get("id") or "")
+        it = by_id.get(id_) or {}
+        kind = str(it.get("kind") or sug.get("kind") or "")
+        if kind == "bib_entry":
+            bib_sugs.setdefault(id_, []).append(dict(sug))
+        elif kind in ("metadata", "footnote"):
+            tex_sugs.setdefault(id_, []).append(dict(sug))
+        else:
+            other.append({"id": id_,
+                          "target": TARGET_BIB if kind.startswith("bib") else TARGET_TEX,
+                          "reason": "只有 BIB/META/FN 会自动应用（其余只记录）"})
+    parts: list[dict] = []
+    if bib_sugs:
+        parts.append(apply_bib_suggestions(
+            bib_path, bib_sugs, items, preserve_existing_backup=True))
+    if tex_sugs:
+        parts.append(apply_tex_suggestions(
+            tex_path, tex_sugs, items, taskbook_keys=taskbook_keys,
+            bib_path=bib_path, preserve_existing_backup=True))
+    out = merge_apply_summaries(*parts)
+    out["skipped"] = list(out.get("skipped") or []) + other
+    out["n_skipped"] = len(out["skipped"])
+    return out
+
+
 def merge_apply_summaries(*parts: dict | None) -> dict:
     """合并「文献字段应用」与「.tex 元数据/脚注应用」两份总结（键向后兼容）。"""
     out: dict = {"n_applied": 0, "n_skipped": 0, "rollback": "", "rollback_tex": "",
-                 "applied": [], "skipped": [], "error": ""}
+                 "applied": [], "skipped": [], "error": "", "backup_kept": ""}
     errs: list[str] = []
     for p in parts:
         if not p:
@@ -1474,6 +1541,8 @@ def merge_apply_summaries(*parts: dict | None) -> dict:
             out["rollback"] = p["rollback"]
         if p.get("rollback_tex"):
             out["rollback_tex"] = p["rollback_tex"]
+        if p.get("backup_kept"):
+            out["backup_kept"] = p["backup_kept"]
         out["applied"] += list(p.get("applied") or [])
         out["skipped"] += list(p.get("skipped") or [])
         if p.get("error"):

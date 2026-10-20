@@ -70,9 +70,18 @@ enum ConvertFeature {
         /// 第 60 批：全文 AI 核查（直连 API）→ `--llm-fulltext`。**只在 ⑪ 直连通道**
         /// （勾了「用 AI 处理参考文献」+ 非两段式）搭配 `--llm-*` 端点时传；引擎未配置端点
         /// 会直接 exit 2（零请求）。**默认不勾**：不勾时 argv 与批 59 逐字节相同；勾了
-        /// **会产生费用**（正文分片直发端点），引擎 report-only（只生成
-        /// `…_AI全文复核.md`，不改正文/不改 reference.bib）。会话态：不写 UserDefaults。
+        /// **会产生费用**（正文分片直发端点）。**批 63 起**引擎默认把通过批 57 安全闸的
+        /// BIB/META/FN 建议**自动应用**（`.ai前` 备份、0 条不写、冲突拒绝、逐条记录；
+        /// `…_AI全文复核.md` 报告照常生成），可用设置页关掉（见 `llmFulltextApply`）。
+        /// 开关本身是会话态：不写 UserDefaults。
         var llmFulltext = false // --llm-fulltext（默认关）
+        /// 批 63：全文核查的**正文总字符上限** → `--llm-fulltext-max-chars`。
+        /// `nil` = 不传（引擎默认 40000）；`0` = 显式不限。只属于 `--llm-fulltext`
+        /// （仅勾了全文核查时传），且只在值 ≠ 引擎默认时才传。
+        var llmFulltextMaxChars: Int? = nil
+        /// 批 63：全文核查结果**自动应用**（引擎默认开）。开（默认）= **什么都不传**
+        /// （= 引擎默认自动应用）；关掉时才传 `--no-llm-fulltext-apply`。
+        var llmFulltextApply = true
         // ── 第 132 条：核实成本闸门 + 引用库（由「引用库设置」页存 UserDefaults，
         //    `ConvertTab.run()` 在运行时现取）。默认值 = **一个参数都不加**，
         //    所以没碰过这些设置的用户，命令行与接入前逐字节相同。
@@ -146,22 +155,56 @@ enum ConvertFeature {
 
     /// 第 59 批：全文 AI 核查的**范围**（引擎契约 `--coop-fulltext {context,full}`）。
     ///
-    /// 这里只做界面显示与参数映射，不参与任何判定：正文截断/字数上限由引擎按实际
-    /// token 预算决定，壳子**不替引擎算**（否则两处口径迟早分叉）。
+    /// 这里只做界面显示与参数映射，不参与任何判定：批 63 起外部 chat 通道**不设字符上限**
+    /// （取消 4/8 万截断，保留体积估算/超长提示）；直连 API 通道的正文上限另有
+    /// 「设置 → API 核查字符上限」（`--llm-fulltext-max-chars`），壳子不替引擎算。
     enum FulltextScope: String, CaseIterable, Equatable {
         case context
         case full
 
-        /// 界面单选文案（两壳一致；括号里的上限是引擎侧设计值，不是壳子在限制）。
+        /// 界面单选文案（批 63 起外部 chat 不设字符上限，不再写「约 N 万字上限」）。
         var title: String {
             switch self {
-            case .context: return "引用上下文（默认，约 4 万字上限）"
-            case .full: return "全文（约 8 万字上限）"
+            case .context: return "引用上下文（默认，不设上限）"
+            case .full: return "全文（不设上限）"
             }
         }
 
         /// 原样交给引擎的参数值（契约固定小写 `context` / `full`）。
         var flagValue: String { rawValue }
+    }
+
+    // MARK: - 第 63 批 B2：元数据文件 `.doc` → 临时 `.docx`（GUI 侧最小适配，纯逻辑）
+
+    /// 「元数据文件」选中的是老式 Word `.doc`（大小写不敏感；`.docx` 不算）时，需要先用
+    /// macOS 自带 `textutil` 转成临时 `.docx` 再交给引擎 `--metadata`（引擎侧 .docx 元数据
+    /// 支持由 engine-core 同批实现）。**不做 Word→LaTeX 全文转换**，只取元数据。
+    ///
+    /// 这里只放**纯判定/路径**；真正的 `textutil` 调用、失败提示与临时文件清理在
+    /// `ConvertTab.run()`（GUI 层）——因此本函数可被 `tools/ai_settings_test` 直接验证。
+    struct MetadataConversion: Equatable {
+        /// 用户选的 `.doc`（原始路径，原文件一个字节都不动）
+        let source: String
+        /// 临时 `.docx` 目标路径（系统临时目录）
+        let output: String
+        /// `textutil` 的完整参数（固定形态；测试直接断言，不在 GUI 里手写）
+        var textutilArguments: [String] {
+            ["-convert", "docx", "-output", output, source]
+        }
+    }
+
+    /// 转换计划：不是 `.doc`（或空路径）→ nil（`.docx` / `.tex` 一律透传）。
+    static func metadataConversionPlan(_ rawPath: String,
+                                       temporaryDirectory: String = NSTemporaryDirectory())
+        -> MetadataConversion? {
+        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        // ⚠ 用 pathExtension 比较（不是 hasSuffix）：大小写不敏感，天然排除 `.docx`。
+        guard (path as NSString).pathExtension.lowercased() == "doc" else { return nil }
+        let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let out = (temporaryDirectory as NSString)
+            .appendingPathComponent("slcn_metadata_\(String(stem.prefix(80))).docx")
+        return MetadataConversion(source: path, output: out)
     }
 
     // MARK: - 开关联动（纯函数，headless 可验证）
@@ -391,7 +434,17 @@ enum ConvertFeature {
             // 普通转换没勾 AI 走不到这里；两段式（coop != .off）也不传（那是外部 chat 流程，
             // 正文通道是另一批的 `--coop-fulltext`，两者不许混）。
             // 未配置端点时引擎自己 exit 2（零请求）—— 壳子不重复判定，日志另有一行提示（logAI）。
-            if o.llmFulltext { a.append("--llm-fulltext") }
+            if o.llmFulltext {
+                a.append("--llm-fulltext")
+                // 批 63：正文总字符上限。**0 = 不限要显式传 "0"**；留空/等于引擎默认都不传
+                // （不传 = 引擎默认 40000，命令行与批 59 逐字节相同）。
+                if let v = o.llmFulltextMaxChars, v != AIBudgetSettings.defaultFulltextMaxChars {
+                    a += ["--llm-fulltext-max-chars", String(v)]
+                }
+                // 批 63：自动应用默认开（= 引擎默认）→ **只有用户关掉时才发关闭旗标**；
+                // 开着时什么都不传，保证「没碰过新设置」的命令行与从前逐字节相同。
+                if !o.llmFulltextApply { a.append("--no-llm-fulltext-apply") }
+            }
             // 第 70 条的两个「未来兼容」旋钮：**留空或填了用不了的值都不传**（第一种是
             // 「用引擎默认」，第二种由 `knobWarnings` 说明），所以两栏都空时命令行与从前
             // **逐字节相同**。这里刻意用解析器（而不是 `add` 的单纯非空判断），
@@ -510,11 +563,24 @@ enum ConvertFeature {
                 log("  文献   AI 结果会并入 reference.bib（回滚副本 reference.bib.ai前）；"
                     + "AI 调用失败 / 一条都没通过安全校验时，bib **一字节不改**\n")
             }
-            // 第 60 批：全文 AI 核查（直连 API）—— **会产生费用**，日志必须写明「发正文、report-only」。
+            // 第 60 批：全文 AI 核查（直连 API）—— **会产生费用**；批 63 起默认自动应用
+            // 通过批 57 安全闸的 BIB/META/FN 建议（`.ai前` 备份、0 条不写、报告照常生成）。
             if o.llmFulltext {
+                let applyText = o.llmFulltextApply
+                    ? "通过安全闸的 BIB/META/FN 建议会**自动应用**（先备份 .ai前；0 条不写；"
+                      + "可在「设置 → 全文核查结果自动应用」关闭）"
+                    : "按 --no-llm-fulltext-apply **不自动应用**（只出报告，产物不改）"
+                let limitText: String
+                if let v = o.llmFulltextMaxChars {
+                    limitText = v == 0
+                        ? "不限（--llm-fulltext-max-chars 0）"
+                        : "\(v) 字符（--llm-fulltext-max-chars）"
+                } else {
+                    limitText = "引擎默认 \(AIBudgetSettings.defaultFulltextMaxChars) 字符（本次不传上限参数）"
+                }
                 log("  全文核查 **直连 API**（--llm-fulltext）：正文按片发送到上面这个端点，"
-                    + "**会产生费用**；只生成《…_AI全文复核.md》核查报告，**不改产物**"
-                    + "（不改正文、不写 reference.bib）。\n")
+                    + "**会产生费用**；正文上限 \(limitText)；\(applyText)；"
+                    + "《…_AI全文复核.md》报告照常生成。\n")
             }
         } else {
             log("  文献   生成《文献核实任务书》\n")

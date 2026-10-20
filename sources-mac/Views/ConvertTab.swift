@@ -126,13 +126,14 @@ struct ConvertTab: View {
                             // 默认不勾 → 一个参数都不加（默认 argv 与批 59 逐字节相同）。
                             Toggle("全文 AI 核查（直连 API，会产生费用）",
                                    isOn: $model.options.llmFulltext)
-                            Text("⚠ 勾上后会产生费用：引擎把稿件正文按片（每片 ≤3 万字）直接发送到"
+                            Text("⚠ 勾上后会产生费用：引擎把稿件正文按片直接发送到"
                                  + "「设置」里配置的 AI 端点，每片一次请求；不勾（默认）时正文一个字节都不外发。\n"
-                                 + "范围：只生成核查报告《…_AI全文复核.md》，不改正文、不改 reference.bib"
-                                 + "（report-only）；两段式协同模式下本轮不生效（那条流程正文只进本机任务书）。\n"
-                                 + "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。"
-                                 + "另请确认预算够——「设置」页的「单篇预算」（默认 30000）可能不够全文分片，"
-                                 + "请按日志提示调大（0 = 不限）。")
+                                 + "范围：通过批 57 安全闸的 BIB/META/FN 建议会**自动应用**"
+                                 + "（先备份 .ai前、0 条不写、冲突拒绝；可在「设置 → 全文核查结果自动应用」关闭），"
+                                 + "《…_AI全文复核.md》报告照常生成；两段式协同模式下本轮不生效。\n"
+                                 + "上限：「设置」里的「API 核查字符上限」默认 40000 字符（0 = 不限）；"
+                                 + "「单篇预算」（默认 30000 tokens）不够时请按日志提示调大。\n"
+                                 + "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.leading, 18)
@@ -156,7 +157,23 @@ struct ConvertTab: View {
                     .toggleStyle(.checkbox)
 
                     // ---------- 高级 ----------
-                    DisclosureGroup("高级选项", isExpanded: $model.showAdvanced) {
+                    // 批 63 B1：系统 DisclosureGroup 在 macOS 上只有 chevron 是命中区，
+                    // 点「高级选项」文字/整行没反应（用户反馈）。改成普通 Button(.plain)
+                    // 铺满整行：点文字或行内空白都能开合；withAnimation 保留展开动画；
+                    // 状态仍是 `model.showAdvanced`（全仓仅此一处引用），无其它回归。
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { model.showAdvanced.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .rotationEffect(.degrees(model.showAdvanced ? 90 : 0))
+                            Text("高级选项")
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if model.showAdvanced {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle("覆盖已存在的输出目录（--force）",
                                    isOn: $model.options.force)
@@ -175,7 +192,7 @@ struct ConvertTab: View {
                             )
                             LabeledPathRow(
                                 title: "元数据文件",
-                                placeholder: "从已有的 .tex 里取标题/作者等信息",
+                                placeholder: "从已有的 .tex / .doc / .docx 里取标题/作者等信息",
                                 path: $model.options.metadata,
                                 kind: .file,
                                 logStore: log
@@ -950,6 +967,19 @@ struct ConvertTab: View {
         // 非法输入 → nil = 不传该参数（引擎用默认；设置页另有红字）。
         o.aiBudgetTokens = budget.articleValue
         o.aiBatchBudgetTokens = budget.batchValue
+        // 批 63：全文核查的字符上限 / 自动应用也**现取**（同口径；只约束 --llm-fulltext）。
+        // `fulltextMaxCharsValue`：nil = 不传（引擎默认 40000）；0 = 显式不限。
+        o.llmFulltextMaxChars = budget.fulltextMaxCharsValue
+        o.llmFulltextApply = budget.fulltextAutoApply
+        // 批 63 B2：元数据文件选的是老式 .doc → 先转成临时 .docx 再交给引擎。
+        // 纯判定/路径在 ConvertFeature.metadataConversionPlan（headless 有断言）；
+        // 这里只做「调 textutil + 失败提示」，临时文件在本次运行结束时清理。
+        var metadataTempPath: String? = nil
+        if let plan = ConvertFeature.metadataConversionPlan(o.metadata) {
+            guard let temp = convertMetadataDoc(plan) else { return }
+            o.metadata = plan.output
+            metadataTempPath = temp
+        }
         // 两个「请求体旋钮」（思考模式 / 输出上限）同样**现取**：与上面三项同一口径，
         // 设置页改完立刻生效，不必先点「保存」（保存只影响下次启动读回的值）。
         // ⚠️ 必须在主线程上取好再传：@Published 的值属于主线程，而 run() 在后台队列
@@ -961,6 +991,10 @@ struct ConvertTab: View {
         model.coopFailure = ""
         if coopOn { model.coopSuggestions = nil }   // 新一轮初排：旧建议不算数
         startRun(o, knobs: knobs) { status in
+            // 批 63 B2：临时 .docx 只服务本次运行，跑完（含失败/取消）立刻清理。
+            if let temp = metadataTempPath {
+                try? FileManager.default.removeItem(atPath: temp)
+            }
             guard coopOn else { return }
             if status == 0 {
                 log.append("（界面）第一段完成：状态「待人工核实（**未交付**）」。"
@@ -969,6 +1003,25 @@ struct ConvertTab: View {
                 appendFailure("第一段失败（退出码 \(status)）；最终交付目录本次未写。")
             }
         }
+    }
+
+    /// 批 63 B2：把用户选的 `.doc` 用 macOS 自带 `textutil` 转成临时 `.docx`。
+    ///
+    /// - Returns: 临时文件路径（供运行结束清理）；转换失败/启动失败返回 nil 并**写日志**
+    ///   提示改用 `.docx` 或 `.tex`（本次直接不跑，不把二进制 .doc 交给引擎）。
+    ///   原文件一个字节都不动；**不做 Word→LaTeX 全文转换**（只取元数据）。
+    private func convertMetadataDoc(_ plan: ConvertFeature.MetadataConversion) -> String? {
+        let result = Shell.capture("/usr/bin/textutil", plan.textutilArguments)
+        let wrote = FileManager.default.fileExists(atPath: plan.output)
+        guard let result, result.status == 0, wrote else {
+            let why = result.map { "退出码 \($0.status)" } ?? "无法启动 /usr/bin/textutil"
+            try? FileManager.default.removeItem(atPath: plan.output)   // 清掉可能的半成品
+            log.append("元数据文件：.doc 转 .docx 失败（\(why)）。\n"
+                       + "  请把该文件另存为 .docx 或 .tex 后在「元数据文件」里重选；本次未开始转换。\n")
+            return nil
+        }
+        log.append("元数据文件：.doc 已转成临时 .docx（原文件不动）：\(plan.output)\n")
+        return plan.output
     }
 
     /// 第二段：用当前暂存目录 + 已选回填（每个路径一个 --coop-replies）续跑并交付。
