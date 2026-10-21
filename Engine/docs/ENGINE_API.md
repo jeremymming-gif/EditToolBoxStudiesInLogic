@@ -234,6 +234,16 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 逐字节不变。口径见 `docs/RULES.md` §四.9；回归见 `tests/test_refs_attach.py`；
 真实稿 2023(71)04 用默认路径编过（biber 0 错、20 页 = 人工）。
 
+**Word 编号体例稿脚注裸编号（B-130，批73，2026-10-21；**无契约变化**）**：编号体例稿
+（文末 `[N]` 清单 + 正文 `（[n]）`）的**脚注文本**里，裸 `[N]`（`参见[12]。`）在满足
+「`ref_key_by_num` 是**可靠 1..N 映射**（Word 自动编号安全闸物化成功，或文末显式 `[N]`
+清单解析一致且编号 1..N 连续）」+「逐处有引用引导语证据」时保守转成 `\parencite{键}`
+（只换编号本身，前后中文与页码定位保留）；越界/无引导语 → 原样保留 + warning（不猜）。
+**不改任何 CLI 参数、stdout 契约行、退出码、产物路径与文件名**；命中稿 `.tex` 只是脚注行
+里多出 `\parencite`（`.bib` 不变），未命中稿产物逐字节不变；正文裸编号不在本卡。
+口径见 `docs/GUIDE.md`「Word 编号体例稿：脚注文本里的裸 `[N]` → `\parencite`」；
+回归见 `tests/test_b73_footnote_bare_cite.py`。
+
 **两段式协同（`--coop-*`）的 argv 契约（第 54–59 批，外壳拼参数用）**：第一段 =
 `--verify-refs --no-ai-merge --coop-taskbook-only [--coop-stage DIR] [--coop-fulltext context|full]`；
 第二段 = `--coop-replies <回填>… [--coop-apply] [--compile] [--clean]`（`--source` / `--out` 两段都必填）。
@@ -350,7 +360,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（26 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改** | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
 | `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、或报告不可用 | `完成。生成目录 N 份（<目录>）` |
-| `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；`stats` 概况；`lint` 体检；`resolve` 记录冲突裁决（keep/defer/adopt）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup` 并校验 sha256）。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定 | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
+| `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；`stats` 概况；`lint` 体检；`rehash` 规范化规则升级后重算 `content_sha256`（B-126；默认 dry-run、`--apply` 才写）；`conflicts` 列冲突条目（B-127；只读，GUI 待裁决页数据源）；`resolve` 记录冲突裁决（keep / defer / adopt / **replace**；写前可选 `--expect-db-sha256` + `--backup DIR`；`--adopt-all-pending` 一键全部采用）；`restore --backup` 从备份整库恢复（不 reopen）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup`）。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定。**新子命令/新参数全部是加法：不传时老行为与老 `--json` 键不变** | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
 
 **产物**：
 - `cleantemp` / `compileall`：原地操作（前者删文件、后者生成 `.pdf` 与 `.log`）。
@@ -378,6 +388,27 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 `proofcheck` 的 `1` 表示「有命中」而不是失败，外壳不要把它显示成错误；
 `toc` 的篇目预览必须调 `--preview`（**别在界面里自己解析报告**），否则会出现
 「清单里勾了 3 篇、生成时只认 2 篇」这种对不上的情况。
+
+### `bibdb.py` 子命令与 `--json` 契约（第 132 条；B-126 / B-127 批73 增补标 ★）
+
+| 子命令 | 干什么 | 关键参数 | `--json` 输出 / 退出码 |
+|---|---|---|---|
+| `init` / `import-bib` / `import-dir` | 建库；导入一份 `.bib` 或多条 bib 的整期成品 | `--dry-run` 预览；`--force` 整条替换（旧值留档） | 老契约不变（`report`/`changes`/`db_existed`…） |
+| `query` / `stats` / `lint` | 查库（key/DOI/题名）/ 库概况 / 体检 | `--bibtex` 附可复制条目 | 老契约不变；`lint` rc1 = 有 error |
+| `rehash` ★ | 规范化规则升级后重算 `content_sha256`（B-126） | 默认 dry-run；`--apply` 才写（只改 `content_sha256`+`updated_at`） | `{db, dry_run, applied, records, stale, changes, sha256_before, sha256_after, updated_at, notes}` |
+| `conflicts` ★（B-127） | **列出冲突条目**（只读；GUI 待裁决页数据源）。C 编号与 `CONFLICTS.md` 同源 | `--pending-only` 只列待裁决 | `{db, db_sha256, totals:{total,pending,resolved}, items:[{stable_no,record_key,bib_key,entry_type,title,author,year,issue,slug,file,at,incoming_sha256,pending,resolution,resolved_at,diff:{字段:{old,new}},advice,verified,method}]}`；库缺失/损坏 rc2 |
+| `resolve`（keep/defer/adopt） | 逐条裁决：keep=保留旧值 / defer=待人工 / adopt=按指纹**逐字段**采用新稿留档值 | `--key --action (--all-fields\|--fields\|--incoming-sha256)`；**写前安全闸**见下 | 老键不变 + ★新增 `db_sha256_before/db_sha256_after/backup_path` |
+| `resolve --action replace` ★（B-127） | **人工裁决 bib**：解析**恰好 1 条** bib（0/多条 rc2），bib key 必须等于库内 record key（**不改 key**）；以该条目 entry_type+fields 写库、重算 `content_sha256`；`verified/sources/method` 不动；目标冲突标 `resolution="adopted"` + `resolved_by="custom-bib"` + `resolved_bib_sha256` + `note` | `--incoming-sha256`（冲突指纹）+ `--bib PATH`；重叠冲突默认拒绝、`--allow-overlap` 标 superseded；`--dry-run` 预览 | `action=replace`、`replaced_fields:{字段:{old,new,remove}}`（dry-run 也有，GUI「预览差异」用）、`incoming_sha256`、`content_sha256_before/after`、`overlapping`/`superseded`、`resolved_by`、`resolved_bib_sha256` + 通用 3 键 |
+| `resolve --adopt-all-pending` ★（B-127） | **一键全部采用**：全部待裁决冲突逐条按 adopt 语义应用 incoming 值；真写**单次原子写 + 单次备份**，每项 `adopted`+`resolved_at`；**同记录待裁决冲突字段重叠 → 整体拒绝 rc2 并列出冲突 #**（请逐条处理）；`--dry-run` 逐条预览不写库；与 `--key/--action` 互斥 | `--dry-run`、`--note`、写前安全闸 | `adopted:[{record_key,bib_key,incoming_sha256,conflict_index,fields:{字段:{old,new,remove}}}]`、`skipped`、`totals_before/after`、`db_sha256_before/after`、`backup_path`、`written` |
+| `restore --backup PATH` ★（B-127） | 从备份**整库恢复**：备份须能被 `Store.load()`（行级 schema）校验通过；`--expect-db-sha256` 与当前库一致才写；原子写回；**不做 reopen**（已裁决冲突回到备份时状态） | `--dry-run` 只校验；`--expect-db-sha256` | `{db, backup_path, written, dry_run, records, backup_sha256, db_sha256_before, db_sha256_after}` |
+| `report` / `report-conflicts` / `report-duplicates` | 生成中文待裁决清单（`CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv`），只写清单文件、不改库 | `--out DIR` | 老契约不变（`{db, reports, conflicts, totals[, pairs]}`） |
+| `normalize` / `normalize-authors` / `normalize-editors` | B1/B2/B3 规范化（默认 dry-run） | `--apply --backup FILE`（写前须备份且 sha 与当前库一致） | 老契约不变 |
+
+**写前安全闸（B-127，`resolve` 全部写动作通用；`restore` 用同名单个参数）**：
+- `--expect-db-sha256 SHA`：**完整** 64 位十六进制，与库当前字节 sha256 一致才写；不符/格式错 → 退出 2 且**零写入**（GUI 列表/指纹过期防线）。
+- `--backup DIR`：PATH 是**目录**（不存在则写前创建；已存在同名文件 → 退出 2）→ 真的会产生写入时，写前复制一份 `bibliography-<UTCts>-<库sha前12位>.jsonl`（UTC 时间戳、定长）；dry-run / 幂等无变化**不产生备份**；同名备份已存在 → 退出 2（绝不覆盖旧备份）。
+- **`--json` 键只加不改**：写动作统一带 `db_sha256_before` / `db_sha256_after` / `backup_path`（无备份时空串；`restore` 的 `backup_path` = 输入的备份文件）；退出 2 且给了 `--json` 时 stdout 尽量另出 `{"error":"中文原因"}`（GUI 有 stderr 回退）。
+- 老调用（不传新参数）的**人读输出与老 JSON 键不变**；全部新能力都走新子命令/新可选参数。
 
 **mac 界面的切换进度（第 95 条起，按用户定的顺序，第 99 条完成；引用库 5 页按第 132 条补）**：
 **十五页全部改调引擎** ——

@@ -36,13 +36,29 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             规范化规则升级后**重算 content_sha256**：默认
                                             dry-run（只报告 old/new，不写库）；--apply 才写
                                             （只改 content_sha256 + updated_at，原子写）
-    resolve     --key K --action keep|defer|adopt
+    resolve     --key K --action keep|defer|adopt|replace
                 (--all-fields | --fields F1,F2 | --incoming-sha256 SHA)
-                [--allow-overlap] [--note TEXT] [--dry-run] [--json]
+                [--bib PATH] [--allow-overlap] [--note TEXT]
+                [--expect-db-sha256 SHA] [--backup DIR] [--dry-run] [--json]
                                             记录冲突裁决：keep=保留旧值 / defer=待人工 /
                                             adopt=**逐字段采用新稿值**（改 fields、重算 sha，
                                             必须用指纹；重叠冲突默认拒绝或用 --allow-overlap
-                                            标 superseded）；整条替换仍走 import-bib --force
+                                            标 superseded）；replace=采用**人工裁决 bib**
+                                            （B-127：恰好 1 条、key 必须等于库内 key、
+                                            整条写 entry_type+fields）；整条替换仍走
+                                            import-bib --force
+    resolve --adopt-all-pending [--dry-run] [--note TEXT]
+                [--expect-db-sha256 SHA] [--backup DIR] [--json]
+                                            B-127 一键全部采用：全部待裁决冲突逐条按 adopt
+                                            语义应用 incoming 值；同记录待裁决冲突字段重叠 →
+                                            整体拒绝（列出冲突 #，请逐条处理）；真写单次
+                                            原子写 + 单次备份
+    conflicts   [--pending-only] [--json]    B-127：列出冲突条目（只读；C 编号与
+                                            CONFLICTS.md 同源；--json 给界面待裁决页）
+    restore     --backup PATH [--expect-db-sha256 SHA] [--dry-run] [--json]
+                                            B-127：从备份整库恢复（校验备份可 Store.load +
+                                            行级 schema；expect sha 一致才原子写回；
+                                            **不做 reopen**）
     report      [--out DIR]                 一次生成全部待裁决清单（推荐）
     report-conflicts  [--out DIR]           字段冲突待裁决清单 CONFLICTS.md（中文、可勾选）
     report-duplicates [--out DIR]           同作品不同 key 候选对 DUPLICATES.md + duplicates.csv
@@ -113,8 +129,12 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
 `0` = 成功（查询 0 命中、lint 只有 warning 也算成功）；`1` = `lint` 有 error；
 `2` = 用法 / IO / 库结构错误（消息在 stderr）。库文件不存在时 `query/stats/lint` /
 `report*` 退出 2（先 init/import）；`import-bib` / `import-dir` 会自动建库。
-`report*` 只写清单文件（可重复生成、内容幂等），不改库本体；`resolve` 才写库
-（只改 `conflicts[]` 的裁决元数据，**不改字段值**；`--dry-run` 不写）。
+`report*` 只写清单文件（可重复生成、内容幂等），不改库本体；`resolve` 才写库：
+keep/defer 只改 `conflicts[]` 的裁决元数据（不改字段值），adopt/replace 按规则改
+`entry_type`/`fields` 并重算 `content_sha256`（`--dry-run` 一律不写）。
+`resolve --adopt-all-pending` 一次原子写 + 一次备份；`restore` 从备份整库写回。
+写动作可加 `--expect-db-sha256`（完整 64 位十六进制，不符退出 2 且零写入）与
+`--backup DIR`（真的会写入时先备份 `bibliography-<UTCts>-<库sha前12位>.jsonl`）。
 `normalize` 默认是**纯 dry-run**：只写报告文件，绝不写 `bibliography.jsonl`；
 `--apply` 才写库（且必须先用 `--backup` 指定备份、sha256 与当前库一致才允许执行）。
 `--dry-run`（预览）：照常解析/查重/算冲突，但**一个字节都不写**（库文件不存在也不会
@@ -133,9 +153,12 @@ fixture `Engine/tests/test_bibdb_rehash.py` 里的期望 sha —— 否则真实
 from __future__ import annotations
 
 import argparse
+import datetime
+import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -174,6 +197,93 @@ def _open_store(args, *, create: bool = False, lenient: bool = False):
     path = _db_path(args)
     store = bibdb.Store.load(path, create=create, lenient=lenient)
     return path, store
+
+
+# ── B-127（批73）：写前安全闸 / 备份 / 失败 JSON 出口 ────────────────────────
+#
+# 为什么放在 CLI 层：读写库的语义在 `slcn/bibdb.py`（引擎唯一一份），「写前校验 sha、
+# 自动备份、把失败原因回给界面」是**外壳契约**，与具体子命令无关 → 一处实现，所有写
+# 动作（keep/defer/adopt/replace/adopt-all、restore）共用。
+
+
+def _fail(args, exc) -> int:
+    """统一失败出口：stderr 中文原因；给了 `--json` 时 stdout 另出 `{"error": …}`。
+
+    GUI 读 stdout 的 JSON（失败时也要能显示原因），非 JSON 调用方看 stderr 即可。
+    """
+    message = str(exc)
+    print(f"✗ {message}", file=sys.stderr)
+    if getattr(args, "json", False):
+        _print_json({"error": message})
+    return 2
+
+
+def _normalize_sha256_arg(value: object, label: str) -> str:
+    """`--expect-db-sha256` 口径：**完整** 64 位十六进制（不收前缀/大写混写按小写算）。"""
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if not re.fullmatch(r"[0-9a-f]{64}", text):
+        raise bibdb.BibDBError(
+            f"{label} 需要完整的 64 位十六进制 sha256（收到 {value!r}）")
+    return text
+
+
+def _write_guard(path: str, args) -> tuple[str, str]:
+    """写动作通用安全闸（B-127）：返回 `(库当前字节 sha256, 备份目录绝对路径或 "")`。
+
+    · `--expect-db-sha256`：完整 64 位十六进制，且与库当前字节 sha256 **一致**才继续；
+      不符 → `BibDBError`（退出 2）。调用方在**任何写入之前**调用本函数 → 天然零写入。
+    · `--backup`：参数是**目录**（不存在则由写前备份创建；已存在同名文件 → 退出 2）。
+    """
+    before_sha = bibdb.db_sha256(path)
+    wanted = _normalize_sha256_arg(getattr(args, "expect_db_sha256", ""),
+                                   "--expect-db-sha256")
+    if wanted:
+        if not before_sha:
+            raise bibdb.BibDBError(f"库文件不存在，无法校验 --expect-db-sha256：{path}")
+        if before_sha != wanted:
+            raise bibdb.BibDBError(
+                f"库 sha256 与 --expect-db-sha256 不符（当前 {before_sha[:12]}…，期望 "
+                f"{wanted[:12]}…）：库可能已被其它操作修改，请刷新后重试（本次未写库）")
+    backup_dir = str(getattr(args, "backup", "") or "").strip()
+    if backup_dir:
+        if os.path.exists(backup_dir) and not os.path.isdir(backup_dir):
+            raise bibdb.BibDBError(f"--backup 需要目录，但已存在同名文件：{backup_dir}")
+        backup_dir = os.path.abspath(backup_dir)
+    return before_sha, backup_dir
+
+
+def _utc_stamp() -> str:
+    """备份文件名里的 UTC 时间戳（定长、按时间可排序）：`YYYYmmddTHHMMSSZ`。"""
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _write_db_backup(path: str, backup_dir: str, before_sha: str,
+                     *, stamp: str = "") -> str:
+    """写库前备份（B-127）：复制库字节 → `bibliography-<UTCts>-<before_sha12>.jsonl`。
+
+    **只在真的会发生写入时调用**（干跑/无变化不产生备份）。同名备份已存在 → 拒绝覆盖并
+    退出 2（宁可不写，也不静默盖掉上一份可恢复的证据）；备份后立刻校验字节 sha256。
+    `stamp` 仅供测试注入固定时间戳。
+    """
+    os.makedirs(backup_dir, exist_ok=True)
+    name = f"bibliography-{stamp or _utc_stamp()}-{before_sha[:12]}.jsonl"
+    target = os.path.join(backup_dir, name)
+    if os.path.exists(target):
+        raise bibdb.BibDBError(f"备份文件已存在（拒绝覆盖）：{target}")
+    try:
+        shutil.copyfile(path, target)
+    except OSError as exc:
+        raise bibdb.BibDBError(f"备份失败（本次未写库）：{exc}") from exc
+    if bibdb.db_sha256(target) != before_sha:
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        raise bibdb.BibDBError(
+            f"备份校验失败（库可能正在被其它操作修改；本次未写库）：{target}")
+    return target
 
 
 def _source_note(source: dict) -> str:
@@ -1369,42 +1479,241 @@ def _print_written(written: list[dict]) -> None:
     print("   （清单不含生成时间：同一份库重复生成逐字节相同）")
 
 
-def cmd_resolve(args) -> int:
-    """记录冲突裁决：keep/defer 只改 conflicts 元数据；adopt **逐字段**改 fields。"""
-    fields = [part.strip() for part in (args.fields or "").split(",") if part.strip()]
-    if args.action == "adopt":
-        if not (args.incoming_sha256 or "").strip():
-            print("✗ --action adopt 必须配合 --incoming-sha256（冲突指纹）精确定位一条冲突",
-                  file=sys.stderr)
-            return 2
-        if args.all_fields or fields:
-            print("✗ --action adopt 只接受 --incoming-sha256；不要同时给 --fields / --all-fields",
-                  file=sys.stderr)
-            return 2
-    elif args.allow_overlap:
-        print("✗ --allow-overlap 只用于 --action adopt（keep/defer 没有重叠问题）",
-              file=sys.stderr)
-        return 2
+#: `conflicts --json` 的条目字段白名单（spec §4.1；去掉内部 `record` / `incoming_source`
+#: 大对象，只保留界面需要的稳定契约字段）。新增字段只能往这里**加**，不能改老键。
+_CONFLICT_ITEM_FIELDS = (
+    "stable_no", "record_key", "bib_key", "entry_type", "title", "author",
+    "year", "issue", "slug", "file", "at", "incoming_sha256", "pending",
+    "resolution", "resolved_at", "diff", "advice", "verified", "method",
+)
+
+
+def _public_conflict_item(item: dict) -> dict:
+    """冲突条目 → `conflicts --json` 输出（白名单投影，不泄露内部大对象）。"""
+    return {name: item.get(name) for name in _CONFLICT_ITEM_FIELDS}
+
+
+def cmd_conflicts(args) -> int:
+    """列出冲突条目（B-127，只读）：GUI「待裁决」页的数据源。
+
+    复用 `collect_conflict_items()`（C 编号与 CONFLICTS.md 同源），`--pending-only`
+    只返回待裁决；库缺失/损坏退出 2；无冲突退出 0 + 空数组。
+    """
     try:
         path, store = _open_store(args)
-        result = store.resolve_conflicts(
-            args.key, args.action, fields=fields,
-            all_fields=bool(args.all_fields), note=args.note or "",
-            dry_run=bool(args.dry_run),
-            incoming_sha256=args.incoming_sha256 or "",
-            allow_overlap=bool(args.allow_overlap))
+        items = collect_conflict_items(store)
+        totals = conflict_totals(store)
+        db_sha = bibdb.db_sha256(path)
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    shown = ([item for item in items if item["pending"]]
+             if args.pending_only else items)
+    payload = {"db": path, "db_sha256": db_sha, "totals": totals,
+               "items": [_public_conflict_item(item) for item in shown]}
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"库 sha256：{db_sha or '（读不到）'}")
+    print(f"冲突 {totals['total']} 条（**待裁决 {totals['pending']}** / 已裁决 "
+          f"{totals['resolved']}）" + ("——只列待裁决" if args.pending_only else ""))
+    if not shown:
+        print("（没有符合条件的条目）")
+        return 0
+    for item in shown:
+        state = ("待裁决" if item["pending"]
+                 else f"已裁决：{item['resolution'] or '—'}")
+        where = "/".join(part for part in (item["issue"], item["slug"]) if part) or "（无期/篇）"
+        print(f"  C{item['stable_no']:03d} · `{item['record_key']}` · {item['title']}"
+              f"（{where}）· {state}")
+    return 0
+
+
+def _replace_from_bib(store, args) -> dict:
+    """解析**恰好 1 条**人工裁决 bib → `store.resolve_replace`（B-127）。
+
+    安全校验（任一不满足 → `BibDBError`，库一个字节都不动）：
+      · bib 文件存在、可读；
+      · 恰好解析出 1 条条目（0 条 / 多条都拒绝）；
+      · 条目结构完好（花括号/引号配平）且无 `problem` 级语法发现；
+      · **bib key 必须等于库内 record key**（裁决不改 key）。
+    另算 bib 文件字节 sha256，写进冲突的 `resolved_bib_sha256`（审计证据）。
+    """
+    record_key = str(args.key or "").strip()
+    if store.get(record_key) is None:
+        raise bibdb.BibDBError(
+            f"引用库里没有记录 key `{record_key}`——请用 CONFLICTS.md 里"
+            "「库内记录」那个键（跨期撞车的记录可能带 -2 后缀）")
+    bib_path = os.path.abspath(str(args.bib or "").strip())
+    if not os.path.isfile(bib_path):
+        raise bibdb.BibDBError(f"找不到裁决 bib：{bib_path}")
+    text, text_warning = bibdb.read_bib_text(bib_path)
+    if text_warning:
+        print(f"⚠️ {text_warning}", file=sys.stderr)
+    entries, findings = bibparse.parse_entries(text)
+    if len(entries) != 1:
+        raise bibdb.BibDBError(
+            f"裁决 bib 必须**恰好 1 条**条目，实际解析出 {len(entries)} 条：{bib_path}")
+    entry = entries[0]
+    if entry.broken:
+        raise bibdb.BibDBError(
+            f"裁决 bib 的条目结构损坏（花括号/引号不配平），拒绝写入：{bib_path}")
+    problems = [finding for finding in findings
+                if getattr(finding, "level", "") == bibparse.LEVEL_PROBLEM]
+    if problems:
+        raise bibdb.BibDBError(
+            f"裁决 bib 有语法问题，拒绝写入（{problems[0].detail}）：{bib_path}")
+    entry_key = str(entry.key or "").strip()
+    if entry_key != record_key:
+        raise bibdb.BibDBError(
+            f"裁决 bib 的 key `{entry_key}` 与库内记录 key `{record_key}` 不一致"
+            "（裁决**不改 key**；请把 bib 条目的 key 改成库内 record key）")
+    with open(bib_path, "rb") as handle:
+        bib_sha = hashlib.sha256(handle.read()).hexdigest()
+    result = store.resolve_replace(
+        record_key, entry.etype, entry.fields,
+        incoming_sha256=args.incoming_sha256 or "", bib_sha256=bib_sha,
+        note=args.note or "", dry_run=bool(args.dry_run),
+        allow_overlap=bool(args.allow_overlap))
+    result["bib"] = bib_path
+    return result
+
+
+def _resolve_adopt_all(args) -> int:
+    """`resolve --adopt-all-pending`（B-127）：待裁决冲突逐条按 adopt 语义一键采用。"""
+    if str(args.key or "").strip() or str(args.action or "").strip():
+        return _fail(args, "--adopt-all-pending 不能与 --key / --action 同时使用"
+                           "（要么逐条裁决，要么一键全部采用）")
+    if args.all_fields or str(args.fields or "").strip() \
+            or str(args.incoming_sha256 or "").strip():
+        return _fail(args, "--adopt-all-pending 不接受 --all-fields / --fields / "
+                           "--incoming-sha256（它处理全部待裁决冲突）")
+    if args.allow_overlap:
+        return _fail(args, "--adopt-all-pending 不接受 --allow-overlap："
+                           "同记录字段重叠会整体拒绝，请逐条处理")
+    try:
+        path, store = _open_store(args)
+        before_sha, backup_dir = _write_guard(path, args)
+        totals_before = conflict_totals(store)
+        result = store.adopt_all_pending(note=args.note or "",
+                                         dry_run=bool(args.dry_run))
+        will_write = bool(result.get("changed")) and not bool(args.dry_run)
+        backup_path = ""
+        if will_write and backup_dir:
+            backup_path = _write_db_backup(path, backup_dir, before_sha)
         written = False if args.dry_run else store.save()
+        after_sha = bibdb.db_sha256(path)
+        if args.dry_run:
+            # dry-run 只算不写：按「将被采用的冲突数」推算总账（跳过项仍待裁决）
+            applied = len(result["adopted"])
+            totals_after = {
+                "total": totals_before["total"],
+                "pending": max(0, totals_before["pending"] - applied),
+                "resolved": totals_before["resolved"] + applied,
+            }
+        else:
+            totals_after = conflict_totals(store)
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    except OSError as exc:
+        return _fail(args, exc)
+    payload = {"db": path, "written": written, **result,
+               "totals_before": totals_before, "totals_after": totals_after,
+               "db_sha256_before": before_sha, "db_sha256_after": after_sha,
+               "backup_path": backup_path}
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    if not result["adopted"] and not result["skipped"]:
+        print("无变化：当前没有待裁决冲突。")
+        return 0
+    print(f"一键全部采用：{result['conflicts']} 条冲突（{result['records']} 条记录）")
+    for row in result["adopted"]:
+        print(f"  - `{row['record_key']}`（冲突 #{row['conflict_index']}，"
+              f"指纹 {row['incoming_sha256'][:12]}…）：")
+        for name, change in row["fields"].items():
+            if change.get("remove"):
+                print(f"      {name}：`{change['old']}` → （删除：新稿无此字段）")
+            else:
+                print(f"      {name}：`{change['old']}` → `{change['new']}`")
+    for row in result["skipped"]:
+        print(f"  ⚠️ 跳过 `{row['record_key']}` 冲突 #{row['conflict_index']}："
+              f"{row['reason']}")
+    if backup_path:
+        print(f"备份：{backup_path}")
+    if args.dry_run:
+        print("（--dry-run：只算不写库；去掉该开关才会写）")
+    else:
+        print("已写库（单次原子写）。" if written else "库无变化（未重写）。")
+    print(f"当前：冲突 {totals_after['total']} 条（待裁决 {totals_after['pending']} / "
+          f"已裁决 {totals_after['resolved']}）")
+    print("提示：本次批量裁决已写进 conflicts[].resolution/resolved_at，重新生成清单不会丢。")
+    return 0
+
+
+def cmd_resolve(args) -> int:
+    """记录冲突裁决：keep/defer 只改 conflicts 元数据；adopt **逐字段**改 fields；
+    replace 采用**人工裁决 bib**（B-127）；`--adopt-all-pending` 一键批量采用。"""
+    if args.adopt_all_pending:
+        return _resolve_adopt_all(args)
+    fields = [part.strip() for part in (args.fields or "").split(",") if part.strip()]
+    if not str(args.key or "").strip() or not str(args.action or "").strip():
+        return _fail(args, "resolve 需要 --key 与 --action"
+                           "（或用 --adopt-all-pending 一键全部采用）")
+    if args.action == "adopt":
+        if not (args.incoming_sha256 or "").strip():
+            return _fail(args, "--action adopt 必须配合 --incoming-sha256"
+                               "（冲突指纹）精确定位一条冲突")
+        if args.all_fields or fields:
+            return _fail(args, "--action adopt 只接受 --incoming-sha256；"
+                               "不要同时给 --fields / --all-fields")
+    elif args.action == "replace":
+        if not (args.incoming_sha256 or "").strip():
+            return _fail(args, "--action replace 必须配合 --incoming-sha256"
+                               "（冲突指纹）精确定位一条冲突")
+        if args.all_fields or fields:
+            return _fail(args, "--action replace 只接受 --incoming-sha256；"
+                               "不要同时给 --fields / --all-fields")
+        if not str(args.bib or "").strip():
+            return _fail(args, "--action replace 必须配合 --bib（人工裁决 bib 文件路径）")
+    elif args.allow_overlap:
+        return _fail(args, "--allow-overlap 只用于 --action adopt / replace"
+                           "（keep/defer 没有重叠问题）")
+    try:
+        path, store = _open_store(args)
+        before_sha, backup_dir = _write_guard(path, args)
+        if args.action == "replace":
+            result = _replace_from_bib(store, args)
+        else:
+            result = store.resolve_conflicts(
+                args.key, args.action, fields=fields,
+                all_fields=bool(args.all_fields), note=args.note or "",
+                dry_run=bool(args.dry_run),
+                incoming_sha256=args.incoming_sha256 or "",
+                allow_overlap=bool(args.allow_overlap))
+        # 备份只在**真的会产生写入**时生成（dry-run / 幂等无变化 → 不产生备份文件）
+        will_write = bool(result.get("changed")) and not bool(args.dry_run)
+        backup_path = ""
+        if will_write and backup_dir:
+            backup_path = _write_db_backup(path, backup_dir, before_sha)
+        written = False if args.dry_run else store.save()
+        after_sha = bibdb.db_sha256(path)
         totals = conflict_totals(store)
     except bibdb.BibDBError as exc:
-        print(f"✗ {exc}", file=sys.stderr)
-        return 2
-    payload = {"db": path, "written": written, **result, "totals": totals}
+        return _fail(args, exc)
+    except OSError as exc:
+        return _fail(args, exc)
+    payload = {"db": path, "written": written, **result, "totals": totals,
+               "db_sha256_before": before_sha, "db_sha256_after": after_sha,
+               "backup_path": backup_path}
     if args.json:
         _print_json(payload)
         return 0
     print(f"库：{path}")
     print(f"记录：`{result['key']}`；动作：{result['action']} → "
-          f"resolution=`{result['resolution']}`")
+          f"resolution=`{result['resolution']}`"
+          + (f"（来源 `{result['resolved_by']}`）" if result.get("resolved_by") else ""))
     if result["already"]:
         print(f"无变化：这些冲突此前已裁决过（{result.get('resolved_count', 0)} 条；"
               f"已有裁决：{'、'.join(result.get('resolved_actions') or []) or '—'}）。")
@@ -1421,9 +1730,16 @@ def cmd_resolve(args) -> int:
         sha_text = (f"；incoming_sha256={item['incoming_sha256'][:12]}…"
                     if item["incoming_sha256"] else "")
         print(f"   - 冲突 #{item['index']} 字段：{fields_text}{sha_text}")
-    if result["action"] == "adopt":
-        print("采用新稿值（**逐字段**；只改这些字段）：")
-        for name, change in (result.get("adopted_fields") or {}).items():
+    if result["action"] in ("adopt", "replace"):
+        if result["action"] == "adopt":
+            print("采用新稿值（**逐字段**；只改这些字段）：")
+            changes = result.get("adopted_fields") or {}
+        else:
+            print("采用人工裁决 bib（**整条 entry_type+fields**；将写这些内容）：")
+            if result.get("bib"):
+                print(f"   bib：{result['bib']}")
+            changes = result.get("replaced_fields") or {}
+        for name, change in changes.items():
             if change.get("remove"):
                 print(f"   - {name}：`{change['old']}` → （删除：新稿无此字段）")
             else:
@@ -1433,11 +1749,13 @@ def cmd_resolve(args) -> int:
         if result.get("overlapping"):
             if result.get("superseded"):
                 names = "、".join(f"#{item['index']}" for item in result["superseded"])
-                print(f"   ⚠️ 重叠冲突已标 `superseded`（被本次 adopt 取代）：{names}")
+                print(f"   ⚠️ 重叠冲突已标 `superseded`（被本次裁决取代）：{names}")
             else:
                 names = "、".join(f"#{item['index']}" for item in result["overlapping"])
                 print(f"   ⚠️ 有 {len(result['overlapping'])} 条重叠冲突将被标 `superseded`"
                       f"（--dry-run 未写）：{names}")
+    if backup_path:
+        print(f"备份：{backup_path}")
     if args.dry_run:
         print("（--dry-run：只算不写库；去掉该开关才会写）")
     else:
@@ -1446,6 +1764,78 @@ def cmd_resolve(args) -> int:
           f"已裁决 {totals['resolved']}）")
     print("提示：清单里的勾选只是草稿；本次裁决已写进 conflicts[].resolution/resolved_at，"
           "重新生成清单不会丢。")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    """从备份恢复整库（B-127）：校验备份结构 + 可选 expect sha → 原子写回。
+
+    安全语义：
+      · 备份必须能被 `Store.load()` 完整读出（行级 schema 校验；失败 → 退出 2，不恢复）；
+      · `--expect-db-sha256` 与当前库字节 sha256 不一致 → 退出 2、零写入；
+      · `--dry-run` 只校验/预览，不写库；
+      · 写回用 `fsutil.atomic_write`（同目录临时文件 + fsync + rename），写后立即校验
+        库字节 sha256 与备份一致；
+      · **不做 reopen**：已裁决冲突不会单独重开，整库回到备份时的状态（P4 拍板口径）。
+    """
+    backup_path = os.path.abspath(str(args.backup or "").strip())
+    if not os.path.isfile(backup_path):
+        return _fail(args, f"找不到备份文件：{backup_path}")
+    try:
+        db_path = _db_path(args)
+        current_sha = bibdb.db_sha256(db_path)
+        expect = _normalize_sha256_arg(args.expect_db_sha256, "--expect-db-sha256")
+        if expect:
+            if not current_sha:
+                raise bibdb.BibDBError(
+                    f"库文件不存在，无法校验 --expect-db-sha256：{db_path}")
+            if current_sha != expect:
+                raise bibdb.BibDBError(
+                    f"库 sha256 与 --expect-db-sha256 不符（当前 {current_sha[:12]}…，期望 "
+                    f"{expect[:12]}…）：库可能已被其它操作修改，请刷新后重试（本次未恢复）")
+        try:
+            backup_store = bibdb.Store.load(backup_path)
+        except bibdb.BibDBError as exc:
+            raise bibdb.BibDBError(f"备份文件校验失败（本次未恢复）：{exc}") from exc
+        try:
+            with open(backup_path, "rb") as handle:
+                backup_bytes = handle.read()
+            backup_sha = hashlib.sha256(backup_bytes).hexdigest()
+            text = backup_bytes.decode("utf-8")
+        except OSError as exc:
+            raise bibdb.BibDBError(
+                f"读不了备份文件：{backup_path}（{exc}）") from exc
+        except UnicodeDecodeError as exc:
+            raise bibdb.BibDBError(
+                f"备份文件不是 UTF-8 文本，无法恢复：{exc}") from exc
+        written = False
+        if not args.dry_run and current_sha != backup_sha:
+            fsutil.atomic_write(db_path, text, keep_backups=0)
+            written = True
+            if bibdb.db_sha256(db_path) != backup_sha:
+                raise bibdb.BibDBError(
+                    "恢复写回校验失败：库 sha256 与备份不一致（请重新选择备份恢复）")
+        after_sha = bibdb.db_sha256(db_path)
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    except OSError as exc:
+        return _fail(args, exc)
+    payload = {"db": db_path, "backup_path": backup_path, "written": written,
+               "dry_run": bool(args.dry_run), "records": len(backup_store.records()),
+               "backup_sha256": backup_sha,
+               "db_sha256_before": current_sha, "db_sha256_after": after_sha}
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{db_path}")
+    print(f"备份：{backup_path}（{payload['records']} 条记录；sha256: {backup_sha[:12]}…）")
+    if args.dry_run:
+        print("（--dry-run：只校验备份、不写库；去掉该开关才会恢复）")
+    elif written:
+        print("已恢复（原子写回；整库回到备份状态，不做 reopen）。")
+    else:
+        print("库内容已与备份一致，无需重写。")
+    print(f"库 sha256：{current_sha[:12]}… → {after_sha[:12]}…")
     return 0
 
 
@@ -4918,14 +5308,17 @@ def build_parser() -> argparse.ArgumentParser:
     # ── 冲突裁决持久化（第 130 条）：把「保留旧值 / 待人工」写进库，重新生成清单不丢 ──
     resolve = sub.add_parser(
         "resolve", parents=[common],
-        help="把冲突标记为已裁决（keep=保留旧值 / defer=待人工查证；不改字段值）")
-    resolve.add_argument("--key", required=True,
-                         help="库内记录 key（CONFLICTS.md 里「库内记录」那个键，可能带 -2 后缀）")
-    resolve.add_argument("--action", required=True, choices=["keep", "defer", "adopt"],
+        help="把冲突标记为已裁决（keep=保留旧值 / defer=待人工查证 / adopt=逐字段采用新稿值 "
+             "/ replace=采用人工裁决 bib）；--adopt-all-pending 一键全部采用")
+    resolve.add_argument("--key", default="",
+                         help="库内记录 key（CONFLICTS.md 里「库内记录」那个键，可能带 -2 后缀；"
+                              "逐条裁决必给；--adopt-all-pending 时不能给）")
+    resolve.add_argument("--action", default="", choices=["keep", "defer", "adopt", "replace"],
                          help="keep=保留库内已核实旧值；defer=待人工查证（先从清单移走）；"
-                              "adopt=**逐字段采用新稿值**（只改该冲突字段，必须配 "
-                              "--incoming-sha256；整条替换仍用 import-bib --force）")
-    selector = resolve.add_mutually_exclusive_group(required=True)
+                              "adopt=**逐字段采用新稿值**（必须配 --incoming-sha256）；"
+                              "replace=采用**人工裁决 bib**（配 --incoming-sha256 + --bib；"
+                              "整条写 entry_type+fields、key 不变）")
+    selector = resolve.add_mutually_exclusive_group()
     selector.add_argument("--all-fields", action="store_true",
                           help="该记录**所有**待裁决冲突")
     selector.add_argument("--fields", default="",
@@ -4933,17 +5326,53 @@ def build_parser() -> argparse.ArgumentParser:
                                "title,author,$entry_type；一条冲突跨多字段时整条标记）")
     selector.add_argument("--incoming-sha256", default="", metavar="SHA",
                           help="按**冲突指纹**精确标记一条冲突（CONFLICTS.md 里每条的"
-                               "「冲突指纹」，或 query --key … --json 的 "
-                               "conflicts[].incoming_sha256；至少 8 位十六进制前缀且须唯一）。"
-                               "同一记录有多条来源不同的冲突时用它，避免 --fields 误伤")
+                               "「冲突指纹」，或 conflicts --json 的 items[].incoming_sha256；"
+                               "至少 8 位十六进制前缀且须唯一；adopt / replace 必给）")
+    resolve.add_argument("--bib", default="", metavar="PATH",
+                         help="仅 --action replace：人工裁决 bib 文件（**恰好 1 条**条目，"
+                              "key 必须等于库内记录 key；裁决不改 key）")
+    resolve.add_argument("--adopt-all-pending", action="store_true",
+                         help="一键全部采用：对全部待裁决冲突逐条按 adopt 语义应用 incoming 值"
+                              "（不给 --key/--action；同记录待裁决冲突字段重叠 → 整体拒绝并"
+                              "列出冲突 #，请逐条处理；--dry-run 出逐条预览）")
     resolve.add_argument("--note", default="",
                          help="裁决备注（写进 conflicts[].note，便于审计）")
     resolve.add_argument("--allow-overlap", action="store_true",
-                         help="仅 --action adopt：把同记录中字段重叠的其它待裁决冲突标为 "
-                              "superseded（默认遇到重叠直接拒绝，先 keep/defer 逐条处理）")
+                         help="仅 --action adopt / replace：把同记录中字段重叠的其它待裁决冲突"
+                              "标为 superseded（默认遇到重叠直接拒绝，先 keep/defer 逐条处理）")
+    resolve.add_argument("--expect-db-sha256", default="", metavar="SHA",
+                         help="写前安全闸：校验库当前字节 sha256（完整 64 位十六进制）；"
+                              "不符 → 退出 2 且零写入（防界面列表过期后误写）")
+    resolve.add_argument("--backup", default="", metavar="DIR",
+                         help="写前自动备份目录（不存在则创建）：真的会写入时先生成 "
+                              "`bibliography-<UTCts>-<库sha前12位>.jsonl`；目录位置已存在"
+                              "同名文件 → 退出 2")
     resolve.add_argument("--dry-run", action="store_true", help="只算不写库")
     resolve.add_argument("--json", action="store_true", help="机器可读输出")
     resolve.set_defaults(func=cmd_resolve)
+
+    # ── 待裁决条目列表（B-127，批73）：GUI「待裁决」页数据源；只读 ──────────────
+    conf = sub.add_parser(
+        "conflicts", parents=[common],
+        help="列出冲突条目（只读；--json 给界面待裁决页；--pending-only 只列待裁决）")
+    conf.add_argument("--pending-only", action="store_true",
+                      help="只列待裁决（没有 resolved_at）的冲突条目")
+    conf.add_argument("--json", action="store_true", help="机器可读输出")
+    conf.set_defaults(func=cmd_conflicts)
+
+    # ── 从备份恢复整库（B-127，批73；P4 拍板：用备份恢复代替 reopen）──────────
+    rst = sub.add_parser(
+        "restore", parents=[common],
+        help="从备份恢复整库（校验备份结构 + 可选 expect sha → 原子写回；不做 reopen）")
+    rst.add_argument("--backup", required=True, metavar="PATH",
+                     help="备份文件路径（`bibliography-<UTCts>-<库sha前12位>.jsonl`）")
+    rst.add_argument("--expect-db-sha256", default="", metavar="SHA",
+                     help="写前校验当前库字节 sha256（完整 64 位十六进制）；"
+                          "不符 → 退出 2 且不恢复")
+    rst.add_argument("--dry-run", action="store_true",
+                     help="只校验备份、不写库（输出前后 sha）")
+    rst.add_argument("--json", action="store_true", help="机器可读输出")
+    rst.set_defaults(func=cmd_restore)
 
     # ── 待裁决清单（第 129 条后续）：给人看的中文清单，可重复生成、逐字节幂等 ──
     report = sub.add_parser(

@@ -216,6 +216,11 @@ class DocxDoc:
     images: list[tuple[str, str]] = field(default_factory=list)
     # 正文里的纯文本编号引用：{编号 → bib 键}（来自文末那份 `[N] …` 清单）
     ref_key_by_num: dict[int, str] = field(default_factory=dict)
+    # B-130（批73）：`ref_key_by_num` 由 **Word 自动编号安全闸（B-022）成功物化**的条数
+    # （0 = 没走该闸；映射可能来自源稿里**显式写着** `[N]` 的清单文本）。
+    # 只给「脚注裸编号 → \parencite」通道做 gate 用（见 `_footnote_num2key_gate`）：
+    # B-022 条件不满足时按 spec「不猜」；不改正文渲染/既有产物。
+    ref_auto_materialized: int = 0
     # 第四十九批（C 类新口径）：混合型脚注（说明文字+引用）清单 → build 汇总
     # 「请人工核对」warning；元素 (fid, 片段)。纯日志，不影响产物。
     mixed_footnotes: list[tuple[int, str]] = field(default_factory=list)
@@ -2617,6 +2622,7 @@ def render_para(
     img_names: dict | None = None,
     fig_counter: list[int] | None = None,
     c_class_union: bool = False,
+    num2key: dict[int, str] | None = None,
 ) -> tuple[str, list[str]]:
     """把一段 XML 片段渲染成 LaTeX。
 
@@ -2631,6 +2637,10 @@ def render_para(
                  `fig:1`，实测 corpus 12 篇有图 label 的产物里 6 篇重复，
                  `2025_04_YingJin_Xu` 6 个全是 fig:1）。默认 None = 保留段落内计数
                  （只给不传计数器的旧调用方/单测用，行为与从前逐字节相同）。
+    num2key      **B-130（批73）**：编号体例稿的 `{编号 → bib 键}` 可靠映射。非空时把
+                 **脚注文本里的裸 `[N]`**（`参见[12]。`）保守换成 `\\parencite{键}`
+                 （判据见 `link_footnote_bare_citations`；越界/无引导语证据 → 原样 +
+                 warning）。默认 None = 不做，与从前逐字节相同（正文裸编号不在本卡）。
 
     返回 (LaTeX, 提示列表)。
     """
@@ -2665,6 +2675,18 @@ def render_para(
 
     out: list[str] = []
     fig_seq = 0
+
+    def _fn_note(text: str) -> str:
+        """B-130：脚注文本里的裸编号引用 → `\\parencite`（仅编号体例稿；否则原样）。
+
+        `num2key` 为空（人年制/无可靠编号映射的稿子）= 默认零变化：一个字都不动。
+        """
+        if not num2key or not text:
+            return text
+        new, _n, _iss = link_footnote_bare_citations(text, num2key)
+        if _iss:
+            notes.extend(_iss)
+        return new
 
     def flush_figs(buf: list[str]) -> None:
         nonlocal fig_seq
@@ -2738,16 +2760,18 @@ def render_para(
                     out.append(f"（\\parencite{loc}{{{key}}}）")
             elif fn.kind in ("citation_unmatched", "mixed_manual"):
                 # C 类新口径：未匹配短引用/混合型 → 保留脚注原文（不编造条目不丢内容）
-                body_note = (getattr(fn, "note_latex", "")
-                             or escape_latex(fn.note or getattr(fn, "ref_raw", "")
-                                             or fn.text))
+                body_note = _fn_note(
+                    (getattr(fn, "note_latex", "")
+                     or escape_latex(fn.note or getattr(fn, "ref_raw", "")
+                                     or fn.text)))
                 out.append(f"\\footnote{{{body_note}}}")
             elif fn.kind in ("mixed", "mixed_citation"):
                 if c_class_union:
                     # ON：混合型（说明文字+引用）→ 保留脚注，说明文字原样
                     #（引用已由 link_citations 替换），build 汇总「请人工核对」warning。
-                    body_note = (getattr(fn, "note_latex", "")
-                                 or escape_latex(fn.note or fn.text))
+                    body_note = _fn_note(
+                        (getattr(fn, "note_latex", "")
+                         or escape_latex(fn.note or fn.text)))
                     out.append(f"\\footnote{{{body_note}}}")
                 else:
                     # OFF：旧行为（逐字节不变）
@@ -2757,7 +2781,8 @@ def render_para(
                     out.append(f"\\footnote{{cf. \\parencite{loc}{{{key}}}. {note} }}")
             else:
                 # 纯注释 / 古典文献：原样保留（英文注释已预先转义+替换引用）
-                body_note = getattr(fn, "note_latex", "") or escape_latex(fn.text)
+                body_note = _fn_note(
+                    getattr(fn, "note_latex", "") or escape_latex(fn.text))
                 out.append(f"\\footnote{{{body_note}}}")
 
     flush_figs(fig_buf)
@@ -3033,6 +3058,62 @@ def _materialize_auto_numbered_refs(
     ), n
 
 
+def _footnote_num2key_gate(doc: "DocxDoc") -> dict[int, str]:
+    r"""B-130 gate：`doc.ref_key_by_num` 是**可靠 1..N 映射**时才返回它，否则 `{}`。
+
+    可靠 = 二者之一（spec §2.2，Lead 2026-10-21 裁决 B）：
+      ① Word 自动编号安全闸（B-022）**成功物化**（`doc.ref_auto_materialized > 0`
+         —— 编号从 1 起连续、每一条都对上原文、正文 [n] 闭合，见
+         `_materialize_auto_numbered_refs` 的白名单/安全闸注释）；
+      ② 文末**显式写着** `[N]` 的清单文本解析一致，且 `num2key` 覆盖 1..N 连续
+         （`_numbered_refs` 的编号取自清单原文标号本身，与正文 `（[N]）` 同一套映射）。
+    两者都不满足（映射为空 / 编号不齐）→ **不猜**，脚注裸编号保持原文
+    （「像引用」的裸编号由 `_footnote_bare_cite_gate_warning` 汇总成一条 warning）。
+    """
+    m = doc.ref_key_by_num
+    if not m:
+        return {}
+    if doc.ref_auto_materialized > 0:
+        return m
+    if sorted(m) == list(range(1, len(m) + 1)):
+        return m
+    return {}
+
+
+def _footnote_bare_cite_gate_warning(fn_objs: dict) -> str:
+    """B-130：脚注里有「像引用」的裸编号、但文末清单没有可靠 1..N 映射 → 一条汇总 warning。
+
+    只在 gate 不通过时调用（spec §2.2「两者都无 → 不猜、warning」）。判据与正转换
+    通道同源：只算**括号外 + 带引用引导语证据**的裸编号，最多列 4 处；没有就返回空串
+    （无此类脚注的稿子不新增 warning，默认零变化）。
+    """
+    hits: list[str] = []
+    for fid in sorted(fn_objs):
+        txt = str(getattr(fn_objs[fid], "text", "") or "")
+        if not txt:
+            continue
+        depths = _fn_in_paren_depths(txt)
+        in_math = _fn_in_math(txt)
+        for m in _FN_BARE_NUM_RE.finditer(txt):
+            s = m.start()
+            if depths[s] > 0 or in_math[s]:
+                continue
+            pre = txt[max(0, s - 32):s]
+            if not (_FN_LEAD_NEAR_RE.search(pre) or _FN_LEAD_FAR_RE.search(pre)):
+                continue
+            snip = txt[max(0, s - 10):min(len(txt), m.end() + 10)].replace("\n", " ")
+            hits.append(f"「…{snip}…」")
+            if len(hits) >= 4:
+                break
+        if len(hits) >= 4:
+            break
+    if not hits:
+        return ""
+    return ("脚注里有裸编号引用 " + "、".join(hits) + ("（仅列前 4 处）" if len(hits) >= 4 else "")
+            + "，但文末清单没有形成可靠 1..N 编号映射（Word 自动编号未物化 / 显式清单"
+            "编号不齐）→ 未转换（不猜），请人工核对")
+
+
 def parse_docx(path: str, quote_threshold: int = 105,
                c_class_union: bool = False) -> DocxDoc:
     """解析 Word 文稿。
@@ -3200,6 +3281,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
             doc.refs = []
             doc.bib_entries.extend(entries)
             doc.ref_key_by_num = num2key
+            doc.ref_auto_materialized = _auto_materialized   # B-130 gate：B-022 物化条数
             # 编号清单通道的「条目 → 原文」（整条 `[N] …`），见 `_numbered_refs`。
             doc.ref_raw_by_key.update(raw_by_key)
         else:
@@ -3214,6 +3296,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 # 人年制一条都没有就还是用编号通道的结果，别把唯一一条丢掉。
                 doc.bib_entries.extend(entries)
                 doc.ref_key_by_num = num2key
+                doc.ref_auto_materialized = _auto_materialized   # B-130 gate（同上报错口径）
                 doc.ref_raw_by_key.update(raw_by_key)
 
     # ③ 元数据块：中英各一套
@@ -3796,6 +3879,16 @@ def parse_docx(path: str, quote_threshold: int = 105,
 
     # ⑥ 渲染正文（段落与表格按原顺序混排）
     fn_pages = {fid: f.locator for fid, f in fn_objs.items()}
+    # B-130（批73）：只有「文末清单是可靠 1..N 编号映射」的编号体例稿才把**脚注文本里
+    # 的裸 [N]** 转成 `\parencite`（gate 见 `_footnote_num2key_gate`）；其余稿传空 →
+    # 渲染路径与从前逐字节相同（默认零变化）。正文裸编号不在本卡。
+    fn_num2key = _footnote_num2key_gate(doc)
+    if not fn_num2key:
+        # spec §2.2：两个可靠映射条件都不满足 → 不猜；脚注里「像引用」的裸编号
+        # 汇总成一条 warning（没有这类脚注的稿子不新增 warning，默认零变化）。
+        _fn_gate_hint = _footnote_bare_cite_gate_warning(fn_objs)
+        if _fn_gate_hint:
+            doc.warnings.append(_fn_gate_hint)
     out: list[str] = []
     tab_idx = 0
     fig_counter = [0]   # P2-0：文档级图序号（整篇唯一；表序号 tab_idx 一直是文档级）
@@ -3841,7 +3934,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
             continue  # 已被上一张图的占位吸收
         latex, notes = render_para(para, fn_objs, doc.bib_entries, keymap, fn_pages,
                                    quote_threshold, img_names, fig_counter=fig_counter,
-                                   c_class_union=c_class_union)
+                                   c_class_union=c_class_union, num2key=fn_num2key)
         doc.warnings.extend(notes)
         if not latex.strip():
             continue
@@ -3941,6 +4034,128 @@ def _normalize_locator(tail: str) -> str:
         return f"第{m.group(1)}页"
     # 其他（章节号之类）原样保留
     return t
+
+
+# ── B-130（批73）：**脚注文本**里的裸编号引用 `参见[12]。` ────────────────────
+# 与正文通道（`link_numbered_citations`，匹配中文括号组）分开：脚注里的裸编号
+# `参见[12]。` / `参见吉尔伯特在[13]的批评` / `参见[13]，第8页。` **没有括号包裹**，
+# 旧实现原样残留（86-08 实测 3 处：成品 PDF 悬空标记，且 Gilbert2002 因此被判未引）。
+# 判据保守（spec §2.2，Lead 2026-10-21 裁决 B）：
+#   ① 只在**脚注文本**里（调用方只在编号体例稿时传映射，见 `_footnote_num2key_gate`）；
+#   ② `[N]` 必须是**裸编号**：不落在中文/英文括号组里（括号组归 `link_numbered_citations`）；
+#   ③ `N ∈ ref_key_by_num`（映射可靠 1..N，否则不猜）；
+#   ④ 逐处要有**引用引导语/语境证据**（参见/参看/详见/转引自/引自/参见文献/参照/参考/
+#      例如/见/据）——「规则[3]条」这类非引用语义不得转换。
+# 拿不准 → 原样保留 + warning（不猜、不丢信息）；转换只换 `[N]` 本身，
+# 前后中文文字与页码定位（`参见[x]，第8页。`）原样保留。
+_FN_BARE_NUM_RE = re.compile(r"\[\s*(\d{1,3})\s*\]")
+#: 引导语紧贴在 `[N]` 前（`参见[12]` / `详见[3]` / `可参考[16]`）
+_FN_LEAD_NEAR_RE = re.compile(
+    r"(?:参见|参看|详见|另见|又见|亦见|并见|转引自|引自|参见文献|参照|参考|"
+    r"参考文献|参考书目|例如)\s*$")
+#: 引导语在同一句里用 ≤12 字隔开（`参见吉尔伯特在[13]的批评`）；`见`/`据` 只在
+#: 句读/空白边界后算证据（避免「意见[3]」「数据[3]」这类词内误伤）。
+_FN_LEAD_FAR_RE = re.compile(
+    r"(?:^|[。！？；：，、\s“”「」『』（）()])"
+    r"(?:参见|参看|详见|另见|又见|亦见|并见|转引自|引自|参见文献|参照|参考|"
+    r"参考文献|参考书目|例如|见|据)"
+    r"[^。！？；\n]{0,12}$")
+
+
+def _fn_in_paren_depths(text: str) -> list[int]:
+    """每个字符位置之前的**括号深度**（全角/半角都算）——判 `[N]` 是否被括号包裹。"""
+    depth = 0
+    out = [0] * (len(text) + 1)
+    for i, ch in enumerate(text):
+        out[i] = depth
+        if ch in "（(":
+            depth += 1
+        elif ch in "）)" and depth > 0:
+            depth -= 1
+    out[len(text)] = depth
+    return out
+
+
+def _fn_in_math(text: str) -> list[bool]:
+    """每个字符位置是否在 `$…$` 数学里（`\\$` 是转义美元符，不算分隔符）。
+
+    含公式的脚注走 `note_latex`（数学原样 `$…$`）——数学里的 `[3]` 是区间/下标之类，
+    **不是**文献编号，绝不能替换（否则会产出 `$\\parencite{…}$` 这种坏 LaTeX）。
+    """
+    out = [False] * (len(text) + 1)
+    in_math = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            out[i] = in_math
+            out[i + 1] = in_math
+            i += 2
+            continue
+        if ch == "$":
+            out[i] = in_math          # 分隔符本身算「外侧」
+            in_math = not in_math
+        else:
+            out[i] = in_math
+        i += 1
+    out[len(text)] = in_math
+    return out
+
+
+def link_footnote_bare_citations(
+    text: str, num2key: dict[int, str]
+) -> tuple[str, int, list[str]]:
+    r"""把**脚注文本里的裸 `[N]`** 保守转换成 `\parencite{键}`（B-130）。
+
+    返回 `(新文本, 转换处数, 问题清单)`。只换 `[N]` 本身：
+    `参见[12]。` → `参见\parencite{Gilbert2002}。`、
+    `参见吉尔伯特在[13]的批评` → `参见吉尔伯特在\parencite{Gilbert2007}的批评`、
+    `参见[13]，第8页。` → `参见\parencite{Gilbert2007}，第8页。`。
+
+    不转换（原样保留 + 一条 warning，**不猜**）：
+      · `N` 不在 `num2key`（越界/清单里没有这个编号）；
+      · 缺引用引导语证据（如「规则[3]条」）。
+    静默跳过（不是引用，也不出 warning）：
+      · `[N]` 在括号组里（交给 `link_numbered_citations`，避免二次转换）；
+      · `[N]` 在 `$…$` 公式里（区间/下标等数学记号）。
+    """
+    if not text or not num2key:
+        return text, 0, []
+    depths = _fn_in_paren_depths(text)
+    in_math = _fn_in_math(text)
+    hi = max(num2key)
+    parts: list[str] = []
+    pos = 0
+    n_done = 0
+    issues: list[str] = []
+    for m in _FN_BARE_NUM_RE.finditer(text):
+        s, e = m.span()
+        if depths[s] > 0:
+            continue                     # `（[6]，第434页）`：括号组归正文编号通道
+        if in_math[s]:
+            continue                     # 公式里的 `[3]` 是数学记号，不是文献编号
+        num = int(m.group(1))
+        pre = text[max(0, s - 32):s]
+        snippet = text[max(0, s - 12):min(len(text), e + 12)].replace("\n", " ")
+        key = num2key.get(num)
+        if not key:
+            issues.append(
+                f"脚注内编号 [{num}] 不在文末清单编号范围（1..{hi}）内，已原样保留"
+                f"（不猜）：「…{snippet}…」")
+            continue
+        if not (_FN_LEAD_NEAR_RE.search(pre) or _FN_LEAD_FAR_RE.search(pre)):
+            issues.append(
+                f"脚注内编号 [{num}] 缺引用引导证据（参见/见/引自…），疑似非引用，"
+                f"已原样保留（不猜）：「…{snippet}…」")
+            continue
+        parts.append(text[pos:s])
+        parts.append(f"\\parencite{{{key}}}")
+        pos = e
+        n_done += 1
+    if not n_done:
+        return text, 0, issues
+    parts.append(text[pos:])
+    return "".join(parts), n_done, issues
 
 
 # 正文里的纯文本编号引用：`（[21]，第33页）` / `([21], p. 33)` / `（见[3]）`

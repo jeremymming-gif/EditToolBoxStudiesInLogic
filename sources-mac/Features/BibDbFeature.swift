@@ -703,6 +703,741 @@ enum BibDbFeature {
         return out
     }
 
+    // MARK: - 待裁决：冲突条目（conflicts --json；批73 B-127）
+    //
+    // 判据全部在引擎：这一层只把 `conflicts --json` / `resolve --json` 的字段翻成界面模型，
+    // **不在 Swift 里判断「哪条该保留/哪条算冲突」**（否则两份真相）。
+    // 列表顺序直接沿用引擎的「期→篇→条目」顺序；C 编号（stable_no）由引擎按全部冲突固定
+    // 分配 —— GUI 裁决后**只重载数据、不重排列表**，用户按 Cxxx 记的决定不会错位。
+
+    /// 冲突里一个字段的「库内已核实旧值 → 新稿值」。
+    struct ConflictFieldDiff: Identifiable {
+        var name = ""
+        var old = ""
+        var new = ""
+        var id: String { name }
+        var oldText: String { old.isEmpty ? "（空）" : old }
+        var newText: String { new.isEmpty ? "（空）" : new }
+    }
+
+    /// 一条待裁决冲突（= 清单里的一个 C 编号）。
+    struct ConflictItem: Identifiable {
+        var stableNo = 0
+        var recordKey = ""
+        var bibKey = ""
+        var entryType = ""
+        var title = ""
+        var author = ""
+        var year = ""
+        var issue = ""
+        var slug = ""
+        var file = ""
+        var at = ""
+        var incomingSha256 = ""
+        var pending = true
+        var resolution = ""
+        var resolvedAt = ""
+        var diff: [ConflictFieldDiff] = []
+        var advice = ""
+        var verified = false
+        var method = ""
+
+        var id: String { "\(stableNo)|\(recordKey)|\(incomingSha256)|\(at)" }
+        var stableLabel: String { String(format: "C%03d", stableNo) }
+        var fingerprintShort: String {
+            incomingSha256.count > 16 ? String(incomingSha256.prefix(16)) + "…" : incomingSha256
+        }
+        var hasFingerprint: Bool { !incomingSha256.isEmpty }
+        var diffFieldsText: String { diff.map { $0.name }.joined(separator: "、") }
+        var sourceText: String {
+            let parts = [issue, slug, file].filter { !$0.isEmpty }
+            return parts.isEmpty ? "（未记录来源）" : parts.joined(separator: " / ")
+        }
+        var briefText: String {
+            "\(title) · \(author)" + (year.isEmpty ? "" : " · \(year)")
+        }
+        /// 已裁决动作的中文（只在 `resolved_at` 存在时有意义；导入默认的 kept-existing 不算裁决）
+        var resolutionTitle: String {
+            guard !resolvedAt.isEmpty else { return "" }
+            switch resolution {
+            case "kept-existing": return "保留旧值"
+            case "deferred": return "待人工"
+            case "adopted": return "采用新值"
+            case "superseded": return "被重叠裁决取代"
+            case "forced-replaced": return "整条替换（历史）"
+            case "replaced-unverified": return "被未核实值替换"
+            default: return resolution.isEmpty ? "已裁决" : resolution
+            }
+        }
+    }
+
+    /// 冲突列表按期/篇分组（顺序 = 引擎给的顺序，不重排）。
+    struct ConflictGroup: Identifiable {
+        var issue = ""
+        var slug = ""
+        var items: [ConflictItem] = []
+        var id: String { "\(issue)|\(slug)" }
+        var issueTitle: String { issue.isEmpty ? "（无期——手工导入/未记录来源）" : issue }
+        var slugTitle: String { slug.isEmpty ? "（无篇名）" : slug }
+        var pendingCount: Int { items.filter { $0.pending }.count }
+        var file: String { items.first?.file ?? "" }
+    }
+
+    /// 一次冲突列表加载结果。
+    struct ConflictsOutcome {
+        var dbPath = ""
+        var dbSha256 = ""
+        var total = 0
+        var pending = 0
+        var resolved = 0
+        var items: [ConflictItem] = []
+        var error: String?
+        var seconds: Double = 0
+        var rawOutput = ""
+
+        var shaShort: String {
+            dbSha256.count > 12 ? String(dbSha256.prefix(12)) + "…" : dbSha256
+        }
+        var pendingItems: [ConflictItem] { items.filter { $0.pending } }
+        var verifiedPending: [ConflictItem] { items.filter { $0.pending && $0.verified } }
+        /// 高亮提醒：这些**库内已核实**记录的字段将被改（采用新值前必须逐条看清楚）
+        var verifiedPendingCount: Int { verifiedPending.count }
+        /// 按期→篇分组（引擎顺序本身已按期→篇→条目，这里只做连续分组）
+        var groups: [ConflictGroup] {
+            var out: [ConflictGroup] = []
+            for item in items {
+                if var last = out.last, last.issue == item.issue, last.slug == item.slug {
+                    last.items.append(item)
+                    out[out.count - 1] = last
+                } else {
+                    out.append(ConflictGroup(issue: item.issue, slug: item.slug, items: [item]))
+                }
+            }
+            return out
+        }
+    }
+
+    private static func parseConflictItem(_ dict: [String: Any]) -> ConflictItem {
+        var item = ConflictItem()
+        item.stableNo = intValue(dict["stable_no"])
+        item.recordKey = stringValue(dict["record_key"])
+        item.bibKey = stringValue(dict["bib_key"])
+        item.entryType = stringValue(dict["entry_type"])
+        item.title = stringValue(dict["title"])
+        item.author = stringValue(dict["author"])
+        item.year = stringValue(dict["year"])
+        item.issue = stringValue(dict["issue"])
+        item.slug = stringValue(dict["slug"])
+        item.file = stringValue(dict["file"])
+        item.at = stringValue(dict["at"])
+        item.incomingSha256 = stringValue(dict["incoming_sha256"])
+        item.pending = (dict["pending"] as? Bool) != false
+        item.resolution = stringValue(dict["resolution"])
+        item.resolvedAt = stringValue(dict["resolved_at"])
+        item.advice = stringValue(dict["advice"])
+        item.verified = (dict["verified"] as? Bool) == true
+        item.method = stringValue(dict["method"])
+        if let rawDiff = dict["diff"] as? [String: Any] {
+            for (name, value) in rawDiff {
+                guard let values = value as? [String: Any] else { continue }
+                item.diff.append(ConflictFieldDiff(
+                    name: name,
+                    old: stringValue(values["old"]),
+                    new: stringValue(values["new"])))
+            }
+            item.diff.sort { $0.name < $1.name }
+        }
+        return item
+    }
+
+    /// 读冲突条目：`bibdb.py conflicts --json [--pending-only]`（**只读；同步；后台队列调**）。
+    static func loadConflicts(pendingOnly: Bool = false) -> ConflictsOutcome {
+        let startedAt = Date()
+        var out = ConflictsOutcome()
+        guard let db = existingDBPath() else {
+            out.error = "引用库文件不存在或找不到笔记仓：\(dbPath() ?? "（未找到笔记仓）")\n"
+                + "先到「入藏」页导入一份 .bib，或到「引用库设置」页指定笔记仓路径。"
+            return out
+        }
+        out.dbPath = db
+        var arguments = ["conflicts", "--json", "--db", db]
+        if pendingOnly { arguments.append("--pending-only") }
+        let run = runJSON(arguments)
+        guard run.ok, let payload = run.json else {
+            if let payload = run.json, !stringValue(payload["error"]).isEmpty {
+                out.error = stringValue(payload["error"])
+            } else {
+                out.error = failureText(run)
+            }
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out.dbSha256 = stringValue(payload["db_sha256"])
+        if let totals = payload["totals"] as? [String: Any] {
+            out.total = intValue(totals["total"])
+            out.pending = intValue(totals["pending"])
+            out.resolved = intValue(totals["resolved"])
+        }
+        for raw in (payload["items"] as? [Any]) ?? [] {
+            guard let dict = raw as? [String: Any] else { continue }
+            out.items.append(parseConflictItem(dict))
+        }
+        // 引擎不在 items 里时要能自洽：总数退化为条目数
+        if out.total == 0 { out.total = out.items.count }
+        if out.pending == 0 { out.pending = out.items.filter { $0.pending }.count }
+        out.rawOutput = run.output
+        out.seconds = Date().timeIntervalSince(startedAt)
+        return out
+    }
+
+    // MARK: - 裁决写库（resolve；行内三按钮 / 编辑裁决 bib）
+
+    /// 一个字段的「将改」变化（old → new；remove = 新稿没有该字段）。
+    struct FieldChange: Identifiable {
+        var name = ""
+        var old = ""
+        var new = ""
+        var remove = false
+        var id: String { name }
+        var oldText: String { old.isEmpty ? "（空）" : old }
+        var newText: String { remove ? "（删除）" : (new.isEmpty ? "（空）" : new) }
+    }
+
+    /// 一次裁决动作的结果（keep / defer / adopt / replace 共用）。
+    struct ResolveOutcome {
+        var key = ""
+        var action = ""
+        var resolution = ""
+        var already = false
+        var written = false
+        var dryRun = false
+        var matchedCount = 0
+        var changes: [FieldChange] = []
+        var supersededCount = 0
+        var overlappingCount = 0
+        var contentShaBefore = ""
+        var contentShaAfter = ""
+        var dbShaBefore = ""
+        var dbShaAfter = ""
+        var backupPath = ""
+        var pendingAfter = -1
+        var totalAfter = -1
+        var error: String?
+        var seconds: Double = 0
+        var rawOutput = ""
+
+        var changeSummary: String {
+            if changes.isEmpty { return "无字段变化" }
+            return "将改 \(changes.count) 个字段（\(changes.map { $0.name }.joined(separator: "、"))）"
+        }
+    }
+
+    private static func parseFieldChanges(from value: Any?) -> [FieldChange] {
+        guard let dict = value as? [String: Any] else { return [] }
+        var out: [FieldChange] = []
+        for (name, raw) in dict {
+            guard let values = raw as? [String: Any] else { continue }
+            out.append(FieldChange(name: name,
+                                   old: stringValue(values["old"]),
+                                   new: stringValue(values["new"]),
+                                   remove: (values["remove"] as? Bool) == true))
+        }
+        out.sort { $0.name < $1.name }
+        return out
+    }
+
+    /// 解析 resolve/replace 的 `--json`（键集见 spec §4.2；新键缺失时不假装有）。
+    private static func parseResolvePayload(_ payload: [String: Any], dryRun: Bool,
+                                           startedAt: Date) -> ResolveOutcome {
+        var out = ResolveOutcome()
+        out.dryRun = dryRun
+        out.key = stringValue(payload["key"])
+        out.action = stringValue(payload["action"])
+        out.resolution = stringValue(payload["resolution"])
+        out.already = (payload["already"] as? Bool) == true
+        out.written = (payload["written"] as? Bool) == true
+        out.matchedCount = intValue(payload["count"])
+        out.changes = parseFieldChanges(from: payload["replaced_fields"])
+        if out.changes.isEmpty { out.changes = parseFieldChanges(from: payload["adopted_fields"]) }
+        if let superseded = payload["superseded"] as? [Any] {
+            out.supersededCount = superseded.count
+        }
+        if let overlapping = payload["overlapping"] as? [Any] {
+            out.overlappingCount = overlapping.count
+        }
+        out.contentShaBefore = stringValue(payload["content_sha256_before"])
+        out.contentShaAfter = stringValue(payload["content_sha256_after"])
+        out.dbShaBefore = stringValue(payload["db_sha256_before"])
+        out.dbShaAfter = stringValue(payload["db_sha256_after"])
+        out.backupPath = stringValue(payload["backup_path"])
+        if let totals = payload["totals"] as? [String: Any] {
+            out.totalAfter = intValue(totals["total"])
+            out.pendingAfter = intValue(totals["pending"])
+        }
+        out.seconds = Date().timeIntervalSince(startedAt)
+        return out
+    }
+
+    /// 一次裁决：`resolve --key K --action keep|defer|adopt [--incoming-sha256 S] --json`。
+    ///
+    /// 写前保护（spec §4.2）：
+    ///   · `expectDBsha256` 非空 → `--expect-db-sha256`（列表过期则引擎拒绝写，退出 2）；
+    ///   · `backupDirectory` 非空 → `--backup <目录>`（引擎写前自动备份，仅真写时才产生）。
+    /// `dryRun=true` 时只算不写（adopt 的「预览差异」用它）。
+    /// **同步；只许后台队列调**。
+    static func resolveConflict(key: String, action: String, incomingSha256: String,
+                                fields: [String] = [],
+                                expectDBsha256: String = "",
+                                backupDirectory: String = "",
+                                allowOverlap: Bool = false,
+                                note: String = "",
+                                dryRun: Bool = false) -> ResolveOutcome {
+        let startedAt = Date()
+        var out = ResolveOutcome()
+        out.key = key
+        out.action = action
+        out.dryRun = dryRun
+        guard let db = existingDBPath() else {
+            out.error = "引用库文件不存在或找不到笔记仓（无法裁决）。"
+            return out
+        }
+        let name = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            out.error = "缺少库内记录 key（不能裁决）。"
+            return out
+        }
+        var arguments = ["resolve", "--key", name, "--action", action, "--json", "--db", db]
+        let sha = incomingSha256.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sha.isEmpty {
+            arguments += ["--incoming-sha256", sha]
+        } else if !fields.isEmpty {
+            arguments += ["--fields", fields.joined(separator: ",")]
+        } else {
+            arguments.append("--all-fields")
+        }
+        if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments += ["--note", note]
+        }
+        if allowOverlap { arguments.append("--allow-overlap") }
+        if dryRun { arguments.append("--dry-run") }
+        if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
+        if !backupDirectory.isEmpty { arguments += ["--backup", backupDirectory] }
+        let run = runJSON(arguments)
+        guard let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if !stringValue(payload["error"]).isEmpty {
+            out.error = stringValue(payload["error"])
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if run.status != 0 {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out = parseResolvePayload(payload, dryRun: dryRun, startedAt: startedAt)
+        out.rawOutput = run.output
+        return out
+    }
+
+    /// 编辑裁决 bib：把用户编辑后的 bib 通过**临时文件**交给
+    /// `resolve --action replace --incoming-sha256 S --bib TMP`（**引擎零新增 stdin 参数**）。
+    ///
+    /// 安全边界（spec §4.2/§4.4）：bib 必须**恰好 1 条**、key 必须等于库内 record key；
+    /// 是否满足由引擎判（退出 2 + 中文原因），GUI 不重复解析 bib。临时文件用后即删。
+    /// **同步；只许后台队列调**。
+    static func replaceRecord(recordKey: String, bibText: String, incomingSha256: String,
+                              expectDBsha256: String = "",
+                              backupDirectory: String = "",
+                              allowOverlap: Bool = false,
+                              note: String = "",
+                              dryRun: Bool = false) -> ResolveOutcome {
+        let startedAt = Date()
+        var out = ResolveOutcome()
+        out.key = recordKey
+        out.action = "replace"
+        out.dryRun = dryRun
+        guard let db = existingDBPath() else {
+            out.error = "引用库文件不存在或找不到笔记仓（无法裁决）。"
+            return out
+        }
+        let text = bibText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            out.error = "先编辑/粘贴要写入库的 bib 条目。"
+            return out
+        }
+        // 临时文件：文件名固定；每次用独立临时目录避免撞名；整个目录用后即删。
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SLCN-replace-\(UUID().uuidString)")
+        let file = dir.appendingPathComponent("edited-bib.bib")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            out.error = "写临时 bib 失败：\(error.localizedDescription)"
+            return out
+        }
+        var arguments = ["resolve", "--key", recordKey, "--action", "replace",
+                         "--incoming-sha256", incomingSha256, "--bib", file.path,
+                         "--json", "--db", db]
+        if !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            arguments += ["--note", note]
+        }
+        if allowOverlap { arguments.append("--allow-overlap") }
+        if dryRun { arguments.append("--dry-run") }
+        if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
+        if !backupDirectory.isEmpty { arguments += ["--backup", backupDirectory] }
+        let run = runJSON(arguments)
+        guard let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if !stringValue(payload["error"]).isEmpty {
+            out.error = stringValue(payload["error"])
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if run.status != 0 {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out = parseResolvePayload(payload, dryRun: dryRun, startedAt: startedAt)
+        out.rawOutput = run.output
+        return out
+    }
+
+    // MARK: - 一键全部采用（resolve --adopt-all-pending）
+
+    /// 批量采用里的一条（= 一个记录上将被改的字段集）。
+    struct AdoptAllItem: Identifiable {
+        var recordKey = ""
+        var bibKey = ""
+        var incomingSha256 = ""
+        var changes: [FieldChange] = []
+        var id: String { recordKey + "|" + incomingSha256 }
+    }
+
+    /// `resolve --adopt-all-pending` 的结果（dry-run 与真写共用）。
+    struct AdoptAllOutcome {
+        var dryRun = false
+        var written = false
+        var adopted: [AdoptAllItem] = []
+        var supersededCount = 0
+        var totalBefore = -1
+        var pendingBefore = -1
+        var totalAfter = -1
+        var pendingAfter = -1
+        var dbShaBefore = ""
+        var dbShaAfter = ""
+        var backupPath = ""
+        var error: String?
+        var seconds: Double = 0
+        var rawOutput = ""
+
+        var recordCount: Int { adopted.count }
+        var fieldCount: Int { adopted.reduce(0) { $0 + $1.changes.count } }
+        var shaShortBefore: String {
+            dbShaBefore.count > 12 ? String(dbShaBefore.prefix(12)) + "…" : dbShaBefore
+        }
+    }
+
+    private static func parseAdoptAllPayload(_ payload: [String: Any], dryRun: Bool,
+                                            startedAt: Date) -> AdoptAllOutcome {
+        var out = AdoptAllOutcome()
+        out.dryRun = dryRun
+        out.written = (payload["written"] as? Bool) == true
+        for raw in (payload["adopted"] as? [Any]) ?? [] {
+            guard let dict = raw as? [String: Any] else { continue }
+            var item = AdoptAllItem()
+            item.recordKey = stringValue(dict["record_key"])
+            item.bibKey = stringValue(dict["bib_key"])
+            item.incomingSha256 = stringValue(dict["incoming_sha256"])
+            item.changes = parseFieldChanges(from: dict["fields"])
+            out.adopted.append(item)
+        }
+        out.supersededCount = ((payload["superseded"] as? [Any]) ?? []).count
+        if let before = payload["totals_before"] as? [String: Any] {
+            out.totalBefore = intValue(before["total"])
+            out.pendingBefore = intValue(before["pending"])
+        }
+        if let after = payload["totals_after"] as? [String: Any] {
+            out.totalAfter = intValue(after["total"])
+            out.pendingAfter = intValue(after["pending"])
+        }
+        out.dbShaBefore = stringValue(payload["db_sha256_before"])
+        out.dbShaAfter = stringValue(payload["db_sha256_after"])
+        out.backupPath = stringValue(payload["backup_path"])
+        out.seconds = Date().timeIntervalSince(startedAt)
+        return out
+    }
+
+    /// 一键全部采用：对待裁决冲突逐条按 adopt 语义应用 incoming 值。
+    ///
+    /// `dryRun=true` = 预览（逐条将改字段 + superseded 列表，库不变）——GUI 的「预览」用它，
+    /// 用户二次确认后才调 `dryRun=false` 真写（单次原子写 + 单次备份）。
+    /// 同记录待裁决冲突字段重叠时引擎会拒绝（退出 2 并列出冲突号），GUI 原样显示。
+    /// **同步；只许后台队列调**。
+    static func adoptAllPending(expectDBsha256: String = "",
+                                backupDirectory: String = "",
+                                dryRun: Bool = true) -> AdoptAllOutcome {
+        let startedAt = Date()
+        var out = AdoptAllOutcome()
+        out.dryRun = dryRun
+        guard let db = existingDBPath() else {
+            out.error = "引用库文件不存在或找不到笔记仓（无法裁决）。"
+            return out
+        }
+        var arguments = ["resolve", "--adopt-all-pending", "--json", "--db", db]
+        if dryRun { arguments.append("--dry-run") }
+        if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
+        if !backupDirectory.isEmpty { arguments += ["--backup", backupDirectory] }
+        let run = runJSON(arguments)
+        guard let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if !stringValue(payload["error"]).isEmpty {
+            out.error = stringValue(payload["error"])
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if run.status != 0 {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out = parseAdoptAllPayload(payload, dryRun: dryRun, startedAt: startedAt)
+        out.rawOutput = run.output
+        return out
+    }
+
+    // MARK: - 从备份恢复（restore）
+
+    /// 自动备份目录（spec §5⑥）：`~/Library/Application Support/SLCN/bibdb-backups/`。
+    /// **不进 git、不随仓库分发**；GUI 的写操作都往这里备份，恢复也默认从这里列。
+    static var backupDirectory: String {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                           in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
+        return base.appendingPathComponent("SLCN").appendingPathComponent("bibdb-backups").path
+    }
+
+    /// 一个备份文件（名称/时间/大小；sha 前缀从文件名 `bibliography-<ts>-<sha12>.jsonl` 里取）。
+    struct BackupFile: Identifiable {
+        var path = ""
+        var name = ""
+        var modified: Date?
+        var bytes = 0
+        var shaHint = ""
+        var id: String { path }
+    }
+
+    /// 列备份（**只读**；目录不存在时返回空数组，不报错）。
+    /// `directory` 只为测试可隔离（界面一律用默认备份目录）。
+    static func listBackups(in directory: String? = nil) -> [BackupFile] {
+        let dir = directory ?? backupDirectory
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
+        var files: [BackupFile] = []
+        for name in names where name.hasSuffix(".jsonl") {
+            let path = PathKit.join(dir, name)
+            var file = BackupFile(path: path, name: name)
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            if let attrs {
+                file.bytes = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                file.modified = attrs[.modificationDate] as? Date
+            }
+            // 名称形如 `bibliography-20261021T120000Z-abcdef123456.jsonl`
+            let parts = name.replacingOccurrences(of: ".jsonl", with: "").split(separator: "-")
+            if let last = parts.last, last.count >= 8 { file.shaHint = String(last) }
+            files.append(file)
+        }
+        files.sort { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
+        return files
+    }
+
+    /// 一次恢复的结果。
+    struct RestoreOutcome {
+        var dryRun = false
+        var written = false
+        var backupPath = ""
+        var backupSha256 = ""     // 备份文件自身的 sha（dry-run 时「恢复后库 sha」= 它）
+        var dbShaBefore = ""
+        var dbShaAfter = ""
+        var error: String?
+        var seconds: Double = 0
+        var rawOutput = ""
+
+        /// 预览要显示的「恢复后库 sha」：dry-run 引擎返回的 after 仍是当前库 sha，
+        /// 目标态要用 `backup_sha256`；真写后两者一致。
+        var targetSha: String {
+            if !backupSha256.isEmpty { return backupSha256 }
+            return dbShaAfter
+        }
+    }
+
+    /// 从备份恢复整库：`restore --backup PATH [--expect-db-sha256] [--dry-run] --json`。
+    /// 校验（备份可解析 + 行级 schema + 期望 sha）全部由引擎做；失败库不变。
+    /// **同步；只许后台队列调**。
+    static func restore(backupPath: String, expectDBsha256: String = "",
+                        dryRun: Bool = true) -> RestoreOutcome {
+        let startedAt = Date()
+        var out = RestoreOutcome()
+        out.dryRun = dryRun
+        out.backupPath = backupPath
+        guard let db = existingDBPath() else {
+            out.error = "引用库文件不存在或找不到笔记仓（无法恢复）。"
+            return out
+        }
+        let path = PathKit.normalize(backupPath)
+        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
+            out.error = "读不到备份文件：\(backupPath)"
+            return out
+        }
+        var arguments = ["restore", "--backup", path, "--json", "--db", db]
+        if dryRun { arguments.append("--dry-run") }
+        if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
+        let run = runJSON(arguments)
+        guard let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if !stringValue(payload["error"]).isEmpty {
+            out.error = stringValue(payload["error"])
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if run.status != 0 {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out.written = (payload["written"] as? Bool) == true
+        let reported = stringValue(payload["backup_path"])
+        out.backupPath = reported.isEmpty ? path : reported
+        out.backupSha256 = stringValue(payload["backup_sha256"])
+        out.dbShaBefore = stringValue(payload["db_sha256_before"])
+        out.dbShaAfter = stringValue(payload["db_sha256_after"])
+        out.seconds = Date().timeIntervalSince(startedAt)
+        out.rawOutput = run.output
+        return out
+    }
+
+    // MARK: - 粘贴 bib 文本（入藏页新来源模式；引擎零改动）
+    //
+    // 做法：把粘贴文本写进**临时文件**（引擎 import-bib 只吃文件路径，本批不做 stdin 参数），
+    // 调现有 `import-bib --dry-run --json` 预览 → 确认后去掉 --dry-run 真写。
+    // 临时文件用后即删；运行日志只记计数/键，不回显 bib 正文（隐私）。
+
+    /// 粘贴入库的「入库口径」（用户拍板 P2：默认未核实）。
+    enum PasteImportMode: String, CaseIterable, Identifiable {
+        case unverified
+        case verified
+        case published
+
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .unverified: return "未核实（默认）"
+            case .verified: return "已人工核对（按已核实入库）"
+            case .published: return "成品 bib（期+篇）"
+            }
+        }
+        var hint: String {
+            switch self {
+            case .unverified: return "手工输入/检索结果：记成未核实来源，AI/网络结果不得默认标已核实"
+            case .verified: return "人工已逐条核对过：按已核实入库（引擎 --verified）"
+            case .published: return "往期已出版成品 bib：填来源期+篇，按 published-bib 入已核实"
+            }
+        }
+    }
+
+    /// 预览 / 入藏**粘贴的 bib 文本**（1..N 条）：写临时文件 → `import-bib ... --json`。
+    ///
+    /// - Parameters:
+    ///   - text: 用户粘贴的 bib 正文（只在内存与临时文件里，**不写日志**）。
+    ///   - issue/slug: `published` 模式必填期（篇可选）。
+    ///   - mode: 入库口径（默认未核实）。
+    ///   - dryRun: true = 预览（不写库）。
+    /// **同步；只许后台队列调**。
+    static func importPastedBib(text rawText: String, issue: String, slug: String,
+                                mode: PasteImportMode, dryRun: Bool) -> ImportOutcome {
+        let startedAt = Date()
+        var out = ImportOutcome(dryRun: dryRun)
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            out.error = "先粘贴至少 1 条 bib 正文，再预览/入藏。"
+            return out
+        }
+        guard let db = dbPath() else {
+            out.error = "找不到私有笔记仓，无法确定引用库位置。请到「引用库设置」页指定笔记仓路径。"
+            return out
+        }
+        let issueName = issue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let slugName = slug.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mode == .published, issueName.isEmpty {
+            out.error = "入库口径选了「成品 bib（期+篇）」：先填来源期（例 2026年第2期(87)）。"
+            return out
+        }
+        // 临时文件：文件名固定 `pasted-bib.bib`（幂等重复粘贴时不新增来源），
+        // 每次用独立临时目录避免撞名；整个目录用后即删。
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SLCN-pasted-\(UUID().uuidString)")
+        let file = dir.appendingPathComponent("pasted-bib.bib")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            out.error = "写粘贴内容的临时文件失败：\(error.localizedDescription)"
+            return out
+        }
+        var arguments = ["import-bib", "--bib", file.path, "--json", "--db", db]
+        switch mode {
+        case .unverified:
+            arguments.append("--unverified")      // 显式未核实（给了期/篇也不会被升成 verified）
+        case .verified:
+            arguments.append("--verified")
+        case .published:
+            arguments.append("--verified")        // 与「单篇 .bib」现状同一口径（成品 bib）
+            if !issueName.isEmpty { arguments += ["--issue", issueName] }
+            if !slugName.isEmpty { arguments += ["--slug", slugName] }
+        }
+        if dryRun { arguments.append("--dry-run") }
+        let run = runJSON(arguments)
+        guard let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if !stringValue(payload["error"]).isEmpty {
+            out.error = stringValue(payload["error"])
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        if run.status != 0 {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out.dbPath = stringValue(payload["db"])
+        out.written = (payload["written"] as? Bool) == true
+        out.dbExisted = (payload["db_existed"] as? Bool) == true
+        out.summary = parseSummary(payload["report"] as? [String: Any])
+        out.changes = parseChanges(payload)
+        out.rawOutput = run.output
+        out.seconds = Date().timeIntervalSince(startedAt)
+        return out
+    }
+
     // MARK: - 从路径推断来源期 / 篇目录名
 
     /// 从 bib 路径推断「来源期」与「篇目录名」：

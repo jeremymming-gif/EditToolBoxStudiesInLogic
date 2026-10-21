@@ -127,33 +127,33 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**98 套件 / 3835 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**100 套件 / 3964 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
-`test_authornorm` 73 ｜ `test_b71_word_author_meta` 63 ｜ `test_bare_email` 30 ｜ `test_batch45_bib` 10
-`test_batch46_bib` 10 ｜ `test_batch47b` 4 ｜ `test_batch48` 5 ｜ `test_batch49_cclass` 32
-`test_batch49_cclass_render` 8 ｜ `test_batch49_no_cites` 10 ｜ `test_batch52_default_on` 16 ｜ `test_batch52_u1` 11
-`test_batch54_coop` 100 ｜ `test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 66 ｜ `test_batch58_bibdb_auto` 38
-`test_batch58_bibdb_hits` 54 ｜ `test_batch59_coop_fulltext` 56 ｜ `test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 54
-`test_batch63_api_char_cap` 14 ｜ `test_batch63_chat_no_limit` 17 ｜ `test_batch63_fulltext_apply` 36 ｜ `test_batch63_metadata_docx` 27
-`test_batch63b_metadata_json` 70 ｜ `test_batch68_bibparse` 36 ｜ `test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 24
-`test_batch70_b001` 46 ｜ `test_batch_case_test` 0 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45
-`test_bibdb` 272 ｜ `test_bibdb_rehash` 31 ｜ `test_bibdb_verify` 54 ｜ `test_bibnorm` 27
-`test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28
-`test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5
-`test_convert_proof_autofix` 53 ｜ `test_docx_labels` 7 ｜ `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 13
-`test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 62 ｜ `test_en_slot_placeholder` 9
-`test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 36
-`test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_appendix` 10 ｜ `test_latex_preamble` 117
-`test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
-`test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
-`test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17
-`test_omml_structures` 22 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 40
-`test_proofcheck` 99 ｜ `test_publish` 55 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
-`test_refs_attach` 29 ｜ `test_refs_batch45a2` 25 ｜ `test_refs_p0_2026_10_18` 21 ｜ `test_refs_p1_2026_10_18` 52
-`test_run_record` 31 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 25 ｜ `test_sep_style` 25
-`test_table_images` 6 ｜ `test_tail_block` 45 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
-`test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
+`test_authornorm` 73 ｜ `test_b71_word_author_meta` 63 ｜ `test_b73_bibdb_adjudication` 84 ｜ `test_b73_footnote_bare_cite` 45
+`test_bare_email` 30 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10 ｜ `test_batch47b` 4
+`test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8 ｜ `test_batch49_no_cites` 10
+`test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 100 ｜ `test_batch56_coop` 54
+`test_batch57_coop_apply` 66 ｜ `test_batch58_bibdb_auto` 38 ｜ `test_batch58_bibdb_hits` 54 ｜ `test_batch59_coop_fulltext` 56
+`test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14 ｜ `test_batch63_chat_no_limit` 17
+`test_batch63_fulltext_apply` 36 ｜ `test_batch63_metadata_docx` 27 ｜ `test_batch63b_metadata_json` 70 ｜ `test_batch68_bibparse` 36
+`test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 24 ｜ `test_batch70_b001` 46 ｜ `test_batch_case_test` 0
+`test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bibdb` 272 ｜ `test_bibdb_rehash` 31
+`test_bibdb_verify` 54 ｜ `test_bibnorm` 27 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105
+`test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35
+`test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 53 ｜ `test_docx_labels` 7
+`test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 13 ｜ `test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26
+`test_en_abstract_sibling` 62 ｜ `test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27
+`test_footnote_id0` 12 ｜ `test_incollection_fields` 36 ｜ `test_infocheck_toc` 63 ｜ `test_issue_tools` 69
+`test_latex_appendix` 10 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
+`test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
+`test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18
+`test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 22 ｜ `test_paths` 19
+`test_pdfmerge` 36 ｜ `test_platform` 40 ｜ `test_proofcheck` 99 ｜ `test_publish` 55
+`test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_attach` 29 ｜ `test_refs_batch45a2` 25
+`test_refs_p0_2026_10_18` 21 ｜ `test_refs_p1_2026_10_18` 52 ｜ `test_run_record` 31 ｜ `test_search_refs` 54
+`test_selfcheck` 25 ｜ `test_sep_style` 25 ｜ `test_table_images` 6 ｜ `test_tail_block` 45
+`test_unmatched_in_report` 70 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
 
 **普查**（`out/docx_audit.csv`，132 份源稿；三态互斥、相加 = 篇数）：
 
@@ -172,11 +172,11 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 - `n_headings` 合计 **587**；`n_bib` 合计 **2221**
 - sha256[:12]：`docx_audit.csv` = `76ff3ba8b46f`，`docx_audit.txt` = `88c831752131`（与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **89.23%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **89.29%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**234 处 / 54 篇**
 
-**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-21 14:20:08`；`HEAD` = `38cc9c8`；`git status --porcelain` **3** 行
+**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：`.git/index` mtime `2026-10-21 19:00:13`；`HEAD` = `09ca4b6`；`git status --porcelain` **12** 行
 <!-- AUTO:STATE:END -->
 
 ---

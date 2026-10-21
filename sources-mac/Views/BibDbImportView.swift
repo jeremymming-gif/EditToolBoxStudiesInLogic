@@ -4,17 +4,21 @@ import AppKit
 /// 「入藏」页的界面状态。
 final class BibDbImportModel: ObservableObject {
 
-    /// 入藏来源：单篇 `.bib` / 整期目录（含稿件库根）。
+    /// 入藏来源：单篇 `.bib` / 整期目录（含稿件库根）/ 粘贴 bib 文本（批73 B-127 P2）。
     enum Mode: String, CaseIterable, Identifiable, Equatable {
         case single = "单篇 .bib"
         case directory = "整期目录"
+        case paste = "粘贴 bib 文本"
         var id: String { rawValue }
     }
 
     @Published var mode: Mode = .single
     @Published var bibPath: String = ""
     @Published var directoryPath: String = ""
-    /// 来源期 / 篇目录名（单篇模式：从路径推断，可手改）
+    /// 粘贴模式：bib 正文（1..N 条）与「入库口径」（默认未核实，用户拍板 P2）
+    @Published var pasteText: String = ""
+    @Published var pasteMode: BibDbFeature.PasteImportMode = .unverified
+    /// 来源期 / 篇目录名（单篇模式：从路径推断，可手改；粘贴的「成品 bib」口径也用它）
     @Published var issue: String = ""
     @Published var slug: String = ""
     /// 预览结果（dry-run；**未写库**）
@@ -32,15 +36,44 @@ final class BibDbImportModel: ObservableObject {
     /// 预览时用的输入签名：输入一改，之前的预览就作废（绝不让编辑照着旧预览点确认）
     private var previewSignature = ""
 
+    /// 当前模式下的「路径」输入（粘贴模式没有路径，返回空串；日志/界面按模式分别取）。
     var currentPath: String {
-        (mode == .single ? bibPath : directoryPath)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch mode {
+        case .single:
+            return bibPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .directory:
+            return directoryPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        case .paste:
+            return ""
+        }
     }
 
+    /// 粘贴正文是否为空（去掉首尾空白后）。
+    var pasteTextEmpty: Bool {
+        pasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 预览按钮的启用条件：对应来源有输入（粘贴模式 = 正文非空）。
+    var hasSourceInput: Bool {
+        switch mode {
+        case .single, .directory:
+            return !currentPath.isEmpty
+        case .paste:
+            return !pasteTextEmpty
+        }
+    }
+
+    /// 输入签名：输入一改，之前的预览就作废（绝不让编辑照着旧预览点确认）。
+    /// 粘贴模式把正文与口径也纳入签名 —— 改一个字就必须重新 dry-run。
     var currentSignature: String {
-        [mode.rawValue, currentPath,
-         issue.trimmingCharacters(in: .whitespacesAndNewlines),
-         slug.trimmingCharacters(in: .whitespacesAndNewlines)].joined(separator: "|")
+        var parts = [mode.rawValue, currentPath,
+                     issue.trimmingCharacters(in: .whitespacesAndNewlines),
+                     slug.trimmingCharacters(in: .whitespacesAndNewlines)]
+        if mode == .paste {
+            parts.append(pasteMode.rawValue)
+            parts.append(pasteText)
+        }
+        return parts.joined(separator: "|")
     }
 
     /// 预览是否对应当前输入（「确认入藏」按钮据此启用）
@@ -72,6 +105,13 @@ final class BibDbImportModel: ObservableObject {
         imported = nil
     }
 
+    /// 粘贴正文 / 入库口径变了（手填）：作废旧预览（绝不让编辑照着旧预览点确认）。
+    func pasteChanged() {
+        invalidatePreview()
+        imported = nil
+        notice = ""
+    }
+
     func invalidatePreview() {
         preview = nil
         previewSignature = ""
@@ -97,11 +137,15 @@ final class BibDbImportModel: ObservableObject {
     }
 }
 
-/// 「入藏」页：把一份成品 `.bib` 或一整期目录导进编辑部引用库。
+/// 「入藏」页：把一份成品 `.bib` / 一整期目录 / **粘贴的 bib 文本（1..N 条）**导进编辑部引用库。
 ///
 /// 产品行为（用户已定案）：
 ///   · **先预览 = dry-run**：引擎照常解析/查重/算冲突，但**一个字节都不写**；
-///   · 预览满意才「确认入藏」：真正写库（单篇传 `--verified`，按往期成品 bib 入已核实）；
+///   · 预览满意才「确认入藏」：真正写库；
+///   · 单篇 .bib = 往期成品 bib 口径（传 `--verified`）；整期目录判据由引擎 `scan_manuscripts`；
+///   · 粘贴文本 = 批73 B-127 P2 新增：临时文件跑 `import-bib`，入库口径单选
+///     **未核实（默认）** / 已人工核对（`--verified`）/ 成品 bib（期+篇，现状）；
+///     临时文件用后即删、运行日志不回显 bib 正文；
 ///   · 来源期 / 篇目录名从路径自动推断（`…/2026年第2期(87)/02 Kun_Xing/…`），可手改；
 ///   · 成功后提示「重新生成清单」——清单是给人看的待裁决文件，库一变就该重算。
 struct BibDbImportView: View {
@@ -117,8 +161,10 @@ struct BibDbImportView: View {
                 BibDbPageHeader(
                     title: "引用库 · 入藏",
                     subtitle: """
-                    把**往期成品 bib**（或一整期目录）导入编辑部引用库：给了来源期/篇的条目按
-                    「往期已出版、人工核对过」入 `verified=true`（AI 结果**不要**走这个入口）。
+                    把**往期成品 bib**（或一整期目录）导入编辑部引用库；批73 起也可以直接
+                    **粘贴 1..N 条 bib 文本**入藏。成品 bib（给了来源期/篇）按「往期已出版、
+                    人工核对过」入 `verified=true`；**粘贴模式默认按「未核实」入库**（AI/检索
+                    结果不得默认标已核实），确已人工核对可显式选「已人工核对」。
                     先点「预览（dry-run）」——引擎照常解析/查重/算冲突，但**库一个字节都不写**；
                     看清楚了再点「确认入藏」。
                     """)
@@ -126,12 +172,19 @@ struct BibDbImportView: View {
                 Divider()
 
                 modePicker
-                pathRow
-
-                if model.mode == .single {
-                    metadataRows
+                if model.mode == .paste {
+                    pasteModeRows
+                    pasteEditor
+                    if model.pasteMode == .published {
+                        metadataRows
+                    }
                 } else {
-                    directoryHint
+                    pathRow
+                    if model.mode == .single {
+                        metadataRows
+                    } else {
+                        directoryHint
+                    }
                 }
 
                 targetRow
@@ -165,6 +218,12 @@ struct BibDbImportView: View {
         .onChange(of: model.directoryPath) { _ in
             if model.mode == .directory { model.pathChanged() }
         }
+        .onChange(of: model.pasteText) { _ in
+            if model.mode == .paste { model.pasteChanged() }
+        }
+        .onChange(of: model.pasteMode) { _ in
+            if model.mode == .paste { model.pasteChanged() }
+        }
         .onChange(of: model.issue) { _ in model.metadataChanged() }
         .onChange(of: model.slug) { _ in model.metadataChanged() }
     }
@@ -181,9 +240,60 @@ struct BibDbImportView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 240)
+            .frame(width: 360)
             .disabled(model.running)
             Spacer()
+        }
+    }
+
+    /// 粘贴模式：入库口径单选（默认未核实；用户拍板 P2）
+    private var pasteModeRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 10) {
+                Text("入库口径").frame(width: 108, alignment: .trailing)
+                Picker("", selection: $model.pasteMode) {
+                    ForEach(BibDbFeature.PasteImportMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .disabled(model.running)
+                Spacer()
+            }
+            Text(model.pasteMode.hint)
+                .font(.caption)
+                .foregroundStyle(model.pasteMode == .unverified ? Color.secondary : Color.orange)
+                .padding(.leading, 118)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 粘贴模式：bib 正文编辑框（1..N 条；只在内存与临时文件里，日志不回显正文）
+    private var pasteEditor: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("bib 正文").frame(width: 108, alignment: .trailing)
+                Text("粘贴 1 条或多条 BibTeX 条目（可含 @article{...} 整段）")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if !model.pasteText.isEmpty {
+                    Text("\(model.pasteText.count) 字符").font(.caption2)
+                        .foregroundStyle(.tertiary).monospacedDigit()
+                }
+            }
+            TextEditor(text: $model.pasteText)
+                .font(.system(.body, design: .monospaced))
+                .disabled(model.running)
+                .frame(minHeight: 160, maxHeight: 260)
+                .overlay(RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color.secondary.opacity(0.3)))
+                .padding(.leading, 118)
+            Text("预览时写临时文件跑 import-bib --dry-run --json，用后立即删除；"
+                 + "运行日志只记计数与条目 key，不回显 bib 正文。")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .padding(.leading, 118)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -267,11 +377,13 @@ struct BibDbImportView: View {
             // 运行中两个按钮都置灰，避免同一份输入被重复提交。
             Button("预览（dry-run，不写库）") { preview() }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.running || model.currentPath.isEmpty)
+                .disabled(model.running || !model.hasSourceInput)
             Button("确认入藏") { confirm() }
                 .disabled(model.running || !model.previewMatchesInputs)
                 .help(model.previewMatchesInputs
-                      ? "真正写库（单篇按往期成品 bib 入 verified）"
+                      ? (model.mode == .paste
+                         ? "真正写库（按所选入库口径：默认未核实）"
+                         : "真正写库（单篇按往期成品 bib 入 verified）")
                       : "先预览，且预览之后不要再改输入")
             if !model.previewMatchesInputs && model.preview != nil && !model.running {
                 Text("输入已改动：请重新预览")
@@ -422,6 +534,8 @@ struct BibDbImportView: View {
         let path = model.currentPath
         let issue = model.issue
         let slug = model.slug
+        let pasteText = model.pasteText
+        let pasteMode = model.pasteMode
         let logger = Logger(store: log, startedAt: Date())
         model.running = true
         model.stage = "正在预览（dry-run，不写库）…"
@@ -430,8 +544,19 @@ struct BibDbImportView: View {
         model.preview = nil
         logger("═".padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
         logger("引用库入藏 · 预览（dry-run：不写库）\n")
-        logger("  来源   \(mode.rawValue)：\(path)\n")
+        switch mode {
+        case .single, .directory:
+            logger("  来源   \(mode.rawValue)：\(path)\n")
+        case .paste:
+            // 隐私：只记字符数/口径，**不记 bib 正文**
+            logger("  来源   粘贴 bib 文本（\(pasteText.count) 字符；临时文件用后即删）"
+                   + " · 口径 \(pasteMode.title)\n")
+        }
         if mode == .single {
+            logger("  期/篇  \(issue.isEmpty ? "（未填）" : issue) / "
+                   + (slug.isEmpty ? "（未填）" : slug) + "\n")
+        }
+        if mode == .paste && pasteMode == .published {
             logger("  期/篇  \(issue.isEmpty ? "（未填）" : issue) / "
                    + (slug.isEmpty ? "（未填）" : slug) + "\n")
         }
@@ -447,6 +572,9 @@ struct BibDbImportView: View {
                 outcome = BibDbFeature.importBib(bibPath: path, issue: issue, slug: slug, dryRun: true)
             case .directory:
                 outcome = BibDbFeature.importDirectory(root: path, dryRun: true)
+            case .paste:
+                outcome = BibDbFeature.importPastedBib(
+                    text: pasteText, issue: issue, slug: slug, mode: pasteMode, dryRun: true)
             }
             DispatchQueue.main.async {
                 model.running = false
@@ -459,8 +587,10 @@ struct BibDbImportView: View {
                 model.setPreview(outcome)
                 Self.logOutcome(outcome, dryRun: true, log: logger)
                 if let summary = outcome.summary, summary.entries == 0 {
-                    model.notice = "这次没有解析出任何条目（检查文件是否真是 .bib、"
-                        + "或这一期目录里有没有成品 bib）。"
+                    model.notice = mode == .paste
+                        ? "这次没有从粘贴文本里解析出任何条目（检查是不是完整的 BibTeX 条目）。"
+                        : "这次没有解析出任何条目（检查文件是否真是 .bib、"
+                            + "或这一期目录里有没有成品 bib）。"
                 }
             }
         }
@@ -472,13 +602,21 @@ struct BibDbImportView: View {
         let path = model.currentPath
         let issue = model.issue
         let slug = model.slug
+        let pasteText = model.pasteText
+        let pasteMode = model.pasteMode
         let logger = Logger(store: log, startedAt: Date())
         model.running = true
         model.stage = "正在写入引用库…"
         model.error = ""
         logger("═".padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
         logger("引用库入藏 · 确认导入（真正写库）\n")
-        logger("  来源   \(mode.rawValue)：\(path)\n")
+        switch mode {
+        case .single, .directory:
+            logger("  来源   \(mode.rawValue)：\(path)\n")
+        case .paste:
+            logger("  来源   粘贴 bib 文本（\(pasteText.count) 字符；临时文件用后即删）"
+                   + " · 口径 \(pasteMode.title)\n")
+        }
         logger("═".padding(toLength: 66, withPad: "═", startingAt: 0) + "\n\n")
 
         let model = self.model
@@ -489,6 +627,9 @@ struct BibDbImportView: View {
                 outcome = BibDbFeature.importBib(bibPath: path, issue: issue, slug: slug, dryRun: false)
             case .directory:
                 outcome = BibDbFeature.importDirectory(root: path, dryRun: false)
+            case .paste:
+                outcome = BibDbFeature.importPastedBib(
+                    text: pasteText, issue: issue, slug: slug, mode: pasteMode, dryRun: false)
             }
             DispatchQueue.main.async {
                 model.running = false

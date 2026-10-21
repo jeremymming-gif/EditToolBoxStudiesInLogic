@@ -46,8 +46,8 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 本期出刊 | 一个入口按顺序跑五步（①检查tex信息 ②生成目录 ③编译全部 ④目录 PDF 落位 ⑤合并整期 PDF）；致命错误即中止，退出码 1 = 橙色警告并继续（规则在引擎侧，见 `Engine/publish.py` 抬头） | `sources-mac/Features/PublishFeature.swift`、`Engine/publish.py` |
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单 | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件 | `sources-mac/Views/BibDbReviewView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单。**批73 起 mac 入藏页另有「粘贴 bib 文本」模式**（1..N 条 → 临时文件先 `import-bib --dry-run --json` 预览 → 入库口径单选：未核实（默认）/ 已人工核对 `--verified` / 成品 bib（期+篇）；**引擎零改动**，粘贴文本走的就是 `import-bib`） | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件。**批73（B-127）起 mac 待裁决页可直接看条目列表并逐条裁决**：列表数据来自 `bibdb.py conflicts --json`（C 编号与 `CONFLICTS.md` 同源）；行内三按钮 keep / adopt / defer；「一键全部采用…」（高亮+二次确认+逐条 old→new 预览，引擎 `resolve --adopt-all-pending`，**同记录字段重叠整体拒绝**）；「编辑裁决 bib…」（预填库内条目→`resolve --action replace --dry-run` 预览差异→确认应用，**裁决不改 key**）；「从备份恢复…」（`bibdb.py restore --backup`，校验备份结构 + 前后 sha，不做 reopen）。所有写动作串行置灰，写前带 `--expect-db-sha256` 并自动备份 | `sources-mac/Views/BibDbReviewView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 引用库设置（引用库） | 引用库路径 / 数据库位置 / 规范化（B1/B2/B3）的 dry-run 与 apply 入口；本机偏好写 `settings.json`，**只有 dry-run 默认安全** | `sources-mac/Views/BibDbSettingsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 设置 | AI 端点配置（明文存本机用户目录）+ 请求旋钮（思考模式 / 输出上限 / **通道** / **联网检索**）+ 体检（①②③④ + **⑤ 检索探针**）+ 隐私文案；**第 55 批新增「单篇预算 / 单批预算」token 预算闸**（默认 30000 / 1000000，0 = 不限，留空 = 不传；只约束直连 API，外部 chat 两段式不生效）；「保存」才落盘、「清空」只清输入框（见下表后说明）。保存/测试按钮**固定在本页底部**、不需要滚到页面末尾。第 60 批起隐私口径：默认只发条目/片段，勾选「全文 AI 核查（直连 API）」后才把正文分片发给你配置的端点（默认不勾、不持久化、会产生费用）；**第 63 批新增「API 核查字符上限」（默认 40000，0 = 不限）与「全文核查结果自动应用」（默认开，走批57安全闸）** | `sources-mac/Views/SettingsTab.swift`、`sources-win/settings.py`，第 47/58/62/69 条 |
 
@@ -269,6 +269,33 @@ False：`docx_audit` 的冻结基线不随总开关变。
 - **验收（第 52 批 v9b）**：41/41 rc=0、compile_ok、undef/dangling 与 v8 相同、P0 集合无新增；
   专项验证纯引用→parencite、混合脚注保留 + warning、并集 bib 去重、无脚注稿零变化。
 - **回退**：命令行 `--no-c-class-union`；GUI 无开关，默认即新口径。
+
+#### Word 编号体例稿：脚注文本里的裸 `[N]` → `\parencite`（批73 B-130，2026-10-21）
+
+**编号体例稿**（文末参考文献是「`[1]…[N]` 编号清单」、正文用 `（[n]）`/`（[n]，第X页）` 引用）
+的**脚注文本里**常出现**裸编号**引用——没有中文括号包裹：`参见[12]。`、
+`参见吉尔伯特在[13]的批评。`、`参见[13]，第8页。`。旧实现只匹配中文括号组，这三类原样残留：
+成品 PDF 出现清单里没有编号可解的悬空标记，且 `[12]` 对应的条目会被判「未被引」而不打印
+（86-08 实例：`\parencite` 35 处/被引 19 条 → 修复后 38 处/20 条）。
+
+- **只在脚注文本里做**（`word/footnotes.xml` 来路），**正文裸编号不在本卡**（另评估）；
+  转换只换 `[N]` 本身，前后中文文字与页码定位原样保留
+  （`参见吉尔伯特在\parencite{…}的批评`、`参见\parencite{…}，第8页`、`参见\parencite{…}。`）。
+- **映射 gate = 可靠 1..N**（`docxsource._footnote_num2key_gate`）：①文末清单是 **Word 自动编号**、
+  安全闸（B-022）成功物化；**或** ②文末**显式写着** `[N]` 的清单文本解析一致且编号覆盖 1..N
+  连续（与正文 `（[N]）` 通道同一套映射）。两者都不满足 → **不猜**：脚注里「像引用」的裸编号
+  汇总成一条 warning，原文保留。
+- **逐处判据**（`docxsource.link_footnote_bare_citations`）：`[N]` 在**括号外**（括号组归正文
+  `link_numbered_citations`，不重复转换）+ `N ∈ 映射` + **引用引导语证据**
+  （参见/参看/详见/另见/又见/亦见/并见/转引自/引自/参见文献/参照/参考/参考文献/参考书目/例如/
+  见/据；`见`/`据` 只在句读/空白边界后算证据，避免「意见[3]」「数据[3]」误伤）。
+  越界编号、无引导语（如「规则[3]条」）→ 原样保留 + 逐条 warning（不猜、不吞内容）。
+- **默认零变化**：不是编号体例稿（无 `ref_key_by_num` 映射）、或脚注里没有匹配的裸编号 →
+  产物 `.tex`/`.bib` 逐字节不变（`num2key` 为空时该通道直接不动作）。
+- **回退**：代码回退即回滚；无新增 CLI 参数、无新 stdout 契约行、退出码/产物路径不变
+  （19 个命中稿 + 6 个零变化样本前后对照：命中稿 `.tex` 仅脚注行变化、`.bib` 逐字节同，
+  零变化样本 `.tex`/`.bib` 逐字节同）。口径见 `docs/ENGINE_API.md`「Word 编号体例稿脚注裸编号」；
+  回归见 `tests/test_b73_footnote_bare_cite.py`。
 
 #### Word 通道：作者信息脚注 → 元数据填空（批71 B-118，2026-10-21）
 
@@ -1154,9 +1181,44 @@ $PY convert.py --source X.docx --out Y --no-bibdb-verify             # 第 58 �
 - **不核实（默认）路径产物逐字节不变**；第 58 批起日志默认多一行只读比对（见上），`--no-bibdb-verify` 或 `--no-bibdb` 关掉后，stdout/任务书/产物与接入前逐字节相同。
 - 引用库怎么来：公开仓 `Engine/tools/bibdb_seed.py` 只读扫描稿件仓往期成品 bib 生成
   （可重复运行幂等），维护/冲突裁决见笔记仓 `bib_db/README.md`；
-  开发用 CLI 是 `Engine/bibdb.py`（`stats` / `lint` / `query`，不进发布包）。
+  开发用 CLI 是 `Engine/bibdb.py`（`stats` / `lint` / `query` / `conflicts` / `resolve` /
+  `restore` 等，不进发布包）。
 - 保守判定的代价要如实说：**库内没有的新文献一律走原流程**（不会因为查库失败而跳过核实）；
   跨库同名作品/简写差异可能命中不到（宁可漏，不可错）。回归见 `tests/test_bibdb_verify.py`。
+
+**引用库裁决 / 备份的 CLI 命令（批73 B-127；GUI 待裁决页全调它们，老用法与老 JSON 键不变）**：
+
+```bash
+$PY Engine/bibdb.py conflicts --json [--pending-only] [--db PATH]
+$PY Engine/bibdb.py resolve --key K --action replace --incoming-sha256 SHA --bib one.bib \
+    [--dry-run] [--allow-overlap] [--expect-db-sha256 SHA] [--backup DIR] [--json]
+$PY Engine/bibdb.py resolve --adopt-all-pending [--dry-run] [--note TEXT] \
+    [--expect-db-sha256 SHA] [--backup DIR] [--json]
+$PY Engine/bibdb.py restore --backup PATH [--expect-db-sha256 SHA] [--dry-run] [--json]
+$PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范化规则升级后重算 sha
+```
+
+- `conflicts --json` 是**只读**的条目数组（字段与 `CONFLICTS.md` 同源，含 `db_sha256` 用于
+  判断界面列表是否过期）；库缺失/损坏退出 2，无冲突退出 0 + 空数组。
+- `resolve --action replace`：解析**恰好 1 条** bib（0 条/多条退出 2），**bib key 必须等于库内
+  record key**（裁决不改 key）；整条写 `entry_type`+`fields`、重算 `content_sha256`，
+  `verified` / `sources` / `method` 一字不动；目标冲突标 `resolution="adopted"` +
+  `resolved_by="custom-bib"` + `resolved_bib_sha256`（人工 bib 文件字节 sha256）+ note；
+  与其它待裁决冲突字段重叠时默认拒绝（`--allow-overlap` 把重叠项标 `superseded`）；
+  重复执行幂等（`already=true`），已裁决后不提供改判（用 `restore` 整库回退）。
+- `resolve --adopt-all-pending`：一键把**全部**待裁决冲突按 adopt 语义应用 incoming 值；
+  **同一记录的多条待裁决冲突字段有重叠 → 整体拒绝**（退出 2 并列出冲突 #，请逐条处理）；
+  `--dry-run` 给逐条 preview（字段 old→new、删除标记）；真写**单次原子写 + 单次备份**。
+- 写前安全闸（`resolve` 写动作通用）：`--expect-db-sha256` 要求**完整 64 位十六进制**且与库当前
+  字节 sha256 一致（不符 → 退出 2、**零写入**）；`--backup DIR` 只在**真的会写入**时生成
+  `bibliography-<UTCts>-<库sha前12位>.jsonl`（同名已存在 → 退出 2，不覆盖旧备份）。
+- `restore --backup PATH`：先校验备份能被 `Store.load()`（行级 schema）读出、`--expect-db-sha256`
+  与当前库一致，再原子写回并返回前后 sha；**不做 reopen**（整库回到备份时状态，这是 P4 拍板口径）。
+- `--json` 新增键**只加不改**：`conflicts` 用新契约；写动作统一带
+  `db_sha256_before` / `db_sha256_after` / `backup_path`（无备份时空串）；退出 2 且给了
+  `--json` 时尽量另出 `{"error": "中文原因"}`，GUI 有 stderr 回退。
+- 回归：`Engine/tests/test_b73_bibdb_adjudication.py`（hermetic tempfile，不碰真库/真稿；
+  覆盖失败零写入、dry-run 库逐字节不变、幂等、备份/恢复、默认零变化）。
 
 ---
 
