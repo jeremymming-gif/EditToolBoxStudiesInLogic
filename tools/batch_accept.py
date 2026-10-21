@@ -16,6 +16,9 @@
 - 退出码字段兼容三种等价写法（各取**最后一个**匹配）：`EXIT=<n>` > `rc=<n>` >
   `exit code:<n>`；**三种都没有** → 该门禁仍判 `UNKNOWN`（不降低严格性）。
 - `seconds`（`elapsed=`）是**可空**字段：拿不到就记 null + WARN，**不判 UNKNOWN**。
+- **cwd 只呈现、不参与判据**（B-149）：按 gate 名从 `gate_plan.json` 读 `cwd`
+  （`public_root`=公开仓根 / `engine`=公开仓 `Engine/`）并写进 `accept.md` 表；
+  老计划缺 `cwd` → 该列留空（`—`）+ 汇总一条 WARN，**绝不**据此判 PASS/FAIL/UNKNOWN。
 - 退出码：`PASS`/`PASS+WARN` = 0；`FAIL` = 1；`UNKNOWN` = 2（便于 CI/脚本区分）。
 
 用法
@@ -44,11 +47,13 @@ import sys
 import tempfile
 import time
 
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 MD_LINE_LIMIT = 40
 
 PASS, WARN, FAIL, UNKNOWN = "PASS", "WARN", "FAIL", "UNKNOWN"
+# cwd 元数据的合法取值（B-149；仅呈现，不参与判据）
+CWD_VALUES = ("public_root", "engine")
 
 # 门禁 id -> 证据发现方式 + 解析器种类（可被 --map 覆盖）
 DEFAULT_GATE_SPECS = {
@@ -325,16 +330,24 @@ def _clean_sha(value):
 def build_accept(plan: dict, ev_dir: str, specs: dict, warnings: list) -> dict:
     gates = [g for g in (plan.get("gates") or []) if isinstance(g, dict)]
     rows, skipped, deferred = [], [], []
+    no_cwd, bad_cwd = [], []
     for gate in gates:
         gid = str(gate.get("id") or "")
         status = str(gate.get("status") or "")
         spec = dict(specs.get(gid) or {"kind": "generic", "patterns": []})
+        cwd = gate.get("cwd")
         entry = {"id": gid, "status": status, "declared_evidence": list(gate.get("evidence") or []),
                  "required_when": list(gate.get("required_when") or []),
                  "skip_when": list(gate.get("skip_when") or []),
                  "rules": [r.get("rule") for r in (gate.get("reasons") or []) if isinstance(r, dict)],
                  "last": gate.get("last") or {},
-                 "cmd": gate.get("cmd") or ""}
+                 "cmd": gate.get("cmd") or "",
+                 # cwd 仅呈现（B-149）：缺失=空白，绝不参与 PASS/FAIL/UNKNOWN 判定
+                 "cwd": cwd if isinstance(cwd, str) else ""}
+        if not entry["cwd"]:
+            no_cwd.append(gid)
+        elif entry["cwd"] not in CWD_VALUES:
+            bad_cwd.append(f"{gid}={entry['cwd']}")
         if status == "skipped":
             entry.update({"verdict": "SKIP", "evidence": None, "fields": {}, "missing": [],
                           "notes": [f"规则 id：{r.get('rule')}" for r in (gate.get("reasons") or [])
@@ -382,6 +395,14 @@ def build_accept(plan: dict, ev_dir: str, specs: dict, warnings: list) -> dict:
                       "missing": hard, "soft_missing": soft, "notes": judged["notes"]})
         rows.append(entry)
 
+    # cwd 只呈现：缺失/非法都只汇总一条 WARN，绝不改 PASS/FAIL/UNKNOWN
+    if no_cwd:
+        warnings.append("未声明 cwd 的门禁：" + ", ".join(no_cwd)
+                        + "（老 gate_plan.json → accept.md 的 cwd 列留空；仅呈现，不影响判定）")
+    if bad_cwd:
+        warnings.append("cwd 取值不在 public_root/engine：" + ", ".join(bad_cwd)
+                        + "（照原样呈现，不参与判定）")
+
     counts = {PASS: 0, WARN: 0, FAIL: 0, UNKNOWN: 0}
     for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
@@ -395,6 +416,7 @@ def build_accept(plan: dict, ev_dir: str, specs: dict, warnings: list) -> dict:
         overall = PASS
     return {"gates": rows, "skipped": skipped, "deferred": deferred,
             "counts": counts, "verdict": overall,
+            "cwd_missing": no_cwd,
             "plan_summary": plan.get("summary") or {}}
 
 
@@ -434,9 +456,9 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
     lines.append(f"结论：**{doc['verdict']}**（PASS {doc['counts'][PASS]} / WARN {doc['counts'][WARN]} / "
                  f"FAIL {doc['counts'][FAIL]} / UNKNOWN {doc['counts'][UNKNOWN]}）")
     lines.append("")
-    lines.append("## 门禁结论表")
-    lines.append("| 门禁 | 结论 | 关键字段 | 证据 |")
-    lines.append("|---|---|---|---|")
+    lines.append("## 门禁结论表（cwd 列=门禁计划 cwd 字段，仅呈现；`—`=老计划未声明）")
+    lines.append("| 门禁 | cwd | 结论 | 关键字段 | 证据 |")
+    lines.append("|---|---|---|---|---|")
     for row in doc["gates"]:
         f = row["fields"]
         gid = row["id"]
@@ -458,7 +480,8 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
             key = "（无解析器）"
         if row["verdict"] == FAIL and not row["evidence"]:
             key = "—（缺证据）"
-        lines.append(f"| {gid} | {row['verdict']} | {key} | {row['evidence'] or '—'} |")
+        lines.append(f"| {gid} | {row.get('cwd') or '—'} | {row['verdict']} | {key} | "
+                     f"{row['evidence'] or '—'} |")
     lines.append("")
     lines.append("## 必跑缺证据 / 解析失败")
     bad = [r for r in doc["gates"] if r["verdict"] in (FAIL, UNKNOWN)]
@@ -471,11 +494,11 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
     lines.append("")
     lines.append(f"## 跳过项（{len(doc['skipped'])}；须 Lead 在 ACCEPT 确认）")
     if doc["skipped"]:
-        lines.append("| 门禁 | 规则 id |")
-        lines.append("|---|---|")
+        lines.append("| 门禁 | cwd | 规则 id |")
+        lines.append("|---|---|---|")
         for r in doc["skipped"]:
             rules = ", ".join(str(x) for x in r["rules"] if x) or "（无理由 → 应改判必跑）"
-            lines.append(f"| {r['id']} | {rules} |")
+            lines.append(f"| {r['id']} | {r.get('cwd') or '—'} | {rules} |")
     else:
         lines.append("（无）")
     if doc["deferred"]:
@@ -595,11 +618,11 @@ def _load_fixtures():
 
 
 def _quiet_main(argv: list) -> int:
-    """self-test 里静默调用 main（只留用例行，输出噪音不外溢）。"""
+    """self-test 里静默调用 main（只留用例行，输出/告警噪音不外溢）。"""
     import contextlib
     import io
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         return main(argv)
 
 
@@ -618,9 +641,15 @@ def run_self_test() -> int:
         results.append((name, ok, detail))
         print(("[batch_accept self-test] %-24s %s %s" % (name, "PASS" if ok else "FAIL", detail)).rstrip())
 
+    # cwd 夹具（B-149）：与真实 gate_plan 同口径，仅呈现、不参与判据
+    PLAN_CWD = {"full_pre": "engine", "full_post": "engine", "gen_docs_write": "engine",
+                "lint": "public_root", "docs": "engine", "swift": "public_root",
+                "corpus_two": "engine", "docx_audit": "engine", "build": "public_root",
+                "ci_watch": "public_root"}
+
     def run(td, tag, *, omit=(), post=(107, 0, 128.0, 0), pre=(106, 2, 131.5, 2),
             lint=(0, 18, 7051, 0), swift=(fixtures.DEFAULT_SWIFT_BEDS, 0, 0),
-            plan_rows=None, rc_style="exit"):
+            plan_rows=None, rc_style="exit", with_cwd=False):
         root = os.path.join(td, tag)
         ev = os.path.join(root, "evidence")
         fixtures.build_evidence_dir(ev, omit=omit, pre=pre, post=post, lint=lint, swift=swift,
@@ -631,6 +660,9 @@ def run_self_test() -> int:
             for g in plan["gates"]:
                 if g["id"] in plan_rows:
                     g["status"] = plan_rows[g["id"]]
+        if with_cwd:
+            for g in plan["gates"]:
+                g["cwd"] = PLAN_CWD.get(g["id"], "public_root")
         fixtures.write_json(plan_path, plan)
         out = os.path.join(root, "out")
         rc = _quiet_main(["--batch", str(fixtures.THIS_BATCH), "--gates", plan_path,
@@ -768,6 +800,39 @@ def run_self_test() -> int:
             return False, "accept.md 未点名缺 rc"
         return True, "EXIT=/rc=/exit code: 全无 → UNKNOWN / exit 2（严格性不变）"
 
+    def t_cwd_presented(td):
+        """cwd 进 accept.md/json，且与「无 cwd 的计划」判定逐项一致（仅呈现）。"""
+        rc_on, doc_on, md_on, _ = run(td, "cwd-on", with_cwd=True)
+        _, doc_off, _, _ = run(td, "cwd-off")
+        cwds = {r["id"]: r.get("cwd") for r in doc_on["gates"]}
+        want = {gid: PLAN_CWD[gid] for gid in cwds}
+        if cwds != want:
+            return False, f"accept.json cwd {cwds} != {want}"
+        if "| 门禁 | cwd |" not in md_on or "public_root" not in md_on or "engine" not in md_on:
+            return False, "accept.md 未显示 cwd 列/取值"
+        if (rc_on != 0 or doc_on["counts"][FAIL] or doc_on["counts"][UNKNOWN]
+                or doc_on["verdict"] != doc_off["verdict"]
+                or doc_on["counts"] != doc_off["counts"]):
+            return False, (f"cwd 影响判定：on={doc_on['verdict']}{doc_on['counts']} "
+                           f"off={doc_off['verdict']}{doc_off['counts']} rc={rc_on}")
+        if any("cwd" in str(w) for w in doc_on.get("warnings") or []):
+            return False, f"带 cwd 却报 cwd WARN：{doc_on.get('warnings')}"
+        return True, (f"{len(cwds)} 门 cwd 进 md/json；判定与无 cwd 计划一致"
+                      f"（{doc_on['verdict']}）")
+
+    def t_cwd_missing(td):
+        """老 gate_plan.json 无 cwd → 空白 + WARN，绝不据此判 FAIL/UNKNOWN。"""
+        rc, doc, md, _ = run(td, "cwd-absent")
+        if any(r.get("cwd") != "" for r in doc["gates"]):
+            return False, f"缺 cwd 却呈现了值：{[r.get('cwd') for r in doc['gates']]}"
+        if rc != 0 or doc["counts"][FAIL] or doc["counts"][UNKNOWN] or doc["cwd_missing"] == []:
+            return False, f"缺 cwd 被当成判据（{doc['verdict']} / rc {rc} / {doc['counts']}）"
+        if not any("cwd" in str(w) for w in doc.get("warnings") or []):
+            return False, f"缺 cwd 未降级 WARN：{doc.get('warnings')}"
+        if not any(f"| {gid} | — |" in md for gid in ("full_pre", "lint", "docs")):
+            return False, "accept.md 的 cwd 列未留空（—）"
+        return True, f"缺 cwd → cwd 列 — + WARN；判定仍 {doc['verdict']}（rc 0）"
+
     print("[batch_accept self-test] hermetic 夹具（tempfile；不读真实仓/真实库）")
     with tempfile.TemporaryDirectory(prefix="batch-accept-selftest-") as td:
         check("all_green", lambda: t_all_pass(td))
@@ -779,6 +844,8 @@ def run_self_test() -> int:
         check("map_override", lambda: t_map_override(td))
         check("rc_forms", lambda: t_rc_forms(td))
         check("rc_missing_unknown", lambda: t_rc_missing_unknown(td))
+        check("cwd_presented_only", lambda: t_cwd_presented(td))
+        check("cwd_missing_present_only", lambda: t_cwd_missing(td))
         check("determinism", lambda: t_determinism(td))
 
     ok = sum(1 for _, o, _ in results if o)

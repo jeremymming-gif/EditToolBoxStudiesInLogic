@@ -2523,13 +2523,160 @@ def _missing_entry_items(low_items: Iterable[dict] | None,
     return rows
 
 
+# ── 批79（B-131）：交付记录口径（清单 N / 引用 M / 打印 P / 未打印 U + 原因 + 库命中 H）──
+#
+# 用户 2026-10-21 实测（案例 195）：交付 PDF 参考文献 19 条，用户不知道「为什么是 19」。
+# 这里只做**只读汇总**：所有计数都来自转换链路已有的数据（reference.bib 的条目键、
+# 产物 .tex 的引用键、状态里的低置信项、核实通道的引用库分类），**不改任何判据/产物**。
+# 拿不到的计数一律 `None`（渲染成 `未测` + 一句原因），禁止估算/编造。
+#
+# 数据来源（单一出处，不新写解析器）：
+#   · 清单 N = `reference.bib` 里闭合的条目键数（`parse_bib_blocks`，同一份解析）；
+#   · 引用 M = 产物 .tex 的不同引用键（`refmark.cited_keys_from_body`，与核实范围同一口径）；
+#   · 打印 P = 被正文引用且清单里有条目的键（biblatex 只打印被引条目；`\nocite{*}` 时=全清单）；
+#   · 未打印 U = N − P；原因分类见 `_delivery_lines()`；
+#   · 库命中 H = 核实通道 `classify_bibdb()` 的 safe 条数（ph1 写进状态，拿不到=未测）。
+
+#: 交付记录节的固定标题（**不带中文序号**：既有节 一…七 的编号随条件顺延、必须逐字节不变；
+#: 本节用固定标题，既不加号也不改动任何既有节的编号）。
+DELIVERY_TITLE = "## 交付记录（清单/引用/打印/未打印）"
+#: 未打印明细的行数上限（超出写「另有 n 条」；spec §4：记录 ≤25 行）。
+DELIVERY_DETAIL_LIMIT = 20
+#: 状态里的交付记录标记 schema（**schema 仍 1**；旧状态无该键 → 不渲染本节、记录逐字节不变）。
+DELIVERY_SCHEMA = 1
+
+
+def build_delivery_summary(*, bib_keys: Iterable[str] | None,
+                           cited_keys: Iterable[str] | None,
+                           nocite_all: bool = False,
+                           low_items: Iterable[dict] | None = None,
+                           bibdb_checked: bool = False,
+                           bibdb_safe: int | None = None,
+                           bibdb_missed: int | None = None) -> dict:
+    """B-131：交付口径只读汇总（纯函数、顺序确定；不写盘、不联网）。
+
+    `bib_keys=None` / `cited_keys=None` 表示该项拿不到 → 渲染时写 `未测`。
+    `bibdb_checked=False`（本次没比对引用库）→ 库命中/库未命中都写 `未测`。
+    """
+    bib = (list(dict.fromkeys(str(k) for k in bib_keys))
+           if bib_keys is not None else None)
+    cited = ({str(k) for k in cited_keys} if cited_keys is not None else None)
+    n_list = len(bib) if bib is not None else None
+    n_cited = len(cited) if cited is not None else None
+    printed: set[str] | None = None
+    unprinted: list[str] = []
+    n_missing: int | None = None
+    if bib is not None and cited is not None:
+        bibset = set(bib)
+        printed = set(bib) if nocite_all else (cited & bibset)
+        unprinted = [k for k in bib if k not in printed]
+        n_missing = len(cited - bibset)
+    n_printed = len(printed) if printed is not None else None
+    n_unprinted = (None if (n_list is None or n_printed is None)
+                   else max(0, n_list - n_printed))
+    parse_fail = 0
+    for it in (low_items or ()):
+        if str((it or {}).get("kind") or "") == "bib_line":
+            parse_fail += 1
+    return {
+        "n_list": n_list,
+        "n_cited": n_cited,
+        "n_printed": n_printed,
+        "n_unprinted": n_unprinted,
+        "unprinted": unprinted,
+        "n_missing": n_missing,
+        "nocite_all": bool(nocite_all),
+        "parse_fail": parse_fail,
+        "bibdb_checked": bool(bibdb_checked),
+        "bibdb_safe": (int(bibdb_safe) if (bibdb_checked and bibdb_safe is not None)
+                       else None),
+        "bibdb_missed": (int(bibdb_missed) if (bibdb_checked and bibdb_missed is not None)
+                         else None),
+    }
+
+
+def _delivery_num(value, reason: str = "本次拿不到该计数") -> str:
+    """计数渲染：拿不到（None）→ `未测（原因）`；拿到了 → `**N**`（加粗便于扫读）。"""
+    if value is None:
+        return f"`未测`（{reason}）"
+    return f"**{int(value)}**"
+
+
+def _delivery_lines(d: dict) -> list[str]:
+    """交付记录节的 markdown 行（含标题；末尾带一个空行）。**不落正文**（只有键名/计数）。"""
+    L = [DELIVERY_TITLE, "",
+         "> 口径：打印条数 = 被正文引用且文末清单里有条目的键"
+         "（biblatex 只打印被引条目；`\\nocite{*}` 时 = 全部清单条目）。"]
+    n_list = d.get("n_list")
+    n_cited = d.get("n_cited")
+    n_printed = d.get("n_printed")
+    n_unp = d.get("n_unprinted")
+    L.append(f"- 源稿文末清单：{_delivery_num(n_list)} 条")
+    L.append(f"- 正文引用键：{_delivery_num(n_cited)} 个")
+    L.append(f"- 打印条数：{_delivery_num(n_printed)} 条")
+    if n_unp is None:
+        L.append("- 未打印：`未测`（缺清单或引用键计数）")
+    else:
+        L.append(f"- 未打印：**{int(n_unp)}** 条（= 清单 − 打印）")
+    # 未打印原因分类（每项都写出数据来源；拿不到的写未测）
+    L.append("- 未打印原因（分类计数）：")
+    if n_unp is None:
+        L.append("  - 未被正文链路引用：`未测`（缺清单或引用键计数）")
+    elif d.get("nocite_all"):
+        L.append(f"  - 未被正文链路引用：**0** 条（`\\nocite{{*}}`：全部清单条目都打印）")
+    else:
+        L.append(f"  - 未被正文链路引用：**{int(n_unp)}** 条（明细见下）")
+    n_missing = d.get("n_missing")
+    if n_missing is None:
+        L.append("  - 正文引用但清单无对应条目：`未测`（缺清单或引用键计数）")
+    else:
+        L.append(f"  - 正文引用但清单无对应条目：**{int(n_missing)}** 个键"
+                 "（引用键里有、文末清单找不到条目 → 不打印）")
+    L.append(f"  - 解析未识别：**{int(d.get('parse_fail') or 0)}** 行"
+             "（文献区原文行未解析进清单；不计入清单条数）")
+    if not d.get("bibdb_checked"):
+        L.append("  - 库未命中：`未测`（本次未比对编辑部引用库）")
+    elif d.get("bibdb_missed") is None:
+        L.append("  - 库未命中：`未测`（核实通道未返回未命中计数）")
+    else:
+        L.append(f"  - 库未命中：**{int(d['bibdb_missed'])}** 条（本次核实范围内）")
+    # 引用库命中 H（未调 AI）
+    if d.get("bibdb_checked") and d.get("bibdb_safe") is not None:
+        L.append(f"- 引用库命中：**{int(d['bibdb_safe'])}** 条（未调 AI）")
+    elif not d.get("bibdb_checked"):
+        L.append("- 引用库命中：`未测`（本次未比对编辑部引用库）")
+    else:
+        L.append("- 引用库命中：`未测`（核实通道未返回命中计数）")
+    # 逐条明细（≤20 行；超出写「另有 n 条」）
+    keys = list(d.get("unprinted") or [])
+    if n_unp is None:
+        L.append("- 未打印明细：`未测`（缺清单或引用键计数）")
+    elif not keys:
+        L.append("- 未打印明细：无（全部清单条目都已打印）")
+    else:
+        shown = keys[:DELIVERY_DETAIL_LIMIT]
+        head = (f"{len(keys)} 条" if len(shown) == len(keys)
+                else f"共 {len(keys)} 条，显示前 {len(shown)} 条")
+        L.append(f"- 未打印明细（{head}）：")
+        for k in shown:
+            L.append(f"  - `{k}`（未被正文引用）")
+        if len(keys) > len(shown):
+            L.append(f"  - …另有 {len(keys) - len(shown)} 条（略）")
+    # 库 safe 与 AI 覆盖二选一口径（可复用第128/129条措辞）
+    L.append("> 口径：引用库 safe 命中只作核实证据（**不调 AI、不改 `reference.bib`**）；"
+             "AI 回填只覆盖回复里出现的键——两者**二选一**，交付内容以 `reference.bib` 为准。")
+    L.append("")
+    return L
+
+
 def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
                   low_report: LowConfReport | None, merge_summary: dict | None,
                   apply_summary: dict | None, final_dir: str,
                   no_ai_merge: bool, compiled: str, backup: str = "",
                   fulltext: dict | None = None,
                   analysis_report: FulltextAnalysisReport | None = None,
-                  low_items: Iterable[dict] | None = None) -> str:
+                  low_items: Iterable[dict] | None = None,
+                  delivery: dict | None = None) -> str:
     L = [f"# AI 协同记录 · {stem}", "",
          f"- 阶段：`{phase}`", f"- 交付目录：`{final_dir}`", ""]
     if fulltext:
@@ -2599,6 +2746,10 @@ def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
     if backup:
         L += ["## 五、交付备份", "",
               f"- 旧交付目录已备份为：`{backup}`（新目录交付成功后才保留）", ""]
+    # 批79（B-131）：交付记录节——**只在状态里有交付标记时出现**（旧状态 → 记录逐字节不变）。
+    # 位置固定在既有编号节之后、附四/清单缺条节之前；标题不带序号，既有节编号一个都不动。
+    if delivery:
+        L += _delivery_lines(delivery)
     if analysis_report is not None:
         # 第六节（批74）：附四 report-only 计数；其余小节逐字节不变。
         L += ["## 六、全文分析（附四，report-only）", "",

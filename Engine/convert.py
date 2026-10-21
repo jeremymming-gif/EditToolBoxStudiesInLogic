@@ -1531,6 +1531,34 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     except Exception as e:  # noqa: BLE001  交付失败必须收口，最终目录保持原样
         die(f"原子交付失败（最终交付目录保持原样）：{type(e).__name__}: {e}\n"
             f"  可修复后重跑 --coop-replies；暂存目录仍在 {stage_dir}")
+    # 批79（B-131）：交付记录口径——**只读汇总**（不写产物；不新写解析器）。
+    # 旧状态无 delivery 标记 → `None` → 记录与旧版逐字节相同（来源：新 ph1 才写该标记）。
+    _delivery = None
+    _dm = state.get("delivery")
+    if isinstance(_dm, dict) and int(_dm.get("schema") or 0) == coop.DELIVERY_SCHEMA:
+        _dbib = _coop_find_bib(state, stage_dir, stem)
+        _dtex = _coop_find_tex(state, stage_dir, stem)
+        _dbib_keys = None
+        if _dbib and os.path.isfile(_dbib):
+            try:
+                with open(_dbib, encoding="utf-8", errors="replace") as _f:
+                    _dbib_keys = [b.key for b in coop.parse_bib_blocks(_f.read())
+                                  if b.closed]
+            except OSError:
+                _dbib_keys = None
+        _dcited, _dnocite = None, False
+        if _dtex and os.path.isfile(_dtex):
+            try:
+                with open(_dtex, encoding="utf-8", errors="replace") as _f:
+                    _dcited, _dnocite = _refmark.cited_keys_from_body(_f.read())
+            except OSError:
+                _dcited = None
+        _delivery = coop.build_delivery_summary(
+            bib_keys=_dbib_keys, cited_keys=_dcited, nocite_all=_dnocite,
+            low_items=low_items,
+            bibdb_checked=bool(_dm.get("bibdb_checked")),
+            bibdb_safe=_dm.get("bibdb_safe"),
+            bibdb_missed=_dm.get("bibdb_missed"))
     record = coop.write_record(
         stage_dir, stem=stem, phase="done", parse_report=parse_report,
         low_report=low_report, merge_summary=merge_summary,
@@ -1543,7 +1571,9 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         analysis_report=(analysis_report if analysis_report is not None
                          and analysis_report.total else None),
         # 批75（B-132）：记录「清单缺条」节的数据源（现有 C 类低置信项；无则记录不变）。
-        low_items=low_items)
+        low_items=low_items,
+        # 批79（B-131）：交付记录节（清单/引用/打印/未打印/库命中；旧状态=None）。
+        delivery=_delivery)
     # 记录是在 promote 之后写的：把它也放进最终目录（暂存目录里同样留一份）。
     try:
         final_record = os.path.join(final_dir, coop.RECORD_NAME)
@@ -2826,6 +2856,9 @@ def main() -> int:
     coop_taskbook_path = ""
     coop_bib_keys: list[str] = []
     coop_low_items: list[dict] = []
+    # 批79（B-131）：核实通道的引用库分类计数（只读汇总；给交付记录「库命中 H」用）。
+    # 未比对引用库时 checked=False → 记录写「未测」，不估算。
+    coop_bibdb: dict = {"checked": False, "safe": None, "missed": None}
 
     if args.verify_refs or args.verify_plan:
         from slcn import llm
@@ -3003,6 +3036,9 @@ def main() -> int:
             print(f"   ⚠ {bibdb_warning}")
         if bibdb_store is not None:
             bibdb_safe, bibdb_candidates, bibdb_missed = classify_bibdb(bibdb_store, entries)
+            # 批79（B-131）：把本次核实范围内的库分类计数留档（供交付记录节；只读）。
+            coop_bibdb = {"checked": True, "safe": len(bibdb_safe),
+                          "missed": len(bibdb_missed)}
             print("   " + bibdb_log_line(bibdb_safe, bibdb_candidates, bibdb_missed,
                                        bibdb_store, bibdb_path))
             if bibdb_safe:
@@ -3611,6 +3647,15 @@ def main() -> int:
         )
         coop_state["reference_bib"] = os.path.abspath(res.bib_path) if res.bib_path else ""
         coop_state["tex"] = os.path.abspath(res.tex_path) if getattr(res, "tex_path", "") else ""
+        # 批79（B-131）：交付记录标记（**只读汇总的开关 + 核实通道的库分类计数**）。
+        # schema 仍 1、不入参数指纹；旧状态无该键 → ph2 不渲染交付记录节（逐字节不变）。
+        # 计数本身在 ph2 用**交付时的产物**现算（引用/打印以最终 .tex/.bib 为准）。
+        coop_state["delivery"] = {
+            "schema": _coop.DELIVERY_SCHEMA,
+            "bibdb_checked": bool(coop_bibdb.get("checked")),
+            "bibdb_safe": coop_bibdb.get("safe"),
+            "bibdb_missed": coop_bibdb.get("missed"),
+        }
         # 第五十九批：附三元信息（模式/字数/截断/估算）——**不落正文**；
         # 只在启用 --coop-fulltext 时写，旧状态无此键按「未启用」处理；schema 仍 1。
         if coop_fulltext_info is not None:
