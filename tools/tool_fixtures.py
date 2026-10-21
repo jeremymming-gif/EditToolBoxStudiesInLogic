@@ -116,7 +116,7 @@ def gate_plan_doc(batch: int = THIS_BATCH) -> dict:
          "last": {"batch": LAST_BATCH, "beds": 7, "fail": 0, "pass_total": 583}},
         {"id": "ci_watch", "status": "deferred",
          "cmd": "gh run view <id> --json status,conclusion",
-         "evidence": ["ci_run_id", "ci_conclusion"],
+         "evidence": ["ci_run_id", "ci_conclusion", "docs_run_id", "docs_conclusion"],
          "required_when": ["commit_pushed"], "skip_when": [],
          "reasons": [{"rule": "commit_pushed",
                       "detail": "尚未 push；提交后必跑（ACCEPT 记录 ci run id）"}],

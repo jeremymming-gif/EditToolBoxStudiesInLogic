@@ -55,6 +55,8 @@ kind 取值：`full` / `gen_docs` / `lint` / `docs` / `swift` / `corpus` / `audi
 7. `ci_watch`：`gh run view … --json …` 的落盘 JSON（顶层 run 或 `{"runs": [...]}`；
    `docs` 工作流按 `workflowName`/`name` 含 `docs`/`文档` 识别），或键值行
    `ci_run_id:` / `ci_conclusion:` / `docs_run_id:` / `docs_conclusion:`。
+   **`docs` 工作流有 `paths` 过滤（只在 `docs/**` 改动时跑）→ 无 docs run 属正常态**：
+   `docs_run_id`/`docs_conclusion` 记 null + WARN，**不判 UNKNOWN**（`ci_conclusion` 仍硬判）。
 8. **同批两轮证据**（如 `*-dev.log` 与提交后 `*-post.log`）会因「最短名优先」互相遮蔽
    → 用 `--map` 显式声明权威轮的文件名模式（例：
    `{"gates": {"lint": {"patterns": ["07-lint-post*.log", "07-lint*.log"], "kind": "lint"}}}`）。
@@ -137,6 +139,9 @@ def _find_evidence(ev_dir: str, patterns) -> str:
 RC_PATTERNS = (r"^EXIT=(\d+)", r"^rc=(\d+)", r"^exit code:\s*(\d+)")
 # 可缺字段：缺失时记 null + WARN，不降级 UNKNOWN（seconds 可从别处/--map 取）
 SOFT_FIELDS = {"seconds"}
+# 按门禁的可缺字段（B-152）：`docs` 工作流有 paths 过滤（只在 docs/ 改动时跑）→
+# 无 docs run 属正常态，不是解析失败（ci_conclusion 仍硬判）
+SOFT_FIELDS_BY_GATE = {"ci_watch": {"docs_run_id", "docs_conclusion"}}
 
 
 def _rc(text: str):
@@ -624,9 +629,10 @@ def build_accept(plan: dict, ev_dir: str, specs: dict, warnings: list) -> dict:
             fields = {"log": os.path.basename(path)}
             warnings.append(f"{gid} 解析异常（{type(exc).__name__}）")
         declared = [FIELD_ALIASES.get(f, f) for f in entry["declared_evidence"]]
+        soft_ok = SOFT_FIELDS | SOFT_FIELDS_BY_GATE.get(gid, set())
         missing = [f for f in declared if fields.get(f) is None]
-        soft = [f for f in missing if f in SOFT_FIELDS]
-        hard = [f for f in missing if f not in SOFT_FIELDS]
+        soft = [f for f in missing if f in soft_ok]
+        hard = [f for f in missing if f not in soft_ok]
         judged = judge_gate(gate, fields, hard)
         if soft and judged["verdict"] != FAIL:
             judged["notes"].append("可缺字段记 null（不判 UNKNOWN）：" + ", ".join(soft))
@@ -1195,6 +1201,22 @@ def run_self_test() -> int:
             return False, "readme_noop 未识别"
         return True, "幂等写（AUTO 块已是最新，0 diff）→ PASS（非写失败）"
 
+    def t_ci_no_docs_run(td):
+        """docs 工作流有 paths 过滤（只在 docs/ 改动时跑）→ 无 docs run 属正常态（记 null+WARN，不判 UNKNOWN）。"""
+        rc, doc, md, _ = run(td, "ci-no-docs", generic=True, plan_rows=GENERIC_REQUIRED,
+                             overrides={"ci_watch": {"databaseId": 40000000003,
+                                                     "workflowName": "CI",
+                                                     "status": "completed",
+                                                     "conclusion": "success"}})
+        row = next(r for r in doc["gates"] if r["id"] == "ci_watch")
+        if row["verdict"] != PASS or rc != 0:
+            return False, f"无 docs run 时判 {row['verdict']} / rc {rc}（应 PASS+WARN）"
+        if sorted(row.get("soft_missing") or []) != ["docs_conclusion", "docs_run_id"]:
+            return False, f"soft_missing 应为 docs_*（实际 {row.get('soft_missing')}）"
+        if doc["counts"][UNKNOWN]:
+            return False, f"无 docs run 被判 UNKNOWN（{doc['counts']}）"
+        return True, "无 docs run → ci_run_id/成功结论仍判 PASS（docs_* 记 null + WARN）"
+
     print("[batch_accept self-test] hermetic 夹具（tempfile；不读真实仓/真实库）")
     with tempfile.TemporaryDirectory(prefix="batch-accept-selftest-") as td:
         check("all_green", lambda: t_all_pass(td))
@@ -1214,6 +1236,7 @@ def run_self_test() -> int:
         check("generic_missing_unknown", lambda: t_generic_missing_unknown(td))
         check("corpus_kv_form", lambda: t_corpus_kv_form(td))
         check("gen_docs_noop_ok", lambda: t_gen_docs_noop_ok(td))
+        check("ci_no_docs_run", lambda: t_ci_no_docs_run(td))
         check("determinism", lambda: t_determinism(td))
 
     ok = sum(1 for _, o, _ in results if o)
