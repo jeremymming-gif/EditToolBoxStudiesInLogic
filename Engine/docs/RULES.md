@@ -846,3 +846,13 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 新增 `Chen2015`《名称究竟如何指称对象？一个新的名称理论》不在 docx 清单 → 归「人工后期修改
 （作者补充）」）；90-07 赵亮英 `594346d`（页 24/refs 11/section 8 一致；括号/脚注/占位符
 差异 → 见上两个软件缺陷候选）。
+
+## 十、HEAD 相对态测试的适用条件（B-155）
+
+- 定义：断言里用 `git archive HEAD` / `git show HEAD:<path>` 取「**HEAD 态**引擎」并与**工作树**对照的测试
+  （如 `tests/test_b75_coop_report_only.py`、`tests/test_batch59_coop_fulltext.py` 的「默认零变化」项）。
+- **适用条件**：工作树 == HEAD（干净树 / CI 态）时，该断言才有意义；**开发态（已改未提交）必红属设计属性**。
+- **收口要求**：提交后必须**复跑**该套件并在证据里记「提交后态 N/N 绿」；不得以开发态红判回归。
+- **禁止**：为迁就开发态而放宽/删除断言、或把 `git archive HEAD` 改为读工作树（等于测同一份代码）。
+- 配套：含此类断言的批次按 `EditToolBox-notes/baselines/gates.json` 的 `gen_docs_write.writes_allowed.head_relative_batch=2`
+  四步配方走（提交代码 → `gen_docs` 写#2 → `full` 复跑 0 红 → 再提交 README）。

@@ -34,7 +34,30 @@
 
   {"gates": {"lint": {"patterns": ["my-lint-*.log"], "kind": "lint"}}}
 
-kind 取值：`full` / `gen_docs` / `lint` / `docs` / `swift` / `generic`。
+kind 取值：`full` / `gen_docs` / `lint` / `docs` / `swift` / `corpus` / `audit` /
+`build` / `ci` / `generic`。
+
+证据格式约定（B-152；**门禁跑完按此落盘，`batch_accept` 才能解析**）
+---------------------------------------------------------------
+1. **每条命令日志的最后一行 `EXIT=<rc>`**（`elapsed=<秒>` 可同行或另起）。
+2. **通用键值行**：证据日志里写单行 `key: value` 或 `key=value` 即可被通用解析器取值，
+   `key` 用下方各门禁的字段名（如 `diff_rows: 0`）。数字/浮点/布尔按字段类型转换；
+   取不到就是 `None` → 该门禁判 `UNKNOWN`（不是 PASS）。
+3. `gen_docs`：AUTO 计数写在 `*auto-numbers*.txt`，正文含
+   `AUTO测试行: N 套件 / M 项断言 / FAIL K 行` + `inputs_sha256: <hex>`；
+   README 是否改动由 `*-readme-diff*.log` 判（含 `@@` 即改动，空 diff = 未改动）。
+4. `lint`：日志内必须有 `db_sha_before: <64 hex>` 与 `db_sha_after: <64 hex>`
+   （判库未被改写；真实 bibdb lint 默认不打印这两行 → **由验收人用 `printf` 追加到日志末尾**）。
+5. `corpus_two`：两条 `shasum` 输出行（`<64 hex>  out/corpus/corpus.csv`，按出现顺序 = pass1/pass2），
+   或键值行 `pass1_sha:` / `pass2_sha:` / `diff_rows:`。
+6. `build`：`cmp=28/28`、`o5=1`、`app_version=…`、`artifact_sha=…`、`engine_py_sha=…`、
+   `manifest=…`、`elapsed=Ns`。
+7. `ci_watch`：`gh run view … --json …` 的落盘 JSON（顶层 run 或 `{"runs": [...]}`；
+   `docs` 工作流按 `workflowName`/`name` 含 `docs`/`文档` 识别），或键值行
+   `ci_run_id:` / `ci_conclusion:` / `docs_run_id:` / `docs_conclusion:`。
+8. **同批两轮证据**（如 `*-dev.log` 与提交后 `*-post.log`）会因「最短名优先」互相遮蔽
+   → 用 `--map` 显式声明权威轮的文件名模式（例：
+   `{"gates": {"lint": {"patterns": ["07-lint-post*.log", "07-lint*.log"], "kind": "lint"}}}`）。
 """
 from __future__ import annotations
 
@@ -47,7 +70,7 @@ import sys
 import tempfile
 import time
 
-TOOL_VERSION = "1.1.0"
+TOOL_VERSION = "1.2.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 MD_LINE_LIMIT = 40
 
@@ -70,10 +93,10 @@ DEFAULT_GATE_SPECS = {
     "lint": {"kind": "lint", "patterns": ["*lint*.log"]},
     "docs": {"kind": "docs", "patterns": ["*docs.log", "*docs-consistency*.log"]},
     "swift": {"kind": "swift", "patterns": ["*swift*.log"]},
-    "corpus_two": {"kind": "generic", "patterns": ["*corpus*.log", "*corpus*.txt"]},
-    "docx_audit": {"kind": "generic", "patterns": ["*audit*.log", "*audit*.txt"]},
-    "build": {"kind": "generic", "patterns": ["*build*.log"]},
-    "ci_watch": {"kind": "generic", "patterns": ["*ci*.json"]},
+    "corpus_two": {"kind": "corpus", "patterns": ["*corpus*.log", "*corpus*.txt"]},
+    "docx_audit": {"kind": "audit", "patterns": ["*audit*.log", "*audit*.txt"]},
+    "build": {"kind": "build", "patterns": ["*build*.log"]},
+    "ci_watch": {"kind": "ci", "patterns": ["*ci*.json"]},
 }
 # 写前基线门禁：红不判 FAIL（记 WARN）；写后门禁红 = FAIL
 PRE_GATE_IDS = {"full_pre"}
@@ -148,6 +171,75 @@ def _float(pattern: str, text: str, group: int = 1):
         return None
 
 
+# 通用键值行（B-152 证据格式约定 §2）：`key: value` / `key=value`，值不跨行
+def _kv_value(text: str, key: str, conv: str = "str"):
+    m = re.search(r"^\s*" + re.escape(key) + r"\s*[:=]\s*(\S+)\s*$", text, re.M)
+    return _convert(m.group(1), conv) if m else None
+
+
+def _convert(value, conv: str):
+    """按字段类型转换；转不出来返回 None（→ 该字段缺失，仍判 UNKNOWN）。"""
+    if value is None:
+        return None
+    try:
+        if conv == "int":
+            return int(str(value).replace(",", ""))
+        if conv == "float":
+            return float(str(value))
+    except (TypeError, ValueError):
+        return None
+    if conv == "bool":
+        return str(value).strip().lower() in ("1", "true", "yes", "y", "是", "一致", "ok")
+    return str(value)
+
+
+def _field_value(text: str, field: str, patterns, conv: str = "str"):
+    """先按字段专用正则、再按通用键值行约定取值。"""
+    for pat in patterns or ():
+        m = re.search(pat, text, re.M)
+        if m:
+            got = _convert(m.group(1) if m.groups() else m.group(0), conv)
+            if got is not None:
+                return got
+    return _kv_value(text, field, conv)
+
+
+SHA64 = r"([0-9a-f]{64})"
+
+# generic 门禁的最小可判字段（B-152）：字段名 = 门禁计划 evidence 里的名字
+GENERIC_FIELD_SPECS = {
+    "corpus_two": {
+        "sha_pass1": {"conv": "str", "patterns": [r"^pass1_sha\s*[:=]\s*" + SHA64]},
+        "sha_pass2": {"conv": "str", "patterns": [r"^pass2_sha\s*[:=]\s*" + SHA64]},
+        "diff_vs_baseline": {"conv": "str",
+                             "patterns": [r"^diff_vs_baseline\s*[:=]\s*(\S+)"]},
+        "diff_rows": {"conv": "int", "patterns": [r"^diff_rows\s*[:=]\s*(\d+)"]},
+    },
+    "docx_audit": {
+        "success": {"conv": "int", "patterns": [r"^success\s*[:=]\s*(\d+)"]},
+        "fail": {"conv": "int", "patterns": [r"^fail\s*[:=]\s*(\d+)"]},
+        "csv_sha": {"conv": "str", "patterns": [r"^csv_sha\s*[:=]\s*" + SHA64]},
+        "diff_vs_notes_baseline": {"conv": "str",
+                                   "patterns": [r"^diff_vs_notes_baseline\s*[:=]\s*(\S+)"]},
+    },
+    "build": {
+        "cmp_28": {"conv": "str", "patterns": [r"^cmp(?:_28)?\s*[:=]\s*(\d+/\d+)"]},
+        "o5": {"conv": "int", "patterns": [r"^o5\s*[:=]\s*(\d+)"]},
+        "app_version": {"conv": "str", "patterns": [r"^app_version\s*[:=]\s*(\S+)"]},
+        "artifact_sha": {"conv": "str", "patterns": [r"^artifact_sha\s*[:=]\s*" + SHA64]},
+        "engine_py_sha": {"conv": "str", "patterns": [r"^engine_py_sha\s*[:=]\s*" + SHA64]},
+        "manifest": {"conv": "str", "patterns": [r"^manifest\s*[:=]\s*(\S+)"]},
+    },
+    "ci_watch": {
+        "ci_run_id": {"conv": "int", "patterns": [r"^ci_run_id\s*[:=]\s*(\d+)"]},
+        "ci_conclusion": {"conv": "str", "patterns": [r"^ci_conclusion\s*[:=]\s*(\S+)"]},
+        "docs_run_id": {"conv": "int", "patterns": [r"^docs_run_id\s*[:=]\s*(\d+)"]},
+        "docs_conclusion": {"conv": "str",
+                            "patterns": [r"^docs_conclusion\s*[:=]\s*(\S+)"]},
+    },
+}
+
+
 def parse_full(text: str, path: str) -> dict:
     seconds = _float(r"汇总：\d+ 套件，红 \d+[^\n]*?耗时 ([\d.]+) 秒", text)
     return {
@@ -172,7 +264,14 @@ def parse_gen_docs(text: str, path: str, aux: dict) -> dict:
         m = re.search(r"inputs_sha256:\s*([0-9a-f]{6,64})", auto)
         out["inputs_sha"] = m.group(1)[:12] if m else None
         out["auto_numbers_file"] = os.path.basename(auto_path)
+    if out.get("inputs_sha") is None:
+        # 真实 gen_docs 写模式日志自带「inputs sha <12 hex>」（B-152 约定 §3）
+        m = re.search(r"inputs sha\s*([0-9a-f]{6,64})", text)
+        if m:
+            out["inputs_sha"] = m.group(1)[:12]
     diff_path = aux.get("readme_diff")
+    # 幂等写（B-159）：clean 树写模式输出「AUTO 块已是最新，未改动 README.md」→ 0 diff 是**正确**结果
+    out["readme_noop"] = bool(re.search(r"AUTO 块已是最新|未改动 README", text))
     if diff_path:
         diff = _read_text(diff_path)
         # 有 hunk（`@@`）即说明 README 真被改；空 diff 文件 = 未改动
@@ -230,13 +329,94 @@ def parse_swift(text: str, path: str) -> dict:
     }
 
 
+def parse_corpus(text: str, path: str, aux: dict) -> dict:
+    """corpus 两遍确定性（B-152）：位置式 `shasum` 行 + 键值行 + `diff_rows`。"""
+    spec = GENERIC_FIELD_SPECS["corpus_two"]
+    out = {"log": os.path.basename(path), "rc": _rc(text)}
+    shas = re.findall(r"^([0-9a-f]{64})\s+\S*corpus(?:\.csv)?", text, re.M)
+    for field in ("sha_pass1", "sha_pass2"):
+        out[field] = _field_value(text, field, spec[field]["patterns"], spec[field]["conv"])
+    if out["sha_pass1"] is None and len(shas) >= 1:
+        out["sha_pass1"] = shas[0]
+    if out["sha_pass2"] is None and len(shas) >= 2:
+        out["sha_pass2"] = shas[1]
+    for field in ("diff_vs_baseline", "diff_rows"):
+        out[field] = _field_value(text, field, spec[field]["patterns"], spec[field]["conv"])
+    if out["diff_rows"] is None and out["diff_vs_baseline"]:
+        m = re.search(r"(\d+)\s*行|(\d+)", str(out["diff_vs_baseline"]))
+        if m:
+            out["diff_rows"] = int(m.group(1) or m.group(2))
+    out["equal"] = (out["sha_pass1"] is not None and out["sha_pass1"] == out["sha_pass2"])
+    return out
+
+
+def parse_docx_audit(text: str, path: str, aux: dict) -> dict:
+    """全库普查（B-152）：`success`/`fail`/`csv_sha`/与笔记仓基线对照。"""
+    spec = GENERIC_FIELD_SPECS["docx_audit"]
+    out = {"log": os.path.basename(path), "rc": _rc(text)}
+    for field, meta in spec.items():
+        out[field] = _field_value(text, field, meta["patterns"], meta["conv"])
+    if out["success"] is None:      # 真实日志形态：`成功 132 篇 / 失败 0 篇`
+        m = re.search(r"成功\s*(\d+)\s*篇", text)
+        if m:
+            out["success"] = int(m.group(1))
+    if out["fail"] is None:
+        m = re.search(r"失败\s*(\d+)\s*篇", text)
+        if m:
+            out["fail"] = int(m.group(1))
+    return out
+
+
+def parse_build(text: str, path: str, aux: dict) -> dict:
+    """打包（B-152）：`cmp=28/28`、`o5=1`、`app_version`、产物 sha、`elapsed`。"""
+    spec = GENERIC_FIELD_SPECS["build"]
+    out = {"log": os.path.basename(path), "rc": _rc(text),
+           "seconds": _float(r"elapsed=([\d.]+)s", text)}
+    for field, meta in spec.items():
+        out[field] = _field_value(text, field, meta["patterns"], meta["conv"])
+    return out
+
+
+def parse_ci(text: str, path: str, aux: dict) -> dict:
+    """CI 结论（B-152）：`gh run view --json` 落盘 JSON，或 `ci_run_id:`/`ci_conclusion:` 键值行。"""
+    spec = GENERIC_FIELD_SPECS["ci_watch"]
+    out = {"log": os.path.basename(path), "rc": _rc(text)}
+    try:
+        doc = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        doc = None
+    runs = doc if isinstance(doc, list) else (doc.get("runs") if isinstance(doc, dict)
+                                              and isinstance(doc.get("runs"), list) else [doc])
+    for run in runs if isinstance(runs, list) else []:
+        if not isinstance(run, dict):
+            continue
+        name = str(run.get("workflowName") or run.get("name") or "").lower()
+        rid = run.get("databaseId", run.get("id"))
+        rid = int(rid) if str(rid).isdigit() else rid
+        conclusion = run.get("conclusion")
+        if "docs" in name or "文档" in name:
+            out.setdefault("docs_run_id", rid)
+            out.setdefault("docs_conclusion", conclusion)
+        elif out.get("ci_run_id") is None and rid is not None:
+            out["ci_run_id"] = rid
+            out["ci_conclusion"] = conclusion
+    for field, meta in spec.items():
+        if out.get(field) is None:
+            out[field] = _field_value(text, field, meta["patterns"], meta["conv"])
+    return out
+
+
 PARSERS = {
     "full": lambda text, path, aux: parse_full(text, path),
     "gen_docs": parse_gen_docs,
     "lint": lambda text, path, aux: parse_lint(text, path),
     "docs": lambda text, path, aux: parse_docs(text, path),
     "swift": lambda text, path, aux: parse_swift(text, path),
-    "generic": lambda text, path, aux: {"log": os.path.basename(path)},
+    "corpus": parse_corpus,
+    "audit": parse_docx_audit,
+    "build": parse_build,
+    "ci": parse_ci,
+    "generic": lambda text, path, aux: {"log": os.path.basename(path), "rc": _rc(text)},
 }
 
 # 「这条证据字段是否解析出数字」时用的字段名归一（evidence 声明名 -> 解析键）
@@ -260,6 +440,26 @@ FIELD_ALIASES = {
     "beds": "beds",
     "fail": "fail",
     "pass_total": "pass_total",
+    # generic 门禁（B-152）：同名直通 + gates.json/夹具里的历史别名
+    "sha_pass1": "sha_pass1",
+    "sha_pass2": "sha_pass2",
+    "diff_vs_baseline": "diff_vs_baseline",
+    "diff_rows": "diff_rows",
+    "vs_baseline": "diff_vs_baseline",
+    "diff_vs_notes_baseline": "diff_vs_notes_baseline",
+    "success": "success",
+    "csv_sha": "csv_sha",
+    "cmp_28": "cmp_28",
+    "cmp": "cmp_28",
+    "o5": "o5",
+    "app_version": "app_version",
+    "artifact_sha": "artifact_sha",
+    "engine_py_sha": "engine_py_sha",
+    "manifest": "manifest",
+    "ci_run_id": "ci_run_id",
+    "ci_conclusion": "ci_conclusion",
+    "docs_run_id": "docs_run_id",
+    "docs_conclusion": "docs_conclusion",
 }
 
 
@@ -290,9 +490,12 @@ def judge_gate(gate: dict, fields: dict, missing: list) -> dict:
         if fields.get("auto_fail"):
             verdict = FAIL
             notes.append(f"AUTO 测试行 FAIL {fields['auto_fail']} 行")
-        if fields.get("readme_changed") is False and fields.get("auto_numbers_file"):
+        if (fields.get("readme_changed") is False and fields.get("auto_numbers_file")
+                and not fields.get("readme_noop")):
             verdict = FAIL
             notes.append("gen_docs 写完 README 却未见 diff（写失败）")
+        if fields.get("readme_noop"):
+            notes.append("幂等写：AUTO 块已是最新 → 0 diff 属预期（B-159）")
     if gid == "lint":
         if fields.get("errors"):
             verdict = FAIL
@@ -314,6 +517,47 @@ def judge_gate(gate: dict, fields: dict, missing: list) -> dict:
         if rc is not None and rc != 0:
             verdict = FAIL
             notes.append(f"Swift 退出码 {rc}")
+    # ---- generic 门禁（B-152）：最小可判证据，仍「绝不静默 PASS」 ----
+    if gid == "corpus_two":
+        p1, p2 = fields.get("sha_pass1"), fields.get("sha_pass2")
+        if p1 is not None and p2 is not None and p1 != p2:
+            verdict = FAIL
+            notes.append(f"两遍 corpus sha 不一致（{p1[:12]} ≠ {p2[:12]}）→ 非确定性回归")
+        rows = fields.get("diff_rows")
+        if isinstance(rows, int) and rows > 0:
+            verdict = FAIL
+            notes.append(f"与冻结基线 diff {rows} 行（预期 0；变坏迁移=0 纪律）")
+        if rc is not None and rc != 0:
+            verdict = FAIL
+            notes.append(f"corpus 退出码 {rc}")
+    if gid == "docx_audit":
+        if fields.get("fail"):
+            verdict = FAIL
+            notes.append(f"docx_audit 失败 {fields['fail']} 篇")
+        if rc is not None and rc != 0:
+            verdict = FAIL
+            notes.append(f"docx_audit 退出码 {rc}")
+    if gid == "build":
+        cmp_val = fields.get("cmp_28")
+        if cmp_val is not None and str(cmp_val) != "28/28":
+            verdict = FAIL
+            notes.append(f"包内 cmp {cmp_val} ≠ 28/28")
+        o5 = fields.get("o5")
+        if o5 is not None and o5 != 1:
+            verdict = FAIL
+            notes.append(f"o5={o5} ≠ 1")
+        if rc is not None and rc != 0:
+            verdict = FAIL
+            notes.append(f"build 退出码 {rc}")
+    if gid == "ci_watch":
+        conclusion = fields.get("ci_conclusion")
+        if conclusion is not None and str(conclusion) != "success":
+            verdict = FAIL
+            notes.append(f"CI 结论 {conclusion} ≠ success")
+        docs_conclusion = fields.get("docs_conclusion")
+        if docs_conclusion is not None and str(docs_conclusion) != "success":
+            verdict = FAIL
+            notes.append(f"docs 工作流结论 {docs_conclusion} ≠ success")
 
     if verdict != FAIL and missing:
         verdict = UNKNOWN
@@ -476,6 +720,18 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
         elif gid == "swift":
             key = (f"{_fmt(f.get('beds'))} 台 / {_fmt(f.get('pass_total'))} PASS / "
                    f"{_fmt(f.get('fail'))} FAIL")
+        elif gid == "corpus_two":
+            same = f.get("sha_pass1") is not None and f.get("sha_pass1") == f.get("sha_pass2")
+            key = (f"两遍 sha {'一致' if same else '不一致'}（{_fmt(f.get('sha_pass1'))}） / "
+                   f"基线 diff {_fmt(f.get('diff_rows'))} 行")
+        elif gid == "docx_audit":
+            key = (f"成功 {_fmt(f.get('success'))} / 失败 {_fmt(f.get('fail'))} / "
+                   f"csv {_fmt(f.get('csv_sha'))}")
+        elif gid == "build":
+            key = (f"cmp {_fmt(f.get('cmp_28'))} / o5 {_fmt(f.get('o5'))} / "
+                   f"{_fmt(f.get('app_version'))}")
+        elif gid == "ci_watch":
+            key = f"run {_fmt(f.get('ci_run_id'))} / {_fmt(f.get('ci_conclusion'))}"
         else:
             key = "（无解析器）"
         if row["verdict"] == FAIL and not row["evidence"]:
@@ -583,6 +839,14 @@ def kpi_cross_check(kpi_doc, batch: int, doc: dict) -> dict:
     gf = gen.get("fields") or {}
     cmp("auto_suites", row.get("auto_suites"), gf.get("auto_suites"))
     cmp("auto_assertions", row.get("auto_assertions"), gf.get("auto_assertions"))
+    # generic 门禁跑了才对照（B-152；跳过时 KPI 里的旧 sha 不代表本批）
+    corpus_row = by_id.get("corpus_two")
+    if corpus_row:
+        cmp("corpus_sha", row.get("corpus_sha"), (corpus_row.get("fields") or {}).get("sha_pass1"))
+    audit_row = by_id.get("docx_audit")
+    if audit_row:
+        cmp("audit_csv_sha", row.get("audit_csv_sha"),
+            (audit_row.get("fields") or {}).get("csv_sha"))
     skipped_ids = [r["id"] for r in doc["skipped"]]
     build_kpi = row.get("build_count")
     if isinstance(build_kpi, int):
@@ -649,11 +913,21 @@ def run_self_test() -> int:
 
     def run(td, tag, *, omit=(), post=(107, 0, 128.0, 0), pre=(106, 2, 131.5, 2),
             lint=(0, 18, 7051, 0), swift=(fixtures.DEFAULT_SWIFT_BEDS, 0, 0),
-            plan_rows=None, rc_style="exit", with_cwd=False):
+            plan_rows=None, rc_style="exit", with_cwd=False, generic=False,
+            overrides=None, gen_docs_noop=False):
         root = os.path.join(td, tag)
         ev = os.path.join(root, "evidence")
         fixtures.build_evidence_dir(ev, omit=omit, pre=pre, post=post, lint=lint, swift=swift,
-                                    rc_style=rc_style)
+                                    rc_style=rc_style, generic=generic,
+                                    gen_docs_noop=gen_docs_noop)
+        for gid, val in (overrides or {}).items():
+            spec = fixtures.EVIDENCE_FILENAMES.get(gid) or (None,)
+            if not spec[0]:
+                continue
+            if isinstance(val, dict):
+                fixtures.write_json(os.path.join(ev, spec[0]), val)
+            else:
+                fixtures.write_text(os.path.join(ev, spec[0]), val)
         plan_path = os.path.join(root, "gate_plan.json")
         plan = fixtures.gate_plan_doc()
         if plan_rows:
@@ -833,6 +1107,94 @@ def run_self_test() -> int:
             return False, "accept.md 的 cwd 列未留空（—）"
         return True, f"缺 cwd → cwd 列 — + WARN；判定仍 {doc['verdict']}（rc 0）"
 
+    # ---- generic 门禁解析器（B-152） ----
+    GENERIC_IDS = ("corpus_two", "docx_audit", "build", "ci_watch")
+    GENERIC_REQUIRED = {gid: "required" for gid in GENERIC_IDS}
+
+    def t_generic_parsed(td):
+        """generic 门禁有字段解析器：不再「恒 UNKNOWN /（无解析器）」。"""
+        rc, doc, md, _ = run(td, "generic-ok", generic=True, plan_rows=GENERIC_REQUIRED)
+        rows = {r["id"]: r for r in doc["gates"] if r["id"] in GENERIC_IDS}
+        want = {"corpus_two": ("sha_pass1", "sha_pass2", "diff_rows"),
+                "docx_audit": ("success", "fail", "csv_sha"),
+                "build": ("cmp_28", "o5", "app_version"),
+                "ci_watch": ("ci_run_id", "ci_conclusion")}
+        for gid, keys in want.items():
+            f = rows[gid]["fields"]
+            missing = [k for k in keys if f.get(k) is None]
+            if missing:
+                return False, f"{gid} 未解析出 {missing}（fields={sorted(f)}）"
+        if rc != 0 or doc["counts"][FAIL] or doc["counts"][UNKNOWN]:
+            return False, f"generic 门禁未判绿（{doc['verdict']} / rc {rc} / {doc['counts']}）"
+        if "（无解析器）" in md:
+            return False, "accept.md 仍显示「（无解析器）」"
+        if rows["corpus_two"]["fields"].get("equal") is not True:
+            return False, "corpus 的 equal 字段未判 True"
+        return True, ("4 门 generic 均解析且 PASS（corpus "
+                      f"{rows['corpus_two']['fields']['sha_pass1'][:8]}… / build cmp "
+                      f"{rows['build']['fields']['cmp_28']} / ci run "
+                      f"{rows['ci_watch']['fields']['ci_run_id']}）")
+
+    def t_corpus_sha_mismatch_fail(td):
+        """两遍 sha 不一致 = 非确定性回归 → FAIL（不静默 PASS）。"""
+        rc, doc, _, _ = run(td, "corpus-mismatch", generic=True, plan_rows=GENERIC_REQUIRED,
+                            overrides={"corpus_two":
+                                       fixtures.corpus_log(pass2_sha="f" * 64)})
+        row = next(r for r in doc["gates"] if r["id"] == "corpus_two")
+        if row["verdict"] != FAIL or rc != 1:
+            return False, f"两遍 sha 不一致未判 FAIL（{row['verdict']} / rc {rc}）"
+        return True, "两遍 sha 不一致 → FAIL（exit 1）"
+
+    def t_generic_thresholds_fail(td):
+        """docx fail>0 / build cmp≠28/28、o5≠1 / ci 结论非 success → FAIL。"""
+        rc, doc, md, _ = run(td, "generic-red", generic=True, plan_rows=GENERIC_REQUIRED,
+                             overrides={"docx_audit": fixtures.audit_log(fail=2),
+                                        "build": fixtures.build_log(cmp="27/28", o5=0),
+                                        "ci_watch": fixtures.ci_watch_json(
+                                            conclusion="failure")})
+        verdicts = {r["id"]: r["verdict"] for r in doc["gates"] if r["id"] in GENERIC_IDS}
+        bad = [gid for gid in ("docx_audit", "build", "ci_watch")
+               if verdicts.get(gid) != FAIL]
+        if rc != 1 or bad:
+            return False, f"阈值未判 FAIL：{verdicts} / rc {rc}"
+        if "cmp 27/28" not in md:
+            return False, "accept.md 未点名 build 的 cmp 字段"
+        return True, "docx fail / build cmp+o5 / ci 非 success → 全 FAIL（exit 1）"
+
+    def t_generic_missing_unknown(td):
+        """有证据文件但字段取不到 → 仍判 UNKNOWN（不因加了解析器就放宽）。"""
+        rc, doc, _, _ = run(td, "generic-nofield", generic=True,
+                            plan_rows=GENERIC_REQUIRED,
+                            overrides={"corpus_two": "▶ corpus 跑完了（夹具无字段）\nEXIT=0\n"})
+        row = next(r for r in doc["gates"] if r["id"] == "corpus_two")
+        if row["verdict"] != UNKNOWN or rc != 2:
+            return False, f"字段缺失未判 UNKNOWN（{row['verdict']} / rc {rc}）"
+        if not row["missing"]:
+            return False, "missing 列表为空"
+        return True, f"字段取不到 → UNKNOWN（missing={row['missing']}）"
+
+    def t_corpus_kv_form(td):
+        """证据格式约定 §2：键值行 `pass1_sha:`/`pass2_sha:` 也能解析。"""
+        rc, doc, _, _ = run(td, "corpus-kv", generic=True, plan_rows=GENERIC_REQUIRED,
+                            overrides={"corpus_two": fixtures.corpus_log(form="kv")})
+        row = next(r for r in doc["gates"] if r["id"] == "corpus_two")
+        f = row["fields"]
+        if row["verdict"] != PASS or rc != 0 or f.get("equal") is not True:
+            return False, f"键值形态未解析（{row['verdict']} / rc {rc} / {f}）"
+        return True, "键值行形态（pass1_sha:/pass2_sha:）→ PASS"
+
+    def t_gen_docs_noop_ok(td):
+        """B-159 幂等写：clean 树「AUTO 块已是最新」→ 0 diff 属预期，不得判 FAIL。"""
+        rc, doc, _, _ = run(td, "gen-docs-noop", gen_docs_noop=True)
+        gen = next(r for r in doc["gates"] if r["id"] == "gen_docs_write")
+        if gen["verdict"] != PASS or rc != 0:
+            return False, f"幂等写未判 PASS（{gen['verdict']} / rc {rc} / {gen['notes']}）"
+        if gen["fields"].get("readme_changed") is not False:
+            return False, "readme_changed 应为 False（空 diff）"
+        if gen["fields"].get("readme_noop") is not True:
+            return False, "readme_noop 未识别"
+        return True, "幂等写（AUTO 块已是最新，0 diff）→ PASS（非写失败）"
+
     print("[batch_accept self-test] hermetic 夹具（tempfile；不读真实仓/真实库）")
     with tempfile.TemporaryDirectory(prefix="batch-accept-selftest-") as td:
         check("all_green", lambda: t_all_pass(td))
@@ -846,6 +1208,12 @@ def run_self_test() -> int:
         check("rc_missing_unknown", lambda: t_rc_missing_unknown(td))
         check("cwd_presented_only", lambda: t_cwd_presented(td))
         check("cwd_missing_present_only", lambda: t_cwd_missing(td))
+        check("generic_parsed", lambda: t_generic_parsed(td))
+        check("corpus_sha_mismatch_fail", lambda: t_corpus_sha_mismatch_fail(td))
+        check("generic_thresholds_fail", lambda: t_generic_thresholds_fail(td))
+        check("generic_missing_unknown", lambda: t_generic_missing_unknown(td))
+        check("corpus_kv_form", lambda: t_corpus_kv_form(td))
+        check("gen_docs_noop_ok", lambda: t_gen_docs_noop_ok(td))
         check("determinism", lambda: t_determinism(td))
 
     ok = sum(1 for _, o, _ in results if o)

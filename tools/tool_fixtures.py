@@ -20,7 +20,7 @@ import json
 import os
 import re
 
-FIXTURE_VERSION = "1.0.0"
+FIXTURE_VERSION = "1.1.0"
 
 # 夹具里的「上一批」基线（对应真实 gate_plan.json 的 last 字段）
 LAST_BATCH = 76
@@ -160,8 +160,18 @@ def full_log(suites: int, red: int, seconds: float, exit_code: int,
     return "\n".join(lines) + "\n"
 
 
-def gen_docs_write_log(exit_code: int = 0, inputs_sha: str = "ec1b5867be84") -> str:
+def gen_docs_write_log(exit_code: int = 0, inputs_sha: str = "ec1b5867be84",
+                       noop: bool = False) -> str:
+    """gen_docs 写模式日志；`noop=True` = B-159 幂等写（clean 树，AUTO 块已是最新 → 0 diff）。"""
     status = "PASS" if exit_code == 0 else "FAIL"
+    if noop:
+        return (
+            "提示  测试计数复用 out/auto-inputs.json 缓存（engine/tests 未变；本次未跑套件）\n"
+            "PASS  AUTO 块已是最新，未改动 README.md\n"
+            f"      AUTO 输入清单：Engine/out/auto-inputs.json（inputs sha {inputs_sha}；"
+            "测试计数复用缓存）\n"
+            f"EXIT={exit_code} elapsed=2s\n"
+        )
     return (
         "提示  写模式：非测试数据块已先行落盘；接着跑套件算测试计数\n"
         f"{status}  已就地更新 AUTO 块（夹具；块外内容逐字节未动）\n"
@@ -280,15 +290,83 @@ EVIDENCE_FILENAMES = {
     "lint": ("04-lint.log", None),
     "docs": ("05-docs.log", None),
     "swift": ("06-swift.log", None),
+    # generic 门禁（B-152）：默认计划里是可跳/延后，`generic=True` 时才写证据
+    "corpus_two": ("07-corpus-two.log", None),
+    "docx_audit": ("08-docx-audit.log", None),
+    "build": ("09-build.log", None),
+    "ci_watch": ("10-ci.json", None),
 }
+
+FIXTURE_CORPUS_SHA = "1d4bf34edab701bd09179cf597ec7f690768643cdf500d7d5b961ee92549d3f7"
+FIXTURE_CSV_SHA = "9e5f3e596fcc0707d340453c85ebf994bfdd75cf6d236f23900c2d200e9ddd25"
+
+
+def corpus_log(pass1_sha: str = FIXTURE_CORPUS_SHA, pass2_sha=None,
+               diff_rows: int = 0, form: str = "shasum", exit_code: int = 0,
+               csv_name: str = "out/corpus/corpus.csv") -> str:
+    """corpus 两遍日志（B-152 证据格式约定）：默认 `shasum` 形态，`form="kv"` 走键值行。"""
+    p2 = pass1_sha if pass2_sha is None else pass2_sha
+    diff_text = "equal（与基线 0 行差异）" if diff_rows == 0 else f"{diff_rows} 行差异（夹具）"
+    lines = ["▶ corpus 全库回归（两遍；夹具）"]
+    if form == "kv":
+        lines += [f"pass1_sha: {pass1_sha}", f"pass2_sha: {p2}"]
+    else:
+        lines += [f"{pass1_sha}  {csv_name}", f"{p2}  {csv_name}"]
+    lines += [f"diff_rows: {diff_rows}", f"diff_vs_baseline: {diff_text}",
+              f"EXIT={exit_code} elapsed=134s"]
+    return "\n".join(lines) + "\n"
+
+
+def audit_log(success: int = 132, fail: int = 0, csv_sha: str = FIXTURE_CSV_SHA,
+              vs_baseline: str = "equal", exit_code: int = 0) -> str:
+    """docx 全库普查日志（B-152）。"""
+    return (
+        "▶ docx 全库普查（夹具）\n"
+        f"成功 {success} 篇 / 失败 {fail} 篇\n"
+        f"success: {success}\n"
+        f"fail: {fail}\n"
+        f"csv_sha: {csv_sha}\n"
+        f"diff_vs_notes_baseline: {vs_baseline}\n"
+        f"EXIT={exit_code} elapsed=41s\n"
+    )
+
+
+def build_log(cmp: str = "28/28", o5: int = 1, app_version: str = "1.3.0+fixture",
+              seconds: float = 29.6, exit_code: int = 0) -> str:
+    """打包日志（B-152）：cmp / o5 / app_version / 产物 sha。"""
+    return (
+        "▶ ./build.sh（夹具）\n"
+        f"cmp: {cmp} 一致\n"
+        f"o5: {o5}\n"
+        f"app_version: {app_version}\n"
+        f"artifact_sha: {'b' * 64}\n"
+        f"engine_py_sha: {'c' * 64}\n"
+        f"manifest: manifest-fixture.json\n"
+        f"EXIT={exit_code} elapsed={int(round(seconds))}s\n"
+    )
+
+
+def ci_watch_json(run_id: int = 40000000001, conclusion: str = "success",
+                  docs_run_id: int = 40000000002, docs_conclusion: str = "success") -> dict:
+    """`gh run view --json` 形态（含 docs 工作流；B-152）。"""
+    ci = {"databaseId": run_id, "workflowName": "CI", "name": "CI", "status": "completed",
+          "conclusion": conclusion, "headSha": "a" * 40}
+    docs = {"databaseId": docs_run_id, "workflowName": "Docs", "name": "Docs",
+            "status": "completed", "conclusion": docs_conclusion, "headSha": "a" * 40}
+    return {"runs": [ci, docs]}
 
 
 def build_evidence_dir(root: str, *, omit=(), pre=(107, 2, 131.5, 2),
                        post=(107, 0, 128.0, 0), auto=(106, 4244, 0),
                        lint=(0, 18, 7051, 0), docs=(0, 0),
                        swift=(DEFAULT_SWIFT_BEDS, 0, 0), gen_docs_exit: int = 0,
-                       readme_diff: bool = True, rc_style: str = "exit") -> dict:
-    """在 root 下生成一套完整证据；`omit` 里的门禁**不写文件**（用于缺证据反例）。"""
+                       readme_diff: bool = True, rc_style: str = "exit",
+                       generic: bool = False, gen_docs_noop: bool = False) -> dict:
+    """在 root 下生成一套完整证据；`omit` 里的门禁**不写文件**（用于缺证据反例）。
+
+    `generic=True` 时额外写 generic 门禁证据（corpus/docx_audit/build/ci_watch；
+    B-152——默认计划里它们是可跳/延后，不需要证据文件）。
+    """
     os.makedirs(root, exist_ok=True)
     files = {}
 
@@ -306,14 +384,24 @@ def build_evidence_dir(root: str, *, omit=(), pre=(107, 2, 131.5, 2),
 
     if "gen_docs_write" not in omit:
         write_text(os.path.join(root, gw_name),
-                   rc_style_log(gen_docs_write_log(gen_docs_exit), rc_style))
+                   rc_style_log(gen_docs_write_log(gen_docs_exit, noop=gen_docs_noop),
+                                rc_style))
         write_text(os.path.join(root, aux_name), auto_numbers_text(*auto))
         if readme_diff:
-            write_text(os.path.join(root, "03-readme-diff.log"), readme_diff_text())
+            # 幂等写：`git diff` 为空 → 仍要落一份**空** diff 文件（约定 §3），readme_changed=False
+            write_text(os.path.join(root, "03-readme-diff.log"),
+                       "" if gen_docs_noop else readme_diff_text())
         files["gen_docs_write"] = gw_name
     put("lint", EVIDENCE_FILENAMES["lint"][0], lint_log(*lint))
     put("docs", EVIDENCE_FILENAMES["docs"][0], docs_log(*docs))
     put("swift", EVIDENCE_FILENAMES["swift"][0], swift_log(*swift))
+    if generic:
+        put("corpus_two", EVIDENCE_FILENAMES["corpus_two"][0], corpus_log())
+        put("docx_audit", EVIDENCE_FILENAMES["docx_audit"][0], audit_log())
+        put("build", EVIDENCE_FILENAMES["build"][0], build_log())
+        if "ci_watch" not in omit:
+            write_json(os.path.join(root, EVIDENCE_FILENAMES["ci_watch"][0]), ci_watch_json())
+            files["ci_watch"] = EVIDENCE_FILENAMES["ci_watch"][0]
     return files
 
 
