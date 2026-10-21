@@ -803,6 +803,115 @@ ANALYSIS_KIND_LABEL = {
 #: 将来「默认自动应用」的 3 类机械项（用户已拍板、**本卡不实现**；只写进 state 留痕）。
 ANALYSIS_FUTURE_WHITELIST = ("bib_field_fill", "meta_fill", "footnote_cite_link")
 
+# ── 批75（B-139）：附四输入补齐——「脚注清单」/「占位符清单」（只在有数据时出现）──
+#
+# 背景（T1 报告 §2 建议项）：附四只给正文（附三），AI 的 `locator.footnote_id` /
+# `locator.placeholder` 没有定位依据、只能从正文猜。两块数据引擎本来就有：
+#   · 脚注 fid + 文本摘要：初排 warning 里的 `#<fid>「<片段>」`（`_FID_RE`，与
+#     `collect_low_confidence()` 同一判据）与已收下的 `FN-<fid>` 低置信项；
+#   · 占位符 类型 + 位置：`BuildResult.undetected_fields`（`(人话标签, 模板 \my* 宏)`），
+#     对应产物 `.tex` 里 `【未识别：<标签>，请手工填写】`（模板唯一出处 `build.PLACEHOLDER_TMPL`）。
+# **不新写解析器、不落正文**；只进任务书（默认零变化），report-only 边界不变。
+
+#: 附四输入清单（附三之后 / 附四之前；两块任一非空时出现）。
+ANALYSIS_INPUTS_TITLE = "## 附三·补充、附四输入清单（脚注 / 占位符；定位用）"
+ANALYSIS_FOOTNOTE_TITLE = "### 脚注清单（fid + 文本摘要）"
+ANALYSIS_PLACEHOLDER_TITLE = "### 占位符清单（类型 + 位置）"
+#: 脚注清单每条文本摘要的截断长度（只作定位线索，不是全文）。
+ANALYSIS_FOOTNOTE_CLIP = 80
+#: 产物里的未识别占位符：`【未识别：<标签>，请手工填写】`（识别用；写入逻辑仍在 build.py）。
+PLACEHOLDER_MARK_RE = re.compile(r"【未识别：([^，】]{1,40})，请手工填写】")
+
+
+def collect_analysis_inputs(*, warnings: Iterable[str] = (),
+                            low_items: Iterable[dict] = (),
+                            placeholders: Iterable[tuple[str, str]] = (),
+                            ) -> tuple[list[dict], list[dict]]:
+    """批75（B-139）：收集附四输入清单 → `(脚注清单, 占位符清单)`（纯函数、顺序确定）。
+
+    · 脚注：从 `warnings` 的 `#<fid>「<片段>」`（与 `collect_low_confidence()` 同一判据）
+      与 `low_items` 的 `FN-<fid>`（`evidence` 为片段）收集，按 fid 升序去重；
+    · 占位符：`placeholders` = `BuildResult.undetected_fields` 的 `(人话标签, 模板宏)` 对。
+    两块都可能为空——调用方只在**有数据**时渲染（默认路径不出现、逐字节不变）。
+    """
+    found: dict[int, dict] = {}
+    for w in warnings or ():
+        for fid_s, snippet in _FID_RE.findall(str(w or "")):
+            try:
+                fid = int(fid_s)
+            except (TypeError, ValueError):
+                continue
+            if fid in found:
+                continue
+            found[fid] = {"fid": fid, "id": f"FN-{fid}",
+                          "text": _clip(snippet, ANALYSIS_FOOTNOTE_CLIP)}
+    for it in low_items or ():
+        if not isinstance(it, dict):
+            continue
+        id_ = str(it.get("id") or "")
+        m = _FN_FID_RE.match(id_)
+        if not m:
+            continue
+        fid = int(m.group(1))
+        if fid in found:
+            continue
+        found[fid] = {"fid": fid, "id": id_,
+                      "text": _clip(it.get("evidence") or "", ANALYSIS_FOOTNOTE_CLIP)}
+    footnotes = [found[k] for k in sorted(found)]
+
+    ph: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for pair in placeholders or ():
+        try:
+            label, macro = pair
+        except (TypeError, ValueError):
+            continue
+        label = _clip(label, 40).strip()
+        macro = str(macro or "").strip()
+        if not label or (label, macro) in seen:
+            continue
+        seen.add((label, macro))
+        ph.append({"label": label, "macro": macro})
+    return footnotes, ph
+
+
+def _table_cell(text: str, limit: int = 120) -> str:
+    """表格单元格：压一行 + 转义 `|`（markdown 表格里竖线会把列切坏）。"""
+    return _clip(text, limit).replace("|", "\\|")
+
+
+def render_analysis_inputs_section(*, footnotes: Iterable[dict] = (),
+                                   placeholders: Iterable[dict] = ()) -> str:
+    """批75（B-139）：附三之后、附四之前的两块输入清单。
+
+    **两块都为空时返回空串**（调用方据此不追加任何内容）；只有一块有数据时只出那一块。
+    """
+    footnotes = list(footnotes or ())
+    placeholders = list(placeholders or ())
+    if not footnotes and not placeholders:
+        return ""
+    L = ["", "---", "", ANALYSIS_INPUTS_TITLE, "",
+         "> 下面两块是引擎手里**现成的结构化输入**（初排 warning / 产物占位符），",
+         "> 供「附四」的 `locator.footnote_id` / `locator.placeholder` 定位。",
+         "> **不是**要求你改动它们；清单里的文字也不要当成待改的正文。", ""]
+    if footnotes:
+        L += [ANALYSIS_FOOTNOTE_TITLE, "",
+              "| fid | 文本摘要 | 关联附一 ID |", "|---|---|---|"]
+        for fn in footnotes:
+            L.append(f"| `{fn.get('fid', '')}` | {_table_cell(fn.get('text', ''))} | "
+                     f"`{fn.get('id', '')}` |")
+        L.append("")
+    if placeholders:
+        L += [ANALYSIS_PLACEHOLDER_TITLE, "",
+              "| 类型（未识别字段） | 位置（产物宏） |", "|---|---|"]
+        for ph_ in placeholders:
+            macro = str(ph_.get("macro") or "")
+            shown = ("\\" + macro) if macro and not macro.startswith("\\") else macro
+            L.append(f"| {_table_cell(ph_.get('label', ''), 40)} | "
+                     f"{_code_span(shown, 60) if shown else '（无宏名）'} |")
+        L.append("")
+    return "\n".join(L)
+
 
 def render_analysis_section() -> str:
     """任务书「附四、初排分析」：七项检查指令 + `slcn.fulltext.v1` schema + 硬约束。
@@ -884,7 +993,8 @@ def render_analysis_section() -> str:
         "- **本节的分析建议只按上面附四 JSON 格式回复**；文献条目仍按第三节 BibTeX、"
         "「附一」各项仍按附一 JSON（三块互不混用）。",
         "- **不得改写、复述或补写正文**：只做「发现 + 建议」，正文/脚注的文字一个都不改。",
-        "- 每条必须带**逐字 `evidence`**（从本任务书内容里**逐字**复制一段连续原文；"
+        "- 每条必须带**逐字 `evidence`**（从本任务书**附四之前**的内容里**逐字**复制一段"
+        "连续原文——附三正文 / 附一原文 / 附二附三说明均可；**本节的 schema 示例与指令不算**。"
         "换行/空白差异可容忍，文字有改动即整条拒绝）；`kind=lowconf_review` 可用 `note` 代替。",
         "- **拿不准**就写 `\"confidence\": \"low\"`，或回 `unresolved`——**不要猜**。",
         f"- 每篇**总条数 ≤{ANALYSIS_MAX_TOTAL}**、**每 kind ≤{ANALYSIS_MAX_PER_KIND}**；"
@@ -946,7 +1056,7 @@ def _analysis_is_unresolved(obj: dict) -> bool:
     return bool(obj.get("unresolved"))
 
 
-def _validate_analysis(obj: dict, *, taskbook_squeezed: str, idx: int) -> tuple[bool, dict, str]:
+def _validate_analysis(obj: dict, *, evidence_squeezed: str, idx: int) -> tuple[bool, dict, str]:
     """校验一条附四对象；返回 `(ok, 规范化记录, 拒绝原因)`。"""
     id_ = str(obj.get("id") or "").strip()
     if not id_:
@@ -992,8 +1102,9 @@ def _validate_analysis(obj: dict, *, taskbook_squeezed: str, idx: int) -> tuple[
         else:
             return False, {}, ("缺少 `evidence`（任务书原文的逐字片段）——整条拒绝"
                                "（`lowconf_review` 可用 `note` 代替）")
-    elif _squeeze(evidence) not in taskbook_squeezed:
-        return False, {}, ("evidence 不是任务书内容的逐字子串（疑似改写/编造）——整条拒绝")
+    elif _squeeze(evidence) not in evidence_squeezed:
+        return False, {}, ("evidence 不是任务书（附四之前内容）的逐字子串（疑似改写/编造）"
+                           "——整条拒绝")
     out = {
         "schema": ANALYSIS_SCHEMA,
         "id": id_,
@@ -1012,14 +1123,30 @@ def _validate_analysis(obj: dict, *, taskbook_squeezed: str, idx: int) -> tuple[
     return True, out, ""
 
 
+def analysis_evidence_base(taskbook_text: str) -> str:
+    """批75（B-140①）：附四 `evidence` 校验基准 = 任务书里**附四之前**的内容。
+
+    旧口径传整份任务书 → AI 可以抄附四自身的 `slcn.fulltext.v1` schema 示例/指令
+    （例如 `"……\\\\footnote{参见[12]。}……"` 或指令里的句子）冒充「逐字证据」。
+    这里从第一个附四标题处截断：基准仍包含**附三正文 + 附一原文 + 附二/附三说明**
+    （以及一~五节等任务书正文），只排除附四小节（含其 schema 示例与指令示例）。
+    任务书里没有附四（旧 state/旧回复）→ 原样返回（行为与旧版一致）。
+    """
+    text = str(taskbook_text or "")
+    i = text.find(ANALYSIS_TITLE)
+    return text[:i] if i >= 0 else text
+
+
 def parse_fulltext_analysis(texts: Iterable[tuple[str, str]],
-                            taskbook_text: str) -> FulltextAnalysisReport:
+                            evidence_base: str) -> FulltextAnalysisReport:
     """解析并逐条校验附四回复（`schema=slcn.fulltext.v1`），**只报告、不写产物**。
 
     分区：只认带 `schema=slcn.fulltext.v1` 的 JSON 对象（附一解析器会跳过它们，见
     `parse_low_confidence()`）；其余对象留给附一/文献部分。
     校验顺序（与 spec §2.3/§2.7 一致）：上限 → 未知 kind（记录不丢弃）→ 同 id 重复 →
     `(kind,target,locator)` 冲突 → 逐条字段/长度/evidence 校验 → 低置信/unresolved 分诊。
+    `evidence_base`（批75/B-140①）= `analysis_evidence_base(任务书全文)`：**附四小节不算**
+    （schema 示例/指令不能当逐字证据）；由调用方（convert.py）从任务书抽取后传入。
     """
     report = FulltextAnalysisReport()
     raw: list[dict] = []
@@ -1093,7 +1220,7 @@ def parse_fulltext_analysis(texts: Iterable[tuple[str, str]],
             "id": id_, "kind": kind,
             "reason": f"重复 id：同一个 `id` 出现 {len(by_id[id_])} 次——该 id 全部拒绝"})
 
-    taskbook_squeezed = _squeeze(taskbook_text or "")
+    evidence_squeezed = _squeeze(evidence_base or "")
     for idx, obj in known:
         id_ = str(obj.get("id") or "").strip()
         kind = str(obj.get("kind") or "").strip()
@@ -1106,7 +1233,7 @@ def parse_fulltext_analysis(texts: Iterable[tuple[str, str]],
                           "（工具拒绝猜哪条对）——涉事条全部拒绝"})
             continue
         ok, out, why = _validate_analysis(
-            obj, taskbook_squeezed=taskbook_squeezed, idx=idx)
+            obj, evidence_squeezed=evidence_squeezed, idx=idx)
         if not ok:
             report.rejected.append({"id": id_, "kind": kind, "reason": why})
             continue
@@ -1248,6 +1375,11 @@ class LowConfReport:
     def summary(self) -> str:
         bits = [f"接受 {self.n_ok} 条", f"拒绝 {len(self.rejected)} 条",
                 f"未回填 {len(self.missing)} 条"]
+        _note_only = sum(1 for sugs in self.suggestions.values()
+                         for sug in (sugs or []) if (sug or {}).get("note_only"))
+        if _note_only:
+            # 批75（B-132）：note-only 已收下但按「待人工」口径计入，摘要里点名。
+            bits.append(f"其中 note-only {_note_only} 条")
         if self.unknown:
             bits.append(f"白名单外 ID {len(self.unknown)} 个")
         return "，".join(bits)
@@ -1337,9 +1469,22 @@ def _validate_suggestion(item: dict, obj: dict) -> tuple[bool, dict, str]:
             f"verdict 不在允许集合 {VERDICTS} 内（收到 `{verdict or '空'}`）——整条拒绝")
     span = str(obj.get("span") or "").strip()
     evidence = str(item.get("evidence") or "")
+    raw_note = str(obj.get("note") or "")
+    note_only = False
     if not span:
-        return False, {}, "缺少 span（原文证据）——整条拒绝"
-    if span not in evidence:
+        # 批75（B-132）：`unresolved` 允许 **note-only**（无 span）。86-08 的 FN-0
+        # （Hacking1999「源稿文末清单缺条」）内容正确，旧版却因缺 span 整条拒绝、note 丢弃。
+        # 只对 unresolved 放宽，而且必须带 note；corrected/confirmed 仍强制 span（不放宽）。
+        if verdict == "unresolved" and raw_note.strip():
+            note_only = True
+            if len(raw_note) > 300:
+                return False, {}, ("note 超过 300 字符上限（note-only 靠它承载说明；"
+                                   f"收到 {len(raw_note)} 字符）——整条拒绝")
+        else:
+            return False, {}, (
+                "缺少 span（原文证据）——整条拒绝"
+                "（只有 `unresolved` 可以用 `note` 代替 span，其余 verdict 不行）")
+    if span and span not in evidence:
         return False, {}, "span 不是「原文片段」的逐字子串（疑似改写/编造）——整条拒绝"
     field_ = str(obj.get("field") or "").strip()
     value = str(obj.get("value") or "").strip()
@@ -1356,9 +1501,12 @@ def _validate_suggestion(item: dict, obj: dict) -> tuple[bool, dict, str]:
     out = {
         "id": str(item["id"]), "kind": item.get("kind", ""), "verdict": verdict,
         "field": field_, "value": value, "span": span,
-        "note": _clip(obj.get("note") or "", 300),
+        "note": _clip(raw_note, 300),
         "key": item.get("key", ""),
     }
+    if note_only:
+        # 只给 note-only 记录加键（普通 replied 的建议结构/jsonl 逐字节不变）。
+        out["note_only"] = True
     # 第五十七批：FN 的 match_key 允许在同一 JSON 里带 `locator`（页码定位）。
     if field_ == "match_key":
         out["locator"] = _clip(obj.get("locator") or "", 40)
@@ -1374,14 +1522,25 @@ def render_suggestions_md(*, stem: str, items: Iterable[dict], report: LowConfRe
          "> BIB 字段 → `reference.bib`；META 元数据 → 输出 `.tex` 的 `\\my*` 字段；",
          "> FN 匹配（仅 citation_unmatched + `match_key`）→ `.tex` 里的 `\\footnote` 提升为 `\\parencite`。",
          ""]
+    # 批75（B-132）：`verdict=unresolved` 且无 span 的 **note-only** 回复已收下（note 保留），
+    # 按「待人工」口径只列在第三节（不进第一节的「已接受建议」，避免编辑误以为可应用）。
+    note_only_rows = [(id_, sug) for id_, sugs in report.suggestions.items()
+                      for sug in (sugs or []) if sug.get("note_only")]
     L += [f"- 接受：**{report.n_ok}** 条", f"- 拒绝：**{len(report.rejected)}** 条",
           f"- 未回填：**{len(report.missing)}** 条",
-          f"- 白名单外 ID：**{len(report.unknown)}** 个", ""]
+          f"- 白名单外 ID：**{len(report.unknown)}** 个"]
+    if note_only_rows:
+        L.append(f"- 其中 note-only `unresolved`（保留说明、待人工）："
+                 f"**{len(note_only_rows)}** 条")
+    L.append("")
 
+    listed = {id_: [sug for sug in (sugs or []) if not sug.get("note_only")]
+              for id_, sugs in report.suggestions.items()}
+    listed = {id_: sugs for id_, sugs in listed.items() if sugs}
     L += ["## 一、已接受建议", ""]
-    if not report.suggestions:
+    if not listed:
         L += ["（无）", ""]
-    for id_, sugs in report.suggestions.items():
+    for id_, sugs in listed.items():
         it = by_id.get(id_, {})
         for sug in sugs:
             L += [f"### `{id_}` — {KIND_LABEL.get(it.get('kind', ''), it.get('kind', ''))}"
@@ -1402,11 +1561,18 @@ def render_suggestions_md(*, stem: str, items: Iterable[dict], report: LowConfRe
     L.append("")
 
     L += ["## 三、待人工", ""]
-    if not report.missing:
+    if not report.missing and not note_only_rows:
         L += ["（无）", ""]
     for id_ in report.missing:
         it = by_id.get(id_, {})
         L += [f"- `{id_}`：{it.get('title', '')} —— 回复里没有这一项"]
+    if note_only_rows:
+        L += ["", "### `unresolved` note-only（已收下说明，请人工判断）", ""]
+        for id_, sug in note_only_rows:
+            it = by_id.get(id_, {})
+            L += [f"- `{id_}`：{it.get('title', '')} —— `unresolved`"
+                  "（未提供 span，按 note-only 收下；**不要**自动采用）",
+                  f"  - 说明：{sug.get('note') or '（无）'}"]
     if report.unknown:
         L += ["", "## 四、白名单外的 ID（已忽略）", ""]
         for id_ in report.unknown:
@@ -2315,12 +2481,55 @@ def budget_exceeded(estimate: dict, article_limit: int, batch_limit: int) -> str
 # ── 协同记录 ──────────────────────────────────────────────────────────────
 
 
+#: 批75（B-132）：协同记录「清单缺条」节的条目来源——C 类脚注 warning 的两类子类。
+_MISSING_ENTRY_SUBKINDS = ("mixed_manual", "citation_unmatched")
+
+
+def _missing_entry_items(low_items: Iterable[dict] | None,
+                         low_report: LowConfReport | None) -> list[dict]:
+    """批75（B-132）：「清单缺条」节条目——**只用现有 C 类低置信项**（不新写解析器）。
+
+    86-08 场景：脚注引用了某文献，但源稿文末清单里没有这一条（Hacking1999）——
+    该脚注在初排里落成 `FN-<fid>`（`subkind=mixed_manual` / `citation_unmatched`）的
+    低置信项。这里把它列成可见小节，并带上回填里的 `note`（note-only 也不丢）。
+    无该类项 → 返回空表（记录逐字节与旧版相同）。
+    """
+    notes: dict[str, str] = {}
+    if low_report is not None:
+        for id_, sugs in (low_report.suggestions or {}).items():
+            for sug in sugs or ():
+                n = str((sug or {}).get("note") or "").strip()
+                if n:
+                    notes[str(id_)] = n
+                    break
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for it in low_items or ():
+        if not isinstance(it, dict):
+            continue
+        id_ = str(it.get("id") or "")
+        m = _FN_FID_RE.match(id_)
+        if not m or id_ in seen:
+            continue
+        if str(it.get("kind") or "") != "footnote":
+            continue
+        sub = str(it.get("subkind") or "")
+        if sub not in _MISSING_ENTRY_SUBKINDS:
+            continue
+        seen.add(id_)
+        rows.append({"id": id_, "fid": m.group(1), "subkind": sub,
+                     "text": _clip(it.get("evidence") or "", 200),
+                     "note": notes.get(id_, "")})
+    return rows
+
+
 def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
                   low_report: LowConfReport | None, merge_summary: dict | None,
                   apply_summary: dict | None, final_dir: str,
                   no_ai_merge: bool, compiled: str, backup: str = "",
                   fulltext: dict | None = None,
-                  analysis_report: FulltextAnalysisReport | None = None) -> str:
+                  analysis_report: FulltextAnalysisReport | None = None,
+                  low_items: Iterable[dict] | None = None) -> str:
     L = [f"# AI 协同记录 · {stem}", "",
          f"- 阶段：`{phase}`", f"- 交付目录：`{final_dir}`", ""]
     if fulltext:
@@ -2399,6 +2608,20 @@ def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
                      "（只报告，不写产物）")
         else:
             L.append("- 本次回复里没有附四 `slcn.fulltext.v1` 对象（不生成报告）")
+        L.append("")
+    # 批75（B-132）：清单缺条可见节——**只在有 C 类未匹配脚注项时出现**（无则记录不变）。
+    _missing = _missing_entry_items(low_items, low_report)
+    if _missing:
+        _n = "七" if analysis_report is not None else "六"
+        L += [f"## {_n}、清单缺条（脚注引用未匹配到文末清单；report-only）", "",
+              "> 来源：本次初排的 C 类脚注 warning（`FN-*` 低置信项）。",
+              "> 可能是**源稿文末清单缺条**（正文/脚注引用了某文献，清单里没有这一条），",
+              "> 也可能只是引用写法未被识别；**只报告、不补条目**，请人工核对。", ""]
+        for rec in _missing:
+            L.append(f"- `{rec['id']}`（脚注 #{rec['fid']}，`{rec['subkind']}`）："
+                     f"{_code_span(rec['text'], 200)}")
+            if rec.get("note"):
+                L.append(f"  - 回填说明：{rec['note']}")
         L.append("")
     L += ["---", "",
           "> 本记录由 `convert.py --coop-replies` 自动生成；外部 chat 通道不产生 API 费用。", ""]

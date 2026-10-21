@@ -63,7 +63,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--llm-fulltext` | **直连 API 全文核查通道②（第 60 批，可选、默认关；第 63 批起自动应用）**：只配合 `--verify-refs` 的 ⑪ 直连路径；把正文分片发到配置端点（每片一次请求、**会产生 API 费用**），生成 `<名>_AI全文复核.md`（报告不落正文全文）。**第 63 批起默认把通过批57安全闸的 BIB/META/FN 建议自动应用到产物**（`.ai前` 备份、`.ai前` 已存在不覆盖、0 条不写、冲突/漂移拒绝、逐条记录；报告照常生成）；`--no-llm-fulltext-apply` 关闭（= 第 60 批 report-only）。未配置端点 / 预算超限 / 与 `--verify-plan` 或两段式同用 → 退出 2 且零请求；单片失败 fail-soft（退出码 0）。不勾时正文一个字节都不外发；不加此参数时 argv/产物与批62 逐字节相同 |
 | `--llm-fulltext-apply` / `--no-llm-fulltext-apply` | **第 63 批**：全文核查结果是否自动应用。默认**开**（仅 BIB/META/FN、全走批57安全闸）；`--no-llm-fulltext-apply` = 只看报告、不改产物（第 60 批 report-only 行为；报告与批60 逐字节相同）；**`--no-ai-merge` 会强制 report-only**（即使默认开）；单独给本开关而无 `--llm-fulltext` → 忽略 + stderr 提示；`.ai前` 已存在时**不覆盖**（回滚点为更早那份，报告注明）；自动应用记录写进报告「四、自动应用记录」（标题「…自动应用」） |
 | `--llm-fulltext-max-chars N` | **第 63 批**：直连 API 全文核查**单篇发送字符上限**，**默认 40000**；超限**显式截断 + 醒目警告**（不退出，照常出报告/自动应用；分片大小取 min(30000, N)）；**`0` = 不限**（整篇发送，费用只受 token 预算闸约束，**风险自担**）；负值 → 退出 2。GUI「设置」页「API 核查字符上限」对应本参数 |
-| `--coop-fulltext {context,full}` | 第 59 批，可选、**默认关**；第 63 批起**取消 4 万/8 万字符截断**。只配合 `--coop-taskbook-only`：第一段任务书在「附二」后追加「附三、正文全文/引用上下文」；`context` = 引用/脚注锚点前后各 300 字窗口合并、`full` = 正文全文，**整篇写入、不再截断**（保留体积估算/超长提示）。只写本机任务书（软件零上传），不新增改正文类建议。**第 74 批（B-133）起附三之后再追加「附四、初排分析（只报告、不改写正文）」**：`slcn.fulltext.v1` schema + 七项指令 + 硬约束；第二段解析后只落 `<名>_AI全文分析.md/.jsonl`（四节）+ 协同记录「六、全文分析」计数，**严格 report-only（不写 `reference.bib`/`.tex`、不接 `--coop-apply`）**。其他组合退出 2。见下方「两段式协同 argv 契约」 |
+| `--coop-fulltext {context,full}` | 第 59 批，可选、**默认关**；第 63 批起**取消 4 万/8 万字符截断**。只配合 `--coop-taskbook-only`：第一段任务书在「附二」后追加「附三、正文全文/引用上下文」；`context` = 引用/脚注锚点前后各 300 字窗口合并、`full` = 正文全文，**整篇写入、不再截断**（保留体积估算/超长提示）。只写本机任务书（软件零上传），不新增改正文类建议。**第 74 批（B-133）起附三之后再追加「附四、初排分析（只报告、不改写正文）」**：`slcn.fulltext.v1` schema + 七项指令 + 硬约束；第二段解析后只落 `<名>_AI全文分析.md/.jsonl`（四节）+ 协同记录「六、全文分析」计数，**严格 report-only（不写 `reference.bib`/`.tex`、不接 `--coop-apply`）**。**第 75 批（B-139/B-140①）**：附三之后/附四之前再补「脚注清单（fid+文本摘要）」「占位符清单（类型+位置）」两块输入（只在有数据时出现；任务书增量按字符数记日志）；附四 `evidence` 基准收紧为**任务书里附四之前的内容**（附三正文 + 附一原文 + 附二/附三说明，抄附四 schema 示例/指令 → 整条拒绝）。其他组合退出 2。见下方「两段式协同 argv 契约」 |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
 
 **元数据文件（`--metadata`）契约（第 63 批 E2；第 63b 批降级为高级兜底）**：
@@ -241,17 +241,27 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 （只换编号本身，前后中文与页码定位保留）；越界/无引导语 → 原样保留 + warning（不猜）。
 **不改任何 CLI 参数、stdout 契约行、退出码、产物路径与文件名**；命中稿 `.tex` 只是脚注行
 里多出 `\parencite`（`.bib` 不变），未命中稿产物逐字节不变；正文裸编号不在本卡。
+**批75 B-137 残余扩展（同句引导语继承/枚举续引）仍无契约变化**：一句内（分号/逗号不结束
+句子）已有引用按引导语转换后，同句内只隔位置/连接语的后续裸 `[N]` 继承引导语继续转换
+（每个 N 仍独立校验映射与越界；拿不准不转）；仅命中稿脚注行多出 `\parencite`，
+未命中稿产物逐字节不变。
 口径见 `docs/GUIDE.md`「Word 编号体例稿：脚注文本里的裸 `[N]` → `\parencite`」；
-回归见 `tests/test_b73_footnote_bare_cite.py`。
+回归见 `tests/test_b73_footnote_bare_cite.py`、`tests/test_b75_b137_cite_residual.py`。
 
 **两段式协同（`--coop-*`）的 argv 契约（第 54–59 批，外壳拼参数用）**：第一段 =
 `--verify-refs --no-ai-merge --coop-taskbook-only [--coop-stage DIR] [--coop-fulltext context|full]`；
 第二段 = `--coop-replies <回填>… [--coop-apply] [--compile] [--clean]`（`--source` / `--out` 两段都必填）。
 `--coop-fulltext` **只能随第一段**（否则 exit 2）、**默认不传**；两壳只在两段式面板勾选「全文 AI 核查」且
 第一段时追加 `--coop-fulltext context|full`，第二段与普通转换绝不带（mac `tools/ai_settings_test` / win
-`sources-win/tests/test_bridge.py` 钉住）。任务书 = `refmark` 任务书 + 附一 + 附二 +（可选）附三 +（可选）附四；
+`sources-win/tests/test_bridge.py` 钉住）。任务书 = `refmark` 任务书 + 附一 + 附二 +（可选）附三 +（可选）附三·补充（附四输入清单：脚注 fid+摘要 /
+占位符 类型+位置，第 75 批 B-139；只在有数据时出现）+（可选）附四；
 **附三只用于回答附一**；**附四（第 74 批 B-133，report-only）只要求 AI 结合全文给出初排分析建议、只报告不写产物**
 （ph2 落 `<名>_AI全文分析.md/.jsonl` + 协同记录「六、全文分析」计数），默认关时任务书/stdout 与批 58 逐字节相同。
+**第 75 批（B-132）**：附一 `unresolved` 允许 **note-only**（无 `span` 带 `note` → 收下、进建议清单「三、待人工」；
+`corrected` 仍强制 span/field/value 与白名单，不放宽）；`_AI协同记录.md` 在存在 C 类未匹配脚注项
+（`FN-*` 的 `mixed_manual`/`citation_unmatched`）时新增可见「清单缺条」节（只报告、不补条目；无该类项时
+记录与旧版逐字节相同）。**第 75 批（B-140①）**：附四 evidence 校验基准 = 任务书**附四之前**的内容
+（`coop.analysis_evidence_base()`；附四 schema 示例/指令不再能当逐字证据）。
 通道②（直连 API 全文核查）由第 60 批的 `--llm-fulltext` 提供：默认关、会外发正文并产生费用。**第 63 批起默认自动应用**（仅 BIB/META/FN、全走批57安全闸；`--no-llm-fulltext-apply` 关；`--llm-fulltext-max-chars N` 默认 40000、0 = 不限）；两壳「设置」页新增「API 核查字符上限」「全文核查结果自动应用」两栏，GUI↔CLI 映射见下。
 
 **核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的

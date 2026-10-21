@@ -4048,6 +4048,8 @@ def _normalize_locator(tail: str) -> str:
 #      例如/见/据）——「规则[3]条」这类非引用语义不得转换。
 # 拿不准 → 原样保留 + warning（不猜、不丢信息）；转换只换 `[N]` 本身，
 # 前后中文文字与页码定位（`参见[x]，第8页。`）原样保留。
+# B-137（批75，B-130 残余）：同句引导语继承/枚举续引——见下方 `_FN_*` 常量与
+# `link_footnote_bare_citations` 的 docstring；每处 N 仍独立校验映射与越界。
 _FN_BARE_NUM_RE = re.compile(r"\[\s*(\d{1,3})\s*\]")
 #: 引导语紧贴在 `[N]` 前（`参见[12]` / `详见[3]` / `可参考[16]`）
 _FN_LEAD_NEAR_RE = re.compile(
@@ -4060,6 +4062,49 @@ _FN_LEAD_FAR_RE = re.compile(
     r"(?:参见|参看|详见|另见|又见|亦见|并见|转引自|引自|参见文献|参照|参考|"
     r"参考文献|参考书目|例如|见|据)"
     r"[^。！？；\n]{0,12}$")
+
+# ── B-137（批75）：同句引导语继承（枚举/续引）──────────────────────────────────
+# 现象（B-130 残余）：同一脚注里只有一个引导语、随后用 `；`/`，` 续列多个编号时，
+# 只有**首处**有逐处引导语证据，其余原样保留——实测 kxj fn11
+# 「可参见[6]的第二节或者[10]的第2.1.2节」只转 [6]；87-3「可参见[6]，第385-389页；
+# [17]，第423-427页」只转 [6]；81/03、81/06、72/01 页码枚举同族。
+# 规则（保守）：一句 = 句号/问号/叹号/换行分隔（**分号、逗号不结束句子**，枚举在句内）；
+# 句内一旦有裸 [N] 按 B-130 原判据成功转换，就记锚点；锚点之后、同句内、且与锚点之间
+# 只隔「位置语/连接语 + 标点/数字/西文字母」的裸 [N]（N∈映射、括号外、公式外）→ 继承
+# 引导语转换；每个 N 独立校验映射与越界。中间夹普通叙述文字、跨句、或 [N] 后紧跟
+# `条/款/项/个/种/次…`（「规则[3]条」类非引用）→ 不转（原样 + warning，不猜）。
+_FN_SENT_END = frozenset("。！？!?\n")
+_FN_GAP_ASCII_OK = frozenset(" \t\u3000\u00a0")
+#: 锚点→候选之间**只允许**这些位置语/连接语（+标点/空白/数字/西文字母）
+_FN_GAP_TOKEN_RE = re.compile(
+    r"(?:注释|参见|参看|详见|另见|又见|亦见|并见|转引自|引自|参照|参考"
+    r"|或者|以及|第|的|或|和|与|及|者|等|注|章|节|卷|页|册|版|篇|部|项|条|款"
+    r"|[一二三四五六七八九十百千零两])")
+_FN_GAP_PUNCT = frozenset(
+    "，,、；;：:．.·…–—-－~～/／§#$&%*+=<>《》「」『』“”‘’\"'()（）[]【】")
+#: 候选 `[N]` 后紧跟量词/单位（`[3]条`）→ 更像非引用，不继承
+_FN_NONCITE_SUFFIX_RE = re.compile(r"^\s*(?:条|款|项|个|种|次|名|位|章|节|卷|页)")
+#: 锚点与候选之间最多隔的字符数（实测最长 14；留余量到 32，防远距离误伤）
+_FN_INHERIT_MAX_GAP = 32
+
+
+def _fn_inherit_gap_ok(gap: str) -> bool:
+    """B-137：同句继承判据——`gap`（锚点 → 候选之间的原文）是否只是位置/连接语 + 标点。"""
+    if len(gap) > _FN_INHERIT_MAX_GAP:
+        return False
+    rest = gap
+    while rest:
+        m = _FN_GAP_TOKEN_RE.match(rest)
+        if m:
+            rest = rest[m.end():]
+            continue
+        ch = rest[0]
+        if ch in _FN_GAP_ASCII_OK or ch in _FN_GAP_PUNCT or ch.isdigit() \
+                or (ch.isascii() and ch.isalpha()):
+            rest = rest[1:]
+            continue
+        return False
+    return True
 
 
 def _fn_in_paren_depths(text: str) -> list[int]:
@@ -4105,16 +4150,25 @@ def _fn_in_math(text: str) -> list[bool]:
 def link_footnote_bare_citations(
     text: str, num2key: dict[int, str]
 ) -> tuple[str, int, list[str]]:
-    r"""把**脚注文本里的裸 `[N]`** 保守转换成 `\parencite{键}`（B-130）。
+    r"""把**脚注文本里的裸 `[N]`** 保守转换成 `\parencite{键}`（B-130 / B-137）。
 
     返回 `(新文本, 转换处数, 问题清单)`。只换 `[N]` 本身：
     `参见[12]。` → `参见\parencite{Gilbert2002}。`、
     `参见吉尔伯特在[13]的批评` → `参见吉尔伯特在\parencite{Gilbert2007}的批评`、
     `参见[13]，第8页。` → `参见\parencite{Gilbert2007}，第8页。`。
 
+    B-137（批75）同句引导语继承：一句内（句号/问号/叹号/换行分隔；分号、逗号不结束）
+    已有一处按引导语转换后，同句内只隔「位置语/连接语 + 标点/数字/西文」的后续裸 `[N]`
+    继承引导语继续转换（枚举/续引）：
+    `可参见[6]的第二节或者[10]的第2.1.2节` → 两处都转；
+    `可参见[6]，第385-389页；[17]，第423-427页` → 两处都转。
+    每个 N 仍独立校验映射（越界不转）；中间夹普通叙述文字、跨句、或 `[N]` 后紧跟
+    `条/款/项/个/种/次…`（「规则[3]条」类非引用）→ 不继承。
+
     不转换（原样保留 + 一条 warning，**不猜**）：
       · `N` 不在 `num2key`（越界/清单里没有这个编号）；
-      · 缺引用引导语证据（如「规则[3]条」）。
+      · 缺引用引导语证据且无同句锚点（如「规则[3]条」）；
+      · 有锚点但与上一处引用之间不是枚举/位置续引结构（夹叙述文字等）。
     静默跳过（不是引用，也不出 warning）：
       · `[N]` 在括号组里（交给 `link_numbered_citations`，避免二次转换）；
       · `[N]` 在 `$…$` 公式里（区间/下标等数学记号）。
@@ -4128,8 +4182,11 @@ def link_footnote_bare_citations(
     pos = 0
     n_done = 0
     issues: list[str] = []
+    anchor = -1     # B-137：同句内上一处已转换引用的 `]` 之后位置；-1 = 本句无锚点
     for m in _FN_BARE_NUM_RE.finditer(text):
         s, e = m.span()
+        if anchor >= 0 and any(ch in _FN_SENT_END for ch in text[anchor:s]):
+            anchor = -1                  # 跨句：继承失效（跨句需新的引导语）
         if depths[s] > 0:
             continue                     # `（[6]，第434页）`：括号组归正文编号通道
         if in_math[s]:
@@ -4143,15 +4200,27 @@ def link_footnote_bare_citations(
                 f"脚注内编号 [{num}] 不在文末清单编号范围（1..{hi}）内，已原样保留"
                 f"（不猜）：「…{snippet}…」")
             continue
-        if not (_FN_LEAD_NEAR_RE.search(pre) or _FN_LEAD_FAR_RE.search(pre)):
-            issues.append(
-                f"脚注内编号 [{num}] 缺引用引导证据（参见/见/引自…），疑似非引用，"
-                f"已原样保留（不猜）：「…{snippet}…」")
+        lead = bool(_FN_LEAD_NEAR_RE.search(pre) or _FN_LEAD_FAR_RE.search(pre))
+        inherit = (
+            anchor >= 0 and not lead
+            and _fn_inherit_gap_ok(text[anchor:s])
+            and not _FN_NONCITE_SUFFIX_RE.match(text[e:])
+        )
+        if not (lead or inherit):
+            if not lead and anchor < 0:
+                issues.append(
+                    f"脚注内编号 [{num}] 缺引用引导证据（参见/见/引自…），疑似非引用，"
+                    f"已原样保留（不猜）：「…{snippet}…」")
+            else:
+                issues.append(
+                    f"脚注内编号 [{num}] 与上一处引用之间不是枚举/位置续引结构，"
+                    f"疑似非引用，已原样保留（不猜）：「…{snippet}…」")
             continue
         parts.append(text[pos:s])
         parts.append(f"\\parencite{{{key}}}")
         pos = e
         n_done += 1
+        anchor = e                       # 同句锚点（继承可链式：枚举第三、第四处）
     if not n_done:
         return text, 0, issues
     parts.append(text[pos:])

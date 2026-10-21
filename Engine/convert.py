@@ -1342,7 +1342,11 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
                     _tb_text = _f.read()
             except OSError as e:
                 print(f"   ⚠ 附四：读不了任务书，evidence 校验将全部拒绝：{e}")
-        analysis_report = coop.parse_fulltext_analysis(texts, _tb_text)
+        # 批75（B-140①）：evidence 校验基准**不再是整份任务书**（旧口径下 AI 可抄附四
+        # schema 示例/指令当逐字证据）；只传「附四之前」的内容（附三正文 + 附一原文 +
+        # 附二/附三说明），由 `analysis_evidence_base()` 截断（附四小节整段排除）。
+        analysis_report = coop.parse_fulltext_analysis(
+            texts, coop.analysis_evidence_base(_tb_text))
 
     keys = [str(k) for k in (state.get("keys") or {}).get("bib") or []]
     low_items = list(state.get("low_confidence") or [])
@@ -1537,7 +1541,9 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         # 批74：协同记录「六」节只在**真的收到附四对象**时出现（spec §2.4）；
         # 启用附四但回复里没有附四对象 → 与旧版记录逐字节相同（旧回复兼容）。
         analysis_report=(analysis_report if analysis_report is not None
-                         and analysis_report.total else None))
+                         and analysis_report.total else None),
+        # 批75（B-132）：记录「清单缺条」节的数据源（现有 C 类低置信项；无则记录不变）。
+        low_items=low_items)
     # 记录是在 promote 之后写的：把它也放进最终目录（暂存目录里同样留一份）。
     try:
         final_record = os.path.join(final_dir, coop.RECORD_NAME)
@@ -3567,6 +3573,22 @@ def main() -> int:
             # 批74（B-133）：附四「初排分析」——**只在附三成功写出之后**追加（位置=附三之后）；
             # 无可用正文时附三/附四一起跳过。首版严格 report-only：只写指令，不写任何产物。
             if coop_fulltext_info is not None:
+                # 批75（B-139，T1 报告 §2）：附三之后、附四之前补「脚注清单（fid+摘要）」
+                # 与「占位符清单（类型+位置）」两块（数据现成：初排 warning 的
+                # `#fid「片段」` + BuildResult.undetected_fields）；**只在有数据时出现**，
+                # 无 `--coop-fulltext` 的路径完全不走这里 → 任务书逐字节不变。
+                _fn_rows, _ph_rows = _coop.collect_analysis_inputs(
+                    warnings=res.warnings,
+                    low_items=coop_low_items,
+                    placeholders=getattr(res, "undetected_fields", ()) or ())
+                _inputs_sec = _coop.render_analysis_inputs_section(
+                    footnotes=_fn_rows, placeholders=_ph_rows)
+                if _inputs_sec:
+                    with open(coop_taskbook_path, "a", encoding="utf-8",
+                              newline="\n") as f:
+                        f.write("\n" + _inputs_sec + "\n")
+                    print(f"   任务书附四输入清单：脚注 {len(_fn_rows)} 条 / "
+                          f"占位符 {len(_ph_rows)} 个（+{len(_inputs_sec)} 字符）")
                 with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
                     f.write("\n" + _coop.render_analysis_section() + "\n")
                 print("   任务书附四：初排分析指令（report-only；只报告、不写产物）")
