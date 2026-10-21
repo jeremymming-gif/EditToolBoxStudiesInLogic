@@ -35,6 +35,16 @@ WHY：手抄的数字必然过期，而且过期了没人知道。所以这块�
   手工显式跑）负责 —— 分工写在 `test_docs_consistency.py` 的 (a) 注释里。
 * 写模式**不允许** `--no-test-runs`（写出去的数字必须是现算的，不能是占位值）。
 
+**批74 / B-110（写模式「一次写绿」，终结 RB-08 第 3 次复发的二写）：**
+写模式的顺序改成「**先数据、后测试**」：先现算并落盘**非测试数据块**（普查/corpus/占位符/红线行；
+「测试」段沿用 README 里现有的行，**不写占位数字**），再跑套件、用现算计数补写最终块。
+原因是套件里的 `test_docs_consistency.py` / `test_selfcheck.py` 会调用本脚本的
+`--check --no-test-runs`：从前写模式先跑套件，那时 README 数据块还是旧值 → 它们记 FAIL，
+AUTO 写出「FAIL 1」瞬态，必须再写一次（或删 `out/auto-inputs.json` 缓存）才绿。
+一次调用内部允许**两次落盘**（数据块先行 + 测试计数补写），对外仍是「写 1 次」；
+`out/auto-inputs.json` 里带 FAIL 的测试计数缓存**不再复用**（避免瞬态 FAIL 被缓存粘住）。
+AUTO 数字口径不变：块里每个数字仍然全部现算。
+
 约定
 ----
 * **块内不放时间戳**：否则 `--check` 永远失败。新鲜度看块内各数据源的 sha256。
@@ -426,7 +436,17 @@ def cached_test_rows(inputs_now: dict, project: dict | None) -> list | None:
     if any(old.get(k) != inputs_now.get(k) for k in keys):
         return None
     rows = project.get("test_rows")
-    return rows if isinstance(rows, list) and rows else None
+    if not isinstance(rows, list) or not rows:
+        return None
+    # B-110：缓存里带着 FAIL 计数的**不许复用**——那是一张「上次套件没全绿」的快照
+    # （典型：RB-08 自指瞬态被写进块里，随后就被缓存「粘住」，只能删 out/ 缓存才恢复）。
+    # 有 FAIL 就重跑套件让计数回到现算值；全绿快照的复用语义不变。
+    try:
+        if any(int(r[2]) for r in rows):
+            return None
+    except (TypeError, ValueError, IndexError):
+        return None
+    return rows
 
 
 def fast_check_ok(old_body: str, project: dict | None, inputs_now: dict) -> bool:
@@ -467,10 +487,30 @@ def save_auto_inputs(inputs: dict, rows: list | None, block_body: str) -> None:
 
 
 def build_block(run_test_suites: bool = True,
-                cached_test_rows_in: list | None = None) -> tuple[str, bool]:
+                cached_test_rows_in: list | None = None,
+                test_section: list[str] | None = None,
+                test_rows_in: list | None = None) -> tuple[str, bool]:
+    """组装 AUTO 块正文，返回 (块正文, 块内「数据」检查是否全 ok)。
+
+    `test_section` / `test_rows_in` 只给**写模式**用（B-110 自指循环修复）：
+    * `test_section`：把 README 里**原样**的「测试」段行拿来占位（中间态落盘用，不重算、不造假数字）；
+    * `test_rows_in`：套件已在外面跑完，直接用这批 `(套件, 断言数, FAIL 数)` 渲染，不重复跑。
+    """
     global _LAST_TEST_ROWS
     ok = True
-    if cached_test_rows_in is not None:
+    if test_section is not None:
+        # B-110：写模式的**中间态**——数据块先行落盘时，原样保留 README 里尚未重算的测试段。
+        # 它不参与 `--no-test-runs` 比对（那两行会被整段剔除），也不会被当成新算的数字。
+        lines = list(test_section)
+        rows = []
+        total = 0
+        _LAST_TEST_ROWS = None
+    elif test_rows_in is not None:
+        # B-110：套件已跑完（写模式第二阶段），直接渲染测试计数。
+        rows = [(str(n), int(p), int(f)) for n, p, f in test_rows_in]
+        total = sum(p for _, p, _ in rows)
+        _LAST_TEST_ROWS = rows
+    elif cached_test_rows_in is not None:
         # O14：engine/tests 未变 → 测试计数直接复用（corpus/audit 变化不必整跑套件）
         global _CACHED_TESTS_USED
         rows = [(str(n), int(p), int(f)) for n, p, f in cached_test_rows_in]
@@ -488,18 +528,19 @@ def build_block(run_test_suites: bool = True,
         rows, total = [(f.stem, 0, 0) for f in test_files()], 0
         _LAST_TEST_ROWS = None
     bad = [(n, f) for n, p, f in rows if f]
-    # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
-    #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
-    t = (f"**测试**（`{Path(PY).name}` + `PYTHONPATH=Engine/vendor`）："
-         f"**{len(rows)} 套件 / {total} 项断言 / FAIL {sum(f for _, _, f in rows)} 行**")
-    t += " ✅" if not bad else " ❌ " + "、".join(f"{n}({f} FAIL)" for n, f in bad)
-    t += "（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）"
-    lines = [t, ""]
-    parts = [f"`{n}` {p}" for n, p, _ in rows]
-    lines.append("套件明细：" + " ｜ ".join(parts[:4]))
-    for i in range(4, len(parts), 4):
-        lines.append(" ｜ ".join(parts[i:i + 4]))
-    lines.append("")
+    if test_section is None:
+        # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
+        #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
+        t = (f"**测试**（`{Path(PY).name}` + `PYTHONPATH=Engine/vendor`）："
+             f"**{len(rows)} 套件 / {total} 项断言 / FAIL {sum(f for _, _, f in rows)} 行**")
+        t += " ✅" if not bad else " ❌ " + "、".join(f"{n}({f} FAIL)" for n, f in bad)
+        t += "（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）"
+        lines = [t, ""]
+        parts = [f"`{n}` {p}" for n, p, _ in rows]
+        lines.append("套件明细：" + " ｜ ".join(parts[:4]))
+        for i in range(4, len(parts), 4):
+            lines.append(" ｜ ".join(parts[i:i + 4]))
+        lines.append("")
     for fn in (audit_block, corpus_block):
         sub, sub_ok = fn()
         lines += sub + [""]
@@ -605,6 +646,47 @@ def split_block(text: str) -> tuple[str, str, str]:
     return text[:i], text[i:j], text[j:]
 
 
+# ── B-110（批74）：写模式「数据块先行」的两个小工具 ───────────────────────────
+# RB-08（连续 3 次复发）：数据变了而 README 的 AUTO 块还是旧值时，写模式从前是
+# 「先跑套件算测试计数」→ 套件里的 `test_docs_consistency.py` / `test_selfcheck.py`
+# 会调用 `gen_docs.py --check --no-test-runs`，那一刻看到的数据块仍是旧的 → 记 FAIL，
+# AUTO 块写出「FAIL 1」瞬态；必须再写一次（或删 `out/auto-inputs.json` 缓存）才绿。
+# 现在写模式改成：**先把非测试数据块算好并落盘**，再跑套件补写测试计数 ——
+# 套件里的自指检查在同一进程内第二次落盘前，看到的数据块已经是现算的新值。
+_DATA_HEAD_PREFIXES = ("**普查**", "**corpus 回归**", "**占位符**", "**红线只读快照**")
+
+
+def test_section_lines(body: str) -> list[str] | None:
+    """取 AUTO 块正文里「测试」段（摘要 + 明细 + 分隔空行）的逐字行；找不到返回 None。
+
+    中间态落盘用它原样占位：**不重算、不造假数字**（写模式仍不许写占位数字）。
+    """
+    text = body[1:] if body.startswith("\n") else body
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith(_DATA_HEAD_PREFIXES):
+            return lines[:i]
+    return None
+
+
+def _flush_block(new: str, head: str, tail: str) -> tuple[str, bool]:
+    """把块正文 `new` 落到 README 并收敛「红线只读快照」自指行；返回 (最终正文, 是否改写)。
+
+    第四十一批 O1：只就地替换那一行（两条只读 git 命令），不重算整块、不再跑套件。
+    B-110：写模式可能分两次调用（数据块先行 / 测试计数补写），每次落盘都走这里。
+    """
+    changed = False
+    for _ in range(3):
+        stable = head + "\n" + new + tail
+        if stable == read_readme():
+            break
+        README.write_text(stable, encoding="utf-8")
+        changed = True
+        git_line = git_block()[0]        # 只刷新本机状态行（index mtime / HEAD / status 行数）
+        new = GIT_LINE.sub(lambda _m: git_line, new)
+    return new, changed
+
+
 def _main_impl(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="生成/校验 README.md 的「当前状态」AUTO 块")
     ap.add_argument("--check", action="store_true", help="只校验，不一致就退出 1 并打印 diff")
@@ -691,30 +773,43 @@ def _main_impl(argv: list[str] | None = None) -> int:
         return 1
 
     # ── 写模式（O14：engine/tests/稿件库/环境都没变时，**复用测试计数缓存**）──
+    #    B-110 / RB-08：「测试计数缓存不可复用」时不再「先跑套件」——先落盘非测试数据块
+    #    （套件里的自指检查看到的因此已是新数据），再跑套件补写测试计数。
     inputs_now = collect_auto_inputs()
     cached = cached_test_rows(inputs_now, load_auto_inputs())
-    new, all_ok = build_block(run_test_suites=True, cached_test_rows_in=cached)
-    # ⚠️ 块里的「红线只读快照」记着 `git status --porcelain` 的行数，而**写 README 本身
-    #    就会让这个数字变**（README 从「干净」变成「已修改」）—— 自指，跑一遍不收敛。
-    #    第四十一批 O1：**不再重算整块**（那会再跑一整遍套件；干净树过期时共 3 遍 ≈180s）。
-    #    只就地替换那一行（两条只读 git 命令），测试/普查/corpus/App 各块只算一次。
-    for _ in range(3):
-        probe = "\n" + new
-        stable = head + probe + tail
-        if stable == read_readme():
-            break
-        README.write_text(stable, encoding="utf-8")
-        git_line = git_block()[0]        # 只刷新本机状态行（index mtime / HEAD / status 行数）
-        new = GIT_LINE.sub(lambda _m: git_line, new)
-    new_body = "\n" + new
-
-    if old == new_body:
-        print("PASS  AUTO 块已是最新，未改动 README.md")
+    if cached is not None:
+        # 快速路径：测试计数可复用（engine/tests/稿件库/环境都没变）→ 一次算全块、一次落盘。
+        new, all_ok = build_block(run_test_suites=False, cached_test_rows_in=cached)
+        new, changed = _flush_block(new, head, tail)
+        if changed:
+            print("PASS  已就地更新 AUTO 块（块外内容逐字节未动）")
+        else:
+            print("PASS  AUTO 块已是最新，未改动 README.md")
     else:
-        README.write_text(head + new_body + tail, encoding="utf-8")
-        after_head, after, after_tail = split_block(read_readme())
-        assert (head, tail) == (after_head, after_tail), "块外内容被改动了 —— 这是 bug"
-        print("PASS  已就地更新 AUTO 块（块外内容逐字节未动）")
+        # B-110 / RB-08（批74）：从前这里是「先跑套件」→ 套件里的 `test_docs_consistency.py`
+        # 与 `test_selfcheck.py` 会调用 `gen_docs.py --check --no-test-runs`，此刻 README 的
+        # 数据块还是旧值 → 当场记 FAIL，AUTO 写出「FAIL 1」瞬态，必须再写一次（或删
+        # `out/auto-inputs.json` 缓存）才绿。现在改成：
+        #   ① 先算并落盘**非测试数据块**（「测试」段沿用 README 里现有的行，不写占位数字）；
+        #   ② 再跑套件；③ 用现算的测试计数补写最终块。
+        # 一次调用内部允许**两次落盘**，对外仍是「写 1 次」；中途失败 → rc≠0，重跑可收敛。
+        interim, _ = build_block(run_test_suites=False,
+                                 test_section=test_section_lines(old) or [])
+        _, wrote_interim = _flush_block(interim, head, tail)
+        print("提示  写模式：非测试数据块已先行落盘"
+              + ("（README 数据块本来已是最新，未改写）" if not wrote_interim else "")
+              + "；接着跑套件算测试计数（自指检查看到的是新数据）", file=sys.stderr)
+        rows, _total = run_tests()
+        new, all_ok = build_block(run_test_suites=False, test_rows_in=rows)
+        new, changed = _flush_block(new, head, tail)
+        if changed:
+            print("PASS  已就地更新 AUTO 块（数据块先行 + 测试计数补写；块外内容逐字节未动）")
+        else:
+            print("PASS  AUTO 块已是最新，未改动 README.md")
+    new_body = "\n" + new
+    after_head, after, after_tail = split_block(read_readme())
+    assert (head, tail) == (after_head, after_tail), "块外内容被改动了 —— 这是 bug"
+    assert after == new_body, "写后 AUTO 块与算出结果不一致 —— 这是 bug"
     # O14：写模式输出 AUTO 输入清单（corpus/audit/engine/tests 的 sha + 测试计数缓存 + 块指纹）
     save_auto_inputs(inputs_now, _LAST_TEST_ROWS, new_body)
     try:

@@ -166,6 +166,10 @@ def is_own_product(name: str, stem: str) -> bool:
         return True
     if name == f"{stem}{LLM_FULLTEXT_REPORT_SUFFIX}":
         return True
+    # 批74（B-133）：附四 report-only 报告（`<stem>_AI全文分析.md/.jsonl`）也是本工具产物；
+    # 不认它的话，第二次跑 `--coop-replies` 会被自己上次交付的报告拦下（「含非本工具的文件」）。
+    if any(name == f"{stem}{suf}" for suf in _coop.ANALYSIS_REPORT_NAMES):
+        return True
     base, dot, ext = name.rpartition(".")
     if dot and base.lower().startswith("fig") and base[3:].isdigit():
         return ("." + ext.lower()) in _IMG_SUFFIXES
@@ -1322,6 +1326,24 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         die(f"回填路径里没有可读文本：{coop.format_reply_paths(args.coop_replies)}"
             "（支持 .md/.txt/.bib/.json 等）")
 
+    # 批74（B-133）：附四「初排分析」——只在 ph1 启用 --coop-fulltext 时解析
+    # （state.analysis）；旧 state 无该键 → 按未启用处理（行为与旧版逐字节相同）。
+    # **report-only**：解析结果只落报告，不进入任何 apply 通道（`--coop-apply` 也不碰它）。
+    _analysis_state = state.get("analysis") or {}
+    _analysis_on = (bool(_analysis_state.get("enabled"))
+                    and str(_analysis_state.get("schema") or "") == coop.ANALYSIS_SCHEMA)
+    analysis_report = None
+    if _analysis_on:
+        _tb_text = ""
+        _tb_path = str(state.get("taskbook") or "")
+        if _tb_path and os.path.isfile(_tb_path):
+            try:
+                with open(_tb_path, encoding="utf-8", errors="replace") as _f:
+                    _tb_text = _f.read()
+            except OSError as e:
+                print(f"   ⚠ 附四：读不了任务书，evidence 校验将全部拒绝：{e}")
+        analysis_report = coop.parse_fulltext_analysis(texts, _tb_text)
+
     keys = [str(k) for k in (state.get("keys") or {}).get("bib") or []]
     low_items = list(state.get("low_confidence") or [])
     parse_report = coop.parse_replies(texts, keys)
@@ -1335,6 +1357,8 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
           "（多路径按命令行顺序；目录内按文件名排序；同一路径去重）")
     print(f"   文献字段：{parse_report.summary()}")
     print(f"   低置信项：{low_report.summary()}")
+    if analysis_report is not None:
+        print(f"   全文分析（附四，report-only）：{analysis_report.summary()}")
 
     if state.get("phase") == "done":
         if state.get("replies_sha256") == digest:
@@ -1355,8 +1379,16 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     if low_report.unknown:
         print(f"   ⚠ 任务书外的低置信 ID {len(low_report.unknown)} 个（已忽略，不猜）："
               + "、".join(low_report.unknown[:6]))
+    for rec in (analysis_report.rejected if analysis_report is not None else [])[:6]:
+        print(f"   ⚠ 拒绝附四建议 `{rec.get('id', '')}`：{rec.get('reason', '')}")
+    if analysis_report is not None and analysis_report.unknown_kinds:
+        print(f"   ⚠ 附四未知 kind {len(analysis_report.unknown_kinds)} 个（已记录、未采用）："
+              + "、".join(f"{r.get('kind', '')}" for r in analysis_report.unknown_kinds[:6]))
 
-    if not parse_report.replies and not low_report.suggestions:
+    if not parse_report.replies and not low_report.suggestions and not (
+            analysis_report is not None and analysis_report.total):
+        # 批74：仅附四回复（附一/文献部分全空）**不算**「回复全部无效」——附四本身
+        # 就是一次有效回填（report-only），不能在这里退出 2。
         die("回填回复**全部无效**或没有命中任务书里的任何键/ID；"
             "最终交付目录与 reference.bib 均未改动。请检查回填文件后重试。")
 
@@ -1438,6 +1470,12 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     sug_md, sug_jsonl = coop.write_suggestions(stage_dir, stem, low_items, low_report)
     print(f"   低置信建议（默认不改产物）：{os.path.basename(sug_md)} / "
           f"{os.path.basename(sug_jsonl)}")
+    # 批74（B-133）：附四报告（report-only）——写进暂存目录，随 promote 进交付目录。
+    # 只有收到 ≥1 个附四对象才落盘（旧回复/未启用 = 不生成报告文件，行为与旧版相同）。
+    if analysis_report is not None and analysis_report.total:
+        ana_md, ana_jsonl = coop.write_analysis_report(stage_dir, stem, analysis_report)
+        print(f"   全文分析报告（report-only，不写产物）：{os.path.basename(ana_md)} / "
+              f"{os.path.basename(ana_jsonl)}")
 
     # ③ 编译（必须在 promote 之前；编译失败时不交付）
     compiled = "未请求 --compile"
@@ -1495,7 +1533,11 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         apply_summary=apply_summary, final_dir=final_dir,
         no_ai_merge=bool(args.no_ai_merge), compiled=compiled,
         backup=promoted.get("backup", ""),
-        fulltext=state.get("fulltext"))
+        fulltext=state.get("fulltext"),
+        # 批74：协同记录「六」节只在**真的收到附四对象**时出现（spec §2.4）；
+        # 启用附四但回复里没有附四对象 → 与旧版记录逐字节相同（旧回复兼容）。
+        analysis_report=(analysis_report if analysis_report is not None
+                         and analysis_report.total else None))
     # 记录是在 promote 之后写的：把它也放进最终目录（暂存目录里同样留一份）。
     try:
         final_record = os.path.join(final_dir, coop.RECORD_NAME)
@@ -3522,6 +3564,12 @@ def main() -> int:
                       f"（约 {_ft['tokens_est']} tokens）")
             else:
                 print("   任务书附三跳过：本次没有可用正文（源稿解析失败/LaTeX 无正文）")
+            # 批74（B-133）：附四「初排分析」——**只在附三成功写出之后**追加（位置=附三之后）；
+            # 无可用正文时附三/附四一起跳过。首版严格 report-only：只写指令，不写任何产物。
+            if coop_fulltext_info is not None:
+                with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
+                    f.write("\n" + _coop.render_analysis_section() + "\n")
+                print("   任务书附四：初排分析指令（report-only；只报告、不写产物）")
         if not coop_bib_keys and bib_text2:
             coop_bib_keys = [b.key for b in _coop.parse_bib_blocks(bib_text2) if b.closed]
         coop_params = _coop.build_params(
@@ -3545,6 +3593,15 @@ def main() -> int:
         # 只在启用 --coop-fulltext 时写，旧状态无此键按「未启用」处理；schema 仍 1。
         if coop_fulltext_info is not None:
             coop_state["fulltext"] = coop_fulltext_info
+            # 批74（B-133）：附四启用标记（**schema 不升版、不入参数指纹**）。
+            # 旧 state 无该键 → ph2 按「未启用」处理（行为与旧版逐字节相同）；
+            # `auto_whitelist_future` 只是给「将来自动应用默认语义」留痕，本卡不实现。
+            coop_state["analysis"] = {
+                "schema": _coop.ANALYSIS_SCHEMA,
+                "enabled": True,
+                "default_policy": "report-only",
+                "auto_whitelist_future": list(_coop.ANALYSIS_FUTURE_WHITELIST),
+            }
         state_file = _coop.save_state(out_dir, coop_state)
         print(f"\n⑬ AI 协同初排·第一段（已暂停，等待回填）")
         print(f"   暂存目录：{out_dir}")

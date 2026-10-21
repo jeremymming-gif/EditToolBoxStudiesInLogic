@@ -143,10 +143,11 @@ _REPLY_EXTS = (".md", ".markdown", ".txt", ".bib", ".json", ".jsonl", ".yaml", "
 
 
 def _is_coop_artifact_name(name: str) -> bool:
-    """状态/记录/任务书/建议不是「回填回复」：目录输入时跳过，避免自己吃自己。"""
+    """状态/记录/任务书/建议/全文分析报告不是「回填回复」：目录输入时跳过，避免自己吃自己。"""
     return (name in (STATE_NAME, RECORD_NAME)
             or name.endswith("_文献核实.md")
-            or SUGGESTIONS_SUFFIX in name)
+            or SUGGESTIONS_SUFFIX in name
+            or ANALYSIS_SUFFIX in name)
 
 
 def _real_key(path: str) -> str:
@@ -746,6 +747,470 @@ def render_fulltext_section(info: dict) -> str:
     ])
 
 
+# ── 批74（B-133）：附四「初排分析」（首版严格 report-only：只报告、不写产物）────
+#
+# 用户 2026-10-21 晚拍板（T1 报告 §6）：①附四首版默认 **report-only**；②自动白名单只
+# 3 类机械项（本卡不实现）；③**禁止改写正文文字**。所以本模块只做「指令渲染 + 解析
+# + 校验 + 落报告」，**不接任何 apply 通道**：附四条目绝不写 `reference.bib` / `.tex`，
+# 也不产生 `.ai前`。全部新逻辑在 `--coop-fulltext` / state.analysis 门后（默认零变化）。
+
+#: 附四机器可读 schema：解析器据此与附一 JSON 对象分区。
+ANALYSIS_SCHEMA = "slcn.fulltext.v1"
+#: 任务书「附四」小节标题（与附一/附二/附三同一层级）。
+ANALYSIS_TITLE = "## 附四、初排分析（只报告、不改写正文）"
+#: 附四报告的默认落点（后缀由调用方补 `.md` / `.jsonl`）。
+ANALYSIS_SUFFIX = "_AI全文分析"
+#: 报告落盘名（工具产物；重跑/`--clean` 必须认它，否则第二次运行会被自己拦下）。
+ANALYSIS_REPORT_NAMES = (f"{ANALYSIS_SUFFIX}.md", f"{ANALYSIS_SUFFIX}.jsonl")
+#: 上限：每篇总条数 / 每 kind 条数（超出部分拒绝并写明原因）。
+ANALYSIS_MAX_TOTAL = 30
+ANALYSIS_MAX_PER_KIND = 10
+#: 值 / 说明长度上限（超限整条拒绝，不静默截断）。
+ANALYSIS_VALUE_LIMIT = 1200
+ANALYSIS_NOTE_LIMIT = 300
+#: 附四对象的三元组白名单。
+ANALYSIS_TARGETS = ("reference.bib", "tex", "report")
+ANALYSIS_ACTIONS = ("fill_field", "link_cite", "fill_placeholder", "rename_key", "report")
+ANALYSIS_CONFIDENCES = ("high", "medium", "low")
+#: 11 类 kind → 允许的 action / target（T1 报告附录 C）。**未知 kind 记录不丢弃**。
+ANALYSIS_KIND_RULES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "cite_uncovered": (("link_cite", "report"), ("tex",)),
+    "dangling_marker": (("report",), ("tex", "report")),
+    "cite_missing_entry": (("report",), ("report",)),
+    "uncited_entry": (("report",), ("report",)),
+    "footnote_cite_link": (("link_cite",), ("tex",)),
+    "bib_field_fill": (("fill_field",), ("reference.bib",)),
+    "bib_key_rename": (("rename_key",), ("report", "tex")),
+    "meta_fill": (("fill_field",), ("tex",)),
+    "placeholder_fill": (("fill_placeholder",), ("tex",)),
+    "style_fix": (("report",), ("report",)),
+    "lowconf_review": (("report",), ("report",)),
+}
+#: kind → 中文标签（报告/任务书显示）。
+ANALYSIS_KIND_LABEL = {
+    "cite_uncovered": "正文/脚注引用标记未转换或漏链",
+    "dangling_marker": "成品悬空引用标记",
+    "cite_missing_entry": "引用但文末清单缺条",
+    "uncited_entry": "清单条目未被正文引用",
+    "footnote_cite_link": "脚注→引用转换建议",
+    "bib_field_fill": "参考文献字段/体例补全",
+    "bib_key_rename": "CJK 译名 bib key 规范",
+    "meta_fill": "元数据补全",
+    "placeholder_fill": "表题/图题/缺引文出处占位符",
+    "style_fix": "体例混用建议",
+    "lowconf_review": "低置信项复核",
+}
+#: 将来「默认自动应用」的 3 类机械项（用户已拍板、**本卡不实现**；只写进 state 留痕）。
+ANALYSIS_FUTURE_WHITELIST = ("bib_field_fill", "meta_fill", "footnote_cite_link")
+
+
+def render_analysis_section() -> str:
+    """任务书「附四、初排分析」：七项检查指令 + `slcn.fulltext.v1` schema + 硬约束。
+
+    **只出现在 `--coop-fulltext` 且附三写出之后**（默认不加时任务书逐字节不变）。
+    本版 report-only：分析建议只落 `…_AI全文分析.md/.jsonl`，不写任何产物。
+    """
+    kind_rows = [
+        "| kind | 含义 | 允许的 action | 允许的 target |",
+        "|---|---|---|---|",
+    ]
+    for kind, (actions, targets) in ANALYSIS_KIND_RULES.items():
+        kind_rows.append(
+            f"| `{kind}` | {ANALYSIS_KIND_LABEL.get(kind, kind)} | "
+            f"{' / '.join(f'`{a}`' for a in actions)} | "
+            f"{' / '.join(f'`{t}`' for t in targets)} |")
+    schema_example = """{
+  "schema": "slcn.fulltext.v1",
+  "id": "AN-0001",
+  "kind": "footnote_cite_link",
+  "target": "tex",
+  "action": "link_cite",
+  "field": "",
+  "value": "\\\\parencite{Gilbert2002}",
+  "locator": {"footnote_id": 5},
+  "anchor": "参见[12]。",
+  "evidence": "……\\\\footnote{参见[12]。}……",
+  "confidence": "high",
+  "source": "源稿脚注",
+  "note": "裸编号 [12] 未转引用；对应文末清单第 12 条"
+}"""
+    return "\n".join([
+        "", "---", "", ANALYSIS_TITLE, "",
+        "> 本节要求你以**初排检查器**的身份，结合「附三」里的正文，给出**只报告、不改写正文**的",
+        "> 分析建议。**本版是 report-only**：这些建议**不会**写进 `reference.bib` 或输出 `.tex`——",
+        "> 软件只把它们整理成 `…_AI全文分析.md` / `.jsonl` 供编辑人工裁决；",
+        "> **不要为了让建议生效而改写正文**（正文文字一个都不许改）。",
+        "",
+        "### 一、请逐项检查（七项）",
+        "",
+        "1. **正文/脚注引用覆盖与漏链**：编号 `[n]`、作者-年式、混合体例；逐处列出未转换/悬空的"
+        "引用标记与上下文（例：脚注里的裸 `参见[12]。`）。",
+        "2. **脚注→引用转换建议**：纯引用脚注/裸编号可映射到哪个文献键、页码定位如何保留"
+        "（例：脚注裸 `[12]` → `Gilbert2002`）。",
+        "3. **参考文献字段/体例补全**：只报「任务书/源稿里能逐字找到依据」的缺失字段与体例混用。",
+        "4. **元数据补全**：作者/单位/邮箱/题名/摘要/关键词——只填有依据的值，**不要猜**。",
+        "5. **表题/图题/缺引文出处占位符**：逐处指出并给依据。",
+        "6. **CJK 译名 bib key 规范**：优先源稿给出的英文作者名，缺才音译；不要凭软件音译定 key。",
+        "7. **低置信项复核**：对「附一」里 `unresolved` / 被拒绝 / 拿不准的项补充意见"
+        "（**可以只写 `note`、不带 `evidence`**）。",
+        "",
+        "### 二、回复格式（`slcn.fulltext.v1`；一条建议一个 JSON 对象）",
+        "",
+        "```json", schema_example, "```",
+        "",
+        "| 字段 | 必填 | 说明 |",
+        "|---|---|---|",
+        f"| `schema` | 是 | 固定 `{ANALYSIS_SCHEMA}`（本节对象必须带；解析器据此与附一 JSON 分区） |",
+        "| `id` | 是 | `AN-####` 这类编号；同一条回复内**不可重复** |",
+        "| `kind` | 是 | 下表 11 类之一；不在表内的会记入「未知 kind」（不采用） |",
+        "| `target` | 是 | `reference.bib` / `tex` / `report`；须与 kind 匹配 |",
+        "| `action` | 是 | `fill_field` / `link_cite` / `fill_placeholder` / `rename_key` / "
+        "`report`；须与 kind 匹配 |",
+        "| `field` | `fill_field` 时必填 | bib 字段名或 `\\my*` 宏名 |",
+        f"| `value` | 写入类建议必填 | 建议写的值；≤{ANALYSIS_VALUE_LIMIT} 字符 |",
+        "| `locator` | 否 | 结构定位：`key` / `macro` / `footnote_id` / `placeholder` / "
+        "`occurrence` |",
+        "| `anchor` | 否 | 目标文件里的逐字片段；**本版只报告，可留空** |",
+        "| `evidence` | 是（`lowconf_review` 可用 `note` 代替） | **任务书内容里的逐字连续片段**"
+        "（工具做子串校验；对不上整条拒绝） |",
+        "| `confidence` | 是 | `high` / `medium` / `low`；`low` 的进「待人工」 |",
+        "| `source` | 否 | `源稿正文` / `源稿脚注` / `文末清单` / `附一低置信项` / `引用库` |",
+        f"| `note` | 否 | ≤{ANALYSIS_NOTE_LIMIT} 字符 |",
+        "",
+        *kind_rows,
+        "",
+        "### 三、硬约束",
+        "",
+        "- **本节的分析建议只按上面附四 JSON 格式回复**；文献条目仍按第三节 BibTeX、"
+        "「附一」各项仍按附一 JSON（三块互不混用）。",
+        "- **不得改写、复述或补写正文**：只做「发现 + 建议」，正文/脚注的文字一个都不改。",
+        "- 每条必须带**逐字 `evidence`**（从本任务书内容里**逐字**复制一段连续原文；"
+        "换行/空白差异可容忍，文字有改动即整条拒绝）；`kind=lowconf_review` 可用 `note` 代替。",
+        "- **拿不准**就写 `\"confidence\": \"low\"`，或回 `unresolved`——**不要猜**。",
+        f"- 每篇**总条数 ≤{ANALYSIS_MAX_TOTAL}**、**每 kind ≤{ANALYSIS_MAX_PER_KIND}**；"
+        "超出部分会被拒绝。",
+        "- 同一 `id` 只一条；同一 `(kind, target, locator)` 只一条（重复/冲突的涉事条全部拒绝）。",
+        "- **本版不写产物**：不要假设工具会自动修改 `reference.bib` 或 `.tex`；"
+        "你的建议只供编辑人工裁决。",
+        "",
+    ])
+
+
+@dataclass
+class FulltextAnalysisReport:
+    """附四解析/校验结果（report-only：只报告，不产生任何产物改动）。"""
+
+    #: 从回复里捞出的附四 JSON 对象总数（含被拒/未知 kind）。
+    total: int = 0
+    #: 校验通过且 confidence 不为 low 的条目（报告一、已接受；jsonl 每行一条）。
+    accepted: list[dict] = field(default_factory=list)
+    #: 被拒绝的条目：{"id","kind","reason"}（报告二、逐条原因）。
+    rejected: list[dict] = field(default_factory=list)
+    #: 校验通过但 `unresolved` / `confidence=low` 的条目（报告三、待人工）。
+    manual: list[dict] = field(default_factory=list)
+    #: 未知 kind 条目：{"id","kind"}（报告四、记录不丢弃）。
+    unknown_kinds: list[dict] = field(default_factory=list)
+
+    def summary(self) -> str:
+        return "，".join([
+            f"接受 {len(self.accepted)} 条",
+            f"拒绝 {len(self.rejected)} 条",
+            f"待人工 {len(self.manual)} 条",
+            f"未知 kind {len(self.unknown_kinds)} 个",
+        ])
+
+
+def _analysis_id(obj: dict, idx: int) -> str:
+    id_ = str(obj.get("id") or "").strip()
+    return id_ or f"（第 {idx} 条无 id）"
+
+
+def _analysis_locator_key(obj: dict) -> str:
+    """`(kind, target, locator)` 冲突检测用的 locator 规范化键；空 locator 返回空串。"""
+    loc = obj.get("locator")
+    if loc in (None, "", {}, []):
+        return ""
+    if isinstance(loc, dict):
+        try:
+            return _canonical(loc)
+        except (TypeError, ValueError):
+            return _squeeze(str(loc))
+    return _squeeze(str(loc))
+
+
+def _analysis_is_unresolved(obj: dict) -> bool:
+    """`unresolved` 标记（拿不准）：`verdict/status/resolution=unresolved` 或 `unresolved:true`。"""
+    for key in ("verdict", "status", "resolution"):
+        if str(obj.get(key) or "").strip().lower() == "unresolved":
+            return True
+    return bool(obj.get("unresolved"))
+
+
+def _validate_analysis(obj: dict, *, taskbook_squeezed: str, idx: int) -> tuple[bool, dict, str]:
+    """校验一条附四对象；返回 `(ok, 规范化记录, 拒绝原因)`。"""
+    id_ = str(obj.get("id") or "").strip()
+    if not id_:
+        return False, {}, "缺少必填字段 `id`（每条附四建议都要有 `AN-*` 编号）——整条拒绝"
+    kind = str(obj.get("kind") or "").strip()
+    target = str(obj.get("target") or "").strip()
+    action = str(obj.get("action") or "").strip()
+    rules = ANALYSIS_KIND_RULES[kind]
+    actions, targets = rules
+    if target not in ANALYSIS_TARGETS:
+        return False, {}, (f"target `{target or '空'}` 不在允许集合 "
+                           f"{list(ANALYSIS_TARGETS)} 内——整条拒绝")
+    if action not in ANALYSIS_ACTIONS:
+        return False, {}, (f"action `{action or '空'}` 不在允许集合 "
+                           f"{list(ANALYSIS_ACTIONS)} 内——整条拒绝")
+    if target not in targets or action not in actions:
+        return False, {}, (
+            f"kind=`{kind}` 的动作/目标不匹配：允许 action={list(actions)}、"
+            f"target={list(targets)}（收到 action=`{action}`、target=`{target}`）——整条拒绝")
+    confidence = str(obj.get("confidence") or "").strip().lower()
+    if confidence not in ANALYSIS_CONFIDENCES:
+        return False, {}, (f"confidence `{confidence or '空'}` 不在允许集合 "
+                           f"{list(ANALYSIS_CONFIDENCES)} 内——整条拒绝")
+    raw_note = str(obj.get("note") or "")
+    if len(raw_note) > ANALYSIS_NOTE_LIMIT:
+        return False, {}, (f"note 超过 {ANALYSIS_NOTE_LIMIT} 字符上限"
+                           f"（{len(raw_note)} 字符）——整条拒绝")
+    raw_value = str(obj.get("value") or "")
+    if len(raw_value) > ANALYSIS_VALUE_LIMIT:
+        return False, {}, (f"value 超过 {ANALYSIS_VALUE_LIMIT} 字符上限"
+                           f"（{len(raw_value)} 字符）——整条拒绝")
+    field_ = str(obj.get("field") or "").strip()
+    value = raw_value.strip()
+    note = _clip(raw_note, ANALYSIS_NOTE_LIMIT)
+    if action == "fill_field" and not field_:
+        return False, {}, "action=fill_field 但 `field` 为空——整条拒绝"
+    if action != "report" and not value:
+        return False, {}, f"action={action} 但 `value` 为空——整条拒绝"
+    evidence = str(obj.get("evidence") or "").strip()
+    if not evidence:
+        if kind == "lowconf_review" and note:
+            pass    # B-132 口径：低置信复核允许 note-only（无 evidence）
+        else:
+            return False, {}, ("缺少 `evidence`（任务书原文的逐字片段）——整条拒绝"
+                               "（`lowconf_review` 可用 `note` 代替）")
+    elif _squeeze(evidence) not in taskbook_squeezed:
+        return False, {}, ("evidence 不是任务书内容的逐字子串（疑似改写/编造）——整条拒绝")
+    out = {
+        "schema": ANALYSIS_SCHEMA,
+        "id": id_,
+        "kind": kind,
+        "target": target,
+        "action": action,
+        "field": field_,
+        "value": value,
+        "locator": obj.get("locator") if obj.get("locator") not in (None, "") else "",
+        "anchor": _clip(obj.get("anchor") or "", 300),
+        "evidence": evidence,   # 逐字原文（只报告；md 渲染时再压一行/截断）
+        "confidence": confidence,
+        "source": _clip(obj.get("source") or "", 100),
+        "note": note,
+    }
+    return True, out, ""
+
+
+def parse_fulltext_analysis(texts: Iterable[tuple[str, str]],
+                            taskbook_text: str) -> FulltextAnalysisReport:
+    """解析并逐条校验附四回复（`schema=slcn.fulltext.v1`），**只报告、不写产物**。
+
+    分区：只认带 `schema=slcn.fulltext.v1` 的 JSON 对象（附一解析器会跳过它们，见
+    `parse_low_confidence()`）；其余对象留给附一/文献部分。
+    校验顺序（与 spec §2.3/§2.7 一致）：上限 → 未知 kind（记录不丢弃）→ 同 id 重复 →
+    `(kind,target,locator)` 冲突 → 逐条字段/长度/evidence 校验 → 低置信/unresolved 分诊。
+    """
+    report = FulltextAnalysisReport()
+    raw: list[dict] = []
+    for _name, text in texts:
+        for obj in iter_json_objects(text or ""):
+            if str(obj.get("schema") or "").strip() == ANALYSIS_SCHEMA:
+                raw.append(obj)
+    report.total = len(raw)
+    if not raw:
+        return report
+
+    # ① 上限闸：按回复里出现的顺序计数；超出部分拒绝（不静默丢）。
+    candidates: list[tuple[int, dict]] = []
+    seen_kind: dict[str, int] = {}
+    for idx, obj in enumerate(raw, 1):
+        kind = str(obj.get("kind") or "").strip()
+        id_ = _analysis_id(obj, idx)
+        if idx > ANALYSIS_MAX_TOTAL:
+            report.rejected.append({
+                "id": id_, "kind": kind,
+                "reason": f"超过每篇 {ANALYSIS_MAX_TOTAL} 条上限（第 {idx} 条起）——整条拒绝"})
+            continue
+        if kind:
+            seen_kind[kind] = seen_kind.get(kind, 0) + 1
+            if seen_kind[kind] > ANALYSIS_MAX_PER_KIND:
+                report.rejected.append({
+                    "id": id_, "kind": kind,
+                    "reason": f"超过每 kind {ANALYSIS_MAX_PER_KIND} 条上限"
+                              f"（`{kind}` 第 {seen_kind[kind]} 条）——整条拒绝"})
+                continue
+        candidates.append((idx, obj))
+
+    # ② 未知 kind：记录不丢弃（不进入后续白名单校验）。
+    known: list[tuple[int, dict]] = []
+    for idx, obj in candidates:
+        kind = str(obj.get("kind") or "").strip()
+        if not kind:
+            report.rejected.append({
+                "id": _analysis_id(obj, idx), "kind": "",
+                "reason": "缺少必填字段 `kind`——整条拒绝"})
+            continue
+        if kind not in ANALYSIS_KIND_RULES:
+            report.unknown_kinds.append({"id": _analysis_id(obj, idx), "kind": kind})
+            continue
+        known.append((idx, obj))
+
+    # ③ 同 id 重复：该 id 全部拒绝；④ 同 (kind,target,locator) 冲突：涉事条全部拒绝。
+    by_id: dict[str, list[int]] = {}
+    for idx, obj in known:
+        by_id.setdefault(str(obj.get("id") or "").strip(), []).append(idx)
+    dup_ids = {id_ for id_, idxs in by_id.items() if id_ and len(idxs) > 1}
+    loc_keys: dict[str, list[tuple[int, dict]]] = {}
+    for idx, obj in known:
+        id_ = str(obj.get("id") or "").strip()
+        if id_ in dup_ids:
+            continue
+        lk = _analysis_locator_key(obj)
+        if not lk:
+            continue
+        kind = str(obj.get("kind") or "").strip()
+        target = str(obj.get("target") or "").strip()
+        loc_keys.setdefault(f"{kind}\0{target}\0{lk}", []).append((idx, obj))
+    conflict_idx: set[int] = set()
+    for _lk, group in loc_keys.items():
+        if len(group) > 1:
+            conflict_idx.update(i for i, _o in group)
+    for id_ in sorted(dup_ids):
+        first = next(obj for idx, obj in known if str(obj.get("id") or "").strip() == id_)
+        kind = str(first.get("kind") or "").strip()
+        report.rejected.append({
+            "id": id_, "kind": kind,
+            "reason": f"重复 id：同一个 `id` 出现 {len(by_id[id_])} 次——该 id 全部拒绝"})
+
+    taskbook_squeezed = _squeeze(taskbook_text or "")
+    for idx, obj in known:
+        id_ = str(obj.get("id") or "").strip()
+        kind = str(obj.get("kind") or "").strip()
+        if id_ in dup_ids:
+            continue
+        if idx in conflict_idx:
+            report.rejected.append({
+                "id": id_, "kind": kind,
+                "reason": "冲突：同一 `(kind, target, locator)` 收到多条建议"
+                          "（工具拒绝猜哪条对）——涉事条全部拒绝"})
+            continue
+        ok, out, why = _validate_analysis(
+            obj, taskbook_squeezed=taskbook_squeezed, idx=idx)
+        if not ok:
+            report.rejected.append({"id": id_, "kind": kind, "reason": why})
+            continue
+        if _analysis_is_unresolved(obj) or out["confidence"] == "low":
+            report.manual.append(out)
+        else:
+            report.accepted.append(out)
+    return report
+
+
+def _analysis_locator_text(rec: dict) -> str:
+    loc = rec.get("locator")
+    if not loc:
+        return ""
+    return _clip(loc if isinstance(loc, str) else _canonical(loc), 160)
+
+
+def render_analysis_md(*, stem: str, report: FulltextAnalysisReport) -> str:
+    """`<名>_AI全文分析.md`：四节（已接受/被拒绝/待人工/未知 kind）。"""
+    L = [f"# AI 全文分析（附四，只报告）· {stem}", "",
+         "> 由编辑回填的外部 chat 回复里的 `slcn.fulltext.v1` JSON 解析而来。",
+         "> **首版 report-only：本报告不写任何产物**——不改 `reference.bib` / 输出 `.tex`、",
+         "> 不新增 `.ai前`、不把任何建议自动应用（`--coop-apply` 也不作用于附四）。",
+         "> 每条建议都要通过 `evidence` 逐字子串校验（对不上任务书原文的整条拒绝）。", "",
+         f"- 已接受：**{len(report.accepted)}** 条",
+         f"- 被拒绝：**{len(report.rejected)}** 条",
+         f"- 待人工：**{len(report.manual)}** 条",
+         f"- 未知 kind：**{len(report.unknown_kinds)}** 个", ""]
+
+    L += ["## 一、已接受（校验通过；report-only 不写产物）", ""]
+    if not report.accepted:
+        L += ["（无）", ""]
+    for rec in sorted(report.accepted, key=lambda r: str(r.get("id") or "")):
+        L += [f"### `{rec['id']}` — {ANALYSIS_KIND_LABEL.get(rec['kind'], rec['kind'])}", "",
+              f"- 动作：`{rec['action']}` → `{rec['target']}`"]
+        if rec.get("field"):
+            L.append(f"- 字段：`{rec['field']}`")
+        if rec.get("value"):
+            L.append(f"- 建议值：{_code_span(rec['value'], 300)}")
+        if _analysis_locator_text(rec):
+            L.append(f"- 定位：{_code_span(_analysis_locator_text(rec), 160)}")
+        if rec.get("anchor"):
+            L.append(f"- 锚点：{_code_span(rec['anchor'], 200)}")
+        if rec.get("evidence"):
+            L.append(f"- 依据：{_code_span(rec['evidence'], 300)}")
+        _tail = f"- 置信度：`{rec['confidence']}`"
+        if rec.get("source"):
+            _tail += f"；来源：{rec['source']}"
+        L.append(_tail)
+        if rec.get("note"):
+            L.append(f"- 说明：{rec['note']}")
+        L.append("")
+
+    L += ["## 二、被拒绝（逐条原因）", ""]
+    if not report.rejected:
+        L += ["（无）", ""]
+    for rec in report.rejected:
+        _kind = f"（`{rec['kind']}`）" if rec.get("kind") else ""
+        L.append(f"- `{rec['id']}`{_kind}：{rec['reason']}")
+    if report.rejected:
+        L.append("")
+
+    L += ["## 三、待人工（`unresolved` 或 `confidence=low`）", ""]
+    if not report.manual:
+        L += ["（无）", ""]
+    for rec in sorted(report.manual, key=lambda r: str(r.get("id") or "")):
+        why = "confidence=low" if rec["confidence"] == "low" else "unresolved（拿不准）"
+        L += [f"### `{rec['id']}` — {ANALYSIS_KIND_LABEL.get(rec['kind'], rec['kind'])}", "",
+              f"- 分流原因：{why}（请编辑人工判断，**不要**自动采用）"]
+        if rec.get("value"):
+            L.append(f"- 建议值：{_code_span(rec['value'], 300)}")
+        if rec.get("evidence"):
+            L.append(f"- 依据：{_code_span(rec['evidence'], 300)}")
+        if rec.get("note"):
+            L.append(f"- 说明：{rec['note']}")
+        L.append("")
+
+    L += ["## 四、未知 kind", ""]
+    if not report.unknown_kinds:
+        L += ["（无）", ""]
+    for rec in sorted(report.unknown_kinds, key=lambda r: (str(r.get("id") or ""),
+                                                           str(r.get("kind") or ""))):
+        L.append(f"- `{rec['id']}`：未知 kind `{rec['kind']}`"
+                 "（不在 11 类白名单内；**已记录、未采用**）")
+    if report.unknown_kinds:
+        L.append("")
+    return "\n".join(L)
+
+
+def write_analysis_report(stage_dir: str, stem: str,
+                          report: FulltextAnalysisReport) -> tuple[str, str]:
+    """把附四报告写进暂存目录（随 promote 进交付目录）；`.jsonl` 每行一条已接受项。
+
+    顺序确定：`.jsonl` 按 `id` 排序（同输入同输出 sha）；0 条已接受时 `.jsonl` 为空文件。
+    """
+    md_path = os.path.join(stage_dir, f"{stem}{ANALYSIS_SUFFIX}.md")
+    jsonl_path = os.path.join(stage_dir, f"{stem}{ANALYSIS_SUFFIX}.jsonl")
+    atomic_write_text(md_path, render_analysis_md(stem=stem, report=report))
+    lines = [json.dumps(rec, ensure_ascii=False)
+             for rec in sorted(report.accepted, key=lambda r: str(r.get("id") or ""))]
+    atomic_write_text(jsonl_path, "\n".join(lines) + ("\n" if lines else ""))
+    return md_path, jsonl_path
+
+
 _JSON_DECODER = json.JSONDecoder()
 
 
@@ -800,6 +1265,10 @@ def parse_low_confidence(texts: Iterable[tuple[str, str]], items: Iterable[dict]
     raw: dict[str, list[dict]] = {}
     for _name, text in texts:
         for obj in iter_json_objects(text or ""):
+            # 批74：附四 `slcn.fulltext.v1` 对象由 parse_fulltext_analysis() 单独解析；
+            # 这里必须跳过（否则 `AN-*` 会进附一的 unknown 报告）。
+            if str(obj.get("schema") or "").strip() == ANALYSIS_SCHEMA:
+                continue
             # 支持模型写成 {"FN-1": {...}} 的包一层（没有顶层 id 时）。
             if "id" not in obj and len(obj) == 1:
                 k, v = next(iter(obj.items()))
@@ -1850,7 +2319,8 @@ def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
                   low_report: LowConfReport | None, merge_summary: dict | None,
                   apply_summary: dict | None, final_dir: str,
                   no_ai_merge: bool, compiled: str, backup: str = "",
-                  fulltext: dict | None = None) -> str:
+                  fulltext: dict | None = None,
+                  analysis_report: FulltextAnalysisReport | None = None) -> str:
     L = [f"# AI 协同记录 · {stem}", "",
          f"- 阶段：`{phase}`", f"- 交付目录：`{final_dir}`", ""]
     if fulltext:
@@ -1920,6 +2390,16 @@ def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
     if backup:
         L += ["## 五、交付备份", "",
               f"- 旧交付目录已备份为：`{backup}`（新目录交付成功后才保留）", ""]
+    if analysis_report is not None:
+        # 第六节（批74）：附四 report-only 计数；其余小节逐字节不变。
+        L += ["## 六、全文分析（附四，report-only）", "",
+              f"- {analysis_report.summary()}"]
+        if analysis_report.total:
+            L.append(f"- 报告：`{stem}{ANALYSIS_SUFFIX}.md` / `.jsonl`"
+                     "（只报告，不写产物）")
+        else:
+            L.append("- 本次回复里没有附四 `slcn.fulltext.v1` 对象（不生成报告）")
+        L.append("")
     L += ["---", "",
           "> 本记录由 `convert.py --coop-replies` 自动生成；外部 chat 通道不产生 API 费用。", ""]
     return "\n".join(L)
