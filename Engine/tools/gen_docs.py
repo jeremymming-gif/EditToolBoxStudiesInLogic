@@ -45,6 +45,15 @@ AUTO 写出「FAIL 1」瞬态，必须再写一次（或删 `out/auto-inputs.jso
 `out/auto-inputs.json` 里带 FAIL 的测试计数缓存**不再复用**（避免瞬态 FAIL 被缓存粘住）。
 AUTO 数字口径不变：块里每个数字仍然全部现算。
 
+**批77 / B-136（AUTO 普查 sha 单源）：** AUTO 的「普查」数字唯一来源是**笔记仓冻结基线**
+`baselines/docx_audit.csv`（本机可发现笔记仓时；行内注明来源 + 成功/失败数），**不再**读
+gitignored 的 `Engine/out` 缓存 —— 从前 README 公开显示的 sha 是"某台机器的 out 缓存值"
+（批73–76 一直是 b70 的 `76ff3ba8…`），与冻结基线不同源。**无笔记仓的环境（CI / 新克隆）
+信息性降级**：不展示会误导的 sha；本机有 `out` 缓存时只报成功/失败数并标 fallback。
+`--check` 在无笔记仓环境把「普查」整段归一化（环境差异不误红），**有**笔记仓时仍严格比对
+（基线 sha 漂移 → rc1；反例见 `tests/test_b77_b136_auto_single_source.py`）；
+`out/auto-inputs.json` 增 `notes_audit_*_sha256` 参与快速通道失效判定。
+
 约定
 ----
 * **块内不放时间戳**：否则 `--check` 永远失败。新鲜度看块内各数据源的 sha256。
@@ -103,8 +112,14 @@ def _git_root() -> Path:
 
 REPO = _git_root()
 README = ENGINE / "README.md"
+# ⚠️ B-136（批77）：「普查」的唯一来源是**笔记仓冻结基线**（见下方 NOTES_BASELINE_*）。
+# 这两个 `Engine/out/` 路径是 gitignored 的**本机缓存**：只作为无笔记仓环境下的
+# fallback 数据（信息性成功/失败数）与 auto-inputs 的环境前提，**不再**决定 AUTO 展示的 sha。
 AUDIT_CSV = ENGINE / "out" / "docx_audit.csv"
 AUDIT_TXT = ENGINE / "out" / "docx_audit.txt"
+# 笔记仓内的冻结基线（相对笔记仓根）；发现逻辑复用 `slcn/paths.py` 的 `notes_root()`。
+NOTES_BASELINE_CSV = Path("baselines") / "docx_audit.csv"
+NOTES_BASELINE_TXT = Path("baselines") / "docx_audit.txt"
 CORPUS_CSV = ENGINE / "out" / "corpus" / "corpus.csv"
 CORPUS_DIR = ENGINE / "out" / "corpus"
 
@@ -208,15 +223,80 @@ def has_manuscripts() -> bool:
         return False
 
 
+# ── B-136（批77）：普查数字的**唯一来源 = 笔记仓冻结基线** ────────────────────
+# 从前读 `Engine/out/docx_audit.csv`（gitignored 的本机缓存）→ 公开 README 上的 sha
+# 其实是"某台机器的 out 缓存值"（批73–76 一直是 b70 的 76ff3ba8…），与笔记仓冻结基线
+# 不同源、且陈旧。现在：本机可发现笔记仓 → 只读 `baselines/docx_audit.csv`（并注明来源）；
+# 无笔记仓（CI / 新克隆）→ 信息性降级，不展示会误导的 sha（环境差异由 normalize_for_check
+# 归一化，`--check` 不因此变红）。发现逻辑复用 `slcn/paths.py` 的 `notes_root()`。
+def _slcn_paths():
+    """`from slcn import paths`：必须先把 `Engine/` 挂进 sys.path（同 environment_complete 的教训）。"""
+    _engine_dir = str(Path(__file__).resolve().parents[1])
+    if _engine_dir not in sys.path:
+        sys.path.insert(0, _engine_dir)
+    from slcn import paths as _p  # noqa: PLC0415
+    return _p
+
+
+def notes_audit_paths() -> tuple[Path, Path] | None:
+    """笔记仓冻结基线 (csv, txt)；本机没有笔记仓 / 没有基线文件 → None。
+
+    `None` 是**环境差异**而不是错误：CI / 新克隆没有私有笔记仓，`--check` 会把「普查」
+    整段归一化（见 `normalize_for_check`），绝不因此变红。
+    """
+    try:
+        root = _slcn_paths().notes_root()
+    except Exception:  # noqa: BLE001 —— 探测失败按「无笔记仓」降级，不影响主流程
+        return None
+    if not root:
+        return None
+    base = Path(root) / NOTES_BASELINE_CSV.parent
+    csv_path = base / NOTES_BASELINE_CSV.name
+    if not csv_path.is_file():
+        return None
+    return csv_path, base / NOTES_BASELINE_TXT.name
+
+
+def _audit_success_fail(txt_path: Path) -> tuple[int, int] | None:
+    """从普查 txt 报告的抬头读「成功解析 N 份、解析失败 M 份」；读不到返回 None。"""
+    try:
+        text = txt_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"成功解析\s*(\d+)\s*份、解析失败\s*(\d+)\s*份", text)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _audit_info_block(reason: str) -> list[str]:
+    """无笔记仓基线时的**信息性降级**：不展示任何 sha（避免误导），只报能确定的事实。
+
+    本机若恰有 `out/` 普查产物，只报告「成功/失败数」并显式标 fallback；CI / 新克隆两者都没有，
+    则指向笔记仓基线。这一行不参与 `--check`（见 normalize_for_check）。
+    """
+    line = f"**普查**：{reason}"
+    sf = _audit_success_fail(AUDIT_TXT)
+    if sf is not None:
+        line += (f"；本机 `out/docx_audit.txt` 仅供参照：成功解析 **{sf[0]}** 份 / 解析失败 **{sf[1]}** 份"
+                 "（fallback，信息性，不参与校验）")
+    else:
+        line += ("；本环境也没有 `out/` 普查产物，成功/失败数见笔记仓基线"
+                 "（本行信息性，不参与校验）")
+    return [line]
+
+
 def audit_block() -> tuple[list[str], bool]:
+    """AUTO「普查」段：唯一来源 = 笔记仓冻结基线；无笔记仓 → 信息性降级（不展示 sha）。"""
     out, ok = [], True
-    if not AUDIT_CSV.is_file():
-        if not has_manuscripts():
-            return ["**普查**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），"
-                    "这一行由稿件仓里的运行给出"], True
-        return ["**普查**：`out/docx_audit.csv` **未生成**（跑 `python3 docx_audit.py`）"], False
-    with AUDIT_CSV.open(encoding="utf-8", newline="") as fh:
-        recs = list(csv.DictReader(fh))
+    source = notes_audit_paths()
+    if source is None:
+        return _audit_info_block(
+            "本环境无笔记仓基线（AUTO 普查数字的唯一来源=笔记仓 `baselines/docx_audit.csv`）"), True
+    csv_path, txt_path = source
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as fh:
+            recs = list(csv.DictReader(fh))
+    except (OSError, csv.Error) as e:  # 基线文件坏了不是环境差异，但也别把 --check 弄崩
+        return _audit_info_block(f"笔记仓基线读取失败（{type(e).__name__}），按信息性处理"), False
     cnt = {f: {s: 0 for s in STATES} for f, _ in FIELDS}
     mismatch = 0
     for r in recs:
@@ -229,15 +309,19 @@ def audit_block() -> tuple[list[str], bool]:
                 mismatch += 1
     tot_h = sum(int(r.get("n_headings") or 0) for r in recs)
     tot_b = sum(int(r.get("n_bib") or 0) for r in recs)
-    out.append(f"**普查**（`out/docx_audit.csv`，{len(recs)} 份源稿；三态互斥、相加 = 篇数）：")
+    sf = _audit_success_fail(txt_path)
+    sf_txt = f"成功解析 **{sf[0]}** 份 / 解析失败 **{sf[1]}** 份；" if sf else ""
+    out.append(f"**普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，{len(recs)} 份源稿；"
+               f"{sf_txt}三态互斥、相加 = 篇数）：")
     out += ["", "| 字段 | `ok` | `fail` | `absent` |", "|---|---|---|---|"]
     for f, cn in FIELDS:
         c = cnt[f]
         out.append(f"| {cn} `{f}` | {c['ok']} | {c['fail']} | {c['absent']} |")
     out += ["", f"- `n_headings` 合计 **{tot_h}**；`n_bib` 合计 **{tot_b}**",
-            f"- sha256[:12]：`docx_audit.csv` = `{sha12(AUDIT_CSV)}`，"
-            f"`docx_audit.txt` = `{sha12(AUDIT_TXT)}`"
-            f"（与 `_ok` 列交叉核对，不一致 **{mismatch}** 行 {'✅' if mismatch == 0 else '❌'}）"]
+            f"- sha256[:12]：`baselines/docx_audit.csv` = `{sha12(csv_path)}`，"
+            f"`baselines/docx_audit.txt` = `{sha12(txt_path)}`"
+            f"（来源：笔记仓冻结基线；与 `_ok` 列交叉核对，不一致 **{mismatch}** 行 "
+            f"{'✅' if mismatch == 0 else '❌'}）"]
     if mismatch:
         ok = False
     return out, ok
@@ -390,18 +474,28 @@ def _manuscripts_info() -> tuple[str, str]:
 
 
 def collect_auto_inputs() -> dict:
-    """AUTO 块的输入清单（O14）：每个数据源的 sha + 环境前提 + 稿件库指纹。"""
+    """AUTO 块的输入清单（O14）：每个数据源的 sha + 环境前提 + 稿件库指纹。
+
+    B-136（批77）：增 `notes_audit_csv_sha256` / `notes_audit_txt_sha256` —— **AUTO 普查数字的
+    真正输入**（笔记仓冻结基线）。它们一变 → 快速通道失效，`--check` 回退到现算比对，
+    于是「基线更新了但 README 没重写」当场被抓。无笔记仓环境两项为空字符串。
+    """
     env_ok, missing = environment_complete()
     tex_sha, tex_n = _corpus_tex_manifest()
     tests_sha, tests_n = _tests_manifest()
     manuscripts_root, manuscripts_fp = _manuscripts_info()
+    notes = notes_audit_paths()
     return {
         "schema": AUTO_INPUTS_SCHEMA,
         "corpus_csv_sha256": _sha256_file(CORPUS_CSV),
         "corpus_tex_manifest_sha256": tex_sha,
         "corpus_tex_files": tex_n,
+        # out 缓存（gitignored）不再是 AUTO 展示的来源，仅作为无笔记仓环境的 fallback /
+        # 环境前提留在清单里（键名不变：既有调用方与测试依赖）。
         "audit_csv_sha256": _sha256_file(AUDIT_CSV),
         "audit_txt_sha256": _sha256_file(AUDIT_TXT),
+        "notes_audit_csv_sha256": _sha256_file(notes[0]) if notes else "",
+        "notes_audit_txt_sha256": _sha256_file(notes[1]) if notes else "",
         "tests_manifest_sha256": tests_sha,
         "tests_files": tests_n,
         "engine_py_sha256": (_run_record.engine_py_sha256() if _run_record is not None else ""),
@@ -564,6 +658,11 @@ APP_LINE = re.compile(r"^\*\*App 包内一致性\*\*.*(?:\n\n)?", re.M)
 # 状态，同一个提交在干净克隆里与在开发机上写得不一样 → 不参与 --check。
 GIT_LINE = re.compile(r"^\*\*红线只读快照\*\*.*$", re.M)
 _GIT_PLACEHOLDER = "**红线只读快照**：（本机工作区状态，不参与校验）"
+# 「普查」整段：**无笔记仓的环境（CI / 新克隆）无法重现**它的数据（唯一来源在私有笔记仓），
+# 按环境差异归一化 —— 否则开发机上写出的 notes 基线块到了 CI 必然被判过期（B-136）。
+# 有笔记仓时**不**归一化：基线 sha 漂移必须被 --check 抓住（反例见新测试）。
+AUDIT_SECTION = re.compile(r"^\*\*普查\*\*.*?(?=^\*\*corpus 回归)", re.M | re.S)
+_AUDIT_PLACEHOLDER = "**普查**：（本环境无笔记仓基线，普查数字不参与校验）"
 
 
 # 测试计数两行：**在本机前提齐全时是硬断言**（"数字不许手抄"最要紧的一条），
@@ -615,6 +714,10 @@ def environment_complete() -> tuple[bool, list[str]]:
 def normalize_for_check(body: str, lenient: bool = False) -> str:
     # APP_LINE 用**删除**（迁移兼容，见上面的注释）；GIT_LINE 仍是占位符替换。
     out = GIT_LINE.sub(_GIT_PLACEHOLDER, APP_LINE.sub("", body))
+    # B-136：无笔记仓的环境（CI / 新克隆）看不到冻结基线 → 「普查」整段按环境差异归一化。
+    # 有笔记仓的机器上**不**归一化 → 基线 sha 漂移仍会把 --check 判红。
+    if notes_audit_paths() is None:
+        out = AUDIT_SECTION.sub(_AUDIT_PLACEHOLDER, out)
     if lenient:
         out = TEST_SUMMARY_LINE.sub(_TEST_PLACEHOLDER, out)
         out = TEST_BREAKDOWN_LINE.sub(_TEST_PLACEHOLDER, out)

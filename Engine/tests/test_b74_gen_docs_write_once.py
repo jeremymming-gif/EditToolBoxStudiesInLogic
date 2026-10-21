@@ -101,6 +101,9 @@ G.AUDIT_CSV = OUT / "docx_audit.csv"
 G.AUDIT_TXT = OUT / "docx_audit.txt"
 G.CORPUS_CSV = OUT / "corpus" / "corpus.csv"
 G.CORPUS_DIR = OUT / "corpus"
+# B-136（批77）起「普查」的唯一来源是**笔记仓冻结基线**：fixture 用同一份假 csv/txt 冒充基线，
+# 保持 hermetic（不读真实笔记仓；CI 上本来也没有笔记仓 → 否则这里会走信息性降级分支）。
+G.notes_audit_paths = lambda: (OUT / "docx_audit.csv", OUT / "docx_audit.txt")
 
 FAKE_ROWS = [("test_a", 3, 0), ("test_b", 4, 0)]
 CALLS: list[bool] = []

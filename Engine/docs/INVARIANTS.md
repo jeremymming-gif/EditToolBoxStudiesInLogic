@@ -14,8 +14,11 @@
 1. **作者来稿只读**：`20xx年第N期(…)` 及 `original/` 里的文件不许改 / 删 / 移；试新规则一律写到 `Engine/out/` 或 `/tmp/`。
    位置：仓库根 `AGENTS.md`「红线（硬约束）」1；期号目录的识别正则在 `Engine/slcn/paths.py`（`ISSUE_RE`）。
 2. **冻结基线不许就地覆盖**：全库普查结果是冻结基线（现钉在笔记仓 `baselines/docx_audit.csv`，sha256 见 `Engine/README.md` 的 AUTO 块）。
+   AUTO 普查数字的**唯一来源就是该文件**（B-136：`tools/gen_docs.py` 只读它、行内注明来源 + 成功/失败数）；
+   无笔记仓的 CI / 新克隆**信息性降级**（不展示会误导的 sha）；`Engine/out/` 缓存只是本机 fallback，**不许冒充基线**。
    改解析器时用 `python3 docx_audit.py --out-dir /tmp/audit_<标记>`（或环境变量 `SLCN_AUDIT_OUT`）隔离，再与基线逐行 diff，**变坏迁移必须为 0**。
-   位置：`Engine/docx_audit.py` 的 `--out-dir`；`Engine/docs/ENGINE_API.md` 六（开发用入口）。
+   位置：`Engine/docx_audit.py` 的 `--out-dir`；`Engine/tools/gen_docs.py`（`notes_audit_paths()` / `audit_block()`）；
+   `Engine/tests/test_b77_b136_auto_single_source.py`；`Engine/docs/ENGINE_API.md` 六（开发用入口）。
 3. **密钥不进 argv**：API 密钥只走环境变量 `SLCN_LLM_KEY`，绝不拼进命令行，也不写进日志（界面只显示前 4 位）。
    位置：`Engine/slcn/llm.py`（`--key` 的帮助文本明写「别写进命令行」）；`Engine/docs/ENGINE_API.md` 一、八.4。
 4. **公开仓不放作者姓名、稿件片段、内部手册**（案例法在笔记仓）；`编辑笔记/` 下只公开 `编辑笔记/模板文件/`。
