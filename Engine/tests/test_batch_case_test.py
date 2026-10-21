@@ -15,7 +15,12 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
    JSON manifest 字段解析 / report 附录显示）；
 ⑨ 全量基准（repo 扫描 / 失败聚类 dashboard / dashboard.csv / cases.csv / 预计耗时 / 88+89 manifest）；
 ⑩ O10 相似度性能（auto/fast/full/none 口径、阈值降级、86 期 manifest、CLI 开关）；
-⑪ 工具健壮性（`slcn_*` 临时目录清理 / 图片型产物 sha note，tex/bib 优先）。
+⑪ 工具健壮性（`slcn_*` 临时目录清理 / 图片型产物 sha note，tex/bib 优先）；
+⑫ B-117（批71，2026-10-21）验收口径重构：默认 L1–L4 新口径（L1 源稿一致性判据
+   `SRC_BIB_MISSING`/`SRC_CITE_MISSING`/`SRC_CITE_UNMATCHED`/`SRC_CITE_UNRESOLVED`/
+   `SRC_LIST_UNPARSED`/`META_UNEXTRACTED`；L3 三分类归因只有软件缺陷计 P1、
+   页数差/版式差降 P2 信息项）；`--legacy-final` 恢复旧口径
+   （`PAGE_DIFF` P1 / `BIB_COUNT_DIFF` / `CITE_DIFF` / `SECTION_DIFF` / `PLACEHOLDER` 等）且逐项可复现。
 
 只写临时目录；不读真实语料、不跑 xelatex、不联网、不读稿件库 —— `cd Engine` 下秒级可跑。
 
@@ -105,6 +110,18 @@ check("默认清单：仅 90-03 声明附加源 metadata=yalcin puzzle.tex",
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) 分级：干净案例 / 各类 P0 / P1 / P2
 # ─────────────────────────────────────────────────────────────────────────────
+CLEAN_L1 = {
+    "ok": True, "channel": "word",
+    "cite_keys": ["A"], "cite_keys_n": 1, "cite_total": 1,
+    "cite_body_missing": [], "cite_missing": [],
+    "note_markers": 0, "note_citation_entries": 0,
+    "ref_titles": ["T"], "ref_titles_n": 1, "ref_source": "test",
+    "unparsed_ref_lines": 0,
+    "meta_present": {"title": True}, "meta_placeholder": {},
+    "meta_unextracted": [], "meta_present_n": 1, "meta_extracted_n": 1,
+    "meta_rate": 1.0,
+    "ref_coverage": {"total": 1, "covered": 1, "missing": [], "missing_n": 0},
+}
 CLEAN = {
     "convert_rc": 0, "pdf_pages": 16,
     "log": {"errors": [], "n_errors": 0, "undefined_citation": 0,
@@ -115,28 +132,31 @@ CLEAN = {
     "sha_after": {"tex": "a", "bib": "b"},
     "plan": {"ai_zero": True, "ai": 0, "rc": 0},
     "closure": {"n_cited": 20, "n_bib": 20, "n_dangling": 0, "n_unused": 0,
-                "dangling": [], "unused": []},
-    "tex": {"cite": 20, "section": 5, "placeholder_any": 0, "placeholder_unrecognized": 0},
-    "bib": {"entries": 20, "must_missing": 0},
+                "cited": ["A"], "bib_keys": ["A"], "dangling": [], "unused": []},
+    "tex": {"cite": 20, "section": 5, "placeholder_any": 0, "placeholder_unrecognized": 0,
+            "footnote": 3},
+    "bib": {"entries": 20, "must_missing": 0, "titles": ["T"]},
     "proof": {"hits": 3, "fixable": 0, "rules": {}},
     "convert": {"compile_ok": True},
+    "l1": CLEAN_L1,
 }
 MAN = {
     "pages": 16, "bib_entries": 20, "cite": 20, "section": 5, "placeholders": 0,
+    "footnote": 3, "cite_keys": ["A"], "bib_titles": ["T"],
     "bib_must": 0, "closure": {"n_unused": 0, "n_dangling": 0},
     "proof": {"hits": 2, "fixable": 0, "rules": {}},
 }
 
 
-def codes(m, man=MAN):
-    return [(f.level, f.code) for f in batch.grade_case(m, man)]
+def codes(m, man=MAN, legacy=False):
+    return [(f.level, f.code) for f in batch.grade_case(m, man, legacy_final=legacy)]
 
 
-def has(m, code, level="P0", man=MAN):
-    return (level, code) in codes(m, man)
+def has(m, code, level="P0", man=MAN, legacy=False):
+    return (level, code) in codes(m, man, legacy=legacy)
 
 
-check("干净案例无 finding（生成 16 页/20 文献/20 引用/5 节 = 人工）",
+check("干净案例无 finding（新口径：L1 无缺条 / L3 无软件缺陷）",
       batch.grade_case(CLEAN, MAN) == [])
 check("skipped 案例不判级", batch.grade_case({"skipped": "x"}, MAN) == [])
 
@@ -166,42 +186,104 @@ check("正文 0 引用但 bib>0 → P0 NO_CITES",
 check(".doc→docx 失败 → P0 DOC_CONVERT",
       has(dict(CLEAN, doc_convert={"needed": True, "ok": False, "error": "no soffice"}),
           "DOC_CONVERT"))
-check("页数差 1 → P1 PAGE_DIFF；差 2/5 也一律 P1（B-019：页差不再进 P0）",
-      has(dict(CLEAN, pdf_pages=17), "PAGE_DIFF", "P1")
-      and has(dict(CLEAN, pdf_pages=18), "PAGE_DIFF", "P1")
-      and not has(dict(CLEAN, pdf_pages=18), "PAGE_DIFF", "P0")
-      and has(dict(CLEAN, pdf_pages=21), "PAGE_DIFF", "P1")
+check("新口径：页数差 1/2/5 → P2 信息项 PAGE_DIFF（B-117 不再 P1）",
+      has(dict(CLEAN, pdf_pages=17), "PAGE_DIFF", "P2")
+      and has(dict(CLEAN, pdf_pages=18), "PAGE_DIFF", "P2")
+      and has(dict(CLEAN, pdf_pages=21), "PAGE_DIFF", "P2")
+      and not has(dict(CLEAN, pdf_pages=21), "PAGE_DIFF", "P1")
+      and batch.PAGE_DIFF_INFO_LEVEL == "P2")
+check("legacy：页数差 1/2/5 → 一律 P1 PAGE_DIFF（批70 旧口径可复现）",
+      has(dict(CLEAN, pdf_pages=17), "PAGE_DIFF", "P1", legacy=True)
+      and has(dict(CLEAN, pdf_pages=21), "PAGE_DIFF", "P1", legacy=True)
       and batch.PAGE_DIFF_LEVEL == "P1")
-check("文献差 1–2 → P1 / 差 3+ → P0（非 88-06 口径不变）",
-      has(dict(CLEAN, bib={"entries": 21, "must_missing": 0}), "BIB_COUNT_DIFF", "P1")
-      and has(dict(CLEAN, bib={"entries": 23, "must_missing": 0}), "BIB_COUNT_DIFF", "P0"))
-check("88-06 文献差 3 → P1 BIB_COUNT_DIFF（B-019 案例级：人工多列，以源稿清单为准）",
+check("新口径：L1 源清单覆盖取代「BIB_COUNT vs 最终版」（不按人工条数判）",
+      not has(dict(CLEAN, bib={"entries": 23, "must_missing": 0}), "BIB_COUNT_DIFF")
+      and not any(c == "BIB_COUNT_DIFF" for _l, c in codes(dict(CLEAN, bib={"entries": 23}))))
+check("legacy：文献差 1–2 → P1 / 差 3+ → P0（旧口径）",
+      has(dict(CLEAN, bib={"entries": 21, "must_missing": 0}), "BIB_COUNT_DIFF", "P1",
+          legacy=True)
+      and has(dict(CLEAN, bib={"entries": 23, "must_missing": 0}), "BIB_COUNT_DIFF", "P0",
+              legacy=True))
+check("legacy：88-06 文献差 3 → P1 BIB_COUNT_DIFF（B-019 案例级降级保留）",
       has(dict(CLEAN, key="88-06", bib={"entries": 23, "must_missing": 0}),
-          "BIB_COUNT_DIFF", "P1")
+          "BIB_COUNT_DIFF", "P1", legacy=True)
       and not has(dict(CLEAN, key="88-06", bib={"entries": 23, "must_missing": 0}),
-                  "BIB_COUNT_DIFF", "P0")
+                  "BIB_COUNT_DIFF", "P0", legacy=True)
       and batch.demote_to_p1("88-06", "BIB_COUNT_DIFF") is not None
       and batch.demote_to_p1("86-10", "BIB_COUNT_DIFF") is None)
-check("正文引用数差 >10% → P1 CITE_DIFF",
-      has(dict(CLEAN, tex={**CLEAN["tex"], "cite": 16}), "CITE_DIFF", "P1"))
-check("正文引用差 ≤10% 不判",
-      not has(dict(CLEAN, tex={**CLEAN["tex"], "cite": 18}), "CITE_DIFF", "P1"))
-check("占位符 >人工 → P1 PLACEHOLDER",
-      has(dict(CLEAN, tex={**CLEAN["tex"], "placeholder_any": 10}), "PLACEHOLDER", "P1"))
-check("节结构差 → P1 SECTION_DIFF",
-      has(dict(CLEAN, tex={**CLEAN["tex"], "section": 4}), "SECTION_DIFF", "P1"))
-check("未引用比人工多 >5 → P1 UNUSED_BIB_EXCESS",
-      has(dict(CLEAN, closure={**CLEAN["closure"], "n_unused": 8}), "UNUSED_BIB_EXCESS", "P1"))
-check("未引用比人工多 1–5 → P2 UNUSED_BIB_MINOR",
-      has(dict(CLEAN, closure={**CLEAN["closure"], "n_unused": 3}), "UNUSED_BIB_MINOR", "P2"))
+check("legacy：正文引用数差 >10% → P1 CITE_DIFF（旧口径）",
+      has(dict(CLEAN, tex={**CLEAN["tex"], "cite": 16}), "CITE_DIFF", "P1", legacy=True))
+check("新口径：CITE_DIFF 不再按人工数判（改由 L3 脚注转引用/信息项归因）",
+      not has(dict(CLEAN, tex={**CLEAN["tex"], "cite": 16}), "CITE_DIFF")
+      and has(dict(CLEAN, tex={**CLEAN["tex"], "cite": 40, "footnote": 14}),
+              "FOOTNOTE_CITE_GAP", "P1",
+              man={**MAN, "cite": 49, "footnote": 7}))
+check("legacy：占位符 >人工 → P1 PLACEHOLDER（旧口径）",
+      has(dict(CLEAN, tex={**CLEAN["tex"], "placeholder_any": 10}), "PLACEHOLDER", "P1",
+          legacy=True))
+check("新口径：源稿有元数据却仍占位 → P1 META_UNEXTRACTED；否则只报告",
+      has(dict(CLEAN, l1={**CLEAN_L1, "meta_unextracted": ["author"], "meta_rate": 0.5}),
+          "META_UNEXTRACTED", "P1")
+      and not has(dict(CLEAN, tex={**CLEAN["tex"], "placeholder_any": 10}), "PLACEHOLDER"))
+check("新口径：节结构差 → P2 信息项（版式差）/ legacy 旧 P1 SECTION_DIFF",
+      has(dict(CLEAN, tex={**CLEAN["tex"], "section": 4}), "SECTION_DIFF", "P2")
+      and not has(dict(CLEAN, tex={**CLEAN["tex"], "section": 4}), "SECTION_DIFF", "P1")
+      and has(dict(CLEAN, tex={**CLEAN["tex"], "section": 4}), "SECTION_DIFF", "P1",
+              legacy=True))
+check("legacy：未引用比人工多 >5 → P1 UNUSED_BIB_EXCESS / 1–5 → P2（旧口径）",
+      has(dict(CLEAN, closure={**CLEAN["closure"], "n_unused": 8}), "UNUSED_BIB_EXCESS", "P1",
+          legacy=True)
+      and has(dict(CLEAN, closure={**CLEAN["closure"], "n_unused": 3}), "UNUSED_BIB_MINOR", "P2",
+              legacy=True))
 check("一校可自动改残留 → P1 PROOF_FIXABLE",
       has(dict(CLEAN, proof={"hits": 5, "fixable": 2, "rules": {}}), "PROOF_FIXABLE", "P1"))
 check("ZH-08 比人工多 → P2 ZH08_HYPHEN",
       has(dict(CLEAN, proof={"hits": 5, "fixable": 0, "rules": {"ZH-08": 9}}),
           "ZH08_HYPHEN", "P2",
           man={**MAN, "proof": {"hits": 2, "fixable": 0, "rules": {"ZH-08": 2}}}))
-check("必补字段比人工多 >10 → P1 BIB_FIELDS",
-      has(dict(CLEAN, bib={"entries": 20, "must_missing": 15}), "BIB_FIELDS", "P1"))
+check("legacy：必补字段比人工多 >10 → P1 BIB_FIELDS（旧口径）",
+      has(dict(CLEAN, bib={"entries": 20, "must_missing": 15}), "BIB_FIELDS", "P1",
+          legacy=True))
+
+# ── B-117 L1 源稿一致性判据（无人工基线）──
+check("L1：源参考文献清单缺条 → P1 SRC_BIB_MISSING（缺哪条必报）",
+      has(dict(CLEAN, l1={**CLEAN_L1, "ref_titles": ["T", "U"], "ref_titles_n": 2,
+                          "ref_coverage": {"total": 2, "covered": 1,
+                                           "missing": ["U"], "missing_n": 1}}),
+          "SRC_BIB_MISSING", "P1")
+      and "U" in str([f.detail for f in batch.grade_case(
+          dict(CLEAN, l1={**CLEAN_L1, "ref_coverage": {"total": 2, "covered": 1,
+                                                       "missing": ["U"], "missing_n": 1}}), MAN)]))
+check("L1：源引用未覆盖 → P1 SRC_CITE_MISSING；未进正文引用命令 → P2 显式信息项",
+      has(dict(CLEAN, l1={**CLEAN_L1, "cite_missing": ["B"]}), "SRC_CITE_MISSING", "P1")
+      and has(dict(CLEAN, l1={**CLEAN_L1, "cite_body_missing": ["C"]}),
+              "SRC_CITE_BODY_INFO", "P2"))
+check("L1：源清单未识别行 → P2 SRC_LIST_UNPARSED（显式报告，不静默）",
+      has(dict(CLEAN, l1={**CLEAN_L1, "unparsed_ref_lines": 3}), "SRC_LIST_UNPARSED", "P2"))
+check("L1：源引用未匹配/指向未解析条目 → P2 显式信息项（未识别/需人工）",
+      has(dict(CLEAN, l1={**CLEAN_L1, "unmatched_citations": ["（Beal Restall 2006）"]}),
+          "SRC_CITE_UNMATCHED", "P2")
+      and has(dict(CLEAN, l1={**CLEAN_L1, "cite_unresolved": ["ref01"]}),
+              "SRC_CITE_UNRESOLVED", "P2"))
+check("L1：解析失败不误判（显式 notes）",
+      batch.grade_case(dict(CLEAN, l1={"ok": False, "error": "boom"}), MAN) == [])
+
+# ── B-117 L3 三分类归因（只有软件缺陷计 P1；页数/版式降 P2）──
+_rows = batch.l3_attribution(dict(CLEAN, pdf_pages=18), MAN)
+check("L3：页数差 → 人工后期修改 / P2 信息项",
+      _rows and _rows[0]["cls"] == batch.L3_MANUAL and _rows[0]["level"] == "P2")
+check("L3：源清单全覆盖而最终人工版多 1 条 → 人工后期修改（作者补充）",
+      any(r["cls"] == batch.L3_MANUAL and r["code"] == "BIB_COUNT_INFO"
+          for r in batch.l3_attribution(
+              dict(CLEAN, l1={**CLEAN_L1, "ref_titles_n": 20}),
+              {**MAN, "bib_entries": 21, "bib_titles": ["T", "Chen2015"]})))
+check("L3：CJK 译名 bib key 差异只报告（转 backlog B-120，不判 P1）",
+      any(r["code"] == "BIB_KEY_INFO" and r["level"] is None
+          for r in batch.l3_attribution(
+              dict(CLEAN, closure={**CLEAN["closure"], "cited": ["Ai1979"]}),
+              {**MAN, "cite_keys": ["Einstein1979"]}))
+      and not has(dict(CLEAN, closure={**CLEAN["closure"], "cited": ["Ai1979"]}),
+                  "BIB_KEY_INFO", man={**MAN, "cite_keys": ["Einstein1979"]}))
 
 # 分级汇总优先级
 check("case_level：含 P0 即 P0", batch.case_level(
@@ -214,9 +296,10 @@ check("KNOWN 登记 87-5 NO_CITES（P0 仍会被判出）",
       batch.is_known("87-5", "NO_CITES") is not None
       and ("P0", "NO_CITES") in codes(dict(CLEAN, tex={**CLEAN["tex"], "cite": 0})))
 check("KNOWN 没登记的案例不误标", batch.is_known("90-05", "NO_CITES") is None)
-check("known PAGE_DIFF 只作说明、不进 P0（B-019；87-9 页差 3 → P1）",
+check("B-117：known 87-9 页差 3 → 新口径 P2 信息项 / legacy 复现旧 P1",
       batch.is_known("87-9", "PAGE_DIFF") is not None
-      and ("P1", "PAGE_DIFF") in codes(dict(CLEAN, key="87-9", pdf_pages=19))
+      and ("P2", "PAGE_DIFF") in codes(dict(CLEAN, key="87-9", pdf_pages=19))
+      and ("P1", "PAGE_DIFF") in codes(dict(CLEAN, key="87-9", pdf_pages=19), legacy=True)
       and ("P0", "PAGE_DIFF") not in codes(dict(CLEAN, key="87-9", pdf_pages=19)))
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,8 +351,16 @@ check("tex_stats：节/表格/引用/占位符",
 
 bib_txt = "@article{A,\n title={T},\n year={2020}\n}\n@book{B,\n title={U},\n publisher={P}\n}\n"
 bs = batch.bib_stats(bib_txt)
-check("bib_stats：条数/类型/必补字段", bs["entries"] == 2 and bs["must_missing"] >= 1
-      and bs["types"].get("article") == 1 and bs["dup_keys"] == [])
+check("bib_stats：条数/类型/必补字段/题名（L1 覆盖用）",
+      bs["entries"] == 2 and bs["must_missing"] >= 1
+      and bs["types"].get("article") == 1 and bs["dup_keys"] == []
+      and bs["titles"] == ["T", "U"])
+check("B-117：题名归一化覆盖（L1.3）+ 占位符按类型枚举（L1.5）",
+      batch.norm_title("Alpha  {Title}.") == batch.norm_title("alpha title")
+      and batch.title_coverage(["Alpha Title", "Beta Book"], ["alpha title"])["missing_n"] == 1
+      and batch.placeholder_types("【未识别：第一作者姓名，请手工填写】"
+                                  "【未识别：表题，请手工填写】【未识别：引文出处】")
+      == {"作者元数据": 1, "图表题": 1, "引文出处": 1})
 
 clo = batch.citations_closure(r"\parencite{A} \parencite{B}", bib_txt)
 check("citations_closure：引用键全部命中 → 无悬空",
@@ -520,6 +611,12 @@ try:
           batch.build_parser().parse_args(["--no-similarity"]).no_similarity is True
           and batch.build_parser().parse_args(["--full-similarity"]).full_similarity is True
           and batch.build_parser().parse_args([]).no_similarity is False)
+    check("B-117 CLI：--legacy-final 默认关/可解析；口径常量（旧 P1 仅 legacy 复现）",
+          batch.build_parser().parse_args([]).legacy_final is False
+          and batch.build_parser().parse_args(["--legacy-final"]).legacy_final is True
+          and batch.ACCEPTANCE_VERSION.startswith("B-117")
+          and batch.PAGE_DIFF_LEVEL == "P1" and batch.PAGE_DIFF_INFO_LEVEL == "P2"
+          and batch.SECTION_DIFF_INFO_LEVEL == "P2")
     dash = batch.build_dashboard(fake_run)
     check("dashboard：按严重度加权排序 + owner/effort 元数据",
           [r["level"] for r in dash] == ["P0", "P1"]

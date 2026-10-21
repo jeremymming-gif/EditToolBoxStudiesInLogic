@@ -32,6 +32,10 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                 [--limit N] [--threshold X] [--min-score X] [--bibtex] [--json]
     stats       [--json]
     lint        [--json]                    重复 key / 字段冲突 / 缺来源 / verified 无记录 …
+    rehash      [--dry-run | --apply] [--json]
+                                            规范化规则升级后**重算 content_sha256**：默认
+                                            dry-run（只报告 old/new，不写库）；--apply 才写
+                                            （只改 content_sha256 + updated_at，原子写）
     resolve     --key K --action keep|defer|adopt
                 (--all-fields | --fields F1,F2 | --incoming-sha256 SHA)
                 [--allow-overlap] [--note TEXT] [--dry-run] [--json]
@@ -116,6 +120,14 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
 `--dry-run`（预览）：照常解析/查重/算冲突，但**一个字节都不写**（库文件不存在也不会
 新建），`--json` 里带 `dry_run=true` 与逐条 `changes` 明细；界面「入藏」页的
 「预览」按钮用的就是它。`--bibtex`（query）：每条命中多带一份可直接复制的 BibTeX。
+
+**⚠️ 改规范化规则必须迁移真实库**：`content_sha256` 由 `slcn/bibnorm.py` 的
+`DROP_FIELDS` / `DROP_FIELD_PREFIXES` / 值清理规则决定。**改了规则（或升级引擎）后，
+必须对真实库跑一遍** `python3 Engine/bibdb.py rehash --db <库> --apply`，并更新冻结
+fixture `Engine/tests/test_bibdb_rehash.py` 里的期望 sha —— 否则真实库 `lint` 会报
+`content_sha256 与字段内容不一致`（批45 `6a6ff4e` 改了 `DROP_FIELDS` 没迁移库，
+6 条 stale-sha 一直没被发现，就是本命令要根治的事故）。`rehash` 只改
+`content_sha256` + `updated_at`，`fields` / `sources` / `verified` 等**一字不动**。
 """
 
 from __future__ import annotations
@@ -1200,6 +1212,126 @@ def cmd_lint(args) -> int:
           + ("——库可用。" if result["ok"] else "——**库有 error，先修**。"))
     return 0 if result["ok"] else 1
 
+
+# ── rehash：规范化规则升级后的库迁移（B-115）────────────────────────────────
+#
+# 为什么要有这个命令：`content_sha256` = f(entry_type, fields) → `canonical_fields()`
+# → `bibnorm._clean_field_value()`。一旦改 `bibnorm.DROP_FIELDS` 之类的规则，**旧库的
+# 摘要立刻全部 stale**，而 lint 会把它报成 error。批45 `6a6ff4e` 改规则后没迁移
+# 10-18 冻结的真实库 → 6 条 stale-sha 潜伏了一个月。本命令是事故的补偿入口，
+# 也是常态化门禁：以后改规则必须「改代码 + rehash --apply 迁移库 + 更新冻结 fixture」。
+
+REHASH_MIGRATION_NOTE = (
+    "改 Engine/slcn/bibnorm.py 的 DROP_FIELDS / DROP_FIELD_PREFIXES / 值清理规则后，"
+    "必须对真实库跑 `bibdb.py rehash --apply` 迁移，并更新 "
+    "Engine/tests/test_bibdb_rehash.py 的冻结 fixture"
+)
+
+
+def _clip_sha(sha: str) -> str:
+    """sha 的前 12 位（空/非 64 位十六进制的旧值原样显示，便于人读报告）。"""
+    text = str(sha or "")
+    return f"{text[:12]}…" if len(text) > 12 else (text or "（空）")
+
+
+def collect_rehash_rows(store) -> list[dict]:
+    """逐条重算 `content_sha256`，返回与库存值不一致的行（old/new 都是完整 sha）。
+
+    `old` 可能是空串（历史上手工/旧 schema 留下的无摘要记录）——一并补上。
+    """
+    rows: list[dict] = []
+    for record in store.records():
+        stored = record.get("content_sha256")
+        old = stored if isinstance(stored, str) else ""
+        actual = bibdb.content_sha256(str(record.get("entry_type") or ""),
+                                      record.get("fields") or {})
+        if old == actual:
+            continue
+        rows.append({"key": str(record.get("key") or ""), "old": old, "new": actual})
+    return rows
+
+
+def _rehash_write(store, rows: list[dict]) -> str:
+    """把重算结果写回库：**只改 content_sha256 + updated_at**，按 key 排序原子写。
+
+    为什么不用 `store.save()`：`Store.save()` 会顺带重算 aliases（那是 merge/import 的口径），
+    而 rehash 的承诺是「除 sha/updated_at 外一个字节都不动」。这里直接按 `save()`
+    同一套序列化（key 排序 + `_record_line()` + `fsutil.atomic_write`）落盘，绕开别名刷新。
+    原子写保证失败时旧库完好（`fsutil.atomic_write` 先写同目录临时文件再 rename）。
+    """
+    now = bibdb._now_iso()
+    new_by_key = {row["key"]: row["new"] for row in rows}
+    for record in store.records():
+        new_sha = new_by_key.get(str(record.get("key") or ""))
+        if new_sha is None:
+            continue
+        record["content_sha256"] = new_sha
+        record["updated_at"] = now
+    text = "".join(bibdb._record_line(record) + "\n" for record in store.records())
+    fsutil.atomic_write(store.path, text, keep_backups=0)
+    return now
+
+
+def cmd_rehash(args) -> int:
+    """重算 `content_sha256`；默认 dry-run，`--apply` 才写（只改 sha + updated_at）。"""
+    path = _db_path(args)
+    try:
+        # 用 lenient 载入：rehash 要治的恰好是「content_sha256 不合规」这一类结构问题
+        # （缺失/非 64 位十六进制/已 stale）。其余结构问题下面一律拒绝执行。
+        store = bibdb.Store.load(path, lenient=True)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    # 写回是按记录重序列化的：坏 JSON 行 / 缺 key / 重复 key 会在写回时被悄悄丢掉，
+    # 所以只允许修 content_sha256 相关问题，别的结构问题先 lint 修。
+    blocking = [problem for problem in store.problems if "content_sha256" not in problem]
+    if blocking:
+        print(f"✗ 库有 {len(blocking)} 处与 content_sha256 无关的结构问题，rehash 拒绝执行"
+              "（先跑 `bibdb.py lint` 修好，避免写回时丢行）：", file=sys.stderr)
+        for problem in blocking[:5]:
+            print(f"  · {problem}", file=sys.stderr)
+        return 2
+    try:
+        rows = collect_rehash_rows(store)
+        before_sha = bibdb.db_sha256(path)
+        written_at = ""
+        if args.apply and rows:
+            written_at = _rehash_write(store, rows)
+        after_sha = bibdb.db_sha256(path) if written_at else before_sha
+    except (bibdb.BibDBError, OSError) as exc:
+        print(f"✗ rehash 失败（库未改动）：{exc}", file=sys.stderr)
+        return 2
+    payload = {
+        "db": path,
+        "dry_run": not args.apply,
+        "applied": bool(written_at),
+        "records": len(store.records()),
+        "stale": len(rows),
+        "changes": rows,
+        "sha256_before": before_sha,
+        "sha256_after": after_sha,
+        "updated_at": written_at or None,
+        "notes": REHASH_MIGRATION_NOTE,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"条目 {payload['records']}；content_sha256 与当前规范化规则不一致 "
+          f"{len(rows)} 条")
+    for row in rows:
+        print(f"  ✗ {row['key']}：{_clip_sha(row['old'])} → {_clip_sha(row['new'])}")
+    if not rows:
+        print("✓ 全部条目一致（0 条需迁移）——库已与当前规范化规则对齐。")
+    elif args.apply:
+        print(f"✓ 已重算并写回 {len(rows)} 条（只改 content_sha256 + updated_at；原子写）")
+        print(f"  库 sha256：{before_sha[:12]}… → {after_sha[:12]}…")
+        print(f"  下一步：`bibdb.py lint --db {path}` 应 error 0（warning 不变）。")
+    else:
+        print(f"dry-run：未写库（{len(rows)} 条待迁移）；确认后用 `--apply` 写回。")
+    if rows:
+        print(f"  说明：{REHASH_MIGRATION_NOTE}。")
+    return 0
 
 
 def _resolve_report_out(args) -> str:
@@ -4768,6 +4900,20 @@ def build_parser() -> argparse.ArgumentParser:
                           help="库体检（重复 key / 字段冲突 / 缺来源 / verified 无记录 …）")
     lint.add_argument("--json", action="store_true", help="机器可读输出")
     lint.set_defaults(func=cmd_lint)
+
+    # ── 规范化规则升级后的库迁移（B-115）：默认 dry-run，--apply 只改 sha/updated_at ──
+    rh = sub.add_parser(
+        "rehash", parents=[common],
+        help="规范化规则升级后重算 content_sha256（默认 dry-run；--apply 只改 "
+             "content_sha256+updated_at，原子写）")
+    rh_mode = rh.add_mutually_exclusive_group()
+    rh_mode.add_argument("--dry-run", action="store_true",
+                         help="显式 dry-run（默认就是；只报告 old/new，不写库）")
+    rh_mode.add_argument("--apply", action="store_true",
+                         help="**真正写库**：逐条重算并写回 content_sha256 + updated_at；"
+                              "fields/sources/verified 等一字不动（原子写）")
+    rh.add_argument("--json", action="store_true", help="机器可读输出")
+    rh.set_defaults(func=cmd_rehash)
 
     # ── 冲突裁决持久化（第 130 条）：把「保留旧值 / 待人工」写进库，重新生成清单不丢 ──
     resolve = sub.add_parser(

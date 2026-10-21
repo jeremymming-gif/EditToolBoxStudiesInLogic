@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
 import time
 
@@ -30,6 +32,46 @@ def _compile_pdf(out_dir: str, stem: str):
     """延迟导入 `convert.compile_pdf`（它 import 的东西多，--dry-run 时不必付这个成本）。"""
     import convert  # noqa: PLC0415
     return convert.compile_pdf(out_dir, stem)
+
+
+def compile_tex_xelatex(folder: str, stem: str, runs: int = 2) -> tuple[bool, str]:
+    """只跑 `xelatex`（**不跑 biber**），给没有参考文献的 .tex 用。
+
+    谁用：`publish.py` 第 ④ 步把这一期的目录 .tex 编译成 `000*/…pdf`（目录没有参考文献，
+    走 `convert.compile_pdf` 会白跑 biber）。口径与 `convert.compile_pdf` 一致：
+    先清上一轮中间产物（复用它的 `clean_stale_compile_artifacts`，否则第一次 xelatex
+    会读旧 `.aux/.out/.toc`）、`-interaction=nonstopmode`、失败回显 `.log` 里的 `!` 摘要。
+
+    返回 `(成功, PDF 路径或错误信息)`；本函数**不改**本文件 `main()` 的任何行为。
+    """
+    if shutil.which("xelatex") is None:
+        return False, "找不到命令 xelatex，请确认已安装 TeX Live"
+    import convert  # noqa: PLC0415  延迟导入：本文件 --dry-run / 普通路径不必付这个成本
+    convert.clean_stale_compile_artifacts(folder, stem)
+    for i in range(1, max(1, runs) + 1):
+        try:
+            r = subprocess.run(
+                ["xelatex", "-interaction=nonstopmode", f"{stem}.tex"],
+                cwd=folder, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            )
+        except OSError as e:  # 命令在但起不来（权限/坏软链）：致命
+            return False, f"启动 xelatex 失败：{e}"
+        if r.returncode != 0:
+            log = os.path.join(folder, f"{stem}.log")
+            detail = ""
+            if os.path.exists(log):
+                hits = [
+                    ln.strip()
+                    for ln in open(log, encoding="utf-8", errors="replace")
+                    if ln.startswith("!")
+                ][:3]
+                detail = "；".join(hits)
+            return False, (f"xelatex 第 {i}/{runs} 次失败（退出码 {r.returncode}）"
+                           f"{('：' + detail) if detail else ''}")
+    pdf = os.path.join(folder, f"{stem}.pdf")
+    if not os.path.exists(pdf):
+        return False, "编译结束但未生成 PDF"
+    return True, pdf
 
 
 def main(argv: list[str] | None = None) -> int:

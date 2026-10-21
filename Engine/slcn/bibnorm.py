@@ -12,6 +12,17 @@
 不跳注释，产物 `reference.bib` 会带空键/重复键，biber 语法报错**整份 bib 报废**
 （2023(71)04：115 处 undefined citation、参考文献区未生成）。现在先 `strip_bib_comments()`
 （只清「行首可选空白 + `%` 到行尾」，行内/值内 `%` 不动）再拆条目。
+
+**⚠️ 改规范化规则（`DROP_FIELDS` / `DROP_FIELD_PREFIXES` / `_clean_field_value` 的值清理）
+必须同时迁移引用库**：库记录的 `content_sha256` 由本模块的清理规则推导（见
+`slcn/bibdb.py:canonical_fields()`），规则一改，旧库摘要立刻全部 stale、`bibdb.py lint`
+会报 `content_sha256 与字段内容不一致`。改动时**必须**：
+  1. 对真实库跑 `python3 Engine/bibdb.py rehash --db <库> --apply`（只改
+     `content_sha256` + `updated_at`，原子写、可 git 回滚）；
+  2. 更新冻结 fixture `Engine/tests/test_bibdb_rehash.py` 里的期望 sha（它存在的目的
+     就是让「改了规则忘了迁移」立刻红）。
+批45 `6a6ff4e` 改了 `DROP_FIELDS` 却没迁移 10-18 冻结库，6 条 stale-sha 潜伏到批71
+才被真实库 lint 发现——本条就是那次事故立的规矩。
 """
 
 from __future__ import annotations

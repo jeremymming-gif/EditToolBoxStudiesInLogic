@@ -157,6 +157,576 @@ def classify(text: str) -> Footnote:
     return fn
 
 
+# ── 作者信息脚注（批71 B-118）──────────────────────────────────────────────
+#
+# Word 稿常把作者信息写成**脚注**（第 90 期 90-01/02/04/07/10 实测）：`作者信息：` /
+# `作者简介：` / `收稿日期：` / `基金项目：` + 每作者「姓名 单位」行 + 邮箱行。它们与
+# 文献脚注的格式完全不同，`classify()` 已按 `_AUTHOR_INFO` 判成 pure_note（本组函数
+# **不改 classify 的任何分支**），这里只把这些文本抽成结构化元数据，供
+# `docxsource.parse_docx` 落到 DocxDoc（build 再**只填空不覆盖**地写模板槽位）。
+#
+# 实测形态（脱敏后钉在 tests/test_b71_word_author_meta.py）：
+#   ① 单作者：  `作者信息：张三  北京大学哲学系` + 邮箱行
+#   ② 多作者中英并列：每作者「姓名 单位」+ 邮箱，英文名/单位写在括号里或另起一行
+#   ③ 叙事：    `作者简介：张三，男，某省某市人，某大学某系教授。电子邮箱：…`
+#   ④ 多单位：  单位另起一行；`通讯作者：` 可另立一段
+#   ⑤ 同条：    `收稿日期：2025-09-19  基金项目：国家社科基金…（22CZX064）。`
+#   ⑥ 无标签英文块：`Zhang San  College of Philosophy, …` + 邮箱（**必须**每条命中的
+#      姓名都在已知作者名单里，且整块无文献标记，宁 fail 不误判）
+#
+# 判据纪律（用户 2026-10-21 拍板：**不许猜**）：
+#   · 姓名只取「已知作者名 / 行首姓名 + 单位或邮箱 / 括号里的英文名」；凭空 token 不收；
+#   · 单位必须含机构词（大学/学院/研究所/… 或 University/College/…）且以机构后缀收尾；
+#   · 姓名与单位**无法可靠切分**（无分隔连写且不在已知名单）→ 不解析 + warning；
+#   · 绝不把第一作者的字段复制给其他作者、绝不覆盖已有值（后者由 build 负责）。
+_AI_NAME_LABEL = (
+    r"作者信息|作者简介|作者单位|单位信息|所属单位|作者署名|作者姓名|"
+    r"通讯作者|通信作者|Corresponding\s+author"
+)
+_AI_RECEIVED_LABEL = r"收稿日期|录用日期|投稿日期|修回日期|修订日期"
+_AI_FUND_LABEL = r"基金项目|基金资助|资助项目|项目资助"
+_AI_LABEL_LEAD_RE = re.compile(
+    r"(?:^|\n)[ \t\u3000]*(?:" + _AI_NAME_LABEL + "|" + _AI_RECEIVED_LABEL
+    + "|" + _AI_FUND_LABEL + r")[ \t\u3000]*[:：]", re.M | re.I)
+#: 段标签只认**行首**（或前面 ≥2 个空格 = 同一条里并列的多个标签）。不认行中间的
+#: `基金项目`（90-02 的基金名里就含「国家社会科学基金项目重点项目」，不能切开）。
+_AI_SECTION_RE = re.compile(
+    r"(?:\n|^|[ \t\u3000]{2,})(?P<label>(?:" + _AI_NAME_LABEL + r")|(?:"
+    + _AI_RECEIVED_LABEL + r")|(?:" + _AI_FUND_LABEL + r"))[ \t\u3000]*[:：][ \t\u3000]*",
+    re.M | re.I)
+_AI_NAMES_SET = {"作者信息", "作者简介", "作者单位", "单位信息", "所属单位",
+                 "作者署名", "作者姓名", "通讯作者", "通信作者"}
+_AI_RECEIVED_SET = {"收稿日期", "录用日期", "投稿日期", "修回日期", "修订日期"}
+_AI_FUND_SET = {"基金项目", "基金资助", "资助项目", "项目资助"}
+_AI_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
+_AI_EMAIL_LABEL_RE = re.compile(r"(?:电子邮箱|邮箱|E-?mail)\s*[：:]", re.I)
+_AI_DATE_RE = re.compile(
+    r"((?:19|20)\d{2})\s*[-–—./年]\s*(\d{1,2})\s*[-–—./月]\s*(\d{1,2})")
+_AI_PAREN_RE = re.compile(r"[（(]([^（）()]{2,120})[）)]")
+_AI_LATIN_NAME_RE = re.compile(
+    r"(?:[A-Z][A-Za-z'’\-]*\.?\s+){1,2}[A-Z][A-Za-z'’\-]*")
+_AI_CN_UNIT_START_RE = re.compile(
+    r"^[\u4e00-\u9fff·]{2,10}(?:大学|学院|研究院|研究所|实验室|科学院|"
+    r"社会科学院|学系|哲学系|中心|学部)")
+_AI_CN_INST_WORD_RE = re.compile(
+    r"大学|学院|研究院|研究所|实验室|科学院|社会科学院|学系|哲学系|中心|学部")
+_AI_CN_UNIT_TAIL_RE = re.compile(
+    r"(?:大学|学院|研究院|研究所|实验室|科学院|社会科学院|学系|哲学系|系|中心|学部)$")
+#: 学术职衔（**剥离**，单位字段只留机构名；行政职务故意不收 —— 与 docxsource 同一口径）
+_AI_TITLE_TAIL_RE = re.compile(
+    r"(?:一级|二级|三级|四级|特聘|客座|兼职|终身|名誉|助理|副)?"
+    r"(?:教授|研究员|讲师|助教|博士生导师|硕士生导师|博导|硕导|博士研究生|"
+    r"硕士研究生|博士|硕士|研究生|生)$")
+_AI_NAME_BAD_RE = re.compile(
+    r"大学|学院|研究院|研究所|实验室|科学院|中心|男|女|人$|省|市|县|区|系|"
+    r"所|院|教授|博士|研究|学$")
+#: 常见中文姓氏（只用于**未知连写**的切分守卫：首字不在表里就不猜）。
+#: 不必求全——名单外的姓名会走「无法判定 → warning」而不是猜错。
+_AI_SURNAMES = frozenset(
+    "王李张刘陈杨黄赵吴周徐孙马朱胡郭何高林罗郑梁谢宋唐许韩冯邓曹彭曾肖田"
+    "董袁潘蒋蔡余杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦付方白邹"
+    "孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤")
+_AI_COMPOUND_SURNAMES = frozenset(
+    ("欧阳", "司马", "诸葛", "上官", "东方", "皇甫", "尉迟", "公孙", "慕容",
+     "长孙", "宇文", "司徒", "令狐", "夏侯"))
+
+
+def _ai_plausible_name(cand: str) -> bool:
+    """未知连写的姓名守卫：2–4 个汉字、不含机构/角色词、首字是常见姓氏。"""
+    if not re.fullmatch(r"[\u4e00-\u9fff·]{2,4}", cand or ""):
+        return False
+    if _AI_NAME_BAD_RE.search(cand):
+        return False
+    if len(cand) >= 3 and cand[:2] in _AI_COMPOUND_SURNAMES:
+        return True
+    return cand[0] in _AI_SURNAMES
+
+
+_AI_EN_INST_RE = re.compile(
+    r"\b(?:University|College|Institute|School|Department|Academy|Center|"
+    r"Centre|Faculty|Laboratory|Lab)\b", re.I)
+#: 无标签英文块里**绝不能出现**的文献标记（出现即当文献脚注，宁 fail 不误判）
+_AI_CITE_CUE_RE = re.compile(
+    r"[“”\"‘’]|\b(?:19|20)\d{2}\b|\bpp?\.\s*\d|\bVol\.|\bPress\b|\bJournal\b|"
+    r"出版社|学报|期刊|https?://")
+
+
+def looks_like_author_info(text: str) -> bool:
+    """是否「作者信息类」脚注（行首有 作者信息/作者简介/收稿日期/基金项目 标签）。
+
+    只在 docxsource 里用来决定「解析不出来时要不要报 warning」——**不改** `classify()`。
+    """
+    t = text or ""
+    if not t.strip() or len(t) > 6000:
+        return False
+    return bool(_AI_LABEL_LEAD_RE.search(t))
+
+
+def _ai_kind(label: str) -> str:
+    lab = re.sub(r"\s+", " ", (label or "").strip()).lower()
+    if lab in _AI_NAMES_SET or lab.startswith("corresponding"):
+        return "authors"
+    if lab in _AI_RECEIVED_SET:
+        return "received"
+    if lab in _AI_FUND_SET:
+        return "funds"
+    return "authors"
+
+
+def _ai_clean_text(s: str) -> str:
+    return re.sub(r"[ \t\u3000]+", " ", (s or "").replace("\u3000", " ")).strip()
+
+
+def _ai_norm_name(name: str) -> str:
+    return re.sub(r"[\s\u3000\\{}kaishu]+", "", str(name or ""))
+
+
+def _ai_new_record(records: list[dict], *, name: str = "", name_en: str = "") -> dict:
+    rec = {"name": name, "name_en": name_en,
+           "affiliation_cn": [], "affiliation_en": [], "email": ""}
+    records.append(rec)
+    return rec
+
+
+def _ai_strip_title(frag: str) -> str:
+    """剥掉学术职衔与包裹标点；返回可能是机构名的片段（不做机构词判据）。"""
+    s = frag.strip(" \u3000,，.。．;；:：()（）[]【】")
+    for _ in range(2):
+        s2 = _AI_TITLE_TAIL_RE.sub("", s).strip(" \u3000,，.。．;；:：()（）[]【】")
+        if s2 == s:
+            break
+        s = s2
+    return s
+
+
+def _ai_add_units(rec: dict, text: str) -> None:
+    """把一段「单位文字」收进 rec；不猜：碎片必须含机构词且以机构后缀/机构词收尾。"""
+    t = _ai_clean_text(text).strip(" ,，.。．;；:：")
+    if not t:
+        return
+    latin = re.search(r"[A-Za-z]", t)
+    han = re.search(r"[\u4e00-\u9fff]", t)
+    if latin and not han:
+        # 纯西文：整段就是一个单位，**不按逗号切**（`College of Philosophy, Nankai University`）
+        for seg in re.split(r"[;；]|\\\\\\\\", t):
+            seg = seg.strip(" .,;，。")
+            if (seg and len(seg) >= 8 and _AI_EN_INST_RE.search(seg)
+                    and seg not in rec["affiliation_en"]):
+                rec["affiliation_en"].append(seg)
+        return
+    if latin and han:
+        # 中英混排：先摘出西文单位段，剩下的按中文规则处理
+        for seg in re.findall(r"[A-Za-z][A-Za-z ,&.\-'’]{7,}", t):
+            seg2 = seg.strip(" .,;")
+            if len(seg2) >= 8 and _AI_EN_INST_RE.search(seg2) \
+                    and seg2 not in rec["affiliation_en"]:
+                rec["affiliation_en"].append(seg2)
+            t = t.replace(seg, " ")
+    for frag in re.split(r"[，,。．.；;、]+", t):
+        core = _ai_strip_title(frag)
+        if not core or len(core) < 4 or not re.fullmatch(r"[\u4e00-\u9fff·]+", core):
+            continue
+        if _AI_CN_INST_WORD_RE.search(core) and _AI_CN_UNIT_TAIL_RE.search(core):
+            if core not in rec["affiliation_cn"]:
+                rec["affiliation_cn"].append(core)
+
+
+def _ai_split_unknown_name(line: str) -> tuple[str, str] | None:
+    """行首「姓名 + 单位」的保守切分；多个切法都成立 → 不猜（None）。"""
+    t = _ai_clean_text(line)
+    m = re.match(r"^([\u4e00-\u9fff·]{2,4})[ \u3000]{2,}(.+)$", t)
+    if m and _AI_CN_INST_WORD_RE.search(m.group(2)):
+        return m.group(1), m.group(2)
+    m_en = re.match(
+        r"^(" + _AI_LATIN_NAME_RE.pattern + r")\s{2,}(.+)$", t)
+    if m_en and _AI_EN_INST_RE.search(m_en.group(2)):
+        return "", ""  # 英文姓名不是中文切分；交给调用方的英文分支
+    cands: list[tuple[str, str]] = []
+    for k in (2, 3, 4):
+        cand, rest = t[:k], t[k:]
+        # 4 字姓名只可能是复姓（欧阳…），普通单姓最多 3 字 —— 否则「李四北京大学…」
+        # 会同时切出「李四」「李四北京」两种，反而把能切的切没了。
+        if k == 4 and cand[:2] not in _AI_COMPOUND_SURNAMES:
+            continue
+        if not _ai_plausible_name(cand):
+            continue
+        rest = rest.lstrip(" \u3000")
+        if not rest or not _AI_CN_UNIT_START_RE.match(rest):
+            continue
+        # 单位起头必须是「2–6 字地名/校名前缀 + 机构词」（北京大学 ✓ / 京大学 ✗）：
+        # 否则「李四北京大学…」会同时切出「李四」「李四北」两种，把能切的切没了。
+        _inst = _AI_CN_INST_WORD_RE.search(rest)
+        if not _inst or not (2 <= _inst.start() <= 6):
+            continue
+        if not _AI_CN_UNIT_TAIL_RE.search(rest):
+            continue
+        cands.append((cand, rest))
+    return cands[0] if len(cands) == 1 else None
+
+
+def _ai_known_prefix(line: str, known_cn: tuple[str, ...],
+                     known_en: tuple[str, ...]) -> tuple[str, str, str] | None:
+    """行首是否是已知作者名 → (kind, name, rest)；kind ∈ {'cn','en'}。"""
+    t = _ai_clean_text(line)
+    best: tuple[str, str, str] | None = None
+    for nm in known_cn:
+        if len(nm) >= 2 and t.startswith(nm):
+            if best is None or len(nm) > len(best[1]):
+                best = ("cn", nm, t[len(nm):])
+    for nm in known_en:
+        if len(nm) >= 4 and t.startswith(nm):
+            if best is None or len(nm) > len(best[1]):
+                best = ("en", nm, t[len(nm):])
+    if best is None:
+        return None
+    rest = best[2].strip(" \u3000,，.。．;；:：")
+    # 已知名后面必须紧跟分隔（空格/标点）或直接是机构名，否则视为误命中
+    if best[2] and best[2][0] not in " \u3000,，.。．;；:：)" \
+            and not _AI_CN_INST_WORD_RE.search(best[2]):
+        return None
+    return best[0], best[1], rest
+
+
+def _ai_add_emails(rec: dict, emails: list[str]) -> None:
+    for e in emails:
+        if not e:
+            continue
+        if not rec["email"]:
+            rec["email"] = e
+        else:
+            break
+
+
+def _ai_is_unit_line(line: str) -> bool:
+    t = _ai_clean_text(line)
+    if not t:
+        return False
+    if _AI_CN_UNIT_START_RE.match(t) and _AI_CN_INST_WORD_RE.search(t):
+        return True
+    return bool(_AI_EN_INST_RE.search(t) and re.search(r"[A-Za-z]", t))
+
+
+def _ai_consume_narrative(
+    line: str, emails: list[str], records: list[dict],
+    known_cn: tuple[str, ...], warnings: list[str],
+) -> dict:
+    """叙事型作者简介：`姓名，性别，籍贯，单位+职衔。`（多作者用 `．`/`。` 分隔）。"""
+    boundaries: list[tuple[int, str]] = []
+    for nm in known_cn:
+        start = 0
+        while True:
+            i = line.find(nm, start)
+            if i < 0:
+                break
+            boundaries.append((i, nm))
+            start = i + len(nm)
+    boundaries.sort()
+    # 去掉重叠（长名字优先）
+    uniq: list[tuple[int, str]] = []
+    for pos, nm in boundaries:
+        if uniq and pos < uniq[-1][0] + len(uniq[-1][1]):
+            continue
+        uniq.append((pos, nm))
+    boundaries = uniq
+    if not boundaries:
+        m = re.match(r"^([\u4e00-\u9fff·]{2,4})[，,]", line)
+        if not m or not _ai_plausible_name(m.group(1)):
+            return {}
+        boundaries = [(0, m.group(1))]
+    made: list[dict] = []
+    for idx, (pos, nm) in enumerate(boundaries):
+        end = boundaries[idx + 1][0] if idx + 1 < len(boundaries) else len(line)
+        seg = line[pos + len(nm):end]
+        rec = _ai_new_record(records, name=nm)
+        _ai_add_units(rec, seg)
+        made.append(rec)
+    if emails:
+        if len(emails) == len(made):
+            for rec, e in zip(made, emails):
+                _ai_add_emails(rec, [e])
+        else:
+            _ai_add_emails(made[0], emails)
+    return made[-1] if made else {}
+
+
+def _ai_consume_line(
+    line: str, records: list[dict], cur: dict | None,
+    known_cn: tuple[str, ...], known_en: tuple[str, ...], warnings: list[str],
+) -> dict | None:
+    """处理作者块里的一行：新作者 / 单位续行 / 邮箱行。返回新的「当前作者」。"""
+    raw = _ai_clean_text(line)
+    if not raw:
+        return cur
+    emails = _AI_EMAIL_RE.findall(raw)
+    text = _AI_EMAIL_RE.sub(" ", raw)
+    text = _AI_EMAIL_LABEL_RE.sub(" ", text)
+    parens = [p.strip() for p in _AI_PAREN_RE.findall(text)]
+    text = _AI_PAREN_RE.sub(" ", text)
+    text = _ai_clean_text(text).strip(" ,，.。．;；:：")
+    if not text:
+        if emails:
+            if cur is None:
+                cur = _ai_new_record(records)
+            _ai_add_emails(cur, emails)
+        return cur
+    # 叙事型（含 2+ 逗号 + 机构词 + 已知作者名或开头姓名）：姓名、单位混在句子里
+    if text.count("，") + text.count(",") >= 2 and _AI_CN_INST_WORD_RE.search(text) \
+            and (any(text.startswith(nm) for nm in known_cn) or "，男" in text
+                 or "，女" in text or "教授" in text or "研究员" in text):
+        made = _ai_consume_narrative(text, emails, records, known_cn, warnings)
+        if made:
+            return made
+    known = _ai_known_prefix(text, known_cn, known_en)
+    if known:
+        kind, name, rest = known
+        if kind == "en":
+            rec = _ai_new_record(records, name_en=name)
+        else:
+            rec = _ai_new_record(records, name=name)
+        for p in parens:
+            if _AI_LATIN_NAME_RE.fullmatch(p):
+                rec["name_en"] = rec["name_en"] or p
+            elif _AI_EN_INST_RE.search(p):
+                _ai_add_units(rec, p)
+        _ai_add_units(rec, rest)
+        _ai_add_emails(rec, emails)
+        return rec
+    # 单位续行（`南京大学现代逻辑与逻辑应用研究所` 这类）：整行本身就是一个单位时
+    # 先按续行处理，避免被「姓名+单位」硬切出「南京大」这种碎片。
+    if cur is not None and _ai_is_unit_line(text) and not _ai_split_unknown_name(text):
+        _ai_add_units(cur, text)
+        _ai_add_emails(cur, emails)
+        return cur
+    split = _ai_split_unknown_name(text)
+    if split:
+        name, rest = split
+        rec = _ai_new_record(records, name=name)
+        for p in parens:
+            if _AI_LATIN_NAME_RE.fullmatch(p):
+                rec["name_en"] = rec["name_en"] or p
+            elif _AI_EN_INST_RE.search(p):
+                _ai_add_units(rec, p)
+        _ai_add_units(rec, rest)
+        _ai_add_emails(rec, emails)
+        return rec
+    if _ai_plausible_name(text):
+        rec = _ai_new_record(records, name=text)
+        _ai_add_emails(rec, emails)
+        return rec
+    if _ai_is_unit_line(text):
+        if cur is None:
+            cur = _ai_new_record(records)
+        _ai_add_units(cur, text)
+        _ai_add_emails(cur, emails)
+        return cur
+    # 认不出的碎片：不猜（丢掉，但只在整条像是作者块时提醒一次由调用方做）
+    return cur
+
+
+def _ai_split_inline_chunks(content: str) -> list[str]:
+    """同一条里的多个作者用 `；`/`;` 并列时切开（每段都必须有邮箱或机构词）。"""
+    content = content or ""
+    if not re.search(r"[；;]", content):
+        return [content]
+    parts = [p for p in re.split(r"[；;]", content) if p.strip()]
+    if len(parts) < 2:
+        return [content]
+    if all("@" in p or _AI_CN_INST_WORD_RE.search(p) for p in parts):
+        return parts
+    return [content]
+
+
+def _ai_parse_authors(content: str, known_cn: tuple[str, ...],
+                      known_en: tuple[str, ...], warnings: list[str]) -> list[dict]:
+    records: list[dict] = []
+    cur: dict | None = None
+    for raw_line in re.split(r"[\n\r]+", content or ""):
+        for chunk in _ai_split_inline_chunks(raw_line):
+            if not chunk.strip():
+                continue
+            cur = _ai_consume_line(chunk, records, cur, known_cn, known_en, warnings)
+    return records
+
+
+def _ai_unlabeled_ok(text: str, known_cn: tuple[str, ...],
+                     known_en: tuple[str, ...]) -> bool:
+    """无标签英文作者块判据：**每条命中的姓名都必须是已知作者名**，整块无文献标记。"""
+    if not known_cn and not known_en:
+        return False
+    if _AI_CITE_CUE_RE.search(text or ""):
+        return False
+    lines = [_ai_clean_text(x) for x in re.split(r"[\n\r]+", text or "")]
+    lines = [x for x in lines if x]
+    if len(lines) < 2:
+        return False
+    name_lines = 0
+    have_email = False
+    for ln in lines:
+        if _AI_EMAIL_RE.fullmatch(ln.strip(" .,;，。")):
+            have_email = True
+            continue
+        if _ai_known_prefix(ln, known_cn, known_en) or _ai_is_unit_line(ln) \
+                or _AI_EMAIL_RE.search(ln):
+            if _ai_known_prefix(ln, known_cn, known_en):
+                name_lines += 1
+            continue
+        return False
+    return name_lines >= 2 or (name_lines >= 1 and have_email)
+
+
+def parse_author_info(
+    text: str, *, known_cn: tuple[str, ...] = (), known_en: tuple[str, ...] = ()
+) -> dict | None:
+    """解析「作者信息类」脚注。
+
+    返回 `{"authors": [...], "received": "", "grants": "", "warnings": [...]}`；
+    不是作者信息脚注（或整条无法判定）→ `None`。每个作者 dict：
+    `{"name", "name_en", "affiliation_cn": [...], "affiliation_en": [...], "email"}`。
+    **本函数不猜**：认不出的碎片丢弃；叙事里的性别/籍贯/职衔不当单位。
+    """
+    t = text or ""
+    if not t.strip() or len(t) > 6000:
+        return None
+    sections: list[tuple[str, str]] = []
+    if looks_like_author_info(t):
+        ms = list(_AI_SECTION_RE.finditer(t))
+        for i, m in enumerate(ms):
+            end = ms[i + 1].start() if i + 1 < len(ms) else len(t)
+            sections.append((_ai_kind(m.group("label")), t[m.end():end]))
+        if not sections:
+            return None
+    elif _ai_unlabeled_ok(t, known_cn, known_en):
+        sections = [("authors", t)]
+    else:
+        return None
+    authors: list[dict] = []
+    received = ""
+    grants = ""
+    warnings: list[str] = []
+    has_author_section = any(k == "authors" for k, _ in sections)
+    for kind, content in sections:
+        if kind == "authors":
+            got = _ai_parse_authors(content, known_cn, known_en, warnings)
+            authors.extend(got)
+        elif kind == "received" and not received:
+            c = content.strip()
+            m = _AI_DATE_RE.search(c)
+            if m:
+                received = "%04d-%02d-%02d" % (int(m.group(1)), int(m.group(2)),
+                                               int(m.group(3)))
+            elif c and not authors:
+                # 只有标签、没有日期是正常体例（作者没填）；有内容却认不出 → 提醒
+                left = _AI_LABEL_LEAD_RE.sub("", c).strip()
+                if left:
+                    warnings.append(f"收稿日期无法判定（不猜）：{c[:40]}")
+        elif kind == "funds" and not grants:
+            for ln in _AI_EMAIL_RE.sub(" ", content).splitlines():
+                ln = ln.strip()
+                if ln:
+                    grants = ln
+                    break
+    if not authors and grants:
+        # 只有基金项目（90-08 型）：正常，不警告
+        pass
+    elif has_author_section and not any(
+            a.get("name") or a.get("name_en") for a in authors):
+        cue = _AI_LABEL_LEAD_RE.sub("", t).strip()
+        if len(cue) >= 2:
+            warnings.append(
+                "作者信息脚注未能判定作者姓名（保持占位符，请人工填写）：" + cue[:60])
+    return {"authors": authors, "received": received, "grants": grants,
+            "warnings": warnings}
+
+
+def parse_fund_line(text: str) -> str:
+    """从正文/脚注的**独立一行** `基金项目：…` 取基金内容（90-08 实测：只在正文）。"""
+    t = (text or "").strip()
+    if not t or len(t) > 300:
+        return ""
+    m = re.match(r"^(?:" + _AI_FUND_LABEL + r")[ \t\u3000]*[:：][ \t\u3000]*(\S.*)$", t)
+    if not m:
+        return ""
+    return m.group(1).strip().rstrip()
+
+
+def merge_author_info(
+    infos: list[dict], *, known_cn: tuple[str, ...] = (),
+    known_en: tuple[str, ...] = (),
+) -> dict:
+    """合并多条作者信息脚注的解析结果（同名合并、英文块按邮箱/已知名单对齐中文记录）。"""
+    all_recs: list[dict] = []
+    received = ""
+    grants = ""
+    warnings: list[str] = []
+    for info in infos or []:
+        all_recs.extend(dict(r) for r in (info.get("authors") or []))
+        received = received or str(info.get("received") or "")
+        grants = grants or str(info.get("grants") or "")
+        warnings.extend(info.get("warnings") or [])
+
+    def _merge_into(tgt: dict, src: dict) -> None:
+        for k in ("affiliation_cn", "affiliation_en"):
+            for v in src.get(k) or []:
+                if v not in tgt.setdefault(k, []):
+                    tgt[k].append(v)
+        if not tgt.get("email") and src.get("email"):
+            tgt["email"] = src["email"]
+        if not tgt.get("name_en") and src.get("name_en"):
+            tgt["name_en"] = src["name_en"]
+        if not tgt.get("name") and src.get("name"):
+            tgt["name"] = src["name"]
+
+    def _find_cn(name: str) -> dict | None:
+        key = _ai_norm_name(name)
+        for r in out:
+            if r.get("name") and _ai_norm_name(r["name"]) == key:
+                return r
+        return None
+
+    def _find_email(email: str) -> dict | None:
+        e = (email or "").strip().lower()
+        if not e:
+            return None
+        for r in out:
+            if (r.get("email") or "").strip().lower() == e:
+                return r
+        return None
+
+    out: list[dict] = []
+    anon: list[dict] = []
+    for rec in all_recs:
+        if rec.get("name"):
+            tgt = _find_cn(rec["name"])
+            if tgt is None:
+                _ai_new_record(out, name=rec["name"])
+                tgt = out[-1]
+            _merge_into(tgt, rec)
+        elif rec.get("name_en"):
+            anon.append(rec)          # 英文块：先放着，等中文记录齐了对齐
+        else:
+            anon.append(rec)          # 匿名单位/邮箱块
+    en_pos = {_ai_norm_name(nm): i for i, nm in enumerate(known_en)}
+    for rec in anon:
+        tgt = _find_email(rec.get("email"))
+        if tgt is None and rec.get("name_en") and len(known_cn) == len(known_en):
+            i = en_pos.get(_ai_norm_name(rec["name_en"]))
+            if i is not None and i < len(out) \
+                    and _ai_norm_name(out[i].get("name")) == _ai_norm_name(known_cn[i]):
+                tgt = out[i]
+        if tgt is not None:
+            _merge_into(tgt, rec)
+        elif rec.get("name_en") and not out:
+            _ai_new_record(out, name_en=rec["name_en"])
+            _merge_into(out[-1], rec)
+        elif not rec.get("name_en") and out:
+            # 匿名单位/邮箱：只可能是第一作者的续行，归给第一条记录
+            _merge_into(out[0], rec)
+        elif rec.get("name_en"):
+            out.append(rec)
+    return {"authors": out, "received": received, "grants": grants,
+            "warnings": warnings}
+
+
 # ── C 类新口径（第 49 批，用户 2026-10-19 拍板；新 API 默认即新口径）────────────
 #
 # 最终参考文献 = 脚注引注文献 ∪ 文末清单；纯引用型脚注 → 正文 `\parencite[locator]{key}`

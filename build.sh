@@ -8,6 +8,21 @@ cd "$PROJ"
 # O13（第四十六批）：构建起点（末尾 manifest 的 started_at / duration）。
 # 只是证据，不参与任何构建判定。
 BUILD_START_ISO="$(date "+%Y-%m-%dT%H:%M:%S%z")"
+# B-119（第七十一批）：版本标识 = 版本号 + git commit short sha + build 时间，嵌进 App 的 Info.plist。
+#   值只有两个来源，别处不另写一份：commit 取当前 HEAD 的 short sha；build 时间取**构建开始**时刻
+#   （与上面的 started_at 同一口径，只截到分钟，例：2026-10-21T13:45）。
+#   ⚠️ 只写 Info.plist 与 build manifest —— **不碰 Engine/**，所以包内 cmp 28 项与 engine_py_sha 口径不变。
+BUILD_COMMIT="$(git -C "$PROJ" rev-parse --short HEAD 2>/dev/null || true)"
+[ -n "$BUILD_COMMIT" ] || BUILD_COMMIT="unknown"
+BUILD_TIME="${BUILD_START_ISO:0:16}"
+# 工作树是否**脏**（有未提交/未跟踪改动；.gitignore 的构建产物不算）。批末构建顺序固定为
+# 「gen_docs 写 → build → cmp → **最后才 commit**」，所以批末 build 时工作树必然是脏的：
+# 只显示 HEAD short sha 会让人误以为包内代码 == 该 commit。脏时版本串标 `-dirty`；
+# clean 树（发版 tag 构建）仍是不带标记的 `1.2.2+<sha>`。
+BUILD_DIRTY="false"
+if [ -n "$(git -C "$PROJ" status --porcelain 2>/dev/null || true)" ]; then BUILD_DIRTY="true"; fi
+BUILD_DIRTY_PLIST="<false/>"
+[ "$BUILD_DIRTY" = "true" ] && BUILD_DIRTY_PLIST="<true/>"
 # 引擎 py 指纹也在**开始时**算（并发写者窗口里结束态可能已变；构建打包用的是开始附近那份）。
 BUILD_ENGINE_SHA=""
 RR_PY="$PROJ/Engine/tools/run_record.py"
@@ -47,6 +62,8 @@ _record_build_manifest() {
     --started-at "$BUILD_START_ISO" --command "bash build.sh" --exit-code "$rc" \
     --artifact "$app_bin" --engine-sha "$BUILD_ENGINE_SHA" \
     --meta "app_version=${APP_VERSION:-unknown}" --meta "app_mtime=$app_mtime" \
+    --meta "build_commit=${BUILD_COMMIT:-unknown}" --meta "build_time=${BUILD_TIME:-unknown}" \
+    --meta "build_dirty=${BUILD_DIRTY:-unknown}" \
     --meta "app_py_files=$app_py_files" --meta "cmp_result=${CMP_RESULT:-not-run}" \
     --meta "failed=$failed" --meta "failed_step=${failed_step:0:120}" || true
   return 0
@@ -79,6 +96,9 @@ cp "$PROJ/.build/$BINARY" "$APP/Contents/MacOS/$BINARY"
 APP_VERSION="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$PROJ/Engine/slcn/__init__.py" | head -1)"
 [ -n "$APP_VERSION" ] || APP_VERSION="0.0"
 echo "   版本 ${APP_VERSION}（取自 Engine/slcn/__init__.py）"
+BUILD_DISPLAY="${APP_VERSION}+${BUILD_COMMIT}"
+[ "$BUILD_DIRTY" = "true" ] && BUILD_DISPLAY="${BUILD_DISPLAY}-dirty"
+echo "   构建标识 ${BUILD_DISPLAY}（${BUILD_TIME}；commit=HEAD short sha，时间=构建开始，dirty=工作树有未提交改动）"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -92,6 +112,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
     <key>CFBundleVersion</key><string>$APP_VERSION</string>
+    <!-- B-119：构建标识（设置页读它显示「1.2.2+commit[-dirty] (build 时间)」）→
+         由上面的 BUILD_COMMIT / BUILD_TIME / BUILD_DIRTY 注入；缺失时 App 只显示版本号，不假装。
+         dirty=true = 构建时工作树有未提交改动（批末 build 属于这种：commit 在 build 之后）。 -->
+    <key>SLCNBuildCommit</key><string>$BUILD_COMMIT</string>
+    <key>SLCNBuildTime</key><string>$BUILD_TIME</string>
+    <key>SLCNBuildDirty</key>$BUILD_DIRTY_PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>

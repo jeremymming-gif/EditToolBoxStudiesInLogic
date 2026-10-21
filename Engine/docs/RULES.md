@@ -792,3 +792,57 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 （2023 年第 4 期 04 稿的 `\definitionnamechange` + `\newcounter{userinput}`、2024 年第 2 期
 05 稿的 `\cp` / `\cpp`、2024 年第 4 期 04 稿的 `SLCN2.sty`）已验证迁入；公开仓不记作者
 姓名与稿件片段。
+
+---
+
+## 九、初排验收口径（基线无关 L1–L4；B-117，2026-10-21 用户拍板）
+
+**背景**：批70 及以前 `tools/batch_case_test.py` 以「最终人工成品」为基线逐项对照
+（`PAGE_DIFF` / `BIB_COUNT_DIFF` / `CITE_DIFF` / `SECTION_DIFF`），把**人工后期修改**
+（初排后的一校/二校/三校/四校、作者自校、编辑增补）与软件缺陷混在一起 → 旧口径
+41 篇 P1=140 不反映软件质量；用户 2026-10-21 否定「统一人工初排基线」（各篇处理参考文献
+的时点不同：初排/一校/三校/四校都可能）。因此验收改为**不需要人工基线**的 L1–L4 口径。
+
+**权威实现**：`tools/batch_case_test.py`（默认新口径；`--legacy-final` 复现旧口径）。
+判定规则与说明：
+
+- **L1 源稿一致性（自动、无人工基线）**
+  1. 编译 rc0；无 `!` 错误、无 undefined citation/reference、无 Missing character（沿用既有 P0 判据）。
+  2. 源正文引用/脚注标记 → 产物覆盖，或**显式报告「未识别/需人工」**（禁静默丢失）：
+     Word 通道按引擎 `docxsource.link_citations()` 同一口径把源正文人年制引用换成键；未匹配的
+     引用原文（如源稿笔误 `Beal Restall 2006`）→ `SRC_CITE_UNMATCHED`（P2，可枚举）；源正文
+     编号引用指向未解析条目（占位键 `refNN`）→ `SRC_CITE_UNRESOLVED`（P2，可枚举）；源引用键
+     在产物 bib 里不存在 → `SRC_CITE_MISSING`（P1，软件缺陷）。
+  3. 源参考文献清单 → 产物 `reference.bib` 条数 + 题名集合覆盖（Word 人年制清单按题名；编号
+     清单题名不可得时按引擎解析出的 bib 键比对）：缺哪条必须报 → `SRC_BIB_MISSING`（P1）；
+     源清单解析不出的行 → `SRC_LIST_UNPARSED`（P2，原文保留、显式交人工/AI 核对）。
+  4. 正文引用键 ⊆ 产物 bib 键（`DANGLING_CITE` P0 沿用，B-019 口径不变）。
+  5. 占位符按类型枚举（作者元数据 / 图表题 / 引文出处 / 摘要关键词 / 题名 / 其他）。
+  6. 元数据（作者/单位/邮箱/题名/摘要/关键词）提取率：源稿已提供该字段、产物宏仍是
+     `【未识别…】` → `META_UNEXTRACTED`（P1，软件缺陷）。
+- **L2 产物自洽性（自动）**：节结构计数、引用/脚注形态计数、占位符清单；现有 P0 判据
+  （`CONVERT_RC`/`NO_PDF`/`TEX_ERROR`/`UNDEF_*`/`MISSING_CHAR`/`BIBER_ERROR`/
+  `NONDETERMINISTIC`/`ZERO_COST`/`DANGLING_CITE`/`NO_CITES`/`DOC_CONVERT`）保持 B-019 口径不变。
+- **L3 与人工成品差异：只做三分类归因**——`软件缺陷` / `源稿本身问题` / `人工后期修改
+  （含作者补充）`；**只有「软件缺陷」计 P0/P1**；**页数差/版式差一律 P2/信息项（不再 P1）**。
+  差异考古只对出现差异的条目查稿件仓 git 历史（只读），不做 41 篇全量基线映射；报告注明
+  抽样集/证据。已知软件缺陷候选（3 样本校准，2026-10-21）：
+  - 90-07：脚注转引用不完整——产物 40 parencite / 14 footnote vs 人工初排 49 / 7 →
+    `FOOTNOTE_CITE_GAP`（P1）；
+  - CJK 译名 bib key 质量——产物 `Ai1979/Hong1982/Tuo2012/Camap1962` vs 人工
+    `Einstein1979/Reichenbach1982/Kuhn2012/Carnap1962` → **只报告**，转 backlog **B-120**，不实现。
+- **L4 用户工作流 E2E**：整期出刊/目录/合并/引用库/GUI 真点（批末验收链执行，本工具不跑）。
+
+**与旧口径的关系**：`--legacy-final` 恢复「与最终人工成品逐项对照」的旧判据
+（`PAGE_DIFF` P1、`BIB_COUNT_DIFF`、`CITE_DIFF`、`SECTION_DIFF`、`PLACEHOLDER`、
+`UNUSED_BIB_*`、`BIB_FIELDS`，含 88-06 案例级降级），用于与批70 报告逐项比对；
+旧数字 **P0/P1/P2 = 2/140/26（批70，2026-10-21）只作历史、不作目标**。
+41 篇新口径复测在批71 Phase C 由 case-lab 执行一次，结果写
+`EditToolBox-notes/PRODUCT-QUALITY.md`（注明口径/日期），不手抄进本表。
+
+**校准样本（只校准归因口径，不作基线；稿件仓只读 `git log/show`）**：90-03 张亮
+`4ac6a17`（初排 19 页/80 parencite/26 footnote/0 占位 = 软件产物；末版 18 页 → 页数差归
+「人工后期修改」）；90-10 陈波 `f54d62d`（源清单 25 = 初排 25 = 软件 25 题名一致；末版 26
+新增 `Chen2015`《名称究竟如何指称对象？一个新的名称理论》不在 docx 清单 → 归「人工后期修改
+（作者补充）」）；90-07 赵亮英 `594346d`（页 24/refs 11/section 8 一致；括号/脚注/占位符
+差异 → 见上两个软件缺陷候选）。

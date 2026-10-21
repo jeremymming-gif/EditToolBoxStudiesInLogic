@@ -1,6 +1,48 @@
 import SwiftUI
 import Foundation
 
+/// 版本标识（第七十一批 B-119）：`版本号+git commit short sha[-dirty] (build 时间)`。
+///
+/// 为什么需要它：从前 dist App 只显示 `1.2.2`，装到编辑机上分不清"这是 1.2.2 发布版，
+/// 还是 1.2.2 之后又改过代码的构建"。commit / build 时间 / 工作树是否脏由 `build.sh` 在构建时
+/// 写进 `Info.plist` 的 `SLCNBuildCommit` / `SLCNBuildTime` / `SLCNBuildDirty`；这里**只读 Bundle，不猜、不联网**。
+/// `-dirty` 是必须的：批末构建顺序是「build → 最后才 commit」，此时 HEAD short sha **并不覆盖**
+/// 包内代码；不标 dirty 就还是会让人误以为包内 == 那个 commit。clean 树（发版 tag 构建）不标。
+/// 用命令行工具跑（没有 .app bundle、Info.plist 里没有这些键）时只显示版本号本身。
+enum AppVersion {
+
+    static let buildCommitKey = "SLCNBuildCommit"
+    static let buildTimeKey = "SLCNBuildTime"
+    static let buildDirtyKey = "SLCNBuildDirty"
+
+    /// 纯函数（不读 Bundle，headless 可验证）：
+    /// 有 commit → `1.2.2+ce9871f (2026-10-21T13:45)`；dirty → `1.2.2+ce9871f-dirty (…)`；
+    /// 没 commit → 只有版本号（**不假装**有构建标识；脏树只加 `-dirty`）。
+    static func format(version: String, commit: String?, buildTime: String?,
+                       dirty: Bool = false) -> String {
+        let trimmedVersion = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmedVersion.isEmpty ? "0.0" : trimmedVersion
+        let dirtyMark = dirty ? "-dirty" : ""
+        guard let commit = commit?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !commit.isEmpty else { return base + dirtyMark }
+        var text = "\(base)+\(commit)\(dirtyMark)"
+        if let buildTime = buildTime?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !buildTime.isEmpty {
+            text += " (\(buildTime))"
+        }
+        return text
+    }
+
+    /// 读当前进程所在 Bundle 的 Info.plist（dist App 由 `build.sh` 注入三个键）。
+    static func display(_ bundle: Bundle = .main) -> String {
+        let info = bundle.infoDictionary
+        return format(version: (info?["CFBundleShortVersionString"] as? String) ?? "0.0",
+                      commit: info?[buildCommitKey] as? String,
+                      buildTime: info?[buildTimeKey] as? String,
+                      dirty: (info?[buildDirtyKey] as? Bool) ?? false)
+    }
+}
+
 /// 「设置」页的界面状态。
 ///
 /// 「测试连接 / 体检」是异步的（URLSession 回调不在主线程），结果与「运行中」标记
@@ -85,6 +127,15 @@ struct SettingsTab: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("AI 设置（可选）").font(.title3).bold()
+            // B-119：版本标识 = 版本号 + commit[-dirty] + build 时间（`1.2.2+ce9871f-dirty (2026-10-21T13:45)`）。
+            // `-dirty` = 构建时工作树有未提交改动（批末 build 就是这种，HEAD sha 不覆盖包内代码）。
+            // 放在设置页最上面：编辑一眼就能看出手上这个包是哪个 commit 打的、干不干净，
+            // 批末 GUI 验收也直接读这一行（AX 静态文本）。
+            Text("编辑部工具箱 \(AppVersion.display())")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+                .help("版本号取自 Engine/slcn/__init__.py；commit/build 时间/是否含未提交改动由 build.sh 构建时写入 Info.plist。")
             Text(headerText)
                 .font(.caption)
                 .foregroundStyle(.secondary)

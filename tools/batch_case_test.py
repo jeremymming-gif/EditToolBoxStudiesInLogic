@@ -81,6 +81,25 @@ manifest（`--manifest file.json`，可选；缺省用内置期 87/90 清单，�
 已知缺口（Phase0 盘点 + 案例 141–144 登记）写在 `KNOWN` 里，报告里标「已知」，不吞掉
 （批69 B-019 起 PAGE_DIFF 条目只作说明，不再参与 P0 计数）。
 
+**批71 B-117（用户 2026-10-21 P0-C）验收口径重构：基线无关 L1–L4**。用户否定「统一人工初排
+基线」（各篇处理参考文献的时点不同：初排/一校/三校/四校都可能），因此默认口径不再把「与最终
+人工成品逐项对照」当判据（旧 `PAGE_DIFF`/`BIB_COUNT_DIFF`/`CITE_DIFF`/`SECTION_DIFF` 会把
+人工后期修改混进 P1）：
+
+* **L1 源稿一致性**（自动、无人工基线）：编译 rc0/无 `!`/undefined/缺字（沿用）；源正文引用/
+  脚注标记 → 产物覆盖，未覆盖/未识别项**逐条可枚举**（禁静默丢失）；源参考文献清单 → 产物
+  `reference.bib` 条数 + 题名集合覆盖（缺哪条必报）；正文引用键 ⊆ 产物 bib 键（沿用悬空判据）；
+  占位符**按类型枚举**；元数据（作者/单位/邮箱/题名/摘要/关键词）提取率。
+* **L2 产物自洽性**：节结构/引用与脚注形态计数/占位符清单；P0 判据（B-019 落库）**不变**。
+* **L3 与人工成品差异 = 只做三分类归因报告**：软件缺陷 / 源稿本身问题 / 人工后期修改（含作者
+  补充）；只有「软件缺陷」计 P0/P1；**页数差/版式差一律降 P2/信息项（不再 P1）**。只对差异项做
+  「差异驱动考古」（稿件仓只读 `git log/show`），不做全量基线映射。
+* **L4 用户工作流 E2E**：整期出刊/目录/合并/GUI 真点，由批末验收链另行覆盖（本工具不跑）。
+
+`--legacy-final`：过渡开关，恢复旧口径（与最终人工成品逐项对照：`PAGE_DIFF` P1、
+`BIB_COUNT_DIFF`、`CITE_DIFF`、`SECTION_DIFF`、`PLACEHOLDER`、`UNUSED_*`、`BIB_FIELDS`），
+用于与批70 报告（P0/P1/P2 = 2/140/26）逐项比对；默认走 L1–L4 新口径。
+
 本脚本只写 /tmp 并输出报告；不写三仓、不 commit/push、不 spawn 子智能体。
 """
 
@@ -121,6 +140,7 @@ try:  # 引擎（唯一一份文档逻辑）：判据尽量复用，不另写一
     from slcn.bibcheck import check as _bib_check
     from slcn.bibcheck import cited_keys as _cited_keys
     from slcn.bibcheck import entry_keys as _entry_keys
+    from slcn.bibnorm import parse_fields as _bib_parse_fields
     from slcn.bibnorm import split_entries as _split_bib_entries
 except Exception as _exc:  # pragma: no cover - 环境缺失时给出可操作提示
     raise SystemExit(
@@ -191,6 +211,20 @@ DEMOTE_TO_P1: dict[str, dict[str, str]] = {
         "BIB_COUNT_DIFF": "人工多列，以源稿清单为准（B-019 抽样结论）",
     },
 }
+
+# ─── 批71 B-117（用户 2026-10-21 P0-C）：基线无关 L1–L4 口径 ───────────────────
+# 默认口径 = 新口径；`--legacy-final` 恢复旧口径（与最终人工成品逐项对照，批70 可复现）。
+ACCEPTANCE_VERSION = "B-117 L1–L4（2026-10-21）"
+ACCEPTANCE_LEGACY = "旧口径·与最终人工成品对照（批69/B-019 落库，--legacy-final）"
+# L3 三分类（只有「软件缺陷」计 P0/P1）
+L3_SOFTWARE = "软件缺陷"
+L3_SOURCE = "源稿本身问题"
+L3_MANUAL = "人工后期修改"
+# 新口径下页数差/版式差降 P2/信息项（不再 P1；B-019 的旧 P1 只在 --legacy-final 下复现）
+PAGE_DIFF_INFO_LEVEL = "P2"
+SECTION_DIFF_INFO_LEVEL = "P2"
+# L1 源稿覆盖：源稿目录里找 .bib 时最多看这两层（作者目录 / 工作区根）
+SRC_BIB_SEARCH_GLOBS = ("*.bib",)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 内置 manifest：期 90 十篇（先）→ 期 87 子案例 1–9（后）
@@ -478,17 +512,70 @@ def tex_stats(text: str) -> dict:
         "includegraphics": len(re.findall(r"\\includegraphics", body)),
         "equation": len(re.findall(r"\\begin\{(?:equation|align|gather)\*?\}", body)),
         "parencite": len(re.findall(r"\\parencite", body)),
+        "footnote": len(re.findall(r"\\footnote\b", body)),
         "cite": len(re.findall(r"\\(?:parencite|cite|citep|citet|textcite|footcite)\b", body)),
         "placeholder_unrecognized": len(re.findall(r"【未识别", text)),
         "placeholder_any": len(re.findall(r"【[^】]*】", text)),
+        "placeholder_types": placeholder_types(text),
     }
 
 
+# B-117 L1.5：占位符按类型枚举。类型取自 RULES §六 的字段清单（作者元数据/题名/摘要/关键词）
+# 与批71 spec（表题/引文出处）；认不出的一律「其他」，**不猜**。
+PLACEHOLDER_TYPE_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("作者", "单位", "邮箱", "姓名", "author", "affiliation", "email"), "作者元数据"),
+    (("表题", "图题", "caption", "图表"), "图表题"),
+    (("引文", "引用", "出处", "文献", "citation"), "引文出处"),
+    (("关键词", "摘要", "abstract", "keyword"), "摘要/关键词"),
+    (("题名", "标题", "title"), "题名"),
+)
+
+
+def placeholder_types(text: str) -> dict[str, int]:
+    """按类型枚举 `【…】` 占位符：{类型: 条数}（B-117 L1.5/L2.3）。"""
+    out: dict[str, int] = {}
+    for m in re.finditer(r"【([^】]*)】", text):
+        raw = m.group(1)
+        cat = "其他"
+        low = raw.lower()
+        for keys, name in PLACEHOLDER_TYPE_RULES:
+            if any(k in low or k in raw for k in keys):
+                cat = name
+                break
+        out[cat] = out.get(cat, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
+def bib_entries_with_keys(text: str) -> list[tuple[str, str, str]]:
+    """`slcn.bibnorm.split_entries` 的 (head, fields, tail) → (类型, 键, 字段体)。
+
+    引擎的 split_entries 返回 (头 `@type{key,`, 字段体, 尾 `}`)；键在**头**里，
+    这里统一解出，避免把字段体误当键（B-117 校准时发现的既有口径问题）。
+    """
+    out: list[tuple[str, str, str]] = []
+    for head, fields, _tail in _split_bib_entries(text):
+        m = re.match(r"@(\w+)\s*\{\s*([^,]+?)\s*,", head)
+        if m:
+            out.append((m.group(1).lower(), m.group(2), fields))
+        else:
+            out.append(("", "", fields))
+    return out
+
+
 def bib_stats(text: str) -> dict:
-    """bib 条目/类型/必补字段/重复键（复用引擎 bibcheck/bibnorm）。"""
-    entries = list(_split_bib_entries(text))
-    keys = [k for _etype, k, _body in entries]
+    """bib 条目/类型/必补字段/重复键/题名（复用引擎 bibcheck/bibnorm）。"""
+    entries = bib_entries_with_keys(text)
+    keys = [k for _etype, k, _body in entries if k]
     rep = _bib_check(text)
+    titles: list[str] = []
+    for _etype, _k, body in entries:
+        try:
+            for name, value in _bib_parse_fields(body):
+                if name.lower() == "title" and value.strip():
+                    titles.append(value.strip())
+                    break
+        except ValueError:  # 引号未闭合等异常字段：跳过该条题名（不阻断统计）
+            continue
     return {
         "entries": len(entries),
         "dup_keys": sorted({k for k in keys if keys.count(k) > 1}),
@@ -496,6 +583,7 @@ def bib_stats(text: str) -> dict:
         "nice_missing": rep.n_nice,
         "unstructured": rep.n_unstructured,
         "types": dict(rep.by_type),
+        "titles": titles,
     }
 
 
@@ -595,11 +683,504 @@ def citations_closure(tex_text: str, bib_text: str) -> dict:
     return {
         "n_cited": len(cited),
         "n_bib": len(keys),
+        "cited": sorted(cited),
+        "bib_keys": sorted(keys),
         "dangling": sorted(cited - keys),
         "unused": sorted(keys - cited),
         "n_dangling": len(cited - keys),
         "n_unused": len(keys - cited),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# L1 源稿一致性（B-117，批71，2026-10-21）：自动、不需要人工基线
+#   权威解析全部复用引擎（Word: slcn.docxsource.parse_docx；LaTeX: slcn.sources /
+#   slcn.bibcheck / slcn.bibnorm），本工具不新写解析器。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 元数据字段与产物宏名（模板见 编辑笔记/模板文件/CN_template.tex；RULES §六）
+L1_META_FIELDS: tuple[tuple[str, str], ...] = (
+    ("title", "mytitle"), ("author", "myfirstauthor"),
+    ("affiliation", "myfirstaffiliation"), ("email", "myfirstemail"),
+    ("abstract", "myabstract"), ("keywords", "mykeywords"),
+)
+
+
+def norm_title(s: str) -> str:
+    """题名集合覆盖用的归一化：去 LaTeX 命令/转义/标点/空白并统一大小写。"""
+    t = re.sub(r"\\[a-zA-Z]+\*?\s*", "", s or "")
+    t = re.sub(r"[{}\\\"'`~^_$&%#]", "", t)
+    t = re.sub(r"[\s\u3000]+", "", t)
+    t = re.sub(r"[，。、；：！？（）【】《》,.;:!?()\[\]<>-]", "", t)
+    return t.lower()
+
+
+def title_coverage(src_titles: list[str], product_titles: list[str]) -> dict:
+    """源参考文献清单题名 → 产物 bib 题名集合覆盖（归一化后精确比对，缺哪条必报）。"""
+    have = {norm_title(t) for t in product_titles if norm_title(t)}
+    missing = [t for t in src_titles if norm_title(t) and norm_title(t) not in have]
+    return {"total": len(src_titles), "covered": len(src_titles) - len(missing),
+            "missing": missing, "missing_n": len(missing)}
+
+
+def placeholder_fields(tex_text: str, macros: dict | None = None) -> dict[str, list[str]]:
+    """产物里「仍是占位符」的 L1 元数据字段（按字段名归集，供元数据提取率/软件缺陷判定）。"""
+    vals = macros
+    if vals is None:
+        try:
+            from slcn.latex import parse_macros
+            vals = {k: v.value for k, v in parse_macros(tex_text).items()}
+        except Exception:  # noqa: BLE001 —— 解析失败时退回全文扫描
+            vals = {}
+    out: dict[str, list[str]] = {}
+    for field, macro in L1_META_FIELDS:
+        raw = str((vals or {}).get(macro, "") or "")
+        if "【未识别" in raw:
+            m = re.search(r"【未识别[：:]([^】]*)】", raw)
+            out.setdefault(field, []).append((m.group(1) if m else field))
+    # 兜底：宏没解析到但全文有作者类占位符（如合著者槽位）
+    if not out:
+        for m in re.finditer(r"【未识别[：:]([^】]*)】", tex_text):
+            body = m.group(1)
+            for field, keys in (("author", ("作者", "姓名", "author")),
+                                ("affiliation", ("单位", "affiliation")),
+                                ("email", ("邮箱", "email")),
+                                ("title", ("题名", "标题", "title")),
+                                ("abstract", ("摘要", "abstract")),
+                                ("keywords", ("关键词", "keyword"))):
+                if any(k in body for k in keys):
+                    out.setdefault(field, []).append(body)
+                    break
+    return out
+
+
+def _read_text_safe(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _tex_source_list(source: Path, workspace: Path | None) -> tuple[list[str], int, list[str]]:
+    """LaTeX 通道源参考文献清单：源目录/工作区里的 .bib（题名）+ .tex 里的 `\\bibitem`。
+
+    返回 (题名列表, 未识别行数, 来源说明)。找不到任何清单 → 空列表 + 来源写明「未识别/需人工」。
+    """
+    roots: list[Path] = [source.parent]
+    if workspace is not None and workspace != source.parent:
+        roots.append(workspace)
+    seen: set[Path] = set()
+    titles: list[str] = []
+    sources: list[str] = []
+    unparsed = 0
+    for root in roots:
+        try:
+            bibs = sorted(p for pat in SRC_BIB_SEARCH_GLOBS for p in root.glob(pat))
+        except OSError:
+            bibs = []
+        for p in bibs:
+            if p in seen:
+                continue
+            seen.add(p)
+            text = _read_text_safe(p)
+            if not text.strip():
+                continue
+            titles.extend(bib_stats(text).get("titles") or [])
+            sources.append(str(p))
+    tex = _read_text_safe(source)
+    blocks = re.split(r"(?=\\bibitem\s*(?:\[[^\]]*\])?\s*\{)", tex)
+    for block in blocks:
+        m = re.match(r"\\bibitem\s*(?:\[[^\]]*\])?\s*\{([^{}]+)\}", block)
+        if not m:
+            continue
+        tail = block[m.end():].strip()
+        if not tail:
+            unparsed += 1
+            continue
+        line = re.sub(r"\s+", " ", tail.split("\\bibitem")[0]).strip()
+        try:
+            from slcn.docxsource import parse_reference_line
+            e = parse_reference_line(line)
+        except Exception:  # noqa: BLE001
+            e = None
+        if e is not None and e.title:
+            titles.append(e.title)
+        else:
+            unparsed += 1
+        sources.append(f"{source.name}:\\bibitem")
+    dedup: list[str] = []
+    for t in titles:
+        if norm_title(t) not in {norm_title(x) for x in dedup}:
+            dedup.append(t)
+    return dedup, unparsed, sorted(set(sources))
+
+
+def source_metrics(src: Path, channel: str, workspace: Path | None,
+                   product_tex: str = "", product_bib: str = "") -> dict:
+    """L1 源稿一致性指标（Word: parse_docx；LaTeX: sources/bibcheck/bibnorm）。
+
+    只读源稿与产物文本；异常/不可解析一律落成显式字段（`notes`），**禁止静默丢失**。
+    """
+    l1: dict = {"ok": False, "channel": channel, "source": str(src), "notes": [],
+                "cite_keys": [], "cite_keys_n": 0, "cite_total": 0,
+                "cite_body_missing": [], "cite_missing": [], "cite_unresolved": [],
+                "unmatched_citations": [], "unmatched_n": 0,
+                "note_markers": 0, "note_citation_entries": 0,
+                "ref_titles": [], "ref_titles_n": 0, "ref_expected_n": 0,
+                "ref_source": "", "unparsed_ref_lines": 0,
+                "ref_numbered_n": 0, "ref_numbered_keys": [], "ref_numbered_unresolved": 0,
+                "meta_present": {}, "meta_placeholder": {}, "meta_unextracted": [],
+                "meta_present_n": 0, "meta_extracted_n": 0, "meta_rate": None,
+                "ref_coverage": {}, "parse_notes": []}
+    try:
+        if channel == "word":
+            from slcn.docxsource import parse_docx
+            doc = parse_docx(str(src))
+            body = doc.body or ""
+            # 人年制正文引用：用引擎同一条 link_citations 口径把源正文引用换成 \parencite；
+            # 未匹配上的引用（源稿笔误如 `Beal Restall 2006`）进 unmatched → 显式「未识别/需人工」
+            linked, unmatched = body, []
+            try:
+                from slcn.docxsource import link_citations
+                linked, unmatched, _logs = link_citations(body, doc.refs)
+            except Exception:  # noqa: BLE001 —— 链接失败时按未链接口径继续（显式落字段）
+                pass
+            unmatched = [u for u in unmatched
+                         if "\\parencite" not in u and "\\cite" not in u]
+            body_cites_all = set(_cited_keys(linked))
+            # refNN = 编号清单/脚注解析不出的占位键（引擎内部键），不算源引用键，
+            # 单独进 cite_unresolved（「未识别/需人工」显式列出，禁静默）
+            placeholder_cites = {k for k in body_cites_all if re.fullmatch(r"ref\d+", k or "")}
+            body_cites = body_cites_all - placeholder_cites
+            ref_titles = [r.title for r in doc.refs if getattr(r, "title", "")]
+            note_entries = [k for k, _e, raw in doc.bib_entries if (raw or "").strip()]
+            entry_keys = {k for k, _e, _raw in doc.bib_entries
+                          if k and not re.fullmatch(r"ref\d+", k or "")}
+            numbered = dict(doc.ref_key_by_num or {})
+            numbered_keys = {k for k in numbered.values()
+                             if k and not re.fullmatch(r"ref\d+", k or "")}
+            # 未识别行数：编号清单通道按 `[N]` 标记与已解析编号的差；人年制通道用引擎 warning 数字
+            marks = [int(n) for n in re.findall(r"^\s*\[(\d+)\]", "\n".join(doc.ref_raw_lines))]
+            numbered_unresolved = len([n for n in marks if n not in numbered])
+            unparsed = numbered_unresolved
+            if not numbered:
+                unparsed = 0
+                for w in doc.warnings:
+                    m = re.search(r"有\s*(\d+)\s*行未能按行内证据解析", w)
+                    if m:
+                        unparsed = int(m.group(1))
+            ref_expected = max(len(doc.refs), len(numbered),
+                               len(doc.ref_raw_lines) if unparsed else 0)
+            l1.update({
+                "doc_kind": "docx",
+                # 源引用键：正文链接键 ∪ 编号清单已解析键 ∪ 脚注文献条目键（refNN 占位符不算）
+                "cite_keys": sorted(body_cites | numbered_keys | entry_keys),
+                "cite_total": len(body_cites) + len(numbered_keys),
+                "cite_unresolved": sorted(placeholder_cites),
+                "unmatched_citations": unmatched[:40],
+                "unmatched_n": len(unmatched),
+                "note_markers": int(doc.n_footnotes or 0),
+                "note_citation_entries": len(note_entries),
+                "ref_titles": ref_titles,
+                "ref_expected_n": ref_expected,
+                "ref_numbered_n": len(numbered),
+                "ref_numbered_keys": sorted(numbered_keys),
+                "ref_numbered_unresolved": numbered_unresolved,
+                "ref_source": (
+                    "docx 文末人年制清单（题名可覆盖）" if ref_titles else
+                    f"docx 文末编号清单 {len(numbered)} 条（题名不可得，按 bib 键覆盖比对）" if numbered else
+                    "docx 未见可解析参考文献清单（未识别，需人工）"),
+                "unparsed_ref_lines": unparsed,
+                "meta_present": {
+                    "title": bool(doc.title_cn or doc.title_en or doc.title),
+                    "author": bool(doc.author or doc.author_en),
+                    "affiliation": bool(doc.affiliation_cn or doc.affiliation_en),
+                    "email": bool(doc.email),
+                    "abstract": bool(doc.abstract_cn or doc.abstract_en),
+                    "keywords": bool(doc.keywords_cn or doc.keywords_en),
+                },
+                "warnings": list(doc.warnings)[:12],
+                "parse_notes": list(doc.c_class_warnings)[:6],
+            })
+        else:
+            text = _read_text_safe(src)
+            try:
+                from slcn.sources import extract_body_text
+                body = extract_body_text(text)
+            except Exception:  # noqa: BLE001 —— 片段稿没有 document 环境
+                body = text
+            body_cites = set(_cited_keys(body))
+            ref_titles, unparsed, ref_sources = _tex_source_list(src, workspace)
+            l1.update({
+                "doc_kind": "tex",
+                "cite_keys": sorted(body_cites),
+                "cite_total": len(body_cites),
+                "note_markers": len(re.findall(r"\\footnote\b", body)),
+                "ref_titles": ref_titles,
+                "ref_expected_n": len(ref_titles),
+                "ref_source": ("、".join(ref_sources) if ref_sources
+                               else "源目录未找到 .bib/\\bibitem 清单（未识别，需人工）"),
+                "unparsed_ref_lines": unparsed,
+                "meta_present": {
+                    "title": bool(re.search(r"\\title\s*\{", text)),
+                    "author": bool(re.search(r"\\author\s*\{", text)),
+                    "affiliation": bool(re.search(r"\\(?:affiliation|affil|address)\s*\{", text)),
+                    "email": bool(re.search(r"\\(?:email|mail)\s*\{|[\w.+-]+@[\w.-]+", text)),
+                    "abstract": bool(re.search(r"\\begin\{abstract\}|\\abstract\s*\{", text)),
+                    "keywords": bool(re.search(r"\\(?:keywords|keyword)\s*\{|\\begin\{keywords\}", text)),
+                },
+                "warnings": [],
+            })
+    except Exception as exc:  # noqa: BLE001 —— 解析失败显式报告（不静默）
+        l1["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        l1["notes"].append("源稿 L1 指标未计算（解析异常，已显式报告）；不阻断案例")
+        return l1
+
+    # 产物侧：引用键/题名覆盖（L1.2/L1.3）
+    prod = citations_closure(product_tex, product_bib) if product_tex else {}
+    prod_cites = set(prod.get("cited") or [])
+    prod_bib_keys = set(prod.get("bib_keys") or [])
+    prod_titles = bib_stats(product_bib).get("titles") if product_bib else []
+    l1["cite_body_missing"] = sorted(set(l1["cite_keys"]) - prod_cites)
+    l1["cite_missing"] = sorted(set(l1["cite_keys"]) - prod_bib_keys)
+    prodtitles = prod_titles or []
+    if l1.get("ref_numbered_n") and not l1["ref_titles"]:
+        # 编号清单通道：题名不可得，按引擎解析出的 bib 键做条数/键覆盖比对（不猜题名）
+        nk = set(l1.get("ref_numbered_keys") or [])
+        miss_keys = sorted(nk - prod_bib_keys)
+        l1["ref_coverage"] = {"total": len(nk), "covered": len(nk) - len(miss_keys),
+                              "missing": miss_keys, "missing_n": len(miss_keys),
+                              "by": "key"}
+    else:
+        l1["ref_coverage"] = title_coverage(l1["ref_titles"], prodtitles)
+    l1["ref_titles_n"] = len(l1["ref_titles"])
+    l1["ref_expected_n"] = l1.get("ref_expected_n") or len(l1["ref_titles"])
+    l1["cite_keys_n"] = len(l1["cite_keys"])
+
+    # 元数据提取率（源稿有该字段 → 产物宏非空且非占位符）
+    macro_vals: dict[str, str] = {}
+    if product_tex:
+        try:
+            from slcn.latex import parse_macros
+            macro_vals = {k: v.value for k, v in parse_macros(product_tex).items()}
+        except Exception:  # noqa: BLE001
+            macro_vals = {}
+    ph = placeholder_fields(product_tex, macro_vals) if product_tex else {}
+    l1["meta_placeholder"] = {k: len(v) for k, v in ph.items()}
+    extracted = 0
+    present = 0
+    for field, macro in L1_META_FIELDS:
+        if not l1["meta_present"].get(field):
+            continue
+        present += 1
+        val = str(macro_vals.get(macro, "") or "")
+        if val.strip() and "【未识别" not in val:
+            extracted += 1
+        else:
+            l1["meta_unextracted"].append(field)
+    l1["meta_present_n"] = present
+    l1["meta_extracted_n"] = extracted
+    l1["meta_rate"] = round(extracted / present, 2) if present else None
+    l1["ok"] = "error" not in l1
+    return l1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# L3 与人工成品差异：只做三分类归因（B-117；页数差/版式差降 P2/信息项）
+#   只有「软件缺陷」行会进 finding；其余行只进报告（信息项不变成 P1）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def l3_attribution(m: dict, man: dict | None) -> list[dict]:
+    """把「与最终人工成品」的差异逐项归因：软件缺陷 / 源稿本身问题 / 人工后期修改。
+
+    返回 rows：{metric, code, gen, man, diff, cls, level, evidence, detail}。
+    `level` ∈ {"P1", "P2", None}：P1 = 软件缺陷（计 P1）；P2 = 页数/版式信息项；
+    None = 只进报告、不判级。纯函数（单测覆盖）。
+    """
+    if not man:
+        return []
+    rows: list[dict] = []
+    l1 = m.get("l1") or {}
+    tex = m.get("tex") or {}
+    bib = m.get("bib") or {}
+    closure = m.get("closure") or {}
+
+    def row(metric: str, code: str, gen, mn, diff, cls: str, level: str | None,
+            evidence: str, detail: str = "") -> dict:
+        return {"metric": metric, "code": code, "gen": gen, "man": mn, "diff": diff,
+                "cls": cls, "level": level, "evidence": evidence,
+                "detail": detail or f"{metric} 生成 {gen} vs 人工 {mn}"}
+
+    # ① 页数差：版式差异 → 人工后期修改（信息项 P2，B-117 起不再 P1）
+    man_pages, gen_pages = man.get("pages"), m.get("pdf_pages")
+    if man_pages and gen_pages and gen_pages != man_pages:
+        rows.append(row("页数", "PAGE_DIFF", gen_pages, man_pages, gen_pages - man_pages,
+                        L3_MANUAL, PAGE_DIFF_INFO_LEVEL,
+                        "版式/后期排版差异；B-117 起页数差降 P2/信息项（旧口径见 --legacy-final）；"
+                        "差异考古=稿件仓人工后期提交（只读 git log）"))
+    # ② 节结构差：版式/结构差异 → 信息项
+    gen_sec, man_sec = tex.get("section"), man.get("section")
+    if man_sec is not None and gen_sec is not None and gen_sec != man_sec:
+        rows.append(row("节结构", "SECTION_DIFF", gen_sec, man_sec, gen_sec - man_sec,
+                        L3_MANUAL, SECTION_DIFF_INFO_LEVEL,
+                        "节结构/版式差异（人工后期增删/合并小节）；B-117 起降 P2/信息项"))
+    # ③ 源参考文献清单覆盖（L1.3 取代旧 BIB_COUNT vs 最终版）
+    cov = l1.get("ref_coverage") or {}
+    if cov.get("missing_n"):
+        rows.append(row("源清单覆盖", "SRC_BIB_MISSING", bib.get("entries"),
+                        l1.get("ref_titles_n"), -cov.get("missing_n"),
+                        L3_SOFTWARE, "P1",
+                        f"源参考文献清单 {l1.get('ref_titles_n')} 条，产物缺 "
+                        f"{cov['missing_n']} 条（L1.3；源={l1.get('ref_source')}）",
+                        detail=f"源参考文献清单缺 {cov['missing_n']} 条：{cov.get('missing')[:6]}"))
+    elif (l1.get("ref_titles_n") or l1.get("ref_expected_n")) and man.get("bib_entries") is not None:
+        gen_bib = bib.get("entries")
+        man_bib = man.get("bib_entries")
+        if gen_bib is not None and man_bib is not None and gen_bib != man_bib:
+            gen_titles = {norm_title(t) for t in (bib.get("titles") or [])}
+            man_titles = man.get("bib_titles") or []
+            manual_only = [t for t in man_titles if norm_title(t) not in gen_titles]
+            rows.append(row("文献条数", "BIB_COUNT_INFO", gen_bib, man_bib, gen_bib - man_bib,
+                            L3_MANUAL, None,
+                            f"源清单 {l1.get('ref_expected_n') or l1.get('ref_titles_n')} 条已全部覆盖；"
+                            f"最终人工版多出的条目不在源清单 → 人工后期修改（作者补充/编辑增补）"
+                            + (f"；多出题名：{manual_only[:6]}" if manual_only else "")))
+    # ③b 源正文引用未匹配/指向未解析条目 → 需人工（L1 已显式列出，这里只做归因）
+    unmatched = l1.get("unmatched_citations") or []
+    if unmatched:
+        rows.append(row("源引用识别", "SRC_CITE_UNMATCHED_INFO", 0, len(unmatched), -len(unmatched),
+                        L3_SOURCE, None,
+                        f"源正文 {len(unmatched)} 处引用未匹配到源清单（源稿本身问题/需人工，"
+                        f"非软件静默丢失）：{unmatched[:6]}"))
+    unresolved = l1.get("cite_unresolved") or []
+    if unresolved:
+        rows.append(row("源引用解析", "SRC_CITE_UNRESOLVED_INFO", 0, len(unresolved),
+                        -len(unresolved), L3_SOURCE, None,
+                        f"源正文 {len(unresolved)} 处引用指向未解析条目（占位键；源清单解析受限，"
+                        f"需人工核对，非静默）：{unresolved[:6]}"))
+    # ④ 正文引用数：脚注转引用不完整 = 软件缺陷候选（P1）
+    man_cite, gen_cite = man.get("cite") or 0, tex.get("cite") or 0
+    man_fn, gen_fn = man.get("footnote") or 0, tex.get("footnote") or 0
+    if man_cite > gen_cite and gen_fn > man_fn:
+        rows.append(row("正文引用/脚注", "FOOTNOTE_CITE_GAP", gen_cite, man_cite,
+                        gen_cite - man_cite, L3_SOFTWARE, "P1",
+                        f"人工成品正文引用 {man_cite} / 脚注 {man_fn}；产物 {gen_cite} / {gen_fn} → "
+                        f"人工把 {man_cite - gen_cite} 条脚注文献转成了正文引用，产物仍留在脚注 "
+                        f"→ 软件缺陷候选（脚注转引用不完整）",
+                        detail=f"正文引用 {gen_cite} vs 人工 {man_cite}；脚注 {gen_fn} vs 人工 "
+                               f"{man_fn}（脚注转引用不完整）"))
+    elif abs(gen_cite - man_cite) > max(2, int(0.10 * max(man_cite, 1))):
+        rows.append(row("正文引用数", "CITE_INFO", gen_cite, man_cite, gen_cite - man_cite,
+                        L3_SOURCE, None,
+                        "引用点差异无法仅凭数字归因（需逐条对照源稿引用标记）；列为信息项待人工确认"))
+    # ⑤ bib 键方案差异（如 CJK 译名转写：Ai1979 vs Einstein1979）→ 软件缺陷候选，转 backlog B-120。
+    #    若人工版多出的条目题名**不在产物 bib 题名集合**（作者补充），则归「人工后期修改」。
+    man_cite_keys = set(man.get("cite_keys") or [])
+    gen_cite_keys = set(closure.get("cited") or [])
+    if man_cite_keys and gen_cite_keys and man_cite_keys != gen_cite_keys:
+        only_man = sorted(man_cite_keys - gen_cite_keys)
+        only_gen = sorted(gen_cite_keys - man_cite_keys)
+        if only_man or only_gen:
+            gen_titles = {norm_title(t) for t in (bib.get("titles") or [])}
+            manual_only_titles = [t for t in (man.get("bib_titles") or [])
+                                  if norm_title(t) not in gen_titles]
+            if manual_only_titles:
+                rows.append(row("bib 键方案", "BIB_KEY_INFO", len(gen_cite_keys),
+                                len(man_cite_keys), len(gen_cite_keys) - len(man_cite_keys),
+                                L3_MANUAL, None,
+                                f"键集合不同主要来自人工后期修改（作者补充题名 "
+                                f"{manual_only_titles[:4]}）；产物独有 {only_gen[:4]} / "
+                                f"人工独有 {only_man[:4]}"))
+            else:
+                rows.append(row("bib 键方案", "BIB_KEY_INFO", len(gen_cite_keys),
+                                len(man_cite_keys), len(gen_cite_keys) - len(man_cite_keys),
+                                L3_SOFTWARE, None,
+                                "键集合不同（CJK 译名转写问题候选：产物键 vs 人工键 "
+                                f"产物独有 {only_gen[:6]} / 人工独有 {only_man[:6]}）→ 转 backlog B-120，"
+                                "本卡只报告不实现"))
+    # ⑥ 占位符：源稿有该元数据却仍占位 → 软件缺陷（P1）；源稿本身没有 → 人工后期修改
+    gen_ph, man_ph = tex.get("placeholder_any") or 0, man.get("placeholders") or 0
+    if gen_ph > man_ph:
+        unex = l1.get("meta_unextracted") or []
+        if unex:
+            rows.append(row("元数据占位符", "META_UNEXTRACTED", gen_ph, man_ph, gen_ph - man_ph,
+                            L3_SOFTWARE, "P1",
+                            f"源稿已提供这些元数据但产物仍是占位符：{unex}（L1.6 提取率 "
+                            f"{l1.get('meta_rate')}）",
+                            detail=f"源稿有、产物仍占位符的元数据：{unex}（占位符 {gen_ph} 处）"))
+        else:
+            rows.append(row("占位符", "PLACEHOLDER_INFO", gen_ph, man_ph, gen_ph - man_ph,
+                            L3_MANUAL if not l1.get("meta_present_n") else L3_SOURCE, None,
+                            "源稿未提供对应元数据/信息 → 人工后期填写（或源稿本身问题）；"
+                            "占位符清单见 L2（显式列出，不静默）"))
+    return rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# L1/L3 纯函数 → findings（新口径；legacy=false 时使用）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _l1_findings(m: dict) -> list[Finding]:
+    """L1 源稿一致性判据（无人工基线）：缺条必报、未识别显式报、禁静默丢失。"""
+    l1 = m.get("l1") or {}
+    out: list[Finding] = []
+    if not l1.get("ok"):
+        return out
+    missing_bib = (l1.get("ref_coverage") or {}).get("missing") or []
+    if missing_bib:
+        out.append(Finding("P1", "SRC_BIB_MISSING",
+                           f"源参考文献清单缺 {len(missing_bib)} 条（逐条列出）：{missing_bib[:6]}"))
+    missing_cite = l1.get("cite_missing") or []
+    if missing_cite:
+        out.append(Finding("P1", "SRC_CITE_MISSING",
+                           f"源正文引用/脚注标记未覆盖 {len(missing_cite)} 条（bib 里没有）："
+                           f"{missing_cite[:8]}"))
+    body_missing = l1.get("cite_body_missing") or []
+    if body_missing:
+        out.append(Finding("P2", "SRC_CITE_BODY_INFO",
+                           f"源稿有 {len(body_missing)} 条引用未进入产物正文引用命令"
+                           f"（可能保留为脚注/未识别，需人工核对；非静默）：{body_missing[:8]}"))
+    if l1.get("unparsed_ref_lines"):
+        out.append(Finding("P2", "SRC_LIST_UNPARSED",
+                           f"源参考文献清单 {l1['unparsed_ref_lines']} 行未识别（原文已保留，需人工/编辑 AI 核对）"))
+    unmatched = l1.get("unmatched_citations") or []
+    if unmatched:
+        out.append(Finding("P2", "SRC_CITE_UNMATCHED",
+                           f"源正文 {len(unmatched)} 处引用未匹配到源清单（未识别/需人工；"
+                           f"可能为源稿本身问题）：{unmatched[:6]}"))
+    unresolved = l1.get("cite_unresolved") or []
+    if unresolved:
+        out.append(Finding("P2", "SRC_CITE_UNRESOLVED",
+                           f"源正文 {len(unresolved)} 处引用指向未解析条目（占位键，未识别/需人工）："
+                           f"{unresolved[:8]}"))
+    unex = l1.get("meta_unextracted") or []
+    if unex:
+        out.append(Finding("P1", "META_UNEXTRACTED",
+                           f"源稿已提供、产物仍占位符的元数据：{unex}（提取率 {l1.get('meta_rate')}）"))
+    return out
+
+
+def _l3_findings(m: dict, man: dict) -> list[Finding]:
+    """L3 只剩：软件缺陷 → P1；页数/版式差 → P2 信息项；其余只进报告。
+
+    L1 已覆盖的缺条判据（SRC_BIB_MISSING 等）不重复出 finding，避免一例两条。
+    """
+    _l1_codes = {"SRC_BIB_MISSING", "SRC_CITE_MISSING", "SRC_LIST_UNPARSED",
+                 "SRC_CITE_UNMATCHED", "META_UNEXTRACTED"}
+    out: list[Finding] = []
+    for r in l3_attribution(m, man):
+        level = r.get("level")
+        if level not in ("P1", "P2"):
+            continue
+        code = r.get("code") or "L3"
+        if code in _l1_codes:
+            continue
+        if code == "PAGE_DIFF" and m.get("pdf_pages") == (man or {}).get("pages"):
+            continue
+        out.append(Finding(level, code, r["detail"]))
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -626,8 +1207,13 @@ def demote_to_p1(key: str, code: str) -> str | None:
     return DEMOTE_TO_P1.get(key or "", {}).get(code)
 
 
-def grade_case(m: dict, man: dict | None) -> list[Finding]:
-    """把一例 metrics 判成 P0/P1/P2（man=None 时只做绝对判据）。"""
+def grade_case(m: dict, man: dict | None, legacy_final: bool = False) -> list[Finding]:
+    """把一例 metrics 判成 P0/P1/P2（man=None 时只做绝对判据）。
+
+    `legacy_final=False`（默认，B-117 新口径）：绝对 P0 不变 + L1 源稿一致性判据 +
+    L3 三分类归因（只有软件缺陷计 P1；页数/版式差 P2 信息项）。
+    `legacy_final=True`：旧口径——与最终人工成品逐项对照（批70 可复现）。
+    """
     out: list[Finding] = []
     case_key = m.get("key") or ""   # B-019 案例级降级用（summary 里的 m 自带 key）
 
@@ -666,7 +1252,28 @@ def grade_case(m: dict, man: dict | None) -> list[Finding]:
     if m.get("doc_convert") and m["doc_convert"].get("needed") and not m["doc_convert"].get("ok"):
         out.append(_p0(m, "DOC_CONVERT", f".doc→docx 失败：{m['doc_convert'].get('error')}"))
 
-    # ── 与人工成品的对照判据 ───────────────────────────────────────────
+    # ── B-117 新口径（默认）：L1 源稿一致性判据（不需要人工基线）──────────
+    if not legacy_final:
+        out.extend(_l1_findings(m))
+        # 一校「可自动改」残留：绝对判据（生成稿自身问题）
+        proof = m.get("proof") or {}
+        if (proof.get("fixable") or 0) > 0:
+            out.append(Finding("P1", "PROOF_FIXABLE",
+                               f"一校可自动改残留 {proof['fixable']} 处（初排未接 fixer）"))
+
+    # ── 与人工成品对照：新口径只做 L3 三分类归因；legacy 才逐项判级 ──────
+    if not legacy_final:
+        if man:
+            out.extend(_l3_findings(m, man))
+            # 中文旁半角短杠（ZH-08）比人工多 = P2 信息项（两种口径都保留，不判 P1）
+            gen_zh08 = ((m.get("proof") or {}).get("rules") or {}).get("ZH-08", 0)
+            man_zh08 = ((man.get("proof") or {}).get("rules") or {}).get("ZH-08", 0)
+            if gen_zh08 > man_zh08:
+                out.append(Finding("P2", "ZH08_HYPHEN",
+                                   f"中文旁半角短杠 ZH-08 {gen_zh08} 处 vs 人工 {man_zh08} 处"))
+        return out
+
+    # ── 旧口径（--legacy-final）：与最终人工成品逐项对照（批70 可复现）────
     if man:
         man_pages = man.get("pages")
         gen_pages = m.get("pdf_pages")
@@ -761,12 +1368,17 @@ def manual_metrics(case: CaseSpec, man_root: Path, workdir: Path,
     ts = tex_stats(tex_text)
     out["section"] = ts["section"]
     out["cite"] = ts["cite"]
+    out["footnote"] = ts["footnote"]
     out["placeholders"] = ts["placeholder_any"]
+    out["placeholder_types"] = ts["placeholder_types"]
+    out["cite_keys"] = sorted(_cited_keys(tex_text)) if tex_p.is_file() else []
     out["bib_entries"] = None
+    out["bib_titles"] = []
     out["bib_must"] = None
     if bib_p.is_file():
         bs = bib_stats(bib_text)
         out["bib_entries"] = bs["entries"]
+        out["bib_titles"] = bs.get("titles") or []
         out["bib_must"] = bs["must_missing"]
         out["bib_types"] = bs["types"]
     out["closure"] = citations_closure(tex_text, bib_text) if tex_p.is_file() and bib_p.is_file() else {}
@@ -1325,8 +1937,8 @@ def ensure_docx(src: Path, workdir: Path, logs_dir: Path, env: dict) -> tuple[Pa
 def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
              py: str, env: dict, timeout: float, compare: bool,
              use_metadata: bool = True, similarity: str = "auto",
-             sim_cache: dict | None = None) -> dict:
-    """跑一个案例：pass1 转换+编译 → 两遍 sha → 判据采集 → 人工对照。"""
+             sim_cache: dict | None = None, legacy_final: bool = False) -> dict:
+    """跑一个案例：pass1 转换+编译 → 两遍 sha → 判据采集 → 人工对照（L1/L3）。"""
     author, key = case.author, case.key
     out_name = sanitize_output_name(author)   # 产物目录名（repo 作者名可能含空格/中文）
     t0 = time.time()
@@ -1430,6 +2042,16 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
     man = manual_metrics(case, man_root, workdir, py, env, logs_dir) if compare else None
     m["manual"] = man
 
+    # 6a) L1 源稿一致性（B-117：无人工基线；复用引擎解析，异常显式落 notes 不静默）
+    l1_channel = "word" if src.suffix.lower() in (".docx", ".doc") else "latex"
+    try:
+        m["l1"] = source_metrics(src, l1_channel, workspace,
+                                 product_tex=gen_tex_text, product_bib=gen_bib_text)
+    except Exception as exc:  # noqa: BLE001 —— 双重保护：指标失败不阻断案例
+        m["l1"] = {"ok": False, "channel": l1_channel, "source": str(src),
+                   "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                   "notes": ["L1 源稿指标未计算（异常已显式报告）；不阻断案例"]}
+
     # 6b) 相似度（O10：auto 大稿降级 fast；O12：按 (人工 sha, 生成 sha, 口径) 缓存）
     if man and man.get("exists", {}).get("tex") and tex_p.is_file():
         try:
@@ -1451,8 +2073,9 @@ def run_case(case: CaseSpec, workspace: Path, man_root: Path, out_root: Path,
             cwd=ENGINE, env=env, log_path=log, timeout=120)
         m["checkbib"] = {**parse_checkbib_md(read_text(md)), "rc": rc}
 
-    # 8) 分级
-    findings = grade_case(m, man)
+    # 8) 分级（B-117：默认 L1–L4 新口径；--legacy-final 旧口径可复现）
+    m["l3"] = l3_attribution(m, man)
+    findings = grade_case(m, man, legacy_final=legacy_final)
     m["findings"] = [f.to_dict() for f in findings]
     m["level"] = case_level(findings)
     m["error_profile"] = error_profile(m)
@@ -1488,6 +2111,12 @@ def render_report(run: dict) -> str:
     lines.append(f"> 生成：{run.get('finished') or now_iso()}　｜　引擎 **{run.get('engine_version')}**　｜　"
                  f"git HEAD `{run.get('git_head')}`　｜　python `{run.get('python')}`")
     lines.append(f"> 产物/日志：`{run.get('out_dir')}`（**只写 /tmp**；未刷新 Desktop `testResult`，未 commit/push）")
+    _legacy = bool(run.get("legacy_final"))
+    lines.append(f"> 验收口径：**{run.get('acceptance_mode') or (ACCEPTANCE_LEGACY if _legacy else ACCEPTANCE_VERSION)}**"
+                 + ("　（`--legacy-final`：与最终人工成品逐项对照，与批70 报告可比；"
+                    "页数差 P1 等旧判据仅在此模式下复现）" if _legacy else
+                    "　（默认：基线无关 L1–L4；与人工成品只做三分类归因，"
+                    "只有「软件缺陷」计 P0/P1，页数差/版式差降 P2/信息项）"))
     rs, re_ = run.get("repo_start") or {}, run.get("repo_end") or {}
     if rs and re_ and rs != re_:
         lines.append(">")
@@ -1512,6 +2141,15 @@ def render_report(run: dict) -> str:
         lines.append(f"- ⚠ 零付费断言未验证 {len(totals['zero_cost_unverified'])} 个案例"
                      f"（`--verify-plan` 未成功，非「已确认违规」）：{', '.join(totals['zero_cost_unverified'][:8])}"
                      + ("…" if len(totals["zero_cost_unverified"]) > 8 else ""))
+    if not _legacy:
+        lines.append(f"- **L1 源稿一致性**（无人工基线）：可算 {totals.get('l1_cases', 0)} 例；"
+                     f"源引用未覆盖 {totals.get('l1_cite_missing', 0)} 条 / 源清单缺失 "
+                     f"{totals.get('l1_bib_missing', 0)} 条 / 源清单未识别 "
+                     f"{totals.get('l1_unparsed_lines', 0)} 行；未覆盖/未识别逐条见 §3b（禁静默丢失）。")
+        lines.append(f"- **L3 三分类归因**（与人工成品）：软件缺陷 {totals.get('l3_software', 0)} 项 / "
+                     f"源稿本身问题 {totals.get('l3_source', 0)} 项 / 人工后期修改 "
+                     f"{totals.get('l3_manual', 0)} 项；只有软件缺陷计 P1，"
+                     f"页数差/版式差为 P2 信息项（明细 §7）。")
     lines.append("")
     lines.append("## 1. 环境与零付费证据")
     lines.append("")
@@ -1586,6 +2224,57 @@ def render_report(run: dict) -> str:
             f"（{_fmt(mclo.get('n_unused'))}） | {_diff_str(tex.get('section'), man.get('section'))} | "
             f"{tex.get('placeholder_any', '—')} | **{lvl}** |")
     lines.append("")
+    # §3b：L1 源稿一致性（B-117；无人工基线）
+    lines.append("## 3b. L1 源稿一致性（无人工基线；B-117）")
+    lines.append("")
+    lines.append("「源引用」= 源正文引用键（Word 含编号清单映射/脚注文献条目）；「未覆盖」= 产物 bib 里"
+                 "没有 / 产物正文引用命令里没有（后者可能保留为脚注/未识别，显式列出）；「源清单」= 源参考"
+                 "文献清单题名数；「缺」= 产物 `reference.bib` 缺的题名（L1.3，缺哪条必报）；"
+                 "「未识别行」= 源清单里解析不出的行（显式交人工，不静默）。")
+    lines.append("")
+    lines.append("| 案例 | 通道 | 源引用 n | 未覆盖(正文/bib) | 源脚注 n | 源清单 n | 缺 | 未识别行 | 元数据提取率 | 源清单来源 |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    for m in ordered:
+        if m.get("skipped"):
+            continue
+        l1 = m.get("l1") or {}
+        if not l1.get("ok"):
+            reason = l1.get("error") or "未计算"
+            lines.append(f"| {m['key']} | — | — | — | — | — | — | — | — | ⚠ {reason[:60]} |")
+            continue
+        cov = l1.get("ref_coverage") or {}
+        rate = l1.get("meta_rate")
+        rate_s = ("—（源稿未提供元数据）" if rate is None else
+                  f"{rate:.0%}（{l1.get('meta_extracted_n')}/{l1.get('meta_present_n')}）")
+        lines.append(
+            f"| {m['key']} | {l1.get('channel')} | {l1.get('cite_keys_n', 0)} | "
+            f"{len(l1.get('cite_body_missing') or [])}/{len(l1.get('cite_missing') or [])} | "
+            f"{_fmt(l1.get('note_markers'))} | {_fmt(l1.get('ref_titles_n'))} | "
+            f"{_fmt(cov.get('missing_n'))} | {_fmt(l1.get('unparsed_ref_lines'))} | {rate_s} | "
+            f"{_fmt(l1.get('ref_source'))} |")
+    _l1_detail: list[str] = []
+    for m in ordered:
+        l1 = m.get("l1") or {}
+        if not l1.get("ok"):
+            continue
+        miss_cite = l1.get("cite_missing") or []
+        miss_bib = (l1.get("ref_coverage") or {}).get("missing") or []
+        body_miss = l1.get("cite_body_missing") or []
+        if l1.get("unparsed_ref_lines"):
+            _l1_detail.append(f"- `{m['key']}` 源清单未识别 {l1['unparsed_ref_lines']} 行"
+                              f"（源={l1.get('ref_source')}；原文已保留，交人工/AI）")
+        if miss_bib:
+            _l1_detail.append(f"- `{m['key']}` 源清单缺 {len(miss_bib)} 条：{miss_bib[:8]}")
+        if miss_cite:
+            _l1_detail.append(f"- `{m['key']}` 源引用未覆盖（bib 无）：{miss_cite[:10]}")
+        if body_miss:
+            _l1_detail.append(f"- `{m['key']}` 源引用未进产物正文引用命令 {len(body_miss)} 条"
+                              f"（可能保留为脚注/未识别，需人工核对）：{body_miss[:10]}")
+    if _l1_detail:
+        lines.append("")
+        lines.append("**L1 明细（逐条可枚举，禁静默）**：")
+        lines.extend(_l1_detail)
+    lines.append("")
     lines.append("## 4. P0 明细")
     lines.append("")
     lines.extend(_render_findings(ordered, "P0"))
@@ -1595,27 +2284,57 @@ def render_report(run: dict) -> str:
     lines.append("## 6. P2 明细")
     lines.append("")
     lines.extend(_render_findings(ordered, "P2"))
-    lines.append("## 7. 与人工成品差异汇总")
+    lines.append("## 7. 与人工成品差异")
     lines.append("")
-    lines.append("| 案例 | 页数差 | 文献差 | 引用差 | 节差 | 占位符差 | 未引用差 | 一校命中(产/人) |")
-    lines.append("|---|---|---|---|---|---|---|---|")
-    for m in ordered:
-        if m.get("skipped"):
-            continue
-        man = m.get("manual") or {}
-        tex, bib = m.get("tex") or {}, m.get("bib") or {}
-        clo, mclo = m.get("closure") or {}, man.get("closure") or {}
-        p_g, p_m = m.get("pdf_pages"), man.get("pages")
-        b_g, b_m = bib.get("entries"), man.get("bib_entries")
-        c_g, c_m = tex.get("cite"), man.get("cite")
-        s_g, s_m = tex.get("section"), man.get("section")
-        ph_g, ph_m = tex.get("placeholder_any"), man.get("placeholders")
-        u_g, u_m = clo.get("n_unused"), mclo.get("n_unused")
-        f = lambda a, b: _fmt((a - b) if isinstance(a, int) and isinstance(b, int) else None)
-        lines.append(f"| {m['key']} | {f(p_g, p_m)} | {f(b_g, b_m)} | {f(c_g, c_m)} | {f(s_g, s_m)} | "
-                     f"{f(ph_g, ph_m)} | {f(u_g, u_m)} | "
-                     f"{_fmt((m.get('proof') or {}).get('hits'))}/"
-                     f"{_fmt((man.get('proof') or {}).get('hits'))} |")
+    if _legacy:
+        lines.append("**旧口径（`--legacy-final`）：逐项数字差（与批70 报告可比，页数差 P1 等旧判据在"
+                     "本节 findings 中复现）**")
+        lines.append("")
+        lines.append("| 案例 | 页数差 | 文献差 | 引用差 | 节差 | 占位符差 | 未引用差 | 一校命中(产/人) |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for m in ordered:
+            if m.get("skipped"):
+                continue
+            man = m.get("manual") or {}
+            tex, bib = m.get("tex") or {}, m.get("bib") or {}
+            clo, mclo = m.get("closure") or {}, man.get("closure") or {}
+            p_g, p_m = m.get("pdf_pages"), man.get("pages")
+            b_g, b_m = bib.get("entries"), man.get("bib_entries")
+            c_g, c_m = tex.get("cite"), man.get("cite")
+            s_g, s_m = tex.get("section"), man.get("section")
+            ph_g, ph_m = tex.get("placeholder_any"), man.get("placeholders")
+            u_g, u_m = clo.get("n_unused"), mclo.get("n_unused")
+            f = lambda a, b: _fmt((a - b) if isinstance(a, int) and isinstance(b, int) else None)
+            lines.append(f"| {m['key']} | {f(p_g, p_m)} | {f(b_g, b_m)} | {f(c_g, c_m)} | {f(s_g, s_m)} | "
+                         f"{f(ph_g, ph_m)} | {f(u_g, u_m)} | "
+                         f"{_fmt((m.get('proof') or {}).get('hits'))}/"
+                         f"{_fmt((man.get('proof') or {}).get('hits'))} |")
+    else:
+        lines.append("**L3 三分类归因（B-117）**：软件缺陷 / 源稿本身问题 / 人工后期修改（含作者补充）。"
+                     "只有「软件缺陷」计 P0/P1；**页数差/版式差一律 P2/信息项（不再 P1）**；"
+                     "其余差异只进本表、不判级。差异考古只对差异项查稿件仓 `git log/show`（只读），"
+                     "不做全量基线映射。")
+        lines.append("")
+        lines.append("| 案例 | 指标 | 生成 | 人工 | 差 | 分类 | 级别 | 依据（证据） |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        _l3_rows = 0
+        for m in ordered:
+            if m.get("skipped"):
+                continue
+            for r in m.get("l3") or []:
+                _l3_rows += 1
+                lvl = r.get("level") or "信息项（不判级）"
+                cls = r.get("cls") or "—"
+                cls_s = f"**{cls}**" if cls == L3_SOFTWARE else cls
+                lines.append(f"| {m['key']} | {r.get('metric')} | {_fmt(r.get('gen'))} | "
+                             f"{_fmt(r.get('man'))} | {_fmt(r.get('diff'))} | {cls_s} | {lvl} | "
+                             f"{_fmt(r.get('evidence'))} |")
+        if not _l3_rows:
+            lines.append("| — | （无差异项） | — | — | — | — | — | — |")
+        lines.append("")
+        lines.append("> 口径边界：L3 的「软件缺陷」判定只以**源稿证据**为准（源清单缺条 / 源引用未覆盖 / "
+                     "源稿有元数据却仍占位 / 人工把脚注文献转成正文引用而产物没有）；页数与版式差异默认归"
+                     "「人工后期修改」；CJK 译名 bib key 质量只报告、转 backlog B-120（本卡不实现）。")
     lines.append("")
     lines.append("## 8. 已知缺口（Phase0/案例 141–144 登记，不 suppress）")
     lines.append("")
@@ -1664,6 +2383,22 @@ def render_report(run: dict) -> str:
             lines.append(f"- 人工成品：`{man.get('dir')}`（{_fmt(man.get('pages'))} 页，"
                          f"{_fmt(man.get('bib_entries'))} 条 bib，一校命中 "
                          f"{_fmt((man.get('proof') or {}).get('hits'))}）")
+        l1 = m.get("l1") or {}
+        if l1.get("ok"):
+            cov = l1.get("ref_coverage") or {}
+            lines.append(f"- L1 源稿：引用键 {l1.get('cite_keys_n', 0)}（未覆盖正文 "
+                         f"{len(l1.get('cite_body_missing') or [])} / bib 缺 "
+                         f"{len(l1.get('cite_missing') or [])}）；源脚注 "
+                         f"{_fmt(l1.get('note_markers'))}；源清单 {l1.get('ref_titles_n', 0)} 条"
+                         f"（缺 {_fmt(cov.get('missing_n'))} / 未识别 "
+                         f"{_fmt(l1.get('unparsed_ref_lines'))} 行）；元数据提取率 "
+                         f"{_fmt(l1.get('meta_rate'))}；占位符类型 "
+                         f"{json.dumps(l1.get('meta_placeholder') or {}, ensure_ascii=False)}")
+        elif l1:
+            lines.append(f"- L1 源稿：⚠ 未计算（{l1.get('error') or '未知'}；显式报告，不静默）")
+        if m.get("l3"):
+            lines.append("- L3 归因：" + "；".join(
+                f"{r.get('metric')}→{r.get('cls')}" for r in m["l3"]))
         if m.get("findings"):
             lines.append("- 判级：" + "；".join(f"{f['level']} {f['code']}" for f in m["findings"]))
         lines.append("")
@@ -1727,8 +2462,11 @@ def render_report(run: dict) -> str:
     lines.append("")
     lines.append("```bash")
     lines.append("PYTHONPATH=Engine/vendor /opt/homebrew/bin/python3.14 tools/batch_case_test.py \\")
-    lines.append(f"  --out {run.get('out_dir')}")
+    lines.append(f"  --out {run.get('out_dir')}" + (" --legacy-final" if _legacy else ""))
     lines.append("```")
+    lines.append("")
+    lines.append("> 验收口径（B-117，2026-10-21）：默认 L1–L4；`--legacy-final` 复现旧口径"
+                 "（与最终人工成品逐项对照，批70 的 P0/P1/P2=2/140/26 只作历史，不作目标）。")
     lines.append("")
     lines.append("*本报告由 `tools/batch_case_test.py` 生成；只读输入、零付费、产物只写 /tmp。*")
     return "\n".join(lines) + "\n"
@@ -1761,6 +2499,13 @@ def _render_findings(ordered: list[dict], level: str) -> list[str]:
 def build_summary(run: dict) -> dict:
     cases = [run["cases"][k] for k in run.get("case_order", []) if k in run["cases"]]
     findings = [(m["key"], f) for m in cases for f in m.get("findings", [])]
+    l3_rows = [dict(r, key=m["key"]) for m in cases for r in (m.get("l3") or [])]
+    l1_missing = sum(len((m.get("l1") or {}).get("cite_missing") or []) for m in cases
+                     if (m.get("l1") or {}).get("ok"))
+    l1_bib_missing = sum(((m.get("l1") or {}).get("ref_coverage") or {}).get("missing_n") or 0
+                         for m in cases if (m.get("l1") or {}).get("ok"))
+    l1_unparsed = sum((m.get("l1") or {}).get("unparsed_ref_lines") or 0
+                      for m in cases if (m.get("l1") or {}).get("ok"))
     totals = {
         "total": len(run.get("case_order", [])),
         "ran": sum(1 for m in cases if not m.get("skipped")),
@@ -1779,6 +2524,16 @@ def build_summary(run: dict) -> dict:
         "zero_cost_unverified": [m["key"] for m in cases
                                  if not m.get("skipped")
                                  and (m.get("plan") or {}).get("ai_zero") is None],
+        # B-117 口径汇总：L1 源稿覆盖 + L3 三分类
+        "acceptance_version": run.get("acceptance_version") or ACCEPTANCE_VERSION,
+        "legacy_final": bool(run.get("legacy_final")),
+        "l1_cases": sum(1 for m in cases if (m.get("l1") or {}).get("ok")),
+        "l1_cite_missing": l1_missing,
+        "l1_bib_missing": l1_bib_missing,
+        "l1_unparsed_lines": l1_unparsed,
+        "l3_software": sum(1 for r in l3_rows if r.get("cls") == L3_SOFTWARE),
+        "l3_source": sum(1 for r in l3_rows if r.get("cls") == L3_SOURCE),
+        "l3_manual": sum(1 for r in l3_rows if r.get("cls") == L3_MANUAL),
     }
     run["totals"] = totals
     return totals
@@ -1870,6 +2625,7 @@ def run_batch(args: argparse.Namespace) -> int:
         print(f"[限制] 只跑前 {len(cases)} 个案例（--limit）")
 
     metadata_disabled = bool(getattr(args, "no_metadata", False))
+    legacy_final = bool(getattr(args, "legacy_final", False))
     sim_mode = ("none" if getattr(args, "no_similarity", False)
                 else ("full" if getattr(args, "full_similarity", False) else "auto"))
     sim_cache: dict | None = None
@@ -1882,6 +2638,9 @@ def run_batch(args: argparse.Namespace) -> int:
     run: dict = {
         "run_id": args.label or out_root.name,
         "metadata_disabled": metadata_disabled, "similarity_mode": sim_mode,
+        "acceptance_version": ACCEPTANCE_VERSION,
+        "acceptance_mode": ACCEPTANCE_LEGACY if legacy_final else ACCEPTANCE_VERSION,
+        "legacy_final": legacy_final,
         "tier": tier, "similarity_cache_path": str(sim_cache_path) if sim_cache is not None else "",
         "started": now_iso(), "out_dir": str(out_root), "python": py,
         "engine_version": ENGINE_VERSION, "git_head": repo_start["head"],
@@ -1907,7 +2666,7 @@ def run_batch(args: argparse.Namespace) -> int:
             m = run_case(case, ws, mroot, out_root, py, env,
                          argv_timeout(args.timeout), compare=not args.no_compare,
                          use_metadata=not metadata_disabled, similarity=sim_mode,
-                         sim_cache=sim_cache)
+                         sim_cache=sim_cache, legacy_final=legacy_final)
             m["channel"] = "latex" if str(m.get("source", "")).endswith(".tex") else "word"
             if (m.get("plan") or {}).get("ai_zero") is False and not m.get("skipped"):
                 run["zero_cost"]["violations"].append(case.key)
@@ -2021,16 +2780,28 @@ def run_self_test() -> int:
     check("零付费：PYTHONPATH 注入 Engine+vendor",
           str(ENGINE) in env["PYTHONPATH"] and str(VENDOR) in env["PYTHONPATH"])
 
+    clean_l1 = {"ok": True, "channel": "word",
+                "cite_keys": ["A"], "cite_keys_n": 1, "cite_total": 1,
+                "cite_body_missing": [], "cite_missing": [],
+                "note_markers": 0, "note_citation_entries": 0,
+                "ref_titles": ["T"], "ref_titles_n": 1, "ref_source": "test",
+                "unparsed_ref_lines": 0,
+                "meta_present": {"title": True},
+                "meta_unaligned": [], "meta_unextracted": [],
+                "meta_present_n": 1, "meta_extracted_n": 1, "meta_rate": 1.0,
+                "ref_coverage": {"total": 1, "covered": 1, "missing": [], "missing_n": 0}}
     clean = {"convert_rc": 0, "pdf_pages": 16,
              "log": {"n_errors": 0, "undefined_citation": 0, "undefined_reference": 0,
                      "missing_char": 0},
              "biber": {"errors": 0}, "sha_ok": True, "plan": {"ai_zero": True, "ai": 0, "rc": 0},
-             "closure": {"n_dangling": 0, "n_unused": 0}, "tex": {"cite": 20, "section": 5,
-                                                                  "placeholder_any": 0},
-             "bib": {"entries": 20}}
+             "closure": {"n_dangling": 0, "n_unused": 0, "cited": ["A"]},
+             "tex": {"cite": 20, "section": 5, "placeholder_any": 0, "footnote": 3},
+             "bib": {"entries": 20, "titles": ["T"]}, "l1": clean_l1}
     man = {"pages": 16, "bib_entries": 20, "cite": 20, "section": 5, "placeholders": 0,
+           "footnote": 3, "cite_keys": ["A"], "bib_titles": ["T"],
            "closure": {"n_unused": 0}, "bib_must": 0, "proof": {"rules": {}}}
-    check("干净案例无 finding", grade_case(clean, man) == [])
+    check("干净案例无 finding（新口径：L1 无缺条/L3 无软件缺陷）",
+          grade_case(clean, man) == [])
     bad = dict(clean, convert_rc=2)
     check("rc≠0 → P0 CONVERT_RC",
           any(f.level == "P0" and f.code == "CONVERT_RC" for f in grade_case(bad, man)))
@@ -2044,29 +2815,102 @@ def run_self_test() -> int:
     check("零付费断言失败 → P0 ZERO_COST",
           any(f.code == "ZERO_COST" for f in grade_case(
               dict(clean, plan={"ai_zero": False, "ai": 3, "rc": 0}), man)))
-    check("页数差 1/2/5 → 一律 P1 PAGE_DIFF（B-019：页差不再进 P0）",
-          any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
-              dict(clean, pdf_pages=17), man))
-          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
-              dict(clean, pdf_pages=18), man))
-          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
-              dict(clean, pdf_pages=21), man))
-          and not any(f.level == "P0" for f in grade_case(
-              dict(clean, pdf_pages=21), man)))
-    check("文献差 3 → P0 BIB_COUNT_DIFF（非 88-06 口径不变）",
+    check("新口径：页数差 1/2/5 → P2 信息项 PAGE_DIFF（B-117 不再 P1）",
+          all(any(f.level == "P2" and f.code == "PAGE_DIFF" for f in grade_case(
+              dict(clean, pdf_pages=n), man))
+              and not any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+                  dict(clean, pdf_pages=n), man))
+              for n in (17, 18, 21)))
+    check("legacy：页数差 1/2/5 → 一律 P1 PAGE_DIFF（批70 旧口径可复现）",
+          all(any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+              dict(clean, pdf_pages=n), man, legacy_final=True)) for n in (17, 18, 21))
+          and PAGE_DIFF_LEVEL == "P1" and PAGE_DIFF_INFO_LEVEL == "P2")
+    check("新口径：页数/版式差不再走 BIB_COUNT 判级（L1 源清单覆盖取代 vs 最终版）",
+          not any(f.code == "BIB_COUNT_DIFF" for f in grade_case(
+              dict(clean, bib={"entries": 23}), man))
+          and not any(f.code == "BIB_COUNT_DIFF" for f in grade_case(
+              dict(clean, l1={**clean_l1}, bib={"entries": 23}), man)))
+    check("legacy：文献差 3 → P0 BIB_COUNT_DIFF / 差 1 → P1（旧口径）",
           any(f.level == "P0" and f.code == "BIB_COUNT_DIFF" for f in grade_case(
-              dict(clean, bib={"entries": 23}), man)))
-    check("88-06 文献差 3 → P1 BIB_COUNT_DIFF（B-019 案例级：人工多列，以源稿清单为准）",
+              dict(clean, bib={"entries": 23}), man, legacy_final=True))
+          and any(f.level == "P1" and f.code == "BIB_COUNT_DIFF" for f in grade_case(
+              dict(clean, bib={"entries": 21}), man, legacy_final=True)))
+    check("legacy：88-06 文献差 3 → P1 BIB_COUNT_DIFF（B-019 案例级降级保留）",
           any(f.level == "P1" and f.code == "BIB_COUNT_DIFF" for f in grade_case(
-              dict(clean, key="88-06", bib={"entries": 23}), man))
+              dict(clean, key="88-06", bib={"entries": 23}), man, legacy_final=True))
           and not any(f.level == "P0" for f in grade_case(
-              dict(clean, key="88-06", bib={"entries": 23}), man)))
+              dict(clean, key="88-06", bib={"entries": 23}), man, legacy_final=True)))
     check("正文 0 引用但 bib>0 → P0 NO_CITES",
           any(f.code == "NO_CITES" for f in grade_case(
               dict(clean, tex={**clean["tex"], "cite": 0}), man)))
-    check("占位符>0 → P1 PLACEHOLDER",
+    check("L1：源参考文献清单缺条 → P1 SRC_BIB_MISSING（缺哪条必报）",
+          any(f.level == "P1" and f.code == "SRC_BIB_MISSING" for f in grade_case(
+              dict(clean, l1={**clean_l1, "ref_titles": ["T", "U"], "ref_titles_n": 2,
+                              "ref_coverage": {"total": 2, "covered": 1,
+                                               "missing": ["U"], "missing_n": 1}}), man))
+          and "U" in str([f.detail for f in grade_case(
+              dict(clean, l1={**clean_l1, "ref_titles": ["T", "U"],
+                              "ref_coverage": {"total": 2, "covered": 1,
+                                               "missing": ["U"], "missing_n": 1}}), man)]))
+    check("L1：源引用未覆盖 → P1 SRC_CITE_MISSING / 未进正文 → P2 显式信息项",
+          any(f.level == "P1" and f.code == "SRC_CITE_MISSING" for f in grade_case(
+              dict(clean, l1={**clean_l1, "cite_missing": ["B"]}), man))
+          and any(f.level == "P2" and f.code == "SRC_CITE_BODY_INFO" for f in grade_case(
+              dict(clean, l1={**clean_l1, "cite_body_missing": ["C"]}), man)))
+    check("L1：源清单未识别行 → P2 SRC_LIST_UNPARSED（显式报告，不静默）",
+          any(f.level == "P2" and f.code == "SRC_LIST_UNPARSED" for f in grade_case(
+              dict(clean, l1={**clean_l1, "unparsed_ref_lines": 3}), man)))
+    check("L1：源引用未匹配/指向未解析条目 → P2 显式信息项（未识别/需人工）",
+          any(f.level == "P2" and f.code == "SRC_CITE_UNMATCHED" for f in grade_case(
+              dict(clean, l1={**clean_l1, "unmatched_citations": ["（Beal Restall 2006）"]}), man))
+          and any(f.level == "P2" and f.code == "SRC_CITE_UNRESOLVED" for f in grade_case(
+              dict(clean, l1={**clean_l1, "cite_unresolved": ["ref01"]}), man)))
+    check("L1：源稿有元数据却仍占位 → P1 META_UNEXTRACTED（软件缺陷）",
+          any(f.level == "P1" and f.code == "META_UNEXTRACTED" for f in grade_case(
+              dict(clean, l1={**clean_l1, "meta_unextracted": ["author"],
+                              "meta_rate": 0.5}), man)))
+    check("L1：解析失败显式落 notes、不产生误判",
+          grade_case(dict(clean, l1={"ok": False, "error": "boom"}), man) == [])
+    check("L3：脚注转引用不完整 → P1 FOOTNOTE_CITE_GAP（软件缺陷）",
+          any(f.level == "P1" and f.code == "FOOTNOTE_CITE_GAP" for f in grade_case(
+              dict(clean, tex={**clean["tex"], "cite": 40, "footnote": 14}),
+              {**man, "cite": 49, "footnote": 7})))
+    check("L3：页数差归因「人工后期修改」/信息项；三分类齐全",
+          (lambda rows: rows and rows[0]["cls"] == L3_MANUAL
+           and rows[0]["level"] == "P2")(l3_attribution(
+               dict(clean, pdf_pages=17), man)))
+    check("L3：源清单全覆盖而最终人工版多 1 条 → 人工后期修改（作者补充）",
+          any(r["cls"] == L3_MANUAL and r["code"] == "BIB_COUNT_INFO"
+              for r in l3_attribution(
+                  dict(clean, l1={**clean_l1, "ref_titles_n": 20}),
+                  {**man, "bib_entries": 21,
+                   "bib_titles": ["T", "Chen2015"]})))
+    check("L3：CJK 译名 bib key 差异只报告（转 backlog B-120，不判 P1）",
+          any(r["code"] == "BIB_KEY_INFO" and r["level"] is None
+              for r in l3_attribution(
+                  dict(clean, closure={**clean["closure"], "cited": ["Ai1979"]}),
+                  {**man, "cite_keys": ["Einstein1979"]}))
+          and not any(f.code == "BIB_KEY_INFO" for f in grade_case(
+              dict(clean, closure={**clean["closure"], "cited": ["Ai1979"]}),
+              {**man, "cite_keys": ["Einstein1979"]})))
+    check("legacy：占位符/引用数/节结构/未引用/必补字段旧判据可复现",
           any(f.level == "P1" and f.code == "PLACEHOLDER" for f in grade_case(
-              dict(clean, tex={**clean["tex"], "placeholder_any": 3}), man)))
+              dict(clean, tex={**clean["tex"], "placeholder_any": 3}), man, legacy_final=True))
+          and any(f.level == "P1" and f.code == "CITE_DIFF" for f in grade_case(
+              dict(clean, tex={**clean["tex"], "cite": 16}), man, legacy_final=True))
+          and any(f.level == "P1" and f.code == "SECTION_DIFF" for f in grade_case(
+              dict(clean, tex={**clean["tex"], "section": 4}), man, legacy_final=True))
+          and any(f.level == "P1" and f.code == "UNUSED_BIB_EXCESS" for f in grade_case(
+              dict(clean, closure={**clean["closure"], "n_unused": 8}), man, legacy_final=True))
+          and any(f.level == "P1" and f.code == "BIB_FIELDS" for f in grade_case(
+              dict(clean, bib={"entries": 20, "must_missing": 15}), man, legacy_final=True)))
+    check("新口径：新 CITE_DIFF/PLACEHOLDER/SECTION_DIFF 旧判据不再按人工基线判 P1",
+          not any(f.code == "CITE_DIFF" for f in grade_case(
+              dict(clean, tex={**clean["tex"], "cite": 16}), man))
+          and not any(f.code == "PLACEHOLDER" for f in grade_case(
+              dict(clean, tex={**clean["tex"], "placeholder_any": 3}), man))
+          and any(f.level == "P2" and f.code == "SECTION_DIFF" for f in grade_case(
+              dict(clean, tex={**clean["tex"], "section": 4}), man)))
     check("解析：预计 AI：0 次 → (True, 0)", parse_plan_ai("预计 AI：0 次（未配置 LLM") == (True, 0))
     check("解析：预计 AI：≤ 3 次 → (False, 3)",
           parse_plan_ai("预计 AI：≤ 3 次调用") == (False, 3))
@@ -2081,9 +2925,10 @@ def run_self_test() -> int:
         "**合计命中 4 处。**")["total"] == 4)
     check("解析：回读校验结论", parse_checkbib_md(
         "**结论：42 处问题 / 29 处提示** —— x（解析出 17 条条目）")["problems"] == 42)
-    check("闭合：悬空/未用", citations_closure(
+    check("闭合：悬空/未用（新增 cited/bib_keys 供 L1 覆盖比对）", citations_closure(
         r"\parencite{A} \parencite{B}", "@article{A,\n title={t}\n}") == {
-            "n_cited": 2, "n_bib": 1, "dangling": ["B"], "unused": [],
+            "n_cited": 2, "n_bib": 1, "cited": ["A", "B"], "bib_keys": ["A"],
+            "dangling": ["B"], "unused": [],
             "n_dangling": 1, "n_unused": 0})
     dc = default_cases()
     check("默认清单：90(10)→87(9)→88(7)→89(5)→86(10) 共 41 篇",
@@ -2101,15 +2946,23 @@ def run_self_test() -> int:
           is_known("87-5", "NO_CITES") is not None
           and any(f.level == "P0" and f.code == "NO_CITES" for f in grade_case(
               dict(clean, tex={**clean["tex"], "cite": 0}), man)))
-    check("B-019：known PAGE_DIFF 只作说明、不进 P0（87-9 页差 3 → P1）",
+    check("B-117：known 87-9 页差 3 → 新口径 P2 信息项 / legacy 复现旧 P1",
           is_known("87-9", "PAGE_DIFF") is not None
-          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+          and any(f.level == "P2" and f.code == "PAGE_DIFF" for f in grade_case(
               dict(clean, key="87-9", pdf_pages=19), man))
+          and any(f.level == "P1" and f.code == "PAGE_DIFF" for f in grade_case(
+              dict(clean, key="87-9", pdf_pages=19), man, legacy_final=True))
           and not any(f.level == "P0" for f in grade_case(
               dict(clean, key="87-9", pdf_pages=19), man)))
     check("默认 out 根不在仓库/Desktop",
           DEFAULT_OUT_ROOT == Path("/tmp/batch_case_test")
           and not str(DEFAULT_OUT_ROOT).startswith(str(ROOT)))
+    check("B-117 CLI：--legacy-final 默认关/可解析；口径常量（旧 P1 仅 legacy 复现）",
+          build_parser().parse_args([]).legacy_final is False
+          and build_parser().parse_args(["--legacy-final"]).legacy_final is True
+          and ACCEPTANCE_VERSION.startswith("B-117")
+          and PAGE_DIFF_LEVEL == "P1" and PAGE_DIFF_INFO_LEVEL == "P2"
+          and SECTION_DIFF_INFO_LEVEL == "P2")
 
     d3 = next(c for c in default_cases() if c.key == "90-03")
     check("90-03 manifest 声明附加源 metadata=yalcin puzzle.tex",
@@ -2137,6 +2990,46 @@ def run_self_test() -> int:
         check("附加源文件不存在 → 安全回退（不传、note 写明候选）",
               "--metadata" not in args3 and info3["fallback"] is True
               and "回退" in info3["note"])
+
+        # ── B-117：L1 源稿一致性（LaTeX 通道；合成 fixture，不读真实稿）──
+        src_dir = ws / "L1Case"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        src_tex = src_dir / "main.tex"
+        src_tex.write_text(
+            "\\begin{document}\n正文\\parencite{A}\\parencite{B}\\footnote{注}。\n"
+            "\\end{document}\n", encoding="utf-8")
+        (src_dir / "author.bib").write_text(
+            "@article{A,\n title={Alpha Title},\n year={2020}\n}\n"
+            "@book{B,\n title={Beta Book},\n year={2021}\n}\n", encoding="utf-8")
+        prod_tex = ("\\newcommand{\\mytitle}{T}\n\\parencite{A}\n"
+                    "【未识别：第一作者姓名，请手工填写】")
+        prod_bib = "@article{A,\n title={Alpha Title},\n year={2020}\n}\n"
+        _l1 = source_metrics(src_tex, "latex", src_dir,
+                             product_tex=prod_tex, product_bib=prod_bib)
+        check("L1：LaTeX 源稿引用键/脚注/源清单/题名覆盖/元数据提取率（合成 fixture）",
+              _l1["ok"] and _l1["cite_keys_n"] == 2 and _l1["note_markers"] == 1
+              and _l1["ref_titles_n"] == 2 and _l1["ref_coverage"]["missing_n"] == 1
+              and _l1["cite_missing"] == ["B"]
+              and _l1["cite_body_missing"] == ["B"]
+              and _l1["meta_unextracted"] == [] and _l1["meta_rate"] is None)
+        _l1_missing = source_metrics(
+            src_tex, "latex", src_dir, product_tex="\\parencite{A}",
+            product_bib="@article{A, title={Alpha Title}}\n")
+        _f = grade_case({"convert_rc": 0, "pdf_pages": 1,
+                         "log": {"n_errors": 0}, "plan": {"ai_zero": True},
+                         "tex": {"cite": 1}, "bib": {"entries": 1},
+                         "closure": {"n_dangling": 0}, "l1": _l1_missing}, None)
+        check("L1：源清单缺条/源引用未覆盖 → P1 findings（无人工基线也判；禁静默）",
+              any(x.level == "P1" and x.code == "SRC_BIB_MISSING" for x in _f)
+              and any(x.level == "P1" and x.code == "SRC_CITE_MISSING" for x in _f)
+              and any(x.level == "P2" and x.code == "SRC_CITE_BODY_INFO" for x in _f))
+        check("B-117：占位符按类型枚举 + 题名归一化覆盖（L1.3/L1.5）",
+              placeholder_types("【未识别：第一作者姓名，请手工填写】"
+                                "【未识别：表题，请手工填写】【未识别：引文出处】")
+              == {"作者元数据": 1, "图表题": 1, "引文出处": 1}
+              and norm_title("Alpha  {Title}.") == norm_title("alpha title")
+              and title_coverage(["Alpha Title", "Beta Book"],
+                                 ["alpha title"])["missing_n"] == 1)
 
     _dash = build_dashboard(
         {"case_order": ["a", "b"],
@@ -2235,6 +3128,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--python", default="", help="子进程解释器（默认当前解释器）")
     ap.add_argument("--timeout", type=float, default=600.0, help="单案例子进程超时秒（默认 600）")
     ap.add_argument("--no-compare", action="store_true", help="不读稿件仓人工成品（只做绝对判据）")
+    ap.add_argument("--legacy-final", action="store_true",
+                    help="B-117 过渡开关：旧口径（与最终人工成品逐项对照：PAGE_DIFF P1/"
+                         "BIB_COUNT_DIFF/CITE_DIFF/SECTION_DIFF…，与批70 输出可比）")
     sim_g = ap.add_mutually_exclusive_group()
     sim_g.add_argument("--no-similarity", action="store_true",
                        help="跳过相似度计算（最快；相似度列留空）")

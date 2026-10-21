@@ -137,8 +137,18 @@ struct BibDbStatsView: View {
         if let lint = overview.lint {
             BibDbInfoRow(label: "lint 结果",
                          value: "error \(lint.errorCount) 项 / warning \(lint.warningCount) 项"
-                         + (lint.ok ? "（库可用）" : "——**库有 error，先修**"),
+                         + (lint.ok ? "（库可用）" : "——库有 error，多为规范化规则升级后未迁移"),
                          color: lint.ok ? (lint.warningCount > 0 ? .orange : .green) : .red)
+            if !lint.ok {
+                // 可操作说明（B-115）：库 error 不是「手工改坏了」这么吓人，最常见原因是
+                // 引擎的规范化规则升级后**真实库还没迁移**；给出确切的修复命令，别让人猜。
+                Text("修复：在终端运行 `python3 Engine/bibdb.py rehash --db <库> --apply`，"
+                     + "再点「刷新」；逐条 error 见下方列表。")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .padding(.leading, 118)
+            }
             BibDbInfoRow(label: "同作品多记录", value: "\(lint.nearDuplicates) 对"
                          + "（经典文献跨期重复引用是常态；仅供参考，不自动合并）")
             ForEach(Array(lint.errors.prefix(6).enumerated()), id: \.offset) { item in

@@ -223,6 +223,14 @@ class DocxDoc:
     # citation_unmatched / field_conflict），build 汇总成中文 warning。
     c_class_warnings: list = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # 批71 B-118：作者信息脚注解析出的**作者级**元数据（多作者/中英文姓名/单位/邮箱）。
+    # 元素：{"name", "name_en", "affiliation_cn": [...], "affiliation_en": [...],
+    #        "email"}。build 用它**只填空不覆盖**地补第二作者起的 CN 单位/邮箱
+    # （旧实现只有英文合著者槽位有来源）。空列表 = 与从前逐字节相同。
+    author_meta: list[dict] = field(default_factory=list)
+    # 批71 B-118：作者信息脚注里的收稿日期/基金项目（build 只填空不覆盖 CLI 值）。
+    received: str = ""
+    grants: str = ""
 
 
 # ── 参考文献条目解析 ──────────────────────────────────────────────────────
@@ -2049,6 +2057,40 @@ def collect_emails(plains: list[str], tail_start: int, fn_texts: list[str]) -> l
     return out
 
 
+# ── 作者信息脚注 → 结构化元数据（批71 B-118）──────────────────────────────
+#
+# 解析与格式判据在 `slcn/footnotes.py::parse_author_info`（单点维护）；这里只负责
+# 「已知作者名」的归一与落位。已知名单是**安全阀**：脚注里的连写「姓名单位」
+# （`张三某某大学…`）、无标签英文块（`Zhang San  College of …`）只有在
+# 姓名命中已知名单时才敢切分——不在名单里就整条不解析（不猜）。
+def _known_cn_authors(author: str) -> list[str]:
+    """中文作者串 → 姓名列表（`陈  波` 这类单字片段并回一个名字）。"""
+    parts = [x for x in re.split(r"[\s、,，·]+", author or "") if x]
+    out: list[str] = []
+    i = 0
+    while i < len(parts):
+        cur = parts[i]
+        if len(cur) == 1 and i + 1 < len(parts) and re.fullmatch(
+                r"[\u4e00-\u9fff]", parts[i + 1]):
+            out.append(cur + parts[i + 1])
+            i += 2
+            continue
+        if len(cur) >= 2:
+            out.append(cur)
+        i += 1
+    return out
+
+
+def _known_en_authors(author_en: str) -> list[str]:
+    """英文作者串 → 姓名列表（只认「每段 2 个 Title-case 词」的连写，拿不准不拆）。"""
+    words = re.split(r"\s+", (author_en or "").strip())
+    if len(words) < 2 or len(words) % 2:
+        return []
+    if not all(re.fullmatch(r"[A-Z][^\W\d_]*\.?", w) for w in words):
+        return []
+    return [" ".join(words[i:i + 2]) for i in range(0, len(words), 2)]
+
+
 def _is_subtitle(t: str) -> bool:
     return bool(_SUB_RE.match(t))
 
@@ -3269,6 +3311,57 @@ def parse_docx(path: str, quote_threshold: int = 105,
     if doc.keywords_cn:
         doc.keywords_cn = re.sub(r"\s*[、，,]\s*", "；", doc.keywords_cn).strip("；")
 
+    # ③.7 作者信息脚注（批71 B-118）：姓名/单位/邮箱/收稿日期/基金项目 →
+    #      DocxDoc.author_meta / received / grants。格式判据在 `slcn/footnotes.py`
+    #      （单点维护）；这里只做「已知作者名」安全阀与落位。
+    #      ⚠️ **只填空不覆盖**：doc.author / affiliation_* / email 已有识别值一个都不动；
+    #         build 侧再以模板槽位「当前是否已解析」为最终判据（人工表单/CLI 优先）。
+    #      ⚠️ 无此类脚注的稿子（90-06/09 实测）走不到任何赋值 → 产物逐字节不变。
+    from .footnotes import (looks_like_author_info, merge_author_info,
+                            parse_author_info, parse_fund_line)
+
+    _known_cn = _known_cn_authors(doc.author)
+    _known_en = _known_en_authors(doc.author_en)
+    _ai_infos: list[dict] = []
+    for _text in fn_texts:
+        _info = parse_author_info(_text, known_cn=_known_cn, known_en=_known_en)
+        if _info:
+            _ai_infos.append(_info)
+        elif looks_like_author_info(_text):
+            doc.warnings.append(
+                "作者信息脚注存在但无法判定作者（保持现有解析结果，请人工填写）："
+                + _text.strip()[:60])
+    # 正文里的独立一行 `基金项目：…`（90-08 实测：作者信息只在正文出现、且没有
+    # 作者姓名/单位）→ **只填基金项目、绝不臆造作者**；该行从正文里移出（否则
+    # 标题页基金脚注 + 正文会重复印一遍）。
+    _drop_fund_para = None
+    if not any(_i.get("grants") for _i in _ai_infos):
+        for _i, _p in enumerate(plains[1:], start=1):
+            _g = parse_fund_line(_p)
+            if _g:
+                _ai_infos.append({"authors": [], "received": "", "grants": _g,
+                                  "warnings": []})
+                _drop_fund_para = paras[_i]
+                break
+    _ai = merge_author_info(_ai_infos, known_cn=tuple(_known_cn),
+                            known_en=tuple(_known_en))
+    doc.author_meta = _ai["authors"]
+    doc.grants = _ai["grants"]
+    doc.received = _ai["received"]
+    doc.warnings.extend(_ai["warnings"])
+    if doc.author_meta:
+        # 只填空：作者姓名/单位/邮箱为空的稿子才用脚注值（多作者并列时补全作者串）。
+        _named = [a["name"] for a in doc.author_meta if a.get("name")]
+        if not doc.author.strip() and _named:
+            doc.author = " ".join(_named)
+        _first = doc.author_meta[0]
+        if not doc.affiliation_cn.strip() and _first.get("affiliation_cn"):
+            doc.affiliation_cn = "\\\\ ".join(_first["affiliation_cn"])
+        if not doc.affiliation_en.strip() and _first.get("affiliation_en"):
+            doc.affiliation_en = AFFIL_EN_JOIN.join(_first["affiliation_en"])
+        if not doc.email.strip() and _first.get("email"):
+            doc.email = _first["email"]
+
     # ④ 正文起点：必须在**所有**元数据块之后
     start = meta_end + 1 if meta_end >= 0 else 2
     for i in range(start, min(start + 8, len(paras))):
@@ -3284,6 +3377,17 @@ def parse_docx(path: str, quote_threshold: int = 105,
             break
     end = ref_start if ref_start > start else len(paras)
     body_paras = paras[start:end]
+
+    # 90-08 型：正文里那个独立的 `基金项目：…` 段落已提升到标题页基金项 → 从正文/块
+    # 序列里移出（否则标题页脚注 + 正文重复印一遍）。位置索引全部基于移除后的列表，
+    # 保持既有「body_paras ↔ blocks」下标口径一致。
+    if _drop_fund_para is not None and any(p is _drop_fund_para for p in body_paras):
+        body_paras = [p for p in body_paras if p is not _drop_fund_para]
+        paras = [p for p in paras if p is not _drop_fund_para]
+        blocks = [b for b in blocks if b is not _drop_fund_para]
+        doc.warnings.append(
+            f"正文中的「基金项目：…」行已移入元数据（标题页基金项）："
+            f"{doc.grants[:60]}")
 
     # 第 121 条：全英文稿（正文前 120 段无汉字）里，文末有参考文献区时，
     # 脚注里的散文/引注一律按注释处理（01 Tuomo_Aho 型）；中文稿/混合稿不受这条影响。

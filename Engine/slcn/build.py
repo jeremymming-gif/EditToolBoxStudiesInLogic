@@ -377,6 +377,70 @@ def coauthor_fields(field_values: dict[str, str]) -> tuple[tuple[str, str], ...]
     return tuple(out)
 
 
+# ── 作者信息脚注 → 作者槽位（批71 B-118）──────────────────────────────────
+def _source_author_meta_fields(
+    author_meta: list[dict] | None,
+    field_values: dict[str, str],
+    tpl_fields: set[str],
+    tpl_defaults: dict[str, str] | None = None,
+    *,
+    skip: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """`DocxDoc.author_meta` → 模板作者槽位（第二作者起的 CN 单位/邮箱等）。
+
+    旧实现里第二作者只有英文槽位有来源（`en_coauthor_values()`），CN 单位与邮箱
+    永远占位符；作者信息脚注解析出**作者级**元数据后在这里补。
+
+    **只填空不覆盖**（用户 2026-10-21 拍板）：
+      · 模板槽位当前已解析（源稿其它位置识别到的 / 模板已有真值）→ 不写；
+      · `overrides`（--author-cn 等）与 `--metadata-json` 人工值 → 一律不碰；
+      · 第 N 位作者的姓名槽位必须存在且**姓名一致**才写它的单位/邮箱
+        （位置对不上就不猜——绝不把甲的单位写给乙）。
+    """
+    out: dict[str, str] = {}
+    if not author_meta:
+        return out
+    defaults = tpl_defaults or {}
+    cn_join = "\\\\ "      # 运行时 = 两个反斜杠 + 空格（与 docxsource 的 CN 多单位一致）
+
+    def _set(name: str, value: str) -> None:
+        if not value or name in out or name in skip or name not in tpl_fields:
+            return
+        if is_parsed(field_values.get(name), name, defaults):
+            return
+        out[name] = value
+
+    def _units_cn(rec: dict) -> str:
+        return cn_join.join([u for u in (rec.get("affiliation_cn") or []) if u])
+
+    def _units_en(rec: dict) -> str:
+        return cn_join.join([u for u in (rec.get("affiliation_en") or []) if u])
+
+    for i, word in enumerate(_ORDINALS[:5]):
+        if i >= len(author_meta):
+            break
+        rec = author_meta[i] or {}
+        macro = _AUTHOR_MACRO(word)
+        if not is_parsed(field_values.get(macro)):
+            continue                      # 该位作者不存在/姓名没解析出来 → 不填
+        rec_name = re.sub(r"[\s\u3000]", "", str(rec.get("name") or ""))
+        slot_name = re.sub(r"[\s\u3000]", "",
+                           _norm_for_compare(field_values.get(macro) or ""))
+        if rec_name and slot_name and rec_name != slot_name:
+            continue                      # 姓名对不上 → 不猜
+        if i == 0:
+            _set("myfirstaffiliation", _units_cn(rec))
+            _set("myfirstaffiliationEN", _units_en(rec))
+            _set("myfirstemail", str(rec.get("email") or ""))
+            _set("myfirstauthorEN", str(rec.get("name_en") or ""))
+        else:
+            _set(f"my{word}affiliation", _units_cn(rec))
+            _set(f"my{word}affiliationEN", _units_en(rec))
+            _set(f"my{word}email", str(rec.get("email") or ""))
+            _set(f"my{word}authorEN", str(rec.get("name_en") or ""))
+    return out
+
+
 # ── 结构化人工元数据（--metadata-json，批63b）──────────────────────────────
 # GUI「填写元数据」表单 → 临时 JSON → convert.py 校验/归一化 → 本文件的 dict：
 #   {"title_cn": "…", …, "authors": [{"name_cn": "…", "name_en": "…",
@@ -2200,6 +2264,16 @@ def build_docx(
         fields.update(en_slots)
         say(f"   英文合著者槽位按源稿填入 {len(en_slots)} 项：{'、'.join(en_slots)}")
 
+    # ── B-118：作者信息脚注解析出的作者级元数据（CN 单位/邮箱/英译名）→ 只填空不覆盖。
+    #    旧实现第二作者起的 CN 单位/邮箱**没有来源**（永远占位符）；作者信息脚注里有。
+    _am_fields = _source_author_meta_fields(
+        getattr(doc, "author_meta", None), fields, tpl_fields, tpl_defaults,
+        skip=set(ov) | structured_keys)
+    if _am_fields:
+        fields.update(_am_fields)
+        say(f"   作者信息脚注补全 {len(_am_fields)} 个作者元数据字段："
+            f"{'、'.join(_am_fields)}")
+
     # ── 必填字段解析不出来 → 写占位符 + 警告，不许留模板默认值 ──
     #    清单 = 文章级/第一作者字段 + 「确实存在的合著者」的单位与邮箱
     undetected: list[str] = []
@@ -2234,7 +2308,19 @@ def build_docx(
             pass
     say(f"   填入 {filled} 个字段（{'英文' if is_en else '中文'}模板）")
     # 编辑侧出版信息（卷/期/年/起止页/收稿日期/责任编辑/基金）
-    ed = editorial_fields(meta)
+    # B-118：作者信息脚注里的收稿日期/基金项目 → 只填空不覆盖（CLI/GUI 显式值优先）；
+    # 源稿是 Word 纯文本，基金里的 & % # _ 等要转义（否则 xelatex 报错）。
+    _meta_src = dict(meta or {})
+    if not str(_meta_src.get("grants") or "").strip() and getattr(doc, "grants", ""):
+        from .docxsource import escape_latex as _esc
+        _grants, _gn = clean_field_value("mygrants", doc.grants)
+        _meta_src["grants"] = _esc(_grants)
+        say(f"   基金项目：从作者信息脚注/正文填入「{_grants[:40]}」")
+        warnings.extend(_gn)
+    if not str(_meta_src.get("received") or "").strip() and getattr(doc, "received", ""):
+        _meta_src["received"] = doc.received
+        say(f"   收稿日期：从作者信息脚注填入「{doc.received}」")
+    ed = editorial_fields(_meta_src)
     for k, v in ed.items():
         if k in tpl_fields:
             tpl = set_field(tpl, k, v)

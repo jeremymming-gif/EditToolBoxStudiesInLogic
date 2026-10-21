@@ -43,7 +43,7 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） | `sources-mac/Features/CompileFeature.swift` |
 | 生成目录 | 按模板继承生成中英文目录（条目断行/栏目行在引擎侧） | `sources-mac/Features/TocFeature.swift`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
 | 删除临时文件 | 清编译中间文件（与 `slcn/clean.py` 逐项一致） | `sources-mac/Features/DeleteTempFeature.swift` |
-| 本期出刊 | 一个入口按顺序跑四步（检查tex信息 → 生成目录 → 合并整期 → 编译全部）；失败即中止，退出码 1 = 橙色警告并继续（规则在引擎侧） | `sources-mac/Features/PublishFeature.swift`、`Engine/publish.py` |
+| 本期出刊 | 一个入口按顺序跑五步（①检查tex信息 ②生成目录 ③编译全部 ④目录 PDF 落位 ⑤合并整期 PDF）；致命错误即中止，退出码 1 = 橙色警告并继续（规则在引擎侧，见 `Engine/publish.py` 抬头） | `sources-mac/Features/PublishFeature.swift`、`Engine/publish.py` |
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单 | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
@@ -269,6 +269,33 @@ False：`docx_audit` 的冻结基线不随总开关变。
 - **验收（第 52 批 v9b）**：41/41 rc=0、compile_ok、undef/dangling 与 v8 相同、P0 集合无新增；
   专项验证纯引用→parencite、混合脚注保留 + warning、并集 bib 去重、无脚注稿零变化。
 - **回退**：命令行 `--no-c-class-union`；GUI 无开关，默认即新口径。
+
+#### Word 通道：作者信息脚注 → 元数据填空（批71 B-118，2026-10-21）
+
+Word 稿常把作者信息写在 `word/footnotes.xml` 里（第 90 期 90-01/02/04/07/10 实测）。
+引擎现在从这类脚注抽**作者级**元数据（`slcn/footnotes.py::parse_author_info`）：
+`作者信息：`/`作者简介：`/`作者单位：`/`收稿日期：`/`基金项目：`/`通讯作者：`，
+含全角/半角冒号、冒号后无空格、多段、多作者并列、中英文姓名、多单位；可识别的形态如：
+
+```text
+作者信息：张三  某某大学哲学系            ← 「姓名 单位」；单位可另起一行（多单位）
+zhangsan@example.edu.cn                  ← 邮箱行（中英并列可写「张三（Zhang San）单位（英文单位）」）
+作者简介：李四，男，某省某市人，某大学某系教授。电子邮箱：lisi@example.edu.cn
+收稿日期：2025-09-19  基金项目：国家社科基金项目"…"（22CZX000）。   ← 可同一条
+```
+
+- **落到哪些槽位**：多作者的 CN 单位/邮箱、通讯作者、英文姓名/单位 →
+  `mysecondauthor/affiliation/email/…` 等现有作者槽位；收稿日期 → `receiveddate`；
+  基金项目 → `mygrants`（基金文本按 LaTeX 转义；`（项目编号：…）` 按刊物惯例清理）。
+  正文里独立的 `基金项目：…` 段（作者信息只在正文、无作者姓名/单位的稿子，如 90-08）
+  只提升基金项、该行从正文移出，**不臆造作者**。
+- **只填空不覆盖**（用户 2026-10-21 拍板）：已有识别值、`--author-cn` 等覆盖参数、
+  `--metadata-json` 人工表单值一律优先；槽位已解析就不动，第 N 位作者姓名对不上也不填。
+- **不猜**：姓名与单位无法可靠切分（不在已知作者名里的无分隔连写）、只有标签没有内容 →
+  保持占位符 + 日志 warning「作者信息脚注未能判定作者姓名（保持占位符，请人工填写）」。
+- **限制**：基金项目照抄源稿文字（不按编辑惯例改写项目名/"本文系…成果"）；源稿没给的
+  英文单位/邮箱不翻译、不编造（仍是【未识别】占位符）；只补元数据，不改正文与引文分类。
+  无此类脚注的稿件产物**逐字节不变**（第 90 期 90-05/06/09 实测）。
 
 #### 两段式 AI 协同初排（第五十四～六十二批；外部 chat 免费流程）
 
