@@ -12,7 +12,9 @@ r"""批75（B-132 + B-139 + B-140①）：协同链 **report-only 收尾** 判�
   · **B-140① evidence 收紧**：附四 evidence 基准 = 任务书里**附四之前**的内容（附三正文 +
     附一原文 + 附二/附三说明），抄附四 schema 示例/指令当 evidence → 整条拒绝；
   · **默认零变化**：无 `--coop-fulltext` 时任务书/产物/日志与 HEAD（`git archive HEAD`）
-    逐字节相同；有 flag 时任务书相对 HEAD 只多两块输入清单 + 附四 evidence 说明一行。
+    逐字节相同；有 flag 时任务书相对 HEAD 只多两块输入清单 + 附四 evidence 说明一行
+    （**提交前 HEAD=批74 旧代码时**；批75 提交后 HEAD=工作树 → 任务书应逐字节相同，
+    两条分支由 `head_is_worktree()` 自判，提交前后都自洽）。
 
 用法：
     cd Engine && PYTHONPATH=.:vendor python3 tests/test_b75_coop_report_only.py
@@ -180,6 +182,22 @@ def _restore_stage(out: str, backup: str) -> None:
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out, exist_ok=True)
     shutil.copytree(backup, _stage(out))
+
+
+def head_is_worktree(head: str) -> bool:
+    """`git archive HEAD` 提取的引擎是否与工作树**同一份代码**（提交后/CI 态 = True）。
+
+    75-1 的 ④-12/④-13/④-15 是「相对旧 HEAD 的增量」断言：开发态（HEAD=批74 旧代码）成立；
+    批75 提交后 HEAD 已含本卡代码（CI 就是这样），故这三条按同一份文件判定改判等价的
+    「HEAD 已是新口径」断言，保证提交前后都自洽、断言总数不变。
+    判据只看本卡改过的两个产品文件（`slcn/coop.py` / `convert.py`），不受其他提交噪声影响。
+    """
+    for rel in (os.path.join("slcn", "coop.py"), "convert.py"):
+        a = os.path.join(head, rel)
+        b = os.path.join(_ENGINE, rel)
+        if not (os.path.isfile(a) and os.path.isfile(b)) or sha(a) != sha(b):
+            return False
+    return True
 
 
 def ensure_head_engine(tmp: str) -> str:
@@ -465,31 +483,44 @@ def test_cli_ph1(tmp: str, head: str) -> None:
     shutil.rmtree(out, ignore_errors=True)
     oldf = _ph1(src, bibp, out, ["--coop-fulltext", "full"], engine=head)
     tb_head = read(_taskbook(out))
-    check("④-12 HEAD 的 fulltext 任务书没有输入清单",
-          oldf.returncode == 0 and coop.ANALYSIS_INPUTS_TITLE not in tb_head)
-    stripped = _strip_inputs(tb)
-    a_new, a_head = stripped.split("\n"), tb_head.split("\n")
-    p = 0
-    while p < min(len(a_new), len(a_head)) and a_new[p] == a_head[p]:
-        p += 1
-    suf = 0
-    while (suf < min(len(a_new), len(a_head)) - p
-           and a_new[-1 - suf] == a_head[-1 - suf]):
-        suf += 1
-    new_mid = a_new[p:len(a_new) - suf]
-    head_mid = a_head[p:len(a_head) - suf]
-    old_joined, new_joined = "\n".join(head_mid), "\n".join(new_mid)
-    old_bullet = _EVID_BULLET_RE.search(old_joined)
-    new_bullet = _EVID_BULLET_RE.search(new_joined)
-    head_rest = _EVID_BULLET_RE.sub("", old_joined).strip() if old_bullet else "?"
-    new_rest = _EVID_BULLET_RE.sub("", new_joined).strip() if new_bullet else "?"
-    check("④-13 删掉输入清单后，相对 HEAD 只剩附四 evidence 说明一处差异",
-          coop.ANALYSIS_INPUTS_TITLE not in stripped
-          and old_bullet is not None and new_bullet is not None
-          and head_rest == "" and new_rest == "", old_joined[:300])
-    check("④-15 evidence 说明已改为「附四之前的内容」（B-140① 口径）",
-          new_bullet is not None and "附四之前" in new_bullet.group(0)
-          and "附四之前" not in (old_bullet.group(0) if old_bullet else ""))
+    if head_is_worktree(head):
+        # 提交后/CI 态：HEAD 已含 75-1 代码 → 等价断言（HEAD 也是新口径，任务书应逐字节相同）
+        check("④-12 HEAD 已含输入清单（HEAD=工作树；提交后/CI 态）",
+              oldf.returncode == 0 and coop.ANALYSIS_INPUTS_TITLE in tb_head)
+        check("④-13 提交后：有 flag 的新任务书与 HEAD 逐字节相同", tb == tb_head)
+        head_bullet = _EVID_BULLET_RE.search(tb_head)
+        new_bullet = _EVID_BULLET_RE.search(tb)
+        check("④-15 evidence 说明为新口径且与 HEAD 一致（均含「附四之前」）",
+              head_bullet is not None and new_bullet is not None
+              and "附四之前" in new_bullet.group(0)
+              and new_bullet.group(0) == head_bullet.group(0))
+    else:
+        # 开发态（HEAD=批74 旧代码）：HEAD 无输入清单、旧 evidence 说明 → 增量断言
+        check("④-12 HEAD 的 fulltext 任务书没有输入清单",
+              oldf.returncode == 0 and coop.ANALYSIS_INPUTS_TITLE not in tb_head)
+        stripped = _strip_inputs(tb)
+        a_new, a_head = stripped.split("\n"), tb_head.split("\n")
+        p = 0
+        while p < min(len(a_new), len(a_head)) and a_new[p] == a_head[p]:
+            p += 1
+        suf = 0
+        while (suf < min(len(a_new), len(a_head)) - p
+               and a_new[-1 - suf] == a_head[-1 - suf]):
+            suf += 1
+        new_mid = a_new[p:len(a_new) - suf]
+        head_mid = a_head[p:len(a_head) - suf]
+        old_joined, new_joined = "\n".join(head_mid), "\n".join(new_mid)
+        old_bullet = _EVID_BULLET_RE.search(old_joined)
+        new_bullet = _EVID_BULLET_RE.search(new_joined)
+        head_rest = _EVID_BULLET_RE.sub("", old_joined).strip() if old_bullet else "?"
+        new_rest = _EVID_BULLET_RE.sub("", new_joined).strip() if new_bullet else "?"
+        check("④-13 删掉输入清单后，相对 HEAD 只剩附四 evidence 说明一处差异",
+              coop.ANALYSIS_INPUTS_TITLE not in stripped
+              and old_bullet is not None and new_bullet is not None
+              and head_rest == "" and new_rest == "", old_joined[:300])
+        check("④-15 evidence 说明已改为「附四之前的内容」（B-140① 口径）",
+              new_bullet is not None and "附四之前" in new_bullet.group(0)
+              and "附四之前" not in (old_bullet.group(0) if old_bullet else ""))
 
 
 # ── ⑤ CLI ph2：note-only 落地 / evidence 收紧 / report-only / 幂等 ────────
