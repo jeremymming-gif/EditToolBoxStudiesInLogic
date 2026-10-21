@@ -7,7 +7,16 @@
    元数据块误入文献区）。
 2) 89-05：`.bib` 在源稿父目录（稿件根），convert 只搜源目录 → 无 bib、30 处 undefined。
 纪律：只按行内证据解析，解析失败保留原文；父目录只搜 1 层，不递归、不跨目录乱搜。
+
+B-113/RB-09（批70）：⑦ 原硬依赖 `/tmp/batch_case_test/benchmark5-v1/summary.json`，
+文件不在的机器上 6 条真实稿 pin 变 SKIP → 断言数 25→19 → 严格 `gen_docs.py --check`
+的 AUTO 计数漂移（假红）。现改为：pin 数据入 repo 脱敏 fixture
+`tests/fixtures/bench5_ref_pins.json`（只有 case id/形态/条数），测试按形态生成
+**合成基准稿**（虚构条目）钉住解析条数 → hermetic、断言数恒定、0 SKIP。
+真实稿复核改为显式 `SLCN_BENCH5_SUMMARY=<summary.json>` 开关，输出 LOCAL 行、
+不计 AUTO 断言数；测试本身不硬编码 `/tmp`。
 """
+import json
 import os
 import re
 import sys
@@ -180,30 +189,113 @@ except OSError:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ⑦ 真实稿 pin（5 期基准数据在 /tmp 时跑；不在则 SKIP）
+# ⑦ 基准 pin（B-113/RB-09：hermetic——repo 内脱敏 fixture + 合成基准稿）
+#    原实现（批45）硬依赖 /tmp/batch_case_test/benchmark5-v1/summary.json：文件不在
+#    的机器上 6 条真实稿 pin 变 SKIP → 断言数 25→19 → 严格 `gen_docs.py --check`
+#    的 AUTO 计数漂移（RB-09 假红）。现在：pin 数据在
+#    tests/fixtures/bench5_ref_pins.json（脱敏：只有 case id、文献形态、解析条数，
+#    无绝对路径/稿名）；测试按形态生成**合成基准稿**（虚构条目）钉住同样的解析条数
+#    → 清 /tmp 前后断言数恒定、0 SKIP，本机/CI 口径一致。
+#    真实稿复核（可选）：设 SLCN_BENCH5_SUMMARY=<summary.json> 时额外逐篇解析，
+#    输出 LOCAL PASS/FAIL（**不计入 AUTO 断言数**），失配计入 FAILS → rc1。
+#    本测试不硬编码 /tmp —— 真实稿路径只由该环境变量传入。
 # ══════════════════════════════════════════════════════════════════════════
-_SUM = "/tmp/batch_case_test/benchmark5-v1/summary.json"
+_PINS = os.path.join(_HERE, "fixtures", "bench5_ref_pins.json")
+_PIN_IDS = ("86-07", "86-08", "86-02", "87-5", "88-01", "88-06")
+
+# 合成基准稿的条目生成器：伪造作者/题名（与真实稿无关），只复刻文献**形态**。
+_FORMS = {
+    "apa_en": lambda n: [f"Doe{i}, J. ({2000 + i % 90}). Title number {i}. "
+                         f"Journal of Logic, {i + 1}(2), 3–14." for i in range(n)],
+    "zh_colon": lambda n: [f"作者{i}：题名{i}，{1980 + i % 40}年，北京：中华书局。"
+                           for i in range(n)],
+    "quoted_title": lambda n: [f"A. Author{i}, “Title {i}”, (2019-08-28)[2015-05-15]. "
+                               f"https://example.org/rec/FAKE{i}.word." for i in range(n)],
+    "year_end": lambda n: [f"Author{i}, De Consequentiis {i} — Über die Folgerungen, "
+                           f"hrsg. F. Schupp, Meiner, Hamburg {1991 + i % 10}."
+                           for i in range(n)],
+    "tail_meta": lambda n: [f"Doe{i}, J. ({2000 + i % 90}). Title number {i}. "
+                            f"Journal of Logic, {i + 1}(2), 3–14." for i in range(n)],
+}
+
 try:
-    import json
-    if not os.path.isfile(_SUM):
-        skip("⑦ 真实稿 pin", "本机没有 5 期基准 summary.json")
-    else:
-        _cases = json.load(open(_SUM, encoding="utf-8"))["cases"]
-        _EXPECT = {"86-07": 38, "86-08": 31, "86-02": 13, "87-5": 24,
-                   "88-01": 40, "88-06": 42}
-        for _k, _min in _EXPECT.items():
-            _src2 = _cases[_k]["source"]
-            if not os.path.isfile(_src2):
-                skip(f"⑦ 真实稿 {_k}", "源稿不在本机"); continue
-            _doc = docxsource.parse_docx(_src2)
-            # B-022 意图变化（批68）：文末为 **Word 自动编号**的稿子改走「编号清单」通道，
-            # 条目落在 `doc.bib_entries`、`doc.refs` 为空（86-08=31、86-02=13 实测）；
-            # 其余 4 篇仍是人年制 `doc.refs` 非空，断言口径不变。
-            _n_parsed = len(_doc.refs) or len(_doc.bib_entries)
-            check(f"⑦ 真实稿 {_k}：解析条数 = {_min}（修复前 "
-                  f"低值见 benchmark）", _n_parsed == _min, str(_n_parsed))
+    with open(_PINS, encoding="utf-8") as _fh:
+        _pin_doc = json.load(_fh)
+    _PIN_CASES = _pin_doc.get("cases") if isinstance(_pin_doc, dict) else None
+    _PIN_ERR = ""
 except Exception as _e:  # noqa: BLE001
-    skip("⑦ 真实稿 pin", f"{type(_e).__name__}: {_e}")
+    _PIN_CASES, _PIN_ERR = None, f"{type(_e).__name__}: {_e}"
+
+
+def _pin_spec(case):
+    """(form, n) 或 None；fixture 缺失/条目非法都返回 None（不抛异常，计数恒定）。"""
+    if not isinstance(_PIN_CASES, dict):
+        return None
+    spec = _PIN_CASES.get(case)
+    if not isinstance(spec, dict):
+        return None
+    form, n = spec.get("form"), spec.get("n")
+    if form not in _FORMS or not isinstance(n, int) or not 1 <= n <= 200:
+        return None
+    return form, n
+
+
+for _k in _PIN_IDS:
+    _spec = _pin_spec(_k)
+    if _spec is None:
+        _bad = _pin_spec.__name__ and (repr(_PIN_CASES.get(_k)) if isinstance(_PIN_CASES, dict)
+                                       else _PIN_ERR or repr(_PIN_CASES))
+        check(f"⑦ 基准形态 {_k}：fixture 条目完整（tests/fixtures/bench5_ref_pins.json）",
+              False, _bad)
+        continue
+    _form, _n = _spec
+    _paras = (["测试题名", "张三", "摘  要：这是摘要。", "关键词：测试", "正文段落。",
+               "参考文献"] + _FORMS[_form](_n))
+    if _form == "tail_meta":    # 88-06 型：文末元数据块不能混进文献区
+        _paras += ["论证能力研究：论证中的语言使用与指示词", "陈志喜", "摘  要",
+                   "论证能力最初是参照语言学中交际能力提出来的……"]
+    _bench = _make_docx(_paras)
+    try:
+        _pdoc = docxsource.parse_docx(_bench)
+        _n_got = len(_pdoc.refs) or len(_pdoc.bib_entries)
+        _perr = f"解析 {_n_got}"
+    except Exception as _e:  # noqa: BLE001 —— 解析异常也算 FAIL，绝不让计数漂移
+        _n_got, _perr = None, f"{type(_e).__name__}: {_e}"
+    finally:
+        try:
+            os.unlink(_bench)
+        except OSError:
+            pass
+    check(f"⑦ 基准形态 {_k}（{_form}）：合成基准稿 {_n} 条全部解析",
+          _n_got == _n, _perr)
+
+# 真实稿复核（可选、**不计 AUTO 断言数**）：只有显式设了 SLCN_BENCH5_SUMMARY 才跑。
+_SUM_ENV = os.environ.get("SLCN_BENCH5_SUMMARY", "").strip()
+if _SUM_ENV:
+    try:
+        with open(_SUM_ENV, encoding="utf-8") as _fh:
+            _real_cases = json.load(_fh).get("cases", {})
+    except Exception as _e:  # noqa: BLE001
+        _real_cases = None
+        print(f"LOCAL SKIP ⑦ 真实稿复核：读不了 SLCN_BENCH5_SUMMARY"
+              f"（{type(_e).__name__}: {_e}）")
+    if _real_cases is not None:
+        for _k in _PIN_IDS:
+            _spec = _pin_spec(_k)
+            _real = _real_cases.get(_k) if isinstance(_real_cases, dict) else None
+            _src_real = _real.get("source") if isinstance(_real, dict) else None
+            if _spec is None or not isinstance(_src_real, str) or not os.path.isfile(_src_real):
+                print(f"LOCAL SKIP ⑦ 真实稿 {_k}（fixture 无 pin 或源稿不在本机）")
+                continue
+            _rdoc = docxsource.parse_docx(_src_real)
+            # B-022 意图变化（批68）：文末为 **Word 自动编号**的稿子改走「编号清单」
+            # 通道，条目落在 `doc.bib_entries`、`doc.refs` 为空（86-08/86-02 实测）。
+            _n_real = len(_rdoc.refs) or len(_rdoc.bib_entries)
+            if _n_real == _spec[1]:
+                print(f"LOCAL PASS ⑦ 真实稿 {_k}：解析 {_n_real} = pin {_spec[1]}")
+            else:
+                print(f"LOCAL FAIL ⑦ 真实稿 {_k}：解析 {_n_real} ≠ pin {_spec[1]}")
+                FAILS.append(f"⑦ 真实稿 {_k}")
 
 print()
 print("=" * 78)

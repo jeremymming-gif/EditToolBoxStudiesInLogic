@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "note": "批45 A2 五期基准 pin 的脱敏快照（B-113/RB-09）：只保留 case 标识、文献形态与解析条数；不含源稿路径/题名/作者。合成基准稿由 tests/test_refs_batch45a2.py 按 form 生成（虚构条目），用于 hermetic 回归；真实稿复核用 SLCN_BENCH5_SUMMARY=<summary.json> 显式开启。",
+  "cases": {
+    "86-07": {"form": "apa_en", "n": 38},
+    "86-08": {"form": "apa_en", "n": 31},
+    "86-02": {"form": "zh_colon", "n": 13},
+    "87-5": {"form": "quoted_title", "n": 24},
+    "88-01": {"form": "year_end", "n": 40},
+    "88-06": {"form": "tail_meta", "n": 42}
+  }
+}

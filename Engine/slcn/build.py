@@ -2051,11 +2051,31 @@ def build_docx(
         body, unmatched, citelogs = link_citations(doc.body, doc.refs)
         for s in citelogs:
             say("   " + s)
+        # B-001（批70；Lead 授权、报告层窄修）：一条文末人年制稿在**上游**（docxsource
+        # 引文块渲染）已经生成 `（\parencite{X}，第 N 页）` 时，link_citations 会把这段
+        # 括号页码当成「没转成引用的引用点」报出来 —— 里面明明已经是 `\parencite`。
+        # 只过滤**报告项**（段落定位 → warning → 核对报告），引用替换行为与产物
+        # .tex/.bib 逐字节不变；与 B-018「假 DANGLING」同类修法。
+        unmatched = [u for u in unmatched if "\\parencite" not in u]
         # 第 80 条：`unmatched` 从前只进 stdout/GUI 日志（还会被界面 400k 上限挤掉），
         # 现在就地定位到源稿段落（`doc.body` 就在手上），随报告一起落盘。
         unmatched_points = _citation_points(doc.body, unmatched)
         if unmatched:
             warnings.append(f"{len(unmatched)} 处引用未能匹配到参考文献：" + "、".join(unmatched[:6]))
+
+    # B-001（批70）⑥：未链文末条目 warning —— **必须在引用生成之后**统计：人年制
+    # Word 稿在 parse/repair 时点正文引用还是纯文本，`link_citations` 之后才成
+    # `\parencite`；提前统计会把整份清单误报成「未引用」（批70 retest 86-07/88-01/
+    # 88-06 分别误报 25/37/39 条）。纯日志、tex/bib 逐字节不变。
+    try:
+        from .bibnorm import end_list_uncited_warning
+
+        _uncited_warn = end_list_uncited_warning(doc, body)
+        if _uncited_warn:
+            warnings.append(_uncited_warn)
+            say("   " + _uncited_warn)
+    except Exception as e:  # noqa: BLE001 —— 纯提示，失败不影响出稿
+        warnings.append(f"未链文末条目提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 
     # 第四十四批④：B 类可发现性提示（初排阶段可见；纯日志、产物逐字节不变）
     if bib_zero_cites_hints:

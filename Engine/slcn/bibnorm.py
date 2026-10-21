@@ -1073,6 +1073,139 @@ def _rewrite_body_cites(body: str, keymap: dict[str, str]) -> str:
     return body
 
 
+# ── B-001（批70）：脚注条目 ↔ 文末人年制条目的「同作品」判据零件 ─────────────
+#
+# 为什么不在 docxsource 的并集处做：那里用的是**指纹**（作者+题名+年+类型），
+# 脚注条目的题名常被解析器塞进半行出版信息（90 的 `Wolf1987`：题名 =「Sanity and
+# the Metaphysics of Responsibility, ” in Responsibility, Character, …」），
+# 归一后与文末条目的干净题名不是「相等」而是「包含」→ 指纹不同 → 永不合并。
+# 这里改用**题名相似度**（`footnotes._title_match_tier`，包含关系 0.95）+ 同姓 +
+# 同年 + **候选唯一** 的保守判据：宁可漏合并（保留 + warning），不做无证据的合并。
+
+_VOL_ED_VOLUME = re.compile(r"\bvol(?:ume)?\.?\s*(\d{1,3})\b", re.I)
+_VOL_ED_VOLUME_CN = re.compile(r"第\s*([0-9]{1,3}|[一二三四五六七八九十]{1,3})\s*卷")
+_VOL_ED_EDITION = re.compile(r"\b(\d{1,2})\s*(?:st|nd|rd|th)\s+ed(?:ition)?\b", re.I)
+_VOL_ED_EDITION_CN = re.compile(r"第\s*([0-9]{1,3}|[一二三四五六七八九十]{1,3})\s*版")
+
+
+def _volume_edition_of_text(text: str) -> tuple[str, str]:
+    """从原文串里保守抽「卷号 / 版次」（只认明确写法；抽不到 → 空串）。
+
+    只为「卷号/版次冲突就不合并」这条闸门服务：抽不到 = 不知道 = 不算冲突。
+    """
+    s = str(text or "")
+    vol = ""
+    m = _VOL_ED_VOLUME.search(s)
+    if m:
+        vol = m.group(1)
+    else:
+        m = _VOL_ED_VOLUME_CN.search(s)
+        if m:
+            from .footnotes import _norm_volume
+
+            vol = _norm_volume(m.group(1))
+    edition = ""
+    m = _VOL_ED_EDITION.search(s)
+    if m:
+        edition = m.group(1)
+    else:
+        m = _VOL_ED_EDITION_CN.search(s)
+        if m:
+            from .footnotes import _norm_edition
+
+            edition = _norm_edition(m.group(1))
+    return vol, edition
+
+
+def _entry_volume_edition(entry: dict, raw: str) -> tuple[str, str]:
+    """脚注 bib 条目（dict）的卷号/版次：先看字段，再从题名/出版信息原文里抽。"""
+    from .footnotes import _norm_edition, _norm_volume
+
+    vol = ""
+    if str(entry.get("volume") or "").strip():
+        vol = _norm_volume(entry.get("volume"))
+    edition = ""
+    if str(entry.get("edition") or "").strip():
+        edition = _norm_edition(entry.get("edition"))
+    if vol and edition:
+        return vol, edition
+    text = " ".join(str(entry.get(k) or "") for k in
+                    ("title", "booktitle", "journal", "note")) + " " + str(raw or "")
+    vol2, ed2 = _volume_edition_of_text(text)
+    return vol or vol2, edition or ed2
+
+
+def _ref_volume_edition(r) -> tuple[str, str]:
+    """文末人年制条目（RefEntry）的卷号/版次：从 raw/title/rest 原文里抽。"""
+    text = " ".join(str(getattr(r, f, "") or "") for f in ("raw", "title", "rest"))
+    return _volume_edition_of_text(text)
+
+
+def _year4(value: object) -> str:
+    return re.sub(r"\D", "", str(value or ""))[:4]
+
+
+# ── B-001（批70）：⑥ 未链文末条目 warning（公开、可单测；纯日志零产物变化）──────
+#
+# 必须在**引用生成之后**调用（build 的 `link_citations` / `link_numbered_citations`
+# 之后）。人年制 Word 稿在 parse/repair 时点正文引用还是**纯文本**（`（Wolf 1987）`
+# 要等 `link_citations` 才变 `\parencite{Wolf1987}`）——在 repair 里提前统计会把整份
+# 清单误报成「未引用」（批70 retest 实测：86-07/88-01/88-06 分别误报 25/37/39 条）。
+# 文末键集合 = 人年制 `refs` + 编号清单 `ref_key_by_num`（**不含**脚注生成的
+# `bib_entries` 键：脚注条目本来就不必出现在正文引用里）。
+# 条件（spec §2.4）：文末有条目 + 正文已有引用命令 + 存在未引条目 → 才提示；
+# 正文 0 引用沿用 build 的既有提示（不重复告警）；`\nocite{*}` 打印全部条目 → 不提示。
+def end_list_uncited_warning(doc, body: str) -> str | None:
+    r"""⑥ 未链文末条目 warning 文本；不该提示时返回 `None`（调用方只写日志/warning）。
+
+    `body` 是**引用已经替换完成**的正文 LaTeX（build 里那个 `body` 变量）。纯读，
+    不改 doc、不写文件；内部异常一律回落 `None`（提示失败不得影响出稿）。
+    """
+    try:
+        refs = list(getattr(doc, "refs", []) or [])
+        num2key = dict(getattr(doc, "ref_key_by_num", {}) or {})
+        entries = list(getattr(doc, "bib_entries", []) or [])
+        body = str(body or "")
+        end_keys: list[str] = []
+        for r in refs:
+            k = str(getattr(r, "key", "") or "")
+            if k and k not in end_keys:
+                end_keys.append(k)
+        for k in num2key.values():
+            k = str(k or "")
+            if k and k not in end_keys:
+                end_keys.append(k)
+        if not end_keys:
+            return None
+        if re.search(r"\\nocite\s*\{\s*\*\s*\}", body):
+            return None      # \nocite{*} → biblatex 打印全部条目，不存在「不上版」
+        from .bibcheck import cited_keys
+
+        cited = cited_keys(body)
+        uncited = [k for k in end_keys if k not in cited]
+        if not cited or not uncited:
+            return None
+        title_by_key: dict[str, str] = {}
+        for r in refs:
+            _k = str(getattr(r, "key", "") or "")
+            _t = str(getattr(r, "title", "") or "").strip()
+            if _k and _t:
+                title_by_key.setdefault(_k, _t)
+        for k, e, _raw in entries:
+            _t = str((e or {}).get("title") or "").strip()
+            if k and _t:
+                title_by_key.setdefault(str(k), _t)
+        shown = []
+        for k in uncited[:8]:
+            t = title_by_key.get(k, "")
+            shown.append(f"{k}（{t[:40]}）" if t else k)
+        return (f"文末有 {len(uncited)} 条未被正文链路引用（biblatex 不会打印，"
+                "PDF 参考文献区会少）："
+                + "、".join(shown) + ("…" if len(uncited) > 8 else ""))
+    except Exception:  # noqa: BLE001  纯提示，失败回落 None
+        return None
+
+
 def _repair_word_refs_impl(doc) -> tuple[list[str], list[str]]:
     notes: list[str] = []
     warnings: list[str] = []
@@ -1261,6 +1394,100 @@ def _repair_word_refs_impl(doc) -> tuple[list[str], list[str]]:
             + "、".join(f"{o}→{n}" for o, n in keymap.items())
             + "（正文引用键同步改写）")
 
+    # ── ⑤ 同作品脚注条目 ↔ 文末人年制条目去重（B-001，期90 实测）──────────
+    # 现象：脚注引注 `Wolf1987`（author「Cf. Susan Wolf」）与文末人年制条目
+    # `Susan1987` 是**同一作品**，但题名一个带出版信息、一个是干净题名 → 指纹
+    # 不同 → 两条都印进 reference.bib（11 条 vs 人工 10 条），正文只引前者。
+    # 判据（全部满足才合并，不猜）：脚注条目键不在文末清单键集合内 + 作者姓归一
+    # 相同（「Cf.」已由 `_author_surname` 剥离）+ 年份相等 + 题名相似度 ≥ 0.90
+    # + 卷号/版次无冲突 + **候选唯一**。命中 → 删 bib 条目、正文键改写为文末键、
+    # 文末字段优先；多候选/不足阈值/卷版冲突 → 保留原条目 + warning（人工核对）。
+    end_list_keys = {getattr(r, "key", "") for r in refs if getattr(r, "key", "")}
+    end_list_keys |= numbered_keys
+    if refs and entries:
+        from .footnotes import (
+            _author_surname, _norm_fp, _title_match_tier,
+        )
+
+        ref_targets: list[dict] = []
+        for r in refs:
+            _rk = getattr(r, "key", "")
+            if not _rk:
+                continue
+            _rvol, _red = _ref_volume_edition(r)
+            ref_targets.append({
+                "key": _rk,
+                "surname": _author_surname(getattr(r, "author", "") or ""),
+                "year": _year4(getattr(r, "year", "")),
+                "title": str(getattr(r, "title", "") or ""),
+                "vol": _rvol,
+                "ed": _red,
+            })
+        kept_same: list[tuple[str, dict, str]] = []
+        keymap_same: dict[str, str] = {}
+        for key, ent, raw in entries:
+            e_author = str(ent.get("author") or ent.get("editor") or "").strip()
+            e_title = str(ent.get("title") or "").strip()
+            e_year = _year4(ent.get("year"))
+            e_surname = _author_surname(e_author) if e_author else ""
+            if (key in end_list_keys or not e_surname or not e_year
+                    or len(_norm_fp(e_title)) < 4):
+                # 文末编号清单条目不在本条范围；身份证据不足（缺作者/年/题名太短）
+                # 的不参与匹配，也不告警（空题名碎片由 ④ 负责、自有 warning）。
+                kept_same.append((key, ent, raw))
+                continue
+            candidates = [t for t in ref_targets
+                          if t["surname"] == e_surname and t["year"] == e_year]
+            if not candidates:
+                kept_same.append((key, ent, raw))
+                continue
+            if len(candidates) > 1:
+                warnings.append(
+                    f"脚注条目 {key} 与文末条目有多条同姓同年候选（"
+                    + "、".join(t["key"] for t in candidates[:6])
+                    + "），疑似同作品重复但无法唯一确定，已保留原条目（不猜），请人工核对")
+                kept_same.append((key, ent, raw))
+                continue
+            target = candidates[0]
+            tier = _title_match_tier(e_title, target["title"])
+            e_vol, e_ed = _entry_volume_edition(ent, raw)
+            vol_conflict = bool(e_vol and target["vol"] and e_vol != target["vol"])
+            ed_conflict = bool(e_ed and target["ed"] and e_ed != target["ed"])
+            if vol_conflict or ed_conflict:
+                warnings.append(
+                    f"脚注条目 {key} 与文末条目 {target['key']} 同姓同年、题名相似度 "
+                    f"{tier:.2f}，但卷号/版次冲突（脚注 "
+                    f"{'卷 ' + e_vol if vol_conflict else '版次 ' + e_ed} vs 文末 "
+                    f"{'卷 ' + target['vol'] if vol_conflict else '版次 ' + target['ed']}"
+                    "），疑似同作品但证据冲突，已保留原条目（不猜），请人工核对")
+                kept_same.append((key, ent, raw))
+                continue
+            if tier < 0.9:
+                warnings.append(
+                    f"脚注条目 {key} 与文末条目 {target['key']} 同姓同年，但题名相似度 "
+                    f"{tier:.2f} < 0.90，疑似同作品重复但不足阈值，已保留原条目"
+                    "（不猜），请人工核对")
+                kept_same.append((key, ent, raw))
+                continue
+            # 合并：删脚注条目、正文键改写为文末键、文末字段优先（surviving 条目
+            # 就是文末条目本身，其字段一字不改；脚注条目不再进 bib）。
+            keymap_same[key] = target["key"]
+            raw_by_key.pop(key, None)
+            notes.append(
+                f"{key}: 脚注条目与文末条目同作品 → 并入 {target['key']}"
+                f"（《{target['title'][:40]}》；文末字段优先，正文引用键同步改写）")
+        if keymap_same:
+            body = _rewrite_body_cites(body, keymap_same)
+            entries = kept_same
+            notes.append(
+                "脚注↔文末同作品合并："
+                + "、".join(f"{o}→{n}" for o, n in keymap_same.items())
+                + "（正文引用键改写为文末键）")
+
+    # ⑥ 未链文末条目 warning 不在这里做：repair 跑在 parse_docx 之后、build 的引用
+    # 替换之前，此时人年制正文引用还是纯文本 → 提前统计会把整份清单误报成「未引用」。
+    # 由 build 在引用生成后调用 `end_list_uncited_warning(doc, body)`（纯日志）。
+
     if notes:
         try:
             doc.refs = refs
@@ -1282,14 +1509,22 @@ def _repair_word_refs_impl(doc) -> tuple[list[str], list[str]]:
 
 
 def repair_word_refs(doc) -> tuple[list[str], list[str]]:
-    r"""Word 文献区解析结果修复（批68 B-021；三条真实缺陷的最小侵入修法）。
+    r"""Word 文献区解析结果修复（批68 B-021 + 批70 B-001；保守、最小侵入）。
+
+    批68 B-021 四条：① 同段多文献拆分 ② 中文编号条目字段归位 ③ 译著拆条归位
+    ④ 空题名脚注碎片合并（86-10 / 90-06 / 90-07 三条真实缺陷）。
+    批70 B-001 一条：⑤ 同作品脚注条目 ↔ 文末人年制条目去重（期90：`Wolf1987` /
+    `Susan1987` 是一篇文献的两个键；命中 → 删 bib 条目 + 正文键改写为文末键，判据
+    见 ⑤ 注释）。⑥ 未链文末条目 warning 不在本函数内：它必须等 build 的引用替换
+    之后才能统计（否则人年制正文引用还是纯文本 → 整份清单误报），由 build 调用
+    公开函数 `end_list_uncited_warning(doc, body)`（纯日志）。
 
     参数 `doc` 是 `docxsource.parse_docx()` 的返回值（只用到 `refs` / `bib_entries`
-    / `body` / `ref_raw_by_key` / `ref_key_by_num`）。**原地修改**上述三个属性，
+    / `body` / `ref_raw_by_key` / `ref_key_by_num`）。**原地修改**上述属性，
     返回 `(改动说明, 告警)` 两组字符串给调用方写日志/warning。
 
     纪律：
-      · 默认零变化——四类判据都不命中的文档，三个属性一个字节都不动；
+      · 默认零变化——各条判据都不命中的文档，属性一个字节都不动；
       · fail-soft——内部异常时回滚到调用前快照，只返回一条 warning，**不阻断出稿**；
       · 判据失败 → 保留原条目 + warning（不猜、不丢原文）。
     """
