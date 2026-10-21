@@ -57,8 +57,14 @@ gitignored 的 `Engine/out` 缓存 —— 从前 README 公开显示的 sha 是"
 约定
 ----
 * **块内不放时间戳**：否则 `--check` 永远失败。新鲜度看块内各数据源的 sha256。
-* 铁律：**只读**。除了给 `README.md` 的 AUTO 块换内容，本脚本不写任何文件，
+* 铁律：**只读**。除了给 `README.md` 的 AUTO 块换内容 + 写 `out/gen_docs-state.txt`
+  （本机状态快照，gitignored、**不进提交**；B-159），本脚本不写任何文件，
   不跑 `docx_audit.py`、不跑 `corpus.py`（那些会重生基线产物），不跑任何写操作的 git 命令。
+* **B-159（批82）**：AUTO 的「红线只读快照」行只写**确定性文本**（`_GIT_LINE`），不再把本机
+  `.git/index` mtime / `HEAD` / `git status` 行数写进**被提交的** README —— 该行在 `--check`
+  里本来就被整行归一化（`GIT_LINE`→`_GIT_PLACEHOLDER`）、从不参与判定，写入侧却保证每次
+  写入 1 行 diff。现况仍**只读**采集，落 `out/gen_docs-state.txt`；clean 树上连跑两次写模式
+  **0 行 diff**（测试 `tests/test_b159_gen_docs_state_line.py`）。
 * 测试用 `/opt/homebrew/bin/python3.14` + `PYTHONPATH=<Engine>/vendor`（绝对路径），
   与人工跑法逐字一致；有 FAIL 行时**照实写进块里**并让退出码非 0。
 """
@@ -411,14 +417,52 @@ def print_app_cmp(ok: bool, same: list[str], diff: list[str], app_dir: Path,
 
 
 # ── 红线只读快照（只读 git 命令）───────────────────────────────────────────
-def git_block() -> list[str]:
+# B-159（批82）：**本机状态不进提交物**。分析见笔记仓
+# `drafts/b81-b159-auto-state-analysis.md`：`--check` 侧早已把这一行整行归一化
+# （`GIT_LINE` → `_GIT_PLACEHOLDER`），该行**从不参与任何判定**；但写入侧从前仍把
+# `.git/index` mtime / `HEAD` / `git status` 行数 materialize 进 README → 不参与判定，
+# 却保证每次写入产生 1 行 diff（批80/81 的 notes-only 批次都只能写完再 revert）。
+# 现在：写模式只写下面这行**确定性文本**；现况仍**只读**采集，落
+# `out/gen_docs-state.txt`（README 同级的 `out/`，gitignored、不进提交）。
+_GIT_LINE = ("**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）："
+             "本机工作区状态不写进提交物；现况见 `out/gen_docs-state.txt`（不提交）")
+
+
+def git_state_lines() -> list[str]:
+    """本机工作区现况：`.git/index` mtime / HEAD / `git status` 行数（**只读** git 命令）。"""
     idx = REPO / ".git" / "index"
     mt = (datetime.fromtimestamp(idx.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
           if idx.is_file() else "（无 .git/index）")
     head = sh(["git", "rev-parse", "--short", "HEAD"], REPO).strip() or "（不可用）"
     n = len([x for x in sh(["git", "status", "--porcelain"], REPO).split("\n") if x.strip()])
-    return [f"**红线只读快照**（只跑 `git rev-parse` / `git status`，不写）："
-            f"`.git/index` mtime `{mt}`；`HEAD` = `{head}`；`git status --porcelain` **{n}** 行"]
+    return [f".git/index mtime: {mt}", f"HEAD: {head}", f"git status --porcelain 行数: {n}"]
+
+
+def state_file() -> Path:
+    """现况快照落盘位置：`README.parent/out/gen_docs-state.txt`（`Engine/out/`，gitignored）。
+
+    用 `README.parent` 而不是 `ENGINE`：测试会把 `G.README` 指到 fixture（保持 hermetic），
+    快照就跟着落到 fixture 的 `out/` 里，不污染真实仓库。
+    """
+    return README.parent / "out" / "gen_docs-state.txt"
+
+
+def record_git_state() -> None:
+    """B-159：把本机现况写进 `out/gen_docs-state.txt`。**尽力**写 —— 失败只告警，不改退出码。"""
+    try:
+        p = state_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        p.write_text("\n".join(["# gen_docs 写模式的本机状态快照（B-159：不写进 README/提交物）",
+                                f"generated_at: {stamp}", *git_state_lines()]) + "\n",
+                     encoding="utf-8")
+    except OSError as e:  # noqa: BLE001 —— 证据文件写不了，不影响主流程
+        print(f"⚠ gen_docs: 状态快照写盘失败（忽略）：{e}", file=sys.stderr)
+
+
+def git_block() -> list[str]:
+    """AUTO 块的「红线只读快照」行：**确定性文本**（B-159，不随本机状态变化）。"""
+    return [_GIT_LINE]
 
 
 # ── 组装 ──────────────────────────────────────────────────────────────────
@@ -773,20 +817,18 @@ def test_section_lines(body: str) -> list[str] | None:
 
 
 def _flush_block(new: str, head: str, tail: str) -> tuple[str, bool]:
-    """把块正文 `new` 落到 README 并收敛「红线只读快照」自指行；返回 (最终正文, 是否改写)。
+    """把块正文 `new` 落到 README；返回 (最终正文, 是否改写)。
 
     第四十一批 O1：只就地替换那一行（两条只读 git 命令），不重算整块、不再跑套件。
     B-110：写模式可能分两次调用（数据块先行 / 测试计数补写），每次落盘都走这里。
+    B-159（批82）：状态行已改成**确定性文本** → 原来的「写 README 改变 status 行数」自指
+    消失，3 轮收敛循环简化为**写一次即稳定**；本机现况改落 `out/gen_docs-state.txt`。
     """
-    changed = False
-    for _ in range(3):
-        stable = head + "\n" + new + tail
-        if stable == read_readme():
-            break
+    stable = head + "\n" + new + tail
+    changed = stable != read_readme()
+    if changed:
         README.write_text(stable, encoding="utf-8")
-        changed = True
-        git_line = git_block()[0]        # 只刷新本机状态行（index mtime / HEAD / status 行数）
-        new = GIT_LINE.sub(lambda _m: git_line, new)
+    record_git_state()
     return new, changed
 
 
