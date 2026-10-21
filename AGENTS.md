@@ -50,7 +50,7 @@ python3 tools/selfcheck.py           # quick；发版前用 --full
 # 只查案例库（编号/索引/状态/相似度/历史路径；在公开仓根跑）
 python3 ../tools/case_audit.py --check
 
-# Swift 测试台（6 个，headless；一条命令跑完）
+# Swift 测试台（7 个，headless；一条命令跑完）
 bash tools/run_swift_tests.sh        # 期望「全部测试台 0 FAIL」
 
 # Windows 外壳桥梁测试（不需 Windows；真窗口那条要带 tkinter 的解释器）
@@ -93,7 +93,7 @@ CI 上就是这样，所以 CI 不该因为它们红。
    不重复跑套件，**AUTO 的「测试计数行」不在此校验**）；**因此 full 之外必须显式跑一次
    `python3 tools/gen_docs.py --check`（默认严格，跑套件，约 61s）**——它是测试计数行的唯一严格守卫
    （发版前必跑；`selfcheck --full --strict-tests` 亦可）。
-7. **Swift 改动**：`bash tools/run_swift_tests.sh`（6 个测试台 0 FAIL）。
+7. **Swift 改动**：`bash tools/run_swift_tests.sh`（7 个测试台 0 FAIL）。
 
 > 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README 已与仓库不同，下次 `./build.sh` 会同步"。
 > **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick，第四十一批 O3 起不再整跑套件）/

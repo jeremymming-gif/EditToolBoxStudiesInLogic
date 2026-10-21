@@ -2196,6 +2196,37 @@ def _backtrack_block_start(lines: list[str], abs_idx: int, stop: int) -> int:
     return j + 1
 
 
+def _skip_en_refs_to_title(lines: list[str], start: int, abs_idx: int) -> int:
+    """把「穿过英文参考文献清单」的块首回推到英文题名（批76 B-120）。
+
+    背景：`_backtrack_block_start` 的判据是「英文、非中文、≤160 字」，而文末**英文
+    参考文献条目**同样满足该形态；于是从英文 Abstract 上溯会穿过整段英文清单，
+    清单尾部被当成「文末元数据块」切走 → 编号清单解析残缺（83/01 3/9、83/02 2/35、
+    75/05 14/18、83/06 46/47；全库 213 篇解析稿只此 4 篇，见批76 报告）。
+
+    编号行 `[N]`/`（N）`/`N.` 是参考文献清单的**硬证据**：候选块里出现编号行，
+    块首就回推到英文题名——从英文 Abstract 往上：跳过括号包的单位行，再去掉
+    作者行 / 副题行（与 `parse_tail_metadata` ② 同源判据），下限是最后一条编号行
+    之后。没有编号行（正常形态）→ 原样返回，**默认行为零变化**。
+    """
+    if start < 0 or abs_idx <= start:
+        return start
+    marks = [i for i in range(start, abs_idx)
+             if _NUMBERED_PREFIX_RE.match(lines[i].strip())]
+    if not marks:
+        return start
+    j = abs_idx - 1
+    while j > start and lines[j].strip().startswith(("(", "（")):
+        j -= 1
+    if j <= start:
+        return start
+    if _looks_like_person(lines[j].strip()):
+        j -= 1
+    if j > start and _is_subtitle(lines[j].strip()):
+        j -= 1
+    return max(j, marks[-1] + 1)
+
+
 def locate_tail_block(plains: list[str], ref_start: int) -> int:
     """文末中英元数据块的起点段落下标；找不到返回 -1。
 
@@ -2210,7 +2241,11 @@ def locate_tail_block(plains: list[str], ref_start: int) -> int:
             (i for i in range(ref_start + 1, len(plains))
              if _ABS_RE.match(plains[i]) and not _has_cjk(plains[i])), -1)
         if tail_start >= 0:
+            _abs_idx = tail_start
             tail_start = _backtrack_block_start(plains, tail_start, ref_start)
+            # 批76 B-120：回溯可能「穿过」文末英文参考文献清单，把清单尾部切出参考
+            # 文献区（见 `_skip_en_refs_to_title`）；无编号行时原样返回、行为不变。
+            tail_start = _skip_en_refs_to_title(plains, tail_start, _abs_idx)
     if tail_start >= 0:
         return tail_start
     lo = max(0, len(plains) - _TAIL_BLOCK_SCAN)

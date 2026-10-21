@@ -3183,9 +3183,10 @@ check("r3-settings-budget", "SettingsTab：单篇/单批预算输入走 update �
         + "零上传=\(setTabSrc2.contains("零上传"))")
 let testRunnerSrc = (try? String(contentsOfFile: projFile("tools/run_swift_tests.sh"),
                                  encoding: .utf8)) ?? ""
-check("r4-runner", "run_swift_tests.sh 的编译清单已加入 CoopFeature.swift（仍 6 台）",
+// 批76 B-143：新增第 7 台 `bibdb_ux`（引用库 GUI 纯逻辑）——台数断言同步 6 → 7。
+check("r4-runner", "run_swift_tests.sh 的编译清单已加入 CoopFeature.swift（现 7 台）",
       testRunnerSrc.contains("Features/CoopFeature.swift")
-        && testRunnerSrc.components(separatedBy: "run_one ").count - 1 == 6,
+        && testRunnerSrc.components(separatedBy: "run_one ").count - 1 == 7,
       "listed=\(testRunnerSrc.contains("Features/CoopFeature.swift")) "
         + "harnesses=\(testRunnerSrc.components(separatedBy: "run_one ").count - 1)")
 

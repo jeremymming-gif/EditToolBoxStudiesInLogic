@@ -995,6 +995,10 @@ final class BibDbSettings: ObservableObject {
     @Published var lookupEnabled: Bool = true
     /// 手动指定的笔记仓路径（原样文本；空 = 自动探测）
     @Published var notesRepoPath: String = ""
+    /// 「待裁决」页的「显示已裁决」开关（B-143：默认关 = 只列待裁决；**仅内存、不落盘**）。
+    /// 「库概况」橙字下钻的「到待裁决页看 / 查看历史已裁决」会设置它再切页，
+    /// 两页共用这一份状态 → 跳转后开关态与按钮语义一致（spec B-143 §2.3）。
+    @Published var showResolvedConflicts: Bool = false
 
     private let defaults: UserDefaults
 

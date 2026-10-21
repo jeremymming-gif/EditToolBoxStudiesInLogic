@@ -35,8 +35,13 @@ struct BibDbStatsView: View {
     @ObservedObject var bibdb: BibDbSettings
     /// 当前是不是显示着这一页：切到本页才去读库（5 页同时存在，见 `MainWindow` 的 ZStack）
     let isActive: Bool
+    /// B-143：warning 明细里的「到待裁决页看 / 查看历史已裁决」跳转。
+    /// 参数 = 跳过去后待裁决页的「显示已裁决」开关态（两页共用 `bibdb.showResolvedConflicts`，
+    /// 由 MainWindow 接线：先设开关再切页，保证跳转后开关态与按钮语义一致）。
+    var onOpenReview: (Bool) -> Void = { _ in }
 
     @StateObject private var model = BibDbStatsModel()
+    @State private var showWarningDetail = false
 
     var body: some View {
         ScrollView {
@@ -79,6 +84,8 @@ struct BibDbStatsView: View {
         .onChange(of: isActive) { active in
             if active { model.reload() }
         }
+        // B-143：橙色 warning 可下钻（分类明细 + 每条建议操作；只读，不写库）
+        .sheet(isPresented: $showWarningDetail) { warningDetailSheet }
     }
 
     // MARK: - 内容
@@ -118,10 +125,25 @@ struct BibDbStatsView: View {
         BibDbInfoRow(label: "期数", value: "\(stats.issues) 期（\(stats.files) 份成品 bib，"
                      + "\(stats.sources) 条来源记录）")
         BibDbInfoRow(label: "最近更新", value: stats.updatedNewest.isEmpty ? "—" : stats.updatedNewest)
-        BibDbInfoRow(label: "冲突", value: "\(stats.conflictsRecords) 条记录 / "
-                     + "\(stats.conflictsTotal) 处字段差异"
-                     + (stats.conflictsTotal == 0 ? "（无待裁决项）" : "（到「待裁决」页看清单）"),
-                     color: stats.conflictsTotal == 0 ? .primary : .orange)
+        // B-143：冲突两源口径对齐。`stats --json` 的 conflicts 是引擎老口径（**全量**，
+        // 不动它）；这里用 `lint --json` 新增的 pending/resolved 拆分显示
+        // 「待裁决 N / 历史已裁决 M」，颜色只按 pending 计（0 = 不再橙色误导）。
+        // 旧引擎没有拆分时回退老统计文案（不谎报）。
+        if let lint = model.overview?.lint, lint.hasConflictSplit {
+            BibDbInfoRow(label: "字段冲突",
+                         value: "待裁决 \(lint.conflictsPendingRecords) 条 / "
+                             + "历史已裁决 \(lint.conflictsResolvedRecords) 条记录"
+                             + "（\(lint.conflictsResolvedTotal) 处差异，审计留痕）"
+                             + (lint.conflictsPendingRecords == 0
+                                ? "，无需处理"
+                                : "（到「待裁决」页看清单）"),
+                         color: lint.conflictsPendingRecords > 0 ? .orange : .secondary)
+        } else {
+            BibDbInfoRow(label: "冲突", value: "\(stats.conflictsRecords) 条记录 / "
+                         + "\(stats.conflictsTotal) 处字段差异"
+                         + (stats.conflictsTotal == 0 ? "（无待裁决项）" : "（到「待裁决」页看清单）"),
+                         color: stats.conflictsTotal == 0 ? .primary : .orange)
+        }
         if !stats.issueList.isEmpty {
             let first = stats.issueList.first ?? ""
             let last = stats.issueList.last ?? ""
@@ -139,6 +161,25 @@ struct BibDbStatsView: View {
                          value: "error \(lint.errorCount) 项 / warning \(lint.warningCount) 项"
                          + (lint.ok ? "（库可用）" : "——库有 error，多为规范化规则升级后未迁移"),
                          color: lint.ok ? (lint.warningCount > 0 ? .orange : .green) : .red)
+            // B-143：橙色 warning 汇总可下钻（按类明细 + 每条 key/原因/建议操作；只读）
+            if lint.warningCount > 0 {
+                HStack(spacing: 10) {
+                    Button {
+                        showWarningDetail = true
+                    } label: {
+                        Label("查看 warning 明细（\(warningCategories(lint).count) 类）",
+                              systemImage: "list.bullet.rectangle")
+                    }
+                    .controlSize(.small)
+                    .help("按类展开：重复记录 / 同一作品多记录 / 字段冲突 / 缺字段 / "
+                          + "entry_type 笔误；每条给 key 例子与建议操作")
+                    Text("橙字来自库健康检查 `lint`；字段冲突的裁决明细在「待裁决」页（两个数据源）")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+                .padding(.leading, 118)
+            }
             if !lint.ok {
                 // 可操作说明（B-115）：库 error 不是「手工改坏了」这么吓人，最常见原因是
                 // 引擎的规范化规则升级后**真实库还没迁移**；给出确切的修复命令，别让人猜。
@@ -177,6 +218,114 @@ struct BibDbStatsView: View {
             Text("lint：没读到结果（库文件存在但 lint 失败，见上方错误）。")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - warning 明细（B-143：橙色汇总可下钻；只读，不写库）
+
+    private func warningCategories(_ lint: BibDbFeature.Lint)
+        -> [BibDbFeature.LintWarningCategory] {
+        BibDbFeature.LintWarningDigest.categories(items: lint.warningItems,
+                                                  legacyWarnings: lint.warnings)
+    }
+
+    private var warningDetailSheet: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("库健康检查 · warning 明细").font(.title3).bold()
+                Spacer()
+                Button("关闭") { showWarningDetail = false }
+            }
+            .padding(16)
+            Divider()
+            ScrollView {
+                if let lint = model.overview?.lint {
+                    warningDetailBody(lint)
+                } else {
+                    Text("lint 结果未加载（先点「刷新」）。")
+                        .foregroundStyle(.secondary).padding(16)
+                }
+            }
+        }
+        .frame(minWidth: 720, minHeight: 460)
+    }
+
+    @ViewBuilder
+    private func warningDetailBody(_ lint: BibDbFeature.Lint) -> some View {
+        let categories = warningCategories(lint)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("数据源：引擎 `bibdb.py lint`（库健康检查）。字段冲突的逐条裁决见「待裁决」页。")
+                .font(.caption).foregroundStyle(.secondary)
+            if categories.isEmpty {
+                Text("没有 warning。").foregroundStyle(.secondary)
+            }
+            ForEach(categories) { category in
+                warningCategoryBlock(category)
+            }
+            Text("本页只报告、不写库；重复记录合并属 P6 另卡（不自动合并）。")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func warningCategoryBlock(_ category: BibDbFeature.LintWarningCategory) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(category.title).font(.callout).bold()
+                Text("\(category.warningCount) 条提示").font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            if let note = category.note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // 分类折叠：库大时明细可能多，只逐条列到 20 条（完整清单跑 bibdb.py lint）
+            ForEach(Array(category.items.prefix(20).enumerated()), id: \.offset) { pair in
+                warningItemRow(pair.element)
+            }
+            if category.items.count > 20 {
+                Text("……另有 \(category.items.count - 20) 条同类提示，"
+                     + "跑 `bibdb.py lint` 看完整清单。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(10)
+        .background(Color.secondary.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12)))
+    }
+
+    private func warningItemRow(_ item: BibDbFeature.LintWarningItem) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("· " + item.detail)
+                .font(.caption)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if !item.keysSample.isEmpty {
+                Text("例子：\(item.keysSample.joined(separator: "、"))"
+                     + (item.count > item.keysSample.count ? " 等 \(item.count) 条" : ""))
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
+            Text("建议：\(item.action)").font(.caption2).foregroundStyle(.tertiary)
+            if item.registry == "conflicts" {
+                // 字段冲突：两源口径对齐的关键一块——显示 pending/resolved 并可跳转待裁决页
+                Text(BibDbFeature.LintWarningDigest.conflictsSummary(item))
+                    .font(.caption)
+                    .foregroundStyle(item.pendingRecords > 0 ? .orange : .secondary)
+                HStack(spacing: 8) {
+                    ForEach(BibDbFeature.reviewJumps(pending: item.pendingRecords,
+                                                     resolved: item.resolvedRecords)) { jump in
+                        Button(jump.title) {
+                            showWarningDetail = false
+                            onOpenReview(jump.showResolved)
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .padding(.leading, 8)
     }
 
     @ViewBuilder

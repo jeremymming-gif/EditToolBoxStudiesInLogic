@@ -1,6 +1,6 @@
 # 工具清单（Tools Inventory；owner 制 + 生命周期；新增工具必须登记）
 
-> 建立于批65（2026-10-20，治理小批 T4）。范围：本仓 `tools/`（22 项 = 20 个 tracked 项 + 2 个本地生成物）+ `Engine/tools/`（6 项）。
+> 建立于批65（2026-10-20，治理小批 T4）。范围：本仓 `tools/`（23 项 = 21 个 tracked 项 + 2 个本地生成物）+ `Engine/tools/`（6 项）。
 > **规则**：①每个工具必须有 owner、用途、最后提交、测试/验证方式；②状态 = **active**（在用）/ **dormant**（疑似休眠，5+ 批未用）/ **legacy**（废弃，移 `tools/legacy/`（需要时新建），**需 Lead 批准、可恢复、不物理删除**）；③**新增工具不登记不得合入**（owner+测试必须写）；④每 5 批 prune 一次，批末监理抽检；⑤"最后提交"= `git log -1 --format=%cs -- <path>`（截至 2026-10-20）。
 > owner 域：engine-core（引擎工具/`Engine/tools`）、qa-release（验收/CI 工具）、mac-shell（Swift 测试台/外壳工具）、rules-docs（模板/文档生成）、case-lab（案例工具）。批65 初版盘点由 Lead 代写，后续按域 owner 维护。
 
@@ -14,7 +14,8 @@
 | `infocheck_test/` | mac 信息核查测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
 | `proofcheck_test/` | mac 一校测试台 | mac-shell | 2026-10-17 | `run_swift_tests.sh`（CI） | active | — |
 | `toc_test/` | mac 目录测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
-| `run_swift_tests.sh` | 6 台 Swift 测试台入口（headless） | qa-release | 2026-10-20 | CI `ci.yml` 步骤调用；期望「全部测试台 0 FAIL」 | active | 唯一入口，不手工逐台敲 |
+| `run_swift_tests.sh` | 7 台 Swift 测试台入口（headless） | qa-release | 2026-10-21 | CI `ci.yml` 步骤调用；期望「全部测试台 0 FAIL」 | active | 唯一入口，不手工逐台敲 |
+| `bibdb_ux_test/`（`main.swift`） | 引用库 GUI 纯逻辑测试台（B-143：待裁决默认过滤/开关/计数/空态 + warning 明细分类/计数/跳转动作 + lint JSON 向后兼容解析） | mac-shell | 2026-10-21 | `run_swift_tests.sh`（CI，第 7 台） | active | 只编译 Foundation 的 `Core/Support.swift`+`Core/Log.swift`+`Features/BibDbFeature.swift`；headless、不起子进程、不读真实库 |
 | `mock_llm_server.py` | 本机假 LLM 端点（零付费测试） | engine-core | 2026-10-17 | `Engine/tests/` 引用（test_aibib、test_batch60/63 等） | active | 开发期零付费的关键工具 |
 | `case_audit.py` | 笔记仓案例库体检（编号/索引/状态/相似度，跨仓） | case-lab | 2026-10-18 | 自带 `--check`；`AGENTS.md`/`selfcheck.py` 引用 | active | 操作笔记仓 `cases/`；跨仓需路径说明 |
 | `gen_case_index.py` | 生成/校验案例索引（跨仓） | case-lab | 2026-10-18 | CI `--check`；`selfcheck.py` 引用 | active | 操作笔记仓 `cases/` |

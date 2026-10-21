@@ -213,6 +213,230 @@ enum BibDbFeature {
         var errorCount = 0
         var warningCount = 0
         var nearDuplicates = 0
+        /// B-143：结构化 warnings（GUI 按类下钻）；旧引擎没有 `warning_items` → 空，
+        /// 界面回退到 `warnings` 字符串（`LintWarningDigest` 负责分类）。
+        var warningItems: [LintWarningItem] = []
+        /// B-143：字段冲突拆分（`counts.conflicts_pending` / `conflicts_resolved`）。
+        /// 老键 `counts.conflicts` 仍是**全量**（引擎向后兼容），界面不再拿它当待裁决数。
+        var conflictsPendingRecords = 0
+        var conflictsPendingTotal = 0
+        var conflictsResolvedRecords = 0
+        var conflictsResolvedTotal = 0
+        /// 是否读到了 B-143 新引擎的冲突拆分（旧引擎 → false，界面退回老文案）
+        var hasConflictSplit = false
+    }
+
+    // MARK: - lint warnings 下钻（B-143）
+
+    /// lint warnings 的**结构化镜像**（引擎 `warning_items`：一条 = `warnings` 里一句）。
+    /// `keys_sample` 只有 ≤5 个例子（不把「缺 title 219 条」全塞进 JSON）；完整清单跑
+    /// `bibdb.py lint` 看。字段冲突项另带 pending/resolved 拆分，供「待裁决 N / 历史已裁决 M」。
+    struct LintWarningItem: Identifiable {
+        var code = ""
+        var registry = ""
+        var detail = ""
+        var action = ""
+        var count = 0
+        var keysSample: [String] = []
+        // 仅 registry == "conflicts" 有意义
+        var pendingRecords = 0
+        var pendingTotal = 0
+        var resolvedRecords = 0
+        var resolvedTotal = 0
+        /// 引擎同 code 可能有多条（如 8 条「内容完全相同的多条记录」），必须带 detail 才唯一
+        var id: String { "\(code)|\(detail)" }
+    }
+
+    /// warning 分类的**固定顺序**（spec B-143 §2.3：重复记录 / 同一作品多记录 / 字段冲突 /
+    /// 缺字段 / entry_type / alias / 未核实 / 其他）与中文标题；GUI 分类展示与计数都从这里来。
+    enum LintWarningRegistry {
+        static let order = ["duplicates", "near_duplicates", "conflicts", "missing_field",
+                            "unknown_entry_type", "alias", "unverified", "other"]
+        static func title(_ registry: String) -> String {
+            switch registry {
+            case "duplicates": return "重复记录（内容完全相同）"
+            case "near_duplicates": return "同一作品的多条记录"
+            case "conflicts": return "字段冲突"
+            case "missing_field": return "缺字段"
+            case "unknown_entry_type": return "entry_type 笔误"
+            case "alias": return "alias 问题"
+            case "unverified": return "未核实条目"
+            default: return "其他"
+            }
+        }
+        /// 分类级补充说明（尤其重复类要写清「P6 另卡、本页只报告、不合并」）
+        static func note(_ registry: String) -> String? {
+            switch registry {
+            case "duplicates":
+                return "重复记录合并属 P6 另卡，本页只报告、不合并"
+            case "near_duplicates":
+                return "经典文献跨期重复引用是常态；如需合并走 P6 另卡，本页只报告"
+            case "conflicts":
+                return "字段冲突裁决的逐条明细在「待裁决」页；本页橙字来自库健康检查 lint（两个数据源）"
+            case "missing_field":
+                return "回原稿/来源 bib 核对后补齐（本页只读，不改库）"
+            case "unknown_entry_type":
+                return "多为笔误（rticle / artical / inprocedings …），按 bibcheck 类型表改正"
+            case "alias":
+                return "alias 让旧 key 也能查库；撞车会让查询标 ambiguous"
+            case "unverified":
+                return "不阻断使用，但查询结果会标 verified=false"
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// 下钻 sheet 里的一类 warning（按固定顺序排出）
+    struct LintWarningCategory: Identifiable {
+        var registry = ""
+        var title = ""
+        var items: [LintWarningItem] = []
+        var id: String { registry }
+        /// 这一类里「提示条数」（不是受影响记录数——缺 title 是一条 warning 管 219 条记录）
+        var warningCount: Int { items.count }
+        /// 受影响记录数（各条 count 之和；仅用于粗看规模）
+        var affectedCount: Int { items.reduce(0) { $0 + max(0, $1.count) } }
+        var note: String? { LintWarningRegistry.note(registry) }
+    }
+
+    /// warning 分类/计数的纯逻辑（headless 可测；旧引擎回退老 warnings 字符串）。
+    struct LintWarningDigest {
+        /// 新引擎用 `warning_items`；旧引擎（或没有结构化数据时）把老字符串按前缀归类。
+        static func categories(items: [LintWarningItem],
+                               legacyWarnings: [String] = []) -> [LintWarningCategory] {
+            var source = items
+            if source.isEmpty && !legacyWarnings.isEmpty {
+                source = fallbackItems(legacyWarnings)
+            }
+            guard !source.isEmpty else { return [] }
+            let grouped = Dictionary(grouping: source) { $0.registry }
+            let known = Set(LintWarningRegistry.order)
+            var result: [LintWarningCategory] = []
+            for registry in LintWarningRegistry.order {
+                guard let group = grouped[registry], !group.isEmpty else { continue }
+                var category = LintWarningCategory()
+                category.registry = registry
+                category.title = LintWarningRegistry.title(registry)
+                category.items = group
+                result.append(category)
+            }
+            // 固定分类之外的新 registry（未来引擎新增）归「其他」，不丢
+            let unknown = source.filter { !known.contains($0.registry) }
+            if !unknown.isEmpty {
+                var category = LintWarningCategory()
+                category.registry = "other"
+                category.title = LintWarningRegistry.title("other")
+                category.items = unknown
+                if let index = result.firstIndex(where: { $0.registry == "other" }) {
+                    result[index].items.append(contentsOf: unknown)
+                } else {
+                    result.append(category)
+                }
+            }
+            return result
+        }
+
+        /// 旧引擎回退：把 warnings 字符串按前缀/关键词归类（无法解析的数字按 1 计）。
+        static func fallbackItems(_ warnings: [String]) -> [LintWarningItem] {
+            warnings.map { text in
+                var item = LintWarningItem()
+                item.detail = text
+                item.code = fallbackCode(text)
+                item.registry = fallbackRegistry(text)
+                item.action = fallbackAction(item.registry)
+                item.count = fallbackCount(text, code: item.code)
+                return item
+            }
+        }
+
+        static func fallbackRegistry(_ text: String) -> String {
+            if text.hasPrefix("内容完全相同的多条记录") { return "duplicates" }
+            if text.hasPrefix("同一作品的多条记录") { return "near_duplicates" }
+            if text.contains("字段冲突") { return "conflicts" }
+            if text.hasPrefix("缺 title") || text.hasPrefix("缺 author")
+                || text.hasPrefix("缺可用年份") { return "missing_field" }
+            if text.contains("entry_type") { return "unknown_entry_type" }
+            if text.contains("alias") { return "alias" }
+            if text.hasPrefix("未核实条目") { return "unverified" }
+            return "other"
+        }
+
+        static func fallbackCode(_ text: String) -> String {
+            switch fallbackRegistry(text) {
+            case "duplicates": return "duplicate_content"
+            case "near_duplicates": return "near_duplicates"
+            case "conflicts": return "conflict_pending"
+            case "missing_field":
+                if text.hasPrefix("缺 title") { return "missing_title" }
+                if text.hasPrefix("缺 author") { return "missing_author" }
+                return "missing_year"
+            case "unknown_entry_type": return "unknown_entry_type"
+            case "alias": return "alias_ambiguous"
+            case "unverified": return "unverified"
+            default: return "other"
+            }
+        }
+
+        static func fallbackAction(_ registry: String) -> String {
+            switch registry {
+            case "duplicates":
+                return "查库确认哪一条为准；重复记录合并属 P6 另卡，本页只报告、不自动合并"
+            case "near_duplicates":
+                return "经典文献跨期重复引用是常态；如需合并走 P6 另卡（本页只报告、不合并）"
+            case "conflicts":
+                return "到「待裁决」页逐条裁决（保留旧值 / 采用新值 / 待人工）"
+            case "missing_field":
+                return "回原稿/来源 bib 核对后补齐（本页只读，不改库）"
+            case "unknown_entry_type":
+                return "按 bibcheck 的类型表改正 entry_type（多为笔误）"
+            case "alias":
+                return "查库确认后让 alias 只指向一条记录"
+            case "unverified":
+                return "按入库口径核实后重新入库（AI 结果不直接入库）"
+            default:
+                return "跑 `bibdb.py lint` 看完整清单"
+            }
+        }
+
+        static func fallbackCount(_ text: String, code: String) -> Int {
+            if code == "duplicate_content" {
+                guard let colon = text.range(of: "：") else { return 1 }
+                let names = text[colon.upperBound...].split(separator: "、")
+                return max(1, names.count)
+            }
+            var digits = ""
+            for character in text {
+                if character.isNumber {
+                    digits.append(character)
+                } else if !digits.isEmpty {
+                    break
+                }
+            }
+            return Int(digits) ?? 1
+        }
+
+        /// 字段冲突项的「待裁决 / 历史已裁决」一句话（GUI 明细用）
+        static func conflictsSummary(_ item: LintWarningItem) -> String {
+            "待裁决 \(item.pendingRecords) 条记录 / \(item.pendingTotal) 处差异 ｜ "
+                + "历史已裁决 \(item.resolvedRecords) 条记录 / \(item.resolvedTotal) 处差异"
+        }
+    }
+
+    /// 从「库概况」warning 明细跳到「待裁决」页的跳转动作。
+    /// `showResolved` = 跳过去后待裁决页的「显示已裁决」开关态（两页共用一份状态）。
+    struct ReviewJump: Identifiable, Equatable {
+        var id = ""
+        var title = ""
+        var showResolved = false
+    }
+
+    /// 字段冲突分类下面给两个跳转：看待裁决（开关关）/ 看历史已裁决（开关开）。
+    static func reviewJumps(pending: Int, resolved: Int) -> [ReviewJump] {
+        [ReviewJump(id: "pending", title: "到待裁决页看（待裁决 \(pending) 条）",
+                    showResolved: false),
+         ReviewJump(id: "resolved", title: "查看历史已裁决（\(resolved) 条）",
+                    showResolved: true)]
     }
 
     /// 库概况页的一次加载结果（stats 与 lint 分开报错：
@@ -286,15 +510,43 @@ enum BibDbFeature {
         return stats
     }
 
-    private static func parseLint(_ payload: [String: Any]) -> Lint {
+    /// `lint --json` → 界面模型（B-143 新增键都是**只加不改**：老引擎也能解析）。
+    /// 注意：`counts.conflicts` 是引擎的**全量**老口径（向后兼容），待裁决/已裁决拆分只认
+    /// `counts.conflicts_pending` / `conflicts_resolved`（没有就 `hasConflictSplit=false`）。
+    static func parseLint(_ payload: [String: Any]) -> Lint {
         var lint = Lint()
         lint.ok = (payload["ok"] as? Bool) ?? true
         lint.errors = (payload["errors"] as? [Any])?.map { stringValue($0) } ?? []
         lint.warnings = (payload["warnings"] as? [Any])?.map { stringValue($0) } ?? []
+        lint.warningItems = ((payload["warning_items"] as? [Any]) ?? []).compactMap { raw in
+            guard let dict = raw as? [String: Any] else { return nil }
+            var item = LintWarningItem()
+            item.code = stringValue(dict["code"])
+            item.registry = stringValue(dict["registry"])
+            item.detail = stringValue(dict["detail"])
+            item.action = stringValue(dict["action"])
+            item.count = intValue(dict["count"])
+            item.keysSample = (dict["keys_sample"] as? [Any])?.map { stringValue($0) } ?? []
+            item.pendingRecords = intValue(dict["pending_records"])
+            item.pendingTotal = intValue(dict["pending_total"])
+            item.resolvedRecords = intValue(dict["resolved_records"])
+            item.resolvedTotal = intValue(dict["resolved_total"])
+            return item
+        }
         if let counts = payload["counts"] as? [String: Any] {
             lint.errorCount = intValue(counts["errors"])
             lint.warningCount = intValue(counts["warnings"])
             lint.nearDuplicates = intValue(counts["near_duplicates"])
+            if let pending = counts["conflicts_pending"] as? [String: Any] {
+                lint.conflictsPendingRecords = intValue(pending["records"])
+                lint.conflictsPendingTotal = intValue(pending["total"])
+                lint.hasConflictSplit = true
+            }
+            if let resolved = counts["conflicts_resolved"] as? [String: Any] {
+                lint.conflictsResolvedRecords = intValue(resolved["records"])
+                lint.conflictsResolvedTotal = intValue(resolved["total"])
+                lint.hasConflictSplit = true
+            }
         } else {
             lint.errorCount = lint.errors.count
             lint.warningCount = lint.warnings.count
@@ -815,6 +1067,90 @@ enum BibDbFeature {
             }
             return out
         }
+    }
+
+    /// 「待裁决」页列表的**纯逻辑状态**（B-143；headless 可测，视图只负责画）。
+    ///
+    /// 判据全部来自引擎：数据一次读全（`conflicts --json` 已带 `pending` 与 totals），
+    /// 默认只显示 `pending=true`；开关打开才显示已裁决（灰显，审计留痕）。
+    /// **C 编号沿用引擎 `stable_no`，过滤不重排** —— 用户按 Cxxx 记的决定不会错位。
+    struct ConflictListState {
+        var showResolved = false
+        var items: [ConflictItem] = []
+        var total = 0
+        var pending = 0
+        var resolved = 0
+
+        init(outcome: ConflictsOutcome, showResolved: Bool = false) {
+            self.showResolved = showResolved
+            self.items = outcome.items
+            self.total = outcome.total
+            self.pending = outcome.pending
+            self.resolved = outcome.resolved
+        }
+
+        /// 当前开关态下可见的条目（默认过滤已裁决；顺序/编号沿用引擎）
+        var visibleItems: [ConflictItem] {
+            showResolved ? items : items.filter { $0.pending }
+        }
+
+        /// 可见条目按期→篇连续分组（与 `ConflictsOutcome.groups` 同一规则，不重排）
+        var visibleGroups: [ConflictGroup] {
+            var out: [ConflictGroup] = []
+            for item in visibleItems {
+                if var last = out.last, last.issue == item.issue, last.slug == item.slug {
+                    last.items.append(item)
+                    out[out.count - 1] = last
+                } else {
+                    out.append(ConflictGroup(issue: item.issue, slug: item.slug, items: [item]))
+                }
+            }
+            return out
+        }
+
+        /// 某组「全部条目数」（含被开关隐藏的已裁决）——分组头「待裁决 N（共 M）」的 M。
+        /// 不能用 visibleGroups 里的 items.count：默认关时它只含 pending，会把 M 误缩成 N
+        /// （Lead 复审发现的 spec §2.2 口径偏差，B-143 修正）。
+        func groupTotal(forGroupId id: String) -> Int {
+            items.filter { "\($0.issue)|\($0.slug)" == id }.count
+        }
+
+        /// 默认过滤下是否「该显示空态」：库里有冲突、但待裁决为 0（当前真实库就是这样）
+        var isEmptyByFilter: Bool {
+            !showResolved && !items.isEmpty && pending == 0
+        }
+
+        /// 列表区空态文案（三种情况说清，不让人误以为是加载失败/显示 bug）
+        var emptyText: String {
+            if total == 0 {
+                return "当前库没有字段冲突（待裁决 0 / 已裁决 0）。"
+            }
+            if isEmptyByFilter {
+                return "当前没有待裁决冲突；历史已裁决 \(resolved) 条，"
+                    + "可打开「显示已裁决」查看（C 编号固定）。"
+            }
+            return ""
+        }
+
+        /// 状态条一句话：「待裁决 N ｜ 已裁决 M ｜ 共 T」（spec B-143 §2.2，不用易误读的 N/M 比例）
+        var statusText: String {
+            "待裁决 \(pending) ｜ 已裁决 \(resolved) ｜ 共 \(total)"
+        }
+
+        /// feedback 一行：说明编号固定 + 已裁决默认隐藏（与原「共 N 条（含已裁决）」区分开）
+        var feedbackText: String {
+            "共 \(total) 条冲突（待裁决 \(pending) / 已裁决 \(resolved)，C 编号固定）；"
+                + (showResolved ? "正在显示已裁决（灰显，仅供审计留痕）。"
+                                : "已裁决默认隐藏，可用「显示已裁决」查看。")
+        }
+
+        /// 分组头：「待裁决 N（共 M）」——不再用易误读的 `N / M`
+        static func groupCountText(pending: Int, total: Int) -> String {
+            "待裁决 \(pending)（共 \(total)）"
+        }
+
+        /// 开关文案（默认关；打开 = 显示已裁决、灰显留痕）
+        static var toggleTitle: String { "显示已裁决（审计留痕，默认关）" }
     }
 
     private static func parseConflictItem(_ dict: [String: Any]) -> ConflictItem {

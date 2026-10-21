@@ -136,6 +136,29 @@ check("块首上一段超过 160 字 → 不吞", locate_tail_block(LONG, -1) ==
 check("没有英文标签时返回 -1",
       locate_tail_block(["中文题名", "作者"] + ["正文"] * 40, -1) == -1)
 
+# 批76 B-120：英文参考文献清单排在文末英文块**之前**时，回溯不得穿过清单
+# （清单条目也是「英文、非中文、≤160 字」，旧实现会把它整段切出参考文献区，
+#  → num2key 只剩清单前半段；83/01/02、75/05、83/06 实测）
+ENLIST = (["中文题名", "作者", "摘要：本文讨论数据库。", "关键词：逻辑；数据库"]
+          + ["正文第 %d 段。" % i for i in range(30)]
+          + ["参考文献",
+             "[1] 张三. 数据库逻辑[J]. 逻辑学研究, 2020(1): 1-10.",
+             "[2] Cevolani, C., 2020, Approaching Truth in Conceptual Spaces, "
+             "Erkenntnis 85 (6):1485-1500.",
+             "[3] Kment, Boris, 2021, Varieties of Modality, "
+             "The Stanford Encyclopedia of Philosophy."]
+          + ["Towards a Logic of Databases", "Zhang San",
+             "Abstract: We study the logic of databases.", "Key words: logic; database"])
+_EN_REF = ENLIST.index("参考文献")
+check("英文清单在文末块前：块首回推到英文题名（不吞清单）",
+      locate_tail_block(ENLIST, _EN_REF) == _EN_REF + 4,
+      f"got {locate_tail_block(ENLIST, _EN_REF)}")
+check("英文清单在文末块前：文末块题名/作者/摘要照旧解析",
+      (lambda t: (t["title_en"], t["author_en"], t["abstract_en"]))(
+          parse_tail_metadata(ENLIST, locate_tail_block(ENLIST, _EN_REF)))
+      == ("Towards a Logic of Databases", "Zhang San", "We study the logic of databases."))
+
+
 # ══ ② 标签正文 + 文末块解析（合成）════════════════════════════════════════
 print("\n── ② 标签正文与文末块解析 ──")
 
@@ -286,6 +309,41 @@ TMP.append(p)
 d = parse_docx(p)
 check("端到端：开头元数据区内的英文摘要归开头那套（abstract_en 取到）",
       d.abstract_en == "head-zone body", repr(d.abstract_en))
+# ③-f 批76 B-120 端到端：编号清单尾部是英文条目 + 文末英文块（83/01 型）
+# 旧实现把 [2]/[3] 切出参考文献区 → num2key 只有 {1}；修复后覆盖 1..3 且脚注 [3] 可转换
+EN_TAIL = (CN_HEAD + ["正文第 %d 段。" % i for i in range(30)]
+           + ["参考文献",
+              "[1] 张三，数据库逻辑，《逻辑学研究》，2020年第1期。",
+              "[2] Cevolani, C., 2020, Approaching Truth in Conceptual Spaces, "
+              "Erkenntnis 85 (6):1485-1500.",
+              "[3] Kment, Boris, 2021, Varieties of Modality, "
+              "The Stanford Encyclopedia of Philosophy.",
+              "Simultaneous Causation and Conceptual Possibility", "(ZHANG San)",
+              "Abstract: We study databases.", "Key words: logic; database"])
+p = make_docx(EN_TAIL, footnote_texts=["关于此方面的初步探讨，读者可参考[3]。"])
+TMP.append(p)
+d = parse_docx(p)
+check("端到端：英文清单尾部不再被切走 → num2key 覆盖 1..3",
+      sorted(d.ref_key_by_num) == [1, 2, 3], str(sorted(d.ref_key_by_num)))
+check("端到端：bib 条目 3 条（含 2 条英文清单条目）",
+      len(d.bib_entries) == 3, str(len(d.bib_entries)))
+check("端到端：映射键仍按既有规则（首作者姓+年份，未改名）",
+      d.ref_key_by_num[3].startswith("Kment") and d.ref_key_by_num[1].startswith("Zhang"),
+      str(d.ref_key_by_num))
+check("端到端：脚注 [3] 进入可靠映射 → 不再报「不在清单范围」",
+      not any("不在文末清单编号范围" in w for w in d.warnings), str(d.warnings[-2:]))
+from slcn.docxsource import (  # noqa: E402
+    _footnote_num2key_gate, link_footnote_bare_citations,
+)
+_gate = _footnote_num2key_gate(d)
+check("端到端：gate 通过（1..3 连续映射，脚注裸编号通道可转换）",
+      _gate == d.ref_key_by_num, str(_gate))
+check("端到端：脚注裸编号 [3] 经可靠映射转成 \\parencite（只换引用文字）",
+      link_footnote_bare_citations("参见[3]。", _gate)[0]
+      == f"参见\\parencite{{{d.ref_key_by_num[3]}}}。")
+check("端到端：文末英文块元数据照旧",
+      d.title_en == "Simultaneous Causation and Conceptual Possibility"
+      and d.abstract_en == "We study databases.", f"{d.title_en!r}")
 for _p in TMP:
     os.unlink(_p)
 
@@ -344,6 +402,16 @@ CASES = [
      lambda d, p: d.title_en == "Grice and Brandom on Verbal Communication"
      and d.abstract_en.startswith("This article compares Grice"),
      "开头英文块 + 英文题名前有一个只有空格的段"),
+    ("2025年第4期(83)/01 Chao'an_He", "同时性因果与概念可能性 - 定稿",
+     lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 10))
+     and d.title_en == "Simultaneous Causation and Conceptual Possibility"
+     and not any("不在文末清单编号范围" in w for w in d.warnings),
+     "英文清单尾部 [4]–[9] 不得被切出参考文献区（B-120 批76）"),
+    ("2025年第4期(83)/02 Zhiheng_Tang", "再论同时性因果 - 定稿",
+     lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 36))
+     and d.title_en.startswith("More on Simultaneous Causation")
+     and not any("不在文末清单编号范围" in w for w in d.warnings),
+     "英文清单尾部 [3]–[35] 不得被切出参考文献区（B-120 批76）"),
 ]
 for _dir, needle, ok, why in CASES:
     path = find(_dir, needle)
@@ -380,6 +448,9 @@ NEG = [
      and d.abstract_en.startswith("Three research models")
      and d.author_en == "Chen Bo",
      "中英两套摘要的英文片段（文末窗口内、开头那套也已取到）不得被覆盖"),
+    ("2026年第5期(90)/07 Liangying_Zhao", "经验贝叶斯主义",
+     lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 12)),
+     "无英文清单穿越：90-07 编号体例稿 num2key 11 条不动（B-120 批76 反例）"),
 ]
 for _dir, needle, ok, why in NEG:
     path = find(_dir, needle)

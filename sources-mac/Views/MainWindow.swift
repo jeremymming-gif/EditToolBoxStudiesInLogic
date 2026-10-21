@@ -78,7 +78,13 @@ struct MainWindow: View {
                     // 第 132 条：引用库 5 页。同样走 `.pageVisible`（案例 126：隐藏页会抢
                     // 拖拽命中，必须让隐藏页整体移出命中范围；**不要**改成条件渲染，
                     // 那会丢页面状态、也会让切换页时重新读库）。
-                    BibDbStatsView(log: log, bibdb: bibdb, isActive: selection == .bibstats)
+                    // B-143：库概况橙字下钻的「到待裁决页看 / 查看历史已裁决」→
+                    // 先把共享开关设成目标态，再切页（两页开关态一致）。
+                    BibDbStatsView(log: log, bibdb: bibdb, isActive: selection == .bibstats,
+                                   onOpenReview: { showResolved in
+                                       bibdb.showResolvedConflicts = showResolved
+                                       selection = .bibreview
+                                   })
                         .pageVisible(selection == .bibstats)
                     BibDbQueryView(log: log, bibdb: bibdb, isActive: selection == .bibquery)
                         .pageVisible(selection == .bibquery)

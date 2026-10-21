@@ -574,6 +574,14 @@ struct BibDbReviewView: View {
 
     // MARK: - 顶部
 
+    /// B-143：列表的纯逻辑状态（默认只列 pending；开关打开显示已裁决；C 编号不重排）
+    private var listState: BibDbFeature.ConflictListState? {
+        model.conflicts.map {
+            BibDbFeature.ConflictListState(outcome: $0,
+                                           showResolved: bibdb.showResolvedConflicts)
+        }
+    }
+
     private var header: some View {
         BibDbPageHeader(
             title: "引用库 · 待裁决",
@@ -584,6 +592,10 @@ struct BibDbReviewView: View {
             ③ **一键全部采用**（高亮警示 + dry-run 逐条预览 + 二次确认）；④ 从自动备份恢复整库。
             ⚠️ 写库动作一律**先预览后确认**、写前校验库 sha 并自动备份；C 编号由引擎固定，
             裁决后**不重排**。
+
+            **两个数据源**：本页来自引擎 `conflicts`（字段冲突裁决，**默认只列待裁决**，
+            已裁决可开关查看、灰显留痕）；「库概况」页的橙色 warning 来自引擎 `lint`
+            （库健康检查：重复/缺字段/entry_type 等），两者口径独立、不互相代替。
             """)
     }
 
@@ -615,10 +627,10 @@ struct BibDbReviewView: View {
 
     private var statusBar: some View {
         HStack(alignment: .center, spacing: 14) {
-            statusChip(title: "待裁决", value: "\(model.conflicts?.pending ?? 0)",
+            // B-143：口径一句话「待裁决 N ｜ 已裁决 M ｜ 共 T」；颜色只按**待裁决**是否 >0
+            statusChip(title: "冲突条目",
+                       value: listState?.statusText ?? "（未加载）",
                        color: (model.conflicts?.pending ?? 0) > 0 ? .orange : .secondary)
-            statusChip(title: "已裁决", value: "\(model.conflicts?.resolved ?? 0)",
-                       color: .secondary)
             statusChip(title: "库 sha",
                        value: model.conflicts?.shaShort ?? "（未加载）",
                        color: .secondary)
@@ -663,6 +675,12 @@ struct BibDbReviewView: View {
             Button("打开备份文件夹") {
                 Logger(store: log)(bibDbOpenInFinder(BibDbFeature.backupDirectory))
             }
+            // B-143：默认只列待裁决；打开后追加已裁决（灰显留痕，C 编号沿用引擎、不重排）
+            Toggle(BibDbFeature.ConflictListState.toggleTitle,
+                   isOn: $bibdb.showResolvedConflicts)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .help("默认只列待裁决；打开后显示已裁决（灰显、仅供审计留痕，C 编号固定不重排）")
             Spacer()
         }
     }
@@ -679,9 +697,8 @@ struct BibDbReviewView: View {
                 Text("清单生成用时 \(BibDbUI.seconds(run.seconds))；库：\(run.dbPath)")
                     .font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)
             }
-            if model.conflicts != nil && model.loadSeconds > 0 {
-                Text("列表加载用时 \(BibDbUI.seconds(model.loadSeconds))；共 "
-                     + "\(model.conflicts?.total ?? 0) 条冲突（含已裁决，编号固定）。")
+            if let state = listState, model.loadSeconds > 0 {
+                Text("列表加载用时 \(BibDbUI.seconds(model.loadSeconds))；\(state.feedbackText)")
                     .font(.caption).foregroundStyle(.tertiary)
             }
         }
@@ -694,8 +711,10 @@ struct BibDbReviewView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Text("冲突条目").font(.callout).bold()
-                if let conflicts = model.conflicts {
-                    Text("按期 → 篇 → C 编号（引擎顺序）")
+                if let conflicts = model.conflicts, let state = listState {
+                    Text(bibdb.showResolvedConflicts
+                         ? "按期 → 篇 → C 编号（引擎顺序；当前：显示全部，已裁决灰显）"
+                         : "按期 → 篇 → C 编号（引擎顺序；当前：只看待裁决）")
                         .font(.caption).foregroundStyle(.tertiary)
                     Spacer()
                     if conflicts.verifiedPendingCount > 0 {
@@ -704,18 +723,22 @@ struct BibDbReviewView: View {
                             .font(.caption).foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                    if state.showResolved && state.resolved > 0 {
+                        Text("另 \(state.resolved) 条已裁决灰显（审计留痕）")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 } else {
                     Spacer()
                 }
             }
-            if let conflicts = model.conflicts, conflicts.items.isEmpty {
-                BibDbStatusLine(kind: .ok, text: "当前库没有任何字段冲突（待裁决 0 / 已裁决 0）。")
+            if let state = listState, !state.emptyText.isEmpty {
+                BibDbStatusLine(kind: .ok, text: state.emptyText)
             }
             if model.conflicts == nil && !model.running {
                 BibDbStatusLine(kind: .warning,
                                 text: "还没加载到冲突列表：点上面「刷新列表」（或先导入引用库）。")
             }
-            ForEach(model.conflicts?.groups ?? []) { group in
+            ForEach(listState?.visibleGroups ?? []) { group in
                 conflictGroup(group)
             }
             if let conflicts = model.conflicts, !conflicts.items.isEmpty {
@@ -734,7 +757,11 @@ struct BibDbReviewView: View {
                     Text("（\(group.file)）").font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
-                Text("待裁决 \(group.pendingCount) / \(group.items.count)")
+                // B-143：分组头改「待裁决 N（共 M）」（不再用易误读的 N / M 比例写法）；
+                // M = 该组**全部条目数**（含被开关隐藏的已裁决），不是过滤后条数。
+                Text(BibDbFeature.ConflictListState.groupCountText(
+                    pending: group.pendingCount,
+                    total: listState?.groupTotal(forGroupId: group.id) ?? group.items.count))
                     .font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(group.items) { item in

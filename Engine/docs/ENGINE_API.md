@@ -248,6 +248,17 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 口径见 `docs/GUIDE.md`「Word 编号体例稿：脚注文本里的裸 `[N]` → `\parencite`」；
 回归见 `tests/test_b73_footnote_bare_cite.py`、`tests/test_b75_b137_cite_residual.py`。
 
+**批76 B-120（编号清单尾部解析修复；**无契约变化**）**：文末英文元数据块（题名/Abstract/
+Keywords）紧跟在**英文参考文献清单**之后时，旧实现从英文 Abstract 向上回溯「英文短行」会
+穿过清单、把清单尾部当元数据块切走 → `ref_key_by_num`（`num2key`）只剩前几条、脚注裸编号
+报「不在清单范围」。现在候选块含编号行 `[N]` 时块首回推到英文题名
+（`docxsource.locate_tail_block` + `_skip_en_refs_to_title`；无编号行行为不变）。
+**不改任何 CLI 参数、stdout 契约行、退出码、产物路径与文件名**；命中稿 `.tex` 仅多出预期
+`\parencite`、`.bib` 仅**新增**此前丢失的条目（既有条目值不变、键不改名，`make_key` 规则未动）；
+未命中稿产物逐字节不变。全库只读 dry-run：`num2key` 1561→1605、N∉可靠映射 14→0、
+解析变化稿 4/213（41 篇回归案例集 0 变化）。口径见 `docs/GUIDE.md`「Word 编号体例稿…」
+B-120 段；回归见 `tests/test_tail_block.py`。
+
 **两段式协同（`--coop-*`）的 argv 契约（第 54–59 批，外壳拼参数用）**：第一段 =
 `--verify-refs --no-ai-merge --coop-taskbook-only [--coop-stage DIR] [--coop-fulltext context|full]`；
 第二段 = `--coop-replies <回填>… [--coop-apply] [--compile] [--clean]`（`--source` / `--out` 两段都必填）。
@@ -405,7 +416,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | 子命令 | 干什么 | 关键参数 | `--json` 输出 / 退出码 |
 |---|---|---|---|
 | `init` / `import-bib` / `import-dir` | 建库；导入一份 `.bib` 或多条 bib 的整期成品 | `--dry-run` 预览；`--force` 整条替换（旧值留档） | 老契约不变（`report`/`changes`/`db_existed`…） |
-| `query` / `stats` / `lint` | 查库（key/DOI/题名）/ 库概况 / 体检 | `--bibtex` 附可复制条目 | 老契约不变；`lint` rc1 = 有 error |
+| `query` / `stats` / `lint` | 查库（key/DOI/题名）/ 库概况 / 体检 | `--bibtex` 附可复制条目 | 老契约不变；`lint` rc1 = 有 error；**B-143 起 `lint` 增补 `warning_items` 与 `counts.conflicts_pending/resolved`（只加不改）**，见下 |
 | `rehash` ★ | 规范化规则升级后重算 `content_sha256`（B-126） | 默认 dry-run；`--apply` 才写（只改 `content_sha256`+`updated_at`） | `{db, dry_run, applied, records, stale, changes, sha256_before, sha256_after, updated_at, notes}` |
 | `conflicts` ★（B-127） | **列出冲突条目**（只读；GUI 待裁决页数据源）。C 编号与 `CONFLICTS.md` 同源 | `--pending-only` 只列待裁决 | `{db, db_sha256, totals:{total,pending,resolved}, items:[{stable_no,record_key,bib_key,entry_type,title,author,year,issue,slug,file,at,incoming_sha256,pending,resolution,resolved_at,diff:{字段:{old,new}},advice,verified,method}]}`；库缺失/损坏 rc2 |
 | `resolve`（keep/defer/adopt） | 逐条裁决：keep=保留旧值 / defer=待人工 / adopt=按指纹**逐字段**采用新稿留档值 | `--key --action (--all-fields\|--fields\|--incoming-sha256)`；**写前安全闸**见下 | 老键不变 + ★新增 `db_sha256_before/db_sha256_after/backup_path` |
@@ -414,6 +425,20 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | `restore --backup PATH` ★（B-127） | 从备份**整库恢复**：备份须能被 `Store.load()`（行级 schema）校验通过；`--expect-db-sha256` 与当前库一致才写；原子写回；**不做 reopen**（已裁决冲突回到备份时状态） | `--dry-run` 只校验；`--expect-db-sha256` | `{db, backup_path, written, dry_run, records, backup_sha256, db_sha256_before, db_sha256_after}` |
 | `report` / `report-conflicts` / `report-duplicates` | 生成中文待裁决清单（`CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv`），只写清单文件、不改库 | `--out DIR` | 老契约不变（`{db, reports, conflicts, totals[, pairs]}`） |
 | `normalize` / `normalize-authors` / `normalize-editors` | B1/B2/B3 规范化（默认 dry-run） | `--apply --backup FILE`（写前须备份且 sha 与当前库一致） | 老契约不变 |
+
+**`lint` 的 B-143（批76）增补（只加不改；面向 GUI 库概况橙字下钻）**：
+- `warnings` 字符串列表**原样保留**（人读唯一权威）。其中「字段冲突」一句改为 **pending 口径**
+  （判据 `conflict_is_pending` = `resolved_at` 为空，与 `conflicts --json` 的 totals 同源）：
+  有待裁决时写「字段冲突待裁决：N 条记录 / M 处差异（历史已裁决 X 条记录 / Y 处差异）」；
+  pending=0 时写「字段冲突：待裁决 0 条 / 历史已裁决 X 条记录（Y 处差异，审计留痕，无需处理）」。
+- 新增 `warning_items:[{code,registry,detail,action,count,keys_sample}]`：`warnings` 的结构化镜像
+  （`detail` 与 warnings 字符串同文；`keys_sample` ≤5 个例子，**不塞全量**）。`registry` 是固定分类：
+  `duplicates` / `near_duplicates` / `conflicts` / `missing_field` / `unknown_entry_type` / `alias` /
+  `unverified` / `other`；字段冲突项另带 `pending_records/pending_total/resolved_records/resolved_total`。
+- `counts` 新增 `conflicts_pending` / `conflicts_resolved`（各为 `{records,total}`；`records` 允许同一记录
+  两侧都出现——它既有待裁决也有已裁决）。**老键 `counts.conflicts` 语义不变 = 全量冲突**（向后兼容），
+  GUI 要显示待裁决数请用新拆分键。
+- `conflicts` 子命令与其 `--json` **零变化**（B-143 不碰裁决逻辑）。
 
 **写前安全闸（B-127，`resolve` 全部写动作通用；`restore` 用同名单个参数）**：
 - `--expect-db-sha256 SHA`：**完整** 64 位十六进制，与库当前字节 sha256 一致才写；不符/格式错 → 退出 2 且**零写入**（GUI 列表/指纹过期防线）。

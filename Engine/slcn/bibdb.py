@@ -2468,21 +2468,49 @@ class Store:
 
     def lint(self) -> dict:
         """库体检：重复 key / 字段冲突 / 缺来源 / verified 无核实记录 / 摘要不符 …
-        返回 `{"ok": bool, "errors": [...], "warnings": [...], "counts": {...}}`。
+        返回 `{"ok": bool, "errors": [...], "warnings": [...], "warning_items": [...],
+        "counts": {...}}`。
 
         **errors 必须为 0** 才能当「库是好的」；warnings 是给人看的待办。
+
+        B-143（批76）增补（**只加不改**，老键/老 warnings 字符串仍在）：
+          · 「字段冲突待裁决」warning 只计 **pending**（判据 `conflict_is_pending`，
+            与 `conflicts --json` 的 totals 同源），文本另给历史已裁决数；
+          · `counts.conflicts` 保持老语义（**全量**冲突，向后兼容），新增
+            `counts.conflicts_pending` / `counts.conflicts_resolved` 拆分（拆分相加 =
+            全量；records 允许同一记录同时计入两侧——它既有待裁决也有已裁决）；
+          · `warning_items` 是 warnings 的结构化镜像（大致同序）：每条
+            `{code, registry, detail, action, count, keys_sample}`（冲突条目另带
+            pending/resolved 拆分），供 GUI 按类下钻；`warnings` 字符串列表不变。
         """
         errors: list[str] = list(self.problems)
         warnings: list[str] = []
+        warning_items: list[dict] = []
         records = [record for record in self._records if isinstance(record, dict)]
         canonical_keys = set(self._by_key)
         sha_owner: dict[str, list[str]] = {}
         alias_owner: dict[str, list[str]] = {}
         conflicts_records = conflicts_total = 0
+        conflicts_pending_records = conflicts_pending_total = 0
+        conflicts_resolved_records = conflicts_resolved_total = 0
         unverified = 0
         missing_title = missing_author = missing_year = bad_doi = 0
+        missing_title_keys: list[str] = []
+        missing_author_keys: list[str] = []
+        missing_year_keys: list[str] = []
+        bad_doi_keys: list[str] = []
         unknown_types: Counter[str] = Counter()
-        conflict_rows: list[str] = []
+        unknown_type_keys: dict[str, list[str]] = {}
+        conflict_pending_rows: list[str] = []
+
+        def _item(code: str, registry: str, detail: str, action: str, count: int,
+                  keys_sample: "list[str] | None" = None) -> dict:
+            """warnings 里同一句人读文本的结构化镜像（registry 分类固定给 GUI 下钻）。"""
+            item = {"code": code, "registry": registry, "detail": detail,
+                    "action": action, "count": count,
+                    "keys_sample": list(keys_sample or [])[:5]}
+            warning_items.append(item)
+            return item
         for record in records:
             key = str(record.get("key") or "（无 key）")
             fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
@@ -2496,66 +2524,151 @@ class Store:
             aliases = [alias for alias in (record.get("aliases") or [])
                        if isinstance(alias, str) and alias]
             if len(set(aliases)) != len(aliases):
-                warnings.append(f"{key}：aliases 里有重复项")
+                detail = f"{key}：aliases 里有重复项"
+                warnings.append(detail)
+                _item("alias_duplicate", "alias", detail,
+                      "去掉记录内重复的 alias（同一别名只留一次）", 1, [key])
             for alias in aliases:
                 alias_owner.setdefault(alias, []).append(key)
                 if alias == key:
-                    warnings.append(f"{key}：aliases 里出现了自己的 key")
+                    detail = f"{key}：aliases 里出现了自己的 key"
+                    warnings.append(detail)
+                    _item("alias_self", "alias", detail,
+                          "删掉指向自身的 alias（canonical key 已可直接查）", 1, [key])
             conflicts = record.get("conflicts") or []
             if isinstance(conflicts, list) and conflicts:
                 conflicts_records += 1
                 conflicts_total += len(conflicts)
-                if len(conflict_rows) < 20:
-                    conflict_rows.append(f"{key}（{len(conflicts)} 条）")
+                pending_here = [c for c in conflicts if conflict_is_pending(c)]
+                resolved_here = len(conflicts) - len(pending_here)
+                if pending_here:
+                    conflicts_pending_records += 1
+                    conflicts_pending_total += len(pending_here)
+                    if len(conflict_pending_rows) < 5:
+                        conflict_pending_rows.append(f"{key}（{len(pending_here)} 条）")
+                if resolved_here:
+                    conflicts_resolved_records += 1
+                    conflicts_resolved_total += resolved_here
             if record.get("verified") is not True:
                 unverified += 1
             if not fields.get("title"):
                 missing_title += 1
+                if len(missing_title_keys) < 5:
+                    missing_title_keys.append(key)
             if not (fields.get("author") or fields.get("editor")):
                 missing_author += 1
+                if len(missing_author_keys) < 5:
+                    missing_author_keys.append(key)
             if not entry_year(fields):
                 missing_year += 1
+                if len(missing_year_keys) < 5:
+                    missing_year_keys.append(key)
             doi = fields.get("doi") or ""
             if doi and not normalize_doi(doi):
                 bad_doi += 1
+                if len(bad_doi_keys) < 5:
+                    bad_doi_keys.append(key)
             etype = str(record.get("entry_type") or "").lower()
             if etype not in KNOWN_ENTRY_TYPES:
                 unknown_types[etype] += 1
+                unknown_type_keys.setdefault(etype, []).append(key)
         # 内容完全重复（正常 upsert 不会产生；只可能是手工编辑/旧版本遗留）
         for owners in sha_owner.values():
             if len(owners) > 1:
-                warnings.append(f"内容完全相同的多条记录：{'、'.join(owners[:5])}")
+                detail = f"内容完全相同的多条记录：{'、'.join(owners[:5])}"
+                warnings.append(detail)
+                _item("duplicate_content", "duplicates", detail,
+                      "查库确认哪一条为准；重复记录合并属 P6 另卡，本页只报告、不自动合并",
+                      len(owners), owners)
         # alias 撞车：alias 指向多条记录，或 alias 与别的记录的 canonical key 相同
         for alias, owners in sorted(alias_owner.items()):
             unique = sorted(set(owners))
             if len(unique) > 1:
-                warnings.append(f"alias `{alias}` 指向多条记录（{ '、'.join(unique[:5]) }）"
-                                "：按 alias 查询会标 ambiguous")
+                detail = (f"alias `{alias}` 指向多条记录（{ '、'.join(unique[:5]) }）"
+                          "：按 alias 查询会标 ambiguous")
+                warnings.append(detail)
+                _item("alias_ambiguous", "alias", detail,
+                      "让 alias 只指向一条记录（查库确认后删掉多余的 alias）",
+                      len(unique), unique)
             elif alias in canonical_keys and alias not in unique:
-                warnings.append(f"alias `{alias}` 与另一条记录的 key 重名")
+                detail = f"alias `{alias}` 与另一条记录的 key 重名"
+                warnings.append(detail)
+                _item("alias_conflict", "alias", detail,
+                      "改掉与 canonical key 重名的 alias（否则按 alias 查询有歧义）",
+                      1, [alias])
         pairs, pair_total = self._near_duplicates(records)
         if pair_total:
             sample = "；".join(f"{first}≈{second}" for first, second in pairs[:5])
-            warnings.append(f"同一作品的多条记录（不同 key）{pair_total} 对：{sample}"
-                            + ("……" if pair_total > 5 else "")
-                            + "（经典文献在多期被重复引用是常态；查询会按题名/DOI 命中，"
-                              "需要合并时另开批次做冲突裁决，不算错误）")
+            detail = (f"同一作品的多条记录（不同 key）{pair_total} 对：{sample}"
+                      + ("……" if pair_total > 5 else "")
+                      + "（经典文献在多期被重复引用是常态；查询会按题名/DOI 命中，"
+                        "需要合并时另开批次做冲突裁决，不算错误）")
+            warnings.append(detail)
+            _item("near_duplicates", "near_duplicates", detail,
+                  "经典文献跨期重复引用是常态；如需合并走 P6 另卡（本页只报告、不合并）",
+                  pair_total, [f"{first}≈{second}" for first, second in pairs[:5]])
         if conflicts_records:
-            warnings.append(f"字段冲突待裁决：{conflicts_records} 条记录 / {conflicts_total} 处差异"
-                            f"（例：{'、'.join(conflict_rows[:5])}）")
+            # B-143：待裁决口径 = pending（与 conflicts --json 的 totals 同源）；
+            # 历史已裁决只作审计留痕写在文本里，不再算「待办」。
+            if conflicts_pending_total:
+                detail = (f"字段冲突待裁决：{conflicts_pending_records} 条记录 / "
+                          f"{conflicts_pending_total} 处差异"
+                          f"（历史已裁决 {conflicts_resolved_records} 条记录 / "
+                          f"{conflicts_resolved_total} 处差异"
+                          + (f"；例：{'、'.join(conflict_pending_rows[:5])}"
+                             if conflict_pending_rows else "") + "）")
+                action = "到「待裁决」页逐条裁决（保留旧值 / 采用新值 / 待人工）"
+            else:
+                detail = (f"字段冲突：待裁决 0 条 / 历史已裁决 "
+                          f"{conflicts_resolved_records} 条记录"
+                          f"（{conflicts_resolved_total} 处差异，审计留痕，无需处理）")
+                action = ("无需处理（历史已裁决留痕；可在「待裁决」页打开"
+                          "「显示已裁决」查看）")
+            warnings.append(detail)
+            conflict_item = _item("conflict_pending", "conflicts", detail, action,
+                                  conflicts_pending_total, conflict_pending_rows)
+            conflict_item.update({
+                "pending_records": conflicts_pending_records,
+                "pending_total": conflicts_pending_total,
+                "resolved_records": conflicts_resolved_records,
+                "resolved_total": conflicts_resolved_total,
+                "all_records": conflicts_records,
+                "all_total": conflicts_total,
+            })
         if unverified:
-            warnings.append(f"未核实条目 {unverified} 条（查询结果会标 verified=false）")
+            detail = f"未核实条目 {unverified} 条（查询结果会标 verified=false）"
+            warnings.append(detail)
+            _item("unverified", "unverified", detail,
+                  "按入库口径核实后重新入库（AI 结果不直接入库）", unverified)
         if missing_title:
-            warnings.append(f"缺 title 的条目 {missing_title} 条")
+            detail = f"缺 title 的条目 {missing_title} 条"
+            warnings.append(detail)
+            _item("missing_title", "missing_field", detail,
+                  "回原稿/来源 bib 核对后补齐 title", missing_title, missing_title_keys)
         if missing_author:
-            warnings.append(f"缺 author/editor 的条目 {missing_author} 条")
+            detail = f"缺 author/editor 的条目 {missing_author} 条"
+            warnings.append(detail)
+            _item("missing_author", "missing_field", detail,
+                  "回原稿/来源 bib 核对后补齐 author（或 editor）",
+                  missing_author, missing_author_keys)
         if missing_year:
-            warnings.append(f"缺可用年份的条目 {missing_year} 条")
+            detail = f"缺可用年份的条目 {missing_year} 条"
+            warnings.append(detail)
+            _item("missing_year", "missing_field", detail,
+                  "回原稿/来源 bib 核对后补齐 year（或 date）",
+                  missing_year, missing_year_keys)
         if bad_doi:
-            warnings.append(f"doi 字段归一后为空（疑似脏值）{bad_doi} 条")
+            detail = f"doi 字段归一后为空（疑似脏值）{bad_doi} 条"
+            warnings.append(detail)
+            _item("bad_doi", "other", detail,
+                  "核对 DOI 是否写错/多了前缀；查库确认后修正字段", bad_doi, bad_doi_keys)
         for etype, count in unknown_types.most_common(10):
-            warnings.append(f"不常见的 entry_type `{etype}`：{count} 条（可能是笔误，"
-                            "见 bibcheck 的类型表）")
+            detail = (f"不常见的 entry_type `{etype}`：{count} 条（可能是笔误，"
+                      "见 bibcheck 的类型表）")
+            warnings.append(detail)
+            _item("unknown_entry_type", "unknown_entry_type", detail,
+                  "按 bibcheck 的类型表改正 entry_type（多为笔误）",
+                  count, unknown_type_keys.get(etype, []))
         counts = {
             "records": len(self._by_key),
             "raw_lines": len(records),
@@ -2563,11 +2676,17 @@ class Store:
             "unverified": unverified,
             "errors": len(errors),
             "warnings": len(warnings),
+            # 老键：**全量**冲突（向后兼容，语义不变）；待裁决/已裁决看下面两个新键
             "conflicts": {"records": conflicts_records, "total": conflicts_total},
+            "conflicts_pending": {"records": conflicts_pending_records,
+                                  "total": conflicts_pending_total},
+            "conflicts_resolved": {"records": conflicts_resolved_records,
+                                   "total": conflicts_resolved_total},
             "near_duplicates": pair_total,
         }
         return {"ok": not errors, "errors": errors[:200],
-                "warnings": warnings[:100], "counts": counts}
+                "warnings": warnings[:100], "warning_items": warning_items[:100],
+                "counts": counts}
 
 
 # ── 稿件仓只读扫描（种子导入 / import-dir 共用） ────────────────────────────

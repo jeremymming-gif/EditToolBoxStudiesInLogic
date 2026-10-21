@@ -76,6 +76,10 @@ run_one infocheck Core/Support.swift Core/Log.swift Core/ViewModels.swift \
 run_one cutover Core/Support.swift Core/Log.swift Core/ViewModels.swift \
   Features/InfoCheckFeature.swift Features/DeleteTempFeature.swift Features/CompileFeature.swift \
   Features/MergeFeature.swift "$PROJ"/tools/cutover_test/main.swift
+# 第 7 台（B-143，批76）：引用库 GUI 纯逻辑（待裁决默认过滤/计数/空态 + warning 明细分类/
+# 跳转标识 + lint JSON 兼容解析）。只编译 Foundation 的 Support/Log/BibDbFeature，headless。
+run_one bibdb_ux Core/Support.swift Core/Log.swift Features/BibDbFeature.swift \
+  "$PROJ"/tools/bibdb_ux_test/main.swift
 
 echo
 if [ "$FAILED" -eq 0 ]; then

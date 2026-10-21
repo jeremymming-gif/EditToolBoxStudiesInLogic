@@ -1315,8 +1315,14 @@ def cmd_lint(args) -> int:
     for warning in result["warnings"]:
         print(f"! {warning}")
     counts = result["counts"]
+    pending_conflicts = counts.get("conflicts_pending") or {}
+    resolved_conflicts = counts.get("conflicts_resolved") or {}
     print(f"条目 {counts['records']}（已核实 {counts['verified']} / "
-          f"未核实 {counts['unverified']}）；冲突 {counts['conflicts']['records']} 条；"
+          f"未核实 {counts['unverified']}）；"
+          f"字段冲突：待裁决 {pending_conflicts.get('records', 0)} 条记录 / "
+          f"{pending_conflicts.get('total', 0)} 处差异"
+          f"（历史已裁决 {resolved_conflicts.get('records', 0)} 条记录 / "
+          f"{resolved_conflicts.get('total', 0)} 处差异）；"
           f"同一作品多条记录 {counts['near_duplicates']} 对")
     print(f"error {counts['errors']} 项，warning {counts['warnings']} 项"
           + ("——库可用。" if result["ok"] else "——**库有 error，先修**。"))
