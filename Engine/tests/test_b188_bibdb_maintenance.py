@@ -430,7 +430,9 @@ mixed = mk_record("1-6", "misc", {
               r"船山信一（編著） and \emph{明治論理学史研究} and 1966年 and 東京：理想社 and 第242--268页。",
     "userf": "jp"})
 badtype = mk_record("badtype1", "rticle", {"author": "X", "title": "T", "year": "2020"})
-db = fresh_db("suggest", [mixed, badtype, ARTICLE])
+doi_key = mk_record("10.2307/2274828", "article", {"author": "Gettier, Edmund",
+                                                   "year": "1963"})
+db = fresh_db("suggest", [mixed, badtype, doi_key, ARTICLE])
 before = sha(db)
 r = run_cli("suggest-field-fixes", "--db", db, "--registry", "missing_field", "--json")
 d = parse_json(r)
@@ -450,6 +452,11 @@ d2 = parse_json(r)
 row2 = next((item for item in d2.get("rows") or [] if item["key"] == "badtype1"), {})
 check("(f) 异常 entry_type → 建议已知类型（rticle→article）",
       any(c.get("value") == "article" for c in row2.get("candidates") or []), row2)
+row3 = next((item for item in d2.get("rows") or []
+             if item["key"] == "10.2307/2274828"), {})
+check("(f) C 类 key 异常（DOI 当 key）→ unknown_entry_type registry 也列出 + 建议规范 key",
+      bool(row3) and row3.get("key_candidate") == "Gettier1963"
+      and "DOI" in (row3.get("key_reason") or ""), row3.get("key_candidate"))
 r = run_cli("suggest-field-fixes", "--db", db, "--registry", "nope", "--json")
 check("(f) 未知 registry → 退 2", r.returncode == 2)
 check("(f) suggest 全程零写入", sha(db) == before)

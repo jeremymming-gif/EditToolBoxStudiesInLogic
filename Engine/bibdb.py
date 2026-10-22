@@ -5857,6 +5857,20 @@ def _segment_candidates(record: dict) -> dict:
     return out
 
 
+_PLACEHOLDER_KEY_RE = re.compile(r"^(?:key|k|ref|entry|bib|item)\d*$", re.I)
+_DOI_KEY_RE = re.compile(r"^(?:10\.\d|https?://|doi:)", re.I)
+
+
+def _key_anomaly(key: str) -> str:
+    """key 是否明显异常（C 类：DOI/网址当 key、`key2` 之类占位符）→ 原因（空=正常）。"""
+    text = str(key or "").strip()
+    if _DOI_KEY_RE.match(text):
+        return "doi"
+    if _PLACEHOLDER_KEY_RE.match(text):
+        return "placeholder"
+    return ""
+
+
 def collect_field_fix_rows(store, registry: str) -> list[dict]:
     """`suggest-field-fixes` 的只读行：候选字段 + 证据 + 风险等级（不写库）。"""
     rows: list[dict] = []
@@ -5868,18 +5882,38 @@ def collect_field_fix_rows(store, registry: str) -> list[dict]:
         issues = _record_issues(record)
         sources = _record_sources(record)
         if registry == "unknown_entry_type":
-            if etype in bibdb.KNOWN_ENTRY_TYPES:
+            # 本 registry = 设计卡 C 类「键/类型异常」：entry_type 不在已知表，**或**
+            # key 明显是 DOI / 占位符（`10.2307/…`、`key2`）——两类都要「先修类型/key」。
+            etype_bad = etype not in bibdb.KNOWN_ENTRY_TYPES
+            key_bad = _key_anomaly(key)
+            if not etype_bad and not key_bad:
                 continue
             close = difflib.get_close_matches(etype, known, n=3, cutoff=0.6)
             candidates = [{"value": candidate, "source": "entry_type",
                            "evidence": f"`{etype}` 与已知类型 `{candidate}` 拼写相近",
                            "risk": "low" if candidate == close[0] and etype[:1] == candidate[:1]
-                           else "medium"} for candidate in close]
+                           else "medium"} for candidate in close] if etype_bad else []
             key_suggestion = ""
-            if re.match(r"^(?:10\.\d|https?://)", key):
-                key_suggestion = "（key 像 DOI/网址：建议改成「作者姓+年份」，旧 key 用 --new-key 自动进 aliases）"
+            key_candidate = ""
+            key_reason = ""
+            if key_bad:
+                key_reason = "key 是 DOI/网址形态（应改成「作者姓+年份」规范 key）" \
+                    if re.match(r"^(?:10\.\d|https?://|doi:)", key) \
+                    else "key 是占位符形态（`key2`/`key` 之类，应改成「作者姓+年份」）"
+                surname = bibdb.first_author_surname(
+                    str(fields.get("author") or fields.get("editor") or ""))
+                year = str(bibdb.entry_year(fields) or "")
+                if surname and year:
+                    stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]", "", surname)
+                    # 库内 key 惯例 = 首字母大写的姓 + 年份（`Tindale2015`）
+                    key_candidate = (stem[:1].upper() + stem[1:] if stem else "") + year
+                key_suggestion = (key_reason + f"；建议 `{key_candidate}`"
+                                  if key_candidate else key_reason
+                                  + "；旧 key 用 --new-key 自动进 aliases")
             rows.append({"key": key, "entry_type": etype,
                          "missing": [], "candidates": candidates,
+                         "key_candidate": key_candidate,
+                         "key_reason": key_reason,
                          "key_suggestion": key_suggestion,
                          "issues": issues,
                          "sources": [{"issue": s.get("issue"), "slug": s.get("slug"),
