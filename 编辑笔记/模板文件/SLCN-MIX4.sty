@@ -20,6 +20,7 @@
 \usepackage{ctex}
 \usepackage{amsmath,amssymb,amsfonts,amsthm,fancyhdr}                     % 使用AMS数学公式符号字体定理,页眉,扩展的color
 \usepackage{url}                                                          % 使用外部超链接
+\usepackage{xstring}                                                     % B-189：模板兜底判据（SEP 词条例外）
 \usepackage{ifthen}                                                       % 使用条件命令
 \usepackage{times}                                                        % 使用Times New Roman字体
 \usepackage{ifpdf}                                                        % 用于绘图工具TpX
@@ -987,6 +988,7 @@
 	\printfield{title}%
 	\newunit%
 	\printfield{note}%
+	\iffieldundef{url}{}{\newunit\printfield{url}}%
 	\finentry%
 }%
 
@@ -1007,11 +1009,49 @@
 % 	\finentry%
 % }
 
+
+%% B-189（2026-10-22 用户拍板）：正式发表条目的参考文献**不印 DOI、不印网址**；
+%% 未出版 / 在线资源（online、unpublished、arXiv 预印本、SEP 词条等）保留并打印网址。
+%% 这里是模板兜底（作者拿本刊模板自行编译也成立）；产物 bib 由引擎 `slcn/bibnorm.py`
+%% 先行清洗（`Engine/docs/RULES.md` §四.10 是权威口径）。
+%% SEP 词条例外：booktitle / journal 含 "Encyclopedia of Philosophy" 时不删网址。
+\AtEveryBibitem{%
+	\ifboolexpr{
+		test {\ifentrytype{article}} or test {\ifentrytype{book}} or
+		test {\ifentrytype{incollection}} or test {\ifentrytype{inproceedings}} or
+		test {\ifentrytype{inbook}} or test {\ifentrytype{proceedings}} or
+		test {\ifentrytype{collection}} or test {\ifentrytype{manual}} or
+		test {\ifentrytype{periodical}} or test {\ifentrytype{thesis}} or
+		test {\ifentrytype{phdthesis}} or test {\ifentrytype{mastersthesis}} or
+		test {\ifentrytype{report}} or test {\ifentrytype{techreport}} or
+		test {\ifentrytype{booklet}} or test {\ifentrytype{conference}}
+	}{%
+		\IfSubStr{\thefield{booktitle}}{Encyclopedia of Philosophy}{}{%
+			\IfSubStr{\thefield{journaltitle}}{Encyclopedia of Philosophy}{}{%
+				\clearfield{url}\clearfield{doi}%
+			}%
+		}%
+	}{}%
+}%
+
+%% B-189：在线资源（@online）保留并打印网址（此前落到 caspervector 默认驱动，网址不印）
+\DeclareBibliographyDriver{online}{%
+	\printnames{author}%
+	\newunit%
+	\printfield{year}%
+	\newunit%
+	\printfield{title}%
+	\iffieldundef{url}{}{\newunit\printfield{url}}%
+	\finentry%
+}%
+
 % 一些语法记录：
 % \iffieldequalstr{year}{a}{b}{c}如果year=a，则进行b，否则进行c
 % \iffieldundef{a}{b}{c}如果a被定义则执行c，否则执行b
 
 % 用于处理特殊内容，全部手打 userf不填，注意页码用--
+%% B-189：misc（SEP/预印本常用）保留并打印网址；不再只有作者一行
 \DeclareBibliographyDriver{misc}{%
 	\printnames{author}%
+	\iffieldundef{url}{}{\newunit\printfield{url}}%
 }%

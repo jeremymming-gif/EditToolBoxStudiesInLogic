@@ -1198,6 +1198,15 @@ class Store:
         规则：只有**全库唯一指向一条记录**的 key 才记成别名。paper-local key（两篇都用
         `a1` 指不同文献）**绝不能**当别名 —— 否则将来「先查库按 key 命中就跳过核实」会
         假命中另一篇文献的引用，这是比漏查更糟的错误。撞车的 key 不记；查询请走 DOI/题名。
+
+        **B-188 增补（2026-10-22）：记录里已有的 aliases 必须保留（并集）**。
+        为什么不能只按来源重算：`edit --new-key` / `merge-records` 会把**旧 key** 写进
+        `aliases`（设计卡 §1.4「旧 key 自动进 aliases」），它没有对应来源，纯重算就会把
+        改名的追溯链**静默清掉**。实测真实库一旦调用 `save()`，按旧口径会丢掉 79 条记录
+        的 254 个别名（如 `13-9` 的 `12-9`）——所以改成两遍分配：
+          ① 先分来源派生的别名（真值，优先占位；同一别名只给唯一持有者）；
+          ② 再并入记录已有的别名（`edit`/`merge` 写入的历史 key），全局撞车的不记
+             （同一别名只允许一条记录持有；与别的 canonical key 同名的不记）。
         """
         owners: dict[str, set[str]] = {}
         for record in self._by_key.values():
@@ -1211,12 +1220,27 @@ class Store:
                 source_key = source.get("key")
                 if isinstance(source_key, str) and source_key:
                     owners.setdefault(source_key, set()).add(key)
+        # ① 来源派生别名（按 key 排序，保证确定性）
+        claimed: set[str] = set()
+        derived: dict[str, set[str]] = {}
+        for key in sorted(self._by_key):
+            got = {alias for alias, group in owners.items()
+                   if len(group) == 1 and key in group and alias != key}
+            derived[key] = got
+            claimed |= got
+        # ② 并集：保留记录原有 aliases（改名/合并写进去的历史 key）
         changed = False
-        for key, record in self._by_key.items():
-            aliases = sorted(
-                alias for alias, group in owners.items()
-                if len(group) == 1 and key in group and alias != key
-            )
+        for key in sorted(self._by_key):
+            record = self._by_key[key]
+            existing = {alias for alias in (record.get("aliases") or [])
+                        if isinstance(alias, str) and alias and alias != key}
+            kept = set(derived[key])
+            for alias in sorted(existing):
+                if alias in claimed or alias in self._by_key:
+                    continue
+                kept.add(alias)
+                claimed.add(alias)
+            aliases = sorted(kept)
             if record.get("aliases") != aliases:
                 record["aliases"] = aliases
                 changed = True
@@ -1325,6 +1349,22 @@ class Store:
             entry["recorded_by"] = "force"
         conflicts.append(entry)
         return True
+
+    # -- 删除记录（B-188 merge-records 用）----------------------------------
+
+    def remove_record(self, key: str) -> dict:
+        """删掉一条记录（按 canonical key），重建索引并标 dirty。
+
+        只给 `merge-records` 用（合并后删去被并入的记录）；**不做** alias 重指
+        （旧 key 由调用方先并进幸存记录的 aliases）。不在这里落盘。
+        """
+        record = self._by_key.get(key)
+        if record is None:
+            raise BibDBError(f"库里没有 key `{key}`")
+        self._records = [item for item in self._records if item is not record]
+        self.dirty = True
+        self._reindex()
+        return record
 
     # -- 冲突裁决（第 130 条，2026-10-18）-----------------------------------
 
@@ -2466,10 +2506,15 @@ class Store:
         pairs.sort()
         return pairs[:cap], len(pairs)
 
-    def lint(self) -> dict:
+    def lint(self, *, with_records: bool = False) -> dict:
         """库体检：重复 key / 字段冲突 / 缺来源 / verified 无核实记录 / 摘要不符 …
         返回 `{"ok": bool, "errors": [...], "warnings": [...], "warning_items": [...],
         "counts": {...}}`。
+
+        `with_records=True`（B-188，CLI 的 `lint --with-records`）时给每个
+        `warning_items[]` 额外加 `records`（受影响的 key 列表，最多 100 条；条目类
+        warning 的 `records` 是记录 key，重复/近重复是 `A≈B`，alias 类是 alias 本身）。
+        **不加 flag 时输出与旧版逐字节相同**（`records` 键根本不出现）。
 
         **errors 必须为 0** 才能当「库是好的」；warnings 是给人看的待办。
 
@@ -2499,16 +2544,21 @@ class Store:
         missing_author_keys: list[str] = []
         missing_year_keys: list[str] = []
         bad_doi_keys: list[str] = []
+        unverified_keys: list[str] = []
+        conflict_pending_keys: list[str] = []
         unknown_types: Counter[str] = Counter()
         unknown_type_keys: dict[str, list[str]] = {}
         conflict_pending_rows: list[str] = []
 
         def _item(code: str, registry: str, detail: str, action: str, count: int,
-                  keys_sample: "list[str] | None" = None) -> dict:
+                  keys_sample: "list[str] | None" = None,
+                  records: "list[str] | None" = None) -> dict:
             """warnings 里同一句人读文本的结构化镜像（registry 分类固定给 GUI 下钻）。"""
             item = {"code": code, "registry": registry, "detail": detail,
                     "action": action, "count": count,
                     "keys_sample": list(keys_sample or [])[:5]}
+            if with_records and records is not None:
+                item["records"] = list(records)
             warning_items.append(item)
             return item
         for record in records:
@@ -2544,6 +2594,7 @@ class Store:
                 if pending_here:
                     conflicts_pending_records += 1
                     conflicts_pending_total += len(pending_here)
+                    conflict_pending_keys.append(key)
                     if len(conflict_pending_rows) < 5:
                         conflict_pending_rows.append(f"{key}（{len(pending_here)} 条）")
                 if resolved_here:
@@ -2551,23 +2602,20 @@ class Store:
                     conflicts_resolved_total += resolved_here
             if record.get("verified") is not True:
                 unverified += 1
+                unverified_keys.append(key)
             if not fields.get("title"):
                 missing_title += 1
-                if len(missing_title_keys) < 5:
-                    missing_title_keys.append(key)
+                missing_title_keys.append(key)
             if not (fields.get("author") or fields.get("editor")):
                 missing_author += 1
-                if len(missing_author_keys) < 5:
-                    missing_author_keys.append(key)
+                missing_author_keys.append(key)
             if not entry_year(fields):
                 missing_year += 1
-                if len(missing_year_keys) < 5:
-                    missing_year_keys.append(key)
+                missing_year_keys.append(key)
             doi = fields.get("doi") or ""
             if doi and not normalize_doi(doi):
                 bad_doi += 1
-                if len(bad_doi_keys) < 5:
-                    bad_doi_keys.append(key)
+                bad_doi_keys.append(key)
             etype = str(record.get("entry_type") or "").lower()
             if etype not in KNOWN_ENTRY_TYPES:
                 unknown_types[etype] += 1
@@ -2579,7 +2627,7 @@ class Store:
                 warnings.append(detail)
                 _item("duplicate_content", "duplicates", detail,
                       "查库确认哪一条为准；重复记录合并属 P6 另卡，本页只报告、不自动合并",
-                      len(owners), owners)
+                      len(owners), owners, owners)
         # alias 撞车：alias 指向多条记录，或 alias 与别的记录的 canonical key 相同
         for alias, owners in sorted(alias_owner.items()):
             unique = sorted(set(owners))
@@ -2589,14 +2637,15 @@ class Store:
                 warnings.append(detail)
                 _item("alias_ambiguous", "alias", detail,
                       "让 alias 只指向一条记录（查库确认后删掉多余的 alias）",
-                      len(unique), unique)
+                      len(unique), unique, unique)
             elif alias in canonical_keys and alias not in unique:
                 detail = f"alias `{alias}` 与另一条记录的 key 重名"
                 warnings.append(detail)
                 _item("alias_conflict", "alias", detail,
                       "改掉与 canonical key 重名的 alias（否则按 alias 查询有歧义）",
-                      1, [alias])
-        pairs, pair_total = self._near_duplicates(records)
+                      1, [alias], sorted(set(unique) | {alias}))
+        pairs, pair_total = self._near_duplicates(
+            records, cap=1000000 if with_records else 10)
         if pair_total:
             sample = "；".join(f"{first}≈{second}" for first, second in pairs[:5])
             detail = (f"同一作品的多条记录（不同 key）{pair_total} 对：{sample}"
@@ -2606,7 +2655,8 @@ class Store:
             warnings.append(detail)
             _item("near_duplicates", "near_duplicates", detail,
                   "经典文献跨期重复引用是常态；如需合并走 P6 另卡（本页只报告、不合并）",
-                  pair_total, [f"{first}≈{second}" for first, second in pairs[:5]])
+                  pair_total, [f"{first}≈{second}" for first, second in pairs[:5]],
+                  [f"{first}≈{second}" for first, second in pairs])
         if conflicts_records:
             # B-143：待裁决口径 = pending（与 conflicts --json 的 totals 同源）；
             # 历史已裁决只作审计留痕写在文本里，不再算「待办」。
@@ -2626,7 +2676,8 @@ class Store:
                           "「显示已裁决」查看）")
             warnings.append(detail)
             conflict_item = _item("conflict_pending", "conflicts", detail, action,
-                                  conflicts_pending_total, conflict_pending_rows)
+                                  conflicts_pending_total, conflict_pending_rows,
+                                  conflict_pending_keys)
             conflict_item.update({
                 "pending_records": conflicts_pending_records,
                 "pending_total": conflicts_pending_total,
@@ -2639,36 +2690,39 @@ class Store:
             detail = f"未核实条目 {unverified} 条（查询结果会标 verified=false）"
             warnings.append(detail)
             _item("unverified", "unverified", detail,
-                  "按入库口径核实后重新入库（AI 结果不直接入库）", unverified)
+                  "按入库口径核实后重新入库（AI 结果不直接入库）", unverified,
+                  unverified_keys[:5], unverified_keys)
         if missing_title:
             detail = f"缺 title 的条目 {missing_title} 条"
             warnings.append(detail)
             _item("missing_title", "missing_field", detail,
-                  "回原稿/来源 bib 核对后补齐 title", missing_title, missing_title_keys)
+                  "回原稿/来源 bib 核对后补齐 title", missing_title, missing_title_keys,
+                  missing_title_keys)
         if missing_author:
             detail = f"缺 author/editor 的条目 {missing_author} 条"
             warnings.append(detail)
             _item("missing_author", "missing_field", detail,
                   "回原稿/来源 bib 核对后补齐 author（或 editor）",
-                  missing_author, missing_author_keys)
+                  missing_author, missing_author_keys, missing_author_keys)
         if missing_year:
             detail = f"缺可用年份的条目 {missing_year} 条"
             warnings.append(detail)
             _item("missing_year", "missing_field", detail,
                   "回原稿/来源 bib 核对后补齐 year（或 date）",
-                  missing_year, missing_year_keys)
+                  missing_year, missing_year_keys, missing_year_keys)
         if bad_doi:
             detail = f"doi 字段归一后为空（疑似脏值）{bad_doi} 条"
             warnings.append(detail)
             _item("bad_doi", "other", detail,
-                  "核对 DOI 是否写错/多了前缀；查库确认后修正字段", bad_doi, bad_doi_keys)
+                  "核对 DOI 是否写错/多了前缀；查库确认后修正字段", bad_doi, bad_doi_keys,
+                  bad_doi_keys)
         for etype, count in unknown_types.most_common(10):
             detail = (f"不常见的 entry_type `{etype}`：{count} 条（可能是笔误，"
                       "见 bibcheck 的类型表）")
             warnings.append(detail)
             _item("unknown_entry_type", "unknown_entry_type", detail,
                   "按 bibcheck 的类型表改正 entry_type（多为笔误）",
-                  count, unknown_type_keys.get(etype, []))
+                  count, unknown_type_keys.get(etype, []), unknown_type_keys.get(etype, []))
         counts = {
             "records": len(self._by_key),
             "raw_lines": len(records),

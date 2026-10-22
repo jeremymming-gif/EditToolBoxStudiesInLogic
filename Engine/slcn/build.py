@@ -1301,7 +1301,8 @@ def build_latex(
         from .bibnorm import normalize_bib
 
         bib_text = open(bib_path, encoding="utf-8", errors="replace").read()
-        bib_text, notes = normalize_bib(bib_text)
+        # B-189：正式发表条目不写/不印 url+doi，未出版/在线资源保留（RULES §四.10）
+        bib_text, notes = normalize_bib(bib_text, strip_urls=True)
         bib_out = os.path.join(out_dir, "reference.bib")
         _atomic_write(bib_out, bib_text, newline="\n", log=say)
         say(f"   {P.rel(bib_out)}（{len(notes)} 处规范化）")
@@ -2403,12 +2404,20 @@ def build_docx(
         # 为什么在 Word 通道单独补这一步：`normalize_bib()`（里面也做同一件事）只跑在
         # LaTeX 通道；Word 通道的 bib 是这里直接渲染的，不补就会「同一部书、换个通道就不搬」。
         # ⚠️ 用的是**窄版本** `move_book_editions()`：只改命中的那一条，其余逐字节不动。
-        from .bibnorm import move_book_editions
+        from .bibnorm import move_book_editions, strip_published_urls
 
         bib_text, ed_notes = move_book_editions("\n".join(parts))
         if ed_notes:
             say(f"   英文书版次并入 title：{len(ed_notes)} 条")
             for n in ed_notes:
+                say(f"   · {n}")
+        # B-189：Word 通道同样执行「正式发表条目不写 url+doi」渲染规范（RULES §四.10）。
+        # 为什么在这里补：Word 通道的 bib 是上面直接渲染的，不走 `normalize_bib()`；
+        # 不补就会「同一篇稿换通道 DOI 就印出来」（实测 LingXin_Cai 86-08 的 1 处）。
+        bib_text, url_notes = strip_published_urls(bib_text)
+        if url_notes:
+            say(f"   正式发表条目网址/DOI 清洗：{len(url_notes)} 处")
+            for n in url_notes:
                 say(f"   · {n}")
         _atomic_write(bib_out, bib_text, newline="\n", log=say)
         say(f"   {P.rel(bib_out)}（脚注/编号清单 {len(doc.bib_entries)} 条"

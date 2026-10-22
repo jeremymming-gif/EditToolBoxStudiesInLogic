@@ -76,6 +76,24 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             重复候选合并 + key 规范化：默认 dry-run（出计划，
                                             **不写库**）；--apply 才写库（须先 --backup；
                                             人工簇暂不合并；旧 key 全量进 aliases）
+    edit        --key K (--bib PATH | --json-fields JSON) [--new-key NEW]
+                [--entry-type T] [--dry-run | --apply --backup DIR]
+                [--expect-db-sha256 SHA] [--note TEXT] [--json]
+                                            B-188 通用条目编辑：默认 dry-run（逐字段 old→new、
+                                            库 sha 前后、必填缺字段影响）；--apply 才写（sha 闸 +
+                                            自动备份 + 原子写 + 重新读库复核）。--new-key 改 key
+                                            （默认不改；旧 key 自动进记录 aliases）；有待裁决
+                                            冲突的记录拒绝编辑；写库痕迹进记录 edits[]
+    merge-records --keys A,B[,...] --new-key K [--entry-type T]
+                [--field-source FIELD=KEY ...] [--dry-run | --apply --backup DIR]
+                [--expect-db-sha256 SHA] [--note TEXT] [--json]
+                                            B-188 合并 2+ 条重复记录为 1 条：新规范 key、
+                                            旧 key 全进 aliases、来源合并、记录数 -N+1；
+                                            近重复用 --field-source 逐字段选源；默认 dry-run
+    suggest-field-fixes [--registry missing_field|unknown_entry_type] [--limit N] [--json]
+                                            B-188 只读：缺 title/year 的字段归位候选
+                                            （A 类 265 条口径）+ 异常 entry_type 建议；
+                                            不写库、不调 AI（GUI「字段归位预览」同源）
     normalize-editors [--dry-run | --apply --backup PATH]
                 [--report PATH | --out-dir DIR] [--csv-out PATH]
                 [--json-out PATH] [--json]
@@ -153,7 +171,9 @@ fixture `Engine/tests/test_bibdb_rehash.py` 里的期望 sha —— 否则真实
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
+import difflib
 import hashlib
 import json
 import os
@@ -1304,7 +1324,7 @@ def cmd_lint(args) -> int:
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
-    result = store.lint()
+    result = store.lint(with_records=bool(getattr(args, "with_records", False)))
     payload = {"db": path, **result}
     if args.json:
         _print_json(payload)
@@ -5219,6 +5239,705 @@ def cmd_merge_duplicates(args) -> int:
     return 0
 
 
+# ── B-188：引用库维护闭环的写库命令（GUI 唯一写入口）────────────────────────
+#
+# 设计卡：`EditToolBox-notes/drafts/specs/b188-bibdb-maintenance-loop.md` §3。
+# 三条命令，都是「dry-run 预览 → 用户确认 → sha 闸 → 自动备份 → 原子写 → 复核」：
+#   · edit             编辑一条记录（表单/原始 bib；可改 key，旧 key 自动进 aliases）
+#   · merge-records    合并 2+ 条重复记录（新规范 key；旧 key 全部进 aliases；逐字段选源）
+#   · suggest-field-fixes  只读：缺字段的归位候选（A 类）+ 异常 entry_type/key 的修法建议
+# 写库痕迹：记录里追加 `edits[]`（动作/时间/备份 sha/字段级 old→new），不另开 sidecar。
+
+def _clone_store(store):
+    """深拷贝一个 Store（dry-run 预演候选写入用；不碰库文件）。"""
+    return copy.deepcopy(store)
+
+
+def _store_text(store) -> str:
+    """按 `Store.save()` 的同一序列化口径渲染整库文本（不写盘）。"""
+    store.refresh_aliases()
+    return "".join(bibdb._record_line(store._by_key[key]) + "\n"
+                   for key in sorted(store._by_key))
+
+
+def _store_sha(store) -> str:
+    return hashlib.sha256(_store_text(store).encode("utf-8")).hexdigest()
+
+
+def _entry_type_or_error(value: object, *, label: str = "entry_type") -> str:
+    etype = str(value or "").strip().lower()
+    if not etype:
+        raise bibdb.BibDBError(f"{label} 不能为空")
+    if etype not in bibdb.KNOWN_ENTRY_TYPES:
+        raise bibdb.BibDBError(
+            f"未知的 {label} `{etype}`：必须在 bibcheck 已知类型表里"
+            f"（{', '.join(sorted(bibdb.KNOWN_ENTRY_TYPES)[:12])} …）")
+    return etype
+
+
+_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+def _canonical_edit_fields(etype: str, raw_fields: object) -> dict[str, str]:
+    """编辑输入字段 → 库内规范字段（复用 `bibdb.canonical_fields()`，唯一实现）。"""
+    if not isinstance(raw_fields, dict):
+        raise bibdb.BibDBError("fields 必须是 JSON 对象（字段名 → 值）")
+    for name, value in raw_fields.items():
+        if not isinstance(value, str):
+            raise bibdb.BibDBError(f"字段 `{name}` 的值必须是字符串（收到 {type(value).__name__}）")
+        low = str(name).strip().lower()
+        if not _FIELD_NAME_RE.match(low):
+            raise bibdb.BibDBError(
+                f"字段名 `{name}` 不合法：只允许小写字母开头的字母/数字/下划线/连字符")
+    fields = bibdb.canonical_fields(dict(raw_fields))
+    if not fields:
+        raise bibdb.BibDBError("编辑后字段为空：拒绝写入一条没有字段的记录")
+    return fields
+
+
+def _read_json_fields_arg(text: str) -> tuple[str, dict]:
+    """`--json-fields` 的三种形态：{entry_type, fields} / {fields} / 扁平字段表。"""
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise bibdb.BibDBError(f"--json-fields 不是合法 JSON：{exc}") from exc
+    if not isinstance(data, dict):
+        raise bibdb.BibDBError("--json-fields 必须是 JSON 对象")
+    if isinstance(data.get("fields"), dict):
+        return str(data.get("entry_type") or ""), data["fields"]
+    payload = {k: v for k, v in data.items() if k != "entry_type"}
+    return str(data.get("entry_type") or ""), payload
+
+
+def _read_edit_input(args) -> tuple[str, dict]:
+    """→ (entry_type 候选, 原始字段 dict)；--entry-type 覆盖输入里的类型。"""
+    if bool(args.bib) == bool(args.json_fields):
+        raise bibdb.BibDBError("--bib 与 --json-fields 必须且只能给一个")
+    if args.bib:
+        path = os.path.abspath(args.bib)
+        if not os.path.isfile(path):
+            raise bibdb.BibDBError(f"找不到 --bib 文件：{path}")
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError as exc:
+            raise bibdb.BibDBError(f"读不了 --bib 文件：{path}（{exc}）") from exc
+        entries, findings = bibparse.parse_entries(text)
+        if any(f.level == bibparse.LEVEL_PROBLEM for f in findings):
+            detail = "；".join(f.detail for f in findings
+                              if f.level == bibparse.LEVEL_PROBLEM)[:300]
+            raise bibdb.BibDBError(f"--bib 有语法问题，拒绝编辑：{detail}")
+        if len(entries) != 1:
+            raise bibdb.BibDBError(
+                f"--bib 必须恰好 1 条 BibTeX（实际 {len(entries)} 条）：请只给要编辑的那一条")
+        entry = entries[0]
+        if str(entry.key or "").strip() != str(args.key).strip():
+            raise bibdb.BibDBError(
+                f"--bib 的 key `{entry.key}` 与 --key `{args.key}` 不一致："
+                "改 key 请用 --new-key（库内 key 是定位依据，不能靠 bib 文件换）")
+        return str(entry.etype or ""), dict(entry.fields)
+    etype, fields = _read_json_fields_arg(args.json_fields)
+    return etype, fields
+
+
+def _pending_conflict_labels(store, key: str) -> list[str]:
+    """该记录**待裁决**冲突的 C 编号（与 `conflicts`/CONFLICTS.md 同源）。"""
+    labels: list[str] = []
+    for item in collect_conflict_items(store):
+        if item.get("record_key") == key and item.get("pending"):
+            labels.append(f"C{int(item['stable_no']):03d}")
+    return labels
+
+
+def _key_collision(store, key: str, *, allow_record: str = "") -> str:
+    """key 能否当 canonical key 用：撞 canonical key / 任何 alias 都算撞车（返回说明）。"""
+    if not key:
+        return "key 不能为空"
+    if re.search(r"[\s,{}()\"]", key):
+        return f"key `{key}` 含空白/逗号/花括号/引号，不是合法 BibTeX key"
+    owners = store._by_key.get(key)
+    if owners is not None and str(owners.get("key") or "") != allow_record:
+        return f"key `{key}` 已被库内另一条记录占用"
+    alias_owners = store._by_alias.get(key) or []
+    for record in alias_owners:
+        if str(record.get("key") or "") != allow_record:
+            return f"key `{key}` 已是记录 `{record.get('key')}` 的别名（alias）"
+    return ""
+
+
+def _missing_required(etype: str, fields: dict) -> list[str]:
+    """该类型「必填」字段里缺哪些（lint 影响预览用；只用于展示，不是新口径）。"""
+    spec = bibdb.bibcheck.REQUIRED.get(etype) or {}
+    return [name for name in spec.get("must") or [] if not str(fields.get(name) or "").strip()]
+
+
+def _record_brief_payload(record: dict) -> dict:
+    title, author, year = _record_brief(record)
+    return {"key": str(record.get("key") or ""),
+            "entry_type": str(record.get("entry_type") or ""),
+            "title": title, "author": author, "year": year}
+
+
+def _append_edit_trace(record: dict, entry: dict) -> None:
+    """记录里追加一条写库痕迹（`edits[]`；不写 sidecar、不进 content_sha256）。"""
+    record.setdefault("edits", []).append(entry)
+
+
+def _apply_edit_plan(store, *, key: str, entry_type: str, fields: dict,
+                     new_key: str, note: str, before_sha: str,
+                     backup_path: str) -> dict:
+    """在内存里执行一次编辑（dry-run 用 clone，apply 用真 store）；返回变更摘要。"""
+    record = store._by_key.get(key)
+    if record is None:
+        raise bibdb.BibDBError(f"库里没有 key `{key}`")
+    old_etype = str(record.get("entry_type") or "")
+    old_fields = dict(record.get("fields") or {})
+    old_key = key
+    target_key = new_key or key
+    changed: dict[str, dict] = {}
+    for name in sorted(set(old_fields) | set(fields)):
+        old_value = str(old_fields.get(name) or "")
+        new_value = str(fields.get(name) or "")
+        if old_value != new_value:
+            changed[name] = {"old": old_value, "new": new_value}
+    aliases_added: list[str] = []
+    if target_key != old_key:
+        aliases = {alias for alias in (record.get("aliases") or []) if isinstance(alias, str)}
+        aliases.add(old_key)
+        aliases.discard(target_key)
+        record["aliases"] = sorted(aliases)
+        aliases_added = [old_key]
+        del store._by_key[old_key]
+        record["key"] = target_key
+        store._by_key[target_key] = record
+        store.dirty = True
+    record["entry_type"] = entry_type
+    record["fields"] = fields
+    record["content_sha256"] = bibdb.content_sha256(entry_type, fields)
+    record["updated_at"] = bibdb._now_iso()
+    record["version"] = int(record.get("version") or 1)
+    _append_edit_trace(record, {
+        "at": record["updated_at"], "action": "edit",
+        "note": note, "old_key": old_key, "new_key": target_key,
+        "entry_type_before": old_etype, "entry_type_after": entry_type,
+        "changed_fields": changed,
+        "backup_sha256": before_sha, "backup_path": backup_path,
+    })
+    store.dirty = True
+    return {"key": old_key, "new_key": target_key,
+            "entry_type_before": old_etype, "entry_type_after": entry_type,
+            "field_changes": changed, "aliases_added": aliases_added,
+            "missing_before": _missing_required(old_etype, old_fields),
+            "missing_after": _missing_required(entry_type, fields)}
+
+
+def _source_identity(src: dict) -> str:
+    return f"{src.get('kind')}|{src.get('issue')}|{src.get('slug')}|{src.get('file')}|{src.get('key')}"
+
+
+def _parse_field_sources(values, keys: list[str]) -> dict[str, str]:
+    """`--field-source field=A` 列表 → {field: 记录 key}；拒绝未知字段来源。"""
+    out: dict[str, str] = {}
+    for item in values or []:
+        text = str(item or "").strip()
+        if "=" not in text:
+            raise bibdb.BibDBError(f"--field-source 需要 `字段=记录key` 形态（收到 {text!r}）")
+        field, source = text.split("=", 1)
+        field, source = field.strip().lower(), source.strip()
+        if not _FIELD_NAME_RE.match(field):
+            raise bibdb.BibDBError(f"--field-source 的字段名不合法：{field!r}")
+        if source not in keys:
+            raise bibdb.BibDBError(
+                f"--field-source 的来源 `{source}` 不在 --keys 里（{'、'.join(keys)}）")
+        out[field] = source
+    return out
+
+
+def _merge_fields(records: list[dict], field_sources: dict[str, str]) -> dict[str, str]:
+    """逐字段选源：显式 `--field-source` 优先，否则按 --keys 顺序取第一条非空值。"""
+    by_key = {str(record.get("key")): record for record in records}
+    merged: dict[str, str] = {}
+    for record in records:
+        fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        for name, value in fields.items():
+            if not str(value or "").strip() or name in merged:
+                continue
+            merged[name] = str(value)
+    for field, source_key in field_sources.items():
+        source_fields = by_key[source_key].get("fields") or {}
+        value = str(source_fields.get(field) or "").strip()
+        if value:
+            merged[field] = value
+        else:
+            merged.pop(field, None)
+    return dict(sorted(merged.items()))
+
+
+def _apply_merge_plan(store, *, keys: list[str], new_key: str, entry_type: str,
+                      merged_fields: dict[str, str], field_sources: dict[str, str],
+                      note: str, before_sha: str, backup_path: str) -> dict:
+    """在内存里执行一次合并；返回变更摘要（dry-run 用 clone，apply 用真 store）。"""
+    records = [store._by_key[key] for key in keys]
+    survivor = records[0]
+    old_survivor_key = str(survivor.get("key") or "")
+    comparison: dict[str, dict] = {}
+    for name in sorted(set().union(*(set((r.get("fields") or {}).keys()) for r in records))):
+        row = {str(r.get("key")): str((r.get("fields") or {}).get(name) or "") for r in records}
+        row["chosen"] = field_sources.get(name, next(
+            (key for key in keys if row.get(key)), ""))
+        row["value"] = merged_fields.get(name, "")
+        comparison[name] = row
+    aliases = set()
+    for record in records:
+        aliases.add(str(record.get("key")))
+        aliases.update(alias for alias in (record.get("aliases") or [])
+                       if isinstance(alias, str))
+    aliases.discard(new_key)
+    # 来源合并（按来源身份去重，保留原顺序）
+    sources = list(survivor.get("sources") or [])
+    seen = {_source_identity(src) for src in sources if isinstance(src, dict)}
+    for record in records[1:]:
+        for source in record.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            identity = _source_identity(source)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            sources.append(source)
+    survivor["sources"] = sources
+    survivor["aliases"] = sorted(aliases)
+    survivor["entry_type"] = entry_type
+    survivor["fields"] = merged_fields
+    survivor["content_sha256"] = bibdb.content_sha256(entry_type, merged_fields)
+    survivor["updated_at"] = bibdb._now_iso()
+    survivor["version"] = int(survivor.get("version") or 1)
+    _append_edit_trace(survivor, {
+        "at": survivor["updated_at"], "action": "merge",
+        "note": note, "old_key": old_survivor_key, "new_key": new_key,
+        "merged_keys": [str(record.get("key")) for record in records],
+        "merged_entry_sha256": {str(record.get("key")): str(record.get("content_sha256") or "")
+                                for record in records},
+        "field_sources": dict(sorted(field_sources.items())),
+        "aliases": sorted(aliases),
+        "backup_sha256": before_sha, "backup_path": backup_path,
+    })
+    for record in records[1:]:
+        store.remove_record(str(record.get("key")))
+    if new_key != old_survivor_key:
+        store._by_key.pop(old_survivor_key, None)
+        survivor["key"] = new_key
+    store._reindex()
+    store.dirty = True
+    return {"keys": keys, "new_key": new_key, "entry_type": entry_type,
+            "field_comparison": comparison, "fields": merged_fields,
+            "aliases": sorted(aliases),
+            "records_before": len(store.records()) + len(records) - 1,
+            "records_after": len(store.records())}
+
+
+def _load_verify(path: str, *, expect_key: str, expect_etype: str,
+                 expect_fields: dict, expect_aliases: list[str],
+                 absent_keys: list[str]) -> dict:
+    """apply 后复核：重新读库 → key/内容/旧 key/aliases 全对，再跑 lint。"""
+    store = bibdb.Store.load(path)
+    record = store._by_key.get(expect_key)
+    items = collect_conflict_items(store)
+    problems: list[str] = []
+    if record is None:
+        problems.append(f"新 key `{expect_key}` 不在库内")
+    else:
+        if str(record.get("entry_type")) != expect_etype:
+            problems.append("entry_type 与预期不符")
+        if bibdb.content_sha256(expect_etype, record.get("fields") or {}) != \
+                str(record.get("content_sha256") or ""):
+            problems.append("content_sha256 与字段内容不一致")
+        have_aliases = set(record.get("aliases") or [])
+        miss = [alias for alias in expect_aliases if alias not in have_aliases]
+        if miss:
+            problems.append(f"旧 key 未进 aliases：{'、'.join(miss)}")
+    still = [key for key in absent_keys if key in store._by_key]
+    if still:
+        problems.append(f"被合并的旧 key 仍在库内：{'、'.join(still)}")
+    lint = store.lint()
+    return {"ok": not problems, "problems": problems,
+            "records": len(store.records()),
+            "lint_errors": len(lint.get("errors") or []),
+            "lint_warnings": len(lint.get("warnings") or []),
+            "pending_conflicts": sum(1 for item in items if item.get("pending"))}
+
+
+def cmd_edit(args) -> int:
+    """编辑一条库记录；默认 dry-run，`--apply` 才写（sha 闸 + 自动备份 + 复核）。"""
+    apply_mode = bool(getattr(args, "apply", False))
+    if apply_mode and bool(getattr(args, "dry_run", False)):
+        return _fail(args, "--apply 与 --dry-run 互斥：一次只能选一种模式")
+    try:
+        input_etype, raw_fields = _read_edit_input(args)
+        new_key = str(getattr(args, "new_key", "") or "").strip()
+        path, store = _open_store(args)
+        key = str(args.key or "").strip()
+        record = store._by_key.get(key)
+        if record is None:
+            raise bibdb.BibDBError(f"库里没有 key `{key}`")
+        # entry_type 优先级：--entry-type > 输入（bib/json-fields）> 记录现有类型
+        entry_type = _entry_type_or_error(
+            getattr(args, "entry_type", "") or input_etype
+            or str(record.get("entry_type") or ""))
+        fields = _canonical_edit_fields(entry_type, raw_fields)
+        pending = _pending_conflict_labels(store, key)
+        if pending:
+            raise bibdb.BibDBError(
+                f"记录 `{key}` 还有 {len(pending)} 条待裁决冲突（{'、'.join(pending)}）："
+                "请先在「待处理」页裁决，再编辑（否则字段会被两条写路径互相覆盖）")
+        if new_key:
+            collision = _key_collision(store, new_key, allow_record=key)
+            if collision:
+                raise bibdb.BibDBError(collision)
+        before_sha = bibdb.db_sha256(path)
+        backup_path = ""
+        if apply_mode:
+            _check_edit_apply_guards(args, path, before_sha)
+        # 预演（dry-run 用 clone；apply 也先 clone 算 sha 供对比）
+        clone = _clone_store(store)
+        summary = _apply_edit_plan(
+            clone, key=key, entry_type=entry_type, fields=fields,
+            new_key=new_key, note=str(args.note or ""),
+            before_sha=before_sha, backup_path="")
+        estimate_sha = _store_sha(clone)
+        written = False
+        after_sha = before_sha
+        verification: dict = {}
+        if apply_mode:
+            backup_path = _write_db_backup(path, str(args.backup), before_sha)
+            result = _apply_edit_plan(
+                store, key=key, entry_type=entry_type, fields=fields,
+                new_key=new_key, note=str(args.note or ""),
+                before_sha=before_sha, backup_path=backup_path)
+            written = store.save()
+            after_sha = bibdb.db_sha256(path)
+            verification = _load_verify(
+                path, expect_key=result["new_key"], expect_etype=entry_type,
+                expect_fields=fields,
+                expect_aliases=result["aliases_added"],
+                absent_keys=[])
+            if not verification.get("ok"):
+                raise bibdb.BibDBError(
+                    "写库后复核失败（数据未按预期落盘，请用备份恢复）："
+                    + "；".join(verification.get("problems") or []))
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    payload = {
+        "command": "edit", "dry_run": not apply_mode, "db": path,
+        **summary,
+        "requested_new_key": new_key,
+        "conflicts_blocking": [],
+        "db_sha256_before": before_sha,
+        "db_sha256_after": after_sha if apply_mode else estimate_sha,
+        "db_sha256_after_estimate": estimate_sha,
+        "backup_path": backup_path, "written": written,
+        "verification": verification,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"记录：`{summary['key']}`" + (f" → `{summary['new_key']}`" if summary["new_key"] != summary["key"] else ""))
+    print(f"类型：{summary['entry_type_before']} → {summary['entry_type_after']}")
+    if summary["field_changes"]:
+        for name, change in summary["field_changes"].items():
+            print(f"  字段 {name}：{change['old']!r} → {change['new']!r}")
+    else:
+        print("  字段无变化")
+    if summary["aliases_added"]:
+        print(f"  旧 key 进 aliases：{'、'.join(summary['aliases_added'])}")
+    if summary["missing_before"] or summary["missing_after"]:
+        print(f"  必填缺字段：{summary['missing_before'] or '无'} → {summary['missing_after'] or '无'}")
+    if apply_mode:
+        print(f"  备份：{backup_path}")
+        print(f"  库 sha256：{before_sha[:12]}… → {after_sha[:12]}…")
+        print(f"  复核：{'通过' if verification.get('ok') else '失败'}（lint error "
+              f"{verification.get('lint_errors')} / warning {verification.get('lint_warnings')}）")
+    else:
+        print(f"  （--dry-run：未写库；预计库 sha256 {estimate_sha[:12]}…）")
+        print("   确认无误后加 --apply --backup <目录> 写入")
+    return 0
+
+
+def _check_edit_apply_guards(args, path: str, before_sha: str) -> None:
+    """apply 前置：--backup 必须是目录（必填）、sha 闸校验（可选但建议）。"""
+    backup_dir = str(getattr(args, "backup", "") or "").strip()
+    if not backup_dir:
+        raise bibdb.BibDBError("--apply 会写真实库，必须先给 --backup <目录>（自动备份）")
+    if os.path.exists(backup_dir) and not os.path.isdir(backup_dir):
+        raise bibdb.BibDBError(f"--backup 需要目录，但已存在同名文件：{backup_dir}")
+    wanted = _normalize_sha256_arg(getattr(args, "expect_db_sha256", ""),
+                                   "--expect-db-sha256")
+    if wanted:
+        if not before_sha:
+            raise bibdb.BibDBError(f"库文件不存在，无法校验 --expect-db-sha256：{path}")
+        if before_sha != wanted:
+            raise bibdb.BibDBError(
+                f"库 sha256 与 --expect-db-sha256 不符（当前 {before_sha[:12]}…，期望 "
+                f"{wanted[:12]}…）：库可能已被其它操作修改，请刷新后重试（本次未写库）")
+
+
+def cmd_merge_records(args) -> int:
+    """合并 2+ 条重复记录（默认 dry-run；`--apply` 才写）。"""
+    apply_mode = bool(getattr(args, "apply", False))
+    if apply_mode and bool(getattr(args, "dry_run", False)):
+        return _fail(args, "--apply 与 --dry-run 互斥：一次只能选一种模式")
+    try:
+        keys = [part.strip() for part in str(args.keys or "").split(",") if part.strip()]
+        if len(keys) < 2:
+            raise bibdb.BibDBError("--keys 至少给 2 条（用逗号分隔）")
+        if len(set(keys)) != len(keys):
+            raise bibdb.BibDBError("--keys 里有重复 key")
+        new_key = str(args.new_key or "").strip()
+        if not new_key:
+            raise bibdb.BibDBError("合并必须给 --new-key（新规范 key）")
+        field_sources = _parse_field_sources(args.field_source, keys)
+        path, store = _open_store(args)
+        missing = [key for key in keys if key not in store._by_key]
+        if missing:
+            raise bibdb.BibDBError(f"库里没有这些 key：{'、'.join(missing)}")
+        blocking: list[str] = []
+        for key in keys:
+            blocking.extend(f"{key}:{label}" for label in _pending_conflict_labels(store, key))
+        if blocking:
+            raise bibdb.BibDBError(
+                f"待合并记录还有待裁决冲突（{'、'.join(blocking)}）：请先裁决再合并")
+        collision = _key_collision(store, new_key, allow_record=keys[0])
+        if collision:
+            raise bibdb.BibDBError(collision)
+        records = [store._by_key[key] for key in keys]
+        etypes = {str(record.get("entry_type") or "") for record in records}
+        requested_etype = str(getattr(args, "entry_type", "") or "").strip()
+        if requested_etype:
+            entry_type = _entry_type_or_error(requested_etype)
+        elif len(etypes) == 1:
+            entry_type = _entry_type_or_error(next(iter(etypes)))
+        else:
+            raise bibdb.BibDBError(
+                "被合并记录的 entry_type 不一致（" + "、".join(sorted(etypes))
+                + "）：请用 --entry-type 明确合并后类型")
+        merged_fields = _merge_fields(records, field_sources)
+        if not merged_fields:
+            raise bibdb.BibDBError("合并后字段为空：拒绝写入一条没有字段的记录")
+        before_sha = bibdb.db_sha256(path)
+        if apply_mode:
+            _check_edit_apply_guards(args, path, before_sha)
+        clone = _clone_store(store)
+        summary = _apply_merge_plan(
+            clone, keys=keys, new_key=new_key, entry_type=entry_type,
+            merged_fields=merged_fields, field_sources=field_sources,
+            note=str(args.note or ""), before_sha=before_sha, backup_path="")
+        estimate_sha = _store_sha(clone)
+        written = False
+        after_sha = before_sha
+        verification: dict = {}
+        if apply_mode:
+            backup_path = _write_db_backup(path, str(args.backup), before_sha)
+            _apply_merge_plan(
+                store, keys=keys, new_key=new_key, entry_type=entry_type,
+                merged_fields=merged_fields, field_sources=field_sources,
+                note=str(args.note or ""), before_sha=before_sha,
+                backup_path=backup_path)
+            written = store.save()
+            after_sha = bibdb.db_sha256(path)
+            verification = _load_verify(
+                path, expect_key=new_key, expect_etype=entry_type,
+                expect_fields=merged_fields, expect_aliases=summary["aliases"],
+                absent_keys=keys)
+            if not verification.get("ok"):
+                raise bibdb.BibDBError(
+                    "写库后复核失败（数据未按预期落盘，请用备份恢复）："
+                    + "；".join(verification.get("problems") or []))
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    payload = {
+        "command": "merge-records", "dry_run": not apply_mode, "db": path,
+        **summary,
+        "conflicts_blocking": [],
+        "db_sha256_before": before_sha,
+        "db_sha256_after": after_sha if apply_mode else estimate_sha,
+        "db_sha256_after_estimate": estimate_sha,
+        "backup_path": backup_path if apply_mode else "", "written": written,
+        "verification": verification,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"合并：{'、'.join(f'`{key}`' for key in keys)} → `{new_key}`（{entry_type}）")
+    for name, row in summary["field_comparison"].items():
+        sources = "、".join(f"{key}={row.get(key, '')!r}" for key in keys)
+        print(f"  字段 {name}：{sources} → 取 {row['chosen'] or '（空）'} = {row['value']!r}")
+    print(f"aliases：{'、'.join(summary['aliases']) or '（无）'}")
+    print(f"记录数：{summary['records_before']} → {summary['records_after']}")
+    if apply_mode:
+        print(f"  备份：{backup_path}")
+        print(f"  库 sha256：{before_sha[:12]}… → {after_sha[:12]}…")
+        print(f"  复核：{'通过' if verification.get('ok') else '失败'}（lint error "
+              f"{verification.get('lint_errors')} / warning {verification.get('lint_warnings')}）")
+    else:
+        print(f"  （--dry-run：未写库；预计库 sha256 {estimate_sha[:12]}…）")
+        print("   确认无误后加 --apply --backup <目录> 写入")
+    return 0
+
+
+# ── 字段归位建议（A 类 265 条；只读）────────────────────────────────────────
+
+_TITLE_MARKER_RE = re.compile(r"\\textit\s*\{|\\emph\s*\{|《[^》]{1,120}》|「[^」]{1,120}」|『[^』]{1,120}』")
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)(1[5-9]\d{2}|20[0-2]\d)(?!\d)")
+_PUBLISHER_TOKEN_RE = re.compile(
+    r"(?:出版社|書房|書店|书店|书局|印书馆|Press\b|University\b|Publishing\b|Verlag\b|"
+    r"Routledge\b|Blackwell\b|Springer\b)")
+_AUTHOR_SEG_SPLIT_RE = re.compile(r"\s+and\s+", re.I)
+
+
+def _plain_cjk_len(text: str) -> int:
+    return len(re.sub(r"\\[a-zA-Z]+\*?\{?|[{}\\]", "", text))
+
+
+def _strip_title_wrapper(text: str) -> str:
+    """`\\emph{論理思想}` / `《書名》` → 内文（只是建议值，不改库）。"""
+    t = text.strip()
+    for cmd in ("\\textit{", "\\emph{"):
+        if t.startswith(cmd) and t.endswith("}"):
+            return t[len(cmd):-1].strip()
+    if (t.startswith("《") and t.endswith("》")) or (t.startswith("「") and t.endswith("」")) \
+            or (t.startswith("『") and t.endswith("』")):
+        return t[1:-1].strip()
+    return t
+
+
+def _segment_candidates(record: dict) -> dict:
+    """一条记录 → {title: [...], year: [...], publisher: [...], entry_type: [...]} 候选。"""
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    out: dict[str, list[dict]] = {"title": [], "year": [], "publisher": [], "entry_type": []}
+    seen = set()
+
+    def _add(kind: str, value: str, source: str, evidence: str, risk: str) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        token = (kind, text)
+        if token in seen:
+            return
+        seen.add(token)
+        out[kind].append({"value": text, "source": source,
+                          "evidence": evidence, "risk": risk})
+
+    for name in ("author", "journal", "booktitle", "note", "publisher", "address"):
+        raw = str(fields.get(name) or "")
+        if not raw:
+            continue
+        for segment in _AUTHOR_SEG_SPLIT_RE.split(raw):
+            segment = segment.strip().rstrip("。.,，;；")
+            if not segment:
+                continue
+            if _YEAR_TOKEN_RE.search(segment) and len(segment) <= 12:
+                for year in _YEAR_TOKEN_RE.findall(segment):
+                    _add("year", year, name,
+                         f"{name} 字段里出现独立年份 `{segment}`", "medium")
+            if _TITLE_MARKER_RE.search(segment):
+                _add("title", _strip_title_wrapper(segment), name,
+                     f"{name} 字段里有题名标记（\\textit/\\emph/《》/「」/『』）",
+                     "medium")
+            elif name == "journal" and len(segment) >= 8 and not _YEAR_TOKEN_RE.search(segment):
+                _add("title", segment, name,
+                     "journal 字段整段是长串（可能把题名错填进期刊名）", "high")
+            elif name == "author" and len(segment) >= 8 and _plain_cjk_len(segment) >= 6 \
+                    and not _PUBLISHER_TOKEN_RE.search(segment):
+                _add("title", segment, name,
+                     "author 字段里出现长中文串（疑似题名/版本信息错位）", "high")
+            if _PUBLISHER_TOKEN_RE.search(segment) or re.match(r"^[^：:]{1,30}[：:]", segment):
+                _add("publisher", segment, name,
+                     f"{name} 字段里有出版者/出版地形态（`：`/出版社/書房/Press…）", "medium")
+    return out
+
+
+def collect_field_fix_rows(store, registry: str) -> list[dict]:
+    """`suggest-field-fixes` 的只读行：候选字段 + 证据 + 风险等级（不写库）。"""
+    rows: list[dict] = []
+    known = sorted(bibdb.KNOWN_ENTRY_TYPES)
+    for record in store.records():
+        key = str(record.get("key") or "")
+        etype = str(record.get("entry_type") or "").lower()
+        fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        issues = _record_issues(record)
+        sources = _record_sources(record)
+        if registry == "unknown_entry_type":
+            if etype in bibdb.KNOWN_ENTRY_TYPES:
+                continue
+            close = difflib.get_close_matches(etype, known, n=3, cutoff=0.6)
+            candidates = [{"value": candidate, "source": "entry_type",
+                           "evidence": f"`{etype}` 与已知类型 `{candidate}` 拼写相近",
+                           "risk": "low" if candidate == close[0] and etype[:1] == candidate[:1]
+                           else "medium"} for candidate in close]
+            key_suggestion = ""
+            if re.match(r"^(?:10\.\d|https?://)", key):
+                key_suggestion = "（key 像 DOI/网址：建议改成「作者姓+年份」，旧 key 用 --new-key 自动进 aliases）"
+            rows.append({"key": key, "entry_type": etype,
+                         "missing": [], "candidates": candidates,
+                         "key_suggestion": key_suggestion,
+                         "issues": issues,
+                         "sources": [{"issue": s.get("issue"), "slug": s.get("slug"),
+                                      "file": s.get("file")} for s in sources],
+                         "fields": fields})
+            continue
+        missing = []
+        if not str(fields.get("title") or "").strip():
+            missing.append("title")
+        if not bibdb.entry_year(fields):
+            missing.append("year")
+        if not missing:
+            continue
+        cands = _segment_candidates(record)
+        cands = {kind: values for kind, values in cands.items() if values}
+        if not cands:
+            continue
+        payload_candidates = [{"field": kind, **item} for kind, items in cands.items()
+                              for item in items]
+        rows.append({"key": key, "entry_type": etype, "missing": missing,
+                     "candidates": payload_candidates,
+                     "issues": issues,
+                     "sources": [{"issue": s.get("issue"), "slug": s.get("slug"),
+                                  "file": s.get("file")} for s in sources],
+                     "fields": fields})
+    rows.sort(key=lambda row: row["key"])
+    return rows
+
+
+def cmd_suggest_field_fixes(args) -> int:
+    """只读：缺字段归位候选 / 异常 entry_type 建议（不写库、不调 AI）。"""
+    registry = str(getattr(args, "registry", "") or "missing_field")
+    if registry not in ("missing_field", "unknown_entry_type"):
+        return _fail(args, "--registry 只支持 missing_field / unknown_entry_type")
+    try:
+        path, store = _open_store(args)
+        rows = collect_field_fix_rows(store, registry)
+        limit = int(getattr(args, "limit", 0) or 0)
+        if limit > 0:
+            rows = rows[:limit]
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    payload = {"db": path, "registry": registry, "count": len(rows), "rows": rows}
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    print(f"候选：{len(rows)} 条（registry={registry}；只读，不写库）")
+    for row in rows[:20]:
+        print(f"· `{row['key']}`（{row['entry_type']}，缺 {'、'.join(row['missing'])}）")
+        for item in row["candidates"][:4]:
+            print(f"    {item['field']} ← [{item['source']}] {item['value'][:60]!r}"
+                  f"（{item['risk']}；{item['evidence']}）")
+    if len(rows) > 20:
+        print(f"……另有 {len(rows) - 20} 条（--json 看全量）")
+    return 0
+
+
 # ── 入口 ────────────────────────────────────────────────────────────────────
 
 
@@ -5295,6 +6014,8 @@ def build_parser() -> argparse.ArgumentParser:
     lint = sub.add_parser("lint", parents=[common],
                           help="库体检（重复 key / 字段冲突 / 缺来源 / verified 无记录 …）")
     lint.add_argument("--json", action="store_true", help="机器可读输出")
+    lint.add_argument("--with-records", action="store_true",
+                      help="warning_items 每条另带 records（受影响 key 列表；B-188 待处理页用）")
     lint.set_defaults(func=cmd_lint)
 
     # ── 规范化规则升级后的库迁移（B-115）：默认 dry-run，--apply 只改 sha/updated_at ──
@@ -5491,6 +6212,60 @@ def build_parser() -> argparse.ArgumentParser:
                           "第二批合并用；未列出的 manual 簇保持不动）")
     mrg.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
     mrg.set_defaults(func=cmd_merge_duplicates)
+
+    # ── B-188：通用条目编辑 / 合并 / 字段归位建议（GUI 写库入口）────────────
+    edt = sub.add_parser(
+        "edit", parents=[common],
+        help="编辑一条库记录（默认 dry-run；--apply 需 sha 闸 + --backup 目录；可 --new-key）")
+    edt.add_argument("--key", required=True, metavar="K", help="库内 canonical key（定位用）")
+    edt.add_argument("--bib", default="", metavar="PATH",
+                     help="编辑后的单条 BibTeX 文件（key 必须等于 --key；改 key 用 --new-key）")
+    edt.add_argument("--json-fields", default="", metavar="JSON",
+                     help='编辑后的字段 JSON：{"entry_type":...,"fields":{...}} 或扁平字段表')
+    edt.add_argument("--new-key", default="", metavar="NEW",
+                     help="改 key（默认不改；旧 key 自动进记录 aliases）")
+    edt.add_argument("--entry-type", default="", metavar="T", help="覆盖条目类型")
+    emode = edt.add_mutually_exclusive_group()
+    emode.add_argument("--dry-run", action="store_true", help="预览（默认就是；只算不写）")
+    emode.add_argument("--apply", action="store_true", help="真正写库（须 --backup 目录）")
+    edt.add_argument("--expect-db-sha256", default="", metavar="SHA",
+                     help="写前校验库字节 sha256（完整 64 位十六进制）")
+    edt.add_argument("--backup", default="", metavar="DIR",
+                     help="写前自动备份目录（--apply 必填；文件名 bibliography-<UTCts>-<sha12>.jsonl）")
+    edt.add_argument("--note", default="", help="写库痕迹备注（记进记录 edits[]）")
+    edt.add_argument("--json", action="store_true", help="机器可读输出")
+    edt.set_defaults(func=cmd_edit)
+
+    mrec = sub.add_parser(
+        "merge-records", parents=[common],
+        help="合并 2+ 条重复记录为 1 条（默认 dry-run；新 key；旧 key 全进 aliases）")
+    mrec.add_argument("--keys", required=True, metavar="A,B[,...]", help="要合并的记录 key（逗号分隔）")
+    mrec.add_argument("--new-key", required=True, metavar="K", help="合并后的规范 key")
+    mrec.add_argument("--entry-type", default="", metavar="T",
+                      help="合并后条目类型（各条不一致时必须给）")
+    mrec.add_argument("--field-source", action="append", default=[], metavar="FIELD=KEY",
+                      help="逐字段选源（可重复；不给的字段按 --keys 顺序取第一条非空值）")
+    mmode2 = mrec.add_mutually_exclusive_group()
+    mmode2.add_argument("--dry-run", action="store_true", help="预览（默认就是；只算不写）")
+    mmode2.add_argument("--apply", action="store_true", help="真正写库（须 --backup 目录）")
+    mrec.add_argument("--expect-db-sha256", default="", metavar="SHA",
+                      help="写前校验库字节 sha256（完整 64 位十六进制）")
+    mrec.add_argument("--backup", default="", metavar="DIR",
+                      help="写前自动备份目录（--apply 必填）")
+    mrec.add_argument("--note", default="", help="写库痕迹备注（记进幸存的记录 edits[]）")
+    mrec.add_argument("--json", action="store_true", help="机器可读输出")
+    mrec.set_defaults(func=cmd_merge_records)
+
+    sff = sub.add_parser(
+        "suggest-field-fixes", parents=[common],
+        help="只读：缺 title/year 的字段归位候选（A 类）/ 异常 entry_type 建议（不写库）")
+    sff.add_argument("--registry", default="missing_field",
+                     choices=("missing_field", "unknown_entry_type"),
+                     help="候选注册表：missing_field（默认）/ unknown_entry_type")
+    sff.add_argument("--limit", type=int, default=0, metavar="N", help="只输出前 N 条（0=全部）")
+    sff.add_argument("--json", action="store_true", help="机器可读输出")
+    sff.set_defaults(func=cmd_suggest_field_fixes)
+
     return parser
 
 

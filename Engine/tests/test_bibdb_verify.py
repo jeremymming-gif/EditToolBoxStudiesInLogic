@@ -47,7 +47,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from slcn import aibib, bibdb, bibparse, refmark  # noqa: E402
+from slcn import aibib, bibdb, bibnorm, bibparse, refmark  # noqa: E402
 
 FAILS: list[str] = []
 SKIPS: list[str] = []
@@ -602,8 +602,14 @@ if HAVE_TEMPLATES:
 """)
     quine_before = entry_block(read(BIB_MIX), "Quine1970")
     other_before = entry_block(read(BIB_MIX), "Other2020")
-    quine_sha_before = bibdb.content_sha256(
-        "article", bibparse.parse_entries(quine_before)[0][0].fields)
+    # B-189：产物写出会按渲染规范删掉**正式发表条目**的 doi/url（Quine1970 = article +
+    # journal；模板本身从来不印 doi）。断言「AI 没碰它」要比较同口径的摘要：把 before
+    # 也过一遍同一清洗函数，否则这条断言会把 B-189 的预期变化误报成回归。
+    _quine_notes: list[str] = []
+    _quine_before_fields = bibnorm.strip_published_urls_fields(
+        "Quine1970", "article",
+        list(bibparse.parse_entries(quine_before)[0][0].fields.items()), _quine_notes)
+    quine_sha_before = bibdb.content_sha256("article", dict(_quine_before_fields))
     mock = MockLLM()
     try:
         out_mix = os.path.join(TMP, "mixed")

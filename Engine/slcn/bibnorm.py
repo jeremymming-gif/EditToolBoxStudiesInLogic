@@ -23,6 +23,14 @@
      就是让「改了规则忘了迁移」立刻红）。
 批45 `6a6ff4e` 改了 `DROP_FIELDS` 却没迁移 10-18 冻结库，6 条 stale-sha 潜伏到批71
 才被真实库 lint 发现——本条就是那次事故立的规矩。
+
+**B-189（2026-10-22 用户拍板）：正式发表条目的 url/doi 渲染规范**。规则见
+`Engine/docs/RULES.md` §四.10：正式发表条目不印/不写 `url`+`doi`，未出版/在线资源
+（online/unpublished/arXiv/SEP 等）保留并打印网址。实现是 `strip_published_urls_fields()`
+（字段级）/ `strip_published_urls()`（文本级，Word 通道用）；**这是渲染层政策，
+不是库规范化规则**——`normalize_bib()` 默认 `strip_urls=False`（库预览/回读校验的
+输出逐字节不变），只有初排产物写出（`slcn/build.py` 两通道）才显式开启。
+所以它**不改变** `bibdb.canonical_fields()` / `content_sha256()`，不需要 rehash。
 """
 
 from __future__ import annotations
@@ -465,8 +473,233 @@ def move_book_editions(text: str) -> tuple[str, list[str]]:
     return joined, notes
 
 
-def normalize_bib(text: str) -> tuple[str, list[str]]:
-    """规范化一份 .bib，返回 (新文本, 改动说明列表)。"""
+# ── B-189：正式发表条目的 url/doi 渲染规范（2026-10-22 用户拍板） ────────────
+#
+# 权威口径 = `Engine/docs/RULES.md` §四.10；本处只实现判据与清洗，不另立口径。
+#   · 正式发表（entry_type ∈ PUBLISHED_ENTRY_TYPES 且有出版信息字段）→
+#     **不印** DOI/网址，产物 `reference.bib` 里连 `url`/`doi` 字段一起删掉；
+#   · 未出版 / 在线资源（online/unpublished/misc/arXiv/SEP 等）→ 保留并打印网址；
+#   · 这是**渲染层政策**：不算库规范化（见模块 docstring 末段），默认不启用。
+
+#: 可能「正式发表」的条目类型（`conference` = inproceedings 的别名；博硕论文 = thesis 的别名，
+#: 见 `slcn/bibcheck.py: TYPE_ALIASES` —— 两边判据不同源会分叉，所以这里按同一张表列）。
+PUBLISHED_ENTRY_TYPES = frozenset({
+    "article", "book", "incollection", "inproceedings", "inbook", "proceedings",
+    "collection", "manual", "periodical", "thesis", "phdthesis", "mastersthesis",
+    "report", "techreport", "booklet", "conference",
+})
+#: 「有出版信息」的字段（任一个非空即算 —— 与设计卡 §3 写死的口径一致）。
+PUBLICATION_FIELDS = ("journal", "journaltitle", "booktitle", "publisher",
+                      "institution", "school")
+#: 恒保留网址的类型（设计卡写死；`misc` 是 SEP/预印本常用类型）。
+ONLINE_RETAIN_ENTRY_TYPES = frozenset({"online", "unpublished", "misc"})
+
+#: 可能夹带网址（不是 `url` 字段）的字段。正式条目全清；在线资源只从
+#: `howpublished`/`publisher` 抽出来搬进 `url`（`title`/`note` 不动：那里夹带的
+#: 网址本来就是条目正文的一部分，搬走会留下「Retrieved from」尾巴）。
+_EMBEDDED_URL_FIELDS = ("publisher", "address", "note", "howpublished", "title",
+                        "journal", "journaltitle", "booktitle")
+_ONLINE_MOVE_URL_FIELDS = ("howpublished", "publisher")
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s{}]+")
+_SEP_ANY = re.compile(r"stanford\s+encyclopedia\s+of\s+philosophy", re.I)
+
+
+def _plain_field(value: str) -> str:
+    """字段值 → 去保护花括号、压空白的可比较形态（只用于判据，不改字段）。"""
+    return re.sub(r"\s+", " ", re.sub(r"[{}]", "", value or "")).strip()
+
+
+def _is_sep_like(fields: dict[str, str]) -> bool:
+    """是不是斯坦福哲学百科（SEP）词条 —— booktitle / journal 任一含 SEP 全名即算。
+
+    为什么不能只复用 `is_sep_entry()`（只看 booktitle）：41 篇实测里有 SEP 词条被
+    作者写成 `@article` + `journal = {The Stanford Encyclopedia of Philosophy}`
+    （Fenrong_Liu `hansson:sep`），只认 booktitle 会把它当正式期刊文章把网址删掉。
+    `is_sep_entry()` 的既有语义（bibcheck 判据）**不动**，这里只做渲染判据。
+    """
+    for name in ("booktitle", "journal", "journaltitle"):
+        if _SEP_ANY.search(_plain_field(fields.get(name, ""))):
+            return True
+    return False
+
+
+def is_online_resource(etype: str, fields: dict[str, str]) -> bool:
+    """该条目是不是「未出版 / 在线资源」（→ 保留并打印网址）。
+
+    判据（设计卡 §3 写死，顺序即优先级）：
+      1. `online` / `unpublished` / `misc` → 恒保留；
+      2. SEP 词条（任意类型）→ 保留（用户规范点名 SEP 要能看出处）；
+      3. 类型 ∈ PUBLISHED_ENTRY_TYPES 且任一 PUBLICATION_FIELDS 非空 → 正式发表；
+      4. 其余（未知类型 / 正式类型但缺出版信息）→ 保留（宁可不删，不误删数据）。
+    """
+    e = (etype or "").strip().lower()
+    if e in ONLINE_RETAIN_ENTRY_TYPES:
+        return True
+    if _is_sep_like(fields):
+        return True
+    if e in PUBLISHED_ENTRY_TYPES and any(
+            str(fields.get(name) or "").strip() for name in PUBLICATION_FIELDS):
+        return False
+    return True
+
+
+def _extract_urls_from_value(value: str) -> tuple[str, list[str]]:
+    """从字段值里抽出 `http(s)://…`，返回 (清掉网址并收尾的文本, 网址列表)。
+
+    收尾规则（实测形状）：
+      · `{John Wiley \\& Sons. https://doi.org/…}` → `John Wiley \\& Sons`；
+      · `{Accessed: 2025-10-18 https://…}` → `Accessed: 2025-10-18`；
+      · 网址后紧跟的中文/英文句读不吞掉相邻正文（只与网址一起匹配的尾标点才丢）。
+    """
+    urls: list[str] = []
+
+    def _repl(m: re.Match[str]) -> str:
+        urls.append(m.group(0).rstrip(".,;:，。；："))
+        return ""
+
+    cleaned = _URL_IN_TEXT.sub(_repl, value)
+    if not urls:
+        return value, []
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+([,;:，；：])", r"\1", cleaned)
+    cleaned = re.sub(r"([,;，；])\s*([,;，；])", r"\1", cleaned)
+    # 网址前那个句点通常是作者拿来分隔「出版者/注记」与网址的：`Sons. https://…`
+    # → 只留 `Sons`（否则印出来是 `Sons., Chichester` 这种双标点）。
+    cleaned = re.sub(r"[.。]\s*$", "", cleaned).strip()
+    cleaned = re.sub(r"[\s,;:，；：]+$", "", cleaned)
+    return cleaned, urls
+
+
+def _blank_after_url_strip(value: str) -> bool:
+    """清掉网址后只剩 LaTeX 空壳（`\\url{}` / `\\href{}{}`）或标点时，字段该整项删除。"""
+    v = re.sub(r"\\(?:url|href)\s*\{[^{}]*\}(\s*\{[^{}]*\})?", "", value)
+    return not re.sub(r"[\s,;:.。，；：]+", "", v)
+
+
+def strip_published_urls_fields(key: str, etype: str,
+                                fields: list[tuple[str, str]],
+                                notes: list[str]) -> list[tuple[str, str]]:
+    """B-189 字段级清洗：按 `is_online_resource()` 删/留 `url`+`doi`。
+
+    纯函数（不改入参）；逐条改动写进 `notes`（与 `normalize_bib` 的说明同一格式）。
+    正式条目还会清掉夹带在 publisher/address/note/… 里的网址；在线资源只把
+    `howpublished`/`publisher` 里的网址搬进 `url` 字段（已有 `url` 时去重丢弃）。
+    """
+    flat: dict[str, str] = {}
+    for name, value in fields:
+        flat.setdefault(name, value)
+    online = is_online_resource(etype, flat)
+    has_url = bool((flat.get("url") or "").strip())
+    embedded: list[tuple[str, str]] = []
+    out: list[tuple[str, str]] = []
+
+    for name, value in fields:
+        if name in ("url", "doi"):
+            if online:
+                out.append((name, value))
+            elif value.strip():
+                notes.append(f"{key}: 正式发表条目不写 {name}（已删除）")
+            continue
+        if name in _EMBEDDED_URL_FIELDS:
+            cleaned, urls = _extract_urls_from_value(value)
+            if urls:
+                if online:
+                    if name in _ONLINE_MOVE_URL_FIELDS:
+                        embedded.extend((name, u) for u in urls)
+                        notes.append(f"{key}: 在线资源 {name} 内嵌网址保留")
+                        value = cleaned
+                        if _blank_after_url_strip(value):
+                            continue
+                    # 其它字段（title/note/…）原样保留：网址本就是条目正文的一部分
+                else:
+                    notes.append(f"{key}: 正式发表条目删除 {name} 内嵌网址 {urls[0]}")
+                    value = cleaned
+                    if _blank_after_url_strip(value):
+                        continue
+        out.append((name, value))
+
+    if online and embedded:
+        if not has_url:
+            field, url = embedded[0]
+            out.append(("url", url))
+            notes.append(f"{key}: {field} 内嵌网址 → url 字段（{url}）")
+        elif len(embedded) >= 1:
+            notes.append(f"{key}: 已有 url，删除 {embedded[0][0]} 内嵌网址（去重）")
+    return out
+
+
+def strip_published_urls(text: str) -> tuple[str, list[str]]:
+    """B-189 文本级清洗（Word 通道产物用）：逐条判定，**只重写命中条目**。
+
+    为什么要有文本级版本：Word 通道的 `reference.bib` 是
+    `docxsource.refs_to_bib()` / `footnotes.entry_to_bib()` 直接渲染的，不经过
+    `normalize_bib()`（那是 LaTeX 通道）；不补这一步就会「同一篇稿、换个通道
+    DOI 就印出来」（实测 LingXin_Cai 86-08 的 1 处 doi.org 就是这样漏的）。
+
+    ⚠️ 只对**命中条目**重排字段（未命中的条目与条目间文本逐字节不动）；
+    这是给机器生成的 bib 用的，不承担「任意作者 bib 的格式归一」。
+    """
+    notes: list[str] = []
+    out: list[str] = []
+    last = 0
+    pos = 0
+    for m in re.finditer(r"@\w+\s*\{", text):
+        start = m.start()
+        if start < pos:
+            continue
+        i = text.index("{", start)
+        depth = 0
+        j = i
+        while j < len(text):
+            if text[j] == "{":
+                depth += 1
+            elif text[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j >= len(text):
+            break                                   # 花括号不配平：剩余文本原样保留
+        body = text[i + 1:j]
+        k = body.find(",")
+        if k < 0:                                   # 无字段（`@misc{key}` 形态）：不动
+            pos = j + 1
+            continue
+        raw_head = text[start:i + 1]
+        hm = re.match(r"@(\w+)\s*\{\s*([^,]+?)\s*,", raw_head + body[:k + 1])
+        pos = j + 1
+        if not hm:
+            continue
+        etype, key = hm.group(1), hm.group(2).strip()
+        try:
+            pairs = parse_fields(body[k + 1:])
+        except ValueError:
+            continue                                # 引号未闭合：交给上游报错，这里不猜
+        if not pairs:
+            continue
+        new_pairs = strip_published_urls_fields(key, etype.lower(), pairs, notes)
+        if new_pairs == pairs:
+            continue
+        out.append(text[last:start])
+        last = j + 1
+        if not new_pairs:                           # 全删空：保留原条目（宁可多留不乱造）
+            out.append(text[start:j + 1])
+            notes.append(f"{key}: 删除后无字段，条目原样保留（需人工核对）")
+            continue
+        width = max((len(n) for n, _ in new_pairs), default=4)
+        body_new = ",\n".join(f"  {n.ljust(width)} = {{{v}}}" for n, v in new_pairs)
+        out.append(f"@{etype}{{{key},\n{body_new}\n}}")
+    out.append(text[last:])
+    return "".join(out), notes
+
+
+def normalize_bib(text: str, *, strip_urls: bool = False) -> tuple[str, list[str]]:
+    """规范化一份 .bib，返回 (新文本, 改动说明列表)。
+
+    `strip_urls=True` 时同时执行 B-189 渲染规范（正式发表条目删 url/doi；
+    只给初排产物写出用，见模块 docstring 末段）。默认 False = 旧行为逐字节不变。
+    """
     notes: list[str] = []
     entries = split_entries(text)
     out: list[str] = []
@@ -516,6 +749,10 @@ def normalize_bib(text: str) -> tuple[str, list[str]]:
         # 第 86 条：英文书籍的版次并进 title（来稿自带 bib 常见 `edition = {2nd}`）。
         # 只对能安全判定的条目动手，判据见函数注释。
         new_fields = book_edition_into_title(key, etype, new_fields, notes)
+
+        # B-189：正式发表条目不写 url/doi（渲染层政策；仅在产物写出时启用）。
+        if strip_urls:
+            new_fields = strip_published_urls_fields(key, etype, new_fields, notes)
 
         width = max((len(n) for n, _ in new_fields), default=4)
         body = ",\n".join(f"  {n.ljust(width)} = {{{v}}}" for n, v in new_fields)
