@@ -5910,9 +5910,16 @@ def collect_field_fix_rows(store, registry: str) -> list[dict]:
                 key_suggestion = (key_reason + f"；建议 `{key_candidate}`"
                                   if key_candidate else key_reason
                                   + "；旧 key 用 --new-key 自动进 aliases")
+            anomaly_kind = ("unknown_entry_type" if etype_bad
+                            else ("doi_key" if _key_anomaly(key) == "doi"
+                                  else "placeholder_key"))
             rows.append({"key": key, "entry_type": etype,
                          "missing": [], "candidates": candidates,
+                         "anomaly_kind": anomaly_kind,
                          "key_candidate": key_candidate,
+                         "key_risk": ("medium" if anomaly_kind == "doi_key"
+                                      and key_candidate else
+                                      ("high" if key_candidate else "")),
                          "key_reason": key_reason,
                          "key_suggestion": key_suggestion,
                          "issues": issues,
