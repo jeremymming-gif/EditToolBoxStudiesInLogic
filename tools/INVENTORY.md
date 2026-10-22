@@ -1,7 +1,8 @@
 # 工具清单（Tools Inventory；owner 制 + 生命周期；新增工具必须登记）
 
-> 建立于批65（2026-10-20，治理小批 T4）；**批103（公开仓恢复批）同步**。范围：本仓 `tools/`（**27 项 = 25 个 tracked 工具项 + 2 个本地生成物**；批78 新增 `batch_accept.py`/`ci_summary.py`/`regression_diff.py`/`tool_fixtures.py` 4 项；**批103 实测 `git ls-files tools` = 26 个 tracked 路径 = 25 个工具项 + 本清单 `INVENTORY.md`**，其中 4 件一次性辅助已归档 `archive/`〔B-164；路径相对 `tools/`〕）+ `Engine/tools/`（6 项）。
-> **规则**：①每个工具必须有 owner、用途、最后提交、测试/验证方式；②状态 = **active**（在用）/ **dormant**（疑似休眠，5+ 批未用）/ **legacy**（废弃，移 `tools/legacy/`（需要时新建），**需 Lead 批准、可恢复、不物理删除**）/ **archived**（已移 `tools/archive/`，**可 `git mv` 恢复、不物理删除、不占 active 名额**）；③**新增工具不登记不得合入**（owner+测试必须写）；④每 5 批 prune 一次，批末监理抽检；⑤"最后提交"= `git log -1 --format=%cs -- <path>`（截至 2026-10-22，批103 复核）。
+> 建立于批65（2026-10-20，治理小批 T4）；**批103（公开仓恢复批）同步；批104（B-157）登记 `inventory_check.py` 并实测校正计数**。范围：本仓 `tools/`（**28 项 = 26 个工具项 + 2 个本地生成物**；批78 新增 `batch_accept.py`/`ci_summary.py`/`regression_diff.py`/`tool_fixtures.py` 4 项；**批104 实测 `git ls-files tools` = 38 个 tracked 路径**（含 Swift 测试台/夹具等嵌套文件；本批新增工具 commit 前不入索引，提交后 = 39），其中 4 件一次性辅助已归档 `archive/`〔B-164；路径相对 `tools/`〕）+ `Engine/tools/`（6 项）。
+> **数字口径（批104 起由 `tools/inventory_check.py --check` 机器校验，不再手抄）**：第 1 节 **28 行 = 26 个工具项（含 `archive/` 4 件）+ 2 个本地生成物**；「工具项 + 本清单」= **27 个 tracked 条目**（批103 口径为 26 = 25+1，本批 +1 为新工具）。`git ls-files` 原样计数含嵌套文件，只作实测输出、不作硬判据。
+> **规则**：①每个工具必须有 owner、用途、最后提交、测试/验证方式；②状态 = **active**（在用）/ **dormant**（疑似休眠，5+ 批未用）/ **legacy**（废弃，移 `tools/legacy/`（需要时新建），**需 Lead 批准、可恢复、不物理删除**）/ **archived**（已移 `tools/archive/`，**可 `git mv` 恢复、不物理删除、不占 active 名额**）；③**新增工具不登记不得合入**（owner+测试必须写）；④每 5 批 prune 一次，批末监理抽检；⑤"最后提交"= `git log -1 --format=%cs -- <path>`（截至 2026-10-22，批104 复核）。
 > owner 域：engine-core（引擎工具/`Engine/tools`）、qa-release（验收/CI 工具）、mac-shell（Swift 测试台/外壳工具）、rules-docs（模板/文档生成）、case-lab（案例工具）。批65 初版盘点由 Lead 代写，后续按域 owner 维护。
 
 ## 1. 本仓 `tools/`
@@ -24,6 +25,7 @@
 | `ci_summary.py`（**v1.0.0**；实测 441 行） | CI 结果摘要（B-145 波1）：读 `gh run view --json name,status,conclusion,jobs` 落盘 JSON（+可选 job 日志）→ `ci_summary.md/json`（job 表 / 失败 step / 归因：测试红·依赖安装失败·文档 AUTO 过期·超时·取消·其它） | qa-release | 批78 | `python3 tools/ci_summary.py --self-test`（**10/10 PASS**，批103-A 实测；用例：绿 + 6 类归因 + 降级 + 确定性） | **dormant**（批91-A/B-171；写死再激活：本仓有 push 或 CI run/结论变化时必调一次，不占 active 名额） | 调用路径：push 后 `gh run view <id> --json …> run.json` → **本工具** → EVIDENCE「CI」行。**本工具不调用 `gh`、不联网**；字段缺失降级 UNKNOWN+WARN |
 | `regression_diff.py`（**v1.0.0**；实测 547 行） | 基线 vs 本批回归差（B-145 波1）：两份 JSON（如 `batch-kpi.json` 两行）→ 字段级变化表 + 分类（improved/expected/regression/skip/unknown）+ 环比 pp（四舍五入到整百分点）；`--fail-on-regression` 时 exit 1 | qa-release | 批78 | `python3 tools/regression_diff.py --self-test`（**8/8 PASS**，批103-A 实测；用例：成本改善/回归/跳旗标/未测/容器选行/确定性） | active（批100 实跑恢复） | 调用路径：收口时 Lead 比本批 vs 上批 KPI 行 → EVIDENCE「vs 上批」行 + `baselines/batch-kpi.json` 校验。null 一律 skip（禁估算）；sha 变化/未分类字段判 unknown 交人工 |
 | `tool_fixtures.py`（569 行） | hermetic 夹具（B-145 波1；**批84 B-152 补 generic 门禁证据：corpus 两遍 sha / docx 普查 / build cmp·o5 / CI `gh --json` 形态**）：在 `tempfile.TemporaryDirectory()` 里造假 gate plan / 假证据日志 / 假 CI run JSON / 假 KPI 行，供上述三件 `--self-test` 共用 | qa-release | 批84 | 由三件工具的 `--self-test` 间接验证（无独立 CLI；`--dump <dir>` 供抽查） | active | 不硬编码真实路径、无网络、不读真实库/会话；新增验收/CI 工具的自检请复用它 |
+| `inventory_check.py`（**v1.0.0**；实测 1057 行） | INVENTORY 看门狗（B-157；批104 采纳外部试点能力、按本仓 DoD 重写，非整文件复制）：读本清单表 1/表 2 + 盘面（可选 `git ls-files`）→ 校验登记项存在性、未登记项（`archive/` 逐件）、行数注记漂移、状态与必填字段、私有仓路径、路径口径（表内相对 `tools/`）、表头计数；`--check` 人类可读（不一致 exit 1）、`--json` 机器可读（**退出码语义与 `--check` 分离**：分析完成即 0）；**只调 `git ls-files`，失败降级 WARN、不崩溃** | qa-release | 待首提（批104，未 commit） | `python3 tools/inventory_check.py --self-test`（**22/22 PASS**）；`python3 tools/inventory_check.py --check`（期望 exit 0） | active | 只读/离线/确定性/纯 stdlib/单文件；self-test 用 tempfile 假仓 + 注入 tracked provider（**不初始化 git、不启子进程**）；计数口径见文件头 docstring；不代替人工判 dormant/archived 取舍 |
 | `gen_templates.py` | 从 Windows 原版程序提取 LaTeX 模板 → 生成 Swift 源 | rules-docs | 2026-10-16 | 生成物 `sources-mac/Features/ContentTemplates.swift` 在仓 | **dormant** | 5+ 批未用；仅换模板时用；保留不删 |
 | `archive/sync_templates.sh` | 稿件仓《编辑笔记/模板文件》→ 本仓同步（发布带副本） | rules-docs | 2026-10-16 | 人工 `--apply` 预演；无自动测试 | **archived**（批103 B-164） | 自建成后无真实调用 → `git mv` 归档；恢复：`git mv tools/archive/sync_templates.sh tools/`；模板更新时才用 |
 | `build_cli.sh` | 构建 CLI 测试工具（与 App 共用同一份功能代码） | engine-core | 2026-10-16 | `Engine/tests/test_infocheck_toc.py` 引用；产物 `toolbox-cli` | active | 与 `build.sh` 分工：只构建 CLI 回归工具 |
@@ -59,4 +61,4 @@
 - [x] 休眠项：每 5 批 prune 时复核（进 `TECH-ADVISOR.md` §6 深审：批75）
 - [x] **B-164（批103）**：4 件一次性 build 辅助 `git mv` → `tools/archive/`、本表状态 archived（判据：目录语义噪声降低；`grep` 零引用；可恢复）
 - [ ] 跨仓工具（`case_audit.py`/`gen_case_index.py`）是否迁回笔记仓或加 `--notes-dir` 说明（P2，需单独立项）
-- [ ] `ai_settings_test/main.swift`（3027 行）是否抽公共 helper/拆分（P2，需单独立项，不在治理批做）
+- [ ] `ai_settings_test/main.swift`（3517 行，批104 实测 `wc -l`）是否抽公共 helper/拆分（P2，需单独立项，不在治理批做）
