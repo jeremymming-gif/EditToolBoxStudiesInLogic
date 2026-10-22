@@ -37,6 +37,12 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 from slcn import metadocx  # noqa: E402
 from slcn import latex as _latex  # noqa: E402
 
+# 批106（B-146 波2-2）dogfood：内联 make_docx 改为共享夹具生成器（hermetic/确定性）。
+# 共享工具只写调用方给的路径，不联网、不读稿件库；本文件其余断言一字未动。
+if os.path.join(_REPO, "tools") not in sys.path:
+    sys.path.insert(0, os.path.join(_REPO, "tools"))
+from docx_fixture_gen import make_docx as _make_fixture_docx  # noqa: E402
+
 FAILS: list[str] = []
 SKIPS: list[str] = []
 PASS = 0
@@ -122,16 +128,13 @@ def escape_xml(t: str) -> str:
 
 
 def make_docx(paras: list[str], path: str) -> str:
-    """只含 word/document.xml 的最小 docx（与 test_tail_block.py 同法；够跑取值路径）。"""
-    ps = "".join(f"<w:p><w:r><w:t>{escape_xml(t)}</w:t></w:r></w:p>" for t in paras)
-    xml = f'<w:document xmlns:w="{W_NS}"><w:body>{ps}</w:body></w:document>'
-    fd, p = tempfile.mkstemp(suffix=".docx") if not path else (None, path)
-    if fd is not None:
-        os.close(fd)
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("word/document.xml", xml)
-    return p
+    """共享夹具（`tools/docx_fixture_gen.py`；批106 B-146 波2-2 dogfood）。
+
+    原实现只写 `word/document.xml`（手拼最小 zip）；现由共享工具生成完整最小
+    OOXML 包（`[Content_Types].xml`/`_rels/.rels`/`word/document.xml`/关系），
+    引擎仍只读 `word/document.xml`，所以本文件既有断言口径不变。
+    """
+    return _make_fixture_docx(path, paras=list(paras), numbering=False)
 
 
 # 虚构样例（不来自任何真实作者稿件）：中文元数据 + 文末英文那套。

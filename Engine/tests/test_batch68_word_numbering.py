@@ -41,6 +41,13 @@ from slcn.docxsource import (  # noqa: E402
     parse_docx,
 )
 
+# 批106（B-146 波2-2）dogfood：内联 _make_docx 改为共享夹具生成器（支持 numPr
+# 编号段落 + 自定义 numbering.xml 原样写入）。其余断言一字未动。
+_TOOLS = str(_ENGINE.parent / "tools")
+if _TOOLS not in sys.path:
+    sys.path.insert(0, _TOOLS)
+from docx_fixture_gen import make_docx as _make_fixture_docx  # noqa: E402
+
 FAILS: list[str] = []
 _NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 
@@ -95,18 +102,29 @@ def _make_docx(path: Path, refs: list[str], body: list[str],
                numbering: str = "", ref_num: tuple[str, int] | None = ("1", 0),
                extra_body_pre: list[str] | None = None,
                pre_numbered: bool = False) -> Path:
-    """合成一份 Word 稿：题名/作者/摘要/关键词 + 正文段 + 参考文献标题 + 清单。"""
-    parts = [_p("测试自动编号参考文献"), _p("张三"),
-             _p("摘要：这是测试用摘要。"), _p("关键词：测试；自动编号")]
-    parts.extend(_p(t, num=ref_num if pre_numbered else None) for t in (extra_body_pre or []))
-    parts.extend(_p(t) for t in body)
-    parts.append(_p("参考文献"))
-    parts.extend(_p(t, num=ref_num) for t in refs)
-    doc = f'<w:document {_NS}><w:body>{"".join(parts)}</w:body></w:document>'
-    with zipfile.ZipFile(path, "w") as z:
-        z.writestr("word/document.xml", doc)
-        if numbering:
-            z.writestr("word/numbering.xml", numbering)
+    """合成一份 Word 稿：题名/作者/摘要/关键词 + 正文段 + 参考文献标题 + 清单。
+
+    批106（B-146 波2-2）dogfood：段落模型交给共享夹具生成器
+    `tools/docx_fixture_gen.py`（题名/作者/摘要/关键词 + 正文 + 参考文献 + 清单），
+    编号条目 = `(text, numId, ilvl)` 元组；`numbering` 非空时作为自定义
+    `word/numbering.xml` 原样写入。原 inline 实现手拼 document.xml，
+    本文件既有断言口径不变。
+    """
+    paras: list[object] = ["测试自动编号参考文献", "张三",
+                           "摘要：这是测试用摘要。", "关键词：测试；自动编号"]
+    if ref_num is None:
+        paras.extend(extra_body_pre or [])
+    else:
+        paras.extend((t, ref_num[0], ref_num[1]) if pre_numbered else t
+                     for t in (extra_body_pre or []))
+    paras.extend(body)
+    paras.append("参考文献")
+    if ref_num is None:
+        paras.extend(refs)
+    else:
+        paras.extend((t, ref_num[0], ref_num[1]) for t in refs)
+    _make_fixture_docx(str(path), paras=paras,
+                       numbering_xml=(numbering or None))
     return path
 
 
