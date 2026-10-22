@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # 跑全部 Swift 测试台（headless：不开 GUI、不联网、不起子进程）。
 #
-#   bash tools/run_swift_tests.sh
+#   bash tools/run_swift_tests.sh                  # 默认：7 台全跑（CI 走这条，勿改调用方式）
+#   bash tools/run_swift_tests.sh --only bibdb_ux  # 只跑一台（B-191 T3；省 1–2 min）
+#   bash tools/run_swift_tests.sh --help
 #
 # 为什么要有这个脚本：每个测试台都要在**特定目录**下编译（它们的 `#filePath` 是相对路径，
 # 编译时的相对路径与运行时的 CWD 一起决定它去哪个目录读生产源码）。手工敲容易踩两个坑：
@@ -9,6 +11,46 @@
 #   ② 复用旧二进制 → 看到的是上一次的结果（2026-10-16 就因此误报过一次）。
 # 这里统一：`cd sources-mac` 编译、每次用全新的 module cache、跑到哪个台子就报哪个。
 set -uo pipefail
+
+# B-191 T3：--only <台名> 只跑一台（台名 = 下方各测试台的第一个参数）。
+# 无参数 = 全跑 7 台（CI `ci.yml` 的调用方式，行为与 B-190 前逐行相同）。
+SUITES=(ai_settings ai_store proofcheck toc infocheck cutover bibdb_ux)
+ONLY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --only)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "✗ --only 需要台名，例如 --only bibdb_ux（可选：${SUITES[*]}）" >&2
+        exit 2
+      fi
+      ONLY="$2"; shift 2 ;;
+    --only=*)
+      ONLY="${1#--only=}"; shift
+      # 空值（`--only=`）必须报参数错误：否则 ONLY="" 会静默回落成「全跑 7 台」（V23 F1）
+      if [ -z "$ONLY" ]; then
+        echo "✗ --only= 后面缺台名，例如 --only=bibdb_ux（可选：${SUITES[*]}）" >&2
+        exit 2
+      fi ;;
+    -h|--help)
+      echo "用法：bash tools/run_swift_tests.sh [--only <台名>]"
+      echo "  无参数        = 编译并运行全部 7 台（CI 默认）"
+      echo "  --only <台名> = 只跑一台，结果/退出码含义不变（0 = 0 FAIL）"
+      echo "  台名：${SUITES[*]}"
+      exit 0 ;;
+    *)
+      echo "✗ 未知参数：$1（用法：bash tools/run_swift_tests.sh [--only <台名>]）" >&2
+      exit 2 ;;
+  esac
+done
+if [ -n "$ONLY" ]; then
+  _known=0
+  for _s in "${SUITES[@]}"; do [ "$_s" = "$ONLY" ] && _known=1; done
+  if [ "$_known" -eq 0 ]; then
+    echo "✗ 未知测试台：${ONLY}（可选：${SUITES[*]}）" >&2
+    exit 2
+  fi
+fi
+
 cd "$(dirname "$0")/../sources-mac" || exit 1
 PROJ=..
 FAILED=0
@@ -20,6 +62,8 @@ SDK="$(xcrun --show-sdk-path 2>/dev/null || true)"
 
 run_one() {
   local name="$1"; shift
+  # --only <台名>：非目标台直接跳过（无参数时 ONLY 为空 → 本节恒不触发，行为不变）
+  [ -n "$ONLY" ] && [ "$ONLY" != "$name" ] && return 0
   local files=("$@")
   local mc="/tmp/slcnmc_${name}" out="/tmp/slcn_${name}_harness"
   rm -rf "$mc" "$out"
@@ -55,7 +99,7 @@ run_one() {
   esac
 }
 
-echo "▶ 编译并运行 Swift 测试台（生产源码本身）"
+echo "▶ 编译并运行 Swift 测试台（生产源码本身）${ONLY:+—— --only $ONLY}"
 run_one ai_settings Core/ViewModels.swift Core/Support.swift Core/Log.swift \
   Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
   Features/CheckBibFeature.swift Features/MergeFeature.swift \
@@ -85,7 +129,7 @@ run_one bibdb_ux Core/Support.swift Core/Log.swift Features/BibDbFeature.swift \
 
 echo
 if [ "$FAILED" -eq 0 ]; then
-  echo "✅ 全部测试台 0 FAIL"
+  if [ -n "$ONLY" ]; then echo "✅ $ONLY 0 FAIL（--only 单台）"; else echo "✅ 全部测试台 0 FAIL"; fi
 else
   echo "❌ 有 $FAILED 个测试台未通过"
 fi
