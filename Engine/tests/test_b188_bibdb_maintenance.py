@@ -5,13 +5,16 @@ r"""B-188：引用库维护闭环的**引擎命令**契约（GUI 写库入口；
 本套件钉住三条新命令 + 两条既有能力补强（hermetic：tempfile 造库，不碰真库/真稿）：
 
   (a) `edit`：dry-run 逐字段 old→new、库 sha 前后、必填缺字段影响；不改库。
-      apply：sha 闸 → 自动备份 → 重算 content_sha256/updated_at → 原子写 → 复核；
+      apply：sha 闸 →（可选）写前备份 → 重算 content_sha256/updated_at → 原子写 → 复核；
       改 key 默认不勾、`--new-key` 后旧 key 自动进 `aliases`（全局查重）；
-      待裁决冲突记录拒绝编辑；`--bib` key 必须等于 `--key`；`--apply` 必须给
-      `--backup` 目录；`--expect-db-sha256` 不符退 2 且零写入；写库痕迹 `edits[]`。
+      待裁决冲突记录拒绝编辑；`--bib` key 必须等于 `--key`；`--expect-db-sha256`
+      不符退 2 且零写入；写库痕迹 `edits[]`。
+      **B-190：`--apply` 的 `--backup` 改可选**（不传 = 不写备份、`backup_path=""`、
+      `edits[].backup_sha256=""`；传了行为不变 —— GUI 改用 git 版本层）。
   (b) `merge-records`：2 条合并为 1 条（新规范 key、旧 key 全进 aliases、来源合并、
       记录数 -1、逐字段 `--field-source` 选源、dry-run 不写）；entry_type 不一致必须
-      `--entry-type`；key 撞车/待裁决记录/未知 key → 退 2 且零写入。
+      `--entry-type`；key 撞车/待裁决记录/未知 key → 退 2 且零写入；`--backup` 同
+      `edit` 一样可选（B-190）。
   (c) `suggest-field-fixes`：只读（库逐字节不变）；A 类缺 title/year 候选（题名标记/
       年份正则/出版者形态）+ 异常 entry_type 建议。
   (d) `lint --with-records`：`warning_items[].records` 给全量受影响 key；**不带 flag 时
@@ -25,6 +28,7 @@ r"""B-188：引用库维护闭环的**引擎命令**契约（GUI 写库入口；
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -80,6 +84,18 @@ def read_bytes(path: str) -> bytes:
 
 def sha(path: str) -> str:
     return hashlib.sha256(read_bytes(path)).hexdigest()
+
+
+def backup_files(root: str) -> list[str]:
+    """临时目录树里所有写前备份文件（B-190：不带 `--backup` 时必须为空）。"""
+    return sorted(str(p) for p in pathlib.Path(root).rglob("bibliography-*.jsonl"))
+
+
+def utc_stamps(count: int = 6) -> list[str]:
+    """当前 UTC 时间戳及随后几秒（预造同名备份，跨秒也不闪断）。"""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return [(now + datetime.timedelta(seconds=offset)).strftime("%Y%m%dT%H%M%SZ")
+            for offset in range(count)]
 
 
 SOURCE = {"kind": bibdb.KIND_PUBLISHED, "issue": "2023年第1期(68)",
@@ -238,17 +254,20 @@ with open(bib_two, "w", encoding="utf-8") as handle:
 r = run_cli("edit", "--db", db, "--key", "Alpha2020", "--bib", bib_two, "--dry-run", "--json")
 check("(a) --bib 多条/语法坏 → 退 2", r.returncode == 2)
 
-# apply 前安全闸
+# apply 前安全闸（B-190：--backup 可选；不给备份也必须拦住 sha 不符）
 r = run_cli("edit", "--db", db, "--key", "Alpha2020", "--entry-type", "article",
-            "--json-fields", json.dumps({"title": "T", "year": "2020"}), "--apply", "--json")
-check("(a) --apply 不给 --backup → 退 2 + 零写入",
-      r.returncode == 2 and sha(db) == before and "backup" in r.stderr, r.stderr[-120:])
+            "--json-fields", json.dumps({"title": "T", "year": "2020"}),
+            "--apply", "--expect-db-sha256", "f" * 64, "--json")
+check("(a) apply 不带 --backup 且 sha 不符 → 退 2 + 零写入 + 无备份文件",
+      r.returncode == 2 and sha(db) == before and "不符" in r.stderr
+      and not backup_files(os.path.join(TMP, "edit_dry")), r.stderr[-140:])
 r = run_cli("edit", "--db", db, "--key", "Alpha2020", "--entry-type", "article",
             "--json-fields", json.dumps({"title": "T", "year": "2020"}),
             "--apply", "--backup", os.path.join(TMP, "edit_dry", "bk"),
             "--expect-db-sha256", "f" * 64, "--json")
-check("(a) --expect-db-sha256 不符 → 退 2 + 零写入",
-      r.returncode == 2 and sha(db) == before and "不符" in r.stderr, r.stderr[-140:])
+check("(a) 带 --backup 但 --expect-db-sha256 不符 → 退 2 + 零写入 + 无备份文件",
+      r.returncode == 2 and sha(db) == before and "不符" in r.stderr
+      and not backup_files(os.path.join(TMP, "edit_dry")), r.stderr[-140:])
 
 # ══════════════════════════════════════════════════════════════════════════
 # (b) edit：apply
@@ -297,6 +316,62 @@ r = run_cli("edit", "--db", db, "--key", "Alpha2020x",
 check("(b) 同内容再 preview：field_changes 为空",
       parse_json(r).get("field_changes") == {} and parse_json(r).get("aliases_added") == [])
 
+# B-190：带 --backup 的旧行为不变（文件名口径 + 同名冲突拒绝）
+check("(b) 备份文件名 = `bibliography-<UTCts>-<库sha前12位>.jsonl`、目录里 1 份",
+      bool(re.fullmatch(r"bibliography-\d{8}T\d{6}Z-[0-9a-f]{12}\.jsonl",
+                        os.path.basename(d.get("backup_path", ""))))
+      and len(backup_files(backup_dir)) == 1, backup_files(backup_dir))
+db = fresh_db("edit_backup_collision")
+before = sha(db)
+collision_dir = os.path.join(TMP, "edit_backup_collision", "backups")
+os.makedirs(collision_dir)
+for stamp in utc_stamps():
+    with open(os.path.join(collision_dir,
+                           f"bibliography-{stamp}-{before[:12]}.jsonl"), "wb") as handle:
+        handle.write(b"")
+r = run_cli("edit", "--db", db, "--key", "Alpha2020", "--entry-type", "article",
+            "--json-fields", json.dumps({"title": "T", "year": "2020"}),
+            "--apply", "--backup", collision_dir, "--json")
+check("(b) 同名备份已存在 → 退 2 且库零写入",
+      r.returncode == 2 and sha(db) == before and "已存在" in r.stderr, r.stderr[-140:])
+# 这份撞名库不再往下用（避免污染后续断言的临时目录树）
+
+# ══════════════════════════════════════════════════════════════════════════
+# (b2) edit：apply 不带 --backup（B-190：不写备份文件；sha 闸/复核/edits[] 不变）
+# ══════════════════════════════════════════════════════════════════════════
+db = fresh_db("edit_apply_nobackup")
+nobackup_root = os.path.join(TMP, "edit_apply_nobackup")
+before = sha(db)
+fields_new = {"author": "Alpha, A.", "title": "Alpha Work Revised",
+              "journal": "Journal of Alpha", "volume": "2", "number": "1",
+              "pages": "1--10", "year": "2020"}
+r = run_cli("edit", "--db", db, "--key", "Alpha2020", "--new-key", "Alpha2020x",
+            "--json-fields", json.dumps({"entry_type": "article", "fields": fields_new}),
+            "--apply", "--expect-db-sha256", before, "--note", "无备份改名", "--json")
+d = parse_json(r)
+check("(b2) edit --apply 不带 --backup：退出 0 + written=true",
+      r.returncode == 0 and d.get("written") is True, r.stderr[-200:])
+check("(b2) 不产生任何备份文件、payload backup_path 为空串",
+      d.get("backup_path") == "" and not backup_files(nobackup_root),
+      backup_files(nobackup_root))
+check("(b2) 库 sha 真变了且 reported after = 实测",
+      sha(db) != before and d.get("db_sha256_after") == sha(db))
+store = bibdb.Store.load(db)
+record = store.get("Alpha2020x")
+check("(b2) 写后复核 ok、新 key/旧 key→aliases 正常",
+      d.get("verification", {}).get("ok") is True
+      and record is not None and store.get("Alpha2020") is None
+      and "Alpha2020" in record.get("aliases", []), d.get("verification"))
+check("(b2) edits[] 正常追加且 backup_sha256/backup_path 均为空串",
+      (record.get("edits") or [{}])[-1].get("action") == "edit"
+      and (record.get("edits") or [{}])[-1].get("note") == "无备份改名"
+      and (record.get("edits") or [{}])[-1].get("backup_sha256") == ""
+      and (record.get("edits") or [{}])[-1].get("backup_path") == "",
+      (record.get("edits") or [{}])[-1])
+check("(b2) 其余记录逐字节未动（除被编辑那条）",
+      json.dumps(store.get("t15"), ensure_ascii=False, sort_keys=True)
+      == json.dumps(BOOK_B, ensure_ascii=False, sort_keys=True))
+
 # ══════════════════════════════════════════════════════════════════════════
 # (c) merge-records：dry-run + apply
 # ══════════════════════════════════════════════════════════════════════════
@@ -337,6 +412,10 @@ check("(d) merge --apply 退出 0 / written=true", r.returncode == 0 and d.get("
       r.stderr[-200:])
 check("(d) 备份存在且 sha = 写前库", os.path.isfile(d.get("backup_path", ""))
       and sha(d["backup_path"]) == before)
+check("(d) 备份文件名 = `bibliography-<UTCts>-<库sha前12位>.jsonl`",
+      bool(re.fullmatch(r"bibliography-\d{8}T\d{6}Z-[0-9a-f]{12}\.jsonl",
+                        os.path.basename(d.get("backup_path", "")))),
+      os.path.basename(d.get("backup_path", "")))
 store = bibdb.Store.load(db)
 survivor = store.get("Tindale2015")
 check("(d) 记录数 6→5、两条旧 key 都不在",
@@ -351,6 +430,39 @@ check("(d) 合并痕迹 edits[].merged_keys 全留",
       (survivor.get("edits") or [{}])[-1])
 check("(d) 复核 ok / lint error 0", d.get("verification", {}).get("ok") is True
       and not store.lint()["errors"], d.get("verification"))
+
+# B-190：merge-records --apply 不带 --backup（不写备份；sha 闸/复核/edits[] 不变）
+db = fresh_db("merge_apply_nobackup")
+nobackup_root = os.path.join(TMP, "merge_apply_nobackup")
+before = sha(db)
+r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "Tindale2015",
+            "--apply", "--expect-db-sha256", before, "--note", "无备份合并", "--json")
+d = parse_json(r)
+check("(d2) merge --apply 不带 --backup：退出 0 + written=true",
+      r.returncode == 0 and d.get("written") is True, r.stderr[-200:])
+check("(d2) 不产生任何备份文件、payload backup_path 为空串",
+      d.get("backup_path") == "" and not backup_files(nobackup_root),
+      backup_files(nobackup_root))
+store = bibdb.Store.load(db)
+survivor = store.get("Tindale2015")
+check("(d2) 记录数 6→5、旧 key 全进 aliases、复核 ok",
+      len(store.records()) == 5 and survivor is not None
+      and set(survivor.get("aliases") or []) == {"1-24", "t15"}
+      and d.get("verification", {}).get("ok") is True, d.get("verification"))
+check("(d2) edits[] 正常追加且 backup_sha256/backup_path 均为空串",
+      (survivor.get("edits") or [{}])[-1].get("action") == "merge"
+      and (survivor.get("edits") or [{}])[-1].get("note") == "无备份合并"
+      and (survivor.get("edits") or [{}])[-1].get("backup_sha256") == ""
+      and (survivor.get("edits") or [{}])[-1].get("backup_path") == "",
+      (survivor.get("edits") or [{}])[-1])
+# sha 闸：不带 backup 时同样拦（rc2 + 零写入 + 无备份文件）
+db = fresh_db("merge_nobackup_gate")
+before = sha(db)
+r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "Tindale2015",
+            "--apply", "--expect-db-sha256", "f" * 64, "--json")
+check("(d2) merge --apply 不带 --backup 且 sha 不符 → 退 2 + 零写入 + 无备份文件",
+      r.returncode == 2 and sha(db) == before and "不符" in r.stderr
+      and not backup_files(os.path.join(TMP, "merge_nobackup_gate")), r.stderr[-140:])
 
 # 近重复：逐字段选源 + entry_type 不一致必须显式给
 nr_a = mk_record("Segerberg1971", "phdthesis", {

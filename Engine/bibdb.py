@@ -77,19 +77,21 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             **不写库**）；--apply 才写库（须先 --backup；
                                             人工簇暂不合并；旧 key 全量进 aliases）
     edit        --key K (--bib PATH | --json-fields JSON) [--new-key NEW]
-                [--entry-type T] [--dry-run | --apply --backup DIR]
+                [--entry-type T] [--dry-run | --apply [--backup DIR]]
                 [--expect-db-sha256 SHA] [--note TEXT] [--json]
                                             B-188 通用条目编辑：默认 dry-run（逐字段 old→new、
                                             库 sha 前后、必填缺字段影响）；--apply 才写（sha 闸 +
-                                            自动备份 + 原子写 + 重新读库复核）。--new-key 改 key
+                                            原子写 + 重新读库复核）。B-190 起 --backup 可选：不传 = 不写备份
+                                             （GUI 改用 git 版本层），传了行为不变。--new-key 改 key
                                             （默认不改；旧 key 自动进记录 aliases）；有待裁决
                                             冲突的记录拒绝编辑；写库痕迹进记录 edits[]
     merge-records --keys A,B[,...] --new-key K [--entry-type T]
-                [--field-source FIELD=KEY ...] [--dry-run | --apply --backup DIR]
+                [--field-source FIELD=KEY ...] [--dry-run | --apply [--backup DIR]]
                 [--expect-db-sha256 SHA] [--note TEXT] [--json]
                                             B-188 合并 2+ 条重复记录为 1 条：新规范 key、
                                             旧 key 全进 aliases、来源合并、记录数 -N+1；
-                                            近重复用 --field-source 逐字段选源；默认 dry-run
+                                            近重复用 --field-source 逐字段选源；默认 dry-run；
+                                            B-190 起 --backup 同样可选（不传 = 不写备份）
     suggest-field-fixes [--registry missing_field|unknown_entry_type] [--limit N] [--json]
                                             B-188 只读：缺 title/year 的字段归位候选
                                             （A 类 265 条口径）+ 异常 entry_type 建议；
@@ -153,6 +155,8 @@ keep/defer 只改 `conflicts[]` 的裁决元数据（不改字段值），adopt/
 `resolve --adopt-all-pending` 一次原子写 + 一次备份；`restore` 从备份整库写回。
 写动作可加 `--expect-db-sha256`（完整 64 位十六进制，不符退出 2 且零写入）与
 `--backup DIR`（真的会写入时先备份 `bibliography-<UTCts>-<库sha前12位>.jsonl`）。
+B-190 起 `edit` / `merge-records` 的 `--backup` 也**可选**：不传 = 不写备份
+（`backup_path=""`、`edits[].backup_sha256=""`；GUI 改用 git 版本层），传了行为不变。
 `normalize` 默认是**纯 dry-run**：只写报告文件，绝不写 `bibliography.jsonl`；
 `--apply` 才写库（且必须先用 `--backup` 指定备份、sha256 与当前库一致才允许执行）。
 `--dry-run`（预览）：照常解析/查重/算冲突，但**一个字节都不写**（库文件不存在也不会
@@ -249,12 +253,27 @@ def _normalize_sha256_arg(value: object, label: str) -> str:
     return text
 
 
+def _backup_dir_arg(args) -> str:
+    """`--backup` 口径（B-190 起对 `edit`/`merge-records` 也**可选**）："" = 不写备份。
+
+    给了就必须是**目录**（不存在则由写前备份创建；已存在同名文件 → 退出 2）。
+    单点解析，`_write_guard` 与 `_check_edit_apply_guards` 同源，避免两套口径漂移。
+    """
+    backup_dir = str(getattr(args, "backup", "") or "").strip()
+    if not backup_dir:
+        return ""
+    if os.path.exists(backup_dir) and not os.path.isdir(backup_dir):
+        raise bibdb.BibDBError(f"--backup 需要目录，但已存在同名文件：{backup_dir}")
+    return os.path.abspath(backup_dir)
+
+
 def _write_guard(path: str, args) -> tuple[str, str]:
     """写动作通用安全闸（B-127）：返回 `(库当前字节 sha256, 备份目录绝对路径或 "")`。
 
     · `--expect-db-sha256`：完整 64 位十六进制，且与库当前字节 sha256 **一致**才继续；
       不符 → `BibDBError`（退出 2）。调用方在**任何写入之前**调用本函数 → 天然零写入。
-    · `--backup`：参数是**目录**（不存在则由写前备份创建；已存在同名文件 → 退出 2）。
+    · `--backup`：可选；参数是**目录**（不存在则由写前备份创建；已存在同名文件 → 退出 2）。
+      不传 = 不写备份（`""`）。
     """
     before_sha = bibdb.db_sha256(path)
     wanted = _normalize_sha256_arg(getattr(args, "expect_db_sha256", ""),
@@ -266,12 +285,7 @@ def _write_guard(path: str, args) -> tuple[str, str]:
             raise bibdb.BibDBError(
                 f"库 sha256 与 --expect-db-sha256 不符（当前 {before_sha[:12]}…，期望 "
                 f"{wanted[:12]}…）：库可能已被其它操作修改，请刷新后重试（本次未写库）")
-    backup_dir = str(getattr(args, "backup", "") or "").strip()
-    if backup_dir:
-        if os.path.exists(backup_dir) and not os.path.isdir(backup_dir):
-            raise bibdb.BibDBError(f"--backup 需要目录，但已存在同名文件：{backup_dir}")
-        backup_dir = os.path.abspath(backup_dir)
-    return before_sha, backup_dir
+    return before_sha, _backup_dir_arg(args)
 
 
 def _utc_stamp() -> str:
@@ -5383,7 +5397,7 @@ def _append_edit_trace(record: dict, entry: dict) -> None:
 
 
 def _apply_edit_plan(store, *, key: str, entry_type: str, fields: dict,
-                     new_key: str, note: str, before_sha: str,
+                     new_key: str, note: str, backup_sha256: str,
                      backup_path: str) -> dict:
     """在内存里执行一次编辑（dry-run 用 clone，apply 用真 store）；返回变更摘要。"""
     record = store._by_key.get(key)
@@ -5420,7 +5434,7 @@ def _apply_edit_plan(store, *, key: str, entry_type: str, fields: dict,
         "note": note, "old_key": old_key, "new_key": target_key,
         "entry_type_before": old_etype, "entry_type_after": entry_type,
         "changed_fields": changed,
-        "backup_sha256": before_sha, "backup_path": backup_path,
+        "backup_sha256": backup_sha256, "backup_path": backup_path,
     })
     store.dirty = True
     return {"key": old_key, "new_key": target_key,
@@ -5474,7 +5488,7 @@ def _merge_fields(records: list[dict], field_sources: dict[str, str]) -> dict[st
 
 def _apply_merge_plan(store, *, keys: list[str], new_key: str, entry_type: str,
                       merged_fields: dict[str, str], field_sources: dict[str, str],
-                      note: str, before_sha: str, backup_path: str) -> dict:
+                      note: str, backup_sha256: str, backup_path: str) -> dict:
     """在内存里执行一次合并；返回变更摘要（dry-run 用 clone，apply 用真 store）。"""
     records = [store._by_key[key] for key in keys]
     survivor = records[0]
@@ -5519,7 +5533,7 @@ def _apply_merge_plan(store, *, keys: list[str], new_key: str, entry_type: str,
                                 for record in records},
         "field_sources": dict(sorted(field_sources.items())),
         "aliases": sorted(aliases),
-        "backup_sha256": before_sha, "backup_path": backup_path,
+        "backup_sha256": backup_sha256, "backup_path": backup_path,
     })
     for record in records[1:]:
         store.remove_record(str(record.get("key")))
@@ -5567,7 +5581,7 @@ def _load_verify(path: str, *, expect_key: str, expect_etype: str,
 
 
 def cmd_edit(args) -> int:
-    """编辑一条库记录；默认 dry-run，`--apply` 才写（sha 闸 + 自动备份 + 复核）。"""
+    """编辑一条库记录；默认 dry-run，`--apply` 才写（sha 闸 + 可选备份 + 复核）。"""
     apply_mode = bool(getattr(args, "apply", False))
     if apply_mode and bool(getattr(args, "dry_run", False)):
         return _fail(args, "--apply 与 --dry-run 互斥：一次只能选一种模式")
@@ -5594,25 +5608,28 @@ def cmd_edit(args) -> int:
             if collision:
                 raise bibdb.BibDBError(collision)
         before_sha = bibdb.db_sha256(path)
+        backup_dir = ""
         backup_path = ""
         if apply_mode:
-            _check_edit_apply_guards(args, path, before_sha)
+            backup_dir = _check_edit_apply_guards(args, path, before_sha)
         # 预演（dry-run 用 clone；apply 也先 clone 算 sha 供对比）
         clone = _clone_store(store)
         summary = _apply_edit_plan(
             clone, key=key, entry_type=entry_type, fields=fields,
             new_key=new_key, note=str(args.note or ""),
-            before_sha=before_sha, backup_path="")
+            backup_sha256="", backup_path="")
         estimate_sha = _store_sha(clone)
         written = False
         after_sha = before_sha
         verification: dict = {}
         if apply_mode:
-            backup_path = _write_db_backup(path, str(args.backup), before_sha)
+            backup_path = (_write_db_backup(path, backup_dir, before_sha)
+                           if backup_dir else "")
             result = _apply_edit_plan(
                 store, key=key, entry_type=entry_type, fields=fields,
                 new_key=new_key, note=str(args.note or ""),
-                before_sha=before_sha, backup_path=backup_path)
+                backup_sha256=before_sha if backup_path else "",
+                backup_path=backup_path)
             written = store.save()
             after_sha = bibdb.db_sha256(path)
             verification = _load_verify(
@@ -5622,7 +5639,7 @@ def cmd_edit(args) -> int:
                 absent_keys=[])
             if not verification.get("ok"):
                 raise bibdb.BibDBError(
-                    "写库后复核失败（数据未按预期落盘，请用备份恢复）："
+                    "写库后复核失败（数据未按预期落盘，请检查库文件并按需回退）："
                     + "；".join(verification.get("problems") or []))
     except bibdb.BibDBError as exc:
         return _fail(args, exc)
@@ -5653,23 +5670,24 @@ def cmd_edit(args) -> int:
     if summary["missing_before"] or summary["missing_after"]:
         print(f"  必填缺字段：{summary['missing_before'] or '无'} → {summary['missing_after'] or '无'}")
     if apply_mode:
-        print(f"  备份：{backup_path}")
+        if backup_path:
+            print(f"  备份：{backup_path}")
         print(f"  库 sha256：{before_sha[:12]}… → {after_sha[:12]}…")
         print(f"  复核：{'通过' if verification.get('ok') else '失败'}（lint error "
               f"{verification.get('lint_errors')} / warning {verification.get('lint_warnings')}）")
     else:
         print(f"  （--dry-run：未写库；预计库 sha256 {estimate_sha[:12]}…）")
-        print("   确认无误后加 --apply --backup <目录> 写入")
+        print("   确认无误后加 --apply 写入（需要额外备份时另加 --backup <目录>）")
     return 0
 
 
-def _check_edit_apply_guards(args, path: str, before_sha: str) -> None:
-    """apply 前置：--backup 必须是目录（必填）、sha 闸校验（可选但建议）。"""
-    backup_dir = str(getattr(args, "backup", "") or "").strip()
-    if not backup_dir:
-        raise bibdb.BibDBError("--apply 会写真实库，必须先给 --backup <目录>（自动备份）")
-    if os.path.exists(backup_dir) and not os.path.isdir(backup_dir):
-        raise bibdb.BibDBError(f"--backup 需要目录，但已存在同名文件：{backup_dir}")
+def _check_edit_apply_guards(args, path: str, before_sha: str) -> str:
+    """apply 前置：`--backup` **可选**（B-190 起；不传 = 不写备份）、sha 闸（可选但建议）。
+
+    返回备份目录绝对路径（`""` = 不写备份）；口径与 `_write_guard` 同源：
+    `--expect-db-sha256` 不符 → `BibDBError`（退出 2 且零写入）；`--backup` 必须是目录。
+    """
+    backup_dir = _backup_dir_arg(args)
     wanted = _normalize_sha256_arg(getattr(args, "expect_db_sha256", ""),
                                    "--expect-db-sha256")
     if wanted:
@@ -5679,6 +5697,7 @@ def _check_edit_apply_guards(args, path: str, before_sha: str) -> None:
             raise bibdb.BibDBError(
                 f"库 sha256 与 --expect-db-sha256 不符（当前 {before_sha[:12]}…，期望 "
                 f"{wanted[:12]}…）：库可能已被其它操作修改，请刷新后重试（本次未写库）")
+    return backup_dir
 
 
 def cmd_merge_records(args) -> int:
@@ -5724,23 +5743,25 @@ def cmd_merge_records(args) -> int:
         if not merged_fields:
             raise bibdb.BibDBError("合并后字段为空：拒绝写入一条没有字段的记录")
         before_sha = bibdb.db_sha256(path)
+        backup_dir = ""
         if apply_mode:
-            _check_edit_apply_guards(args, path, before_sha)
+            backup_dir = _check_edit_apply_guards(args, path, before_sha)
         clone = _clone_store(store)
         summary = _apply_merge_plan(
             clone, keys=keys, new_key=new_key, entry_type=entry_type,
             merged_fields=merged_fields, field_sources=field_sources,
-            note=str(args.note or ""), before_sha=before_sha, backup_path="")
+            note=str(args.note or ""), backup_sha256="", backup_path="")
         estimate_sha = _store_sha(clone)
         written = False
         after_sha = before_sha
         verification: dict = {}
         if apply_mode:
-            backup_path = _write_db_backup(path, str(args.backup), before_sha)
+            backup_path = (_write_db_backup(path, backup_dir, before_sha)
+                           if backup_dir else "")
             _apply_merge_plan(
                 store, keys=keys, new_key=new_key, entry_type=entry_type,
                 merged_fields=merged_fields, field_sources=field_sources,
-                note=str(args.note or ""), before_sha=before_sha,
+                note=str(args.note or ""), backup_sha256=before_sha if backup_path else "",
                 backup_path=backup_path)
             written = store.save()
             after_sha = bibdb.db_sha256(path)
@@ -5750,7 +5771,7 @@ def cmd_merge_records(args) -> int:
                 absent_keys=keys)
             if not verification.get("ok"):
                 raise bibdb.BibDBError(
-                    "写库后复核失败（数据未按预期落盘，请用备份恢复）："
+                    "写库后复核失败（数据未按预期落盘，请检查库文件并按需回退）："
                     + "；".join(verification.get("problems") or []))
     except bibdb.BibDBError as exc:
         return _fail(args, exc)
@@ -5775,13 +5796,14 @@ def cmd_merge_records(args) -> int:
     print(f"aliases：{'、'.join(summary['aliases']) or '（无）'}")
     print(f"记录数：{summary['records_before']} → {summary['records_after']}")
     if apply_mode:
-        print(f"  备份：{backup_path}")
+        if backup_path:
+            print(f"  备份：{backup_path}")
         print(f"  库 sha256：{before_sha[:12]}… → {after_sha[:12]}…")
         print(f"  复核：{'通过' if verification.get('ok') else '失败'}（lint error "
               f"{verification.get('lint_errors')} / warning {verification.get('lint_warnings')}）")
     else:
         print(f"  （--dry-run：未写库；预计库 sha256 {estimate_sha[:12]}…）")
-        print("   确认无误后加 --apply --backup <目录> 写入")
+        print("   确认无误后加 --apply 写入（需要额外备份时另加 --backup <目录>）")
     return 0
 
 
@@ -6257,7 +6279,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── B-188：通用条目编辑 / 合并 / 字段归位建议（GUI 写库入口）────────────
     edt = sub.add_parser(
         "edit", parents=[common],
-        help="编辑一条库记录（默认 dry-run；--apply 需 sha 闸 + --backup 目录；可 --new-key）")
+        help="编辑一条库记录（默认 dry-run；--apply 走 sha 闸 + 原子写 + 写后复核；可 --new-key）")
     edt.add_argument("--key", required=True, metavar="K", help="库内 canonical key（定位用）")
     edt.add_argument("--bib", default="", metavar="PATH",
                      help="编辑后的单条 BibTeX 文件（key 必须等于 --key；改 key 用 --new-key）")
@@ -6268,11 +6290,13 @@ def build_parser() -> argparse.ArgumentParser:
     edt.add_argument("--entry-type", default="", metavar="T", help="覆盖条目类型")
     emode = edt.add_mutually_exclusive_group()
     emode.add_argument("--dry-run", action="store_true", help="预览（默认就是；只算不写）")
-    emode.add_argument("--apply", action="store_true", help="真正写库（须 --backup 目录）")
+    emode.add_argument("--apply", action="store_true",
+                       help="真正写库（可选 --backup 目录；不传 = 不写备份）")
     edt.add_argument("--expect-db-sha256", default="", metavar="SHA",
                      help="写前校验库字节 sha256（完整 64 位十六进制）")
     edt.add_argument("--backup", default="", metavar="DIR",
-                     help="写前自动备份目录（--apply 必填；文件名 bibliography-<UTCts>-<sha12>.jsonl）")
+                     help="写前自动备份目录（可选；不传 = 不写备份。文件名 "
+                          "bibliography-<UTCts>-<sha12>.jsonl）")
     edt.add_argument("--note", default="", help="写库痕迹备注（记进记录 edits[]）")
     edt.add_argument("--json", action="store_true", help="机器可读输出")
     edt.set_defaults(func=cmd_edit)
@@ -6288,11 +6312,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="逐字段选源（可重复；不给的字段按 --keys 顺序取第一条非空值）")
     mmode2 = mrec.add_mutually_exclusive_group()
     mmode2.add_argument("--dry-run", action="store_true", help="预览（默认就是；只算不写）")
-    mmode2.add_argument("--apply", action="store_true", help="真正写库（须 --backup 目录）")
+    mmode2.add_argument("--apply", action="store_true",
+                        help="真正写库（可选 --backup 目录；不传 = 不写备份）")
     mrec.add_argument("--expect-db-sha256", default="", metavar="SHA",
                       help="写前校验库字节 sha256（完整 64 位十六进制）")
     mrec.add_argument("--backup", default="", metavar="DIR",
-                      help="写前自动备份目录（--apply 必填）")
+                      help="写前自动备份目录（可选；不传 = 不写备份）")
     mrec.add_argument("--note", default="", help="写库痕迹备注（记进幸存的记录 edits[]）")
     mrec.add_argument("--json", action="store_true", help="机器可读输出")
     mrec.set_defaults(func=cmd_merge_records)
