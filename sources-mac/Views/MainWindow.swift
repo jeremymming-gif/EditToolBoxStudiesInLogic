@@ -78,13 +78,11 @@ struct MainWindow: View {
                     // 第 132 条：引用库 5 页。同样走 `.pageVisible`（案例 126：隐藏页会抢
                     // 拖拽命中，必须让隐藏页整体移出命中范围；**不要**改成条件渲染，
                     // 那会丢页面状态、也会让切换页时重新读库）。
-                    // B-143：库概况橙字下钻的「到待裁决页看 / 查看历史已裁决」→
-                    // 先把共享开关设成目标态，再切页（两页开关态一致）。
+                    // B-188：库概况橙字下钻「去处理（定位分类）」→ 只切页；
+                    // 定位/「显示已裁决」由 StatsView 先写一次性 `bibdb.reviewJump`，
+                    // 待处理页激活时取走（不再有共享 showResolvedConflicts 开关）。
                     BibDbStatsView(log: log, bibdb: bibdb, isActive: selection == .bibstats,
-                                   onOpenReview: { showResolved in
-                                       bibdb.showResolvedConflicts = showResolved
-                                       selection = .bibreview
-                                   })
+                                   onOpenReview: { selection = .bibreview })
                         .pageVisible(selection == .bibstats)
                     BibDbQueryView(log: log, bibdb: bibdb, isActive: selection == .bibquery)
                         .pageVisible(selection == .bibquery)
@@ -176,7 +174,7 @@ enum NavPage: String, CaseIterable, Identifiable {
     case convert, checkbib, proofcheck, merge
     case infocheck, compile, toc, cleantemp
     case publish
-    // 第 132 条：引用库（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置）
+    // 第 132 条：引用库（库概况 / 查库 / 入藏 / 待处理（B-188 由「待裁决」改名）/ 引用库设置）
     case bibstats, bibquery, bibimport, bibreview, bibsettings
     case settings
 
@@ -196,7 +194,7 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .bibstats: return "库概况"
         case .bibquery: return "查库"
         case .bibimport: return "入藏"
-        case .bibreview: return "待裁决"
+        case .bibreview: return "待处理"
         case .bibsettings: return "引用库设置"
         case .settings: return "设置"
         }
@@ -232,8 +230,8 @@ enum NavPage: String, CaseIterable, Identifiable {
     /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件。
     static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .publish]
 
-    /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待裁决 → 设置。
-    /// 排序就是使用顺序：先知道库里有什么，再查/入藏，有冲突才去待裁决。
+    /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待处理 → 设置。
+    /// 排序就是使用顺序：先知道库里有什么，再查/入藏，要人工处理才去「待处理」页。
     static let library: [NavPage] = [.bibstats, .bibquery, .bibimport, .bibreview, .bibsettings]
 }
 

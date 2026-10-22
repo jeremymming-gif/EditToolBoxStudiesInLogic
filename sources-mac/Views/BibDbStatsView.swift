@@ -35,10 +35,11 @@ struct BibDbStatsView: View {
     @ObservedObject var bibdb: BibDbSettings
     /// 当前是不是显示着这一页：切到本页才去读库（5 页同时存在，见 `MainWindow` 的 ZStack）
     let isActive: Bool
-    /// B-143：warning 明细里的「到待裁决页看 / 查看历史已裁决」跳转。
-    /// 参数 = 跳过去后待裁决页的「显示已裁决」开关态（两页共用 `bibdb.showResolvedConflicts`，
-    /// 由 MainWindow 接线：先设开关再切页，保证跳转后开关态与按钮语义一致）。
-    var onOpenReview: (Bool) -> Void = { _ in }
+    /// B-188：warning 明细里的「去处理（定位分类）」跳转。
+    /// 点击时先写**一次性跳转意图** `bibdb.reviewJump`（目标分类 + 字段冲突区看不看已处理），
+    /// 再调本回调切页；由 `MainWindow` 接线成 `{ selection = .bibreview }`。
+    /// 目标页在激活时取走意图并清 nil（见 CONTRACT §3），本页不持有共享开关状态。
+    var onOpenReview: () -> Void = {}
 
     @StateObject private var model = BibDbStatsModel()
     @State private var showWarningDetail = false
@@ -136,12 +137,12 @@ struct BibDbStatsView: View {
                              + "（\(lint.conflictsResolvedTotal) 处差异，审计留痕）"
                              + (lint.conflictsPendingRecords == 0
                                 ? "，无需处理"
-                                : "（到「待裁决」页看清单）"),
+                                : "（到「待处理」页看清单）"),
                          color: lint.conflictsPendingRecords > 0 ? .orange : .secondary)
         } else {
             BibDbInfoRow(label: "冲突", value: "\(stats.conflictsRecords) 条记录 / "
                          + "\(stats.conflictsTotal) 处字段差异"
-                         + (stats.conflictsTotal == 0 ? "（无待裁决项）" : "（到「待裁决」页看清单）"),
+                         + (stats.conflictsTotal == 0 ? "（无待裁决项）" : "（到「待处理」页看清单）"),
                          color: stats.conflictsTotal == 0 ? .primary : .orange)
         }
         if !stats.issueList.isEmpty {
@@ -173,7 +174,7 @@ struct BibDbStatsView: View {
                     .controlSize(.small)
                     .help("按类展开：重复记录 / 同一作品多记录 / 字段冲突 / 缺字段 / "
                           + "entry_type 笔误；每条给 key 例子与建议操作")
-                    Text("橙字来自库健康检查 `lint`；字段冲突的裁决明细在「待裁决」页（两个数据源）")
+                    Text("橙字来自库健康检查 `lint`；字段冲突的裁决明细在「待处理」页（两个数据源）")
                         .font(.caption2).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer()
@@ -253,7 +254,7 @@ struct BibDbStatsView: View {
     private func warningDetailBody(_ lint: BibDbFeature.Lint) -> some View {
         let categories = warningCategories(lint)
         VStack(alignment: .leading, spacing: 14) {
-            Text("数据源：引擎 `bibdb.py lint`（库健康检查）。字段冲突的逐条裁决见「待裁决」页。")
+            Text("数据源：引擎 `bibdb.py lint`（库健康检查）。库健康与字段冲突都到「待处理」页处理。")
                 .font(.caption).foregroundStyle(.secondary)
             if categories.isEmpty {
                 Text("没有 warning。").foregroundStyle(.secondary)
@@ -261,7 +262,7 @@ struct BibDbStatsView: View {
             ForEach(categories) { category in
                 warningCategoryBlock(category)
             }
-            Text("本页只报告、不写库；重复记录合并属 P6 另卡（不自动合并）。")
+            Text("本页只报告、不写库；「去处理」只是跳到「待处理」页定位分类（合并/编辑都在那里，绝不自动合并）。")
                 .font(.caption2).foregroundStyle(.tertiary)
         }
         .padding(16)
@@ -282,7 +283,7 @@ struct BibDbStatsView: View {
             }
             // 分类折叠：库大时明细可能多，只逐条列到 20 条（完整清单跑 bibdb.py lint）
             ForEach(Array(category.items.prefix(20).enumerated()), id: \.offset) { pair in
-                warningItemRow(pair.element)
+                warningItemRow(pair.element, categoryTitle: category.title)
             }
             if category.items.count > 20 {
                 Text("……另有 \(category.items.count - 20) 条同类提示，"
@@ -295,7 +296,8 @@ struct BibDbStatsView: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12)))
     }
 
-    private func warningItemRow(_ item: BibDbFeature.LintWarningItem) -> some View {
+    private func warningItemRow(_ item: BibDbFeature.LintWarningItem,
+                                categoryTitle: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("· " + item.detail)
                 .font(.caption)
@@ -309,20 +311,27 @@ struct BibDbStatsView: View {
             }
             Text("建议：\(item.action)").font(.caption2).foregroundStyle(.tertiary)
             if item.registry == "conflicts" {
-                // 字段冲突：两源口径对齐的关键一块——显示 pending/resolved 并可跳转待裁决页
+                // 字段冲突：两源口径对齐的关键一块——显示 pending/resolved 并跳到待处理页
                 Text(BibDbFeature.LintWarningDigest.conflictsSummary(item))
                     .font(.caption)
                     .foregroundStyle(item.pendingRecords > 0 ? .orange : .secondary)
-                HStack(spacing: 8) {
-                    ForEach(BibDbFeature.reviewJumps(pending: item.pendingRecords,
-                                                     resolved: item.resolvedRecords)) { jump in
-                        Button(jump.title) {
-                            showWarningDetail = false
-                            onOpenReview(jump.showResolved)
-                        }
-                        .controlSize(.small)
-                    }
+            }
+            HStack(spacing: 8) {
+                Button {
+                    showWarningDetail = false
+                    // 一次性意图：定位到本条 warning 的 registry；字段冲突没有待裁决项时看历史已裁决。
+                    bibdb.reviewJump = BibDbReviewJump(
+                        registry: item.registry,
+                        showResolved: item.registry == "conflicts" && item.pendingRecords == 0)
+                    onOpenReview()
+                } label: {
+                    Label("去处理（定位分类）", systemImage: "arrow.up.forward.app")
                 }
+                .controlSize(.small)
+                .help("到「待处理」页的「\(categoryTitle)」分类逐条处理（本页只读，不改库）")
+                Text("数据源：引擎 `lint`（本页只报告；处理在「待处理」页）")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.leading, 8)
@@ -338,7 +347,7 @@ struct BibDbStatsView: View {
                          monospaced: true, color: .red, wraps: true)
         }
         Text("读库用时 \(BibDbUI.seconds(overview.seconds))。"
-             + "这一页只读：不写库、不改清单。要生成/更新待裁决清单请到「待裁决」页。")
+             + "这一页只读：不写库、不改清单。要逐条处理库健康问题请到「待处理」页。")
             .font(.caption)
             .foregroundStyle(.tertiary)
     }

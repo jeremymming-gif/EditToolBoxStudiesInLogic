@@ -70,6 +70,16 @@ struct BibDbQueryView: View {
     let isActive: Bool
 
     @StateObject private var model = BibDbQueryModel()
+    /// B-188：本页的「编辑此条」入口。key 在点按钮时冻结进 target——
+    /// 编辑期间结果列表/选中项可能变化，写库对象不能跟着变。
+    /// ⚠️ 用 `.sheet(item:)` 而不是 `isPresented + 另一个 @State`：后者在真机走查里
+    /// 出现过 sheet 拿到空 key（`loadEditorDraft` 报「缺少要编辑的条目 key」×2），
+    /// item 在呈现时刻整体捕获、顺序无歧义。
+    private struct EditorTarget: Identifiable {
+        let key: String
+        var id: String { key }
+    }
+    @State private var editorTarget: EditorTarget? = nil
 
     var body: some View {
         ScrollView {
@@ -113,6 +123,17 @@ struct BibDbQueryView: View {
             .frame(maxWidth: 920, alignment: .leading)
         }
         .onChange(of: model.mode) { _ in model.reset() }
+        // B-188：共享条目编辑器（预览=引擎 dry-run；写入前自动备份 + sha 校验）。
+        .sheet(item: $editorTarget) { target in
+            BibDbEditorSheet(log: log, bibdb: bibdb, recordKey: target.key,
+                             onWritten: {
+                                 // 写库成功：用当前输入重查一次，刷新详情（不清输入、不换模式）。
+                                 Logger(store: log)("引用库已写入；重新查询当前输入以刷新详情。\n")
+                                 if !model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                     model.search()
+                                 }
+                             })
+        }
     }
 
     // MARK: - 查询条
@@ -178,6 +199,10 @@ struct BibDbQueryView: View {
                         Text("未核实").font(.caption).foregroundStyle(.orange)
                     }
                     Spacer()
+                    Button("编辑此条") {
+                        editorTarget = EditorTarget(key: hit.record.key)
+                    }
+                    .help("打开共享条目编辑器：预览（引擎 dry-run）→ 二次确认 → 写库（自动备份 + sha 校验）")
                     Button("复制 BibTeX") { copyBibTeX(hit) }
                         .buttonStyle(.borderedProminent)
                     Button("在运行日志里显示") { logHit(hit) }

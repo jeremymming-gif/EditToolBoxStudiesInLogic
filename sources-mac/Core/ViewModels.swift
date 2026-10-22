@@ -953,6 +953,22 @@ final class EditorsProbeModel: ObservableObject {
     }
 }
 
+/// B-188：从其它引用库页跳到「待处理」页的**一次性跳转意图**。
+///
+/// 为什么单独一个类型（而不是 `Bool`/多个 `@Published`）：
+///   · 一次跳转 = 「定位到哪个分类」+「字段冲突区看不看已裁决」两个事实，绑成一个值，
+///     ReviewView 取走一次就够，不会出现「开关开了但分类没定位」这类半应用状态；
+///   · 放在 `BibDbSettings` 外面、且**不依赖 `BibDbFeature` 的任何类型**：其它 Swift 测试台
+///     只编译 `Core/ViewModels.swift`（不带 `Features/BibDbFeature.swift`），这里不能出现
+///     引擎层类型。`registry` 用字符串标识分类（与 `LintWarningRegistry.order` 同字面量）。
+struct BibDbReviewJump: Equatable {
+    /// 定位分类（conflicts/duplicates/near_duplicates/missing_field/unknown_entry_type/
+    /// alias/unverified/other/""）；`""` = 普通进入，不定位
+    var registry: String = ""
+    /// 字段冲突区是否看「已处理/已裁决」
+    var showResolved: Bool = false
+}
+
 /// 「引用库」设置（第 132 条）：核实成本闸门 + 查库开关 + 引用库（笔记仓）路径。
 ///
 /// 为什么存 `UserDefaults` 而不是 `ai.json`：这几项是**本机行为偏好**（上限、要不要先算账、
@@ -995,10 +1011,13 @@ final class BibDbSettings: ObservableObject {
     @Published var lookupEnabled: Bool = true
     /// 手动指定的笔记仓路径（原样文本；空 = 自动探测）
     @Published var notesRepoPath: String = ""
-    /// 「待裁决」页的「显示已裁决」开关（B-143：默认关 = 只列待裁决；**仅内存、不落盘**）。
-    /// 「库概况」橙字下钻的「到待裁决页看 / 查看历史已裁决」会设置它再切页，
-    /// 两页共用这一份状态 → 跳转后开关态与按钮语义一致（spec B-143 §2.3）。
-    @Published var showResolvedConflicts: Bool = false
+    /// B-188：「待处理」页的**一次性跳转意图**（**仅内存、不落盘**）。
+    ///
+    /// 为什么不放 Bool：B-143 的 `showResolvedConflicts` 是共享开关，5 个常驻引用库页都
+    /// `@ObservedObject` 它 → 开关一变全体 body 重算（spec B-188 §2 性能诊断）。
+    /// 现在跳转只写这份意图，`BibDbReviewView` 激活时取走、应用成**页面本地态**后置回 nil；
+    /// 其它页不再因为一次跳转重算。见 `Core/ViewModels.swift: BibDbReviewJump` 与 CONTRACT.md。
+    @Published var reviewJump: BibDbReviewJump? = nil
 
     private let defaults: UserDefaults
 

@@ -1,7 +1,26 @@
 import SwiftUI
 import AppKit
 
-/// 「待裁决」页的界面状态（批73 B-127：列表 + 行内三按钮 + 一键全部采用 + 编辑裁决 bib + 备份恢复）。
+/// 条目编辑器 sheet 的目标（`sheet(item:)` 需要 Identifiable；view 只负责展示，sheet 自己起任务）。
+struct ReviewEditorTarget: Identifiable, Equatable {
+    var key: String
+    var id: String { key }
+}
+
+/// 对照/合并 sheet 的目标（2+ 条 key；重复对 / 近重复对）。
+struct ReviewMergeTarget: Identifiable, Equatable {
+    var keys: [String]
+    var id: String { keys.joined(separator: "|") }
+}
+
+/// 字段归位 sheet 的目标（`"missing_field"` / `"unknown_entry_type"`）。
+struct ReviewFieldFixTarget: Identifiable, Equatable {
+    var registry: String
+    var id: String { registry }
+}
+
+/// 「待处理」页的界面状态（批73 B-127：列表 + 行内三按钮 + 一键全部采用 + 编辑裁决 bib + 备份恢复；
+/// B-188：三段式 + 性能 P0 缓存）。
 ///
 /// 线程约定与其它页一致：会起子进程的 `BibDbFeature.*` 一律在后台队列调，回主线程回填。
 /// **所有写操作串行**：`running` 期间所有按钮/行内按钮置灰（同一份库不能有两个写进同一个窗口）。
@@ -17,6 +36,36 @@ final class BibDbReviewModel: ObservableObject {
     @Published var lastRun: BibDbFeature.ReportOutcome? = nil
     @Published var lastAction: String = ""  // 最近一次裁决/恢复的一句话结果（不写日志）
     @Published var loadSeconds: Double = 0
+
+    // MARK: - B-188 P0 缓存（一次算好；body 不再重算）
+
+    /// 冲突列表的**双态缓存**（Wave1 `ReviewCacheState`：默认 / 含已裁决各预计算一份）。
+    /// 开关切换只换缓存态（O(1)），不重跑引擎、不在 body 里重建 `ConflictListState`。
+    @Published var reviewCache: BibDbFeature.ReviewCacheState? = nil
+    /// 本页本地开关（B-188：**不再**是共享 `bibdb.showResolvedConflicts`；跳转意图只写这里）
+    @Published var showResolvedConflicts = false
+    /// 库健康（`lint --with-records`，含 8 类 warning 与受影响记录全量）
+    @Published var health: BibDbFeature.HealthOutcome? = nil
+    /// 库内写库留痕（记录 `edits[]`，只读扫描）+ 已处理列表（M 与③区同源）
+    @Published var traces: [BibDbFeature.EditTrace] = []
+    @Published var processed: [BibDbFeature.ProcessedEntry] = []
+    /// 加载完成时的库清单（进页新鲜度检查、状态条 sha 用）
+    @Published var manifest: BibDbFeature.DBManifest? = nil
+    @Published var healthSeconds: Double = 0
+    @Published var tracesTotal = 0
+    /// 进页发现库变了 → 提示点「刷新列表」，**不自动起引擎**
+    @Published var freshnessNotice = ""
+    /// 是否完成过一次加载（首次激活加载；之后只查新鲜度）
+    @Published var loadedOnce = false
+    /// 每次完整加载完成的世代号（视图据此消费「加载后才可能定位到」的跳转目标）
+    @Published var loadGeneration = 0
+    /// 后台新鲜度检查中（只 stat + sha，不写库；不挡写按钮）
+    @Published var checkingFreshness = false
+
+    // 三个共享 sheet 的展示目标（sheet 自己起后台任务/自己 dismiss；这里只记「打开谁」）
+    @Published var editorTarget: ReviewEditorTarget? = nil
+    @Published var mergeTarget: ReviewMergeTarget? = nil
+    @Published var fieldFixTarget: ReviewFieldFixTarget? = nil
 
     // 行内裁决：确认框用的待执行请求（view 侧 .alert）
     // 一键全部采用：预览 sheet（dry-run 结果）+ 二次确认
@@ -64,33 +113,105 @@ final class BibDbReviewModel: ObservableObject {
         files.first { $0.exists }
     }
 
-    /// 后台加载冲突列表（`conflicts --json`），回填状态条 + 列表。
-    func loadConflicts() {
+    /// 当前本地开关态对应的列表状态（Wave1 已缓存的 `ConflictListState`，O(1)）。
+    /// body 只读它，不再每次重建 `ConflictListState(outcome:showResolved:)`。
+    var listState: BibDbFeature.ConflictListState? { reviewCache?.listState }
+
+    /// 本地开关切换：只换预计算好的缓存态，不重跑引擎、不触发任何子进程。
+    func setShowResolved(_ value: Bool) {
+        guard showResolvedConflicts != value else { return }
+        showResolvedConflicts = value
+        reviewCache?.showResolved = value
+    }
+
+    // MARK: - 加载策略（B-188 P0：进页不自动重载）
+
+    /// 激活本页：首次跑一次完整加载；之后只做**新鲜度检查**（库变了只提示，不自动起引擎）。
+    func activate() {
+        guard !running else { return }
+        if !loadedOnce {
+            reloadAll()
+            return
+        }
+        checkFreshness()
+    }
+
+    /// 新鲜度检查：后台算 `dbManifest`（6 MB 流式 sha），与缓存的 manifest 比 `isStale`。
+    /// 过期 → 只显示「库已变化：点刷新列表」提示；**绝不自动重跑引擎**。
+    func checkFreshness() {
+        guard !running, !checkingFreshness else { return }
+        guard let db = BibDbFeature.existingDBPath(), !db.isEmpty else {
+            freshnessNotice = "引用库文件不存在：先到「入藏」页导入 .bib，或到「引用库设置」页指定笔记仓。"
+            return
+        }
+        let cached = manifest
+        if cached == nil {
+            // 首次加载失败 / 库不存在：不当作「过期」，明确让用户点「刷新列表」重试
+            freshnessNotice = "还没成功加载过（或库文件不存在）：点「刷新列表」重试。"
+            return
+        }
+        checkingFreshness = true
+        let model = self
+        DispatchQueue.global(qos: .utility).async {
+            let current = BibDbFeature.dbManifest(db: db)
+            DispatchQueue.main.async {
+                model.checkingFreshness = false
+                if BibDbFeature.isStale(cached: cached, current: current) {
+                    model.freshnessNotice = "库已变化（外部 CLI 改过库？）：点「刷新列表」重新加载"
+                        + "（本页不会自动重跑引擎）。"
+                } else {
+                    model.freshnessNotice = ""
+                }
+            }
+        }
+    }
+
+    /// 完整加载 / 手动「刷新列表」/ 写库成功后**局部失效**：一次后台**串行**读
+    /// conflicts + health + traces + manifest，回主线程一次性回填。
+    /// 不清本页本地开关、定位与其它页面状态（P0 局部失效口径）。
+    func reloadAll() {
         guard !running else { return }
         running = true
-        stage = "正在读取待裁决条目…"
+        stage = "正在读取待处理数据（字段冲突 + 库健康 + 写库留痕）…"
         error = ""
+        freshnessNotice = ""
+        let db = BibDbFeature.existingDBPath() ?? ""
         let model = self
         DispatchQueue.global(qos: .userInitiated).async {
-            let outcome = BibDbFeature.loadConflicts()
+            let conflicts = BibDbFeature.loadConflicts()
+            let health = BibDbFeature.loadHealth(db: db)
+            let scan = BibDbFeature.scanEditTraces(db: db)
+            let manifest = health.manifest ?? (db.isEmpty ? nil : BibDbFeature.dbManifest(db: db))
             DispatchQueue.main.async {
                 model.running = false
                 model.stage = ""
-                model.loadSeconds = outcome.seconds
-                if let error = outcome.error {
-                    model.error = error
-                    return
+                model.loadedOnce = true
+                model.loadSeconds = conflicts.seconds
+                model.healthSeconds = health.seconds
+                var errors: [String] = []
+                if let error = conflicts.error { errors.append("字段冲突：" + error) }
+                if let error = health.error { errors.append("库健康：" + error) }
+                model.error = errors.joined(separator: "\n")
+                if conflicts.error == nil {
+                    model.conflicts = conflicts
+                    model.reviewCache = BibDbFeature.ReviewCacheState(
+                        outcome: conflicts, showResolved: model.showResolvedConflicts)
                 }
-                model.conflicts = outcome
+                if health.error == nil { model.health = health }
+                model.traces = scan.traces
+                model.tracesTotal = scan.total
+                model.processed = BibDbFeature.processedEntries(conflicts: model.conflicts,
+                                                                traces: scan.traces)
+                if let manifest { model.manifest = manifest }
+                model.loadGeneration += 1
                 model.reloadFiles()
             }
         }
     }
 
-    /// 进页/点「刷新列表」：两份都刷（文件状态在本地、立刻；冲突条目跑引擎）。
-    func refreshAll() {
-        reloadFiles()
-        loadConflicts()
+    /// 写库成功后**局部失效**：只重载 conflicts / health / processed / manifest（一次后台串行）。
+    func refreshAfterWrite() {
+        reloadAll()
     }
 
     /// 后台重新生成清单（`bibdb.py report`；**只写清单文件，不改库本体**）。
@@ -150,7 +271,7 @@ final class BibDbReviewModel: ObservableObject {
                 }
                 model.lastAction = Self.resolveLine(item: item, action: action, outcome: outcome)
                 model.message = model.lastAction
-                model.loadConflicts()
+                model.refreshAfterWrite()
             }
         }
     }
@@ -241,7 +362,7 @@ final class BibDbReviewModel: ObservableObject {
                 model.showAdoptSheet = false
                 model.adoptPreview = nil
                 model.adoptChecked = false
-                model.loadConflicts()
+                model.refreshAfterWrite()
             }
         }
     }
@@ -370,7 +491,7 @@ final class BibDbReviewModel: ObservableObject {
                 model.message = text
                 if !outcome.dbShaAfter.isEmpty { model.conflicts?.dbSha256 = outcome.dbShaAfter }
                 model.showEditSheet = false
-                model.loadConflicts()
+                model.refreshAfterWrite()
             }
         }
     }
@@ -451,7 +572,7 @@ final class BibDbReviewModel: ObservableObject {
                 model.message = text
                 model.restorePreview = nil
                 model.showRestoreSheet = false
-                model.loadConflicts()
+                model.refreshAfterWrite()
             }
         }
     }
@@ -522,33 +643,83 @@ struct BibDbReviewView: View {
         }
     }
 
+    @State private var scrollTarget: String? = nil
+    /// 库健康分类展开态（按 registry；跳转意图会把目标分类展开）
+    @State private var healthExpanded: Set<String> = []
+    /// 库健康每类的记录搜索词（按 registry；只在前端过滤已加载的 records）
+    @State private var healthSearch: [String: String] = [:]
+    /// 库健康每条 warning 的「再显示 200 条」上限（按 item.id）
+    @State private var healthLimits: [String: Int] = [:]
+    /// ③ 已处理分页
+    @State private var processedLimit = 100
+    /// 跳转目标分类在库健康加载完成前还不在视图里：记下来，加载完成后补一次定位
+    @State private var deferredScrollTarget: String? = nil
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                header
-                Divider()
-                pathRows
-                statusBar
-                actionBar
-                feedback
-                Divider()
-                conflictSection
-                Divider()
-                reportFilesSection
-                Divider()
-                readingGuide
+        ScrollViewReader { proxy in
+            ScrollView {
+                // B-188 P0：整页一个 LazyVStack（三段列表都懒加载；已处理/已裁决默认一行摘要）
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    header
+                    Divider()
+                    pathRows
+                    statusBar
+                    actionBar
+                    feedback
+                    Divider()
+                    conflictSection.id("section-conflicts")
+                    Divider()
+                    healthSection.id("section-health")
+                    Divider()
+                    processedSection.id("section-processed")
+                    Divider()
+                    reportFilesSection
+                    Divider()
+                    readingGuide
+                }
+                .padding(20)
+                .frame(maxWidth: 1000, alignment: .leading)
             }
-            .padding(20)
-            .frame(maxWidth: 1000, alignment: .leading)
+            .onChange(of: scrollTarget) { target in
+                guard let target else { return }
+                DispatchQueue.main.async {
+                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                    scrollTarget = nil
+                }
+            }
+        }
+        // 三个共享 sheet（sheet 自己起后台任务/持有状态/自己 dismiss；写完回调本页局部失效）
+        .sheet(item: $model.editorTarget) { target in
+            BibDbEditorSheet(log: log, bibdb: bibdb, recordKey: target.key,
+                             onWritten: { model.refreshAfterWrite() })
+        }
+        .sheet(item: $model.mergeTarget) { target in
+            BibDbMergeSheet(log: log, bibdb: bibdb, keys: target.keys,
+                            onMerged: { model.refreshAfterWrite() })
+        }
+        .sheet(item: $model.fieldFixTarget) { target in
+            BibDbFieldFixSheet(log: log, bibdb: bibdb, registry: target.registry,
+                               onApplied: { model.refreshAfterWrite() })
         }
         .sheet(isPresented: $model.showAdoptSheet) { adoptSheet }
         .sheet(isPresented: $model.showEditSheet) { editSheet }
         .sheet(isPresented: $model.showRestoreSheet) { restoreSheet }
         .onAppear {
-            if isActive { model.refreshAll() }
+            if isActive { activateAndConsume() }
         }
         .onChange(of: isActive) { active in
-            if active { model.refreshAll() }
+            if active { activateAndConsume() }
+        }
+        // 跳转意图：激活时消费；本页已激活时收到新意图也消费（一次性，取走即清）
+        .onChange(of: bibdb.reviewJump) { jump in
+            guard isActive, jump != nil else { return }
+            consumeReviewJump()
+        }
+        // 首次激活时库健康还在后台加载：加载完成后补一次分类定位（展开态已在 consume 时写入）
+        .onChange(of: model.loadGeneration) { _ in
+            guard let target = deferredScrollTarget else { return }
+            deferredScrollTarget = nil
+            scrollTarget = target
         }
         // 行内三按钮确认框
         .alert(item: $resolveRequest) { request in
@@ -568,34 +739,57 @@ struct BibDbReviewView: View {
             if !text.isEmpty { Logger(store: log)(text + "\n") }
         }
         .onChange(of: model.error) { text in
-            if !text.isEmpty { Logger(store: log)("❌ 引用库裁决失败：" + text + "\n") }
+            if !text.isEmpty { Logger(store: log)("❌ 引用库待处理失败：" + text + "\n") }
         }
+    }
+
+    /// 激活：首次加载 / 之后只查新鲜度；同时消费一次性跳转意图（不触发引擎）。
+    private func activateAndConsume() {
+        model.activate()
+        consumeReviewJump()
+    }
+
+    /// 消费一次性跳转意图：只改本页本地开关 + 定位，**不写回任何共享开关**；取走即清。
+    private func consumeReviewJump() {
+        guard let jump = bibdb.reviewJump else { return }
+        model.setShowResolved(jump.showResolved)
+        if !jump.registry.isEmpty {
+            if jump.registry == "conflicts" {
+                scrollTarget = "section-conflicts"
+            } else {
+                healthExpanded.insert(jump.registry)
+                let target = "category-\(jump.registry)"
+                // 库健康还没加载时目标区还不存在：先记下，等这次加载完成再滚过去
+                if model.health == nil {
+                    deferredScrollTarget = target
+                } else {
+                    scrollTarget = target
+                }
+            }
+        }
+        bibdb.reviewJump = nil
     }
 
     // MARK: - 顶部
 
-    /// B-143：列表的纯逻辑状态（默认只列 pending；开关打开显示已裁决；C 编号不重排）
-    private var listState: BibDbFeature.ConflictListState? {
-        model.conflicts.map {
-            BibDbFeature.ConflictListState(outcome: $0,
-                                           showResolved: bibdb.showResolvedConflicts)
-        }
-    }
-
     private var header: some View {
         BibDbPageHeader(
-            title: "引用库 · 待裁决",
+            title: "引用库 · 待处理",
             subtitle: """
-            引用库里**已核实条目**遇到「同一作品、不同期成品 bib 字段写法不同」时，库不会
-            静默改掉旧值，只把差异留档成 `conflicts`。这一页把它们**逐条列出来**，可以：
-            ① 逐条三选一（保留旧值 / 采用新值 / 待人工）直接写库；② 编辑裁决 bib 后写库；
-            ③ **一键全部采用**（高亮警示 + dry-run 逐条预览 + 二次确认）；④ 从自动备份恢复整库。
-            ⚠️ 写库动作一律**先预览后确认**、写前校验库 sha 并自动备份；C 编号由引擎固定，
-            裁决后**不重排**。
+            本页把「引用库需要人工处理的事」集中到一处，三段：
+            ① **字段冲突**——库里已核实条目遇到「同一作品、不同期成品 bib 写法不同」时，库不会静默
+            改掉旧值，只把差异留档成 `conflicts`；逐条 keep/adopt/defer、编辑裁决 bib、一键全部采用、
+            从备份恢复都在①区。已裁决默认隐藏，可用开关按**一行摘要**查看（C 编号由引擎固定、不重排）。
+            ② **库健康**——引擎 `lint --with-records` 的 8 类 warning（重复记录 / 同一作品多记录 /
+            缺字段 / entry_type 笔误 / alias / 未核实…）按固定顺序折叠；展开按**受影响记录**逐条列出，
+            每行可「编辑条目」，重复/近重复对可「对照合并」，缺字段/entry_type 类可开批量预览归位。
+            ③ **已处理**——冲突裁决 + 编辑/合并写库留痕（动作 / key / 时间 / 备份 sha 短），默认折叠、
+            点开一行看明细。
 
-            **两个数据源**：本页来自引擎 `conflicts`（字段冲突裁决，**默认只列待裁决**，
-            已裁决可开关查看、灰显留痕）；「库概况」页的橙色 warning 来自引擎 `lint`
-            （库健康检查：重复/缺字段/entry_type 等），两者口径独立、不互相代替。
+            写库纪律：**dry-run 预览 → 二次确认 → 写前校验库 sha → 自动备份 → 原子写**；库被外部
+            CLI 改过时 sha 闸会拒绝写，点「刷新列表」后重试；撤销用「从备份恢复…」。
+            两个数据源：字段冲突来自引擎 `conflicts`，库健康来自引擎 `lint --with-records`（口径独立、
+            不互相代替）；已处理的编辑/合并留痕来自记录 `edits[]`（不建 sidecar）。
             """)
     }
 
@@ -625,45 +819,50 @@ struct BibDbReviewView: View {
 
     // MARK: - 状态条
 
+    /// 状态条一句话（Wave1 纯逻辑，口径写死在 CONTRACT.md）：
+    /// `待处理 N（字段冲突 P ｜ 库健康 18 条/涉及约 355 条记录）｜ 已处理 M ｜ 库 sha 前12位…`
+    private var statusText: String {
+        BibDbFeature.pendingStatusText(
+            conflictPending: model.conflicts?.pending ?? 0,
+            health: model.health?.lint,
+            processedCount: model.processed.count,
+            dbSha256: model.manifest?.sha256 ?? model.conflicts?.dbSha256 ?? "")
+    }
+
+    private var pendingTotal: Int {
+        (model.conflicts?.pending ?? 0) + (model.health?.warningCount ?? 0)
+    }
+
     private var statusBar: some View {
         HStack(alignment: .center, spacing: 14) {
-            // B-143：口径一句话「待裁决 N ｜ 已裁决 M ｜ 共 T」；颜色只按**待裁决**是否 >0
-            statusChip(title: "冲突条目",
-                       value: listState?.statusText ?? "（未加载）",
-                       color: (model.conflicts?.pending ?? 0) > 0 ? .orange : .secondary)
-            statusChip(title: "库 sha",
-                       value: model.conflicts?.shaShort ?? "（未加载）",
-                       color: .secondary)
-            if model.running {
+            Text(statusText)
+                .font(.callout).bold().monospacedDigit()
+                .foregroundStyle(pendingTotal > 0 ? Color.orange : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if model.running || model.checkingFreshness {
                 ProgressView().controlSize(.small)
-                Text(model.stage).font(.caption).foregroundStyle(.secondary)
+                Text(model.running ? model.stage : "正在检查库是否变化…")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(8)
         .background(Color.secondary.opacity(0.05))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.15)))
     }
 
-    private func statusChip(title: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.callout).bold().foregroundStyle(color)
-                .monospacedDigit()
-                .textSelection(.enabled)
-        }
-    }
-
     private var actionBar: some View {
         HStack(spacing: 12) {
             Button("刷新列表") {
-                Logger(store: log)("引用库待裁决：刷新列表…\n")
-                model.refreshAll()
+                Logger(store: log)("引用库待处理：刷新列表（字段冲突 + 库健康 + 写库留痕）…\n")
+                model.reloadAll()
             }
             .disabled(model.running)
-            .help("重新读 conflicts --json（外部 CLI 改过库后必须刷新，写前 sha 校验才不会白拦）")
+            .help("重新读 conflicts + lint --with-records + 写库留痕（外部 CLI 改过库后必须刷新，"
+                  + "写前 sha 校验才不会白拦）")
             Button("重新生成清单") {
-                Logger(store: log, startedAt: Date())("引用库待裁决清单：重新生成…\n")
+                Logger(store: log, startedAt: Date())("引用库待处理清单：重新生成…\n")
                 model.regenerate()
             }
             .disabled(model.running)
@@ -675,18 +874,23 @@ struct BibDbReviewView: View {
             Button("打开备份文件夹") {
                 Logger(store: log)(bibDbOpenInFinder(BibDbFeature.backupDirectory))
             }
-            // B-143：默认只列待裁决；打开后追加已裁决（灰显留痕，C 编号沿用引擎、不重排）
+            // B-188：本页本地开关（不再是共享 bibdb.showResolvedConflicts；切换 O(1) 只换缓存态）
             Toggle(BibDbFeature.ConflictListState.toggleTitle,
-                   isOn: $bibdb.showResolvedConflicts)
+                   isOn: Binding(get: { model.showResolvedConflicts },
+                                 set: { model.setShowResolved($0) }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
-                .help("默认只列待裁决；打开后显示已裁决（灰显、仅供审计留痕，C 编号固定不重排）")
+                .disabled(model.running)
+                .help("默认只列待裁决；打开后已裁决按一行摘要显示（点开明细，C 编号固定不重排）")
             Spacer()
         }
     }
 
     private var feedback: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if !model.freshnessNotice.isEmpty {
+                BibDbStatusLine(kind: .warning, text: model.freshnessNotice)
+            }
             if !model.error.isEmpty {
                 BibDbStatusLine(kind: .error, text: model.error)
             }
@@ -697,48 +901,54 @@ struct BibDbReviewView: View {
                 Text("清单生成用时 \(BibDbUI.seconds(run.seconds))；库：\(run.dbPath)")
                     .font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)
             }
-            if let state = listState, model.loadSeconds > 0 {
+            if let state = model.listState {
                 Text("列表加载用时 \(BibDbUI.seconds(model.loadSeconds))；\(state.feedbackText)")
+                    .font(.caption).foregroundStyle(.tertiary)
+            } else if !model.running && model.loadedOnce {
+                Text("还没加载到字段冲突列表：点上面「刷新列表」重试。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            } else if !model.running {
+                Text("首次进入本页会自动加载一次；之后切页只做新鲜度检查（不重复起引擎）。")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+            if let health = model.health, health.seconds > 0 {
+                Text("库健康用时 \(BibDbUI.seconds(health.seconds))；写库留痕 \(model.tracesTotal) 条。")
                     .font(.caption).foregroundStyle(.tertiary)
             }
         }
     }
 
-    // MARK: - 冲突列表
+    // MARK: - ① 字段冲突
 
-    @ViewBuilder
     private var conflictSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Text("冲突条目").font(.callout).bold()
-                if let conflicts = model.conflicts, let state = listState {
-                    Text(bibdb.showResolvedConflicts
-                         ? "按期 → 篇 → C 编号（引擎顺序；当前：显示全部，已裁决灰显）"
+                Text("① 字段冲突").font(.callout).bold()
+                if let conflicts = model.conflicts {
+                    Text(model.showResolvedConflicts
+                         ? "按期 → 篇 → C 编号（引擎顺序；当前：显示全部，已裁决为一行摘要、点开明细）"
                          : "按期 → 篇 → C 编号（引擎顺序；当前：只看待裁决）")
                         .font(.caption).foregroundStyle(.tertiary)
-                    Spacer()
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                     if conflicts.verifiedPendingCount > 0 {
                         Text("⚠️ 其中 \(conflicts.verifiedPendingCount) 条是库内已核实记录，"
                              + "采用新值会改已出版核对结果")
                             .font(.caption).foregroundStyle(.red)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if state.showResolved && state.resolved > 0 {
-                        Text("另 \(state.resolved) 条已裁决灰显（审计留痕）")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    }
                 } else {
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
             }
-            if let state = listState, !state.emptyText.isEmpty {
+            if let state = model.listState, !state.emptyText.isEmpty {
                 BibDbStatusLine(kind: .ok, text: state.emptyText)
             }
             if model.conflicts == nil && !model.running {
                 BibDbStatusLine(kind: .warning,
-                                text: "还没加载到冲突列表：点上面「刷新列表」（或先导入引用库）。")
+                                text: "还没加载到字段冲突：点上面「刷新列表」（或先导入引用库）。")
             }
-            ForEach(listState?.visibleGroups ?? []) { group in
+            ForEach(model.listState?.visibleGroups ?? []) { group in
                 conflictGroup(group)
             }
             if let conflicts = model.conflicts, !conflicts.items.isEmpty {
@@ -757,11 +967,10 @@ struct BibDbReviewView: View {
                     Text("（\(group.file)）").font(.caption2).foregroundStyle(.tertiary)
                 }
                 Spacer()
-                // B-143：分组头改「待裁决 N（共 M）」（不再用易误读的 N / M 比例写法）；
-                // M = 该组**全部条目数**（含被开关隐藏的已裁决），不是过滤后条数。
+                // 分组头「待裁决 N（共 M）」：M 用已缓存的 groupTotals（含被开关隐藏的已裁决）
                 Text(BibDbFeature.ConflictListState.groupCountText(
                     pending: group.pendingCount,
-                    total: listState?.groupTotal(forGroupId: group.id) ?? group.items.count))
+                    total: model.listState?.groupTotal(forGroupId: group.id) ?? group.items.count))
                     .font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(group.items) { item in
@@ -773,73 +982,12 @@ struct BibDbReviewView: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12)))
     }
 
+    @ViewBuilder
     private func conflictRow(_ item: BibDbFeature.ConflictItem) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(item.stableLabel)
-                        .font(.system(.callout, design: .monospaced)).bold()
-                        .foregroundStyle(item.pending ? Color.primary : Color.secondary)
-                    Text(item.recordKey)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                    if item.verified {
-                        Text("已核实").font(.caption2)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundStyle(.green)
-                            .clipShape(Capsule())
-                    }
-                    if !item.resolvedAt.isEmpty {
-                        Text(item.resolutionTitle).font(.caption2)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.15))
-                            .foregroundStyle(.secondary)
-                            .clipShape(Capsule())
-                    } else {
-                        Text("待裁决").font(.caption2).foregroundStyle(.orange)
-                    }
-                }
-                Text(item.briefText)
-                    .font(.callout)
-                    .foregroundStyle(item.pending ? Color.primary : Color.secondary)
-                    .lineLimit(2)
-                Text("来源（新稿）：\(item.sourceText)")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(1).textSelection(.enabled)
-                ForEach(item.diff) { diff in
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("· \(diff.name)：").font(.caption).foregroundStyle(.secondary)
-                        Text(diff.oldText)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        Text("→").font(.caption).foregroundStyle(.tertiary)
-                        Text(diff.newText)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(item.pending ? Color.primary : Color.secondary)
-                            .lineLimit(2)
-                    }
-                }
-                if !item.advice.isEmpty {
-                    Text("建议：\(item.advice)").font(.caption2).foregroundStyle(.tertiary)
-                }
-                HStack(spacing: 10) {
-                    if !item.hasFingerprint {
-                        Text("无冲突指纹（旧数据）").font(.caption2).foregroundStyle(.orange)
-                    } else {
-                        Text("指纹 \(item.fingerprintShort)")
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .textSelection(.enabled)
-                    }
-                    if !item.method.isEmpty {
-                        Text("核实方式 \(item.method)").font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-            if item.pending {
+        if item.pending {
+            HStack(alignment: .top, spacing: 10) {
+                conflictDetail(item)
+                Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 6) {
                     Button("保留旧值") { askResolve(item, action: "keep") }
                         .disabled(model.running)
@@ -854,21 +1002,459 @@ struct BibDbReviewView: View {
                         .help("defer：标为待人工查证，先从待裁决列表移走（不改字段）")
                 }
                 .frame(width: 96)
-            } else {
-                Text("已裁决")
-                    .font(.caption).foregroundStyle(.tertiary)
-                    .frame(width: 96, alignment: .center)
+            }
+            .padding(8)
+            .background(Color.clear)
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.12)))
+        } else {
+            resolvedConflictRow(item)
+        }
+    }
+
+    /// 已裁决行：默认**一行摘要**（C 编号 / 动作 / key / 时间），点开展开明细（审计留痕）。
+    private func resolvedConflictRow(_ item: BibDbFeature.ConflictItem) -> some View {
+        DisclosureGroup {
+            HStack(alignment: .top, spacing: 10) {
+                conflictDetail(item)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 4)
+        } label: {
+            HStack(spacing: 8) {
+                Text(item.stableLabel)
+                    .font(.system(.caption, design: .monospaced)).bold()
+                    .foregroundStyle(.secondary)
+                Text(item.resolutionTitle.isEmpty ? "已裁决" : item.resolutionTitle)
+                    .font(.caption2)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Color.secondary.opacity(0.15))
+                    .foregroundStyle(.secondary)
+                    .clipShape(Capsule())
+                Text(item.recordKey)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                Text(item.briefText)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 0)
+                if !item.resolvedAt.isEmpty {
+                    Text(item.resolvedAt)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .padding(8)
-        .background(item.pending ? Color.clear : Color.secondary.opacity(0.06))
-        .overlay(RoundedRectangle(cornerRadius: 5)
-            .stroke(item.pending ? Color.secondary.opacity(0.12) : Color.secondary.opacity(0.06)))
-        .opacity(item.pending ? 1.0 : 0.62)
+        .background(Color.secondary.opacity(0.06))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.06)))
+    }
+
+    /// 冲突条目明细（待裁决行的主体 / 已裁决行展开后的明细，共用同一套渲染）。
+    private func conflictDetail(_ item: BibDbFeature.ConflictItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(item.stableLabel)
+                    .font(.system(.callout, design: .monospaced)).bold()
+                    .foregroundStyle(item.pending ? Color.primary : Color.secondary)
+                Text(item.recordKey)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                if item.verified {
+                    Text("已核实").font(.caption2)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.green.opacity(0.15))
+                        .foregroundStyle(.green)
+                        .clipShape(Capsule())
+                }
+                if item.pending {
+                    Text("待裁决").font(.caption2).foregroundStyle(.orange)
+                }
+            }
+            Text(item.briefText)
+                .font(.callout)
+                .foregroundStyle(item.pending ? Color.primary : Color.secondary)
+                .lineLimit(2)
+            Text("来源（新稿）：\(item.sourceText)")
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).textSelection(.enabled)
+            ForEach(item.diff) { diff in
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("· \(diff.name)：").font(.caption).foregroundStyle(.secondary)
+                    Text(diff.oldText)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("→").font(.caption).foregroundStyle(.tertiary)
+                    Text(diff.newText)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(item.pending ? Color.primary : Color.secondary)
+                        .lineLimit(2)
+                }
+            }
+            if !item.advice.isEmpty {
+                Text("建议：\(item.advice)").font(.caption2).foregroundStyle(.tertiary)
+            }
+            HStack(spacing: 10) {
+                if !item.hasFingerprint {
+                    Text("无冲突指纹（旧数据）").font(.caption2).foregroundStyle(.orange)
+                } else {
+                    Text("指纹 \(item.fingerprintShort)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+                }
+                if !item.method.isEmpty {
+                    Text("核实方式 \(item.method)").font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
     }
 
     private func askResolve(_ item: BibDbFeature.ConflictItem, action: String) {
         resolveRequest = ResolveRequest(item: item, action: action)
+    }
+
+    // MARK: - ② 库健康
+
+    private var healthSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("② 库健康").font(.callout).bold()
+                if let health = model.health {
+                    Text(BibDbFeature.healthStatusText(health.lint))
+                        .font(.callout).bold().monospacedDigit()
+                        .foregroundStyle(health.warningCount > 0 ? Color.orange : Color.secondary)
+                    if health.affectedRecords > 0 {
+                        Text("（受影响记录并集 \(health.affectedRecords) 条）")
+                            .font(.caption).foregroundStyle(.tertiary)
+                    }
+                } else {
+                    Text(model.running ? "正在读取（lint --with-records）…" : "（未加载）")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            Text("数据源：引擎 `lint --with-records`（8 类固定顺序；展开分类看逐条受影响记录，"
+                 + "记录多时用搜索/「再显示 200 条」；重复/近重复对可打开「对照合并」，**绝不自动合并**）。")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let health = model.health {
+                if health.categories.isEmpty {
+                    BibDbStatusLine(kind: .ok, text: "库健康检查没有 warning。")
+                } else {
+                    ForEach(health.categories) { category in
+                        healthCategory(category)
+                    }
+                }
+            } else if !model.running && model.loadedOnce {
+                BibDbStatusLine(kind: .warning,
+                                text: "还没加载到库健康数据：点上面「刷新列表」重试。")
+            }
+        }
+    }
+
+    private func healthCategory(_ category: BibDbFeature.LintWarningCategory) -> some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { healthExpanded.contains(category.registry) },
+            set: { expanded in
+                if expanded { healthExpanded.insert(category.registry) }
+                else { healthExpanded.remove(category.registry) }
+            })) {
+            VStack(alignment: .leading, spacing: 8) {
+                if let note = category.note {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                categoryActions(category)
+                // 搜索只对「逐条记录」类（缺字段/entry_type/alias…）有意义；
+                // 重复/近重复类是一对一条的 warning，不做 key 搜索（避免误导）。
+                let searchableTotal = category.items.reduce(0) { sum, item in
+                    sum + (mergePairKeys(category.registry, item) == nil ? item.records.count : 0)
+                }
+                if searchableTotal > 12 {
+                    HStack(spacing: 6) {
+                        TextField("在 \(searchableTotal) 条受影响记录里搜索 key…",
+                                  text: healthSearchBinding(category.registry))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 360)
+                        Text("\(filteredRecordCount(category)) / \(searchableTotal)")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                        Spacer(minLength: 0)
+                    }
+                }
+                ForEach(category.items) { item in
+                    healthItem(category: category, item: item)
+                }
+            }
+            .padding(.top, 6)
+            .padding(.leading, 4)
+        } label: {
+            HStack(spacing: 8) {
+                Text(category.title).font(.callout).bold()
+                Text("\(category.warningCount) 条提示").font(.caption2).foregroundStyle(.secondary)
+                let records = category.items.reduce(0) { $0 + $1.records.count }
+                if records > 0 {
+                    Text("受影响记录 \(records) 条").font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+                if category.registry == "duplicates" || category.registry == "near_duplicates" {
+                    Text("可逐对「对照合并」").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .id("category-\(category.registry)")
+        .padding(10)
+        .background(Color.secondary.opacity(0.04))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12)))
+    }
+
+    /// 分类顶部的批量动作：缺字段 / entry_type（共享 sheet，由 sheet 自己确认写库）。
+    @ViewBuilder
+    private func categoryActions(_ category: BibDbFeature.LintWarningCategory) -> some View {
+        switch category.registry {
+        case "missing_field":
+            HStack(spacing: 8) {
+                Button("批量预览归位…") {
+                    Logger(store: log)("引用库待处理：打开字段归位预览（missing_field）…\n")
+                    model.fieldFixTarget = ReviewFieldFixTarget(registry: "missing_field")
+                }
+                .disabled(model.running)
+                .help("来自引擎 suggest-field-fixes --registry missing_field："
+                      + "勾选后逐条 edit --apply（统一 sha 闸 + 自动备份）")
+                Text("A 类：缺 title/缺 year 等，候选归位来自引擎；不自动应用")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+        case "unknown_entry_type":
+            HStack(spacing: 8) {
+                Button("先修 entry_type/key…") {
+                    Logger(store: log)("引用库待处理：打开字段归位预览（unknown_entry_type）…\n")
+                    model.fieldFixTarget = ReviewFieldFixTarget(registry: "unknown_entry_type")
+                }
+                .disabled(model.running)
+                .help("来自引擎 suggest-field-fixes --registry unknown_entry_type：按 anomaly_kind 分组")
+                Text("C 类：entry_type 笔误 / DOI 或占位符当 key（不自动应用）")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+        case "conflicts":
+            HStack(spacing: 8) {
+                Button("去①字段冲突") { scrollTarget = "section-conflicts" }
+                    .disabled(model.running)
+                Text("字段冲突的逐条裁决在①区（本类此处只显示计数）。")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                Spacer(minLength: 0)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func healthSearchBinding(_ registry: String) -> Binding<String> {
+        Binding(get: { healthSearch[registry] ?? "" },
+                set: { healthSearch[registry] = $0 })
+    }
+
+    /// 前端过滤已加载的 records（不重跑引擎、不写库；只筛展示）。
+    private func filteredRecords(_ registry: String, _ records: [String]) -> [String] {
+        let query = (healthSearch[registry] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return records }
+        return records.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    private func filteredRecordCount(_ category: BibDbFeature.LintWarningCategory) -> Int {
+        category.items.reduce(0) { $0 + filteredRecords(category.registry, $1.records).count }
+    }
+
+    /// duplicates：`item.records` 直接是 2 个 key；near_duplicates：records 是 `A≈B` 串，
+    /// 按 `≈` 拆两侧（**拆展示串不是判据**，只为把两条 key 交给合并 sheet）。
+    private func mergePairKeys(_ registry: String, _ item: BibDbFeature.LintWarningItem) -> [String]? {
+        switch registry {
+        case "duplicates":
+            let keys = item.records.filter { !$0.isEmpty }
+            return keys.count >= 2 ? keys : nil
+        case "near_duplicates":
+            guard let text = item.records.first else { return nil }
+            let parts = text.components(separatedBy: "≈").map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty }
+            return parts.count >= 2 ? parts : nil
+        default:
+            return nil
+        }
+    }
+
+    private func healthItem(category: BibDbFeature.LintWarningCategory,
+                            item: BibDbFeature.LintWarningItem) -> some View {
+        let pair = mergePairKeys(category.registry, item)
+        let records = pair == nil ? filteredRecords(category.registry, item.records) : item.records
+        let query = (healthSearch[category.registry] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("· " + item.detail).font(.caption).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Text("\(item.count) 条").font(.caption2).foregroundStyle(.secondary)
+            }
+            if !item.action.isEmpty {
+                Text("建议：\(item.action)").font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if item.records.isEmpty {
+                if item.registry == "conflicts" {
+                    Text("待裁决 \(item.pendingRecords) 条 / 历史已裁决 \(item.resolvedRecords) 条")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            } else if !records.isEmpty || query.isEmpty {
+                healthRecordList(category: category, item: item, pair: pair, records: records)
+            }
+        }
+        .padding(.leading, 8)
+    }
+
+    @ViewBuilder
+    private func healthRecordList(category: BibDbFeature.LintWarningCategory,
+                                  item: BibDbFeature.LintWarningItem,
+                                  pair: [String]?,
+                                  records: [String]) -> some View {
+        if let pair {
+            // 重复/近重复：一条 warning 就是一对；两侧各带「编辑条目」，一对一个「对照合并」
+            HStack(spacing: 8) {
+                ForEach(Array(pair.enumerated()), id: \.offset) { indexed in
+                    Text(indexed.element)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button("编辑条目…") { openEditor(indexed.element) }
+                        .controlSize(.small)
+                        .disabled(model.running)
+                    if indexed.offset == 0 {
+                        Button("对照合并…") { openMerge(pair) }
+                            .controlSize(.small)
+                            .disabled(model.running)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        } else {
+            let limit = healthLimits[item.id] ?? 200
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(records.prefix(limit).enumerated()), id: \.offset) { indexed in
+                    HStack(spacing: 8) {
+                        Text(indexed.element)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Spacer(minLength: 0)
+                        Button("编辑条目…") { openEditor(indexed.element) }
+                            .controlSize(.small)
+                            .disabled(model.running)
+                    }
+                }
+                if records.count > limit {
+                    Button("再显示 200 条（还有 \(records.count - limit) 条）") {
+                        healthLimits[item.id] = limit + 200
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private func openEditor(_ key: String) {
+        Logger(store: log)("引用库待处理：打开条目编辑器（\(key)）…\n")
+        model.editorTarget = ReviewEditorTarget(key: key)
+    }
+
+    private func openMerge(_ keys: [String]) {
+        Logger(store: log)("引用库待处理：打开对照合并（\(keys.joined(separator: "、"))）…\n")
+        model.mergeTarget = ReviewMergeTarget(keys: keys)
+    }
+
+    // MARK: - ③ 已处理
+
+    private var processedSection: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 6) {
+                if model.processed.isEmpty {
+                    BibDbStatusLine(kind: .idle,
+                                    text: "还没有写库留痕（冲突裁决 / 编辑条目 / 合并记录）。")
+                }
+                ForEach(Array(model.processed.prefix(processedLimit))) { entry in
+                    processedRow(entry)
+                }
+                if model.processed.count > processedLimit {
+                    Button("再显示 100 条（还有 \(model.processed.count - processedLimit) 条）") {
+                        processedLimit += 100
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Text("③ 已处理").font(.callout).bold()
+                Text("\(model.processed.count) 条留痕（冲突裁决 + 编辑/合并痕迹）")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text("默认折叠，点开看明细").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    /// 已处理一行：默认一行摘要（动作 / key / 备份 sha 短 / 时间），点开看明细。
+    private func processedRow(_ entry: BibDbFeature.ProcessedEntry) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.detail).font(.caption).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !entry.backupSha256.isEmpty {
+                    Text("备份 sha：\(entry.backupSha256)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if !processedBackupPath(entry).isEmpty {
+                    Text("备份文件：\(processedBackupPath(entry))")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                Text("记录：\(entry.key) · 类型：\(entry.kind)")
+                    .font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
+            }
+            .padding(.leading, 8).padding(.top, 2)
+        } label: {
+            HStack(spacing: 8) {
+                Text(entry.actionTitle).font(.caption).bold()
+                    .lineLimit(1)
+                    .frame(minWidth: 80, alignment: .leading)
+                Text(entry.key)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+                if !entry.backupSha256.isEmpty {
+                    Text("备份 sha \(entry.backupSha256)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                if !entry.at.isEmpty {
+                    Text(entry.at)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(6)
+        .background(Color.secondary.opacity(0.03))
+        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.10)))
+    }
+
+    /// 「已处理」明细里的备份路径：`ProcessedEntry` 只带备份 sha（Wave1 口径），
+    /// 这里按 id 从同源写库痕迹里取 `backup_path`（纯展示检索，不做任何判据）。
+    private func processedBackupPath(_ entry: BibDbFeature.ProcessedEntry) -> String {
+        guard entry.kind == "edit" || entry.kind == "merge" else { return "" }
+        for trace in model.traces {
+            let key = trace.newKey.isEmpty ? trace.recordKey : trace.newKey
+            if "trace|\(trace.id)|\(key)" == entry.id { return trace.backupPath }
+        }
+        return ""
     }
 
     // MARK: - 一键全部采用 + 编辑裁决 + 备份恢复
@@ -926,7 +1512,7 @@ struct BibDbReviewView: View {
 
     private func beginEditForFirstPending(_ conflicts: BibDbFeature.ConflictsOutcome) {
         guard let item = conflicts.pendingItems.first else { return }
-        Logger(store: log)("引用库裁决：打开编辑裁决 bib（C"
+        Logger(store: log)("引用库待处理：打开编辑裁决 bib（C"
                            + String(format: "%03d", item.stableNo) + "）…\n")
         model.beginEdit(item)
     }
