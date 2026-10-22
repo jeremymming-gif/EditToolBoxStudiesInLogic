@@ -31,7 +31,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from slcn import paths as _paths  # noqa: E402
 
-CASE_RE = re.compile(r"^###\s+(\d+)\.\s*(.+?)\s*$")
+#: 案例标题：`### 119.` 为常规；`### 119补.` / `### 119补2.` 为同号补充案例
+#: （批105 B-181：62+.md 有 2 条「119补」补充案例，旧正则漏收 → INDEX 227 vs 实际 229）。
+CASE_RE = re.compile(r"^###\s+(\d+(?:补\d*)?)\.\s*(.+?)\s*$")
 STATUS_RE = re.compile(r"^>\s*状态[:：]\s*(.+?)\s*$")
 DATE_RE = re.compile(r"(20\d{2}-\d{2}-\d{2})")
 
@@ -135,6 +137,14 @@ def cell(s: str) -> str:
     return s.replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _case_sort_key(num: str) -> tuple[int, bool, int]:
+    """案例号排序：`119` < `119补` < `119补2` < `120`（补充案例紧跟同号正条）。"""
+    m = re.match(r"^(\d+)(?:补(\d*))?$", num)
+    if not m:
+        return (10 ** 9, False, 0)
+    return (int(m.group(1)), m.group(2) is not None, int(m.group(2) or 0))
+
+
 def build_index(cases_dir: str) -> str:
     """生成 INDEX.md 的全文。"""
     files = sorted(f for f in os.listdir(cases_dir)
@@ -144,7 +154,7 @@ def build_index(cases_dir: str) -> str:
         for c in parse_case_file(os.path.join(cases_dir, f)):
             c["file"] = f
             rows.append(c)
-    rows.sort(key=lambda c: int(c["num"]))
+    rows.sort(key=lambda c: _case_sort_key(c["num"]))
 
     def status_kind(text: str) -> str:
         for prefix, kind in STATUS_KINDS:
@@ -203,7 +213,7 @@ def build_digest(cases_dir: str) -> str:
         for c in parse_case_file(os.path.join(cases_dir, f)):
             c["file"] = f
             rows.append(c)
-    rows.sort(key=lambda c: int(c["num"]))
+    rows.sort(key=lambda c: _case_sort_key(c["num"]))
     by_tag: dict[str, list[dict[str, str]]] = {}
     for c in rows:
         scores = c.get("_scores") or {}
