@@ -47,7 +47,7 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单。**批73 起 mac 入藏页另有「粘贴 bib 文本」模式**（1..N 条 → 临时文件先 `import-bib --dry-run --json` 预览 → 入库口径单选：未核实（默认）/ 已人工核对 `--verified` / 成品 bib（期+篇）；**引擎零改动**，粘贴文本走的就是 `import-bib`） | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 待处理 / 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件。**批73（B-127）起 mac 待裁决页可直接看条目列表并逐条裁决**：列表数据来自 `bibdb.py conflicts --json`（C 编号与 `CONFLICTS.md` 同源）；行内三按钮 keep / adopt / defer；「一键全部采用…」（高亮+二次确认+逐条 old→new 预览，引擎 `resolve --adopt-all-pending`，**同记录字段重叠整体拒绝**）；「编辑裁决 bib…」（预填库内条目→`resolve --action replace --dry-run` 预览差异→确认应用，**裁决不改 key**）；「从备份恢复…」（`bibdb.py restore --backup`，校验备份结构 + 前后 sha，不做 reopen）。所有写动作串行置灰，写前带 `--expect-db-sha256` 并自动备份。**B-188 起 mac 此页改名「待处理」**：①字段冲突（上述能力）②库健康（`lint --with-records` 按 8 类折叠到受影响记录，行内「编辑条目 / 对照合并」）③已处理（冲突裁决 + 记录 `edits[]` 留痕：动作/时间/备份 sha，默认折叠）；新增共享条目编辑器（`edit --dry-run/--apply`，key 默认只读、改 key 旧 key 进 aliases）、对照合并（`merge-records`，逐字段选源、新 key 自动建议、**不自动合并**）、字段归位批量预览（`suggest-field-fixes` + 逐条 `edit --apply`）；性能：listState 缓存 + LazyVStack + 进页不自动重载（sha/mtime 判新鲜）+ 一次性跳转意图。Windows 版此页仍只读「待裁决」 | `sources-mac/Views/BibDbReviewView.swift`、`BibDbEditorSheet.swift`、`BibDbMergeSheet.swift`、`BibDbFieldFixSheet.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
+| 待处理 / 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件。**批73（B-127）起 mac 待裁决页可直接看条目列表并逐条裁决**：列表数据来自 `bibdb.py conflicts --json`（C 编号与 `CONFLICTS.md` 同源）；行内三按钮 keep / adopt / defer；「一键全部采用…」（高亮+二次确认+逐条 old→new 预览，引擎 `resolve --adopt-all-pending`，**同记录字段重叠整体拒绝**）；「编辑裁决 bib…」（预填库内条目→`resolve --action replace --dry-run` 预览差异→确认应用，**裁决不改 key**）；**B-190 起取消备份制**：写库成功后自动本地 git commit（只 `bib_db/bibliography.jsonl`、绝不自动 push），页面**版本库状态区**显示分支/库文件脏否/未推送提交数/最近 3 条库提交，并提供「提交…」「推送…」「回退到上一个提交…」（均二次确认；回退 = `checkout HEAD~1 -- 库文件` + 新 commit，不 hard reset、不 push）；git 不可用/非 repo 时写库照旧成功、只黄字提示版本层失败。所有写动作串行置灰，写前带 `--expect-db-sha256`。**B-188 起 mac 此页改名「待处理」**：①字段冲突（上述能力）②库健康（`lint --with-records` 按 8 类折叠到受影响记录，行内「编辑条目 / 对照合并」）③已处理（冲突裁决 + 记录 `edits[]` 留痕：动作/时间，默认折叠；B-190 起不再展示备份 sha）；新增共享条目编辑器（`edit --dry-run/--apply`，key 默认只读、改 key 旧 key 进 aliases）、对照合并（`merge-records`，逐字段选源、新 key 自动建议、**不自动合并**）、字段归位批量预览（`suggest-field-fixes` + 逐条 `edit --apply`）；性能：listState 缓存 + LazyVStack + 进页不自动重载（sha/mtime 判新鲜）+ 一次性跳转意图。Windows 版此页仍只读「待裁决」 | `sources-mac/Views/BibDbReviewView.swift`、`BibDbEditorSheet.swift`、`BibDbMergeSheet.swift`、`BibDbFieldFixSheet.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 引用库设置（引用库） | 引用库路径 / 数据库位置 / 规范化（B1/B2/B3）的 dry-run 与 apply 入口；本机偏好写 `settings.json`，**只有 dry-run 默认安全** | `sources-mac/Views/BibDbSettingsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 设置 | AI 端点配置（明文存本机用户目录）+ 请求旋钮（思考模式 / 输出上限 / **通道** / **联网检索**）+ 体检（①②③④ + **⑤ 检索探针**）+ 隐私文案；**第 55 批新增「单篇预算 / 单批预算」token 预算闸**（默认 30000 / 1000000，0 = 不限，留空 = 不传；只约束直连 API，外部 chat 两段式不生效）；「保存」才落盘、「清空」只清输入框（见下表后说明）。保存/测试按钮**固定在本页底部**、不需要滚到页面末尾。第 60 批起隐私口径：默认只发条目/片段，勾选「全文 AI 核查（直连 API）」后才把正文分片发给你配置的端点（默认不勾、不持久化、会产生费用）；**第 63 批新增「API 核查字符上限」（默认 40000，0 = 不限）与「全文核查结果自动应用」（默认开，走批57安全闸）** | `sources-mac/Views/SettingsTab.swift`、`sources-win/settings.py`，第 47/58/62/69 条 |
 
@@ -1237,7 +1237,7 @@ $PY convert.py --source X.docx --out Y --no-bibdb-verify             # 第 58 �
 - 保守判定的代价要如实说：**库内没有的新文献一律走原流程**（不会因为查库失败而跳过核实）；
   跨库同名作品/简写差异可能命中不到（宁可漏，不可错）。回归见 `tests/test_bibdb_verify.py`。
 
-**引用库裁决 / 备份的 CLI 命令（批73 B-127；GUI 待裁决页全调它们，老用法与老 JSON 键不变）**：
+**引用库裁决的 CLI 命令（批73 B-127；老用法与老 JSON 键不变；GUI B-190 起不再传 `--backup`、不再调 `restore`）**：
 
 ```bash
 $PY Engine/bibdb.py conflicts --json [--pending-only] [--db PATH]
@@ -1245,7 +1245,6 @@ $PY Engine/bibdb.py resolve --key K --action replace --incoming-sha256 SHA --bib
     [--dry-run] [--allow-overlap] [--expect-db-sha256 SHA] [--backup DIR] [--json]
 $PY Engine/bibdb.py resolve --adopt-all-pending [--dry-run] [--note TEXT] \
     [--expect-db-sha256 SHA] [--backup DIR] [--json]
-$PY Engine/bibdb.py restore --backup PATH [--expect-db-sha256 SHA] [--dry-run] [--json]
 $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范化规则升级后重算 sha
 ```
 
@@ -1259,17 +1258,18 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
   重复执行幂等（`already=true`），已裁决后不提供改判（用 `restore` 整库回退）。
 - `resolve --adopt-all-pending`：一键把**全部**待裁决冲突按 adopt 语义应用 incoming 值；
   **同一记录的多条待裁决冲突字段有重叠 → 整体拒绝**（退出 2 并列出冲突 #，请逐条处理）；
-  `--dry-run` 给逐条 preview（字段 old→new、删除标记）；真写**单次原子写 + 单次备份**。
+  `--dry-run` 给逐条 preview（字段 old→new、删除标记）；真写**单次原子写**（GUI 不再传 `--backup`）。
 - 写前安全闸（`resolve` 写动作通用）：`--expect-db-sha256` 要求**完整 64 位十六进制**且与库当前
-  字节 sha256 一致（不符 → 退出 2、**零写入**）；`--backup DIR` 只在**真的会写入**时生成
-  `bibliography-<UTCts>-<库sha前12位>.jsonl`（同名已存在 → 退出 2，不覆盖旧备份）。
-- `restore --backup PATH`：先校验备份能被 `Store.load()`（行级 schema）读出、`--expect-db-sha256`
-  与当前库一致，再原子写回并返回前后 sha；**不做 reopen**（整库回到备份时状态，这是 P4 拍板口径）。
+  字节 sha256 一致（不符 → 退出 2、**零写入**）；`--backup DIR` 是**可选**的旧兼容参数，只在真的会
+  写入时生成 `bibliography-<UTCts>-<库sha前12位>.jsonl`（GUI B-190 起不传；目录备份制已取消）。
+- 整库回退：GUI 用「待处理」页版本区「回退到上一个提交…」（git `checkout HEAD~1 -- 库文件` + 新
+  commit，不 hard reset、不 push）。引擎 CLI 仍保留 `restore --backup PATH` 作**向后兼容**（校验备份
+  可解析 + 期望 sha 后原子写回，不做 reopen），GUI 不再调用。
 - `--json` 新增键**只加不改**：`conflicts` 用新契约；写动作统一带
   `db_sha256_before` / `db_sha256_after` / `backup_path`（无备份时空串）；退出 2 且给了
   `--json` 时尽量另出 `{"error": "中文原因"}`，GUI 有 stderr 回退。
 - 回归：`Engine/tests/test_b73_bibdb_adjudication.py`（hermetic tempfile，不碰真库/真稿；
-  覆盖失败零写入、dry-run 库逐字节不变、幂等、备份/恢复、默认零变化）。
+  覆盖失败零写入、dry-run 库逐字节不变、幂等、备份/恢复（CLI 兼容）、默认零变化）。
 
 ---
 

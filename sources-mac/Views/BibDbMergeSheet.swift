@@ -66,6 +66,11 @@ struct BibDbMergeSheet: View {
             onMerged()
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) { dismiss() }
         }
+        // B-190：版本层提示单独记日志（失败是黄字，不属于写库失败）
+        .onChange(of: model.versionNotice) { notice in
+            guard let notice, !notice.text.isEmpty else { return }
+            Logger(store: log)((notice.failed ? "⚠️ " : "") + notice.text + "\n")
+        }
     }
 
     // MARK: - 顶部
@@ -84,7 +89,8 @@ struct BibDbMergeSheet: View {
                     .disabled(model.applying)
             }
             Text(("**绝不自动合并**：逐字段选来源、新 key 可改，先跑引擎 dry-run 预览（不写库），"
-                  + "再二次确认写入。写前自动备份 + 库 sha 校验；旧 key 全部保留进 `aliases`。")
+                  + "再二次确认写入。写前只做库 sha 校验；写库成功后自动本地 git commit（不推送）；"
+                  + "旧 key 全部保留进 `aliases`。")
                 .plainMarkdown)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -333,6 +339,9 @@ struct BibDbMergeSheet: View {
         if model.succeeded && !model.successText.isEmpty {
             BibDbStatusLine(kind: .ok, text: model.successText)
         }
+        if let version = model.versionNotice, !version.text.isEmpty {
+            BibDbStatusLine(kind: version.failed ? .warning : .idle, text: version.text)
+        }
         if model.preview != nil && model.previewedInputs != model.currentInputs
             && !model.recordsChanged {
             BibDbStatusLine(kind: .warning,
@@ -444,6 +453,8 @@ private final class BibDbMergeSheetModel: ObservableObject {
     @Published var confirmMerge = false
     @Published var successText = ""
     @Published var succeeded = false
+    /// B-190：写库成功后的版本层提示（自动本地 commit；失败只黄字，不影响写库结论）
+    @Published var versionNotice: BibDbVersionWriteNotice? = nil
     /// 嵌套编辑器写库后置 true：本页旧材料/旧预览都不再可信（不自动重载，避免吞掉用户选择）。
     @Published var recordsChanged = false
     /// 加载失败的原因（与「预览/合并失败」的 error 分开：列表空时只显示这条）。
@@ -471,7 +482,7 @@ private final class BibDbMergeSheetModel: ObservableObject {
     var confirmText: String {
         "将把 \(records.map(\.key).joined(separator: "、")) 合并为 `\(newKey)`（entry_type \(entryType.isEmpty ? "沿用第一条" : entryType)）；"
             + "旧 key 全部保留进 aliases，记录数 -\(max(0, records.count - 1))。\n"
-            + "写前引擎自动备份（\(BibDbFeature.backupDirectory)）并校验库 sha。"
+            + "写前只校验库 sha；写库成功后自动本地提交库文件（不推送）。"
     }
 
     // MARK: 加载 / 重读
@@ -492,6 +503,7 @@ private final class BibDbMergeSheetModel: ObservableObject {
         previewedInputs = nil
         successText = ""
         succeeded = false
+        versionNotice = nil
         recordsChanged = false
         let db = BibDbFeature.existingDBPath() ?? ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -580,6 +592,7 @@ private final class BibDbMergeSheetModel: ObservableObject {
         let expect = loadedSha
         running = true
         stage = "正在跑引擎 dry-run 预览…"
+        versionNotice = nil
         error = ""
         message = ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -617,7 +630,8 @@ private final class BibDbMergeSheetModel: ObservableObject {
         let input = currentInputs
         let expect = preview.dbSha256Before.isEmpty ? loadedSha : preview.dbSha256Before
         applying = true
-        stage = "正在合并（备份 → 原子写 → 复核）…"
+        stage = "正在合并（原子写 → 复核）…"
+        versionNotice = nil
         error = ""
         message = ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -626,23 +640,29 @@ private final class BibDbMergeSheetModel: ObservableObject {
                                                   entryType: input.entryType,
                                                   fieldSources: input.fieldSources,
                                                   expectDBsha256: expect)
+            var version: BibDbVersionWriteNotice? = nil
+            if outcome.written, outcome.error == nil {
+                version = BibDbVersionCommit.afterWrite(
+                    db: db, action: "合并 " + keys.joined(separator: ",")
+                        + "→" + outcome.newKey,
+                    recordCount: keys.count,
+                    shaBefore: outcome.dbSha256Before, shaAfter: outcome.dbSha256After)
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.applying = false
                 self.stage = ""
                 guard outcome.written, outcome.error == nil else {
                     var text = outcome.error ?? "合并失败（引擎没有返回原因）。"
-                    if !outcome.backupPath.isEmpty {
-                        text += "\n引擎已备份到：\(outcome.backupPath)"
-                        text += "\n若提示「写后复核失败」，库可能已经写了：请用该备份恢复，不要当作没写。"
-                    }
+                    text += "\n若提示「写后复核失败」，库可能已经写了：请在「待处理」页版本区核对/回退，"
+                        + "不要当作没写。"
                     self.error = text
                     return
                 }
+                self.versionNotice = version
                 var lines: [String] = []
                 lines.append("已合并为 `\(outcome.newKey)`；记录 \(outcome.recordsAfter) 条")
                 lines.append("aliases：\(outcome.aliases.isEmpty ? "（无）" : outcome.aliases.joined(separator: "、"))")
-                lines.append("备份：\(outcome.backupPath.isEmpty ? "（引擎未返回）" : outcome.backupPath)")
                 lines.append("新库 sha：\(outcome.dbSha256After.isEmpty ? "（未返回）" : outcome.dbSha256After)")
                 if let verification = outcome.verification {
                     lines.append(verification.summary)

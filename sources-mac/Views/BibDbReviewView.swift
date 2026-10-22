@@ -19,8 +19,8 @@ struct ReviewFieldFixTarget: Identifiable, Equatable {
     var id: String { registry }
 }
 
-/// 「待处理」页的界面状态（批73 B-127：列表 + 行内三按钮 + 一键全部采用 + 编辑裁决 bib + 备份恢复；
-/// B-188：三段式 + 性能 P0 缓存）。
+/// 「待处理」页的界面状态（批73 B-127：列表 + 行内三按钮 + 一键全部采用 + 编辑裁决 bib；
+/// B-188：三段式 + 性能 P0 缓存；B-190：版本库状态区 + 写库成功自动本地 commit（绝不自动 push））。
 ///
 /// 线程约定与其它页一致：会起子进程的 `BibDbFeature.*` 一律在后台队列调，回主线程回填。
 /// **所有写操作串行**：`running` 期间所有按钮/行内按钮置灰（同一份库不能有两个写进同一个窗口）。
@@ -91,15 +91,8 @@ final class BibDbReviewModel: ObservableObject {
     @Published var editMessage = ""
     @Published var confirmEditApply = false
 
-    // 从备份恢复 sheet
-    @Published var showRestoreSheet = false
-    @Published var backups: [BibDbFeature.BackupFile] = []
-    @Published var restoreSelection = ""     // 选中的备份路径
-    @Published var restorePreview: BibDbFeature.RestoreOutcome? = nil
-    @Published var restorePreviewSHA = ""    // 预览时的库 sha
-    @Published var restoreError = ""
-    @Published var restoreMessage = ""
-    @Published var confirmRestore = false
+    /// B-190：写库成功后版本层（自动本地 commit）的结果提示（黄字 fail-soft，不属于写库失败）。
+    @Published var versionNotice: BibDbVersionWriteNotice? = nil
 
     // MARK: - 读（清单文件 / 冲突条目）
 
@@ -244,24 +237,31 @@ final class BibDbReviewModel: ObservableObject {
 
     /// 行内裁决执行。`action` = `keep` / `adopt` / `defer`。
     ///
-    /// 安全闸（spec §4.4/§5）：写前带 `--expect-db-sha256`（列表加载时的库 sha）+
-    /// `--backup <自动备份目录>`；列表过期时引擎退出 2、库不变 → 提示刷新。
+    /// 安全闸（spec §4.4/§5）：写前带 `--expect-db-sha256`（列表加载时的库 sha）；列表过期时
+    /// 引擎退出 2、库不变 → 提示刷新。B-190：写库成功后自动本地 commit（失败只黄字）。
     func performResolve(_ item: BibDbFeature.ConflictItem, action: String) {
         guard !running else { return }
         let expectSHA = conflicts?.dbSha256 ?? ""
-        let backupDirectory = BibDbFeature.backupDirectory
+        let db = BibDbFeature.existingDBPath() ?? ""
+        let label = "C" + String(format: "%03d", item.stableNo) + " " + action
         running = true
         stage = "正在写库（\(Self.actionTitle(action)) C\(String(format: "%03d", item.stableNo))）…"
         error = ""
         message = ""
         lastAction = ""
+        versionNotice = nil
         let model = self
         DispatchQueue.global(qos: .userInitiated).async {
             let outcome = BibDbFeature.resolveConflict(
                 key: item.recordKey, action: action,
                 incomingSha256: item.incomingSha256,
-                expectDBsha256: expectSHA,
-                backupDirectory: backupDirectory)
+                expectDBsha256: expectSHA)
+            var version: BibDbVersionWriteNotice? = nil
+            if outcome.error == nil, outcome.written {
+                version = BibDbVersionCommit.afterWrite(
+                    db: db, action: "裁决 " + label, recordCount: 1,
+                    shaBefore: outcome.dbShaBefore, shaAfter: outcome.dbShaAfter)
+            }
             DispatchQueue.main.async {
                 model.running = false
                 model.stage = ""
@@ -269,6 +269,7 @@ final class BibDbReviewModel: ObservableObject {
                     model.error = error
                     return
                 }
+                model.versionNotice = version
                 model.lastAction = Self.resolveLine(item: item, action: action, outcome: outcome)
                 model.message = model.lastAction
                 model.refreshAfterWrite()
@@ -291,7 +292,6 @@ final class BibDbReviewModel: ObservableObject {
         let no = "C\(String(format: "%03d", item.stableNo))"
         var text = "✅ \(no) \(actionTitle(action))：" + (outcome.already ? "此前已裁决（无变化）" : "已写库")
         text += "；库内记录 `\(item.recordKey)`"
-        if !outcome.backupPath.isEmpty { text += "；备份：\(outcome.backupPath)" }
         if !outcome.dbShaAfter.isEmpty { text += "；库 sha " + String(outcome.dbShaAfter.prefix(12)) + "…" }
         if outcome.pendingAfter >= 0 { text += "；待裁决 \(outcome.pendingAfter)" }
         return text
@@ -299,11 +299,10 @@ final class BibDbReviewModel: ObservableObject {
 
     // MARK: - 写：一键全部采用（dry-run 预览 → 二次确认 → 真写）
 
-    /// 打开「一键全部采用」：先跑 dry-run 预览（库不变），把逐条 old→new + 备份路径摆给用户看。
+    /// 打开「一键全部采用」：先跑 dry-run 预览（库不变），把逐条 old→new 摆给用户看。
     func beginAdoptAll() {
         guard !running else { return }
         let expectSHA = conflicts?.dbSha256 ?? ""
-        let backupDirectory = BibDbFeature.backupDirectory
         running = true
         stage = "正在预览「全部采用」（dry-run，不写库）…"
         error = ""
@@ -312,7 +311,7 @@ final class BibDbReviewModel: ObservableObject {
         let model = self
         DispatchQueue.global(qos: .userInitiated).async {
             let outcome = BibDbFeature.adoptAllPending(
-                expectDBsha256: expectSHA, backupDirectory: backupDirectory, dryRun: true)
+                expectDBsha256: expectSHA, dryRun: true)
             DispatchQueue.main.async {
                 model.running = false
                 model.stage = ""
@@ -328,19 +327,27 @@ final class BibDbReviewModel: ObservableObject {
         }
     }
 
-    /// 二次确认后真写（单次原子写 + 单次备份）；成功后刷新列表（C 编号由引擎固定、不重排）。
+    /// 二次确认后真写（单次原子写）；成功后自动本地 commit 一次并刷新列表（C 编号固定、不重排）。
     func performAdoptAll() {
         guard !running, let preview = adoptPreview else { return }
         guard !preview.adopted.isEmpty else { return }
         let expectSHA = adoptPreviewSHA
-        let backupDirectory = BibDbFeature.backupDirectory
+        let db = BibDbFeature.existingDBPath() ?? ""
         running = true
         stage = "正在全部采用（写库）…"
         error = ""
+        versionNotice = nil
         let model = self
         DispatchQueue.global(qos: .userInitiated).async {
             let outcome = BibDbFeature.adoptAllPending(
-                expectDBsha256: expectSHA, backupDirectory: backupDirectory, dryRun: false)
+                expectDBsha256: expectSHA, dryRun: false)
+            var version: BibDbVersionWriteNotice? = nil
+            if outcome.error == nil, outcome.written {
+                version = BibDbVersionCommit.afterWrite(
+                    db: db, action: "一键采用 \(outcome.recordCount) 条",
+                    recordCount: outcome.recordCount,
+                    shaBefore: outcome.dbShaBefore, shaAfter: outcome.dbShaAfter)
+            }
             DispatchQueue.main.async {
                 model.running = false
                 model.stage = ""
@@ -348,12 +355,12 @@ final class BibDbReviewModel: ObservableObject {
                     model.error = "一键全部采用：写库失败（库未改或已回滚）。\n" + error
                     return
                 }
+                model.versionNotice = version
                 var text = "✅ 已全部采用：改 \(outcome.recordCount) 条记录 / "
                     + "\(outcome.fieldCount) 个字段"
                 if outcome.supersededCount > 0 {
                     text += "；\(outcome.supersededCount) 条重叠冲突标 superseded"
                 }
-                if !outcome.backupPath.isEmpty { text += "；备份：\(outcome.backupPath)" }
                 if outcome.pendingAfter >= 0 {
                     text += "；待裁决 \(outcome.pendingBefore) → \(outcome.pendingAfter)"
                 }
@@ -455,24 +462,34 @@ final class BibDbReviewModel: ObservableObject {
         editPreview != nil && !editPreviewSignature.isEmpty && editPreviewSignature == editSignature
     }
 
-    /// 确认应用：`resolve --action replace`（带 --backup + --expect-db-sha256；真写）。
+    /// 确认应用：`resolve --action replace`（带 --expect-db-sha256；真写 + 自动本地 commit）。
     func performEditApply() {
         guard !running, editPreviewMatchesInputs else { return }
         let expectSHA = conflicts?.dbSha256 ?? ""
-        let backupDirectory = BibDbFeature.backupDirectory
         let key = editKey
         let sha = editIncomingSHA
         let text = editBibText
         let allowOverlap = editAllowOverlap
+        let db = BibDbFeature.existingDBPath() ?? ""
+        let actionLabel = "裁决 " + (editItem.map {
+            "C" + String(format: "%03d", $0.stableNo)
+        } ?? editKey) + " replace"
         running = true
         stage = "正在写库（编辑裁决 bib）…"
         editError = ""
+        versionNotice = nil
         let model = self
         DispatchQueue.global(qos: .userInitiated).async {
             let outcome = BibDbFeature.replaceRecord(
                 recordKey: key, bibText: text, incomingSha256: sha,
-                expectDBsha256: expectSHA, backupDirectory: backupDirectory,
+                expectDBsha256: expectSHA,
                 allowOverlap: allowOverlap, dryRun: false)
+            var version: BibDbVersionWriteNotice? = nil
+            if outcome.error == nil, outcome.written {
+                version = BibDbVersionCommit.afterWrite(
+                    db: db, action: actionLabel, recordCount: 1,
+                    shaBefore: outcome.dbShaBefore, shaAfter: outcome.dbShaAfter)
+            }
             DispatchQueue.main.async {
                 model.running = false
                 model.stage = ""
@@ -480,9 +497,9 @@ final class BibDbReviewModel: ObservableObject {
                     model.editError = "写库失败（库未改或已回滚）：\n" + error
                     return
                 }
+                model.versionNotice = version
                 var text = "✅ 编辑裁决已写库：记录 `\(key)`"
                 if !outcome.changes.isEmpty { text += "；" + outcome.changeSummary }
-                if !outcome.backupPath.isEmpty { text += "；备份：\(outcome.backupPath)" }
                 if !outcome.dbShaAfter.isEmpty {
                     text += "；库 sha " + String(outcome.dbShaAfter.prefix(12)) + "…"
                 }
@@ -496,86 +513,6 @@ final class BibDbReviewModel: ObservableObject {
         }
     }
 
-    // MARK: - 写：从备份恢复
-
-    func openRestoreSheet() {
-        guard !running else { return }
-        backups = BibDbFeature.listBackups()
-        restoreSelection = backups.first?.path ?? ""
-        restorePreview = nil
-        restorePreviewSHA = ""
-        restoreError = ""
-        restoreMessage = ""
-        showRestoreSheet = true
-    }
-
-    /// 校验/预览：`restore --dry-run --json`（校验备份可解析 + 期望 sha；库不变）。
-    func previewRestore() {
-        guard !running else { return }
-        let path = restoreSelection
-        guard !path.isEmpty else {
-            restoreError = "先选一个备份文件。"
-            return
-        }
-        let expectSHA = conflicts?.dbSha256 ?? ""
-        running = true
-        restoreError = ""
-        restoreMessage = ""
-        restorePreview = nil
-        restorePreviewSHA = ""
-        let model = self
-        DispatchQueue.global(qos: .userInitiated).async {
-            let outcome = BibDbFeature.restore(backupPath: path,
-                                               expectDBsha256: expectSHA,
-                                               dryRun: true)
-            DispatchQueue.main.async {
-                model.running = false
-                if let error = outcome.error {
-                    model.restoreError = "校验失败（库未改）：\n" + error
-                    return
-                }
-                model.restorePreview = outcome
-                model.restorePreviewSHA = expectSHA
-                let target = outcome.targetSha.isEmpty ? outcome.dbShaAfter : outcome.targetSha
-                model.restoreMessage = "校验通过（dry-run：未写库）：恢复后库 sha 将为 "
-                    + String(target.prefix(12)) + "…"
-            }
-        }
-    }
-
-    /// 确认恢复：`restore --backup PATH --expect-db-sha256 …`（真写；整库恢复，不 reopen）。
-    func performRestore() {
-        guard !running, let preview = restorePreview else { return }
-        let expectSHA = restorePreviewSHA
-        running = true
-        stage = "正在从备份恢复库…"
-        error = ""
-        restoreError = ""
-        let model = self
-        DispatchQueue.global(qos: .userInitiated).async {
-            let outcome = BibDbFeature.restore(backupPath: preview.backupPath,
-                                               expectDBsha256: expectSHA,
-                                               dryRun: false)
-            DispatchQueue.main.async {
-                model.running = false
-                model.stage = ""
-                if let error = outcome.error {
-                    model.restoreError = "恢复失败（库未改）：\n" + error
-                    return
-                }
-                var text = "✅ 已从备份恢复整库"
-                text += "；库 sha " + String(outcome.dbShaBefore.prefix(12)) + "… → "
-                    + String(outcome.dbShaAfter.prefix(12)) + "…"
-                text += "；备份：\(outcome.backupPath)"
-                model.restoreMessage = text
-                model.lastAction = text
-                model.message = text
-                model.restorePreview = nil
-                model.showRestoreSheet = false
-                model.refreshAfterWrite()
-            }
-        }
-    }
 }
 
 /// 「待裁决」页（批73 B-127 改造）。
@@ -584,14 +521,17 @@ final class BibDbReviewModel: ObservableObject {
 ///   · 逐条三选一直裁：保留旧值 / 采用新值 / 待人工（写库，重启不丢，C 编号固定）；
 ///   · 「一键全部采用」：高亮警示 + dry-run 逐条预览 + 二次确认，默认**不提供无确认执行**；
 ///   · 「编辑裁决 bib…」：预填库内条目 → TextEditor 改 → dry-run 预览差异 → 确认写库；
-///   · 「从备份恢复…」：列自动备份 → 校验/预览 → 整库恢复（**不 reopen** 已裁决）；
-///   · 所有写操作串行、先预览后确认、写前 `--expect-db-sha256` + 自动备份。
+///   · 版本库状态区（B-190）：分支 / 库文件脏否 / 未推送提交数 / 最近 3 条库提交；
+///     「提交…」「推送…」「回退到上一个提交…」都要二次确认；备份制已取消。
+///   · 所有写操作串行、先预览后确认、写前 `--expect-db-sha256`；写库成功后自动本地 commit。
 struct BibDbReviewView: View {
     @ObservedObject var log: LogStore
     @ObservedObject var bibdb: BibDbSettings
     let isActive: Bool
 
     @StateObject private var model = BibDbReviewModel()
+    /// B-190：版本库状态区（版本状态/手动提交/推送/回退；全部后台 + fail-soft）
+    @StateObject private var version = BibDbVersionModel()
 
     /// 行内三按钮的确认请求（采用新值必须二次确认；保留/待人工只改裁决元数据）
     @State private var resolveRequest: ResolveRequest? = nil
@@ -614,7 +554,7 @@ struct BibDbReviewView: View {
             var lines: [String] = []
             lines.append("库内记录：`\(item.recordKey)` · \(item.title)")
             if isAdopt {
-                lines.append("将按新稿值修改以下字段（写库，撤销需从备份恢复）：")
+                lines.append("将按新稿值修改以下字段（写库；撤销用版本区「回退到上一个提交…」）：")
                 for diff in item.diff {
                     lines.append("· \(diff.name)：「\(diff.oldText)」→「\(diff.newText)」")
                 }
@@ -622,7 +562,7 @@ struct BibDbReviewView: View {
                     lines.append("⚠️ 这是库内已核实(verified)记录：改的是已出版成品里人工核对过的字段，"
                                  + "请确认新值为准。")
                 }
-                lines.append("写前自动备份到：\(BibDbFeature.backupDirectory)")
+                lines.append("写库成功后自动本地提交库文件（不推送）。")
             } else if action == "keep" {
                 lines.append("保留库内已核实旧值（不改字段值）。")
             } else {
@@ -650,8 +590,6 @@ struct BibDbReviewView: View {
     @State private var healthSearch: [String: String] = [:]
     /// 库健康每条 warning 的「再显示 200 条」上限（按 item.id）
     @State private var healthLimits: [String: Int] = [:]
-    /// ③ 已处理分页
-    @State private var processedLimit = 100
     /// 跳转目标分类在库健康加载完成前还不在视图里：记下来，加载完成后补一次定位
     @State private var deferredScrollTarget: String? = nil
 
@@ -665,13 +603,14 @@ struct BibDbReviewView: View {
                     pathRows
                     statusBar
                     actionBar
+                    versionSection
                     feedback
                     Divider()
                     conflictSection.id("section-conflicts")
                     Divider()
                     healthSection.id("section-health")
                     Divider()
-                    processedSection.id("section-processed")
+                    BibDbProcessedSection(model: model).id("section-processed")
                     Divider()
                     reportFilesSection
                     Divider()
@@ -701,9 +640,8 @@ struct BibDbReviewView: View {
             BibDbFieldFixSheet(log: log, bibdb: bibdb, registry: target.registry,
                                onApplied: { model.refreshAfterWrite() })
         }
-        .sheet(isPresented: $model.showAdoptSheet) { adoptSheet }
-        .sheet(isPresented: $model.showEditSheet) { editSheet }
-        .sheet(isPresented: $model.showRestoreSheet) { restoreSheet }
+        .sheet(isPresented: $model.showAdoptSheet) { BibDbAdoptSheet(model: model) }
+        .sheet(isPresented: $model.showEditSheet) { BibDbEditSheet(model: model) }
         .onAppear {
             if isActive { activateAndConsume() }
         }
@@ -717,6 +655,8 @@ struct BibDbReviewView: View {
         }
         // 首次激活时库健康还在后台加载：加载完成后补一次分类定位（展开态已在 consume 时写入）
         .onChange(of: model.loadGeneration) { _ in
+            // B-190：库写成功后版本状态跟着刷新（后台读 git，失败只黄字）
+            version.reload()
             guard let target = deferredScrollTarget else { return }
             deferredScrollTarget = nil
             scrollTarget = target
@@ -741,11 +681,17 @@ struct BibDbReviewView: View {
         .onChange(of: model.error) { text in
             if !text.isEmpty { Logger(store: log)("❌ 引用库待处理失败：" + text + "\n") }
         }
+        // B-190：写库成功后的版本层提示单独一条（失败是黄字，不属于写库失败）
+        .onChange(of: model.versionNotice) { notice in
+            guard let notice, !notice.text.isEmpty else { return }
+            Logger(store: log)((notice.failed ? "⚠️ " : "") + notice.text + "\n")
+        }
     }
 
     /// 激活：首次加载 / 之后只查新鲜度；同时消费一次性跳转意图（不触发引擎）。
     private func activateAndConsume() {
         model.activate()
+        version.reload()
         consumeReviewJump()
     }
 
@@ -779,18 +725,26 @@ struct BibDbReviewView: View {
             本页把「引用库需要人工处理的事」集中到一处，三段：
             ① **字段冲突**——库里已核实条目遇到「同一作品、不同期成品 bib 写法不同」时，库不会静默
             改掉旧值，只把差异留档成 `conflicts`；逐条 keep/adopt/defer、编辑裁决 bib、一键全部采用、
-            从备份恢复都在①区。已裁决默认隐藏，可用开关按**一行摘要**查看（C 编号由引擎固定、不重排）。
+            版本库状态区（提交/推送/回退）也在本页。已裁决默认隐藏，可用开关按**一行摘要**查看
+            （C 编号由引擎固定、不重排）。
             ② **库健康**——引擎 `lint --with-records` 的 8 类 warning（重复记录 / 同一作品多记录 /
             缺字段 / entry_type 笔误 / alias / 未核实…）按固定顺序折叠；展开按**受影响记录**逐条列出，
             每行可「编辑条目」，重复/近重复对可「对照合并」，缺字段/entry_type 类可开批量预览归位。
-            ③ **已处理**——冲突裁决 + 编辑/合并写库留痕（动作 / key / 时间 / 备份 sha 短），默认折叠、
-            点开一行看明细。
+            ③ **已处理**——冲突裁决 + 编辑/合并写库留痕（动作 / key / 时间），默认折叠、点开一行看明细。
 
-            写库纪律：**dry-run 预览 → 二次确认 → 写前校验库 sha → 自动备份 → 原子写**；库被外部
-            CLI 改过时 sha 闸会拒绝写，点「刷新列表」后重试；撤销用「从备份恢复…」。
+            写库纪律：**dry-run 预览 → 二次确认 → 写前校验库 sha → 原子写 → 写库成功后自动本地
+            git commit（只提交库文件、绝不自动 push）**；库被外部 CLI 改过时 sha 闸会拒绝写，点
+            「刷新列表」后重试；撤销用版本区「回退到上一个提交…」（不 hard reset、不推送）。
             两个数据源：字段冲突来自引擎 `conflicts`，库健康来自引擎 `lint --with-records`（口径独立、
             不互相代替）；已处理的编辑/合并留痕来自记录 `edits[]`（不建 sidecar）。
             """)
+    }
+
+    /// B-190：版本库状态区（分支/脏否/未推送/最近 3 条库提交 + 提交/推送/回退）。
+    private var versionSection: some View {
+        BibDbVersionSection(model: version, onReverted: {
+            model.reloadAll()
+        })
     }
 
     private var pathRows: some View {
@@ -811,9 +765,6 @@ struct BibDbReviewView: View {
                          monospaced: true,
                          color: (BibDbFeature.existingDBPath() == nil) ? .red : .secondary,
                          wraps: true)
-            BibDbInfoRow(label: "备份目录",
-                         value: BibDbFeature.backupDirectory,
-                         monospaced: true, wraps: true)
         }
     }
 
@@ -871,9 +822,6 @@ struct BibDbReviewView: View {
                 .disabled(model.primaryFile == nil)
             Button("打开清单文件夹") { openFolder() }
                 .disabled(!folderExists)
-            Button("打开备份文件夹") {
-                Logger(store: log)(bibDbOpenInFinder(BibDbFeature.backupDirectory))
-            }
             // B-188：本页本地开关（不再是共享 bibdb.showResolvedConflicts；切换 O(1) 只换缓存态）
             Toggle(BibDbFeature.ConflictListState.toggleTitle,
                    isOn: Binding(get: { model.showResolvedConflicts },
@@ -896,6 +844,10 @@ struct BibDbReviewView: View {
             }
             if !model.message.isEmpty {
                 BibDbStatusLine(kind: .ok, text: model.message)
+            }
+            // B-190：写库成功后版本层的结果（commit 失败只黄字，不混进「写库失败」）
+            if let version = model.versionNotice, !version.text.isEmpty {
+                BibDbStatusLine(kind: version.failed ? .warning : .idle, text: version.text)
             }
             if let run = model.lastRun, run.error == nil {
                 Text("清单生成用时 \(BibDbUI.seconds(run.seconds))；库：\(run.dbPath)")
@@ -995,7 +947,7 @@ struct BibDbReviewView: View {
                     Button("采用新值") { askResolve(item, action: "adopt") }
                         .disabled(model.running || !item.hasFingerprint)
                         .help(item.hasFingerprint
-                              ? "adopt：逐字段采用新稿值（写库；会二次确认并自动备份）"
+                              ? "adopt：逐字段采用新稿值（写库；会二次确认；成功后自动本地提交）"
                               : "该条冲突无指纹（旧数据），引擎无法精确定位，需用编辑裁决 bib")
                     Button("待人工") { askResolve(item, action: "defer") }
                         .disabled(model.running)
@@ -1219,7 +1171,7 @@ struct BibDbReviewView: View {
                 }
                 .disabled(model.running)
                 .help("来自引擎 suggest-field-fixes --registry missing_field："
-                      + "勾选后逐条 edit --apply（统一 sha 闸 + 自动备份）")
+                      + "勾选后逐条 edit --apply（统一 sha 闸；整批写完后自动本地提交一次）")
                 Text("A 类：缺 title/缺 year 等，候选归位来自引擎；不自动应用")
                     .font(.caption2).foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
@@ -1369,95 +1321,7 @@ struct BibDbReviewView: View {
         model.mergeTarget = ReviewMergeTarget(keys: keys)
     }
 
-    // MARK: - ③ 已处理
-
-    private var processedSection: some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 6) {
-                if model.processed.isEmpty {
-                    BibDbStatusLine(kind: .idle,
-                                    text: "还没有写库留痕（冲突裁决 / 编辑条目 / 合并记录）。")
-                }
-                ForEach(Array(model.processed.prefix(processedLimit))) { entry in
-                    processedRow(entry)
-                }
-                if model.processed.count > processedLimit {
-                    Button("再显示 100 条（还有 \(model.processed.count - processedLimit) 条）") {
-                        processedLimit += 100
-                    }
-                    .controlSize(.small)
-                }
-            }
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 8) {
-                Text("③ 已处理").font(.callout).bold()
-                Text("\(model.processed.count) 条留痕（冲突裁决 + 编辑/合并痕迹）")
-                    .font(.caption2).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Text("默认折叠，点开看明细").font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    /// 已处理一行：默认一行摘要（动作 / key / 备份 sha 短 / 时间），点开看明细。
-    private func processedRow(_ entry: BibDbFeature.ProcessedEntry) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.detail).font(.caption).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !entry.backupSha256.isEmpty {
-                    Text("备份 sha：\(entry.backupSha256)")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                if !processedBackupPath(entry).isEmpty {
-                    Text("备份文件：\(processedBackupPath(entry))")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                Text("记录：\(entry.key) · 类型：\(entry.kind)")
-                    .font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
-            }
-            .padding(.leading, 8).padding(.top, 2)
-        } label: {
-            HStack(spacing: 8) {
-                Text(entry.actionTitle).font(.caption).bold()
-                    .lineLimit(1)
-                    .frame(minWidth: 80, alignment: .leading)
-                Text(entry.key)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                Spacer(minLength: 0)
-                if !entry.backupSha256.isEmpty {
-                    Text("备份 sha \(entry.backupSha256)")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-                if !entry.at.isEmpty {
-                    Text(entry.at)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .padding(6)
-        .background(Color.secondary.opacity(0.03))
-        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.10)))
-    }
-
-    /// 「已处理」明细里的备份路径：`ProcessedEntry` 只带备份 sha（Wave1 口径），
-    /// 这里按 id 从同源写库痕迹里取 `backup_path`（纯展示检索，不做任何判据）。
-    private func processedBackupPath(_ entry: BibDbFeature.ProcessedEntry) -> String {
-        guard entry.kind == "edit" || entry.kind == "merge" else { return "" }
-        for trace in model.traces {
-            let key = trace.newKey.isEmpty ? trace.recordKey : trace.newKey
-            if "trace|\(trace.id)|\(key)" == entry.id { return trace.backupPath }
-        }
-        return ""
-    }
-
-    // MARK: - 一键全部采用 + 编辑裁决 + 备份恢复
+    // MARK: - 一键全部采用 + 编辑裁决
 
     private func adoptAllSection(_ conflicts: BibDbFeature.ConflictsOutcome) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1472,7 +1336,7 @@ struct BibDbReviewView: View {
                     .font(.caption).foregroundStyle(.red).bold()
                 Text("这是批量修改学术事实（其中 \(conflicts.verifiedPendingCount) 条属于库内已核实记录），"
                      + "执行前必须先看 dry-run 逐条预览、再二次确认；默认不提供无确认执行。"
-                     + "写前自动备份，撤销用「从备份恢复…」。")
+                     + "写库成功后自动本地提交（不推送），撤销用版本区「回退到上一个提交…」。")
                     .font(.caption).foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -1485,13 +1349,10 @@ struct BibDbReviewView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
                     .disabled(model.running || conflicts.pending == 0)
-                    .help("先 dry-run 预览（逐条 old→new + 备份路径），二次确认后才真写")
+                    .help("先 dry-run 预览（逐条 old→new），二次确认后才真写")
                 Button("编辑裁决 bib…") { beginEditForFirstPending(conflicts) }
                     .disabled(model.running || conflicts.pendingItems.isEmpty)
                     .help("预填库内条目 → TextEditor 编辑 → dry-run 预览差异 → 确认写库")
-                Button("从备份恢复…") { model.openRestoreSheet() }
-                    .disabled(model.running)
-                    .help("列自动备份 → 校验/预览 → 整库恢复（不 reopen 已裁决）")
                 Spacer()
                 Text("待裁决 \(conflicts.pending) 条")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1515,329 +1376,6 @@ struct BibDbReviewView: View {
         Logger(store: log)("引用库待处理：打开编辑裁决 bib（C"
                            + String(format: "%03d", item.stableNo) + "）…\n")
         model.beginEdit(item)
-    }
-
-    // MARK: - 一键全部采用 sheet
-
-    private var adoptSheet: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("一键全部采用 · 预览（dry-run，未写库）").font(.title3).bold()
-                Spacer()
-                Button("关闭") { model.showAdoptSheet = false }
-                    .disabled(model.running)
-            }
-            if let preview = model.adoptPreview {
-                let verifiedRisk = model.conflicts?.verifiedPendingCount ?? 0
-                highRiskBanner(preview: preview, verifiedRisk: verifiedRisk)
-                HStack(spacing: 18) {
-                    statText("将改记录", "\(preview.recordCount) 条")
-                    statText("将改字段", "\(preview.fieldCount) 个")
-                    statText("风险（已核实）", "\(verifiedRisk) 条",
-                             color: verifiedRisk > 0 ? .red : .secondary)
-                    statText("重叠 superseded", "\(preview.supersededCount) 条",
-                             color: preview.supersededCount > 0 ? .orange : .secondary)
-                    Spacer()
-                }
-                Text("备份：\(BibDbFeature.backupDirectory)/（真写时引擎生成 "
-                     + "bibliography-<UTC时间>-<库sha12>.jsonl；dry-run 不产生备份）")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                Divider()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(preview.adopted) { item in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.recordKey)
-                                    .font(.system(.caption, design: .monospaced)).bold()
-                                ForEach(item.changes) { change in
-                                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                                        Text("· \(change.name)：").font(.caption).foregroundStyle(.secondary)
-                                        Text(change.oldText)
-                                            .font(.system(.caption, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                        Text("→").font(.caption).foregroundStyle(.tertiary)
-                                        Text(change.newText)
-                                            .font(.system(.caption, design: .monospaced))
-                                    }
-                                }
-                            }
-                            .padding(6)
-                        }
-                    }
-                    .padding(2)
-                }
-                .frame(minHeight: 120, maxHeight: 320)
-            } else {
-                BibDbStatusLine(kind: .warning, text: "还没有 dry-run 预览数据。")
-            }
-            if !model.error.isEmpty {
-                BibDbStatusLine(kind: .error, text: model.error)
-            }
-            Divider()
-            HStack(spacing: 12) {
-                Button("取消") { model.showAdoptSheet = false }
-                    .disabled(model.running)
-                Spacer()
-                if model.running {
-                    ProgressView().controlSize(.small)
-                    Text(model.stage).font(.caption).foregroundStyle(.secondary)
-                }
-                Button("确认全部采用（写库）…") { model.confirmAdoptAll = true }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(model.running
-                              || !model.adoptChecked
-                              || (model.adoptPreview?.adopted.isEmpty ?? true))
-                    .help("点击后再弹一次确认框（列将改条数/字段数 + 备份路径）")
-            }
-        }
-        .padding(20)
-        .frame(width: 760, height: 560, alignment: .leading)
-        // 二次确认挂在**本 sheet 自己**上：挂在主 view 上会被「正在呈现 sheet」抑制
-        // （批73 真点缺陷 P1：sheet 内确认框不弹）。
-        .alert("确认一键全部采用？", isPresented: $model.confirmAdoptAll) {
-            Button("取消", role: .cancel) {}
-            Button("确认全部采用（写库）", role: .destructive) { model.performAdoptAll() }
-        } message: {
-            if let preview = model.adoptPreview {
-                Text("将改 \(preview.recordCount) 条记录 / \(preview.fieldCount) 个字段；"
-                     + "备份目录：\(BibDbFeature.backupDirectory)\n"
-                     + "逐条 old→new 见预览列表。写库后如需撤销，用「从备份恢复…」。")
-            } else {
-                Text("将按新稿值批量修改引用库。")
-            }
-        }
-    }
-
-    private func highRiskBanner(preview: BibDbFeature.AdoptAllOutcome, verifiedRisk: Int) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("⚠️ 二次确认前请逐条核对下面的 old → new：")
-                .font(.caption).bold().foregroundStyle(.red)
-            Text("本操作会一次性修改 \(preview.recordCount) 条记录；其中库内已核实记录 \(verifiedRisk) 条。"
-                 + "写库后如需撤销，只能用「从备份恢复…」整库回退。")
-                .font(.caption).foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
-            if preview.pendingBefore >= 0 {
-                Text("库内冲突：待裁决 \(preview.pendingBefore) 条 → 采用后 \(preview.pendingAfter) 条")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.06))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.red.opacity(0.25)))
-    }
-
-    private func statText(_ title: String, _ value: String, color: Color = .primary) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            Text(value).font(.callout).bold().foregroundStyle(color).monospacedDigit()
-        }
-    }
-
-    // MARK: - 编辑裁决 bib sheet
-
-    private var editSheet: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("编辑裁决 bib · \(model.editItem.map { "C" + String(format: "%03d", $0.stableNo) } ?? "")")
-                    .font(.title3).bold()
-                Spacer()
-                Button("关闭") { model.showEditSheet = false }
-                    .disabled(model.running)
-            }
-            Text("库内记录：\(model.editKey) · \(model.editTitle)")
-                .font(.callout).textSelection(.enabled)
-            Text("冲突指纹：\(model.editIncomingSHA.isEmpty ? "（无：该条冲突无指纹，引擎会拒绝 replace）" : model.editIncomingSHA)")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            if model.editLoading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在预填库内条目（query --key --bibtex）…").font(.caption)
-                }
-            }
-            TextEditor(text: $model.editBibText)
-                .font(.system(.body, design: .monospaced))
-                .disabled(model.running || model.editLoading)
-                .frame(minHeight: 220)
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
-            Toggle("接受覆盖重叠旧基线（--allow-overlap：把同记录字段重叠的其它待裁决冲突标 superseded）",
-                   isOn: $model.editAllowOverlap)
-                .disabled(model.running)
-                .font(.caption)
-            if let preview = model.editPreview {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("预览差异（dry-run，库未改）").font(.callout).bold()
-                    if preview.changes.isEmpty {
-                        Text("与库内条目无字段差异。").font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(preview.changes) { change in
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text("· \(change.name)：").font(.caption).foregroundStyle(.secondary)
-                            Text(change.oldText)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                            Text("→").font(.caption).foregroundStyle(.tertiary)
-                            Text(change.newText)
-                                .font(.system(.caption, design: .monospaced))
-                        }
-                    }
-                    if preview.overlappingCount > 0 {
-                        Text("⚠ 有 \(preview.overlappingCount) 条重叠冲突"
-                             + (preview.supersededCount > 0 ? "（将标 superseded）" : "（默认拒绝，需勾选 allow-overlap）"))
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                    if !preview.dbShaBefore.isEmpty {
-                        Text("库 sha：\(preview.dbShaBefore.prefix(12))… → \(preview.dbShaAfter.prefix(12))…")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            if !model.editError.isEmpty {
-                BibDbStatusLine(kind: .error, text: model.editError)
-            }
-            if !model.editMessage.isEmpty {
-                BibDbStatusLine(kind: model.editPreview == nil ? .ok : .warning, text: model.editMessage)
-            }
-            Divider()
-            HStack(spacing: 12) {
-                Button("预览差异（dry-run，不写库）") { model.previewEdit() }
-                    .disabled(model.running || model.editLoading || model.editBibText.isEmpty)
-                Spacer()
-                if model.running {
-                    ProgressView().controlSize(.small)
-                    Text(model.stage).font(.caption).foregroundStyle(.secondary)
-                }
-                Button("确认应用（写库）…") { model.confirmEditApply = true }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.running || !model.editPreviewMatchesInputs)
-                    .help("先预览；预览后改动 bib / 勾选会作废预览，必须重新预览")
-            }
-        }
-        .padding(20)
-        .frame(width: 720, height: 620, alignment: .leading)
-        // 二次确认挂在**本 sheet 自己**上（批73 真点缺陷 P1：主 view 上的 alert 会被 sheet 抑制）。
-        .alert("确认应用编辑后的 bib？", isPresented: $model.confirmEditApply) {
-            Button("取消", role: .cancel) {}
-            Button("确认写库", role: .destructive) { model.performEditApply() }
-        } message: {
-            let count = model.editPreview?.changes.count ?? 0
-            Text("将改 \(count) 个字段；备份目录：\(BibDbFeature.backupDirectory)")
-        }
-    }
-
-    // MARK: - 从备份恢复 sheet
-
-    private var restoreSheet: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("从备份恢复引用库").font(.title3).bold()
-                Spacer()
-                Button("关闭") { model.showRestoreSheet = false }
-                    .disabled(model.running)
-            }
-            Text("备份目录：\(BibDbFeature.backupDirectory)/")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary).textSelection(.enabled)
-            Text("⚠️ 恢复 = 整库覆盖（不 reopen 已裁决）：恢复后库内裁决状态随备份回退。"
-                 + "只恢复数据库文件，不动清单文件。恢复前会校验备份可解析 + 当前库 sha。")
-                .font(.caption).foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.backups.isEmpty {
-                BibDbStatusLine(kind: .warning,
-                                text: "备份目录里还没有备份文件。写库动作（裁决/采用/编辑裁决）成功后会生成备份。")
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(model.backups) { backup in
-                            Button {
-                                model.restoreSelection = backup.path
-                                model.restorePreview = nil
-                                model.restoreError = ""
-                                model.restoreMessage = ""
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: model.restoreSelection == backup.path
-                                          ? "largecircle.fill.circle" : "circle")
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(backup.name)
-                                            .font(.system(.caption, design: .monospaced))
-                                        Text("\(BibDbUI.size(backup.bytes))；修改时间 "
-                                             + "\(BibDbUI.dateText(backup.modified))")
-                                            .font(.caption2).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(4)
-                            .background(model.restoreSelection == backup.path
-                                        ? Color.accentColor.opacity(0.10) : Color.clear)
-                        }
-                    }
-                }
-                .frame(minHeight: 100, maxHeight: 240)
-            }
-            if let preview = model.restorePreview {
-                Divider()
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("校验/预览（dry-run，库未改）").font(.callout).bold()
-                    Text("将恢复到：\(preview.backupPath)")
-                        .font(.caption).textSelection(.enabled)
-                    Text("库 sha：\(preview.dbShaBefore.prefix(12))… → \(preview.targetSha.prefix(12))…")
-                        .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-            }
-            if !model.restoreError.isEmpty {
-                BibDbStatusLine(kind: .error, text: model.restoreError)
-            }
-            if !model.restoreMessage.isEmpty {
-                BibDbStatusLine(kind: model.restorePreview == nil ? .ok : .warning,
-                                text: model.restoreMessage)
-            }
-            Divider()
-            HStack(spacing: 12) {
-                Button("打开备份文件夹") {
-                    Logger(store: log)(bibDbOpenInFinder(BibDbFeature.backupDirectory))
-                }
-                Button("刷新备份列表") {
-                    model.backups = BibDbFeature.listBackups()
-                    model.restorePreview = nil
-                }
-                .disabled(model.running)
-                Spacer()
-                if model.running {
-                    ProgressView().controlSize(.small)
-                    Text(model.stage).font(.caption).foregroundStyle(.secondary)
-                }
-                Button("校验/预览（dry-run）") { model.previewRestore() }
-                    .disabled(model.running || model.restoreSelection.isEmpty)
-                Button("确认恢复（写库）…") { model.confirmRestore = true }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(model.running || model.restorePreview == nil)
-                    .help("先校验/预览；恢复会整库覆盖当前库")
-            }
-        }
-        .padding(20)
-        .frame(width: 720, height: 560, alignment: .leading)
-        // 二次确认挂在**本 sheet 自己**上（批73 真点缺陷 P1：主 view 上的 alert 会被 sheet 抑制）。
-        .alert("确认从备份恢复整库？", isPresented: $model.confirmRestore) {
-            Button("取消", role: .cancel) {}
-            Button("确认恢复（覆盖当前库）", role: .destructive) { model.performRestore() }
-        } message: {
-            if let preview = model.restorePreview {
-                Text("将把整个引用库恢复到：\n\(preview.backupPath)\n"
-                     + "当前库 sha → 备份 sha；恢复后库内所有裁决状态随备份回退（不提供 reopen）。")
-            } else {
-                Text("将把整个引用库恢复到所选备份。")
-            }
-        }
     }
 
     // MARK: - 清单文件（只读；保留原有能力）
@@ -1881,9 +1419,9 @@ struct BibDbReviewView: View {
                  + "（旧值为空、旧值是笔误）时才采用新值；拿不准就标「待人工」。")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("所有写动作：预览 → 确认 → 写前 sha 校验 → 自动备份 → 原子写；库被外部 CLI 改过时"
-                 + "sha 校验会拒绝写，点「刷新列表」后重试。备份在 "
-                 + "`~/Library/Application Support/SLCN/bibdb-backups/`，可用「从备份恢复…」整库回退。")
+            Text("所有写动作：预览 → 确认 → 写前 sha 校验 → 原子写 → 写库成功后自动本地 git commit"
+                 + "（只提交库文件、绝不自动推送）；库被外部 CLI 改过时 sha 校验会拒绝写，点"
+                 + "「刷新列表」后重试。整库回退用版本区「回退到上一个提交…」（新 commit，不 hard reset）。")
                 .font(.caption).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }

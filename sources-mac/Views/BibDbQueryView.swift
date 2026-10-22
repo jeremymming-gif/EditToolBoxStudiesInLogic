@@ -123,7 +123,7 @@ struct BibDbQueryView: View {
             .frame(maxWidth: 920, alignment: .leading)
         }
         .onChange(of: model.mode) { _ in model.reset() }
-        // B-188：共享条目编辑器（预览=引擎 dry-run；写入前自动备份 + sha 校验）。
+        // B-188：共享条目编辑器（预览=引擎 dry-run；写入前 sha 校验；B-190 起写库成功后自动本地提交）。
         .sheet(item: $editorTarget) { target in
             BibDbEditorSheet(log: log, bibdb: bibdb, recordKey: target.key,
                              onWritten: {
@@ -202,7 +202,8 @@ struct BibDbQueryView: View {
                     Button("编辑此条") {
                         editorTarget = EditorTarget(key: hit.record.key)
                     }
-                    .help("打开共享条目编辑器：预览（引擎 dry-run）→ 二次确认 → 写库（自动备份 + sha 校验）")
+                    .help("打开共享条目编辑器：预览（引擎 dry-run）→ 二次确认 → 写库（sha 校验；"
+                          + "成功后自动本地提交库文件，不推送）")
                     Button("复制 BibTeX") { copyBibTeX(hit) }
                         .buttonStyle(.borderedProminent)
                     Button("在运行日志里显示") { logHit(hit) }

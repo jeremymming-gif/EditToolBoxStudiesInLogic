@@ -16,7 +16,7 @@
 | `proofcheck_test/` | mac 一校测试台 | mac-shell | 2026-10-17 | `run_swift_tests.sh`（CI） | active | — |
 | `toc_test/` | mac 目录测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
 | `run_swift_tests.sh` | 7 台 Swift 测试台入口（headless） | qa-release | 2026-10-21 | CI `ci.yml` 步骤调用；期望「全部测试台 0 FAIL」 | active | 唯一入口，不手工逐台敲 |
-| `bibdb_ux_test/`（`main.swift`） | 引用库 GUI 纯逻辑测试台（B-143：待裁决默认过滤/开关/计数/空态 + warning 明细分类/计数/跳转动作 + lint JSON 向后兼容解析） | mac-shell | 2026-10-21 | `run_swift_tests.sh`（CI，第 7 台） | active | 只编译 Foundation 的 `Core/Support.swift`+`Core/Log.swift`+`Features/BibDbFeature.swift`；headless、不起子进程、不读真实库 |
+| `bibdb_ux_test/`（`main.swift`） | 引用库 GUI 纯逻辑测试台（B-143：待裁决默认过滤/开关/计数/空态 + warning 明细分类/计数/跳转动作 + lint JSON 向后兼容解析；B-190：git 版本层纯逻辑/接线） | mac-shell | 2026-10-23 | `run_swift_tests.sh`（CI，第 7 台） | active | 只编译 Foundation 的 `Core/Support.swift`+`Core/Log.swift`+`Features/BibDbFeature.swift`+`Features/BibDbFeature+Import.swift`+`Features/BibDbGit.swift`；headless、不起子进程、不读真实库 |
 | `mock_llm_server.py` | 本机假 LLM 端点（零付费测试） | engine-core | 2026-10-17 | `Engine/tests/` 引用（test_aibib、test_batch60/63 等） | active | 开发期零付费的关键工具 |
 | `case_audit.py` | 笔记仓案例库体检（编号/索引/状态/相似度，跨仓） | case-lab | 2026-10-18 | 自带 `--check`；`AGENTS.md`/`selfcheck.py` 引用 | active | 操作笔记仓 `cases/`；跨仓需路径说明 |
 | `gen_case_index.py` | 生成/校验案例索引（跨仓） | case-lab | 2026-10-18 | CI `--check`；`selfcheck.py` 引用 | active | 操作笔记仓 `cases/` |

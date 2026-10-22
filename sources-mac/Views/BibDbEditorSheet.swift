@@ -5,7 +5,8 @@ import SwiftUI
 /// 为什么视图里看不到字段规范化/解析/key 查重：这些判据全在引擎 `bibdb.py edit` 里
 /// （本仓红线「一个引擎，两个外壳」）。本 sheet 只做三件事：
 ///   ① 表单 ↔ `EditorDraft` 的绑定；② 把草稿交给 Wave1 API（后台队列）；③ 展示引擎结论。
-/// 所以「预览」= `edit --dry-run`（零写入），「写入」= `edit --apply --backup --expect-db-sha256`。
+/// 所以「预览」= `edit --dry-run`（零写入），「写入」= `edit --apply --expect-db-sha256`
+/// （B-190 起不传 `--backup`；成功后自动本地 git commit，只提交库文件、绝不自动 push）。
 /// 线程：Wave1 写库/预览 API 都是同步子进程调用，视图**只能**后台队列调、回主线程回填（案例 126）。
 struct BibDbEditorSheet: View {
     @ObservedObject var log: LogStore
@@ -54,8 +55,8 @@ struct BibDbEditorSheet: View {
             Button("取消", role: .cancel) {}
             Button("确认写入", role: .destructive) { model.apply() }
         } message: {
-            Text("将按预览的字段差异写库；写前引擎自动备份，并用库 sha 校验防并发改动。\n"
-                 + "备份目录：\(BibDbFeature.backupDirectory)")
+            Text("将按预览的字段差异写库，并用库 sha 校验防并发改动；写库成功后自动本地提交库文件"
+                 + "（不推送）。\n撤销用「待处理」页版本区「回退到上一个提交…」。")
         }
         // 写库成功后：先让成功摘要可见一小会儿（详情同时进运行日志），再按契约 dismiss。
         .onChange(of: model.succeeded) { done in
@@ -63,6 +64,11 @@ struct BibDbEditorSheet: View {
             Logger(store: log)(model.successText + "\n")
             onWritten()
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { dismiss() }
+        }
+        // B-190：版本层提示单独记日志（失败是黄字，不属于写库失败）
+        .onChange(of: model.versionNotice) { notice in
+            guard let notice, !notice.text.isEmpty else { return }
+            Logger(store: log)((notice.failed ? "⚠️ " : "") + notice.text + "\n")
         }
     }
 
@@ -82,8 +88,8 @@ struct BibDbEditorSheet: View {
                     .disabled(model.applying)
             }
             Text(("这是**共享编辑器**：查库详情、待处理页的行都用它。预览 = 引擎 dry-run（不写库）；"
-                  + "写入前自动备份 + 库 sha 校验。字段规范化/key 查重/必填字段全由引擎判定，"
-                  + "本窗口只显示引擎结论。").plainMarkdown)
+                  + "写入前只做库 sha 校验，写库成功后自动本地 git commit（不推送）。"
+                  + "字段规范化/key 查重/必填字段全由引擎判定，本窗口只显示引擎结论。").plainMarkdown)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -359,6 +365,9 @@ struct BibDbEditorSheet: View {
         if !model.error.isEmpty {
             BibDbStatusLine(kind: .error, text: model.error)
         }
+        if let version = model.versionNotice, !version.text.isEmpty {
+            BibDbStatusLine(kind: version.failed ? .warning : .idle, text: version.text)
+        }
         if !model.message.isEmpty && model.error.isEmpty {
             BibDbStatusLine(kind: .idle, text: model.message)
         }
@@ -469,6 +478,8 @@ private final class BibDbEditorSheetModel: ObservableObject {
     @Published var confirmApply = false
     @Published var successText = ""
     @Published var succeeded = false
+    /// B-190：写库成功后的版本层提示（自动本地 commit；失败只黄字，不影响写库结论）
+    @Published var versionNotice: BibDbVersionWriteNotice? = nil
     @Published var loadedSha = ""
     @Published var showAdvanced = false
     @Published var newFieldName = ""
@@ -512,6 +523,7 @@ private final class BibDbEditorSheetModel: ObservableObject {
         previewedDraft = nil
         successText = ""
         succeeded = false
+        versionNotice = nil
         let db = BibDbFeature.existingDBPath() ?? ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = BibDbFeature.loadEditorDraft(db: db, key: key)
@@ -654,6 +666,7 @@ private final class BibDbEditorSheetModel: ObservableObject {
         let expect = loadedSha
         running = true
         stage = "正在跑引擎 dry-run 预览…"
+        versionNotice = nil
         error = ""
         message = ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -688,29 +701,36 @@ private final class BibDbEditorSheetModel: ObservableObject {
         let db = BibDbFeature.existingDBPath() ?? ""
         let expect = preview.dbSha256Before.isEmpty ? loadedSha : preview.dbSha256Before
         applying = true
-        stage = "正在写库（备份 → 原子写 → 复核）…"
+        stage = "正在写库（原子写 → 复核）…"
+        versionNotice = nil
         error = ""
         message = ""
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = BibDbFeature.applyEdit(db: db, draft: draft,
                                                  expectDBsha256: expect)
+            var version: BibDbVersionWriteNotice? = nil
+            if outcome.written, outcome.error == nil {
+                let renamed = !outcome.newKey.isEmpty && outcome.newKey != outcome.key
+                let action = "编辑 " + outcome.key + (renamed ? "→\(outcome.newKey)" : "")
+                version = BibDbVersionCommit.afterWrite(
+                    db: db, action: action, recordCount: 1,
+                    shaBefore: outcome.dbSha256Before, shaAfter: outcome.dbSha256After)
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.applying = false
                 self.stage = ""
                 guard outcome.written, outcome.error == nil else {
                     var text = outcome.error ?? "写库失败（引擎没有返回原因）。"
-                    if !outcome.backupPath.isEmpty {
-                        text += "\n引擎已备份到：\(outcome.backupPath)"
-                        text += "\n若提示「写后复核失败」，库可能已经写了：请用该备份恢复，不要当作没写。"
-                    }
+                    text += "\n若提示「写后复核失败」，库可能已经写了：请在「待处理」页版本区核对/回退，"
+                        + "不要当作没写。"
                     self.error = text
                     return
                 }
+                self.versionNotice = version
                 var lines: [String] = []
                 let renamed = !outcome.newKey.isEmpty && outcome.newKey != outcome.key
                 lines.append("已写入引用库：`\(outcome.key)`" + (renamed ? " → `\(outcome.newKey)`" : ""))
-                lines.append("备份：\(outcome.backupPath.isEmpty ? "（引擎未返回）" : outcome.backupPath)")
                 lines.append("新库 sha：\(outcome.dbSha256After.isEmpty ? "（未返回）" : outcome.dbSha256After)")
                 if let verification = outcome.verification {
                     lines.append(verification.summary)

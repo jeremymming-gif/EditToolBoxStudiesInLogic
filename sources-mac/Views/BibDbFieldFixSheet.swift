@@ -373,7 +373,7 @@ struct BibDbFieldFixSheet: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.running || model.selected.isEmpty
                           || model.applyChoicesIsEmpty)
-                .help("逐条串行 apply；每条写前自动备份 + sha 校验；任一条失败即停")
+                .help("逐条串行 apply；每条都走 sha 校验；任一条失败即停；整批写完后自动本地提交一次")
             }
         }
     }
@@ -401,9 +401,10 @@ struct BibDbFieldFixSheet: View {
                     .font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(3)
             }
-            if !summary.backupPaths.isEmpty {
-                Text("备份：\(summary.backupPaths.joined(separator: "、"))")
-                    .font(.caption2).foregroundStyle(.tertiary)
+            if let version = model.versionNotice, !version.text.isEmpty {
+                Text(version.text)
+                    .font(.caption2)
+                    .foregroundStyle(version.failed ? Color.orange : Color.secondary)
                     .lineLimit(2)
                     .textSelection(.enabled)
             }
@@ -487,6 +488,8 @@ private final class BibDbFieldFixSheetModel: ObservableObject {
     @Published var confirmApply = false
     @Published var summary: BibDbFeature.FieldFixApplySummary?
     @Published var progress = ""
+    /// B-190：整批写库成功后的版本层提示（自动本地 commit；失败只黄字）
+    @Published var versionNotice: BibDbVersionWriteNotice? = nil
 
     static let riskFilterOptions: [RiskFilterOption] = [
         RiskFilterOption(value: "all", title: "全部"),
@@ -513,7 +516,7 @@ private final class BibDbFieldFixSheetModel: ObservableObject {
         }
         return "A 类 = 题名/年份/出版信息写进了别的字段：候选、证据、风险全部来自引擎 "
             + "`suggest-field-fixes`（只读）。勾选行 →「应用选中」= 逐条 `edit --apply`"
-            + "（串行 sha 链 + 每条自动备份）。无候选（B 类）只展示，**不自动写库**。"
+            + "（串行 sha 链；整批写完后自动本地提交一次、不推送）。无候选（B 类）只展示，**不自动写库**。"
     }
 
     func anomalyTitle(_ kind: String) -> String {
@@ -704,8 +707,8 @@ private final class BibDbFieldFixSheetModel: ObservableObject {
     }
 
     var confirmText: String {
-        "将逐条串行写库 \(selected.count) 条（每条：引擎 sha 校验 + 自动备份 → 原子写 → 复核）；"
-            + "任一条失败即停，已写的保留。\n备份目录：\(BibDbFeature.backupDirectory)"
+        "将逐条串行写库 \(selected.count) 条（每条：引擎 sha 校验 → 原子写 → 复核）；"
+            + "任一条失败即停，已写的保留；整批写完后自动本地提交一次（不推送）。"
     }
 
     func apply(log: LogStore, onApplied: @escaping () -> Void) {
@@ -733,28 +736,37 @@ private final class BibDbFieldFixSheetModel: ObservableObject {
         error = ""
         message = ""
         summary = nil
+        versionNotice = nil
         progress = "正在逐条写库（串行 \(count) 条）…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = BibDbFeature.applySelectedFieldFixes(db: db, rows: chosen,
                                                                choices: choices)
+            var version: BibDbVersionWriteNotice? = nil
+            if outcome.writtenCount > 0 {
+                version = BibDbVersionCommit.afterWrite(
+                    db: db, action: "字段归位 \(outcome.writtenCount) 条",
+                    recordCount: outcome.writtenCount,
+                    shaBefore: outcome.dbShaBefore, shaAfter: outcome.finalSha)
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.running = false
                 self.progress = ""
                 self.summary = outcome
+                self.versionNotice = version
                 let logger = Logger(store: log)
                 logger("字段归位：写入 \(outcome.writtenCount)/\(count) 条"
                        + (outcome.error == nil ? "" : "；失败：\(outcome.error ?? "")") + "\n")
                 if !outcome.writtenKeys.isEmpty {
                     logger("  已写：\(outcome.writtenKeys.joined(separator: "、"))\n")
                 }
-                if !outcome.backupPaths.isEmpty {
-                    logger("  备份：\(outcome.backupPaths.joined(separator: "、"))\n")
+                if let version, !version.text.isEmpty {
+                    logger((version.failed ? "⚠️ " : "") + version.text + "\n")
                 }
                 logger("  库 sha：\(outcome.dbShaBefore) → \(outcome.finalSha)\n")
                 if let failure = outcome.error, !failure.isEmpty {
                     self.error = "已写 \(outcome.writtenCount) 条；停在 `\(outcome.failedKey)`：\(failure)\n"
-                        + "其余未写。库里已写部分不会回滚（用备份恢复见下方备份路径）。"
+                        + "其余未写。库里已写部分不会回滚；可在「待处理」页版本区核对/回退。"
                 } else {
                     self.message = "全部 \(outcome.writtenCount) 条已写入（库 sha 已更新）。"
                 }

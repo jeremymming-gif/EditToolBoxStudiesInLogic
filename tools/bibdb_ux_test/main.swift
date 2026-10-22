@@ -7,12 +7,15 @@
 // ConflictListState/ReviewCacheState 缓存语义、lint records / 库健康 / 待处理状态条、
 // 已处理留痕（processedEntries/EditTrace）、编辑器与合并校验、suggestedMergeKey/
 // mergeFieldRows、字段归位（groups/defaults/risk/buildDraft）、isStale 新鲜度。
+// B-190：(o) 段是 git 版本层纯逻辑/源码接线（commit message、命令构造、status/log 解析、
+// fail-soft 文案、只 add 库文件、无自动 push）。
 // (f) 段是**生产源码接线断言**（按 /tmp/b188-gui/CONTRACT.md 与 BRIEF §5 的目标态）：
 // 视图层（SwiftUI）本身不在本台编译，由 Lead 的 typecheck/build/走查覆盖。
 //
 // 跑法（在 sources-mac 下）：
 //     swiftc -O -swift-version 5 -target arm64-apple-macos14.0 -module-cache-path /tmp/buxmc \
 //       -o /tmp/bibdb_ux_test Core/Support.swift Core/Log.swift Features/BibDbFeature.swift \
+//       Features/BibDbFeature+Import.swift Features/BibDbGit.swift \
 //       ../tools/bibdb_ux_test/main.swift
 //     /tmp/bibdb_ux_test        # 期望：SUMMARY: N PASS / 0 FAIL
 //
@@ -1149,6 +1152,44 @@ check("(n) WriteVerification.summary：失败文案列出引擎问题",
       verifyBad.summary)
 check("(n) WriteVerification.summary：没有 problems 时给占位原因",
       BibDbFeature.WriteVerification().summary == "写后复核失败：（引擎未给原因）")
+
+// ── (o) B-190：git 版本层（纯逻辑 + 源码接线；不起子进程/不碰真实库）────────
+print("\n── (o) git 版本层（B-190）──")
+let gitSource = readSource("Features/BibDbGit.swift")
+let modelSource = readSource("Features/BibDbFeature.swift")
+let importSource = readSource("Features/BibDbFeature+Import.swift")
+let runnerSource = (try? String(contentsOf: toolbox.appendingPathComponent("tools/run_swift_tests.sh"), encoding: .utf8)) ?? ""
+let gitCode = gitSource.split(separator: "\n").map { $0.components(separatedBy: "//").first ?? "" }.joined(separator: "\n")
+func sourceSlice(_ text: String, _ from: String, _ to: String) -> String { guard let a = text.range(of: from), let b = text.range(of: to, range: a.upperBound..<text.endIndex) else { return "" }; return String(text[a.upperBound..<b.lowerBound]) }
+let shaA = String(repeating: "a", count: 64), shaB = String(repeating: "b", count: 64), dbRel = "bib_db/bibliography.jsonl"
+check("(o) BibDbGit 只 import Foundation（无 SwiftUI/Combine）", gitCode.contains("import Foundation") && !gitCode.contains("import SwiftUI") && !gitCode.contains("import Combine"))
+check("(o) commit message 固定格式", BibDbGit.commitMessage(action: "编辑条目", recordCount: 3, shaBefore: shaA, shaAfter: shaB) == "引用库：编辑条目（记录 3 条；sha aaaaaaaaaaaa→bbbbbbbbbbbb）")
+check("(o) commit message：note 只追加第二行", BibDbGit.commitMessage(action: "", recordCount: 0, shaBefore: "", shaAfter: "", note: "补 title") == "引用库：写库（记录 0 条；sha →）\n备注：补 title")
+check("(o) shortSha / revertMessage", BibDbGit.shortSha(shaA) == "aaaaaaaaaaaa" && BibDbGit.shortSha("abc") == "abc" && BibDbGit.revertMessage(shaBefore: shaA, shaAfter: shaB) == "引用库：回退到上一个提交（sha aaaaaaaaaaaa→bbbbbbbbbbbb）")
+let commitArgs = BibDbGit.commitArguments(message: "m")
+check("(o) add/commit 的 pathspec 只有库文件（没别的文件）", BibDbGit.addArguments() == ["add", "--", dbRel] && commitArgs == ["commit", "-m", "m", "--", dbRel] && commitArgs.filter { $0.contains("/") } == [dbRel])
+check("(o) status/log/ahead/branch 命令口径", BibDbGit.statusArguments() == ["status", "--porcelain", "--", dbRel] && BibDbGit.logArguments() == ["log", "--oneline", "-3", "--", dbRel] && BibDbGit.aheadArguments() == ["rev-list", "--count", "@{upstream}..HEAD"] && BibDbGit.branchArguments() == ["rev-parse", "--abbrev-ref", "HEAD"])
+check("(o) push 命令只有 push（无 force）", BibDbGit.pushArguments() == ["push"] && !BibDbGit.pushArguments().contains("--force"))
+check("(o) 回退命令：checkout HEAD~1 + 库文件（不 hard reset）", BibDbGit.revertCheckoutArguments() == ["checkout", "HEAD~1", "--", dbRel] && !BibDbGit.revertCheckoutArguments().contains("--hard"))
+check("(o) 回退前校验：≥2 库提交 / HEAD 有库文件", BibDbGit.commitCountArguments() == ["rev-list", "--count", "HEAD", "--", dbRel] && BibDbGit.headFileCheckArguments() == ["cat-file", "-e", "HEAD:" + dbRel])
+check("(o) 仓库定位命令：git -C <db 目录> rev-parse --show-toplevel", BibDbGit.repoRootArguments(dbDirectory: "/tmp/x") == ["-C", "/tmp/x", "rev-parse", "--show-toplevel"])
+check("(o) parseRepoRoot：去空白 / fatal 拒绝", BibDbGit.parseRepoRoot("/tmp/notes\n") == "/tmp/notes" && BibDbGit.parseRepoRoot("fatal: not a git repository") == nil)
+check("(o) relativeDBPath：约定路径通过、仓库外 nil", BibDbGit.relativeDBPath(repoRoot: "/tmp/repo", dbPath: "/tmp/repo/bib_db/bibliography.jsonl") == dbRel && BibDbGit.relativeDBPath(repoRoot: "/tmp/repo", dbPath: "/tmp/other/bib_db/bibliography.jsonl") == nil)
+check("(o) isDBDirty：空/空白 = 干净", !BibDbGit.isDBDirty("") && !BibDbGit.isDBDirty(" \n") && BibDbGit.isDBDirty(" M bib_db/bibliography.jsonl"))
+check("(o) parseUnpushedCount：3/0/坏值（无 upstream fail-soft）", BibDbGit.parseUnpushedCount("3\n") == 3 && BibDbGit.parseUnpushedCount("0") == 0 && BibDbGit.parseUnpushedCount("fatal: no upstream") == nil)
+check("(o) parseBranch / parseCommitCount", BibDbGit.parseBranch("main\n") == "main" && BibDbGit.parseCommitCount("2\n") == 2 && BibDbGit.parseCommitCount("") == nil)
+check("(o) parseLogOneline：最多 3 条 + sha/说明拆分", BibDbGit.parseLogOneline("a1 第一次\nb2 第二次\nc3 第三次\nd4 第四次").map { $0.sha } == ["a1", "b2", "c3"] && BibDbGit.parseLogOneline("a1 第一次").first?.subject == "第一次")
+check("(o) parseShasum：64 hex 通过、坏格式 nil", BibDbGit.parseShasum(shaA + "  /tmp/f\n") == shaA && BibDbGit.parseShasum("deadbeef  /tmp/f") == nil)
+check("(o) failureText：优先错误行并截断（push 失败带 stderr 摘要）", BibDbGit.failureText("To x\n ! [rejected] main -> main (fetch first)\nerror: failed to push some refs").contains("rejected") && BibDbGit.failureText("a\nb\nc\nd\ne", maxLines: 2) == "d ｜ e")
+check("(o) isIdentityError：身份未配置可识别", BibDbGit.isIdentityError("*** Please tell me who you are.") && !BibDbGit.isIdentityError("fatal: not a git repository"))
+check("(o) fail-soft 默认值：unpushed=-1 / loaded=false", BibDbGit.VersionStatus().unpushedCount == -1 && !BibDbGit.VersionStatus().loaded && BibDbGit.VersionStatus(repo: "/r").loaded)
+check("(o) git 源码无 hard reset/pull/fetch/switch/force", !gitCode.contains("--hard") && !gitCode.contains("reset") && !gitCode.contains("\"pull\"") && !gitCode.contains("\"fetch\"") && !gitCode.contains("\"switch\"") && !gitCode.contains("--force"))
+check("(o) commitDBVersion 源码不 push（push 只能显式调用）", !sourceSlice(gitSource, "static func commitDBVersion", "static func manualCommit").contains("push") && gitCode.components(separatedBy: "pushArguments()").count - 1 == 2)
+let commitSrc = sourceSlice(gitSource, "private static func commitDBFile", "static func versionStatus")
+check("(o) 提交源码：脏否→add→commit(pathspec)→HEAD，且不 push", commitSrc.contains("addArguments()") && commitSrc.contains("commitArguments(message: message)") && commitSrc.contains("isDBDirty") && !commitSrc.contains("pushArguments("))
+check("(o) 模型/入藏源码不再引用备份制 API", !modelSource.contains("backupDirectory") && !modelSource.contains("listBackups") && !modelSource.contains("func restore(") && !importSource.contains("backupDirectory") && !modelSource.contains("\"--backup\"") && !importSource.contains("\"--backup\"") && modelSource.contains("--expect-db-sha256"))
+check("(o) 入藏段已纯搬迁到 extension（类型不再在 model 声明）", importSource.contains("extension BibDbFeature") && importSource.contains("struct ImportOutcome") && !modelSource.contains("struct ImportOutcome") && importSource.contains("func importBib(") && importSource.contains("importPastedBib("))
+check("(o) 测试台编译清单含新文件", runnerSource.contains("Features/BibDbGit.swift") && runnerSource.contains("Features/BibDbFeature+Import.swift"))
 
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

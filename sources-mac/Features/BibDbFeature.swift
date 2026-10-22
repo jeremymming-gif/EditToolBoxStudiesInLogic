@@ -52,7 +52,7 @@ enum BibDbFeature {
     // MARK: - 公共运行壳
 
     /// 一次 CLI 运行的结果（`json` 是 stdout 里解析出的 JSON 对象）。
-    private struct Run {
+    struct Run {
         var json: [String: Any]?
         var status: Int32 = -1
         var output: String = ""
@@ -63,7 +63,7 @@ enum BibDbFeature {
     }
 
     /// 拼好 `python bibdb.py <arguments>` 跑一次（**同步；只许在后台队列调**）。
-    private static func runJSON(_ arguments: [String]) -> Run {
+    static func runJSON(_ arguments: [String]) -> Run {
         guard let tool = locateTool() else {
             return Run(error: "未找到引用库脚本 Engine/bibdb.py。\n"
                        + "（官方 ./build.sh 会把它打进 app 包的 Resources/Engine；"
@@ -105,7 +105,7 @@ enum BibDbFeature {
     }
 
     /// 引擎失败时的可读原因：优先最后一行非空输出（CLI 的中文报错都在那里）。
-    private static func failureText(_ run: Run) -> String {
+    static func failureText(_ run: Run) -> String {
         if let error = run.error { return error }
         let tail = run.output.split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -115,7 +115,7 @@ enum BibDbFeature {
 
     // MARK: - 小工具（JSON → 值）
 
-    private static func intValue(_ value: Any?) -> Int {
+    static func intValue(_ value: Any?) -> Int {
         if let n = value as? Int { return n }
         if let n = value as? NSNumber { return n.intValue }
         if let n = value as? Double { return Int(n) }
@@ -123,7 +123,7 @@ enum BibDbFeature {
         return 0
     }
 
-    private static func stringValue(_ value: Any?) -> String {
+    static func stringValue(_ value: Any?) -> String {
         if let s = value as? String { return s }
         if let n = value as? NSNumber { return n.stringValue }
         return ""
@@ -656,222 +656,6 @@ enum BibDbFeature {
         return out
     }
 
-    // MARK: - 入藏（import-bib / import-dir，都先 dry-run 预览）
-
-    /// 一次导入的计数摘要（= 引擎 `ImportReport.summary()` 的界面模型）
-    struct ImportSummary {
-        var entries = 0
-        var new = 0
-        var merged = 0
-        var updated = 0
-        var conflicts = 0
-        var disambiguated = 0
-        var sourcesAdded = 0
-        var findings = 0
-        var skipped: [(reason: String, count: Int)] = []
-        var warnings: [String] = []
-
-        var skippedTotal: Int { skipped.reduce(0) { $0 + $1.count } }
-
-        /// 一行摘要（与 CLI 的 `_report_line` 同一信息量，措辞不必逐字相同）
-        var line: String {
-            var text = "条目 \(entries)（新增 \(new) / 合并或已存在 \(merged) / "
-                + "更新 \(updated) / 冲突 \(conflicts) / 跳过 \(skippedTotal)）"
-            if disambiguated > 0 { text += "，key 撞车加后缀 \(disambiguated)" }
-            return text
-        }
-    }
-
-    /// 一条「将变化」的明细（CLI `changes` 数组）
-    struct ImportChange: Identifiable {
-        var key = ""
-        var status = ""         // new / merged / updated / conflict
-        var title = ""
-        var author = ""
-        var year = ""
-        var verified = false
-        var sourcesAdded = 0
-        var conflictsAdded = 0
-        var conflictFields: [String] = []
-
-        var id: String { key }
-
-        var statusTitle: String {
-            switch status {
-            case "new": return "新增"
-            case "merged": return "合并来源"
-            case "updated": return "更新"
-            case "conflict": return "记冲突"
-            default: return status
-            }
-        }
-    }
-
-    /// 导入结果（预览与真导入共用；`dryRun=true` 时引擎一个字节都没写）
-    struct ImportOutcome {
-        var dryRun = false
-        var written = false
-        var dbPath = ""
-        var dbExisted = false
-        var summary: ImportSummary?
-        var changes: [ImportChange] = []
-        var issues: [ImportIssueRow] = []
-        var warnings: [String] = []
-        var error: String?
-        var seconds: Double = 0
-        var rawOutput = ""
-    }
-
-    /// import-dir 的逐期明细（预览时给编辑看「哪几期、每期几份 bib」）
-    struct ImportIssueRow: Identifiable {
-        var issue = ""
-        var finished = false
-        var fileCount = 0
-        var slugs: [String] = []
-        var summary: ImportSummary?
-
-        var id: String { issue }
-    }
-
-    private static func parseSummary(_ payload: [String: Any]?) -> ImportSummary? {
-        guard let payload else { return nil }
-        var summary = ImportSummary()
-        summary.entries = intValue(payload["entries"])
-        summary.new = intValue(payload["new"])
-        summary.merged = intValue(payload["merged"])
-        summary.updated = intValue(payload["updated"])
-        summary.conflicts = intValue(payload["conflicts"])
-        summary.disambiguated = intValue(payload["disambiguated"])
-        summary.sourcesAdded = intValue(payload["sources_added"])
-        summary.findings = intValue(payload["findings"])
-        if let skipped = payload["skipped"] as? [String: Any] {
-            summary.skipped = skipped
-                .map { (reason: $0.key, count: intValue($0.value)) }
-                .sorted { $0.reason < $1.reason }
-        }
-        summary.warnings = (payload["warnings"] as? [Any])?.map { stringValue($0) } ?? []
-        return summary
-    }
-
-    private static func parseChanges(_ payload: [String: Any]?) -> [ImportChange] {
-        guard let items = payload?["changes"] as? [Any] else { return [] }
-        var rows: [ImportChange] = []
-        for item in items {
-            guard let dict = item as? [String: Any] else { continue }
-            var row = ImportChange()
-            row.key = stringValue(dict["key"])
-            row.status = stringValue(dict["status"])
-            row.title = stringValue(dict["title"])
-            row.author = stringValue(dict["author"])
-            row.year = stringValue(dict["year"])
-            row.verified = (dict["verified"] as? Bool) == true
-            row.sourcesAdded = intValue(dict["sources_added"])
-            row.conflictsAdded = intValue(dict["conflicts_added"])
-            row.conflictFields = (dict["conflict_fields"] as? [Any])?.map { stringValue($0) } ?? []
-            rows.append(row)
-        }
-        return rows
-    }
-
-    private static func parseIssueRows(_ payload: [String: Any]?) -> [ImportIssueRow] {
-        guard let items = payload?["result"] as? [String: Any],
-              let issues = items["issues"] as? [Any] else { return [] }
-        var rows: [ImportIssueRow] = []
-        for item in issues {
-            guard let dict = item as? [String: Any] else { continue }
-            var row = ImportIssueRow()
-            row.issue = stringValue(dict["issue"])
-            row.finished = (dict["finished"] as? Bool) == true
-            if let files = dict["files"] as? [Any] {
-                row.fileCount = files.count
-                row.slugs = files.compactMap { ($0 as? [String: Any]).map { stringValue($0["slug"]) } }
-            }
-            row.summary = parseSummary(dict["report"] as? [String: Any])
-            rows.append(row)
-        }
-        return rows
-    }
-
-    /// 预览 / 导入**单篇** `.bib`（**同步；后台队列调**）。
-    ///
-    /// - Parameters:
-    ///   - issue/slug: 来源期与篇目录名（界面自动从路径推断、可改）。给了期/篇就是
-    ///     「往期成品 bib」口径，引擎会按 `published-bib` 入 `verified=true`。
-    ///   - dryRun: true = 只算不写（界面「预览」按钮）。
-    static func importBib(bibPath rawPath: String, issue: String, slug: String,
-                          dryRun: Bool) -> ImportOutcome {
-        let startedAt = Date()
-        var out = ImportOutcome(dryRun: dryRun)
-        let bib = PathKit.normalize(rawPath)
-        guard !bib.isEmpty, FileManager.default.fileExists(atPath: bib),
-              !PathKit.isDirectory(bib) else {
-            out.error = "读不到要导入的 .bib：\(bib)（文件不存在，或这是个文件夹）"
-            return out
-        }
-        guard let db = dbPath() else {
-            out.error = "找不到私有笔记仓，无法确定引用库位置。请到「引用库设置」页指定笔记仓路径。"
-            return out
-        }
-        var arguments = ["import-bib", "--bib", bib, "--verified", "--json", "--db", db]
-        let issueName = issue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let slugName = slug.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !issueName.isEmpty { arguments += ["--issue", issueName] }
-        if !slugName.isEmpty { arguments += ["--slug", slugName] }
-        if dryRun { arguments.append("--dry-run") }
-        let run = runJSON(arguments)
-        guard run.ok, let payload = run.json else {
-            out.error = failureText(run)
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        out.dbPath = stringValue(payload["db"])
-        out.written = (payload["written"] as? Bool) == true
-        out.dbExisted = (payload["db_existed"] as? Bool) == true
-        out.summary = parseSummary(payload["report"] as? [String: Any])
-        out.changes = parseChanges(payload)
-        out.rawOutput = run.output
-        out.seconds = Date().timeIntervalSince(startedAt)
-        return out
-    }
-
-    /// 预览 / 导入**整期目录**（**同步；后台队列调**）。
-    ///
-    /// `root` 可以给「一期目录」（如 `…/2026年第2期(87)`，只导入这一期）或
-    /// 「稿件库根」（扫全部期）。判据在引擎 CLI 层（与种子导入同源）。
-    static func importDirectory(root rawRoot: String, dryRun: Bool) -> ImportOutcome {
-        let startedAt = Date()
-        var out = ImportOutcome(dryRun: dryRun)
-        let root = PathKit.normalize(rawRoot)
-        guard !root.isEmpty, PathKit.isDirectory(root) else {
-            out.error = "读不到目录：\(root)（不存在或不是文件夹）"
-            return out
-        }
-        guard let db = dbPath() else {
-            out.error = "找不到私有笔记仓，无法确定引用库位置。请到「引用库设置」页指定笔记仓路径。"
-            return out
-        }
-        var arguments = ["import-dir", "--root", root, "--json", "--db", db]
-        if dryRun { arguments.append("--dry-run") }
-        let run = runJSON(arguments)
-        guard run.ok, let payload = run.json else {
-            out.error = failureText(run)
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        out.dbPath = stringValue(payload["db"])
-        out.written = (payload["written"] as? Bool) == true
-        out.dbExisted = (payload["db_existed"] as? Bool) == true
-        if let result = payload["result"] as? [String: Any] {
-            out.summary = parseSummary(result["total"] as? [String: Any])
-            out.warnings = (result["warnings"] as? [Any])?.map { stringValue($0) } ?? []
-        }
-        out.changes = parseChanges(payload)
-        out.issues = parseIssueRows(payload)
-        out.rawOutput = run.output
-        out.seconds = Date().timeIntervalSince(startedAt)
-        return out
-    }
-
     // MARK: - 待裁决清单（report；只写清单，不改库）
 
     /// 一个清单文件的状态（存在/大小/修改时间）
@@ -1303,7 +1087,6 @@ enum BibDbFeature {
         var contentShaAfter = ""
         var dbShaBefore = ""
         var dbShaAfter = ""
-        var backupPath = ""
         var pendingAfter = -1
         var totalAfter = -1
         var error: String?
@@ -1353,7 +1136,6 @@ enum BibDbFeature {
         out.contentShaAfter = stringValue(payload["content_sha256_after"])
         out.dbShaBefore = stringValue(payload["db_sha256_before"])
         out.dbShaAfter = stringValue(payload["db_sha256_after"])
-        out.backupPath = stringValue(payload["backup_path"])
         if let totals = payload["totals"] as? [String: Any] {
             out.totalAfter = intValue(totals["total"])
             out.pendingAfter = intValue(totals["pending"])
@@ -1364,15 +1146,13 @@ enum BibDbFeature {
 
     /// 一次裁决：`resolve --key K --action keep|defer|adopt [--incoming-sha256 S] --json`。
     ///
-    /// 写前保护（spec §4.2）：
-    ///   · `expectDBsha256` 非空 → `--expect-db-sha256`（列表过期则引擎拒绝写，退出 2）；
-    ///   · `backupDirectory` 非空 → `--backup <目录>`（引擎写前自动备份，仅真写时才产生）。
+    /// 写前保护（spec §4.2）：`expectDBsha256` 非空 → `--expect-db-sha256`
+    /// （列表过期则引擎拒绝写，退出 2）。B-190 起写库不再传 `--backup`（改走 git 版本层）。
     /// `dryRun=true` 时只算不写（adopt 的「预览差异」用它）。
     /// **同步；只许后台队列调**。
     static func resolveConflict(key: String, action: String, incomingSha256: String,
                                 fields: [String] = [],
                                 expectDBsha256: String = "",
-                                backupDirectory: String = "",
                                 allowOverlap: Bool = false,
                                 note: String = "",
                                 dryRun: Bool = false) -> ResolveOutcome {
@@ -1405,7 +1185,6 @@ enum BibDbFeature {
         if allowOverlap { arguments.append("--allow-overlap") }
         if dryRun { arguments.append("--dry-run") }
         if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
-        if !backupDirectory.isEmpty { arguments += ["--backup", backupDirectory] }
         let run = runJSON(arguments)
         guard let payload = run.json else {
             out.error = failureText(run)
@@ -1435,7 +1214,6 @@ enum BibDbFeature {
     /// **同步；只许后台队列调**。
     static func replaceRecord(recordKey: String, bibText: String, incomingSha256: String,
                               expectDBsha256: String = "",
-                              backupDirectory: String = "",
                               allowOverlap: Bool = false,
                               note: String = "",
                               dryRun: Bool = false) -> ResolveOutcome {
@@ -1474,7 +1252,6 @@ enum BibDbFeature {
         if allowOverlap { arguments.append("--allow-overlap") }
         if dryRun { arguments.append("--dry-run") }
         if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
-        if !backupDirectory.isEmpty { arguments += ["--backup", backupDirectory] }
         let run = runJSON(arguments)
         guard let payload = run.json else {
             out.error = failureText(run)
@@ -1519,7 +1296,6 @@ enum BibDbFeature {
         var pendingAfter = -1
         var dbShaBefore = ""
         var dbShaAfter = ""
-        var backupPath = ""
         var error: String?
         var seconds: Double = 0
         var rawOutput = ""
@@ -1556,7 +1332,6 @@ enum BibDbFeature {
         }
         out.dbShaBefore = stringValue(payload["db_sha256_before"])
         out.dbShaAfter = stringValue(payload["db_sha256_after"])
-        out.backupPath = stringValue(payload["backup_path"])
         out.seconds = Date().timeIntervalSince(startedAt)
         return out
     }
@@ -1564,11 +1339,10 @@ enum BibDbFeature {
     /// 一键全部采用：对待裁决冲突逐条按 adopt 语义应用 incoming 值。
     ///
     /// `dryRun=true` = 预览（逐条将改字段 + superseded 列表，库不变）——GUI 的「预览」用它，
-    /// 用户二次确认后才调 `dryRun=false` 真写（单次原子写 + 单次备份）。
+    /// 用户二次确认后才调 `dryRun=false` 真写（单次原子写；GUI 成功后自动本地 commit）。
     /// 同记录待裁决冲突字段重叠时引擎会拒绝（退出 2 并列出冲突号），GUI 原样显示。
     /// **同步；只许后台队列调**。
     static func adoptAllPending(expectDBsha256: String = "",
-                                backupDirectory: String = "",
                                 dryRun: Bool = true) -> AdoptAllOutcome {
         let startedAt = Date()
         var out = AdoptAllOutcome()
@@ -1580,7 +1354,6 @@ enum BibDbFeature {
         var arguments = ["resolve", "--adopt-all-pending", "--json", "--db", db]
         if dryRun { arguments.append("--dry-run") }
         if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
-        if !backupDirectory.isEmpty { arguments += ["--backup", backupDirectory] }
         let run = runJSON(arguments)
         guard let payload = run.json else {
             out.error = failureText(run)
@@ -1602,234 +1375,14 @@ enum BibDbFeature {
         return out
     }
 
-    // MARK: - 从备份恢复（restore）
-
-    /// 自动备份目录（spec §5⑥）：`~/Library/Application Support/SLCN/bibdb-backups/`。
-    /// **不进 git、不随仓库分发**；GUI 的写操作都往这里备份，恢复也默认从这里列。
-    static var backupDirectory: String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                           in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
-        return base.appendingPathComponent("SLCN").appendingPathComponent("bibdb-backups").path
-    }
-
-    /// 一个备份文件（名称/时间/大小；sha 前缀从文件名 `bibliography-<ts>-<sha12>.jsonl` 里取）。
-    struct BackupFile: Identifiable {
-        var path = ""
-        var name = ""
-        var modified: Date?
-        var bytes = 0
-        var shaHint = ""
-        var id: String { path }
-    }
-
-    /// 列备份（**只读**；目录不存在时返回空数组，不报错）。
-    /// `directory` 只为测试可隔离（界面一律用默认备份目录）。
-    static func listBackups(in directory: String? = nil) -> [BackupFile] {
-        let dir = directory ?? backupDirectory
-        let fm = FileManager.default
-        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return [] }
-        var files: [BackupFile] = []
-        for name in names where name.hasSuffix(".jsonl") {
-            let path = PathKit.join(dir, name)
-            var file = BackupFile(path: path, name: name)
-            let attrs = try? fm.attributesOfItem(atPath: path)
-            if let attrs {
-                file.bytes = (attrs[.size] as? NSNumber)?.intValue ?? 0
-                file.modified = attrs[.modificationDate] as? Date
-            }
-            // 名称形如 `bibliography-20261021T120000Z-abcdef123456.jsonl`
-            let parts = name.replacingOccurrences(of: ".jsonl", with: "").split(separator: "-")
-            if let last = parts.last, last.count >= 8 { file.shaHint = String(last) }
-            files.append(file)
-        }
-        files.sort { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
-        return files
-    }
-
-    /// 一次恢复的结果。
-    struct RestoreOutcome {
-        var dryRun = false
-        var written = false
-        var backupPath = ""
-        var backupSha256 = ""     // 备份文件自身的 sha（dry-run 时「恢复后库 sha」= 它）
-        var dbShaBefore = ""
-        var dbShaAfter = ""
-        var error: String?
-        var seconds: Double = 0
-        var rawOutput = ""
-
-        /// 预览要显示的「恢复后库 sha」：dry-run 引擎返回的 after 仍是当前库 sha，
-        /// 目标态要用 `backup_sha256`；真写后两者一致。
-        var targetSha: String {
-            if !backupSha256.isEmpty { return backupSha256 }
-            return dbShaAfter
-        }
-    }
-
-    /// 从备份恢复整库：`restore --backup PATH [--expect-db-sha256] [--dry-run] --json`。
-    /// 校验（备份可解析 + 行级 schema + 期望 sha）全部由引擎做；失败库不变。
-    /// **同步；只许后台队列调**。
-    static func restore(backupPath: String, expectDBsha256: String = "",
-                        dryRun: Bool = true) -> RestoreOutcome {
-        let startedAt = Date()
-        var out = RestoreOutcome()
-        out.dryRun = dryRun
-        out.backupPath = backupPath
-        guard let db = existingDBPath() else {
-            out.error = "引用库文件不存在或找不到笔记仓（无法恢复）。"
-            return out
-        }
-        let path = PathKit.normalize(backupPath)
-        guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else {
-            out.error = "读不到备份文件：\(backupPath)"
-            return out
-        }
-        var arguments = ["restore", "--backup", path, "--json", "--db", db]
-        if dryRun { arguments.append("--dry-run") }
-        if !expectDBsha256.isEmpty { arguments += ["--expect-db-sha256", expectDBsha256] }
-        let run = runJSON(arguments)
-        guard let payload = run.json else {
-            out.error = failureText(run)
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        if !stringValue(payload["error"]).isEmpty {
-            out.error = stringValue(payload["error"])
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        if run.status != 0 {
-            out.error = failureText(run)
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        out.written = (payload["written"] as? Bool) == true
-        let reported = stringValue(payload["backup_path"])
-        out.backupPath = reported.isEmpty ? path : reported
-        out.backupSha256 = stringValue(payload["backup_sha256"])
-        out.dbShaBefore = stringValue(payload["db_sha256_before"])
-        out.dbShaAfter = stringValue(payload["db_sha256_after"])
-        out.seconds = Date().timeIntervalSince(startedAt)
-        out.rawOutput = run.output
-        return out
-    }
-
-    // MARK: - 粘贴 bib 文本（入藏页新来源模式；引擎零改动）
-    //
-    // 做法：把粘贴文本写进**临时文件**（引擎 import-bib 只吃文件路径，本批不做 stdin 参数），
-    // 调现有 `import-bib --dry-run --json` 预览 → 确认后去掉 --dry-run 真写。
-    // 临时文件用后即删；运行日志只记计数/键，不回显 bib 正文（隐私）。
-
-    /// 粘贴入库的「入库口径」（用户拍板 P2：默认未核实）。
-    enum PasteImportMode: String, CaseIterable, Identifiable {
-        case unverified
-        case verified
-        case published
-
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .unverified: return "未核实（默认）"
-            case .verified: return "已人工核对（按已核实入库）"
-            case .published: return "成品 bib（期+篇）"
-            }
-        }
-        var hint: String {
-            switch self {
-            case .unverified: return "手工输入/检索结果：记成未核实来源，AI/网络结果不得默认标已核实"
-            case .verified: return "人工已逐条核对过：按已核实入库（引擎 --verified）"
-            case .published: return "往期已出版成品 bib：填来源期+篇，按 published-bib 入已核实"
-            }
-        }
-    }
-
-    /// 预览 / 入藏**粘贴的 bib 文本**（1..N 条）：写临时文件 → `import-bib ... --json`。
-    ///
-    /// - Parameters:
-    ///   - text: 用户粘贴的 bib 正文（只在内存与临时文件里，**不写日志**）。
-    ///   - issue/slug: `published` 模式必填期（篇可选）。
-    ///   - mode: 入库口径（默认未核实）。
-    ///   - dryRun: true = 预览（不写库）。
-    /// **同步；只许后台队列调**。
-    static func importPastedBib(text rawText: String, issue: String, slug: String,
-                                mode: PasteImportMode, dryRun: Bool) -> ImportOutcome {
-        let startedAt = Date()
-        var out = ImportOutcome(dryRun: dryRun)
-        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            out.error = "先粘贴至少 1 条 bib 正文，再预览/入藏。"
-            return out
-        }
-        guard let db = dbPath() else {
-            out.error = "找不到私有笔记仓，无法确定引用库位置。请到「引用库设置」页指定笔记仓路径。"
-            return out
-        }
-        let issueName = issue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let slugName = slug.trimmingCharacters(in: .whitespacesAndNewlines)
-        if mode == .published, issueName.isEmpty {
-            out.error = "入库口径选了「成品 bib（期+篇）」：先填来源期（例 2026年第2期(87)）。"
-            return out
-        }
-        // 临时文件：文件名固定 `pasted-bib.bib`（幂等重复粘贴时不新增来源），
-        // 每次用独立临时目录避免撞名；整个目录用后即删。
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SLCN-pasted-\(UUID().uuidString)")
-        let file = dir.appendingPathComponent("pasted-bib.bib")
-        defer { try? FileManager.default.removeItem(at: dir) }
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            try text.write(to: file, atomically: true, encoding: .utf8)
-        } catch {
-            out.error = "写粘贴内容的临时文件失败：\(error.localizedDescription)"
-            return out
-        }
-        var arguments = ["import-bib", "--bib", file.path, "--json", "--db", db]
-        switch mode {
-        case .unverified:
-            arguments.append("--unverified")      // 显式未核实（给了期/篇也不会被升成 verified）
-        case .verified:
-            arguments.append("--verified")
-        case .published:
-            arguments.append("--verified")        // 与「单篇 .bib」现状同一口径（成品 bib）
-            if !issueName.isEmpty { arguments += ["--issue", issueName] }
-            if !slugName.isEmpty { arguments += ["--slug", slugName] }
-        }
-        if dryRun { arguments.append("--dry-run") }
-        let run = runJSON(arguments)
-        guard let payload = run.json else {
-            out.error = failureText(run)
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        if !stringValue(payload["error"]).isEmpty {
-            out.error = stringValue(payload["error"])
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        if run.status != 0 {
-            out.error = failureText(run)
-            out.seconds = Date().timeIntervalSince(startedAt)
-            return out
-        }
-        out.dbPath = stringValue(payload["db"])
-        out.written = (payload["written"] as? Bool) == true
-        out.dbExisted = (payload["db_existed"] as? Bool) == true
-        out.summary = parseSummary(payload["report"] as? [String: Any])
-        out.changes = parseChanges(payload)
-        out.rawOutput = run.output
-        out.seconds = Date().timeIntervalSince(startedAt)
-        return out
-    }
-
     // MARK: - B-188：显式库路径 / 新鲜度 / 待处理 / 编辑 / 合并 / 字段归位
     //
     // 这一段的约定（B-188 GUI 分片；对外签名与口径见 `/tmp/b188-gui/CONTRACT.md`）：
     //   · 所有**会起子进程**的函数都显式接受 `db: String`，绝不回落到 `existingDBPath()`；
     //     `db` 为空 / 文件不存在 → 直接返回 error、**不起子进程**（防误写真实库）。
     //   · 写库函数（`applyEdit` / `applyMerge` / `applySelectedFieldFixes`）**一律**把
-    //     `--backup DIR` 与 `--expect-db-sha256 SHA` 传给引擎（空串由引擎按「不校验」处理；
-    //     `--backup` 空串会被引擎拒绝 → 宁可写不进去，也不静默无备份写库）。
+    //     `--expect-db-sha256 SHA` 传给引擎（空串由引擎按「不校验」处理）。B-190 起
+    //     **不再传 `--backup`**：写库成功后由 Git 版本层自动本地 commit（绝不自动 push）。
     //   · 全部是**同步**函数 → 视图只许在后台队列调、回主线程回填（文件抬头的线程约定不变）。
     //   · 判据仍然只在引擎：这里只拼 argv / 收 `--json` / 翻界面模型；**不重写**字段规范化、
     //     key 查重、必填字段、bib 解析。
@@ -2036,7 +1589,6 @@ enum BibDbFeature {
         var newKey = ""
         var changedFields: [EditTraceFieldChange] = []
         var mergedKeys: [String] = []
-        var backupPath = ""
         var backupSha256 = ""
 
         var id: String { "\(recordKey)|\(action)|\(at)|\(oldKey)|\(newKey)" }
@@ -2080,7 +1632,6 @@ enum BibDbFeature {
                 trace.note = stringValue(dict["note"])
                 trace.oldKey = stringValue(dict["old_key"])
                 trace.newKey = stringValue(dict["new_key"])
-                trace.backupPath = stringValue(dict["backup_path"])
                 trace.backupSha256 = stringValue(dict["backup_sha256"])
                 trace.mergedKeys = (dict["merged_keys"] as? [Any])?.map { stringValue($0) } ?? []
                 if let changed = dict["changed_fields"] as? [String: Any] {
@@ -2110,13 +1661,13 @@ enum BibDbFeature {
         var key = ""
         var actionTitle = ""
         var at = ""
-        var backupSha256 = ""    // 短 sha；冲突裁决没有备份 sha（引擎不记）
+        var backupSha256 = ""    // 引擎留痕字段；B-190 起备份制取消、UI 不再展示
         var detail = ""
         var id = ""
     }
 
     /// 已处理条目（**纯逻辑**）：①冲突已裁决项（中文动作 + resolved_at + C 编号/key）；
-    /// ②编辑/合并痕迹（动作/时间/备份 sha/字段或 merged_keys 摘要）。
+    /// ②编辑/合并痕迹（动作/时间/字段或 merged_keys 摘要）。
     /// 按时间**倒序**、稳定排序；不校验、不补判据。
     static func processedEntries(conflicts: ConflictsOutcome?, traces: [EditTrace]) -> [ProcessedEntry] {
         var rows: [ProcessedEntry] = []
@@ -2349,7 +1900,6 @@ enum BibDbFeature {
         var newKey = ""
         var dbSha256Before = ""
         var dbSha256After = ""
-        var backupPath = ""
         var verification: WriteVerification?
         var error: String?
         var seconds: Double = 0
@@ -2364,10 +1914,10 @@ enum BibDbFeature {
         return text
     }
 
-    /// 拼 `edit` 的 argv（dry-run / apply 共用）。`--backup`/`--expect-db-sha256`
-    /// 在 apply 时**永远**传（空串由引擎拒绝/不校验）。
+    /// 拼 `edit` 的 argv（dry-run / apply 共用）。apply 时**永远**传
+    /// `--expect-db-sha256`（空串由引擎按「不校验」处理）；B-190 起不再传 `--backup`。
     private static func editArguments(db: String, draft: EditorDraft,
-                                      expectDBsha256: String, backupDir: String,
+                                      expectDBsha256: String,
                                       apply: Bool) -> (arguments: [String], error: String?) {
         guard let fieldsText = editorFieldsJSON(draft) else {
             return ([], "编辑器字段无法序列化成 JSON（内部错误）：请重试。")
@@ -2378,7 +1928,6 @@ enum BibDbFeature {
                          "--json", "--db", db]
         if apply {
             arguments.append("--apply")
-            arguments += ["--backup", backupDir]
             arguments += ["--expect-db-sha256", expectDBsha256]
         } else {
             arguments.append("--dry-run")
@@ -2438,7 +1987,6 @@ enum BibDbFeature {
         }
         let built = editArguments(db: path, draft: draft,
                                   expectDBsha256: expectDBsha256,
-                                  backupDir: BackupDirectoryPlaceholder.none,
                                   apply: false)
         if let buildError = built.error {
             out.error = buildError
@@ -2480,10 +2028,10 @@ enum BibDbFeature {
         return out
     }
 
-    /// 写入编辑：`edit --apply --backup DIR --expect-db-sha256 SHA --json`
+    /// 写入编辑：`edit --apply --expect-db-sha256 SHA --json`（B-190 起不传 `--backup`）。
     /// （**同步；后台队列调**）。失败原样展示引擎中文 error（sha 过期/key 撞车/待裁决冲突…）。
-    static func applyEdit(db: String, draft: EditorDraft, expectDBsha256: String,
-                          backupDir: String = BibDbFeature.backupDirectory) -> EditApplyOutcome {
+    static func applyEdit(db: String, draft: EditorDraft,
+                          expectDBsha256: String) -> EditApplyOutcome {
         let startedAt = Date()
         var out = EditApplyOutcome()
         out.key = draft.recordKey
@@ -2501,7 +2049,7 @@ enum BibDbFeature {
         }
         let built = editArguments(db: path, draft: draft,
                                   expectDBsha256: expectDBsha256,
-                                  backupDir: backupDir, apply: true)
+                                  apply: true)
         if let buildError = built.error {
             out.error = buildError
             out.seconds = Date().timeIntervalSince(startedAt)
@@ -2528,7 +2076,6 @@ enum BibDbFeature {
         out.newKey = stringValue(payload["new_key"])
         out.dbSha256Before = stringValue(payload["db_sha256_before"])
         out.dbSha256After = stringValue(payload["db_sha256_after"])
-        out.backupPath = stringValue(payload["backup_path"])
         out.verification = parseWriteVerification(payload["verification"])
         out.seconds = Date().timeIntervalSince(startedAt)
         return out
@@ -2592,11 +2139,6 @@ enum BibDbFeature {
         draft.aliases = aliases
         draft.rawBib = raw
         return (draft, nil)
-    }
-
-    /// `previewEdit` 的 dry-run 不需要备份目录；用一个语义化的空串占位（不进 argv）。
-    private enum BackupDirectoryPlaceholder {
-        static let none = ""
     }
 
     // MARK: B-188-5：对照 / 合并（merge-records）
@@ -2805,7 +2347,6 @@ enum BibDbFeature {
         var aliases: [String] = []
         var dbSha256Before = ""
         var dbSha256After = ""
-        var backupPath = ""
         var verification: WriteVerification?
         var error: String?
         var seconds: Double = 0
@@ -2813,7 +2354,7 @@ enum BibDbFeature {
 
     private static func mergeArguments(db: String, keys: [String], newKey: String,
                                        entryType: String, fieldSources: [String: String],
-                                       expectDBsha256: String, backupDir: String,
+                                       expectDBsha256: String,
                                        apply: Bool) -> [String] {
         var arguments = ["merge-records", "--keys", keys.joined(separator: ","),
                          "--new-key", newKey, "--json", "--db", db]
@@ -2824,7 +2365,6 @@ enum BibDbFeature {
         }
         if apply {
             arguments.append("--apply")
-            arguments += ["--backup", backupDir]
             arguments += ["--expect-db-sha256", expectDBsha256]
         } else {
             arguments.append("--dry-run")
@@ -2875,8 +2415,7 @@ enum BibDbFeature {
         let arguments = mergeArguments(db: path, keys: cleaned, newKey: name,
                                        entryType: entryType, fieldSources: fieldSources,
                                        expectDBsha256: expectDBsha256,
-                                       backupDir: BackupDirectoryPlaceholder.none,
-                                       apply: false)
+                                            apply: false)
         let run = runJSON(arguments)
         guard let payload = run.json else {
             out.error = failureText(run)
@@ -2908,12 +2447,11 @@ enum BibDbFeature {
         return out
     }
 
-    /// 写入合并：`merge-records --apply --backup DIR --expect-db-sha256 SHA --json`
-    /// （**同步；后台队列调**）。完全不自动合并 —— 只有用户确认后才调这个。
+    /// 写入合并：`merge-records --apply --expect-db-sha256 SHA --json`
+    /// （B-190 起不传 `--backup`；**同步；后台队列调**）。完全不自动合并 —— 只有用户确认后才调。
     static func applyMerge(db: String, keys: [String], newKey: String,
                            entryType: String = "", fieldSources: [String: String] = [:],
-                           expectDBsha256: String,
-                           backupDir: String = BibDbFeature.backupDirectory) -> MergeApplyOutcome {
+                           expectDBsha256: String) -> MergeApplyOutcome {
         let startedAt = Date()
         var out = MergeApplyOutcome()
         out.newKey = newKey
@@ -2934,7 +2472,7 @@ enum BibDbFeature {
         let arguments = mergeArguments(db: path, keys: cleaned, newKey: name,
                                        entryType: entryType, fieldSources: fieldSources,
                                        expectDBsha256: expectDBsha256,
-                                       backupDir: backupDir, apply: true)
+                                       apply: true)
         let run = runJSON(arguments)
         guard let payload = run.json else {
             out.error = failureText(run)
@@ -2957,7 +2495,6 @@ enum BibDbFeature {
         out.aliases = stringArray(payload["aliases"])
         out.dbSha256Before = stringValue(payload["db_sha256_before"])
         out.dbSha256After = stringValue(payload["db_sha256_after"])
-        out.backupPath = stringValue(payload["backup_path"])
         out.verification = parseWriteVerification(payload["verification"])
         out.seconds = Date().timeIntervalSince(startedAt)
         return out
@@ -3220,10 +2757,9 @@ enum BibDbFeature {
 
     /// 应用一条字段归位（复用 `applyEdit`；**同步；后台队列调**）。
     static func applyFieldFix(db: String, row: FieldFixRow, choice: FieldFixChoice,
-                              expectDBsha256: String,
-                              backupDir: String = BibDbFeature.backupDirectory) -> EditApplyOutcome {
+                              expectDBsha256: String) -> EditApplyOutcome {
         applyEdit(db: db, draft: buildFieldFixDraft(row: row, choice: choice),
-                  expectDBsha256: expectDBsha256, backupDir: backupDir)
+                  expectDBsha256: expectDBsha256)
     }
 
     /// 批量应用字段归位的运行摘要（串行逐条写；失败即停、保留已写条目报告）。
@@ -3233,7 +2769,6 @@ enum BibDbFeature {
         var failedKey = ""
         var error: String?
         var finalSha = ""
-        var backupPaths: [String] = []
         var seconds: Double = 0
 
         var stopped: Bool { !failedKey.isEmpty }
@@ -3241,11 +2776,10 @@ enum BibDbFeature {
     }
 
     /// 批量应用选中条目（**串行**）：第一条 `expect` = 当前库 sha（`dbManifest`），之后每条用
-    /// 上一条返回的 `dbSha256After`；任一条失败即停，保留 `writtenKeys` / `failedKey` / 备份路径。
+    /// 上一条返回的 `dbSha256After`；任一条失败即停，保留 `writtenKeys` / `failedKey`。
     /// **同步；后台队列调**。
     static func applySelectedFieldFixes(db: String, rows: [FieldFixRow],
-                                        choices: [String: FieldFixChoice],
-                                        backupDir: String = BibDbFeature.backupDirectory)
+                                        choices: [String: FieldFixChoice])
         -> FieldFixApplySummary {
         let startedAt = Date()
         var out = FieldFixApplySummary()
@@ -3270,7 +2804,7 @@ enum BibDbFeature {
         for row in selected {
             guard let choice = choices[row.key] else { continue }
             let result = applyFieldFix(db: path, row: row, choice: choice,
-                                       expectDBsha256: sha, backupDir: backupDir)
+                                       expectDBsha256: sha)
             if let error = result.error, !result.written {
                 out.failedKey = row.key
                 out.error = error
@@ -3279,7 +2813,6 @@ enum BibDbFeature {
                 return out
             }
             out.writtenKeys.append(result.newKey.isEmpty ? row.key : result.newKey)
-            if !result.backupPath.isEmpty { out.backupPaths.append(result.backupPath) }
             sha = result.dbSha256After.isEmpty
                 ? dbManifest(db: path).sha256 : result.dbSha256After
         }
