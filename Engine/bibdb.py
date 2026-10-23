@@ -5714,6 +5714,14 @@ def cmd_merge_records(args) -> int:
         new_key = str(args.new_key or "").strip()
         if not new_key:
             raise bibdb.BibDBError("合并必须给 --new-key（新规范 key）")
+        if new_key in keys:
+            # B-192：new_key 等于待合并的旧 key 时，合并后旧 key 全部进 aliases，
+            # 同一 key 不能既是 canonical key 又是自己的 alias —— 旧实现会先写库、
+            # 再在写后复核阶段失败（rc2 但数据已落盘）。这里**写前**拒绝、零写入。
+            raise bibdb.BibDBError(
+                f"--new-key `{new_key}` 不能等于待合并的旧 key（{'、'.join(keys)}）："
+                "合并后旧 key 会全部进 aliases，新 key 必须是全新的规范 key"
+                "（写前拒绝、零写入）")
         field_sources = _parse_field_sources(args.field_source, keys)
         path, store = _open_store(args)
         missing = [key for key in keys if key not in store._by_key]

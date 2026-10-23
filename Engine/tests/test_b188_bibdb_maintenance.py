@@ -396,6 +396,16 @@ check("(c) 未知 key → 退 2 + 零写入", r.returncode == 2 and sha(db) == b
 r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "sep-preferences",
             "--dry-run", "--json")
 check("(c) 新 key 撞已有 canonical key → 退 2", r.returncode == 2 and "占用" in r.stderr)
+# B-192：new_key ∈ keys 必须写前拒绝（旧实现会先写库、写后复核失败但数据已落盘）
+r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "1-24",
+            "--dry-run", "--json")
+check("(c) 新 key 等于待合并 key（dry-run）→ 退 2 + 零写入 + 写前拒绝",
+      r.returncode == 2 and sha(db) == before and "旧 key" in r.stderr, r.stderr[-160:])
+r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "t15",
+            "--apply", "--expect-db-sha256", before, "--json")
+check("(c) 新 key ∈ keys 在 --apply 同样写前拒绝（退 2 + 零写入、无备份）",
+      r.returncode == 2 and sha(db) == before
+      and not backup_files(os.path.join(TMP, "merge")), r.stderr[-160:])
 r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "Tindale2015",
             "--field-source", "title=NoSuch", "--dry-run", "--json")
 check("(c) --field-source 来源不在 --keys → 退 2", r.returncode == 2)
@@ -474,11 +484,11 @@ nr_b = mk_record("Segerberg1971b", "book", {
     "year": "1971"}, aliases=["s71"])
 db = fresh_db("merge_near", [nr_a, nr_b])
 r = run_cli("merge-records", "--db", db, "--keys", "Segerberg1971,Segerberg1971b",
-            "--new-key", "Segerberg1971", "--dry-run", "--json")
+            "--new-key", "Segerberg1971merged", "--dry-run", "--json")
 check("(d) 近重复 entry_type 不一致且没给 --entry-type → 退 2", r.returncode == 2
       and "entry_type" in r.stderr)
 r = run_cli("merge-records", "--db", db, "--keys", "Segerberg1971,Segerberg1971b",
-            "--new-key", "Segerberg1971", "--entry-type", "book",
+            "--new-key", "Segerberg1971merged", "--entry-type", "book",
             "--field-source", "author=Segerberg1971", "--field-source", "title=Segerberg1971",
             "--field-source", "school=Segerberg1971", "--dry-run", "--json")
 d = parse_json(r)
@@ -486,13 +496,14 @@ check("(d) 近重复逐字段选源生效（author/title 取 A；publisher 取 B
       d.get("fields", {}).get("author") == "Segerberg, K."
       and d["fields"].get("title") == "An Essay in Classical Modal Logic"
       and d["fields"].get("publisher", "").startswith("Uppsala, Filosofiska"), d.get("fields"))
-check("(d) 近重复 aliases = B 的旧 key + 原 aliases", d.get("aliases") == [
-    "Segerberg1971b", "s71"], d.get("aliases"))
+check("(d) 近重复 aliases = 两条旧 key + 原 aliases",
+      sorted(d.get("aliases") or []) == ["Segerberg1971", "Segerberg1971b", "s71"],
+      d.get("aliases"))
 
 # 待裁决记录拒绝合并 + 零写入
 db = fresh_db("merge_conflict")
 before = sha(db)
-r = run_cli("merge-records", "--db", db, "--keys", "Gamma2019,t15", "--new-key", "Gamma2019",
+r = run_cli("merge-records", "--db", db, "--keys", "Gamma2019,t15", "--new-key", "Gamma2019x",
             "--entry-type", "article", "--dry-run", "--json")
 check("(d) 待裁决记录拒绝合并（报 C 编号）",
       r.returncode == 2 and "待裁决" in r.stderr and sha(db) == before, r.stderr[-160:])
