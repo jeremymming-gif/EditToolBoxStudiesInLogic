@@ -826,6 +826,12 @@ _NOTE_PROBE_BAD = re.compile(
     r"笔者|我们|本文|拙文|作者认为|此注|前注|同上|见前|转引自|感谢|基金|"
     r"作者简介|收稿日期|电子信箱|上文|下文|参见前")
 
+#: note_only 探测的中文散文守卫：书名号**前**的片段里出现论述性动词 =
+#: 「库恩在《…》中指出…」型散文注，不是文献条目（独立验收者实测漏网）。
+_NOTE_PROBE_PROSE_VERB = re.compile(
+    r"在|认为|指出|主张|强调|写道|说道|提到|提及|表示|称|所述|所说|所论|"
+    r"论述|讨论|谈到|分析|说明|告诉我们|可见")
+
 #: 「作者, 名. (年) 题名. 地: 出版社.」式英文条目（86-08 Hacking 型）
 _APA_ENTRY = re.compile(
     r"^(?P<author>[A-Z][A-Za-z'’\-]+(?:\s*,\s*[A-Z][A-Za-z.'’\-]+){1,3})\.\s*"
@@ -1140,18 +1146,25 @@ def _note_only_probe(text: str) -> dict | None:
     body, _had = strip_leading_cue(t)
     fields = _extract_raw_fields(body)
     title = str(fields.get("title") or "").strip()
-    if len(_norm_fp(title)) < 3:
+    if len(_norm_fp(title)) < 3 or not _title_is_plausible(title):
         return None
     author = str(fields.get("author") or "").strip()
     year = str(fields.get("year") or "").strip()
     if re.search(r"[\u4e00-\u9fff]", body):
-        if not _WORK_CN_TITLE.search(body):
+        m = _WORK_CN_TITLE.search(body)
+        if not m:
+            return None
+        # 书名号前必须是「作者名」形态（不出现论述性动词/句子成分）
+        if _NOTE_PROBE_PROSE_VERB.search(body[:m.start()]):
             return None
         if not author and re.search(
                 r"《[^》]{2,}》\s*[，,]?\s*(?:19|20)\d{2}\s*年第", body):
             return None
-    elif not year:
-        return None
+    else:
+        if not year:
+            return None
+        if author and not _author_is_plausible(author):
+            return None
     if not (author or year):
         return None
     return {"fields": fields, "body": body}
@@ -1746,6 +1759,7 @@ def resolve_citation(citation: Footnote,
             locator=citation.locator)
     scored: list[tuple[tuple, str]] = []
     volume_ambiguous = False
+    container_keys: set[str] = set()
     for i in candidates:
         key, entry, _raw = entries[i]
         entry = _enrich_entry(entry, _raw)
@@ -1772,11 +1786,13 @@ def resolve_citation(citation: Footnote,
         # Agency and Answerability, pp. 106-107.` 型）——析出文献题名与 bib 条目的
         # **书名/容器**题名不同，但容器题名在引注原文里逐字出现。只在「作者姓匹配
         # + 容器题名归一后 ≥8 字符 + 唯一命中」时启用；不编造、不改条目字段。
+        _container_hit = False
         if title and sim < title_threshold:
             _raw_all = str(citation.ref_raw or citation.ref or citation.text or "")
             _cnorm = _norm_fp(cand_title)
             if len(_cnorm) >= 8 and _cnorm in _norm_fp(_raw_all):
                 sim = max(sim, 0.95)
+                _container_hit = True
         surname_ok = _surname_similarity(surname, cand_surname) >= 0.8
         if not surname_ok:
             continue
@@ -1812,6 +1828,8 @@ def resolve_citation(citation: Footnote,
             else:
                 continue
         scored.append(((tier, -sim, -_completeness(entry)), key))
+        if _container_hit:
+            container_keys.add(key)
     if stats is not None:
         stats["candidates"] = len(candidates)
     if not scored:
@@ -1836,6 +1854,13 @@ def resolve_citation(citation: Footnote,
                 reason="同作者/年/题名有多个卷号候选，无法唯一确定（不猜）",
                 author=str(fields.get("author") or ""), title=title, year=year,
                 locator=citation.locator)
+    if best_key in container_keys and len(container_keys) > 1:
+        # container 匹配命中多个候选 → 无法唯一确定是哪部作品（不猜）
+        return None, FootnoteWarning(
+            "citation_unmatched", fid=citation.fid, text=citation.text[:200],
+            reason="多个容器题名候选，无法唯一确定（不猜）",
+            author=str(fields.get("author") or ""), title=title, year=year,
+            locator=citation.locator)
     if strict:
         # B-199 note_only 探测：必须题名命中、非「仅作者+年」档、相似度 ≥0.92、
         # 最佳档候选唯一（多条不同条目同档 → 歧义，不猜）。

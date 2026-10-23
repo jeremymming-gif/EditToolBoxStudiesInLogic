@@ -410,9 +410,24 @@ def _src_line_key(doc, title: str, year: str = "") -> str:
     if len(tnorm) < 4:
         return ""
     # ① 编号清单：原文行 → 编号 → 键（`ref_key_by_num` 只有编号清单才有）
+    # 编号优先取行内 `[N]` 前缀（B-199 验收缺陷：清单前多一条说明行时，
+    # 用 enumerate 会把行号当编号、返回邻条键）；无 `[N]` 前缀的行只有在
+    # 「行数 == 键数且键连续 1..N」时才允许按位置兜底，否则放弃（不猜）。
     if lines and key_by_num:
+        nums: list[int | None] = []
+        for line in lines:
+            m = re.match(r"^\s*\[\s*(\d+)\s*\]", str(line))
+            nums.append(int(m.group(1)) if m else None)
+        if all(n is None for n in nums):
+            keys_int = sorted(int(k) for k in key_by_num)
+            if len(lines) == len(key_by_num) and keys_int == list(range(1, len(lines) + 1)):
+                nums = list(range(1, len(lines) + 1))
+            else:
+                nums = []
         hits: list[int] = []
-        for num, line in enumerate(lines, start=1):
+        for line, num in zip(lines, nums):
+            if num is None:
+                continue
             if tnorm not in _norm_fp(line):
                 continue
             if year and str(year) not in str(line):
@@ -3674,6 +3689,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 _new.note_latex = _old_note_latex
             _kind = _new.kind_new
             _fallback_mixed = False
+            _was_split = _kind == CITATION_MIXED_SPLIT
             if _kind == CITATION_ENTRY:
                 # B-199：引导语后剥出的完整条目（90-07「参阅陈晓平…」型）先按文末清单
                 # 原文行找既有键——命中则只 cite（不改 bib），避免字段碎片导致重复条目。
@@ -3765,8 +3781,13 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 try:
                     # U1：含公式的混合脚注同样复用旧对象预渲染的 note_latex
                     # （数学已受保护；引用替换照做，避免二次转义）。
-                    _mixed_src = _old_note_latex or escape_latex(
-                        _new.note or _new.ref_raw or _new.text)
+                    # B-199 验收缺陷：mixed_split 回退时必须保留**整条原文**
+                    # （note_before 也是脚注正文；只取 ref_raw 会吞掉说明文字）。
+                    if _was_split:
+                        _mixed_src = _old_note_latex or escape_latex(_new.text)
+                    else:
+                        _mixed_src = _old_note_latex or escape_latex(
+                            _new.note or _new.ref_raw or _new.text)
                     _new.note_latex = link_citations(_mixed_src, doc.refs)[0]
                 except Exception:  # noqa: BLE001
                     _new.note_latex = _old_note_latex
@@ -3943,11 +3964,15 @@ def parse_docx(path: str, quote_threshold: int = 105,
             list(_end_entries_snapshot), list(_new_entries),
             warnings=doc.c_class_warnings, keymap=_union_alias)
         if _union_alias:
+            def _alias_key(_k: str) -> str:
+                # B-199：多作品键是 "K1,K2" 逗号串 → **逐键**改写（整串 .get 永不命中）
+                return ",".join(_union_alias.get(p, p) for p in str(_k).split(","))
+
             for _fid, _k in list(keymap.items()):
-                keymap[_fid] = _union_alias.get(_k, _k)
+                keymap[_fid] = _alias_key(_k)
             for _fid, _fn in fn_objs.items():
                 if getattr(_fn, "key", ""):
-                    _fn.key = _union_alias.get(_fn.key, _fn.key)
+                    _fn.key = _alias_key(_fn.key)
             for _num, _k in list(doc.ref_key_by_num.items()):
                 doc.ref_key_by_num[_num] = _union_alias.get(_k, _k)
             for _old, _newk in _union_alias.items():

@@ -126,6 +126,11 @@ check("② 负例：纯说明（无题名/作者证据）→ note_only，不探�
       _plain.kind_new == F.CITATION_NOTE and not _plain.from_note_probe,
       f"kind={_plain.kind_new}")
 
+_prose_note = F.classify_citation("库恩在《科学革命的结构》中指出范式不可通约。")
+check("② 负例：中文散文注（库恩在《…》中指出…）→ note_only，不探测",
+      _prose_note.kind_new == F.CITATION_NOTE and not _prose_note.from_note_probe,
+      f"kind={_prose_note.kind_new} probe={_prose_note.from_note_probe}")
+
 _quote = F.classify_citation("参见《哲学研究》2024年第3期。")
 check("② 负例：只有《刊名》+年份、无作者 → 不探测/不提为条目（保留脚注）",
       _quote.kind_new in (F.CITATION_NOTE, F.CITATION_MIXED)
@@ -263,6 +268,20 @@ check("⑥ 多作品 → 逐作品唯一命中才返回（90-07 #27）",
           "陈晓平：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期；"
           "《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。"))
 
+_fake_prefix = SimpleNamespace(
+    ref_raw_lines=["说明行（非清单）",
+                   "[1] 托马斯•库恩：《科学革命的结构》，北京大学出版社，2012年。",
+                   "[2] 陈晓平：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。"],
+    ref_key_by_num={1: "Tuo2012", 2: "Chen2026"},
+    refs=[],
+)
+check("⑥ 编号清单前有说明行：按行内 [N] 取号，不返回邻条键",
+      _src_line_key(_fake_prefix, "科学革命的结构") == "Tuo2012",
+      _src_line_key(_fake_prefix, "科学革命的结构"))
+check("⑥ 编号清单前有说明行：第二条仍取对",
+      _src_line_key(_fake_prefix, "贝叶斯方法的基本原理及其哲学意蕴", "2026") == "Chen2026",
+      _src_line_key(_fake_prefix, "贝叶斯方法的基本原理及其哲学意蕴", "2026"))
+
 # 人年制清单：字段碎片但 raw 完整（90-06 译著拆条前）
 _fake_human = SimpleNamespace(
     ref_raw_lines=["托尔斯泰著，方敬译，《伊凡伊里奇之死》，文化生活出版社，1947。"],
@@ -299,8 +318,10 @@ def _make_docx(path: str, footnotes: list[str], refs: list[str]) -> str:
              # 正文带编号引用证据（[1]/[2]/[3]），让 B-022 安全闸把文末自动编号物化
              _p("正文第一段，含正文编号引用（[1]）、（[2]）与（[3]）。",
                 fnrefs=tuple(range(1, len(footnotes) + 1))),
-             _p("参考文献")]
-    parts.extend(_p(t, num=True) for t in refs)
+             ]
+    if refs:
+        parts.append(_p("参考文献"))
+        parts.extend(_p(t, num=True) for t in refs)
     doc_xml = f'<w:document {_NS}><w:body>' + "".join(parts) + "</w:body></w:document>"
     fn_xml = f'<w:footnotes {_NS}>' + "".join(
         f'<w:footnote w:id="{i}">{_p(t)}</w:footnote>'
@@ -312,7 +333,8 @@ def _make_docx(path: str, footnotes: list[str], refs: list[str]) -> str:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("word/document.xml", doc_xml)
         z.writestr("word/footnotes.xml", fn_xml)
-        z.writestr("word/numbering.xml", num_xml)
+        if refs:
+            z.writestr("word/numbering.xml", num_xml)
     return path
 
 
@@ -330,6 +352,8 @@ _docx = _make_docx(
         "托马斯•库恩：《科学革命的结构》，第66页。",
         # 4) 纯说明（引者注：前注）→ 原样保留脚注，不提升
         "这里不再展开，参见前注。",
+        # 5) 中文散文注（书名号前有「在…指出」）→ 必须保留脚注，不得按清单键提升
+        "库恩在《科学革命的结构》中指出范式不可通约。",
     ],
     [
         "W. C. Salmon, The Foundations of Scientific Inference, Pittsburgh: "
@@ -364,8 +388,23 @@ check("⑦ 负例：纯说明脚注保持 \\footnote 原文、未生造引用",
       "这里不再展开，参见前注。" in _body
       and "parencite{前注" not in _body,
       _body[-160:])
+check("⑦ 负例：中文散文注（库恩在《…》中指出…）保留脚注、不按清单键删除",
+      "库恩在《科学革命的结构》中指出范式不可通约。" in _body,
+      _body[-220:])
 check("⑦ 混合型清单归零（4 条脚注全部有去处）",
       list(_doc.mixed_footnotes) == [], list(_doc.mixed_footnotes))
+
+# 无文末清单：mixed 拆分失败回退 mixed_manual 时，必须保留整条脚注原文
+_docx2 = _make_docx(
+    os.path.join(_TMP, "b199-norefs.docx"),
+    ["沃森认为自己的观点与柏拉图对灵魂的划分异曲同工。Gary Watson, "
+     "“Free Action and Free Will,” p. 150."],
+    [],
+)
+_doc2 = parse_docx(_docx2, c_class_union=True)
+check("⑦ 负例：无文末清单时 mixed 回退保留 note_before（说明文字不丢）",
+      "沃森认为自己的观点与柏拉图对灵魂的划分异曲同工。" in _doc2.body,
+      _doc2.body[-220:])
 
 print()
 print("=" * 78)
