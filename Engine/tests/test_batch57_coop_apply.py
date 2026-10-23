@@ -548,10 +548,13 @@ def test_cli_e2e(tmp: str) -> None:
           "应用前备份：" in rec and "应用前备份（.tex）：" in rec
           and ".tex `myvolnumber`" in rec and "`match_key` ←" in rec
           and "定位 `21`" in rec)
-    st2 = json.load(open(st_path, encoding="utf-8"))
-    check("⑤-9 stats.low_applied 计 4 条（BIB1+FN1+META2）且 phase=done",
-          st2["phase"] == "done" and st2["stats"]["low_applied"] == 4,
-          str(st2.get("stats")))
+    # B-211：promote 成功后暂存目录被清理、`_AI协同状态.json` 不随交付 →
+    # 阶段/stats 的可见证据改为交付目录里的协同记录（记录在 promote 后写并复制进最终目录）。
+    check("⑤-9 交付记录：阶段 done 且 --coop-apply 应用 4 条（BIB1+FN1+META2）",
+          "阶段：`done`" in rec
+          and "- `--coop-apply`：应用 **4** 条，待人工 0 条" in rec,
+          rec[-700:])
+    check("⑤-9b promote 成功后暂存目录已清理", not os.path.exists(stage))
     sug_lines = [json.loads(ln) for ln in
                  _read(os.path.join(final, "San_Zhang_AI建议.jsonl")).splitlines() if ln.strip()]
     accepted = [x for x in sug_lines if x.get("status") == "accepted"]
@@ -562,13 +565,17 @@ def test_cli_e2e(tmp: str) -> None:
           "已应用 1 条文献字段建议" in p2.stdout
           and "已应用到 .tex 3 条" in p2.stdout, p2.stdout[-400:])
 
-    # 幂等：同回填重跑早退，产物 sha 不变
+    # B-211：交付成功后暂存目录已清理 → 重复 ph2 不再幂等早退，而是明确拒绝续跑；
+    # 交付产物仍一个字节不动、不静默重交付（批54/56 同口径）。
     before = (_sha(ftex), _sha(os.path.join(final, "reference.bib")))
     p3 = _run(["--source", src, "--out", out, "--coop-replies", reply,
                "--no-original", "--coop-apply"])
-    check("⑤-12 重复 ph2 幂等早退且产物不动",
-          p3.returncode == 0 and "幂等" in p3.stdout
-          and (_sha(ftex), _sha(os.path.join(final, "reference.bib"))) == before)
+    check("⑤-12 交付后重复 ph2：明确拒绝续跑（退出 2）且产物不动",
+          p3.returncode == 2
+          and ("找不到可续跑的协同初排暂存目录" in p3.stderr
+               or "请先运行第一段" in p3.stderr)
+          and (_sha(ftex), _sha(os.path.join(final, "reference.bib"))) == before,
+          (p3.stderr + p3.stdout)[-400:])
 
     # restore 两个备份 → 回到应用前
     check("⑤-13 restore_tex_backup / restore_bib_backup 可逆",
@@ -576,6 +583,21 @@ def test_cli_e2e(tmp: str) -> None:
           and coop.restore_bib_backup(os.path.join(final, "reference.bib"))
           and _read(ftex) == fn_tex
           and _read(os.path.join(final, "reference.bib")) == pre_bib)
+
+    # B-211 失败路径：重新 ph1 出暂存 → 源稿改动 → ph2 指纹不符退出 2；
+    # promote 未成功，暂存目录必须原样保留、交付目录一个字节不动。
+    before_fail = (_sha(ftex), _sha(os.path.join(final, "reference.bib")))
+    p1b = _ph1(src, bibp, out)
+    _write(src, _TEX57 + "\n% B-211 失败路径注入：源稿已变\n")
+    p4 = _run(["--source", src, "--out", out, "--coop-replies", reply,
+               "--no-original", "--coop-apply"])
+    check("⑤-14 失败路径：源稿变动后 ph2 退出 2 且明说「不一致」",
+          p1b.returncode == 0 and p4.returncode == 2
+          and ("不一致" in p4.stderr or "不一致" in p4.stdout),
+          (p4.stderr + p4.stdout)[-400:])
+    check("⑤-15 失败路径：暂存目录保留、最终产物零变化（promote 失败不清理）",
+          os.path.isdir(stage)
+          and (_sha(ftex), _sha(os.path.join(final, "reference.bib"))) == before_fail)
 
 
 def test_cli_bib_only_unchanged(tmp: str) -> None:
@@ -611,6 +633,8 @@ def test_cli_bib_only_unchanged(tmp: str) -> None:
           os.path.isfile(os.path.join(final, "reference.bib.ai前")))
     check("⑤b-6 stdout 仍报「已应用 N 条」旧口径",
           "已应用 1 条文献字段建议" in p2.stdout)
+    check("⑤b-7 BIB-only 交付成功后暂存目录已清理（B-211）",
+          not os.path.exists(stage))
 
 
 def test_cli_no_ai_merge_and_default(tmp: str) -> None:
@@ -634,6 +658,8 @@ def test_cli_no_ai_merge_and_default(tmp: str) -> None:
     check("⑤c-1 --no-ai-merge 仍整体禁用 apply（.tex 不变、无 .ai前）",
           p2.returncode == 0 and _read(ftex) == pre_tex
           and not os.path.exists(ftex + ".ai前"), p2.stderr[-300:])
+    check("⑤c-1b --no-ai-merge 交付成功后暂存目录已清理（B-211）",
+          not os.path.exists(stage))
 
     # 默认路径（无任何 coop 参数）：不产生状态/记录/.ai前
     base2 = os.path.join(tmp, "plain")
