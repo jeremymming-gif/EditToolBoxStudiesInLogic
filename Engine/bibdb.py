@@ -90,6 +90,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                 [--expect-db-sha256 SHA] [--note TEXT] [--json]
                                             B-188 合并 2+ 条重复记录为 1 条：新规范 key、
                                             旧 key 全进 aliases、来源合并、记录数 -N+1；
+                                            B-201：--new-key 可**沿用 --keys 之一**
+                                            （合并后其余旧 key 进 aliases；撞其它记录仍拒绝）；
                                             近重复用 --field-source 逐字段选源；默认 dry-run；
                                             B-190 起 --backup 同样可选（不传 = 不写备份）
     suggest-field-fixes [--registry missing_field|unknown_entry_type] [--limit N] [--json]
@@ -1351,13 +1353,16 @@ def cmd_lint(args) -> int:
     counts = result["counts"]
     pending_conflicts = counts.get("conflicts_pending") or {}
     resolved_conflicts = counts.get("conflicts_resolved") or {}
+    near_acked = counts.get("near_duplicates_acknowledged") or 0
+    near_note = (f"（另有 {near_acked} 对已确认不同，见 health-ignore.json）"
+                 if near_acked else "")
     print(f"条目 {counts['records']}（已核实 {counts['verified']} / "
           f"未核实 {counts['unverified']}）；"
           f"字段冲突：待裁决 {pending_conflicts.get('records', 0)} 条记录 / "
           f"{pending_conflicts.get('total', 0)} 处差异"
           f"（历史已裁决 {resolved_conflicts.get('records', 0)} 条记录 / "
           f"{resolved_conflicts.get('total', 0)} 处差异）；"
-          f"同一作品多条记录 {counts['near_duplicates']} 对")
+          f"同一作品多条记录 {counts['near_duplicates']} 对{near_note}")
     print(f"error {counts['errors']} 项，warning {counts['warnings']} 项"
           + ("——库可用。" if result["ok"] else "——**库有 error，先修**。"))
     return 0 if result["ok"] else 1
@@ -5258,7 +5263,8 @@ def cmd_merge_duplicates(args) -> int:
 # 设计卡：`EditToolBox-notes/drafts/specs/b188-bibdb-maintenance-loop.md` §3。
 # 三条命令，都是「dry-run 预览 → 用户确认 → sha 闸 → 自动备份 → 原子写 → 复核」：
 #   · edit             编辑一条记录（表单/原始 bib；可改 key，旧 key 自动进 aliases）
-#   · merge-records    合并 2+ 条重复记录（新规范 key；旧 key 全部进 aliases；逐字段选源）
+#   · merge-records    合并 2+ 条重复记录（新规范 key 可沿用被合并键之一；旧 key 全部进
+#                      aliases；逐字段选源）
 #   · suggest-field-fixes  只读：缺字段的归位候选（A 类）+ 异常 entry_type/key 的修法建议
 # 写库痕迹：记录里追加 `edits[]`（动作/时间/备份 sha/字段级 old→new），不另开 sidecar。
 
@@ -5569,7 +5575,9 @@ def _load_verify(path: str, *, expect_key: str, expect_etype: str,
         miss = [alias for alias in expect_aliases if alias not in have_aliases]
         if miss:
             problems.append(f"旧 key 未进 aliases：{'、'.join(miss)}")
-    still = [key for key in absent_keys if key in store._by_key]
+    # B-201：new_key 可以等于被合并键之一（它就是合并后的 canonical key）；
+    # `absent_keys` 里把它排除，否则会误报「被合并的旧 key 仍在库内」。
+    still = [key for key in absent_keys if key != expect_key and key in store._by_key]
     if still:
         problems.append(f"被合并的旧 key 仍在库内：{'、'.join(still)}")
     lint = store.lint()
@@ -5714,14 +5722,6 @@ def cmd_merge_records(args) -> int:
         new_key = str(args.new_key or "").strip()
         if not new_key:
             raise bibdb.BibDBError("合并必须给 --new-key（新规范 key）")
-        if new_key in keys:
-            # B-192：new_key 等于待合并的旧 key 时，合并后旧 key 全部进 aliases，
-            # 同一 key 不能既是 canonical key 又是自己的 alias —— 旧实现会先写库、
-            # 再在写后复核阶段失败（rc2 但数据已落盘）。这里**写前**拒绝、零写入。
-            raise bibdb.BibDBError(
-                f"--new-key `{new_key}` 不能等于待合并的旧 key（{'、'.join(keys)}）："
-                "合并后旧 key 会全部进 aliases，新 key 必须是全新的规范 key"
-                "（写前拒绝、零写入）")
         field_sources = _parse_field_sources(args.field_source, keys)
         path, store = _open_store(args)
         missing = [key for key in keys if key not in store._by_key]
@@ -5733,7 +5733,11 @@ def cmd_merge_records(args) -> int:
         if blocking:
             raise bibdb.BibDBError(
                 f"待合并记录还有待裁决冲突（{'、'.join(blocking)}）：请先裁决再合并")
-        collision = _key_collision(store, new_key, allow_record=keys[0])
+        # B-201：新 key 可以**沿用**被合并键之一（高频诉求：`15-11`+`Ripley2015`
+        # 直接并成 `Ripley2015`，正文 `\cite` 不悬空）。等于 keys[1] 时也放行
+        # （那条记录合并后即被删除），撞**其它**已存在 canonical/alias 仍拒绝。
+        allow_record = new_key if new_key in keys else keys[0]
+        collision = _key_collision(store, new_key, allow_record=allow_record)
         if collision:
             raise bibdb.BibDBError(collision)
         records = [store._by_key[key] for key in keys]
@@ -6311,9 +6315,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     mrec = sub.add_parser(
         "merge-records", parents=[common],
-        help="合并 2+ 条重复记录为 1 条（默认 dry-run；新 key；旧 key 全进 aliases）")
+        help="合并 2+ 条重复记录为 1 条（默认 dry-run；new-key 可沿用被合并键之一；旧 key 全进 aliases）")
     mrec.add_argument("--keys", required=True, metavar="A,B[,...]", help="要合并的记录 key（逗号分隔）")
-    mrec.add_argument("--new-key", required=True, metavar="K", help="合并后的规范 key")
+    mrec.add_argument("--new-key", required=True, metavar="K",
+                      help="合并后的规范 key（可等于 --keys 之一，B-201；撞其它已有 key/alias 仍拒绝）")
     mrec.add_argument("--entry-type", default="", metavar="T",
                       help="合并后条目类型（各条不一致时必须给）")
     mrec.add_argument("--field-source", action="append", default=[], metavar="FIELD=KEY",

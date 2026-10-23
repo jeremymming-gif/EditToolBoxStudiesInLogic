@@ -2206,12 +2206,14 @@ with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
         real_sha = bibdb.db_sha256(real_db)
         r = run_cli("normalize-editors", "--db", real_db, "--json")
         real = json.loads(r.stdout) if r.returncode == 0 else {}
-        # 兼容三种真实库状态：B3 apply 前 / B3 后 / 重复合并 apply 后（第四十三批起）
+        # 兼容多种真实库状态：B3 apply 前 / B3 后 / 合并 apply 后（第四十三批起；之后每次
+        # 用户合并在本集合加一行当前状态即可 —— 断言仍是「dry-run 零变化 + 统计自洽」）
         _states = {
             (7950, 971, 29, 498, 473),      # B3 apply 前
             (7950, 971, 29, 0, 971),        # B3 apply 后
             (7067, 908, 24, 0, 908),        # 第一批合并 apply 后（7950-883）
             (7051, 905, 24, 0, 905),        # 第二批合并 apply 后（7067-16，含 Segerberg 书版子集）
+            (7045, 904, 24, 0, 904),        # 用户 2026-10-23 引用库合并提交后（7051-6；B-201 批同步）
         }
         _state = (real.get("records"), real.get("with_editor"), real.get("editor_only"),
                   real.get("changes"), real.get("skips"))

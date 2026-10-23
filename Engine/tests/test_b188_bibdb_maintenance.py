@@ -14,7 +14,8 @@ r"""B-188：引用库维护闭环的**引擎命令**契约（GUI 写库入口；
   (b) `merge-records`：2 条合并为 1 条（新规范 key、旧 key 全进 aliases、来源合并、
       记录数 -1、逐字段 `--field-source` 选源、dry-run 不写）；entry_type 不一致必须
       `--entry-type`；key 撞车/待裁决记录/未知 key → 退 2 且零写入；`--backup` 同
-      `edit` 一样可选（B-190）。
+      `edit` 一样可选（B-190）。**B-201：`--new-key` 可沿用 `--keys` 之一**（= 其中一条
+      旧 key；合并后其余旧 key 进 aliases；撞**其它**已有 canonical/alias 仍退 2 零写入）。
   (c) `suggest-field-fixes`：只读（库逐字节不变）；A 类缺 title/year 候选（题名标记/
       年份正则/出版者形态）+ 异常 entry_type 建议。
   (d) `lint --with-records`：`warning_items[].records` 给全量受影响 key；**不带 flag 时
@@ -395,20 +396,44 @@ r = run_cli("merge-records", "--db", db, "--keys", "1-24,nope", "--new-key", "X"
 check("(c) 未知 key → 退 2 + 零写入", r.returncode == 2 and sha(db) == before)
 r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "sep-preferences",
             "--dry-run", "--json")
-check("(c) 新 key 撞已有 canonical key → 退 2", r.returncode == 2 and "占用" in r.stderr)
-# B-192：new_key ∈ keys 必须写前拒绝（旧实现会先写库、写后复核失败但数据已落盘）
+check("(c) 新 key 撞其它已有 canonical key → 退 2 + 零写入",
+      r.returncode == 2 and "占用" in r.stderr and sha(db) == before, r.stderr[-160:])
+r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15",
+            "--new-key", "liupreferencelogic2025", "--dry-run", "--json")
+check("(c) 新 key 撞其它记录的 alias → 退 2 + 零写入",
+      r.returncode == 2 and "别名" in r.stderr and sha(db) == before, r.stderr[-160:])
+# B-201：new_key 可以沿用被合并键之一（`\cite` 用的旧 key 不必改，正文不悬空）
 r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "1-24",
             "--dry-run", "--json")
-check("(c) 新 key 等于待合并 key（dry-run）→ 退 2 + 零写入 + 写前拒绝",
-      r.returncode == 2 and sha(db) == before and "旧 key" in r.stderr, r.stderr[-160:])
+d = parse_json(r)
+check("(c) 新 key 等于 keys[0]（dry-run）：接受 rc0 + 零写入 + aliases=[t15]",
+      r.returncode == 0 and d.get("dry_run") is True and sha(db) == before
+      and d.get("aliases") == ["t15"], r.stderr[-160:] or str(d.get("aliases")))
+db = fresh_db("merge_reuse_key")
+before = sha(db)
 r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "t15",
             "--apply", "--expect-db-sha256", before, "--json")
-check("(c) 新 key ∈ keys 在 --apply 同样写前拒绝（退 2 + 零写入、无备份）",
-      r.returncode == 2 and sha(db) == before
-      and not backup_files(os.path.join(TMP, "merge")), r.stderr[-160:])
+d = parse_json(r)
+check("(c) 新 key 等于 keys[1]（--apply）：rc0 + written + verification.ok",
+      r.returncode == 0 and d.get("written") is True
+      and d.get("verification", {}).get("ok") is True, r.stderr[-200:])
+store = bibdb.Store.load(db)
+survivor = store.get("t15")
+check("(c) 沿用 keys[1] 后：canonical=t15、1-24 仅 alias、记录数 6→5",
+      len(store.records()) == 5 and store.get("1-24") is None and survivor is not None
+      and survivor.get("key") == "t15" and survivor.get("aliases") == ["1-24"],
+      survivor and survivor.get("aliases"))
+check("(c) 沿用 keys[1] 后：sources 合并 2 条 / edits[].merged_keys 全留",
+      len(survivor.get("sources") or []) == 2
+      and (survivor.get("edits") or [{}])[-1].get("merged_keys") == ["1-24", "t15"],
+      (survivor.get("edits") or [{}])[-1])
+db = fresh_db("merge_field_source")
+before = sha(db)
 r = run_cli("merge-records", "--db", db, "--keys", "1-24,t15", "--new-key", "Tindale2015",
             "--field-source", "title=NoSuch", "--dry-run", "--json")
-check("(c) --field-source 来源不在 --keys → 退 2", r.returncode == 2)
+check("(c) --field-source 来源不在 --keys → 退 2（报来源文案、零写入）",
+      r.returncode == 2 and "--field-source" in r.stderr and "NoSuch" in r.stderr
+      and sha(db) == before, r.stderr[-160:])
 
 # apply
 db = fresh_db("merge_apply")

@@ -114,6 +114,14 @@ SCHEMA_VERSION = 1
 DB_DIRNAME = "bib_db"
 DB_FILENAME = "bibliography.jsonl"
 
+#: B-204：人工裁决「两条不同条目，不要再提示」的 sidecar（与库**同目录**、随笔记仓提交）。
+#: 它不是库格式的一部分：缺文件 = 无效果；lint 只读不写，库字节 sha 不变。
+HEALTH_IGNORE_FILENAME = "health-ignore.json"
+#: sidecar 顶层版本（结构变更时 +1；引擎只认这一版，别的版本 fail-soft 成一条 warning）
+HEALTH_IGNORE_VERSION = 1
+#: sidecar 允许静音的告警 code（只覆盖「重复」两类：其它 warning 是待办，不许被忽略）
+HEALTH_IGNORE_CODES = ("near_duplicates", "duplicate_content")
+
 #: 来源种类：往期成品 bib / 人工标记已核实 / 普通导入（未核实）
 KIND_PUBLISHED = "published-bib"
 KIND_VERIFIED = "verified"
@@ -252,6 +260,141 @@ def db_sha256(path: str) -> str:
             return hashlib.sha256(fh.read()).hexdigest()
     except OSError:
         return ""
+
+
+# ── B-204：重复告警忽略 sidecar（人工裁决「两条不同条目」）──────────────────
+#
+# 为什么放在库旁边而不是库里：静音一条「库健康」提示是**编辑决定**、要可审计，
+# 但改记录（加 x-ack 标记 / 改 fields）会动 content_sha256 与 bib 事实。sidecar 与
+# `bibliography.jsonl` 同目录、随笔记仓版本化：删条目 / git revert 即恢复告警，
+# 库字节一个都不动。**只有 lint 读它**；`report-duplicates` 仍全量审计（不静音）。
+#
+# 口径（设计卡 §4 / 证据 `/tmp/b201/evidence/q4-dup-ack.md`）：
+#   · 缺文件 / sidecar 不存在 = 空集，零新 warning；
+#   · key 先按 canonical（`_by_key`）解析、再按 alias（`_by_alias` 唯一 owner）；
+#     找不到 / alias 多指 / keys 重复 → 该条 ack 不生效；
+#   · `near_duplicates` ack = 一条 pair（2 个 key，无序）；
+#   · `duplicate_content` ack = 一组内容完全相同的记录（keys 必须列全该组，升序集合相等）；
+#   · 文件坏 / version 不对 / 结构坏 / 有无法解析的 key → **不抛异常、lint errors 仍 0**，
+#     只额外产生一条聚合 warning（code=`health_ignore`），坏条目不生效、好条目照常生效；
+#   · 两条 key 解析到同一条记录（多半 ack 后已合并）→ ack 自然失效，但**不算文件坏**
+#     （不新增 warning：用户做了合并这个正确动作，不该反被「清单有问题」提示）。
+
+
+def health_ignore_path(db_path: str) -> str:
+    """`<库目录>/health-ignore.json`（B-204）；库路径为空时返回空串（= 无 sidecar）。"""
+    if not db_path:
+        return ""
+    return os.path.join(os.path.dirname(os.path.abspath(db_path)), HEALTH_IGNORE_FILENAME)
+
+
+def _resolve_health_key(raw: str, by_key: dict, by_alias: dict) -> tuple[str, str]:
+    """sidecar 里的一个 key → canonical key。返回 `(canonical, 问题说明)`；问题非空 = 不生效。"""
+    if raw in by_key:
+        return raw, ""
+    owners = by_alias.get(raw) or []
+    canonical = {str(record.get("key") or "") for record in owners
+                 if isinstance(record, dict)}
+    canonical.discard("")
+    if len(canonical) == 1:
+        return next(iter(canonical)), ""
+    if len(canonical) > 1:
+        return "", f"key `{raw}` 是 {len(canonical)} 条记录的别名（多指）"
+    return "", f"key `{raw}` 不在库里（也不是唯一别名）"
+
+
+def load_health_ignore(db_path: str, by_key: dict, by_alias: dict) -> dict:
+    """读 sidecar（B-204）。**fail-soft**：任何结构问题只记进 `problems`，永不抛异常。
+
+    返回 `{"path", "exists", "near_duplicates": set[frozenset[str]],
+    "duplicate_content": set[tuple[str, ...]], "acks": [...], "problems": [...]}`：
+      · `near_duplicates` / `duplicate_content` 是**已解析成 canonical key** 的生效集合；
+      · `acks` 保留每条条目的解析结果（`effective` 标记是否生效；reason / decided_at
+        仅供审计，不参与判定）；
+      · `problems` 每条 = 一处问题（由 lint 聚合成一条 warning，`count` = 问题数）。
+    """
+    path = health_ignore_path(db_path)
+    result: dict = {"path": path, "exists": False, "near_duplicates": set(),
+                    "duplicate_content": set(), "acks": [], "problems": []}
+    if not path or not os.path.isfile(path):
+        return result
+    result["exists"] = True
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    # t5（verifier t3 发现）：`JSONDecodeError`（坏 JSON）与 `UnicodeDecodeError`（非法
+    # UTF-8 字节，在解码阶段就抛）都是 `ValueError` 子类 —— 两种都算「文件坏」走
+    # fail-soft；`OSError` 覆盖读不到（权限/IO）。这里绝不能漏成 traceback。
+    except (OSError, ValueError) as exc:
+        result["problems"].append(f"读不了 / 不是合法 UTF-8 或 JSON（{exc}）")
+        return result
+    if not isinstance(payload, dict):
+        result["problems"].append("顶层不是 JSON 对象")
+        return result
+    version = payload.get("version")
+    if version != HEALTH_IGNORE_VERSION:
+        result["problems"].append(
+            f"version 不是 {HEALTH_IGNORE_VERSION}（实际 {version!r}）：本引擎不认这个文件")
+        return result
+    entries = payload.get("acknowledged")
+    if not isinstance(entries, list):
+        result["problems"].append("`acknowledged` 不是数组")
+        return result
+    for index, entry in enumerate(entries, start=1):
+        label = f"第 {index} 条 ack"
+        if not isinstance(entry, dict):
+            result["problems"].append(f"{label}不是 JSON 对象")
+            continue
+        code = entry.get("code")
+        if code not in HEALTH_IGNORE_CODES:
+            result["problems"].append(
+                f"{label} 的 code {code!r} 不受支持（只允许 {'/'.join(HEALTH_IGNORE_CODES)}）")
+            continue
+        keys = entry.get("keys")
+        if (not isinstance(keys, list) or len(keys) < 2
+                or any(not isinstance(key, str) or not key.strip() for key in keys)):
+            result["problems"].append(f"{label} 的 keys 必须是 ≥2 个非空字符串")
+            continue
+        raw_keys = [key.strip() for key in keys]
+        if len(set(raw_keys)) != len(raw_keys):
+            result["problems"].append(f"{label} 的 keys 有重复项：{'、'.join(raw_keys)}")
+            continue
+        resolved: list[str] = []
+        problem = ""
+        for raw in raw_keys:
+            canonical, problem = _resolve_health_key(raw, by_key, by_alias)
+            if problem:
+                break
+            resolved.append(canonical)
+        if problem:
+            result["problems"].append(f"{label}：{problem}（该条不生效）")
+            continue
+        resolved_unique = sorted(set(resolved))
+        if len(resolved_unique) < 2:
+            # 两条 key 现在指向同一条记录（最常见：ack 之后把这两条合并了）——ack 天然
+            # 失效，但**不算文件结构坏**（不新增 warning，免得用户做了正确的事反被提示）。
+            result["acks"].append({
+                "code": code, "keys": raw_keys, "resolved": resolved_unique,
+                "effective": False,
+                "reason": str(entry.get("reason") or ""),
+                "decided_at": str(entry.get("decided_at") or ""),
+            })
+            continue
+        if code == "near_duplicates" and (len(raw_keys) != 2 or len(resolved_unique) != 2):
+            result["problems"].append(
+                f"{label}：near_duplicates 必须恰好 2 个 key（实际 {len(raw_keys)}）")
+            continue
+        result["acks"].append({
+            "code": code, "keys": raw_keys, "resolved": resolved_unique,
+            "effective": True,
+            "reason": str(entry.get("reason") or ""),
+            "decided_at": str(entry.get("decided_at") or ""),
+        })
+        if code == "near_duplicates":
+            result["near_duplicates"].add(frozenset(resolved_unique))
+        else:
+            result["duplicate_content"].add(tuple(resolved_unique))
+    return result
 
 
 # ── 字段规范化（唯一实现：复用 slcn/bibnorm.py 的编辑规则） ─────────────────
@@ -2506,6 +2649,10 @@ class Store:
         pairs.sort()
         return pairs[:cap], len(pairs)
 
+    def _health_ignore(self) -> dict:
+        """本库的「已裁决为不同条目」sidecar（B-204；缺文件 = 空集，坏文件 fail-soft）。"""
+        return load_health_ignore(self.path, self._by_key, self._by_alias)
+
     def lint(self, *, with_records: bool = False) -> dict:
         """库体检：重复 key / 字段冲突 / 缺来源 / verified 无核实记录 / 摘要不符 …
         返回 `{"ok": bool, "errors": [...], "warnings": [...], "warning_items": [...],
@@ -2527,11 +2674,23 @@ class Store:
           · `warning_items` 是 warnings 的结构化镜像（大致同序）：每条
             `{code, registry, detail, action, count, keys_sample}`（冲突条目另带
             pending/resolved 拆分），供 GUI 按类下钻；`warnings` 字符串列表不变。
+
+        B-204 增补（人工裁决「两条不同条目」→ 不再提示；sidecar 见 `load_health_ignore`）：
+          · 读 `<库目录>/health-ignore.json`；缺文件 = 零变化、零新 warning；
+          · `near_duplicates`：命中的 pair 剔除，`counts.near_duplicates` 只计未 ack；
+            新增 `counts.near_duplicates_acknowledged`（被抑制 pair 数，仅审计）；
+            全被 ack 时该 warning 整条不出现（`counts.warnings` 相应减 1）；
+          · `duplicate_content`：一组内容相同的记录被 ack（keys 列全该组）→ 整组不提示；
+          · sidecar 坏 / version 不对 / key 解析不了 → **不抛异常、errors 仍 0**，只多一条
+            聚合 warning（`warning_items[].code="health_ignore"`，count = 问题数）。
         """
         errors: list[str] = list(self.problems)
         warnings: list[str] = []
         warning_items: list[dict] = []
         records = [record for record in self._records if isinstance(record, dict)]
+        health = self._health_ignore()
+        acked_pairs: set = health["near_duplicates"]
+        acked_groups: set = health["duplicate_content"]
         canonical_keys = set(self._by_key)
         sha_owner: dict[str, list[str]] = {}
         alias_owner: dict[str, list[str]] = {}
@@ -2621,8 +2780,12 @@ class Store:
                 unknown_types[etype] += 1
                 unknown_type_keys.setdefault(etype, []).append(key)
         # 内容完全重复（正常 upsert 不会产生；只可能是手工编辑/旧版本遗留）
+        # B-204：组内 key 升序集合与 sidecar 的 duplicate_content ack **完全一致**才整组
+        # 不提示（2 条组 = pair；3 条组必须 ack 列全 3 个 key；部分 ack 不抑制）。
         for owners in sha_owner.values():
             if len(owners) > 1:
+                if tuple(sorted(owners)) in acked_groups:
+                    continue
                 detail = f"内容完全相同的多条记录：{'、'.join(owners[:5])}"
                 warnings.append(detail)
                 _item("duplicate_content", "duplicates", detail,
@@ -2644,8 +2807,15 @@ class Store:
                 _item("alias_conflict", "alias", detail,
                       "改掉与 canonical key 重名的 alias（否则按 alias 查询有歧义）",
                       1, [alias], sorted(set(unique) | {alias}))
-        pairs, pair_total = self._near_duplicates(
-            records, cap=1000000 if with_records else 10)
+        # B-204：先取全量 pair，剔除 sidecar 已 ack 的（counts.near_duplicates 只计未 ack；
+        # 被抑制数另记 counts.near_duplicates_acknowledged，仅审计）。全被 ack 时整条
+        # warning 不出现（warnings 计数相应减 1），GUI「待处理 N」随之下降。
+        raw_pairs, _raw_total = self._near_duplicates(records, cap=1_000_000)
+        shown_pairs = [(first, second) for first, second in raw_pairs
+                       if frozenset((first, second)) not in acked_pairs]
+        pair_total = len(shown_pairs)
+        near_acked = len(raw_pairs) - pair_total
+        pairs = shown_pairs if with_records else shown_pairs[:10]
         if pair_total:
             sample = "；".join(f"{first}≈{second}" for first, second in pairs[:5])
             detail = (f"同一作品的多条记录（不同 key）{pair_total} 对：{sample}"
@@ -2723,6 +2893,19 @@ class Store:
             _item("unknown_entry_type", "unknown_entry_type", detail,
                   "按 bibcheck 的类型表改正 entry_type（多为笔误）",
                   count, unknown_type_keys.get(etype, []), unknown_type_keys.get(etype, []))
+        # B-204：sidecar 有问题时**只加一条聚合 warning**（fail-soft：lint error 仍 0，
+        # 坏条目忽略、好条目照常生效；未 ack 的告警照常输出）。
+        problems = health["problems"]
+        if problems:
+            summary = "；".join(problems[:5]) + ("……" if len(problems) > 5 else "")
+            detail = (f"已确认不同清单 `{os.path.basename(health['path'])}` 有 "
+                      f"{len(problems)} 处问题（相关条目未生效）：{summary}")
+            warnings.append(detail)
+            _item("health_ignore", "other", detail,
+                  "修正或删除库同目录的 health-ignore.json（缺文件 = 无效果；"
+                  "文件坏了不阻塞 lint，但 ack 可能不生效）",
+                  len(problems), [os.path.basename(health["path"])],
+                  [os.path.basename(health["path"])])
         counts = {
             "records": len(self._by_key),
             "raw_lines": len(records),
@@ -2737,6 +2920,8 @@ class Store:
             "conflicts_resolved": {"records": conflicts_resolved_records,
                                    "total": conflicts_resolved_total},
             "near_duplicates": pair_total,
+            # B-204：被 sidecar 抑制的 pair 数（审计；不影响「待办」口径）
+            "near_duplicates_acknowledged": near_acked,
         }
         return {"ok": not errors, "errors": errors[:200],
                 "warnings": warnings[:100], "warning_items": warning_items[:100],
