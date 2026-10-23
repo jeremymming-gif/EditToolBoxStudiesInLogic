@@ -248,16 +248,16 @@ def test_cli_multi_paths(tmp: str) -> None:
           "甲核实版" in fbib and "乙核实版" in fbib)
     check("④-4 日志写明「2 个文本 / 2 个路径」", "2 个文本 / 2 个路径" in p2.stdout)
 
-    st = json.load(open(os.path.join(stage, coop.STATE_NAME), encoding="utf-8"))
-    check("④-5 phase=done 且状态含 stats",
-          st["phase"] == "done" and "stats" in st)
+    # B-211：promote 成功后暂存目录被清理；状态文件不随交付，stats/阶段改由
+    # 交付目录里的协同记录与 stdout 摘要见证（state 本身已不可读）。
+    rec = _read(os.path.join(final, coop.RECORD_NAME))
+    check("④-5 交付成功：记录写明阶段 done 且暂存目录已清理",
+          "阶段：`done`" in rec and not os.path.exists(stage))
     check("④-6 stats：文献 2/2、未回填 0、低置信回复 0",
-          st["stats"]["bib_total"] == 2 and st["stats"]["bib_replied"] == 2
-          and st["stats"]["bib_pending"] == 0 and st["stats"]["low_replied"] == 0
-          and st["stats"]["low_applied"] == 0 and st["stats"]["low_pending_manual"] == 0,
-          str(st.get("stats")))
-    check("④-7 回填 digest 覆盖两个路径（与引擎现算一致）",
-          st["replies_sha256"] == coop.replies_digest(coop.load_reply_texts([r1, r2])))
+          "- 解析到 2 条，拒绝 0 条，未回填 0 条" in rec
+          and "- 接受 0 条，" in rec, rec[-700:])
+    check("④-7 两个路径的回填都进入交付记录（已接受键 k1、k2）",
+          "已接受键：k1、k2" in rec)
     check("④-8 最终摘要统一为「回填 x（未回填 y）；低置信回复 z（…）」",
           "回填：2 条（未回填 0 条）；低置信回复：0 条"
           "（可应用 0 条 / 仅记录待人工 0 条）" in p2.stdout, p2.stdout[-500:])
@@ -266,11 +266,16 @@ def test_cli_multi_paths(tmp: str) -> None:
     check("④-10 协同记录随交付进入最终目录",
           os.path.isfile(os.path.join(final, coop.RECORD_NAME)))
 
-    # 同一份回填（两个路径）重跑 → 幂等早退，且 digest 与「两文件」一致。
+    # B-211：交付成功后暂存目录（含状态）已清理 → 重跑必须明确拒绝，
+    # 绝不静默重交付或改写既有交付产物。
     p3 = _run(["--source", src, "--out", out, "--no-original",
                "--coop-replies", r1, "--coop-replies", r2])
-    check("④-11 同一多路径回填重跑幂等（退出 0、未重复应用）",
-          p3.returncode == 0 and "幂等" in p3.stdout, p3.stderr[-400:])
+    check("④-11 交付后重跑：明确拒绝（退出 2、指向暂存目录/第一段）且交付产物不变",
+          p3.returncode == 2
+          and ("找不到可续跑的协同初排暂存目录" in p3.stderr
+               or "请先运行第一段" in p3.stderr)
+          and _read(os.path.join(final, "reference.bib")) == fbib,
+          p3.stderr[-500:])
 
 
 # ── ⑤ CLI：0 文献回填 warning / stats / --coop-apply 计数 ─────────────────
@@ -295,12 +300,10 @@ def test_cli_zero_bib_warning(tmp: str) -> None:
           and "reference.bib 不会并入 AI 修订" in p2.stdout
           and "可能漏导入" in p2.stdout
           and "--coop-replies 可重复传多个文件/目录" in p2.stdout, p2.stdout[-700:])
-    st = json.load(open(os.path.join(stage, coop.STATE_NAME), encoding="utf-8"))
-    check("⑤-3 stats：文献 0/2 回填、低置信回复 1 条仅记录待人工",
-          st["stats"]["bib_total"] == 2 and st["stats"]["bib_replied"] == 0
-          and st["stats"]["bib_pending"] == 2 and st["stats"]["low_replied"] == 1
-          and st["stats"]["low_applied"] == 0 and st["stats"]["low_pending_manual"] == 1,
-          str(st.get("stats")))
+    rec = _read(os.path.join(final, coop.RECORD_NAME))
+    check("⑤-3 记录：文献 0/2 回填、低置信回复 1 条仅记录待人工",
+          "- 解析到 0 条，拒绝 0 条，未回填 2 条" in rec
+          and "- 接受 1 条，" in rec, rec[-700:])
     check("⑤-4 交付的 reference.bib 未被回填改动（0 条并入）",
           _read(os.path.join(final, "reference.bib")) == pret)
     check("⑤-5 最终摘要「回填：0 条（未回填 2 条）；低置信回复：1 条（可应用 0 / 待人工 1）」",
@@ -314,13 +317,16 @@ def test_cli_zero_bib_warning(tmp: str) -> None:
     stage2 = os.path.join(out2, "San_Zhang_待核")
     p5 = _run(["--source", src2, "--out", out2, "--no-original",
                "--coop-replies", reply, "--coop-apply"])
-    st2 = json.load(open(os.path.join(stage2, coop.STATE_NAME), encoding="utf-8"))
+    final2 = os.path.join(out2, "San_Zhang")
+    rec2 = _read(os.path.join(final2, coop.RECORD_NAME))
     check("⑤-6 --coop-apply 时 stats.low_applied=1、待人工 0",
-          "AI 补的题名" in _read(os.path.join(out2, "San_Zhang", "reference.bib"))
-          and st2["stats"]["low_applied"] == 1 and st2["stats"]["low_pending_manual"] == 0,
-          str(st2.get("stats")))
+          "AI 补的题名" in _read(os.path.join(final2, "reference.bib"))
+          and "低置信回复：1 条（可应用 1 条 / 仅记录待人工 0 条）" in p5.stdout
+          and "- `--coop-apply`：应用 **1** 条，待人工 0 条" in rec2
+          and not os.path.exists(stage2), p5.stdout[-500:])
     check("⑤-7 --coop-apply 后文献回填仍是 0（低置信应用不算文献回填）",
-          p4.returncode == 0 and p5.returncode == 0 and st2["stats"]["bib_replied"] == 0)
+          p4.returncode == 0 and p5.returncode == 0
+          and "- 解析到 0 条，拒绝 0 条，未回填 2 条" in rec2)
 
 
 # ── ⑥ CLI：ph2 --clean（交付目录不含中间文件；保留用户可见产物）────────────

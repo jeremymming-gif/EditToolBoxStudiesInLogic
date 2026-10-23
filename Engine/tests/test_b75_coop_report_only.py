@@ -598,12 +598,19 @@ def test_cli_ph2(tmp: str, head: str) -> None:
           and not [k for k in snapshot(_final(out)) if k.endswith(".ai前")],
           str({k for k in set(combo_products) | set(base_products)
                if combo_products.get(k) != base_products.get(k)}))
+    # B-211：交付成功后暂存目录（含状态）已清理 → 重跑必须明确拒绝，交付产物不动。
+    _final_before = snapshot(_final(out))
     r2 = _ph2(src, out, reply_c)
-    check("⑤-9 重跑幂等早退（报告是本工具产物，不被自己拦）",
-          r2.returncode == 0 and "幂等" in r2.stdout, (r2.stderr + r2.stdout)[-400:])
+    check("⑤-9 交付后重跑：明确拒绝（退出 2、指向暂存目录/第一段）且交付产物不变",
+          r2.returncode == 2
+          and ("找不到可续跑的协同初排暂存目录" in r2.stderr
+               or "请先运行第一段" in r2.stderr)
+          and snapshot(_final(out)) == _final_before,
+          (r2.stderr + r2.stdout)[-500:])
 
     # ⑤-10/11：B-140① 新旧基准对照（旧口径=整份任务书，新口径=附四之前）
-    tb = read(_taskbook(out))
+    # B-211：暂存目录已随交付清理；任务书随 promote 进入最终目录，从那里读。
+    tb = read(os.path.join(_final(out), f"{_STEM}_文献核实.md"))
     body_ev = "开头一段正文"
     for tag, ev, want in (("schema", _SCHEMA_EVIDENCE, "拒绝"),
                           ("instr", _INSTR_EVIDENCE, "拒绝"),

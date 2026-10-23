@@ -2437,6 +2437,21 @@ def promote_stage(stage_dir: str, final_dir: str, *,
             "excluded": sorted(exclude)}
 
 
+def cleanup_stage(stage_dir: str) -> bool:
+    """B-211：删除已交付的暂存目录。存在且删掉返回 True；不存在/失败返回 False（**不抛**）。
+
+    只在 `promote_stage()` **成功之后**调用（convert.py）：失败时保留暂存目录，
+    免得交付没成先把编辑的回填现场清掉。
+    """
+    try:
+        if not stage_dir or not os.path.isdir(stage_dir):
+            return False
+        shutil.rmtree(stage_dir)
+        return True
+    except Exception:  # noqa: BLE001  清理是收尾动作，任何意外都不许连累交付
+        return False
+
+
 # ── 预算闸（只约束直接 API 通道）─────────────────────────────────────────
 
 

@@ -1590,6 +1590,12 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     except OSError as e:
         print(f"   ⚠ 状态文件写入失败：{type(e).__name__}: {e}")
 
+    # B-211：交付成功后清理暂存目录（promote 成功才走得到这里；失败保留现场）。
+    if coop.cleanup_stage(stage_dir):
+        print(f"  暂存目录已清理：{stage_dir}")
+    else:
+        print(f"   ⚠ 暂存目录未清理（保留）：{stage_dir}")
+
     if promoted.get("backup"):
         print(f"   旧交付目录已备份：{os.path.basename(promoted['backup'])}")
     # 第五十六批：最终摘要统一为「x/y + 可应用/待人工」口径（数字全部来自状态 stats）。

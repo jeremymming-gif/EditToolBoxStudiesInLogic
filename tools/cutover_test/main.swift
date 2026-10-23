@@ -42,10 +42,27 @@ func readSource(_ rel: String) -> String {
 print("── (a) 删除临时文件 → cleantemp.py ──")
 let cleanTool = toolbox.appendingPathComponent("Engine/cleantemp.py").path
 check("(a) 生产源码里的 Engine/cleantemp.py 真的在", FileManager.default.fileExists(atPath: cleanTool))
-check("(a) argv：默认走**移入回收目录**（`--trash`，UI 方案第 3 件）",
+check("(a) argv：默认走**移入回收目录**（`--trash`，UI 方案第 3 件；默认模式 aux）",
       DeleteTempFeature.arguments(folderPath: "/期 90") == ["--folder", "/期 90", "--trash"])
 check("(a) 老行为（直接删）仍可拼出来：`trash: false` 时不带 `--trash`",
       DeleteTempFeature.arguments(folderPath: "/期 90", trash: false) == ["--folder", "/期 90"])
+// B-211：三模式 argv（契约见 spec §3；新模式默认先入回收站，故不带 --trash）
+check("(a) 显式 aux 模式与默认逐字节一致",
+      DeleteTempFeature.arguments(folderPath: "/期 90", mode: .aux)
+      == ["--folder", "/期 90", "--trash"])
+check("(a) delivery：`--folder <目录> --mode delivery`",
+      DeleteTempFeature.arguments(folderPath: "/期 90", mode: .delivery)
+      == ["--folder", "/期 90", "--mode", "delivery"])
+check("(a) workspace：`--folder <目录> --mode workspace`",
+      DeleteTempFeature.arguments(folderPath: "/期 90", mode: .workspace)
+      == ["--folder", "/期 90", "--mode", "workspace"])
+check("(a) 清空回收站：`--folder <目录> --empty-trash`",
+      DeleteTempFeature.emptyTrashArguments(folderPath: "/期 90")
+      == ["--folder", "/期 90", "--empty-trash"])
+check("(a) 三种模式的 rawValue / 中文标题符合契约",
+      DeleteTempFeature.CleanMode.allCases.map(\.rawValue) == ["aux", "delivery", "workspace"]
+      && DeleteTempFeature.CleanMode.allCases.map(\.title)
+      == ["编译临时文件", "交付收尾（白名单）", "工作区旧件（每期留最新合并 PDF）"])
 check("(a) 撤销：`--folder <目录> --restore <回收目录>`",
       DeleteTempFeature.restoreArguments(folderPath: "/期 90", trashDir: "/期 90/.toolbox-trash/1")
       == ["--folder", "/期 90", "--restore", "/期 90/.toolbox-trash/1"])
@@ -61,11 +78,26 @@ check("(a) Swift 侧**不再自带**后缀清单（`suffixes = [...]` 已随逻�
 check("(a) Swift 侧**不再**直接删文件（没有 `removeItem`）", !cleanSrc.contains("removeItem"))
 check("(a) 界面对话框说清「可撤销」且按钮是动词（不是「确定吗」）",
       cleanSrc.contains("移入回收目录") && cleanSrc.contains("可撤销"))
-check("(a) 横幅上的「撤销清理」接在删除页（`onUndo`）",
-      readSource("Views/MainWindow.swift").contains("undoTitle: \"撤销清理\"")
-      && readSource("Views/MainWindow.swift").contains("DeleteTempFeature.restore"))
-check("(a) 界面调用点未变（`SimpleTab` 里仍是 `DeleteTempFeature.run(folderPath:log:)`）",
-      readSource("Views/MainWindow.swift").contains("DeleteTempFeature.run(folderPath: path, log: logger)"))
+check("(a) 三模式确认框各说各的关键话：白名单/闭包、每期只留最新合并 PDF、固定交付物不动",
+      cleanSrc.contains("白名单") && cleanSrc.contains("引用闭包")
+      && cleanSrc.contains("合并*.pdf") && cleanSrc.contains("固定交付物"))
+check("(a) 清空回收站确认框说清「不可撤销」「永久」",
+      cleanSrc.contains("清空回收站（不可撤销）") && cleanSrc.contains("永久清空"))
+check("(a) 界面接线：MainWindow 用 CleanTempView，并把 run/emptyTrash/restore/lastTrashDir 都接上",
+      readSource("Views/MainWindow.swift").contains("CleanTempView(")
+      && readSource("Views/MainWindow.swift")
+          .contains("DeleteTempFeature.run(folderPath: path, mode: mode, log: logger)")
+      && readSource("Views/MainWindow.swift")
+          .contains("DeleteTempFeature.emptyTrash(folderPath: path, log: logger)")
+      && readSource("Views/MainWindow.swift").contains("DeleteTempFeature.restore")
+      && readSource("Views/MainWindow.swift").contains("DeleteTempFeature.lastTrashDir"))
+check("(a) 页面有模式 Picker、清空回收站按钮、撤销清理按钮（CleanTempView）",
+      readSource("Views/CleanTempView.swift").contains("Picker(")
+      && readSource("Views/CleanTempView.swift").contains("清空回收站…")
+      && readSource("Views/CleanTempView.swift").contains("撤销清理"))
+check("(a) 清空回收站后**不给**撤销（否则会把整个目录搬回去）",
+      readSource("Views/CleanTempView.swift").contains("allowUndo: false")
+      && readSource("Views/CleanTempView.swift").contains("canUndo = allowUndo && ok"))
 
 // ── (a2) 完成横幅：契约行 → 状态 + 产物路径（UI 方案第 1 件，mac 侧）────────────
 print("── (a2) 完成横幅：从契约行抠产物路径 ──")

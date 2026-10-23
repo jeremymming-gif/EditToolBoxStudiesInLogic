@@ -42,7 +42,7 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 检查 tex 信息 | 查 tex 里编辑关心的字段是否齐（并核对 PDF 实际页数） | `sources-mac/Features/InfoCheckFeature.swift` |
 | 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） | `sources-mac/Features/CompileFeature.swift` |
 | 生成目录 | 按模板继承生成中英文目录（条目断行/栏目行在引擎侧） | `sources-mac/Features/TocFeature.swift`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
-| 删除临时文件 | 清编译中间文件（与 `slcn/clean.py` 逐项一致） | `sources-mac/Features/DeleteTempFeature.swift` |
+| 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest v2，`--restore` 撤销、`--empty-trash` 清空） | `sources-mac/Features/DeleteTempFeature.swift`、`Engine/cleantemp.py`、`Engine/slcn/clean.py` |
 | 本期出刊 | 一个入口按顺序跑五步（①检查tex信息 ②生成目录 ③编译全部 ④目录 PDF 落位 ⑤合并整期 PDF）；致命错误即中止，退出码 1 = 橙色警告并继续（规则在引擎侧，见 `Engine/publish.py` 抬头） | `sources-mac/Features/PublishFeature.swift`、`Engine/publish.py` |
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |

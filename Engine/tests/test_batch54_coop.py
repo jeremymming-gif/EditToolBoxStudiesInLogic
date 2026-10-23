@@ -394,8 +394,10 @@ def test_multi_field_suggestions(tmp: str) -> None:
     check("④-14 --coop-apply 按 (id, field) 计数：已应用 3 条",
           "已应用 3 条" in p2.stdout)
 
+    # B-211：promote 成功后暂存目录被清理，建议/记录等产物随交付进入最终目录
+    # （`_AI协同状态.json` 除外）。
     sug_lines = [json.loads(ln) for ln in
-                 _read(os.path.join(stage, "San_Zhang_AI建议.jsonl")).splitlines() if ln.strip()]
+                 _read(os.path.join(fin, "San_Zhang_AI建议.jsonl")).splitlines() if ln.strip()]
     accepted = [x for x in sug_lines if x.get("status") == "accepted"]
     check("④-15 建议 jsonl 每个 field 一行",
           len(accepted) == 3
@@ -410,6 +412,8 @@ def test_multi_field_suggestions(tmp: str) -> None:
           backups == ["reference.bib.ai前"] and _read(fb + ".ai前") == pre)
     check("④-18 restore_bib_backup 恢复为应用前",
           coop.restore_bib_backup(fb) and _read(fb) == pre)
+    check("④-19 promote 成功后暂存目录已清理（失败才保留）",
+          not os.path.exists(stage))
 
 
 # ── ⑥ 原子 promote ────────────────────────────────────────────────────────
@@ -580,22 +584,32 @@ def test_cli_coop_flow(tmp: str) -> None:
           "甲核实版" in fbib and "乙核实版" in fbib)
     check("⑧-14 状态文件不随交付进入最终目录",
           not os.path.exists(os.path.join(final, coop.STATE_NAME)))
-    st2 = json.load(open(os.path.join(stage, coop.STATE_NAME), encoding="utf-8"))
-    check("⑧-15 ph2 后状态 phase=done", st2["phase"] == "done")
+    # B-211：状态文件不随交付且成功后暂存目录被清理；phase=done 的可见证据是
+    # 交付目录里的协同记录（记录写于 promote 之后，仍进最终目录）。
+    rec = _read(os.path.join(final, coop.RECORD_NAME))
+    check("⑧-15 ph2 交付记录写明 phase=done 且成功后暂存目录已清理",
+          "阶段：`done`" in rec and not os.path.exists(stage))
 
     before = _sha(os.path.join(final, "reference.bib"))
     p3 = _run(["--source", src, "--out", out, "--coop-replies", replies, "--no-original"])
-    check("⑧-16 重复 ph2 幂等（退出 0、明说未重复应用）",
-          p3.returncode == 0 and "幂等" in p3.stdout)
+    # B-211：交付成功后暂存目录已清理 → 重跑明确拒绝，不静默重交付。
+    check("⑧-16 交付后重复 ph2：明确拒绝续跑（退出 2、指向第一段）",
+          p3.returncode == 2
+          and ("找不到可续跑的协同初排暂存目录" in p3.stderr
+               or "请先运行第一段" in p3.stderr), (p3.stderr + p3.stdout)[-500:])
     check("⑧-17 重复 ph2 不改交付产物", _sha(os.path.join(final, "reference.bib")) == before)
 
-    # 指纹不符：源稿改一个字节 → 拒绝续跑，最终目录不动
+    # 指纹不符：按原稿重新初排（暂存目录回来）→ 源稿改一个字节 → ph2 拒绝续跑，
+    # 最终目录不动、暂存目录保留（失败路径不清理）。
+    p1b = _run(["--source", src, "--bib", bib, "--out", out, "--author", "张三",
+                "--no-original", "--verify-refs", "--no-ai-merge", "--coop-taskbook-only"])
     _write(src, _TEX + "\n% changed\n")
     p4 = _run(["--source", src, "--out", out, "--coop-replies", replies, "--no-original"])
-    check("⑧-18 源稿变了 ph2 退出 2", p4.returncode == 2)
+    check("⑧-18 源稿变了 ph2 退出 2", p1b.returncode == 0 and p4.returncode == 2)
     check("⑧-19 指纹不符时明说『不一致』", "不一致" in p4.stderr or "不一致" in p4.stdout)
-    check("⑧-20 指纹不符时最终产物一个字节不动",
-          _sha(os.path.join(final, "reference.bib")) == before)
+    check("⑧-20 指纹不符时最终产物一个字节不动且暂存目录保留",
+          _sha(os.path.join(final, "reference.bib")) == before
+          and os.path.isdir(stage))
 
 
 def test_cli_coop_failures_and_apply(tmp: str) -> None:

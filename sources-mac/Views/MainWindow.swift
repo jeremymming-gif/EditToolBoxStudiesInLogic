@@ -141,30 +141,23 @@ struct MainWindow: View {
         }
     }
 
-    /// 删除临时文件：**先确认、再移入 .toolbox-trash（可撤销）**，不再直接删；
+    /// 删除临时文件（B-211）：模式选择 + 运行 / 撤销 / 清空回收站。
+    /// 三种模式都**先确认、再移入 .toolbox-trash（可撤销）**，不再直接删；
     /// 跑完横幅上有「撤销清理」，把文件搬回原处（引擎侧保证不覆盖已有文件）。
     private var cleanPage: some View {
-        SimpleTab(
-            help: """
-            使用说明：输入路径，例如：
-            …/Studies_in_Logic_Database/2026年第5期(90)
-
-            点击运行会先确认，再把此文件夹内及子文件夹内的临时文件
-            移入同目录的 .toolbox-trash/（可撤销，不会直接删掉）：
-            .aux, .bbl, .bcf, .blg, .out, .run.xml, .synctex.gz, .DS_Store
-            不会动 .tex / .pdf / .sty / .bib / .log，也不进 original/（作者来稿）。
-            在更换设备并要修改 tex 或 bib 时使用，避免编译出现问题。
-            """,
-            pickKind: .directory,
+        CleanTempView(
             log: log,
-            action: { path, logger in
-                DeleteTempFeature.run(folderPath: path, log: logger)
+            run: { path, mode, logger in
+                DeleteTempFeature.run(folderPath: path, mode: mode, log: logger)
             },
-            undoTitle: "撤销清理",
-            onUndo: { folder, trashDir in
+            emptyTrash: { path, logger in
+                DeleteTempFeature.emptyTrash(folderPath: path, log: logger)
+            },
+            undo: { folder, trashDir in
                 DeleteTempFeature.restore(folderPath: folder, trashDir: trashDir,
                                           log: Logger(store: log))
-            }
+            },
+            lastTrashDir: { DeleteTempFeature.lastTrashDir(folderPath: $0) }
         )
     }
 }

@@ -692,10 +692,17 @@ def test_cli_ph2(tmp: str) -> None:
     check("⑤-17 --coop-apply + 附四 → 仍不产生 .ai前",
           not [k for k in applied_products if k.endswith(".ai前")])
 
-    # ④ 重跑幂等：报告是本工具产物，不被「非本工具文件」拦下
+    # ④ B-211：交付成功后暂存目录（含状态）已清理 → 重跑明确拒绝，
+    # 不静默重交付、不改交付产物（报告本身已是最终目录里的本工具产物）。
+    _final_before = snapshot(_final(out))
     r3 = _ph2(src, out, ana_reply)
-    check("⑤-18 重跑 --coop-replies 幂等早退（不因自己报告被拦）",
-          r3.returncode == 0 and "幂等" in r3.stdout, (r3.stderr + r3.stdout)[-500:])
+    check("⑤-18 交付后重跑：明确拒绝（退出 2、指向暂存目录/第一段）且交付产物一个字节不动",
+          r3.returncode == 2
+          and ("找不到可续跑的协同初排暂存目录" in r3.stderr
+               or "请先运行第一段" in r3.stderr)
+          and snapshot(_final(out)) == _final_before, (r3.stderr + r3.stdout)[-500:])
+    check("⑤-19 promote 成功后暂存目录已清理（失败才保留）",
+          not os.path.exists(_stage(out)))
 
 
 # ── ⑥ CLI：仅附四回复不触发「回复全部无效」──────────────────────────────
