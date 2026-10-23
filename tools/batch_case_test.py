@@ -587,6 +587,20 @@ def bib_stats(text: str) -> dict:
     }
 
 
+def bib_entry_meta(text: str) -> list[tuple[str, dict]]:
+    """`.bib` 的 (键, 字段 dict)——B-200 同作品键归并用（author/year/title 等）。"""
+    out: list[tuple[str, dict]] = []
+    for _etype, key, body in bib_entries_with_keys(text):
+        if not key:
+            continue
+        try:
+            fields = {name.lower(): value for name, value in _bib_parse_fields(body)}
+        except ValueError:  # 引号未闭合等异常字段：跳过该条（不阻断）
+            continue
+        out.append((key, fields))
+    return out
+
+
 def log_stats(text: str) -> dict:
     """xelatex .log 判据：! 错误 / undefined / 缺字符 / 页数 / overfull。"""
     errors = re.findall(r"^! (.+)$", text, re.M)
@@ -706,9 +720,33 @@ L1_META_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
+# 题名归一（B-200）：产物把版次并入题名（87-1 `Topology, (2nd)`；89-06 `..., (Second
+# edition)`）、源清单常带外层 `{}`；只剥「逗号+尾部括号」与包裹花括号，不做子串匹配；
+# `missing` 保留原始题名 + `missing_raw` 双列复核。
+_VERSION_TAIL_RE = re.compile(r"(?:[,，]\s*[\(（][^)）]*[\)）]|[（][^）]*[）])\s*$")
+_TRANSLATOR_LINE_RE = re.compile(r"^[\u4e00-\u9fff·・、，,．.\s]{1,40}译$")
+
+
+def _strip_outer_braces(s: str) -> str:
+    t = (s or "").strip()
+    while len(t) > 1 and t[0] == "{" and t[-1] == "}":
+        t = t[1:-1].strip()
+    return t
+
+
+def is_translator_line(s: str) -> bool:
+    """译著清单里的「译者行」（90-06「周煦良、汤永宽译」「方敬译」）——不是独立作品。"""
+    t = _strip_outer_braces(s)
+    if not t or "《" in t or re.search(r"(?:19|20)\d{2}", t):
+        return False
+    return bool(_TRANSLATOR_LINE_RE.match(t))
+
+
 def norm_title(s: str) -> str:
-    """题名集合覆盖用的归一化：去 LaTeX 命令/转义/标点/空白并统一大小写。"""
-    t = re.sub(r"\\[a-zA-Z]+\*?\s*", "", s or "")
+    """题名集合覆盖用的归一化：剥外层 `{}` 与尾部版次括号，去命令/标点/空白并统一大小写。"""
+    t = _strip_outer_braces(s)
+    t = _VERSION_TAIL_RE.sub("", t).strip()
+    t = re.sub(r"\\[a-zA-Z]+\*?\s*", "", t)
     t = re.sub(r"[{}\\\"'`~^_$&%#]", "", t)
     t = re.sub(r"[\s\u3000]+", "", t)
     t = re.sub(r"[，。、；：！？（）【】《》,.;:!?()\[\]<>-]", "", t)
@@ -716,11 +754,23 @@ def norm_title(s: str) -> str:
 
 
 def title_coverage(src_titles: list[str], product_titles: list[str]) -> dict:
-    """源参考文献清单题名 → 产物 bib 题名集合覆盖（归一化后精确比对，缺哪条必报）。"""
+    """源清单题名 → 产物 bib 题名覆盖（归一化后精确比对，缺哪条必报）。B-200：译者行
+    不算缺条但显式列进 `translator_lines`；`missing_raw` 保留原题名供复核。"""
     have = {norm_title(t) for t in product_titles if norm_title(t)}
-    missing = [t for t in src_titles if norm_title(t) and norm_title(t) not in have]
+    missing: list[str] = []
+    translator: list[str] = []
+    for t in src_titles:
+        n = norm_title(t)
+        if not n:
+            continue
+        if is_translator_line(t):
+            translator.append(t)
+            continue
+        if n not in have:
+            missing.append(t)
     return {"total": len(src_titles), "covered": len(src_titles) - len(missing),
-            "missing": missing, "missing_n": len(missing)}
+            "missing": missing, "missing_raw": list(missing), "missing_n": len(missing),
+            "translator_lines": translator}
 
 
 def placeholder_fields(tex_text: str, macros: dict | None = None) -> dict[str, list[str]]:
@@ -761,10 +811,31 @@ def _read_text_safe(path: Path) -> str:
         return ""
 
 
+def _parse_lncs_bibitem(tail: str) -> str | None:
+    """LNCS 体例 `\\bibitem` → 题名（89-05 型「作者, 首字母.: 题名. 期刊 卷(期), 页码 (年)」）：
+    只认作者段后的第一个 `: `、题名到第一个句点；失败返回 None（调用方计 unparsed，不产碎片）。"""
+    s = re.sub(r"\s+", " ", (tail or "").split("\\end{thebibliography}")[0]).strip()
+    m = re.search(r":\s+", s)
+    if not m:
+        return None
+    body = s[m.end():].strip()
+    if not body:
+        return None
+    title = re.split(r"\.\s+", body, maxsplit=1)[0].strip()
+    title = re.sub(r"\((?:19|20)\d{2}\)\s*$", "", title).strip()
+    title = re.sub(r"\\[a-zA-Z]+\*?\s*", "", title)
+    title = title.replace("{", "").replace("}", "")
+    title = re.sub(r"\s+", " ", title).strip(" ,.;:")
+    if len(title) < 4 or not re.search(r"[A-Za-z\u4e00-\u9fff]", title):
+        return None
+    return title
+
+
 def _tex_source_list(source: Path, workspace: Path | None) -> tuple[list[str], int, list[str]]:
     """LaTeX 通道源参考文献清单：源目录/工作区里的 .bib（题名）+ .tex 里的 `\\bibitem`。
 
-    返回 (题名列表, 未识别行数, 来源说明)。找不到任何清单 → 空列表 + 来源写明「未识别/需人工」。
+    返回 (题名列表, 未识别行数, 来源说明)。B-200：**源目录没有 .bib 时** `\\bibitem` 走
+    LNCS 分支；有 .bib 的混合稿（86-05）逐项保留既有口径。
     """
     roots: list[Path] = [source.parent]
     if workspace is not None and workspace != source.parent:
@@ -773,6 +844,7 @@ def _tex_source_list(source: Path, workspace: Path | None) -> tuple[list[str], i
     titles: list[str] = []
     sources: list[str] = []
     unparsed = 0
+    has_bib = False
     for root in roots:
         try:
             bibs = sorted(p for pat in SRC_BIB_SEARCH_GLOBS for p in root.glob(pat))
@@ -787,6 +859,7 @@ def _tex_source_list(source: Path, workspace: Path | None) -> tuple[list[str], i
                 continue
             titles.extend(bib_stats(text).get("titles") or [])
             sources.append(str(p))
+            has_bib = True
     tex = _read_text_safe(source)
     blocks = re.split(r"(?=\\bibitem\s*(?:\[[^\]]*\])?\s*\{)", tex)
     for block in blocks:
@@ -796,6 +869,14 @@ def _tex_source_list(source: Path, workspace: Path | None) -> tuple[list[str], i
         tail = block[m.end():].strip()
         if not tail:
             unparsed += 1
+            continue
+        sources.append(f"{source.name}:\\bibitem")
+        if not has_bib:
+            title = _parse_lncs_bibitem(tail)
+            if title:
+                titles.append(title)
+            else:
+                unparsed += 1
             continue
         line = re.sub(r"\s+", " ", tail.split("\\bibitem")[0]).strip()
         try:
@@ -807,12 +888,86 @@ def _tex_source_list(source: Path, workspace: Path | None) -> tuple[list[str], i
             titles.append(e.title)
         else:
             unparsed += 1
-        sources.append(f"{source.name}:\\bibitem")
     dedup: list[str] = []
     for t in titles:
         if norm_title(t) not in {norm_title(x) for x in dedup}:
             dedup.append(t)
     return dedup, unparsed, sorted(set(sources))
+
+
+# ── B-200：源引用键 ↔ 产物 bib 键「同作品」归并（作者姓+年+题名相似 ≥0.9，唯一候选）
+CITE_SAME_WORK_MIN = 0.9
+
+
+def _author_surname(a: str) -> str:
+    """第一作者姓（与 engine `RefEntry.surname` 同口径）：中文取首字，西文取逗号前/末词。"""
+    a = re.sub(r"^(?:cf\.|see|参见|见)\s*", "", (a or "").strip(), flags=re.I)
+    a = re.split(r"\s+and\s+", a, maxsplit=1)[0].strip()
+    if not a:
+        return ""
+    if re.match(r"^[\u4e00-\u9fff]", a):
+        return a[0]
+    head = re.split(r"[,，]", a)[0].strip()
+    return head if head != a and not re.fullmatch(r"(?:[A-Z]\.?\s*)+", head) else (a.split() or [head])[-1]
+
+
+def _same_work_title_sim(a: str, b: str) -> float:
+    """题名相似度（同 engine `_norm_fp` 口径；一方为另一方前缀=同作品+出处尾注，记 1.0；其余复用
+    `Engine/slcn/footnotes.py::_title_similarity`）。"""
+    na = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", norm_title(a))
+    nb = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", norm_title(b))
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    short, long = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(short) >= 8 and long.startswith(short):
+        return 1.0
+    try:
+        from slcn.footnotes import _title_similarity
+        return float(_title_similarity(a, b))
+    except Exception:  # noqa: BLE001 —— 引擎不可用时退回本地同口径
+        import difflib
+        return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def merge_same_work_cites(cite_missing: list[str], src_entries: dict[str, dict],
+                          prod_entries: list[tuple[str, dict]]) -> tuple[list[str], list[dict]]:
+    """同作品异键归并：作者姓+年相同、题名相似 ≥0.9、**候选唯一**才合并（返回仍缺的键与
+    `cite_merged` 记录；无候选/多候选的真实缺口原样保留，不掩盖）。"""
+    still: list[str] = []
+    merged: list[dict] = []
+    for key in cite_missing:
+        se = src_entries.get(key) or {}
+        sy, sa, st = (str(se.get("year") or ""), str(se.get("author") or ""),
+                      str(se.get("title") or ""))
+        cands: list[tuple[float, str]] = []
+        if sy and sa and st:
+            s_surname = _author_surname(sa).lower()
+            for pkey, pe in prod_entries:
+                if str(pe.get("year") or "") != sy:
+                    continue
+                if _author_surname(str(pe.get("author") or "")).lower() != s_surname:
+                    continue
+                score = _same_work_title_sim(st, str(pe.get("title") or ""))
+                if score >= CITE_SAME_WORK_MIN:
+                    cands.append((round(score, 3), pkey))
+        if len(cands) == 1:
+            merged.append({"from": key, "to": cands[0][1], "score": cands[0][0]})
+        else:
+            still.append(key)
+    return still, merged
+
+
+def _is_citable_bib_entry(raw: str, entry: dict) -> bool:
+    """B-200 第 4 修（R1）：只排除议论性脚注伪条目——raw >200 字且 author 明显是散文
+    （>120 字符或 >20 词），如 88-06 Anscombre2021。doc.bib_entries 的 raw 对普通脚注常只是
+    题名/短引（90-01 Ayer1946 raw="Language"），不能按 raw 年份推断；其余结构化条目一律保留。"""
+    raw = (raw or "").strip()
+    author = str(entry.get("author") or "").strip()
+    if len(raw) > 200 and author and (len(author) > 120 or len(author.split()) > 20):
+        return False
+    return True
 
 
 def source_metrics(src: Path, channel: str, workspace: Path | None,
@@ -824,6 +979,7 @@ def source_metrics(src: Path, channel: str, workspace: Path | None,
     l1: dict = {"ok": False, "channel": channel, "source": str(src), "notes": [],
                 "cite_keys": [], "cite_keys_n": 0, "cite_total": 0,
                 "cite_body_missing": [], "cite_missing": [], "cite_unresolved": [],
+                "cite_merged": [], "entry_keys_excluded": [],
                 "unmatched_citations": [], "unmatched_n": 0,
                 "note_markers": 0, "note_citation_entries": 0,
                 "ref_titles": [], "ref_titles_n": 0, "ref_expected_n": 0,
@@ -854,11 +1010,25 @@ def source_metrics(src: Path, channel: str, workspace: Path | None,
             body_cites = body_cites_all - placeholder_cites
             ref_titles = [r.title for r in doc.refs if getattr(r, "title", "")]
             note_entries = [k for k, _e, raw in doc.bib_entries if (raw or "").strip()]
-            entry_keys = {k for k, _e, _raw in doc.bib_entries
+            # B-200 第 4 修：议论性脚注不产源引用键（88-06 伪键 Anscombre2021 型）；
+            # 被排除的键显式落 `entry_keys_excluded`（不静默丢）。
+            citable = [t for t in doc.bib_entries if _is_citable_bib_entry(t[2], t[1])]
+            entry_keys_excluded = [k for k, e, raw in doc.bib_entries
+                                   if k and not re.fullmatch(r"ref\d+", k or "")
+                                   and not _is_citable_bib_entry(raw, e)]
+            entry_keys = {k for k, _e, _raw in citable
                           if k and not re.fullmatch(r"ref\d+", k or "")}
+            src_entries = {k: e for k, e, _raw in citable if k}
+            for r in doc.refs:
+                if getattr(r, "key", "") and getattr(r, "title", ""):
+                    src_entries.setdefault(r.key, {"author": r.author, "title": r.title,
+                                                   "year": r.year})
             numbered = dict(doc.ref_key_by_num or {})
             numbered_keys = {k for k in numbered.values()
                              if k and not re.fullmatch(r"ref\d+", k or "")}
+            # 伪键（议论性脚注）连正文链接键一起剔除；真实缺口（88-02 Novaes2018）不排除
+            excluded_keys = {k for k in entry_keys_excluded if k}
+            cite_keys = (body_cites | numbered_keys | entry_keys) - excluded_keys
             # 未识别行数：编号清单通道按 `[N]` 标记与已解析编号的差；人年制通道用引擎 warning 数字
             marks = [int(n) for n in re.findall(r"^\s*\[(\d+)\]", "\n".join(doc.ref_raw_lines))]
             numbered_unresolved = len([n for n in marks if n not in numbered])
@@ -873,14 +1043,16 @@ def source_metrics(src: Path, channel: str, workspace: Path | None,
                                len(doc.ref_raw_lines) if unparsed else 0)
             l1.update({
                 "doc_kind": "docx",
-                # 源引用键：正文链接键 ∪ 编号清单已解析键 ∪ 脚注文献条目键（refNN 占位符不算）
-                "cite_keys": sorted(body_cites | numbered_keys | entry_keys),
+                # 源引用键：正文链接键 ∪ 编号清单已解析键 ∪ 脚注文献条目键（refNN 占位符不算；
+                # B-200 议论性脚注伪键剔除）
+                "cite_keys": sorted(cite_keys),
                 "cite_total": len(body_cites) + len(numbered_keys),
                 "cite_unresolved": sorted(placeholder_cites),
                 "unmatched_citations": unmatched[:40],
                 "unmatched_n": len(unmatched),
                 "note_markers": int(doc.n_footnotes or 0),
                 "note_citation_entries": len(note_entries),
+                "entry_keys_excluded": entry_keys_excluded,
                 "ref_titles": ref_titles,
                 "ref_expected_n": ref_expected,
                 "ref_numbered_n": len(numbered),
@@ -911,6 +1083,15 @@ def source_metrics(src: Path, channel: str, workspace: Path | None,
                 body = text
             body_cites = set(_cited_keys(body))
             ref_titles, unparsed, ref_sources = _tex_source_list(src, workspace)
+            # B-200 同作品映射的源侧元数据：源目录/工作区的 .bib 键 → 字段
+            src_entries: dict[str, dict] = {}
+            for _root in [src.parent] + ([workspace] if workspace and workspace != src.parent else []):
+                try:
+                    for _p in sorted(q for pat in SRC_BIB_SEARCH_GLOBS for q in _root.glob(pat)):
+                        for _k, _fields in bib_entry_meta(_read_text_safe(_p)):
+                            src_entries.setdefault(_k, _fields)
+                except OSError:
+                    pass
             l1.update({
                 "doc_kind": "tex",
                 "cite_keys": sorted(body_cites),
@@ -943,6 +1124,18 @@ def source_metrics(src: Path, channel: str, workspace: Path | None,
     prod_titles = bib_stats(product_bib).get("titles") if product_bib else []
     l1["cite_body_missing"] = sorted(set(l1["cite_keys"]) - prod_cites)
     l1["cite_missing"] = sorted(set(l1["cite_keys"]) - prod_bib_keys)
+    if l1["cite_missing"]:
+        # B-200 第 3 修：同作品异键（90-06 Wolf1987→Susan1987、88-02 Garson2013a→
+        # Garson2013）按作者姓+年+题名相似 ≥0.9、唯一候选归并；真实缺口原样保留。
+        still, merged = merge_same_work_cites(
+            l1["cite_missing"], src_entries,
+            bib_entry_meta(product_bib) if product_bib else [])
+        l1["cite_missing"] = still
+        l1["cite_merged"] = merged
+        if merged:
+            l1["notes"].append("同作品键合并 %d 条：%s" % (
+                len(merged),
+                "、".join(f"{m['from']}→{m['to']}({m['score']})" for m in merged)))
     prodtitles = prod_titles or []
     if l1.get("ref_numbered_n") and not l1["ref_titles"]:
         # 编号清单通道：题名不可得，按引擎解析出的 bib 键做条数/键覆盖比对（不猜题名）
@@ -2231,6 +2424,10 @@ def render_report(run: dict) -> str:
                  "没有 / 产物正文引用命令里没有（后者可能保留为脚注/未识别，显式列出）；「源清单」= 源参考"
                  "文献清单题名数；「缺」= 产物 `reference.bib` 缺的题名（L1.3，缺哪条必报）；"
                  "「未识别行」= 源清单里解析不出的行（显式交人工，不静默）。")
+    lines.append("B-200 附注：题名比对已归一（剥尾部版次/外层花括号）；`\\bibitem` 已按 LNCS 体例感知解析"
+                 "（`.bib`+`\\bibitem` 混合稿保留旧口径）；同作品异键已按 author+year+title 相似 ≥0.9、"
+                 "唯一候选归并（`cite_merged`，from/to/score 可核）；议论性脚注不产源引用键"
+                 "（`entry_keys_excluded` 显式列出）。")
     lines.append("")
     lines.append("| 案例 | 通道 | 源引用 n | 未覆盖(正文/bib) | 源脚注 n | 源清单 n | 缺 | 未识别行 | 元数据提取率 | 源清单来源 |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
@@ -2386,12 +2583,18 @@ def render_report(run: dict) -> str:
         l1 = m.get("l1") or {}
         if l1.get("ok"):
             cov = l1.get("ref_coverage") or {}
+            merged = l1.get("cite_merged") or []
+            merged_txt = (f"；同作品合并 {len(merged)} 条（"
+                          + "、".join(f"{x.get('from')}→{x.get('to')}" for x in merged[:4])
+                          + "）") if merged else ""
+            trans = cov.get("translator_lines") or []
+            trans_txt = f"；译者行 {len(trans)}（不报缺）" if trans else ""
             lines.append(f"- L1 源稿：引用键 {l1.get('cite_keys_n', 0)}（未覆盖正文 "
                          f"{len(l1.get('cite_body_missing') or [])} / bib 缺 "
-                         f"{len(l1.get('cite_missing') or [])}）；源脚注 "
+                         f"{len(l1.get('cite_missing') or [])}）{merged_txt}；源脚注 "
                          f"{_fmt(l1.get('note_markers'))}；源清单 {l1.get('ref_titles_n', 0)} 条"
                          f"（缺 {_fmt(cov.get('missing_n'))} / 未识别 "
-                         f"{_fmt(l1.get('unparsed_ref_lines'))} 行）；元数据提取率 "
+                         f"{_fmt(l1.get('unparsed_ref_lines'))} 行{trans_txt}）；元数据提取率 "
                          f"{_fmt(l1.get('meta_rate'))}；占位符类型 "
                          f"{json.dumps(l1.get('meta_placeholder') or {}, ensure_ascii=False)}")
         elif l1:
@@ -3065,6 +3268,98 @@ def run_self_test() -> int:
               and title_coverage(["Alpha Title", "Beta Book"],
                                  ["alpha title"])["missing_n"] == 1)
 
+        # ── B-200：L1 口径四修（全部合成 fixture，不读真实稿）──
+        tc = title_coverage
+        check("B-200a：版次并入产物题名不报缺（仅剥「逗号+尾部括号」）",
+              tc(["Topology"], ["Topology, (2nd)"])["missing_n"] == 0
+              and tc(["An Introduction to Decision Theory"],
+                     ["An Introduction to Decision Theory, (Second edition)"])["missing_n"] == 0
+              and tc(["题名"], ["题名（第二版）"])["missing_n"] == 0
+              and tc(["Topology"], ["Topology (2nd)"])["missing_n"] == 1)
+        check("B-200b：源清单外层 {} 不报缺（{X} vs X；双层包裹+版次）",
+              tc(["{Principles of Neural Science}"], ["Principles of Neural Science"])["missing_n"] == 0
+              and tc(["{Principles of Neural Science}"], ["{{Principles of Neural Science}, (5th)}"])["missing_n"] == 0)
+        _tr = tc(["存在主义是一种人道主义", "周煦良、汤永宽译"], ["存在主义是一种人道主义"])
+        check("B-200c：译著译者行不计缺条、显式列 translator_lines（90-06 型）",
+              _tr["missing_n"] == 0 and _tr["missing_raw"] == []
+              and _tr["translator_lines"] == ["周煦良、汤永宽译"])
+        lncs_titles = [f"Title number {i} of the sample" for i in range(1, 16)]
+        lncs = (ws / "LncsCase") / "lncs.tex"
+        lncs.parent.mkdir(parents=True, exist_ok=True)
+        lncs.write_text("\\begin{thebibliography}{99}\n" + "".join(
+            f"\\bibitem{{k{i}}}\nAuthor, A., Other, B.: {t}. J. Samples "
+            f"\\textbf{{{i}}}({i}), 1--10 (20{10 + i:02d})\n"
+            for i, t in enumerate(lncs_titles, 1)) + "\\end{thebibliography}\n",
+            encoding="utf-8")
+        _lt, _lu, _ = _tex_source_list(lncs, None)
+        check("B-200d：LNCS \\bibitem 15 条题名正确、无碎片、unparsed=0（89-05 型）",
+              _lt == lncs_titles and _lu == 0)
+        mixed_dir = ws / "MixedCase"
+        mixed_dir.mkdir(parents=True, exist_ok=True)
+        (mixed_dir / "refs.bib").write_text("@book{B, title={Beta Book}, year={2021}}\n",
+                                            encoding="utf-8")
+        _mix_line = ("Zhen, L., Seligman, J.: A logical model of the dynamics of peer "
+                     "pressure. Journal 1, 2 (2011)")
+        mixed_tex = mixed_dir / "main.tex"
+        mixed_tex.write_text("\\begin{thebibliography}{99}\n\\bibitem{x}\n" + _mix_line
+                             + "\n\\end{thebibliography}\n", encoding="utf-8")
+        from slcn.docxsource import parse_reference_line as _prl
+        _legacy = _prl(re.sub(r"\s+", " ", _mix_line + " \\end{thebibliography}"))
+        _mt, _mu, _ = _tex_source_list(mixed_tex, None)
+        check("B-200d2：.bib+\\bibitem 混合稿（86-05）保持旧口径（不启用 LNCS 分支）",
+              _mt == ["Beta Book", (_legacy.title if _legacy is not None else "")]
+              and _mu == (0 if _legacy is not None and _legacy.title else 1)
+              and "A logical model of the dynamics of peer pressure" not in _mt)
+        sw_dir = ws / "SameWork"
+        sw_dir.mkdir(parents=True, exist_ok=True)
+        (sw_dir / "refs.bib").write_text(
+            "@incollection{Wolf1987,\n author={Wolf, Susan},\n"
+            " title={Sanity and the Metaphysics of Responsibility},\n year={1987}\n}\n",
+            encoding="utf-8")
+        sw_tex = sw_dir / "main.tex"
+        sw_tex.write_text("\\begin{document}\n正文\\parencite{Wolf1987}。\n"
+                          "\\end{document}\n", encoding="utf-8")
+        _sw = source_metrics(
+            sw_tex, "latex", sw_dir, product_tex="\\parencite{Susan1987}",
+            product_bib="@incollection{Susan1987,\n author={Wolf, S.},\n"
+                        " title={Sanity and the Metaphysics of Responsibility,},\n"
+                        " year={1987}\n}\n")
+        check("B-200e：同作品异键（Wolf1987↔Susan1987）唯一候选项映射并写 cite_merged",
+              _sw["cite_missing"] == [] and len(_sw["cite_merged"]) == 1
+              and _sw["cite_merged"][0]["from"] == "Wolf1987"
+              and _sw["cite_merged"][0]["to"] == "Susan1987"
+              and _sw["cite_merged"][0]["score"] >= 0.9)
+        _still2, _merged2 = merge_same_work_cites(
+            ["X2000"], {"X2000": {"author": "Smith, J.", "title": "Same Work",
+                                  "year": "2000"}},
+            [("A2000", {"author": "Smith, J.", "title": "Same Work", "year": "2000"}),
+             ("B2000", {"author": "Smith, J.", "title": "Same Work", "year": "2000"})])
+        check("B-200e2：同作品映射要求唯一候选（多候选不合并、真实缺口保留）",
+              _merged2 == [] and _still2 == ["X2000"])
+        _prose = {"author": "Anscombre and Ducrot takes a non-truth-conditional semantic "
+                            "approach to the argumentative indicators and proposed a "
+                            "radical argumentativism theory which take argumentativity as "
+                            "an inherent feature of language (being semantic) and holds that",
+                  "title": "every form of language use has an argumentative aspect",
+                  "year": "2021"}
+        _disc = ("This discussion footnote merely elaborates on argumentative indicators and "
+                 "rhetorical structure without bibliographic data. " * 6)[:545]
+        check("B-200f：议论性脚注不产 entry_keys、正常纯引用脚注仍产键（88-06 型）",
+              len(_disc) == 545 and len(_prose["author"]) > 120
+              and _is_citable_bib_entry(_disc, _prose) is False
+              and _is_citable_bib_entry(
+                  "James W. Garson, Modal Logic for Philosophers, Cambridge University "
+                  "Press, 2013, p. 105.",
+                  {"author": "James W. Garson", "title": "Modal Logic for Philosophers",
+                   "year": "2013", "publisher": "Cambridge University Press"}) is True)
+        check("B-200g：短 raw 引用条目仍产键（90-01 Ayer1946 raw=Language 型，防过筛复发）",
+              _is_citable_bib_entry(
+                  "Language",
+                  {"author": "Ayer, A. J.", "title": "Language, Truth and Logic",
+                   "year": "1946"}) is True)
+        check("B-200h：545 字散文+长 author 的议论性脚注不产键（88-06 回归）",
+              _is_citable_bib_entry(_disc, _prose) is False)
+
     _dash = build_dashboard(
         {"case_order": ["a", "b"],
          "cases": {
@@ -3075,6 +3370,11 @@ def run_self_test() -> int:
              "b": {"convert_rc": 0, "log": {},
                    "findings": [{"level": "P1", "code": "PAGE_DIFF", "detail": "页差 1"}]},
          }})
+    _rep = render_report({"cases": {}, "case_order": [], "totals": {}})
+    check("B-200i：report.md §3b 附注披露四修口径（题名归一/LNCS/同作品归并/议论脚注）",
+          "## 3b. L1 源稿一致性" in _rep and "题名比对已归一" in _rep
+          and "LNCS 体例感知" in _rep and "cite_merged" in _rep
+          and "议论性脚注不产源引用键" in _rep)
     check("输出名 sanitize / sha 判定 / 零付费判定（失败案例不算违规）",
           sanitize_output_name("Liwu Rong") == "Liwu_Rong"
           and sanitize_output_name("Bo_Chen") == "Bo_Chen"
