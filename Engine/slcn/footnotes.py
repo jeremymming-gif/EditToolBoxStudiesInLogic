@@ -73,6 +73,22 @@ class Footnote:
     note_latex: str = ""
     key: str = ""  # bib 键（生成后回填）
     entry: dict = field(default_factory=dict)  # 解析出的 bib 字段
+    # ── B-199 脚注引用提升（2026-10-23）──────────────────────────────────
+    #: 真 mixed 拆分：引用**之前**的说明文字（含 `参见/参阅/See` 引导语）
+    note_before: str = ""
+    #: 真 mixed 拆分：引用**之后**的说明文字
+    note_after: str = ""
+    #: 由 note_only 探测提升的短引用（docxsource 用 `strict=True` 唯一匹配）
+    from_note_probe: bool = False
+    #: 引导语（参阅/参见/See/Cf.）后紧跟完整条目 → 剥引导语后按条目提升
+    cue_stripped: bool = False
+    #: 拆分出的引用里含**多部作品**（≥2 个题名）：保留原文，只在末尾追加 parencite
+    multi_work: bool = False
+    #: 多作品兜底：脚注整段原文保留（note_before 设为全文），只在末尾注入 parencite
+    keep_whole: bool = False
+    #: 拆分脚注的渲染片段（docxsource 预先 escape/link_citations；渲染时只用这两段）
+    note_before_latex: str = ""
+    note_after_latex: str = ""
 
 
 def ref_span(text: str) -> int:
@@ -738,6 +754,7 @@ def merge_author_info(
 CITATION_PURE = "pure_citation"       # 纯引用（短引用/页码级，可整体转正文 parencite）
 CITATION_ENTRY = "reference_entry"    # 脚注里是完整文献条目
 CITATION_MIXED = "mixed"              # 说明文字 + 引用（脚注保留 + 人工核对）
+CITATION_MIXED_SPLIT = "mixed_split"  # 说明文字 + 可解析引用 → 拆分（B-199）
 CITATION_NOTE = "note_only"           # 纯说明/古典文献（不进参考文献）
 
 #: 散文判据：正文+引用的混合型脚注常见特征（批 47 论述性脚注实测）
@@ -778,30 +795,458 @@ def _entry_complete(entry: dict | None) -> bool:
     return context
 
 
-def classify_citation(text: str) -> Footnote:
-    """C 类新口径分类（第四十九批接口，engine-core 接线用）。
+# ── B-199 脚注引用提升：假 mixed 修正 / note_only 探测 / 真 mixed 拆分 ──────────
+#
+# 依据（B-198 批 A 分诊，2026-10-23）：
+#   · 90-07 的 4 条「参阅 X, …」纯引用被 `_PROSE_CUES` 的「参阅」误判 mixed
+#     （引导语在 prose 判定之前没有先试 parse）；
+#   · 90-07 Kuhn / 90-06 Tolstoy 无年份条目被 legacy `classify()` 判 pure_note 后
+#     `classify_citation()` 直接静默 note_only（日志零记录）；
+#   · 86-08 混合脚注里的 Hacking 1999、88-02 混合脚注里的 Novaes 2018 不拆 →
+#     ref 不入 bib、脚注内也没有 `\parencite`。
+# 纪律（继承「不编造」）：所有字段都来自原文；只有「唯一命中」才提升；古典文献
+# （SL/OP/罗马卷次）与引者注（笔者/本文/转引自…）不探测、不拆分。
 
-    返回 `Footnote`，`kind_new` ∈ {pure_citation, reference_entry, mixed, note_only}，
-    并带 `ref_raw` / `entry` / `note` / `locator`：
-      · pure_citation：短引用（作者+年/页码），`entry=None`，待 union 匹配；
-      · reference_entry：脚注里是完整条目，`entry` = parse_entry() 字段；
-      · mixed：说明文字 + 引用（`note`=说明，`ref_raw`=引用片段），脚注保留 + warning；
+#: 引用引导语（脚注引文的常见前缀；`See also` 必须先于 `See` 匹配）
+_CUE_PREFIX = re.compile(
+    r"^(?:(?:See also|see also|See|see|Cf\.|cf\.)\s*[，,、:：]?\s*|"
+    r"(?:参阅|参见|又见|亦见|转引自|引自)\s*[，,、:：]?\s*)")
+
+#: 句中引导语（非锚定；`_split_mixed_note_ref` 用，英文字界防误伤）
+_CUE_MID = re.compile(
+    r"(?:\bSee also\b|\bsee also\b|\bSee\b|\bsee\b|\bCf\.|\bcf\.|参阅|参见|转引自|引自)"
+    r"\s*[，,、:：]?\s*")
+
+#: 古典文献/缩写开头（即使条目里带年份也不拆分，保持脚注原样：88-02 #24/#85 实测）
+_CLASSICAL_START = re.compile(
+    r"^\s*(?:[A-Z][A-Za-z'’\-]+,\s*)?(?:SL|OP|Exp|Summa|Sent|Quodl|Ord)\b")
+
+#: note_only 探测的引者注/说明注守卫（命中即不探测，保持纯注释）
+_NOTE_PROBE_BAD = re.compile(
+    r"笔者|我们|本文|拙文|作者认为|此注|前注|同上|见前|转引自|感谢|基金|"
+    r"作者简介|收稿日期|电子信箱|上文|下文|参见前")
+
+#: 「作者, 名. (年) 题名. 地: 出版社.」式英文条目（86-08 Hacking 型）
+_APA_ENTRY = re.compile(
+    r"^(?P<author>[A-Z][A-Za-z'’\-]+(?:\s*,\s*[A-Z][A-Za-z.'’\-]+){1,3})\.\s*"
+    r"\((?P<year>(?:19|20)\d{2})\)\s*"
+    r"(?P<title>.+?)(?P<tend>[.!?])\s+"
+    r"(?P<address>[A-Z][A-Za-z.'’\- ]{1,40}):\s*"
+    r"(?P<publisher>[^.]{2,90})\.?$")
+
+#: 拆分候选里「散文/引文串」开头词（这些绝不是文献条目的开头）
+_REF_PROSE_START = re.compile(
+    r"^(?:We|The|This|These|It|In|But|And|If|Our|His|Her|They|There|Here|"
+    r"According|For|As|Since|However|Moreover|Note|Exactly|Consequently|Thus|"
+    r"‘|“)")
+
+#: 多作品拆分：中文书名号 / 英文题名引号
+_WORK_CN_TITLE = re.compile(r"《([^》]{2,120})》")
+_WORK_EN_TITLE = re.compile(r"[“\"]([^”\"]{2,120})[”\"]")
+
+
+def strip_leading_cue(text: str) -> tuple[str, bool]:
+    """剥掉开头的引用引导语（参阅/参见/See/Cf.）；返回 (余下文本, 是否剥过)。"""
+    t = str(text or "").strip()
+    m = _CUE_PREFIX.match(t)
+    if not m:
+        return t, False
+    rest = t[m.end():].lstrip()
+    return (rest, bool(rest)) if rest else (t, False)
+
+
+def _parse_apa_entry(raw: str) -> dict | None:
+    """「Hacking, Ian. (1999) The Social Construction of What? Cambridge: Harvard
+    University Press.」式条目（作者. (年) 题名. 地: 出版社.）——只认完整形态。"""
+    m = _APA_ENTRY.match(str(raw or "").strip())
+    if not m:
+        return None
+    title = m.group("title").strip()
+    if len(title) < 3:
+        return None
+    if m.group("tend") in "!?":
+        title += m.group("tend")
+    return {"_type": "book", "author": m.group("author").strip(),
+            "title": title, "year": m.group("year"),
+            "address": m.group("address").strip(),
+            "publisher": m.group("publisher").strip().rstrip(".")}
+
+
+_AUTHOR_PARTICLE = re.compile(r"^(?:van|von|de|der|den|la|le|di|da|du|ten|ter)\s+\S")
+_AUTHOR_STOP = {"eg", "e.g", "e.g.", "ie", "i.e", "i.e.", "see", "cf", "cf.",
+                "for", "and", "but", "the", "in", "if", "this", "we", "our",
+                "his", "her", "they", "there"}
+
+
+def _author_is_plausible(author: str) -> bool:
+    """作者串像不像作者（拆分/探测闸门；88-01 实测 `eg`、`Buridan 1976, p` 是散文碎片）。"""
+    a = str(author or "").strip()
+    if not a or len(a) > 40:
+        return False
+    if not re.search(r"[A-Za-z\u4e00-\u9fff]", a):
+        return False
+    if re.search(r"\d", a):
+        return False
+    first = a.split(",")[0].strip().lower()
+    if first in _AUTHOR_STOP:
+        return False
+    if a[0].islower() and not _AUTHOR_PARTICLE.match(a):
+        return False
+    return True
+
+
+_TITLE_BAD_START = re.compile(r"^(?:[§第\d]|[a-z])")
+_TITLE_AUTHOR_YEAR = re.compile(
+    r"^[A-Z][A-Za-z'’\-]+(?:\s*,\s*[A-Z][A-Za-z.'’\-]+)?\s*,?\s*\(?(?:19|20)\d{2}\)?\.?$")
+
+
+def _title_is_plausible(title: str) -> bool:
+    """题名像不像「作品题名」（拆分/探测闸门；防把短引用残渣当题名建条目）。
+
+    负例（88-01/86-07 实测）：`§§ 147 and 148.`、`23; Tractatus …`、
+    `Paul 1961`、`see Schupp 1988` —— 这些是页码/段号/裸作者年，不是题名。
+    """
+    t = str(title or "").strip()
+    if len(_norm_fp(t)) < 4:
+        return False
+    if _TITLE_BAD_START.match(t):
+        return False
+    if _TITLE_AUTHOR_YEAR.match(t):
+        return False
+    if not re.search(r"[\u4e00-\u9fff]", t) and not any(c.islower() for c in t):
+        return False
+    return True
+
+
+def _entry_quality(entry: dict | None) -> int:
+    """完整条目「干净度」评分：字段多分高；题名臃肿/不像题名时扣分或直接不合格。
+
+    只用于在多个解析通道的结果里挑一个（全部字段仍来自原文，不编造）。
+    """
+    if not _entry_complete(entry):
+        return -1
+    if not _title_is_plausible(str(entry.get("title") or "")):
+        return -1
+    if not _author_is_plausible(str(entry.get("author") or entry.get("editor") or "")):
+        return -1
+    score = sum(1 for name in ("author", "title", "year", "journal", "booktitle",
+                               "publisher", "address", "volume")
+                if str(entry.get(name) or "").strip())
+    title = str(entry.get("title") or "")
+    if len(title) > 90:
+        score -= 3
+    if any(mark in title for mark in ("”, in", '", in', "”in", '"in',
+                                      "edited by", "eds.", ", in ")):
+        score -= 3
+    author = str(entry.get("author") or "")
+    if len(author) > 40:
+        score -= 3
+    return score
+
+
+def _best_complete_entry(raw: str) -> dict | None:
+    """多通道解析，取「最干净的完整条目」；都不完整 → None（绝不拼字段）。"""
+    t = str(raw or "").strip()
+    if not t:
+        return None
+    candidates: list[dict] = []
+    try:
+        candidates.append(parse_entry(t))
+    except Exception:  # noqa: BLE001 —— 解析失败按短引用处理
+        pass
+    apa = _parse_apa_entry(t)
+    if apa:
+        candidates.append(apa)
+    try:
+        from . import footref
+        parsed = footref.parse_one(t)
+        if parsed is None:
+            _many = footref.parse_note(t)
+            parsed = _many[0] if _many else None
+        if parsed is not None:
+            import dataclasses as _dc
+            candidate = {k: v for k, v in _dc.asdict(parsed).items() if v}
+            if candidate.get("etype") and not candidate.get("_type"):
+                candidate = dict(candidate)
+                candidate["_type"] = candidate.pop("etype")
+            candidates.append(candidate)
+    except Exception:  # noqa: BLE001
+        pass
+    extra = _extract_raw_fields(t)
+    if extra:
+        candidates.append(extra)
+    best: dict | None = None
+    best_score = 0
+    for candidate in candidates:
+        score = _entry_quality(candidate)
+        if score > best_score:
+            best, best_score = candidate, score
+    return best
+
+
+def _looks_like_citation_ref(ref: str) -> bool:
+    """这段文本像不像「文献条目/引注」（拆分候选的闸门，防把散文/引文切进 bib）。"""
+    t = str(ref or "").strip()
+    if not t or len(t) < 8 or len(t) > 420:
+        return False
+    if looks_classical(t) or _CLASSICAL_START.match(t):
+        return False
+    if _REF_PROSE_START.match(t):
+        return False
+    if _WORK_CN_TITLE.search(t):
+        return True
+    if re.search(r"[\u4e00-\u9fff]", t):
+        # 中文/中英混排：引号里是强调或引文（86-07「形式行」型），不构成题名证据；
+        # 只认书名号（上面已查），否则不拆（宁可不拆，不可把散文切进 bib）。
+        return False
+    if _WORK_EN_TITLE.search(t):
+        return True
+    if _parse_apa_entry(t):
+        return True
+    return _entry_quality(_best_complete_entry(t)) >= 3
+
+
+def _sentences(text: str) -> list[str]:
+    """按**中文**句末标点切句（保留标点）。
+
+    英文句点不可靠：人名缩写（`Sara L. Uckelmann`、`Hacking, Ian.`）会把条目切断，
+    凡英文片段一律整段处理（拆不动就保持 mixed，宁可不拆不可错拆）。
+    """
+    t = str(text or "")
+    out: list[str] = []
+    start = 0
+    for i, ch in enumerate(t):
+        if ch in "。！？；":
+            out.append(t[start:i + 1])
+            start = i + 1
+    if start < len(t):
+        out.append(t[start:])
+    return [s for s in out if s.strip()]
+
+
+def _work_titles(ref: str) -> list[dict]:
+    """从引用片段里抽「(题名, 年份)」列表（多作品拆分用）。
+
+    与 `_work_count` 同一口径：分号分段；中文段只取**第一个**书名号（同段后面的
+    《期刊名》/《丛书名》是容器，不是第二部作品）；英文段只取「“题名”, in …」形态。
+    年份取该题名后、下一段之前的最近 4 位数。
+    """
+    t = str(ref or "")
+    found: list[dict] = []
+    offset = 0
+    for seg in re.split(r"([；;])", t):
+        if not seg or seg in ("；", ";"):
+            offset += len(seg)
+            continue
+        seg_start = offset + (len(t[offset:]) - len(t[offset:].lstrip()))
+        if re.search(r"[\u4e00-\u9fff]", seg):
+            m = _WORK_CN_TITLE.search(seg)
+            found_one = [(m.group(1).strip(), m.end(), m.start())] if m else []
+        else:
+            found_one = [(m.group(1).strip(), m.end(), m.start())
+                         for m in _EN_WORK_TITLE.finditer(seg)]
+        for title, end, start in found_one:
+            tail = seg[end:]
+            ym = re.search(r"(?:19|20)\d{2}", tail)
+            found.append({"title": title, "year": ym.group(0) if ym else "",
+                          "pos": seg_start + start})
+        offset += len(seg)
+    found.sort(key=lambda x: x["pos"])
+    return found
+
+
+_EN_WORK_TITLE = re.compile(r"[“\"]([^”\"]{2,120})[”\"]\s*,?\s*in\b")
+
+
+def _work_count(ref: str) -> int:
+    """引用片段里的**作品数**（只用于「多作品混合」判定，不解析字段）。
+
+    · 分号分段，中文段按书名号计 1 部（同段的《期刊名》算容器，不算第二部）；
+    · 英文段只认「“题名”, in …」形态的析出文献题名（中文文本里的引号是强调，
+      不是作品，90-07 #6 实测：3 处引号会把纯引注误判成多作品）。
+    """
+    t = str(ref or "")
+    total = 0
+    for seg in re.split(r"[；;]", t):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if re.search(r"[\u4e00-\u9fff]", seg):
+            if _WORK_CN_TITLE.search(seg):
+                total += 1
+            continue
+        en = len(_EN_WORK_TITLE.findall(seg))
+        if en:
+            total += en
+        elif _parse_apa_entry(seg) or _looks_like_citation_ref(seg):
+            total += 1
+    return total
+
+
+def _split_mixed_note_ref(text: str) -> dict | None:
+    """把「说明文字 + 引用」文本拆成 (note_before, ref, note_after)。
+
+    顺序：① 引导语处切（`参见/参阅/See/Cf.` 后紧跟文献段）② 逐句窗口找
+    「像引注」的句子。都不成立 → None（保持 mixed，不拆）。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return None
+    # ① 引导语切分：从后往前试（句中最后一个引导语更可能是引文起点）
+    cue_spans = [m for m in _CUE_MID.finditer(t) if m.start() > 0]
+    for m in reversed(cue_spans):
+        ref = t[m.end():].strip()
+        if not _looks_like_citation_ref(ref):
+            continue
+        return {"note_before": t[:m.end()].strip(), "ref": ref,
+                "note_after": "", "multi": _work_count(ref) >= 2}
+    # ② 逐句窗口（单句/连续多句）找引注
+    sents = _sentences(t)
+    n = len(sents)
+    for width in (1, 2, 3):
+        for i in range(n - width + 1):
+            ref = "".join(sents[i:i + width]).strip()
+            if not _looks_like_citation_ref(ref):
+                continue
+            before = "".join(sents[:i]).strip()
+            after = "".join(sents[i + width:]).strip()
+            if not before and not after:
+                continue
+            return {"note_before": before, "ref": ref, "note_after": after,
+                    "multi": _work_count(ref) >= 2}
+    return None
+
+
+def _note_only_probe(text: str) -> dict | None:
+    """note_only 引用探测：纯注释里若含「作者/年份 + 题名」证据 → 可试唯一 resolve。
+
+    守卫（宁可不探测，不可误提升）：
+      · 作者信息/引者注（笔者/本文/前注/转引自…）不探测；
+      · 古典文献（SL/OP/罗马卷次）不探测；
+      · 中文：必须有**书名号题名**；只有《刊名》+年份+期号（无作者）不探测；
+      · 英文：必须有年份（无年份的英文引注留给既有匹配通道，不额外探测）。
+    """
+    t = str(text or "").strip()
+    if not t or len(t) > 160:
+        return None
+    if _AUTHOR_INFO.search(t):
+        return None
+    if _NOTE_PROBE_BAD.search(t):
+        return None
+    if t.count("。") > 1:
+        return None
+    if looks_classical(t) or _CLASSICAL_START.match(t):
+        return None
+    body, _had = strip_leading_cue(t)
+    fields = _extract_raw_fields(body)
+    title = str(fields.get("title") or "").strip()
+    if len(_norm_fp(title)) < 3:
+        return None
+    author = str(fields.get("author") or "").strip()
+    year = str(fields.get("year") or "").strip()
+    if re.search(r"[\u4e00-\u9fff]", body):
+        if not _WORK_CN_TITLE.search(body):
+            return None
+        if not author and re.search(
+                r"《[^》]{2,}》\s*[，,]?\s*(?:19|20)\d{2}\s*年第", body):
+            return None
+    elif not year:
+        return None
+    if not (author or year):
+        return None
+    return {"fields": fields, "body": body}
+
+
+def classify_citation(text: str) -> Footnote:
+    r"""C 类新口径分类（第四十九批接口，engine-core 接线用）。
+
+    返回 `Footnote`，`kind_new` ∈ {pure_citation, reference_entry, mixed, note_only,
+    mixed_split}，并带 `ref_raw` / `entry` / `note` / `locator`：
+      · pure_citation：短引用（作者+年/页码），`entry=None`，待 resolve 匹配；
+      · reference_entry：脚注里是完整条目，`entry` = 解析字段；
+      · mixed：说明文字 + 引用但**引用部分无法安全解析/匹配**（脚注保留 + 人工核对）；
+      · mixed_split：说明文字 + 可解析引用 → 拆成 note_before/ref/note_after，
+        ref 入 bib（或匹配既有键）、脚注保留并在原位注入 `\parencite`（B-199）；
       · note_only：纯说明/古典文献。
+
+    B-199 变更（2026-10-23，依据 B-198 批 A 分诊）：① 先剥引导语（参阅/参见/See/
+    Cf.）再判条目，引导语后紧跟完整文献字段时不再整条判 mixed；② 完整条目即使
+    篇幅长（>260 字）或被散文判据命中，也不误判 mixed；③ legacy pure_note 里有
+    「作者/年份 + 题名」证据且无引者注/古典标记时，升级为待匹配短引用（strict
+    唯一匹配，匹配不上仍按纯注释保留）；④ 真 mixed 用 note/ref 拆分。
     """
     legacy = classify(text)
     fn = Footnote(fid=legacy.fid, text=legacy.text, kind=legacy.kind, ref=legacy.ref,
                   note=legacy.note, locator=legacy.locator, note_latex=legacy.note_latex)
     if legacy.kind in ("pure_note", "classical"):
+        if legacy.kind == "pure_note":
+            probe = _note_only_probe(legacy.text)
+            if probe:
+                fn.kind_new = CITATION_PURE
+                fn.ref_raw = probe["body"]
+                fn.from_note_probe = True
+                fn.locator = extract_locator(probe["body"]) or legacy.locator
+                return fn
         fn.kind_new = CITATION_NOTE
         fn.note = legacy.note or legacy.text
         fn.ref_raw = ""
         return fn
     if legacy.kind == "mixed":
+        # 真 mixed（legacy 已切出 ref/note）：ref 能安全解析 → 拆分；否则保持 mixed。
+        ref = legacy.ref or ""
+        if _looks_like_citation_ref(ref):
+            entry = _best_complete_entry(ref)
+            fn.kind_new = CITATION_MIXED_SPLIT
+            fn.ref_raw = ref
+            fn.entry = entry or {}
+            fn.note_after = legacy.note or ""
+            fn.multi_work = _work_count(ref) >= 2
+            fn.locator = extract_locator(ref) or legacy.locator
+            return fn
         fn.kind_new = CITATION_MIXED
-        fn.ref_raw = legacy.ref
+        fn.ref_raw = ref
         return fn
     head = legacy.ref or ""
     if _looks_prose(head):
+        stripped, had_cue = strip_leading_cue(head)
+        multi_whole = _work_count(head) >= 2
+        # ① 先试拆 note/ref：句中有引导语（86-08 Hacking「…参见Hacking, Ian. (1999)…」、
+        #    88-02 Freddoso「… See Alfred Freddoso…」）或中文献句（90-07 #6）。
+        split = _split_mixed_note_ref(head)
+        if split and _looks_like_citation_ref(split["ref"]):
+            entry = _best_complete_entry(split["ref"])
+            fn.kind_new = CITATION_MIXED_SPLIT
+            fn.ref_raw = split["ref"]
+            fn.entry = entry or {}
+            fn.note_before = split["note_before"]
+            fn.note_after = split["note_after"]
+            fn.multi_work = bool(split["multi"])
+            fn.locator = extract_locator(split["ref"]) or extract_locator(head) \
+                or legacy.locator
+            if fn.multi_work and not fn.note_before and not fn.note_after:
+                fn.keep_whole = True
+            return fn
+        # ② 整段就是一条完整条目（90-07「参阅 R. Camap…」型；长条目 88-02 #27 型）
+        #   → 按完整条目提升（引导语在开头时先剥掉）。
+        if not multi_whole and _looks_like_citation_ref(stripped if had_cue else head):
+            entry = _best_complete_entry(stripped if had_cue else head)
+            if entry:
+                fn.kind_new = CITATION_ENTRY
+                fn.entry = entry
+                fn.ref_raw = stripped if had_cue else head
+                fn.cue_stripped = had_cue
+                fn.locator = extract_locator(fn.ref_raw) or legacy.locator
+                return fn
+        # ③ 整段多作品引用（88-02 Novaes 型：一条脚注混两部书，无说明文字）→
+        #    保留原文、另按作品解析条目（docxsource 能把各作品唯一匹配到既有键时只注入 cite）。
+        if multi_whole:
+            fn.kind_new = CITATION_MIXED_SPLIT
+            fn.ref_raw = head
+            fn.entry = _best_complete_entry(head) or {}
+            fn.multi_work = True
+            fn.keep_whole = True
+            fn.locator = extract_locator(head) or legacy.locator
+            return fn
         fn.kind_new = CITATION_MIXED
         fn.ref_raw = head
         fn.note = legacy.note or ""
@@ -1264,11 +1709,16 @@ def resolve_citation(citation: Footnote,
                      *, title_threshold: float = 0.9,
                      index: dict | None = None,
                      stats: dict | None = None,
-                     keymap: dict[str, str] | None = None) -> tuple[str | None, FootnoteWarning | None]:
+                     keymap: dict[str, str] | None = None,
+                     strict: bool = False) -> tuple[str | None, FootnoteWarning | None]:
     """短引用 → 已存在条目 key（分档匹配：作者-年+题名相似度+字段完整度）；不编造。
 
     分档：① 完整指纹（含卷/版）② 姓+年+题名≥阈值 ③ 姓+题名≥阈值（一方缺年）
           ④ 姓+年唯一候选（候选仅 1 条）；题目/年份/卷版冲突直接拒绝。
+    B-199：题名不匹配时允许 **container/booktitle** 匹配（候选条目的题名作为容器
+    题名在引注原文里逐字出现）。
+    `strict=True`（note_only 探测用）：必须题名匹配、tier≤3、相似度 ≥0.92、
+    最佳档候选**唯一**，否则不提升（宁可不提升，不可误提升）。
     返回 `(key|None, warning|None)`；失败 = `citation_unmatched`（调用方保留原脚注/正文）。
     """
     fields = _extract_citation_fields(citation)
@@ -1318,6 +1768,15 @@ def resolve_citation(citation: Footnote,
             if len(same_title) >= 1 and not vol:
                 volume_ambiguous = True
         sim = _title_match_tier(title, cand_title) if title else 0.0
+        # B-199：container/booktitle 匹配（90-06 的 `“Volitional Necessities”, in
+        # Agency and Answerability, pp. 106-107.` 型）——析出文献题名与 bib 条目的
+        # **书名/容器**题名不同，但容器题名在引注原文里逐字出现。只在「作者姓匹配
+        # + 容器题名归一后 ≥8 字符 + 唯一命中」时启用；不编造、不改条目字段。
+        if title and sim < title_threshold:
+            _raw_all = str(citation.ref_raw or citation.ref or citation.text or "")
+            _cnorm = _norm_fp(cand_title)
+            if len(_cnorm) >= 8 and _cnorm in _norm_fp(_raw_all):
+                sim = max(sim, 0.95)
         surname_ok = _surname_similarity(surname, cand_surname) >= 0.8
         if not surname_ok:
             continue
@@ -1375,6 +1834,18 @@ def resolve_citation(citation: Footnote,
             return None, FootnoteWarning(
                 "citation_unmatched", fid=citation.fid, text=citation.text[:200],
                 reason="同作者/年/题名有多个卷号候选，无法唯一确定（不猜）",
+                author=str(fields.get("author") or ""), title=title, year=year,
+                locator=citation.locator)
+    if strict:
+        # B-199 note_only 探测：必须题名命中、非「仅作者+年」档、相似度 ≥0.92、
+        # 最佳档候选唯一（多条不同条目同档 → 歧义，不猜）。
+        best_sim = -scored[0][0][1]
+        distinct = set(top)
+        if (not title or best_tier not in (1, 2, 3)
+                or best_sim < 0.92 or len(distinct) != 1):
+            return None, FootnoteWarning(
+                "citation_unmatched", fid=citation.fid, text=citation.text[:200],
+                reason="note_only 探测非唯一命中（不提升，不编造）",
                 author=str(fields.get("author") or ""), title=title, year=year,
                 locator=citation.locator)
     if stats is not None:

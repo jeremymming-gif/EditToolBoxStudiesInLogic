@@ -51,9 +51,12 @@ check("① 完整文献条目 → reference_entry，entry 含题名/年份",
 
 f_mixed = footnotes.classify_citation(
     "沃森认为自己的观点与柏拉图对灵魂的划分异曲同工。Gary Watson, “Free Action and Free Will,” p. 150.")
-check("① 说明+引用 → mixed（ref_raw 带引用、note 不空）",
-      f_mixed.kind_new == footnotes.CITATION_MIXED and bool(f_mixed.ref_raw),
-      f_mixed.kind_new)
+# B-199（2026-10-23）：说明+引用由「整条保留 mixed」细化为可拆分的 mixed_split
+#（note_before + ref）；docxsource 里 ref 匹配不到既有键时仍回退 mixed（保留脚注）。
+check("① 说明+引用 → mixed_split（note_before 带说明、ref_raw 带引用）",
+      f_mixed.kind_new == footnotes.CITATION_MIXED_SPLIT and bool(f_mixed.ref_raw)
+      and "沃森" in (f_mixed.note_before or ""),
+      f"{f_mixed.kind_new} / {f_mixed.note_before!r}")
 
 f_note = footnotes.classify_citation("基金项目：国家社会科学基金重点项目（22AZX019）。")
 check("① 纯说明 → note_only", f_note.kind_new == footnotes.CITATION_NOTE)

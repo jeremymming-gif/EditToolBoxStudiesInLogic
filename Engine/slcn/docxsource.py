@@ -393,6 +393,76 @@ def _entry_is_note_only(entry: dict | None) -> bool:
     return not any(str(entry.get(k) or "").strip() for k in ("author", "title"))
 
 
+# ── B-199（2026-10-23）：脚注引用提升的接线辅助 ─────────────────────────────
+#
+# 背景（B-198 批 A 分诊）：编号清单型 Word 稿里，bib 条目字段可能被解析成碎片
+# （题名吸进 `author` 等），靠字段匹配不可靠；但 B-022 物化后的
+# `doc.ref_raw_lines`（完整原文行）+ `doc.ref_key_by_num` 是可靠映射。题名逐字
+# 落在**唯一**原文行内时才返回键——不编造、不改条目。
+
+def _src_line_key(doc, title: str, year: str = "") -> str:
+    """用文末编号清单的原文行给「题名（+年份）」找既有 bib 键；唯一命中才返回。"""
+    from .footnotes import _norm_fp
+
+    lines = list(getattr(doc, "ref_raw_lines", None) or [])
+    key_by_num = dict(getattr(doc, "ref_key_by_num", None) or {})
+    tnorm = _norm_fp(str(title or ""))
+    if len(tnorm) < 4:
+        return ""
+    # ① 编号清单：原文行 → 编号 → 键（`ref_key_by_num` 只有编号清单才有）
+    if lines and key_by_num:
+        hits: list[int] = []
+        for num, line in enumerate(lines, start=1):
+            if tnorm not in _norm_fp(line):
+                continue
+            if year and str(year) not in str(line):
+                continue
+            hits.append(num)
+        if hits:
+            return str(key_by_num.get(hits[0]) or "") if len(hits) == 1 else ""
+    # 人年制文末清单（90-06 型）：字段可能被「译著拆条/字段归位」前的碎片占住
+    # （题名位变成「方敬译」），但 `Ref.raw` 原文行是完整的 → 用原文行兜底。
+    ref_hits: list[str] = []
+    for ref in (getattr(doc, "refs", None) or []):
+        raw = str(getattr(ref, "raw", "") or "")
+        if not raw:
+            continue
+        if tnorm not in _norm_fp(raw):
+            continue
+        if year and str(year) not in raw:
+            continue
+        key = str(getattr(ref, "key", "") or "")
+        if key:
+            ref_hits.append(key)
+    unique = sorted(set(ref_hits))
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _citation_title_year(fn) -> tuple[str, str]:
+    """从 Footnote 抽 (题名, 4 位年份)；字段全部来自原文（不编造）。"""
+    from .footnotes import _extract_citation_fields
+
+    try:
+        fields = _extract_citation_fields(fn)
+    except Exception:  # noqa: BLE001
+        fields = {}
+    year = re.sub(r"\D", "", str(fields.get("year") or ""))[:4]
+    return str(fields.get("title") or ""), year
+
+
+def _src_line_keys_for_works(doc, ref: str) -> list[str]:
+    """多作品引用：逐作品用原文行找键；**全部**唯一命中才返回（否则空列表）。"""
+    from .footnotes import _work_titles
+
+    keys: list[str] = []
+    for work in _work_titles(str(ref or "")):
+        key = _src_line_key(doc, work["title"], work["year"])
+        if not key:
+            return []
+        keys.append(key)
+    return keys if len(keys) >= 2 else []
+
+
 #: 英文「全名 + 年份在后」的参考文献区格式（期 88 / 06 Zhixi_Chen 真稿实测）：
 #:   `Jacobs, Scott, Jackson, Sally, 1989. Building a model of conversational argument. In …`
 #:   `Van Eemeren, Frans et al. 2014. Handbook of Argumentation Theory. …`
@@ -2793,6 +2863,13 @@ def render_para(
                     out.append(f"\\parencite{loc}{{{key}}}")
                 else:
                     out.append(f"（\\parencite{loc}{{{key}}}）")
+            elif fn.kind in ("mixed_split_entry", "mixed_split_cite"):
+                # B-199：真 mixed 拆分：说明文字保留 + 原位注入 `\parencite`。
+                key = keymap.get(fn.fid, "")
+                loc = f"[{fn.locator}]" if fn.locator else ""
+                before = getattr(fn, "note_before_latex", "") or ""
+                after = getattr(fn, "note_after_latex", "") or ""
+                out.append(f"\\footnote{{{before}\\parencite{loc}{{{key}}}{after}}}")
             elif fn.kind in ("citation_unmatched", "mixed_manual"):
                 # C 类新口径：未匹配短引用/混合型 → 保留脚注原文（不编造条目不丢内容）
                 body_note = _fn_note(
@@ -3573,8 +3650,8 @@ def parse_docx(path: str, quote_threshold: int = 105,
     #（正文 parencite）；未命中 → citation_unmatched（保留脚注 + warning）；mixed →
     # mixed_manual（保留脚注 + 核对 warning）；note_only → pure_note。
     if c_class_union:
-        from .footnotes import (CITATION_ENTRY, CITATION_MIXED, CITATION_NOTE,
-                                CITATION_PURE, FootnoteWarning,
+        from .footnotes import (CITATION_ENTRY, CITATION_MIXED, CITATION_MIXED_SPLIT,
+                                CITATION_NOTE, CITATION_PURE, FootnoteWarning,
                                 classify_citation, resolve_citation,
                                 union_entries)
         _candidates: list[tuple[str, dict, str]] = []
@@ -3596,20 +3673,94 @@ def parse_docx(path: str, quote_threshold: int = 105,
             if _old_note_latex:
                 _new.note_latex = _old_note_latex
             _kind = _new.kind_new
+            _fallback_mixed = False
             if _kind == CITATION_ENTRY:
-                _new.kind = "pure_ref"
-                _new.ref = _new.ref_raw or _new.ref
-                _new.entry = _new.entry or {}
-            elif _kind == CITATION_PURE:
-                _key, _warn = resolve_citation(_new, _candidates)
+                # B-199：引导语后剥出的完整条目（90-07「参阅陈晓平…」型）先按文末清单
+                # 原文行找既有键——命中则只 cite（不改 bib），避免字段碎片导致重复条目。
+                _key = ""
+                if getattr(_new, "cue_stripped", False):
+                    _t, _y = _citation_title_year(_new)
+                    _key = _src_line_key(doc, _t, _y)
                 if _key:
                     _new.kind = "pure_citation_matched"
                     _new.key = _key
                 else:
+                    _new.kind = "pure_ref"
+                    _new.ref = _new.ref_raw or _new.ref
+                    _new.entry = _new.entry or {}
+            elif _kind == CITATION_PURE:
+                # B-199：note_only 探测提升的短引用用 strict（唯一命中才提升）；
+                # 其余短引用在原匹配失败后，再用文末清单原文行兜底（90-07 Einstein 型：
+                # 无作者、题名+卷+年本可唯一，旧匹配在「作者不匹配」处早退）。
+                _strict = bool(getattr(_new, "from_note_probe", False))
+                _key, _warn = resolve_citation(_new, _candidates, strict=_strict)
+                if not _key:
+                    _t, _y = _citation_title_year(_new)
+                    if _t:
+                        _key = _src_line_key(doc, _t, _y)
+                if _key:
+                    _new.kind = "pure_citation_matched"
+                    _new.key = _key
+                elif _strict:
+                    # 探测未唯一命中 → 保持纯注释（与旧行为一致，不改产物）
+                    _new.kind = "pure_note"
+                    _new.note = _new.text
+                    _new.ref_raw = ""
+                else:
                     _new.kind = "citation_unmatched"
                     doc.c_class_warnings.append(_warn)
                     doc.footnote_notes += 1
+            elif _kind == CITATION_MIXED_SPLIT:
+                # B-199：真 mixed 拆分。多作品 → 逐作品按原文行匹配；单作品 → 完整
+                # 条目进 bib / 短引用匹配既有键。都失败（或脚注含公式）→ 保持 mixed。
+                _multi = bool(getattr(_new, "multi_work", False))
+                _keys: list[str] = []
+                if _multi:
+                    _keys = _src_line_keys_for_works(doc, _new.ref_raw)
+                _entry = _new.entry or {}
+                if not _keys and not _entry and not _multi:
+                    _key, _warn = resolve_citation(_new, _candidates)
+                    if not _key:
+                        _t, _y = _citation_title_year(_new)
+                        if _t:
+                            _key = _src_line_key(doc, _t, _y)
+                    if _key:
+                        _keys = [_key]
+                if _old_note_latex:
+                    # 含公式的脚注：拆分渲染会破坏已受保护的数学 → 保持 mixed。
+                    _fallback_mixed = True
+                elif _keys:
+                    _new.kind = "mixed_split_cite"
+                    _new.key = ",".join(_keys)
+                elif _entry_is_note_only(_entry):
+                    _fallback_mixed = True
+                else:
+                    _new.kind = "mixed_split_entry"
+                    _new.ref = _new.ref_raw or ""
             elif _kind == CITATION_MIXED:
+                _fallback_mixed = True
+            elif _kind == CITATION_NOTE:
+                _new.kind = "pure_note"
+                _new.note = _new.note or _new.text
+            if _new.kind in ("mixed_split_entry", "mixed_split_cite"):
+                # B-199：拆分脚注渲染 = note_before + \parencite[loc]{key} + note_after；
+                # keep_whole（多作品兜底）时保留整段原文、parencite 追加在末尾。
+                try:
+                    if getattr(_new, "keep_whole", False):
+                        _new.note_before_latex = link_citations(
+                            escape_latex(_new.text or ""), doc.refs)[0]
+                        _new.note_after_latex = ""
+                    else:
+                        _new.note_before_latex = (
+                            link_citations(escape_latex(_new.note_before), doc.refs)[0]
+                            if _new.note_before else "")
+                        _new.note_after_latex = (
+                            link_citations(escape_latex(_new.note_after), doc.refs)[0]
+                            if _new.note_after else "")
+                except Exception:  # noqa: BLE001
+                    _new.note_before_latex = _old_note_latex
+                    _new.note_after_latex = ""
+            if _fallback_mixed:
                 _new.kind = "mixed_manual"
                 try:
                     # U1：含公式的混合脚注同样复用旧对象预渲染的 note_latex
@@ -3627,15 +3778,13 @@ def parse_docx(path: str, quote_threshold: int = 105,
                     title=str((_new.entry or {}).get("title", "")),
                     year=str((_new.entry or {}).get("year", "")),
                     locator=_new.locator))
-            elif _kind == CITATION_NOTE:
-                _new.kind = "pure_note"
-                _new.note = _new.note or _new.text
             # 第四十九批引擎侧边界保护（86-03 实测）：中文**文献条目型**脚注
             # （源稿形如 `[] 胡炳年、陈彦瑾，“…”，逻辑学研究，2018 年第 1 期。`）会被
             # 新分类器判成 mixed/note_only → bib 22→1。带 `[编号]` 开头 + 文献标记
             # （书名号/出版社/学报/期号/年份）时按 reference_entry 处理，进并集 bib。
             # 只在带编号前缀时兜底，不影响 86-07 论述脚注 / 90-06/07 短引用。
-            if (_new.kind in ("mixed", "mixed_manual", "pure_note")
+            if (_new.kind in ("mixed", "mixed_manual", "pure_note",
+                              "mixed_split_entry", "mixed_split_cite")
                     and re.match(r"^\s*\[\s*[^\]]*\]", _new.text or "")
                     and re.search(r"《[^》]{2,}》|出版社|学报|期刊|\[[MJDC]\]|"
                                   r"(?:19|20)\d{2}\s*年?\s*第\s*\d+\s*[期卷]",
@@ -3669,7 +3818,8 @@ def parse_docx(path: str, quote_threshold: int = 105,
     if c_class_union:
         # 短引用命中 → keymap（正文渲染用 `\\parencite[locator]{key}`）
         for _fid, _fn in fn_objs.items():
-            if _fn.kind == "pure_citation_matched" and getattr(_fn, "key", ""):
+            if _fn.kind in ("pure_citation_matched", "mixed_split_cite") \
+                    and getattr(_fn, "key", ""):
                 keymap[_fid] = _fn.key
     # 第四十七批（88-02 实测）：同一文献被**多条脚注反复引用**时逐条提升 → bib 重复
     # （88-02 有 19 条重复：同一作品不同页码各生成一条），参考文献区多 2 页。
@@ -3679,12 +3829,20 @@ def parse_docx(path: str, quote_threshold: int = 105,
     seq = 0
     for fid in sorted(fn_objs):
         f = fn_objs[fid]
-        if f.kind in ("pure_ref", "mixed"):
+        if f.kind in ("pure_ref", "mixed", "mixed_split_entry"):
             # 第 121 条（期 88 实测）：英语**论述性脚注**（含年份/see 的散文）会被
             # classify() 误判成 pure_ref；parse_entry() 只能给出 note（没有 author/title），
             # 照旧当文献条目会 ① 生成垃圾 bib、② 把脚注散文从正文抽走。
             # 条目不成立且**不含中文**时降级为纯注释（中文脚注体例不动，避免回归）。
-            _e0 = parse_entry(f.ref)
+            # B-199：**只**对「引导语剥离条目」与「真 mixed 拆分条目」用分类阶段解出
+            # 的字段（`parse_entry(f.ref)` 对「参阅 X, …」/中文条目只能回 note，会误触
+            # 降级或生成垃圾条目）；其余路径保持旧行为（重解析 f.ref），避免改变已
+            # 有稿子的键/碎片合并（90-07 ref03/04/05 靠旧路径与 repair 合并）。
+            _use_cls_entry = (bool(getattr(f, "cue_stripped", False))
+                              or f.kind == "mixed_split_entry")
+            _e0 = (getattr(f, "entry", None) or {}) if _use_cls_entry else {}
+            if _entry_is_note_only(_e0):
+                _e0 = parse_entry(f.ref)
             # 「有文末参考文献区」的英文稿（refs 非空）里，脚注的散文/引注一律不算条目；
             # 没有文末区的短引注（`Cf. X 2012.`，中文稿里的英文脚注常见）保留旧行为，
             # 避免正文引用全丢。
