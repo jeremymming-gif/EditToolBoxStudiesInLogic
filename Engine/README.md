@@ -176,9 +176,9 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 - `n_headings` 合计 **587**；`n_bib` 合计 **2222**
 - sha256[:12]：`baselines/docx_audit.csv` = `9e5f3e596fcc`，`baselines/docx_audit.txt` = `4f2d552c20d1`（来源：笔记仓冻结基线；与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **89.56%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
-**占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
+**占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**234 处 / 54 篇**
 
 **红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：本机工作区状态不写进提交物；现况见 `out/gen_docs-state.txt`（不提交）
 <!-- AUTO:STATE:END -->
