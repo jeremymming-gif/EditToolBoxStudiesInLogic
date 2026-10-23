@@ -9,6 +9,8 @@
 // mergeFieldRows、字段归位（groups/defaults/risk/buildDraft）、isStale 新鲜度。
 // B-190：(o) 段是 git 版本层纯逻辑/源码接线（commit message、命令构造、status/log 解析、
 // fail-soft 文案、只 add 库文件、无自动 push）。
+// B-196：(p) 段是「待处理」页新鲜度四态 reviewFreshness（stale 时视图临时禁用写库入口；
+// 判定口径与 isStale 同一份）。
 // (f) 段是**生产源码接线断言**（按 /tmp/b188-gui/CONTRACT.md 与 BRIEF §5 的目标态）：
 // 视图层（SwiftUI）本身不在本台编译，由 Lead 的 typecheck/build/走查覆盖。
 //
@@ -865,15 +867,24 @@ check("(k) suggestedMergeKey：Segerberg, K. + 1971 → Segerberg1971",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
           key: "x", fields: ["author": #"Segerberg, K."#, "year": "1971"])])
           == "Segerberg1971")
-check("(k) suggestedMergeKey：无 author/editor 且无 year → 回退第一条 key（miaolitian）",
+check("(k) suggestedMergeKey：无 author/editor 且无 year → 回退第一条 key + Merged（B-192）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
-          key: "miaolitian", fields: ["title": "x"])]) == "miaolitian")
-check("(k) suggestedMergeKey：有作者无年份 → 回退第一条 key",
+          key: "miaolitian", fields: ["title": "x"])]) == "miaolitianMerged")
+check("(k) suggestedMergeKey：有作者无年份 → 回退第一条 key + Merged",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
-          key: "1-24", fields: ["author": #"Tindale, C. W."#])]) == "1-24")
-check("(k) suggestedMergeKey：有年份无作者 → 回退第一条 key",
+          key: "1-24", fields: ["author": #"Tindale, C. W."#])]) == "1-24Merged")
+check("(k) suggestedMergeKey：有年份无作者 → 回退第一条 key + Merged",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
-          key: "x", fields: ["year": "2015"])]) == "x")
+          key: "x", fields: ["year": "2015"])]) == "xMerged")
+check("(k) suggestedMergeKey：候选等于自身 key → 追加 Merged（B-192 默认值不撞 keys）",
+      BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
+          key: "Tindale2015",
+          fields: ["author": #"Tindale, C. W."#, "year": "2015"])]) == "Tindale2015Merged")
+check("(k) suggestedMergeKey：候选命中另一条记录 key → 追加 Merged",
+      BibDbFeature.suggestedMergeKey(records: [
+          makeMergeRecord(key: "1-24", fields: ["author": #"Tindale, C. W."#, "year": "2015"]),
+          makeMergeRecord(key: "Tindale2015", fields: ["author": "X", "year": "2000"])])
+          == "Tindale2015Merged")
 check("(k) suggestedMergeKey：重音 folding（Émile → Emile）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
           key: "x", fields: ["author": "Émile, J.", "year": "1999"])]) == "Emile1999")
@@ -925,6 +936,11 @@ check("(k) validateMerge：非法 newKey 字符（空白/逗号/花括号/引号
       })
 check("(k) validateMerge：合法输入返回 []（trim 后 ≥2 条）",
       BibDbFeature.validateMerge(keys: [" A ", "B"], newKey: "Tindale2015").isEmpty)
+check("(k) validateMerge：新 key 等于任一待合并旧 key → 报错（B-192，trim 后也命中）",
+      BibDbFeature.validateMerge(keys: ["A", "B"], newKey: "A")
+          .contains { $0.contains("旧 key") }
+      && BibDbFeature.validateMerge(keys: ["A", "B"], newKey: " B ")
+          .contains { $0.contains("旧 key") })
 check("(k) validateMerge：<2 条 + 空 newKey 同时报 2 个错",
       BibDbFeature.validateMerge(keys: ["A"], newKey: "").count == 2)
 check("(k) validateMerge：全空白 key 过滤后视作不足 2 条",
@@ -1190,6 +1206,37 @@ check("(o) 提交源码：脏否→add→commit(pathspec)→HEAD，且不 push",
 check("(o) 模型/入藏源码不再引用备份制 API", !modelSource.contains("backupDirectory") && !modelSource.contains("listBackups") && !modelSource.contains("func restore(") && !importSource.contains("backupDirectory") && !modelSource.contains("\"--backup\"") && !importSource.contains("\"--backup\"") && modelSource.contains("--expect-db-sha256"))
 check("(o) 入藏段已纯搬迁到 extension（类型不再在 model 声明）", importSource.contains("extension BibDbFeature") && importSource.contains("struct ImportOutcome") && !modelSource.contains("struct ImportOutcome") && importSource.contains("func importBib(") && importSource.contains("importPastedBib("))
 check("(o) 测试台编译清单含新文件", runnerSource.contains("Features/BibDbGit.swift") && runnerSource.contains("Features/BibDbFeature+Import.swift"))
+
+// ── (p) B-196：reviewFreshness 四态（stale 时写入口临时禁用）────────────────
+print("\n── (p) B-196 新鲜度四态 ──")
+// 用 DBManifest() 构造一份与 baseManifest 完全相同的当前清单（参考本文件现有夹具写法）。
+var sameManifest = BibDbFeature.DBManifest()
+sameManifest.path = baseManifest.path
+sameManifest.exists = baseManifest.exists
+sameManifest.size = baseManifest.size
+sameManifest.mtime = baseManifest.mtime
+sameManifest.sha256 = baseManifest.sha256
+check("(p) reviewFreshness：current nil → .missingDB（库路径缺失/读不到）",
+      BibDbFeature.reviewFreshness(cached: baseManifest, current: nil) == .missingDB)
+check("(p) reviewFreshness：cached nil → .noBaseline（没成功加载过，不当作过期）",
+      BibDbFeature.reviewFreshness(cached: nil, current: makeManifest()) == .noBaseline)
+check("(p) reviewFreshness：两边都 nil → .missingDB（current 优先）",
+      BibDbFeature.reviewFreshness(cached: nil, current: nil) == .missingDB)
+check("(p) reviewFreshness：sha 变 → .stale（跨页写库后的实测形态）",
+      BibDbFeature.reviewFreshness(
+          cached: baseManifest,
+          current: makeManifest(sha256: String(repeating: "b", count: 64))) == .stale)
+check("(p) reviewFreshness：size 变 → .stale",
+      BibDbFeature.reviewFreshness(cached: baseManifest,
+                                   current: makeManifest(size: 6_000_001)) == .stale)
+check("(p) reviewFreshness：mtime 变 → .stale",
+      BibDbFeature.reviewFreshness(cached: baseManifest,
+                                   current: makeManifest(mtime: 1_700_000_005)) == .stale)
+check("(p) reviewFreshness：完全一致 → .fresh",
+      BibDbFeature.reviewFreshness(cached: baseManifest, current: sameManifest) == .fresh)
+check("(p) reviewFreshness：fresh ⇔ !isStale（判定口径只有一份）",
+      (BibDbFeature.reviewFreshness(cached: baseManifest, current: makeManifest()) == .fresh)
+      == !BibDbFeature.isStale(cached: baseManifest, current: makeManifest()))
 
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

@@ -53,8 +53,11 @@ final class BibDbReviewModel: ObservableObject {
     @Published var manifest: BibDbFeature.DBManifest? = nil
     @Published var healthSeconds: Double = 0
     @Published var tracesTotal = 0
-    /// 进页发现库变了 → 提示点「刷新列表」，**不自动起引擎**
+    /// 进页发现库变了 → 提示点「刷新列表」，**不自动起引擎**（B-188）
     @Published var freshnessNotice = ""
+    /// B-196：库已过期（`.stale`）→ 本页所有写库入口临时置灰；复查 `.fresh` / 刷新成功回填后清除。
+    /// 只影响界面入口，写前 `--expect-db-sha256` 闸不变。
+    @Published var stale = false
     /// 是否完成过一次加载（首次激活加载；之后只查新鲜度）
     @Published var loadedOnce = false
     /// 每次完整加载完成的世代号（视图据此消费「加载后才可能定位到」的跳转目标）
@@ -129,31 +132,41 @@ final class BibDbReviewModel: ObservableObject {
         checkFreshness()
     }
 
-    /// 新鲜度检查：后台算 `dbManifest`（6 MB 流式 sha），与缓存的 manifest 比 `isStale`。
-    /// 过期 → 只显示「库已变化：点刷新列表」提示；**绝不自动重跑引擎**。
+    /// 新鲜度检查：后台算 `dbManifest`（6 MB 流式 sha），用 `reviewFreshness`（内部即 `isStale` 口径）分四态。
+    /// 过期 → 提示 + **临时禁用本页写库入口**；仍然**绝不自动重跑引擎**（B-188 设计保留）。
     func checkFreshness() {
         guard !running, !checkingFreshness else { return }
         guard let db = BibDbFeature.existingDBPath(), !db.isEmpty else {
+            // B-196 .missingDB：保持 B-188 原有提示；不当作过期
+            stale = false
             freshnessNotice = "引用库文件不存在：先到「入藏」页导入 .bib，或到「引用库设置」页指定笔记仓。"
             return
         }
         let cached = manifest
-        if cached == nil {
-            // 首次加载失败 / 库不存在：不当作「过期」，明确让用户点「刷新列表」重试
-            freshnessNotice = "还没成功加载过（或库文件不存在）：点「刷新列表」重试。"
-            return
-        }
         checkingFreshness = true
         let model = self
         DispatchQueue.global(qos: .utility).async {
             let current = BibDbFeature.dbManifest(db: db)
             DispatchQueue.main.async {
                 model.checkingFreshness = false
-                if BibDbFeature.isStale(cached: cached, current: current) {
-                    model.freshnessNotice = "库已变化（外部 CLI 改过库？）：点「刷新列表」重新加载"
-                        + "（本页不会自动重跑引擎）。"
-                } else {
+                switch BibDbFeature.reviewFreshness(cached: cached, current: current) {
+                case .stale:
+                    // B-196：只提示 + 禁用写入口，不自动重跑引擎
+                    model.stale = true
+                    model.freshnessNotice = "库已变化（外部 CLI 改过库？）：本页写库已临时禁用，"
+                        + "点「刷新列表」重新加载。"
+                case .fresh:
+                    model.stale = false
                     model.freshnessNotice = ""
+                case .noBaseline:
+                    // B-196：首次加载失败 / 库不存在，不当作「过期」；保持 B-188 原有提示
+                    model.stale = false
+                    model.freshnessNotice = "还没成功加载过（或库文件不存在）：点「刷新列表」重试。"
+                case .missingDB:
+                    // 异步路径里 current 由 dbManifest 返回、恒非 nil；保留兜底文案
+                    model.stale = false
+                    model.freshnessNotice = "引用库文件不存在：先到「入藏」页导入 .bib，"
+                        + "或到「引用库设置」页指定笔记仓。"
                 }
             }
         }
@@ -189,6 +202,9 @@ final class BibDbReviewModel: ObservableObject {
                     model.conflicts = conflicts
                     model.reviewCache = BibDbFeature.ReviewCacheState(
                         outcome: conflicts, showResolved: model.showResolvedConflicts)
+                    // B-196：字段冲突列表已按当前库回填（写库入口的安全依据）→ 解除写入口禁用。
+                    // 库健康段是展示数据；它失败不影响写库 sha 闸，保守起见仍在 error 里报。
+                    model.stale = false
                 }
                 if health.error == nil { model.health = health }
                 model.traces = scan.traces
@@ -941,17 +957,24 @@ struct BibDbReviewView: View {
                 conflictDetail(item)
                 Spacer(minLength: 0)
                 VStack(alignment: .trailing, spacing: 6) {
+                    // B-196：库已过期（stale）→ 行内写入口全部临时置灰，先「刷新列表」
                     Button("保留旧值") { askResolve(item, action: "keep") }
-                        .disabled(model.running)
-                        .help("keep：保留库内已核实旧值（只写裁决元数据，不改字段）")
+                        .disabled(model.running || model.stale)
+                        .help(model.stale
+                              ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                              : "keep：保留库内已核实旧值（只写裁决元数据，不改字段）")
                     Button("采用新值") { askResolve(item, action: "adopt") }
-                        .disabled(model.running || !item.hasFingerprint)
-                        .help(item.hasFingerprint
-                              ? "adopt：逐字段采用新稿值（写库；会二次确认；成功后自动本地提交）"
-                              : "该条冲突无指纹（旧数据），引擎无法精确定位，需用编辑裁决 bib")
+                        .disabled(model.running || model.stale || !item.hasFingerprint)
+                        .help(model.stale
+                              ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                              : (item.hasFingerprint
+                                 ? "adopt：逐字段采用新稿值（写库；会二次确认；成功后自动本地提交）"
+                                 : "该条冲突无指纹（旧数据），引擎无法精确定位，需用编辑裁决 bib"))
                     Button("待人工") { askResolve(item, action: "defer") }
-                        .disabled(model.running)
-                        .help("defer：标为待人工查证，先从待裁决列表移走（不改字段）")
+                        .disabled(model.running || model.stale)
+                        .help(model.stale
+                              ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                              : "defer：标为待人工查证，先从待裁决列表移走（不改字段）")
                 }
                 .frame(width: 96)
             }
@@ -1169,9 +1192,11 @@ struct BibDbReviewView: View {
                     Logger(store: log)("引用库待处理：打开字段归位预览（missing_field）…\n")
                     model.fieldFixTarget = ReviewFieldFixTarget(registry: "missing_field")
                 }
-                .disabled(model.running)
-                .help("来自引擎 suggest-field-fixes --registry missing_field："
-                      + "勾选后逐条 edit --apply（统一 sha 闸；整批写完后自动本地提交一次）")
+                .disabled(model.running || model.stale)
+                .help(model.stale
+                      ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                      : "来自引擎 suggest-field-fixes --registry missing_field："
+                        + "勾选后逐条 edit --apply（统一 sha 闸；整批写完后自动本地提交一次）")
                 Text("A 类：缺 title/缺 year 等，候选归位来自引擎；不自动应用")
                     .font(.caption2).foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
@@ -1182,8 +1207,10 @@ struct BibDbReviewView: View {
                     Logger(store: log)("引用库待处理：打开字段归位预览（unknown_entry_type）…\n")
                     model.fieldFixTarget = ReviewFieldFixTarget(registry: "unknown_entry_type")
                 }
-                .disabled(model.running)
-                .help("来自引擎 suggest-field-fixes --registry unknown_entry_type：按 anomaly_kind 分组")
+                .disabled(model.running || model.stale)
+                .help(model.stale
+                      ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                      : "来自引擎 suggest-field-fixes --registry unknown_entry_type：按 anomaly_kind 分组")
                 Text("C 类：entry_type 笔误 / DOI 或占位符当 key（不自动应用）")
                     .font(.caption2).foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
@@ -1276,13 +1303,14 @@ struct BibDbReviewView: View {
                     Text(indexed.element)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
+                    // B-196：这两类打开的是会写库的 sheet；stale 时一并置灰
                     Button("编辑条目…") { openEditor(indexed.element) }
                         .controlSize(.small)
-                        .disabled(model.running)
+                        .disabled(model.running || model.stale)
                     if indexed.offset == 0 {
                         Button("对照合并…") { openMerge(pair) }
                             .controlSize(.small)
-                            .disabled(model.running)
+                            .disabled(model.running || model.stale)
                     }
                 }
                 Spacer(minLength: 0)
@@ -1298,7 +1326,7 @@ struct BibDbReviewView: View {
                         Spacer(minLength: 0)
                         Button("编辑条目…") { openEditor(indexed.element) }
                             .controlSize(.small)
-                            .disabled(model.running)
+                            .disabled(model.running || model.stale)
                     }
                 }
                 if records.count > limit {
@@ -1348,11 +1376,15 @@ struct BibDbReviewView: View {
                 Button("一键全部采用…") { model.beginAdoptAll() }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
-                    .disabled(model.running || conflicts.pending == 0)
-                    .help("先 dry-run 预览（逐条 old→new），二次确认后才真写")
+                    .disabled(model.running || model.stale || conflicts.pending == 0)
+                    .help(model.stale
+                          ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                          : "先 dry-run 预览（逐条 old→new），二次确认后才真写")
                 Button("编辑裁决 bib…") { beginEditForFirstPending(conflicts) }
-                    .disabled(model.running || conflicts.pendingItems.isEmpty)
-                    .help("预填库内条目 → TextEditor 编辑 → dry-run 预览差异 → 确认写库")
+                    .disabled(model.running || model.stale || conflicts.pendingItems.isEmpty)
+                    .help(model.stale
+                          ? "库已变化：先点上方「刷新列表」重新加载（写入口临时禁用）"
+                          : "预填库内条目 → TextEditor 编辑 → dry-run 预览差异 → 确认写库")
                 Spacer()
                 Text("待裁决 \(conflicts.pending) 条")
                     .font(.caption).foregroundStyle(.secondary)

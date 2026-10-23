@@ -1467,6 +1467,28 @@ enum BibDbFeature {
         return false
     }
 
+    /// B-196：把 `isStale` 的「过期/不过期」拆成「待处理」页可分支的四态（**纯逻辑**）：
+    /// - `.missingDB`：当前读不到库（`current == nil`；库路径缺失/未指定）
+    /// - `.noBaseline`：还没有成功加载过的缓存（`cached == nil`），**不当作过期**
+    /// - `.stale`：缓存与当前库不一致（路径/存在性/size/mtime/sha，口径同 `isStale`）
+    /// - `.fresh`：完全一致
+    ///
+    /// 视图只在 `.stale` 时**临时禁用写库入口**并提示点「刷新列表」，仍然不自动重跑引擎
+    /// （B-188 设计保留）；写前 `--expect-db-sha256` 校验不变，只是把「首击被拒」提前说明。
+    enum ReviewFreshness: Equatable {
+        case fresh
+        case stale
+        case noBaseline
+        case missingDB
+    }
+
+    /// B-196：分四态（判定口径与 `isStale` 完全一致，不另写一套）。
+    static func reviewFreshness(cached: DBManifest?, current: DBManifest?) -> ReviewFreshness {
+        guard let current else { return .missingDB }
+        guard let cached else { return .noBaseline }
+        return isStale(cached: cached, current: current) ? .stale : .fresh
+    }
+
     // MARK: B-188-1：库健康（lint --with-records 的结构化 records）
 
     /// 一次库健康加载结果（「待处理」页状态条 + 「库健康」段的数据源）。
@@ -2220,13 +2242,18 @@ enum BibDbFeature {
 
     /// 合并后的建议新 key（**纯逻辑**）：第一作者家族姓（去 LaTeX/重音，只留 A-Za-z）+ 第一条的
     /// 4 位 year；无作者/无年份 → 第一条 key。例：`Tindale, C. W.` + 2015 → `Tindale2015`。
+    /// B-192：候选若等于任一待合并 key（或与其它记录 key 相同），追加 `Merged`，
+    /// 避免默认值直接命中「new_key ∈ keys」的引擎写前拒绝。
     static func suggestedMergeKey(records: [MergeRecord]) -> String {
         guard let first = records.first else { return "" }
+        let keys = Set(records.map(\.key))
         let author = first.fields["author"] ?? first.fields["editor"] ?? ""
         let surname = plainAuthorSurname(author)
         let year = firstFourDigitYear(first.fields["year"] ?? first.fields["date"] ?? "")
-        guard !surname.isEmpty, !year.isEmpty else { return first.key }
-        return surname + year
+        let base = (surname.isEmpty || year.isEmpty) ? first.key : surname + year
+        var candidate = keys.contains(base) ? base + "Merged" : base
+        while keys.contains(candidate) { candidate += "Merged" }
+        return candidate
     }
 
     /// `Tindale, C. W.` → `Tindale`（第一作者；含逗号取逗号前，否则最后一个 token），
@@ -2309,7 +2336,8 @@ enum BibDbFeature {
         return rows
     }
 
-    /// 合并前纯逻辑校验（其余交引擎）：≥2 条、不重复、新 key 非空且无空白/逗号/花括号/引号。
+    /// 合并前纯逻辑校验（其余交引擎）：≥2 条、不重复、新 key 非空且无空白/逗号/花括号/引号，
+    /// 且不能等于任一待合并的旧 key（B-192：旧 key 会全部进 aliases）。
     static func validateMerge(keys: [String], newKey: String) -> [String] {
         var errors: [String] = []
         let cleaned = keys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2321,6 +2349,8 @@ enum BibDbFeature {
             errors.append("合并必须给新 key（作者姓+年份，如 Tindale2015）。")
         } else if key.range(of: #"[\s,{}()\"]"#, options: .regularExpression) != nil {
             errors.append("新 key `\(key)` 含空白/逗号/花括号/引号，不是合法 BibTeX key。")
+        } else if cleaned.contains(key) {
+            errors.append("新 key `\(key)` 不能等于待合并的旧 key；旧 key 会全部进 aliases，请换一个全新的规范 key。")
         }
         return errors
     }
