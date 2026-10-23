@@ -747,7 +747,8 @@ struct BibDbReviewView: View {
             （C 编号由引擎固定、不重排）。
             ② **库健康**——引擎 `lint --with-records` 的 8 类 warning（重复记录 / 同一作品多记录 /
             缺字段 / entry_type 笔误 / alias / 未核实…）按固定顺序折叠；展开按**受影响记录**逐条列出，
-            每行可「编辑条目」，重复/近重复对可「对照合并」，缺字段/entry_type 类可开批量预览归位。
+            每行可「编辑条目」，重复/近重复对可「对照合并」或「确认不同（不再提示）」，
+            缺字段/entry_type 类可开批量预览归位。
             ③ **已处理**——冲突裁决 + 编辑/合并写库留痕（动作 / key / 时间），默认折叠、点开一行看明细。
 
             写库纪律：**dry-run 预览 → 二次确认 → 写前校验库 sha → 原子写 → 写库成功后自动本地
@@ -1121,7 +1122,8 @@ struct BibDbReviewView: View {
                 Spacer(minLength: 0)
             }
             Text("数据源：引擎 `lint --with-records`（8 类固定顺序；展开分类看逐条受影响记录，"
-                 + "记录多时用搜索/「再显示 200 条」；重复/近重复对可打开「对照合并」，**绝不自动合并**）。")
+                 + "记录多时用搜索/「再显示 200 条」；重复/近重复对可打开「对照合并」或"
+                 + "「确认不同（不再提示）」，**绝不自动合并**）。")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
             if let health = model.health {
@@ -1154,7 +1156,8 @@ struct BibDbReviewView: View {
                 }
                 Spacer(minLength: 0)
                 if category.registry == "duplicates" || category.registry == "near_duplicates" {
-                    Text("可逐对「对照合并」").font(.caption2).foregroundStyle(.tertiary)
+                    Text("可逐对「对照合并」或「确认不同（不再提示）」")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
         } content: {
@@ -1278,6 +1281,13 @@ struct BibDbReviewView: View {
         }
     }
 
+    /// registry → `ack-duplicates --code`（B-205）。**两张名字不同**：待处理页的 registry
+    /// `duplicates` 在引擎里是「重复记录」= `duplicate_content`；`near_duplicates` 同名。
+    /// 映射只此一处（别在行内再判一次）。
+    private func healthAckCode(_ registry: String) -> String {
+        registry == "duplicates" ? "duplicate_content" : "near_duplicates"
+    }
+
     private func healthItem(category: BibDbFeature.LintWarningCategory,
                             item: BibDbFeature.LintWarningItem) -> some View {
         let pair = mergePairKeys(category.registry, item)
@@ -1327,6 +1337,13 @@ struct BibDbReviewView: View {
                         Button("对照合并…") { openMerge(pair) }
                             .controlSize(.small)
                             .disabled(model.running || model.stale)
+                        // B-205：确认「这两条是不同条目」= 保持两条、不改库；写 sidecar
+                        // （bib_db/health-ignore.json）+ 自动本地 commit（不推送）+ 刷新列表。
+                        BibDbHealthAckControl(
+                            code: healthAckCode(category.registry),
+                            keys: pair,
+                            disabled: model.running || model.stale,
+                            onFinished: { model.refreshAfterWrite() })
                     }
                 }
                 Spacer(minLength: 0)

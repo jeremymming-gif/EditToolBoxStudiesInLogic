@@ -14,6 +14,8 @@
 // refspec 无 force）。
 // B-196：(p) 段是「待处理」页新鲜度四态 reviewFreshness（stale 时视图临时禁用写库入口；
 // 判定口径与 isStale 同一份）。
+// B-205：(o3) 段是重复/近重复「确认不同（不再提示）」：引擎 argv（--apply --json）、
+// JSON 解析、sidecar 的 git 命令（pathspec 只该文件、无 force/无 push）、视图接线。
 // (f) 段是**生产源码接线断言**（按 /tmp/b188-gui/CONTRACT.md 与 BRIEF §5 的目标态）：
 // 视图层（SwiftUI）本身不在本台编译，由 Lead 的 typecheck/build/走查覆盖。
 //
@@ -1360,6 +1362,150 @@ check("(p) reviewFreshness：完全一致 → .fresh",
 check("(p) reviewFreshness：fresh ⇔ !isStale（判定口径只有一份）",
       (BibDbFeature.reviewFreshness(cached: baseManifest, current: makeManifest()) == .fresh)
       == !BibDbFeature.isStale(cached: baseManifest, current: makeManifest()))
+
+// ── (o3) B-205：确认不同（不再提示）——引擎 argv/解析 + sidecar git + 视图接线 ──
+print("\n── (o3) B-205 确认不同（不再提示）──")
+let healthAckSource = readSource("Views/BibDbHealthAck.swift")
+let sidecarRel = "bib_db/health-ignore.json"
+let ackDB = "/tmp/b205/bib_db/bibliography.jsonl"
+let ackArgs = BibDbFeature.ackDuplicatesArguments(db: ackDB, code: "near_duplicates",
+                                                 keys: ["A2019", "B2020"],
+                                                 reason: "用户确认不同条目（GUI；B-205）")
+check("(o3) ackDuplicatesArguments：精确 argv（--apply --json、code/keys/reason 位置）",
+      ackArgs == ["ack-duplicates", "--db", ackDB, "--code", "near_duplicates",
+                  "--keys", "A2019,B2020", "--reason", "用户确认不同条目（GUI；B-205）",
+                  "--apply", "--json"], "\(ackArgs)")
+check("(o3) ackDuplicatesArguments：固定 --apply（GUI 只走真写）、无 --dry-run、--json 恰 1 个",
+      ackArgs.first == "ack-duplicates" && ackArgs.contains("--apply")
+      && !ackArgs.contains("--dry-run") && ackArgs.filter { $0 == "--json" }.count == 1)
+let ackDefault = BibDbFeature.AckDuplicatesOutcome()
+check("(o3) AckDuplicatesOutcome 默认值：未写/无 sidecar/计数 0/无 error",
+      !ackDefault.added && !ackDefault.written && ackDefault.sidecarPath.isEmpty
+      && ackDefault.entriesBefore == 0 && ackDefault.entriesAfter == 0
+      && ackDefault.error == nil && ackDefault.seconds == 0)
+let ackPayload: [String: Any] = [
+    "command": "ack-duplicates", "dry_run": false, "db": ackDB,
+    "sidecar_path": "/tmp/b205/bib_db/health-ignore.json",
+    "code": "near_duplicates", "keys": ["A2019", "B2020"],
+    "canonical_keys": ["A2019", "B2020"],
+    "added": true, "written": true, "entries_before": 0, "entries_after": 1,
+]
+let ackParsed = BibDbFeature.parseAckDuplicates(ackPayload)
+check("(o3) parseAckDuplicates：added/written/sidecar_path/entries_before→after",
+      ackParsed.added && ackParsed.written
+      && ackParsed.sidecarPath == "/tmp/b205/bib_db/health-ignore.json"
+      && ackParsed.entriesBefore == 0 && ackParsed.entriesAfter == 1
+      && ackParsed.error == nil)
+let ackIdempotent = BibDbFeature.parseAckDuplicates(["added": false, "written": false,
+                                                     "entries_before": 3,
+                                                     "entries_after": 3])
+check("(o3) parseAckDuplicates：幂等（added=false/written=false、条目数不变）",
+      !ackIdempotent.added && !ackIdempotent.written
+      && ackIdempotent.entriesBefore == 3 && ackIdempotent.entriesAfter == 3
+      && ackIdempotent.error == nil)
+let ackFailed = BibDbFeature.parseAckDuplicates(
+    ["error": "sidecar 损坏：先修 bib_db/health-ignore.json"])
+check("(o3) parseAckDuplicates：error 取 JSON error（缺键时其余取默认值）",
+      ackFailed.error == "sidecar 损坏：先修 bib_db/health-ignore.json"
+      && !ackFailed.added && !ackFailed.written && ackFailed.entriesAfter == 0)
+let ackRunSrc = sourceSlice(modelSource, "static func ackDuplicates(db: String",
+                            "// MARK: - 从路径推断来源期")
+check("(o3) ackDuplicates 源码：runJSON + 精确 argv + parseAckDuplicates + failureText（同步）",
+      ackRunSrc.contains("runJSON(ackDuplicatesArguments(")
+      && ackRunSrc.contains("parseAckDuplicates(payload)")
+      && ackRunSrc.contains("failureText(run)")
+      && ackRunSrc.contains("existingExplicitDB(db)")
+      && !ackRunSrc.contains("DispatchQueue") && !ackRunSrc.contains("--dry-run"),
+      ackRunSrc.isEmpty ? "（源码切片为空：签名或 MARK 变了）" : "")
+check("(o3) ackDuplicates 源码：引擎 rc2 优先用 JSON error、无 JSON 才 failureText",
+      ackRunSrc.contains("guard let payload = run.json")
+      && ackRunSrc.contains("out.error == nil && run.status != 0"))
+check("(o3) healthIgnoreRelativePath = bib_db/health-ignore.json",
+      BibDbGit.healthIgnoreRelativePath == sidecarRel)
+check("(o3) health-ignore 三条 git 命令：pathspec 只该文件",
+      BibDbGit.healthIgnoreStatusArguments() == ["status", "--porcelain", "--", sidecarRel]
+      && BibDbGit.healthIgnoreAddArguments() == ["add", "--", sidecarRel]
+      && BibDbGit.healthIgnoreCommitArguments(message: "m")
+          == ["commit", "-m", "m", "--", sidecarRel]
+      && BibDbGit.healthIgnoreCommitArguments(message: "m").filter { $0.contains("/") }
+          == [sidecarRel])
+check("(o3) healthIgnoreCommitMessage：`<keys>；B-205` 固定格式",
+      BibDbGit.healthIgnoreCommitMessage(detail: "A2019≈B2020")
+          == "引用库：确认不同（不再提示）（A2019≈B2020；B-205）")
+check("(o3) healthIgnoreCommitMessage：空 detail 用 sidecar 路径兜底",
+      BibDbGit.healthIgnoreCommitMessage(detail: "  ")
+          == "引用库：确认不同（不再提示）（bib_db/health-ignore.json；B-205）")
+let sidecarRange = gitSource.range(of: "static func commitHealthIgnore")
+let sidecarCommitSrc = sidecarRange.map { String(gitSource[$0.upperBound...]) } ?? ""
+check("(o3) commitHealthIgnore 源码：locateRepo→status 脏否→add→commit→HEAD（pathspec 只 sidecar）",
+      sidecarCommitSrc.contains("locateRepo(db: db)")
+      && sidecarCommitSrc.contains("healthIgnoreStatusArguments()")
+      && sidecarCommitSrc.contains("isDBDirty(status.output)")
+      && sidecarCommitSrc.contains("healthIgnoreAddArguments()")
+      && sidecarCommitSrc.contains("healthIgnoreCommitArguments(message: message)")
+      && sidecarCommitSrc.contains("headShaArguments()")
+      && !sidecarCommitSrc.contains("dbRelativePath"),
+      sidecarCommitSrc.isEmpty ? "（源码切片为空：函数名变了）" : "")
+check("(o3) commitHealthIgnore 源码：无 push/fetch/reset/force（只本地提交）",
+      !sidecarCommitSrc.contains("pushArguments(") && !sidecarCommitSrc.contains("\"push\"")
+      && !sidecarCommitSrc.contains("fetch") && !sidecarCommitSrc.contains("reset")
+      && !sidecarCommitSrc.contains("--force") && !sidecarCommitSrc.contains("--hard"))
+check("(o3) commitHealthIgnore 源码：身份错误用 identityErrorText、无改动不空 commit（fail-soft）",
+      sidecarCommitSrc.contains("isIdentityError(commit.output)")
+      && sidecarCommitSrc.contains("identityErrorText")
+      && sidecarCommitSrc.contains("guard isDBDirty(status.output) else")
+      && sidecarCommitSrc.contains("queryUnpushedCount(repo: repo)"))
+check("(o3) 新视图文件存在：BibDbHealthAckControl（按钮 + 二次确认 alert + 自查状态）",
+      healthAckSource.contains("struct BibDbHealthAckControl: View")
+      && healthAckSource.contains("Button(\"确认不同…\")")
+      && healthAckSource.contains(".controlSize(.small)")
+      && healthAckSource.contains("@State private var confirm")
+      && healthAckSource.contains("@State private var busy")
+      && healthAckSource.contains("@State private var notice")
+      && healthAckSource.contains("@State private var warning"),
+      healthAckSource.isEmpty ? "（文件尚未落盘：Views/BibDbHealthAck.swift）" : "")
+check("(o3) 视图：AX 名字带 keys（走查唯一定位）+ help 提到 sidecar/git revert",
+      healthAckSource.contains(
+          ".accessibilityLabel(Text(\"确认不同 \\(keys.joined(separator: \"≈\"))\"))")
+      && healthAckSource.contains("bib_db/health-ignore.json")
+      && healthAckSource.contains("git revert"))
+check("(o3) 视图：二次确认标题按 keys.count 动态（2 条原文案不变、组用「这些记录」）+ 按钮不变",
+      healthAckSource.contains("keys.count == 2")
+      && healthAckSource.contains(".alert(confirmTitle, isPresented: $confirm)")
+      && healthAckSource.contains("\"确认这两条是不同条目？\"")
+      && healthAckSource.contains("\"确认这些记录是不同条目？\"")
+      && healthAckSource.contains("保持两条记录、不做合并")
+      && healthAckSource.contains("保持这些记录为各自独立条目")
+      && healthAckSource.contains("Button(\"取消\", role: .cancel)")
+      && healthAckSource.contains("Button(\"确认不同（不再提示）\")")
+      && healthAckSource.contains("不改 bibliography.jsonl")
+      && healthAckSource.contains("不推送"))
+check("(o3) 视图：后台 ackDuplicates(reason: 用户确认不同条目) → commitHealthIgnore → onFinished",
+      healthAckSource.contains("BibDbFeature.ackDuplicates(")
+      && healthAckSource.contains("reason: \"用户确认不同条目（GUI；B-205）\"")
+      && healthAckSource.contains("BibDbGit.commitHealthIgnore(")
+      && healthAckSource.contains("onFinished()")
+      && healthAckSource.contains("DispatchQueue.global"))
+check("(o3) 视图：busy/disabled 置灰、引擎失败黄字、提交失败 fail-soft 黄字",
+      healthAckSource.contains(".disabled(disabled || busy)")
+      && healthAckSource.contains("warning = \"确认不同失败（库与 sidecar 未改）：\" + error")
+      && healthAckSource.contains("本地提交失败"))
+check("(o3) ReviewView 接线：BibDbHealthAckControl(code/keys/disabled/onFinished 四项齐全)",
+      reviewSource.contains("BibDbHealthAckControl(")
+      && reviewSource.contains("code: healthAckCode(category.registry)")
+      && reviewSource.contains("keys: pair")
+      && reviewSource.contains("disabled: model.running || model.stale")
+      && reviewSource.contains("onFinished: { model.refreshAfterWrite() }"))
+check("(o3) ReviewView：registry→code 映射（duplicates→duplicate_content / near_duplicates）",
+      reviewSource.contains(
+          "registry == \"duplicates\" ? \"duplicate_content\" : \"near_duplicates\""))
+check("(o3) ReviewView：按钮在「对照合并…」之后；说明文案同步「确认不同（不再提示）」",
+      ({ () -> Bool in
+          guard let merge = reviewSource.range(of: "Button(\"对照合并…\")"),
+                let ack = reviewSource.range(of: "BibDbHealthAckControl(") else { return false }
+          return merge.lowerBound < ack.lowerBound
+      }())
+      && reviewSource.components(separatedBy: "确认不同（不再提示）").count - 1 >= 3)
 
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

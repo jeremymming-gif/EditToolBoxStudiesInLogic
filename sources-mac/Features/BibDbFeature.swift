@@ -2847,6 +2847,81 @@ enum BibDbFeature {
         return out
     }
 
+    // MARK: B-205：重复/近重复「确认不同（不再提示）」（health-ignore sidecar）
+
+    /// `ack-duplicates --apply --json` 的界面模型（spec §2/§4）。
+    ///
+    /// 语义：确认「这两条是不同条目」= **保持两条记录、不合并、不改库**，只把这一对写进
+    /// notes 仓 `bib_db/health-ignore.json`（可审计；撤销用 `git revert` 或删掉该条目）。
+    /// `added=false / written=false` = 此前已确认（幂等，零写入）。
+    struct AckDuplicatesOutcome {
+        var added = false
+        var written = false
+        var sidecarPath = ""
+        var entriesBefore = 0
+        var entriesAfter = 0
+        var error: String?
+        var seconds: Double = 0
+    }
+
+    /// `ack-duplicates` 的 argv（**纯函数**；第 7 台精确断言）。
+    /// 固定 `--apply`：GUI 只在用户二次确认后才调它（默认 dry-run 是 CLI 契约，GUI 不用）。
+    static func ackDuplicatesArguments(db: String, code: String, keys: [String],
+                                       reason: String) -> [String] {
+        ["ack-duplicates", "--db", db, "--code", code,
+         "--keys", keys.joined(separator: ","),
+         "--reason", reason, "--apply", "--json"]
+    }
+
+    /// `ack-duplicates --json` 的 payload → 界面模型（**纯函数**；缺键取默认值）。
+    /// `error` 取 JSON 的 error（引擎校验失败时 rc2 也带它）。
+    static func parseAckDuplicates(_ payload: [String: Any]) -> AckDuplicatesOutcome {
+        var out = AckDuplicatesOutcome()
+        out.added = (payload["added"] as? Bool) == true
+        out.written = (payload["written"] as? Bool) == true
+        out.sidecarPath = stringValue(payload["sidecar_path"])
+        out.entriesBefore = intValue(payload["entries_before"])
+        out.entriesAfter = intValue(payload["entries_after"])
+        let error = stringValue(payload["error"])
+        if !error.isEmpty { out.error = error }
+        return out
+    }
+
+    /// 确认「不同条目」：写 sidecar（`--apply`；**不改库**）。**同步；后台队列调**。
+    ///
+    /// 引擎失败（坏 sidecar / 该对已不存在 / key 解析不了）→ rc2，`error` 是引擎中文原因；
+    /// 失败一律零写入（由引擎保证），界面只显示黄字、不刷新列表。
+    static func ackDuplicates(db: String, code: String, keys: [String],
+                              reason: String) -> AckDuplicatesOutcome {
+        let startedAt = Date()
+        var out = AckDuplicatesOutcome()
+        guard let path = existingExplicitDB(db) else {
+            out.error = dbPathError(db)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        let cleaned = keys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else {
+            out.error = "确认不同至少要有一个 key（收到空列表）：本次未调用引擎。"
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        let run = runJSON(ackDuplicatesArguments(db: path, code: code, keys: cleaned,
+                                                 reason: reason))
+        guard let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        out = parseAckDuplicates(payload)
+        if out.error == nil && run.status != 0 {
+            out.error = failureText(run)
+        }
+        out.seconds = Date().timeIntervalSince(startedAt)
+        return out
+    }
+
     // MARK: - 从路径推断来源期 / 篇目录名
 
     /// 从 bib 路径推断「来源期」与「篇目录名」：

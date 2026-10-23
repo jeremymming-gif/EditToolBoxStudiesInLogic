@@ -771,4 +771,93 @@ enum BibDbGit {
             return finish()
         }
     }
+
+    // MARK: - B-205：health-ignore sidecar 的自动本地 commit
+
+    /// 「确认不同（不再提示）」写入的 sidecar（相对仓库根，与引擎同一路径）。
+    static let healthIgnoreRelativePath = "bib_db/health-ignore.json"
+
+    /// `git status --porcelain -- <sidecar>`：只看这一个文件脏否。
+    static func healthIgnoreStatusArguments() -> [String] {
+        ["status", "--porcelain", "--", healthIgnoreRelativePath]
+    }
+
+    /// add：**只**追加 sidecar（pathspec 限定；工作区其它脏文件绝不带进这次提交）。
+    static func healthIgnoreAddArguments() -> [String] {
+        ["add", "--", healthIgnoreRelativePath]
+    }
+
+    /// commit：`--` 限定只提交 sidecar。
+    static func healthIgnoreCommitArguments(message: String) -> [String] {
+        ["commit", "-m", message, "--", healthIgnoreRelativePath]
+    }
+
+    /// 自动 commit 的说明（设计卡 §4 固定格式）：`引用库：确认不同（不再提示）（<keys>；B-205）`。
+    static func healthIgnoreCommitMessage(detail: String) -> String {
+        let text = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = text.isEmpty ? healthIgnoreRelativePath : text
+        return "引用库：确认不同（不再提示）（\(label)；B-205）"
+    }
+
+    /// 「确认不同（不再提示）」成功后自动本地 commit（**只 add/commit sidecar、绝不 push**）。
+    ///
+    /// - Parameters:
+    ///   - db: 库文件路径（据此定位仓库；sidecar 固定在同一仓库的 `bib_db/health-ignore.json`）。
+    ///   - detail: 提交说明里的对象（通常 `A≈B`）。
+    ///
+    /// 无改动（幂等重确认 / sidecar 未变）→ `committed=false`、不产生空 commit；
+    /// 非 repo / git 缺失 / 身份未配置 → 只填 `error`：sidecar 已写入、裁决不丢（fail-soft）。
+    /// **同步；只许后台队列调**。
+    static func commitHealthIgnore(db: String, detail: String) -> CommitResult {
+        let startedAt = Date()
+        var out = CommitResult()
+        out.message = healthIgnoreCommitMessage(detail: detail)
+        func finish() -> CommitResult {
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        switch locateRepo(db: db) {
+        case .failed(let reason):
+            out.error = reason
+            return finish()
+        case .ok(let repo):
+            guard let status = runGit(repo: repo, healthIgnoreStatusArguments()) else {
+                out.error = "未找到 git（\(gitPath)）：sidecar 已写入，但未生成本地提交。"
+                return finish()
+            }
+            guard status.status == 0 else {
+                out.error = "读不到 sidecar 状态：" + failureText(status.output)
+                return finish()
+            }
+            guard isDBDirty(status.output) else {
+                return finish()                       // 无改动：不产生空 commit（error = nil）
+            }
+            guard let add = runGit(repo: repo, healthIgnoreAddArguments()) else {
+                out.error = "git add 无法启动：sidecar 已写入，但未生成本地提交。"
+                return finish()
+            }
+            guard add.status == 0 else {
+                out.error = "git add 失败（sidecar 已写入）：" + failureText(add.output)
+                return finish()
+            }
+            let message = out.message
+            guard let commit = runGit(repo: repo,
+                                      healthIgnoreCommitArguments(message: message)) else {
+                out.error = "git commit 无法启动：sidecar 已写入，但未生成本地提交。"
+                return finish()
+            }
+            guard commit.status == 0 else {
+                out.error = isIdentityError(commit.output)
+                    ? identityErrorText
+                    : "git commit 失败（sidecar 已写入）：" + failureText(commit.output)
+                return finish()
+            }
+            out.committed = true
+            if let head = runGit(repo: repo, headShaArguments()), head.status == 0 {
+                out.sha = parseHeadSha(head.output) ?? ""
+            }
+            out.unpushedCount = queryUnpushedCount(repo: repo)
+            return finish()
+        }
+    }
 }
