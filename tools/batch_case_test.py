@@ -2562,6 +2562,20 @@ def git_fingerprint() -> dict:
     return out
 
 
+def _compare_run_impl(current_run: dict, baseline_path, out_dir=None, label=""):
+    """--compare 判据入口：判据全在 tools/case_compare.py，本文件只做 import 兜底。"""
+    try:
+        from case_compare import compare_run  # noqa: PLC0415 —— 脚本运行时 tools/ 在 sys.path
+    except ImportError:  # Engine 单测经 importlib 加载本文件时 tools/ 不在 sys.path
+        import importlib.util  # noqa: PLC0415
+        spec = importlib.util.spec_from_file_location(
+            "_case_compare", Path(__file__).resolve().parent / "case_compare.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        compare_run = module.compare_run
+    return compare_run(current_run, baseline_path, out_dir, label)
+
+
 def run_batch(args: argparse.Namespace) -> int:
     started = time.time()
     out_root = Path(args.out) if args.out else (DEFAULT_OUT_ROOT / (args.label or _stamp()))
@@ -2648,7 +2662,8 @@ def run_batch(args: argparse.Namespace) -> int:
         "manuscripts": str(man_repo), "repo_scan": repo_stats,
         "zero_cost": {"cleared": cleared, "violations": []},
         "cases": {}, "case_order": [c.key for c in cases],
-        "args": vars(args),
+        # 过滤 --compare（B-206）：无模式时 summary.json 的 args 字节不变
+        "args": {k: v for k, v in vars(args).items() if k != "compare"},
     }
     print(f"[批次] {len(cases)} 个案例 → {out_root}")
     print("[批次] 顺序：" + " → ".join(
@@ -2709,6 +2724,23 @@ def run_batch(args: argparse.Namespace) -> int:
     report = render_report(run)
     (out_root / "report.md").write_text(report, encoding="utf-8")
 
+    # B-206：--compare 与基线 summary.json 逐篇对比（判据在 case_compare.py；末行 + rc=3）
+    compare_result: dict | None = None
+    compare_rc = 0
+    if getattr(args, "compare", ""):
+        baseline = Path(args.compare).expanduser()
+        if not baseline.is_file():
+            print(f"[用法] --compare 基线不存在：{baseline}", file=sys.stderr)
+            return 2
+        try:
+            compare_result = _compare_run_impl(
+                run, baseline, out_root, args.label or out_root.name)
+        except (ValueError, OSError) as exc:
+            print(f"[用法] --compare 基线无效：{exc}", file=sys.stderr)
+            return 2
+        if compare_result["violations"]:
+            compare_rc = 3
+
     elapsed = time.time() - started
     print()
     print("=" * 72)
@@ -2719,7 +2751,9 @@ def run_batch(args: argparse.Namespace) -> int:
           f"零付费 {'✅' if totals['zero_cost_ok'] else '❌'}"
           f"（已验证 {totals.get('zero_cost_verified', 0)}，未验证 {len(totals.get('zero_cost_unverified') or [])}）")
     print(f"耗时 {elapsed:.1f}s；报告 {out_root / 'report.md'}；数据 {out_root / 'summary.json'}")
-    return 0
+    if compare_result is not None:
+        print(compare_result["summary_line"])
+    return compare_rc
 
 
 def _stamp() -> str:
@@ -3128,6 +3162,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--python", default="", help="子进程解释器（默认当前解释器）")
     ap.add_argument("--timeout", type=float, default=600.0, help="单案例子进程超时秒（默认 600）")
     ap.add_argument("--no-compare", action="store_true", help="不读稿件仓人工成品（只做绝对判据）")
+    ap.add_argument("--compare", default="", metavar="BASELINE_SUMMARY_JSON",
+                    help="与基线 summary.json 逐篇对比（写 <out>/compare.md/json；"
+                         "末行 COMPARE violations=N；有违规 rc=3）")
     ap.add_argument("--legacy-final", action="store_true",
                     help="B-117 过渡开关：旧口径（与最终人工成品逐项对照：PAGE_DIFF P1/"
                          "BIB_COUNT_DIFF/CITE_DIFF/SECTION_DIFF…，与批70 输出可比）")
