@@ -2242,18 +2242,15 @@ enum BibDbFeature {
 
     /// 合并后的建议新 key（**纯逻辑**）：第一作者家族姓（去 LaTeX/重音，只留 A-Za-z）+ 第一条的
     /// 4 位 year；无作者/无年份 → 第一条 key。例：`Tindale, C. W.` + 2015 → `Tindale2015`。
-    /// B-192：候选若等于任一待合并 key（或与其它记录 key 相同），追加 `Merged`，
-    /// 避免默认值直接命中「new_key ∈ keys」的引擎写前拒绝。
+    /// B-201：候选等于任一待合并 key 时**直接返回**（不再追加 `Merged`）——允许沿用其中一条记录的
+    /// key（旧 key 自动进 aliases，正文引用不悬空）；撞「其它」库记录不在 GUI 预判，交给引擎
+    /// preview 报错（dry-run 零写入）。
     static func suggestedMergeKey(records: [MergeRecord]) -> String {
         guard let first = records.first else { return "" }
-        let keys = Set(records.map(\.key))
         let author = first.fields["author"] ?? first.fields["editor"] ?? ""
         let surname = plainAuthorSurname(author)
         let year = firstFourDigitYear(first.fields["year"] ?? first.fields["date"] ?? "")
-        let base = (surname.isEmpty || year.isEmpty) ? first.key : surname + year
-        var candidate = keys.contains(base) ? base + "Merged" : base
-        while keys.contains(candidate) { candidate += "Merged" }
-        return candidate
+        return (surname.isEmpty || year.isEmpty) ? first.key : surname + year
     }
 
     /// `Tindale, C. W.` → `Tindale`（第一作者；含逗号取逗号前，否则最后一个 token），
@@ -2336,8 +2333,9 @@ enum BibDbFeature {
         return rows
     }
 
-    /// 合并前纯逻辑校验（其余交引擎）：≥2 条、不重复、新 key 非空且无空白/逗号/花括号/引号，
-    /// 且不能等于任一待合并的旧 key（B-192：旧 key 会全部进 aliases）。
+    /// 合并前纯逻辑校验（其余交引擎）：≥2 条、不重复、新 key 非空且无空白/逗号/花括号/引号。
+    /// B-201：新 key **可以等于**任一待合并的旧 key（沿用其中一条；旧 key 自动进 aliases）；
+    /// 是否撞库里其它记录/alias 交给引擎 `merge-records --dry-run` 判定（GUI 不预判）。
     static func validateMerge(keys: [String], newKey: String) -> [String] {
         var errors: [String] = []
         let cleaned = keys.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2349,8 +2347,6 @@ enum BibDbFeature {
             errors.append("合并必须给新 key（作者姓+年份，如 Tindale2015）。")
         } else if key.range(of: #"[\s,{}()\"]"#, options: .regularExpression) != nil {
             errors.append("新 key `\(key)` 含空白/逗号/花括号/引号，不是合法 BibTeX key。")
-        } else if cleaned.contains(key) {
-            errors.append("新 key `\(key)` 不能等于待合并的旧 key；旧 key 会全部进 aliases，请换一个全新的规范 key。")
         }
         return errors
     }

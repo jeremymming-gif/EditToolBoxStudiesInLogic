@@ -113,6 +113,56 @@ struct BibDbStatusLine: View {
     }
 }
 
+/// 待处理页 4 处**自定义 disclosure 行**（B-202；t6 返工，脱离 `DisclosureGroup`）。
+///
+/// 为什么不用 `DisclosureGroup`：它的 label 只是普通内容（只有内置箭头可点），把 label 包成
+/// `Button` 后 SwiftUI 仍会把子元素折叠进 `AXDisclosureTriangle`，AX 树里没有 AXButton、
+/// label 文本也消失 —— 走查 `click --role AXButton --name` 无法命中，证据链不成立。
+/// 这里自己拼：**整行 Button（箭头+label+空白）** + 受控 `isExpanded` 展开内容。
+///
+/// `title` 是给无障碍/走查用的 AX 名字（如「③ 已处理」「缺字段」）；展开内容在 Button 之外，
+/// 其文本仍会出现在 AX 树里（点击后可用 assert-text 验证）。
+struct BibDbRowDisclosure<Label: View, Content: View>: View {
+    let title: String
+    let isExpanded: Bool
+    let action: () -> Void
+    let label: Label
+    let content: Content
+
+    init(title: String, isExpanded: Bool, action: @escaping () -> Void,
+         @ViewBuilder label: () -> Label,
+         @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.isExpanded = isExpanded
+        self.action = action
+        self.label = label()
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { action() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    label
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(title))
+            .accessibilityHint("展开或收起")
+            if isExpanded {
+                content
+            }
+        }
+    }
+}
+
 /// 「复制到剪贴板」：成功/失败都返回一句要写进运行日志的话（不静默）。
 enum BibDbClipboard {
     static func copy(_ text: String, what: String) -> String {

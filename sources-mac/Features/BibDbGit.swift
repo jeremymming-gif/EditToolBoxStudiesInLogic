@@ -74,6 +74,41 @@ enum BibDbGit {
         var output = ""
         var error: String?
         var seconds: Double = 0
+
+        // MARK: B-203（只推 bib_db 的连续未推送前缀；旧字段保持兼容）
+        /// 实际推送的连续 bib-only 提交数（0 = 没推）。
+        var pushedCount = 0
+        /// 前缀之后的第一条未推送提交（含非 bib_db 文件，未推）；nil = 没有剩余。
+        var remainderCommit: PushCommit?
+        /// 首条未推送提交就含非 bib_db 文件/是 merge：整次推送被阻止。
+        var blockedCommit: PushCommit?
+        /// 代理失效 → 已用 `-c ...proxy=` 重试过（成功与否都记）。
+        var proxyRetried = false
+        /// 没有待推送提交（成功语义：无需动作，不是失败）。
+        var nothingToDo = false
+        /// 推送目标（`<remote>/<branch>`；无 upstream 时为空）。
+        var upstream = ""
+    }
+
+    /// 一条未推送提交（`git log --reverse --format=%x1e%H%x1f%P%x1f%s --name-only` 的一条记录）。
+    /// `parents.count > 1` = merge 提交（推它会带上另一父的整段历史，一律不推）。
+    struct PushCommit: Equatable {
+        var sha = ""
+        var parents: [String] = []
+        var subject = ""
+        var paths: [String] = []
+        var isMerge: Bool { parents.count > 1 }
+        var shortSha: String { BibDbGit.shortSha(sha) }
+    }
+
+    /// 推送预检计划（纯函数 `planPush` 的返回值；`push()` 据此决定推/拒/无事可做）。
+    enum PushPlan: Equatable {
+        /// `@{upstream}..HEAD` 为空：没有待推送提交。
+        case nothingToPush
+        /// 最旧的一条未推送提交就不是 bib-only：整次拒绝（绝不推送 notes）。
+        case blocked(PushCommit)
+        /// 可推送连续 bib-only 前缀；`remainder` 是其后不能再推的提交（可能为空）。
+        case pushable(tip: PushCommit, count: Int, remainder: [PushCommit])
     }
 
     /// 回退到上一个提交的结果。
@@ -127,9 +162,22 @@ enum BibDbGit {
         ["rev-list", "--count", "@{upstream}..HEAD"]
     }
 
-    /// 推送（**仅用户显式点「推送…」时调用**；不带 force）。
-    static func pushArguments() -> [String] {
-        ["push"]
+    /// 推送预检：`@{upstream}..HEAD` 从旧到新，逐提交带 `%H`/`%P`/`%s` 与 `--name-only` 路径。
+    /// 记录分隔 `\x1e`、字段分隔 `\x1f`（提交说明里不会出现这两个控制字符）。
+    static func pushLogArguments() -> [String] {
+        ["log", "--reverse", "--format=%x1e%H%x1f%P%x1f%s", "--name-only",
+         "@{upstream}..HEAD"]
+    }
+
+    /// upstream 解析：`rev-parse --abbrev-ref --symbolic-full-name @{upstream}` → `origin/main`。
+    static func upstreamArguments() -> [String] {
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]
+    }
+
+    /// 推送（**仅用户显式点「推送…」时调用**）：把 bib-only 前缀的 tip fast-forward 到 upstream 分支。
+    /// refspec 限定 `<tip>:refs/heads/<branch>`、**不带 --force**（远端只前进、不改写历史）。
+    static func pushArguments(remote: String, tip: String, branch: String) -> [String] {
+        ["push", remote, "\(tip):refs/heads/\(branch)"]
     }
 
     /// 回退第一步：把库文件恢复到上一个提交（`HEAD~1`），**不** hard reset。
@@ -246,6 +294,101 @@ enum BibDbGit {
             if rows.count >= max(1, limit) { break }
         }
         return rows
+    }
+
+    /// 解析推送预检日志（`pushLogArguments` 的输出；顺序 = 从旧到新）。
+    /// 每条记录：`\x1e<sha>\x1f<父提交们>\x1f<说明>`，其后每行一个路径（空提交 0 个路径）。
+    /// 坏记录（缺字段/sha 不合法）跳过；整体无法解析时返回 []（调用方结合输出判 fail-soft）。
+    static func parsePushLog(_ output: String) -> [PushCommit] {
+        var commits: [PushCommit] = []
+        // 第一块是第一个记录分隔符之前的噪声（通常为空/换行）；没有 \x1e = 没有记录。
+        for chunk in output.components(separatedBy: "\u{1e}").dropFirst() {
+            let lines = chunk.components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            guard let header = lines.first else { continue }
+            let fields = header.components(separatedBy: "\u{1f}")
+            guard fields.count >= 3 else { continue }
+            let sha = fields[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard sha.count >= 7, sha.allSatisfy({ $0.isHexDigit }) else { continue }
+            let parents = fields[1]
+                .split(whereSeparator: { $0 == " " || $0 == "\t" })
+                .map(String.init)
+            let subject = fields.dropFirst(2).joined(separator: "\u{1f}")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            commits.append(PushCommit(sha: sha, parents: parents, subject: subject,
+                                      paths: Array(lines.dropFirst())))
+        }
+        return commits
+    }
+
+    /// 路径是否在 `bib_db/` 下（改名/删除在 `--name-only` 里也只出现路径本身，按前缀判）。
+    static func isBibPath(_ path: String) -> Bool {
+        path.hasPrefix("bib_db/")
+    }
+
+    /// 一条提交是否「只含 bib_db/」：空提交（0 路径）允许；**merge 一律不算**
+    /// （推 merge 会把另一父的整段历史一起带过去）。
+    static func isBibOnly(_ commit: PushCommit) -> Bool {
+        guard !commit.isMerge else { return false }
+        return commit.paths.allSatisfy { isBibPath($0) }
+    }
+
+    /// 第一条非 `bib_db/` 路径（UI 解释「为什么阻止」用）；全是 bib 或 merge 时为空串。
+    static func firstNonBibPath(_ commit: PushCommit) -> String {
+        commit.paths.first(where: { !isBibPath($0) }) ?? ""
+    }
+
+    /// 推送预检计划（**纯逻辑**）：从最旧未推送提交起取**最长 bib-only 前缀**。
+    /// · 空日志 → `.nothingToPush`；· 首条就不满足 → `.blocked`（绝不静默带上 notes）；
+    /// · 其余 → `.pushable(tip = 前缀最后一条, count = 前缀条数, remainder = 其后提交)`。
+    /// `upstreamRemote/upstreamBranch` 由调用方对称传入（upstream 是否存在由 `push()` 先判）。
+    static func planPush(commits: [PushCommit], upstreamRemote: String,
+                         upstreamBranch: String) -> PushPlan {
+        guard !commits.isEmpty else { return .nothingToPush }
+        var prefix: [PushCommit] = []
+        for commit in commits {
+            guard isBibOnly(commit) else {
+                if prefix.isEmpty { return .blocked(commit) }
+                return .pushable(tip: prefix[prefix.count - 1], count: prefix.count,
+                                 remainder: Array(commits[prefix.count...]))
+            }
+            prefix.append(commit)
+        }
+        return .pushable(tip: prefix[prefix.count - 1], count: prefix.count, remainder: [])
+    }
+
+    /// `origin/main` → (`origin`, `main`)：首个 `/` 拆开（分支名可含 `/`）；坏值/fatal → nil。
+    static func parseUpstream(_ output: String) -> (remote: String, branch: String)? {
+        let line = firstNonEmptyLine(output)
+        guard !line.isEmpty, !line.lowercased().hasPrefix("fatal:") else { return nil }
+        guard let slash = line.firstIndex(of: "/") else { return nil }
+        let remote = String(line[..<slash]).trimmingCharacters(in: .whitespaces)
+        let branch = String(line[line.index(after: slash)...])
+            .trimmingCharacters(in: .whitespaces)
+        guard !remote.isEmpty, !branch.isEmpty else { return nil }
+        return (remote, branch)
+    }
+
+    /// push 失败文本是否像「代理不可用」（本机全局 gitconfig 的失效 socks5 代理是已知现场）。
+    /// 命中才用 `proxyOverrideArguments()` 重试一次；其它错误不重试（避免掩盖真原因）。
+    static func looksLikeProxyFailure(_ output: String) -> Bool {
+        let lower = output.lowercased()
+        if lower.contains("could not resolve proxy") || lower.contains("proxy connect")
+            || lower.contains("unsupported proxy") {
+            return true
+        }
+        if lower.contains("failed to connect to") {
+            return lower.contains(" port ") || lower.contains("proxy")
+        }
+        return false
+    }
+
+    /// 清代理重试参数（只用于 push；`-c` 必须在子命令前）。
+    /// 本机 `~/.gitconfig` 的 `http.https://github.com.proxy=socks5://127.0.0.1:10808` 无监听时，
+    /// 清掉这两个键即可走直连（见 BRIEF 的 push 口径）。
+    static func proxyOverrideArguments() -> [String] {
+        ["-c", "http.https://github.com.proxy=", "-c", "http.proxy="]
     }
 
     /// `shasum -a 256` → 64 位小写 sha；格式不对 → nil。
@@ -475,28 +618,88 @@ enum BibDbGit {
         return out
     }
 
-    /// 推送（**仅用户显式点「推送…」+二次确认后调用**）。失败带 stderr 摘要。
+    /// 推送（**仅用户显式点「推送…」+二次确认后调用**）。
+    ///
+    /// B-203（方案 A+）：先读 `@{upstream}..HEAD` 每个提交的路径，取**最长 bib-only 前缀**，
+    /// 只把前缀 tip 以 `<tip>:refs/heads/<upstream 分支>` fast-forward 到远端 ——
+    /// notes 其它未推送提交一条不发、本地零改动、**不 force / 不 fetch / 不 rebase**。
+    /// 首条未推送提交就含非 `bib_db/` 文件（或 merge）→ 整次拒绝（`blockedCommit`，UI 黄字）。
+    /// 代理特征失败 → 用 `proxyOverrideArguments()` 重试一次（`proxyRetried`）。
+    /// 失败一律 fail-soft：只填 `error`，本地提交与库数据不动。
     static func push(db: String) -> PushResult {
         let startedAt = Date()
         var out = PushResult()
+        func finish() -> PushResult {
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
         switch locateRepo(db: db) {
         case .failed(let reason):
             out.error = reason
+            return finish()
         case .ok(let repo):
-            guard let result = runGit(repo: repo, pushArguments()) else {
-                out.error = "未找到 git（\(gitPath)）：无法推送。"
-                out.seconds = Date().timeIntervalSince(startedAt)
-                return out
+            // ① upstream：没有就 fail-soft（本地提交不丢）。
+            guard let upstreamRun = runGit(repo: repo, upstreamArguments()),
+                  upstreamRun.status == 0,
+                  let upstream = parseUpstream(upstreamRun.output) else {
+                out.error = "未设置 upstream（无法确定推送目标）；本地提交不受影响。"
+                    + "可先在终端 `git push -u <远端> <分支>` 建立追踪后再推送。"
+                return finish()
             }
-            out.output = result.output
-            if result.status == 0 {
-                out.pushed = true
-            } else {
-                out.error = "推送失败：" + failureText(result.output)
+            out.upstream = upstream.remote + "/" + upstream.branch
+
+            // ② 未推送提交清单（从旧到新 + 每个提交的路径）。
+            guard let log = runGit(repo: repo, pushLogArguments()) else {
+                out.error = "未找到 git（\(gitPath)）：无法推送。"
+                return finish()
+            }
+            guard log.status == 0 else {
+                out.error = "读不到未推送提交：" + failureText(log.output)
+                return finish()
+            }
+            let trimmed = log.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let commits = parsePushLog(log.output)
+            if commits.isEmpty && !trimmed.isEmpty {
+                out.error = "读不到未推送提交（git log 输出无法解析）："
+                    + failureText(log.output)
+                return finish()
+            }
+
+            // ③ 计划：只推连续 bib-only 前缀；绝不静默带上 notes 提交。
+            switch planPush(commits: commits, upstreamRemote: upstream.remote,
+                            upstreamBranch: upstream.branch) {
+            case .nothingToPush:
+                out.nothingToDo = true
+                return finish()
+            case .blocked(let commit):
+                out.blockedCommit = commit
+                return finish()
+            case .pushable(let tip, let count, let remainder):
+                out.remainderCommit = remainder.first
+                let arguments = pushArguments(remote: upstream.remote, tip: tip.sha,
+                                              branch: upstream.branch)
+                var result = runGit(repo: repo, arguments)
+                // 代理特征失败 → 清掉失效代理重试一次（仅 push；其它错误不重试）。
+                if let first = result, first.status != 0,
+                   looksLikeProxyFailure(first.output) {
+                    out.proxyRetried = true
+                    result = runGit(repo: repo, proxyOverrideArguments() + arguments)
+                }
+                guard let final = result else {
+                    out.error = "未找到 git（\(gitPath)）：无法推送。"
+                    return finish()
+                }
+                out.output = final.output
+                if final.status == 0 {
+                    out.pushed = true
+                    out.pushedCount = count
+                } else {
+                    // 失败 = 远端没动：pushedCount 保持 0（不把「计划推的条数」说成已推）。
+                    out.error = "推送失败：" + failureText(final.output)
+                }
+                return finish()
             }
         }
-        out.seconds = Date().timeIntervalSince(startedAt)
-        return out
     }
 
     /// 回退到上一个库提交：

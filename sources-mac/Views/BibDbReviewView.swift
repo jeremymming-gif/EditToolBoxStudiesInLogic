@@ -602,6 +602,8 @@ struct BibDbReviewView: View {
     @State private var scrollTarget: String? = nil
     /// 库健康分类展开态（按 registry；跳转意图会把目标分类展开）
     @State private var healthExpanded: Set<String> = []
+    /// 已裁决冲突行的展开态（B-202：整行可点；按 `ConflictItem.id`）
+    @State private var resolvedExpanded: Set<String> = []
     /// 库健康每类的记录搜索词（按 registry；只在前端过滤已加载的 records）
     @State private var healthSearch: [String: String] = [:]
     /// 库健康每条 warning 的「再显示 200 条」上限（按 item.id）
@@ -987,14 +989,13 @@ struct BibDbReviewView: View {
     }
 
     /// 已裁决行：默认**一行摘要**（C 编号 / 动作 / key / 时间），点开展开明细（审计留痕）。
+    /// B-202：自定义 disclosure 行（header = AXButton；箭头与文字都能开合），展开态由 `resolvedExpanded` 受控。
     private func resolvedConflictRow(_ item: BibDbFeature.ConflictItem) -> some View {
-        DisclosureGroup {
-            HStack(alignment: .top, spacing: 10) {
-                conflictDetail(item)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 4)
-        } label: {
+        BibDbRowDisclosure(
+            title: item.stableLabel + (item.resolutionTitle.isEmpty
+                                       ? " 已裁决" : " " + item.resolutionTitle),
+            isExpanded: resolvedExpanded.contains(item.id),
+            action: { toggleResolved(item.id) }) {
             HStack(spacing: 8) {
                 Text(item.stableLabel)
                     .font(.system(.caption, design: .monospaced)).bold()
@@ -1017,10 +1018,21 @@ struct BibDbReviewView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+        } content: {
+            HStack(alignment: .top, spacing: 10) {
+                conflictDetail(item)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 4)
         }
         .padding(8)
         .background(Color.secondary.opacity(0.06))
         .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.06)))
+    }
+
+    private func toggleResolved(_ id: String) {
+        if resolvedExpanded.contains(id) { resolvedExpanded.remove(id) }
+        else { resolvedExpanded.insert(id) }
     }
 
     /// 冲突条目明细（待裁决行的主体 / 已裁决行展开后的明细，共用同一套渲染）。
@@ -1128,12 +1140,24 @@ struct BibDbReviewView: View {
     }
 
     private func healthCategory(_ category: BibDbFeature.LintWarningCategory) -> some View {
-        DisclosureGroup(isExpanded: Binding(
-            get: { healthExpanded.contains(category.registry) },
-            set: { expanded in
-                if expanded { healthExpanded.insert(category.registry) }
-                else { healthExpanded.remove(category.registry) }
-            })) {
+        BibDbRowDisclosure(
+            title: category.title,
+            isExpanded: healthExpanded.contains(category.registry),
+            action: { toggleHealthCategory(category.registry) }) {
+            // B-202：整行可点（AX 名字 = 分类标题，如「缺字段」）；展开态沿用 healthExpanded。
+            HStack(spacing: 8) {
+                Text(category.title).font(.callout).bold()
+                Text("\(category.warningCount) 条提示").font(.caption2).foregroundStyle(.secondary)
+                let records = category.items.reduce(0) { $0 + $1.records.count }
+                if records > 0 {
+                    Text("受影响记录 \(records) 条").font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+                if category.registry == "duplicates" || category.registry == "near_duplicates" {
+                    Text("可逐对「对照合并」").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        } content: {
             VStack(alignment: .leading, spacing: 8) {
                 if let note = category.note {
                     Text(note).font(.caption).foregroundStyle(.secondary)
@@ -1162,24 +1186,16 @@ struct BibDbReviewView: View {
             }
             .padding(.top, 6)
             .padding(.leading, 4)
-        } label: {
-            HStack(spacing: 8) {
-                Text(category.title).font(.callout).bold()
-                Text("\(category.warningCount) 条提示").font(.caption2).foregroundStyle(.secondary)
-                let records = category.items.reduce(0) { $0 + $1.records.count }
-                if records > 0 {
-                    Text("受影响记录 \(records) 条").font(.caption2).foregroundStyle(.tertiary)
-                }
-                Spacer(minLength: 0)
-                if category.registry == "duplicates" || category.registry == "near_duplicates" {
-                    Text("可逐对「对照合并」").font(.caption2).foregroundStyle(.tertiary)
-                }
-            }
         }
         .id("category-\(category.registry)")
         .padding(10)
         .background(Color.secondary.opacity(0.04))
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12)))
+    }
+
+    private func toggleHealthCategory(_ registry: String) {
+        if healthExpanded.contains(registry) { healthExpanded.remove(registry) }
+        else { healthExpanded.insert(registry) }
     }
 
     /// 分类顶部的批量动作：缺字段 / entry_type（共享 sheet，由 sheet 自己确认写库）。

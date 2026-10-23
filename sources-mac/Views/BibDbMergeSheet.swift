@@ -88,9 +88,9 @@ struct BibDbMergeSheet: View {
                 Button("关闭") { dismiss() }
                     .disabled(model.applying)
             }
-            Text(("**绝不自动合并**：逐字段选来源、新 key 可改，先跑引擎 dry-run 预览（不写库），"
-                  + "再二次确认写入。写前只做库 sha 校验；写库成功后自动本地 git commit（不推送）；"
-                  + "旧 key 全部保留进 `aliases`。")
+            Text(("**绝不自动合并**：逐字段选来源、新 key 可改（也可沿用其中一条记录的 key），"
+                  + "先跑引擎 dry-run 预览（不写库），再二次确认写入。写前只做库 sha 校验；"
+                  + "写库成功后自动本地 git commit（不推送）；旧 key 全部保留进 `aliases`。")
                 .plainMarkdown)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -200,7 +200,7 @@ struct BibDbMergeSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 280)
-                Text("默认建议 = 第一作者姓 + 年份（引擎同口径）；可手改")
+                Text("默认建议 = 第一作者姓 + 年份（引擎同口径）；可手改，也可沿用其中一条记录的 key（旧 key 自动进 aliases）")
                     .font(.caption2).foregroundStyle(.tertiary)
                 Spacer()
             }

@@ -128,7 +128,8 @@ final class BibDbVersionModel: ObservableObject {
         }
     }
 
-    /// 推送（二次确认后；失败把 git stderr 摘要放黄字）。**绝不 force**。
+    /// 推送（二次确认后；**只推连续且仅含 bib_db/ 文件的未推送提交**）。
+    /// 失败/被阻止把原因放黄字；成功/无事可做放 notice。**绝不 force**。
     func runPush() {
         guard !busy else { return }
         let db = BibDbFeature.existingDBPath() ?? ""
@@ -149,9 +150,30 @@ final class BibDbVersionModel: ObservableObject {
                 if let error = result.error {
                     model.warning = error
                 } else if result.pushed {
-                    model.notice = "已推送到远端（推送是手动动作，永不自动发生）。"
+                    var text = "已推送 \(result.pushedCount) 条 bib_db 提交到 \(result.upstream)。"
+                    if let remainder = result.remainderCommit {
+                        let sha = BibDbGit.shortSha(remainder.sha)
+                        let subject = remainder.subject.isEmpty ? "（无说明）" : remainder.subject
+                        text += "后面的 \(sha) \(subject) 含非 bib_db 文件，未推送。"
+                    }
+                    if result.proxyRetried {
+                        text += "已绕过失效代理。"
+                    }
+                    model.notice = text
+                } else if let blocked = result.blockedCommit {
+                    let sha = BibDbGit.shortSha(blocked.sha)
+                    let subject = blocked.subject.isEmpty ? "（无说明）" : blocked.subject
+                    let pathText = blocked.isMerge
+                        ? "merge 提交（会带上另一父的历史）"
+                        : (BibDbGit.firstNonBibPath(blocked).isEmpty
+                           ? "（未知路径）" : BibDbGit.firstNonBibPath(blocked))
+                    model.warning = "推送已阻止：待推送提交含 bib_db 之外的文件（"
+                        + "\(sha) \(subject) → \(pathText)）；为避免推送 notes 内容，本次未推送。"
+                } else if result.nothingToDo {
+                    model.notice = "没有待推送的 bib_db 提交（notes 其它提交不会由这里推送）。"
                 }
-                model.reload(keepWarning: result.error != nil)
+                // 被阻止也保留黄字：reload 的普通提示不能覆盖它。
+                model.reload(keepWarning: result.error != nil || result.blockedCommit != nil)
             }
         }
     }
@@ -203,7 +225,7 @@ struct BibDbVersionSection: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Text("版本库（git）").font(.callout).bold()
-                Text("写库成功后自动本地 commit；推送是手动动作，永不自动 push")
+                Text("写库成功后自动本地 commit；推送是手动动作（只推连续且仅含 bib_db/ 的提交），永不自动 push")
                     .font(.caption2).foregroundStyle(.tertiary)
                 Spacer()
                 if model.loading || model.busy {
@@ -236,12 +258,12 @@ struct BibDbVersionSection: View {
                     }
                 Button("推送…") { model.confirmPush = true }
                     .disabled(!model.canOperate)
-                    .help("把当前分支的未推送提交推到远端（二次确认；失败显示 git stderr 摘要；不做 force）")
+                    .help("只推送连续且仅含 bib_db/ 文件的未推送提交（二次确认；notes 其它提交不推；失败显示 git stderr 摘要；不做 force）")
                     .alert("推送到远端？", isPresented: $model.confirmPush) {
                         Button("取消", role: .cancel) {}
                         Button("推送") { model.runPush() }
                     } message: {
-                        Text("将把当前分支的未推送提交推到远端（不使用 force）；失败会显示 git 的 stderr 摘要。")
+                        Text("只推送仅含 `bib_db/` 文件的连续未推送提交；notes 其它提交不会推送；不使用 force。")
                     }
                 Button("回退到上一个提交…") { model.confirmRevert = true }
                     .disabled(!model.canOperate)

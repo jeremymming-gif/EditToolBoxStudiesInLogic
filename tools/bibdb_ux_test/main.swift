@@ -9,6 +9,9 @@
 // mergeFieldRows、字段归位（groups/defaults/risk/buildDraft）、isStale 新鲜度。
 // B-190：(o) 段是 git 版本层纯逻辑/源码接线（commit message、命令构造、status/log 解析、
 // fail-soft 文案、只 add 库文件、无自动 push）。
+// B-201：(k) 段是合并建议 key / 校验的新语义（新 key 可沿用被合并键之一，不再追加 Merged）。
+// B-203：(o2) 段是推送预检（parsePushLog/isBibOnly/planPush、只推 bib-only 前缀、代理重试、
+// refspec 无 force）。
 // B-196：(p) 段是「待处理」页新鲜度四态 reviewFreshness（stale 时视图临时禁用写库入口；
 // 判定口径与 isStale 同一份）。
 // (f) 段是**生产源码接线断言**（按 /tmp/b188-gui/CONTRACT.md 与 BRIEF §5 的目标态）：
@@ -867,24 +870,24 @@ check("(k) suggestedMergeKey：Segerberg, K. + 1971 → Segerberg1971",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
           key: "x", fields: ["author": #"Segerberg, K."#, "year": "1971"])])
           == "Segerberg1971")
-check("(k) suggestedMergeKey：无 author/editor 且无 year → 回退第一条 key + Merged（B-192）",
+check("(k) suggestedMergeKey：无 author/editor 且无 year → 回退第一条 key（B-201 不再加 Merged）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
-          key: "miaolitian", fields: ["title": "x"])]) == "miaolitianMerged")
-check("(k) suggestedMergeKey：有作者无年份 → 回退第一条 key + Merged",
+          key: "miaolitian", fields: ["title": "x"])]) == "miaolitian")
+check("(k) suggestedMergeKey：有作者无年份 → 回退第一条 key（B-201）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
-          key: "1-24", fields: ["author": #"Tindale, C. W."#])]) == "1-24Merged")
-check("(k) suggestedMergeKey：有年份无作者 → 回退第一条 key + Merged",
+          key: "1-24", fields: ["author": #"Tindale, C. W."#])]) == "1-24")
+check("(k) suggestedMergeKey：有年份无作者 → 回退第一条 key（B-201）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
-          key: "x", fields: ["year": "2015"])]) == "xMerged")
-check("(k) suggestedMergeKey：候选等于自身 key → 追加 Merged（B-192 默认值不撞 keys）",
+          key: "x", fields: ["year": "2015"])]) == "x")
+check("(k) suggestedMergeKey：候选等于自身 key → 直接返回该 key（B-201 不加 Merged）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
           key: "Tindale2015",
-          fields: ["author": #"Tindale, C. W."#, "year": "2015"])]) == "Tindale2015Merged")
-check("(k) suggestedMergeKey：候选命中另一条记录 key → 追加 Merged",
+          fields: ["author": #"Tindale, C. W."#, "year": "2015"])]) == "Tindale2015")
+check("(k) suggestedMergeKey：候选命中另一条待合并 key → 返回该 key（B-201）",
       BibDbFeature.suggestedMergeKey(records: [
           makeMergeRecord(key: "1-24", fields: ["author": #"Tindale, C. W."#, "year": "2015"]),
           makeMergeRecord(key: "Tindale2015", fields: ["author": "X", "year": "2000"])])
-          == "Tindale2015Merged")
+          == "Tindale2015")
 check("(k) suggestedMergeKey：重音 folding（Émile → Emile）",
       BibDbFeature.suggestedMergeKey(records: [makeMergeRecord(
           key: "x", fields: ["author": "Émile, J.", "year": "1999"])]) == "Emile1999")
@@ -936,11 +939,9 @@ check("(k) validateMerge：非法 newKey 字符（空白/逗号/花括号/引号
       })
 check("(k) validateMerge：合法输入返回 []（trim 后 ≥2 条）",
       BibDbFeature.validateMerge(keys: [" A ", "B"], newKey: "Tindale2015").isEmpty)
-check("(k) validateMerge：新 key 等于任一待合并旧 key → 报错（B-192，trim 后也命中）",
-      BibDbFeature.validateMerge(keys: ["A", "B"], newKey: "A")
-          .contains { $0.contains("旧 key") }
-      && BibDbFeature.validateMerge(keys: ["A", "B"], newKey: " B ")
-          .contains { $0.contains("旧 key") })
+check("(k) validateMerge：新 key 等于任一待合并旧 key → 允许（B-201，trim 后也允许）",
+      BibDbFeature.validateMerge(keys: ["A", "B"], newKey: "A").isEmpty
+      && BibDbFeature.validateMerge(keys: ["A", "B"], newKey: " B ").isEmpty)
 check("(k) validateMerge：<2 条 + 空 newKey 同时报 2 个错",
       BibDbFeature.validateMerge(keys: ["A"], newKey: "").count == 2)
 check("(k) validateMerge：全空白 key 过滤后视作不足 2 条",
@@ -1185,7 +1186,7 @@ check("(o) shortSha / revertMessage", BibDbGit.shortSha(shaA) == "aaaaaaaaaaaa" 
 let commitArgs = BibDbGit.commitArguments(message: "m")
 check("(o) add/commit 的 pathspec 只有库文件（没别的文件）", BibDbGit.addArguments() == ["add", "--", dbRel] && commitArgs == ["commit", "-m", "m", "--", dbRel] && commitArgs.filter { $0.contains("/") } == [dbRel])
 check("(o) status/log/ahead/branch 命令口径", BibDbGit.statusArguments() == ["status", "--porcelain", "--", dbRel] && BibDbGit.logArguments() == ["log", "--oneline", "-3", "--", dbRel] && BibDbGit.aheadArguments() == ["rev-list", "--count", "@{upstream}..HEAD"] && BibDbGit.branchArguments() == ["rev-parse", "--abbrev-ref", "HEAD"])
-check("(o) push 命令只有 push（无 force）", BibDbGit.pushArguments() == ["push"] && !BibDbGit.pushArguments().contains("--force"))
+check("(o) push 命令：`push <remote> <tip>:refs/heads/<branch>`（无 force）", BibDbGit.pushArguments(remote: "origin", tip: "abcdef123456", branch: "main") == ["push", "origin", "abcdef123456:refs/heads/main"] && !BibDbGit.pushArguments(remote: "origin", tip: "abcdef123456", branch: "main").contains("--force"))
 check("(o) 回退命令：checkout HEAD~1 + 库文件（不 hard reset）", BibDbGit.revertCheckoutArguments() == ["checkout", "HEAD~1", "--", dbRel] && !BibDbGit.revertCheckoutArguments().contains("--hard"))
 check("(o) 回退前校验：≥2 库提交 / HEAD 有库文件", BibDbGit.commitCountArguments() == ["rev-list", "--count", "HEAD", "--", dbRel] && BibDbGit.headFileCheckArguments() == ["cat-file", "-e", "HEAD:" + dbRel])
 check("(o) 仓库定位命令：git -C <db 目录> rev-parse --show-toplevel", BibDbGit.repoRootArguments(dbDirectory: "/tmp/x") == ["-C", "/tmp/x", "rev-parse", "--show-toplevel"])
@@ -1199,13 +1200,135 @@ check("(o) parseShasum：64 hex 通过、坏格式 nil", BibDbGit.parseShasum(sh
 check("(o) failureText：优先错误行并截断（push 失败带 stderr 摘要）", BibDbGit.failureText("To x\n ! [rejected] main -> main (fetch first)\nerror: failed to push some refs").contains("rejected") && BibDbGit.failureText("a\nb\nc\nd\ne", maxLines: 2) == "d ｜ e")
 check("(o) isIdentityError：身份未配置可识别", BibDbGit.isIdentityError("*** Please tell me who you are.") && !BibDbGit.isIdentityError("fatal: not a git repository"))
 check("(o) fail-soft 默认值：unpushed=-1 / loaded=false", BibDbGit.VersionStatus().unpushedCount == -1 && !BibDbGit.VersionStatus().loaded && BibDbGit.VersionStatus(repo: "/r").loaded)
-check("(o) git 源码无 hard reset/pull/fetch/switch/force", !gitCode.contains("--hard") && !gitCode.contains("reset") && !gitCode.contains("\"pull\"") && !gitCode.contains("\"fetch\"") && !gitCode.contains("\"switch\"") && !gitCode.contains("--force"))
-check("(o) commitDBVersion 源码不 push（push 只能显式调用）", !sourceSlice(gitSource, "static func commitDBVersion", "static func manualCommit").contains("push") && gitCode.components(separatedBy: "pushArguments()").count - 1 == 2)
+check("(o) git 源码无 hard reset/pull/fetch/rebase/switch/force", !gitCode.contains("--hard") && !gitCode.contains("reset") && !gitCode.contains("\"pull\"") && !gitCode.contains("\"fetch\"") && !gitCode.contains("\"rebase\"") && !gitCode.contains("\"switch\"") && !gitCode.contains("--force"))
+check("(o) commitDBVersion 源码不 push（push 只能显式调用）", !sourceSlice(gitSource, "static func commitDBVersion", "static func manualCommit").contains("push") && sourceSlice(gitSource, "static func push(db: String)", "static func revertToPreviousCommit").contains("pushArguments(remote:"))
 let commitSrc = sourceSlice(gitSource, "private static func commitDBFile", "static func versionStatus")
 check("(o) 提交源码：脏否→add→commit(pathspec)→HEAD，且不 push", commitSrc.contains("addArguments()") && commitSrc.contains("commitArguments(message: message)") && commitSrc.contains("isDBDirty") && !commitSrc.contains("pushArguments("))
 check("(o) 模型/入藏源码不再引用备份制 API", !modelSource.contains("backupDirectory") && !modelSource.contains("listBackups") && !modelSource.contains("func restore(") && !importSource.contains("backupDirectory") && !modelSource.contains("\"--backup\"") && !importSource.contains("\"--backup\"") && modelSource.contains("--expect-db-sha256"))
 check("(o) 入藏段已纯搬迁到 extension（类型不再在 model 声明）", importSource.contains("extension BibDbFeature") && importSource.contains("struct ImportOutcome") && !modelSource.contains("struct ImportOutcome") && importSource.contains("func importBib(") && importSource.contains("importPastedBib("))
 check("(o) 测试台编译清单含新文件", runnerSource.contains("Features/BibDbGit.swift") && runnerSource.contains("Features/BibDbFeature+Import.swift"))
+
+// ── (o2) B-203：推送只推 bib_db 连续前缀 + 代理重试 ─────────────────────
+print("\n── (o2) B-203 推送预检（只推 bib_db）──")
+func makePushCommit(_ sha: String, parents: [String] = ["p0"], subject: String,
+                    paths: [String]) -> BibDbGit.PushCommit {
+    BibDbGit.PushCommit(sha: sha, parents: parents, subject: subject, paths: paths)
+}
+let pushLogText = "\u{1e}aaaaaaaa1\u{1f}p0\u{1f}引用库：写库 A\nbib_db/bibliography.jsonl\n\n"
+    + "\u{1e}bbbbbbbb2\u{1f}aaaaaaaa1\u{1f}notes：补 drafts\ndrafts/probe.md\nextra.md\n"
+let parsedPushLog = BibDbGit.parsePushLog(pushLogText)
+check("(o2) parsePushLog：\\x1e/\\x1f 记录/字段分隔、路径逐行、顺序保留",
+      parsedPushLog.count == 2
+      && parsedPushLog[0].sha == "aaaaaaaa1"
+      && parsedPushLog[0].parents == ["p0"]
+      && parsedPushLog[0].subject == "引用库：写库 A"
+      && parsedPushLog[0].paths == ["bib_db/bibliography.jsonl"]
+      && parsedPushLog[1].paths == ["drafts/probe.md", "extra.md"],
+      "\(parsedPushLog)")
+check("(o2) parsePushLog：空提交 0 路径；空日志 → []；坏记录跳过",
+      BibDbGit.parsePushLog("\u{1e}cccccccc3\u{1f}bbbbbbbb2\u{1f}空提交\n\n")
+          .first?.paths.isEmpty == true
+      && BibDbGit.parsePushLog("").isEmpty
+      && BibDbGit.parsePushLog("\u{1e}not-a-record").isEmpty)
+check("(o2) pushLogArguments：旧→新、%H/%P/%s + --name-only、@{upstream}..HEAD",
+      BibDbGit.pushLogArguments() == ["log", "--reverse",
+                                      "--format=%x1e%H%x1f%P%x1f%s", "--name-only",
+                                      "@{upstream}..HEAD"])
+let bibCommit1 = makePushCommit("1111111", subject: "bib1",
+                                paths: ["bib_db/bibliography.jsonl"])
+let bibCommit2 = makePushCommit("2222222", parents: ["1111111"], subject: "bib2",
+                                paths: ["bib_db/bibliography.jsonl"])
+let notesCommit = makePushCommit("3333333", parents: ["2222222"], subject: "notes 提交",
+                                 paths: ["drafts/probe.md"])
+let bibCommit3 = makePushCommit("4444444", parents: ["3333333"], subject: "bib3",
+                                paths: ["bib_db/bibliography.jsonl"])
+let mergeCommit = makePushCommit("5555555", parents: ["4444444", "deadbee"],
+                                 subject: "merge", paths: [])
+check("(o2) isBibOnly：全 bib_db/（含空提交）→ true；含 notes 文件 → false",
+      BibDbGit.isBibOnly(bibCommit1)
+      && BibDbGit.isBibOnly(makePushCommit("6666666", subject: "空提交", paths: []))
+      && !BibDbGit.isBibOnly(makePushCommit("7777777", subject: "混",
+                                            paths: ["bib_db/x", "notes/y.md"]))
+      && !BibDbGit.isBibOnly(makePushCommit("8888888", subject: "notes",
+                                            paths: ["notes/y.md"])))
+check("(o2) isBibOnly：merge 提交一律 false（路径全 bib 也不算）",
+      !BibDbGit.isBibOnly(mergeCommit)
+      && BibDbGit.firstNonBibPath(makePushCommit("9999999", subject: "混",
+                                                 paths: ["bib_db/x", "notes/y.md"]))
+          == "notes/y.md")
+check("(o2) planPush：全 bib → tip=最后一条 / count=2 / 无 remainder",
+      BibDbGit.planPush(commits: [bibCommit1, bibCommit2], upstreamRemote: "origin",
+                        upstreamBranch: "main")
+          == .pushable(tip: bibCommit2, count: 2, remainder: []))
+check("(o2) planPush：首条 notes → blocked（sha/subject/非 bib 路径都在）",
+      BibDbGit.planPush(commits: [notesCommit, bibCommit3], upstreamRemote: "origin",
+                        upstreamBranch: "main") == .blocked(notesCommit)
+      && notesCommit.shortSha == "3333333"
+      && notesCommit.subject == "notes 提交"
+      && BibDbGit.firstNonBibPath(notesCommit) == "drafts/probe.md")
+check("(o2) planPush：bib,notes,bib → 前缀 1 + remainder 2（后面的 bib 不代推）",
+      BibDbGit.planPush(commits: [bibCommit1, notesCommit, bibCommit3],
+                        upstreamRemote: "origin", upstreamBranch: "main")
+          == .pushable(tip: bibCommit1, count: 1,
+                       remainder: [notesCommit, bibCommit3]))
+check("(o2) planPush：merge 首条 → blocked（不把另一父历史带过去）",
+      BibDbGit.planPush(commits: [mergeCommit], upstreamRemote: "origin",
+                        upstreamBranch: "main") == .blocked(mergeCommit))
+check("(o2) planPush：bib 后 merge → 前缀在 merge 处截断",
+      BibDbGit.planPush(commits: [bibCommit1, bibCommit2, mergeCommit],
+                        upstreamRemote: "origin", upstreamBranch: "main")
+          == .pushable(tip: bibCommit2, count: 2, remainder: [mergeCommit]))
+let emptyBibCommit = makePushCommit("6666666", subject: "空提交", paths: [])
+check("(o2) planPush：空日志 → nothingToPush；空提交也算 bib-only",
+      BibDbGit.planPush(commits: [], upstreamRemote: "origin", upstreamBranch: "main")
+          == .nothingToPush
+      && BibDbGit.planPush(commits: [emptyBibCommit], upstreamRemote: "origin",
+                           upstreamBranch: "main")
+          == .pushable(tip: emptyBibCommit, count: 1, remainder: []))
+check("(o2) pushArguments：refspec 限定 refs/heads/<branch>、无 force/-f",
+      BibDbGit.pushArguments(remote: "origin", tip: "abcdef123456", branch: "main")
+          == ["push", "origin", "abcdef123456:refs/heads/main"]
+      && !BibDbGit.pushArguments(remote: "origin", tip: "abcdef123456", branch: "main")
+          .contains("--force")
+      && !BibDbGit.pushArguments(remote: "origin", tip: "abcdef123456", branch: "main")
+          .contains("-f"))
+check("(o2) upstreamArguments：rev-parse --abbrev-ref --symbolic-full-name @{upstream}",
+      BibDbGit.upstreamArguments()
+          == ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])
+check("(o2) parseUpstream：origin/main、含 / 的分支、fatal/空 → nil",
+      BibDbGit.parseUpstream("origin/main\n")?.remote == "origin"
+      && BibDbGit.parseUpstream("origin/main\n")?.branch == "main"
+      && BibDbGit.parseUpstream("origin/feature/x\n")?.branch == "feature/x"
+      && BibDbGit.parseUpstream("fatal: no upstream configured for branch 'main'") == nil
+      && BibDbGit.parseUpstream("") == nil)
+check("(o2) looksLikeProxyFailure：代理死（Failed to connect … port）/ Could not resolve / CONNECT / Unsupported",
+      BibDbGit.looksLikeProxyFailure(
+          "fatal: unable to access 'https://github.com/x': Failed to connect to 127.0.0.1 port 10808 after 0 ms: Couldn't connect to server")
+      && BibDbGit.looksLikeProxyFailure("fatal: Could not resolve proxy: socks5")
+      && BibDbGit.looksLikeProxyFailure("error: proxy CONNECT aborted")
+      && BibDbGit.looksLikeProxyFailure("fatal: Unsupported proxy syntax in config"))
+check("(o2) looksLikeProxyFailure：普通失败不误判（rejected / HTTP 403 / 身份）",
+      !BibDbGit.looksLikeProxyFailure("! [rejected] main -> main (non-fast-forward)")
+      && !BibDbGit.looksLikeProxyFailure("fatal: unable to access 'https://github.com/x': The requested URL returned error: 403")
+      && !BibDbGit.looksLikeProxyFailure("*** Please tell me who you are."))
+check("(o2) proxyOverrideArguments：清 github proxy + http.proxy（-c 配对）",
+      BibDbGit.proxyOverrideArguments()
+          == ["-c", "http.https://github.com.proxy=", "-c", "http.proxy="])
+check("(o2) PushResult 默认值：未推送/count 0/无 blocked·remainder/未重试/非空操作",
+      { let r = BibDbGit.PushResult()
+        return !r.pushed && r.pushedCount == 0 && r.blockedCommit == nil
+            && r.remainderCommit == nil && !r.proxyRetried && !r.nothingToDo
+            && r.upstream.isEmpty }())
+let pushSrc = sourceSlice(gitSource, "static func push(db: String)",
+                          "static func revertToPreviousCommit")
+check("(o2) push 源码：planPush + refspec push + 代理重试都接线；绝不 force",
+      pushSrc.contains("planPush(commits:") && pushSrc.contains("pushArguments(remote:")
+      && pushSrc.contains("looksLikeProxyFailure") && pushSrc.contains("proxyOverrideArguments()")
+      && !pushSrc.contains("--force"))
+check("(o2) push 源码：无 upstream / log 坏输出 / blocked 都 fail-soft（不崩、不动本地）",
+      pushSrc.contains("未设置 upstream") && pushSrc.contains("本地提交不受影响")
+      && pushSrc.contains("无法解析") && pushSrc.contains("blockedCommit")
+      && pushSrc.contains("nothingToDo"))
 
 // ── (p) B-196：reviewFreshness 四态（stale 时写入口临时禁用）────────────────
 print("\n── (p) B-196 新鲜度四态 ──")
