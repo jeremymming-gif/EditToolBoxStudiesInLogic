@@ -397,6 +397,78 @@ def load_health_ignore(db_path: str, by_key: dict, by_alias: dict) -> dict:
     return result
 
 
+def load_health_ignore_entries(db_path: str) -> dict:
+    """读 sidecar 的**原文条目**（B-205 写动作专用；不解析 key、不改变 lint 口径）。
+
+    `load_health_ignore()` 把条目解析成「生效/不生效」的集合，适合 lint 只读；写动作要
+    **原样保留**既有条目的 `reason` / `decided_at`（以及将来可能加的审计字段），所以另给
+    这个原文读取口。
+
+    返回 `{"path", "exists", "version", "acknowledged": [原文 dict...], "problems": [...]}`：
+      · 缺文件 = 空集、无问题（首次 ack 的常态）；
+      · `problems` 非空 = 文件存在但**不能安全重写**（读不了 / 坏 JSON / 顶层不是 JSON
+        对象 / version 不是本引擎认的 / `acknowledged` 不是数组 / 某条不是 JSON 对象）→
+        写动作必须拒绝覆盖，提示用户先修文件。这和 `load_health_ignore` 的 fail-soft 是
+        **相反**的取舍：lint 可以忽略坏条目继续报库健康，写动作宁可不写，也不能把用户
+        手写的条目悄悄丢掉。
+    """
+    path = health_ignore_path(db_path)
+    result: dict = {"path": path, "exists": False, "version": None,
+                    "acknowledged": [], "problems": []}
+    if not path or not os.path.isfile(path):
+        return result
+    result["exists"] = True
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as exc:
+        result["problems"].append(f"读不了 / 不是合法 UTF-8 或 JSON（{exc}）")
+        return result
+    if not isinstance(payload, dict):
+        result["problems"].append("顶层不是 JSON 对象")
+        return result
+    version = payload.get("version")
+    result["version"] = version
+    if version != HEALTH_IGNORE_VERSION:
+        result["problems"].append(
+            f"version 不是 {HEALTH_IGNORE_VERSION}（实际 {version!r}）：本引擎不认这个文件")
+        return result
+    entries = payload.get("acknowledged")
+    if not isinstance(entries, list):
+        result["problems"].append("`acknowledged` 不是数组")
+        return result
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            result["problems"].append(f"第 {index} 条 ack 不是 JSON 对象")
+            continue
+        result["acknowledged"].append(entry)
+    return result
+
+
+def write_health_ignore_entries(db_path: str, entries: list[dict]) -> str:
+    """原子重写 sidecar（B-205 写动作）：`version: 1` + 条目原文，pretty JSON + 末尾换行。
+
+    只写 `<库目录>/health-ignore.json`，**绝不碰 bibliography.jsonl**：同目录临时文件 +
+    `fsync` + `os.replace`（失败时旧文件完好），`keep_backups=0` 不落 `.bak` 垃圾
+    （sidecar 本身归笔记仓 git 审计，撤销用 `git revert` / 删条目）。返回 sidecar 路径。
+
+    调用方负责**先校验**（`load_health_ignore_entries` 与 `load_health_ignore` 都没有
+    problems）；本函数只按给定条目序列化，不猜、不修、不丢。
+    """
+    path = health_ignore_path(db_path)
+    if not path:
+        raise BibDBError("库路径为空，无法确定 health-ignore.json 的位置")
+    cleaned: list[dict] = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise BibDBError(f"第 {index} 条 ack 不是 JSON 对象：拒绝写 sidecar")
+        cleaned.append(dict(entry))
+    payload = {"version": HEALTH_IGNORE_VERSION, "acknowledged": cleaned}
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    fsutil.atomic_write(path, text, keep_backups=0)
+    return path
+
+
 # ── 字段规范化（唯一实现：复用 slcn/bibnorm.py 的编辑规则） ─────────────────
 
 

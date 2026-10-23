@@ -2214,6 +2214,7 @@ with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
             (7067, 908, 24, 0, 908),        # 第一批合并 apply 后（7950-883）
             (7051, 905, 24, 0, 905),        # 第二批合并 apply 后（7067-16，含 Segerberg 书版子集）
             (7045, 904, 24, 0, 904),        # 用户 2026-10-23 引用库合并提交后（7051-6；B-201 批同步）
+            (7043, 904, 24, 0, 904),        # 用户用 B-201 新功能再合并 2 对后（7045-2；B-205 批同步）
         }
         _state = (real.get("records"), real.get("with_editor"), real.get("editor_only"),
                   real.get("changes"), real.get("skips"))

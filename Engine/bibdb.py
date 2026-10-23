@@ -32,6 +32,13 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                 [--limit N] [--threshold X] [--min-score X] [--bibtex] [--json]
     stats       [--json]
     lint        [--json]                    重复 key / 字段冲突 / 缺来源 / verified 无记录 …
+    ack-duplicates --code near_duplicates|duplicate_content --keys A,B[,...]
+                [--reason TEXT] [--apply] [--json]
+                                            人工确认「两条不同条目，不再提示」（B-205）：
+                                            默认 dry-run（只预览）；--apply 才原子写库同目录
+                                            `health-ignore.json`（**不写 bibliography.jsonl**）；
+                                            幂等（已 ack → rc0 added=false 零写入）；坏 sidecar /
+                                            非当前 pair 或组 → rc2 且零写入
     rehash      [--dry-run | --apply] [--json]
                                             规范化规则升级后**重算 content_sha256**：默认
                                             dry-run（只报告 old/new，不写库）；--apply 才写
@@ -116,6 +123,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     /opt/homebrew/bin/python3.14 bibdb.py query --title "A Theory of Everything" --author Smith
     /opt/homebrew/bin/python3.14 bibdb.py stats
     /opt/homebrew/bin/python3.14 bibdb.py lint
+    /opt/homebrew/bin/python3.14 bibdb.py ack-duplicates --code near_duplicates \
+        --keys <keyA>,<keyB> [--apply]   # 默认 dry-run；确认不同只写 sidecar、不改库
     /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action keep --all-fields
     /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action adopt \
         --incoming-sha256 <指纹> [--allow-overlap] [--dry-run]
@@ -1366,6 +1375,162 @@ def cmd_lint(args) -> int:
     print(f"error {counts['errors']} 项，warning {counts['warnings']} 项"
           + ("——库可用。" if result["ok"] else "——**库有 error，先修**。"))
     return 0 if result["ok"] else 1
+
+
+# ── B-205：重复/近重复告警的 GUI 裁决入口（写 sidecar，不改库）────────────────
+#
+# 用户诉求（`miaolitian≈miaolitian2`）：误报的「同作品多条记录」希望自己裁决「确认不同」。
+# 引擎只做**落盘 + 校验**，绝不改库：写 `<库目录>/health-ignore.json`（B-204 的 sidecar），
+# `lint` 下一次读取即不再提示；GUI 负责二次确认 / 自动本地 commit / 刷新
+# （spec `EditToolBox-notes/drafts/specs/b205-ack-duplicate-gui.md` §2/§4）。
+#
+# 口径（与 GUI 契约逐条对应）：
+#   · 默认 dry-run：只算 added / 条目数 / 库 sha，不建也不改 sidecar；`--apply` 才写；
+#   · key 先 canonical（`_by_key`）后唯一 alias（`_by_alias`）；canonical 去重 + **排序后**落盘；
+#   · sidecar 有任何问题（坏 JSON / version≠1 / 任一条目非法 / key 解析不了）→ rc2 **零写入**，
+#     提示先修 sidecar（写动作绝不覆盖坏文件）；
+#   · 已 ack（同 code + 同 canonical 键集）→ **先判幂等**：rc0、added=false、零写入；
+#   · 存在性：near_duplicates 必须恰好 2 个不同 canonical key 且是 `Store._near_duplicates()`
+#     当前未 ack 的 pair；duplicate_content 必须列全当前内容相同组（同 content_sha256）的全部 key；
+#   · 库文件一个字节都不动：命令前后 sha 必相同（JSON 里带 db_sha256）。
+
+ACK_DUPLICATES_DEFAULT_REASON = "人工确认：两条不同条目（不再提示）"
+
+
+def _duplicate_content_groups(store) -> set:
+    """当前「内容完全相同」的 canonical key 组（与 `Store.lint` 的 duplicate_content 同口径）。
+
+    lint 只对「库内 content_sha256 有效且与重算值一致」的记录分组（stale sha 是 error，
+    不当重复组）；ack 校验必须同一判据，否则会把 lint 根本不提示的组写进 sidecar。
+    """
+    sha_owner: dict[str, list[str]] = {}
+    for record in store._records:
+        if not isinstance(record, dict):
+            continue
+        key = str(record.get("key") or "")
+        stored = record.get("content_sha256")
+        if not key or not isinstance(stored, str) or not bibdb._HEX64_RE.match(stored):
+            continue
+        actual = bibdb.content_sha256(str(record.get("entry_type") or ""),
+                                      record.get("fields") or {})
+        if actual != stored:
+            continue
+        sha_owner.setdefault(actual, []).append(key)
+    return {tuple(sorted(owners)) for owners in sha_owner.values() if len(owners) > 1}
+
+
+def cmd_ack_duplicates(args) -> int:
+    """确认「两条不同条目」→ 写入 sidecar（默认 dry-run；`--apply` 才写；**不写库**）。"""
+    apply_mode = bool(getattr(args, "apply", False))
+    if apply_mode and bool(getattr(args, "dry_run", False)):
+        return _fail(args, "--apply 与 --dry-run 互斥：一次只能选一种模式")
+    code = str(getattr(args, "code", "") or "")
+    keys = [part.strip() for part in str(getattr(args, "keys", "") or "").split(",")
+            if part.strip()]
+    try:
+        if code not in bibdb.HEALTH_IGNORE_CODES:
+            raise bibdb.BibDBError(
+                f"--code 只支持 {'/'.join(bibdb.HEALTH_IGNORE_CODES)}（收到 {code!r}）")
+        if not keys:
+            raise bibdb.BibDBError("--keys 至少要给 1 个 key（多个用逗号分隔）")
+        path, store = _open_store(args)
+        db_sha_before = bibdb.db_sha256(path)
+        sidecar = bibdb.load_health_ignore_entries(path)
+        health = bibdb.load_health_ignore(path, store._by_key, store._by_alias)
+        sidecar_path = sidecar["path"] or bibdb.health_ignore_path(path)
+        problems: list[str] = []
+        for problem in list(sidecar["problems"]) + list(health["problems"]):
+            if problem not in problems:      # 坏 JSON 两个读取口会各报一次，去重
+                problems.append(problem)
+        if problems:
+            summary = "；".join(problems[:5]) + ("……" if len(problems) > 5 else "")
+            raise bibdb.BibDBError(
+                f"现有「已确认不同」清单有 {len(problems)} 处问题（{summary}）："
+                f"先修 {sidecar_path} 再确认（本次未写入，绝不覆盖坏文件）")
+        canonical_keys: list[str] = []
+        key_problems: list[str] = []
+        for raw in keys:
+            canonical, problem = bibdb._resolve_health_key(
+                raw, store._by_key, store._by_alias)
+            if problem:
+                key_problems.append(problem)
+            elif canonical not in canonical_keys:
+                canonical_keys.append(canonical)
+        if key_problems:
+            raise bibdb.BibDBError("；".join(key_problems))
+        canonical_keys.sort()
+        if code == "near_duplicates" and len(canonical_keys) != 2:
+            raise bibdb.BibDBError(
+                f"near_duplicates 必须恰好 2 个不同的 canonical key（实际 "
+                f"{len(canonical_keys)} 个：{'、'.join(canonical_keys) or '（空）'}）")
+        if code == "duplicate_content" and len(canonical_keys) < 2:
+            raise bibdb.BibDBError(
+                f"duplicate_content 至少要 2 个不同的 canonical key（实际 "
+                f"{len(canonical_keys)} 个）")
+        # 先判幂等：同一 code + 同一 canonical 键集已经在 sidecar 里 → 不再做存在性校验
+        # （pair 可能早被 ack、后来库又变了；重复点按钮必须仍是 rc0 且零写入）。
+        acked = next((entry for entry in health["acks"]
+                      if entry.get("code") == code
+                      and sorted(entry.get("resolved") or []) == canonical_keys), None)
+        added = acked is None
+        if added:
+            if code == "near_duplicates":
+                records = [record for record in store._records
+                           if isinstance(record, dict)]
+                raw_pairs, _total = store._near_duplicates(records, cap=1_000_000)
+                acked_pairs = health["near_duplicates"]
+                current = {frozenset((first, second)) for first, second in raw_pairs
+                           if frozenset((first, second)) not in acked_pairs}
+                if frozenset(canonical_keys) not in current:
+                    raise bibdb.BibDBError(
+                        f"`{'≈'.join(canonical_keys)}` 不是当前未确认的近重复对"
+                        "（只能确认 lint 正在提示的 pair，每对恰好 2 条；"
+                        "库有变化请刷新后重试）")
+            elif tuple(canonical_keys) not in _duplicate_content_groups(store):
+                raise bibdb.BibDBError(
+                    "这些 key 与当前「内容完全相同」的一组记录不一致："
+                    "duplicate_content 必须列全该组全部 canonical key"
+                    "（组有变化请刷新后重试）")
+        entries_before = len(sidecar["acknowledged"])
+        entries_after = entries_before + (1 if added else 0)
+        written = False
+        if added and apply_mode:
+            reason = (str(getattr(args, "reason", "") or "").strip()
+                      or ACK_DUPLICATES_DEFAULT_REASON)
+            entry = {"code": code, "keys": list(canonical_keys), "reason": reason,
+                     "decided_at": bibdb._now_iso()}
+            bibdb.write_health_ignore_entries(
+                path, list(sidecar["acknowledged"]) + [entry])
+            written = True
+        db_sha_after = bibdb.db_sha256(path)
+        if db_sha_after != db_sha_before:
+            raise bibdb.BibDBError(
+                "内部错误：确认不同不应改库，但库文件 sha256 变了（请检查库文件）")
+    except bibdb.BibDBError as exc:
+        return _fail(args, exc)
+    payload = {
+        "command": "ack-duplicates", "dry_run": not apply_mode, "db": path,
+        "sidecar_path": sidecar_path, "code": code, "keys": keys,
+        "canonical_keys": canonical_keys, "added": added, "written": written,
+        "entries_before": entries_before, "entries_after": entries_after,
+        "db_sha256": db_sha_after,
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    joined = "、".join(canonical_keys)
+    if not added:
+        print(f"已确认过（{code}）：{joined} —— 无需重复写入"
+              f"（sidecar 条目 {entries_before} 条；库未改，sha256 {db_sha_after[:12]}…）")
+    elif not apply_mode:
+        print(f"计划确认不同（{code}）：{joined} → {sidecar_path}"
+              f"（sidecar 条目 {entries_before}→{entries_after}；dry-run 未写入；"
+              "确认无误加 --apply）")
+    else:
+        print(f"已确认不同（{code}）：{joined} → 已写入 {sidecar_path}"
+              f"（sidecar 条目 {entries_before}→{entries_after}；库未改，"
+              f"sha256 {db_sha_after[:12]}…）")
+    return 0
 
 
 # ── rehash：规范化规则升级后的库迁移（B-115）────────────────────────────────
@@ -6198,6 +6363,25 @@ def build_parser() -> argparse.ArgumentParser:
                     help="输出目录（默认 = 库文件所在目录）")
     rd.add_argument("--json", action="store_true", help="机器可读输出")
     rd.set_defaults(func=cmd_report_duplicates)
+
+    # ── B-205：人工确认「两条不同条目」（写 sidecar；默认 dry-run，--apply 才写）──
+    ack = sub.add_parser(
+        "ack-duplicates", parents=[common],
+        help="人工确认「两条不同条目」（写库同目录 health-ignore.json；默认 dry-run，"
+             "--apply 才写；幂等；不写库）")
+    ack.add_argument("--code", required=True, choices=bibdb.HEALTH_IGNORE_CODES,
+                     help="告警 code：near_duplicates（一对）/ duplicate_content（一整组）")
+    ack.add_argument("--keys", required=True, metavar="A,B[,...]",
+                     help="要确认不同的 key（逗号分隔；也认唯一 alias；写盘用 canonical 排序）")
+    ack.add_argument("--reason", default="",
+                     help=f"裁决理由（默认「{ACK_DUPLICATES_DEFAULT_REASON}」）")
+    ack_mode = ack.add_mutually_exclusive_group()
+    ack_mode.add_argument("--dry-run", action="store_true",
+                          help="预览（默认就是；只算 added / 条目数 / 库 sha，不写 sidecar）")
+    ack_mode.add_argument("--apply", action="store_true",
+                          help="真正写 sidecar（原子写；库文件一个字节都不动）")
+    ack.add_argument("--json", action="store_true", help="机器可读输出")
+    ack.set_defaults(func=cmd_ack_duplicates)
 
     # ── B1 确定性规范化 dry-run（第 131 条后续）：只出报告、绝不写库 ──────────
     norm = sub.add_parser(
