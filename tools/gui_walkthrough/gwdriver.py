@@ -15,7 +15,9 @@ from gwcore import (  # noqa: F401 —— 常量/纯函数全部来自 gwcore，
     AX_MAX_DEPTH, DEFAULT_APP, DEFAULT_DOMAIN, DEFAULT_KEY, DEFAULT_NOTES_REPO,
     EXIT_ENV, EXIT_OK, EXIT_USAGE, AssertError, EnvProblem, Evidence, PermissionProblem,
     STATE_NAME, ToolError, UsageError, _clip, _now, alert_titles, build_helper, choose_alert,
-    choose_button, element_name, fixture_plan, guard_fixture_root, helper_call,
+    choose_button, collapse_nested_alerts, element_name, fixture_plan, guard_fixture_root,
+    alert_press_verdict,
+    helper_call,
     frontmost_script, keystroke_script, locator_argv, match_text, pbcopy_argv, permission_hint, run_cmd,
     ax_tree_degenerate, button_path_sane, filter_deepest, pick_pid, render_dump, run_plan, screencapture_argv, sha256_file, shot_tmp_name,
     snapshot_equal, snapshot_repo, validate_optional_locator, DEGENERATE_AX_HINT,
@@ -351,17 +353,22 @@ def cmd_assert_alert(ctx: Ctx, loc: dict) -> tuple[str, str, dict]:
         data = ctx.helper(["alerts", "--pid", str(ctx.pid()), "--max-depth", str(ns.max_depth or 8)])
         if not data.get("ok"):
             raise AssertError(f"取 alert 失败：{data.get('error')} {data.get('message', '')}", data)
-        alerts = data.get("alerts") or []
+        raw_alerts = data.get("alerts") or []
+        # B-197（2026-10-23 真点：嵌套 sheet alert 误报多命中）：外层 editor sheet 的 texts
+        # 递归含内嵌 alert 文本 → 先按 path 祖先-后代折叠，再按标题挑唯一；并列多命中仍拒绝。
+        alerts = collapse_nested_alerts(raw_alerts)
         alert, err = choose_alert(alerts, ns.title, exact=ns.exact_title, body=ns.body or "",
                                   ignore_case=ns.ignore_case)
         return (alert is not None, {"alert": alert, "error": err, "seen": len(alerts),
+                                    "seen_raw": len(raw_alerts),
                                     "titles": [t for a in alerts for t in alert_titles(a)[:2]]})
 
     t0 = time.monotonic()
     found, detail = ctx.poll(_probe, ns.timeout, interval=max(0.1, ns.timeout / 10 or 0.1))
     elapsed = time.monotonic() - t0
     log = (f"# assert-alert {_now()}\ntitle={ns.title!r} button={ns.button!r} click={bool(ns.click)}\n"
-           f"timeout={ns.timeout}s elapsed={elapsed:.2f}s alerts_seen={detail.get('seen')}\n")
+           f"timeout={ns.timeout}s elapsed={elapsed:.2f}s alerts_seen={detail.get('seen')} "
+           f"(raw {detail.get('seen_raw')})\n")
     if not found:
         raise AssertError(f"alert 断言失败：{detail.get('error')}；若界面确有 alert：确认 App 在前台，"
                           f"屏幕休眠会让 AX 树退化（先 caffeinate -u -t 2）", {**detail, "log": log})
@@ -383,9 +390,9 @@ def cmd_assert_alert(ctx: Ctx, loc: dict) -> tuple[str, str, dict]:
         if ns.click:
             press = ctx.helper(["press", "--pid", str(ctx.pid()), "--path", button["path"],
                                 "--expect-name", button.get("name", "")])
-            if not press.get("ok"):
-                raise AssertError(f"点 alert 按钮失败：{press.get('error')} {press.get('message', '')}",
-                                  {**detail, "press": press, "log": log})
+            press_ok = bool(press.get("ok"))
+            press_detail = press
+            dismissed: bool | None = None
             if not ns.no_verify_dismiss:
                 def _gone():
                     again = ctx.helper(["alerts", "--pid", str(ctx.pid()), "--max-depth", "8"])
@@ -393,12 +400,28 @@ def cmd_assert_alert(ctx: Ctx, loc: dict) -> tuple[str, str, dict]:
                     return (not still, {"still": bool(still)})
 
                 gone, gdetail = ctx.poll(_gone, ns.dismiss_timeout)
+                dismissed = gone
                 log += f"dismissed={gone} ({gdetail})\n"
-                if not gone:
-                    raise AssertError("点击后 alert 仍在（可能点空/嵌套 alert）", {**detail, "log": log})
+            verdict, reason = alert_press_verdict(press_ok, dismissed,
+                                                  not bool(ns.no_verify_dismiss))
+            if not verdict:
+                if reason == "press_error_unverified":
+                    raise AssertError(
+                        f"点 alert 按钮失败：{press.get('error')} {press.get('message', '')}",
+                        {**detail, "press": press, "log": log})
+                raise AssertError(
+                    f"点 alert 按钮失败且 alert 仍在：{press.get('error')} "
+                    f"{press.get('message', '')}" if not press_ok
+                    else "点击后 alert 仍在（可能点空/嵌套 alert）",
+                    {**detail, "press": press, "log": log})
+            if reason == "tolerated":
+                # B-197 附带：AXPress 报 -25205（SwiftUI .cancel 按钮怪癖）但 alert 已关
+                log += (f"press_error_tolerated=True press={press.get('error')} "
+                        f"{press.get('message', '')}\n")
     return "PASS", (f"alert「{_clip(ns.title, 30)}」" + (f" → 点「{clicked}」" if clicked else "")
                     + f"（{elapsed:.2f}s）"), {
-        "assert_alert": detail, "alert_path": alert.get("path"), "clicked": clicked, "log": log}
+        "assert_alert": detail, "alert_path": alert.get("path"), "clicked": clicked,
+        "press": press_detail if ns.click and ns.button else None, "log": log}
 
 
 def cmd_dump(ctx: Ctx, loc: dict) -> tuple[str, str, dict]:

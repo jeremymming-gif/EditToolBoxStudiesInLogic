@@ -122,7 +122,7 @@ cat "$TMPDIR/gui-walkthrough-evidence/VERDICT-SUMMARY.txt"
 | 3 | 缺「辅助功能」权限（打印可行动提示，不静默假 PASS） |
 | 4 | 环境问题（App 未启动 / 缺 swiftc / git、defaults 失败 / fixture 状态缺失 / AX 树退化） |
 
-## 8. `--self-test`（hermetic，30 例）
+## 8. `--self-test`（hermetic，34 例）
 
 ```bash
 python3 tools/gui_walkthrough/gui_walkthrough.py --self-test   # 末行 N/N PASS，rc 0
@@ -134,7 +134,7 @@ python3 tools/gui_walkthrough/gui_walkthrough.py --self-test   # 末行 N/N PASS
 覆盖：证据命名/slug、helper 输出解析、定位 argv 与护栏、alert 解析（B-190 真实形态 / 多命中拒绝 /
 标题不匹配 / 禁索引）、文本断言语义、VERDICT 汇总、证据续编号与 `--reset` 归档、fixture 计划与根护栏、
 teardown 恢复计划、计划执行失败即停、权限提示与退出码、截图 argv 与临时命名、AppleScript 构造、
-helper 编译缓存、helper 源码契约、dump 渲染、快照比对、退化树识别、`--subtree` 最深命中、pid 精确匹配、evidence-dir 只收绝对路径。
+helper 编译缓存、helper 源码契约、dump 渲染、快照比对、退化树识别、`--subtree` 最深命中、pid 精确匹配、evidence-dir 只收绝对路径、嵌套 alert 折叠（B-197：外层 sheet 折叠 / 并列多命中仍拒绝）、press 容错（B-197 附带：`.cancel` 按钮 AXPress 报 -25205 但 alert 已关 → PASS；无消失证据仍 FAIL）。
 
 ## 9. 已知限制（刻意不做的）
 
@@ -150,8 +150,8 @@ helper 编译缓存、helper 源码契约、dump 渲染、快照比对、退化�
 | `gui_walkthrough.py` | 命令行入口（子命令/参数、evidence 记录、退出码） |
 | `gwcore.py` | 常量、错误类型、纯函数（定位 argv、alert 解析、命名、fixture 计划、快照比对）、evidence pack |
 | `gwdriver.py` | `Ctx`（pid/AX/AppleScript/pbcopy）+ 9 个子命令实现 |
-| `gwselftest.py` | hermetic 自测（30 例；哨兵证明零子进程） |
+| `gwselftest.py` | hermetic 自测（34 例；哨兵证明零子进程） |
 | `axhelper.swift` | AX 原语（JSON 输出）：trusted/dump/resolve/press/select/setvalue/scroll/alerts/window/texts |
 
-自测口径：`python3 tools/gui_walkthrough/gui_walkthrough.py --self-test`（`tools/INVENTORY.md` 登记同一行；30/30 PASS）。
+自测口径：`python3 tools/gui_walkthrough/gui_walkthrough.py --self-test`（`tools/INVENTORY.md` 登记同一行；34/34 PASS）。
 上游相关工具：`tools/run_swift_tests.sh`（Swift 测试台，headless）、`tools/inventory_check.py`（清单看门狗）。

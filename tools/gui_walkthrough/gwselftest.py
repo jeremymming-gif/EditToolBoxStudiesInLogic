@@ -18,7 +18,9 @@ from gwcore import (
     ARCHIVE_PREFIX, AX_MAX_DEPTH, EXIT_ASSERT, EXIT_ENV, EXIT_NO_PERM, EXIT_OK, EXIT_USAGE,
     HELPER_SOURCE, SLUG_MAX, STATE_NAME, TOOL_VERSION, VERDICT_JSON, VERDICT_TXT,
     AssertError, EnvProblem, Evidence, PermissionProblem, UsageError,
-    build_helper, choose_alert, choose_button, evidence_name, fixture_plan, guard_fixture_root,
+    build_helper, choose_alert, choose_button, collapse_nested_alerts, evidence_name,
+    alert_press_verdict,
+    fixture_plan, guard_fixture_root,
     locator_argv, match_text, permission_hint, run_plan, screencapture_argv, sha256_file,
     slugify, snapshot_equal, status_digest, teardown_plan, validate_alert_args,
     validate_locator, window_rect, frontmost_script, keystroke_script, pbcopy_argv,
@@ -424,6 +426,64 @@ def self_test() -> int:
                   and tilde.is_absolute() and empty == "usage")
             return ok, f"bad={len(bad)} 全拒 / good={good} / empty={empty}"
 
+        # 31) 嵌套 alert 折叠：B-197（2026-10-23 真点：嵌套 sheet alert 误报多命中）——
+        #     外层 editor sheet 无 desc=alert、texts 递归含内层 alert 文本 → 折叠后只留内层
+        def t_alert_nested_collapse():
+            alerts = [
+                {"path": "0.6", "role": "AXSheet",
+                 "texts": ["编辑引用库条目", "Ju2020", "确认写入引用库？",
+                           "将按预览的字段差异写库，并用库 sha 校验防并发改动。"],
+                 "buttons": [{"path": "0.6.2", "name": "取消", "desc": "取消"}]},
+                {"path": "0.6.3", "role": "AXSheet", "desc": "alert",
+                 "texts": ["确认写入引用库？", "将按预览的字段差异写库，并用库 sha 校验防并发改动。"],
+                 "buttons": [{"path": "0.6.3.0", "name": "取消", "desc": "取消"},
+                             {"path": "0.6.3.1", "name": "确认写入", "desc": "确认写入"}]},
+            ]
+            collapsed = collapse_nested_alerts(alerts)
+            alert, err = choose_alert(collapsed, "确认写入引用库？")
+            btn, berr = (choose_button(alert, "确认写入") if alert else (None, err))
+            raw_alert, raw_err = choose_alert(alerts, "确认写入引用库？")
+            ok = (len(collapsed) == 1 and collapsed[0]["path"] == "0.6.3"
+                  and alert is not None and alert.get("path") == "0.6.3"
+                  and btn is not None and btn.get("path") == "0.6.3.1" and not berr
+                  and raw_alert is None and "命中 2" in raw_err)
+            return ok, (f"raw 2 命中→拒绝 / 折叠→{len(collapsed)} 个，"
+                        f"alert={alert and alert.get('path')} button={btn and btn.get('path')}")
+
+        # 32) 并列 alert 不折叠（B-197 只折叠祖先-后代；不放宽 B-191「绝不猜」）
+        def t_alert_siblings_kept():
+            alerts = [
+                {"path": "0.6", "texts": ["确认写入引用库？"],
+                 "buttons": [{"path": "0.6.2", "name": "确认写入"}]},
+                {"path": "0.9", "texts": ["确认写入引用库？"],
+                 "buttons": [{"path": "0.9.2", "name": "确认写入"}]},
+                {"path": "0.6", "texts": ["确认写入引用库？"], "buttons": []},  # 同 path 重复
+            ]
+            collapsed = collapse_nested_alerts(alerts)
+            alert, err = choose_alert(collapsed, "确认写入引用库？")
+            dedup = collapse_nested_alerts([{"path": "0.6"}, {"path": "0.6"}])
+            ok = (len(collapsed) == 2 and alert is None and "命中 2" in err and len(dedup) == 1)
+            return ok, f"折叠后 {len(collapsed)} 个 / 同 path 去重 {len(dedup)} 个 / {err[:40]}"
+
+        # 33) B-197 附带：press 报 -25205（SwiftUI .cancel 按钮怪癖）但 alert 已关 → 容错 PASS
+        def t_alert_press_tolerated():
+            ok1, r1 = alert_press_verdict(False, True, True)
+            ok2, r2 = alert_press_verdict(True, True, True)
+            ok = ok1 and r1 == "tolerated" and ok2 and r2 == "pressed"
+            return ok, f"press_err+dismissed→{r1} / press_ok+dismissed→{r2}"
+
+        # 34) 没有「消失」证据时仍判失败（不猜）：alert 仍在 / 传 --no-verify-dismiss
+        def t_alert_press_fail_kept():
+            ok1, r1 = alert_press_verdict(False, False, True)
+            ok2, r2 = alert_press_verdict(True, False, True)
+            ok3, r3 = alert_press_verdict(False, None, False)
+            ok4, r4 = alert_press_verdict(True, None, False)
+            ok = (not ok1 and r1 == "press_error_and_alert_still_present"
+                  and not ok2 and r2 == "alert_still_present"
+                  and not ok3 and r3 == "press_error_unverified"
+                  and ok4 and r4 == "pressed")
+            return ok, f"err+仍在→{r1} / ok+仍在→{r2} / err+未验→{r3} / ok+未验→{r4}"
+
         for name, fn in [
             ("evidence_naming", t_naming), ("slug", t_slug), ("helper_output_parse", t_parse),
             ("locator_argv", t_locator_argv), ("locator_guard", t_locator_guard),
@@ -437,16 +497,21 @@ def self_test() -> int:
             ("osa_scripts", t_osa_scripts), ("helper_build_cache", t_helper_build),
             ("helper_source_contract", t_helper_source), ("dump_render", t_dump_render),
             ("snapshot_equal", t_snapshot), ("degenerate_ax_tree", t_degenerate), ("shot_tmp_name", t_shot_tmp_name), ("filter_deepest", t_filter_deepest), ("pick_pid", t_pick_pid), ("empty_evidence_dir", t_empty_evidence_dir), ("evidence_dir_absolute_only", t_evidence_dir_absolute_only),
+            ("alert_nested_collapse", t_alert_nested_collapse),
+            ("alert_siblings_kept", t_alert_siblings_kept),
+            ("alert_press_tolerated", t_alert_press_tolerated),
+            ("alert_press_fail_kept", t_alert_press_fail_kept),
         ]:
             check(name, fn)
     finally:
         subprocess.run = real_run
 
     ok = sum(1 for _, passed, _ in results if passed)
-    print(f"[gui_walkthrough self-test] {ok}/{len(results)} PASS"
-          + ("" if ok == len(results) else " ← 有失败"))
+    # 汇总行放最后：README §8 与验收口径都是「末行 N/N PASS」；hermetic 证明行已在上面打印。
     print("[gui_walkthrough self-test] hermetic：全程 0 个真实子进程（哨兵未触发）、"
           "未起 App、未读真实库、未联网、未写真实 App defaults")
+    print(f"[gui_walkthrough self-test] {ok}/{len(results)} PASS"
+          + ("" if ok == len(results) else " ← 有失败"))
     return 0 if ok == len(results) else 1
 
 

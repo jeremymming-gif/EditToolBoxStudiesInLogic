@@ -248,6 +248,50 @@ def alert_titles(alert: dict) -> list[str]:
     return titles
 
 
+def collapse_nested_alerts(alerts: list[dict]) -> list[dict]:
+    """折叠「alert 套 alert」的外层候选：祖先候选的 texts 递归包含内层 alert 文本。
+
+    B-197（2026-10-23 真点：嵌套 sheet alert 误报多命中）——「编辑引用库条目」editor sheet
+    （AXSheet，无 desc=alert）内部嵌套真正的 alert（AXSheet desc=alert，标题「确认写入引用库？」）；
+    axhelper 的 alertsPayload 把两层都收进来，外层 textsIn 递归含内层文本，于是 choose_alert 看到
+    同一个标题命中 2 个。这里只丢弃「path 是另一个候选 path 的祖先」的外层候选
+    （child.startswith(parent + ".")），相同 path 去重（留首个）；**并列兄弟多命中不折叠**，
+    仍由 choose_alert 拒绝——B-191「绝不猜」的安全边界不变。
+    """
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for alert in alerts:
+        path = str(alert.get("path", ""))
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(alert)
+    paths = [str(a.get("path", "")) for a in unique]
+    return [a for a, p in zip(unique, paths)
+            if not any(other != p and other.startswith(p + ".") for other in paths)]
+
+
+def alert_press_verdict(press_ok: bool, dismissed: bool | None,
+                        verify_dismiss: bool) -> tuple[bool, str]:
+    """B-197 附带：把「AXPress 结果 + 关闭验证」合成 alert 点击的最终判定。
+
+    SwiftUI 的 `.cancel` 角色按钮（alert 里的「取消」）实测 AXPress 返回
+    `-25205 attribute-unsupported`，但**窗口实际已关闭**（2026-10-23 真点，1.5 s 内
+    dump 已无 alert）。因此 press 报错不等于点空：只要 `verify_dismiss` 且随后确认
+    alert 消失，就按成功处理（log 记 tolerated）。若 alert 仍在，仍判失败；传
+    `--no-verify-dismiss` 时没有「消失」证据，press 报错仍判失败（不猜）。
+
+    返回 `(success, reason)`；reason ∈ pressed / tolerated / alert_still_present /
+    press_error_and_alert_still_present / press_error_unverified。
+    """
+    if verify_dismiss:
+        if dismissed is True:
+            return True, ("pressed" if press_ok else "tolerated")
+        return False, ("alert_still_present" if press_ok
+                       else "press_error_and_alert_still_present")
+    return press_ok, ("pressed" if press_ok else "press_error_unverified")
+
+
 def choose_alert(alerts: list[dict], title: str, *, exact: bool = False,
                  body: str = "", ignore_case: bool = False) -> tuple[dict | None, str]:
     """按标题在 alert 候选里挑唯一一个；返回 (alert, 错误说明)。"""
