@@ -903,3 +903,34 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 - **禁止**：为迁就开发态而放宽/删除断言、或把 `git archive HEAD` 改为读工作树（等于测同一份代码）。
 - 配套：含此类断言的批次按 `EditToolBox-notes/baselines/gates.json` 的 `gen_docs_write.writes_allowed.head_relative_batch=2`
   四步配方走（提交代码 → `gen_docs` 写#2 → `full` 复跑 0 红 → 再提交 README）。
+
+## 十一、脚注引用提升判据（B-199，2026-10-23；Word 通道 C 类口径补充）
+
+> 依据：B-198 批 A 分诊（`EditToolBox-notes/drafts/b198-longtail-triage.md` §3.1/§3.3）。
+> 权威实现：`slcn/footnotes.py: classify_citation()/resolve_citation()/_note_only_probe()`、
+> `slcn/docxsource.py: _src_line_key()/_src_line_keys_for_works()`。回归：`tests/test_b199_footnote_promotion.py`。
+> `--no-c-class-union`（C 类口径关）时本节的提升**一律不生效**，产物逐字节不变。
+
+- **假 mixed 修正**：引导语（`参阅/参见/See/Cf./See also/转引自/引自`）在**开头**、且其后
+  整段是完整文献条目时 → `reference_entry`（不因「像说明」整条判 mixed）；长条目（>260 字）
+  只要能整体解析为完整条目，也不判 mixed。引导语只认开头，或句中**独立**出现（英文字界）。
+- **note_only 探测**：legacy `classify()` 判 `pure_note`、文本里有题名证据（中文必须含
+  **书名号**题名；英文必须含年份）、且无引者注（笔者/本文/前注/转引自…）与古典标记
+  （SL/OP/罗马卷次）时，升级为待匹配短引用；匹配用 `strict=True`：题名命中、相似度 ≥0.92、
+  最佳档候选**唯一**。任一条不满足 → 保持纯注释（产物与旧行为一致）。
+- **真 mixed 拆分**（`mixed_split`）：拆成 `note_before + ref + note_after`。ref 可解析为
+  完整条目 → 条目进并集 bib（重复按既有指纹/原文归一合并）、脚注保留并在原位注入
+  `\parencite`；ref 是短引用 → 只在**命中既有键**时注入。多作品（≥2 题名）保留整段原文、
+  `\parencite` 追加在末尾。古典文献（SL/OP/罗马卷次）与散文式英文论述脚注**不拆**；
+  含公式的脚注不拆（走旧 mixed 渲染，避免 `$…$` 二次转义）。
+- **container/booktitle 匹配**：题名不匹配时，若候选条目的题名（归一后 ≥8 字符）**逐字**
+  出现在引注原文里、且作者姓仍匹配 → 命中（90-06 `Gary2004` 型：析出文献题名不同、
+  容器书名在原文）。
+- **文末清单原文行兜底**：短引用匹配失败时，用 `doc.ref_raw_lines`（编号清单）或
+  `Ref.raw`（人年制清单）的**原文行**做题名（+年份）唯一命中 → 既有键；多行命中或题名
+  归一后 <4 字符 → 不猜（90-07 Einstein、90-06 Tolstoy 型：清单字段是碎片，原文行完整）。
+- **不编造**：所有字段来自原文；无证据/非唯一命中 → 保留脚注并出 warning
+  （`citation_unmatched` / `mixed_manual_check`），不生成条目、不猜键。
+- **验收口径**：41 篇允许变化 = `\parencite` 增加 + bib 条目增加；正文文字、页数、其它
+  finding 码不变（偏差逐条记报告）。新测试 ≥8 断言，必须含负例（古典/引者注/无题名/
+  多候选/无容器证据不提升）。

@@ -262,6 +262,11 @@ False：`docx_audit` 的冻结基线不随总开关变。
   `mixed` 说明+引用 → 保留脚注 + `mixed_manual_check` warning（build 汇总成「请人工核对」清单）；
   `note_only` 纯说明/古典文献 → 原样保留。`pure_citation` 匹配不到完整条目 →
   `citation_unmatched`：保留脚注、**不编造**，出 warning。
+- **B-199（2026-10-23）增补**：新增 `mixed_split` 拆分态（说明文字保留 + 原位注入
+  `\parencite`，ref 入 bib）；引导语（参阅/参见/See/Cf.）后的完整条目不再误判 mixed；
+  无年份但有题名证据的 `note_only` 用 strict 唯一匹配探测提升；题名不匹配时允许
+  container/booktitle 匹配与「文末清单原文行」唯一兜底。判据全文见 `RULES.md` §十一，
+  回归 `tests/test_b199_footnote_promotion.py`。
 - **并集 bib**（`union_entries()`）：文末清单 ∪ 脚注条目；指纹 = 第一作者姓 + 题名 + 4 位年份 +
   类型族 + 卷号 + 版次（页码/定位不参与），同作品仅页码不同合并 1 条、正文各处
   `\parencite[页码]`；文末版本优先、缺字段互补，字段冲突记 `field_conflict` warning；并集改键
