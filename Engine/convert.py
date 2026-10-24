@@ -2894,8 +2894,11 @@ def main() -> int:
     # 第五十八批：默认初排的引用库比对（只打一行汇总）；B-217 ⑧ 起默认**回填**：
     # 安全命中只补缺失字段（--no-bibdb-apply 回到旧只读口径、逐字节相同）。
     # 用户反馈「初排感觉没查引用库」：此前只有 --verify-refs/--verify-plan 分支才查库。
-    # 核实分支自己会查库并打印明细（第 129 条），这里不重复跑；无库时静默。
-    if not (args.verify_refs or args.verify_plan):
+    # `--verify-refs` 分支自己会查库并打印明细（第 129 条），这里不重复跑；无库时静默。
+    # ⚠️ B-217 修复（41 篇两遍确定性）：`--verify-plan` **也照常写出产物**（既有承诺），
+    #    回填必须同样生效——否则同一源「compile 模式 vs --verify-plan 模式」的
+    #    reference.bib 不同（两遍 sha 不一致 → NONDETERMINISTIC）。
+    if not args.verify_refs:
         bibdb_readonly_scan(args, res)
 
     # ⚠️ ⑨ 编译 / ⑩ 导出原稿 PDF **挪到了 ⑪ 之后**（2026-10-15，见下面第 ⑪ 节末尾）：

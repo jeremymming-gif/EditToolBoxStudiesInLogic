@@ -504,6 +504,42 @@ def test_default_apply(tmp: str, env_db: dict, env_nodb: dict,
                                         "fills": {"journal": "J"}}]) == (_raw, []))
 
 
+# ── ⑤b --verify-plan 单独也回填（B-217 修复：41 篇两遍确定性）────────────
+
+
+def test_verify_plan_apply(tmp: str, env_db: dict, source: str) -> None:
+    """同一源「默认 compile 模式」vs「--verify-plan 模式」产物 .bib 必须逐字节相同。
+
+    41 篇确定性检查的 pass2 走 `--verify-plan`；B-217 ⑧ 默认回填若只在该模式外生效，
+    同稿两遍 .bib 会不同（NONDETERMINISTIC）。本组钉住回填与核实模式无关。
+    """
+    src_dir = os.path.dirname(source)
+    bib2 = write(os.path.join(src_dir, "missing_fields_plan.bib"), _BIB_MISSING)
+    lib = os.path.join(tmp, "notes", "bib_db", "bibliography.jsonl")
+    out_def = os.path.join(tmp, "planapply", "default")
+    out_plan = os.path.join(tmp, "planapply", "plan")
+    for d in (out_def, out_plan):
+        shutil.rmtree(d, ignore_errors=True)
+    r_def = run_convert(out_def, ["--bibdb-path", lib], env=env_db,
+                        source=source, bib=bib2)
+    r_plan = run_convert(out_plan, ["--verify-plan", "--bibdb-path", lib],
+                         env=env_db, source=source, bib=bib2)
+    bib_def = _read_bib(out_def)
+    bib_plan = _read_bib(out_plan)
+    check("⑤b-1 --verify-plan 单独运行退出 0", r_plan.returncode == 0,
+          (r_plan.stdout + r_plan.stderr)[-400:])
+    check("⑤b-2 --verify-plan 单独运行也回填（打默认汇总行「默认回填 1 条」）",
+          "引用库比对：" in r_plan.stdout and "默认回填 1 条" in r_plan.stdout,
+          r_plan.stdout[-500:])
+    check("⑤b-3 --verify-plan 产物 .bib 含回填字段（journal=Mind）",
+          "journal = {Mind}" in bib_plan, bib_plan)
+    check("⑤b-4 默认 vs --verify-plan 的 reference.bib 逐字节相同（两遍确定性）",
+          bib_def != "" and bib_def == bib_plan,
+          f"def={sha(os.path.join(out_def, 'Test_Author', 'reference.bib'))[:12] if bib_def else 'missing'} "
+          f"plan={sha(os.path.join(out_plan, 'Test_Author', 'reference.bib'))[:12] if bib_plan else 'missing'}")
+    check("⑤b-5 默认转换退出 0（对照组）", r_def.returncode == 0)
+
+
 # ── main ────────────────────────────────────────────────────────────────
 
 
@@ -529,6 +565,7 @@ def main() -> int:
         test_degrade(tmp, env_nodb, source, bib)
         test_helper(tmp, env_db, source, bib)
         test_default_apply(tmp, env_db, env_nodb, source)
+        test_verify_plan_apply(tmp, env_db, source)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print()
