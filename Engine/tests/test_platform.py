@@ -405,6 +405,32 @@ check("(g) `bibdb.py` 的入口名与文件逐字一致，且在 `sources-win/en
            .read_text(encoding="utf-8")))
 
 # ─────────────────────────────────────────────────────────────────────────
+print("\n── (h) 文档覆盖：engine CLI 的 argparse 子命令名必须写进 ENGINE_API.md ──")
+# 弱断言（刻意不做「逐字契约」）：ENGINE_API.md 是给人读的散文 + 表格，这里只钉
+# 「每个子命令名在文档里出现过」——新增子命令却漏写文档时，这条会点名缺失的命令。
+# 用 `bibdb.build_parser()` 是**真 argparse 表**（不是另抄一份清单），漏加/改名都逃不掉；
+# 解析不出子命令（返回值空）也判红，避免「解析失败 → 空缺失 → 假 PASS」。
+_CLI_SUBS_CODE = (
+    "import sys; sys.path.insert(0, '.')\n"
+    "import bibdb\n"
+    "sub = [a for a in bibdb.build_parser()._actions\n"
+    "       if a.__class__.__name__ == '_SubParsersAction']\n"
+    "print('SUBS=' + ','.join(sorted(sub[0].choices)) if sub else 'SUBS=')\n")
+r = child(_CLI_SUBS_CODE)
+_cli_subs = []
+if r.returncode == 0:
+    for _line in r.stdout.decode("utf-8", "replace").splitlines():
+        if _line.startswith("SUBS="):
+            _cli_subs = [s for s in _line[len("SUBS="):].split(",") if s]
+_cli_doc = (ENGINE / "docs" / "ENGINE_API.md").read_text(encoding="utf-8")
+_missing_cmds = [s for s in _cli_subs if f"`{s}`" not in _cli_doc]
+check("(h) `bibdb.py` 的 argparse 子命令名全部出现在 `Engine/docs/ENGINE_API.md`"
+      "（漏写文档 = 读者照契约找不到命令）",
+      r.returncode == 0 and len(_cli_subs) >= 20 and not _missing_cmds,
+      f"rc={r.returncode} 子命令 {len(_cli_subs)} 个；缺失：{_missing_cmds}"
+      if r.returncode == 0 else f"rc={r.returncode} {r.stderr[-160:]!r}")
+
+# ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")
