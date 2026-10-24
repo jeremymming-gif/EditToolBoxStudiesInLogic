@@ -127,7 +127,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 4826 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 4830 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 36
@@ -152,7 +152,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
 `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
 `test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17
-`test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 41
+`test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 45
 `test_proofcheck` 99 ｜ `test_publish` 55 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
 `test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 66
 `test_run_record` 31 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
