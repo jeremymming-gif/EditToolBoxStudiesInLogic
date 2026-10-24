@@ -16,6 +16,8 @@
 // 判定口径与 isStale 同一份）。
 // B-205：(o3) 段是重复/近重复「确认不同（不再提示）」：引擎 argv（--apply --json）、
 // JSON 解析、sidecar 的 git 命令（pathspec 只该文件、无 force/无 push）、视图接线。
+// B-209：(q) 段是「外部 bib → 规范 bib」只读预览：normalize-bib JSON 解析、日志隐私、
+// 文件/粘贴 argv 与临时文件清理、入藏页入口/sheet/送入 dry-run 的源码接线。
 // (f) 段是**生产源码接线断言**（按 /tmp/b188-gui/CONTRACT.md 与 BRIEF §5 的目标态）：
 // 视图层（SwiftUI）本身不在本台编译，由 Lead 的 typecheck/build/走查覆盖。
 //
@@ -1506,6 +1508,165 @@ check("(o3) ReviewView：按钮在「对照合并…」之后；说明文案同�
           return merge.lowerBound < ack.lowerBound
       }())
       && reviewSource.components(separatedBy: "确认不同（不再提示）").count - 1 >= 3)
+
+// ── (q) B-209：外部 bib → 规范 bib（只读预览；纯逻辑 + 源码接线）──────────
+print("\n── (q) B-209 外部 bib → 规范 bib ──")
+let rawNormalized = "\n@article{A2024,\n  title = {Secret Title α},\n}\n\n"
+let normPayload: [String: Any] = [
+    "entries_in": 3, "entries_out": 3,
+    "changed_entries": 1, "unchanged_entries": 1, "kept_entries": 1,
+    "normalized_text": rawNormalized,
+    "entries": [
+        [
+            "key": "A2024", "entry_type": "article", "status": "changed",
+            "changed_fields": [
+                ["name": "title", "old": "Old Secret Value", "new": "New Secret Value"],
+                ["name": "doi", "old": NSNull(), "new": "10.1000/secret"],
+                ["name": "note", "old": "Drop Secret Value", "new": NSNull()],
+            ],
+            "notes": ["Secret Note"],
+            "risks": [],
+            "missing_required": ["year", "pages"],
+        ],
+        [
+            "key": "B2020", "entry_type": "book", "status": "unchanged",
+            "changed_fields": [], "notes": [], "risks": [], "missing_required": [],
+        ],
+        [
+            "key": "C2019", "entry_type": "article", "status": "kept",
+            "changed_fields": [],
+            "notes": ["字段值含未配对引号：on"],
+            "risks": ["字段值含未配对的引号，引擎原样保留"],
+            "missing_required": [],
+        ],
+    ],
+]
+let norm = BibDbFeature.parseNormalizePayload(normPayload)
+let firstNorm = norm.entries.first
+check("(q) parseNormalizePayload：计数/entries/normalized_text 全解析",
+      norm.entriesIn == 3 && norm.entriesOut == 3 && norm.changedEntries == 1
+      && norm.unchangedEntries == 1 && norm.keptEntries == 1
+      && norm.entries.count == 3
+      && firstNorm?.key == "A2024" && firstNorm?.entryType == "article"
+      && firstNorm?.status == "changed"
+      && firstNorm?.changedFields.count == 3
+      && firstNorm?.changedFields.first?.name == "title"
+      && firstNorm?.changedFields.first?.old == "Old Secret Value"
+      && firstNorm?.changedFields.first?.new == "New Secret Value"
+      && norm.normalizedText == rawNormalized,
+      "entries=\(norm.entries.count)")
+check("(q) parseNormalizePayload：changed_fields 的 null old/new → 新增/删除",
+      firstNorm?.changedFields.count == 3
+      && firstNorm?.changedFields[1].old == nil
+      && firstNorm?.changedFields[1].new == "10.1000/secret"
+      && firstNorm?.changedFields[1].line.contains("（新增）") == true
+      && firstNorm?.changedFields[2].new == nil
+      && firstNorm?.changedFields[2].old == "Drop Secret Value"
+      && firstNorm?.changedFields[2].line.contains("（删除）") == true)
+check("(q) statusTitle：changed/unchanged/kept → 变化/未变/原样保留",
+      norm.entries.map { $0.statusTitle } == ["变化", "未变", "原样保留"])
+let keptNorm = norm.entries.first { $0.status == "kept" }
+check("(q) kept 条目：kept_entries + risks 含「引号」",
+      norm.keptEntries == 1 && keptNorm != nil
+      && keptNorm?.risks.contains(where: { $0.contains("引号") }) == true
+      && keptNorm?.notes.contains(where: { $0.contains("引号") }) == true)
+check("(q) missingRequiredLine：缺必填：year、pages",
+      firstNorm?.missingRequiredLine == "缺必填：year、pages"
+      && firstNorm?.missingRequired == ["year", "pages"])
+let emptyNorm = BibDbFeature.parseNormalizePayload(nil)
+check("(q) parseNormalizePayload(nil)：不崩、空模型",
+      emptyNorm.entries.isEmpty && emptyNorm.entriesIn == 0 && emptyNorm.entriesOut == 0
+      && emptyNorm.changedEntries == 0 && emptyNorm.unchangedEntries == 0
+      && emptyNorm.keptEntries == 0 && emptyNorm.normalizedText.isEmpty
+      && emptyNorm.summaryLine == "条目 0（变化 0 / 未变 0 / 原样保留 0）")
+let normLog = BibDbFeature.normalizeLogLines(norm)
+let normLogText = normLog.joined(separator: "\n")
+check("(q) normalizeLogLines：计数摘要 + 每条 key（状态）",
+      normLog.first == "外部 bib 规范化：条目 3（变化 1 / 未变 1 / 原样保留 1）"
+      && normLog.contains("  · A2024（变化）")
+      && normLog.contains("  · B2020（未变）")
+      && normLog.contains("  · C2019（原样保留）")
+      && normLog.count == 4)
+check("(q) normalizeLogLines 隐私：题名/字段值/notes/risks 文本不进日志",
+      !normLogText.contains("Secret Title")
+      && !normLogText.contains("Old Secret Value")
+      && !normLogText.contains("New Secret Value")
+      && !normLogText.contains("Drop Secret Value")
+      && !normLogText.contains("10.1000/secret")
+      && !normLogText.contains("Secret Note")
+      && !normLogText.contains("引号"))
+check("(q) 复制文本逐字节 == normalizedText（不 trim、不加 header/尾注）",
+      Array(norm.normalizedText.utf8) == Array(rawNormalized.utf8)
+      && norm.normalizedText == rawNormalized
+      && !norm.normalizedText.contains("规范化")
+      && norm.normalizedText.hasSuffix("\n\n"))
+let normArgs = BibDbFeature.normalizeBibArguments(bibPath: "/tmp/x/ref.bib")
+check("(q) normalizeBibArguments：精确 argv（--json、无 --db）",
+      normArgs == ["normalize-bib", "--bib", "/tmp/x/ref.bib", "--json"]
+      && !normArgs.contains("--db") && normArgs.filter { $0 == "--json" }.count == 1,
+      "\(normArgs)")
+let normFileSrc = sourceSlice(importSource, "static func normalizeExternalBib(bibPath",
+                              "static func normalizeExternalBib(text")
+let normTextSrc = sourceSlice(importSource, "static func normalizeExternalBib(text",
+                              "static func parseNormalizePayload")
+check("(q) 文件模式源码：同步 runJSON(normalize-bib) + failureText；不碰 dbPath/DispatchQueue",
+      normFileSrc.contains("runJSON(normalizeBibArguments(bibPath: bib))")
+      && normFileSrc.contains("failureText(run)")
+      && normFileSrc.contains("parseNormalizePayload(payload)")
+      && !normFileSrc.contains("dbPath")
+      && !normFileSrc.contains("DispatchQueue"),
+      normFileSrc.isEmpty ? "（源码切片为空：签名变了）" : "")
+check("(q) 粘贴模式源码：SLCN-normalize-<UUID>/pasted-bib.bib + defer 清理；不打印正文",
+      normTextSrc.contains("SLCN-normalize-")
+      && normTextSrc.contains("pasted-bib.bib")
+      && normTextSrc.contains("defer { try? FileManager.default.removeItem(at: dir) }")
+      && normTextSrc.contains("normalizeExternalBib(bibPath: file.path)")
+      && !normTextSrc.contains("Logger")
+      && !normTextSrc.contains("print(")
+      && !normTextSrc.contains("runJSON"),
+      normTextSrc.isEmpty ? "（源码切片为空：签名变了）" : "")
+let importViewSource = readSource("Views/BibDbImportView.swift")
+check("(q) 入藏页入口：按钮标题精确 + sheet 接线（任何模式可见）",
+      importViewSource.contains(
+          "Button(\"外部 bib → 规范 bib…\") { showNormalizeSheet = true }")
+      && importViewSource.contains(".sheet(isPresented: $showNormalizeSheet)")
+      && importViewSource.contains("Text(\"外部 bib → 规范 bib（只读预览）\")"))
+check("(q) sheet：来源「文件 / 粘贴」+ 四个按钮标题精确",
+      importViewSource.contains("case file = \"文件\"")
+      && importViewSource.contains("case paste = \"粘贴\"")
+      && importViewSource.contains("Button(\"规范化预览\")")
+      && importViewSource.contains("Button(\"复制规范文本\")")
+      && importViewSource.contains("Button(\"送入入藏预览\")")
+      && importViewSource.contains("Button(\"关闭\")"))
+check("(q) 复制：NSPasteboard clearContents + setString(normalizedText, .string)",
+      importViewSource.contains("NSPasteboard.general.clearContents()")
+      && importViewSource.contains(
+          "NSPasteboard.general.setString(result.normalizedText, forType: .string)"))
+let sendNormSrc = sourceSlice(importViewSource, "private func sendNormalizedToImport",
+                              "// MARK: - 哪条路进来的")
+check("(q) 送入入藏预览：切 .paste + 写 pasteText + 显式 preview()（dry-run）",
+      sendNormSrc.contains("model.mode = .paste")
+      && sendNormSrc.contains("model.pasteText = text")
+      && sendNormSrc.contains("preview()")
+      && !sendNormSrc.contains("dryRun: false"),
+      sendNormSrc.isEmpty ? "（源码切片为空：函数名变了）" : "")
+check("(q) onChange 防清空：pasteChanged/mode 都以 previewMatchesInputs 兜底",
+      importViewSource.contains("if previewMatchesInputs { return }")
+      && importViewSource.contains("if !model.previewMatchesInputs { model.invalidatePreview() }"))
+let sheetNormIndex = importViewSource.range(of: "struct BibDbNormalizeSheet: View")
+let sheetNormSrc = sheetNormIndex.map { String(importViewSource[$0.lowerBound...]) } ?? ""
+check("(q) sheet 切片：无 import/confirm 写库调用、无 dbPath、无 dryRun:false",
+      !sheetNormSrc.isEmpty
+      && sheetNormSrc.contains("BibDbFeature.normalizeExternalBib(")
+      && !sheetNormSrc.contains("importPastedBib(")
+      && !sheetNormSrc.contains("importBib(")
+      && !sheetNormSrc.contains("confirm()")
+      && !sheetNormSrc.contains("dbPath")
+      && !sheetNormSrc.contains("dryRun: false"),
+      sheetNormSrc.isEmpty ? "（源码切片为空：struct 名变了）" : "")
+check("(q) 引擎契约接线：normalize-bib 只读（无 --apply/--db）",
+      importSource.contains("\"normalize-bib\"")
+      && !normFileSrc.contains("--apply") && !normTextSrc.contains("--apply"))
 
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

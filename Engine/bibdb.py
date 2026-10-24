@@ -111,6 +111,13 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             B3 英文编者倒装（姓, 名缩写）：默认 dry-run（只出
                                             报告、绝不写库）；--apply 才写库（只改 editor；
                                             中文/机构/others 跳过；含「只有 editor」的记录）
+    normalize-bib (--bib PATH | --stdin) [--json]
+                                            只读：外部 .bib 交给**唯一实现**
+                                            `slcn.bibnorm.normalize_bib()`（默认
+                                            strip_urls=False）→ stdout 规范文本；--json 另给
+                                            逐条字段前/后 diff。不改 key、不写库/文件、不调 AI；
+                                            含 @string/@preamble/@comment 或 0 条目 → 退出 2；
+                                            引号未闭合的条目原样保留（kept，需人工核对）
 
 用法示例（在本目录下跑）
 ------------------------
@@ -200,7 +207,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from slcn import bibdb, bibnorm, bibparse, fsutil, paths  # noqa: E402
+from slcn import bibcheck, bibdb, bibnorm, bibparse, fsutil, paths  # noqa: E402
 from slcn.platform import utf8_stdio  # noqa: E402
 
 
@@ -2735,6 +2742,163 @@ def _cmd_normalize_apply(path: str, store: "bibdb.Store", args,
         print("   未 apply（需人工处理）：" + "、".join(item["key"] for item in skipped[:10])
               + ("…" if len(skipped) > 10 else ""))
     print("   （只改了 entry_type/fields/content_sha256/updated_at；其余元数据未动）")
+    return 0
+
+
+# ── normalize-bib（B-209）：外部 .bib 只读规范化 ────────────────────────────
+#
+# 规范化规则**只有一份**（`slcn.bibnorm.normalize_bib()`）；这里只是外部 bib 的读写壳
+# + 逐条字段 diff / 缺字段风险归组。不碰库、不落报告、不新增判据：`--bib`/`--stdin`
+# 的文本原样交给同一实现，GUI 预览与初排产物因此不会出现两套口径。
+# 引号未闭合（`parse_fields` 抛 `ValueError`）时逐条降级：坏条目原样保留、好条目照常
+# 规范化；整段 `normalize_bib()` 会直接抛错，所以这里按 `split_entries()` 的逐条来。
+
+_NON_BIB_ENTRY_RE = re.compile(r"@\s*(?:string|preamble|comment)\s*\{", re.I)
+_QUOTE_KEPT_RISK = "字段值引号未闭合，条目原样保留（需人工核对）"
+
+
+def _entry_identity(head: str) -> tuple[str, str]:
+    """从条目头取 `(key, 小写 entry_type)`；解析不了时返回空串（不改原文）。"""
+    m = re.match(r"@(\w+)\s*\{\s*([^,]+)\s*,", head)
+    return (m.group(2).strip(), m.group(1).lower()) if m else ("", "")
+
+
+def _fields_by_name(fields_text: str) -> dict[str, str]:
+    """字段名小写 → 值；同名重复以**首个**为准（改名不猜映射：旧删 + 新增）。"""
+    out: dict[str, str] = {}
+    for name, value in bibnorm.parse_fields(fields_text):
+        out.setdefault(name.lower(), value)
+    return out
+
+
+def _fields_diff(old: dict[str, str], new: dict[str, str]) -> list[dict]:
+    """逐字段前/后 diff（只列变化；新增 old=null、删除 new=null）。"""
+    changes: list[dict] = []
+    for name, old_value in old.items():
+        if name not in new:
+            changes.append({"name": name, "old": old_value, "new": None})
+        elif new[name] != old_value:
+            changes.append({"name": name, "old": old_value, "new": new[name]})
+    for name, new_value in new.items():
+        if name not in old:
+            changes.append({"name": name, "old": None, "new": new_value})
+    return changes
+
+
+def _normalized_entry_fields(normalized: str) -> dict[str, str]:
+    """规范化后单条条目的字段表（调用方保证只含这一条）。"""
+    entries = bibnorm.split_entries(normalized)
+    return _fields_by_name(entries[0][1]) if entries else {}
+
+
+def _build_normalize_bib_payload(entries: list[tuple[str, str, str]]) -> dict:
+    """逐条调用唯一实现 `normalize_bib()`，拼回规范文本并算 diff/风险。"""
+    parts: list[str] = []
+    rows: list[dict] = []
+    top_notes: list[str] = []
+    for head, fields_text, tail in entries:
+        raw = head + fields_text + tail
+        key, entry_type = _entry_identity(head)
+        try:
+            normalized, notes = bibnorm.normalize_bib(raw)
+            changes = _fields_diff(_fields_by_name(fields_text),
+                                   _normalized_entry_fields(normalized))
+            body = normalized[:-1] if normalized.endswith("\n") else normalized
+            status = "changed" if body != raw else "unchanged"
+        except ValueError:          # 引号未闭合：整条原样保留（不截断、不丢条目）
+            normalized, notes, changes, status = raw, [], [], "kept"
+        entry_notes: list[str] = []
+        for note in notes:
+            if key and note.startswith(f"{key}: "):
+                entry_notes.append(note)
+            else:
+                top_notes.append(note)
+        rows.append({"key": key, "entry_type": entry_type, "status": status,
+                     "changed_fields": changes, "notes": entry_notes,
+                     "risks": [], "missing_required": []})
+        parts.append(normalized)
+    normalized_text = "\n".join(parts)
+
+    # 缺字段判据**复用** bibcheck.check() 的 must 级 missing/empty（不另写 REQUIRED）。
+    missing: dict[str, list[str]] = {}
+    empty: dict[str, list[str]] = {}
+    for issue in bibcheck.check(normalized_text).issues:
+        if issue.severity != "must" or issue.kind not in ("missing", "empty"):
+            continue
+        bucket = missing if issue.kind == "missing" else empty
+        fields = bucket.setdefault(issue.key, [])
+        if issue.detail not in fields:
+            fields.append(issue.detail)
+    for row in rows:
+        absent = missing.get(row["key"], [])
+        blank = empty.get(row["key"], [])
+        risks = [_QUOTE_KEPT_RISK] if row["status"] == "kept" else []
+        if absent:
+            risks.append("缺必填字段：" + "、".join(absent))
+        if blank:
+            risks.append("必填字段值为空：" + "、".join(blank))
+        row["risks"] = risks
+        row["missing_required"] = absent + blank
+
+    return {
+        "entries_in": len(entries),
+        "entries_out": len(parts),
+        "changed_entries": sum(1 for row in rows if row["status"] == "changed"),
+        "unchanged_entries": sum(1 for row in rows if row["status"] == "unchanged"),
+        "kept_entries": sum(1 for row in rows if row["status"] == "kept"),
+        "normalized_text": normalized_text,
+        "entries": rows,
+        "notes": top_notes,
+    }
+
+
+def cmd_normalize_bib(args) -> int:
+    """B-209 只读：外部 .bib → 规范文本 / 逐条 diff（唯一实现 = `bibnorm.normalize_bib`）。"""
+    text_warning = ""
+    if args.stdin:
+        try:
+            text = sys.stdin.buffer.read().decode("utf-8")
+        except UnicodeDecodeError:
+            print("✗ stdin 不是 UTF-8 文本（本命令只收 UTF-8）", file=sys.stderr)
+            return 2
+    else:
+        bib_path = os.path.abspath(args.bib)
+        if not os.path.isfile(bib_path):
+            print(f"✗ 找不到要规范化的 bib：{bib_path}", file=sys.stderr)
+            return 2
+        try:
+            text, text_warning = bibdb.read_bib_text(bib_path)
+        except bibdb.BibDBError as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            return 2
+    if _NON_BIB_ENTRY_RE.search(bibnorm.strip_bib_comments(text)):
+        print("✗ 含 @string/@preamble/@comment：本命令只收纯文献条目，"
+              "请先移除这些非文献块", file=sys.stderr)
+        return 2
+    entries = bibnorm.split_entries(text)
+    if not entries:
+        print("✗ 没有条目（输入为空或只有整行注释）", file=sys.stderr)
+        return 2
+    if text_warning:        # 拒绝路径只留一行原因；告警只在真能出结果时提示
+        print(f"⚠️ {text_warning}", file=sys.stderr)
+    payload = _build_normalize_bib_payload(entries)
+    # stderr 只放计数（不打印 bib 正文/字段值；GUI 不解析这行）。
+    print(f"normalize-bib：{payload['entries_in']} 条 → changed "
+          f"{payload['changed_entries']} / unchanged {payload['unchanged_entries']}"
+          f" / kept {payload['kept_entries']}", file=sys.stderr)
+    if args.json:
+        _print_json(payload)
+    else:
+        # 直接写 UTF-8 字节：Windows 的文本 stdout 会把 `\n` 翻成 `\r\n`，那样 stdout
+        # 就不再逐字节等于 `normalize_bib()[0].encode("utf-8")` 了（本命令的硬契约）。
+        data = payload["normalized_text"].encode("utf-8")
+        out = getattr(sys.stdout, "buffer", None)
+        if out is None:
+            sys.stdout.write(payload["normalized_text"])
+        else:
+            sys.stdout.flush()
+            out.write(data)
+            out.flush()
     return 0
 
 
@@ -6405,6 +6569,19 @@ def build_parser() -> argparse.ArgumentParser:
                       help="另写 JSON 摘要文件（可选；--out-dir 时默认写同名 .json）")
     norm.add_argument("--json", action="store_true", help="stdout 输出 JSON 摘要")
     norm.set_defaults(func=cmd_normalize)
+
+    # ── B-209：外部 .bib 只读规范化（唯一实现 bibnorm.normalize_bib；无 --db）─────
+    nbib = sub.add_parser(
+        "normalize-bib",
+        help="只读：外部 .bib → 规范文本（--json 给逐条字段前/后 diff；不写库/文件）")
+    nsrc = nbib.add_mutually_exclusive_group(required=True)
+    nsrc.add_argument("--bib", default="", metavar="PATH",
+                      help="输入 .bib 文件（UTF-8；只读，不落报告）")
+    nsrc.add_argument("--stdin", action="store_true",
+                      help="从 stdin 读 UTF-8 文本（与 --bib 二选一必选）")
+    nbib.add_argument("--json", action="store_true",
+                      help="stdout 只输出一个 JSON（含 normalized_text 与逐条 diff）")
+    nbib.set_defaults(func=cmd_normalize_bib)
 
     # ── B2 作者倒装（第 136 条后续）：默认 dry-run，--apply 才写库 ──────────
     auth = sub.add_parser(

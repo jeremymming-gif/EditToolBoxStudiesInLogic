@@ -106,7 +106,12 @@ final class BibDbImportModel: ObservableObject {
     }
 
     /// 粘贴正文 / 入库口径变了（手填）：作废旧预览（绝不让编辑照着旧预览点确认）。
+    ///
+    /// B-209：「外部 bib → 规范 bib」送入时先改 mode/pasteText、再自动跑 dry-run；
+    /// SwiftUI 的 `.onChange` 在状态提交后回调，这里用「预览签名是否仍匹配」兜底——
+    /// 已生成的预览不会被随后到达的 onChange 清掉（否则界面会停在「无预览」）。
     func pasteChanged() {
+        if previewMatchesInputs { return }
         invalidatePreview()
         imported = nil
         notice = ""
@@ -154,6 +159,8 @@ struct BibDbImportView: View {
     let isActive: Bool
 
     @StateObject private var model = BibDbImportModel()
+    /// B-209：「外部 bib → 规范 bib」只读预览 sheet（任何入藏模式都可见）。
+    @State private var showNormalizeSheet = false
 
     var body: some View {
         ScrollView {
@@ -172,6 +179,7 @@ struct BibDbImportView: View {
                 Divider()
 
                 modePicker
+                normalizeEntryRow
                 if model.mode == .paste {
                     pasteModeRows
                     pasteEditor
@@ -209,7 +217,9 @@ struct BibDbImportView: View {
             .frame(maxWidth: 920, alignment: .leading)
         }
         .onChange(of: model.mode) { _ in
-            model.invalidatePreview()
+            // 送入「外部 bib → 规范 bib」时会同时改 mode/pasteText 并立刻预览：
+            // 预览签名已匹配当前输入时保留它，避免 onChange 把刚生成的预览清掉。
+            if !model.previewMatchesInputs { model.invalidatePreview() }
             model.imported = nil
         }
         .onChange(of: model.bibPath) { _ in
@@ -226,6 +236,33 @@ struct BibDbImportView: View {
         }
         .onChange(of: model.issue) { _ in model.metadataChanged() }
         .onChange(of: model.slug) { _ in model.metadataChanged() }
+        .sheet(isPresented: $showNormalizeSheet) {
+            BibDbNormalizeSheet(log: log) { text in
+                sendNormalizedToImport(text)
+            }
+        }
+    }
+
+    /// B-209 入口：外部 bib → 规范 bib（只读预览；三种入藏模式都可见）。
+    private var normalizeEntryRow: some View {
+        HStack(spacing: 10) {
+            Button("外部 bib → 规范 bib…") { showNormalizeSheet = true }
+                .disabled(model.running)
+            Text("文件/粘贴 → 引擎只读规范化 → 逐条字段前后 diff；不写库，"
+                 + "可复制规范文本或送回「粘贴 bib 文本」入藏预览。")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+        }
+    }
+
+    /// B-209：把规范文本送回既有入藏流程（**仍走 dry-run 预览 → 确认入藏**）。
+    /// 显式顺序：先切「粘贴 bib 文本」模式并写入正文，再触发一次既有 `preview()`；
+    /// `.onChange` 的作废逻辑用签名兜底（见 `BibDbImportModel.pasteChanged`）。
+    private func sendNormalizedToImport(_ text: String) {
+        guard !model.running else { return }
+        model.mode = .paste
+        model.pasteText = text
+        preview()
     }
 
     // MARK: - 哪条路进来的
@@ -708,5 +745,273 @@ struct BibDbImportView: View {
             log("（入藏完成：建议到「待裁决」页重新生成清单。）\n")
         }
         log("\n")
+    }
+}
+
+/// B-209「外部 bib → 规范 bib」只读预览 sheet。
+///
+/// 只做三件事：文件/粘贴取一份 **外部** bib → 后台调 `normalize-bib --json` → 显示逐条 diff。
+/// **绝不写库**：复制规范文本 / 送入入藏预览都由编辑再确认；入库只经入藏页既有
+/// 「预览（dry-run）→ 确认入藏」，口径三态（未核实/已核实/成品 bib）不变。
+struct BibDbNormalizeSheet: View {
+
+    enum Source: String, CaseIterable, Identifiable {
+        case file = "文件"
+        case paste = "粘贴"
+        var id: String { rawValue }
+    }
+
+    var log: LogStore
+    /// 把规范文本送回父视图（父视图负责切 `.paste` 并自动跑 dry-run 预览）。
+    let onSendToImport: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var source: Source = .file
+    @State private var bibPath = ""
+    @State private var pasteText = ""
+    @State private var outcome: BibDbFeature.NormalizeOutcome? = nil
+    @State private var running = false
+    @State private var stage = ""
+    @State private var error = ""
+    @State private var notice = ""
+
+    private var result: BibDbFeature.NormalizeResult? { outcome?.result }
+
+    private var canPreview: Bool {
+        guard !running else { return false }
+        switch source {
+        case .file:
+            return !bibPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .paste:
+            return !pasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private var canUseResult: Bool {
+        !running && outcome?.result != nil && (outcome?.error == nil)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("外部 bib → 规范 bib（只读预览）")
+                .font(.title3).bold()
+
+            HStack(spacing: 10) {
+                Text("来源")
+                Picker("", selection: $source) {
+                    ForEach(Source.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 180)
+                .disabled(running)
+                Spacer()
+            }
+
+            if source == .file {
+                LabeledPathRow(
+                    title: "外部 .bib",
+                    placeholder: "例如 …/某篇待入藏的 reference.bib",
+                    path: $bibPath,
+                    kind: .file,
+                    logStore: log
+                )
+                .disabled(running)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("bib 正文").font(.callout).bold()
+                    TextEditor(text: $pasteText)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 140, maxHeight: 220)
+                        .overlay(RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.secondary.opacity(0.3)))
+                        .disabled(running)
+                    Text("粘贴 1 条或多条 BibTeX。只读：本窗口不写库，也不改入藏页已填内容。")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Button("规范化预览") { runNormalize() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canPreview)
+                Button("复制规范文本") { copyNormalizedText() }
+                    .disabled(!canUseResult)
+                Button("送入入藏预览") { sendToImport() }
+                    .disabled(!canUseResult)
+                Spacer()
+                Button("关闭") { dismiss() }
+            }
+
+            if running {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(stage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if !error.isEmpty {
+                BibDbStatusLine(kind: .error, text: error)
+            }
+            if !notice.isEmpty {
+                BibDbStatusLine(kind: .ok, text: notice)
+            }
+            if let result {
+                resultSection(result)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .frame(minWidth: 760, idealWidth: 840, minHeight: 540, idealHeight: 640)
+        .onChange(of: source) { _ in clearOutcome() }
+        .onChange(of: bibPath) { _ in clearOutcome() }
+        .onChange(of: pasteText) { _ in clearOutcome() }
+    }
+
+    // MARK: - 结果区
+
+    @ViewBuilder
+    private func resultSection(_ result: BibDbFeature.NormalizeResult) -> some View {
+        Divider()
+        Text(result.summaryLine).font(.callout).bold().textSelection(.enabled)
+        Text("逐条字段对比（最多列 60 条）：").font(.caption).bold()
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(result.entries.prefix(60)) { entry in
+                entryRow(entry)
+            }
+        }
+        if result.entries.count > 60 {
+            Text("……另有 \(result.entries.count - 60) 条（完整明细见运行日志 / CLI --json）。")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
+        Text("「原样保留」= 引擎判断该条不能安全重写（如字段值引号不配对），"
+             + "保留原条目并在 risks 里说明原因。")
+            .font(.caption2).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func entryRow(_ entry: BibDbFeature.NormalizeEntry) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(entry.statusTitle)
+                    .font(.caption)
+                    .foregroundStyle(statusColor(entry.status))
+                    .frame(width: 64, alignment: .leading)
+                Text(entry.key)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                if !entry.entryType.isEmpty {
+                    Text("（\(entry.entryType)）")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            ForEach(entry.changedFields) { field in
+                Text("    " + field.line)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if !entry.missingRequired.isEmpty {
+                Text("    " + entry.missingRequiredLine)
+                    .font(.caption2).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+            ForEach(Array(entry.risks.enumerated()), id: \.offset) { item in
+                Text("    ⚠ " + item.element)
+                    .font(.caption2).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+            ForEach(Array(entry.notes.enumerated()), id: \.offset) { item in
+                Text("    · " + item.element)
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "changed": return .blue
+        case "kept": return .orange
+        default: return .secondary
+        }
+    }
+
+    // MARK: - 动作（后台跑引擎；sheet 绝不写库）
+
+    private func runNormalize() {
+        guard !running, canPreview else { return }
+        let source = source
+        let path = bibPath
+        let text = pasteText
+        let logger = Logger(store: log, startedAt: Date())
+        running = true
+        stage = "正在调用引擎规范化（只读）…"
+        error = ""
+        notice = ""
+        outcome = nil
+        logger("═".padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
+        logger("外部 bib → 规范 bib · 只读预览\n")
+        switch source {
+        case .file:
+            logger("  来源   外部 .bib：\(path)\n")
+        case .paste:
+            // 隐私：只记字符数，不记正文。
+            logger("  来源   粘贴 bib 文本（\(text.count) 字符；临时文件用后即删）\n")
+        }
+        logger("═".padding(toLength: 66, withPad: "═", startingAt: 0) + "\n\n")
+
+        // 与入藏页同一写法：闭包只活一次子进程的时长，强引用 self 无循环引用。
+        DispatchQueue.global(qos: .userInitiated).async {
+            let normalized: BibDbFeature.NormalizeOutcome
+            switch source {
+            case .file:
+                normalized = BibDbFeature.normalizeExternalBib(bibPath: path)
+            case .paste:
+                normalized = BibDbFeature.normalizeExternalBib(text: text)
+            }
+            DispatchQueue.main.async {
+                running = false
+                stage = ""
+                if let message = normalized.error {
+                    error = message
+                    logger("❌ 规范化失败：\(message)\n\n")
+                    return
+                }
+                guard let result = normalized.result else {
+                    error = "引擎没有返回可解析的规范化结果。"
+                    logger("❌ 规范化失败：没有可解析的 JSON\n\n")
+                    return
+                }
+                outcome = normalized
+                for line in BibDbFeature.normalizeLogLines(result) {
+                    logger(line + "\n")
+                }
+                logger("（只读预览：未写库。复制规范文本或送入入藏预览由你确认。）\n\n")
+            }
+        }
+    }
+
+    private func copyNormalizedText() {
+        guard let result = outcome?.result else { return }
+        // 原样复制：不 trim、不加 header/尾注。
+        NSPasteboard.general.clearContents()
+        _ = NSPasteboard.general.setString(result.normalizedText, forType: .string)
+        notice = "已复制规范文本（\(result.normalizedText.count) 字符，原样）。"
+    }
+
+    private func sendToImport() {
+        guard let result = outcome?.result else { return }
+        let text = result.normalizedText
+        onSendToImport(text)
+        dismiss()
+    }
+
+    private func clearOutcome() {
+        outcome = nil
+        error = ""
+        notice = ""
     }
 }

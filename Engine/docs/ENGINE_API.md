@@ -432,6 +432,15 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | `suggest-field-fixes` ★（B-188） | **只读**：缺 title/year 的字段归位候选（A 类 265 条口径：`\textit`/`\emph`/《》/「」题名标记、年份正则、`：`/出版社/書房 出版者形态；每条带 source/evidence/risk）与 **C 类「键/类型异常」**建议（`unknown_entry_type` registry = entry_type 不在已知表 **或** key 是 DOI/网址/占位符形态；entry_type 用 difflib 近似，key 给 `key_candidate`=作者姓+年份、`key_reason`）。**不写库、不调 AI**，GUI「字段归位预览」与它同源 | `--registry missing_field\|unknown_entry_type` `[--limit N] [--json]` | `{db, registry, count, rows:[{key, entry_type, missing, candidates:[{field,value,source,evidence,risk}], issues, sources, fields, key_suggestion?}]}` |
 | `normalize` / `normalize-authors` / `normalize-editors` | B1/B2/B3 规范化（默认 dry-run） | `--apply --backup FILE`（写前须备份且 sha 与当前库一致） | 老契约不变 |
 
+**`normalize-bib`（B-209，只读外部 `.bib`；不碰引用库）**：
+- 命令：`python3 bibdb.py normalize-bib (--bib PATH | --stdin) [--json]`；**没有 `--db`**，与 `bib_db`/笔记仓无关，不写任何文件。
+- 唯一实现：逐条调用 `slcn.bibnorm.normalize_bib()`（默认 `strip_urls=False`，与 `normalize` 同源）；不改 key、不新增规范化判据。
+- 默认模式：stdout **只**输出规范文本，逐字节 = `normalize_bib(text)[0]`（UTF-8）；计数/诊断只走 stderr（不打印 bib 正文/字段值）。
+- `--json`：stdout 只一个对象 `{entries_in, entries_out, changed_entries, unchanged_entries, kept_entries, normalized_text, entries:[{key, entry_type, status, changed_fields:[{name,old,new}], notes, risks, missing_required}], notes}`；`changed_fields` 只列变化（新增 `old=null`、删除 `new=null`、字段改名 = 旧名删除 + 新名新增，不猜映射；同名重复以首个为准），`missing_required` 复用 `slcn.bibcheck.check()` 的 must 级 `missing`/`empty`。
+- 拒绝（rc2，**stdout 为空**，stderr 一行原因）：输入含 `@string{` / `@preamble{` / `@comment{`（大小写不敏感；先剥整行 `%` 注释）、0 条目（空/纯注释）、文件不存在/不可读、stdin 非 UTF-8。
+- 引号未闭合（`parse_fields` 抛 `ValueError`）：**逐条**降级——坏条目 `status="kept"` 原样保留（`risks` 提示人工核对），好条目照常规范化；rc0，条目数/key 集合不变。
+- 只读/隐私：运行期不创建/修改文件、不需要 notes 仓；stderr 只允许计数/key/字段名，不出现 bib 正文或字段值。退出码：`0` 成功（含 kept）、`2` 拒绝/用法错误。
+
 **`lint` 的 B-143（批76）增补（只加不改；面向 GUI 库概况橙字下钻）**：
 - `warnings` 字符串列表**原样保留**（人读唯一权威）。其中「字段冲突」一句改为 **pending 口径**
   （判据 `conflict_is_pending` = `resolved_at` 为空，与 `conflicts --json` 的 totals 同源）：

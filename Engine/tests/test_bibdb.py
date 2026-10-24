@@ -50,6 +50,11 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
       editor-only/大写 `AND`/粘连缩写）、MD+CSV+JSON 三件报告、dry-run **绝不写库**；
       `--apply --backup` 只改 editor + sha/updated_at、二次 dry-run 0 残留、二次 apply 0 变更；
       报告无绝对路径/无时间戳、dry-run 两次逐字节相同（幂等）
+  (u) `normalize-bib`（B-209 外部 .bib 只读规范化）：stdout 逐字节 = 唯一实现
+      `bibnorm.normalize_bib()[0]`；`--json` 的 entries_in/out、changed_fields 前/后 diff、
+      notes/risks/missing_required（复用 `bibcheck.check()`）；幂等；`--stdin` 与 `--bib`
+      逐字节同；`@string`/`@preamble`/`@comment`/空/纯注释 → rc2 且 stdout 空；引号不配平
+      → 坏条目原样保留（kept）且 rc0；只读、不接受 `--db`、stderr 不打印正文/字段值
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -74,7 +79,7 @@ for _p in (str(_ENGINE), str(_ENGINE / "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from slcn import bibdb, paths  # noqa: E402
+from slcn import bibdb, bibnorm, paths  # noqa: E402
 
 pass_n = 0
 fails: list[str] = []
@@ -2245,6 +2250,209 @@ else:
         "tex-ref", "tex-ref-basename", "tex-ref-case",
         "fallback-author", "fallback-only", "fallback-reference")]
     check("(l) 选 bib 的判据都在白名单里", not bad_how, str([b.rel for b in bad_how[:3]]))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (u) normalize-bib：外部 .bib 只读规范化（唯一实现 + 逐条 diff） ──")
+
+NORM_SECRET = "ZQX9137"
+NORM_BIB = """% 整行注释：不是条目
+@article{Luo2021,
+  author = {罗素},
+  title = {逻辑哲学导论 ZQX9137},
+  journaltitle = {逻辑学研究},
+  year = {2021},
+  volume = {14},
+  issue = {2},
+  pages = {pp. 1-61},
+  abstract = {摘要应删除。},
+  url = {https://example.org/keep-me},
+}
+
+@book{Plato2000,
+  author = {Plato},
+  title = {The Republic},
+  year = {2000},
+  publisher = {Cambridge University Press},
+  location = {Cambridge},
+  keywords = {philosophy},
+}
+
+@incollection{Smith2019,
+  author    = {Smith, John},
+  title     = {A Chapter},
+  booktitle = {The Book},
+  year      = {2019},
+  publisher = {Springer},
+  pages     = {1--10}
+}
+"""
+
+BAD_RAW = '''@article{Bad2021,
+  author = {Bad, Author},
+  title = "Unclosed title,
+  year = {2021}
+}'''
+BAD_BIB = """@article{Good1,
+  author  = {A, B},
+  title   = {First},
+  journal = {J},
+  year    = {2020},
+  volume  = {1},
+  number  = {1},
+  pages   = {1--2}
+}
+
+""" + BAD_RAW + """
+
+@book{Good2,
+  author    = {C, D},
+  title     = {Second},
+  year      = {2019},
+  publisher = {P},
+  address   = {A}
+}
+"""
+
+
+def run_cli_bytes(*args: str, stdin_bytes: bytes = b"") -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, CLI, *args], input=stdin_bytes,
+                          capture_output=True, cwd=str(_ENGINE), env=ENV)
+
+
+def entry_keys(bib_text: str) -> set[str]:
+    return {head.split("{", 1)[1].rsplit(",", 1)[0].strip()
+            for head, _fields, _tail in bibnorm.split_entries(bib_text)}
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_normbib_") as tmp:
+    mixed = write(os.path.join(tmp, "mixed.bib"), NORM_BIB)
+    expected = bibnorm.normalize_bib(NORM_BIB)[0].encode("utf-8")
+    r = run_cli_bytes("normalize-bib", "--bib", mixed)
+    check("(u) --bib 退出 0；stdout 逐字节 = 唯一实现 normalize_bib()[0]（无前后缀）",
+          r.returncode == 0 and r.stdout == expected, (r.stdout + r.stderr)[:300])
+    check("(u) 默认模式 stdout 只有规范文本、计数/诊断只在 stderr",
+          r.stdout.startswith(b"@article{Luo2021,")
+          and b"normalize-bib" in r.stderr, r.stderr[:160])
+
+    rj = run_cli_bytes("normalize-bib", "--bib", mixed, "--json")
+    try:
+        p = json.loads(rj.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        p = {}
+    stdout_json = rj.stdout.decode("utf-8", errors="replace").strip()
+    check("(u) --json：stdout 只有一个 JSON 对象、normalized_text 与默认 stdout 逐字节同",
+          rj.returncode == 0 and stdout_json.startswith("{") and stdout_json.endswith("}")
+          and p.get("normalized_text", "").encode("utf-8") == r.stdout, rj.stderr[:200])
+    rows = {row["key"]: row for row in p.get("entries", [])}
+    check("(u) 混合 fixture：entries_in==entries_out==3、≥2 changed + ≥1 unchanged",
+          p.get("entries_in") == p.get("entries_out") == 3
+          and p.get("changed_entries", 0) >= 2 and p.get("unchanged_entries", 0) >= 1
+          and len(rows) == 3,
+          json.dumps({k: p.get(k) for k in ("entries_in", "entries_out", "changed_entries",
+                                            "unchanged_entries", "kept_entries")}))
+    check("(u) 每 entry 有 changed_fields/notes/risks；key 集合前后相等",
+          entry_keys(NORM_BIB) == entry_keys(p.get("normalized_text", ""))
+          == {"Luo2021", "Plato2000", "Smith2019"}
+          and all(isinstance(row.get(f), list) for row in rows.values()
+                  for f in ("changed_fields", "notes", "risks", "missing_required")))
+    changes = {c["name"]: c for c in rows.get("Luo2021", {}).get("changed_fields", [])}
+    check("(u) changed_fields 只列变化：改名=旧删+新名新增、DROP 字段 new=null、补 userf old=null",
+          changes.get("journaltitle", {}).get("new") is None
+          and changes.get("journal", {}).get("old") is None
+          and changes.get("issue", {}).get("new") is None
+          and changes.get("number", {}).get("old") is None
+          and changes.get("abstract", {}).get("new") is None
+          and changes.get("userf", {}).get("old") is None
+          and changes.get("pages") == {"name": "pages", "old": "pp. 1-61", "new": "1--61"},
+          json.dumps(rows.get("Luo2021", {}).get("changed_fields", []),
+                     ensure_ascii=False)[:300])
+    check("(u) 已规范条目 status=unchanged、changed_fields 为空",
+          rows.get("Smith2019", {}).get("status") == "unchanged"
+          and rows.get("Smith2019", {}).get("changed_fields") == [])
+    check("(u) notes 按 key 归到条目；无缺字段时 risks 为空（mixed 三条都齐）",
+          all(note.startswith("Luo2021: ") for note in rows["Luo2021"]["notes"])
+          and rows["Luo2021"]["notes"]
+          and all(not row["risks"] for row in rows.values()))
+
+    idem = os.path.join(tmp, "idem.bib")
+    with open(idem, "wb") as handle:
+        handle.write(r.stdout)
+    r2 = run_cli_bytes("normalize-bib", "--bib", idem, "--json")
+    p2 = json.loads(r2.stdout.decode("utf-8")) if r2.returncode == 0 else {}
+    r2_default = run_cli_bytes("normalize-bib", "--bib", idem)
+    check("(u) 幂等：二跑 changed_entries==0、changed_fields 全空、stdout 与一跑逐字节同",
+          r2.returncode == 0 and p2.get("changed_entries") == 0
+          and all(not row["changed_fields"] for row in p2.get("entries", []))
+          and r2_default.stdout == r.stdout,
+          json.dumps({"changed": p2.get("changed_entries")}, ensure_ascii=False))
+
+    rstdin = run_cli_bytes("normalize-bib", "--stdin", stdin_bytes=NORM_BIB.encode("utf-8"))
+    check("(u) --stdin 与 --bib 输出逐字节相同",
+          rstdin.returncode == 0 and rstdin.stdout == r.stdout,
+          (rstdin.stdout + rstdin.stderr)[:200])
+
+    for raw_kind in ("@string", "@Preamble", "@Comment"):
+        path = write(os.path.join(tmp, raw_kind.lstrip("@").lower() + ".bib"),
+                     f'{raw_kind}{{x = "y"}}\n@article{{A, title = {{T}}}}\n')
+        rr = run_cli_bytes("normalize-bib", "--bib", path)
+        check(f"(u) 拒绝 {raw_kind}：rc2 且 stdout 为空",
+              rr.returncode == 2 and rr.stdout == b"", rr.stderr[:160])
+
+    comment_only = write(os.path.join(tmp, "comment_only.bib"),
+                         "% 只有注释\n% @article{Fake, title = {T}}\n")
+    empty_bib = write(os.path.join(tmp, "empty.bib"), "")
+    rc = run_cli_bytes("normalize-bib", "--bib", comment_only)
+    re_ = run_cli_bytes("normalize-bib", "--bib", empty_bib)
+    check("(u) 纯注释/空输入：rc2 且 stdout 为空",
+          rc.returncode == re_.returncode == 2 and rc.stdout == re_.stdout == b"",
+          (rc.stderr + re_.stderr)[:200])
+
+    bad_bib = write(os.path.join(tmp, "badquote.bib"), BAD_BIB)
+    rb = run_cli_bytes("normalize-bib", "--bib", bad_bib)
+    rbj = run_cli_bytes("normalize-bib", "--bib", bad_bib, "--json")
+    pb = json.loads(rbj.stdout.decode("utf-8")) if rbj.returncode == 0 else {}
+    bad_rows = {row["key"]: row for row in pb.get("entries", [])}
+    check("(u) 引号不配平：rc0、entries_in==entries_out==3、key 集合不变",
+          rb.returncode == rbj.returncode == 0
+          and pb.get("entries_in") == pb.get("entries_out") == 3
+          and set(bad_rows) == {"Good1", "Bad2021", "Good2"})
+    check("(u) 坏条目原文逐字节在输出中、status=kept、risks 含「引号」、kept_entries==1",
+          pb.get("kept_entries") == 1
+          and bad_rows["Bad2021"]["status"] == "kept"
+          and any("引号" in risk for risk in bad_rows["Bad2021"]["risks"])
+          and BAD_RAW.encode("utf-8") in rb.stdout,
+          json.dumps(bad_rows.get("Bad2021", {}), ensure_ascii=False)[:300])
+    check("(u) 坏条目 missing_required 复用 bibcheck.check() 的 must 缺字段（pages/journal）",
+          "pages" in bad_rows["Bad2021"]["missing_required"]
+          and "journal" in bad_rows["Bad2021"]["missing_required"])
+
+    ro_dir = os.path.join(tmp, "readonly")
+    os.makedirs(ro_dir)
+    ro_bib = write(os.path.join(ro_dir, "in.bib"), NORM_BIB)
+    snapshot = {name: read_bytes(os.path.join(ro_dir, name))
+                for name in sorted(os.listdir(ro_dir))}
+    ra = run_cli_bytes("normalize-bib", "--bib", ro_bib)
+    rj3 = run_cli_bytes("normalize-bib", "--bib", ro_bib, "--json")
+    after = {name: read_bytes(os.path.join(ro_dir, name))
+             for name in sorted(os.listdir(ro_dir))}
+    check("(u) 只读：运行前后临时目录文件列表/内容不变（默认/--json 都不写文件）",
+          ra.returncode == rj3.returncode == 0 and snapshot == after)
+    not_db = os.path.join(tmp, "must-not-exist.jsonl")
+    rdb = run_cli_bytes("normalize-bib", "--bib", ro_bib, "--db", not_db)
+    check("(u) 不接受 --db（不需要 notes 仓，绝不写库）",
+          rdb.returncode == 2 and not os.path.exists(not_db))
+
+    check("(u) stderr 隐私：fixture 唯一 title 串不出现在 stderr（默认与 --json）",
+          NORM_SECRET.encode("utf-8") not in r.stderr
+          and NORM_SECRET.encode("utf-8") not in rj.stderr)
+
+    rmiss = run_cli_bytes("normalize-bib", "--bib", os.path.join(tmp, "nope.bib"))
+    check("(u) 文件不存在：rc2、stdout 空、stderr 中文原因",
+          rmiss.returncode == 2 and rmiss.stdout == b""
+          and "找不到".encode("utf-8") in rmiss.stderr)
+    rboth = run_cli_bytes("normalize-bib", "--bib", ro_bib, "--stdin")
+    check("(u) --bib/--stdin 互斥必选", rboth.returncode == 2 and rboth.stdout == b"")
 
 
 # ─────────────────────────────────────────────────────────────────────────
