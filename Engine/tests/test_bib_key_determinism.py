@@ -55,6 +55,9 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 
 from slcn import docxsource  # noqa: E402
 from slcn.docxsource import RefEntry  # noqa: E402
+# B-207：`make_key/_dedupe_keys` 的定义已搬进 `slcn/wordentry.py`，`docxsource` 只是门面。
+# 下面 ③ 的静态守卫必须读 **owning 模块** 源码（读 99 行门面会切空 → IndexError）。
+from slcn import wordentry  # noqa: E402
 
 FAILS = []
 SKIPS = []
@@ -196,11 +199,12 @@ for a, y in _FB:
     check(f"③ {a!r} → {want}（= crc32 独立复算）", got == want, f"{got}")
 check("③ 同一串连续算 100 次完全相同（纯函数）",
       len({K("[1]Barsalou, L", "1987") for _ in range(100)}) == 1, "")
+_WORDENTRY_SRC = open(wordentry.__file__, encoding="utf-8").read()
 check("③ 源码里不再用内置 `hash()` 生成键",
-      "hash(a)" not in open(docxsource.__file__, encoding="utf-8").read().split("def make_key")[1].split("def _dedupe_keys")[0],
+      "hash(a)" not in _WORDENTRY_SRC.split("def make_key")[1].split("def _dedupe_keys")[0],
       "")
 check("③ 源码里有说明「为什么不能用 hash()」的注释",
-      "PYTHONHASHSEED" in open(docxsource.__file__, encoding="utf-8").read(), "")
+      "PYTHONHASHSEED" in _WORDENTRY_SRC, "")
 
 # ── ④ 跨进程：两个独立进程的键集合必须完全相等 ───────────────────────────
 print("\n── ④ 跨进程（两个独立子进程，PYTHONHASHSEED 不同）──")
