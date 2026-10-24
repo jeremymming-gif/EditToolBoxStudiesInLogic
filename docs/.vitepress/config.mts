@@ -11,6 +11,8 @@ export default defineConfig({
   base: '/EditToolBoxStudiesInLogic/',
   cleanUrls: true,
   lastUpdated: true,
+  // docs/public/templates/*.docx 是公开下载文件（非 VitePress 页面），死链检查按预期跳过
+  ignoreDeadLinks: [/^\/templates\/.+\.docx$/],
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/EditToolBoxStudiesInLogic/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#3451b2' }],
@@ -30,7 +32,8 @@ export default defineConfig({
         text: '入门',
         items: [
           { text: '快速上手', link: '/guide/quickstart' },
-          { text: '安装说明', link: '/guide/install' }
+          { text: '安装说明', link: '/guide/install' },
+          { text: '投稿模板（Word）', link: '/guide/submission-template' }
         ]
       },
       {
