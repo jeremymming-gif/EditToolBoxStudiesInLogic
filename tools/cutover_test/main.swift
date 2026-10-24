@@ -59,6 +59,29 @@ check("(a) workspace：`--folder <目录> --mode workspace`",
 check("(a) 清空回收站：`--folder <目录> --empty-trash`",
       DeleteTempFeature.emptyTrashArguments(folderPath: "/期 90")
       == ["--folder", "/期 90", "--empty-trash"])
+// B-212 F2：`Shell.run` 回调的是**输出块**（可能多行），横幅判据只认「完成。」开头的一行。
+// 单测直接打纯函数 `logLines(from:)`；整块当一行的旧实现会让这些断言红。
+let emptyTrashLine = "完成。已清空回收站 2 个回收目录（目录：/期 90/.toolbox-trash）"
+let multiChunk = "已删除：a.aux\n路径：/期 90\n" + emptyTrashLine + "\n"
+check("(a) logLines：单行契约行原样保留（空回收站 = 0 个也要成功）",
+      DeleteTempFeature.logLines(from: "完成。已清空回收站 0 个回收目录\n")
+      == ["完成。已清空回收站 0 个回收目录"]
+      && DeleteTempFeature.logLines(from: emptyTrashLine) == [emptyTrashLine])
+check("(a) logLines：多行块（前有 Deleted/路径行、末行完成行）能取出该契约行",
+      EngineOutput.contractLine(from: DeleteTempFeature.logLines(from: multiChunk)) == emptyTrashLine)
+check("(a) logLines：反例——整块不切行时 `hasPrefix(\"完成。\")` 判不出（F2 根因）",
+      !EngineOutput.indicatesSuccess(multiChunk.trimmingCharacters(in: .whitespacesAndNewlines)))
+check("(a) logLines：契约行在**块中间**（后面还有 Feature 话术）也能取出",
+      EngineOutput.contractLine(from: DeleteTempFeature.logLines(
+          from: "已删除：a.aux\n" + emptyTrashLine + "\n清空回收站\n")) == emptyTrashLine)
+check("(a) logLines：空块 / 纯空白 / 只有换行 → []",
+      DeleteTempFeature.logLines(from: "").isEmpty
+      && DeleteTempFeature.logLines(from: "  \n\t\r\n  ").isEmpty)
+check("(a) logLines：`\\r\\n` 与裸 `\\r` 都按行切（去掉 \\r、不留空行、保持顺序）",
+      DeleteTempFeature.logLines(from: "已删除：a.aux\r\n" + emptyTrashLine + "\r\n")
+      == ["已删除：a.aux", emptyTrashLine]
+      && DeleteTempFeature.logLines(from: "已删除：a.aux\r" + emptyTrashLine + "\r")
+      == ["已删除：a.aux", emptyTrashLine])
 check("(a) 三种模式的 rawValue / 中文标题符合契约",
       DeleteTempFeature.CleanMode.allCases.map(\.rawValue) == ["aux", "delivery", "workspace"]
       && DeleteTempFeature.CleanMode.allCases.map(\.title)
@@ -98,6 +121,9 @@ check("(a) 页面有模式 Picker、清空回收站按钮、撤销清理按钮�
 check("(a) 清空回收站后**不给**撤销（否则会把整个目录搬回去）",
       readSource("Views/CleanTempView.swift").contains("allowUndo: false")
       && readSource("Views/CleanTempView.swift").contains("canUndo = allowUndo && ok"))
+check("(a) 横幅的 onLine 走 `logLines(from:)` 逐行 append（B-212 F2 接线点）",
+      readSource("Views/CleanTempView.swift")
+          .contains("for line in DeleteTempFeature.logLines(from: chunk)"))
 
 // ── (a2) 完成横幅：契约行 → 状态 + 产物路径（UI 方案第 1 件，mac 侧）────────────
 print("── (a2) 完成横幅：从契约行抠产物路径 ──")

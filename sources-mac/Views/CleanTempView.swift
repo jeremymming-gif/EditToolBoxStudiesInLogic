@@ -182,13 +182,16 @@ struct CleanTempView: View {
         let target = model.path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return }
         // 抓**契约行**（以 `完成。` 开头的那行）填横幅；不能取最后一行（Feature 后面还会补话术）。
+        // ⚠️ `Shell.run` 回调的是**输出块**（可能一次吐多行）：必须先用 `logLines(from:)` 切成行，
+        // 否则 `完成。…` 落在块中、整块 `hasPrefix` 判不出来 → 成功也报 ❌（B-212 F2）。
         final class LineBox: @unchecked Sendable { var lines: [String] = [] }
         let box = LineBox()
         let started = Date()
         let cancel = RunCancel()
-        let logger = Logger(store: log, startedAt: started, cancel: cancel) { line in
-            let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !t.isEmpty { box.lines.append(t) }
+        let logger = Logger(store: log, startedAt: started, cancel: cancel) { chunk in
+            for line in DeleteTempFeature.logLines(from: chunk) {
+                box.lines.append(line)
+            }
         }
         let runner = model
         canUndo = false

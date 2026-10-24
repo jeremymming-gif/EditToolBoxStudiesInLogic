@@ -516,6 +516,156 @@ check("(f) convert.py 的清理在 die(原子交付失败) 之后（失败分支
 shutil.rmtree(froot, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
+print("\n── (g) 失败计数/退出码（OSError 不再静默）＋改动前逐字节对照 ──")
+
+
+def head_file(path: str) -> str:
+    proc = subprocess.run(["git", "show", f"HEAD:{path}"], cwd=str(ENGINE.parent),
+                          capture_output=True, text=True, encoding="utf-8")
+    if proc.returncode != 0:
+        raise SystemExit(f"git show HEAD:{path} 失败：{proc.stderr}")
+    return proc.stdout
+
+
+# 旧引擎：当前 slcn 其余模块 + HEAD 版 clean.py/cleantemp.py（只替换被改的两个文件）
+OLD_ENGINE = tempfile.mkdtemp(prefix="b211_oldeng_")
+shutil.copytree(str(ENGINE / "slcn"), os.path.join(OLD_ENGINE, "slcn"),
+                ignore=shutil.ignore_patterns("__pycache__"))
+mkfile(os.path.join(OLD_ENGINE, "slcn", "clean.py"), head_file("Engine/slcn/clean.py"))
+mkfile(os.path.join(OLD_ENGINE, "cleantemp.py"), head_file("Engine/cleantemp.py"))
+
+
+def run_old(*args):
+    return subprocess.run([PY, os.path.join(OLD_ENGINE, "cleantemp.py"), *args],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env=ENV, cwd=OLD_ENGINE)
+
+
+_STAMP_RE = re.compile(r"-[0-9]{4}_[0-9]{2}_[0-9]{2}_[0-9]{6}")
+
+
+def norm_stamp(text: str) -> str:
+    return _STAMP_RE.sub("-<STAMP>", text)
+
+
+def same_out(old, new) -> bool:
+    return ((norm_stamp(old.stdout), norm_stamp(old.stderr), old.returncode)
+            == (norm_stamp(new.stdout), norm_stamp(new.stderr), new.returncode))
+
+
+CMP = tempfile.mkdtemp(prefix="b211_cmp_")
+
+
+def fresh(root: str, files: dict[str, str]) -> str:
+    shutil.rmtree(root, ignore_errors=True)
+    for rel, text in files.items():
+        mkfile(os.path.join(root, rel), text)
+    return root
+
+
+def old_vs_new(name: str, files: dict[str, str], make_args):
+    path = os.path.join(CMP, name)
+    fresh(path, files)
+    old = run_old(*make_args(path))
+    fresh(path, files)
+    new = run("cleantemp.py", *make_args(path))
+    return old, new
+
+
+# (c) 正常 delivery：整段 stdout+stderr+退出码 与改动前逐字节一致
+DELIVERY_CMP = {
+    "main.tex": r"\includegraphics{fig.png}" + "\n",
+    "fig.png": "F",
+    "junk.aux": "J",
+    "junk.bbl": "J",
+    "sub/nested.out": "J",
+    "old_待核/inner.txt": "T",
+    "bad_AI.tex": "WL",
+    "mystery.xyz": "U",
+    "original/keep.aux": "ORIG",
+}
+old_d, new_d = old_vs_new("delivery", DELIVERY_CMP,
+                          lambda p: ("--folder", p, "--mode", "delivery"))
+check("(g) 正常 delivery 新旧版逐字节一致（stdout+stderr+退出码，时间戳归一化）",
+      new_d.returncode == 0 and "完成。已移入回收目录" in new_d.stdout and same_out(old_d, new_d),
+      f"rc old/new={old_d.returncode}/{new_d.returncode}")
+
+# (c) 正常 workspace：同上
+WORKSPACE_CMP = {
+    "2024年第1期/合并2024_01_01_10_00_00.pdf": "OLD",
+    "2024年第1期/合并2024_01_02_10_00_00.pdf": "NEW",
+    "2024年第1期/信息检查.txt": "J",
+    "2024年第1期/x.bak": "J",
+    "2024年第1期/sub_待核/in.txt": "J",
+    "2024年第1期/000 目录/keep.aux": "P",
+    "2024年第2期/合并草稿.pdf": "A",
+    "2024年第2期/合并另一草稿.pdf": "B",
+    "合并.pdf": "FIX",
+    "合并2020_01_01.pdf": "R0",
+    "合并2021_01_01_12_00_00.pdf": "R1",
+}
+old_w, new_w = old_vs_new("workspace", WORKSPACE_CMP,
+                          lambda p: ("--folder", p, "--mode", "workspace"))
+check("(g) 正常 workspace 新旧版逐字节一致（stdout+stderr+退出码，时间戳归一化）",
+      new_w.returncode == 0 and "完成。已移入回收目录" in new_w.stdout and same_out(old_w, new_w),
+      f"rc old/new={old_w.returncode}/{new_w.returncode}")
+
+# (d) aux 默认与 --trash：旧输出不变（新增 1 条回归）
+AUX_CMP = {"a.aux": "A", "b.bbl": "B", ".DS_Store": "D", "keep.tex": "T",
+           "original/x.aux": "O"}
+old_a0, new_a0 = old_vs_new("aux_default", AUX_CMP, lambda p: ("--folder", p))
+old_a1, new_a1 = old_vs_new("aux_trash", AUX_CMP, lambda p: ("--folder", p, "--trash"))
+check("(g) aux 默认/--trash 新旧版逐字节一致（时间戳归一化）",
+      new_a0.returncode == new_a1.returncode == 0
+      and same_out(old_a0, new_a0) and same_out(old_a1, new_a1),
+      f"rc={new_a0.returncode}/{new_a1.returncode}")
+
+# (a) 合成反例：delivery 里只读子目录内的 junk 文件 → 失败可计数、非零退出
+F = tempfile.mkdtemp(prefix="b211_fail_")
+mkfile(os.path.join(F, "main.tex"), r"\includegraphics{fig.png}" + "\n")
+mkfile(os.path.join(F, "fig.png"), "F")
+mkfile(os.path.join(F, "normal.aux"), "J")
+mkfile(os.path.join(F, "locked/stuck.aux"), "J")
+os.chmod(os.path.join(F, "locked"), 0o555)
+r = run("cleantemp.py", "--folder", F, "--mode", "delivery", "--dry-run")
+check("(g) dry-run 行为不变（只读夹具也不产生失败，退出码 0、零写入）",
+      r.returncode == 0 and "失败" not in r.stderr and trash_dirs(F) == [],
+      f"rc={r.returncode}")
+r = run("cleantemp.py", "--folder", F, "--mode", "delivery")
+out = r.stdout + r.stderr
+check("(g) 只读目录：退出码 2、输出点名失败路径 + 失败计数、不打成功契约行",
+      r.returncode == 2 and "locked/stuck.aux" in out and "失败 1 项" in r.stderr
+      and "完成。" not in r.stdout, f"rc={r.returncode}")
+td_f = trash_dirs(F)
+# (b) 同一次运行里正常 junk 仍成功移入回收站（不回滚已成功项）
+check("(g) 同次运行正常 junk 仍移入回收站（源消失、trash 里在）",
+      not os.path.exists(os.path.join(F, "normal.aux")) and len(td_f) == 1
+      and os.path.exists(os.path.join(td_f[0], "normal.aux")))
+man_f = json.load(open(os.path.join(td_f[0], "manifest.json"), encoding="utf-8"))
+check("(g) 失败项源文件仍在、manifest 只记成功项",
+      os.path.exists(os.path.join(F, "locked/stuck.aux"))
+      and [e["path"] for e in man_f["entries"]] == ["normal.aux"],
+      man_f["entries"])
+os.chmod(os.path.join(F, "locked"), 0o755)
+
+# --delete 模式同样计数
+Fd = tempfile.mkdtemp(prefix="b211_faildel_")
+mkfile(os.path.join(Fd, "main.tex"), r"\includegraphics{fig.png}" + "\n")
+mkfile(os.path.join(Fd, "fig.png"), "F")
+mkfile(os.path.join(Fd, "normal.aux"), "J")
+mkfile(os.path.join(Fd, "locked/stuck.aux"), "J")
+os.chmod(os.path.join(Fd, "locked"), 0o555)
+r = run("cleantemp.py", "--folder", Fd, "--mode", "delivery", "--delete")
+check("(g) --delete 同样计数：退出码 2、正常 junk 已永久删、失败项仍在",
+      r.returncode == 2 and "失败 1 项" in r.stderr and "完成。" not in r.stdout
+      and not os.path.exists(os.path.join(Fd, "normal.aux"))
+      and os.path.exists(os.path.join(Fd, "locked/stuck.aux")), f"rc={r.returncode}")
+os.chmod(os.path.join(Fd, "locked"), 0o755)
+
+for d in (F, Fd, CMP, OLD_ENGINE):
+    shutil.rmtree(d, ignore_errors=True)
+
+# ─────────────────────────────────────────────────────────────────────────
 for d in (root, root2, root3, D2, D3, D4, D5, W24, Wd):
     shutil.rmtree(d, ignore_errors=True)
 for d in glob.glob(os.path.join(tempfile.gettempdir(), "b211_*")):

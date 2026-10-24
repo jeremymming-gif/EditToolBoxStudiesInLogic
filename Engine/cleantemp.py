@@ -98,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "aux":
         return _run_aux(root, args)
 
+    failures: list[tuple[str, str]] = []
     if args.mode == "delivery":
         try:
             _files, _dirs, missing = _clean.delivery_closure(root)
@@ -113,12 +114,20 @@ def main(argv: list[str] | None = None) -> int:
         print("交付目录收尾清理\n")
         print(f"路径：{root}\n")
         n, trash_root = _clean.delivery_clean(
-            root, log=lambda s: print(s), dry_run=args.dry_run, delete=args.delete)
+            root, log=lambda s: print(s), dry_run=args.dry_run, delete=args.delete,
+            failures=failures)
     else:
         print("工作区旧件清理\n")
         print(f"路径：{root}\n")
         n, trash_root = _clean.workspace_clean(
-            root, log=lambda s: print(s), dry_run=args.dry_run, delete=args.delete)
+            root, log=lambda s: print(s), dry_run=args.dry_run, delete=args.delete,
+            failures=failures)
+
+    if failures:
+        # 有失败项：不打成功契约行（外壳据此判「已完成」），非零退出码。
+        print(f"\n❌ 清理未完成：成功 {n} 项，失败 {len(failures)} 项（失败项见上方）",
+              file=sys.stderr)
+        return 2
 
     print()
     if args.delete:

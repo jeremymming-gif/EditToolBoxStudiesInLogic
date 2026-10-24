@@ -60,6 +60,19 @@ enum DeleteTempFeature {
         ["--folder", folderPath, "--empty-trash"]
     }
 
+    /// 把 `Shell.run` 回调的**输出块**规范成**行**（横幅判定只认「以 `完成。` 开头的一行」）。
+    ///
+    /// `Shell.run` 每次 `availableData` 回调整块字节（可能一次吐好几行），整块 trim 后当成
+    /// 一行，会让 `完成。…` 落在块中/块尾 → `EngineOutput.contractLine` 的 `hasPrefix("完成。")`
+    /// 判不出来、横幅误报 ❌（B-212 F2 真机：2 个回收目录时 ❌，空回收站时 ✅，不稳定）。
+    /// 这里只做切行：按换行切分（含 `\r\n` 与裸 `\r`）、去首尾空白、丢空行、保持顺序。
+    /// **纯函数**（`tools/cutover_test` 直接断言它）。
+    static func logLines(from chunk: String) -> [String] {
+        chunk.split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     /// 撤销：把某个回收目录里的文件搬回去。**纯函数**（cutover 断言）。
     static func restoreArguments(folderPath: String, trashDir: String) -> [String] {
         ["--folder", folderPath, "--restore", trashDir]
@@ -223,6 +236,10 @@ enum DeleteTempFeature {
     }
 
     /// 清空回收站（不可撤销）。确认后调用，引擎自己的契约行如实写「清空了几个回收目录」。
+    ///
+    /// 成功判据是引擎契约行 `完成。已清空回收站 N 个回收目录（目录：…）`，与按钮的「清空」动作
+    /// 对应；N 可以为 0 —— 回收站本来就空时再清空**也是成功**（引擎输出「0 个回收目录」），
+    /// 横幅必须 ✅，不能因为「没东西可清」判成 ❌。
     static func emptyTrash(folderPath rawPath: String, log: Logger) {
         let path = PathKit.normalize(rawPath)
         log("清空回收站\n")

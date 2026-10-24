@@ -464,10 +464,16 @@ class _Sink:
         self.stamp = _stamp()
         self.trash_root = "" if delete else trash_dir(root, self.stamp)
         self.entries: list[tuple[str, str]] = []
+        #: 失败项：(相对路径, 失败原因)。成功计数 entries 照旧只记成功项。
+        self.failures: list[tuple[str, str]] = []
 
     @property
     def count(self) -> int:
         return len(self.entries)
+
+    @property
+    def failure_count(self) -> int:
+        return len(self.failures)
 
     def take(self, full: str, rel: str, typ: str) -> bool:
         if self.dry_run:
@@ -486,6 +492,7 @@ class _Sink:
                     shutil.move(full, dst)
                     self.emit(f"Moved: {rel}")
             except OSError as e:
+                self.failures.append((rel, str(e)))
                 self.emit(f"Error {'deleting' if self.delete else 'moving'} {rel}: {e}")
                 return False
         self.entries.append((rel, typ))
@@ -505,11 +512,15 @@ def delivery_clean(
     log: Callable[[str], None] | None = None,
     dry_run: bool = False,
     delete: bool = False,
+    failures: list[tuple[str, str]] | None = None,
 ) -> tuple[int, str]:
     """交付目录收尾：白名单 > 清理名单 > 未识别保留；目录只删 `*_待核` 整棵。
 
     返回 (搬运条目数, 回收目录)。引用缺失时 raise DeliveryError（**零写入**）。
     调用前请先跑 `delivery_closure()` 拿闭包（本函数内部也会再算一次，保证独立可用）。
+
+    向后兼容：可选 `failures`（输出参数）收「(相对路径, 原因)」失败项；
+    不传则行为与旧版完全一致，返回值 tuple 长度/顺序不变。成功计数仍只数成功项。
     """
     emit = log or (lambda _s: None)
     closure_files, closure_dirs, missing = delivery_closure(root)
@@ -550,6 +561,8 @@ def delivery_clean(
                 sink.take(full, rel, "file")
                 continue
             emit(f"保留（未识别）：{rel}")
+    if failures is not None:
+        failures.extend(sink.failures)
     return sink.count, sink.commit()
 
 
@@ -608,8 +621,13 @@ def workspace_clean(
     log: Callable[[str], None] | None = None,
     dry_run: bool = False,
     delete: bool = False,
+    failures: list[tuple[str, str]] | None = None,
 ) -> tuple[int, str]:
-    """工作区旧件：每期 `合并*.pdf` 只留最新 + 递归清 `信息检查*/ *.bak/*.coop-bak-*/ *_待核/`。"""
+    """工作区旧件：每期 `合并*.pdf` 只留最新 + 递归清 `信息检查*/ *.bak/*.coop-bak-*/ *_待核/`。
+
+    向后兼容：可选 `failures`（输出参数）收「(相对路径, 原因)」失败项；
+    不传则行为与旧版完全一致，返回值 tuple 长度/顺序不变。成功计数仍只数成功项。
+    """
     emit = log or (lambda _s: None)
     root = os.path.abspath(root)
     if not os.path.isdir(root):
@@ -651,6 +669,8 @@ def workspace_clean(
                 continue
             full = os.path.join(dirpath, fname)
             sink.take(full, P.rel(full, root), "file")
+    if failures is not None:
+        failures.extend(sink.failures)
     return sink.count, sink.commit()
 
 
