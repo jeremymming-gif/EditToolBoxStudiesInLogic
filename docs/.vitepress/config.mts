@@ -12,7 +12,7 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   // docs/public/templates/*.docx 是公开下载文件（非 VitePress 页面），死链检查按预期跳过
-  ignoreDeadLinks: [/^\/templates\/.+\.docx$/],
+  ignoreDeadLinks: [/^\/templates\/.+\.docx(\?.*)?$/],
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/EditToolBoxStudiesInLogic/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#3451b2' }],

@@ -9,8 +9,12 @@ description: 《逻辑学研究》作者投稿 Word 模板：与 LaTeX 模板逐
 
 | 语言 | 模板 | 适用 |
 |---|---|---|
-| 中文稿 | [SLCN-submission-template-cn.docx](/templates/SLCN-submission-template-cn.docx) | 中文正文 + 英文题目/摘要页 |
-| 英文稿 | [SLCN-submission-template-en.docx](/templates/SLCN-submission-template-en.docx) | 英文正文 + 中文题目/摘要页 |
+| 中文稿 | [SLCN-submission-template-cn.docx](/templates/SLCN-submission-template-cn.docx?download=1) | 中文正文 + 英文题目/摘要页 |
+| 英文稿 | [SLCN-submission-template-en.docx](/templates/SLCN-submission-template-en.docx?download=1) | 英文正文 + 中文题目/摘要页 |
+
+> **下载提示**：若上面的链接出现 404（一般是站点部署刚更新、边缘缓存尚未刷新），请强制刷新页面（Cmd/Ctrl+Shift+R）或用下面的备用直链（GitHub 源文件）：
+> - 中文模板备用：[raw.githubusercontent.com/…/SLCN-submission-template-cn.docx](https://raw.githubusercontent.com/jeremymming-gif/EditToolBoxStudiesInLogic/main/docs/public/templates/SLCN-submission-template-cn.docx)
+> - 英文模板备用：[raw.githubusercontent.com/…/SLCN-submission-template-en.docx](https://raw.githubusercontent.com/jeremymming-gif/EditToolBoxStudiesInLogic/main/docs/public/templates/SLCN-submission-template-en.docx)
 
 > 模板内为占位示例（题名/作者/摘要等），参考文献示例为**真实已发表文献**；模板不含任何未刊稿件内容。版式口径经编辑部（2026-10-24）确认。
 >
@@ -107,3 +111,5 @@ description: 《逻辑学研究》作者投稿 Word 模板：与 LaTeX 模板逐
 > 修订：2026-10-24 v5——英文期刊名/书名/文集名按印刷样式改为斜体；一字线改用中文字体渲染。v6——补充公式编号说明、命题/推论/公理/例/注示例、图表与公式引用写法、书名号/引号示例；本页新增「投稿前检查清单」。v7——模板章节重组为「引言→数学公式→定理→图表→写作规范→参考文献」，写作规范合并原语言与格式/长引文与脚注两节；模板正文不再提及转换工具。v8——§3 改名「定理与证明」（标题不用顿号）、§4 内嵌示例图（替换即用）、英文作者信息脚注格式微调；为工具箱初排转换做模板侧适配。
 
 > 修订：2026-10-24 v9——示例图换为逻辑推理示意图（P → Q，P ⊢ Q）；按编辑部要求**表题移到表格下方**（图题仍在图下）；其余同 v8。
+
+> 修订：2026-10-24 v10——下载链接加 `?download=1`（避开部署切换时的边缘缓存），并补 GitHub 源文件备用直链与下载提示；模板内容与 v9 相同。
