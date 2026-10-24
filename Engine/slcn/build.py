@@ -2025,6 +2025,7 @@ def build_docx(
     number_cite_map: bool = False,
     c_class_union: bool | None = None,
     structured: dict | None = None,
+    bibdb_store: object | None = None,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -2098,7 +2099,7 @@ def build_docx(
 
     say("① 解析 Word 文稿")
     doc = parse_docx(docx_path, quote_threshold=quote_threshold,
-                     c_class_union=c_class_union)
+                     c_class_union=c_class_union, bibdb_store=bibdb_store)
     warnings.extend(doc.warnings)
     # 批68 B-021（bib-refs）：Word 文献区解析结果修复（86-10/90-06/90-07 三条真实
     # 缺陷；保守判据+失败保留原条目，默认零变化、fail-soft 不阻断出稿）。详见 bibnorm。

@@ -543,6 +543,78 @@ def test_verify_plan_apply(tmp: str, env_db: dict, source: str) -> None:
 # ── main ────────────────────────────────────────────────────────────────
 
 
+def test_short_cite_library(tmp: str) -> None:
+    """B-220 N6：纯引用脚注 → 引用库 HIT_SAFE 唯一命中（不编造）。"""
+    from slcn import bibdb, bibdbapply  # noqa: E402
+
+    # 合成库：① 已核实且题名唯一；② 未核实同名题名；③ 同题名第二条（唯一性反例）
+    notes2 = os.path.join(tmp, "notes2")
+    path2 = os.path.join(notes2, "bib_db", "bibliography.jsonl")
+    os.makedirs(os.path.dirname(path2), exist_ok=True)
+    st = bibdb.Store.load(path2, create=True)
+    st.import_bib_text("""@article{Watson1987,
+  author  = {Gary Watson},
+  title   = {Free Action and Free Will},
+  journal = {Mind},
+  volume  = {96},
+  number  = {382},
+  pages   = {145--172},
+  year    = {1987}
+}
+
+""", PUBLISHED, verified=True)
+    st.import_bib_text("""@article{Unverified2099,
+  author = {Doe, Jane},
+  title  = {A Totally Unverified Work For The Test},
+  year   = {2099},
+}
+""", PUBLISHED, verified=False)
+    st.save()
+    store = bibdb.Store.load(path2)
+
+    r = bibdbapply.resolve_short_citation(store, author="Gary Watson",
+                                          title="Free Action and Free Will,")
+    check("⑨-1 短引库解析：已核实唯一题名 → 命中且字段/类型可用",
+          bool(r) and r["key"] == "Watson1987" and r["entry"].get("_type") == "article"
+          and r["entry"].get("journal") == "Mind", repr(r and r.get("key")))
+    check("⑨-2 短引库解析：无 Store（--no-bibdb 等）→ None（默认零变化）",
+          bibdbapply.resolve_short_citation(None, author="Gary Watson",
+                                            title="Free Action and Free Will") is None)
+    r_typo = bibdbapply.resolve_short_citation(store, author="Gary Waston",
+                                               title="Free Action and Free Will")
+    check("⑨-3 短引库解析：作者姓拼错 + 题名唯一 → 只按题名兜底（唯一性判据）",
+          bool(r_typo) and r_typo["key"] == "Watson1987", repr(r_typo and r_typo.get("key")))
+    r_unv = bibdbapply.resolve_short_citation(
+        store, author="Jane Doe", title="A Totally Unverified Work For The Test")
+    check("⑨-4 短引库解析：库内未核实 → None（候选不动，不编造）", r_unv is None, repr(r_unv))
+    # 唯一性反例：同题名再进一条已核实记录（不同作者）→ 拼错作者不再兜底
+    st2 = bibdb.Store.load(path2)
+    st2.import_bib_text("""@article{Other1987,
+  author = {Other, Ann},
+  title  = {Free Action and Free Will},
+  year   = {1987}
+}
+""", PUBLISHED, verified=True)
+    st2.save()
+    store2 = bibdb.Store.load(path2)
+    r_amb = bibdbapply.resolve_short_citation(store2, author="Gary Waston",
+                                              title="Free Action and Free Will")
+    check("⑨-5 短引库解析：同题名多条 → 拼错作者时拒绝（唯一性反例）", r_amb is None, repr(r_amb))
+    # 开关：--no-bibdb-apply 时 Store 不解析（convert 侧门槛）
+    import argparse  # noqa: E402
+    try:
+        from convert import resolve_bibdb_apply_store  # noqa: E402
+
+        for flag in ("no_bibdb_apply", "no_bibdb_verify", "no_bibdb"):
+            ns = argparse.Namespace(no_bibdb_verify=False, no_bibdb=False,
+                                    no_bibdb_apply=False)
+            setattr(ns, flag, True)
+            check(f"⑨-6 {flag} → 短引库 Store 不解析（回旧行为）",
+                  resolve_bibdb_apply_store(ns) is None)
+    except ImportError as exc:  # pragma: no cover - 隔离环境
+        SKIPS.append(f"convert 侧开关自检（{exc}）")
+
+
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="slcn_b58_bibdb ")
     try:
@@ -566,6 +638,7 @@ def main() -> int:
         test_helper(tmp, env_db, source, bib)
         test_default_apply(tmp, env_db, env_nodb, source)
         test_verify_plan_apply(tmp, env_db, source)
+        test_short_cite_library(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print()

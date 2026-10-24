@@ -28,8 +28,32 @@ _QUOTES = "\"'“”‘’「」『』"
 # ── 英文期刊：rest 前导噪声 / 引号残留 ─────────────────────────────────────
 
 
+#: 手写刊名简写形态：`Vol. 68 (1), pp. 5-20` / `Vol. 68, No. 1, pp. 5-20` /
+#: `Vol. 68, pp. 5-20`（B-220 N4d；实测 2026年第5期(90) 90-06 两条）。
+#: 旧两条期刊正则要求 `68(1): 5-20` 的冒号形态，这族一律落空 → journal/volume/
+#: number/pages 全丢、条目退化成 @misc（字段被 misc 字段序丢弃）。这里只**改写
+#: 成旧判据能认的形态**再交给同一份 `pat1`，判据本身仍只有一处。
+_VOL_SHORT_RE = re.compile(
+    r"^(?P<journal>.+?)\s*[,，]\s*Vol\.?\s*(?P<vol>\d{1,4})\s*"
+    r"(?:\(\s*(?P<num>[^)]+?)\s*\))?"
+    r"(?:\s*[,，]\s*No\.?\s*(?P<num2>\d{1,4}))?\s*[,，]\s*"
+    r"(?:pp?\.?\s*)?(?P<page1>[A-Za-z]?\d{1,5})\s*[-–—~]\s*(?P<page2>[A-Za-z]?\d{1,5})",
+    re.I,
+)
+
+
+def _vol_short_candidate(rest: str) -> str:
+    """`Journal, Vol. 68 (1), pp. 5-20.` → `Journal, 68(1): 5-20`（认不出返回 ""）。"""
+    m = _VOL_SHORT_RE.match((rest or "").strip())
+    if not m:
+        return ""
+    num = (m.group("num") or m.group("num2") or "").strip()
+    head = f"{m.group('vol')}({num})" if num else m.group("vol")
+    return f"{m.group('journal').strip()}, {head}: {m.group('page1')}-{m.group('page2')}"
+
+
 def journal_rest_variants(rest: str) -> list[str]:
-    """``rest`` 的归一化候选（只**多剥**前导噪声，不改原始串本身）。"""
+    """``rest`` 的归一化候选（只**多剥**前导噪声 / 改写简写形态，不改原始串本身）。"""
     out: list[str] = []
     r = (rest or "").lstrip(_LEAD_SEP)
     if r != rest:
@@ -46,6 +70,11 @@ def journal_rest_variants(rest: str) -> list[str]:
     m = re.match(r"^[\"'“「『].+?[\"'”」』]\s*[,，]\s*(?P<rest>.+)$", r)
     if m and m.group("rest").strip() not in out:
         out.append(m.group("rest").strip())
+    # B-220 N4d：`Vol./No./pp.` 简写形态 → 旧判据能认的 `卷(期): 页` 形态
+    for cand in (r, r2):
+        v = _vol_short_candidate(cand)
+        if v and v not in out:
+            out.append(v)
     return out
 
 
@@ -234,8 +263,144 @@ def _join_book_parts(parts: list[str]) -> str:
     return out
 
 
-# ── 中文学位论文：`博士论文，厦门大学，2009 年` ────────────────────────────
+# ── B-220 N5：`in 编者列表, eds., 书名, 地: 社` / `in 书名, eds. 编者, 地: 社` ──
+#
+# 实测 2026年第5期(90)：`in M. J. Cody and M. L. McLaughlin, eds., The Psychology of
+# Tactical Communication, Clevedon: Multilingual Matters.`（编者在前）与
+# `in Logic, Methodology and Philosophy of Science, eds. E. Nagel, P. Suppes, and
+# A. Tarski, Stanford: …`（书名在前）——旧判据只认 `(eds.)` 括注形态，这两族全落空：
+# 条目退化成 @book/@misc，booktitle/editor 整段丢失（人工成品是 @incollection）。
+# 只认**结构可辨**的形态；认不出返回 ("","")，绝不猜。
+_EDS_ALONE_RE = re.compile(r"^(?:eds?|Eds?|editors?|Editors?)\.?$", re.I)
+_EDS_HEAD_RE = re.compile(r"^(?:eds?|Eds?|editors?|Editors?)\.?\s+(?P<rest>.+)$")
+#: 原始条目里 `in` 标记（前面可能是空格/逗号/句号/**引号收尾** —— `”in Logic` 实测）。
+_IN_ANY_RE = re.compile(r"(?:^|(?<=[\s,，;；.。“”\"'「」『』]))[Ii]n\s*[:：]?\s+(?=\S)")
+_AUTHORISH_SEG_RE = re.compile(
+    r"^(?:(?:van|von|de|der|den|del|di|da|le|la)\s+)?(?:[A-Z]\.\s*)+"
+    r"[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?$")
 
+
+def _split_segs(text: str) -> list[str]:
+    return [x.strip() for x in re.split(r"[,，]", text or "") if x.strip()]
+
+
+def _take_book_parts(segs: list[str]) -> str:
+    """`eds.` 之后的片段 → 书名：第一段**结构上就是书名**（可能含 Routledge 等
+    出版社线索词，如 `The Routledge Handbook of…`），不能按「像出版社」丢掉；
+    之后遇到页码/出版信息才停。"""
+    if not segs:
+        return ""
+    parts: list[str] = [segs[0]]
+    for seg in segs[1:]:
+        if _looks_like_pub_seg(seg):
+            break
+        parts.append(seg)
+        if len(parts) >= 8:
+            break
+    return _clean_booktitle(_join_book_parts(parts))
+
+
+def _take_editor_parts(segs: list[str]) -> str:
+    if not segs:
+        return ""
+    parts: list[str] = [re.sub(r"^(?:and|&)\s+", "", segs[0])]
+    for seg in segs[1:]:
+        if _looks_like_pub_seg(seg):
+            break
+        parts.append(re.sub(r"^(?:and|&)\s+", "", seg))
+        if len(parts) >= 8:
+            break
+    ed = ", ".join(parts).strip(" \t\u3000,，.。;；")
+    # 编者段若混进出版信息（源稿缺逗号：`… and Robert J. Stainton Oxford: OUP`）
+    # → 不写 editor（宁缺勿错）。
+    if not ed or re.search(r"[:：]", ed):
+        return ""
+    return ed if _plausible_editor(ed) else ""
+
+
+def _editor_list_from_tail(tail: str, *, allow_c: bool = False) -> tuple[str, str]:
+    """对 `in ` 之后的一段做 A/B/C 三形态识别（供 ``incollection_editor_list`` 用）。
+
+    ``allow_c=False``（人年制通道默认）：只认带 `eds./ed.` 标记的 A/B 形态——
+    短引脚注（`… in The Importance of What We Care About, p. 262.`）没有年份/编者，
+    按 C 形态会把书名判成容器，实际那只是同书章节的短引。
+    """
+    segs = _split_segs(tail)
+    if len(segs) < 2:
+        return "", ""
+    # A：编者列表在前，`eds./ed.` 独占一段
+    for i, seg in enumerate(segs):
+        if i >= 1 and _EDS_ALONE_RE.match(seg):
+            editor = ", ".join(
+                re.sub(r"^(?:and|&)\s+", "", x) for x in segs[:i]).strip()
+            if not _plausible_editor(editor):
+                editor = ""
+            book = _take_book_parts(segs[i + 1:])
+            if _plausible_book(book):
+                return book, editor
+            return "", ""
+    # B：书名在前，`eds. 编者…` 段起头
+    for i, seg in enumerate(segs):
+        if i < 1:
+            continue
+        em = _EDS_HEAD_RE.match(seg)
+        if not em:
+            continue
+        book = _clean_booktitle(_join_book_parts(segs[:i]))
+        editor = _take_editor_parts([em.group("rest")] + segs[i + 1:])
+        if _plausible_book(book):
+            return book, editor
+        return "", ""
+    # C：无编者标记——书名不像作者名、不含数字，且其后第一段确是出版信息
+    #    （裸年份 / 页码 / 地: 社）；期刊的 `Journal, 68(1): 5-20` 形态一律排除。
+    #    只在编号清单通道启用（allow_c=True）：那里容器标记出现在题名之后、可信。
+    if not allow_c or not re.search(r"(?:19|20)\d{2}", tail):
+        return "", ""
+    head = segs[0].strip()
+    if (not _AUTHORISH_SEG_RE.match(head) and not re.search(r"\d", head)
+            and not re.search(r"\d+\s*\([^)]*\)\s*[:：]", tail)
+            and len(segs) >= 2):
+        nxt = segs[1].strip()
+        if (re.fullmatch(r"(?:19|20)\d{2}[a-z]?", nxt)
+                or re.match(r"^(?:pp?\.?\s*)?\d", nxt)
+                or re.match(r"^[A-Z][A-Za-z.\- ]{1,30}[:：]\s*[A-Z]", nxt)):
+            book = _take_book_parts(segs)
+            if _plausible_book(book):
+                return book, ""
+    return "", ""
+
+
+def in_container_tail(raw: str) -> str:
+    """从整条原文里取「引号题名之后、以 in 开头」的容器段（B-220 N5）。
+
+    编号清单通道传的是整条 `[N] 作者, 年, “题名”, in 编者…`——容器判据只能看
+    题名**之后**那一段，否则题名里自带的单词 in（如 *Tales … in the Metaphysics
+    of Intentionality*）会造成误判。认不出（无引号题名）→ ""（不猜）。
+    """
+    m = re.search(r"[”\"」』]\s*[,，]?\s*(?P<tail>[Ii]n\s+.+)$", (raw or "").strip())
+    return m.group("tail").strip() if m else ""
+
+
+def incollection_editor_list(rest: str, *, allow_c: bool = False) -> tuple[str, str]:
+    """B-220 N5：`in …` 起头的编者/书名列表形态 → ``(booktitle, editor)``。
+
+    三种子形态（均要求结构清楚）：
+      A. `in 编者列表, eds., 书名, 地: 社`  —— 编者段在前、`eds.` 独占一段；
+      B. `in 书名, eds. 编者, 地: 社`        —— 书名在前、`eds. …` 段起头；
+      C. `in 书名, <年份/卷期/地: 社>`      —— 无编者标记；要求书名段不含数字、
+         其后的段确为出版信息（裸年份/页码/地: 社），且整体不是期刊的
+         `Journal, 68(1): 5-20` 形态 —— 否则会误把期刊/题名里的 in 当容器。
+    输入从 `in` 开头（调用方用 `in_container_tail()` 从整条原文取，或 rest 本就
+    以 in 开头）；认不出/拿不准 → ``("", "")``。
+    """
+    s = re.sub(r"^[\s,，.。]+", "", (rest or "").strip())
+    if not re.match(r"(?i)^in\s", s):
+        return "", ""
+    tail = re.sub(r"(?i)^in\s*[:：]?\s*", "", s)
+    return _editor_list_from_tail(tail, allow_c=allow_c)
+
+
+# ── 中文学位论文：`博士论文，厦门大学，2009 年` ────────────────────────────
 _THESIS_KIND_RE = re.compile(r"(?P<kind>博士(?:学位)?论文|硕士(?:学位)?论文)")
 _SCHOOL_HINT_RE = re.compile(r"大学|学院|研究院|研究所|学校|科学院")
 
@@ -344,10 +509,26 @@ def apply_numbered_extras(entry: dict, raw: str, match_journal=None) -> dict:
         entry["school"] = etf["school"]
         return entry
     bt, ed = incollection_in_editors(raw)
+    if not bt:
+        # B-220 N5：`(eds.)` 括注之外的两族编者/书名列表形态（旧判据全落空）。
+        # 只把**引号题名之后**的 in 段交给容器判据（题名里自带 in 的误判防线）。
+        bt, ed = incollection_editor_list(in_container_tail(raw), allow_c=True)
+    _filled_container = False
     if bt and not entry.get("booktitle"):
         entry["booktitle"] = bt
+        _filled_container = True
     if ed and not entry.get("editor"):
         entry["editor"] = ed
+        _filled_container = True
+    if _filled_container:
+        # 补到容器字段后类型随证据升级（否则 `entry_to_bib` 按 misc/book 的字段序
+        # 丢掉 booktitle/editor——实测 90-09 Dillard/Jackson/Stryker、90-07 Salmon）。
+        from . import footref as _footref
+
+        _etype, _why = _footref.classify_entry_type(entry, raw=raw)
+        if _etype in ("incollection", "inproceedings") and entry.get("_type") not in (
+                "incollection", "inproceedings"):
+            entry["_type"] = _etype
     urls = find_urls(raw)
     if urls and not entry.get("url"):
         entry["url"] = urls[0]

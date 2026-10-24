@@ -477,6 +477,87 @@ _b1keep = apply_numbered_extras(
 check("B1 反例：已有 journal 的条目不被覆盖（逐字节旧行为）",
       _b1keep.get("journal") == "Already Known", repr(_b1keep.get("journal")))
 
+# ══ ⑦ B-220（90 期初排）：英文题目/作者/期刊形态修复（N1–N5）══════════════════
+print("── ⑦ B-220：90 期文献解析修复（N1–N4）──")
+
+from slcn.wordentry import _match_en_journal, parse_reference_line  # noqa: E402
+from slcn.wordrefs import apply_numbered_extras  # noqa: E402
+
+
+def parse_extras(line):
+    """编号通道完整生产口径：parse_numbered_item + apply_numbered_extras。"""
+    p = parse1(line)
+    d = {"_type": p.etype, "author": p.author, "title": p.title, "journal": p.journal,
+         "booktitle": p.booktitle, "volume": p.volume, "number": p.number,
+         "pages": p.pages, "publisher": p.publisher, "address": p.address,
+         "year": p.year, "note": p.note}
+    return apply_numbered_extras(d, line, match_journal=_match_en_journal)
+
+
+# N1：引号题名尾标点（西式 `…,”`）剥离；题名其余部分不动
+_p = parse1('Harry Frankfurt, 1971, “Freedom of Will and the Concept of a Person,” '
+            'The Journal of Philosophy, Vol. 68 (1), pp. 5-20.')
+check("⑦ N1 引号题名尾逗号剥离", _p.title == "Freedom of Will and the Concept of a Person",
+      repr(_p.title))
+check("⑦ N1 题名内逗号不受影响（含逗号书名不截断）",
+      parse_reference_line("A. J. Ayer, 1946, Language, Truth and Logic, 2nd ed., "
+                           "London: Victor Gollancz.").title == "Language, Truth and Logic")
+
+# N2：无引号英文题名逗号续接；出版信息（版次/地: 社）不并入
+_p2 = parse1('A. J. Ayer, 1946, Language, Truth and Logic, 2nd ed., '
+             'London: Victor Gollancz.')
+check("⑦ N2 题名续接（Ayer1946）", _p2.title == "Language, Truth and Logic", repr(_p2.title))
+check("⑦ N2 续接后出版信息仍解析", _p2.publisher == "Victor Gollancz" and
+      _p2.address == "London", f"{_p2.publisher!r} {_p2.address!r}")
+_p2n = parse1('L. Savage, 1972, The Foundations of Statistics. Second edition, '
+              'New York: Dover Publishing.')
+check("⑦ N2 反例：版次不并入题名", _p2n.title == "The Foundations of Statistics. Second edition",
+      repr(_p2n.title))
+
+# N3：多作者编号清单——续段像「首字母+姓」且其后紧跟裸年份才合并
+_p3 = parse1('R. E. Young, A. L. Becker and K. L. Pike, 1970, Rhetoric: Discovery '
+             'and Change, New York: Harcourt, Brace & World.')
+check("⑦ N3 多作者合并（Young1970）", "Becker" in _p3.author and "Pike" in _p3.author
+      and _p3.title == "Rhetoric: Discovery and Change",
+      f"{_p3.author!r} / {_p3.title!r}")
+_p3n = parse1('J. Doe, 1990, B. Smith and K. Jones, The Book, New York: Routledge.')
+check("⑦ N3 反例：作者形态段后无裸年份 → 不合并（维持旧行为）",
+      "Becker" not in _p3n.author and "Smith" not in _p3n.author.split(",")[0],
+      repr(_p3n.author))
+
+# N4：Vol./No./pp. 简写期刊形态（旧正则只认 `68(1): 5-20`）
+_e4 = parse_extras('Harry Frankfurt, 1971, “Freedom of Will and the Concept of a '
+                   'Person,” The Journal of Philosophy, Vol. 68 (1), pp. 5-20.')
+check("⑦ N4 期刊简写形态（Vol./pp.）→ journal/volume/number/pages",
+      (_e4.get("journal"), _e4.get("volume"), _e4.get("number"), _e4.get("pages"))
+      == ("The Journal of Philosophy", "68", "1", "5--20"),
+      f"{_e4.get('journal')!r} {_e4.get('volume')!r} {_e4.get('number')!r} {_e4.get('pages')!r}")
+# N4：刊名含单词 in 不再被容器判据误杀
+_e4b = parse_extras('T. Williamson, 2009, “Probability and Danger”, The Amherst '
+                    'Lecture in Philosophy, 4: 1–35.')
+check("⑦ N4 刊名含 in（The Amherst Lecture in Philosophy）不被误杀",
+      _e4b.get("journal") == "The Amherst Lecture in Philosophy"
+      and _e4b.get("_type") == "article", f"{_e4b.get('journal')!r} {_e4b.get('_type')!r}")
+# N4：中文期刊 `YYYY第N期` + `+N` 补充页
+_e4c = parse_extras('费多益，“倾向：因果观念重建”，中国社会科学，2023第9期，第122-143+207页。')
+check("⑦ N4 中文期刊 YYYY第N期 / +N 页",
+      (_e4c.get("journal"), _e4c.get("number"), _e4c.get("pages"))
+      == ("中国社会科学", "9", "122--143"),
+      f"{_e4c.get('journal')!r} {_e4c.get('number')!r} {_e4c.get('pages')!r}")
+
+# N5：`in 编者列表, eds., 书名, 地: 社` 容器形态（旧判据全落空）
+_e5 = parse_extras('J. P. Dillard, 1990, “The Nature and Substance of Goals in '
+                   'Tactical Communication”, in M. J. Cody and M. L. McLaughlin, eds., '
+                   'The Psychology of Tactical Communication, Clevedon: Multilingual Matters.')
+check("⑦ N5 编者列表在前 → booktitle/editor/类型",
+      _e5.get("booktitle") == "The Psychology of Tactical Communication"
+      and "Cody" in (_e5.get("editor") or "") and _e5.get("_type") == "incollection",
+      f"{_e5.get('booktitle')!r} {_e5.get('editor')!r} {_e5.get('_type')!r}")
+_e5n = parse_extras('J. Doe, 2000, “Some Chapter”, in Some Book Without Marker, '
+                    'New York: Routledge, pp. 1-10.')
+check("⑦ N5 反例：无编者标记 + 无年份锚点 → 不编 booktitle",
+      not _e5n.get("booktitle"), repr(_e5n.get("booktitle")))
+
 # 汇总 ──
 print()
 if SKIPS:

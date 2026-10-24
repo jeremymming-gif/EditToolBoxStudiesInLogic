@@ -434,8 +434,13 @@ def _remark_prefix(para) -> bool:
 
 
 def parse_docx(path: str, quote_threshold: int = 105,
-               c_class_union: bool = False) -> DocxDoc:
+               c_class_union: bool = False,
+               bibdb_store: object | None = None) -> DocxDoc:
     """解析 Word 文稿。
+
+    bibdb_store   **B-220 N6**：引用库 Store（只读）；非 None 时，C 类短引在文末
+                  清单配不上完整条目时再查一次库——仅 HIT_SAFE 命中才建条目并提升
+                  （候选/未命中/多义一律不动）。None = 默认零变化（旧行为）。
 
     ⚠️ 用 slcn/docxxml 直接读 XML，**不用 python-docx 的 paragraph.text**。
     后者会静默丢掉 OMML 公式、run 级格式（斜体）和整个 footnotes.xml，
@@ -937,9 +942,19 @@ def parse_docx(path: str, quote_threshold: int = 105,
                     _new.note = _new.text
                     _new.ref_raw = ""
                 else:
-                    _new.kind = "citation_unmatched"
-                    doc.c_class_warnings.append(_warn)
-                    doc.footnote_notes += 1
+                    # B-220 N6：短引在文末清单里配不上完整条目时，再问一次**引用库**
+                    # （仅 HIT_SAFE + 题名 ≥0.90 才建条目并提升；候选/未命中不动）。
+                    # 实测 90-06 4 处 → 库内 Watson1987；实现在 bibdbapply（单点）。
+                    _lib_ok = False
+                    if bibdb_store is not None:
+                        from . import bibdbapply
+
+                        _lib_ok = bibdbapply.attach_short_citation(
+                            doc, _new, _warn, bibdb_store)
+                    if not _lib_ok:
+                        _new.kind = "citation_unmatched"
+                        doc.c_class_warnings.append(_warn)
+                        doc.footnote_notes += 1
             elif _kind == CITATION_MIXED_SPLIT:
                 # B-199：真 mixed 拆分。多作品 → 逐作品按原文行匹配；单作品 → 完整
                 # 条目进 bib / 短引用匹配既有键。都失败（或脚注含公式）→ 保持 mixed。

@@ -101,12 +101,26 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
     rest = m.group("rest").strip()
     qm = _QUOTED.match(rest)
     if qm:                                   # 有引号 → 题名在引号里，出版信息在引号之后
-        title = qm.group("title").strip()
+        # B-220 N1：西式引号把**题名尾逗号写在引号内**（`“Freedom of Will…,”
+        # The Journal…`）——尾逗号是分隔符、不是题名的一部分。旧实现把它留在
+        # title 里，印出来是「…Person,」（实测 2026年第5期(90) 90-06 4 条）。
+        title = qm.group("title").strip().rstrip(" ,，、;；:：")
         after = rest[qm.end():].lstrip(",，. ")
     else:                                    # 无引号 → 题名到下一个逗号（书常用）
         parts = [x.strip() for x in re.split(r"[,，]", rest, maxsplit=1)]
         title = parts[0]
         after = parts[1] if len(parts) > 1 else ""
+        # B-220 N2：无引号英文题名常含逗号（`Language, Truth and Logic, 2nd ed.,
+        # London: …`）——旧实现只取第一段，题名被截断（实测 90 期 Ayer1946 印成
+        # 「Language」）。判据统一在 `footref.title_comma_continuation()`（编号通道共用）。
+        if after:
+            from . import footref as _footref
+
+            segs = [title] + [x.strip() for x in re.split(r"[,，]", after) if x.strip()]
+            join_n = _footref.title_comma_continuation(segs)
+            if join_n:
+                title = ", ".join(segs[: join_n + 1])
+                after = ", ".join(segs[join_n + 1:])
     # ⚠️ P0-2（期 87 sub5/sub2 实测）：`rest` 必须是**题名之后**的出版信息；旧实现
     #    存的是**含引号题名的整段 rest**，而 `refs_to_bib()` 的期刊正则要求 rest 以刊名
     #    开头 → journal/volume/number/pages 永不命中（22 条里丢 18 条 pages）。
@@ -843,13 +857,23 @@ def _match_incollection(rest: str) -> tuple[str, str]:
     新判据返回空（不是这族形态）→ 走旧判据，**旧判据能解析的条目逐字节不变**
     （中文 `[C]//`、`… (eds.), 书名, https:…` 等都不含英文 `in` 标记）。
     """
-    from .wordrefs import incollection_in_editors, is_in_editor_form
+    from .wordrefs import (
+        incollection_editor_list, incollection_in_editors, is_in_editor_form)
 
     if is_in_editor_form(rest):
         # 这一族形态**只用新判据**：旧判据会把 `in ` 前缀吃进 editor
         # （`editor=in Doe, K.`），宁可只写书名也不写脏 editor（宁缺勿编）。
-        return incollection_in_editors(rest)
-    return _incollection_book_editor(rest)
+        bt, ed = incollection_in_editors(rest)
+        if bt:
+            return bt, ed
+        return incollection_editor_list(rest)
+    bt, ed = _incollection_book_editor(rest)
+    if bt or ed:
+        # 旧判据只认出一半（如 `(eds.)` 后没有书名）时也原样返回：editor 仍要写，
+        # booktitle 绝不可编（B-217② 反例 ⑤ 的既有口径，B-220 N5 不改）。
+        return bt, ed
+    # B-220 N5：`in 编者列表, eds., 书名, 地: 社` 等旧判据全落空的两族形态
+    return incollection_editor_list(rest)
 
 
 def _en_entry_fields(e: RefEntry) -> dict:
@@ -978,10 +1002,14 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
         # 时按 incollection 输出（书名/页码/出版信息由 incollection 分支写）。
         _chapter: tuple[str, str] = ("", "")
         if not _thesis:
-            from .wordrefs import incollection_in_book_pages, is_in_editor_form
+            from .wordrefs import (
+                incollection_editor_list, incollection_in_book_pages, is_in_editor_form)
 
             _chapter = (_match_incollection(rest) if is_in_editor_form(rest)
                         else incollection_in_book_pages(rest))
+            if not _chapter[0]:
+                # B-220 N5：`in 编者列表, eds., 书名, 地: 社` 等新判据兜底
+                _chapter = incollection_editor_list(rest)
             if etype == "book" and _chapter[0]:
                 etype = "incollection"
         out.append(f"@{etype}{{{e.key},")

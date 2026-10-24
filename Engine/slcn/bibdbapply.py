@@ -259,3 +259,112 @@ def write_checklist(out_dir: str, stem: str, applied: list[dict],
         new = f"══ {stem} 参考文献核对 ══\n\n" + section
     atomic_write(path, new + "\n", newline="\n", log=log)
     return path
+
+def _unique_normalized_title(store, title: str) -> bool:
+    """库内「归一化题名完全相同」的记录是否**恰好 1 条**（短引题名唯一性判据）。"""
+    try:
+        from . import bibdb
+
+        wanted = bibdb.normalize_title(title)
+        if not wanted:
+            return False
+        records = getattr(store, "_records", None) or []
+        hits = sum(
+            1 for rec in records
+            if bibdb.normalize_title((rec.get("fields") or {}).get("title") or "") == wanted)
+        return hits == 1
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def resolve_short_citation(store, author: str = "", title: str = "",
+                           year: str = "") -> dict | None:
+    """B-220 N5：纯引用脚注（只有作者+题名、缺完整条目）→ 引用库安全命中 → bib 条目。
+
+    只在 `Store.match_reference()` 判 **HIT_SAFE**（库内已核实）且题名相似度 ≥0.90
+    时返回；候选/未命中 → ``None``（不编造，仍走原路径：脚注保留 + 人工核对 warning）。
+    返回 ``{"key", "entry", "raw", "record_key", "title_similarity"}``；``entry`` 是
+    可直接交给 `footnotes.entry_to_bib()` 的字段 dict（含 ``_type``）。
+
+    调用方：`wordbody.parse_docx()`（仅当 convert 已解析出引用库且默认回填开着时）。
+    """
+    if store is None:
+        return None
+    from . import bibdb
+
+    title = str(title or "").strip().rstrip(" ,，、;；:：")
+    author = str(author or "").strip().rstrip(" ,，、;；:：")
+    if not title:
+        return None
+    fields = {"title": title}
+    if author:
+        fields["author"] = author
+    if year:
+        fields["year"] = str(year)
+    try:
+        match = store.match_reference(fields)
+    except Exception:  # noqa: BLE001  附加通道：任何意外都不许连累出稿
+        return None
+    if not isinstance(match, dict) or match.get("status") != bibdb.HIT_SAFE:
+        # 作者一侧对不上（源稿短引把作者姓拼错，如 `Gary Waston`）时，允许退一步做
+        # **只按题名**的第二次匹配，但必须同时满足：HIT_SAFE + 题名相似度 ≥0.98 +
+        # 库内**归一化题名完全相同的记录恰有 1 条**（唯一，不会张冠李戴）。
+        if not author:
+            return None
+        try:
+            match = store.match_reference({"title": title})
+        except Exception:  # noqa: BLE001
+            return None
+        if (not isinstance(match, dict) or match.get("status") != bibdb.HIT_SAFE
+                or not _unique_normalized_title(store, title)):
+            return None
+        try:
+            if float(match.get("title_similarity") or 0.0) < 0.98:
+                return None
+        except (TypeError, ValueError):
+            return None
+    rec = match.get("record") or {}
+    rec_key = str(match.get("record_key") or rec.get("key") or "").strip()
+    if not rec_key:
+        return None
+    sim = match.get("title_similarity")
+    try:
+        if sim is not None and float(sim) < 0.90:
+            return None
+    except (TypeError, ValueError):
+        return None
+    out_fields = dict(bibdb.canonical_fields(rec.get("fields") or {}))
+    out_fields["_type"] = str(rec.get("entry_type") or "").strip() or "misc"
+    return {
+        "key": rec_key,
+        "entry": out_fields,
+        "raw": f"{author} {title}".strip(),
+        "record_key": rec_key,
+        "title_similarity": sim,
+    }
+
+def attach_short_citation(doc, fn, warn, store) -> bool:
+    """B-220 N6 接线：把「纯引用脚注 → 库 HIT_SAFE 安全命中」落到 doc/fn。
+
+    命中 → 该脚注改为 ``pure_citation_matched``（渲染成 `\parencite`）、库记录进
+    `doc.bib_entries`/`ref_raw_by_key`，并写一条可见 warning；不命中 → **一个字段都
+    不改**、返回 False（调用方维持旧路径：脚注保留 + 人工核对）。
+    """
+    info = resolve_short_citation(
+        store,
+        author=str(getattr(warn, "author", "") or ""),
+        title=str(getattr(warn, "title", "") or ""),
+        year=str(getattr(warn, "year", "") or ""))
+    if not info:
+        return False
+    key = info["key"]
+    fn.kind = "pure_citation_matched"
+    fn.key = key
+    fn.entry = info["entry"]
+    if not any(k == key for k, _e, _r in getattr(doc, "bib_entries", [])):
+        doc.bib_entries.append((key, info["entry"], info["raw"]))
+    doc.ref_raw_by_key[key] = info["raw"]
+    doc.warnings.append(
+        "短引经引用库安全命中（库内已核实，未编造）："
+        f"「{str(getattr(warn, 'text', ''))[:40]}」→ {key}")
+    return True

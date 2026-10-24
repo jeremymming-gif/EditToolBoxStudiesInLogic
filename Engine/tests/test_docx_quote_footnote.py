@@ -119,6 +119,25 @@ check("④ 短引文（不足阈值、句末标点 < 2）不提升",
 _out_none, _ok_none = hoist_quote_fallback("没有引号的一段文字", "【QUOTED】")
 check("④ hoist_quote_fallback：没有长引文 → 原样返回", _ok_none is False)
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ B-220 N7：引文之后**紧随**已解析引用时，引用折进 quotation 环境、不再留
+#    「【需补充参考文献与页码】」占位（实测 90-05：旧实现占位与引用重复印两处）
+# ══════════════════════════════════════════════════════════════════════════
+_para_cite = Para(segs=[
+    Seg("text", QUOTE_HEAD + QUOTE_TAIL + "。（[5]，第40页）"),
+])
+_l7, _n7 = render_para(_para_cite, {}, [], {}, quote_threshold=105,
+                       num2key={5: "Sosa2021"})
+check("⑤ N7 紧随的编号引用折进 quotation（\hfill（\parencite…，第 40 页））",
+      "\\hfill（\\parencite{Sosa2021}，第 40 页）" in _l7, _l7[-160:])
+check("⑤ N7 不再留「需补充参考文献与页码」占位",
+      "需补充参考文献与页码" not in _l7 and _l7.count("Sosa2021") == 1, _l7[-160:])
+# 反例：引文后**没有**可解析引用 → 占位照旧（不编造）
+_para_nocite = Para(segs=[Seg("text", QUOTE_HEAD + QUOTE_TAIL)])
+_l7n, _n7n = render_para(_para_nocite, {}, [], {}, quote_threshold=105)
+check("⑤ N7 反例：无可解析引用 → 占位照旧（不编造）",
+      "需补充参考文献与页码" in _l7n)
+
 print()
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

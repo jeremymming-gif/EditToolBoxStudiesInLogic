@@ -110,7 +110,9 @@ def _pages(text: str) -> str:
     if m:
         return f"{m.group(1)}--{m.group(2)}"
     # 中文体例：`…，第24–43、204–205页。` —— 取第一段（人工成品也是取第一段）
-    m = re.search(r"第\s*(\d{1,4})\s*[-–—~]\s*(\d{1,4})\s*(?:[、,，]\s*\d{1,4}\s*[-–—~]\s*\d{1,4})?\s*页", text)
+    # B-220 N4c：允许尾部 `+N` 补充页（实测 90-05 费多益条 `第122-143+207页`，
+    # 人工成品 pages={122--143}）——取主页码段，`+N` 是补充材料页、不进 pages。
+    m = re.search(r"第\s*(\d{1,4})\s*[-–—~]\s*(\d{1,4})\s*(?:[、,，]\s*\d{1,4}\s*[-–—~]\s*\d{1,4})?\s*(?:[+＋]\s*\d{1,4}\s*)?页", text)
     if m:
         return f"{m.group(1)}--{m.group(2)}"
     return ""
@@ -151,6 +153,7 @@ _PUB_CUES = (
     r"Benjamins|Wiley|Blackwell|Springer|Routledge|Bloomsbury|Palgrave|"
     r"Gruyter|Kluwer|Reidel|Elsevier|Wadsworth|Waveland|Rowman|Parlor|"
     r"McGraw|Macmillan|Scribner|Holt|Rinehart|Winston|Harper|Collins|"
+    r"Gollancz|"
     r"出版社|书局|印书馆"
 )
 
@@ -195,11 +198,73 @@ def _looks_pub_segment(seg: str) -> bool:
         return True
     if re.match(r"^(?:1[89]|20)\d{2}\b", text):
         return True
-    if re.match(r"^(?:第\s*\d+|pp?\.\s*\d|Vol\.?|No\.?|in\s|In\s|载\s|见\s)", text):
+    if re.match(r"^(?:第\s*\d+|pp?\.\s*\d|Vol\.?\s*\d|No\.?\s*\d|in\s|In\s|载\s|见\s)", text):
         return True
     if re.match(r"^[A-Z][A-Za-z.\- ]{1,20}[:：]\s*[A-Z]", text) and "," in text:
         return True
     return False
+
+
+# ── B-220 N2/N3：英文题名逗号续接 + 多作者（编号/人年制两个通道共用判据）──────
+#: 题名续段以这些功能词开头（小写）→ 一定是题名的一部分（`…, and What It Explains`）。
+_LOWER_CONNECTIVE_RE = re.compile(
+    r"^(?:and|or|of|the|a|an|for|with|from|as|in|on|at|to|by|under|between|"
+    r"through|upon|into)\b")
+#: 版次/卷期/页码残段——出现在题名之后时说明题名已结束（`2nd ed.` / `Vol. 2`）。
+_EDITION_OR_NOISE_RE = re.compile(
+    r"^(?:\d+(?:st|nd|rd|th)?\s*(?:ed|edn|edition)\.?\b|"
+    r"(?:rev|revised|updated|enlarged|expanded)(?:\s+edition)?\.?\b|"
+    r"(?:2nd|1st|3rd|4th|5th|6th|7th|8th|9th)\b|Vol\.?\s*\d|No\.?\s*\d|pp?\.\s*\d)",
+    re.I)
+#: 纯题名候选段：不含冒号/数字（出版信息几乎总有冒号或数字）。
+_PLAIN_TITLE_SEG_RE = re.compile(r"^[^:：\d]+$")
+
+
+def title_comma_continuation(segments: list[str]) -> int:
+    """给「被逗号切开的题名候选段」，返回**应并入题名**的后续段数（0 = 不并）。
+
+    只处理两类**可自证**的续接（B-220 N2；实测 90 期 Ayer1946 / Frankfurt1999 /
+    vanEemeren1992 / Sosa2021）：
+      ① 下一段以**小写功能词**开头（`and What It Explains`）；
+      ② 下一段是**纯题名段**（无数字/冒号），且其后紧跟版次标记或另一小写功能词段。
+    两种都要求该段本身不是出版信息（`_looks_pub_segment`）。宁可少并、不可错并：
+    `2nd ed.` / `Oxford: OUP` / `New York: …` 等出版信息一律不并入。
+    """
+    k = 0
+    for i in range(1, len(segments)):
+        seg = segments[i].strip()
+        if not seg:
+            break
+        if _looks_pub_segment(seg) or _EDITION_OR_NOISE_RE.match(seg):
+            break
+        nxt = segments[i + 1].strip() if i + 1 < len(segments) else ""
+        if seg[:1].islower() and _LOWER_CONNECTIVE_RE.match(seg):
+            k = i
+            continue
+        if _PLAIN_TITLE_SEG_RE.match(seg) and nxt and (
+                (nxt[:1].islower() and _LOWER_CONNECTIVE_RE.match(nxt))
+                or _EDITION_OR_NOISE_RE.match(nxt)):
+            k = i
+            continue
+        break
+    return k
+
+
+#: 英文作者段的形态：`B. Garssen` / `A. F. Snoeck Henkemans` / `and J. H. M. Wagemans`
+#: / `A. L. Becker and K. L. Pike`（编号清单多作者，B-220 N3）。
+_EN_AUTHOR_SEG_RE = re.compile(
+    r"^(?:and\s+)?(?:(?:van|von|de|der|den|del|di|da|le|la)\s+)?"
+    r"(?:[A-Z]\.\s*)+"
+    r"(?:[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?)"
+    r"(?:\s*(?:,|&|and)\s*(?:[A-Z]\.\s*)*(?:[A-Z][\w'’\-]+(?:\s+[A-Z][\w'’\-]+)?))*$")
+
+
+def looks_like_en_author_segment(seg: str) -> bool:
+    """这一段像不像「英文作者名」（首字母缩写 + 姓）。"""
+    s = seg.strip()
+    if not s or len(s) > 120 or re.search(r"[\u4e00-\u9fff]", s):
+        return False
+    return bool(_EN_AUTHOR_SEG_RE.match(s))
 
 
 def _pub_addr(text: str) -> tuple[str, str]:
@@ -282,6 +347,12 @@ def _title_quoted(text: str) -> str:
         return ""
     start = om.end()
     fallback: str | None = None
+
+    def _clean(value: str) -> str:
+        # B-220 N1：西式引号把**题名尾逗号写在引号内**（`“Freedom of Will…,”`）——
+        # 尾标点是分隔符、不是题名的一部分（旧实现原样返回，印出来是「…Person,」）。
+        return value.strip().rstrip(" ,，、;；:：")
+
     for cm in re.finditer(r"[”\"]", text[start:]):
         inner = text[start : start + cm.start()]
         if fallback is None:
@@ -291,10 +362,13 @@ def _title_quoted(text: str) -> str:
             continue
         nxt = text[start + cm.end() : start + cm.end() + 1]
         if nxt in ("", "，", ",", "。", ".", "；", ";", "、"):
-            if 4 <= len(inner) <= 120:
-                return inner.strip()
-    if fallback is not None and 4 <= len(fallback) <= 120:
-        return fallback.strip()
+            cleaned = _clean(inner)
+            if 4 <= len(cleaned) <= 120:
+                return cleaned
+    if fallback is not None:
+        cleaned = _clean(fallback)
+        if 4 <= len(cleaned) <= 120:
+            return cleaned
     return ""
 
 
@@ -858,7 +932,27 @@ def parse_numbered_item(seg: str) -> Parsed:
         #    不识别的话，译者那段会被当成题名（真题名就此丢失、还多一个假题名），
         #    实测见第 64 条与 `_translation_author_segments()` 的注释。
         n_auth = _translation_author_segments(parts)
-        p.author = "，".join(parts[:n_auth]) if parts else ""
+        # B-220 N3：英文多作者编号清单——`R. E. Young, A. L. Becker and K. L. Pike, 1970,
+        # …`（旧实现只取第 1 作者，第 2 作者被当成题名；实测 90 期 Young1970/
+        # vanEemeren2014/2009、90-04 Parr2022）。只在「续段像英文作者名、且其后紧跟
+        # 一个裸年份」时合并，宁可少并、不可错并。
+        if n_auth <= 1 and not re.search(r"[\u4e00-\u9fff]", t):
+            _j = 1
+            while _j < len(parts) and _j <= 8 and looks_like_en_author_segment(parts[_j]):
+                _nxt = parts[_j + 1].strip() if _j + 1 < len(parts) else ""
+                if re.fullmatch(r"(?:19|20)\d{2}[a-z]?", _nxt):
+                    _j += 1
+                    break
+                _j += 1
+            if _j > 1 and re.fullmatch(r"(?:19|20)\d{2}[a-z]?",
+                                        parts[_j].strip() if _j < len(parts) else ""):
+                n_auth = _j
+        # 续接的作者段可能自带 `and`/`&` 连接词（`…, and J. H. M. Wagemans, 2014`）——
+        # 去掉连接词再用统一分隔符拼接，避免 `… and and J. H. …`（正常化在出口做）。
+        _auth_parts = [parts[0]] + [
+            re.sub(r"^(?:and|&)\s+", "", x.strip()) for x in parts[1:n_auth]
+        ]
+        p.author = "，".join(_auth_parts) if parts else ""
         body = [x for x in parts[n_auth:] if not re.fullmatch(r"(19|20)\d{2}\s*年?", x)]
         # `作者：《题名》`（期 87 sub7 `[12] 虞愚：《印度逻辑推理与推论式的发展》,哲学研究，…`）
         # 没有逗号分隔作者与题名，整段被当成题名——按「冒号 + 书名号」拆开。
@@ -878,10 +972,17 @@ def parse_numbered_item(seg: str) -> Parsed:
         if body:
             p.title = body[0].strip("《》〈〉").strip()
             # 英文题名常含逗号：把被逗号切开的副题并回 title，直到遇到出版信息。
-            if year_prefix:
+            # B-220 N2：旧实现只在「题名段带年份前缀」时才并（罕见形态），实测 90 期
+            # `Language, Truth and Logic` / `Necessity, Volition, and Love` /
+            # `Argumentation, Communication, and Fallacies…` 全被截断。判据统一到
+            # `title_comma_continuation()`（与 wordentry 人年制通道共用，单点）。
+            _join_n = title_comma_continuation(body)
+            if _join_n:
                 joiner = "，" if re.search(r"[\u4e00-\u9fff]", p.title) else ", "
-                while len(body) > 1 and not _looks_pub_segment(body[1]):
-                    p.title = p.title.rstrip(" ,，") + joiner + body.pop(1).strip()
+                for _k in range(1, _join_n + 1):
+                    p.title = (p.title.rstrip(" ,，") + joiner
+                               + body[_k].strip(" ,，"))
+                del body[1:_join_n + 1]
         rest = "，".join(body[1:])
         ym = re.search(r"((?:19|20)\d{2})", year_prefix or t)
         if ym:
@@ -904,12 +1005,19 @@ def parse_numbered_item(seg: str) -> Parsed:
         )
         if m:
             cand = m.group(1).strip()
-            if not re.search(r"（|\bin\b", cand):
+            # B-220 N4a：旧判据用 `\bin\b` 排除「in Book」容器形态，但把刊名里**含
+            # 单词 in** 的也误杀（实测 90-05 `The Amherst Lecture in Philosophy` 因此
+            # journal 丢失、条目退化成 @misc、字段被 entry_to_bib 的 misc 字段序丢弃）。
+            # 只拒「以 in 开头」的候选（那才是容器形态）。
+            if not re.search(r"（", cand) and not re.match(r"(?i)^in\s", cand):
                 p.journal = cand
         if not p.journal:
             # 中文期刊：`刊名，2026年第6期，第24–43页。`——刊名后面直接跟年份或期号
+            # B-220 N4b：补 `2023第9期`（年份与「第N期」之间无「年」/逗号）形态
+            # （实测 90-05 费多益条：`中国社会科学，2023第9期，第122-143+207页。`）。
             m2 = re.match(
-                r"^[\s,，.。]*([\u4e00-\u9fff·]{2,30})\s*[，,]\s*(?:\d{4}\s*年|第\s*\d+\s*期)",
+                r"^[\s,，.。]*([\u4e00-\u9fff·]{2,30})\s*[，,]\s*"
+                r"(?:\d{4}\s*年|第\s*\d+\s*期|\d{4}\s*第\s*\d+\s*期)",
                 rest,
             )
             if m2:

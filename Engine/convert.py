@@ -1728,7 +1728,11 @@ def bibdb_readonly_scan(args, res) -> dict:
         entries = split_entries(bib_text)
         if not entries:
             return out
-        store, path, _warning = resolve_bibdb(args)
+        store = getattr(res, "_bibdb_store_shared", None)
+        if store is not None:
+            path, _warning = getattr(store, "path", ""), ""
+        else:
+            store, path, _warning = resolve_bibdb(args)
         if store is None:
             return out
         safe, candidates, missed = classify_bibdb(store, entries)
@@ -2081,6 +2085,23 @@ def render_llm_fulltext_report(*, stem: str, cfg, est: dict, result: dict,
           "正文内容不写入本报告（只在本次请求中发送给所配置的端点）。", ""]
     return "\n".join(L)
 
+
+
+def resolve_bibdb_apply_store(args):
+    """B-220 N6：短引库解析用的只读 Store（与默认回填共用同一组开关）。
+
+    任一回填/查库开关关闭（`--no-bibdb` / `--no-bibdb-verify` / `--no-bibdb-apply`）
+    或库不可用 → 返回 ``None``（默认零变化：短引仍按原路径保留脚注 + 人工核对）。
+    """
+    if (getattr(args, "no_bibdb_verify", False)
+            or getattr(args, "no_bibdb", False)
+            or getattr(args, "no_bibdb_apply", False)):
+        return None
+    try:
+        store, _path, _warning = resolve_bibdb(args)
+    except Exception:  # noqa: BLE001  附加通道：库不可用不阻断出稿
+        return None
+    return store
 
 
 def resolve_c_class_union(args) -> bool:
@@ -2713,6 +2734,9 @@ def main() -> int:
         "received": args.received, "editor": args.editor, "grants": args.grants,
     }
     ext = os.path.splitext(source)[1].lower()
+    # B-220 N6：短引库解析用的 Store（Word 通道才用；只读；开关同默认回填）。
+    # 与 ⑦ 的 bibdb_readonly_scan 共用——扫描端通过 `res._bibdb_store_shared` 复用。
+    _bibdb_store = resolve_bibdb_apply_store(args) if ext in WORD_EXT else None
     try:
         if ext in WORD_EXT:
             res = build_docx(
@@ -2730,6 +2754,8 @@ def main() -> int:
                 end_list_priority=getattr(args, "end_list_priority", False),
                 number_cite_map=getattr(args, "number_cite_map", False),
                 c_class_union=resolve_c_class_union(args),
+                # B-220 N6：短引库解析（引用库默认开；--no-bibdb-apply 等关闭）
+                bibdb_store=_bibdb_store,
             )
         else:
             _bib_path = find_bib(source, args.bib)
@@ -2747,6 +2773,12 @@ def main() -> int:
             )
     except Exception as e:  # noqa: BLE001
         die(f"生成失败：{type(e).__name__}: {e}")
+    # B-220 N6：让 ⑦ 的引用库比对复用同一份只读 Store（避免二次加载 7043 条）。
+    if _bibdb_store is not None:
+        try:
+            res._bibdb_store_shared = _bibdb_store
+        except Exception:  # noqa: BLE001
+            pass
 
     # ⑦ 合并参考文献附件（全库 28% 的稿件把参考文献放在单独文件里）
     #

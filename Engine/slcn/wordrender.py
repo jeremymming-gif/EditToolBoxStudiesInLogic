@@ -543,6 +543,41 @@ def render_para(
         target = f"“{hoist.content}”"
         if target in latex:
             latex = latex.replace(target, quoted, 1)
+            if not key:
+                # B-220 N7：引文出处已由正文引用替换解析出来，只是落在关闭引号**之后**
+                # （`“……。”（\parencite{K}，第 N 页）`）。旧实现两处都写：环境里留
+                # 「【需补充参考文献与页码】」占位、真引用挂在 \end{quotation} 之后
+                # （实测 90-05 7 处；人工惯例是把引用放进环境 `\hfill（…）`）。
+                # 只在这个**紧随其后**的引用完全可解析时合并；否则保持原样。
+                _pos = latex.find(quoted)
+                if _pos >= 0:
+                    _tail = latex[_pos + len(quoted):]
+                    # 源稿常见 `……。”。（[5]，第40页）`：关闭引号后先有句号再是括号引用。
+                    _lead = re.match(r"[。.．]?\s*", _tail)
+                    _tail = _tail[_lead.end():]
+                    _m = re.match(
+                        r"（\\parencite\{([^}]+)\}(?:，第\s*([^）]+?)\s*页)?）", _tail)
+                    _key2, _page2 = "", ""
+                    if _m:
+                        _key2, _page2 = _m.group(1), _m.group(2) or ""
+                        _end = _m.end()
+                    else:
+                        # 编号清单体例：渲染期 trailing 引用还是纯文本 `（[18]，第258页）`，
+                        # 由 build 的 ②.5 事后替换；这里用同一份编号映射就地折算。
+                        _m2 = re.match(
+                            r"（\[(\d+)\](?:[，,]\s*第\s*([^）]+?)\s*页)?）", _tail)
+                        if _m2 and num2key:
+                            _key2 = num2key.get(int(_m2.group(1)), "")
+                            _page2 = _m2.group(2) or ""
+                            _end = _m2.end()
+                        else:
+                            _key2 = ""
+                    if _key2:
+                        _quoted2, _note2 = build_quotation(
+                            hoist.content, _key2, _page2)
+                        latex = latex[:_pos] + _quoted2 + _tail[_end:]
+                        if _note2:
+                            notes.append(f"{_note2}（引文 {hoist.visible_len} 字）")
         else:
             # 引文被斜体/公式/脚注标记切开时，退化匹配（见 hoist_quote_fallback 注释）
             latex, _hoisted = hoist_quote_fallback(latex, quoted)
