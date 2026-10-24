@@ -28,6 +28,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
         sys.path.insert(0, _p)
 
 from slcn.docxsource import render_para  # noqa: E402
+from slcn.wordcaption import caption_candidate, find_captions  # noqa: E402
 from slcn.docxxml import Para, Seg  # noqa: E402
 
 FAILS = []
@@ -136,6 +137,68 @@ try:
     _real_check()
 except Exception as _e:  # noqa: BLE001
     skip("④ 真实稿 fig label 唯一性抽查", f"{type(_e).__name__}: {_e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ B-217③：Word 题注 → \caption（唯一相邻关联；关联失败保持原行为 + warning）
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑤ B-217③ 题注关联与 \\caption 接线 ──")
+
+
+def _cap(text, style=""):
+    return Para(segs=[Seg("text", text=text)], style=style)
+
+
+_c = caption_candidate(_cap("图1 系统架构", "Caption"))
+check("⑤ 判据：Caption 样式「图1 系统架构」→ 图题、去掉编号前缀",
+      bool(_c) and _c["kind"] == "fig" and _c["text"] == "系统架构", repr(_c))
+_c = caption_candidate(_cap("表2 实验数据"))
+check("⑤ 判据：无样式但「表2 + 说明」的短段落也认",
+      bool(_c) and _c["kind"] == "tab" and _c["text"] == "实验数据", repr(_c))
+check("⑤ 反例：无样式正文叙述「图1 展示了系统架构。」不认（句末标点）",
+      caption_candidate(_cap("图1 展示了系统架构。")) is None)
+check("⑤ 反例：普通正文段落不认", caption_candidate(_cap("本文讨论逻辑")) is None)
+
+_items = [
+    {"caption": None, "figure": True, "table": False, "blank": False},
+    {"caption": caption_candidate(_cap("图1 系统架构")), "figure": False,
+     "table": False, "blank": False},
+    {"caption": None, "figure": False, "table": False, "blank": True},
+    {"caption": None, "figure": False, "table": False, "blank": False},  # 正文段
+    {"caption": None, "figure": False, "table": True, "blank": False},
+    {"caption": caption_candidate(_cap("表1 实验数据")), "figure": False,
+     "table": False, "blank": False},
+]
+_assoc, _skip, _warns = find_captions(_items)
+check("⑤ 唯一相邻：图/表各并入题注、题注段落要跳过、无 warning",
+      _assoc.get(0) == {"kind": "fig", "text": "系统架构"}
+      and _assoc.get(4) == {"kind": "tab", "text": "实验数据"}
+      and _skip == {1, 5} and _warns == [], repr((_assoc, _skip, _warns)))
+_amb = [
+    {"caption": None, "figure": True, "table": False, "blank": False},
+    {"caption": caption_candidate(_cap("图1 甲")), "figure": False,
+     "table": False, "blank": False},
+    {"caption": None, "figure": True, "table": False, "blank": False},
+]
+_a2, _s2, _w2 = find_captions(_amb)
+check("⑤ 反例：题注夹在两个图之间 → 不关联 + warning（不猜）",
+      _a2 == {} and _s2 == set() and bool(_w2), repr((_a2, _s2, _w2)))
+_mis = [
+    {"caption": None, "figure": False, "table": True, "blank": False},
+    {"caption": caption_candidate(_cap("图1 甲")), "figure": False,
+     "table": False, "blank": False},
+]
+_a3, _s3, _w3 = find_captions(_mis)
+check("⑤ 反例：写「图1」却挨着表格 → 不关联 + warning（不猜）",
+      _a3 == {} and _s3 == set() and bool(_w3), repr((_a3, _s3, _w3)))
+
+_texc, _ = render_para(_para(Seg("image", rid="rId1")), {}, [], {}, img_names=IMG,
+                       fig_caption="系统架构")
+check("⑤ 接线：render_para(fig_caption=…) → figure 用真实题注、无占位",
+      "\\caption{系统架构}" in _texc and "【需补充图题】" not in _texc, _texc[:160])
+_texd, _ = render_para(_para(Seg("image", rid="rId1")), {}, [], {}, img_names=IMG)
+check("⑤ 反例：不传 fig_caption → 占位与从前逐字节相同",
+      "\\caption{【需补充图题】}" in _texd, _texd[:160])
 
 print()
 print("=" * 78)

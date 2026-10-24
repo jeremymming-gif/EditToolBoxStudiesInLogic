@@ -23,6 +23,20 @@ import re
 import zlib
 from dataclasses import dataclass, field
 
+# B-217：新判据一律落新模块（本文件已越线，LEAD-LESSONS §4），这里只做薄接线：
+#   · wordcite   —— 正文/脚注共用的引用引导语判据 + 正文裸编号通道（B-217①）；
+#   · wordcaption—— 题注识别与唯一相邻关联（B-217③）；
+#   · wordrefs   —— 文献字段扩展判据（B-217②，供 refs_to_bib 兜底）。
+from .wordcaption import caption_candidate as _caption_candidate
+from .wordcaption import find_captions as _find_captions
+from .wordcaption import is_figure_para as _is_figure_para
+from .wordcite import CUE_LEAD_FAR_RE as _FN_LEAD_FAR_RE
+from .wordcite import CUE_LEAD_NEAR_RE as _FN_LEAD_NEAR_RE
+from .wordcite import cue_evidence as _cue_evidence
+from .wordcite import fn_in_math as _fn_in_math
+from .wordcite import fn_in_paren_depths as _fn_in_paren_depths
+from .wordcite import link_body_cue_citations as _link_body_cue_citations
+
 # 零宽 / BOM 字符，与 `rules.py: _ZERO_WIDTH` **同一组**（案例 74 与案例 75 共用一份）。
 # ⚠️ 它们**不可见**：`'\ufeffS. Blackburn'` 在终端里与 `'S. Blackburn'` 长得一模一样，
 #    用肉眼查稿永远查不出来，只能靠代码剥。
@@ -848,6 +862,7 @@ def _numbered_refs(
     from . import footref
     from .bibcheck import author_has_role_mark as _has_role_mark
     from .footnotes import make_key as _fn_make_key
+    from .wordrefs import apply_numbered_extras
 
     out: list[tuple[str, dict, str]] = []
     num2key: dict[int, str] = {}
@@ -884,7 +899,8 @@ def _numbered_refs(
         it0 = footref.parse_numbered_item(raw_line)
         if not it0.title or not (it0.year or it0.author):
             continue
-        entry0 = _entry_dict(it0)
+        entry0 = apply_numbered_extras(
+            _entry_dict(it0), raw_line, match_journal=_match_en_journal)
         key0 = _fn_make_key(entry0, len(out) + 1, used)
         out.append((key0, entry0, raw_line))
         raw_by_key[key0] = raw_line
@@ -909,7 +925,8 @@ def _numbered_refs(
         # test_ref_raw_lines 反例）；P0-4 的「保留+note」只针对无角色标记的情形。
         if short_title and _has_role_mark(it.author):
             continue
-        entry = _entry_dict(it)
+        entry = apply_numbered_extras(
+            _entry_dict(it), seg, match_journal=_match_en_journal)
         if short_title:
             entry["note"] = (f"题名解析可疑（{it.title}），已保留原条目，"
                              "请按源稿原文核对题名")
@@ -1042,6 +1059,43 @@ _KIND_BY_ETYPE = {"book": "M", "article": "J", "incollection": "C",
                   "inproceedings": "P", "phdthesis": "D", "report": "R"}
 
 
+def _match_en_journal(rest: str):
+    """英文期刊正则入口（B-217②）：`refs_to_bib` 与 `_en_entry_fields` 共用。
+
+    旧两条正则（`_EN_JOURNAL_RE` / `_EN_JOURNAL_RE2`）**先试**，原样命中时行为与
+    从前逐字节相同；都不中时由 `wordrefs.match_en_journal()` 对「剥前导逗号/
+    引号残留」的候选再试——扩展判据只有一处实现。
+    """
+    from .wordrefs import match_en_journal
+
+    return match_en_journal(rest, _EN_JOURNAL_RE, _EN_JOURNAL_RE2)
+
+
+def _clean_journal_name(name: str) -> str:
+    """刊名剥残留引号/逗号（`“Synthese”` → `Synthese`）；无残留时逐字节不变。"""
+    from .wordrefs import clean_journal_name
+
+    return clean_journal_name(name)
+
+
+def _match_incollection(rest: str) -> tuple[str, str]:
+    """`(booktitle, editor)` 入口（B-217②）。
+
+    先试 `wordrefs.incollection_in_editors()` 的**结构化英文形态**
+    （`in … (ed./eds.), Book, pp. a–b, Place: Publisher`）——旧判据在这一族上
+    会把 `in ` 前缀吃进 editor（`editor=in Doe, K.`），所以这里必须先试新判据；
+    新判据返回空（不是这族形态）→ 走旧判据，**旧判据能解析的条目逐字节不变**
+    （中文 `[C]//`、`… (eds.), 书名, https:…` 等都不含英文 `in` 标记）。
+    """
+    from .wordrefs import incollection_in_editors, is_in_editor_form
+
+    if is_in_editor_form(rest):
+        # 这一族形态**只用新判据**：旧判据会把 `in ` 前缀吃进 editor
+        # （`editor=in Doe, K.`），宁可只写书名也不写脏 editor（宁缺勿编）。
+        return incollection_in_editors(rest)
+    return _incollection_book_editor(rest)
+
+
 def _en_entry_fields(e: RefEntry) -> dict:
     """英文 RefEntry 的出版信息 → `classify_entry_type()` 需要的 fields。
 
@@ -1052,10 +1106,10 @@ def _en_entry_fields(e: RefEntry) -> dict:
 
     rest = re.sub(r"^[.。]\s*", "", (e.rest or "").strip())
     fields: dict[str, str] = {}
-    jm = _EN_JOURNAL_RE.match(rest) or _EN_JOURNAL_RE2.match(rest)
+    jm = _match_en_journal(rest)
     if jm:
         gd = jm.groupdict()
-        fields["journal"] = (gd.get("journal") or "").strip()
+        fields["journal"] = _clean_journal_name((gd.get("journal") or "").strip())
         fields["volume"] = gd.get("volume") or ""
         fields["number"] = gd.get("number") or ""
         fields["pages"] = (gd.get("pages") or "").replace("-", "--")
@@ -1079,7 +1133,7 @@ def _en_entry_fields(e: RefEntry) -> dict:
         fields["publisher"] = pub
     if _plausible_pub(addr):
         fields["address"] = addr
-    bt, _ed = _incollection_book_editor(rest)
+    bt, _ed = _match_incollection(rest)
     if bt:
         fields["booktitle"] = bt
     if not fields.get("publisher"):
@@ -1138,7 +1192,6 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
     out = ["% 由 Word 参考文献自动生成，请核对类型与字段。", ""]
     for e in refs:
         etype = TYPE_MAP.get(e.kind, "book")
-        out.append(f"@{etype}{{{e.key},")
         fields: list[tuple[str, str]] = []
         if e.author:
             fields.append(("author", _bib_author(e.author)))
@@ -1148,12 +1201,38 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
         # rest 常以「. 」开头（`. Mind, 85(337): 112-119.`），必须先剥掉，
         # 否则下面的期刊正则匹配不到——实测所有期刊条目都因此丢了卷/期/页。
         rest = re.sub(r"^[.。]\s*", "", e.rest.strip())
-        jm = _EN_JOURNAL_RE.match(rest)
-        if jm is None:  # 无卷号形态：`Mind 85: 112-119`
-            jm = _EN_JOURNAL_RE2.match(rest)
+        # B-217②：中文学位论文（「博士论文，厦门大学，2009 年」）→
+        # @phdthesis/@mastersthesis（引用库口径：school=学校、address=学位类型）。
+        # 认不出 `_thesis` 时 etype 不变，旧路径逐字节不变。
+        _thesis = None
+        if etype in ("phdthesis", "mastersthesis"):
+            from .wordrefs import en_thesis_fields, thesis_fields
+
+            _thesis = thesis_fields(rest) or en_thesis_fields(rest)
+        elif etype == "book":
+            # B-217② F3：英文 `PhD thesis, Northwestern University` 旧分类会落成
+            # book（模板 [4] 实测）→ 识别为学位论文（须认出 school，宁缺勿编）。
+            from .wordrefs import en_thesis_fields
+
+            _thesis = en_thesis_fields(rest)
+        if _thesis:
+            etype = _thesis["etype"]
+        # B-217② B2-2：人年制英文编著章节（`in <书名>, pp. a–b. 地: 社.`，可能
+        # 没有编者标记）旧分类落成 @book，且把 `pp. a–b. 地` 当出版地——结构可辨
+        # 时按 incollection 输出（书名/页码/出版信息由 incollection 分支写）。
+        _chapter: tuple[str, str] = ("", "")
+        if not _thesis:
+            from .wordrefs import incollection_in_book_pages, is_in_editor_form
+
+            _chapter = (_match_incollection(rest) if is_in_editor_form(rest)
+                        else incollection_in_book_pages(rest))
+            if etype == "book" and _chapter[0]:
+                etype = "incollection"
+        out.append(f"@{etype}{{{e.key},")
+        jm = _match_en_journal(rest)
         if jm and etype == "article":
             gd = jm.groupdict()
-            fields.append(("journal", escape_bib_value(gd["journal"].strip())))
+            fields.append(("journal", escape_bib_value(_clean_journal_name(gd["journal"]))))
             # 中文期刊常写成「逻辑学研究, 2022(5): 38-50」——括号前那个数是**年份**
             # 而不是卷号。若它等于条目的年份，就当卷号不填。
             vol = gd.get("volume") or ""
@@ -1170,10 +1249,18 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
             # ⚠️ `pub` / `addr` 仍是「**note 判据**」用的那一份（`_split_publisher`），
             #    一个字没动 —— 这样 book/article 的 note 行为逐字不变（案例 81）。
             pub, addr = _split_publisher(rest)
+            # B-217② B2-4：`http(s)://` 不是出版信息（旧输出 `address={https}`、
+            # `publisher={//plato}`）。URL 只进 `url` 字段，出版地/社一律不写。
+            from .wordrefs import find_urls as _find_urls
+
+            _urls = _find_urls(rest)
             if etype == "book":
-                if addr:
+                # B-217② B2-4：`http(s)://` 不是出版信息（旧输出 `address={https}`、
+                # `publisher={//plato}`）——有 URL 时只写 url 字段，不写出版地/社。
+                # pub/addr 仍照旧算着（note 判据逐字不变；其余分支不受影响）。
+                if addr and not _urls:
                     fields.append(("address", escape_bib_value(addr)))
-                if pub:
+                if pub and not _urls:
                     fields.append(("publisher", escape_bib_value(pub)))
             elif etype == "incollection":
                 # ── 案例 81：`[C]//` 条目已解析到手的字段被静默丢掉 ──────────
@@ -1183,7 +1270,7 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
                 # 商务印书馆/北京一个字都没写（回读校验报告却还写「❗必补：booktitle」，
                 # 而它下一行贴出的源稿原文里明明有 —— 与第 66/68 条同一型事故）。
                 # 口径见 `_incollection_book_editor()` 的 docstring：宁缺勿编。
-                bt, ed = _incollection_book_editor(rest)
+                bt, ed = _chapter if _chapter[0] else _match_incollection(rest)
                 cpub, caddr = _incollection_pub_addr(rest)
                 if bt:
                     fields.append(("booktitle", escape_bib_value(bt)))
@@ -1195,7 +1282,26 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
                     fields.append(("publisher", escape_bib_value(cpub)))
                 if caddr:
                     fields.append(("address", escape_bib_value(caddr)))
+                # B-217② B2-2：章节页码（`pp. 46-62` → pages=46--62）
+                from .wordrefs import pages_from_rest
+
+                _pg = pages_from_rest(rest)
+                if _pg:
+                    fields.append(("pages", _pg))
+            elif _thesis:
+                # B-217②：学位论文 —— 引用库既有口径（`bib_db` 实测）：
+                # `@phdthesis/@mastersthesis` + `school=学校`；中文学位论文另有
+                # `address=学位类型`（英文条目引用库不写 address，不臆造）。
+                fields.append(("school", escape_bib_value(_thesis["school"])))
+                if _thesis.get("degree"):
+                    fields.append(("address", escape_bib_value(_thesis["degree"])))
             fields.append(("year", e.year))
+            # B-217②：网络资源 `http(s)://` → `url` 字段（不猜、原样保留；从 note
+            # 里删掉同一网址，避免印刷出现两遍）。无 URL 的条目逐字节不变。
+            from .wordrefs import strip_urls
+
+            if _urls:
+                fields.append(("url", escape_bib_value(_urls[0])))
             # P0-2 兜底：@article 但期刊卷期页没解析出来时，把 rest 原文塞进 note，
             # 不再静默丢（期 87 sub5 有 18 条 pages 丢失且无任何痕迹）。
             if etype == "article" and not any(k == "journal" for k, _ in fields) and rest:
@@ -1214,7 +1320,10 @@ def refs_to_bib(refs: list[RefEntry]) -> str:
             #     这是一个**尚未修**的数据损失（不是已修），独立于第 81 条的
             #     `[C]//` 字段丢失；留给下一步（改 note 口径时需同步 book/article 分支
             #     与冻结基线 `out/docx_audit.csv` 的字段统计）。
-            note = rest if not (pub or addr) else ""
+            # B-217②：学位论文已写 school/address 时不留重复 note（引用库无 note）。
+            note = rest if not (pub or addr or _thesis) else ""
+            if note and _urls:
+                note = strip_urls(note)
             if note:
                 fields.append(("note", escape_bib_value(note)))
 
@@ -1430,7 +1539,11 @@ _HEAD_CN_ARABIC = re.compile(r"^\d{1,2}(?:\s+|(?=[\u4e00-\u9fff]))(?P<t>\S.*)$")
 _HEAD_CN_DOT = re.compile(r"^\d{1,2}\.\s*(?P<t>[\u4e00-\u9fff]\S*)$")
 # 数字后紧跟这些字的多半不是标题（`20世纪…`、`2022年第6期…`），排除掉
 _HEAD_CN_BAD_TAIL = ("年", "月", "日", "世纪", "年代", "页", "卷", "期", "个", "种", "位", "条")
-_CN_HEAD_PUNCT = "。；，、：；！？,;:!?"
+# B-217⑦（B-215 模板实测）：`、` **不再一律拒绝**——「3 定理、引理与证明」是
+# 合格短标题（长度判据已在 `_is_cn_numbered_heading`：2–40 字）。句末标点
+# （。！？；）、逗号/冒号/西文标点仍拒绝；长标题超 40 字仍拒绝。
+# 默认路径：不含顿号的标题判定逐字节不变。
+_CN_HEAD_PUNCT = "。；，：；！？,;:!?"
 
 
 def _is_cn_numbered_heading(t: str) -> bool:
@@ -2572,7 +2685,8 @@ SHAPE_PLACEHOLDER = (
 )
 
 
-def table_env(tbl, idx: int, img_names: dict[str, str] | None = None) -> str:
+def table_env(tbl, idx: int, img_names: dict[str, str] | None = None,
+              caption: str | None = None) -> str:
     """把 Word 表格转成 LaTeX table + tabular。
 
     格式对齐人工成品惯例（见 Haiting_Huang / Yingying_Tang）：
@@ -2586,6 +2700,9 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None) -> str:
           \\caption{...}
           \\label{tab:...}
         \\end{table}
+
+    ``caption``（B-217③）：Word 题注段落解析出的说明文字（已转义）；``None`` 时
+    与从前逐字节相同（占位「【需补充表题】」）。
     """
     ncol = max(tbl.ncols, 1)
     # 单元格文字长（>18 字）的列改用 p{} 定宽，否则 \\hline 之间会被撑爆版心
@@ -2630,8 +2747,10 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None) -> str:
 
     if has_img:
         head = _row_tex(tbl.rows[0]) if tbl.rows else ""
+        _cap = f"\\caption{{{caption}}}" if caption is not None \
+            else "\\caption{【需补充表题】}"
         lines = ["\n\\begin{longtable}{" + colspec + "}",
-                 f"  \\caption{{【需补充表题】}}\\label{{tab:{idx}}}\\\\",
+                 f"  {_cap}\\label{{tab:{idx}}}\\\\",
                  "  \\hline", head, "  \\hline", "  \\endfirsthead",
                  "  \\hline", head, "  \\hline", "  \\endhead"]
         for r in tbl.rows[1:]:
@@ -2647,7 +2766,8 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None) -> str:
         lines.append(_row_tex(r))
         lines.append("  \\hline")
     lines.append("  \\end{tabular}")
-    lines.append("  \\caption{【需补充表题】}")
+    lines.append(f"  \\caption{{{caption}}}" if caption is not None
+                 else "  \\caption{【需补充表题】}")
     lines.append(f"  \\label{{tab:{idx}}}")
     lines.append("\\end{table}\n")
     return "\n".join(lines)
@@ -2687,11 +2807,14 @@ def render_cell(cell, img_names: dict[str, str] | None = None) -> str:
     return " ".join(p for p in parts if p).strip()
 
 
-def figure_env(names: list[str], idx: int) -> str:
+def figure_env(names: list[str], idx: int, caption: str | None = None) -> str:
     """生成 figure 环境。人工惯例见 07 Liangying_Zhao。
 
     同一段落里连续的图片**合成一个 figure**——实测 01 Yanjin_Chen 的 docx 里有
     5 张分开的图，人工是把它们合成一张 `p1.png` 放进一个 figure 的。
+
+    ``caption``（B-217③）：Word 题注段落解析出的说明文字（已转义）；``None`` 时
+    与从前逐字节相同（占位「【需补充图题】」）。
     """
     if not names:
         return ""
@@ -2706,7 +2829,8 @@ def figure_env(names: list[str], idx: int) -> str:
             lines.append("".join(
                 f"\\includegraphics[width={w:.2f}\\textwidth]{{{n}}}" for n in pair
             ))
-    lines.append("\\caption{【需补充图题】}")
+    lines.append(f"\\caption{{{caption}}}" if caption is not None
+                 else "\\caption{【需补充图题】}")
     lines.append(f"\\label{{fig:{idx}}}")
     lines.append("\\end{figure}\n")
     return "\n".join(lines)
@@ -2743,6 +2867,7 @@ def render_para(
     fig_counter: list[int] | None = None,
     c_class_union: bool = False,
     num2key: dict[int, str] | None = None,
+    fig_caption: str | None = None,
 ) -> tuple[str, list[str]]:
     """把一段 XML 片段渲染成 LaTeX。
 
@@ -2761,6 +2886,9 @@ def render_para(
                  **脚注文本里的裸 `[N]`**（`参见[12]。`）保守换成 `\\parencite{键}`
                  （判据见 `link_footnote_bare_citations`；越界/无引导语证据 → 原样 +
                  warning）。默认 None = 不做，与从前逐字节相同（正文裸编号不在本卡）。
+    fig_caption  **B-217③**：本段图对象对应的 Word 题注说明文字（已转义，调用方
+                 只在「题注与图片唯一相邻」时传）；本段第一个 figure 用它当
+                 `\\caption`，其余 figure/无题注保持占位。默认 None = 逐字节同从前。
 
     返回 (LaTeX, 提示列表)。
     """
@@ -2819,9 +2947,11 @@ def render_para(
             else:
                 fig_seq += 1
                 seq = fig_seq
-            out.append(figure_env(list(buf), seq))
+            cap, fig_cap_left[0] = fig_cap_left[0], None
+            out.append(figure_env(list(buf), seq, caption=cap))
             buf.clear()
 
+    fig_cap_left = [fig_caption]   # B-217③：题注只并入本段第一个 figure
     fig_buf: list[str] = []
     shape_buf: list[int] = []
     for seg in para.segs:
@@ -4115,12 +4245,31 @@ def parse_docx(path: str, quote_threshold: int = 105,
     start_block = pos_in_blocks.get(id(body_paras[0]), 0) if body_paras else len(blocks)
     end_block = pos_in_blocks.get(id(body_paras[-1]), len(blocks) - 1) + 1 if body_paras else len(blocks)
     seq_blocks = blocks[start_block:end_block]
+    # B-217③：Word 题注 → 图片/表格 `\caption`（判据与关联在 slcn/wordcaption.py）。
+    # 只认「题注段与图片/表格**唯一相邻**（±1 个非空块）」；关联失败/有歧义 →
+    # 保持现行为（占位 + 题注留正文）+ warning，绝不猜。
+    _cap_items: list[dict] = []
+    for _b in seq_blocks:
+        if isinstance(_b, Table):
+            _cap_items.append({"caption": None, "figure": False,
+                               "table": True, "blank": False})
+            continue
+        _fig = _is_figure_para(_b, img_names)
+        _cap_items.append({"caption": _caption_candidate(_b), "figure": _fig,
+                           "table": False,
+                           "blank": not _b.plain.strip() and not _fig})
+    _cap_by_idx, _cap_skip, _cap_warns = _find_captions(_cap_items)
+    doc.warnings.extend(_cap_warns)
     idx = -1
     for para in seq_blocks:
         idx += 1
+        if idx in _cap_skip:
+            continue                     # 题注已并入 \caption：不再残留正文
         if isinstance(para, Table):
             tab_idx += 1
-            out.append(table_env(para, tab_idx, img_names))
+            _tc = _cap_by_idx.get(idx)
+            out.append(table_env(para, tab_idx, img_names,
+                                 caption=escape_latex(_tc["text"]) if _tc else None))
             doc.warnings.append(
                 f"表格 {tab_idx}：{para.nrows} 行 × {para.ncols} 列已转为 tabular"
                 + ("（含合并单元格，请核对）" if para.merged else "")
@@ -4150,9 +4299,11 @@ def parse_docx(path: str, quote_threshold: int = 105,
             continue
         if any(idx > k and idx < k + c for k, c in fig_marks.items()):
             continue  # 已被上一张图的占位吸收
+        _fc = _cap_by_idx.get(idx)
         latex, notes = render_para(para, fn_objs, doc.bib_entries, keymap, fn_pages,
                                    quote_threshold, img_names, fig_counter=fig_counter,
-                                   c_class_union=c_class_union, num2key=fn_num2key)
+                                   c_class_union=c_class_union, num2key=fn_num2key,
+                                   fig_caption=escape_latex(_fc["text"]) if _fc else None)
         doc.warnings.extend(notes)
         if not latex.strip():
             continue
@@ -4269,17 +4420,10 @@ def _normalize_locator(tail: str) -> str:
 # B-137（批75，B-130 残余）：同句引导语继承/枚举续引——见下方 `_FN_*` 常量与
 # `link_footnote_bare_citations` 的 docstring；每处 N 仍独立校验映射与越界。
 _FN_BARE_NUM_RE = re.compile(r"\[\s*(\d{1,3})\s*\]")
-#: 引导语紧贴在 `[N]` 前（`参见[12]` / `详见[3]` / `可参考[16]`）
-_FN_LEAD_NEAR_RE = re.compile(
-    r"(?:参见|参看|详见|另见|又见|亦见|并见|转引自|引自|参见文献|参照|参考|"
-    r"参考文献|参考书目|例如)\s*$")
-#: 引导语在同一句里用 ≤12 字隔开（`参见吉尔伯特在[13]的批评`）；`见`/`据` 只在
-#: 句读/空白边界后算证据（避免「意见[3]」「数据[3]」这类词内误伤）。
-_FN_LEAD_FAR_RE = re.compile(
-    r"(?:^|[。！？；：，、\s“”「」『』（）()])"
-    r"(?:参见|参看|详见|另见|又见|亦见|并见|转引自|引自|参见文献|参照|参考|"
-    r"参考文献|参考书目|例如|见|据)"
-    r"[^。！？；\n]{0,12}$")
+#: B-217：引导语判据（`_FN_LEAD_NEAR_RE` / `_FN_LEAD_FAR_RE`）与位置判据
+#: （`_fn_in_paren_depths` / `_fn_in_math`）已抽到 `slcn/wordcite.py`——正文通道
+#: （`link_body_cue_citations`）与脚注通道共用**同一份**判据（LEAD-LESSONS §4
+#: 重复实现零容忍）；本文件顶部 import 保持既有名字，行为与从前逐字节相同。
 
 # ── B-137（批75）：同句引导语继承（枚举/续引）──────────────────────────────────
 # 现象（B-130 残余）：同一脚注里只有一个引导语、随后用 `；`/`，` 续列多个编号时，
@@ -4323,46 +4467,6 @@ def _fn_inherit_gap_ok(gap: str) -> bool:
             continue
         return False
     return True
-
-
-def _fn_in_paren_depths(text: str) -> list[int]:
-    """每个字符位置之前的**括号深度**（全角/半角都算）——判 `[N]` 是否被括号包裹。"""
-    depth = 0
-    out = [0] * (len(text) + 1)
-    for i, ch in enumerate(text):
-        out[i] = depth
-        if ch in "（(":
-            depth += 1
-        elif ch in "）)" and depth > 0:
-            depth -= 1
-    out[len(text)] = depth
-    return out
-
-
-def _fn_in_math(text: str) -> list[bool]:
-    """每个字符位置是否在 `$…$` 数学里（`\\$` 是转义美元符，不算分隔符）。
-
-    含公式的脚注走 `note_latex`（数学原样 `$…$`）——数学里的 `[3]` 是区间/下标之类，
-    **不是**文献编号，绝不能替换（否则会产出 `$\\parencite{…}$` 这种坏 LaTeX）。
-    """
-    out = [False] * (len(text) + 1)
-    in_math = False
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch == "\\" and i + 1 < len(text):
-            out[i] = in_math
-            out[i + 1] = in_math
-            i += 2
-            continue
-        if ch == "$":
-            out[i] = in_math          # 分隔符本身算「外侧」
-            in_math = not in_math
-        else:
-            out[i] = in_math
-        i += 1
-    out[len(text)] = in_math
-    return out
 
 
 def link_footnote_bare_citations(
@@ -4418,7 +4522,7 @@ def link_footnote_bare_citations(
                 f"脚注内编号 [{num}] 不在文末清单编号范围（1..{hi}）内，已原样保留"
                 f"（不猜）：「…{snippet}…」")
             continue
-        lead = bool(_FN_LEAD_NEAR_RE.search(pre) or _FN_LEAD_FAR_RE.search(pre))
+        lead = _cue_evidence(pre)     # B-217：与正文通道同一份引导语判据
         inherit = (
             anchor >= 0 and not lead
             and _fn_inherit_gap_ok(text[anchor:s])
@@ -4483,6 +4587,11 @@ def link_numbered_citations(
     但**各自带页码时不能合并**，人工成品的写法是
     `（\parencite{a26}；\parencite{a27}，第245--253页）`。
     编号前的引导语（`（见[3]）`）保留在命令前面。
+
+    B-217①：括号组**之外**的「引导语 + 裸编号」也走本函数（`参见文献[4]`、
+    `参看[5，6]`、`详见[7]第8–12 页`、`引自[8]`）——只换编号本身为
+    `\parencite{键}`，引导语/页码定位原样保留；判据与反例见
+    `slcn/wordcite.py: link_body_cue_citations`（编号越界 → 原样 + warning）。
 
     返回 (新正文, 转换处数, 问题清单)。编号超出清单范围的原样保留并记一条问题。
     """
@@ -4561,7 +4670,16 @@ def link_numbered_citations(
         return f"（{tail_pre}" + "；".join(parts) + "）"
 
     grp = _GRP_EN if is_en else _GRP_CN
-    return grp.sub(repl, body), n_done, issues
+    new_body = grp.sub(repl, body)
+    # B-217①：括号组之外的「引导语 + 裸编号」（参见文献[4] / 参看[5，6] /
+    # 详见[7]第8–12 页 / 引自[8]）→ `\parencite`（判据在 slcn/wordcite.py，
+    # 与脚注通道共用同一份引导语判据）。括号组已由上面的 pass 处理：转换过的
+    # 已无 `[N]`；未转换的仍在括号内 → 下面按括号深度跳过（不重复转/warning）。
+    # 脚注参数里的裸编号归 `link_footnote_bare_citations`，本通道不越界。
+    new_body, n_cue, cue_issues = _link_body_cue_citations(
+        new_body, num2key, lang, _en_locator_cmd)
+    issues.extend(cue_issues)
+    return new_body, n_done + n_cue, issues
 
 
 def _en_locator_cmd(cmd: str, loc: str) -> str:

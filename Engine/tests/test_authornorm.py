@@ -357,6 +357,27 @@ else:
     SKIPS.append("真实成品 reference.bib 不存在")
 
 # ══ ⑥ 英文作者名规范：SURNAME Given → Given Surname（期90/05 Beibei_Gao）════
+
+# ── ⑤b B-217②：中文学位论文（编号清单 → entry_to_bib 防御性补齐）────────────
+_bib_phd = entry_to_bib("Wu2009", {"_type": "phdthesis", "author": "吴梅红",
+                                   "title": "基于动态认知逻辑的多主体系统知识推理研究",
+                                   "school": "厦门大学", "address": "博士论文",
+                                   "year": "2009", "userf": "cn"})
+check("⑤b @phdthesis：school/address 落位（引用库口径：address=学位类型）",
+      "@phdthesis{Wu2009," in _bib_phd and "school" in _bib_phd
+      and "厦门大学" in _bib_phd and "address" in _bib_phd and "博士论文" in _bib_phd,
+      _bib_phd)
+_bib_mas = entry_to_bib("Li2015", {"_type": "mastersthesis", "author": "李四",
+                                   "title": "某理论研究", "school": "北京大学",
+                                   "address": "硕士学位论文", "year": "2015", "userf": "cn"})
+check("⑤b @mastersthesis：school/address 落位",
+      "@mastersthesis{Li2015," in _bib_mas and "school" in _bib_mas
+      and "硕士学位论文" in _bib_mas, _bib_mas)
+from slcn import footnotes as _fn_mod  # noqa: E402
+check("⑤b _TYPE_ORDER 含 phdthesis/mastersthesis/thesis（不再降级 @misc）",
+      {"phdthesis", "mastersthesis", "thesis"} <= set(_fn_mod._TYPE_ORDER)
+      if _fn_mod is not None else True)
+
 from slcn.naming import normalize_english_author  # noqa: E402
 check("⑥ GAO Bei-bei（有中文名 高贝贝）→ Beibei Gao",
       normalize_english_author("GAO Bei-bei", "高贝贝") == "Beibei Gao",

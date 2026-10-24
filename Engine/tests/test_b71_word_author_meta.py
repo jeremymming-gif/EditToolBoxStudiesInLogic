@@ -397,6 +397,163 @@ check("⑧ parse_fund_line 取内容且不吞标签", _fund == "国家社科基�
 check("⑧ parse_fund_line 对正文句子不命中（不以标签开头）",
       footnotes.parse_fund_line("本文基金项目：参见附注。") == "")
 
+# ── ⑨ B-217 ④⑥：英文作者块（与中文作者信息**同源**判据）──────────────────
+print("\n── ⑨ B-217 ④⑥：EN 作者块「姓名, 单位, E-mail」──")
+_EN_INFO = ("San Zhang, Department of Philosophy, Example University, "
+            "E-mail: zhangsan@example.edu\n"
+            "Si Li, Department of Philosophy, Example University, "
+            "E-mail: lisi@example.edu\n"
+            "Wu Wang, School of Philosophy, Example University, "
+            "E-mail: wangwu@example.edu\n"
+            "Acknowledgements: Please insert grants here, or delete this line.")
+_en = footnotes.parse_author_info(_EN_INFO, known_cn=("San", "Zhang", "Li"),
+                                  known_en=())
+_en_a = (_en or {}).get("authors") or []
+check("⑨ EN 三作者块解析出 3 位（不依赖已知名单）", len(_en_a) == 3, f"{_en}")
+check("⑨ 姓名/单位/邮箱逐作者落位",
+      [r.get("name_en") for r in _en_a] == ["San Zhang", "Si Li", "Wu Wang"]
+      and _en_a[1].get("affiliation_en") == ["Department of Philosophy, Example University"]
+      and _en_a[2].get("affiliation_en") == ["School of Philosophy, Example University"]
+      and _en_a[1].get("email") == "lisi@example.edu", f"{_en_a}")
+check("⑨ 尾部 Acknowledgements 行不进作者块",
+      all("Acknowledg" not in "".join(r.get("affiliation_en") or []) for r in _en_a),
+      f"{_en_a}")
+_en_old = footnotes.parse_author_info(
+    "San Zhang Department of Philosophy, Example University "
+    "E-mail: zhangsan@example.edu")
+check("⑨ 旧格式「姓名 单位…」（无姓后逗号）也识别",
+      bool(_en_old) and _en_old["authors"][0].get("name_en") == "San Zhang"
+      and _en_old["authors"][0].get("email") == "zhangsan@example.edu",
+      f"{_en_old}")
+check("⑨ 反例：英文文献脚注不误判（年份/引号/期刊名）",
+      footnotes.parse_author_info(
+          "P. Benacerraf, 1981, “Frege: The last logicist”, Midwest Studies in "
+          "Philosophy 5, pp. 1–20.") is None)
+check("⑨ 反例：单作者无邮箱不认（宁 fail 不误判）",
+      footnotes.parse_author_info(
+          "San Zhang, Department of Philosophy, Example University") is None)
+
+
+def _macro_value(tex, name):
+    """取模板里 `\\newcommand{\\name}` 的 `{…}` 值（花括号配平）。"""
+    ms = list(re.finditer(r"\\(?:re)?newcommand\{\\" + name + r"\}", tex))
+    if not ms:
+        return ""
+    m = ms[-1]                       # 后定义生效（模板里先 null 后 renewcommand）
+    i = tex.find("{", m.end())
+    if i < 0:
+        return ""
+    depth = 0
+    j = i
+    while j < len(tex):
+        if tex[j] == "{":
+            depth += 1
+        elif tex[j] == "}":
+            depth -= 1
+        j += 1
+        if depth == 0:
+            break
+    return tex[i + 1:j - 1]
+
+
+_TPL_DIR = os.path.join(os.path.dirname(_ENGINE), "docs", "public", "templates")
+_EN_DOCX = os.path.join(_TPL_DIR, "SLCN-submission-template-en.docx")
+_CN_DOCX = os.path.join(_TPL_DIR, "SLCN-submission-template-cn.docx")
+check("⑨ 公开仓英文/中文模板 docx 存在（端到端夹具）",
+      os.path.isfile(_EN_DOCX) and os.path.isfile(_CN_DOCX), _TPL_DIR)
+
+with tempfile.TemporaryDirectory() as _tmp:
+    _res_en = build.build_docx(docx_path=_EN_DOCX, out_dir=os.path.join(_tmp, "en"),
+                               basename="Case", lang="en", verbose=False)
+    _tex_en = open(_res_en.tex_path, encoding="utf-8").read()
+check("⑨ EN 模板：三作者槽位 = San Zhang / Si Li / Wu Wang",
+      _macro_value(_tex_en, "myfirstauthor").strip() == "San Zhang"
+      and _macro_value(_tex_en, "mysecondauthor").strip() == "Si Li"
+      and _macro_value(_tex_en, "mythirdauthor").strip() == "Wu Wang",
+      repr((_macro_value(_tex_en, "myfirstauthor"),
+            _macro_value(_tex_en, "mysecondauthor"))))
+check("⑨ EN 模板：一作单位/邮箱 = 单人值（不再是三人合并）",
+      _macro_value(_tex_en, "myfirstaffiliation").strip()
+      == "Department of Philosophy, Example University"
+      and _macro_value(_tex_en, "myfirstemail").strip() == "zhangsan@example.edu",
+      repr(_macro_value(_tex_en, "myfirstaffiliation")))
+check("⑨ EN 模板：二/三作者单位与邮箱",
+      "Si Li" in _tex_en and "lisi@example.edu" in _tex_en
+      and "wangwu@example.edu" in _tex_en
+      and _macro_value(_tex_en, "mythirdaffiliation").strip()
+      == "School of Philosophy, Example University")
+
+# ── ⑩ B-217 ⑤：CN 一作单位 bug（姓名一致时才覆盖 legacy 合并值）──────────
+print("\n── ⑩ B-217 ⑤：CN 一作单位覆盖 legacy 合并值 ──")
+with tempfile.TemporaryDirectory() as _tmp:
+    _res_cn = build.build_docx(docx_path=_CN_DOCX, out_dir=os.path.join(_tmp, "cn"),
+                               basename="Case", lang="zh", verbose=False)
+    _tex_cn = open(_res_cn.tex_path, encoding="utf-8").read()
+check("⑤ CN 模板：myfirstaffiliation 只剩第一作者单位（不再三人合并）",
+      _macro_value(_tex_cn, "myfirstaffiliation").strip() == "中山大学哲学系",
+      repr(_macro_value(_tex_cn, "myfirstaffiliation")))
+check("⑤ CN 模板：myfirstaffiliationEN 只剩第一作者英文单位",
+      _macro_value(_tex_cn, "myfirstaffiliationEN").strip()
+      == "Department of Philosophy, Example University",
+      repr(_macro_value(_tex_cn, "myfirstaffiliationEN")))
+check("⑤ CN 模板：第二作者单位/邮箱保持正确（只填空不覆盖不变）",
+      _macro_value(_tex_cn, "mysecondaffiliation").strip() == "北京大学哲学系"
+      and _macro_value(_tex_cn, "mysecondemail").strip() == "lisi@example.edu.cn")
+_orig_parse = footnotes.parse_author_info
+try:
+    footnotes.parse_author_info = lambda *a, **k: None      # 关闭新解析 = 旧行为
+    with tempfile.TemporaryDirectory() as _tmp:
+        _res_oldcn = build.build_docx(docx_path=_CN_DOCX,
+                                      out_dir=os.path.join(_tmp, "old"),
+                                      basename="Case", lang="zh", verbose=False)
+        _tex_oldcn = open(_res_oldcn.tex_path, encoding="utf-8").read()
+finally:
+    footnotes.parse_author_info = _orig_parse
+check("⑤ 反例：关闭 author_meta 解析 → 恢复旧行为（三单位合并）",
+      "北京大学哲学系" in _macro_value(_tex_oldcn, "myfirstaffiliation"),
+      repr(_macro_value(_tex_oldcn, "myfirstaffiliation")))
+_TPL_CN_TEX = os.path.join(os.path.dirname(_ENGINE), "编辑笔记", "模板文件",
+                           "CN_template.tex")
+from slcn.latex import parse_macros as _parse_macros  # noqa: E402
+_tpl_cn_text = open(_TPL_CN_TEX, encoding="utf-8").read()
+_tpl_cn_fields = set(_parse_macros(_tpl_cn_text))
+_tpl_cn_defs = build.template_defaults(_tpl_cn_text)
+_am = [{"name": "张三", "name_en": "", "affiliation_cn": ["中山大学哲学系"],
+        "affiliation_en": ["Department of Philosophy, Example University"],
+        "email": "zhangsan@example.edu.cn"}]
+_fv = {"myfirstauthor": "\\kaishu 张三",
+       "myfirstaffiliation": "中山大学哲学系\\\\ 北京大学哲学系",
+       "myfirstaffiliationEN": "Dept A\\\\ Dept B",
+       "myfirstemail": "old@example.edu"}
+_w0 = []
+_ov = build._source_author_meta_fields(_am, _fv, _tpl_cn_fields, _tpl_cn_defs,
+                                       warnings=_w0)
+check("⑤ 姓名一致 → 一作单位/邮箱以 author_meta[0] 覆盖 legacy",
+      _ov.get("myfirstaffiliation") == "中山大学哲学系"
+      and _ov.get("myfirstaffiliationEN") == "Department of Philosophy, Example University"
+      and _ov.get("myfirstemail") == "zhangsan@example.edu.cn", f"{_ov}")
+_fv2 = dict(_fv, myfirstauthor="\\kaishu 李四")
+_w2 = []
+_ov2 = build._source_author_meta_fields(_am, _fv2, _tpl_cn_fields, _tpl_cn_defs,
+                                        warnings=_w2)
+check("⑤ 反例：姓名不一致 → 不覆盖 + warning",
+      "myfirstaffiliation" not in _ov2 and "myfirstemail" not in _ov2
+      and any("姓名不一致" in x for x in _w2), f"{_ov2} / {_w2}")
+_w3 = []
+_ov3 = build._source_author_meta_fields(
+    _am, _fv, _tpl_cn_fields, _tpl_cn_defs,
+    skip={"myfirstaffiliation", "myfirstemail"}, warnings=_w3)
+check("⑤ 反例：人工覆盖（--affiliation-cn/--email）优先，不被 author_meta 覆盖",
+      "myfirstaffiliation" not in _ov3 and "myfirstemail" not in _ov3, f"{_ov3}")
+# 默认路径：无作者信息脚注的稿件，新旧实现产物逐字节同
+_p10 = make_docx(body_paras("测试题名十", "钱七", affil="某某大学哲学系"),
+                 footnotes_=[["这里是一条普通说明性脚注。"]])
+_tex10n, _bib10n = build_case(_p10)
+_tex10o, _bib10o = build_case(_p10, disable_author_info=True)
+check("⑤/④ 反例：无作者信息脚注 → 产物与旧行为逐字节同（tex+bib）",
+      _tex10n == _tex10o and _bib10n == _bib10o,
+      f"{len(_tex10n)} vs {len(_tex10o)}")
+
 # ── 汇总 ────────────────────────────────────────────────────────────────
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

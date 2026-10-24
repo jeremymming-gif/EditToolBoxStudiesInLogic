@@ -37,6 +37,8 @@ for _p in (str(_ENGINE), str(_ENGINE / "vendor")):
 
 from slcn.docxsource import (  # noqa: E402
     _auto_numbered_ref_items,
+    _is_cn_dot_heading,
+    _is_cn_numbered_heading,
     link_numbered_citations,
     parse_docx,
 )
@@ -253,6 +255,87 @@ with tempfile.TemporaryDirectory(prefix="slcn_b68_") as _td:
           d_pos_off.body == d_pos_on.body
           and d_pos_off.ref_raw_lines == d_pos_on.ref_raw_lines
           and "\\parencite" not in d_pos_on.body)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑤ B-217①：正文「引导语 + 裸编号」→ \parencite（判据在 slcn/wordcite.py，
+#    与脚注通道共用同一份引导语判据；括号组内归既有通道，不重复转）
+# ══════════════════════════════════════════════════════════════════════════
+print("── ⑤ B-217① 正文引导语 + 裸编号 ──")
+_M = {3: "K3", 4: "K4", 5: "K5", 6: "K6", 7: "K7", 8: "K8"}
+for _src, _want in (
+    ("参见文献[4]", "参见文献\\parencite{K4}"),
+    ("参看[5，6]", "参看\\parencite{K5,K6}"),
+    ("详见[7]第8–12 页", "详见\\parencite{K7}第8–12 页"),
+    ("引自[8]", "引自\\parencite{K8}"),
+):
+    _out, _n, _iss = link_numbered_citations(_src, _M, "zh")
+    check(f"⑤ 正例：{_src}", _out == _want and _n == 1 and _iss == [],
+          repr((_out, _n, _iss)))
+_out, _n, _iss = link_numbered_citations("（见[3]）", _M, "zh")
+check("⑤ 正例：（见[3]）由既有括号通道处理（不重复转）",
+      _out == "（见\\parencite{K3}）" and _n == 1, repr(_out))
+for _src in ("[3]", "枚举[3] [4]", "区间[3,4]形态", "规则[3]条"):
+    _out, _n, _iss = link_numbered_citations(_src, _M, "zh")
+    check(f"⑤ 反例：{_src} 不转、原样", _out == _src and _n == 0 and _iss == [],
+          repr((_out, _n, _iss)))
+_out, _n, _iss = link_numbered_citations("参见[99]", _M, "zh")
+check("⑤ 反例：越界 [99] 原样 + warning（不猜）",
+      _out == "参见[99]" and _n == 0 and bool(_iss) and "1..8" in _iss[0],
+      repr((_out, _n, _iss)))
+_out, _n, _iss = link_numbered_citations("参见$[3]$", _M, "zh")
+check("⑤ 反例：公式里的 [3] 不转", _out == "参见$[3]$" and _n == 0, repr(_out))
+_out, _n, _iss = link_numbered_citations("参见\\footnote{见[3]}", _M, "zh")
+check("⑤ 反例：脚注参数里的裸编号归脚注通道（正文通道不越界）",
+      _out == "参见\\footnote{见[3]}" and _n == 0, repr(_out))
+_out, _n, _iss = link_numbered_citations("参见[4], p. 33", _M, "en")
+check("⑤ 英文体例：定位写进可选参数 \\parencite[p.~33]{K4}",
+      _out == "参见\\parencite[p.~33]{K4}" and _n == 1, repr(_out))
+
+# ══ ⑤b B-217① F4：英文引导语（见 see / cf. / see also；仅 lang=en 生效）══
+print("\n── ⑤b B-217① F4 英文引导语（lang=en）──")
+for _src, _want in (
+    ("see [4].", "see \\parencite{K4}."),
+    ("cf. [5]", "cf. \\parencite{K5}"),
+    ("see also [6]", "see also \\parencite{K6}"),
+    ("cited in [7]", "cited in \\parencite{K7}"),
+    ("no parentheses: see [8]", "no parentheses: see \\parencite{K8}"),
+):
+    _out, _n, _iss = link_numbered_citations(_src, _M, "en")
+    check(f"⑤b 英文正例：{_src}", _out == _want and _n == 1 and _iss == [],
+          repr((_out, _n, _iss)))
+_out, _n, _ = link_numbered_citations("see [4] [5].", _M, "en")
+check("⑤b 反例（en）：枚举第二个编号不转（只转引导语紧邻的那个）",
+      _out == "see \\parencite{K4} [5]." and _n == 1, repr(_out))
+_out, _n, _ = link_numbered_citations("the element [4] is missing.", _M, "en")
+check("⑤b 反例（en）：无引导语裸编号不转", _out == "the element [4] is missing." and _n == 0,
+      repr(_out))
+_out, _n, _ = link_numbered_citations("see [4].", _M, "zh")
+check("⑤b 反例（zh 默认路径）：英文引导语不生效、原样", _out == "see [4]." and _n == 0,
+      repr(_out))
+_out, _n, _iss = link_numbered_citations("参考文献\n[4] 张三。关于测试文献的说明[J].", _M, "zh")
+check("⑤b 反例：正文「参考文献」标题行不是引导语（B-217 验收回归）",
+      _out == "参考文献\n[4] 张三。关于测试文献的说明[J]." and _n == 0, repr(_out))
+_out, _n, _ = link_numbered_citations("参见文献[4]", _M, "zh")
+check("⑤b 正例（zh）：参见文献[4] → 参见文献\\parencite{K4}",
+      _out == "参见文献\\parencite{K4}" and _n == 1, repr(_out))
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ B-217⑦：短标题含顿号不再整节降级（长/含句末标点仍拒绝）
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑥ B-217⑦ 标题顿号容错 ──")
+check("⑥ 正例：「定理、引理与证明」→ 标题", _is_cn_numbered_heading("定理、引理与证明"))
+check("⑥ 正例：点式「3. 定理、引理与证明」同样放行",
+      _is_cn_dot_heading("3. 定理、引理与证明"))
+check("⑥ 反例：含句末标点仍拒绝", not _is_cn_numbered_heading("定理、引理与证明。"))
+check("⑥ 反例：含逗号/分号仍拒绝",
+      not _is_cn_numbered_heading("定理，引理与证明")
+      and not _is_cn_numbered_heading("定理；引理与证明"))
+check("⑥ 反例：超 40 字仍拒绝",
+      not _is_cn_numbered_heading("定理与引理" * 9))
+check("⑥ 反例：不含顿号的既有判定不变",
+      _is_cn_numbered_heading("定理与证明")
+      and not _is_cn_numbered_heading("定理与证明。"))
 
 print()
 print("=" * 78)

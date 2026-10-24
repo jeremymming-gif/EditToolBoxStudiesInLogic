@@ -114,7 +114,8 @@ STEIN_BIB = (
     "  title     = {The Normative Status of Logic},\n"
     "  booktitle = {The Stanford Encyclopedia of Philosophy},\n"
     "  editor    = {Zalta, E N. and Nodelman, U},\n"
-    "  year      = {2022}\n"
+    "  year      = {2022},\n"
+    "  url       = {https://plato.stanford.edu/archives/win2022/entries/logic-normative/}\n"
     "}\n"
 )
 _sb = bib_of(STEIN)
@@ -123,9 +124,9 @@ check("② booktitle = The Stanford Encyclopedia of Philosophy（不是编者串
       "booktitle = {The Stanford Encyclopedia of Philosophy}" in _sb)
 check("② editor = 编者倒装规范化（`&` → `and`）",
       "editor    = {Zalta, E N. and Nodelman, U}" in _sb)
-check("② URL 没有被当成出版信息（不写 address/publisher）",
-      "address" not in _sb and "publisher" not in _sb and "//plato" not in _sb
-      and "https" not in _sb)
+check("② URL 没有被当成出版信息（不写 address/publisher；B-217② 起进 url 字段）",
+      "address" not in _sb and "publisher" not in _sb
+      and "url       = {https://plato.stanford.edu/" in _sb)
 
 # ══ ③ 反例 1：`[M]` / `[J]` 不许有 booktitle ════════════════════════════════
 print("\n── ③ 反例 1：`[M]` / `[J]` 与 booktitle 无关 ──")
@@ -319,6 +320,34 @@ for _f in TMP:
         os.unlink(_f)
     except OSError:
         pass
+
+
+# ══ B-217②：英文编著章节 `in … (ed./eds.), Book, pp. a–b, Place: Publisher` ════
+print("\n── B-217② 英文编著章节扩展（in / (eds.) / et al. / 反例）──")
+IN_EDS = ("Smith, J. 2020. A Chapter[C]// in Doe, K. and Roe, R. (eds.), "
+          "The Big Book of Logic, pp. 1–20, Oxford: Oxford University Press.")
+_ib = bib_of(IN_EDS)
+check("②b 正例：in … (eds.), Book, pp. a–b, Place: Publisher → booktitle/editor/出版信息",
+      "booktitle = {The Big Book of Logic}" in _ib
+      and "editor" in _ib and "Doe" in _ib
+      and "publisher = {Oxford University Press}" in _ib
+      and "address" in _ib and "Oxford" in _ib, repr(_ib))
+ETAL = ("Smith, J. 2020. A Chapter[C]// in Doe et al. (eds.), Handbook of Things, "
+        "pp. 3–9, London: Routledge.")
+_eb = bib_of(ETAL)
+check("②b 正例：`et al.`/多编者变体 → booktitle + editor",
+      "booktitle = {Handbook of Things}" in _eb and "editor" in _eb, repr(_eb))
+NOED = ("Smith, J. 2020. A Chapter[C]// in (eds.), Orphan Book, pp. 1–2.")
+_nb = bib_of(NOED)
+check("②b 反例：`in (eds.)` 没写编者 → 只写书名、不猜 editor 名",
+      "booktitle = {Orphan Book}" in _nb and "editor" not in _nb
+      and "editor = {in}" not in _nb, repr(_nb))
+URLBOOK = ("Smith, J. 2020. A Chapter[C]// in Doe, K. (ed.), "
+           "https://example.org/chapter, pp. 1–2.")
+_ub = bib_of(URLBOOK)
+check("②b 反例：书名位置是 URL → 不写 booktitle（不猜）",
+      "booktitle" not in _ub, repr(_ub))
+check("②b 反例：中文 `[C]//` 形态逐字节走旧路径", bib_of(TARSKI) == TARSKI_BIB)
 
 print()
 if SKIPS:

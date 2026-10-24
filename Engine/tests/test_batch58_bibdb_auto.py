@@ -387,6 +387,123 @@ def test_helper(tmp: str, env_db: dict, source: str, bib: str) -> None:
         os.environ.update(old_env)
 
 
+# ── ⑧ B-217：引用库**默认回填**（--no-bibdb-apply 回退旧只读口径）──────────
+#
+# 用户 2026-10-24 拍板：命中 HIT_SAFE → 默认只补缺失字段（journal/volume/number/
+# pages/booktitle/editor/publisher/address），出 before/after 清单；候选/未命中不动；
+# `--no-bibdb-apply` 关闭后产物/日志**逐字节**等于旧行为。
+_BIB_MISSING = """@article{Quine1970,
+  author  = {Quine, W. V. O.},
+  title   = {Philosophy of Logic},
+  pages   = {9--9},
+  year    = {1970},
+}
+
+@article{KeyHitOnly,
+  author = {Doe, Jane},
+  title  = {A Totally Different Manuscript Title About Other Things},
+  year   = {1999},
+}
+"""
+
+
+def _read_bib(out_dir: str) -> str:
+    p = os.path.join(out_dir, "Test_Author", "reference.bib")
+    return open(p, encoding="utf-8", errors="replace").read() if os.path.isfile(p) else ""
+
+
+def test_default_apply(tmp: str, env_db: dict, env_nodb: dict,
+                       source: str) -> None:
+    from slcn import bibdbapply  # noqa: E402
+
+    src_dir = os.path.dirname(source)
+    bib2 = write(os.path.join(src_dir, "missing_fields.bib"), _BIB_MISSING)
+    lib = os.path.join(tmp, "notes", "bib_db", "bibliography.jsonl")
+    lib_sha = sha(lib)
+
+    out_on = os.path.join(tmp, "apply", "out")
+    out_off = os.path.join(tmp, "apply_off", "out")
+    out_silent = os.path.join(tmp, "apply_silent", "out")
+    r_on = run_convert(out_on, [], env=env_db, source=source, bib=bib2)
+    r_off = run_convert(out_off, ["--no-bibdb-apply"], env=env_db,
+                        source=source, bib=bib2)
+    r_silent = run_convert(out_silent, ["--no-bibdb-verify"], env=env_db,
+                           source=source, bib=bib2)
+    bib_on, bib_off = _read_bib(out_on), _read_bib(out_off)
+    check("⑧-1 默认回填：退出 0", r_on.returncode == 0,
+          (r_on.stdout + r_on.stderr)[-400:])
+    check("⑧-2 默认回填日志：命中 1 / 候选 1 / 未命中 1 + 回填 1 条 / 2 项",
+          "默认回填 1 条 / 2 项" in r_on.stdout and "命中 1 / 候选 1" in r_on.stdout,
+          r_on.stdout[-600:])
+    check("⑧-3 只补缺失字段：journal=Mind、volume=79",
+          "journal = {Mind}" in bib_on and "volume = {79}" in bib_on, bib_on)
+    check("⑧-4 已有非空字段不覆盖（pages 仍是稿件值，不是库值 1--20）",
+          "pages" in bib_on and "9--9" in bib_on
+          and "pages = {1--20}" not in bib_on, bib_on)
+    check("⑧-5 候选条目不动（KeyHitOnly 字段体不变）",
+          "A Totally Different Manuscript Title About Other Things" in bib_on
+          and "KeyHitOnly" in bib_on)
+    check("⑧-6 回填核对清单写出 before/after（沿用参考文献核对体例）",
+          os.path.isfile(os.path.join(out_on, "Test_Author",
+                                      "Test_Author_参考文献核对.txt"))
+          and "引用库回填" in open(os.path.join(
+              out_on, "Test_Author", "Test_Author_参考文献核对.txt"),
+              encoding="utf-8").read()
+          and "journal：（缺失）→ Mind" in open(os.path.join(
+              out_on, "Test_Author", "Test_Author_参考文献核对.txt"),
+              encoding="utf-8").read())
+    check("⑧-7 默认回填不改输入 .bib / 不写引用库",
+          sha(bib2) == sha(write(os.path.join(src_dir, "missing_fields.bib"),
+                                 _BIB_MISSING))
+          and sha(lib) == lib_sha)
+    check("⑧-8 --no-bibdb-apply：旧只读口径（汇总行「只读，不改产物」、无回填）",
+          r_off.returncode == 0 and "只读，不改产物" in r_off.stdout
+          and "默认回填" not in r_off.stdout, r_off.stdout[-500:])
+    check("⑧-9 --no-bibdb-apply：产物逐字节 = --no-bibdb-verify（都不写）",
+          snapshot(os.path.join(out_off, "Test_Author"))
+          == snapshot(os.path.join(out_silent, "Test_Author")))
+    check("⑧-10 --no-bibdb-apply：不写回填清单",
+          not os.path.isfile(os.path.join(out_off, "Test_Author",
+                                          "Test_Author_参考文献核对.txt"))
+          or "引用库回填" not in open(os.path.join(
+              out_off, "Test_Author", "Test_Author_参考文献核对.txt"),
+              encoding="utf-8").read())
+    _nod = os.path.join(tmp, "apply_nodb", "out")
+    shutil.rmtree(_nod, ignore_errors=True)
+    _r_nod_on = run_convert(_nod, [], env=env_nodb, source=source, bib=bib2)
+    shutil.rmtree(_nod, ignore_errors=True)
+    _r_nod_off = run_convert(_nod, ["--no-bibdb-apply"], env=env_nodb,
+                             source=source, bib=bib2)
+    check("⑧-11 无库时默认转换与 --no-bibdb-apply 日志逐字节同（静默零变化）",
+          _r_nod_on.returncode == 0 and _r_nod_on.stdout == _r_nod_off.stdout)
+
+    # helper 单测：候选不补 / 只补缺失 / 已有非空不覆盖 / 空值原位替换
+    entries = [("article", "K", " author = {A}, title = {T}, year = {2020}, ")]
+    safe_c = {"K": {"status": bibdb.HIT_CANDIDATE,
+                    "record": {"fields": {"journal": "J"}}}}
+    check("⑧-12 候选（低置信）不回填", bibdbapply.plan_fills(None, entries, safe_c) == [])
+    safe_s = {"K": {"status": bibdb.HIT_SAFE,
+                    "record": {"fields": {"journal": "J", "volume": "1"}}}}
+    _pl = bibdbapply.plan_fills(None, entries, safe_s)
+    check("⑧-13 安全命中只补缺失字段",
+          _pl and _pl[0]["fills"] == {"journal": "J", "volume": "1"}, f"{_pl}")
+    entries2 = [("article", "K",
+                 " author = {A}, journal = {Old}, title = {T}, year = {2020} ")]
+    _pl2 = bibdbapply.plan_fills(None, entries2, safe_s)
+    check("⑧-14 已有非空字段不覆盖",
+          _pl2 and _pl2[0]["fills"] == {"volume": "1"}, f"{_pl2}")
+    _raw = "@article{K,\n  author = {A},\n  journal = {},\n  year = {2020}\n}\n"
+    _new, _applied = bibdbapply.apply_text(
+        _raw, [{"etype": "article", "key": "K", "fills": {"journal": "J"}}])
+    check("⑧-15 空值字段原位替换（不产生重复字段）",
+          _new.count("journal") == 1 and "journal = {J}" in _new
+          and _new.replace("journal = {J}", "journal = {}") == _raw,
+          _new)
+    check("⑧-16 找不到的条目 / 未知类型 → 不动（fail-soft）",
+          bibdbapply.apply_text(_raw, [{"etype": "misc", "key": "NOPE",
+                                        "fills": {"journal": "J"}}]) == (_raw, []))
+
+
 # ── main ────────────────────────────────────────────────────────────────
 
 
@@ -411,6 +528,7 @@ def main() -> int:
         test_verify_paths(tmp, env_db, source, bib)
         test_degrade(tmp, env_nodb, source, bib)
         test_helper(tmp, env_db, source, bib)
+        test_default_apply(tmp, env_db, env_nodb, source)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print()

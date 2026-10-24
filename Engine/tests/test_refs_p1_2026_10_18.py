@@ -367,6 +367,116 @@ _b1 = docxsource.refs_to_bib([docxsource.parse_reference_line(_line)])
 _b2 = docxsource.refs_to_bib([docxsource.parse_reference_line(_line)])
 check("⑦ 无命中输入产物逐字节相同（确定性）", _b1 == _b2 and "@book" in _b1, _b1.splitlines()[0][:80])
 
+
+# ══ B-217②：中文学位论文 → @phdthesis/@mastersthesis；URL → url 字段 ═════════
+print()
+print("── B-217② 中文学位论文 / 网络资源 URL ──")
+_phd = docxsource.parse_reference_line(
+    "吴梅红. 2009. 基于动态认知逻辑的多主体系统知识推理研究[D]. 博士论文，厦门大学，2009 年.")
+_pb = docxsource.refs_to_bib([_phd]) if _phd else ""
+check("B-217② 博士论文 → @phdthesis + school=厦门大学 + address=博士论文",
+      "@phdthesis{" in _pb and "{厦门大学}" in _pb
+      and "{博士论文}" in _pb and "note" not in _pb, repr(_pb))
+_mas = docxsource.parse_reference_line(
+    "李四. 2018. 某方向研究[D]. 硕士学位论文，北京大学，2018 年.")
+_mb = docxsource.refs_to_bib([_mas]) if _mas else ""
+check("B-217② 硕士学位论文 → @mastersthesis + address=硕士学位论文",
+      "@mastersthesis{" in _mb and "{硕士学位论文}" in _mb
+      and "{北京大学}" in _mb and "note" not in _mb, repr(_mb))
+_old = docxsource.parse_reference_line(
+    "王五. 2015. 某方向研究[D]. 北京：商务印书馆.")
+_ob = docxsource.refs_to_bib([_old]) if _old else ""
+check("B-217② 反例：无学位类型/学校信息 → 不写 school/address（旧行为原样）",
+      "school" not in _ob and "address = {博士" not in _ob, repr(_ob))
+_url = docxsource.parse_reference_line(
+    "Hájek, A. 2023. Most counterfactuals are false[Z]. https://philarchive.org/rec/HAJMCA.")
+_ub = docxsource.refs_to_bib([_url]) if _url else ""
+check("B-217② 网络资源：url 字段保留（不丢网址）",
+      "= {https://philarchive.org/rec/HAJMCA}" in _ub
+      and "publisher" not in _ub and "address" not in _ub, repr(_ub))
+_nourl = docxsource.parse_reference_line(
+    "Quine, W V O. 1970. Philosophy of Logic[M]. Englewood: Prentice Hall.")
+_nb = docxsource.refs_to_bib([_nourl]) if _nourl else ""
+check("B-217② 反例：无网址条目无 url 字段（逐字节旧行为）",
+      "url" not in _nb and _nb == docxsource.refs_to_bib([_nourl]), repr(_nb))
+
+
+# ══ B-217②(F2/F3)：编号清单 detection —— `_numbered_refs` + apply_numbered_extras ══
+# 真实路径：模板稿的参考文献是**编号清单** → `doc.bib_entries`（不是 doc.refs）。
+# 这里只钉「识别出的 entry 字段」（.bib 字段输出由 footnotes._TYPE_ORDER 决定）。
+print()
+print("── B-217② F2/F3 编号清单 detection（学位论文 / SEP 章节 / URL）──")
+_NUM_LINES = [
+    "[1] 吴梅红，基于动态认知逻辑的多主体系统知识推理研究，博士论文，厦门大学，2009 年。",
+    "[2] A. C. Hastings, 1963, A Reformulation of the Modes of Reasoning, PhD thesis, Northwestern University.",
+    "[3] P. Bartha, 2019, “Analogy and analogical reasoning”, in E. N. Zalta (ed.), "
+    "The Stanford Encyclopedia of Philosophy (Spring 2019 Edition), "
+    "https://plato.stanford.edu/archives/spr2019/entries/reasoning-analogy/.",
+    "[4] J. Smith, 2000, “A normal title”, Journal of Tests, 1(2): 3-4.",
+    "[5] 李四，某方向研究，博士论文，2009 年。",
+    "[6] P. Bartha, 2020, “No url chapter”, in E. N. Zalta (ed.), The Stanford Encyclopedia of Philosophy.",
+]
+_nout, _nmap, _ = docxsource._numbered_refs(_NUM_LINES)
+_by_key = {k: e for k, e, _r in _nout}
+_wu = _by_key.get(_nmap.get(1, ""), {})
+check("F2 正例：CN 学位论文 → _type=phdthesis + school=厦门大学 + address=博士论文",
+      _wu.get("_type") == "phdthesis" and _wu.get("school") == "厦门大学"
+      and _wu.get("address") == "博士论文", repr({k: _wu.get(k) for k in ("_type", "school", "address")}))
+_h = _by_key.get(_nmap.get(2, ""), {})
+check("F3 正例：EN PhD thesis → _type=phdthesis + school=Northwestern University（不臆造 address）",
+      _h.get("_type") == "phdthesis"
+      and _h.get("school") == "Northwestern University" and not _h.get("address"),
+      repr({k: _h.get(k) for k in ("_type", "school", "address")}))
+_b = _by_key.get(_nmap.get(3, ""), {})
+check("F3 正例：SEP 章节 → booktitle（去版次括注）+ editor + url 保留",
+      _b.get("booktitle") == "The Stanford Encyclopedia of Philosophy"
+      and _b.get("editor") == "E. N. Zalta"
+      and str(_b.get("url", "")).startswith("https://plato.stanford.edu/"), repr(
+          {k: _b.get(k) for k in ("booktitle", "editor", "url")}))
+check("F3 正例：普通编号条目不被加字段（逐字节旧行为）",
+      _by_key.get(_nmap.get(4, ""), {}).get("_type") == "article"
+      and not any(_by_key.get(_nmap.get(4, ""), {}).get(k)
+                  for k in ("school", "booktitle", "url")),
+      repr(_by_key.get(_nmap.get(4, ""), {})))
+# 反例①：CN 学位论文但没写学校 → 不猜 school/address，_type 不变
+_ns = _by_key.get(_nmap.get(5, ""), {})
+check("F3 反例：CN 学位论文无学校 → 不写 school/address、不改 _type（不猜）",
+      not _ns.get("school") and not _ns.get("address") and _ns.get("_type") != "phdthesis",
+      repr({k: _ns.get(k) for k in ("_type", "school", "address")}))
+# 反例②：SEP 章节条目没有 URL → 有 booktitle、无 url（不臆造网址）
+_nu = _by_key.get(_nmap.get(6, ""), {})
+check("F3 反例：SEP 章节无网址 → 写 booktitle 但不写 url（不臆造）",
+      _nu.get("booktitle") == "The Stanford Encyclopedia of Philosophy"
+      and not _nu.get("url"), repr({k: _nu.get(k) for k in ("booktitle", "url")}))
+
+
+# ══ B1（验收 FAIL 修）：编号清单 EN journal（footref 未解析 → extras 补）════════
+print()
+print("── B1 编号清单 EN journal 提取（apply_numbered_extras）──")
+from slcn.wordrefs import apply_numbered_extras  # noqa: E402
+from slcn.docxsource import _match_en_journal  # noqa: E402
+
+_B1_RAW = ("[5] P. Benacerraf, 1981, “Frege: The last logicist”, "
+           "Midwest Studies in Philosophy, 6(1): 17–35.")
+_b1e = apply_numbered_extras(
+    {"_type": "article", "author": "Benacerraf, P.", "year": "1981",
+     "title": "Frege: The last logicist", "journal": "", "volume": "6",
+     "number": "1", "pages": "17--35"},
+    _B1_RAW, match_journal=_match_en_journal)
+check("B1 正例：编号清单 `“题名”, 刊名, 卷(期): 页` → journal=Midwest Studies in Philosophy",
+      _b1e.get("journal") == "Midwest Studies in Philosophy", repr(_b1e.get("journal")))
+_b1nb = apply_numbered_extras(
+    {"_type": "book", "author": "王五", "year": "2015", "title": "某书",
+     "journal": ""},
+    "[6] 王五，2015，某书，北京：商务印书馆。", match_journal=_match_en_journal)
+check("B1 反例：无刊名形态的编号条目 → 不写 journal（不猜）",
+      not _b1nb.get("journal"), repr(_b1nb.get("journal")))
+_b1keep = apply_numbered_extras(
+    {"_type": "article", "journal": "Already Known", "year": "1981"}, _B1_RAW,
+    match_journal=_match_en_journal)
+check("B1 反例：已有 journal 的条目不被覆盖（逐字节旧行为）",
+      _b1keep.get("journal") == "Already Known", repr(_b1keep.get("journal")))
+
 # 汇总 ──
 print()
 if SKIPS:

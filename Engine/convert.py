@@ -1691,20 +1691,30 @@ def bibdb_log_line(safe, candidates, missed, store, path) -> str:
             f"（库 {n_records} 条，{path}）")
 
 
+def _bibdb_scan_stem(res) -> str:
+    """产物 stem（核对清单文件名用；拿不到就空串 → 用通用名）。"""
+    tex = str(getattr(res, "tex_path", "") or "")
+    return os.path.splitext(os.path.basename(tex))[0] if tex else ""
+
+
 def bibdb_readonly_scan(args, res) -> dict:
-    """第五十八批：初排转换**默认**的只读引用库比对（只打一行汇总，绝不改产物/任务书）。
+    """初排转换**默认**的引用库通道：比对 + **默认回填**（B-217 ⑧）。
 
-    Lead 2026-10-20 拍板口径：
-      · 默认**开**（无新参数时）；`--no-bibdb-verify` 或 `--no-bibdb` 关闭；
-      · `--verify-refs` / `--verify-plan` 不做（核实分支自己查库并打印明细，避免重复计算）；
+    Lead 2026-10-20 拍板「默认开只读比对」；用户 2026-10-24 拍板升级为**默认回填**：
+      · 默认**开**（无新参数时）；`--no-bibdb-verify` / `--no-bibdb` 完全关闭；
+      · `--no-bibdb-apply` 关闭回填 → 只读比对（日志/产物**逐字节等于旧行为**）；
+      · 回填只对 HIT_SAFE 命中、只补缺失字段（`slcn/bibdbapply.py` 单一实现），
+        候选/未命中一律不动（不臆造），before/after 清单追加进「参考文献核对.txt」；
+      · `--verify-refs` / `--verify-plan` 不做（核实分支自己查库并打印明细）；
       · 无 `reference.bib` / 无条目 / 库不存在 / 读库失败 → **完全静默**
-        （公开仓、CI、没建库的机器上日志零变化）；
-      · 只读：命中**不改稿**（沿用「库命中不自动改产物」的产品哲学）。
+        （公开仓、CI、没建库的机器上日志/产物零变化）。
 
-    返回 `{done, store, path, entries, safe, candidates, missed}`（测试/调试用）。
+    返回 `{done, store, path, entries, safe, candidates, missed, applied, filled,
+    checklist}`（测试/调试用；默认回填关闭时 applied 为空）。
     """
     out = {"done": False, "store": None, "path": "", "entries": [],
-           "safe": {}, "candidates": {}, "missed": []}
+           "safe": {}, "candidates": {}, "missed": [],
+           "applied": [], "filled": 0, "checklist": ""}
     if getattr(args, "no_bibdb_verify", False) or getattr(args, "no_bibdb", False):
         return out
     try:
@@ -1714,20 +1724,63 @@ def bibdb_readonly_scan(args, res) -> dict:
         from slcn.bibcheck import split_entries
 
         with open(bib_path, encoding="utf-8", errors="replace") as f:
-            entries = split_entries(f.read())
+            bib_text = f.read()
+        entries = split_entries(bib_text)
         if not entries:
             return out
         store, path, _warning = resolve_bibdb(args)
         if store is None:
             return out
         safe, candidates, missed = classify_bibdb(store, entries)
-        print(f"   引用库比对：命中 {len(safe)} / 候选 {len(candidates)} / 未命中 {len(missed)}"
-              "（只读，不改产物）", flush=True)
+        applied: list[dict] = []
+        if not getattr(args, "no_bibdb_apply", False) and safe:
+            applied = _bibdb_apply_backfill(bib_path, bib_text, store, entries, safe)
+        if applied:
+            n_items = sum(len(a.get("filled") or {}) for a in applied)
+            stem = _bibdb_scan_stem(res)
+            print(f"   引用库比对：命中 {len(safe)} / 候选 {len(candidates)} / "
+                  f"未命中 {len(missed)}（默认回填 {len(applied)} 条 / {n_items} 项，"
+                  "候选与未命中不动）", flush=True)
+            for a in applied:
+                detail = "、".join(f"{k}=（缺失）→ {v}"
+                                   for k, v in (a.get("filled") or {}).items())
+                print(f"     · [{a.get('key')}] {detail}", flush=True)
+            try:
+                from slcn import bibdbapply
+                out["checklist"] = bibdbapply.write_checklist(
+                    os.path.dirname(bib_path), stem, applied)
+                print(f"     回填核对清单：{os.path.basename(out['checklist'])}", flush=True)
+            except Exception:  # noqa: BLE001  清单写不了不影响已回填的 bib
+                out["checklist"] = ""
+        else:
+            print(f"   引用库比对：命中 {len(safe)} / 候选 {len(candidates)} / "
+                  f"未命中 {len(missed)}（只读，不改产物）", flush=True)
         out.update(done=True, store=store, path=path, entries=entries,
-                   safe=safe, candidates=candidates, missed=missed)
-    except Exception:  # noqa: BLE001  只读附加通道：任何意外都不许连累出稿
+                   safe=safe, candidates=candidates, missed=missed,
+                   applied=applied,
+                   filled=sum(len(a.get("filled") or {}) for a in applied))
+    except Exception:  # noqa: BLE001  附加通道：任何意外都不许连累出稿
         return out
     return out
+
+
+def _bibdb_apply_backfill(bib_path: str, bib_text: str, store, entries,
+                          safe: dict) -> list[dict]:
+    """默认回填（B-217 ⑧）：只补缺失字段 + 原子写回；任何结构异常 → 不写（fail-soft）。"""
+    try:
+        from slcn import bibdbapply
+        from slcn.fsutil import atomic_write
+
+        plans = bibdbapply.plan_fills(store, entries, safe)
+        if not plans:
+            return []
+        new_text, applied = bibdbapply.apply_text(bib_text, plans)
+        if not applied or new_text == bib_text:
+            return []
+        atomic_write(bib_path, new_text, newline="\n", log=None)
+        return applied
+    except Exception:  # noqa: BLE001  附加通道：任何意外都不许连累出稿
+        return []
 
 
 def bibdb_taskbook_hits(entries, safe) -> list[dict]:
@@ -2206,9 +2259,15 @@ def main() -> int:
     ap.add_argument("--no-bibdb", action="store_true",
                     help="关闭引用库查库（本次一律不查库；输出与接入前逐字节相同）。")
     ap.add_argument("--no-bibdb-verify", action="store_true",
-                    help="关闭「初排默认只读引用库比对」（默认开：只打一行 "
-                         "命中/候选/未命中 汇总，不改任何产物；无引用库时自动静默跳过；"
+                    help="关闭「初排默认引用库比对/回填」（默认开：安全命中即回填缺失字段"
+                         "并打一行汇总；无引用库时自动静默跳过；"
                          "不影响 --verify-refs/--verify-plan 的核实行为）。")
+    ap.add_argument("--no-bibdb-apply", action="store_true",
+                    help="关闭「引用库默认回填」（默认开：安全命中的已核实条目只补"
+                         "缺失字段 journal/volume/number/pages/booktitle/editor/"
+                         "publisher/address 并写 before/after 核对清单；候选/未命中不动；"
+                         "无引用库时静默跳过）。关闭后回到只读引用库比对口径"
+                         "（只打一行汇总、不改产物，逐字节等于旧行为）。")
     # P1（2026-10-17，第 71 条起）：自动检索证据 = DeepSeek Search API（独立原始 JSON API），
     # **不改模型提示词、不改转换产物**，只把「每条文献在公开网页上的候选来源」写进任务书。
     # 默认关；不开启时产物与从前的调用**逐字节相同**（任务书里一个字段都不多）。
@@ -2832,7 +2891,8 @@ def main() -> int:
         for w in res.warnings:
             print(f"  · {w}")
 
-    # 第五十八批：默认初排的**只读**引用库比对（只打一行汇总，不改任何产物）。
+    # 第五十八批：默认初排的引用库比对（只打一行汇总）；B-217 ⑧ 起默认**回填**：
+    # 安全命中只补缺失字段（--no-bibdb-apply 回到旧只读口径、逐字节相同）。
     # 用户反馈「初排感觉没查引用库」：此前只有 --verify-refs/--verify-plan 分支才查库。
     # 核实分支自己会查库并打印明细（第 129 条），这里不重复跑；无库时静默。
     if not (args.verify_refs or args.verify_plan):

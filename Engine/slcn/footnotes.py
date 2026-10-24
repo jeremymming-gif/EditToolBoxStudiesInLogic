@@ -189,12 +189,17 @@ def classify(text: str) -> Footnote:
 #   ⑤ 同条：    `收稿日期：2025-09-19  基金项目：国家社科基金…（22CZX064）。`
 #   ⑥ 无标签英文块：`Zhang San  College of Philosophy, …` + 邮箱（**必须**每条命中的
 #      姓名都在已知作者名单里，且整块无文献标记，宁 fail 不误判）
+#   ⑥b（B-217 ④⑥）无标签英文作者块（不依赖已知名单）：逐作者一行
+#      `San Zhang, Department of Philosophy, Example University, E-mail: …`
+#      （也兼容 v7 旧格式「姓名 单位…」不带姓后逗号）→ 姓名/单位/邮箱；判据见
+#      `_ai_en_name_and_unit()` / `_ai_en_block_prefix()`，宁 fail 不误判。
 #
 # 判据纪律（用户 2026-10-21 拍板：**不许猜**）：
 #   · 姓名只取「已知作者名 / 行首姓名 + 单位或邮箱 / 括号里的英文名」；凭空 token 不收；
 #   · 单位必须含机构词（大学/学院/研究所/… 或 University/College/…）且以机构后缀收尾；
 #   · 姓名与单位**无法可靠切分**（无分隔连写且不在已知名单）→ 不解析 + warning；
-#   · 绝不把第一作者的字段复制给其他作者、绝不覆盖已有值（后者由 build 负责）。
+#   · 绝不把第一作者的字段复制给其他作者；第一作者槽位与正文姓名一致时 build 以
+#     `author_meta[0]` 覆盖 legacy 合并值（B-217 ⑤），其余仍「只填空不覆盖」。
 _AI_NAME_LABEL = (
     r"作者信息|作者简介|作者单位|单位信息|所属单位|作者署名|作者姓名|"
     r"通讯作者|通信作者|Corresponding\s+author"
@@ -258,9 +263,11 @@ def _ai_plausible_name(cand: str) -> bool:
     return cand[0] in _AI_SURNAMES
 
 
-_AI_EN_INST_RE = re.compile(
-    r"\b(?:University|College|Institute|School|Department|Academy|Center|"
-    r"Centre|Faculty|Laboratory|Lab)\b", re.I)
+#: 英文机构词（单位判据的**唯一**来源：`_AI_EN_INST_RE` 与「姓名+单位」切分共用）
+_AI_EN_INST_WORD = (
+    r"University|College|Institute|School|Department|Academy|Center|"
+    r"Centre|Faculty|Laboratory|Lab")
+_AI_EN_INST_RE = re.compile(r"\b(?:" + _AI_EN_INST_WORD + r")\b", re.I)
 #: 无标签英文块里**绝不能出现**的文献标记（出现即当文献脚注，宁 fail 不误判）
 _AI_CITE_CUE_RE = re.compile(
     r"[“”\"‘’]|\b(?:19|20)\d{2}\b|\bpp?\.\s*\d|\bVol\.|\bPress\b|\bJournal\b|"
@@ -422,6 +429,87 @@ def _ai_is_unit_line(line: str) -> bool:
     return bool(_AI_EN_INST_RE.search(t) and re.search(r"[A-Za-z]", t))
 
 
+# ── 英文作者块（B-217 ④⑥，与中文作者信息**同源判据**）──────────────────────
+#
+# 英文稿模板的写法（`drafts/template-engine-contract.md` §2 L1-2）：
+#     San Zhang, Department of Philosophy, Example University, E-mail: san@example.edu
+#     Si Li, School of Philosophy, Example University, E-mail: li@example.edu
+# 逐作者一行（也兼容同一条里 `；` 并列、以及 v7 旧格式「姓名 单位…」不带姓后逗号）。
+# 判据纪律与中文块一致（用户 2026-10-21 拍板「不许猜」）：
+#   · 姓名必须整段是拉丁姓名形态（`_AI_LATIN_NAME_RE`，1–3 个词）；
+#   · 单位必须含机构词（`_AI_EN_INST_RE`）且够长，纯 `E-mail` 残尾剥掉；
+#   · 每行不得带文献线索（`_AI_CITE_CUE_RE`：年份/pp./Press/Journal/引号…）；
+#   · 单独一位作者必须带邮箱才认（否则宁可 fail 不误判）。
+_AI_EN_LABEL_TAIL_RE = re.compile(r"[\s,，;；]*(?:E-?mail|Email)\s*$", re.I)
+
+
+def _ai_en_name_and_unit(text: str) -> tuple[str, str] | None:
+    """`姓名, 单位…`（或旧格式 `姓名 单位…`）→ (姓名, 单位)；拿不准 → None。"""
+    t = _ai_clean_text(text)
+    parts = [p.strip() for p in re.split(r"[,，]", t) if p.strip()]
+    name = ""
+    unit = ""
+    if len(parts) >= 2 and len(parts[0].split()) <= 3 \
+            and _AI_LATIN_NAME_RE.fullmatch(parts[0]):
+        name = parts[0]
+        unit = ", ".join(parts[1:])
+    else:
+        words = t.split()
+        for k in (2, 3):
+            if len(words) <= k:
+                break
+            cand = " ".join(words[:k])
+            rest = " ".join(words[k:])
+            if _AI_LATIN_NAME_RE.fullmatch(cand) and re.match(
+                    r"^(?:" + _AI_EN_INST_WORD + r")\b", rest, re.I):
+                name, unit = cand, rest
+                break
+    if not name:
+        return None
+    unit = _AI_EN_LABEL_TAIL_RE.sub("", unit).strip(" ,，;；")
+    if len(unit) < 8 or not _AI_EN_INST_RE.search(unit):
+        return None
+    return name, unit
+
+
+def _ai_en_block_prefix(text: str) -> str | None:
+    """无标签英文作者块的**开头连续段**；不是作者块 → None。
+
+    只收开头连续的「作者行 / 单位续行 / 邮箱行」，遇到第一处别的内容就停
+    （模板脚注后面的 `Acknowledgements: …` 不参与、也不整块否决——与中文块
+    「尾部标签另算」同一思路）。要求：至少 1 位作者，且「≥2 位作者」或「带邮箱」。
+    """
+    lines = [_ai_clean_text(x) for x in re.split(r"[\n\r]+", text or "")]
+    lines = [x for x in lines if x]
+    if not lines:
+        return None
+    kept: list[str] = []
+    n_auth = 0
+    have_email = False
+    for ln in lines:
+        emails = _AI_EMAIL_RE.findall(ln)
+        core = _ai_clean_text(_AI_EMAIL_LABEL_RE.sub(" ", _AI_EMAIL_RE.sub(" ", ln)))
+        core = core.strip(" ,，.。;；:：")
+        if not core:                       # 纯邮箱行（逐作者一行体例的续行）
+            if not n_auth:
+                return None
+            kept.append(ln)
+            have_email = True
+            continue
+        if _ai_en_name_and_unit(core) and not _AI_CITE_CUE_RE.search(core):
+            n_auth += 1
+            have_email = have_email or bool(emails)
+            kept.append(ln)
+            continue
+        if n_auth and _ai_is_unit_line(core) and not _AI_CITE_CUE_RE.search(core):
+            kept.append(ln)
+            continue
+        break
+    if not n_auth or (n_auth < 2 and not have_email):
+        return None
+    return "\n".join(kept)
+
+
 def _ai_consume_narrative(
     line: str, emails: list[str], records: list[dict],
     known_cn: tuple[str, ...], warnings: list[str],
@@ -492,6 +580,16 @@ def _ai_consume_line(
         made = _ai_consume_narrative(text, emails, records, known_cn, warnings)
         if made:
             return made
+    # 英文作者行（B-217 ④⑥）：`姓名, 单位…` / 旧格式 `姓名 单位…`。放在「已知名单」
+    # 之前——英文稿的 `_known_cn_authors()` 会把拉丁作者串拆成 `San`/`Zhang` 这类
+    # 假名单，先走已知分支会把姓名切成碎片（实测 EN 模板稿）。
+    _en = _ai_en_name_and_unit(text)
+    if _en is not None:
+        name, unit = _en
+        rec = _ai_new_record(records, name_en=name)
+        _ai_add_units(rec, unit)
+        _ai_add_emails(rec, emails)
+        return rec
     known = _ai_known_prefix(text, known_cn, known_en)
     if known:
         kind, name, rest = known
@@ -614,7 +712,12 @@ def parse_author_info(
     elif _ai_unlabeled_ok(t, known_cn, known_en):
         sections = [("authors", t)]
     else:
-        return None
+        # 无标签英文作者块（B-217 ④⑥）：姓名/单位/邮箱**自带判据**，不依赖已知名单
+        # （英文稿的已知名单常为空或为拆碎的拉丁串）。
+        _en_block = _ai_en_block_prefix(t)
+        if not _en_block:
+            return None
+        sections = [("authors", _en_block)]
     authors: list[dict] = []
     received = ""
     grants = ""
@@ -2128,8 +2231,16 @@ def make_key(entry: dict, seq: int, used: set[str]) -> str:
 _TYPE_ORDER = {
     "book": ["author", "title", "edition", "publisher", "address", "year", "userf", "note"],
     "article": ["author", "title", "journal", "volume", "number", "year", "pages", "userf", "note"],
-    "incollection": ["author", "title", "booktitle", "publisher", "address", "year", "pages", "userf", "note"],
-    "misc": ["author", "title", "year", "userf", "note"],
+    "incollection": ["author", "title", "booktitle", "publisher", "address", "year",
+                     "pages", "url", "userf", "note"],
+    # B-217②（防御性补齐，编号清单→entry_to_bib 通道）：中文学位论文按引用库既有口径
+    # （`bib_db` 实测 67+15 条）：`school=学校`、`address=学位类型原字串`（「博士论文」/
+    # 「硕士学位论文」）。`thesis` 是往期成品里的另一种写法（institution/type）。
+    "phdthesis": ["author", "title", "school", "address", "year", "userf", "note"],
+    "mastersthesis": ["author", "title", "school", "address", "year", "userf", "note"],
+    "thesis": ["author", "title", "type", "institution", "school", "address",
+               "year", "userf", "note"],
+    "misc": ["author", "title", "year", "url", "userf", "note"],
 }
 
 

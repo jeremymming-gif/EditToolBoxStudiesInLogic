@@ -25,6 +25,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 
 from slcn import footref  # noqa: E402
 from slcn.docxsource import (  # noqa: E402
+    RefEntry,
     _looks_short_bibliographic_note,
     _numbered_refs,
     parse_reference_line,
@@ -167,6 +168,64 @@ _out = _numbered_refs(_bad.splitlines())[0]
 check("P0-7 漏括号 [13 仍解析为 4 条（13 号不丢）",
       len(_out) == 4 and any("Ross" in (e.get("author") or "") for _k, e, _r in _out),
       str([(e.get("author"), e.get("title")) for _k, e, _r in _out]))
+
+
+# ══ B-217②：英文期刊 rest 前导逗号/引号残留（memo 第 2 条）════════════════════
+print("\n── B-217② 英文期刊：rest 前导逗号 / 引号残留 ──")
+
+
+def _bib_rest(rest):
+    e = RefEntry(raw="x", author="Hájek, A.", year="2020", title="T", kind="J",
+                 rest=rest)
+    e.key = "AHjek2020"
+    return refs_to_bib([e])
+
+
+for _rest, _label in ((", Synthese, 199: 637-659.", "前导逗号"),
+                      ("，Synthese, 199: 637-659.", "前导中文逗号"),
+                      ("”, Synthese, 199: 637-659.", "引号残留")):
+    _b = _bib_rest(_rest)
+    check(f"B-217② 期刊{_label}：journal=Synthese/volume=199/pages=637--659",
+          "journal = {Synthese}" in _b and "volume  = {199}" in _b
+          and "pages   = {637--659}" in _b, repr(_b))
+_b = _bib_rest("Synthese, 199: 637-659.")
+check("B-217② 反例：旧形态（无前导噪声）输出逐字节不变",
+      "journal = {Synthese}" in _b and "volume  = {199}" in _b, repr(_b))
+_b = _bib_rest("“Synthese”, 199: 637-659.")
+check("B-217② 引号刊名清理：journal=Synthese（不带引号）",
+      "journal = {Synthese}" in _b and "“" not in _b, repr(_b))
+
+
+# ══ B2-2 / B2-4（验收 FAIL 修）：人年制编著章节 / 网络资源 URL ═══════════════
+print("\n── B2-2/B2-4 人年制：无编者章节 `in …, pp. a–b. 地: 社.` / URL ──")
+_B22 = parse_reference_line(
+    "S. Wolf, 1987, Sanity and the Metaphysics of Responsibility, in "
+    "Responsibility, Character, and the Emotions, pp. 46-62. Cambridge: "
+    "Cambridge University Press.")
+_b22 = refs_to_bib([_B22]) if _B22 else ""
+check("B2-2 正例：无编者 `in 书名, pp. a–b. 地: 社.` → @incollection + booktitle/pages/出版信息",
+      "@incollection{" in _b22
+      and "booktitle = {Responsibility, Character, and the Emotions}" in _b22
+      and "pages     = {46--62}" in _b22
+      and "address   = {Cambridge}" in _b22
+      and "publisher = {Cambridge University Press}" in _b22, repr(_b22))
+_B22N = parse_reference_line(
+    "T. Williamson, 2000, Knowledge and Its Limits, New York: Oxford University Press.")
+_b22n = refs_to_bib([_B22N]) if _B22N else ""
+check("B2-2 反例：普通书籍（无 in/pp.）仍是 @book、无 booktitle/pages",
+      "@book{" in _b22n and "booktitle" not in _b22n and "pages" not in _b22n, repr(_b22n))
+_B24 = parse_reference_line(
+    "P. Bartha, 2019, Analogy and analogical reasoning, in The Stanford "
+    "Encyclopedia of Philosophy, https://plato.stanford.edu/archives/spr2019/"
+    "entries/reasoning-analogy/.")
+_b24 = refs_to_bib([_B24]) if _B24 else ""
+check("B2-4 正例：URL → url 字段；不写 publisher/address（旧输出 https / //plato）",
+      "https://plato.stanford.edu/archives/spr2019/entries/reasoning-analogy/" in _b24
+      and "publisher" not in _b24 and "address" not in _b24
+      and "= {Analogy and analogical reasoning}" in _b24, repr(_b24))
+check("B2-4 反例：无 URL 的书仍写 publisher/address（旧行为不变）",
+      "publisher = {Oxford University Press}" in _b22n
+      and "address   = {New York}" in _b22n, repr(_b22n))
 
 print()
 if FAILS:

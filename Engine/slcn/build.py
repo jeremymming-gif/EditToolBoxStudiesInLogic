@@ -201,12 +201,46 @@ def cn_author_names(author: str) -> list[str]:
     return names
 
 
-def author_fields(author: str) -> dict[str, str]:
-    """作者姓名 → `\\myfirstauthor` / `\\mysecondauthor`…（与人工成品一致的写法）。
+#: 英文作者串里**可以**当分隔符的显式记号（B-217 ④）：**不含逗号**——逗号可能是
+#: 倒装姓名的内部标点（`Kou, Jingru`），切开就凭空多出一个作者。
+_EN_NAME_SEP_EXPLICIT = re.compile(r"\s*(?:;|；|、|&|\band\b)\s*")
+_EN_NAME_TOKEN_RE = re.compile(
+    r"(?:[A-Z][A-Za-z'’\-]*\.?\s+){1,2}[A-Z][A-Za-z'’\-]*")
 
-    多作者：第一作者进 `\\myfirstauthor`，其余进 `\\mysecondauthor…`。实测
-    2026_05 Jingru_Kou 是 `{\\kaishu 寇静茹}` + `\\renewcommand{\\mysecondauthor}{\\kaishu 刘叶涛}`。
-    只在**纯中文姓名**时拆分——`Jiawei Chu` 这种英文名拆开就错了。
+
+def _en_author_names(author: str, en_names=()) -> list[str]:
+    """英文作者串 → 姓名列表（B-217 ④；**保守**，拿不准返回 []）。
+
+    英文稿模板（`drafts/template-engine-contract.md` §2 L1-2）标题页作者行是
+    `San Zhang, Si Li, Wu Wang`。逗号不能直接当分隔符，所以只有两条判据：
+      ① 优先「与作者信息脚注解析出的英文姓名（`en_names`）逐一比对」——去掉分隔符
+         后整串相等才拆（标题页与脚注是同一批人的两种写法，这是最强判据）；
+      ② 否则只认显式分隔符 `;` `；` `、` `&` ` and `，且每段必须是完整拉丁姓名形态。
+    逗号 / 纯空格连写一律不猜（连写英文串的等分判据归 `en_coauthor_values()`）。
+    """
+    a = (author or "").strip()
+    if not a or not re.search(r"[A-Za-z]", a):
+        return []
+    known = [str(n).strip() for n in (en_names or ()) if str(n).strip()]
+    if len(known) >= 2 and all(_EN_NAME_TOKEN_RE.fullmatch(n) for n in known):
+        def _squash(text: str) -> str:
+            text = re.sub(r"\band\b", "", text, flags=re.I)
+            return re.sub(r"[\s,，、;；&]+", "", text).lower()
+        if _squash(a) == _squash(" ".join(known)):
+            return known[:5]
+    parts = [p.strip() for p in _EN_NAME_SEP_EXPLICIT.split(a) if p.strip()]
+    if len(parts) < 2 or not all(_EN_NAME_TOKEN_RE.fullmatch(p) for p in parts):
+        return []
+    return parts[:5]
+
+
+def author_fields(author: str, *, en_names=()) -> dict[str, str]:
+    r"""作者姓名 → `\myfirstauthor` / `\mysecondauthor`…（与人工成品一致的写法）。
+
+    多作者：第一作者进 `\myfirstauthor`，其余进 `\mysecondauthor…`。实测
+    2026_05 Jingru_Kou 是 `{\kaishu 寇静茹}` + `\renewcommand{\mysecondauthor}{\kaishu 刘叶涛}`。
+    中文姓名串按中文判据拆；**英文多作者**只走 `_en_author_names()` 的两条保守判据
+    （B-217 ④：英文模板三位作者 → 三个宏都填；逗号倒装名不拆）。
 
     单作者也不能直接把原串写进宏（案例 71）：源稿里排成 `陈  波` 时，
     `cn_author_names()` 已经把它并回一个 `陈波`，可原串还带着内部空白——
@@ -214,6 +248,12 @@ def author_fields(author: str) -> dict[str, str]:
     只有**拆不出中文姓名**（英文名 / 空）时才用原串。
     """
     author = (author or "").strip()
+    en = _en_author_names(author, en_names)
+    if len(en) > 1:
+        out = {"myfirstauthor": en[0]}
+        for nm, ordw in zip(en[1:5], _ORDINALS[1:]):
+            out[f"my{ordw}author"] = nm
+        return out
     cn_names = cn_author_names(author)
     if len(cn_names) > 1:
         out = {"myfirstauthor": f"\\kaishu {cn_names[0]}"}
@@ -385,6 +425,8 @@ def _source_author_meta_fields(
     tpl_defaults: dict[str, str] | None = None,
     *,
     skip: set[str] | frozenset[str] = frozenset(),
+    prefer_en: bool = False,
+    warnings: list[str] | None = None,
 ) -> dict[str, str]:
     """`DocxDoc.author_meta` → 模板作者槽位（第二作者起的 CN 单位/邮箱等）。
 
@@ -396,6 +438,15 @@ def _source_author_meta_fields(
       · `overrides`（--author-cn 等）与 `--metadata-json` 人工值 → 一律不碰；
       · 第 N 位作者的姓名槽位必须存在且**姓名一致**才写它的单位/邮箱
         （位置对不上就不猜——绝不把甲的单位写给乙）。
+
+    **B-217 ⑤ 第一作者例外（覆盖）**：`author_meta[0]` 与正文第一作者姓名一致时，
+    第一作者的单位/邮箱以 `author_meta[0]` **覆盖** legacy 值（`docxsource` 的
+    `collect_affiliations` 会把整条作者信息脚注里的所有单位塞给第一作者，实测模板
+    三作者稿 `myfirstaffiliation` 印出三行）。姓名不一致时不覆盖、报 warning；
+    第二作者起仍「只填空不覆盖」。`--affiliation-cn/--email/--metadata-json` 人工值
+    经 `skip` 一律优先，不在覆盖范围。
+    `prefer_en=True`（英文模板）时 `my<N>affiliation` 这个**唯一**单位宏取英文单位
+    （EN 模板没有 `my<N>affiliationEN` 槽位）。
     """
     out: dict[str, str] = {}
     if not author_meta:
@@ -410,12 +461,22 @@ def _source_author_meta_fields(
             return
         out[name] = value
 
+    def _force(name: str, value: str) -> None:
+        """覆盖 legacy 值（B-217 ⑤）：人工覆盖/不存在的槽位仍然不动，空值不覆盖。"""
+        if not value or name in skip or name not in tpl_fields:
+            return
+        out[name] = value
+
     def _units_cn(rec: dict) -> str:
         return cn_join.join([u for u in (rec.get("affiliation_cn") or []) if u])
 
     def _units_en(rec: dict) -> str:
         return cn_join.join([u for u in (rec.get("affiliation_en") or []) if u])
 
+    def _clean_name(value) -> str:
+        return re.sub(r"[\s\u3000]", "", _norm_for_compare(str(value or "")))
+
+    _mismatch_warned = False
     for i, word in enumerate(_ORDINALS[:5]):
         if i >= len(author_meta):
             break
@@ -423,18 +484,36 @@ def _source_author_meta_fields(
         macro = _AUTHOR_MACRO(word)
         if not is_parsed(field_values.get(macro)):
             continue                      # 该位作者不存在/姓名没解析出来 → 不填
-        rec_name = re.sub(r"[\s\u3000]", "", str(rec.get("name") or ""))
-        slot_name = re.sub(r"[\s\u3000]", "",
-                           _norm_for_compare(field_values.get(macro) or ""))
-        if rec_name and slot_name and rec_name != slot_name:
+        rec_name = _clean_name(rec.get("name"))
+        rec_name_en = _clean_name(rec.get("name_en"))
+        slot_name = _clean_name(field_values.get(macro))
+        name_ok = bool(slot_name) and (
+            slot_name == rec_name or (bool(rec_name_en) and slot_name == rec_name_en))
+        if (rec_name or rec_name_en) and slot_name and not name_ok:
+            if i == 0 and warnings is not None and not _mismatch_warned:
+                warnings.append(
+                    "作者信息脚注与正文作者姓名不一致（第一作者单位/邮箱保持原样，"
+                    "不覆盖，请人工核对）：正文「"
+                    + _norm_for_compare(field_values.get(macro) or "")
+                    + "」/ 脚注「" + (rec.get("name") or rec.get("name_en") or "")
+                    + "」")
+                _mismatch_warned = True
             continue                      # 姓名对不上 → 不猜
+        main_units = ((_units_en(rec) or _units_cn(rec)) if prefer_en
+                      else _units_cn(rec))
         if i == 0:
-            _set("myfirstaffiliation", _units_cn(rec))
-            _set("myfirstaffiliationEN", _units_en(rec))
-            _set("myfirstemail", str(rec.get("email") or ""))
+            if name_ok:
+                # B-217 ⑤：姓名一致 → 第一作者单位/邮箱覆盖 legacy 合并值
+                _force("myfirstaffiliation", main_units)
+                _force("myfirstaffiliationEN", _units_en(rec))
+                _force("myfirstemail", str(rec.get("email") or ""))
+            else:
+                _set("myfirstaffiliation", main_units)
+                _set("myfirstaffiliationEN", _units_en(rec))
+                _set("myfirstemail", str(rec.get("email") or ""))
             _set("myfirstauthorEN", str(rec.get("name_en") or ""))
         else:
-            _set(f"my{word}affiliation", _units_cn(rec))
+            _set(f"my{word}affiliation", main_units)
             _set(f"my{word}affiliationEN", _units_en(rec))
             _set(f"my{word}email", str(rec.get("email") or ""))
             _set(f"my{word}authorEN", str(rec.get("name_en") or ""))
@@ -2209,7 +2288,11 @@ def build_docx(
     # 多作者：人工成品的写法是「第一作者 → \myfirstauthor，其余 → \mysecondauthor…」
     # （实测 2026_05_Jingru_Kou：`{\kaishu 寇静茹}` + `\renewcommand{\mysecondauthor}{\kaishu 刘叶涛}`）。
     # 只在**纯中文姓名**时拆分——`Jiawei Chu` 这种英文名拆开就错了。
-    fields.update(author_fields(author))
+    # B-217 ④：英文多作者——标题页作者串与作者信息脚注解析出的英文姓名逐一比对，
+    # 一致才拆（逗号倒装名不猜，见 `_en_author_names()`）。
+    _en_meta_names = [str(_a.get("name_en") or "") for _a in
+                      (getattr(doc, "author_meta", None) or []) if _a.get("name_en")]
+    fields.update(author_fields(author, en_names=_en_meta_names))
     # 文末中英元数据块里常同时有英文作者、单位、邮箱（09 Jiawei_Chu 就是）
     fields["myfirstauthorEN"] = normalize_english_author(doc.author_en, doc.author)
     fields["myfirstaffiliation"] = doc.affiliation_cn
@@ -2269,7 +2352,7 @@ def build_docx(
     #    旧实现第二作者起的 CN 单位/邮箱**没有来源**（永远占位符）；作者信息脚注里有。
     _am_fields = _source_author_meta_fields(
         getattr(doc, "author_meta", None), fields, tpl_fields, tpl_defaults,
-        skip=set(ov) | structured_keys)
+        skip=set(ov) | structured_keys, prefer_en=is_en, warnings=warnings)
     if _am_fields:
         fields.update(_am_fields)
         say(f"   作者信息脚注补全 {len(_am_fields)} 个作者元数据字段："
