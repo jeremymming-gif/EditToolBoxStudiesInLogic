@@ -233,6 +233,125 @@ check("⑥ 反例：已结构化条目原样保留（不重复转义）",
       and "\\\\&" not in _ok_out
       and _ok_out.count("@book{b1,") == 1, repr(_ok_out)[:120])
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑦ B-107（86-02）：plain book / 英文编号书字段归位；旧三形态逐字节不变
+# ══════════════════════════════════════════════════════════════════════════
+# 源行取自 86-02 文末 Word 自动编号清单（段 141–153），逐字；期望字段只由行内证据得出。
+_B107_LINES = {
+    "Wang2012": "[141] 汪奠基：《中国逻辑思想史》，武汉：武汉大学出版社，2012。",
+    "Li1985": "[142] 李泽厚：《中国古代思想史论》，合肥：安徽文艺出版社，1985年。",
+    "Boas2022": ("[143] Van Emde Boas P, Van Emde Boas G, Xie K, Zhao B. "
+                 "Analyzing the logic of sun tzu in “the art of war”, using mind maps[M]. "
+                 "Singapore: Springer Nature Singapore Pte Ltd. 2022."),
+    "Wang1988": "[146] 王先谦：荀子集解，1988年，北京：中华书局。",
+    "Yin1976": "[148] 银雀山汉墓竹简整理小组编：《银雀山汉墓竹简孙子兵法》，1976年，北京：中华书局。",
+    "Sun2012": "[150] 孙武撰：《十一家注孙子》，2012年，北京：中华书局。",
+    "Li2006": "[152] 李零：《兵以诈立：我读孙子》，2006年，北京：中华书局。",
+}
+_B107_EXPECT = {
+    "Wang2012": {"_type": "book", "author": "汪奠基", "title": "中国逻辑思想史",
+                 "address": "武汉", "publisher": "武汉大学出版社", "year": "2012"},
+    "Li1985": {"_type": "book", "author": "李泽厚", "title": "中国古代思想史论",
+               "address": "合肥", "publisher": "安徽文艺出版社", "year": "1985"},
+    "Boas2022": {"_type": "book",
+                 "author": "Van Emde Boas P and Van Emde Boas G and Xie K and Zhao B",
+                 "title": "Analyzing the logic of sun tzu in “the art of war”, using mind maps",
+                 "address": "Singapore",
+                 "publisher": "Springer Nature Singapore Pte Ltd.", "year": "2022"},
+    "Wang1988": {"_type": "book", "author": "王先谦", "title": "荀子集解",
+                 "address": "北京", "publisher": "中华书局", "year": "1988"},
+    "Yin1976": {"_type": "book", "author": "银雀山汉墓竹简整理小组编",
+                "title": "银雀山汉墓竹简孙子兵法", "address": "北京",
+                "publisher": "中华书局", "year": "1976"},
+    "Sun2012": {"_type": "book", "author": "孙武撰", "title": "十一家注孙子",
+                "address": "北京", "publisher": "中华书局", "year": "2012"},
+    "Li2006": {"_type": "book", "author": "李零", "title": "兵以诈立：我读孙子",
+               "address": "北京", "publisher": "中华书局", "year": "2006"},
+}
+for _k, _line in _B107_LINES.items():
+    _got = bibnorm._parse_cn_numbered_line(_line)
+    check(f"⑦-1 {_k}：plain book / 英文编号书按行内证据归位",
+          _got == _B107_EXPECT[_k], repr(_got))
+
+# 旧三形态基准 = **HEAD 版**函数（`git show HEAD:Engine/slcn/bibnorm.py` 于 /tmp 载入）
+# 的逐字节输出，写死为期望；新分支不得改动它们。
+_HEAD_OLD = [
+    ("[1] 亚里士多德：《工具论》，张竹明译，北京：商务印书馆，1984。",
+     {"author": "亚里士多德（著），张竹明（译）", "title": "工具论", "year": "1984",
+      "_type": "book", "address": "北京", "publisher": "商务印书馆"}),
+    ("[2] 陈波：《逻辑例外论的演变》，《逻辑学研究》，2020年第5期。",
+     {"author": "陈波", "title": "逻辑例外论的演变", "year": "2020",
+      "_type": "article", "journal": "逻辑学研究", "number": "5"}),
+    ("[3] 塔斯基：《真理的语义概念》，马蒂尼奇（主编）：《语言哲学》，北京：商务印书馆，2004。",
+     {"author": "塔斯基", "title": "真理的语义概念", "year": "2004",
+      "_type": "incollection", "booktitle": "语言哲学",
+      "note": "马蒂尼奇（主编）（主编）", "address": "北京", "publisher": "商务印书馆"}),
+]
+for _line, _want in _HEAD_OLD:
+    check(f"⑦-2 旧形态与 HEAD 逐字节一致：{_want['title']}",
+          bibnorm._parse_cn_numbered_line(_line) == _want,
+          repr(bibnorm._parse_cn_numbered_line(_line)))
+
+# 反例：行内证据不足 → None（不猜、不改原条目）。中文期刊 / 英文期刊 / 缺出版信息。
+_NEG_LINES = (
+    "[7] 李文：《某题名》，某刊名，2020年第3期。",
+    "[8] Smith J. Some Title[J]. Journal Name, 2020(3): 12-20.",
+    "[9] 王五：某书名，2020年。",
+    "[10] 赵六：《某书》，2020年。",
+    "[11] J. Smith. Some Book[M]. London: Springer, 2020.",
+)
+for _line in _NEG_LINES:
+    check("⑦-3 不匹配行返回 None（不猜）：" + _line[:16],
+          bibnorm._parse_cn_numbered_line(_line) is None,
+          repr(bibnorm._parse_cn_numbered_line(_line)))
+
+# ④ repair ②：无匹配 → 条目不替换；命中（中文无《》书 / 英文书）→ 只换该条、键不变。
+import copy as _copy
+
+
+class _Doc:
+    pass
+
+
+def _mk_doc(entries, num2key):
+    d = _Doc()
+    d.refs = []
+    d.bib_entries = entries
+    d.body = ""
+    d.ref_raw_by_key = {_k: _r for _k, _e, _r in entries}
+    d.ref_key_by_num = dict(num2key)
+    return d
+
+
+_neg = ("neg1", {"author": "李文", "title": "某题名", "year": "2020"},
+        "[7] 李文：《某题名》，某刊名，2020年第3期。")
+_d0 = _mk_doc([_neg], {7: "neg1"})
+_before = _copy.deepcopy(_d0.bib_entries)
+bibnorm.repair_word_refs(_d0)
+check("⑦-4 无匹配时 repair 不替换条目（旧行为不变）", _d0.bib_entries == _before,
+      repr(_d0.bib_entries))
+
+_cn_bad = ("Wang1988", {"author": "王先谦：荀子集解", "title": "北京：中华书局",
+                        "year": "1988"}, _B107_LINES["Wang1988"])
+_en_bad = ("Boas2022",
+           {"author": "Van Emde Boas P and Van Emde Boas G and Xie K and Zhao B. "
+                      "Analyzing the logic of sun tzu in",
+            "title": "the art of war",
+            "publisher": "Springer Nature Singapore Pte Ltd. 2022",
+            "address": "sing mind maps[M]. Singapore", "year": "2022"},
+           _B107_LINES["Boas2022"])
+_keep = ("Keep2020", {"author": "张三", "title": "正常题名", "year": "2020"}, "")
+_d1 = _mk_doc([_cn_bad, _en_bad, _keep], {146: "Wang1988", 143: "Boas2022"})
+bibnorm.repair_word_refs(_d1)
+check("⑦-4 repair ②：中文无《》书按行内证据归位、键不变",
+      _d1.bib_entries[0] == ("Wang1988", _B107_EXPECT["Wang1988"], _B107_LINES["Wang1988"]),
+      repr(_d1.bib_entries[0]))
+check("⑦-4 repair ②：英文编号书经新增路由归位（其余规则不动）",
+      _d1.bib_entries[1] == ("Boas2022", _B107_EXPECT["Boas2022"], _B107_LINES["Boas2022"]),
+      repr(_d1.bib_entries[1]))
+check("⑦-4 repair ②：未命中条目原样保留、顺序不变",
+      _d1.bib_entries[2] == _keep, repr(_d1.bib_entries[2]))
+
 print()
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

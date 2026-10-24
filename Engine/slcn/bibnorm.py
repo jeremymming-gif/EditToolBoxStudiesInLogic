@@ -1141,16 +1141,96 @@ def _entry_from_refentry(e) -> dict:
     return d
 
 
+#: 英文编号清单里的**书**形态（86-02 实测）：
+#: `Van Emde Boas P, …, Zhao B. Title[M]. Singapore: Springer Nature Singapore Pte Ltd. 2022.`
+#: 只认 `[M]` 类型标识 + 行尾年份 + `城市: 出版社` 三种行内证据，不猜其它形态。
+_EN_NUMBERED_BOOK_RE = re.compile(
+    r"^(?P<author>[^\[\]]{2,240}?)[.。]\s+"
+    r"(?P<title>[^\[\]]{2,300}?)\s*\[M\]\.?\s*"
+    r"(?P<rest>.+)$", re.S)
+_EN_BOOK_TAIL_YEAR_RE = re.compile(r"(?P<year>(?:19|20)\d{2})[.。]?\s*$")
+
+#: 非书的出版信息（期刊卷期/年份混进「出版社」位）→ 不当 plain book，保留原条目。
+_NOT_BOOK_PUB_RE = re.compile(r"(?:19|20)\d{2}|第\s*\d+\s*[期卷]")
+
+
+def _parse_en_numbered_book(s: str) -> dict | None:
+    """英文编号书：`作者列表. 题名[M]. 城市: 出版社, 年.`（86-02 实测，行内证据）。"""
+    if not s or _has_cjk(s):
+        return None
+    m = _EN_NUMBERED_BOOK_RE.match(s.strip())
+    if not m:
+        return None
+    rest = m.group("rest").strip()
+    ym = _EN_BOOK_TAIL_YEAR_RE.search(rest)
+    if not ym:
+        return None
+    addr, sep, pub = rest[: ym.start()].strip().rstrip(",，;；").partition(":")
+    if not sep:
+        return None
+    addr = addr.strip().strip(",，;；")
+    pub = pub.strip()
+    if not (2 <= len(addr) <= 60 and 2 <= len(pub) <= 100):
+        return None
+    # 作者串只按**源顺序**保留、把逗号换成 BibTeX 的 `and`（不拆/不补姓名部件）。
+    # 单个 token / 以缩写开头的作者（`J. Smith. …`）几乎都是被首个句点切错 → 不猜。
+    author = m.group("author").strip().strip(",，;；")
+    if " " not in author or re.match(r"^[A-Za-z]\.", author):
+        return None
+    author = re.sub(r"\s*[,，]\s*", " and ", author)
+    return {
+        "_type": "book", "author": author, "title": m.group("title").strip(),
+        "year": ym.group("year"), "address": addr, "publisher": pub,
+    }
+
+
+def _parse_cn_plain_book_no_angle(s: str) -> dict | None:
+    """中文 plain book（题名无《》）：`作者：书名，年，出版地：出版社`（86-02 实测）。
+
+    只认「作者冒号 + 书名列 + 行内年份 + 显式 `出版地: 出版社`」四件行内证据；
+    任何一件缺失（尤其中文期刊行没有 `地: 社`）→ None，保留原条目。
+    """
+    m = re.match(
+        r"^(?P<author>[^：:《，,。]{2,30})\s*[：:]\s*"
+        r"(?P<title>[^，,。：《》“”]{2,120})\s*[，,]\s*(?P<rest>.+)$", s)
+    if not m:
+        return None
+    years = re.findall(r"(?:19|20)\d{2}", s)
+    if not years:
+        return None
+    addr, pub = _split_address_publisher(m.group("rest").strip())
+    if not addr or not pub or _NOT_BOOK_PUB_RE.search(pub):
+        return None
+    return {
+        "_type": "book", "author": m.group("author").strip(),
+        "title": m.group("title").strip(), "year": years[-1],
+        "address": addr, "publisher": pub,
+    }
+
+
+def _has_en_numbered_book(raw: str) -> bool:
+    """`repair_word_refs` ② 的**路由**判据：该行是否是英文编号书形态（不参与解析）。"""
+    m = _NUMBERED_HEAD_RE.match(raw or "")
+    return _parse_en_numbered_book(
+        (m.group(2) if m else (raw or "")).strip()) is not None
+
+
 def _parse_cn_numbered_line(raw: str) -> dict | None:
     """解析中文编号条目：`作者：《题名》，《期刊》，年` / `作者：《书名》，译者译，地：社，年`。
 
     只认**行内证据**（题名来自《》、年份来自行内 4 位数字、期刊/出版社来自显式
     标点段）；① 译著、② 期刊论文、③ 编著章节 三种形态之外一律返回 None（保留原条目）。
+
+    B-107（86-02 实测）在同一判据内补两种 **plain book**：④ 中文 `《题名》，[年，]地：社`
+    与 ⑤ 题名不带《》的 `作者：书名，[年，]地：社`；另加 ⑥ 英文编号书 `…[M]. 地: 社, 年`。
+    旧三形态判据与顺序一字未动（新分支只在其后/在其不可达处生效）。
     """
     m = _NUMBERED_HEAD_RE.match(raw or "")
     s = (m.group(2) if m else (raw or "")).strip()
-    if not _has_cjk(s) or "《" not in s:
-        return None
+    if not _has_cjk(s):
+        return _parse_en_numbered_book(s)
+    if "《" not in s:
+        return _parse_cn_plain_book_no_angle(s)
     colon = re.search(r"[：:]", s)
     if not colon:
         return None
@@ -1222,6 +1302,13 @@ def _parse_cn_numbered_line(raw: str) -> dict | None:
             d["address"] = addr
         if pub:
             d["publisher"] = pub
+        return d
+    # ④ 中文 plain book：`《题名》，[年，]出版地：出版社[，年]`（86-02 实测）
+    addr, pub = _split_address_publisher(tail)
+    if addr and pub and not _NOT_BOOK_PUB_RE.search(pub):
+        d["_type"] = "book"
+        d["address"] = addr
+        d["publisher"] = pub
         return d
     return None
 
@@ -1533,7 +1620,7 @@ def _repair_word_refs_impl(doc) -> tuple[list[str], list[str]]:
     if extra_added:
         notes.append(f"同段多文献：编号清单共拆出 {extra_added} 条被吞并的文献")
 
-    # ── ② 中文编号条目字段归位（90-07 型）───────────────────────────────
+    # ── ② 编号条目字段归位（90-07 / 86-02 型）───────────────────────────
     fixed_cn = 0
     fixed_keys: list[str] = []
     for i, (key, ent, raw) in enumerate(entries):
@@ -1550,6 +1637,9 @@ def _repair_word_refs_impl(doc) -> tuple[list[str], list[str]]:
             or title.strip().endswith("译")
             or "：" in author
             or "《" in author
+            # B-107：英文编号书（86-02 Boas2022）旧判据全部不命中，但同一行内证据
+            # 足以归位；这里只**多路由**这一种形态（判据仍在 `_parse_*` 单点）。
+            or _has_en_numbered_book(full)
         )
         if not fragment:
             continue
