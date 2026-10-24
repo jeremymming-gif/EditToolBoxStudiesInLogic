@@ -60,6 +60,11 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 
 from slcn import docxsource as D  # noqa: E402
 
+# B-207：`_clean_affil_line` 的定义已搬进 `slcn/wordmeta.py`（docxsource 只是门面）。
+# `parse_docx` 内部调用它时，**global 查找发生在 wordmeta 命名空间**——所以 monkeypatch
+# 必须打在 owning 模块上，打在门面上不会生效（门面只是另一份绑定）。
+from slcn import wordmeta as M  # noqa: E402
+
 FAILS = []
 SKIPS = []
 
@@ -238,7 +243,7 @@ check("③ 单独一行 `武汉大学哲学系` 结果逐字不变",
 
 # 真实稿里**实际喂进去的每一行**：旧非空 ⇒ 新相同（这是本缺陷的核心不变量）
 _SAW: list[tuple[str, str, str]] = []
-_real_clean = D._clean_affil_line
+_real_clean = M._clean_affil_line
 
 
 def _spy(line):
@@ -254,7 +259,7 @@ if not os.path.isfile(BO_CHEN):
 else:
     from slcn import sources  # noqa: E402
 
-    D._clean_affil_line = _spy
+    M._clean_affil_line = _spy          # 打 owning 模块（wordmeta），parse_docx 才看得到
     try:
         for nm, src in _DOCS:
             ss = sources.identify(src) if os.path.isdir(src) else None
@@ -268,7 +273,7 @@ else:
                 continue
             _checked_docs.append(nm)
     finally:
-        D._clean_affil_line = _real_clean
+        M._clean_affil_line = _real_clean
 
 _broke = [(ln, o, n) for ln, o, n in _SAW if o and o != n]
 _gain_lines = sorted({(ln, n) for ln, o, n in _SAW if not o and n})
@@ -318,11 +323,11 @@ for nm, path in _DOCS:
         continue
     _old, _new = {}, {}
     for tag, impl, box in (("old", old_clean_affil_line, _old), ("new", _real_clean, _new)):
-        D._clean_affil_line = impl
+        M._clean_affil_line = impl
         try:
             doc = aff_of(path)
         finally:
-            D._clean_affil_line = _real_clean
+            M._clean_affil_line = _real_clean
         if doc is not None:
             box["cn"], box["en"] = doc.affiliation_cn or "", doc.affiliation_en or ""
     if not _old:

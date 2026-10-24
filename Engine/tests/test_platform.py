@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import os
 import pathlib
 import subprocess
@@ -430,6 +431,251 @@ check("(h) `bibdb.py` 的 argparse 子命令名全部出现在 `Engine/docs/ENGI
       f"rc={r.returncode} 子命令 {len(_cli_subs)} 个；缺失：{_missing_cmds}"
       if r.returncode == 0 else f"rc={r.returncode} {r.stderr[-160:]!r}")
 
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (h) B-207 模块契约：docxsource 拆六模块 + 门面 re-export ──")
+# B-207 spec §5。上方 (h) 文档覆盖组保持原样；本组沿用 spec 的「(h)」编号，四条是 (h1)–(h4)。
+# 契约对象：`slcn/docxsource.py` 拆成 wordcore/wordentry/wordmeta/wordrender/wordbody/
+# wordcitebody 六个静态模块 + docxsource 门面，要求**零行为变化**：旧 `slcn.docxsource`
+# 命名空间一个符号都不许少，且动态取到的必须就是 owning 模块里的**同一个对象**。
+# 旧符号清单由 `git show e6e4c8d:Engine/slcn/docxsource.py` 的 AST 生成：
+#   顶层 def/class + 模块级常量赋值共 211 个（含私有名），外加原 head 的 9 个
+#   wordcaption/wordcite 别名。清单长度被 (h1) 钉住：删名/漏名都会红。
+_B207_OLD_SYMBOLS = (
+    "_ZERO_WIDTH", "_strip_zero_width", "SURNAME_PINYIN", "TRANSLATED_NAMES", "TYPE_MAP",
+    "PUNCT_TO_STRIP", "_LATEX_ESCAPES", "_ESCAPE_RE", "escape_latex", "_footnote_latex",
+    "escape_bib_value", "RefEntry", "DocxDoc", "_REF_RE", "parse_reference_line",
+    "_REF_CN_RE", "_REF_EN_RE", "_QUOTED", "_parse_reference_line_en",
+    "_looks_short_bibliographic_note", "_entry_is_note_only", "_src_line_key",
+    "_citation_title_year", "_src_line_keys_for_works", "_REF_EN_FULLNAME_RE",
+    "_EN_AUTHOR_SPLIT", "_initials", "_parse_reference_line_en_fullname", "_REF_CN2_RE",
+    "_parse_reference_line_cn2", "_parse_reference_line_cn", "_NUMBERED_PREFIX_RE",
+    "_APA_YEAR_RE", "_APA_YEAR_RANGE_RE", "_EN_SENTENCE_END", "_clean_apa_authors",
+    "_apa_kind", "_parse_reference_line_apa", "_CN_COLON_RE",
+    "_parse_reference_line_cn_colon", "_EN_YEAR_END_RE", "_parse_reference_line_year_end",
+    "_CN_APA_RE", "_parse_reference_line_cn_apa", "_QUOTED_TITLE_RE",
+    "_parse_reference_line_loose", "_numbered_refs", "_make_key_core", "make_key",
+    "_dedupe_keys", "_EN_JOURNAL_RE", "_EN_JOURNAL_RE2", "_KIND_BY_ETYPE",
+    "_match_en_journal", "_clean_journal_name", "_match_incollection", "_en_entry_fields",
+    "_EN_ORG_RE", "_finalize_en_entry", "refs_to_bib", "_split_publisher", "_bib_author",
+    "_extract_publisher", "_BT_STOP_RE", "_EDITOR_MARK_RE", "_BT_NON_TITLE_RE",
+    "_PUB_COLON_RE", "_bt_candidate_ok", "_editor_candidate_ok",
+    "_incollection_book_editor", "_incollection_pub_addr", "_HEAD1", "_HEAD_CN_SPACE",
+    "_HEAD2", "_HEAD_CN_ARABIC", "_HEAD_CN_DOT", "_HEAD_CN_BAD_TAIL", "_CN_HEAD_PUNCT",
+    "_is_cn_numbered_heading", "_is_cn_dot_heading", "_ABS_LEAD", "_ABS_RE", "_KW_RE",
+    "_REF_HEADS", "_ABS_LOOKAHEAD", "_ABS_MIN_CHARS", "_ABS_END_CHARS", "_META_LABEL_RE",
+    "_CLC_META_RE", "_is_clc_meta_only", "MIN_BODY_CHARS", "_HEAD_EN1", "_HEAD_EN2",
+    "_HEAD_EN2_HALF", "_HEAD_EN3", "META_SCAN", "_SUB_RE", "_EMAIL_RE", "_EMAIL_ANY_RE",
+    "_AFFIL_HEAD_RE", "_TAIL_BLOCK_SCAN", "_TAIL_LABEL_RE", "_ADDR", "_ADDR_ALONE_RE",
+    "_ADDRS_ONLY_RE", "_NAME_ADDR_RE", "_PAREN_ADDR_RE", "_AUTHOR_MARK_RE", "_TRAIL_PUNCT",
+    "_PLACEHOLDER_EMAIL_RE", "_EMAIL_TAIL_FALLBACK", "_AFFIL_WORD_RE", "_AFFIL_HEAD_WORDS",
+    "_AFFIL_LABEL_RE", "_AFFIL_NEVER_RE", "_AFFIL_PROSE_RE", "_AFFIL_CITY_ZIP_RE",
+    "_AFFIL_LIST_ITEM_RE", "_AFFIL_UNIT_START_RE", "_AFFIL_UNIT_TAIL",
+    "_AFFIL_UNIT_END_RE", "_AFFIL_UNIT_END_ANY_RE", "_AFFIL_TITLE_TAIL_RE",
+    "_AFFIL_NEVER_START_RE", "_LATIN_STOPWORDS", "_AFFIL_LATIN_START_RE", "AFFIL_EN_JOIN",
+    "_clean_affil_line", "_clean_affil_line_strict", "_clean_affil_by_sentence",
+    "_clean_affil_cjk", "_clean_affil_latin", "_affil_same_unit", "_affil_lines_to_units",
+    "_strip_author_names", "_affil_block_hits", "_affil_head_zone",
+    "_looks_like_name_line", "collect_affiliations", "_norm_email", "_emails_in_text",
+    "collect_emails", "_known_cn_authors", "_known_en_authors", "_is_subtitle",
+    "_title_with_break", "_looks_like_person", "_label_body", "_looks_like_abs_prose",
+    "_abs_body_cn", "_backtrack_block_start", "_skip_en_refs_to_title",
+    "locate_tail_block", "_tail_abstract_cn", "parse_tail_metadata", "_TITLE_SMALL_WORDS",
+    "_looks_plain_en_title", "classify_en_heading", "_has_cjk", "find_char_diagrams",
+    "SHAPE_PLACEHOLDER", "table_env", "render_cell", "figure_env", "hoist_quote_fallback",
+    "render_para", "_AUTO_NUM_FMT_OK", "_AUTO_NUM_LVL_RE", "_PRE_NUM_RE", "_xml_para_text",
+    "_docx_numbering_defs", "_auto_numbered_ref_items", "_materialize_auto_numbered_refs",
+    "_footnote_num2key_gate", "_footnote_bare_cite_gate_warning", "_THEOREM_ENV",
+    "_NUM_CHARS", "_THEOREM_HEAD_RE", "_PROOF_HEAD_RE", "_REMARK_HEAD_RE", "_EQ_REF_RE",
+    "_drop_text_prefix", "_theorem_env_of", "_QED_TOKENS", "_strip_qed_tail",
+    "_proof_env_of", "_remark_prefix", "parse_docx", "_CITE_RE", "_normalize_locator",
+    "_FN_BARE_NUM_RE", "_FN_SENT_END", "_FN_GAP_ASCII_OK", "_FN_GAP_TOKEN_RE",
+    "_FN_GAP_PUNCT", "_FN_NONCITE_SUFFIX_RE", "_FN_INHERIT_MAX_GAP", "_fn_inherit_gap_ok",
+    "link_footnote_bare_citations", "_NUM_GROUP", "_cite_nums", "_GRP_CN", "_GRP_EN",
+    "link_numbered_citations", "_en_locator_cmd", "_LATEX_CMD_RE", "_NAME_TOKEN_RE",
+    "_cite_name_tokens", "_author_surname_token", "_year_fallback_evidence",
+    "link_citations",
+)
+_B207_HEAD_ALIASES = {
+    "_caption_candidate": ("wordcaption", "caption_candidate"),
+    "_find_captions": ("wordcaption", "find_captions"),
+    "_is_figure_para": ("wordcaption", "is_figure_para"),
+    "_FN_LEAD_FAR_RE": ("wordcite", "CUE_LEAD_FAR_RE"),
+    "_FN_LEAD_NEAR_RE": ("wordcite", "CUE_LEAD_NEAR_RE"),
+    "_cue_evidence": ("wordcite", "cue_evidence"),
+    "_fn_in_math": ("wordcite", "fn_in_math"),
+    "_fn_in_paren_depths": ("wordcite", "fn_in_paren_depths"),
+    "_link_body_cue_citations": ("wordcite", "link_body_cue_citations"),
+}
+_B207_MODULES = ("wordcore", "wordentry", "wordmeta", "wordrender", "wordbody",
+                 "wordcitebody")
+_B207_MISSING = object()
+
+
+def _b207_top_defs(path: pathlib.Path) -> dict[str, list[int]]:
+    """文件里**定义**的顶层符号 → 全部定义行号（def/class/常量赋值；Import 不算）。
+
+    返回 list 而非单个行号：**同一文件内的重复定义也必须被抓到**
+    （用 dict 覆盖会让「同一文件里的第二实现」逃过 (h1)/(h4) 的重复检查）。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: dict[str, list[int]] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.setdefault(node.name, []).append(node.lineno)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    out.setdefault(tgt.id, []).append(node.lineno)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            out.setdefault(node.target.id, []).append(node.lineno)
+    return out
+
+
+# ── (h1) facade re-export：完整 + 同一性 ──────────────────────────────────
+try:
+    from slcn import docxsource as _b207_facade  # noqa: E402
+    _b207_facade_err = ""
+except Exception as _exc:  # noqa: BLE001
+    _b207_facade = None
+    _b207_facade_err = repr(_exc)
+
+_b207_owned: dict[str, list[tuple[str, int]]] = {}
+_b207_absent_mods: list[str] = []
+_b207_import_err: dict[str, str] = {}
+_b207_imported: dict[str, object] = {}
+for _mod in _B207_MODULES:
+    _mod_path = ENGINE / "slcn" / (_mod + ".py")
+    try:
+        _b207_imported[_mod] = importlib.import_module("slcn." + _mod)
+    except Exception as _exc:  # noqa: BLE001
+        _b207_import_err[_mod] = repr(_exc)
+    if not _mod_path.is_file():
+        _b207_absent_mods.append(_mod)
+        continue
+    for _sym, _lines in _b207_top_defs(_mod_path).items():
+        for _line in _lines:
+            _b207_owned.setdefault(_sym, []).append((_mod, _line))
+
+_b207_missing = [n for n in _B207_OLD_SYMBOLS
+                 if _b207_facade is None or not hasattr(_b207_facade, n)]
+_b207_no_owner = [n for n in _B207_OLD_SYMBOLS if not _b207_owned.get(n)]
+_b207_dup = sorted(
+    "%s→%s" % (n, ["%s:%d" % (m, ln) for m, ln in locs])
+    for n, locs in _b207_owned.items() if len(locs) > 1)
+_b207_identity_bad: list[str] = []
+if _b207_facade is not None:
+    for _name in _B207_OLD_SYMBOLS:
+        _locs = _b207_owned.get(_name) or []
+        if len(_locs) != 1:
+            continue
+        _owner = _b207_imported.get(_locs[0][0])
+        if getattr(_b207_facade, _name, _B207_MISSING) is not getattr(
+                _owner, _name, _B207_MISSING):
+            _b207_identity_bad.append("%s→%s" % (_name, _locs[0][0]))
+    for _alias, (_src_mod, _orig) in _B207_HEAD_ALIASES.items():
+        try:
+            _src = importlib.import_module("slcn." + _src_mod)
+        except Exception as _exc:  # noqa: BLE001
+            _b207_identity_bad.append("%s→%s(%r)" % (_alias, _src_mod, _exc))
+            continue
+        if getattr(_b207_facade, _alias, _B207_MISSING) is not getattr(
+                _src, _orig, _B207_MISSING):
+            _b207_identity_bad.append("%s→%s.%s" % (_alias, _src_mod, _orig))
+
+check("(h1) 门面 re-export 完整且同一：旧 `docxsource` 的 211 个顶层符号 + 9 个 head 别名"
+      "全部在 `slcn.docxsource` 里，且 **is** 其唯一 owning 新模块的同名对象",
+      len(_B207_OLD_SYMBOLS) == 211 and len(_B207_HEAD_ALIASES) == 9
+      and _b207_facade is not None and not _b207_absent_mods and not _b207_import_err
+      and not _b207_missing and not _b207_no_owner and not _b207_dup
+      and not _b207_identity_bad,
+      "facade=%s 缺模块=%s import失败=%s 缺符号(%d)=%s 无owner=%s 重复定义=%s is不符(%d)=%s"
+      % (_b207_facade_err or "ok", _b207_absent_mods, _b207_import_err,
+         len(_b207_missing), _b207_missing[:5], _b207_no_owner[:5], _b207_dup[:3],
+         len(_b207_identity_bad), _b207_identity_bad[:5]))
+
+# ── (h2) 无循环 import ───────────────────────────────────────────────────
+_b207_import_rc = child("import slcn.build, slcn.docxsource, slcn.footnotes")
+_b207_graph: dict[str, set[str]] = {}
+for _py in sorted((ENGINE / "slcn").glob("*.py")):
+    _deps: set[str] = set()
+    for _node in ast.parse(_py.read_text(encoding="utf-8")).body:
+        if not isinstance(_node, ast.ImportFrom) or (_node.level or 0) < 1:
+            continue
+        if _node.module:
+            _deps.add(_node.module.split(".")[0])
+        else:                                    # `from . import footref` 形态
+            _deps.update(_a.name.split(".")[0] for _a in _node.names)
+    _b207_graph[_py.stem] = _deps
+
+
+def _b207_find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
+    color: dict[str, int] = {}
+    stack: list[str] = []
+    found: list[list[str]] = []
+
+    def visit(u: str) -> None:
+        color[u] = 1
+        stack.append(u)
+        for v in sorted(graph.get(u, ())):
+            if v not in graph:
+                continue
+            if color.get(v, 0) == 1:
+                found.append(stack[stack.index(v):] + [v])
+            elif color.get(v, 0) == 0:
+                visit(v)
+        stack.pop()
+        color[u] = 2
+
+    for u in sorted(graph):
+        if color.get(u, 0) == 0:
+            visit(u)
+    return found
+
+
+_b207_cycles = _b207_find_cycles(_b207_graph)
+_b207_reverse = [m for m in _B207_MODULES if "docxsource" in _b207_graph.get(m, set())]
+_b207_graph_absent = [m for m in _B207_MODULES + ("docxsource",) if m not in _b207_graph]
+check("(h2) 无循环 import：子进程 `import slcn.build, slcn.docxsource, slcn.footnotes` rc=0；"
+      "且 `slcn/` 顶层相对 import 图**无环**、六个新模块顶层都不 import docxsource",
+      _b207_import_rc.returncode == 0 and not _b207_cycles and not _b207_reverse
+      and not _b207_graph_absent,
+      "rc=%d %r 环=%s 新模块反向import=%s 缺节点=%s"
+      % (_b207_import_rc.returncode, _b207_import_rc.stderr[-120:], _b207_cycles[:2],
+         _b207_reverse, _b207_graph_absent))
+
+# ── (h3) 行数上限 ────────────────────────────────────────────────────────
+_b207_limits = {"docxsource": 3000}
+_b207_limits.update({m: 1500 for m in _B207_MODULES})
+_b207_line_bad: list[str] = []
+_b207_line_absent: list[str] = []
+for _mod, _limit in _b207_limits.items():
+    _mod_path = ENGINE / "slcn" / (_mod + ".py")
+    if not _mod_path.is_file():
+        _b207_line_absent.append(_mod)
+        continue
+    _n = len(_mod_path.read_text(encoding="utf-8").splitlines())
+    if _n > _limit:
+        _b207_line_bad.append("%s=%d>%d" % (_mod, _n, _limit))
+check("(h3) 行数上限：`slcn/docxsource.py` ≤3000 行，六个新模块各 ≤1500 行"
+      "（拆分不许把大文件换个名字继续长）",
+      not _b207_line_bad and not _b207_line_absent,
+      "超限=%s 缺文件=%s" % (_b207_line_bad, _b207_line_absent))
+
+# ── (h4) 判据单点：def/赋值定义各恰好 1 处 ───────────────────────────────
+_B207_SINGLE_POINT = ("_work_titles", "_work_count", "looks_classical",
+                      "_CLASSICAL_START", "_work_segments", "_is_classical_ref",
+                      "split_numbered_bib_note")
+_b207_sites: dict[str, list[str]] = {n: [] for n in _B207_SINGLE_POINT}
+for _py in sorted((ENGINE / "slcn").glob("*.py")):
+    for _sym, _lines in _b207_top_defs(_py).items():
+        if _sym in _b207_sites:
+            for _line in _lines:
+                _b207_sites[_sym].append("%s:%d" % (_py.name, _line))
+_b207_multi = {n: s for n, s in _b207_sites.items() if len(s) != 1}
+check("(h4) 判据单点：七个判据符号在 `slcn/` 全库的顶层 def/赋值定义**各恰好 1 处**"
+      "（Import/ImportFrom 不算；出现第二处 = 双实现回归）",
+      not _b207_multi,
+      "定义位置=%s%s" % (_b207_sites, ("；不唯一=%s" % _b207_multi) if _b207_multi else ""))
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:

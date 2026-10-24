@@ -125,6 +125,24 @@ def _looks_cn_biblio(text: str) -> bool:
     return t.endswith(("。", "页。", "页", "。]", "．", "."))
 
 
+def split_numbered_bib_note(text: str) -> str | None:
+    """「[编号] + 中文文献标记」注释型脚注 → 文献条目（去 `[N]` 前缀后返回），否则 None。
+
+    第四十九批引擎侧边界保护（86-03 实测）：中文**文献条目型**脚注
+    （源稿形如 `[] 胡炳年、陈彦瑾，“…”，逻辑学研究，2018 年第 1 期。`）会被
+    新分类器判成 mixed/note_only → bib 22→1。带 `[编号]` 开头 + 文献标记
+    （书名号/出版社/学报/期号/年份）时按 reference_entry 处理，进并集 bib。
+    只在带编号前缀时兜底，不影响 86-07 论述脚注 / 90-06/07 短引用。
+    """
+    t = text or ""
+    if not re.match(r"^\s*\[\s*[^\]]*\]", t):
+        return None
+    if not re.search(r"《[^》]{2,}》|出版社|学报|期刊|\[[MJDC]\]|"
+                     r"(?:19|20)\d{2}\s*年?\s*第\s*\d+\s*[期卷]", t):
+        return None
+    return re.sub(r"^\s*\[\s*[^\]]*\]\s*", "", t).strip()
+
+
 def looks_classical(ref: str) -> bool:
     """判断是不是古典/一手文献（Ockham, SL II, 1, OP I, 242.）。
 
@@ -924,6 +942,15 @@ _CUE_MID = re.compile(
 _CLASSICAL_START = re.compile(
     r"^\s*(?:[A-Z][A-Za-z'’\-]+,\s*)?(?:SL|OP|Exp|Summa|Sent|Quodl|Ord)\b")
 
+
+def _is_classical_ref(t: str) -> bool:
+    """古典/一手文献判据单点：`looks_classical(t) or _CLASSICAL_START.match(t)`。
+
+    两个底层判据缺一不可（顺序与语义不变），反例：`"OP I, 242, 1990"` 含年份使
+    `looks_classical` 为 False，但 `_CLASSICAL_START` 命中 → 合并结果必须仍为 True。
+    """
+    return looks_classical(t) or bool(_CLASSICAL_START.match(t))
+
 #: note_only 探测的引者注/说明注守卫（命中即不探测，保持纯注释）
 _NOTE_PROBE_BAD = re.compile(
     r"笔者|我们|本文|拙文|作者认为|此注|前注|同上|见前|转引自|感谢|基金|"
@@ -1098,7 +1125,7 @@ def _looks_like_citation_ref(ref: str) -> bool:
     t = str(ref or "").strip()
     if not t or len(t) < 8 or len(t) > 420:
         return False
-    if looks_classical(t) or _CLASSICAL_START.match(t):
+    if _is_classical_ref(t):
         return False
     if _REF_PROSE_START.match(t):
         return False
@@ -1133,6 +1160,22 @@ def _sentences(text: str) -> list[str]:
     return [s for s in out if s.strip()]
 
 
+def _work_segments(ref: str) -> list[tuple[int, str]]:
+    """按**分号**把引用片段切段，返回 [(段起点绝对偏移, 段原文), ...]（分隔符不返回）。
+
+    `_work_titles` / `_work_count` 共用的**唯一**分段口径：中英文分号；空段跳过，
+    其余段（含只有空白的段）原样返回，段内判定由两个消费方各自在其上做。
+    """
+    t = str(ref or "")
+    out: list[tuple[int, str]] = []
+    offset = 0
+    for seg in re.split(r"([；;])", t):
+        if seg and seg not in ("；", ";"):
+            out.append((offset, seg))
+        offset += len(seg)
+    return out
+
+
 def _work_titles(ref: str) -> list[dict]:
     """从引用片段里抽「(题名, 年份)」列表（多作品拆分用）。
 
@@ -1142,11 +1185,7 @@ def _work_titles(ref: str) -> list[dict]:
     """
     t = str(ref or "")
     found: list[dict] = []
-    offset = 0
-    for seg in re.split(r"([；;])", t):
-        if not seg or seg in ("；", ";"):
-            offset += len(seg)
-            continue
+    for offset, seg in _work_segments(t):
         seg_start = offset + (len(t[offset:]) - len(t[offset:].lstrip()))
         if re.search(r"[\u4e00-\u9fff]", seg):
             m = _WORK_CN_TITLE.search(seg)
@@ -1159,7 +1198,6 @@ def _work_titles(ref: str) -> list[dict]:
             ym = re.search(r"(?:19|20)\d{2}", tail)
             found.append({"title": title, "year": ym.group(0) if ym else "",
                           "pos": seg_start + start})
-        offset += len(seg)
     found.sort(key=lambda x: x["pos"])
     return found
 
@@ -1176,7 +1214,7 @@ def _work_count(ref: str) -> int:
     """
     t = str(ref or "")
     total = 0
-    for seg in re.split(r"[；;]", t):
+    for _offset, seg in _work_segments(t):
         seg = seg.strip()
         if not seg:
             continue
@@ -1244,7 +1282,7 @@ def _note_only_probe(text: str) -> dict | None:
         return None
     if t.count("。") > 1:
         return None
-    if looks_classical(t) or _CLASSICAL_START.match(t):
+    if _is_classical_ref(t):
         return None
     body, _had = strip_leading_cue(t)
     fields = _extract_raw_fields(body)
