@@ -1619,8 +1619,26 @@ _ABS_END_CHARS = "。；！？，,.;!?"
 # ③ 的「下一个元数据标签」清单（摘要/关键词那两类由 _ABS_RE/_KW_RE 判，不重复）
 _META_LABEL_RE = re.compile(
     _ABS_LEAD + r"(?:标题|题目|题名|副标题|作者|单位|所属单位|邮箱|电子邮箱|通讯作者|"
-    r"通信作者|作者简介|作者信息|中图分类号|文献标识码|基金项目|收稿日期|"
+    r"通信作者|作者简介|作者信息|中图分类号|文献(?:标识|标志)码|基金项目|收稿日期|"
     r"Title|Author|Affiliation|E-?mail)\s*(?:[:：]|$)", re.I)
+
+
+# ── B-219③：正文里只由「中图分类号/文献标识码」组成的整段 → 丢弃 ─────────────
+#
+# 本刊标题页由 SLCN-MIX.sty 固定印刷 `中图分类号：B81` / `文献标识码：A`
+# （SLCN-MIX.sty 标题页命令），正文里再来一行就是重复。判据（spec §2③）：
+# **整段只由**这些元数据组成（标签 + 值，可两行合一/分两段），值限
+# 字母数字与 `.-—/+`；段里只要还夹着正文句子就不动（GIGO 不猜）。
+_CLC_META_RE = re.compile(
+    r"^(?:(?:中图分类号|文献(?:标识|标志)码)\s*(?:[:：]\s*)?[A-Za-z0-9][A-Za-z0-9.\-—/+]*"
+    r"\s*(?:[；;，,、]\s*)?)+$"
+)
+
+
+def _is_clc_meta_only(text: str) -> bool:
+    """整段是否只由「中图分类号/文献标识码」元数据组成（B-219③）。"""
+    t = (text or "").strip()
+    return bool(t) and bool(_CLC_META_RE.fullmatch(t))
 
 # 低于这个字符数就不可能是正文（例如剩下的只是一张缩写对照表）
 MIN_BODY_CHARS = 1500
@@ -2725,17 +2743,22 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None,
 
     if any_long:
         w = round(0.92 / ncol, 3)
-        colspec = "|" + "|".join("p{" + str(w) + "\\textwidth}" for _ in range(ncol)) + "|"
+        _cols = ["p{" + str(w) + "\\textwidth}" for _ in range(ncol)]
     else:
-        colspec = "|" + "|".join("c" for _ in range(ncol)) + "|"
+        _cols = ["c" for _ in range(ncol)]
+    # B-219①：三线表列格式**不带竖线**；网格表仍带（默认路径逐字节不变）。
+    # 含图表走 longtable 分支（spec：该分支不改），因此三线表判据在这里排除它。
+    _three = bool(getattr(tbl, "three_line", False)) and not has_img
+    colspec = "".join(_cols) if _three else "|" + "|".join(_cols) + "|"
 
-    def _row_tex(r) -> str:
+    def _row_tex(r, bars: bool = True) -> str:
         cells = []
         used = 0
         for c in r:
-            txt = render_cell(c, img_names)
+            txt = render_cell(c, img_names, soft_break=_three)
             if c.colspan > 1:
-                cells.append(f"\\multicolumn{{{c.colspan}}}{{|c|}}{{{txt}}}")
+                cells.append(f"\\multicolumn{{{c.colspan}}}"
+                             f"{{{'|c|' if bars else 'c'}}}{{{txt}}}")
                 used += c.colspan
             else:
                 cells.append(txt)
@@ -2744,6 +2767,25 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None,
             cells.append("")
             used += 1
         return "  " + " & ".join(cells) + " \\\\"
+
+    if _three:
+        # B-219① 三线表 → booktabs（判据见 docxxml.Table.three_line；含图表仍走
+        # longtable 分支，见下）。`\usepackage{booktabs}` 由 build.build_docx 按
+        # 产物是否含 `\toprule` 注入，模板 .sty/.tex 一个字都不改。
+        lines = ["\n\\begin{table}[htbp]", "  \\centering",
+                 f"  \\begin{{tabular}}{{{colspec}}}", "  \\toprule"]
+        if tbl.rows:
+            lines.append(_row_tex(tbl.rows[0], bars=False))
+            lines.append("  \\midrule")
+            for r in tbl.rows[1:]:
+                lines.append(_row_tex(r, bars=False))
+        lines.append("  \\bottomrule")
+        lines.append("  \\end{tabular}")
+        lines.append(f"  \\caption{{{caption}}}" if caption is not None
+                     else "  \\caption{【需补充表题】}")
+        lines.append(f"  \\label{{tab:{idx}}}")
+        lines.append("\\end{table}\n")
+        return "\n".join(lines)
 
     if has_img:
         head = _row_tex(tbl.rows[0]) if tbl.rows else ""
@@ -2773,17 +2815,22 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None,
     return "\n".join(lines)
 
 
-def render_cell(cell, img_names: dict[str, str] | None = None) -> str:
+def render_cell(cell, img_names: dict[str, str] | None = None,
+                soft_break: bool = False) -> str:
     """渲染一个单元格（文字 / 公式 / **图片**）。
 
     第四十六批②续：表格单元格内嵌图片（86-01 实测 18 张）旧实现直接丢弃；这里按
     `img_names`（rId → figN.ext）输出 `\\includegraphics`。**无图单元格**的输出与
     从前逐字节相同（只有 text/math 分支）。
+
+    `soft_break`（B-219①，默认 False=旧行为）：三线表的 p{} 定宽列里，单元格内换行
+    渲染成 `\\newline `（spec §2①「单元格内换行」）；网格表仍用空格连接。
     """
     parts = []
     for sg in cell.segs:
         if sg.kind == "text":
-            parts.append(escape_latex(sg.text).replace("\n", " ").strip())
+            parts.append(escape_latex(sg.text).replace(
+                "\n", "\\newline " if soft_break else " ").strip())
         elif sg.kind == "math":
             parts.append(f"${sg.text}$")
         elif sg.kind == "image":
@@ -2868,6 +2915,8 @@ def render_para(
     c_class_union: bool = False,
     num2key: dict[int, str] | None = None,
     fig_caption: str | None = None,
+    eq_counter: list[int] | None = None,
+    caption_only: bool = False,
 ) -> tuple[str, list[str]]:
     """把一段 XML 片段渲染成 LaTeX。
 
@@ -2889,6 +2938,13 @@ def render_para(
     fig_caption  **B-217③**：本段图对象对应的 Word 题注说明文字（已转义，调用方
                  只在「题注与图片唯一相邻」时传）；本段第一个 figure 用它当
                  `\\caption`，其余 figure/无题注保持占位。默认 None = 逐字节同从前。
+    eq_counter   **B-219②**：文档级独立公式计数器 `[0]`（parse_docx 只有在正文
+                 「式（N）/公式（N）」引用能与独立公式数对齐时才传同一个 `[0]`）。
+                 传了就按文档顺序把 `m:oMathPara` 渲染成
+                 `\\begin{equation}…\\label{eq:N}\\end{equation}`；默认 None =
+                 仍是 `\\[…\\]`，与从前逐字节相同。
+    caption_only **B-219④(a)**：本段是「图片对象 + 同段内联题注」——题注文字只进
+                 `\\caption`，不再重复渲染进正文。默认 False = 旧行为。
 
     返回 (LaTeX, 提示列表)。
     """
@@ -2956,6 +3012,8 @@ def render_para(
     shape_buf: list[int] = []
     for seg in para.segs:
         if seg.kind == "text":
+            if caption_only:
+                continue          # B-219④(a)：同段内联题注只进 \caption，不重复进正文
             t = escape_latex(seg.text)
             if not t.strip():
                 out.append(t)
@@ -2970,7 +3028,15 @@ def render_para(
         elif seg.kind == "math":
             # 第四十四批①：行间公式（m:oMathPara）→ `\[...\]`，行内仍 `$...$`
             if getattr(seg, "display", False):
-                out.append(f"\\[{seg.text}\\]")
+                if eq_counter is not None:
+                    # B-219②（拍板 A）：编号只在「正文引用可与独立公式顺序对齐」
+                    # 时由 parse_docx 传计数器启用；编号 N = 文档内第 N 个独立公式。
+                    eq_counter[0] += 1
+                    out.append(
+                        f"\\begin{{equation}}\n{seg.text}\n"
+                        f"\\label{{eq:{eq_counter[0]}}}\n\\end{{equation}}")
+                else:
+                    out.append(f"\\[{seg.text}\\]")
             else:
                 out.append(f"${seg.text}$")
         elif seg.kind == "shape":
@@ -3371,6 +3437,112 @@ def _footnote_bare_cite_gate_warning(fn_objs: dict) -> str:
             "编号不齐）→ 未转换（不猜），请人工核对")
 
 
+# ── B-219⑤：段首定理类标签 → 定理环境（最简映射；「注」不环境化）─────────────
+#
+# 判据（spec §2⑤，段首、整段为一条）：标签 ∈ {定理,引理,定义,命题,推论,公理,例}
+# **紧跟编号**（阿拉伯 1–2 位或 一…十），编号后允许分隔 `[：:．.、]` 或空白；
+# 或 {证明} 紧跟 `[.．：:]`（无编号）。不命中（「定义一个…」「证明 F-UD：」）→ 纯文本。
+# 编号由模板 sty 自动生成，这里只 strip 标签+作者编号，内容仍走 render_para
+# （行内公式/脚注/引用等既有路径全部复用）。
+_THEOREM_ENV = {
+    "定理": "theorem", "引理": "lemma", "定义": "definition",
+    "命题": "proposition", "推论": "corollary", "公理": "axiom", "例": "example",
+}
+_NUM_CHARS = r"(?:[0-9]{1,2}|[一二三四五六七八九十]{1,3})"
+_THEOREM_HEAD_RE = re.compile(
+    r"(?P<label>定理|引理|定义|命题|推论|公理|例)\s*" + _NUM_CHARS
+    + r"\s*(?:[：:．.、]\s*|\s+)")
+_PROOF_HEAD_RE = re.compile(r"证明\s*[.．：:]\s*")
+_REMARK_HEAD_RE = re.compile(r"注\s*" + _NUM_CHARS + r"?\s*(?:[：:．.、]|\s+)")
+
+#: B-219②：正文里的「式（N）/公式（N）」引用（全/半角括号；「（式（N））」也命中内层）
+_EQ_REF_RE = re.compile(r"(?:式|公式)\s*[（(]\s*(\d{1,3})\s*[）)]")
+
+
+def _drop_text_prefix(para, n_chars: int):
+    """返回「去掉前 n 个纯文字字符」的 Para 副本（跨 run 也成立；不改原对象）。"""
+    from .docxxml import Para, Seg
+
+    segs = []
+    left = n_chars
+    for sg in para.segs:
+        if left > 0 and sg.kind == "text":
+            if len(sg.text) <= left:
+                left -= len(sg.text)
+                continue
+            segs.append(Seg(sg.kind, sg.text[left:], italic=sg.italic,
+                            bold=sg.bold, fid=sg.fid, rid=sg.rid,
+                            display=sg.display, w_pt=sg.w_pt, h_pt=sg.h_pt))
+            left = 0
+        else:
+            segs.append(sg)
+    return Para(segs=segs, style=para.style)
+
+
+def _theorem_env_of(para):
+    """段首定理标签 → (环境名, 去掉标签后的 Para)；不命中 → None。"""
+    text = para.plain
+    lead = len(text) - len(text.lstrip())
+    m = _THEOREM_HEAD_RE.match(text, lead)
+    if not m:
+        return None
+    rest = _drop_text_prefix(para, m.end())
+    if not rest.plain.strip() and not any(
+            s.kind in ("math", "image") for s in rest.segs):
+        return None                     # 只剩「定理1：」的空段：不环境化，保持原样
+    return _THEOREM_ENV[m.group("label")], rest
+
+
+# B-219 修（verifier FAIL 1）：amsthm 的 proof 环境会自动印 `\qedsymbol`（本刊 sty 为
+# `\openbox`）；作者原稿段末常又写一个 □/`$\Box$` → 编译出两个框。这里**只去段末**的
+# QED 符号（正文中间的 □ 不动），让 amsthm 只印一个。
+_QED_TOKENS = ("□", "\\Box", "\\square", "\\boxempty", "\\qed")
+
+
+def _strip_qed_tail(rest):
+    """去掉证明段末尾的 QED 符号；无变化时原样返回同一个 Para。"""
+    segs = list(rest.segs)
+    changed = False
+    while segs:
+        sg = segs[-1]
+        if sg.kind == "math" and sg.text.strip() in _QED_TOKENS:
+            segs.pop(); changed = True; continue
+        if sg.kind == "text":
+            t = sg.text.rstrip()
+            tok = next((x for x in _QED_TOKENS if t.endswith(x)), None)
+            if tok is not None:
+                sg.text = t[: -len(tok)].rstrip(); changed = True
+                if not sg.text:
+                    segs.pop()
+                continue
+        break
+    if not changed:
+        return rest
+    from .docxxml import Para
+    return Para(segs=segs, style=rest.style)
+
+
+def _proof_env_of(para):
+    """段首「证明.」→ ("proof", 去掉标签后的 Para)；不命中 → None（无编号证明环境）。"""
+    text = para.plain
+    lead = len(text) - len(text.lstrip())
+    m = _PROOF_HEAD_RE.match(text, lead)
+    if not m:
+        return None
+    rest = _drop_text_prefix(para, m.end())
+    if not rest.plain.strip() and not any(
+            s.kind in ("math", "image") for s in rest.segs):
+        return None
+    return "proof", _strip_qed_tail(rest)
+
+
+def _remark_prefix(para) -> bool:
+    """段首「注…」标签（不环境化，只 warning；模板无未编号 remark 环境）。"""
+    text = para.plain
+    lead = len(text) - len(text.lstrip())
+    return bool(_REMARK_HEAD_RE.match(text, lead))
+
+
 def parse_docx(path: str, quote_threshold: int = 105,
                c_class_union: bool = False) -> DocxDoc:
     """解析 Word 文稿。
@@ -3728,6 +3900,19 @@ def parse_docx(path: str, quote_threshold: int = 105,
         doc.warnings.append(
             f"正文中的「基金项目：…」行已移入元数据（标题页基金项）："
             f"{doc.grants[:60]}")
+
+    # B-219③：正文里只由「中图分类号/文献标识码」组成的整段 → 删除（标题页由
+    # SLCN-MIX.sty 固定印刷 B81/A，不得重复）。与上面基金行同口径：从 body_paras /
+    # paras / blocks 三处一起移出，保持既有下标口径一致；没这行的稿件零变化。
+    _clc_paras = [p for p in body_paras if _is_clc_meta_only(p.plain)]
+    if _clc_paras:
+        _clc_ids = {id(p) for p in _clc_paras}
+        body_paras = [p for p in body_paras if id(p) not in _clc_ids]
+        paras = [p for p in paras if id(p) not in _clc_ids]
+        blocks = [b for b in blocks if id(b) not in _clc_ids]
+        doc.warnings.append(
+            f"已移除正文中图分类号/文献标识码行 {len(_clc_paras)} 段"
+            "（标题页固定印刷）：" + "；".join(p.plain.strip()[:40] for p in _clc_paras))
 
     # 第 121 条：全英文稿（正文前 120 段无汉字）里，文末有参考文献区时，
     # 脚注里的散文/引注一律按注释处理（01 Tuomo_Aho 型）；中文稿/混合稿不受这条影响。
@@ -4237,6 +4422,25 @@ def parse_docx(path: str, quote_threshold: int = 105,
         _fn_gate_hint = _footnote_bare_cite_gate_warning(fn_objs)
         if _fn_gate_hint:
             doc.warnings.append(_fn_gate_hint)
+    # B-219②（用户 2026-10-24 拍板 A：按引用联动）：先收集正文「式（N）/公式（N）」
+    # 的引用编号集合 R 与独立公式数 D（`m:oMathPara`，文档顺序）。
+    # 仅当 R 非空且 max(R) <= D 时启用全部编号（N=1..D，文档级计数器）；
+    # R 为空 → 保持 `\[…\]`（与已刊一致）；R 非空但对不齐 → 不编号 + 1 条 warning。
+    _eq_refs = {
+        int(n) for p in body_paras for n in _EQ_REF_RE.findall(p.plain) if int(n) >= 1
+    }
+    _eq_display = sum(
+        1 for p in body_paras for s in p.segs
+        if s.kind == "math" and getattr(s, "display", False)
+    )
+    eq_counter: list[int] | None = None
+    if _eq_refs:
+        if max(_eq_refs) <= _eq_display:
+            eq_counter = [0]
+        else:
+            doc.warnings.append(
+                f"式引用编号无法与独立公式对齐（D={_eq_display}, "
+                f"引用 max={max(_eq_refs)}），保持原样（需人工核对）")
     out: list[str] = []
     tab_idx = 0
     fig_counter = [0]   # P2-0：文档级图序号（整篇唯一；表序号 tab_idx 一直是文档级）
@@ -4255,9 +4459,12 @@ def parse_docx(path: str, quote_threshold: int = 105,
                                "table": True, "blank": False})
             continue
         _fig = _is_figure_para(_b, img_names)
-        _cap_items.append({"caption": _caption_candidate(_b), "figure": _fig,
+        _cap = _caption_candidate(_b)
+        _cap_items.append({"caption": _cap, "figure": _fig,
                            "table": False,
-                           "blank": not _b.plain.strip() and not _fig})
+                           # B-219④(b)：空题注段不透明（要在 find_captions 里出 warning）
+                           "blank": not _b.plain.strip() and not _fig
+                                    and not (_cap and _cap.get("empty"))})
     _cap_by_idx, _cap_skip, _cap_warns = _find_captions(_cap_items)
     doc.warnings.extend(_cap_warns)
     idx = -1
@@ -4300,12 +4507,24 @@ def parse_docx(path: str, quote_threshold: int = 105,
         if any(idx > k and idx < k + c for k, c in fig_marks.items()):
             continue  # 已被上一张图的占位吸收
         _fc = _cap_by_idx.get(idx)
-        latex, notes = render_para(para, fn_objs, doc.bib_entries, keymap, fn_pages,
+        # B-219⑤：段首定理类标签 → 定理环境（内容仍走 render_para，行内公式/脚注
+        # 等既有路径复用；「注」不环境化，只 warning）。
+        _theo = _theorem_env_of(para) or _proof_env_of(para)
+        _theo_env, _render_obj = (_theo[0], _theo[1]) if _theo else (None, para)
+        if _remark_prefix(para):
+            doc.warnings.append(
+                "注 未环境化（模板无未编号 remark 环境），保持原样（不猜）")
+        latex, notes = render_para(_render_obj, fn_objs, doc.bib_entries, keymap, fn_pages,
                                    quote_threshold, img_names, fig_counter=fig_counter,
                                    c_class_union=c_class_union, num2key=fn_num2key,
-                                   fig_caption=escape_latex(_fc["text"]) if _fc else None)
+                                   fig_caption=escape_latex(_fc["text"]) if _fc else None,
+                                   eq_counter=eq_counter,
+                                   caption_only=bool(_fc and _fc.get("inline")))
         doc.warnings.extend(notes)
         if not latex.strip():
+            continue
+        if _theo_env is not None:
+            out.append(f"\n\\begin{{{_theo_env}}}\n{latex}\n\\end{{{_theo_env}}}\n")
             continue
         plain = escape_latex(para.plain).strip()
         if _HEAD1.match(plain):

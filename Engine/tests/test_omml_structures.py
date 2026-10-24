@@ -251,6 +251,70 @@ try:
 except Exception as _e:  # noqa: BLE001
     skip("真实稿夹具", f"{type(_e).__name__}: {_e}")
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑨ B-219②：独立公式 equation 编号（拍板 A：仅当「式（N）」引用可对齐）
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑨ B-219② 独立公式 equation 编号 ──")
+from slcn.docxsource import parse_docx  # noqa: E402
+from slcn.build import _add_xrefs  # noqa: E402
+
+
+def _docx_with_display(ref_text: str = "") -> str:
+    ps = "".join(
+        f'<w:p><w:r><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>'
+        for t in ("公式编号测试稿", "张三", "摘要：测试。", "关键词：测试", "正文一段。"))
+    disp = ('<w:p><m:oMathPara><m:oMath>' + _rt("a=b")
+            + '</m:oMath></m:oMathPara></w:p>')
+    ref = (f'<w:p><w:r><w:t xml:space="preserve">{escape(ref_text)}</w:t></w:r></w:p>'
+           if ref_text else "")
+    doc = (f'<w:document xmlns:w="{W_NS}" xmlns:m="{M_NS}"><w:body>{ps}{disp}{ref}'
+           '</w:body></w:document>')
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", doc)
+    return path
+
+
+_D_EQ = _docx_with_display("由上式可得，式（1）成立。")
+try:
+    _eqdoc = parse_docx(_D_EQ)
+    check("B219② 正例：正文有「式（1）」且 D=1 → equation + label{eq:1}（无 \\[…\\]）",
+          "\\begin{equation}" in _eqdoc.body and "\\label{eq:1}" in _eqdoc.body
+          and "\\[a=b\\]" not in _eqdoc.body,
+          repr([ln for ln in _eqdoc.body.splitlines() if "equation" in ln or "eq:1" in ln]))
+    check("B219② 反例：无式引用 → 仍 \\[a=b\\]、不编号、无 warning",
+          not _eqdoc.warnings or not any("式引用编号" in w for w in _eqdoc.warnings))
+finally:
+    os.unlink(_D_EQ)
+
+_D_EQ2 = _docx_with_display()
+try:
+    _eqdoc2 = parse_docx(_D_EQ2)
+    check("B219② 反例：R 为空 → 独立公式保持 \\[a=b\\]、无 equation/label",
+          "\\[a=b\\]" in _eqdoc2.body and "\\begin{equation}" not in _eqdoc2.body
+          and "\\label{eq:" not in _eqdoc2.body, repr(_eqdoc2.body[-120:]))
+finally:
+    os.unlink(_D_EQ2)
+
+_D_EQ3 = _docx_with_display("见式（2）。")
+try:
+    _eqdoc3 = parse_docx(_D_EQ3)
+    check("B219② 反例：引用 max=2 > D=1 → 不编号、保持 \\[…\\] + 1 条 warning",
+          "\\[a=b\\]" in _eqdoc3.body and "\\begin{equation}" not in _eqdoc3.body
+          and any("式引用编号无法与独立公式对齐" in w for w in _eqdoc3.warnings),
+          repr(_eqdoc3.warnings[:2]))
+finally:
+    os.unlink(_D_EQ3)
+
+_eq_tex = "\\label{eq:1}\n见式（1）与公式（1）；已引用式（\\ref{eq:1}）不动。\n"
+_eq_out, _n_tab, _n_fig = _add_xrefs(_eq_tex)
+check("B219② 接线：有 label{eq:1} → 式（1）/公式（1）→ \\ref{eq:1}，保留括号、幂等",
+      "式（\\ref{eq:1}）" in _eq_out and "公式（\\ref{eq:1}）" in _eq_out
+      and _eq_out.count("\\ref{eq:1}") == 3, repr(_eq_out))
+check("B219② 反例：无 eq label → 「式（1）」逐字节不变（不产生 undefined reference）",
+      _add_xrefs("\\label{tab:1}\n如图1、式（1）。\n")[0] == "\\label{tab:1}\n如图1、式（1）。\n")
+
 print()
 print("=" * 78)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")

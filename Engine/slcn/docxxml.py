@@ -1004,6 +1004,8 @@ class Cell:
     segs: list[Seg] = field(default_factory=list)
     colspan: int = 1
     vmerge: str = ""  # '' | 'restart' | 'continue'
+    # B-219①：单元格**下框线**（首行有 = 三线表的表头线）。默认 False = 旧行为。
+    bottom_border: bool = False
 
     @property
     def text(self) -> str:
@@ -1018,6 +1020,11 @@ class Cell:
 class Table:
     rows: list[list[Cell]] = field(default_factory=list)
     ncols: int = 0
+    # B-219①：表级边框事实（`w:tblBorders`）。默认 False = 读不到/旧调用方 →
+    # `three_line` 恒 False → 输出与从前逐字节相同。
+    borders_top: bool = False
+    borders_bottom: bool = False
+    borders_sides_off: bool = False
 
     @property
     def nrows(self) -> int:
@@ -1031,10 +1038,44 @@ class Table:
     def nested(self) -> bool:
         return False
 
+    @property
+    def three_line(self) -> bool:
+        """三线表判据（spec §2①，全部满足才算）：上/下框线可见、左右/内部框线
+        均 none/缺省、首行单元格有下框线（表头线）。"""
+        return (
+            self.borders_top
+            and self.borders_bottom
+            and self.borders_sides_off
+            and bool(self.rows)
+            and any(c.bottom_border for c in self.rows[0])
+        )
+
+
+#: 边框「不可见」取值（OOXML：none/nil；空字符串=没写 val，按缺省处理）。
+_BORDER_OFF = frozenset({"", "none", "nil"})
+
+
+def _border_visible(parent, tag: str) -> bool:
+    """父元素下 `<w:tag w:val=…>` 是否画出一条可见线；元素缺省 = 不可见。"""
+    if parent is None:
+        return False
+    el = parent.find(f"{{{W_NS}}}{tag}")
+    if el is None:
+        return False
+    return (el.get(f"{{{W_NS}}}val") or "").strip().lower() not in _BORDER_OFF
+
 
 def read_table(tbl) -> Table:
     """读一张 Word 表格。"""
     t = Table()
+    tblpr = tbl.find(f"{{{W_NS}}}tblPr")
+    tblb = tblpr.find(f"{{{W_NS}}}tblBorders") if tblpr is not None else None
+    # B-219①：表级边框事实（三线表判据的唯一来源）
+    t.borders_top = _border_visible(tblb, "top")
+    t.borders_bottom = _border_visible(tblb, "bottom")
+    t.borders_sides_off = not any(
+        _border_visible(tblb, tag) for tag in ("left", "right", "insideH", "insideV")
+    )
     for tr in tbl.findall(W_TR):
         row: list[Cell] = []
         for tc in tr.findall(W_TC):
@@ -1053,6 +1094,8 @@ def read_table(tbl) -> Table:
                 vm = tcpr.find(W_VMERGE)
                 if vm is not None:
                     cell.vmerge = vm.get(f"{{{W_NS}}}val") or "continue"
+                cell.bottom_border = _border_visible(
+                    tcpr.find(f"{{{W_NS}}}tcBorders"), "bottom")
             row.append(cell)
         if row:
             t.rows.append(row)

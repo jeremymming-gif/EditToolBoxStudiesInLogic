@@ -46,28 +46,39 @@ def _kind_of(word: str) -> str | None:
 
 
 def caption_candidate(para) -> dict | None:
-    """段落 → 题注候选 dict；不是题注返回 ``None``（**不改变该段落的既有处理**）。"""
+    """段落 → 题注候选 dict；不是题注返回 ``None``（**不改变该段落的既有处理**）。
+
+    B-219④(b)：``Caption/题注`` 样式段但文字为空或只剩「图N/表N」→ 返回
+    ``{"empty": True, ...}``（find_captions 只发 warning，不并、不删除）。
+    """
     text = (getattr(para, "plain", "") or "").strip()
-    if not text:
-        return None
     style = str(getattr(para, "style", "") or "")
     styled = bool(CAPTION_STYLE_RE.search(style))
+    if not text:
+        if styled:
+            return {"kind": None, "text": "", "raw": "", "styled": True, "empty": True}
+        return None
     m = _KIND_RE.match(text)
     if m:
         rest = (m.group("rest") or "").strip()
         if not rest:
+            if styled:
+                return {"kind": _kind_of(m.group("kind")), "text": "", "raw": text,
+                        "styled": True, "empty": True}
             return None                     # 「图1」后面没说明文字：不并（保持原行为）
         if styled:
-            return {"kind": _kind_of(m.group("kind")), "text": rest, "raw": text}
+            return {"kind": _kind_of(m.group("kind")), "text": rest, "raw": text,
+                    "styled": True}
         # 无样式：必须是**短、无句末标点**的「图N/表N + 说明」，避免正文叙述误伤
         if len(text) > 120 or re.search(r"[。！？；!?;]", text):
             return None
-        return {"kind": _kind_of(m.group("kind")), "text": rest, "raw": text}
+        return {"kind": _kind_of(m.group("kind")), "text": rest, "raw": text,
+                "styled": False}
     if styled:
         # 题注样式但正文没写「图N/表N」：说明文字就是整段，类型由相邻对象决定
         if len(text) > 300:
             return None
-        return {"kind": None, "text": text, "raw": text}
+        return {"kind": None, "text": text, "raw": text, "styled": True}
     return None
 
 
@@ -93,11 +104,31 @@ def find_captions(items: list[dict]) -> tuple[dict[int, dict], set[int], list[st
     空段落（``blank=True``）在求相邻时**透明**（Word 稿常见图/表与题注之间夹空行）。
 
     返回 ``(关联表 {目标下标: {"kind", "text"}}, 跳过的题注下标集合, warning 清单)``。
+
+    B-219④ 增强（默认路径仍只在命中新形态时生效）：
+      (a) 同段内联：段落既有图对象、又以「图N…」说明文字开头 → 该段自身的图用
+          这一条题注（返回项带 ``"inline": True``，调用方据此不重复渲染题注文字）；
+      (b) 空题注：Caption 样式但无说明文字（或只剩「图N/表N」）→ 只 warning，
+          不并、不删除（保持占位）；
+      (c) 多题注争抢同一目标 → 先按「Caption 样式唯一」、再按「类型与目标一致唯一」
+          挑 1 条（并 + warning），其余候选留在正文；无法唯一化 → 都不并 + warning。
     """
     n = len(items)
     order = [i for i in range(n) if not items[i].get("blank")]
     pos = {idx: k for k, idx in enumerate(order)}
-    cand = {i: items[i]["caption"] for i in order if items[i].get("caption")}
+    out: dict[int, dict] = {}
+    skip: set[int] = set()
+    warns: list[str] = []
+
+    # (b) 空题注：只 warning，绝不并、绝不删（题注段本身照常留在正文）
+    for i in order:
+        _c = items[i].get("caption")
+        if _c and _c.get("empty"):
+            raw = (_c.get("raw") or "").strip()
+            warns.append(f"空题注「{raw[:20] or '（空）'}」保持占位（保持原样（不猜））")
+
+    cand = {i: items[i]["caption"] for i in order
+            if items[i].get("caption") and not items[i]["caption"].get("empty")}
     target: dict[int, str] = {}
     for i in order:
         if items[i].get("table"):
@@ -105,12 +136,22 @@ def find_captions(items: list[dict]) -> tuple[dict[int, dict], set[int], list[st
         elif items[i].get("figure"):
             target[i] = "fig"
 
+    # (a) 同段内联题注：段落 = 图对象 + 段首「图N…」文字 → 绑定自身
+    inline: set[int] = set()
+    for i in sorted(cand):
+        c = cand[i]
+        if items[i].get("figure") and (not c["kind"] or c["kind"] == "fig"):
+            out[i] = {"kind": "fig", "text": c["text"], "inline": True}
+            inline.add(i)
+
     # 每个题注候选的 ±1 非空邻居里有哪些目标。
     # B-217③ 修（模板实测）：题注**写明了「图N/表N」**时只统计**同类型**目标——
     # Word 模板里图与表常紧邻，只按 ±1 会把「图1」判成同时挨着图+表（CN/EN 两模板
     # 全部因此不并）。这里先按前缀做类型过滤，再要求该类型内 ±1 唯一。
     adj: dict[int, list[int]] = {}
     for i in cand:
+        if i in inline:
+            continue                     # 已绑定自身，不再抢邻居
         c = cand[i]
         k = pos[i]
         ns: list[int] = []
@@ -121,15 +162,9 @@ def find_captions(items: list[dict]) -> tuple[dict[int, dict], set[int], list[st
                     ns.append(j)
         adj[i] = ns
 
-    claims: dict[int, int] = {}
-    for ns in adj.values():
-        for j in ns:
-            claims[j] = claims.get(j, 0) + 1
-
-    out: dict[int, dict] = {}
-    skip: set[int] = set()
-    warns: list[str] = []
-    for i in sorted(cand):
+    # 先把候选按目标分组（每个候选仍要求「相邻目标唯一 + 类型一致」）。
+    by_target: dict[int, list[int]] = {}
+    for i in sorted(adj):
         c = cand[i]
         ns = adj[i]
         if not ns:
@@ -143,18 +178,40 @@ def find_captions(items: list[dict]) -> tuple[dict[int, dict], set[int], list[st
                 "保持原样（不猜）")
             continue
         j = ns[0]
-        tkind = target[j]
-        if c["kind"] and c["kind"] != tkind:
+        if c["kind"] and c["kind"] != target[j]:
             what = "图" if c["kind"] == "fig" else "表"
             warns.append(
                 f"题注「{c['raw'][:20]}」写的是{what}题，但相邻对象不是{what}，"
                 "保持原样（不猜）")
             continue
-        if claims.get(j, 0) > 1:
+        by_target.setdefault(j, []).append(i)
+
+    # (c) 每个目标最多并 1 条；争抢时按样式/类型唯一化，否则都不并。
+    for j in sorted(by_target):
+        ids = by_target[j]
+        tkind = target[j]
+        if j in out:
             warns.append(
-                f"题注「{c['raw'][:20]}」相邻的图片/表格同时被多个题注候选关联，"
-                "保持原样（不猜）")
+                f"图片/表格同时被同段内联题注与相邻题注候选关联，保持原样（不猜）")
             continue
-        out[j] = {"kind": tkind, "text": c["text"]}
-        skip.add(i)
+        if len(ids) == 1:
+            i = ids[0]
+            out[j] = {"kind": tkind, "text": cand[i]["text"]}
+            skip.add(i)
+            continue
+        _styled = [i for i in ids if cand[i].get("styled")]
+        _typed = [i for i in ids if cand[i]["kind"] == tkind]
+        if len(_styled) == 1:
+            picked, basis = _styled[0], "Caption 样式唯一"
+        elif len(_typed) == 1:
+            picked, basis = _typed[0], "题注类型与目标一致唯一"
+        else:
+            warns.append(
+                f"题注「{cand[ids[0]]['raw'][:20]}」等 {len(ids)} 条同时被同一图片/表格"
+                "关联，无法唯一确定，保持原样（不猜）")
+            continue
+        out[j] = {"kind": tkind, "text": cand[picked]["text"]}
+        skip.add(picked)
+        warns.append(
+            f"多题注争抢，已并入 1 条（判据：{basis}），其余 {len(ids) - 1} 条保留正文")
     return out, skip, warns

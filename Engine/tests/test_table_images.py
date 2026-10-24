@@ -131,6 +131,82 @@ else:
           _doc3.body.count("\\includegraphics") == 18
           and "\\begin{longtable}" in _doc3.body, str(_doc3.body.count("\\includegraphics")))
 
+# ══════════════════════════════════════════════════════════════════════════
+# ④ B-219①：三线表 → booktabs（边框事实 + 输出 + 导言区注入）；负例逐字节不变
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ④ B-219① 三线表 → booktabs ──")
+from slcn.docxxml import read_blocks, Table as _XTable  # noqa: E402
+
+_B = "w:val"
+_THREE_LINE_TBL = (
+    '<w:tbl><w:tblPr><w:tblBorders>'
+    f'<w:top {_B}="single"/><w:bottom {_B}="single"/>'
+    f'<w:left {_B}="none"/><w:right {_B}="none"/>'
+    f'<w:insideH {_B}="none"/><w:insideV {_B}="none"/>'
+    '</w:tblBorders></w:tblPr>'
+    '<w:tr><w:tc><w:tcPr><w:tcBorders>'
+    f'<w:bottom {_B}="single"/></w:tcBorders></w:tcPr>'
+    '<w:p><w:r><w:t>项目</w:t></w:r></w:p></w:tc>'
+    '<w:tc><w:tcPr><w:tcBorders>'
+    f'<w:bottom {_B}="single"/></w:tcBorders></w:tcPr>'
+    '<w:p><w:r><w:t>内容</w:t></w:r></w:p></w:tc></w:tr>'
+    '<w:tr><w:tc><w:p><w:r><w:t>甲</w:t></w:r></w:p></w:tc>'
+    '<w:tc><w:p><w:r><w:t>乙</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+
+_D3 = make_docx(["三线表测试稿", "张三", "摘要：测试。", "关键词：测试", "正文前。"],
+                table_xml=_THREE_LINE_TBL, tail=["正文后。"])
+try:
+    _tbl3 = [b for b in read_blocks(_D3) if isinstance(b, _XTable)][0]
+    check("B219① 边框事实：top/bottom 可见、四边/内部 none、首行有下框线 → three_line",
+          _tbl3.borders_top and _tbl3.borders_bottom and _tbl3.borders_sides_off
+          and _tbl3.rows[0][0].bottom_border and _tbl3.three_line,
+          repr((_tbl3.borders_top, _tbl3.borders_bottom, _tbl3.borders_sides_off,
+                _tbl3.rows[0][0].bottom_border)))
+    _tl_tex = docxsource.table_env(_tbl3, 1, {})
+    check("B219① 三线表输出：无竖线 colspec + toprule/midrule/bottomrule，无 \\hline",
+          "\\begin{tabular}{cc}" in _tl_tex and "\\toprule" in _tl_tex
+          and "\\midrule" in _tl_tex and "\\bottomrule" in _tl_tex
+          and "\\hline" not in _tl_tex and "|" not in _tl_tex.split("\\begin{tabular}")[1].split("\n")[0],
+          repr(_tl_tex[:120]))
+    with tempfile.TemporaryDirectory() as _t3:
+        _r3 = build.build_docx(_D3, _t3, basename="T3", lang="zh", verbose=False)
+        _tex3 = open(_r3.tex_path, encoding="utf-8").read()
+    check("B219① 产物导言区按需注入 booktabs（插在 hyperref 行前）",
+          "\\usepackage{booktabs}" in _tex3
+          and _tex3.index("\\usepackage{booktabs}") < _tex3.index("hyperref")
+          and _tex3.count("\\toprule") == 1,
+          repr([ln for ln in _tex3.splitlines() if "booktabs" in ln]))
+finally:
+    try:
+        os.unlink(_D3)
+    except OSError:
+        pass
+
+# 负例 1：普通网格表 → `three_line` False，`table_env` 与 HEAD 逐字节相同
+_D4 = make_docx(["网格表测试稿", "张三", "摘要：测试。", "关键词：测试", "正文前。"],
+                table_xml=_PLAIN_CELL, tail=["正文后。"])
+try:
+    _tbl2 = [b for b in read_blocks(_D4) if isinstance(b, _XTable)][0]
+    check("B219① 反例：无 tblBorders 的网格表 three_line=False",
+          not _tbl2.three_line, repr((_tbl2.borders_top, _tbl2.borders_sides_off)))
+    _HEAD_TABLE = (
+        "\n\\begin{table}[htbp]\n  \\centering\n"
+        "  \\begin{tabular}{|c|c|}\n  \\hline\n"
+        "  A & B \\\\\n  \\hline\n"
+        "  \\end{tabular}\n  \\caption{【需补充表题】}\n"
+        "  \\label{tab:1}\n\\end{table}\n")
+    check("B219① 反例：网格表 table_env 与 HEAD 逐字节相同",
+          docxsource.table_env(_tbl2, 1, {}) == _HEAD_TABLE,
+          repr(docxsource.table_env(_tbl2, 1, {})[:80]))
+finally:
+    try:
+        os.unlink(_D4)
+    except OSError:
+        pass
+# 负例 2：含图表格即使有“三线”边框也仍走 longtable（spec：longtable 分支不改）
+check("B219① 反例：含图表格不写 booktabs（longtable 分支优先）",
+      "\\toprule" not in _tex1 and "\\begin{longtable}" in _tex1)
+
 print()
 print("=" * 78)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

@@ -1945,23 +1945,29 @@ def _autofix_proof(tex: str, lang: str) -> tuple[str, dict[str, int]]:
 #   · 行首题注「表N：/图N：」（Word 题注段落残留，如期 87 sub2 两处）**不碰**；
 #   · 已写成 `表~\ref{…}`/`表\ref{…}` 的跳过（幂等）；
 #   · 「式(N)」不做：Word 通道行内公式无 equation 编号环境（另批）。
-_XREF_LABEL_RE = re.compile(r"\\label\{(tab|fig):(\d+)\}")
+_XREF_LABEL_RE = re.compile(r"\\label\{(tab|fig|eq):(\d+)\}")
 _XREF_CAPTION_LINE_RE = re.compile(r"(?m)^[ \t]*[表图][ \t]{0,3}\d+[ \t]{0,3}[：:]")
 _XREF_NUM_RE = re.compile(r"([表图])[ \t]{0,3}(\d+)")
 _XREF_KIND = {"表": "tab", "图": "fig"}
+#: B-219②：「式（N）/公式（N）」（全/半角括号；「（式（N））」命中内层）
+_XREF_EQ_RE = re.compile(r"(?:式|公式)\s*[（(]\s*(\d{1,3})\s*[）)]")
 
 
 def _add_xrefs(tex: str) -> tuple[str, int, int]:
     """正文「表N/图N」→「表~\\\\ref{tab:N}」「图~\\\\ref{fig:N}」，返回 (新文本, 表数, 图数)。
 
     没有 label 的稿（LaTeX 通道、无图表 Word 稿）→ 原样返回，逐字节不变。
+
+    B-219②：存在 `\\label{eq:N}`（parse_docx 判定编号可对齐后才产出）时，把正文
+    「式（N）/公式（N）」里的 N 换成 `\\ref{eq:N}`，保留原文括号/引导词；行内无
+    独立公式的稿没有 eq label → 这半段不执行（逐字节不变）。
     """
     from .proofcheck import visible_mask   # 只读 import（rules-docs 冻结的公开函数）
 
-    labels: dict[str, set[str]] = {"tab": set(), "fig": set()}
+    labels: dict[str, set[str]] = {"tab": set(), "fig": set(), "eq": set()}
     for m in _XREF_LABEL_RE.finditer(tex):
         labels[m.group(1)].add(m.group(2))
-    if not labels["tab"] and not labels["fig"]:
+    if not labels["tab"] and not labels["fig"] and not labels["eq"]:
         return tex, 0, 0
 
     masked = visible_mask(tex)
@@ -1985,8 +1991,16 @@ def _add_xrefs(tex: str) -> tuple[str, int, int]:
         else:
             n_fig += 1
 
+    # B-219②：式引用只换编号 N（括号、引导词原样）
+    if labels["eq"]:
+        for m in _XREF_EQ_RE.finditer(masked):
+            num = m.group(1)
+            if num not in labels["eq"]:
+                continue
+            todo.append((m.start(1), m.end(1), f"\\ref{{eq:{num}}}"))
+
     out = tex
-    for start, end, repl in reversed(todo):
+    for start, end, repl in sorted(todo, key=lambda t: t[0], reverse=True):
         out = out[:start] + repl + out[end:]
     return out, n_tab, n_fig
 
@@ -2421,6 +2435,12 @@ def build_docx(
 
     say("④ 迁移正文")
     tpl = insert_body(tpl, body)
+
+    # B-219①：三线表产物才注入 booktabs（插在导言区 hyperref 行前，即 SLCN-MIX
+    # 之后）。没有 `\toprule` 的产物逐字节不变；模板 .sty/.tex 一个字都不改。
+    if "\\toprule" in body and "\\usepackage{booktabs}" not in tpl:
+        tpl = PRE.insert_lines(tpl, ["\\usepackage{booktabs}"], HYPERREF_ANCHOR)
+        say("   三线表：向生成 .tex 导言区注入 \\usepackage{booktabs}")
 
     say("⑤ 套用预校正规则")
     res = R.apply_rules(tpl, lang=lang, safe_only=True, docx_mode=True)

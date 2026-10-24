@@ -200,6 +200,168 @@ _texd, _ = render_para(_para(Seg("image", rid="rId1")), {}, [], {}, img_names=IM
 check("⑤ 反例：不传 fig_caption → 占位与从前逐字节相同",
       "\\caption{【需补充图题】}" in _texd, _texd[:160])
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑥ B-219③：中图分类号/文献标识码整段 → 丢弃（负例：夹正文句子不动）
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑥ B-219③ 中图分类号/文献标识码行 ──")
+import tempfile  # noqa: E402
+import zipfile  # noqa: E402
+from xml.sax.saxutils import escape as _esc  # noqa: E402
+
+from slcn.docxsource import (  # noqa: E402
+    _is_clc_meta_only, _proof_env_of, _remark_prefix, _theorem_env_of, parse_docx,
+)
+from slcn.docxsource import render_para as _render  # noqa: E402
+
+check("B219③ 判据：整段只有「中图分类号：B81  文献标识码：A」→ 丢弃",
+      _is_clc_meta_only("中图分类号：B81　　　　文献标识码：A")
+      and _is_clc_meta_only("中图分类号: B81")
+      and _is_clc_meta_only("文献标识码：A；中图分类号：B81-05"))
+check("B219③ 反例：段里还夹正文句子 → 不动",
+      not _is_clc_meta_only("中图分类号：B81，本文讨论逻辑")
+      and not _is_clc_meta_only("文献标识码 A 表示学术论文"))
+
+
+def _make_docx(paras: list[str]) -> str:
+    ps = "".join(f'<w:p><w:r><w:t xml:space="preserve">{_esc(t)}</w:t></w:r></w:p>'
+                 for t in paras)
+    doc = ('<w:document xmlns:w="http://schemas.openxmlformats.org/'
+           'wordprocessingml/2006/main"><w:body>' + ps + '</w:body></w:document>')
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", doc)
+    return path
+
+
+_D_CLC = _make_docx(["中图分类号测试稿", "张三", "摘要：测试摘要内容。", "关键词：测试",
+                     "中图分类号：B81　　　　文献标识码：A",
+                     "正文第一段讨论逻辑。", "正文第二段继续讨论。"])
+try:
+    _clc_doc = parse_docx(_D_CLC)
+    check("B219③ 接线：正文里的 CLC 行已删除 + 1 条 info warning",
+          "中图分类号" not in _clc_doc.body
+          and any("已移除正文中图分类号" in w for w in _clc_doc.warnings),
+          repr(_clc_doc.body[:80]))
+finally:
+    os.unlink(_D_CLC)
+
+_D_NOCLC = _make_docx(["无CLC测试稿", "张三", "摘要：测试摘要内容。", "关键词：测试",
+                       "正文第一段讨论逻辑。", "正文第二段继续讨论。"])
+try:
+    _noclc_doc = parse_docx(_D_NOCLC)
+    check("B219③ 反例：没有 CLC 行的稿件不新增 warning、正文不动",
+          not any("已移除正文中图分类号" in w for w in _noclc_doc.warnings)
+          and "正文第一段讨论逻辑。" in _noclc_doc.body)
+finally:
+    os.unlink(_D_NOCLC)
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑦ B-219④：题注并合加强（同段内联 / 空题注 / 多题注争抢唯一化）
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑦ B-219④ 题注并合加强 ──")
+_empty_c = caption_candidate(Para(segs=[], style="Caption"))
+_e_out, _e_skip, _e_w = find_captions(
+    [{"caption": _empty_c, "figure": False, "table": False, "blank": False}])
+check("B219④(b) 空题注（Caption 样式、无文字）→ empty 候选，不并 + warning",
+      bool(_empty_c) and _empty_c.get("empty") and _e_out == {}
+      and _e_skip == set() and bool(_e_w), repr(_empty_c))
+check("B219④(b) 反例：非题注样式的空段仍不算题注（None）",
+      caption_candidate(Para(segs=[], style="Normal")) is None)
+
+_inline_c = caption_candidate(Para(segs=[Seg("text", text="图1 系统架构")]))
+_inl_items = [{"caption": _inline_c, "figure": True, "table": False, "blank": False}]
+_inl_out, _inl_skip, _inl_w = find_captions(_inl_items)
+check("B219④(a) 同段内联题注 → 绑定自身 figure（inline=True，题注段不整段删除）",
+      _inl_out.get(0, {}).get("inline") is True
+      and _inl_out[0]["text"] == "系统架构" and _inl_skip == set(), repr(_inl_out))
+_tex_inline, _ = _render(
+    _para(Seg("text", text="图1 系统架构"), Seg("image", rid="rId1")), {}, [], {},
+    img_names=IMG, fig_caption="系统架构", caption_only=True)
+check("B219④(a) 接线：render_para(caption_only=True) → 题注文字不重复进正文",
+      "\\caption{系统架构}" in _tex_inline and "图1 系统架构" not in _tex_inline,
+      _tex_inline[:120])
+
+_multi = [
+    {"caption": caption_candidate(_cap("图1 甲")), "figure": False,
+     "table": False, "blank": False},
+    {"caption": None, "figure": True, "table": False, "blank": False},
+    {"caption": caption_candidate(_cap("乙图说明", "Caption")), "figure": False,
+     "table": False, "blank": False},
+]
+_m_out, _m_skip, _m_w = find_captions(_multi)
+check("B219④(c) 多题注争抢：Caption 样式唯一 → 并那一条 + warning，其余留正文",
+      _m_out.get(1, {}).get("text") == "乙图说明" and _m_skip == {2}
+      and any("多题注争抢" in w for w in _m_w), repr((_m_out, _m_skip, _m_w)))
+_multi2 = [
+    {"caption": caption_candidate(_cap("图1 甲")), "figure": False,
+     "table": False, "blank": False},
+    {"caption": None, "figure": True, "table": False, "blank": False},
+    {"caption": caption_candidate(_cap("图1 乙")), "figure": False,
+     "table": False, "blank": False},
+]
+_a2c, _s2c, _w2c = find_captions(_multi2)
+check("B219④(c) 反例：无法唯一化（两条同级）→ 都不并 + warning",
+      _a2c == {} and _s2c == set() and bool(_w2c), repr((_a2c, _s2c, _w2c)))
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑧ B-219⑤：定理类标签 → 环境（注不环境化）
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑧ B-219⑤ 定理类标签 → 环境 ──")
+_th = _theorem_env_of(Para(segs=[Seg("text", text="定理1　若条件成立，则结论成立。")]))
+check("B219⑤ 判据：定理1 → theorem，strip 标签+作者编号",
+      bool(_th) and _th[0] == "theorem"
+      and _th[1].plain.strip() == "若条件成立，则结论成立。",
+      repr(_th[0] if _th else None))
+_pf = _proof_env_of(Para(segs=[Seg("text", text="证明.　由定理1 直接可得。")]))
+check("B219⑤ 判据：证明. → proof（无编号）",
+      bool(_pf) and _pf[0] == "proof", repr(_pf[0] if _pf else None))
+check("B219⑤ 反例：定义一个… / 证明 F-UD（…）： 不命中（保持纯文本）",
+      _theorem_env_of(Para(segs=[Seg("text", text="定义一个对象为某类对象。")])) is None
+      and _proof_env_of(Para(segs=[Seg("text", text="证明 F-UD（…）：")])) is None)
+check("B219⑤ 注：不环境化，只 warning",
+      _remark_prefix(Para(segs=[Seg("text", text="注　注不编号；补充说明文字。")]))
+      and not _remark_prefix(Para(segs=[Seg("text", text="注意安全。")])))
+
+_D_TH = _make_docx(["定理环境测试稿", "张三", "摘要：测试摘要内容。", "关键词：测试",
+                    "定理1　若条件成立，则结论成立。",
+                    "证明.　由定理1 直接可得。",
+                    "定义一个对象为某类对象。",
+                    "注　注不编号；补充说明文字。"])
+try:
+    _th_doc = parse_docx(_D_TH)
+    check("B219⑤ 接线：定理/证明 → 环境；定义反例保持纯文本；注 warning",
+          "\\begin{theorem}" in _th_doc.body and "\\begin{proof}" in _th_doc.body
+          and "\\begin{definition}" not in _th_doc.body
+          and "定义一个对象为某类对象。" in _th_doc.body
+          and any("注 未环境化" in w for w in _th_doc.warnings),
+          repr([ln for ln in _th_doc.body.splitlines() if "begin{" in ln]))
+finally:
+    os.unlink(_D_TH)
+
+# ── B-219 修（verifier FAIL）：proof 双 QED / CLC「文献标志码」变体 ──
+_pf_q = _proof_env_of(Para(segs=[Seg("text", text="证明.　由定理1 直接可得。"),
+                                Seg("math", text="□")]))
+check("B219⑤ 修：proof 段末 □ 被剥掉（amsthm 自动印 QED，避免双框）",
+      bool(_pf_q) and all(not (s.kind == "math" and s.text.strip() in ("□", "\\Box", "\\square"))
+                          for s in _pf_q[1].segs))
+_pf_m = _proof_env_of(Para(segs=[Seg("text", text="证明.　设 □ 为模态算子，结论成立。")]))
+check("B219⑤ 修反例：证明正文中间的 □ 不删",
+      bool(_pf_m) and "□" in _pf_m[1].plain)
+check("B219③ 修：真实稿「文献标志码」变体也判为整段元数据",
+      _is_clc_meta_only("文献标志码：A")
+      and _is_clc_meta_only("中图分类号：B81；文献标志码：A"))
+_D_CLC_FLAG = _make_docx(["标志码测试稿", "张三", "摘要：测试摘要内容。", "关键词：测试",
+                          "文献标志码：A", "正文第一段讨论逻辑。"])
+try:
+    _flag_doc = parse_docx(_D_CLC_FLAG)
+    check("B219③ 修接线：文献标志码段被删除 + warning",
+          "文献标志码" not in _flag_doc.body
+          and any("已移除正文中图分类号" in w for w in _flag_doc.warnings),
+          repr(_flag_doc.body[:80]))
+finally:
+    os.unlink(_D_CLC_FLAG)
+
 print()
 print("=" * 78)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")
