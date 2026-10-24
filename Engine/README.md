@@ -127,7 +127,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 4830 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 4838 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 36
@@ -137,7 +137,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_b79_b131_delivery_record` 27 ｜ `test_bare_email` 30 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10
 `test_batch47b` 4 ｜ `test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8
 `test_batch49_no_cites` 10 ｜ `test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 101
-`test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 71 ｜ `test_batch58_bibdb_auto` 59 ｜ `test_batch58_bibdb_hits` 54
+`test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 71 ｜ `test_batch58_bibdb_auto` 67 ｜ `test_batch58_bibdb_hits` 54
 `test_batch59_coop_fulltext` 56 ｜ `test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14
 `test_batch63_chat_no_limit` 17 ｜ `test_batch63_fulltext_apply` 36 ｜ `test_batch63_metadata_docx` 27 ｜ `test_batch63b_metadata_json` 70
 `test_batch68_bibparse` 36 ｜ `test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 53 ｜ `test_batch70_b001` 46
@@ -145,16 +145,16 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_bibdb` 294 ｜ `test_bibdb_rehash` 31 ｜ `test_bibdb_verify` 54 ｜ `test_bibnorm` 46
 `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28
 `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5
-`test_convert_proof_autofix` 53 ｜ `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 13
+`test_convert_proof_autofix` 53 ｜ `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 16
 `test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 62 ｜ `test_en_slot_placeholder` 9
 `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 41
 `test_infocheck_toc` 63 ｜ `test_issue_tools` 69 ｜ `test_latex_appendix` 10 ｜ `test_latex_preamble` 117
 `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
 `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52
-`test_merge_record_provenance` 51 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17
+`test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17
 `test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 45
 `test_proofcheck` 99 ｜ `test_publish` 55 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
-`test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 66
+`test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 78
 `test_run_record` 31 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
 `test_table_images` 12 ｜ `test_tail_block` 54 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
 `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
