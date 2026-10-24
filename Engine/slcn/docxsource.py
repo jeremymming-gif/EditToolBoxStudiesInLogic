@@ -3697,11 +3697,20 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 doc.refs.append(e)
         _dedupe_keys(doc.refs)
         # 第四十五批 A2：没解析出来的文献行**保留原文 + warning**（不猜、不丢）。
-        _unparsed = [ln for ln in section if parse_reference_line(ln) is None]
-        if _unparsed and (doc.refs or entries):
+        # B-219 Phase B 修：编号清单行（`[N] …`）由专用通道 `_numbered_refs` 解析，
+        # 人年制兜底对带前缀的行必然 None —— 旧逻辑把它们全算「未解析」，模板 8/8 已
+        # 进 bib 却仍误报 8 行。只对**两条通道都失败**的行告警（产品 .tex/.bib 不变）。
+        _num_lines = [ln for ln in section if _NUMBERED_PREFIX_RE.match(ln)]
+        _num_failed = max(0, len(_num_lines) - len(entries))
+        _unparsed = [ln for ln in section
+                     if parse_reference_line(ln) is None
+                     and not _NUMBERED_PREFIX_RE.match(ln)]
+        _n_unparsed = len(_unparsed) + _num_failed
+        if _n_unparsed and (doc.refs or entries):
+            _first = (_unparsed or _num_lines)[0]
             doc.warnings.append(
-                f"文末参考文献区有 {len(_unparsed)} 行未能按行内证据解析"
-                f"（原文已保留、交人工/AI 核对）：首行「{_unparsed[0][:80]}」"
+                f"文末参考文献区有 {_n_unparsed} 行未能按行内证据解析"
+                f"（原文已保留、交人工/AI 核对）：首行「{_first[:80]}」"
             )
         if len(entries) > len(doc.refs) or (_auto_materialized and entries):
             # 编号清单解释力更强 → 以它为准；逗号兜底误吃的那几条丢掉（它们本就是清单行）。

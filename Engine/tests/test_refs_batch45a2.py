@@ -297,6 +297,36 @@ if _SUM_ENV:
                 print(f"LOCAL FAIL ⑦ 真实稿 {_k}：解析 {_n_real} ≠ pin {_spec[1]}")
                 FAILS.append(f"⑦ 真实稿 {_k}")
 
+# ── B-219 Phase B：编号清单行（`[N] …`）不再被误报「按行内证据解析失败」──
+_D_NUM = _make_docx([
+    "测试题名", "张三", "摘  要：这是摘要。", "关键词：测试", "正文段落。",
+    "参考文献",
+    "[1] 常思礼，“试释《文心雕龙》中的‘诡’”，中北大学学报（社会科学版），2023 年第3 期，第24–31 页。",
+    "[2] 汪奠基，《中国逻辑思想史》，武汉：武汉大学出版社，2012 年。",
+    "[3] Benacerraf, P., 1981, “Frege: The last logicist”, Midwest Studies in Philosophy, 6(1): 17–35.",
+])
+try:
+    _numdoc = docxsource.parse_docx(_D_NUM)
+    check("B219B 编号清单行不再误报「未能按行内证据解析」（编号通道已解析 3 条）",
+          not any("未能按行内证据解析" in w for w in _numdoc.warnings)
+          and len(_numdoc.bib_entries) == 3,
+          repr([w[:50] for w in _numdoc.warnings]))
+finally:
+    os.unlink(_D_NUM)
+_D_BADNUM = _make_docx([
+    "测试题名", "张三", "摘  要：这是摘要。", "关键词：测试", "正文段落。",
+    "参考文献",
+    "[1] 陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.",
+    "[2] 。",
+])
+try:
+    _bad = docxsource.parse_docx(_D_BADNUM)
+    check("B219B 反例：编号通道也解析不了的残行仍报 warning",
+          any("未能按行内证据解析" in w for w in _bad.warnings),
+          repr([w[:50] for w in _bad.warnings]))
+finally:
+    os.unlink(_D_BADNUM)
+
 print()
 print("=" * 78)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

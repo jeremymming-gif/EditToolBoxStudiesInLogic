@@ -362,6 +362,42 @@ try:
 finally:
     os.unlink(_D_CLC_FLAG)
 
+# ── B-219 Phase B / L3：模板自转换验收（CN/EN 模板为固定输入）──
+import tempfile as _tempfile  # noqa: E402
+from slcn import build as _build  # noqa: E402
+
+_PUBROOT = os.path.dirname(_ENGINE)
+_L3_TPL = {
+    "zh": os.path.join(_PUBROOT, "docs", "public", "templates", "SLCN-submission-template-cn.docx"),
+    "en": os.path.join(_PUBROOT, "docs", "public", "templates", "SLCN-submission-template-en.docx"),
+}
+_l3 = {}
+for _lang, _path in _L3_TPL.items():
+    _out = _tempfile.mkdtemp(prefix="b219_l3_")
+    _res = _build.build_docx(docx_path=_path, out_dir=_out, basename="L3_" + _lang,
+                             lang=_lang, verbose=False)
+    with open(_res.tex_path, encoding="utf-8") as _f:
+        _l3[_lang] = (_res, _f.read())
+check("L3 CN/EN 模板均可转换：0【未识别】/0【需补充】",
+      all("【未识别" not in _tex and "【需补充" not in _tex for _r, _tex in _l3.values()),
+      repr({k: ([w for w in r.warnings if "未识别" in w][:1]) for k, (r, _t) in _l3.items()}))
+check("L3 CN/EN 无「文末参考文献区…未能按行内证据解析」warning",
+      all(not any("未能按行内证据解析" in w for w in _r.warnings) for _r, _t in _l3.values()))
+_cnr, _cnt = _l3["zh"]
+check("L3 CN 结构计数：equation=4 / toprule / caption=2 / theorem / 无中图分类号",
+      _cnt.count("\\begin{equation}") == 4 and _cnt.count("\\toprule") == 1
+      and _cnt.count("\\caption{") == 2 and "\\begin{theorem}" in _cnt
+      and "中图分类号" not in _cnt,
+      f"eq={_cnt.count('\\begin{equation}')} top={_cnt.count('\\toprule')} cap={_cnt.count('\\caption{')}")
+check("L3 CN 作者槽位：\\myfirstauthor 恰为张三（regex 钉槽位，非全文含）",
+      bool(re.search(r"\\myfirstauthor\}[^\n]*\n\s*\{\\kaishu 张三\}", _cnt)),
+      repr(re.findall(r"\\myfirstauthor\}[^\n]*\n\s*\{[^}]*\}", _cnt)[:1]))
+check("L3 EN 元数据槽位：mytitle/mytitleCN/myabstractCN 均为真实示例",
+      "Frege's Puzzle" in _l3["en"][1] and "弗雷格之谜" in _l3["en"][1]
+      and "本文重新考察弗雷格" in _l3["en"][1])
+check("L3 EN 结构：toprule / caption=2", _l3["en"][1].count("\\toprule") == 1
+      and _l3["en"][1].count("\\caption{") == 2)
+
 print()
 print("=" * 78)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")
