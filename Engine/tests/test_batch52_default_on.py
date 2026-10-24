@@ -83,7 +83,8 @@ class _Stop(Exception):
 _seen = {}
 
 
-def _fake_parse_docx(path, quote_threshold=105, c_class_union=False):
+def _fake_parse_docx(path, quote_threshold=105, c_class_union=False,
+                     bibdb_store=None):
     _seen["c_class_union"] = c_class_union
     raise _Stop("stop before real parse")
 
