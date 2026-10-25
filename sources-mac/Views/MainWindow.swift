@@ -75,6 +75,9 @@ struct MainWindow: View {
                         .pageVisible(selection == .cleantemp)
                     publishPage
                         .pageVisible(selection == .publish)
+                    // B-225：目录摘要推送（整期装配的最后一步：出刊后整理推送文案）
+                    DirPushView(log: log)
+                        .pageVisible(selection == .dirpush)
                     // 第 132 条：引用库 5 页。同样走 `.pageVisible`（案例 126：隐藏页会抢
                     // 拖拽命中，必须让隐藏页整体移出命中范围；**不要**改成条件渲染，
                     // 那会丢页面状态、也会让切换页时重新读库）。
@@ -166,7 +169,7 @@ struct MainWindow: View {
 enum NavPage: String, CaseIterable, Identifiable {
     case convert, checkbib, proofcheck, merge
     case infocheck, compile, toc, cleantemp
-    case publish
+    case publish, dirpush
     // 第 132 条：引用库（库概况 / 查库 / 入藏 / 待处理（B-188 由「待裁决」改名）/ 引用库设置）
     case bibstats, bibquery, bibimport, bibreview, bibsettings
     case settings
@@ -184,6 +187,7 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .toc: return "生成目录"
         case .cleantemp: return "删除临时文件"
         case .publish: return "本期出刊"
+        case .dirpush: return "目录摘要推送"
         case .bibstats: return "库概况"
         case .bibquery: return "查库"
         case .bibimport: return "入藏"
@@ -205,6 +209,7 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .toc: return "list.number"
         case .cleantemp: return "trash"
         case .publish: return "square.stack.3d.up.forward"
+        case .dirpush: return "megaphone"
         case .bibstats: return "books.vertical"
         case .bibquery: return "text.magnifyingglass"
         case .bibimport: return "tray.and.arrow.down"
@@ -220,8 +225,8 @@ enum NavPage: String, CaseIterable, Identifiable {
     /// 那是编辑流程：编辑拿《文献核实任务书》改完交回 .bib，接着就按手册逐条核查。
     static let singleArticle: [NavPage] = [.convert, .checkbib, .proofcheck, .merge]
 
-    /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件。
-    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .publish]
+    /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件 → 出刊 → 推送文案。
+    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .publish, .dirpush]
 
     /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待处理 → 设置。
     /// 排序就是使用顺序：先知道库里有什么，再查/入藏，要人工处理才去「待处理」页。

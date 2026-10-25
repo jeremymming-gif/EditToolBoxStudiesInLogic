@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 跑全部 Swift 测试台（headless：不开 GUI、不联网、不起子进程）。
 #
-#   bash tools/run_swift_tests.sh                  # 默认：7 台全跑（CI 走这条，勿改调用方式）
+#   bash tools/run_swift_tests.sh                  # 默认：8 台全跑（CI 走这条，勿改调用方式）
 #   bash tools/run_swift_tests.sh --only bibdb_ux  # 只跑一台（B-191 T3；省 1–2 min）
 #   bash tools/run_swift_tests.sh --help
 #
@@ -13,8 +13,8 @@
 set -uo pipefail
 
 # B-191 T3：--only <台名> 只跑一台（台名 = 下方各测试台的第一个参数）。
-# 无参数 = 全跑 7 台（CI `ci.yml` 的调用方式，行为与 B-190 前逐行相同）。
-SUITES=(ai_settings ai_store proofcheck toc infocheck cutover bibdb_ux)
+# 无参数 = 全跑 8 台（CI `ci.yml` 的调用方式；第 8 台 = B-225 dirpush）。
+SUITES=(ai_settings ai_store proofcheck toc infocheck cutover bibdb_ux dirpush)
 ONLY=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -33,7 +33,7 @@ while [ $# -gt 0 ]; do
       fi ;;
     -h|--help)
       echo "用法：bash tools/run_swift_tests.sh [--only <台名>]"
-      echo "  无参数        = 编译并运行全部 7 台（CI 默认）"
+      echo "  无参数        = 编译并运行全部 8 台（CI 默认）"
       echo "  --only <台名> = 只跑一台，结果/退出码含义不变（0 = 0 FAIL）"
       echo "  台名：${SUITES[*]}"
       exit 0 ;;
@@ -126,6 +126,12 @@ run_one cutover Core/Support.swift Core/Log.swift Core/ViewModels.swift \
 run_one bibdb_ux Core/Support.swift Core/Log.swift Features/BibDbFeature.swift \
   Features/BibDbFeature+Import.swift Features/BibDbGit.swift \
   "$PROJ"/tools/bibdb_ux_test/main.swift
+
+# 第 8 台（B-225 Phase B）：目录摘要推送 GUI 纯逻辑（参数拼装 / 引擎 --json 冻结契约解析 /
+# 年度勾选与缺期状态 / 默认输出根与仓库内输出根启发式）。只编译 Foundation 的
+# Support/Log + DirPushFeature，headless —— 引擎 `Engine/dirpush.py` 不参与编译。
+run_one dirpush Core/Support.swift Core/Log.swift Features/DirPushFeature.swift \
+  "$PROJ"/tools/dirpush_test/main.swift
 
 echo
 if [ "$FAILED" -eq 0 ]; then
