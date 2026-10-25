@@ -525,18 +525,18 @@ with tempfile.TemporaryDirectory() as tmp:
 
 # ── ②b 中文译著体例：不能被「多作者用 `and` 分隔」的建议毁掉（2026-10-15，第 64 条）──
 #
-# 真实成品形态：`{阿斯海姆（著），张建军、万林（译）}`（《排校手册》源码的实例是
+# 真实成品形态：`{阿斯海姆（著），郑建国、万林（译）}`（《排校手册》源码的实例是
 # `焦循（著），沈文倬（点校）`）。那里的**中文逗号与顿号是姓名的一部分**，
 # 不是多作者分隔符；按普通中文多作者的口径去建议，会把它改成
-# `{阿斯海姆（著） and 张建军 and 万林（译）}` —— 著/译标记当场毁掉。
+# `{阿斯海姆（著） and 郑建国 and 万林（译）}` —— 著/译标记当场毁掉。
 print("\n── ②b 中文著/译体例：豁免 `and` 建议 + 按体例校验 ──")
 
-TR_MARKED = ("@book{A2014,\n  author = {阿斯海姆（著），张建军、万林（译）},\n"
+TR_MARKED = ("@book{A2014,\n  author = {阿斯海姆（著），郑建国、万林（译）},\n"
              "  title = {指称与意向性},\n  publisher = {南京大学出版社},\n"
              "  address = {南京},\n  year = {2014},\n  userf = {cn}\n}\n")
 TR_PLAIN = ("@book{X,\n  author = {刘淘宁，顿新国},\n  title = {x},\n"
             "  publisher = {P},\n  address = {A},\n  year = {2000},\n  userf = {cn}\n}\n")
-TR_AND = ("@book{W,\n  author = {沃斯等（著） and 黄海婷（译）},\n  title = {x},\n"
+TR_AND = ("@book{W,\n  author = {沃斯等（著） and 吴静怡（译）},\n  title = {x},\n"
           "  publisher = {P},\n  address = {A},\n  year = {2000},\n  userf = {cn}\n}\n")
 TR_ED_AND = ("@book{G,\n  author = {古文献研究室（编） and 某某},\n  title = {x},\n"
              "  publisher = {P},\n  address = {A},\n  year = {2000},\n  userf = {cn}\n}\n")
@@ -546,7 +546,7 @@ check("②b 译著体例（（著），（译））：**不再**提示改成 `an
       not infos(rep_tr, "多作者用 `and` 分隔", key="A2014"),
       str([f.detail for f in infos(rep_tr, key="A2014")]))
 check("②b 译著体例值里的中文逗号不是多作者分隔符（判据函数）",
-      bibcheck.author_has_role_mark("阿斯海姆（著），张建军、万林（译）")
+      bibcheck.author_has_role_mark("阿斯海姆（著），郑建国、万林（译）")
       and bibcheck.author_has_role_mark("焦循（著），沈文倬（点校）")
       and bibcheck.author_has_role_mark("古文献研究室（编）")
       and not bibcheck.author_has_role_mark("刘淘宁，顿新国"))

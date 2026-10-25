@@ -135,7 +135,7 @@ def _vol_issue(text: str) -> tuple[str, str]:
         # 期号不带前导零（同 vol(issue) 分支与 `第N卷` 的口径；bib 规范要求 `number = {6}`）
         return "", re.sub(r"^0+(?=\d)", "", m.group(1))
     # `No. 10: 14–24`（只有期号、没有卷号）。人工成品的做法是把它记进 volume，
-    # 这里照同一口径（实测 09 Jiawei_Chu 第 15 条：人工 `volume={10}`）。
+    # 这里照同一口径（实测 09 Jiawei_Zhong 第 15 条：人工 `volume={10}`）。
     m = re.search(r"\bNo\.?\s*(\d{1,3})", text)
     if m:
         return m.group(1), ""
@@ -143,7 +143,7 @@ def _vol_issue(text: str) -> tuple[str, str]:
 
 
 # 出版社线索词（英文）：只有命中它们才敢把 `X: Y` 当成「出版地: 出版社」。
-# 放宽的起因：实测 09 Jiawei_Chu 的 `Mahwah, NJ: Lawrence Erlbaum Associates`、
+# 放宽的起因：实测 09 Jiawei_Zhong 的 `Mahwah, NJ: Lawrence Erlbaum Associates`、
 # `New York: Peter Lang`、`London: Arnold` 都因为老名单（只认 Press/University/…）
 # 而整个丢掉，条目退化成 `@misc`——而 misc 的字段序里没有 publisher/address，
 # 信息就此消失，人工成品那边是 `@book` + 出版社。
@@ -540,9 +540,9 @@ def refine_entry_fields(fields: dict, *, raw: str = "") -> dict:
 # `焦循（著），沈文倬（点校）`。这里的**中文逗号不是**「作者 → 题名」的分界，
 # 而是「著者 → 译者」的分界；顿号也不是多作者分隔符，而是「姓名的一部分」。
 #
-# 为什么不识别就会坏（实测 `2026年第5期(90)/01 Jingru_Kou` 第 16 条）：
-# `[16] 阿斯海姆（著），张建军、万林（译），指称与意向性，南京：南京大学出版社，2014年。`
-# 按中文逗号切之后，`张建军、万林（译）` 被当成了**题名** ——
+# 为什么不识别就会坏（实测 `2026年第5期(90)/01 Meimei_Han` 第 16 条）：
+# `[16] 阿斯海姆（著），郑建国、万林（译），指称与意向性，南京：南京大学出版社，2014年。`
+# 按中文逗号切之后，`郑建国、万林（译）` 被当成了**题名** ——
 # 条目于是既丢掉真题名（`指称与意向性`），又多出一个假题名。见第 64 条。
 _ROLE_SRC = re.compile(r"[（(](?:著|原著)[)）]\s*$")
 _ROLE_TRANS = re.compile(
@@ -675,7 +675,7 @@ def parse_note(text: str) -> list[Parsed]:
 
 # ── 第三种格式：编号清单 `[N] 作者, 年份, "题名", 刊名, 卷(期): 页` ──────────
 #
-# 实测 02 Zixin_Luo 的 `附件一 完整参考文献.docx`：
+# 实测 02 Lili_Zhao 的 `附件一 完整参考文献.docx`：
 #     [1] Jc Beall, 2000, "Fitch' Proof, Verificationism, and the Knower Paradox",
 #         Australasian Journal of Philosophy, 78(2): 241-247.
 #     [8] 付敏，亚相容解悖方案研究，2021年，北京：社会科学文献出版社。
@@ -692,7 +692,7 @@ _BAD_MARKER = re.compile(r"(?m)^(\s*)\[(\d{1,3})(?=[ \t]+[^\s\[\]()（）])")
 def _normalize_numbered_markers(text: str) -> str:
     """补全漏写的 `]`：`[13 J. Ross…` → `[13] J. Ross…`。
 
-    实测期 90/05 Beibei_Gao：源稿第 13 条写成 `[13 J. Ross, …`（缺右括号），
+    实测期 90/05 Xiaoyu_Lin：源稿第 13 条写成 `[13 J. Ross, …`（缺右括号），
     旧正则按 `[13]` 切分只认到 22 条，正文 `[13]` 因此越界、清单少 1 条。
     只认「行首 `[数字` + 空格 + 非括号字符」，正常 `[13]` 不会命中。
     """
@@ -739,7 +739,7 @@ def split_numbered(text: str) -> list[str]:
 # `浙江大学学报（人文社会科学版）`），也可能写成 `《逻辑学研究》2025年第4期`
 # （书名号 + 刊名与年份之间没有逗号）。旧 m2 判据要求「纯汉字刊名 + 逗号 + 年/期」，
 # 这几类全部落空 → `journal` 空 → 条目退化成 `@misc`；而 misc 的字段序里**没有**
-# journal，刊名就此整个消失。实测 2026年第5期(90)/01 Jingru_Kou 第 17 条
+# journal，刊名就此整个消失。实测 2026年第5期(90)/01 Meimei_Han 第 17 条
 # `党学哲，“论作为证据逻辑的核证逻辑”，湖南科技大学学报（社会科学版），2022年第6期，第29-38页。`
 # 就是这一条（author/title/number/pages/year 全对，只丢了刊名、类型也错成 misc）。
 #
@@ -1028,8 +1028,8 @@ def parse_numbered_item(seg: str) -> Parsed:
             # 不以刊名开头的——旧 m2 全落空，这里按「YYYY年第N期」锚点回退取刊名。
             cj, cnum = _cn_journal_before_year(t)
             # ⚠️ 若「刊名」与解析出来的题名是同一串，说明题名那一格本来就被切坏了
-            #    （实测 2026年第5期(90)/07 Liangying_Zhao 的
-            #     `陈晓平：《题名》，《武汉科技大学学报》，2024年第1期。`——无引号分支
+            #    （实测 2026年第5期(90)/07 Jiayi_He 的
+            #     `徐佳明：《题名》，《武汉科技大学学报》，2024年第1期。`——无引号分支
             #     把 `作者：《题名》` 整段当成作者、把刊名当成了题名）。这时两条证据
             #     互相矛盾，**不升级成 @article**：照旧留作 @misc，由 refmark 把原文
             #     交给编辑的 AI（宁可不认，不猜）。

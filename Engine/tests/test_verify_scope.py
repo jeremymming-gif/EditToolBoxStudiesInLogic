@@ -241,7 +241,7 @@ TEX = r"""\documentclass{article}
 \author{张三}
 \begin{document}
 \maketitle
-正文引用\parencite{Quine1970}，以及\parencite[第 3 页]{Chen2022}。
+正文引用\parencite{Quine1970}，以及\parencite[第 3 页]{Li2022}。
 
 \printbibliography
 \end{document}
@@ -266,8 +266,8 @@ BIB = """\
   year    = {1970}
 }
 
-@book{Chen2022,
-  author    = {陈波},
+@book{Li2022,
+  author    = {李雷},
   title     = {逻辑例外论},
   publisher = {北京大学出版社},
   address   = {北京},
@@ -356,7 +356,7 @@ else:
           "源 bib 4 条；正文引用 2 条 → 本次核实 2 条（跳过 2 条未引用）" in r1.stdout,
           r1.stdout[-500:])
     check("(d) 任务书只列引用到的 2 条，未引用条目（Uncited*）不出现",
-          md1.count("### `") == 2 and "Quine1970" in md1 and "Chen2022" in md1
+          md1.count("### `") == 2 and "Quine1970" in md1 and "Li2022" in md1
           and "Uncited2001" not in md1 and "Uncited2002" not in md1)
     check("(d) 任务书头部写明「本次核实范围」与跳过条数",
           "本次核实范围" in md1 and "跳过 2 条" in md1 and "源 bib 共 4 条" in md1)
@@ -373,7 +373,7 @@ else:
     md2 = _read(tb2)
     check("(d) \\nocite{*} → 全量核实（任务书 4 条）",
           r2.returncode == 0 and md2.count("### `") == 4
-          and all(k in md2 for k in ("Quine1970", "Chen2022",
+          and all(k in md2 for k in ("Quine1970", "Li2022",
                                     "Uncited2001", "Uncited2002")),
           f"rc={r2.returncode} n={md2.count('### `')}")
     check("(d) \\nocite{*} 的量化行写明了语义（不是悄悄全量）",
@@ -438,12 +438,12 @@ else:
     W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     _paras = ["论参考文献核实范围", "张三", "摘要：测试。", "关键词：测试"]
     _paras += [f"正文第{i}段，讨论逻辑与论证。" for i in range(12)]
-    _paras += ["最近的研究（高贝贝 2021）讨论了极小主义，另有（陈波 2022）论及逻辑例外论。"]
+    _paras += ["最近的研究（林小雨 2021）讨论了极小主义，另有（李雷 2022）论及逻辑例外论。"]
     _paras += [
         "参考文献",
-        "高贝贝. 2021. 极小主义视域下的真谓词[J]. 逻辑学研究, 2021(4): 27-36.",
-        "陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.",
-        "张建军. 2014. 逻辑悖论研究引论[M]. 北京: 人民出版社.",
+        "林小雨. 2021. 极小主义视域下的真谓词[J]. 逻辑学研究, 2021(4): 27-36.",
+        "李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.",
+        "郑建国. 2014. 逻辑悖论研究引论[M]. 北京: 人民出版社.",
     ]
     _ps = "".join(f'<w:p><w:r><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>'
                   for t in _paras)
@@ -464,7 +464,7 @@ else:
     check("(e) Word：量化行 = 源 bib 3 条 / 正文引用 2 条 / 跳 1 条",
           "源 bib 3 条；正文引用 2 条 → 本次核实 2 条（跳过 1 条未引用）" in rw.stdout,
           rw.stdout[-500:])
-    check("(e) Word：任务书只列正文引用到的 2 条（未引用的张建军 2014 不进清单）",
+    check("(e) Word：任务书只列正文引用到的 2 条（未引用的郑建国 2014 不进清单）",
           mdw.count("### `") == 2 and "逻辑悖论研究引论" not in mdw)
 
 # ══ (f) 本地 mock LLM：AI 批量范围 + 模型能力前置提示 ══════════════════════
@@ -539,7 +539,7 @@ else:
         check("(f) chat：只对范围内条目调 AI（2 次，不是源 bib 的 4 次）",
               r6.returncode == 0 and len(reqs) == 2, f"rc={r6.returncode} n={len(reqs)}")
         check("(f) chat：逐条提示词里没有未引用条目的键",
-              "Quine1970" in joined and "Chen2022" in joined
+              "Quine1970" in joined and "Li2022" in joined
               and "Uncited2001" not in joined and "Uncited2002" not in joined)
         check("(f) chat：日志里的逐条进度是 [1/2] / [2/2]",
               "[1/2]" in r6.stdout and "[2/2]" in r6.stdout and "[3/" not in r6.stdout,

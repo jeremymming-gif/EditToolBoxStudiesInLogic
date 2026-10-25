@@ -203,7 +203,7 @@ check("(c) 不变量：已经合规范的 SEP 条目**逐字节不变**",
 
 # 端到端：仓库里那份成品的 SEP 条目跑 normalize_bib → 字段一个不少
 BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "..", "..", "2026年第5期(90)", "10 Bo_Chen", "reference.bib")
+                    "..", "..", "2026年第5期(90)", "10 Lei_Li", "reference.bib")
 BASE = os.path.normpath(BASE)
 if os.path.isfile(BASE):
     text = open(BASE, encoding="utf-8", errors="replace").read()

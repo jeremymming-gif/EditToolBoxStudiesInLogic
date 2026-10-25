@@ -4,9 +4,9 @@ r"""Word 通道「英文元数据第二源」判据测试（**第 76 条**，202
 缺陷
 ----
 正文 docx 里只有中文时，英文题名/摘要/作者其实就在**同一个 `original/` 目录**的
-另一份「英文摘要」docx 里，`parse_docx()` 一直读得出来（实测 10 Bo_Chen：
+另一份「英文摘要」docx 里，`parse_docx()` 一直读得出来（实测 10 Lei_Li：
 
-    title_en='A Survey of Contemporary Philosophy of Logic'、author_en='Chen Bo'、
+    title_en='A Survey of Contemporary Philosophy of Logic'、author_en='Li Lei'、
     abstract_en 1529 字符、keywords_en='contemporary philosophy of logic; …'
 
 ），但 `convert.py` 的 Word 分支只把 `source` 交给 `build_docx()`、`metadata_path`
@@ -24,7 +24,7 @@ r"""Word 通道「英文元数据第二源」判据测试（**第 76 条**，202
      且**绝不跨目录**去仓库原目录里找那份真实存在的姊妹文件。
   ④ 反例 3：同目录有同名但不是英文摘要的文件（真实语料 `04 YingJin_Xu` 的
      `…汉语摘要.docx`，以及现造的纯中文 docx）→ 不许把它的中文摘要当英文摘要塞进去。
-  ⑤ 正例：10 Bo_Chen 那对文件 → `title_en`/`abstract_en`/`author_en` 正确补上，
+  ⑤ 正例：10 Lei_Li 那对文件 → `title_en`/`abstract_en`/`author_en` 正确补上，
      且与那份英文摘要 docx 的 `parse_docx()` 取值**逐字相同**；`affiliation_en`
      两份都没有 → 照旧走占位符（如实记录）。
   ⑥ 反例 4：LaTeX 通道行为不变（`build_latex` 的 metadata 语义不许被动到）。
@@ -88,6 +88,53 @@ def skip(name, why):
 def _corpus_dir(rel_dir: str) -> str:
     """稿件库锚点下的相对目录；没有稿件库返回 ""（调用方据此 SKIP）。"""
     return os.path.join(_MANUSCRIPTS, rel_dir) if _MANUSCRIPTS else ""
+
+
+def _issue_paper_dir(issue_no: str, no: str) -> str:
+    """按「总期号 + 篇序号」发现来稿目录（不硬编码真实作者名/文件名；B-232）。
+
+    例：(`90`, `10`) → `<稿件库>/2026年第5期(90)/10 <作者>/original`；无稿件库/无该篇 → ""。
+    """
+    if not _MANUSCRIPTS:
+        return ""
+    import re as _re
+    for name in sorted(os.listdir(_MANUSCRIPTS)):
+        m = _re.search(r"\((\d+[A-Z]?)\)$", name)
+        if not (m and m.group(1) == str(issue_no)):
+            continue
+        issue = os.path.join(_MANUSCRIPTS, name)
+        hits = sorted(d for d in glob.glob(os.path.join(issue, no + " *")) if os.path.isdir(d))
+        if hits:
+            return os.path.join(hits[0], "original")
+    return ""
+
+
+def _docx_in(dirpath: str, needle: str = "", exclude=()) -> str:
+    """目录下取 .docx：有 needle 时按文件名片段匹配；否则取**最大**的一份（正文优先）。"""
+    if not dirpath:
+        return ""
+    hits = [x for x in glob.glob(os.path.join(dirpath, "**", "*.docx"), recursive=True)
+            if zipfile.is_zipfile(x)
+            and (not needle or needle in os.path.basename(x))
+            and not any(k in os.path.basename(x) for k in exclude)]
+    hits.sort(key=lambda p: -os.path.getsize(p))
+    return hits[0] if hits else ""
+
+
+def _tex_in(dirpath: str, needle: str) -> str:
+    if not dirpath:
+        return ""
+    hits = [x for x in glob.glob(os.path.join(dirpath, "**", "*.tex"), recursive=True)
+            if needle in os.path.basename(x)]
+    return hits[0] if hits else ""
+
+
+def _tex_not(dirpath: str, needle: str) -> str:
+    if not dirpath:
+        return ""
+    hits = [x for x in sorted(glob.glob(os.path.join(dirpath, "**", "*.tex"), recursive=True))
+            if needle not in os.path.basename(x)]
+    return hits[0] if hits else ""
 
 
 def find(rel_dir, needle):
@@ -154,15 +201,16 @@ def make_docx(paras):
     return path
 
 
-# ── 真实语料 ─────────────────────────────────────────────────────────────
-BC_BODY = find("2026年第5期(90)/10 Bo_Chen/original", "陈波 当代逻辑哲学鸟瞰")
-BC_EN = find("2026年第5期(90)/10 Bo_Chen/original", "英文摘要")
+# ── 真实语料（按「期号+篇序号」发现，不硬编码真实作者名/文件名；B-232）─────
+BC_DIR = _issue_paper_dir("90", "10")
+BC_BODY = _docx_in(BC_DIR, exclude=("英文摘要",))          # 正文：非英文摘要附件的那份（取最大）
+BC_EN = _docx_in(BC_DIR, "英文摘要")                       # 英文摘要附件（文件名含通用词）
 GF_BODY = find("2026年第2期(87)/07 Guangwu_Feng/original", "格赖斯和布兰顿")
 GD_BODY = find("2024年第4期(77)/05 Guoping_Du/original", "排中律-LJXYJ")
 YX_CN = find("2025年第6期(85)/04 YingJin_Xu/original", "汉语摘要")
-LZ_DIR = _corpus_dir("2026年第5期(90)/03 Liang_Zhang/original")
-LZ_META = one("2026年第5期(90)/03 Liang_Zhang/original", "yalcin puzzle", "*.tex")
-LZ_BODY = one("2026年第5期(90)/03 Liang_Zhang/original", "main", "*.tex")
+LZ_DIR = _issue_paper_dir("90", "03")
+LZ_META = _tex_not(LZ_DIR, "main")
+LZ_BODY = _tex_in(LZ_DIR, "main")
 
 _TMP = []
 
@@ -202,12 +250,12 @@ if BC_EN:
     check("① 真实英文摘要 docx 命中，且 title_en/abstract_en 与 parse_docx 逐字相同",
           _sheet_real.get("title_en") == _en_real.title_en
           and _sheet_real.get("abstract_en") == _en_real.abstract_en
-          and _sheet_real.get("author_en") == "Chen Bo",
+          and _sheet_real.get("author_en") == _en_real.author_en,
           f"{_sheet_real.get('title_en')!r}")
     check("① 真实正文 docx（有叙述正文、无英文块）→ 不命中",
           sources.en_metadata_sheet(BC_BODY) == {}, "")
 else:
-    skip("① 真实英文摘要 docx", "缺真实语料 10 Bo_Chen")
+    skip("① 真实英文摘要 docx", "缺真实语料 10 Lei_Li")
 
 if GF_BODY:
     check("① 自带文末英文块的真实正文稿（07 Guangwu_Feng）→ 不命中"
@@ -227,10 +275,10 @@ else:
 print("\n── ② 反例 1：正文自带英文块（案例 52）→ 第二源不许改 ──")
 
 if not (GF_BODY and GD_BODY and BC_EN):
-    skip("② 反例 1", "缺真实语料（Guangwu_Feng / Guoping_Du 正文 / Bo_Chen 英文摘要）")
+    skip("② 反例 1", "缺真实语料（Guangwu_Feng / Guoping_Du 正文 / Lei_Li 英文摘要）")
 else:
     # ②-a 真实样本：正文稿自带**完整**英文块（05 Guoping_Du 文末英文块）→
-    #      同目录放一份**取值完全不同**的真实英文摘要（Bo_Chen 那份）也不许改一个字。
+    #      同目录放一份**取值完全不同**的真实英文摘要（Lei_Li 那份）也不许改一个字。
     with tempfile.TemporaryDirectory() as tmp:
         d = os.path.join(tmp, "orig")
         os.makedirs(d)
@@ -292,7 +340,7 @@ else:
 print("\n── ③ 反例 2：同目录没有英文摘要 → 逐字节相同、不跨目录 ──")
 
 if not BC_BODY:
-    skip("③ 反例 2", "缺真实语料 10 Bo_Chen 正文")
+    skip("③ 反例 2", "缺真实语料 10 Lei_Li 正文")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         d = os.path.join(tmp, "孤稿")          # 只放正文 docx，**不放**英文摘要
@@ -331,7 +379,7 @@ else:
 print("\n── ④ 反例 3：同目录的中文/非英文摘要文件不许当中文当英文 ──")
 
 if not BC_BODY:
-    skip("④ 反例 3", "缺真实语料 10 Bo_Chen 正文")
+    skip("④ 反例 3", "缺真实语料 10 Lei_Li 正文")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         d = os.path.join(tmp, "orig")
@@ -388,11 +436,11 @@ else:
               f"{res4.warnings[:1]}")
 
 
-# ══ ⑤ 正例：10 Bo_Chen 那对文件 ═══════════════════════════════════════════
-print("\n── ⑤ 正例：10 Bo_Chen 正文 + 英文摘要 → 英文题名/摘要/作者补上 ──")
+# ══ ⑤ 正例：10 Lei_Li 那对文件 ═══════════════════════════════════════════
+print("\n── ⑤ 正例：10 Lei_Li 正文 + 英文摘要 → 英文题名/摘要/作者补上 ──")
 
 if not (BC_BODY and BC_EN):
-    skip("⑤ 正例", "缺真实语料 10 Bo_Chen")
+    skip("⑤ 正例", "缺真实语料 10 Lei_Li")
 else:
     en_doc = parse_docx(BC_EN)
     check("⑤ 同目录自动发现：`find_en_metadata()` 找到那份英文摘要",
@@ -405,8 +453,8 @@ else:
         check("⑤ `\\myabstractEN` 与英文摘要 docx 的 `abstract_en` **逐字相同**",
               macro_value(tex, "myabstractEN") == en_doc.abstract_en,
               f"len={len(macro_value(tex, 'myabstractEN') or '')}")
-        check("⑤ `\\myfirstauthorEN` 补成 `Chen Bo`",
-              macro_value(tex, "myfirstauthorEN") == en_doc.author_en == "Chen Bo", "")
+        check("⑤ `\\myfirstauthorEN` 补成英文摘要 docx 的作者（逐字同源）",
+              bool(en_doc.author_en) and macro_value(tex, "myfirstauthorEN") == en_doc.author_en, "")
         check("⑤ 未识别清单被第二源**清掉**了英文题名/摘要/作者三项"
               "（补不了的项仍是占位符：两份文件都没有 affiliation_en）",
               "英文题名" not in " ".join(res.warnings)
@@ -470,7 +518,7 @@ check("⑥ 新参数只加在 `build_docx` 上，且**带默认值 None**（老�
       f"{_sig_docx['metadata_path'].default!r}")
 
 if not (os.path.isfile(LZ_BODY) and os.path.isfile(LZ_META)):
-    skip("⑥ build_latex 行为", "缺真实语料 03 Liang_Zhang")
+    skip("⑥ build_latex 行为", "缺真实语料 03 Jie_Zhou")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         res = build.build_latex(LZ_BODY, os.path.join(tmp, "lz"),
@@ -493,16 +541,16 @@ else:
             check("⑥ LaTeX 通道的元数据源就是它给的那一个（没有偷偷去同目录找 .tex）",
                   any("元数据源" in s for s in res2.log), "")
         else:
-            skip("⑥ build_latex + Word 文件", "缺真实语料 10 Bo_Chen 英文摘要")
+            skip("⑥ build_latex + Word 文件", "缺真实语料 10 Lei_Li 英文摘要")
 
 
 # ══ ⑦ 角色：identify() 与 --scan 的清单都不再写【未识别】 ═════════════════
 print("\n── ⑦ 角色：en_abstract（identify / --scan）+ 扣分逻辑保住 ──")
 
 if not (BC_BODY and BC_EN):
-    skip("⑦ 角色", "缺真实语料 10 Bo_Chen")
+    skip("⑦ 角色", "缺真实语料 10 Lei_Li")
 else:
-    art_dir = os.path.dirname(os.path.dirname(BC_BODY))          # …/10 Bo_Chen
+    art_dir = os.path.dirname(os.path.dirname(BC_BODY))          # …/10 Lei_Li
     ss = sources.identify(art_dir)
     ear = [c for c in ss.candidates if c.role == "en_abstract"]
     check("⑦ `identify()` 给英文摘要 docx 明确角色 `en_abstract`",
@@ -540,19 +588,19 @@ for _p in _TMP:
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑬ 第四十五批 A：连写英文作者串按作者数等分（90-01 实测）
-#    源稿英文作者是 `Jingru Kou Yetao Liu`（无 and/&/;），旧逻辑整串进不了第二作者
-#    槽位 → 模板印占位符；人工成品是 `\mysecondauthorEN{Yetao Liu}`。
+#    源稿英文作者是 `Meimei Han Xiaoming Wang`（无 and/&/;），旧逻辑整串进不了第二作者
+#    槽位 → 模板印占位符；人工成品是 `\mysecondauthorEN{Xiaoming Wang}`。
 # ══════════════════════════════════════════════════════════════════════════
 from slcn.build import _split_en_names_by_count  # noqa: E402
 
 check("⑬ 2 个作者、4 个词（每人 2 词）→ 逐字定位拆分",
-      _split_en_names_by_count("Jingru Kou Yetao Liu", 2) == ["Jingru Kou", "Yetao Liu"],
-      repr(_split_en_names_by_count("Jingru Kou Yetao Liu", 2)))
+      _split_en_names_by_count("Meimei Han Xiaoming Wang", 2) == ["Meimei Han", "Xiaoming Wang"],
+      repr(_split_en_names_by_count("Meimei Han Xiaoming Wang", 2)))
 check("⑬ 反例：词数不匹配作者数 → 不猜（返回空）",
-      _split_en_names_by_count("Jingru Kou Yetao Liu", 3) == []
+      _split_en_names_by_count("Meimei Han Xiaoming Wang", 3) == []
       and _split_en_names_by_count("Lu Jiang", 2) == [])
 check("⑬ 反例：含小写/虚词 → 不猜（保守判据）",
-      _split_en_names_by_count("Jingru Kou and Yetao Liu", 2) == [])
+      _split_en_names_by_count("Meimei Han and Xiaoming Wang", 2) == [])
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑭ 第四十五批 A：正文环境宏包写在本地 .sty 时补迁移（86-05 algorithm 实测）

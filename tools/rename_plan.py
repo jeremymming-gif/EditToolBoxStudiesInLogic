@@ -1091,8 +1091,8 @@ def _self_test() -> int:
     with tempfile.TemporaryDirectory(prefix="rename-plan-selftest-") as tmp:
         # ---- 夹具：两个 case 的产物 ----
         root = os.path.join(tmp, "products")
-        c1 = os.path.join(root, "Liangying_Zhao")
-        c2 = os.path.join(root, "Beibei_Gao")
+        c1 = os.path.join(root, "Jiayi_He")
+        c2 = os.path.join(root, "Xiaoyu_Lin")
         tex1 = (
             "\\documentclass{article}\n"
             "\\begin{document}\n"
@@ -1108,9 +1108,9 @@ def _self_test() -> int:
         )
         tex2 = "\\documentclass{article}\n正文 \\parencite{X1}。\n"
         bib2 = "@book{X1,\n  author = {X, X.},\n  title = {X1},\n  year = {2000}\n}\n"
-        _write(os.path.join(c1, "Liangying_Zhao.tex"), tex1)
+        _write(os.path.join(c1, "Jiayi_He.tex"), tex1)
         _write(os.path.join(c1, "reference.bib"), bib1)
-        _write(os.path.join(c2, "Beibei_Gao.tex"), tex2)
+        _write(os.path.join(c2, "Xiaoyu_Lin.tex"), tex2)
         _write(os.path.join(c2, "reference.bib"), bib2)
 
         sha = lambda k: "a" * 64  # noqa: E731 — 夹具固定 sha
@@ -1178,8 +1178,8 @@ def _self_test() -> int:
         check("apply: 写 2 个改名文件、复制 2 个原样文件",
               rep_apply["written_files"] == 2 and rep_apply["copied_files"] == 2,
               f"written={rep_apply['written_files']} copied={rep_apply['copied_files']}")
-        out_c1 = _read_text(os.path.join(out_dir, "Liangying_Zhao", "Liangying_Zhao.tex"))
-        out_b1 = _read_text(os.path.join(out_dir, "Liangying_Zhao", "reference.bib"))
+        out_c1 = _read_text(os.path.join(out_dir, "Jiayi_He", "Jiayi_He.tex"))
+        out_b1 = _read_text(os.path.join(out_dir, "Jiayi_He", "reference.bib"))
         check("apply: .tex 只改引用参数中的键",
               "\\parencite{B1}" in out_c1 and "\\cites{B1, X1}" in out_c1
               and "\\citep[see][p.3]{B3}" in out_c1)
@@ -1187,8 +1187,8 @@ def _self_test() -> int:
               "@book{B1,\n" in out_b1 and "@book{B3,\n" in out_b1
               and "author = {Old, A.}" in out_b1)
         check("apply: 未命中 case 逐字节同（复制）",
-              _read_text(os.path.join(out_dir, "Beibei_Gao", "Beibei_Gao.tex")) == tex2
-              and _read_text(os.path.join(out_dir, "Beibei_Gao", "reference.bib")) == bib2)
+              _read_text(os.path.join(out_dir, "Xiaoyu_Lin", "Xiaoyu_Lin.tex")) == tex2
+              and _read_text(os.path.join(out_dir, "Xiaoyu_Lin", "reference.bib")) == bib2)
         check("apply: 报告落在 --out", os.path.isfile(
             os.path.join(out_dir, "rename-plan-apply.json")))
         neg = False

@@ -201,7 +201,7 @@ def find(d: str, needle: str) -> str:
 
 # (语料目录, 文件名片段, 期望 doc.email, 说明, 附加断言)
 CASES = [
-    ("2026年第5期(90)/01 Jingru_Kou", "定稿", "1611582@mail.nankai.edu.cn",
+    ("2026年第5期(90)/01 Meimei_Han", "定稿", "1611582@mail.nankai.edu.cn",
      "正文 9 段共 21 个符号 @ 不得进 doc.email（只取脚注里的真地址）", "at21"),
     ("2023年第2期(69)/04 Bo_Xianyu", "鲜于波", "",
      "表格里的审稿人邮箱 shyping@mail.sysu.edu.cn 不得进 doc.email", None),

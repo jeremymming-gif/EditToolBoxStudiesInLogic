@@ -2,7 +2,7 @@
 """合并一期 PDF（第 88 条）：把「合并文件」从 mac 外壳搬进引擎。
 
 这套件要钉住的是**行为等价**，不是「代码看起来像」：
-  (a) 文件名规则：序号目录、`03 Liang_Zhang` → `Liang_Zhang`、宽松匹配 `Chen Liu.pdf`；
+  (a) 文件名规则：序号目录、`03 Jie_Zhou` → `Jie_Zhou`、宽松匹配 `Chen Liu.pdf`；
   (b) 合并顺序与书签：扉页 → 中文目录 → 英文目录 → 各篇（按序号）→ 封底，
       书签名与页码逐个对齐；
   (c) 两种大纲模式：默认**平铺**（上游 PyPDF2 行为），`--nest-outlines` 挂到文章之下；
@@ -82,8 +82,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check("(a) 只收 `^[0-9][0-9]` 的**目录**，且按名排序",
           M.numbered_entries(tmp) == ["000 目录", "01 A_Author", "10 J_Author", "99x"],
           f"{M.numbered_entries(tmp)}")
-    check("(a) `03 Liang_Zhang` → 取最后一段 `Liang_Zhang`",
-          M.article_name("03 Liang_Zhang") == "Liang_Zhang")
+    check("(a) `03 Jie_Zhou` → 取最后一段 `Jie_Zhou`",
+          M.article_name("03 Jie_Zhou") == "Jie_Zhou")
     check("(a) 目录名没有空格时原样返回", M.article_name("07Chen") == "07Chen")
     check("(a) lax 键：下划线/半角空格/全角空格/连字符/大小写都归一",
           M.loose_key("Chen_Liu") == M.loose_key("chen liu") == M.loose_key("Chen-Liu")

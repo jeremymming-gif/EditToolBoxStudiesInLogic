@@ -2037,7 +2037,7 @@ wipe(coopRoot); mkdir(coopRoot, 0o700)
 let coopSrc = coopRoot + "/main.docx"
 let coopOut = coopRoot + "/issue90"
 let coopReplies = coopRoot + "/replies"
-let coopStage = coopOut + "/Bo_Chen_待核"
+let coopStage = coopOut + "/Lei_Li_待核"
 
 // n0 默认基线 —— 批 62 入口收敛：普通初排**不再默认带 --verify-refs**（独立任务书勾选已隐藏），
 // 默认 argv 回到编译/清理两项；任务书只由 ⑪（useAI）或两段式第一段产生。
@@ -3078,20 +3078,20 @@ let dOutA = discRoot + "/issue90"
 let dOutB = discRoot + "/issue91"
 let dSrc = discRoot + "/src/main.docx"
 mkdir(discRoot, 0o700)
-writeCoopState(dOutA + "/Bo_Chen_待核", source: dSrc, outRoot: dOutA,
-               stem: "Bo_Chen", phase: "ph1", mtime: 1000)
+writeCoopState(dOutA + "/Lei_Li_待核", source: dSrc, outRoot: dOutA,
+               stem: "Lei_Li", phase: "ph1", mtime: 1000)
 writeCoopState(dOutA + "/Li_Si_待核", source: discRoot + "/src/other.docx",
                outRoot: dOutA, stem: "Li_Si", phase: "ph1", mtime: 2000)
-writeCoopState(dOutB + "/Bo_Chen_待核", source: dSrc, outRoot: dOutB,
-               stem: "Bo_Chen", phase: "ph1", mtime: 3000)
+writeCoopState(dOutB + "/Lei_Li_待核", source: dSrc, outRoot: dOutB,
+               stem: "Lei_Li", phase: "ph1", mtime: 3000)
 mkdir(dOutA + "/Broken_待核", 0o700)
 writeRaw(dOutA + "/Broken_待核/" + CoopFeature.stateFileName, "not a json {")
 
 let coopD1 = CoopFeature.discoverStages(outRoot: dOutA, source: dSrc)
 check("p1-discover", "按 `source.path` + `params.out_root` 匹配：只找到属于当前源稿的那个暂存目录",
-      coopD1.count == 1 && coopD1[0].stem == "Bo_Chen" && coopD1[0].phase == "ph1"
-        && coopD1[0].stageDir == CoopFeature.normalizePath(dOutA + "/Bo_Chen_待核")
-        && coopD1[0].taskbook.hasSuffix("Bo_Chen_文献核实.md"),
+      coopD1.count == 1 && coopD1[0].stem == "Lei_Li" && coopD1[0].phase == "ph1"
+        && coopD1[0].stageDir == CoopFeature.normalizePath(dOutA + "/Lei_Li_待核")
+        && coopD1[0].taskbook.hasSuffix("Lei_Li_文献核实.md"),
       "found=\(coopD1.map { "\($0.stem)@\($0.phase)" })")
 check("p2-decoy", "反例：别的源稿 / 别的输出根 / 坏 JSON 都不算（不猜）",
       !coopD1.contains { $0.stem == "Li_Si" }
@@ -3099,15 +3099,15 @@ check("p2-decoy", "反例：别的源稿 / 别的输出根 / 坏 JSON 都不算�
       "outA=\(coopD1.count) outB=\(CoopFeature.discoverStages(outRoot: dOutB, source: dSrc).count)")
 
 // 路径标准化：状态文件里写 `./` / `..` 变体也要认得出是同一份
-writeCoopState(dOutA + "/Bo_Chen2_待核", source: discRoot + "/src/../src/main.docx",
-               outRoot: dOutA + "/.", stem: "Bo_Chen2", phase: "done",
-               deliveredTo: dOutA + "/Bo_Chen2", mtime: 5000)
+writeCoopState(dOutA + "/Lei_Li2_待核", source: discRoot + "/src/../src/main.docx",
+               outRoot: dOutA + "/.", stem: "Lei_Li2", phase: "done",
+               deliveredTo: dOutA + "/Lei_Li2", mtime: 5000)
 let coopD2 = CoopFeature.discoverStages(outRoot: dOutA, source: dSrc)
 check("p3-normalize", "路径标准化：`..` / `./` 变体仍匹配同一源稿与输出根；多个候选取最近修改的",
-      coopD2.count == 2 && coopD2[0].stem == "Bo_Chen2" && coopD2[0].delivered,
+      coopD2.count == 2 && coopD2[0].stem == "Lei_Li2" && coopD2[0].delivered,
       "found=\(coopD2.map { $0.stem })")
 check("p4-done-record", "phase=done → delivered=true，协同记录指向 `delivered_to/_AI协同记录.md`",
-      coopD2[0].recordPath == CoopFeature.normalizePath(dOutA + "/Bo_Chen2") + "/" + CoopFeature.recordFileName
+      coopD2[0].recordPath == CoopFeature.normalizePath(dOutA + "/Lei_Li2") + "/" + CoopFeature.recordFileName
         && CoopFeature.stageStatusText(coopD2[0]) == "已交付"
         && CoopFeature.stageStatusText(coopD1[0]).contains("未交付")
         && CoopFeature.stageStatusText(nil) == "尚未初排",
@@ -3142,7 +3142,7 @@ check("q2-suggestions-missing", "还没有建议清单（未跑第二段）→ n
 // refresh：发现 + 建议 + 记录三件事的合并结果（界面刷新状态只用这一个入口）
 let coopRefresh = CoopFeature.refresh(outRoot: dOutA, source: dSrc)
 check("q3-refresh", "refresh()：selected = 最近修改的候选，建议摘要与记录存在性一并带出",
-      coopRefresh.selected?.stem == "Bo_Chen2" && coopRefresh.suggestions == nil
+      coopRefresh.selected?.stem == "Lei_Li2" && coopRefresh.suggestions == nil
         && coopRefresh.recordExists == false && coopRefresh.stages.count == 2,
       "selected=\(coopRefresh.selected?.stem ?? "<nil>") stages=\(coopRefresh.stages.count)")
 
@@ -3292,14 +3292,14 @@ check("s3-text", "剪贴板文本校验：空/纯空白 → nil（红字提示�
 
 // s4 state.stats 解析 + 成功摘要口径（用户真测：9/9 + 低置信 22 项）
 let s56Out = s56Root + "/issue90"
-let s56Final = s56Out + "/Bo_Chen"
-let s56Stage = s56Out + "/Bo_Chen_待核"
+let s56Final = s56Out + "/Lei_Li"
+let s56Stage = s56Out + "/Lei_Li_待核"
 mkdir(s56Stage, 0o700); mkdir(s56Final, 0o700)
 let s56State: [String: Any] = [
     "schema": 1, "phase": "done",
     "source": ["path": coopSrc, "sha256": "x"],
-    "params": ["out_root": s56Out, "stem": "Bo_Chen"],
-    "taskbook": s56Stage + "/Bo_Chen_文献核实.md",
+    "params": ["out_root": s56Out, "stem": "Lei_Li"],
+    "taskbook": s56Stage + "/Lei_Li_文献核实.md",
     "stage_dir": s56Stage, "final_dir": s56Final, "delivered_to": s56Final,
     "stats": ["bib_total": 9, "bib_replied": 9, "bib_pending": 0,
               "low_total": 22, "low_replied": 9, "low_applied": 9,
@@ -3308,10 +3308,10 @@ let s56State: [String: Any] = [
 let s56StateData = try! JSONSerialization.data(withJSONObject: s56State, options: [.sortedKeys])
 writeRaw(s56Stage + "/" + CoopFeature.stateFileName, String(data: s56StateData, encoding: .utf8)!)
 writeRaw(s56Final + "/" + CoopFeature.recordFileName,
-         "# AI 协同记录 · Bo_Chen\n\n## 一、外部 chat 回填（文献字段）\n\n"
+         "# AI 协同记录 · Lei_Li\n\n## 一、外部 chat 回填（文献字段）\n\n"
          + "- 解析到 9 条，拒绝 0 条，未回填 0 条\n\n## 二、reference.bib 并入\n\n"
          + "- 并入：**9** 条\n- 跳过：**0** 条\n")
-writeRaw(s56Stage + "/Bo_Chen_AI建议.md", "# 建议清单\n")
+writeRaw(s56Stage + "/Lei_Li_AI建议.md", "# 建议清单\n")
 let s56Loaded = CoopFeature.loadStage(stageDir: s56Stage)
 check("s4-stats-parse", "state.stats 解析：文献 9/9、低置信 22（回复 9 / 应用 9 / 待人工 13）",
       s56Loaded?.stats == CoopFeature.CoopStats(
@@ -3325,14 +3325,14 @@ check("s4-summary", "成功摘要固定口径：「文献回填 9/9（并入 9 �
         && s56Result?.stats.legacy == false,
       "summary=\(s56Result?.summaryLine ?? "<nil>")")
 check("s4-suggestions-path", "「打开建议清单」路径：暂存目录里的 `<stem>_AI建议.md` 优先",
-      s56Result?.suggestionsMarkdownPath == s56Stage + "/Bo_Chen_AI建议.md",
+      s56Result?.suggestionsMarkdownPath == s56Stage + "/Lei_Li_AI建议.md",
       "path=\(s56Result?.suggestionsMarkdownPath ?? "<nil>")")
 
 // s5 文献回填 0/N → 橙色警告文案固定（不再出现误导性的「待人工 0」）
 let s56ZeroState: [String: Any] = [
     "schema": 1, "phase": "done",
     "source": ["path": coopSrc, "sha256": "x"],
-    "params": ["out_root": s56Out, "stem": "Bo_Chen0"],
+    "params": ["out_root": s56Out, "stem": "Lei_Li0"],
     "taskbook": "", "stage_dir": s56Stage + "0", "final_dir": s56Final + "0",
     "delivered_to": s56Final + "0",
     "stats": ["bib_total": 9, "bib_replied": 0, "bib_pending": 9,
@@ -3344,7 +3344,7 @@ let s56ZeroData = try! JSONSerialization.data(withJSONObject: s56ZeroState, opti
 writeRaw(s56Stage + "0/" + CoopFeature.stateFileName,
          String(data: s56ZeroData, encoding: .utf8)!)
 writeRaw(s56Final + "0/" + CoopFeature.recordFileName,
-         "# AI 协同记录 · Bo_Chen0\n\n## 一、外部 chat 回填（文献字段）\n\n"
+         "# AI 协同记录 · Lei_Li0\n\n## 一、外部 chat 回填（文献字段）\n\n"
          + "- 解析到 0 条，拒绝 0 条，未回填 9 条\n")
 let s56ZeroLoaded = CoopFeature.loadStage(stageDir: s56Stage + "0")
 let s56ZeroResult = s56ZeroLoaded.map { CoopFeature.loadResult($0) }

@@ -205,8 +205,17 @@ check(r"⑧ 反例：括号基 `\left(a+b\right)_{1}` 仍是合法写法（不�
 # ══════════════════════════════════════════════════════════════════════════
 # 真实稿夹具（有稿件库才跑）：90/07 nary+display、87/06 定界符+脚注、83/05 脚注
 # ══════════════════════════════════════════════════════════════════════════
-def _build_real(issue: str, slug: str, needle: str = "") -> str:
-    art = os.path.join(_manuscripts, issue, slug)
+def _paper_dir(issue_name: str, no: str) -> str:
+    """按期目录名 + 篇序号发现来稿目录（不硬编码真实作者名；B-232）。"""
+    import glob as _glob
+    if not _manuscripts:
+        return ""
+    hits = sorted(_glob.glob(os.path.join(_manuscripts, issue_name, no + " *")))
+    return next((h for h in hits if os.path.isdir(h)), "")
+
+
+def _build_real(issue: str, no: str, needle: str = "") -> str:
+    art = _paper_dir(issue, no)
     ss = sources.identify(art, verbose=False)
     if not ss.docx:
         return ""
@@ -219,7 +228,7 @@ try:
     if not _manuscripts:
         skip("真实稿夹具", "本机没有稿件库")
     else:
-        _t90 = _build_real("2026年第5期(90)", "07 Liangying_Zhao")
+        _t90 = _build_real("2026年第5期(90)", "07")
         if _t90:
             check("② 真实稿 90/07：求和体恢复（\\sum_{i=1}^{k}），不再是 `{∑ }`",
                   r"\sum_{i=1}^{k}" in _t90 and r"{\sum }" not in _t90,
@@ -229,7 +238,7 @@ try:
                   _n_disp90 >= 1, f"display 数={_n_disp90}")
         else:
             skip("真实稿 90/07", "缺源稿")
-        _t87 = _build_real("2026年第2期(87)", "06 Ruixue_Tang")
+        _t87 = _build_real("2026年第2期(87)", "06")
         if _t87:
             check("③ 真实稿 87/06：6 个花括号 / 2 个方括号 / 1 个尖括号恢复",
                   _t87.count(r"\left\{") >= 6 and _t87.count(r"\left[") >= 2
@@ -241,7 +250,7 @@ try:
                   f"残留={_t87.count('\\\\textbackslash{}')}")
         else:
             skip("真实稿 87/06", "缺源稿")
-        _t83 = _build_real("2025年第4期(83)", "05 Gang_Wang")
+        _t83 = _build_real("2025年第4期(83)", "05")
         if _t83:
             check("① 真实稿 83/05：脚注公式不再二次转义（工程列 32 个脚注公式）",
                   "\\textbackslash{}" not in _t83.split("% ──")[0] or True,

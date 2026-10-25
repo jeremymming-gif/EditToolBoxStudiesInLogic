@@ -4,10 +4,10 @@ r"""`slcn/build.py` 的**中文作者拆分**判据（案例 71，2026-10-15 用
 缺陷
 ----
 `cn_author_names()` 从前按 `re.split(r"[\s、,，]+", author)` 硬拆，于是期刊里
-「两字姓名内部带空白」的排法（源稿 docx 里写作 `陈  波`，两个 ASCII 空格）被拆成
-`['陈', '波']`：`author_fields()` 把「波」写成 `\mysecondauthor`，`coauthor_fields()`
+「两字姓名内部带空白」的排法（源稿 docx 里写作 `李  雷`，两个 ASCII 空格）被拆成
+`['李', '雷']`：`author_fields()` 把「波」写成 `\mysecondauthor`，`coauthor_fields()`
 再凭空产出 4 个占位符（第二作者中文单位/邮箱、英文姓名/英文单位）并印进 PDF 页眉
-（`陈, 波`）。
+（`李, 雷`）。
 
 判据
 ----
@@ -20,11 +20,11 @@ r"""`slcn/build.py` 的**中文作者拆分**判据（案例 71，2026-10-15 用
 --------
   ① 必配反例表（逐字用真实字符串）：单字姓名内部空白合并；真·多作者**拆分不变**；
      含英文字母整条不拆（既有约定）。
-  ② 连带效应：`author_fields('陈  波')` 只写一个 `\myfirstauthor`，且
+  ② 连带效应：`author_fields('李  雷')` 只写一个 `\myfirstauthor`，且
      `coauthor_fields()` 为空（= 不再凭空产出 4 个占位符；这是缺陷的完整症状）。
   ③ 非回归：内联**改动前**的实现，对一批真实多作者串逐个比对，结果必须逐字相同。
-  ④ 真实稿端到端（`build_docx`）：Bo_Chen 不再有假第二作者、`\myfirstauthor` 是陈波；
-     Jingru_Kou / Zhaoshi_Zeng 这类真·多作者稿仍然拆对。
+  ④ 真实稿端到端（`build_docx`）：Lei_Li 不再有假第二作者、`\myfirstauthor` 是李雷；
+     Meimei_Han / Zhaoshi_Zeng 这类真·多作者稿仍然拆对。
 
 不联网、不写仓库（产物一律进临时目录）、不跑 corpus.py / build.sh。
 缺真实稿件时 `SKIP` 而不是失败（与 `test_coauthor_en.py` 的 ③ 组同一口径）。
@@ -50,9 +50,9 @@ FAILS = []
 SKIPS = []
 
 _ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
-BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Bo_Chen", "original",
-                       "陈波 当代逻辑哲学鸟瞰.docx")
-JINGRU = os.path.join(_ROOT, "2026年第5期(90)", "01 Jingru_Kou", "定稿.docx")
+BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
+                       "李雷 当代逻辑论题鸟瞰.docx")
+JINGRU = os.path.join(_ROOT, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
 ZENG = os.path.join(_ROOT, "2024年第1期(74)", "02 Zhaoshi_Zeng", "original",
                     "原文--论栾调甫中国逻辑研究范式.docx")
 
@@ -105,13 +105,13 @@ def noncomment_lines(tex, needle):
 print("── ① cn_author_names：必配反例表（真实字符串）──")
 
 _SINGLE_HAN_WITH_SPACE = [
-    ("陈  波", ["陈波"]),          # 两个 ASCII 空格（期刊两字姓名的常见排法）
+    ("李  雷", ["李雷"]),          # 两个 ASCII 空格（期刊两字姓名的常见排法）
     ("屈 凯", ["屈凯"]),
     ("曾 昭式", ["曾昭式"]),        # 单字在前、三字名在后
 ]
 _REAL_MULTI = [
     ("王刚 李晟", ["王刚", "李晟"]),        # ★ 关键反例：不许并成一个
-    ("寇静茹 刘叶涛", ["寇静茹", "刘叶涛"]),
+    ("韩梅梅 王小明", ["韩梅梅", "王小明"]),
     ("张三、李四", ["张三", "李四"]),
     ("邱德钧  陶景侃", ["邱德钧", "陶景侃"]),
     ("曾昭式   凌敏", ["曾昭式", "凌敏"]),
@@ -135,14 +135,14 @@ for src, want in _SLASH:
     check(f"① `/` 分隔 {src!r} → {len(want)} 个名字", got == want, f"{got}")
 
 check("① 含英文字母整条不拆（既有约定，见 docstring）",
-      build.cn_author_names("Jiawei Chu") == []
-      and build.cn_author_names("Chen Bo") == []
-      and build.cn_author_names("陈波 Chen Bo") == [], "")
+      build.cn_author_names("Jiawei Zhong") == []
+      and build.cn_author_names("Li Lei") == []
+      and build.cn_author_names("李雷 Li Lei") == [], "")
 check("① 空 / None 不炸", build.cn_author_names("") == []
       and build.cn_author_names("   ") == [] and build.cn_author_names(None) == [])
 check("① 全角空格（U+3000）也是分隔符",
       build.cn_author_names("王刚\u3000李晟") == ["王刚", "李晟"]
-      and build.cn_author_names("陈\u3000波") == ["陈波"], "")
+      and build.cn_author_names("李\u3000雷") == ["李雷"], "")
 check("① 末尾落单的单字片段原样保留（与改动前一致，不硬猜）",
       build.cn_author_names("王刚 李") == ["王刚", "李"], "")
 check("① 连着的单字片段两两合并（4 个单字 → 2 个名字）",
@@ -154,9 +154,9 @@ check("① 纯标点片段不参与合并（`阿 · 迈农` 保持与改动前�
 # ── ② 连带效应：假第二作者与 4 个凭空占位符 ──────────────────────────────
 print("\n── ② author_fields / coauthor_fields：不再凭空产出第二作者 ──")
 
-_f = build.author_fields("陈  波")
-check("② `陈  波` → 只写 `\\myfirstauthor`，值是没有内部空白的 `陈波`",
-      _f == {"myfirstauthor": "\\kaishu 陈波"}, f"{_f}")
+_f = build.author_fields("李  雷")
+check("② `李  雷` → 只写 `\\myfirstauthor`，值是没有内部空白的 `李雷`",
+      _f == {"myfirstauthor": "\\kaishu 李雷"}, f"{_f}")
 check("② 没有 `mysecondauthor`（假第二作者不再产生）",
       "mysecondauthor" not in _f, f"{sorted(_f)}")
 check("② `coauthor_fields()` 为空 → 不再凭空产出 4 个占位符",
@@ -172,9 +172,9 @@ check("② 真·两作者的 `coauthor_fields()` 才该有 4 项（第二作者�
           "mysecondaffiliation", "mysecondemail",
           "mysecondauthorEN", "mysecondaffiliationEN"], "")
 check("② 英文名不经合并、原样保留（既有约定不变）",
-      build.author_fields("Jiawei Chu") == {"myfirstauthor": "\\kaishu Jiawei Chu"}, "")
+      build.author_fields("Jiawei Zhong") == {"myfirstauthor": "\\kaishu Jiawei Zhong"}, "")
 check("② 普通单作者中文名逐字不变",
-      build.author_fields("寇静茹") == {"myfirstauthor": "\\kaishu 寇静茹"}
+      build.author_fields("韩梅梅") == {"myfirstauthor": "\\kaishu 韩梅梅"}
       and build.author_fields("") == {"myfirstauthor": "null"}, "")
 
 
@@ -182,8 +182,8 @@ check("② 普通单作者中文名逐字不变",
 print("\n── ③ 非回归：与改动前逐字相同（只在有单字片段时才允许不同）──")
 
 _REALISTIC = [s for s, _w in _REAL_MULTI + _SINGLE_HAN_WITH_SPACE + _SLASH] + [
-    "Jiawei Chu", "陈波", "屈凯", "张燕京 李邢睿", "夏吾太 项智多杰",
-    "雒自新 王璇", "黄海婷 张建军", "赵亮英 陈晓平", "牛子涵 熊明辉*",
+    "Jiawei Zhong", "李雷", "屈凯", "张燕京 李邢睿", "夏吾太 项智多杰",
+    "赵丽丽 孙悦", "吴静怡 郑建国", "何嘉怡 徐佳明", "牛子涵 熊明辉*",
     "鲜于波1, 黄伟鑫1", "南亚伶 王克喜",
 ]
 _diff = [(s, old_cn_author_names(s), build.cn_author_names(s))
@@ -194,12 +194,12 @@ check("③ 22 条真实作者串里，结果与改动前不同的一律**只能*
       f"不同的：{[d for d in _diff]}")
 check("③ 真·多作者（两段都 ≥2 字）拆分逐字未变",
       all(old_cn_author_names(s) == build.cn_author_names(s)
-          for s in ["王刚 李晟", "寇静茹 刘叶涛", "邱德钧  陶景侃", "曾昭式   凌敏",
+          for s in ["王刚 李晟", "韩梅梅 王小明", "邱德钧  陶景侃", "曾昭式   凌敏",
                     "张三、李四", "李友广、李宗敏", "张燕京 李邢睿",
-                    "夏吾太 项智多杰", "雒自新 王璇", "赵亮英 陈晓平"]), "")
+                    "夏吾太 项智多杰", "赵丽丽 孙悦", "何嘉怡 徐佳明"]), "")
 check("③ 真·多作者的**槽位数**一个都没少",
       all(len(build.cn_author_names(s)) == len(old_cn_author_names(s))
-          for s in ["王刚 李晟", "寇静茹 刘叶涛", "邱德钧  陶景侃", "曾昭式   凌敏",
+          for s in ["王刚 李晟", "韩梅梅 王小明", "邱德钧  陶景侃", "曾昭式   凌敏",
                     "张三、李四", "王奇琦 郑伟平", "牛子涵 熊明辉*"]), "")
 
 
@@ -207,12 +207,12 @@ check("③ 真·多作者的**槽位数**一个都没少",
 print("\n── ④ 真实稿端到端（build_docx）──")
 
 if not os.path.isfile(BO_CHEN):
-    skip("④ 端到端（Bo_Chen）", f"缺真实稿件（{BO_CHEN}）")
+    skip("④ 端到端（Lei_Li）", f"缺真实稿件（{BO_CHEN}）")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         tex = build_tex(BO_CHEN, os.path.join(tmp, "bo_chen"))
-        check("④ `\\myfirstauthor` 是完整的 `陈波`（不再是 `陈`）",
-              "\n{\\kaishu 陈波}" in tex, "")
+        check("④ `\\myfirstauthor` 是完整的 `李雷`（不再是 `李`）",
+              "\n{\\kaishu 李雷}" in tex, "")
         check("④ **没有**取消注释的 `\\renewcommand{\\mysecondauthor}` 行",
               not noncomment_lines(tex, "\\renewcommand{\\mysecondauthor}"),
               f"{noncomment_lines(tex, '\\renewcommand{\\mysecondauthor}')}")
@@ -221,13 +221,13 @@ else:
                   ("第二作者单位", "第二作者邮箱", "第二作者英文姓名", "第二作者英文单位")), "")
 
 if not os.path.isfile(JINGRU):
-    skip("④ 端到端（Jingru_Kou 真两作者）", f"缺真实稿件（{JINGRU}）")
+    skip("④ 端到端（Meimei_Han 真两作者）", f"缺真实稿件（{JINGRU}）")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         tex = build_tex(JINGRU, os.path.join(tmp, "jingru"))
-        check("④ Jingru_Kou 仍然拆成两作者（第一作者寇静茹 + 第二作者刘叶涛）",
-              "\n{\\kaishu 寇静茹}" in tex
-              and "\\renewcommand{\\mysecondauthor}{\\kaishu 刘叶涛}" in tex, "")
+        check("④ Meimei_Han 仍然拆成两作者（第一作者韩梅梅 + 第二作者王小明）",
+              "\n{\\kaishu 韩梅梅}" in tex
+              and "\\renewcommand{\\mysecondauthor}{\\kaishu 王小明}" in tex, "")
 
 if not os.path.isfile(ZENG):
     skip("④ 端到端（Zhaoshi_Zeng 真两作者）", f"缺真实稿件（{ZENG}）")

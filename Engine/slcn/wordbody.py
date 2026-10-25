@@ -499,14 +499,14 @@ def parse_docx(path: str, quote_threshold: int = 105,
     #
     # 题名后面常另起一段放副标题（以破折号开头），再下一段才是作者。
     # 直接取「第 1 段」当作者会把副标题写进 `\myfirstauthor`——实测踩到
-    # （09 Jiawei_Chu：`\kaishu ——一个基于广义论证理论的生成模型`）。
+    # （09 Jiawei_Zhong：`\kaishu ——一个基于示例论证理论的生成模型`）。
     doc.title = plains[0].strip()
     author_idx = 1
     if len(plains) > 1 and _is_subtitle(plains[1]):
         doc.subtitle = plains[1].strip()
         doc.title = f"{doc.title}{doc.subtitle}"
         author_idx = 2
-    # ⚠️ 题名与作者之间**可能是空段落**（实测 2026_05_Jingru_Kou：`[1]` 是空行，
+    # ⚠️ 题名与作者之间**可能是空段落**（实测 2026_05_Meimei_Han：`[1]` 是空行，
     #    作者在 `[2]`），所以不能只看 author_idx 那一段，要往后找到第一个非空段。
     for k in range(author_idx, min(len(plains), author_idx + 4)):
         cand = plains[k].strip()
@@ -523,7 +523,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
 
     # ②.5 文末中英元数据块（英文题名/摘要/关键词、作者、单位、邮箱）
     #
-    # ⚠️ 它排在参考文献区**之后**（09 Jiawei_Chu：第 115–125 段）。所以：
+    # ⚠️ 它排在参考文献区**之后**（09 Jiawei_Zhong：第 115–125 段）。所以：
     #   · 参考文献区必须在它之前收口，否则英文摘要会被当成最后一条文献；
     #   · 元数据块只在这里扫，不能拿它去改「正文起点」（那是开头那套的事）。
     # ⚠️ 但**不能要求「参考文献」标题存在**：实测 16 篇源稿的英文块附近根本没有这个
@@ -572,7 +572,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         # 两条体例：`[N] 作者, 年份, "题名", 刊名…`（编号清单通道 `_numbered_refs`）
         # 与「作者. 年份. 题名[M]. …」/中文逗号风格（人年制通道 `parse_reference_line`）。
         # ⚠️ 取舍必须**按覆盖条数取优**，不能只看"人年制有没有解析出东西"：
-        #    2026-10-17 实例测试回归（案例 116）——Beibei_Gao 的文末 22 条编号清单里有一条
+        #    2026-10-17 实例测试回归（案例 116）——Xiaoyu_Lin 的文末 22 条编号清单里有一条
         #    编号写歪了（`[13 J. Ross…` 少了 `]`），逗号兜底把它误吃成 1 条 → `doc.refs` 非空
         #    → 旧逻辑「if not doc.refs」就**再也不敢走编号通道** → 整份 22 条只剩 1 条、
         #    正文引用全部没替换。裸的"先来先得"在两种格式混排/写歪时都会踩这个坑。
@@ -680,7 +680,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
     #
     # 中文稿常见布局：英文题名、英文摘要、中英文单位、邮箱全放在**参考文献之后**。
     # 早先只扫开头 20 段，于是 `\mytitleEN` / `\myabstractEN` 一直是模板占位符
-    # `Title` / `Abstract`（实测 09 Jiawei_Chu 就是这样，编辑只能自己填）。
+    # `Title` / `Abstract`（实测 09 Jiawei_Zhong 就是这样，编辑只能自己填）。
     #
     # ⚠️ title_cn / title_en 只放**主标题**，副标题留在 doc.subtitle / doc.subtitle_en，
     #    由 build.py 用 `\\` 拼起来。两边都带上副标题就会重复一次（实测踩到）。
@@ -723,7 +723,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
 
     # 中文关键词的分隔符按**刊物惯例**归一：人工成品一律用分号
     # （全库实测 142 篇用「；」、0 篇用「、」），模板注释也写着「以中文分号分隔」，
-    # 而作者原稿常用顿号。实测 09 Jiawei_Chu：源稿「、」→ 人工「；」。
+    # 而作者原稿常用顿号。实测 09 Jiawei_Zhong：源稿「、」→ 人工「；」。
     if doc.keywords_cn:
         doc.keywords_cn = re.sub(r"\s*[、，,]\s*", "；", doc.keywords_cn).strip("；")
 
@@ -849,7 +849,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         # 中文文献条目型脚注（《…》，出版社，年）不含括号引用，保持 pure_ref 进 bib
         # （否则 86-03 的 21 条中文文献脚注会被误降级、bib 从 22 掉到 1，实测回归）。
         # 论述性特征：① 行内**作者-年引用**（括号里任意位置含年份，覆盖
-        # `(Cook, 2010)` / `(陈波, 2018，第三节)` / `(Burgess, 2009, p. 129)`）；
+        # `(Cook, 2010)` / `(李雷, 2018，第三节)` / `(Burgess, 2009, p. 129)`）；
         # 或 ② 多句散文（≥2 个句号）。中文文献条目型脚注通常两者都不满足
         # （86-03 的 21 条文献脚注实测不满足 → 不会被误降级、bib 保持 22）。
         _inline_cite = re.search(
@@ -910,7 +910,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
             _fallback_mixed = False
             _was_split = _kind == CITATION_MIXED_SPLIT
             if _kind == CITATION_ENTRY:
-                # B-199：引导语后剥出的完整条目（90-07「参阅陈晓平…」型）先按文末清单
+                # B-199：引导语后剥出的完整条目（90-07「参阅徐佳明…」型）先按文末清单
                 # 原文行找既有键——命中则只 cite（不改 bib），避免字段碎片导致重复条目。
                 _key = ""
                 if getattr(_new, "cue_stripped", False):
@@ -1278,12 +1278,12 @@ def parse_docx(path: str, quote_threshold: int = 105,
     #    实测 03 Ziming_Song：`一、引言`…`六、结语` 是一级，`1. 决策论与愿望/信念`、
     #    `2. 表征定理` 挂在 `二、` 底下；人工成品 Ziming_Song.tex 给的正是
     #    `\subsection{决策论与愿望/信念}`。67A 邱德钧稿同构（`二、…` 下挂 `1.`–`5.`）。
-    #    没有 `一、` 的稿子（04 Bo_Chen、07 Long_Chen、07 Guangwu_Feng…）里 `N.` 本身就是
+    #    没有 `一、` 的稿子（04 Lei_Li、07 Long_Chen、07 Guangwu_Feng…）里 `N.` 本身就是
     #    一级标题，人工成品同样排 `\section` —— 所以这一层判定与人工做法一致。
     #    ⚠️ 只作用于**新增**的点式分支：`N 空格`/`N.M` 等既有分支的层级一字不改。
     # ② 列表：`1. 莱布尼茨` / `2. 休谟` / `3. 康德` 这种**连排**短行是名单，不是一串小节。
     #    判据是「前后邻居里只要还有一个同形行，整串都按列表处理」。语料 132 篇里这种
-    #    连排 0 处（04 Bo_Chen 那 6 行每行后面都跟着成段正文，照旧认成标题），
+    #    连排 0 处（04 Lei_Li 那 6 行每行后面都跟着成段正文，照旧认成标题），
     #    这条纯粹是防「名单被拆成一堆 \section」的反例防线——只会少认，不会多认。
     cn_num_top = any(
         _HEAD1.match(escape_latex(p.plain).strip()) for p in body_paras if p.plain.strip()

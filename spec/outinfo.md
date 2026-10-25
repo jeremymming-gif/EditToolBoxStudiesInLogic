@@ -314,9 +314,9 @@ folders = sorted(
 ### 3.2 极易出错的三处
 
 1. **`folder_name = folder.split()[-1]`（行 52）**：`split()`（无参数）按任意空白切分，取**最后**一段。
-   - `'03 Liang_Zhang'` → `'Liang_Zhang'`
-   - `'03 Liang Zhang'` → `'Zhang'`
-   - `'03Liang_Zhang'`（无空格）→ `'03Liang_Zhang'`（整串，仅一段）
+   - `'03 Jie_Zhou'` → `'Jie_Zhou'`
+   - `'03 Jie Zhou'` → `'Zhang'`
+   - `'03Jie_Zhou'`（无空格）→ `'03Jie_Zhou'`（整串，仅一段）
    然后 `tex_file = folder_path + '/' + folder_name + '.tex'`，即**目录名最后一段**必须等于 `.tex` 主文件名。
    `output` 里写入的也是 `folder_name`（**不带编号、不带路径**）。
 
@@ -470,8 +470,8 @@ os.path.join(output_dir, '信息检查' + str(now.strftime('%Y_%m_%d_%H_%M_%S'))
 
 ### 6.5 一个「正常」文章块的完整样例
 
-假设目录 `2026年第5期(90)/03 Liang_Zhang/`，内含 `Liang_Zhang.tex` / `Liang_Zhang.pdf` / `journal.sty`。
-（`folder_name = 'Liang_Zhang'`）
+假设目录 `2026年第5期(90)/03 Jie_Zhou/`，内含 `Jie_Zhou.tex` / `Jie_Zhou.pdf` / `journal.sty`。
+（`folder_name = 'Jie_Zhou'`）
 
 tex 中 `get_line_num` 命中：
 - 某行含 `输入卷号` 且该行数字为 `12`
@@ -481,12 +481,12 @@ tex 中 `get_line_num` 命中：
 则 `output` 增长为（为清晰起见把 `\n` 显式写出）：
 
 ```text
-Liang_Zhang\n
+Jie_Zhou\n
 卷号：12  期号：5  起始页码：105  终止页码：118  年份：2026\n
 页数：14\n
 中文标题: 论指称的模糊性\n
 英文标题: On the Vagueness of Reference\n
-第一作者英文: Liang Zhang\n
+第一作者英文: Jie Zhou\n
 第二作者中文: 张晓明\n
 字号 11pt\n
 全文行距: 125\n
@@ -501,12 +501,12 @@ Liang_Zhang\n
 > **年份在起始页码之前，且年份以 `\n` 收行**。修正后的真实版：
 
 ```text
-Liang_Zhang\n
+Jie_Zhou\n
 卷号：12  期号：5  年份：2026\n
 起始页码：105  终止页码：118  页数：14\n
 中文标题: 论指称的模糊性\n
 英文标题: On the Vagueness of Reference\n
-第一作者英文: Liang Zhang\n
+第一作者英文: Jie Zhou\n
 第二作者中文: 张晓明\n
 字号 11pt\n
 全文行距: 125\n
@@ -1049,12 +1049,12 @@ func runInfo(_ textView: NSTextView, _ s: String) {
 2026年第5期(90)/
 ├── Contents/                     # folder_name == 'Contents' → 被 continue 跳过
 ├── 01 Wang_Li/                   # 无 .tex / .sty / .pdf
-└── 03 Liang_Zhang/
-    ├── Liang_Zhang.tex
+└── 03 Jie_Zhou/
+    ├── Jie_Zhou.tex
     └── journal.sty
 ```
 
-`03 Liang_Zhang/Liang_Zhang.tex`（内容刻意包含各种边界）：
+`03 Jie_Zhou/Jie_Zhou.tex`（内容刻意包含各种边界）：
 
 ```latex
 % 输入卷号 12
@@ -1070,14 +1070,14 @@ func runInfo(_ textView: NSTextView, _ s: String) {
 {On the Vagueness of Reference}
 {}
 第一作者姓名
-Liang Zhang
+Jie Zhou
 第二作者姓名 Zhang, Xiaoming
 Insert the third author if
 第三作者中文: % commented
 \documentclass[a4paper,11pt]{article}
 ```
 
-`03 Liang_Zhang/journal.sty`：
+`03 Jie_Zhou/journal.sty`：
 
 ```latex
 \baselinestretch{1.25}
@@ -1086,12 +1086,12 @@ Insert the third author if
 ### 13.2 实际输出（`repr`，确认精确换行与空格）
 
 ```python
-'Wang_Li\n\nLiang_Zhang\n'
+'Wang_Li\n\nJie_Zhou\n'
 '卷号：12  期号：5  年份：2026\n'
 '起始页码：105  终止页码：118  页数：14\n'
 '中文标题: 论指称的模糊性\n'
 '英文标题: On the Vagueness of Reference\n'
-'第一作者英文: Liang Zhang\n'
+'第一作者英文: Jie Zhou\n'
 '第二作者中文: 第二作者姓名 Zhang, Xiaoming\n'
 '第三作者英文: Insert the third author if\n'
 '字号 11pt]{article}\n'

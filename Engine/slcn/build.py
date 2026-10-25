@@ -53,7 +53,7 @@ def clean_field_value(name: str, value: str) -> tuple[str, list[str]]:
 # 模板里这些字段的默认值是**示例文字**（`第一作者` / `单位1（到系所）` /
 # `xxxx@xxxx.xxx` / `Abstract` / `Title` / `在这里填上你的标题`…）。解析不出来时
 # 若跳过不写，产物里就留着这些示例字——**看起来像正常出稿，实则是静默失败**：
-# 实测 2026_05 Jingru_Kou（作者没给单位与邮箱）产物印着「单位1（到系所）」
+# 实测 2026_05 Meimei_Han（作者没给单位与邮箱）产物印着「单位1（到系所）」
 # 「xxxx@xxxx.xxx」，编辑不逐字核对根本发现不了。
 # 所以约定：这些字段**没能从源稿解析出来** → 写显眼的「【未识别：…，请手工填写】」
 # 占位符，并记一条 warning（convert.py 会汇总打印）。编辑可用 --title-cn/--author-cn/…
@@ -79,7 +79,7 @@ REQUIRED_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
         # 第一作者的**英文**槽位（2026-10-15，案例 72）：CN 模板 1.5 节把它们预置成
         # 示例文字 `First Author` / `Affiliation 1`，从前不在这张表里 → 解析不出来时
         # 既不写占位符也不报「未识别」，模板示例文字被**静默**搬进产物印到 PDF 上
-        # （实测 2026_05 Bo_Chen 第 20 页英文摘要页）；比写占位符更危险。
+        # （实测 2026_05 Lei_Li 第 20 页英文摘要页）；比写占位符更危险。
         # 对照：第二作者的英文槽位在 `coauthor_fields()` 里，所以第二作者是对的。
         ("myfirstauthorEN", "第一作者英文姓名"),
         ("myfirstaffiliationEN", "第一作者英文单位"),
@@ -152,7 +152,7 @@ def template_defaults(template_text: str) -> dict[str, str]:
 
 # 姓名分隔符：空白（含全角空格）、顿号/逗号（中英）、以及期刊里常见的 `/`。
 # ⚠️ 逗号只在**中文**姓名串里当分隔符（本函数一开始就把含英文字母的整条挡掉），
-#    所以不会误伤 `Kou, Jingru` 这种倒装英文名——那是 `en_coauthor_values()` 的事。
+#    所以不会误伤 `Han, Meimei` 这种倒装英文名——那是 `en_coauthor_values()` 的事。
 _NAME_SEP = re.compile(r"[\s、,，/／]+")
 _CJK_CHAR = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
@@ -165,7 +165,7 @@ def _is_single_han(s: str) -> bool:
 def cn_author_names(author: str) -> list[str]:
     """纯中文姓名串 → 姓名列表；含英文字母时返回空列表。
 
-    为什么含英文字母就整条不拆：`Jiawei Chu` 按空白拆成 `Jiawei` / `Chu` 就错了
+    为什么含英文字母就整条不拆：`Jiawei Zhong` 按空白拆成 `Jiawei` / `Zhong` 就错了
     （实测的教训，见 `author_fields()`）。`author_fields()` 与英文合著者槽位
     （`en_coauthor_values()` 要拿中文作者数对表）共用这一份判据。
 
@@ -174,7 +174,7 @@ def cn_author_names(author: str) -> list[str]:
     `['陈','波']`——`author_fields()` 把「波」写成第二作者，`coauthor_fields()`
     再凭空产出 4 个占位符（第二作者中文/英文单位、邮箱、英文姓名）印进 PDF 页眉。
     判据：**单个汉字长度的片段不可能是完整中文姓名**，所以「单字片段 + 下一个片段」
-    两两合并（`陈`+`波`=`陈波`；`顺`+`真`=`顺真`）。这个判据**只可能**在片段本身
+    两两合并（`李`+`雷`=`李雷`；`顺`+`真`=`顺真`）。这个判据**只可能**在片段本身
     连一个字都不够时触发，因此不会把 `王刚 李晟` 两个真姓名并成一个
     （两个片段都 ≥2 字，不满足触发条件）——这正是 `convert.py:306-313` 那条
     「折叠空白后不足 5 字算一个名字」的判据所缺的性质（它会把 `王刚 李晟` 当成一个人）。
@@ -202,7 +202,7 @@ def cn_author_names(author: str) -> list[str]:
 
 
 #: 英文作者串里**可以**当分隔符的显式记号（B-217 ④）：**不含逗号**——逗号可能是
-#: 倒装姓名的内部标点（`Kou, Jingru`），切开就凭空多出一个作者。
+#: 倒装姓名的内部标点（`Han, Meimei`），切开就凭空多出一个作者。
 _EN_NAME_SEP_EXPLICIT = re.compile(r"\s*(?:;|；|、|&|\band\b)\s*")
 _EN_NAME_TOKEN_RE = re.compile(
     r"(?:[A-Z][A-Za-z'’\-]*\.?\s+){1,2}[A-Z][A-Za-z'’\-]*")
@@ -238,12 +238,12 @@ def author_fields(author: str, *, en_names=()) -> dict[str, str]:
     r"""作者姓名 → `\myfirstauthor` / `\mysecondauthor`…（与人工成品一致的写法）。
 
     多作者：第一作者进 `\myfirstauthor`，其余进 `\mysecondauthor…`。实测
-    2026_05 Jingru_Kou 是 `{\kaishu 寇静茹}` + `\renewcommand{\mysecondauthor}{\kaishu 刘叶涛}`。
+    2026_05 Meimei_Han 是 `{\kaishu 韩梅梅}` + `\renewcommand{\mysecondauthor}{\kaishu 王小明}`。
     中文姓名串按中文判据拆；**英文多作者**只走 `_en_author_names()` 的两条保守判据
     （B-217 ④：英文模板三位作者 → 三个宏都填；逗号倒装名不拆）。
 
     单作者也不能直接把原串写进宏（案例 71）：源稿里排成 `陈  波` 时，
-    `cn_author_names()` 已经把它并回一个 `陈波`，可原串还带着内部空白——
+    `cn_author_names()` 已经把它并回一个 `李雷`，可原串还带着内部空白——
     照抄原串会让页眉印成 `陈  波`。所以单作者走 `cn_names[0]`；
     只有**拆不出中文姓名**（英文名 / 空）时才用原串。
     """
@@ -285,7 +285,7 @@ def _AUTHOR_MACRO(word: str) -> str:
 
 # 英文合著者槽位的分隔符判据（`en_coauthor_values()`）：**刻意保守**。
 #   · 作者行只在 `and` / `&` / `;` / `、` 处切——**不用逗号**：英文元数据里的
-#     `Kou, Jingru`（倒装式）逗号是姓名的一部分，切了就凭空多出一个作者；
+#     `Han, Meimei`（倒装式）逗号是姓名的一部分，切了就凭空多出一个作者；
 #   · 单位行只在分号、或 `docxsource` 自己的多单位连接符（`\\　\hspace{…}`）处切。
 _EN_AUTHOR_SEP = re.compile(r"\s*(?:;|、|，|&|\band\b)\s*")
 _EN_AFFIL_SEP = re.compile(r"\s*;\s*|\\\\")
@@ -321,9 +321,9 @@ _EN_NAME_STOP_WORDS = frozenset({
 def _split_en_names_by_count(author_en: str, n: int) -> list[str]:
     r"""把**连写成一个字段**的英文作者串按声明作者数等分（2 词/人）。
 
-    第四十五批 A（90-01 Jingru_Kou 实测）：源稿英文作者行是 `Jingru Kou Yetao Liu`
+    第四十五批 A（90-01 Meimei_Han 实测）：源稿英文作者行是 `Meimei Han Xiaoming Wang`
     （没有 and/&/; 分隔符），旧逻辑 `_split_en_list` 只按显式分隔符切 → 整串进不了
-    第二作者槽位，模板印占位符；人工成品是 `\mysecondauthorEN{Yetao Liu}`。
+    第二作者槽位，模板印占位符；人工成品是 `\mysecondauthorEN{Xiaoming Wang}`。
 
     **严格判据（案例 163 / 第四十五批 Lead 裁决）**，任一不满足就**不猜**（返回 []）：
       ① 词数恰好 = 2 × 声明作者数（2–5 位作者）；
@@ -363,7 +363,7 @@ def en_coauthor_values(
       · 单位行只在分号或 docxsource 的多单位连接符处切；
       · **段数必须与中文作者槽位数完全一致**，才按位置取第 2…5 段；
       · **绝不**把第一作者的单位复制给第二作者——人工成品里两份恰好相同是巧合，
-        不是规则（`Jingru_Kou` 正是这种巧合：第一/第二作者同属南开大学哲学院）。
+        不是规则（`Meimei_Han` 正是这种巧合：第一/第二作者同属南开大学哲学院）。
     单作者稿（`n_authors <= 1`）一律返回空 dict：产物与从前逐字节相同。
     """
     out: dict[str, str] = {}
@@ -391,7 +391,7 @@ def coauthor_fields(field_values: dict[str, str]) -> tuple[tuple[str, str], ...]
 
     模板里 `mysecondaffiliation`=「单位2（到系所）」、`mysecondemail`=「xxxx@xxxx.xxx」，
     多作者稿的标题页会按作者数选排版分支（sty 里的 oneauthors/twoauthors… 那一套），
-    把这些示例文字原样印出来——实测 2026_05 Jingru_Kou 编译后 PDF 里第二作者
+    把这些示例文字原样印出来——实测 2026_05 Meimei_Han 编译后 PDF 里第二作者
     就印着「单位2（到系所）」和「xxxx@xxxx.xxx」。
 
     只在**该槽位作者确实存在**（`mysecondauthor` 有非空、非 null 的值）时才算：
@@ -1432,7 +1432,7 @@ def build_latex(
 def editorial_fields(meta: dict | None) -> dict[str, str]:
     """编辑侧**出版信息** → 模板字段。
 
-    这些信息作者稿里没有、工具也推不出来。缺了它们的后果很显眼（09 Jiawei_Chu 实测）：
+    这些信息作者稿里没有、工具也推不出来。缺了它们的后果很显眼（09 Jiawei_Zhong 实测）：
     每页页眉都是「逻辑学研究 xxxx 年第 x 期，1–10」，而人工成品是
     「逻辑学研究 2026 年第 5 期，137–152」——两份 PDF「看起来不一样」主要就是这个。
 
@@ -2137,7 +2137,7 @@ def build_docx(
     say(f"   题名《{doc.title}》 作者 {doc.author}")
     say(f"   段落正文 {len(doc.body)} 字符；章节 {len(doc.headings)} 个；公式 {doc.n_math} 处")
     # 参考文献有两条通道：文末**人年制**（doc.refs）与 编号清单/脚注（doc.bib_entries）。
-    # 只报 doc.refs 会让「编号清单」型稿件显示成「参考文献 0 条」——实测 09 Jiawei_Chu
+    # 只报 doc.refs 会让「编号清单」型稿件显示成「参考文献 0 条」——实测 09 Jiawei_Zhong
     # 明明解析出 18 条却这样打印，编辑会以为又丢了。
     if doc.bib_entries and not doc.refs:
         say(f"   参考文献 {len(doc.bib_entries)} 条（文末编号清单/脚注体例）")
@@ -2219,7 +2219,7 @@ def build_docx(
             f"正文含 {n_cite} 处 \\parencite")
         if n_cite == 0:
             # biblatex 只打印**被引用**的条目，所以 bib 再全，PDF 的参考文献区也是空的。
-            # 实测 09 Jiawei_Chu 就是这样：编辑器会以为「参考文献又丢了」。
+            # 实测 09 Jiawei_Zhong 就是这样：编辑器会以为「参考文献又丢了」。
             # 不自动加 `\nocite{*}`：全库 261 篇人工成品都是显式引用，**0 篇**用 \nocite。
             warnings.append(
                 f"bib 里有 {len(doc.bib_entries)} 条，但正文没有引用命令 → "
@@ -2283,7 +2283,7 @@ def build_docx(
     say("③ 载入模板并填入元数据（模板用户可选）")
     tpl, tpl_sel = _prepare_template(lang, sty, skeleton, say)
     lang = tpl_sel.lang
-    # ⚠️ 不要在这里把空格全删掉：`寇静茹 刘叶涛` 会被压成 `寇静茹刘叶涛`（实测 2026_05_Jingru_Kou）。
+    # ⚠️ 不要在这里把空格全删掉：`韩梅梅 王小明` 会被压成 `韩梅梅王小明`（实测 2026_05_Meimei_Han）。
     #    需要「无空格」形态的地方（键、目录名）自己处理，写进模板的必须是原样姓名。
     author = doc.author.strip()
 
@@ -2298,7 +2298,7 @@ def build_docx(
     tpl_defaults = template_defaults(tpl)
 
     # 题名带副标题时，人工成品是**并进同一个字段并用 `\\` 断行**的：
-    #   \mytitle{论证行动如何生成？\\——一个基于广义论证理论的生成模型}
+    #   \mytitle{示例论证如何生成？\\——一个基于示例论证理论的生成模型}
     # 页眉用的 myrunningtitle 则保持一行（不带 `\\`）。
     def _with_sub(title: str, sub: str) -> str:
         return f"{title}\\\\{sub}" if title and sub else title
@@ -2321,14 +2321,14 @@ def build_docx(
             "mykeywords": doc.keywords_cn or doc.keywords_en,
         }
     # 多作者：人工成品的写法是「第一作者 → \myfirstauthor，其余 → \mysecondauthor…」
-    # （实测 2026_05_Jingru_Kou：`{\kaishu 寇静茹}` + `\renewcommand{\mysecondauthor}{\kaishu 刘叶涛}`）。
-    # 只在**纯中文姓名**时拆分——`Jiawei Chu` 这种英文名拆开就错了。
+    # （实测 2026_05_Meimei_Han：`{\kaishu 韩梅梅}` + `\renewcommand{\mysecondauthor}{\kaishu 王小明}`）。
+    # 只在**纯中文姓名**时拆分——`Jiawei Zhong` 这种英文名拆开就错了。
     # B-217 ④：英文多作者——标题页作者串与作者信息脚注解析出的英文姓名逐一比对，
     # 一致才拆（逗号倒装名不猜，见 `_en_author_names()`）。
     _en_meta_names = [str(_a.get("name_en") or "") for _a in
                       (getattr(doc, "author_meta", None) or []) if _a.get("name_en")]
     fields.update(author_fields(author, en_names=_en_meta_names))
-    # 文末中英元数据块里常同时有英文作者、单位、邮箱（09 Jiawei_Chu 就是）
+    # 文末中英元数据块里常同时有英文作者、单位、邮箱（09 Jiawei_Zhong 就是）
     fields["myfirstauthorEN"] = normalize_english_author(doc.author_en, doc.author)
     fields["myfirstaffiliation"] = doc.affiliation_cn
     fields["myfirstaffiliationEN"] = doc.affiliation_en
@@ -2450,7 +2450,7 @@ def build_docx(
     if is_en and doc.keywords_en:
         warnings.append(f"英文模板无关键词字段，英文关键词需人工放置：{doc.keywords_en[:40]}…")
     elif not is_en and doc.keywords_en and "mykeywordsEN" not in tpl_fields:
-        # 实测中文稿也常带英文关键词（09 Jiawei_Chu），但 CN 模板没有对应字段，
+        # 实测中文稿也常带英文关键词（09 Jiawei_Zhong），但 CN 模板没有对应字段，
         # 只能提示人工放置——不要静默丢掉。
         warnings.append(f"中文模板无英文关键词字段，英文关键词需人工放置：{doc.keywords_en[:40]}…")
 

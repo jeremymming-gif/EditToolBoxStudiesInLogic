@@ -393,9 +393,9 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
     """「初排转换」：`convert.py --source … --out …`（参数与 mac 界面一致）。
 
     ⚠️ `author` / `name` 不是可选项而是**某一类稿件的活路**：正文里读不出第一作者姓名时
-    引擎会退出 2 并要求「请显式指定 --author "陈波" / --name Bo_Chen」——
+    引擎会退出 2 并要求「请显式指定 --author "李雷" / --name Lei_Li」——
     界面若没有这两个输入框，这类稿（本刊真实的 LaTeX 投稿里就有）**整页做不了**
-    （2026-10-17 审计实测：`2026年第5期(90)/03 Liang_Zhang/…/main.tex` 等 2 篇 rc=2）。
+    （2026-10-17 审计实测：`2026年第5期(90)/03 Jie_Zhou/…/main.tex` 等 2 篇 rc=2）。
     出版信息（vol/issue/…）缺了不报错，但 PDF 页眉会是「xxxx 年第 x 期，1–10」占位。
 
     第 132 条的核实成本闸门（`verify_max` / `verify_plan` / `verify_all_refs` /

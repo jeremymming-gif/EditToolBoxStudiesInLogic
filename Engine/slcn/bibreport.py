@@ -175,7 +175,7 @@ _FIELD_NAME_RE = {
 # （反面：`暂缺` / `未直接给出` 说的是「字段当初就缺」，不在此列——那类补上后才该删。）
 #
 # ⚠️ 这一档是「第 7 条 vs 第 6 条」的分界：把它设成空元组 `()`，判据就退化成
-# 「只看注释点名的字段是否还缺」（更宽松：`Maddy2002`/`Martin2025`/`ChenBo2023`
+# 「只看注释点名的字段是否还缺」（更宽松：`Maddy2002`/`Martin2025`/`LiLei2023`
 # 那种「值两说」的注释也会被建议删）。留这一行是为了让口径可切换、可测。
 VALUE_STILL_IN_DOUBT: tuple[str, ...] = (
     "两说", "两可", "两版", "存疑", "疑为", "疑似",
@@ -287,7 +287,7 @@ def check_spec(rep: Report, entries: list[Entry]) -> None:
         # 旧判据只看 must 字段是否缺（`declared and not missing_must`），撞两条规则：
         #   ① 第 7 条要求保留「不确定的值不要猜」的注释（值有两说 / 疑似笔误 / 版本未定）
         #      ——这种注释字段填着也必须留（真实稿：Maddy2002 的 journal 两说、
-        #      Martin2025 的 publisher 疑为 `Press` 之误、ChenBo2023「暂按源稿原文保留」）；
+        #      Martin2025 的 publisher 疑为 `Press` 之误、LiLei2023「暂按源稿原文保留」）；
         #   ② 注释点名的字段可能只是 **nice**（如 @book 的 edition）——它不在 must 表里，
         #      `missing_must` 于是为空，被误判成「都已填齐」，可**点名的那个字段其实还缺**
         #      （真实稿：Quine1970 / Williamson2007 的 `% ⚠ 待核实：edition`）。
@@ -296,7 +296,7 @@ def check_spec(rep: Report, entries: list[Entry]) -> None:
         #   · 注释点名的任何字段（must 或 nice）**只要还缺一个** → 绝不建议删；
         #   · 注释还在记悬着的问题（`value_still_in_doubt`）→ 绝不建议删；
         #   · 注释没点名任何字段、或点名的字段都已填齐，且 must 字段齐、且没有悬着的问题
-        #     → 才是真过期注释（例如 ChenBo2022：注释写「卷号暂缺」但 `volume = {15}`
+        #     → 才是真过期注释（例如 LiLei2022：注释写「卷号暂缺」但 `volume = {15}`
         #     已经补上；或注释写「已按官方来源核实，可删」）。
         named = pointed_fields(declared) if declared else []
         named_missing = [n for n in named if not (e.fields.get(n, "") or "").strip()]
@@ -405,8 +405,8 @@ def check_spec(rep: Report, entries: list[Entry]) -> None:
         #
         # ⚠️ 中文译著 / 整理者体例（`原作者（著），译者（译）`，含（点校）（编）等）**豁免**：
         #    那个中文逗号与顿号是**姓名的一部分**，不是多作者分隔符；按普通中文多作者的
-        #    口径改成 `and` 会把 `{阿斯海姆（著），张建军、万林（译）}` 变成
-        #    `{阿斯海姆（著） and 张建军 and 万林（译）}`，**著/译标记就此毁掉**（第 64 条，
+        #    口径改成 `and` 会把 `{阿斯海姆（著），郑建国、万林（译）}` 变成
+        #    `{阿斯海姆（著） and 郑建国 and 万林（译）}`，**著/译标记就此毁掉**（第 64 条，
         #    2026-10-15 在真实成品上发现）。这类值改由 `translation_marking_issues()`
         #    按中文译著体例校验（缺（著）/缺（译）/误用 `and`），**不在这里报**。
         raw_au = f.get("author", "").strip()

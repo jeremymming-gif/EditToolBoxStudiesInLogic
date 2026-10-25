@@ -49,7 +49,7 @@ PUNCT_TO_STRIP = " \t\u3000.,，。;；:：、"
 
 # LaTeX 特殊字符。Word 文稿里出现 `&`（如 "Zalta, E N. & Nodelman, U"）、
 # `%`（"50%"）、`_`、`#`、`$` 时必须转义，否则编译会直接报
-# "Misplaced alignment tab character &" 之类。实测 10 Bo_Chen 就栽在
+# "Misplaced alignment tab character &" 之类。实测 10 Lei_Li 就栽在
 # 参考文献 note 字段的一个 & 上。
 _LATEX_ESCAPES = [
     ("\\", r"\textbackslash{}"),
@@ -156,7 +156,7 @@ class DocxDoc:
     keywords_cn: str = ""
     keywords_en: str = ""
     # 副标题（原稿里另起一段、以破折号开头）。人工成品把它并进 `\mytitle`
-    # 并用 `\\` 断行——见 README 第 16 条与 2026-10 的 09 Jiawei_Chu 实测。
+    # 并用 `\\` 断行——见 README 第 16 条与 2026-10 的 09 Jiawei_Zhong 实测。
     subtitle: str = ""
     subtitle_en: str = ""
     # 文末中英元数据块里的其余内容（作者英文名、单位、邮箱）

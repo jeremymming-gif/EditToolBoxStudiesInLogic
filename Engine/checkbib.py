@@ -340,12 +340,12 @@ def main(argv: list[str] | None = None) -> int:
             "                                  1 = 已并入 ≥1 条；2 = 用法 / IO 错误\n"
             "退出码（列表模式，--list-keys）：0 = 打印了那一行；2 = 用法 / IO 错误\n"
             "例（体检）：python3.14 checkbib.py --returned 新.bib "
-            "--original out/corpus/2026_10_Bo_Chen/reference.bib "
-            "--tex out/corpus/2026_10_Bo_Chen/Bo_Chen.tex\n"
+            "--original out/corpus/2026_10_Lei_Li/reference.bib "
+            "--tex out/corpus/2026_10_Lei_Li/Lei_Li.tex\n"
             "例（并回）：python3.14 checkbib.py --returned 新.bib "
-            "--merge-into out/corpus/2026_10_Bo_Chen/reference.bib\n"
+            "--merge-into out/corpus/2026_10_Lei_Li/reference.bib\n"
             "例（粘贴并回，不落中间文件）：pbpaste | python3.14 checkbib.py --returned-stdin "
-            "--merge-into out/corpus/2026_10_Bo_Chen/reference.bib\n"
+            "--merge-into out/corpus/2026_10_Lei_Li/reference.bib\n"
             "例（粘贴预览）：pbpaste | python3.14 checkbib.py --returned-stdin --list-keys"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

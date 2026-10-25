@@ -65,7 +65,7 @@ if let r = report {
           && a.startPage == "1" && a.endPage == "16" && a.pages == "16",
           "\(a.volume)/\(a.issue)/\(a.year) \(a.startPage)–\(a.endPage) 共\(a.pages)")
     check("(c) 中英文标题解出来（副标题破折号保留）",
-          (a.chineseTitle ?? "").contains("——") && (a.englishTitle ?? "").contains("Yashin"),
+          (a.chineseTitle ?? "").contains("——") && (a.englishTitle ?? "").contains("Example"),
           a.chineseTitle ?? "nil")
     check("(c) 作者字段解出来（中文作者带 `\\kaishu`，与引擎产物一致）",
           (a.firstAuthorChinese ?? "").contains("陆王")

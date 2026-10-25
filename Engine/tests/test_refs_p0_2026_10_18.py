@@ -156,7 +156,7 @@ PROSE = ("See also the discussion in the previous chapter, which argues that the
 check("P0-6 反例：普通英文散文仍不被认作文献",
       _looks_short_bibliographic_note(PROSE) is False)
 
-# ══ P0-7：漏写右括号的编号标记 `[13 J. Ross…` 不再整条丢（期90/05 Beibei_Gao）══
+# ══ P0-7：漏写右括号的编号标记 `[13 J. Ross…` 不再整条丢（期90/05 Xiaoyu_Lin）══
 _bad = (
     "[1] A. Armour-Garb, 2010, “Horwichian Minimalism”, Analysis, 70(4): 693-703.\n"
     "[12] P. Raatikainen, 2005, “On Horwich’s way out”, Analysis, 65(3): 175–177.\n"

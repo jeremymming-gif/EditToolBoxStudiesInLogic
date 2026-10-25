@@ -12,7 +12,7 @@ from .wordcore import (RefEntry, TRANSLATED_NAMES)
 
 # ── 正文引用替换 ──────────────────────────────────────────────────────────
 
-# （Haack 1974） （Martin 2025，31-44） （参见陈波 2022） （例\parencite{Wen2025}）
+# （Haack 1974） （Martin 2025，31-44） （参见李雷 2022） （例\parencite{Wen2025}）
 _CITE_RE = re.compile(
     r"[（(]\s*(?:参见|见|例如|如|引自|转引自)?\s*"
     r"(?P<names>[^（）()\d]{1,40}?)\s*"
@@ -465,7 +465,7 @@ def link_citations(body: str, refs: list[RefEntry]) -> tuple[str, list[str], lis
             # `\parencite{…，}）` 这类不平衡产物；01 Tuomo_Aho 实测）。
             unmatched.append(m.group(0))
             return m.group(0)
-        # names 可能是「苏珊·哈克」「陈波」「Haack」「Beall 和 Restall」
+        # names 可能是「苏珊·哈克」「李雷」「Haack」「Beall 和 Restall」
         cands = re.split(r"[、,，和与&\s]+", names)
         cands = [c for c in cands if c]
         hit = None

@@ -400,8 +400,8 @@ class TocSettings:
         return bool(self.columnKind)
 
     def contains(self, report_article_name: str) -> bool:
-        """某篇文章是否属于栏目。报告里的名字是 `folder_name`（如 `Jingru_Kou`），
-        设置里可能存带序号的（如 `01 Jingru_Kou`），所以两边都兼容。"""
+        """某篇文章是否属于栏目。报告里的名字是 `folder_name`（如 `Meimei_Han`），
+        设置里可能存带序号的（如 `01 Meimei_Han`），所以两边都兼容。"""
         if not self.is_column_enabled:
             return False
         target = report_article_name.strip()

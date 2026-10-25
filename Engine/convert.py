@@ -8,28 +8,28 @@
 
   1. **源文件必须由用户显式提供**（--source），不做任何自动发现，也不默认填充。
      找不到、读不出作者时**直接报错**，把选择权交回用户，绝不猜。
-  2. **输出目录按规范命名**：作者「陈波」→ 生成 `Bo_Chen/Bo_Chen.tex`
+  2. **输出目录按规范命名**：作者「李雷」→ 生成 `Lei_Li/Lei_Li.tex`
      （多作者只取第一个）。见 slcn/naming.py。
 
-     同时建立 `Bo_Chen/original/` 并把源稿归档进去，命名与往期各期一致
+     同时建立 `Lei_Li/original/` 并把源稿归档进去，命名与往期各期一致
      （实测全库 92 篇文章都用 `original/`）。可用 --no-original 关闭。
 
      本工具**只负责初排环节**，因此目录名**不带序号前缀**。按编辑部流程，
-     序号（如 `10 Bo_Chen` 的 `10`）是在三校 / 蓝样校对阶段、文章目录顺序
+     序号（如 `10 Lei_Li` 的 `10`）是在三校 / 蓝样校对阶段、文章目录顺序
      确定之后才由人工加上去的——那一步不归本工具管。
 
 用法
 ----
     # Word 文稿
     python3 convert.py \\
-        --source "…/10 Bo_Chen/original/陈波 当代逻辑哲学鸟瞰.docx" \\
+        --source "…/10 Lei_Li/original/李雷 当代逻辑论题鸟瞰.docx" \\
         --out    "…/2026年第5期(90)" \\
         --compile
 
     # LaTeX 源文件（多源合并：正文 + 上一轮模板稿的元数据）
     python3 convert.py \\
-        --source   "…/03雅辛之谜（定稿）/main.tex" \\
-        --metadata "…/03雅辛之谜（定稿）/yalcin puzzle.tex" \\
+        --source   "…/03示例悖论（定稿）/main.tex" \\
+        --metadata "…/03示例悖论（定稿）/example puzzle.tex" \\
         --out      "…/2026年第5期(90)" \\
         --compile
 
@@ -182,7 +182,7 @@ def is_own_product(name: str, stem: str) -> bool:
 # ── 参考文献「内容指纹」：跨来源去重用 ────────────────────────────────────
 #
 # 同一份文献可能从两条通道进来（正文文末的编号清单 / 参考文献附件），**键却不同**
-# （`Beall2000` vs `a1`），只按键去重挡不住。实测 02 Zixin_Luo：正文自带 19 条
+# （`Beall2000` vs `a1`），只按键去重挡不住。实测 02 Lili_Zhao：正文自带 19 条
 # 编号清单、附件又是同一份，于是 bib 翻倍成 38 条。
 _NORM_RE = re.compile(r"[\W_]+")
 
@@ -325,8 +325,8 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
             # 第 2 段常是「姓名, 单位, 邮编」（实测 Lu Jiang, Department of Philosophy,
             # Sun Yat-sen University, 510275 共 76 字）。必须**先去单位再判断长度**，
             # 否则整段超长被挡掉，作者就读不出来了。
-            # ⚠️ 原稿常见排布是「题名 → 副标题 → 作者」（实测 07 Liangying_Zhao：
-            #   [0] 题名  [1] ——评赖兴巴赫…  [2] 赵亮英 陈晓平）。
+            # ⚠️ 原稿常见排布是「题名 → 副标题 → 作者」（实测 07 Jiayi_He：
+            #   [0] 题名  [1] ——评示例归纳论者…  [2] 何嘉怡 徐佳明）。
             #   直接取第 2 段会把副标题当作者，输出名变成一串乱拼音。
             for i in range(1, min(6, len(paras))):
                 line = paras[i]
@@ -338,7 +338,7 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
                     continue  # 英文稿的 Abstract / Keywords 行
                 a = re.split(r"[,，、]", line)[0].strip()
                 a = re.sub(r"\b(Distinguished|Professor|Prof|Dr|Mr|Ms|Mrs)\.?\b.*$", "", a, flags=re.I)
-                # 多作者用空格分隔（`赵亮英 陈晓平`）时取第一个；
+                # 多作者用空格分隔（`何嘉怡 徐佳明`）时取第一个；
                 # 但中文姓名内部也可能带空格（`陈  波`），用长度区分：
                 # 折叠空白后不足 5 字的一律视为「一个名字」。
                 collapsed = re.sub(r"\s+", " ", a).strip()
@@ -578,8 +578,8 @@ def merge_bib_attachment(bibp: str, have: str, bib_text: str) -> tuple[int, int,
 
 # ── 第 76 条：英文元数据第二源定位（**同样只在同目录下查找**）──────────────
 #
-# 用户实测（2026年第5期(90)/10 Bo_Chen）：正文 docx 里只有中文，英文题名/摘要/作者
-# 就在同目录的 `当代逻辑哲学鸟瞰英文摘要.docx` 里，引擎一直读得出来，却从来没接进
+# 用户实测（2026年第5期(90)/10 Lei_Li）：正文 docx 里只有中文，英文题名/摘要/作者
+# 就在同目录的 `当代逻辑论题鸟瞰英文摘要.docx` 里，引擎一直读得出来，却从来没接进
 # Word 通道 → 编辑只能在界面「正文信息覆盖」里手工粘贴。
 #
 # 纪律（与 `find_bib()` 一字不差的口径）：
@@ -656,7 +656,7 @@ def stage_original(
     files     [(路径, 角色说明), ...]，即 --source / --metadata / --bib
     copy_dir  True 时把源文件所在**整个目录**也复制进来。
               LaTeX 投稿常是「一个文件夹里放 main.tex + 旧稿 + bib + sty + pdf」，
-              往期就是这么整包归档的（如 03 Liang_Zhang/original/03雅辛之谜（定稿）/）。
+              往期就是这么整包归档的（如 03 Jie_Zhou/original/03示例悖论（定稿）/）。
     """
     dest = os.path.join(out_dir, "original")
     os.makedirs(dest, exist_ok=True)
@@ -2171,7 +2171,7 @@ def main() -> int:
                          "老式 `.doc` 请先另存 `.docx`/`.tex`（Mac 界面会自动转换）。")
     ap.add_argument("--bib", default=None, help="参考文献库 .bib（默认取源文件同目录下的）")
     ap.add_argument("--author", default=None, help="第一作者姓名（源里读不到时必须提供）")
-    ap.add_argument("--name", default=None, help="直接指定输出名，如 Bo_Chen（跳过姓名推导）")
+    ap.add_argument("--name", default=None, help="直接指定输出名，如 Lei_Li（跳过姓名推导）")
     ap.add_argument("--lang", choices=["zh", "en"], default=None, help="稿件语种（默认自动判断）")
     ap.add_argument("--sty", default=None, help="版面样式文件（默认中文 SLCN-MIX.sty / 英文 SLEN.sty）")
     ap.add_argument("--skeleton", default=None, help="骨架模板 .tex（默认 CN_template / EN_template）")
@@ -2605,7 +2605,7 @@ def main() -> int:
             print(f"  提取字段 {len(_meta_fields)} 个：{'、'.join(_meta_fields)}")
             print(f"  临时 .tex：{_meta_word_tmp}（运行结束自动清理）")
     # 第四十二批 A2：LaTeX 多文件稿自动配「前言源」（正文片段 + 含 \documentclass/宏定义的
-    # 前言文件，如期 90/03 的 main.tex + yalcin puzzle.tex）。判据与可解释说明见
+    # 前言文件，如期 90/03 的 main.tex + example puzzle.tex）。判据与可解释说明见
     # `slcn.sources.discover_latex_sources()`；显式 --metadata 永远优先；判不准只 warning、保持旧行为。
     if (not metadata and not args.coop_replies
             and os.path.splitext(source)[1].lower() == ".tex"):
@@ -2662,8 +2662,8 @@ def main() -> int:
         print(f"  ⚠ 多音字需确认：{h}  如读音不对，请用 --name 显式指定")
 
     out_root = os.path.abspath(args.out)
-    # 若用户选的目录**本身就叫这个名字**（如 …/Desktop/Bo_Chen），就用它，
-    # 不再套一层。否则会生成 …/Desktop/Bo_Chen/Bo_Chen/，
+    # 若用户选的目录**本身就叫这个名字**（如 …/Desktop/Lei_Li），就用它，
+    # 不再套一层。否则会生成 …/Desktop/Lei_Li/Lei_Li/，
     # 且第二次运行时会因为「目标已存在」直接拒绝——实测踩到过。
     if os.path.basename(out_root) == name:
         out_dir = out_root
@@ -2734,7 +2734,7 @@ def main() -> int:
         #   · 混着别人的文件 → 拦住，那才可能是编辑部已有的稿件目录。
         #
         # ⚠️ 这里曾经还加过一个「用户选的是不是同名目录」的条件，是错的：
-        #    正常用法是 `--out ~/Desktop` → `~/Desktop/Bo_Chen`，两者不同名，
+        #    正常用法是 `--out ~/Desktop` → `~/Desktop/Lei_Li`，两者不同名，
         #    于是**每次重跑都被拦**，哪怕目录里全是自己的产物。
         if foreign:
             die(
@@ -2806,7 +2806,7 @@ def main() -> int:
 
     # ⑦ 合并参考文献附件（全库 28% 的稿件把参考文献放在单独文件里）
     #
-    # 实测 02 Zixin_Luo：正文 docx 里没有参考文献，全在 `附件一 完整参考文献.docx`。
+    # 实测 02 Lili_Zhao：正文 docx 里没有参考文献，全在 `附件一 完整参考文献.docx`。
     # 不合并的话引用全部无法替换（22 处）。
     #
     # 第 134 条（2026-10-18）：附件不能「扫到就并」——
@@ -2888,7 +2888,7 @@ def main() -> int:
                     added = []
                     skipped_bad = 0
                     # 去重不能只比键：附件条目用 `a1…`，而正文文末那条编号清单解析出来的
-                    # 是 `Beall2000` 这种键——**同一份文献、两个键**。实测 02 Zixin_Luo：
+                    # 是 `Beall2000` 这种键——**同一份文献、两个键**。实测 02 Lili_Zhao：
                     # 只按键去重会让参考文献翻倍成 38 条。这里按「作者+年份+题名」内容指纹去重。
                     seen = _bib_fingerprints(have)
                     skipped_dup = 0

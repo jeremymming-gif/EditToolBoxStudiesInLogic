@@ -175,7 +175,7 @@ for _dir, needle, mail, want_email in ID0_CASES:
 SEP_CASES = [
     # 目录, 片段, 说明, 期望的脚注 id 集合
     ("2026年第3期(88)/02 Lu_Jiang", "Ockham Semantics", "continuationSeparator 在 id=0", set(range(1, 91))),
-    ("2026年第5期(90)/07 Liangying_Zhao", "经验贝叶斯主义", "separator 在 id=0、continuationSeparator 在 id=1",
+    ("2026年第5期(90)/07 Jiayi_He", "示例贝叶斯主义", "separator 在 id=0、continuationSeparator 在 id=1",
      set(range(2, 52))),
 ]
 for _dir, needle, why, want_ids in SEP_CASES:

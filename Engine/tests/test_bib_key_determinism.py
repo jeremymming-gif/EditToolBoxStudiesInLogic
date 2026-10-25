@@ -24,7 +24,7 @@ CPython 对 `str` 的 `hash()` 受 **PYTHONHASHSEED 随机化**影响，每个�
 
 四组断言
 --------
-  ① 反例核心：**非兜底条目的键逐字不变**（`ChenBo2005`、`Beall2006`、`Xing1984`、
+  ① 反例核心：**非兜底条目的键逐字不变**（`LiLei2005`、`Beall2006`、`Xing1984`、
      译名表 `Russell…`…）。判据是「改动前的分类器本来就认得这个作者串 →
      新键必须与旧键逐字相同」。
   ② `'\ufeffS. Blackburn'` 必须生成**稳定且可读**的键（`SBlackburn1998`，不是 `refNNNN`）。
@@ -136,7 +136,7 @@ print("── ① 非兜底键逐字不变（改动前能分类的作者串，�
 
 # 真实作者串（含全库实测的正常条目 + 边界串）
 _NORMAL = [
-    ("陈波", "2005"), ("刘靖贤", "2013"), ("曾昭式", "1984"),
+    ("李雷", "2005"), ("刘靖贤", "2013"), ("曾昭式", "1984"),
     ("罗素", "1918"), ("克里普克", "1980"), ("蒯因", "1970"), ("哈瑞", "1982"),
     ("Beall, J. C. and Restall, G.", "2006"),
     ("Beall, J. C.", "2006"), ("Xing", "1984"), ("Haack, S.", "1974"),
@@ -151,12 +151,12 @@ _mismatch = [(a, y, old_make_key(RefEntry(raw="", author=a, year=y), ""), K(a, y
              if not old_falls_back(a)
              and old_make_key(RefEntry(raw="", author=a, year=y), "") != K(a, y)]
 check("① 18 条正常作者串的键与改动前**逐字完全相同**", not _mismatch, f"{_mismatch}")
-check("① 点名核对：`陈波`→ChenBo2005、`Beall, J. C. and Restall, G.`→BeallRestall2006、"
+check("① 点名核对：`李雷`→LiLei2005、`Beall, J. C. and Restall, G.`→BeallRestall2006、"
       "`Xing`→Xing1984",
-      K("陈波", "2005") == "ChenBo2005"
+      K("李雷", "2005") == "LiLei2005"
       and K("Beall, J. C. and Restall, G.", "2006") == "BeallRestall2006"
       and K("Xing", "1984") == "Xing1984",
-      f"{K('陈波', '2005')} / {K('Beall, J. C. and Restall, G.', '2006')} / {K('Xing', '1984')}")
+      f"{K('李雷', '2005')} / {K('Beall, J. C. and Restall, G.', '2006')} / {K('Xing', '1984')}")
 check("① 译名表条目不变：`罗素`→Russell1918",
       K("罗素", "1918") == old_make_key(RefEntry(raw="", author="罗素", year="1918")) == "Russell1918", "")
 check("① 作者串**中间**夹零宽也不改键（顺序是「先按原串判、判不出再剥零宽重判」）",
@@ -180,7 +180,7 @@ _ZW_CASES = [
     ("\ufeffJ. Woleński", "2010", "JWoleski2010"),
     ("\ufeffM.Ridge", "2014", "MRidge2014"),
     ("\ufeffJ.Woods", "2017", "JWoods2017"),
-    ("\ufeff陈波", "2005", "ChenBo2005"),          # 中文串同理
+    ("\ufeff李雷", "2005", "LiLei2005"),          # 中文串同理
 ]
 for a, y, want in _ZW_CASES:
     got = K(a, y)
@@ -216,7 +216,7 @@ sys.path.insert(0, ENG); sys.path.insert(0, os.path.join(ENG, "vendor"))
 from slcn import docxsource
 from slcn.docxsource import RefEntry
 ZW = ["\ufeff", "\u200b", "\u200c", "\u200d"]
-CASES = [("陈波", "2005"), ("Beall, J. C. and Restall, G.", "2006"), ("Xing", "1984"),
+CASES = [("李雷", "2005"), ("Beall, J. C. and Restall, G.", "2006"), ("Xing", "1984"),
          ("\ufeffS. Blackburn", "1998"), ("\ufeffR. Audi", "2006"),
          ("\ufeffM. Schroeder", "2008b"), ("\ufeffJ.Woods", "2017"),
          ("[1]Barsalou, L", "1987"), ("[25]Radford A", "2018")]

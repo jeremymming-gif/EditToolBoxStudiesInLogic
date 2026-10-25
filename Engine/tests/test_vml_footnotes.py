@@ -85,10 +85,10 @@ finally:
     except OSError:
         pass
 
-# ④ 中文论述性脚注降级：合成 docx（正文引用 + 长散文脚注含行内 (陈波, 2018)）
+# ④ 中文论述性脚注降级：合成 docx（正文引用 + 长散文脚注含行内 (李雷, 2018)）
 _FN = ('<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
        '<w:footnote w:id="1"><w:p><w:r><w:t>这一看法其实与现代逻辑早期观念并不一致，'
-       '有关这一观念的转变研究可参见(陈波, 2018)，另见相关讨论与回应。</w:t></w:r>'
+       '有关这一观念的转变研究可参见(李雷, 2018)，另见相关讨论与回应。</w:t></w:r>'
        '</w:p></w:footnote></w:footnotes>')
 _DOC = ('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         '<w:body>'

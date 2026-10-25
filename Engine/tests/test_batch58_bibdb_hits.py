@@ -54,7 +54,7 @@ def check(name: str, cond, detail="") -> bool:
 
 # ══ 夹具：临时库（译著 3 条 + 英文 1 条 + key 碰撞 1 条 + 未核实 1 条）══════════
 PUBLISHED = {"kind": bibdb.KIND_PUBLISHED, "issue": "2026年第5期(90)",
-             "slug": "10 Bo_Chen", "file": "reference.bib"}
+             "slug": "10 Lei_Li", "file": "reference.bib"}
 _TMP = tempfile.mkdtemp(prefix="batch58 bibdb hits ")
 _LIB = os.path.join(_TMP, "bibliography.jsonl")
 _build = bibdb.Store.load(_LIB, create=True)

@@ -482,7 +482,7 @@ struct ConvertTab: View {
     private var outputNameRow: some View {
         HStack(spacing: 12) {
             Text("输出名")
-            TextField("留空则按第一作者自动命名（如 Chen_Bo）",
+            TextField("留空则按第一作者自动命名（如 Li_Lei）",
                       text: $model.options.name)
                 .textFieldStyle(.roundedBorder)
         }

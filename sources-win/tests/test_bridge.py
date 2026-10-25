@@ -215,12 +215,12 @@ check("(b) 一校核查：语种「自动」时不传 `--lang`（交给引擎判
 
 # ─────────────────────────────────────────────────────────────────────────
 # H1／H3（2026-10-17 审计的两条高危）在**桥梁层**的回归守卫 —— 不需窗口即可跑
-_c_full = E.convert_call(source="a.docx", out="/tmp/o", author="陈波", name="Bo_Chen",
+_c_full = E.convert_call(source="a.docx", out="/tmp/o", author="李雷", name="Lei_Li",
                          vol="19", issue="5", year="2026", pages="137-152",
                          received="2025-09-19", editor="何杨", grants="国社科基金")
 check("(b) convert 能把 `--author/--name` 传下去（正文读不出姓名时，这是这类稿的唯一活路）",
       "--author" in _c_full.argv and "--name" in _c_full.argv
-      and _c_full.argv[_c_full.argv.index("--author") + 1] == "陈波", _c_full.display[:100])
+      and _c_full.argv[_c_full.argv.index("--author") + 1] == "李雷", _c_full.display[:100])
 check("(b) 编辑侧出版信息七项都能传（缺了 PDF 页眉会是「xxxx 年第 x 期」占位）",
       all(f in _c_full.argv for f in ("--vol", "--issue", "--year", "--pages",
                                       "--received", "--editor", "--grants")), _c_full.display[:100])
@@ -416,7 +416,7 @@ open(os.path.join(_art, "Lu_Wang.tex"), "w", encoding="utf-8").write(
     "\\newcommand{\\myendpage}{16}       % 输入终止页码\n"
     "\\newcommand{\\mypages}{16}         % 输入页数\n"
     "\\newcommand{\\mytitle}             % 请输入论文题目\n"
-    "{论雅辛之谜}\n"
+    "{论示例悖论}\n"
     "\\newcommand{\\myfirstauthor}       % 请输入第一作者姓名\n"
     "{\\kaishu 陆王}\n")
 _lines3: list[str] = []
@@ -437,7 +437,7 @@ if isinstance(_payload, dict):
     _a = (_payload.get("articles") or [{}])[0]
     check("(e) 预览里字段齐全（卷/期/年/题目/作者）",
           _a.get("volume") == "19" and _a.get("issue") == "5" and _a.get("year") == "2026"
-          and "论雅辛" in (_a.get("chineseTitle") or "") and "陆王" in (_a.get("firstAuthorChinese") or ""),
+          and "论示例" in (_a.get("chineseTitle") or "") and "陆王" in (_a.get("firstAuthorChinese") or ""),
           f"{_a.get('volume')}/{_a.get('issue')}/{_a.get('year')} {_a.get('chineseTitle')}")
 shutil.rmtree(_ic_dir, ignore_errors=True)
 

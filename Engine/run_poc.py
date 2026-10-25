@@ -35,14 +35,14 @@ if not os.path.isdir(TPL):
 
 ARTICLES = {
     "tex": {
-        "dir": os.path.join(ROOT, "2026年第5期(90)", "03 Liang_Zhang"),
-        "basename": "Liang_Zhang",
+        "dir": os.path.join(ROOT, "2026年第5期(90)", "03 Jie_Zhou"),
+        "basename": "Jie_Zhou",
         "label": "通道 A · LaTeX 源文件",
     },
     "docx": {
-        "dir": os.path.join(ROOT, "2026年第5期(90)", "10 Bo_Chen"),
-        "basename": "Bo_Chen",
-        "docx": "陈波 当代逻辑哲学鸟瞰.docx",
+        "dir": os.path.join(ROOT, "2026年第5期(90)", "10 Lei_Li"),
+        "basename": "Lei_Li",
+        "docx": "李雷 当代逻辑论题鸟瞰.docx",
         "label": "通道 B · Word 文稿",
     },
 }
@@ -78,7 +78,7 @@ def run_tex_channel(verbose: bool = True, sty: str | None = None, skeleton: str 
     print("=" * 78)
     res = build_latex(
         article_dir=a["dir"],
-        out_dir=os.path.join(OUT, "03_Liang_Zhang"),
+        out_dir=os.path.join(OUT, "03_Jie_Zhou"),
         basename=a["basename"],
         lang="zh",
         sty=sty,
@@ -101,7 +101,7 @@ def run_docx_channel(verbose: bool = True, sty: str | None = None, skeleton: str
     print("=" * 78)
     res = build_docx(
         docx_path=os.path.join(a["dir"], "original", a["docx"]),
-        out_dir=os.path.join(OUT, "10_Bo_Chen"),
+        out_dir=os.path.join(OUT, "10_Lei_Li"),
         basename=a["basename"],
         lang="zh",
         sty=sty,

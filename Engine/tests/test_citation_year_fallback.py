@@ -2,7 +2,7 @@
 """年份唯一兜底必须带「姓名证据」（第 73 条）。
 
 缺陷（案例 73）：`link_citations()` 里姓氏+年份精确匹配落空时，只要该年份在参考文献表里
-**唯一**，就 `hit = by_year[year][0]` 直接替换。实测真稿 `10 Bo_Chen` 的正文
+**唯一**，就 `hit = by_year[year][0]` 直接替换。实测真稿 `10 Lei_Li` 的正文
 `（Williamson 2017；修订扩充版，2021）` 因此被静默换成 `\\parencite{Hjortland2017}`
 （Hjortland 2017《Anti-Exceptionalism About Logic》），印进 PDF 第 6 页；而参考文献里
 Williamson 的键是 `Williamson2007`（年份 2007），真正的威廉姆森条目**从未被引用**。
@@ -17,7 +17,7 @@ Williamson 的键是 `Williamson2007`（年份 2007），真正的威廉姆森�
   (b) 反例边界：词边界，`Li` 不许命中 `Little`（防「子串松匹配」把证据门做漏）；
   (c) 正例：姓+年精确匹配照旧转换（含页码尾巴），且**不**走兜底、不留兜底日志；
   (d) 保留的兜底：有姓名证据时仍配，并且**留下可留档的警示**；
-  (e) 真实稿回归（语料不在本机则 SKIP）：`10 Bo_Chen` 的 Williamson 引用进 unmatched、
+  (e) 真实稿回归（语料不在本机则 SKIP）：`10 Lei_Li` 的 Williamson 引用进 unmatched、
       `Hjortland2017` 只剩本来正确的那 1 处。
 
 不写 out/、不联网、不跑 corpus.py / build.sh / docx_audit.py。用法：
@@ -185,12 +185,12 @@ check("(d) 日志末尾仍报总账（`引用替换命中 …；未匹配 …`�
       any(s.startswith("引用替换命中") for s in l1), repr(l1[-1:]))
 
 # ══ (e) 真实稿回归 ═════════════════════════════════════════════════════════
-print("\n── (e) 真实稿回归：10 Bo_Chen 的 Williamson 引用进 unmatched，Hjortland2017 只剩 1 处 ──")
+print("\n── (e) 真实稿回归：10 Lei_Li 的 Williamson 引用进 unmatched，Hjortland2017 只剩 1 处 ──")
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Bo_Chen", "original",
-                    "陈波 当代逻辑哲学鸟瞰.docx")
+REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Lei_Li", "original",
+                    "李雷 当代逻辑论题鸟瞰.docx")
 if not os.path.exists(REAL):
-    skip("(e) 真实稿 10 Bo_Chen", "语料不在本机")
+    skip("(e) 真实稿 10 Lei_Li", "语料不在本机")
 else:
     from slcn.docxsource import parse_docx
 

@@ -98,7 +98,7 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 
 | 环节 | 谁在做 | 本工具的角色 |
 |---|---|---|
-| 分配稿件 → **初排** | 编辑用本工具 | ✅ **生成 `Bo_Chen/Bo_Chen.tex` + `Bo_Chen/original/`** |
+| 分配稿件 → **初排** | 编辑用本工具 | ✅ **生成 `Lei_Li/Lei_Li.tex` + `Lei_Li/original/`** |
 | 一校 / 二校 / 三校 / 四校 | 人工 | ❌ 不参与 |
 | 做中英文目录（后两次校对时） | 人工 + 工具箱 | ❌ 不参与 |
 | **确定目录顺序后加序号前缀** | **人工** | ❌ **不参与** |
@@ -107,9 +107,9 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 **⚠️ 最常见的误解：目录名的数字前缀不归本工具管。**
 
 ```text
-初排阶段    →  Bo_Chen/Bo_Chen.tex        ← 本工具的产出，无前缀
-              Bo_Chen/original/          ← 源稿归档
-三校/蓝样后 →  10 Bo_Chen/Bo_Chen.tex     ← 人工改名（陈波排目录第 10 篇）
+初排阶段    →  Lei_Li/Lei_Li.tex        ← 本工具的产出，无前缀
+              Lei_Li/original/          ← 源稿归档
+三校/蓝样后 →  10 Lei_Li/Lei_Li.tex     ← 人工改名（李雷排目录第 10 篇）
 ```
 
 序号要等**目录顺序定下来**才有意义，而那是在三校或蓝样校对阶段才确定的，
@@ -162,16 +162,16 @@ python3 corpus.py --sty SLEN.sty                 # 全库回归时统一覆盖
 cd Engine
 PY=/Users/zhangwenming/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3
 
-# Word 文稿：陈波 → 生成 Bo_Chen/Bo_Chen.tex
+# Word 文稿：李雷 → 生成 Lei_Li/Lei_Li.tex
 $PY convert.py \
-    --source "/…/10 Bo_Chen/original/陈波 当代逻辑哲学鸟瞰.docx" \
+    --source "/…/10 Lei_Li/original/李雷 当代逻辑论题鸟瞰.docx" \
     --out    "/…/2026年第5期(90)" \
     --compile
 
 # LaTeX 源文件：多源合并（正文来自新稿 + 元数据来自上一轮模板稿）
 $PY convert.py \
-    --source   "/…/03雅辛之谜（定稿）/main.tex" \
-    --metadata "/…/03雅辛之谜（定稿）/yalcin puzzle.tex" \
+    --source   "/…/03示例悖论（定稿）/main.tex" \
+    --metadata "/…/03示例悖论（定稿）/example puzzle.tex" \
     --out      "/…/2026年第5期(90)" \
     --compile
 
@@ -630,16 +630,16 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 > `000 Table of Contents` / 扉页 / 编委页 / `original/` / `agreement/` 怎么放，
 > 编辑侧的权威规范在**稿件仓 README.md** 的「期目录与文件命名规范」一节（案例第 115 条）。
 
-作者「陈波」→ `Bo_Chen/`，其中：
+作者「李雷」→ `Lei_Li/`，其中：
 
 ```
-Bo_Chen/
-├── Bo_Chen.tex      ← 目标 tex
-├── Bo_Chen.pdf      ← --compile 才有
+Lei_Li/
+├── Lei_Li.tex      ← 目标 tex
+├── Lei_Li.pdf      ← --compile 才有
 ├── reference.bib
 ├── SLCN-MIX.sty     ← 与 --sty 一致
 └── original/        ← 源稿归档，命名与往期各期一致
-    └── 陈波 当代逻辑哲学鸟瞰.docx
+    └── 李雷 当代逻辑论题鸟瞰.docx
 ```
 
 `original/` 与仓库现有 92 篇文章的命名完全一致。默认会把本次用到的源文件
@@ -647,7 +647,7 @@ Bo_Chen/
 
 - `--copy-dir` — 连源文件所在**整个目录**一起归档。LaTeX 投稿常是「一个文件夹里
   放 main.tex + 旧稿 + bib + sty + pdf」，往期就是这么整包归档的
-  （如 `Liang_Zhang/original/03雅辛之谜（定稿）/`）。
+  （如 `Jie_Zhou/original/03示例悖论（定稿）/`）。
 - `--no-original` — 不建立 `original/`。
 - 自动去重：整目录已包含的文件不会再平铺复制；源文件本就在 `original/` 内时跳过，
   重跑已有稿件目录不会自己复制自己。
@@ -661,12 +661,12 @@ EditToolBox 的 `DeleteTempFeature.swift`：
 | **保留** | `.tex` `.pdf` `.sty` `.bib` **`.log`** |
 
 `.log` 是**故意不删**的——编译出错要靠它排查，工具箱的「删除临时文件」也不删它。
-实测效果（03 Liang_Zhang / 10 Bo_Chen）：
+实测效果（03 Jie_Zhou / 10 Lei_Li）：
 
 | | 人工成品 | 工具产出（`--compile --clean`） |
 |---|---|---|
-| `10 Bo_Chen` | `.tex .pdf .log .sty .bib original/` | 同上，**零差异** |
-| `03 Liang_Zhang` | `.tex .pdf .sty .bib original/` | 多一个 `.log` |
+| `10 Lei_Li` | `.tex .pdf .log .sty .bib original/` | 同上，**零差异** |
+| `03 Jie_Zhou` | `.tex .pdf .sty .bib original/` | 多一个 `.log` |
 
 删掉 `.bbl`/`.bcf` 不影响后续重编——已验证再跑一遍
 `xelatex → biber → xelatex ×2` 仍得到 18 页、零报错。
@@ -688,10 +688,10 @@ EditToolBox 的 `DeleteTempFeature.swift`：
 
 #### ⚠️ 目录名不带序号前缀——这是刻意的
 
-本工具**只用于初排环节**，输出 `Bo_Chen/`，**不加数字前缀**。
+本工具**只用于初排环节**，输出 `Lei_Li/`，**不加数字前缀**。
 
 按编辑部流程，序号是在**三校 / 蓝样校对**阶段、文章目录顺序确定之后才由人工加上去的
-（例：陈波这篇排在目录第 10 篇 → 那时才把 `Bo_Chen` 改成 `10 Bo_Chen`）。
+（例：李雷这篇排在目录第 10 篇 → 那时才把 `Lei_Li` 改成 `10 Lei_Li`）。
 那一步不属于本工具的职责范围。仓库根 `README.md` 记录的工作流与此一致：
 初排阶段新建的文件夹结构就是 `Ming_Xiao/`（无前缀）。
 
@@ -701,8 +701,8 @@ EditToolBox 的 `DeleteTempFeature.swift`：
 
 | 姓名 | 输出名 | 姓名 | 输出名 |
 |---|---|---|---|
-| 陈波 | `Bo_Chen` | 张亮 | `Liang_Zhang` |
-| 寇静茹 | `Jingru_Kou` | 唐莹莹 | `Yingying_Tang` |
+| 李雷 | `Lei_Li` | 周杰 | `Jie_Zhou` |
+| 韩梅梅 | `Meimei_Han` | 苏晓晴 | `Xiaoqing_Su` |
 | Michael Rathjen | `Michael_Rathjen` | Wen-fang Wang | `Wenfang_Wang` |
 
 - 多作者**只取第一作者**
@@ -834,7 +834,7 @@ AI 会照抄源稿的「名 姓」，这一步是引擎负责的。而 `finish_r
 cd Engine
 PY=/opt/homebrew/bin/python3.14
 # 把「交回的整份 .bib」并进产物里的 reference.bib（原文件先备份为 reference.bib.ai前）
-$PY checkbib.py --returned 交回.bib --merge-into "…/2026年第5期(90)/01 Jingru_Kou/reference.bib"
+$PY checkbib.py --returned 交回.bib --merge-into "…/2026年第5期(90)/01 Meimei_Han/reference.bib"
 # 可选：--tex 正文.tex（合并后的报告仍查引用键闭合）、--out 报告.md（把报告落到文件）
 ```
 
@@ -859,7 +859,7 @@ $PY checkbib.py --returned 交回.bib --merge-into "…/2026年第5期(90)/01 Ji
 cd Engine
 PY=/opt/homebrew/bin/python3.14
 # 粘贴并回（**不落中间文件**）：交回的整份 .bib 走 stdin
-pbpaste | $PY checkbib.py --returned-stdin --merge-into "…/2026年第5期(90)/01 Jingru_Kou/reference.bib"
+pbpaste | $PY checkbib.py --returned-stdin --merge-into "…/2026年第5期(90)/01 Meimei_Han/reference.bib"
 # 粘贴预览：只打印一行「识别到几条、键是什么」，**永不写文件**
 pbpaste | $PY checkbib.py --returned-stdin --list-keys      # 例：20 条：1, 2, 3, 4, 5, 6, 7, 8…
 # 体检也一样：--original / --tex / --out 照旧可用
@@ -1057,7 +1057,7 @@ GUI 的「设置」页「测试连接 / 体检」里的 **⑤ 检索探针** 直
 
 - **只找同目录**（与 `find_bib()` 同一个纪律），**绝不跨目录搜索**；同目录有多份时按「字段更全 > `abstract_en` 更长 > 文件名序」确定性地挑一份。
 - `--scan` 现在把它标成 **`[英文元数据]`**（以前是【未识别】）——它是**可选第二源**，永远不会被选成正文档。
-- 补进来的字段与来源文件会**写进运行日志**：`第二源 当代逻辑哲学鸟瞰英文摘要.docx（英文元数据表，含：…）` +
+- 补进来的字段与来源文件会**写进运行日志**：`第二源 当代逻辑论题鸟瞰英文摘要.docx（英文元数据表，含：…）` +
   `英文元数据补入 N 项：…`；一个字段都不缺时写「正文自带的英文块优先，第二源未改动任何字段」。
 
 **它不会做什么**（这些是硬口径）：
@@ -1079,7 +1079,7 @@ GUI 的「设置」页「测试连接 / 体检」里的 **⑤ 检索探针** 直
 
 **边界**：`en_metadata_sheet()` 的「没有叙述正文」判据是**保守**的——宁可拒绝一份可疑文件（退回占位符），
 也不把另一篇文章的元数据塞进本篇。全库实测：73 篇「单 docx 正文」的稿子里只有 2 篇能发现第二源，
-其中只有 1 篇真正补入了字段（`10 Bo_Chen`）。
+其中只有 1 篇真正补入了字段（`10 Lei_Li`）。
 
 ### 3.9 合并一期的 PDF：`mergepdf.py`（2026-10-15，第 88 条）
 
@@ -1375,27 +1375,27 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 
 | 项 | 现状 |
 |---|---|
-| ~~**OMML 公式**~~ | ✅ **已修**：`docxxml.py` 直读 `<m:oMath>`，陈波稿 7 个符号已正确还原为 `$\neg$` 等 |
+| ~~**OMML 公式**~~ | ✅ **已修**：`docxxml.py` 直读 `<m:oMath>`，李雷稿 7 个符号已正确还原为 `$\neg$` 等 |
 | ~~**脚注丢失**~~ | ✅ **已修**：`docxxml.py` 读 `footnotes.xml`；Lu_Jiang 的 90 条脚注 → 68 个 bib 条目、68 处 `\parencite` |
 | ~~**斜体丢失**~~ | ✅ **已修**：run 级 `<w:i/>` → `\textit{}`；Lu_Jiang 从 0 处增至 323 处（人工 182） |
 | **斜体略多** | Lu_Jiang 323 处 vs 人工 182 —— 人工没有把每处斜体都包起来，属编辑取舍，待观察 |
-| **引文阈值偏差** | 07 Liangying_Zhao 生成 24 个 quotation，人工 37 个。人工把短于三行的引文也放进了引用环境。用户已确认**不调低阈值**；实测调低到 40 字后 quotation 数 38≈37 精确匹配，但**页数反而多 1 页**，说明阈值不影响版面 |
-| **字符拼图需人工重画** | 工具只能检出并占位，**不能自动生成图片**。07 Liangying_Zhao 的两张图需人工参照原稿重画 |
+| **引文阈值偏差** | 07 Jiayi_He 生成 24 个 quotation，人工 37 个。人工把短于三行的引文也放进了引用环境。用户已确认**不调低阈值**；实测调低到 40 字后 quotation 数 38≈37 精确匹配，但**页数反而多 1 页**，说明阈值不影响版面 |
+| **字符拼图需人工重画** | 工具只能检出并占位，**不能自动生成图片**。07 Jiayi_He 的两张图需人工参照原稿重画 |
 | **合并单元格需核对** | 92 张表里 19 张（21%）有合并单元格。`gridSpan` 已转 `\multicolumn`，但 `vMerge`（纵向合并）只做提示、未转 `\multirow` |
 | **表题需人工补** | 只能写 `\caption{【需补充表题】}` |
-| ~~**`userf={cn}` 会使版面变紧**~~ | ✅ **已解决**：陈波稿回到 20 页 = 人工 20 页。先前是 bib 解析 bug 导致条目内容偏少，修好后自然对齐 |
+| ~~**`userf={cn}` 会使版面变紧**~~ | ✅ **已解决**：李雷稿回到 20 页 = 人工 20 页。先前是 bib 解析 bug 导致条目内容偏少，修好后自然对齐 |
 | ~~**多文件源稿不支持**~~ | ✅ **已支持**：`--scan` 列角色，出稿时自动合并参考文献附件 |
 | ~~**第三种参考文献格式**~~ | ✅ **已支持**：`[N] 作者, 年份, "题名", 刊名, 卷(期): 页` |
 | **引用键需人工对齐** | 附件条目键为 `a1`、`a2`…，正文引用写的是作者-年份，两者**自动对不上**，需人工接线 |
-| **Liang_Zhang 多 1 页** | 19 页 vs 人工 18 页。已排除 `userf`（两边标记的 8 条**完全相同**）、`month`/`number`/`author`/`publisher` 归一化差异。剩余 bib 差异**全是编辑判断**：`Almog1989` 改 author→editor、`Kratzer2020` 把 institution 并入 note、`Ninan2016` 修正年份（2016→2018）、`Schlenker2009a` 改拼写错误、`Wittgenstein2005` 的「~著，~译」→「（著），（译）」。**这些工具不应复刻**，1 页差是累积效应 |
+| **Jie_Zhou 多 1 页** | 19 页 vs 人工 18 页。已排除 `userf`（两边标记的 8 条**完全相同**）、`month`/`number`/`author`/`publisher` 归一化差异。剩余 bib 差异**全是编辑判断**：`Almog1989` 改 author→editor、`Kratzer2020` 把 institution 并入 note、`Ninan2016` 修正年份（2016→2018）、`Schlenker2009a` 改拼写错误、`Wittgenstein2005` 的「~著，~译」→「（著），（译）」。**这些工具不应复刻**，1 页差是累积效应 |
 | **图题/表题需人工补** | 只能写 `\caption{【需补充图题】}` / `【需补充表题】}`，内容得人工填（实测人工会写「苦苦茶视频广告设计的四个功能模块」这类） |
 | **矢量形状不能自动截图** | 已能检出 + 占位 + 导出原稿 PDF，但**定位图形在 PDF 里的坐标需要版面引擎信息**，目前只能人工对照截图 |
-| **行内公式仍偏少** | 07 Liangying_Zhao：工具 16 处 vs 人工 119 处。作者把大量数学写成纯文本（`Fn(A,B)`、`xi`、`fn`），下标/上标的判定（`xi` 是 `$x_i$` 还是 `$x^i$`？）无法可靠自动化，属编辑判断 |
-| **`\cndash` 偏少** | 07 Liangying_Zhao：工具 8 处 vs 人工 31 处；页码区间的识别仍需加强 |
+| **行内公式仍偏少** | 07 Jiayi_He：工具 16 处 vs 人工 119 处。作者把大量数学写成纯文本（`Fn(A,B)`、`xi`、`fn`），下标/上标的判定（`xi` 是 `$x_i$` 还是 `$x^i$`？）无法可靠自动化，属编辑判断 |
+| **`\cndash` 偏少** | 07 Jiayi_He：工具 8 处 vs 人工 31 处；页码区间的识别仍需加强 |
 | **脚注略多** | 27 处 vs 人工 15 —— 部分「纯注释」人工可能并入了正文 |
 | **编辑侧字段** | 卷号/期号/年份/起止页/页数 作者稿里没有，需人工填或从期目录读 |
 | **拼音** | 未装 `pypinyin`，只覆盖 40 个常见姓氏 |
-| **译名对照** | 人工会补「（Gottlob Frege）」这类外文原名括注，10 Bo_Chen 有 **22 处**。这是可复用的资产，应从历史语料建表 |
+| **译名对照** | 人工会补「（Gottlob Frege）」这类外文原名括注，10 Lei_Li 有 **22 处**。这是可复用的资产，应从历史语料建表 |
 | **公式重排** | 人工会把 `split` 改成 `aligned` 并重排，属编辑判断 |
 | **英文稿章节层级** | 已能认 `1.` / `1）`，但部分英文稿（如 01 Wenfang_Wang、06 Zhixi_Chen）仍有大量 L3，疑似元数据或参考文献结构差异，**待个案排查** |
 | **PDF 源稿** | 22 篇只有 PDF，本期不处理（需 OCR / Mathpix 路线） |
@@ -1465,9 +1465,9 @@ ImportError: cannot import name 'etree' from 'lxml'
 **验证（2026-10-13 结构合并后重做）**：
 
 ① app 包内、用 **`/opt/homebrew/bin/python3` 3.14**（系统里没有 lxml，靠 `vendor/`
-   回退）、在 `/tmp` 这种**中立目录**下完整实跑 Bo_Chen → **20 页**，与人工成品一致；
+   回退）、在 `/tmp` 这种**中立目录**下完整实跑 Lei_Li → **20 页**，与人工成品一致；
 ② 用**真实的 `ConvertFeature.swift` 源码**编一个探针放进 app 包内运行，
-   `locateTool()` 两条分支都命中并各自跑完 Bo_Chen 全文（编译 0 报错、20 页）：
+   `locateTool()` 两条分支都命中并各自跑完 Lei_Li 全文（编译 0 报错、20 页）：
 
    | 分支 | 命中路径 |
    |---|---|
@@ -1527,8 +1527,8 @@ Swift 侧只做界面 + 参数拼装 + 找路径，构建时把引擎打包进 a
 
 | 稿件 | 工具 | 人工 |
 |---|---|---|
-| Bo_Chen（中文，Word） | 20 页 | 20 页 ✅ |
-| Liang_Zhang（中文，LaTeX） | 18 页 | 18 页 ✅ |
+| Lei_Li（中文，Word） | 20 页 | 20 页 ✅ |
+| Jie_Zhou（中文，LaTeX） | 18 页 | 18 页 ✅ |
 | Lu_Jiang（英文，Word） | **25 页** | **25 页** ✅ |
 
 ---

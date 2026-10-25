@@ -55,7 +55,7 @@ def skip(name, why):
 
 LABEL = "- **源稿原文**（解析可能有遗漏，请以它为准）："
 
-# 真实稿 `2026年第5期(90)/01 Jingru_Kou/定稿.docx` 第 17 条（第 66/68 条的当事人）。
+# 真实稿 `2026年第5期(90)/01 Meimei_Han/定稿.docx` 第 17 条（第 66/68 条的当事人）。
 # ⚠️ 逐字抄自源稿：中文全角逗号、`第29-38页` 用的是**短横**（源稿如此，规范要求的是双短横）。
 DANG_RAW = ("[17] 党学哲，“论作为证据逻辑的核证逻辑”，湖南科技大学学报（社会科学版），"
             "2022年第6期，第29-38页。")
@@ -88,7 +88,7 @@ check("(a) 逐条对齐：Burge1984 拿到的不是别条的原文",
 # 「有原文」与「有条目」必须严格一一对应，否则任务书会为不存在的条目写一段原文。
 SKIP_LINES = [
     "[1] 亚里士多德（著），颜一，工具论，北京：商务印书馆，2003年。",   # 短题名、无（译）→ 跳过
-    "[2] 陈波，逻辑学导论，北京：中国人民大学出版社，2003年。",
+    "[2] 李雷，逻辑学导论，北京：中国人民大学出版社，2003年。",
 ]
 e2, _n2, raw2 = _numbered_refs(SKIP_LINES)
 check("(a) 反例：被跳过的短题名条目不进映射（映射只含留下的条目）",
@@ -169,8 +169,8 @@ BIB2 = """\
   year   = {2022}
 }
 
-@book{Chen2022,
-  author    = {陈波},
+@book{Li2022,
+  author    = {李雷},
   title     = {逻辑例外论},
   publisher = {北京大学出版社},
   year      = {2022},
@@ -182,7 +182,7 @@ md_old = refmark.build(BIB2, "S")
 md_new = refmark.build(BIB2, "S", raw_by_key={"Dang2022": DANG_RAW})
 check("(d) 命中的条目带「源稿原文」行，且原文逐字在那一行里",
       f"{LABEL}`{DANG_RAW}`" in md_new, repr(md_new[md_new.find(LABEL):][:60]))
-check("(d) 没命中的条目（Chen2022）**没有**「源稿原文」行",
+check("(d) 没命中的条目（Li2022）**没有**「源稿原文」行",
       md_new.count(LABEL) == 1, f"count={md_new.count(LABEL)}")
 check("(d) `raw_by_key={}` 与旧调用逐字节相同", refmark.build(BIB2, "S", raw_by_key={}) == md_old)
 check("(d) 「以原文为准」的口径写进了规范正文（是给 AI 的指令，不只是排版）",
@@ -242,9 +242,9 @@ check("(f) 含反引号的原文进任务书后行内代码仍闭合",
 # ══ (g) 真实稿 ═════════════════════════════════════════════════════════════
 print("\n── (g) 真实稿：`Dang2022` 的原文逐字等于那份 `[17]` 行 ──")
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "01 Jingru_Kou", "定稿.docx")
+REAL = os.path.join(_REPO, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
 if not os.path.exists(REAL):
-    skip("(g) 真实稿 01 Jingru_Kou/定稿.docx", "语料不在本机")
+    skip("(g) 真实稿 01 Meimei_Han/定稿.docx", "语料不在本机")
 else:
     d = parse_docx(REAL)
     check("(g) 真实稿：20 条编号清单全部拿到原文",
@@ -262,7 +262,7 @@ else:
 
     _bib = "\n".join(entry_to_bib(k, e, r) for k, e, r in d.bib_entries)
     if "@" in _bib:
-        _md = refmark.build(_bib, "Jingru_Kou", raw_by_key=d.ref_raw_by_key)
+        _md = refmark.build(_bib, "Meimei_Han", raw_by_key=d.ref_raw_by_key)
         check("(g) 真实稿：任务书里 `Dang2022` 那一节带上了它的原文",
               f"{LABEL}`{DANG_RAW}`" in _md, repr(_md[_md.find(LABEL):][:50]))
         check("(g) 真实稿：20 条都带上了原文（逐条清单里 20 行）",

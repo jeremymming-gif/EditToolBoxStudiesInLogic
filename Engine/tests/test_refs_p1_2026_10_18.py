@@ -158,8 +158,8 @@ check("② 花括号保护原样（不拆不猜，整条保持）",
 check("② 已倒装幂等（不再动）", "Haack, S." in bib_author("Haack, S."), bib_author("Haack, S."))
 # 中文著/译体例（第 64 条）不被破坏
 check("② 中文著/译体例整段保留",
-      "阿斯海姆（著），张建军、万林（译）" in bib_author("阿斯海姆（著），张建军、万林（译）"),
-      bib_author("阿斯海姆（著），张建军、万林（译）"))
+      "阿斯海姆（著），郑建国、万林（译）" in bib_author("阿斯海姆（著），郑建国、万林（译）"),
+      bib_author("阿斯海姆（著），郑建国、万林（译）"))
 # footref 路径同样走统一 helper（多作者 + 虚词）
 p = parse1("[1] J. P. Dillard and C. Segrin, 1993, X, Journal of X, 1(2): 1-2.")
 check("② footref.parse_numbered_item 的 author 也统一倒装",
@@ -350,12 +350,12 @@ _COUNTER = [
      "World Health Organization"),
     ("{van Fraassen}, B. C., 1980, The Scientific Image, Oxford: Clarendon.",
      "{van Fraassen}, B. C."),
-    ("陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.", None),  # 中文路径不动
+    ("李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.", None),  # 中文路径不动
 ]
 for line, expect in _COUNTER:
     e = docxsource.parse_reference_line(line)
     if expect is None:      # 中文清单路径：不允许被英文倒装 helper 改动
-        check(f"⑦ 反例（中文路径）：author 不被英文倒装", e is not None and e.author == "陈波",
+        check(f"⑦ 反例（中文路径）：author 不被英文倒装", e is not None and e.author == "李雷",
               f"{getattr(e, 'author', None)!r}")
     else:
         check(f"⑦ 反例：`{expect[:24]}` 保持原样",

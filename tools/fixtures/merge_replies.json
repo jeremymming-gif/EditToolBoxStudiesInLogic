@@ -4,6 +4,6 @@
   "Chalmers2011": "```bibtex\n@article{Chalmers2011a,\n  author  = {Chalmers, D. J.},\n  title   = {Actuality and Knowability},\n  journal = {Analysis},\n  volume  = {71},\n  number  = {3},\n  pages   = {411--419},\n  year    = {2011}\n}\n```",
   "Dummett1991": "抱歉，我在离线状态下查不到这一条的权威来源（没有可核对的官网页面），请编辑按《排校手册》与 WorldCat 人工核对，我不猜。",
   "Kaplan1989": "```bibtex\n@incollection{Kaplan1989,\n  author    = {David Kaplan},\n  editor    = {Joseph Almog and John Perry and Howard Wettstein},\n  title     = {Demonstratives},\n  booktitle = {Themes from Kaplan},\n  pages     = {481--563},\n  publisher = {Oxford University Press},\n  address   = {New York},\n  year      = {1989}\n}\n```",
-  "A2014": "```bibtex\n@book{A2014,\n  author    = {阿斯海姆（著），张建军、万林（译）},\n  title     = {指称与意向性},\n  publisher = {南京大学出版社},\n  address   = {南京},\n  year      = {2014},\n  userf     = {cn}\n}\n```",
+  "A2014": "```bibtex\n@book{A2014,\n  author    = {阿斯海姆（著），郑建国、万林（译）},\n  title     = {指称与意向性},\n  publisher = {南京大学出版社},\n  address   = {南京},\n  year      = {2014},\n  userf     = {cn}\n}\n```",
   "Dang2022": "```bibtex\n@article{Dang2022,\n  author  = {党学哲},\n  title   = {论作为证据逻辑的核证逻辑},\n  journal = {湖南科技大学学报（社会科学版）},\n  number  = {6},\n  pages   = {29--38},\n  year    = {2022},\n  userf   = {cn}\n}\n```\n% 类型已改：@misc → @article（源条目是 @misc，本条实为期刊论文）\n% ⚠ 待核实：volume（官网只有在线优先版，卷号两说；查不到就省略该字段）"
 }

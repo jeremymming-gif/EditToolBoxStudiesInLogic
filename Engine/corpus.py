@@ -3,7 +3,7 @@
 
 为什么要做这件事
 ----------------
-第 0 期只用 03 Liang_Zhang / 10 Bo_Chen 两篇验证，那是 2 个数据点，
+第 0 期只用 03 Jie_Zhou / 10 Lei_Li 两篇验证，那是 2 个数据点，
 不足以支撑「自动化率」这种量化结论。本库有 86 篇可做基准比对的稿件，
 跑一遍才能得到真实分布与失败模式。
 
@@ -110,7 +110,7 @@ def pick_lang(target_path: str) -> str:
 
 
 def target_basename(article_name: str) -> str:
-    """'03 Liang_Zhang' → 'Liang_Zhang'"""
+    """'03 Jie_Zhou' → 'Jie_Zhou'"""
     parts = article_name.split()
     return parts[1] if len(parts) > 1 else article_name
 

@@ -160,9 +160,9 @@ def _cite(text, entry=None):
     f.entry = entry
     return f
 
-entries_zh = [("Chen2018", {"author": "陈波", "title": "逻辑学导论", "year": "2018"}, "")]
-check("⑤ 中文短引用「（陈波，2018）」→ 命中", 
-      footnotes.resolve_citation(_cite("陈波，2018，第3页。"), entries_zh)[0] == "Chen2018")
+entries_zh = [("Li2018", {"author": "李雷", "title": "逻辑学导论", "year": "2018"}, "")]
+check("⑤ 中文短引用「（李雷，2018）」→ 命中", 
+      footnotes.resolve_citation(_cite("李雷，2018，第3页。"), entries_zh)[0] == "Li2018")
 entries_en = [("Cook2010", {"author": "Cook, R. T.", "title": "Let a Thousand Flowers Bloom",
                             "year": "2010"}, "")]
 check("⑤ 缩写作者「Cook 2010」→ 命中", 
@@ -189,8 +189,8 @@ empty_entries = [("n1", {}, ""), ("n2", {"note": "基于表象"}, ""),
 check("⑥ 66-1 空 author/title/仅页码条目 → 指纹 None、禁止合并（87-9 8→1 回归）",
       all(footnotes.entry_fingerprint(e) is None for _k, e, _r in empty_entries)
       and len(footnotes.union_entries([], empty_entries)) == 3)
-short_title = [("s1", {"author": "陈波", "title": "逻辑", "year": "2018"}, ""),
-               ("s2", {"author": "陈波", "title": "逻辑", "year": "2018"}, "")]
+short_title = [("s1", {"author": "李雷", "title": "逻辑", "year": "2018"}, ""),
+               ("s2", {"author": "李雷", "title": "逻辑", "year": "2018"}, "")]
 check("⑥ 题名 <4 字不单独作依据（不合并）",
       len(footnotes.union_entries([], short_title)) == 2)
 page_like = [("p1", {"author": "Watson, G.", "title": "pp. 61-62", "year": "1975"}, "")]

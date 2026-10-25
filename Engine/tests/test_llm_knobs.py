@@ -287,7 +287,7 @@ check("(d) CLI 传了认不出的工具名 → 回落到默认（请求照发、
 # ── (e) 端到端：真 convert.py CLI + 本地 mock，自定义工具名 ───────────────────
 print("\n── (e) mock 端到端：`--llm-search-tool web_search_preview` ──")
 _MOCK = os.path.join(_MACTOOLBOX, "tools", "mock_llm_server.py")
-MANUSCRIPT = os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 Jingru_Kou", "定稿.docx")
+MANUSCRIPT = os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
 
 if not os.path.isfile(_MOCK) or not os.path.isfile(MANUSCRIPT):
     skip("(e) mock 端到端", f"缺 mock 或真实稿件（{_MOCK} / {MANUSCRIPT}）")

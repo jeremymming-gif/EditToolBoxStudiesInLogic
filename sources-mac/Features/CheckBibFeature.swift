@@ -297,7 +297,7 @@ enum CheckBibFeature {
             log("找不到稿件目录：\(dir)\n")
             return false
         }
-        // .tex 基名 = 目录名去掉序号前缀（`01 Jingru_Kou` → `Jingru_Kou`），
+        // .tex 基名 = 目录名去掉序号前缀（`01 Meimei_Han` → `Meimei_Han`），
         // 与 CompileFeature 的同一条推导。
         let folderName = (dir as NSString).lastPathComponent
             .split(whereSeparator: { $0.isWhitespace }).last.map(String.init)

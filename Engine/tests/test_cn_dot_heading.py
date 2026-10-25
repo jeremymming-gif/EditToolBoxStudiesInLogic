@@ -48,9 +48,9 @@ def check(name, cond, detail=""):
 # ══ ① 形态判据（纯字符串）═════════════════════════════════════════════════
 print("── ① 形态判据 `_is_cn_dot_heading` ──")
 
-# 必须认成标题的（全部来自真实语料 04 Bo_Chen / 07 Guangwu_Feng / 06 Lili_Lu …）
+# 必须认成标题的（全部来自真实语料 04 Lei_Li / 07 Guangwu_Feng / 06 Lili_Lu …）
 MUST = [
-    "1. 莱布尼茨",                                  # 04 Bo_Chen：人名小节（人工成品是 \section）
+    "1. 莱布尼茨",                                  # 04 Lei_Li：人名小节（人工成品是 \section）
     "5. 维特根斯坦",
     "1. 引言",                                      # 01 Pengshu_Shan 等
     "1.引言",                                       # 07 Guangwu_Feng：点后**没有空格**
@@ -63,7 +63,7 @@ for t in MUST:
 
 # 必须挡住的（全部是真实语料里与标题同形的**列表项/文献行**）
 MUST_NOT = [
-    # 09 Jiawei_Chu：整句列表项（带 `。`、超 40 字）
+    # 09 Jiawei_Zhong：整句列表项（带 `。`、超 40 字）
     "1. 尚未形成对论证行动完整生成过程的统一解释。三条径路各有其代表性人物，",
     # 08 Ran_Ren：因明五支（带 `：`/`。`/引号）
     "1.命题（宗）：“此山有火。”",
@@ -155,8 +155,8 @@ check("端到端：\\subsection 行确实出现在产物里",
       "\\subsection{决策论与愿望/信念}" in d.body)
 
 # ②-c 反例 1：连排名单（`N.` + 人名，但邻居也是同形行）→ 一个都不认。
-#   ⚠️ 与 04 Bo_Chen 的区别就在**这里**：Bo_Chen 的 `1. 莱布尼茨`…`6. 艾耶尔`
-#   每行后面都跟着 150–800 字的成段正文（见 ③ 的对账，人工成品 Bo_Chen.tex
+#   ⚠️ 与 04 Lei_Li 的区别就在**这里**：Lei_Li 的 `1. 莱布尼茨`…`6. 艾耶尔`
+#   每行后面都跟着 150–800 字的成段正文（见 ③ 的对账，人工成品 Lei_Li.tex
 #   把那 6 行排成 `\section`），所以是标题；连排、中间没有正文的才是名单。
 p = make_docx(HEAD + FILLER[:6]
               + ["1. 莱布尼茨", "2. 休谟", "3. 康德"]
@@ -252,9 +252,9 @@ def human_sections(tex: str) -> tuple[list[str], list[str]]:
 
 # (目录, 文件名片段, 期望层级分布, 说明) —— 期望值全部来自该篇的人工成品 .tex
 CASES = [
-    ("2022年第5期(66)/04 Bo_Chen", "逻辑例外论",
+    ("2022年第5期(66)/04 Lei_Li", "逻辑例外论",
      {"sections": ["莱布尼茨", "休谟", "康德", "弗雷格", "维特根斯坦", "艾耶尔"]},
-     "04 Bo_Chen：6 个人名小节，人工成品 Bo_Chen.tex 全是 \\section"),
+     "04 Lei_Li：6 个人名小节，人工成品 Lei_Li.tex 全是 \\section"),
     ("2022年第4期(65)/02 Pengshu_Shan", "20160050580_O_editing",
      {"sections": ["哥德尔的数学认识论概念的三个层次", "以非直接解读为基础的两例数学哲学研究进路", "结语"]},
      "02 Pengshu_Shan：3 个点式标题（人工成品 shanpengshu.tex 同为 \\section）"),
@@ -295,7 +295,7 @@ for _dir, needle, want, why in CASES:
 
 # ③-b 与人工成品逐条对账：新认出的标题必须**都在**人工成品的章节表里
 PAIRS = [
-    ("2022年第5期(66)/04 Bo_Chen", "逻辑例外论", "Bo_Chen.tex"),
+    ("2022年第5期(66)/04 Lei_Li", "逻辑例外论", "Lei_Li.tex"),
     ("2022年第4期(65)/02 Pengshu_Shan", "20160050580_O_editing", "shanpengshu.tex"),
     ("2023年第4期(71)/06 Lili_Lu", "20160050685_O_editing", "Lili_Lu.tex"),
     ("2023年第5期(72)/03 Ziming_Song", "20160050777_O_editing", "Ziming_Song.tex"),

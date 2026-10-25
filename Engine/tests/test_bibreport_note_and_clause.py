@@ -6,13 +6,13 @@ r"""「待核实」注释判据（案例 77）与任务书第三节条号（案�
      · 反例（必配）：注释点名了 `edition` 而 `edition` 缺（@book 的 **nice** 字段，
        `Quine1970` / `Williamson2007` 形态）→ **绝不许**出现「建议删掉该注释」；
      · 反例：注释还在记一个**悬着的问题**（值两说 / 疑似笔误 / 暂按原文保留，
-       `Maddy2002` / `Martin2025` / `ChenBo2023` 形态）→ 绝不许建议删；
-     · 正例：注释点名的字段**已填齐**（`ChenBo2022` 的「卷号暂缺」但 `volume` 已补、
+       `Maddy2002` / `Martin2025` / `LiLei2023` 形态）→ 绝不许建议删；
+     · 正例：注释点名的字段**已填齐**（`LiLei2022` 的「卷号暂缺」但 `volume` 已补、
        `HaRui1998`）、或干脆没点名任何字段、或写着「已按官方来源核实，可删」→ 才可以建议删；
      · 「点名」的解析必须用 `slcn/bibcheck.py` 的字段表（`REQUIRED` 的 must + nice），
        不许另列一份；`booktitle` 不许被误认成 `title`；
-     · 真实稿 `2026年第5期(90)/10 Bo_Chen` 的受控夹具（7 条「待核实」注释原样抄录）
-       → 改前 7 条建议删，改后只剩 2 条（`ChenBo2022` / `HaRui1998`）。
+     · 真实稿 `2026年第5期(90)/10 Lei_Li` 的受控夹具（7 条「待核实」注释原样抄录）
+       → 改前 7 条建议删，改后只剩 2 条（`LiLei2022` / `HaRui1998`）。
   ② 第 78 条 —— 任务书第三节的条号只能从**唯一一处**取
      · `bibreport.SECTION3_CLAUSES` 里每个条号，与 `refmark.FORMAT_MD` 实际渲染出的
        第三节编号清单**逐条对齐**（锚点必须落在该号那一条的正文里）；
@@ -95,7 +95,7 @@ check("① 注释里点名 `booktitle` 不会被误认成 `title`",
       bibreport.pointed_fields(["% ⚠ 待核实：booktitle 的编者与书名（源稿作「马蒂尼奇. 语言哲学」）"])
       == ["booktitle"],
       repr(bibreport.pointed_fields(["% ⚠ 待核实：booktitle 的编者与书名（源稿作「马蒂尼奇. 语言哲学」）"])))
-check("① 注释里点名多个字段（真实稿 ChenBo2023 形态）→ 全部认出",
+check("① 注释里点名多个字段（真实稿 LiLei2023 形态）→ 全部认出",
       bibreport.pointed_fields(["% ⚠ 待核实：journal / volume / number / pages（无法访问官方来源）"])
       == ["journal", "number", "pages", "volume"], "")
 check("① 只写来源、没点名任何字段的注释 → 认不出字段",
@@ -112,7 +112,7 @@ check("① `暂缺` / `未直接给出卷号` / `已按官方来源核实，可�
       not any(bibreport.value_still_in_doubt([m]) for m in
               ("CNKI 目次页未直接给出卷号，暂缺", "已按官方来源核实，可删", "已按译著体例补入")), "")
 
-# ── 真实稿夹具：`2026年第5期(90)/10 Bo_Chen/reference.bib` 里 8 条带「待核实」的条目 ──
+# ── 真实稿夹具：`2026年第5期(90)/10 Lei_Li/reference.bib` 里 8 条带「待核实」的条目 ──
 #    （原文一字不改地抄录；数字 15 等就是原稿里的值——本测试只读字符串，不碰原稿）
 REAL_FIXTURE = """\
 % 来源：未查到（无法联网核实；以下按源稿原文保留，仅修正作者字段体例）
@@ -161,8 +161,8 @@ REAL_FIXTURE = """\
 
 % 来源：CNKI 知网《逻辑学研究》2022 年第 5 期目次（https://www.cnki.net）
 % ⚠ 待核实：volume（该刊 2022 年为第 15 卷，CNKI 目次页未直接给出卷号，暂缺）
-@article{ChenBo2022,
-  author  = {陈波},
+@article{LiLei2022,
+  author  = {李雷},
   title   = {逻辑例外论的演变},
   journal = {逻辑学研究},
   volume  = {15},
@@ -174,8 +174,8 @@ REAL_FIXTURE = """\
 
 % 来源：未查到（《哲学与文化》为台湾辅仁大学刊物，无公开可访问的官方卷期页；CNKI 未收录该刊）
 % ⚠ 待核实：journal / volume / number / pages（无法访问官方来源，暂按源稿原文保留）
-@article{ChenBo2023,
-  author  = {陈波},
+@article{LiLei2023,
+  author  = {李雷},
   title   = {逻辑例外论及其困境},
   journal = {哲学与文化},
   volume  = {50},
@@ -215,7 +215,7 @@ _rep_real = bibreport.analyze(REAL_FIXTURE)
 _flagged = delete_suggestions(_rep_real)
 
 check("① 真实稿夹具：改后只剩 2 条「建议删掉该注释」",
-      _flagged == ["ChenBo2022", "HaRui1998"], f"{len(_flagged)} 条：{_flagged}")
+      _flagged == ["HaRui1998", "LiLei2022"], f"{len(_flagged)} 条：{_flagged}")
 check("① 反例 Quine1970（点名 edition 而 edition 缺）→ **不许**建议删",
       "Quine1970" not in _flagged, "")
 check("① 反例 Williamson2007（点名 edition 而 edition 缺）→ **不许**建议删",
@@ -224,12 +224,12 @@ check("① 反例 Maddy2002（journal「两说」）→ **不许**建议删",
       "Maddy2002" not in _flagged, "")
 check("① 反例 Martin2025（publisher「疑为…之误，未核实」）→ **不许**建议删",
       "Martin2025" not in _flagged, "")
-check("① 反例 ChenBo2023（「无法访问官方来源，暂按源稿原文保留」）→ **不许**建议删",
-      "ChenBo2023" not in _flagged, "")
+check("① 反例 LiLei2023（「无法访问官方来源，暂按源稿原文保留」）→ **不许**建议删",
+      "LiLei2023" not in _flagged, "")
 check("① Tarski2019（点名 pages 而 pages 缺）→ **不许**建议删",
       "Tarski2019" not in _flagged, "")
-check("① 正例 ChenBo2022（注「卷号暂缺」但 volume 已补）→ 可以建议删",
-      "ChenBo2022" in _flagged, "")
+check("① 正例 LiLei2022（注「卷号暂缺」但 volume 已补）→ 可以建议删",
+      "LiLei2022" in _flagged, "")
 check("① 正例 HaRui1998（点名 author，author 已填齐）→ 可以建议删",
       "HaRui1998" in _flagged, "")
 
@@ -252,11 +252,11 @@ try:
     _flagged_loose = delete_suggestions(bibreport.analyze(REAL_FIXTURE))
 finally:
     bibreport.VALUE_STILL_IN_DOUBT = _keep_markers
-check("① 口径开关：关掉「悬着的问题」档 → 退化成 5 条（多出 Maddy2002/Martin2025/ChenBo2023）",
-      _flagged_loose == ["ChenBo2022", "ChenBo2023", "HaRui1998", "Maddy2002", "Martin2025"],
+check("① 口径开关：关掉「悬着的问题」档 → 退化成 5 条（多出 Maddy2002/Martin2025/LiLei2023）",
+      _flagged_loose == ["HaRui1998", "LiLei2022", "LiLei2023", "Maddy2002", "Martin2025"],
       f"{_flagged_loose}")
 check("① 口径开关：恢复后回到交付口径（7 条注释 → 只剩 2 条建议删）",
-      delete_suggestions(bibreport.analyze(REAL_FIXTURE)) == ["ChenBo2022", "HaRui1998"], "")
+      delete_suggestions(bibreport.analyze(REAL_FIXTURE)) == ["HaRui1998", "LiLei2022"], "")
 
 # ── 单条形态：反例 / 正例 ──
 

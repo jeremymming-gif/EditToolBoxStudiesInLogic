@@ -5,7 +5,7 @@
   2. 正文里的 \\bibitem 列表      ——需转成 .bib
   3. Word 文档末尾的人年制参考文献 ——需结构化（最难，PoC 先做中文条目）
 
-清理规则来自对 03 Liang_Zhang 与 10 Bo_Chen 两份人工成品的实测比对。
+清理规则来自对 03 Jie_Zhou 与 10 Lei_Li 两份人工成品的实测比对。
 
 **第 133 条（2026-10-18）：整行 `%` 注释不算条目**。作者 `.bib` 里常见注释掉的模板/
 重复条目（`% @article{,`、`% @misc{z16,`）；`split_entries()` 从前全文匹配 `@\\w+\\s*\\{`、
@@ -87,7 +87,7 @@ def _clean_field_value(name: str, value: str) -> str | None:
         return None
     if name == "month":
         # ⚠️ 不要转成数字！实测人工成品保留 `nov` / `jul` 这种写法，
-        #    早先转成 `11`/`07` 是错的（Liang_Zhang 的 Yalcin2007、Ninan2016 都对不上）。
+        #    早先转成 `11`/`07` 是错的（Jie_Zhou 的 Yalcin2007、Ninan2016 都对不上）。
         return v.lower() if v.isalpha() else v
     if name == "pages":
         # {pp. 1--61} → {1--61}；{983-1026} → {983--1026}
@@ -98,7 +98,7 @@ def _clean_field_value(name: str, value: str) -> str | None:
         # 去掉期刊名被误填进 publisher 的情况：{[Oxford University Press, Mind Association]}
         v = re.sub(r"^\[(.*)\]$", r"\1", v)
         # 出版商后面常跟着期刊名（`Oxford University Press, Mind Association`），
-        # 人工做法是只留出版商。实测 Liang_Zhang 的 Dorr2013 / Mandelkern2019 都是这样。
+        # 人工做法是只留出版商。实测 Jie_Zhou 的 Dorr2013 / Mandelkern2019 都是这样。
         parts = [x.strip() for x in v.split(",")]
         if len(parts) > 1 and re.search(
             r"(Press|University|Verlag|Publishing|Routledge|Blackwell|Wiley|Springer)$", parts[0]
@@ -150,7 +150,7 @@ def detect_userf(author: str, title: str, extra: str = "") -> str:
 #          要按 V 排就在 bib 里写波浪号 `van~Fraassen`；
 #       ② 作者超过 4 个 / 编者超过 3 个写成 `{D. Lewis and others}`；
 #       ③ 「同一篇文章要保持标准统一。非必要不修改。」
-#   · 而**编辑的实际成品**是另一回事：`2026年第5期(90)/01 Jingru_Kou/reference.bib`
+#   · 而**编辑的实际成品**是另一回事：`2026年第5期(90)/01 Meimei_Han/reference.bib`
 #     20 条英文条目 **20/20 全倒装**（`Burge, T.` / `Chalmers, D. J.` / `Kvanvig, J.`）。
 #     编辑部据此把「一律倒装」定为**硬规则**（用户 2026-10-15）。
 #   · 「要不要把全名缩成缩写」手册只在 JC Beall 一节侧面提过（关掉 firstinits 时
@@ -333,7 +333,7 @@ def _sep_fixup(key: str, etype: str, new_fields: list[tuple[str, str]],
     （见 `slcn/refmark.py` 第一节第 2 条）。可**官网那份是 biblatex 形状**，直接并进
     `reference.bib` 会带来两个问题：
       · `howpublished = {\\url{…}}` —— 我们的样式只认 `url`，这一项**印不出来**
-        （成品 `10 Bo_Chen` 的 `Steinberger2022` 用的是 `url = {…}`）；
+        （成品 `10 Lei_Li` 的 `Steinberger2022` 用的是 `url = {…}`）；
       · `urldate` —— 本刊不写访问日期（`DROP_FIELDS` 本来就会删，这里再确认一次）。
 
     ⚠️ 判据**只看 `booktitle`**（不是 SEP 的条目一个字都不动，逐字节保持原样）；
@@ -992,7 +992,7 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
 #   · 人年制行解析按逗号切段 → `X著，Y译，《书名》，出版社，年。` 的**题名位被译者
 #     占用**（90-06：title={周煦良、汤永宽译}，rest={《存在主义…》…}）；
 #   · 编号清单里中文条目 `作者：《题名》，《期刊》，年` 的字段被切错（90-07：
-#     author={陈晓平：《…》} / title={期刊名} / title={译者}）；
+#     author={徐佳明：《…》} / title={期刊名} / title={译者}）；
 #   · 只有 note 的脚注引注条目（题名/作者空）仍进了 bib → 参考文献区出现**空题名
 #     碎片**（90-06 的 ref01–03、90-07 的 ref03–05）。
 #

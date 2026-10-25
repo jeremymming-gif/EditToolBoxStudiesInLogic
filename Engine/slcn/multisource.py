@@ -3,10 +3,10 @@ r"""多文件源稿识别：把 `original/` 下的所有文件按**内容**判�
 为什么需要
 ----------
 全库实测：**92 篇稿件中 26 篇（28%）** 的 `original/` 里有多于一个 docx。
-典型的 02 Zixin_Luo：
+典型的 02 Lili_Zhao：
 
     original/
-      最新  02可知性悖论的"真矛盾论"解决方案探析（定稿）.docx   ← 正文
+      最新  02示例悖论的"矛盾论"解决方案探析（定稿）.docx   ← 正文
       符号整体替换.docx          ← 符号替换表
       附件一 完整参考文献.docx    ← 参考文献
       附件二 图.pdf              ← 图
@@ -70,10 +70,10 @@ class SourceFile:
 #
 # 为什么需要这一条（2026-10-13 实测踩到）：用户把 `--source` 指到桌面上的散稿时，
 # 扫描是**整个目录递归**的，于是上一次的产物也被当成候选。其中
-# `Bo_Chen_参考文献联网核实.txt` 的文件名里带「文献」→ 命中 refs 文件名线索
+# `Lei_Li_参考文献联网核实.txt` 的文件名里带「文献」→ 命中 refs 文件名线索
 # （见下方「文件名线索」一段）→ 被当成参考文献附件 → 合并时往 reference.bib
 # 里塞了一条 `@misc{a1}`，内容是**整份 CrossRef 核对报告**。
-# 同一次扫描还把 `Bo_Chen/Bo_Chen.tex` 列成了「另一个完整稿件版本」。
+# 同一次扫描还把 `Lei_Li/Lei_Li.tex` 列成了「另一个完整稿件版本」。
 _OWN_OUTPUT_SUFFIXES = (
     "_参考文献核对.txt",
     "_参考文献联网核实.txt",
@@ -348,7 +348,7 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
             sf = SourceFile(path=full, name=rel)
             if ext in _IMG_EXT:
                 # `第3页.PDF` 这类是**分页稿**（作者按页交稿或扫描），不是插图。
-                # 实测 02 Zixin_Luo 有 9 个这样的文件，全判成图会淹没真正的 `附件二 图.pdf`。
+                # 实测 02 Lili_Zhao 有 9 个这样的文件，全判成图会淹没真正的 `附件二 图.pdf`。
                 if re.match(r"^第\s*\d+\s*页", os.path.basename(rel)) or re.match(
                     r"^(p|page)\s*\d+$", os.path.splitext(os.path.basename(rel))[0], re.I
                 ):
@@ -419,7 +419,7 @@ def scan(directory: str, verbose: bool = False) -> list[SourceFile]:
             c.reason = "条目短且编号连续，像脚注表"
         elif _looks_like_article(txt) and (
             # 非最长的文件要当「另一个完整稿件版本」，**必须够长**。
-            # 实测 Bo_Chen 的 `当代逻辑哲学鸟瞰英文摘要.docx` 只有 2227 字符
+            # 实测 Lei_Li 的 `当代逻辑论题鸟瞰英文摘要.docx` 只有 2227 字符
             # （正文 22826），却因为含 Abstract/Keywords 命中了判据，
             # 被误报成「第二个完整稿件版本」。
             is_main or c.chars >= max(6000, max_chars * 0.3)

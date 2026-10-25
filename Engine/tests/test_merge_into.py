@@ -328,14 +328,14 @@ with tempfile.TemporaryDirectory() as tmp:
           and "已追加到同级任务书《reference_文献核实.md》" in out)
 
 with tempfile.TemporaryDirectory() as tmp:
-    # 真实形态：任务书按**稿件**命名（Jingru_Kou_文献核实.md），bib 叫 reference.bib
+    # 真实形态：任务书按**稿件**命名（Meimei_Han_文献核实.md），bib 叫 reference.bib
     target, returned = fixture(tmp)
-    tb = write(tmp, "Jingru_Kou_文献核实.md", "# 任务书\n")
+    tb = write(tmp, "Meimei_Han_文献核实.md", "# 任务书\n")
     _, out, _ = run_cli("--returned", returned, "--merge-into", target)
     check("④ 同级只有一份 `*_文献核实.md`（名字按稿件）→ 追加到它",
           "## 六、合并记录（本次已并入 reference.bib）" in read(tb)
           and not os.path.exists(os.path.join(tmp, "reference_合并记录.md"))
-          and "已追加到同级任务书《Jingru_Kou_文献核实.md》" in out)
+          and "已追加到同级任务书《Meimei_Han_文献核实.md》" in out)
 
 with tempfile.TemporaryDirectory() as tmp:
     target, returned = fixture(tmp)

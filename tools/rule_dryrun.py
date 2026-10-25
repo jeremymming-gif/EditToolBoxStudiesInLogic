@@ -182,8 +182,8 @@ def _short(text: str, limit: int = 80) -> str:
 def _slug_dir(issue: str, slug: str) -> str:
     """篇目产出目录名：与 `Engine/corpus.py` 的 `run_one()` 口径一致。
 
-    `issue[:4]` = 期号年份；篇名空格换下划线：`2026年第5期(90)` + `03 Liang_Zhang`
-    → `2026_03_Liang_Zhang`。仅用于定位产出目录，不复制任何装配/扫描逻辑。
+    `issue[:4]` = 期号年份；篇名空格换下划线：`2026年第5期(90)` + `03 Jie_Zhou`
+    → `2026_03_Jie_Zhou`。仅用于定位产出目录，不复制任何装配/扫描逻辑。
     """
     return f"{issue[:4]}_{slug.replace(' ', '_')}"
 

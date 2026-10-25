@@ -3,9 +3,9 @@
 
 缺陷
 -----
-期 90/03 Liang_Zhang 的 `original/03雅辛之谜（定稿）/` 里两个 .tex 角色完全不同：
+期 90/03 Jie_Zhou 的 `original/03示例悖论（定稿）/` 里两个 .tex 角色完全不同：
     main.tex            纯正文片段（无 `\\documentclass`、无宏定义）
-    yalcin puzzle.tex   上一轮模板稿（`\\documentclass` + 41 个 SCLN 模板宏 +
+    example puzzle.tex   上一轮模板稿（`\\documentclass` + 41 个 SCLN 模板宏 +
                         作者宏 `\\val/\\e/\\A/\\pair/\\set`，`:224` 定义）
 自动发现若只按「唯一 .tex / main.tex 优先」选文件，会只拿 main.tex → 宏全丢、公式区
 大面积 `Undefined control sequence`（期 90 基线 119 处 `!`、92 undefined citation）。
@@ -21,6 +21,7 @@
 ----
     cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_multisource_discovery.py
 """
+import glob
 import os
 import pathlib
 import sys
@@ -50,7 +51,7 @@ def skip(name, why):
     SKIPS.append(name)
 
 
-FRAGMENT = ("美国学者雅辛提出了被称为雅辛之谜（Yalcin's puzzles）的疑难问题，"
+FRAGMENT = ("美国学者示例提出了被称为示例悖论（Example puzzles）的疑难问题，"
             "并给出一个信息敏感型的解释方案。\n\n" + "正文论述。" * 300 + "\n")
 PREAMBLE = ("\\documentclass[11pt]{article}\n"
             "\\usepackage{amsmath}\n"
@@ -61,6 +62,35 @@ PREAMBLE = ("\\documentclass[11pt]{article}\n"
 COMPLETE = ("\\documentclass[11pt]{article}\n\\usepackage{amsmath}\n"
             "\\begin{document}\n\\section{引言}\n" + "正文内容。" * 400 + "\n\\end{document}\n")
 README_TEX = "这是说明，不是 tex 源。"  # 非 .tex，不该被扫描
+
+
+def _issue_paper_original(issue_no: str, no: str) -> str:
+    """按「总期号 + 篇序号」发现来稿的 original 目录（不硬编码真实作者名/文件名；B-232）。"""
+    from slcn import paths
+    root = paths.manuscripts_root()
+    if not root:
+        return ""
+    import glob as _glob
+    import re as _re
+    for name in sorted(os.listdir(root)):
+        m = _re.search(r"\((\d+[A-Z]?)\)$", name)
+        if not (m and m.group(1) == str(issue_no)):
+            continue
+        hits = sorted(_glob.glob(os.path.join(root, name, no + " *")))
+        hits = [h for h in hits if os.path.isdir(h)]
+        if hits:
+            orig = os.path.join(hits[0], "original")
+            return orig if os.path.isdir(orig) else hits[0]
+    return ""
+
+
+def _main_and_meta_tex(orig: str):
+    """original 下的 (正文片段, 前言/模板稿)：按 `main.tex` 与「另一个 .tex」区分。"""
+    texs = sorted(glob.glob(os.path.join(orig, "**", "*.tex"), recursive=True))
+    main = next((p for p in texs if os.path.basename(p) == "main.tex"), "")
+    meta = next((p for p in texs if os.path.basename(p) != "main.tex"), "")
+    return main, meta
+
 
 
 def _write(d: str, name: str, text: str) -> str:
@@ -74,13 +104,13 @@ def _write(d: str, name: str, text: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 with tempfile.TemporaryDirectory() as d:
     main_tex = _write(d, "main.tex", FRAGMENT)
-    _write(d, "yalcin puzzle.tex", PREAMBLE)
+    _write(d, "example puzzle.tex", PREAMBLE)
     plan = sources.discover_latex_sources(main_tex)
     check("① 片段+前言：正文源 = 显式给的 main.tex",
           plan.body is not None and os.path.basename(plan.body.path) == "main.tex",
           repr(plan.body and plan.body.path))
     check("① 前言源自动配到含 \\documentclass+宏定义的 .tex",
-          plan.metadata is not None and os.path.basename(plan.metadata.path) == "yalcin puzzle.tex",
+          plan.metadata is not None and os.path.basename(plan.metadata.path) == "example puzzle.tex",
           repr(plan.metadata and plan.metadata.path))
     check("① note 可解释（提到「前言源」/「无 \\documentclass」）",
           "前言源" in plan.note and ("documentclass" in plan.note or "\\documentclass" in plan.note),
@@ -126,7 +156,7 @@ with tempfile.TemporaryDirectory() as d:
     check("④ 纯片段：有 warning（提示用户 --metadata / 确认）", bool(plan.warnings), str(plan.warnings))
 
 # ══════════════════════════════════════════════════════════════════════════
-# ⑤ 真实稿 90-03（有稿件库时）：发现结果 = main.tex + yalcin puzzle.tex
+# ⑤ 真实稿 90-03（有稿件库时）：发现结果 = main.tex + example puzzle.tex
 # ══════════════════════════════════════════════════════════════════════════
 def _real_90_03() -> None:
     from slcn import paths
@@ -135,24 +165,26 @@ def _real_90_03() -> None:
     if not root:
         skip("⑤ 真实稿 90-03 发现", "本机没有稿件库")
         return
-    art = os.path.join(root, "2026年第5期(90)", "03 Liang_Zhang")
-    main_tex = os.path.join(art, "original", "03雅辛之谜（定稿）", "main.tex")
-    if not os.path.isfile(main_tex):
+    orig = _issue_paper_original("90", "03")
+    main_tex, meta_tex = _main_and_meta_tex(orig) if orig else ("", "")
+    if not (main_tex and meta_tex):
         skip("⑤ 真实稿 90-03 发现", "本机没有该稿")
         return
+    art = os.path.dirname(orig)
     plan = sources.discover_latex_sources(main_tex)
     check("⑤ 90-03：正文源 = main.tex",
           plan.body is not None and os.path.basename(plan.body.path) == "main.tex")
-    check("⑤ 90-03：前言/元数据源 = yalcin puzzle.tex（无需 --metadata）",
+    check("⑤ 90-03：前言/元数据源 = 另一个 .tex（无需 --metadata）",
           plan.metadata is not None
-          and os.path.basename(plan.metadata.path) == "yalcin puzzle.tex",
+          and os.path.basename(plan.metadata.path) == os.path.basename(meta_tex),
           repr(plan.metadata and plan.metadata.path))
     check("⑤ 90-03：无「判不准」warning", plan.warnings == [], str(plan.warnings))
 
     # 兼容 pin：identify() 的既有输出保持不变（corpus 21 篇 LaTeX 产物依赖它）
     ident = sources.identify(art, verbose=False)
-    check("⑤ identify() 旧行为不变：90-03 metadata=yalcin / body=main",
-          ident.metadata is not None and os.path.basename(ident.metadata.path) == "yalcin puzzle.tex"
+    check("⑤ identify() 旧行为不变：90-03 metadata=模板稿 / body=main",
+          ident.metadata is not None
+          and os.path.basename(ident.metadata.path) == os.path.basename(meta_tex)
           and ident.body is not None and os.path.basename(ident.body.path) == "main.tex")
 
 
@@ -203,7 +235,7 @@ def _real_old_behavior_pins() -> None:
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑦ CLI 接线 pin：convert.py **不传 --metadata** 时走自动前言源（--dry-run 不编译）
-#    断言：dry-run 成功 + 日志出现「前言源 …/yalcin puzzle.tex」+「自动发现」；
+#    断言：dry-run 成功 + 日志出现「前言源 …/example puzzle.tex」+「自动发现」；
 #          传了 --metadata 时**不**走自动发现（显式优先）。
 # ══════════════════════════════════════════════════════════════════════════
 def _cli_auto_metadata_pin() -> None:
@@ -215,24 +247,24 @@ def _cli_auto_metadata_pin() -> None:
     if not root:
         skip("⑦ convert.py 自动前言源 pin", "本机没有稿件库")
         return
-    art = os.path.join(root, "2026年第5期(90)", "03 Liang_Zhang")
-    main_tex = os.path.join(art, "original", "03雅辛之谜（定稿）", "main.tex")
-    meta_tex = os.path.join(art, "original", "03雅辛之谜（定稿）", "yalcin puzzle.tex")
-    if not (os.path.isfile(main_tex) and os.path.isfile(meta_tex)):
+    orig = _issue_paper_original("90", "03")
+    main_tex, meta_tex = _main_and_meta_tex(orig) if orig else ("", "")
+    if not (main_tex and meta_tex):
         skip("⑦ convert.py 自动前言源 pin", "本机没有该稿")
         return
+    author_name = os.path.basename(os.path.dirname(orig)).split(" ", 1)[-1]  # 运行时发现，不写死
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [_ENGINE, os.path.join(_ENGINE, "vendor"), env.get("PYTHONPATH", "")])
     base = [sys.executable, "convert.py", "--source", main_tex,
-            "--lang", "zh", "--name", "Liang_Zhang", "--dry-run"]
+            "--lang", "zh", "--name", author_name, "--dry-run"]
     with tempfile.TemporaryDirectory() as out:
         r = subprocess.run(base + ["--out", out], cwd=_ENGINE, env=env,
                            capture_output=True, text=True, timeout=120)
         check("⑦ 不传 --metadata：convert.py --dry-run rc=0（接线可跑）",
               r.returncode == 0, f"rc={r.returncode} stderr={r.stderr[-160:]!r}")
-        check("⑦ 不传 --metadata：日志出现「前言源」+ yalcin puzzle.tex",
-              "前言源" in r.stdout and "yalcin puzzle.tex" in r.stdout,
+        check("⑦ 不传 --metadata：日志出现「前言源」+ 模板稿文件名",
+              "前言源" in r.stdout and os.path.basename(meta_tex) in r.stdout,
               r.stdout[-400:].replace("\n", "\u23ce"))
         check("⑦ 不传 --metadata：日志说明「自动发现」（可解释）",
               "自动发现" in r.stdout)

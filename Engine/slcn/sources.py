@@ -1,9 +1,9 @@
 """源识别：判断 original/ 目录下每个文件扮演什么角色。
 
-这是整个项目最关键的认知落地。以 03 Liang_Zhang 为例，`original/03雅辛之谜（定稿）/`
+这是整个项目最关键的认知落地。以 03 Jie_Zhou 为例，`original/03示例悖论（定稿）/`
 里躺着两个 .tex，角色完全不同：
 
-    yalcin puzzle.tex   上一轮按【旧模板 SLCN.sty】排好的完整稿
+    example puzzle.tex   上一轮按【旧模板 SLCN.sty】排好的完整稿
                         → 题名/作者/单位/邮箱/摘要/关键词/基金/英文摘要 全在这里
     main.tex            作者本轮新提交的【纯正文】，这些元数据一个都没有
 
@@ -55,7 +55,7 @@ def _tex_stats(path: str) -> dict:
     has_docclass = "\\documentclass" in text
     has_begin_doc = "\\begin{document}" in text
     # 宏定义数（**不含 \usepackage**：只有宏包行的是「主文件」而不是「前言源」）。
-    # 期 90/03 的 `yalcin puzzle.tex:224` 定义了 \val，同处还有 \e/\A/\pair/\set；
+    # 期 90/03 的 `example puzzle.tex:224` 定义了 \val，同处还有 \e/\A/\pair/\set；
     # 「有 \documentclass + 作者宏定义」才是正文片段的前言源（见 discover_latex_sources）。
     n_defs = len(re.findall(
         r"\\(?:newcommand|renewcommand|providecommand|DeclareMathOperator|"
@@ -97,10 +97,10 @@ def is_junk(path: str) -> bool:
 
 # ── 第 76 条：英文元数据第二源（「英文摘要」docx）────────────────────────────
 #
-# 用户实测（2026年第5期(90)/10 Bo_Chen）：正文 `陈波 当代逻辑哲学鸟瞰.docx` 里
+# 用户实测（2026年第5期(90)/10 Lei_Li）：正文 `李雷 当代逻辑论题鸟瞰.docx` 里
 # **只有中文**，而英文题名/摘要/作者一直就在**同一个 original/ 目录**的
-# `当代逻辑哲学鸟瞰英文摘要.docx` 里，`parse_docx()` 也早就读得出来：
-#     title_en='A Survey of Contemporary Philosophy of Logic'、author_en='Chen Bo'、
+# `当代逻辑论题鸟瞰英文摘要.docx` 里，`parse_docx()` 也早就读得出来：
+#     title_en='A Survey of Contemporary Philosophy of Logic'、author_en='Li Lei'、
 #     abstract_en 1529 字符、keywords_en='contemporary philosophy of logic; …'
 # 但 Word 通道从来没把这个第二源接进来，编辑只能在界面里手工粘贴。
 #
@@ -110,7 +110,7 @@ EN_META_FIELDS = ("title_en", "subtitle_en", "abstract_en",
                   "author_en", "affiliation_en", "keywords_en")
 
 # 「元数据表」= 除题名/作者/摘要/关键词之外**没有叙述正文**。
-#   · `当代逻辑哲学鸟瞰英文摘要.docx`：doc.body 为空（整份文件就是一张表）→ 命中；
+#   · `当代逻辑论题鸟瞰英文摘要.docx`：doc.body 为空（整份文件就是一张表）→ 命中；
 #   · 同目录的**另一篇英文全文稿**（如 02 Lu_Jiang 的英文稿）：doc.body 上万字符
 #     → 不命中。这一条是必需的：否则会把**另一篇文章**的英文题名/摘要塞进本篇。
 _EN_SHEET_MAX_BODY = 200
@@ -148,7 +148,7 @@ def _docx_candidate(path: str, reason: str) -> SourceFile:
     """被排除的 Word 候选：其中「英文元数据表」给明确角色 `en_abstract`（第 76 条）。
 
     为什么要有这个角色：用户实测 `--scan` 把
-    `当代逻辑哲学鸟瞰英文摘要.docx` 报成【未识别】「2227 字符，特征不明显」——
+    `当代逻辑论题鸟瞰英文摘要.docx` 报成【未识别】「2227 字符，特征不明显」——
     它其实是有下游用途的**可选第二源**，不是没特征的垃圾。
 
     ⚠️ 这里**不动** `_docx_score()` 的扣分（文件名含「摘要」依旧 -12000），
@@ -245,10 +245,10 @@ def identify(article_dir: str, verbose: bool = False) -> SourceSet:
 
 # ── LaTeX 多文件源发现（第四十二批 A2）────────────────────────────────────
 #
-# 背景（期 90/03 Liang_Zhang）：作者目录里两个 .tex 角色完全不同——
+# 背景（期 90/03 Jie_Zhou）：作者目录里两个 .tex 角色完全不同——
 #   main.tex            纯正文片段：无 \documentclass、无宏定义（50 段正文）
-#   yalcin puzzle.tex   上一轮按旧模板排的完整稿：\documentclass + 41 个 SCLN 模板宏 +
-#                       作者自定义宏（\val/\e/\A/\pair/\set，`yalcin puzzle.tex:224`）
+#   example puzzle.tex   上一轮按旧模板排的完整稿：\documentclass + 41 个 SCLN 模板宏 +
+#                       作者自定义宏（\val/\e/\A/\pair/\set，`example puzzle.tex:224`）
 # `convert.py` 的设计是**不做自动发现**（`--source/--metadata` 显式给出，见
 # `require_source()` 的说明）；`sources.identify()` 是给回归器/取数工具做的角色识别，
 # 它只认「>=5 个 \my* 宏 = 元数据稿」这一条，对「有 \documentclass、只有作者宏的前言
@@ -297,7 +297,7 @@ def discover_latex_sources(source: str) -> LatexSourcePlan:
       ① **正文源**：调用方显式给的 `.tex` 永远优先（`--source` 的语义，不替换）；
          目录输入时沿用 `identify()` 的正文源；
       ② **前言/元数据源**：优先沿用 `identify()` 已有结论（含 >=5 个 SCLN 模板宏的
-         旧模板稿，如 90-03 的 `yalcin puzzle.tex`）；
+         旧模板稿，如 90-03 的 `example puzzle.tex`）；
       ③ 否则找「含 `\\documentclass` 且有宏定义（`\\newcommand/\\def/\\newenvironment/
          \\DeclareMathOperator`）」的**另一个** .tex 当前言源；恰好 1 个才自动用；
       ④ 多个前言候选 / 既无模板宏也无 `\\documentclass` 前言文件 / 纯片段 → **不猜**，
@@ -345,7 +345,7 @@ def discover_latex_sources(source: str) -> LatexSourcePlan:
 
     # ④ 找「有 \documentclass + 宏定义」的前言候选
     #    再加一条「前言体量」闸门：候选的正文体量必须明显小于本稿正文（否则它是
-    #    **另一份完整旧版稿**，不是前言——绝不能拿它当元数据源，90-03 的 yalcin 稿
+    #    **另一份完整旧版稿**，不是前言——绝不能拿它当元数据源，90-03 的旧模板稿
     #    正文只有标题页 2587 字符 / 本稿正文 27266 字符，命中；另一份完整稿不命中）。
     _max_body = max((st.get("body_chars", 0) for _p, st in tex), default=0)
     _pre_max = max(3000, int(_max_body * 0.4))

@@ -533,7 +533,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 
 **已知的平台注意点**（还没做，写在这里免得踩）：
 
-- **长路径**：Windows 默认 260 字符上限。稿件目录名很长（`2026年第5期(90)/07 Liangying_Zhao/original/…`）
+- **长路径**：Windows 默认 260 字符上限。稿件目录名很长（`2026年第5期(90)/07 Jiayi_He/original/…`）
   套上产物目录可能超限；真要踩到，用 `\\?\` 前缀或让用户在浅目录里出稿。
 - **`tools/gen_docs.py` 写死了 mac 的 Python 路径**（`/opt/homebrew/bin/python3.14`）——
   它是**开发工具**，Windows 上要么改常量、要么用 `python`（不影响 App）。

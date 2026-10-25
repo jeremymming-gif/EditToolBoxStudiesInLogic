@@ -2,10 +2,10 @@
 
 规范（由仓库现有 92 篇文章的目录名反推验证）
 -------------------------------------------
-    陈波      → Bo_Chen         （名 Bo + 下划线 + 姓 Chen）
-    张亮      → Liang_Zhang
-    寇静茹    → Jingru_Kou
-    唐莹莹    → Yingying_Tang
+    李雷      → Lei_Li         （名 Lei + 下划线 + 姓 Li）
+    周杰      → Jie_Zhou
+    韩梅梅    → Meimei_Han
+    苏晓晴    → Xiaoqing_Su
     Michael Rathjen → Michael_Rathjen
     Wen-fang Wang   → Wenfang_Wang   （连字符去掉后并成一段）
 
@@ -85,7 +85,7 @@ def _pinyin(word: str) -> list[str]:
         raise AuthorNameError(
             "缺少 pypinyin，无法把中文姓名转成拼音。"
             "请运行 `pip install --target vendor pypinyin`，"
-            "或直接用 --name 指定输出名（如 --name Bo_Chen）。"
+            "或直接用 --name 指定输出名（如 --name Lei_Li）。"
         ) from e
 
 
@@ -117,10 +117,10 @@ def surname_pinyin(sur: str) -> str:
 def normalize_english_author(name: str, chinese_name: str = "") -> str:
     """把源稿里的英文作者名规范成编辑部体例「Given Surname」。
 
-    实测期 90/05 Beibei_Gao：源 docx 写 `GAO Bei-bei`，人工成品是 `Beibei Gao`。
+    实测期 90/05 Xiaoyu_Lin：源 docx 写 `LIN Xiao-yu`，人工成品是 `Xiaoyu Lin`。
     规则：
       · 形如 `SURNAME Given...`（姓氏全大写）→ 交换为 `Given SURNAME`；
-      · 有中文姓名时按中文拼音重建（`高贝贝` → `Beibei Gao`，顺带去掉拼音连字符）；
+      · 有中文姓名时按中文拼音重建（`林小雨` → `Xiaoyu Lin`，顺带去掉拼音连字符）；
       · 其它写法原样返回（不猜）。
     """
     text = re.sub(r"\s+", " ", str(name or "")).strip()
@@ -143,7 +143,7 @@ def normalize_english_author(name: str, chinese_name: str = "") -> str:
 
 
 def chinese_to_folder(name: str) -> str:
-    """陈波 → Bo_Chen。"""
+    """李雷 → Lei_Li。"""
     sur, given = split_chinese_name(name)
     if not given:
         raise AuthorNameError(f"中文姓名「{name}」只有姓、没有名，无法生成「名_姓」格式")
@@ -248,7 +248,7 @@ def validate_name(name: str) -> str:
     n = name.strip()
     if not _SAFE_NAME.match(n):
         raise AuthorNameError(
-            f"输出名「{name}」不合法。只允许字母、数字、下划线，且以字母开头（如 Bo_Chen）。"
+            f"输出名「{name}」不合法。只允许字母、数字、下划线，且以字母开头（如 Lei_Li）。"
         )
     return n
 
@@ -278,7 +278,7 @@ def looks_like_person_name(name: str) -> bool:
     收紧误伤面大，且没实测到对应缺陷）。
 
     反例（应当返回 False）：`贝叶斯主义认为`、`摘`、`数学基础是数学哲学研究中的重要问题`、
-    `摘  要：数学基础是…`。正例：`陈波`、`唐瑞雪`、`冯光武`、`阿依古丽·买买提`、
+    `摘  要：数学基础是…`。正例：`李雷`、`唐瑞雪`、`冯光武`、`阿依古丽·买买提`、
     `Michael Rathjen`、`Wen-fang Wang`。
     """
     s = (name or "").strip()
@@ -359,6 +359,6 @@ def resolve_output_name(
         "无法确定输出文件夹名：源文件里读不到第一作者姓名。\n"
         f"  （源文件：{source_desc or '未注明'}）\n"
         "  请显式指定其一：\n"
-        "    --author \"陈波\"      从姓名自动转拼音\n"
-        "    --name Bo_Chen        直接给出输出名"
+        "    --author \"李雷\"      从姓名自动转拼音\n"
+        "    --name Lei_Li        直接给出输出名"
     )

@@ -4065,7 +4065,7 @@ def cmd_normalize_editors(args) -> int:
 #   · 同一作者同一年有多条作品时，**按题名字母序**依次加 a/b/c（APA 7：alphabetize
 #     by title, ignoring initial articles；再按顺序加 suffix a, b, c…）；
 #   · 本库内部 key = `Surname`（或中文 `SurnameGiven` 拼音）+ 4 位年份 + 可选字母，
-#     与库内既有风格一致（`ChenBo2005` / `Haack1978` / `Li2026a`）。
+#     与库内既有风格一致（`LiLei2005` / `Haack1978` / `Li2026a`）。
 #   · 只有 similarity=1 的簇参与 key 规范化；其余合并簇保留 canonical 旧 key（报告注明）。
 MERGE_IGNORE_KEYS = frozenset({"miaolitian", "miaolitian2"})
 MERGE_REPORT_MD = "DUPLICATES-MERGE-PLAN.md"
@@ -4089,7 +4089,7 @@ MERGE_FIELD_DIFF_NOTE_LIMIT = 8
 
 
 def _merge_key_name(person: str) -> str:
-    """第一作者姓名 → 规范化 key 前缀（拉丁 `Haack` / 中文 `ChenBo`）。认不出返回 ""。"""
+    """第一作者姓名 → 规范化 key 前缀（拉丁 `Haack` / 中文 `LiLei`）。认不出返回 ""。"""
     name = str(person or "").strip()
     if not name:
         return ""
@@ -4794,7 +4794,7 @@ def build_merge_report_md(plan: dict, *, apa_url: str, generated_from: str) -> s
         "  判据另经 Tilburg University APA 7 指南 3.3「Order of reference list entries」核实：",
         "  <https://libguides.uvt.nl/apa-manual/order-references>）。",
         "- 本库内部 key 规范：`Surname`（或中文 `SurnameGiven` 拼音）+ 4 位年份 + 可选 a/b/c，",
-        "  与库内既有风格一致（`ChenBo2005` / `Haack1978` / `Li2026a`）；只对 **similarity=1 的簇**",
+        "  与库内既有风格一致（`LiLei2005` / `Haack1978` / `Li2026a`）；只对 **similarity=1 的簇**",
         "  生成新 key，其余合并簇保留 canonical 旧 key（避免一次改动过大）。",
         "- 版本选择（用户拍板）：**优先保留花括号/LaTeX 保护** → 其次字段更完整 → 来源更多 →",
         "  冲突更少 → key 稳定。",

@@ -19,13 +19,13 @@
 产物长这样（`--out` 下按作者姓名建目录，**初排阶段刻意不加数字前缀** —— 序号是三校/蓝样后才由人工加的）：
 
 ```text
-Bo_Chen/
-├── Bo_Chen.tex      ← 目标 tex
-├── Bo_Chen.pdf      ← --compile 才有
+Lei_Li/
+├── Lei_Li.tex      ← 目标 tex
+├── Lei_Li.pdf      ← --compile 才有
 ├── reference.bib
 ├── SLCN-MIX.sty     ← 与 --sty 一致
 └── original/        ← 源稿归档（只读副本）
-    └── 陈波 当代逻辑哲学鸟瞰.docx
+    └── 李雷 当代逻辑论题鸟瞰.docx
 ```
 
 **仓库地图（目录级）**：`Engine/` 引擎（Python，唯一一份逻辑）｜`sources-mac/` 界面
@@ -55,14 +55,14 @@ Bo_Chen/
 cd Engine
 PY=/opt/homebrew/bin/python3.14        # 跑普查/测试用的解释器（依赖在项目自己的 vendor/）
 
-# Word 文稿 → 初排稿（陈波）
+# Word 文稿 → 初排稿（李雷）
 $PY convert.py \
-    --source "/…/10 Bo_Chen/original/陈波 当代逻辑哲学鸟瞰.docx" \
+    --source "/…/10 Lei_Li/original/李雷 当代逻辑论题鸟瞰.docx" \
     --out    "/…/2026年第5期(90)" \
     --compile
 
 # LaTeX 多源合并（正文取自新稿 + 元数据取自上一轮模板稿）
-$PY convert.py --source "/…/main.tex" --metadata "/…/yalcin puzzle.tex" \
+$PY convert.py --source "/…/main.tex" --metadata "/…/example puzzle.tex" \
                --out "/…/2026年第5期(90)" --compile
 
 # 先看会发生什么，不落盘
@@ -191,8 +191,8 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
    **变坏迁移必须为 0**（哪些算变坏见 [`docs/RULES.md`](docs/RULES.md) §三）。
 2. **反例测试** —— 新规则必须**同时**给出「不该命中的反例」，写进 `tests/test_*.py`；
    规则取舍先跑 `ablation_corpus.py` 消融，别凭直觉（这是本项目最重要的纪律）。
-3. **代表稿** —— `convert.py` 跑三篇代表稿：`03 Liang_Zhang`（LaTeX 通道）、
-   `10 Bo_Chen`（Word 通道）、`Lu_Jiang`（脚注体例 + 英文稿），人眼核版面与页数。
+3. **代表稿** —— `convert.py` 跑三篇代表稿：`03 Jie_Zhou`（LaTeX 通道）、
+   `10 Lei_Li`（Word 通道）、`Lu_Jiang`（脚注体例 + 英文稿），人眼核版面与页数。
 4. **`corpus.py` 回归** —— `$PY corpus.py`（默认 `--jobs auto` 并行；`--jobs 1` = 旧串行）；
    判据看**逐篇明细**而不是中位数。R5 的「`docxxml` 用 `id()` 去重、`05 Yang_Hu` ±0.03pp 抖动」
    已在**第 125 条**修掉（去重改用元素身份）：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，

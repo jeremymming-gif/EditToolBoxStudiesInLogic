@@ -16,9 +16,9 @@ struct TocSettings: Codable {
     var columnName: String = ""
     /// 栏目英文名，例如「Research on Epistemic Paradoxes」；留空则沿用中文名
     var columnNameEN: String = ""
-    /// 栏目主持人，例如「张建军」
+    /// 栏目主持人，例如「郑建国」
     var columnHost: String = ""
-    /// 属于栏目的文章，用文件夹名标识，例如 ["01 Jingru_Kou", "02 Zixin_Luo"]
+    /// 属于栏目的文章，用文件夹名标识，例如 ["01 Meimei_Han", "02 Lili_Zhao"]
     var columnArticles: [String] = []
     /// 手动指定模板来源期目录；留空则自动找上一期
     var templateFolder: String = ""
@@ -49,8 +49,8 @@ struct TocSettings: Codable {
     var columnEditing: Bool { !columnKind.isEmpty }
 
     /// 判断某篇文章是否属于栏目。
-    /// 报告里的文章名是 `folder_name`（如 "Jingru_Kou"），不带序号；
-    /// 而设置里可能存的是带序号的文件夹名（如 "01 Jingru_Kou"），所以两边都兼容。
+    /// 报告里的文章名是 `folder_name`（如 "Meimei_Han"），不带序号；
+    /// 而设置里可能存的是带序号的文件夹名（如 "01 Meimei_Han"），所以两边都兼容。
     func contains(_ reportArticleName: String) -> Bool {
         guard isColumnEnabled else { return false }
         let target = reportArticleName.trimmingCharacters(in: .whitespaces)

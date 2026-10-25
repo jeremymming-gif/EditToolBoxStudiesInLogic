@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.14
 r"""「正文里没转成 cite 的引用点」进留档报告（第 80 条）的判据测试。
 
-缺陷（真稿 `2026年第5期(90)/10 Bo_Chen` 实测）：正文写 `（Beal  Restall 2006）`
+缺陷（真稿 `2026年第5期(90)/10 Lei_Li` 实测）：正文写 `（Beal  Restall 2006）`
 （源稿把 `Beall` 少写了一个 l），`link_citations()` 的「姓+年」精确匹配落空 → 那处引用
 **原样留在正文里**；bib 里的 `Beall2006` 于是被 `bibcheck.check_citations()` 的 ②
 报成「冗余条目」——**误诊**：条目不多余，是那处引用没转。而这条「没转」从前只
@@ -89,11 +89,11 @@ def split_p24(items):
 SECTION_HEAD = "  ── 正文里没转成引用的引用点（"
 
 # 含全部四种引用点的正文：给 (b) 的四个门槛用（每条都真实出现，便于逐个开合证据）
-TEX_ALL = "\n".join(["第一段。" + RAW_BEAL, "第二段。（Smith 2006）。", "第三段。（陈波 2005）。",
+TEX_ALL = "\n".join(["第一段。" + RAW_BEAL, "第二段。（Smith 2006）。", "第三段。（李雷 2005）。",
                      "第四段。" + RAW_WILL])
 BIB_CHEN = """\
-@article{ChenBo2005,
-  author  = {陈波},
+@article{LiLei2005,
+  author  = {李雷},
   title   = {一个与归纳问题类似的演绎问题},
   journal = {哲学研究},
   volume  = {1},
@@ -135,14 +135,14 @@ check("(a) ① 悬空引用不受新参数影响",
 check("(a) ① + ② 一起时顺序与条数都与从前一致",
       len(bibcheck.check_citations(TEX_BEALL + TEX_DANGLE, BIB_BEALL)) == 2)
 
-TEX_ATTR = "陈波提出社会历史因果描述论。"
+TEX_ATTR = "李雷提出社会历史因果描述论。"
 _cites_attr = bibcheck.check_citations(TEX_ATTR, BIB_CHEN)
 _cite3 = [c for c in _cites_attr if c.startswith("③")]
 # ⚠️ 逐字复刻既有输出：那一句在 `bibcheck.py` 里是**原始 f-string**，所以两个反斜杠
 #    会原样留着（`\\parencite`）。这是第 80 条之前的既有形态，本次一个字都没动。
 check("(a) ③ 疑似漏引的文案逐字不变",
-      _cite3 == ["③ 疑似漏引：正文写「陈波提出」，附近没有引用命令，"
-                 "请核对是否需要补 \\\\parencite{ChenBo2005}"], repr(_cite3))
+      _cite3 == ["③ 疑似漏引：正文写「李雷提出」，附近没有引用命令，"
+                 "请核对是否需要补 \\\\parencite{LiLei2005}"], repr(_cite3))
 check("(a) ③ 不受新参数影响：给了 unmatched 也照样报",
       bibcheck.check_citations(TEX_ATTR, BIB_CHEN, unmatched=[RAW_BEAL]) == _cites_attr)
 
@@ -182,18 +182,18 @@ _p24_smith, _hist_smith = split_p24(_smith)
 check("(b) 反例：`Smith 2006` 与本条作者 Beall 毫无共同前缀 → 不提示",
       len(_p24_smith) == 1 and _hist_smith == [OLD_LINE], repr(_smith))
 # 中文姓名：CJK 门槛是 2 个汉字
-_chen = bibcheck.check_citations(TEX_ALL, BIB_CHEN, unmatched=["（陈波 2005）"])
+_chen = bibcheck.check_citations(TEX_ALL, BIB_CHEN, unmatched=["（李雷 2005）"])
 _p24_chen, _hist_chen = split_p24(_chen)
 _chen_line = _hist_chen[0] if _hist_chen else ""
-check("(b) CJK：`（陈波 2005）` 与本条作者「陈波」命中（CJK 门槛 2 字）",
+check("(b) CJK：`（李雷 2005）` 与本条作者「李雷」命中（CJK 门槛 2 字）",
       len(_p24_chen) == 1 and len(_hist_chen) == 1
-      and "⚠" in _chen_line and "「陈波」" in _chen_line, repr(_chen))
+      and "⚠" in _chen_line and "「李雷」" in _chen_line, repr(_chen))
 
 check("(b) 前缀判据的边界：ASCII 要 ≥ 4 个字符（3 个不算证据）",
       bibcheck._prefix_evidence("Bea", "Beall") == 0
       and bibcheck._prefix_evidence("Beal", "Beall") == 4)
 check("(b) 前缀判据的边界：CJK 要 ≥ 2 个汉字",
-      bibcheck._prefix_evidence("陈", "陈波") == 0 and bibcheck._prefix_evidence("陈波", "陈波") == 2)
+      bibcheck._prefix_evidence("陈", "李雷") == 0 and bibcheck._prefix_evidence("李雷", "李雷") == 2)
 check("(b) token 切分留着数字 token（年份判据要靠它）",
       bibcheck._ref_tokens(RAW_BEAL) == ["Beal", "Restall", "2006"],
       repr(bibcheck._ref_tokens(RAW_BEAL)))
@@ -410,12 +410,12 @@ def make_docx(paras):
 
 # ⚠️ 同一年要有**两条**参考文献：`link_citations()` 的「年份唯一兜底」只在
 #    `len(by_year[year]) == 1` 时才可能触发；两条同年 → 兜底不成立 → 引用原样留下
-#    （真稿 Bo_Chen 的 2006 年就是 Beall2006 + Hanna2006 两条）。
+#    （真稿 Lei_Li 的 2006 年就是 Beall2006 + Hanna2006 两条）。
 REF_BEALL = "Beall, J C, Restall, G. 2006. Logical Pluralism[M]. Oxford: Oxford University Press."
 REF_HANNA = "Hanna, R. 2006. Rationality and Logic[M]. Cambridge, MA: The MIT Press."
 BODY_P = [f"正文第{i}段，讨论逻辑多元论与逻辑哲学之间的关系。" for i in range(11)]
 CITE_P = "逻辑多元论也存在着不同的版本和观点，例如毕尔和雷斯托尔" + RAW_BEAL + "。"
-SRC_DOCX = make_docx(["当代逻辑哲学鸟瞰", "陈波", "摘要：本文讨论逻辑哲学。", "关键词：逻辑；哲学"]
+SRC_DOCX = make_docx(["当代逻辑论题鸟瞰", "李雷", "摘要：本文讨论逻辑哲学。", "关键词：逻辑；哲学"]
                      + BODY_P + [CITE_P] + ["参考文献", REF_BEALL, REF_HANNA])
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -472,16 +472,16 @@ for _t in TMP:
         pass
 
 # ══ (g) 真实稿（语料不在本机则 SKIP）═══════════════════════════════════════
-print("\n── (g) 真实稿 10 Bo_Chen：三处未匹配引用都进报告 ──")
+print("\n── (g) 真实稿 10 Lei_Li：三处未匹配引用都进报告 ──")
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Bo_Chen", "original",
-                    "陈波 当代逻辑哲学鸟瞰.docx")
+REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Lei_Li", "original",
+                    "李雷 当代逻辑论题鸟瞰.docx")
 if not os.path.exists(REAL):
-    skip("(g) 真实稿 10 Bo_Chen", "语料不在本机")
+    skip("(g) 真实稿 10 Lei_Li", "语料不在本机")
 else:
     with tempfile.TemporaryDirectory() as tmp:
-        res = build.build_docx(REAL, tmp, basename="Bo_Chen", verbose=False)
-        txt = open(os.path.join(tmp, "Bo_Chen_参考文献核对.txt"), encoding="utf-8").read()
+        res = build.build_docx(REAL, tmp, basename="Lei_Li", verbose=False)
+        txt = open(os.path.join(tmp, "Lei_Li_参考文献核对.txt"), encoding="utf-8").read()
         check("(g) 三处未匹配引用都逐条列出",
               all(f"· 「{r}」" in txt for r in (RAW_WILL, RAW_BEAL, RAW_HAACK)),
               repr([r for r in (RAW_WILL, RAW_BEAL, RAW_HAACK) if f"· 「{r}」" not in txt]))

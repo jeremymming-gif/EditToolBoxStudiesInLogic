@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.14
 """`@incollection`（`[C]//`）**已经解析到的字段被丢掉**（第 81 条）。
 
-真实来稿 `2026年第5期(90)/10 Bo_Chen` 的源稿行：
+真实来稿 `2026年第5期(90)/10 Lei_Li` 的源稿行：
 
     塔斯基. 2019. 真理的语义概念和语义学的基础[C]// 马蒂尼奇. 语言哲学[M]. 牟博, 译. 北京: 商务印书馆.
 
@@ -21,7 +21,7 @@
   ⑥ **反例 4**：`@book` / `@article` 的既有输出**逐字不变**（黄金字面量；含「版次/中译加注
      本轮不动」的钉子 `Haack1974`）；
   ⑦ **反例 5**：条目数与键序列不变（`make_key` 一个字没动）；
-  ⑧ 端到端：现造最小 docx + 真实稿 `10 Bo_Chen`（语料不在本机则 SKIP）。
+  ⑧ 端到端：现造最小 docx + 真实稿 `10 Lei_Li`（语料不在本机则 SKIP）。
 
 不写 out/、不联网、不跑 corpus.py / build.sh。用法：
     cd Engine && /opt/homebrew/bin/python3.14 tests/test_incollection_fields.py
@@ -240,7 +240,7 @@ print("\n── ⑦ 反例 5：条目数 / 键序列 / make_key ──")
 
 MIXED_LINES = [
     BOOK_BEALL, ART_HAACK76, TARSKI, STEIN,
-    "陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.",
+    "李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.",
 ]
 MIXED = [parse_reference_line(x) for x in MIXED_LINES]
 MIXED_BIB = refs_to_bib(MIXED)
@@ -249,7 +249,7 @@ check("⑦ 条目数不变（1 输入 = 1 输出，5 条）", len(_emitted) == l
       repr(_emitted))
 check("⑦ 键序列逐字不变（`[C]//` 修字段**不**改键）",
       [k for _t, k in _emitted] == [e.key for e in MIXED]
-      == ["Beall2006", "Haack1976", "Tarski2019", "Steinberger2022", "ChenBo2022"],
+      == ["Beall2006", "Haack1976", "Tarski2019", "Steinberger2022", "LiLei2022"],
       repr([k for _t, k in _emitted]))
 check("⑦ 类型序列不变（C → incollection，其余照旧）",
       [t for t, _k in _emitted] == ["book", "article", "incollection", "incollection", "article"],
@@ -257,8 +257,8 @@ check("⑦ 类型序列不变（C → incollection，其余照旧）",
 # `make_key` 一个字没动：既有的确定性形态照旧
 check("⑦ make_key 逐字未动：中文译名 / 中文全拼音 / 西文姓",
       make_key(parse_reference_line(TARSKI)) == "Tarski2019"
-      and make_key(parse_reference_line("陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50."))
-      == "ChenBo2022"
+      and make_key(parse_reference_line("李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50."))
+      == "LiLei2022"
       and make_key(parse_reference_line(ART_HAACK76)) == "Haack1976")
 
 # ══ ⑧ 端到端 ═══════════════════════════════════════════════════════════════
@@ -289,9 +289,9 @@ check("⑧ 最小 docx：文献区解析出 1 条、键 Tarski2019",
 check("⑧ 最小 docx：端到端产出 = 黄金字面量", refs_to_bib(d_min.refs) == TARSKI_BIB,
       repr(refs_to_bib(d_min.refs)))
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Bo_Chen", "original", "陈波 当代逻辑哲学鸟瞰.docx")
+REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Lei_Li", "original", "李雷 当代逻辑论题鸟瞰.docx")
 if not os.path.exists(REAL):
-    skip("真实稿 10 Bo_Chen", "语料不在本机")
+    skip("真实稿 10 Lei_Li", "语料不在本机")
 else:
     d_real = parse_docx(REAL)
     by_key = {e.key: e for e in d_real.refs}

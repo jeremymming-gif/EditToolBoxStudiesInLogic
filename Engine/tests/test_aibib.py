@@ -14,7 +14,7 @@ r"""`slcn/aibib.py`（把 AI 返回的条目**并入** reference.bib）的判据
   ④ `convert.apply_ai_merge()` 落盘：回滚副本 `reference.bib.ai前`、`<stem>_回读校验报告.md`、
      任务书「六、合并记录」、**0 条并入时一个字都不写**、半截返回不并入但记原因。
   ⑤ 端到端（真实 CLI + 本地 mock 的 replay 夹具）：`convert.py --verify-refs` 配 LLM 跑
-     `2026年第5期(90)/01 Jingru_Kou/定稿.docx`，核对上面每一项的**实际产物**——
+     `2026年第5期(90)/01 Meimei_Han/定稿.docx`，核对上面每一项的**实际产物**——
      含 GAP 1（`Dang2022` 的围栏外注释 → 报告降为提示）与 GAP 3（`Kaplan1989` 重排）。
 
 
@@ -50,7 +50,7 @@ SKIPS = []
 # 夹具目录 2026-10-15 phase 2c 从 `tools/gui_fixtures/` 改名成 `tools/fixtures/`：
 # 人工点击时代的「回读校验」夹具已删（无任何测试引用），这里只留 mock 回放用的那一个。
 FAKE = "fixtures/merge_replies.json"
-MANUSCRIPT = os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 Jingru_Kou", "定稿.docx")
+MANUSCRIPT = os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
 
 
 def check(name, cond, detail=""):
@@ -90,7 +90,7 @@ ORIG = """\
 }
 
 @book{A2014,
-  author    = {阿斯海姆（著），张建军、万林（译）},
+  author    = {阿斯海姆（著），郑建国、万林（译）},
   title     = {指称与意向性},
   publisher = {南京大学出版社},
   address   = {南京},
@@ -288,11 +288,11 @@ check("③ 多条英文作者**每一个**都倒装（editor 也查）",
       blocks(res.text)["Almog1989"].count("Almog, J. and Perry, J. and Wettstein, H.") == 1,
       blocks(res.text)["Almog1989"].splitlines()[3])
 _cjk = aibib.merge(ORIG, {"A2014": fence(
-    "@book{A2014,\n  author    = {阿斯海姆（著），张建军、万林（译）},\n"
+    "@book{A2014,\n  author    = {阿斯海姆（著），郑建国、万林（译）},\n"
     "  title     = {指称与意向性},\n  publisher = {南京大学出版社},\n"
     "  year      = {2014},\n  address   = {南京},\n  userf     = {cn}\n}")})
 check("③ 中文著/译体例的作者值一个字节不动（不许拆成 and）",
-      "author    = {阿斯海姆（著），张建军、万林（译）}" in _cjk.text and _cjk.n_merged == 1,
+      "author    = {阿斯海姆（著），郑建国、万林（译）}" in _cjk.text and _cjk.n_merged == 1,
       blocks(_cjk.text)["A2014"].splitlines()[1])
 check("③ A2014 的字段顺序被按第三节重排（year 让位给 address），记进 diff",
       _cjk.by_key("A2014").diff.reordered
@@ -303,7 +303,7 @@ check("③ 重排说明写进 notes（编辑要能看出是引擎挪的）",
       f"{_cjk.by_key('A2014').notes}")
 # 字段值与顺序都没变、只是排版（对齐空格）不同时，才该说「只有排版不同」
 _same = aibib.merge(ORIG, {"A2014": fence(
-    "@book{A2014,\n  author = {阿斯海姆（著），张建军、万林（译）},\n"
+    "@book{A2014,\n  author = {阿斯海姆（著），郑建国、万林（译）},\n"
     "  title = {指称与意向性},\n  publisher = {南京大学出版社},\n"
     "  address = {南京},\n  year = {2014},\n  userf = {cn}\n}")})
 check("③ 字段值与顺序都没变、只是排版不同时，说明里点出「只有排版/注释位置不同」",
@@ -465,8 +465,8 @@ else:
                 "--no-original",
                 "--llm-base", f"http://127.0.0.1:{port}/v1",
                 "--llm-key", "mock", "--llm-model", "mock-model"])
-            out0 = os.path.join(base, "Jingru_Kou")
-            out1 = os.path.join(ai, "Jingru_Kou")
+            out0 = os.path.join(base, "Meimei_Han")
+            out1 = os.path.join(ai, "Meimei_Han")
             check("⑤ 两次 convert.py 都正常结束（AI 通道不改退出码）",
                   p0.returncode == 0 and p1.returncode == 0,
                   (p1.stderr or p1.stdout)[-200:])
@@ -475,7 +475,7 @@ else:
             roll = os.path.join(out1, "reference.bib.ai前")
             check("⑤ `--no-ai-merge` 真的不并：产物与从前一致（无 .ai前、无报告）",
                   not os.path.exists(os.path.join(out0, "reference.bib.ai前"))
-                  and not os.path.exists(os.path.join(out0, "Jingru_Kou_回读校验报告.md")), "")
+                  and not os.path.exists(os.path.join(out0, "Meimei_Han_回读校验报告.md")), "")
             check("⑤ 并入路径：写了回滚副本，且它 = 未并入时的那份 reference.bib（逐字节相同）",
                   os.path.isfile(roll) and open(roll, encoding="utf-8").read() == bib0, "")
             check("⑤ 合并后的 reference.bib 确实变了（至少 1 条）", bib1 != bib0, "")
@@ -493,7 +493,7 @@ else:
             check("⑤ `% ⚠ 待核实` 注释跟着条目进了 reference.bib",
                   "% ⚠ 待核实：number" in bib1, "")
             check("⑤ 中文著/译体例没被拆成 and（A2014）",
-                  "阿斯海姆（著），张建军、万林（译）" in bib1 and "阿斯海姆（著） and" not in bib1, "")
+                  "阿斯海姆（著），郑建国、万林（译）" in bib1 and "阿斯海姆（著） and" not in bib1, "")
             # GAP 1 端到端：Dang2022 的 `% ⚠ 待核实` 写在**围栏外面**，也必须进 bib、且在条目上方
             _d22 = next(e for e in parse_entries(bib1)[0] if e.key == "Dang2022")
             check("⑤ GAP1：围栏外的 `% ⚠ 待核实：volume` 被搬到 Dang2022 条目**上方**",
@@ -511,7 +511,7 @@ else:
                   _k_order == ["author", "title", "booktitle", "editor", "publisher",
                                "address", "pages", "year"], f"{_k_order}")
 
-            _rpt = os.path.join(out1, "Jingru_Kou_回读校验报告.md")
+            _rpt = os.path.join(out1, "Meimei_Han_回读校验报告.md")
             _rp = open(_rpt, encoding="utf-8").read() if os.path.isfile(_rpt) else ""
             check("⑤ 回读校验报告已生成，且控制台打印了它的结论行",
                   bool(_rp) and "**结论：" in _rp and "结论：" in p1.stdout, "")
@@ -526,7 +526,7 @@ else:
             check("⑤ GAP3：字段顺序汇总提示里不再点名合并过的 Kaplan1989",
                   "Kaplan1989" not in next(
                       (ln for ln in _rp.splitlines() if "字段顺序与任务书第三节" in ln), ""), "")
-            _md = open(os.path.join(out1, "Jingru_Kou_文献核实.md"), encoding="utf-8").read()
+            _md = open(os.path.join(out1, "Meimei_Han_文献核实.md"), encoding="utf-8").read()
             check("⑤ 任务书里有「六、合并记录」，逐条给出并入/跳过与原因",
                   "## 六、合并记录（本次已并入 reference.bib）" in _md
                   and "`Chalmers2011`" in _md and "不一致" in _md, "")

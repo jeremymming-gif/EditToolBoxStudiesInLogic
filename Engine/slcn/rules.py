@@ -70,7 +70,7 @@ RULES: list[Rule] = [
          r"\.\.\.(?!\.)(?=[A-Za-z])", r"\\ldots{}", "en"),
     Rule("en-ellipsis", "英文省略号", r"\.\.\.(?!\.)", r"\\ldots", "en"),
     # ⛔ 已删除 Rule("en-apostrophe")。
-    #    它在单篇（03 Liang_Zhang）消融中贡献 +0.025pp，貌似有益；
+    #    它在单篇（03 Jie_Zhou）消融中贡献 +0.025pp，貌似有益；
     #    但全库逐项核对显示 ’ 在人工成品里是**保留**的
     #    （05 Wenzhong_Ma：docx 35 个 ’ → 成品保留 32 个，仅 6 处改直引号）。
     #    这是「单篇调参过拟合」的典型样本——规则取舍必须以全库证据为准。
@@ -137,7 +137,7 @@ UNICODE_MATH = {
     "□": r"\Box", "◻": r"\Box",  # ◻=U+25FB：88-02 Lu_Jiang 源稿手打（字体无字形）
     "◇": r"\Diamond", "⋄": r"\diamond",
     "∴": r"\therefore", "∵": r"\because", "∅": r"\varnothing",
-    "⟨": r"\langle", "⟩": r"\rangle",  # 期 90/05 Beibei_Gao（LogicA F072/F073）
+    "⟨": r"\langle", "⟩": r"\rangle",  # 期 90/05 Xiaoyu_Lin（LogicA F072/F073）
     "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",
     "ε": r"\varepsilon", "θ": r"\theta", "λ": r"\lambda", "μ": r"\mu",
     "π": r"\pi", "σ": r"\sigma", "φ": r"\varphi", "ϕ": r"\phi",
@@ -151,7 +151,7 @@ _PAREN_DIGITS = {chr(0x2474 + i): f"（{i + 1}）" for i in range(20)}
 _CIRCLED_DIGITS = {chr(0x2460 + i): f"（{i + 1}）" for i in range(20)}
 
 # Word 文稿常把数学写成纯文本（`limn→∞`、`logx`）。这些函数名直接放进 $…$ 里
-# 会因为 \\lim 未定义而编译失败——实测 07 Liangying_Zhao 就是这么炸的。
+# 会因为 \\lim 未定义而编译失败——实测 07 Jiayi_He 就是这么炸的。
 MATH_FUNCS = {
     "limsup": r"\limsup", "liminf": r"\liminf", "lim": r"\lim",
     "log": r"\log", "ln": r"\ln", "exp": r"\exp", "sin": r"\sin",
@@ -205,7 +205,7 @@ def normalize_unicode_punct(text: str) -> tuple[str, int]:
 
 
 # 「引者注」：原稿写作 `（X——引者注）`，人工一律转成 `\footnote{X，引者注。}~`
-# 实测 07 Liangying_Zhao 的 4 处 100% 一致；缺「即」时人工会补上（3/3）。
+# 实测 07 Jiayi_He 的 4 处 100% 一致；缺「即」时人工会补上（3/3）。
 _YINZHEZHU = re.compile(r"（([^）]{1,60}?)——引者注）")
 
 
@@ -298,7 +298,7 @@ def apply_rules(
             n3 = 0
             if docx_mode:
                 # ⚠️ 只对 **Word 来源** 做函数名修正。LaTeX 源稿本来就是规范 LaTeX，
-                #    对它跑这步会误伤（实测 03 Liang_Zhang 立刻报 Missing $ inserted）。
+                #    对它跑这步会误伤（实测 03 Jie_Zhou 立刻报 Missing $ inserted）。
                 #    问题本身也只存在于 Word：作者把数学写成纯文本 `limn→∞`。
                 text, n3 = fix_math_commands(text)
             text, n4 = fix_editor_notes(text)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.14
 """英文作者一律倒装（编辑部 2026-10-15 决定）的判据测试。
 
-**要解决的问题**（实测，不是设想）：真实稿件 `2026年第5期(90)/01 Jingru_Kou`。
+**要解决的问题**（实测，不是设想）：真实稿件 `2026年第5期(90)/01 Meimei_Han`。
 工具的 `reference.bib` 把作者写成**名在前**（`T. Burge`、`D. J. Chalmers`、`M. Dummett`），
 编辑的成品 20 条英文条目 **20/20 是倒装式**（`Burge, T.`、`Chalmers, D. J.`、`Kvanvig, J.`）。
 旧规范写着「**本名倒装**仍用逗号……两种写法都对」+「非必要不修改」，AI 照抄源稿 → 15 处里差 14 处。
@@ -61,16 +61,16 @@ RAW_20 = [
     "A. J. Ayer", "T. Burge", "D. J. Chalmers", "D. J. Chalmers", "M.Dummett",
     "D. Edgington", "F. B. Fitch", "M.Jago", "D. Kaplan", "J.Kvanvig",
     "H.Leitgeb", "R. Nozick", "J. Salerno (ed.)", "R. Stalnaker", "T. Williamson",
-    "阿斯海姆（著）", "党学哲", "党学哲", "克里普克（著）", "沃斯等（著） and 黄海婷（译）",
+    "阿斯海姆（著）", "党学哲", "党学哲", "克里普克（著）", "沃斯等（著） and 吴静怡（译）",
 ]
 EXPECT_20 = [
     "Ayer, A. J.", "Burge, T.", "Chalmers, D. J.", "Chalmers, D. J.", "Dummett, M.",
     "Edgington, D.", "Fitch, F. B.", "Jago, M.", "Kaplan, D.", "Kvanvig, J.",
     "Leitgeb, H.", "Nozick, R.", "{Salerno (ed.)}, J.", "Stalnaker, R.", "Williamson, T.",
-    "阿斯海姆（著）", "党学哲", "党学哲", "克里普克（著）", "沃斯等（著） and 黄海婷（译）",
+    "阿斯海姆（著）", "党学哲", "党学哲", "克里普克（著）", "沃斯等（著） and 吴静怡（译）",
 ]
 
-print("── ① 20 条真实作者串（Jingru_Kou 的 docx 解析结果）──")
+print("── ① 20 条真实作者串（Meimei_Han 的 docx 解析结果）──")
 bad = [(a, N(a), b) for a, b in zip(RAW_20, EXPECT_20) if N(a) != b]
 check("① 20/20 条都转成编辑成品的形态", not bad, f"不等 {bad}")
 check("① 15 条英文全部变成「姓, 名」",
@@ -100,9 +100,9 @@ print("\n── ③ 反例（不该动 / 不该误判）──")
 COUNTER = {
     "党学哲": "党学哲",                          # 中文姓名
     "太田方": "太田方",                          # 日文（汉字）
-    "阿斯海姆（著），张建军、万林（译）": "阿斯海姆（著），张建军、万林（译）",   # 中文译著：逗号/顿号保留
+    "阿斯海姆（著），郑建国、万林（译）": "阿斯海姆（著），郑建国、万林（译）",   # 中文译著：逗号/顿号保留
     "克里普克（著），梅文（译）": "克里普克（著），梅文（译）",
-    "沃斯等（著） and 黄海婷（译）": "沃斯等（著） and 黄海婷（译）",             # 中文条目里已是 and
+    "沃斯等（著） and 吴静怡（译）": "沃斯等（著） and 吴静怡（译）",             # 中文条目里已是 and
     "van~Fraassen": "van~Fraassen",              # 波浪号（手册：要按 V 排就加 ~）
     "van Fraassen, B. C.": "van Fraassen, B. C.",  # 已倒装 + 虚词
     "van~Fraassen, B. C.": "van~Fraassen, B. C.",
@@ -168,27 +168,27 @@ RAW_LINES = [
     " Themes from Kaplan, New York: Oxford University Press, pp. 481–563.",
     "[10] J.Kvanvig, 1995, “The Knowability Paradox and the Prospects for Anti-Realism”,"
     " Noûs, 29(4): 481–500.",
-    "[16] 阿斯海姆（著），张建军、万林（译），指称与意向性，南京：南京大学出版社，2014年。",
+    "[16] 阿斯海姆（著），郑建国、万林（译），指称与意向性，南京：南京大学出版社，2014年。",
 ]
 parsed = footref.parse_numbered_list("\n".join(RAW_LINES))
 got = [p.author for p in parsed]
 check("⑤ 编号清单：英文作者倒装、中文作者不动",
       got == ["Ayer, A. J.", "Burge, T.", "Dummett, M.", "Kaplan, D.", "Kvanvig, J.",
-              "阿斯海姆（著），张建军、万林（译）"],
+              "阿斯海姆（著），郑建国、万林（译）"],
       f"{got}")
 check("⑤ 编号清单：条目数不变（没多没少）", len(parsed) == len(RAW_LINES), f"{len(parsed)}")
 
 # ── ⑤b 中文译著体例：`原作者（著），译者（译）` 必须被识别（第 64 条，2026-10-15）────
 #
-# 从前 `阿斯海姆（著），张建军、万林（译），指称与意向性，…` 会被切成
-# 「作者 = 阿斯海姆（著）／题名 = 张建军、万林（译）」——**丢了真题名、多了个假题名**
-# （实测 2026年第5期(90)/01 Jingru_Kou 第 16 条，`title = {张建军、万林（译）}`）。
+# 从前 `阿斯海姆（著），郑建国、万林（译），指称与意向性，…` 会被切成
+# 「作者 = 阿斯海姆（著）／题名 = 郑建国、万林（译）」——**丢了真题名、多了个假题名**
+# （实测 2026年第5期(90)/01 Meimei_Han 第 16 条，`title = {郑建国、万林（译）}`）。
 # 根因：无引号分支按中文逗号切，把「著者 → 译者」的那个逗号当成了「作者 → 题名」。
 print("\n── ⑤b 中文著/译体例：作者 = 原作者（著），译者（译）──")
 _TR_LINES = [
-    "[16] 阿斯海姆（著），张建军、万林（译），指称与意向性，南京：南京大学出版社，2014年。",
+    "[16] 阿斯海姆（著），郑建国、万林（译），指称与意向性，南京：南京大学出版社，2014年。",
     "[17] 焦循（著），沈文倬（点校），孟子正义，北京：中华书局，1987年。",
-    "[18] 沃斯、费布鲁赫、库伊（著），黄海婷（译），从哈克标准看知道者悖论的解决方案，"
+    "[18] 沃斯、费布鲁赫、库伊（著），吴静怡（译），从哈克标准看知道者悖论的解决方案，"
     "逻辑学动态与评论，2025年，第3–36页。",
     # 反例①：普通中文条目（两段都没有角色标记）——一个字节都不该变
     "[19] 付敏，亚相容解悖方案研究，2021年，北京：社会科学文献出版社。",
@@ -199,13 +199,13 @@ _TR_LINES = [
 ]
 _tr = footref.parse_numbered_list("\n".join(_TR_LINES))
 check("⑤b （著）…（译）：作者保留中文逗号、顿号（不倒装、不拆）",
-      _tr[0].author == "阿斯海姆（著），张建军、万林（译）", repr(_tr[0].author))
+      _tr[0].author == "阿斯海姆（著），郑建国、万林（译）", repr(_tr[0].author))
 check("⑤b （著）…（译）：题名是真题名（不再被译者段顶掉）",
       _tr[0].title == "指称与意向性", repr(_tr[0].title))
 check("⑤b （著）…（点校）：同样识别", _tr[1].author == "焦循（著），沈文倬（点校）"
       and _tr[1].title == "孟子正义", f"{_tr[1].author!r} / {_tr[1].title!r}")
 check("⑤b 多个原作者（顿号）+ 译者：作者段完整",
-      _tr[2].author == "沃斯、费布鲁赫、库伊（著），黄海婷（译）", repr(_tr[2].author))
+      _tr[2].author == "沃斯、费布鲁赫、库伊（著），吴静怡（译）", repr(_tr[2].author))
 check("⑤b 反例①：普通中文条目一字不变（付敏）",
       _tr[3].author == "付敏" and _tr[3].title == "亚相容解悖方案研究",
       f"{_tr[3].author!r} / {_tr[3].title!r}")
@@ -216,7 +216,7 @@ check("⑤b 反例③：只有（译）时作者段仍是一段（梅文）",
       _tr[5].author == "梅文（译）" and _tr[5].title == "题名",
       f"{_tr[5].author!r} / {_tr[5].title!r}")
 check("⑤b 判据函数：只在「首段（著）+ 次段（译/点校）」同时成立时才认两段",
-      footref._translation_author_segments(["阿斯海姆（著）", "张建军、万林（译）", "指称与意向性"]) == 2
+      footref._translation_author_segments(["阿斯海姆（著）", "郑建国、万林（译）", "指称与意向性"]) == 2
       and footref._translation_author_segments(["黑格尔（著）", "逻辑学", "北京：商务印书馆"]) == 1
       and footref._translation_author_segments(["付敏", "亚相容解悖方案研究"]) == 1
       and footref._translation_author_segments(["梅文（译）", "题名"]) == 1)
@@ -231,12 +231,12 @@ from slcn.docxsource import _numbered_refs  # noqa: E402
 check("⑤c 完整著/译形态 → 放行 3 字题名",
       [t for _k, _e, t in _numbered_refs(
           ["[1] 亚里士多德（著），张竹明（译），物理学，北京：商务印书馆，2016年。",
-           "[2] 陈波，逻辑学导论，北京：中国人民大学出版社，2003年。"])[0]]
+           "[2] 李雷，逻辑学导论，北京：中国人民大学出版社，2003年。"])[0]]
       == ["物理学", "逻辑学导论"])
 check("⑤c 只有（著）→ 短题名一律丢掉（不放行垃圾条目），正常条目照旧",
       [t for _k, _e, t in _numbered_refs(
           ["[1] 亚里士多德（著），颜一，工具论，北京：商务印书馆，2003年。",
-           "[2] 陈波，逻辑学导论，北京：中国人民大学出版社，2003年。"])[0]] == ["逻辑学导论"])
+           "[2] 李雷，逻辑学导论，北京：中国人民大学出版社，2003年。"])[0]] == ["逻辑学导论"])
 check("⑤c 判据 both=True：要求（著）与（译）同时出现",
       author_has_role_mark("亚里士多德（著），张竹明（译）", both=True)
       and not author_has_role_mark("亚里士多德（著）", both=True)
@@ -285,7 +285,7 @@ check("⑥ 未倒装 → 1 条 must，且带上改法",
       f"{[(i.severity, i.detail) for i in iss]}")
 check("⑥ 已倒装 → 0 条", bibcheck.author_form_issues(BIB_OK) == [])
 check("⑥ 中文条目、`JC Beall` 不报",
-      bibcheck.author_form_issues("@book{Chen2022,\n  author = {陈波},\n  title = {x}\n}\n") == []
+      bibcheck.author_form_issues("@book{Li2022,\n  author = {李雷},\n  title = {x}\n}\n") == []
       and bibcheck.author_form_issues("@book{B,\n  author = {JC Beall},\n  title = {x}\n}\n") == [])
 check("⑥ editor 字段同样查",
       [i.detail for i in bibcheck.author_form_issues(
@@ -302,7 +302,7 @@ check("⑥ author_is_inverted 与规范化器同源", INV("T. Burge") is False a
 print("\n── ⑦ 中文译著缺「（著）/（译）」：提示 ──")
 TR_BAD = "@book{A2014,\n  author = {阿斯海姆（著）},\n  title = {指称与意向性},\n  publisher = {南京大学出版社},\n  address = {南京},\n  year = {2014},\n  userf = {cn}\n}\n"
 TR_OK = "@book{H2004,\n  author = {黑格尔（著），杨一之（译）},\n  title = {逻辑学},\n  publisher = {商务印书馆},\n  address = {北京},\n  year = {2004},\n  userf = {cn}\n}\n"
-TR_PLAIN = "@book{Chen2022,\n  author = {陈波},\n  title = {逻辑例外论},\n  publisher = {北京大学出版社},\n  address = {北京},\n  year = {2022},\n  userf = {cn}\n}\n"
+TR_PLAIN = "@book{Li2022,\n  author = {李雷},\n  title = {逻辑例外论},\n  publisher = {北京大学出版社},\n  address = {北京},\n  year = {2022},\n  userf = {cn}\n}\n"
 TR_ED = "@book{G2001,\n  author = {国家文物局古文献研究室（编）},\n  title = {吐鲁番出土文书},\n  publisher = {文物出版社},\n  address = {北京},\n  year = {2001},\n  userf = {cn}\n}\n"
 check("⑦ 有（著）缺（译）→ 1 条提示（nice，不挡退出码）",
       [i.severity for i in bibcheck.translation_marking_issues(TR_BAD)] == ["nice"])
@@ -311,7 +311,7 @@ check("⑦ 普通中文专著（无标记）→ 不报", bibcheck.translation_ma
 check("⑦ `（编）` 不算译著 → 不报", bibcheck.translation_marking_issues(TR_ED) == [])
 check("⑦ 只有（译）缺（著）→ 也报",
       len(bibcheck.translation_marking_issues(
-          "@book{X,\n  author = {黄海婷（译）},\n  title = {x},\n  year = {2000}\n}\n")) == 1)
+          "@book{X,\n  author = {吴静怡（译）},\n  title = {x},\n  year = {2000}\n}\n")) == 1)
 
 # ── ⑧ checkbib.py 命令行 ──────────────────────────────────────────────────
 print("\n── ⑧ checkbib.py 命令行 ──")
@@ -343,7 +343,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # ⚠️ 相对本文件推仓库根（`tests/` → `Engine/` → `` → 仓库根）：写死某台机器的
 #    绝对路径会让这条对照在别人机器上永远 SKIP（等于没测）。2026-10-15 拆仓预演时一并修。
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-FINAL_BIB = str(_REPO_ROOT / "2026年第5期(90)" / "01 Jingru_Kou" / "reference.bib")
+FINAL_BIB = str(_REPO_ROOT / "2026年第5期(90)" / "01 Meimei_Han" / "reference.bib")
 print("\n── 附：编辑成品 20/20 全倒装（真实文件，只读）──")
 if os.path.isfile(FINAL_BIB):
     txt = open(FINAL_BIB, encoding="utf-8", errors="replace").read()
@@ -356,7 +356,7 @@ if os.path.isfile(FINAL_BIB):
 else:
     SKIPS.append("真实成品 reference.bib 不存在")
 
-# ══ ⑥ 英文作者名规范：SURNAME Given → Given Surname（期90/05 Beibei_Gao）════
+# ══ ⑥ 英文作者名规范：SURNAME Given → Given Surname（期90/05 Xiaoyu_Lin）════
 
 # ── ⑤b B-217②：中文学位论文（编号清单 → entry_to_bib 防御性补齐）────────────
 _bib_phd = entry_to_bib("Wu2009", {"_type": "phdthesis", "author": "吴梅红",
@@ -379,15 +379,15 @@ check("⑤b _TYPE_ORDER 含 phdthesis/mastersthesis/thesis（不再降级 @misc�
       if _fn_mod is not None else True)
 
 from slcn.naming import normalize_english_author  # noqa: E402
-check("⑥ GAO Bei-bei（有中文名 高贝贝）→ Beibei Gao",
-      normalize_english_author("GAO Bei-bei", "高贝贝") == "Beibei Gao",
-      normalize_english_author("GAO Bei-bei", "高贝贝"))
+check("⑥ LIN Xiao-yu（有中文名 林小雨）→ Xiaoyu Lin",
+      normalize_english_author("LIN Xiao-yu", "林小雨") == "Xiaoyu Lin",
+      normalize_english_author("LIN Xiao-yu", "林小雨"))
 check("⑥ 无中文名时交换顺序、保留常规连字符",
       normalize_english_author("SMITH John", "") == "John Smith",
       normalize_english_author("SMITH John", ""))
 check("⑥ 已是 Given Surname 的写法原样返回",
-      normalize_english_author("Beibei Gao", "高贝贝") == "Beibei Gao",
-      normalize_english_author("Beibei Gao", "高贝贝"))
+      normalize_english_author("Xiaoyu Lin", "林小雨") == "Xiaoyu Lin",
+      normalize_english_author("Xiaoyu Lin", "林小雨"))
 
 print(f"\n{'=' * 66}")
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")

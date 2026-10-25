@@ -118,7 +118,7 @@ with tempfile.TemporaryDirectory(prefix="batch45_bib_") as tmp:
     with open(tex_path, "w", encoding="utf-8") as fh:
         fh.write(r"""\documentclass{article}
 \begin{document}
-雅辛\parencite{Yalcin2007, p985}认为……[1] 还有编号引用 [12]。
+示例\parencite{Yalcin2007, p985}认为……[1] 还有编号引用 [12]。
 \end{document}
 """)
     r = run_checkbib("--returned", bib_path, "--tex", tex_path)

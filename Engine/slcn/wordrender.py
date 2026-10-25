@@ -126,7 +126,7 @@ def table_env(tbl, idx: int, img_names: dict[str, str] | None = None,
               caption: str | None = None) -> str:
     """把 Word 表格转成 LaTeX table + tabular。
 
-    格式对齐人工成品惯例（见 Haiting_Huang / Yingying_Tang）：
+    格式对齐人工成品惯例（见 Jingyi_Wu / Xiaoqing_Su）：
         \\begin{table}[htbp]
           \\centering
           \\begin{tabular}{|c|c|c|}
@@ -274,7 +274,7 @@ def render_cell(cell, img_names: dict[str, str] | None = None,
 
 
 def figure_env(names: list[str], idx: int, caption: str | None = None) -> str:
-    """生成 figure 环境。人工惯例见 07 Liangying_Zhao。
+    """生成 figure 环境。人工惯例见 07 Jiayi_He。
 
     同一段落里连续的图片**合成一个 figure**——实测 01 Yanjin_Chen 的 docx 里有
     5 张分开的图，人工是把它们合成一张 `p1.png` 放进一个 figure 的。
@@ -378,7 +378,7 @@ def render_para(
     # 不能再作为普通脚注输出一遍。
     plain = "".join(sg.text for sg in para.segs if sg.kind == "text")
     # 提升判据（满足其一即可）：① 够长；② 含 ≥2 个句末标点（完整陈述）。
-    # ⚠️ 这里先前只判长度，于是 Bo_Chen 那段 92 字、含 3 个「。」的引文
+    # ⚠️ 这里先前只判长度，于是 Lei_Li 那段 92 字、含 3 个「。」的引文
     #    （人工放进了 quotation 环境）被漏掉了。
     #   注：slcn/quotations.py 里的 hoist_quotes() 也有一套判据，但**全项目无人调用**，
     #   是死代码；真正生效的是下面这一行。两处判据要一起改，别只改一处。

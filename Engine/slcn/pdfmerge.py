@@ -10,8 +10,8 @@ Windows 用 PyPDF2（上游 `merge.py`）。要做 Windows 版就必须**只留�
 
   · 扉页 `扉页.pdf` 只追加页面、**不导入它自带的大纲**，然后登记顶层书签 `cover`（指向第 0 页）；
   · `000…/Chinese Content.pdf` → 书签 `Chinese Content`；`000…/contents.pdf` → 书签 `contents`；
-  · 其余 `NN <名字>` 目录 → 用**目录名最后一段**（如 `03 Liang_Zhang` → `Liang_Zhang`）
-    去找 `Liang_Zhang.pdf`；**找不到就宽松匹配**（`Chen Liu.pdf` 这种下划线写成空格的情况，
+  · 其余 `NN <名字>` 目录 → 用**目录名最后一段**（如 `03 Jie_Zhou` → `Jie_Zhou`）
+    去找 `Jie_Zhou.pdf`；**找不到就宽松匹配**（`Chen Liu.pdf` 这种下划线写成空格的情况，
     上游原版会整篇跳过且不报错 —— 实测丢过 33 页）；
   · 编委页 / 封底：**只追加页面、不导入大纲**（实测`cneditors[260113]左移.pdf` 自带一个叫
     「Chinese Content」的陈旧书签，导进来会出现两个同名书签指向不同页），书签名分别是 `编委页` / `封底`；
@@ -36,7 +36,7 @@ if TYPE_CHECKING:                       # 只在类型检查时可见
 #    实测（2026-10-17）：`toc --preview` 0.07→0.03 s、`compileall --dry-run` 0.07→0.03 s，
 #    **产物与 stdout 逐字节相同**。`infocheck` 自己早就是就地 import 的写法（同一口径）。
 
-#: 一期的期目录下，形如 `01 Liang_Zhang` / `000 目录` 的子目录
+#: 一期的期目录下，形如 `01 Jie_Zhou` / `000 目录` 的子目录
 _NUMBERED = re.compile(r"^[0-9][0-9]")
 
 #: 工具箱自己生成的合并文件，找编委页/封底时要排除
@@ -73,7 +73,7 @@ def loose_key(name: str) -> str:
 
 
 def article_name(folder_name: str) -> str:
-    """`03 Liang_Zhang` → `Liang_Zhang`（取目录名最后一段）。"""
+    """`03 Jie_Zhou` → `Jie_Zhou`（取目录名最后一段）。"""
     parts = folder_name.split()
     return parts[-1] if parts else folder_name
 

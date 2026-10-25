@@ -25,7 +25,7 @@ r"""批量实例测试驱动 `tools/batch_case_test.py`（Phase1，2026-10-18，
     # 只跑期 90 十篇（风险前置）；期 87 九篇后跑
     ... --issues 90 --out /tmp/batch_case_test/run90
 
-    # 单案例（05 Beibei_Gao 精确回归）
+    # 单案例（05 Xiaoyu_Lin 精确回归）
     ... --case 90/05 --out /tmp/batch_case_test/beibei
 
     # 关闭 manifest 附加源（模拟「只靠引擎通用发现」的 A2-only 口径；期 90/03 对照用）
@@ -54,14 +54,14 @@ manifest（`--manifest file.json`，可选；缺省用内置期 87/90 清单，�
       {"key": "88-01", "issue": "88", "author": "Tuomo_Aho",
        "author_dir": "Tuomo_Aho", "workspace": "/abs/path/macCaseTest88",
        "source": "Tuomo_Aho/xxx.docx",        # 省略=在工作区按规则自动发现
-       "metadata": "yalcin puzzle.tex",       # 可选：附加源（convert.py --metadata）
+       "metadata": "example puzzle.tex",       # 可选：附加源（convert.py --metadata）
        "manual_dir": "01 Tuomo_Aho",          # 相对稿件仓期目录；省略=不做人工对照
        "manual_bib": "reference.bib", "extra_args": []}
     ]}
 
 **附加源（`metadata`）判据**：LaTeX 多文件稿常把「正文片段」和「模板/宏定义」分成两个 `.tex`
-（如期 90/03：`main.tex` 是纯正文片段，作者宏 `\\val/\\e/\\A` 定义在同目录 `yalcin puzzle.tex:224`；
-`convert.py` 的标准用法是 `--source main.tex --metadata "yalcin puzzle.tex"`）。manifest 的
+（如期 90/03：`main.tex` 是纯正文片段，作者宏 `\\val/\\e/\\A` 定义在同目录 `example puzzle.tex:224`；
+`convert.py` 的标准用法是 `--source main.tex --metadata "example puzzle.tex"`）。manifest 的
 `metadata` 字段就是给这类稿准备的：**非空** → 命令追加 `--metadata <解析到的绝对路径>`；
 解析顺序 = 绝对路径直接用 → 工作区根 → 作者目录 → 源文件所在目录；
 **文件不存在 → 安全回退**：不传 `--metadata`、在 metrics/报告里写醒目 note（不阻断案例、不静默）；
@@ -259,18 +259,69 @@ class CaseSpec:
         }
 
 
+def _discover_issue_papers(issue_code: str) -> dict[str, str]:
+    """从稿件仓发现某期的论文目录：{篇序号: 目录名}；无稿件库 → {}（B-232）。
+
+    公开仓不得硬编码真实作者名，期 90 的十篇按「期号+篇序号」在运行时发现；
+    没有稿件库（CI/公开仓）时回落为 `Paper<篇序号>` 占位，真实运行才有真实目录名。
+    """
+    try:
+        from slcn import paths as _paths
+        root = _paths.manuscripts_root()
+    except Exception:  # pragma: no cover - 引擎缺失时 self-test 另有报错
+        root = None
+    issue_name = MANUAL_ROOTS.get(issue_code)
+    if not root or not issue_name:
+        return {}
+    issue_dir = Path(root) / issue_name
+    if not issue_dir.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for p in sorted(issue_dir.iterdir()):
+        m = re.match(r"^(\d{2}) ", p.name)
+        if m and p.is_dir():
+            out[m.group(1)] = p.name
+    return out
+
+
+def _discover_meta_tex(issue_code: str, no: str) -> str:
+    """发现「正文片段之外」的模板/前言 .tex 文件名（期 90/03 的 additional source）。
+
+    返回**文件名**（CaseSpec.metadata 的解析顺序支持按源文件目录找）；找不到 → ""。
+    """
+    try:
+        from slcn import paths as _paths
+        root = _paths.manuscripts_root()
+    except Exception:  # pragma: no cover
+        root = None
+    issue_name = MANUAL_ROOTS.get(issue_code)
+    if not root or not issue_name:
+        return ""
+    dirs = sorted(d for d in (Path(root) / issue_name).glob(no + " *") if d.is_dir())
+    if not dirs:
+        return ""
+    orig = dirs[0] / "original"          # 只在 original/ 下找（paper 根可能有多轮产物 .tex）
+    for tex in sorted(orig.glob("**/*.tex")):
+        if tex.name != "main.tex":
+            return tex.name
+    return ""
+
+
 def default_cases() -> list[CaseSpec]:
     """内置清单：期 90（10 篇）在前、期 87 子案例 1–9 在后。"""
     cases: list[CaseSpec] = []
-    for no, author in (
-        ("01", "Jingru_Kou"), ("02", "Zixin_Luo"), ("03", "Liang_Zhang"),
-        ("04", "Haiting_Huang"), ("05", "Beibei_Gao"), ("06", "Yingying_Tang"),
-        ("07", "Liangying_Zhao"), ("08", "Yanlin_Liao"), ("09", "Jiawei_Chu"),
-        ("10", "Bo_Chen"),
-    ):
-        extra = {"metadata": "yalcin puzzle.tex"} if no == "03" else {}
+    _disc90 = _discover_issue_papers("90")          # 作者目录名运行时发现（B-232）
+    for no in ("01", "02", "03", "04", "05", "06", "07", "08", "09", "10"):
+        dirname = _disc90.get(no, "")
+        author = dirname.split(" ", 1)[1] if " " in dirname else f"Paper{no}"
+        manual_dir = dirname or f"{no} {author}"
+        extra: dict[str, str] = {}
+        if no == "03":
+            meta = _discover_meta_tex("90", "03")
+            if meta:
+                extra = {"metadata": meta}
         cases.append(CaseSpec(key=f"90-{no}", issue="90", author=author,
-                              author_dir=author, manual_dir=f"{no} {author}", **extra))
+                              author_dir=author, manual_dir=manual_dir, **extra))
     for sub, (no, author) in enumerate((
         ("02", "Kun_Xing"), ("03", "Wenjing_Du"), ("04", "Fayang_Ye"),
         ("05", "Pengfei_Song"), ("06", "Ruixue_Tang"), ("07", "Guangwu_Feng"),
@@ -2443,7 +2494,7 @@ def render_report(run: dict) -> str:
                      f"（key = 人工+生成 tex sha + 口径；文件 `{_sc.get('path')}`）")
     if run.get("metadata_disabled"):
         lines.append("- **A2-only 口径**：`--no-metadata` 已启用——manifest 的附加源（如 90-03 的 "
-                     "`yalcin puzzle.tex`）**不传给** `convert.py`，用于单独评估引擎通用发现规则；"
+                     "`example puzzle.tex`）**不传给** `convert.py`，用于单独评估引擎通用发现规则；"
                      "若引擎修复不到会退回旧行为（rc=2 等），属预期。")
     lines.append("")
     lines.append("## 2. 确定性（两遍 sha256）")
@@ -3199,7 +3250,7 @@ def run_self_test() -> int:
               for r in l3_attribution(
                   dict(clean, l1={**clean_l1, "ref_titles_n": 20}),
                   {**man, "bib_entries": 21,
-                   "bib_titles": ["T", "Chen2015"]})))
+                   "bib_titles": ["T", "Li2015"]})))
     check("L3：CJK 译名 bib key 差异只报告（转 backlog B-120，不判 P1）",
           any(r["code"] == "BIB_KEY_INFO" and r["level"] is None
               for r in l3_attribution(
@@ -3280,18 +3331,18 @@ def run_self_test() -> int:
           and SECTION_DIFF_INFO_LEVEL == "P2")
 
     d3 = next(c for c in default_cases() if c.key == "90-03")
-    check("90-03 manifest 声明附加源 metadata=yalcin puzzle.tex",
-          d3.metadata == "yalcin puzzle.tex"
+    check("90-03 manifest 声明附加源 metadata=example puzzle.tex",
+          d3.metadata == "example puzzle.tex"
           and sum(1 for c in default_cases() if c.metadata) == 1)
     with tempfile.TemporaryDirectory(prefix="slcn_selftest_") as td:
         ws = Path(td)
-        (ws / "Liang_Zhang").mkdir(parents=True, exist_ok=True)
-        meta = ws / "Liang_Zhang" / "yalcin puzzle.tex"
+        (ws / "Jie_Zhou").mkdir(parents=True, exist_ok=True)
+        meta = ws / "Jie_Zhou" / "example puzzle.tex"
         meta.write_text("\\documentclass{x}", encoding="utf-8")
-        src = ws / "Liang_Zhang" / "main.tex"
+        src = ws / "Jie_Zhou" / "main.tex"
         src.write_text("body", encoding="utf-8")
-        spec3 = CaseSpec(key="t-90-03", issue="90", author="Liang_Zhang",
-                         author_dir="Liang_Zhang", metadata="yalcin puzzle.tex")
+        spec3 = CaseSpec(key="t-90-03", issue="90", author="Jie_Zhou",
+                         author_dir="Jie_Zhou", metadata="example puzzle.tex")
         args, info = convert_common_args(spec3, src, ws / "out", ws)
         check("附加源：文件存在 → 命令含 --metadata <绝对路径>",
               "--metadata" in args and args[args.index("--metadata") + 1] == str(meta)
@@ -3455,7 +3506,7 @@ def run_self_test() -> int:
           and "议论性脚注不产源引用键" in _rep)
     check("输出名 sanitize / sha 判定 / 零付费判定（失败案例不算违规）",
           sanitize_output_name("Liwu Rong") == "Liwu_Rong"
-          and sanitize_output_name("Bo_Chen") == "Bo_Chen"
+          and sanitize_output_name("Lei_Li") == "Lei_Li"
           and sanitize_output_name("1st Case") == "A_1st_Case"
           and sha_verdict(0, True, True, {"tex": "a", "bib": "b"}, {"tex": "a", "bib": "b"}) is True
           and sha_verdict(2, False, False, {}, {}) is None
@@ -3546,7 +3597,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--issues", default="",
                     help="只跑这些期（逗号分隔；默认 90,87,88,89）")
     ap.add_argument("--case", default="",
-                    help="只跑一个案例：`90/05` 或 `87-3` 或作者名（如 Beibei_Gao）")
+                    help="只跑一个案例：`90/05` 或 `87-3` 或作者名（如 Xiaoyu_Lin）")
     ap.add_argument("--workspace", action="append", metavar="ISSUE=DIR",
                     help="覆盖工作区路径（可重复），如 --workspace 90=/path/macCaseTest")
     ap.add_argument("--manifest", default="",

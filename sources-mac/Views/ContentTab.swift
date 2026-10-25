@@ -3,7 +3,7 @@ import AppKit
 
 /// 栏目勾选列表里的一行
 struct TocArticleRow: Identifiable {
-    let id: String            // 报告里的文章名，如 "Jingru_Kou"
+    let id: String            // 报告里的文章名，如 "Meimei_Han"
     let title: String
     var selected: Bool
 }
@@ -223,7 +223,7 @@ struct ContentTab: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 240)
                     Text("主持人").font(.callout)
-                    TextField("如：张建军", text: $model.settings.columnHost)
+                    TextField("如：郑建国", text: $model.settings.columnHost)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 120)
                 }

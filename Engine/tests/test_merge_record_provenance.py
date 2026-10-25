@@ -7,7 +7,7 @@ r"""第 79 条（AI 结果并入 bib 的**合并记录漏记**）的判据测试
     在留档里看不见。现在逐条记，形态与既有
     `- 说明：条目上方保留的 AI 注释：…` **完全一致**；
   · 缺陷 B：AI 新增/改动的字段与**它自己写的** `% ⚠ 待核实` 注释自相矛盾
-    （`ChenBo2022`：注释写「volume…暂缺」，字段却新增了 `volume = {15}`）→ 现在给一条
+    （`LiLei2022`：注释写「volume…暂缺」，字段却新增了 `volume = {15}`）→ 现在给一条
     ⚠️ 警告。**只报不改**：字段、注释、四条硬保障、`n_merged` / `n_skipped` 口径全不动。
 
 五组断言：
@@ -18,10 +18,10 @@ r"""第 79 条（AI 结果并入 bib 的**合并记录漏记**）的判据测试
      （字段名只写在括号里不算点名；`booktitle` 不会被当成 `title`；大小写不敏感；
      不设 `bibcheck.REQUIRED` 白名单，`userf` 这类本条真实字段也认）；
   ③ 四条硬保障与 `n_merged` / `n_skipped` 口径**不受影响**（回归）；
-  ④ **真实产物重放**（`~/Desktop/Bo_Chen/`，可用 `SLCN_BO_CHEN_DIR` 换位置；只读）：拿任务书
+  ④ **真实产物重放**（`~/Desktop/Lei_Li/`，可用 `SLCN_BO_CHEN_DIR` 换位置；只读）：拿任务书
      `# AI 建议` 段当 replies 喂 `aibib.merge()`，再 `render_merge_section()`：
      ① 记录里出现 25 条「来源」说明（20 条带 http URL、5 条无 URL）；
-     ② `ChenBo2022` 那条出现⚠️矛盾警告；③ 生成的 bib 与 `reference.bib`
+     ② `LiLei2022` 那条出现⚠️矛盾警告；③ 生成的 bib 与 `reference.bib`
      **逐字节相同**（证明改动只动了记录文本、没动合并结果）；
   ⑤ 替换边界没被「来源」污染：拿同一批 replies 把合并后的 `reference.bib` **再并一遍**，
      逐字节幂等、文件头注释不被切坏——这是「`来源` 只进记账表
@@ -50,10 +50,10 @@ from slcn.bibparse import parse_entries  # noqa: E402
 FAILS = []
 SKIPS = []
 
-#: 真实产物（`2024年第6期(79)/10 Bo_Chen` 那一轮真稿实跑的留档）——**只读**。
+#: 真实产物（`2024年第6期(79)/10 Lei_Li` 那一轮真稿实跑的留档）——**只读**。
 # 这是**外部**目录（用户在桌面上真跑 GUI 的产物），不在仓库里，所以不可能写成相对路径。
 # 用环境变量 `SLCN_BO_CHEN_DIR` 指到别处；目录不在就整组 SKIP（见下面 `skip("④ …")`）。
-BO_CHEN = os.environ.get("SLCN_BO_CHEN_DIR", os.path.expanduser("~/Desktop/Bo_Chen"))
+BO_CHEN = os.environ.get("SLCN_BO_CHEN_DIR", os.path.expanduser("~/Desktop/Lei_Li"))
 
 
 def check(name, cond, detail=""):
@@ -399,7 +399,7 @@ check("③ 保障④：`% 来源` 进记录**不会**让 diff 多出字段（记
 
 # ── ④ 真实产物重放（只读）──────────────────────────────────────────────
 
-print("\n── ④ 真实产物重放：Bo_Chen 那一轮的《文献核实.md》→ merge() → 记录 ──")
+print("\n── ④ 真实产物重放：Lei_Li 那一轮的《文献核实.md》→ merge() → 记录 ──")
 
 AI_HEAD = "# AI 建议"
 REC_HEAD = "## 六、合并记录"
@@ -418,12 +418,12 @@ def replies_from_taskbook(md_text):
     return out
 
 
-_md_p = os.path.join(BO_CHEN, "Bo_Chen_文献核实.md")
+_md_p = os.path.join(BO_CHEN, "Lei_Li_文献核实.md")
 _bib_p = os.path.join(BO_CHEN, "reference.bib")
 _pre_p = os.path.join(BO_CHEN, "reference.bib.ai前")
 if not (os.path.isfile(_md_p) and os.path.isfile(_bib_p) and os.path.isfile(_pre_p)):
     skip("④ 真实产物重放", f"跑不了：{BO_CHEN} 里缺 "
-                           "Bo_Chen_文献核实.md / reference.bib / reference.bib.ai前")
+                           "Lei_Li_文献核实.md / reference.bib / reference.bib.ai前")
 else:
     _md = open(_md_p, encoding="utf-8").read()
     _pre = open(_pre_p, encoding="utf-8").read()
@@ -439,7 +439,7 @@ else:
           f"replies={N} → 并入 {_res.n_merged} / 跳过 {_res.n_skipped}")
 
     # ⚠️ 这一组**不许写死 25 / 20 / 5 这类绝对数字**：它读的是
-    # `~/Desktop/Bo_Chen/`（用户真跑 GUI 的产物目录；可用 SLCN_BO_CHEN_DIR 换），
+    # `~/Desktop/Lei_Li/`（用户真跑 GUI 的产物目录；可用 SLCN_BO_CHEN_DIR 换），
     # 用户**再跑一次**就换了一批数据，写死会让测试无端变红。
     # 断言一律改成「记录与产物之间的数量关系」，判据照样有牙齿。
     # （2026-10-15 实测踩到：第一次交付时写死 25，用户第二次跑 GUI 后 9 项全红。）

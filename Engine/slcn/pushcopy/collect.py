@@ -426,7 +426,7 @@ def _column_articles_from_settings(issue_dir: str) -> set[str]:
         if not name:
             continue
         out.add(name)
-        m = re.match(r"^\d+\s+(.+)$", name)      # "01 Jingru_Kou" → "Jingru_Kou"
+        m = re.match(r"^\d+\s+(.+)$", name)      # "01 Meimei_Han" → "Meimei_Han"
         if m:
             out.add(m.group(1).strip())
     return out

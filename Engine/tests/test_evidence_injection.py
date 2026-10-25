@@ -51,14 +51,14 @@ def check(name, cond, detail=""):
 
 # ══ (a) 提示词注入 ═════════════════════════════════════════════════════════
 print("── (a) 逐条提示词注入证据 ──")
-BODY = "  author = {高贝贝},\n  title  = {极小主义视域下的真谓词},\n  year   = {2021}"
-one_plain = refmark.entry_prompt("article", "Gao2021", BODY)
+BODY = "  author = {林小雨},\n  title  = {极小主义视域下的真谓词},\n  year   = {2021}"
+one_plain = refmark.entry_prompt("article", "Lin2021", BODY)
 check("(a) 默认（无证据/无原文/无检索）与 P1 之前逐字节相同",
-      one_plain == ('@article{Gao2021,\nauthor = {高贝贝},\n  title  = {极小主义视域下的真谓词},\n'
+      one_plain == ('@article{Lin2021,\nauthor = {林小雨},\n  title  = {极小主义视域下的真谓词},\n'
                     '  year   = {2021}}'),
       repr(one_plain))
 check("(a) 显式 evidence=None 与不传参数逐字节相同",
-      refmark.entry_prompt("article", "Gao2021", BODY, evidence=None) == one_plain)
+      refmark.entry_prompt("article", "Lin2021", BODY, evidence=None) == one_plain)
 
 PACK = {
     "verdict": "evidence", "score": 0.93, "queries": ['"极小主义视域下的真谓词"'],
@@ -70,7 +70,7 @@ PACK = {
              "site_name": "中山大学逻辑与认知研究所", "authority": 3, "score": 0.81}],
     "n_results": 5, "error": "",
 }
-p_ev = refmark.entry_prompt("article", "Gao2021", BODY, evidence=PACK)
+p_ev = refmark.entry_prompt("article", "Lin2021", BODY, evidence=PACK)
 check("(a) 有证据：提示词出现证据块与完整 URL（不截断，模型要照抄进 `% 来源：`）",
       refmark.EVIDENCE_PROMPT_HEADER in p_ev
       and "https://read.cnki.net/web/Journal/Article/LJXJ202104003.html" in p_ev
@@ -79,14 +79,14 @@ check("(a) 有证据：规则要求 URL 只能来自证据（防编造）",
       "不得编造" in p_ev and "% 来源" in p_ev)
 MISSING = {"verdict": "missing", "score": 0.0, "top": [],
            "queries": ['"某文"', "某文 2020"], "error": "HTTP 500"}
-p_mis = refmark.entry_prompt("article", "Gao2021", BODY, evidence=MISSING)
+p_mis = refmark.entry_prompt("article", "Lin2021", BODY, evidence=MISSING)
 check("(a) 未查到：明确「按查不到处理」+ 回显查询 + 检索错误（不许拿记忆补齐）",
       "未检索到" in p_mis and "查不到" in p_mis and '"某文"' in p_mis
       and "HTTP 500" in p_mis)
 check("(a) 有原文时证据块追加在原文之后（原文优先口径不变）",
-      refmark.entry_prompt("article", "Gao2021", BODY, raw="[1] 原文…",
+      refmark.entry_prompt("article", "Lin2021", BODY, raw="[1] 原文…",
                            evidence=PACK).index("源稿原文")
-      < refmark.entry_prompt("article", "Gao2021", BODY, raw="[1] 原文…",
+      < refmark.entry_prompt("article", "Lin2021", BODY, raw="[1] 原文…",
                              evidence=PACK).index("自动检索证据"))
 
 # ══ (b) `% 来源：` URL 白名单 ══════════════════════════════════════════════
@@ -140,11 +140,11 @@ URL_FAKE = "https://fake-journal.example.com/made-up"
 
 
 def _make_docx(dirpath: str) -> str:
-    paras = ["论证据注入的接线测试", "高贝贝", "摘要：测试。", "关键词：测试"]
+    paras = ["论证据注入的接线测试", "林小雨", "摘要：测试。", "关键词：测试"]
     paras += [f"正文第{i}段，讨论证据注入。" for i in range(12)]
     paras += ["参考文献",
-              "[1] 高贝贝，“极小主义视域下的真谓词”，逻辑学研究，2021年第4期，第27-36页。",
-              "[2] 张建军，逻辑悖论研究引论，北京：人民出版社，2014年。"]
+              "[1] 林小雨，“极小主义视域下的真谓词”，逻辑学研究，2021年第4期，第27-36页。",
+              "[2] 郑建国，逻辑悖论研究引论，北京：人民出版社，2014年。"]
     ps = "".join(f'<w:p><w:r><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>'
                  for t in paras)
     path = os.path.join(dirpath, "demo.docx")
@@ -158,8 +158,8 @@ class DualMock:
     """一个 server 同时扮 Search API（/v1/tools/search）与 chat（/chat/completions）。
 
     chat 的回复按提示词里的 key 决定：
-      · `Gao2021` → 带**有效** `% 来源：`（URL_A）+ 补全字段（应被并入）；
-      · `Zhang2014` → 带**编造** URL（应被白名单挡下，bib 原文不动）。
+      · `Lin2021` → 带**有效** `% 来源：`（URL_A）+ 补全字段（应被并入）；
+      · `Zheng2014` → 带**编造** URL（应被白名单挡下，bib 原文不动）。
     """
 
     def __init__(self):
@@ -174,11 +174,11 @@ class DualMock:
                 if self.path.endswith("/tools/search"):
                     q = body.get("query", "")
                     outer.search_prompts.append(q)
-                    if "极小主义" in q or "高贝贝" in q:
+                    if "极小主义" in q or "林小雨" in q:
                         rows = [{"title": "极小主义视域下的真谓词", "url": URL_A,
                                  "site_name": "知网", "authority": "4",
                                  "rerank_score": "1.95", "date": "2021-01-01",
-                                 "summary": "高贝贝 逻辑学研究 2021年第4期 第27-36页",
+                                 "summary": "林小雨 逻辑学研究 2021年第4期 第27-36页",
                                  "snippet": "", "content": ""}]
                     else:
                         rows = []
@@ -188,11 +188,11 @@ class DualMock:
                         (m.get("content") or "") for m in body.get("messages", [])
                         if m.get("role") == "user")
                     outer.chat_prompts.append(content)
-                    if "Gao2021" in content:
+                    if "Lin2021" in content:
                         reply = (
                             f"% 来源：{URL_A}\n"
-                            "@article{Gao2021,\n"
-                            "  author  = {高贝贝},\n"
+                            "@article{Lin2021,\n"
+                            "  author  = {林小雨},\n"
                             "  title   = {极小主义视域下的真谓词},\n"
                             "  journal = {逻辑学研究},\n"
                             "  number  = {4},\n"
@@ -202,8 +202,8 @@ class DualMock:
                     else:
                         reply = (
                             f"% 来源：{URL_FAKE}\n"
-                            "@book{Zhang2014,\n"
-                            "  author    = {张建军},\n"
+                            "@book{Zheng2014,\n"
+                            "  author    = {郑建国},\n"
                             "  title     = {逻辑悖论研究引论},\n"
                             "  publisher = {人民出版社},\n"
                             "  address   = {北京},\n"
@@ -248,7 +248,7 @@ else:
 
         def _run(out_dir: str, extra: list[str]) -> subprocess.CompletedProcess:
             # ⚠️ 第 129 条起 `--verify-refs` 会在默认引用库存在时自动查库；本套件量的是
-            #    「证据注入 + URL 白名单」，而合成稿里的条目（高贝贝 2021 / 陈波 2022 等）
+            #    「证据注入 + URL 白名单」，而合成稿里的条目（林小雨 2021 / 李雷 2022 等）
             #    在本机种子库里可能已核实 → 会被跳过 AI 调用，改变 prompt/合并记录断言。
             #    显式 `--no-bibdb` 把引用库钉死为关（引用库接入另有 test_bibdb_verify.py）。
             return subprocess.run(
@@ -271,16 +271,16 @@ else:
         check("(c) 逐条提示词里带证据块与证据 URL",
               all("自动检索证据" in p for p in mock.chat_prompts)
               and any(URL_A in p for p in mock.chat_prompts), str(mock.chat_prompts)[:200])
-        check("(c) 有效来源的条目被并入（Gao2021 的 journal/pages 进了 bib）",
+        check("(c) 有效来源的条目被并入（Lin2021 的 journal/pages 进了 bib）",
               "journal = {逻辑学研究}" in bib_txt and "pages" in bib_txt)
-        check("(c) 编造 URL 的条目被挡下（Zhang2014 仍是原样：没有 address 变更/来源行）",
+        check("(c) 编造 URL 的条目被挡下（Zheng2014 仍是原样：没有 address 变更/来源行）",
               "fake-journal.example.com" not in bib_txt
               and md.count("来源 URL") >= 0)
         check("(c) 任务书合并记录写明「未出现在本次检索结果」原因",
               "未出现在本次检索结果" in md and "换域名/换路径" in md, md[-400:])
         check("(c) 控制台打印白名单统计（通过/挡下）",
               "来源 URL 白名单" in r_on.stdout, r_on.stdout[-400:])
-        check("(c) 编造 URL 的条目原文逐字节未动（没有 address 被补进 Zhang2014）",
+        check("(c) 编造 URL 的条目原文逐字节未动（没有 address 被补进 Zheng2014）",
               "address   = {北京}" in bib_txt or "address    = {北京}" in bib_txt)
 
         # 默认不开检索：提示词里没有证据块（回归：默认零行为变化）

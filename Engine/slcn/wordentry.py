@@ -22,7 +22,7 @@ _REF_RE = re.compile(
 def parse_reference_line(line: str) -> RefEntry | None:
     """解析一条人年制参考文献，如：
     Quine, W V O. 1970. Philosophy of Logic[M]. Englewood: Prentice Hall.
-    陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.
+    李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.
     """
     s = re.sub(r"\s+", " ", line.strip())
     if len(s) < 8:
@@ -65,7 +65,7 @@ def parse_reference_line(line: str) -> RefEntry | None:
 
 #: 中文逗号风格（本刊作者来稿里极常见）：
 #:   `陈清泚，“论证研究的认知社会学路径”，《自然辩证法研究》，2020年第2期，第103–108页。`
-#:   `张建军，逻辑悖论研究引论，北京：人民出版社，2014年。`
+#:   `郑建国，逻辑悖论研究引论，北京：人民出版社，2014年。`
 #:   `王雪君、郭佳宏，“对‘意外考试’悖论的一种非确定论解释”，世界哲学，2022年第1期，第152-159页。`
 #: 特征：作者到第一个**中文逗号**，题名到第二个，年份在后面的部分。英文/GB 风格走上面的 `_REF_RE`。
 _REF_CN_RE = re.compile(
@@ -626,7 +626,7 @@ def _numbered_refs(
     条目形如 `(key, 字段 dict, 原文)`——与脚注文献那条通道**同形**，
     因此直接并进 `doc.bib_entries`，由 `footnotes.entry_to_bib` 写成 bib。
 
-    实测 09 Jiawei_Chu：文末 18 条全是这种体例，旧实现只认人年制（`作者. 年. …[J]. …`），
+    实测 09 Jiawei_Zhong：文末 18 条全是这种体例，旧实现只认人年制（`作者. 年. …[J]. …`），
     于是「参考文献 0 条」、bib 里一条都没有。
     """
     from . import footref
@@ -720,14 +720,14 @@ def _make_key_core(a: str, year: str, disambiguate: str = "") -> str | None:
             return f"{en}{year}{disambiguate}"
     m = re.match(r"^([\u4e00-\u9fff]{2,4})", a)
     if m:
-        # 中文姓名取**全拼音**：陈波 → ChenBo、刘靖贤 → LiuJingxian、哈瑞 → HaRui。
+        # 中文姓名取**全拼音**：李雷 → LiLei、刘靖贤 → LiuJingxian、哈瑞 → HaRui。
         # 早先只对姓查表、名留汉字，生成了 `Chen波2005` 这种混着中文的键
         # （BibLaTeX 虽能容忍，但难看且易出问题）。实测人工成品用的是全拼音。
         name = m.group(1)
         try:
             from .naming import chinese_to_folder
 
-            folder = chinese_to_folder(name)   # Bo_Chen
+            folder = chinese_to_folder(name)   # Lei_Li
             given_py, sur_py = folder.split("_", 1)
             return f"{sur_py}{given_py}{year}{disambiguate}"
         except Exception:  # noqa: BLE001  pypinyin 缺失时退回旧逻辑
@@ -758,7 +758,7 @@ def make_key(e: RefEntry, disambiguate: str = "") -> str:
     只好走兜底键。实测该篇 16 条、全库 5 篇共 39 条落到兜底。
 
     ⚠️ 顺序是「**先按原串判，判不出来再剥零宽重判**」，不是「先剥再判」：
-    只有这样才能保证**已经能分类的条目键逐字不变**（`ChenBo2005`、`Beall2006`、
+    只有这样才能保证**已经能分类的条目键逐字不变**（`LiLei2005`、`Beall2006`、
     `Xing1984` …）。逐字不变这条不变量是本缺陷的验收核心——先剥再判会顺手改掉
     「名字中间夹零宽」的条目：`'Jo\\ufeffhn Smith'` 今天走西文分支取到 `Jo2005`
     （`re.match` 在零宽处截断），先剥再判会变成 `John2005`。
@@ -1160,7 +1160,7 @@ def _extract_publisher(rest: str) -> str:
 #
 # `[C]//` 是 GB/T 7714 的「析出文献」形态：
 #     析出文献主要责任者. 析出文献题名[C]// 专著主要责任者. 专著题名[M]. 出版地: 出版者, 年: 页.
-# 实测（2026年第5期(90)/10 Bo_Chen）：
+# 实测（2026年第5期(90)/10 Lei_Li）：
 #     塔斯基. 2019. 真理的语义概念和语义学的基础[C]// 马蒂尼奇. 语言哲学[M]. 牟博, 译. 北京: 商务印书馆.
 # 解析器把 rest 拿全了（`马蒂尼奇. 语言哲学[M]. 牟博, 译. 北京: 商务印书馆.`），
 # 旧字段表却从来没有 booktitle/editor，而 address/publisher 又被 `etype == "book"` 挡住

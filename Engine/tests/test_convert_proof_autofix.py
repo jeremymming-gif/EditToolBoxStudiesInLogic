@@ -372,6 +372,15 @@ finally:
     except OSError:
         pass
 
+def _issue_paper(issue_name: str, no: str) -> str:
+    """按期目录名 + 篇序号发现来稿目录（不硬编码真实作者名；B-232）。"""
+    if _manuscripts is None:
+        return ""
+    import glob as _glob
+    hits = sorted(_glob.glob(os.path.join(_manuscripts, issue_name, no + " *")))
+    return next((h for h in hits if os.path.isdir(h)), "")
+
+
 # ⑨-2 真实稿 pin（期90/87 的 P0-B 案例；无稿件库时 SKIP）
 if _manuscripts is not None:
     import slcn.sources as _sources
@@ -380,14 +389,14 @@ if _manuscripts is not None:
     # 清单序号后正文 `[n]` → `\parencite`，「bib>0 但 0 引用」的 B 类提示不应再出现；
     # 其余 3 例（90-06 脚注引注、87-5/87-7 无编号清单）口径不变。
     _REAL_B_CASES = (
-        ("2026年第5期(90)", "04 Haiting_Huang", False, "90-04（B-022 后已有 \\parencite）"),
-        ("2026年第5期(90)", "06 Yingying_Tang", False, "90-06 脚注引注路径（有 30 处引用）"),
-        ("2026年第5期(90)", "08 Yanlin_Liao", False, "90-08（B-022 后已有 \\parencite）"),
-        ("2026年第2期(87)", "06 Ruixue_Tang", True, "87-5"),
-        ("2026年第2期(87)", "08 Ran_Ren", True, "87-7"),
+        ("2026年第5期(90)", "04", False, "90-04（B-022 后已有 \\parencite）"),
+        ("2026年第5期(90)", "06", False, "90-06 脚注引注路径（有 30 处引用）"),
+        ("2026年第5期(90)", "08", False, "90-08（B-022 后已有 \\parencite）"),
+        ("2026年第2期(87)", "06", True, "87-5"),
+        ("2026年第2期(87)", "08", True, "87-7"),
     )
-    for _iss, _slug, _expect_b, _label in _REAL_B_CASES:
-        _rd = os.path.join(_manuscripts, _iss, _slug)
+    for _iss, _no, _expect_b, _label in _REAL_B_CASES:
+        _rd = _issue_paper(_iss, _no)
         if not os.path.isdir(_rd):
             print(f"SKIP  ⑨ 真实稿 {_label}（本机没有该稿）")
             continue
@@ -403,7 +412,7 @@ if _manuscripts is not None:
               repr((_got_b, _rb.log[:2])))
 
     # ⑨-3 真实稿产物 sha 不变（90-04：提示开/关逐字节相同）
-    _rd_b = os.path.join(_manuscripts, "2026年第5期(90)", "04 Haiting_Huang")
+    _rd_b = _issue_paper("2026年第5期(90)", "04")
     if os.path.isdir(_rd_b):
         _ssb2 = _sources.identify(_rd_b, verbose=False)
         if _ssb2.docx:

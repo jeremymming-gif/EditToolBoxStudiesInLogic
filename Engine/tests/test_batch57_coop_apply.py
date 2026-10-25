@@ -277,11 +277,11 @@ def test_meta_apply(tmp: str) -> None:
 # ── ③ FN 应用（unit）─────────────────────────────────────────────────────
 
 
-_FN_BIB = "@article{k1,\n  author = {陈波},\n  year = {2005},\n}\n@article{k2,\n  author = {李四},\n  year = {2021},\n}\n"
+_FN_BIB = "@article{k1,\n  author = {李雷},\n  year = {2005},\n}\n@article{k2,\n  author = {李四},\n  year = {2021},\n}\n"
 
 _FN_TEX = r"""\documentclass{article}
 \begin{document}
-正文一。\footnote{陈波 2005。}
+正文一。\footnote{李雷 2005。}
 正文二。\footnote{李四 2021，第21页。}
 重复锚点。\footnote{重复锚点}
 再来。\footnote{重复锚点}
@@ -293,7 +293,7 @@ def _fn_env(tmp: str, tag: str = "fn") -> tuple[str, str, list[dict]]:
     tp = _write(os.path.join(tmp, f"{tag}.tex"), _FN_TEX)
     bp = _write(os.path.join(tmp, f"{tag}.bib"), _FN_BIB)
     items = [
-        _item("FN-7", "footnote", evidence="陈波 2005", subkind="citation_unmatched",
+        _item("FN-7", "footnote", evidence="李雷 2005", subkind="citation_unmatched",
               target=".tex", fields=["note", "match_key"]),
         _item("FN-8", "footnote", evidence="李四 2021，第21页",
               subkind="citation_unmatched", target=".tex", fields=["note", "match_key"]),
@@ -316,7 +316,7 @@ def test_fn_apply(tmp: str) -> None:
     tex = _read(tp)
     check("③-1 citation_unmatched + 唯一锚点 → 脚注提升为 \\parencite",
           res["n_applied"] == 1 and "\\parencite{k1}" in tex
-          and "\\footnote{陈波 2005。}" not in tex)
+          and "\\footnote{李雷 2005。}" not in tex)
     check("③-2 改写后 `.ai前` 等于原文、applied 记 target/键",
           res["rollback_tex"] == tp + ".ai前" and _read(tp + ".ai前") == original
           and res["applied"][0].get("target") == ".tex"
@@ -500,12 +500,12 @@ def test_cli_e2e(tmp: str) -> None:
     tex_stage = os.path.join(stage, "San_Zhang.tex")
     pre_tex = _read(tex_stage)
     pre_bib = _read(os.path.join(stage, "reference.bib"))
-    fn_tex = pre_tex.replace("\\end{document}", "正文引用。\\footnote{陈波 2005。}\n\\end{document}")
+    fn_tex = pre_tex.replace("\\end{document}", "正文引用。\\footnote{李雷 2005。}\n\\end{document}")
     _write(tex_stage, fn_tex)
     st = json.load(open(st_path, encoding="utf-8"))
     st["low_confidence"].append({
         "id": "FN-7", "kind": "footnote", "title": "脚注 #7（citation_unmatched）",
-        "evidence": "陈波 2005", "need": "", "fields": ["note", "match_key"],
+        "evidence": "李雷 2005", "need": "", "fields": ["note", "match_key"],
         "key": "", "status": "pending", "subkind": "citation_unmatched",
         "target": ".tex", "macro": "", "current": ""})
     st["keys"]["low_confidence"].append("FN-7")
@@ -524,7 +524,7 @@ def test_cli_e2e(tmp: str) -> None:
                    f'{{"id":"{bib_item["id"]}","verdict":"corrected",'
                    f'"field":"year","value":"2020","span":"k1"}}\n'
                    '{"id":"FN-7","verdict":"corrected","field":"match_key",'
-                   '"value":"k2","locator":"21","span":"陈波 2005"}\n'
+                   '"value":"k2","locator":"21","span":"李雷 2005"}\n'
                    "```\n")
     p2 = _run(["--source", src, "--out", out, "--coop-replies", reply,
                "--no-original", "--coop-apply"])
@@ -536,7 +536,7 @@ def test_cli_e2e(tmp: str) -> None:
     check("⑤-4 META 写入最终 tex（myvolnumber=19、myfirstemail 占位被填）",
           fvals.get("myvolnumber") == "19" and "z@example.com" in fvals.get("myfirstemail", ""))
     check("⑤-5 FN 脚注提升为 \\parencite[21]{k2}",
-          "\\parencite[21]{k2}" in ftext and "\\footnote{陈波 2005。}" not in ftext)
+          "\\parencite[21]{k2}" in ftext and "\\footnote{李雷 2005。}" not in ftext)
     check("⑤-6 两处 `.ai前` 都随交付进最终目录",
           os.path.isfile(ftex + ".ai前")
           and os.path.isfile(os.path.join(final, "reference.bib.ai前")))

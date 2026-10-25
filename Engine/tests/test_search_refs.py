@@ -95,7 +95,7 @@ class FakeSearch:
                         {"title": "极小主义视域下的真谓词",
                          "url": "https://read.cnki.net/web/Journal/Article/LJXJ202104003.html",
                          "site_name": "知网", "authority": "4", "rerank_score": "1.95",
-                         "date": "2021-01-01", "summary": "高贝贝 逻辑学研究 2021年第4期 第27-36页",
+                         "date": "2021-01-01", "summary": "林小雨 逻辑学研究 2021年第4期 第27-36页",
                          "snippet": "", "content": ""},
                         {"title": "无关的候选 " + q[:6],
                          "url": "https://example.com/x", "site_name": "某站",
@@ -180,14 +180,14 @@ check("(b) 连续空白压成一个空格", search.clean_title("a   b\n c") == "
 check("(b) 中文作者取 2–5 字（亚里士多德不是 4 字截断）",
       search.author_tokens("亚里士多德（著），张竹明（译）") == ["亚里士多德"])
 check("(b) 体例标记/译者不算作者",
-      search.author_tokens("高贝贝") == ["高贝贝"]
+      search.author_tokens("林小雨") == ["林小雨"]
       and search.author_tokens("Beall, J. C. and Restall, G.") == ["Beall"])
 check("(b) 空作者 → 空列表（不因作者扣分）", search.author_tokens("") == [])
-_q = search.build_queries({"title": "“美诺悖论”", "author": "陈波",
+_q = search.build_queries({"title": "“美诺悖论”", "author": "李雷",
                            "year": "2020", "journal": "逻辑学研究"})
 check("(b) q1 只对题名加引号（精确短语）", _q[0] == '"美诺悖论"', str(_q))
 check("(b) q2 题名+作者+年份+刊名，整体不加引号",
-      _q[1] == "美诺悖论 陈波 2020 逻辑学研究", _q[1] if len(_q) > 1 else "(缺)")
+      _q[1] == "美诺悖论 李雷 2020 逻辑学研究", _q[1] if len(_q) > 1 else "(缺)")
 check("(b) 题名不可用 → 不构造 query（如实写未查到）",
       search.build_queries({"title": "   "}) == [])
 
@@ -201,10 +201,10 @@ check("(c) 知网/出版社/高校/百科/文库/搜索引擎各归其层",
        and search.domain_tier("https://www.taodocs.com/x")[0] == 0.3
        and search.domain_tier("https://www.baidu.com/s")[0] == 0.2
        and search.domain_tier("https://unknown.example/x")[0] == 0.2))
-_f = {"title": "极小主义视域下的真谓词", "author": "高贝贝", "year": "2021",
+_f = {"title": "极小主义视域下的真谓词", "author": "林小雨", "year": "2021",
       "journal": "逻辑学研究"}
 _good = {"title": "极小主义视域下的真谓词", "url": "https://read.cnki.net/x",
-         "summary": "高贝贝 逻辑学研究 2021年第4期 第27-36页"}
+         "summary": "林小雨 逻辑学研究 2021年第4期 第27-36页"}
 _bad = {"title": "完全无关的东西", "url": "https://high-authority.example/x",
         "summary": "authority 4 也没用"}
 _s_good = search.score_result(_f, _good)
@@ -265,24 +265,24 @@ print("\n── (e) 证据包 ──")
 fake = FakeSearch()
 try:
     bib = (
-        "@article{Gao2021,\n  author = {高贝贝}, title = {极小主义视域下的真谓词},\n"
+        "@article{Lin2021,\n  author = {林小雨}, title = {极小主义视域下的真谓词},\n"
         "  journal = {逻辑学研究}, year = {2021}, number = {4}, pages = {27--36}\n}\n"
-        "@book{Zhang2014,\n  author = {张建军}, title = {逻辑悖论研究引论},\n"
+        "@book{Zheng2014,\n  author = {郑建国}, title = {逻辑悖论研究引论},\n"
         "  publisher = {人民出版社}, address = {北京}, year = {2014}\n}\n"
     )
     c = search.SearchClient(fake.base, "k", sleep_fn=lambda s: None)
     logs = []
-    ev = search.gather_evidence(bib, ["Gao2021", "Zhang2014"], c, log=logs.append)
-    check("(e) 命中条目的判词与最佳分", ev["Gao2021"]["verdict"] == "evidence"
-          and ev["Gao2021"]["score"] >= 0.75, str(ev["Gao2021"]["score"]))
+    ev = search.gather_evidence(bib, ["Lin2021", "Zheng2014"], c, log=logs.append)
+    check("(e) 命中条目的判词与最佳分", ev["Lin2021"]["verdict"] == "evidence"
+          and ev["Lin2021"]["score"] >= 0.75, str(ev["Lin2021"]["score"]))
     check("(e) 命中后不再发第二条 query；未命中才补第二条（每条至多 2 次）",
-          len(ev["Gao2021"]["queries"]) == 1
-          and 1 <= len(ev["Zhang2014"]["queries"]) <= 2,
-          f"{ev['Gao2021']['queries']} | {ev['Zhang2014']['queries']}")
-    check("(e) 证据包带 top≤3、URL 与 authority", len(ev["Gao2021"]["top"]) <= 3
-          and ev["Gao2021"]["top"][0]["url"].startswith("https://read.cnki.net/")
-          and ev["Gao2021"]["top"][0]["authority"] == 4)
-    _allowed = ev["Gao2021"].get("allowed_urls") or []
+          len(ev["Lin2021"]["queries"]) == 1
+          and 1 <= len(ev["Zheng2014"]["queries"]) <= 2,
+          f"{ev['Lin2021']['queries']} | {ev['Zheng2014']['queries']}")
+    check("(e) 证据包带 top≤3、URL 与 authority", len(ev["Lin2021"]["top"]) <= 3
+          and ev["Lin2021"]["top"][0]["url"].startswith("https://read.cnki.net/")
+          and ev["Lin2021"]["top"][0]["authority"] == 4)
+    _allowed = ev["Lin2021"].get("allowed_urls") or []
     check("(e) 证据包另存「本次全部检索结果 URL」供白名单（含不在 top3 的结果）",
           isinstance(_allowed, list) and len(_allowed) >= 2
           and all(u.startswith("http") for u in _allowed)
@@ -296,21 +296,21 @@ try:
     fake2 = FakeSearch()
     fake2.results_for = lambda q: []
     c2 = search.SearchClient(fake2.base, "k", sleep_fn=lambda s: None)
-    ev2 = search.gather_evidence(bib, ["Gao2021"], c2)
+    ev2 = search.gather_evidence(bib, ["Lin2021"], c2)
     check("(e) 0 条结果 → missing，且依次试满两条 query",
-          ev2["Gao2021"]["verdict"] == "missing" and len(ev2["Gao2021"]["queries"]) == 2
-          and fake2.n_search == 2, f"{ev2['Gao2021']['queries']} n={fake2.n_search}")
+          ev2["Lin2021"]["verdict"] == "missing" and len(ev2["Lin2021"]["queries"]) == 2
+          and fake2.n_search == 2, f"{ev2['Lin2021']['queries']} n={fake2.n_search}")
     check("(e) missing 的证据包也带上用过的 query（回显给编辑）",
-          ev2["Gao2021"]["queries"][0].startswith('"'))
+          ev2["Lin2021"]["queries"][0].startswith('"'))
     fake2.close()
 
     fake3 = FakeSearch()
     fake3.fail_all = True
     c3 = search.SearchClient(fake3.base, "k", sleep_fn=lambda s: None)
-    ev3 = search.gather_evidence(bib, ["Gao2021"], c3)
+    ev3 = search.gather_evidence(bib, ["Lin2021"], c3)
     check("(e) 检索出错 → 仍返回 pack（missing + error），不抛异常阻断出稿",
-          ev3["Gao2021"]["verdict"] == "missing" and "HTTP" in ev3["Gao2021"]["error"],
-          ev3["Gao2021"]["error"][:60])
+          ev3["Lin2021"]["verdict"] == "missing" and "HTTP" in ev3["Lin2021"]["error"],
+          ev3["Lin2021"]["error"][:60])
     fake3.close()
 finally:
     fake.close()
@@ -318,7 +318,7 @@ finally:
 # ══ (f) 任务书渲染：有证据才出现；默认调用逐字节不变 ═══════════════════════
 print("\n── (f) 任务书渲染 ──")
 BIB = (
-    "@article{Gao2021,\n  author  = {高贝贝},\n  title   = {极小主义视域下的真谓词},\n"
+    "@article{Lin2021,\n  author  = {林小雨},\n  title   = {极小主义视域下的真谓词},\n"
     "  journal = {逻辑学研究},\n  number  = {4},\n  year    = {2021},\n  pages   = {27--36}\n}\n"
 )
 base_md = refmark.build(BIB, "demo")
@@ -333,16 +333,16 @@ pack = {
              "site_name": "知网", "authority": 4, "score": 0.93}],
     "queries": ['"极小主义视域下的真谓词"'], "n_results": 5, "error": "",
 }
-md = refmark.build(BIB, "demo", evidence={"Gao2021": pack},
+md = refmark.build(BIB, "demo", evidence={"Lin2021": pack},
                    evidence_note="### 本次检索证据（自动，DeepSeek Search API）\n\n> 测试统计。")
 check("(f) 有证据 → 出现「🔎 自动检索证据」与来源 URL 行",
       "🔎 **自动检索证据**" in md and "read.cnki.net" in md and "最佳匹配 0.93" in md)
-check("(f) 证据行出现在该条目块内（位于 `### \\`Gao2021\\`` 之后）",
-      md.index("🔎 **自动检索证据**") > md.index("### `Gao2021`"))
+check("(f) 证据行出现在该条目块内（位于 `### \\`Lin2021\\`` 之后）",
+      md.index("🔎 **自动检索证据**") > md.index("### `Lin2021`"))
 check("(f) 头部统计行写进任务书", "测试统计" in md)
 missing_pack = {"verdict": "missing", "score": 0.0, "top": [], "queries": ['"某文"', "某文 2020"],
                 "n_results": 0, "error": ""}
-md2 = refmark.build(BIB, "demo", evidence={"Gao2021": missing_pack})
+md2 = refmark.build(BIB, "demo", evidence={"Lin2021": missing_pack})
 check("(f) 未查到 → 渲染「未查到」并回显用过的 query",
       "**未查到**" in md2 and '"某文"' in md2 and "某文 2020" in md2)
 _extra = [ln for ln in md.splitlines() if ln not in base_md.splitlines()]
@@ -389,12 +389,12 @@ _W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 def _make_docx(dirpath: str) -> str:
     """只含 word/document.xml 的最小 docx（与 test_refmark_raw_refs.py 同法）。"""
-    paras = ["论检索证据的接线测试", "高贝贝", "摘要：本文测试检索证据。", "关键词：检索；证据"]
+    paras = ["论检索证据的接线测试", "林小雨", "摘要：本文测试检索证据。", "关键词：检索；证据"]
     paras += [f"正文第{i}段，讨论检索证据与参考文献核实。" for i in range(12)]
     paras += [
         "参考文献",
-        "[1] 高贝贝，“极小主义视域下的真谓词”，逻辑学研究，2021年第4期，第27-36页。",
-        "[2] 张建军，逻辑悖论研究引论，北京：人民出版社，2014年。",
+        "[1] 林小雨，“极小主义视域下的真谓词”，逻辑学研究，2021年第4期，第27-36页。",
+        "[2] 郑建国，逻辑悖论研究引论，北京：人民出版社，2014年。",
     ]
     ps = "".join(f'<w:p><w:r><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>'
                  for t in paras)

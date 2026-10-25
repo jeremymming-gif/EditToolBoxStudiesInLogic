@@ -57,7 +57,7 @@ def check(name: str, cond, detail="") -> bool:
 
 
 PUBLISHED = {"kind": bibdb.KIND_PUBLISHED, "issue": "2026年第5期(90)",
-             "slug": "08 Yanlin_Liao", "file": "reference.bib"}
+             "slug": "08 Lina_Ma", "file": "reference.bib"}
 
 _LIB_BIB = """@article{a8,
   author = {Benacerraf, P.},
@@ -102,8 +102,8 @@ _LIB_BIB = """@article{a8,
   title  = {Sanity and the Metaphysics of Responsibility},
   year   = {1987}
 }
-@article{Chen2018,
-  author    = {Chen, Bo},
+@article{Li2018,
+  author    = {Li, Lei},
   title     = {《论语》中的政治隐喻},
   year      = {2018},
   publisher = {中华书局}
@@ -252,10 +252,10 @@ m = _match({"title": "数理哲学导论", "author": "罗素", "year": "2010"},
 check("(b) 译著作者写法（稿「罗素」 vs 库「罗素（著） and 晏成书（译）」）→ safe",
       m["status"] == bibdb.HIT_SAFE and m["hit"] == "title-normalized"
       and m["record_key"] == "Russell2010-2", f"{m['status']}/{m['hit']}")
-m = _match({"title": "论语 中的政治隐喻", "author": "Chen, Bo", "year": "2018"},
+m = _match({"title": "论语 中的政治隐喻", "author": "Li, Lei", "year": "2018"},
            key="chen2018")
 check("(b) 书名号/全角标点差异 → safe（旧题名路径即可命中，或走归一）",
-      m["status"] == bibdb.HIT_SAFE and m["record_key"] == "Chen2018",
+      m["status"] == bibdb.HIT_SAFE and m["record_key"] == "Li2018",
       f"{m['status']}/{m['hit']}/{m['record_key']}")
 
 # ══ (c) 内容指纹一致（无题名 / 旧中文条目）══════════════════════════════════

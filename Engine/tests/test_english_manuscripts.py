@@ -139,9 +139,9 @@ check("④ 中文通道不受影响", "..." in r_zh.text and "\\ldots" not in r_
 # ⑤ 自己的 .bak 算自己的产物
 # ══════════════════════════════════════════════════════════════════════════
 check("⑤ `<产物>.<时间戳>.bak` 算自己的产物",
-      convert.is_own_product("Bo_Chen.tex.20261017-211835-551078.bak", "Bo_Chen"))
+      convert.is_own_product("Lei_Li.tex.20261017-211835-551078.bak", "Lei_Li"))
 check("⑤ 非本工具文件仍会被拦",
-      not convert.is_own_product("别人的稿子.docx", "Bo_Chen"))
+      not convert.is_own_product("别人的稿子.docx", "Lei_Li"))
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑥ 英文论述性脚注 → 纯注释
@@ -173,7 +173,7 @@ check("⑦ `et al.` 形式也能解析", _e2 is not None and _e2.year == "2014",
 # 反例：既有格式不能被抢
 _e3 = DS.parse_reference_line("Quine, W V O. 1970. Philosophy of Logic[M]. Englewood: Prentice Hall.")
 check("⑦ 既有 GB 英文格式不受影响（[M] 仍解析）", _e3 is not None and _e3.year == "1970")
-_e4 = DS.parse_reference_line("陈波. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.")
+_e4 = DS.parse_reference_line("李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50.")
 check("⑦ 中文条目不受影响", _e4 is not None and _e4.year == "2022")
 
 # ══════════════════════════════════════════════════════════════════════════

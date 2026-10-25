@@ -21,16 +21,16 @@ _HEAD2 = re.compile(r"^（[一二三四五六七八九十]+）\s*")
 # ⚠️ 同一篇稿子里「标题」和「列表项」长得很像，必须分开：
 #       [5]  '1 引言'                        ← 标题
 #       [19] '1. 尚未形成对论证行动完整生成过程的统一解释。三条径路…'  ← 列表项（带点 + 整句）
-#   实测 09 Jiawei_Chu：6 个节标题全是前者，旧规则只认「一、引言」那种老式编号，
+#   实测 09 Jiawei_Zhong：6 个节标题全是前者，旧规则只认「一、引言」那种老式编号，
 #   于是标题原样留在正文里，产物里**一个 \section 都没有**（人工成品有 6 个）。
-# ⚠️ 数字与标题之间**可以没有空格**：实测 2026_05_Jingru_Kou 写的是
-#    `1可知性悖论的逻辑结构与严格性问题`（`4  结语` 那种带空格的也有），
+# ⚠️ 数字与标题之间**可以没有空格**：实测 2026_05_Meimei_Han 写的是
+#    `1示例悖论的逻辑结构与严格性问题`（`4  结语` 那种带空格的也有），
 #    旧规则要求 `\s+`，于是 6 个节标题只认出 1 个。
 _HEAD_CN_ARABIC = re.compile(r"^\d{1,2}(?:\s+|(?=[\u4e00-\u9fff]))(?P<t>\S.*)$")
 # `N. 标题`（阿拉伯数字 + **点**）—— 与 `N 标题` 同族，只是编号后多一个点。
-# 实测 04 Bo_Chen：一篇 6 个小节全写成 `1. 莱布尼茨` / `5. 维特根斯坦`（人名小节），
+# 实测 04 Lei_Li：一篇 6 个小节全写成 `1. 莱布尼茨` / `5. 维特根斯坦`（人名小节），
 # 旧判据那一句 `rest[:1].isupper()` 是为英文 `1. Introduction` 写的，于是 6 个标题
-# 全留在正文里，产物**一个 \section 都没有**（人工成品 Bo_Chen.tex 里 6 个都是
+# 全留在正文里，产物**一个 \section 都没有**（人工成品 Lei_Li.tex 里 6 个都是
 # `\section` —— 所以它们是标题，不是正文里的名单）。
 # ⚠️ 点后必须直接是**汉字**：英文 `1. Introduction` 仍走 _HEAD_EN1，行为逐字不变；
 #    `N.M`（`2.2 标题`）也仍在 _HEAD_EN3 之前被挡住（点后是数字，这里不匹配）。
@@ -63,7 +63,7 @@ def _is_cn_dot_heading(t: str) -> bool:
     """`N. 中文标题` 的形态判据 —— **复用** `_is_cn_numbered_heading`，不另写一套。
 
     ⚠️ 这一层就是防「编号列表项被当成标题」的闸门。正文里与标题同形的列表项实测有：
-        `1. 尚未形成对论证行动完整生成过程的统一解释。三条径路…`（09 Jiawei_Chu）
+        `1. 尚未形成对论证行动完整生成过程的统一解释。三条径路…`（09 Jiawei_Zhong）
         `1.命题（宗）：“此山有火。”`（08 Ran_Ren 的因明五支）
         `1. 第一页第二段，提出周延问题的文献建议列出原始文献，…`（04 Yanjing_Zhang）
     它们全部被「2–40 字 + 无句读 + 不像 20 世纪」挡住——判据与 `N 标题` 那条路径
@@ -156,10 +156,10 @@ META_SCAN = 20
 
 # ── 副标题 / 文末中英元数据块 ─────────────────────────────────────────────
 #
-# 实测 09 Jiawei_Chu（2026年第5期）：原稿结构是
-#     0 论证行动如何生成？          ← 题名
-#     1 ——一个基于广义论证理论的生成模型 ← 副标题（另起一段！）
-#     2 鉏佳威                      ← 作者
+# 实测 09 Jiawei_Zhong（2026年第5期）：原稿结构是
+#     0 示例论证如何生成？          ← 题名
+#     1 ——一个基于示例论证理论的生成模型 ← 副标题（另起一段！）
+#     2 钟嘉伟                      ← 作者
 #     …
 #     96 参考文献 + 97–114 编号清单（`[N] 作者, 年, "题名", 刊名, 卷(期): 页`）
 #     115–119 英文题名/副题/作者/摘要/关键词   ← 在文末！
@@ -234,7 +234,7 @@ _EMAIL_TAIL_FALLBACK = 6
 #   ① 题目/作者附近独立一行：`浙江大学哲学学院`、`（兰州大学 哲学社会学院，兰州 730000）`
 #   ② 作者与单位同一行：`焦雯雯 中山大学哲学系`、`甘肃政法大学 卢俐利`
 #   ③ 文末中英元数据块（无标签）：`作者信息：周振忠 中山大学逻辑与认知研究所`
-#   ④ 脚注里的作者信息：`作者信息：黄海婷  南京大学哲学学院`、`Jingru Kou  College of …`
+#   ④ 脚注里的作者信息：`作者信息：吴静怡  南京大学哲学学院`、`Meimei Han  College of …`
 #
 # 精度优先（宁可 fail 不误判）：行内出现句号/分号/书名号/网址/日期/编号一律不算；
 # 中文行按标点分组、组内剔掉「人名」「城市+邮编」这类碎片；西文行只剥行首作者名。
@@ -352,7 +352,7 @@ def _clean_affil_line_strict(t: str) -> str:
       （兰州大学 哲学社会学院，兰州 730000） / 广东第二师范学院马克思主义学院 广州 510303
       焦雯雯 中山大学哲学系 / 甘肃政法大学 卢俐利 / 作者信息：周振忠 中山大学逻辑与认知研究所
       School of Philosophy and Social Development, Shandong University
-      Jingru Kou   College of Philosophy, Nankai University
+      Meimei Han   College of Philosophy, Nankai University
     实测量的反例（必须返回空串）：
       山西大学，2024年8月12-13日（会议信息，含日期）
       相关地址信息：For information, address State University of New York Press…网址：www…
@@ -398,17 +398,17 @@ def _clean_affil_line_strict(t: str) -> str:
 def _clean_affil_by_sentence(t: str) -> str:
     r"""stage ②（案例 75）：整行否掉后，按句切分 + 在**句内**取机构名。
 
-    缺陷（案例 75，2026_05_Bo_Chen 的 `word/footnotes.xml`）
+    缺陷（案例 75，2026_05_Lei_Li 的 `word/footnotes.xml`）
     ------------------------------------------------------
     源稿脚注里明明写着单位：
 
-        作者简介: 陈波，男，湖南常德人，武汉大学哲学系教授。电子邮箱：chen-bo@whu.edu.cn
+        作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。电子邮箱：li-lei@whu.edu.cn
 
     产物却写 `【未识别：第一作者单位，请手工填写】`。根因是 stage ① 的**整行连坐**，
     三道各自独立致命（已实测）：
-        `_clean_affil_line_strict('作者简介: 陈波，男，湖南常德人，武汉大学哲学系教授。电子邮箱：…')` → ''
-        `_clean_affil_line_strict('作者简介: 陈波，武汉大学哲学系')` → '武汉大学哲学系'  ← 去掉「男」就能解
-        `_clean_affil_line_strict('作者简介: 陈波，男，武汉大学哲学系')` → ''           ← 留着「男」就整行丢
+        `_clean_affil_line_strict('作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。电子邮箱：…')` → ''
+        `_clean_affil_line_strict('作者简介: 李雷，武汉大学哲学系')` → '武汉大学哲学系'  ← 去掉「男」就能解
+        `_clean_affil_line_strict('作者简介: 李雷，男，武汉大学哲学系')` → ''           ← 留着「男」就整行丢
     即：**是「能解但判据太严」，不是「没解析出来」。**
 
     判据（按 `，,。．；;、` 切句，逐句独立判定；句内任何一条不过就丢**这一句**，不连坐）
@@ -520,7 +520,7 @@ def _clean_affil_cjk(t: str) -> str:
 
 
 def _clean_affil_latin(t: str) -> str:
-    """西文行：剥掉行首的作者名（`Jingru Kou  College of …`），其余原样保留。"""
+    """西文行：剥掉行首的作者名（`Meimei Han  College of …`），其余原样保留。"""
     t = re.sub(r"^The\s+(?=[A-Z])", "", t)      # `The University of Hong Kong`
     words = t.split()
     n = 0
@@ -590,7 +590,7 @@ def _affil_lines_to_units(lines: list[str], names: list[str] | None = None) -> t
 def _strip_author_names(one: str, names: list[str]) -> str:
     """剥掉**粘在单位上的作者名**。
 
-    实测 2026_05_Zixin_Luo 原稿写的是 `雒自新西安交通大学马克思主义学院`
+    实测 2026_05_Lili_Zhao 原稿写的是 `赵丽丽西安交通大学马克思主义学院`
     （Word 里是两个 run，纯文本读出来没有分隔符），不剥会得到带人名的单位。
     只用**已知作者名**去剥（doc.author），所以不会误伤 `南开大学哲学院` 这种。
     """
@@ -614,7 +614,7 @@ def _affil_block_hits(lines: list[str], min_run: int = 2) -> list[str]:
 
     实测两类来路：① 英文摘要之后的作者信息块
     （2022_06A_Zhaoqing_Xu：`Xu Department of … / 邮箱 / Ouyang Department of … / 邮箱`）；
-    ② 脚注里的作者信息（`Jingru Kou  College of … / 邮箱 / …`）。
+    ② 脚注里的作者信息（`Meimei Han  College of … / 邮箱 / …`）。
     正文脚注里顺口提到某个大学不会形成这样的连续块，因此不会被误收。
     """
     out: list[str] = []
@@ -750,7 +750,7 @@ def collect_emails(plains: list[str], tail_start: int, fn_texts: list[str]) -> l
     其中 4 篇连标签都白写了）、11 篇在开头元数据区。
 
     ⚠️ 只扫这三段是**结构性防护**，不要为了多救几行放宽：
-      · 参考文献区（ref_start..tail_start）与正文中段不在任何一段里——01 Jingru_Kou
+      · 参考文献区（ref_start..tail_start）与正文中段不在任何一段里——01 Meimei_Han
         正文 9 处「现实世界 @」这种当符号用的 @ 因此不可达；
       · 表格（w:tbl）在 parse_docx 里就被滤掉、从不进 plains——04 Bo_Xianyu 表格
         单元格里的审稿人邮箱因此不可达；
@@ -822,7 +822,7 @@ def _title_with_break(title: str, subtitle: str) -> str:
 
 
 def _looks_like_person(t: str) -> bool:
-    """英文作者行：短、无句末标点、无逗号（`Jiawei Chu`）。"""
+    """英文作者行：短、无句末标点、无逗号（`Jiawei Zhong`）。"""
     return (
         0 < len(t) <= 40
         and not re.search(r"[.?!。？！:：]", t)
@@ -1003,7 +1003,7 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
     seg = [(i, t.strip()) for i, t in enumerate(lines) if i >= start and t.strip()]
 
     # ① 英文摘要 / 英文关键词（内容判据同开头那套：只看有没有汉字）
-    # ⚠️ 标签可能**独占一段**（实测 2026_05_Jingru_Kou：`[111]` 只有 `Abstract`，
+    # ⚠️ 标签可能**独占一段**（实测 2026_05_Meimei_Han：`[111]` 只有 `Abstract`，
     #    正文在下一段），这时取下一段的正文，别把模板占位符 `Abstract` 留在产物里。
     for pos, (_i, t) in enumerate(seg):
         if _ABS_RE.match(t) and not _has_cjk(t) and not out.get("abstract_en"):
@@ -1080,7 +1080,7 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
         # ⚠️ 英文单位：不能只用 `\\`。人工成品与模板的写法是
         #   `\\　\hspace{1em}\phantom{\myfirstauthorEN}\hspace{1em} ` ← **末尾有个空格**
         # 即第二行用「全角空格 + 作者名宽度的 phantom + 空格 + 一个普通空格」缩进。
-        # 末尾那个空格不能省：它正好是 PDF 里的 1.88pt（实测 09 Jiawei_Chu：
+        # 末尾那个空格不能省：它正好是 PDF 里的 1.88pt（实测 09 Jiawei_Zhong：
         # 人工第二机构 x=38.64，漏了空格就是 x=36.76，首字母 D 看着偏左一点点）。
         out["affiliation_en"] = AFFIL_EN_JOIN.join(en)
     return out

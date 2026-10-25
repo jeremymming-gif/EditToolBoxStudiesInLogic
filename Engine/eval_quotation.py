@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """引文环境转换功能的专项评测。
 
-基准：07 Liangying_Zhao 人工成品的 quotation 块。
+基准：07 Jiayi_He 人工成品的 quotation 块。
 被测：本工具从原稿 docx 生成的 quotation 块。
 
 报出 查全率 / 查准率 / 漏检原因 / 误检内容，并对每个匹配块做逐字对照。
@@ -16,13 +16,46 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-HUMAN = "../../2026年第5期(90)/07 Liangying_Zhao/Liangying_Zhao.tex"
-DOCX = ("../../2026年第5期(90)/07 Liangying_Zhao/original/"
-        "经验贝叶斯主义的基本方法及其理论前景 修改版 缩减.docx")
-MINE = "out/quote_eval/Liangying_Zhao/Liangying_Zhao.tex"
+def _discover_paths() -> tuple[str, str, str]:
+    """按「期号 + 篇序号」发现基准稿与产物路径（不硬编码真实作者名/标题；B-232）。
+
+    返回 (人工成品 .tex, 原稿 .docx, 被测产物 .tex)；无稿件库时全为 ""。
+    """
+    try:
+        from slcn import paths
+        root = paths.manuscripts_root()
+    except Exception:  # pragma: no cover - 引擎缺失时按「无稿件库」处理
+        root = None
+    if not root:
+        return "", "", ""
+    import glob
+    paper = ""
+    for d in sorted(glob.glob(os.path.join(root, "*"))):
+        m = re.search(r"\((\d+[A-Z]?)\)$", os.path.basename(d))
+        if not (m and m.group(1) == "90"):
+            continue
+        hits = sorted(h for h in glob.glob(os.path.join(d, "07 *")) if os.path.isdir(h))
+        if hits:
+            paper = hits[0]
+            break
+    if not paper:
+        return "", "", ""
+    author = os.path.basename(paper).split(" ", 1)[1]
+    human = os.path.join(paper, author + ".tex")
+    docx = ""
+    cands = [x for x in glob.glob(os.path.join(paper, "original", "**", "*.docx"),
+                                  recursive=True)
+             if "英文摘要" not in os.path.basename(x)]
+    cands.sort(key=lambda x: -os.path.getsize(x))
+    if cands:
+        docx = cands[0]
+    return human, docx, os.path.join("out", "quote_eval", author, author + ".tex")
+
+
+HUMAN, DOCX, MINE = _discover_paths()   # 运行时发现（公开仓不含真实作者名/标题）
 
 # 用法：
-#   python3 convert.py --source '<Liangying_Zhao 原稿.docx>' --out out/quote_eval --compile
+#   python3 convert.py --source '<90 期第 7 篇原稿.docx>' --out out/quote_eval --compile
 #   python3 eval_quotation.py
 
 

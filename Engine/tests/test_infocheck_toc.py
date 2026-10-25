@@ -69,10 +69,10 @@ def make_issue(root: str) -> None:
             "\\newcommand{\\myendpage}{16}       % 输入终止页码\n"
             "\\newcommand{\\mypages}{16}         % 输入页数\n"
             "\\newcommand{\\mytitle}             % 请输入论文题目\n"
-            "{论雅辛之谜及其解决方案——从扩展的RZH标准看}\n"
+            "{论示例悖论及其解决方案——从扩展的X标准看}\n"
             "\\newcommand{\\mytitleEN}           % 请输入英文标题\n"
-            "{On Yashin's Puzzle: \\\\\n"
-            "A Study Based on the Extended RZH Criterion}\n"
+            "{On the Example Paradox: \\\\\n"
+            "A Study Based on the Extended X Criterion}\n"
             "\\newcommand{\\myfirstauthor}       % 请输入第一作者姓名\n"
             "{\\kaishu 陆王}\n"
             "\\renewcommand{\\mysecondauthor}{\\kaishu 王二}  % 若需要，请输入第二作者姓名，并取消该行注释\n"
@@ -85,7 +85,7 @@ def make_issue(root: str) -> None:
 def make_report(root: str, *, none_title: bool = False) -> str:
     """造一份检查报告（格式与 infocheck 的产物一致）。"""
     path = os.path.join(root, "信息检查2026_01_01_00_00_00.txt")
-    title = "None" if none_title else "论雅辛之谜及其解决方案——从扩展的RZH标准看"
+    title = "None" if none_title else "论示例悖论及其解决方案——从扩展的X标准看"
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(
             "Lu_Wang\r\n"
@@ -93,7 +93,7 @@ def make_report(root: str, *, none_title: bool = False) -> str:
             "起始页码：1  终止页码：16  页数：16\r\n"
             "字号 10.5t\r\n"
             f"中文标题: {title}\r\n"
-            "英文标题: On Yashin's Puzzle: \\\\A Study Based on the Extended RZH Criterion\r\n"
+            "英文标题: On the Example Paradox: \\\\A Study Based on the Extended X Criterion\r\n"
             "第一作者中文: 陆王\r\n"
             "第二作者中文: 王二\r\n"
             "全文行距: 13\r\n"
@@ -113,9 +113,9 @@ check("(a) 卷/期/年 抽到", (art.volume, art.issue, art.year) == ("19", "5",
 check("(a) 起止页与页数抽到", (art.startPage, art.endPage, art.pages) == ("1", "16", "16"))
 check("(a) 字号取 documentclass 里逗号分隔的第 2 段", art.fontSize == "10.5t", str(art.fontSize))
 check("(a) 中英文标题抽到，且中文标题里的副标题破折号保留",
-      art.chineseTitle == "论雅辛之谜及其解决方案——从扩展的RZH标准看", repr(art.chineseTitle))
+      art.chineseTitle == "论示例悖论及其解决方案——从扩展的X标准看", repr(art.chineseTitle))
 check("(a) 英文标题按配平收集到闭合 `}`（不是只取两行）",
-      art.englishTitle is not None and "Extended RZH Criterion" in art.englishTitle,
+      art.englishTitle is not None and "Extended X Criterion" in art.englishTitle,
       repr(art.englishTitle))
 check("(b) 作者取值去掉了注释：第二作者是 `\\kaishu 王二` 而不是整行（含「% 若需要…」）",
       art.secondAuthorChinese == "\\kaishu 王二", repr(art.secondAuthorChinese))
@@ -181,9 +181,9 @@ check("(a) wrap_title：英文在空格处断", we is not None and not we[0].end
       and not we[1].startswith(" "), f"{we}")
 # 2026-10-17 第十四批（案例第 110 条）：期 90 成品里这篇标题断在「的」后；
 # 旧的「0.35/0.65 居中兜底」会把它劈成「真理 / 论」（切词）。这里把与成品一致的断点钉死。
-wc = TOC.wrap_title("推理倾向性：对紧缩真理论概括难题的知识论回应", 20, False)
+wc = TOC.wrap_title("示例倾向性：对紧缩真理论概括难题的知识论回应", 20, False)
 check("(a) wrap_title：中文长标题在虚词后断、不切词（期 90 成品同款断点）",
-      wc == ("推理倾向性：对紧缩真理论概括难题的", "知识论回应"), f"{wc}")
+      wc == ("示例倾向性：对紧缩真理论概括难题的", "知识论回应"), f"{wc}")
 check("(a) TocSettings 默认断行上限：中文 20 / 英文 30（英文按期 90 成品校准，原 35）",
       TOC.TocSettings().titleWrapLimit == 20 and TOC.TocSettings().titleWrapLimitEN == 30,
       f"{TOC.TocSettings().titleWrapLimit}/{TOC.TocSettings().titleWrapLimitEN}")
@@ -232,7 +232,7 @@ check("(a) 生成两份（先英文后中文）",
       and outs[1].endswith("Chinese Content_2026_01_01_00_00_00.tex"), f"{[os.path.basename(x) for x in outs]}")
 ch_tex = open(outs[1], encoding="utf-8").read()
 check("(a) 中文目录：头部填了本期卷期、正文有标题与页码、以 tail 收尾",
-      "第\\ 19 卷" in ch_tex and "论雅辛之谜" in ch_tex and ch_tex.rstrip().endswith("\\end{document}"),
+      "第\\ 19 卷" in ch_tex and "论示例悖论" in ch_tex and ch_tex.rstrip().endswith("\\end{document}"),
       ch_tex[:60].replace("\n", "⏎"))
 check("(a) 条目之间用 `\\vdistance` 分隔（只有一份时也可以没有）", True)
 en_tex = open(outs[0], encoding="utf-8").read()
@@ -247,7 +247,7 @@ check("(b) 报告里标题是「None」→ 日志提醒回「检查tex信息」�
 
 # 栏目：勾选的文章带缩进前缀
 settings2 = TOC.TocSettings(columnKind="专栏", columnName="认知悖论研究",
-                            columnHost="张建军", columnArticles=["01 Lu_Wang"])
+                            columnHost="郑建国", columnArticles=["01 Lu_Wang"])
 check("(a) TocSettings.contains：带序号的设置也能匹配报告的短名",
       settings2.contains("Lu_Wang") and not settings2.contains("别人"))
 check("(a) 栏目名：中文「专栏：X」、英文「Column: X」",
@@ -257,7 +257,7 @@ check("(a) make_column_block：沿用上一期形态并替换名称与主持人"
       TT.make_column_block(settings2, ["{\\large \\bf{专栏：旧名}}",
                                        "&&\\textit{\\large 主持人：旧主持}",
                                        "\\\\[3.2 ex]"], True)
-      == ["{\\large \\bf{专栏：认知悖论研究}}", "&&\\textit{\\large 主持人：张建军}", "\\\\[3.2 ex]"])
+      == ["{\\large \\bf{专栏：认知悖论研究}}", "&&\\textit{\\large 主持人：郑建国}", "\\\\[3.2 ex]"])
 check("(a) make_column_block：没开栏目 → 空",
       TT.make_column_block(TOC.TocSettings(), ["x"], True) == [])
 check("(a) TocSettings.load：文件不存在 → 默认值；字段缺失 → 逐字段回落（旧 json 不清空）",

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3.14
-r"""`slcn/docxsource.py` 的 **「作者简介」里取单位**判据（案例 75，2026_05_Bo_Chen 实测）。
+r"""`slcn/docxsource.py` 的 **「作者简介」里取单位**判据（案例 75，2026_05_Lei_Li 实测）。
 
 缺陷
 ----
-源稿 `2026年第5期(90)/10 Bo_Chen/original/陈波 当代逻辑哲学鸟瞰.docx` 的
+源稿 `2026年第5期(90)/10 Lei_Li/original/李雷 当代逻辑论题鸟瞰.docx` 的
 `word/footnotes.xml` 里写着：
 
-    作者简介: 陈波，男，湖南常德人，武汉大学哲学系教授。电子邮箱：chen-bo@whu.edu.cn
+    作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。电子邮箱：li-lei@whu.edu.cn
 
 单位硬串「武汉大学哲学系」就在这句里，产物却写 `【未识别：第一作者单位，请手工填写】`。
 根因在 `_clean_affil_line()` 的**整行否定**（旧实现），三道各自独立致命：
@@ -17,9 +17,9 @@ r"""`slcn/docxsource.py` 的 **「作者简介」里取单位**判据（案例 7
 
 已实测（**能解但判据太严**，不是没解析出来）：
 
-    _clean_affil_line('作者简介: 陈波，男，湖南常德人，武汉大学哲学系教授。电子邮箱：…') == ''
-    _clean_affil_line('作者简介: 陈波，武汉大学哲学系') == '武汉大学哲学系'   ← 去掉「男」就能解
-    _clean_affil_line('作者简介: 陈波，男，武汉大学哲学系') == ''            ← 留着「男」就整行丢
+    _clean_affil_line('作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。电子邮箱：…') == ''
+    _clean_affil_line('作者简介: 李雷，武汉大学哲学系') == '武汉大学哲学系'   ← 去掉「男」就能解
+    _clean_affil_line('作者简介: 李雷，男，武汉大学哲学系') == ''            ← 留着「男」就整行丢
 
 改法：stage ① 保持旧口径不动；stage ② 按 `，。；、` 切句、在**句内**取
 `_AFFIL_UNIT_START_RE … ` 形态的最长机构名，允许 `教授/副教授/讲师/研究员/博士` 这类
@@ -38,7 +38,7 @@ r"""`slcn/docxsource.py` 的 **「作者简介」里取单位**判据（案例 7
   ③ 非回归：内联**改动前**的 `_clean_affil_line`，对
      (a) 一张真实字符串表 + (b) 真实稿里实际喂进去的**每一行** 逐个比对：
      **改动前非空的行，结果必须逐字不变**（= 本缺陷只可能「空 → 非空」）。
-  ④ 端到端：`parse_docx` 对 Bo_Chen 产出 `武汉大学哲学系`；含作者简介的真实稿
+  ④ 端到端：`parse_docx` 对 Lei_Li 产出 `武汉大学哲学系`；含作者简介的真实稿
      旧实现取不到、新实现取到了（收益）；且旧实现本来能取到的稿，值一个都不变。
 
 不联网、不写仓库（全部只读源稿）、不跑 corpus.py / build.sh。
@@ -69,18 +69,18 @@ FAILS = []
 SKIPS = []
 
 _ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
-BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Bo_Chen", "original",
-                       "陈波 当代逻辑哲学鸟瞰.docx")
+BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
+                       "李雷 当代逻辑论题鸟瞰.docx")
 # 03 Yuanchang_He 的作者简介在开头元数据区（不是脚注）：`作者简介：何远长，武汉大学哲学学院博士生，…`
 YUANCHANG = os.path.join(_ROOT, "2025年第1期(80)", "03 Yuanchang_He")
 # 05 Guoping_Du 的作者简介里有 联系电话 / 通信地址 / 邮政编码 / 工作单位（尾块）+ 脚注里的长简介
 GUOPING = os.path.join(_ROOT, "2024年第4期(77)", "05 Guoping_Du")
 # 单位本来就在开头括号行里、值已经正确的代表稿（不许被动）
 OTHER_DOCS = [
-    ("01 Jingru_Kou", os.path.join(_ROOT, "2026年第5期(90)", "01 Jingru_Kou")),
+    ("01 Meimei_Han", os.path.join(_ROOT, "2026年第5期(90)", "01 Meimei_Han")),
     ("07 Yanjing_Zhang", os.path.join(_ROOT, "2025年第4期(83)", "07 Yanjing_Zhang")),
     ("07 Kai_Qu", os.path.join(_ROOT, "2024年第2期(75)", "07 Kai_Qu")),
-    ("07 Liangying_Zhao", os.path.join(_ROOT, "2026年第5期(90)", "07 Liangying_Zhao")),
+    ("07 Jiayi_He", os.path.join(_ROOT, "2026年第5期(90)", "07 Jiayi_He")),
 ]
 
 
@@ -131,28 +131,28 @@ C = D._clean_affil_line
 # ── ① 正例：案例 75 那一行 ────────────────────────────────────────────────
 print("── ① 正例：作者简介里的单位要被抓出来 ──")
 
-BO_LINE = ("作者简介: 陈波，男，湖南常德人，武汉大学哲学系教授。"
-           "电子邮箱：chen-bo@whu.edu.cn")
+BO_LINE = ("作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。"
+           "电子邮箱：li-lei@whu.edu.cn")
 check("① 案例 75 原样一行 → `武汉大学哲学系`", C(BO_LINE) == "武汉大学哲学系", repr(C(BO_LINE)))
 check("① 旧实现对这一行返回空串（复现缺陷本身）",
       old_clean_affil_line(BO_LINE) == "", repr(old_clean_affil_line(BO_LINE)))
-check("① `作者简介: 陈波，武汉大学哲学系`（去掉「男」就能解的那条）仍然解得出",
-      C("作者简介: 陈波，武汉大学哲学系") == "武汉大学哲学系", repr(C("作者简介: 陈波，武汉大学哲学系")))
-check("① `作者简介: 陈波，男，武汉大学哲学系`（留着「男」就整行丢的那条）本次也解得出",
-      C("作者简介: 陈波，男，武汉大学哲学系") == "武汉大学哲学系",
-      repr(C("作者简介: 陈波，男，武汉大学哲学系")))
+check("① `作者简介: 李雷，武汉大学哲学系`（去掉「男」就能解的那条）仍然解得出",
+      C("作者简介: 李雷，武汉大学哲学系") == "武汉大学哲学系", repr(C("作者简介: 李雷，武汉大学哲学系")))
+check("① `作者简介: 李雷，男，武汉大学哲学系`（留着「男」就整行丢的那条）本次也解得出",
+      C("作者简介: 李雷，男，武汉大学哲学系") == "武汉大学哲学系",
+      repr(C("作者简介: 李雷，男，武汉大学哲学系")))
 check("① 职衔后缀被剥离（`教授/博士生/博士研究生`），不留在单位名里",
       C("作者简介：任然，（1984-）女，唐山师范学院讲师，主要研究方向：科学技术哲学。") == "唐山师范学院"
       and C("作者简介：何远长，武汉大学哲学学院博士生") == "武汉大学哲学学院"
       and C("作者简介：李宗敏，西北大学中国思想文化研究所博士研究生。") == "西北大学中国思想文化研究所",
       "")
 check("① 多作者多单位按出现顺序全部取出（`\\x00` 连接）",
-      C("作者简介：赵亮英，广东警官学院马克思主义学院副教授．"
-        "陈晓平，华南师范大学政治与公共管理学院教授、广东财经大学智能社会与人的发展研究中心兼职教授。")
+      C("作者简介：何嘉怡，广东警官学院马克思主义学院副教授．"
+        "徐佳明，华南师范大学政治与公共管理学院教授、广东财经大学智能社会与人的发展研究中心兼职教授。")
       == "广东警官学院马克思主义学院\x00华南师范大学政治与公共管理学院"
          "\x00广东财经大学智能社会与人的发展研究中心",
-      repr(C("作者简介：赵亮英，广东警官学院马克思主义学院副教授．"
-             "陈晓平，华南师范大学政治与公共管理学院教授、"
+      repr(C("作者简介：何嘉怡，广东警官学院马克思主义学院副教授．"
+             "徐佳明，华南师范大学政治与公共管理学院教授、"
              "广东财经大学智能社会与人的发展研究中心兼职教授。")))
 check("① 单位名里的圆括号（校区）保留：`中山大学哲学系（珠海）助理教授` → `中山大学哲学系（珠海）`",
       C("作者简介：萧浩健（1983-）,男,广东汕头人,布朗大学哲学博士,"
@@ -230,7 +230,7 @@ _REAL_LINES = [
     "甘肃政法大学 卢俐利",
     "作者信息：周振忠 中山大学逻辑与认知研究所",
     "School of Philosophy and Social Development, Shandong University",
-    "Jingru Kou   College of Philosophy, Nankai University",
+    "Meimei Han   College of Philosophy, Nankai University",
     "（中国社会科学院大学哲学院，北京102401；中国社会科学院哲学研究所，北京100732）",
     "[通讯作者] 南京大学哲学学院",
     "作者简介：周志荣，男，1982-，江苏南京人，中南财经政法大学哲学院副教授。",
@@ -252,10 +252,10 @@ def _spy(line):
     return new
 
 
-_DOCS = [("Bo_Chen", BO_CHEN), ("Yuanchang_He", YUANCHANG), ("Guoping_Du", GUOPING)] + OTHER_DOCS
+_DOCS = [("Lei_Li", BO_CHEN), ("Yuanchang_He", YUANCHANG), ("Guoping_Du", GUOPING)] + OTHER_DOCS
 _checked_docs = []
 if not os.path.isfile(BO_CHEN):
-    skip("③ 真实稿逐行不变量（Bo_Chen 等）", f"缺真实稿件（{BO_CHEN}）")
+    skip("③ 真实稿逐行不变量（Lei_Li 等）", f"缺真实稿件（{BO_CHEN}）")
 else:
     from slcn import sources  # noqa: E402
 
@@ -309,12 +309,12 @@ def aff_of(src):
 
 
 if not os.path.isfile(BO_CHEN):
-    skip("④ Bo_Chen 端到端", f"缺真实稿件（{BO_CHEN}）")
+    skip("④ Lei_Li 端到端", f"缺真实稿件（{BO_CHEN}）")
 else:
     _doc = aff_of(BO_CHEN)
-    check("④ 案例 75：Bo_Chen 的 `affiliation_cn` = `武汉大学哲学系`（原来是空）",
+    check("④ 案例 75：Lei_Li 的 `affiliation_cn` = `武汉大学哲学系`（原来是空）",
           _doc.affiliation_cn == "武汉大学哲学系", repr(_doc.affiliation_cn))
-    check("④ Bo_Chen 的 `affiliation_cn` 不带邮箱/职衔",
+    check("④ Lei_Li 的 `affiliation_cn` 不带邮箱/职衔",
           "@" not in _doc.affiliation_cn and "教授" not in _doc.affiliation_cn,
           repr(_doc.affiliation_cn))
 

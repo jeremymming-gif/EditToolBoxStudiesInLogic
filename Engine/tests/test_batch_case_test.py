@@ -101,11 +101,17 @@ check("期 87 作者目录 = 1..9（子案例号，不是作者名）",
 check("期 87 人工 bib 文件名特例（sub5/sub8 用作者名）",
       {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-5"] == "Ruixue_Tang.bib"
       and {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-8"] == "Runcheng_Liang.bib")
-check("期 90 人工目录 = 01..10 作者名",
-      {c.key: c.manual_dir for c in cases if c.issue == "90"}["90-05"] == "05 Beibei_Gao")
-check("默认清单：仅 90-03 声明附加源 metadata=yalcin puzzle.tex",
-      next(c for c in cases if c.key == "90-03").metadata == "yalcin puzzle.tex"
-      and sum(1 for c in cases if c.metadata) == 1)
+_m90 = {c.key: c.manual_dir for c in cases if c.issue == "90"}
+check("期 90 人工目录 = 01..10 篇序号（作者名由稿件仓发现，不硬编码）",
+      _m90["90-05"].startswith("05 ")
+      and [_m90[f"90-{i:02d}"].split(" ", 1)[0] for i in range(1, 11)]
+      == [f"{i:02d}" for i in range(1, 11)])
+_meta90 = {c.key: c.metadata for c in cases if c.issue == "90" and c.metadata}
+check("期 90 附加源：只允许 90-03 声明（有稿件库时文件名由发现得到，非 main.tex）",
+      all(k == "90-03" and not v.endswith("main.tex") for k, v in _meta90.items()))
+check("默认清单：无稿件库时 90 篇回落占位名 Paper01..Paper10（不硬编码真实作者）",
+      all(_m90[f"90-{i:02d}"].endswith(f"Paper{i:02d}") for i in range(1, 11))
+      if not batch._discover_issue_papers("90") else True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) 分级：干净案例 / 各类 P0 / P1 / P2
@@ -276,7 +282,7 @@ check("L3：源清单全覆盖而最终人工版多 1 条 → 人工后期修改
       any(r["cls"] == batch.L3_MANUAL and r["code"] == "BIB_COUNT_INFO"
           for r in batch.l3_attribution(
               dict(CLEAN, l1={**CLEAN_L1, "ref_titles_n": 20}),
-              {**MAN, "bib_entries": 21, "bib_titles": ["T", "Chen2015"]})))
+              {**MAN, "bib_entries": 21, "bib_titles": ["T", "Li2015"]})))
 check("L3：CJK 译名 bib key 差异只报告（转 backlog B-120，不判 P1）",
       any(r["code"] == "BIB_KEY_INFO" and r["level"] is None
           for r in batch.l3_attribution(
@@ -406,40 +412,40 @@ try:
         p.write_bytes(b"x" * size)
         return p
 
-    mk("Beibei_Gao/推理倾向性.docx", 5000)
-    mk("Bo_Chen/陈波 当代逻辑哲学鸟瞰.docx", 9000)
-    mk("Bo_Chen/当代逻辑哲学鸟瞰英文摘要.docx", 300)
-    mk("Yingying_Tang/自我确认与能动性.docx", 8000)
-    mk("Yingying_Tang/作者信息.docx", 200)
-    mk("Liang_Zhang/main.tex", 500)
-    mk("Liang_Zhang/子文件.tex", 9000)
-    mk("Liang_Zhang/conditionals.bib", 100)
+    mk("Xiaoyu_Lin/示例倾向性.docx", 5000)
+    mk("Lei_Li/李雷 当代逻辑论题鸟瞰.docx", 9000)
+    mk("Lei_Li/当代逻辑论题鸟瞰英文摘要.docx", 300)
+    mk("Xiaoqing_Su/自我确认与示例性.docx", 8000)
+    mk("Xiaoqing_Su/作者信息.docx", 200)
+    mk("Jie_Zhou/main.tex", 500)
+    mk("Jie_Zhou/子文件.tex", 9000)
+    mk("Jie_Zhou/conditionals.bib", 100)
     mk("Empty_Dir/说明.txt", 10)
 
     def spec(key, author, author_dir, source="", manual_dir=""):
         return batch.CaseSpec(key=key, issue="t", author=author, author_dir=author_dir,
                               manual_dir=manual_dir, source=source)
 
-    src, note = batch.discover_source(spec("t-1", "Bo_Chen", "Bo_Chen"), TMP)
+    src, note = batch.discover_source(spec("t-1", "Lei_Li", "Lei_Li"), TMP)
     check("自动发现：Word 排除「英文摘要」第二源",
-          src is not None and src.name == "陈波 当代逻辑哲学鸟瞰.docx")
-    src, note = batch.discover_source(spec("t-2", "Yingying_Tang", "Yingying_Tang"), TMP)
+          src is not None and src.name == "李雷 当代逻辑论题鸟瞰.docx")
+    src, note = batch.discover_source(spec("t-2", "Xiaoqing_Su", "Xiaoqing_Su"), TMP)
     check("自动发现：Word 排除「作者信息」辅助文件",
-          src is not None and src.name == "自我确认与能动性.docx")
-    src, note = batch.discover_source(spec("t-3", "Liang_Zhang", "Liang_Zhang"), TMP)
+          src is not None and src.name == "自我确认与示例性.docx")
+    src, note = batch.discover_source(spec("t-3", "Jie_Zhou", "Jie_Zhou"), TMP)
     check("自动发现：LaTeX 优先 main.tex（不是最大的子文件）",
           src is not None and src.name == "main.tex")
     src, _ = batch.discover_source(spec("t-4", "Ghost", "Ghost"), TMP)
     check("自动发现：作者目录不存在 → None", src is None)
     src, _ = batch.discover_source(
-        spec("t-5", "Beibei_Gao", "Beibei_Gao", source="Beibei_Gao/推理倾向性.docx"), TMP)
-    check("manifest.source 覆盖自动发现", src is not None and src.name == "推理倾向性.docx")
+        spec("t-5", "Xiaoyu_Lin", "Xiaoyu_Lin", source="Xiaoyu_Lin/示例倾向性.docx"), TMP)
+    check("manifest.source 覆盖自动发现", src is not None and src.name == "示例倾向性.docx")
     src, _ = batch.discover_source(
-        spec("t-6", "Beibei_Gao", "Beibei_Gao", source="Beibei_Gao/nope.docx"), TMP)
+        spec("t-6", "Xiaoyu_Lin", "Xiaoyu_Lin", source="Xiaoyu_Lin/nope.docx"), TMP)
     check("manifest.source 不存在 → None（不静默换文件）", src is None)
 
     # .docx 不需要 LibreOffice；.doc 在没有 soffice 时才尝试（本机有也不在本测试里真转）
-    docx_p, info = batch.ensure_docx(mk("Beibei_Gao/a.docx"), TMP / "work", TMP / "logs",
+    docx_p, info = batch.ensure_docx(mk("Xiaoyu_Lin/a.docx"), TMP / "work", TMP / "logs",
                                      dict(os.environ))
     check("ensure_docx：.docx 原样返回（needed=False）",
           info["needed"] is False and info["ok"] is True and docx_p is not None)
@@ -452,7 +458,7 @@ try:
     check("输出名 sanitize：空格/非法字符/首位数字",
           batch.sanitize_output_name("Liwu Rong") == "Liwu_Rong"
           and batch.sanitize_output_name("Yu Chen") == "Yu_Chen"
-          and batch.sanitize_output_name("Bo_Chen") == "Bo_Chen"
+          and batch.sanitize_output_name("Lei_Li") == "Lei_Li"
           and batch.sanitize_output_name("1st Case") == "A_1st_Case"
           and batch.sanitize_output_name("") == "Case")
     check("sha_verdict：成功才判 True/False，失败= None（不误判 NONDETERMINISTIC）",
@@ -668,12 +674,12 @@ try:
           _rc == 2 and "驱动自检" in _err.getvalue() and "ABI 不匹配" in _err.getvalue())
 
     # ── ⑧ manifest 附加源（metadata / --metadata / --no-metadata）──
-    meta_p = mk("Liang_Zhang/yalcin puzzle.tex", 400)
-    main_p = mk("Liang_Zhang/main.tex", 600)
+    meta_p = mk("Jie_Zhou/example puzzle.tex", 400)
+    main_p = mk("Jie_Zhou/main.tex", 600)
 
     def case_meta(**kw):
-        base = dict(key="t-meta", issue="t", author="Liang_Zhang",
-                    author_dir="Liang_Zhang", metadata="yalcin puzzle.tex")
+        base = dict(key="t-meta", issue="t", author="Jie_Zhou",
+                    author_dir="Jie_Zhou", metadata="example puzzle.tex")
         base.update(kw)
         return batch.CaseSpec(**base)
 
@@ -716,11 +722,11 @@ try:
     man_json = TMP / "manifest.json"
     man_json.write_text(
         '{"cases": [{"key": "t-j", "issue": "t", "author": "A", "author_dir": "A", '
-        '"manual_dir": "", "source": "", "metadata": "yalcin puzzle.tex", '
+        '"manual_dir": "", "source": "", "metadata": "example puzzle.tex", '
         '"extra_args": []}]}', encoding="utf-8")
     loaded = batch.load_cases(types.SimpleNamespace(manifest=str(man_json), issues="", case=""))
     check("JSON manifest：metadata 字段被解析", len(loaded) == 1
-          and loaded[0].metadata == "yalcin puzzle.tex")
+          and loaded[0].metadata == "example puzzle.tex")
     check("CLI：--no-metadata 开关可解析（默认关）",
           batch.build_parser().parse_args([]).no_metadata is False
           and batch.build_parser().parse_args(["--no-metadata"]).no_metadata is True)
@@ -733,12 +739,12 @@ try:
         "python": sys.executable, "zero_cost": {"cleared": ["SLCN_LLM_KEY"]},
         "cases": {}, "case_order": ["t-1"],
     }
-    m = {**CLEAN, "key": "t-1", "author": "Bo_Chen", "channel": "word",
-         "product_dir": "/tmp/x/t-1", "source": "/tmp/x/Bo_Chen.docx",
+    m = {**CLEAN, "key": "t-1", "author": "Lei_Li", "channel": "word",
+         "product_dir": "/tmp/x/t-1", "source": "/tmp/x/Lei_Li.docx",
          "source_note": "自动发现", "elapsed_s": 1.0, "level": "✅",
          "convert": {"compile_ok": True}, "findings": [],
          "metadata": {"declared": True, "found": True, "fallback": False,
-                      "path": "/tmp/x/yalcin puzzle.tex", "note": "附加源 --metadata"},
+                      "path": "/tmp/x/example puzzle.tex", "note": "附加源 --metadata"},
          "manual": {**MAN, "dir": "/tmp/man", "proof": {"hits": 2}}}
     m["sha_note"] = "tex/bib 相同，仅 2 个图片文件字节不同（测试）"
     run["cases"]["t-1"] = m
@@ -755,11 +761,11 @@ try:
     report = batch.render_report(run)
     check("报告渲染：含标题/总表/附录/零付费段",
           all(s in report for s in ("批量实例测试报告", "总表", "每案例附录",
-                                    "零付费", "t-1", "Bo_Chen")))
+                                    "零付费", "t-1", "Lei_Li")))
     check("报告渲染：干净案例标 ✅",
           "**✅**" in report or "| ✅ |" in report)
     check("报告附录：显示附加源（--metadata）",
-          "附加源（--metadata）" in report and "yalcin puzzle.tex" in report)
+          "附加源（--metadata）" in report and "example puzzle.tex" in report)
     check("报告：零付费未验证案例单列（不误报违规）",
           "零付费断言未验证" in report)
     check("报告：图片型产物 sha note 可见 + totals.sha_notes 计数",

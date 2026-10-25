@@ -60,8 +60,8 @@ BIB_OK = """\
   year    = {1970}
 }
 
-@book{Chen2022,
-  author    = {陈波},
+@book{Li2022,
+  author    = {李雷},
   title     = {逻辑例外论},
   publisher = {北京大学出版社},
   address   = {北京},

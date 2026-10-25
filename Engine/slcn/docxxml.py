@@ -4,7 +4,7 @@
 ------------------------------
 `paragraph.text` 只是把 `<w:t>`（常规文字）拼起来，它会**静默丢掉**三样东西：
 
-  1. `<m:oMath>` —— OMML 公式。陈波稿的 7 个逻辑符号（¬ ∧ ∨ → ↔ ∀ ∃）就是这么消失的，
+  1. `<m:oMath>` —— OMML 公式。李雷稿的 7 个逻辑符号（¬ ∧ ∨ → ↔ ∀ ∃）就是这么消失的，
      人工成品是 `否定$\\neg$、合取$\\land$`，我们却输出成 `否定、合取`（残句）。
   2. run 级格式 `<w:i/>` —— 斜体。Lu_Jiang 正文有 414 处斜体，人工转成 185 处
      `\\emph/\\textit`，我们一处都拿不到。
@@ -401,7 +401,7 @@ LOGICA_SYM_CHARS = {
     "0052": "∈",  # a∈A
     "005D": "∅",  # 0=∅ / {∅}
     "005E": "∞",  # ∞-群胚
-    # 期 90/05 Beibei_Gao 实测：Word 把 LogicA 的 ⟨/⟩ 存成 F072/F073，
+    # 期 90/05 Xiaoyu_Lin 实测：Word 把 LogicA 的 ⟨/⟩ 存成 F072/F073，
     # 人工成品写成 `\langle` / `\rangle`（`命题⟨雪是白的→…⟩`）。
     "72": "⟨",
     "73": "⟩",
@@ -474,7 +474,7 @@ def _math_text_latex(text: str) -> str:
 
     Word 公式里常把「（x是具有“p→p”形式的命题→x是真的）」整段塞进 `<m:t>`；
     不包 `\text{}` 时 xelatex 会在 Times New Roman 里找汉字/全角字符 → Missing character，
-    PDF 乱码/缺字（期 90/05 Beibei_Gao；期 90/07 Liangying_Zhao 的 `＝` U+FF1D 实测 2 处）。
+    PDF 乱码/缺字（期 90/05 Xiaoyu_Lin；期 90/07 Jiayi_He 的 `＝` U+FF1D 实测 2 处）。
     分类判据见 `_is_math_text_char`；数学符号（→、∈ 等）仍留给 `_math_to_tex` 处理。
     """
     if not text:

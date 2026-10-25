@@ -210,8 +210,8 @@ check("电话/地址/邮编不混进 affiliation_cn",
       and "邮政编码" not in (_b.get("affiliation_cn") or ""), repr(_b.get("affiliation_cn")))
 check("带标签的邮箱仍能取到", _b.get("email") == "dgpnju@163.com", repr(_b.get("email")))
 
-# ② 但「中英文所属单位」那种正常单位块必须照旧（09 Jiawei_Chu 的形态）
-JC = ["How Are Argumentative Actions Generated?", "Jiawei Chu", "Abstract: body",
+# ② 但「中英文所属单位」那种正常单位块必须照旧（09 Jiawei_Zhong 的形态）
+JC = ["How Are Argumentative Actions Generated?", "Jiawei Zhong", "Abstract: body",
       "Keywords: kw", "邮箱：chujw3@mail2.sysu.edu.cn", "中英文所属单位: ",
       "中山大学逻辑与认知研究所", "中山大学哲学系",
       "Institute of Logic and Cognition, Sun Yat-sen University ",
@@ -370,7 +370,7 @@ def tail_of(path: str) -> int:
 
 # (语料目录, 文件名片段, 断言函数, 说明)
 CASES = [
-    ("2022年第5期(66)/04 Bo_Chen", "逻辑例外论",
+    ("2022年第5期(66)/04 Lei_Li", "逻辑例外论",
      lambda d, p: d.title_en == "The Development of Logical Exceptionalism"
      and d.abstract_en.startswith("The main viewpoints of logical exceptionalism")
      and d.author_en == "CHEN Bo" and tail_of(p) == 50,
@@ -443,12 +443,12 @@ NEG = [
     ("2026年第1期(86)/08 LingXin_Cai", "补充材料 20260117",
      lambda d, p: "Fallacies are a crucial component" not in (d.abstract_cn or ""),
      "中文 `摘要：` 独占一段、下一段是英文 → 不许写进 abstract_cn"),
-    ("2026年第5期(90)/10 Bo_Chen", "当代逻辑哲学鸟瞰英文摘要",
+    ("2026年第5期(90)/10 Lei_Li", "当代逻辑论题鸟瞰英文摘要",
      lambda d, p: d.title_en == "A Survey of Contemporary Philosophy of Logic"
      and d.abstract_en.startswith("Three research models")
-     and d.author_en == "Chen Bo",
+     and d.author_en == "Li Lei",
      "中英两套摘要的英文片段（文末窗口内、开头那套也已取到）不得被覆盖"),
-    ("2026年第5期(90)/07 Liangying_Zhao", "经验贝叶斯主义",
+    ("2026年第5期(90)/07 Jiayi_He", "示例贝叶斯主义",
      lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 12)),
      "无英文清单穿越：90-07 编号体例稿 num2key 11 条不动（B-120 批76 反例）"),
 ]
