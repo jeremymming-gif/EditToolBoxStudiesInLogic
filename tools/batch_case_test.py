@@ -454,6 +454,84 @@ def assert_zero_cost_args(argv: list[str]) -> tuple[bool, list[str]]:
     return (not bad), bad
 
 
+# ── A2（B-221）：跑批前 driver 解释器 ↔ Engine/vendor ABI 自检 ──────────────────
+DRIVER_PROBE_CODE = """\
+import json, sys
+try:
+    import lxml.etree as etree
+    print(json.dumps({"ok": True, "file": getattr(etree, "__file__", "") or "",
+                      "version": [sys.version_info[0], sys.version_info[1]]}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": type(exc).__name__ + ": " + str(exc)}))
+"""
+_CPYTHON_TAG = re.compile(r"cpython-(\d+)")
+DRIVER_REPAIR_HINT = (
+    "修复：① 用 --python 指定与 Engine/vendor 匹配的解释器（vendor 里 lxml 的 .so 为 cpython-<版本>）；"
+    "② 或在 Engine/ 下用该解释器重装 vendor：python3.X -m pip install --target vendor -r requirements.txt；"
+    "③ 检查 PYTHONPATH 是否被系统/其他 site-packages 抢占。"
+)
+
+
+def _default_driver_probe(cmd: list[str], env: dict) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(cmd, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, errors="replace", timeout=60)
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 127, "", f"{type(exc).__name__}: {exc}"
+
+
+def driver_interpreter_problem(python: str, *, runner=None) -> str | None:
+    """A2：目标解释器能否在 `PYTHONPATH=Engine:Engine/vendor` 下 import lxml.etree，
+    且 `lxml.etree.__file__` 落在 Engine/vendor、cpython ABI 标签与解释器版本一致。
+
+    返回 None=通过；否则为可读原因（main 据此 rc=2 fail-fast，不跑任何案例）。
+    `runner(cmd, env) -> (rc, stdout, stderr)` 可注入：self-test 伪造探测输出，不依赖本机版本。
+    """
+    target = python or sys.executable
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join((str(ENGINE), str(VENDOR)))
+    rc, stdout, stderr = (runner or _default_driver_probe)([target, "-c", DRIVER_PROBE_CODE], env)
+    if rc != 0:
+        tail = (stderr or stdout).strip().splitlines()
+        return f"{target} 启动/导入失败（rc={rc}）：{tail[-1] if tail else '无输出'}"
+    try:
+        info = json.loads(stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return f"{target} 探测输出不是合法 JSON：{stdout.strip()[:200]!r}"
+    if not isinstance(info, dict) or not info.get("ok"):
+        error = info.get("error") if isinstance(info, dict) else info
+        return f"{target} 无法 import lxml.etree：{error}"
+    file_name = str(info.get("file") or "")
+    if not file_name:
+        return f"{target} 的 lxml.etree 没有 __file__（不是预期的二进制模块）"
+    module_path = Path(file_name).resolve()
+    vendor = VENDOR.resolve()
+    if module_path != vendor and vendor not in module_path.parents:
+        return (f"lxml.etree 来自 {module_path}，不在 {vendor}"
+                "（PYTHONPATH 被系统/其他 site-packages 抢占）")
+    version = info.get("version")
+    tag = _CPYTHON_TAG.search(module_path.name)
+    if not tag or not (isinstance(version, list) and len(version) >= 2):
+        return f"无法从 {module_path.name} 判定 cpython ABI 标签（解释器版本 {version}）"
+    expected = f"{version[0]}{version[1]}"
+    if tag.group(1) != expected:
+        return (f"ABI 不匹配：vendor lxml 为 cpython-{tag.group(1)}，"
+                f"但解释器为 Python {version[0]}.{version[1]}（需要 cpython-{expected}）")
+    return None
+
+
+def check_driver_interpreter(python: str) -> bool:
+    """跑批前自检并打印结论；False = main 应 rc=2 fail-fast（不跑任何案例）。"""
+    problem = driver_interpreter_problem(python)
+    if problem is None:
+        print(f"[驱动] 解释器自检通过：{python or sys.executable}（lxml.etree ← Engine/vendor，ABI 匹配）")
+        return True
+    print(f"[驱动自检] FAIL：{problem}", file=sys.stderr)
+    print(f"[驱动自检] {DRIVER_REPAIR_HINT}", file=sys.stderr)
+    return False
+
+
 def find_soffice() -> str | None:
     for cand in (
         "/opt/homebrew/bin/soffice",
@@ -3425,6 +3503,25 @@ def run_self_test() -> int:
           and estimate_bench([CaseSpec(key="x", issue="repo", author="A", author_dir=".",
                                        source="/tmp/a.docx")])["est_minutes"] == round(8.5 / 60, 1)
           and [r["level"] for r in _dash][:2] == ["P0", "P1"])
+    # ── A2（B-221）driver 解释器 ↔ vendor ABI 自检：正反例（伪造探测输出，不依赖本机版本）──
+    def _probe(file_name, version):
+        return lambda cmd, env: (0, json.dumps(
+            {"ok": True, "file": file_name, "version": list(version)}), "")
+
+    _vendor_ok = str(VENDOR / "lxml" / "etree.cpython-314-darwin.so")
+    _vendor_old = str(VENDOR / "lxml" / "etree.cpython-313-darwin.so")
+    _outside = "/usr/lib/python3/site-packages/lxml/etree.cpython-314-darwin.so"
+    check("A2 驱动自检：vendor lxml + ABI 匹配 → 通过（注入探测，不依赖本机版本）",
+          driver_interpreter_problem("fake-python", runner=_probe(_vendor_ok, (3, 14))) is None)
+    check("A2 驱动自检：ABI 不匹配/不在 vendor/import 失败 → 明确原因",
+          "ABI 不匹配" in (driver_interpreter_problem("p", runner=_probe(_vendor_old, (3, 14))) or "")
+          and "不在" in (driver_interpreter_problem("p", runner=_probe(_outside, (3, 14))) or "")
+          and "无法 import lxml.etree" in (driver_interpreter_problem(
+              "p", runner=lambda cmd, env: (0, json.dumps(
+                  {"ok": False, "error": "ModuleNotFoundError: No module named 'lxml'"}),
+                  "")) or "")
+          and "启动/导入失败" in (driver_interpreter_problem(
+              "p", runner=lambda cmd, env: (1, "", "FileNotFoundError: no python")) or ""))
     print()
     print(f"失败 {len(fails)} 项" + (f"：{fails}" if fails else "（全部通过）"))
     return 1 if fails else 0
@@ -3489,6 +3586,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.self_test:
         return run_self_test()
+    # A2（B-221）：真跑案例前自检 driver 解释器 ↔ Engine/vendor ABI；不匹配 rc=2 fail-fast
+    if not check_driver_interpreter(args.python or sys.executable):
+        return 2
     try:
         return run_batch(args)
     except KeyboardInterrupt:

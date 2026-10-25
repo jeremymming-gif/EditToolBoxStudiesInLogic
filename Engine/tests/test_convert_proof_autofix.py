@@ -423,6 +423,85 @@ if _manuscripts is not None:
 else:
     print("SKIP  ⑨ 真实稿 pin（本机没有稿件库）")
 
+# ══════════════════════════════════════════════════════════════════════════
+# ⑩ B-221 C1：初排交接单（默认生成 / --no-handoff 关闭 / 重跑识别 / .tex 不变）
+# ══════════════════════════════════════════════════════════════════════════
+import argparse as _argparse  # noqa: E402
+import re as _re  # noqa: E402
+
+import convert as _convert  # noqa: E402
+from slcn import handoff as _handoff  # noqa: E402
+
+_ap_h = _argparse.ArgumentParser()
+_convert._add_handoff_args(_ap_h)
+check("⑩ --no-handoff：默认生成（handoff=True）", _ap_h.parse_args([]).handoff is True)
+check("⑩ --no-handoff：显式关闭（handoff=False）",
+      _ap_h.parse_args(["--no-handoff"]).handoff is False)
+
+_h_docx = make_docx(["测试标题", "张三", "摘要：测试摘要。", "关键词：测试", "正文。"])
+try:
+    with tempfile.TemporaryDirectory() as _t_on:
+        _r_h = build.build_docx(_h_docx, _t_on, basename="H", lang="zh", verbose=False)
+        _hp = os.path.join(_t_on, "H" + _handoff.HANDOFF_SUFFIX)
+        _htxt = open(_hp, encoding="utf-8").read() if os.path.isfile(_hp) else ""
+        _h_tex_bytes = open(_r_h.tex_path, "rb").read()
+        check("⑩ 默认生成 <stem>_初排交接单.txt（UTF-8/LF）",
+              os.path.isfile(_hp) and "\r" not in _htxt, repr(_hp))
+        _hlines = _htxt.split("\n")
+        check("⑩ 四节固定、顺序正确",
+              [ln for ln in _hlines if ln in _handoff.SECTION_TITLES]
+              == list(_handoff.SECTION_TITLES))
+        _hidx = [_hlines.index(t) for t in _handoff.SECTION_TITLES]
+        check("⑩ 各节非空（有内容或「无」）",
+              all(_hlines[a + 1:b] for a, b in
+                  zip(_hidx, _hidx[1:] + [len(_hlines)])))
+        check("⑩ BuildResult.handoff_path 指向交接单 + bibcheck 小字典槽位存在",
+              _r_h.handoff_path == _hp
+              and (_r_h.handoff_bib is None or isinstance(_r_h.handoff_bib, dict)))
+        # Lead B-221 C1 硬要求：①不用 atomic_write（重跑不产生 .bak 污染产物目录）；
+        # ②内容确定性（两目录/原地重跑逐字节同；无时间戳/绝对路径）。
+        with tempfile.TemporaryDirectory() as _t_on2:
+            build.build_docx(_h_docx, _t_on2, basename="H", lang="zh", verbose=False)
+            _htxt2dir = open(os.path.join(_t_on2, "H" + _handoff.HANDOFF_SUFFIX),
+                             encoding="utf-8").read()
+        build.build_docx(_h_docx, _t_on, basename="H", lang="zh", verbose=False)
+        _htxt_rerun = open(_hp, encoding="utf-8").read()
+        _h_baks = [f for f in os.listdir(_t_on)
+                   if f.startswith("H" + _handoff.HANDOFF_SUFFIX) and f.endswith(".bak")]
+        check("⑩ 交接单确定性：两目录/原地重跑逐字节相同，且重跑不留 .bak（普通覆盖写）",
+              _htxt2dir == _htxt == _htxt_rerun and _h_baks == [],
+              f"baks={_h_baks}")
+        check("⑩ 交接单不含绝对路径/时间戳（41 篇两遍比对口径）",
+              _t_on not in _htxt and _t_on2 not in _htxt
+              and _re.search(r"\d{8}-\d{6}-\d{6}", _htxt) is None)
+    with tempfile.TemporaryDirectory() as _t_off:
+        _r_off = build.build_docx(_h_docx, _t_off, basename="H", lang="zh",
+                                  verbose=False, handoff=False)
+        check("⑩ handoff=False：产物目录零新增交接单（旧行为）",
+              not os.path.exists(os.path.join(_t_off, "H" + _handoff.HANDOFF_SUFFIX))
+              and _r_off.handoff_path is None)
+        check("⑩ handoff 开关不改 .tex（逐字节相同）",
+              _h_tex_bytes == open(_r_off.tex_path, "rb").read())
+    check("⑩ is_own_product 认交接单（第二次转换不被自己产物拦）",
+          _convert.is_own_product("H" + _handoff.HANDOFF_SUFFIX, "H") is True)
+    _hb = _handoff.render(
+        stem="B", bib={"total": 2, "must": 1, "nice": 0, "unstructured": 0,
+                       "report_path": "/tmp/B_参考文献核对.txt"},
+        bibdb={"done": True, "safe": {"a": {}, "b": {}}, "candidates": {},
+               "missed": [], "applied": [{"key": "a"}], "filled": 3},
+        warnings=["短引经引用库安全命中（库内已核实，未编造）：「某引」→ key"])
+    check("⑩ ① 汇总 bibcheck 结论 + 引用库回填条数 + 核对报告指针",
+          "条目总数：2（必补 1 / 建议 0 / 未结构化 0）" in _hb
+          and "回填 1 条 / 3 项" in _hb
+          and "短引库→bib，生成期）：1 条" in _hb
+          and "B_参考文献核对.txt" in _hb)
+    _empty = _handoff.render(stem="Z")
+    check("⑩ 交接单四节空时写「无」",
+          all(t in _empty for t in _handoff.SECTION_TITLES)
+          and _empty.count("无") >= 3)
+finally:
+    os.unlink(_h_docx)
+
 print()
 print("=" * 78)
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))

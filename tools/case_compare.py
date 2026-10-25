@@ -9,22 +9,33 @@ l1_cite_missing↓；l1_ok false→true。违规：cite↓；bib↓；新增 fin
 （P2<P1<P0）；pages 变；l1_ok true→false；sha_ok true→false；案例增/删；允许清单之外的任何
 变化 → unlisted_change。缺失：基线有/当前无 → missing_in_current；基线无/当前有 →
 missing_in_baseline（保守）。
+corpus-diff 方向（B-221 修正）：l2/l3 是差异块计数（slcn/score.py：L2 表层/L3 实质，越少越好）
+→ 下降=improved（info）、上升=worsened；ok 1→0 / error 新增 / src_tbl 增加 / 基线行消失仍
+worsened；新增行仍 info。方向判据只在 `_corpus_conditions` 一处实现。
+产品内容 hash（B-221）：`--write-product-hashes RUN_DIR OUT_JSON` 读 RUN_DIR/summary.json，
+逐案例按 product_dir 对 `<stem>.tex` + `reference.bib`（无则 null）出 sha256 清单；
+`--product-hash-baseline BASELINE_JSON RUN_DIR` 比对，`--out` 落 product_hash_diff.{md,json}。
 CLI 退出码：compare-run 0/1/2（无违规/有违规/用法或读写错误）；corpus-diff 0/1/2；
+write-product-hashes 0/2；product-hash-baseline 0/1/2（无变化/有变化/用法或读写错误）；
 self-test 0/1。
 """
 import argparse
 import csv
+import hashlib
 import json
 import sys
 import tempfile
 from pathlib import Path
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 LEVEL_RANK = {"P2": 0, "P1": 1, "P0": 2}
 METRIC_ORDER = {n: i for i, n in enumerate(("case", "cite", "parencite", "footnote", "bib", "bib_keys", "pages", "sha_ok", "findings", "l1_ok", "l1_cite_missing", "l1_bib_missing"))}
 CSV_HEADER = ["issue", "slug", "channel", "lang", "ok", "raw_ratio", "content_acc", "l2", "l3", "ref_chars", "src_tbl", "out_tbl", "src_img", "out_img", "src_shape", "out_shape", "error"]
 # 简单 metric 统一规则：(增→allowed 类别, 减→violation 类别, 允许方向 +1/-1/0)
 SIMPLE_RULES = {"cite": ("cite_up", "cite_decrease", 1), "parencite": ("parencite_up", "unlisted_change", 1), "footnote": (None, "unlisted_change", 0), "pages": (None, "pages_changed", 0), "l1_cite_missing": ("l1_cite_missing_down", "unlisted_change", -1), "l1_bib_missing": (None, "unlisted_change", 0)}
+# corpus.csv 的 l2/l3 = 差异块计数（slcn/score.py：L2 表层差异块 / L3 实质差异块，越少越好）
+# 方向判据单点：corpus_diff 的方向只在 `_corpus_conditions` 使用本常量，勿在别处复制。
+CORPUS_LOWER_IS_BETTER = ("l2", "l3")
 
 
 def _dig(obj, *keys):
@@ -239,25 +250,46 @@ def _read_corpus_csv(path):
     return rows
 
 
+def _corpus_conditions(base, new):
+    """corpus_diff 的唯一方向判据点：返回 (worsened 条件表, improved 说明表)。
+
+    l2/l3 是差异块计数（`slcn/score.py`：L2 表层差异块 / L3 实质差异块，越少越好）
+    → 下降=improved（进 info）、上升=worsened；ok/error/src_tbl/行缺失方向不变。
+    """
+    worsened, improved = [], []
+    if base["ok"] == 1 and new["ok"] == 0:
+        worsened.append(("ok_regressed", "ok", 1, 0, "ok 1→0"))
+    if not base["error"] and new["error"]:
+        worsened.append(("error_new", "error", base["error"], new["error"], "error 新增"))
+    for column in CORPUS_LOWER_IS_BETTER:
+        if new[column] > base[column]:
+            worsened.append((column + "_up", column, base[column], new[column],
+                             f"{column} 上升 {base[column]} → {new[column]}（差异块计数，越少越好）"))
+        elif new[column] < base[column]:
+            improved.append(f"{column} 下降 {base[column]} → {new[column]}（差异块计数减少=改善）")
+    if new["src_tbl"] > base["src_tbl"]:
+        worsened.append(("src_tbl_up", "src_tbl", base["src_tbl"], new["src_tbl"], "src_tbl 增加"))
+    if base["ok"] == 0 and new["ok"] == 1:
+        improved.append("ok 0→1")
+    if base["error"] and not new["error"]:
+        improved.append("error 消失")
+    return worsened, improved
+
+
 def corpus_diff(baseline_path, new_path, out_dir=None) -> dict:
-    """按 (issue, slug) 对齐 corpus.csv；变坏 = ok 1→0 / error 新增 / l2·l3 下降 /
-    src_tbl 增加 / 基线行消失。新增行只记 info（不算变坏）。"""
+    """按 (issue, slug) 对齐 corpus.csv；变坏 = ok 1→0 / error 新增 / l2·l3 上升 /
+    src_tbl 增加 / 基线行消失。l2/l3 是差异块计数（slcn/score.py：越少越好）→ 下降=改善（info）。
+    新增行只记 info（不算变坏）。方向判据只在 `_corpus_conditions` 一处实现。"""
     base_rows, new_rows = _read_corpus_csv(baseline_path), _read_corpus_csv(new_path)
     worsened, info = [], []
     for key in sorted(set(base_rows) | set(new_rows)):
         label = f"{key[0]}/{key[1]}"; base, new = base_rows.get(key), new_rows.get(key)
         if base is None: info.append({"case": label, "kind": "row_added", "detail": "基线无此行（新增，不算变坏）"}); continue
         if new is None: worsened.append({"case": label, "category": "row_missing", "column": "row", "before": "present", "after": None, "detail": "基线行在新表中缺失（案例消失）"}); continue
-        conditions = []
-        if base["ok"] == 1 and new["ok"] == 0: conditions.append(("ok_regressed", "ok", 1, 0, "ok 1→0"))
-        if not base["error"] and new["error"]: conditions.append(("error_new", "error", base["error"], new["error"], "error 新增"))
-        for column in ("l2", "l3"):
-            if new[column] < base[column]: conditions.append((column + "_down", column, base[column], new[column], f"{column} 下降 {base[column]} → {new[column]}"))
-        if new["src_tbl"] > base["src_tbl"]: conditions.append(("src_tbl_up", "src_tbl", base["src_tbl"], new["src_tbl"], "src_tbl 增加"))
-        for category, column, before, after, detail in conditions: worsened.append({"case": label, "category": category, "column": column, "before": before, "after": after, "detail": detail})
-        if not conditions:
-            better = [text for text, hit in (("ok 0→1", base["ok"] == 0 and new["ok"] == 1), ("error 消失", bool(base["error"]) and not new["error"]), ("l2 上升", new["l2"] > base["l2"]), ("l3 上升", new["l3"] > base["l3"])) if hit]
-            if better: info.append({"case": label, "kind": "improved", "detail": "；".join(better)})
+        conditions, improved = _corpus_conditions(base, new)
+        for category, column, before, after, detail in conditions:
+            worsened.append({"case": label, "category": category, "column": column, "before": before, "after": after, "detail": detail})
+        if improved: info.append({"case": label, "kind": "improved", "detail": "；".join(improved)})
     worsened_cases = len({item["case"] for item in worsened})
     result = {"baseline": str(baseline_path), "new": str(new_path), "worsened": worsened_cases, "worsened_conditions": len(worsened), "worsened_rows": worsened, "info": info, "summary_line": f"CORPUS_DIFF worsened={worsened_cases}"}
     if out_dir:
@@ -267,6 +299,96 @@ def corpus_diff(baseline_path, new_path, out_dir=None) -> dict:
         md += _table(worsened, ["case", "category", "column", "before", "after", "detail"]) if worsened else ["（无）"]
         md += ["", f"## info（{len(info)}）", ""] + ([f"- {item['case']}：{item['detail']}" for item in info] or ["（无）"]) + ["", result["summary_line"], ""]
         (out / "corpus_diff.md").write_text("\n".join(md), encoding="utf-8")
+    return result
+
+
+# ── 产品内容 hash（B-221 A1②）：.tex/.bib 内容级对比，补「计数没变=没变化」盲区 ─────
+PRODUCT_FILES = ("{stem}.tex", "reference.bib")
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _product_dir_of(run_dir, case):
+    raw = case.get("product_dir") if isinstance(case, dict) else None
+    if not isinstance(raw, str) or not raw: return None
+    path = Path(raw)
+    return path if path.is_absolute() else Path(run_dir) / path
+
+
+def product_hashes(run_dir) -> dict:
+    """读 `<RUN_DIR>/summary.json`，逐案例按 product_dir 对 `<stem>.tex` + `reference.bib`
+    出 sha256 清单（stem = product_dir 目录名；文件/目录缺失 → sha256=null，条目仍保留）。"""
+    run_dir = Path(run_dir)
+    summary = _load_json(run_dir / "summary.json", "run summary.json")
+    cases = _cases_of(summary, "run summary.json")
+    out_cases = {}
+    for key in sorted(cases):
+        product_dir = _product_dir_of(run_dir, cases[key])
+        stem = product_dir.name if product_dir is not None else key
+        files = []
+        for template in PRODUCT_FILES:
+            name = template.format(stem=stem)
+            target = product_dir / name if product_dir is not None else None
+            files.append({"path": name,
+                          "sha256": _sha256_file(target) if target is not None and target.is_file() else None})
+        out_cases[key] = {"product_dir": str(product_dir) if product_dir is not None else None, "files": files}
+    missing = sum(1 for case in out_cases.values() for item in case["files"] if item["sha256"] is None)
+    result = {"tool": "case_compare.py", "version": VERSION, "run_dir": str(run_dir),
+              "summary": str(run_dir / "summary.json"), "cases": out_cases,
+              "summary_line": f"PRODUCT_HASHES cases={len(out_cases)} files={len(out_cases) * len(PRODUCT_FILES)} missing={missing}"}
+    return result
+
+
+def write_product_hashes(run_dir, out_json) -> dict:
+    """把产品内容 hash 清单写到 OUT_JSON（纯只读输入；父目录不存在则创建）。"""
+    result = product_hashes(run_dir)
+    dest = Path(out_json)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    return result
+
+
+def product_hash_diff(baseline_json, run_dir, out_dir=None) -> dict:
+    """产品 hash 清单 vs 当前 run：列 changed case + file + before/after sha；`out_dir` 非空
+    时落 product_hash_diff.{md,json}。stdout 末行由调用方打印 `summary_line`。"""
+    baseline = _load_json(baseline_json, "产品 hash 基线")
+    base_cases = baseline.get("cases")
+    if not isinstance(base_cases, dict) or not base_cases: raise ValueError("产品 hash 基线 的 cases 必须是非空 dict")
+    current = product_hashes(run_dir)
+    cur_cases = current["cases"]
+    changes = []
+    for key in sorted(set(base_cases) | set(cur_cases)):
+        before, after = base_cases.get(key), cur_cases.get(key)
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            changes.append({"case": key, "file": "(product_dir)", "before": "present" if before is not None else None,
+                            "after": "present" if after is not None else None,
+                            "detail": "案例新增" if before is None else "案例消失"})
+            continue
+        before_files = {item.get("path"): item.get("sha256") for item in before.get("files", []) if isinstance(item, dict)}
+        after_files = {item.get("path"): item.get("sha256") for item in after.get("files", []) if isinstance(item, dict)}
+        for name in sorted(set(before_files) | set(after_files)):
+            if before_files.get(name) != after_files.get(name):
+                changes.append({"case": key, "file": name,
+                                "before": before_files.get(name), "after": after_files.get(name)})
+    changed_cases = len({item["case"] for item in changes})
+    result = {"baseline": str(baseline_json), "run_dir": str(run_dir), "changed_cases": changed_cases,
+              "changed_files": len(changes), "changes": changes,
+              "summary_line": f"PRODUCT_HASH_DIFF changed={changed_cases}"}
+    if out_dir:
+        out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
+        (out / "product_hash_diff.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        md = ["# 产品内容 hash diff（case_compare --product-hash-baseline）", "",
+              f"- 基线清单：`{result['baseline']}`", f"- 当前 run：`{result['run_dir']}`",
+              f"- 变化案例：{changed_cases} / 变化文件：{len(changes)}", ""]
+        md += _table(changes, ["case", "file", "before", "after"]) if changes else ["（无变化）"]
+        md += ["", result["summary_line"], ""]
+        (out / "product_hash_diff.md").write_text("\n".join(md), encoding="utf-8")
     return result
 
 
@@ -314,16 +436,59 @@ def run_self_test() -> int:
         check("round-trip md/json + CLI 零差异 exit 0、stdout 末行 summary_line", result["summary_line"] in md_path.read_text(encoding="utf-8") and saved["summary_line"] == result["summary_line"] and saved["cases"] == result["cases"] and rc == 0 and buf.getvalue().strip().splitlines()[-1] == "COMPARE violations=0 allowed_changes=0")
         bad_json = tmp / "bad.json"; bad_json.write_text('{"cases": {}}', encoding="utf-8")
         check("非法输入（空 cases/非 dict/文件不存在）→ ValueError", all(raises(compare_run, current, path) for current, path in (({"cases": cur}, bad_json), ({"cases": []}, baseline), ({"cases": cur}, tmp / "missing.json"))))
-        csv_base = [",".join(CSV_HEADER), _corpus_row("90", "01"), _corpus_row("90", "02"), _corpus_row("90", "03"), _corpus_row("90", "04"), _corpus_row("90", "05"), _corpus_row("90", "06"), _corpus_row("90", "08", ok=0)]
-        csv_new = [",".join(CSV_HEADER), _corpus_row("90", "01"), _corpus_row("90", "02", ok=0), _corpus_row("90", "03", error="boom"), _corpus_row("90", "04", l2=9), _corpus_row("90", "05", src_tbl=2), _corpus_row("90", "07"), _corpus_row("90", "08", ok=1)]
+        csv_base = [",".join(CSV_HEADER), _corpus_row("90", "01"), _corpus_row("90", "02"), _corpus_row("90", "03"), _corpus_row("90", "04"), _corpus_row("90", "05"), _corpus_row("90", "06"), _corpus_row("90", "08", ok=0), _corpus_row("90", "09"), _corpus_row("90", "10")]
+        csv_new = [",".join(CSV_HEADER), _corpus_row("90", "01", l3=4), _corpus_row("90", "02", ok=0), _corpus_row("90", "03", error="boom"), _corpus_row("90", "04", l2=11), _corpus_row("90", "05", src_tbl=2), _corpus_row("90", "07"), _corpus_row("90", "08", ok=1), _corpus_row("90", "09", l3=6), _corpus_row("90", "10", l2=9)]
         corpus_base, corpus_new = tmp / "corpus_base.csv", tmp / "corpus_new.csv"
         corpus_base.write_text("\n".join(csv_base) + "\n", encoding="utf-8"); corpus_new.write_text("\n".join(csv_new) + "\n", encoding="utf-8")
         diff = corpus_diff(corpus_base, corpus_new, tmp / "corpus_out")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf): crc = main(["--corpus-diff", str(corpus_base), str(corpus_new)])
-        check("corpus：5 类变坏/未变化不误报/info/落盘/CLI exit 1 + 末行", diff["worsened"] == 5 and {v["category"] for v in diff["worsened_rows"]} == {"ok_regressed", "error_new", "l2_down", "src_tbl_up", "row_missing"} and not any(v["case"] == "90/01" for v in diff["worsened_rows"]) and {v["case"] for v in diff["info"]} >= {"90/07", "90/08"} and "CORPUS_DIFF worsened=5" in (tmp / "corpus_out" / "corpus_diff.md").read_text(encoding="utf-8") and json.loads((tmp / "corpus_out" / "corpus_diff.json").read_text(encoding="utf-8"))["worsened"] == 5 and crc == 1 and buf.getvalue().strip().splitlines()[-1] == "CORPUS_DIFF worsened=5")
+        category_hits = {(v["case"], v["category"]) for v in diff["worsened_rows"]}
+        info_by_case = {item["case"]: item["detail"] for item in diff["info"]}
+        check("corpus：6 类变坏/未变化不误报/info/落盘/CLI exit 1 + 末行", diff["worsened"] == 6 and category_hits == {("90/02", "ok_regressed"), ("90/03", "error_new"), ("90/04", "l2_up"), ("90/05", "src_tbl_up"), ("90/06", "row_missing"), ("90/09", "l3_up")} and not any(v["case"] == "90/01" for v in diff["worsened_rows"]) and {"90/07", "90/08"} <= set(info_by_case) and "CORPUS_DIFF worsened=6" in (tmp / "corpus_out" / "corpus_diff.md").read_text(encoding="utf-8") and json.loads((tmp / "corpus_out" / "corpus_diff.json").read_text(encoding="utf-8"))["worsened"] == 6 and crc == 1 and buf.getvalue().strip().splitlines()[-1] == "CORPUS_DIFF worsened=6")
+        check("corpus 方向正反例：l2/l3 下降 → improved（info，非变坏）；上升 → worsened",
+              ("90/01", "l3_down") not in category_hits and "l3 下降 5 → 4" in info_by_case.get("90/01", "")
+              and ("90/04", "l2_up") in category_hits and ("90/09", "l3_up") in category_hits)
+        # A1-1（独立验收 T3 补）：l2 下降同样必须判 improved（不止 l3 有正例）。
+        check("corpus 方向正例 2：l2 下降 → improved（info，非变坏）",
+              ("90/10", "l2_down") not in category_hits
+              and "l2 下降 10 → 9" in info_by_case.get("90/10", "")
+              and not any(v["case"] == "90/10" for v in diff["worsened_rows"]))
         bad_csv = tmp / "bad.csv"; bad_csv.write_text("issue,slug\n90,01\n", encoding="utf-8")
         check("corpus：表头不符 → ValueError", raises(corpus_diff, bad_csv, corpus_new))
+
+        # ── A1② 产品内容 hash（B-221）：清单结构 / 同内容 0 变化 / 改 1 字节 1 案例 ──
+        run_dir = tmp / "run"; prod_a, prod_b = run_dir / "products" / "A", run_dir / "products" / "B"
+        prod_a.mkdir(parents=True); prod_b.mkdir(parents=True)
+        (prod_a / "A.tex").write_text("tex-a", encoding="utf-8"); (prod_a / "reference.bib").write_text("bib-a", encoding="utf-8")
+        (prod_b / "B.tex").write_text("tex-b", encoding="utf-8")
+        (run_dir / "summary.json").write_text(json.dumps({"cases": {"a": {"product_dir": str(prod_a)}, "b": {"product_dir": str(prod_b)}}}), encoding="utf-8")
+        hashes_path = tmp / "product-hashes.json"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): hrc = main(["--write-product-hashes", str(run_dir), str(hashes_path)])
+        hashes = json.loads(hashes_path.read_text(encoding="utf-8"))
+        b_files = {item["path"]: item["sha256"] for item in hashes["cases"]["b"]["files"]}
+        check("产品 hash：清单含 case/相对路径/sha256，reference.bib 缺失 → null（CLI exit 0）",
+              hrc == 0 and hashes["cases"]["a"]["files"][0]["path"] == "A.tex"
+              and len(hashes["cases"]["a"]["files"][0]["sha256"]) == 64
+              and b_files.get("reference.bib") is None
+              and buf.getvalue().strip().splitlines()[-1].startswith("PRODUCT_HASHES cases=2"))
+        diff_path = tmp / "product-diff"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): drc = main(["--product-hash-baseline", str(hashes_path), str(run_dir), "--out", str(diff_path)])
+        check("产品 hash：同内容 → PRODUCT_HASH_DIFF changed=0（rc 0、落 md/json）",
+              drc == 0 and buf.getvalue().strip().splitlines()[-1] == "PRODUCT_HASH_DIFF changed=0"
+              and (diff_path / "product_hash_diff.md").is_file() and (diff_path / "product_hash_diff.json").is_file()
+              and json.loads((diff_path / "product_hash_diff.json").read_text(encoding="utf-8"))["changed_cases"] == 0)
+        (prod_a / "A.tex").write_bytes((prod_a / "A.tex").read_bytes() + b"!")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf): drc2 = main(["--product-hash-baseline", str(hashes_path), str(run_dir)])
+        changed = product_hash_diff(hashes_path, run_dir)
+        check("产品 hash：改 1 字节 → changed=1，列 case/file/before/after（rc 1）",
+              drc2 == 1 and buf.getvalue().strip().splitlines()[-1] == "PRODUCT_HASH_DIFF changed=1"
+              and changed["changed_cases"] == 1 and changed["changed_files"] == 1
+              and changed["changes"][0]["case"] == "a" and changed["changes"][0]["file"] == "A.tex"
+              and changed["changes"][0]["before"] != changed["changes"][0]["after"])
 
     failed = checks.count(False)
     print()
@@ -332,11 +497,13 @@ def run_self_test() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="case_compare.py", description="批次运行对比（--compare-run）与 corpus 回归 diff（--corpus-diff）；纯 stdlib、离线、只写 --out")
+    ap = argparse.ArgumentParser(prog="case_compare.py", description="批次运行对比（--compare-run）、corpus 回归 diff（--corpus-diff）与产品内容 hash 对比（B-221）；纯 stdlib、离线、只写 --out")
     ap.add_argument("--self-test", action="store_true", help="跑内置自检（hermetic，秒级）")
     ap.add_argument("--compare-run", nargs=2, metavar=("BASELINE_JSON", "CURRENT_JSON"), help="比较基线 summary.json 与当前 run/summary JSON")
     ap.add_argument("--corpus-diff", nargs=2, metavar=("BASELINE_CSV", "NEW_CSV"), help="比较两份 corpus.csv（按 issue+slug 对齐）")
-    ap.add_argument("--out", default="", help="输出目录（compare.md/json 或 corpus_diff.*）")
+    ap.add_argument("--write-product-hashes", nargs=2, metavar=("RUN_DIR", "OUT_JSON"), help="读 <RUN_DIR>/summary.json，逐案例对 <stem>.tex + reference.bib 出 sha256 清单 JSON（B-221）")
+    ap.add_argument("--product-hash-baseline", nargs=2, metavar=("BASELINE_JSON", "RUN_DIR"), help="与产品 hash 基线清单比较，--out 落 product_hash_diff.{md,json}（B-221）")
+    ap.add_argument("--out", default="", help="输出目录（compare.md/json、corpus_diff.* 或 product_hash_diff.*）")
     ap.add_argument("--label", default="", help="当前 run 的标签（写进 md/json）")
     ap.add_argument("--version", action="version", version=f"case_compare.py {VERSION}")
     return ap
@@ -346,6 +513,12 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.self_test: return run_self_test()
     try:
+        if args.write_product_hashes:
+            result = write_product_hashes(args.write_product_hashes[0], args.write_product_hashes[1])
+            print(result["summary_line"]); return 0
+        if args.product_hash_baseline:
+            result = product_hash_diff(args.product_hash_baseline[0], args.product_hash_baseline[1], args.out or None)
+            print(result["summary_line"]); return 1 if result["changed_cases"] else 0
         if args.compare_run:
             result = compare_run(_load_json(args.compare_run[1], "当前 run"), args.compare_run[0], args.out or None, args.label)
             print(result["summary_line"]); return 1 if result["violations"] else 0

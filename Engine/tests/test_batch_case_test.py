@@ -639,6 +639,34 @@ try:
           and batch.build_parser().parse_args(["--inventory"]).inventory is True
           and batch.build_parser().parse_args(["--limit", "3"]).limit == 3)
 
+    # ── B-221 A2：驱动解释器 ↔ Engine/vendor ABI 自检（注入探测；不启真实子进程）──
+    import json as _json
+    import contextlib as _ctx
+    import io as _io
+
+    def _dfake(file_name, version=(3, 14)):
+        return lambda cmd, env: (0, _json.dumps(
+            {"ok": True, "file": file_name, "version": list(version)}), "")
+
+    check("B-221 驱动自检：vendor+ABI 匹配 → 通过 / ABI 不匹配 → 明确原因",
+          batch.driver_interpreter_problem(
+              "fake", runner=_dfake(str(batch.VENDOR / "lxml" / "etree.cpython-314-darwin.so"))) is None
+          and "ABI 不匹配" in (batch.driver_interpreter_problem(
+              "fake", runner=_dfake(str(batch.VENDOR / "lxml" / "etree.cpython-313-darwin.so"))) or ""))
+    _orig_problem = batch.driver_interpreter_problem
+    _orig_run = batch.run_batch
+    batch.driver_interpreter_problem = lambda *a, **k: "ABI 不匹配（测试注入）"
+    batch.run_batch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("自检失败时不应进入 run_batch"))
+    try:
+        _err = _io.StringIO()
+        with _ctx.redirect_stderr(_err):
+            _rc = batch.main([])
+    finally:
+        batch.driver_interpreter_problem = _orig_problem
+        batch.run_batch = _orig_run
+    check("B-221 main：驱动自检失败 → rc=2 fail-fast（未进入 run_batch）",
+          _rc == 2 and "驱动自检" in _err.getvalue() and "ABI 不匹配" in _err.getvalue())
+
     # ── ⑧ manifest 附加源（metadata / --metadata / --no-metadata）──
     meta_p = mk("Liang_Zhang/yalcin puzzle.tex", 400)
     main_p = mk("Liang_Zhang/main.tex", 600)

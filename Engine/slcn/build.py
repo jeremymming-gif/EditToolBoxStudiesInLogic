@@ -823,6 +823,10 @@ class BuildResult:
     # 「任务书附三、正文全文/引用上下文」使用（--coop-fulltext；默认关）。
     # **纯附加、默认空**：不参与渲染，也不改任何产物/日志。
     body_text: str = ""
+    # B-221 C1（初排交接单）：bibcheck 结论小字典（`_write_bib_report` 返回值）与交接单
+    # 落盘路径。**纯附加、默认空**：不参与渲染，也不改 .tex/.bib 一个字节。
+    handoff_bib: dict | None = None
+    handoff_path: str | None = None
 
 
 def _citation_points(source_body: str, unmatched: list[str]) -> list[tuple[str, int, str]]:
@@ -860,8 +864,12 @@ def _citation_points(source_body: str, unmatched: list[str]) -> list[tuple[str, 
 
 
 def _write_bib_report(bib_path: str, out_dir: str, stem: str, say, warnings: list,
-                      unmatched: list[tuple[str, int, str]] | None = None) -> None:
-    """生成参考文献核对报告。
+                      unmatched: list[tuple[str, int, str]] | None = None) -> dict:
+    """生成参考文献核对报告。**返回 bibcheck 结论小字典**（B-221 C1 交接单汇总用；
+    写文件逻辑与从前逐字节相同）：`{total, must, nice, unstructured, report_path}`；
+    未生成报告时 `report_path` 为空串。
+
+    （返回类型从 None 改成 dict 是纯附加：既有调用方都按副作用使用，不看返回值。）
 
     按用户要求核对：期刊文章要有卷号/期号/页码；书籍章节要有页码/出版地/出版商；
     书籍要有出版地/出版商；学位论文与会议论文按往期样式。**只报告，不擅自改内容。**
@@ -879,12 +887,14 @@ def _write_bib_report(bib_path: str, out_dir: str, stem: str, say, warnings: lis
     text = open(bib_path, encoding="utf-8", errors="replace").read()
     rep = bibcheck.check(text)
     points = list(unmatched or [])
+    summary = {"total": rep.total, "must": rep.n_must, "nice": rep.n_nice,
+               "unstructured": rep.n_unstructured, "report_path": ""}
     # ⚠️ 门槛 = 「字段有问题」**或**「有没转成 cite 的引用」。
     #    从前只看前者，于是「bib 干净 + 正文有引用没转」的稿子连报告都不出（第 80 条）；
     #    反过来，两个条件都不满足时行为与从前一字不差（第 61 条修好的出报告门槛不受影响）。
     if not rep.issues and not points:
         say(f"   参考文献核对：{rep.total} 条，未发现问题 ✅")
-        return
+        return summary
 
     path = os.path.join(out_dir, f"{stem}_参考文献核对.txt")
     body = bibcheck.format_report(rep, f"{stem} 参考文献核对")
@@ -927,6 +937,8 @@ def _write_bib_report(bib_path: str, out_dir: str, stem: str, say, warnings: lis
             f"参考文献有 {rep.n_must} 项必补字段（卷号/期号/页码/出版地等），"
             f"详见 {os.path.basename(path)}"
         )
+    summary["report_path"] = path
+    return summary
 
 
 def _prepare_template(lang: str, sty: str | None, skeleton: str | None, say) -> tuple[str, T.ResolvedTemplate]:
@@ -2026,6 +2038,7 @@ def build_docx(
     c_class_union: bool | None = None,
     structured: dict | None = None,
     bibdb_store: object | None = None,
+    handoff: bool = True,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -2076,6 +2089,13 @@ def build_docx(
                     （bib-refs `union_entries`）；无法匹配不编造。CLI 回退开关
                     `--no-c-class-union`。低层 `parse_docx()` 默认仍 False
                     （docx_audit 冻结基线不变）。
+    handoff         **初排交接单**（B-221 C1，默认开）：True = **全部产物写完后**生成
+                    `<basename>_初排交接单.txt`，四节固定（① bibcheck 结论 + 引用库
+                    回填 + 核对报告指针；② 未识别元数据逐项 + 编辑侧未提供字段；
+                    ③ 最终 .tex 里【需补充…】占位逐项；④ warnings 原文逐条；空节写
+                    「无」）。**只汇总引用、不重算判据**（`slcn/handoff.py`），
+                    .tex/.bib 一个字节都不动；False = 产物目录与接入前逐字节相同
+                    （`convert.py --no-handoff` 接线）。
     """
     from .docxsource import (
         link_citations,
@@ -2567,12 +2587,18 @@ def build_docx(
         except Exception as e:  # noqa: BLE001  拆不动就保持原样，不能因此中断出稿
             warnings.append(f"参考文献结构化跳过：{type(e).__name__}: {e}")
 
-    # 参考文献核对报告
+    # 参考文献核对报告（B-221 C1：返回值是 bibcheck 结论小字典，供交接单汇总；
+    # 写文件逻辑不变）
+    bib_summary: dict | None = None
     if bib_out:
-        _write_bib_report(bib_out, out_dir, basename, say, warnings,
-                          unmatched=unmatched_points)
+        bib_summary = _write_bib_report(bib_out, out_dir, basename, say, warnings,
+                                        unmatched=unmatched_points)
 
-    return BuildResult(
+    missing_fields = [
+        f for f in ("myvolnumber", "myissnumber", "mypubyear", "myfirstpage", "mylastpage", "mypages")
+        if f not in editorial_fields(meta)
+    ]
+    res_obj = BuildResult(
         tex_path=tex_path,
         bib_path=bib_out,
         sty_path=sty_out,
@@ -2581,10 +2607,7 @@ def build_docx(
         rule_hits={**res.applied, **_pf},
         audit=audit,
         warnings=warnings,
-        missing_fields=[
-            f for f in ("myvolnumber", "myissnumber", "mypubyear", "myfirstpage", "mylastpage", "mypages")
-            if f not in editorial_fields(meta)
-        ],
+        missing_fields=missing_fields,
         bib_keys_used={e.key for e in doc.refs},
         # 第 68 条：把「条目 → 源稿原文」两份材料带出去（⑪ 的任务书与 AI 预跑要用），
         # 只做浅拷贝，不改 doc 本身。
@@ -2593,4 +2616,15 @@ def build_docx(
         body_text=str(body or ""),
         ref_raw_lines=list(doc.ref_raw_lines),
         ref_raw_by_key=dict(doc.ref_raw_by_key),
+        handoff_bib=bib_summary,
     )
+    # B-221 C1 初排交接单：**最后一步**写（全部产物已落盘），只汇总已有结论；
+    # 失败绝不阻断出稿，只补一条 warning。默认开；handoff=False 时目录零新增。
+    if handoff:
+        try:
+            from . import handoff as _handoff
+
+            _handoff.write_from_result(res_obj, log=say)
+        except Exception as e:  # noqa: BLE001  附加产物，不许连累出稿
+            warnings.append(f"初排交接单生成失败（不影响出稿）：{type(e).__name__}: {e}")
+    return res_obj

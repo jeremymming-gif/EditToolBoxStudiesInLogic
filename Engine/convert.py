@@ -89,6 +89,9 @@ _OWN_STEM_SUFFIXES = (
     "_参考文献核对.txt", "_参考文献联网核实.txt", "_原稿.pdf",
     # 2026-10-15 新增：并入 AI 结果之后的离线回读校验报告（`apply_ai_merge()` 写）
     "_回读校验报告.md",
+    # B-221 C1：Word→初排默认生成的「初排交接单」。不认它的话，第二次跑同一篇稿子
+    # 会被自己上次的交接单拦下（「含非本工具的文件」）。
+    "_初排交接单.txt",
 )
 _IMG_SUFFIXES = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".eps", ".svg", ".pdf")
 
@@ -2128,6 +2131,24 @@ def _add_c_class_union_args(ap: argparse.ArgumentParser) -> None:
                     help="回退旧口径（C 类关闭，等价于 v8 行为；对照/应急用）")
 
 
+def _add_handoff_args(ap: argparse.ArgumentParser) -> None:
+    """注册「初排交接单」开关（B-221 C1；抽成函数供测试直接跑 argparse 语义）。
+
+    默认**生成**（`handoff=True`）——Word→初排每次默认带一份 `<stem>_初排交接单.txt`；
+    `--no-handoff` 关闭时产物目录与接入前逐字节相同。LaTeX 直读通道接受该参数但 no-op
+    （交接单只汇总 Word 解析/初排阶段的数据）。
+    """
+    ap.add_argument("--no-handoff", dest="handoff", action="store_false",
+                    default=True,
+                    help="不生成 <stem>_初排交接单.txt（默认生成；关闭后产物目录与旧行为"
+                         "逐字节相同）")
+
+
+def _handoff_enabled(args) -> bool:
+    """C1 开关取值（默认开；旧调用方/测试名空间没有该键也按开处理）。"""
+    return bool(getattr(args, "handoff", True))
+
+
 def main() -> int:
     # 第 86 条：Windows 的 stdout 默认是控制台代码页（cp936），中文日志会被管道接走后
     # 乱码甚至 UnicodeEncodeError 崩在半路。这里**第一步**就切到 UTF-8（mac 上是空操作）。
@@ -2184,6 +2205,7 @@ def main() -> int:
     ap.add_argument("--list-editors", action="store_true",
                     help="只列出全库出现过的「责任编辑」姓名（每行「姓名<TAB>篇数」），供界面下拉用")
     ap.add_argument("--compile", action="store_true", help="生成后立即编译出 PDF")
+    _add_handoff_args(ap)
     ap.add_argument("--scan", action="store_true",
                     help="只扫描源文件所在目录，列出各文件角色（正文/参考文献/脚注/图）后退出")
     ap.add_argument("--refs", default=None,
@@ -2756,6 +2778,8 @@ def main() -> int:
                 c_class_union=resolve_c_class_union(args),
                 # B-220 N6：短引库解析（引用库默认开；--no-bibdb-apply 等关闭）
                 bibdb_store=_bibdb_store,
+                # B-221 C1：初排交接单默认生成；--no-handoff 关闭（目录逐字节回旧）
+                handoff=_handoff_enabled(args),
             )
         else:
             _bib_path = find_bib(source, args.bib)
@@ -2931,7 +2955,18 @@ def main() -> int:
     #    回填必须同样生效——否则同一源「compile 模式 vs --verify-plan 模式」的
     #    reference.bib 不同（两遍 sha 不一致 → NONDETERMINISTIC）。
     if not args.verify_refs:
-        bibdb_readonly_scan(args, res)
+        bibdb_info = bibdb_readonly_scan(args, res)
+        # B-221 C1：交接单在「全部产物写完」之后刷新一次——build_docx 生成时看不到 ⑦
+        # 引用库回填（它改的是 build 之后才写回的 reference.bib），这里用 ⑦ 的现成返回值
+        # 补上「引用库回填命中/应用条数」，并把最终 .tex 作为 ③ 的汇总对象。只重渲染汇总，
+        # 不重算判据、不改任何 .tex/.bib；失败不阻断出稿。
+        if _handoff_enabled(args) and getattr(res, "handoff_path", None):
+            try:
+                from slcn import handoff as _handoff
+
+                _handoff.write_from_result(res, bibdb=bibdb_info, log=print)
+            except Exception as e:  # noqa: BLE001  附加产物，不许连累出稿
+                print(f"   ⚠ 初排交接单刷新失败（不影响出稿）：{type(e).__name__}: {e}")
 
     # ⚠️ ⑨ 编译 / ⑩ 导出原稿 PDF **挪到了 ⑪ 之后**（2026-10-15，见下面第 ⑪ 节末尾）：
     #    用户决定「AI 结果要进产物」，而并进去的条目必须体现在 PDF 里——所以顺序必须是
