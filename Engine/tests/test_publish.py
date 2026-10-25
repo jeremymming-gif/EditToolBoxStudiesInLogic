@@ -9,10 +9,13 @@
   (d) 缺 ① 的报告 ⇒ 第 ② 步**退出码 2 中止**（不静默跳过）；
   (e) 第 ⑤ 步**显式传** `--nest-outlines --editors-page --back-cover`（默认开），
       `--no-*` 逐个关闭；而 `slcn/pdfmerge.merge_issue` 自己的默认值**仍是全关**（默认零变化）；
-  (f) 第 ④ 步取期目录根最新 `Chinese Content_<ts>.tex` / `contents_<ts>.tex` → 复制为
-      `000*/Chinese Content.tex` / `contents.tex`（保留根下 .tex）→ 在 000* 内 xelatex ×2；
-      缺 000 目录 ⇒ 退出码 2 + 提示 `--skip-toc-pdf`；`--skip-toc-pdf` 跳过④并对缺 PDF 告警；
-      xelatex 不在 ⇒ 按「缺工具」失败（测试不依赖本机装 TeX；只有最后一条真编译断言会 SKIP）。
+  (f) 第 ④ 步调 `slcn/tocdelivery.py`（唯一实现，toc.py --place --compile 共用）：
+      取期目录根最新 `Chinese Content_<ts>.tex` / `contents_<ts>.tex` → 复制为
+      `000*/Chinese Content.tex` / `contents.tex`（保留根下 .tex）→ 字体前置检查 → 在 000* 内
+      xelatex ×2 → 页数 > 1 时单页适配；**缺 000 目录 ⇒ 自动创建**（B-226，不再 rc2）；
+      `--skip-toc-pdf` 跳过④并对缺 PDF 告警；编译/字体失败 ⇒ 退出码 2 + 可操作原因
+      （测试全部把编译/字体检查换成假实现，不依赖本机装 TeX）。
+  (g) 第 ② 步**不再硬传 `--template <本期>`**：模板解析与「生成目录」同一套；显式 `--template` 才传。
 
 测试全部用 tempfile 合成期目录 / 假步骤，**不读真实稿件库**（hermetic）。
 """
@@ -34,6 +37,7 @@ sys.path.insert(0, str(ENGINE))
 
 import publish as P                              # noqa: E402
 from slcn import pdfmerge as M                   # noqa: E402
+from slcn import tocdelivery as TD               # noqa: E402
 
 pass_n = 0
 fails: list[str] = []
@@ -255,7 +259,7 @@ check("(e6) mergepdf.py CLI 三开关仍是 store_true（默认 False 的原始�
       and not any(f"--no-{x}" in _merge_src
                   for x in ("nest-outlines", "editors-page", "back-cover")))
 
-print("\n── (f) 第 ④ 步目录 PDF 落位（合成 000 目录；编译函数用假实现，不依赖 TeX）──")
+print("\n── (f) 第 ④ 步目录 PDF 落位（调 tocdelivery；编译/字体检查用假实现，不依赖 TeX）──")
 
 
 def mk_toc_root(newer_content: str = "NEW-CONTENT", newer_en: str = "NEW-CONTENTS") -> tuple[str, str]:
@@ -274,18 +278,54 @@ def mk_toc_root(newer_content: str = "NEW-CONTENT", newer_en: str = "NEW-CONTENT
 compiled: list[tuple[str, str]] = []
 
 
-def fake_compile(toc_dir: str, stem: str):
-    compiled.append((toc_dir, stem))
-    pdf = os.path.join(toc_dir, stem + ".pdf")
-    with open(pdf, "wb") as fh:
-        fh.write(b"%PDF-1.4 fake\n")
-    return True, pdf
+def fake_compile_all(folder: str, stems) -> dict:
+    """假的 tocdelivery.compile_pdfs：写假 PDF + 1 页 log，记录调用。"""
+    out = {}
+    for key, stem in stems:
+        compiled.append((folder, stem))
+        pdf = os.path.join(folder, stem + ".pdf")
+        with open(pdf, "wb") as fh:
+            fh.write(b"%PDF-1.4 fake\n")
+        with open(os.path.join(folder, stem + ".log"), "w", encoding="utf-8") as fh:
+            fh.write(f"Output written on {stem}.pdf (1 page).\n")
+        out[key] = (True, pdf)
+    return out
+
+
+def install_fake_delivery(*, font_fail: bool = False, compile_fail_stem: str = "",
+                          pages: dict | None = None):
+    """替换 tocdelivery 的字体检查/编译/单页适配（交付链其余部分用真实现）。返回恢复函数。"""
+    orig = (TD.check_windows_fonts, TD.compile_pdfs, TD.fit_single_page)
+    page_map = pages or {"zh": 1, "en": 1}
+
+    def fake_fonts():
+        return (False, "缺少 Windows 字体（SimSun）") if font_fail else (True, "")
+
+    def fake_compile(folder: str, stems) -> dict:
+        out = fake_compile_all(folder, stems)
+        for key, stem in stems:
+            if compile_fail_stem and stem == compile_fail_stem:
+                out[key] = (False, "xelatex 第 1/2 次失败（退出码 1）：! Fake error")
+        return out
+
+    def fake_fit(folder, stems, compile_func, log=lambda _s: None):
+        return dict(page_map), ""
+
+    TD.check_windows_fonts, TD.compile_pdfs, TD.fit_single_page = fake_fonts, fake_compile, fake_fit
+
+    def restore() -> None:
+        TD.check_windows_fonts, TD.compile_pdfs, TD.fit_single_page = orig
+
+    return restore
 
 
 root, toc_dir = mk_toc_root()
 compiled.clear()
-with patched("_compile_toc_pdf", fake_compile):
+_restore = install_fake_delivery()
+try:
     res = P._step4_toc_pdf(root, P._Opts(root=root))
+finally:
+    _restore()
 check("(f1) 落位成功：退出码 0", res.rc == 0, f"rc={res.rc} reason={res.reason}")
 check("(f2) 取最新一份 tex 复制为 000*/Chinese Content.tex",
       open(os.path.join(toc_dir, "Chinese Content.tex"), encoding="utf-8").read() == "NEW-CONTENT")
@@ -302,28 +342,58 @@ check("(f5) 根下的带时间戳 .tex 全部保留（供下一期继承）",
 root2 = mkroot()
 os.makedirs(os.path.join(root2, "000 目录"), exist_ok=True)
 res = P._step4_toc_pdf(root2, P._Opts(root=root2))
-check("(f6) 根下没有目录 tex：退出码 2 + 原因提示先跑第 2 步",
-      res.rc == 2 and "请先跑第 2 步" in res.reason, f"rc={res.rc} reason={res.reason}")
+check("(f6) 根下没有目录 tex：退出码 2 + 原因提示先生成目录",
+      res.rc == 2 and "先生成目录" in res.reason, f"rc={res.rc} reason={res.reason}")
 
 # 编译失败 ⇒ 退出码 2（不静默用旧 PDF）
-root3, toc3 = mk_toc_root()
+root3, _toc3 = mk_toc_root()
 compiled.clear()
-with patched("_compile_toc_pdf", lambda d, s: (False, "xelatex 第 1/2 次失败（退出码 1）：! Fake error")):
+_restore = install_fake_delivery(compile_fail_stem="contents")
+try:
     res = P._step4_toc_pdf(root3, P._Opts(root=root3))
+finally:
+    _restore()
 check("(f7) 目录 PDF 编译失败：退出码 2 + 原因说明不拿旧 PDF 合并",
       res.rc == 2 and "不会拿旧 PDF 继续合并" in res.reason, f"rc={res.rc} reason={res.reason}")
 
-print("\n── (g) 000 目录缺失 / --skip-toc-pdf ──")
+# 字体前置检查失败 ⇒ 退出码 2 + 原因（不编译、绝不静默换字体）
+root3b, _toc3b = mk_toc_root()
+compiled.clear()
+_restore = install_fake_delivery(font_fail=True)
+try:
+    res = P._step4_toc_pdf(root3b, P._Opts(root=root3b))
+finally:
+    _restore()
+check("(f8) 字体检查失败：退出码 2 + 可操作原因，且**没有启动编译**（不静默换字体）",
+      res.rc == 2 and "缺少 Windows 字体" in res.reason and not compiled,
+      f"rc={res.rc} reason={res.reason} compiled={compiled}")
+
+print("\n── (g) 缺 000 目录 ⇒ **自动创建**（B-226）；--skip-toc-pdf 仍跳过 ──")
 root4 = mkroot()
 mkfile(os.path.join(root4, "Chinese Content_20261021_130000.tex"), "NEW")
 mkfile(os.path.join(root4, "contents_20261021_130000.tex"), "NEW-EN")
-res = P._step4_toc_pdf(root4, P._Opts(root=root4))
-check("(g1) 无 000* 目录且未 --skip-toc-pdf：退出码 2", res.rc == 2, f"rc={res.rc}")
-check("(g2) 原因给出可操作建议「加 --skip-toc-pdf」", "--skip-toc-pdf" in res.reason, res.reason)
-rc, out, err = run_main(["--folder", root4, "--from", "4"])
-check("(g3) main 级：末行「卡在第 4 步（目录 PDF 落位）」+ stderr 带原因",
-      rc == 2 and "卡在第 4 步（目录 PDF 落位）" in last_line(out) and "--skip-toc-pdf" in err,
-      f"rc={rc} last={last_line(out)}")
+compiled.clear()
+_restore = install_fake_delivery()
+try:
+    res = P._step4_toc_pdf(root4, P._Opts(root=root4))
+finally:
+    _restore()
+check("(g1) 无 000* 目录且未 --skip-toc-pdf：**自动创建** 000 Table of Contents 后照常落位编译",
+      res.rc == 0 and os.path.isdir(os.path.join(root4, "000 Table of Contents"))
+      and [s for _d, s in compiled] == ["Chinese Content", "contents"],
+      f"rc={res.rc} reason={res.reason} compiled={compiled}")
+check("(g2) 自动创建的 000 目录里出现两份固定名 tex+pdf",
+      all(os.path.isfile(os.path.join(root4, "000 Table of Contents", n))
+          for n in ("Chinese Content.tex", "contents.tex",
+                    "Chinese Content.pdf", "contents.pdf")))
+compiled.clear()
+_restore = install_fake_delivery()
+try:
+    rc, out, err = run_main(["--folder", root4, "--from", "4"])
+finally:
+    _restore()
+check("(g3) main 级：缺 000 不再中止（rc=0，末行「5 步都跑完」）",
+      rc == 0 and last_line(out).startswith("完成。出刊："), f"rc={rc} last={last_line(out)}")
 
 # --skip-toc-pdf：000 目录齐 → 跳过且不复制不编译，退出码 0
 root5, toc5 = mk_toc_root()
@@ -334,12 +404,16 @@ mkfile(os.path.join(toc5, "Chinese Content.tex"), "STALE")
 compiled.clear()
 
 
-def must_not_compile(toc_dir: str, stem: str):
+def must_not_compile(folder: str, stems):
     raise AssertionError("--skip-toc-pdf 时不应编译目录 PDF")
 
 
-with patched("_compile_toc_pdf", must_not_compile):
+_restore = install_fake_delivery()
+TD.compile_pdfs = must_not_compile
+try:
     res = P._step4_toc_pdf(root5, P._Opts(root=root5, skip_toc_pdf=True))
+finally:
+    _restore()
 check("(g4) --skip-toc-pdf 且 000 里 PDF 齐：退出码 0", res.rc == 0, f"rc={res.rc}")
 check("(g5) --skip-toc-pdf 跳过整个第 4 步（连 tex 都不复制）",
       open(os.path.join(toc5, "Chinese Content.tex"), encoding="utf-8").read() == "STALE")
@@ -350,13 +424,24 @@ res = P._step4_toc_pdf(root5, P._Opts(root=root5, skip_toc_pdf=True))
 check("(g7) --skip-toc-pdf 且 000 缺目录 PDF：退出码 1 + 明确告警缺哪份",
       res.rc == 1 and any("缺" in w and "contents.pdf" in w for w in res.warnings),
       f"rc={res.rc} warnings={res.warnings}")
+# --skip-toc-pdf 且期目录根本没有 000：仍不自动创建（跳过就是跳过），告警两份都缺
+root5b = mkroot()
+mkfile(os.path.join(root5b, "Chinese Content_20261021_130000.tex"), "X")
+mkfile(os.path.join(root5b, "contents_20261021_130000.tex"), "Y")
+res = P._step4_toc_pdf(root5b, P._Opts(root=root5b, skip_toc_pdf=True))
+check("(g7b) --skip-toc-pdf 反对称：无 000 时不自动创建目录、告警缺两份 PDF",
+      res.rc == 1 and not os.path.isdir(os.path.join(root5b, "000 Table of Contents"))
+      and len(res.warnings) == 1 and "Chinese Content.pdf" in res.warnings[0],
+      f"rc={res.rc} warnings={res.warnings}")
 
 orig_step4 = P._step4_toc_pdf
 calls, restore = install_fake_steps()
 P.STEP_FUNCS[4] = orig_step4          # 第 4 步保留真实现，其余步骤用假实现
+_restore = install_fake_delivery()
 try:
     rc, out, _ = run_main(["--folder", root5, "--only", "4", "--skip-toc-pdf"])
 finally:
+    _restore()
     restore()
 check("(g8) main：--skip-toc-pdf 告警计入汇总、退出码 1，契约行仍最后一行",
       rc == 1 and "只跑了第 4 步" in last_line(out)
@@ -390,18 +475,31 @@ def fake_run_e2e(argv: list[str]) -> P._StepResult:
 
 
 compiled.clear()
-with patched("_run_script", fake_run_e2e), patched("_compile_toc_pdf", fake_compile):
-    rc, out, err = run_main(["--folder", root6])
+_restore = install_fake_delivery()
+try:
+    with patched("_run_script", fake_run_e2e):
+        rc, out, err = run_main(["--folder", root6])
+finally:
+    _restore()
 check("(i1) 退出码 0", rc == 0, f"rc={rc} err={err.strip()}")
 check("(i2) 子进程调用顺序 = infocheck → toc → compileall → mergepdf",
       order_scripts == ["infocheck.py", "toc.py", "compileall.py", "mergepdf.py"], str(order_scripts))
-check("(i3) 第 ①②③ 步参数正确（--folder / --report+--template）",
-      argv_by_script["infocheck.py"][1:] == ["--folder", root6]
-      and argv_by_script["toc.py"][1] == "--report"
-      and argv_by_script["toc.py"][3] == "--template"
-      and argv_by_script["toc.py"][4] == root6
+check("(i3) 第 ② 步只传 `--report`、**不硬传 `--template`**（模板解析与生成目录同一套，E8）",
+      argv_by_script["toc.py"][1] == "--report" and "--template" not in argv_by_script["toc.py"]
       and argv_by_script["compileall.py"][1:] == ["--folder", root6],
       str(argv_by_script))
+# 显式 --template 时才透传
+_restore = install_fake_delivery()
+try:
+    with patched("_run_script", fake_run_e2e):
+        run_main(["--folder", root6, "--only", "2", "--template", "/x/2026年第4期(89)"])
+finally:
+    _restore()
+check("(i3b) 显式 `--template` 时第 ② 步透传（口径不变，仍可用）",
+      argv_by_script["toc.py"][1:] == ["--report",
+                                       os.path.join(root6, "信息检查_20261021_130000.txt"),
+                                       "--template", "/x/2026年第4期(89)"],
+      str(argv_by_script["toc.py"]))
 check("(i4) 第 ④ 步真跑了：000 里出现复制来的目录 tex 与编译出的 PDF",
       open(os.path.join(root6, "000 Table of Contents", "Chinese Content.tex"),
            encoding="utf-8").read() == "E2E-CN"

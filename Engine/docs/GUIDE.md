@@ -13,13 +13,13 @@
 > ⚠️ **两条红线**（原文在下面「三、用法」末尾）：**原稿只读**；**稿件仓不做任何 git 写操作**
 > （工具箱仓与笔记仓的提交口径另见仓库根 `AGENTS.md` 红线 3）。
 
-## GUI 各页在干什么（速查，15 页）
+## GUI 各页在干什么（速查，mac 15 页 / Windows 14 页）
 
 App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + 右侧当前功能页 + 下方运行日志**」
 （`sources-mac/Views/MainWindow.swift`，Windows 版同一套结构）。侧边栏按用途分三组——
 「单篇稿件」「整期装配」「引用库」——外加一个「设置」：「初排转换」是每篇稿子的第一步；文献核实有**两个主要入口**：
 两段式 AI 协同（第一段产出任务书）与「文献回读校验」页（离线回读/手动并回，高级），CLI `--verify-refs` 仍可使用
-（拿外部 AI 改完交回的 `.bib` 做离线体检 / 手动并回），「本期出刊」是整期装配的一键入口；
+（拿外部 AI 改完交回的 `.bib` 做离线体检 / 手动并回），整期装配按「检查tex信息 → 编译全部 → 生成目录 → 删除临时文件 → 目录摘要推送」走，整期合并 PDF 用「合并文件」页；
 「设置」是配置项、不属于流程某一步，所以单独放组外底部。面向编辑的操作步骤见 `使用说明.md`。
 
 > **日志两层（2026-10-17，两平台同一套判据）**：运行日志默认「摘要」（只留阶段/结果/关键行），
@@ -41,9 +41,8 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 合并文件 | 把各篇合成一期（扉页 → 编委页 → 中英目录 → 各篇 → 封底，重建书签） | `sources-mac/Features/MergeFeature.swift` |
 | 检查 tex 信息 | 查 tex 里编辑关心的字段是否齐（并核对 PDF 实际页数） | `sources-mac/Features/InfoCheckFeature.swift` |
 | 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） | `sources-mac/Features/CompileFeature.swift` |
-| 生成目录 | 按模板继承生成中英文目录（条目断行/栏目行在引擎侧） | `sources-mac/Features/TocFeature.swift`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
+| 生成目录 | 选检查报告 → **一键最终交付**：生成中英文目录 → 缺 `000 Table of Contents` 自动创建 → 落位固定名（`Chinese Content.tex/.pdf`、`contents.tex/.pdf`）→ XeLaTeX ×2 编译；结果区列出 4 个固定名路径/模板来源/页数；高级开关「仅生成 tex（不落位）」默认关（旧行为）。模板继承、条目断行/栏目行与单页适配都在引擎侧 | `sources-mac/Features/TocFeature.swift`、`sources-win/main.py`、`Engine/toc.py`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
 | 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest v2，`--restore` 撤销、`--empty-trash` 清空） | `sources-mac/Features/DeleteTempFeature.swift`、`Engine/cleantemp.py`、`Engine/slcn/clean.py` |
-| 本期出刊 | 一个入口按顺序跑五步（①检查tex信息 ②生成目录 ③编译全部 ④目录 PDF 落位 ⑤合并整期 PDF）；致命错误即中止，退出码 1 = 橙色警告并继续（规则在引擎侧，见 `Engine/publish.py` 抬头） | `sources-mac/Features/PublishFeature.swift`、`Engine/publish.py` |
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
 | 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单。**批73 起 mac 入藏页另有「粘贴 bib 文本」模式**（1..N 条 → 临时文件先 `import-bib --dry-run --json` 预览 → 入库口径单选：未核实（默认）/ 已人工核对 `--verified` / 成品 bib（期+篇）；**引擎零改动**，粘贴文本走的就是 `import-bib`） | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |

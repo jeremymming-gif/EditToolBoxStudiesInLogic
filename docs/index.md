@@ -24,7 +24,7 @@ features:
       src: /icons/assembly.svg
       alt: ''
     title: 整期装配
-    details: 检查 tex 信息、编译全部、生成目录、清理临时文件、本期出刊。
+    details: 检查 tex 信息、编译全部、生成目录、清理临时文件、合并文件。
   - icon:
       src: /icons/bibdb.svg
       alt: ''

@@ -8,11 +8,16 @@
 
 五步（每一步都是现成的入口，向导只做**编排**）：
   ① 检查tex信息    infocheck.py --folder <期>                 → 期目录根《信息检查<时间戳>.txt》
-  ② 生成目录       toc.py --report <①的报告> --template <期>   → 期目录根两份带时间戳的目录 .tex
+  ② 生成目录       toc.py --report <①的报告>                    → 期目录根两份带时间戳的目录 .tex
+                    （**不再硬传 `--template <本期>`**：模板解析与「生成目录」页同一套
+                      「本期成品 → 显式指定 → 上一期 → 内置」；需要显式指定时传 `--template <期目录>`）
   ③ 编译全部       compileall.py --folder <期>（只编论文，跳过 000 目录）
-  ④ 目录 PDF 落位  取期目录根最新 `Chinese Content_<ts>.tex` / `contents_<ts>.tex`
+  ④ 目录 PDF 落位  调 `slcn/tocdelivery.py`（与 `toc.py --place --compile` **同一份实现**）：
+                   取期目录根最新 `Chinese Content_<ts>.tex` / `contents_<ts>.tex`
                    → 复制为 `000*/Chinese Content.tex` / `contents.tex`（覆盖旧的、保留 .tex 供下一期继承）
-                   → 在 `000*` 内 xelatex ×2 出同名 .pdf
+                   → Windows 字体前置检查 → 在 `000*` 内 xelatex ×2 出同名 .pdf
+                   → 页数 > 1 时一次性压缩行距做单页适配
+                   （该期缺 `000*` 目录时**自动创建** `000 Table of Contents`，不再报错中止）
   ⑤ 合并整期 PDF   mergepdf.py --folder <期> --out <期>/合并.pdf
                    **显式传** `--nest-outlines --editors-page --back-cover`（与 GUI「合并文件」页默认三开一致），
                    可用 `--no-nest-outlines` / `--no-editors-page` / `--no-back-cover` 逐个关闭。
@@ -33,12 +38,12 @@
     现在由本步自动完成 —— 目录 PDF 是合并的输入之一，不落位就等于产不出含新目录的成品；
   · 必须**先**跑（第③步之后、第⑤步之前）：合并要读 `000*/Chinese Content.pdf` / `contents.pdf`；
   · 目录 .tex 编译失败 ⇒ **退出码 2 中止**，不允许拿上一期的旧 PDF 静默合并；
-  · 该期没有 `000` 开头的目录 ⇒ 退出码 2 并提示：确认这期确实不带目录后加 `--skip-toc-pdf`；
+  · 该期没有 `000` 开头的目录 ⇒ **自动创建** `000 Table of Contents` 后照常落位（B-226）；
   · `--skip-toc-pdf` 跳过第 ④ 步（直接用 000 目录里现有 PDF），缺目录 PDF 时**明确告警**。
 
 ⚠️ 本文件**不复制任何判据**：每步的"什么算成功/什么算有结果"仍由那个入口自己决定；
-向导只看退出码，把每步的契约行原样透传。第 ④ 步复用 `compileall.compile_tex_xelatex`
-（与 `convert.compile_pdf` 同一套 xelatex 口径），本文件只决定"复制哪两份、放哪里"。
+向导只看退出码，把每步的契约行原样透传。第 ④ 步的「复制 + 编译 + 单页适配 + 字体检查」
+单点在 `slcn/tocdelivery.py`（`toc.py --place --compile` 共用同一份，禁止第二份实现）。
 """
 
 from __future__ import annotations
@@ -46,15 +51,15 @@ from __future__ import annotations
 import argparse
 import glob
 import os
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from slcn import platform as _plat  # noqa: E402
-from slcn import pdfmerge as _pm    # noqa: E402
+from slcn import platform as _plat      # noqa: E402
+from slcn import pdfmerge as _pm        # noqa: E402
+from slcn import tocdelivery as _td     # noqa: E402
 
 ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
@@ -68,12 +73,9 @@ STEPS = {
     5: ("合并整期 PDF", "mergepdf.py"),
 }
 
-#: 第 ④ 步：`(期目录根下的带时间戳 tex 通配, 000 目录里的成品名)`。
-#: 顺序即合并顺序（pdfmerge 先并中文目录、再并英文目录）。
-TOC_TEX_PAIRS = (
-    ("Chinese Content_*.tex", "Chinese Content"),
-    ("contents_*.tex", "contents"),
-)
+#: 第 ④ 步的固定名与顺序（与合并顺序一致：先中文目录、再英文目录）。
+#: 实现单点在 `slcn/tocdelivery.py`（`TEX_STEMS`），这里只是别名。
+TOC_TEX_PAIRS = tuple((f"{stem}_*.tex", stem) for _key, stem in _td.TEX_STEMS)
 
 #: 合并输出名（与旧版 publish 一致：期目录下的固定名；`合并` 前缀让 pdfmerge 的识别排除它）。
 MERGED_NAME = "合并.pdf"
@@ -83,6 +85,7 @@ MERGED_NAME = "合并.pdf"
 class _Opts:
     """一次出刊运行的选项（步骤函数共用；测试可直接构造）。"""
     root: str
+    template: str = ""              # ② 显式指定模板期目录（默认空 = 与「生成目录」同一套解析）
     skip_toc_pdf: bool = False
     nest_outlines: bool = True      # ⑤ 显式传 `--nest-outlines`（默认与 GUI 合并页一致：开）
     editors_page: bool = True       # ⑤ 显式传 `--editors-page`
@@ -116,18 +119,6 @@ def _newest_report(root: str) -> str:
     return _newest(root, "信息检查*.txt")
 
 
-def _find_toc_dir(root: str) -> str:
-    """找 `000` 开头的目录（`000 Table of Contents` / 旧名 `000 目录` 都认）。
-
-    识别口径与 `slcn/pdfmerge.py` 完全一致（`numbered_entries` + `startswith("000")`），
-    不另写一套判据 —— 否则会出现「合并读 A 目录、落位写 B 目录」。
-    """
-    for name in _pm.numbered_entries(root):
-        if name.startswith("000"):
-            return os.path.join(root, name)
-    return ""
-
-
 def _run_script(argv: list[str]) -> _StepResult:
     """起子进程跑一个引擎入口，**只看退出码**（判据仍由那个入口自己决定）。"""
     try:
@@ -135,16 +126,6 @@ def _run_script(argv: list[str]) -> _StepResult:
     except OSError as e:  # 解释器都起不来：致命
         return _StepResult(2, reason=f"启动失败：{e}")
     return _StepResult(proc.returncode)
-
-
-def _compile_toc_pdf(toc_dir: str, stem: str) -> tuple[bool, str]:
-    """编译 `000*` 里的一份目录 tex（xelatex ×2）。
-
-    单独包一层是为了可测试（测试替换它就不必真跑 TeX）；实现复用
-    `compileall.compile_tex_xelatex`，与文章编译同一套 xelatex 口径。
-    """
-    import compileall as _ca  # noqa: PLC0415  延迟导入：①–③⑤ 不必付这个 import 成本
-    return _ca.compile_tex_xelatex(toc_dir, stem, runs=2)
 
 
 # ── 五步 ────────────────────────────────────────────────────────────────
@@ -159,7 +140,13 @@ def _step2_toc(root: str, opts: _Opts) -> _StepResult:
         # 前置条件不满足 ⇒ 中止（不是"跳过"——静默跳过会产出半成品，方案明令禁止）
         return _StepResult(2, reason="没有找到《信息检查*.txt》报告 —— 请先跑第 1 步")
     print(f"（报告：{report}）\n")
-    return _run_script([_entry("toc.py"), "--report", report, "--template", root])
+    argv = [_entry("toc.py"), "--report", report]
+    if opts.template:
+        # 显式指定模板期目录时才传（默认让 toc.py 走「本期成品 → 上一期 → 内置」同一套解析，
+        # 从前硬传 `--template <本期>`，缺 000 时会退化成内置、与「生成目录」页不一致，B-226 E8）
+        argv += ["--template", opts.template]
+        print(f"（显式模板：{opts.template}）\n")
+    return _run_script(argv)
 
 
 def _step3_compileall(root: str, opts: _Opts) -> _StepResult:
@@ -167,10 +154,14 @@ def _step3_compileall(root: str, opts: _Opts) -> _StepResult:
 
 
 def _step4_toc_pdf(root: str, opts: _Opts) -> _StepResult:
-    toc_dir = _find_toc_dir(root)
+    """目录 PDF 落位：**唯一实现**在 `slcn/tocdelivery.py`（与 `toc.py --place --compile` 共用）。
 
+    B-226 起缺 `000*` 目录时**自动创建** `000 Table of Contents` 再落位（不再 rc2 中止）；
+    `--skip-toc-pdf` 仍整步跳过（直接用 000 目录里现有的目录 PDF，缺 PDF 时明确告警）。
+    """
     if opts.skip_toc_pdf:
         print("（--skip-toc-pdf：跳过第 4 步，直接用 000 目录里现有的目录 PDF）\n")
+        toc_dir = _td.find_toc_dir(root)
         missing = ([stem + ".pdf" for _pat, stem in TOC_TEX_PAIRS] if not toc_dir
                    else [stem + ".pdf" for _pat, stem in TOC_TEX_PAIRS
                          if not os.path.isfile(os.path.join(toc_dir, stem + ".pdf"))])
@@ -181,34 +172,15 @@ def _step4_toc_pdf(root: str, opts: _Opts) -> _StepResult:
         print(f"   ⚠ {warn}")
         return _StepResult(1, warnings=[warn])
 
-    if not toc_dir:
-        return _StepResult(2, reason=(
-            "该期没有以「000」开头的目录（例如 `000 Table of Contents`）—— 第 4 步要把编译好的"
-            "目录 PDF 放进去；确认这期确实不带目录后，重新运行并加 `--skip-toc-pdf`"))
-
-    # ① 取期目录根最新的两份目录 tex，复制成 000 目录里的固定名（覆盖旧的，.tex 留给下一期继承）
-    for pattern, stem in TOC_TEX_PAIRS:
-        src = _newest(root, pattern)
-        if not src:
-            return _StepResult(2, reason=(
-                f"期目录根下没有 {pattern} 目录 tex —— 请先跑第 2 步（生成目录）"))
-        dst = os.path.join(toc_dir, stem + ".tex")
-        try:
-            shutil.copyfile(src, dst)
-        except OSError as e:
-            return _StepResult(2, reason=f"复制目录 tex 到 000 目录失败：{e}")
-        print(f"   {os.path.basename(src)} → {os.path.relpath(dst, root)}")
-    print()
-
-    # ② 在 000 目录里 xelatex ×2 出同名 PDF；失败即中止（绝不静默拿旧 PDF 继续合并）
-    for _pattern, stem in TOC_TEX_PAIRS:
-        ok, msg = _compile_toc_pdf(toc_dir, stem)
-        if not ok:
-            return _StepResult(2, reason=(
-                f"目录 PDF 编译失败（{stem}.tex）：{msg}；未生成新的目录 PDF，"
-                f"不会拿旧 PDF 继续合并"))
-        print(f"   ✅ 目录 PDF：{os.path.join(toc_dir, stem + '.pdf')}")
-    return _StepResult(0)
+    print("（落位 + 编译目录 PDF；缺 000 目录时自动创建）\n")
+    res = _td.deliver(root, do_compile=True, log=lambda s: print(s))
+    if res.error:
+        return _StepResult(2, reason=res.error)
+    for key, stem in _td.TEX_STEMS:
+        pdf = res.pdfs.get(key, "")
+        pages = res.pages.get(key, 0)
+        print(f"   ✅ 目录 PDF：{pdf}（{pages} 页）")
+    return _StepResult(0, warnings=list(res.warnings))
 
 
 def _step5_merge(root: str, opts: _Opts) -> _StepResult:
@@ -249,6 +221,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="只跑第 N 步（单步重跑）")
     ap.add_argument("--from", dest="from_step", type=int, choices=(1, 2, 3, 4, 5), metavar="N",
                     help="从第 N 步开始跑（前 N−1 步的产物当作已经就绪）")
+    ap.add_argument("--template", default="", metavar="期目录",
+                    help="第 2 步显式指定模板来源期目录（默认不传：与「生成目录」同一套"
+                         "「本期成品 → 上一期 → 内置」解析）")
     ap.add_argument("--skip-toc-pdf", action="store_true",
                     help="跳过第 4 步（目录 PDF 落位）：直接用 000 目录里现有的目录 PDF；缺了会告警")
     ap.add_argument("--no-nest-outlines", dest="nest_outlines", action="store_false",
@@ -267,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     first = args.only or args.from_step or 1
     last = args.only or 5
     opts = _Opts(root=root,
+                 template=os.path.abspath(os.path.expanduser(args.template)) if args.template else "",
                  skip_toc_pdf=args.skip_toc_pdf,
                  nest_outlines=args.nest_outlines,
                  editors_page=args.editors_page,

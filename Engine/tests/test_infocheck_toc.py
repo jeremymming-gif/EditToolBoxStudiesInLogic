@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import pathlib
@@ -615,6 +616,413 @@ try:
           f"rc={r.returncode} annual={_j.get('annual')}")
 finally:
     shutil.rmtree(_push_work, ignore_errors=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (g) B-226 标题/作者清洗（E1/E2/E3/E9）──")
+check("(g1) clean_title 保留 \\hbox 内容（`甲\\hbox{乙丙}` 从前只剩「甲」）",
+      TOC.clean_title("示例标题的甲\\hbox{乙丙}\\\\——副标题", keep_braces=False)
+      == "示例标题的甲乙丙——副标题",
+      TOC.clean_title("示例标题的甲\\hbox{乙丙}\\\\——副标题", keep_braces=False))
+check("(g2) clean_title 保留 \\textbf 内容（标题末尾的 `\\textbf{ABC}` 不再被整段删掉）",
+      TOC.clean_title("示例标题\\textbf{ABC}", keep_braces=False) == "示例标题ABC")
+check("(g3) 数学模式标题 `$\\text{术语}^*$` → `术语`",
+      TOC.clean_title("$\\text{术语}^*$", keep_braces=False) == "术语",
+      TOC.clean_title("$\\text{术语}^*$", keep_braces=False))
+check("(g4) 反例：普通标题/花括号英文标题不受影响（英文仍 keep_braces）",
+      TOC.clean_title("示例标题", keep_braces=False) == "示例标题"
+      and TOC.clean_title("Intuitionistic Epistemic Logic {\\bf IEL} with Justification",
+                          keep_braces=True)
+      == "Intuitionistic Epistemic Logic {\\bf IEL} with Justification")
+check("(g5) clean_name 保留中文间隔号 `·`（外文译名）",
+      TOC.clean_name("\\kaishu 甲·乙丙") == "甲·乙丙", TOC.clean_name("\\kaishu 甲·乙丙"))
+check("(g6) 反例：clean_name 仍滤掉非汉字非间隔号（`\\kaishu`/数字/字母/空格）",
+      TOC.clean_name("abc 123 \\kaishu 张三") == "张三", TOC.clean_name("abc 123 \\kaishu 张三"))
+check("(g7) clean_author_en：去掉 `\\Letter` 类通讯作者标记（英文目录编译失败根因）",
+      TOC.clean_author_en("\\Letter}$") == "" and TOC.clean_author_en("$^\\text{\\Letter}$") == "",
+      repr(TOC.clean_author_en("$^\\text{\\Letter}$")))
+check("(g8) 反例：clean_author_en 保留正常英文名（含变音字母）",
+      TOC.clean_author_en("Tuomo Aho") == "Tuomo Aho"
+      and TOC.clean_author_en("Mikko Yrjönsuuri") == "Mikko Yrjönsuuri")
+_dup_block = ["起始页码：1  终止页码：4  页数：4\r\n",
+              "中文标题: 测试\n",
+              "第一作者中文: 甲\n",
+              "第一作者中文: \\kaishu 甲乙\n"]
+_dup = TOC.parse_entry("Zhien_Bei", _dup_block)
+check("(g9) 同角色两条作者：**后者优先**（「甲，甲乙」→「甲乙」）",
+      _dup.chineseAuthors == ["甲乙"], f"{_dup.chineseAuthors}")
+_two = TOC.parse_entry("X", ["第一作者中文: 甲\n", "第二作者中文: 乙\n"])
+check("(g10) 反例：不同角色的作者都保留、顺序为第一→第二",
+      _two.chineseAuthors == ["甲", "乙"], f"{_two.chineseAuthors}")
+_letter = TOC.parse_entry("Tuomo_Aho", ["第一作者英文: Tuomo Aho\n", "第二作者英文: \\Letter}$\n"])
+check("(g11) 英文作者清洗后为空的那条被丢弃，正常英文名保留",
+      _letter.englishAuthors == ["Tuomo Aho"], f"{_letter.englishAuthors}")
+
+print("\n── (h) 模板 split 跳过注释行（E4：89 注释 tabularx / 注释栏目行不复活）──")
+_TEX_COMMENT = ("\\documentclass{ctexart}\n"
+                "%\\begin{tabularx}{\\textwidth}{l@{\\hspace{4em}}r}\n"
+                "\\begin{tabularx}{\\textwidth}{l@{\\hspace{2.7em}}r}\n"
+                "\\large  \\bf{Column: Real Column}\n"
+                "\\\\[3mm]\n"
+                "%{\\large \\bf{Column: Old Commented}}\n"
+                "%中间主体\n"
+                "\\large T\\\\\n"
+                "\\end{tabularx}\n")
+_parts_c = TT.split(_TEX_COMMENT, "注释模板")
+check("(h1) 真模板起点是**非注释**的 tabularx（head 末行是 2.7em 列定义，不是 4em 注释版）",
+      _parts_c.head.rstrip().endswith("{\\textwidth}{l@{\\hspace{2.7em}}r}")
+      and "hspace{4em}" not in _parts_c.head.split("\n")[-2:],
+      _parts_c.head.split("\n")[-1])
+check("(h2) columnBlock 只从区间内**真实**行提取（注释栏目行不复活）",
+      _parts_c.columnBlock == ["\\large  \\bf{Column: Real Column}", "\\\\[3mm]"],
+      f"{_parts_c.columnBlock}")
+check("(h3) 反例：只有注释版 tabularx 时按「无模板」处理（columnBlock 空、tail 空）",
+      TT.split("%\\begin{tabularx}{x}{a}\n%\\end{tabularx}\n", "s").columnBlock == [])
+_parts_87 = TT.split("\\begin{tabularx}{\\textwidth}{l@{\\hspace{4em}}r}\n"
+                     "%{\\large \\bf{专栏：86 残留}}\n"
+                     "\\\\[3mm]\n\\end{tabularx}\n", "s87")
+check("(h4) 87 式注释栏目行 + 无真实栏目行 → columnBlock 为空（注释行不复活，S5）",
+      _parts_87.columnBlock == [], f"{_parts_87.columnBlock}")
+
+print("\n── (i) 内置模板源头 fontset=windows（V1）──")
+_bi_zh = TT.builtin("Chinese Content.tex").head
+_bi_en = TT.builtin("contents.tex").head
+check("(i1) 内置中文模板 documentclass 源头带 fontset=windows",
+      "\\documentclass[b5paper,11pt,onecolumn,twoside,fontset=windows]{ctexart}" in _bi_zh)
+check("(i2) 内置英文模板 documentclass 源头带 fontset=windows",
+      "\\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}" in _bi_en)
+check("(i3) 反例：运行时兜底 ensure_windows_fontset 仍只补、不覆盖已有 fontset",
+      TT.ensure_windows_fontset("\\documentclass[b5paper,fontset=mac]{ctexart}")
+      == "\\documentclass[b5paper,fontset=mac]{ctexart}")
+
+print("\n── (j) B-226 目录交付 helper（slcn/tocdelivery.py）：落位/编译/单页适配/字体检查 ──")
+from slcn import tocdelivery as TD  # noqa: E402
+import contextlib as _ctxlib  # noqa: E402
+
+
+@_ctxlib.contextmanager
+def _patched(obj, attr, value):
+    orig = getattr(obj, attr)
+    setattr(obj, attr, value)
+    try:
+        yield
+    finally:
+        setattr(obj, attr, orig)
+
+
+def _mk_deliver_root(with_000: bool = True) -> str:
+    d = tempfile.mkdtemp(prefix="slcn_deliver_")
+    if with_000:
+        os.makedirs(os.path.join(d, "000 Table of Contents"))
+    for stem in ("Chinese Content", "contents"):
+        with open(os.path.join(d, f"{stem}_20260101_000000.tex"), "w", encoding="utf-8") as fh:
+            fh.write(f"% {stem}\n")
+    return d
+
+
+def _mk_fit_dir(zh_pages: int, en_pages: int) -> str:
+    d = tempfile.mkdtemp(prefix="slcn_fit_")
+    for key, stem, pages in (("zh", "Chinese Content", zh_pages), ("en", "contents", en_pages)):
+        with open(os.path.join(d, f"{stem}.tex"), "w", encoding="utf-8") as fh:
+            fh.write("\\documentclass{ctexart}\n"
+                     "\\newcommand{\\vdistance}{\\\\[4.8ex]}%调整行间隔\n"
+                     "\\begin{document}\n"
+                     "A\n\n\\vdistance\n\nB\n\n\\vdistance\n\nC\n"
+                     "\\end{document}\n")
+        with open(os.path.join(d, f"{stem}.log"), "w", encoding="utf-8") as fh:
+            fh.write(f"Output written on {stem}.pdf ({pages} page{'' if pages == 1 else 's'}).\n")
+    return d
+
+
+_d_find = _mk_deliver_root()
+check("(j1) find_toc_dir：认 `000 Table of Contents`，且与 pdfmerge.numbered_entries 同一口径",
+      os.path.basename(TD.find_toc_dir(_d_find)) == "000 Table of Contents"
+      and TD.find_toc_dir(_mk_deliver_root(with_000=False)) == "")
+_d_no000 = _mk_deliver_root(with_000=False)
+_d_auto = TD.ensure_toc_dir(_d_no000)
+check("(j2) ensure_toc_dir：缺 000* 时自动创建 `000 Table of Contents`",
+      os.path.isdir(_d_auto) and os.path.basename(_d_auto) == "000 Table of Contents")
+_d_old = tempfile.mkdtemp(prefix="slcn_deliver_old_")
+os.makedirs(os.path.join(_d_old, "000 目录"))
+with open(os.path.join(_d_old, "Chinese Content_20260101_000000.tex"), "w", encoding="utf-8") as fh:
+    fh.write("A")
+with open(os.path.join(_d_old, "contents_20260101_000000.tex"), "w", encoding="utf-8") as fh:
+    fh.write("B")
+check("(j4) ensure_toc_dir 反例：已有旧名 `000 目录` → 原样返回、不另建标准名",
+      os.path.basename(TD.ensure_toc_dir(_d_old)) == "000 目录"
+      and not os.path.isdir(os.path.join(_d_old, "000 Table of Contents")))
+_d_place = _mk_deliver_root()
+_placed = TD.place_tex(_d_place, os.path.join(_d_place, "000 Table of Contents"))
+check("(j5) place_tex：落位固定名、返回路径、根下时间戳 tex 保留",
+      _placed["zh"] == os.path.join(_d_place, "000 Table of Contents", "Chinese Content.tex")
+      and os.path.isfile(_placed["en"])
+      and len(glob.glob(os.path.join(_d_place, "Chinese Content_*.tex"))) == 1)
+try:
+    TD.place_tex(tempfile.mkdtemp(), tempfile.mkdtemp())
+    check("(j6) place_tex 反例：根下没有时间戳 tex → DeliveryError", False)
+except TD.DeliveryError:
+    check("(j6) place_tex 反例：根下没有时间戳 tex → DeliveryError（不半套交付）", True)
+check("(j7) 页数解析：`Output written on … (2 pages)` → 2，单数 `(1 page)` → 1",
+      TD.page_count_from_log(_mk_fit_dir(2, 1), "Chinese Content") == 2
+      and TD.page_count_from_log(_mk_fit_dir(2, 1), "contents") == 1)
+
+_fit_calls: list[str] = []
+
+
+def _fit_compile_ok(folder: str, stem: str):
+    _fit_calls.append(stem)
+    with open(os.path.join(folder, f"{stem}.log"), "w", encoding="utf-8") as fh:
+        fh.write(f"Output written on {stem}.pdf (1 page).\n")
+    return True, os.path.join(folder, f"{stem}.pdf")
+
+
+_d_fit = _mk_fit_dir(2, 1)
+_fit_before_en = open(os.path.join(_d_fit, "contents.tex"), encoding="utf-8").read()
+_fit_logs: list[str] = []
+_fit_counts, _fit_err = TD.fit_single_page(_d_fit, TD.TEX_STEMS, _fit_compile_ok,
+                                           log=_fit_logs.append)
+_fit_zh = open(os.path.join(_d_fit, "Chinese Content.tex"), encoding="utf-8").read()
+check("(j8) 单页适配：页数>1 的那份改写成 `\\dimexpr 原值 - Npt`、重编译后返回 1 页",
+      _fit_err == "" and _fit_counts == {"zh": 1, "en": 1}
+      and "\\dimexpr 4.8ex - " in _fit_zh and _fit_zh.endswith("\\end{document}\n")
+      and _fit_calls == ["Chinese Content"], f"err={_fit_err} calls={_fit_calls}")
+check("(j9) 单页适配反例：页数=1 的那份**不动**（不破坏与人工成品的位置对齐）",
+      open(os.path.join(_d_fit, "contents.tex"), encoding="utf-8").read() == _fit_before_en)
+check("(j10) 单页适配写日志：旧值→新值、页数前→后",
+      any("\\vdistance 4.8ex →" in s for s in _fit_logs)
+      and any("2 页 → 1 页" in s for s in _fit_logs), f"{_fit_logs}")
+_fit_calls.clear()
+
+
+def _fit_compile_still2(folder: str, stem: str):
+    _fit_calls.append(stem)
+    return True, os.path.join(folder, f"{stem}.pdf")
+
+
+_d_fit2 = _mk_fit_dir(2, 2)
+_counts2, _err2 = TD.fit_single_page(_d_fit2, TD.TEX_STEMS, _fit_compile_still2)
+check("(j11) 反例：压到上限仍 >1 页 → 返回可操作失败原因（不静默成功）",
+      "仍是 2 页" in _err2 and "自动单页适配失败" in _err2, _err2)
+_fit_base = _mk_fit_dir(2, 1)
+_shrink_small = TD._shrink_pt(_fit_base, "Chinese Content", 2, "zh", "0.4ex")
+_shrink_inherit = TD._shrink_pt(_fit_base, "Chinese Content", 2, "zh", "4.8ex")
+_shrink_cap_dir = _mk_fit_dir(2, 1)
+with open(os.path.join(_shrink_cap_dir, "Chinese Content.log"), "w", encoding="utf-8") as fh:
+    fh.write("Overfull \\vbox (9999.0pt too high) has occurred while \\output is active\n")
+check("(j12) 压缩量：本期成品小行距=40pt 基准；3 页再加 40pt；继承大行距按「压到人工量级」估算",
+      TD._BASE_SHRINK_PT == 40.0 and _shrink_small == 40.0
+      and TD._shrink_pt(_fit_base, "Chinese Content", 3, "zh", "0.4ex") == 80.0
+      and _shrink_inherit > 100.0, f"small={_shrink_small} inherit={_shrink_inherit}")
+check("(j12b) 总压缩量有上限 320pt（实测 85→86 缺 000 路径需 280pt，上限留余量）",
+      TD._MAX_TOTAL_SHRINK_PT == 320.0
+      and TD._shrink_pt(_shrink_cap_dir, "Chinese Content", 2, "zh", "0.4ex") == 320.0)
+check("(j12c) 长度估算：4.8ex≈23.5pt、-3.05mm≈-8.7pt（只用于估算压缩量）",
+      abs(TD.length_to_pt("4.8ex") - 23.52) < 0.01
+      and abs(TD.length_to_pt("-3.05mm") + 8.677) < 0.01
+      and TD.length_to_pt("bogus") is None)
+_d_novd = tempfile.mkdtemp(prefix="slcn_fit_novd_")
+with open(os.path.join(_d_novd, "Chinese Content.tex"), "w", encoding="utf-8") as fh:
+    fh.write("no macro\n")
+with open(os.path.join(_d_novd, "Chinese Content.log"), "w", encoding="utf-8") as fh:
+    fh.write("Output written on x.pdf (2 pages).\n")
+_c_novd, _err_novd = TD.fit_single_page(_d_novd, (("zh", "Chinese Content"),), _fit_compile_ok)
+check("(j13) 反例：模板里没有 \\vdistance 宏 → 返回失败原因（不改坏模板）",
+      "\\vdistance" in _err_novd, _err_novd)
+
+with _patched(TD, "_FONT_CHECK_CACHE", None), _patched(TD.shutil, "which", lambda _n: None):
+    _font_ok, _font_msg = TD.check_windows_fonts()
+check("(j14) 字体前置检查：找不到 xelatex → 失败 + 可操作原因（缺工具不等于字体齐全）",
+      _font_ok is False and "TeX Live" in _font_msg, _font_msg)
+with _patched(TD, "_FONT_CHECK_CACHE", (False, "cached-reason")):
+    check("(j15) 字体检查结果进程内缓存（一次交付只探一次）",
+          TD.check_windows_fonts() == (False, "cached-reason"))
+
+# deliver：落位 + 编译 + 适配 一条链（编译用假实现，不依赖 TeX）
+_d_del = _mk_deliver_root(with_000=False)
+
+
+def _fake_compile_all(folder: str, stems):
+    out = {}
+    for key, stem in stems:
+        pdf = os.path.join(folder, f"{stem}.pdf")
+        with open(pdf, "wb") as fh:
+            fh.write(b"%PDF-1.4 fake\n")
+        with open(os.path.join(folder, f"{stem}.log"), "w", encoding="utf-8") as fh:
+            fh.write(f"Output written on {stem}.pdf (1 page).\n")
+        out[key] = (True, pdf)
+    return out
+
+
+with _patched(TD, "check_windows_fonts", lambda: (True, "")):
+    _del = TD.deliver(_d_del, do_compile=True, compile_func=_fake_compile_all,
+                      log=lambda _s: None)
+check("(j16) deliver：缺 000 → 自动创建 → 落位 → 编译，返回 4 个路径 + 页数",
+      _del.error == "" and _del.compiled
+      and os.path.basename(_del.toc_dir) == "000 Table of Contents"
+      and all(os.path.isfile(p) for p in _del.placed.values())
+      and all(os.path.isfile(p) for p in _del.pdfs.values())
+      and _del.pages == {"zh": 1, "en": 1}, f"{_del}")
+with _patched(TD, "check_windows_fonts", lambda: (False, "缺少 Windows 字体（SimSun）")):
+    _del_font = TD.deliver(_mk_deliver_root(), do_compile=True, compile_func=_fake_compile_all)
+check("(j17) deliver 反例：字体检查失败 → error 带原因、compiled=False（绝不静默换字体）",
+      "缺少 Windows 字体" in _del_font.error and not _del_font.compiled, _del_font.error)
+
+# toc.py CLI：--place + --result-json 的固定 schema
+_json_base = tempfile.mkdtemp(prefix="slcn_toc_json_")
+_json_root = os.path.join(_json_base, "2026年第5期(90)")
+make_issue(_json_root)
+_json_report = make_report(_json_root)
+_json_out = os.path.join(tempfile.mkdtemp(prefix="slcn_toc_json_out_"), "result.json")
+r_json = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _json_report,
+                         "--place", "--result-json", _json_out],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace",
+                        env=os.environ, cwd=ENGINE)
+_schema_keys = {"templateSource", "templateNote", "tocDir", "placed", "compiled",
+                "pages", "column", "manualEdits", "warnings"}
+_payload = json.load(open(_json_out, encoding="utf-8")) if os.path.isfile(_json_out) else {}
+check("(j18) `--place --result-json`：rc=0、JSON 写出、schema 字段固定",
+      r_json.returncode == 0 and os.path.isfile(_json_out)
+      and set(_payload) == _schema_keys
+      and set(_payload["placed"]) == {"zhTex", "zhPdf", "enTex", "enPdf"}
+      and set(_payload["pages"]) == {"zh", "en"}
+      and set(_payload["column"]) == {"enabled", "title"}
+      and isinstance(_payload["manualEdits"], list) and isinstance(_payload["warnings"], list),
+      f"rc={r_json.returncode} keys={sorted(_payload)}")
+check("(j19) 结果 JSON：templateSource 取四种口径之一、tocDir 是 000 目录、compiled=False",
+      _payload.get("templateSource") in ("本期成品", "上一期", "内置模板", "显式指定")
+      and os.path.basename(_payload.get("tocDir", "")) == "000 Table of Contents"
+      and _payload.get("compiled") is False and _payload.get("pages") == {"zh": 0, "en": 0})
+check("(j20) 落位：000 里出现固定名 Chinese Content.tex / contents.tex",
+      all(os.path.isfile(_payload["placed"][k])
+          for k in ("zhTex", "enTex")) and _payload["placed"]["zhTex"].endswith("Chinese Content.tex"))
+check("(j21) 契约行仍是 stdout 最后一行（GUI 靠它拿产物）",
+      [ln for ln in r_json.stdout.strip().splitlines() if ln.strip()][-1].startswith("完成。生成目录"))
+# 反例：--compile 缺 xelatex → rc=2 + stderr 原因；不写结果 JSON
+_no_tex_root = tempfile.mkdtemp(prefix="slcn_toc_compile_")
+make_issue(_no_tex_root)
+_no_tex_report = make_report(_no_tex_root)
+_bad_json = os.path.join(tempfile.mkdtemp(prefix="slcn_toc_badjson_"), "r.json")
+_env_nopath = dict(os.environ)
+_env_nopath["PATH"] = "/usr/bin:/bin"
+r_nofont = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _no_tex_report,
+                           "--compile", "--result-json", _bad_json],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env=_env_nopath, cwd=ENGINE)
+check("(j22) 反例：`--compile` 缺 xelatex → rc=2、stderr 说清原因、不写结果 JSON",
+      r_nofont.returncode == 2 and "xelatex" in r_nofont.stderr
+      and not os.path.isfile(_bad_json),
+      f"rc={r_nofont.returncode} err={r_nofont.stderr.strip()[:90]}")
+
+# ── manualEdits（结果 JSON 的只读标注）──
+_edit_root = tempfile.mkdtemp(prefix="slcn_edits_")
+_edit_report = os.path.join(_edit_root, "信息检查2026_01_01_00_00_00.txt")
+with open(_edit_report, "w", encoding="utf-8", newline="") as fh:
+    fh.write("X_Y\r\n卷号：19  期号：5  年份：2026\r\n起始页码：1  终止页码：2  页数：2\r\n"
+             "中文标题: 标题\r\n第一作者中文: 第一作者\r\n\r\n")
+_edits = TOC.manual_edits(_edit_report, TOC.TocSettings())
+check("(m1) manualEdits：源稿占位标题「标题」→ kind=title（只标注不改行为）",
+      any(e["kind"] == "title" and e["article"] == "X_Y" for e in _edits), f"{_edits}")
+check("(m2) manualEdits：源稿占位作者「第一作者」→ kind=author",
+      any(e["kind"] == "author" for e in _edits), f"{_edits}")
+_normal_edits = TOC.manual_edits(make_report(os.path.join(_json_base, "2026年第5期(90)")),
+                                 TOC.TocSettings())
+check("(m3) 反例：正常标题/作者不产生 title/author 类 manualEdits",
+      not [e for e in _normal_edits if e["kind"] in ("title", "author")], f"{_normal_edits}")
+
+
+print("\n── (k) 缺 000 自动创建 + 结果 JSON 的 templateSource 口径（E8/F2）──")
+_k_root = tempfile.mkdtemp(prefix="slcn_toc_autocreate_")
+_prev = os.path.join(_k_root, "2025年第6期(85)")
+os.makedirs(os.path.join(_prev, "000 Table of Contents"))
+with open(os.path.join(_prev, "000 Table of Contents", "Chinese Content.tex"), "w", encoding="utf-8") as fh:
+    fh.write("\\documentclass{ctexart}\n\\newcommand{\\vdistance}{\\\\[4.8ex]}\n"
+             "\\begin{document}\n\\begin{tabularx}{\\textwidth}{l@{\\hspace{1em}}r}\n"
+             "%中间主体\n\\vdistance\n\\end{tabularx}\n\\end{document}\n")
+with open(os.path.join(_prev, "000 Table of Contents", "contents.tex"), "w", encoding="utf-8") as fh:
+    fh.write("\\documentclass{ctexart}\n\\newcommand{\\vdistance}{\\\\[6mm]}\n"
+             "\\begin{document}\n\\begin{tabularx}{\\textwidth}{l@{\\hspace{1em}}r}\n"
+             "%中间主体\n\\vdistance\n\\end{tabularx}\n\\end{document}\n")
+_k_cur = os.path.join(_k_root, "2026年第1期(86)")
+make_issue(_k_cur)
+shutil.rmtree(os.path.join(_k_cur, "000 Table of Contents"))   # 造「缺 000」场景
+_k_report = make_report(_k_cur)
+_k_json = os.path.join(tempfile.mkdtemp(prefix="slcn_toc_k_"), "r.json")
+_k_before = TD.find_toc_dir(_k_cur)
+r_k = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _k_report,
+                      "--place", "--result-json", _k_json],
+                     capture_output=True, text=True, encoding="utf-8", errors="replace",
+                     env=os.environ, cwd=ENGINE)
+_k_payload = json.load(open(_k_json, encoding="utf-8")) if os.path.isfile(_k_json) else {}
+check("(k1) 缺 000 + 有上一期：rc=0、自动创建 `000 Table of Contents`",
+      r_k.returncode == 0 and _k_before == ""
+      and os.path.isdir(os.path.join(_k_cur, "000 Table of Contents")),
+      f"rc={r_k.returncode} err={r_k.stderr.strip()[:80]}")
+check("(k2) 结果 JSON 的 templateSource 是**生成时**口径=`上一期`（不被落位后的本期成品覆盖）",
+      _k_payload.get("templateSource") == "上一期", str(_k_payload.get("templateSource")))
+# k3：全新的「缺 000」目录 + 显式 --template → 显式指定
+_k2_root = tempfile.mkdtemp(prefix="slcn_toc_k2root_")
+shutil.copytree(_prev, os.path.join(_k2_root, os.path.basename(_prev)))
+_k2_cur = os.path.join(_k2_root, "2026年第2期(87)")
+make_issue(_k2_cur)
+shutil.rmtree(os.path.join(_k2_cur, "000 Table of Contents"))
+_k2_report = make_report(_k2_cur)
+_kjson2 = os.path.join(tempfile.mkdtemp(prefix="slcn_toc_k2_"), "r.json")
+r_k2 = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _k2_report,
+                       "--place", "--template", _prev, "--result-json", _kjson2],
+                      capture_output=True, text=True, encoding="utf-8", errors="replace",
+                      env=os.environ, cwd=ENGINE)
+_k2 = json.load(open(_kjson2, encoding="utf-8")) if os.path.isfile(_kjson2) else {}
+check("(k3) 显式 `--template`：templateSource=`显式指定`（缺 000 时仍可用）",
+      r_k2.returncode == 0 and _k2.get("templateSource") == "显式指定",
+      f"rc={r_k2.returncode} src={_k2.get('templateSource')}")
+# k4：本期已有成品时，显式 --template 不夺权（口径=排在「本期成品」之后，保持现状）
+_kjson3 = os.path.join(tempfile.mkdtemp(prefix="slcn_toc_k3_"), "r.json")
+r_k3 = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _k_report,
+                       "--place", "--template", _prev, "--result-json", _kjson3],
+                      capture_output=True, text=True, encoding="utf-8", errors="replace",
+                      env=os.environ, cwd=ENGINE)
+_k3 = json.load(open(_kjson3, encoding="utf-8")) if os.path.isfile(_kjson3) else {}
+check("(k4) 本期已有成品 + 显式 --template：仍用本期成品（优先级保持现状）",
+      r_k3.returncode == 0 and _k3.get("templateSource") == "本期成品",
+      f"rc={r_k3.returncode} src={_k3.get('templateSource')}")
+
+
+print("\n── (l) 英文栏目表头数据驱动（columnNameEN 空 ⇒ 不生成 Column 行；用户 2026-10-25 口径）──")
+_a_zh_shape = ["{\\large \\bf{专辑：旧名}}", "&&\\textit{\\large 主持人：旧主持}", "\\\\[3.2 ex]"]
+_en_shape = ["\\large  \\bf{Special Issue: Old}", "\\\\[6.2mm]"]
+_s_en_empty = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnHost="某人",
+                              columnArticles=["Lu_Wang"])
+_s_en_full = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnNameEN="Preference Logic",
+                             columnHost="某人", columnArticles=["Lu_Wang"])
+check("(l1) 英文名空 ⇒ 英文栏目块为空（**不拿中文名回退**、不生成 `Column: 偏好逻辑`）",
+      TT.make_column_block(_s_en_empty, _en_shape, False) == []
+      and TT.make_column_block(_s_en_empty, [], False) == [])
+check("(l2) 英文名非空 ⇒ 生成 `Column: <EN>` + 沿用模板间距",
+      TT.make_column_block(_s_en_full, _en_shape, False)
+      == ["\\large  \\bf{Column: Preference Logic} ", "\\\\[6.2mm]"])
+check("(l3) 反例：英文名非空但模板无栏目块 ⇒ 用默认间距 3mm",
+      TT.make_column_block(_s_en_full, [], False)
+      == ["\\large  \\bf{Column: Preference Logic} ", "\\\\[3mm]"])
+check("(l4) 中文栏目块不受英文名缺失影响（仍按上一期形态替换名称/主持人）",
+      TT.make_column_block(_s_en_empty, _a_zh_shape, True)
+      == ["{\\large \\bf{专辑：偏好逻辑}}", "&&\\textit{\\large 主持人：某人}", "\\\\[3.2 ex]"])
+# 端到端：EN 名空时生成的英文目录**没有 Column 行**，但栏目条目仍带 `~~~~`
+_l_root = tempfile.mkdtemp(prefix="slcn_col_en_")
+make_issue(_l_root)
+_l_report = make_report(_l_root)
+_l_outs = TOC.run(_l_report, _s_en_empty, log=lambda _s: None, stamp="COL")
+_l_en = open(_l_outs[0], encoding="utf-8").read()
+_l_zh = open(_l_outs[1], encoding="utf-8").read()
+check("(l5) 端到端：英文名空 ⇒ 英文 tex 无 `Column:` 行 / 无中文栏目名，条目仍带 `~~~~`",
+      "Column:" not in _l_en and "专栏：" not in _l_en and "偏好逻辑" not in _l_en
+      and "~~~~ " in _l_en,
+      repr([ln for ln in _l_en.split("\n") if "~~~~" in ln][:1]))
+check("(l6) 端到端反例：中文 tex 仍生成「专辑：偏好逻辑」表头",
+      "专辑：偏好逻辑" in _l_zh)
+_l_outs2 = TOC.run(_l_report, _s_en_full, log=lambda _s: None, stamp="COL2")
+_l_en2 = open(_l_outs2[0], encoding="utf-8").read()
+check("(l7) 端到端反例：英文名非空 ⇒ 英文 tex 生成 `Column: Preference Logic`",
+      "Column: Preference Logic" in _l_en2)
 
 print("\n" + "=" * 66)
 if fails:

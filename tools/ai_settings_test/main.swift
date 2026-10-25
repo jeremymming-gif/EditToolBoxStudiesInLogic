@@ -1273,15 +1273,14 @@ let uFeatureFiles = ["Features/ConvertFeature.swift",
                      "Features/ProofCheckFeature.swift",
                      "Features/CompileFeature.swift",
                      "Features/DeleteTempFeature.swift",
-                     "Features/PublishFeature.swift",
                      "Features/TocFeature.swift",
                      "Features/InfoCheckFeature.swift",
                      "Features/CheckBibFeature.swift",
                      "Features/MergeFeature.swift"]
 let uMissed = uFeatureFiles.filter { !readSrc($0).contains("Shell.cancelledStatus") }
-check("u4-all-features", "全部 9 个 Feature 都处理了 `Shell.cancelledStatus`（取消不补「失败」话术）",
+check("u4-all-features", "全部 8 个 Feature 都处理了 `Shell.cancelledStatus`（取消不补「失败」话术）",
       uMissed.isEmpty,
-      uMissed.isEmpty ? "9/9" : "未处理：\(uMissed.joined(separator: "、"))")
+      uMissed.isEmpty ? "8/8" : "未处理：\(uMissed.joined(separator: "、"))")
 let uViewFiles = ["Views/SimpleFeatureView.swift", "Views/CheckBibView.swift",
                   "Views/ConvertTab.swift", "Views/ProofCheckView.swift",
                   "Views/InfoCheckView.swift", "Views/ContentTab.swift"]

@@ -586,22 +586,6 @@ def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
     return EngineCall(cmd, "mergepdf.py", "合并文件")
 
 
-def publish_call(*, folder: str, only: int = 0, from_step: int = 0) -> EngineCall:
-    """「本期出刊」向导：一个入口跑完 四步（编排在引擎侧，外壳只拼参数）。
-
-    引擎 `publish.py` 负责「失败中止 / 退出码 1 橙色继续 / 可单步重跑」，判据只有一份。
-    """
-    cmd = _base_cmd("publish.py")
-    if cmd is None:
-        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
-    cmd += ["--folder", folder]
-    if only:
-        cmd += ["--only", str(only)]
-    elif from_step:
-        cmd += ["--from", str(from_step)]
-    return EngineCall(cmd, "publish.py", "本期出刊")
-
-
 def cleantemp_call(*, folder: str, dry_run: bool = False,
                    trash: bool = False, restore_trash: str = "") -> EngineCall:
     """「删除临时文件」：`cleantemp.py --folder …`（参数与 mac 界面一致 + 可回收模式）。
@@ -665,14 +649,24 @@ def infocheck_call(*, folder: str, preview: bool = False) -> EngineCall:
     return EngineCall(cmd, "infocheck.py", "检查tex信息（预览）" if preview else "检查tex信息")
 
 
-def toc_call(*, report: str, template: str = "") -> EngineCall:
-    """「生成目录」：`toc.py --report …`（本期设置由界面先写进 `目录设置.json`）。"""
+def toc_call(*, report: str, template: str = "", text_only: bool = False,
+             result_json: str = "") -> EngineCall:
+    """「生成目录」：默认**一键最终交付**（`--place --compile`，落位/编译逻辑在引擎里）。
+
+    高级开关「仅生成 tex（不落位）」打开时只传 `--report`（旧行为：只写时间戳 .tex）。
+    `result_json` 是界面给的临时路径：引擎把 4 个固定名路径/模板来源/页数写成 JSON，
+    跑完由 `read_toc_result()` 读回来显示 —— 外壳不猜模板来源、不拼产物路径。
+    """
     cmd = _base_cmd("toc.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
     cmd += ["--report", report]
     if template.strip():
         cmd += ["--template", template.strip()]
+    if not text_only:
+        cmd += ["--place", "--compile"]
+        if result_json:
+            cmd += ["--result-json", result_json]
     return EngineCall(cmd, "toc.py", "生成目录")
 
 
@@ -683,6 +677,74 @@ def toc_preview_call(*, report: str) -> EngineCall:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
     cmd += ["--report", report, "--preview"]
     return EngineCall(cmd, "toc.py", "目录预览")
+
+
+def read_toc_result(path: str) -> dict:
+    """读 `toc.py --result-json` 写的结果；文件不在/不是 JSON → `{}`（不猜、不炸）。"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def toc_result_lines(payload: dict) -> list[str]:
+    """把生成目录的结果 JSON 翻成结果区的行（**纯函数**，桥梁测试直接断言）。
+
+    只显示引擎给的事实：4 个固定名路径 / 模板来源 / 页数 / 栏目 / 人工核对项 / 警告；
+    模板来源**不在这里判断**（引擎说「上一期」就是上一期）。
+    """
+    if not isinstance(payload, dict):
+        return []
+    lines: list[str] = []
+    source = str(payload.get("templateSource") or "").strip()
+    if source:
+        lines.append(f"模板来源：{source}")
+    note = str(payload.get("templateNote") or "").strip()
+    if note:
+        lines.append(note)
+    placed = payload.get("placed")
+    if isinstance(placed, dict):
+        for label, key in (("中文目录 PDF", "zhPdf"), ("中文目录 tex", "zhTex"),
+                           ("英文目录 PDF", "enPdf"), ("英文目录 tex", "enTex")):
+            value = str(placed.get(key) or "").strip()
+            if value:
+                lines.append(f"{label}：{value}")
+    pages = payload.get("pages")
+    if isinstance(pages, dict):
+        parts: list[str] = []
+        if isinstance(pages.get("zh"), int):
+            parts.append(f"中文 {pages['zh']} 页")
+        if isinstance(pages.get("en"), int):
+            parts.append(f"英文 {pages['en']} 页")
+        if parts:
+            lines.append("页数：" + "／".join(parts))
+    column = payload.get("column")
+    if isinstance(column, dict) and column.get("enabled") is True:
+        title = str(column.get("title") or "").strip()
+        lines.append("栏目：" + (title or "已启用"))
+    edits = payload.get("manualEdits")
+    if isinstance(edits, list):
+        for edit in edits:
+            if not isinstance(edit, dict):
+                continue
+            kind = str(edit.get("kind") or "").strip()
+            text = "需人工核对" + (f"（{kind}）" if kind else "")
+            article = str(edit.get("article") or "").strip()
+            if article:
+                text += f"：{article}"
+            note = str(edit.get("note") or "").strip()
+            if note:
+                text += f" — {note}"
+            lines.append(text)
+    warnings = payload.get("warnings")
+    if isinstance(warnings, list):
+        for warning in warnings:
+            text = str(warning).strip()
+            if text:
+                lines.append(f"⚠️ {text}")
+    return lines
 
 
 # ── 引用库 CLI（第 132 条）：`bibdb.py` 的薄参数拼装 ────────────────────────

@@ -12,7 +12,7 @@ r"""内置目录模板 —— **本文件由 `tools/gen_content_templates.py` �
 """
 
 chContentHead = r"""
-\documentclass[b5paper,11pt,onecolumn,twoside]{ctexart}
+\documentclass[b5paper,11pt,onecolumn,twoside,fontset=windows]{ctexart}
 \pagestyle{empty}
 \usepackage[total={130mm,203mm}, top=28.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式
 \usepackage{tabularx}
@@ -45,7 +45,7 @@ chContentEnd = r"""
 """
 
 enContentHead = r"""
-\documentclass[b5paper,10pt,onecolumn,twoside]{ctexart}
+\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}
 \pagestyle{empty}%不显示页码
 \usepackage[total={130mm,203mm}, top=20.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式
 \usepackage{tabularx}

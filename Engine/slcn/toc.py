@@ -45,12 +45,15 @@ class TocEntry:
 
 
 def clean_name(name: str) -> str:
-    """只保留 CJK 统一表意文字（U+4E00–U+9FFF）。
+    """只保留 CJK 统一表意文字（U+4E00–U+9FFF）与中文间隔号 `·`。
 
     ⚠️ 注意与 `infocheck.no_chinese` 的范围**不同**：那边是 9FA5（复刻上游），
     这里是 9FFF（mac 的 `cleanName` 就是这么写的）。刻意各自保留，别"顺手统一"。
+
+    `·` 必须保留：外文译名的间隔号（如 `甲·乙`）从前被当噪声滤掉，
+    成品目录里就成了「甲乙」。
     """
-    return "".join(c for c in name if 0x4E00 <= ord(c) <= 0x9FFF)
+    return "".join(c for c in name if 0x4E00 <= ord(c) <= 0x9FFF or c == "·")
 
 
 def python_readlines(content: str) -> list[str]:
@@ -106,26 +109,87 @@ def split_articles(lines: list[str]) -> list[tuple[str, list[str]]]:
     return result
 
 
+#: 「文本类」命令：清洗标题时**保留花括号里的内容**（不是整段删掉）。
+#: 从前一律按 `\cmd{...}` 整段删除，于是 `甲\hbox{乙丙}` 只剩 `甲`、
+#: `…\textbf{ABC}` 会丢 `ABC`（B-226 E1）。
+_TEXT_COMMANDS = ("hbox", "textbf", "textit", "emph", "text")
+_TEXT_COMMANDS_RE = re.compile(r"\\(?:" + "|".join(_TEXT_COMMANDS) + r")\s*\{\s*([^{}]*?)\s*\}")
+
+
+def _unwrap_text_commands(t: str) -> str:
+    r"""把 `\hbox{X}` / `\textbf{X}` / `\textit{X}` / `\emph{X}` / `\text{X}` 换成 `X`（可嵌套）。"""
+    for _ in range(3):
+        changed = _TEXT_COMMANDS_RE.sub(r"\1", t)
+        if changed == t:
+            break
+        t = changed
+    return t
+
+
 def clean_title(raw: str | None, keep_braces: bool) -> str:
-    r"""标题清洗：去掉残留的 LaTeX 命令。
+    r"""标题清洗：去掉残留的 LaTeX 命令，但**保留文本类命令的内容**。
 
     原版只去掉 `\\`、`\Large`、`\large`，`\zihao{4}` 这类会留在标题里 ——
     成品里真的出现过 `\large \zihao{4}Reasoning Disposition...`。
+
+    两种特例（B-226 P0 冻结）：
+      · 文本类命令保留内容：`甲\hbox{乙丙}` → `甲乙丙`、`...\textbf{ABC}` → `...ABC`；
+      · 整条标题是数学模式（`$\text{术语}^*$`）：取 `\text` 内容、去掉上标星号
+        → `术语`（从前会留下 `$^*$`，英文模板/数学字体在目录里是非法残留）。
     """
     if raw is None:
         return ""
     t = raw
     for token in ("\\\\", "\\Large", "\\large"):
         t = t.replace(token, "")
-    t = re.sub(r"\\[a-zA-Z]+\s*\{[^}]*\}", "", t)
+    math = re.match(r"^\s*\$(.*)\$\s*$", t, re.S)
+    if math:
+        inner = _unwrap_text_commands(math.group(1))
+        inner = re.sub(r"\^\s*\{?\s*\*?\s*\}?", "", inner)   # 去掉 ^* / ^{*} 上标
+        t = inner.replace("*", "").replace("$", "")
+        t = re.sub(r"\\[a-zA-Z]+\s*\{[^}]*\}", "", t)
+    else:
+        t = _unwrap_text_commands(t)
+        t = re.sub(r"\\[a-zA-Z]+\s*\{[^}]*\}", "", t)
     if not keep_braces:
         t = t.replace("{", "").replace("}", "")
     return t.strip()
 
 
+def clean_author_en(raw: str | None) -> str:
+    r"""英文作者清洗：去掉通讯作者/脚注标记（`$^\text{\Letter}$`、`\Letter`）等 LaTeX 残留。
+
+    英文目录从前**编译失败**的根因就是它：报告里的第二作者英文取出来可能只剩
+    `\Letter}$`，原样写进 tabularx 后 xelatex 报 `Argument of \@sect has an extra }`。
+    这里只去标记，正文（英文名）原样保留；清洗后为空即由调用方丢弃（不是"换成别人"）。
+    """
+    if raw is None:
+        return ""
+    t = _unwrap_text_commands(raw)                  # \textit{Name} → Name
+    t = re.sub(r"\\[a-zA-Z]+\s*", "", t)            # \Letter 之类无参命令
+    t = t.replace("$", "").replace("^", "").replace("{", "").replace("}", "")
+    t = t.replace("~", " ")                         # LaTeX 不换行空格 → 普通空格
+    return re.sub(r"\s+", " ", t).strip()
+
+
+#: 报告里的作者角色行：`第一作者英文: …` / `第二作者中文: …`（全角冒号也兼容）
+_AUTHOR_LINE_RE = re.compile(r"(第[一二三])作者(英文|中文)\s*[:：]\s*(.*)")
+_AUTHOR_ROLE_INDEX = {"第一": 0, "第二": 1, "第三": 2}
+#: 源稿占位符（88 期末篇里真的写着「标题」「第一作者」）——只标注、不改行为
+_PLACEHOLDER_TITLES = {"标题", "题目", "无", "None"}
+_PLACEHOLDER_AUTHOR_RE = re.compile(r"^第[一二三]作者$")
+
+
 def parse_entry(folder_name: str, block: list[str]) -> TocEntry:
-    """从一篇报告块里解析出目录条目。"""
+    r"""从一篇报告块里解析出目录条目。
+
+    作者按**角色**（第一/第二/第三）占位：同一角色出现两条时**后者优先**。
+    报告里同一角色可能出现两行「第一作者中文」——先一行误填，后一行才对；
+    后一条才是真名；从前两条都进列表，目录里就成了「甲，甲乙」（B-226 E9）。
+    """
     entry = TocEntry(folderName=folder_name)
+    zh: list[str | None] = [None, None, None]
+    en: list[str | None] = [None, None, None]
     for line in block:
         if "起始页码：" in line:
             first = (line.split() or [""])[0]
@@ -145,23 +209,18 @@ def parse_entry(folder_name: str, block: list[str]) -> TocEntry:
                 entry.titleParseFailed = True
             else:
                 entry.englishTitle = raw
-        elif "第一作者英文:" in line:
-            entry.englishAuthors.append(line[7:].strip())
-        elif "第一作者中文:" in line:
-            entry.chineseAuthors.append(clean_name(line[7:].strip()))
-        elif "第二作者英文:" in line:
-            entry.englishAuthors.append(line[7:].strip())
-        elif "第二作者中文:" in line:
-            entry.chineseAuthors.append(clean_name(line[7:].strip()))
-        elif "第三作者英文:" in line:
-            entry.englishAuthors.append(line[7:].strip())
-        elif "第三作者中文:" in line:
-            entry.chineseAuthors.append(clean_name(line[7:].strip()))
+        else:
+            m = _AUTHOR_LINE_RE.search(line)
+            if m:
+                slot = en if m.group(2) == "英文" else zh
+                raw_author = m.group(3).strip()
+                if raw_author:
+                    slot[_AUTHOR_ROLE_INDEX[m.group(1)]] = raw_author
 
     entry.chineseTitle = clean_title(entry.chineseTitle, keep_braces=False)
     entry.englishTitle = clean_title(entry.englishTitle, keep_braces=True)
-    entry.chineseAuthors = [a for a in entry.chineseAuthors if a]
-    entry.englishAuthors = [a for a in entry.englishAuthors if a]
+    entry.chineseAuthors = [a for a in (clean_name(x) for x in zh if x) if a]
+    entry.englishAuthors = [a for a in (clean_author_en(x) for x in en if x) if a]
     return entry
 
 
@@ -409,6 +468,60 @@ class TocSettings:
         return path
 
 
+# ── 模板解析（单点：generate_tex 与 template_source_note 共用）──────────
+
+#: 模板来源的四种口径 —— 结果 JSON 的 `templateSource` 字段（GUI 依赖，别改字面量）。
+TEMPLATE_CURRENT = "本期成品"
+TEMPLATE_EXPLICIT = "显式指定"
+TEMPLATE_PREVIOUS = "上一期"
+TEMPLATE_BUILTIN = "内置模板"
+
+
+@dataclass
+class TemplateChoice:
+    """一次模板解析的结果：模板本体 + 来源口径 + 人话说明。"""
+
+    parts: _tt.Parts
+    source: str
+    note: str
+    folder: str = ""
+
+
+def resolve_template(report_dir: str, settings: "TocSettings",
+                     file_name: str) -> TemplateChoice:
+    r"""解析模板来源，优先级：**本期成品 → （显式 templateFolder）→ 上一期 → 内置模板**。
+
+    单点实现：真正生成（`generate_tex`）与界面说明（`template_source_note`）必须同一口径，
+    否则会出现「预览说继承上一期、生成时却用内置」这类对不上（B-226 E8/F2）。
+    `--template` 显式指定的口径**保持现状**：排在「本期成品」之后（本期已有成品时本期优先）。
+    """
+    cur = _tt.load(report_dir, file_name)
+    if cur is not None:
+        return TemplateChoice(cur, TEMPLATE_CURRENT,
+                              f"本期 000 Table of Contents 里已有的 {file_name}", report_dir)
+    if settings.templateFolder:
+        folder = os.path.normpath(settings.templateFolder)
+        parts = _tt.load(folder, file_name)
+        if parts is not None:
+            return TemplateChoice(parts, TEMPLATE_EXPLICIT,
+                                  f"指定模板 {os.path.basename(folder)} 的 {file_name}", folder)
+    prev = _tt.previous_issue_folder(report_dir)
+    if prev:
+        parts = _tt.load(prev, file_name)
+        if parts is not None:
+            return TemplateChoice(parts, TEMPLATE_PREVIOUS,
+                                  f"上一期 {os.path.basename(prev)} 的 {file_name}", prev)
+    return TemplateChoice(_tt.builtin(file_name), TEMPLATE_BUILTIN,
+                          "未找到可继承的模板，改用内置模板（卷期号等仍需手工核对）", "")
+
+
+def template_source(report_path: str, settings: "TocSettings") -> tuple[str, str]:
+    """供结果 JSON 用：`(templateSource, templateNote)`。"""
+    d = os.path.dirname(os.path.abspath(report_path))
+    choice = resolve_template(d, settings, "Chinese Content.tex")
+    return choice.source, choice.note
+
+
 # ── 生成文件 ─────────────────────────────────────────────────────────────
 
 def generate_tex(report_path: str, flag: str, settings: TocSettings,
@@ -437,21 +550,11 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     publish_month = str(int(issue) * 2) if issue.isdigit() else ""
 
     # ---- 模板（方案 A：继承成品）----
-    # 优先级：本期 000 目录里已有的成品 → 上一期 → 内置模板。
-    # 本期已有成品时优先用它，因为同事可能已经在本期调过版式，重新生成应当继承那一次调整。
-    template_folder = (os.path.normpath(settings.templateFolder) if settings.templateFolder
-                       else _tt.previous_issue_folder(report_dir))
-
-    parts = _tt.load(report_dir, f"{base_name}.tex")
-    if parts is not None:
-        log(f"模板来源：本期 000 Table of Contents 里已有的 {base_name}.tex")
-    else:
-        parts = _tt.load(template_folder, f"{base_name}.tex") if template_folder else None
-        if parts is not None:
-            log(f"模板来源：上一期 {parts.source} 的 {base_name}.tex")
-        else:
-            parts = _tt.builtin(base_name)
-            log("未找到可继承的模板，改用内置模板（卷期号等仍需手工核对）")
+    # 优先级：本期 000 目录里已有的成品 → （显式 templateFolder）→ 上一期 → 内置模板。
+    # 解析逻辑单点在 `resolve_template`：界面预览与真正生成必须是同一口径。
+    choice = resolve_template(report_dir, settings, f"{base_name}.tex")
+    parts = choice.parts
+    log(f"模板来源：{choice.note}")
 
     # ---- 头部：填入本期卷期信息，并统一使用 Windows 字体 ----
     head = _tt.ensure_windows_fontset(_tt.patch_header(
@@ -463,8 +566,14 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # ---- 栏目块 ----
     column_block = _tt.make_column_block(settings, parts.columnBlock, is_chinese)
     if settings.is_column_enabled:
-        title = settings.chinese_column_title if is_chinese else settings.english_column_title
-        log(f"本期栏目：{title}（{len(settings.columnArticles)} 篇）")
+        count = len(settings.columnArticles)
+        if is_chinese:
+            log(f"本期栏目：{settings.chinese_column_title}（{count} 篇）")
+        elif (settings.columnNameEN or "").strip():
+            log(f"本期栏目：Column: {settings.columnNameEN.strip()}（{count} 篇）")
+        else:
+            log(f"本期栏目：英文栏未填英文名 → 不生成 Column 行"
+                f"（条目仍带 ~~~~ 标记，{count} 篇）")
 
     # ---- 正文条目 ----
     entries: list[str] = []
@@ -506,15 +615,69 @@ def list_articles(report_path: str) -> list[tuple[str, str]]:
             for folder, block in split_articles(lines)]
 
 
+def manual_edits(report_path: str, settings: "TocSettings") -> list[dict[str, str]]:
+    r"""结果 JSON 的 `manualEdits`：**只标注、不改行为**的人工手改/源稿占位条目。
+
+    给 P2 允许清单用：GUI 只负责显示，是否放行由人逐条确认（B-226 §11.6）。
+    四类 `kind`（schema 冻结）：
+      · `title` —— 标题在报告里是「None」/空/源稿占位（如 88 期末篇的「标题」）；
+      · `author` —— 作者为空或源稿占位（如「第一作者」）；
+      · `wrap` —— 标题由引擎自动断行，断点可能与人工成品不同；
+      · `columnHeader` —— 本期开了栏目但继承的模板里没有栏目行（已按兜底形态重建）。
+    """
+    edits: list[dict[str, str]] = []
+
+    def add(kind: str, article: str, note: str) -> None:
+        edits.append({"kind": kind, "article": article, "note": note})
+
+    try:
+        with open(report_path, encoding="utf-8", errors="replace") as fh:
+            lines = python_readlines(fh.read())
+    except OSError:
+        return edits
+    for folder_name, block in split_articles(lines):
+        e = parse_entry(folder_name, block)
+        if not e.chineseTitle.strip():
+            add("title", folder_name,
+                "标题在检查报告里为空或「None」—— 请回「检查tex信息」核对该篇 tex 的标题填写")
+        elif e.chineseTitle.strip() in _PLACEHOLDER_TITLES:
+            add("title", folder_name,
+                f"源稿标题是占位「{e.chineseTitle.strip()}」，成品目录需人工写正式标题")
+        if not e.chineseAuthors:
+            add("author", folder_name,
+                "中文作者在检查报告里为空 —— 请回「检查tex信息」核对该篇 tex 的作者填写")
+        elif any(_PLACEHOLDER_AUTHOR_RE.match(a) for a in e.chineseAuthors):
+            add("author", folder_name, "源稿作者是占位（「第一作者」之类），需人工补正式姓名")
+        wrapped = None
+        if e.chineseTitle and "——" not in e.chineseTitle:
+            wrapped = wrap_title(e.chineseTitle, settings.titleWrapLimit, is_english=False)
+        if e.englishTitle:
+            wrapped_en = wrap_title(e.englishTitle, settings.titleWrapLimitEN, is_english=True)
+            wrapped = wrapped or wrapped_en
+        if wrapped:
+            add("wrap", folder_name,
+                "标题由引擎自动断行，断点可能与人工成品不同（P2 按允许清单逐条确认）")
+
+    if settings.is_column_enabled:
+        d = os.path.dirname(os.path.abspath(report_path))
+        parts = _tt.load(d, "Chinese Content.tex")
+        if parts is None or not parts.columnBlock:
+            add("columnHeader", "",
+                f"本期栏目「{settings.chinese_column_title}」：继承的模板里没有栏目行，"
+                "已按兜底形态重建，请核对栏目名/主持人")
+    return edits
+
+
 def template_source_note(report_path: str, settings: TocSettings) -> str:
-    """供界面使用：推断本期的模板来源说明（本期已有 → 上一期 → 内置）。"""
+    """供界面使用：推断本期的模板来源说明（本期已有 → 显式指定 → 上一期 → 内置）。"""
     d = os.path.dirname(os.path.abspath(report_path))
-    if _tt.load(d, "Chinese Content.tex") is not None:
+    choice = resolve_template(d, settings, "Chinese Content.tex")
+    if choice.source == TEMPLATE_CURRENT:
         return "本期 000 Table of Contents 里已有成品，将继承它的版式"
-    folder = (os.path.normpath(settings.templateFolder) if settings.templateFolder
-              else _tt.previous_issue_folder(d))
-    if folder and _tt.load(folder, "Chinese Content.tex") is not None:
-        return f"将继承上一期 {os.path.basename(os.path.normpath(folder))} 的版式"
+    if choice.source == TEMPLATE_EXPLICIT:
+        return f"将继承指定模板 {os.path.basename(os.path.normpath(choice.folder))} 的版式"
+    if choice.source == TEMPLATE_PREVIOUS:
+        return f"将继承上一期 {os.path.basename(os.path.normpath(choice.folder))} 的版式"
     return "找不到可继承的成品，将使用内置模板（卷期号等需手工核对）"
 
 

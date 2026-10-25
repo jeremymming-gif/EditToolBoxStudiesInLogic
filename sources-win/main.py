@@ -1079,17 +1079,27 @@ class InfoCheckTab(TabPage):
 class TocTab(TabPage):
     name = "生成目录"
     pick = "file"
-    instruction = ("使用说明：选「检查tex信息」生成的**报告 .txt**，生成中英文两份目录 .tex（**先英文后中文**）。\n"
-                   "版式**继承上一期成品**（本期 000 Table of Contents 里已有的优先），只替换本期的卷期信息，\n"
-                   "所以同事手工调过的版式会自动延续。下方可填本期栏目（专栏/专辑），留空表示本期无栏目。\n"
-                   "点「读取篇目」会列出报告里的文章，可勾选哪些属于栏目 —— 设置会写进报告同目录的 `目录设置.json`。")
+    instruction = ("使用说明：选「检查tex信息」生成的**报告 .txt**，点「运行」一次完成**最终交付**：\n"
+                   "  缺少 000 Table of Contents 时自动创建 → 生成中英文目录 → 落位成固定文件名\n"
+                   "  （Chinese Content.tex/.pdf、contents.tex/.pdf）→ 用 XeLaTeX 编译成 PDF。\n"
+                   "结果区列出 4 个成品路径、模板来源与页数，可直接打开目录。\n"
+                   "模板来源由引擎判断并显示（本期成品 → 上一期 → 内置模板），界面不另猜。\n"
+                   "高级开关「仅生成 tex（不落位）」打开时只写带时间戳的 .tex（旧行为），不落位、不编译。\n"
+                   "下方可填本期栏目（专栏/专辑），留空表示本期无栏目；"
+                   "点「读取篇目」会列出报告里的文章，可勾选哪些属于栏目。")
 
     def __init__(self, parent, name, on_run, on_stop):
         super().__init__(parent, name, on_run, on_stop)
         self.rows: list[tuple[str, str]] = []      # [(文章名, 中文标题)]
+        self.result_json_path = ""
+        self.text_only_run = False
         self.note = ttk.Label(self, text="（还没读取篇目：选报告后点「读取篇目」）",
                               wraplength=760, justify="left", style="Muted.TLabel")
         self.note.grid(row=90, column=0, padx=10, pady=(4, 0), sticky="w")
+        # 结果区（引擎结果 JSON：4 路径 / 模板来源 / 页数 / 注意事项）
+        self.delivery = ttk.Label(self, text="", wraplength=820, justify="left")
+        self.delivery.grid(row=92, column=0, padx=10, pady=(0, 6), sticky="w")
+        self.delivery.grid_remove()
         # ⚠️ `tk.Listbox` 保留：Tk 没有 ttk 对等物。颜色由 `theme.COLOR` 喂进去
         #    （`theme.style_listbox`）—— 主文件里不写死颜色。
         self.listbox = tk.Listbox(self, selectmode=tk.EXTENDED, height=7, exportselection=False)
@@ -1098,26 +1108,70 @@ class TocTab(TabPage):
         self.rowconfigure(91, weight=1)
 
     def build_options(self, parent: ttk.Frame) -> None:
+        # 两行放：第一行是运行模式与本期栏目；第二行是「显式指定模板」（高级兜底）。
+        row1 = ttk.Frame(parent)
+        row1.pack(side="top", fill="x")
+        row2 = ttk.Frame(parent)
+        row2.pack(side="top", fill="x", pady=(4, 0))
+        self.v_textonly = tk.BooleanVar(value=False)
         self.v_kind = tk.StringVar(value="")
         self.v_cname = tk.StringVar(value="")
         self.v_cname_en = tk.StringVar(value="")
         self.v_host = tk.StringVar(value="")
         self.v_template = tk.StringVar(value="")
-        ttk.Button(parent, text="读取篇目", width=10, command=self.load_preview).pack(side="left")
-        ttk.Label(parent, text="栏目类型").pack(side="left", padx=(10, 2))
-        ttk.Combobox(parent, textvariable=self.v_kind, width=6, state="readonly",
+        _check(row1, "仅生成 tex（不落位、不编译）", self.v_textonly).pack(side="left", padx=(0, 10))
+        ttk.Button(row1, text="读取篇目", width=10, command=self.load_preview).pack(side="left")
+        ttk.Label(row1, text="栏目类型").pack(side="left", padx=(10, 2))
+        ttk.Combobox(row1, textvariable=self.v_kind, width=6, state="readonly",
                      values=("", "专栏", "专辑")).pack(side="left")
-        ttk.Label(parent, text="栏目名").pack(side="left", padx=(8, 2))
-        ttk.Entry(parent, textvariable=self.v_cname, width=16).pack(side="left")
-        ttk.Label(parent, text="英文名").pack(side="left", padx=(8, 2))
-        ttk.Entry(parent, textvariable=self.v_cname_en, width=18).pack(side="left")
-        ttk.Label(parent, text="主持人").pack(side="left", padx=(8, 2))
-        ttk.Entry(parent, textvariable=self.v_host, width=10).pack(side="left")
-        ttk.Label(parent, text="模板来源期目录（留空=自动找上一期）").pack(side="left", padx=(8, 2))
-        ttk.Entry(parent, textvariable=self.v_template, width=22).pack(side="left")
+        ttk.Label(row1, text="栏目名").pack(side="left", padx=(8, 2))
+        ttk.Entry(row1, textvariable=self.v_cname, width=16).pack(side="left")
+        ttk.Label(row1, text="英文名").pack(side="left", padx=(8, 2))
+        ttk.Entry(row1, textvariable=self.v_cname_en, width=18).pack(side="left")
+        ttk.Label(row1, text="主持人").pack(side="left", padx=(8, 2))
+        ttk.Entry(row1, textvariable=self.v_host, width=10).pack(side="left")
+        ttk.Label(row2, text="模板来源期目录（留空=自动找上一期；一般不用填）").pack(side="left")
+        ttk.Entry(row2, textvariable=self.v_template, width=32).pack(side="left", padx=(4, 0))
 
     def extra_args(self) -> dict:
-        return {"template": self.v_template.get()}
+        return {"template": self.v_template.get(),
+                "text_only": bool(self.v_textonly.get())}
+
+    def prepare_result_json(self) -> str:
+        """每次运行一个新的结果 JSON 临时路径（读回即删；不落稿件目录）。"""
+        import tempfile
+        handle, path = tempfile.mkstemp(prefix="slcn-toc-", suffix=".json")
+        os.close(handle)
+        self.result_json_path = path
+        return path
+
+    def clear_delivery(self) -> None:
+        self.delivery.config(text="")
+        self.delivery.grid_remove()
+
+    def show_delivery(self, payload: dict, code: int, tail: str = "") -> None:
+        """把引擎结果 JSON 显示到结果区：4 路径 + 模板来源 + 页数 + 注意事项（只显示）。"""
+        if not payload:
+            if code != 0 and not self.text_only_run:
+                text = "❌ 引擎没有写出结果 JSON（已中止）。"
+                if tail:
+                    text += "\n" + tail
+                self.delivery.config(text=plain(text), foreground=theme.COLOR["error"])
+                self.delivery.grid()
+            return
+        note = str(payload.get("templateNote") or "")
+        if note:
+            self.note.config(text=plain(note))
+        lines = E.toc_result_lines(payload)
+        if self.text_only_run:
+            lines = ["（仅生成 tex：未落位、未编译）"] + lines
+        if code == 1:
+            lines.insert(0, "⚠️ 已交付，但有需要人工核对的地方（见运行日志）")
+        if not lines:
+            lines = ["（引擎没有返回可显示的详情；产物位置见运行日志）"]
+        self.delivery.config(text=plain("\n".join(lines)),
+                             foreground=theme.COLOR["warn"] if code == 1 else theme.COLOR["fg"])
+        self.delivery.grid()
 
     def load_preview(self) -> None:
         """问引擎要篇目清单（`toc.py --preview`），不要自己解析报告 —— 口径必须与生成时一致。"""
@@ -1186,8 +1240,8 @@ class TocTab(TabPage):
             "columnName": self.v_cname.get(),
             "columnNameEN": self.v_cname_en.get(),
             "columnHost": self.v_host.get(),
-            "columnArticles": [self.rows[i][0] for i in self.listbox.curselection()]
-            if self.rows else data.get("columnArticles", []),
+            "columnArticles": ([self.rows[i][0] for i in self.listbox.curselection()]
+                               if self.rows else data.get("columnArticles", [])),
             "templateFolder": self.v_template.get(),
         })
         data.setdefault("titleWrapLimit", 20)
@@ -1259,19 +1313,6 @@ class CompileAllTab(TabPage):
 
     def extra_args(self) -> dict:
         return {"only": self.v_only.get(), "dry_run": self.v_dry.get()}
-
-
-class PublishTab(TabPage):
-    name = "本期出刊"
-    pick = "dir"
-    instruction = ("使用说明：选**一期的目录**，点「运行」按顺序跑完四步：\n"
-                   "① 检查tex信息 → ② 生成目录 → ③ 合并整期 PDF → ④ 编译全部。\n"
-                   "**失败即中止**（前 N−1 步的产物保留，日志末行会写明卡在第几步）；\n"
-                   "退出码 1（有结果/需人工核对，例如有文章编译失败）只算**橙色警告**并继续。\n"
-                   "要单步重跑某一环节，仍可用左边的单个页面（编排与判据在引擎 `publish.py`，只有一份）。")
-
-    def build_options(self, parent: ttk.Frame) -> None:
-        pass
 
 
 class ProofCheckTab(TabPage):
@@ -1578,7 +1619,6 @@ class MainWindow(tk.Tk):
         self.toc_tab = TocTab(self.content, "生成目录", self.start, self.stop)
         self.compile_tab = CompileAllTab(self.content, "编译全部", self.start, self.stop)
         self.clean_tab = CleanTab(self.content, "删除临时文件", self.start, self.stop)
-        self.publish_tab = PublishTab(self.content, "本期出刊", self.start, self.stop)
         # ── 第 132 条：「引用库」5 页（与 mac 同口径；数据源是 Engine/bibdb.py）──
         # 页面在 bibdb_ui.py（main.py 已经 1300+ 行，别继续膨胀）；这里只建对象、排进侧栏。
         self.bibdb_stats_tab = B.BibDbStatsPage(self.content, app=self)
@@ -1590,8 +1630,7 @@ class MainWindow(tk.Tk):
                                         post=self._q.put)
         self.tabs = [self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
                      self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
-                     self.publish_tab,
-                     # 第 132 条：引用库分组（9..13）；「设置」仍是组外底部（14）
+                     # 第 132 条：引用库分组（8..12）；「设置」仍是组外底部（13）
                      self.bibdb_stats_tab, self.bibdb_query_tab, self.bibdb_import_tab,
                      self.bibdb_review_tab, self.bibdb_settings_tab,
                      self.settings_tab]
@@ -1602,8 +1641,8 @@ class MainWindow(tk.Tk):
         #: 第 132 条起多一个与另两组**平行**的顶级分组「引用库」（按使用顺序排：
         #: 看概况 → 查库 → 入藏 → 待裁决 → 设置）。设置仍是组外的配置入口。
         self.nav_groups = [("单篇稿件", (0, 1, 2, 3)),
-                           ("整期装配", (4, 5, 6, 7, 8)),
-                           ("引用库", (9, 10, 11, 12, 13))]
+                           ("整期装配", (4, 5, 6, 7)),
+                           ("引用库", (8, 9, 10, 11, 12))]
         for title, idxs in self.nav_groups:
             group = self.nav.insert("", "end", text=title, open=True)
             for i in idxs:
@@ -1947,6 +1986,13 @@ class MainWindow(tk.Tk):
                     else:
                         tab.show_result(text, path, seconds)
                     continue
+                if isinstance(line, tuple) and line[0] == "__TOC_RESULT__":
+                    _tag, tab, payload, code, tail = line
+                    try:
+                        tab.show_delivery(payload, code, tail)
+                    except Exception as exc:  # noqa: BLE001  结果区出错不许弄断事件循环
+                        self.log(f"❌ 生成目录结果区显示失败：{exc}")
+                    continue
                 if isinstance(line, tuple) and line[0] == "__COOP__":
                     # 第五十五批：两段式协同跑完后，由工作线程把「发现到的暂存目录/
                     # 建议摘要」送回主线程再更新界面（Tk 控件只在主线程碰）。
@@ -2011,13 +2057,14 @@ class MainWindow(tk.Tk):
             return E.infocheck_call(folder=path)
         if isinstance(tab, TocTab):
             tab.save_settings(path)          # 先把本期设置写进引擎要读的 json
-            return E.toc_call(report=path, **opts)
+            text_only = bool(opts.get("text_only"))
+            tab.text_only_run = text_only
+            result_json = "" if text_only else tab.prepare_result_json()
+            return E.toc_call(report=path, result_json=result_json, **opts)
         if isinstance(tab, ProofCheckTab):
             return E.proofcheck_call(tex=path, **opts)
         if isinstance(tab, CompileAllTab):
             return E.compileall_call(folder=path, **opts)
-        if isinstance(tab, PublishTab):
-            return E.publish_call(folder=path)
         if isinstance(tab, CleanTab):
             # UI 方案第 3 件：**先预览再动手**，且动手的方式是"移到回收目录"（可撤销）。
             # 老行为（直接删）仍保留在 CLI 默认值里，mac 外壳不受影响。
@@ -2069,6 +2116,8 @@ class MainWindow(tk.Tk):
                          "（不会发出任何请求）；请先到「设置」页填地址与模型名。")
         self._running_tab = tab
         self._t0 = time.monotonic()
+        if isinstance(tab, TocTab):
+            tab.clear_delivery()
         tab.show_running(0.0)
         self._set_busy(True)
         # ⚠️ 路径必须在**主线程**里取好再交给工作线程：Tk 控件不能跨线程碰 ——
@@ -2145,8 +2194,20 @@ class MainWindow(tk.Tk):
             payload = self._info_report_payload(path)
             if payload:
                 self._q.put(("__REPORT__", tab, payload))
+        # 生成目录：把引擎写的结果 JSON 读回来（4 路径/模板来源/页数），读完即删
+        toc_payload: dict = {}
+        if isinstance(tab, TocTab) and tab.result_json_path:
+            toc_payload = E.read_toc_result(tab.result_json_path)
+            try:
+                os.remove(tab.result_json_path)
+            except OSError:
+                pass
+            tab.result_json_path = ""
         coop_payload: dict | None = None
         result = E.result_text(call.entry, code)
+        if isinstance(tab, TocTab) and code == 0:
+            result = ("✅ 生成并交付完成" if not tab.text_only_run
+                      else "✅ 已生成 tex（仅生成，未落位/未编译）")
         if coop_phase:
             try:
                 coop_payload = self._coop_payload(call, coop_phase, code)
@@ -2167,12 +2228,19 @@ class MainWindow(tk.Tk):
         self._q.put(f"{result}（退出码 {code}）")
         if tab is not None:
             path = E.artifact_path(last["line"]) if code == 0 else ""
+            if isinstance(tab, TocTab):
+                toc_dir = str(toc_payload.get("tocDir") or "").strip()
+                if toc_dir:
+                    path = toc_dir
             undo = None
             # 清理跑完 → 给一个「撤销清理」按钮：把回收目录里的东西搬回去
             if isinstance(tab, CleanTab) and code == 0 and path and "--trash" in call.argv:
                 undo = ("撤销清理", path)
             self._q.put(("__RESULT__", tab, result,
                          path, time.monotonic() - self._t0, undo))
+            if isinstance(tab, TocTab):
+                self._q.put(("__TOC_RESULT__", tab, toc_payload, code,
+                             E.output_tail(tail, count=2) if code not in (0, 1) else ""))
             if coop_payload is not None:
                 self._q.put(("__COOP__", tab, coop_payload, code))
         self._q.put("__DONE__")

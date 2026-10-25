@@ -32,8 +32,12 @@ _PREV_ISSUE_RE = re.compile(r"^(20\d\d)年第(\d+)期")
 _TOTAL_ISSUE_RE = re.compile(r"[（(](\d+)[）)]")
 #: 形如 `\\[3.2 ex]` / `\\[4mm]` 的间距行（注意是**两个**反斜杠 + 方括号）
 _SPACING_RE = re.compile(r"^\s*\\\\\[\s*[\d.]+\s*(ex|mm|pt)\s*\]")
-#: 去掉行首的注释符
-_COMMENT_PREFIX_RE = re.compile(r"^\s*%\s?")
+def is_comment_line(line: str) -> bool:
+    """这一行是否被注释掉（行首 `%`；前导空白不算）。
+
+    ⚠️ 必须只认行首：`\begin{tabularx}{...}%调整版式` 这种**行尾**注释是正常内容。
+    """
+    return line.lstrip().startswith("%")
 
 
 def previous_issue_folder(issue_folder: str) -> str | None:
@@ -121,7 +125,11 @@ def split(text: str, source: str) -> Parts:
     """
     lines = text.split("\n")
 
-    begin_idx = next((i for i, ln in enumerate(lines) if BEGIN_TABULARX in ln), None)
+    # ⚠️ 只认**没被注释掉**的 `\begin/\end{tabularx}`：89 期人工 contents.tex 的
+    #    第 20 行留着一行注释掉的旧列定义 `%\begin{tabularx}{...}`，从前会被当成真模板起点，
+    #    于是「本期/上一期模板」把注释版列定义搬进新 tex → 英文目录 xelatex 直接失败（B-226 E4）。
+    begin_idx = next((i for i, ln in enumerate(lines)
+                      if BEGIN_TABULARX in ln and not is_comment_line(ln)), None)
     if begin_idx is None:
         return Parts(head=text, columnBlock=[], tail="", source=source)
 
@@ -137,20 +145,22 @@ def split(text: str, source: str) -> Parts:
             spec_idx = i
             break
 
-    end_idx = next((i for i, ln in enumerate(lines) if END_TABULARX in ln), None)
+    end_idx = next((i for i, ln in enumerate(lines)
+                    if END_TABULARX in ln and not is_comment_line(ln)), None)
     if end_idx is None:
         return Parts(head="\n".join(lines[:spec_idx + 1]), columnBlock=[], tail="", source=source)
 
     column_block: list[str] = []
     spacing_line: str | None = None
     for line in lines[spec_idx + 1:end_idx]:
-        plain = _COMMENT_PREFIX_RE.sub("", line)
-        if "专栏" in plain or "专辑" in plain or "Column:" in plain:
-            column_block.append(plain)
-        elif "主持人" in plain:
-            column_block.append(plain)
-        elif spacing_line is None and "vdistance" not in plain and _SPACING_RE.match(plain):
-            spacing_line = plain
+        if is_comment_line(line):
+            continue          # 注释行不是本期版式的一部分（87 的注释栏目行不复活，S5）
+        if "专栏" in line or "专辑" in line or "Column:" in line:
+            column_block.append(line)
+        elif "主持人" in line:
+            column_block.append(line)
+        elif spacing_line is None and "vdistance" not in line and _SPACING_RE.match(line):
+            spacing_line = line
     if column_block and spacing_line is not None:
         column_block.append(spacing_line)
 
@@ -205,12 +215,27 @@ def english_month_name(month: int) -> str:
 
 
 def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]:
-    """生成本期栏目块：沿用上一期的形态（含间距设置），只替换名称与主持人。"""
+    r"""生成本期栏目块：中文沿用上一期形态（含间距/主持人），只替换名称与主持人。
+
+    英文表头**数据驱动**（B-226 P1 补充，用户 2026-10-25 复核口径）：
+      · 填了 `columnNameEN` ⇒ 生成 `Column: <英文名>`（间距沿用模板里的 `\\[..]`，没有则 3mm）；
+      · `columnNameEN` 为空 ⇒ **不生成英文表头行**（不拿中文名回退），
+        条目仍按 `columnArticles` 带 `~~~~` 前缀。
+    为什么不做逐期特例：人工 89 期英文写的是一行 `Special Issue: Preference Logic`（不是 `Column:`），
+    这是同事的手工改法，进 P2「允许清单」逐条确认，不在代码里复刻（架构护栏 2：「禁止按期硬编码」）。
+    """
     if not settings.is_column_enabled:
         return []
 
-    title = settings.chinese_column_title if is_chinese else settings.english_column_title
+    if not is_chinese:
+        name_en = (settings.columnNameEN or "").strip()
+        if not name_en:
+            return []
+        spacing = next((ln for ln in shape if _SPACING_RE.match(ln)), None) if shape else None
+        return ["\\large  \\bf{Column: " + name_en + "} ", spacing or "\\\\[3mm]"]
 
+    # 中文：沿用上一期的形态（含间距），只替换名称与主持人
+    title = settings.chinese_column_title
     if shape:
         out: list[str] = []
         for line in shape:
@@ -218,18 +243,13 @@ def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]
             if "主持人" in new_line:
                 new_line = re.sub(r"主持人[：:][^}]*", f"主持人：{settings.columnHost}", new_line)
             elif not _SPACING_RE.match(new_line):
-                new_line = re.sub(r"(专栏|专辑|Column)[：:][^}]*", title, new_line)
+                new_line = re.sub(r"(专栏|专辑)[：:][^}]*", title, new_line)
             out.append(new_line)
         return out
 
-    # 上一期没有栏目块时的兜底形态
-    if is_chinese:
-        return [
-            "{\\large \\bf{" + title + "}}",
-            "&&\\textit{\\large 主持人：" + settings.columnHost + "}",
-            "\\\\[3.2 ex]",
-        ]
+    # 上一期没有栏目块时的兜底形态（中文）
     return [
-        "\\large  \\bf{" + title + "} ",
-        "\\\\[3mm]",
+        "{\\large \\bf{" + title + "}}",
+        "&&\\textit{\\large 主持人：" + settings.columnHost + "}",
+        "\\\\[3.2 ex]",
     ]

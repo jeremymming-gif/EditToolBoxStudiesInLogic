@@ -144,12 +144,57 @@ check("(b) 检查tex信息：`--folder` + `--preview`（界面表格用）",
 check("(b) 反例：正式检查时**不**带 `--preview`（要落 txt/json 产物）",
       "--preview" not in E.infocheck_call(folder="/tmp/x").argv)
 c8 = E.toc_call(report=r"C:\\出稿\\信息检查2026.txt", template=r"C:\\期\\上一期")
-check("(b) 生成目录：`--report` + `--template`",
-      c8.entry == "toc.py" and "--report" in c8.argv and "--template" in c8.argv)
+check("(b) 生成目录默认一键交付：`--report` + `--template` + `--place --compile`",
+      c8.entry == "toc.py" and "--report" in c8.argv and "--template" in c8.argv
+      and "--place" in c8.argv and "--compile" in c8.argv)
 check("(b) 生成目录：模板留空 → **不传** `--template`（交给引擎找上一期）",
       "--template" not in E.toc_call(report="/tmp/x.txt").argv)
+_c8r = E.toc_call(report="/tmp/x.txt", result_json="/tmp/结果.json")
+check("(b) 生成目录：给了临时路径才追加 `--result-json <path>`（外壳读回 4 路径）",
+      "--result-json" in _c8r.argv
+      and _c8r.argv[_c8r.argv.index("--result-json") + 1] == "/tmp/结果.json"
+      and "--result-json" not in E.toc_call(report="/tmp/x.txt").argv)
+check("(b) 生成目录「仅生成 tex」高级开关（默认关）→ 只传 `--report`（旧行为，不落位/不编译）",
+      "--place" not in E.toc_call(report="/tmp/x.txt", text_only=True).argv
+      and "--compile" not in E.toc_call(report="/tmp/x.txt", text_only=True).argv
+      and "--report" in E.toc_call(report="/tmp/x.txt", text_only=True).argv)
 check("(b) 目录预览：`--preview`（篇目清单，不落文件）",
       "--preview" in E.toc_preview_call(report="/tmp/x.txt").argv)
+
+# B-226：生成目录结果 JSON → 结果区的行（4 路径 / 模板来源 / 页数 / 注意事项）
+_toc_payload = {
+    "templateSource": "上一期", "templateNote": "模板：2026年第4期(89)",
+    "tocDir": "/tmp/期/000 Table of Contents",
+    "placed": {"zhTex": "/tmp/期/000 Table of Contents/Chinese Content.tex",
+               "zhPdf": "/tmp/期/000 Table of Contents/Chinese Content.pdf",
+               "enTex": "/tmp/期/000 Table of Contents/contents.tex",
+               "enPdf": "/tmp/期/000 Table of Contents/contents.pdf"},
+    "compiled": True, "pages": {"zh": 1, "en": 1},
+    "column": {"enabled": True, "title": "专栏：认知悖论研究"},
+    "manualEdits": [{"kind": "标题占位", "article": "08 样例", "note": "源稿标题为占位"}],
+    "warnings": ["缺 000 Table of Contents，已自动创建"],
+}
+_toc_lines = E.toc_result_lines(_toc_payload)
+check("(b) 生成目录结果 JSON → 结果区：4 个固定名路径",
+      sum(1 for line in _toc_lines
+          if any(name in line for name in ("Chinese Content.tex", "Chinese Content.pdf",
+                                           "contents.tex", "contents.pdf"))) == 4,
+      _toc_lines)
+check("(b) 生成目录结果 JSON → 结果区：模板来源 / 页数 / 人工核对项 / 警告",
+      any(line.startswith("模板来源：上一期") for line in _toc_lines)
+      and "页数：中文 1 页／英文 1 页" in _toc_lines
+      and any("需人工核对" in line and "标题占位" in line for line in _toc_lines)
+      and any(line.startswith("⚠️") and "已自动创建" in line for line in _toc_lines),
+      _toc_lines)
+check("(b) 生成目录结果 JSON 缺字段/文件不存在 → 空结果（不猜、不炸）",
+      E.toc_result_lines({}) == []
+      and E.read_toc_result("/tmp/不存在/slcn-toc-无.json") == {})
+_bad_json = os.path.join(tempfile.mkdtemp(prefix="slcn_toc_bad_"), "r.json")
+with open(_bad_json, "w", encoding="utf-8") as fh:
+    fh.write("not json")
+check("(b) 生成目录结果文件坏 JSON → `{}`（界面走「没有结果 JSON」分支，不假绿）",
+      E.read_toc_result(_bad_json) == {})
+shutil.rmtree(os.path.dirname(_bad_json), ignore_errors=True)
 
 c4 = E.cleantemp_call(folder=r"E:\期\2026年第5期(90)", dry_run=True)
 check("(b) 删除临时文件：`--folder` + `--dry-run`",
@@ -593,7 +638,7 @@ else:
         # 只做**不跑引擎**的交互：切到「引用库设置」页（on_activate 只做文件系统探测）、
         # 改两项设置并保存，验证 (a) 页能建出来 (b) 设置真的落到 settings.json
         # (c) 非法上限不落盘。跑引擎的读库/查库在 (i) 组用临时库验（不在窗口里依赖真实库）。
-        app.show_tab(13)
+        app.show_tab(12)
         app.update()
         bs = app.bibdb_settings_tab
         bs.max_var.set("0")
@@ -609,7 +654,7 @@ else:
         app.update()
         _cfg3 = json.load(open(S.config_path(), encoding="utf-8"))
         print("非法上限不落盘=%d" % int(_cfg3.get("bibdb", {}).get("verifyMax") == 0))
-        print("引用库页=" + "|".join(tabs[9:14]))
+        print("引用库页=" + "|".join(tabs[8:13]))
         print("引用库侧栏=" + "|".join(
             app.nav.item(x, "text") for x in app.nav.get_children()))
         # ── 第五十五批：两段式协同 + AI 预算（真窗口证据）──
@@ -730,7 +775,7 @@ else:
         ct._toggle_coop_panel()
         app.update()
         # 设置页预算：非法不落盘（红字）/ 合法（含 0 = 不限）落盘
-        app.show_tab(14)
+        app.show_tab(13)
         app.update()
         st2 = app.settings_tab
         st2.v_budget.set("abc")
@@ -870,9 +915,9 @@ else:
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
-        check("(g) 十五个页都在（侧边栏顺序：单篇 4 + 整期 5 + 引用库 5 + 设置）",
+        check("(g) 十四个页都在（侧边栏顺序：单篇 4 + 整期 4 + 引用库 5 + 设置）",
               "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|"
-              "删除临时文件|本期出刊|库概况|查库|入藏|待裁决|引用库设置|设置"
+              "删除临时文件|库概况|查库|入藏|待裁决|引用库设置|设置"
               in out, out.strip()[-220:])
         check("(g) **分组侧边栏**：两层结构（单篇稿件 / 整期装配 / 引用库 / 设置），"
               "不是 14 个平级标签",

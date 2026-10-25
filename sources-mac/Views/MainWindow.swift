@@ -73,8 +73,6 @@ struct MainWindow: View {
                         .pageVisible(selection == .toc)
                     cleanPage
                         .pageVisible(selection == .cleantemp)
-                    publishPage
-                        .pageVisible(selection == .publish)
                     // B-225：目录摘要推送（整期装配的最后一步：出刊后整理推送文案）
                     DirPushView(log: log)
                         .pageVisible(selection == .dirpush)
@@ -126,24 +124,6 @@ struct MainWindow: View {
         }
     }
 
-    /// 本期出刊向导：一个入口跑完五步（编排与判据在引擎 `publish.py`，只有一份）。
-    private var publishPage: some View {
-        SimpleTab(
-            help: """
-            使用说明：选一期的目录，点运行按顺序跑完五步：
-            ① 检查tex信息 → ② 生成目录 → ③ 编译全部 → ④ 目录 PDF 落位 → ⑤ 合并整期 PDF。
-
-            失败即中止（前 N−1 步的产物保留，日志末行写明卡在第几步）；
-            退出码 1（有结果/需人工核对，例如有文章编译失败）只算橙色警告并继续。
-            要单步重跑某一环节，仍用左边的单个页面。
-            """,
-            pickKind: .directory,
-            log: log
-        ) { path, logger in
-            PublishFeature.run(folderPath: path, log: logger)
-        }
-    }
-
     /// 删除临时文件（B-211）：模式选择 + 运行 / 撤销 / 清空回收站。
     /// 三种模式都**先确认、再移入 .toolbox-trash（可撤销）**，不再直接删；
     /// 跑完横幅上有「撤销清理」，把文件搬回原处（引擎侧保证不覆盖已有文件）。
@@ -169,7 +149,7 @@ struct MainWindow: View {
 enum NavPage: String, CaseIterable, Identifiable {
     case convert, checkbib, proofcheck, merge
     case infocheck, compile, toc, cleantemp
-    case publish, dirpush
+    case dirpush
     // 第 132 条：引用库（库概况 / 查库 / 入藏 / 待处理（B-188 由「待裁决」改名）/ 引用库设置）
     case bibstats, bibquery, bibimport, bibreview, bibsettings
     case settings
@@ -186,7 +166,6 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .compile: return "编译全部"
         case .toc: return "生成目录"
         case .cleantemp: return "删除临时文件"
-        case .publish: return "本期出刊"
         case .dirpush: return "目录摘要推送"
         case .bibstats: return "库概况"
         case .bibquery: return "查库"
@@ -208,7 +187,6 @@ enum NavPage: String, CaseIterable, Identifiable {
         case .compile: return "hammer"
         case .toc: return "list.number"
         case .cleantemp: return "trash"
-        case .publish: return "square.stack.3d.up.forward"
         case .dirpush: return "megaphone"
         case .bibstats: return "books.vertical"
         case .bibquery: return "text.magnifyingglass"
@@ -225,8 +203,9 @@ enum NavPage: String, CaseIterable, Identifiable {
     /// 那是编辑流程：编辑拿《文献核实任务书》改完交回 .bib，接着就按手册逐条核查。
     static let singleArticle: [NavPage] = [.convert, .checkbib, .proofcheck, .merge]
 
-    /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件 → 出刊 → 推送文案。
-    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .publish, .dirpush]
+    /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件 → 推送文案。
+    /// （整期合并 PDF 用「合并文件」页。）
+    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .dirpush]
 
     /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待处理 → 设置。
     /// 排序就是使用顺序：先知道库里有什么，再查/入藏，要人工处理才去「待处理」页。
