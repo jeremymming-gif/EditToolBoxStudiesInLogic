@@ -465,7 +465,7 @@ def make_pushcopy_issue(root: str, year: int, number: int, total: int,
             if column else "\\\\[3.0 ex]\n")
     body = (
         "{\\large ~~~~ 假标题一}\n&\\textit{\\large ~~~~ 张三，李四}\n& 1\\\\\n\\vdistance\n"
-        "{\\large ~~~~ 假标题二}\n&\\textit{\\large ~~~~ 王五}\n& 2\\\\\n\\vdistance\n")
+        "{\\large 假标题二}\n&\\textit{\\large 王五}\n& 2\\\\\n\\vdistance\n")
     zh = ("\\documentclass{ctexart}\n\\begin{document}\n" + hdr
           + "\\vspace{4ex}\n\\begin{tabularx}{\\textwidth}\n{l@{\\hspace{-0.3em}}r}\n"
           + host + "%中间主体\n" + body + "\\end{tabularx}\n\\end{document}\n")
@@ -474,7 +474,7 @@ def make_pushcopy_issue(root: str, year: int, number: int, total: int,
           "\\begin{tabularx}{\\textwidth}{l@{\\hspace{4em}}r}\n"
           "\\large  \\bf{Column: Fake Column}\n\\\\[6.2mm]\n%中间主体\n"
           "\\large ~~~~ Fake Title One\\\\\n\\textit{{~~~~  San Zhang}, {Si Li}}\n& 1\\\\\n\\vdistance\n"
-          "\\large ~~~~ Fake Title Two\\\\\n\\textit{{~~~~ Wu Wang}}\n& 2\\\\\n\\vdistance\n"
+          "\\large Fake Title Two\\\\\n\\textit{{Wu Wang}}\n& 2\\\\\n\\vdistance\n"
           "\\end{tabularx}\n\\end{document}\n")
     _w(os.path.join(toc, "contents.tex"), en)
     for i, (t, a, ab) in enumerate((("假标题一", "张三", "假摘要甲。"),
@@ -524,8 +524,9 @@ try:
           and _j["dry_run"] is True and _j["annual"] is None
           and set(_j) >= {"schema", "ok", "mode", "dry_run", "outputs", "issue",
                           "counts", "warnings", "missing", "annual"}
-          and set(_j["counts"]) == {"zh_entries", "en_entries", "articles",
-                                    "abstracts_ok", "abstracts_missing"}
+          and set(_j["counts"]) == {"zh_entries", "en_entries", "column_entries",
+                                    "articles", "abstracts_ok", "abstracts_missing"}
+          and _j["counts"]["column_entries"] == 1
           and not os.path.exists(out_root),
           f"rc={r.returncode} fields={sorted(_j)}")
     before = sorted(os.listdir(d3))
@@ -563,6 +564,25 @@ try:
     check("(f5c) document.xml 根保留全部 xmlns 声明（mc:Ignorable 前缀均可解析；防 Word 修复弹窗）",
           bool(_root_tag) and _ign is not None and not _undeclared,
           "undeclared=%s" % _undeclared)
+    # (f5d) 专栏文章区分（用户 2026-10-25 三轮要求，参考 2026 年第 5 期实例）：
+    #       专栏区域单元格内部边框取消（tcBorders=nil）——另生成一份**中文 only** 目录检查
+    #       （双语模式本轮不做边框区分，避免与实例体例冲突）。
+    _zh_only = os.path.join(_push_work, "out_zh_only")
+    r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
+                        "--out", _zh_only],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=_env)
+    _zh_doc = os.path.join(_zh_only, "2026 年第 3 期", "逻辑学研究2026年第3期目录摘要.docx")
+    _zx = _zip.ZipFile(_zh_doc).read("word/document.xml").decode("utf-8")
+    # fixture：第 1 篇专栏（1 条 "col_last"）+ 第 2 篇非专栏；host 行 bottom nil。
+    # 期望：tcBorders 3 处（host 1 + 专栏条目标题/作者各 1），专栏条目 top nil 2 处；
+    #       非专栏行不加 tcBorders。
+    _nb = _zx.count("<w:tcBorders>")
+    _ntop = _zx.count('<w:top w:val="nil"/>')
+    _nbot = _zx.count('<w:bottom w:val="nil"/>')
+    check("(f5d) 专栏区域去边框（参考实例：专栏行 tcBorders nil；非专栏行不变）",
+          r.returncode == 0 and _nb == 3 and _ntop == 2 and _nbot == 1,
+          f"rc={r.returncode} borders={_nb} top_nil={_ntop} bottom_nil={_nbot}")
     check("(f6) settings 写出且确定性（schema/year/issue/with_en_toc，无时间戳）",
           json.load(open(os.path.join(out_root, "2026 年第 3 期", "目录摘要设置.json"),
                          encoding="utf-8"))

@@ -61,6 +61,65 @@ def _clone_par(xml: str, text: str) -> etree._Element:
     return par
 
 
+#: 专栏区域边框（用户 2026-10-25 三轮要求，参考实例 2026 年第 5 期 docx）：
+#: 专栏/主持人行 + 专栏文章条目的单元格**内部边框取消**（tcBorders=nil）——
+#: 参考实例正是这样区分专栏文章的（标题行 bottom=nil、right=single；专栏条目行
+#: 标题 cell top/bottom/right=nil、作者 cell top/bottom/left=nil/right=single；
+#: 最后一条专栏条目 bottom 留空 → 继承表格底边框，形成与普通文章之间的分隔线）。
+_BORDER_SPECS = {
+    "host": {0: {"bottom": "nil", "right": "single"}},
+    "col_0": {"top": "nil", "bottom": "nil", "right": "nil"},
+    "col_1": {"top": "nil", "bottom": "nil", "left": "nil", "right": "single"},
+    "col_last_0": {"top": "nil", "right": "nil"},
+    "col_last_1": {"top": "nil", "left": "nil", "right": "single"},
+}
+
+
+def _apply_cell_border(tc: etree._Element, ci: int, tag: str) -> None:
+    """按 `tag` 给目录单元格加/合并 `w:tcBorders`（只用于专栏区域）。"""
+    if not tag:
+        return
+    if tag == "host":
+        spec = _BORDER_SPECS["host"].get(ci) or _BORDER_SPECS["host"].get(0, {})
+    else:
+        spec = _BORDER_SPECS.get(f"{tag}_{ci}", {})
+    if not spec:
+        return
+    tcpr = tc.find(q("tcPr"))
+    if tcpr is None:
+        tcpr = etree.Element(q("tcPr"))
+        tc.insert(0, tcpr)
+    borders = tcpr.find(q("tcBorders"))
+    if borders is None:
+        borders = etree.Element(q("tcBorders"))
+        # `w:tcPr` 子元素顺序是 schema 序列：tcBorders 必须在 vAlign 之前。
+        order = ("cnfStyle", "tcW", "gridSpan", "hMerge", "vMerge", "tcBorders",
+                 "shd", "noWrap", "tcMar", "textDirection", "tcFitText", "vAlign",
+                 "hideMark", "headers", "cellIns", "cellDel", "cellMerge", "tcPrChange")
+        idx = len(tcpr)
+        for i, ch in enumerate(tcpr):
+            name = ch.tag.split("}")[-1]
+            if name in order and order.index(name) > order.index("tcBorders"):
+                idx = i
+                break
+        tcpr.insert(idx, borders)
+    # `w:tcBorders` 子元素顺序也是 schema 序列：top, left, bottom, right, insideH, …
+    _side_order = ("top", "left", "bottom", "right", "insideH", "insideV",
+                   "tl2br", "tr2bl")
+    for side in _side_order:
+        if side not in spec:
+            continue
+        val = spec[side]
+        el = borders.find(q(side))
+        if el is None:
+            el = etree.SubElement(borders, q(side))
+        el.set(q("val"), val)
+        if val == "single":
+            el.set(q("sz"), "4")
+            el.set(q("space"), "0")
+            el.set(q("color"), "auto")
+
+
 def _display_width(s: str) -> int:
     """粗略显示宽度（CJK/全角=2，其它=1），用于 zh 体例专栏行对齐主持人。"""
     w = 0
@@ -77,13 +136,19 @@ def _blank(xml: str) -> etree._Element:
 # ── 表格构建 ───────────────────────────────────────────────────────────
 
 
-def _build_table(mode_table: dict, rows: list[tuple[str, list[list[str]]]],
+def _build_table(mode_table: dict, rows: list,
                  *, used: list[str]) -> etree._Element:
-    """按行原型拼 `<w:tbl>`；`rows` = [(行原型名, 每个 cell 的文本列表)]。"""
+    """按行原型拼 `<w:tbl>`。
+
+    `rows` = [(行原型名, 每个 cell 的文本列表[, 是否专栏缩进])]；第 3 项缺省 = 不缩进
+    （见 `_COLUMN_INDENT`）。
+    """
     tbl = etree.Element(q("tbl"))
     for ch in _fragments(mode_table["open"]):
         tbl.append(ch)
-    for name, cell_values in rows:
+    for row in rows:
+        name, cell_values = row[0], row[1]
+        tag = row[2] if len(row) > 2 else ""
         proto = mode_table["rows"].get(name)
         if proto is None:
             used.append(f"missing-row-prototype:{name}")
@@ -97,6 +162,7 @@ def _build_table(mode_table: dict, rows: list[tuple[str, list[list[str]]]],
             if cell.get("tcPr"):
                 for ch in _fragments(cell["tcPr"]):
                     tc.append(ch)
+            _apply_cell_border(tc, ci, tag)
             values = cell_values[ci] if ci < len(cell_values) else []
             if cell["slot"] == "none":
                 for px in cell["paras"]:
@@ -147,14 +213,20 @@ def _issue_table_rows(issue: "_collect.IssueData", mode_name: str, *, annual: bo
             rows.append(("zh_entry", [title, ["，".join(e.authors)]]))
     else:
         if issue.column is not None:
+            host_tag = "" if annual else "host"
             if _has_row(issue, mode_name, "host_merged"):
-                rows.append(("host_merged", [[_zh_host_text(issue)]]))
+                rows.append(("host_merged", [[_zh_host_text(issue)]], host_tag))
             else:
                 rows.append(("host2", [[f"{issue.column.label}：{issue.column.name}"],
                                        [f"主持人：{issue.column.host}" if issue.column.host else ""]]))
-        for e in issue.zh_entries:
+        col_positions = [] if annual else [i for i, e in enumerate(issue.zh_entries) if e.is_column]
+        last_col = col_positions[-1] if col_positions else None
+        for i, e in enumerate(issue.zh_entries):
             title = ["".join(e.title_lines)] if e.title_lines else [""]
-            rows.append(("zh_entry", [title, ["，".join(e.authors)]]))
+            tag = ""
+            if last_col is not None and i in col_positions:
+                tag = "col_last" if i == last_col else "col"
+            rows.append(("zh_entry", [title, ["，".join(e.authors)]], tag))
     return rows
 
 

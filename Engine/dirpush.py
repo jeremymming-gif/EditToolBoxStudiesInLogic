@@ -97,11 +97,13 @@ def _issue_json(issue: _collect.IssueData) -> dict:
 def _counts(issues: list[_collect.IssueData]) -> dict:
     zh = sum(len(i.zh_entries) for i in issues)
     en = sum(len(i.en_entries) for i in issues if i.with_en_toc)
+    col = sum(sum(1 for e in i.zh_entries if e.is_column) for i in issues)
     articles = sum(len(i.articles) for i in issues)
     if len(issues) == 1:
         return {
             "zh_entries": zh,
             "en_entries": en,
+            "column_entries": col,
             "articles": articles,
             "abstracts_ok": issues[0].abstracts_ok,
             "abstracts_missing": articles - issues[0].abstracts_ok,
@@ -110,6 +112,7 @@ def _counts(issues: list[_collect.IssueData]) -> dict:
     return {
         "zh_entries": zh,
         "en_entries": en,
+        "column_entries": col,
         "articles": articles,
         "abstracts_ok": 0,
         "abstracts_missing": 0,
@@ -124,8 +127,8 @@ def _empty_result(mode: str, dry_run: bool, message: str) -> dict:
         "dry_run": bool(dry_run),
         "outputs": [],
         "issue": None,
-        "counts": {"zh_entries": 0, "en_entries": 0, "articles": 0,
-                   "abstracts_ok": 0, "abstracts_missing": 0},
+        "counts": {"zh_entries": 0, "en_entries": 0, "column_entries": 0,
+                   "articles": 0, "abstracts_ok": 0, "abstracts_missing": 0},
         "warnings": [message],
         "missing": [],
         "annual": None,

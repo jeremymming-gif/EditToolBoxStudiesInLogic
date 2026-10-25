@@ -55,10 +55,15 @@ class CollectError(RuntimeError):
 
 @dataclass
 class TocEntry:
-    """一条目录条目（页码已按实例体例丢弃）。"""
+    """一条目录条目（页码已按实例体例丢弃）。
+
+    `is_column`：是否属于本期专栏/专辑（按目录 tex 的 `~~~~` 缩进标记识别；
+    见 `_is_indented`；无标记时可由 `<期目录>/目录设置.json` 的 columnArticles 兜底）。
+    """
 
     title_lines: list[str] = field(default_factory=list)
     authors: list[str] = field(default_factory=list)
+    is_column: bool = False
 
 
 @dataclass
@@ -401,6 +406,44 @@ def _split_top_groups(s: str) -> list[str]:
     return groups
 
 
+def _column_articles_from_settings(issue_dir: str) -> set[str]:
+    r"""读 `<期目录>/目录设置.json` 的 `columnArticles`（老期次兜底；只读）。"""
+    path = os.path.join(issue_dir, "目录设置.json")
+    if not os.path.isfile(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    out: set[str] = set()
+    for item in data.get("columnArticles") or []:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name:
+            continue
+        out.add(name)
+        m = re.match(r"^\d+\s+(.+)$", name)      # "01 Jingru_Kou" → "Jingru_Kou"
+        if m:
+            out.add(m.group(1).strip())
+    return out
+
+
+def _is_indented(raw: str) -> bool:
+    r"""目录 tex 的「栏目文章缩进」标记：标题/作者组以 `~~~~`（LaTeX 4 空格）开头。
+
+    2026 年第 5 期实例：专栏前 4 篇标题行 `{\large ~~~~ 标题}`、作者行
+    `\textit{\large ~~~~ 作者}`；非专栏文章无 `~` 前缀。生成 `Chinese Content.tex`
+    的 `slcn/toc.py`：`chinese_entry(..., in_column=True)` 会加 `~~~~ ` 前缀 ——
+    所以这是「哪些文章属于栏目」的既有机器可读来源，不需要用户勾选。
+    """
+    text = re.sub(r"^\s*\\(?:large|Large|LARGE)\s*", "", raw).lstrip()
+    return text.startswith("~")
+
+
 def _parse_column_and_entries(body: str, want_en: bool) -> tuple[Column | None, list[TocEntry]]:
     """解析 tabularx 主体 → (专栏/主持人, 条目列表)。
 
@@ -439,15 +482,21 @@ def _parse_zh_block(block: str) -> tuple[Column | None, list[TocEntry]]:
         _content, end = _match_brace(block, m.end() - 1)
         author_spans.append((m.start(), end + 1))
     titles: list[str] = []
+    title_indented = False
     for raw in _braced_after_commands(block, ("\\large", "\\Large"),
                                       skip_spans=author_spans):
+        if _is_indented(raw):
+            title_indented = True
         text = _clean_title(raw)
         if not text or text.startswith("主持人") or re.match(r"^(专栏|专辑)\s*[：:]", text):
             continue
         titles.append(text)
     # 作者：`\textit{…}`（zh 模板里有时在 `&\textit{\large …}`）
     authors: list[str] = []
+    author_indented = False
     for content in _group_cmd(block, "\\textit"):
+        if _is_indented(content):
+            author_indented = True
         for frag in _split_top_groups(content):
             name = _clean_author(frag)
             if name:
@@ -461,7 +510,8 @@ def _parse_zh_block(block: str) -> tuple[Column | None, list[TocEntry]]:
             part = _clean_title(part)
             if part:
                 title_lines.append(part)
-    entry = TocEntry(title_lines=title_lines, authors=authors)
+    entry = TocEntry(title_lines=title_lines, authors=authors,
+                     is_column=(title_indented or author_indented))
     return (column if column is not None else None), ([entry] if entry.title_lines else [])
 
 
@@ -497,6 +547,7 @@ def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
             column = Column(label="Column", name=name, host="")
     titles: list[str] = []
     authors: list[str] = []
+    indented = False
     for line in block.splitlines():
         raw = line.strip()
         if not raw:
@@ -510,6 +561,8 @@ def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
             continue
         if "\\textit" in raw:
             for content in _group_cmd(raw, "\\textit"):
+                if _is_indented(content):
+                    indented = True
                 for frag in _split_top_groups(content):
                     name = _clean_author(frag)
                     if name:
@@ -518,6 +571,8 @@ def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
         if raw.startswith("\\large") or raw.startswith("\\Large"):
             # 同一行可能塞了多个 `\large …` 段（2026 年第 4 期 contents.tex 实测）
             for seg in re.split(r"\\\\", raw):
+                if _is_indented(seg):
+                    indented = True
                 seg = re.sub(r"\\Large?", "", seg)
                 text = _clean_title(seg)
                 if text:
@@ -527,7 +582,7 @@ def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
         text = _clean_title(raw)
         if text:
             titles.append(text)
-    entry = TocEntry(title_lines=titles, authors=authors) if titles else None
+    entry = TocEntry(title_lines=titles, authors=authors, is_column=indented) if titles else None
     return column, ([entry] if entry else [])
 
 
@@ -991,6 +1046,32 @@ def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
 
     if not zh_entries:
         raise CollectError("中文目录条目为空（tabularx 主体解析不到条目）")
+
+    # 「哪些文章属于专栏」：目录 tex 的 `~~~~` 缩进标记是既有机器可读来源（slcn/toc.py 生成时写入）。
+    # 老期次若手工写 tex 没加标记，则用期目录下 `目录设置.json` 的 columnArticles 兜底；
+    # 两者都没有 → 明确 warning（不静默把专栏文章当普通文章）。
+    if column is not None and not any(e.is_column for e in zh_entries):
+        names = _column_articles_from_settings(issue_dir)
+        if names:
+            matched = 0
+            for entry, art in zip(zh_entries, articles):
+                base = _pm.article_name(art.folder) if art.folder else ""
+                if base in names or art.folder in names:
+                    entry.is_column = True
+                    matched += 1
+            if matched:
+                warnings.append(
+                    f"专栏文章缩进取自 目录设置.json（columnArticles 命中 {matched} 篇）")
+            else:
+                warnings.append(
+                    "目录设置.json 的 columnArticles 与本期文章名不匹配，未区分专栏文章")
+        else:
+            warnings.append(
+                "本期目录未标注专栏文章（目录 tex 无 `~~~~` 缩进，且无 目录设置.json）："
+                "专栏文章与非专栏文章未加区分")
+    if with_en_toc and en_entries and len(en_entries) == len(zh_entries):
+        for en_e, zh_e in zip(en_entries, zh_entries):
+            en_e.is_column = zh_e.is_column
 
     return IssueData(
         dir=issue_dir,
