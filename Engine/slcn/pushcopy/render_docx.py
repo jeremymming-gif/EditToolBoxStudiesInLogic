@@ -183,10 +183,25 @@ def _document_root() -> etree._Element:
 
 
 def _write_docx(root: etree._Element, out_path: str) -> None:
-    """固定 zip 时间戳/顺序写出；先临时文件再 rename（覆盖不留 .bak）。"""
+    """固定 zip 时间戳/顺序写出；先临时文件再 rename（覆盖不留 .bak）。
+
+    ⚠️ 根标签必须**逐字节沿用母版原始 `<w:document …>`**（含全部 xmlns 声明）：
+    lxml 重序列化只保留「实际用到」的命名空间声明，而母版根上的
+    `mc:Ignorable="w14 w15 … wp14"` 仍引用这些前缀 —— 缺声明 = MCE 无效，
+    Word 打开时报「发现无法读取的内容」并要求修复（B-225 交付后用户实测，2026-10-25 修复）。
+    正文仍用 lxml 序列化（清理无用命名空间、保持确定性），只拼接母版根前缀。
+    """
     etree.cleanup_namespaces(root)
-    doc_xml = etree.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
     parts, order = _master_parts()
+    master_doc = parts["word/document.xml"]
+    m = re.search(rb"<w:document[^>]*>", master_doc)
+    if m is None:
+        raise ValueError("母版 word/document.xml 缺 <w:document> 根标签")
+    body = root.find(q("body"))
+    if body is None:
+        raise ValueError("渲染树缺 <w:body>")
+    body_xml = etree.tostring(body, encoding="UTF-8")
+    doc_xml = master_doc[:m.start()] + m.group(0) + body_xml + b"</w:document>"
     parts = dict(parts)
     parts["word/document.xml"] = doc_xml
     out_dir = os.path.dirname(out_path)

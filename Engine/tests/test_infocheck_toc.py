@@ -552,6 +552,17 @@ try:
           bool(_seg) and 'w:sz w:val="28"' in _seg and "<w:b/>" in _seg
           and 'w:jc w:val="center"' in _seg,
           _seg[:160])
+    # (f5c) Word 兼容性回归：根标签必须保留母版全部 xmlns 声明。lxml 重序列化会丢掉
+    #       只被 mc:Ignorable 引用、未被元素使用的命名空间（w15/w16…/wp14）→ MCE 无效
+    #       → Word 打开报「发现无法读取的内容」并修复（B-225 交付后用户实测）。
+    import re as _re_root
+    _root_tag = (_re_root.search(r"<w:document[^>]*>", _xml) or _re_root.match("", _xml)).group(0)
+    _ign = _re_root.search(r'mc:Ignorable="([^"]*)"', _root_tag)
+    _undeclared = [p for p in (_ign.group(1).split() if _ign else [])
+                   if ("xmlns:%s=" % p) not in _root_tag]
+    check("(f5c) document.xml 根保留全部 xmlns 声明（mc:Ignorable 前缀均可解析；防 Word 修复弹窗）",
+          bool(_root_tag) and _ign is not None and not _undeclared,
+          "undeclared=%s" % _undeclared)
     check("(f6) settings 写出且确定性（schema/year/issue/with_en_toc，无时间戳）",
           json.load(open(os.path.join(out_root, "2026 年第 3 期", "目录摘要设置.json"),
                          encoding="utf-8"))
