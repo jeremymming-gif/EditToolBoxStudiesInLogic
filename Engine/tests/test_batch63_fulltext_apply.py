@@ -243,10 +243,21 @@ def _head_supports_flag(engine: str, flag: str) -> bool:
     有效守卫；HEAD==工作树时它退化为**同代码回归守卫**（仍能挡住后续改动悄悄改掉
     report-only 行为），所以不 skip。
     """
+    # B-229：convert.py 已拆成门面 + slcn/convert_*.py 四个静态模块；按「HEAD 引擎
+    # 当前是否支持该 flag」的**同一判据**拼读门面与 4 个模块（旧 HEAD 没有这些模块时
+    # 行为与从前逐字节相同：只读 convert.py）。
     try:
-        with open(os.path.join(engine, "convert.py"), encoding="utf-8",
-                  errors="replace") as f:
-            return flag in f.read()
+        paths = [os.path.join(engine, "convert.py")]
+        slcn_dir = os.path.join(engine, "slcn")
+        if os.path.isdir(slcn_dir):
+            paths += [os.path.join(slcn_dir, n)
+                      for n in sorted(os.listdir(slcn_dir))
+                      if n.startswith("convert_") and n.endswith(".py")]
+        text = ""
+        for path in paths:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text += f.read()
+        return flag in text
     except OSError:
         return False
 

@@ -406,7 +406,9 @@ check("⑦ CLI 走 `merge_returned_bib()`（源码级：没有自己的合并循
       "aibib.merge_returned_bib(" in read(os.path.join(_ENGINE, "checkbib.py")))
 check("⑦ 落盘「先备份、后覆盖」也是共用的 `apply_merge_to_file()`",
       "aibib.apply_merge_to_file(" in read(os.path.join(_ENGINE, "checkbib.py"))
-      and "aibib.apply_merge_to_file(" in read(os.path.join(_ENGINE, "convert.py")))
+      # B-229：convert.py 已拆分，`apply_ai_merge()`（含这次共用落盘）在 owning 模块里。
+      and "aibib.apply_merge_to_file("
+      in read(os.path.join(_ENGINE, "slcn", "convert_stage.py")))
 
 # `replies_from_bib()` 的单元判据：整份 bib → replies 形状
 _r = aibib.replies_from_bib(TARGET)

@@ -677,6 +677,206 @@ check("(h4) 判据单点：七个判据符号在 `slcn/` 全库的顶层 def/赋
       not _b207_multi,
       "定义位置=%s%s" % (_b207_sites, ("；不唯一=%s" % _b207_multi) if _b207_multi else ""))
 # ─────────────────────────────────────────────────────────────────────────
+print("\n── (i) B-229 模块契约：convert.py 拆四模块 + 门面 re-export ──")
+# B-229 spec §5。契约对象：`Engine/convert.py`（v1.4.0 时 3899 行）拆成
+# convert_metadata / convert_compile / convert_bib / convert_stage 四个静态模块 +
+# `Engine/convert.py` 薄门面，要求**零行为变化**：旧 `convert` 命名空间的 80 个非 main
+# 顶层符号一个不许少，且动态取到的必须就是 owning 模块里的**同一个对象**；`main` 仍留在
+# 门面（CLI 入口 / `engine_main.convert.main()` 契约）。
+# 旧符号清单由 `git show v1.4.0:Engine/convert.py` 的 AST 生成（含私有名与模块级常量）；
+# 长度被 (i1) 钉住：删名/漏名都会红。
+_B229_OLD_SYMBOLS = (
+    "WORD_EXT", "TEX_EXT", "_OWN_FIXED", "_OWN_STEM_SUFFIXES", "_IMG_SUFFIXES", "_MID_SUFFIXES",
+    "is_own_product", "_BACKUP_RE", "require_source", "die", "_has_cjk", "detect_lang",
+    "author_from_source", "find_en_metadata", "mark_en_abstract_roles", "_find_db_root",
+    "list_editors", "MetadataJSONError", "_METADATA_JSON_SCALARS", "_METADATA_JSON_AUTHOR_KEYS",
+    "_MAX_JSON_AUTHORS", "_json_clean", "_json_affil_list", "_normalize_json_author",
+    "load_metadata_json", "supports_structured", "structured_kwargs", "_ensure_vendor",
+    "resolve_c_class_union", "pdf_page_count", "_STALE_COMPILE_EXTS",
+    "clean_stale_compile_artifacts", "compile_pdf", "_NORM_RE", "_ref_fingerprint",
+    "_bib_fingerprints", "_bib_candidates", "_pick_bib", "bib_search_dirs", "find_bib_ex",
+    "find_bib", "bib_origin", "_DECL_BIBADD_RE", "_DECL_BIBLIO_RE", "declared_bib_path",
+    "real_bib_path", "bib_entry_structurally_safe", "bib_attachment_entries",
+    "merge_bib_attachment", "resolve_bibdb", "classify_bibdb", "bibdb_log_line",
+    "_bibdb_scan_stem", "bibdb_readonly_scan", "_bibdb_apply_backfill", "bibdb_taskbook_hits",
+    "resolve_bibdb_apply_store", "_FINISH_WHY", "channel_provenance", "stage_original",
+    "collect_overrides", "supports_overrides", "overrides_kwargs", "apply_ai_merge",
+    "_coop_find_bib", "_coop_find_tex", "_coop_locate_state", "run_coop_replies",
+    "LLM_FULLTEXT_CHUNK_CHARS", "LLM_FULLTEXT_REPORT_SUFFIX", "LLM_FULLTEXT_RUBRIC",
+    "split_fulltext_chunks", "_fulltext_chunk_items", "_llm_fulltext_system", "_llm_fulltext_user",
+    "_llm_fulltext_review", "render_llm_fulltext_report", "_add_handoff_args", "_handoff_enabled",
+    "_add_c_class_union_args", "_OVERRIDE_FIELDS",
+)
+_B229_MODULES = ("convert_bib", "convert_compile", "convert_metadata", "convert_stage")
+_B229_FAMILY_BASE = 3899              # v1.4.0 时 `Engine/convert.py` 行数
+_B229_FAMILY_LIMIT = 3977             # 3899 × 1.02（spec「总量 ±2%」）
+_B229_CONVERT_TARGET = 800            # 卡面目标：薄门面
+_B229_MODULE_LIMIT = 1500
+_B229_EXTRACTED = ("build_arg_parser", "run_refs_attach", "run_verify_refs",
+                   "run_coop_taskbook")
+_B229_MISSING = object()
+
+
+# ── (i1) facade re-export：完整 + 同一性 ─────────────────────────────────
+try:
+    _b229_facade = importlib.import_module("convert")
+    _b229_facade_err = ""
+except Exception as _exc:  # noqa: BLE001
+    _b229_facade = None
+    _b229_facade_err = repr(_exc)
+
+_b229_owned: dict[str, list[tuple[str, int]]] = {}
+_b229_absent_mods: list[str] = []
+_b229_import_err: dict[str, str] = {}
+_b229_imported: dict[str, object] = {}
+for _mod in _B229_MODULES:
+    _mod_path = ENGINE / "slcn" / (_mod + ".py")
+    try:
+        _b229_imported[_mod] = importlib.import_module("slcn." + _mod)
+    except Exception as _exc:  # noqa: BLE001
+        _b229_import_err[_mod] = repr(_exc)
+    if not _mod_path.is_file():
+        _b229_absent_mods.append(_mod)
+        continue
+    for _sym, _lines in _b207_top_defs(_mod_path).items():
+        for _line in _lines:
+            _b229_owned.setdefault(_sym, []).append((_mod, _line))
+
+_b229_missing = [n for n in _B229_OLD_SYMBOLS
+                 if _b229_facade is None or not hasattr(_b229_facade, n)]
+_b229_no_owner = [n for n in _B229_OLD_SYMBOLS if not _b229_owned.get(n)]
+_b229_dup = sorted(
+    "%s→%s" % (n, ["%s:%d" % (m, ln) for m, ln in locs])
+    for n, locs in _b229_owned.items() if len(locs) > 1)
+_b229_identity_bad: list[str] = []
+if _b229_facade is not None:
+    for _name in _B229_OLD_SYMBOLS:
+        _locs = _b229_owned.get(_name) or []
+        if len(_locs) != 1:
+            continue
+        _owner = _b229_imported.get(_locs[0][0])
+        if getattr(_b229_facade, _name, _B229_MISSING) is not getattr(
+                _owner, _name, _B229_MISSING):
+            _b229_identity_bad.append("%s→%s" % (_name, _locs[0][0]))
+# 门面只许定义 `main` 一个顶层符号：旧实现必须整段搬走，不许在门面留第二份定义。
+_b229_facade_defs = sorted(set(_b207_top_defs(ENGINE / "convert.py")) - {"main"})
+check("(i1) 门面 re-export 完整且同一：旧 `convert.py` 的 81 个非 main 顶层符号"
+      "全部在 `convert` 命名空间里，且 **is** 其唯一 owning 新模块的同名对象；"
+      "门面自身只定义 `main`、`main` 仍可调用",
+      len(_B229_OLD_SYMBOLS) == 81 and _b229_facade is not None
+      and not _b229_absent_mods and not _b229_import_err
+      and not _b229_missing and not _b229_no_owner and not _b229_dup
+      and not _b229_identity_bad and not _b229_facade_defs
+      and callable(getattr(_b229_facade, "main", None)),
+      "facade=%s 缺模块=%s import失败=%s 缺符号(%d)=%s 无owner=%s 重复定义=%s "
+      "is不符(%d)=%s 门面额外定义=%s"
+      % (_b229_facade_err or "ok", _b229_absent_mods, _b229_import_err,
+         len(_b229_missing), _b229_missing[:5], _b229_no_owner[:5], _b229_dup[:3],
+         len(_b229_identity_bad), _b229_identity_bad[:5], _b229_facade_defs[:5]))
+
+# ── (i2) 无循环 import ───────────────────────────────────────────────────
+_b229_import_rc = child("import convert, slcn.convert_bib, slcn.convert_compile, "
+                        "slcn.convert_metadata, slcn.convert_stage")
+_b229_graph: dict[str, set[str]] = {}
+for _py in sorted((ENGINE / "slcn").glob("*.py")):
+    _deps: set[str] = set()
+    for _node in ast.parse(_py.read_text(encoding="utf-8")).body:
+        if not isinstance(_node, ast.ImportFrom) or (_node.level or 0) < 1:
+            continue
+        if _node.module:
+            _deps.add(_node.module.split(".")[0])
+        else:                                    # `from . import footref` 形态
+            _deps.update(_a.name.split(".")[0] for _a in _node.names)
+    _b229_graph[_py.stem] = _deps
+_b229_facade_deps: set[str] = set()
+for _node in ast.parse((ENGINE / "convert.py").read_text(encoding="utf-8")).body:
+    if isinstance(_node, ast.ImportFrom):
+        if (_node.level or 0) >= 1 and _node.module:
+            _b229_facade_deps.add(_node.module.split(".")[0])
+        elif _node.module and _node.module.startswith("slcn."):
+            _b229_facade_deps.add(_node.module.split(".")[1])
+    elif isinstance(_node, ast.Import):
+        for _a in _node.names:
+            if _a.name.startswith("slcn."):
+                _b229_facade_deps.add(_a.name.split(".")[1])
+_b229_graph["convert"] = _b229_facade_deps
+# 4 个新模块的**顶层** import 里不许出现 `import convert` / `from convert import ...`
+# （相对 import 图只能抓 `from .` 形态；绝对 import 必须单独用 AST 扫，变异测试 ⓑ 就是这条）。
+_b229_top_import_convert: list[str] = []
+for _mod in _B229_MODULES:
+    _mp = ENGINE / "slcn" / (_mod + ".py")
+    if not _mp.is_file():
+        continue
+    for _node in ast.parse(_mp.read_text(encoding="utf-8")).body:
+        if isinstance(_node, ast.Import):
+            if any(_a.name == "convert" or _a.name.startswith("convert.")
+                   for _a in _node.names):
+                _b229_top_import_convert.append("%s:%d" % (_mod, _node.lineno))
+        elif (isinstance(_node, ast.ImportFrom) and (_node.level or 0) == 0
+              and _node.module and (_node.module == "convert"
+                                    or _node.module.startswith("convert."))):
+            _b229_top_import_convert.append("%s:%d" % (_mod, _node.lineno))
+_b229_cycles = _b207_find_cycles(_b229_graph)
+_b229_reverse = [m for m in _B229_MODULES if "convert" in _b229_graph.get(m, set())]
+_b229_facade_deps_bad = sorted(_b229_facade_deps - set(_B229_MODULES))
+check("(i2) 无循环 import：子进程 `import convert` + 4 模块 rc=0；`slcn/`+门面的顶层"
+      "相对 import 图**无环**；4 个新模块顶层都不 import `convert`；门面顶层相对 import"
+      "只指向 4 个新模块",
+      _b229_import_rc.returncode == 0 and not _b229_cycles and not _b229_reverse
+      and not _b229_facade_deps_bad and not _b229_top_import_convert,
+      "rc=%d %r 环=%s 新模块反向import=%s 顶层 import convert=%s 门面依赖=%s"
+      % (_b229_import_rc.returncode, _b229_import_rc.stderr[-120:], _b229_cycles[:2],
+         _b229_reverse, _b229_top_import_convert[:5], sorted(_b229_facade_deps)))
+
+# ── (i3) 行数上限（门面/新模块/族总量）──────────────────────────────────
+_b229_line_bad: list[str] = []
+_b229_line_absent: list[str] = []
+_b229_convert_lines = len((ENGINE / "convert.py").read_text(encoding="utf-8").splitlines())
+if _b229_convert_lines > _B229_CONVERT_TARGET:
+    _b229_line_bad.append("convert.py=%d>%d" % (_b229_convert_lines, _B229_CONVERT_TARGET))
+_b229_mod_lines: dict[str, int] = {}
+for _mod in _B229_MODULES:
+    _mod_path = ENGINE / "slcn" / (_mod + ".py")
+    if not _mod_path.is_file():
+        _b229_line_absent.append(_mod)
+        continue
+    _n = len(_mod_path.read_text(encoding="utf-8").splitlines())
+    _b229_mod_lines[_mod] = _n
+    if _n > _B229_MODULE_LIMIT:
+        _b229_line_bad.append("%s=%d>%d" % (_mod, _n, _B229_MODULE_LIMIT))
+_b229_family_lines = _b229_convert_lines + sum(_b229_mod_lines.values())
+check("(i3) 行数上限：`Engine/convert.py` ≤800（薄门面目标；硬代码闸是 3000）、四个新模块"
+      "各 ≤1500、拆分族总量（门面+4 模块）≤3977（原 3899 的 +2%）",
+      not _b229_line_bad and not _b229_line_absent
+      and _b229_family_lines <= _B229_FAMILY_LIMIT,
+      "超限=%s 缺文件=%s 实测=门面 %d / %s / 族 %d（限 %d）"
+      % (_b229_line_bad, _b229_line_absent, _b229_convert_lines, _b229_mod_lines,
+         _b229_family_lines, _B229_FAMILY_LIMIT))
+
+# ── (i4) 定义单点：旧符号与外提函数各恰好 1 处 ──────────────────────────
+_b229_sites: dict[str, list[str]] = {n: [] for n in _B229_OLD_SYMBOLS}
+_b229_extracted_sites: dict[str, list[str]] = {n: [] for n in _B229_EXTRACTED}
+_b229_family_files = [ENGINE / "convert.py"] + [
+    ENGINE / "slcn" / (m + ".py") for m in _B229_MODULES]
+for _fp in _b229_family_files:
+    if not _fp.is_file():
+        continue
+    for _sym, _lines in _b207_top_defs(_fp).items():
+        for _line in _lines:
+            if _sym in _b229_sites:
+                _b229_sites[_sym].append("%s:%d" % (_fp.name, _line))
+            if _sym in _b229_extracted_sites:
+                _b229_extracted_sites[_sym].append("%s:%d" % (_fp.name, _line))
+_b229_multi = {n: s for n, s in _b229_sites.items() if len(s) != 1}
+_b229_extracted_multi = {n: s for n, s in _b229_extracted_sites.items() if len(s) != 1}
+check("(i4) 定义单点：81 个旧顶层符号在「门面 + 4 模块」内的顶层 def/赋值定义各**恰好"
+      " 1 处**；main 内 4 段外提函数（build_arg_parser/run_refs_attach/run_verify_refs/"
+      "run_coop_taskbook）各恰好 1 处定义（Import/ImportFrom 不算）",
+      not _b229_multi and not _b229_extracted_multi,
+      "旧符号不唯一=%s；外提函数=%s"
+      % (_b229_multi or "无", _b229_extracted_sites))
+
+# ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")

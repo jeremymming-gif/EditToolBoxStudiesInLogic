@@ -347,8 +347,12 @@ check("(e) `build_latex()` 里没有引用核对报告（LaTeX 通道产物与�
       "_write_bib_report" not in __import__("inspect").getsource(build.build_latex))
 check("(e) `checkbib.py` 用的 `bibreport.check_citations` 是**另一个**函数（本改动碰不到它）",
       bibreport.check_citations is not bibcheck.check_citations)
-# 第 61 条修好的两处门槛/名单：本改动一个字都没动（convert.py 未修改）
-_CONVERT_SRC = open(os.path.join(_ENGINE, "convert.py"), encoding="utf-8").read()
+# 第 61 条修好的两处门槛/名单：本改动一个字都没动（B-229 拆分后分别落在
+# slcn/convert_bib.py 的 ⑪ 与 slcn/convert_metadata.py 的 _OWN_STEM_SUFFIXES）。
+_CONVERT_SRC = (
+    open(os.path.join(_ENGINE, "slcn", "convert_bib.py"), encoding="utf-8").read()
+    + open(os.path.join(_ENGINE, "slcn", "convert_metadata.py"),
+           encoding="utf-8").read())
 check("(e) 第 61 条的任务书门槛原样在（有文献区但 0 条目也要出任务书）",
       "if res.bib_path or raw_ref_lines:" in _CONVERT_SRC)
 check("(e) 报告仍算「本工具产物」（重跑不会被自己的报告拦住）",

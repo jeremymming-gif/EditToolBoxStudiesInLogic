@@ -507,7 +507,7 @@ check("(f) promote 失败（monkeypatch rename）→ 抛异常、旧交付目录
       and open(os.path.join(final2, "old.tex"), encoding="utf-8").read() == "OLD")
 check("(f) promote 失败 → stage 原样保留（绝不先删现场）",
       os.path.isdir(stage2) and os.path.exists(os.path.join(stage2, "paper2.tex")))
-src_convert = (ENGINE / "convert.py").read_text(encoding="utf-8")
+src_convert = (ENGINE / "slcn" / "convert_stage.py").read_text(encoding="utf-8")
 check("(f) convert.py 在 promote_stage 成功路径之后调用 coop.cleanup_stage",
       src_convert.index("coop.cleanup_stage") > src_convert.index("coop.promote_stage")
       and "暂存目录已清理：" in src_convert)
