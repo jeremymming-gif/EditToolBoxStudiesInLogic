@@ -631,38 +631,43 @@ r = run("cleantemp.py", "--folder", F, "--mode", "delivery", "--dry-run")
 check("(g) dry-run 行为不变（只读夹具也不产生失败，退出码 0、零写入）",
       r.returncode == 0 and "失败" not in r.stderr and trash_dirs(F) == [],
       f"rc={r.returncode}")
-r = run("cleantemp.py", "--folder", F, "--mode", "delivery")
-out = r.stdout + r.stderr
-check("(g) 只读目录：退出码 2、输出点名失败路径 + 失败计数、不打成功契约行",
-      r.returncode == 2 and "locked/stuck.aux" in out and "失败 1 项" in r.stderr
-      and "完成。" not in r.stdout, f"rc={r.returncode}")
-td_f = trash_dirs(F)
-# (b) 同一次运行里正常 junk 仍成功移入回收站（不回滚已成功项）
-check("(g) 同次运行正常 junk 仍移入回收站（源消失、trash 里在）",
-      not os.path.exists(os.path.join(F, "normal.aux")) and len(td_f) == 1
-      and os.path.exists(os.path.join(td_f[0], "normal.aux")))
-man_f = json.load(open(os.path.join(td_f[0], "manifest.json"), encoding="utf-8"))
-check("(g) 失败项源文件仍在、manifest 只记成功项",
-      os.path.exists(os.path.join(F, "locked/stuck.aux"))
-      and [e["path"] for e in man_f["entries"]] == ["normal.aux"],
-      man_f["entries"])
-os.chmod(os.path.join(F, "locked"), 0o755)
+if os.name == "nt":
+    # Windows：目录「只读位」不阻止删除/移动（POSIX 语义 vs Windows ACL/属性），chmod 无法构造 OSError 反例。
+    # F1「失败计数/非零退出」路径在 POSIX（mac/Linux）全量覆盖；Windows 侧登记为已知测试缺口（CI/preflight 如实记录）。
+    print("\nSKIP (g) 只读目录失败反例（Windows 无 POSIX 目录只读语义；F1 失败计数路径由 POSIX 覆盖）")
+else:
+    r = run("cleantemp.py", "--folder", F, "--mode", "delivery")
+    out = r.stdout + r.stderr
+    check("(g) 只读目录：退出码 2、输出点名失败路径 + 失败计数、不打成功契约行",
+          r.returncode == 2 and "locked/stuck.aux" in out and "失败 1 项" in r.stderr
+          and "完成。" not in r.stdout, f"rc={r.returncode}")
+    td_f = trash_dirs(F)
+    # (b) 同一次运行里正常 junk 仍成功移入回收站（不回滚已成功项）
+    check("(g) 同次运行正常 junk 仍移入回收站（源消失、trash 里在）",
+          not os.path.exists(os.path.join(F, "normal.aux")) and len(td_f) == 1
+          and os.path.exists(os.path.join(td_f[0], "normal.aux")))
+    man_f = json.load(open(os.path.join(td_f[0], "manifest.json"), encoding="utf-8"))
+    check("(g) 失败项源文件仍在、manifest 只记成功项",
+          os.path.exists(os.path.join(F, "locked/stuck.aux"))
+          and [e["path"] for e in man_f["entries"]] == ["normal.aux"],
+          man_f["entries"])
+    os.chmod(os.path.join(F, "locked"), 0o755)
 
-# --delete 模式同样计数
-Fd = tempfile.mkdtemp(prefix="b211_faildel_")
-mkfile(os.path.join(Fd, "main.tex"), r"\includegraphics{fig.png}" + "\n")
-mkfile(os.path.join(Fd, "fig.png"), "F")
-mkfile(os.path.join(Fd, "normal.aux"), "J")
-mkfile(os.path.join(Fd, "locked/stuck.aux"), "J")
-os.chmod(os.path.join(Fd, "locked"), 0o555)
-r = run("cleantemp.py", "--folder", Fd, "--mode", "delivery", "--delete")
-check("(g) --delete 同样计数：退出码 2、正常 junk 已永久删、失败项仍在",
-      r.returncode == 2 and "失败 1 项" in r.stderr and "完成。" not in r.stdout
-      and not os.path.exists(os.path.join(Fd, "normal.aux"))
-      and os.path.exists(os.path.join(Fd, "locked/stuck.aux")), f"rc={r.returncode}")
-os.chmod(os.path.join(Fd, "locked"), 0o755)
+    # --delete 模式同样计数
+    Fd = tempfile.mkdtemp(prefix="b211_faildel_")
+    mkfile(os.path.join(Fd, "main.tex"), r"\includegraphics{fig.png}" + "\n")
+    mkfile(os.path.join(Fd, "fig.png"), "F")
+    mkfile(os.path.join(Fd, "normal.aux"), "J")
+    mkfile(os.path.join(Fd, "locked/stuck.aux"), "J")
+    os.chmod(os.path.join(Fd, "locked"), 0o555)
+    r = run("cleantemp.py", "--folder", Fd, "--mode", "delivery", "--delete")
+    check("(g) --delete 同样计数：退出码 2、正常 junk 已永久删、失败项仍在",
+          r.returncode == 2 and "失败 1 项" in r.stderr and "完成。" not in r.stdout
+          and not os.path.exists(os.path.join(Fd, "normal.aux"))
+          and os.path.exists(os.path.join(Fd, "locked/stuck.aux")), f"rc={r.returncode}")
+    os.chmod(os.path.join(Fd, "locked"), 0o755)
 
-for d in (F, Fd, CMP, OLD_ENGINE):
+for d in ((F, CMP, OLD_ENGINE) + (() if os.name == "nt" else (Fd,))):
     shutil.rmtree(d, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
