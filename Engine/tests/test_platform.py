@@ -712,7 +712,9 @@ _B229_MODULES = ("convert_bib", "convert_compile", "convert_metadata", "convert_
 # bib_entry_structurally_safe/bib_attachment_entries/merge_bib_attachment）从
 # convert_bib 逐字搬入 bibmerge.py 以守族行数线 → owner/定义单点扫描须含 bibmerge，
 # 但**族行数统计仍只算 4 模块**（族线 3977 口径不变，不弱化）。
-_B229_OWNER_MODULES = _B229_MODULES + ("bibmerge",)
+# B-222 A 段：bib 发现 + bibdb 族 18 符号从 convert_bib 逐字外提 bibpipeline.py
+# （同样不计入族行数）→ owner/定义单点扫描再扩 bibpipeline。
+_B229_OWNER_MODULES = _B229_MODULES + ("bibmerge", "bibpipeline")
 _B229_FAMILY_BASE = 3899              # v1.4.0 时 `Engine/convert.py` 行数
 _B229_FAMILY_LIMIT = 3977             # 3899 × 1.02（spec「总量 ±2%」）
 _B229_CONVERT_TARGET = 800            # 卡面目标：薄门面
@@ -781,7 +783,8 @@ check("(i1) 门面 re-export 完整且同一：旧 `convert.py` 的 81 个非 ma
 
 # ── (i2) 无循环 import ───────────────────────────────────────────────────
 _b229_import_rc = child("import convert, slcn.convert_bib, slcn.convert_compile, "
-                        "slcn.convert_metadata, slcn.convert_stage, slcn.bibmerge")
+                        "slcn.convert_metadata, slcn.convert_stage, slcn.bibmerge, "
+                        "slcn.bibpipeline")
 _b229_graph: dict[str, set[str]] = {}
 for _py in sorted((ENGINE / "slcn").glob("*.py")):
     _deps: set[str] = set()
@@ -863,8 +866,9 @@ _b229_sites: dict[str, list[str]] = {n: [] for n in _B229_OLD_SYMBOLS}
 _b229_extracted_sites: dict[str, list[str]] = {n: [] for n in _B229_EXTRACTED}
 _b229_family_files = [ENGINE / "convert.py"] + [
     ENGINE / "slcn" / (m + ".py") for m in _B229_MODULES]
-# (i4) 定义单点扫描 = 门面+4 模块+bibmerge（mini-split 后的实际 owner 面）
-_b229_owner_files = _b229_family_files + [ENGINE / "slcn" / "bibmerge.py"]
+# (i4) 定义单点扫描 = 门面+4 模块+bibmerge+bibpipeline（mini-split/B-222 A 段后的实际 owner 面）
+_b229_owner_files = _b229_family_files + [ENGINE / "slcn" / "bibmerge.py",
+                                          ENGINE / "slcn" / "bibpipeline.py"]
 for _fp in _b229_owner_files:
     if not _fp.is_file():
         continue
@@ -876,9 +880,10 @@ for _fp in _b229_owner_files:
                 _b229_extracted_sites[_sym].append("%s:%d" % (_fp.name, _line))
 _b229_multi = {n: s for n, s in _b229_sites.items() if len(s) != 1}
 _b229_extracted_multi = {n: s for n, s in _b229_extracted_sites.items() if len(s) != 1}
-check("(i4) 定义单点：81 个旧顶层符号在「门面 + 4 模块 + bibmerge」内的顶层 def/赋值定义各**恰好"
-      " 1 处**；main 内 4 段外提函数（build_arg_parser/run_refs_attach/run_verify_refs/"
-      "run_coop_taskbook）各恰好 1 处定义（Import/ImportFrom 不算）",
+check("(i4) 定义单点：81 个旧顶层符号在「门面 + 4 模块 + bibmerge + bibpipeline」内的顶层"
+      " def/赋值定义各**恰好 1 处**；main 内 4 段外提函数（build_arg_parser/"
+      "run_refs_attach/run_verify_refs/run_coop_taskbook）各恰好 1 处定义"
+      "（Import/ImportFrom 不算）",
       not _b229_multi and not _b229_extracted_multi,
       "旧符号不唯一=%s；外提函数=%s"
       % (_b229_multi or "无", _b229_extracted_sites))
@@ -957,6 +962,135 @@ finally:
     _BIC.set_enabled(_saved_bic)
 check("(j9) apply_cli_args(--no-bibitem-convert) → enabled() False；恢复默认后 True",
       _cli_off and _BIC.enabled() is True)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (k) B-222 A 段①：B-233 解析规则收编 footref 判据单点 ──")
+# spec §4：B-233 的解析/渲染规则整体迁入 `slcn/footref.py` 文件末尾新节，
+# bibitem_convert 只保留开关/结果/key/主入口/CLI；私有跨模块 import 归零。
+_B222A_RULE_SYMBOLS = (
+    "FIELD_ORDER", "_TYPES", "_UNSAFE_RE", "_YEAR_RE", "_PYEAR_RE", "_MARK_RE",
+    "_MARK_TYPE", "_THESIS_RE", "_IN_RE", "_VOL_RE", "_ITALIC_RE", "_BOLD_RE",
+    "_PAGES_RE", "_collapse", "_year_of", "_clean_text", "_clean_title",
+    "_split_sentence", "_join_authors", "_split_author_rest", "_fill_pub_addr",
+    "_parse_marked", "_parse_cjk", "_fill_lncs_tail", "parse_bibitem_entry",
+    "render_bibitem_entry", "bibitem_skeleton_fields", "empty_bibitem_fields",
+    "clean_bibitem_note",
+)
+# 迁移前全库已有的同名私有常量（bibdb._YEAR_RE = docx 年份判据、tocdelivery._PAGES_RE =
+# 日志页数解析），与 B-233 规则无关、也不在本次 5 文件范围内。判据单点按「footref 恰好 1
+# 处 + 其余同名只允许这两个预存异义点」验：防的是「第二份 B-233 实现」，不是同名异义。
+_B222A_PREEXISTING_HOMONYMS = {"_YEAR_RE": ("bibdb",), "_PAGES_RE": ("tocdelivery",)}
+_b222a_sites: dict[str, list[str]] = {n: [] for n in _B222A_RULE_SYMBOLS}
+for _py in sorted((ENGINE / "slcn").glob("*.py")):
+    for _sym, _lines in _b207_top_defs(_py).items():
+        if _sym in _b222a_sites:
+            for _line in _lines:
+                _b222a_sites[_sym].append("%s:%d" % (_py.name, _line))
+_b222a_bad: dict[str, list[str]] = {}
+for _sym, _locs in _b222a_sites.items():
+    _own = [s for s in _locs if s.startswith("footref.py:")]
+    _known = _B222A_PREEXISTING_HOMONYMS.get(_sym, ())
+    _extra = [s for s in _locs if not s.startswith("footref.py:")
+              and s.split(":")[0].removesuffix(".py") not in _known]
+    if len(_own) != 1 or _extra:
+        _b222a_bad[_sym] = _locs
+check("(k1) 判据单点：B-233 的 29 个解析/渲染符号在 `slcn/` 全库的顶层 def/赋值定义"
+      "**各恰好 1 处且位于 footref.py**（Import/ImportFrom 不算；额外同名只允许迁移前"
+      "既存的 bibdb._YEAR_RE / tocdelivery._PAGES_RE 两个异义私有常量）",
+      not _b222a_bad,
+      "不满足=%s；预存同名=%s" % (_b222a_bad or "无", _B222A_PREEXISTING_HOMONYMS))
+
+_bic_priv_imports: list[str] = []
+for _node in ast.walk(ast.parse((ENGINE / "slcn" / "bibitem_convert.py").read_text(
+        encoding="utf-8"))):
+    if isinstance(_node, ast.ImportFrom):
+        _bic_priv_imports += ["%s%s.%s" % ("." * (_node.level or 0), _node.module or "",
+                                           _a.name)
+                              for _a in _node.names if _a.name.startswith("_")]
+    elif isinstance(_node, ast.Import):
+        _bic_priv_imports += [_a.name for _a in _node.names
+                              if _a.name.split(".")[-1].startswith("_")]
+check("(k2) 负例：`bibitem_convert.py` 的**全部** Import/ImportFrom（含函数内）里，"
+      "从模块外部导入以 `_` 开头的名字 = 0（B-233 判据不再跨模块借私有实现）",
+      not _bic_priv_imports, "私有导入=%s" % _bic_priv_imports)
+
+_B222A_FROM_FOOTREF = ("clean_bibitem_note", "empty_bibitem_fields",
+                       "parse_bibitem_entry", "render_bibitem_entry",
+                       "bibitem_skeleton_fields")
+from slcn import footref as _fr  # noqa: E402
+_bic_identity_bad = [n for n in _B222A_FROM_FOOTREF
+                     if getattr(_BIC, n, _B229_MISSING) is not getattr(
+                         _fr, n, _B229_MISSING)]
+check("(k3) import 面/接口：bibitem_convert 从 footref 导入的 5 个公有名与 footref 同名"
+      "对象 **is** 一致；`footref.parse_one` 仍在且可调用、"
+      "`bibitem_convert.parse_bibitem_entry` 可调用（旧 `_parse_one` 只更名不删除）",
+      not _bic_identity_bad
+      and callable(getattr(_fr, "parse_one", None))
+      and callable(getattr(_BIC, "parse_bibitem_entry", None)),
+      "is不符=%s parse_one可调用=%r"
+      % (_bic_identity_bad, callable(getattr(_fr, "parse_one", None))))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (l) B-222 A 段②：bib 管线外提 bibpipeline + convert.py 零改动 re-export ──")
+_B222A_PIPELINE_SYMBOLS = (
+    "_bib_candidates", "_pick_bib", "bib_search_dirs", "find_bib_ex", "find_bib",
+    "bib_origin", "_DECL_BIBADD_RE", "_DECL_BIBLIO_RE", "declared_bib_path",
+    "real_bib_path", "resolve_bibdb", "classify_bibdb", "bibdb_log_line",
+    "_bibdb_scan_stem", "bibdb_readonly_scan", "_bibdb_apply_backfill",
+    "bibdb_taskbook_hits", "resolve_bibdb_apply_store",
+)
+_bp = importlib.import_module("slcn.bibpipeline")
+_bp_sites: dict[str, list[str]] = {n: [] for n in _B222A_PIPELINE_SYMBOLS}
+for _py in sorted((ENGINE / "slcn").glob("*.py")):
+    for _sym, _lines in _b207_top_defs(_py).items():
+        if _sym in _bp_sites:
+            for _line in _lines:
+                _bp_sites[_sym].append("%s:%d" % (_py.name, _line))
+_bp_bad = {n: s for n, s in _bp_sites.items()
+           if len(s) != 1 or not s[0].startswith("bibpipeline.py:")}
+_bp_identity_bad = [n for n in _B222A_PIPELINE_SYMBOLS
+                    if getattr(_cv, n, _B229_MISSING) is not getattr(
+                        _bp, n, _B229_MISSING)]
+check("(l1) 外提符号单点 + 门面同一性：18 个 bib 符号在 `slcn/` 全库顶层定义各恰好 1 处"
+      "且属 bibpipeline.py；`convert.<sym> is slcn.bibpipeline.<sym>`（convert.py 零改动）",
+      not _bp_bad and not _bp_identity_bad,
+      "定义不唯一/归属错=%s；is不符=%s" % (_bp_bad or "无", _bp_identity_bad[:5]))
+
+# (l2) 子进程 import + 既有环图；bibpipeline 顶层不许反向 import convert/convert_bib。
+_bp_import_rc = child("import convert, slcn.bibpipeline, slcn.convert_bib")
+_bp_top_reverse: list[str] = []
+for _node in ast.parse((ENGINE / "slcn" / "bibpipeline.py").read_text(
+        encoding="utf-8")).body:
+    if isinstance(_node, ast.Import):
+        _mods = [_a.name for _a in _node.names]
+    elif isinstance(_node, ast.ImportFrom):
+        _base = _node.module or ""
+        _mods = [_base] + [_base + "." + _a.name for _a in _node.names]
+    else:
+        continue
+    for _m in _mods:
+        _parts = [p for p in _m.split(".") if p and p != "slcn"]
+        if _parts and _parts[0] in ("convert", "convert_bib"):
+            _bp_top_reverse.append("bibpipeline.py:%d→%s" % (_node.lineno, _m))
+check("(l2) 无循环 import：子进程 `import convert, slcn.bibpipeline, slcn.convert_bib`"
+      " rc=0；既有 `slcn/` 顶层相对 import 环形图**无环**；bibpipeline 顶层不 import"
+      " `convert`/`convert_bib`",
+      _bp_import_rc.returncode == 0 and not _b229_cycles and not _bp_top_reverse,
+      "rc=%d %r 环=%s 反向import=%s"
+      % (_bp_import_rc.returncode, _bp_import_rc.stderr[-120:], _b229_cycles[:2],
+         _bp_top_reverse[:5]))
+
+# (l3) 族行数下降（B-222 A 段前实测 3904；B-229 硬线 3977；各模块 ≤1500）
+_b222a_family_files = [ENGINE / "convert.py"] + [
+    ENGINE / "slcn" / (m + ".py") for m in _B229_MODULES]
+_b222a_mod_lines = {f.stem: len(f.read_text(encoding="utf-8").splitlines())
+                    for f in _b222a_family_files}
+_b222a_total = sum(_b222a_mod_lines.values())
+_b222a_line_bad = ["%s=%d>1500" % (m, n) for m, n in _b222a_mod_lines.items() if n > 1500]
+check("(l3) 族行数下降：门面+4 模块总行数 **< 3904（A 段前实测）** 且 ≤3977、各模块 ≤1500",
+      not _b222a_line_bad and 0 < _b222a_total < 3904 and _b222a_total <= _B229_FAMILY_LIMIT,
+      "超限=%s 实测=%s 总=%d（前 3904，限 %d）"
+      % (_b222a_line_bad, _b222a_mod_lines, _b222a_total, _B229_FAMILY_LIMIT))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

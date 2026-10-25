@@ -1065,3 +1065,315 @@ def parse_numbered_item(seg: str) -> Parsed:
 def parse_numbered_list(text: str) -> list[Parsed]:
     """解析整份编号参考文献清单。"""
     return [parse_numbered_item(x) for x in split_numbered(text)]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 手写 `\bibitem` 条目解析（B-222 A 段：B-233 规则整体收编，判据单点）
+# ═══════════════════════════════════════════════════════════════════════════
+
+FIELD_ORDER = ("author", "title", "journal", "booktitle", "volume", "number",
+               "pages", "publisher", "address", "school", "year", "note")
+_TYPES = frozenset(("article", "book", "incollection", "inproceedings",
+                    "phdthesis", "mastersthesis", "misc"))
+_UNSAFE_RE = re.compile(r"(?<!\\)([&%#_])")
+_YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_PYEAR_RE = re.compile(r"\(\s*((?:19|20)\d{2})\s*\)\s*[.,;]?\s*$")
+_MARK_RE = re.compile(r"\[\s*([JMCDNZRSPA])\s*\]")
+_MARK_TYPE = {"J": "article", "M": "book", "C": "incollection", "D": "phdthesis",
+              "N": "article", "R": "misc", "S": "misc", "P": "misc", "A": "book",
+              "Z": "misc"}
+_THESIS_RE = re.compile(
+    r"(Ph\.?\s*D\.?|Doctoral|Master'?s?)\s+(thesis|dissertation)\b", re.I)
+_IN_RE = re.compile(r"^In\s*:\s*(.+)$", re.S)
+_VOL_RE = re.compile(r"\bVol\.?\s*~?\s*(\d+)", re.I)
+_ITALIC_RE = re.compile(r"\\textit\{([^{}]*)\}")
+_BOLD_RE = re.compile(r"\\textbf\{([^{}]*)\}")
+_PAGES_RE = re.compile(
+    r"(?:pp?\.\s*~?\s*|[,，]\s*)([A-Za-z]?\d{1,5})\s*(?:--|–|—|-|~)\s*([A-Za-z]?\d{1,5})")
+
+
+# ── 文本小工具 ────────────────────────────────────────────────────────────
+
+def _collapse(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()
+
+
+def _year_of(s: str) -> str:
+    m = _PYEAR_RE.search(s or "")
+    return m.group(1) if m else ((_YEAR_RE.findall(s or "") or [""])[-1])
+
+
+def _clean_text(t: str) -> str:
+    return _collapse(t).strip(" .,;:")
+
+
+def clean_bibitem_note(text: str) -> str:
+    return _clean_text(_collapse(text))
+
+
+def _clean_title(t: str) -> str:
+    t = _clean_text(t)
+    m = re.fullmatch(r"\\textit\{(.+)\}", t, re.S)
+    t = m.group(1).strip() if m else t
+    return re.sub(r"^[\s:：.]+", "", t).strip()
+
+
+def empty_bibitem_fields() -> dict:
+    return {"key": "", "_type": "misc", **dict.fromkeys(FIELD_ORDER, "")}
+
+
+def _split_sentence(s: str) -> tuple[str, str]:
+    """第一个 `. `（花括号深度 0、非转义）处切题名/后半段；切不出返回 `(s, "")`。"""
+    depth, i, n = 0, 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(0, depth - 1)
+        elif ch == "." and depth == 0 and i + 1 < n and s[i + 1] in " \n\t":
+            j = i + 1
+            while j < n and s[j] in " \n\t":
+                j += 1
+            if j < n and (s[j].isupper() or s[j] in "\\{" or s[j].isdigit()):
+                return s[:i].strip(), s[j:].strip()
+        i += 1
+    return s.strip(), ""
+
+
+# ── 作者串 → BibTeX `and` ────────────────────────────────────────────────
+
+def _join_authors(blob: str) -> str:
+    """`Zhen, L., Seligman, J.` → `Zhen, L. and Seligman, J.`（不改姓名部件）。"""
+    s = _collapse(blob).strip().strip(",;")
+    if not s:
+        return ""
+    if re.search(r"[\u4e00-\u9fa5，、；]", s):  # 中文条目：逗号/顿号即作者分隔
+        return " and ".join(p.strip() for p in re.split(r"[,，、;；]\s*", s) if p.strip())
+    out, cur = [], ""
+    for tok in (t.strip() for t in re.split(r",\s*", s) if t.strip()):
+        # 缩写点被当分隔符吃掉（GB/T 英文条目 `Smith, J`）→ 补回
+        if re.fullmatch(r"[A-Z]\.(?:[-\s]*[A-Z]\.)*|[A-Z]{1,3}", tok):
+            init = tok if tok.endswith(".") else tok + "."
+            out.append(f"{cur}, {init}" if cur else init)
+            cur = ""
+        else:
+            if cur:
+                out.append(cur)
+            cur = tok
+    if cur:
+        out.append(cur)
+    return " and ".join(out) if out else s
+
+
+def _split_author_rest(s: str) -> tuple[str, str]:
+    """LNCS 的 `作者列表: 正文` 切分；切不出返回 `("", s)`。"""
+    m = re.search(r"\.\s*:\s+", s)
+    if m:
+        return s[: m.start() + 1].strip(), s[m.end():].strip()
+    m = re.match(r"^([^:：]{2,240}?)\s*[：:]\s+(.+)$", s, re.S)
+    if m:
+        head = m.group(1).strip()
+        if all(len(t) <= 40 for t in re.split(r",\s*", head)):
+            return head, m.group(2).strip()
+    return "", s
+
+
+# ── GB/T 7714 / 中文条目 ─────────────────────────────────────────────────
+
+def _fill_pub_addr(d: dict, s: str) -> None:
+    """`出版地: 出版社` / `出版社, 城市` → address/publisher（拆不出留空）。"""
+    m = _PYEAR_RE.search(s or "")
+    s = (s[:m.start()] if m else (s or "")).strip(" ,.;")
+    m = re.match(r"^(?P<a>[^:：,，]{2,60}?)\s*[:：]\s*(?P<p>[^,，.。]{2,100})", s)
+    if m:
+        d["address"], d["publisher"] = _clean_text(m.group("a")), _clean_text(m.group("p"))
+        return
+    parts = [p.strip() for p in re.split(r"[,，]", s) if p.strip()]
+    if parts:
+        d["publisher"] = _clean_text(parts[0])
+        if len(parts) > 1:
+            d["address"] = _clean_text(", ".join(parts[1:]))
+
+
+def _parse_marked(raw: str) -> dict | None:
+    """GB/T 7714 条目（中英文都认）：类型看 `[X]` 标记，字段复用 footref 行解析器。"""
+    mark = _MARK_RE.search(raw)
+    if not mark:
+        return None
+    e = empty_bibitem_fields()
+    e["_type"] = _MARK_TYPE.get(mark.group(1).upper(), "misc")
+    try:
+        p = parse_one(raw)
+    except Exception:  # noqa: BLE001  解析器异常只是「这条不提升」
+        p = None
+    if p is not None:
+        for name in ("author", "title", "journal", "booktitle", "volume", "number",
+                     "pages", "publisher", "address", "year"):
+            val = getattr(p, name, "")
+            if val:
+                e[name] = str(val)
+    if not e["author"]:  # 行内兜底：`作者. 题名[X]. ...` 的最后一段 `. ` 切作者/题名
+        head = raw[: mark.start()]
+        last = None
+        for m in re.finditer(r"[.。]\s+", head):
+            last = m
+        author, title = (head[:last.start()], head[last.end():]) if last else ("", head)
+        e["author"] = _join_authors(author.strip(" .。"))
+        e["title"] = e["title"] or _clean_title(title.strip(" .。"))
+    if not e["year"]:
+        e["year"] = _year_of(raw)
+    if e["_type"] == "phdthesis" and not e["school"]:
+        tail = raw[mark.end():]
+        mt = _THESIS_RE.search(tail)
+        school = tail[mt.end():] if mt else tail
+        school = re.sub(r"[\s,，.。;；]*(?:19|20)\d{2}\s*[.。]?\s*$", "", school)
+        e["school"] = _clean_text(school.strip(" ,.;"))
+    return e
+
+
+def _parse_cjk(raw: str) -> dict | None:
+    """中文条目：复用 `bibnorm._parse_cn_numbered_line`（《题名》/plain book 体例）。"""
+    try:
+        from .bibnorm import _parse_cn_numbered_line
+        d = _parse_cn_numbered_line(raw)
+    except Exception:  # noqa: BLE001
+        d = None
+    if not d:
+        return None
+    e = empty_bibitem_fields()
+    e.update({k: v for k, v in d.items() if k in e and v})
+    return e
+
+
+# ── LNCS / Springer 数字体例 ──────────────────────────────────────────────
+
+def _fill_lncs_tail(e: dict, tail: str) -> None:
+    mt = _THESIS_RE.search(tail)
+    if mt:
+        e["_type"] = "mastersthesis" if "master" in mt.group(0).lower() else "phdthesis"
+        school = _clean_text(tail[mt.end():])
+        pm = _PYEAR_RE.search(school)
+        e["school"] = (school[: pm.start()] if pm else school).strip(" ,.;")
+        e["school"] = re.sub(r"^(?:of|at|,)\s+", "", e["school"], flags=re.I)
+        return
+    mi = _IN_RE.match(tail)
+    if mi:  # 章节：In: \textit{书名}, pp. N--M. 出版社, 城市 (年)
+        e["_type"] = "incollection"
+        s = mi.group(1).strip()
+        pm = _PYEAR_RE.search(s)
+        s = (s[: pm.start()] if pm else s).strip(" ,.;")
+        im = _ITALIC_RE.search(s)
+        if im:
+            e["booktitle"] = _clean_text(im.group(1))
+            s = (s[: im.start()] + " " + s[im.end():]).strip()
+        else:
+            bt, s2 = _split_sentence(s)
+            e["booktitle"], s = _clean_title(bt), s2
+        vm = _VOL_RE.search(s)
+        if vm:
+            e["volume"] = vm.group(1)
+        pm = _PAGES_RE.search(s)
+        if pm:
+            e["pages"] = f"{pm.group(1)}--{pm.group(2)}"
+            s = s[pm.end():]
+        else:
+            s = ""
+        left = re.sub(r"^[\s,.;]+", "", s)
+        pm = _PYEAR_RE.search(left)
+        if pm:
+            left = left[: pm.start()]
+        if left.strip(" ,.;"):
+            _fill_pub_addr(e, left)
+        return
+    if _PAGES_RE.search(tail) or "\\textbf{" in tail or "\\textit{" in tail:
+        e["_type"] = "article"
+        im, bm = _ITALIC_RE.search(tail), _BOLD_RE.search(tail)
+        if im:
+            e["journal"] = _clean_text(im.group(1))
+        if bm:
+            e["volume"] = _clean_text(bm.group(1))
+        if not im and not bm:  # 无标记体例：`题名. 刊名 卷(期), 页 (年)`
+            gm = re.match(
+                r"^(?P<j>.+?)\s+(?P<v>\d{1,4})\s*(?:\((?P<n>[^)]{1,12})\))?\s*,\s*"
+                r"(?P<p>[A-Za-z]?\d{1,5}\s*(?:--|–|—|-|~)\s*[A-Za-z]?\d{1,5})", tail)
+            if gm:
+                e["journal"], e["volume"] = _clean_text(gm.group("j")), gm.group("v")
+                e["number"] = gm.group("n") or ""
+                e["pages"] = re.sub(r"\s*(?:--|–|—|-|~)\s*", "--", gm.group("p"))
+            return
+        pm = _PAGES_RE.search(tail)
+        if pm:
+            e["pages"] = f"{pm.group(1)}--{pm.group(2)}"
+        if not e["volume"]:
+            vm = _VOL_RE.search(tail)
+            if vm:
+                e["volume"] = vm.group(1)
+        for num in re.findall(r"\(\s*([^()]{1,12})\s*\)", tail):
+            if re.fullmatch(r"\d{1,3}[a-z]?", num.strip()):
+                e["number"] = num.strip()
+                break
+        return
+    if tail:  # 书：\textit{题名}. 出版社, 城市 (年)
+        e["_type"] = "book"
+        _fill_pub_addr(e, tail)
+        if e["publisher"]:
+            return
+    e["_type"], e["note"] = "misc", _clean_text(tail)
+
+
+# ── 单条解析 / 渲染 / key / 主入口 ───────────────────────────────────────
+
+def parse_bibitem_entry(body: str) -> dict:
+    raw = _collapse(body)
+    if not raw:
+        return empty_bibitem_fields()
+    d = _parse_marked(raw)
+    if d is None and re.search(r"[\u4e00-\u9fa5]", raw):
+        d = _parse_cjk(raw)
+    if d is None:  # LNCS/Springer：`作者列表: 题名. 后端信息`
+        author, rest = _split_author_rest(raw)
+        if rest:
+            d = empty_bibitem_fields()
+            d["author"], d["year"] = _join_authors(author), _year_of(raw)
+            title, tail = _split_sentence(rest)
+            d["title"] = _clean_title(title)
+            if tail:
+                _fill_lncs_tail(d, tail)
+            else:
+                d["note"] = _clean_text(rest)
+    if d is not None:
+        return d
+    e = empty_bibitem_fields()
+    e["note"] = _clean_text(raw)
+    title, _tail = _split_sentence(raw)
+    e["title"] = _clean_title(title) if title and title != raw else ""
+    e["year"] = _year_of(raw)
+    return e
+
+
+def bibitem_skeleton_fields(skel_bib: str) -> dict[str, dict]:
+    """`bibitems_to_bib` 骨架 → {key: {title, year}}，仅作解析失败时的兜底。"""
+    out: dict[str, dict] = {}
+    for k, t, y in re.findall(
+            r"@\w+\{([^,]*),\s*title\s*=\s*\{(.*?)\},\s*year\s*=\s*\{([^}]*)\}",
+            skel_bib or "", re.S):
+        out[k.strip()] = {"title": _clean_title(t), "year": y.strip()}
+    return out
+
+
+def render_bibitem_entry(e: dict) -> str:
+    etype = str(e.get("_type") or "misc").lower()
+    fields: list[str] = []
+    for name in FIELD_ORDER:
+        raw = _collapse(e.get(name) or "")
+        # 作者串末位缩写点（`Seligman, J.`）是数据，不当句末标点剥
+        val = _UNSAFE_RE.sub(r"\\\1", raw.strip(" ,;") if name == "author"
+                             else _clean_text(raw))
+        if val:
+            fields.append(f"  {name} = {{{val}}}")
+    return "@%s{%s,\n%s\n}" % (etype if etype in _TYPES else "misc",
+                               e.get("key") or "bibitem", ",\n".join(fields))
