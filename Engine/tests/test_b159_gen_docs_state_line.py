@@ -94,7 +94,7 @@ check("(c) 块外内容逐字节未动", G.README.read_text(encoding="utf-8").en
 # ── (d) 现况留证：out/gen_docs-state.txt（不进提交）─────────────────────────
 _state = G.state_file()
 check("(d) 快照落在 README 同级的 `out/gen_docs-state.txt`",
-      str(_state).endswith("/out/gen_docs-state.txt"), _state)
+      str(_state).replace("\\", "/").endswith("/out/gen_docs-state.txt"), _state)
 _txt = _state.read_text(encoding="utf-8") if _state.is_file() else ""
 check("(d) 快照含 generated_at + mtime / HEAD / status 三行",
       all(k in _txt for k in ("generated_at:", ".git/index mtime:", "HEAD:",

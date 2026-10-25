@@ -73,10 +73,10 @@ def snapshot(root: str) -> dict[str, str]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d != C.TRASH_DIR]
         for d in dirnames:
-            out[os.path.relpath(os.path.join(dirpath, d), root)] = "dir"
+            out[os.path.relpath(os.path.join(dirpath, d), root).replace("\\", "/")] = "dir"
         for f in filenames:
             full = os.path.join(dirpath, f)
-            out[os.path.relpath(full, root)] = sha(full)
+            out[os.path.relpath(full, root).replace("\\", "/")] = sha(full)
     return out
 
 
@@ -119,7 +119,7 @@ check("(a) 真删：退出码 0、删除 9 个", r.returncode == 0 and "已删�
 check("(a) 契约行仍是旧文案", last_line(r) == f"完成。已删除 9 个临时文件（目录：{root}）",
       last_line(r))
 check("(a) 日志行仍是 `删除完成，共删除9个文件。`", "删除完成，共删除9个文件。" in r.stdout)
-left = sorted(os.path.relpath(os.path.join(dp, f), root)
+left = sorted(os.path.relpath(os.path.join(dp, f), root).replace("\\", "/")
               for dp, _dn, fn in os.walk(root) for f in fn)
 check("(a) 删除集合正确：只剩 keep 文件（含 original 系 4 个）",
       left == sorted(["01 A/A.tex", "01 A/A.pdf", "01 A/A.log", "01 A/SLCN-MIX.sty",

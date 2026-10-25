@@ -498,7 +498,7 @@ finally:
 check("(i3b) 显式 `--template` 时第 ② 步透传（口径不变，仍可用）",
       argv_by_script["toc.py"][1:] == ["--report",
                                        os.path.join(root6, "信息检查_20261021_130000.txt"),
-                                       "--template", "/x/2026年第4期(89)"],
+                                       "--template", os.path.abspath("/x/2026年第4期(89)")],
       str(argv_by_script["toc.py"]))
 check("(i4) 第 ④ 步真跑了：000 里出现复制来的目录 tex 与编译出的 PDF",
       open(os.path.join(root6, "000 Table of Contents", "Chinese Content.tex"),
