@@ -708,6 +708,51 @@ def _numbered_refs(
     return out, num2key, raw_by_key
 
 
+def convert_bibitem_refs(doc) -> int:
+    """B-233：Word 文末手写 `\\bibitem` 文本 → 规范 bib 条目（就地写 doc、fail-soft）。
+
+    触发（保守）：无编号清单/脚注条目，且人年制通道零结果，或其条目原文**全部**以
+    `\\bibitem` 开头（宽松解析器会把这种行误吃成 `ref…` 垃圾条目）。条目顺序=文献
+    序号（`ref_key_by_num={n: 第 n 条键}`）、源键保留；正文 `[n]`→`\\parencite` 由
+    build 既有 `link_numbered_citations` 完成（不猜）。返回写入条数。
+    """
+    try:
+        from . import bibitem_convert
+
+        if not bibitem_convert.enabled() or doc.bib_entries:
+            return 0
+        refs = list(getattr(doc, "refs", None) or [])
+        if refs and not all(str(e.raw or "").strip().startswith("\\bibitem") for e in refs):
+            return 0
+        lines = [s for s in (getattr(doc, "ref_raw_lines", None) or []) if s.strip()]
+        text = "\n".join(lines)
+        if not bibitem_convert.looks_like_bibitems(text):
+            return 0
+        result = bibitem_convert.convert(text)
+        entries = [e for e in (getattr(result, "entries", None) or []) if e.get("key")]
+        if not entries:
+            return 0
+    except Exception:  # noqa: BLE001 —— fail-soft：转换失败不阻断出稿
+        return 0
+
+    def _raw(k: str) -> str:  # 条目 → 源稿原文行（build 的任务书/兜底用）
+        pat = r"\\bibitem\s*(?:\[[^\]]*\])?\s*\{" + re.escape(k) + r"\}"
+        return next((s for s in lines if re.search(pat, s)), "")
+
+    out = [(str(e["key"]), {k: v for k, v in e.items() if k != "key"}, _raw(str(e["key"])))
+           for e in entries]
+    if refs:  # 旧通道误吃：丢弃垃圾条目，改走 bibitem（warning 留痕，不静默）
+        doc.warnings.append(f"文末 {len(refs)} 行 \\bibitem 被人年制通道误解析"
+                            f"（如 {refs[0].key}），已改用 \\bibitem 自动转换，请核对")
+        doc.refs, doc.ref_raw_by_key = [], {}
+    doc.bib_entries.extend(out)
+    doc.ref_key_by_num = {i: k for i, (k, _e, _r) in enumerate(out, 1)}
+    doc.ref_raw_by_key.update({k: r for k, _e, r in out if r})
+    doc.warnings.extend(str(w) for w in (getattr(result, "warnings", None) or []))
+    doc.warnings.append(f"{bibitem_convert.WARNING_AUTO}（Word 文末共 {len(out)} 条）")
+    return len(out)
+
+
 def _make_key_core(a: str, year: str, disambiguate: str = "") -> str | None:
     """按「译名表 → 中文全拼音 → 西文姓」分类生成 bib 键。
 

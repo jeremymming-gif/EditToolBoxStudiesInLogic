@@ -5,7 +5,7 @@ import os, re
 
 from slcn import aibib as _aibib, bibcheck as _bibcheck, bibdb as _bibdb
 from slcn import coop as _coop, paths as _paths, refmark as _refmark, search as _search
-from slcn.convert_metadata import TEX_EXT, die
+from slcn.convert_metadata import TEX_EXT, WORD_EXT, die
 from slcn.convert_stage import (
     LLM_FULLTEXT_CHUNK_CHARS, LLM_FULLTEXT_REPORT_SUFFIX, _FINISH_WHY,
     _fulltext_chunk_items, _llm_fulltext_review, _llm_fulltext_system,
@@ -14,35 +14,12 @@ from slcn.convert_stage import (
 )
 
 
-# ── 参考文献「内容指纹」：跨来源去重用 ────────────────────────────────────
-#
-# 同一份文献可能从两条通道进来（正文文末的编号清单 / 参考文献附件），**键却不同**
-# （`Beall2000` vs `a1`），只按键去重挡不住。实测 02 Lili_Zhao：正文自带 19 条
-# 编号清单、附件又是同一份，于是 bib 翻倍成 38 条。
-_NORM_RE = re.compile(r"[\W_]+")
-
-
-def _ref_fingerprint(author: str, title: str, year: str) -> tuple[str, str, str]:
-    """作者 + 年份 + 题名的归一化指纹（去掉全部标点与空白，大小写无关）。"""
-    def norm(s: str) -> str:
-        return _NORM_RE.sub("", (s or "").lower())
-
-    return (norm(author), norm(year), norm(title))
-
-
-def _bib_fingerprints(bib_text: str) -> set[tuple[str, str, str]]:
-    """从已有 .bib 文本里取出每条目的内容指纹。"""
-    if not bib_text.strip():
-        return set()
-    from slcn.bibcheck import fields_of, split_entries
-
-    out = set()
-    for _etype, _key, body in split_entries(bib_text):
-        f = fields_of(body)
-        fp = _ref_fingerprint(f.get("author", ""), f.get("title", ""), f.get("year", ""))
-        if fp != ("", "", ""):
-            out.add(fp)
-    return out
+# B-233：B-229 族行数硬线（convert.py + 4 模块 ≤ 3977）——内容指纹 / 附件结构校验 /
+# 附件合并等纯 helper 已**逐字**整体搬到新模块 `slcn/bibmerge.py`（不计入族）；这里
+# re-export，`convert.py` 门面与既有套件（`convert.xxx`）的用法逐字不变。
+from slcn.bibmerge import (_NORM_RE, _attach_bibitem_text, _bib_fingerprints,  # noqa: F401
+                           _ref_fingerprint, bib_attachment_entries,
+                           bib_entry_structurally_safe, merge_bib_attachment)
 
 
 # ── 参考文献定位（仅在同目录下查找，不做跨目录搜索） ──────────────────────
@@ -171,80 +148,6 @@ def real_bib_path(source: str, explicit_bib: str | None = None) -> str | None:
     if declared:
         return declared
     return find_bib(source, None)
-
-
-def bib_entry_structurally_safe(entry: str) -> bool:
-    """渲染后的 BibTeX 条目最低结构校验（第 134 条）。
-
-    花括号配平、字段区无相邻 `}{`——71/04 的坏条目就是 `title = {A}{B}` 这种形状
-    （biber: "found {...}, expected end of entry"）。
-    """
-    if "}{" in entry:
-        return False
-    depth = 0
-    for ch in entry:
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth < 0:
-                return False
-    return depth == 0
-
-
-def bib_attachment_entries(text: str) -> list[tuple[str, str, str, str]]:
-    """把 BibTeX 附件拆成 [(类型, 键, 字段体, 条目原文)]。
-
-    第 134 条：条目按**原文直入**（不改写作者字段/顺序），只做去重与结构校验。
-    """
-    from slcn.bibnorm import split_entries as split_raw
-
-    out: list[tuple[str, str, str, str]] = []
-    for head, fields, tail in split_raw(text):
-        m = re.match(r"@(\w+)\s*\{\s*([^,]+)\s*,", head)
-        if not m:
-            continue
-        key = m.group(2).strip()
-        if not key:
-            continue
-        out.append((m.group(1), key, fields, head + fields + tail))
-    return out
-
-
-def merge_bib_attachment(bibp: str, have: str, bib_text: str) -> tuple[int, int, int]:
-    """把 BibTeX 附件按条目原文并入 `bibp`；返回 (新增, 重复跳过, 结构不合格跳过)。
-
-    第 134 条：按键 + 「作者+年份+题名」内容指纹去重；渲染后结构校验不合格的条目不写
-    （错误条目会让 biber 报语法错、**整份 bib 报废**——71/04 的教训）。
-    """
-    from slcn.bibcheck import fields_of as _fields_of
-    from slcn.bibcheck import split_entries as _split3
-
-    have = have or ""
-    have_keys = {k for _t, k, _b in _split3(have)} if have else set()
-    seen = _bib_fingerprints(have) if have else set()
-    added: list[str] = []
-    skipped_dup = 0
-    skipped_bad = 0
-    for _etype, key, fields, raw in bib_attachment_entries(bib_text):
-        if key in have_keys:
-            skipped_dup += 1
-            continue
-        if not bib_entry_structurally_safe(raw):
-            skipped_bad += 1
-            continue
-        f = _fields_of(fields)
-        fp = _ref_fingerprint(f.get("author", ""), f.get("title", ""), f.get("year", ""))
-        if fp != ("", "", "") and fp in seen:
-            skipped_dup += 1
-            continue
-        seen.add(fp)
-        have_keys.add(key)
-        added.append(raw if raw.endswith("}") else raw + "}")
-    if added:
-        with open(bibp, "a", encoding="utf-8", newline="\n") as f:
-            f.write("\n% ── 由参考文献附件合并 ──\n" + "\n".join(added) + "\n")
-    return len(added), skipped_dup, skipped_bad
 
 
 # ── 编辑部引用库（bib_db）接入（第 129 条，2026-10-18）──────────────────────
@@ -447,6 +350,7 @@ def resolve_bibdb_apply_store(args):
         return None
     return store
 
+
 def run_refs_attach(args, res, *, source, out_dir, stem, refs_auto):
     """⑦ 合并参考文献附件（B-229：从 `main` 纯搬运外提；语句逐字/顺序不变；返回 res）。"""
     from slcn import footref
@@ -493,7 +397,7 @@ def run_refs_attach(args, res, *, source, out_dir, stem, refs_auto):
             elif not res.bib_path:
                 with open(bibp, "w", encoding="utf-8", newline="\n") as f:
                     f.write("% 由参考文献附件生成\n\n")
-                res = res.__class__(**{**res.__dict__, "bib_path": bibp})
+                res.bib_path = bibp   # 就地补，见 `_attach_bibitem_text` 同处注释
             added, skipped_dup, skipped_bad = merge_bib_attachment(bibp, have, txt)
             if added:
                 print(f"   从附件合并 {added} 条（BibTeX 直入）→ {os.path.basename(bibp)}")
@@ -504,12 +408,35 @@ def run_refs_attach(args, res, *, source, out_dir, stem, refs_auto):
             if not (added or skipped_dup or skipped_bad):
                 print("   附件条目与现有 bib 无新增")
         else:
+            # B-233：先认手写 `\bibitem`（Word 粘贴的 thebibliography 文本）——它没有
+            # `[N]` 标号，下面两个解析器都不认；转换后按键直入 reference.bib（不猜引用键）。
+            from slcn import bibitem_convert as _bb
+
+            _bb_done = False
+            if _bb.enabled() and _bb.looks_like_bibitems(txt):
+                res, _n_add, _n_dup, _n_bad = _attach_bibitem_text(
+                    res, txt, out_dir=out_dir, stem=stem,
+                    word_source=os.path.splitext(source)[1].lower() in WORD_EXT)
+                if _n_add:
+                    print(f"   由 \\bibitem 自动转换 {_n_add} 条 → "
+                          f"{os.path.basename(res.bib_path or '')}")
+                    print("   ⚠ 引用键需人工对齐：附件条目保留源稿 \\bibitem 键，"
+                          "正文编号引用不自动映射，请人工核对")
+                    res.warnings.append(
+                        f"由 \\bibitem 自动转换 {_n_add} 条（引用键需人工对齐，请核对）")
+                if _n_dup:
+                    print(f"   （另有 {_n_dup} 条与现有 bib 重复（键/内容指纹），已跳过）")
+                if _n_bad:
+                    print(f"   ⚠ 另有 {_n_bad} 条结构不合格（嵌套花括号等），未写入")
+                if not (_n_add or _n_dup or _n_bad):
+                    print("   附件条目与现有 bib 无新增")
+                _bb_done = True
             # 纯文本清单：编号清单（`[1] 作者, 年, "题名", 刊名, 卷(期): 页`）优先；
             # 否则按「整条 in note」的脚注体例处理
-            items = footref.parse_numbered_list(txt)
-            if not items:
+            items = [] if _bb_done else footref.parse_numbered_list(txt)
+            if not items and not _bb_done:
                 items = footref.parse_note(txt)
-            if items:
+            if items and not _bb_done:
                 # 正文没解析出参考文献时工具不会建 bib，这里补建一个
                 bibp = res.bib_path or os.path.join(out_dir, f"{stem}.bib")
                 have = ""
@@ -518,7 +445,7 @@ def run_refs_attach(args, res, *, source, out_dir, stem, refs_auto):
                 elif not res.bib_path:
                     with open(bibp, "w", encoding="utf-8", newline="\n") as f:
                         f.write("% 由参考文献附件生成\n\n")
-                    res = res.__class__(**{**res.__dict__, "bib_path": bibp})
+                    res.bib_path = bibp   # 就地补，见 `_attach_bibitem_text` 同处注释
                 added = []
                 skipped_bad = 0
                 # 去重不能只比键：附件条目用 `a1…`，而正文文末那条编号清单解析出来的
@@ -559,7 +486,7 @@ def run_refs_attach(args, res, *, source, out_dir, stem, refs_auto):
                     print("   附件条目与现有 bib 无新增")
                 elif added:
                     print("   ⚠ 引用键需人工对齐：附件条目键为 a1、a2…，正文引用需相应调整")
-            else:
+            elif not _bb_done:
                 print(f"   ⚠ 未能从 {os.path.basename(args.refs)} 解析出条目")
     return res
 

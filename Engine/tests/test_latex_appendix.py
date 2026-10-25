@@ -8,6 +8,7 @@ r"""第四十六批②：LaTeX 稿「参考文献之后的附录」迁移（86-0
 插到模板 `\printbibliography` 之后；只在确有非注释内容时生效（Word 通道与非附录稿不变）。
 """
 import os
+import re
 import sys
 import tempfile
 
@@ -17,7 +18,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from slcn import build  # noqa: E402
+from slcn import bibitem_convert, build, convert_bib  # noqa: E402
 
 FAILS = []
 
@@ -141,6 +142,126 @@ try:
 finally:
     try:
         os.unlink(_body); os.rmdir(_tmp)
+    except OSError:
+        pass
+
+# ── B-233：无可用 .bib 的手写 thebibliography → 自动生成 reference.bib ──────
+# 夹具全合成（零真实作者/内容）：正文引用 + 4 条 \bibitem（期刊/学位论文/章节/
+# 专著）+ 注释里的幽灵条目。验收：条数=源、key 原样、author/title/year 有值、类型
+# 按显式标记正确、产物无 \bibitem 残留、注释条目不误吃；有可用 .bib 时旧路径优先。
+_SRC_BIBITEM = (
+    "\\documentclass{article}\n\\begin{document}\n"
+    "\\section{正文}\n合成正文引用 \\cite{art2020} 与 \\cite{thesis2021}。\n"
+    "\\begin{thebibliography}{99}\n"
+    "% \\bibitem{ghostkey} Ghost, A.: Ghost title. \\textit{Ghost Journal} (1999)\n"
+    "\\bibitem{art2020} Smith, J.: A synthetic journal article. "
+    "\\textit{Journal of Synthetic Tests} \\textbf{12}(3), 45--67 (2020)\n"
+    "\\bibitem{thesis2021} Doe, A.: \\textit{A Synthetic Dissertation}. "
+    "PhD thesis, Synthetic University (2021)\n"
+    "\\bibitem{inc2022} Roe, B.: A synthetic chapter. In: "
+    "\\textit{Collected Synthetic Papers}, pp.~10--20. Sample Press, Sample City (2022)\n"
+    "\\bibitem{book2023} Poe, C.: \\textit{A Synthetic Book}. "
+    "Sample Press, Sample City (2023)\n"
+    "\\end{thebibliography}\n\\end{document}\n"
+)
+_ENTRY_RE = re.compile(r"@(\w+)\{([^,]+),")
+_FIELD_RE = re.compile(r"\b(author|title|year)\s*=\s*\{(.+?)\}")
+
+
+def _bib_entries(path: str) -> tuple[list[tuple[str, str]], str]:
+    text = open(path, encoding="utf-8").read()
+    return _ENTRY_RE.findall(text), text
+
+
+_tmp_b = tempfile.mkdtemp()
+_body_b = os.path.join(_tmp_b, "body.tex")
+open(_body_b, "w", encoding="utf-8").write(_SRC_BIBITEM)
+try:
+    with tempfile.TemporaryDirectory() as out:
+        _res_b = build.build_latex(_body_b, out, basename="B", lang="zh", verbose=False)
+        _tex_b = open(_res_b.tex_path, encoding="utf-8").read()
+        _bib_ok = bool(_res_b.bib_path) and os.path.isfile(_res_b.bib_path)
+        _types_b, _bib_b = _bib_entries(_res_b.bib_path) if _bib_ok else ([], "")
+    _warn_b = " ".join(_res_b.warnings)
+    check("B-233① 无 .bib 手写 \\bibitem → 生成 reference.bib：条数=源 4、key 原样、顺序一致",
+          _bib_ok and [k for _t, k in _types_b] == [
+              "art2020", "thesis2021", "inc2022", "book2023"], repr(_types_b))
+    check("B-233② 类型按显式标记：期刊→@article、PhD thesis→@phdthesis、"
+          "In:→@incollection、出版社+城市→@book",
+          [t for t, _k in _types_b] == ["article", "phdthesis", "incollection", "book"],
+          repr([t for t, _k in _types_b]))
+    _fields_b = _FIELD_RE.findall(_bib_b)
+    _n_by = {f: len([v for ff, v in _fields_b if ff == f]) for f in ("author", "title", "year")}
+    check("B-233③ 4/4 条 author/title/year 有值", _n_by == {"author": 4, "title": 4, "year": 4},
+          repr(_n_by))
+    check("B-233④ 产物无 \\bibitem 残留；注释里的 \\bibitem 未被吃成条目；提示进 warnings",
+          "\\bibitem" not in _tex_b and "ghostkey" not in _bib_b
+          and "由 \\bibitem 自动转换" in _warn_b, repr(_bib_b[:200]))
+finally:
+    try:
+        os.unlink(_body_b); os.rmdir(_tmp_b)
+    except OSError:
+        pass
+
+# B-233⑤ 有可用 .bib 时旧路径优先（find_bib 命中）：完全不转换、无自动转换 warning
+_tmp_c = tempfile.mkdtemp()
+_body_c = os.path.join(_tmp_c, "body.tex")
+_bib_c = os.path.join(_tmp_c, "reference.bib")
+open(_body_c, "w", encoding="utf-8").write(_SRC_BIBITEM)
+open(_bib_c, "w", encoding="utf-8").write(
+    "@article{frombib,\n  author = {Doe, J.},\n  title = {Synthetic entry from bib},\n"
+    "  journal = {J},\n  year = {2019}\n}\n")
+try:
+    _found = convert_bib.find_bib(_body_c, None)
+    with tempfile.TemporaryDirectory() as out:
+        _res_c = build.build_latex(_body_c, out, basename="C", lang="zh",
+                                   verbose=False, bib_path=_found)
+        _types_c, _bib_c_txt = _bib_entries(_res_c.bib_path)
+    check("B-233⑤ 有可用 .bib 时旧路径优先：find_bib 命中 → 不转换、不产生自动转换 warning",
+          _found == _bib_c and [k for _t, k in _types_c] == ["frombib"]
+          and "art2020" not in _bib_c_txt
+          and "由 \\bibitem 自动转换" not in " ".join(_res_c.warnings), repr(_types_c))
+finally:
+    try:
+        os.unlink(_body_c); os.unlink(_bib_c); os.rmdir(_tmp_c)
+    except OSError:
+        pass
+
+# B-233⑥ 开关关闭（CLI --no-bibitem-convert 的底层语义）→ 回旧行为、不写 reference.bib
+_tmp_d = tempfile.mkdtemp()
+_body_d = os.path.join(_tmp_d, "body.tex")
+open(_body_d, "w", encoding="utf-8").write(_SRC_BIBITEM)
+try:
+    bibitem_convert.set_enabled(False)
+    try:
+        with tempfile.TemporaryDirectory() as out:
+            _res_d = build.build_latex(_body_d, out, basename="D", lang="zh", verbose=False)
+    finally:
+        bibitem_convert.set_enabled(True)
+    check("B-233⑥ 转换开关关闭 → 不生成 reference.bib，保留旧告警（可回退）",
+          _res_d.bib_path is None
+          and any("未生成 reference.bib" in w for w in _res_d.warnings), repr(_res_d.warnings))
+finally:
+    try:
+        os.unlink(_body_d); os.rmdir(_tmp_d)
+    except OSError:
+        pass
+
+# B-233⑦ 反例：只有注释里的 \bibitem → 不触发转换（不误吃）
+_tmp_e = tempfile.mkdtemp()
+_body_e = os.path.join(_tmp_e, "body.tex")
+open(_body_e, "w", encoding="utf-8").write(
+    "\\documentclass{article}\n\\begin{document}\n正文。\n"
+    "\\begin{thebibliography}{9}\n% \\bibitem{ghost} Ghost, A.: T (1999)\n"
+    "\\end{thebibliography}\n\\end{document}\n")
+try:
+    with tempfile.TemporaryDirectory() as out:
+        _res_e = build.build_latex(_body_e, out, basename="E", lang="zh", verbose=False)
+    check("B-233⑦ 反例：注释里的 \\bibitem 不触发转换（不生成 reference.bib）",
+          _res_e.bib_path is None)
+finally:
+    try:
+        os.unlink(_body_e); os.rmdir(_tmp_e)
     except OSError:
         pass
 

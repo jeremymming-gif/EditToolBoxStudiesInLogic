@@ -59,9 +59,11 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
         sys.path.insert(0, _p)
 
 from slcn import footnotes as F  # noqa: E402
+from slcn.convert_bib import run_refs_attach  # noqa: E402
 from slcn.docxsource import (  # noqa: E402
     _src_line_key,
     _src_line_keys_for_works,
+    link_numbered_citations,
     parse_docx,
 )
 
@@ -405,6 +407,108 @@ _doc2 = parse_docx(_docx2, c_class_union=True)
 check("⑦ 负例：无文末清单时 mixed 回退保留 note_before（说明文字不丢）",
       "沃森认为自己的观点与柏拉图对灵魂的划分异曲同工。" in _doc2.body,
       _doc2.body[-220:])
+
+# ══ ⑧ B-233：Word 文末手写 `\bibitem` → 规范 bib 条目（合成 docx） ═════════
+print("── ⑧ B-233：Word 文末 \\bibitem 自动转换 ──")
+
+
+def _make_bibitem_docx(path: str, lines: list[str], body_line: str) -> str:
+    parts = [_p("测试题名：bibitem 合成稿"), _p("张三"),
+             _p("摘要：这是测试用摘要，只用于合成文档解析。"),
+             _p("关键词：文献；转换"), _p(body_line), _p("参考文献")]
+    parts.extend(_p(t) for t in lines)
+    doc_xml = f'<w:document {_NS}><w:body>' + "".join(parts) + "</w:body></w:document>"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", doc_xml)
+    return path
+
+
+_BIB_ITEMS = [
+    r"\bibitem{a1} Smith J. The Synthetic Title. In: Jones M (ed.) Synthetic LNCS, "
+    r"vol. 1234, pp. 10-20. Springer, Berlin (2001)",
+    r"\bibitem{a2} Doe A, Roe B. Another Synthetic Paper. Journal of Tests, "
+    r"vol. 3, no. 2, pp. 1-9 (2002)",
+    r"\bibitem{a3} Roe B. Synthetic Dissertation. PhD thesis, Test University (2003)",
+]
+_doc3 = parse_docx(_make_bibitem_docx(
+    os.path.join(_TMP, "b233-bibitem.docx"), _BIB_ITEMS,
+    "正文第一段，含正文编号引用（[1]）、（[2]）与（[3]）。"))
+_keys3 = [k for k, _e, _r in _doc3.bib_entries]
+check("⑧ 单 docx 文末 3 条 bibitem → bib_entries 3 条（源键保留）",
+      len(_doc3.bib_entries) == 3 and _keys3 == ["a1", "a2", "a3"], f"{_keys3}")
+check("⑧ 条目顺序=文献序号：ref_key_by_num={1:a1,2:a2,3:a3}",
+      _doc3.ref_key_by_num == {1: "a1", 2: "a2", 3: "a3"},
+      str(_doc3.ref_key_by_num))
+_body3, _n_num, _num_issues = link_numbered_citations(
+    _doc3.body, _doc3.ref_key_by_num, "zh")
+check("⑧ 正文 （[1]）（[2]）（[3]）→ \\parencite{a1/a2/a3}（走既有映射链，不猜）",
+      _n_num == 3 and all(f"\\parencite{{a{i}}}" in _body3 for i in (1, 2, 3)),
+      f"n={_n_num} issues={_num_issues} body={_body3[:120]}")
+check("⑧ 旧人年制通道无条目（不产生 ref… 垃圾键）",
+      list(_doc3.refs) == [], [e.key for e in _doc3.refs])
+check("⑧ doc.warnings 含「由 \\bibitem 自动转换」提示（交接单④自动收录）",
+      any("由 \\bibitem 自动转换" in w for w in _doc3.warnings), str(_doc3.warnings))
+check("⑧ ref_raw_by_key 收录源稿原文行",
+      str(_doc3.ref_raw_by_key.get("a1", "")).startswith("\\bibitem{a1}"),
+      str(_doc3.ref_raw_by_key.get("a1", ""))[:60])
+
+# 放宽（Lead 2026-10-25 裁决）：人年制宽松解析器会把 `\bibitem … (2001). …` 行误吃
+# 成条目；只有**全部** raw 都以 `\bibitem` 开头时才视为未解析 → 仍转换、丢弃垃圾条目。
+_MIS_BIB = [
+    r"\bibitem{b1} Smith, J. (2001). Synthetic Title Two. Synthetic Press, 10-20.",
+    r"\bibitem{b2} Doe, A. (2002). Another Synthetic Paper. Journal of Tests 3(2), 1-9.",
+]
+_doc4 = parse_docx(_make_bibitem_docx(
+    os.path.join(_TMP, "b233-bibitem-misparsed.docx"), _MIS_BIB,
+    "正文第二段，引用 [1] 与 [2]。"))
+check("⑧ 旧通道误吃（refs 非空但全为 \\bibitem 行）→ 仍转换且垃圾 refs 丢弃",
+      len(_doc4.bib_entries) == 2 and list(_doc4.refs) == []
+      and [k for k, _e, _r in _doc4.bib_entries] == ["b1", "b2"],
+      f"keys={[k for k, _e, _r in _doc4.bib_entries]} refs={[e.key for e in _doc4.refs]}")
+
+# 负例（Lead 裁决的严格边界）：refs 里只要有一条不是从 `\bibitem` 行来的 → 不触发
+_MIXED = [r"\bibitem{c1} Smith J. A Synthetic Title. Springer (2004)",
+          "李雷. 2022. 逻辑例外论的演变[J]. 逻辑学研究, 2022(5): 38-50."]
+_doc5 = parse_docx(_make_bibitem_docx(
+    os.path.join(_TMP, "b233-bibitem-mixed.docx"), _MIXED, "正文第三段。"))
+check("⑧ 负例：refs 含非 \\bibitem 原文行 → 不触发转换（不猜）",
+      not _doc5.bib_entries and bool(_doc5.refs),
+      f"entries={len(_doc5.bib_entries)} refs={[e.key for e in _doc5.refs]}")
+
+# 开关：模块 enabled()=False（`--no-bibitem-convert` 的接线口径）→ 回旧行为
+from slcn import bibitem_convert as _BB  # noqa: E402
+
+try:
+    _BB.set_enabled(False)
+    _doc6 = parse_docx(_make_bibitem_docx(
+        os.path.join(_TMP, "b233-bibitem-off.docx"), _BIB_ITEMS, "正文第四段。"))
+finally:
+    _BB.set_enabled(True)
+check("⑧ 开关关闭 → 不转换（旧行为：0 条、无 warning）",
+      not _doc6.bib_entries and not _doc6.ref_key_by_num
+      and not any("由 \\bibitem 自动转换" in w for w in _doc6.warnings),
+      f"entries={len(_doc6.bib_entries)} warns={_doc6.warnings}")
+
+# ══ ⑨ B-233：多文件 refs 附件（bibitem 文本）→ ⑦ 转出条目 ══════════════════
+print("── ⑨ B-233：多文件 refs 附件（\\bibitem 文本）──")
+_attach = os.path.join(_TMP, "refs-bibitems.txt")
+with open(_attach, "w", encoding="utf-8", newline="\n") as f:
+    f.write("\n".join(_BIB_ITEMS) + "\n")
+
+
+_res9 = run_refs_attach(SimpleNamespace(refs=_attach, bib=""),
+                        SimpleNamespace(bib_path=None, warnings=[]),
+                        source=_docx, out_dir=_TMP, stem="b233-attach",
+                        refs_auto=False)
+_bib9 = open(_res9.bib_path, encoding="utf-8").read() if _res9.bib_path else ""
+check("⑨ 多文件 bibitem 附件 → ⑦ 写出 reference.bib 3 条（键保留 a1/a2/a3）",
+      _res9.bib_path is not None and _bib9.count("\n@") + _bib9.startswith("@") == 3
+      and all(f"{{{k}," in _bib9 for k in ("a1", "a2", "a3")),
+      f"bib_path={_res9.bib_path} n@={_bib9.count('@')}")
+check("⑨ 附件转换 warning「引用键需人工对齐」进 res.warnings（交接单）",
+      any("引用键需人工对齐" in w for w in _res9.warnings), str(_res9.warnings))
+check("⑨ 转换条目过结构校验、无 \\bibitem 残留",
+      "\\bibitem{" not in _bib9 and "@phdthesis{a3" in _bib9, _bib9[:400])
 
 print()
 print("=" * 78)

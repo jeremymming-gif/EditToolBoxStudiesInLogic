@@ -49,7 +49,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import clean as _clean, platform as _plat, refmark as _refmark  # noqa: E402
-from slcn import naming as N, paths as _paths, sources as _sources, templates as T  # noqa: E402
+from slcn import naming as N, paths as _paths, sources as _sources, templates as T, bibitem_convert as _bibitem  # noqa: E402  B-233 转换开关
 
 # ── B-229：旧 convert 的 81 个顶层符号全部从 owning 模块显式 re-export（`is` 同一对象）──
 from slcn.convert_metadata import (  # noqa: E402
@@ -75,8 +75,8 @@ def main() -> int:
     # 第 86 条：Windows 的 stdout 默认是控制台代码页（cp936），中文日志会被管道接走后
     # 乱码甚至 UnicodeEncodeError 崩在半路。这里**第一步**就切到 UTF-8（mac 上是空操作）。
     _plat.utf8_stdio()
-    ap = build_arg_parser()
-    args = ap.parse_args()
+    ap = _bibitem.add_cli_args(build_arg_parser())  # B-233：--no-bibitem-convert
+    args = _bibitem.apply_cli_args(ap.parse_args())
     if not args.scan and not args.out and not args.list_editors:
         ap.error("除 --scan / --list-editors 外，必须指定 --out")
     if args.list_editors:

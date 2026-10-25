@@ -708,6 +708,11 @@ _B229_OLD_SYMBOLS = (
     "_add_c_class_union_args", "_OVERRIDE_FIELDS",
 )
 _B229_MODULES = ("convert_bib", "convert_compile", "convert_metadata", "convert_stage")
+# B-233 mini-split：5 个既有纯 helper（_ref_fingerprint/_bib_fingerprints/
+# bib_entry_structurally_safe/bib_attachment_entries/merge_bib_attachment）从
+# convert_bib 逐字搬入 bibmerge.py 以守族行数线 → owner/定义单点扫描须含 bibmerge，
+# 但**族行数统计仍只算 4 模块**（族线 3977 口径不变，不弱化）。
+_B229_OWNER_MODULES = _B229_MODULES + ("bibmerge",)
 _B229_FAMILY_BASE = 3899              # v1.4.0 时 `Engine/convert.py` 行数
 _B229_FAMILY_LIMIT = 3977             # 3899 × 1.02（spec「总量 ±2%」）
 _B229_CONVERT_TARGET = 800            # 卡面目标：薄门面
@@ -729,7 +734,7 @@ _b229_owned: dict[str, list[tuple[str, int]]] = {}
 _b229_absent_mods: list[str] = []
 _b229_import_err: dict[str, str] = {}
 _b229_imported: dict[str, object] = {}
-for _mod in _B229_MODULES:
+for _mod in _B229_OWNER_MODULES:
     _mod_path = ENGINE / "slcn" / (_mod + ".py")
     try:
         _b229_imported[_mod] = importlib.import_module("slcn." + _mod)
@@ -776,7 +781,7 @@ check("(i1) 门面 re-export 完整且同一：旧 `convert.py` 的 81 个非 ma
 
 # ── (i2) 无循环 import ───────────────────────────────────────────────────
 _b229_import_rc = child("import convert, slcn.convert_bib, slcn.convert_compile, "
-                        "slcn.convert_metadata, slcn.convert_stage")
+                        "slcn.convert_metadata, slcn.convert_stage, slcn.bibmerge")
 _b229_graph: dict[str, set[str]] = {}
 for _py in sorted((ENGINE / "slcn").glob("*.py")):
     _deps: set[str] = set()
@@ -803,7 +808,7 @@ _b229_graph["convert"] = _b229_facade_deps
 # 4 个新模块的**顶层** import 里不许出现 `import convert` / `from convert import ...`
 # （相对 import 图只能抓 `from .` 形态；绝对 import 必须单独用 AST 扫，变异测试 ⓑ 就是这条）。
 _b229_top_import_convert: list[str] = []
-for _mod in _B229_MODULES:
+for _mod in _B229_OWNER_MODULES:
     _mp = ENGINE / "slcn" / (_mod + ".py")
     if not _mp.is_file():
         continue
@@ -817,7 +822,7 @@ for _mod in _B229_MODULES:
                                     or _node.module.startswith("convert."))):
             _b229_top_import_convert.append("%s:%d" % (_mod, _node.lineno))
 _b229_cycles = _b207_find_cycles(_b229_graph)
-_b229_reverse = [m for m in _B229_MODULES if "convert" in _b229_graph.get(m, set())]
+_b229_reverse = [m for m in _B229_OWNER_MODULES if "convert" in _b229_graph.get(m, set())]
 _b229_facade_deps_bad = sorted(_b229_facade_deps - set(_B229_MODULES))
 check("(i2) 无循环 import：子进程 `import convert` + 4 模块 rc=0；`slcn/`+门面的顶层"
       "相对 import 图**无环**；4 个新模块顶层都不 import `convert`；门面顶层相对 import"
@@ -858,7 +863,9 @@ _b229_sites: dict[str, list[str]] = {n: [] for n in _B229_OLD_SYMBOLS}
 _b229_extracted_sites: dict[str, list[str]] = {n: [] for n in _B229_EXTRACTED}
 _b229_family_files = [ENGINE / "convert.py"] + [
     ENGINE / "slcn" / (m + ".py") for m in _B229_MODULES]
-for _fp in _b229_family_files:
+# (i4) 定义单点扫描 = 门面+4 模块+bibmerge（mini-split 后的实际 owner 面）
+_b229_owner_files = _b229_family_files + [ENGINE / "slcn" / "bibmerge.py"]
+for _fp in _b229_owner_files:
     if not _fp.is_file():
         continue
     for _sym, _lines in _b207_top_defs(_fp).items():
@@ -869,12 +876,87 @@ for _fp in _b229_family_files:
                 _b229_extracted_sites[_sym].append("%s:%d" % (_fp.name, _line))
 _b229_multi = {n: s for n, s in _b229_sites.items() if len(s) != 1}
 _b229_extracted_multi = {n: s for n, s in _b229_extracted_sites.items() if len(s) != 1}
-check("(i4) 定义单点：81 个旧顶层符号在「门面 + 4 模块」内的顶层 def/赋值定义各**恰好"
+check("(i4) 定义单点：81 个旧顶层符号在「门面 + 4 模块 + bibmerge」内的顶层 def/赋值定义各**恰好"
       " 1 处**；main 内 4 段外提函数（build_arg_parser/run_refs_attach/run_verify_refs/"
       "run_coop_taskbook）各恰好 1 处定义（Import/ImportFrom 不算）",
       not _b229_multi and not _b229_extracted_multi,
       "旧符号不唯一=%s；外提函数=%s"
       % (_b229_multi or "无", _b229_extracted_sites))
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (j) B-233 `\\bibitem` 自动转换：模块 API / 开关 / CLI 契约 ──")
+from slcn import bibitem_convert as _BIC  # noqa: E402
+from slcn import convert_bib as _cb  # noqa: E402
+
+check("(j1) 模块 API 齐全：convert/BibitemResult/enabled/set_enabled/"
+      "looks_like_bibitems/render_entries",
+      all(hasattr(_BIC, n) for n in (
+          "convert", "BibitemResult", "enabled", "set_enabled",
+          "looks_like_bibitems", "render_entries")))
+_saved_bic = _BIC.enabled()
+check("(j2) 默认转换开（enabled() is True）", _saved_bic is True)
+try:
+    _BIC.set_enabled(False)
+    _off_ok = _BIC.enabled() is False
+finally:
+    _BIC.set_enabled(_saved_bic)
+check("(j3) set_enabled(False) 生效、可恢复（CLI 开关语义）",
+      _off_ok and _BIC.enabled() is _saved_bic)
+
+_BIC_SRC = ("\\begin{thebibliography}{9}\n"
+            "% \\bibitem{ghost} Ghost, A.: Ghost title (1999)\n"
+            "\\bibitem{art2020} Smith, J.: A synthetic article title. "
+            "\\textit{Journal of Synthetic Tests} \\textbf{12}(3), 45--67 (2020)\n"
+            "\\end{thebibliography}")
+_r1 = _BIC.convert(_BIC_SRC)
+_e1 = _r1.entries[0] if _r1.entries else {}
+check("(j4) convert 契约：剥注释后 n_source=n_parsed=1、key/字段/类型正确、"
+      "ghost 不进 entries",
+      _r1.n_source == 1 and _r1.n_parsed == 1 and len(_r1.entries) == 1
+      and _e1.get("key") == "art2020" and _e1.get("_type") == "article"
+      and _e1.get("author") == "Smith, J." and _e1.get("title")
+      and _e1.get("year") == "2020" and "ghost" not in _r1.bib_text,
+      repr({k: _e1.get(k) for k in ("key", "_type", "author", "title", "year")}))
+check("(j5) looks_like_bibitems：真 bibitem 命中；注释里的/纯正文不命中",
+      _BIC.looks_like_bibitems("\\bibitem{a} X") is True
+      and _BIC.looks_like_bibitems("% \\bibitem{a} X") is False
+      and _BIC.looks_like_bibitems("没有参考文献的正文") is False)
+check("(j6) render_entries(entries) 与 convert().bib_text 一致且可被结构校验",
+      _BIC.render_entries(_r1.entries) == _r1.bib_text
+      and _cb.bib_entry_structurally_safe(
+          _BIC.render_entries(_r1.entries).split("\n\n", 1)[1].strip()))
+try:
+    _r2 = _BIC.convert("\\bibitem")
+    _fail_soft = True
+except Exception:  # noqa: BLE001  约定 fail-soft：绝不抛
+    _fail_soft = False
+check("(j7) fail-soft：坏输入不抛异常、无条目时不产出 bib_text",
+      _fail_soft and _BIC.convert("").entries == []
+      and _BIC.convert("\\bibitem").n_source == 0)
+
+_cv = importlib.import_module("convert")
+# 门面在 main() 里用 `_bibitem.add_cli_args(build_arg_parser())` 挂参数（B-229 族净 0 行）：
+# 这里按同一顺序复现，并对真实 `convert.py --help` 做一次端到端确认。
+_ap_bic = _BIC.add_cli_args(_cv.build_arg_parser())
+_ns_def = _ap_bic.parse_args(["--source", "x.tex", "--out", "y"])
+_ns_off = _ap_bic.parse_args(["--source", "x.tex", "--out", "y", "--no-bibitem-convert"])
+_help_env = dict(os.environ)
+_help_env["PYTHONPATH"] = str(ENGINE) + os.pathsep + _help_env.get("PYTHONPATH", "")
+_help = subprocess.run([PY, "convert.py", "--help"], capture_output=True, text=True,
+                       env=_help_env, cwd=str(ENGINE))
+check("(j8) CLI 契约：--no-bibitem-convert 存在（真实 `--help` 可见）且默认 False",
+      _help.returncode == 0 and "--no-bibitem-convert" in _help.stdout
+      and _ns_def.no_bibitem_convert is False and _ns_off.no_bibitem_convert is True,
+      "help_rc=%d has=%s" % (_help.returncode,
+                             "--no-bibitem-convert" in _help.stdout))
+_saved_bic = _BIC.enabled()
+try:
+    _BIC.apply_cli_args(_ns_off)
+    _cli_off = _BIC.enabled() is False
+finally:
+    _BIC.set_enabled(_saved_bic)
+check("(j9) apply_cli_args(--no-bibitem-convert) → enabled() False；恢复默认后 True",
+      _cli_off and _BIC.enabled() is True)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

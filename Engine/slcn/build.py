@@ -12,6 +12,7 @@ from . import paths as P
 from . import preamble as PRE
 from . import rules as R
 from . import templates as T
+from . import bibitem_convert
 from .latex import (
     collect_custom_macros,
     copy_referenced_graphics,
@@ -1402,11 +1403,34 @@ def build_latex(
         lack = used_keys - have
         if lack:
             warnings.append(f"正文引用但 bib 里没有的键 {len(lack)} 个：" + "、".join(sorted(lack)[:8]))
-    elif used_keys:
-        warnings.append(
-            f"源目录没有 .bib：正文有 {len(used_keys)} 个引用键，未生成 reference.bib"
-            "（LaTeX 稿的参考文献库通常随稿提交；请向作者补要，或用「已有的 .bib」指定）"
-        )
+    else:
+        # B-233：源目录没有可用 .bib，但源稿（剥注释后）有手写 \bibitem →
+        # 自动转成 reference.bib（仍走上面唯一写点 `out_dir/reference.bib`）。
+        # 触发不限于正文有引用键；有 .bib 的默认路径在上面，一个字节不变。
+        _bi = None
+        if bibitem_convert.enabled() and bibitem_convert.looks_like_bibitems(raw_body):
+            _bi = bibitem_convert.convert(raw_body)
+        if _bi is not None and _bi.entries:
+            from .bibnorm import normalize_bib
+
+            bib_text, notes = normalize_bib(_bi.bib_text, strip_urls=True)
+            bib_out = os.path.join(out_dir, "reference.bib")
+            _atomic_write(bib_out, bib_text, newline="\n", log=say)
+            say(f"   {P.rel(bib_out)}（由 \\bibitem 自动转换 {_bi.n_parsed} 条，"
+                f"{len(notes)} 处规范化）")
+            warnings.append(bibitem_convert.WARNING_AUTO)
+            warnings.extend(_bi.warnings)
+            have = set(re.findall(r"@\w+\{([^,]+),", bib_text))
+            lack = used_keys - have
+            if lack:
+                warnings.append(
+                    f"正文引用但自动转换的 reference.bib 里没有的键 {len(lack)} 个："
+                    + "、".join(sorted(lack)[:8]))
+        elif used_keys:
+            warnings.append(
+                f"源目录没有 .bib：正文有 {len(used_keys)} 个引用键，未生成 reference.bib"
+                "（LaTeX 稿的参考文献库通常随稿提交；请向作者补要，或用「已有的 .bib」指定）"
+            )
 
     sty_out = os.path.join(out_dir, os.path.basename(tpl_sel.sty))
     shutil.copy2(tpl_sel.sty, sty_out)

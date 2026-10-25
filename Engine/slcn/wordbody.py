@@ -1481,6 +1481,11 @@ def parse_docx(path: str, quote_threshold: int = 105,
             else:
                 out.append(latex + "\n")
     doc.body = "\n".join(out).strip()
+    # B-233：Word 文末手写 `\bibitem`（旧两通道 0 条时）自动转换为规范 bib 条目；
+    # 默认开，`--no-bibitem-convert` 在 convert.py 统一关闭；fail-soft 见函数内。
+    from .wordentry import convert_bibitem_refs
+
+    convert_bibitem_refs(doc)
     return doc
 
 
