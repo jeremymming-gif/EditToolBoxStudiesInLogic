@@ -596,3 +596,32 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 4. **退出码语义不许改**（§二/§三/§五）。
 5. 改完跑：`tests/test_platform.py`（平台）、`tests/test_docs_consistency.py`（文档），
    以及 `README.md` 固定验收链条里的那六项。
+
+## 十五、入口：`dirpush.py`（目录摘要推送，B-225）
+
+外壳只拼参数、只读 stdout/stderr；**所有判据在引擎**（`slcn/pushcopy/`）。
+
+```bash
+python3 Engine/dirpush.py --issue <期目录> [--out <输出根>] [--with-en-toc] [--json] [--dry-run]
+python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] [--include-issues 1,2,3] \
+    [--out <根>] [--json] [--dry-run]
+```
+
+- `--issue` 必填：当期=具体期目录；年度=该年任一期目录（扫其父目录 `YYYY年第N期*`）。
+- `--out` 缺省 `~/Documents/sysu/编辑部/目录摘要推送/`（不写稿件仓）。
+- 输出（契约冻结）：当期 `<out>/<YYYY> 年第 <N> 期/逻辑学研究<YYYY>年第<N>期目录摘要.docx`；
+  年度 `<out>/<YYYY> 年/逻辑学研究<YYYY>年总目录.docx`；同名**直接覆盖、不留 .bak**；不产 PDF。
+- 每期生成成功后写 `<该期输出目录>/目录摘要设置.json`：`{"schema":1,"year":<y>,"issue":<n>,"with_en_toc":<bool>}`
+  （无时间戳；年度模式**只读**它还原各期体例，从不写）。
+- `--dry-run`：只采集+校验、**不写任何文件**；`outputs` 给计划路径（GUI 预览用）。
+- `--json`：stdout **恰好一个 JSON 对象**（日志全走 stderr），字段：
+  `schema/ok/mode/dry_run/outputs[]/issue{year,number,vol,total,header_lines[],with_en_toc,column}/
+  counts{zh_entries,en_entries,articles,abstracts_ok,abstracts_missing}/warnings[]/missing[]/
+  annual{year,included[],excluded[],missing_issues[],issues[{number,with_en_toc,status}]}|null`。
+  `with_en_toc` 缺省推断 = 输出目录已有设置则沿用，否则 false；`--with-en-toc` 仅当期模式。
+  输入/用法错误时 stdout 仍给同 schema 对象（`ok:false`、issue/annual=null），stderr 中文原因。
+- 退出码：0 成功（含 warning）/ 2 输入或用法错误（无 `000 Table of Contents`、参数冲突、年度 0 期）/
+  1 内部异常（traceback 走 stderr）。
+- 计数口径：`abstracts_ok` = 有可用**中文**摘要的篇数；`abstracts_missing` = 跳过篇数
+  （中文摘要为模板占位符时按缺失处理，不回落英文摘要；年度模式两项均为 0）。
+- 只读保证：跑前跑后输入期目录 sha256 清单一致；同输入两遍 docx 逐字节相同（固定 zip 时间戳/docProps）。

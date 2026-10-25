@@ -439,6 +439,152 @@ check("(e) 契约行仍是 stdout 最后一行（外壳靠它拿产物）",
       bool(_no_out) and _no_out[-1].startswith("完成。"), _no_out[-1] if _no_out else "<empty>")
 shutil.rmtree(no_issue_dir, ignore_errors=True)
 
+
+print("\n── (f) 目录摘要推送（B-225）：合成期目录 → docx 契约 ──")
+import hashlib as _hashlib
+import zipfile as _zip
+from slcn.pushcopy import collect as PC
+from slcn.pushcopy import render_docx as PR  # noqa: F401
+
+
+def _w(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def make_pushcopy_issue(root: str, year: int, number: int, total: int,
+                        month: int, day: int, *, column: bool = True) -> str:
+    """合成一期（假期号/假专栏/假作者/假摘要），落在 tempdir 里。"""
+    d = os.path.join(root, f"{year}年第{number}期({total})")
+    toc = os.path.join(d, "000 Table of Contents")
+    hdr = ("\\begin{flushright}\n\\heiti{逻辑学研究（双月刊）\\\\\n"
+           f"第\\ 19 卷，第\\ {number} 期，总第\\ {total} 期}}\\\\\n"
+           f"\\heiti{{{year} 年第\\ {number} 期，{month}月\\ {day} 日出版}}\n\\end{{flushright}}\n")
+    host = ("{\\large \\bf{专栏：假专栏}}&&\\textit{\\large 主持人：假主持}\n\\\\[3.0 ex]\n"
+            if column else "\\\\[3.0 ex]\n")
+    body = (
+        "{\\large ~~~~ 假标题一}\n&\\textit{\\large ~~~~ 张三，李四}\n& 1\\\\\n\\vdistance\n"
+        "{\\large ~~~~ 假标题二}\n&\\textit{\\large ~~~~ 王五}\n& 2\\\\\n\\vdistance\n")
+    zh = ("\\documentclass{ctexart}\n\\begin{document}\n" + hdr
+          + "\\vspace{4ex}\n\\begin{tabularx}{\\textwidth}\n{l@{\\hspace{-0.3em}}r}\n"
+          + host + "%中间主体\n" + body + "\\end{tabularx}\n\\end{document}\n")
+    _w(os.path.join(toc, "Chinese Content.tex"), zh)
+    en = ("\\documentclass{ctexart}\n\\begin{document}\n"
+          "\\begin{tabularx}{\\textwidth}{l@{\\hspace{4em}}r}\n"
+          "\\large  \\bf{Column: Fake Column}\n\\\\[6.2mm]\n%中间主体\n"
+          "\\large ~~~~ Fake Title One\\\\\n\\textit{{~~~~  San Zhang}, {Si Li}}\n& 1\\\\\n\\vdistance\n"
+          "\\large ~~~~ Fake Title Two\\\\\n\\textit{{~~~~ Wu Wang}}\n& 2\\\\\n\\vdistance\n"
+          "\\end{tabularx}\n\\end{document}\n")
+    _w(os.path.join(toc, "contents.tex"), en)
+    for i, (t, a, ab) in enumerate((("假标题一", "张三", "假摘要甲。"),
+                                    ("假标题二", "王五", "假摘要乙。")), start=1):
+        tex = ("\\documentclass{article}\n\\begin{document}\n"
+               f"\\newcommand{{\\mytitleCN}}{{{t}}}\n"
+               f"\\newcommand{{\\myfirstauthorCN}}{{{a}}}\n"
+               f"\\newcommand{{\\myfirstaffiliationCN}}{{假单位}}\n"
+               f"\\newcommand{{\\myabstractCN}}{{{ab}}}\n"
+               f"\\newcommand{{\\mytitle}}{{Fake Title {i}}}\n"
+               f"\\newcommand{{\\myfirstauthor}}{{Author {i}}}\n"
+               f"\\newcommand{{\\myabstract}}{{Fake abstract {i}.}}\n"
+               "\\end{document}\n")
+        _w(os.path.join(d, f"{i:02d} Fake_{i}", f"Fake_{i}.tex"), tex)
+    return d
+
+
+_push_work = tempfile.mkdtemp(prefix="slcn_pushcopy_")
+try:
+    out_root = os.path.join(_push_work, "out")
+    d3 = make_pushcopy_issue(_push_work, 2026, 3, 88, 6, 18)
+    iss = PC.collect_issue(d3, with_en_toc=True, out_root=out_root)
+    check("(f1) 期次/期头 3 行（实例体例逐字）",
+          iss.vol == 19 and iss.total == 88 and iss.header_lines == [
+              "逻辑学研究 2026 年第 3 期",
+              "第 19 卷（总第 88 期）2026 年 6 月 18 日出版",
+              "双月刊 2008 年创刊"], repr(iss.header_lines))
+    check("(f2) 中/英文目录条目 + 专栏/主持人口径",
+          len(iss.zh_entries) == 2 and len(iss.en_entries) == 2 and iss.column is not None
+          and iss.column.label == "专栏" and iss.column.host == "假主持"
+          and iss.zh_entries[0].authors == ["张三，李四"]
+          and iss.en_entries[0].title_lines == ["Fake Title One"],
+          repr([iss.zh_entries[0].authors, iss.en_entries[0].title_lines]))
+    check("(f3) 各篇 CN 元数据（假作者/假摘要）",
+          len(iss.articles) == 2 and iss.abstracts_ok == 2
+          and iss.articles[0].title_lines == ["假标题一"]
+          and iss.articles[1].abstract == "假摘要乙。",
+          repr([a.abstract for a in iss.articles]))
+    _env = dict(os.environ, PYTHONPATH=str(ENGINE) + os.pathsep + str(ENGINE / "vendor"))
+    r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
+                        "--out", out_root, "--json", "--dry-run"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=_env)
+    _j = json.loads(r.stdout)
+    check("(f4) dry-run：rc=0、stdout 唯一 JSON、字段名冻结、不写盘",
+          r.returncode == 0 and _j["ok"] is True and _j["mode"] == "issue"
+          and _j["dry_run"] is True and _j["annual"] is None
+          and set(_j) >= {"schema", "ok", "mode", "dry_run", "outputs", "issue",
+                          "counts", "warnings", "missing", "annual"}
+          and set(_j["counts"]) == {"zh_entries", "en_entries", "articles",
+                                    "abstracts_ok", "abstracts_missing"}
+          and not os.path.exists(out_root),
+          f"rc={r.returncode} fields={sorted(_j)}")
+    before = sorted(os.listdir(d3))
+    _docx = os.path.join(out_root, "2026 年第 3 期", "逻辑学研究2026年第3期目录摘要.docx")
+    _sha = []
+    for _ in range(2):
+        r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
+                            "--out", out_root, "--with-en-toc"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", env=_env)
+        _sha.append(_hashlib.sha256(open(_docx, "rb").read()).hexdigest())
+    check("(f5) 当期路径体例 + 两遍 sha256 相同 + 同名覆盖无 bak",
+          r.returncode == 0 and _sha[0] == _sha[1] and os.path.isfile(_docx)
+          and not any(x.endswith(".bak") for x in os.listdir(os.path.dirname(_docx))),
+          f"rc={r.returncode} sha={_sha}")
+    _xml = _zip.ZipFile(_docx).read("word/document.xml").decode("utf-8")
+    _i = _xml.find("论文摘要")
+    _seg = ""
+    if _i >= 0:
+        _a = _xml.rfind("<w:p>", 0, _i)
+        _b = _xml.find("</w:p>", _i)
+        _seg = _xml[_a:_b] if _a >= 0 and _b >= 0 else ""
+    check("(f5b) 当期 docx 含「论文摘要」节标题（14pt=sz28 / b / jc=center，实例体例）",
+          bool(_seg) and 'w:sz w:val="28"' in _seg and "<w:b/>" in _seg
+          and 'w:jc w:val="center"' in _seg,
+          _seg[:160])
+    check("(f6) settings 写出且确定性（schema/year/issue/with_en_toc，无时间戳）",
+          json.load(open(os.path.join(out_root, "2026 年第 3 期", "目录摘要设置.json"),
+                         encoding="utf-8"))
+          == {"schema": 1, "year": 2026, "issue": 3, "with_en_toc": True})
+    check("(f7) 不产 PDF + 输入期目录零变化",
+          not any(x.lower().endswith(".pdf") for x in os.listdir(os.path.dirname(_docx)))
+          and sorted(os.listdir(d3)) == before)
+    bad = os.path.join(_push_work, "2026年第9期(99)")
+    os.makedirs(bad, exist_ok=True)
+    r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", bad,
+                        "--out", out_root],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=_env)
+    check("(f8) 缺 000 Table of Contents → rc=2 + 中文提示 + 不生成",
+          r.returncode == 2 and "000 Table of Contents" in r.stderr
+          and not os.path.exists(os.path.join(out_root, "2026 年第 9 期")),
+          f"rc={r.returncode} err={r.stderr.strip()[:60]}")
+    make_pushcopy_issue(_push_work, 2026, 4, 89, 8, 18)
+    r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
+                        "--annual", "--year", "2026", "--out", out_root, "--json"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=_env)
+    _j = json.loads(r.stdout)
+    check("(f9) 年度：rc=0、JSON annual 结构（included/缺期/体例还原）+ 两期拼接",
+          r.returncode == 0 and _j["mode"] == "annual" and _j["annual"]["year"] == 2026
+          and _j["annual"]["included"] == [3, 4] and 5 in _j["annual"]["missing_issues"]
+          and _j["counts"]["zh_entries"] == 4 and len(_j["annual"]["issues"]) >= 2
+          and any(x["status"] == "no_toc" for x in _j["annual"]["issues"])
+          and _j["annual"]["issues"][0]["with_en_toc"] is True,
+          f"rc={r.returncode} annual={_j.get('annual')}")
+finally:
+    shutil.rmtree(_push_work, ignore_errors=True)
+
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")

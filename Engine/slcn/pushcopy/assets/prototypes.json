@@ -1,0 +1,428 @@
+{
+ "modes": {
+  "annual_bi": {
+   "abs_author": null,
+   "abs_body": null,
+   "abs_gap": [],
+   "abs_section": null,
+   "abs_title": null,
+   "after_table": [],
+   "blank": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-26\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5103\" w14:cap=\"flat\" w14:cmpd=\"sng\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:val=\"0\"/></w14:textOutline></ns0:rPr></ns0:pPr></ns0:p>",
+   "block_gap": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"both\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>"
+   ],
+   "header": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:firstLine=\"420\" ns0:firstLineChars=\"0\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+   ],
+   "table": {
+    "open": "<w:tblPr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:tblStyle w:val=\"3\"/><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblInd w:w=\"0\" w:type=\"dxa\"/><w:tblBorders><w:top w:val=\"single\" w:color=\"auto\" w:sz=\"4\" w:space=\"0\"/><w:left w:val=\"single\" w:color=\"auto\" w:sz=\"4\" w:space=\"0\"/><w:bottom w:val=\"single\" w:color=\"auto\" w:sz=\"4\" w:space=\"0\"/><w:right w:val=\"single\" w:color=\"auto\" w:sz=\"4\" w:space=\"0\"/><w:insideH w:val=\"single\" w:color=\"auto\" w:sz=\"4\" w:space=\"0\"/><w:insideV w:val=\"single\" w:color=\"auto\" w:sz=\"4\" w:space=\"0\"/></w:tblBorders><w:tblLayout w:type=\"autofit\"/><w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:left w:w=\"108\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:right w:w=\"108\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr><w:tblGrid xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:gridCol w:w=\"5785\"/><w:gridCol w:w=\"2617\"/></w:tblGrid>",
+    "row_order": [
+     "en_section:0",
+     "en_entry:1",
+     "en_entry:2",
+     "en_entry:3",
+     "en_entry:4",
+     "en_entry:5",
+     "zh_section:6",
+     "zh_entry:7",
+     "zh_entry:8",
+     "zh_entry:9",
+     "zh_entry:10",
+     "zh_entry:11"
+    ],
+    "rows": {
+     "en_entry": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl ns0:val=\"0\"/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"default\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:cs=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-Hans\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"default\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:cs=\"Times New Roman\"/><ns0:b ns0:val=\"0\"/><ns0:bCs ns0:val=\"0\"/><ns0:i ns0:val=\"0\"/><ns0:iCs ns0:val=\"0\"/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "lines",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5785\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:left ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"nil\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"楷体\" ns0:cs=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"default\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:cs=\"Times New Roman\"/><ns0:b ns0:val=\"0\"/><ns0:bCs ns0:val=\"0\"/><ns0:i ns0:val=\"0\"/><ns0:iCs ns0:val=\"0\"/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2617\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:left ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"1134\" ns0:hRule=\"atLeast\"/></ns0:trPr>"
+     },
+     "en_section": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-Hans\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"8402\" ns0:type=\"dxa\"/><ns0:gridSpan ns0:val=\"2\"/><ns0:tcBorders><ns0:top ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:left ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:bottom ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:right ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"1134\" ns0:hRule=\"atLeast\"/></ns0:trPr>"
+     },
+     "zh_entry": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "lines",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5785\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:left ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"nil\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2617\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:left ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"1134\" ns0:hRule=\"atLeast\"/></ns0:trPr>"
+     },
+     "zh_section": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-Hans\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"8402\" ns0:type=\"dxa\"/><ns0:gridSpan ns0:val=\"2\"/><ns0:tcBorders><ns0:top ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:left ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:bottom ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/><ns0:right ns0:val=\"dashSmallGap\" ns0:color=\"auto\" ns0:sz=\"4\" ns0:space=\"0\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"1134\" ns0:hRule=\"atLeast\"/></ns0:trPr>"
+     }
+    }
+   },
+   "tail": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>"
+   ],
+   "toc_title": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-26\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5103\" w14:cap=\"flat\" w14:cmpd=\"sng\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:val=\"0\"/></w14:textOutline></ns0:rPr></ns0:pPr><ns0:r xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-28\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5103\" w14:cap=\"flat\" w14:cmpd=\"sng\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:val=\"0\"/></w14:textOutline></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+  },
+  "annual_zh": {
+   "abs_author": null,
+   "abs_body": null,
+   "abs_gap": [],
+   "abs_section": null,
+   "abs_title": null,
+   "after_table": [],
+   "blank": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:left=\"3946\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-26\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5103\" w14:cap=\"flat\" w14:cmpd=\"sng\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:val=\"0\"/></w14:textOutline></ns0:rPr></ns0:pPr></ns0:p>",
+   "block_gap": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>"
+   ],
+   "header": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:firstLine=\"420\" ns0:firstLineChars=\"0\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"Times New Roman\" ns0:hAnsi=\"Times New Roman\" ns0:eastAsia=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+   ],
+   "table": {
+    "open": "<w:tblPr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:tblStyle w:val=\"3\"/><w:tblW w:w=\"4998\" w:type=\"pct\"/><w:tblInd w:w=\"0\" w:type=\"dxa\"/><w:tblBorders><w:top w:val=\"dashSmallGap\" w:color=\"auto\" w:sz=\"8\" w:space=\"0\"/><w:left w:val=\"dashSmallGap\" w:color=\"auto\" w:sz=\"8\" w:space=\"0\"/><w:bottom w:val=\"dashSmallGap\" w:color=\"auto\" w:sz=\"8\" w:space=\"0\"/><w:right w:val=\"dashSmallGap\" w:color=\"auto\" w:sz=\"8\" w:space=\"0\"/><w:insideH w:val=\"none\" w:color=\"auto\" w:sz=\"0\" w:space=\"0\"/><w:insideV w:val=\"none\" w:color=\"auto\" w:sz=\"0\" w:space=\"0\"/></w:tblBorders><w:tblLayout w:type=\"autofit\"/><w:tblCellMar><w:top w:w=\"0\" w:type=\"dxa\"/><w:left w:w=\"108\" w:type=\"dxa\"/><w:bottom w:w=\"0\" w:type=\"dxa\"/><w:right w:w=\"108\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr><w:tblGrid xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:gridCol w:w=\"6055\"/><w:gridCol w:w=\"2464\"/></w:tblGrid>",
+    "row_order": [
+     "host2:0",
+     "zh_entry:1",
+     "zh_entry:2",
+     "zh_entry:3",
+     "zh_entry:4",
+     "zh_entry:5",
+     "zh_entry:6",
+     "zh_entry:7"
+    ],
+    "rows": {
+     "host2": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"240\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"left\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:color ns0:val=\"000000\"/><ns0:kern ns0:val=\"0\"/><ns0:sz ns0:val=\"23\"/><ns0:szCs ns0:val=\"23\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\" ns0:bidi=\"ar\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5970\" ns0:type=\"dxa\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"240\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"left\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:color ns0:val=\"000000\"/><ns0:kern ns0:val=\"0\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\" ns0:bidi=\"ar\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:b/><ns0:bCs/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2430\" ns0:type=\"dxa\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"1134\" ns0:hRule=\"atLeast\"/></ns0:trPr>"
+     },
+     "zh_entry": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:beforeLines=\"0\" ns0:afterLines=\"0\" ns0:line=\"240\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000000\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "lines",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5970\" ns0:type=\"dxa\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:suppressLineNumbers ns0:val=\"0\"/><ns0:kinsoku/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:line=\"240\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:color ns0:val=\"000000\"/><ns0:kern ns0:val=\"0\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\" ns0:bidi=\"ar\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"楷体\" ns0:hAnsi=\"楷体\" ns0:eastAsia=\"楷体\" ns0:cs=\"楷体\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:val=\"en-US\" ns0:eastAsia=\"zh-CN\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2430\" ns0:type=\"dxa\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"1134\" ns0:hRule=\"atLeast\"/></ns0:trPr>"
+     }
+    }
+   },
+   "tail": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>"
+   ],
+   "toc_title": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:keepNext ns0:val=\"0\"/><ns0:keepLines ns0:val=\"0\"/><ns0:pageBreakBefore ns0:val=\"0\"/><ns0:widowControl/><ns0:kinsoku ns0:val=\"0\"/><ns0:wordWrap/><ns0:overflowPunct/><ns0:topLinePunct ns0:val=\"0\"/><ns0:autoSpaceDE ns0:val=\"0\"/><ns0:autoSpaceDN ns0:val=\"0\"/><ns0:bidi ns0:val=\"0\"/><ns0:adjustRightInd ns0:val=\"0\"/><ns0:snapToGrid ns0:val=\"0\"/><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:left=\"3946\"/><ns0:textAlignment ns0:val=\"baseline\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-26\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5103\" w14:cap=\"flat\" w14:cmpd=\"sng\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:val=\"0\"/></w14:textOutline></ns0:rPr></ns0:pPr><ns0:r xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\" ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:eastAsia=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-28\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5103\" w14:cap=\"flat\" w14:cmpd=\"sng\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:val=\"0\"/></w14:textOutline></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+  },
+  "bi": {
+   "abs_author": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00085981\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "abs_body": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:pStyle ns0:val=\"p1\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\" ns0:hint=\"eastAsia\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\" ns0:hint=\"eastAsia\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "abs_gap": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr></ns0:p>"
+   ],
+   "abs_section": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"2\"/><ns0:sz ns0:val=\"28\"/><ns0:szCs ns0:val=\"28\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"2\"/><ns0:sz ns0:val=\"28\"/><ns0:szCs ns0:val=\"28\"/></ns0:rPr><ns0:lastRenderedPageBreak/><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "abs_title": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00085981\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "after_table": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr></ns0:p>"
+   ],
+   "blank": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+   "header": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:firstLine=\"420\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+   ],
+   "table": {
+    "open": "<w:tblPr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:tblStyle w:val=\"ae\"/><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblLook w:val=\"04A0\" w:firstRow=\"1\" w:lastRow=\"0\" w:firstColumn=\"1\" w:lastColumn=\"0\" w:noHBand=\"0\" w:noVBand=\"1\"/></w:tblPr><w:tblGrid xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:gridCol w:w=\"5705\"/><w:gridCol w:w=\"2591\"/></w:tblGrid>",
+    "row_order": [
+     "en_section:0",
+     "en_column:1",
+     "en_entry:2",
+     "en_entry:3",
+     "en_entry:4",
+     "en_entry:5",
+     "en_entry:6",
+     "en_entry:7",
+     "en_entry:8",
+     "zh_section:9",
+     "host2:10",
+     "zh_entry:11",
+     "zh_entry:12",
+     "zh_entry:13",
+     "zh_entry:14",
+     "zh_entry:15",
+     "zh_entry:16",
+     "zh_entry:17"
+    ],
+    "rows": {
+     "en_column": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:pStyle ns0:val=\"p1\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\" ns0:hint=\"eastAsia\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00A76FFC\"><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5705\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"nil\"/></ns0:tcBorders></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:pStyle ns0:val=\"p1\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr></ns0:p>",
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:right=\"480\" ns0:firstLineChars=\"2700\" ns0:firstLine=\"6480\"/><ns0:jc ns0:val=\"left\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\" ns0:hint=\"eastAsia\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr></ns0:p>"
+        ],
+        "slot": "none",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2591\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:left ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/></ns0:tcBorders></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"317\"/></ns0:trPr>"
+     },
+     "en_entry": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:pStyle ns0:val=\"p1\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00A76FFC\"><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "lines",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5705\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"nil\"/></ns0:tcBorders></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:pStyle ns0:val=\"p1\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00A76FFC\"><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman Regular\" ns0:hAnsi=\"Times New Roman Regular\" ns0:cs=\"Times New Roman Regular\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2591\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"nil\"/><ns0:left ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/></ns0:tcBorders></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"316\"/></ns0:trPr>"
+     },
+     "en_section": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:widowControl/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:eastAsia=\"zh-Hans\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"8296\" ns0:type=\"dxa\"/><ns0:gridSpan ns0:val=\"2\"/><ns0:tcBorders><ns0:bottom ns0:val=\"single\" ns0:sz=\"4\" ns0:space=\"0\" ns0:color=\"auto\"/></ns0:tcBorders></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"460\"/></ns0:trPr>"
+     },
+     "host2": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:pStyle ns0:val=\"p1\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"SimHei\" ns0:eastAsia=\"SimHei\" ns0:hAnsi=\"SimHei\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00C60D65\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:snapToGrid ns0:val=\"0\"/><ns0:sz ns0:val=\"21\"/><ns0:szCs ns0:val=\"21\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5705\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"nil\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"left\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00C60D65\"><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\"/><ns0:b/><ns0:bCs/><ns0:snapToGrid/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2591\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:left ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"383\"/></ns0:trPr>"
+     },
+     "zh_entry": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"009757FC\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "lines",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5705\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/><ns0:right ns0:val=\"nil\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:right=\"420\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\" ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"009757FC\"><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2591\" ns0:type=\"dxa\"/><ns0:tcBorders><ns0:top ns0:val=\"nil\"/><ns0:left ns0:val=\"nil\"/><ns0:bottom ns0:val=\"nil\"/></ns0:tcBorders><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"383\"/></ns0:trPr>"
+     },
+     "zh_section": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:widowControl/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/><ns0:lang ns0:eastAsia=\"zh-Hans\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"8296\" ns0:type=\"dxa\"/><ns0:gridSpan ns0:val=\"2\"/><ns0:tcBorders><ns0:bottom ns0:val=\"single\" ns0:sz=\"4\" ns0:space=\"0\" ns0:color=\"auto\"/></ns0:tcBorders></ns0:tcPr>"
+       }
+      ],
+      "trPr": "<ns0:trPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:trHeight ns0:val=\"460\"/></ns0:trPr>"
+     }
+    }
+   },
+   "tail": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>"
+   ],
+   "toc_title": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-26\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5105\" w14:cap=\"flat\" w14:cmpd=\"sng\" w14:algn=\"ctr\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:lim=\"0\"/></w14:textOutline></ns0:rPr></ns0:pPr><ns0:r xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-28\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5105\" w14:cap=\"flat\" w14:cmpd=\"sng\" w14:algn=\"ctr\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:lim=\"0\"/></w14:textOutline></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+  },
+  "zh": {
+   "abs_author": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00E21F25\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "abs_body": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"楷体\" ns0:eastAsia=\"楷体\" ns0:hAnsi=\"楷体\" ns0:cs=\"楷体\" ns0:hint=\"eastAsia\"/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "abs_gap": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/></ns0:pPr></ns0:p>"
+   ],
+   "abs_section": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/><ns0:b/><ns0:bCs/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"2\"/><ns0:sz ns0:val=\"28\"/><ns0:szCs ns0:val=\"28\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"2\"/><ns0:sz ns0:val=\"28\"/><ns0:szCs ns0:val=\"28\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "abs_title": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:hAnsi=\"宋体\"/><ns0:sz ns0:val=\"32\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00E21F25\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"24\"/><ns0:szCs ns0:val=\"24\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+   "after_table": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/></ns0:pPr></ns0:p>"
+   ],
+   "blank": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr></ns0:p>",
+   "header": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:ind ns0:firstLine=\"420\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>",
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr></ns0:pPr><ns0:r><ns0:rPr><ns0:rFonts ns0:ascii=\"Times New Roman\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"Times New Roman\" ns0:hint=\"eastAsia\"/><ns0:b/><ns0:bCs/><ns0:sz ns0:val=\"30\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+   ],
+   "table": {
+    "open": "<w:tblPr xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:tblStyle w:val=\"ae\"/><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblLook w:val=\"04A0\" w:firstRow=\"1\" w:lastRow=\"0\" w:firstColumn=\"1\" w:lastColumn=\"0\" w:noHBand=\"0\" w:noVBand=\"1\"/></w:tblPr><w:tblGrid xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:gridCol w:w=\"5524\"/><w:gridCol w:w=\"2772\"/></w:tblGrid>",
+    "row_order": [
+     "host_merged:0",
+     "zh_entry:1",
+     "zh_entry:2",
+     "zh_entry:3",
+     "zh_entry:4",
+     "zh_entry:5",
+     "zh_entry:6",
+     "zh_entry:7"
+    ],
+    "rows": {
+     "host_merged": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:widowControl/><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"left\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"003C29C9\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"8296\" ns0:type=\"dxa\"/><ns0:gridSpan ns0:val=\"2\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": ""
+     },
+     "zh_entry": {
+      "cells": [
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:widowControl/><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"003C29C9\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "lines",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"5524\" ns0:type=\"dxa\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       },
+       {
+        "paras": [
+         "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:widowControl/><ns0:kinsoku/><ns0:spacing ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr><ns0:r ns0:rsidRPr=\"00E21F25\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+        ],
+        "slot": "single",
+        "tcPr": "<ns0:tcPr xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:tcW ns0:w=\"2772\" ns0:type=\"dxa\"/><ns0:vAlign ns0:val=\"center\"/></ns0:tcPr>"
+       }
+      ],
+      "trPr": ""
+     }
+    }
+   },
+   "tail": [
+    "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr><ns0:rPr><ns0:rFonts ns0:hint=\"eastAsia\"/></ns0:rPr></ns0:pPr></ns0:p>"
+   ],
+   "toc_title": "<ns0:p xmlns:ns0=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><ns0:pPr xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:spacing ns0:before=\"120\" ns0:line=\"360\" ns0:lineRule=\"auto\"/><ns0:jc ns0:val=\"center\"/><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-26\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5105\" w14:cap=\"flat\" w14:cmpd=\"sng\" w14:algn=\"ctr\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:lim=\"0\"/></w14:textOutline></ns0:rPr></ns0:pPr><ns0:r xmlns:w14=\"http://schemas.microsoft.com/office/word/2010/wordml\"><ns0:rPr><ns0:rFonts ns0:ascii=\"宋体\" ns0:eastAsia=\"宋体\" ns0:hAnsi=\"宋体\" ns0:cs=\"宋体\" ns0:hint=\"eastAsia\"/><ns0:color ns0:val=\"000008\"/><ns0:spacing ns0:val=\"-28\"/><ns0:sz ns0:val=\"36\"/><ns0:szCs ns0:val=\"36\"/><w14:textOutline w14:w=\"5105\" w14:cap=\"flat\" w14:cmpd=\"sng\" w14:algn=\"ctr\"><w14:solidFill><w14:srgbClr w14:val=\"000008\"/></w14:solidFill><w14:prstDash w14:val=\"solid\"/><w14:miter w14:lim=\"0\"/></w14:textOutline></ns0:rPr><ns0:t>@@TEXT@@</ns0:t></ns0:r></ns0:p>"
+  }
+ },
+ "note": "块原型（格式 only，文本占位 @@TEXT@@）；由脚本从参考实例机器化抽取，公开仓不含真实文本",
+ "schema": 1,
+ "token": "@@TEXT@@"
+}
