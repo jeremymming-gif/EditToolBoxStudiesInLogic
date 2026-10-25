@@ -253,8 +253,8 @@ let runner = (try? String(contentsOf: tools.appendingPathComponent("run_swift_te
 check("(e) MainWindow：NavPage 加 `dirpush`、标题「目录摘要推送」、SF Symbol",
       mainWindow.contains("dirpush") && mainWindow.contains("return \"目录摘要推送\"")
       && mainWindow.contains("return \"megaphone\""))
-check("(e) MainWindow：侧栏「整期装配」组 `.cleantemp` 之后 = `.dirpush`（「本期出刊」页已删）",
-      mainWindow.contains("[.infocheck, .compile, .toc, .cleantemp, .dirpush]"))
+check("(e) MainWindow：侧栏「整期装配」组 `.cleantemp` → `.merge` → `.dirpush`（B-235）",
+      mainWindow.contains("[.infocheck, .compile, .toc, .cleantemp, .merge, .dirpush]"))
 check("(e) MainWindow：ZStack 里真的挂了 `DirPushView(log: log)` 且走 `.pageVisible`",
       mainWindow.contains("DirPushView(log: log)") && mainWindow.contains(".pageVisible(selection == .dirpush)"))
 check("(e) 视图真的调了预览/生成两个引擎入口（不自己写判据）",

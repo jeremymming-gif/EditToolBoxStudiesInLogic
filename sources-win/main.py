@@ -1640,8 +1640,8 @@ class MainWindow(tk.Tk):
         #: 分组 → 页（顺序就是侧栏里的顺序；`设置` 单独放在最下面，照 WinUI 的惯例）
         #: 第 132 条起多一个与另两组**平行**的顶级分组「引用库」（按使用顺序排：
         #: 看概况 → 查库 → 入藏 → 待裁决 → 设置）。设置仍是组外的配置入口。
-        self.nav_groups = [("单篇稿件", (0, 1, 2, 3)),
-                           ("整期装配", (4, 5, 6, 7)),
+        self.nav_groups = [("单篇稿件", (0, 1, 3)),
+                           ("整期装配", (4, 5, 6, 7, 2)),
                            ("引用库", (8, 9, 10, 11, 12))]
         for title, idxs in self.nav_groups:
             group = self.nav.insert("", "end", text=title, open=True)

@@ -197,15 +197,15 @@ enum NavPage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 「单篇稿件」组（按编辑流程排）：初排 → 回读校验 → 一校核查 → 合并成刊。
+    /// 「单篇稿件」组（按编辑流程排）：初排 → 回读校验 → 一校核查。
     ///
     /// ⚠️ 顺序本身被 `tools/proofcheck_test` 断言（一校核查必须在回读校验之后）——
     /// 那是编辑流程：编辑拿《文献核实任务书》改完交回 .bib，接着就按手册逐条核查。
-    static let singleArticle: [NavPage] = [.convert, .checkbib, .proofcheck, .merge]
+    static let singleArticle: [NavPage] = [.convert, .checkbib, .proofcheck]
 
-    /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件 → 推送文案。
-    /// （整期合并 PDF 用「合并文件」页。）
-    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .dirpush]
+    /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件 → 合并成刊 → 推送文案。
+    /// （整期合并 PDF 用本组「合并文件」页，B-235 从「单篇稿件」移入。）
+    static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .merge, .dirpush]
 
     /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待处理 → 设置。
     /// 排序就是使用顺序：先知道库里有什么，再查/入藏，要人工处理才去「待处理」页。

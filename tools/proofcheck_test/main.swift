@@ -100,12 +100,17 @@ let orderLine = mainWindow.split(separator: "\n")
 let order = orderLine.description
 let iBib = order.range(of: ".checkbib")?.lowerBound
 let iProof = order.range(of: ".proofcheck")?.lowerBound
-let iMerge = order.range(of: ".merge")?.lowerBound
-check("(c) 「单篇稿件」组顺序：初排 → 文献回读校验 → **一校核查** → 合并文件"
-      + "（编辑流程：回读校验之后接着一校核查）",
-      order.contains(".convert") && iBib != nil && iProof != nil && iMerge != nil
-      && iBib! < iProof! && iProof! < iMerge!,
+// B-235：「合并文件」从「单篇稿件」移到「整期装配」，单篇组不再含 `.merge`
+let assemblyLine = mainWindow.split(separator: "\n")
+    .first { $0.contains("static let assembly") } ?? ""
+let assemblyOrder = assemblyLine.description
+check("(c) 「单篇稿件」组顺序：初排 → 文献回读校验 → **一校核查**（不含合并文件；编辑流程）",
+      order.contains(".convert") && iBib != nil && iProof != nil
+      && iBib! < iProof! && !order.contains(".merge"),
       order.isEmpty ? "<没找到 singleArticle 定义>" : String(order.prefix(120)))
+check("(c) 「合并文件」页归「整期装配」组（B-235）",
+      assemblyOrder.contains(".merge"),
+      assemblyOrder.isEmpty ? "<没找到 assembly 定义>" : String(assemblyOrder.prefix(120)))
 check("(c) 视图**不用 `@State`**（本机只有 Command Line Tools，SwiftUI 宏插件不可用）",
       !view.contains("@State ") && !view.contains("@State private"))
 check("(c) 视图把状态交给注入的 model（`@ObservedObject var model: ProofCheckModel`）",

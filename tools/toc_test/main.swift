@@ -186,8 +186,8 @@ check("(e) `PublishFeature.swift` 已删、MainWindow 不再引用它",
 check("(e) MainWindow 不再有「本期出刊」页 / `.publish` 导航项",
       !mainWindow.contains("本期出刊") && !mainWindow.contains("case .publish")
       && !mainWindow.contains("publishPage"))
-check("(e) 侧栏「整期装配」= 检查tex信息 → 编译全部 → 生成目录 → 删除临时文件 → 目录摘要推送",
-      mainWindow.contains("[.infocheck, .compile, .toc, .cleantemp, .dirpush]"))
+check("(e) 侧栏「整期装配」= 检查tex信息 → 编译全部 → 生成目录 → 删除临时文件 → 合并文件 → 目录摘要推送",
+      mainWindow.contains("[.infocheck, .compile, .toc, .cleantemp, .merge, .dirpush]"))
 
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

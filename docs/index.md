@@ -19,7 +19,7 @@ features:
       src: /icons/single.svg
       alt: ''
     title: 单篇稿件
-    details: 初排转换（Word / LaTeX → 可编译 .tex）、文献回读校验、一校核查、合并文件。
+    details: 初排转换（Word / LaTeX → 可编译 .tex）、文献回读校验、一校核查。
   - icon:
       src: /icons/assembly.svg
       alt: ''
