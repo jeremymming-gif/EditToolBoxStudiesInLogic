@@ -38,6 +38,20 @@ REPO = SHELL.parent                       # ← 仓根；从前写成 `.parent.p
                                           #   于是 (g) 组给的 PYTHONPATH 指到了不存在的目录
 sys.path.insert(0, str(SHELL))
 
+
+def _read_all_shell_sources() -> str:
+    """整个 Windows 外壳的源码拼接：`main.py` + `tabs/*.py` + `bibdb_ui.py`。
+
+    B-230 把各 tab 页从 `main.py` 原样搬进 `tabs/` 后，静态守卫若只扫 `main.py`
+    会漏掉页面源码（假绿或假红）。`tabs/*.py` 按文件名排序拼接（顺序固定、可复现）。
+    """
+    parts = [SHELL / "main.py", *sorted((SHELL / "tabs").glob("*.py")),
+             SHELL / "bibdb_ui.py"]
+    return "\n".join(pp.read_text(encoding="utf-8") for pp in parts if pp.exists())
+
+
+all_src = _read_all_shell_sources()
+
 import coop as C  # noqa: E402  第五十五批：两段式协同的纯逻辑（无 tkinter）
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
@@ -265,10 +279,9 @@ check("(b) 合并页有 `--detect` 预览（与 mac 对等；默认不跑）",
       "--detect" in E.merge_call(folder="/期", detect=True).argv
       and "--detect" not in E.merge_call(folder="/期").argv)
 check("(b) 设置页有「检索证据」开关（P2，第 72 条）：勾选状态进 cfg、保存时写回",
-      "v_searchrefs" in (SHELL / "main.py").read_text(encoding="utf-8")
-      and 'api"]["searchRefs"] = bool(self.v_searchrefs.get())'
-          in (SHELL / "main.py").read_text(encoding="utf-8")
-      and "DeepSeek 独立 Search API" in (SHELL / "main.py").read_text(encoding="utf-8"))
+      "v_searchrefs" in all_src
+      and 'api"]["searchRefs"] = bool(self.v_searchrefs.get())' in all_src
+      and "DeepSeek 独立 Search API" in all_src)
 check("(b) 运行日志里的「最后一行」被当作契约行送去抠路径",
       "_on_line" in (SHELL / "main.py").read_text(encoding="utf-8")
       and "E.artifact_path(" in (SHELL / "main.py").read_text(encoding="utf-8"))
@@ -457,7 +470,7 @@ src = main_py.read_text(encoding="utf-8")
 # 静态守卫必须一起扫 —— 只扫 main.py 会漏掉新文件里的经典控件/写死颜色。
 ui_py = SHELL / "bibdb_ui.py"
 ui_src = ui_py.read_text(encoding="utf-8") if ui_py.exists() else ""
-all_src = src + "\n" + ui_src
+# all_src 已在文件头统一拼接（main.py + tabs/*.py + bibdb_ui.py；B-230）
 import ast  # noqa: E402
 ast.parse(src)
 check("(f) `main.py` 语法正确", True)
@@ -486,24 +499,24 @@ check("(f) 引用库界面把引擎调用委托给 `engine.py`（出现 E.bibdb_
       and "pypdf" not in ui_src,
       "")
 check("(f) 界面里**没有**复制引擎逻辑（不 import pypdf / 不自己拼 PDF）",
-      "pypdf" not in src and "PdfWriter" not in src)
+      "pypdf" not in all_src and "PdfWriter" not in all_src)
 check("(f) 界面把逻辑都委托给 `engine.py`（八个入口各一处调用）",
-      all(f"E.{fn}_call(" in src
+      all(f"E.{fn}_call(" in all_src
           for fn in ("convert", "checkbib", "merge", "cleantemp", "compileall", "proofcheck",
                      "infocheck", "toc")), "")
 check("(f) 保留了原版的中文交互（浏览/运行/停止 + 底部日志框）",
-      all(k in src for k in ("浏览", "运行", "停止", "运行日志")))
+      all(k in all_src for k in ("浏览", "运行", "停止", "运行日志")))
 check("(f) 界面线程与工作线程分开（Tkinter 不是线程安全的，日志靠队列回传）",
       "threading.Thread" in src and "queue.Queue" in src and "after(" in src)
 # ⚠️ 下面三条是 2026-10-17 审计抓到的真缺陷的守卫 —— 从前的"守卫"是假的
 #    （例如只断言 `E.infocheck_call(` 在 main.py 里出现过，而 `show_report` 是死代码）。
 check("(f) 「检查tex信息」的表格**真的有人填**（`show_report` 从前全仓 0 处调用 = 表格永远空）",
-      src.count("show_report(") >= 2 and "_info_report_payload" in src,
-      f"show_report 出现 {src.count('show_report(')} 次")
+      all_src.count("show_report(") >= 2 and "_info_report_payload" in all_src,
+      f"show_report 出现 {all_src.count('show_report(')} 次")
 check("(f) 初排转换页有「输出名 / 作者」输入框（缺了这类 LaTeX 稿整页做不了）",
-      "输出名" in src and "v_author" in src and "v_name" in src)
+      "输出名" in all_src and "v_author" in all_src and "v_name" in all_src)
 check("(f) 「删除临时文件」是**先预览再移入回收目录、且可撤销**（UI 方案第 3 件）",
-      "confirm_trash" in src and "undo_btn" in src and "撤销清理" in src
+      "confirm_trash" in all_src and "undo_btn" in all_src and "撤销清理" in all_src
       and "--trash" in (SHELL / "engine.py").read_text(encoding="utf-8"))
 check("(f) 停止走**整棵进程树**（只 terminate 直接子进程时，xelatex 会继续写产物目录）",
       "E.kill_tree(" in src and "def kill_tree" in (SHELL / "engine.py").read_text(encoding="utf-8"))
@@ -515,10 +528,10 @@ _theme_src = (SHELL / "theme.py").read_text(encoding="utf-8")
 #    于是守卫永远是绿的（假保证）。2026-10-17 第一版就这么写过，当场被自己抓到。
 _classic = re.findall(r"(?<![\w.])tk\.(?:Button|Entry|Checkbutton)\(", all_src)
 check("(f) 没有 Tk 经典控件按钮/输入框/勾选框了（clam 只管得到 ttk 控件的外观；"
-      "main.py 与 bibdb_ui.py 一起扫）",
+      "main.py + tabs/*.py 与 bibdb_ui.py 一起扫）",
       not _classic, f"还有 {len(_classic)} 处")
 check("(f) `tk.Listbox` 保留（Tk 无 ttk 对等物）但色板取自 `theme.style_listbox`",
-      "tk.Listbox(" in src and "theme.style_listbox(" in src
+      "tk.Listbox(" in all_src and "theme.style_listbox(" in all_src
       and "def style_listbox" in _theme_src)
 check("(f) 日志框 `tk.Text` 保留，颜色/字体取自 theme（bg 白、等宽字体）",
       "tk.Text(" in src and 'theme.COLOR["text_bg"]' in src and "theme.mono_font()" in src)
@@ -529,10 +542,27 @@ check("(f) 界面文件里**没有**写死的颜色（#555/#666/#b00 之类）�
 check("(f) U4 接线：`is_summary_line` / `_render_log` / 摘要·原始 / `logShowRaw` / 空状态占位",
       "E.is_summary_line(" in src and "_render_log" in src and "Toolbutton" in src
       and "摘要" in src and "原始" in src and "logShowRaw" in src
-      and "运行任务后，日志会显示在这里" in src)
+      and "运行任务后，日志会显示在这里" in all_src)
 check("(f) 复制/保存一律给**完整日志**（含折叠行）：不读日志控件，用 `_full_log_text()`",
       src.count("self._full_log_text()") >= 2 and "self.output.get(" not in src
       and "clipboard_append(self.output" not in src)
+
+# ── B-230（纯搬运）：`tabs/*.py` 的结构守卫 —— 依赖必须单向 `tabs → base + 引擎模块` ──
+_tab_files = sorted((SHELL / "tabs").glob("*.py"))
+_tab_srcs = {pp.name: pp.read_text(encoding="utf-8") for pp in _tab_files}
+_bad_root = [n for n, s in _tab_srcs.items() if "class MainWindow" in s or "tk.Tk(" in s]
+check("(f) B-230：`MainWindow` / `tk.Tk()` 不在 `tabs/*.py`（入口只在 main.py）",
+      bool(_tab_files) and not _bad_root, _bad_root)
+_bad_main = [n for n, s in _tab_srcs.items()
+             if re.search(r"^\s*(?:import\s+main\b|from\s+main\b)", s, re.M)]
+check("(f) B-230：`tabs/*.py` 不 import `main`（依赖单向：tabs → base + 引擎模块）",
+      not _bad_main, _bad_main)
+_sib = re.compile(r"^\s*(?:from\s+(?:tabs\.|\.)(\w+)|import\s+tabs\.(\w+))", re.M)
+_bad_sib = {n: sorted({a or b for a, b in _sib.findall(s)} - {"base"})
+            for n, s in _tab_srcs.items()}
+_bad_sib = {n: v for n, v in _bad_sib.items() if v}
+check("(f) B-230：`tabs/*.py` 不互为兄弟 import（只允许 `from .base import`）",
+      not _bad_sib, _bad_sib)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (g) 真开一次窗口（控件参数写错只有这一步抓得到）──")
@@ -905,12 +935,20 @@ else:
     env2["PYTHONPATH"] = str(REPO / "Engine" / "vendor")
     env2["SLCN_BRIDGE_TEST_DIR"] = gdir
     env2["SLCN_BRIDGE_CFG"] = gcfg
-    r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       env=env2, cwd=str(SHELL), timeout=180)
-    out = r.stdout or ""
-    if r.returncode != 0 and ("no display" in (r.stderr or "") or "TclError" in (r.stderr or "")):
+    try:
+        r = subprocess.run([tkpy, "-"], input=prog, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           env=env2, cwd=str(SHELL), timeout=180)
+    except subprocess.TimeoutExpired:
+        # headless（无窗口服务）时 Aqua Tk 会卡在 `update()`（本机实测；不是产品缺陷）：
+        # 与下面「没有可用显示器」同一口径 SKIP，真窗口断言仍交 CI 覆盖。
+        print("SKIP  (g) 真窗口子进程 180 秒未返回（本机无窗口服务 / headless；真窗口交 CI）")
+        r = None
+    out = (r.stdout or "") if r is not None else ""
+    if r is not None and r.returncode != 0 and (
+            "no display" in (r.stderr or "") or "TclError" in (r.stderr or "")):
         print(f"SKIP  (g) 没有可用显示器/窗口服务：{(r.stderr or '').strip().splitlines()[-1:]}")
-    else:
+    elif r is not None:
         win_out = out                       # (h) 组还要在这些输出里找 U4 的证据
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
@@ -1759,96 +1797,96 @@ finally:
     shutil.rmtree(_j_root, ignore_errors=True)
 
 # ── main.py 源码守卫：协同 UI 的接线点（真窗口在 (g)；这里防「没接上」）──
-_src_55 = (SHELL / "main.py").read_text(encoding="utf-8")
+# B-230：这些页面已搬进 `tabs/*.py`，源码守卫扫整个外壳（all_src）
 check("(j) 初排转换页：默认关的「AI 协同初排（两段式）」+ 协同操作区默认隐藏",
-      "AI 协同初排（两段式）" in _src_55 and "self.v_coop" in _src_55
-      and "coop_panel.pack_forget()" in _src_55)
+      "AI 协同初排（两段式）" in all_src and "self.v_coop" in all_src
+      and "coop_panel.pack_forget()" in all_src)
 check("(j) 协同操作区按钮齐全（打开任务书/暂存目录/交付目录/协同记录/建议清单 + "
       "回填导入：添加文件/目录/剪贴板/移除选中/全部清除/运行第二段）",
-      all(k in _src_55 for k in ("打开任务书", "打开暂存目录", "打开交付目录",
+      all(k in all_src for k in ("打开任务书", "打开暂存目录", "打开交付目录",
                                  "打开协同记录", "打开建议清单",
                                  "添加回填文件…", "添加回填目录…", "从剪贴板导入",
                                  "移除选中", "全部清除", "运行第二段…")))
 check("(j) 批56：已选清单可见（「已选 N 项」+ Listbox），不再复制临时目录/折叠父目录",
-      "已选 " in _src_55 and "self.v_coop_sel" in _src_55
-      and "self.coop_list" in _src_55 and "ReplySelection" in _src_55
-      and "prepare_replies" not in _src_55)
+      "已选 " in all_src and "self.v_coop_sel" in all_src
+      and "self.coop_list" in all_src and "ReplySelection" in all_src
+      and "prepare_replies" not in all_src)
 check("(j) 批56：第二段把**已选清单**按顺序传给引擎（重复 --coop-replies）+ "
       "页面 clean 开着时带 --clean",
-      "coop_replies=paths" in _src_55
-      and "clean=bool(self.v_clean.get())" in _src_55)
+      "coop_replies=paths" in all_src
+      and "clean=bool(self.v_clean.get())" in all_src)
 check("(j) 批56：成功摘要读 `summarize_stage`（stats 口径）+ 0 回填橙色警告"
       "（theme 颜色，不写死色号）",
-      "C.summarize_stage" in _src_55 and "v_coop_warn" in _src_55
-      and 'theme.COLOR["warn"]' in _src_55)
+      "C.summarize_stage" in all_src and "v_coop_warn" in all_src
+      and 'theme.COLOR["warn"]' in all_src)
 check("(j) 第二段复用第一段选定的输出根（`_coop_out` + `set_coop_out`），"
       "第一段走 `coop_ph1_call`",
-      "_coop_out" in _src_55 and "tab.set_coop_out(out)" in _src_55
-      and "coop_ph1_call(out)" in _src_55 and "coop_ph2_call(" in _src_55)
+      "_coop_out" in all_src and "tab.set_coop_out(out)" in all_src
+      and "coop_ph1_call(out)" in all_src and "coop_ph2_call(" in all_src)
 check("(j) 源稿改过 → 第二段先报「请重新运行第一段」（不拿旧暂存硬续跑）",
-      "源稿与第一段时不一致" in _src_55)
+      "源稿与第一段时不一致" in all_src)
 check("(j) 「一键修改产物（--coop-apply）」默认不勾 + 说明 `.ai前` 备份；"
       "应用决定在运行前定（勾选值在拼 argv 时取）",
-      "一键修改产物（--coop-apply）" in _src_55 and "v_coop_apply" in _src_55
-      and ".ai前" in _src_55 and "coop_apply=bool(self.v_coop_apply.get())" in _src_55)
+      "一键修改产物（--coop-apply）" in all_src and "v_coop_apply" in all_src
+      and ".ai前" in all_src and "coop_apply=bool(self.v_coop_apply.get())" in all_src)
 check("(j) 协同结果经队列回主线程（`__COOP__` + `apply_coop_result`），不跨线程碰控件",
-      '"__COOP__"' in _src_55 and "apply_coop_result" in _src_55
-      and "C.load_stage" in _src_55 and "C.discover_stage" in _src_55)
+      '"__COOP__"' in all_src and "apply_coop_result" in all_src
+      and "C.load_stage" in all_src and "C.discover_stage" in all_src)
 check("(j) 批59：全文 AI 核查面板默认不勾（复选框 + 「引用上下文/全文」单选；静态说明"
       "与 mac 逐字一致：默认不勾/零上传/零费用/不再弹二次确认/仅第一段生效）；"
       "ph1 拼 argv 走 `C.coop_fulltext_mode`",
-      "全文 AI 核查（任务书附正文）" in _src_55
-      and "self.v_coop_fulltext = tk.BooleanVar(value=False)" in _src_55
-      and "引用上下文（默认" in _src_55 and "全文（约 8 万字上限）" in _src_55
-      and 'args["coop_fulltext"] = C.coop_fulltext_mode(self.v_coop_fulltext.get()' in _src_55
-      and "默认不勾：任务书不含正文" in _src_55
-      and "已获授权，不再弹二次确认" in _src_55
-      and "第二段续跑与交付不受影响" in _src_55)
+      "全文 AI 核查（任务书附正文）" in all_src
+      and "self.v_coop_fulltext = tk.BooleanVar(value=False)" in all_src
+      and "引用上下文（默认" in all_src and "全文（约 8 万字上限）" in all_src
+      and 'args["coop_fulltext"] = C.coop_fulltext_mode(self.v_coop_fulltext.get()' in all_src
+      and "默认不勾：任务书不含正文" in all_src
+      and "已获授权，不再弹二次确认" in all_src
+      and "第二段续跑与交付不受影响" in all_src)
 check("(j) 批60：初排页「全文 AI 核查（直连 API，会产生费用）」默认不勾；提示与 mac "
       "逐字对齐（会产生费用/每片 ≤3 万字/report-only 不改 reference.bib/未配置端点退出 2）；"
       "勾选值经 `extra_args` 交给拼装点",
-      "全文 AI 核查（直连 API，会产生费用）" in _src_55
-      and "self.v_llm_fulltext = tk.BooleanVar(value=False)" in _src_55
-      and 'args["llm_fulltext"] = bool(self.v_llm_fulltext.get())' in _src_55
-      and "每片 ≤3 万字" in _src_55 and "不改 reference.bib" in _src_55
-      and "直接退出 2" in _src_55 and "report-only" in _src_55)
+      "全文 AI 核查（直连 API，会产生费用）" in all_src
+      and "self.v_llm_fulltext = tk.BooleanVar(value=False)" in all_src
+      and 'args["llm_fulltext"] = bool(self.v_llm_fulltext.get())' in all_src
+      and "每片 ≤3 万字" in all_src and "不改 reference.bib" in all_src
+      and "直接退出 2" in all_src and "report-only" in all_src)
 check("(j) 批60：**会话态不落盘**（Lead 拍板：正文外发+费用属每次运行的主动同意）——"
       "`llmFulltext` 不进 settings.py / settings.json 写入路径（main.py 只准在注释里"
       "提 mac 的同名字段）；真进 argv 时日志说明「会产生费用、report-only」与"
       "「端点未配置会 exit 2」",
       "llmFulltext" not in (SHELL / "settings.py").read_text(encoding="utf-8")
-      and _src_55.count("llmFulltext") == 1
-      and "Options.llmFulltext" in _src_55
-      and '"--llm-fulltext" in call.argv' in _src_55
-      and "但端点未配置" in _src_55 and "会产生费用" in _src_55)
+      and all_src.count("llmFulltext") == 1
+      and "Options.llmFulltext" in all_src
+      and '"--llm-fulltext" in call.argv' in all_src
+      and "但端点未配置" in all_src and "会产生费用" in all_src)
 check("(j) 批62：初排页**不再暴露**独立「出文献核实任务书」勾选（`v_refs` 字段保留、"
       "默认 False）；新增「用 AI 处理参考文献（直连 API，会产生费用）」显式勾选"
       "（默认不勾、会话态），勾选值经 `extra_args` 的 `use_ai` 交给拼装点",
-      '_check(row1, "出文献核实任务书"' not in _src_55
-      and "self.v_refs = tk.BooleanVar(value=False)" in _src_55
-      and "用 AI 处理参考文献（直连 API，会产生费用）" in _src_55
-      and "self.v_ai = tk.BooleanVar(value=False)" in _src_55
-      and 'args["use_ai"] = bool(self.v_ai.get())' in _src_55
-      and "self.v_ai.set(True)" not in _src_55)   # 只由用户点勾，代码不得偷偷打开
+      '_check(row1, "出文献核实任务书"' not in all_src
+      and "self.v_refs = tk.BooleanVar(value=False)" in all_src
+      and "用 AI 处理参考文献（直连 API，会产生费用）" in all_src
+      and "self.v_ai = tk.BooleanVar(value=False)" in all_src
+      and 'args["use_ai"] = bool(self.v_ai.get())' in all_src
+      and "self.v_ai.set(True)" not in all_src)   # 只由用户点勾，代码不得偷偷打开
 check("(j) 批62：两段式面板引导文案与 mac 逐字一致；回读页定位改为"
       "「回读/比对报告查看器（高级：手动并回，离线）」但侧栏短名不变、能力保留"
       "（并回/入藏/离线体检），并明确「本页不生成任务书」",
-      "文献核实任务书 = 两段式第一段产物" in _src_55
-      and "CLI --verify-refs（高级）" in _src_55
-      and 'page_title = "回读/比对报告查看器（高级：手动并回，离线）"' in _src_55
-      and 'name = "文献回读校验"' in _src_55
-      and "本页不生成《文献核实任务书》" in _src_55
-      and "并回产物 reference.bib" in _src_55 and "入藏到引用库" in _src_55)
+      "文献核实任务书 = 两段式第一段产物" in all_src
+      and "CLI --verify-refs（高级）" in all_src
+      and 'page_title = "回读/比对报告查看器（高级：手动并回，离线）"' in all_src
+      and 'name = "文献回读校验"' in all_src
+      and "本页不生成《文献核实任务书》" in all_src
+      and "并回产物 reference.bib" in all_src and "入藏到引用库" in all_src)
 check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
       "与 mac 强制 useAI=false 同口径）",
-      "api=None if coop_phase else" in _src_55)
+      "api=None if coop_phase else" in all_src)
 check("(j) 失败提示含**退出码 + 日志尾部**（`E.output_tail(tail…)`），不只一句「失败」",
-      "E.output_tail(tail" in _src_55)
+      "E.output_tail(tail" in all_src)
 check("(j) 设置页有单篇/单批 token 预算输入 + 红字错误位；隐私文案讲清"
       "「外部 chat 不上传任何内容、零费用」",
-      "单篇 token 预算" in _src_55 and "单批 token 预算" in _src_55
-      and "budget_error" in _src_55 and "不上传任何内容" in _src_55
-      and "零费用" in _src_55)
+      "单篇 token 预算" in all_src and "单批 token 预算" in all_src
+      and "budget_error" in all_src and "不上传任何内容" in all_src
+      and "零费用" in all_src)
 check("(j) 三个纯逻辑模块都不 import tkinter（engine/settings/coop 可 headless 测）",
       all(not re.search(r"^\s*(?:import|from)\s+tkinter", (SHELL / name).read_text(
           encoding="utf-8"), re.M) for name in ("engine.py", "settings.py", "coop.py")))
