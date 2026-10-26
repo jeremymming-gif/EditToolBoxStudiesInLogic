@@ -13,6 +13,29 @@ func srcFile(_ rel: String) -> String { projFile(SRC_DIR_NAME + "/" + rel) }
 func readSrc(_ rel: String) -> String {
     (try? String(contentsOfFile: srcFile(rel), encoding: .utf8)) ?? ""
 }
+/// B-230：同族多文件（`Views/ConvertTab*.swift` 这类**非递归** glob，与 `build.sh` 的 4 条
+/// `*.swift` glob 同口径）。拆分后一个页面的源码散在同一层多个文件里，源码级断言必须看整族；
+/// **顺序固定** = 按文件名排序（`ConvertTab.swift` 排在同族其余文件之前）。
+func srcGlobFiles(_ pattern: String) -> [String] {
+    guard pattern.contains("*") else { return [pattern] }
+    let ns = pattern as NSString
+    let parts = ns.lastPathComponent.components(separatedBy: "*")
+    guard parts.count == 2 else { return [] }
+    let all = (try? FileManager.default.contentsOfDirectory(atPath: srcFile(ns.deletingLastPathComponent))) ?? []
+    return all.filter { $0.hasPrefix(parts[0]) && $0.hasSuffix(parts[1]) }.sorted()
+}
+/// 把整族源文件按固定顺序拼起来读。任一文件读不到 → 整体返回 ""（正向断言必然红，不假 PASS）。
+func readSrcGlob(_ pattern: String) -> String {
+    guard pattern.contains("*") else { return readSrc(pattern) }
+    let dir = (pattern as NSString).deletingLastPathComponent
+    let names = srcGlobFiles(pattern)
+    guard !names.isEmpty else { return "" }
+    let texts = names.map {
+        try? String(contentsOfFile: srcFile(dir + "/" + $0), encoding: .utf8)
+    }
+    guard !texts.contains(where: { $0 == nil }) else { return "" }
+    return texts.compactMap { $0 }.joined(separator: "\n")
+}
 
 import Foundation
 import CryptoKit          // (h1) 只用来算 ai.json 的 sha256（纯本地，不碰网络）
@@ -814,7 +837,7 @@ check("g-nil-missing", "nil + 目录不存在 → 默认值（follow/2048），�
         + " dirCreated=\(exists(gMissing))")
 
 // 接线（源码级）：调用方确实把当前值传了进来，run() 确实把它交给 engineEnvironment
-let convertTabSrc = readSrc("Views/ConvertTab.swift")
+let convertTabSrc = readSrcGlob("Views/ConvertTab*.swift")
 check("g-caller-wiring", "(a') ConvertTab.run() 从同一个 settings 现取旋钮，并以 run(knobs:) 传入",
       convertTabSrc.contains("let knobs = settings.aiEngineKnobs")
         && convertTabSrc.contains("ConvertFeature.run(options: o, knobs: knobs, log: logger)"),
@@ -1069,7 +1092,7 @@ check("i5b-searchrefs-needs-ai", "没勾「用 AI」时**不传** --search-refs�
       !argv(optRefsNoAI).contains("--search-refs"), "argv=\(argv(optRefsNoAI))")
 
 // i6: 源码级接线：SwiftUI 只绑定纯函数，联动逻辑只有一份
-let tabSrc = readSrc("Views/ConvertTab.swift")
+let tabSrc = readSrcGlob("Views/ConvertTab*.swift")
 check("i6-bind", "ConvertTab 的复选框绑定走 `ConvertFeature.toggled(...)`；批62 起不再绑定独立任务书勾选",
       tabSrc.contains("ConvertFeature.toggled(")
         && !tabSrc.contains("verifyRefsLocked(")
@@ -1282,9 +1305,10 @@ check("u4-all-features", "全部 8 个 Feature 都处理了 `Shell.cancelledStat
       uMissed.isEmpty,
       uMissed.isEmpty ? "8/8" : "未处理：\(uMissed.joined(separator: "、"))")
 let uViewFiles = ["Views/SimpleFeatureView.swift", "Views/CheckBibView.swift",
-                  "Views/ConvertTab.swift", "Views/ProofCheckView.swift",
+                  "Views/ConvertTab*.swift", "Views/ProofCheckView.swift",
                   "Views/InfoCheckView.swift", "Views/ContentTab.swift"]
-let uNoCancel = uViewFiles.filter { !readSrc($0).contains("model.cancel?.cancel()") }
+// B-230：初排页拆成同层多文件 → 这一项按**整族**读（仍是 6 个「页」，不弱化）
+let uNoCancel = uViewFiles.filter { !readSrcGlob($0).contains("model.cancel?.cancel()") }
 check("u5-views-have-cancel", "6 个可运行页的主按钮都变成「取消」（`model.cancel?.cancel()`）",
       uNoCancel.isEmpty,
       uNoCancel.isEmpty ? "6/6" : "缺：\(uNoCancel.joined(separator: "、"))")
@@ -2127,7 +2151,7 @@ var n59Plain = ConvertFeature.Options(); n59Plain.coopFulltext = true
 check("n59-plain-ignores", "普通转换（非两段式）不传 --coop-fulltext（引擎只在 --coop-taskbook-only 下识别）",
       !ConvertFeature.arguments(n59Plain).contains("--coop-fulltext"),
       "argv=\(ConvertFeature.arguments(n59Plain))")
-let n59TabSrc = readSrc("Views/ConvertTab.swift")
+let n59TabSrc = readSrcGlob("Views/ConvertTab*.swift")
 let n59ConvSrc = readSrc("Features/ConvertFeature.swift")
 check("n59-ui-wiring", "源码级接线：ConvertTab 有「全文 AI 核查（任务书附正文）」复选框 + 范围单选，"
       + "ConvertFeature 拼 --coop-fulltext",
@@ -2177,7 +2201,7 @@ n60Ph2 = CoopFeature.prepare(n60Ph2, phase: .second)
 check("n60-coop-ph2-ignores", "两段式第二段不传 --llm-fulltext",
       !ConvertFeature.arguments(n60Ph2).contains("--llm-fulltext"),
       "argv=\(ConvertFeature.arguments(n60Ph2))")
-let n60TabSrc = readSrc("Views/ConvertTab.swift")
+let n60TabSrc = readSrcGlob("Views/ConvertTab*.swift")
 let n60ConvSrc = readSrc("Features/ConvertFeature.swift")
 check("n60-ui-wiring", "源码级接线：ConvertTab 有「全文 AI 核查（直连 API，会产生费用）」复选框（默认不勾），"
       + "ConvertFeature 拼 --llm-fulltext",
@@ -2410,7 +2434,7 @@ check("q63-settings-clear", "留空 = 删键回默认（不存空串）；自动
 q63Defaults.removePersistentDomain(forName: q63Suite)
 
 // ── 源码级接线（不依赖窗口手点；屏幕锁定时作为等价证据）
-let q63TabSrc = readSrc("Views/ConvertTab.swift")
+let q63TabSrc = readSrcGlob("Views/ConvertTab*.swift")
 let q63ConvSrc = readSrc("Features/ConvertFeature.swift")
 let q63SettingsSrc = readSrc("Views/SettingsTab.swift")
 let q63VmSrc = readSrc("Core/ViewModels.swift")
@@ -3232,7 +3256,7 @@ check("q4-logtail", "失败日志尾部：取最后 N 行、去掉时间戳前�
       "tail=\(CoopFeature.logTail(coopTailText, maxLines: 2))")
 
 // 源码级接线：UI 必须真的走这些纯函数（界面照抄判据 = 双份真相）
-let convTabSrc2 = readSrc("Views/ConvertTab.swift")
+let convTabSrc2 = readSrcGlob("Views/ConvertTab*.swift")
 let convFeatSrc2 = readSrc("Features/ConvertFeature.swift")
 let setTabSrc2 = readSrc("Views/SettingsTab.swift")
 check("r1-ui-coop", "ConvertTab：有「AI 协同初排（两段式）」开关 + 多路回填导入（批56）+ --coop-apply 勾选 + 「未交付」口径",
@@ -3492,7 +3516,7 @@ check("s7-ph1-can-run", "ph1 暂存目录 + 已选 2 项 → 可以跑第二段�
       "hint=\(CoopFeature.secondPhaseDisabledHint(replyCount: 0, stage: s56Ph1) ?? "<nil>")")
 
 // s8 源码级接线：界面真的用纯逻辑（防「两套真相」）
-let s56TabSrc = readSrc("Views/ConvertTab.swift")
+let s56TabSrc = readSrcGlob("Views/ConvertTab*.swift")
 let s56ConvSrc = readSrc("Features/ConvertFeature.swift")
 check("s8-tab-wiring", "ConvertTab：多文件/目录/剪贴板导入 + 已选清单移除/清除 + 第二段判据 + 0 回填警告 + 打开建议清单",
       s56TabSrc.contains("添加文件…") && s56TabSrc.contains("添加目录…")
@@ -3553,7 +3577,7 @@ check("m62-coop-ph2", "两段式第二段不带 --verify-refs（最小集契约�
       !ConvertFeature.arguments(m62Ph2).contains("--verify-refs"),
       "argv=\(ConvertFeature.arguments(m62Ph2))")
 // 源码级：独立勾选已从界面移除；字段/toggled 分支保留兼容；两段式面板有引导文案
-let m62TabSrc = readSrc("Views/ConvertTab.swift")
+let m62TabSrc = readSrcGlob("Views/ConvertTab*.swift")
 let m62ConvSrc = readSrc("Features/ConvertFeature.swift")
 check("m62-ui-hidden", "批62：初排页不再暴露独立「生成文献核实任务书」勾选（无 Toggle/绑定/置灰说明）",
       !m62TabSrc.contains("生成参考文献核实任务书（交给自己的 AI 核实）")
@@ -3584,6 +3608,25 @@ check("m62-checkbib-capabilities", "CheckBib 页能力保留：并回 / 入藏�
 check("m62-checkbib-log-title", "CheckBib 运行日志标题同步为「回读/比对报告查看器」（只改定位文案）",
       m62CheckBibFeat.contains("log(\"回读/比对报告查看器"),
       "logTitle=\(m62CheckBibFeat.contains("log(\"回读/比对报告查看器"))")
+
+// ===========================================================================
+// (B-230) 拆分后「同族源文件」齐全性
+//
+//     ConvertTab 拆成 5 个**同层**文件（`build.sh` 的 `Views/*.swift` 非递归 glob 自动收，
+//     构建脚本零改动）：ConvertTab.swift（保留名：页面骨架 + 运行/收尾）+
+//     ConvertTabModel.swift（`ConvertModel` 类型本体）/ ConvertTabForm.swift /
+//     ConvertTabCoop.swift / ConvertTabRows.swift。
+//     上面 (g)/(i6)/(n59)/(n60)/(q63)/(r1)/(s8)/(m62) 的源码级断言改成读**整族**
+//     （`readSrcGlob`）。这里守住「整族真的读到了、一个都没少」—— 否则文件缺失会让
+//     `readSrcGlob` 回 ""，纯负向断言（`!src.contains(...)`）会假 PASS。
+// ===========================================================================
+section("B-230  mac 视图分包：同族源文件齐全")
+let b230TabFamily = srcGlobFiles("Views/ConvertTab*.swift")
+check("b230-tab-family", "ConvertTab 族源文件齐全（拆分后同层多文件，glob 拼接非空）",
+      Set(["ConvertTab.swift", "ConvertTabCoop.swift", "ConvertTabForm.swift",
+           "ConvertTabModel.swift", "ConvertTabRows.swift"]).isSubset(of: Set(b230TabFamily))
+        && !readSrcGlob("Views/ConvertTab*.swift").isEmpty,
+      "files=\(b230TabFamily.joined(separator: ","))")
 
 print("")
 print("================================================================")

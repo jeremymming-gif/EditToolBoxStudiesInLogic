@@ -54,6 +54,31 @@ func readSource(_ relative: String) -> String {
     (try? String(contentsOf: sources.appendingPathComponent(relative), encoding: .utf8)) ?? ""
 }
 
+/// B-230：同族多文件（`Views/BibDbReview*.swift` 这类**非递归** glob，与 `build.sh` 的
+/// 4 条 `*.swift` glob 同口径）。「待处理」页拆成同层多文件后，源码级断言必须看整族；
+/// **顺序固定** = 按文件名排序（`BibDbReviewView.swift` 排在同族其余文件之前）。
+func sourceGlobFiles(_ pattern: String) -> [String] {
+    guard pattern.contains("*") else { return [pattern] }
+    let ns = pattern as NSString
+    let parts = ns.lastPathComponent.components(separatedBy: "*")
+    guard parts.count == 2 else { return [] }
+    let dir = sources.appendingPathComponent(ns.deletingLastPathComponent)
+    let all = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+    return all.filter { $0.hasPrefix(parts[0]) && $0.hasSuffix(parts[1]) }.sorted()
+}
+/// 把整族源文件按固定顺序拼起来读。任一文件读不到 → 整体返回 ""（正向断言必然红，不假 PASS）。
+func readSourceGlob(_ pattern: String) -> String {
+    guard pattern.contains("*") else { return readSource(pattern) }
+    let dir = (pattern as NSString).deletingLastPathComponent
+    let names = sourceGlobFiles(pattern)
+    guard !names.isEmpty else { return "" }
+    let texts = names.map {
+        try? String(contentsOf: sources.appendingPathComponent(dir + "/" + $0), encoding: .utf8)
+    }
+    guard !texts.contains(where: { $0 == nil }) else { return "" }
+    return texts.compactMap { $0 }.joined(separator: "\n")
+}
+
 // ── 夹具 ─────────────────────────────────────────────────────────────────
 func makeItem(_ no: Int, pending: Bool, issue: String = "2023年第1期(68)",
               slug: String = "01 x", verified: Bool = false)
@@ -488,7 +513,7 @@ check("(e) 新引擎 JSON：明细分类直接用结构化 registry",
 
 // ── (f) 生产源码接线（B-188 目标态；防「纯逻辑在、视图没用上」）──────────
 print("\n── (f) 生产源码接线（B-188 目标态）──")
-let reviewSource = readSource("Views/BibDbReviewView.swift")
+let reviewSource = readSourceGlob("Views/BibDbReview*.swift")
 let statsSource = readSource("Views/BibDbStatsView.swift")
 let mainWindowSource = readSource("Views/MainWindow.swift")
 let querySource = readSource("Views/BibDbQueryView.swift")
@@ -1667,6 +1692,20 @@ check("(q) sheet 切片：无 import/confirm 写库调用、无 dbPath、无 dry
 check("(q) 引擎契约接线：normalize-bib 只读（无 --apply/--db）",
       importSource.contains("\"normalize-bib\"")
       && !normFileSrc.contains("--apply") && !normTextSrc.contains("--apply"))
+
+// ── (r) B-230：同族源文件齐全性 ─────────────────────────────────────────
+//  「待处理」页拆成 4 个**同层**文件（`build.sh` 的 `Views/*.swift` 非递归 glob 自动收，
+//  构建脚本零改动）：BibDbReviewView.swift（保留名：视图骨架 + 顶部/状态条/清单文件）
+//  + BibDbReviewModel / BibDbReviewConflicts / BibDbReviewHealth。
+//  上面 (f) 组改成读**整族**（`readSourceGlob`）；这里守住「整族真的读到了」——
+//  否则文件缺失会让 `readSourceGlob` 回 ""，纯负向断言（`!src.contains(...)`）会假 PASS。
+print("\n── (r) B-230 分包：同族源文件齐全 ──")
+let reviewFamily = sourceGlobFiles("Views/BibDbReview*.swift")
+check("(r) BibDbReview 族源文件齐全（拆分后同层多文件，glob 拼接非空）",
+      Set(["BibDbReviewConflicts.swift", "BibDbReviewHealth.swift",
+           "BibDbReviewModel.swift", "BibDbReviewView.swift"]).isSubset(of: Set(reviewFamily))
+      && !readSourceGlob("Views/BibDbReview*.swift").isEmpty,
+      "files=\(reviewFamily.joined(separator: ","))")
 
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

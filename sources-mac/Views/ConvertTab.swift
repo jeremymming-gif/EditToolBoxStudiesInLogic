@@ -6,52 +6,6 @@ import UniformTypeIdentifiers
 /// 界面刻意做得简单：**必填的只有源文件和输出目录**，其余（metadata/bib/refs/
 /// 语种/模板）都收在「高级」里。因为多数情况工具能自动判断
 /// （语种、模板、参考文献附件都会自动识别），不需要编辑每次填一堆东西。
-/// 「初排转换」页的界面状态。
-/// 用 ObservableObject 而不是 @State —— 运行在工作线程里，
-/// 需要在逃逸闭包中回写 running，@State 在 struct 里做不到（self 不可变）。
-final class ConvertModel: ObservableObject {
-    @Published var options = ConvertFeature.Options()
-    @Published var running = false
-    @Published var showAdvanced = false
-    /// 批63b：初排页「人工填写元数据」表单。值只在本次 App 会话内有效（不做持久化），
-    /// 运行前写成 `/tmp` 临时 JSON 传给引擎 `--metadata-json`，跑完即删；
-    /// 不填 = 与从前完全一样（默认 argv 逐字节不变）。
-    @Published var metadataForm = MetadataForm()
-    /// 表单 sheet 是否打开
-    @Published var showMetadataForm = false
-    @Published var metadataSources: [String] = []   // B-223：多份补充信息（顺序 = 合并顺序）
-    @Published var showMetadataPreview = false
-    @Published var metadataPreview: ConvertFeature.MetadataPreviewPayload? = nil
-    /// U3：本次运行的取消句柄（运行中「开始转换」变成「取消」）
-    var cancel: RunCancel? = nil
-
-    // MARK: - 第 55 批：两段式「AI 协同初排」的界面状态机
-    //
-    // `coopStage` 由**扫描暂存目录**得出（只读引擎写的 `_AI协同状态.json`），
-    // 是按钮组与状态文案的唯一依据：没有它 = 尚未初排；`phase=ph1` = 待人工核实
-    // （**未交付**）；`phase=done` = 已交付。**绝不**把暂存目录当交付目录展示。
-
-    /// 当前源稿在输出目录下匹配到的暂存目录（最近修改的那个）
-    @Published var coopStage: CoopFeature.StageState? = nil
-    /// 匹配到的候选数（>1 时界面提示「已选最近的」）
-    @Published var coopCandidates = 0
-    /// 「一键修改产物（--coop-apply）」—— 默认不勾；必须在跑第二段**之前**决定
-    @Published var coopApply = false
-    /// 第二段成功后才有的建议摘要（从 `<stem>_AI建议.jsonl` 统计；仅界面辅助信息）
-    @Published var coopSuggestions: CoopFeature.SuggestionsSummary? = nil
-    /// 协同记录文件（已交付且文件确实存在时非空）
-    @Published var coopRecordPath = ""
-    /// 最近一次协同运行的失败说明（退出码 + 日志尾部）
-    @Published var coopFailure = ""
-    // ---- 第 56 批：回填导入重构（多文件 / 目录 / 剪贴板 + 已选清单） ----
-    /// 已选回填（文件/目录/剪贴板草稿可混合、可多次导入累加、可逐项移除/清空）。
-    /// **不再折叠成父目录**：每一项按顺序各传一个 `--coop-replies`。
-    @Published var replies = CoopFeature.RepliesSelection()
-    /// 第二段成功后读 state.stats 的结果摘要（旧状态回退 record/旧 state）
-    @Published var coopResult: CoopFeature.CoopResult? = nil
-    /// 剪贴板草稿序号（每次粘贴递增，同秒重复粘贴也不会互相覆盖）
-    var clipboardSequence = 0
-}
 
 struct ConvertTab: View {
 
@@ -65,9 +19,9 @@ struct ConvertTab: View {
     /// 第 55 批：AI 预算闸（单篇/单批 token）。点击转换时现取；只约束直连 API 通道。
     @ObservedObject var budget: AIBudgetSettings
 
-    @StateObject private var model = ConvertModel()
+    @StateObject var model = ConvertModel()
     /// 责编名单（采集 + 自定义 + 默认），见 EditorStore.swift
-    @StateObject private var editors = EditorStore()
+    @StateObject var editors = EditorStore()
 
     // MARK: - 文案常量（View 里只写 `Text(Self.xxxText)`）
     //
@@ -78,15 +32,15 @@ struct ConvertTab: View {
     // **改文案改这里**；界面上不要再写拼接字符串，也不要再在 View 里做长表达式。
     private static let dragHintText: String =
         "源文件与输出目录都可以直接从访达拖进来（高级选项里的路径同理）"
-    private static let forceHintText: String =
+    static let forceHintText: String =
         "目标目录里混着非本工具的文件时（例如手工 latexmk 留下的 "
         + ".fdb_latexmk/.fls），默认会被拦下以防误伤已有稿件目录；"
         + "勾选后照常写入：同名产物被覆盖，目录里的其它文件不会被删。"
-    private static let keepBibHintText: String =
+    static let keepBibHintText: String =
         "勾上 = 只出《文献核实任务书》（引擎侧 --no-ai-merge）：AI 结果不写进产物，"
         + "reference.bib 一个字节都不动。不勾时 AI 结果会并入交付的 reference.bib，"
         + "合并之前的那份会先备份成 reference.bib.ai前（要回滚就把它覆盖回去）。"
-    private static let llmFulltextHintText: String =
+    static let llmFulltextHintText: String =
         "⚠ 勾上后会产生费用：引擎把稿件正文按片直接发送到"
         + "「设置」里配置的 AI 端点，每片一次请求；不勾（默认）时正文一个字节都不外发。\n"
         + "范围：通过批 57 安全闸的 BIB/META/FN 建议会**自动应用**"
@@ -97,18 +51,18 @@ struct ConvertTab: View {
         + "⚠ 前提：需先在「设置」页配置端点；未配置时引擎直接退出 2（不会发出任何请求）。"
     // 批67（B-017）：旧「正文信息覆盖」不再是常驻入口——只在**两段式**模式作兜底显示
     // （普通转换的唯一人工元数据入口是「填写元数据…」表单）。
-    private static let inlineOverrideHeaderText: String =
+    static let inlineOverrideHeaderText: String =
         "正文信息覆盖（两段式兜底；只覆盖第一作者/题名/摘要/单位/邮箱；"
         + "多作者请改用 `.tex` 元数据文件）"
-    private static let inlineOverrideWarningText: String =
+    static let inlineOverrideWarningText: String =
         "⚠ 手工覆盖的生效取决于引擎版本：用旧版引擎时日志会提示"
         + "「尚不支持 overrides 参数」，此时不影响转换本身。"
-    private static let metadataPlaceholderWordText: String =
+    static let metadataPlaceholderWordText: String =
         "留空自动找英文元数据第二源；.docx 可显式指定（.doc 请先另存为 .docx）"
-    private static let metadataPlaceholderLatexText: String =
+    static let metadataPlaceholderLatexText: String =
         "留空用人工填写或同目录 .tex；.doc/.docx 自动识别已取消（请用「填写元数据…」）"
-    private static let metadataSourcesTitleText: String = "元数据 / 补充信息（可选）"
-    private static let metadataSourcesHintText: String =
+    static let metadataSourcesTitleText: String = "元数据 / 补充信息（可选）"
+    static let metadataSourcesHintText: String =
         "可一次选择多份 .docx / .tex / .json；顺序就是合并顺序（先到先得）：只补正文"
         + "缺失项、不覆盖正文已有内容；表单里填过的字段最高优先。"
     private static let metadataSourcesIgnoredLogText: String =
@@ -123,17 +77,17 @@ struct ConvertTab: View {
         + "并把通过安全校验的结果并入 reference.bib）。"
     private static let helpInitialLayoutNoteText: String =
         "⚠ 工具只做初排。数字前缀、目录顺序在三校/蓝样阶段再加。"
-    private static let metadataFormTitleText: String =
+    static let metadataFormTitleText: String =
         "元数据（推荐人工填写；值直接写入交付产物，留空 = 不覆盖）"
     // B-017：普通转换的常驻上限说明（与表单内、docs 同口径；明细来自纯逻辑常量）。
-    private static let metadataFormLimitText: String = MetadataForm.limitSummary
-    private static let metadataFormCoopFallbackTitleText: String =
+    static let metadataFormLimitText: String = MetadataForm.limitSummary
+    static let metadataFormCoopFallbackTitleText: String =
         "元数据（两段式协同：人工元数据表单不适用）"
-    private static let metadataFormCoopHintText: String =
+    static let metadataFormCoopHintText: String =
         "⚠ 两段式协同暂不支持人工填写元数据（引擎会直接退出 2）：表单入口按模式让位，"
         + "本次不会下传表单内容。请按下面「正文信息覆盖」兜底字段填第一作者/题名/摘要/单位/邮箱"
         + "（第一段生效；第二段从暂存状态继承，不用重填），或改用普通转换/`.tex` 元数据文件。"
-    private static let metadataFormPriorityHintText: String =
+    static let metadataFormPriorityHintText: String =
         "表单优先于 `.tex` 元数据文件；临时 JSON 只在本次运行有效，跑完即删。"
     // AI 说明文案（批63b R2：View 本体在 `ConvertAiHintViews.swift`，文案常量留在本文件，
     // 因为既有源码级断言（tools/ai_settings_test i6-hint）按 ConvertTab 源码检查这些句子）。
@@ -186,10 +140,10 @@ struct ConvertTab: View {
     private static let coopFirstPhaseDoneLogText: String =
         "（界面）第一段完成：状态「待人工核实（**未交付**）」。"
         + "下一步：打开任务书 → 外部 chat 核实 → 导入回复 → 运行第二段。\n"
-    private static let coopTaskbookNoteText: String =
+    static let coopTaskbookNoteText: String =
         "文献核实任务书 = 两段式第一段产物；普通转换如需任务书请用两段式或 CLI "
         + "--verify-refs（高级）。"
-    private static let coopToggleHintText: String =
+    static let coopToggleHintText: String =
         "软件不上传、不调用 API、零费用：第一段只在本机生成暂存目录 + 任务书，"
         + "任务书由编辑自己交给外部 chat（豆包/千问/DeepSeek 等）核实；"
         + "把回复导入后跑第二段，**这时才交付**。\n"
@@ -197,34 +151,34 @@ struct ConvertTab: View {
         + "可放同一文件，也可拆成多个文件/目录甚至粘贴剪贴板，一起导入即可。\n"
         + "⚠ 勾着两段式时「用 AI 处理参考文献」的直连 API 通道本次不生效（不传 --llm-*）；"
         + "「只扫描源稿」不受影响。"
-    private static let coopNoStageText: String =
+    static let coopNoStageText: String =
         "尚未初排：点上方「开始第一段（出任务书）」→ 打开任务书去外部 chat 核实 → "
         + "回来「添加文件…/添加目录…/从剪贴板导入」→ 运行第二段。第一段跑完前不会写最终交付目录。"
-    private static let coopApplyHintText: String =
+    static let coopApplyHintText: String =
         "勾上 = 引擎 `--coop-apply`：把**通过校验的建议**落到产物——文献字段（BIB）→ reference.bib；"
         + "元数据（META）→ 输出 .tex 的 `\\my*` 字段；纯引用脚注匹配（FN，仅 citation_unmatched）"
         + "→ .tex 正文 `\\parencite`。写前分别备份 `reference.bib.ai前` / `<名>.tex.ai前`（可恢复）；"
         + "编辑侧已有值不覆盖，混合型脚注 / 文献区原文等仍**只列清单待人工**。\n"
         + "⚠ 这个决定必须在跑第二段**之前**做：引擎 phase=done 后同一回填重跑是幂等早退，"
         + "看到建议再回头勾已经晚了。"
-    private static let coopSuggestionsTimingText: String =
+    static let coopSuggestionsTimingText: String =
         "建议清单（`_AI建议.md/.jsonl`）在第二段跑完后才生成；现在看不到是正常的。"
         + "第二段成功后这里会按引擎统计显示「文献回填 x/y」与「低置信回复」计数。"
-    private static let coopRepliesHintText: String =
+    static let coopRepliesHintText: String =
         "多个文件 / 目录 / 剪贴板草稿都会**一起**交给引擎（按下面清单顺序逐个传 --coop-replies），"
         + "不会再折叠成父目录。回填=完整 BibTeX + 附一 JSON 两部分，缺一部分会导致漏回填。"
-    private static let coopDeliveredText: String =
+    static let coopDeliveredText: String =
         "已交付。若还要改回填内容或换了源稿：重新跑第一段会重置暂存目录状态；"
         + "对同一份回填重跑第二段是幂等早退（不会重复应用）。"
-    private static let coopFulltextHintText: String =
+    static let coopFulltextHintText: String =
         "默认不勾：任务书不含正文，与从前一致（软件零上传、零费用）。\n"
         + "勾上后引擎会把正文/引用上下文写进本机《文献核实任务书》（范围见上）："
         + "文件只留在本机，由你自己复制给外部 chat 做全文核查——软件仍不上传、不调用 API。"
         + "已获授权，不再弹二次确认。\n"
         + "⚠ 只对「开始第一段（出任务书）」生效；第二段续跑与交付不受影响。"
-    private static let coopDeliveredLegacyNoteText: String =
+    static let coopDeliveredLegacyNoteText: String =
         "（旧状态文件没有 stats 字段：部分计数为估算，准确数字见协同记录与建议清单。）"
-    private static let coopFirstPhaseNoteText: String =
+    static let coopFirstPhaseNoteText: String =
         "第一段不写最终交付目录；第二段成功后才交付。失败时最终目录保持原样。"
 
     
@@ -293,395 +247,6 @@ struct ConvertTab: View {
             log.append("元数据文件：\(why)。\n")
             model.options.metadata = ""
         }
-    }
-
-    // MARK: - 初排页 section（body 拆分；顺序 = 界面自上而下）
-
-    /// 源文件 + 输出目录（两个必填路径）。
-    private var sourceAndOutputSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // ---------- 源文件（必填） ----------
-            LabeledPathRow(
-                title: "源文件（必填）",
-                placeholder: "Word 文稿（.docx）或 LaTeX 文件（.tex）",
-                path: $model.options.source,
-                kind: .file,
-                logStore: log
-            )
-
-            // ---------- 输出目录（必填） ----------
-            LabeledPathRow(
-                title: "输出目录（必填）",
-                placeholder: "初排稿的输出位置，例如 …/2026年第5期(90)（工具会在其下建 名_姓/；不要选 03 名_姓，会多套一层）",
-                path: $model.options.out,
-                kind: .directory,
-                logStore: log
-            )
-        }
-    }
-
-    /// 常勾选项（编译/清理/AI/协同/原稿 PDF）。
-    private var commonOptionsSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            compileCleanToggles
-            // 批 62 入口收敛（B 方案）：独立的「生成文献核实任务书」勾选已隐藏，
-            // 本页只保留两个语义入口 —— 两段式（任务书 = 第一段产物）与 ⑪ 直连 AI
-            // （内部自动带 --verify-refs，产物/行为与批61 一致）。
-            // `Options.verifyRefs` 字段保留给旧脚本/既有调用方，界面不再绑定它；
-            // 普通初排转换不再带 --verify-refs（默认产物无 <stem>_文献核实.md）。
-            // 第 132 条：核实成本闸门提示（值来自「引用库设置」页，点击转换时现取）。
-            if model.options.useAI || model.options.coop {
-                VerifyGateHint(bibdb: bibdb)
-            }
-            aiToggleRow
-            AiHintView(settings: settings,
-                       usesAI: model.options.useAI,
-                       usesCoop: model.options.coop)
-            aiExtraTogglesSection
-            coopToggleRow
-            sourcePdfToggle
-        }
-        .toggleStyle(.checkbox)
-    }
-
-    private var compileCleanToggles: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("生成后立即编译 PDF（XeLaTeX → biber → XeLaTeX ×2）",
-                   isOn: $model.options.compile)
-            Toggle("清理编译中间文件（保留 .log）", isOn: $model.options.clean)
-        }
-    }
-
-    // 「用 AI 处理参考文献」：勾上就是「任务书 + 按同一份规范在本机直连 AI 预跑」
-    // （引擎侧自动带 --verify-refs；批 62 起这是普通初排唯一出任务书的入口）。
-    // 批 62 文案与 Win 逐字对齐（Lead 口径）：标签点明「直连 API，会产生费用」。
-    private var aiToggleRow: some View {
-        Toggle("用 AI 处理参考文献（直连 API，会产生费用）",
-               isOn: binding(.useAI, \.useAI))
-    }
-
-    private var sourcePdfToggle: some View {
-        Toggle("导出原稿 PDF（供矢量图形人工截图）",
-               isOn: $model.options.sourcePdf)
-    }
-
-    /// 勾「用 AI 处理参考文献」后才出现的两个附加开关（保留原 bib / 全文 AI 核查）。
-    @ViewBuilder private var aiExtraTogglesSection: some View {
-        if model.options.useAI {
-            // 只在 AI 勾着时可见：没勾 AI 就没有合并通道，这个开关无从谈起。
-            keepOriginalBibRow
-            keepOriginalBibHint
-            // ---------- 第 60 批：全文 AI 核查（直连 API，会产生费用；默认不勾） ----------
-            // 默认不勾 → 一个参数都不加（默认 argv 与批 59 逐字节相同）。
-            llmFulltextRow
-            llmFulltextHint
-        }
-    }
-
-    private var keepOriginalBibRow: some View {
-        Toggle("保留原 reference.bib（不并入 AI 结果）",
-               isOn: binding(.keepOriginalBib, \.keepOriginalBib))
-    }
-
-    private var keepOriginalBibHint: some View {
-        Text(Self.keepBibHintText)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.leading, 18)
-    }
-
-    private var llmFulltextRow: some View {
-        Toggle("全文 AI 核查（直连 API，会产生费用）",
-               isOn: $model.options.llmFulltext)
-    }
-
-    private var llmFulltextHint: some View {
-        Text(Self.llmFulltextHintText)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.leading, 18)
-    }
-
-    /// 两段式「AI 协同初排」开关（默认关）+ 勾上后的说明。
-    @ViewBuilder private var coopToggleRow: some View {
-        // 默认关 → 协同相关字段一个都不进 argv，转换行为与批 54 逐字节相同。
-        Toggle("AI 协同初排（两段式；外部 chat 免费流程）",
-               isOn: $model.options.coop)
-            .onChange(of: model.options.coop) { on in
-                if on { refreshCoopStage() }
-            }
-        if model.options.coop {
-            Text(Self.coopToggleHintText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.leading, 18)
-        }
-    }
-
-    /// 「高级选项」整行按钮（批 63 B1：点文字/整行都能开合；状态仍是 model.showAdvanced）。
-    private var advancedToggleButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.15)) { model.showAdvanced.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .rotationEffect(.degrees(model.showAdvanced ? 90 : 0))
-                Text("高级选项")
-                Spacer()
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// 高级选项展开后的全部内容。
-    private var advancedOptionsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            advancedPathsSection
-            advancedNamingSection
-            advancedPublicationSection
-            advancedMetadataSection
-        }
-        .padding(.top, 8)
-    }
-
-    /// 高级：覆盖开关 + 三个附件/元数据路径。
-    private var advancedPathsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle("覆盖已存在的输出目录（--force）",
-                   isOn: $model.options.force)
-                .toggleStyle(.checkbox)
-            Text(Self.forceHintText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            LabeledPathRow(
-                title: "参考文献附件",
-                placeholder: "留空则自动识别（全库 37% 的稿件把文献单独放一个文件）",
-                path: $model.options.refs,
-                kind: .file,
-                logStore: log
-            )
-            LabeledPathRow(
-                title: "已有的 .bib",
-                placeholder: "指定后不再自动生成",
-                path: $model.options.bib,
-                kind: .file,
-                logStore: log
-            )
-        }
-    }
-
-    /// 高级：输出名 / 第一作者 / 语种。
-    private var advancedNamingSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            outputNameRow
-            sourceAuthorRow
-            languageRow
-        }
-    }
-
-    private var outputNameRow: some View {
-        HStack(spacing: 12) {
-            Text("输出名")
-            TextField("留空则按第一作者自动命名（如 Li_Lei）",
-                      text: $model.options.name)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
-    private var sourceAuthorRow: some View {
-        HStack(spacing: 12) {
-            Text("第一作者")
-            TextField("留空则从源文件提取",
-                      text: $model.options.author)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
-    private var languageRow: some View {
-        HStack(spacing: 12) {
-            Text("语种")
-            languagePicker
-        }
-    }
-
-    private var languagePicker: some View {
-        Picker("", selection: $model.options.lang) {
-            Text("自动判断").tag("")
-            Text("中文（SLCN-MIX.sty）").tag("zh")
-            Text("英文（SLEN.sty）").tag("en")
-        }
-        .labelsHidden()
-        .frame(width: 240)
-    }
-
-    /// 高级：出版信息（卷/期/年、起止页/收稿/责编、基金项目）。
-    private var advancedPublicationSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider().padding(.vertical, 2)
-            Text("出版信息（选填；填了 PDF 页眉/页码才是最终形态）")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                Text("卷 / 期 / 年")
-                TextField("19", text: $model.options.vol)
-                    .textFieldStyle(.roundedBorder).frame(width: 60)
-                TextField("5", text: $model.options.issue)
-                    .textFieldStyle(.roundedBorder).frame(width: 60)
-                TextField("2026", text: $model.options.pubYear)
-                    .textFieldStyle(.roundedBorder).frame(width: 70)
-            }
-            pagesAndEditorRow
-            HStack(spacing: 12) {
-                Text("基金项目")
-                TextField("选填，如：国家社会科学基金项目“…”（23BZX113）。",
-                          text: $model.options.grants)
-                    .textFieldStyle(.roundedBorder)
-            }
-        }
-    }
-
-    /// 起止页 / 收稿日期 / 责编（含自定义名单与默认值按钮）。
-    private var pagesAndEditorRow: some View {
-        HStack(spacing: 12) {
-            Text("起止页")
-            TextField("137-152", text: $model.options.pages)
-                .textFieldStyle(.roundedBorder).frame(width: 110)
-            Text("收稿日期")
-            TextField("2025-09-19", text: $model.options.received)
-                .textFieldStyle(.roundedBorder).frame(width: 110)
-            editorControls
-        }
-    }
-
-    /// 责编控件（批63b R2：抽成独立小 View `EditorControlsRow`，避免大 ViewBuilder
-    /// 上下文里的类型检查开销；行为/布局/文案不变）。
-    private var editorControls: some View {
-        EditorControlsRow(editors: editors, selection: $model.options.editor)
-    }
-
-    /// 高级：元数据入口（B-017：普通=表单 / 两段式=内联兜底）+ 引用环境阈值。
-    private var advancedMetadataSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider().padding(.vertical, 2)
-            if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop)
-                != .inlineFallback {
-                metadataSourcesSection
-            }
-            metadataEntrySection
-            Divider().padding(.vertical, 2)
-            quoteThresholdRow
-        }
-    }
-
-    /// B-017：**单一元数据入口**。路由判据只有一份——
-    /// `MetadataForm.entryMode(scanOnly:coop:)`（纯逻辑，`tools/ai_settings_test` 直接断言）：
-    ///   · 普通转换 → 只显示「填写元数据…」表单（旧 7 内联字段不渲染）；
-    ///   · 两段式协同 → 表单不适用（引擎对 JSON + 协同明确 exit 2），只显示旧 7 内联兜底。
-    @ViewBuilder private var metadataEntrySection: some View {
-        if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop) == .inlineFallback {
-            coopMetadataFallbackSection
-        } else {
-            metadataFormSection
-        }
-    }
-
-    /// 两段式：人工元数据表单不适用 → 说明 + 「已填表单不下传」提醒 + 旧内联兜底。
-    private var coopMetadataFallbackSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(Self.metadataFormCoopFallbackTitleText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(Self.metadataFormCoopHintText)
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.metadataForm.hasAnyValue {
-                coopFormValuesRow
-            }
-            inlineOverrideSection
-        }
-    }
-
-    /// 两段式下表单已填内容不会下传：明确提醒 + 一键清空（绝不静默丢值）。
-    private var coopFormValuesRow: some View {
-        HStack(spacing: 12) {
-            Text(coopFormValuesNotAttachedText())
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("清空表单") { model.metadataForm = MetadataForm() }
-        }
-    }
-
-    private func coopFormValuesNotAttachedText() -> String {
-        "已填表单：" + model.metadataForm.summaryLine() + "（两段式不下传，本次不会写进产物）"
-    }
-
-    /// 高级：引用环境阈值（原与元数据同段；B-017 拆成小 View 保持表达式小）。
-    private var quoteThresholdRow: some View {
-        HStack(spacing: 12) {
-            Text("引用环境阈值")
-            TextField("105", value: $model.options.quoteThreshold, format: .number)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 80)
-            Text("字符（超过此长度提升为引用环境）")
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// 旧「正文信息覆盖」7 个内联字段（B-017 起只作**两段式兜底**显示；普通转换不渲染）。
-    /// 表单与内联不再同时可编辑；运行前 GUI 仍会按字段清零（防御旧调用方/旧状态双源）。
-    private var inlineOverrideSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // ---------- 正文信息手工覆盖（两段式兜底输入路径） ----------
-            // 引擎按版面启发式解析题名/作者/摘要，总有解析不出来或
-            // 解析错的稿子。这里是两段式下的兜底：填了就覆盖自动解析结果。
-            // 全部留空 = 不覆盖，与旧版行为一致。
-            Text(Self.inlineOverrideHeaderText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                Text("中文题名")
-                TextField("留空则用自动解析结果", text: $model.options.titleCn)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack(spacing: 12) {
-                Text("第一作者")
-                TextField("留空则用自动解析结果",
-                          text: $model.options.authorCn)
-                    .textFieldStyle(.roundedBorder).frame(width: 180)
-                Text("单位")
-                TextField("如：中山大学逻辑与认知研究所",
-                          text: $model.options.affiliationCn)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack(spacing: 12) {
-                Text("邮箱")
-                TextField("如：someone@example.com", text: $model.options.email)
-                    .textFieldStyle(.roundedBorder).frame(width: 240)
-            }
-            HStack(spacing: 12) {
-                Text("中文摘要")
-                TextField("留空则用自动解析结果", text: $model.options.abstractCn)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack(spacing: 12) {
-                Text("英文题名")
-                TextField("留空则用自动解析结果", text: $model.options.titleEn)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack(spacing: 12) {
-                Text("英文摘要")
-                TextField("留空则用自动解析结果", text: $model.options.abstractEn)
-                    .textFieldStyle(.roundedBorder)
-            }
-            Text(Self.inlineOverrideWarningText)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        // B-017：本 section 只在两段式模式渲染，而两段式**不下传**表单 →
-        // 不能再按「表单有值」置灰（否则用户两段式下两个入口都不可用）。
     }
 
     /// 运行按钮区（只扫描 / 开始转换 / 取消 / 进度）。
@@ -768,447 +333,16 @@ struct ConvertTab: View {
                         vendor: FileManager.default.fileExists(atPath: vendor) ? vendor : nil)
     }
 
-    // MARK: - B-223：元数据 / 补充信息（多份，可选；只补空、表单最高优先）
-    /// 多份补充源（.docx / .tex / .json）：顺序 = 合并顺序（先到先得）；只补正文空值。
-    @ViewBuilder private var metadataSourcesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(Self.metadataSourcesTitleText).font(.caption).foregroundStyle(.secondary)
-                Button("添加…") { addMetadataSource() }
-                Button("预览…") { previewMetadataSources() }
-                    .disabled(model.options.source.isEmpty || model.running)
-            }
-            Text(model.metadataSources.isEmpty
-                 ? Self.metadataFilePlaceholder(for: model.options.source)
-                 : Self.metadataSourcesHintText)
-                .font(.caption2).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            ForEach(Array(model.metadataSources.enumerated()), id: \.offset) { index, path in
-                HStack(spacing: 8) {
-                    Text("\(index + 1). \((path as NSString).lastPathComponent)")
-                        .font(.caption).lineLimit(1).help(path)
-                    Button("移除") {
-                        if index < model.metadataSources.count {
-                            model.metadataSources.remove(at: index)
-                        }
-                    }.buttonStyle(.borderless)
-                }
-            }
-        }
-    }
-
-    private func addMetadataSource() {   // 多选入口 = 多次单选累加；同一路径不重复加
-        guard let p = PanelKit.pickFile(allowedExtensions: ["docx", "tex", "json"]) else {
-            return
-        }
-        if case .ignored(let why) = ConvertFeature.metadataSourceVerdict(
-            path: p, source: model.options.source) {
-            log.append("元数据 / 补充信息：\(why)。\n")
-            return
-        }
-        guard !model.metadataSources.contains(p) else { return }
-        model.metadataSources.append(p)
-    }
-
-    /// 只读预览（引擎 `--metadata-preview-out`；不建产物目录 / 不写产物 / 不写交接单）。
-    private func previewMetadataSources() {
-        var o = model.options; o.metadataSources = model.metadataSources
-        var formTemp: String? = nil
-        if model.metadataForm.hasAnyValue, let json = model.metadataForm.jsonString() {
-            let p = MetadataForm.tempFilePath(stem: o.source)
-            if (try? json.write(toFile: p, atomically: true, encoding: .utf8)) != nil {
-                o.metadataJSON = p
-                formTemp = p
-            }
-        }
-        defer { if let p = formTemp { MetadataForm.removeTemporaryFile(p) } }
-        log.append("元数据预览：读取中（只读，不写任何产物）…\n")
-        if let payload = ConvertFeature.previewMetadata(o, knobs: settings.aiEngineKnobs,
-                                                        log: Logger(store: log)) {
-            model.metadataPreview = payload; model.showMetadataPreview = true
-            log.append("元数据预览：\(payload.rows.count) 个字段；未写任何产物。\n")
-        } else {
-            log.append("元数据预览失败（见上方日志）；本次未写任何文件。\n")
-        }
-    }
-
-    /// 批63b：「元数据文件」占位文案按**源稿通道**动态变（两通道既有能力不同，不能一刀切）。
-    ///
-    ///   · LaTeX 源：`.doc/.docx` 自动识别已取消（用户拍板）→ 引导用表单或同目录 `.tex`；
-    ///   · Word 源：`.docx` 是既有「英文元数据第二源」（第 76 条，行为不变）→ 引导显式指定。
-    private static func metadataFilePlaceholder(for source: String) -> String {
-        let lowered = source.lowercased()
-        if lowered.hasSuffix(".doc") || lowered.hasSuffix(".docx") {
-            return Self.metadataPlaceholderWordText
-        }
-        return Self.metadataPlaceholderLatexText
-    }
-
-    /// 普通转换：初排页**唯一**的人工元数据入口（表单在 sheet 里；这里放入口 + 摘要 +
-    /// 常驻上限说明）。B-017：旧 7 内联字段在此模式不再渲染。
-    private var metadataFormSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(Self.metadataFormTitleText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            metadataFormEntryRow
-            Text(Self.metadataFormLimitText)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.metadataForm.hasAnyValue {
-                Text(Self.metadataFormPriorityHintText)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    @ViewBuilder private var metadataFormEntryRow: some View {
-        HStack(spacing: 12) {
-            metadataFormButton
-            if model.metadataForm.hasAnyValue {
-                Text(model.metadataForm.summaryLine())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("清空") { model.metadataForm = MetadataForm() }
-            }
-        }
-    }
-
-    private var metadataFormButton: some View {
-        Button {
-            // B-111：打开表单时**单向预填**——仅当表单「第一作者中文姓名」为空、且高级选项
-            // 「第一作者」(`options.author`) 已填时，用其预填；不覆盖已填值。
-            // 只改内存里的表单会话态（不写 JSON、不改 argv），`Options.author` 语义不变。
-            model.metadataForm = MetadataForm.prefillFirstAuthorCN(
-                from: model.options.author,
-                current: model.metadataForm)
-            model.showMetadataForm = true
-        } label: {
-            Label("填写元数据…", systemImage: "square.and.pencil")
-        }
-        // B-017：普通模式唯一入口。两段式模式**整段不渲染**（引擎对 JSON + 协同 exit 2），
-        // 不再靠「禁用按钮」表达——禁用但旁边的兜底字段也置灰时用户会卡死。
-    }
-
     /// 复选框 → 选项的绑定：联动规则的**唯一**实现在 `ConvertFeature.toggled(_:to:in:)`
     /// （纯函数，`tools/ai_settings_test` 直接验证它）。SwiftUI 这边只做绑定，
     /// 不写任何 if/联动逻辑 —— 界面照抄一份判据，迟早会与引擎侧分叉。
-    private func binding(_ which: ConvertFeature.Checkbox,
+    func binding(_ which: ConvertFeature.Checkbox,
                          _ keyPath: WritableKeyPath<ConvertFeature.Options, Bool>) -> Binding<Bool> {
         Binding(get: { model.options[keyPath: keyPath] },
                 set: { model.options = ConvertFeature.toggled(which, to: $0, in: model.options) })
     }
 
-    // MARK: - 第 55 批：两段式「AI 协同初排」
-    // （说明文案统一在上方「文案常量」区：coopToggleHintText / coopNoStageText /
-    //  coopApplyHintText / coopSuggestionsTimingText / coopRepliesHintText /
-    //  coopDeliveredText / coopFulltextHintText 等）
-    /// 两段式的状态区：状态行 + 按钮组（按钮可见性完全由 `coopStage.phase` 决定）。
-    private var coopPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            Text("AI 协同初排（两段式）").font(.callout).bold()
-            // 批 62 入口收敛：任务书从此只有“两段式第一段”这一个界面入口（plus ⑪ 直连 AI）。
-            Text(Self.coopTaskbookNoteText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            coopFailureRow
-            // ---------- 第 59 批：全文 AI 核查（任务书附正文；默认不勾） ----------
-            // 默认不勾 → 一个参数都不加（默认 argv 与批 58 逐字节相同）。
-            Divider()
-            coopFulltextToggleRow
-            coopFulltextScopePicker
-            Text(Self.coopFulltextHintText)
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            coopStageSection
-        }
-        .padding(10)
-        .background(Color.secondary.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-    }
-
-    @ViewBuilder private var coopFailureRow: some View {
-        if !model.coopFailure.isEmpty {
-            Text(model.coopFailure)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var coopFulltextToggleRow: some View {
-        Toggle("全文 AI 核查（任务书附正文）", isOn: $model.options.coopFulltext)
-            .toggleStyle(.checkbox)
-    }
-
-    @ViewBuilder private var coopFulltextScopePicker: some View {
-        if model.options.coopFulltext {
-            Picker("核查范围", selection: $model.options.coopFulltextScope) {
-                ForEach(ConvertFeature.FulltextScope.allCases, id: \.self) { scope in
-                    Text(scope.title).tag(scope)
-                }
-            }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
-            .padding(.leading, 18)
-        }
-    }
-
-    @ViewBuilder private var coopStageSection: some View {
-        if let stage = model.coopStage {
-            coopStagePanel(stage)
-        } else {
-            Text(Self.coopNoStageText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// 暂存目录状态面板。**第一段状态只叫「暂存目录」**，绝不写成交付目录。
-    @ViewBuilder private func coopStagePanel(_ stage: CoopFeature.StageState) -> some View {
-        Text(statusLine(stage))
-            .font(.callout).bold()
-        coopCandidatesNote(stage)
-        coopStageBody(stage)
-    }
-
-    private func statusLine(_ stage: CoopFeature.StageState) -> String {
-        "状态：" + CoopFeature.stageStatusText(stage)
-    }
-
-    @ViewBuilder private func coopCandidatesNote(_ stage: CoopFeature.StageState) -> some View {
-        if model.coopCandidates > 1 {
-            Text("发现 \(model.coopCandidates) 个匹配的暂存目录，已选最近修改的一个：\(stage.stageDir)")
-                .font(.caption).foregroundStyle(.orange)
-        }
-    }
-
-    @ViewBuilder private func coopStageBody(_ stage: CoopFeature.StageState) -> some View {
-        if stage.isDelivered {
-            coopDeliveredPanel(stage)
-        } else {
-            coopPendingPanel(stage)
-        }
-    }
-
-    /// 已交付：只显示**最终目录**与协同记录（暂存目录可以仍在，但不作为交付物展示）。
-    ///
-    /// 第 56 批：成功摘要改读 `state.stats`（旧状态回退 record/旧 state），口径固定为
-    /// 「文献回填 x/y（并入 z 条，未回填 n）｜低置信回复 a（应用 b / 仅记录待人工 c）」；
-    /// 文献回填 0/N 时**橙色警告**（用户真测就栽在「只导入 JSON、丢了 BibTeX」却看到全绿）。
-    @ViewBuilder private func coopDeliveredPanel(_ stage: CoopFeature.StageState) -> some View {
-        Text(deliveredDirLine(stage))
-            .font(.system(.caption, design: .monospaced))
-            .textSelection(.enabled)
-        HStack(spacing: 10) {
-            Button("打开交付目录") { openDeliveredDir(stage) }
-            deliveredRecordButton
-            deliveredSuggestionsButton
-        }
-        deliveredResultSection
-        Text(Self.coopDeliveredText)
-            .font(.caption).foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func deliveredDirLine(_ stage: CoopFeature.StageState) -> String {
-        "交付目录：\(stage.deliveredTo.isEmpty ? stage.finalDir : stage.deliveredTo)"
-    }
-
-    private func openDeliveredDir(_ stage: CoopFeature.StageState) {
-        openPath(stage.deliveredTo.isEmpty ? stage.finalDir : stage.deliveredTo)
-    }
-
-    @ViewBuilder private var deliveredRecordButton: some View {
-        if !model.coopRecordPath.isEmpty {
-            Button("打开协同记录") { openPath(model.coopRecordPath) }
-        }
-    }
-
-    @ViewBuilder private var deliveredSuggestionsButton: some View {
-        if let result = model.coopResult,
-           !result.suggestionsMarkdownPath.isEmpty,
-           FileManager.default.fileExists(atPath: result.suggestionsMarkdownPath) {
-            Button("打开建议清单") { openPath(result.suggestionsMarkdownPath) }
-        }
-    }
-
-    @ViewBuilder private var deliveredResultSection: some View {
-        if let result = model.coopResult {
-            Text(result.summaryLine)
-                .font(.callout).bold()
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-            deliveredZeroBibWarning(result)
-            deliveredLegacyNote(result)
-        }
-    }
-
-    @ViewBuilder private func deliveredZeroBibWarning(_ result: CoopFeature.CoopResult) -> some View {
-        if let warning = result.zeroBibWarning {
-            Text(warningLine(warning))
-                .font(.callout).bold()
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    @ViewBuilder private func deliveredLegacyNote(_ result: CoopFeature.CoopResult) -> some View {
-        if result.stats.legacy {
-            Text(Self.coopDeliveredLegacyNoteText)
-                .font(.caption).foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func warningLine(_ text: String) -> String { "⚠ " + text }
-
-    /// 待人工核实（ph1 / ph2 未完成）：暂存目录 + 任务书 + 回填导入（多文件/目录/剪贴板）
-    /// + 已选清单（可移除/清空）+ 一键修改产物 + 第二段。
-    @ViewBuilder private func coopPendingPanel(_ stage: CoopFeature.StageState) -> some View {
-        Text(pendingStageLine(stage))
-            .font(.system(.caption, design: .monospaced))
-            .textSelection(.enabled)
-        pendingStageButtons(stage)
-        Divider().padding(.vertical, 2)
-        Text("回填导入").font(.callout).bold()
-        pendingRepliesImportRow
-        Text(model.replies.summary)
-            .font(.caption).bold()
-            .foregroundStyle(model.replies.isEmpty ? Color.secondary : Color.primary)
-        pendingRepliesList
-        Text(Self.coopRepliesHintText)
-            .font(.caption).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        pendingApplySection
-        pendingSecondPhaseSection(stage)
-        Text(Self.coopSuggestionsTimingText)
-            .font(.caption).foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-        Text(Self.coopFirstPhaseNoteText)
-            .font(.caption).foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func pendingStageLine(_ stage: CoopFeature.StageState) -> String {
-        "暂存目录（**未交付**，不是最终产物）：\(stage.stageDir)"
-    }
-
-    @ViewBuilder private func pendingStageButtons(_ stage: CoopFeature.StageState) -> some View {
-        HStack(spacing: 10) {
-            pendingTaskbookButton(stage)
-            Button("打开暂存目录") { openStageDir(stage) }
-            pendingRunningSpinner
-        }
-    }
-
-    private func openStageDir(_ stage: CoopFeature.StageState) {
-        openPath(stage.stageDir)
-    }
-
-    @ViewBuilder private func pendingTaskbookButton(_ stage: CoopFeature.StageState) -> some View {
-        if !stage.taskbook.isEmpty {
-            Button("打开任务书") { openPath(stage.taskbook) }
-        }
-    }
-
-    @ViewBuilder private var pendingRunningSpinner: some View {
-        if model.running {
-            ProgressView().controlSize(.small)
-        }
-    }
-
-    private var pendingRepliesImportRow: some View {
-        HStack(spacing: 8) {
-            Button("添加文件…") { addReplyFiles() }
-            Button("添加目录…") { addReplyDirectory() }
-            Button("从剪贴板导入") { importClipboard() }
-            clearRepliesButton
-            Spacer()
-        }
-        .disabled(model.running)
-    }
-
-    @ViewBuilder private var clearRepliesButton: some View {
-        if !model.replies.isEmpty {
-            Button("全部清除") { clearReplies() }
-        }
-    }
-
-    private var pendingRepliesList: some View {
-        ForEach(Array(model.replies.items.enumerated()), id: \.element.path) { index, item in
-            pendingReplyRow(index: index, item: item)
-        }
-    }
-
-    private func pendingReplyRow(index: Int, item: CoopFeature.ReplyItem) -> some View {
-        HStack(spacing: 6) {
-            Text(replyIcon(item))
-                .font(.caption)
-            Text(item.displayName).font(.caption)
-            Text(item.path)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-            Spacer(minLength: 4)
-            Button("移除") { removeReply(at: index) }
-                .buttonStyle(.borderless)
-                .disabled(model.running)
-        }
-        .padding(.leading, 12)
-    }
-
-    private func replyIcon(_ item: CoopFeature.ReplyItem) -> String {
-        CoopFeature.isClipboardDraft(item.path) ? "📋" : (item.isDirectory ? "📁" : "📄")
-    }
-
-    private var pendingApplySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("一键修改产物（--coop-apply；默认不勾）", isOn: $model.coopApply)
-                .toggleStyle(.checkbox)
-            Text(Self.coopApplyHintText)
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func pendingSecondPhaseSection(_ stage: CoopFeature.StageState) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            secondPhaseButton(stage)
-            secondPhaseDisabledHint(stage)
-        }
-    }
-
-    private func secondPhaseButton(_ stage: CoopFeature.StageState) -> some View {
-        Button {
-            runSecondPhase()
-        } label: {
-            Label("运行第二段（续跑 → 编译 → 交付）", systemImage: "square.and.arrow.down.on.square")
-        }
-        .disabled(model.running
-                  || !CoopFeature.canRunSecondPhase(replyCount: model.replies.count, stage: stage))
-    }
-
-    @ViewBuilder private func secondPhaseDisabledHint(_ stage: CoopFeature.StageState) -> some View {
-        if let hint = CoopFeature.secondPhaseDisabledHint(replyCount: model.replies.count, stage: stage) {
-            Text(hint)
-                .font(.caption)
-                .foregroundStyle(model.replies.isEmpty ? Color.orange : Color.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    /// 扫描当前源稿对应的暂存目录并刷新状态（勾开关 / 改源稿 / 改输出目录 / 跑完一段时调用）。
-    private func refreshCoopStage() {
+    func refreshCoopStage() {
         guard !model.running else { return }
         let source = CoopFeature.normalizePath(model.options.source)
         let out = CoopFeature.normalizePath(model.options.out)
@@ -1231,7 +365,7 @@ struct ConvertTab: View {
     }
 
     /// 在访达里打开文件/目录（失败不静默：写进运行日志）。
-    private func openPath(_ path: String) {
+    func openPath(_ path: String) {
         guard !path.isEmpty else {
             log.append("⚠ 要打开的路径为空。\n")
             return
@@ -1246,7 +380,7 @@ struct ConvertTab: View {
 
     /// 「添加文件…」：支持多选；**每个文件各算一项**（不再折叠父目录、不复制临时目录）。
     /// 引擎批 56 起 `--coop-replies` 可重复，界面按已选顺序为每个路径各传一个 flag。
-    private func addReplyFiles() {
+    func addReplyFiles() {
         guard let urls = PanelKit.pickReplyFiles() else { return }
         let counts = addReplyItems(urls)
         model.coopFailure = ""
@@ -1273,7 +407,7 @@ struct ConvertTab: View {
     }
 
     /// 「添加目录…」：目录整体作为一个路径（引擎会读入该目录下全部可读文本）。
-    private func addReplyDirectory() {
+    func addReplyDirectory() {
         guard let url = PanelKit.pickReplyDirectory() else { return }
         let item = CoopFeature.ReplyItem(path: url.path, isDirectory: true)
         model.coopFailure = ""
@@ -1286,7 +420,7 @@ struct ConvertTab: View {
 
     /// 「从剪贴板导入」：读 UTF-8 文本 → 存成临时 `.md` → 加入已选清单。
     /// 空/非文本给红字提示（不静默）；重复粘贴生成多个临时文件（序号递增）。
-    private func importClipboard() {
+    func importClipboard() {
         guard let text = CoopFeature.clipboardText(NSPasteboard.general.string(forType: .string)) else {
             model.coopFailure = "剪贴板里没有可导入的文本：先把外部 chat 的回复复制到剪贴板再点这里。"
             return
@@ -1308,7 +442,7 @@ struct ConvertTab: View {
     }
 
     /// 移除已选清单里的一项（剪贴板草稿顺带删掉临时文件；用户自己选的文件**不删**）。
-    private func removeReply(at index: Int) {
+    func removeReply(at index: Int) {
         guard let item = model.replies.remove(at: index) else { return }
         if CoopFeature.isClipboardDraft(item.path) {
             try? FileManager.default.removeItem(atPath: item.path)
@@ -1317,7 +451,7 @@ struct ConvertTab: View {
     }
 
     /// 清空已选清单（只清清单与剪贴板临时文件，不碰用户文件）。
-    private func clearReplies() {
+    func clearReplies() {
         let drafts = model.replies.items
             .filter { CoopFeature.isClipboardDraft($0.path) }
             .map { $0.path }
@@ -1563,7 +697,7 @@ struct ConvertTab: View {
     ///     不再折叠成父目录；空清单由按钮 disabled 拦住，这里再兜一次并说明原因。
     ///   · `--coop-apply` 必须在**启动前**由勾选框决定（引擎 phase=done 后重跑是幂等早退）。
     ///   · `--clean` 随页面「清理编译中间文件」开关走（ph2 也生效，否则交付目录会留中间文件）。
-    private func runSecondPhase() {
+    func runSecondPhase() {
         guard let stage = model.coopStage else {
             model.coopFailure = "还没有可续跑的暂存目录：请先运行第一段。"
             return
@@ -1606,131 +740,4 @@ struct ConvertTab: View {
         }
     }
 
-}
-
-/// 「责编」控件：选择 / 自定义名单 / 设为默认。
-///
-/// 批63b 发布修复 R2：从 `ConvertTab` 的大 ViewBuilder 上下文里抽出来（旧 Xcode 在
-/// 大上下文里对带条件分支的 ViewBuilder 类型检查代价高）。行为 / 文案 / 布局与拆分前一致：
-/// 在 `pagesAndEditorRow` 的 HStack 里，它展开成「责编 + Picker + [新责编姓名 + 添加] + 设为默认」。
-private struct EditorControlsRow: View {
-    @ObservedObject var editors: EditorStore
-    @Binding var selection: String
-
-    var body: some View {
-        Text("责编")
-        editorPicker
-        customEditorControls
-        setDefaultEditorButton
-    }
-
-    private var editorPicker: some View {
-        Picker("", selection: $selection) { editorPickerItems }
-            .labelsHidden()
-            .frame(width: 130)
-    }
-
-    @ViewBuilder private var editorPickerItems: some View {
-        Text("未指定").tag("")
-        ForEach(editors.allNames, id: \.self) { name in
-            Text(editorOptionTitle(name)).tag(name)
-        }
-        Text("自定义…").tag("__custom__")
-    }
-
-    /// 默认责编在名单里加「（默认）」。抽成方法，让 ViewBuilder 里只剩 `Text(String)`。
-    private func editorOptionTitle(_ name: String) -> String {
-        editors.defaultName == name ? "\(name)（默认）" : name
-    }
-
-    @ViewBuilder private var customEditorControls: some View {
-        if selection == "__custom__" {
-            customEditorNameField
-            addEditorButton
-        }
-    }
-
-    private var customEditorNameField: some View {
-        TextField("新责编姓名", text: $editors.newName)
-            .textFieldStyle(.roundedBorder).frame(width: 90)
-    }
-
-    private var addEditorButton: some View {
-        Button("添加") { addCustomEditor() }
-    }
-
-    private func addCustomEditor() {
-        editors.addCustom(editors.newName)
-        let name = editors.newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !name.isEmpty { selection = name }
-        editors.newName = ""
-    }
-
-    private var setDefaultEditorButton: some View {
-        Button(setDefaultEditorTitle()) { setDefaultEditor() }
-            .disabled(selection.isEmpty || selection == "__custom__")
-    }
-
-    private func setDefaultEditorTitle() -> String {
-        editors.defaultName == selection && !selection.isEmpty
-            ? "已设为默认 ✓" : "设为默认"
-    }
-
-    private func setDefaultEditor() {
-        editors.setDefault(selection)
-    }
-}
-
-/// 一行「标签 + 路径输入 + 浏览按钮」。与 SimpleFeatureView 的选择方式保持一致（NSOpenPanel）。
-struct LabeledPathRow: View {
-    let title: String
-    let placeholder: String
-    @Binding var path: String
-    let kind: PickKind
-    /// 批63b：可选的扩展名白名单（如 `["tex", "docx"]`）。空数组 = 不限制（既有调用方零变化）。
-    /// 只影响「浏览…」的 NSOpenPanel 过滤；拖拽类型由 `PathDrop` 只判文件/目录，
-    /// 更细的通行/拦截由各页自己的纯函数判定（如 `ConvertFeature.metadataPathVerdict`）。
-    var allowedExtensions: [String] = []
-    /// 拖拽落地 / 被拒时写进运行日志（可为 nil）。不能静默——
-    /// 编辑拖了没反应时，日志里要能看出是「类型不对」还是「压根没收到拖拽」。
-    var logStore: LogStore? = nil
-
-    var body: some View {
-        let logger = logStore.map { Logger(store: $0) }
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.callout).bold()
-            HStack(spacing: 8) {
-                DroppablePathField(text: $path, placeholder: placeholder) { url in
-                    PathDrop.receive(url, kind: kind, label: title, log: logger,
-                                     setPath: { path = $0 }, onAccept: nil)
-                }
-                Button("浏览…") { browse() }
-                if !path.isEmpty {
-                    Button {
-                        path = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .pathDropTarget(path: $path, kind: kind, label: title, log: logger)
-    }
-
-    private func browse() {
-        // 批63b R2：NSOpenPanel / ModalResponse 相关代码集中在 `PanelKit.swift`
-        // （旧 Xcode 首次解析 AppKit 运算符的开销不再算到本文件头上）。
-        let picked: String?
-        if kind == .file {
-            // 批63b：只让 picker 显示白名单类型（取舍判据仍在各页的纯函数里，不在这里）。
-            picked = PanelKit.pickFile(allowedExtensions: allowedExtensions)
-        } else {
-            picked = PanelKit.pickDirectory()
-        }
-        if let picked = picked {
-            path = picked
-        }
-    }
 }
