@@ -2,17 +2,15 @@ r"""引用库「默认回填」→「库值全量应用」（B-217 ⑧ → **B-1
 
 HIT_SAFE 条目按库内已核实记录**覆盖产物现值 / 补齐缺失字段**，产出 before/after 清单。
 纪律（宁缺毋滥）：只碰 HIT_SAFE（候选/未命中不动）；只碰白名单 `APPLY_FIELDS`（28 类，
-**与类型无关**）+ doi/url（过 B-189 单点；eprint 三件套仅在线类型）；库导入残留/
-`bibnorm.DROP_FIELDS` 永不应用（`_LIB_IMPORT_RESIDUE` 再兜一层）。渲染单点：
-`bibdb.canonical_fields()` → `bibnorm.normalize_author_field()`（author/editor）→
-`footnotes._bib_escape()` → `bibnorm.strip_published_urls_fields()`；应用即终态、幂等。
-**库有非空值 → 覆盖**（同值不动、不重写）；库缺/空 → 保留产物原值（不抹除、不写空值）。
-弱身份（方案 A：题名类命中且 title_similarity < 0.98）与同 key 重复条目整条跳过；
-库/产物类型不一致照常应用、仅清单记「类型差异（待 B-222 B）」；结构异常 fail-soft
-整条跳过（绝不写半条，未命中条目逐字节不变）。
-兼容：`plan_fills()` 保留 B-217 旧窄语义供既有单测/调用方；新语义只走
-`plan_library_fills()`。调用方：`bibpipeline.bibdb_readonly_scan()`（默认开；
-`--no-bibdb-apply` 关闭时本模块不被调用 → 回旧只读比对口径）。
+**与类型无关**）+ doi/url（过 B-189 单点；eprint 仅在线类型）；库导入残留/DROP_FIELDS 永不应用。
+渲染单点：`bibdb.canonical_fields()` → `normalize_author_field()`（author/editor）→
+`_render_library_text()`（CJK 字体命令去包装、成对 ``$...$`` 数学守恒、段外 `_bib_escape()`
+转义）→ `strip_published_urls_fields()`；应用即终态、幂等。
+**库有非空值 → 覆盖**（同值不动）；库缺/空 → 保留产物原值（不抹除/不写空值）。
+弱身份（方案 A：题名类命中且 title_similarity < 0.98）与同 key 重复条目整条跳过；库/产物
+类型不一致照常应用、仅清单记「类型差异（待 B-222 B）」；结构异常 fail-soft 整条跳过。
+兼容：`plan_fills()` 保留 B-217 旧窄语义；新语义只走 `plan_library_fills()`（调用方
+`bibpipeline.bibdb_readonly_scan()`；`--no-bibdb-apply` 关闭时不被调用 → 回旧只读口径）。
 """
 
 from __future__ import annotations
@@ -328,15 +326,12 @@ WEAK_TITLE_SIM: float = 0.98
 
 def is_weak_identity(match: dict | None) -> bool:
     """B-135 方案 A：题名类命中且 title_similarity < 0.98 → 弱身份（默认整条排除）。"""
-    if not isinstance(match, dict):
-        return False
-    if str(match.get("hit") or "") not in WEAK_HITS:
+    if not isinstance(match, dict) or str(match.get("hit") or "") not in WEAK_HITS:
         return False
     try:
-        sim = float(match.get("title_similarity") or 0.0)
+        return float(match.get("title_similarity") or 0.0) < WEAK_TITLE_SIM
     except (TypeError, ValueError):
         return False
-    return sim < WEAK_TITLE_SIM
 
 
 def _safe_value_ok(value: str) -> bool:
@@ -345,24 +340,51 @@ def _safe_value_ok(value: str) -> bool:
         return False
     depth = 0
     for ch in value:
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth < 0:
-                return False
-    if depth != 0:
-        return False
-    trail = len(value) - len(value.rstrip("\\"))
-    return trail % 2 == 0
+        depth += 1 if ch == "{" else -1 if ch == "}" else 0
+        if depth < 0:
+            return False
+    return depth == 0 and (len(value) - len(value.rstrip("\\"))) % 2 == 0
 
+
+#: B-135 P0 修复（41 篇 run 暴露：89-05 `$\mathcal{L}$` 被转义 / 90-07 斜体上下文 CJK
+#: 字体命令崩溃）：出口渲染的 CJK 文本命令与数学段正则。
+_TEXT_WRAP_RE = re.compile(r"\\text[a-zA-Z]*\{([^{}]*)\}")
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
+_MATH_SPLIT_RE = re.compile(r"(?<!\\)\$")
+
+
+def _render_library_text(value: str) -> str:
+    """库值出口渲染（B-135 P0 修复）：CJK 字体命令去包装（xeCJK 在斜体上下文对
+    ``\\text??{CJK}`` 会崩，去包装视觉不变）；成对未转义 ``$...$`` 数学段原样保留、
+    段外按 `footnotes._bib_escape()` 同源口径转义；未转义 ``$`` 为奇数时整值回退旧
+    `_bib_escape()`（绝不写半条坏值）；花括号不配平时不做去包装改写（保守不动）。"""
+    from .footnotes import _bib_escape
+
+    text = str(value)
+    depth = 0
+    for ch in text:
+        depth += 1 if ch == "{" else -1 if ch == "}" else 0
+        if depth < 0:
+            break
+    if depth == 0:
+        while True:
+            new = _TEXT_WRAP_RE.sub(
+                lambda m: m.group(1) if _CJK_RE.search(m.group(1)) else m.group(0),
+                text)
+            if new == text:
+                break
+            text = new
+    parts = _MATH_SPLIT_RE.split(text)
+    if len(parts) % 2 == 0:            # 未转义 $ 为奇数个 → 回退整值旧转义
+        return _bib_escape(text)
+    return "".join(_bib_escape(p) if i % 2 == 0 else f"${p}$"
+                   for i, p in enumerate(parts))
 
 def _render_library_candidates(etype: str,
                                record_fields: dict) -> list[tuple[str, str]]:
     """库记录（已 `canonical_fields`）→ 白名单候选 ``[(字段名, 渲染终值)]``（固定顺序）。
     doi/url 的 B-189 清理需与产物字段合并，留给 `plan_library_fills()` 单点处理。"""
     from . import bibnorm
-    from .footnotes import _bib_escape
 
     names = list(APPLY_FIELDS) + list(POLICY_FIELDS)
     if str(etype or "").strip().lower() in ONLINE_TYPES:
@@ -374,10 +396,9 @@ def _render_library_candidates(etype: str,
         raw = record_fields.get(name)
         if not isinstance(raw, str) or not raw.strip():
             continue                      # 库缺/空 → 保留产物原值（绝不写空值）
-        value = raw
         if name in ("author", "editor"):
-            value = bibnorm.normalize_author_field(value)
-        value = _bib_escape(value)
+            raw = bibnorm.normalize_author_field(raw)
+        value = _render_library_text(raw)
         if not _safe_value_ok(value):
             continue                      # 结构不安全的值不写（整条仍可应用其余字段）
         out.append((name, value))
@@ -391,17 +412,13 @@ def _field_text_map(body: str) -> dict[str, str]:
 
 
 def plan_library_fills(store, entries, safe: dict) -> tuple[list[dict], dict]:
-    """B-135 全量应用规划：HIT_SAFE → 逐条算覆盖/补齐（不改文本）。
-
-    返回 ``(plans, stats)``：plans 与 `plan_fills()` 同形（可直接交 `apply_text()`）；
-    stats 供日志/清单（``type_diff``/``b189``/``weak``/``duplicate``，``struct`` 由
-    `apply_text()` 补）。``store`` 只为与旧 API 对齐（规划只用已判好的 ``safe``）。
-    """
+    """B-135 全量应用规划：HIT_SAFE → 逐条算覆盖/补齐（不改文本）；返回 ``(plans,
+    stats)``。plans 与 `plan_fills()` 同形（可直接交 `apply_text()`），stats 供日志/
+    清单（``struct`` 由 `apply_text()` 补）；``store`` 仅为与旧 API 对齐。"""
     from . import bibdb, bibnorm
 
     plans: list[dict] = []
-    stats: dict = {"type_diff": [], "b189": [], "weak": [], "duplicate": [],
-                   "struct": []}
+    stats: dict = {"type_diff": [], "b189": [], "weak": [], "duplicate": [], "struct": []}
     counts: dict[str, int] = {}
     for _etype, key, _body in entries or []:
         counts[key] = counts.get(key, 0) + 1
@@ -427,17 +444,12 @@ def plan_library_fills(store, entries, safe: dict) -> tuple[list[dict], dict]:
             continue
         field_map = _field_text_map(body)
         cand_map = dict(candidates)
-        # B-189 的 flat 用 setdefault（首值优先）→ 必须传「候选值优先」的合并字段列，
-        # 清理后再按名字映射回候选值；否则候选 doi/url/内嵌网址永远进不了清理结果。
-        merged: list[tuple[str, str]] = [
-            (name, cand_map.get(name, field_map.get(name, "")))
-            for name in field_map]
-        seen = {name for name, _value in merged}
-        merged.extend((name, value) for name, value in candidates
-                      if name not in seen)
+        # B-189 的 flat 用 setdefault（首值优先）→ 传「候选优先」合并列，清理后按名映射回。
+        merged = [(n, cand_map.get(n, field_map.get(n, ""))) for n in field_map]
+        seen = {n for n, _v in merged}
+        merged += [(n, v) for n, v in candidates if n not in seen]
         notes: list[str] = []
-        cleaned = bibnorm.strip_published_urls_fields(
-            key, prod_type, merged, notes)
+        cleaned = bibnorm.strip_published_urls_fields(key, prod_type, merged, notes)
         if notes:
             stats["b189"].extend(notes)
         clean_map = dict(cleaned)
@@ -456,8 +468,8 @@ def plan_library_fills(store, entries, safe: dict) -> tuple[list[dict], dict]:
                 replaces[name] = value    # 现值非空且不同 → 库值覆盖
             # 现值 == 库值 → 不动（幂等：第二遍 applied=0）
         if fills or replaces:
-            plans.append({"etype": etype, "key": key,
-                          "fills": fills, "replaces": replaces})
+            plans.append({"etype": etype, "key": key, "fills": fills,
+                          "replaces": replaces})
     return plans, stats
 
 
@@ -466,19 +478,13 @@ def format_stats(stats: dict | None) -> list[str]:
     if not stats:
         return []
     lines: list[str] = []
-    type_diff = list(stats.get("type_diff") or [])
-    if type_diff:
-        lines.append("  · 类型差异（待 B-222 B）：%d 条（%s）" % (
-            len(type_diff),
-            "、".join(str(r.get("key") or "") for r in type_diff)))
-    weak = list(stats.get("weak") or [])
-    if weak:
-        lines.append("  · 弱身份排除（方案 A，未应用）：%d 条（%s）" % (
-            len(weak), "、".join(str(k) for k in weak)))
-    duplicate = list(stats.get("duplicate") or [])
-    if duplicate:
-        lines.append("  · 重复 key 整条跳过：%d 条（%s）" % (
-            len(duplicate), "、".join(str(k) for k in duplicate)))
+    for field, title in (("type_diff", "类型差异（待 B-222 B）"),
+                         ("weak", "弱身份排除（方案 A，未应用）"),
+                         ("duplicate", "重复 key 整条跳过")):
+        rows = list(stats.get(field) or [])
+        if rows:
+            keys = [str(r.get("key") or "") if isinstance(r, dict) else str(r) for r in rows]
+            lines.append("  · %s：%d 条（%s）" % (title, len(rows), "、".join(keys)))
     b189 = [str(n) for n in (stats.get("b189") or [])]
     if b189:
         dropped = [n for n in b189 if "已删除" in n]
@@ -487,9 +493,8 @@ def format_stats(stats: dict | None) -> list[str]:
                      "内嵌网址处理 %d 项" % (len(dropped), len(embedded)))
     struct = list(stats.get("struct") or [])
     if struct:
-        lines.append("  · 结构异常整条跳过：%d 条（%s）" % (
-            len(struct),
-            "、".join(str(r.get("key") or "") for r in struct)))
+        keys = [str(r.get("key") or "") for r in struct if isinstance(r, dict)]
+        lines.append("  · 结构异常整条跳过：%d 条（%s）" % (len(struct), "、".join(keys)))
     return lines
 
 
@@ -497,16 +502,14 @@ def format_checklist(applied: list[dict], stem: str = "",
                      stats: dict | None = None) -> str:
     """before/after 核对清单（沿用「参考文献核对.txt」分节体例；B-135 全量口径）。
 
-    ``stats`` 为 ``plan_library_fills()``/`apply_text()` 的附注（类型差异、弱身份
-    排除、B-189 清理、结构异常）。字段行与分节体例与 B-220/B-222 相同；但第 2 行
-    描述已按 B-135 spec §3 更新（白名单 28 类），故不给 ``stats`` 时也**不是**与
-    B-220/B-222 接受态逐字节相同（旧 API 仅字段行/体例兼容）。
+    ``stats`` 为 `plan_library_fills()`/`apply_text()` 附注（类型差异/弱身份/B-189/
+    结构异常）。字段行/体例与 B-220/B-222 相同，但第 2 行描述按 B-135 spec §3 更新，
+    故不给 ``stats`` 时也**不是**与 B-220/B-222 逐字节相同（旧 API 仅字段行/体例兼容）。
     """
     n_items = sum(len(a.get("filled") or {}) for a in applied or [])
     lines = [f"  ── 引用库回填（{len(applied or [])} 条 / {n_items} 项）──",
-             "  命中已核实条目后：库内非空值**覆盖产物现值**或**补齐缺失字段**"
-             "（白名单 28 类 + doi/url/eprint；B-135 spec §3）；"
-             "库缺字段保留产物原值；候选/未命中一律不动。",
+             "  命中已核实条目后：库内非空值**覆盖产物现值**或**补齐缺失字段**（白名单 "
+             "28 类 + doi/url/eprint；B-135 spec §3）；库缺字段保留产物原值；候选/未命中不动。",
              "  上文「按条目列出」若把这些字段列为必补，以本节为准。"]
     for a in applied or []:
         lines.append(f"  [{a.get('etype') or '?'}] {a.get('key')}")

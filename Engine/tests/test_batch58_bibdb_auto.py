@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 r"""第五十八批：初排转换**默认引用库比对 + 库值全量应用**（B-217 ⑧ → B-135 P2）。
 
-离线口径（Lead 2026-10-20 拍板）：默认开，HIT_SAFE 按 B-135 spec §3 白名单写入库内
-非空值（覆盖/补齐），打汇总 + 逐条明细 + before/after 清单；`--no-bibdb-verify` /
-`--no-bibdb` 关闭；`--no-bibdb-apply` 回旧只读口径（日志/产物逐字节等于 B-220）；
-`--verify-refs` / `--verify-plan` 不变；无引用库时完全静默。
+离线口径（Lead 2026-10-20 拍板）：默认开，HIT_SAFE 按 B-135 spec §3 白名单写入库内非空值
+（覆盖/补齐），打汇总 + 逐条明细 + before/after 清单；`--no-bibdb-verify` / `--no-bibdb` 关闭；
+`--no-bibdb-apply` 回旧只读口径（日志/产物逐字节等于 B-220）；`--verify-refs/--verify-plan` 不变。
 
-**Hermetic（同一引擎自对照）**：同一 fixture 跑两次只差开关，断言日志只差库值应用
-新增行（精确三类）、产物树只差 reference.bib 库值差异 + 核对清单，其余逐字节同。
-
-用法：
-    cd Engine && PYTHONPATH=.:vendor python3 tests/test_batch58_bibdb_auto.py
+**Hermetic**：同一 fixture 跑两次只差开关，日志只差库值应用新增行、产物只差 bib + 清单，其余逐字节同。
 """
 
 from __future__ import annotations
@@ -163,6 +158,7 @@ _APPLY_RE = re.compile(r"引用库比对：命中 (\d+) / 候选 (\d+) / 未命�
 # 默认应用新增的三类日志行（精确锚点；①汇总 ②逐条明细 ③核对清单路径）。
 _DETAIL_RE = re.compile(r"^     · \[[^\]]+\] .*$")
 _WRITE_RE = re.compile(r"^     回填核对清单：\S+_参考文献核对\.txt$")
+_MATH22 = "Completeness and Incompleteness in the Bimodal Base {$\\mathcal{L}(R,-R)$}"
 _BIB_NAME = "reference.bib"
 _CHECKLIST_NAME = "Test_Author_参考文献核对.txt"
 
@@ -264,8 +260,7 @@ def test_default_with_db(tmp: str, env_db: dict, env_nodb: dict,
     check("②-5c 核对清单：关库版不写；默认版新建 = 标题 + 库应用分节（分节在尾部、含 before/after）",
           off_chk == "" and on_chk.startswith("══ Test_Author 参考文献核对 ══\n\n")
           and "  ── 引用库回填（1 条 / 1 项）──" in on_chk
-          and on_chk.rstrip().endswith(
-              "author：（旧值 Quine, W. V. O.）→ Quine, Willard Van Orman"
+          and on_chk.rstrip().endswith("author：（旧值 Quine, W. V. O.）→ Quine, Willard Van Orman"
               "\n  · B-189 网址清理：正式发表不写 doi/url 1 项；内嵌网址处理 0 项"),
           on_chk[-400:])
     check("②-6 默认日志 = --no-bibdb-verify 日志 + 精确三类库应用行（其余逐字节相同）",
@@ -291,7 +286,7 @@ def test_default_no_db(tmp: str, env_nodb: dict, source: str, bib: str) -> None:
 # ── ④ 关闭开关（同一引擎自对照）──────────────────────────────────────────
 def test_opt_out(tmp: str, env_db: dict, env_nodb: dict, source: str, bib: str) -> None:
     # B-135 spec §3（用户 2026-10-26 批准）：默认 = 库值应用 → 「产物逐字节同」旧前提失效；
-    # 比较口径改为「除 spec §7 允许改写的 reference.bib/核对清单/其备份外逐字节同 +
+    # 口径改为「除 spec §7 允许改写的 reference.bib/核对清单/其备份外逐字节同 +
     # reference.bib 只差库值 author 一行（整文件逐字节可逆）」。
     (on, on_snap, (on_bib, on_baks, _on_chk),
      off, off_snap, (off_bib, off_baks, _off_chk)) = run_pair(
@@ -499,7 +494,7 @@ def test_default_apply(tmp: str, env_db: dict, env_nodb: dict,
     check("⑧-1 默认回填：退出 0", r_on.returncode == 0,
           (r_on.stdout + r_on.stderr)[-400:])
     # B-135 spec §3：白名单 28 类（author/title 等）→ 本夹具 journal+volume 补缺失、
-    # author+pages 按库值覆盖 = 4 项；doi 被 B-189 删除不计项。
+    # author+pages 覆盖 = 4 项；doi 被 B-189 删除不计项。
     check("⑧-2 默认回填日志：命中 1 / 候选 1 / 未命中 0 + 回填 1 条 / 4 项（B-135 spec §3）",
           "默认回填 1 条 / 4 项" in r_on.stdout and "命中 1 / 候选 1" in r_on.stdout,
           r_on.stdout[-600:])
@@ -587,31 +582,36 @@ def test_default_apply(tmp: str, env_db: dict, env_nodb: dict,
                           "abstract": "abs", "keywords": "kw", "wang": "W",
                           "id": "42", "priority": "9", "abstractnote": "n",
                           "journal": "Mind"})
-    # B-135 spec §3：库导入残留点名 wang/id/priority/abstractnote（原仅用 userf/
-    # crossref 等价覆盖）→ 全部进夹具，断言 render/plan/applied 三处都不出现。
+    # B-135 spec §3：库导入残留（userf/crossref/wang/id/priority/abstractnote）全进夹具，
+    # render/plan/applied 三处都不出现（原仅用 userf/crossref 等价覆盖）。
     check("⑧-15 白名单外永不应用（render 只留 title；plan 只补 journal）；"
           "spec §3 点名库导入残留 wang/id/priority/abstractnote 也不写入",
           [n for n, _v in _c15] == ["title"]
           and _p15 and set(_p15[0]["fills"]) == {"journal"}
           and _a15 and _a15[0]["filled"] == {"journal": "Mind"},
           f"{_c15} / {_p15}")
-    _t16, _a16, _st16, _p16 = _lib(  # ⑧-16 B-189 正式发表不写 doi/url
+    _t16, _a16, _st16, _p16 = _lib(  # ⑧-16 B-189 + P0 库值出口渲染
         "  author = {A},\n  journal = {Mind},\n  title = {T},\n  year = {2020}",
-        {"title": "T", "year": "2020", "journal": "Mind",
+        {"title": _MATH22, "year": "2020", "journal": "Mind",
          "doi": "10.1000/x", "url": "https://e/x"})
     _t16b, _a16b, _st16b, _p16b = _lib(
         "  author = {A},\n  title = {T},\n  year = {2020}", {
             "title": "T", "year": "2020", "doi": "10.1000/y", "url": "https://e/y",
             "eprint": "2201.0001", "archiveprefix": "arXiv",
+            "booktitle": "逻辑经验主义\\textup{（上卷）}", "note": "\\textup{A}n",
             "primaryclass": "cs.LO"}, etype="misc")
     _m16, _m16b = _lib_fields(_t16), _lib_fields(_t16b)
-    check("⑧-16 B-189：正式发表不写 doi/url（库值有也删留痕）；misc 保留 doi/url/eprint",
+    check("⑧-16 B-189：正式发表不写 doi/url（库值有也删留痕）；misc 保留 doi/url/eprint；P0 出口渲染：$...$ 数学不转义、CJK \\text??{} 去包装、ASCII 不动、奇数 $ 回退",
           "doi" not in _m16 and "url" not in _m16
           and any("已删除" in n for n in _st16["b189"])
           and _m16b.get("doi") == "10.1000/y" and _m16b.get("url") == "https://e/y"
           and _m16b.get("eprint") == "2201.0001"
           and _m16b.get("archiveprefix") == "arXiv"
-          and _m16b.get("primaryclass") == "cs.LO", f"{_m16} / {_m16b}")
+          and _m16b.get("primaryclass") == "cs.LO"
+          and _m16.get("title") == _MATH22 and "\\$" not in _m16["title"]
+          and _m16b.get("booktitle") == "逻辑经验主义（上卷）"
+          and _m16b.get("note") == "\\textup{A}n"
+          and bibdbapply._render_library_text("a$b") == "a\\$b", f"{_m16} / {_m16b}")
     _t17, _a17, _st17, _p17 = _lib(  # ⑧-17 key 不改（record_key 带 -2 后缀）
         "  author = {A},\n  title = {T},\n  year = {2020}",
         {"title": "T", "year": "2020", "journal": "Mind"}, record_key="K-2")
@@ -692,7 +692,7 @@ def test_verify_plan_apply(tmp: str, env_db: dict, source: str) -> None:
           bib_def != "" and bib_def == bib_plan)
     check("⑤b-5 默认转换退出 0（对照组）", r_def.returncode == 0)
 
-# ── main ────────────────────────────────────────────────────────────────
+
 def test_short_cite_library(tmp: str) -> None:
     """B-220 N6：纯引用脚注 → 引用库 HIT_SAFE 唯一命中（不编造）。"""
     from slcn import bibdb, bibdbapply  # noqa: E402
