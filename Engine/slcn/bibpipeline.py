@@ -230,23 +230,26 @@ def _bibdb_scan_stem(res) -> str:
 
 
 def bibdb_readonly_scan(args, res) -> dict:
-    """初排转换**默认**的引用库通道：比对 + **默认回填**（B-217 ⑧）。
+    """初排转换**默认**的引用库通道：比对 + **默认回填**（B-217 ⑧ → B-135 P2）。
 
-    Lead 2026-10-20 拍板「默认开只读比对」；用户 2026-10-24 拍板升级为**默认回填**：
+    Lead 2026-10-20 拍板「默认开只读比对」；用户 2026-10-24 拍板升级为**默认回填**；
+    用户 2026-10-26 批准 B-135 方案 A（弱身份默认整条排除）+ P2（库值**全量应用**）：
       · 默认**开**（无新参数时）；`--no-bibdb-verify` / `--no-bibdb` 完全关闭；
-      · `--no-bibdb-apply` 关闭回填 → 只读比对（日志/产物**逐字节等于旧行为**）；
-      · 回填只对 HIT_SAFE 命中、只补缺失字段（`slcn/bibdbapply.py` 单一实现），
-        候选/未命中一律不动（不臆造），before/after 清单追加进「参考文献核对.txt」；
+      · `--no-bibdb-apply` 关闭应用 → 只读比对（日志/产物**逐字节等于旧行为**）；
+      · 只对 HIT_SAFE 命中、按 28 类白名单 + doi/url/eprint（`slcn/bibdbapply.py`
+        单一实现）写入：库内非空值**覆盖产物现值**或**补齐缺失字段**，库缺字段保留
+        产物原值；候选/未命中一律不动（不臆造）；弱身份/重复 key/结构异常整条跳过；
+        before/after 清单追加进「参考文献核对.txt」；
       · `--verify-refs` / `--verify-plan` 不做（核实分支自己查库并打印明细）；
       · 无 `reference.bib` / 无条目 / 库不存在 / 读库失败 → **完全静默**
         （公开仓、CI、没建库的机器上日志/产物零变化）。
 
     返回 `{done, store, path, entries, safe, candidates, missed, applied, filled,
-    checklist}`（测试/调试用；默认回填关闭时 applied 为空）。
+    stats, checklist}`（测试/调试用；默认回填关闭时 applied 为空）。
     """
     out = {"done": False, "store": None, "path": "", "entries": [],
            "safe": {}, "candidates": {}, "missed": [],
-           "applied": [], "filled": 0, "checklist": ""}
+           "applied": [], "filled": 0, "stats": {}, "checklist": ""}
     if getattr(args, "no_bibdb_verify", False) or getattr(args, "no_bibdb", False):
         return out
     try:
@@ -269,8 +272,10 @@ def bibdb_readonly_scan(args, res) -> dict:
             return out
         safe, candidates, missed = classify_bibdb(store, entries)
         applied: list[dict] = []
+        stats: dict = {}
         if not getattr(args, "no_bibdb_apply", False) and safe:
-            applied = _bibdb_apply_backfill(bib_path, bib_text, store, entries, safe)
+            applied, stats = _bibdb_apply_backfill(
+                bib_path, bib_text, store, entries, safe)
         if applied:
             n_items = sum(len(a.get("filled") or {}) for a in applied)
             stem = _bibdb_scan_stem(res)
@@ -278,13 +283,18 @@ def bibdb_readonly_scan(args, res) -> dict:
                   f"未命中 {len(missed)}（默认回填 {len(applied)} 条 / {n_items} 项，"
                   "候选与未命中不动）", flush=True)
             for a in applied:
-                detail = "、".join(f"{k}=（缺失）→ {v}"
-                                   for k, v in (a.get("filled") or {}).items())
-                print(f"     · [{a.get('key')}] {detail}", flush=True)
+                replaced = a.get("replaced") or {}
+                parts = []
+                for k, v in (a.get("filled") or {}).items():
+                    if k in replaced:
+                        parts.append(f"{k}=（旧值 {replaced[k]}）→ {v}")
+                    else:
+                        parts.append(f"{k}=（缺失）→ {v}")
+                print(f"     · [{a.get('key')}] " + "、".join(parts), flush=True)
             try:
                 from slcn import bibdbapply
                 out["checklist"] = bibdbapply.write_checklist(
-                    os.path.dirname(bib_path), stem, applied)
+                    os.path.dirname(bib_path), stem, applied, stats=stats)
                 print(f"     回填核对清单：{os.path.basename(out['checklist'])}", flush=True)
             except Exception:  # noqa: BLE001  清单写不了不影响已回填的 bib
                 out["checklist"] = ""
@@ -293,7 +303,7 @@ def bibdb_readonly_scan(args, res) -> dict:
                   f"未命中 {len(missed)}（只读，不改产物）", flush=True)
         out.update(done=True, store=store, path=path, entries=entries,
                    safe=safe, candidates=candidates, missed=missed,
-                   applied=applied,
+                   applied=applied, stats=stats,
                    filled=sum(len(a.get("filled") or {}) for a in applied))
     except Exception:  # noqa: BLE001  附加通道：任何意外都不许连累出稿
         return out
@@ -301,22 +311,24 @@ def bibdb_readonly_scan(args, res) -> dict:
 
 
 def _bibdb_apply_backfill(bib_path: str, bib_text: str, store, entries,
-                          safe: dict) -> list[dict]:
-    """默认回填（B-217 ⑧）：只补缺失字段 + 原子写回；任何结构异常 → 不写（fail-soft）。"""
+                          safe: dict) -> tuple[list[dict], dict]:
+    """默认回填（B-135 P2）：库值全量应用 + 原子写回；任何结构异常 → 不写（fail-soft）。
+
+    返回 `(applied, stats)`：applied 与实际写回一致；stats 供日志/核对清单附注
+    （类型差异 / 弱身份排除 / 重复 key / B-189 清理 / 结构异常）。
+    """
     try:
         from slcn import bibdbapply
         from slcn.fsutil import atomic_write
 
-        plans = bibdbapply.plan_fills(store, entries, safe)
-        if not plans:
-            return []
-        new_text, applied = bibdbapply.apply_text(bib_text, plans)
+        plans, stats = bibdbapply.plan_library_fills(store, entries, safe)
+        new_text, applied = bibdbapply.apply_text(bib_text, plans, stats)
         if not applied or new_text == bib_text:
-            return []
+            return [], stats
         atomic_write(bib_path, new_text, newline="\n", log=None)
-        return applied
+        return applied, stats
     except Exception:  # noqa: BLE001  附加通道：任何意外都不许连累出稿
-        return []
+        return [], {}
 
 
 def bibdb_taskbook_hits(entries, safe) -> list[dict]:

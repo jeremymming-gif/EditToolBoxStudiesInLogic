@@ -1138,10 +1138,10 @@ def build_arg_parser():
                          "并打一行汇总；无引用库时自动静默跳过；"
                          "不影响 --verify-refs/--verify-plan 的核实行为）。")
     ap.add_argument("--no-bibdb-apply", action="store_true",
-                    help="关闭「引用库默认回填」（默认开：安全命中的已核实条目只补"
-                         "缺失字段 journal/volume/number/pages/booktitle/editor/"
-                         "publisher/address 并写 before/after 核对清单；候选/未命中不动；"
-                         "无引用库时静默跳过）。关闭后回到只读引用库比对口径"
+                    help="关闭「库值全量应用」（默认开：安全命中的已核实条目按白名单"
+                         "覆盖/补齐库内非空值，并写 before/after 核对清单；"
+                         "候选/未命中不动；无引用库时静默跳过）。"
+                         "关闭后回到只读引用库比对口径"
                          "（只打一行汇总、不改产物，逐字节等于旧行为）。")
     # P1（2026-10-17，第 71 条起）：自动检索证据 = DeepSeek Search API（独立原始 JSON API），
     # **不改模型提示词、不改转换产物**，只把「每条文献在公开网页上的候选来源」写进任务书。

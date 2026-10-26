@@ -8,7 +8,8 @@ r"""编辑部引用库接入核实链路（第 129 条，2026-10-18）的判据�
     第一作者姓 / 年份相容 + `verified=true`；
   · **key 命中只算候选**（BibTeX key 多为 per-paper），仍走检索 + AI；
   · 安全命中只跳过「检索/AI」，**绝不改 `reference.bib`**；字段差异只写进任务书提示；
-  · 默认（不核实）路径逐字节不变；`--no-bibdb` 与接入前行为逐字节一致；
+  · 默认（不核实）路径：库值只写入 reference.bib（+既有核对清单/备份），.tex 与关库版
+    逐字节一致（B-135 起白名单全量覆盖）；`--no-bibdb` 与接入前行为逐字节一致；
   · 库缺失/笔记仓缺失 → 优雅跳过（显式 `--bibdb` 才告警）。
 
 断言分组：
@@ -17,7 +18,8 @@ r"""编辑部引用库接入核实链路（第 129 条，2026-10-18）的判据�
   (b) 任务书「五、库内已核实（无需再查）」：默认不出现、给了才出现、含来源与差异提示
   (c) 合并记录：库内命中（未调 AI）与正文未引用（范围外）分开统计；默认参数逐字节不变
   (d) convert 端到端（合成 LaTeX + --bibdb-path，**不联网**）：跑前日志一行 / --verify-plan
-      按扣减后算预计检索与 AI / 任务书与 reference.bib 行为；--no-bibdb 与库缺失
+      按扣减后算预计检索与 AI / 任务书与 reference.bib 行为；--no-bibdb 与库缺失；
+      默认路径库值应用见 d6
   (e) 全部命中库内已核实 + mock LLM：**0 次 AI 调用**、任务书五节、合并记录分类、bib 未改
   (f) 部分命中 + mock LLM：安全命中键不请求、key-only 候选仍请求并正常并入；安全条目逐字节未动
   (g) 默认（不核实）路径与 `--no-bibdb` 的产物逐字节一致性
@@ -445,15 +447,29 @@ if HAVE_TEMPLATES:
           r7.returncode == 0 and "只配合 --verify-refs" in (r7.stdout + r7.stderr),
           (r7.stdout + r7.stderr)[-300:])
 
-    # (d6) 默认（不核实）路径：有库/无库的转换产物逐字节相同
+    # (d6) 默认（不核实）路径：库值只写入 reference.bib（+既有核对清单/备份）；
+    #     .tex 与关库版逐字节同、条目 key 集合不变（B-135 spec §3/§5/§7：默认路径按白名单
+    #     全量应用库值；B-222 B 起默认即回填，旧 8 字段在 fixture 里无差异故旧断言曾为绿）。
     out_default_a = os.path.join(TMP, "default_db")
     out_default_b = os.path.join(TMP, "default_nodb")
     rd_a = run_convert(out_default_a, ["--bibdb-path", _DB])
     rd_b = run_convert(out_default_b, [], env=env_off)
     snap_a, snap_b = files_snapshot(out_default_a), files_snapshot(out_default_b)
-    check("(d) 默认（不核实）路径：有库 / 无库的转换产物逐字节相同",
-          rd_a.returncode == 0 and rd_b.returncode == 0 and snap_a == snap_b,
-          f"diff={set(snap_a.items()) ^ set(snap_b.items())}"[:300] if snap_a != snap_b else "")
+    tex_a = {k: v for k, v in snap_a.items() if k.endswith((".tex", ".sty"))}
+    tex_b = {k: v for k, v in snap_b.items() if k.endswith((".tex", ".sty"))}
+    allowed = {"Test_Author/reference.bib", "Test_Author/Test_Author_参考文献核对.txt"}
+    # 「快照值差异集」（含内容差异/单侧存在）：两侧相同的 .tex/.sty 不算 extra，
+    # 只允许 reference.bib、核对清单与既有 .bak 备份不同。
+    extra = {k for k in set(snap_a) | set(snap_b)
+             if snap_a.get(k) != snap_b.get(k) and k not in allowed
+             and not (k.startswith("Test_Author/reference.bib.") and k.endswith(".bak"))}
+    bib_a = read(os.path.join(out_default_a, "Test_Author", "reference.bib"))
+    bib_b = read(os.path.join(out_default_b, "Test_Author", "reference.bib"))
+    check("(d) 默认（不核实）路径：库值只写 reference.bib（author 取库值）、.tex 与关库版逐字节同",
+          rd_a.returncode == 0 and rd_b.returncode == 0
+          and tex_a == tex_b and extra == set()
+          and "Quine, Willard Van Orman" in bib_a and "Quine, W. V. O." in bib_b,
+          f"tex_same={tex_a == tex_b} extra={extra}")
 
 
 # ══ 本地假 LLM 端点（只数请求，回复一条合法 bib）══════════════════════════
