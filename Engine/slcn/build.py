@@ -828,6 +828,10 @@ class BuildResult:
     # 落盘路径。**纯附加、默认空**：不参与渲染，也不改 .tex/.bib 一个字节。
     handoff_bib: dict | None = None
     handoff_path: str | None = None
+    # B-223（元数据 / 补充信息）：本次用到的补充源汇总与「正文已有未采用」清单。
+    # **纯附加、默认空**：只给初排交接单②引用，不参与渲染、不改 .tex/.bib 一个字节。
+    meta_sources: list[str] = field(default_factory=list)
+    meta_conflicts: list[str] = field(default_factory=list)
 
 
 def _citation_points(source_body: str, unmatched: list[str]) -> list[tuple[str, int, str]]:
@@ -2063,6 +2067,7 @@ def build_docx(
     structured: dict | None = None,
     bibdb_store: object | None = None,
     handoff: bool = True,
+    supplements: list[str] | None = None,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -2120,6 +2125,10 @@ def build_docx(
                     「无」）。**只汇总引用、不重算判据**（`slcn/handoff.py`），
                     .tex/.bib 一个字节都不动；False = 产物目录与接入前逐字节相同
                     （`convert.py --no-handoff` 接线）。
+    supplements     元数据 / 补充信息文件（B-223，可多份、按顺序先到先得）：只把
+                    `.docx` 里识别到的题名/作者/单位/邮箱/摘要/关键词/基金/致谢
+                    **补进正文空值**，不覆盖正文已解析出的值；None/[]（默认）=
+                    与接入前逐字节相同。识别判据见 `slcn/metadata_source.py`。
     """
     from .docxsource import (
         link_citations,
@@ -2158,6 +2167,14 @@ def build_docx(
     # ── 第 76 条：英文元数据第二源（同目录的「英文摘要」docx）──
     # 放在「题名/作者」那几行日志之前，日志读起来就是「这次英文题名是从哪来的」。
     _merge_en_metadata_source(doc, docx_path, metadata_path, say, warnings)
+    # B-223：元数据 / 补充信息（多份 .docx）——只补正文空值，不覆盖正文解析结果。
+    _meta_sources: list = []
+    _meta_conflicts: list = []
+    if supplements:
+        from . import metadata_source as _metadata_source
+
+        _meta_sources, _meta_conflicts = _metadata_source.apply_word_supplements(
+            doc, supplements, say=say, warnings=warnings)
     say(f"   题名《{doc.title}》 作者 {doc.author}")
     say(f"   段落正文 {len(doc.body)} 字符；章节 {len(doc.headings)} 个；公式 {doc.n_math} 处")
     # 参考文献有两条通道：文末**人年制**（doc.refs）与 编号清单/脚注（doc.bib_entries）。
@@ -2641,6 +2658,8 @@ def build_docx(
         ref_raw_lines=list(doc.ref_raw_lines),
         ref_raw_by_key=dict(doc.ref_raw_by_key),
         handoff_bib=bib_summary,
+        meta_sources=list(_meta_sources),
+        meta_conflicts=list(_meta_conflicts),
     )
     # B-221 C1 初排交接单：**最后一步**写（全部产物已落盘），只汇总已有结论；
     # 失败绝不阻断出稿，只补一条 warning。默认开；handoff=False 时目录零新增。

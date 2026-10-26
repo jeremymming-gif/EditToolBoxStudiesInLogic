@@ -17,7 +17,9 @@ r"""第六十三批 E2：LaTeX 通道 `--metadata` 支持 Word 元数据文件�
 
 from __future__ import annotations
 
+import glob
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -383,6 +385,103 @@ def test_textutil_doc_roundtrip(tmp: str) -> None:
           _latex.get_macro_value(tex, "mytitle") == "论测试逻辑",
           f"{_latex.get_macro_value(tex, 'mytitle')!r}")
 
+_AUTHOR_INFO_BLOCK = ["作者名字：李四", "邮箱：lisi@example.edu.cn", "单位信息：某大学哲学系"]
+
+
+def test_b223_supplements(tmp: str) -> None:
+    src = make_docx(_CN_HEAD + _BODY, os.path.join(tmp, "supp_src.docx"))
+    supp = make_docx(_AUTHOR_INFO_BLOCK, os.path.join(tmp, "supp_info.docx"))
+    out = os.path.join(tmp, "supp_out")
+    r = run_convert(src, out, ["--metadata", supp])
+    tex = read(out_tex(out)) if os.path.isfile(out_tex(out)) else ""
+    check("⑥-1 Word 通道：标签作者信息块补空（单位/邮箱），不覆盖正文作者",
+          r.returncode == 0
+          and _latex.get_macro_value(tex, "myfirstaffiliation") == "某大学哲学系"
+          and _latex.get_macro_value(tex, "myfirstemail") == "lisi@example.edu.cn"
+          and "张三" in (_latex.get_macro_value(tex, "myfirstauthor") or ""),
+          (r.stdout + r.stderr)[-300:])
+    check("⑥-2 日志写明补充信息与补入项数",
+          "补充信息" in r.stdout and "补充信息补入 2 项" in r.stdout,
+          r.stdout[-400:])
+    src_tex = write(os.path.join(tmp, "supp_src.tex"), _TEX_SRC)
+    a = write(os.path.join(tmp, "supp_a.tex"),
+              "\\newcommand{\\mytitle}{甲题名}\n")
+    b = write(os.path.join(tmp, "supp_b.tex"),
+              "\\newcommand{\\mytitle}{乙题名}\n\\newcommand{\\mytitleEN}{Yi Title}\n")
+    out2 = os.path.join(tmp, "supp_out2")
+    r2 = run_convert(src_tex, out2, ["--metadata", a, "--metadata", b])
+    tex2 = read(out_tex(out2)) if os.path.isfile(out_tex(out2)) else ""
+    check("⑥-3 LaTeX 多份补充信息：顺序 = 合并顺序（先到先得）",
+          r2.returncode == 0
+          and _latex.get_macro_value(tex2, "mytitle") == "甲题名"
+          and _latex.get_macro_value(tex2, "mytitleEN") == "Yi Title",
+          (r2.stdout + r2.stderr)[-300:])
+    check("⑥-4 多份时日志写明份数与来源文件名",
+          "元数据源（补充信息 2 份）" in r2.stdout and "supp_a.tex" in r2.stdout,
+          r2.stdout[-400:])
+    prev = os.path.join(tmp, "preview.json")
+    out3 = os.path.join(tmp, "preview_out")
+    r3 = run_convert(src, out3, ["--metadata", supp, "--metadata-preview-out", prev])
+    data = {}
+    if os.path.isfile(prev):
+        with open(prev, encoding="utf-8") as f:
+            data = json.load(f)
+    rows = data.get("rows") or []
+    statuses = {row.get("status") for row in rows}
+    check("⑥-5 预览 dry-run：JSON 行结构含 字段/生效值/来源/状态",
+          r3.returncode == 0 and data.get("schema") == 1 and bool(rows)
+          and {"field", "label", "value", "source", "status"} <= set(rows[0]),
+          (r3.stdout + r3.stderr)[-300:])
+    check("⑥-6 预览状态区分「已填（正文解析）」与「已填（补充文件）」",
+          "已填（正文解析）" in statuses
+          and any(str(st).startswith("已填（补充文件）") for st in statuses),
+          str(sorted(str(st) for st in statuses)))
+    check("⑥-7 预览只读：不建产物目录、不写交接单、无临时残留",
+          not os.path.isdir(out3)
+          and "只读预览，未写入任何产物" in r3.stdout
+          and not glob.glob(os.path.join(tmp, "slcn-meta-*")),
+          (r3.stdout + r3.stderr)[-300:])
+
+
+_EN_SHEET = ["Towards a Logic of Databases", "Zhang San", "Abstract",
+             "We study the logic of databases.", "Key words: logic; database"]
+
+
+def test_b223_preview_auto_en(tmp: str) -> None:
+    d = os.path.join(tmp, "prev_auto")
+    src = make_docx(_CN_HEAD + _BODY, os.path.join(d, "稿.docx"))
+    make_docx(_EN_SHEET, os.path.join(d, "稿英文摘要.docx"))
+    prev, out = os.path.join(d, "preview.json"), os.path.join(d, "out")
+    r = run_convert(src, out, ["--metadata-preview-out", prev])
+    with open(prev, encoding="utf-8") as f:
+        data = json.load(f) if os.path.isfile(prev) else {}
+    rows = {row.get("field"): row for row in (data.get("rows") or [])}
+    t = rows.get("title_en", {})
+    check("⑥-8 预览复现 Word 同目录自动英文第二源（来源标注可读）",
+          r.returncode == 0 and t.get("value") == "Towards a Logic of Databases"
+          and "同目录自动第二源" in (t.get("source") or "")
+          and "稿英文摘要.docx" in (t.get("source") or ""), str(t))
+    check("⑥-9 预览：仍缺的英文槽位（英文单位）列为「缺项」，已补的作者英文姓名不误报",
+          rows.get("affiliation_en", {}).get("status") == "缺项"
+          and str(rows.get("author_en", {}).get("status", "")).startswith("已填"),
+          str({k: v.get("status") for k, v in rows.items()}))
+
+
+def test_b223_compose_escape(tmp: str) -> None:
+    d = os.path.join(tmp, "compose_esc")
+    src = write(os.path.join(d, "paper.tex"), _TEX_SRC)
+    tex_meta = write(os.path.join(d, "meta.tex"), "\\newcommand{\\mytitle}{甲题名}\n")
+    supp = make_docx(["单位信息：A&B 科技 100% 有限公司_研发#部"],
+                     os.path.join(d, "supp.docx"))
+    out = os.path.join(d, "out")
+    r = run_convert(src, out, ["--metadata", tex_meta, "--metadata", supp])
+    tex = read(out_tex(out)) if os.path.isfile(out_tex(out)) else ""
+    aff = _latex.get_macro_value(tex, "myfirstaffiliation") or ""
+    check("⑥-10 LaTeX 多源：.docx 明文值先转义（% & _ # 不破坏编译）",
+          r.returncode == 0 and "100\\%" in aff and "A\\&B" in aff
+          and "\\_研发" in aff and "\\#" in aff,
+          (r.stdout + r.stderr)[-300:] + " | " + aff)
+
 
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="slcn_b63_meta ")
@@ -391,6 +490,9 @@ def main() -> int:
         test_errors(tmp)
         test_cli_e2e(tmp)
         test_cli_errors(tmp)
+        test_b223_supplements(tmp)
+        test_b223_preview_auto_en(tmp)
+        test_b223_compose_escape(tmp)
         head = ensure_head_engine(tmp)
         test_zero_change(tmp, head)
         test_textutil_doc_roundtrip(tmp)

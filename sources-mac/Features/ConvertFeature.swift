@@ -17,6 +17,9 @@ enum ConvertFeature {
         var source = ""          // --source（必填）
         var out = ""             // --out（必填）
         var metadata = ""        // --metadata（批63b：LaTeX 源只收 .tex；Word 源 .docx 第二源照旧）
+        /// B-223：元数据 / 补充信息（可选，**多份**；顺序 = 合并顺序、先到先得）。
+        /// 拼成多个 `--metadata`（引擎 append；单值语义与 v1.4.0 逐字节相同）。
+        var metadataSources: [String] = []
         /// 批63b：人工填写元数据的临时 JSON 路径（--metadata-json；空 = 不传）。
         /// 由 `run()` 写成 `/tmp` 文件、运行结束清理；只在普通转换下传
         /// （两段式协同引擎会 exit 2；只扫描源稿不产出交付物）。
@@ -237,6 +240,84 @@ enum ConvertFeature {
         return .accepted
     }
 
+    /// B-223：多份「元数据 / 补充信息」逐项校验（新多选列表用；旧单值仍走
+    /// `metadataPathVerdict`，语义一字未改 —— 旧断言直接调它，不改）。
+    ///
+    /// 与旧单值判据的差别只在**放开 .docx / .json**：批223 起 Word / LaTeX 两个通道
+    /// 都接受 .docx（英文元数据表 + 标签作者信息块）与 .json（表单同 schema）作补充源；
+    /// 引擎只补空、不覆盖，多份按顺序先到先得。`.doc` 仍要先另存为 `.docx`。
+    static func metadataSourceVerdict(path rawPath: String,
+                                      source rawSource: String) -> MetadataPathVerdict {
+        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return .accepted }
+        let ext = (path as NSString).pathExtension.lowercased()
+        switch ext {
+        case "docx", "tex", "json":
+            return .accepted
+        case "doc":
+            return .ignored("补充信息请先把 .doc 另存为 .docx"
+                            + "（不再把 .doc 转成临时文件）；本次未使用该文件")
+        default:
+            return .ignored("补充信息只支持 .docx / .tex / .json；本次未使用该文件")
+        }
+    }
+
+    // MARK: - B-223：元数据 / 补充信息预览（引擎 dry-run 的 JSON → 界面行）
+
+    /// 预览结果的一行：`字段 | 生效值 | 来源 | 状态`（字段/状态文案由引擎给，界面不翻译）。
+    struct MetadataPreviewRow: Codable, Identifiable {
+        let field: String
+        let label: String
+        let value: String
+        let source: String
+        let status: String
+        let note: String?
+        var id: String { field + "|" + status }
+    }
+
+    /// 引擎 `--metadata-preview-out` 写出的预览 JSON（schema 固定 1；只读）。
+    struct MetadataPreviewPayload: Codable {
+        let schema: Int
+        let source: String
+        let channel: String
+        let lang: String
+        let rows: [MetadataPreviewRow]
+        let conflicts: [String]
+        let unidentified: [String]
+        let warnings: [String]
+    }
+
+    /// 元数据 / 补充信息**只读预览**：跑与 `run()` 同一条 argv，只在末尾加
+    /// `--metadata-preview-out <tmp>`。引擎保证：不建产物目录、不写产物、不写交接单、
+    /// 不留临时文件；这里再把引擎写的临时 JSON 读完删掉。
+    static func previewMetadata(_ o: Options, knobs liveKnobs: AIEngineKnobs? = nil,
+                                log: Logger) -> MetadataPreviewPayload? {
+        guard !o.source.isEmpty else {
+            log("请先选择源文件（Word 文稿或 LaTeX 文件）。\n")
+            return nil
+        }
+        guard let tool = locateTool() else {
+            log("未找到转换引擎 Engine/convert.py，无法预览。\n")
+            return nil
+        }
+        let toolDir = (tool as NSString).deletingLastPathComponent
+        guard let py = locatePython(toolDir: toolDir) else {
+            log("未找到 python3，无法预览。\n")
+            return nil
+        }
+        let out = NSTemporaryDirectory() + "slcn-meta-preview-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        let status = Shell.run(py, [tool] + arguments(o) + ["--metadata-preview-out", out],
+                               workingDirectory: toolDir,
+                               environment: engineEnvironment(o, toolDir: toolDir,
+                                                              knobs: effectiveKnobs(liveKnobs)),
+                               log: log)
+        guard status == 0, let data = FileManager.default.contents(atPath: out) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(MetadataPreviewPayload.self, from: data)
+    }
+
     // MARK: - 开关联动（纯函数，headless 可验证）
 
     /// 三个复选框在纯逻辑里的身份（`tools/ai_settings_test` 直接按它调 `toggled`）。
@@ -369,6 +450,9 @@ enum ConvertFeature {
         add("--source", o.source)
         if !o.scanOnly { add("--out", o.out) }
         add("--metadata", o.metadata)
+        // B-223：多份补充信息 → 多个 `--metadata`（顺序 = 合并顺序、先到先得）。
+        // 旧单值字段仍先拼：只给 `metadata` 时 argv 与批63 逐字节相同。
+        for path in o.metadataSources { add("--metadata", path) }
         // 批63b：人工填写元数据 → 临时 JSON（引擎优先级最高：JSON > 旧 7 参数 > --metadata）。
         // **只在普通转换下传**：两段式协同引擎对 JSON 明确 exit 2（v1 不支持），
         // 只扫描源稿不产出交付物、传了也没意义。默认空路径时 add() 自动跳过 →

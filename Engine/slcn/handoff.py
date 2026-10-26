@@ -125,9 +125,10 @@ def _bib_section(bib: dict | None, bibdb: dict | None, short_hits: int) -> list[
     return lines
 
 
-def _meta_section(undetected: list[tuple[str, str]],
-                  missing_fields: list[str]) -> list[str]:
-    """② 未识别元数据占位逐项 + 编辑侧未提供字段（均来自 BuildResult）。"""
+def _meta_section(undetected: list[tuple[str, str]], missing_fields: list[str],
+                  meta_sources: list[str] | None = None,
+                  meta_conflicts: list[str] | None = None) -> list[str]:
+    """② 未识别元数据占位逐项 + 编辑侧未提供字段 + 补充信息（来源/冲突）。"""
     lines: list[str] = []
     if undetected:
         lines.append(f"未识别元数据（产物中已写「【未识别：…】」占位符，"
@@ -140,6 +141,13 @@ def _meta_section(undetected: list[tuple[str, str]],
         for name in missing_fields:
             label = _EDITORIAL_LABELS.get(name)
             lines.append(f"  · {name}（{label}）" if label else f"  · {name}")
+    # B-223：元数据 / 补充信息（来源逐份 + 正文已有未采用的冲突清单；旧输入下不出现）。
+    if meta_conflicts:
+        lines.append(f"补充信息冲突（正文已有该字段，未采用 {len(meta_conflicts)} 项）：")
+        lines.extend(f"  · {item}" for item in meta_conflicts)
+    if meta_sources:
+        lines.append(f"元数据来源（本次用到的补充信息 {len(meta_sources)} 份）：")
+        lines.extend(f"  · {item}" for item in meta_sources)
     return lines or ["无"]
 
 
@@ -169,14 +177,18 @@ def _warnings_section(warnings: list[str]) -> list[str]:
 def render(*, stem: str, bib: dict | None = None, bibdb: dict | None = None,
            undetected: list[tuple[str, str]] | None = None,
            missing_fields: list[str] | None = None, tex_text: str = "",
-           warnings: list[str] | None = None) -> str:
+           warnings: list[str] | None = None,
+           meta_sources: list[str] | None = None,
+           meta_conflicts: list[str] | None = None) -> str:
     """渲染交接单全文（**纯函数**，便于逐字断言）。四节固定，空节写「无」。"""
     warnings = [str(w) for w in (warnings or ())]
     short_hits = sum(1 for w in warnings if w.startswith(BIBDB_SHORT_HIT_PREFIX))
     sections = [
         (SECTION_TITLES[0], _bib_section(bib, bibdb, short_hits)),
         (SECTION_TITLES[1], _meta_section(list(undetected or ()),
-                                          list(missing_fields or ()))),
+                                          list(missing_fields or ()),
+                                          list(meta_sources or ()),
+                                          list(meta_conflicts or ()))),
         (SECTION_TITLES[2], _placeholder_section(tex_text)),
         (SECTION_TITLES[3], _warnings_section(warnings)),
     ]
@@ -219,6 +231,8 @@ def write_from_result(res, *, bibdb: dict | None = None,
         missing_fields=getattr(res, "missing_fields", None) or (),
         tex_text=tex_text,
         warnings=getattr(res, "warnings", None) or (),
+        meta_sources=getattr(res, "meta_sources", None) or (),
+        meta_conflicts=getattr(res, "meta_conflicts", None) or (),
     )
     path = os.path.join(out_dir, f"{stem}{HANDOFF_SUFFIX}")
     # Lead B-221 C1 硬要求：**不用 `fsutil.atomic_write`**——它会在第二次写/刷新时

@@ -152,8 +152,8 @@ def main() -> int:
         _sp = _state0.get("params") or {}
         if not args.name and _sp.get("stem"):
             args.name = _sp["stem"]
-        if args.metadata is None and _sp.get("metadata"):
-            args.metadata = _sp["metadata"]
+        if not args.metadata and _sp.get("metadata"):
+            args.metadata = [_sp["metadata"]]
         if args.lang is None and _sp.get("lang"):
             args.lang = _sp["lang"]
         if args.sty is None and _sp.get("sty"):
@@ -250,9 +250,15 @@ def main() -> int:
 
     # ① 强制校验源文件
     source = require_source(args.source)
-    metadata = os.path.abspath(args.metadata) if args.metadata else None
-    if metadata and not os.path.exists(metadata):
-        die(f"--metadata 指定的文件不存在：{metadata}")
+    _meta_paths = [os.path.abspath(p) for p in (args.metadata or [])]
+    for _mp in _meta_paths:
+        if not os.path.exists(_mp):
+            die(f"--metadata 指定的文件不存在：{_mp}")
+    # B-223 FAIL-2：单份 `.json` 与 `--metadata-json` 同语义（人工元数据，最高优先），
+    # 不再当「Word/LaTeX 补充文件」静默忽略；坏 JSON 一律 exit 2。
+    _meta_json_paths = [p for p in _meta_paths if os.path.splitext(p)[1].lower() == ".json"]
+    _meta_paths = [p for p in _meta_paths if p not in _meta_json_paths]
+    metadata = _meta_paths[0] if _meta_paths else None
     # 批63b：GUI 人工元数据（结构化 JSON）——优先级最高；坏 JSON/不存在 exit 2。
     # 协同两段式第二段按暂存状态重跑（参数存 state 里，不含 JSON）→ 明确不支持，
     # 与 Word 元数据文件同一先例，绝不静默丢元数据。
@@ -268,28 +274,93 @@ def main() -> int:
             die(str(e))
         for _w in _mj_warnings:
             print(f"  ⚠ {_w}")
+    for _jp in _meta_json_paths:
+        if args.coop_taskbook_only or args.coop_replies:
+            die("--metadata 指向 .json 时暂不支持协同两段式"
+                "（第二段按暂存状态重跑，人工元数据无法跨进程保留）：请改用普通转换。")
+        try:
+            _st, _jw = load_metadata_json(_jp)
+        except MetadataJSONError as e:
+            die(f"--metadata 指向的 JSON 不可用：{e}")
+        for _w in _jw:
+            print(f"  ⚠ {_w}")
+        if not _st:
+            continue
+        if structured_meta is None:
+            structured_meta = dict(_st)
+            print(f"人工元数据（--metadata {os.path.basename(_jp)}）："
+                  f"{len(_st.get('authors') or [])} 位作者")
+        else:  # 先到先得：--metadata-json / 前一份 JSON 已给的字段优先，这里只补空
+            _filled = 0
+            for _k, _v in _st.items():
+                if _k != "authors" and not structured_meta.get(_k):
+                    structured_meta[_k] = _v
+                    _filled += 1
+            if not structured_meta.get("authors") and _st.get("authors"):
+                structured_meta["authors"] = _st["authors"]
+                _filled += 1
+            print(f"人工元数据（--metadata {os.path.basename(_jp)}）：补入 {_filled} 项"
+                  "（与 --metadata-json 重复时以先给的为准）")
+    # B-223：元数据/补充信息合并预览（dry-run 只读）。给 GUI「预览」按钮用：只读源稿
+    # 与补充源，输出预览 JSON；**不建产物目录、不写产物、不写交接单、不留临时文件**。
+    if args.metadata_preview_out:
+        import json
+        from slcn import metadata_source as _msrc_prev
+        _prev = _msrc_prev.preview(
+            source, _meta_paths, form=structured_meta, lang=args.lang,
+            channel="latex" if os.path.splitext(source)[1].lower() not in WORD_EXT
+            else "word")
+        _pout = os.path.abspath(args.metadata_preview_out)
+        with open(_pout, "w", encoding="utf-8", newline="\n") as _pf:
+            json.dump(_prev, _pf, ensure_ascii=False, indent=1)
+            _pf.write("\n")
+        print(f"\n元数据预览已写入：{_pout}")
+        print("（--metadata-preview-out：只读预览，未写入任何产物）")
+        return 0
     # 批63 E2（用户 Q3）：LaTeX 通道的 --metadata 接受 Word 元数据文件——.docx 用现有
     # Word 通道解析器抽字段、合成**临时 .tex**（\my* 宏），后续流程完全不变；
     # .doc / 二进制明确报错 exit 2（Mac 界面会先转 .docx）；.tex 原样、逐字节零变化。
+    # B-223：--metadata 可给多份（.docx/.tex/.json）→ 合并成一份临时 .tex；单值路径逐字节不变。
     _meta_word_tmp = ""
-    if metadata and os.path.splitext(source)[1].lower() not in WORD_EXT:
+    if _meta_paths and os.path.splitext(source)[1].lower() not in WORD_EXT:
         from slcn import metadocx as _metadocx
 
-        if (args.coop_taskbook_only or args.coop_replies) and \
-                os.path.splitext(metadata)[1].lower() in (".docx", ".doc"):
-            die("--metadata 指向 Word 文件时暂不支持协同两段式"
-                "（第一段的临时元数据文件在进程结束会清理，第二段无法复用）："
-                "请改用 .tex 元数据文件，或先跑一次普通转换。")
-        try:
-            _meta_lang = args.lang or detect_lang(source, None)[0]
-            metadata, _meta_fields, _meta_word_tmp = _metadocx.adapt_metadata(
-                metadata, lang=_meta_lang)
-        except _metadocx.MetadataError as e:
-            die(str(e))
-        if _meta_word_tmp:
-            print(f"元数据源（Word）  {os.path.abspath(args.metadata)}")
+        if len(_meta_paths) > 1:
+            from slcn import metadata_source as _msrc_many
+
+            if args.coop_taskbook_only or args.coop_replies:
+                die("多份元数据/补充信息暂不支持协同两段式"
+                    "（合并出的临时 .tex 在进程结束会清理，第二段无法复用）："
+                    "请改用单份 .tex 元数据文件，或先跑一次普通转换。")
+            try:
+                _meta_lang = args.lang or detect_lang(source, None)[0]
+                metadata, _meta_fields, _meta_warns = _msrc_many.compose_latex(
+                    _meta_paths, lang=_meta_lang)
+            except Exception as e:  # noqa: BLE001
+                die(f"元数据/补充信息合并失败：{type(e).__name__}: {e}")
+            _meta_word_tmp = metadata
+            print("元数据源（补充信息 " + str(len(_meta_paths)) + " 份）  "
+                  + "、".join(os.path.basename(p) for p in _meta_paths))
             print(f"  提取字段 {len(_meta_fields)} 个：{'、'.join(_meta_fields)}")
             print(f"  临时 .tex：{_meta_word_tmp}（运行结束自动清理）")
+            for _w in _meta_warns:
+                print(f"  ⚠ {_w}")
+        else:
+            if (args.coop_taskbook_only or args.coop_replies) and \
+                    os.path.splitext(metadata)[1].lower() in (".docx", ".doc"):
+                die("--metadata 指向 Word 文件时暂不支持协同两段式"
+                    "（第一段的临时元数据文件在进程结束会清理，第二段无法复用）："
+                    "请改用 .tex 元数据文件，或先跑一次普通转换。")
+            try:
+                _meta_lang = args.lang or detect_lang(source, None)[0]
+                metadata, _meta_fields, _meta_word_tmp = _metadocx.adapt_metadata(
+                    metadata, lang=_meta_lang)
+            except _metadocx.MetadataError as e:
+                die(str(e))
+            if _meta_word_tmp:
+                print(f"元数据源（Word）  {os.path.abspath(_meta_paths[0])}")
+                print(f"  提取字段 {len(_meta_fields)} 个：{'、'.join(_meta_fields)}")
+                print(f"  临时 .tex：{_meta_word_tmp}（运行结束自动清理）")
     # 第四十二批 A2：LaTeX 多文件稿自动配「前言源」（正文片段 + 含 \documentclass/宏定义的
     # 前言文件，如期 90/03 的 main.tex + example puzzle.tex）。判据与可解释说明见
     # `slcn.sources.discover_latex_sources()`；显式 --metadata 永远优先；判不准只 warning、保持旧行为。
@@ -305,7 +376,14 @@ def main() -> int:
 
     # 第 76 条：Word 通道的英文元数据第二源（仅同目录；LaTeX 通道不用这个）。
     # 在**转换之前**就定下来，好让下面「源文件 / 第二源」两行日志把来源交代清楚。
-    en_meta = (find_en_metadata(source, metadata)
+    _en_explicit = metadata
+    if len(_meta_paths) > 1 and os.path.splitext(source)[1].lower() in WORD_EXT:
+        # B-223：多份补充源里挑第一份「有英文元数据表」的 .docx 当第二源；都没有则沿用旧口径。
+        for _mp in _meta_paths:
+            if os.path.splitext(_mp)[1].lower() == ".docx" and _sources.en_metadata_sheet(_mp):
+                _en_explicit = _mp
+                break
+    en_meta = (find_en_metadata(source, _en_explicit)
                if os.path.splitext(source)[1].lower() in WORD_EXT else None)
 
     print("═" * 74)
@@ -391,7 +469,7 @@ def main() -> int:
                     + sum(1 for a in structured_meta.get("authors") or []
                           if any(a.values())))
         _prio = []
-        if args.metadata:
+        if _meta_paths:
             _prio.append("优先于 --metadata 元数据文件")
         if overrides:
             _prio.append("重复字段以本参数为准")
@@ -454,6 +532,8 @@ def main() -> int:
                 # 第 76 条：英文元数据第二源（同目录的「英文摘要」docx）。
                 # None = 不接第二源 = 与从前逐字节相同。
                 metadata_path=en_meta,
+                # B-223：补充信息（多份 .docx，只补正文空值；空列表 = 旧行为）
+                supplements=_meta_paths,
                 # overrides 只在 build.py 已支持该关键字时才传（见 overrides_kwargs），
                 # 旧引擎配新界面不会崩，只是这次覆盖不生效并在日志里说明。
                 **overrides_kwargs(build_docx, overrides),
@@ -514,7 +594,8 @@ def main() -> int:
             print("   （正文源是多文件稿：已按整目录归档，同 --copy-dir）")
         stage_original(
             out_dir,
-            [(source, "正文源")] + ([(metadata, "元数据源")] if metadata else []),
+            [(source, "正文源")] + ([(metadata, "元数据源")] if metadata else [])
+            + [(p, "补充信息源") for p in _meta_paths[1:]],
             copy_dir=args.copy_dir or auto_copy_dir,
         )
 

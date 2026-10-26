@@ -2827,12 +2827,91 @@ check("q63b-doc-entry-removed",
         && !q63ConvSrc.contains("MetadataConversion"),
       "tab_clean=\(!q63TabSrc.contains("/usr/bin/textutil")) conv_clean=\(!q63ConvSrc.contains("metadataConversionPlan"))")
 check("q63b-metadata-file-ui",
-      "元数据文件 picker 限 .tex/.docx；placeholder 按源稿通道动态变（LaTeX 写已取消、Word 写第二源）",
-      q63TabSrc.contains("allowedExtensions: [\"tex\", \"docx\"]")
+      "元数据文件 picker 限 .tex/.docx（批223 升级为多份入口：.docx/.tex/.json）；"
+        + "placeholder 按源稿通道动态变（LaTeX 写已取消、Word 写第二源）",
+      q63TabSrc.contains("allowedExtensions: [\"docx\", \"tex\", \"json\"]")
         && q63TabSrc.contains("metadataFilePlaceholder")
         && q63TabSrc.contains(".doc/.docx 自动识别已取消")
         && q63TabSrc.contains("英文元数据第二源"),
       "picker=\(q63TabSrc.contains("allowedExtensions")) placeholder=\(q63TabSrc.contains("metadataFilePlaceholder"))")
+func q223Accepted(_ v: ConvertFeature.MetadataPathVerdict) -> Bool {
+    if case .accepted = v { return true }
+    return false
+}
+func q223Why(_ v: ConvertFeature.MetadataPathVerdict) -> String {
+    if case .ignored(let w) = v { return w }
+    return ""
+}
+var q223Multi = ConvertFeature.Options()
+q223Multi.source = "/tmp/a.docx"
+q223Multi.out = "/tmp/out"
+q223Multi.metadataSources = ["/tmp/补充一.docx", "/tmp/补充二.tex"]
+let q223MultiArgs = ConvertFeature.arguments(q223Multi)
+let q223MetaIdxs = q223MultiArgs.indices.filter { q223MultiArgs[$0] == "--metadata" }
+check("q223-argv-multi-metadata",
+      "多份补充信息 → 多个 --metadata（顺序 = 合并顺序）；默认 argv 仍逐字节不变",
+      q223MetaIdxs.count == 2
+        && q223MetaIdxs.map { q223MultiArgs[$0 + 1] } == ["/tmp/补充一.docx", "/tmp/补充二.tex"]
+        && ConvertFeature.arguments(ConvertFeature.Options()) == ["--compile", "--clean"],
+      "argv=\(q223MultiArgs)")
+check("q223-verdict-multi",
+      "补充信息判据：两通道都收 .docx/.tex/.json；.doc 要另存、其它拒；"
+        + "旧单值 metadataPathVerdict 并存不改（旧断言逐条仍绿）",
+      q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/作者信息.docx", source: "/x/正文.docx"))
+        && q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/英摘.docx", source: "/x/正文.tex"))
+        && q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/meta.tex", source: "/x/正文.tex"))
+        && q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/meta.json", source: "/x/正文.docx"))
+        && q223Why(ConvertFeature.metadataSourceVerdict(path: "/x/old.doc", source: "/x/正文.docx"))
+            .contains("另存为 .docx")
+        && q223Why(ConvertFeature.metadataSourceVerdict(path: "/x/pic.pdf", source: "/x/正文.tex"))
+            .contains(".docx / .tex / .json"),
+      "docx=\(q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/作者信息.docx", source: "/x/正文.docx")))"
+        + " json=\(q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/meta.json", source: "/x/正文.docx")))")
+let q223SampleJSON = """
+{"schema":1,"source":"/tmp/正文.docx","channel":"word","lang":"zh",
+ "rows":[{"field":"author_cn","label":"第一作者","value":"唐英英",
+          "source":"补充文件: 作者信息.docx（第 1 个）","status":"已填（补充文件）"},
+         {"field":"author_en","label":"第一作者英文姓名","value":"","source":"","status":"未识别"}],
+ "conflicts":["第一作者：正文已有「张三」，未采用「唐英英」"],
+ "unidentified":["字段「通讯作者」没有对应模板槽位"],
+ "warnings":["补充信息只补空、不覆盖正文"]}
+"""
+let q223Decoded = try? JSONDecoder().decode(ConvertFeature.MetadataPreviewPayload.self,
+                                            from: Data(q223SampleJSON.utf8))
+check("q223-preview-decode",
+      "预览 sheet 的数据模型能吃引擎 --metadata-preview-out 的 JSON（行 / 冲突 / 未识别 / 警告）",
+      q223Decoded?.rows.count == 2
+        && q223Decoded?.rows.first?.status == "已填（补充文件）"
+        && q223Decoded?.rows.last?.status == "未识别"
+        && q223Decoded?.conflicts.count == 1
+        && q223Decoded?.unidentified.count == 1
+        && q223Decoded?.warnings.count == 1,
+      "rows=\(q223Decoded?.rows.count ?? -1)")
+let q223SheetSrc = readSrc("Views/MetadataPreviewSheet.swift")
+check("q223-ui-multi-source",
+      "GUI：单入口「元数据 / 补充信息（可选）」= 多选列表 + 添加/预览 + 预览 sheet；新 View 只展示",
+      q63TabSrc.contains("元数据 / 补充信息（可选）")
+        && q63TabSrc.contains("metadataSourcesSection")
+        && q63TabSrc.contains("Button(\"添加…\")")
+        && q63TabSrc.contains("Button(\"预览…\")")
+        && q63TabSrc.contains("MetadataPreviewSheet(payload: model.metadataPreview)")
+        && q223SheetSrc.contains("struct MetadataPreviewSheet: View")
+        && q223SheetSrc.contains("payload.rows"),
+      "tab=\(q63TabSrc.contains("metadataSourcesSection")) sheet=\(q223SheetSrc.contains("MetadataPreviewSheet"))")
+check("q223-preview-wiring",
+      "预览 = 引擎 dry-run（--metadata-preview-out）+ 临时 JSON 读完即删；预览不写产物/交接单",
+      q63ConvSrc.contains("--metadata-preview-out")
+        && q63ConvSrc.contains("func previewMetadata(")
+        && q63ConvSrc.contains("slcn-meta-preview-")
+        && q63TabSrc.contains("previewMetadataSources()")
+        && q63TabSrc.contains("MetadataForm.removeTemporaryFile(p)")
+        && q63TabSrc.contains("未写任何产物"),
+      "conv=\(q63ConvSrc.contains("--metadata-preview-out")) tab=\(q63TabSrc.contains("previewMetadataSources"))")
+check("q223-coop-scan-unchanged",
+      "两段式 / 只扫描不下传补充信息（旧行为不变）：同一 guard + 明确日志",
+      q63TabSrc.contains("!o.scanOnly && !(o.coop && !o.scanOnly)")
+        && q63TabSrc.contains("metadataSourcesIgnoredLogText"),
+      "ok")
 check("q63b-run-wiring",
       "run()：verdict 双拦截 + 临时 JSON（写失败中止不静默）+ 内联逐字段清零 + 日志「N 位作者 / M 项字段」+ 结束清理",
       q63TabSrc.contains("metadataPathVerdict")

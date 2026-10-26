@@ -19,6 +19,9 @@ final class ConvertModel: ObservableObject {
     @Published var metadataForm = MetadataForm()
     /// 表单 sheet 是否打开
     @Published var showMetadataForm = false
+    @Published var metadataSources: [String] = []   // B-223：多份补充信息（顺序 = 合并顺序）
+    @Published var showMetadataPreview = false
+    @Published var metadataPreview: ConvertFeature.MetadataPreviewPayload? = nil
     /// U3：本次运行的取消句柄（运行中「开始转换」变成「取消」）
     var cancel: RunCancel? = nil
 
@@ -104,6 +107,12 @@ struct ConvertTab: View {
         "留空自动找英文元数据第二源；.docx 可显式指定（.doc 请先另存为 .docx）"
     private static let metadataPlaceholderLatexText: String =
         "留空用人工填写或同目录 .tex；.doc/.docx 自动识别已取消（请用「填写元数据…」）"
+    private static let metadataSourcesTitleText: String = "元数据 / 补充信息（可选）"
+    private static let metadataSourcesHintText: String =
+        "可一次选择多份 .docx / .tex / .json；顺序就是合并顺序（先到先得）：只补正文"
+        + "缺失项、不覆盖正文已有内容；表单里填过的字段最高优先。"
+    private static let metadataSourcesIgnoredLogText: String =
+        "元数据 / 补充信息：两段式协同与「只扫描源稿」不下传补充信息，本次忽略。\n"
     private static let helpIntroText: String =
         "把作者交来的 Word 文稿或 LaTeX 源文件，转成符合《逻辑学研究》模板的初排稿。"
     private static let helpAutoText: String =
@@ -228,7 +237,8 @@ struct ConvertTab: View {
             .onChange(of: model.options.out) { _ in onOutChanged() }
             .onChange(of: model.options.metadata) { path in onMetadataPathChanged(path) }
             .sheet(isPresented: $model.showMetadataForm) { metadataFormSheet }
-    }
+            .sheet(isPresented: $model.showMetadataPreview) {
+                MetadataPreviewSheet(payload: model.metadataPreview) }    }
 
     private var pageBody: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -452,15 +462,6 @@ struct ConvertTab: View {
                 logStore: log
             )
             LabeledPathRow(
-                title: "元数据文件",
-                // 批63b：placeholder 按源稿通道动态变（LaTeX / Word 的既有能力不同）。
-                placeholder: Self.metadataFilePlaceholder(for: model.options.source),
-                path: $model.options.metadata,
-                kind: .file,
-                allowedExtensions: ["tex", "docx"],
-                logStore: log
-            )
-            LabeledPathRow(
                 title: "已有的 .bib",
                 placeholder: "指定后不再自动生成",
                 path: $model.options.bib,
@@ -563,6 +564,10 @@ struct ConvertTab: View {
     private var advancedMetadataSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider().padding(.vertical, 2)
+            if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop)
+                != .inlineFallback {
+                metadataSourcesSection
+            }
             metadataEntrySection
             Divider().padding(.vertical, 2)
             quoteThresholdRow
@@ -761,6 +766,70 @@ struct ConvertTab: View {
         let vendor = dir + "/vendor"
         editors.harvest(source: model.options.source, tool: tool, python: py, toolDir: dir,
                         vendor: FileManager.default.fileExists(atPath: vendor) ? vendor : nil)
+    }
+
+    // MARK: - B-223：元数据 / 补充信息（多份，可选；只补空、表单最高优先）
+    /// 多份补充源（.docx / .tex / .json）：顺序 = 合并顺序（先到先得）；只补正文空值。
+    @ViewBuilder private var metadataSourcesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(Self.metadataSourcesTitleText).font(.caption).foregroundStyle(.secondary)
+                Button("添加…") { addMetadataSource() }
+                Button("预览…") { previewMetadataSources() }
+                    .disabled(model.options.source.isEmpty || model.running)
+            }
+            Text(model.metadataSources.isEmpty
+                 ? Self.metadataFilePlaceholder(for: model.options.source)
+                 : Self.metadataSourcesHintText)
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(model.metadataSources.enumerated()), id: \.offset) { index, path in
+                HStack(spacing: 8) {
+                    Text("\(index + 1). \((path as NSString).lastPathComponent)")
+                        .font(.caption).lineLimit(1).help(path)
+                    Button("移除") {
+                        if index < model.metadataSources.count {
+                            model.metadataSources.remove(at: index)
+                        }
+                    }.buttonStyle(.borderless)
+                }
+            }
+        }
+    }
+
+    private func addMetadataSource() {   // 多选入口 = 多次单选累加；同一路径不重复加
+        guard let p = PanelKit.pickFile(allowedExtensions: ["docx", "tex", "json"]) else {
+            return
+        }
+        if case .ignored(let why) = ConvertFeature.metadataSourceVerdict(
+            path: p, source: model.options.source) {
+            log.append("元数据 / 补充信息：\(why)。\n")
+            return
+        }
+        guard !model.metadataSources.contains(p) else { return }
+        model.metadataSources.append(p)
+    }
+
+    /// 只读预览（引擎 `--metadata-preview-out`；不建产物目录 / 不写产物 / 不写交接单）。
+    private func previewMetadataSources() {
+        var o = model.options; o.metadataSources = model.metadataSources
+        var formTemp: String? = nil
+        if model.metadataForm.hasAnyValue, let json = model.metadataForm.jsonString() {
+            let p = MetadataForm.tempFilePath(stem: o.source)
+            if (try? json.write(toFile: p, atomically: true, encoding: .utf8)) != nil {
+                o.metadataJSON = p
+                formTemp = p
+            }
+        }
+        defer { if let p = formTemp { MetadataForm.removeTemporaryFile(p) } }
+        log.append("元数据预览：读取中（只读，不写任何产物）…\n")
+        if let payload = ConvertFeature.previewMetadata(o, knobs: settings.aiEngineKnobs,
+                                                        log: Logger(store: log)) {
+            model.metadataPreview = payload; model.showMetadataPreview = true
+            log.append("元数据预览：\(payload.rows.count) 个字段；未写任何产物。\n")
+        } else {
+            log.append("元数据预览失败（见上方日志）；本次未写任何文件。\n")
+        }
     }
 
     /// 批63b：「元数据文件」占位文案按**源稿通道**动态变（两通道既有能力不同，不能一刀切）。
@@ -1389,6 +1458,17 @@ struct ConvertTab: View {
             metadata: o.metadata, source: o.source) {
             log.append("元数据文件：\(why)。\n")
             o.metadata = ""
+        }
+        guard !model.metadataSources.isEmpty else { return }   // B-223：多份补充信息
+        guard !o.scanOnly && !(o.coop && !o.scanOnly) else {
+            log.append(Self.metadataSourcesIgnoredLogText)
+            return
+        }
+        o.metadataSources = model.metadataSources.filter { path in
+            guard case .ignored(let why) = ConvertFeature.metadataSourceVerdict(
+                path: path, source: o.source) else { return true }
+            log.append("元数据 / 补充信息：\(why)。\n")
+            return false
         }
     }
 

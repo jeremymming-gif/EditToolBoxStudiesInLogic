@@ -715,6 +715,63 @@ def test_bad_json(tmp: str) -> None:
           and not os.path.exists(out), (r.stdout + r.stderr)[-300:])
 
 
+# ── ⑥b 批223：`--metadata-preview-out` 只读预览（表单最高优先；旧判据不变） ──
+
+
+def test_b223_preview(tmp: str) -> None:
+    src = write(os.path.join(tmp, "b223_src.tex"), _TEX_SRC)
+    js = write_json(os.path.join(tmp, "b223_form.json"),
+                    {"schema_version": 1, "title_cn": "人工题名"})
+    prev = os.path.join(tmp, "b223_preview.json")
+    out = os.path.join(tmp, "b223_out")
+    before = sha(js)
+    r = run_convert(src, out, ["--metadata-json", js, "--metadata-preview-out", prev])
+    data = {}
+    if os.path.isfile(prev):
+        with open(prev, encoding="utf-8") as f:
+            data = json.load(f)
+    rows = data.get("rows") or []
+    row = next((x for x in rows if x.get("field") == "title_cn"), {})
+    check("⑥b-1 预览：--metadata-json 的表单值状态 = 已填（表单）",
+          r.returncode == 0 and row.get("value") == "人工题名"
+          and row.get("status") == "已填（表单）", str(row))
+    check("⑥b-2 预览只读：不建产物目录、表单 JSON 一个字节不改",
+          not os.path.isdir(out) and sha(js) == before, (r.stdout + r.stderr)[-200:])
+    bad = write(os.path.join(tmp, "b223_bad.json"), "{ 坏 JSON")
+    prev2 = os.path.join(tmp, "b223_preview2.json")
+    r2 = run_convert(src, out, ["--metadata-json", bad, "--metadata-preview-out", prev2])
+    check("⑥b-3 坏 JSON + 预览：exit 2、不写预览文件（批63b 判据不放宽）",
+          r2.returncode == 2 and not os.path.isfile(prev2), (r2.stdout + r2.stderr)[-200:])
+
+
+def test_b223_json_as_metadata(tmp: str) -> None:
+    # B-223 FAIL-2：`--metadata x.json` 与 `--metadata-json` 同语义（两通道一致、最高优先）
+    d = os.path.join(tmp, "json_as_meta")
+    src_tex = write(os.path.join(d, "src", "paper.tex"), _TEX_SRC)
+    js = write_json(os.path.join(d, "in", "one.json"), _JSON_ONE)
+    r = run_convert(src_tex, os.path.join(d, "out"), ["--metadata", js])
+    m = macros(out_tex(os.path.join(d, "out")), "mytitle") \
+        if os.path.isfile(out_tex(os.path.join(d, "out"))) else {}
+    check("⑥c-1 LaTeX 通道：--metadata 指向 .json 按人工元数据生效（exit 0）",
+          r.returncode == 0 and m.get("mytitle") == "测试题名",
+          (r.stdout + r.stderr)[-300:])
+    docx = make_docx(["Word 稿标题", "王小明", "摘要：Word 稿摘要。", "正文。"],
+                     os.path.join(d, "word", "paper.docx"))
+    out2 = os.path.join(d, "out2")
+    r2 = run_convert(docx, out2, ["--metadata", js])
+    m2 = macros(out_tex(out2), "mytitle") if os.path.isfile(out_tex(out2)) else {}
+    check("⑥c-2 Word 通道：--metadata 指向 .json 生效（不再「忽略且不告知」）",
+          r2.returncode == 0 and m2.get("mytitle") == "测试题名"
+          and "本次忽略" not in r2.stdout, (r2.stdout + r2.stderr)[-300:])
+    js2 = write_json(os.path.join(d, "in", "two.json"), dict(_JSON_ONE, title_cn="后给的题名"))
+    out3 = os.path.join(d, "out3")
+    r3 = run_convert(src_tex, out3, ["--metadata", js, "--metadata-json", js2])
+    m3 = macros(out_tex(out3), "mytitle") if os.path.isfile(out_tex(out3)) else {}
+    check("⑥c-3 先到先得：--metadata-json 与 --metadata x.json 都给 title 时以 --metadata-json 为准",
+          r3.returncode == 0 and m3.get("mytitle") == "后给的题名",
+          (r3.stdout + r3.stderr)[-300:])
+
+
 # ── ⑨ 默认零变化：无参数 / --metadata 与 HEAD 逐字节相同；kwarg None 等价 ──
 
 
@@ -780,6 +837,8 @@ def main() -> int:
         test_cli_en_multi(tmp)
         test_cli_word_channel(tmp)
         test_priority_and_empty(tmp)
+        test_b223_preview(tmp)
+        test_b223_json_as_metadata(tmp)
         test_placeholders(tmp)
         test_bad_json(tmp)
         head = ensure_head_engine(tmp)

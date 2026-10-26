@@ -996,11 +996,11 @@ def build_arg_parser():
                     version=f"SLCN 引擎 {ENGINE_VERSION} ｜ {_plat.describe()}")
     ap.add_argument("--source", required=True, help="【必填】源文件（.docx / .doc / .tex）")
     ap.add_argument("--out", default=None, help="【必填】输出根目录，将在其下建立 <作者名>/ 文件夹")
-    ap.add_argument("--metadata", default=None,
-                    help="LaTeX 多源合并时的元数据源（上一轮模板稿）。也可给 Word `.docx`："
-                         "自动提取题名/作者/单位/邮箱/摘要/关键词，按语种写成临时元数据"
-                         "（批63；**只取元数据字段，不做 Word→LaTeX 全文转换**）；"
-                         "老式 `.doc` 请先另存 `.docx`/`.tex`（Mac 界面会自动转换）。")
+    ap.add_argument("--metadata", action="append", default=None, metavar="文件",
+                    help="元数据 / 补充信息源（可给多份，按给出顺序先到先得；只补正文缺失项、"
+                         "不覆盖已有内容）。.docx：标签作者信息块/英文元数据表/首部元数据块；"
+                         ".tex：\\my* 元数据宏；.json：结构化人工元数据。LaTeX 通道多份会合并成"
+                         "一份临时元数据；单份时与旧版逐字节相同。老式 `.doc` 请先另存 `.docx`/`.tex`。")
     ap.add_argument("--bib", default=None, help="参考文献库 .bib（默认取源文件同目录下的）")
     ap.add_argument("--author", default=None, help="第一作者姓名（源里读不到时必须提供）")
     ap.add_argument("--name", default=None, help="直接指定输出名，如 Lei_Li（跳过姓名推导）")
@@ -1034,6 +1034,10 @@ def build_arg_parser():
                          "摘要关键词）。结构见 ENGINE_API「--metadata-json 契约」；"
                          "优先级最高（> --metadata 与 --title-cn 等）；空值不覆盖；"
                          "坏 JSON/不存在/超 5 作者/作者跳号 → exit 2")
+    ap.add_argument("--metadata-preview-out", default=None, metavar="临时JSON",
+                    help="【只读预览】把「正文解析＋补充文件＋人工元数据」的合并结果写成 JSON"
+                         "（字段/生效值/来源/状态/冲突/未识别/缺项），写完立即退出："
+                         "不建产物目录、不写产物、不写交接单、不留临时文件。供界面「预览」按钮用。")
     ap.add_argument("--list-editors", action="store_true",
                     help="只列出全库出现过的「责任编辑」姓名（每行「姓名<TAB>篇数」），供界面下拉用")
     ap.add_argument("--compile", action="store_true", help="生成后立即编译出 PDF")
