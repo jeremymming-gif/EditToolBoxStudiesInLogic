@@ -24,6 +24,7 @@ import ast
 import importlib
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -1229,6 +1230,108 @@ check("(m7) B-135 核心：库有非空值 → 覆盖现值/补齐缺失（fills
       "结构异常 fail-soft 返回 None",
       _ok7a and _ok7b and _ok7c and _ok7d and _ok7e,
       "a=%r b=%r c=%r d=%r e=%r plans=%s" % (_ok7a, _ok7b, _ok7c, _ok7d, _ok7e, _pl7))
+
+# ─────────────────────────────────────────────────────────────────────────
+# (n) 双壳页面集合一致性（B-230 壳契约；**静态解析**，不 import tkinter/tk）
+#
+# 口径（`notes/drafts/specs/b230-shell-split.md` §4.1 逐字核对过，**不是**「集合完全相等」）：
+#   mac `NavPage` 15 页 / win `tabs` 14 页；mac 只多「目录摘要推送」（B-225 仅 mac 交付，win 无此页），
+#   唯一允许的中文别名是「待处理」(mac；B-188 改名) ⇄「待裁决」(win)，其余逐字相同；
+#   三个分组「单篇稿件 / 整期装配 / 引用库」逐组**集合**相等（整期装配 mac 多一页），
+#   **不比较组内顺序**（win 的「生成目录」在「编译全部」之前、mac 相反 —— 已知差异，登记不修）。
+#   缺文件（比如只拿了 Engine/ 的瘦检出）→ SKIP，绝不假 PASS。
+#   组号用 (n) 而不是 spec 写的 (i)：a–m 已占用，i1–i4 属 B-229 门面组（卡面 §1c）。
+_PAGES_ROOT = ENGINE.parent
+_MAC_PAGES_SRC = _PAGES_ROOT / "sources-mac" / "Views" / "MainWindow.swift"
+_WIN_TABS_DIR = _PAGES_ROOT / "sources-win" / "tabs"
+_WIN_PAGES_SRC = ([_PAGES_ROOT / "sources-win" / "main.py"]
+                  + sorted(_WIN_TABS_DIR.glob("*.py"))
+                  + [_PAGES_ROOT / "sources-win" / "bibdb_ui.py"])
+_PAGES_MISSING = [str(_p) for _p in [_MAC_PAGES_SRC, _WIN_TABS_DIR] + _WIN_PAGES_SRC
+                  if not _p.exists()]
+
+if _PAGES_MISSING:
+    for _g in ("n1", "n2", "n3"):
+        print(f"SKIP  ({_g}) 双壳页面集合：缺 {len(_PAGES_MISSING)} 处源文件，"
+              f"本机不判（{_PAGES_MISSING[:3]}）")
+else:
+    _mac_src = _MAC_PAGES_SRC.read_text(encoding="utf-8")
+    _win_src = [_p.read_text(encoding="utf-8") for _p in _WIN_PAGES_SRC]
+    _win_all = "\n".join(_win_src)
+    _win_main = _win_src[0]
+
+    # mac 中文名：只取 `var title: String` 的 switch（`var symbol` 那段是 SF Symbol 英文名，
+    # 一起收会把中文名覆盖成图标名）。
+    _mac_title_block = re.search(r"var title: String \{(.*?)\n    \}", _mac_src, re.S)
+    _mac_titles = dict(re.findall(r'case \.(\w+): return "([^"]+)"',
+                                 _mac_title_block.group(1) if _mac_title_block else ""))
+    # win 中文名：各 tab 的类属性 `name = "..."`（「设置」是组外底部页，兜一层）
+    _win_names = set(re.findall(r'^\s+name = "([^"]+)"', _win_all, re.M)) | {"设置"}
+    _ALIAS = {"待处理": "待裁决"}       # B-188 只改了 mac 侧 → 唯一允许的别名
+    _MAC_ONLY = {"目录摘要推送"}        # B-225 只交付了 mac → 唯一允许的缺失页
+
+    _mac_zh = {_ALIAS.get(_t, _t) for _t in _mac_titles.values()}
+    _mac_side = _mac_zh - _win_names
+    _win_side = _win_names - _mac_zh
+    check("(n1) 双壳页面集合：mac NavPage 15 页 / win tabs 14 页，mac 仅多「目录摘要推送」，"
+          "win 没有 mac 之外的页（别名「待处理」⇄「待裁决」已归一）",
+          _mac_side == _MAC_ONLY and _win_side == set(),
+          f"mac={len(_mac_zh)} 页 / win={len(_win_names)} 页｜mac−win={sorted(_mac_side)}｜"
+          f"win−mac={sorted(_win_side)}")
+
+    check("(n2) 允许清单自检（防白名单僵化）：目录摘要推送 在 mac、待处理 在 mac、"
+          "待裁决 在 win、待处理 **不在** win（别名两侧各留一处才算没漂移）",
+          "目录摘要推送" in _mac_titles.values() and "待处理" in _mac_titles.values()
+          and "待裁决" in _win_names and "待处理" not in _win_names,
+          f"目录摘要推送@mac={'目录摘要推送' in _mac_titles.values()} "
+          f"待处理@mac={'待处理' in _mac_titles.values()} "
+          f"待裁决@win={'待裁决' in _win_names} 待处理@win={'待处理' in _win_names}")
+
+    # (n3) 分组：mac 三个 static let 名单 × win `self.nav_groups` 的索引 → 组名→中文名集合。
+    # mac 侧 key（NavPage）→ 中文名（过别名）；组名按编辑流程一一对应。
+    _mac_groups: dict[str, set[str]] = {}
+    for _key in ("singleArticle", "assembly", "library"):
+        _gm = re.search(r"static let %s: \[NavPage\] = \[(.*?)\]" % _key, _mac_src, re.S)
+        _mac_groups[_key] = {_ALIAS.get(_mac_titles.get(_k, "?" + _k),
+                                        _mac_titles.get(_k, "?" + _k))
+                             for _k in (re.findall(r"\.(\w+)", _gm.group(1)) if _gm else [])}
+    # win 侧：`self.tabs` 的属性顺序就是侧栏索引；属性 → 页类 → 类属性的 name
+    _tabs_block = re.search(r"self\.tabs = \[(.*?)\]", _win_main, re.S)
+    _win_attrs = re.findall(r"self\.(\w+)", _tabs_block.group(1)) if _tabs_block else []
+    _win_cls = dict(re.findall(r"self\.(\w+) = (?:[A-Za-z_]\w*\.)?(\w+)\(", _win_main))
+    _win_tab_names = []
+    for _a in _win_attrs:
+        _cm = (re.search(r'^class %s\b.*?^\s+name = "([^"]+)"' % _win_cls[_a], _win_all,
+                         re.S | re.M) if _a in _win_cls else None)
+        _win_tab_names.append(_cm.group(1) if _cm else "?" + _a)
+    _ng_block = re.search(r"self\.nav_groups = \[(.*?)\]", _win_main, re.S)
+    _win_groups: dict[str, set[str]] = {}
+    for _gname, _idxs in re.findall(r'\("([^"]+)",\s*\(([\d,\s]+)\)\)',
+                                    _ng_block.group(1) if _ng_block else ""):
+        _win_groups[_gname] = {
+            (_ALIAS.get(_win_tab_names[int(_i)], _win_tab_names[int(_i)])
+             if 0 <= int(_i) < len(_win_tab_names) else "?idx" + _i.strip())
+            for _i in _idxs.split(",") if _i.strip()}
+
+    _GROUP_PAIRS = (("singleArticle", "单篇稿件"), ("assembly", "整期装配"),
+                    ("library", "引用库"))
+    _MAC_GROUP_EXTRA = {"assembly": {"目录摘要推送"}}   # 整期装配：mac 多「目录摘要推送」
+    _group_bad: list[str] = []
+    _group_detail: list[str] = []
+    for _mac_key, _win_gname in _GROUP_PAIRS:
+        _mg = _mac_groups.get(_mac_key, set())
+        _wg = _win_groups.get(_win_gname, set())
+        _extra, _miss = _mg - _wg, _wg - _mg
+        _ok = _extra == _MAC_GROUP_EXTRA.get(_mac_key, set()) and _miss == set()
+        _group_detail.append("%s(mac=%d/win=%d) mac−win=%s win−mac=%s%s"
+                             % (_win_gname, len(_mg), len(_wg), sorted(_extra),
+                                sorted(_miss), "" if _ok else " ✗"))
+        if not _ok:
+            _group_bad.append(_win_gname)
+    check("(n3) 分组一致性：单篇稿件 / 整期装配 / 引用库 三组「组名→中文名集合」逐组相等"
+          "（整期装配 mac 仅多「目录摘要推送」；不比较组内顺序）",
+          not _group_bad and len(_win_groups) == 3 and all(_mac_groups.values()),
+          "｜".join(_group_detail))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
