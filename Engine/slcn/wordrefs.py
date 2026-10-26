@@ -273,6 +273,9 @@ def _join_book_parts(parts: list[str]) -> str:
 # 只认**结构可辨**的形态；认不出返回 ("","")，绝不猜。
 _EDS_ALONE_RE = re.compile(r"^(?:eds?|Eds?|editors?|Editors?)\.?$", re.I)
 _EDS_HEAD_RE = re.compile(r"^(?:eds?|Eds?|editors?|Editors?)\.?\s+(?P<rest>.+)$")
+#: 编者标记挂在**段尾**：`J. W. Davis, D. J. Hockney and W. K. Wilson (eds.)`（B-222 D3）。
+_EDS_TAIL_RE = re.compile(
+    r"^(?P<eds>.+?)\s*\((?P<mark>eds?|Eds?|editors?|Editors?)\.?\)\s*$", re.I)
 #: 原始条目里 `in` 标记（前面可能是空格/逗号/句号/**引号收尾** —— `”in Logic` 实测）。
 _IN_ANY_RE = re.compile(r"(?:^|(?<=[\s,，;；.。“”\"'「」『』]))[Ii]n\s*[:：]?\s+(?=\S)")
 _AUTHORISH_SEG_RE = re.compile(
@@ -319,11 +322,11 @@ def _take_editor_parts(segs: list[str]) -> str:
 
 
 def _editor_list_from_tail(tail: str, *, allow_c: bool = False) -> tuple[str, str]:
-    """对 `in ` 之后的一段做 A/B/C 三形态识别（供 ``incollection_editor_list`` 用）。
+    """对 `in ` 之后的一段做 A/B/C/D 四形态识别（供 ``incollection_editor_list`` 用）。
 
-    ``allow_c=False``（人年制通道默认）：只认带 `eds./ed.` 标记的 A/B 形态——
-    短引脚注（`… in The Importance of What We Care About, p. 262.`）没有年份/编者，
-    按 C 形态会把书名判成容器，实际那只是同书章节的短引。
+    ``allow_c`` 保留供调用方表达通道语义（编号清单 = 容器标记一定在题名之后）。
+    B-222 B 段 D1 起 C 形态不再按通道开关：安全条件（年份锚点 + 非期刊
+    `N(M):p` 形态）本身就足以排除短引与期刊（实测 90-07 人年制 `in 书名, 2005`）。
     """
     segs = _split_segs(tail)
     if len(segs) < 2:
@@ -351,10 +354,23 @@ def _editor_list_from_tail(tail: str, *, allow_c: bool = False) -> tuple[str, st
         if _plausible_book(book):
             return book, editor
         return "", ""
+    # D：`in 编者列表, 书名 (eds.), …` —— 编者标记挂在某段**尾部**（既非独占段、
+    #    也非段首）。B-222 B 段 D3 实测 90-04 Harrison1969 / 90-05 Horwich2005
+    #    （`in J. W. Davis, D. J. Hockney and W. K. Wilson (eds.), Philosophical Logic`）。
+    for i, seg in enumerate(segs):
+        em = _EDS_TAIL_RE.match(seg)
+        if not em:
+            continue
+        editor = _take_editor_parts(segs[:i] + [em.group("eds")])
+        book = _take_book_parts(segs[i + 1:])
+        if editor and _plausible_book(book):
+            return book, editor
+        return "", ""
     # C：无编者标记——书名不像作者名、不含数字，且其后第一段确是出版信息
     #    （裸年份 / 页码 / 地: 社）；期刊的 `Journal, 68(1): 5-20` 形态一律排除。
-    #    只在编号清单通道启用（allow_c=True）：那里容器标记出现在题名之后、可信。
-    if not allow_c or not re.search(r"(?:19|20)\d{2}", tail):
+    #    B-222 B 段 D1：年份锚点 + 非期刊形态即启用（人年制通道也认，
+    #    旧 gate 只在编号清单通道开，实测 90-07 短引容器漏判）。
+    if not re.search(r"(?:19|20)\d{2}", tail):
         return "", ""
     head = segs[0].strip()
     if (not _AUTHORISH_SEG_RE.match(head) and not re.search(r"\d", head)
@@ -421,6 +437,7 @@ def thesis_fields(rest: str) -> dict | None:
     etype = "mastersthesis" if degree.startswith("硕士") else "phdthesis"
     tail = rest[m.end():]
     school = ""
+    kind_order = "school_after"
     for part in re.split(r"[，,。.；;、]", tail):
         p = part.strip(" \t\u3000，,。.；;、")
         if not p:
@@ -429,8 +446,22 @@ def thesis_fields(rest: str) -> dict | None:
             school = p
             break
     if not school:
+        # B-222 B 段 B3：编号清单实测 `北京师范大学博士论文` —— 校名在学位类型
+        # **之前**。只认紧邻、结构上像校名的一段（不猜）；旧语序仍返回
+        # ``school_after``，由 `apply_numbered_extras` 收口（既有断言不动）。
+        before = [p.strip(" \t\u3000，,。.；;、")
+                  for p in re.split(r"[，,。.；;、\s]", rest[:m.start()])]
+        for part in reversed(before):
+            if not part:
+                continue
+            if _SCHOOL_HINT_RE.search(part) and len(part) <= 40:
+                school = part
+                kind_order = "school_before"
+            break
+    if not school:
         return None
-    return {"etype": etype, "degree": degree, "school": school}
+    return {"etype": etype, "degree": degree, "school": school,
+            "kind_order": kind_order}
 
 
 # ── 英文学位论文：`PhD thesis, Northwestern University` ────────────────────

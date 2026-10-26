@@ -34,6 +34,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+# B-222 B 段 A1–A5：bib 字段序的**单点**在 `slcn/bibrender.py`（这里只 re-export，
+# `footnotes._TYPE_ORDER` 与 `bibrender._TYPE_ORDER` 是同一对象，旧引用不变）。
+from .bibrender import _TYPE_ORDER, bib_field_order  # noqa: F401
+
 # ── 文献成分识别 ──────────────────────────────────────────────────────────
 
 # 出现这些说明是**现代出版物条目**（可以进 bib）
@@ -2265,21 +2269,8 @@ def make_key(entry: dict, seq: int, used: set[str]) -> str:
 
 
 # ── bib 字段 → .bib 文本 ──────────────────────────────────────────────────
-
-_TYPE_ORDER = {
-    "book": ["author", "title", "edition", "publisher", "address", "year", "userf", "note"],
-    "article": ["author", "title", "journal", "volume", "number", "year", "pages", "userf", "note"],
-    "incollection": ["author", "title", "booktitle", "publisher", "address", "year",
-                     "pages", "url", "userf", "note"],
-    # B-217②（防御性补齐，编号清单→entry_to_bib 通道）：中文学位论文按引用库既有口径
-    # （`bib_db` 实测 67+15 条）：`school=学校`、`address=学位类型原字串`（「博士论文」/
-    # 「硕士学位论文」）。`thesis` 是往期成品里的另一种写法（institution/type）。
-    "phdthesis": ["author", "title", "school", "address", "year", "userf", "note"],
-    "mastersthesis": ["author", "title", "school", "address", "year", "userf", "note"],
-    "thesis": ["author", "title", "type", "institution", "school", "address",
-               "year", "userf", "note"],
-    "misc": ["author", "title", "year", "url", "userf", "note"],
-}
+# B-222 B 段 A1–A5：字段序表已迁到 `slcn/bibrender.py`（模块顶部 import 的
+# `_TYPE_ORDER` 即同一对象）；`entry_to_bib` 用 `bib_field_order()`，见下。
 
 
 # ── 作者串 → BibTeX 的 `and` 分隔 ────────────────────────────────────────
@@ -2407,9 +2398,14 @@ def normalize_authors(a: str) -> str:
 
 
 def entry_to_bib(key: str, entry: dict, raw: str = "") -> str:
-    """把解析出的字段写成 .bib 条目。"""
+    """把解析出的字段写成 .bib 条目。
+
+    B-222 B 段 A1–A5：**字段存在即输出**——`bib_field_order()` 的类型序只决定
+    排序；entry 里带的白名单外字段（@book 的 journal/volume/number/pages、
+    @incollection 的 editor/edition、@inproceedings 的容器字段…）全部照写，
+    不再静默裁掉。反例（entry 本来没有的字段）不会被凭空造出来。
+    """
     etype = entry.get("_type", "misc")
-    order = _TYPE_ORDER.get(etype, _TYPE_ORDER["misc"])
     # 中文条目补 userf={cn}（SLCN-MIX.sty 据此改用中文标点）
     if not entry.get("userf"):
         from .bibnorm import detect_userf
@@ -2417,6 +2413,9 @@ def entry_to_bib(key: str, entry: dict, raw: str = "") -> str:
         uf = detect_userf(str(entry.get("author", "")), str(entry.get("title", "")))
         if uf:
             entry = dict(entry, userf=uf)
+    present = [k for k, v in entry.items()
+               if isinstance(k, str) and not k.startswith("_") and v]
+    order = bib_field_order(etype, present)
     lines = [f"@{etype}{{{key},"]
     width = max((len(k) for k in order if entry.get(k)), default=4)
     wrote = False

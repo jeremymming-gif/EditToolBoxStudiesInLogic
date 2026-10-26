@@ -432,14 +432,19 @@ def test_default_apply(tmp: str, env_db: dict, env_nodb: dict,
     bib_on, bib_off = _read_bib(out_on), _read_bib(out_off)
     check("⑧-1 默认回填：退出 0", r_on.returncode == 0,
           (r_on.stdout + r_on.stderr)[-400:])
-    check("⑧-2 默认回填日志：命中 1 / 候选 1 / 未命中 1 + 回填 1 条 / 2 项",
-          "默认回填 1 条 / 2 项" in r_on.stdout and "命中 1 / 候选 1" in r_on.stdout,
+    # B-222 B/U3（用户 2026-10-26 12:1x 批准）：库值覆盖契约上线后，本夹具的
+    # journal+volume 是「补缺失」、pages 是「已有非空按库值覆盖」→ 合计 3 项。
+    check("⑧-2 默认回填日志：命中 1 / 候选 1 / 未命中 1 + 回填 1 条 / 3 项"
+          "（B-222 B/U3 库值覆盖契约）",
+          "默认回填 1 条 / 3 项" in r_on.stdout and "命中 1 / 候选 1" in r_on.stdout,
           r_on.stdout[-600:])
     check("⑧-3 只补缺失字段：journal=Mind、volume=79",
           "journal = {Mind}" in bib_on and "volume = {79}" in bib_on, bib_on)
-    check("⑧-4 已有非空字段不覆盖（pages 仍是稿件值，不是库值 1--20）",
-          "pages" in bib_on and "9--9" in bib_on
-          and "pages = {1--20}" not in bib_on, bib_on)
+    # B-222 B/U3（用户 2026-10-26 12:1x 批准）：改为**库值覆盖**——pages 现值 9--9
+    # 与库值 1--20 不同 → 整值覆盖；同值才不重写（不是放宽判据，是契约变更）。
+    check("⑧-4 已有非空字段按库值覆盖（pages 9--9 → 库值 1--20；B-222 B/U3 契约）",
+          "pages" in bib_on and "{1--20}" in bib_on
+          and "9--9" not in bib_on, bib_on)
     check("⑧-5 候选条目不动（KeyHitOnly 字段体不变）",
           "A Totally Different Manuscript Title About Other Things" in bib_on
           and "KeyHitOnly" in bib_on)

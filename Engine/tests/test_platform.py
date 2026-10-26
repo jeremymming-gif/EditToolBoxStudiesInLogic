@@ -1093,6 +1093,144 @@ check("(l3) 族行数下降：门面+4 模块总行数 **< 3904（A 段前实测
       % (_b222a_line_bad, _b222a_mod_lines, _b222a_total, _B229_FAMILY_LIMIT))
 
 # ─────────────────────────────────────────────────────────────────────────
+print("\n── (m) B-222 B 段：A 字段存在即输出 / B 类型判据 / C N2 行内句点 / D N5 容器 ──")
+import re as _re  # noqa: E402
+from slcn import footnotes as _fn  # noqa: E402
+from slcn import wordrefs as _wr  # noqa: E402
+_br = importlib.import_module("slcn.bibrender")
+# (m1) A1–A5：类型序只排序、不筛字段（entry 有就写，没有不造）；排序表单点在 bibrender.py。
+_A = [("book", {"_type": "book", "author": "H.", "title": "T", "journal": "Synthese", "volume": "53", "number": "2", "pages": "257--272"}, ("journal", "volume", "number", "pages"), ()),
+      ("incollection", {"_type": "incollection", "author": "C.", "title": "T", "booktitle": "B", "editor": "E"}, ("editor",), ()),
+      ("inproceedings", {"_type": "inproceedings", "author": "S.", "title": "T", "booktitle": "BT", "editor": "E", "volume": "3", "pages": "1--2"}, ("booktitle", "editor", "volume", "pages"), ()),
+      ("book", {"_type": "book", "author": "V.", "title": "T", "booktitle": "BT"}, ("booktitle",), ()),
+      ("incollection", {"_type": "incollection", "author": "S.", "title": "T", "booktitle": "B", "edition": "Winter 2022"}, ("edition",), ()),
+      ("book", {"_type": "book", "author": "A.", "title": "T", "publisher": "P"}, (), ("journal", "volume", "number", "pages")),
+      ("book", {"_type": "book", "author": "A.", "title": "T", "confidence": "low"}, (), ("confidence", "_type"))]
+_a_bad = []
+for _t, _e, _must, _not in _A:
+    _out = _fn.entry_to_bib("k", dict(_e))
+    _keys = _re.findall(r"^  (\w+)\s+=", _out, _re.M)
+    if (not _out.startswith("@%s{" % _t) or any(k not in _keys for k in _must)
+            or any(k in _keys for k in _not)):
+        _a_bad.append((_t, _keys))
+_br_defs = _b207_top_defs(ENGINE / "slcn" / "bibrender.py")
+check("(m1) A1–A5 字段存在即输出：@book 的 journal/volume/number/pages、@incollection 的 "
+      "editor/edition、@inproceedings 的容器字段都照写；@book 无 journal 不凭空造；"
+      "内部键（confidence/_type）不进 .bib；`bib_field_order` 单点在 bibrender.py、"
+      "footnotes 不重复定义",
+      not _a_bad and len(_br_defs.get("bib_field_order") or []) == 1
+      and "_TYPE_ORDER" not in _b207_top_defs(ENGINE / "slcn" / "footnotes.py"),
+      "不符=%s 定义=%s" % (_a_bad[:2], sorted(_br_defs)))
+# (m2) B1/B2：作者串里的 `(ed.)/(eds.)` 是编著整书的作者位，不是容器线索；真析出仍 incollection。
+_b1 = _fr.classify_entry_type({"author": "{Salerno (ed.)}", "publisher": "Oxford University Press", "address": "Oxford"}, raw="Salerno (ed.), New Essays on the Knowability Paradox, Oxford: Oxford University Press, 2009.")[0]
+_b2 = _fr.classify_entry_type({"author": "{F. H. van Eemeren and P. Wu (eds.)}", "publisher": "John Benjamins", "address": "Amsterdam"}, raw="F. H. van Eemeren and P. Wu (eds.), Contextualizing Pragma-dialectics, Amsterdam: John Benjamins, 2017.")[0]
+_b_neg1 = _fr.classify_entry_type({"booktitle": "Philosophical Logic", "publisher": "D. Reidel Publishing Company", "address": "Dordrecht", "pages": "74--88"}, raw="C. Harrison, 1969, “The Unanticipated Examination”, in J. W. Davis, D. J. Hockney and W. K. Wilson (eds.), Philosophical Logic, Dordrecht: D. Reidel Publishing Company, pp. 74-88.")[0]
+_b_neg2 = _fr.classify_entry_type({}, raw="X, “T”, in Y (eds.), Book, pp. 1-2.")[0]
+check("(m2) B1/B2：编著整书（作者串内 `(ed.)/(eds.)`）→ @book；真析出（`in … (eds.)`）仍 @incollection",
+      (_b1, _b2, _b_neg1, _b_neg2) == ("book", "book", "incollection", "incollection"),
+      "实测=%s" % ((_b1, _b2, _b_neg1, _b_neg2),))
+# (m3) B3：`北京师范大学博士论文`（校名在学位类型前）→ @phdthesis；真期刊仍 @article。
+_bt_raw = "王雪君，基于将来的不确定性对将来偶然命题和“意外”的研究，北京师范大学博士论文，2020年。"
+_p3 = _fr.parse_numbered_item(_bt_raw)
+_tf = _wr.thesis_fields(_bt_raw)
+_pj = _fr.parse_numbered_item("李四，论某某问题，哲学研究，2020年第3期：1-10。")
+_po = _fr.parse_numbered_item("[9] 张三，题名题名题名，博士学位论文，北京：北京大学，2020年。")
+check("(m3) B3：校名+博士/硕士学位论文 → @phdthesis（journal 清空、school=校名）；"
+      "真期刊名仍 @article；旧语序不在此抢判",
+      _p3.etype == "phdthesis" and _p3.journal == "" and _tf is not None
+      and _tf["school"] == "北京师范大学" and _tf["degree"] == "博士论文"
+      and _pj.etype == "article" and _pj.journal == "哲学研究" and _po.etype == "misc",
+      "B3=%s/%s 期刊=%s 旧语序=%s" % (_p3.etype, _p3.journal, _pj.etype, _po.etype))
+# (m4) B5：`_MARK_TYPE` 只能是 `TYPE_MARK` 的别名（旧表在 N/R/A 发散，不得放宽）。
+_fr_src = (ENGINE / "slcn" / "footref.py").read_text(encoding="utf-8")
+check("(m4) B5 标记→类型单点：`_MARK_TYPE is TYPE_MARK`、逐键相等、源码无第二份字面表",
+      _fr._MARK_TYPE is _fr.TYPE_MARK and dict(_fr._MARK_TYPE) == dict(_fr.TYPE_MARK)
+      and _fr_src.count("_MARK_TYPE = TYPE_MARK") == 1 and "_MARK_TYPE = {" not in _fr_src,
+      "is=%r N/R/A=%s" % (_fr._MARK_TYPE is _fr.TYPE_MARK, {k: _fr._MARK_TYPE[k] for k in "NRA"}))
+# (m5) C（N2 行内句点）：`from URL` 是出版信息残段，不并题名；真功能词续接仍并。
+check("(m5) C N2：`, from URL`/`. Cambridge` 视为出版信息（continuation=0）、真功能词续接仍并（1）",
+      (_fr.title_comma_continuation(["Reason, Truth and History", "from URL"]),
+       _fr.title_comma_continuation(["Language, Truth and Logic", ". Cambridge"]),
+       _fr.title_comma_continuation(["Essays", "from the Edge"])) == (0, 0, 1),
+      "实测=%s" % ([_fr.title_comma_continuation(s) for s in (
+          ["Reason, Truth and History", "from URL"],
+          ["Language, Truth and Logic", ". Cambridge"], ["Essays", "from the Edge"])],))
+# (m6) D（N5）：安全 C 形态（allow_c=False 也认）；期刊/无年份短引不认；`in 编者 (eds.), 书名`
+#      → booktitle；中文集刊 → incollection；bibrender 无循环；footnotes re-export is 同一对象。
+_n5 = _wr.incollection_editor_list("in The Importance of What We Care About, 2005", allow_c=False)
+_n5j = _wr.incollection_editor_list("in Journal of Philosophy, 68(1): 5-20", allow_c=False)
+_n5s = _wr.incollection_editor_list("in The Importance of What We Care About, p. 262", allow_c=False)
+_d3 = _wr.incollection_editor_list("in J. W. Davis, D. J. Hockney and W. K. Wilson (eds.), Philosophical Logic, Dordrecht: D. Reidel Publishing Company, pp. 74-88", allow_c=False)
+_coll = _fr.parse_numbered_item("沃斯、费布鲁赫、库伊（著），黄海婷（译），从哈克标准看知道者悖论的解决方案，逻辑学动态与评论，2025年第1辑（总第7辑）：3-36。")
+check("(m6) D N5：`in 书名, 2005` 出 booktitle（allow_c=False 也认）；期刊/无年份短引不认；"
+      "`in 编者 (eds.), 书名` 出 booktitle+editor；中文集刊 → @incollection；"
+      "bibrender 无循环、footnotes re-export is 同一对象",
+      _n5 == ("The Importance of What We Care About", "") and _n5j == ("", "") and _n5s == ("", "")
+      and _d3 == ("Philosophical Logic", "J. W. Davis, D. J. Hockney and W. K. Wilson")
+      and (_coll.etype, _coll.booktitle) == ("incollection", "逻辑学动态与评论")
+      and child("import slcn.bibrender, slcn.footnotes, slcn.footref, slcn.wordrefs").returncode == 0
+      and _fn._TYPE_ORDER is _br._TYPE_ORDER,
+      "n5=%s 期刊=%s 短引=%s d3=%s 集刊=%s" % (_n5, _n5j, _n5s, _d3, _coll.booktitle))
+# (m7) B-135 核心：库值覆盖（合成 bib/record/safe；hermetic，不读真实库、不联网）。
+#      口径：库有非空值 → 覆盖现值/补齐缺失；库缺/空 → 保留产物；同值不重写；
+#      非 HIT_SAFE / 类型表外 / 非 8 类字段 → 不动；未命中条目逐字节不变；结构异常跳过。
+_bdb = importlib.import_module("slcn.bibdb")
+_bap = importlib.import_module("slcn.bibdbapply")
+_b1 = "\n  author = {A},\n  journal = {Old},\n  pages = {9--9}\n"
+_b2 = "\n  author = {B}\n"
+_b3 = "\n  author = {C},\n  journal = {Same}\n"
+_b4 = "\n  author = {D},\n  journal = {Keep}\n"
+_B7 = ("@article{K1," + _b1 + "}\n\n@article{K2," + _b2 + "}\n\n"
+       "@article{K3," + _b3 + "}\n\n@article{K4," + _b4 + "}\n")
+_SAFE7 = {"K1": {"status": _bdb.HIT_SAFE,
+                 "record": {"fields": {"journal": "New Journal", "volume": "7",
+                                       "pages": "1--20"}}},
+          "K2": {"status": _bdb.HIT_SAFE,
+                 "record": {"fields": {"journal": "Mind", "volume": ""}}},
+          "K3": {"status": _bdb.HIT_SAFE, "record": {"fields": {"journal": "Same"}}},
+          "K4": {"status": _bdb.HIT_CANDIDATE, "record": {"fields": {"journal": "X"}}}}
+_pl7 = _bap.plan_fills(None, [("article", "K1", _b1), ("article", "K2", _b2),
+                              ("article", "K3", _b3), ("article", "K4", _b4)], _SAFE7)
+_p7 = {x["key"]: x for x in _pl7}
+_new7, _app7 = _bap.apply_text(_B7, _pl7)
+_app7d = {a["key"]: a for a in _app7}
+_chk7 = _bap.format_checklist(_app7)
+_ok7a = (_p7.get("K1", {}).get("fills") == {"volume": "7"}
+         and _p7.get("K1", {}).get("replaces")
+         == {"journal": "New Journal", "pages": "1--20"}
+         and _p7.get("K2", {}).get("fills") == {"journal": "Mind"}
+         and _p7.get("K2", {}).get("replaces") == {}
+         and "K3" not in _p7 and "K4" not in _p7)
+_ok7b = ("journal = {New Journal}" in _new7 and "volume = {7}" in _new7
+         and "pages = {1--20}" in _new7 and "journal = {Old}" not in _new7
+         and "journal = {Mind}" in _new7 and "journal = {Same}" in _new7
+         and "journal = {Keep}" in _new7 and _new7.count("journal") == 4
+         and _app7d.get("K1", {}).get("filled")
+         == {"volume": "7", "journal": "New Journal", "pages": "1--20"}
+         and _app7d.get("K1", {}).get("replaced")
+         == {"journal": "Old", "pages": "9--9"}
+         and list(_app7d) == ["K1", "K2"])
+_ok7c = ("@article{K3,\n  author = {C},\n  journal = {Same}\n}" in _new7)
+_ok7d = (not _bap.plan_fills(None, [("misc", "K9", "\n  author = {E},\n  journal = {Old}\n")],
+                            {"K9": {"status": _bdb.HIT_SAFE,
+                                    "record": {"fields": {"journal": "New"}}}})
+         and not _bap.plan_fills(None, [("article", "K8", _b2)],
+                                 {"K8": {"status": _bdb.HIT_CANDIDATE,
+                                         "record": {"fields": {"journal": "X"}}}})
+         and "volume = {}" not in _new7)
+_r7 = _bap._render_entry("\n  author = {A},\n  journal = {Old}\n", {}, {"journal": "New"})
+_r7bad = _bap._render_entry("\n  author = {A},\n  journal = {Old\n", {}, {"journal": "New"})
+_ok7e = (_r7 is not None and "}{" not in _r7 and "journal = {New}" in _r7
+         and _r7bad is None
+         and "journal：（旧值 Old）→ New Journal" in _chk7
+         and "volume：（缺失）→ 7" in _chk7)
+check("(m7) B-135 核心：库有非空值 → 覆盖现值/补齐缺失（fills+replaces）；库缺/空保留"
+      "产物值；同值不重写；候选/类型表外不动；未命中条目逐字节不变；_render_entry"
+      "结构异常 fail-soft 返回 None",
+      _ok7a and _ok7b and _ok7c and _ok7d and _ok7e,
+      "a=%r b=%r c=%r d=%r e=%r plans=%s" % (_ok7a, _ok7b, _ok7c, _ok7d, _ok7e, _pl7))
+
+# ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")

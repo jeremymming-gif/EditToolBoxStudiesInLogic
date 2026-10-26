@@ -1,12 +1,14 @@
-r"""引用库「默认回填」（B-217 ⑧，用户 2026-10-24 拍板：默认回填）。
+r"""引用库「默认回填」（B-217 ⑧ → **B-135 核心**，用户 2026-10-26 拍板）。
 
 只做一件事：把 `bibdb.Store.match_reference()` 判成 **HIT_SAFE** 的条目，按库内
-已核实记录**只补缺失字段**，并产出 before/after 核对清单。纪律（宁缺毋滥）：
+已核实记录**以库值覆盖产物现值 / 补齐缺失字段**，并产出 before/after 核对清单。
+纪律（宁缺毋滥）：
 
   · 只碰 HIT_SAFE；候选（HIT_CANDIDATE）/未命中一律不动（绝不臆造，仍走原流程）；
-  · 只补 `FILL_FIELDS` 这 8 类字段，且必须在该条目**类型**的有效字段内
+  · 只碰 `FILL_FIELDS` 这 8 类字段，且必须在该条目**类型**的有效字段内
     （`_FIELD_BY_TYPE`；类型不在表里 → 整条跳过）；
-  · **已有非空字段不覆盖**；字段存在但值为空 → 原位替换（不产生重复字段）；
+  · **库有非空值 → 覆盖产物现值**（现值 == 库值时不动、不重写）；库缺/空 →
+    **保留产物原值**（绝不抹除、不写空值）；字段存在但值为空 → 原位替换；
   · 条目在 .bib 里定位不到 / 结构校验失败 / 任何意外 → 该条跳过（fail-soft，
     绝不写半条）；返回的 new_text 与旧文本在**未命中条目上逐字节相同**。
 
@@ -130,8 +132,25 @@ def _parse_fields(body: str) -> list[tuple[str, int, int, str]]:
     return fields
 
 
+def _field_value_text(raw: str) -> str:
+    """`.bib` 字段值原文（`{...}` / `"..."`）→ 比较用文本（去外层括号与首尾空白）。"""
+    v = (raw or "").strip()
+    if len(v) >= 2 and v[0] == "{" and v[-1] == "}":
+        v = v[1:-1]
+    elif len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+        v = v[1:-1]
+    return v.strip()
+
+
 def plan_fills(store, entries, safe: dict) -> list[dict]:
-    """HIT_SAFE 命中 → 逐条计算「缺哪些字段、库值是什么」（不改文本）。"""
+    """HIT_SAFE 命中 → 逐条计算「要补的缺失字段 / 要覆盖的旧值字段」（不改文本）。
+
+    B-135 核心（本批最小语义）：
+      · 库值非空且 .bib **缺失/空值** → ``fills``（原位补空值 / 末尾插新字段）；
+      · .bib **现值非空且 ≠ 库值** → ``replaces``（整值覆盖；同值不重写）；
+      · 其余纪律不变：只碰 HIT_SAFE、只碰 `_FIELD_BY_TYPE` 保守表内类型、只碰
+        `FILL_FIELDS` 8 类；候选/未命中/类型不在表 → 整条不动（不猜）。
+    """
     from . import bibdb
 
     plans: list[dict] = []
@@ -143,31 +162,56 @@ def plan_fills(store, entries, safe: dict) -> list[dict]:
         if not allowed:
             continue                      # 类型不在保守表 → 不动（不猜字段有效性）
         rec_fields = bibdb.canonical_fields((match.get("record") or {}).get("fields") or {})
-        existing = {n for n, _s, _e, _v in _parse_fields(body)}
+        fields = _parse_fields(body)
+        existing = {n: (s, e, v) for n, s, e, v in fields}
         fills: dict[str, str] = {}
+        replaces: dict[str, str] = {}
         for name in allowed:
-            if name not in FILL_FIELDS or name in existing:
+            if name not in FILL_FIELDS:
                 continue
             value = _clean_value(rec_fields.get(name))
-            if value:
+            if not value:
+                continue                  # 库缺/空 → 保留产物原值
+            if name not in existing:
                 fills[name] = value
-        if fills:
-            plans.append({"etype": etype, "key": key, "fills": fills})
+                continue
+            current = _field_value_text(body[existing[name][0]:existing[name][1]])
+            if not current:
+                fills[name] = value       # .bib 空值 → 原位补
+            elif current != value:
+                replaces[name] = value    # 现值非空且不同 → 整值覆盖
+            # 现值 == 库值 → 不动（不重写）
+        if fills or replaces:
+            plans.append({"etype": etype, "key": key,
+                          "fills": fills, "replaces": replaces})
     return plans
 
 
-def _render_entry(body: str, fills: dict[str, str]) -> str | None:
-    """字段体 + 要补的字段 → 新字段体；结构不安全 → None（调用方跳过该条）。"""
+def _render_entry(body: str, fills: dict[str, str],
+                  replaces: dict[str, str] | None = None) -> str | None:
+    """字段体 + 要补/要覆盖的字段 → 新字段体；结构不安全 → None（调用方跳过该条）。
+
+    ``fills``：缺失字段插到末尾 / 空值字段原位替换；``replaces``：已有非空值整段
+    （``{...}`` / ``"..."``）换成 ``{库值}``。任何花括号不配平 / 结构异常 → None。
+    """
+    replaces = replaces or {}
     fields = _parse_fields(body)
     by_name = {n: (s, e) for n, s, e, _v in fields}
     edits: list[tuple[int, int, str]] = []   # (起点, 删除长度, 新文本)，逆序应用
     new_fields: dict[str, str] = {}
+    for name, value in replaces.items():
+        if name not in by_name:
+            continue                      # 防御：plan 只覆盖 .bib 已有字段
+        s, e = by_name[name]
+        edits.append((s, e - s, "{" + value + "}"))
     for name, value in fills.items():
+        if name in replaces:
+            continue
         if name in by_name:
             s, e = by_name[name]
             raw = body[s:e]
             if raw not in ("{}", '""'):
-                continue                  # 已有非空值（防御：plan 已过滤）→ 不覆盖
+                continue                  # 已有非空值（防御：plan 已过滤）→ 不补
             edits.append((s, e - s, "{" + value + "}"))
         else:
             new_fields[name] = value
@@ -198,13 +242,17 @@ def _render_entry(body: str, fills: dict[str, str]) -> str | None:
     if depth != 0 or "}{" in new_body:
         return None
     have = {n for n, _s, _e, _v in _parse_fields(new_body)}
-    if any(name not in have for name in fills):
+    if any(name not in have for name in list(fills) + list(replaces)):
         return None
     return new_body
 
 
 def apply_text(bib: str, plans: list[dict]) -> tuple[str, list[dict]]:
-    """按计划回填 → `(新文本, 实际回填清单)`；未命中条目逐字节不变。"""
+    """按计划回填/覆盖 → `(新文本, 实际应用清单)`；未命中条目逐字节不变。
+
+    applied 每项：``{"key","etype","filled":{全部应用字段: 新值},"replaced":{被覆盖
+    字段: 旧值}}``；``filled`` 是**全部应用项**口径（bibpipeline 的「N 项」用它）。
+    """
     spans = {key: (etype, start, body_start, close)
              for etype, key, start, body_start, close in entry_spans(bib)}
     edits: list[tuple[int, int, str]] = []
@@ -217,13 +265,20 @@ def apply_text(bib: str, plans: list[dict]) -> tuple[str, list[dict]]:
         etype, _start, body_start, close = span
         if etype and plan.get("etype") and etype != str(plan["etype"]).lower():
             continue
+        fills = dict(plan.get("fills") or {})
+        replaces = dict(plan.get("replaces") or {})
+        if not fills and not replaces:
+            continue
         body = bib[body_start:close]
-        new_body = _render_entry(body, plan.get("fills") or {})
+        old_values = {n: _field_value_text(v)
+                      for n, _s, _e, v in _parse_fields(body) if n in replaces}
+        new_body = _render_entry(body, fills, replaces)
         if new_body is None or new_body == body:
             continue
         edits.append((body_start, close - body_start, new_body))
         applied.append({"key": key, "etype": etype,
-                        "filled": dict(plan.get("fills") or {})})
+                        "filled": {**fills, **replaces},
+                        "replaced": {n: old_values.get(n, "") for n in replaces}})
     new_bib = bib
     for pos, cut, text in sorted(edits, key=lambda x: -x[0]):
         new_bib = new_bib[:pos] + text + new_bib[pos + cut:]
@@ -231,15 +286,20 @@ def apply_text(bib: str, plans: list[dict]) -> tuple[str, list[dict]]:
 
 
 def format_checklist(applied: list[dict], stem: str = "") -> str:
-    """before/after 核对清单（沿用「参考文献核对.txt」的分节体例）。"""
+    """before/after 核对清单（沿用「参考文献核对.txt」分节体例；B-135 核心口径）。"""
     n_items = sum(len(a.get("filled") or {}) for a in applied or [])
     lines = [f"  ── 引用库回填（{len(applied or [])} 条 / {n_items} 项）──",
-             "  命中已核实条目后**只补缺失字段**；已有非空字段不覆盖，候选/未命中一律不动。",
+             "  命中已核实条目后：库内非空值**覆盖产物现值**或**补齐缺失字段**（8 类）；"
+             "库缺字段保留产物原值；候选/未命中一律不动。",
              "  上文「按条目列出」若把这些字段列为必补，以本节为准。"]
     for a in applied or []:
         lines.append(f"  [{a.get('etype') or '?'}] {a.get('key')}")
+        replaced = a.get("replaced") or {}
         for name, value in (a.get("filled") or {}).items():
-            lines.append(f"      {name}：（缺失）→ {value}")
+            if name in replaced:
+                lines.append(f"      {name}：（旧值 {replaced[name]}）→ {value}")
+            else:
+                lines.append(f"      {name}：（缺失）→ {value}")
     return "\n".join(lines)
 
 

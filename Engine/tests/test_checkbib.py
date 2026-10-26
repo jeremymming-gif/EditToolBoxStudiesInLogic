@@ -642,7 +642,10 @@ else:
             rename_key = k
             break
     rename_key = rename_key or keys[0]
-    victim_key = next((e.key for e in entries if "pages" in e.fields), None)
+    # B-222 B/U3：corpus 产物变化后，首引键可能恰好也是唯一带 pages 的条目；
+    # rename_key == victim_key 时 drop_field 会定位不到（测试夹具选样缺陷，非产品缺陷）。
+    victim_key = next((e.key for e in entries
+                       if "pages" in e.fields and e.key != rename_key), None)
     drop_key = next((k for k in keys if k not in (victim_key, rename_key)), None)
 
     mutated = btext.replace("{" + rename_key + ",", "{" + rename_key + "_v2,", 1)

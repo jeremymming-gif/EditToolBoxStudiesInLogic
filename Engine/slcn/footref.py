@@ -194,6 +194,11 @@ def _looks_pub_segment(seg: str) -> bool:
     text = seg.strip().strip(" .。")
     if not text:
         return True
+    # B-222 B 段 C（N2 行内句点）：`from URL` / `available at https://…` 是出版信息
+    # 残段，不是题名续接（实测 87-8 题名后 `, from URL` 被并进题名）。
+    if re.match(r"(?:from|available\s+(?:at|from)|at)\s+"
+                r"(?:URL\b|https?://|www\.|doi\b)", text, re.I):
+        return True
     if re.search(_PUB_CUES, text):
         return True
     if re.match(r"^(?:1[89]|20)\d{2}\b", text):
@@ -455,15 +460,23 @@ def _has_container(fields: dict, raw: str = "") -> bool:
 
     判据：`booktitle` 非空；或文中有 `(eds.)/（编）/主编/edited by` 且同时有
     页码线索/出版社/`in` 结构——只凭一个 `(eds.)` 不升级（可能只是注释）。
+
+    B-222 B 段 B1/B2：`(ed.)/(eds.)` **只在 `in …` 容器段里**算线索。作者串里的
+    编著标记（`Salerno (ed.), New Essays…` = 编著整书的作者位置）不是容器，
+    否则整书被误判 @incollection（实测 90-01/90-08）。
     """
     if str(fields.get("booktitle") or "").strip():
         return True
     blob = " ".join(str(fields.get(k) or "") for k in ("address", "note", "publisher", "journal"))
-    blob = f"{blob} {raw}".strip()
-    if not _CONTAINER_CUE.search(blob):
+    # 容器线索只看第一个 `in …` 之后；题名自带 in 时，其后的真容器段仍在区域内。
+    in_tail = re.search(r"\b[Ii]n\s+", raw or "")
+    cue_region = (raw or "")[in_tail.start():] if in_tail else ""
+    cue_blob = f"{blob} {cue_region}".strip()
+    if not _CONTAINER_CUE.search(cue_blob):
         return False
-    return bool(_PAGES_CUE.search(blob) or str(fields.get("publisher") or "").strip()
-                or re.search(r"\bin\s+", blob, re.I))
+    return bool(_PAGES_CUE.search(blob) or _PAGES_CUE.search(raw or "")
+                or str(fields.get("publisher") or "").strip()
+                or re.search(r"\bin\s+", cue_blob, re.I))
 
 
 def classify_entry_type(fields: dict | None = None, *, raw: str = "") -> tuple[str, str]:
@@ -887,6 +900,26 @@ def _parse_apa_item(t: str) -> Parsed | None:
     return p
 
 
+# ── B-222 B 段 B3/D2：编号清单里两个「类型判据」入口 ───────────────────────
+#: 中文集刊/辑刊名（书，不是期刊）：`逻辑学动态与评论`（2025年第1辑）。
+_CN_COLLECTION_NAME_RE = re.compile(r"(?:集刊|辑刊|丛刊)")
+_CN_COLLECTION_ISSUE_RE = re.compile(r"第\s*\d+\s*辑")
+
+
+def _cn_collection_journal(journal: str, raw: str) -> bool:
+    """`journal` 格是否其实是**中文集刊**（书名，应挪到 booktitle）。
+
+    只认两种自证线索（真中文期刊仍走 @article）：刊名含「集刊/辑刊/丛刊」，或
+    原文有 `第N辑` 期号形态（集刊按辑出版，期刊按「年第N期」）。英文/中英混排
+    刊名不在此列（不猜）。
+    """
+    j = (journal or "").strip()
+    if not j or not re.search(r"[\u4e00-\u9fff]", j) or re.search(r"[A-Za-z]", j):
+        return False
+    return bool(_CN_COLLECTION_NAME_RE.search(j)
+                or _CN_COLLECTION_ISSUE_RE.search(raw or j))
+
+
 def parse_numbered_item(seg: str) -> Parsed:
     """解析 `作者, 年份, "题名", 刊名, 卷(期): 页` 这种。"""
     t = seg.strip().rstrip(".。")
@@ -1039,6 +1072,35 @@ def parse_numbered_item(seg: str) -> Parsed:
                 p.journal = cj
                 p.number = p.number or cnum
 
+    # B-222 B 段 B3/D2/D3：编号清单通道的**类型/字段归位**（本函数是编号清单出口）。
+    #   B3：`北京师范大学博士论文`——`_cn_journal_before_year` 会把「校名+学位类型」
+    #       抓成 journal；交 `wordrefs.thesis_fields` 单点（与编号清单写回同源）。
+    #       只认**校名在学位类型之前**的语序；旧语序（`博士学位论文，校名`）仍由
+    #       `apply_numbered_extras` 收口，既有断言 `test_refs_p1` 反例③不变。
+    #   D2：中文集刊（`第N辑`/集刊/辑刊）是书不是期刊，刊名格挪到 booktitle。
+    #   D3：`in 编者 (eds.), 书名` 的容器段（题名**之后**才认）补 booktitle。
+    from . import wordrefs as _wordrefs
+
+    _thesis = _wordrefs.thesis_fields(t)
+    _thesis_before = bool(_thesis and _thesis.get("kind_order") == "school_before")
+    _collection = False
+    _type_locked = False
+    if _thesis_before:
+        p.etype = _thesis["etype"]
+        p.journal = ""
+        _type_locked = True
+    elif _cn_collection_journal(p.journal, t):
+        p.booktitle = p.journal
+        p.journal = ""
+        p.etype = "incollection"
+        _collection = True
+        _type_locked = True
+    elif not p.booktitle:
+        _container_bt, _ = _wordrefs.incollection_editor_list(
+            _wordrefs.in_container_tail(t), allow_c=True)
+        if _container_bt:
+            p.booktitle = _container_bt
+
     # P1-2（2026-10-18）：类型统一走「出版信息特征」判据，不再按卷期正则命中与否。
     # 先纠正两个把出版社塞进 journal 格的老问题（`Oxford: Clarendon` / `Springer`），
     # 再交给可复用判据（下一卡 docxsource 也用同一个函数）。
@@ -1049,11 +1111,13 @@ def parse_numbered_item(seg: str) -> Parsed:
             p.journal = ""
         elif _publisher_only_journal(p.journal):
             p.publisher, p.journal = p.journal, ""
-    p.etype, _etype_reason = classify_entry_type({
+    _etype, _etype_reason = classify_entry_type({
         "journal": p.journal, "booktitle": p.booktitle, "publisher": p.publisher,
         "address": p.address, "pages": p.pages, "volume": p.volume,
         "number": p.number, "note": p.note,
     }, raw=t)
+    if not _type_locked:
+        p.etype = _etype
     if not p.title:
         p.title = rest
 
@@ -1079,9 +1143,9 @@ _UNSAFE_RE = re.compile(r"(?<!\\)([&%#_])")
 _YEAR_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 _PYEAR_RE = re.compile(r"\(\s*((?:19|20)\d{2})\s*\)\s*[.,;]?\s*$")
 _MARK_RE = re.compile(r"\[\s*([JMCDNZRSPA])\s*\]")
-_MARK_TYPE = {"J": "article", "M": "book", "C": "incollection", "D": "phdthesis",
-              "N": "article", "R": "misc", "S": "misc", "P": "misc", "A": "book",
-              "Z": "misc"}
+# B-222 B 段 B5：标记→类型曾有**第二份表**，与模块顶 `TYPE_MARK` 在 N/R/A 三键发散
+# （`[N]` 被写成 @article、`[R]` 写成 @misc、`[A]` 写成 @book）。单点回 `TYPE_MARK`。
+_MARK_TYPE = TYPE_MARK
 _THESIS_RE = re.compile(
     r"(Ph\.?\s*D\.?|Doctoral|Master'?s?)\s+(thesis|dissertation)\b", re.I)
 _IN_RE = re.compile(r"^In\s*:\s*(.+)$", re.S)
