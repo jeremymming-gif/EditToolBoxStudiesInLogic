@@ -695,6 +695,51 @@ check("(i3) 反例：运行时兜底 ensure_windows_fontset 仍只补、不覆�
       TT.ensure_windows_fontset("\\documentclass[b5paper,fontset=mac]{ctexart}")
       == "\\documentclass[b5paper,fontset=mac]{ctexart}")
 
+# ── (i4)–(i6) 幂等 / 不重复追加 / 字体映射单点（B-231 ②；纯字符串断言，不起 xelatex）──
+# 为什么常驻：`ensure_windows_fontset` 每次生成都会跑；一旦改成「无条件追加」或「覆盖已有
+# fontset」，产出会带两个 fontset 或悄悄改字体，而 (i1)–(i3) 只覆盖「源头带」与「只补不覆盖」
+# 两个静态点。`tocdelivery._WINDOWS_FONTS` 与缺字体提示串是两份手写字面量，漂移则报错信息
+# 会与真实探针集合不一致——本组把二者钉成同一集合。
+import re  # noqa: E402
+from slcn import tocdelivery as TD  # noqa: E402（(j) 组再 import 同一模块，幂等）
+
+_FONTSET_INPUTS = (
+    ("无 fontset 的 ctexart", "\\documentclass[b5paper,10.5t,onecolumn,twoside]{ctexart}"),
+    ("fontset=mac", "\\documentclass[b5paper,fontset=mac]{ctexart}"),
+    ("fontset=windows", "\\documentclass[b5paper,fontset=windows]{ctexart}"),
+    ("非 ctexart 文档类", "\\documentclass[b5paper]{article}"),
+)
+_i4_bad = [
+    (label, TT.ensure_windows_fontset(TT.ensure_windows_fontset(src)),
+     TT.ensure_windows_fontset(src))
+    for label, src in _FONTSET_INPUTS
+    if TT.ensure_windows_fontset(TT.ensure_windows_fontset(src)) != TT.ensure_windows_fontset(src)
+]
+check("(i4) 幂等：f(f(x)) == f(x)（无 fontset／fontset=mac／fontset=windows／非 ctexart 四输入）",
+      not _i4_bad, f"不满足的输入：{_i4_bad}")
+
+_i5_bad = []
+for _label, _x in _FONTSET_INPUTS:
+    _y = TT.ensure_windows_fontset(_x)
+    if "fontset=windows,fontset=windows" in _y or _y.count("fontset=") > 1:
+        _i5_bad.append((_label, _y))
+    if "fontset=mac" in _x and "fontset=mac" not in _y:
+        _i5_bad.append((_label + "（已有 fontset=mac 被覆盖）", _y))
+check("(i5) 不重复追加：四输入输出 fontset= 计数≤1、无 `fontset=windows,fontset=windows`、原 fontset=mac 不被覆盖",
+      not _i5_bad, f"问题输出：{_i5_bad}")
+
+# 提示串从源码取（不手抄）：抓 `hint = (... else "<字面量>")` 的兜底字面量，
+# 要求它与 `"/".join(_WINDOWS_FONTS)` 逐字符相等；探针串同时含 fontset 与四个字体命令。
+_TD_SRC = pathlib.Path(TD.__file__).read_text(encoding="utf-8")
+_m_hint = re.search(r'else\s+"([^"]+)"\)', _TD_SRC)
+_hint_literal = _m_hint.group(1) if _m_hint else None
+_fonts_join = "/".join(TD._WINDOWS_FONTS)
+check("(i6) 映射单点：`/`.join(_WINDOWS_FONTS) == 提示串字面量（源码提取），_FONT_PROBE_TEX 含 fontset=windows 与四字体命令",
+      _hint_literal == _fonts_join
+      and all(tok in TD._FONT_PROBE_TEX
+              for tok in ("fontset=windows", "\\songti", "\\heiti", "\\kaishu", "\\fangsong")),
+      f"提示串字面量={_hint_literal!r} join={_fonts_join!r} 探针={TD._FONT_PROBE_TEX!r}")
+
 print("\n── (j) B-226 目录交付 helper（slcn/tocdelivery.py）：落位/编译/单页适配/字体检查 ──")
 from slcn import tocdelivery as TD  # noqa: E402
 import contextlib as _ctxlib  # noqa: E402
