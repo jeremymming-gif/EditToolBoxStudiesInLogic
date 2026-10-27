@@ -344,6 +344,41 @@ check("端到端：脚注裸编号 [3] 经可靠映射转成 \\parencite（只�
 check("端到端：文末英文块元数据照旧",
       d.title_en == "Simultaneous Causation and Conceptual Possibility"
       and d.abstract_en == "We study databases.", f"{d.title_en!r}")
+
+# B-105（87-9 实测）：没有「参考文献」标题时，文末英文块只作元数据来源，
+# 不得再留在正文（模板 2.11 会另排一次英文题名页）。87-9 实测正文里
+# 「Abstract: Christopher…」重复 1 次 → 16 页 vs 人工 14。
+p = make_docx(CN_HEAD + ["正文第 %d 段。" % i for i in range(40)]
+              + ["Towards a Logic of Databases", "Zhang San",
+                 "Abstract: We study the logic of databases.", "Key words: logic; database",
+                 "作者简介：张三，哲学博士，研究方向：逻辑学。"])
+TMP.append(p)
+d = parse_docx(p)
+check("B-105① 无参考文献标题：英文块仍进元数据（title_en/abstract_en）",
+      d.title_en == "Towards a Logic of Databases"
+      and d.abstract_en == "We study the logic of databases.",
+      f"{d.title_en!r} / {d.abstract_en!r}")
+check("B-105① 无参考文献标题：正文不再重复英文题名/作者简介",
+      "Towards a Logic of Databases" not in d.body and "作者简介" not in d.body
+      and "正文第 0 段。" in d.body, repr(d.body[-120:]))
+
+# B-105（71/06 Lili_Lu 实测）：英文块排在「参考文献」标题之前时，也要在英文块
+# 起点截断（旧实现只认参考文献标题 → 英文块留在正文，20 页 vs 人工 19）。
+p = make_docx(CN_HEAD + ["正文第 %d 段。" % i for i in range(30)]
+              + ["On the Legal Argument in Legal Interpretation", "Zhang San",
+                 "Abstract: We study legal argument.", "Keywords: legal argument",
+                 "作者简介：张三，哲学博士，研究方向：法律逻辑。",
+                 "参考文献",
+                 "[1] 张三. 法律论证研究[J]. 逻辑学研究, 2020(1): 1-10."])
+TMP.append(p)
+d = parse_docx(p)
+check("B-105② 英文块在参考文献标题之前：元数据照旧（title_en/abstract_en）",
+      d.title_en == "On the Legal Argument in Legal Interpretation"
+      and d.abstract_en == "We study legal argument.",
+      f"{d.title_en!r} / {d.abstract_en!r}")
+check("B-105② 英文块在参考文献标题之前：正文在英文块起点截断（不含英文块/作者简介）",
+      "On the Legal Argument" not in d.body and "作者简介" not in d.body
+      and "Abstract: We study legal argument." not in d.body, repr(d.body[-120:]))
 for _p in TMP:
     os.unlink(_p)
 

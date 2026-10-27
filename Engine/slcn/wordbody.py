@@ -791,7 +791,12 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 j += 1
             start = j
             break
-    end = ref_start if ref_start > start else len(paras)
+    # B-105（87-9 实测）：文末英文题名/摘要/关键词块既是元数据来源，又会被模板
+    # 2.11 再排一次——正文必须在这里截断。有「参考文献」标题且英文块在其后时仍以
+    # 标题为界（与 HEAD 逐字节一致）；没有标题（ref_start<0）、或标题在英文块之后
+    # （71/06 Lili_Lu 型）时，以英文块起点 tail_start 为界。
+    _ends = [x for x in (ref_start, tail_start) if x > start]
+    end = min(_ends) if _ends else len(paras)
     body_paras = paras[start:end]
 
     # 90-08 型：正文里那个独立的 `基金项目：…` 段落已提升到标题页基金项 → 从正文/块

@@ -1576,8 +1576,29 @@ def _latex_post_bibliography_tail(raw: str) -> str:
     # `\printtitlepageCN` undefined、rc 0→2；89-05 的英文题名/摘要块同理（模板会
     # 自动印，迁了会重复）。这些都不是「附录」——extract_body_text 本来就该截掉。
     # 判据：**只有含 `\appendix` 的 tail 才是真附录**（86-05 实测为 `\appendix` 开头）。
-    if _active_find(_active_tail, "\\appendix") < 0:
+    _appendix_at = _active_find(_active_tail, "\\appendix")
+    if _appendix_at < 0:
         return ""
+    # B-105（86-05 实测）：`\appendix` 之后若还跟着作者从模板复制的尾部块
+    # （2.9 `\myarticletype` 作者信息 / 2.10 `\myeditor` 责任编辑 / 2.11
+    # `\mytitleEN` 英文题名页），整段迁到模板 `\printbibliography` 前会与模板
+    # 自带的同名块重复（86-05 实测 `\myeditor`、`\printtitlepageEN` 各两处）。
+    # 只截断**位于 `\appendix` 之后**的起点：附录本身及其正文必须保留；
+    # 锚点在附录之前时一律不动（宁可不截，也不误删附录）。
+    _tail_starts = []
+    for _anchor in ("\\ifthenelse{\\equal{\\myarticletype}",
+                    "\\ifthenelse{\\equal{\\mytitleEN}"):
+        _hit = _active_find(_active_tail, _anchor)
+        if _hit > _appendix_at:
+            _tail_starts.append(_hit)
+    _myeditor_at = _active_find(_active_tail, "\\myeditor")
+    if _myeditor_at > _appendix_at:
+        # 2.10 的起点取它前面最近一个 `\begin{flushright}`（模板里两者紧邻）。
+        _flush = _active_tail.rfind("\\begin{flushright}", 0, _myeditor_at)
+        if _flush >= 0 and _myeditor_at - _flush < 160:
+            _tail_starts.append(_flush)
+    if _tail_starts:
+        _active_tail = _active_tail[: min(_tail_starts)].rstrip()
     tail = _active_tail
     keep = [ln for ln in tail.split("\n")
             if ln.strip() and not ln.strip().startswith("%")]

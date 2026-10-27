@@ -130,6 +130,25 @@ else:
     check("③ 真实稿 86-01：产物 includegraphics = 18、含 1 张 longtable",
           _doc3.body.count("\\includegraphics") == 18
           and "\\begin{longtable}" in _doc3.body, str(_doc3.body.count("\\includegraphics")))
+    # B-106（86-01 实测）：表格题注是作者真写的题注，不是「需补充表题」占位。
+    check("③ 真实稿 86-01：题注为《如果》的多模态文本，不写占位",
+          "\\caption{《如果》的多模态文本}" in _doc3.body
+          and "需补充表题" not in _doc3.body, repr(_doc3.body[_doc3.body.find("longtable"):][:120]))
+
+# B-106：表格前有题注段的合成稿（无 Desktop 夹具的机器/CI 也能覆盖）
+_D_CAP = make_docx(["表格题注测试稿", "张三", "摘要：测试。", "关键词：测试", "正文前。",
+                    "表1 测试表题"],
+                   table_xml=_PLAIN_CELL, tail=["正文后。"])
+try:
+    _doc_cap = docxsource.parse_docx(_D_CAP)
+    check("B-106 合成：表格前题注段 → \\caption{测试表题}，不写占位",
+          "\\caption{测试表题}" in _doc_cap.body
+          and "需补充表题" not in _doc_cap.body, repr(_doc_cap.body[-200:]))
+finally:
+    try:
+        os.unlink(_D_CAP)
+    except OSError:
+        pass
 
 # ══════════════════════════════════════════════════════════════════════════
 # ④ B-219①：三线表 → booktabs（边框事实 + 输出 + 导言区注入）；负例逐字节不变

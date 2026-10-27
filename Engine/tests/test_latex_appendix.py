@@ -145,6 +145,54 @@ finally:
     except OSError:
         pass
 
+# ── B-105（86-05 实测）：`\appendix` 之后仍跟着模板尾部块 → 只保留附录 ──────────
+# 86-05 源稿把模板 2.9/2.10/2.11 一并复制到 `\appendix` 之后；旧实现整段迁到模板
+# `\printbibliography` 前 → 模板自带的 `\myeditor` / `\printtitlepageEN` 又排一遍
+# （29 页 vs 人工 26）。判据：只截**附录之后**的模板尾部块起点。
+_SRC_APPENDIX_TAIL = (
+    "\\documentclass{article}\n\\begin{document}\n\\section{正文}\n正文内容。\n"
+    "\\printbibliography\n\\appendix\n\\section*{附录}\n附录正文 A。\n"
+    "\\ifthenelse{\\equal{\\myarticletype}{original}}{}{%\n"
+    "\\vspace*{4ex}\\noindent\\myfirstauthor\n}\n"
+    "\\vspace{4ex}\n\\begin{flushright}\n\\myeditor\n\\end{flushright}\n"
+    "\\ifthenelse{\\equal{\\mytitleEN}{null}}{}{%\n\\newpage\n\\printtitlepageEN\n}\n"
+    "\\end{document}\n"
+)
+_tail_ap = build._latex_post_bibliography_tail(_SRC_APPENDIX_TAIL)
+check("B-105① 附录之后的 2.9/2.10/2.11 模板尾部块被截掉：保留 \\appendix 与附录正文",
+      "\\appendix" in _tail_ap and "附录正文 A" in _tail_ap
+      and "\\myeditor" not in _tail_ap and "\\printtitlepageEN" not in _tail_ap,
+      repr(_tail_ap))
+
+_TPL_APPENDIX = (
+    "\\documentclass{article}\n\\begin{document}\n\\section{正文}\n正文。\n"
+    "\\printbibliography\n"
+    "\\ifthenelse{\\equal{\\myarticletype}{original}}{}{%\n模板 2.9 作者信息\n}\n"
+    "\\vspace{4ex}\n\\begin{flushright}\n\\myeditor\n\\end{flushright}\n"
+    "\\ifthenelse{\\equal{\\mytitleEN}{null}}{}{%\n\\newpage\n\\printtitlepageEN\n}\n"
+    "\\end{document}\n"
+)
+_out_ap = build._insert_post_bibliography(_TPL_APPENDIX, _tail_ap)
+check("B-105② 迁入模板后尾部块各 1 处（\\myeditor / \\printtitlepageEN 不再重复）",
+      _out_ap.count("\\printbibliography") == 1
+      and _out_ap.count("\\myeditor") == 1
+      and _out_ap.count("\\printtitlepageEN") == 1
+      and _out_ap.count("\\appendix") == 1, repr(_out_ap))
+
+_SRC_ANCHOR_BEFORE = (
+    "\\documentclass{article}\n\\begin{document}\n\\section{正文}\n正文内容。\n"
+    "\\printbibliography\n"
+    "\\vspace{4ex}\n\\begin{flushright}\n\\myeditor\n\\end{flushright}\n"
+    "\\ifthenelse{\\equal{\\mytitleEN}{null}}{}{%\n\\newpage\n\\printtitlepageEN\n}\n"
+    "\\appendix\n\\section*{附录}\n附录正文 B。\n"
+    "\\end{document}\n"
+)
+_tail_ab = build._latex_post_bibliography_tail(_SRC_ANCHOR_BEFORE)
+check("B-105③ 反例：模板尾部块在 \\appendix 之前 → 不截断（不误删附录）",
+      "\\appendix" in _tail_ab and "附录正文 B" in _tail_ab
+      and "\\myeditor" in _tail_ab and "\\printtitlepageEN" in _tail_ab,
+      repr(_tail_ab))
+
 # ── B-233：无可用 .bib 的手写 thebibliography → 自动生成 reference.bib ──────
 # 夹具全合成（零真实作者/内容）：正文引用 + 4 条 \bibitem（期刊/学位论文/章节/
 # 专著）+ 注释里的幽灵条目。验收：条数=源、key 原样、author/title/year 有值、类型
