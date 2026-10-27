@@ -25,6 +25,9 @@ description: Windows / macOS 安装、首次打开与常见问题。
 4. 首次运行若弹出蓝色的 SmartScreen 提示（「Windows 已保护你的电脑」）：点 **「更多信息」→「仍要运行」**（只需一次）。
 
 > 编译 LaTeX 需要本机安装 **TeX Live**（或 MiKTeX），`xelatex`、`biber` 要在 PATH 里；只做转换不编译则不需要。
+>
+> 处理 Word 稿时：作者若用早期 **MathType** 写公式（OLE/预览图 WMF/EMF），或要用「导出原稿 PDF」截矢量形状，
+> 还需要本机安装 **LibreOffice**（条件必需依赖；不装时转换仍完成，但公式图位置是「公式图缺失」占位，产物不可直接送排）。
 
 ## macOS
 
@@ -32,9 +35,12 @@ macOS 版目前只提供 Apple 芯片（arm64）包。
 
 1. 下载 `EditToolBox-<版本>-macOS-arm64.zip`，解压得到 `编辑部工具箱.app`，拖进「应用程序」；
 2. 首次打开若提示「无法验证开发者」或「已损坏」：在访达里 **右键点 App → 打开 → 仍要打开**（只需一次）；
-3. 引擎与 Python 已打包在 App 内，不需要另装 Python。
+3. 引擎与依赖随 App 打包；App 运行需要本机有 `python3`（首次运行会体检版本，提示版本不对时按提示安装后重开 App）。
 
 > 编译 LaTeX 需要本机安装 **TeX Live / MacTeX**（自带 `xelatex`、`biber`）；只做转换不编译则不需要。
+>
+> 处理 Word 稿时：作者若用早期 **MathType** 写公式（OLE/预览图 WMF/EMF），或要用「导出原稿 PDF」截矢量形状，
+> 还需要本机安装 **LibreOffice**（`brew install --cask libreoffice`，条件必需依赖；缺失时公式图位置是「公式图缺失」占位）。
 
 ## 版本与更新
 
@@ -50,5 +56,6 @@ macOS 版目前只提供 Apple 芯片（arm64）包。
 | macOS 提示「已损坏，无法打开」 | 右键 → 打开；或系统设置 → 隐私与安全性 → 仍要打开 |
 | 找不到引擎 | Windows 确认 `SLCNEngine.exe` 与 `编辑部工具箱.exe` 在同一个文件夹；macOS 在设置页确认「引擎路径」（App 自带引擎，通常不用改） |
 | 转换成功但编译失败 | 检查是否安装 TeX 发行版（TeX Live / MiKTeX / MacTeX）、`xelatex` 是否在 PATH |
+| Word 稿转换后公式位置是「公式图缺失」占位 | 作者用了 MathType/OLE 公式，本机未装或未找到 LibreOffice；装好后**重跑一次初排转换**（见 `使用说明.md` §一「Word 公式图（MathType）与 LibreOffice（条件必需）」） |
 
 更多问题见[常见问题](../reference/faq)。

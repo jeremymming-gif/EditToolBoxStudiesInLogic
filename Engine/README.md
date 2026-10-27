@@ -80,13 +80,14 @@ cd Engine
 python3 -m pip install --target vendor -r requirements.txt
 ```
 
-**可选外部依赖：LibreOffice（`soffice`）** —— Word 稿里的 MathType/OLE 公式预览图是 WMF/EMF，
+**外部依赖（条件必需）：LibreOffice（`soffice`）** —— Word 稿里的 MathType/OLE 公式预览图是 WMF/EMF，
 XeLaTeX 不能直接嵌入，引擎用 `soffice --headless --convert-to pdf` 批量转 PDF 后再 `\includegraphics`。
+**条件必需**（仅含 MathType/OLE 公式的 Word 稿、以及「导出原稿 PDF」需要；LaTeX 稿/OMML 公式稿可不装）；
 **fail-soft**：未安装/找不到 `soffice`（`SLCN_SOFFICE` → PATH → 三平台常见安装位置）时**不报错、不阻断出稿**，
 Word 通道把公式图渲染为 `\IfFileExists{figN.pdf}{…}{\fbox{\scriptsize 公式图缺失}}` 占位，
 并在初排日志的「注意事项」里 warning（`N 个公式/图片未能导出（WMF/EMF 需要 LibreOffice soffice 转换…）`）。
-LibreOffice 免费开源但**不随工具箱打包/分发**；检查/安装命令见 `../使用说明.md` §一
-「Word 公式图（MathType）与 LibreOffice（可选依赖）」，平台/定位细节见 `docs/ENGINE_API.md` §七。
+LibreOffice 免费开源但**不随工具箱打包/分发**（含 MathType 公式的 Word 稿须自行安装）；检查/安装命令见 `../使用说明.md` §一
+「Word 公式图（MathType）与 LibreOffice（条件必需）」，平台/定位细节见 `docs/ENGINE_API.md` §七。
 同理，「导出原稿 PDF」（矢量形状人工截图用）也依赖它，缺它时该步骤跳过并说明。
 
 **源文件必须显式给（`--source` 必填）**，工具不做自动发现；`run_poc.py` / `corpus.py` 的自动发现

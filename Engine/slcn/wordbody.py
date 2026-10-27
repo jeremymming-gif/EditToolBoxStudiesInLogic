@@ -480,8 +480,9 @@ def parse_docx(path: str, quote_threshold: int = 105,
         doc.warnings.append(
             f"发现 {n_ole} 处 MathType/OLE 公式对象（word/embeddings 共 {n_embed} 个）："
             "它们是 OLE 包不是 OMML，Word 通道不解析 OLE 本体，但已自动取**预览图**"
-            "（WMF/EMF）转 PDF 后按原尺寸出图；若本机没有 LibreOffice（soffice），"
-            "公式图位置会显示「公式图缺失」占位，安装 LibreOffice 后重跑即可；"
+            "（WMF/EMF）转 PDF 后按原尺寸出图；这类稿件需要 LibreOffice（条件必需依赖，"
+            "不随工具箱分发）：若本机没有（soffice），公式图位置会显示「公式图缺失」占位、"
+            "产物不宜直接送排，安装后重跑即可；"
             "如需公式可编辑，请让作者另存为 OMML（或提供 MathType→TeX 版）"
         )
     if _font:

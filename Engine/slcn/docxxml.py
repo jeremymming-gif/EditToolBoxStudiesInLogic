@@ -814,9 +814,10 @@ def read_media(path: str) -> dict[str, str]:
 def _soffice_bin() -> str:
     r"""找 LibreOffice 的 soffice（WMF/EMF → PDF 转换用；找不到返回 ""）。
 
-    ⚠️ 这是**可选外部依赖**（不是默认依赖）：用户机器没装 LibreOffice 时，
-    公式图片转不出来 → 渲染端 `\IfFileExists` 显示「公式图缺失」占位 + warning，
-    **不阻断出稿**（详见 build.py 的 warning 与报告 §依赖）。
+    ⚠️ 这是**条件必需外部依赖**：Word 稿含 MathType/OLE 公式（或要用「导出原稿 PDF」
+    截矢量形状）时必须安装；LaTeX 稿、Word 自带 OMML 公式稿可不装、也不会走到这里。
+    没装 LibreOffice 时公式图片转不出来 → 渲染端 `\IfFileExists` 显示「公式图缺失」
+    占位 + warning，**不阻断出稿但产物不完整**（详见 build.py 的 warning 与报告 §依赖）。
     """
     import shutil
 
@@ -944,8 +945,8 @@ def extract_media(path: str, out_dir: str, mapping: dict[str, str]) -> dict[str,
     因为原文件名（image1.png）没有信息量。
 
     第四十七批（87-2 实测）：MathType 公式预览图是 **WMF**，XeLaTeX 不能直接嵌入
-    → 用 soffice 批量转 PDF（按内容 sha 去重；无 soffice 时**不写文件**，渲染端
-    `\IfFileExists` 显示「公式图缺失」占位 + build warning，不阻断出稿）。
+    → 用 soffice 批量转 PDF（按内容 sha 去重；LibreOffice 对这类 Word 稿是条件必需依赖；
+    无 soffice 时**不写文件**，渲染端 `\IfFileExists` 显示「公式图缺失」占位 + build warning，不阻断出稿）。
     """
     import glob
     import hashlib

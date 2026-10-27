@@ -56,7 +56,7 @@
 |---|---|
 | Python ≥ 3.11 | 引擎用；按下面的命令把三个包装进 `Engine/vendor/` |
 | TeX（`xelatex` + `biber`） | TeX Live / MacTeX / MiKTeX 均可，需在 PATH 里 |
-| LibreOffice | **可选**：Word 稿的 MathType/OLE 公式图（WMF/EMF）转 PDF 插入成品、以及「导出原稿 PDF」（供矢量图形截图）用得到；**不随工具箱分发**，缺失时 fail-soft（公式图位置显示「公式图缺失」占位 + 日志 warning，**不阻断出稿**）。检查/安装见 [`使用说明.md`](使用说明.md) §一「Word 公式图（MathType）与 LibreOffice（可选依赖）」 |
+| LibreOffice | **条件必需**（仅当：Word 稿用 MathType/OLE 公式，或要用「导出原稿 PDF」截矢量形状时；LaTeX 稿、Word 自带 OMML 公式稿可不装）：缺失时转换仍完成（fail-soft），但公式图位置显示「公式图缺失」占位、**产物不可直接送排**。**不随工具箱分发**，需自行安装；检查/安装见 [`使用说明.md`](使用说明.md) §一「Word 公式图（MathType）与 LibreOffice（条件必需）」 |
 | Xcode 命令行工具 | **可选**：只有构建 mac 外壳需要（`swiftc`） |
 
 ```bash

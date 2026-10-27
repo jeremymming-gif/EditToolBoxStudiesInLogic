@@ -609,7 +609,7 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 | `SLCN_MANUSCRIPTS` | **稿件库**（各期作者来稿）的位置。重活工具（`docx_audit.py` 全库普查、`corpus.py` 全库回归、`run_poc.py` 代表稿）需要它。不设时自动探测（向上找 → 同级目录，默认两仓并排就命中）；**没有稿件库时这些工具打印一行说明并正常退出（0）** —— 公开仓与 CI 上就是这样。 |
 | `SLCN_NOTES` | **私有笔记仓**（案例法 / 交接说明 / 冻结基线）的位置。默认自动探测同级目录 `EditToolBox-notes/`。 |
 | `SLCN_AUDIT_OUT` | 全库普查的输出目录（等价于 `--out-dir`）。**并行跑多份普查时必须用它隔离**，否则会互相覆盖同一份 csv/txt。 |
-| `SLCN_SOFFICE` | 指定 LibreOffice 可执行文件（「导出原稿 PDF」＋ Word 的 MathType/OLE 公式图 WMF/EMF → PDF 用）。**fail-soft**：找不到时**不报错、不阻断出稿** —— 公式图位置显示「公式图缺失」占位（`\IfFileExists` 兜底）+ 初排日志 warning，「导出原稿 PDF」步骤则跳过并说明；检查/安装见 `使用说明.md` §一。 |
+| `SLCN_SOFFICE` | 指定 LibreOffice 可执行文件（「导出原稿 PDF」＋ Word 的 MathType/OLE 公式图 WMF/EMF → PDF 用；**条件必需**：Word 稿含 MathType/OLE 公式或做「导出原稿 PDF」时必须，LaTeX/OMML 稿可不装）。**fail-soft**（仅指不阻断出稿）：找不到时**不报错、不阻断出稿** —— 公式图位置显示「公式图缺失」占位（`\IfFileExists` 兜底）+ 初排日志 warning，「导出原稿 PDF」步骤则跳过并说明；检查/安装见 `使用说明.md` §一。 |
 
 > 前两个只在开发/回归时用得到；编辑日常使用 `.app` / `.exe` 时不需要设任何环境变量。
 
@@ -756,12 +756,12 @@ $PY -m pip install --target vendor pypinyin    # 装在项目自己的 vendor/�
 
 `vendor/` 已 gitignore。缺失时工具会给出上面这条命令，不会静默失败。
 
-**可选外部依赖 LibreOffice（`soffice`）**：Word 稿里若用早期 MathType 写公式（OLE 对象 + 预览图 WMF/EMF），
+**外部依赖 LibreOffice（`soffice`，条件必需）**：Word 稿里若用早期 MathType 写公式（OLE 对象 + 预览图 WMF/EMF）时需要它（LaTeX 稿 / Word 自带 OMML 公式稿可不装），
 XeLaTeX 不能直接嵌入，引擎用 `soffice --headless --norestore --convert-to pdf` 批量转 PDF 后再插入。
-**fail-soft**：找不到 `soffice`（定位顺序 `SLCN_SOFFICE` → PATH → 三平台常见安装位置）时**不报错、不阻断出稿**——
+处理这类 Word 稿时它属**条件必需依赖**（缺它产物公式图占位、不宜送排），但引擎仍是 fail-soft：找不到 `soffice`（定位顺序 `SLCN_SOFFICE` → PATH → 三平台常见安装位置）时**不报错、不阻断出稿**——
 Word 通道渲染成 `\IfFileExists{figN.pdf}{…}{\fbox{\scriptsize 公式图缺失}}` 占位并在初排日志 warning；
-「导出原稿 PDF」（矢量形状人工截图用）步骤则跳过并返回说明。LibreOffice **不随工具箱打包/分发**，
-检查/安装命令见仓库根的 `使用说明.md` §一「Word 公式图（MathType）与 LibreOffice（可选依赖）」。
+「导出原稿 PDF」（矢量形状人工截图用）步骤则跳过并返回说明。LibreOffice **不随工具箱打包/分发**（处理含 MathType 公式的 Word 稿时必须自行安装），
+检查/安装命令见仓库根的 `使用说明.md` §一「Word 公式图（MathType）与 LibreOffice（条件必需）」。
 
 产物写在 `out/`（已 gitignore，不会污染稿件目录），**全程只读原稿，不修改任何现有文件**。
 
