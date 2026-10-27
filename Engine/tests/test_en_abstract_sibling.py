@@ -587,6 +587,53 @@ for _p in _TMP:
         pass
 
 # ══════════════════════════════════════════════════════════════════════════
+# ⑧ 反例 5（B-240②）：同目录 refs/bibitem 附件不许当英文元数据第二源
+#   p0 实测：附件 body<200 过「无叙述正文」判据、`title_en` 由 `\bibitem{a1}` 那一行
+#   误解析，且 `parse_docx(附件).refs` 抽出 **0 条** → 旧「文献结构非空」反判据打不中。
+#   修法（`find_en_metadata` 三条反判据，宁漏不误）：(a) 题名以文献行标记开头 → 不选；
+#   (b) 英文字段 ≥2 或含 abstract/keywords（只一项 title_en 不选）；(c) 角色=refs → 不选。
+# ══════════════════════════════════════════════════════════════════════════
+print("\n── ⑧ 反例 5：同目录 refs/bibitem 附件不许当英文元数据第二源（B-240②）──")
+
+_REF_LINE = ["\\bibitem{a1} Smith J, Doe A. A Synthetic Title for Testing. In: Jones …"]
+
+with tempfile.TemporaryDirectory() as tmp:
+    d = os.path.join(tmp, "orig")
+    os.makedirs(d)
+    main = os.path.join(d, "main.docx")
+    refs = os.path.join(d, "专门造参考文献附件.docx")
+    shutil.copy2(tmp_docx(_CN_ONLY), main)
+    shutil.copy2(tmp_docx(_REF_LINE), refs)
+    _rf = sources.en_metadata_sheet(refs)
+    check("⑧ 前提：合成 refs 附件**确实**会被 `en_metadata_sheet()` 当成候选"
+          "（否则这条负例没有意义）",
+          bool(_rf) and (_rf.get("title_en") or "").startswith("\\bibitem"), f"{_rf}")
+    check("⑧ 同目录 refs/bibitem 附件 → `find_en_metadata()` 返回 None（附件不被选中）",
+          convert.find_en_metadata(main, None) is None,
+          f"{convert.find_en_metadata(main, None)}")
+    # 反判据 (b)：只有一项 `title_en` 的 docx 不算「英文元数据表」
+    lone = os.path.join(d, "只有英文标题.docx")
+    shutil.copy2(tmp_docx(["A Lone English Title"]), lone)
+    check("⑧ 反判据 (b)：只有 `title_en` 一项的 docx 不选"
+          "（要求字段 ≥2 或含 abstract_en/keywords_en）",
+          sources.en_metadata_sheet(lone) == {"title_en": "A Lone English Title"}
+          and convert.find_en_metadata(main, None) is None,
+          f"{sources.en_metadata_sheet(lone)}")
+
+# 真实语料 90-02：main 与 `附件一 完整参考文献.docx` **同目录**（p0 实测：场景存在但不触发）
+_SL_DIR = _issue_paper_dir("90", "02")
+_SL_REFS = _docx_in(_SL_DIR, "参考文献")
+_SL_MAIN = _docx_in(_SL_DIR, exclude=("附件",))
+if _SL_MAIN and _SL_REFS:
+    check("⑧ 真实 90-02：main 与 `附件一 完整参考文献.docx` 同目录"
+          " → `find_en_metadata()` 返回 None（不误当第二源）",
+          convert.find_en_metadata(_SL_MAIN, None) is None,
+          f"{convert.find_en_metadata(_SL_MAIN, None)}")
+else:
+    skip("⑧ 真实 90-02 同目录 refs 附件", "缺真实语料 90-02")
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # ⑬ 第四十五批 A：连写英文作者串按作者数等分（90-01 实测）
 #    源稿英文作者是 `Meimei Han Xiaoming Wang`（无 and/&/;），旧逻辑整串进不了第二作者
 #    槽位 → 模板印占位符；人工成品是 `\mysecondauthorEN{Xiaoming Wang}`。

@@ -250,6 +250,50 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
 #     照旧写占位符，绝不猜。
 #   · 判据是**内容**（`sources.en_metadata_sheet()`：有英文字段 + 没有叙述正文），
 #     不是文件名——所以同目录的另一篇英文全文稿、中文稿、缩写表都不会被选中。
+#
+# ── B-240②（2026-10-27）：同目录 refs/bibitem 附件不许当英文元数据第二源 ──────
+#
+# 实测（B-240 p0，B-233 E2E 复现件）：main 与参考文献附件同目录时，附件
+# `body=95`（< 200，过了「没有叙述正文」判据）、`title_en` 由 `\bibitem{a1}` 那一行
+# 误解析（`'\bibitem{a1} Smith J, …'`），而 `parse_docx(附件).refs` 抽出 **0 条**
+# → 旧反判据「文献结构非空」**打不中**，附件被当成「英文摘要」选中。
+#
+# 补三条反判据（**宁漏不误**：判不了就不选、照旧写占位符，绝不硬猜）：
+#   (a) `title_en` 可辨识——以 `\bibitem` / `[n]` / `(n)` 这类文献行标记开头的，
+#       不是英文题名；
+#   (b) 英文字段 ≥2 项，或含 `abstract_en`/`keywords_en`（**只有一项 `title_en` 不选**）；
+#   (c) 同目录里被 `multisource.scan()` 判为参考文献角色（`role == "refs"`）的文件
+#       ——`attachment_kind()` / `select_refs_attachment()` 消费的就是这套角色，
+#       故 refs/bibitem 附件在这里被一律排除。
+_REFS_LINE_MARK = re.compile(r"^\s*(?:\\bibitem\b|\[\s*\d+\s*\]|\(\s*\d+\s*\))")
+
+
+def _en_metadata_fields_ok(fields: dict[str, str]) -> bool:
+    """B-240② 反判据 (a)(b)：这份 docx 的英文字段像不像「一张英文元数据表」。"""
+    title = (fields.get("title_en") or "").strip()
+    if title and _REFS_LINE_MARK.match(title):
+        return False                      # (a) 题名其实是 `\bibitem{a1} …` 之类的文献行
+    if len(fields) >= 2:
+        return True                       # (b) 至少两项英文字段
+    return bool((fields.get("abstract_en") or "").strip()
+                or (fields.get("keywords_en") or "").strip())  # (b) 单项但够硬
+
+
+def _refs_role_paths(directory: str) -> set[str]:
+    """B-240② 反判据 (c)：同目录里被 `multisource.scan()` 判成参考文献的文件（绝对路径）。
+
+    角色判定失败（异常/目录不可读）时返回空集：**不阻断**第二源发现，
+    内容判据 (a)(b) 仍然生效。
+    """
+    try:
+        from . import multisource as _multisource
+
+        return {os.path.abspath(s.path) for s in _multisource.scan(directory)
+                if s.role == "refs"}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def find_en_metadata(source: str, explicit: str | None = None) -> str | None:
     """给 Word 正文找一份同目录的「英文摘要」docx 当英文元数据第二源。
 
@@ -263,6 +307,7 @@ def find_en_metadata(source: str, explicit: str | None = None) -> str | None:
     d = os.path.dirname(os.path.abspath(source))
     src = os.path.abspath(source)
     cands: list[tuple[int, int, str]] = []
+    refs_roles: set[str] | None = None
     for f in sorted(os.listdir(d)):
         if not f.lower().endswith(".docx") or f.startswith("~$"):
             continue
@@ -270,8 +315,14 @@ def find_en_metadata(source: str, explicit: str | None = None) -> str | None:
         if not os.path.isfile(p) or os.path.abspath(p) == src:
             continue
         fields = _sources.en_metadata_sheet(p)
-        if fields:
-            cands.append((len(fields), len(fields.get("abstract_en", "")), p))
+        if not fields or not _en_metadata_fields_ok(fields):
+            continue
+        # (c) 角色反判据：refs/bibitem 附件即便「像」英文表也不选（B-240②）。
+        if refs_roles is None:
+            refs_roles = _refs_role_paths(d)
+        if os.path.abspath(p) in refs_roles:
+            continue
+        cands.append((len(fields), len(fields.get("abstract_en", "")), p))
     if not cands:
         return None
     # 多份候选：字段更全的优先，其次英文摘要更长的那份（同分时按文件名排序，确定性）
