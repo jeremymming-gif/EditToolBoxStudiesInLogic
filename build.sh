@@ -1,5 +1,8 @@
 #!/bin/bash
 # 构建 macOS 原生「编辑部工具箱」
+# 构建开始与 manifest 落盘前各记一次「源码树 sha」：两次不一致 → stderr 明示
+# 「构建期间源码被修改（写手未静默）」，manifest 记 source_tree_sha_start/_end/
+# source_tree_changed/source_tree_files（只追加）。**纯证据**：不改变构建判定与退出码。
 set -euo pipefail
 
 PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +35,88 @@ if [ -f "$RR_PY" ]; then
   BUILD_ENGINE_SHA="$("$RR_PY_BIN" -c "import sys; sys.path.insert(0, '$PROJ/Engine/tools'); import run_record; print(run_record.engine_py_sha256())" 2>/dev/null || true)"
 fi
 
+# ── 源码树静默快照（写手静默闸，只读证据）──────────────────────────────────
+# WHY：构建期间若有写手改源码，包内代码会是两个时刻混在一起的样子，而构建照样可能成功；
+#   曾因此白跑 1–2 次构建 + 10–20 步。这里在**构建开始**与 **manifest 落盘前**各算一次
+#   源码树 sha，覆盖实际编译/入包输入：
+#     build.sh、Engine/**（排除 Engine/out/**、__pycache__、*.pyc、*.pyo、.DS_Store；
+#     vendor/ **在**内 —— 它随包交付）、sources-mac/**/*.swift、sources-win/**、
+#     编辑笔记/模板文件/**、Resources/**；不含 dist/、.build/、.mc/ 等构建产物。
+#   算法：文件清单（相对路径，LC_ALL=C 字节序）逐个 sha256 → 清单行再聚合 sha256
+#   （一次 find|sort|xargs 管道；本仓 668 文件/35MB ≈ 0.12s，开销可忽略）。
+#   两次不一致 → stderr 明示「构建期间源码被修改」，manifest 记机器可判字段；**不改变
+#   构建判定与退出码**，也绝不让快照本身把构建搞挂（任何异常都只降级为 unknown）。
+#   ⚠️ 本文件由 /bin/bash 3.2（macOS 自带）执行：变量展开紧邻中文标点时一律写 ${var}——
+#   3.2 会把紧随其后的多字节字符当成变量名的一部分（本告警行踩过：$VAR；→ 变量名带「；」）。
+# >>> SOURCE-TREE-SNAPSHOT-BEGIN（/tmp 受控夹具按此标记原样抽取这两个函数）
+SOURCE_TREE_SHA_START="unknown"
+SOURCE_TREE_SHA_END="unknown"
+SOURCE_TREE_CHANGED="0"
+SOURCE_TREE_FILE_COUNT="0"
+SOURCE_TREE_SHA_LAST=""
+_source_tree_sha() {   # $1=仓库根；结果写 SOURCE_TREE_SHA_LAST / SOURCE_TREE_FILE_COUNT
+  local root="${1:-.}" list="" sha="" n="0"
+  # 临时清单：用可移植的 mktemp 模板（BSD/GNU 都认末尾 6 个 X）；失败 → 只降级为 unknown
+  list="$(mktemp "${TMPDIR:-/tmp}/slcn-srctree.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$list" ]; then
+    SOURCE_TREE_SHA_LAST="unknown"; SOURCE_TREE_FILE_COUNT="0"; return 0
+  fi
+  (
+    cd "$root" 2>/dev/null || exit 1
+    {
+      [ -f build.sh ] && printf 'build.sh\0'
+      find Engine -type f \
+        ! -path 'Engine/out/*' ! -path '*/__pycache__/*' \
+        ! -name '*.pyc' ! -name '*.pyo' ! -name '.DS_Store' -print0 2>/dev/null
+      find sources-mac -type f -name '*.swift' ! -path '*/__pycache__/*' -print0 2>/dev/null
+      find sources-win -type f ! -path '*/__pycache__/*' \
+        ! -name '*.pyc' ! -name '*.pyo' ! -name '.DS_Store' -print0 2>/dev/null
+      find '编辑笔记/模板文件' -type f ! -name '.DS_Store' -print0 2>/dev/null
+      find Resources -type f ! -name '.DS_Store' -print0 2>/dev/null
+    } > "$list"
+  ) || true
+  n="$(tr -cd '\0' < "$list" 2>/dev/null | wc -c | tr -d ' ' || true)"
+  if [ "${n:-0}" -gt 0 ]; then
+    # 清单里是相对仓库根的路径，哈希必须在根目录里跑：build.sh 自身已 cd 到 PROJ，
+    # 但夹具/库调用方不一定，不能依赖调用方 cwd（否则相对路径找不到 → 空哈希）
+    sha="$(
+      cd "$root" 2>/dev/null || exit 1
+      # shasum（macOS/Perl）优先，sha256sum（GNU）兜底；两者输出格式相同，聚合口径一致
+      if command -v shasum >/dev/null 2>&1; then
+        LC_ALL=C sort -z "$list" | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1
+      elif command -v sha256sum >/dev/null 2>&1; then
+        LC_ALL=C sort -z "$list" | xargs -0 sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1
+      fi
+    )"
+  fi
+  if [ -n "$sha" ]; then
+    SOURCE_TREE_SHA_LAST="$sha"
+    SOURCE_TREE_FILE_COUNT="$n"
+  else
+    SOURCE_TREE_SHA_LAST="unknown"
+    SOURCE_TREE_FILE_COUNT="0"
+  fi
+  rm -f "$list"
+  return 0
+}
+_source_tree_check() {   # $1=仓库根 $2=开始态 sha；写 SOURCE_TREE_SHA_END / SOURCE_TREE_CHANGED
+  local start="${2:-unknown}"
+  _source_tree_sha "${1:-.}"
+  SOURCE_TREE_SHA_END="${SOURCE_TREE_SHA_LAST:-unknown}"
+  SOURCE_TREE_CHANGED="0"
+  if [ "$start" != "unknown" ] && [ "$SOURCE_TREE_SHA_END" != "unknown" ] \
+     && [ "$start" != "$SOURCE_TREE_SHA_END" ]; then
+    SOURCE_TREE_CHANGED="1"
+    echo "⚠ 构建期间源码被修改（写手未静默）：source_tree changed ${start} -> ${SOURCE_TREE_SHA_END}；本次构建产物可能不一致，请重跑 build" >&2
+    echo "   （请确认写手已停手后重跑 ./build.sh；本警告不改变退出码，manifest 记 source_tree_changed=1）" >&2
+  fi
+  return 0
+}
+# <<< SOURCE-TREE-SNAPSHOT-END
+_source_tree_sha "$PROJ"
+SOURCE_TREE_SHA_START="${SOURCE_TREE_SHA_LAST:-unknown}"
+echo "   源码树 sha ${SOURCE_TREE_SHA_START:0:12}…（${SOURCE_TREE_FILE_COUNT} 个文件；构建结束复算，不一致会告警）"
+
 # ── O14（第四十七批）：purpose 标记 + **失败也留 manifest**（ERR trap）────────
 # 真跑 / 验证跑用环境变量区分（O5 计数可机读）：
 #   SLCN_BUILD_PURPOSE=verify-build bash build.sh    # 验证构建
@@ -58,6 +143,8 @@ _record_build_manifest() {
     app_py_files="$(find "$app/Contents/Resources/Engine" -name '*.py' 2>/dev/null | wc -l | tr -d ' ')"
   fi
   [ "$rc" = "0" ] || failed="true"
+  # 源码树静默快照：manifest 落盘前重算一次，与构建开始态比对；不一致 → 明示警告（不改 rc）
+  _source_tree_check "$PROJ" "${SOURCE_TREE_SHA_START:-unknown}"
   "$rec_py" "$RR_PY" --record-only --label build --purpose "$BUILD_PURPOSE" \
     --started-at "$BUILD_START_ISO" --command "bash build.sh" --exit-code "$rc" \
     --artifact "$app_bin" --engine-sha "$BUILD_ENGINE_SHA" \
@@ -65,6 +152,10 @@ _record_build_manifest() {
     --meta "build_commit=${BUILD_COMMIT:-unknown}" --meta "build_time=${BUILD_TIME:-unknown}" \
     --meta "build_dirty=${BUILD_DIRTY:-unknown}" \
     --meta "app_py_files=$app_py_files" --meta "cmp_result=${CMP_RESULT:-not-run}" \
+    --meta "source_tree_sha_start=${SOURCE_TREE_SHA_START:-unknown}" \
+    --meta "source_tree_sha_end=${SOURCE_TREE_SHA_END:-unknown}" \
+    --meta "source_tree_changed=${SOURCE_TREE_CHANGED:-0}" \
+    --meta "source_tree_files=${SOURCE_TREE_FILE_COUNT:-0}" \
     --meta "failed=$failed" --meta "failed_step=${failed_step:0:120}" || true
   return 0
 }
