@@ -75,6 +75,22 @@
 （注意：const 5 的**末行即表格起始行，其后没有换行符** —— 文件以 `r}` 结尾无 `\n`。
 const 3 末行以 `\\[5.0 ex]\n` 结尾**有**换行符。）
 
+### STEP 1b 现值台账（2026-10-27 模板升级后）
+
+上表是 **2022 版 Windows 原版**的提取值（历史台账，保留溯源）。本仓内置模板此后经两次升级，
+与 Windows 原版**不再逐字节一致**：`sources-mac/Features/ContentTemplates.swift` 是唯一源，
+`Engine/slcn/content_templates.py` 由 `Engine/tools/gen_content_templates.py` 生成（生成物禁手改）。
+
+| 模板 | Windows 原版提取（上表） | 现值 | 差异 |
+|---|---|---|---|
+| `ch_content_head` | 675 字符 / `aa162d91…` | **771 字符** | 升级为 2026 年第 3 期（88）中文版式：补 `fontset=windows`；刊名/卷期/出版日期改 88 期值；栏目行改占位 `XXX` |
+| `en_content_head` | 565 字符 / `1502445b…` | **713 字符** | 升级为 88 期英文版式：补 `fontset=windows`；加 `amssymb`；页眉改 `Volume 19, Number 3, June 2026`；栏目行改占位 `XXX` |
+| `ch_content_end`＝`en_content_end` | 31 字符 / `e1d16e4d…` | **31 字符（未变）** | — |
+
+现值校验口径：① `Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻断言 Swift 源 ↔ 生成物逐字节一致；
+② golden 快照 `Engine/tests/fixtures/golden_toc/Chinese Content_GOLDEN.tex`（959 字节）与
+`contents_GOLDEN.tex`（858 字节）；③ `Engine/tools/gen_content_templates.py --check`（不同步退出 1）。
+
 ---
 
 ## 2.1 `clean_name(name)` — 源 line 67-68

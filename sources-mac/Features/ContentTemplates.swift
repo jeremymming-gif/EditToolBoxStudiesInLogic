@@ -1,9 +1,10 @@
-// ⚠️ 本文件由 tools/gen_templates.py 自动生成，请勿手工修改。
-// 内容是 Windows 原版程序内置的 LaTeX 模板，逐字节一致。
+// ⚠️ 本文件原由 tools/gen_templates.py 从 Windows 原版程序提取生成。
+// 2026-10-27 起中/英内置目录模板已升级为 2026 年第 3 期(88) 版式，与 Windows 原版不再逐字节一致；
+// 重跑提取脚本会覆盖这次升级 —— 改模板请直接改下面的字面量，再跑 Engine/tools/gen_content_templates.py 重生成并重冻结 golden。
 
 enum ContentTemplates {
 
-    /// chContentHead —— 692 个字符
+    /// chContentHead —— 771 个字符
     static let chContentHead = "\\documentclass[b5paper,11pt,onecolumn,twoside,fontset=windows]{ctexart}\n\\pagestyle{empty}\n\\usepackage[total={130mm,203mm}, top=25.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式\n\\usepackage{tabularx}\n\\usepackage{amssymb}\n\\usepackage{xeCJK}\n\\setmainfont{Times New Roman}\n\n\\newcommand{\\vdistance}{\\\\[4.8ex]}%调整行间隔\n\\newcommand{\\cndash}{\\raise0.1em\\hbox{--}}\n\n\\begin{document}\n\n\\begin{flushright}\n\\renewcommand{\\baselinestretch}{1.3}\n\\zihao{5}\n\\heiti{逻辑学研究（双月刊）\\\\\n第\\ 19 卷，第\\ 3 期，总第\\ 88 期}\\\\\n\\heiti{2026 年第\\ 3 期，6月\\ 18 日出版}\n\\end{flushright}\n\\vspace{4ex}{\\songti{\\huge{\\bfseries  目 \\ \\ \\ \\ \\ \\ \\ \\ 录}}}\n\n\\noindent\\hrulefill \\vspace{2.5ex}\\\\\n\\begin{tabularx}{\\textwidth}\n{l@{\\hspace{-0.3em}}r@{\\hspace{-4.2em}}r}\t\n{\\large \\bf{专栏：XXX}}\n&&\\textit{\\large 主持人：XXX}\n\\\\[3.0 ex]\n"
 
     /// chContentEnd —— 31 个字符

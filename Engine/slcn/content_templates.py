@@ -1,7 +1,7 @@
 r"""内置目录模板 —— **本文件由 `tools/gen_content_templates.py` 生成，不要手改**。
 
 源头：`sources-mac/Features/ContentTemplates.swift`（mac 界面的内置模板常量，
-其上游是原版 `charti_build_content.py` 里写死的 2022 年模板）。
+其上游是 Windows 原版 `charti_build_content.py` 里写死的模板；中/英内置模板已于 2026-10-27 升级为 2026 年第 3 期(88) 版式，与 Windows 原版不再逐字节一致）。
 
 「生成目录」只在**找不到可继承的成品**时才用它（正常路径是继承上一期的
 `000 Table of Contents/Chinese Content.tex` 或 `contents.tex`）。即便如此，
