@@ -11,14 +11,16 @@ r"""内置目录模板 —— **本文件由 `tools/gen_content_templates.py` �
 `python3 tools/gen_content_templates.py`。
 """
 
-chContentHead = r"""
-\documentclass[b5paper,11pt,onecolumn,twoside,fontset=windows]{ctexart}
+chContentHead = r"""\documentclass[b5paper,11pt,onecolumn,twoside,fontset=windows]{ctexart}
 \pagestyle{empty}
-\usepackage[total={130mm,203mm}, top=28.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式
+\usepackage[total={130mm,203mm}, top=25.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式
 \usepackage{tabularx}
+\usepackage{amssymb}
+\usepackage{xeCJK}
 \setmainfont{Times New Roman}
 
 \newcommand{\vdistance}{\\[4.8ex]}%调整行间隔
+\newcommand{\cndash}{\raise0.1em\hbox{--}}
 
 \begin{document}
 
@@ -26,17 +28,17 @@ chContentHead = r"""
 \renewcommand{\baselinestretch}{1.3}
 \zihao{5}
 \heiti{逻辑学研究（双月刊）\\
-第\ 15 卷，第\ 6 期，总第\ 67 期}\\
-\heiti{2022 年第\ 6 期，12月\ 18 日出版}
+第\ 19 卷，第\ 3 期，总第\ 88 期}\\
+\heiti{2026 年第\ 3 期，6月\ 18 日出版}
 \end{flushright}
-\vspace{7.8ex}{\songti{\huge{\bfseries  目 \ \ \ \ \ \ \ \ 录}}}
+\vspace{4ex}{\songti{\huge{\bfseries  目 \ \ \ \ \ \ \ \ 录}}}
 
 \noindent\hrulefill \vspace{2.5ex}\\
 \begin{tabularx}{\textwidth}
-{l@{\hspace{4.5em}}r@{\hspace{-6.1em}}r}	
+{l@{\hspace{-0.3em}}r@{\hspace{-4.2em}}r}	
 {\large \bf{专栏：XXX}}
 &&\textit{\large 主持人：XXX}
-\\[5.0 ex]
+\\[3.0 ex]
 """
 
 chContentEnd = r"""
