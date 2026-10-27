@@ -127,7 +127,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 5004 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 5008 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48
@@ -146,7 +146,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28
 `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5
 `test_convert_proof_autofix` 66 ｜ `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 16
-`test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 62 ｜ `test_en_slot_placeholder` 9
+`test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 66 ｜ `test_en_slot_placeholder` 9
 `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 41
 `test_infocheck_toc` 135 ｜ `test_issue_tools` 69 ｜ `test_latex_appendix` 17 ｜ `test_latex_preamble` 117
 `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12
