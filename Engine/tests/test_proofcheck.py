@@ -297,6 +297,272 @@ check("(d) `--lang en` 时中文规则让位（命中数下降）",
       "命中" in r6.stdout and "ZH-01" not in r6.stdout, r6.stdout[:60])
 
 # ─────────────────────────────────────────────────────────────────────────
+print("\n── (e) 模板合规（report-only）──")
+import shutil  # noqa: E402
+import templatecheck as TC  # noqa: E402
+
+CANON_STY = ENGINE.parent / "编辑笔记" / "模板文件" / "SLCN-MIX.sty"
+tpl_tmp = tempfile.mkdtemp(prefix="slcn_tplcheck_")
+BIB_OK = ("@article{K1,\n  author = {A. B.},\n  title = {T},\n"
+          "  journal = {J},\n  year = {2020}\n}\n")
+FIG_BLOCK = ("\\begin{figure}[htbp]\\centering\\includegraphics{fig.png}"
+             "\\caption{示意图}\\end{figure}")
+CN_OK = (r"""\documentclass[UTF8]{article}
+\usepackage{SLCN-MIX}
+\newcommand{\mytitle}{论某问题}
+\newcommand{\myfirstauthor}{张三}
+\newcommand{\myfirstaffiliation}{某大学哲学系}
+\newcommand{\myabstract}{这是一段摘要。}
+\newcommand{\mykeywords}{甲；乙；丙}
+\addbibresource{reference.bib}
+\begin{document}
+正文一段，引用\cite{K1}。
+""" + FIG_BLOCK + r"""
+\printbibliography
+\end{document}
+""")
+EN_OK = r"""\documentclass[UTF8]{article}
+\usepackage{SLEN}
+\newcommand{\mytitle}{A Title}
+\newcommand{\myabstract}{An abstract.}
+\begin{document}
+Body text.
+\end{document}
+"""
+
+
+def tprod(name, tex, *, bib=True, sty=True, files=()):
+    d = os.path.join(tpl_tmp, name)
+    os.makedirs(d)
+    tex_path = os.path.join(d, name + ".tex")
+    with open(tex_path, "w", encoding="utf-8") as fh:
+        fh.write(tex)
+    if bib is not False:
+        with open(os.path.join(d, "reference.bib"), "w", encoding="utf-8") as fh:
+            fh.write(bib if isinstance(bib, str) else BIB_OK)
+    if sty:
+        shutil.copyfile(str(CANON_STY), os.path.join(d, "SLCN-MIX.sty"))
+    for rel, data in files:
+        with open(os.path.join(d, rel), "wb") as fh:
+            fh.write(data)
+    return tex_path
+
+
+def trep(tex, name, template="", **kw):
+    return TC.check_product(tprod(name, tex, **kw), template)
+
+
+def trule(rep, rid):
+    return next(r for r in rep.results if r.rule.id == rid)
+
+
+def tmut(base, old, new):
+    assert old in base, old[:40]
+    return base.replace(old, new)
+
+
+def run_tc(*args):
+    return subprocess.run([PY, str(ENGINE / "templatecheck.py"), *args],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env=ENV, cwd=str(ENGINE))
+
+
+check("(e) 8 条规则、ID 恰为 T1..T8",
+      [r.id for r in TC.RULES] == ["T%d" % i for i in range(1, 9)])
+cn_rep = trep(CN_OK, "CnAll", files=[("fig.png", b"png")])
+check("(e) 正例：CN 初排稿 8 条全 PASS", cn_rep.counts() == (8, 0, 0), str(cn_rep.counts()))
+en_t3 = trule(trep(EN_OK, "EnAll"), "T3")
+check("(e) EN 稿：关键词 3–8 是 SKIP 并在摘要里说明（不是 FAIL）",
+      en_t3.status == "PASS" and "SKIP" in en_t3.summary, en_t3.summary)
+en_aligned = ("\\documentclass[UTF8]{article}\n\\usepackage{SLEN}\n"
+              "\\newcommand{\\mytitle}" + " " * 90 + "% comment\n{A Title}\n"
+              "\\begin{document}\nx\n\\end{document}\n")
+en_meta = TC.parse_metadata(en_aligned, TC.raw_mask(en_aligned))
+check("(e) 题名的值写在下一行、行尾带注释对齐时仍能解析（EN 模板真实形态）",
+      en_meta.get("mytitle", ("", 0))[0] == "A Title")
+
+check("(e) T1 反例：缺 \\begin{document} → FAIL",
+      trule(trep(tmut(CN_OK, "\\begin{document}\n", ""), "T1a"), "T1").status == "FAIL")
+check("(e) T1 反例：document 环境里没有正文 → FAIL",
+      trule(trep(tmut(CN_OK, "正文一段，引用\\cite{K1}。\n" + FIG_BLOCK + "\n", ""),
+                 "T1b"), "T1").status == "FAIL")
+check("(e) T2 反例：缺题名定义 → FAIL",
+      trule(trep(tmut(CN_OK, "\\newcommand{\\mytitle}{论某问题}\n", ""), "T2a"), "T2").status
+      == "FAIL")
+check("(e) T2 反例：作者仍是模板占位符（\\kaishu xxx）→ FAIL",
+      any("占位符" in f.issue for f in trule(
+          trep(tmut(CN_OK, "{张三}", "{{\\kaishu xxx}}"), "T2b"), "T2").findings))
+check("(e) T2 反例：单位仍是【未识别…】→ FAIL",
+      any("未识别" in f.issue for f in trule(
+          trep(tmut(CN_OK, "{某大学哲学系}", "{【未识别：第一作者单位，请手工填写】}"),
+               "T2c"), "T2").findings))
+t2_null = trep(tmut(CN_OK, "\\begin{document}\n",
+                    "\\newcommand{\\mysecondauthor}{null}\n"
+                    "%\\renewcommand{\\mysecondauthor}{xxx}\n\\begin{document}\n"),
+               "T2d", files=[("fig.png", b"png")])
+check("(e) T2 不误报：第二作者 null / 被注释 → PASS", trule(t2_null, "T2").status == "PASS")
+
+check("(e) T3 反例：关键词 2 个 → FAIL",
+      trule(trep(tmut(CN_OK, "{甲；乙；丙}", "{甲；乙}"), "T3a"), "T3").status == "FAIL")
+check("(e) T3 边界：关键词 8 个 → PASS",
+      trule(trep(tmut(CN_OK, "{甲；乙；丙}", "{甲；乙；丙；丁；戊；己；庚；辛}"),
+                 "T3b"), "T3").status == "PASS")
+check("(e) T3 反例：关键词 9 个 → FAIL",
+      trule(trep(tmut(CN_OK, "{甲；乙；丙}", "{甲；乙；丙；丁；戊；己；庚；辛；壬}"),
+                 "T3c"), "T3").status == "FAIL")
+t3_long = trule(trep(tmut(CN_OK, "{这是一段摘要。}", "{" + "摘" * 1200 + "}"), "T3d"), "T3")
+check("(e) T3：摘要只有字数 INFO、没有长度阈值（长摘要不 FAIL）",
+      t3_long.status == "PASS" and any("摘要字数" in n for n in t3_long.notes))
+check("(e) T3 反例：摘要为空 → FAIL",
+      trule(trep(tmut(CN_OK, "{这是一段摘要。}", "{}"), "T3e"), "T3").status == "FAIL")
+
+check("(e) T4 正例：bib 字段齐全、cite 闭合 → PASS",
+      trule(trep(CN_OK, "T4a", files=[("fig.png", b"png")]), "T4").status == "PASS")
+t4_miss = trule(trep(CN_OK, "T4b", bib="@article{K1,\n author = {A.},\n journal = {J}\n}\n",
+                     files=[("fig.png", b"png")]), "T4")
+check("(e) T4 反例：缺 author/title/year → FAIL",
+      t4_miss.status == "FAIL" and any("缺字段" in f.issue for f in t4_miss.findings))
+t4_misc = trule(trep(CN_OK, "T4c",
+                     bib="@misc{K1,\n author = {A.},\n title = {T},\n year = {2020}\n}\n",
+                     files=[("fig.png", b"png")]), "T4")
+check("(e) T4 反例：misc 缺 note/howpublished/url → FAIL",
+      t4_misc.status == "FAIL" and any("note/howpublished/url" in f.issue
+                                       for f in t4_misc.findings))
+t4_unknown = trule(trep(CN_OK, "T4d",
+                        bib="@dataset{K1,\n author = {A.},\n title = {T},\n year = {2020}\n}\n",
+                        files=[("fig.png", b"png")]), "T4")
+check("(e) T4 反例：未知条目类型 → FAIL",
+      t4_unknown.status == "FAIL" and any("未知条目类型" in f.issue
+                                          for f in t4_unknown.findings))
+t4_cite = trule(trep(tmut(CN_OK, "\\cite{K1}", "\\cite{NOPE}"), "T4e",
+                     files=[("fig.png", b"png")]), "T4")
+check("(e) T4 反例：cite 键在 bib 里没有条目 → FAIL",
+      t4_cite.status == "FAIL" and any("没有对应条目" in f.issue for f in t4_cite.findings))
+t4_dup = trule(trep(CN_OK, "T4f", bib=BIB_OK + BIB_OK, files=[("fig.png", b"png")]), "T4")
+check("(e) T4 反例：bib 重复 key → FAIL",
+      t4_dup.status == "FAIL" and any("重复" in f.issue for f in t4_dup.findings))
+t4_unused = trule(trep(CN_OK, "T4g",
+                       bib=BIB_OK + "@book{K2,\n author = {B.},\n title = {U},\n"
+                                     " publisher = {P},\n year = {2021}\n}\n",
+                       files=[("fig.png", b"png")]), "T4")
+check("(e) T4：未引用条目只 INFO（不算规范）",
+      t4_unused.status == "PASS" and any("未引用条目" in n for n in t4_unused.notes))
+t4_nobib = trule(trep(tmut(tmut(CN_OK, "\\addbibresource{reference.bib}\n", ""),
+                           "正文一段，引用\\cite{K1}。", "正文一段，没有引用。"), "T4h", bib=False,
+                      files=[("fig.png", b"png")]), "T4")
+check("(e) T4：没有 .bib → SKIP（字段检查做不了，不假报）",
+      t4_nobib.status == "SKIP", t4_nobib.status)
+
+check("(e) T5 正例：figure 有非空 \\caption → PASS",
+      trule(trep(CN_OK, "T5a", files=[("fig.png", b"png")]), "T5").status == "PASS")
+check("(e) T5 反例：figure 没有 \\caption → FAIL",
+      trule(trep(tmut(CN_OK, FIG_BLOCK, tmut(FIG_BLOCK, "\\caption{示意图}", "")), "T5b",
+                 files=[("fig.png", b"png")]), "T5").status == "FAIL")
+check("(e) T5 反例：\\caption 被注释掉 → FAIL",
+      trule(trep(tmut(CN_OK, "\\caption{示意图}", "%\\caption{示意图}"), "T5c",
+                 files=[("fig.png", b"png")]), "T5").status == "FAIL")
+check("(e) T5 反例：figure 没有闭合 \\end → FAIL",
+      trule(trep(tmut(CN_OK, FIG_BLOCK, FIG_BLOCK.replace("\\end{figure}", "")), "T5d",
+                 files=[("fig.png", b"png")]), "T5").status == "FAIL")
+check("(e) T5 不误报：verbatim 里的 figure 不算（SKIP）",
+      trule(trep(tmut(CN_OK, FIG_BLOCK,
+                      "\\begin{verbatim}\n\\begin{figure}\n\\end{figure}\n\\end{verbatim}"),
+                 "T5e", files=[("fig.png", b"png")]), "T5").status == "SKIP")
+
+check("(e) T6 正例：\\usepackage 与模板精确一致 → PASS",
+      trule(trep(CN_OK, "T6a", files=[("fig.png", b"png")]), "T6").status == "PASS")
+check("(e) T6 反例：\\usepackage{SLCN-MIX4} ≠ 模板 SLCN-MIX → FAIL",
+      trule(trep(tmut(CN_OK, "{SLCN-MIX}", "{SLCN-MIX4}"), "T6b", "SLCN-MIX",
+                 files=[("fig.png", b"png")]), "T6").status == "FAIL")
+check("(e) T6 反例：没有可识别的模板 \\usepackage → FAIL",
+      trule(trep(tmut(CN_OK, "\\usepackage{SLCN-MIX}\n", ""), "T6c", "SLCN-MIX",
+                 files=[("fig.png", b"png")]), "T6").status == "FAIL")
+
+check("(e) T7 正例：产品目录的 .sty 与 canonical 一致 → PASS",
+      trule(trep(CN_OK, "T7a", files=[("fig.png", b"png")]), "T7").status == "PASS")
+check("(e) T7 反例：产品目录的 .sty 被改过（sha 不一致）→ FAIL",
+      trule(trep(CN_OK, "T7b", sty=False,
+                 files=[("SLCN-MIX.sty", b"% tampered\n"), ("fig.png", b"png")]), "T7").status
+      == "FAIL")
+check("(e) T7 反例：产品目录缺 .sty → FAIL",
+      trule(trep(CN_OK, "T7c", sty=False, files=[("fig.png", b"png")]), "T7").status == "FAIL")
+
+check("(e) T8 正例：\\includegraphics 的素材存在 → PASS",
+      trule(trep(CN_OK, "T8a", files=[("fig.png", b"png")]), "T8").status == "PASS")
+check("(e) T8 反例：图片素材不存在 → FAIL",
+      trule(trep(tmut(CN_OK, "{fig.png}", "{nope.png}"), "T8b",
+                 files=[("fig.png", b"png")]), "T8").status == "FAIL")
+check("(e) T8 不误报：注释里的 \\includegraphics 不算（SKIP）",
+      trule(trep(tmut(CN_OK, FIG_BLOCK, "%\\includegraphics{nope.png}"), "T8c",
+                 files=[("fig.png", b"png")]), "T8").status == "SKIP")
+check("(e) T8 不误报：\\IfFileExists 兜底 → 视为通过",
+      "视为通过" in trule(trep(tmut(CN_OK, FIG_BLOCK,
+                                    "\\begin{figure}[htbp]\\centering"
+                                    "\\IfFileExists{fig.png}{}{\\includegraphics{fig.png}}"
+                                    "\\caption{示意图}\\end{figure}"), "T8d"), "T8").notes[-1])
+
+r_ver = run_tc("--version")
+check("(e) CLI `--version` 退出码 0、报版本", r_ver.returncode == 0 and "SLCN 引擎"
+      in r_ver.stdout)
+r_self = run_tc("--self-test")
+check("(e) CLI `--self-test` 退出码 0、8 条规则正例全过",
+      r_self.returncode == 0 and "自检通过：8/8" in r_self.stdout, r_self.stdout.strip())
+r_noin = run_tc()
+check("(e) CLI 缺 --input → 退出码 2", r_noin.returncode == 2 and "--input" in r_noin.stderr)
+r_badtpl = run_tc("--input", os.path.dirname(tprod("CliTpl", CN_OK)),
+                  "--template", "NoSuch", "--out", os.path.join(tpl_tmp, "x.md"))
+check("(e) CLI 未知模板 → 退出码 2", r_badtpl.returncode == 2 and "未知模板" in r_badtpl.stderr)
+r_badout = run_tc("--input", os.path.dirname(tprod("CliOutBad", CN_OK)), "--out",
+                  os.path.join(tpl_tmp, "x.txt"))
+check("(e) CLI --out 不是 .md → 退出码 2", r_badout.returncode == 2 and ".md" in r_badout.stderr)
+two = os.path.join(tpl_tmp, "TwoTex")
+os.makedirs(two)
+for stem in ("AB", "CD"):
+    with open(os.path.join(two, stem + ".tex"), "w", encoding="utf-8") as fh:
+        fh.write(CN_OK)
+r_two = run_tc("--input", two)
+check("(e) CLI 目录里有 2 个 .tex → 退出码 2（不替用户猜）",
+      r_two.returncode == 2 and "2 个 .tex" in r_two.stderr, r_two.stderr[:80])
+
+cli_dir = os.path.dirname(tprod("CliDir", CN_OK, files=[("fig.png", b"png")]))
+r_dir = run_tc("--input", cli_dir)
+check("(e) CLI 目录输入：默认报告写在产品目录、契约行 PASS 8 / FAIL 0 / SKIP 0",
+      r_dir.returncode == 0 and "完成。模板合规：PASS 8 / FAIL 0 / SKIP 0" in r_dir.stdout
+      and os.path.exists(os.path.join(cli_dir, "CliDir_模板合规.md")), r_dir.stdout[-90:].strip())
+
+out_dir = os.path.dirname(tprod("CliOut", CN_OK, files=[("fig.png", b"png")]))
+out_md = os.path.join(tpl_tmp, "cli_out.md")
+r_out = run_tc("--input", out_dir, "--out", out_md)
+check("(e) CLI --out 指到仓库外：报告落点正确、产品目录不多出报告",
+      r_out.returncode == 0 and os.path.exists(out_md)
+      and not os.path.exists(os.path.join(out_dir, "CliOut_模板合规.md")))
+
+snap_dir = os.path.dirname(tprod("Snap", CN_OK, files=[("fig.png", b"png")]))
+snap = {}
+for fn in sorted(os.listdir(snap_dir)):
+    with open(os.path.join(snap_dir, fn), "rb") as fh:
+        snap[fn] = fh.read()
+r_snap = run_tc("--input", snap_dir, "--out", os.path.join(tpl_tmp, "snap.md"))
+after = {}
+for fn in sorted(os.listdir(snap_dir)):
+    with open(os.path.join(snap_dir, fn), "rb") as fh:
+        after[fn] = fh.read()
+check("(e) 只读保证：输入/产品文件字节零变化、产品目录不多出文件",
+      r_snap.returncode == 0 and snap == after, f"rc={r_snap.returncode}")
+
+many = CN_OK.replace(FIG_BLOCK, "".join(
+    "\\begin{figure}[htbp]\\centering\\includegraphics{fig%d.png}\\end{figure}\n" % i
+    for i in range(60)))
+many_dir = os.path.dirname(tprod("Many", many))
+many_md = os.path.join(tpl_tmp, "many.md")
+r_many = run_tc("--input", many_dir, "--out", many_md)
+md = open(many_md, encoding="utf-8").read()
+check("(e) 报告结构：摘要表 + 依据 + 明细行",
+      r_many.returncode == 1 and "## 摘要" in md and "依据：" in md and "| 行 |" in md)
+check("(e) 报告单规则 50 条上限：60 条只列 50 条并注明省略",
+      "另有 10 条已省略（共 60 条）" in md)
+
+# ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")
