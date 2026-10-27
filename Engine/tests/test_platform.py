@@ -1334,6 +1334,69 @@ else:
           "｜".join(_group_detail))
 
 # ─────────────────────────────────────────────────────────────────────────
+# (o) 分发不泄漏：swift 侧外壳**不许**再绑 publish.py（B-231 ④；静态扫描，不 import 外壳）
+#
+# 口径（根 `README.md`「一个引擎，两个外壳」+「Engine/ 引擎（Python，唯一一份逻辑）」；
+# `Engine/docs/ENGINE_API.md` 与根 `README.md:116` 都把 `publish.py` 标成 **CLI-only**
+# —— 2026-10-21 第 71 批 B-116 起 GUI「本期出刊」页已删，逻辑只在引擎里）：
+#   · 扫描集 = 仓库根 `sources-mac/**/*.swift` + `sources-win/**/*.py`；
+#   · **排除** `sources-win/engine.py` —— Windows 分发器的 `ENTRIES` **必须**含 publish.py
+#     （跨平台交付事实，已由 (g) 组守，这里不重复断言）；
+#   · **排除** `sources-win/tests/` —— 测试夹具故意逐字引用入口表；
+#   · 命中 = `\bpublish\.py\b` 或当年的 GUI 绑定符号 `PublishTab` / `PublishFeature` /
+#     `publish_call`（任一出现 = 「本期出刊」页被接回外壳，B-227 删页后的回潮）。
+#
+# 路径口径修正（见 `ROOT/DECISIONS.md` b231-i4）：提示词写的 `Engine/vendor/README.md` 与
+# `Engine/native/slcn` 在本树里**都不存在**（`Engine/vendor/` 是被 .gitignore 的 pip 依赖
+# 目录、没有 README；`git ls-files` 无任何 `native/` 路径），`tools/batch_accept.py` 也没有
+# 可复用的源码扫描函数（只有 `parse_*` / `judge_gate` 证据解析）。故按上面这份**真实口径**
+# 就地扫描（**未复制任何既有逻辑**，因为没有可复用的实现）。
+_NOLEAK_ROOT = ENGINE.parent
+_NOLEAK_MAC_DIR = _NOLEAK_ROOT / "sources-mac"
+_NOLEAK_WIN_DIR = _NOLEAK_ROOT / "sources-win"
+_NOLEAK_WIN_ENTRY = _NOLEAK_WIN_DIR / "engine.py"   # 分发器入口表：必须含 publish.py（(g) 组守）
+_NOLEAK_MAC_FILES = sorted(_NOLEAK_MAC_DIR.rglob("*.swift")) if _NOLEAK_MAC_DIR.is_dir() else []
+_NOLEAK_WIN_FILES = ([p for p in sorted(_NOLEAK_WIN_DIR.rglob("*.py"))
+                      if p != _NOLEAK_WIN_ENTRY
+                      and "tests" not in p.relative_to(_NOLEAK_WIN_DIR).parts]
+                     if _NOLEAK_WIN_DIR.is_dir() else [])
+_NOLEAK_FILES = _NOLEAK_MAC_FILES + _NOLEAK_WIN_FILES
+_NOLEAK_RE = re.compile(r"\bpublish\.py\b|PublishTab|PublishFeature|publish_call")
+_no_leaks: list[str] = []
+for _p in _NOLEAK_FILES:
+    try:
+        _txt = _p.read_text(encoding="utf-8", errors="replace")
+    except OSError as _e:                    # 读不动 = 红（绝不静默跳过）
+        _no_leaks.append(f"{_p.relative_to(_NOLEAK_ROOT)}: <读失败 {_e}>")
+        continue
+    for _ln, _line in enumerate(_txt.splitlines(), 1):
+        _m = _NOLEAK_RE.search(_line)
+        if _m:
+            _no_leaks.append(f"{_p.relative_to(_NOLEAK_ROOT)}:{_ln}:{_m.group(0)}")
+
+check("(o1) swift 侧外壳零 publish.py 绑定：sources-mac/**/*.swift + sources-win/**/*.py"
+      "（排除分发器 engine.py 与 tests/）里不许出现 publish.py / PublishTab / "
+      "PublishFeature / publish_call —— 外壳只许 CLI 起引擎，不许把删掉的「本期出刊」页接回来",
+      not _no_leaks,
+      f"扫 {len(_NOLEAK_FILES)} 个外壳源文件（mac {len(_NOLEAK_MAC_FILES)} / "
+      f"win {len(_NOLEAK_WIN_FILES)}）｜命中 {len(_no_leaks)} 处：{_no_leaks[:5]}")
+
+# (o2) 反向防僵化：上面那条**必须真有文件可扫**，否则「零命中」是真空绿（缺目录 → 红，不 SKIP）。
+#     另钉住分发引擎目录仍在原地：Swift 侧（`build.sh` 打包进 App 的 `Resources/Engine`）与
+#     两个外壳共用同一份 `Engine/slcn`；提示词写作 `Engine/native/slcn`，实测只有 `Engine/slcn`。
+_NOLEAK_DIST = ENGINE / "slcn"
+_O2_MAC_N = len(_NOLEAK_MAC_FILES)
+_O2_WIN_N = len(_NOLEAK_WIN_FILES)
+_O2_DIST_N = len(sorted(_NOLEAK_DIST.glob("*.py"))) if _NOLEAK_DIST.is_dir() else 0
+check("(o2) 扫描范围非空（防 (o1) 真空绿）：mac 壳 Swift 源、win 壳 py 源各 >0 且两目录都在"
+      "扫描范围内；分发引擎目录 Engine/slcn 存在且非空",
+      _NOLEAK_MAC_DIR.is_dir() and _NOLEAK_WIN_DIR.is_dir()
+      and _O2_MAC_N > 0 and _O2_WIN_N > 0 and _O2_DIST_N > 0,
+      f"mac={'有' if _NOLEAK_MAC_DIR.is_dir() else '缺'}{_O2_MAC_N} 文件｜"
+      f"win={'有' if _NOLEAK_WIN_DIR.is_dir() else '缺'}{_O2_WIN_N} 文件｜"
+      f"slcn={_O2_DIST_N} 个 .py｜合计扫 {len(_NOLEAK_FILES)}")
+
+# ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:
     print(f"失败 {len(fails)} 项：{fails}")
