@@ -53,7 +53,7 @@
 | `run_engine_tests.sh` | 引擎套件入口（quick/full） | qa-release | 2026-10-17 | CI `ci.yml` + release workflow 调用 | active | 唯一套件入口，不写行内循环 |
 | `run_record.py` | 运行记录写 `runs/*.json` | qa-release | 2026-10-19 | 自有单测 `test_run_record.py`；`build.sh` 调用 | active | 证据/审计用 |
 | `bibdb_seed.py` | 引用库种子数据 | bib-refs | 2026-10-18 | `Engine/docs/GUIDE.md` 流程引用；bibdb 初始化 | active | 改库结构时同步 |
-| `gen_content_templates.py` | 内容模板生成（toctemplate/content_templates） | rules-docs | 2026-10-16 | 生成物在 `Engine/slcn/`（`content_templates.py`/`toctemplate.py`） | **dormant** | 5+ 批未用；模板更新时才用；保留不删 |
+| `gen_content_templates.py` | 内容模板生成（toctemplate/content_templates） | rules-docs | 2026-10-16 | 生成物在 `Engine/slcn/`（`content_templates.py`/`toctemplate.py`）；由 `Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻调用（防 Swift↔py 漂移） | **dormant** | 5+ 批未用；模板更新时才用；保留不删 |
 
 ## 3. 休眠候选汇总（**保留不删除**；批65 已标 dormant，待 Lead/用户确认后维持或转 legacy）
 
