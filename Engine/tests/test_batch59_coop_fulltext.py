@@ -253,6 +253,15 @@ def test_render_unit() -> None:
 
 # ── ③ CLI：无 flag 与 HEAD 逐字节相同（默认关零变化）─────────────────────
 
+# B-004（2026-10-28 ZH-08 默认启用）预期日志差异：过滤 ZH-08 相关行后比较
+import re as _re
+_ZH08_LOG_NOISE = _re.compile(r"(ZH-08|判断指引：|· 第\d+\s*行：|自动修复 )")
+
+
+def _strip_zh08_log(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not _ZH08_LOG_NOISE.search(ln))
+
+
 
 def test_no_flag_zero_change(tmp: str, head: str) -> None:
     src, bibp, out = _fixture(tmp, "noflag")
@@ -269,7 +278,8 @@ def test_no_flag_zero_change(tmp: str, head: str) -> None:
     check("③-1 无 flag ph1 退出 0", new.returncode == 0, new.stderr[-300:])
     check("③-2 无 flag 任务书与 HEAD 逐字节相同", tb_new == tb_old)
     check("③-3 无 flag 产物树（tex/bib/任务书）与 HEAD 逐字节相同", snap_new == snap_old)
-    check("③-4 无 flag 日志与 HEAD 逐字节相同（除输出路径相同外）", new.stdout == old.stdout)
+    check("③-4 无 flag 日志与 HEAD 逐字节相同（除输出路径相同外；B-004 ZH-08 行过滤）",
+      _strip_zh08_log(new.stdout) == _strip_zh08_log(old.stdout))
     check("③-5 无 flag 任务书没有「附三」", coop.FULLTEXT_TITLE not in tb_new)
     check("③-6 无 flag state 没有 fulltext 键", "fulltext" not in st_new)
     check("③-7 HEAD 引擎没有该功能（state 也无 fulltext）", "fulltext" not in _state(out))

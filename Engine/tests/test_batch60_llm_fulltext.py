@@ -277,6 +277,15 @@ def test_help_and_invalid(tmp: str) -> None:
 
 # ── ② 默认关：零全文请求 + 与 HEAD 逐字节相同 ───────────────────────────
 
+# B-004（2026-10-28 ZH-08 默认启用）预期日志差异：过滤 ZH-08 相关行后比较
+import re as _re
+_ZH08_LOG_NOISE = _re.compile(r"(ZH-08|判断指引：|· 第\d+\s*行：|自动修复 )")
+
+
+def _strip_zh08_log(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not _ZH08_LOG_NOISE.search(ln))
+
+
 
 def test_default_off(tmp: str, head: str) -> None:
     src, bibp, out = fixture(tmp, "off", _BODY_ONLY)
@@ -296,7 +305,8 @@ def test_default_off(tmp: str, head: str) -> None:
           new.stderr[-300:])
     check("②-2 默认关不生成全文复核报告", not os.path.exists(report_path(out)))
     check("②-3 默认关与 HEAD 产物逐字节相同", snap_new == snap_old)
-    check("②-4 默认关与 HEAD 日志逐字节相同", stdout_new == old.stdout)
+    check("②-4 默认关与 HEAD 日志逐字节相同（B-004 ZH-08 行过滤）",
+      _strip_zh08_log(stdout_new) == _strip_zh08_log(old.stdout))
     check("②-5 默认关没有全文请求（请求里无「本片正文」）",
           not any("本片正文" in str(p.get("user") or "") for p in prompts_new))
     check("②-6 HEAD 引擎同样没有全文请求",

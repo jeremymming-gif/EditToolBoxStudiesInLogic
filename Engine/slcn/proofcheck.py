@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 CJK = r"\u4e00-\u9fff"
 
@@ -266,40 +267,168 @@ def _optional_arg_spans(tex: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _zh08_narrow(m: re.Match, tex: str) -> bool:
-    r"""ZH-08 的**窄子集**判据：短杠左右紧邻都是汉字，且不在命令可选参数里。
+#: 这些命令的花括号参数是**技术值**（长度/字号/日期/表格线/键），ZH-08 一律不碰。
+#: 与 `_KEY_ARGS` 有重叠是有意的：`_KEY_ARGS` 只服务 visible_mask，这里给 ZH-08 的
+#: 判据单独一份（数学/URL/日期字段的语义见 2026-10-28 冻结 spec §2）。
+_ZH08_TECH_ARGS = frozenset({
+    "vspace", "hspace", "cline", "zihao", "receiveddate", "date",
+    "setlength", "addtolength", "rule", "raisebox", "scalebox", "resizebox",
+    "fontsize", "linespread", "setcounter", "addtocounter", "arraystretch",
+    "tabcolsep", "parindent", "textwidth", "linewidth", "columnwidth",
+    "baselineskip", "includegraphics", "input", "include", "bibliography",
+    "addbibresource", "url", "href", "cite", "parencite", "textcite",
+    "footcite", "nocite", "ref", "eqref", "label", "pageref", "bibitem",
+    "documentclass", "usepackage",
+})
 
-    为什么只做这一窄类（2026-10-18 rules-docs Phase0 实测）：期 87 人工成品里
-    `马丁-洛夫` / `斯托奈克-刘易斯` / `语用-辩证` 一类 CJK-CJK 复合词 76/76 改成了连接号
-    （旧口径 `\cndash `；按手册应为 `\edash `，见 `_zh08_connector_replace`）；
-    而同一条规则命中的 latin-CJK（`would-反事实`）、math-CJK
-    （`$\phi$-世界`/`$\infty$-群胚`）、digit-CJK（`2-群胚`）、CJK-digit（`\item[模仿-1：]`）
-    人工成品**一律保留 ASCII 短杠**（24/24、16/16、3/3、2/2）——自动改这些就是制造新错。
+#: 裸 URL / DOI / 邮箱 / 文件名 / 英文页码（`pp.130-133`）/ ISBN：保持 ASCII、不报。
+_ZH08_PROTECT = (
+    re.compile(r"https?://[^\s{}]+"),
+    re.compile(r"\b(?:doi:\s*)?10\.\d{4,9}/[^\s{}]+", re.I),
+    re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+    re.compile(r"\b[A-Za-z0-9_./-]+\.(?:bib|tex|pdf|png|jpe?g|gif|svg|eps|"
+               r"docx?|xlsx?|csv|py|json|ya?ml|md|cls|sty|bst)\b"),
+    re.compile(r"\bpp?\.\s*\d+[ \t]*-[ \t]*\d+"),
+    re.compile(r"\bISBN(?:-1[03])?:?\s*[\d-]+"),
+)
+
+#: 宏定义 `\newcommand{\receiveddate}{2024-12-04}`：日期是模板字段，整条定义保持。
+_ZH08_DEFS = re.compile(
+    r"\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand)"
+    r"\*?\s*\{?\\[A-Za-z@]+\}?\s*(?:\[[^\]]*\])?\s*\{|"
+    r"\\def\s*\\[A-Za-z@]+\s*\{")
+
+#: 纯数字日期 `2021-06-16`（手册：日期用短横 `\edash`；中文稿里仍要改）。
+_ZH08_DATE = re.compile(
+    r"(?<!\d)(?:19|20)\d{2}[ \t]{0,3}-[ \t]{0,3}(?:0[1-9]|1[0-2])"
+    r"[ \t]{0,3}-[ \t]{0,3}(?:0[1-9]|[12]\d|3[01])(?!\d)")
+
+#: ZH-09 的页码区间（单/双短杠都算）：ZH-08 不与之抢同一根短杠。
+_ZH09_PAGE = re.compile(
+    r"第[ \t]{0,3}(\d+)[ \t]{0,3}-{1,2}[ \t]{0,3}(\d+)[ \t]{0,3}页")
+
+
+@lru_cache(maxsize=32)
+def _zh08_spans(tex: str) -> tuple[tuple[int, int], ...]:
+    r"""ZH-08 一律**不碰**的区间：可选参数 / 技术参数 / URL / DOI / 文件名 / 页码。"""
+    spans: list[tuple[int, int]] = list(_optional_arg_spans(tex))
+    for m in re.finditer(r"\\([A-Za-z@]+)\*?\s*\{", tex):
+        if m.group(1) not in _ZH08_TECH_ARGS:
+            continue
+        end = _match_brace(tex, m.end() - 1)
+        if end > 0:
+            spans.append((m.start(), end))
+    for m in _ZH08_DEFS.finditer(tex):
+        end = _match_brace(tex, m.end() - 1)
+        if end > 0:
+            spans.append((m.start(), end))
+    for pat in _ZH08_PROTECT:
+        spans.extend(m.span() for m in pat.finditer(tex))
+    spans.extend(m.span() for m in _ZH09_PAGE.finditer(tex))
+    return tuple(spans)
+
+
+@lru_cache(maxsize=16)
+def _zh08_visible(tex: str) -> str:
+    """缓存 `visible_mask`：只用于判断短杠是否紧邻数学/被屏蔽命令。"""
+    return visible_mask(tex)
+
+
+def _zh08_left(tex: str, at: int) -> str:
+    """`at` 往左跳过 0–3 个空格/制表符后的字符；超过 3 个或到行首返回空串。"""
+    i, skipped = at, 0
+    while i >= 0 and tex[i] in " \t" and skipped < 3:
+        i -= 1
+        skipped += 1
+    if i < 0 or tex[i] in " \t\r\n":
+        return ""
+    return tex[i]
+
+
+def _zh08_run(tex: str, hy: int) -> int:
+    """短杠所在连续 `-` 游程的长度（`--`/`---`/`-->` 都不是 ZH-08 的地盘）。"""
+    n, i = 1, hy - 1
+    while i >= 0 and tex[i] == "-":
+        n += 1
+        i -= 1
+    i = hy + 1
+    while i < len(tex) and tex[i] == "-":
+        n += 1
+        i += 1
+    return n
+
+
+def _zh08_cjk_line_near(tex: str, hy: int, radius: int = 15) -> bool:
+    r"""同一行、短杠前后 `radius` 字内是否有汉字（纯日期/编号的语境判据）。"""
+    a = tex.rfind("\n", 0, hy) + 1
+    b = tex.find("\n", hy)
+    if b < 0:
+        b = len(tex)
+    return any(_is_cjk(c) for c in tex[max(a, hy - radius):min(b, hy + radius + 1)])
+
+
+def _zh08_accept(m: re.Match, tex: str) -> bool:
+    r"""ZH-08 新口径（2026-10-28 用户拍板 A）的「报不报」判据。
+
+    口径（冻结 spec §2，`lang=zh` 才跑）：
+    - `-` 左右任一紧邻（0–3 空格/制表符）小写 ASCII 字母 → 保持、不报；
+    - `-` 两侧都是汉字 → 不动、不报（用 accept 静默；人名/复合词无法可靠区分）；
+    - 其余（大写/缩略语、数字、日期、编号、汉字+数字）→ `\edash `；
+    - 数学区/`raw_mask` 屏蔽区、可选参数、`\vspace`/`\cline`/`\receiveddate` 等技术参数、
+      URL/DOI/文件名/`pp.130-133` 页码 → 保持、不报；
+    - `--`（游程 ≥2）不归 ZH-08：中文页码范围由 ZH-09 扩 `-{1,2}` 处理，其余一律不动。
     """
-    if any(a <= m.start() < b for a, b in _optional_arg_spans(tex)):
+    hy = m.start()
+    if hy < 0 or hy >= len(tex) or tex[hy] != "-":
         return False
-    if m.group(1) is not None:                 # 命中「汉字-」：右侧紧邻必须是汉字
-        return m.end() < len(tex) and _is_cjk(tex[m.end()])
-    if m.start() == 0:                         # 命中「-汉字」：左侧紧邻必须是汉字
+    if _in_any(hy, _zh08_spans(tex)) or _zh08_run(tex, hy) != 1:
         return False
-    return _is_cjk(tex[m.start() - 1])
+    left = _zh08_left(tex, hy - 1)
+    right = tex[m.end()] if m.end() < len(tex) and tex[m.end()] not in " \t\r\n" else ""
+    if not left or not right:
+        return False
+    if ("a" <= left <= "z") or ("a" <= right <= "z"):
+        return False
+    if _is_cjk(left) and _is_cjk(right):
+        return False
+    if _is_cjk(left) or _is_cjk(right):
+        return True
+    if any(a <= hy < b for a, b in (x.span() for x in _ZH08_DATE.finditer(tex))):
+        return True
+    if left.isdigit() and right.isdigit():
+        return _zh08_cjk_line_near(tex, hy)
+    if left.isupper() and right.isdigit():      # `A-105` / `2021-06-16` 的邻接形态
+        return True
+    if left.isdigit() and right.isupper():      # `L101-L110` 一类
+        return _zh08_cjk_line_near(tex, hy)
+    return False
+
+
+def _zh08_math_adjacent(m: re.Match, tex: str) -> bool:
+    r"""紧邻数学区/被 `visible_mask` 屏蔽的命令（`$\phi$-世界`、`\ref{x}-式`）。
+
+    这类命中的语义要人看（spec §2-4：数学模式内保持 ASCII），所以**只报不改**。
+    """
+    vis = _zh08_visible(tex)
+    hy = m.start()
+    left = _zh08_left(vis, hy - 1)
+    right = vis[m.end()] if m.end() < len(vis) and vis[m.end()] not in " \t\r\n" else ""
+    return left == "\x00" or right == "\x00"
+
+
+def _zh08_fixable(m: re.Match, tex: str) -> bool:
+    return _zh08_accept(m, tex) and not _zh08_math_adjacent(m, tex)
 
 
 def _zh08_connector_replace(m: re.Match) -> str:
-    r"""窄子集替换：`汉字-汉字` → `汉字\edash 汉字`（**短横 `\edash`**，手册口径）。
+    r"""把命中的半角短杠（连同其后 0–3 个空格）换成**短横 `\edash `**。
 
-    依据（用户 2026-10-18 拍板「按手册规范」，手册原文
-    `编辑笔记/排版手册/排版手册源码/edit_handbook.tex` 第 317-321 行）：
-    - **短横 `\edash`**：人名与编号（`表2\edash 9`、`2022\edash 10\edash 08`、`3-a`、
-      `A\edash 级别`、`让\edash 雅克·卢梭`）；
-    - **双短横 `\cndash`**：**只用于页码范围**（`第8\cndash 12页`；见 ZH-09 / `zh-pagerange-*`）；
-    - **一字线 `—`**：半个破折号（`北京—上海`）。
-    所以 ZH-08 的中文复合词/人名用 `\edash`，**不是** `\cndash`（期 87 人工成品的
-    `马丁\cndash 洛夫` 属旧口径，已按拍板改正）。`\edash` 后保留一个空格：LaTeX 控制词后
-    的空格被吞掉、视觉与手册源码 `让\edash 雅克·卢梭` 一致；不写成 `{}` 以免多出空组。
-    本函数只在 `_zh08_narrow` 为真时被调用，此时 `group(1)`（命中「汉字-」方向）必非空。
+    2026-10-28 口径：短横 `\edash` 用于人名/编号/日期/字母序号；双短横 `\cndash`
+    **只给页码范围**（ZH-09）；一字线 `—` 永不改。`\edash` 后保留一个空格（LaTeX 控制词
+    会吞空格，视觉与手册源码 `表2\edash 9` 一致）。旧实现只返回 `group(1)`、右锚定匹配
+    会吞掉右侧汉字（`2-群胚` → `2\edash 胚`）；现在 pattern 只匹配短杠本身，不再有分组。
     """
-    return (m.group(1) or "") + "\\edash "
+    return "\\edash "
 
 
 def _zh19_abbrev_token(tex: str, start: int, end: int) -> str:
@@ -368,13 +497,14 @@ RULES: list[Rule] = [
          rf"(?:[{CJK}][ \t]{{0,3}}\(|\)[ \t]{{0,3}}[{CJK}])",
          "确认是英文括注（保留）还是漏改的中文括号（改全角）", langs=("zh",), noisy=True),
     Rule("ZH-08", "中文旁的半角短杠", "经验书 预校正·中文（检索英文短杠）＋手册·连字符",
-         rf"(?:([{CJK}])[ \t]{{0,3}}-|-[ \t]{{0,3}}([{CJK}]))",
-         "判断是「短横」（\\edash：人名/编号/日期）、「双短横」（\\cndash：**只有页码范围**）"
-         "还是一字线「—」；汉字-汉字 这类中文复合词/人名可由 --fix 自动改 \\edash（默认初排不启用）",
-         langs=("zh",), noisy=True, fixable=True,
-         fixable_when=_zh08_narrow, replace=_zh08_connector_replace),
+         r"-(?:[ \t]{0,3})",
+         "按手册分类：短横 `\\edash`（人名/编号/日期/字母序号）、双短横 `\\cndash`（**只有页码范围**）"
+         "或一字线「—」；小写英文邻、汉字-汉字、数学/命令参数保持 ASCII。"
+         "2026-10-28 起默认初排按此口径自动改",
+         langs=("zh",), noisy=True, fixable=True, accept=_zh08_accept,
+         fixable_when=_zh08_fixable, replace=_zh08_connector_replace),
     Rule("ZH-09", "「第N-N页」缺双短横命令", "经验书 预校正·中文（检索 第\\d*-\\d*页）＋手册·连字符",
-         r"第[ \t]{0,3}(\d+)[ \t]{0,3}-[ \t]{0,3}(\d+)[ \t]{0,3}页", "范围页码用双短横：第8\\cndash 12页",
+         r"第[ \t]{0,3}(\d+)[ \t]{0,3}-{1,2}[ \t]{0,3}(\d+)[ \t]{0,3}页", "范围页码用双短横：第8\\cndash 12页",
          langs=("zh",), fixable=True,
          replace=lambda m: f"第{m.group(1)}\\cndash {m.group(2)}页"),
 
@@ -441,17 +571,16 @@ RULES: list[Rule] = [
 ]
 
 #: **初排转换可以默认自动套用的 fixable 白名单**（engine-core 在 `slcn/build.py` 接线时用）。
-#: ⚠️ 故意**不含 ZH-08**：连接号口径已按手册拍板（人名/编号用短横 `\edash`，双短横
-#: `\cndash` **只给页码范围**；用户 2026-10-18 决定），但默认初排是否启用仍待本批回归 +
-#: 顾问意见（Lead 决定）—— 在拍板前默认初排不得改产物，ZH-08 的窄子集只在人工点
-#: 「一校核查 --fix」时生效。
+#: 2026-10-28 用户拍板（m01116/m01132，选项 A）：ZH-08 连接号按新口径**默认启用**；
+#: 汉字-汉字、小写英文邻、数学/命令参数/URL 等仍在 ZH-08 内部静默，不会改产物。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
-    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06",
+    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
     "ZH-09", "ZH-14", "EN-01", "EN-02", "EN-03",
 )
 
 #: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
-OPT_IN_FIXABLE: tuple[str, ...] = ("ZH-08",)
+#: 2026-10-28 起 ZH-08 已进入初排白名单，此集合暂时为空（保留常量供后批使用）。
+OPT_IN_FIXABLE: tuple[str, ...] = ()
 
 
 # ── 检查 ─────────────────────────────────────────────────────────────────
@@ -525,8 +654,8 @@ def apply_fixes(tex: str, rep: Report,
     位置类规则（脚注/引文移到标点前）不在这里做 —— 需要括号配对，见 `move_marks_before_punct()`。
 
     `rule_ids`：只动这些规则（`None` = 全部 fixable，即 `--fix` 的默认口径）。
-    初排转换接线时必须传 `INITIAL_LAYOUT_FIXABLE` —— 那里的默认产物不许被
-    `OPT_IN_FIXABLE`（ZH-08 连接号）改掉（口径未拍板，见该常量注释）。
+    初排转换接线时应传 `INITIAL_LAYOUT_FIXABLE`（2026-10-28 起含 ZH-08 新口径）；
+    `OPT_IN_FIXABLE` 目前为空，供后批把「暂不默认启用」的规则单独列出。
     """
     todo = [h for h in rep.hits if h.fixable and h.replacement is not None
             and (rule_ids is None or h.rule_id in rule_ids)]

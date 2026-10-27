@@ -60,32 +60,51 @@ check("(a) ZH-07 中文旁的半角括号 → 报（标为噪声大）",
       len(hits_of("他说(是这样)。\n", "ZH-07")) == 1
       and next(r for r in P.RULES if r.id == "ZH-07").noisy)
 check("(a) ZH-08 中文旁的半角短杠 → 报（标为噪声大）",
-      len(hits_of("具-体。\n", "ZH-08")) == 1
+      len(hits_of("2-群胚。\n", "ZH-08")) == 1
       and next(r for r in P.RULES if r.id == "ZH-08").noisy)
 
-# ZH-08 窄子集（2026-10-18 rules-docs Phase1；第四十二批按手册口径改为 `\edash`）：
-# 只把「汉字-汉字」当可自动改，替换成**短横** `\edash`（手册：人名/编号用短横；
-# 双短横 `\cndash` **只用于页码范围**，见 ZH-09）。latin/math/digit/可选参数类
-# 人工一律保留 ASCII 短杠（Phase0 报告 /tmp/audit_lead/rules-docs-phase0.md）。
-zh08_narrow = [h for h in hits_of("马丁-洛夫类型论\n", "ZH-08") if h.fixable]
-check("(a) ZH-08 窄子集：`马丁-洛夫`（CJK-CJK）→ 可自动改，替换 `丁\\edash `（手册口径）",
-      len(zh08_narrow) == 1 and zh08_narrow[0].replacement == "丁\\edash ")
-for _tex, _why in (
-        ("would-反事实条件句\n", "latin-CJK"),
-        ("$\\phi$-世界\n", "math-CJK"),
-        ("或$\\infty$-群胚\n", "math-CJK（v1.2.1 的 ∞ 形态）"),
-        ("2-群胚与2-范畴\n", "digit-CJK"),
-        ("\\item[模仿-1：]\n", "CJK-digit（enumerate 标签）")):
-    check(f"(a) ZH-08 反例：{_why} 自动改 0 处（人工成品保留 ASCII 短杠）",
-          not [h for h in hits_of(_tex, "ZH-08") if h.fixable])
-check("(a) ZH-08 反例：`第8-12页` 归 ZH-09（页码规则），ZH-08 不报",
-      not hits_of("第8-12页。\n", "ZH-08"))
-check("(a) ZH-08 窄子集只在 --fix 面；初排白名单 INITIAL_LAYOUT_FIXABLE **不含** ZH-08",
-      "ZH-08" not in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ("ZH-08",))
-check("(a) 同一份稿里两种连接号不混：中文复合词 → `\\edash `，页码范围 → `\\cndash `（手册口径）",
-      P.apply_fixes("马丁-洛夫类型论见第8-12页。\n",
-                    P.check("马丁-洛夫类型论见第8-12页。\n", lang="zh"))[0]
-      == "马丁\\edash 洛夫类型论见第8\\cndash 12页。\n")
+# ZH-08 新口径（2026-10-28 用户拍板 A，冻结 spec b004-zh08-connector §2）：
+# 汉字-汉字 / 小写英文邻 / 数学内 / 命令参数 / URL 等保持 ASCII；其余 → `\edash `。
+check("(a) ZH-08 新口径：汉字-汉字（马丁-洛夫/社会-历史）→ 不动、不报",
+      not hits_of("马丁-洛夫类型论\n", "ZH-08")
+      and not hits_of("社会-历史研究\n", "ZH-08"))
+check("(a) ZH-08 新口径：小写英文邻（would-/3-a/b-数据/not-）→ 保持、不报",
+      not hits_of("would-反事实条件句\n", "ZH-08")
+      and not hits_of("3-a 与 b-数据\n", "ZH-08")
+      and not hits_of("not-条件句\n", "ZH-08"))
+for _tex, _want in (("2-群胚\n", "2\\edash 群胚\n"),
+                    ("MTL- 代数\n", "MTL\\edash 代数\n"),
+                    ("表2-9\n", "表2\\edash 9\n"),
+                    ("2021-06-16\n", "2021\\edash 06\\edash 16\n"),
+                    ("A-105\n", "A\\edash 105\n"),
+                    ("S5-关系\n", "S5\\edash 关系\n")):
+    _out, _ap = P.apply_fixes(_tex, P.check(_tex, lang="zh"))
+    check(f"(a) ZH-08 新口径：{_tex.strip()!r} → {_want.strip()!r}", _out == _want, _out)
+check("(a) ZH-08 回归：右锚定命中不吞汉字（2-群胚 → 2\\edash 群胚，不是 2\\edash 胚；"
+      "MTL- 代数 → MTL\\edash 代数，不是 MTL\\edash 数）",
+      P.apply_fixes("2-群胚\n", P.check("2-群胚\n", lang="zh"))[0] == "2\\edash 群胚\n"
+      and P.apply_fixes("MTL- 代数\n", P.check("MTL- 代数\n", lang="zh"))[0] == "MTL\\edash 代数\n")
+check("(a) ZH-08 数学：数学区内部保持（不报）；数学紧邻（$\\phi$-世界）只报不改",
+      not hits_of("$a-b$\n", "ZH-08")
+      and [h.fixable for h in hits_of("$\\phi$-世界\n", "ZH-08")] == [False]
+      and [h.fixable for h in hits_of("或$\\infty$-群胚\n", "ZH-08")] == [False])
+for _tex, _why in (("\\item[模仿-1：]\n", "可选参数"),
+                   ("\\vspace{-5.9ex}\n", "\\vspace 技术参数"),
+                   ("\\cline{2-4}\n", "\\cline 技术参数"),
+                   ("\\receiveddate{2025-06-12}\n", "模板日期字段"),
+                   ("\\url{https://x.test/a-b}\n", "URL"),
+                   ("见 pp.130-133 与 pp.130--133\n", "英文页码"),
+                   ("\\draw (0,0)--(12,0);\n", "TikZ --")):
+    check(f"(a) ZH-08 保持不报：{_why}", not hits_of(_tex, "ZH-08"), _tex)
+check("(a) ZH-08 反例：`第8--12页` 归 ZH-09（扩 -{1,2}），ZH-08 不报",
+      not hits_of("第8--12页。\n", "ZH-08")
+      and [h.replacement for h in hits_of("第8--12页。\n", "ZH-09")] == ["第8\\cndash 12页"])
+check("(a) ZH-08 默认启用：INITIAL_LAYOUT_FIXABLE 含 ZH-08，OPT_IN_FIXABLE 已置空",
+      "ZH-08" in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ())
+check("(a) 同一份稿里两种连接号不混：数字+CJK → `\\edash `，页码范围 → `\\cndash `（手册口径）",
+      P.apply_fixes("2-群胚类型论见第8--12页。\n",
+                    P.check("2-群胚类型论见第8--12页。\n", lang="zh"))[0]
+      == "2\\edash 群胚类型论见第8\\cndash 12页。\n")
 
 check("(a) ZH-09 第8-12页 → 报，建议用 \\cndash",
       [h.replacement for h in hits_of("第8-12页。\n", "ZH-09")] == ["第8\\cndash 12页"])
@@ -207,20 +226,21 @@ check("(c) 中文行**不因英文规则被改**（语言判据拦住）",
 check("(c) 输入文本没有被就地改动（apply_fixes 返回新字符串）",
       tex.startswith("令 $P$ 命题变元的无穷集合, 公式集"))
 
-# ZH-08 窄子集（--fix 口径） vs 初排接线（白名单口径）——2026-10-18 rules-docs Phase1
-# 第四十二批：替换目标按手册口径改为短横 `\edash `（`\cndash` 只给页码范围）
+# ZH-08 新口径（--fix 口径） vs 初排接线（白名单口径）——2026-10-28 用户拍板 A
+# 短横 `\edash `；汉字-汉字/小写英文邻/数学紧邻保持：数学紧邻只报不改。
 mix = "马丁-洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
 mix_rep = P.check(mix, lang="zh")
 mix_out, mix_applied = P.apply_fixes(mix, mix_rep)
-check("(c) ZH-08 窄子集在 --fix 里自动改：只有 CJK-CJK 那一处变成 `\\edash `",
-      mix_out == "马丁\\edash 洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2-群胚。\n"
+check("(c) ZH-08 新口径在 --fix 里自动改：只有 `2-群胚` 变成 `2\\edash 群胚`",
+      mix_out == "马丁-洛夫类型论与 would-反事实条件句，以及 $\\phi$-世界、2\\edash 群胚。\n"
       and [h.rule_id for h in mix_applied] == ["ZH-08"], mix_out.strip())
 w_out, w_applied = P.apply_fixes(mix, mix_rep, rule_ids=P.INITIAL_LAYOUT_FIXABLE)
-check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 **一处都不改**（默认初排不启用，Lead 决定）",
-      w_out == mix and not w_applied, f"applied={[h.rule_id for h in w_applied]}")
+check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 同样改 `2-群胚`（默认初排启用）",
+      w_out == mix_out and [h.rule_id for h in w_applied] == ["ZH-08"],
+      f"applied={[h.rule_id for h in w_applied]}")
 check("(c) 初排白名单仍报其他 fixable 规则（ZH-01/06/09/14 都在名单里）",
       set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-14"}
-      and "ZH-08" in P.OPT_IN_FIXABLE)
+      and "ZH-08" in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ())
 
 # `apply_fixes(..., rule_ids=…)` 契约（engine-core E1 接线用）：**显式窄子集**只改这些 id。
 # E1 的首批窄白名单 = ZH-01..06（EN-03/ZH-14 留后批）；这里直接按 id 元组验，不依赖宽常量。

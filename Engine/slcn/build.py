@@ -1349,7 +1349,7 @@ def build_latex(
 
     audit = R.audit(tpl, lang=lang)
 
-    # ZH-08 连接号：只提示人工判断，不改产物（第四十三批）。
+    # ZH-08 连接号：LaTeX 通道未接自动改，只提示人工判断（第四十三批）。
     #    ⚠️ 纯日志，异常绝不阻断出稿（与 ⑤′ 自动改同一纪律）。
     if dash_hints and lang == "zh":
         try:
@@ -1762,22 +1762,27 @@ def _merge_en_metadata_source(
 # 实测仍残留 20 处（ZH-06×19 + ZH-01×1），全库初排稿（Word 通道）残留 123 处/29 篇，
 # 人工成品这些位置逐处为 0 —— 同一判据在工具内两处实现不一致（笔记仓案例 142 / P1-6）。
 #
-# 口径（Lead 批准）：**只用窄集 ZH-01..ZH-06**。ZH-08（连接号）、ZH-09/14、EN-01..03
-# 本批没有消融与人工对照，不得默认改产物；rules-docs 的宽常量 `INITIAL_LAYOUT_FIXABLE`
-# 仅供后批参考，这里**不** import 使用。
+# 口径（2026-10-28 用户拍板，B-004 / spec b004-zh08-connector）：ZH-08 连接号按新口径
+# **默认启用**（小写英文邻/汉字-汉字/数学/命令参数仍静默，不会改错）；其余仍只用窄集
+# ZH-01..ZH-06 + ZH-09/14、EN-01..03 中的初排白名单。
 #
 # 实现刻意只用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
 # `apply_fixes(tex, sub)`），不传 rules-docs 新增的 `rule_ids` 参数 → 回滚免疫。
-_PROOF_AUTOFIX_IDS: tuple[str, ...] = ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06")
+_PROOF_AUTOFIX_IDS: tuple[str, ...] = (
+    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
+)
 
 
-# ── ZH-08 连接号：只提示、不自动分类（第四十三批）────────────────────────
+# ── ZH-08 连接号：默认初排按新口径自动改（2026-10-28 拍板）────────────────
 #
-# 用户 2026-10-22 拍板：引擎**无法可靠区分**「人名内部短横」（让-雅克·卢梭，应写
-# `\edash`）与「地名/路线/区间的一字线」（北京-上海，应写一字线）——那需要语义/知识库，
-# 正则与词表都会错。所以 ZH-08 **不做默认自动改**（E1 白名单也不含它），改为在初排
-# 日志里给「可发现性提示」：命中数 + 前 20 条上下文 + 判断指引，交人工编辑逐条判断。
-# ⚠️ 只写日志，**产物逐字节不变**（本模块所有 ZH-08 代码都不修改 tpl）。
+# 2026-10-22 的「只提示、不自动分类」口径已被用户 2026-10-28 拍板（m01116/m01132，
+# spec `EditToolBox-notes/drafts/specs/b004-zh08-connector.md`，选项 A）取代：
+# - 小写 ASCII 字母紧邻的短杠保持（would-反事实 / 3-a / b-数据）；
+# - 两侧都是汉字的短杠保持、不报（人名/复合词无法可靠区分，宁可不改）；
+# - 其余（大写/缩略语、数字、日期、编号、汉字+数字）→ `\edash `；
+# - 数学区/命令参数/URL/DOI/文件名/英文页码保持；`--` 只有中文页码范围走 ZH-09。
+# `_autofix_proof` 在初排 ⑤′ 已按 `_PROOF_AUTOFIX_IDS` 改产物；下面的日志提示只报
+# **剩余仍需人工确认**的命中（如数学紧邻 `$\phi$-世界`，fixable=False），不再声称「未改字符」。
 _DASH_GUIDE = ("人名 / 编号 / 日期 / 字母序号 → 短横 \\edash；"
                "地名 / 路线 / 区间等 → 一字线（——）")
 
@@ -1796,18 +1801,27 @@ def _dash_hints(tex: str, lang: str) -> list[tuple[int, str]]:
     for h in rep.hits:
         if h.rule_id != "ZH-08":
             continue
-        a, b = max(0, h.start - 10), min(len(tex), h.end + 10)
+        # 旧 ZH-08 pattern 把左锚汉字算进命中起点；新口径从短杠起算。
+        # 提示窗口往前补 1 字，保持 2026-10-22 起的日志上下文逐字节不变。
+        back = 11 if h.start > 0 and "\u4e00" <= tex[h.start - 1] <= "\u9fff" else 10
+        a, b = max(0, h.start - back), min(len(tex), h.end + 10)
         out.append((h.line, tex[a:b].replace("\n", "⏎")))
     return out
 
 
-def _report_dash_hints(tex: str, lang: str, say, limit: int = 20) -> int:
-    """把 ZH-08 提示写进初排日志（无命中不打印），返回命中数。"""
+def _report_dash_hints(tex: str, lang: str, say, limit: int = 20,
+                       autofixed: bool = False) -> int:
+    """把 ZH-08 提示写进初排日志（无命中不打印），返回命中数。
+
+    `autofixed=True` 时（Word 通道 ⑤′ 已按新口径改过产物）说明剩下的是「自动改后剩余」；
+    LaTeX 通道未接自动改，保持 2026-10-22 的原文案（与 HEAD 日志逐字节一致）。
+    """
     hints = _dash_hints(tex, lang)
     if not hints:
         return 0
-    say(f"   一校提示：ZH-08 连接号待人工判断 {len(hints)} 处"
-        "（只提示，未改任何字符）")
+    suffix = ("（Word 初排已自动改；以下为剩余需人工确认处）"
+              if autofixed else "（只提示，未改任何字符）")
+    say(f"   一校提示：ZH-08 连接号待人工判断 {len(hints)} 处" + suffix)
     say(f"   判断指引：{_DASH_GUIDE}")
     for line, ctx in hints[:limit]:
         say(f"   · 第{line}行：{ctx}")
@@ -2109,13 +2123,15 @@ def build_docx(
                     默认 None = 不接第二源 = 与从前逐字节相同（`corpus.py` /
                     `run_poc.py` 等既有调用方不带这个参数，行为不变）。
     proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6）：True（默认）= 生成后
-                    自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 这 6 条确定性替换；
+                    自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 + ZH-08 这 7 条确定性
+                    替换（ZH-08 自 2026-10-28 起按新口径默认启用：小写英文邻/汉字-汉字/
+                    数学/命令参数仍保持，不会改错）；
                     False = 与接入前逐字节相同（`corpus.py --no-proof-autofix` 消融用）。
                     只影响中文 Word 通道；LaTeX 通道与英文稿不受影响。
-    dash_hints       **ZH-08 连接号待人工判断**的日志提示（第四十三批，默认开）：
+    dash_hints       **ZH-08 连接号提示**的日志开关（第四十三批，默认开）：
                     True = 命中数 + 前 20 条上下文（前后各 10 字）+ 判断指引；
-                    False = 不打印。**纯日志，产物逐字节不变**——引擎不做语义自动分类
-                    （人名短横 \\edash vs 地名/路线一字线，正则/词表都不可靠）。
+                    False = 不打印。Word 通道在 ⑤′ 自动改**之后**报剩余（主要是数学紧邻
+                    `$\\phi$-世界` 这类只报不改的），LaTeX 通道未接自动改、只提示。
     bib_zero_cites_hints  **B 类可发现性提示**（第四十四批④，默认开）：
                    bib 条数>0 而正文 `\\parencite/\\cite` 数=0 时（biblatex 只打印被引
                    条目 → PDF 参考文献区会是空的），在初排日志**置顶**提示 + 计数，
@@ -2532,7 +2548,7 @@ def build_docx(
     for rid, n in sorted(res.applied.items(), key=lambda x: -x[1]):
         say(f"   · {rid:24s} ×{n}")
 
-    # ⑤′ 一校可自动改子集（期 87 P1-6）：只做 ZH-01..ZH-06 六条确定性替换。
+    # ⑤′ 一校可自动改子集（期 87 P1-6；B-004 起加 ZH-08）：只做确定性子集。
     #    ⚠️ 失败绝不阻断出稿：只写 warning，产物照常生成（编辑宁可多检查，不能没稿）。
     _pf: dict[str, int] = {}
     if proof_autofix and lang == "zh":
@@ -2552,11 +2568,11 @@ def build_docx(
     if _nx_tab or _nx_fig:
         say(f"   图表交叉引用：表 {_nx_tab} 处、图 {_nx_fig} 处")
 
-    # ZH-08 连接号：只提示人工判断，不改产物（第四十三批）。
+    # ZH-08 连接号：⑤′ 已自动改；这里只提示剩余需人工确认处（第四十三批）。
     #    ⚠️ 纯日志，异常绝不阻断出稿（与 ⑤′ 自动改同一纪律）。
     if dash_hints and lang == "zh":
         try:
-            _report_dash_hints(tpl, lang, say)
+            _report_dash_hints(tpl, lang, say, autofixed=bool(_pf))
         except Exception as e:  # noqa: BLE001
             warnings.append(f"ZH-08 连接号提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 

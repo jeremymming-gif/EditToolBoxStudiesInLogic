@@ -67,8 +67,8 @@ def make_docx(paras):
 # ══════════════════════════════════════════════════════════════════════════
 # ①–④ 单元：_autofix_proof 只做窄集、语义与人工成品一致、幂等、不碰屏蔽区
 # ══════════════════════════════════════════════════════════════════════════
-check("① 白名单常量恰为 ZH-01..ZH-06（不夹带 ZH-08/09/14、EN）",
-      _PROOF_AUTOFIX_IDS == ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06"),
+check("① 白名单常量 = ZH-01..ZH-06 + ZH-08（B-004 起连接号默认启用；不夹带 09/14、EN）",
+      _PROOF_AUTOFIX_IDS == ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08"),
       repr(_PROOF_AUTOFIX_IDS))
 
 _new6, _h6 = _autofix_proof("甲、“乙”", "zh")
@@ -88,12 +88,17 @@ for name, tex in (
     ("引文键 \\parencite{a,b}", "见\\parencite{a,b}"),
     ("注释 % 甲、乙", "% 甲、乙"),
     ("verbatim \\verb|甲、乙|", "\\verb|甲、乙|"),
-    ("ZH-08 短杠（白名单外）", "马丁-洛夫"),
+    ("ZH-08 汉字-汉字（新口径静默）", "马丁-洛夫"),
     ("ZH-09 页码范围（白名单外）", "第1-2页"),
     ("ZH-14 集合竖线（白名单外）", "\\{a|b\\}"),
 ):
     _out, _h = _autofix_proof(tex, "zh")
     check(f"④ 屏蔽区/白名单外不动：{name}", _out == tex and _h == {}, repr((_out, _h)))
+
+# ZH-08 新口径默认启用（B-004）：数字+CJK / 表图编号 → \edash；汉字-汉字仍静默
+_new8, _h8 = _autofix_proof("2-群胚 与 表2-9", "zh")
+check("④ ZH-08 默认启用：2-群胚/表2-9 → \edash（汉字-汉字仍不动）",
+      _new8 == "2\\edash 群胚 与 表2\\edash 9" and _h8 == {"ZH-08": 2}, repr((_new8, _h8)))
 
 # 英文稿（lang=en）窄集是 zh 规则，必须 0 改动（build_docx 侧另按 lang=="zh" 守卫）
 _en, _he = _autofix_proof("He said, \"a,b\"", "en")
@@ -178,14 +183,16 @@ def _hint_lines(res) -> list[str]:
 
 
 # ⑧-1 单元：屏蔽区（数学/注释）不算；命中数与 proofcheck 同口径
-_tex8 = "正文 马丁-洛夫 与 $甲-乙$ 与 % 甲-乙\n北京-上海 区间"
+_tex8 = "正文 S5-关系 与 $甲-乙$ 与 % 甲-乙\nT-双条件句 与 表2-9"
 _hints8 = _dash_hints(_tex8, "zh")
 _pc8 = sum(1 for h in proofcheck.check(_tex8, lang="zh").hits if h.rule_id == "ZH-08")
 check("⑧ 单元：_dash_hints 命中数 = proofcheck ZH-08 数（同一判据）",
-      len(_hints8) == _pc8 == 2, f"{len(_hints8)} vs {_pc8}")
+      len(_hints8) == _pc8 == 3, f"{len(_hints8)} vs {_pc8}")
 check("⑧ 单元：数学 $甲-乙$ / 注释 % 甲-乙 不进提示（屏蔽层生效）",
-      all("甲-乙" not in ctx or "马丁-洛夫" in ctx or "北京-上海" in ctx
-          for _line, ctx in _hints8),
+      len(_hints8) == 3
+      and any("S5-关系" in c for _l, c in _hints8)
+      and any("T-双条件句" in c for _l, c in _hints8)
+      and any("表2-9" in c for _l, c in _hints8),
       repr([c for _l, c in _hints8]))
 
 # ⑧-2/⑧-3 端到端 Word 通道：命中→日志含指引+上下文；开关关→无提示；产物逐字节不变
@@ -197,15 +204,15 @@ def _sha_file(path: str) -> str:
 _DOCX8 = make_docx([
     "连接号待判断的测试稿", "张三",
     "摘要：测试 ZH-08 提示。", "关键词：连接号",
-    "第一段：关于让-雅克·卢梭的讨论，以及北京-上海的路线。",
-    "第二段：该方案在假设-演绎法框架下成立。",
+    "第一段：关于 S5-关系与 T-双条件句的讨论，以及表2-9。",
+    "第二段：该方案在 2-群胚框架下成立。",
 ])
 
 
 def _build8(flag: bool):
     with tempfile.TemporaryDirectory() as tmp:
         res = build.build_docx(docx_path=_DOCX8, out_dir=tmp, basename="Dash", lang="zh",
-                               verbose=False, dash_hints=flag)
+                               verbose=False, dash_hints=flag, proof_autofix=False)
         return open(res.tex_path, encoding="utf-8").read(), res, _sha_file(res.tex_path)
 
 
@@ -223,8 +230,8 @@ check("⑧ 合成稿：日志含判断指引（edash/一字线口径）",
       any(_GUIDE_NEEDLE in ln for ln in _res8on.log)
       and any("\\edash" in ln and "一字线" in ln for ln in _res8on.log),
       repr([ln for ln in _res8on.log if _GUIDE_NEEDLE in ln]))
-check("⑧ 合成稿：上下文样例含实际命中（让-雅克 / 北京-上海 / 假设-演绎 至少 1 处）",
-      any(("让-雅克" in ln) or ("北京-上海" in ln) or ("假设-演绎" in ln) for ln in _res8on.log),
+check("⑧ 合成稿：上下文样例含实际命中（S5-关系 / T-双条件句 / 表2-9 至少 1 处）",
+      any(("S5-关系" in ln) or ("T-双条件句" in ln) or ("表2-9" in ln) for ln in _res8on.log),
       repr([ln for ln in _res8on.log if ln.strip().startswith("· 第")][:3]))
 check("⑧ 开关关（dash_hints=False）→ 无任何 ZH-08 提示行", _hint_lines(_res8off) == [],
       repr(_hint_lines(_res8off)))
@@ -248,7 +255,7 @@ except OSError:
 _tex_src8 = os.path.join(tempfile.mkdtemp(), "body8.tex")
 open(_tex_src8, "w", encoding="utf-8").write(
     "\\documentclass{ctexart}\n\\begin{document}\n"
-    "关于让-雅克·卢梭与北京-上海的讨论。\n\\end{document}\n")
+    "关于 S5-关系与 T-双条件句的讨论。\n\\end{document}\n")
 try:
     with tempfile.TemporaryDirectory() as _t8a, tempfile.TemporaryDirectory() as _t8b:
         _ra = build.build_latex(_tex_src8, _t8a, basename="L", lang="zh",
