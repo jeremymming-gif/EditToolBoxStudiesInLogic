@@ -178,7 +178,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 - `n_headings` 合计 **587**；`n_bib` 合计 **2222**
 - sha256[:12]：`baselines/docx_audit.csv` = `9e5f3e596fcc`，`baselines/docx_audit.txt` = `4f2d552c20d1`（来源：笔记仓冻结基线；与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **89.56%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **89.44%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**232 处 / 53 篇**
 
