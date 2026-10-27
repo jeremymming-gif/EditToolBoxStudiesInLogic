@@ -46,26 +46,28 @@ chContentEnd = r"""
 \end{document}
 """
 
-enContentHead = r"""
-\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}
+enContentHead = r"""\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}
 \pagestyle{empty}%不显示页码
 \usepackage[total={130mm,203mm}, top=20.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式
 \usepackage{tabularx}
+\usepackage{amssymb}
 \setmainfont{Times New Roman}
 
-
+% \renewcommand{\large}{\fontsize{11}{14}\selectfont}%调整字体大小
 \newcommand{\vdistance}{\\[4mm]}%调整行间隔
 
 \begin{document}
 \begin{flushright}
 \zihao{-4}
-\textbf{Studies in Logic\\
-Volume 16, Number 2, April 2023}
+\textbf{Studies in Logic\phantom{|}\\
+Volume 19, Number 3, June 2026\phantom{|}}
 \end{flushright}
 \vspace{0.5ex} {\rmfamily{\bfseries TABLE OF CONTENTS}} \vspace{-0.5ex}
 
-\noindent\hrulefill{\rmfamily} \vspace{1.3ex}\\
-\begin{tabularx}{\textwidth}{l@{\hspace{-1.2em}}r}
+\noindent\hrulefill{\rmfamily} \vspace{2ex}\\
+\begin{tabularx}{\textwidth}{l@{\hspace{4em}}r}
+\large  \bf{Column: XXX} 
+\\[6.2mm]
 """
 
 enContentEnd = r"""

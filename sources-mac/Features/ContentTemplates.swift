@@ -9,8 +9,8 @@ enum ContentTemplates {
     /// chContentEnd —— 31 个字符
     static let chContentEnd = "\n\\end{tabularx}\n\\end{document}\n"
 
-    /// enContentHead —— 582 个字符
-    static let enContentHead = "\n\\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}\n\\pagestyle{empty}%不显示页码\n\\usepackage[total={130mm,203mm}, top=20.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式\n\\usepackage{tabularx}\n\\setmainfont{Times New Roman}\n\n\n\\newcommand{\\vdistance}{\\\\[4mm]}%调整行间隔\n\n\\begin{document}\n\\begin{flushright}\n\\zihao{-4}\n\\textbf{Studies in Logic\\\\\nVolume 16, Number 2, April 2023}\n\\end{flushright}\n\\vspace{0.5ex} {\\rmfamily{\\bfseries TABLE OF CONTENTS}} \\vspace{-0.5ex}\n\n\\noindent\\hrulefill{\\rmfamily} \\vspace{1.3ex}\\\\\n\\begin{tabularx}{\\textwidth}{l@{\\hspace{-1.2em}}r}\n"
+    /// enContentHead —— 713 个字符
+    static let enContentHead = "\\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}\n\\pagestyle{empty}%不显示页码\n\\usepackage[total={130mm,203mm}, top=20.3mm, headheight=20pt, headsep=4truemm]{geometry}%调整版式\n\\usepackage{tabularx}\n\\usepackage{amssymb}\n\\setmainfont{Times New Roman}\n\n% \\renewcommand{\\large}{\\fontsize{11}{14}\\selectfont}%调整字体大小\n\\newcommand{\\vdistance}{\\\\[4mm]}%调整行间隔\n\n\\begin{document}\n\\begin{flushright}\n\\zihao{-4}\n\\textbf{Studies in Logic\\phantom{|}\\\\\nVolume 19, Number 3, June 2026\\phantom{|}}\n\\end{flushright}\n\\vspace{0.5ex} {\\rmfamily{\\bfseries TABLE OF CONTENTS}} \\vspace{-0.5ex}\n\n\\noindent\\hrulefill{\\rmfamily} \\vspace{2ex}\\\\\n\\begin{tabularx}{\\textwidth}{l@{\\hspace{4em}}r}\n\\large  \\bf{Column: XXX} \n\\\\[6.2mm]\n"
 
     /// 原程序编译时把中英文目录的结尾视为同一个字符串（内容相同被去重）
     static let enContentEnd = chContentEnd
