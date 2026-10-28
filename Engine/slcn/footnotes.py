@@ -2157,6 +2157,8 @@ _ART_CN = re.compile(
 def _parse_entry_impl(ref: str) -> dict:
     """把一条文献解析成 bib 字段（旧实现；出口的 P1-2 类型订正见 `parse_entry`）。"""
     s = re.sub(r"\s+", " ", ref).strip().rstrip(".")
+    # 兜底要“逐字符”，所以另留一份只去首尾空白的原文（保留句末标点）。
+    orig = ref.strip()
 
     m = _ART_CN.match(s)
     if m:
@@ -2207,12 +2209,13 @@ def _parse_entry_impl(ref: str) -> dict:
                 "edition": (m.group("edition") or "").strip().rstrip(","),
             }
 
-    # 解析不出来：保留原文，人工/AI 再订正
-    return {"_type": "misc", "note": s}
+    # 解析不出来：内部仍记在 note（供降级判据/指纹逻辑使用）；出稿时
+    # `bibnorm.expand_note_entries()` 仍拆不动 → 原文逐字符进 author（B-262）。
+    return {"_type": "misc", "note": orig}
 
 
 def parse_entry(ref: str) -> dict:
-    """把一条文献解析成 bib 字段；解析不出来就整条塞进 note，绝不丢内容。
+    """把一条文献解析成 bib 字段；解析不出来时原文兜底进 author（见下），绝不丢内容。
 
     P1-2（2026-10-18）：出口统一走 `footref.refine_entry_fields()`——把「刊名格其实是
     出版地/出版社」的挪回 `address`/`publisher`，并按**出版信息特征**重判 `_type`
@@ -2454,6 +2457,42 @@ def _bib_escape(s: str) -> str:
             i += 2
             continue
         if ch in "&%$#_":
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _bib_escape_verbatim(s: str) -> str:
+    r"""verbatim 文献串的 bib 花括号保护（B-262）。
+
+    `author = {{…}}` 让整串按一个名字原样排印；但裸 `{}` 会让 biber 括号失衡，
+    `\{`/`\}` 也不被 biber 接受，故用 `\textbraceleft{}`/`\textbraceright{}`
+    （实测 biber 2.21 解析、PDF 印出花括号）。反斜杠也逐字符保真（排成可见字符），
+    避免源稿原文里的宏/转义被 LaTeX 解释；其余特殊字符与 `_bib_escape` 同口径。
+    """
+    out = []
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n and s[i + 1] in "&%$#_":
+            # entry_to_bib 已把这几类转义成 \% 等；这里照原样保留转义，避免重复。
+            out.append(s[i : i + 2])
+            i += 1
+        elif ch == "\\":
+            # 其余反斜杠逐字符保真：排成可见字符，避免源串里的宏被 LaTeX 解释
+            out.append("\\textbackslash{}")
+        elif ch == "{":
+            out.append("\\textbraceleft{}")
+        elif ch == "}":
+            out.append("\\textbraceright{}")
+        elif ch == "~":
+            out.append("\\textasciitilde{}")
+        elif ch == "^":
+            out.append("\\textasciicircum{}")
+        elif ch in "&%$#_":
             out.append("\\" + ch)
         else:
             out.append(ch)

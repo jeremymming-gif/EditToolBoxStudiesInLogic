@@ -128,10 +128,12 @@ def convert(text: str, *, strip: bool = True) -> BibitemResult:
                 warns.append(f"{key}: 解析异常，已保留原文（{type(exc).__name__}）")
             e["key"] = key
             sk = skeleton.get(rawk) or {}
-            if not e.get("title") and sk.get("title"):
-                e["title"] = sk["title"]
-            if not e.get("year") and re.fullmatch(r"(?:19|20)\d{2}", sk.get("year") or ""):
-                e["year"] = sk["year"]
+            if not e.get("_verbatim"):
+                # verbatim 兜底条目只写 author（B-262），不拿骨架补 title/year
+                if not e.get("title") and sk.get("title"):
+                    e["title"] = sk["title"]
+                if not e.get("year") and re.fullmatch(r"(?:19|20)\d{2}", sk.get("year") or ""):
+                    e["year"] = sk["year"]
             if not (e.get("author") or e.get("title")):
                 e["_type"] = "misc"
                 e["note"] = e.get("note") or clean_bibitem_note(body)

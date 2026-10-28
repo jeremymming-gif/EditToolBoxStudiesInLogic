@@ -300,10 +300,18 @@ def _compile_fixture(sty_name: str, tag: str) -> None:
             + fields_to_bib("online", "WebPage",
                             [("author", "Wiki, C."), ("title", "Some Web Page"),
                              ("year", "2023"), ("url", "https://example.org/web")])
-            # B-248：无 url 的 @misc（87-9 修复后形态）——题名/年份必须印出
+            # B-248：无 url 的 @misc（87-9 修复后形态）
             + fields_to_bib("misc", "PlainMisc",
                             [("author", "Doe, J."), ("title", "A Miscellaneous Note"),
-                             ("year", "2021")]))
+                             ("year", "2021")])
+            # B-262：未出版资源仍印网址（EN 模板本批补齐同一行为）
+            + fields_to_bib("unpublished", "Unpub",
+                            [("author", "Draft, A."), ("title", "An Unpublished Draft"),
+                             ("year", "2025"), ("url", "https://example.org/draft")])
+            # B-262：解析失败兜底形态——整条原文花括号保护后放进 author，misc 只印它
+            + fields_to_bib("misc", "Fallback",
+                            [("author", "{{Some complex reference, with commas; "
+                                        "and ``quotes'' -- and more.}}")]))
     with open(os.path.join(d, "fixture.tex"), "w", encoding="utf-8") as fh:
         fh.write("\\documentclass[b5paper,10.5t,onecolumn,UTF8]{article}\n"
                  f"\\usepackage{{{sty_name[:-4]}}}\n"
@@ -325,22 +333,32 @@ def _compile_fixture(sty_name: str, tag: str) -> None:
     norm = re.sub(r"\s+", "", text)
     check(f"⑤ 模板兜底（{tag}）：正式 article 的 doi.org 不印", "doi.org" not in norm)
     check(f"⑤ 模板兜底（{tag}）：SEP 词条网址仍打印", "plato.stanford.edu" in norm)
-    check(f"⑤ 模板兜底（{tag}）：misc/arXiv 网址仍打印", "arxiv.org" in norm)
     check(f"⑤ 模板兜底（{tag}）：online 网址仍打印", "example.org/web" in norm)
-    # B-248：misc driver 恢复全字段（本批只授权 SLCN-MIX.sty；MIX4 保持原状不在写域）
-    if tag == "mix":
-        # 样式会把题名转 sentence case 并加引号 → 用大小写不敏感匹配
-        check(f"⑤ B-248 misc 印题名与年份（不再只有作者）",
-              "amiscellaneousnote" in norm.lower() and "2021" in norm,
+    # B-262：misc 回退为只印 author（CN/EN 同步）；MIX4 已停止维护，不在本批写域
+    if tag == "mix4":
+        # MIX4 已停止维护：保持 B-189 旧行为（misc 印 author+url），不在本批写域
+        check(f"⑤ 模板兜底（{tag}）：misc/arXiv 网址仍打印（MIX4 保持原状）",
+              "arxiv.org" in norm)
+    else:
+        check(f"⑤ 模板兜底（{tag}）：misc 只印 author，arXiv 网址不印",
+              "arxiv.org" not in norm and "K.Lee" in norm, text[-400:].replace("\n", " "))
+        check(f"⑤ 模板兜底（{tag}）：无 url 的 misc 只印作者（不再印题名/年份）",
+              "J.Doe" in norm and "amiscellaneousnote" not in norm.lower()
+              and "2021" not in norm,
               text[-400:].replace("\n", " "))
-        check(f"⑤ B-248 online 仍印网址、无 url 的 misc 按 author→title→year 顺序印全",
-              "example.org/web" in norm
-              and re.search(r"miscellaneousnote[^a-z0-9]{0,20}(?:19|20)\d{2}", norm, re.I)
-              is not None,
-              norm[-400:])
+        check(f"⑤ 模板兜底（{tag}）：解析失败条目 author 整串逐字印出",
+              "Somecomplexreference,withcommas" in norm,
+              text[-400:].replace("\n", " "))
+        # cndash（\raise0.1em\hbox{--}）在 pypdf 抽取里带前导空格：「1 –10」；
+        # 旧默认 \bibrangedash 是 en dash，抽取为「1–10」（无空格）。
+        check(f"⑤ 模板兜底（{tag}）：参考文献页码范围印 cndash",
+              "1 –10" in text, repr(text[-200:]))
+        check(f"⑤ 模板兜底（{tag}）：unpublished 网址仍打印",
+              "example.org/draft" in norm)
 
 
 _compile_fixture("SLCN-MIX.sty", "mix")
+_compile_fixture("SLEN.sty", "en")
 _compile_fixture("SLCN-MIX4.sty", "mix4")
 
 print()

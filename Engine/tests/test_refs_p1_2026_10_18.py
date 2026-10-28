@@ -606,6 +606,73 @@ check("⑧ ④ 中文反例：作者/类型不变（仍 @misc、不把中文出�
       and _p8e.title.startswith("黑格尔"),
       f"{_p8e and _p8e.etype!r} {_p8e and _p8e.author!r} {_p8e and _p8e.title!r}")
 
+# ══ ⑨ B-262：SEP→incollection + 解析失败原文兜底进 author ═════════════════════
+print("\n── ⑨ B-262：SEP 类型判据 / 解析失败 verbatim author ──")
+
+# SEP 判据：journal 命中 → @incollection，且容器名从 journal 挪到 booktitle（否则不排印）
+_e9sep = footnotes.parse_entry(
+    'Hansson, S. O., “Preferences”, The Stanford Encyclopedia of Philosophy (2022), pp. 1-10.')
+check("⑨ SEP 词条（journal 位）：@incollection、booktitle 承接、journal 清空",
+      _e9sep.get("_type") == "incollection"
+      and _e9sep.get("booktitle") == "The Stanford Encyclopedia of Philosophy"
+      and not _e9sep.get("journal") and _e9sep.get("pages") == "1--10",
+      repr({k: _e9sep.get(k) for k in ("_type", "booktitle", "journal", "pages")}))
+
+# 宽口径（模板例外同款）：`Encyclopedia of Philosophy` 也判 incollection
+_e9sep2 = footnotes.parse_entry(
+    'Hansson, S. O., “Preferences”, Encyclopedia of Philosophy (2022).')
+check("⑨ SEP 宽口径：`Encyclopedia of Philosophy` 亦判 @incollection",
+      _e9sep2.get("_type") == "incollection"
+      and _e9sep2.get("booktitle") == "Encyclopedia of Philosophy",
+      repr({k: _e9sep2.get(k) for k in ("_type", "booktitle")}))
+
+# 反例：普通刊名仍是 @article（判据不能误伤）
+_e9art = footnotes.parse_entry(
+    'Smith, J., “A Paper”, Journal of Philosophy (2020), pp. 1-10.')
+check("⑨ 反例：普通期刊仍是 @article（SEP 判据不误伤）",
+      _e9art.get("_type") == "article" and _e9art.get("journal") == "Journal of Philosophy",
+      repr({k: _e9art.get(k) for k in ("_type", "journal")}))
+
+# 解析失败兜底：@misc + 原文逐字符进 author（不再重复塞 note）
+# 初排出口先把原文记在 note；`expand_note_entries()` 再拆不动时才落 author。
+def _fallback_bib(key, raw):
+    first = footnotes.entry_to_bib(key, footnotes.parse_entry(raw), raw)
+    second, _notes = bibnorm.expand_note_entries(first)
+    return second
+
+
+_src9 = 'Some complex reference, with commas; and “quotes” -- and more.'
+_b9f = _fallback_bib("Fallback9", _src9)
+check("⑨ 解析失败：@misc、author 为原文逐字符（花括号保护）、无 note 重复",
+      _b9f.startswith("@misc{Fallback9,")
+      and "{{" + _src9 + "}}" in _b9f and "  note" not in _b9f,
+      _b9f.replace("\n", " "))
+
+# 中文复杂文献（著/译体例，解析器本来不认）→ 同一兜底
+_src9cn = "这是一条无法拆分的复杂中文文献说明，包含著者、译者、书名、出版地与出版社等信息，但没有年份。"
+_b9fc = _fallback_bib("FallbackCN9", _src9cn)
+check("⑨ 解析失败（中文）：author 逐字符保留、无 note",
+      "{{" + _src9cn + "}}" in _b9fc and "  note" not in _b9fc,
+      _b9fc.replace("\n", " "))
+
+# BibTeX 必要保护：{} 会让 biber 括号失衡 → textbraceleft/textbraceright；% & ~ 转义
+_src9b = "Braces {a}, 50% and tilde ~ — plus a long tail to exceed forty characters."
+_b9fb = _fallback_bib("FallbackB9", _src9b)
+check("⑨ 兜底转义：花括号用 \textbraceleft{}/\textbraceright{}，% ~ 转义",
+      "\\textbraceleft{}a\\textbraceright{}" in _b9fb
+      and "50\\%" in _b9fb and "\\textasciitilde{}" in _b9fb,
+      _b9fb.replace("\n", " "))
+
+# \bibitem 兜底（手写参考文献 → 初排转换）：同一形态，render 出口也只写 author
+_body9 = "A discursive reference line with commas, no colon and no bibliographic tail."
+_e9bit = footref.parse_bibitem_entry(_body9)
+_b9bit = footref.render_bibitem_entry({**_e9bit, "key": "BibFallback9"})
+check("⑨ \\bibitem 解析失败：@misc、author 逐字符、无 title/note",
+      _b9bit.startswith("@misc{BibFallback9,")
+      and "author = {{" + _body9 + "}}" in _b9bit
+      and "title =" not in _b9bit and "note =" not in _b9bit,
+      _b9bit.replace("\n", " "))
+
 # 汇总 ──
 print()
 if SKIPS:

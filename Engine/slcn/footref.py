@@ -655,6 +655,20 @@ def _has_container(fields: dict, raw: str = "") -> bool:
                 or re.search(r"\bin\s+", cue_blob, re.I))
 
 
+#: SEP 词条判据（B-262）：booktitle/journal 命中 → incollection。
+#: 兼容既有模板例外所认的宽口径 `Encyclopedia of Philosophy`（含 Stanford 限定）。
+_SEP_CUE = re.compile(r"encyclopedia\s+of\s+philosophy", re.I)
+
+
+def _sep_container(fields: dict) -> str:
+    """返回命中的容器串（booktitle 优先，其次 journaltitle/journal）；未命中返回 ""。"""
+    for key in ("booktitle", "journaltitle", "journal"):
+        v = re.sub(r"[{}]", "", str(fields.get(key) or ""))
+        if v and _SEP_CUE.search(v):
+            return v
+    return ""
+
+
 def classify_entry_type(fields: dict | None = None, *, raw: str = "") -> tuple[str, str]:
     """按「出版信息特征」判定 BibTeX 类型，返回 `(etype, 依据)`。
 
@@ -720,7 +734,16 @@ def refine_entry_fields(fields: dict, *, raw: str = "") -> dict:
         elif _publisher_only_journal(journal):
             out["publisher"] = journal
             del out["journal"]
+    # B-262：SEP 词条（booktitle/journal 含 `Encyclopedia of Philosophy`）判 @incollection；
+    # 落在 journal 的容器名要挪到 booktitle，否则 incollection 驱动不排印它。
+    if _sep_container(out) and not str(out.get("booktitle") or "").strip():
+        for _k in ("journaltitle", "journal"):
+            if str(out.get(_k) or "").strip():
+                out["booktitle"] = out.pop(_k)
+                break
     etype, _reason = classify_entry_type(out, raw=raw)
+    if _sep_container(out):
+        etype = "incollection"
     out["_type"] = etype
     return out
 
@@ -1616,15 +1639,19 @@ def parse_bibitem_entry(body: str) -> dict:
             d["title"] = _clean_title(title)
             if tail:
                 _fill_lncs_tail(d, tail)
+            elif not author:
+                # B-262：没有作者、也没有出版尾段 → 无从解析，整条走 verbatim 兜底
+                # （不再把同一原文重复写进 note）。
+                d = None
             else:
                 d["note"] = _clean_text(rest)
     if d is not None:
         return d
+    # B-262：解析不出的复杂条目 → @misc，原文逐字符进 author（渲染时做花括号保护）；
+    # 不再写 note/title/year（misc 驱动只印 author）。
     e = empty_bibitem_fields()
-    e["note"] = _clean_text(raw)
-    title, _tail = _split_sentence(raw)
-    e["title"] = _clean_title(title) if title and title != raw else ""
-    e["year"] = _year_of(raw)
+    e["_verbatim"] = True
+    e["author"] = raw
     return e
 
 
@@ -1639,6 +1666,12 @@ def bibitem_skeleton_fields(skel_bib: str) -> dict[str, dict]:
 
 
 def render_bibitem_entry(e: dict) -> str:
+    if e.get("_verbatim"):
+        from .footnotes import _bib_escape_verbatim
+
+        return "@misc{%s,\n  author = {{%s}}\n}" % (
+            e.get("key") or "bibitem",
+            _bib_escape_verbatim(_collapse(e.get("author") or "")))
     etype = str(e.get("_type") or "misc").lower()
     fields: list[str] = []
     for name in FIELD_ORDER:

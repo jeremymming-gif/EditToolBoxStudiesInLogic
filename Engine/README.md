@@ -129,7 +129,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 5171 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**114 套件 / 5187 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48
@@ -140,10 +140,10 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_batch47b` 4 ｜ `test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8
 `test_batch49_no_cites` 10 ｜ `test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 101
 `test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 71 ｜ `test_batch58_bibdb_auto` 79 ｜ `test_batch58_bibdb_hits` 54
-`test_batch59_coop_fulltext` 56 ｜ `test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14
+`test_batch59_coop_fulltext` 56 ｜ `test_batch60_llm_fulltext` 66 ｜ `test_batch61_bibdb_rules` 53 ｜ `test_batch63_api_char_cap` 14
 `test_batch63_chat_no_limit` 17 ｜ `test_batch63_fulltext_apply` 36 ｜ `test_batch63_metadata_docx` 37 ｜ `test_batch63b_metadata_json` 76
 `test_batch68_bibparse` 36 ｜ `test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 53 ｜ `test_batch70_b001` 46
-`test_batch_case_test` 0 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bib_url_render` 48
+`test_batch_case_test` 0 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bib_url_render` 58
 `test_bibdb` 376 ｜ `test_bibdb_rehash` 31 ｜ `test_bibdb_verify` 54 ｜ `test_bibnorm` 46
 `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28
 `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5
@@ -156,7 +156,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17
 `test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_platform` 76
 `test_proofcheck` 159 ｜ `test_publish` 58 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
-`test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 82
+`test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89
 `test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
 `test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
 `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14

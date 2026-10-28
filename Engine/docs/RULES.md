@@ -19,7 +19,7 @@
 | 编辑部 bib 规范（写进任务书、也是给 AI 的 system prompt） | `slcn/refmark.py`（`SPEC_MD` / `SOURCES_MD` / `FORMAT_MD`；⑪ 逐条请求 = `entry_prompt()`） | 本文 §五 | 第 41/61/68 条 |
 | **条目 → 源稿原文**的映射（任务书「源稿原文」行与 AI 预跑都用它） | `slcn/docxsource.py`（`DocxDoc.ref_raw_by_key` / `_numbered_refs`）、`slcn/footref.py`（`split_numbered_raw`）、`slcn/build.py`（`BuildResult.ref_raw_lines` / `ref_raw_by_key`）、`slcn/refmark.py`（`_norm_raw_line` / `_entry_block`） | 本文 §五 | 第 68 条 |
 | bib 归一化 / `userf` / `\bibitem` 转换 | `slcn/bibnorm.py`（`detect_userf()` / `normalize_bib()` / `_clean_field_value()` / `DROP_FIELDS`） | 本文 §四.1 | 第 20/32 条 |
-| **正式发表条目的 DOI/网址渲染规范**（B-189，2026-10-22 用户拍板） | `slcn/bibnorm.py`（`is_online_resource()` / `strip_published_urls_fields()` / `strip_published_urls()`；`normalize_bib(strip_urls=True)`）+ `slcn/build.py`（两通道产物写出）+ `编辑笔记/模板文件/SLCN-MIX.sty` / `编辑笔记/模板文件/SLCN-MIX4.sty`（`\AtEveryBibitem` 兜底） | 本文 §四.10 | —（B-189） |
+| **正式发表条目的 DOI/网址渲染规范**（B-189，2026-10-22 用户拍板） | `slcn/bibnorm.py`（`is_online_resource()` / `strip_published_urls_fields()` / `strip_published_urls()`；`normalize_bib(strip_urls=True)`）+ `slcn/build.py`（两通道产物写出）+ `编辑笔记/模板文件/SLCN-MIX.sty` / `SLEN.sty`（`\AtEveryBibitem` 兜底） | 本文 §四.10 | —（B-189） |
 | **bib 整行注释不算条目**（第 133 条） | `slcn/bibnorm.py`（`strip_bib_comments()` / `split_entries()`） | 本文 §四.8 | 第 133 条 |
 | **参考文献附件的选择/校验/合并**（第 134 条） | `convert.py`（`real_bib_path()` / `bib_attachment_entries()` / `merge_bib_attachment()` / `bib_entry_structurally_safe()`）、`slcn/multisource.py`（`select_refs_attachment()` / `text_attachment_issue()` / `bib_attachment_issue()` / `looks_like_bibtex()`） | 本文 §四.9 | 第 134 条 |
 | **AI 结果并入 `reference.bib`**（2026-10-15） | `slcn/aibib.py`（`merge()` / 注释归位 / 字段顺序重排 / `render_merge_section()`；手动通道 = `merge_returned_bib()` / `apply_merge_to_file()` / `write_merge_record()`）+ `convert.py`（`apply_ai_merge()`，回滚副本 `reference.bib.ai前`）+ `checkbib.py --merge-into` | 本文 §五 | 第 64/65 条 |
@@ -568,10 +568,15 @@ undefined citation 0、参考文献区生成、20 页 = 人工 20 页）。
   —— 判据 = 条目类型 ∈ `bibnorm.PUBLISHED_ENTRY_TYPES` **且** 任一出版信息字段
   （`journal/journaltitle/booktitle/publisher/institution/school`）非空）：
   **参考文献列表不印 DOI、不印网址**；产物 `reference.bib` 里连 `url`/`doi` 字段一起删掉。
-- **未出版 / 在线资源**（`online`、`unpublished`、`misc`、arXiv 预印本、SEP 词条等）：
+- **未出版 / 在线资源**（`online`、`unpublished`、arXiv 预印本、SEP 词条等）：
   **保留并打印网址**（这类需要看出处）。SEP 词条按 `booktitle`/`journal` 含
-  “Stanford Encyclopedia of Philosophy” 判定（实测有作者把 SEP 写成 `@article` +
-  `journal` 的形态，只认 `booktitle` 会误删）。
+  “Encyclopedia of Philosophy” 判定（“Stanford Encyclopedia of Philosophy” 是其全称；
+  实测有作者把 SEP 写成 `@article` + `journal` 的形态，只认 `booktitle` 会误删）。
+  初排转换还把这种 `journal` 形态规范成 `incollection`（`journal`→`booktitle`），
+  保证模板印出容器名。
+- **misc 只印 author 一个字段**（2026-10-28 回退）：解析不出的复杂文献由引擎把源稿
+  原文献逐字符放进 `author`（verbatim，花括号保护），misc 驱动原样排印；不再印
+  title/url 等其它字段。`online`/`unpublished` 驱动仍印网址。
 - 夹带在 `publisher`/`address`/`note`/`howpublished`/`title` 等字段里的网址：
   正式条目删除；在线资源从 `howpublished`/`publisher` 搬进 `url` 字段（`title`/`note`
   不动 —— 那里夹带的网址本就是条目正文的一部分，搬走会留下「Retrieved from」尾巴）。
@@ -584,10 +589,10 @@ undefined citation 0、参考文献区生成、20 页 = 人工 20 页）。
    `docxsource.refs_to_bib()` / `footnotes.entry_to_bib()` 直接渲染，不经过
    `normalize_bib()`，所以 `build_docx()` 在 `move_book_editions()` 之后单独调用文本级
    清洗（实测 LingXin_Cai 86-08 的 1 处 doi.org 就是从 Word 通道漏的）。
-2. **模板兜底**：`SLCN-MIX.sty` / `SLCN-MIX4.sty` 的 `\AtEveryBibitem` 对正式类型
-   `\clearfield{url}\clearfield{doi}`（SEP 词条例外）；并补齐 `misc`/`online`/
-   `unpublished` 驱动的网址打印（此前 `misc` 只印作者、`online` 走 caspervertor 默认
-   驱动不印网址）。作者拿本刊模板自行编译也成立。
+2. **模板兜底**：`SLCN-MIX.sty`（中文）与 `SLEN.sty`（英文）的 `\AtEveryBibitem`
+   对正式类型 `\clearfield{url}\clearfield{doi}`（SEP 词条例外）；`online`/
+   `unpublished` 驱动印网址，`misc` 驱动只印 `author`。作者拿本刊模板自行编译也成立。
+   `SLCN-MIX4.sty` 停止维护，不再同步这些改动。
 
 **为什么是「渲染层政策」而不是库规范化**：同一份库记录要保留 DOI/网址供核实，
 而印出来的参考文献按上面口径取舍。所以清洗**不在** `_clean_field_value()` /
@@ -597,11 +602,14 @@ undefined citation 0、参考文献区生成、20 页 = 人工 20 页）。
 **边界 / 已知取舍**：① 只处理 `http(s)://` 形态；`doi = {10.…}` 字段在正式条目直接
 删除、在线资源保留字段（模板从不印 `doi` 字段，只印 `url`）；② 判断按条目类型 +
 出版信息，**缺字段的残缺条目按在线资源保守保留**（宁可不删，不误删数据；要更严请先
-把字段补齐）；③ `misc` 驱动仍只印作者 + 网址（补全其它字段不在 B-189 范围）。
+把字段补齐）；③ `misc` 驱动只印作者（网址也不印；复杂文献的原文在 `author` 里原样输出）；
+④ 参考文献 `pages` 范围的 `--` 统一渲染成 `\cndash`（`\DefineBibliographyExtras`
+  里改 `\bibrangedash`，中英文模板一致）。
 
 **回归**：`tests/test_bib_url_render.py`（① 字段级判据/幂等；② 文本级只改命中条目；
-③ `normalize_bib` 默认向后兼容；④ 两通道产物接线；⑤ `SLCN-MIX(.4).sty` 编译夹具：
-正式条目 doi.org 不印、SEP/misc/online 网址仍印 —— 无 TeX 环境自动 SKIP）。
+③ `normalize_bib` 默认向后兼容；④ 两通道产物接线；⑤ `SLCN-MIX.sty`/`SLEN.sty`
+编译夹具：正式条目 doi.org 不印、SEP/online/unpublished 网址仍印、misc 只印 author、
+`pages` 范围印 `\cndash`；`SLCN-MIX4.sty` 保持旧行为 —— 无 TeX 环境自动 SKIP）。
 41 篇实测复测见笔记仓 `drafts/b189-report.md`。
 
 ---

@@ -958,7 +958,14 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
             continue
         parsed = footref.parse_note(f["note"])
         if not parsed:
-            out.append(f"@{et}{{{key},{body}\n}}")  # 判为非文献，原样保留
+            # B-262：解析不出的复杂文献 → @misc，源稿原文逐字符进 author（花括号保护），
+            # 不再重复放 note；misc 驱动只印 author，正好原样排印，便于人工再订正。
+            from .footnotes import _bib_escape_verbatim
+
+            raw = f["note"].strip().replace("\n", " ")
+            out.append("@misc{%s,\n  author    = {{%s}}\n}"
+                       % (key, _bib_escape_verbatim(raw)))
+            notes.append(f"{key}: 解析不出，原文逐字符进 author")
             continue
         for i2, p in enumerate(parsed, 1):
             k = key if len(parsed) == 1 else f"{key}{chr(96 + i2)}"
