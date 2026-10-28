@@ -299,7 +299,11 @@ def _compile_fixture(sty_name: str, tag: str) -> None:
                              ("url", "https://arxiv.org/abs/2401.00001")])
             + fields_to_bib("online", "WebPage",
                             [("author", "Wiki, C."), ("title", "Some Web Page"),
-                             ("year", "2023"), ("url", "https://example.org/web")]))
+                             ("year", "2023"), ("url", "https://example.org/web")])
+            # B-248：无 url 的 @misc（87-9 修复后形态）——题名/年份必须印出
+            + fields_to_bib("misc", "PlainMisc",
+                            [("author", "Doe, J."), ("title", "A Miscellaneous Note"),
+                             ("year", "2021")]))
     with open(os.path.join(d, "fixture.tex"), "w", encoding="utf-8") as fh:
         fh.write("\\documentclass[b5paper,10.5t,onecolumn,UTF8]{article}\n"
                  f"\\usepackage{{{sty_name[:-4]}}}\n"
@@ -323,6 +327,17 @@ def _compile_fixture(sty_name: str, tag: str) -> None:
     check(f"⑤ 模板兜底（{tag}）：SEP 词条网址仍打印", "plato.stanford.edu" in norm)
     check(f"⑤ 模板兜底（{tag}）：misc/arXiv 网址仍打印", "arxiv.org" in norm)
     check(f"⑤ 模板兜底（{tag}）：online 网址仍打印", "example.org/web" in norm)
+    # B-248：misc driver 恢复全字段（本批只授权 SLCN-MIX.sty；MIX4 保持原状不在写域）
+    if tag == "mix":
+        # 样式会把题名转 sentence case 并加引号 → 用大小写不敏感匹配
+        check(f"⑤ B-248 misc 印题名与年份（不再只有作者）",
+              "amiscellaneousnote" in norm.lower() and "2021" in norm,
+              text[-400:].replace("\n", " "))
+        check(f"⑤ B-248 online 仍印网址、无 url 的 misc 按 author→title→year 顺序印全",
+              "example.org/web" in norm
+              and re.search(r"miscellaneousnote[^a-z0-9]{0,20}(?:19|20)\d{2}", norm, re.I)
+              is not None,
+              norm[-400:])
 
 
 _compile_fixture("SLCN-MIX.sty", "mix")

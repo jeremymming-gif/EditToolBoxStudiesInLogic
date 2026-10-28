@@ -1079,8 +1079,27 @@
 % \iffieldundef{a}{b}{c}如果a被定义则执行c，否则执行b
 
 % 用于处理特殊内容，全部手打 userf不填，注意页码用--
-%% B-189：misc（SEP/预印本常用）保留并打印网址；不再只有作者一行
+%% B-189：misc（SEP/预印本常用）保留并打印网址。
+%% B-248（2026-10-28）：misc driver **恢复全字段**——87-9 的 8 条脚注书目只印作者名，
+%% 渲染根因是旧 driver 整段注释后只留 B-189 的 `\printnames{author}`（+url）。这里按
+%% author→title→journaltitle/booktitle→year→volume+number→pages→publisher+location→note
+%% 的顺序印全；**url 仍在原打印位（末尾）**。正式发表条目的 url/doi 由 `slcn/bibnorm.py`
+%% 先行清洗（B-189「正式发表不印 DOI/网址」口径不变）。
 \DeclareBibliographyDriver{misc}{%
-	\printnames{author}%
-	\iffieldundef{url}{}{\newunit\printfield{url}}%
+	\printnames{author}\setunit{\cecomma}%
+	\printfield{title}\setunit*{\cecomma}%
+	\printfield{journaltitle}\setunit*{\cecomma}%
+	\printfield{booktitle}\setunit*{\cecomma}%
+	\setunit{\cecomma}%
+	\printfield{year}%
+	\usebibmacro{volume+number}%
+	\setunit{\cecomma}%
+	\printfield{pages}%
+	\setunit{\cecomma}%
+	\usebibmacro{publisher+location}%
+	\setunit{\cecomma}%
+	\printfield{note}%
+	\setunit{\cecomma}%
+	\printfield{url}%
+	\finentry%
 }%

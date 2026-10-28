@@ -311,7 +311,109 @@ def _pub_addr(text: str) -> tuple[str, str]:
     return "", ""
 
 
-def _split_author_title(head: str) -> tuple[str, str]:
+# ── B-248：英文姓名列表判据（Word 脚注书目的作者/题名切分兜底）──────────────
+#
+# 87-9 实测：`Christopher W. Tindale, The Philosophy…` 的第一个 `. ` 落在**中名缩写**
+# `W.` 之后，旧实现于是把作者切成 `Christopher W.`、题名切成 `Tindale, The …`（6/8 条）。
+# 旧实现**没有**可用的 `. ` 时直接返回 `("", head)`，整条没有作者。
+# 这里补两件事：① 拒绝「名 + 中名缩写. + 姓,」这种切点；② 兜底走「完整姓名列表 +
+# 逗号」切分（仅在无可用 `. ` 时），并用**保守的姓名形态**判断哪一段还是作者。
+_EN_NAME_PARTICLE = r"(?:van|von|de|der|den|del|di|da|le|la)"
+_EN_NAME_WORD = r"(?:[A-Z]\.|[A-Z][\w'’\-]+|" + _EN_NAME_PARTICLE + r")"
+_EN_NAME_PART = re.compile(
+    r"^(?:" + _EN_NAME_PARTICLE + r"\s+)?"
+    r"(?:[A-Z]\.\s*)*"
+    r"(?:[A-Z][\w'’\-]+|[A-Z])"
+    r"(?:\s+" + _EN_NAME_WORD + r")*"
+    r"\.?$"
+)
+#: 段首不能是这些词（题名常见开头，避免把 `The Philosophy of Argument` 当人名）
+_EN_NAME_STOP = frozenset(
+    "The A An Of In On And For From With Its His Her Their This That These Those".split())
+
+
+def _looks_like_name_list_segment(seg: str) -> bool:
+    """这一段像不像「英文姓名列表」（多作者用 `&`/`and`/`、`/`;` 连接）？
+
+    刻意保守：含中文、过长、单词段（>2 字符）一律不算；每个名字段必须是
+    「首字母缩写 + 姓」或「名 + 中名缩写 + 姓」，且词里除 `van/von/de…` 外都得大写。
+    """
+    s = seg.replace("\\&", "&")
+    s = re.sub(r"\s*\(\s*eds?\.?\s*\)\s*$", "", s.strip(), flags=re.I).strip(" ,，")
+    if not s or len(s) > 70 or re.search(r"[\u4e00-\u9fff]", s):
+        return False
+    if re.match(r"(?i)^et\s+al\.?$", s):
+        return True                      # `et al` 是作者列表的收尾标记，不是题名
+    pieces = [p.strip() for p in re.split(r"\s*(?:&|\band\b|、|;)\s*", s) if p.strip()]
+    if not pieces:
+        return False
+    for piece in pieces:
+        toks = piece.split()
+        if not 1 <= len(toks) <= 5:
+            return False
+        if len(toks) == 1 and len(toks[0]) > 2:
+            return False                 # 单词段（`Language`/`Logic`）不是完整姓名
+        if toks[0] in _EN_NAME_STOP:
+            return False
+        if re.search(r"[’'']s\b", piece):
+            return False                 # 所有格（`Plato’s Reasons`）是题名，不是姓名
+        if not _EN_NAME_PART.match(piece):
+            return False
+    return True
+
+
+def _has_name_list_marker(seg: str) -> bool:
+    """多作者续段的**追加**证据：缩写、复姓介词或 `&/and/、` 连接词。
+
+    单独一个 `Some Book`（两词都大写）可能只是题名；只有这些标记才当作者续段。
+    """
+    s = re.sub(r"\s*\(\s*eds?\.?\s*\)\s*$", "", seg.strip(), flags=re.I)
+    return bool(re.search(r"\b[A-Z]\.", s)
+                or re.search(r"(?:^|\s)(?:van|von|de|der|den|del|di|da|le|la)\s", s)
+                or re.search(r"\s(?:&|and)\s|、", s))
+
+
+def _looks_like_surname_continuation(text: str) -> bool:
+    """切点后的内容是不是「姓氏 + 逗号/(eds.)/et al」——即在缩写后误切了。
+
+    `Tindale, The …` / `van Eemeren, et al, …` / `Frank (eds.), …` 命中；
+    `Judgment under Uncertainty, …`（正常题名）不命中。
+    """
+    return bool(re.match(
+        r"^(?:(?:van|von|de|der|den|del|di|da|le|la)\s+)?[A-Za-z][\w'’\-]*\s*"
+        r"(?:[,，]|\(\s*eds?\.?\s*\)\s*[,，]|et\s+al\b)", text))
+
+
+def _split_author_title_by_comma(head: str) -> tuple[str, str]:
+    """兜底：`姓名列表, 题名`（无可用 `. ` 时）。中文体例不在此列（仍走旧路径）。"""
+    if re.search(r"[\u4e00-\u9fff]", head):
+        return "", head
+    parts = [p.strip() for p in re.split(r"\s*[,，]\s*", head)]
+    if len(parts) < 2:
+        return "", head
+    auth: list[str] = []
+    i = 0
+    while i < len(parts):
+        if re.match(r"(?i)^et\s+al\.?$", parts[i]):
+            i += 1
+            continue                     # `et al` 只作列表收尾，不进 author 字段
+        if not _looks_like_name_list_segment(parts[i]):
+            break
+        if i > 0 and not _has_name_list_marker(parts[i]):
+            break                        # 只有「Some Book」形态的多词段：是题名不是作者
+        auth.append(parts[i])
+        i += 1
+    if not auth or i >= len(parts):
+        return "", head
+    author = re.sub(r"\s*\(\s*eds?\.?\s*\)\s*$", "",
+                    ", ".join(auth)).strip(" ,，")
+    title = ", ".join(parts[i:]).strip(" ,，")
+    if len(author) < 2 or len(title) < 4:
+        return "", head
+    return author, title
+
+
+def _split_author_title(head: str, *, comma_fallback: bool = True) -> tuple[str, str]:
     """把 `作者列表. 题名` 切开。
 
     难点是多作者：`Kahneman D., Slovic P., \\& Tversky A. Judgment under
@@ -319,6 +421,9 @@ def _split_author_title(head: str) -> tuple[str, str]:
     （实测就是这样错的）。
 
     判据：切点后的「题名」若以 `&`、`\\&`、`,` 开头，说明后面还有作者，继续往后找。
+    B-248：切点前是**单大写字母**（中名缩写）且切点后紧接「姓 + 逗号/(eds.)/et al」
+    时也跳过——这是 `Christopher W. Tindale, …` 的误切。全部 `. ` 都不可用（或没有）
+    时，按「完整姓名列表后的第一个逗号」兜底；中文体例不受影响。
     """
     for m in re.finditer(r"[.。]\s+", head):
         a, t = head[: m.start()].strip(), head[m.end() :].strip()
@@ -330,7 +435,13 @@ def _split_author_title(head: str) -> tuple[str, str]:
             continue
         if len(a) > 90:               # 作者部分过长，多半切错了
             continue
+        if re.search(r"(?:^|\s)[A-Z]$", a) and _looks_like_surname_continuation(t):
+            continue                  # B-248：`… Christopher W. Tindale, …` 的误切点
         return a, t
+    if comma_fallback:
+        a, t = _split_author_title_by_comma(head)
+        if a:
+            return a, t
     return "", head
 
 
@@ -453,6 +564,71 @@ def _publisher_only_journal(value: str) -> bool:
     if not text or _SERIAL_CUE.search(text):
         return False
     return bool(_PUBLISHER_ONLY_CUE.match(text))
+
+
+# ── B-248：无类型标记（misc）出口的出版社/刊名回填 ──────────────────────────
+#
+# 87-9 的源稿句末形如 `…, Cambridge University Press, 2015.`：出版社后**跟年份**，
+# 旧的 `_pub_addr()` 只认「出版社收尾」，因此返回空（evidence.md §2 L2）。这里补一个
+# **弱形态**：`… , <Publisher>, YYYY.`，但候选必须命中出版社线索词，且**不得是题名本身**
+# （题名含冒号/逗号/尾部年份的形态一律不认，宁缺勿错）。
+_PUB_WEAK_TAIL = re.compile(
+    r"[,，]\s*((?:[Tt]he\s+)?(?:"
+    r"[A-Z][A-Za-z&.'\- ]{2,48}?(?:Press|University|Verlag|Books?|Publishing|Publishers?|"
+    r"Academic\s+Pub)"
+    r"|(?:Springer|Routledge|Blackwell|Wiley|Elsevier|Palgrave|Macmillan|Pearson|Longman|"
+    r"McGraw|Hackett|Rowman|Bloomsbury|SAGE|Sage|Clarendon|Brill)\b[A-Za-z&.'\- ]{0,48}"
+    r"))\s*(?:[,，]\s*(?:19|20)\d{2}\s*[.。]?)?\s*$"
+)
+
+
+def _misc_pub_addr(text: str, title: str) -> tuple[str, str]:
+    """misc 条目的出版社/出版地抽取（弱形态保护）。认不出返回 `("", "")`。
+
+    候选按「`_pub_addr` 强形态 → 弱形态（出版社后跟年份 / 只有社名）」顺序试，
+    **逐个**过弱形态保护：候选不得是题名（题名含冒号/逗号时 `_pub_addr` 可能把题名
+    后半截当出版社，实测 87-9 ref06/ref08），也不得含年份。
+    """
+    cands: list[tuple[str, str]] = []
+    pub, addr = _pub_addr(text)
+    if pub:
+        cands.append((pub, addr))
+    m = _PUB_WEAK_TAIL.search(text)
+    if m:
+        cands.append((m.group(1).strip(), ""))
+    tl = (title or "").strip().rstrip(" .。")
+    tl = re.sub(r"[,，]\s*(?:19|20)\d{2}\s*[.。]?$", "", tl).strip(" ,，")
+    for pub, addr in cands:
+        if not pub or len(pub) < 3 or re.search(r"(?:19|20)\d{2}", pub):
+            continue
+        if tl and pub.lower() in tl.lower() and not tl.lower().endswith(pub.lower()):
+            # 出现在题名中间 → 是题名里的词，不认
+            continue
+        return re.sub(r"^[Tt]he\s+", "", pub), addr
+    return "", ""
+
+
+def _strip_title_pub(title: str, pub: str) -> str:
+    """把误并进题名的「, 出版社, 年份」后缀剪掉（B-248）。"""
+    t = (title or "").strip()
+    if not t or not pub:
+        return title
+    idx = t.lower().rfind(pub.lower())
+    if idx > 0:
+        t = t[:idx].rstrip(" ,，")
+    t = re.sub(r"[,，]\s*(?:19|20)\d{2}\s*[.。]?\s*$", "", t).strip(" ,，")
+    # 弱形态允许社名前带 `the`（`the University of South Carolina Press`）；剪题名时
+    # 社名已按去掉 `the` 后的串匹配，这里再把残留的连接词剪掉。
+    t = re.sub(r"[,，]?\s*[Tt]he\s*$", "", t).strip(" ,，")
+    return t if len(t) >= 4 else title
+
+
+def _vol_no_misc(text: str) -> tuple[str, str]:
+    """`Vol. 1, No. 1` → `("1", "1")`（misc 出口用；`_vol_issue` 的 `No.` 兜底会记进 volume）。"""
+    m = re.search(r"\bVol\.?\s*(\d{1,4})\s*[,，]\s*(?:No\.?\s*)?(\d{1,4})", text)
+    if m:
+        return m.group(1), re.sub(r"^0+(?=\d)", "", m.group(2))
+    return _vol_issue(text)
 
 
 def _has_container(fields: dict, raw: str = "") -> bool:
@@ -600,7 +776,8 @@ def parse_one(text: str) -> Parsed:
         p.title = q
         p.author = re.split(r"[，,]", head[: head.find(q)])[0].strip(" .。，,")
     else:
-        p.author, p.title = _split_author_title(head)
+        # B-248：逗号兜底只开给**无类型标记**的条目（有 `[J]/[M]` 的既有行为不变）
+        p.author, p.title = _split_author_title(head, comma_fallback=not marks)
     p.author = re.sub(r"\\&", "&", p.author).strip(" .。，,")
     p.author = _invert_en_author(p.author)
     p.title = re.sub(r"\\&", "&", p.title).strip(" .。，,")
@@ -635,6 +812,38 @@ def parse_one(text: str) -> Parsed:
             m = re.search(r"[.。]\s*([A-Z][A-Za-z&.\- ]{3,40}(?:Press|University|Verlag|Books?|Publishing))", t)
             if m:
                 p.publisher = m.group(1).strip()
+
+    # B-248：**无类型标记**的 Word 脚注书目也要回填出版社/刊名并重判类型。
+    # 旧实现只在 `[J]/[M]` 分支里抽出版信息，misc 条目因此永远丢出版社、永远 @misc
+    # （87-9 的 8 条全中）。这里只对「无标记 + 非中文」动手：
+    #   · 中文体例（`作者，题名，出版地：出版社，年`）走别的通道，本函数不改判；
+    #   · 有 `[J]/[M]` 等标记的条目保持既有行为不变。
+    if p.etype == "misc" and not marks and not re.search(r"[\u4e00-\u9fff]", t):
+        after = t
+        if p.title and p.title in t:
+            after = t[t.index(p.title) + len(p.title):]
+        if not p.publisher:
+            pub, addr = _misc_pub_addr(t, p.title)
+            if pub:
+                p.publisher = pub
+                p.address = p.address or addr
+                p.title = _strip_title_pub(p.title, pub)
+        if not p.publisher:
+            # 期刊形态：题名之后紧跟「刊名, Vol./No./YYYY/第…」（Bitzer 引号条实测）
+            m = re.match(
+                r"^[\s”\"'’。,，.。]*([^，,。\d\[\]]{3,70}?)\s*[，,]\s*"
+                r"(?:Vol\.?|No\.?|(?:19|20)\d{2}|第)", after)
+            if m:
+                p.journal = m.group(1).strip()
+                v, n = _vol_no_misc(after)
+                p.volume, p.number = p.volume or v, p.number or n
+        _etype, _reason = classify_entry_type({
+            "journal": p.journal, "booktitle": p.booktitle, "publisher": p.publisher,
+            "address": p.address, "pages": p.pages, "volume": p.volume,
+            "number": p.number, "note": p.note,
+        }, raw=t)
+        if _etype in ("book", "article", "incollection", "inproceedings"):
+            p.etype = _etype
 
     got = sum(bool(x) for x in (p.author, p.title, p.journal, p.booktitle, p.publisher))
     p.confidence = "high" if got >= 3 else ("low" if got >= 2 else "low")

@@ -558,6 +558,54 @@ _e5n = parse_extras('J. Doe, 2000, “Some Chapter”, in Some Book Without Mark
 check("⑦ N5 反例：无编者标记 + 无年份锚点 → 不编 booktitle",
       not _e5n.get("booktitle"), repr(_e5n.get("booktitle")))
 
+# ══ ⑧ B-248：Word 脚注书目（无类型标记）作者切分 + 类型/出版社回填 ════════════
+# 87-9 实测 8 条只印作者：`_split_author_title` 在中名缩写 `W.` 后的 `. ` 切分，
+# 且无 `[J]/[M]` 标记时 `parse_one` 不做出版社/类型回填。夹具串全部取自源稿 fn2–fn6。
+print("\n── ⑧ B-248：87-9 脚注书目残缺修复（Tindale / van Eemeren / Frank / Bitzer / 中文反例）──")
+
+
+def parse_note1(line):
+    ps = footref.parse_note(line)
+    return ps[0] if ps else None
+
+
+_p8 = parse_note1("Christopher W. Tindale, The Philosophy of Argument and Audience "
+                  "Reception, Cambridge University Press, 2015.")
+check("⑧ ① Tindale：不在中名缩写后切（author 以 Tindale 起、题名不以 Tindale 起、@book+出版社）",
+      _p8 is not None and _p8.author.startswith("Tindale,")
+      and not _p8.title.startswith("Tindale") and _p8.etype == "book"
+      and "Cambridge University Press" in _p8.publisher,
+      f"{_p8 and _p8.author!r} / {_p8 and _p8.title!r} / {_p8 and _p8.etype!r} / "
+      f"{_p8 and _p8.publisher!r}")
+
+_p8b = parse_note1("Frans H. van Eemeren, et al, Handbook of Argumentation Theory, "
+                   "Springer Reference, 2014.")
+_p8c = parse_note1("M. Bolduc & David A. Frank (eds.), The Intellectual and Cultural "
+                   "Origins of Chaïm Perelman, Brill Academic Pub, 2023.")
+check("⑧ ② van Eemeren / Frank：作者 family 正确、题名不混作者、均 @book",
+      _p8b is not None and _p8c is not None
+      and "van Eemeren" in _p8b.author and _p8b.title.startswith("Handbook of Argumentation")
+      and _p8b.etype == "book"
+      and "Frank" in _p8c.author and _p8c.title.startswith("The Intellectual")
+      and _p8c.etype == "book",
+      f"{_p8b and _p8b.author!r}/{_p8b and _p8b.etype!r} | "
+      f"{_p8c and _p8c.author!r}/{_p8c and _p8c.etype!r}")
+
+_p8d = parse_note1("L. Bitzer, “The Rhetorical Situation”, Philosophy and Rhetoric, "
+                   "Vol. 1, No. 1, 1968, pp. 1-14.")
+check("⑧ ③ Bitzer 引号条：etype=article、author=Bitzer, L.、刊名/年/页",
+      _p8d is not None and _p8d.etype == "article" and _p8d.author == "Bitzer, L."
+      and _p8d.journal == "Philosophy and Rhetoric" and _p8d.year == "1968"
+      and _p8d.pages == "1--14",
+      f"{_p8d and _p8d.etype!r} {_p8d and _p8d.author!r} "
+      f"{_p8d and _p8d.journal!r} {_p8d and _p8d.year!r} {_p8d and _p8d.pages!r}")
+
+_p8e = parse_note1("黑格尔（著），逻辑学，北京：商务印书馆，2004年。")
+check("⑧ ④ 中文反例：作者/类型不变（仍 @misc、不把中文出版信息当英文书目）",
+      _p8e is not None and _p8e.etype == "misc" and _p8e.author == ""
+      and _p8e.title.startswith("黑格尔"),
+      f"{_p8e and _p8e.etype!r} {_p8e and _p8e.author!r} {_p8e and _p8e.title!r}")
+
 # 汇总 ──
 print()
 if SKIPS:

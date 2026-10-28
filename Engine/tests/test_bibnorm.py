@@ -213,8 +213,9 @@ _NOTE_BIB = """@misc{ref03,
 }
 """
 _exp_out, _exp_notes = bibnorm.expand_note_entries(_NOTE_BIB)
+# B-248：该夹具（van Eemeren 引号条）在 spec §5 ② 的类型重判后是 @article（原 @misc）
 check("⑥ expand_note_entries 拆出结构化条目（仍是 1 条）",
-      len(_exp_notes) == 1 and "@misc{ref03," in _exp_out, str(_exp_notes))
+      len(_exp_notes) == 1 and "@article{ref03," in _exp_out, str(_exp_notes))
 # author 里的 `&` 必须变成 BibTeX 的 `and`（不能是裸 `&`，也不能是转义后的 `\&` 当分隔符）
 _auth_line = [ln for ln in _exp_out.splitlines() if ln.strip().startswith("author")][0]
 check("⑥ author 字段里的 `&` 规范成 `and`（不出现裸 &）",
