@@ -1,6 +1,26 @@
 import SwiftUI
 import AppKit
 
+/// 高级检索的一行界面条件（与 `BibDbFeature.QueryAdvancedTerm` 一一对应）。
+struct BibDbAdvancedTermRow: Identifiable {
+    let id = UUID()
+    var field: String
+    var mode: String
+    var value: String
+}
+
+/// 高级检索字段的中文标签（key 与引擎字段名一致）。
+private let bibDbAdvancedFieldLabels: [(key: String, label: String)] = [
+    ("author", "作者"), ("editor", "编者"), ("title", "题名"), ("booktitle", "书名"),
+    ("journal", "期刊"), ("publisher", "出版社"), ("year", "年份"), ("doi", "DOI"),
+    ("alias", "别名"), ("any", "任意"),
+]
+
+/// 高级检索匹配模式的中文标签。
+private let bibDbAdvancedModeLabels: [(key: String, label: String)] = [
+    ("contains", "包含"), ("prefix", "前缀"), ("exact", "精确"), ("fuzzy", "模糊"),
+]
+
 /// 「查库」页的界面状态。
 final class BibDbQueryModel: ObservableObject {
     @Published var mode: BibDbFeature.QueryMode = .key
@@ -12,12 +32,39 @@ final class BibDbQueryModel: ObservableObject {
     @Published var error: String = ""
     @Published var seconds: Double = 0
 
+    // B-261：基本检索 / 高级检索
+    @Published var advanced = false
+    @Published var terms: [BibDbAdvancedTermRow] = [
+        BibDbAdvancedTermRow(field: "author", mode: "contains", value: ""),
+        BibDbAdvancedTermRow(field: "title", mode: "contains", value: ""),
+    ]
+    @Published var sort = "relevance"
+    @Published var limit = 20
+    @Published var strict = false
+    @Published var totalMatched = 0
+    @Published var truncated = false
+    /// 与 `hits` 同序对齐的 why-hit（`matched[i]` 属于 `hits[i]`）
+    @Published var matched: [[BibDbFeature.QueryAdvancedMatch]] = []
+
     /// 世代号：连续查询时只认最后一次（旧结果回来不许覆盖新结果）
     private var generation = 0
 
     var selected: BibDbFeature.QueryHit? {
         guard let selectedID else { return nil }
         return hits.first { $0.id == selectedID }
+    }
+
+    /// 选中那条命中的 why-hit（基本检索没有，返回空）
+    var selectedMatched: [BibDbFeature.QueryAdvancedMatch] {
+        guard let selectedID,
+              let index = hits.firstIndex(where: { $0.id == selectedID }),
+              index < matched.count else { return [] }
+        return matched[index]
+    }
+
+    /// 至少一行填了值（决定「查询」按钮是否可点）
+    var hasAdvancedValue: Bool {
+        terms.contains { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     /// 后台查库（`bibdb.py query --json --bibtex`）。**绝不在主线程跑子进程**（案例 126）。
@@ -29,6 +76,9 @@ final class BibDbQueryModel: ObservableObject {
         running = true
         error = ""
         note = ""
+        matched = []
+        totalMatched = 0
+        truncated = false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = BibDbFeature.query(mode: mode, text: text)
             DispatchQueue.main.async {
@@ -48,6 +98,60 @@ final class BibDbQueryModel: ObservableObject {
         }
     }
 
+    /// 后台高级检索（`bibdb.py query-advanced --json --bibtex`）。
+    func searchAdvanced() {
+        let terms = self.terms
+            .filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { BibDbFeature.QueryAdvancedTerm(field: $0.field, mode: $0.mode, value: $0.value) }
+        guard !terms.isEmpty else {
+            error = "高级检索至少填一行条件（值不能为空）。"
+            return
+        }
+        let sort = self.sort
+        let limit = self.limit
+        let strict = self.strict
+        generation += 1
+        let gen = generation
+        running = true
+        error = ""
+        note = ""
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = BibDbFeature.queryAdvanced(terms: terms, sort: sort,
+                                                    limit: limit, strict: strict)
+            DispatchQueue.main.async {
+                guard let self, gen == self.generation else { return }
+                self.running = false
+                self.seconds = result.seconds
+                if let error = result.error {
+                    self.hits = []
+                    self.selectedID = nil
+                    self.matched = []
+                    self.totalMatched = 0
+                    self.truncated = false
+                    self.error = error
+                    return
+                }
+                self.hits = result.hits
+                self.matched = result.matched
+                self.totalMatched = result.totalMatched
+                self.truncated = result.truncated
+                self.note = result.hits.isEmpty ? "高级检索没有命中。" : ""
+                self.selectedID = result.hits.first?.id
+            }
+        }
+    }
+
+    /// 加一行条件（默认作者包含）
+    func addTerm() {
+        terms.append(BibDbAdvancedTermRow(field: "author", mode: "contains", value: ""))
+    }
+
+    /// 删一行条件（至少留一行）
+    func removeTerm(id: UUID) {
+        guard terms.count > 1 else { return }
+        terms.removeAll { $0.id == id }
+    }
+
     /// 换了模式/清空输入：上一次的结果不再对应当前查询，直接清掉（避免看着旧结果复制错条目）。
     func reset() {
         generation += 1
@@ -57,6 +161,9 @@ final class BibDbQueryModel: ObservableObject {
         note = ""
         error = ""
         seconds = 0
+        matched = []
+        totalMatched = 0
+        truncated = false
     }
 }
 
@@ -94,7 +201,13 @@ struct BibDbQueryView: View {
 
                 Divider()
 
-                searchBar
+                modeBar
+
+                if model.advanced {
+                    advancedForm
+                } else {
+                    searchBar
+                }
 
                 if !model.error.isEmpty {
                     BibDbStatusLine(kind: .error, text: model.error)
@@ -114,7 +227,9 @@ struct BibDbQueryView: View {
                     Divider()
                     selectedDetail
                 } else {
-                    Text("输入查询内容后按回车或点「查询」。")
+                    Text(model.advanced
+                         ? "填好条件后点「查询」（多行条件同时满足才命中）。"
+                         : "输入查询内容后按回车或点「查询」。")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -123,6 +238,7 @@ struct BibDbQueryView: View {
             .frame(maxWidth: 920, alignment: .leading)
         }
         .onChange(of: model.mode) { _ in model.reset() }
+        .onChange(of: model.advanced) { _ in model.reset() }
         // B-188：共享条目编辑器（预览=引擎 dry-run；写入前 sha 校验；B-190 起写库成功后自动本地提交）。
         .sheet(item: $editorTarget) { target in
             BibDbEditorSheet(log: log, bibdb: bibdb, recordKey: target.key,
@@ -164,12 +280,119 @@ struct BibDbQueryView: View {
         }
     }
 
+    // MARK: - 基本 / 高级切换
+
+    private var modeBar: some View {
+        Picker("", selection: $model.advanced) {
+            Text("基本检索").tag(false)
+            Text("高级检索").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 220)
+        .disabled(model.running)
+    }
+
+    // MARK: - 高级检索条件
+
+    private var advancedForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach($model.terms) { $row in
+                HStack(spacing: 8) {
+                    Picker("", selection: $row.field) {
+                        ForEach(bibDbAdvancedFieldLabels, id: \.key) { item in
+                            Text(item.label).tag(item.key)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 96)
+                    .disabled(model.running)
+                    .onChange(of: row.field) { newValue in
+                        // 年份/DOI/别名不做模糊（与引擎 _SEARCH_NO_FUZZY 一致）
+                        if BibDbFeature.queryAdvancedNoFuzzy.contains(newValue),
+                           row.mode == "fuzzy" {
+                            row.mode = "exact"
+                        }
+                    }
+
+                    Picker("", selection: $row.mode) {
+                        ForEach(modeChoices(for: row.field), id: \.key) { item in
+                            Text(item.label).tag(item.key)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 88)
+                    .disabled(model.running)
+
+                    TextField("值（如 Smith / 1975 / 10.1007/…）", text: $row.value)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .disabled(model.running)
+                        .onSubmit { searchAdvanced() }
+
+                    Button {
+                        model.removeTerm(id: row.id)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.running || model.terms.count <= 1)
+                    .help("删除这一行条件（至少留一行）")
+                }
+            }
+
+            HStack(spacing: 12) {
+                Button("+ 加一行") { model.addTerm() }
+                    .buttonStyle(.bordered)
+                    .disabled(model.running)
+
+                Picker("排序", selection: $model.sort) {
+                    Text("相关度").tag("relevance")
+                    Text("年份").tag("year")
+                    Text("作者").tag("author")
+                }
+                .frame(width: 150)
+                .disabled(model.running)
+
+                Stepper("最多 \(model.limit) 条", value: $model.limit, in: 1...200)
+                    .disabled(model.running)
+
+                Toggle("严格（模糊门槛 0.90）", isOn: $model.strict)
+                    .toggleStyle(.checkbox)
+                    .disabled(model.running)
+
+                Spacer()
+
+                Button("查询") { searchAdvanced() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("f", modifiers: .command)
+                    .disabled(model.running || !model.hasAdvancedValue)
+            }
+
+            Text("多行条件**同时满足**才命中；年份/DOI/别名不做模糊。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// 某个字段可用的匹配模式（年份/DOI/别名去掉「模糊」）
+    private func modeChoices(for field: String) -> [(key: String, label: String)] {
+        if BibDbFeature.queryAdvancedNoFuzzy.contains(field) {
+            return bibDbAdvancedModeLabels.filter { $0.key != "fuzzy" }
+        }
+        return bibDbAdvancedModeLabels
+    }
+
     // MARK: - 结果列表
 
     private var resultList: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("命中 \(model.hits.count) 条").font(.callout).bold()
+                if model.advanced && model.totalMatched > model.hits.count {
+                    Text("／共 \(model.totalMatched) 条匹配\(model.truncated ? "，已截断" : "")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if model.seconds > 0 {
                     Text("（用时 \(BibDbUI.seconds(model.seconds))）")
                         .font(.caption).foregroundStyle(.tertiary)
@@ -212,6 +435,20 @@ struct BibDbQueryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                if model.advanced && !model.selectedMatched.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("命中原因（\(model.selectedMatched.count) 项条件都满足）")
+                            .font(.caption).bold()
+                        ForEach(Array(model.selectedMatched.enumerated()), id: \.offset) { _, match in
+                            Text("[\(match.field)] \(match.mode) · "
+                                 + String(format: "%.3f", match.score)
+                                 + (match.snippet.isEmpty ? "" : " · \(match.snippet)"))
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
                 if !hit.bibtex.isEmpty {
                     ScrollView {
                         Text(hit.bibtex)
@@ -241,6 +478,17 @@ struct BibDbQueryView: View {
         model.search()
         // 查询结果在后台回填；日志这里只记「发起了什么查询」，不阻塞。
         Logger(store: log)("查引用库（\(mode.title)）：\(text)\n")
+    }
+
+    private func searchAdvanced() {
+        guard model.hasAdvancedValue else { return }
+        let subject = model.terms
+            .filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { "\($0.field)=\($0.value)" }
+            .joined(separator: "；")
+        model.searchAdvanced()
+        Logger(store: log)("高级检索：\(subject)（排序 \(model.sort)，最多 \(model.limit) 条"
+                           + (model.strict ? "，严格）" : "）") + "\n")
     }
 
     private func copyBibTeX(_ hit: BibDbFeature.QueryHit) {

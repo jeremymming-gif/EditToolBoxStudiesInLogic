@@ -1707,5 +1707,65 @@ check("(r) BibDbReview 族源文件齐全（拆分后同层多文件，glob 拼�
       && !readSourceGlob("Views/BibDbReview*.swift").isEmpty,
       "files=\(reviewFamily.joined(separator: ","))")
 
+// ── (s) B-261：引用库高级检索（argv 纯函数 + 视图接线）────────────────────
+//  两壳（Win/mac）共用同一 argv 口径：`--字段 值 --mode 字段=模式` 交错 + `--limit`
+//  + `--strict` 或 `--min-score=0.75` + `--bibtex --json` + `--db`。
+print("\n── (s) B-261 引用库高级检索（Win/mac 同 argv 口径）──")
+let advOne = BibDbFeature.queryAdvancedArguments(
+    terms: [BibDbFeature.QueryAdvancedTerm(field: "author", mode: "contains", value: "Smith"),
+            BibDbFeature.QueryAdvancedTerm(field: "title", mode: "fuzzy", value: "theory")],
+    sort: "year", limit: 5, strict: false, db: "/tmp/x.sqlite")
+check("(s) 高级检索 argv 逐字：字段/值交错 + 总是显式 --mode 字段=模式",
+      advOne.error == nil
+      && advOne.arguments == ["query-advanced",
+                              "--author", "Smith", "--mode", "author=contains",
+                              "--title", "theory", "--mode", "title=fuzzy",
+                              "--limit", "5", "--min-score=0.75",
+                              "--bibtex", "--json", "--db", "/tmp/x.sqlite"],
+      advOne.arguments.joined(separator: " ") + " err=\(advOne.error ?? "nil")")
+
+let advStrict = BibDbFeature.queryAdvancedArguments(
+    terms: [BibDbFeature.QueryAdvancedTerm(field: "doi", mode: "exact", value: "10.1/x")],
+    sort: "relevance", limit: 20, strict: true, db: "/tmp/x.sqlite")
+check("(s) --strict 时不再带 --min-score（门槛由引擎固定 0.90）",
+      advStrict.error == nil
+      && advStrict.arguments.contains("--strict")
+      && !advStrict.arguments.contains { $0.hasPrefix("--min-score") }
+      && advStrict.arguments.contains("--db"),
+      advStrict.arguments.joined(separator: " "))
+
+check("(s) 空条件 → 中文错误且不拼 argv",
+      BibDbFeature.queryAdvancedArguments(terms: [], db: "/tmp/x.sqlite").error
+          == "高级检索至少要填一行检索条件。")
+check("(s) 非法字段/模式/空值/排序/limit 都被拦（中文错误，不静默）",
+      BibDbFeature.queryAdvancedArguments(
+          terms: [.init(field: "key", mode: "contains", value: "x")], db: "/tmp/x").error != nil
+      && BibDbFeature.queryAdvancedArguments(
+          terms: [.init(field: "author", mode: "regex", value: "x")], db: "/tmp/x").error != nil
+      && BibDbFeature.queryAdvancedArguments(
+          terms: [.init(field: "author", mode: "contains", value: "  ")], db: "/tmp/x").error != nil
+      && BibDbFeature.queryAdvancedArguments(
+          terms: [.init(field: "author", mode: "contains", value: "x")],
+          sort: "date", db: "/tmp/x").error != nil
+      && BibDbFeature.queryAdvancedArguments(
+          terms: [.init(field: "author", mode: "contains", value: "x")],
+          limit: 0, db: "/tmp/x").error != nil
+      && BibDbFeature.queryAdvancedArguments(
+          terms: [.init(field: "author", mode: "contains", value: "x")],
+          limit: 201, db: "/tmp/x").error != nil)
+
+let advView = readSource("Views/BibDbQueryView.swift")
+check("(s) 视图有基本/高级切换 + 字段行增删 + 排序/limit/strict",
+      advView.contains("高级检索") && advView.contains("基本检索")
+      && advView.contains("+ 加一行") && advView.contains("removeTerm")
+      && advView.contains("\"relevance\"") && advView.contains("limit")
+      && advView.contains("strict"))
+check("(s) 视图回填 why-hit（matched 的 field/mode/score/snippet）",
+      advView.contains("selectedMatched") && advView.contains("命中原因")
+      && advView.contains("match.snippet") && advView.contains("String(format: \"%.3f\""))
+check("(s) 视图走 BibDbFeature.queryAdvanced（后台队列，不在主线程跑子进程）",
+      advView.contains("BibDbFeature.queryAdvanced(")
+      && advView.contains("DispatchQueue.global(qos: .userInitiated)"))
+
 print("\nSUMMARY: \(pass) PASS / \(fail) FAIL")
 exit(fail == 0 ? 0 : 1)

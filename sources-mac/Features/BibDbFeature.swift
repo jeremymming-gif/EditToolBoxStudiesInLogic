@@ -656,6 +656,137 @@ enum BibDbFeature {
         return out
     }
 
+    // MARK: - 高级检索（query-advanced；B-261）
+
+    /// 高级检索的一行条件：字段 + 模式 + 值。
+    /// 与 `bibdb.py query-advanced --字段 值 --mode 字段=模式` 一一对应（AND 组合）。
+    struct QueryAdvancedTerm {
+        var field: String
+        var mode: String
+        var value: String
+    }
+
+    /// 一条命中里「为什么命中」的一项（引擎 payload 的 `matched[]`）。
+    struct QueryAdvancedMatch {
+        var field = ""
+        var mode = ""
+        var score: Double = 0
+        var snippet = ""
+    }
+
+    /// 一次高级检索结果。`hits` 复用基本检索的 `QueryHit`；
+    /// `matched` 与 `hits` **同序对齐**（`matched[i]` 属于 `hits[i]`）。
+    struct QueryAdvancedOutcome {
+        var hits: [QueryHit] = []
+        var matched: [[QueryAdvancedMatch]] = []
+        var totalMatched = 0
+        var truncated = false
+        var error: String?
+        var seconds: Double = 0
+    }
+
+    /// 高级检索可用的字段（与引擎 `_ADVANCED_FIELD_ARGS` 的十个 GUI 字段一致；
+    /// `key` 留给基本检索的 key 精确查）。
+    static let queryAdvancedFields = ["author", "editor", "title", "booktitle", "journal",
+                                      "publisher", "year", "doi", "alias", "any"]
+    /// 高级检索可用的匹配模式
+    static let queryAdvancedModes = ["contains", "prefix", "exact", "fuzzy"]
+    /// 高级检索可用的排序
+    static let queryAdvancedSorts = ["relevance", "year", "author"]
+    /// 年份/DOI/别名不做模糊（与引擎 `_SEARCH_NO_FUZZY` 一致）
+    static let queryAdvancedNoFuzzy = ["year", "doi", "alias"]
+
+    /// 拼高级检索 argv（纯函数，供测试台直接断言；不跑子进程）。
+    static func queryAdvancedArguments(terms: [QueryAdvancedTerm], sort: String = "relevance",
+                                       limit: Int = 20, strict: Bool = false,
+                                       db: String) -> (arguments: [String], error: String?) {
+        guard !terms.isEmpty else {
+            return ([], "高级检索至少要填一行检索条件。")
+        }
+        guard queryAdvancedSorts.contains(sort) else {
+            return ([], "未知的排序方式：\(sort)（只认 relevance/year/author）")
+        }
+        guard limit >= 1 && limit <= 200 else {
+            return ([], "limit 必须是 1–200 的整数：\(limit)")
+        }
+        var arguments = ["query-advanced"]
+        for term in terms {
+            let field = term.field.trimmingCharacters(in: .whitespacesAndNewlines)
+            let mode = term.mode.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard queryAdvancedFields.contains(field) else {
+                return ([], "未知的检索字段：\(field)（只认 "
+                        + queryAdvancedFields.joined(separator: "/") + "）")
+            }
+            guard queryAdvancedModes.contains(mode) else {
+                return ([], "未知的匹配模式：\(mode)（只认 contains/prefix/exact/fuzzy）")
+            }
+            let value = term.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                return ([], "条件值不能为空（\(field)）。")
+            }
+            arguments += ["--" + field, value, "--mode", "\(field)=\(mode)"]
+        }
+        arguments += ["--limit", String(limit)]
+        arguments += strict ? ["--strict"] : ["--min-score=0.75"]
+        arguments += ["--bibtex", "--json", "--db", db]
+        return (arguments, nil)
+    }
+
+    /// 高级检索（**同步；后台队列调**）。多行条件同时满足才命中，命中带 why-hit。
+    static func queryAdvanced(terms: [QueryAdvancedTerm], sort: String = "relevance",
+                              limit: Int = 20, strict: Bool = false) -> QueryAdvancedOutcome {
+        let startedAt = Date()
+        var out = QueryAdvancedOutcome()
+        guard let db = existingDBPath() else {
+            out.error = "引用库文件不存在或找不到笔记仓。请先到「入藏」页导入，"
+                + "或到「引用库设置」页指定笔记仓路径。"
+            return out
+        }
+        let built = queryAdvancedArguments(terms: terms, sort: sort, limit: limit,
+                                           strict: strict, db: db)
+        if let message = built.error {
+            out.error = message
+            return out
+        }
+        let run = runJSON(built.arguments)
+        guard run.ok, let payload = run.json else {
+            out.error = failureText(run)
+            out.seconds = Date().timeIntervalSince(startedAt)
+            return out
+        }
+        var hits: [QueryHit] = []
+        var matched: [[QueryAdvancedMatch]] = []
+        for item in (payload["hits"] as? [Any]) ?? [] {
+            guard let dict = item as? [String: Any] else { continue }
+            var hit = QueryHit()
+            if let record = dict["record"] as? [String: Any] {
+                hit.record = recordInfo(record)
+            }
+            hit.hitKind = stringValue(dict["hit"])
+            hit.score = (dict["score"] as? Double) ?? 0
+            hit.confidence = stringValue(dict["confidence"])
+            hit.bibtex = stringValue(dict["bibtex"])
+            hits.append(hit)
+            var whys: [QueryAdvancedMatch] = []
+            for whyItem in (dict["matched"] as? [Any]) ?? [] {
+                guard let why = whyItem as? [String: Any] else { continue }
+                var match = QueryAdvancedMatch()
+                match.field = stringValue(why["field"])
+                match.mode = stringValue(why["mode"])
+                match.score = (why["score"] as? Double) ?? 0
+                match.snippet = stringValue(why["snippet"])
+                whys.append(match)
+            }
+            matched.append(whys)
+        }
+        out.hits = hits
+        out.matched = matched
+        out.totalMatched = (payload["total_matched"] as? Int) ?? hits.count
+        out.truncated = (payload["truncated"] as? Bool) ?? false
+        out.seconds = Date().timeIntervalSince(startedAt)
+        return out
+    }
+
     // MARK: - 待裁决清单（report；只写清单，不改库）
 
     /// 一个清单文件的状态（存在/大小/修改时间）
