@@ -89,6 +89,7 @@ r"""编辑部引用库（`bib_db`）：把「已核实的参考文献」沉淀�
     db = bibdb.Store.load(bibdb.default_db_path())          # 默认 笔记仓/bib_db/bibliography.jsonl
     db.query_doi("10.1000/xyz")                             # → 命中列表（含 verified/score）
     db.query_title("The Title", author="Smith", year="2020")
+    db.query_advanced(bibdb.SearchSpec((bibdb.SearchTerm("title", "logic"),)))  # B-259
     db.import_bib_text(text, {"kind": "published-bib", "issue": "...", "slug": "...",
                               "file": "reference.bib"}, verified=True)
     db.stats(); db.lint()
@@ -104,6 +105,7 @@ import os
 import re
 import unicodedata
 from collections import Counter
+from dataclasses import dataclass
 
 from . import bibcheck, bibnorm, bibparse, fsutil, paths
 
@@ -557,6 +559,16 @@ def normalize_title(value: object) -> str:
     s = _DASH_RE.sub("-", s.lower())
     s = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", " ", s)
     return re.sub(r"\s+", " ", s).strip()
+
+
+def normalize_search_text(value: object) -> str:
+    """检索用归一（B-259）：在 `normalize_title` 之前先折叠全角/CJK 标点。
+
+    与 `_match_title_forms` 用同一张 `_MATCH_PUNCT_MAP`（，。：；！？（）《》 → ASCII），
+    再走 `normalize_title` 的 LaTeX/NFKD/小写/去标点/压空白，保证「高级检索」与旧
+    `query_title` 对同一串给出同一归一结果；CJK 不切词（直接子串/前缀匹配）。
+    """
+    return normalize_title(_latex_plain(value).translate(_MATCH_PUNCT_MAP))
 
 
 def _tokens(text: str) -> list[str]:
@@ -1307,6 +1319,306 @@ class ImportReport:
             "skipped": dict(sorted(self.skipped.items())),
             "warnings": list(self.warnings),
         }
+
+# ── 高级检索（B-259：P1 Engine API） ────────────────────────────────────────
+#
+# 只读检索层：把「字段 × 模式 × 年份表达式」的 AND 条件打到内存库上，返回带
+# why-hit（`matched`）的分页结果。刻意不建索引、不改 `_by_key`；7k 条库单次
+# 查询（不含进程启动）在 300ms 内（spec §2.9）。旧 `query_key/query_doi/query_title`
+# 一行不改 —— 本层只复用它们的归一化/姓氏/年份/DOI 工具。
+
+#: 高级检索支持的字段（spec §2.1）；`any` = 题名/作者/书名/期刊/出版社任一命中
+SEARCH_FIELDS: tuple[str, ...] = (
+    "author", "editor", "title", "booktitle", "journal",
+    "publisher", "year", "doi", "key", "alias", "any",
+)
+#: 文本字段的四种匹配模式（默认 `contains`）
+SEARCH_MODES: tuple[str, ...] = ("contains", "prefix", "exact", "fuzzy")
+#: 排序方式（spec §2.6）
+SEARCH_SORTS: tuple[str, ...] = ("relevance", "year", "author")
+#: 模糊检索默认下限与 `--strict` 的下限（旧 `query_title` 的 0.90 不放宽）
+SEARCH_MIN_SCORE_DEFAULT = 0.75
+SEARCH_MIN_SCORE_STRICT = 0.90
+#: `any` 依次尝试的字段（任一命中即算命中；这是 spec 允许的唯一内部 OR）
+_ANY_SEARCH_FIELDS: tuple[str, ...] = ("title", "author", "booktitle", "journal",
+                                       "publisher")
+#: 按条目字段取值的文本字段（年份/标识符/别名另走专用路径）
+_SEARCH_TEXT_FIELDS = frozenset({"author", "editor", "title", "booktitle", "journal",
+                                 "publisher"})
+#: 这些字段不允许 fuzzy（标识符/年份没有「相似」语义，spec §2.5）
+_SEARCH_NO_FUZZY = frozenset({"year", "doi", "key", "alias"})
+#: 模式严格度（越小越严格，spec §2.6 的第二排序键）
+_SEARCH_MODE_RANK = {"exact": 0, "prefix": 1, "contains": 2, "fuzzy": 3}
+#: 模糊 needle 归一后至少 2 字符（防 `li` 命中 `liu`，spec §2.5）
+_SEARCH_MIN_NEEDLE = 2
+#: 年份表达式：`2003` / `=2003` / `1990-2000` / `>=2010` / `<=1999` / `>2010` / `<2010`
+_SEARCH_YEAR_EXPR_RE = re.compile(
+    r"^(?:(?P<op>>=|<=|>|<|=)?\s*(?P<year>\d{4})"
+    r"|(?P<lo>\d{4})\s*[-–—]\s*(?P<hi>\d{4}))$")
+
+
+def _search_similarity(needle: str, candidate: str) -> float:
+    """两个**已归一**串的相似度（与 `title_similarity` 同口径，供 fuzzy 打分）。"""
+    if not needle or not candidate:
+        return 0.0
+    if needle == candidate:
+        return 1.0
+    short, long = ((needle, candidate) if len(needle) <= len(candidate)
+                   else (candidate, needle))
+    if len(short) >= 12 and len(short) >= 0.6 * len(long) and short in long:
+        return 0.95
+    a, b = _tokens(needle), _tokens(candidate)
+    dice = 2.0 * len(set(a) & set(b)) / (len(a) + len(b)) if a and b else 0.0
+    return round(max(_seq_ratio(needle, candidate), dice), 6)
+
+
+def _parse_year_expression(value: object) -> tuple[str, int, int]:
+    """解析年份表达式 → `(op, low, high)`；非法抛 `BibDBError`（CLI rc2）。"""
+    raw = _squash(value)
+    match = _SEARCH_YEAR_EXPR_RE.match(raw)
+    if match is None:
+        raise BibDBError(
+            f"年份表达式非法：{raw!r}（支持 2003 / =2003 / 1990-2000 / "
+            ">=2010 / <=1999 / >2010 / <2010）")
+    if match.group("year"):
+        year = int(match.group("year"))
+        return (match.group("op") or "=", year, year)
+    low, high = int(match.group("lo")), int(match.group("hi"))
+    if low > high:
+        raise BibDBError(f"年份区间非法：{raw!r}（起点 {low} > 终点 {high}）")
+    return ("range", low, high)
+
+
+def _search_year_matches(expression: tuple[str, int, int], year: str) -> bool:
+    """记录年份（`entry_year`：year 优先、date 兜底）是否满足年份表达式。"""
+    if not (year and year.isdigit()):
+        return False                       # 缺年份不命中（spec §2.3）
+    value = int(year)
+    op, low, high = expression
+    if op == "=":
+        return value == low
+    if op == "range":
+        return low <= value <= high
+    if op == ">=":
+        return value >= low
+    if op == "<=":
+        return value <= low
+    if op == ">":
+        return value > low
+    return value < low
+
+
+@dataclass(frozen=True)
+class SearchTerm:
+    """一个检索条件：在 `field` 上按 `mode` 匹配 `value`（构造即校验）。
+
+    `field` ∈ `SEARCH_FIELDS`；`mode` ∈ `SEARCH_MODES`（默认 contains）。`year` 的
+    `value` 必须是年份表达式；`doi/key/alias/year` 禁止 fuzzy（`BibDBError`）。
+    """
+
+    field: str
+    value: str
+    mode: str = "contains"
+
+    def __post_init__(self) -> None:
+        field = str(self.field or "").strip().lower()
+        mode = str(self.mode or "").strip().lower()
+        value = _squash(self.value)
+        if field not in SEARCH_FIELDS:
+            raise BibDBError(
+                f"高级检索字段非法：{self.field!r}（支持 {'/'.join(SEARCH_FIELDS)}）")
+        if mode not in SEARCH_MODES:
+            raise BibDBError(
+                f"高级检索模式非法：{self.mode!r}（支持 {'/'.join(SEARCH_MODES)}）")
+        if not value:
+            raise BibDBError(f"高级检索条件为空：--{field}")
+        if mode == "fuzzy" and field in _SEARCH_NO_FUZZY:
+            raise BibDBError(f"`{field}` 不支持 fuzzy（标识符/年份请用 exact/prefix/contains）")
+        if field == "year":
+            _parse_year_expression(value)
+        if mode == "fuzzy" and len(normalize_search_text(value)) < _SEARCH_MIN_NEEDLE:
+            raise BibDBError(
+                f"模糊检索词过短：{value!r}（归一后至少 {_SEARCH_MIN_NEEDLE} 字符）")
+        object.__setattr__(self, "field", field)
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "value", value)
+
+
+@dataclass(frozen=True)
+class SearchSpec:
+    """一次高级检索：多个 term 之间 **AND**；`sort`/`limit`/`min_score` 同 spec §2。
+
+    `min_score` 只作用于 fuzzy 条件（相似度下限；默认 0.75，`--strict` 用 0.90）；
+    非 fuzzy 条件命中即 1.0，不受它影响。构造即校验，非法抛 `BibDBError`。
+    """
+
+    terms: tuple[SearchTerm, ...]
+    sort: str = "relevance"
+    limit: int = 20
+    min_score: float = SEARCH_MIN_SCORE_DEFAULT
+
+    def __post_init__(self) -> None:
+        terms = tuple(self.terms)
+        if not terms:
+            raise BibDBError("高级检索至少要有一个条件（--author/--title/… 或 --any）")
+        for term in terms:
+            if not isinstance(term, SearchTerm):
+                raise BibDBError(f"高级检索条件必须是 SearchTerm：{term!r}")
+        sort = str(self.sort or "").strip().lower()
+        if sort not in SEARCH_SORTS:
+            raise BibDBError(f"排序方式非法：{self.sort!r}（支持 {'/'.join(SEARCH_SORTS)}）")
+        if isinstance(self.limit, bool) or not isinstance(self.limit, int):
+            raise BibDBError(f"limit 必须是整数：{self.limit!r}")
+        if not 1 <= self.limit <= 200:
+            raise BibDBError(f"limit 超出范围：{self.limit}（1–200）")
+        try:
+            min_score = float(self.min_score)
+        except (TypeError, ValueError):
+            raise BibDBError(f"min_score 必须是 0–1 的数：{self.min_score!r}") from None
+        if not 0.0 <= min_score <= 1.0:
+            raise BibDBError(f"min_score 超出范围：{self.min_score}（0–1）")
+        object.__setattr__(self, "terms", terms)
+        object.__setattr__(self, "sort", sort)
+        object.__setattr__(self, "min_score", min_score)
+
+
+def _search_author_candidates(raw: object) -> list[str]:
+    """作者字段的候选串：整串 + 每个成员的「全名 + 姓氏」（spec §2.5 的 OR）。
+
+    先按 `_AUTHOR_SEP_RE`（and / ; / &）拆全员、逐个去角色词；`CJK` 姓名由
+    `first_author_surname` 原样返回（不分词）。
+    """
+    text = strip_author_roles(_latex_plain(raw))
+    members = [part.strip() for part in _AUTHOR_SEP_RE.split(text) if part.strip()]
+    candidates: list[str] = []
+    for item in [normalize_search_text(text)] + [
+            value for part in members
+            for value in (normalize_search_text(part), first_author_surname(part))]:
+        if item and item not in candidates:
+            candidates.append(item)
+    return candidates
+
+
+def _search_candidates(field: str, record: dict, cache: dict[str, list[str]]) -> list[str]:
+    """某字段的归一化候选串（同一条记录内缓存，多 term 复用；只读）。"""
+    if field in cache:
+        return cache[field]
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    if field in ("author", "editor"):
+        items = _search_author_candidates(fields.get(field) or "")
+    elif field == "doi":
+        items = [normalize_doi(fields.get("doi")) or _doi_from_url(fields.get("url"))]
+    elif field == "key":
+        items = [str(record.get("key") or "").lower()]
+    elif field == "alias":
+        items = [str(alias or "").lower() for alias in record.get("aliases") or []]
+    else:
+        items = [normalize_search_text(fields.get(field) or "")]
+    cache[field] = [item for item in items if item]
+    return cache[field]
+
+
+def _search_mode_score(needle: str, candidates: list[str], mode: str) -> float:
+    """单字段按模式打分：命中 1.0，fuzzy 取相似度最大，其余 0.0（空 needle 不算命中）。"""
+    if not needle:
+        return 0.0
+    if mode == "fuzzy":
+        return max((_search_similarity(needle, cand) for cand in candidates),
+                   default=0.0)
+    best = 0.0
+    for cand in candidates:
+        if mode == "exact":
+            score = 1.0 if cand == needle else 0.0
+        elif mode == "prefix":
+            score = 1.0 if cand.startswith(needle) else 0.0
+        else:                                   # contains
+            score = 1.0 if needle in cand else 0.0
+        if score > best:
+            best = score
+            if best == 1.0:
+                break
+    return best
+
+
+def _search_snippet(raw: object) -> str:
+    """why-hit 的上下文：字段原文前 80 字（spec §2.7）。"""
+    return str(raw if raw is not None else "")[:80]
+
+
+def _search_record_term(term: SearchTerm, needle: str,
+                         year_expr: tuple[str, int, int] | None, record: dict,
+                         cache: dict[str, list[str]]) -> tuple[float, list[dict]] | None:
+    """单条件对一条记录打分 → `(score, matched)`；不命中返回 None。"""
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    if term.field == "year":
+        year = entry_year(fields)
+        if not _search_year_matches(year_expr or ("=", 0, 0), year):
+            return None
+        return 1.0, [{"field": "year", "mode": term.mode, "score": 1.0,
+                      "snippet": _search_snippet(year)}]
+    if term.field == "any":
+        best: tuple[float, str] | None = None
+        for name in _ANY_SEARCH_FIELDS:
+            score = _search_mode_score(needle, _search_candidates(name, record, cache),
+                                       term.mode)
+            if score > 0.0 and (best is None or score > best[0]):
+                best = (score, name)
+        if best is None:
+            return None
+        score, name = best
+        return score, [{"field": name, "mode": term.mode, "score": round(score, 4),
+                        "snippet": _search_snippet(fields.get(name) or "")}]
+    if term.field in ("doi", "key", "alias"):
+        score = _search_mode_score(needle, _search_candidates(term.field, record, cache),
+                                   term.mode)
+        if score <= 0.0:
+            return None
+        if term.field == "doi":
+            snippet = fields.get("doi") or fields.get("url") or ""
+        elif term.field == "key":
+            snippet = record.get("key") or ""
+        else:
+            snippet = " / ".join(str(alias or "") for alias in record.get("aliases") or [])
+        return score, [{"field": term.field, "mode": term.mode, "score": round(score, 4),
+                        "snippet": _search_snippet(snippet)}]
+    score = _search_mode_score(needle, _search_candidates(term.field, record, cache),
+                               term.mode)
+    if score <= 0.0:
+        return None
+    return score, [{"field": term.field, "mode": term.mode, "score": round(score, 4),
+                    "snippet": _search_snippet(fields.get(term.field) or "")}]
+
+
+def _search_hit(record: dict, score: float, matched: list[dict]) -> dict:
+    """一条命中：键固定为 spec §2.8 的九个（`--bibtex` 由 CLI 另加 `bibtex`）。"""
+    fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+    return {
+        "key": str(record.get("key") or ""),
+        "score": round(float(score), 4),
+        "matched": matched,
+        "verified": record.get("verified") is True,
+        "title": str(fields.get("title") or ""),
+        "author": str(fields.get("author") or fields.get("editor") or ""),
+        "year": entry_year(fields),
+        "record": record,
+    }
+
+
+def _search_sort_key(hit: dict, sort: str, strictness: int) -> tuple:
+    """排序键（spec §2.6）。`strictness` 是**整条查询**的模式严格度（各 term 秩和）。
+
+    模式是 term 的属性而不是命中记录的属性，同一查询下它对所有命中相同；放在分数
+    之后是为了在「同分」时保持确定的比较口径（年份/作者/key 继续决胜）。
+    """
+    fields = hit["record"].get("fields") if isinstance(hit["record"].get("fields"), dict) else {}
+    surname = first_author_surname(fields.get("author") or fields.get("editor"))
+    year = hit["year"]
+    year_key = (0, -int(year)) if year and year.isdigit() else (1, 0)
+    if sort == "year":
+        return (year_key, surname, hit["key"])
+    if sort == "author":
+        return (surname, year_key, hit["key"])
+    return (-hit["score"], strictness, year_key, surname, hit["key"])
 
 # ── 引用库本体 ──────────────────────────────────────────────────────────────
 
@@ -2623,6 +2935,65 @@ class Store:
             "count": len(hits),
             "high": sum(1 for hit in hits if hit["confidence"] == "high"),
             "ambiguous": len(hits) > 1,
+        }
+
+    def query_advanced(self, spec: "SearchSpec") -> dict:
+        """高级检索（B-259 P1；**纯读**，不改库/不建索引）。
+
+        多条 `SearchTerm` 之间 AND；`any` 内部对五个文本字段取最佳命中（OR）。
+        fuzzy 条件按 `spec.min_score` 过滤；总分 = 各 term 分的均分（4 位小数）。
+        返回 `query/hits/count/total_matched/truncated`（键见 spec §2.8）。
+        """
+        if not isinstance(spec, SearchSpec):
+            raise BibDBError(f"query_advanced 需要 SearchSpec：{spec!r}")
+        plan: list[tuple[SearchTerm, str, tuple[str, int, int] | None]] = []
+        for term in spec.terms:
+            expression = (_parse_year_expression(term.value)
+                          if term.field == "year" else None)
+            if term.field == "doi":
+                needle = normalize_doi(term.value)
+            elif term.field in ("key", "alias"):
+                needle = term.value.lower()
+            elif term.field == "year":
+                needle = ""
+            else:
+                needle = normalize_search_text(term.value)
+            plan.append((term, needle, expression))
+        strictness = sum(_SEARCH_MODE_RANK[term.mode] for term in spec.terms)
+        total = 0
+        hits: list[dict] = []
+        # 按 key 升序遍历（records() 的口径）：同输入重复逐字节一致
+        for key in sorted(self._by_key):
+            record = self._by_key[key]
+            cache: dict[str, list[str]] = {}
+            scores: list[float] = []
+            matched: list[dict] = []
+            for term, needle, expression in plan:
+                outcome = _search_record_term(term, needle, expression, record, cache)
+                if outcome is None:
+                    break
+                score, items = outcome
+                if term.mode == "fuzzy" and score < spec.min_score:
+                    break                       # fuzzy 未达下限 = 该条不命中
+                scores.append(score)
+                matched.extend(items)
+            else:
+                total += 1
+                hits.append(_search_hit(record, sum(scores) / len(scores), matched))
+        hits.sort(key=lambda hit: _search_sort_key(hit, spec.sort, strictness))
+        page = hits[:spec.limit]
+        return {
+            "query": {
+                "terms": [{"field": term.field, "value": term.value, "mode": term.mode}
+                          for term in spec.terms],
+                "sort": spec.sort,
+                "limit": spec.limit,
+                "min_score": spec.min_score,
+            },
+            "hits": page,
+            "count": len(page),
+            "total_matched": total,
+            "truncated": total > len(page),
         }
 
     # -- 统计 / lint --------------------------------------------------------

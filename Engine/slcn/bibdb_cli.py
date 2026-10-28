@@ -175,6 +175,107 @@ def cmd_query(args) -> int:
     return 0
 
 
+#: `query-advanced` 的字段参数（顺序 = 生成 term 的顺序；同名参数重复 = 多个 AND）
+_ADVANCED_FIELD_ARGS: tuple[str, ...] = (
+    "author", "editor", "title", "booktitle", "journal",
+    "publisher", "year", "doi", "key", "alias", "any",
+)
+#: 这些字段 CLI 默认 exact（标识符）；其余文本字段默认 contains，year 走年份表达式
+_ADVANCED_DEFAULT_EXACT = frozenset({"doi", "key", "alias"})
+
+
+def cmd_query_advanced(args) -> int:
+    """高级检索（B-259 P2）：多字段 AND + 4 模式 + 年份表达式 + 排序/分页/why-hit。"""
+    modes: dict[str, str] = {}
+    for raw in args.mode or []:
+        text = str(raw or "")
+        if "=" not in text:
+            print(f"✗ --mode 需要 `字段=模式` 形式：{text!r}", file=sys.stderr)
+            return 2
+        name, _, value = text.partition("=")
+        name = name.strip().lower()
+        value = value.strip().lower()
+        if name not in bibdb.SEARCH_FIELDS:
+            print(f"✗ --mode 字段 `{name}` 不在支持范围"
+                  f"（{'/'.join(bibdb.SEARCH_FIELDS)}）", file=sys.stderr)
+            return 2
+        if name in modes and modes[name] != value:
+            print(f"✗ --mode 字段 `{name}` 给了两种模式（{modes[name]} / {value}）",
+                  file=sys.stderr)
+            return 2
+        modes[name] = value
+    for name in modes:
+        if not getattr(args, name):
+            print(f"✗ --mode {name}=… 没有对应的 --{name} 条件", file=sys.stderr)
+            return 2
+    if args.strict and args.min_score is not None:
+        print("✗ --strict 与 --min-score 互斥", file=sys.stderr)
+        return 2
+    try:
+        terms = []
+        for name in _ADVANCED_FIELD_ARGS:
+            mode = modes.get(name) or ("exact" if name in _ADVANCED_DEFAULT_EXACT
+                                       else "contains")
+            for value in getattr(args, name) or []:
+                terms.append(bibdb.SearchTerm(name, value, mode))
+        min_score = (bibdb.SEARCH_MIN_SCORE_STRICT if args.strict
+                     else bibdb.SEARCH_MIN_SCORE_DEFAULT if args.min_score is None
+                     else args.min_score)
+        spec = bibdb.SearchSpec(tuple(terms), sort=args.sort, limit=args.limit,
+                                min_score=min_score)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    try:
+        path, store = _open_store(args)
+        result = store.query_advanced(spec)
+    except bibdb.BibDBError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+    payload = {"db": path, "kind": "advanced", **result}
+    if args.bibtex:
+        for hit in payload["hits"]:
+            hit["bibtex"] = render_bibtex(hit["record"])
+    if args.json:
+        _print_json(payload)
+        return 0
+    print(f"库：{path}")
+    hits = result["hits"]
+    if not hits:
+        subject = "；".join(f"{term.field} {term.mode}={term.value}"
+                           for term in spec.terms)
+        print(f"高级检索无命中（{subject}）")
+        print("提示：放宽字段或模式（文本默认 contains；fuzzy 需相似度 ≥ "
+              f"{spec.min_score:.2f}），或去掉 --strict")
+        return 0
+    print(f"高级检索命中 {len(hits)} 条"
+          + (f"（共 {result['total_matched']} 条，已截断）"
+             if result["truncated"] else ""))
+    for index, hit in enumerate(hits, start=1):
+        marks = ["已核实" if hit["verified"] else "未核实"]
+        print(f"  {index}. [{'／'.join(marks)}] {hit['key']}  score={hit['score']:.4f}")
+        if hit["title"]:
+            print(f"     题名：{_clip(hit['title'], 90)}")
+        if hit["author"] or hit["year"]:
+            print(f"     作者：{_clip(hit['author'], 70)}"
+                  + (f"　年份：{hit['year']}" if hit["year"] else ""))
+        doi = _field(hit["record"].get("fields") or {}, "doi")
+        if doi:
+            print(f"     DOI：{doi}")
+        why = "；".join(
+            f"{item['field']} {item['mode']} {item['score']:.3f}"
+            f"「{_clip(item['snippet'], 40)}」" for item in hit["matched"])
+        if why:
+            print(f"     命中：{why}")
+        for source in hit["record"].get("sources") or []:
+            print(f"     来源：{_source_note(source)}")
+        if args.bibtex:
+            print("     BibTeX：")
+            for line in render_bibtex(hit["record"]).rstrip("\n").split("\n"):
+                print(f"       {line}")
+    return 0
+
+
 def cmd_stats(args) -> int:
     try:
         path, store = _open_store(args)
@@ -2686,6 +2787,51 @@ def build_parser() -> argparse.ArgumentParser:
                      help="每条命中附带可直接复制的 BibTeX（--json 里是 `bibtex` 字段）")
     qry.add_argument("--json", action="store_true", help="机器可读输出")
     qry.set_defaults(func=cmd_query)
+
+    qadv = sub.add_parser(
+        "query-advanced", parents=[common],
+        help="高级检索：多字段 AND / contains|prefix|exact|fuzzy / 年份表达式 / 排序 / 分页")
+    qadv.add_argument("--author", action="append", default=[], metavar="TEXT",
+                      help="作者（可重复＝多个 AND；匹配全名/姓氏）")
+    qadv.add_argument("--editor", action="append", default=[], metavar="TEXT",
+                      help="编者（可重复；规则同 --author）")
+    qadv.add_argument("--title", action="append", default=[], metavar="TEXT",
+                      help="题名（可重复；默认 contains，短片段也能查）")
+    qadv.add_argument("--booktitle", action="append", default=[], metavar="TEXT",
+                      help="书名（可重复）")
+    qadv.add_argument("--journal", action="append", default=[], metavar="TEXT",
+                      help="期刊名（可重复）")
+    qadv.add_argument("--publisher", action="append", default=[], metavar="TEXT",
+                      help="出版社（可重复）")
+    qadv.add_argument("--year", action="append", default=[], metavar="EXPR",
+                      help="年份表达式（可重复）：2003 / =2003 / 1990-2000 / "
+                           ">=2010 / <=1999 / >2010 / <2010")
+    qadv.add_argument("--doi", action="append", default=[], metavar="DOI",
+                      help="DOI（可重复；默认 exact，大小写/前缀不敏感）")
+    qadv.add_argument("--key", action="append", default=[], metavar="KEY",
+                      help="BibTeX key（可重复；默认 exact）")
+    qadv.add_argument("--alias", action="append", default=[], metavar="KEY",
+                      help="别名 key（可重复；默认 exact，命中任一别名）")
+    qadv.add_argument("--any", action="append", default=[], metavar="TEXT",
+                      help="题名/作者/书名/期刊/出版社任一命中（内部 OR；可重复＝AND）")
+    qadv.add_argument("--mode", action="append", default=[], metavar="FIELD=MODE",
+                      help="字段匹配模式（可重复）：author/title/… = "
+                           "contains|prefix|exact|fuzzy；未指定时文本字段 contains、"
+                           "doi/key/alias exact；必须同时给对应字段条件")
+    qadv.add_argument("--sort", default="relevance", choices=list(bibdb.SEARCH_SORTS),
+                      help="排序：relevance（默认）/ year / author")
+    qadv.add_argument("--limit", type=int, default=20,
+                      help="最多返回几条（默认 20，范围 1–200）")
+    qadv.add_argument("--min-score", type=float, default=None,
+                      help=f"fuzzy 相似度下限（默认 {bibdb.SEARCH_MIN_SCORE_DEFAULT}；"
+                           "与 --strict 互斥）")
+    qadv.add_argument("--strict", action="store_true",
+                      help=f"严格模式：fuzzy 下限抬到 {bibdb.SEARCH_MIN_SCORE_STRICT}"
+                           "（与 --min-score 互斥）")
+    qadv.add_argument("--bibtex", action="store_true",
+                      help="每条命中附带可直接复制的 BibTeX（--json 里是 `bibtex` 字段）")
+    qadv.add_argument("--json", action="store_true", help="机器可读输出")
+    qadv.set_defaults(func=cmd_query_advanced)
 
     stats = sub.add_parser("stats", parents=[common], help="库概况")
     stats.add_argument("--json", action="store_true", help="机器可读输出")

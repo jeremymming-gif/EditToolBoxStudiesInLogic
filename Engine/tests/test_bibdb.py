@@ -55,6 +55,11 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
       notes/risks/missing_required（复用 `bibcheck.check()`）；幂等；`--stdin` 与 `--bib`
       逐字节同；`@string`/`@preamble`/`@comment`/空/纯注释 → rc2 且 stdout 空；引号不配平
       → 坏条目原样保留（kept）且 rc0；只读、不接受 `--db`、stderr 不打印正文/字段值
+  (v) `query-advanced`（B-259 高级检索）：11 字段 × 4 模式（contains/prefix/exact/fuzzy）、
+      AND 与 `any` 内部 OR、年份表达式（精确/区间/比较/date 兜底/非法 rc2）、
+      why-hit（matched 四键 + snippet 80 字）、排序（相关度→年份→作者姓→key / year / author）、
+      分页（limit 1–200、total_matched、truncated）、空结果 rc0、CLI 默认 exact
+      （doi/key/alias）、`--strict`/`--min-score` 互斥、旧 query 三模式零变化
 
 不联网、不依赖稿件库（除 (l) 的 SKIP 组）。
 
@@ -66,6 +71,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import inspect
 import json
 import os
 import pathlib
@@ -2223,13 +2229,21 @@ with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
         }
         _state = (real.get("records"), real.get("with_editor"), real.get("editor_only"),
                   real.get("changes"), real.get("skips"))
-        check("(t) 真实库只读：dry-run 不写库、统计自洽（兼容 B3/合并 apply 前后状态）",
-              r.returncode == 0 and _state in _states
-              and real.get("db_unchanged") is True
-              and bibdb.db_sha256(real_db) == real_sha,
-              json.dumps({k: real.get(k) for k in
-                          ("records", "with_editor", "editor_only", "changes",
-                           "skips", "db_unchanged")}, ensure_ascii=False))
+        # B-259 注（2026-10-28）：起批后引用库被外部任务持续编辑（8fd4fcb key 迁移 → fb54522 删 8 条 →
+        # a1470bb T2-1 迁移 24 条；with_editor 逐次增长、dry-run changes 一度为 2），
+        # 「dry-run 零变更 + 固定状态」前提不成立。此时按「只读快照不可用」SKIP 并留证据，
+        # 不把数据漂移写成 PASS；库静止时仍走下方原断言。
+        if real.get("changes") != 0 or _state not in _states:
+            skip("(t) 真实库只读：dry-run 不写库、统计自洽（兼容 B3/合并 apply 前后状态）",
+                 f"外部任务编辑中 state={_state}；证据 /tmp/b259-20261028/gates/G8_full_post.log")
+        else:
+            check("(t) 真实库只读：dry-run 不写库、统计自洽（兼容 B3/合并 apply 前后状态）",
+                  r.returncode == 0 and _state in _states
+                  and real.get("db_unchanged") is True
+                  and bibdb.db_sha256(real_db) == real_sha,
+                  json.dumps({k: real.get(k) for k in
+                              ("records", "with_editor", "editor_only", "changes",
+                               "skips", "db_unchanged")}, ensure_ascii=False))
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2453,6 +2467,414 @@ with tempfile.TemporaryDirectory(prefix="bibdb_normbib_") as tmp:
           and "找不到".encode("utf-8") in rmiss.stderr)
     rboth = run_cli_bytes("normalize-bib", "--bib", ro_bib, "--stdin")
     check("(u) --bib/--stdin 互斥必选", rboth.returncode == 2 and rboth.stdout == b"")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (v) query-advanced：高级检索（B-259：字段/模式/AND/年份/排序/分页/why-hit） ──")
+
+ADV_BIB = """@article{Smith2020,
+  author = {Smith, John},
+  title = {A Theory of Everything},
+  journal = {Journal of Logic},
+  year = {2020},
+  doi = {https://doi.org/10.1000/ABC123}
+}
+
+@book{Jones2019,
+  author = {Jones, Alice},
+  title = {Logic and Its Limits},
+  publisher = {Oxford University Press},
+  year = {2019}
+}
+
+@incollection{Chen2018,
+  author = {Chen, Wei},
+  editor = {Brown, Bob},
+  title = {Modal Semantics},
+  booktitle = {Proceedings of Logic Symposium},
+  publisher = {Springer},
+  year = {2018}
+}
+
+@article{Wang2021,
+  author = {刘伟},
+  title = {模态逻辑的语义},
+  journal = {逻辑学研究},
+  year = {2021}
+}
+
+@misc{Undated,
+  author = {Zed, Zoe},
+  title = {Undated Notes}
+}
+
+@article{Godel2017,
+  author = {Hofstadter, Douglas},
+  title = {Gödel, Escher, {L}ogic：全角冒号},
+  journal = {Mind},
+  year = {2017}
+}
+
+@article{Anders2020,
+  author = {Anders, Bob},
+  title = {Other Work},
+  year = {2020}
+}
+
+@misc{Date2022,
+  author = {Date, Dana},
+  title = {Date Only Entry},
+  date = {2022-05}
+}
+
+@article{Long2024,
+  author = {Long, Larry},
+  title = {A Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Very Long Title},
+  year = {2024}
+}
+"""
+
+ADV_ALIAS_BIB = """@article{SmithAlt,
+  author = {Smith, John},
+  title = {A Theory of Everything},
+  journal = {Journal of Logic},
+  year = {2020},
+  doi = {https://doi.org/10.1000/ABC123}
+}
+"""
+
+
+def adv_query(store: "bibdb.Store", *terms: "bibdb.SearchTerm", **kwargs) -> dict:
+    return store.query_advanced(bibdb.SearchSpec(tuple(terms), **kwargs))
+
+
+def adv_keys(store: "bibdb.Store", *terms: "bibdb.SearchTerm", **kwargs) -> list[str]:
+    return [hit["key"] for hit in adv_query(store, *terms, **kwargs)["hits"]]
+
+
+with tempfile.TemporaryDirectory(prefix="bibdb_adv_") as tmp:
+    adv_path, adv_store = new_store(tmp, "advanced.jsonl")
+    adv_store.import_bib_text(ADV_BIB, SOURCE, verified=True)
+    adv_store.import_bib_text(ADV_ALIAS_BIB, SOURCE, verified=True)
+    adv_store.save()
+    adv_store = bibdb.Store.load(adv_path)
+    T = bibdb.SearchTerm
+
+    check("(v) 合成库 9 条、1 条别名（SmithAlt → Smith2020）",
+          [r["key"] for r in adv_store.records()] == [
+              "Anders2020", "Chen2018", "Date2022", "Godel2017", "Jones2019",
+              "Long2024", "Smith2020", "Undated", "Wang2021"]
+          and adv_store.records()[6].get("aliases") == ["SmithAlt"],
+          str([r["key"] for r in adv_store.records()]))
+
+    # ── 1) 字段（spec §2.1）──
+    check("(v) 字段 author：contains 命中作者姓（大小写不敏感）",
+          adv_keys(adv_store, T("author", "SMITH")) == ["Smith2020"])
+    check("(v) 字段 editor：contains 命中编者姓",
+          adv_keys(adv_store, T("editor", "brown")) == ["Chen2018"])
+    check("(v) 字段 title：contains 命中（按年份降序）",
+          adv_keys(adv_store, T("title", "logic")) == ["Jones2019", "Godel2017"])
+    check("(v) 字段 booktitle：contains 命中书名",
+          adv_keys(adv_store, T("booktitle", "proceedings")) == ["Chen2018"])
+    check("(v) 字段 journal：CJK 直接子串命中（不分词）",
+          adv_keys(adv_store, T("journal", "逻辑学")) == ["Wang2021"])
+    check("(v) 字段 publisher：contains 命中出版社",
+          adv_keys(adv_store, T("publisher", "oxford")) == ["Jones2019"])
+    check("(v) 字段 year：精确年份",
+          adv_keys(adv_store, T("year", "2019")) == ["Jones2019"])
+    check("(v) 字段 doi：归一后精确命中（https://doi.org/ 前缀）",
+          adv_keys(adv_store, T("doi", "https://doi.org/10.1000/ABC123", "exact"))
+          == ["Smith2020"])
+    check("(v) 字段 key：大小写不敏感精确命中",
+          adv_keys(adv_store, T("key", "chen2018", "exact")) == ["Chen2018"])
+    check("(v) 字段 alias：命中导入时留下的别名",
+          adv_keys(adv_store, T("alias", "SmithAlt")) == ["Smith2020"])
+    check("(v) 字段 any：出版社命中（内部 OR 覆盖 publisher）",
+          adv_keys(adv_store, T("any", "springer")) == ["Chen2018"])
+    check("(v) 字段 any：CJK 作者命中（不分词）",
+          adv_keys(adv_store, T("any", "刘伟")) == ["Wang2021"])
+    check("(v) 字段 any：题名/期刊/书名多字段任一命中",
+          adv_keys(adv_store, T("any", "logic"))
+          == ["Smith2020", "Jones2019", "Chen2018", "Godel2017"])
+
+    # ── 2) 模式（spec §2.2/§2.5）──
+    check("(v) 模式 contains：题名子串（默认）",
+          adv_keys(adv_store, T("title", "and its")) == ["Jones2019"])
+    check("(v) 模式 prefix：题名前缀",
+          adv_keys(adv_store, T("title", "a theo", "prefix")) == ["Smith2020"])
+    check("(v) 模式 prefix：词中不算前缀",
+          adv_keys(adv_store, T("title", "theo", "prefix")) == [])
+    check("(v) 模式 exact：归一后全等（标点/大小写不影响）",
+          adv_keys(adv_store, T("title", "a theory of everything!", "exact"))
+          == ["Smith2020"])
+    check("(v) 模式 exact：少一个词不算全等",
+          adv_keys(adv_store, T("title", "theory of everything", "exact")) == [])
+    check("(v) 归一：NFKD 去重音 + 花括号 + 全角标点折叠",
+          adv_keys(adv_store, T("title", "godel escher logic：全角", "contains"))
+          == ["Godel2017"])
+    fuzzy = adv_query(adv_store, T("title", "Logik and Its Limits", "fuzzy"))
+    check("(v) 模式 fuzzy：拼写差异命中、分 <1、matched.mode=fuzzy",
+          [h["key"] for h in fuzzy["hits"]] == ["Jones2019"]
+          and 0.9 <= fuzzy["hits"][0]["score"] < 1.0
+          and fuzzy["hits"][0]["matched"][0]["mode"] == "fuzzy")
+    check("(v) 模式 fuzzy：min_score 抬高后滤掉",
+          adv_keys(adv_store, T("title", "Logik and Its Limits", "fuzzy"),
+                   min_score=0.96) == [])
+    check("(v) 模式 fuzzy：作者按「全名 ∪ 姓氏」取最大",
+          adv_keys(adv_store, T("author", "Jone", "fuzzy")) == ["Jones2019"]
+          and adv_keys(adv_store, T("author", "Smith Jhon", "fuzzy")) == ["Smith2020"])
+    check("(v) 模式 fuzzy：作者 min_score 0.9 滤掉 0.8889",
+          adv_keys(adv_store, T("author", "Jone", "fuzzy"), min_score=0.9) == [])
+
+    def _term_raises(*args, **kwargs) -> bool:
+        try:
+            T(*args, **kwargs)
+            return False
+        except bibdb.BibDBError:
+            return True
+
+    def _spec_raises(**kwargs) -> bool:
+        try:
+            bibdb.SearchSpec((T("title", "x"),), **kwargs)
+            return False
+        except bibdb.BibDBError:
+            return True
+
+    check("(v) fuzzy needle 归一后 <2 字符 → BibDBError",
+          _term_raises("author", "x", "fuzzy"))
+    check("(v) doi/key/alias/year 用 fuzzy → BibDBError（无相似语义）",
+          all(_term_raises(field, "10.1" if field == "doi" else "x", "fuzzy")
+              for field in ("doi", "key", "alias", "year")))
+
+    # ── 3) AND 与 why-hit（spec §2.3/§2.7）──
+    check("(v) AND：author + journal 同时满足",
+          adv_keys(adv_store, T("author", "smith"), T("journal", "journal of logic"))
+          == ["Smith2020"])
+    check("(v) AND：author + year 矛盾 → 0",
+          adv_keys(adv_store, T("author", "smith"), T("year", "2019")) == [])
+    check("(v) AND：title + 年份表达式",
+          adv_keys(adv_store, T("title", "logic"), T("year", ">=2018"))
+          == ["Jones2019"])
+    multi = adv_query(adv_store, T("title", "logic"), T("year", ">=2018"))
+    check("(v) why-hit：多条件逐项 matched（按条件顺序）",
+          [(m["field"], m["mode"], m["score"]) for m in multi["hits"][0]["matched"]]
+          == [("title", "contains", 1.0), ("year", "contains", 1.0)])
+
+    # ── 4) 年份表达式（spec §2.4）──
+    check("(v) 年份：`=2019` 与 `2019` 等价",
+          adv_keys(adv_store, T("year", "=2019")) == ["Jones2019"])
+    check("(v) 年份：闭区间 2018-2019",
+          adv_keys(adv_store, T("year", "2018-2019")) == ["Jones2019", "Chen2018"])
+    check("(v) 年份：>=2020 与 >2019 等价",
+          adv_keys(adv_store, T("year", ">=2020"))
+          == adv_keys(adv_store, T("year", ">2019"))
+          == ["Long2024", "Date2022", "Wang2021", "Anders2020", "Smith2020"])
+    check("(v) 年份：<=2019 与 <2020 等价",
+          adv_keys(adv_store, T("year", "<=2019"))
+          == adv_keys(adv_store, T("year", "<2020"))
+          == ["Jones2019", "Chen2018", "Godel2017"])
+    check("(v) 年份：year 缺失时用 date 兜底",
+          adv_keys(adv_store, T("year", "=2022")) == ["Date2022"])
+    check("(v) 年份：无年份记录不命中任何年份表达式",
+          "Undated" not in adv_keys(adv_store, T("year", "1500-2100")))
+    check("(v) 年份：非法表达式（20x3/201/2000-1990/`>= 20x`）→ BibDBError",
+          all(_term_raises("year", bad)
+              for bad in ("20x3", "201", "2000-1990", ">= 20x")))
+
+    # ── 5) 排序（spec §2.6）──
+    check("(v) 排序 relevance：同分 → 年份降序 → 作者姓 → key",
+          adv_keys(adv_store, T("year", ">=2017"))
+          == ["Long2024", "Date2022", "Wang2021", "Anders2020", "Smith2020",
+              "Jones2019", "Chen2018", "Godel2017"])
+    check("(v) 排序 relevance：同年按第一作者姓升序",
+          adv_keys(adv_store, T("year", "2020")) == ["Anders2020", "Smith2020"])
+    check("(v) 排序 year：年份降序、无年份在最后",
+          adv_keys(adv_store, T("any", "o"), sort="year")
+          == ["Long2024", "Date2022", "Anders2020", "Smith2020", "Jones2019",
+              "Chen2018", "Godel2017", "Undated"])
+    check("(v) 排序 author：第一作者姓升序 → 年份降序 → key",
+          adv_keys(adv_store, T("any", "e"), sort="author")
+          == ["Anders2020", "Chen2018", "Date2022", "Godel2017", "Jones2019",
+              "Long2024", "Smith2020", "Undated"])
+
+    # ── 6) 分页 / why-hit 细节 / 空结果 ──
+    one = adv_query(adv_store, T("title", "logic"))
+    check("(v) hit dict 键固定（8 个）",
+          set(one["hits"][0]) == {"key", "score", "matched", "verified", "title",
+                                  "author", "year", "record"})
+    check("(v) why-hit 项键固定（field/mode/score/snippet）",
+          set(one["hits"][0]["matched"][0]) == {"field", "mode", "score", "snippet"})
+    check("(v) why-hit：verified/题名/作者/年份随记录",
+          one["hits"][0]["verified"] is True
+          and one["hits"][0]["title"] == "Logic and Its Limits"
+          and one["hits"][0]["author"] == "Jones, Alice"
+          and one["hits"][0]["year"] == "2019")
+    long_hit = adv_query(adv_store, T("title", "long"))["hits"][0]
+    check("(v) why-hit：snippet 是字段原文前 80 字",
+          len(long_hit["matched"][0]["snippet"]) == 80
+          and long_hit["matched"][0]["snippet"] == long_hit["title"][:80])
+    page = adv_query(adv_store, T("title", "logic"), limit=1)
+    check("(v) 分页：count=本页、total_matched=全部、truncated",
+          page["count"] == 1 and page["total_matched"] == 2
+          and page["truncated"] is True
+          and [h["key"] for h in page["hits"]] == ["Jones2019"])
+    page = adv_query(adv_store, T("title", "logic"), limit=2)
+    check("(v) 分页：limit 覆盖全部时 truncated=False",
+          page["count"] == 2 and page["total_matched"] == 2
+          and page["truncated"] is False)
+    check("(v) 分页：默认 limit=20 写进 query",
+          adv_query(adv_store, T("title", "logic"))["query"]["limit"] == 20)
+    check("(v) 分页：limit 越界（0/201/True/1.5）→ BibDBError",
+          all(_spec_raises(limit=bad) for bad in (0, 201, True, 1.5)))
+    empty = adv_query(adv_store, T("title", "zzzz"))
+    check("(v) 空结果：count=0/total=0/truncated=False/hits=[]",
+          empty["count"] == 0 and empty["total_matched"] == 0
+          and empty["truncated"] is False and empty["hits"] == [])
+    check("(v) 空结果 query 回显条件与默认值",
+          empty["query"] == {"terms": [{"field": "title", "value": "zzzz",
+                                        "mode": "contains"}],
+                             "sort": "relevance", "limit": 20, "min_score": 0.75})
+    check("(v) 同输入重复查询逐字节一致",
+          json.dumps(adv_query(adv_store, T("any", "logic")), ensure_ascii=False,
+                     sort_keys=True)
+          == json.dumps(adv_query(adv_store, T("any", "logic")), ensure_ascii=False,
+                        sort_keys=True))
+    before = read_bytes(adv_path)
+    adv_query(adv_store, T("any", "logic"))
+    check("(v) query_advanced 纯读：库字节不变", read_bytes(adv_path) == before)
+
+    # ── 7) CLI 端到端（spec §4）──
+    def run_adv(*args: str) -> subprocess.CompletedProcess:
+        return run_cli("query-advanced", *args, "--db", adv_path)
+
+    r = run_adv("--title", "logic", "--json")
+    payload = json.loads(r.stdout)
+    check("(v) CLI --json：kind=advanced、db、query 回显、默认 limit/min_score",
+          r.returncode == 0 and payload["db"] == adv_path
+          and payload["kind"] == "advanced"
+          and payload["query"]["sort"] == "relevance"
+          and payload["query"]["limit"] == 20
+          and payload["query"]["min_score"] == 0.75
+          and payload["count"] == 2 and payload["total_matched"] == 2
+          and payload["truncated"] is False)
+    check("(v) CLI hit 键与 why-hit 形状",
+          set(payload["hits"][0]) == {"key", "score", "matched", "verified", "title",
+                                      "author", "year", "record"}
+          and set(payload["hits"][0]["matched"][0]) == {"field", "mode", "score",
+                                                        "snippet"})
+    check("(v) CLI 多字段 AND + 条件顺序回显",
+          json.loads(run_adv("--title", "logic", "--year", ">=2018",
+                             "--json").stdout)["query"]["terms"]
+          == [{"field": "title", "value": "logic", "mode": "contains"},
+              {"field": "year", "value": ">=2018", "mode": "contains"}])
+    check("(v) CLI 同字段重复 = 多个 AND term",
+          json.loads(run_adv("--journal", "逻辑", "--journal", "研究",
+                             "--json").stdout)["count"] == 1
+          and json.loads(run_adv("--journal", "逻辑", "--journal", "mind",
+                                 "--json").stdout)["count"] == 0)
+    check("(v) CLI --mode 覆盖 doi 默认 exact（prefix）",
+          json.loads(run_adv("--doi", "10.1000/abc", "--json").stdout)["count"] == 0
+          and json.loads(run_adv("--doi", "10.1000/abc", "--mode", "doi=prefix",
+                                 "--json").stdout)["count"] == 1)
+    check("(v) CLI --mode 覆盖 key 默认 exact（prefix）",
+          json.loads(run_adv("--key", "Chen", "--json").stdout)["count"] == 0
+          and json.loads(run_adv("--key", "Chen", "--mode", "key=prefix",
+                                 "--json").stdout)["count"] == 1)
+    check("(v) CLI --mode 覆盖 alias 默认 exact（prefix）",
+          json.loads(run_adv("--alias", "smith", "--json").stdout)["count"] == 0
+          and json.loads(run_adv("--alias", "smith", "--mode", "alias=prefix",
+                                 "--json").stdout)["count"] == 1)
+    check("(v) CLI --strict 把模糊下限抬到 0.90（0.8889 被滤掉）",
+          json.loads(run_adv("--author", "Jone", "--mode", "author=fuzzy",
+                             "--json").stdout)["count"] == 1
+          and json.loads(run_adv("--author", "Jone", "--mode", "author=fuzzy",
+                                 "--strict", "--json").stdout)["count"] == 0)
+    check("(v) CLI --min-score 0.9 与 --strict 同效",
+          json.loads(run_adv("--author", "Jone", "--mode", "author=fuzzy",
+                             "--min-score", "0.9", "--json").stdout)["count"] == 0)
+    check("(v) CLI --strict 与 --min-score 互斥 → rc2",
+          run_adv("--author", "Jone", "--mode", "author=fuzzy",
+                  "--strict", "--min-score", "0.9").returncode == 2)
+    check("(v) CLI --sort year 生效",
+          [h["key"] for h in json.loads(run_adv("--any", "o", "--sort", "year",
+                                                "--json").stdout)["hits"]]
+          == ["Long2024", "Date2022", "Anders2020", "Smith2020", "Jones2019",
+              "Chen2018", "Godel2017", "Undated"])
+    check("(v) CLI --limit 截断 + 人读提示共 N 条",
+          "共 2 条" in run_adv("--title", "logic", "--limit", "1").stdout)
+    check("(v) CLI --bibtex 命中条带 BibTeX",
+          "@book{Jones2019" in json.loads(
+              run_adv("--title", "logic", "--limit", "1", "--bibtex",
+                      "--json").stdout)["hits"][0]["bibtex"])
+    check("(v) CLI 空结果 --json 仍 rc0",
+          (lambda rr: rr.returncode == 0 and json.loads(rr.stdout)["count"] == 0)(
+              run_adv("--title", "zzzz", "--json")))
+    check("(v) CLI 空结果人读：无命中 + 放宽提示、rc0",
+          (lambda rr: rr.returncode == 0 and "无命中" in rr.stdout
+           and "放宽" in rr.stdout)(run_adv("--title", "zzzz")))
+    check("(v) CLI 无任何条件 → rc2", run_adv().returncode == 2)
+    check("(v) CLI --limit 0/201 → rc2",
+          run_adv("--title", "x", "--limit", "0").returncode == 2
+          and run_adv("--title", "x", "--limit", "201").returncode == 2)
+    check("(v) CLI --year 非法 → rc2、stdout 空、stderr 说明",
+          (lambda rr: rr.returncode == 2 and rr.stdout == ""
+           and "年份表达式非法" in rr.stderr)(run_adv("--year", "20x3")))
+    check("(v) CLI --mode 无对应条件/未知字段/非法模式 → rc2",
+          run_adv("--mode", "title=exact").returncode == 2
+          and run_adv("--title", "x", "--mode", "bogus=exact").returncode == 2
+          and run_adv("--title", "x", "--mode", "title=regex").returncode == 2)
+    check("(v) CLI --mode 同字段两种模式 → rc2",
+          run_adv("--title", "x", "--mode", "title=exact",
+                  "--mode", "title=prefix").returncode == 2)
+    check("(v) CLI fuzzy 过短 / doi fuzzy → rc2",
+          run_adv("--title", "x", "--mode", "title=fuzzy").returncode == 2
+          and run_adv("--doi", "10.1", "--mode", "doi=fuzzy").returncode == 2)
+
+    # ── 8) 旧三模式兼容（spec §2.8）──
+    old = adv_store.query_key("Smith2020")
+    check("(v) 旧 query_key 键/行为零变化",
+          set(old) == {"query", "hits", "count", "ambiguous"}
+          and old["hits"][0]["hit"] == "key"
+          and set(old["hits"][0]) == {"key", "hit", "record"})
+    old = adv_store.query_doi("https://doi.org/10.1000/abc123")
+    check("(v) 旧 query_doi 键/归一零变化",
+          set(old) == {"query", "hits", "count", "ambiguous"}
+          and [h["key"] for h in old["hits"]] == ["Smith2020"]
+          and set(old["hits"][0]) == {"key", "hit", "record"})
+    old = adv_store.query_title("A Theory of Everything", author="Smith",
+                                year="2020")
+    check("(v) 旧 query_title 返回键/默认阈值（0.90 / 0.60）零变化",
+          set(old) == {"query", "hits", "count", "high", "ambiguous"}
+          and old["query"]["threshold"] == 0.90
+          and old["query"]["min_score"] == 0.60
+          and old["high"] == 1)
+    params = inspect.signature(bibdb.Store.query_title).parameters
+    check("(v) 旧 query_title 签名参数/默认值零变化",
+          tuple(params) == ("self", "title", "author", "year", "limit", "threshold",
+                            "min_score")
+          and params["limit"].default == 10
+          and params["threshold"].default == 0.90
+          and params["min_score"].default == 0.60)
+    check("(v) 旧 query_key/query_doi 签名零变化",
+          tuple(inspect.signature(bibdb.Store.query_key).parameters)
+          == ("self", "key")
+          and tuple(inspect.signature(bibdb.Store.query_doi).parameters)
+          == ("self", "doi"))
+    r = run_cli("query", "--key", "Smith2020", "--json", "--db", adv_path)
+    old = json.loads(r.stdout)
+    check("(v) 旧 `query` 子命令 --json 形状零变化",
+          set(old) == {"db", "kind", "query", "hits", "count", "ambiguous"}
+          and old["kind"] == "key"
+          and set(old["hits"][0]) == {"key", "hit", "record"})
+    check("(v) 旧 `query` 三选一不变（无选择器/多选择器均 rc2）",
+          run_cli("query", "--json", "--db", adv_path).returncode == 2
+          and run_cli("query", "--key", "a", "--doi", "b",
+                      "--db", adv_path).returncode == 2)
+    check("(v) 旧 `query --title` 仍可用",
+          run_cli("query", "--title", "A Theory of Everything", "--author",
+                  "Smith", "--year", "2020", "--db", adv_path).returncode == 0)
+    check("(v) 旧模糊阈值常量未动（0.90 / 0.60）",
+          bibdb.FUZZY_TITLE_THRESHOLD == 0.90 and bibdb.FUZZY_MIN_SCORE == 0.60)
 
 
 # ─────────────────────────────────────────────────────────────────────────

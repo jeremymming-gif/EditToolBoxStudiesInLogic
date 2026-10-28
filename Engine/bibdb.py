@@ -30,6 +30,18 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                            `--root` 也可给**一期目录**（只导入这一期）
     query       (--key K | --doi D | --title T [--author A] [--year Y])
                 [--limit N] [--threshold X] [--min-score X] [--bibtex] [--json]
+    query-advanced [--author A]… [--editor E]… [--title T]… [--booktitle B]…
+                [--journal J]… [--publisher P]… [--year Y]… [--doi D]… [--key K]…
+                [--alias L]… [--any Q]… [--mode FIELD=MODE]…
+                [--sort relevance|year|author] [--limit N] [--min-score X | --strict]
+                [--bibtex] [--json]
+                                             B-259 高级检索：11 字段 × 4 模式（文本默认
+                                             contains，doi/key/alias 默认 exact），term 之间
+                                             AND、any 内部 OR；--year 收年份表达式
+                                             （2003 / =2003 / 1990-2000 / >=2010 …）；fuzzy
+                                             默认 0.75、--strict 抬到 0.90（doi/key/alias/
+                                             year 禁 fuzzy）；命中带 why-hit（matched）与
+                                             total_matched/truncated
     stats       [--json]
     lint        [--json]                    重复 key / 字段冲突 / 缺来源 / verified 无记录 …
     ack-duplicates --code near_duplicates|duplicate_content --keys A,B[,...]
