@@ -949,6 +949,7 @@ _ns_off = _ap_bic.parse_args(["--source", "x.tex", "--out", "y", "--no-bibitem-c
 _help_env = dict(os.environ)
 _help_env["PYTHONPATH"] = str(ENGINE) + os.pathsep + _help_env.get("PYTHONPATH", "")
 _help = subprocess.run([PY, "convert.py", "--help"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace",
                        env=_help_env, cwd=str(ENGINE))
 check("(j8) CLI 契约：--no-bibitem-convert 存在（真实 `--help` 可见）且默认 False",
       _help.returncode == 0 and "--no-bibitem-convert" in _help.stdout

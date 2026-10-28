@@ -457,12 +457,14 @@ if HAVE_TEMPLATES:
     snap_a, snap_b = files_snapshot(out_default_a), files_snapshot(out_default_b)
     tex_a = {k: v for k, v in snap_a.items() if k.endswith((".tex", ".sty"))}
     tex_b = {k: v for k, v in snap_b.items() if k.endswith((".tex", ".sty"))}
-    allowed = {"Test_Author/reference.bib", "Test_Author/Test_Author_参考文献核对.txt"}
+    allowed = {os.path.join("Test_Author", "reference.bib"),
+               os.path.join("Test_Author", "Test_Author_参考文献核对.txt")}
     # 「快照值差异集」（含内容差异/单侧存在）：两侧相同的 .tex/.sty 不算 extra，
     # 只允许 reference.bib、核对清单与既有 .bak 备份不同。
     extra = {k for k in set(snap_a) | set(snap_b)
              if snap_a.get(k) != snap_b.get(k) and k not in allowed
-             and not (k.startswith("Test_Author/reference.bib.") and k.endswith(".bak"))}
+             and not (k.startswith(os.path.join("Test_Author", "reference.bib."))
+                      and k.endswith(".bak"))}
     bib_a = read(os.path.join(out_default_a, "Test_Author", "reference.bib"))
     bib_b = read(os.path.join(out_default_b, "Test_Author", "reference.bib"))
     check("(d) 默认（不核实）路径：库值只写 reference.bib（author 取库值）、.tex 与关库版逐字节同",
