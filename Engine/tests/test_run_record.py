@@ -31,6 +31,7 @@ _REPO = os.path.dirname(_ENGINE)
 RR = os.path.join(_ENGINE, "tools", "run_record.py")
 
 FAILS = []
+SKIPS = []
 _TMP = tempfile.mkdtemp(prefix="slcn_run_record_")
 
 REQUIRED = ("started_at", "finished_at", "duration_s", "command", "cwd",
@@ -42,6 +43,11 @@ def check(name, cond, detail=""):
     if not cond:
         FAILS.append(name)
     return bool(cond)
+
+
+def skip(name, why):
+    print(f"SKIP  {name}  {why}")
+    SKIPS.append(name)
 
 
 def run_rr(args, cwd=_ENGINE, timeout=120):
@@ -210,6 +216,14 @@ try:
         block8 = ""
     check("⑧ build.sh 可抽取源码树快照函数（标记块存在）",
           bool(block8) and "_source_tree_sha()" in block8, f"block={len(block8)}B")
+    bash_usable = False
+    _bash = shutil.which("bash")
+    if _bash:
+        try:
+            bash_usable = subprocess.run([_bash, "-c", "exit 0"], capture_output=True,
+                                         timeout=30).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            bash_usable = False
     fx = os.path.join(_TMP, "srctree-fixture")
     for rel in ("build.sh", "Engine/a.py", "sources-mac/A.swift", "sources-win/x.py",
                 "编辑笔记/模板文件/t.tex", "Resources/i.icns",
@@ -242,21 +256,25 @@ echo "MUT_CHANGED=$SOURCE_TREE_CHANGED"
 grep -q '构建期间源码被修改（写手未静默）：source_tree changed' "$fx/warn.txt" \
   && echo "WARN_HIT=1" || echo "WARN_HIT=0"
 """)
-    r8 = subprocess.run(["bash", probe, fx], capture_output=True, text=True,
-                        encoding="utf-8", errors="replace", timeout=120)
-    v8 = {}
-    for line in (r8.stdout or "").splitlines():
-        if "=" in line:
-            k, val = line.split("=", 1)
-            v8[k] = val
-    check("⑧ 快照确定性：同态两次同 sha、夹具恰 6 个输入文件",
-          r8.returncode == 0 and v8.get("DET") == "1" and v8.get("FILES") == "6",
-          {"rc": r8.returncode, "out": (r8.stdout or "")[-200:], "err": (r8.stderr or "")[-200:]})
-    check("⑧ 产物/非输入改动不改变 sha（out/__pycache__/*.pyc/.DS_Store/非 .swift 均排除）",
-          v8.get("EXCL_SAME") == "1", v8.get("EXCL_SAME"))
-    check("⑧ 源码改动 → source_tree_changed=1 且警告文本命中",
-          v8.get("MUT_CHANGED") == "1" and v8.get("WARN_HIT") == "1",
-          {k: v8.get(k) for k in ("MUT_CHANGED", "WARN_HIT")})
+    if not bash_usable:
+        skip("⑧ build.sh 源码树快照三查（确定性/产物排除/源码改动）",
+             "本机无可用 bash（Windows 的 bash 可能是 WSL 存根；build.sh 只在 macOS/Linux 跑）")
+    else:
+        r8 = subprocess.run([_bash, probe, fx], capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=120)
+        v8 = {}
+        for line in (r8.stdout or "").splitlines():
+            if "=" in line:
+                k, val = line.split("=", 1)
+                v8[k] = val
+        check("⑧ 快照确定性：同态两次同 sha、夹具恰 6 个输入文件",
+              r8.returncode == 0 and v8.get("DET") == "1" and v8.get("FILES") == "6",
+              {"rc": r8.returncode, "out": (r8.stdout or "")[-200:], "err": (r8.stderr or "")[-200:]})
+        check("⑧ 产物/非输入改动不改变 sha（out/__pycache__/*.pyc/.DS_Store/非 .swift 均排除）",
+              v8.get("EXCL_SAME") == "1", v8.get("EXCL_SAME"))
+        check("⑧ 源码改动 → source_tree_changed=1 且警告文本命中",
+              v8.get("MUT_CHANGED") == "1" and v8.get("WARN_HIT") == "1",
+              {k: v8.get(k) for k in ("MUT_CHANGED", "WARN_HIT")})
     d6 = os.path.join(_TMP, "srctree-meta")
     rc6, _, _ = run_rr(["--record-only", "--label", "unit-srctree", "--out-dir", d6,
                         "--started-at", started, "--command", "bash build.sh",
@@ -278,5 +296,6 @@ finally:
     shutil.rmtree(_TMP, ignore_errors=True)
 
 print("=" * 70)
-print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))
+print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）")
+      + (f"｜SKIP {len(SKIPS)} 项" if SKIPS else ""))
 sys.exit(1 if FAILS else 0)
