@@ -796,6 +796,62 @@ def bibdb_query_call(mode: str, text: str, db: str = "", limit: int = 20) -> Eng
     return EngineCall(cmd, "bibdb.py", f"引用库 · 查库（{mode}）")
 
 
+#: 高级检索字段（**不含 key**：key 是基本检索的精确入口；口径见 b259 spec §2）
+ADVANCED_QUERY_FIELDS = ("author", "editor", "title", "booktitle", "journal",
+                         "publisher", "year", "doi", "alias", "any")
+#: 高级检索匹配方式（与 `bibdb.py query-advanced --mode` 一一对应）
+ADVANCED_QUERY_MODES = ("contains", "prefix", "exact", "fuzzy")
+#: 高级检索排序（与 `bibdb.py query-advanced --sort` 一一对应）
+ADVANCED_QUERY_SORTS = ("relevance", "year", "author")
+
+
+def bibdb_query_advanced_call(terms: list[dict], sort: str = "relevance", limit: int = 20,
+                              min_score: float = 0.75, strict: bool = False,
+                              db: str = "") -> EngineCall:
+    """高级检索：`bibdb.py query-advanced --字段 值 --mode 字段=模式 … --bibtex --json`。
+
+    每个 term 都**显式**带 `--mode 字段=模式`（不靠 CLI 默认值），两壳发出去的参数
+    才逐字一致、桥测试才能钉死。`strict=True` 用引擎的 0.90 门槛，否则显式传
+    `--min-score`（默认 0.75）。判据全在引擎，这里只拼参数。
+    """
+    if not isinstance(terms, list) or not terms:
+        raise ValueError("高级检索至少要填一行检索条件。")
+    if sort not in ADVANCED_QUERY_SORTS:
+        raise ValueError(f"未知的排序方式：{sort!r}（只认 {'/'.join(ADVANCED_QUERY_SORTS)}）")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not (1 <= limit <= 200):
+        raise ValueError(f"limit 必须是 1–200 的整数：{limit!r}")
+    if (isinstance(min_score, bool) or not isinstance(min_score, (int, float))
+            or not (0 <= min_score <= 1)):
+        raise ValueError(f"min_score 必须是 0–1 之间的数：{min_score!r}")
+
+    cmd = _bibdb_cmd() + ["query-advanced"]
+    for index, term in enumerate(terms, 1):
+        if not isinstance(term, dict):
+            raise ValueError(f"第 {index} 行检索条件必须是字典（field/mode/value）：{term!r}")
+        field = term.get("field")
+        mode = term.get("mode")
+        value = term.get("value")
+        if field not in ADVANCED_QUERY_FIELDS:
+            raise ValueError(f"第 {index} 行检索字段未知：{field!r}"
+                             f"（只认 {'/'.join(ADVANCED_QUERY_FIELDS)}）")
+        if mode not in ADVANCED_QUERY_MODES:
+            raise ValueError(f"第 {index} 行匹配方式未知：{mode!r}"
+                             f"（只认 {'/'.join(ADVANCED_QUERY_MODES)}）")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"第 {index} 行检索条件没有填值。")
+        cmd += [f"--{field}", value]
+        cmd += ["--mode", f"{field}={mode}"]
+    cmd += ["--limit", str(limit)]
+    if strict:
+        cmd.append("--strict")
+    else:
+        cmd.append(f"--min-score={min_score}")
+    cmd += ["--bibtex", "--json"]
+    if db:
+        cmd += ["--db", db]
+    return EngineCall(cmd, "bibdb.py", "引用库 · 高级检索")
+
+
 def bibdb_import_bib_call(*, bib: str, issue: str = "", slug: str = "",
                           dry_run: bool = True, db: str = "",
                           verified: bool = True) -> EngineCall:

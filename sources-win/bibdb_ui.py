@@ -592,6 +592,24 @@ QUERY_HINTS = {
     "title": "题名模糊匹配（返回相似度与置信度）",
 }
 
+#: 高级检索（B-261）：字段 / 匹配方式 / 排序（界面文字 → 引擎参数，键与
+#: `bibdb.py query-advanced` 的 `--字段` / `--mode 字段=模式` / `--sort` 一致）。
+#: 字段**不含 key**（key 是基本检索的精确入口）；年份只收年份表达式。
+ADVANCED_FIELDS = (("作者", "author"), ("编者", "editor"), ("题名", "title"),
+                   ("书名", "booktitle"), ("期刊", "journal"), ("出版社", "publisher"),
+                   ("年份", "year"), ("DOI", "doi"), ("别名", "alias"), ("任意", "any"))
+ADVANCED_MODES = (("包含", "contains"), ("前缀", "prefix"), ("精确", "exact"), ("模糊", "fuzzy"))
+ADVANCED_SORTS = (("相关度", "relevance"), ("年份", "year"), ("作者", "author"))
+#: 引擎对这几个字段**不收** fuzzy（见 b259 spec §2），界面里也不提供该档。
+ADVANCED_NO_FUZZY = ("year", "doi", "alias")
+ADVANCED_HINT = ("多行之间是 AND（都要满足）；年份行可填 2003 / 1990-2000 / >=2010；"
+                 "「模糊」只对文本字段有效。")
+_ADV_FIELD_KEY = {label: key for label, key in ADVANCED_FIELDS}
+_ADV_FIELD_LABEL = {key: label for label, key in ADVANCED_FIELDS}
+_ADV_MODE_KEY = {label: key for label, key in ADVANCED_MODES}
+_ADV_MODE_LABEL = {key: label for label, key in ADVANCED_MODES}
+_ADV_SORT_KEY = {label: key for label, key in ADVANCED_SORTS}
+
 
 class BibDbQueryPage(BibDbPage):
     name = "查库"        # 侧栏里显示的名字（组 → 页的第二层）
@@ -607,8 +625,18 @@ class BibDbQueryPage(BibDbPage):
         self._running = False
         self._hits: list[dict] = []
         self._hit_by_iid: dict[str, dict] = {}
+        self._adv_rows: list[dict] = []
 
-        bar = ttk.Frame(parent)
+        # B-261：查库分「基本检索 / 高级检索」两个 Tab。基本检索 = 原有部件的
+        # **原样迁移**：变量名、回调、search() 路径、复制 BibTeX 全保持原行为。
+        self.notebook = ttk.Notebook(parent)
+        self.notebook.pack(fill="x", pady=(0, 4))
+        basic_tab = ttk.Frame(self.notebook, padding=(2, 4))
+        advanced_tab = ttk.Frame(self.notebook, padding=(2, 4))
+        self.notebook.add(basic_tab, text="基本检索")
+        self.notebook.add(advanced_tab, text="高级检索")
+
+        bar = ttk.Frame(basic_tab)
         bar.pack(fill="x", pady=(0, 6))
         self.mode_var = tk.StringVar(value="key")
         self.mode_box = ttk.Combobox(bar, textvariable=self.mode_var, width=6,
@@ -624,9 +652,11 @@ class BibDbQueryPage(BibDbPage):
         self.search_btn.pack(side="left")
         self.busy = ttk.Label(bar, text="", style="Muted.TLabel")
         self.busy.pack(side="left", padx=8)
-        self.hint = ttk.Label(parent, text="", style="Muted.TLabel")
+        self.hint = ttk.Label(basic_tab, text="", style="Muted.TLabel")
         self.hint.pack(fill="x")
         self._update_hint()
+
+        self._build_advanced(advanced_tab)
 
         self.status = StatusLine(parent)
         self.status.pack(fill="x", pady=(2, 4))
@@ -655,10 +685,107 @@ class BibDbQueryPage(BibDbPage):
         self.source_label = ttk.Label(parent, text="", style="Muted.TLabel",
                                       wraplength=800, justify="left")
         self.source_label.pack(fill="x", pady=(2, 2))
+        # why-hit（高级检索）：只有命中带 matched[] 时才显示；基本检索永远隐藏，
+        # 所以基本模式的界面与 B-259 逐像素一致。
+        self.why_box = ttk.Frame(parent)
+        self.why_label = ttk.Label(self.why_box, text="", style="Muted.TLabel")
+        self.why_label.pack(anchor="w")
+        self.why_text = _readonly_text(self.why_box, height=4)
+        self.why_text.pack(fill="x", pady=(2, 2))
         self.bibtex = _readonly_text(parent, height=7)
         self.bibtex.pack(fill="both", expand=True, pady=(2, 2))
 
         self.mode_box.bind("<<ComboboxSelected>>", lambda _e: self._mode_changed())
+
+    # ── 高级检索（B-261）──
+    def _build_advanced(self, parent: ttk.Frame) -> None:
+        self.adv_rows_frame = ttk.Frame(parent)
+        self.adv_rows_frame.pack(fill="x")
+        self._add_adv_row()          # 默认两行：作者 + 题名
+        self._add_adv_row(field="title")
+
+        add_bar = ttk.Frame(parent)
+        add_bar.pack(fill="x", pady=(3, 4))
+        ttk.Button(add_bar, text="+ 加一行", width=12,
+                   command=self._add_adv_row).pack(side="left")
+
+        controls = ttk.Frame(parent)
+        controls.pack(fill="x")
+        ttk.Label(controls, text="排序").pack(side="left")
+        self.adv_sort_var = tk.StringVar(value="相关度")
+        self.adv_sort_box = ttk.Combobox(controls, textvariable=self.adv_sort_var, width=6,
+                                         state="readonly",
+                                         values=[label for label, _key in ADVANCED_SORTS])
+        self.adv_sort_box.pack(side="left", padx=(4, 12))
+        ttk.Label(controls, text="最多").pack(side="left")
+        self.adv_limit_var = tk.StringVar(value="20")
+        self.adv_limit_spin = ttk.Spinbox(controls, from_=1, to=200, width=6,
+                                          textvariable=self.adv_limit_var)
+        self.adv_limit_spin.pack(side="left", padx=(4, 12))
+        self.adv_strict_var = tk.BooleanVar(value=False)
+        self.adv_strict = ttk.Checkbutton(controls, text="严格（模糊门槛 0.90）",
+                                          variable=self.adv_strict_var)
+        self.adv_strict.pack(side="left")
+        self.adv_search_btn = ttk.Button(controls, text="查询", width=10,
+                                         style="Accent.TButton", command=self.search_advanced)
+        self.adv_search_btn.pack(side="left", padx=(12, 6))
+        self.adv_busy = ttk.Label(controls, text="", style="Muted.TLabel")
+        self.adv_busy.pack(side="left")
+        self.adv_hint = ttk.Label(parent, text=plain(ADVANCED_HINT), style="Muted.TLabel",
+                                  wraplength=800, justify="left")
+        self.adv_hint.pack(fill="x", pady=(4, 0))
+
+    def _add_adv_row(self, field: str = "author", mode: str = "contains",
+                     value: str = "") -> None:
+        row: dict = {}
+        frame = ttk.Frame(self.adv_rows_frame)
+        frame.pack(fill="x", pady=1)
+        field_var = tk.StringVar(value=_ADV_FIELD_LABEL.get(field, "作者"))
+        mode_var = tk.StringVar(value=_ADV_MODE_LABEL.get(mode, "包含"))
+        field_box = ttk.Combobox(frame, textvariable=field_var, width=6, state="readonly",
+                                 values=[label for label, _key in ADVANCED_FIELDS])
+        field_box.pack(side="left")
+        mode_box = ttk.Combobox(frame, textvariable=mode_var, width=6, state="readonly",
+                                values=[label for label, _key in ADVANCED_MODES])
+        mode_box.pack(side="left", padx=4)
+        entry = ttk.Entry(frame, width=44)
+        entry.insert(0, value)
+        entry.pack(side="left", padx=(0, 4))
+        del_btn = ttk.Button(frame, text="删除", width=6,
+                             command=lambda r=row: self._remove_adv_row(r))
+        del_btn.pack(side="left")
+        row.update(frame=frame, field_var=field_var, mode_var=mode_var, entry=entry,
+                   field_box=field_box, mode_box=mode_box, del_btn=del_btn)
+        self._adv_rows.append(row)
+        field_box.bind("<<ComboboxSelected>>", lambda _e, r=row: self._adv_field_changed(r))
+        entry.bind("<Return>", lambda _e: self.search_advanced())
+
+    def _adv_field_changed(self, row: dict) -> None:
+        """字段一换就收紧可选模式：年份/DOI/别名不收 fuzzy，默认「精确」。"""
+        field = _ADV_FIELD_KEY.get(row["field_var"].get(), "author")
+        allowed = [(label, key) for label, key in ADVANCED_MODES
+                   if not (key == "fuzzy" and field in ADVANCED_NO_FUZZY)]
+        row["mode_box"].configure(values=[label for label, _key in allowed])
+        if row["mode_var"].get() not in [label for label, _key in allowed]:
+            row["mode_var"].set(_ADV_MODE_LABEL["exact"])
+        elif field in ADVANCED_NO_FUZZY:
+            row["mode_var"].set(_ADV_MODE_LABEL["exact"])
+
+    def _remove_adv_row(self, row: dict) -> None:
+        if row in self._adv_rows:
+            self._adv_rows.remove(row)
+        row["frame"].destroy()
+
+    def _advanced_terms(self) -> list[dict]:
+        terms: list[dict] = []
+        for row in self._adv_rows:
+            value = row["entry"].get().strip()
+            if not value:
+                continue
+            field = _ADV_FIELD_KEY.get(row["field_var"].get(), "author")
+            mode = _ADV_MODE_KEY.get(row["mode_var"].get(), "contains")
+            terms.append({"field": field, "mode": mode, "value": value})
+        return terms
 
     # ── 查询 ──
     def _mode_changed(self) -> None:
@@ -735,6 +862,27 @@ class BibDbQueryPage(BibDbPage):
                              f"查库失败：{E.output_tail(result.get('lines') or [], count=2)}")
             return
         hits = payload.get("hits") or []
+        self._fill_hits(hits)
+        if hits:
+            first = "hit:0"
+            if self.tree.exists(first):
+                self.tree.selection_set(first)
+                self.tree.focus(first)
+            self.rows_count.config(text=f"命中 {len(hits)} 条（用时 "
+                                        f"{fmt_seconds(float(result.get('seconds') or 0))}）。")
+            if payload.get("ambiguous") and result.get("mode") == "key":
+                self.status.show("warn", "⚠ 有多条同 key/alias 的记录，需人工确认。")
+        else:
+            self.rows_count.config(text="没有命中。")
+            query = payload.get("query") or {}
+            subject = query.get("title") or query.get("doi") or query.get("key") or ""
+            self.status.show("warn", f"没有命中：{subject}（用时 "
+                                     f"{fmt_seconds(float(result.get('seconds') or 0))}）")
+        if payload.get("error"):
+            self.status.show("warn", f"（引擎说明：{payload['error']}）")
+
+    def _fill_hits(self, hits: list) -> None:
+        """把引擎 JSON 的 hits 填进现有 tree（基本/高级两条查询共用同一展示）。"""
         for index, hit in enumerate(hits):
             if not isinstance(hit, dict):
                 continue
@@ -761,21 +909,94 @@ class BibDbQueryPage(BibDbPage):
                                      verified, where))
             self._hit_by_iid[iid] = hit
             self._hits.append(hit)
+
+    # ── 高级检索（B-261）：多条件 AND，argv 只由 engine.py 拼 ──
+    def search_advanced(self) -> None:
+        if self._running:
+            return
+        terms = self._advanced_terms()
+        if not terms:
+            self.status.show("warn", "高级检索至少填一行条件（值不能为空）。")
+            return
+        notes = self.notes_root()
+        db = E.bibdb_db_path(notes) if notes else None
+        if not notes:
+            self.status.show("warn", "找不到私有笔记仓。请先到「引用库 → 引用库设置」页指定笔记仓路径。")
+            return
+        raw_limit = self.adv_limit_var.get().strip()
+        if not raw_limit.isdigit():
+            self.status.show("error", f"limit 必须是 1–200 的整数：{raw_limit!r}")
+            return
+        limit = int(raw_limit)
+        strict = bool(self.adv_strict_var.get())
+        sort = _ADV_SORT_KEY.get(self.adv_sort_var.get(), "relevance")
+        try:
+            call = E.bibdb_query_advanced_call(terms, sort=sort, limit=limit,
+                                               strict=strict, db=db or "")
+        except (RuntimeError, ValueError) as exc:
+            self.status.show("error", str(exc))
+            return
+        self._generation += 1
+        generation = self._generation
+        self._running = True
+        self.adv_search_btn.config(state="disabled")
+        self.adv_busy.config(text="正在查询…")
+        self.search_btn.config(state="disabled")
+        self.mode_box.config(state="disabled")
+        self.status.clear()
+        subject = "；".join(f"{term['field']}={term['value']}" for term in terms)
+        self.log(f"高级检索：{subject}（排序 {self.adv_sort_var.get()}，最多 {limit} 条"
+                 + ("，严格）" if strict else "）"))
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+
+        def work() -> dict:
+            started = time.monotonic()
+            code, lines = collect_call(call, api=api, notes=manual)
+            return {"code": code, "lines": lines, "payload": E.parse_json_lines(lines),
+                    "subject": subject, "seconds": time.monotonic() - started}
+
+        run_async(self.post, work,
+                  lambda payload: self._on_advanced_result(payload, generation))
+
+    def _on_advanced_result(self, result: dict, generation: int) -> None:
+        if generation != self._generation:
+            return
+        self._running = False
+        self.adv_search_btn.config(state="normal")
+        self.adv_busy.config(text="")
+        self.search_btn.config(state="normal")
+        self.mode_box.config(state="readonly")
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        self._hits = []
+        self._hit_by_iid.clear()
+        self._show_detail(None)
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        if code != 0 or not isinstance(payload, dict):
+            self.status.show("error",
+                             f"高级检索失败：{E.output_tail(result.get('lines') or [], count=2)}")
+            return
+        hits = payload.get("hits") or []
+        self._fill_hits(hits)
+        elapsed = fmt_seconds(float(result.get("seconds") or 0))
         if hits:
             first = "hit:0"
             if self.tree.exists(first):
                 self.tree.selection_set(first)
                 self.tree.focus(first)
-            self.rows_count.config(text=f"命中 {len(hits)} 条（用时 "
-                                        f"{fmt_seconds(float(result.get('seconds') or 0))}）。")
-            if payload.get("ambiguous") and result.get("mode") == "key":
-                self.status.show("warn", "⚠ 有多条同 key/alias 的记录，需人工确认。")
+            parts = [f"命中 {len(hits)} 条"]
+            total = payload.get("total_matched")
+            if isinstance(total, int) and total > len(hits):
+                parts.append(f"共 {total} 条匹配")
+            if payload.get("truncated"):
+                parts.append("已截断")
+            self.rows_count.config(text="，".join(parts) + f"（用时 {elapsed}）。")
         else:
             self.rows_count.config(text="没有命中。")
-            query = payload.get("query") or {}
-            subject = query.get("title") or query.get("doi") or query.get("key") or ""
-            self.status.show("warn", f"没有命中：{subject}（用时 "
-                                     f"{fmt_seconds(float(result.get('seconds') or 0))}）")
+            self.status.show("warn", f"高级检索没有命中：{result.get('subject') or ''}"
+                                     f"（用时 {elapsed}）")
         if payload.get("error"):
             self.status.show("warn", f"（引擎说明：{payload['error']}）")
 
@@ -788,6 +1009,7 @@ class BibDbQueryPage(BibDbPage):
         if not hit:
             self.selected_label.config(text="（未选中）")
             self.source_label.config(text="")
+            self._show_why_hits(None)
             set_readonly_text(self.bibtex, "")
             self.copy_btn.config(state="disabled")
             self.log_btn.config(state="disabled")
@@ -803,10 +1025,40 @@ class BibDbQueryPage(BibDbPage):
                      str(sources[0].get("file") or "")]
             where = " / ".join(part for part in parts if part)
         self.source_label.config(text=plain("来源：" + (where or "（无来源记录）")))
+        self._show_why_hits(hit)
         bibtex = str(hit.get("bibtex") or "")
         set_readonly_text(self.bibtex, bibtex or "（引擎未返回 BibTeX）")
         self.copy_btn.config(state="normal" if bibtex else "disabled")
         self.log_btn.config(state="normal")
+
+    def _show_why_hits(self, hit: dict | None) -> None:
+        """高级检索的 why-hit：把 matched[] 的 field/mode/score/snippet 摊成文本。
+
+        基本检索的命中没有 `matched` 键 → 这里直接把整块收起来（界面零变化）。
+        """
+        lines: list[str] = []
+        matched = (hit or {}).get("matched")
+        if isinstance(matched, list):
+            for item in matched:
+                if not isinstance(item, dict):
+                    continue
+                score = item.get("score")
+                try:
+                    score_text = f"{float(score):.3f}"
+                except (TypeError, ValueError):
+                    score_text = str(score or "")
+                snippet = str(item.get("snippet") or "").replace("\n", " ").strip()
+                lines.append(f"[{item.get('field') or '?'}] {item.get('mode') or '?'} · "
+                             f"{score_text} · {snippet}")
+        if not lines:
+            if self.why_box.winfo_manager():
+                self.why_box.pack_forget()
+            set_readonly_text(self.why_text, "")
+            return
+        self.why_label.config(text=f"命中原因（{len(lines)} 项条件都满足）：")
+        set_readonly_text(self.why_text, "\n".join(lines))
+        if not self.why_box.winfo_manager():
+            self.why_box.pack(fill="x", pady=(2, 2), before=self.bibtex)
 
     def copy_bibtex(self) -> None:
         selection = self.tree.selection()

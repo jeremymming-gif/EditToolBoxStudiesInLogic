@@ -1204,6 +1204,64 @@ check("(i) 查库 key/DOI 不带 `--limit`；题名模糊查询才带（且带 -
       and "--json" in E.bibdb_query_call("key", "Foo2020").argv)
 check("(i) 未知查库方式 → ValueError（界面不许把错参数发给引擎）",
       _raises_value_error(E.bibdb_query_call, "author", "x"))
+
+# ── B-261：高级检索 argv 契约（与 mac `queryAdvanced` 同一规则；判据仍在引擎）──
+_adv_want = ["query-advanced", "--author", "Smith", "--mode", "author=fuzzy",
+             "--limit", "5", "--strict", "--bibtex", "--json"]
+_adv = E.bibdb_query_advanced_call(
+    [{"field": "author", "mode": "fuzzy", "value": "Smith"}],
+    sort="year", limit=5, strict=True)
+check("(i) B-261 高级检索：每个 term 后**总是显式** `--mode 字段=模式`，"
+      "再 `--limit`、`--strict`、`--bibtex --json`（逐字）",
+      _adv.entry == "bibdb.py" and _adv.argv[-len(_adv_want):] == _adv_want,
+      _adv.display[-160:])
+_adv_default = E.bibdb_query_advanced_call(
+    [{"field": "title", "mode": "contains", "value": "Theory"}])
+check("(i) B-261 高级检索：非 strict 用显式 `--min-score=0.75`（不是引擎默认值）",
+      "--strict" not in _adv_default.argv
+      and "--min-score=0.75" in _adv_default.argv
+      and "--min-score=0.9" not in _adv_default.argv, _adv_default.display[-160:])
+_adv_db = E.bibdb_query_advanced_call(
+    [{"field": "doi", "mode": "exact", "value": "10.1/x"}],
+    min_score=0.5, db="/db/b.jsonl")
+check("(i) B-261 高级检索：`--db` 在末尾、`--min-score` 带显式值、doi 用 exact",
+      _adv_db.argv[-2:] == ["--db", "/db/b.jsonl"]
+      and "--min-score=0.5" in _adv_db.argv
+      and _adv_db.argv[_adv_db.argv.index("--doi") + 1] == "10.1/x"
+      and _adv_db.argv[_adv_db.argv.index("--mode") + 1] == "doi=exact",
+      _adv_db.display[-160:])
+_adv_multi_want = ["query-advanced", "--title", "A", "--mode", "title=contains",
+                   "--booktitle", "B", "--mode", "booktitle=prefix",
+                   "--limit", "20", "--min-score=0.75", "--bibtex", "--json"]
+_adv_multi = E.bibdb_query_advanced_call(
+    [{"field": "title", "mode": "contains", "value": "A"},
+     {"field": "booktitle", "mode": "prefix", "value": "B"}])
+check("(i) B-261 高级检索：多行按界面顺序逐行拼（`--title A --mode title=contains` "
+      "在前，`--booktitle B --mode booktitle=prefix` 在后）",
+      _adv_multi.argv[-len(_adv_multi_want):] == _adv_multi_want,
+      _adv_multi.display[-200:])
+check("(i) B-261 高级检索：非法 field/mode/sort/limit/min_score/空行/value → "
+      "ValueError（界面不许把错参数发给引擎）",
+      _raises_value_error(E.bibdb_query_advanced_call, [])
+      and _raises_value_error(E.bibdb_query_advanced_call, ["author"])
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "key", "mode": "exact", "value": "Foo"}])
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "author", "mode": "regex", "value": "Foo"}])
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "author", "mode": "contains", "value": "  "}])
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "author", "mode": "contains", "value": "Foo"}],
+                              sort="date")
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "author", "mode": "contains", "value": "Foo"}],
+                              limit=0)
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "author", "mode": "contains", "value": "Foo"}],
+                              limit=201)
+      and _raises_value_error(E.bibdb_query_advanced_call,
+                              [{"field": "author", "mode": "contains", "value": "Foo"}],
+                              min_score=1.5))
 check("(i) 重新生成清单：`report --json --db … --out …`（只写 .md/.csv，不改库）",
       "report" in E.bibdb_report_call(out_dir="/n/bib_db", db="/db/b.jsonl").argv
       and "--out" in E.bibdb_report_call(out_dir="/n/bib_db").argv)
@@ -1306,6 +1364,26 @@ check("(i) CLI 冒烟：query --key --bibtex 命中 1 条、带回可复制的 B
       _rc == 0 and len(_hits) == 1 and "@article" in str(_hits[0].get("bibtex", ""))
       and "Foo2020" in str(_hits[0].get("bibtex", "")),
       f"rc={_rc} hits={len(_hits)}")
+
+_rc, _lines = run_capture(E.bibdb_query_advanced_call(
+    [{"field": "author", "mode": "contains", "value": "Foo"}], db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+_adv_hits = (_payload or {}).get("hits") or []
+_adv_matched = (_adv_hits[0].get("matched") or []) if _adv_hits else []
+check("(i) CLI 冒烟：query-advanced --author Foo 命中 1 条、kind=advanced，"
+      "并带回 why-hit matched[]（field/mode/score/snippet）",
+      _rc == 0 and isinstance(_payload, dict) and _payload.get("kind") == "advanced"
+      and len(_adv_hits) == 1 and _adv_hits[0].get("key") == "Foo2020"
+      and any(m.get("field") == "author" and m.get("mode") == "contains"
+              and "score" in m and "snippet" in m for m in _adv_matched),
+      f"rc={_rc} hits={len(_adv_hits)} matched={_adv_matched[:1]}")
+_rc, _lines = run_capture(E.bibdb_query_advanced_call(
+    [{"field": "author", "mode": "contains", "value": "Nobody"}], db=_cli_db))
+_payload = E.parse_json_lines(_lines)
+check("(i) CLI 冒烟：query-advanced 无命中 → rc0、hits 空（不是程序错）",
+      _rc == 0 and isinstance(_payload, dict) and _payload.get("hits") == []
+      and _payload.get("total_matched") == 0,
+      f"rc={_rc} total={(_payload or {}).get('total_matched')}")
 
 _rc, _lines = run_capture(E.bibdb_lint_call(db=_cli_db))
 _payload = E.parse_json_lines(_lines)
