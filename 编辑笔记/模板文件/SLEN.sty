@@ -16,6 +16,8 @@
 \usepackage{ctex}
 \usepackage{amsmath,amssymb,amsfonts,amsthm,fancyhdr}                     % 使用AMS数学公式符号字体定理,页眉,扩展的color
 \usepackage{url}                                                          % 使用外部超链接
+% 20261028Wenming_Zhang: SEP 词条判据（\IfSubStr，见 5.4 的 \AtEveryBibitem）
+\usepackage{xstring}
 \usepackage{ifthen}                                                       % 使用条件命令
 \usepackage{times}                                                        % 使用Times字体
 \usepackage{ifpdf}                                                        % 用于绘图工具TpX
@@ -130,6 +132,10 @@
 %    5.1 全局处理
 %-------------------------------------------------------------------------%
 \usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,sorting=nyt, sortcites=true]{biblatex}	
+% 20261028Wenming_Zhang: 参考文献页码范围印一字线 \cndash（与中文模板同口径；\bibrangedash 须在 \DefineBibliographyExtras 里改写）。
+\DefineBibliographyExtras{english}{%
+	\renewcommand*{\bibrangedash}{\cndash}%
+}
 \renewcommand{\bibfont}{\normalfont\small}					%字体大小
 \defbibenvironment{bibliography}						%修改行距
   {\list
@@ -334,6 +340,7 @@
 	\printfield{title}%
 	\newunit
 	\printfield{note}%
+	\iffieldundef{url}{}{\newunit\printfield{url}}%
 	\finentry%
 }
 
@@ -394,24 +401,41 @@
 	}
 }
 
-%中文的话，只定义misc这种样式
-\DeclareBibliographyDriver{misc}{%				
-	\printnames{author}\setunit{\cncomma}%
-	\printfield{title}\setunit*{\cncomma}%
-	\printfield{journaltitle}\setunit*{\cncomma}%
-	\setunit{\cncomma}%
+% 20261028Wenming_Zhang: 正式发表条目的参考文献**不印 DOI、不印网址**；未出版 / 在线资源（online、unpublished、arXiv 预印本、SEP 词条等）保留并打印网址；SEP 词条例外：booktitle / journal 含 "Encyclopedia of Philosophy" 时不删网址。
+\AtEveryBibitem{%
+	\ifboolexpr{
+		test {\ifentrytype{article}} or test {\ifentrytype{book}} or
+		test {\ifentrytype{incollection}} or test {\ifentrytype{inproceedings}} or
+		test {\ifentrytype{inbook}} or test {\ifentrytype{proceedings}} or
+		test {\ifentrytype{collection}} or test {\ifentrytype{manual}} or
+		test {\ifentrytype{periodical}} or test {\ifentrytype{thesis}} or
+		test {\ifentrytype{phdthesis}} or test {\ifentrytype{mastersthesis}} or
+		test {\ifentrytype{report}} or test {\ifentrytype{techreport}} or
+		test {\ifentrytype{booklet}} or test {\ifentrytype{conference}}
+	}{%
+		\IfSubStr{\thefield{booktitle}}{Encyclopedia of Philosophy}{}{%
+			\IfSubStr{\thefield{journaltitle}}{Encyclopedia of Philosophy}{}{%
+				\clearfield{url}\clearfield{doi}%
+			}%
+		}%
+	}{}%
+}%
+
+% 20261028Wenming_Zhang: 在线资源（@online）保留并打印网址
+\DeclareBibliographyDriver{online}{%
+	\printnames{author}%
+	\newunit
 	\printfield{year}%
-	\usebibmacro{cn_volume+number}%
-	\setunit{\cncomma}%
-	\usebibmacro{cn_publisher+location}%
-	\setunit{\cncomma}%
-	\printfield{pages}%
-	\setunit{\cncomma}%
-	\printfield{url}%
-     \setunit{\cncomma}%
-	\printfield{note}%
+	\newunit
+	\printfield{title}%
+	\iffieldundef{url}{}{\newunit\printfield{url}}%
 	\finentry%
-}
+}%
+
+% 20261028Wenming_Zhang: misc 只印 author 一个字段——解析不出的复杂文献由引擎把源稿原文献逐字符放进 author（verbatim），本驱动原样排印。
+\DeclareBibliographyDriver{misc}{%
+	\printnames{author}%
+}%
 
 %-------------------------------------------------------------------------%
 %    6 定义数学环境样式
