@@ -48,6 +48,7 @@ export default defineConfig({
         text: '参考',
         items: [
           { text: '常见问题', link: '/reference/faq' },
+          { text: '已知限制与绕行', link: '/reference/known-limitations' },
           { text: '版本记录', link: '/reference/changelog' },
           { text: '开发与构建', link: '/reference/development' }
         ]

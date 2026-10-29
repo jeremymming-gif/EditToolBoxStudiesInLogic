@@ -65,6 +65,7 @@ features:
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/guide/quickstart"><strong>快速上手</strong><span>三步完成一篇初排；整期流程与引用库入手。</span></a>
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/single"><strong>功能总览</strong><span>单篇稿件、整期装配、引用库与成本控制。</span></a>
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/reference/faq"><strong>常见问题</strong><span>联网与费用、API key、编译失败、打不开怎么办。</span></a>
+  <a class="doc-card" href="/EditToolBoxStudiesInLogic/reference/known-limitations"><strong>已知限制与绕行</strong><span>v1.4.1 仍存在的限制与绕行办法。</span></a>
 </div>
 
 ## 界面
