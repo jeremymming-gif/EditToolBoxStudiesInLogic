@@ -94,6 +94,68 @@ def _blank_comment_lines(bib: str) -> str:
     return "".join(out)
 
 
+def _strip_inline_comments(bib: str) -> str:
+    r"""把**行内 `%` 注释**（未转义的 `%` 到行尾）就地抹成空格：长度/换行不变。
+
+    为什么需要（B-264）：真实稿件的 .bib 常把 `%` 当**行内批注**用，例如
+    `@book{a19, %20,22,23`、`year = {2003},%1958`、`author = {…},%Seale, C.`。
+    这些 `%` 之后是作者自己的备注，却**不在花括号字段值里面**；从前只抹整行注释，
+    行内备注就被当成「字段体里有无法解析的片段」→ `broken=True`（实测私域 8 条）。
+
+    判据（与 `parse_entries()` 的花括号/引号层同口径）：
+      · **行首** `%`（整行注释）由 `_blank_comment_lines()` 先抹掉，这里不重复处理；
+      · 只在**条目结构层**（花括号深度 ≤ 1、且不在顶层 `field = "…"` 引号值里）把
+        `%` 到行尾视为注释——字段值 `{…}`/`"…"` 里的 `%` 是**数据**，一个字符都不动；
+      · `\%` 是转义（按前导反斜杠个数的奇偶判断），不是注释。
+    """
+    out: list[str] = []
+    depth = 0                      # 花括号深度（整份文件累计：条目跨行，不能逐行重置）
+    quote = False                  # 顶层 `field = "…"`（深度 1 的引号值；花括号里的 `"` 是字符）
+    for line in bib.splitlines(keepends=True):
+        chars: list[str] = []
+        i, n = 0, len(line)
+        erased = False
+        while i < n:
+            ch = line[i]
+            if erased:                       # 已在行内注释里：抹成空格（保留换行）
+                chars.append("\n" if ch == "\n" else " ")
+                i += 1
+                continue
+            if quote:
+                if ch == "\\" and i + 1 < n:
+                    chars.append(line[i:i + 2])
+                    i += 2
+                    continue
+                if ch == '"':
+                    quote = False
+                chars.append(ch)
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < n:     # `\%` 等转义：原样保留，不算注释
+                chars.append(line[i:i + 2])
+                i += 2
+                continue
+            if ch == "%":
+                if depth <= 1:               # 结构层的 `%` → 注释，抹到行尾
+                    erased = True
+                    chars.append(" ")
+                    i += 1
+                    continue
+                chars.append(ch)             # 字段值花括号里的 `%`：数据
+                i += 1
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth = max(0, depth - 1)
+            elif ch == '"' and depth == 1:
+                quote = True
+            chars.append(ch)
+            i += 1
+        out.append("".join(chars))
+    return "".join(out)
+
+
 def _comments_above(bib: str, pos: int) -> list[str]:
     """取某条条目上方紧邻的注释行（允许中间夹空行）。"""
     out: list[str] = []
@@ -150,9 +212,24 @@ def _next_entry_start(text: str, pos: int) -> int:
 
 
 def _in_line_comment(text: str, pos: int) -> bool:
-    """pos 是否落在同一行的 `%` 之后（行尾注释里的 `@` 不算条目）。"""
+    r"""pos 是否落在同一行的**未转义** `%` 之后（行内注释里的 `@` 不算条目）。
+
+    B-264：`\%` 是转义（按前导反斜杠个数奇偶判断），不算注释起点；否则
+    `title = {50\% off}` 这类行会把后面合法的 `@` 误判进注释。
+    """
     start = text.rfind("\n", 0, pos) + 1
-    return "%" in text[start:pos]
+    line = text[start:pos]
+    k = line.find("%")
+    while k >= 0:
+        bs = 0
+        q = k - 1
+        while q >= 0 and line[q] == "\\":
+            bs += 1
+            q -= 1
+        if bs % 2 == 0:
+            return True
+        k = line.find("%", k + 1)
+    return False
 
 
 def _scan_top_fields(
@@ -285,7 +362,7 @@ def parse_entries(bib: str) -> tuple[list[Entry], list[Finding]]:
     entries: list[Entry] = []
     findings: list[Finding] = []
     skipped_blocks: list[tuple[str, int]] = []
-    clean = _blank_comment_lines(bib)
+    clean = _strip_inline_comments(_blank_comment_lines(bib))
     n = len(clean)
     i = 0
     while i < n:

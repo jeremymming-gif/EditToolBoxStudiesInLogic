@@ -2409,6 +2409,20 @@ def entry_to_bib(key: str, entry: dict, raw: str = "") -> str:
     不再静默裁掉。反例（entry 本来没有的字段）不会被凭空造出来。
     """
     etype = entry.get("_type", "misc")
+    # B-264 v2（用户 m00808 约定，Lead m00248 批准 D-13）：**凡最终交付 type=misc
+    # 的条目，author = 源稿参考文献逐字原文，且不得含任何其它字段**（title/year/
+    # url 全空）。这是交付出入口的单点强制，两条来源都走这里：
+    #   ① 解析失败兜底（`_verbatim`，B-262 起 render_bibitem_entry 已如此）；
+    #   ② 解析成功但类型无法归类（Book/article/incollection/report 之外的条目）。
+    # 花括号保护按一个「名字」原样排印（`_bib_escape_verbatim`）；misc 驱动
+    # （`编辑笔记/模板文件/` 冻结，用户 m00714）只印 author，于是读者看到的是
+    # 源稿整行原文，编辑可逐字对照订正——不再出现「裸人名」。
+    if etype == "misc":
+        raw_text = (raw or entry.get("author") or entry.get("title") or "").strip()
+        raw_text = re.sub(r"\s*\n\s*", " ", raw_text)
+        if raw_text:
+            return ("@misc{%s,\n  author    = {{%s}}\n}\n"
+                    % (key, _bib_escape_verbatim(raw_text)))
     # 中文条目补 userf={cn}（SLCN-MIX.sty 据此改用中文标点）
     if not entry.get("userf"):
         from .bibnorm import detect_userf

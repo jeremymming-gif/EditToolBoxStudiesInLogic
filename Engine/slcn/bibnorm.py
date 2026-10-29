@@ -503,6 +503,10 @@ _ONLINE_MOVE_URL_FIELDS = ("howpublished", "publisher")
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s{}]+")
 _SEP_ANY = re.compile(r"stanford\s+encyclopedia\s+of\s+philosophy", re.I)
+#: 在线参考工具线索（B-264 v2）：词典/百科/在线词书。见 `_is_reference_work_like`。
+_REFERENCE_WORK_ANY = re.compile(
+    r"\b(?:Dictionaries|Dictionary|Encyclopaedias|Encyclopaedia|"
+    r"Encyclopedias|Encyclopedia|Online)\b", re.I)
 
 
 def _plain_field(value: str) -> str:
@@ -524,12 +528,35 @@ def _is_sep_like(fields: dict[str, str]) -> bool:
     return False
 
 
+def _is_reference_work_like(fields: dict[str, str]) -> bool:
+    """是不是「在线参考工具」词条（词典/百科）—— B-264 v2 新增，同 `_is_sep_like` 的窄口径。
+
+    为什么需要（期 87 sub9 实测）：APA 的在线词典引用被写成 `@article` +
+    `journal = {Online Etymology Dictionary}` / `{An Anglo-Saxon Dictionary Online}`
+    / `{Oxford English Dictionary}`。按第 3 条判据「article + 有刊名 = 正式发表」会把
+    网址当 DOI 删掉，可这几条的**出处就是网址**（`Retrieved … from https://…`），
+    删掉等于丢数据。发布版 .bib（人工定稿）也保留了这些网址。
+
+    判据只认三个字段（booktitle / journal / journaltitle）里出现
+    `Dictionary` / `Encyclopaedia` / `Encyclopedia` / `Online` 词——口径刻意窄：
+    普通刊名（`Journal of Logic` 等）不命中，照旧按正式发表处理。
+    这是对 B-189 渲染政策的一处**行为扩展**（宁可多留一处网址，也不误删出处），
+    已在 B-264 v2 的 impl.md 里按 D-xx 披露；`Engine/docs/RULES.md` §四.10 的
+    权威口径未改（本函数只是判据实现）。
+    """
+    for name in ("booktitle", "journal", "journaltitle"):
+        if _REFERENCE_WORK_ANY.search(_plain_field(fields.get(name, ""))):
+            return True
+    return False
+
+
 def is_online_resource(etype: str, fields: dict[str, str]) -> bool:
     """该条目是不是「未出版 / 在线资源」（→ 保留并打印网址）。
 
     判据（设计卡 §3 写死，顺序即优先级）：
       1. `online` / `unpublished` / `misc` → 恒保留；
       2. SEP 词条（任意类型）→ 保留（用户规范点名 SEP 要能看出处）；
+      2b. 在线参考工具（词典/百科，B-264 v2）→ 保留（出处就是网址）；
       3. 类型 ∈ PUBLISHED_ENTRY_TYPES 且任一 PUBLICATION_FIELDS 非空 → 正式发表；
       4. 其余（未知类型 / 正式类型但缺出版信息）→ 保留（宁可不删，不误删数据）。
     """
@@ -537,6 +564,8 @@ def is_online_resource(etype: str, fields: dict[str, str]) -> bool:
     if e in ONLINE_RETAIN_ENTRY_TYPES:
         return True
     if _is_sep_like(fields):
+        return True
+    if _is_reference_work_like(fields):
         return True
     if e in PUBLISHED_ENTRY_TYPES and any(
             str(fields.get(name) or "").strip() for name in PUBLICATION_FIELDS):

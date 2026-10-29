@@ -65,6 +65,10 @@ class Parsed:
     address: str = ""
     year: str = ""
     note: str = ""
+    # B-264 v2：APA 书/章节的 `(Rev. ed.)`/`(2nd ed.)` 与 In-eds 编辑者。
+    # 这两格只有 APA 分支会填；其它体例留空，`entry_to_bib` 对空值不输出。
+    edition: str = ""
+    editor: str = ""
     confidence: str = "low"  # 'high' | 'low'
 
 
@@ -1037,42 +1041,194 @@ def _cn_journal_before_year(t: str) -> tuple[str, str]:
     return "", ""
 
 
-# ── P0-4（期 87 sub8 实测）：APA 体例编号清单 ──────────────────────────────
+# ── P0-4（期 87 sub8 实测）/ B-264 v2：APA 体例编号清单 ────────────────────
 #   源稿：`Bailin, S., Case, R., Coombs, J. R., & Daniels, L. B. (1999a).
 #          Common misconceptions of critical thinking. Journal of Curriculum
 #          Studies, 31(3), 269–283.`
 #   旧实现无引号分支按逗号切 → author=Bailin、title=S.，随后被 `len(title)<4`
 #   整条丢弃（26 条里丢 5 条、且无 warning）。APA 有**可判定的固定形状**：
-#   `作者段 (YYYY[a-z]?). 题名. 刊名, 卷(期), 页.`，单独成一条分支最安全。
-_APA_YEAR = re.compile(r"\(\s*(?P<year>(?:19|20)\d{2}[a-z]?)\s*\)\s*[.。]?\s*")
+#   `作者段 (YYYY[a-z]?). 题名. 出版信息`，单独成一条分支最安全。
+#
+#   B-264 v2（期 87 sub9 实测 26 条）补齐的是**出版尾**——旧实现只认期刊尾 +
+#   一张窄出版社线索词表，书/章节/在线词典全掉 misc 或被吞进题名：
+#     · 书：`Place: Publisher` 一律认（Heath / Henry Holt / Insight Assessment
+#       这类旧词表外的出版社；`Windsor, ON, Canada` 这种「城市, 州, 国家」双逗号
+#       地名也认），`(Vol. N)`→volume、`(Rev. ed.)`→edition；
+#     · 章节：`In <编辑者> (Eds.), <书名> (pp. X–Y). [Place: Publisher.]` →
+#       @incollection（编辑者「首字母 姓」倒装成「姓, 首字母」）；
+#     · 在线词典/百科：`In <词典>.`、`In <Eds.>, <词典> Online. <机构>. <URL>`
+#       → @article，刊名=词典名（与 87-09 发布 bib 的 c15–c17 同口径）；
+#       SEP 词条（booktitle 含 encyclopedia of philosophy）仍是 @incollection；
+#     · `(Winter 2022 ed.)` 这类**季节性版本**不进 edition，落 note（发布 bib 即如此）；
+#     · `Retrieved … from URL` / 裸 URL → note；机构句保留，URL 字段另由
+#       `apply_numbered_extras` 的 `find_urls` 兜；
+#     · 括号年扩到 18xx（1896 这类老文献），`n.d.` 与**无括号裸年**（`I. 1960.`）
+#       也认；年份后缀 `1999a/b` 剥掉（BibTeX year 只要 4 位，发布 bib c3/c4 即 1999）；
+#     · 类型只落 book/article/incollection/report；**书/章节/报告绝不落 misc**——
+#       真解析不出才 misc，由交付层 `footnotes.entry_to_bib` 转「源稿原文逐字进
+#       author」的 @misc（B-262 渲染，misc 驱动原样排印，编辑可据此人工订正）。
+_APA_YEAR = re.compile(
+    r"\(\s*(?P<year>(?:1[5-9]|20)\d{2})(?P<suffix>[a-z])?\s*\)\s*[.。]?\s*")
+_APA_ND = re.compile(r"\(\s*n\.?\s*d\.?\s*\)\s*[.。]?\s*", re.I)
+_APA_BARE_YEAR = re.compile(
+    r"^(?P<pre>.+?[A-Z]\.)\s+(?P<year>(?:1[5-9]|20)\d{2})\.\s+(?P<after>\S.*)$")
 _APA_INITIALS = re.compile(r"^(?:[A-Z]\.\s*)+$")
+#: 期刊尾：`题名. 刊名, 卷(期), 页.`——刊名允许冒号/长名；题名允许以 `”`/`"` 收尾。
 _APA_TAIL = re.compile(
-    r"^(?P<title>.+?[.?!。？！])\s+"
-    r"(?P<journal>[A-Z][^,.]{1,90}?)\s*,\s*"
-    r"(?P<volume>\d{1,4})(?:\s*\((?P<number>[^)]+)\))?\s*,\s*"
-    r"(?P<pages>[A-Z]?\d{1,5}\s*[-–—]\s*[A-Z]?\d{1,5})\s*[.。]?\s*$")
+    r"^(?P<title>.+?[.?!。？！][”\"'’]?)\s+"
+    r"(?P<journal>[^,]{1,200}?)\s*,\s*"
+    r"(?P<volume>\d{1,4})(?:\s*\((?P<number>[^)）]+)\))?\s*,\s*"
+    r"(?P<pages>[A-Za-z]?\d{1,5}\s*[-–—]\s*[A-Za-z]?\d{1,5})[.。]?\s*$")
+#: 章节：`题名. In <编辑者> (Eds.), <书名> …`
+_APA_IN = re.compile(r"^(?P<title>.+?[.?!。？！][”\"'’]?)\s+In\s+(?P<rest>\S.*)$")
+_APA_EDS = re.compile(r"^(?P<eds>.+?)\s*\((?:Eds?|eds?)\.\)\s*,\s*(?P<rest>\S.*)$")
+_APA_PAREN = re.compile(r"\(([^()]{1,90})\)")
+_APA_PAGES_PAREN = re.compile(
+    r"^pp?\.\s*(?P<pages>[A-Za-z]?\d{1,5}\s*[-–—]\s*[A-Za-z]?\d{1,5})$")
+_APA_VOL_PAREN = re.compile(r"^Vol\.?\s*(?P<volume>\d{1,4})$", re.I)
+_APA_ED_PAREN = re.compile(
+    r"^(?P<ed>Revised|Rev\.?|\d{1,2}(?:st|nd|rd|th))\s+ed\.?$", re.I)
+_APA_SEASON_ED_PAREN = re.compile(
+    r"^(?:Winter|Spring|Summer|Fall|Autumn)\s+\d{4}\s+(?:ed\.?|Edition)$", re.I)
+_APA_REPORT_CUE = re.compile(r"\(\s*Report\s+No\.|Technical\s+[Rr]eport")
+#: 在线参考工具（词典/百科）：`In <词典>` 无页码/版本时按 @article + 刊名=词典名。
+_APA_REFWORK = re.compile(r"\b(?:Dictionary|Encyclopedia|Encyclopaedia)\b|\bOnline\b", re.I)
+#: 尾部句子边界（`. ` / `? ` / `! `）——题名/书名与出版尾的分界候选。
+_APA_SENT_END = re.compile(r"(?<=[.?!])\s+")
 
 
-def _split_apa_title_pub(after: str) -> tuple[str, str]:
-    """APA 书/章节：`Title (Vol. 7). Windsor, ON, Canada: University of Windsor.`
-    → (Title (Vol. 7), Windsor, ON, Canada: University of Windsor)。
+def _apa_pub_ok(addr: str, pub: str) -> bool:
+    """出版地/出版者像不像——紧口径与宽松口径共用的一道否决（B-264 v2）。
 
-    判据：切点后的尾巴含出版社线索词（Press/Publishing/University/…）——宁可认不出，
-    也不把副题里的句点当切点（题名里带句点的书不少）。
+    否决形状：出版地里有「句点后接空格」（`Speech acts . New York` 是把副题当出版地）；
+    地址/出版者里有年份、`pp.`、数字括注（那是卷期/页码不是出版信息）；
+    出版者命中刊名线索词（那是期刊不是出版社）。
     """
-    for m in re.finditer(r"\.\s+", after):
-        head = after[: m.start()]
-        if head.count("(") > head.count(")"):     # 括号里的句点（`(Vol. 7)`）不是切点
+    if not addr or not pub:
+        return False
+    if re.search(r"\.\s|\s\.", addr):
+        return False
+    if re.search(r"(?:1[5-9]|20)\d{2}|\bpp?\.|\d\s*[\(（]", addr + " " + pub):
+        return False
+    if _SERIAL_CUE.search(pub):
+        return False
+    return True
+
+
+def _apa_place_publisher(tail: str) -> tuple[str, str] | None:
+    """`Indianapolis, IN: Hackett Publishing` → (Indianapolis, IN, Hackett Publishing)。
+
+    先走 `looks_like_place_publisher()`（B-248 的紧口径），再造一条**宽松**口径兜
+    「Windsor, ON, Canada」这种双逗号地名（`_PLACE_PUB` 只允许「城市, 州」一个逗号点）。
+    宽松口径加两道保险：出版地像地名（大写开头、无年份/pp/数字括注、句点后不接空格），
+    出版者像机构名（大写开头、不含刊名线索词）——宁可认不出，不把副题当出版地。
+    """
+    got = looks_like_place_publisher(tail)
+    if got and _apa_pub_ok(*got):
+        return got
+    s = tail.strip().rstrip(".。 ")
+    m = re.match(r"^(?P<addr>[A-Z][^:；;]{1,58}?)\s*:\s*(?P<pub>[A-Z][^:；;]{2,88}?)\s*$", s)
+    if not m:
+        return None
+    addr = m.group("addr").strip().rstrip(",; ")
+    pub = m.group("pub").strip().rstrip(".,; ")
+    if not _apa_pub_ok(addr, pub):
+        return None
+    return addr, pub
+
+
+def _apa_editors(text: str) -> str:
+    """`B. Akpan & T. Kennedy` → `Akpan, B. and Kennedy, T.`（编辑者倒装）。
+
+    APA 的 In-eds 编辑者写「首字母 姓」，BibTeX 要「姓, 首字母」。规则：
+      · 「首字母 姓」→ 首字母之后的整体当姓（多词姓 `T. Northcote Toller` 正确）；
+      · 先写全名再缩写（`Stephen P. Norris`）→ 末词当姓、前面整体当名。
+    """
+    out: list[str] = []
+    for chunk in re.split(r"\s*(?:&|\band\b)\s*|\s*,\s*(?=[A-Z])", text or ""):
+        chunk = chunk.strip().strip(",;")
+        if not chunk:
             continue
-        tail = after[m.end():].strip()
-        if not tail or len(tail) > 120:
+        tokens = chunk.split()
+        lead = 0
+        while lead < len(tokens) and re.fullmatch(r"[A-Z]\.", tokens[lead]):
+            lead += 1
+        if lead and lead < len(tokens):
+            out.append(f"{' '.join(tokens[lead:])}, {' '.join(tokens[:lead])}")
+        elif len(tokens) >= 2:
+            out.append(f"{tokens[-1]}, {' '.join(tokens[:-1])}")
+        else:
+            out.append(chunk)
+    return " and ".join(out)
+
+
+def _apa_split_retrieved(after: str) -> tuple[str, str]:
+    """把 `… Retrieved October 30, 2025, from https://…` 拆成 (正文, note)。
+
+    `Retrieved … from` 的 `from` 去掉（发布 bib 的 note 就是「Retrieved 日期, URL」）；
+    URL 字段另有 `find_urls` 兜底，这里只负责正文边界。
+    """
+    m = re.search(r"\bRetrieved\b", after)
+    if not m:
+        return after, ""
+    body = after[: m.start()].rstrip(" .;；")
+    note = after[m.start():].strip()
+    note = re.sub(r"\bfrom\s+(?=https?://)", "", note)
+    return body, re.sub(r"\s{2,}", " ", note).strip(" .;；")
+
+
+def _apa_take_parens(text: str, note_bits: list[str]) -> tuple[str, dict[str, str]]:
+    """从书名/题名里抽 `(pp. X–Y)` `(Vol. N)` `(Rev. ed.)` 等括注。
+
+    返回 (去掉括注的文本, 抽出的字段)。季节性版本（`(Winter 2022 ed.)`）不进
+    edition，按发布 bib 的口径落 note；认不出的括注原样留在文本里。
+    """
+    fields: dict[str, str] = {}
+
+    def _repl(m: re.Match[str]) -> str:
+        inner = m.group(1).strip()
+        mp = _APA_PAGES_PAREN.match(inner)
+        if mp:
+            fields["pages"] = re.sub(r"\s*[-–—]\s*", "--", mp.group("pages"))
+            return " "
+        mv = _APA_VOL_PAREN.match(inner)
+        if mv:
+            fields["volume"] = mv.group("volume")
+            return " "
+        me = _APA_ED_PAREN.match(inner)
+        if me:
+            ed = me.group("ed")
+            fields["edition"] = "Revised" if ed.lower().startswith("rev") else ed
+            return " "
+        if _APA_SEASON_ED_PAREN.match(inner):
+            note_bits.append(inner)
+            return " "
+        return m.group(0)
+
+    cleaned = _APA_PAREN.sub(_repl, text)
+    return re.sub(r"\s{2,}", " ", cleaned).strip(" .;；"), fields
+
+
+def _split_apa_container_tail(s: str) -> tuple[str, str, str]:
+    """切「书名」与尾部：返回 (书名, 尾, "pub"|"note"|"")。
+
+    逐个句点边界试：尾巴是 `Place: Publisher` → 出版尾（"pub"）；尾巴带机构句/
+    URL/Retrieved → 在线词典注记（"note"，取最早的那个边界，书名最短）；
+    都不像 → 整段都是书名。题名里的句点（`Vol. 3.`）靠「尾巴像不像出版尾」排除。
+    """
+    best_note: tuple[str, str, str] | None = None
+    for m in _APA_SENT_END.finditer(s):
+        head = s[: m.start()].strip().rstrip(" .;；")
+        tail = s[m.end():].strip()
+        if not head or not tail:
             continue
-        if re.search(r"\b(?:Press|Publishing|Publishers?|Pub|University|Universit[äa]t|"
-                     r"Routledge|Blackwell|Springer|Wiley|Books?|Verlag|Hackett|SAGE|Sage|"
-                     r"Erlbaum|Pearson|Longman|McGraw|Elsevier|Rowman|Bloomsbury|Palgrave)\b",
-                     tail):
-            return after[: m.start()].strip(), tail
-    return after.strip(), ""
+        if _apa_place_publisher(tail):
+            return head, tail, "pub"
+        if best_note is None and re.search(r"https?://|\bRetrieved\b", tail):
+            best_note = (head, tail, "note")
+    if best_note:
+        return best_note
+    return s.strip(), "", ""
 
 
 def _apa_authors(pre: str) -> str:
@@ -1094,41 +1250,175 @@ def _apa_authors(pre: str) -> str:
     return " and ".join(names)
 
 
+def _apa_author_gap(pre: str) -> str:
+    """作者段像不像 APA；像就返回 BibTeX 作者串，不像返回空串。
+
+    两种合法形状：
+      · 普通作者列表：`姓, 首字母`（至少一个 `X.`，含逗号）；
+      · 团体作者：`Oxford University Press`（无逗号、无缩写）——整段用花括号保护，
+        强制 BibTeX 当一个名字（发布 bib c17 就是 `{Oxford University Press}`）。
+    不以数字开头（防把年份/页码片段当作者）。
+    """
+    s = pre.strip().rstrip(", ")
+    if not s or re.search(r"^\d", s):
+        return ""
+    if "," in s:
+        if not re.search(r"[A-Z]\.", s):
+            return ""
+        return _apa_authors(s)
+    words = s.rstrip(".").split()
+    if 2 <= len(words) <= 10 and all(
+            re.fullmatch(r"[A-Za-z][A-Za-z.'’\-]*", w) for w in words):
+        return "{%s}" % " ".join(words)
+    return ""
+
+
+def _apa_clean_title(t: str) -> str:
+    return re.sub(r"[.。]\s*$", "", (t or "").strip()).strip()
+
+
+def _apa_join_note(note_bits: list[str], retrieved: str) -> str:
+    """note 片段按原样拼接（各片段的句点保留，不把两句话粘成一句）。"""
+    bits = [x.strip() for x in note_bits if x and x.strip()]
+    if retrieved:
+        bits.append(retrieved)
+    return re.sub(r"\s{2,}", " ", " ".join(bits)).strip(" ,;；")
+
+
+def _parse_apa_in(p: Parsed, title: str, rest: str,
+                  retrieved: str, note_bits: list[str]) -> None:
+    """`In …` 章节 / 在线词典条目的尾部解析（p.title 由调用方给）。"""
+    body = rest.strip().rstrip(" .;；")
+    body = re.sub(r"^(?:his|her|their)\s+", "", body, flags=re.I)
+    eds = ""
+    m = _APA_EDS.match(body)
+    if m:
+        eds = _apa_editors(m.group("eds"))
+        body = m.group("rest").strip()
+    book, fields = _apa_take_parens(body, note_bits)
+    booktitle, tail, kind = _split_apa_container_tail(book)
+    p.booktitle = booktitle
+    for name in ("pages", "volume", "edition"):
+        if fields.get(name):
+            setattr(p, name, fields[name])
+    if kind == "pub":
+        got = _apa_place_publisher(tail)
+        if got:
+            p.address, p.publisher = got
+    elif tail:
+        note_bits.append(tail)
+    struct = bool(p.pages or p.volume or p.edition or p.publisher
+                  or _SEP_CUE.search(booktitle))
+    if struct:
+        p.etype = "incollection"
+        p.title = _apa_clean_title(title)
+        if eds:
+            p.editor = eds
+    else:
+        # 无页码/版本/出版尾的 `In <词典>.`：在线词典条目（发布 bib c15–c17 口径）
+        p.etype = "article"
+        p.journal = booktitle
+        p.booktitle = ""
+        p.title = _apa_clean_title(title)
+        if eds:
+            # 编辑者串可能以缩写点收尾（`… Tichy, O.`），别再补一个句点
+            note_bits.insert(0, "Edited by %s%s" % (eds, "" if eds.endswith(".") else "."))
+    p.note = _apa_join_note(note_bits, retrieved)
+
+
+def _parse_apa_book(p: Parsed, after: str, retrieved: str,
+                    note_bits: list[str]) -> bool:
+    """`题名. Place: Publisher`（可夹 `(Vol. N)`/`(Rev. ed.)`）→ @book。"""
+    for m in _APA_SENT_END.finditer(after):
+        head = after[: m.start()].strip()
+        tail = after[m.end():].strip()
+        if not head or not tail:
+            continue
+        got = _apa_place_publisher(tail)
+        if not got:
+            continue
+        title, fields = _apa_take_parens(head, note_bits)
+        title = _apa_clean_title(title)
+        if not title:
+            continue
+        p.title = title
+        p.address, p.publisher = got
+        for name in ("volume", "edition"):
+            if fields.get(name):
+                setattr(p, name, fields[name])
+        p.etype = "book"
+        p.note = _apa_join_note(note_bits, retrieved)
+        return True
+    return False
+
+
 def _parse_apa_item(t: str) -> Parsed | None:
     """识别并解析 APA 体例条目；不是 APA 形状返回 None（绝不抢其它体例）。"""
     m = _APA_YEAR.search(t)
-    if not m:
-        return None
-    pre = t[: m.start()].strip().rstrip(", ")
-    after = t[m.end():].strip()
-    # 作者段必须像 APA：有逗号 + 至少一个「X.」缩写，且不以年份/数字开头。
-    if "," not in pre or not re.search(r"[A-Z]\.", pre) or re.search(r"^\d", pre):
-        return None
-    author = _apa_authors(pre)
+    if m:
+        author_pre = t[: m.start()]
+        after = t[m.end():].strip()
+        year = m.group("year")
+    else:
+        nd = _APA_ND.search(t)
+        if nd:
+            author_pre = t[: nd.start()]
+            after = t[nd.end():].strip()
+            year = ""
+        else:
+            bare = _APA_BARE_YEAR.match(t)
+            if not bare:
+                return None
+            author_pre = bare.group("pre")
+            after = bare.group("after").strip()
+            year = bare.group("year")
+    author = _apa_author_gap(author_pre)
     if not author:
         return None
     p = Parsed()
     p.author = author
-    p.year = m.group("year")
+    p.year = year
+    note_bits: list[str] = []
+    after, retrieved = _apa_split_retrieved(after)
     tail = _APA_TAIL.match(after)
     if tail:
-        p.title = re.sub(r"[.。]\s*$", "", tail.group("title").strip())
+        p.etype = "article"
+        p.title = _apa_clean_title(tail.group("title"))
         p.journal = tail.group("journal").strip().rstrip(",;")
         p.volume = tail.group("volume")
         p.number = (tail.group("number") or "").strip()
         p.pages = re.sub(r"\s*[-–—]\s*", "--", tail.group("pages").strip())
-        p.etype = "article"
+        p.note = _apa_join_note(note_bits, retrieved)
     else:
-        title, pubpart = _split_apa_title_pub(after)
-        p.title = title
-        if pubpart:
-            if re.search(r"[:：]", pubpart):
-                p.address, p.publisher = [
-                    x.strip().rstrip(".") for x in re.split(r"[:：]", pubpart, maxsplit=1)]
+        inm = _APA_IN.match(after)
+        if inm:
+            _parse_apa_in(p, inm.group("title"), inm.group("rest"),
+                          retrieved, note_bits)
+        elif _parse_apa_book(p, after, retrieved, note_bits):
+            pass
+        else:
+            rep = _APA_REPORT_CUE.search(after)
+            if rep:
+                # 显式报告号才认 @report（26 条没有可解析的报告，c12 是人工替换条目）
+                p.etype = "report"
+                p.title = _apa_clean_title(after[: rep.start()])
+                p.note = _apa_join_note(
+                    [after[rep.start():].strip()] + note_bits, retrieved)
             else:
-                p.publisher = pubpart.strip().rstrip(".")
-        p.etype = "book" if p.publisher else "misc"
-    p.confidence = "high" if (p.title and (p.journal or p.publisher)) else "low"
+                # 在线词典兜底：`题名. Dictionary/Encyclopedia/Online …` + Retrieved/URL
+                parts = re.split(r"(?<=[.?!])\s+", after, maxsplit=1)
+                if len(parts) == 2 and _APA_REFWORK.search(parts[1]) and (
+                        retrieved or re.search(r"https?://", after)):
+                    p.etype = "article"
+                    p.title = _apa_clean_title(parts[0])
+                    p.journal = _apa_clean_title(parts[1])
+                    p.note = _apa_join_note(note_bits, retrieved)
+                else:
+                    # 真解析不出：misc（交付层会转「源稿原文逐字进 author」，不冒充结构化）
+                    p.etype = "misc"
+                    p.title = _apa_clean_title(after)
+                    p.note = _apa_join_note(note_bits, retrieved)
+    p.confidence = "high" if (p.title and (p.journal or p.publisher or p.booktitle)) else "low"
     return p
 
 

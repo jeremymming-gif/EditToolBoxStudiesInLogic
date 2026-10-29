@@ -273,19 +273,41 @@ def apply_text(bib: str, plans: list[dict],
             continue
         fills = dict(plan.get("fills") or {})
         replaces = dict(plan.get("replaces") or {})
-        if not fills and not replaces:
+        # B-264 v2 / spec A9：库类型与产物类型不同 → 条目头 `@prod{key,` 的
+        # `@` 后类型名整段替换。类型只看 span 里的**实际文本**，与 plan 不一致时
+        # 上面已按 etype-mismatch 跳过，所以这里改的就是读到的那个类型名。
+        new_etype = str(plan.get("new_etype") or "").strip().lower()
+        header_edit: tuple[int, int, str] | None = None
+        if new_etype and new_etype != etype:
+            m = re.match(r"(\s*@\s*)([A-Za-z][\w:+-]*)", bib[_start:body_start])
+            if not m or m.group(2).lower() != etype:
+                if stats is not None:
+                    stats.setdefault("struct", []).append(
+                        {"key": key, "reason": "etype-rewrite-failed"})
+                if not fills and not replaces:
+                    continue
+                new_etype = ""             # 改不了条目头就只做字段回填
+            else:
+                header_edit = (_start + m.start(2), len(m.group(2)), new_etype)
+        if not fills and not replaces and not header_edit:
             continue
         body = bib[body_start:close]
         old_values = {n: _field_value_text(v)
                       for n, _s, _e, v in _parse_fields(body) if n in replaces}
-        new_body = _render_entry(body, fills, replaces)
+        new_body = _render_entry(body, fills, replaces) if (fills or replaces) else body
         if new_body is None or new_body == body:
             if new_body is None and stats is not None:
                 stats.setdefault("struct", []).append(
                     {"key": key, "reason": "render-failed"})
-            continue
-        edits.append((body_start, close - body_start, new_body))
-        applied.append({"key": key, "etype": etype,
+            if not header_edit:
+                continue
+            applied_etype = new_etype
+        else:
+            edits.append((body_start, close - body_start, new_body))
+            applied_etype = new_etype or etype
+        if header_edit:
+            edits.append(header_edit)
+        applied.append({"key": key, "etype": applied_etype,
                         "filled": {**fills, **replaces},
                         "replaced": {n: old_values.get(n, "") for n in replaces}})
     new_bib = bib
@@ -317,6 +339,15 @@ ONLINE_TYPES: frozenset[str] = frozenset({"misc", "unpublished", "online"})
 _LIB_IMPORT_RESIDUE: frozenset[str] = frozenset({
     "userf", "crossref", "wang", "yan", "id", "priority", "related",
     "relatedtype", "abstractnote", "isbn10", "langid", "lang", "day", "date",
+})
+
+#: 采用库 `entry_type` 时允许写入的类型（B-264 v2 / spec A9）——保守白名单：
+#: 只认 bib 解析器与核对器都登记过的类型名；库里的别名（`conference` 等）先经
+#: `bibcheck.TYPE_ALIASES` 归一，归一后仍不在表内 → 不采用（保留产物类型，记 stats）。
+_SAFE_ETYPES: frozenset[str] = frozenset({
+    "article", "book", "incollection", "inproceedings", "inbook", "proceedings",
+    "collection", "manual", "periodical", "thesis", "phdthesis", "mastersthesis",
+    "report", "techreport", "booklet", "online", "unpublished", "misc",
 })
 
 #: 弱身份（方案 A）：这些「题名类」命中且题名相似度低于阈值 → 整条跳过（spec §9）。
@@ -429,9 +460,22 @@ def plan_library_fills(store, entries, safe: dict) -> tuple[list[dict], dict]:
         record = match.get("record") or {}
         prod_type = str(etype or "").strip().lower()
         lib_type = str(record.get("entry_type") or "").strip().lower()
+        # B-264 v2 / spec A9：HIT_SAFE 命中后**采用库的 entry_type**（B-222 B 的余项）。
+        # 为什么现在做：库内已核实条目的类型是人工核过的权威值，产物类型来自解析器；
+        # 两者不一致时旧实现只记一条「类型差异（待 B-222 B）」就放过，交付的 .bib
+        # 类型仍是解析器的猜测。现在把差异落成 `new_etype`，由 `apply_text()` 改条目头。
+        # 只认白名单类型（库里的 `conference` 等别名先归一），白名单外不采用。
+        eff_type = prod_type
+        type_applied = False
         if lib_type and prod_type and lib_type != prod_type:
+            from .bibcheck import TYPE_ALIASES
+            norm_lib = TYPE_ALIASES.get(lib_type, lib_type)
+            if norm_lib in _SAFE_ETYPES:
+                eff_type = norm_lib
+                type_applied = True
             stats["type_diff"].append(
-                {"key": key, "entry_type": prod_type, "library_type": lib_type})
+                {"key": key, "entry_type": prod_type, "library_type": lib_type,
+                 "applied": type_applied})
         if is_weak_identity(match):
             stats["weak"].append(key)
             continue                      # 方案 A：弱身份整条排除
@@ -439,7 +483,8 @@ def plan_library_fills(store, entries, safe: dict) -> tuple[list[dict], dict]:
             stats["duplicate"].append(key)
             continue                      # 同 key 重复：规划阶段就整条跳过
         rec_fields = bibdb.canonical_fields(record.get("fields") or {})
-        candidates = _render_library_candidates(prod_type, rec_fields)
+        # 候选字段按**采用后的类型**渲染（eprint 三件套等按类型分档，spec §3 同源）
+        candidates = _render_library_candidates(eff_type, rec_fields)
         if not candidates:
             continue
         field_map = _field_text_map(body)
@@ -467,9 +512,12 @@ def plan_library_fills(store, entries, safe: dict) -> tuple[list[dict], dict]:
             elif current != value:
                 replaces[name] = value    # 现值非空且不同 → 库值覆盖
             # 现值 == 库值 → 不动（幂等：第二遍 applied=0）
-        if fills or replaces:
-            plans.append({"etype": etype, "key": key, "fills": fills,
-                          "replaces": replaces})
+        if fills or replaces or type_applied:
+            plan = {"etype": etype, "key": key, "fills": fills,
+                    "replaces": replaces}
+            if type_applied:
+                plan["new_etype"] = eff_type
+            plans.append(plan)
     return plans, stats
 
 
@@ -478,7 +526,7 @@ def format_stats(stats: dict | None) -> list[str]:
     if not stats:
         return []
     lines: list[str] = []
-    for field, title in (("type_diff", "类型差异（待 B-222 B）"),
+    for field, title in (("type_diff", "类型差异（已采用库类型）"),
                          ("weak", "弱身份排除（方案 A，未应用）"),
                          ("duplicate", "重复 key 整条跳过")):
         rows = list(stats.get(field) or [])

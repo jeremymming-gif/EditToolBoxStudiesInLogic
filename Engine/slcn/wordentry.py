@@ -648,6 +648,9 @@ def _numbered_refs(
             "volume": it.volume, "number": it.number, "pages": it.pages,
             "publisher": it.publisher, "address": it.address,
             "year": it.year, "note": it.note,
+            # B-264 v2：APA 书/章节的 `(Vol. N)`→volume、`(Rev. ed.)`→edition、
+            # In-eds 编辑者→editor；其它体例这两格恒空，`entry_to_bib` 不输出空值。
+            "edition": it.edition, "editor": it.editor,
         }
 
     # P0-5a（期 87 sub7 实测）：编号清单**第一个标记之前**的无编号条目（作者漏编号）
@@ -701,7 +704,11 @@ def _numbered_refs(
             entry["note"] = (f"题名解析可疑（{it.title}），已保留原条目，"
                              "请按源稿原文核对题名")
         key = _fn_make_key(entry, len(out) + 1, used)
-        out.append((key, entry, it.title))
+        # B-264 v2（用户 m00808 / Lead m00248）：交付为 @misc 的条目，第三元素
+        # （`entry_to_bib` 的 `raw`）必须是**去标号的源稿原文**，不是 title——
+        # 交付层据此写「author = 逐字原文」的极简 misc。非 misc 保持旧行为
+        # （第三元素仍是 title；只在「所有字段都空」时才会用到 raw 写 note）。
+        out.append((key, entry, seg if entry.get("_type") == "misc" else it.title))
         if _nm:                       # 只有带标号的条目才进「编号→键」映射
             num2key[num] = key
         raw_by_key[key] = raw

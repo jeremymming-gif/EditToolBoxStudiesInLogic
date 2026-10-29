@@ -91,7 +91,12 @@ REQUIRED: dict[str, dict[str, list[str]]] = {    "article": {
     "report": {"must": ["author", "title", "year"], "nice": ["institution", "number"]},
     "online": {"must": ["title", "url", "urldate"], "nice": ["author", "year"]},
     "unpublished": {"must": ["author", "title", "note"], "nice": ["year"]},
-    "misc": {"must": ["author", "title", "year"], "nice": []},
+    # B-264 v2（用户 m00808 / Lead m00248 交付契约）：**最终交付的 @misc 一律是
+    # 「author = 源稿逐字原文」的单字段条目**（title/year 全空，见
+    # `footnotes.entry_to_bib` 的 misc 分支）。因此 misc 的必备字段只剩 author；
+    # 若仍要求 title/year，每一条逐字 misc 都会报 2 项「必补」——全是虚警，
+    # 编辑照着报错只会去「编」一个题名/年份，正是契约要避免的。
+    "misc": {"must": ["author"], "nice": []},
 }
 
 # 类型名统一（往期写法）
@@ -287,6 +292,45 @@ _SENTENCE_CASED = ("article", "inproceedings", "incollection", "misc")
 _SUBTITLE_CAP = re.compile(r"[:：]\s+([A-Z])(?![A-Z])")
 #: 已被保护的样子（`: {A}n`）
 _SUBTITLE_GUARDED = re.compile(r"[:：]\s+\{[A-Z]")
+
+# ── 题名污染（B-264 v2，spec A4）─────────────────────────────────────────
+# 判据：`title` 里粘上了**出版尾**——`出版地: 出版社`、期刊卷期页码、`pp. 起–止`。
+# 这是 APA 解析层以前的老毛病（题名把 `New York, NY: Basic Books` 一起吞了）：
+# 排出来题名末尾挂着出版信息，且 publisher/address 两栏反而空着。
+# 与 `author_form_issues()` 同一个理由**不并进 `check()`**（冻结基线），走
+# `style_form_issues()`（`bibreport` 的「规范核对」入口，nice 级、只报不改）。
+_TITLE_PUB_CUE = re.compile(
+    r"\b(?:Press|Publishing|Publishers?|University|Universit[äa]t|Verlag|Books?\b|"
+    r"Company|Co\.|Inc\.?|Ltd\.?|Routledge|Springer|Blackwell|Wiley|Hackett|Heath|"
+    r"Holt|Scribner|Harper|Pearson|Longman|Elsevier|Bloomsbury|Palgrave|McGraw)",
+    re.I)
+#: `City, ST: Publisher` / `City: Publisher`（出版社须命中 `_TITLE_PUB_CUE`）
+_TITLE_PLACE_PUB = re.compile(
+    r"(?:^|[.;]\s+)(?P<addr>[A-Z][A-Za-z.\- ]{1,32}?(?:,\s*[A-Z]{2})?)\s*:\s*"
+    r"(?P<pub>[A-Z][^:]{2,70}?)\s*$")
+#: 题名尾的期刊卷期页码：`… Journal, 12(3), 45–67` / `… Review, 2, 258–306`
+_TITLE_JOURNAL_TAIL = re.compile(
+    r",\s*\d{1,4}(?:\s*\(\s*\d{1,3}\s*\))?\s*,\s*"
+    r"[A-Z]?\d{1,5}\s*[-–—−]{1,2}\s*[A-Z]?\d{1,5}\s*$")
+#: 题名尾的页码范围：`… (pp. 227–239)` / `… pp. 39–53`
+_TITLE_PAGES_TAIL = re.compile(
+    r"(?:\(\s*pp?\.\s*\d{1,5}\s*[-–—]\s*\d{1,5}\s*\)|"
+    r"\bpp?\.\s*\d{1,5}\s*[-–—−]{1,2}\s*\d{1,5})\s*$")
+
+
+def title_pollution_reason(title: str) -> str:
+    """题名里是否粘了出版信息 → 返回人读理由；干净则返回 ""。"""
+    ti = (title or "").strip()
+    if not ti:
+        return ""
+    m = _TITLE_PLACE_PUB.search(ti)
+    if m and _TITLE_PUB_CUE.search(m.group("pub")):
+        return "题名尾部粘了「出版地: 出版社」"
+    if _TITLE_JOURNAL_TAIL.search(ti):
+        return "题名尾部粘了期刊卷期/页码"
+    if _TITLE_PAGES_TAIL.search(ti):
+        return "题名尾部粘了页码范围"
+    return ""
 #: `Part I` / `Vol. 2` 这类编号
 _NUMBERED = re.compile(r"\b(?:Part|Chapter|Section|Vol\.?|No\.?)\s+([IVXLCDM]+|\d+)\b")
 
@@ -307,6 +351,13 @@ def style_form_issues(bib: str) -> list[Issue]:
         if (f.get("userf") or "").strip().lower() == "cn":
             continue
         ti = (f.get("title") or "").strip()
+        # B-264 v2：题名污染（出版尾/卷期页码被并进 title）——与中文条目无关，先判。
+        why = title_pollution_reason(ti)
+        if why and etype not in ("misc",):
+            out.append(Issue(
+                key, etype, "style",
+                f"{why}，publisher/address/journal/pages 反而空着——"
+                "应拆成独立字段（APA 出版尾解析，B-264 v2）", "nice"))
         if etype in _SENTENCE_CASED and ti:
             if _SUBTITLE_CAP.search(ti) and not _SUBTITLE_GUARDED.search(ti):
                 out.append(Issue(
@@ -338,6 +389,22 @@ def style_form_issues(bib: str) -> list[Issue]:
     return out
 
 
+_VERBATIM_AUTHOR = re.compile(r"^\{\{.*\}\}$", re.S)
+
+
+def _looks_verbatim_misc(f: dict[str, str]) -> bool:
+    """是不是 B-264 v2 的「逐字原文 misc」：只有 author（值是整行原文的转义形态）。"""
+    author = (f.get("author") or "").strip()
+    if not author:
+        return False
+    if not _VERBATIM_AUTHOR.match(author):
+        return False
+    for name in ("title", "journal", "booktitle", "year", "publisher", "url", "doi"):
+        if (f.get(name) or "").strip():
+            return False
+    return True
+
+
 def author_form_issues(bib: str) -> list[Issue]:
     """英文 `author` / `editor` 未倒装的条目 → must 级问题（含改法建议）。"""
     from . import bibnorm
@@ -346,6 +413,11 @@ def author_form_issues(bib: str) -> list[Issue]:
     for etype_raw, key, body in split_entries(bib):
         etype = TYPE_ALIASES.get(etype_raw.lower(), etype_raw.lower())
         f = fields_of(body)
+        if etype == "misc" and _looks_verbatim_misc(f):
+            # B-264 v2：逐字 misc 的 author 是「源稿整行原文」，不是作者姓名，
+            # 倒装规则对它没有意义（原文里本来就有 `Smith, J.` 这类写法）；
+            # 不跳过的话，核对器会对每一条逐字 misc 报 must 级虚警。
+            continue
         for name in ("author", "editor"):
             raw = (f.get(name) or "").strip()
             if not raw or not re.search(r"[A-Za-z]", raw):
