@@ -21,9 +21,9 @@ from .wordmeta import (AFFIL_EN_JOIN, META_SCAN, _ABS_RE, _HEAD1, _HEAD2, _HEAD_
                        _HEAD_CN_DOT, _HEAD_CN_SPACE, _HEAD_EN1, _HEAD_EN2, _HEAD_EN2_HALF,
                        _HEAD_EN3, _KW_RE, _REF_HEADS, _abs_body_cn, _is_clc_meta_only,
                        _is_cn_dot_heading, _is_cn_numbered_heading, _is_subtitle,
-                       _known_cn_authors, _known_en_authors, _label_body, _tail_abstract_cn,
-                       collect_affiliations, collect_emails, locate_tail_block,
-                       parse_tail_metadata)
+                       _is_title_candidate, _known_cn_authors, _known_en_authors,
+                       _label_body, _tail_abstract_cn, collect_affiliations, collect_emails,
+                       head_author_after, head_title_index, locate_tail_block, parse_tail_metadata)
 from .wordrender import (_looks_plain_en_title, classify_en_heading, find_char_diagrams,
                          render_para, table_env)
 
@@ -501,12 +501,12 @@ def parse_docx(path: str, quote_threshold: int = 105,
     # 题名后面常另起一段放副标题（以破折号开头），再下一段才是作者。
     # 直接取「第 1 段」当作者会把副标题写进 `\myfirstauthor`——实测踩到
     # （09 Jiawei_Zhong：`\kaishu ——一个基于示例论证理论的生成模型`）。
-    doc.title = plains[0].strip()
-    author_idx = 1
-    if len(plains) > 1 and _is_subtitle(plains[1]):
-        doc.subtitle = plains[1].strip()
+    title_idx = head_title_index(plains)  # S1：跳过开头空段与模板页眉
+    doc.title, author_idx = plains[title_idx].strip(), title_idx + 1
+    if len(plains) > author_idx and _is_subtitle(plains[author_idx]):
+        doc.subtitle = plains[author_idx].strip()
         doc.title = f"{doc.title}{doc.subtitle}"
-        author_idx = 2
+        author_idx += 1
     # ⚠️ 题名与作者之间**可能是空段落**（实测 2026_05_Meimei_Han：`[1]` 是空行，
     #    作者在 `[2]`），所以不能只看 author_idx 那一段，要往后找到第一个非空段。
     for k in range(author_idx, min(len(plains), author_idx + 4)):
@@ -657,6 +657,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
 
     doc.title_cn = doc.title if _has_cjk(doc.title) else ""
     doc.title_en = "" if _has_cjk(doc.title) else doc.title
+    _head_title_idx = title_idx if doc.title_en else -1  # head 英文作者窗口起点
     # ⚠️ `meta_end` 仍按**改动前**的口径算（只数紧贴段首的标签）：它管的是「正文起点」
     #    与「开头英文题名的扫描范围」，都是另外的判据，本轮只放宽摘要的**取值**，
     #    不该顺带把这两处也动了。实测 2022年第4期(65) 康孝军 的稿子：缩进的
@@ -674,8 +675,10 @@ def parse_docx(path: str, quote_threshold: int = 105,
             continue
         if _has_cjk(t) and not doc.title_cn:
             doc.title_cn = t
-        elif not _has_cjk(t) and not doc.title_en and t != doc.author:
-            doc.title_en = t
+        elif not _has_cjk(t) and not doc.title_en and t != doc.author and _is_title_candidate(t):
+            doc.title_en, _head_title_idx = t, i
+
+    doc.author_en = doc.author_en or head_author_after(plains, _head_title_idx)
 
     # ③.5 文末那一套：开头没有的（英文题名/摘要/关键词/作者/单位/邮箱）在这里补
     #
@@ -698,7 +701,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         if not doc.title_en.strip():
             doc.title_en = tail.get("title_en", "")
             doc.subtitle_en = tail.get("subtitle_en", "")
-        doc.author_en = tail.get("author_en", "")
+        doc.author_en = tail.get("author_en", "") or doc.author_en  # S1：空值不覆盖
         doc.email = tail.get("email", "")
 
     # ③.6 单位：不再只认文末块里的「单位：」标签（旧实现全库只拿到 1/132）。

@@ -129,11 +129,12 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**116 套件 / 5314 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**120 套件 / 5383 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48
-`test_b204_health_ignore` 40 ｜ `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 83 ｜ `test_b71_word_author_meta` 81
+`test_b204_health_ignore` 40 ｜ `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 83 ｜ `test_b268_conflict` 15
+`test_b268_frontmatter` 17 ｜ `test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b71_word_author_meta` 81
 `test_b73_bibdb_adjudication` 84 ｜ `test_b73_footnote_bare_cite` 45 ｜ `test_b74_fulltext_analysis` 96 ｜ `test_b74_gen_docs_write_once` 14
 `test_b75_b137_cite_residual` 39 ｜ `test_b75_coop_report_only` 60 ｜ `test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22
 `test_b79_b131_delivery_record` 27 ｜ `test_bare_email` 30 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10

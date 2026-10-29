@@ -325,14 +325,19 @@ else:
                                "Key words: different; keywords"]), en)
         gf = parse_docx(body)
         en_doc = parse_docx(en)
-        check("②-b 前提：正文稿英文块**没有** author_en（它是空的）",
-              bool(gf.title_en.strip()) and not gf.author_en.strip(), f"{gf.author_en!r}")
+        # B-268 S1：该正文稿的 head 英文作者行现在会被恢复（`Guangwu Feng Shuiying Chen`），
+        # 前提从「author_en 为空」改为「正文稿自己的 author_en 与第二源不同」；断言仍验证
+        # 「第二源不覆盖正文稿已有值」。
+        check("②-b 前提：正文稿英文块**有自己的** author_en（与第二源不同）",
+              bool(gf.title_en.strip()) and bool(gf.author_en.strip())
+              and gf.author_en != en_doc.author_en, f"{gf.author_en!r}")
         _res2, tex2 = build_tex(body, os.path.join(tmp, "out"), metadata_path=en)
         check("②-b 正文已有的 `\\mytitleEN` / `\\myabstractEN` 一个字都没动",
               macro_value(tex2, "mytitleEN") == gf.title_en
               and macro_value(tex2, "myabstractEN") == gf.abstract_en, "")
-        check("②-b 正文**没有**的 `\\myfirstauthorEN`（原为占位符）才补上第二源的值",
-              macro_value(tex2, "myfirstauthorEN") == en_doc.author_en == "Someone Else",
+        check("②-b 正文已有的 `\\myfirstauthorEN` 不被第二源覆盖（B-268：head 恢复值优先）",
+              macro_value(tex2, "myfirstauthorEN") == gf.author_en
+              and en_doc.author_en == "Someone Else",
               f"{macro_value(tex2, 'myfirstauthorEN')!r}")
 
 

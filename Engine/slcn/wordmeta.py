@@ -831,6 +831,206 @@ def _looks_like_person(t: str) -> bool:
     )
 
 
+# ── 英文题名 / 作者行的形态校验（B-268 S1）────────────────────────────────
+#
+# 背景：旧实现把「摘要前最后一条非中文短行」无条件当英文题名、把「紧邻摘要前的
+# 那一行」无条件当作者。源稿在这些位置放的可能是**邮箱行**（74/02、87/09）、
+# **纯单位行**（66/02、87/09）、甚至**模板页眉**（82/02），于是 `\mytitleEN` 印出
+# `alex.sample@example.org`、`\myfirstauthorEN` 永远是占位符。
+#
+# 判据收成下面这组单点函数，wordbody 的 head（③/③.4）与 parse_tail_metadata 的
+# tail（②）共用同一套：**拿不准就返回空**，交给模板占位符让编辑手工填——
+# 给作者印错名字/单位是学术事故，宁可 fail 不可误判（禁止猜名）。
+_TEMPLATE_HEADER_RE = re.compile(r"^\s*Studies\s+in\s+Logic\b[^\n]*\bVol\b", re.I)
+_PII_RE = re.compile(r"^\s*PII\s*[:：]", re.I)
+_EMAIL_LINE_RE = re.compile(
+    r"^\s*[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+\s*$")
+# 单位行的**强形态**：段首机构词，或行内有 `Department of / School of …`，
+# 或以机构名收尾（`… University` / `… University, City`）。
+_AFFIL_START_RE = re.compile(
+    r"^\s*(?:School|Department|Dept\.?|Institute|College|Faculty|"
+    r"Centre|Center|Academy|Laboratory|Research\s+(?:Center|Centre|Institute))\b", re.I)
+_AFFIL_PHRASE_RE = re.compile(
+    r"\b(?:Department|School|Institute|Faculty|College|Centre|Center)\s+of\b", re.I)
+_ORG_TAIL_RE = re.compile(
+    r"(?:University|Universit[ée]|Institute|College|Academy)\s*(?:,.*)?$", re.I)
+_ORG_HEAD_RE = re.compile(
+    r"^\s*(?:[A-Z][^\s,]{1,20}(?:\s+[A-Z][^\s,]{1,20}){0,4})\s+"
+    r"(?:University|Institute|College|Academy)\b", re.I)
+# 作者行里的姓名形态：Title-case（允许全大写姓 `SAMPLE`、连字符 `Mei-lin`、缩写句点）
+_PERSON_NAME_TOKEN_RE = re.compile(r"[A-Z][A-Za-z'’\-]*\.?$")
+_NAME_PARTICLES = frozenset({"van", "von", "de", "der", "den", "del", "della",
+                             "di", "da", "du", "la", "le", "bin", "ibn"})
+# 作者行里不可能是姓名成分的词（头衔/机构/占位符）——宁可判不出，也不把
+# `Distinguished Professor`、`First Author` 拼进 `\myfirstauthorEN`。
+# 模板自带的示例行（CN 模板自转换要逐字保留，S1 校验不得把它们判成非法）
+_TPL_SAMPLE_TITLE = "english title"
+_TPL_SAMPLE_AUTHOR_RE = re.compile(r"^(?:First|Second|Third|Fourth|Fifth)\s+Author\b", re.I)
+_NOT_NAME_WORDS = frozenset({
+    "professor", "prof", "dr", "department", "dept", "university", "institute",
+    "college", "school", "faculty", "academy", "philosophy", "research",
+    "center", "centre", "chair", "distinguished", "emeritus", "lecturer",
+    "dean", "author", "authors", "title",
+})
+# 作者行上的上标标记（`Alex Sample 1, Mei Lin 2\uf02a`；\uf02a 是私用区星号）
+_SUPERSCRIPT_RE = re.compile(
+    r"[\uf020-\uf0ff\u00b9\u00b2\u00b3\u2070-\u207f\u2020\u2021\u00a7\u00b6*∗†‡]")
+
+
+def _is_email_line(t: str) -> bool:
+    """整段就是一个邮箱地址（74/02、87/09 文末块的形态）。"""
+    return bool(_EMAIL_LINE_RE.match(t or ""))
+
+
+def _looks_like_template_header(t: str) -> bool:
+    """模板页眉（`Studies in Logic, Vol. x, No. x (xxxx): 1–10 PII: …`，实测 82/02）。"""
+    s = (t or "").strip()
+    return bool(_TEMPLATE_HEADER_RE.match(s) or _PII_RE.match(s))
+
+
+def _looks_like_affiliation(t: str) -> bool:
+    """英文单位行（纯机构名）；不是题名、不是姓名。"""
+    s = (t or "").strip()
+    if not s or _has_cjk(s) or len(s) > 160 or "@" in s:
+        return False
+    if _AFFIL_START_RE.match(s) or _AFFIL_PHRASE_RE.search(s):
+        return True
+    return len(s.split()) <= 12 and bool(_ORG_TAIL_RE.search(s) or _ORG_HEAD_RE.match(s))
+
+
+def _looks_like_person_name(t: str) -> bool:
+    """单个姓名段：2–6 个 Title-case 词、无句读/括号、无机构/头衔词。"""
+    s = (t or "").strip()
+    if not s or len(s) > 60 or _has_cjk(s) or "@" in s:
+        return False
+    if _TPL_SAMPLE_AUTHOR_RE.match(s):
+        return True
+    if any(c in s for c in ".?!。？！:：;；()（）[]{}/\\|<>"):
+        return False
+    toks = s.split()
+    if not 2 <= len(toks) <= 6:
+        return False
+    for w in toks:
+        core = w.rstrip(".")
+        if core.lower() in _NAME_PARTICLES:
+            continue
+        if core.lower() in _NOT_NAME_WORDS:
+            return False
+        if not _PERSON_NAME_TOKEN_RE.match(w):
+            return False
+    return True
+
+
+def _strip_author_markers(t: str) -> str:
+    """去掉作者行上的上标星号/编号（`Alex Sample 1, Mei Lin 2` → `Alex Sample, Mei Lin`）。"""
+    s = _SUPERSCRIPT_RE.sub(" ", t or "")
+    s = re.sub(r"\s*\b\d{1,2}\b\s*", " ", s)
+    return re.sub(r"\s+", " ", s).strip(" ,，;；")
+
+
+def _author_row_name(t: str) -> str:
+    """英文作者行里的姓名部分；判不出返回 ""（不猜）。
+
+    覆盖三种实测形态：
+      · 单段姓名 → 原样（`Alex Sample`、`Mei Lin   Wei Chen`；
+        连写的多作者串交给 build.py 的 `_split_en_names_by_count` 按作者数等分）；
+      · 多段且**每段都是姓名** → 用**空格**连接（85/05 `Alex Sample 1, Mei Lin 2`）：
+        这与仓内既有的连写作者串形态一致（72/04、83/05），build 的
+        `_split_en_names_by_count` 按「2×作者数」等分即可切出第二作者英文槽；
+        不用分号是因为它会原样进 `\myfirstauthorEN`，且仓内无此先例；
+      · 姓名 + 单位/头衔写在同一行 → 只取第一段（79/01、88/02）。
+    """
+    s = (t or "").strip()
+    if not s or len(s) > 120 or _has_cjk(s) or "@" in s:
+        return ""
+    if _looks_like_template_header(s):
+        return ""
+    s = _strip_author_markers(s)
+    if not s:
+        return ""
+    parts = [p.strip() for p in re.split(r"[,，;；]", s) if p.strip()]
+    if not parts or not _looks_like_person_name(parts[0]):
+        return ""
+    if len(parts) == 1:
+        # 单段：整行必须是姓名形态，单位行（含 Institution/University…）不算
+        return "" if _looks_like_affiliation(s) else parts[0]
+    if all(_looks_like_person_name(p) for p in parts[1:]):
+        return " ".join(parts)
+    return parts[0]
+
+
+def _is_title_candidate(t: str) -> bool:
+    """英文题名候选的校验（不得是邮箱/单位/模板页眉/占位符/标签行）。"""
+    s = (t or "").strip()
+    if not s or len(s) > 300 or "@" in s:
+        return False
+    if _looks_like_template_header(s) or _looks_like_affiliation(s):
+        return False
+    if _ABS_RE.match(s) or _KW_RE.match(s) or _META_LABEL_RE.match(s):
+        return False
+    if not re.search(r"[A-Za-z]", s):
+        return False
+    low = s.lower()
+    if low == _TPL_SAMPLE_TITLE:
+        return True
+    return not low.startswith(("received ", "first author", "second author", "title"))
+
+
+def _author_followed_by_block(lines: list[str], j: int) -> bool:
+    """作者行之后紧跟单位/邮箱/英文摘要/中文块才认（挡住「题名被拆成两段」的误判）。"""
+    seen = 0
+    while j < len(lines) and seen < 2:
+        t = lines[j].strip()
+        j += 1
+        if not t:
+            continue
+        seen += 1
+        if (_ABS_RE.match(t) or _KW_RE.match(t) or _META_LABEL_RE.match(t)
+                or _looks_like_affiliation(t) or _is_email_line(t) or _has_cjk(t)):
+            return True
+        return False
+    return False
+
+
+def head_author_after(lines: list[str], title_idx: int) -> str:
+    """英文题名之后紧邻的作者行（head 英文块）；判不出返回 ""。
+
+    只在「题名下一段」的窗口里找（最多跳过 2 个空段）；遇到摘要/关键词标签、
+    单位行、邮箱行之外的非姓名行就收手——不往下扫正文，避免把节标题当人名。
+    """
+    if title_idx < 0 or title_idx >= len(lines):
+        return ""
+    j = title_idx + 1
+    seen = 0
+    while j < len(lines) and seen < 3:
+        t = lines[j].strip()
+        j += 1
+        if not t:
+            continue
+        seen += 1
+        if _ABS_RE.match(t) or _KW_RE.match(t) or _META_LABEL_RE.match(t):
+            return ""
+        name = _author_row_name(t)
+        if name:
+            return name if _author_followed_by_block(lines, j) else ""
+        if _looks_like_affiliation(t) or _is_email_line(t):
+            continue
+        return ""
+    return ""
+
+
+def head_title_index(lines: list[str]) -> int:
+    """题名段落下标：跳过开头空段与模板页眉；全是页眉/空段时返回 0（旧行为）。"""
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    while i < len(lines) and _looks_like_template_header(lines[i]):
+        i += 1
+        while i < len(lines) and not lines[i].strip():
+            i += 1
+    return i if i < len(lines) else 0
+
+
 def _label_body(lines: list[str], i: int, label_re) -> str:
     """元数据标签的正文：同一段冒号之后的内容；标签**独占一段**时取下一段。
 
@@ -934,7 +1134,13 @@ def _skip_en_refs_to_title(lines: list[str], start: int, abs_idx: int) -> int:
         j -= 1
     if j <= start:
         return start
-    if _looks_like_person(lines[j].strip()):
+    # B-268 S1：剥掉摘要正上方的邮箱行/单位行（74/02、87/09 的形态），
+    # 再按「作者 → 副题」回推题名；没有这些行时逐字节同旧行为。
+    if j > start and _is_email_line(lines[j].strip()):
+        j -= 1
+    if j > start and _looks_like_affiliation(lines[j].strip()):
+        j -= 1
+    if j > start and _author_row_name(lines[j].strip()):
         j -= 1
     if j > start and _is_subtitle(lines[j].strip()):
         j -= 1
@@ -1035,12 +1241,27 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
         # ⚠️ 作者行下面常紧跟一行**括号包起来的英文单位**（实测 05 Guoping_Du：
         #    `Du Guo-ping` / `(Institute of Philosophy, …)`）。它既不像人名也不是题名；
         #    旧逻辑只看「像不像人名」，于是把单位印成了 `\mytitleEN`。
+        # B-268 S1：除括号单位行外，**裸邮箱行**（74/02、87/09）与**纯单位行**
+        #    （66/02、87/09）也挡在摘要正上方，必须先剥掉再判作者/题名；否则邮箱或
+        #    机构名会被印成 `\mytitleEN`。剥完仍要过形态校验（_author_row_name /
+        #    _is_title_candidate），判不出就留空交给占位符——不猜。
         while back and back[-1][1].lstrip().startswith(("(", "（")):
             back = back[:-1]
-        # 紧邻摘要的那一行若像人名，就是英文作者
-        if back and _looks_like_person(back[-1][1]):
-            out["author_en"] = back[-1][1]
+        while back and _is_email_line(back[-1][1]):
             back = back[:-1]
+        while back and _looks_like_affiliation(back[-1][1]):
+            back = back[:-1]
+        # 紧邻摘要的那一行若像人名，就是英文作者（作者行只可能在题名之上还有内容时
+        # 出现；只剩一行时那行就是题名，不能当作者吃掉）。
+        # ⚠️ 旧判据 `_looks_like_person` 命中时**原样保留**（它认的连写作者串/多空格
+        #    是既成产物的一部分，逐字节不能动）；只在旧判据失败时才走新形态恢复。
+        if len(back) >= 2:
+            _line = back[-1][1]
+            _name = _line if (_looks_like_person(_line)
+                              and _looks_like_person_name(_line)) else _author_row_name(_line)
+            if _name:
+                out["author_en"] = _name
+                back = back[:-1]
         if back:
             # 最后一行是题名，其后若以破折号开头则为副题
             title = back[-1][1]
@@ -1048,8 +1269,9 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
             if len(back) >= 2 and _is_subtitle(title):
                 sub = title
                 title = back[-2][1]
-            out["title_en"] = title
-            out["subtitle_en"] = sub
+            if _is_title_candidate(title):
+                out["title_en"] = title
+                out["subtitle_en"] = sub
 
     # ③ 邮箱 + 中英文所属单位
     for _i, t in seg:

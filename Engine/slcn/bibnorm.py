@@ -606,6 +606,62 @@ def _blank_after_url_strip(value: str) -> bool:
     return not re.sub(r"[\s,;:.。，；：]+", "", v)
 
 
+#: note 里的网址 token：`\url{…}` / `\href{…}{…}` / 裸 http(s) 地址（B-268 S4）。
+_URL_TOKEN_RE = re.compile(
+    r"\\url\s*\{\s*([^{}]*?)\s*\}|\\href\s*\{\s*([^{}]*?)\s*\}\s*\{[^{}]*\}",
+    re.I)
+_BARE_URL_RE = re.compile(r"https?://[^\s{}]+", re.I)
+
+
+def _url_identity(url: str) -> str:
+    """「同一条链接」的归一判据（只用于 note 去重，不参与取舍/回填判据）。
+
+    归一：去 `\\url{}` 包装 → DOI 归一为 `doi:<id>` → arXiv 的 `/abs/` 与 `/pdf/`
+    归一为同一 id → 去协议/`www.`/尾斜杠并小写。实测的两类形态：
+      · `\\url{https://…/sorites-paradox}` 与 `https://…/sorites-paradox/`（库 Hyde2018）；
+      · `https://arxiv.org/pdf/1706.03762.pdf` 与 `http://arxiv.org/abs/1706.03762`（库 Vaswani2017）。
+    """
+    u = (url or "").strip()
+    m = re.match(r"\\(?:url|href)\s*\{\s*([^{}]*?)\s*\}", u, re.I)
+    if m:
+        u = m.group(1).strip()
+    m = re.match(r"(?i)^https?://(?:dx\.)?doi\.org/(.+)$", u)
+    if m:
+        return "doi:" + m.group(1).strip().lower().rstrip("/")
+    m = re.match(r"(?i)^(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf)/([^/?#]+?)(?:\.pdf)?$", u)
+    if m:
+        return "arxiv:" + m.group(1).strip().lower()
+    u = re.sub(r"(?i)^https?://", "", u)
+    u = re.sub(r"(?i)^www\.", "", u)
+    return u.rstrip("/").lower()
+
+
+def _drop_duplicate_urls(value: str, url_keys: set[str]) -> tuple[str, list[str]]:
+    """把 `value` 里与 url/doi 字段**同一条链接**的网址删掉；其余文本/空白不动。
+
+    只删命中的那个 token（含 `\\url{}`/`\\href{}` 包装），不重排其它内容；
+    删完只剩标点/空壳的字段由调用方按 `_blank_after_url_strip()` 整项删除。
+    """
+    removed: list[str] = []
+
+    def _repl(m: re.Match[str]) -> str:
+        raw = m.group(0)
+        inner = (m.group(1) or m.group(2) or raw).strip()
+        if _url_identity(inner) in url_keys:
+            removed.append(inner)
+            return ""
+        return raw
+
+    cleaned = _URL_TOKEN_RE.sub(_repl, value or "")
+    if not removed:
+        return value, []
+    cleaned = _BARE_URL_RE.sub(_repl, cleaned)
+    cleaned = re.sub(r"[（(]\s*[)）]", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"[\s,;:，；：]+$", "", cleaned)
+    return cleaned, removed
+
+
 def strip_published_urls_fields(key: str, etype: str,
                                 fields: list[tuple[str, str]],
                                 notes: list[str]) -> list[tuple[str, str]]:
@@ -620,6 +676,13 @@ def strip_published_urls_fields(key: str, etype: str,
         flat.setdefault(name, value)
     online = is_online_resource(etype, flat)
     has_url = bool((flat.get("url") or "").strip())
+    # B-268 S4：note 里与 url/doi 字段同一条链接的网址要在输出层去重（保留 url 字段）。
+    url_keys: set[str] = set()
+    if has_url:
+        url_keys.add(_url_identity(flat.get("url") or ""))
+    if (flat.get("doi") or "").strip():
+        url_keys.add(_url_identity("https://doi.org/" + flat["doi"].strip()))
+    url_keys.discard("")
     embedded: list[tuple[str, str]] = []
     out: list[tuple[str, str]] = []
 
@@ -630,6 +693,14 @@ def strip_published_urls_fields(key: str, etype: str,
             elif value.strip():
                 notes.append(f"{key}: 正式发表条目不写 {name}（已删除）")
             continue
+        if name == "note" and online and url_keys:
+            cleaned, dups = _drop_duplicate_urls(value, url_keys)
+            if dups:
+                notes.append(
+                    f"{key}: note 内网址与 url/doi 重复（去重，保留 url 字段）：{dups[0]}")
+                value = cleaned
+                if _blank_after_url_strip(value):
+                    continue
         if name in _EMBEDDED_URL_FIELDS:
             cleaned, urls = _extract_urls_from_value(value)
             if urls:

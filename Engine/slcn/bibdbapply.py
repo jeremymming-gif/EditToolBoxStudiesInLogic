@@ -332,6 +332,9 @@ POLICY_FIELDS: tuple[str, ...] = ("doi", "url")
 #: eprint 三件套：只在在线资源类型应用（misc/unpublished/online）。
 EPRINT_FIELDS: tuple[str, ...] = ("eprint", "archiveprefix", "primaryclass")
 
+#: B-268 S3：核对单里「覆盖库值」的样本条数上限（其余按条目见逐条行）。
+_CONFLICT_SAMPLES = 5
+
 #: 在线资源类型（与 `bibnorm.is_online_resource()` 的恒保留集合同口径）。
 ONLINE_TYPES: frozenset[str] = frozenset({"misc", "unpublished", "online"})
 
@@ -546,6 +549,58 @@ def format_stats(stats: dict | None) -> list[str]:
     return lines
 
 
+def conflict_summary(applied: list[dict]) -> tuple[dict[str, int], list[tuple[str, str, str, str]]]:
+    """B-268 S3：回填**覆盖已有值**的冲突汇总。
+
+    `apply_text()` 的 applied 项里，`filled` 是最终值、`replaced` 是**被覆盖的旧值**
+    （字段原先非空且与库值不同）——「缺失→补齐」不算冲突。返回
+    `({字段: 覆盖次数}, [(key, 字段, 旧值, 新值), …])`；样本按 applied 顺序取前
+    `_CONFLICT_SAMPLES` 条（确定性：不排序、不用集合）。
+
+    冲突字段类型沿用 T4 普查的那七类（pages/publisher/address/title/volume/year/
+    edition）时最值得先看，但**不裁剪**：库对任何白名单字段的覆盖都要可见。
+    """
+    counts: dict[str, int] = {}
+    samples: list[tuple[str, str, str, str]] = []
+    for a in applied or ():
+        if not isinstance(a, dict):
+            continue
+        key = str(a.get("key") or "")
+        replaced = a.get("replaced") or {}
+        filled = a.get("filled") or {}
+        for name in replaced:
+            name = str(name)
+            old = str(replaced.get(name) or "")
+            new = str(filled.get(name) or "")
+            counts[name] = counts.get(name, 0) + 1
+            if len(samples) < _CONFLICT_SAMPLES:
+                samples.append((key, name, old, new))
+    return counts, samples
+
+
+def _short_value(value: str, n: int = 40) -> str:
+    """样本里的值截断（只影响显示，不参与任何判据）。"""
+    v = " ".join(str(value or "").split())
+    return v if len(v) <= n else v[: n - 1] + "…"
+
+
+def format_conflicts(applied: list[dict]) -> list[str]:
+    """B-268 S3：核对单里的「覆盖库值」统计行 + 样本（时点 = ⑦ 回填后）。"""
+    counts, samples = conflict_summary(applied)
+    if not counts:
+        return []
+    n = sum(counts.values())
+    detail = "、".join(f"{name} {cnt}" for name, cnt in
+                      sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    lines = [f"  · 覆盖库值（⑦ 回填时改了已有值）：{n} 项（{detail}）"]
+    for key, name, old, new in samples:
+        lines.append(f"      样本 [{key}] {name}：「{_short_value(old)}」"
+                     f"→「{_short_value(new)}」")
+    if n > len(samples):
+        lines.append(f"      （其余 {n - len(samples)} 项按条目见上文逐条行）")
+    return lines
+
+
 def format_checklist(applied: list[dict], stem: str = "",
                      stats: dict | None = None) -> str:
     """before/after 核对清单（沿用「参考文献核对.txt」分节体例；B-135 全量口径）。
@@ -559,6 +614,9 @@ def format_checklist(applied: list[dict], stem: str = "",
              "  命中已核实条目后：库内非空值**覆盖产物现值**或**补齐缺失字段**（白名单 "
              "28 类 + doi/url/eprint；B-135 spec §3）；库缺字段保留产物原值；候选/未命中不动。",
              "  上文「按条目列出」若把这些字段列为必补，以本节为准。"]
+    # S3：覆盖库内已有值（replaced）的披露放在逐条行之前，保持「分节在尾部」体例
+    # （既有测试要求清单以 format_stats 的 B-189 行收尾），故不进尾部。
+    lines.extend(format_conflicts(applied))
     for a in applied or []:
         lines.append(f"  [{a.get('etype') or '?'}] {a.get('key')}")
         replaced = a.get("replaced") or {}
