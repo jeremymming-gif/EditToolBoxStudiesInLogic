@@ -929,7 +929,7 @@ def _strip_author_markers(t: str) -> str:
 
 
 def _author_row_name(t: str) -> str:
-    """英文作者行里的姓名部分；判不出返回 ""（不猜）。
+    r"""英文作者行里的姓名部分；判不出返回 ""（不猜）。
 
     覆盖三种实测形态：
       · 单段姓名 → 原样（`Alex Sample`、`Mei Lin   Jie Chen`；

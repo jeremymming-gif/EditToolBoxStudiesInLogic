@@ -563,6 +563,16 @@ def apply_numbered_extras(entry: dict, raw: str, match_journal=None) -> dict:
     urls = find_urls(raw)
     if urls and not entry.get("url"):
         entry["url"] = urls[0]
+    # B-270 A2：编号/APA 路径**写 url 后从 note 删掉同一链接**（旧实现只写 url，
+    # 解析层又把同一 URL（含 `Retrieved 日期, URL`）拼进 note，于是 url+note 双写）。
+    # 与通用分支 `wordentry.py` 的 `strip_urls(note)` 同口径，但只删 identity 相同者。
+    note = entry.get("note")
+    if note and entry.get("url"):
+        from .bibnorm import _drop_duplicate_urls, _url_identity
+
+        cleaned, dups = _drop_duplicate_urls(str(note), {_url_identity(entry["url"])})
+        if dups:
+            entry["note"] = cleaned
     # B1：编号清单 `作者, 年, “题名”, 刊名, 卷(期): 页.` —— footref 没解析出 journal
     # 时用同一份期刊正则（调用方传入 `docxsource._match_en_journal`）补，只填空字段。
     if match_journal and not entry.get("journal"):

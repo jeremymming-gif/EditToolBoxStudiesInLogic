@@ -610,7 +610,7 @@ def _blank_after_url_strip(value: str) -> bool:
 _URL_TOKEN_RE = re.compile(
     r"\\url\s*\{\s*([^{}]*?)\s*\}|\\href\s*\{\s*([^{}]*?)\s*\}\s*\{[^{}]*\}",
     re.I)
-_BARE_URL_RE = re.compile(r"https?://[^\s{}]+", re.I)
+_BARE_URL_RE = re.compile(r"(https?://[^\s{}]+)", re.I)
 
 
 def _url_identity(url: str) -> str:
@@ -622,6 +622,9 @@ def _url_identity(url: str) -> str:
       · `https://arxiv.org/pdf/1706.03762.pdf` 与 `http://arxiv.org/abs/1706.03762`（库 Vaswani2017）。
     """
     u = (url or "").strip()
+    # B-270：库/产物里存在 LaTeX 转义斜杠（`archives\/win2022`，实测库键 c14-6）；
+    # 先归一成普通斜杠再判身份，否则修好上面的裸 URL 也匹配不上这一条。
+    u = re.sub(r"\\+/", "/", u)
     m = re.match(r"\\(?:url|href)\s*\{\s*([^{}]*?)\s*\}", u, re.I)
     if m:
         u = m.group(1).strip()
@@ -636,28 +639,48 @@ def _url_identity(url: str) -> str:
     return u.rstrip("/").lower()
 
 
+#: 裸 URL token 末尾常见的句读/收尾符：判身份前先去掉（不吞 URL 内部的标点）。
+_TOKEN_TRAILING = ".,;:，；：、）]】>\"'"
+
+
+def _trim_url_token(s: str) -> str:
+    """去掉裸 URL token 末尾的句读；`(...)` 只在括号不配平时去掉 `)`。"""
+    s = s.rstrip(_TOKEN_TRAILING)
+    while s.endswith(")") and s.count(")") > s.count("("):
+        s = s[:-1].rstrip(_TOKEN_TRAILING)
+    return s.strip()
+
+
 def _drop_duplicate_urls(value: str, url_keys: set[str]) -> tuple[str, list[str]]:
     """把 `value` 里与 url/doi 字段**同一条链接**的网址删掉；其余文本/空白不动。
 
-    只删命中的那个 token（含 `\\url{}`/`\\href{}` 包装），不重排其它内容；
+    只删命中的那个 token（`\\url{}`/`\\href{}` 包装或裸 http(s) 地址），不重排其它内容；
     删完只剩标点/空壳的字段由调用方按 `_blank_after_url_strip()` 整项删除。
+    B-270：裸 URL 是 docx 稿件里最常见的形态，必须先清包裹、**再清裸 URL**；
+    两种都清完才判断是否命中（旧实现的「没删到包裹就早退」让裸 URL 永远走不到）。
     """
     removed: list[str] = []
 
     def _repl(m: re.Match[str]) -> str:
         raw = m.group(0)
-        inner = (m.group(1) or m.group(2) or raw).strip()
+        # 两种 token 正则的组数不同（`_URL_TOKEN_RE` 两组、`_BARE_URL_RE` 一组），
+        # 统一取「第一个非空 group，否则整段」——不再假设固定组号（旧实现在
+        # 包裹+裸 URL 混合形态会抛 IndexError: no such group）。
+        inner = _trim_url_token(next((g for g in m.groups() if g), raw).strip())
         if _url_identity(inner) in url_keys:
             removed.append(inner)
             return ""
         return raw
 
     cleaned = _URL_TOKEN_RE.sub(_repl, value or "")
+    # B-270：去掉「没删到包裹形态就 return」的早退——裸 URL 也要过一遍。
+    cleaned = _BARE_URL_RE.sub(_repl, cleaned)
     if not removed:
         return value, []
-    cleaned = _BARE_URL_RE.sub(_repl, cleaned)
     cleaned = re.sub(r"[（(]\s*[)）]", "", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    # 「Retrieved …, from URL」在 URL 被删后留下的 `, from` / `from` 残句一并清掉。
+    cleaned = re.sub(r"(?i)[\s,;，；]*\bfrom\s*$", "", cleaned).strip()
     cleaned = re.sub(r"[\s,;:，；：]+$", "", cleaned)
     return cleaned, removed
 

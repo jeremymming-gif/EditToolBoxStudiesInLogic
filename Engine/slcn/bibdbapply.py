@@ -251,7 +251,9 @@ def apply_text(bib: str, plans: list[dict],
     applied 每项：``{"key","etype","filled":{全部应用字段: 新值},"replaced":{被覆盖
     字段: 旧值}}``；``filled`` 是**全部应用项**口径（bibpipeline 的「N 项」用它）。
     ``stats`` 给定时把「定位不到/结构校验失败」的条目记进 ``stats["struct"]``
-    （B-135 清单附注用）；不给时行为与旧版逐字节相同。
+    （B-135 清单附注用）；不给时结构问题不记录，但下面的 A3 文本去重仍照常生效。
+    B-270 A3：只要有实际应用，返回前再跑一次文本级 ``bibnorm.strip_published_urls()``
+    ——库记录 note 带入的重复链接在落盘前清掉，未命中条目仍逐字节不变。
     """
     spans = {key: (etype, start, body_start, close)
              for etype, key, start, body_start, close in entry_spans(bib)}
@@ -313,6 +315,16 @@ def apply_text(bib: str, plans: list[dict],
     new_bib = bib
     for pos, cut, text in sorted(edits, key=lambda x: -x[0]):
         new_bib = new_bib[:pos] + text + new_bib[pos + cut:]
+    if new_bib != bib:
+        # B-270 A3：回填后复检。库记录里的 note 可能仍带与 url 相同的链接（库侧
+        # 由 B-271 迁移，但引擎必须自守）；在落盘前再跑一次文本级去重——只重写
+        # 命中条目，未命中条目逐字节不变，也不改变回填的字段覆盖策略。
+        from . import bibnorm
+        cleaned_bib, clean_notes = bibnorm.strip_published_urls(new_bib)
+        if clean_notes:
+            if stats is not None:
+                stats.setdefault("b189", []).extend(clean_notes)
+            new_bib = cleaned_bib
     return new_bib, applied
 
 
@@ -730,7 +742,7 @@ def resolve_short_citation(store, author: str = "", title: str = "",
     }
 
 def attach_short_citation(doc, fn, warn, store) -> bool:
-    """B-220 N6 接线：把「纯引用脚注 → 库 HIT_SAFE 安全命中」落到 doc/fn。
+    r"""B-220 N6 接线：把「纯引用脚注 → 库 HIT_SAFE 安全命中」落到 doc/fn。
 
     命中 → 该脚注改为 ``pure_citation_matched``（渲染成 `\parencite`）、库记录进
     `doc.bib_entries`/`ref_raw_by_key`，并写一条可见 warning；不命中 → **一个字段都
