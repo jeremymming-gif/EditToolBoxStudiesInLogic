@@ -64,11 +64,33 @@ def make_docx(paras):
     return path
 
 
+def make_docx_with_footnote(prefix_paras, run_para_xml, footnote_text):
+    """合成含真实 `word/footnotes.xml` + 正文脚注引用的最小 docx（ZH-12 初排接线用）。
+
+    `prefix_paras` 是普通段落文本（题名/作者），`run_para_xml` 是正文那段的 `<w:r>`
+    串（含 `<w:footnoteReference w:id="1"/>`），`footnote_text` 是脚注内容。
+    """
+    ps = "".join(f'<w:p><w:r><w:t xml:space="preserve">{escape(t)}</w:t></w:r></w:p>'
+                 for t in prefix_paras)
+    ps += f"<w:p>{run_para_xml}</w:p>"
+    doc = f'<w:document xmlns:w="{W_NS}"><w:body>{ps}</w:body></w:document>'
+    fns = (f'<w:footnotes xmlns:w="{W_NS}"><w:footnote w:id="1"><w:p>'
+           f'<w:r><w:t xml:space="preserve">{escape(footnote_text)}</w:t></w:r>'
+           f'</w:p></w:footnote></w:footnotes>')
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("word/document.xml", doc)
+        z.writestr("word/footnotes.xml", fns)
+    return path
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # ①–④ 单元：_autofix_proof 只做窄集、语义与人工成品一致、幂等、不碰屏蔽区
 # ══════════════════════════════════════════════════════════════════════════
-check("① 白名单常量 = ZH-01..ZH-06 + ZH-08（B-004 起连接号默认启用；不夹带 09/14、EN）",
-      _PROOF_AUTOFIX_IDS == ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08"),
+check("① 白名单常量 = ZH-01..ZH-06 + ZH-08 + ZH-12（B-004 起连接号默认启用；B-272 起句末脚注补间隔）",
+      _PROOF_AUTOFIX_IDS == ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06",
+                             "ZH-08", "ZH-12"),
       repr(_PROOF_AUTOFIX_IDS))
 
 _new6, _h6 = _autofix_proof("甲、“乙”", "zh")
@@ -104,6 +126,19 @@ check("④ ZH-08 默认启用：2-群胚/表2-9 → \edash（汉字-汉字仍不
 _en, _he = _autofix_proof("He said, \"a,b\"", "en")
 check("④ 英文稿（lang=en）零改动", _en == "He said, \"a,b\"" and _he == {}, repr((_en, _he)))
 
+# ZH-12（B-272）：句末脚注后紧跟汉字 → 脚注与汉字之间补 `\,`；覆盖嵌套与幂等
+_new12, _h12 = _autofix_proof("完成了。\\footnote{注}这就是结果。", "zh")
+check("④ ZH-12 默认启用：句末脚注后插 `\\\\,`",
+      _new12 == "完成了。\\footnote{注}\\,这就是结果。" and _h12 == {"ZH-12": 1},
+      repr((_new12, _h12)))
+_new12b, _h12b = _autofix_proof(_new12, "zh")
+check("④ ZH-12 幂等：已有 `\\\\,` 的不再重复", _new12b == _new12 and _h12b == {},
+      repr((_new12b, _h12b)))
+_new12n, _h12n = _autofix_proof("完成了。\\footnote{见\\parencite{X}的注 {内层}}这就是结果。", "zh")
+check("④ ZH-12 嵌套花括号/命令：整段脚注后插 `\\\\,`",
+      _new12n == "完成了。\\footnote{见\\parencite{X}的注 {内层}}\\,这就是结果。"
+      and _h12n == {"ZH-12": 1}, repr((_new12n, _h12n)))
+
 # ══════════════════════════════════════════════════════════════════════════
 # ⑤⑥ 端到端：合成 docx → build_docx 默认自动改 / proof_autofix=False 原样
 # ══════════════════════════════════════════════════════════════════════════
@@ -116,6 +151,21 @@ _BODY = [
     "第二段：若气温升高,则冰会融化。",
 ]
 _DOCX = make_docx([_TITLE, _AUTHOR] + _BODY)
+
+# ZH-12 初排接线：含真实 footnotes.xml 的合成 docx（正文「完成了。[脚注]这就是结果。」）
+_FN_RUNS = ('<w:r><w:t xml:space="preserve">完成了。</w:t></w:r>'
+            '<w:r><w:footnoteReference w:id="1"/></w:r>'
+            '<w:r><w:t xml:space="preserve">这就是结果。</w:t></w:r>')
+_DOCX_FN = make_docx_with_footnote([_TITLE, _AUTHOR], _FN_RUNS, "注")
+
+
+def _build_fn(proof_autofix: bool) -> tuple[str, dict]:
+    with tempfile.TemporaryDirectory() as tmp:
+        res = build.build_docx(
+            docx_path=_DOCX_FN, out_dir=tmp, basename="CaseFn", lang="zh",
+            verbose=False, proof_autofix=proof_autofix,
+        )
+        return open(res.tex_path, encoding="utf-8").read(), res
 
 
 def _build(proof_autofix: bool) -> tuple[str, dict]:
@@ -136,7 +186,7 @@ check("⑤ 默认（proof_autofix=True）产物里 ZH-06 已改：出现「“�
 check("⑤ 默认产物里 ZH-01 已改：出现「升高，则」", "升高，则" in _tex_on)
 check("⑥ proof_autofix=False 产物保留原样（顿号/半角逗号仍在）",
       "“甲”、“乙”" in _tex_off and "升高,则" in _tex_off)
-check("⑤ 默认产物里这 6 条规则残留 = 0（用 proofcheck 复核最终 tex）",
+check("⑤ 默认产物里这 8 条规则残留 = 0（用 proofcheck 复核最终 tex）",
       not [h for h in proofcheck.check(_tex_on, lang="zh").hits
            if h.rule_id in _PROOF_AUTOFIX_IDS and h.fixable])
 check("⑤ BuildResult.rule_hits 里合并记录了自动改（ZH-06/ZH-01 至少一条 >0）",
@@ -163,11 +213,25 @@ check("⑤′ 异常写进 warnings（不让编辑无感）",
       any("一校可自动改子集未执行" in w for w in _res_boom.warnings),
       repr(_res_boom.warnings[-2:]))
 
+# ZH-12 初排接线（B-272）：默认套用 / 关闭时原样 / rule_hits 记录
+_tex_fn_on, _res_fn_on = _build_fn(True)
+_tex_fn_off, _res_fn_off = _build_fn(False)
+check("⑤ ZH-12 初排接线：默认产物 =「完成了。\\footnote{注}\\,这就是结果。」",
+      "完成了。\\footnote{注}\\,这就是结果。" in _tex_fn_on,
+      repr([l for l in _tex_fn_on.splitlines() if "完成了" in l][:1]))
+check("⑥ ZH-12 初排接线：proof_autofix=False 保留原样（脚注后无 `\\\\,`）",
+      "完成了。\\footnote{注}这就是结果。" in _tex_fn_off
+      and "\\footnote{注}\\,这就是结果" not in _tex_fn_off,
+      repr([l for l in _tex_fn_off.splitlines() if "完成了" in l][:1]))
+check("⑤ ZH-12 初排接线：BuildResult.rule_hits 记录 ZH-12",
+      _res_fn_on.rule_hits.get("ZH-12", 0) >= 1, repr(_res_fn_on.rule_hits))
+
 # 清理临时 docx
-try:
-    os.unlink(_DOCX)
-except OSError:
-    pass
+for _p in (_DOCX, _DOCX_FN):
+    try:
+        os.unlink(_p)
+    except OSError:
+        pass
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑧ ZH-08 连接号：初排日志「待人工判断」提示（第四十三批）

@@ -121,8 +121,46 @@ check("(a) ZH-11 正例：引文在逗号之前 → 不报",
       not hits_of("见文献\\parencite{Haack1974}，以及别的。\n", "ZH-11"))
 check("(a) ZH-11 反例：**英文稿**里的 `work, \\cite{x}` 不报（手册这条是中文口径）",
       not hits_of("Besides Burgess' work, \\cite{Holliday17} considered it.\n", "ZH-11", lang="en"))
-check("(a) ZH-12 句号后的脚注紧跟汉字 → 报（手册：需加 \\,）",
-      len(hits_of("完成了。\\footnote{注}这就是结果。\n", "ZH-12")) == 1)
+# 句末标点后的脚注（手册 §常规 4.3；B-272 起 ZH-12 升级为「可自动改」）
+# 判据（spec b272-zh12-footnote-space §4）：句末标点（。！？…，可带闭引号/闭括号）
+# 后紧跟 `\footnote{…}`，右邻**紧接**汉字 → 插 `\,`；花括号配对、支持嵌套。
+for _tex, _why in (
+    ("完成了。\\footnote{注}这就是结果。\n", "句号"),
+    ("完成了？\\footnote{注}这就是结果。\n", "问号"),
+    ("完成了！\\footnote{注}这就是结果。\n", "叹号"),
+    ("完成了…\\footnote{注}这就是结果。\n", "省略号"),
+    ("完成了\\ldots\\footnote{注}这就是结果。\n", r"`\ldots`"),
+    ("完成了。”\\footnote{注}这就是结果。\n", "闭引号"),
+    ("完成了。）\\footnote{注}这就是结果。\n", "闭括号"),
+    ("完成了。《书名》\\footnote{注}这就是结果。\n", "闭书名号"),
+    ("完成了。\\footnote{注}“下一句。\n", "右邻中文开引号"),
+    ("完成了。 \\footnote{注}这就是结果。\n", "句末与脚注间夹空格"),
+    ("完成了。\\footnote{注 {内层}}这就是结果。\n", "嵌套花括号"),
+    ("完成了。\\footnote{见\\parencite{Wang2018}的注}这就是结果。\n", "嵌套命令"),
+):
+    _hs = hits_of(_tex, "ZH-12")
+    check(f"(a) ZH-12 句末标点后脚注紧跟汉字 → 报：{_why}", len(_hs) == 1, _tex)
+    check(f"(a) ZH-12 该处 fixable，替换覆盖整段脚注并加 `\\,`：{_why}",
+          len(_hs) == 1 and _hs[0].fixable
+          and _hs[0].replacement == _tex[_hs[0].start:_hs[0].end] + "\\,",
+          repr([_h.replacement for _h in _hs]))
+for _tex, _why in (
+    ("完成了；\\footnote{注}这就是结果。\n", "左邻分号不是句末标点"),
+    ("完成了：\\footnote{注}这就是结果。\n", "左邻冒号不是句末标点"),
+    ("完成了，\\footnote{注}这就是结果。\n", "左邻逗号归 ZH-10、不归 ZH-12"),
+    ("完成了。\\footnote{注}\\,这就是结果。\n", "已有 `\\,`"),
+    ("完成了。\\footnote{注} 这就是结果。\n", "脚注后已有空格"),
+    ("完成了。\\footnote{注}~这就是结果。\n", "脚注后已有 `~`"),
+    ("完成了。\\footnote{注}\\parencite{Wang2018}这就是结果。\n", "右邻是命令"),
+    ("完成了。\\footnote{注}ABC\n", "右邻 ASCII"),
+    ("完成了。\\footnote{注}\n", "句末没有右邻"),
+    ("完成了。\\footnote{注这就是结果。\n", "花括号不配对"),
+    ("% 完成了。\\footnote{注}这就是结果。\n", "注释区"),
+    ("$完成了。\\footnote{注}这就是结果。$\n", "数学区"),
+):
+    check(f"(a) ZH-12 反例不报：{_why}", not hits_of(_tex, "ZH-12"), _tex)
+check("(a) ZH-12 反例：英文稿不按中文口径报",
+      not hits_of("Done.\\footnote{note}This follows.\n", "ZH-12", lang="en"))
 
 # 数学环境（手册 §数学环境）
 check("(a) ZH-13 数学里的三个点 → 报", len(hits_of("$a_1,...,a_n$\n", "ZH-13")) == 1)
@@ -238,9 +276,25 @@ w_out, w_applied = P.apply_fixes(mix, mix_rep, rule_ids=P.INITIAL_LAYOUT_FIXABLE
 check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 同样改 `2-群胚`（默认初排启用）",
       w_out == mix_out and [h.rule_id for h in w_applied] == ["ZH-08"],
       f"applied={[h.rule_id for h in w_applied]}")
-check("(c) 初排白名单仍报其他 fixable 规则（ZH-01/06/09/14 都在名单里）",
-      set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-14"}
+check("(c) 初排白名单仍报其他 fixable 规则（ZH-01/06/09/12/14 都在名单里）",
+      set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-12", "ZH-14"}
       and "ZH-08" in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ())
+
+# ZH-12（B-272）：句末脚注后补 `\,` —— --fix 与初排白名单两条口径都生效、且幂等
+zh12_tex = "完成了。\\footnote{注}这就是结果。\n"
+zh12_new, zh12_applied = P.apply_fixes(zh12_tex, P.check(zh12_tex, lang="zh"))
+check("(c) ZH-12 --fix：在整段脚注后插 `\,`（`。\\footnote{注}这就是结果` → `…注}\\,这就是结果`）",
+      zh12_new == "完成了。\\footnote{注}\\,这就是结果。\n"
+      and [h.rule_id for h in zh12_applied] == ["ZH-12"], repr(zh12_new))
+check("(c) ZH-12 幂等：对结果再跑不再新增",
+      P.apply_fixes(zh12_new, P.check(zh12_new, lang="zh"))[0] == zh12_new
+      and [h for h in P.check(zh12_new, lang="zh").hits if h.rule_id == "ZH-12"] == [])
+check("(c) ZH-12 输入原文不被就地改动",
+      zh12_tex == "完成了。\\footnote{注}这就是结果。\n")
+zh12_w, zh12_wa = P.apply_fixes(zh12_tex, P.check(zh12_tex, lang="zh"),
+                                rule_ids=P.INITIAL_LAYOUT_FIXABLE)
+check("(c) ZH-12 在初排白名单（INITIAL_LAYOUT_FIXABLE）下同样自动改",
+      zh12_w == zh12_new and [h.rule_id for h in zh12_wa] == ["ZH-12"])
 
 # `apply_fixes(..., rule_ids=…)` 契约（engine-core E1 接线用）：**显式窄子集**只改这些 id。
 # E1 的首批窄白名单 = ZH-01..06（EN-03/ZH-14 留后批）；这里直接按 id 元组验，不依赖宽常量。

@@ -516,10 +516,11 @@ RULES: list[Rule] = [
          "手册 §校对规范·常规 5.1（文献引用位置与脚注同理）",
          r"([，,])[ \t]{0,3}(\\(?:parencite|cite|footcite|textcite)\{)",
          "把引用移到该标点之前", langs=("zh",), scope="raw"),
-    Rule("ZH-12", "句号后的脚注紧跟汉字（间隔过小）",
+    # ZH-12 用专用扫描（pattern 留空）：`\footnote{…}` 的花括号可能嵌套，
+    # 正则 `[^}]*` 会在第一个 `}` 处截断；判据与替换见 `_zh12_hits()` / `check()`。
+    Rule("ZH-12", "句末后的脚注紧跟汉字（间隔过小）",
          "手册 §校对规范·常规 4.3（需要 \\, 调间隔）",
-         rf"(。\\footnote\{{[^}}]*\}})[ \t]{{0,3}}(?=[{CJK}])",
-         "在脚注与汉字之间加 \\,", langs=("zh",), scope="raw"),
+         "", "在脚注与汉字之间加 \\,", langs=("zh",), scope="raw", fixable=True),
 
     # ── 数学环境（手册 §数学环境）──────────────────────────────────────
     Rule("ZH-13", "省略号用三个英文点", "手册 §数学环境·省略号（按高度选 \\ldots / \\cdots）",
@@ -573,9 +574,10 @@ RULES: list[Rule] = [
 #: **初排转换可以默认自动套用的 fixable 白名单**（engine-core 在 `slcn/build.py` 接线时用）。
 #: 2026-10-28 用户拍板（m01116/m01132，选项 A）：ZH-08 连接号按新口径**默认启用**；
 #: 汉字-汉字、小写英文邻、数学/命令参数/URL 等仍在 ZH-08 内部静默，不会改产物。
+#: 2026-10-30（B-272）ZH-12 句末脚注后补 `\,` 也进入默认白名单（判据见 `_zh12_hits()`）。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
-    "ZH-09", "ZH-14", "EN-01", "EN-02", "EN-03",
+    "ZH-09", "ZH-12", "ZH-14", "EN-01", "EN-02", "EN-03",
 )
 
 #: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
@@ -584,6 +586,98 @@ OPT_IN_FIXABLE: tuple[str, ...] = ()
 
 
 # ── 检查 ─────────────────────────────────────────────────────────────────
+
+#: ZH-12 判据里的句末标点（手册 §校对规范·常规 4.3）：命令左侧可以是它，
+#: 也可以是 `\ldots`/`\dots` 或 `……` 的末字。
+_ZH12_END_PUNCT = "。！？…”’）】》」"
+#: 句末标点与 `\footnote{` 之间允许夹的空格/制表符（`。 \footnote` 仍算）。
+_ZH12_GAP = " \t"
+#: 右锚：紧贴的汉字，或中文开引号/开括号（`\footnote{…}“下一句` 也要调）。
+_ZH12_RIGHT_OPEN = "“‘（《「"
+#: 中文稿里的英文句末（右锚是汉字时收；中文稿的「汉字.汉字」已在 ⑤ 被 ZH-02 改全角）。
+_ZH12_END_HALF = ".!?"
+
+
+def _zh12_in_math(mask: str, pos: int) -> bool:
+    r"""`pos` 是否在**同一行**的行内数学区里（`$…$` / `\(…\)` / `\[…\]`）。
+
+    ⚠️ 不用 `math_mask`：它的 `$…$$…$` 相邻美元符会把后面几千字正文连成一段
+    （实测 corpus `Lanshang_Hu.tex` 的 `$\alpha$$\beta$`），按掩码段判会把正文误杀。
+    行内数学只看本行：未转义 `$` 的奇偶，或最近一个 `\(`/`\[` 尚未闭合。
+    `mask` 用 `raw_mask` 的文本（注释/verbatim 已挖空），避免把它里面的美元符算进来。
+    """
+    line_start = mask.rfind("\n", 0, pos) + 1
+    seg = mask[line_start:pos]
+    if len(re.findall(r"(?<!\\)\$", seg)) % 2 == 1:
+        return True
+    for open_d, close_d in (("\\(", "\\)"), ("\\[", "\\]")):
+        if seg.rfind(open_d) > seg.rfind(close_d):
+            return True
+    return False
+
+
+def _zh12_left_kind(mask: str, i: int) -> str | None:
+    r"""ZH-12 左锚：`\footnote{` 之前的字符是否是句末。
+
+    返回 `"full"`（全角句末/`\ldots`/`……`）、`"half"`（中文稿里的英文 `. ! ?`）
+    或 `None`。允许句末与 `\footnote{` 之间夹空格/制表符（`。 \footnote`）。
+    """
+    k = i - 1
+    while k >= 0 and mask[k] in _ZH12_GAP:
+        k -= 1
+    if k < 0:
+        return None
+    prefix = mask[:k + 1]
+    if prefix.endswith("\\ldots") or prefix.endswith("\\dots"):
+        return "full"
+    ch = mask[k]
+    if ch in _ZH12_END_PUNCT:
+        return "full"
+    if ch in _ZH12_END_HALF:
+        return "half"
+    return None
+
+
+def _zh12_hits(tex: str, mask: str) -> list[tuple[int, int]]:
+    r"""ZH-12 专用扫描：句末标点后紧跟 `\footnote{…}`、右锚紧贴汉字/中文开引号。
+
+    返回 `(start, end)`：`start` 是反斜杠位置，`end` 是配对右花括号之后的位置
+    （可直接用于 `Hit.start/end` 和 `apply_fixes` 的整段替换）。
+    用 `mask`（`raw_mask`：注释/verbatim 已挖空、长度不变）定位与配对，保证注释
+    里的命令不误报；数学区判据见 `_zh12_in_math`。
+
+    判据（spec `b272-zh12-footnote-space` §4；分析 §B）：
+    - 左锚：往前吃掉空格后是 `。！？…”’）】》」` 或 `\ldots`/`\dots`（英文 `. ! ?`
+      仅在右锚是汉字时收）；
+    - 右锚：`end` 处**紧贴**汉字或 `“ ‘ （ 《 「`；若是空格/换行/`~`/`%`、已有
+      `\,`、反斜杠（命令/数学/环境）或文件尾，一律不算（幂等：已插 `\,` 不重复插）。
+    """
+    out: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        i = mask.find("\\footnote{", pos)
+        if i < 0:
+            break
+        end = _match_brace(mask, i + len("\\footnote{") - 1)
+        pos = i + 1
+        if end < 0 or end >= len(mask):
+            continue
+        if _zh12_in_math(mask, i):      # 数学区里的 `\footnote` 不按这条判
+            continue
+        if mask[end:end + 2] == "\\,":
+            continue
+        nxt = mask[end]
+        right_cjk = _is_cjk(nxt)
+        if not right_cjk and nxt not in _ZH12_RIGHT_OPEN:
+            continue
+        kind = _zh12_left_kind(mask, i)
+        if kind is None:
+            continue
+        if kind == "half" and not right_cjk:
+            continue
+        out.append((i, end))
+    return out
+
 
 def _kaishu_spans(text: str) -> list[tuple[int, int]]:
     r"""楷体环境（quotation / quote）在原文里的区间（不含环境标记本身）。"""
@@ -622,6 +716,21 @@ def check(tex: str, lang: str = "zh") -> Report:
                 replacement=(rule.replace(m) if (fix_ok and callable(rule.replace)) else None),
             ))
 
+    # ZH-12（B-272）：句末标点后的脚注与紧随汉字之间要插 `\,`。专用扫描而非正则：
+    # 脚注内容可能嵌套花括号，`[^}]*` 会截断；这里按花括号配对求整段区间再替换。
+    if lang == "zh":
+        for start, end in _zh12_hits(tex, masks["raw"]):
+            line, col = _line_col(tex, start)
+            seg = tex[start:end]
+            rep.hits.append(Hit(
+                rule_id="ZH-12", title="句末后的脚注紧跟汉字（间隔过小）",
+                basis="手册 §校对规范·常规 4.3（需要 \\, 调间隔）",
+                line=line, col=col, start=start, end=end,
+                text=seg.replace("\n", "⏎"),
+                advice="在脚注与汉字之间加 \\,", fixable=True,
+                replacement=seg + "\\,",
+            ))
+
     # 楷体环境里的英文/数字（单独扫：要在区间内，且不在 \textup{} / \ct 等命令的参数里）
     if lang == "zh":
         for a, b in kaishu:
@@ -654,7 +763,8 @@ def apply_fixes(tex: str, rep: Report,
     位置类规则（脚注/引文移到标点前）不在这里做 —— 需要括号配对，见 `move_marks_before_punct()`。
 
     `rule_ids`：只动这些规则（`None` = 全部 fixable，即 `--fix` 的默认口径）。
-    初排转换接线时应传 `INITIAL_LAYOUT_FIXABLE`（2026-10-28 起含 ZH-08 新口径）；
+    初排转换接线时应传 `INITIAL_LAYOUT_FIXABLE`（2026-10-28 起含 ZH-08 新口径、
+    2026-10-30 B-272 起含 ZH-12 句末脚注补 `\,`）；
     `OPT_IN_FIXABLE` 目前为空，供后批把「暂不默认启用」的规则单独列出。
     """
     todo = [h for h in rep.hits if h.fixable and h.replacement is not None

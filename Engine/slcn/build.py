@@ -1765,11 +1765,13 @@ def _merge_en_metadata_source(
 # 口径（2026-10-28 用户拍板，B-004 / spec b004-zh08-connector）：ZH-08 连接号按新口径
 # **默认启用**（小写英文邻/汉字-汉字/数学/命令参数仍静默，不会改错）；其余仍只用窄集
 # ZH-01..ZH-06 + ZH-09/14、EN-01..03 中的初排白名单。
+# 2026-10-30（B-272 / spec b272-zh12-footnote-space）：ZH-12「句末脚注后补 `\,`」进窄集，
+# 初排 Word 通道默认套用（判据在 `proofcheck._zh12_hits()`，支持嵌套花括号）。
 #
 # 实现刻意只用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
 # `apply_fixes(tex, sub)`），不传 rules-docs 新增的 `rule_ids` 参数 → 回滚免疫。
 _PROOF_AUTOFIX_IDS: tuple[str, ...] = (
-    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
+    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08", "ZH-12",
 )
 
 
@@ -2123,9 +2125,10 @@ def build_docx(
                     默认 None = 不接第二源 = 与从前逐字节相同（`corpus.py` /
                     `run_poc.py` 等既有调用方不带这个参数，行为不变）。
     proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6）：True（默认）= 生成后
-                    自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 + ZH-08 这 7 条确定性
-                    替换（ZH-08 自 2026-10-28 起按新口径默认启用：小写英文邻/汉字-汉字/
-                    数学/命令参数仍保持，不会改错）；
+                    自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 + ZH-08 + ZH-12 这 8 条
+                    确定性替换（ZH-08 自 2026-10-28 起按新口径默认启用：小写英文邻/
+                    汉字-汉字/数学/命令参数仍保持，不会改错；ZH-12 自 2026-10-30 起
+                    在句末标点后的脚注与紧随汉字之间补 `\\,`，见 B-272）；
                     False = 与接入前逐字节相同（`corpus.py --no-proof-autofix` 消融用）。
                     只影响中文 Word 通道；LaTeX 通道与英文稿不受影响。
     dash_hints       **ZH-08 连接号提示**的日志开关（第四十三批，默认开）：
