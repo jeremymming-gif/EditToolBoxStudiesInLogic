@@ -34,7 +34,7 @@ def _pick_bib(cands: list[str]) -> str | None:
 def bib_search_dirs(source: str) -> list[tuple[str, str]]:
     """`.bib` 的保守搜索链：源稿同目录 → 父目录（稿件根，限 1 层）。
 
-    第四十五批 A2（89-05 Zhen_Liang 实测）：源稿在 `original/` 子目录里，而
+    第四十五批 A2（89-05 Jing_Liang 实测）：源稿在 `original/` 子目录里，而
     `reference.bib` 在**稿件根目录**（上一级）——旧实现只搜源目录 → 无 bib、
     15 个键全悬空、30 处 undefined citation。只加一层父目录，不做递归搜索：
     `.bib` 是作者/编辑明确放在稿件根的文件，跨目录乱搜会认错别人的 bib。

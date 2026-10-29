@@ -44,32 +44,32 @@ def emails(plains, tail_start=-1, fn=()):
 print("── ① 行形态判据 ──")
 
 # ① 地址独占一段（可带括号/全角空格/尾随句号；尾标点必须归一掉）
-check("地址独占一段", emails(["题名", "徐敏", "xuminlogic@hust.edu.cn", "摘要：…"])
-      == ["xuminlogic@hust.edu.cn"])
-check("括号 + 尾标点归一", emails(["题名", "\u3000（zhyanjing@163.com）。"])
-      == ["zhyanjing@163.com"])
-check("带标签 <…> + 尾。归一", emails(["题名", "Email: <taho@mappi.helsinki.fi>"])
-      == ["taho@mappi.helsinki.fi"])
-check("带标签「邮箱：」+ 尾。归一", emails(["题名", "邮箱：chi_cr@qq.com。"])
-      == ["chi_cr@qq.com"])
+check("地址独占一段", emails(["题名", "徐宁", "author019@sample.edu.cn", "摘要：…"])
+      == ["author019@sample.edu.cn"])
+check("括号 + 尾标点归一", emails(["题名", "\u3000（author022@sample.com）。"])
+      == ["author022@sample.com"])
+check("带标签 <…> + 尾。归一", emails(["题名", "Email: <author016@sample.org>"])
+      == ["author016@sample.org"])
+check("带标签「邮箱：」+ 尾。归一", emails(["题名", "邮箱：author007@sample.com。"])
+      == ["author007@sample.com"])
 
-# ② 整行只有地址（空白分隔多个）——06 Liwu Rong
+# ② 整行只有地址（空白分隔多个）——06 Jie Rong
 check("一行两个地址（空格分隔）",
-      emails(["题名", "hooeyrong@163.com                      409578772@qq.com"])
-      == ["hooeyrong@163.com", "409578772@qq.com"])
+      emails(["题名", "author011@sample.com                      author004@sample.com"])
+      == ["author011@sample.com", "author004@sample.com"])
 
 # ③ 作者信息/单位行：行内**第一个**地址（这正是「第一作者邮箱」的取值口径）
 check("作者简介行内取地址",
-      emails(["题名", "作者简介：何远长，武汉大学哲学学院博士生，563481898@qq.com"])
-      == ["563481898@qq.com"])
-_both = emails(["题名", "作者信息：张燕京 zhangyanjing@hbu.edu.cn 王琪 邮箱：15135215246@163.com。"])
+      emails(["题名", "作者简介：何明，武汉大学哲学学院博士生，author005@sample.com"])
+      == ["author005@sample.com"])
+_both = emails(["题名", "作者信息：张敏 author021@sample.edu.cn 王琳 邮箱：author001@sample.com。"])
 check("同行裸地址在前、带标签在后 → 第一个是第一作者（其余候选按序返回）",
-      _both == ["zhangyanjing@hbu.edu.cn", "15135215246@163.com"], repr(_both))
+      _both == ["author021@sample.edu.cn", "author001@sample.com"], repr(_both))
 
 # ④ 作者名 + 地址同行
 check("作者名 + 地址同行",
-      emails(["题名", "Zhixi Chen  202140007@oamail.gdufs.edu.cn"])
-      == ["202140007@oamail.gdufs.edu.cn"])
+      emails(["题名", "Hao Chen  author003@sample.edu.cn"])
+      == ["author003@sample.edu.cn"])
 check("长行（>80 字）即使以地址结尾也不算",
       emails(["题名", "甲" * 90 + " a@b.cn"]) == [])
 check("同样的行只要 ≤80 字就按「短行以地址结尾」收（阈值边界）",
@@ -79,13 +79,13 @@ check("地址前有句末标点 → 是正文句子，不收",
 
 # ⑤ MDPI 式 `Name (addr):`
 check("Name (addr):（MDPI 式）",
-      emails(["题名", "1 Niu Ju (juniu@mail.sysu.edu.cn): Center for Clinical Humanities"])
-      == ["juniu@mail.sysu.edu.cn"])
+      emails(["题名", "1 Jing Niu (author012@sample.edu.cn): Center for Clinical Humanities"])
+      == ["author012@sample.edu.cn"])
 
-# ⑥ 短行以地址结尾（04 YingJin_Xu 的通信地址行）
+# ⑥ 短行以地址结尾（04 Chen_Xu 的通信地址行）
 check("短行以地址结尾",
-      emails(["题名", "Shanghai 200433, P. R. China yjxu@fudan.edu.cn"])
-      == ["yjxu@fudan.edu.cn"])
+      emails(["题名", "Shanghai 200433, P. R. China author020@sample.edu.cn"])
+      == ["author020@sample.edu.cn"])
 
 # 符号 @ 在任何形态下都不该被当成地址
 check("符号 @ 段落不产出地址",
@@ -119,9 +119,9 @@ check("tail_start = -1 时只看最后 %d 段" % _EMAIL_TAIL_FALLBACK,
 
 # 脚注通道 + 文档顺序（开头 > 文末 > 脚注）+ 去重
 check("脚注里的地址能取到",
-      emails(["题名", "正文"], fn=["作者信息：牛子涵  中山大学逻辑与认知研究所",
-                                  "\u3000\u3000\u3000niuzh@mail2.sysu.edu.cn"]) ==
-      ["niuzh@mail2.sysu.edu.cn"])
+      emails(["题名", "正文"], fn=["作者信息：牛静  中山大学逻辑与认知研究所",
+                                  "\u3000\u3000\u3000author014@sample.edu.cn"]) ==
+      ["author014@sample.edu.cn"])
 check("文档顺序：开头元数据区在前、脚注在后",
       emails(["题名", "first@head.cn"], fn=["second@foot.cn"]) ==
       ["first@head.cn", "second@foot.cn"])
@@ -162,7 +162,7 @@ def make_docx(paras, table_cells=()):
     return path
 
 
-REVIEWER = "审稿人通讯处及邮编： 广州市中山大学哲学系 510275电   话： 电子邮件： shyping@mail.sysu.edu.cn"
+REVIEWER = "审稿人通讯处及邮编： 广州市中山大学哲学系 510275电   话： 电子邮件： author015@sample.edu.cn"
 tmp1 = make_docx(
     # 题名 + 开头元数据区里的真地址 + 40 段正文（把符号 @ 顶进正文中段）
     ["论逻辑与数据库", "张三", "author@univ.edu.cn"] + [f"正文第 {i} 段。" for i in range(40)]
@@ -201,19 +201,19 @@ def find(d: str, needle: str) -> str:
 
 # (语料目录, 文件名片段, 期望 doc.email, 说明, 附加断言)
 CASES = [
-    ("2026年第5期(90)/01 Meimei_Han", "定稿", "1611582@mail.nankai.edu.cn",
+    ("2026年第5期(90)/01 Meimei_Han", "定稿", "author002@sample.edu.cn",
      "正文 9 段共 21 个符号 @ 不得进 doc.email（只取脚注里的真地址）", "at21"),
-    ("2023年第2期(69)/04 Bo_Xianyu", "鲜于波", "",
-     "表格里的审稿人邮箱 shyping@mail.sysu.edu.cn 不得进 doc.email", None),
-    ("2025年第3期(82)/02 Zhiguang_Zhao", "New_Version_0", "",
+    ("2023年第2期(69)/04 Ming_Xianyu", "鲜于明", "",
+     "表格里的审稿人邮箱 author015@sample.edu.cn 不得进 doc.email", None),
+    ("2025年第3期(82)/02 Wei_Zhao", "New_Version_0", "",
      "模板占位符 xxx@xxx.xxx 必须留空（不能印进 \\myfirstemail）", None),
-    ("2025年第6期(85)/05 Niu_Ju", "251119", "juniu@mail.sysu.edu.cn",
+    ("2025年第6期(85)/05 Jing_Niu", "251119", "author012@sample.edu.cn",
      "脚注被判 pure_ref 也不能跳过（禁止用脚注分类当护栏）", None),
-    ("2022年第4期(65)/06 Liwu Rong", "格莱斯", "hooeyrong@163.com",
+    ("2022年第4期(65)/06 Jie Rong", "格莱斯", "author011@sample.com",
      "一行两个地址取第一个", None),
-    ("2025年第6期(85)/04 YingJin_Xu", "作者信息", "yjxu@fudan.edu.cn",
+    ("2025年第6期(85)/04 Chen_Xu", "作者信息", "author020@sample.edu.cn",
      "地址粘在通信地址行尾（短行以地址结尾）", None),
-    ("2024年第4期(77)/05 Guoping_Du", "杜国平", "dgpnju@163.com",
+    ("2024年第4期(77)/05 Hai_Du", "杜海", "author009@sample.com",
      "「电子邮箱：」标签 + tail_start = -1（旧路径覆盖不到）", None),
 ]
 for _dir, needle, want, why, extra in CASES:

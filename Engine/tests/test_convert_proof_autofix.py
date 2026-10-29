@@ -277,8 +277,17 @@ finally:
 
 # ⑧-6 真实稿 pin：日志命中数 = proofcheck ZH-08 数（期 87 Word 稿；无稿件库时 SKIP）
 if _manuscripts is not None:
-    _real_dir = os.path.join(_manuscripts, "2026年第2期(87)", "06 Ruixue_Tang")
-    if os.path.isdir(_real_dir):
+    # 按「期号 + 篇序号」发现目录，不硬编码作者目录名（B-269）
+    import glob as _glob8
+    _hits8 = []
+    for _iss8 in sorted(os.listdir(_manuscripts)):
+        if _iss8.endswith("(87)"):
+            _hits8 = sorted(d for d in _glob8.glob(os.path.join(_manuscripts, _iss8, "06 *"))
+                            if os.path.isdir(d))
+            if _hits8:
+                break
+    _real_dir = _hits8[0] if _hits8 else ""
+    if _real_dir and os.path.isdir(_real_dir):
         _ss8 = __import__("slcn.sources", fromlist=["identify"]).identify(_real_dir, verbose=False)
         if _ss8.docx:
             with tempfile.TemporaryDirectory() as _t8:
@@ -288,7 +297,7 @@ if _manuscripts is not None:
             _rl = _hint_lines(_r8)
             _rn = int(__import__("re").search(r"(\d+) 处", _rl[0]).group(1)) if _rl else 0
             _rpc = sum(1 for h in proofcheck.check(_t8tex, lang="zh").hits if h.rule_id == "ZH-08")
-            check("⑧ 真实稿（期87 Ruixue_Tang）：日志命中数 = proofcheck ZH-08 数",
+            check("⑧ 真实稿（期87 Xiaomei_Tang）：日志命中数 = proofcheck ZH-08 数",
                   _rn == _rpc > 0, f"{_rn} vs {_rpc}")
         else:
             print("SKIP  ⑧ 真实稿 pin（该篇不是 Word 稿）")

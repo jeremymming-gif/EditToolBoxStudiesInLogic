@@ -151,7 +151,7 @@ final class BibDbImportModel: ObservableObject {
 ///   · 粘贴文本 = 批73 B-127 P2 新增：临时文件跑 `import-bib`，入库口径单选
 ///     **未核实（默认）** / 已人工核对（`--verified`）/ 成品 bib（期+篇，现状）；
 ///     临时文件用后即删、运行日志不回显 bib 正文；
-///   · 来源期 / 篇目录名从路径自动推断（`…/2026年第2期(87)/02 Kun_Xing/…`），可手改；
+///   · 来源期 / 篇目录名从路径自动推断（`…/2026年第2期(87)/02 Hai_Xing/…`），可手改；
 ///   · 成功后提示「重新生成清单」——清单是给人看的待裁决文件，库一变就该重算。
 struct BibDbImportView: View {
     @ObservedObject var log: LogStore
@@ -339,7 +339,7 @@ struct BibDbImportView: View {
         if model.mode == .single {
             LabeledPathRow(
                 title: "成品 .bib",
-                placeholder: "例如 …/2026年第2期(87)/02 Kun_Xing/reference.bib",
+                placeholder: "例如 …/2026年第2期(87)/02 Hai_Xing/reference.bib",
                 path: $model.bibPath,
                 kind: .file,
                 logStore: log
@@ -367,12 +367,12 @@ struct BibDbImportView: View {
                     .font(.system(.body, design: .monospaced))
                     .disabled(model.running)
                 Text("篇目录名").frame(width: 76, alignment: .trailing)
-                TextField("例：02 Kun_Xing", text: $model.slug)
+                TextField("例：02 Hai_Xing", text: $model.slug)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .disabled(model.running)
             }
-            Text("从路径自动推断（`…/2026年第2期(87)/02 Kun_Xing/…`）；认不出就留空，"
+            Text("从路径自动推断（`…/2026年第2期(87)/02 Hai_Xing/…`）；认不出就留空，"
                  + "别硬猜——来源是库里的审计凭据，写错比不写更糟。改完要重新预览。")
                 .font(.caption)
                 .foregroundStyle(.tertiary)

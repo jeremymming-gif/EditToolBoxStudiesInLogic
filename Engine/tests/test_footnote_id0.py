@@ -76,7 +76,7 @@ def texts(path):
 print("── ① 判据：按 w:type 丢，不按 id 丢 ──")
 
 # 真脚注编号 0（不带 w:type）+ 正常脚注 1：两者都要在，且 id 0 的内容要读出来
-REAL0 = "作者信息：王刚  四川师范大学哲学学院  wanggang1013@163.com"
+REAL0 = "作者信息：王强  四川师范大学哲学学院  author017@sample.com"
 p = make_docx([
     fn_el(-1, "", "separator"),
     fn_el(0, REAL0),
@@ -155,10 +155,10 @@ def find(d: str, needle: str) -> str:
 
 # (语料目录, 文件名片段, id=0 脚注里必须出现的邮箱, doc.email 期望值)
 ID0_CASES = [
-    ("2023年第4期(71)/01 Yanjin_Chen", "传播语境下论证设计的方法",
-     "chenyanjin@jnu.edu.cn", "chenyanjin@jnu.edu.cn"),
-    ("2024年第4期(77)/02 Gang_Wang", "印度正理派", "wanggang1013@163.com", "wanggang1013@163.com"),
-    ("2026年第1期(86)/10 Qiqi_Wang", "专访蒂莫西", "wqq@xmu.edu.cn", "wqq@xmu.edu.cn"),
+    ("2023年第4期(71)/01 Jing_Chen", "传播语境下论证设计的方法",
+     "author006@sample.edu.cn", "author006@sample.edu.cn"),
+    ("2024年第4期(77)/02 Qiang_Wang", "印度正理派", "author017@sample.com", "author017@sample.com"),
+    ("2026年第1期(86)/10 Min_Wang", "专访蒂莫西", "author018@sample.edu.cn", "author018@sample.edu.cn"),
 ]
 for _dir, needle, mail, want_email in ID0_CASES:
     path = find(_dir, needle)
@@ -174,7 +174,7 @@ for _dir, needle, mail, want_email in ID0_CASES:
 # 分隔符稿：id=0（或 id=1）是伪脚注，一个字符都不许变成脚注内容
 SEP_CASES = [
     # 目录, 片段, 说明, 期望的脚注 id 集合
-    ("2026年第3期(88)/02 Lu_Jiang", "Ockham Semantics", "continuationSeparator 在 id=0", set(range(1, 91))),
+    ("2026年第3期(88)/02 Ning_Jiang", "Ockham Semantics", "continuationSeparator 在 id=0", set(range(1, 91))),
     ("2026年第5期(90)/07 Jiayi_He", "示例贝叶斯主义", "separator 在 id=0、continuationSeparator 在 id=1",
      set(range(2, 52))),
 ]

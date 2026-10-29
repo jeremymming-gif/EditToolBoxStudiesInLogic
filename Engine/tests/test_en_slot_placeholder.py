@@ -231,7 +231,7 @@ else:
         "title_en": "A Survey of Contemporary Philosophy of Logic",
         "abstract_en": "Three research models can be generalized…",
         "affiliation_cn": "武汉大学哲学学院",
-        "email": "li-lei@whu.edu.cn",
+        "email": "li-lei@sample.edu.cn",
     }
     with tempfile.TemporaryDirectory() as tmp:
         res, tex = build_case(BO_CHEN, os.path.join(tmp, "neg2"),

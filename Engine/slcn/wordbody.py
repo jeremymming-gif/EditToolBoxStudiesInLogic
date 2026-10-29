@@ -444,7 +444,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
 
     ⚠️ 用 slcn/docxxml 直接读 XML，**不用 python-docx 的 paragraph.text**。
     后者会静默丢掉 OMML 公式、run 级格式（斜体）和整个 footnotes.xml，
-    实测让 Lu_Jiang 一篇丢掉 17.4% 内容和全部 72 处引用。
+    实测让 Ning_Jiang 一篇丢掉 17.4% 内容和全部 72 处引用。
     """
     from .docxxml import Table, read_blocks, read_footnotes, segs_to_text
     from .footnotes import classify, make_key, parse_entry, split_numbered_bib_note
@@ -460,13 +460,13 @@ def parse_docx(path: str, quote_threshold: int = 105,
     with __import__("zipfile").ZipFile(path) as z:
         _docxml = z.read("word/document.xml").decode("utf-8")
         doc.n_math = len(re.findall(r"<m:oMath(?![A-Za-z])[^>]*>", _docxml))
-        # 期 87 子案例 2（03 Wenjing_Du）实测：作者用 MathType 写公式，docx 里是
+        # 期 87 子案例 2（03 Juan_Du）实测：作者用 MathType 写公式，docx 里是
         # `<w:object>` + `word/embeddings/*.bin`，不是 OMML → 解析不到、**静默丢失**，
         # PDF 里公式位置全空、页数少 2 页。这里如实计数并警告（不阻断出稿）。
         from .docxxml import ole_object_stats, symbol_run_stats
 
         n_ole, n_embed = ole_object_stats(_docxml, z.namelist())
-        # 期 87 子案例 3（04 Fayang_Ye 的 .doc）实测：用 LogicA 等「逻辑符号字体」插入
+        # 期 87 子案例 3（04 Feng_Ye 的 .doc）实测：用 LogicA 等「逻辑符号字体」插入
         # 的 →/∼/∧ 是 `<w:sym>` run，既不是文字也不是 OMML → 静默丢失。
         # 字体的 char→Unicode 映射是字体私有的，不能硬猜；只计数并警告人工核对。
         _font = symbol_run_stats(_docxml)
@@ -549,7 +549,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         if _tail_cut:
             # 从「摘要」标签往前吃掉紧邻的**元数据行**（中文题名 / 作者姓名）：
             # 短、含中文、不含年份、不是以文献年份/出版信息结尾——文献条目一定有年份或
-            # 卷期/页码，这类行是文末块的表头（88-06 实测：`论证能力研究：…` / `陈志喜`）。
+            # 卷期/页码，这类行是文末块的表头（88-06 实测：`论证能力研究：…` / `赵晓梅`）。
             _cut = _tail_cut
             while _cut > 0:
                 _prev = section[_cut - 1].strip()
@@ -660,15 +660,15 @@ def parse_docx(path: str, quote_threshold: int = 105,
     _head_title_idx = title_idx if doc.title_en else -1  # head 英文作者窗口起点
     # ⚠️ `meta_end` 仍按**改动前**的口径算（只数紧贴段首的标签）：它管的是「正文起点」
     #    与「开头英文题名的扫描范围」，都是另外的判据，本轮只放宽摘要的**取值**，
-    #    不该顺带把这两处也动了。实测 2022年第4期(65) 康孝军 的稿子：缩进的
+    #    不该顺带把这两处也动了。实测 2022年第4期(65) 康海 的稿子：缩进的
     #    `    摘 要：…` 一旦计入 meta_end，扫描范围就从第 2 段涨到第 5 段，
-    #    段首的邮箱行 ` kxj319@hotmail.com` 会被当成英文题名（title_en 变脏）。
+    #    段首的邮箱行 ` author013@sample.com` 会被当成英文题名（title_en 变脏）。
     #    `_KW_RE` 本来就要求紧贴段首，所以这个过滤只对摘要标签生效。
     meta_end = max([i for i, _, _ in abs_blocks + kw_blocks if not plains[i][:1].isspace()],
                    default=-1)
     for i in range(1, meta_end + 1):
         t = plains[i]
-        # ⚠️ 空白段不是题名：实测 07 Guangwu_Feng 的英文题名前面有一个只有空格的段，
+        # ⚠️ 空白段不是题名：实测 07 Hai_Feng 的英文题名前面有一个只有空格的段，
         #    旧逻辑把 `' '` 当成了英文题名，于是 `\mytitleEN` 是空的、文末的真题名
         #    也因为「title_en 非空」不再来覆盖。
         if len(t) > 80 or _ABS_RE.match(t) or _KW_RE.match(t) or not t.strip():
@@ -798,7 +798,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
     # B-105（87-9 实测）：文末英文题名/摘要/关键词块既是元数据来源，又会被模板
     # 2.11 再排一次——正文必须在这里截断。有「参考文献」标题且英文块在其后时仍以
     # 标题为界（与 HEAD 逐字节一致）；没有标题（ref_start<0）、或标题在英文块之后
-    # （71/06 Lili_Lu 型）时，以英文块起点 tail_start 为界。
+    # （71/06 Ting_Lu 型）时，以英文块起点 tail_start 为界。
     _ends = [x for x in (ref_start, tail_start) if x > start]
     end = min(_ends) if _ends else len(paras)
     body_paras = paras[start:end]
@@ -828,7 +828,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
             "（标题页固定印刷）：" + "；".join(p.plain.strip()[:40] for p in _clc_paras))
 
     # 第 121 条：全英文稿（正文前 120 段无汉字）里，文末有参考文献区时，
-    # 脚注里的散文/引注一律按注释处理（01 Tuomo_Aho 型）；中文稿/混合稿不受这条影响。
+    # 脚注里的散文/引注一律按注释处理（01 Avery_Blake 型）；中文稿/混合稿不受这条影响。
     doc_is_en = not any(_has_cjk(p.plain) for p in body_paras[:120] if p.plain.strip())
 
     # ⑤ 脚注：分类 → 生成 bib → 建立 id→key 映射
@@ -919,7 +919,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
             _fallback_mixed = False
             _was_split = _kind == CITATION_MIXED_SPLIT
             if _kind == CITATION_ENTRY:
-                # B-199：引导语后剥出的完整条目（90-07「参阅徐佳明…」型）先按文末清单
+                # B-199：引导语后剥出的完整条目（90-07「参阅徐强…」型）先按文末清单
                 # 原文行找既有键——命中则只 cite（不改 bib），避免字段碎片导致重复条目。
                 _key = ""
                 if getattr(_new, "cue_stripped", False):
@@ -1038,7 +1038,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
                     year=str((_new.entry or {}).get("year", "")),
                     locator=_new.locator))
             # 第四十九批引擎侧边界保护（86-03 实测）：中文**文献条目型**脚注
-            # （源稿形如 `[] 胡炳年、陈彦瑾，“…”，逻辑学研究，2018 年第 1 期。`）会被
+            # （源稿形如 `[] 胡炳年、陈静，“…”，逻辑学研究，2018 年第 1 期。`）会被
             # 新分类器判成 mixed/note_only → bib 22→1。判据单点在
             # `footnotes.split_numbered_bib_note`（带 `[编号]` 前缀 + 文献标记才认）。
             if _new.kind in ("mixed", "mixed_manual", "pure_note",
@@ -1284,10 +1284,10 @@ def parse_docx(path: str, quote_threshold: int = 105,
     # ⑤.6 `N. 中文标题`（见 _HEAD_CN_DOT）的两条**上下文**判据。
     #
     # ① 层级：同篇还有 `一、`/`二、` 式一级编号时（`_HEAD1` → `\section`），`1.` 是**子节**。
-    #    实测 03 Ziming_Song：`一、引言`…`六、结语` 是一级，`1. 决策论与愿望/信念`、
-    #    `2. 表征定理` 挂在 `二、` 底下；人工成品 Ziming_Song.tex 给的正是
-    #    `\subsection{决策论与愿望/信念}`。67A 邱德钧稿同构（`二、…` 下挂 `1.`–`5.`）。
-    #    没有 `一、` 的稿子（04 Lei_Li、07 Long_Chen、07 Guangwu_Feng…）里 `N.` 本身就是
+    #    实测 03 Jie_Song：`一、引言`…`六、结语` 是一级，`1. 决策论与愿望/信念`、
+    #    `2. 表征定理` 挂在 `二、` 底下；人工成品 Jie_Song.tex 给的正是
+    #    `\subsection{决策论与愿望/信念}`。67A 邱伟稿同构（`二、…` 下挂 `1.`–`5.`）。
+    #    没有 `一、` 的稿子（04 Lei_Li、07 Qiang_Chen、07 Hai_Feng…）里 `N.` 本身就是
     #    一级标题，人工成品同样排 `\section` —— 所以这一层判定与人工做法一致。
     #    ⚠️ 只作用于**新增**的点式分支：`N 空格`/`N.M` 等既有分支的层级一字不改。
     # ② 列表：`1. 莱布尼茨` / `2. 休谟` / `3. 康德` 这种**连排**短行是名单，不是一串小节。
@@ -1306,7 +1306,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         if not _is_cn_dot_heading(prev_t) and not _is_cn_dot_heading(next_t):
             lone_cn_dot.add(id(p))
 
-    # ⑤.7 无样式英文小标题（第 121 条，07 Hu_Liu 型）：只对**全英文**稿件启用，
+    # ⑤.7 无样式英文小标题（第 121 条，07 Bo_Liu 型）：只对**全英文**稿件启用，
     # 且要求「前面是成段正文、后面是成段正文」，避免把正文里的短句误判成标题。
     plain_en_headings: dict[int, str] = {}
     if nonempty_paras and not any(_has_cjk(x.plain) for x in body_paras[:120] if x.plain.strip()):

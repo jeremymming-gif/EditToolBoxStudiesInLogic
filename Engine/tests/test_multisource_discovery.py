@@ -220,9 +220,11 @@ def _real_old_behavior_pins() -> None:
     else:
         check("⑥.1 identify 旧行为 pin：单文件完整稿 body/metadata 同源（≥1 篇命中）",
               same >= 1, f"{same}/{sampled} 篇同源")
-    # 6.2 多片段稿（Fenrong_Liu）：旧行为 = body 取最长片段、metadata=None（本批不动）
-    art = os.path.join(root, "2026年第4期(89)", "01 Fenrong_Liu")
-    if os.path.isdir(art):
+    # 6.2 多片段稿：旧行为 = body 取最长片段、metadata=None（本批不动）
+    # 路径按「期号 + 篇序号」发现，不硬编码作者目录名（B-232/B-269）
+    _orig_62 = _issue_paper_original("89", "01")
+    art = os.path.dirname(_orig_62) if _orig_62 else ""
+    if art and os.path.isdir(art):
         ident = sources.identify(art, verbose=False)
         if ident.docx:
             skip("⑥.2 identify 多片段稿 pin", "该篇是 Word 稿")

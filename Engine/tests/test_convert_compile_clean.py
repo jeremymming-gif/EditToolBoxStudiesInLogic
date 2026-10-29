@@ -7,7 +7,7 @@ r"""重编译前清上一轮中间产物（第 141 条，2026-10-18；期 87 子
 `.bbl`**（biber 还没重跑），若上一轮产物目录里留着坏数据，会在 step 1 就报错、被
 判「编译未通过」——哪怕这一轮生成的 `.bib` 已经修好。
 
-实测：期 87 子案例 9（10 Wei_Chen）第一次跑时 `reference.bib` 的 author 带裸 `&`
+实测：期 87 子案例 9（10 Jie_Chen）第一次跑时 `reference.bib` 的 author 带裸 `&`
 （`expand_note_entries` 未转义，第 141 条已修），编译在 step 3 失败，留下坏 `.bbl`；
 修好 bib 后**重跑同一目录**，step 1 直接读旧 `.bbl` 报 `Misplaced alignment tab
 character &`，rc=2。重跑同目录是编辑的常规操作，不能把上一轮残留算到这一轮头上。

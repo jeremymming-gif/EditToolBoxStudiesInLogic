@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         if not os.path.exists(tex):
             # ⚠️ 精确名找不到时用**宽松键**再找一遍（只留字母数字、小写）：
             #    目录名与人写的文件名常常只差一个撇号 —— 2025年第4期(83) 的
-            #    `01 Chao'an_He/` 里文件叫 `Chaoan_He.tex`，精确匹配失败 → 这一篇
+            #    `01 Tian'an_He/` 里文件叫 `Tianan_He.tex`，精确匹配失败 → 这一篇
             #    **每期都被静默漏编**（`--dry-run` 只列 6/7，编辑多半不会注意；
             #    人工补编一次 ≈ 6 秒，但得先发现）。2026-10-17 逐页体检实测。
             lo = _pm.find_tex(sub, art)
@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                 tex = lo
         if os.path.exists(tex):
             # ⚠️ 编译用的 **stem 必须取"真正找到的那个文件"的名字**，不是目录名派生的
-            #    `art`：宽松匹配到 `Chaoan_He.tex` 时若仍拿 `Chao'an_He` 去跑 xelatex，
+            #    `art`：宽松匹配到 `Tianan_He.tex` 时若仍拿 `Tian'an_He` 去跑 xelatex，
             #    找不到文件 → 每期白报一次"编译失败"（我第一版只改了发现、没改编译参数，
             #    被自己的测试当场抓出来）。精确匹配时两者相同，行为不变。
             stem = os.path.splitext(os.path.basename(tex))[0]

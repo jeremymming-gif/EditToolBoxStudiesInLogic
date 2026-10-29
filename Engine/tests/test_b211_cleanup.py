@@ -314,7 +314,7 @@ check("(d) 无顶层 .tex → exit 2 +「不是交付目录：未找到 .tex」+
       r.returncode == 2 and "不是交付目录：未找到 .tex" in r.stderr
       and os.path.exists(os.path.join(D3, "x.aux")), f"rc={r.returncode}")
 
-# 230 假 png 闭包全保留（规模夹具；真库 Wenjing_Du 实测仅 0–2 图，已如实披露）
+# 230 假 png 闭包全保留（规模夹具；真库 Juan_Du 实测仅 0–2 图，已如实披露）
 D4 = tempfile.mkdtemp(prefix="b211_230_")
 lines = [r"\documentclass{article}", r"\usepackage{graphicx}", r"\begin{document}"]
 for i in range(230):

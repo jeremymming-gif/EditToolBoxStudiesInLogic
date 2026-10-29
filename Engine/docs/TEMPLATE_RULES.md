@@ -46,10 +46,10 @@ PYTHONPATH=.:vendor python3 templatecheck.py --version
 
 **真实抽样**（2026-10-27，只读，报告在 `/tmp/b002-20261027/`）：
 
-- `2022_02_Xiaoliu_Du`（Word/中文）PASS 5 / FAIL 1 / SKIP 2：T4 的 `@misc` 缺 note/howpublished/url。
-- `2023_04_Hao_Wu`（LaTeX/英文）PASS 4 / FAIL 2 / SKIP 2：T2 未识别占位符、T4 缺 year。
-- `2023_01_Yanjin_Chen`（Word/中文）PASS 7 / FAIL 1 / SKIP 0：T4 缺 publisher / journal。
-- `2024_02_JiaHong_Guo`（Word/中文）PASS 6 / FAIL 2 / SKIP 0：T2 `xxx` 占位符、T5 6 个 figure 无 caption。
+- `2022_02_Xiaoshu_Du`（Word/中文）PASS 5 / FAIL 1 / SKIP 2：T4 的 `@misc` 缺 note/howpublished/url。
+- `2023_04_Ming_Wu`（LaTeX/英文）PASS 4 / FAIL 2 / SKIP 2：T2 未识别占位符、T4 缺 year。
+- `2023_01_Jing_Chen`（Word/中文）PASS 7 / FAIL 1 / SKIP 0：T4 缺 publisher / journal。
+- `2024_02_JiaHuan_Guo`（Word/中文）PASS 6 / FAIL 2 / SKIP 0：T2 `xxx` 占位符、T5 6 个 figure 无 caption。
 
 **canonical 模板 sha 源 = public 仓**：`EditToolBoxStudiesInLogic/编辑笔记/模板文件/`（经
 `slcn/templates.py` 的 `TPL_DIR` / `AVAILABLE_STY` 定位；`--template <path>` 可覆盖）。稿件仓里的

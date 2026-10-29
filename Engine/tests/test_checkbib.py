@@ -45,8 +45,8 @@ CHECKBIB_PY = os.path.join(_ENGINE, "checkbib.py")
 
 # 本套件依赖的语料文件（读了 shasum 便于别的会话改动后对账；不符只 WARN）
 FIXTURE_SHA256 = {
-    "2026_08_Ran_Ren/reference.bib": "3fc0debccf906551ae18a7d80154ff31101de5c737e8031227a859e9557d3eca",
-    "2026_09_Runcheng_Liang/reference.bib": "21abef5e3ea8d115bebac9c152fdf2af9ca43eec64ba2bc770c4476e486145b2",
+    "2026_08_Jing_Ren/reference.bib": "3fc0debccf906551ae18a7d80154ff31101de5c737e8031227a859e9557d3eca",
+    "2026_09_Chen_Liang/reference.bib": "21abef5e3ea8d115bebac9c152fdf2af9ca43eec64ba2bc770c4476e486145b2",
 }
 
 FAILS = []
@@ -107,7 +107,7 @@ def real_pair(need_cites=True, min_entries=3, require_closed=True):
 
 
 def clean_real_bib(min_entries=3):
-    """找一份**零问题**的真实 bib（现为 2026_08_Ran_Ren：15 条、0 问题）。"""
+    """找一份**零问题**的真实 bib（现为 2026_08_Jing_Ren：15 条、0 问题）。"""
     if not os.path.isdir(CORPUS):
         return None
     best = None
@@ -287,7 +287,7 @@ BROKEN_CASES = {
     "花括号不配平": GOOD + "\n@article{Broken2026,\n  author = {李四},\n  title  = {这条永远不闭合,\n",
     "key 后面没有逗号": GOOD + "\n@book{nocomma\n  title = {key 后面没有逗号}\n}\n",
     "不是合法条目头": GOOD + "\n@ @@ not-an-entry @\n",
-    # 真实语料里的写法（out/corpus/2026_04_Zuojun_Xiong 等：`url` 被误替换成了数字）
+    # 真实语料里的写法（out/corpus/2026_04_Zuoliang_Xiong 等：`url` 被误替换成了数字）
     "字段名不合法": GOOD + "\n@article{BadField2026,\n  title = {字段名是数字},\n"
     "  1     = {https://doi.org/10.1017/S1755020325100981}\n}\n",
     "引号没有闭合": GOOD

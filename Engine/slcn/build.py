@@ -126,8 +126,8 @@ def is_parsed(value: str | None, name: str = "", defaults: dict | None = None) -
     空串与模板惯用的 null 都算没解析出来；**与模板自带的示例文字逐字相同**也算
     没解析出来——作者常常直接拿模板改，字段没填就还是「第一作者」「单位1（到系所）」
     「xxxx@xxxx.xxx」「Abstract」「标题」。这类值搬进产物，跟没填一样，甚至更坏
-    （实测 LaTeX 通道 04 Hao_Wu 是 `First Author`/`Department 1, University 1`，
-    05 Baoxun_Tu 是 `第一作者`/`单位1（到系所）`/`xxxx@xxxx.xxx`）。
+    （实测 LaTeX 通道 04 Ming_Wu 是 `First Author`/`Department 1, University 1`，
+    05 Ming_Tu 是 `第一作者`/`单位1（到系所）`/`xxxx@xxxx.xxx`）。
 
     比较用模板**自己**的原值（见 template_defaults），不写死字符串——换模板代次
     （CN/SLCN-MIX4/SLEN）也不必改代码。`\\kaishu` 前缀不参与比较。
@@ -171,16 +171,16 @@ def cn_author_names(author: str) -> list[str]:
     （`en_coauthor_values()` 要拿中文作者数对表）共用这一份判据。
 
     拆完之后还要**合并「单字片段」**（2026-10-15，案例 71）：
-    期刊排两字姓名时姓名内部会带空白（`陈  波`、`屈 凯`），按空白硬拆就成了
+    期刊排两字姓名时姓名内部会带空白（`陈  松`、`屈 明`），按空白硬拆就成了
     `['陈','波']`——`author_fields()` 把「波」写成第二作者，`coauthor_fields()`
     再凭空产出 4 个占位符（第二作者中文/英文单位、邮箱、英文姓名）印进 PDF 页眉。
     判据：**单个汉字长度的片段不可能是完整中文姓名**，所以「单字片段 + 下一个片段」
-    两两合并（`李`+`雷`=`李雷`；`顺`+`真`=`顺真`）。这个判据**只可能**在片段本身
-    连一个字都不够时触发，因此不会把 `王刚 李晟` 两个真姓名并成一个
+    两两合并（`李`+`雷`=`李雷`；`顺`+`真`=`顺海`）。这个判据**只可能**在片段本身
+    连一个字都不够时触发，因此不会把 `王强 李强` 两个真姓名并成一个
     （两个片段都 ≥2 字，不满足触发条件）——这正是 `convert.py:306-313` 那条
-    「折叠空白后不足 5 字算一个名字」的判据所缺的性质（它会把 `王刚 李晟` 当成一个人）。
+    「折叠空白后不足 5 字算一个名字」的判据所缺的性质（它会把 `王强 李强` 当成一个人）。
 
-    故意**不**做「单字片段并入前一个片段」：那样 `王刚 李` 会把已拆对的首个姓名
+    故意**不**做「单字片段并入前一个片段」：那样 `王强 李` 会把已拆对的首个姓名
     吃掉；末尾落单的单字片段原样保留（与改动前一致，不会更坏）。
     """
     author = (author or "").strip()
@@ -243,9 +243,9 @@ def author_fields(author: str, *, en_names=()) -> dict[str, str]:
     中文姓名串按中文判据拆；**英文多作者**只走 `_en_author_names()` 的两条保守判据
     （B-217 ④：英文模板三位作者 → 三个宏都填；逗号倒装名不拆）。
 
-    单作者也不能直接把原串写进宏（案例 71）：源稿里排成 `陈  波` 时，
+    单作者也不能直接把原串写进宏（案例 71）：源稿里排成 `陈  松` 时，
     `cn_author_names()` 已经把它并回一个 `李雷`，可原串还带着内部空白——
-    照抄原串会让页眉印成 `陈  波`。所以单作者走 `cn_names[0]`；
+    照抄原串会让页眉印成 `陈  松`。所以单作者走 `cn_names[0]`；
     只有**拆不出中文姓名**（英文名 / 空）时才用原串。
     """
     author = (author or "").strip()
@@ -736,7 +736,7 @@ def override_fields(
     out: dict[str, str] = {}
     # 中英题名/摘要在两种模板里落在**不同字段**：CN 模板 mytitle=中文、mytitleEN=英文；
     # EN 模板 mytitle=英文、mytitleCN=中文。填错会让摘要跑到正文里（实测把
-    # 02 Lu_Jiang 的内容准确率压到 8.7%），所以这里必须按模板类型分流。
+    # 02 Ning_Jiang 的内容准确率压到 8.7%），所以这里必须按模板类型分流。
     if "title_cn" in ov:
         out["mytitleCN" if is_en else "mytitle"] = ov["title_cn"]
     if "title_en" in ov:
@@ -1245,7 +1245,7 @@ def build_latex(
 
     say("④ 搬运自定义命令（正文依赖，漏搬会编译失败）")
     # 第 120 条：先取正文（`.tex` 多文件稿先展开 \input/\include），再判「哪些宏正文
-    # 真的用得到」——没用到的定义不搬（07 Yiyan_Wang 的 \ar 就是这样避开 xy 冲突的），
+    # 真的用得到」——没用到的定义不搬（07 Fang_Wang 的 \ar 就是这样避开 xy 冲突的），
     # 与模板/宏包重名的宏自动改名（\prop → \slcnprop），正文同步改。
     # 第 130 条：**正文区**（\begin{document} 之后）的自定义定义不迁移——正文整段
     # 照搬已经带着它们；再从 meta_text 里搬一遍会在产物里重复定义（\newcommand 直接
@@ -1379,7 +1379,7 @@ def build_latex(
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
     # 第 121 条：正文 `\includegraphics` 引用的图片从源目录复制进产物目录，
-    # 否则 LaTeX 通道产物一定编译失败（04 Chen_Liu 真稿）。
+    # 否则 LaTeX 通道产物一定编译失败（04 Yang_Liu 真稿）。
     gfx = copy_referenced_graphics(
         body, meta_text, os.path.dirname(os.path.abspath(body_path)), out_dir, warnings
     )
@@ -1503,7 +1503,7 @@ def editorial_fields(meta: dict | None) -> dict[str, str]:
 # ── 第四十六批②：LaTeX 稿「参考文献之后的内容」（附录/致谢）迁移 ────────────
 # `sources.extract_body_text()` 会**截到参考文献之前**（第 121 条：\bibliographystyle
 # 等要留在正文外）。副作用：作者把附录写在 `\printbibliography` 之后时，整段附录被
-# 静默丢掉 —— 86-05 WeiNong_Li 实测丢了 3 个附录小节（人工 26 页 vs 生成 20 页，
+# 静默丢掉 —— 86-05 Wei_Qiu 实测丢了 3 个附录小节（人工 26 页 vs 生成 20 页，
 # 正文文本只有人工的 66.7%）。这里把「参考文献命令之后到 \end{document}」的内容
 # 取出来，插到模板自己的 `\printbibliography` 之后（表格/公式等原样保留）。
 # 纪律：只在**确实有非注释内容**时生效；Word 通道与无附录稿逐字节不变。
@@ -1665,7 +1665,7 @@ def _insert_post_bibliography(template_text: str, tail: str) -> str:
     lines = template_text.split("\n")
     for idx, ln in enumerate(lines):
         if "\\printbibliography" in ln and not ln.strip().startswith("%"):
-            # 与人工成品 tex 顺序一致：附录在参考文献**之前**（86-05 WeiNong_Li.tex 实测）
+            # 与人工成品 tex 顺序一致：附录在参考文献**之前**（86-05 Wei_Qiu.tex 实测）
             lines[idx] = tail.strip("\n") + "\n\n" + ln
             return "\n".join(lines)
     j = template_text.find("\\end{document}")
@@ -2368,7 +2368,7 @@ def build_docx(
     # 中英文稿的字段布局**完全不同**，必须按模板类型分别填：
     #   CN 模板（含 mytitleEN）：中文为主，另有 myabstractEN / mykeywords
     #   EN 模板（含 mytitleCN）：英文为主，另有 myabstractCN，且**没有关键词字段**
-    # 填错字段会让摘要跑到正文里，实测把 02 Lu_Jiang 的内容准确率压到 8.7%。
+    # 填错字段会让摘要跑到正文里，实测把 02 Ning_Jiang 的内容准确率压到 8.7%。
     tpl_fields = set(parse_macros(tpl))
     is_en = "mytitleCN" in tpl_fields
     # 模板自带的示例文字（`第一作者`/`单位1（到系所）`/`xxxx@xxxx.xxx`/`Abstract`…）：
@@ -2588,7 +2588,7 @@ def build_docx(
 
     # 参考文献有两个来源，都写进同一个 .bib：
     #   ① Word 末尾的参考文献区（doc.refs）
-    #   ② **脚注里的文献条目**（doc.bib_entries）——Lu_Jiang 的 68 条全在这里，
+    #   ② **脚注里的文献条目**（doc.bib_entries）——Ning_Jiang 的 68 条全在这里，
     #      早先只认 ①，导致「参考文献 0 条」、68 处引用全部悬空。
     bib_out = None
     if doc.refs or doc.bib_entries:
@@ -2615,7 +2615,7 @@ def build_docx(
                 say(f"   · {n}")
         # B-189：Word 通道同样执行「正式发表条目不写 url+doi」渲染规范（RULES §四.10）。
         # 为什么在这里补：Word 通道的 bib 是上面直接渲染的，不走 `normalize_bib()`；
-        # 不补就会「同一篇稿换通道 DOI 就印出来」（实测 LingXin_Cai 86-08 的 1 处）。
+        # 不补就会「同一篇稿换通道 DOI 就印出来」（实测 Min_Cai 86-08 的 1 处）。
         bib_text, url_notes = strip_published_urls(bib_text)
         if url_notes:
             say(f"   正式发表条目网址/DOI 清洗：{len(url_notes)} 处")

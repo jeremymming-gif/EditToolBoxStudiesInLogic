@@ -248,10 +248,10 @@ def process_folders(path: str, out_dir: str | None = None,
         art = ArticleInfo(folder=folder, folderName=name)
 
         # ---------- 读 .tex ----------
-        # 与 `compileall` 同一口径：先精确、再宽松兜底（`TianwenXu.tex` 少了别人的下划线、
-        # `Chaoan_He.tex` 丢了撇号这类）。从前这里**只认精确名**，于是同一篇
+        # 与 `compileall` 同一口径：先精确、再宽松兜底（`MingXu.tex` 少了别人的下划线、
+        # `Tianan_He.tex` 丢了撇号这类）。从前这里**只认精确名**，于是同一篇
         # 「编译全部」能编、「检查tex信息」却报字段缺失、目录里标题成 None
-        # （2026-10-17 全库普查实测：2024年第2期 03 Tianwen_Xu）。
+        # （2026-10-17 全库普查实测：2024年第2期 03 Ming_Xu）。
         tex_file = _pm.find_tex(folder_path, name)
         if tex_file:
             art.hasTeX = True
@@ -356,7 +356,7 @@ def process_folders(path: str, out_dir: str | None = None,
                 art.lineSpacing = baseline
 
         # ---------- PDF 实际页数 ----------
-        # 与 `mergepdf` 同一口径：先精确、再宽松兜底（`Chen Liu.pdf` 空格/下划线不同）。
+        # 与 `mergepdf` 同一口径：先精确、再宽松兜底（`Yang Liu.pdf` 空格/下划线不同）。
         pdf_hit = _pm.resolve_article_pdf(folder_path, name)
         if pdf_hit:
             pdf_file, actual_pdf = pdf_hit

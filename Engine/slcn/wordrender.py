@@ -21,7 +21,7 @@ _TITLE_SMALL_WORDS = {
 def _looks_plain_en_title(t: str) -> bool:
     """无编号、无样式的一段英文短句，像不像章节标题（Title Case、无句末标点）。
 
-    第 121 条（07 Hu_Liu 真稿）：访谈稿的 9 个小标题在 docx 里是**无样式独立短段**
+    第 121 条（07 Bo_Liu 真稿）：访谈稿的 9 个小标题在 docx 里是**无样式独立短段**
     （`On Logic Pluralism`…），旧判据只认编号标题 → 产物一个 `\\section` 都没有。
     这里只做「像标题」的文本判据；是否真是标题由调用方结合上下文（前后段落）决定。
     """
@@ -81,7 +81,7 @@ def find_char_diagrams(paras, min_run: int = 8, max_len: int = 12) -> list[tuple
     i, n = 0, len(paras)
     while i < n:
         # 含内嵌图片的段落绝不能算进「字符拼图」——
-        # 实测 01 Yanjin_Chen 的段落 77（3 张图、无文字）被相邻的单字符段
+        # 实测 01 Jing_Chen 的段落 77（3 张图、无文字）被相邻的单字符段
         # 吞掉，导致那一组图完全没有输出。
         if any(sg.kind == "image" for sg in paras[i].segs):
             i += 1
@@ -276,7 +276,7 @@ def render_cell(cell, img_names: dict[str, str] | None = None,
 def figure_env(names: list[str], idx: int, caption: str | None = None) -> str:
     """生成 figure 环境。人工惯例见 07 Jiayi_He。
 
-    同一段落里连续的图片**合成一个 figure**——实测 01 Yanjin_Chen 的 docx 里有
+    同一段落里连续的图片**合成一个 figure**——实测 01 Jing_Chen 的 docx 里有
     5 张分开的图，人工是把它们合成一张 `p1.png` 放进一个 figure 的。
 
     ``caption``（B-217③）：Word 题注段落解析出的说明文字（已转义）；``None`` 时
@@ -311,7 +311,7 @@ def hoist_quote_fallback(latex: str, quoted: str) -> tuple[str, bool]:
     ⚠️ 第一处匹配里若含 `\\footnote`，说明**脚注标记插在引文中间**（Word 稿很常见：
        脚注挂在引文第 20 个字后面）。这时整段替换会把脚注正文一起吃掉，而正则实际
        匹配到的是脚注正文里的一对**短引号** → 引文被重复一遍、多出一个 `}`、
-       整篇编译失败（`! Too many }'s`）。实测期 87 子案例 3（04 Fayang_Ye，案例 141）。
+       整篇编译失败（`! Too many }'s`）。实测期 87 子案例 3（04 Feng_Ye，案例 141）。
        此时**放弃提升**（保持原文内联）——人工成品也是这么处理的。
 
     返回 (新文本, 是否替换)。替换必须用字符串切片而不是 `re.sub` 的替换串：
@@ -348,7 +348,7 @@ def render_para(
                  `[0]` 并传进来，图 `\\label{fig:N}` 的 N 才是文档内唯一的（旧实现把
                  `fig_seq` 放在本函数内、每个段落从 1 重来 → 多段有图时 label 全叫
                  `fig:1`，实测 corpus 12 篇有图 label 的产物里 6 篇重复，
-                 `2025_04_YingJin_Xu` 6 个全是 fig:1）。默认 None = 保留段落内计数
+                 `2025_04_Chen_Xu` 6 个全是 fig:1）。默认 None = 保留段落内计数
                  （只给不传计数器的旧调用方/单测用，行为与从前逐字节相同）。
     num2key      **B-130（批73）**：编号体例稿的 `{编号 → bib 键}` 可靠映射。非空时把
                  **脚注文本里的裸 `[N]`**（`参见[12]。`）保守换成 `\\parencite{键}`

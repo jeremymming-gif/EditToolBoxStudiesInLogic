@@ -18,11 +18,11 @@ r"""Word 通道「英文元数据第二源」判据测试（**第 76 条**，202
   ① 判据：`sources.en_metadata_sheet()` —— 英文元数据表命中；正文 docx、纯中文稿、
      缩写/汉语摘要、**另一篇英文全文稿**（有叙述正文）都不命中。
   ② **反例 1（最重要）**：正文 docx **自带**英文块（案例 52 的文末英文块，真实稿件
-     `07 Guangwu_Feng`）→ 第二源存在也不许改它的 `title_en`/`abstract_en`，
+     `07 Hai_Feng`）→ 第二源存在也不许改它的 `title_en`/`abstract_en`，
      产物与不接第二源**逐字节相同**。
   ③ 反例 2：同目录**没有**英文摘要文件 → 结果与改动前逐字节相同（占位符照旧），
      且**绝不跨目录**去仓库原目录里找那份真实存在的姊妹文件。
-  ④ 反例 3：同目录有同名但不是英文摘要的文件（真实语料 `04 YingJin_Xu` 的
+  ④ 反例 3：同目录有同名但不是英文摘要的文件（真实语料 `04 Chen_Xu` 的
      `…汉语摘要.docx`，以及现造的纯中文 docx）→ 不许把它的中文摘要当英文摘要塞进去。
   ⑤ 正例：10 Lei_Li 那对文件 → `title_en`/`abstract_en`/`author_en` 正确补上，
      且与那份英文摘要 docx 的 `parse_docx()` 取值**逐字相同**；`affiliation_en`
@@ -107,6 +107,12 @@ def _issue_paper_dir(issue_no: str, no: str) -> str:
         if hits:
             return os.path.join(hits[0], "original")
     return ""
+
+
+def _rel_original(issue_no: str, no: str) -> str:
+    """`_issue_paper_dir` 相对稿件库根的形式，供 `find()/one()` 用（B-269）。"""
+    d = _issue_paper_dir(issue_no, no)
+    return os.path.relpath(d, _MANUSCRIPTS) if d and _MANUSCRIPTS else ""
 
 
 def _docx_in(dirpath: str, needle: str = "", exclude=()) -> str:
@@ -205,9 +211,9 @@ def make_docx(paras):
 BC_DIR = _issue_paper_dir("90", "10")
 BC_BODY = _docx_in(BC_DIR, exclude=("英文摘要",))          # 正文：非英文摘要附件的那份（取最大）
 BC_EN = _docx_in(BC_DIR, "英文摘要")                       # 英文摘要附件（文件名含通用词）
-GF_BODY = find("2026年第2期(87)/07 Guangwu_Feng/original", "格赖斯和布兰顿")
-GD_BODY = find("2024年第4期(77)/05 Guoping_Du/original", "排中律-LJXYJ")
-YX_CN = find("2025年第6期(85)/04 YingJin_Xu/original", "汉语摘要")
+GF_BODY = find(_rel_original("87", "07"), "格赖斯和布兰顿")
+GD_BODY = find(_rel_original("77", "05"), "排中律-LJXYJ")
+YX_CN = find(_rel_original("85", "04"), "汉语摘要")
 LZ_DIR = _issue_paper_dir("90", "03")
 LZ_META = _tex_not(LZ_DIR, "main")
 LZ_BODY = _tex_in(LZ_DIR, "main")
@@ -258,26 +264,26 @@ else:
     skip("① 真实英文摘要 docx", "缺真实语料 10 Lei_Li")
 
 if GF_BODY:
-    check("① 自带文末英文块的真实正文稿（07 Guangwu_Feng）→ 不命中"
+    check("① 自带文末英文块的真实正文稿（07 Hai_Feng）→ 不命中"
           "（它是正文，不是元数据表）",
           sources.en_metadata_sheet(GF_BODY) == {}, "")
 else:
-    skip("① Guangwu_Feng 正文判据", "缺真实语料")
+    skip("① Hai_Feng 正文判据", "缺真实语料")
 
 if YX_CN:
     check("① 真实「汉语摘要.docx」（纯中文）→ 不命中",
           sources.en_metadata_sheet(YX_CN) == {}, "")
 else:
-    skip("① YingJin_Xu 汉语摘要判据", "缺真实语料")
+    skip("① Chen_Xu 汉语摘要判据", "缺真实语料")
 
 
 # ══ ② 反例 1（最重要）：正文自带英文块 → 第二源一个字都不许改 ═══════════════
 print("\n── ② 反例 1：正文自带英文块（案例 52）→ 第二源不许改 ──")
 
 if not (GF_BODY and GD_BODY and BC_EN):
-    skip("② 反例 1", "缺真实语料（Guangwu_Feng / Guoping_Du 正文 / Lei_Li 英文摘要）")
+    skip("② 反例 1", "缺真实语料（Hai_Feng / Hai_Du 正文 / Lei_Li 英文摘要）")
 else:
-    # ②-a 真实样本：正文稿自带**完整**英文块（05 Guoping_Du 文末英文块）→
+    # ②-a 真实样本：正文稿自带**完整**英文块（05 Hai_Du 文末英文块）→
     #      同目录放一份**取值完全不同**的真实英文摘要（Lei_Li 那份）也不许改一个字。
     with tempfile.TemporaryDirectory() as tmp:
         d = os.path.join(tmp, "orig")
@@ -325,7 +331,7 @@ else:
                                "Key words: different; keywords"]), en)
         gf = parse_docx(body)
         en_doc = parse_docx(en)
-        # B-268 S1：该正文稿的 head 英文作者行现在会被恢复（`Guangwu Feng Shuiying Chen`），
+        # B-268 S1：该正文稿的 head 英文作者行现在会被恢复（`Hai Feng Chen Xu`），
         # 前提从「author_en 为空」改为「正文稿自己的 author_en 与第二源不同」；断言仍验证
         # 「第二源不覆盖正文稿已有值」。
         check("②-b 前提：正文稿英文块**有自己的** author_en（与第二源不同）",
@@ -409,7 +415,7 @@ else:
         check("④ 运行日志如实说明「没有可用的英文字段，本次忽略」",
               any("没有可用的英文字段" in w for w in res.warnings), f"{res.warnings[:2]}")
 
-        # 真实语料：04 YingJin_Xu 的「汉语摘要.docx」
+        # 真实语料：04 Chen_Xu 的「汉语摘要.docx」
         if YX_CN:
             shutil.copy2(YX_CN, os.path.join(d, os.path.basename(YX_CN)))
             check("④ 真实「汉语摘要.docx」放同目录也不被发现",
@@ -422,7 +428,7 @@ else:
                   and (not (_yx.abstract_cn or "").strip() or (_yx.abstract_cn or "") not in tex2),
                   f"abstract_cn={(_yx.abstract_cn or '')[:20]!r}")
         else:
-            skip("④ 真实汉语摘要 docx", "缺真实语料 04 YingJin_Xu")
+            skip("④ 真实汉语摘要 docx", "缺真实语料 04 Chen_Xu")
 
         # 显式指到不存在 / 非 .docx 的路径 → 记 warning，不崩、不改字段
         res3, tex3 = build_tex(body, os.path.join(tmp, "out3"),
@@ -650,7 +656,7 @@ check("⑬ 2 个作者、4 个词（每人 2 词）→ 逐字定位拆分",
       repr(_split_en_names_by_count("Meimei Han Xiaoming Wang", 2)))
 check("⑬ 反例：词数不匹配作者数 → 不猜（返回空）",
       _split_en_names_by_count("Meimei Han Xiaoming Wang", 3) == []
-      and _split_en_names_by_count("Lu Jiang", 2) == [])
+      and _split_en_names_by_count("Ning Jiang", 2) == [])
 check("⑬ 反例：含小写/虚词 → 不猜（保守判据）",
       _split_en_names_by_count("Meimei Han and Xiaoming Wang", 2) == [])
 

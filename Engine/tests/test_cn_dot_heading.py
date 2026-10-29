@@ -12,7 +12,7 @@
      连排名单、整句列表项、引文里的编号行、文献清单行；外加英文侧逐字不变。
   ③ 真实语料（语料不在本机则 SKIP）：13 篇受影响稿子的标题数，
      并与**人工成品 .tex** 的 \\section/\\subsection 对齐（这是层级判据的根据：
-     03 Ziming_Song 人工成品把 `1. 决策论与愿望/信念` 排成 \\subsection）。
+     03 Jie_Song 人工成品把 `1. 决策论与愿望/信念` 排成 \\subsection）。
 
 不写 out/、不联网、不跑 corpus.py。用法：
     cd Engine && /opt/homebrew/bin/python3.14 tests/test_cn_dot_heading.py
@@ -48,14 +48,14 @@ def check(name, cond, detail=""):
 # ══ ① 形态判据（纯字符串）═════════════════════════════════════════════════
 print("── ① 形态判据 `_is_cn_dot_heading` ──")
 
-# 必须认成标题的（全部来自真实语料 04 Lei_Li / 07 Guangwu_Feng / 06 Lili_Lu …）
+# 必须认成标题的（全部来自真实语料 04 Lei_Li / 07 Hai_Feng / 06 Ting_Lu …）
 MUST = [
     "1. 莱布尼茨",                                  # 04 Lei_Li：人名小节（人工成品是 \section）
     "5. 维特根斯坦",
-    "1. 引言",                                      # 01 Pengshu_Shan 等
-    "1.引言",                                       # 07 Guangwu_Feng：点后**没有空格**
-    "3. 以非直接解读为基础的两例数学哲学研究进路",       # 02 Pengshu_Shan：18 字长标题
-    "2. 决策论与愿望/信念",                           # 03 Ziming_Song：标题里有 `/`
+    "1. 引言",                                      # 01 Ning_Shan 等
+    "1.引言",                                       # 07 Hai_Feng：点后**没有空格**
+    "3. 以非直接解读为基础的两例数学哲学研究进路",       # 02 Ning_Shan：18 字长标题
+    "2. 决策论与愿望/信念",                           # 03 Jie_Song：标题里有 `/`
     "4. 结语",
 ]
 for t in MUST:
@@ -65,22 +65,22 @@ for t in MUST:
 MUST_NOT = [
     # 09 Jiawei_Zhong：整句列表项（带 `。`、超 40 字）
     "1. 尚未形成对论证行动完整生成过程的统一解释。三条径路各有其代表性人物，",
-    # 08 Ran_Ren：因明五支（带 `：`/`。`/引号）
+    # 08 Jing_Ren：因明五支（带 `：`/`。`/引号）
     "1.命题（宗）：“此山有火。”",
     "2.理由（因）：“因有烟故。”",
-    # 04 Yanjing_Zhang：审稿意见逐条回复（带 `，`）
+    # 04 Min_Zhang：审稿意见逐条回复（带 `，`）
     "1. 第一页第二段，提出周延问题的文献建议列出原始文献，因为本页第三段提出的",
-    # 04 Yanjing_Zhang：短句列表项，**以 `。` 收尾**（标题不会带句号）
+    # 04 Min_Zhang：短句列表项，**以 `。` 收尾**（标题不会带句号）
     "4. 第八页缺失“四种亚氏量词组成的对当方阵”。",
-    # 67A 邱德钧：文末文献清单（带 `，`/`。`、超 40 字）
-    "1. 陶景侃，《大学逻辑教程》，兰州大学出版社，1993年8月，第一版。",
+    # 67A 邱伟：文末文献清单（带 `，`/`。`、超 40 字）
+    "1. 陶明，《大学逻辑教程》，兰州大学出版社，1993年8月，第一版。",
     # 「20 世纪」式残句（_HEAD_CN_BAD_TAIL）
     "1. 2020年到2023年的统计数据如下表所示",
     # 点后是数字 = `N.M` 子节，归 _HEAD_EN3，不该被这条认走
     "2.2 表征定理",
     # 英文标题：行为必须逐字不变（`1. Introduction` 仍由 _HEAD_EN1 认）
     "1. Introduction",
-    "2. Formal Examination of Priest’s view of nothing:",   # 04 Wenfang_Wang：英文+冒号，本轮**不管**
+    "2. Formal Examination of Priest’s view of nothing:",   # 04 Xue_Wang：英文+冒号，本轮**不管**
 ]
 for t in MUST_NOT:
     check(f"不算标题：{t}", not _is_cn_dot_heading(t))
@@ -137,7 +137,7 @@ check("端到端：5 个点式中文标题全部认成 \\section（层级 1）",
 check("端到端：产物里确实是 \\section（不是留在正文里的编号行）",
       "\\section{莱布尼茨}" in d.body and "1. 莱布尼茨" not in d.body)
 
-# ②-b：同篇还有 `一、` 一级编号 → `1.` 是子节（人工成品 03 Ziming_Song 就是这么排的）
+# ②-b：同篇还有 `一、` 一级编号 → `1.` 是子节（人工成品 03 Jie_Song 就是这么排的）
 p = make_docx(HEAD
               + ["一、引言"] + FILLER[:4]
               + ["二、经典决策论及其规范之源"] + FILLER[4:6]
@@ -178,7 +178,7 @@ check("反例：整句编号列表项（带 。/，）→ 0 个标题", d.headin
 
 # ②-e 反例 3：文献清单行（`N. 作者，《书名》，…`）→ 不认
 p = make_docx(HEAD + FILLER[:6]
-              + ["1. 陶景侃，《大学逻辑教程》，兰州大学出版社，1993年8月，第一版。"]
+              + ["1. 陶明，《大学逻辑教程》，兰州大学出版社，1993年8月，第一版。"]
               + FILLER[6:])
 TMP.append(p)
 d = parse_docx(p)
@@ -255,30 +255,30 @@ CASES = [
     ("2022年第5期(66)/04 Lei_Li", "逻辑例外论",
      {"sections": ["莱布尼茨", "休谟", "康德", "弗雷格", "维特根斯坦", "艾耶尔"]},
      "04 Lei_Li：6 个人名小节，人工成品 Lei_Li.tex 全是 \\section"),
-    ("2022年第4期(65)/02 Pengshu_Shan", "20160050580_O_editing",
+    ("2022年第4期(65)/02 Ning_Shan", "20160050580_O_editing",
      {"sections": ["哥德尔的数学认识论概念的三个层次", "以非直接解读为基础的两例数学哲学研究进路", "结语"]},
-     "02 Pengshu_Shan：3 个点式标题（人工成品 shanpengshu.tex 同为 \\section）"),
-    ("2023年第4期(71)/06 Lili_Lu", "20160050685_O_editing",
+     "02 Ning_Shan：3 个点式标题（人工成品 shanpengshu.tex 同为 \\section）"),
+    ("2023年第4期(71)/06 Ting_Lu", "20160050685_O_editing",
      {"sections": ["引言", "法律解释概述", "法律论证结构中的解释", "法律解释论证及其评价", "结论"]},
-     "06 Lili_Lu：`1. 引言`…`6. 结论`（人工成品 Lili_Lu.tex 是 \\section，`2.1` 才是 \\subsection）"),
-    ("2023年第5期(72)/03 Ziming_Song", "20160050777_O_editing",
+     "06 Ting_Lu：`1. 引言`…`6. 结论`（人工成品 Ting_Lu.tex 是 \\section，`2.1` 才是 \\subsection）"),
+    ("2023年第5期(72)/03 Jie_Song", "20160050777_O_editing",
      {"subsections": ["决策论与愿望/信念", "表征定理"]},
-     "03 Ziming_Song：`一、` 在上 → `1.` 是 \\subsection（人工成品 Ziming_Song.tex 实证）"),
-    ("2024年第1期(74)/07 Wenwen_Jiao", "202402文献标注",
+     "03 Jie_Song：`一、` 在上 → `1.` 是 \\subsection（人工成品 Jie_Song.tex 实证）"),
+    ("2024年第1期(74)/07 Min_Jiao", "202402文献标注",
      {"sections": ["引言", "弗雷格-吉奇问题与表达主义", "祈使句推理与约根森难题", "小结"]},
-     "07 Wenwen_Jiao：`1.引言`（无空格）+ `3.弗雷格-…`"),
-    ("2026年第1期(86)/07 Long_Chen", "返修版（无修订标记）",
+     "07 Min_Jiao：`1.引言`（无空格）+ `3.弗雷格-…`"),
+    ("2026年第1期(86)/07 Qiang_Chen", "返修版（无修订标记）",
      {"sections": ["引言", "不同形式的逻辑多元论", "反驳多元论的多重理由"]},
-     "07 Long_Chen：自定义样式 `1` 的 4 个标题里认出 3 个"),
-    ("2026年第2期(87)/07 Guangwu_Feng", "格赖斯和布兰顿",
+     "07 Qiang_Chen：自定义样式 `1` 的 4 个标题里认出 3 个"),
+    ("2026年第2期(87)/07 Hai_Feng", "格赖斯和布兰顿",
      {"sections": ["引言", "格赖斯的语用推理", "布兰顿的语义推理", "共性与差异", "问题与挑战", "余论"]},
-     "07 Guangwu_Feng：6 个标题全认（点后有空格/无空格混用）"),
-    ("2026年第2期(87)/08 Ran_Ren", "陈那派与正理派",
+     "07 Hai_Feng：6 个标题全认（点后有空格/无空格混用）"),
+    ("2026年第2期(87)/08 Jing_Ren", "陈那派与正理派",
      {"sections": ["从康德哲学的角度看陈那派知识论的特征", "从比较逻辑视角看印度逻辑的特异性", "结论"]},
-     "08 Ran_Ren：3 个标题认出来，因明五支那 9 条列表项一条都不许进来"),
-    ("2026年第2期(87)/09 Runcheng_Liang", "梁润成+最终",
+     "08 Jing_Ren：3 个标题认出来，因明五支那 9 条列表项一条都不许进来"),
+    ("2026年第2期(87)/09 Chen_Liang", "梁晨+最终",
      {"sections": ["引言", "约翰逊和汉比的标准", "新标准", "新标准的应用", "结论"]},
-     "09 Runcheng_Liang：`1.`–`5.` 认出来（`2.1` 等本就由 _HEAD_EN3 认）"),
+     "09 Chen_Liang：`1.`–`5.` 认出来（`2.1` 等本就由 _HEAD_EN3 认）"),
 ]
 for _dir, needle, want, why in CASES:
     path = find(_dir, needle)
@@ -296,14 +296,14 @@ for _dir, needle, want, why in CASES:
 # ③-b 与人工成品逐条对账：新认出的标题必须**都在**人工成品的章节表里
 PAIRS = [
     ("2022年第5期(66)/04 Lei_Li", "逻辑例外论", "Lei_Li.tex"),
-    ("2022年第4期(65)/02 Pengshu_Shan", "20160050580_O_editing", "shanpengshu.tex"),
-    ("2023年第4期(71)/06 Lili_Lu", "20160050685_O_editing", "Lili_Lu.tex"),
-    ("2023年第5期(72)/03 Ziming_Song", "20160050777_O_editing", "Ziming_Song.tex"),
-    ("2024年第1期(74)/07 Wenwen_Jiao", "202402文献标注", "Wenwen_Jiao.tex"),
-    ("2026年第1期(86)/07 Long_Chen", "返修版（无修订标记）", "Long_Chen.tex"),
-    ("2026年第2期(87)/07 Guangwu_Feng", "格赖斯和布兰顿", "Guangwu_Feng.tex"),
-    ("2026年第2期(87)/08 Ran_Ren", "陈那派与正理派", "Ran_Ren.tex"),
-    ("2026年第2期(87)/09 Runcheng_Liang", "梁润成+最终", "Runcheng_Liang.tex"),
+    ("2022年第4期(65)/02 Ning_Shan", "20160050580_O_editing", "shanpengshu.tex"),
+    ("2023年第4期(71)/06 Ting_Lu", "20160050685_O_editing", "Ting_Lu.tex"),
+    ("2023年第5期(72)/03 Jie_Song", "20160050777_O_editing", "Jie_Song.tex"),
+    ("2024年第1期(74)/07 Min_Jiao", "202402文献标注", "Min_Jiao.tex"),
+    ("2026年第1期(86)/07 Qiang_Chen", "返修版（无修订标记）", "Qiang_Chen.tex"),
+    ("2026年第2期(87)/07 Hai_Feng", "格赖斯和布兰顿", "Hai_Feng.tex"),
+    ("2026年第2期(87)/08 Jing_Ren", "陈那派与正理派", "Jing_Ren.tex"),
+    ("2026年第2期(87)/09 Chen_Liang", "梁晨+最终", "Chen_Liang.tex"),
 ]
 for _dir, needle, texname in PAIRS:
     path = find(_dir, needle)
@@ -323,12 +323,12 @@ for _dir, needle, texname in PAIRS:
 
 # ③-c 反例：这些稿子的点式编号行**一条都不许**变成标题（全是列表项/英文稿，本轮不该动）
 NEG = [
-    ("2023年第4期(71)/04 Yingying_Wang", "20160050760_A_editing",
+    ("2023年第4期(71)/04 Jing_Wang", "20160050760_A_editing",
      "审稿意见逐条回复（`1、`/`2、` + 整句）"),
-    ("2025年第6期(85)/03 QingHui_Su", "Two Recent Approaches",
-     "03 QingHui_Su：`3.3.1 Problems…` 深编号，属已知漏认（英文判据不动）"),
-    ("2024年第6期(79)/01 Wenfang_Wang", "A Careful inspection",
-     "01 Wenfang_Wang：英文标题结尾带冒号，仍不认（英文判据不动）"),
+    ("2025年第6期(85)/03 Ning_Su", "Two Recent Approaches",
+     "03 Ning_Su：`3.3.1 Problems…` 深编号，属已知漏认（英文判据不动）"),
+    ("2024年第6期(79)/01 Xue_Wang", "A Careful inspection",
+     "01 Xue_Wang：英文标题结尾带冒号，仍不认（英文判据不动）"),
 ]
 for _dir, needle, why in NEG:
     path = find(_dir, needle)

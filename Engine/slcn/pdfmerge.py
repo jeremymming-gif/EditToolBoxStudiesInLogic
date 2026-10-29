@@ -11,7 +11,7 @@ Windows 用 PyPDF2（上游 `merge.py`）。要做 Windows 版就必须**只留�
   · 扉页 `扉页.pdf` 只追加页面、**不导入它自带的大纲**，然后登记顶层书签 `cover`（指向第 0 页）；
   · `000…/Chinese Content.pdf` → 书签 `Chinese Content`；`000…/contents.pdf` → 书签 `contents`；
   · 其余 `NN <名字>` 目录 → 用**目录名最后一段**（如 `03 Jie_Zhou` → `Jie_Zhou`）
-    去找 `Jie_Zhou.pdf`；**找不到就宽松匹配**（`Chen Liu.pdf` 这种下划线写成空格的情况，
+    去找 `Jie_Zhou.pdf`；**找不到就宽松匹配**（`Yang Liu.pdf` 这种下划线写成空格的情况，
     上游原版会整篇跳过且不报错 —— 实测丢过 33 页）；
   · 编委页 / 封底：**只追加页面、不导入大纲**（实测`cneditors[260113]左移.pdf` 自带一个叫
     「Chinese Content」的陈旧书签，导进来会出现两个同名书签指向不同页），书签名分别是 `编委页` / `封底`；
@@ -65,7 +65,7 @@ def numbered_entries(folder: str) -> list[str]:
 def loose_key(name: str) -> str:
     """宽松比较用的键：去掉下划线/半角空格/全角空格/连字符，统一小写。
 
-    这样 `Chen_Liu` / `Chen Liu` / `chen-liu` 视为同一个名字。
+    这样 `Yang_Liu` / `Yang Liu` / `chen-liu` 视为同一个名字。
     """
     for ch in ("_", " ", "\u3000", "-"):
         name = name.replace(ch, "")
@@ -98,7 +98,7 @@ def resolve_article_pdf(folder: str, name: str) -> tuple[str, str] | None:
 def _tex_key(name: str) -> str:
     """比 `loose_key` 再宽一点：**只留字母数字**（撇号、点、括号、下划线全去掉）再小写。
 
-    为什么要它：`01 Chao'an_He/` 里人写的文件名是 `Chaoan_He.tex`（撇号在文件名里没了）——
+    为什么要它：`01 Tian'an_He/` 里人写的文件名是 `Tianan_He.tex`（撇号在文件名里没了）——
     `loose_key` 只去 `_`/空格/连字符，两边仍然不等。CJK 也算字母数字（`str.isalnum()`），
     所以中文名不会被抹掉。
     """

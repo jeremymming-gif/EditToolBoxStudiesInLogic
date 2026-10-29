@@ -178,15 +178,15 @@ mkfile(os.path.join(root, "01 A_Author", "A_Author.tex"), DOC)
 mkfile(os.path.join(root, "02 B_Author", "B_Author.tex"), DOC)
 mkfile(os.path.join(root, "000 目录", "Chinese Content.tex"), DOC)   # 不编
 os.makedirs(os.path.join(root, "03 C_Author"), exist_ok=True)        # 没有 .tex
-# 撇号差异：目录名 `04 Chao'an_He`，人写的文件名却是 `Chaoan_He.tex`
-# （真实例子：稿件库 `2025年第4期(83)/01 Chao'an_He/Chaoan_He.tex`）
-mkfile(os.path.join(root, "04 Chao'an_He", "Chaoan_He.tex"), DOC)
+# 撇号差异：目录名 `04 Tian'an_He`，人写的文件名却是 `Tianan_He.tex`
+# （真实例子：目录名与文件名只差一个撇号）
+mkfile(os.path.join(root, "04 Tian'an_He", "Tianan_He.tex"), DOC)
 
 r = run("compileall.py", "--folder", root, "--dry-run")
 check("(b) `--dry-run`：退出码 0", r.returncode == 0, f"rc={r.returncode}")
 check("(b) 列出 3 篇要编的", r.stdout.count("（预演）将编译：") == 3, r.stdout.strip()[-120:])
-check("(b) **宽松匹配**：目录名 `Chao'an_He` 与文件名 `Chaoan_He.tex` 只差一个撇号，也要编它",
-      "Chaoan_He.tex" in r.stdout and "（宽松匹配）" in r.stdout,
+check("(b) **宽松匹配**：目录名 `Tian'an_He` 与文件名 `Tianan_He.tex` 只差一个撇号，也要编它",
+      "Tianan_He.tex" in r.stdout and "（宽松匹配）" in r.stdout,
       r.stdout.strip()[-160:])
 check("(b) 反例：精确名对得上时**不许**走宽松匹配（不许把别的篇认错）",
       "（宽松匹配）A_Author" not in r.stdout)

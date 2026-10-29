@@ -119,7 +119,7 @@ check("反例 i（判据层）：`摘要式阅读…` 不是标签",
       and _abs_body_cn(["摘要式阅读是本文讨论的主题。"], 0) == "")
 check("反例 i（判据层）：`摘要性`/`摘要化` 同理",
       _ABS_RE.match("摘要性分析") is None and _ABS_RE.match("摘要化学方法") is None)
-check("粘连标签仍照认（04 YingJin_Xu 的 `摘要理想的人工…`）",
+check("粘连标签仍照认（04 Chen_Xu 的 `摘要理想的人工…`）",
       _abs_body_cn(["摘要理想的人工通用智能系统应具备足够的智能。"], 0)
       == "理想的人工通用智能系统应具备足够的智能。")
 check("反例 ii（判据层）：句中 `Abstract` 不是标签",
@@ -185,7 +185,7 @@ d = parse_docx(p)
 check("反例 ii：句中 `Abstract`（第 3/4 段，窗口内）→ abstract_en 必须为空",
       d.abstract_en == "", repr(d.abstract_en))
 
-# ②-反例 iii-a：`摘要：` 独占一段，但下一段是英文（英文块的标签，实机 08 LingXin_Cai）
+# ②-反例 iii-a：`摘要：` 独占一段，但下一段是英文（英文块的标签，实机 08 Min_Cai）
 p = make_docx(["On the Logic of Databases", "Zhang San", "英文标题及摘要",
                "摘要：", "Fallacies are a crucial component in the study of argumentation.",
                "Abstract:", "This paper discusses the logic of databases."] + BODY)
@@ -205,7 +205,7 @@ d = parse_docx(p)
 check("反例 iii-b：缩进的 `摘要：` + 英文正文 → 不抢中文摘要槽",
       d.abstract_cn == "", repr(d.abstract_cn))
 
-# ②-对照：同样的段落**不缩进** → 旧路径逐字节不变（实机 10 Min Xu 的既成事实）
+# ②-对照：同样的段落**不缩进** → 旧路径逐字节不变（实机 10 Ming Xu 的既成事实）
 p = make_docx(["On the Logic of Databases", "Zhang San",
                "摘要： The logical education at Huazhong University is an important part."]
               + BODY)
@@ -231,9 +231,9 @@ check("反例 iv（缩进版）：摘要为空、关键词行没被吞成摘要�
       f"但它是向下取正文的**收手条件**）")
 
 # ②-反例 v（本轮自己加的）：缩进标签**不得**把「开头英文题名」的扫描范围一起放大。
-#     实测 2022年第4期(65) 康孝军的校对稿就是这个形态：缩进的 `    摘 要：…` 一旦计入
+#     实测 2022年第4期(65) 康海的校对稿就是这个形态：缩进的 `    摘 要：…` 一旦计入
 #     meta_end，扫描范围从第 2 段涨到第 5 段，段首那行邮箱会被当成英文题名。
-p = make_docx(["反推数学与无穷", "康孝军", " kxj319@hotmail.com",
+p = make_docx(["反推数学与无穷", "康海", " author013@sample.com",
                "    摘 要：无穷一直以来都是数学哲学中的一个基本问题，但不同的无穷观都未令人满意。",
                "    关键词：反推数学；无穷"] + BODY)
 TMP.append(p)
@@ -313,11 +313,11 @@ def find(d: str, needle: str) -> str:
 
 
 UNCHANGED = [
-    ("2022年第6A期(67A)/10 Min Xu", "英文中文摘要等信息",
+    ("2022年第6A期(67A)/10 Ming Xu", "英文中文摘要等信息",
      "同段、无缩进、正文是英文 → 旧规就写进中文摘要（本次不得改）"),
-    ("2023年第1期(68)/05 Zhenzhong_Zhou", "周振忠 真之多元论",
+    ("2023年第1期(68)/05 Ming_Zhou", "周明 真之多元论",
      "开头有中文摘要、文末是英文块 → 一处都不许动"),
-    ("2025年第6期(85)/04 YingJin_Xu", "汉语摘要",
+    ("2025年第6期(85)/04 Chen_Xu", "汉语摘要",
      "无分隔符的粘连标签 `摘要理想的人工…` → 旧规取到的必须逐字节不变"),
     ("2026年第5期(90)/10 Lei_Li", "李雷 当代逻辑论题鸟瞰",
      "中英两套摘要都在开头 → 文末兜底不许介入"),
@@ -338,32 +338,32 @@ print("\n── ④ 真实语料（修复稿 / 反例）──")
 
 # (语料目录, 文件名片段, 断言函数, 说明)
 FIXED = [
-    ("2023年第1期(68)/04 Huaqing_Cheng", "20160050645_flow",
+    ("2023年第1期(68)/04 Jing_Cheng", "20160050645_flow",
      lambda d, p: d.abstract_cn.startswith("直觉主义认知逻辑IEL"),
      "`摘 要 `（字间空格）独占一段 → 取下一段"),
-    ("2023年第5期(72)/03 Ziming_Song", "最新！——录用稿",
+    ("2023年第5期(72)/03 Jie_Song", "最新！——录用稿",
      lambda d, p: d.abstract_cn.startswith("决策论哲学中的一个重要问题"),
      "段首四个半角空格缩进"),
-    ("2023年第6期(73)/06 Xiaoqi_Zhang", "全文gaigai",
+    ("2023年第6期(73)/06 Lei_Zhang", "全文gaigai",
      lambda d, p: d.abstract_cn.startswith("睡眠已成为社会学家讨论的医学化的一个典型例子"),
      "文末 `摘    要` 独占一段（开头英文标签是 `Abstract. `，英文侧另有既存问题，"
      "不在本轮范围）"),
-    ("2024年第1期(74)/07 Wenwen_Jiao", "202302",
+    ("2024年第1期(74)/07 Min_Jiao", "202302",
      lambda d, p: d.abstract_cn.startswith("对道德判断的条件句推理")
      and d.keywords_cn.startswith("弗雷格-吉奇问题"),
      "开头 `摘要` 独占一段 + 关键词没被吞进摘要"),
-    ("2024年第6期(79)/06 Yuyu_Liu", "Mengzi on Rectification",
+    ("2024年第6期(79)/06 Min_Liu", "Mengzi on Rectification",
      lambda d, p: d.abstract_cn.startswith("近代以来")
      and d.abstract_en.startswith("Set in the context of pre-Qin period"),
      "中英两套：英文块照旧取、中文槽补上"),
-    ("2024年第6期(79)/01 Wenfang_Wang", "A Careful inspection",
+    ("2024年第6期(79)/01 Xue_Wang", "A Careful inspection",
      lambda d, p: d.abstract_cn.startswith("普里斯特近期")
      and d.abstract_en.startswith("Graham Priest"),
      "文末中文摘要（参考文献之后）+ 开头英文摘要"),
-    ("2025年第6期(85)/06 Jin_Gan", "JIN GAN",
+    ("2025年第6期(85)/06 Ning_Gan", "JIN GAN",
      lambda d, p: d.abstract_cn.startswith("日本近世关于Rhetoric"),
      "文末 `摘    要` 独占一段"),
-    ("2026年第3期(88)/06 Zhixi_Chen", "Revised Manuscript 5.23",
+    ("2026年第3期(88)/06 Hao_Chen", "Revised Manuscript 5.23",
      lambda d, p: d.abstract_cn.startswith("论证能力最初是参照语言学中交际能力"),
      "文末 `摘  要` 独占一段"),
 ]
@@ -381,19 +381,19 @@ for _dir, needle, ok, why in FIXED:
           f"abstract_cn={rd.abstract_cn[:26]!r}")
 
 NEG = [
-    ("2026年第1期(86)/08 LingXin_Cai", "补充材料 20260117",
+    ("2026年第1期(86)/08 Min_Cai", "补充材料 20260117",
      lambda d, p: (d.abstract_cn or "") == ""
      and "Fallacies are a crucial component" not in (d.abstract_cn or "")
      and d.abstract_cn == (old_abstract_cn(p) or ""),
      "`摘要：` 独占一段、下一段是英文（英文块）→ 仍然 fail，不许拿英文冒充"),
-    ("2025年第6期(85)/04 YingJin_Xu", "Time-budget-sensitive",
+    ("2025年第6期(85)/04 Chen_Xu", "Time-budget-sensitive",
      lambda d, p: d.abstract_en.startswith("An idealized artificial general intelligence")
      and d.keywords_en.startswith("Need-for-Closure"),
      "英文块的标签独占一段（Abstract / Keywords:）→ 英文侧不动"),
-    ("2023年第3期(70)/06 Zhixi_Chen", "陈志喜稿件",
+    ("2023年第3期(70)/06 Hao_Chen", "赵晓梅稿件",
      lambda d, p: d.abstract_cn == "" and d.abstract_en.startswith("Current research"),
      "已知限制：文末标签是 `中文摘要`（不在 _ABS_RE 词表内）→ 仍 fail"),
-    ("2024年第5期(78)/03 HaoJian_Xiao", "点、区间与含数字句子真值",
+    ("2024年第5期(78)/03 Chen_Xiao", "点、区间与含数字句子真值",
      lambda d, p: d.abstract_cn == "",
      "已知限制：`摘要: …` 在第 24 段、且排在参考文献**之前**（两头都够不着）→ 仍 fail"),
 ]

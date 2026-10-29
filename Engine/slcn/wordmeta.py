@@ -64,8 +64,8 @@ def _is_cn_dot_heading(t: str) -> bool:
 
     ⚠️ 这一层就是防「编号列表项被当成标题」的闸门。正文里与标题同形的列表项实测有：
         `1. 尚未形成对论证行动完整生成过程的统一解释。三条径路…`（09 Jiawei_Zhong）
-        `1.命题（宗）：“此山有火。”`（08 Ran_Ren 的因明五支）
-        `1. 第一页第二段，提出周延问题的文献建议列出原始文献，…`（04 Yanjing_Zhang）
+        `1.命题（宗）：“此山有火。”`（08 Jing_Ren 的因明五支）
+        `1. 第一页第二段，提出周延问题的文献建议列出原始文献，…`（04 Min_Zhang）
     它们全部被「2–40 字 + 无句读 + 不像 20 世纪」挡住——判据与 `N 标题` 那条路径
     是**同一套**，所以两种写法的误判边界一致，不会出现「同样一句话在 `1 引言` 里
     挡住了、在 `1. 引言` 里却放行」。
@@ -77,16 +77,16 @@ def _is_cn_dot_heading(t: str) -> bool:
     # 与 _HEAD_EN1 分支同一条：句中带句点的多半是文献条目/编号说明，不是标题
     return "." not in rest and _is_cn_numbered_heading(rest)
 
-# 结构标记必须**中英双认**。实测 01 Wenfang_Wang 是英文稿，用的是
+# 结构标记必须**中英双认**。实测 01 Xue_Wang 是英文稿，用的是
 # `Abstract:` / `Keywords:`；只认中文标记会让正文区直接取空（相似度掉到 1%）。
 #
 # ⚠️ 段首允许有空白（`\s` 在 Python 3 里本来就含全角空格 U+3000，这里显式写出来只是
-#    让判据一眼可读）：实测 2023年第5期(72) 03 Ziming_Song 的摘要写成
+#    让判据一眼可读）：实测 2023年第5期(72) 03 Jie_Song 的摘要写成
 #    `    摘要：决策论哲学中的…`（段首四个半角空格），旧规则要求标签紧贴段首，
 #    于是中文摘要 fail。**只放宽段首空白**——`^` 仍锚定段首，句中出现的
 #    「摘要/Abstract」一律不算标签（这是这条正则的语义，不是附加条件）。
 _ABS_LEAD = r"^[\s\u3000]*"
-# ⚠️ 「摘要」与正文之间**可以没有分隔符**（实测 2025年第6期(85) 04 YingJin_Xu 的汉语
+# ⚠️ 「摘要」与正文之间**可以没有分隔符**（实测 2025年第6期(85) 04 Chen_Xu 的汉语
 #    摘要写成 `摘要理想的人工通用智能系统…`，全库仅此 1 处），所以不能一律要求冒号；
 #    但也不能无条件认：`摘要式阅读`/`摘要性…`/`摘要化…` 里的「摘要」只是**构词语素**，
 #    不是标签（全库实测这三个后缀字在标签位置 0 命中，这条纯粹是反例防线；
@@ -107,7 +107,7 @@ _REF_HEADS = {"参考文献", "references", "参考书目", "bibliography", "wor
 # 判据（宁 fail 不误判，绝不凭空造正文）：
 #   ① 空段跳过，最多取 _ABS_LOOKAHEAD 段，且最多往后看 _ABS_LOOKAHEAD*2 段；
 #   ② 只取**含汉字**的段落——语言判据与 _label_body / parse_tail_metadata ① 同一套。
-#      实测 2026年第1期(86) 08 LingXin_Cai 的补充材料是 `摘要：` 后跟**英文**正文
+#      实测 2026年第1期(86) 08 Min_Cai 的补充材料是 `摘要：` 后跟**英文**正文
 #      （那一段在「英文标题及摘要」小标题之下，是英文块的标签），这条专门挡它抢中文槽；
 #   ③ 撞上下一个标签（关键词/摘要/题名/作者/单位/邮箱…）就收手，绝不把关键词吞成摘要；
 #   ④ 每段都要像正文（够长 + 有成句的标点）——节标题（`一、引言`）不是摘要正文。
@@ -142,12 +142,12 @@ def _is_clc_meta_only(text: str) -> bool:
 MIN_BODY_CHARS = 1500
 
 # 英文稿的章节编号：`1. Title` 是节，`1）Title` 是全角右括号的子节。
-# 实测 02 Lu_Jiang：docx 用 `1. Modern Approaches…`，人工成品是
+# 实测 02 Ning_Jiang：docx 用 `1. Modern Approaches…`，人工成品是
 # `\section{Modern Approaches…}`（去掉编号）。识别不出来会让整篇 token 对齐错位——
 # 一个缺失的 \section 能凭空造出 1400 多个假的「实质差异」。
 _HEAD_EN1 = re.compile(r"^\d{1,2}\.\s+(?P<t>\S.*)$")
 _HEAD_EN2 = re.compile(r"^\d{1,2}）\s*(?P<t>\S.*)$")
-# 第 121 条（期 88 / 02 Lu_Jiang 真稿）：英文子标题写 `2) Problems with …`（半角右括号）。
+# 第 121 条（期 88 / 02 Ning_Jiang 真稿）：英文子标题写 `2) Problems with …`（半角右括号）。
 _HEAD_EN2_HALF = re.compile(r"^\d{1,2}\)\s*(?P<t>[A-Z].*)$")
 _HEAD_EN3 = re.compile(r"^\d{1,2}\.\d{1,2}\s+(?P<t>\S.*)$")  # 1.2 Title
 
@@ -176,7 +176,7 @@ _AFFIL_HEAD_RE = re.compile(r"(?:所属单位|单位|affiliation)", re.I)
 # ── 文末英文元数据块的兜底定位（见 locate_tail_block）──────────────────────
 #
 # 实测 16 篇源稿把英文题名/摘要/关键词块写在**文末**，却没有「参考文献」标题
-# （或标题排在英文块**之后**，01 Lili_Lu 就是这样）。旧实现要求 `ref_start >= 0`
+# （或标题排在英文块**之后**，01 Ting_Lu 就是这样）。旧实现要求 `ref_start >= 0`
 # 才去回溯这个块，于是这些稿子的 `tail_start` 永远是 -1：英文题名 11 行、
 # 英文摘要 15 行 fail，连写明的「电子邮箱：」都用不上（README 第 45 条④）。
 #
@@ -192,10 +192,10 @@ _TAIL_LABEL_RE = re.compile(r"^(?:Abstract|Keywords?|Key\s*words?)\s*(?:[:：]|$
 # ── 裸邮箱的行形态判据（见 collect_emails）────────────────────────────────
 #
 # 地址本体沿用 _EMAIL_ANY_RE，免得两处正则各自演化。实测地址的写法有六类：
-#   ① 独占一段 `hooeyrong@163.com`；② 一行两个地址（06 Liwu Rong）；
-#   ③ 作者信息/单位行内（03 Yuanchang_He 的 `作者简介：…563481898@qq.com`）；
-#   ④ 作者名与地址同行（06 Zhixi_Chen `Zhixi Chen  202140007@oamail.gdufs.edu.cn`）；
-#   ⑤ `Name (addr):`（05 Niu_Ju）；⑥ 短行以地址结尾（04 YingJin_Xu 的通信地址行）。
+#   ① 独占一段 `author011@sample.com`；② 一行两个地址（06 Jie Rong）；
+#   ③ 作者信息/单位行内（03 Ming_He 的 `作者简介：…author005@sample.com`）；
+#   ④ 作者名与地址同行（06 Hao_Chen `Hao Chen  author003@sample.edu.cn`）；
+#   ⑤ `Name (addr):`（05 Jing_Niu）；⑥ 短行以地址结尾（04 Chen_Xu 的通信地址行）。
 # 判据本身要求**完整地址**（`local@domain.tld`），所以正文里当符号用的 `@`
 # 无论怎么贴都命不中；范围限制在 collect_emails 里。
 _ADDR = _EMAIL_ANY_RE.pattern
@@ -215,10 +215,10 @@ _PAREN_ADDR_RE = re.compile(
 _AUTHOR_MARK_RE = re.compile(
     r"作者信息|作者简介|通讯作者|通信作者|Corresponding|所属单位|单位|"
     r"[Uu]niversity|College|Institute|Department|大学|学院|研究院|研究所")
-# 地址后常紧跟中文句号（实测 `chi_cr@qq.com。`、`15135215246@163.com。`）：_EMAIL_RE
+# 地址后常紧跟中文句号（实测 `author007@sample.com。`、`author001@sample.com。`）：_EMAIL_RE
 # 的字符类没排除它，值会带脏尾，所以取值一律先剥掉包裹括号与尾标点。
 _TRAIL_PUNCT = "。．.，,；;：:）)】」》>"
-# 模板占位符不是真邮箱（实测 02 Zhiguang_Zhao 的 `xxx@xxx.xxx`）：宁可不填，
+# 模板占位符不是真邮箱（实测 02 Wei_Zhao 的 `xxx@xxx.xxx`）：宁可不填，
 # 也不能把假地址印进 `\myfirstemail`。黑名单**故意比任务要求宽**（连带拒
 # `@example.*` / `@test.*` / `@yourdomain`）——全库 0 命中，宁 fail 不误判。
 _PLACEHOLDER_EMAIL_RE = re.compile(
@@ -232,8 +232,8 @@ _EMAIL_TAIL_FALLBACK = 6
 # 旧实现只认「文末元数据块里带 `单位：` 标签的行」，于是全库 132 份源稿只拿到 1 份
 # （docx_audit 第 44 条：单位 1/132、fail 54）。实测体例有四类：
 #   ① 题目/作者附近独立一行：`浙江大学哲学学院`、`（兰州大学 哲学社会学院，兰州 730000）`
-#   ② 作者与单位同一行：`焦雯雯 中山大学哲学系`、`甘肃政法大学 卢俐利`
-#   ③ 文末中英元数据块（无标签）：`作者信息：周振忠 中山大学逻辑与认知研究所`
+#   ② 作者与单位同一行：`焦敏 中山大学哲学系`、`甘肃政法大学 卢婷`
+#   ③ 文末中英元数据块（无标签）：`作者信息：周明 中山大学逻辑与认知研究所`
 #   ④ 脚注里的作者信息：`作者信息：吴静怡  南京大学哲学学院`、`Meimei Han  College of …`
 #
 # 精度优先（宁可 fail 不误判）：行内出现句号/分号/书名号/网址/日期/编号一律不算；
@@ -284,7 +284,7 @@ _AFFIL_UNIT_END_ANY_RE = re.compile(r"(?:" + _AFFIL_UNIT_TAIL + r")")
 # 职衔**剥离**（单位字段是给排版用的，人工成品里没有职衔），只认下列**学术职衔**：
 #   一级/二级/三级/四级/特聘/客座/兼职/终身/名誉/助理/副 + 教授|研究员|讲师|助教
 #   博士|硕士（生）（研究生）（导师）| 博导 | 硕导
-# **行政职务故意不收**（主任/院长/所长/处长/秘书…）。理由：实测 05 Guoping_Du 的作者简介
+# **行政职务故意不收**（主任/院长/所长/处长/秘书…）。理由：实测 05 Hai_Du 的作者简介
 # 里有 `中国社会科学院智能与逻辑实验室主任`——那个实验室是作者**主持的平台**，
 # 而他的既有单位（开头括号行）是「中国社会科学院大学哲学院 + 中国社会科学院哲学研究所」。
 # 把「主任」也算职衔，就会凭空多出一个单位、把一个本来正确的值改坏。宁 fail 不误判。
@@ -333,7 +333,7 @@ def _clean_affil_line(line: str) -> str:
     因此本缺陷**只可能**让「原来是空串」的行变成非空（收益），不可能把既有值改掉或清掉
     （风险）；全库逐篇对照见 `tests/test_affil_from_bio.py` 的 ③ 组。
     """
-    # 去 BOM / 零宽字符：Word 第一段常带 `\ufeff`（实测 2024_02_Kai_Qu 的脚注）
+    # 去 BOM / 零宽字符：Word 第一段常带 `\ufeff`（实测 2024_02_Ming_Qu 的脚注）
     t = _strip_zero_width(line or "")
     t = re.sub(r"\s+", " ", t.strip())
     if not t or len(t) > 160:
@@ -350,7 +350,7 @@ def _clean_affil_line_strict(t: str) -> str:
     实测量的正例：
       浙江大学哲学学院 / 北京大学外国哲学研究所
       （兰州大学 哲学社会学院，兰州 730000） / 广东第二师范学院马克思主义学院 广州 510303
-      焦雯雯 中山大学哲学系 / 甘肃政法大学 卢俐利 / 作者信息：周振忠 中山大学逻辑与认知研究所
+      焦敏 中山大学哲学系 / 甘肃政法大学 卢婷 / 作者信息：周明 中山大学逻辑与认知研究所
       School of Philosophy and Social Development, Shandong University
       Meimei Han   College of Philosophy, Nankai University
     实测量的反例（必须返回空串）：
@@ -379,7 +379,7 @@ def _clean_affil_line_strict(t: str) -> str:
         return ""
     if _AFFIL_LIST_ITEM_RE.match(t) or t[0].isdigit():
         return ""
-    # 标签先剥（`作者信息：周振忠 中山大学…` 的「作者」不是正文口吻），再判行首词
+    # 标签先剥（`作者信息：周明 中山大学…` 的「作者」不是正文口吻），再判行首词
     t = _AFFIL_LABEL_RE.sub("", t)
     if _AFFIL_NEVER_START_RE.match(t):
         return ""
@@ -402,7 +402,7 @@ def _clean_affil_by_sentence(t: str) -> str:
     ------------------------------------------------------
     源稿脚注里明明写着单位：
 
-        作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。电子邮箱：li-lei@whu.edu.cn
+        作者简介: 李雷，男，湖南常德人，武汉大学哲学系教授。电子邮箱：li-lei@sample.edu.cn
 
     产物却写 `【未识别：第一作者单位，请手工填写】`。根因是 stage ① 的**整行连坐**，
     三道各自独立致命（已实测）：
@@ -427,7 +427,7 @@ def _clean_affil_by_sentence(t: str) -> str:
          （`武汉大学哲学系教授` → `武汉大学哲学系`）；
       ④ 单位名后面**只允许**跟 `_AFFIL_TITLE_TAIL_RE` 的学术职衔（可剥离；行政职务不收，
          理由见该正则处的注释）。后面跟着别的东西就丢这一句——这是「宁 fail 不误判」的闸门：
-         `…哲学系563481898@qq.com`（邮箱）、`…实验室主任`（行政职务）、`…大学任教`（残句）。
+         `…哲学系author005@sample.com`（邮箱）、`…实验室主任`（行政职务）、`…大学任教`（残句）。
     多句命中就按出现顺序用 `\x00` 连接（与 `_clean_affil_cjk` 的多单位口径一致，
     由 `_affil_lines_to_units` 再拆开、剥作者名、按中/英分桶）。
     """
@@ -464,7 +464,7 @@ def _clean_affil_by_sentence(t: str) -> str:
             continue
         if re.search(r"\d{4}\s*年|\d{1,2}\s*月\s*\d{1,2}\s*日", s):
             continue
-        if _EMAIL_ANY_RE.search(s):          # `作者简介：…563481898@qq.com` 不许当单位
+        if _EMAIL_ANY_RE.search(s):          # `作者简介：…author005@sample.com` 不许当单位
             continue
         if not _AFFIL_UNIT_START_RE.match(s):
             continue
@@ -476,7 +476,7 @@ def _clean_affil_by_sentence(t: str) -> str:
             continue
         # 机构名后面紧跟的圆括号：内容**不是**职衔时算机构名的一部分——
         # `中山大学哲学系（珠海）助理教授` → `中山大学哲学系（珠海）`
-        # （人工成品 2024_05_HaoJian_Xiao 写的就是带（珠海）的）。
+        # （人工成品 2024_05_Chen_Xiao 写的就是带（珠海）的）。
         # 内容是职衔时（`武汉大学哲学系（教授）`）留给下一步的职衔剥离。
         m = re.match(r"[（(]([^）)]{1,16})[）)]", s[end:])
         if m and not _AFFIL_TITLE_TAIL_RE.match(m.group(1)):
@@ -525,7 +525,7 @@ def _clean_affil_latin(t: str) -> str:
     words = t.split()
     n = 0
     # 最多剥 2 个词（`Given Family Inst…`）。剥更多会把校名开头的词吃掉——
-    # 实测 2025_05_Wutai_Xia 的 `Shawotar Qinghai Minzu University, Research Center…`
+    # 实测 2025_05_Wenzhi_Xia 的 `Sonam Qinghai Minzu University, Research Center…`
     # 会被剥成 `University, Research Center…`（错的），所以宁可整行放弃。
     while n < 2 and n < len(words) - 1:
         w = words[n].strip(",.&;:。")
@@ -537,7 +537,7 @@ def _clean_affil_latin(t: str) -> str:
             break
         n += 1
     # 只剥**成对**的「名 姓」（≥2 个词）：单剥一个词会把 `Tibet University, Research Center…`
-    # 剥成 `University, Research Center…`（实测 2025_05_Wutai_Xia），宁可整行放弃。
+    # 剥成 `University, Research Center…`（实测 2025_05_Wenzhi_Xia），宁可整行放弃。
     if n >= 2:
         rest = " ".join(words[n:])
         if rest and _AFFIL_WORD_RE.search(rest):
@@ -552,13 +552,13 @@ def _clean_affil_latin(t: str) -> str:
 def _affil_same_unit(one: str, bucket: list[str]) -> bool:
     """同一单位的不同**空白写法**算同一个单位。
 
-    案例 75 的连带修正：实测 2025_04_Yanjing_Zhang 的开头括号行写
+    案例 75 的连带修正：实测 2025_04_Min_Zhang 的开头括号行写
     `（河北大学 哲学与社会学学院，河北 保定 071002）`（Word 两个 run，读出来带空格），
     文末作者简介写 `河北大学哲学与社会学学院`（不带空格）。单纯放宽判据会让新解出来的
     第二条并进列表，`\\myfirstaffiliation` 就印出**两行同一个单位**——把「改前非空」的值改坏。
 
     ⚠️ 只在**同一次调用内**按空白归一（`_affil_lines_to_units` 的桶）；跨调用（`collect_affiliations`
-    的 `extend`）仍然是精确匹配——那是有意为之：`2024_02_Kai_Qu` 开头行与脚注行本就
+    的 `extend`）仍然是精确匹配——那是有意为之：`2024_02_Ming_Qu` 开头行与脚注行本就
     重复印着同一个单位，那是**历史行为**，本轮不许顺手改掉（改了就是一个「改前非空后变了」）。
     """
     key = re.sub(r"\s+", "", one)
@@ -613,7 +613,7 @@ def _affil_block_hits(lines: list[str], min_run: int = 2) -> list[str]:
     """从「连续若干行都是单位行/人名行/邮箱行」的块里取单位。
 
     实测两类来路：① 英文摘要之后的作者信息块
-    （2022_06A_Zhaoqing_Xu：`Xu Department of … / 邮箱 / Ouyang Department of … / 邮箱`）；
+    （2022_06A_Zhaoxing_Xu：`Xu Department of … / 邮箱 / Ouyang Department of … / 邮箱`）；
     ② 脚注里的作者信息（`Meimei Han  College of … / 邮箱 / …`）。
     正文脚注里顺口提到某个大学不会形成这样的连续块，因此不会被误收。
     """
@@ -628,7 +628,7 @@ def _affil_block_hits(lines: list[str], min_run: int = 2) -> list[str]:
         run_hits, run_len = [], 0
 
     for ln in lines:
-        ln = ln.strip()          # Word 里邮箱段常以全角空格收尾/起头（实测 Zhaoqing_Xu）
+        ln = ln.strip()          # Word 里邮箱段常以全角空格收尾/起头（实测 Zhaoxing_Xu）
         got = _clean_affil_line(ln)
         if got or _looks_like_name_line(ln) or _EMAIL_ANY_RE.fullmatch(ln.rstrip(".")):
             run_len += 1
@@ -695,7 +695,7 @@ def collect_affiliations(
 
 
 def _norm_email(tok: str) -> str:
-    """剥掉地址外包裹的括号与尾随标点（实测 `chi_cr@qq.com。`、`<taho@…>`）。"""
+    """剥掉地址外包裹的括号与尾随标点（实测 `author007@sample.com。`、`<taho@…>`）。"""
     return tok.strip().strip("<>（）()【】[]").rstrip(_TRAIL_PUNCT)
 
 
@@ -733,7 +733,7 @@ def _emails_in_text(text: str) -> list[str]:
         if m:
             found.append((off + m.start("e"), _norm_email(m.group("e"))))
             continue
-        # ⑥ 短行以地址结尾（实测 04 YingJin_Xu：`Shanghai 200433, P. R. China yjxu@…`）。
+        # ⑥ 短行以地址结尾（实测 04 Chen_Xu：`Shanghai 200433, P. R. China yjxu@…`）。
         # 地址前出现句末标点说明这是正文句子，不收。
         if len(line) <= 80:
             m = re.search(r"(?P<e>" + _ADDR + r")[\s\u3000]*[。.]?$", line)
@@ -752,7 +752,7 @@ def collect_emails(plains: list[str], tail_start: int, fn_texts: list[str]) -> l
     ⚠️ 只扫这三段是**结构性防护**，不要为了多救几行放宽：
       · 参考文献区（ref_start..tail_start）与正文中段不在任何一段里——01 Meimei_Han
         正文 9 处「现实世界 @」这种当符号用的 @ 因此不可达；
-      · 表格（w:tbl）在 parse_docx 里就被滤掉、从不进 plains——04 Bo_Xianyu 表格
+      · 表格（w:tbl）在 parse_docx 里就被滤掉、从不进 plains——04 Ming_Xianyu 表格
         单元格里的审稿人邮箱因此不可达；
       · 伪脚注（`w:type` = `separator` / `continuationSeparator`）由 read_footnotes 丢掉；
         而**真实的 `w:id="0"` 脚注会读到**（本库 23 篇是这种，正文确实引用它）——
@@ -783,7 +783,7 @@ def collect_emails(plains: list[str], tail_start: int, fn_texts: list[str]) -> l
 # （`张三某某大学…`）、无标签英文块（`Zhang San  College of …`）只有在
 # 姓名命中已知名单时才敢切分——不在名单里就整条不解析（不猜）。
 def _known_cn_authors(author: str) -> list[str]:
-    """中文作者串 → 姓名列表（`陈  波` 这类单字片段并回一个名字）。"""
+    """中文作者串 → 姓名列表（`陈  松` 这类单字片段并回一个名字）。"""
     parts = [x for x in re.split(r"[\s、,，·]+", author or "") if x]
     out: list[str] = []
     i = 0
@@ -932,7 +932,7 @@ def _author_row_name(t: str) -> str:
     """英文作者行里的姓名部分；判不出返回 ""（不猜）。
 
     覆盖三种实测形态：
-      · 单段姓名 → 原样（`Alex Sample`、`Mei Lin   Wei Chen`；
+      · 单段姓名 → 原样（`Alex Sample`、`Mei Lin   Jie Chen`；
         连写的多作者串交给 build.py 的 `_split_en_names_by_count` 按作者数等分）；
       · 多段且**每段都是姓名** → 用**空格**连接（85/05 `Alex Sample 1, Mei Lin 2`）：
         这与仓内既有的连写作者串形态一致（72/04、83/05），build 的
@@ -1034,16 +1034,16 @@ def head_title_index(lines: list[str]) -> int:
 def _label_body(lines: list[str], i: int, label_re) -> str:
     """元数据标签的正文：同一段冒号之后的内容；标签**独占一段**时取下一段。
 
-    ⚠️ 实测英文元数据常把标签单独写一段（2024_07_Wenwen_Jiao 的 `Abstract`、
-    2025_06_YingJin_Xu 的 `Abstract` 与 `Keywords:`）。旧实现只取 `label_re.sub`
+    ⚠️ 实测英文元数据常把标签单独写一段（2024_07_Min_Jiao 的 `Abstract`、
+    2025_06_Chen_Xu 的 `Abstract` 与 `Keywords:`）。旧实现只取 `label_re.sub`
     的结果，正文就丢了，`\\myabstractEN` 退回模板占位符 `Abstract`。
     判据与 parse_tail_metadata ① 同一套：下一段要**同语言**（英文标签 → 不含汉字）
     且不是另一个标签。
 
     ⚠️ 中文标签（`摘要`/`关键词`）**不**向下补：后面跟英文段的是「中英两套摘要」的
-    另一套（实测 2026_01_LingXin_Cai 的补充材料），补进来就把英文写进 `\\myabstractCN`
+    另一套（实测 2026_01_Min_Cai 的补充材料），补进来就把英文写进 `\\myabstractCN`
     了——宁 fail 不误判。
-    段首的 BOM（U+FEFF，实测 2024_02_Kai_Qu 的英文摘要段）不是正文，去掉。
+    段首的 BOM（U+FEFF，实测 2024_02_Ming_Qu 的英文摘要段）不是正文，去掉。
     """
     body = label_re.sub("", lines[i])
     if body.strip() or i + 1 >= len(lines) or _has_cjk(lines[i]):
@@ -1068,7 +1068,7 @@ def _abs_body_cn(lines: list[str], i: int) -> str:
     ⚠️ 标签与正文同段时**逐字节保持改动前的取值**（就是 `_label_body` 对中文标签的
     原样输出：`_ABS_RE.sub` 之后不做 strip，尾随空白也不动）——普查里那 68 篇
     `abstract_cn=ok` 全是这条路径的既成事实，动一个字节都可能翻状态。
-    只有**新放宽**的段首缩进路径才追加「正文必须含汉字」：实测 10 Min Xu 的
+    只有**新放宽**的段首缩进路径才追加「正文必须含汉字」：实测 10 Ming Xu 的
     `摘要： The logical education…`（无缩进、正文是英文）现在就算中文摘要，
     缩进版不能因为放宽形态而把英文正文写进 `\\myabstractCN`（宁 fail 不误判）。
     """
@@ -1179,13 +1179,13 @@ def locate_tail_block(plains: list[str], ref_start: int) -> int:
 def _tail_abstract_cn(lines: list[str], ref_start: int) -> str:
     """**参考文献区之后**的中文摘要；没有则返回 ""（正文全英文、中文摘要另附文末的稿子）。
 
-    实测 7 篇：2023年第6期(73) 06 Xiaoqi_Zhang ×2、2025年第6期(85) 06 Jin_Gan、
-    2026年第3期(88) 06 Zhixi_Chen ×3、2024年第6期(79) 01 Wenfang_Wang——它们的
+    实测 7 篇：2023年第6期(73) 06 Lei_Zhang ×2、2025年第6期(85) 06 Ning_Gan、
+    2026年第3期(88) 06 Hao_Chen ×3、2024年第6期(79) 01 Xue_Wang——它们的
     `摘    要` / `摘  要` / `摘要：…` 都不在开头 META_SCAN 段之内，而文末那条路径
     （parse_tail_metadata）**只看非中文标签**（见该函数 ①），于是中文摘要一直 fail。
 
     这是同一个标签形态判据的**第二处位置**，不是新判据：段首标签 + 正文必须含汉字
-    （所以文末的英文块不会被误当中文摘要，实测 LingXin_Cai 那种 `摘要：`+英文 也挡住）。
+    （所以文末的英文块不会被误当中文摘要，实测 Min_Cai 那种 `摘要：`+英文 也挡住）。
     只在开头那套**空手而归**时才跑（调用处判断），只补空槽、绝不覆盖已有取值。
     """
     lo = ref_start + 1 if ref_start >= 0 else max(0, len(lines) - _TAIL_BLOCK_SCAN)
@@ -1238,7 +1238,7 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
                 back.clear()
                 continue
             back.append((i, t))
-        # ⚠️ 作者行下面常紧跟一行**括号包起来的英文单位**（实测 05 Guoping_Du：
+        # ⚠️ 作者行下面常紧跟一行**括号包起来的英文单位**（实测 05 Hai_Du：
         #    `Du Guo-ping` / `(Institute of Philosophy, …)`）。它既不像人名也不是题名；
         #    旧逻辑只看「像不像人名」，于是把单位印成了 `\mytitleEN`。
         # B-268 S1：除括号单位行外，**裸邮箱行**（74/02、87/09）与**纯单位行**
@@ -1286,7 +1286,7 @@ def parse_tail_metadata(lines: list[str], start: int) -> dict:
                 continue
             if _EMAIL_RE.search(t):
                 continue
-            # ⚠️ 单位标签后面常紧跟同一份「作者简介」的**其它**标签行（实测 05 Guoping_Du：
+            # ⚠️ 单位标签后面常紧跟同一份「作者简介」的**其它**标签行（实测 05 Hai_Du：
             #    `联系电话：…` / `通信地址：…` / `邮政编码：…`）。旧逻辑把它们全当单位，
             #    `\myaffiliation` 会印成电话号码和家庭住址。带标签的行只认「单位/机构/
             #    affiliation」这一种；没有标签的行（单位名本身）照收。

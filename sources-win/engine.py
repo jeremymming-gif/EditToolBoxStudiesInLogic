@@ -255,7 +255,7 @@ def bibdb_report_files(notes_root: str | None) -> list[dict]:
 def infer_issue_and_slug(raw_path: str) -> tuple[str, str]:
     """从 bib 路径推断「来源期」与「篇目录名」（认不出返回两个空串，**绝不猜**）。
 
-    例：`…/2026年第2期(87)/02 Kun_Xing/reference.bib` → (`2026年第2期(87)`, `02 Kun_Xing`)。
+    例：`…/2026年第2期(87)/02 Hai_Xing/reference.bib` → (`2026年第2期(87)`, `02 Hai_Xing`)。
     判据与引擎 `Engine/slcn/paths.py: ISSUE_RE`、`Engine/slcn/bibdb.py` 的作者目录
     正则**同一口径**（期 = `20xx年第…`；篇 = 两位数字 + 空格/下划线/短横）。
     为什么故意不猜：来源是库里的**审计凭据**，写错的来源比空来源更糟

@@ -51,11 +51,11 @@ r"""批量实例测试驱动 `tools/batch_case_test.py`（Phase1，2026-10-18，
 manifest（`--manifest file.json`，可选；缺省用内置期 87/90 清单，源文件自动发现）：
 
     {"cases": [
-      {"key": "88-01", "issue": "88", "author": "Tuomo_Aho",
-       "author_dir": "Tuomo_Aho", "workspace": "/abs/path/macCaseTest88",
-       "source": "Tuomo_Aho/xxx.docx",        # 省略=在工作区按规则自动发现
+      {"key": "88-01", "issue": "88", "author": "Avery_Blake",
+       "author_dir": "Avery_Blake", "workspace": "/abs/path/macCaseTest88",
+       "source": "Avery_Blake/xxx.docx",        # 省略=在工作区按规则自动发现
        "metadata": "example puzzle.tex",       # 可选：附加源（convert.py --metadata）
-       "manual_dir": "01 Tuomo_Aho",          # 相对稿件仓期目录；省略=不做人工对照
+       "manual_dir": "01 Avery_Blake",          # 相对稿件仓期目录；省略=不做人工对照
        "manual_bib": "reference.bib", "extra_args": []}
     ]}
 
@@ -323,25 +323,25 @@ def default_cases() -> list[CaseSpec]:
         cases.append(CaseSpec(key=f"90-{no}", issue="90", author=author,
                               author_dir=author, manual_dir=manual_dir, **extra))
     for sub, (no, author) in enumerate((
-        ("02", "Kun_Xing"), ("03", "Wenjing_Du"), ("04", "Fayang_Ye"),
-        ("05", "Pengfei_Song"), ("06", "Ruixue_Tang"), ("07", "Guangwu_Feng"),
-        ("08", "Ran_Ren"), ("09", "Runcheng_Liang"), ("10", "Wei_Chen"),
+        ("02", "Hai_Xing"), ("03", "Juan_Du"), ("04", "Feng_Ye"),
+        ("05", "Tao_Song"), ("06", "Xiaomei_Tang"), ("07", "Hai_Feng"),
+        ("08", "Jing_Ren"), ("09", "Chen_Liang"), ("10", "Jie_Chen"),
     ), start=1):
         manual_bib = "reference.bib"
-        if author in ("Ruixue_Tang", "Runcheng_Liang"):
+        if author in ("Xiaomei_Tang", "Chen_Liang"):
             manual_bib = f"{author}.bib"   # 期 87 人工成品里这两份 bib 用作者名
         cases.append(CaseSpec(key=f"87-{sub}", issue="87", author=author,
                               author_dir=str(sub), manual_dir=f"{no} {author}",
                               manual_bib=manual_bib))
     # 期 88（7 篇英文：Word/LaTeX 混合；源文件来自历史用例，映射见 /tmp/case88_TEST_REPORT.md）
     for no, author, source in (
-        ("01", "Tuomo_Aho", "original/CONSEQ2026FINAL.docx"),
-        ("02", "Lu_Jiang", "lujiang/Ockham Semantics Submission Studies in Logic revised version May 25 2026 source file.docx"),
-        ("03", "Zhentao_Zhang", "origin/main.tex"),
-        ("04", "Chen_Liu", "Chenliu/SLEN_template.tex"),
-        ("05", "YouAn_Su", "youansu/main.tex"),
-        ("06", "Zhixi_Chen", "zhixichen/Revised Manuscript 5.23.docx"),
-        ("07", "Hu_Liu", "huliu/Approved+2025+Williamson+Interview.docx"),
+        ("01", "Avery_Blake", "original/CONSEQ2026FINAL.docx"),
+        ("02", "Ning_Jiang", "lujiang/Ockham Semantics Submission Studies in Logic revised version May 25 2026 source file.docx"),
+        ("03", "Tao_Zhang", "origin/main.tex"),
+        ("04", "Yang_Liu", "Chenliu/SLEN_template.tex"),
+        ("05", "Chen_Su", "youansu/main.tex"),
+        ("06", "Hao_Chen", "zhixichen/Revised Manuscript 5.23.docx"),
+        ("07", "Bo_Liu", "huliu/Approved+2025+Williamson+Interview.docx"),
     ):
         cases.append(CaseSpec(key=f"88-{no}", issue="88", author=author,
                               author_dir=author, manual_dir=f"{no} {author}",
@@ -350,13 +350,13 @@ def default_cases() -> list[CaseSpec]:
     # 批68 B-018：89-05 的 Desktop 复测副本缺稿件根 `reference.bib`（引擎父目录搜索在真实
     # 稿件仓布局正常，批67 定性），复测 manifest 显式指定稿件仓人工 bib（**只读**；
     # sha256 d201436d5e7027debe84ab0ae837c1ec6e4d0f4af0376fa606302a11e9d9f5ba，3917B/15 条）。
-    _bib89_05 = MANUSCRIPTS_DEFAULT / "2026年第4期(89)" / "05 Zhen_Liang" / "reference.bib"
+    _bib89_05 = MANUSCRIPTS_DEFAULT / "2026年第4期(89)" / "05 Jing_Liang" / "reference.bib"
     for no, author, source in (
-        ("01", "Fenrong_Liu", "Fenrong_Liu/main_CN.tex"),
-        ("02", "Xiaoxuan_Fu", "偏好逻辑特刊/SLCN_template.tex"),
-        ("05", "Zhen_Liang", "original/社群动态偏好逻辑的公理化研究（修改版）.tex"),
-        ("06", "Dazhu_Li", "层级选举模型中的偏好聚合及其规范性质分析/submission-final submssion.tex"),
-        ("07", "Yiyan_Wang", "(Latex版)_逻辑学研究_从个体偏好到集体理性__revision_1_/WANGYIYAN.tex"),
+        ("01", "Fang_Liu", "Fang_Liu/main_CN.tex"),
+        ("02", "Chen_Fu", "偏好逻辑特刊/SLCN_template.tex"),
+        ("05", "Jing_Liang", "original/社群动态偏好逻辑的公理化研究（修改版）.tex"),
+        ("06", "Delin_Li", "层级选举模型中的偏好聚合及其规范性质分析/submission-final submssion.tex"),
+        ("07", "Fang_Wang", "(Latex版)_逻辑学研究_从个体偏好到集体理性__revision_1_/WANGYIYAN.tex"),
     ):
         extra = ("--bib", str(_bib89_05)) if no == "05" and _bib89_05.is_file() else ()
         cases.append(CaseSpec(key=f"89-{no}", issue="89", author=author,
@@ -365,23 +365,23 @@ def default_cases() -> list[CaseSpec]:
     # 期 86（第四十四批新增；Desktop macCaseTest86 子案例 1..10 ↔ 稿件仓 01..10，
     # 映射按人工成品 PDF 标题核对；4/5 为 LaTeX，5 带 SLCN.sty+bib）
     for no, author, source in (
-        ("01", "Yu_Chen", "1/广义论证理论视域下视频公益广告的多模态说服传播【修改稿3】.docx"),
-        ("02", "Han_Mei", "2/以广义论证为视角解读《孙子兵法》战略三篇论证 - 洁净修改稿.docx"),
-        ("03", "Xiaohua_Wu", "3/(修改定稿1）广义论证视域下苗族“蒙脸”占卜仪式的说理研究——基于“问亡灵”仪轨的“细描”.docx"),
-        ("04", "Zuojun_Xiong", "4/SL-Logic of Secrets and Exclusive Knowledge .tex"),
-        ("05", "WeiNong_Li", "5/qiudejun0724.tex"),
-        ("06", "Zhenzhong_Zhou", "6/真理论的目标、结构与方法 - 稿件作者校对.docx"),
-        ("07", "Long_Chen", "7/返修版（无修订标记）-驳斥逻辑多元论—基于逻辑中隐式与显式立场.docx"),
-        ("08", "LingXin_Cai", "8/密涅瓦猫头鹰问题的困境与自然规范性出路 20260114.docx"),
-        ("09", "Zhien_Bei", "9/《命题的优先性》述评（最新修改版）.docx"),
-        ("10", "Qiqi_Wang", "10/专访蒂莫西·威廉姆森教授（校正0916）.docx"),
+        ("01", "Fan_Yang", "1/广义论证理论视域下视频公益广告的多模态说服传播【修改稿3】.docx"),
+        ("02", "Hanying_Mei", "2/以广义论证为视角解读《孙子兵法》战略三篇论证 - 洁净修改稿.docx"),
+        ("03", "Xiaowan_Wu", "3/(修改定稿1）广义论证视域下苗族“蒙脸”占卜仪式的说理研究——基于“问亡灵”仪轨的“细描”.docx"),
+        ("04", "Zuoliang_Xiong", "4/SL-Logic of Secrets and Exclusive Knowledge .tex"),
+        ("05", "Wei_Qiu", "5/qiudejun0724.tex"),
+        ("06", "Ming_Zhou", "6/真理论的目标、结构与方法 - 稿件作者校对.docx"),
+        ("07", "Qiang_Chen", "7/返修版（无修订标记）-驳斥逻辑多元论—基于逻辑中隐式与显式立场.docx"),
+        ("08", "Min_Cai", "8/密涅瓦猫头鹰问题的困境与自然规范性出路 20260114.docx"),
+        ("09", "Zhixin_Bei", "9/《命题的优先性》述评（最新修改版）.docx"),
+        ("10", "Min_Wang", "10/专访蒂莫西·威廉姆森教授（校正0916）.docx"),
     ):
         idx = str(int(no))
         manual_bib = "reference.bib"
         if no == "05":
-            manual_bib = "WeiNong_Li.bib"
+            manual_bib = "Wei_Qiu.bib"
         elif no == "08":
-            manual_bib = "LingXin_Cai.bib"
+            manual_bib = "Min_Cai.bib"
         cases.append(CaseSpec(key=f"86-{no}", issue="86", author=author,
                               author_dir=idx, manual_dir=f"{no} {author}",
                               source=source, manual_bib=manual_bib))
@@ -3337,10 +3337,10 @@ def run_self_test() -> int:
           and [c.issue for c in dc[26:31]] == ["89"] * 5
           and [c.issue for c in dc[31:]] == ["86"] * 10
           and len(dc) == 41)
-    check("期 87 子案例编号 ↔ 作者映射（1=Kun_Xing … 9=Wei_Chen）",
+    check("期 87 子案例编号 ↔ 作者映射（1=Hai_Xing … 9=Jie_Chen）",
           [c.author for c in default_cases() if c.issue == "87"] ==
-          ["Kun_Xing", "Wenjing_Du", "Fayang_Ye", "Pengfei_Song", "Ruixue_Tang",
-           "Guangwu_Feng", "Ran_Ren", "Runcheng_Liang", "Wei_Chen"])
+          ["Hai_Xing", "Juan_Du", "Feng_Ye", "Tao_Song", "Xiaomei_Tang",
+           "Hai_Feng", "Jing_Ren", "Chen_Liang", "Jie_Chen"])
     check("已知缺口标注不 suppress：87-5 NO_CITES 判 P0 且标已知",
           is_known("87-5", "NO_CITES") is not None
           and any(f.level == "P0" and f.code == "NO_CITES" for f in grade_case(
@@ -3615,7 +3615,7 @@ def run_self_test() -> int:
           and "LNCS 体例感知" in _rep and "cite_merged" in _rep
           and "议论性脚注不产源引用键" in _rep)
     check("输出名 sanitize / sha 判定 / 零付费判定（失败案例不算违规）",
-          sanitize_output_name("Liwu Rong") == "Liwu_Rong"
+          sanitize_output_name("Jie Rong") == "Jie_Rong"
           and sanitize_output_name("Lei_Li") == "Lei_Li"
           and sanitize_output_name("1st Case") == "A_1st_Case"
           and sha_verdict(0, True, True, {"tex": "a", "bib": "b"}, {"tex": "a", "bib": "b"}) is True

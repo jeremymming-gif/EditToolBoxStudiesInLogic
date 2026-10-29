@@ -3442,7 +3442,7 @@ def _select_bib(author_dir: str, slug: str) -> tuple[str | None, str, str]:
     判据优先级（前三级是**终稿 tex 自己指定**的那份，最可信）：
       1. `tex-ref`：tex 引用的文件名在作者目录里一字不差存在；
       2. `tex-ref-basename` / `tex-ref-case`：大小写/相对路径差异；
-      3. `fallback-author`：bib 名与作者目录同名（老期 `Wenzhong Ma.bib` 这种）；
+      3. `fallback-author`：bib 名与作者目录同名（老期 `Jie Ma.bib` 这种）；
       4. `fallback-only` / `fallback-reference`：目录里只有一份 / 叫 `reference.bib`。
     找不到返回 `(None, 原因, "")`——**不猜**，让调用方如实跳过。
     """
@@ -3548,7 +3548,7 @@ def read_bib_text(path: str) -> tuple[str, str]:
     """读一份 `.bib` 的文本（UTF-8），返回 `(文本, 告警)`。
 
     往期 bib 里存在**源文件本身带 U+FFFD 替换字符**的文件（2026年第4期(89)/01
-    Fenrong_Liu 的 reference.bib 就有 2 个）——它不是编码错误，但字段确实可能不完整，
+    Fang_Liu 的 reference.bib 就有 2 个）——它不是编码错误，但字段确实可能不完整，
     所以如实告警、照常导入。真正非 UTF-8 的文件用替换字符读入并告警（不因一个坏字节
     丢掉整份参考文献）。
     """

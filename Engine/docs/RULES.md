@@ -588,7 +588,7 @@ undefined citation 0、参考文献区生成、20 页 = 人工 20 页）。
    `normalize_bib(strip_urls=True)` 里调用（`slcn/build.py` ⑦）；Word 通道的 bib 由
    `docxsource.refs_to_bib()` / `footnotes.entry_to_bib()` 直接渲染，不经过
    `normalize_bib()`，所以 `build_docx()` 在 `move_book_editions()` 之后单独调用文本级
-   清洗（实测 LingXin_Cai 86-08 的 1 处 doi.org 就是从 Word 通道漏的）。
+   清洗（实测 Min_Cai 86-08 的 1 处 doi.org 就是从 Word 通道漏的）。
 2. **模板兜底**：`SLCN-MIX.sty`（中文）与 `SLEN.sty`（英文）的 `\AtEveryBibitem`
    对正式类型 `\clearfield{url}\clearfield{doi}`（SEP 词条例外）；`online`/
    `unpublished` 驱动印网址，`misc` 驱动只印 `author`。作者拿本刊模板自行编译也成立。
@@ -778,11 +778,11 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 
 口径：2026-10-13 用当前代码重测（`cd Engine && python3 corpus.py`，DSH 自带 Python 3.12），
 数字从 `out/corpus/corpus.csv` 复算。⚠️ **可复现性**：连跑三次，Word 中位分别 88.46% / 88.48% / 88.53%，
-差异**全部**来自 `05 Yang_Hu` 一篇（引擎自身的非确定性，根因见 `HANDOFF.md` 第九节：`id()` 去重遇 GC）。
+差异**全部**来自 `05 Chuan_Hu` 一篇（引擎自身的非确定性，根因见 `HANDOFF.md` 第九节：`id()` 去重遇 GC）。
 所以回归比对请看**逐篇明细**，别只看中位数。
 
 > **2026-10-18 更新（第 125 条）**：这条非确定性已修——`slcn/docxxml.py` 的元素去重从 `id()`
-> 改为**元素身份**（集合持有引用），且只登记真正处理过的 `<m:oMath>`；`05 Yang_Hu` 的公式段
+> 改为**元素身份**（集合持有引用），且只登记真正处理过的 `<m:oMath>`；`05 Chuan_Hu` 的公式段
 > 现在稳定为 276（旧实现随机丢到 245–254）。现在同输入连跑两次 `corpus.csv` 应**逐字节一致**；
 > 若再次不一致，按回归处理（根因另找，不要再把「已知抖动」当免责理由）。
 

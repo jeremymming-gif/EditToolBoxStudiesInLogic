@@ -56,10 +56,10 @@ def make_issue(root: str) -> None:
     tail_en = _CT.enContentEnd[1:] if _CT.enContentEnd.startswith("\n") else _CT.enContentEnd
     with open(os.path.join(toc_dir, "contents.tex"), "w", encoding="utf-8") as fh:
         fh.write(_CT.enContentHead + "\n\n%中间主体\n\n" + tail_en)
-    a = os.path.join(root, "01 Lu_Wang")
+    a = os.path.join(root, "01 Ning_Wang")
     os.makedirs(a, exist_ok=True)
     # 形态照真实稿件抄：**关键词行与取值行分开**（取值在关键词行的下一行，或同一行的花括号里）
-    with open(os.path.join(a, "Lu_Wang.tex"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(a, "Ning_Wang.tex"), "w", encoding="utf-8") as fh:
         fh.write(
             "\\documentclass[b5paper,10.5t,onecolumn,twoside]{ctexart}\n"
             "\\newcommand{\\myvolnumber}{19}      % 输入卷号\n"
@@ -77,7 +77,7 @@ def make_issue(root: str) -> None:
             "{\\kaishu 陆王}\n"
             "\\renewcommand{\\mysecondauthor}{\\kaishu 王二}  % 若需要，请输入第二作者姓名，并取消该行注释\n"
             "\\renewcommand{\\mythirdauthor}{}  % 若需要，请输入第三作者姓名，并取消该行注释\n")
-    with open(os.path.join(a, "Lu_Wang.sty"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(a, "Ning_Wang.sty"), "w", encoding="utf-8") as fh:
         fh.write("% 全文行间距 13\n")
     # 没有 pdf：走「有 tex 无 pdf」的分支
 
@@ -88,7 +88,7 @@ def make_report(root: str, *, none_title: bool = False) -> str:
     title = "None" if none_title else "论示例悖论及其解决方案——从扩展的X标准看"
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(
-            "Lu_Wang\r\n"
+            "Ning_Wang\r\n"
             "卷号：19  期号：5  年份：2026\r\n"
             "起始页码：1  终止页码：16  页数：16\r\n"
             "字号 10.5t\r\n"
@@ -140,7 +140,7 @@ check("(a) json 用 Swift 的排版：`\" : \"` + 两空格缩进 + 键排序",
 check("(a) json 里**空字段省略**（不写 null）——与 Swift 的 encodeIfPresent 一致",
       "null" not in raw_json and '"thirdAuthorChinese"' not in raw_json)
 check("(a) json 可被正常解析且字段齐全",
-      json.loads(raw_json)["articles"][0]["folder"] == "01 Lu_Wang")
+      json.loads(raw_json)["articles"][0]["folder"] == "01 Ning_Wang")
 
 print("\n── (b) 三处「上游会出错」的修正 ──")
 # ① 第一作者：关键词在文件末尾（下一行不存在）→ 留空不崩
@@ -158,10 +158,10 @@ print("\n── (a) 生成目录：条目与拼装 ──")
 report = make_report(root)
 lines = TOC.python_readlines(open(report, encoding="utf-8").read())
 check("(a) split_articles：按「起始页码」切块，文件夹名取往前第 2 行",
-      TOC.split_articles(lines)[0][0] == "Lu_Wang")
+      TOC.split_articles(lines)[0][0] == "Ning_Wang")
 check("(a) parse_issue_info：从同一行拆出卷/期/年",
       TOC.parse_issue_info(lines) == ("19", "5", "2026"))
-entry = TOC.parse_entry("Lu_Wang", TOC.split_articles(lines)[0][1])
+entry = TOC.parse_entry("Ning_Wang", TOC.split_articles(lines)[0][1])
 check("(a) 条目页码是**去前导零的整数**字符串", entry.page == "1", entry.page)
 check("(a) 中文标题洗掉 LaTeX 命令、去掉花括号",
       "{" not in entry.chineseTitle and "\\" not in entry.chineseTitle, entry.chineseTitle)
@@ -247,9 +247,9 @@ check("(b) 报告里标题是「None」→ 日志提醒回「检查tex信息」�
 
 # 栏目：勾选的文章带缩进前缀
 settings2 = TOC.TocSettings(columnKind="专栏", columnName="认知悖论研究",
-                            columnHost="郑建国", columnArticles=["01 Lu_Wang"])
+                            columnHost="郑建国", columnArticles=["01 Ning_Wang"])
 check("(a) TocSettings.contains：带序号的设置也能匹配报告的短名",
-      settings2.contains("Lu_Wang") and not settings2.contains("别人"))
+      settings2.contains("Ning_Wang") and not settings2.contains("别人"))
 check("(a) 栏目名：中文「专栏：X」、英文「Column: X」",
       settings2.chinese_column_title == "专栏：认知悖论研究"
       and settings2.english_column_title == "Column: 认知悖论研究")
@@ -275,18 +275,18 @@ alt = tempfile.mkdtemp(prefix="slcn_ic_alt_")
 make_issue(alt)
 # ① 非标准 000 目录名：`000 目录` 也不许被当成一篇文章（从前只认 article_name=="Contents"）
 os.makedirs(os.path.join(alt, "000 目录"), exist_ok=True)
-# ② tex 名与目录名只差下划线（实测：2024年第2期 03 Tianwen_Xu 里是 `TianwenXu.tex`）
-_a2 = os.path.join(alt, "02 Tianwen_Xu")
+# ② tex 名与目录名只差下划线（实测：2024年第2期 03 Ming_Xu 里是 `MingXu.tex`）
+_a2 = os.path.join(alt, "02 Ming_Xu")
 os.makedirs(_a2, exist_ok=True)
-shutil.copy(os.path.join(alt, "01 Lu_Wang", "Lu_Wang.tex"),
-            os.path.join(_a2, "TianwenXu.tex"))
+shutil.copy(os.path.join(alt, "01 Ning_Wang", "Ning_Wang.tex"),
+            os.path.join(_a2, "MingXu.tex"))
 _rep_alt = IC.process_folders(alt, write=False)
 _names_alt = [a.folderName for a in _rep_alt.articles]
 check("(a) `000 目录`（非标准名）与 `000 Table of Contents` 都不被当成文章",
       "目录" not in _names_alt and "Contents" not in _names_alt, f"{_names_alt}")
-check("(a) tex 名只差下划线（`TianwenXu.tex`）→ 宽松匹配后字段照常读到（与 compileall 同一口径）",
-      "Tianwen_Xu" in _names_alt
-      and any(a.folderName == "Tianwen_Xu" and a.hasTeX and a.volume == "19"
+check("(a) tex 名只差下划线（`MingXu.tex`）→ 宽松匹配后字段照常读到（与 compileall 同一口径）",
+      "Ming_Xu" in _names_alt
+      and any(a.folderName == "Ming_Xu" and a.hasTeX and a.volume == "19"
               for a in _rep_alt.articles),
       f"{[(a.folderName, a.hasTeX, a.volume) for a in _rep_alt.articles]}")
 shutil.rmtree(alt, ignore_errors=True)
@@ -642,21 +642,21 @@ check("(g7) clean_author_en：去掉 `\\Letter` 类通讯作者标记（英文�
       TOC.clean_author_en("\\Letter}$") == "" and TOC.clean_author_en("$^\\text{\\Letter}$") == "",
       repr(TOC.clean_author_en("$^\\text{\\Letter}$")))
 check("(g8) 反例：clean_author_en 保留正常英文名（含变音字母）",
-      TOC.clean_author_en("Tuomo Aho") == "Tuomo Aho"
+      TOC.clean_author_en("Avery Blake") == "Avery Blake"
       and TOC.clean_author_en("Mikko Yrjönsuuri") == "Mikko Yrjönsuuri")
 _dup_block = ["起始页码：1  终止页码：4  页数：4\r\n",
               "中文标题: 测试\n",
               "第一作者中文: 甲\n",
               "第一作者中文: \\kaishu 甲乙\n"]
-_dup = TOC.parse_entry("Zhien_Bei", _dup_block)
+_dup = TOC.parse_entry("Zhixin_Bei", _dup_block)
 check("(g9) 同角色两条作者：**后者优先**（「甲，甲乙」→「甲乙」）",
       _dup.chineseAuthors == ["甲乙"], f"{_dup.chineseAuthors}")
 _two = TOC.parse_entry("X", ["第一作者中文: 甲\n", "第二作者中文: 乙\n"])
 check("(g10) 反例：不同角色的作者都保留、顺序为第一→第二",
       _two.chineseAuthors == ["甲", "乙"], f"{_two.chineseAuthors}")
-_letter = TOC.parse_entry("Tuomo_Aho", ["第一作者英文: Tuomo Aho\n", "第二作者英文: \\Letter}$\n"])
+_letter = TOC.parse_entry("Avery_Blake", ["第一作者英文: Avery Blake\n", "第二作者英文: \\Letter}$\n"])
 check("(g11) 英文作者清洗后为空的那条被丢弃，正常英文名保留",
-      _letter.englishAuthors == ["Tuomo Aho"], f"{_letter.englishAuthors}")
+      _letter.englishAuthors == ["Avery Blake"], f"{_letter.englishAuthors}")
 
 print("\n── (h) 模板 split 跳过注释行（E4：89 注释 tabularx / 注释栏目行不复活）──")
 _TEX_COMMENT = ("\\documentclass{ctexart}\n"
@@ -1036,9 +1036,9 @@ print("\n── (l) 英文栏目表头数据驱动（columnNameEN 空 ⇒ 不生
 _a_zh_shape = ["{\\large \\bf{专辑：旧名}}", "&&\\textit{\\large 主持人：旧主持}", "\\\\[3.2 ex]"]
 _en_shape = ["\\large  \\bf{Special Issue: Old}", "\\\\[6.2mm]"]
 _s_en_empty = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnHost="某人",
-                              columnArticles=["Lu_Wang"])
+                              columnArticles=["Ning_Wang"])
 _s_en_full = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnNameEN="Preference Logic",
-                             columnHost="某人", columnArticles=["Lu_Wang"])
+                             columnHost="某人", columnArticles=["Ning_Wang"])
 check("(l1) 英文名空 ⇒ 英文栏目块为空（**不拿中文名回退**、不生成 `Column: 偏好逻辑`）",
       TT.make_column_block(_s_en_empty, _en_shape, False) == []
       and TT.make_column_block(_s_en_empty, [], False) == [])

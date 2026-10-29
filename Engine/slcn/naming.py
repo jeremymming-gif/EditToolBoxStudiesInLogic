@@ -6,8 +6,8 @@
     周杰      → Jie_Zhou
     韩梅梅    → Meimei_Han
     苏晓晴    → Xiaoqing_Su
-    Michael Rathjen → Michael_Rathjen
-    Wen-fang Wang   → Wenfang_Wang   （连字符去掉后并成一段）
+    Elena Petrova → Elena_Petrova
+    Anna Schmidt         → Anna_Schmidt         （连字符去掉后并成一段）
 
 即 **「名_姓」，中文取拼音、外文取原名**。多作者只取第一作者。
 
@@ -52,8 +52,8 @@ COMPOUND_SURNAMES = {
 }
 
 # 多音字**姓氏**的正确读法。pypinyin 给的是常见读法，作姓氏时往往不同。
-# 实测踩坑：单芃舒 → pypinyin 给 dan，正确是 shan（→ Pengshu_Shan）；
-#           曾昭式 → pypinyin 给 ceng，正确是 zeng（→ Zhaoshi_Zeng）。
+# 实测踩坑：单宁 → pypinyin 给 dan，正确是 shan（→ Ning_Shan）；
+#           曾宁 → pypinyin 给 ceng，正确是 zeng（→ Ning_Zeng）。
 SURNAME_OVERRIDE = {
     "单": "shan", "曾": "zeng", "薄": "bo", "仇": "qiu", "解": "xie",
     "区": "ou", "查": "zha", "尉": "yu", "乐": "yue", "盖": "ge",
@@ -191,9 +191,9 @@ def homographs(name: str) -> list[str]:
 
 
 def latin_to_folder(name: str) -> str:
-    """Michael Rathjen → Michael_Rathjen；Wen-fang Wang → Wenfang_Wang。
+    """Elena Petrova → Elena_Petrova；Anna Schmidt → Anna_Schmidt。
 
-    兼容 "Rathjen, Michael"（姓, 名）与 "Michael Rathjen"（名 姓）两种写法。
+    兼容 "Petrova, Elena"（姓, 名）与 "Elena Petrova"（名 姓）两种写法。
     """
     n = re.sub(r"[,，].*$", "", name.strip()) if "," in name else name.strip()
     n = re.sub(r"\b(Prof|Professor|Dr|Mr|Ms|Mrs)\.?\b", "", n, flags=re.I)
@@ -215,9 +215,9 @@ def latin_to_folder(name: str) -> str:
         surname = parts[-1]
         given = " ".join(parts[:-1])
 
-    # 去掉职称尾缀（如 "Wen-fang Wang, Distinguished Professor"）
+    # 去掉职称尾缀（如 "Anna Schmidt, Distinguished Professor"）
     given = re.sub(r"\b(Distinguished|Professor|Prof|Dr)\b.*$", "", given, flags=re.I).strip()
-    # 连字符与空格并成一段：Wen-fang → Wenfang
+    # 连字符与空格并成一段：Anna → Anna（连字符空格并段时去非字母字符）
     given_clean = re.sub(r"[^A-Za-z]", "", given)
     sur_clean = re.sub(r"[^A-Za-z]", "", surname)
     if not given_clean or not sur_clean:
@@ -267,9 +267,9 @@ def looks_like_person_name(name: str) -> bool:
     为什么需要：`convert.author_from_source()` 的 Word 启发式是「第 1–5 段里找一段
     看着像姓名的」，旧判据只看长度 ≤40、不以句号/冒号结尾——于是**把正文当作者**：
 
-      · 期 87 子案例 2（03 Wenjing_Du）源稿没写作者，第 4 段正文被当成作者，
+      · 期 87 子案例 2（03 Juan_Du）源稿没写作者，第 4 段正文被当成作者，
         输出名推导成 `Yesizhuyirenwei_Bei`（「贝叶斯主义认为」）；
-      · 子案例 3（04 Fayang_Ye）第 2 段 `摘  要：…` 中间有空格，摘要行判据没命中，
+      · 子案例 3（04 Feng_Ye）第 2 段 `摘  要：…` 中间有空格，摘要行判据没命中，
         单字「摘」被当作者。
 
     这与 `naming.py` 的原则冲突：「能确定才输出，不能确定就报错让用户显式指定，
@@ -278,8 +278,8 @@ def looks_like_person_name(name: str) -> bool:
     收紧误伤面大，且没实测到对应缺陷）。
 
     反例（应当返回 False）：`贝叶斯主义认为`、`摘`、`数学基础是数学哲学研究中的重要问题`、
-    `摘  要：数学基础是…`。正例：`李雷`、`唐瑞雪`、`冯光武`、`阿依古丽·买买提`、
-    `Michael Rathjen`、`Wen-fang Wang`。
+    `摘  要：数学基础是…`。正例：`李雷`、`唐晓梅`、`冯海`、`阿依古丽·买买提`、
+    `Elena Petrova`、`Anna Schmidt`。
     """
     s = (name or "").strip()
     if not s:

@@ -3056,7 +3056,7 @@ enum BibDbFeature {
     // MARK: - 从路径推断来源期 / 篇目录名
 
     /// 从 bib 路径推断「来源期」与「篇目录名」：
-    /// `…/2026年第2期(87)/02 Kun_Xing/reference.bib` → (`2026年第2期(87)`, `02 Kun_Xing`)。
+    /// `…/2026年第2期(87)/02 Hai_Xing/reference.bib` → (`2026年第2期(87)`, `02 Hai_Xing`)。
     ///
     /// 判据与引擎 `slcn/paths.py: ISSUE_RE`、`slcn/bibdb.py: _AUTHOR_DIR_RE` **同一口径**
     /// （期 = `20xx年第…`；篇 = 两位数字 + 空格/下划线/短横）；认不出就返回空串 ——

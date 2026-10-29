@@ -362,7 +362,7 @@ def _en_locator_cmd(cmd: str, loc: str) -> str:
 # 年份唯一**只是候选范围，不是匹配依据**。早先这里不看姓名就直接
 # `hit = by_year[year][0]`，实测全库 23 次触发里 5 次是硬配
 # （`（Williamson 2017）`→Hjortland2017、`（Kripke 2007: 301）`→Recanati2007、
-# `（何朝安，2021）`→AGregory2021、`（IPCAS，1955年正式成立）`→Shen1955），
+# `（何晨，2021）`→AGregory2021、`（IPCAS，1955年正式成立）`→Shen1955），
 # 印进 PDF 就是引错文献，而且真正的 Williamson2007 从未被引用。
 # 另 18 次姓名其实**对得上**，只是 `RefEntry.surname` 把西文名的首字母算进了姓
 # （`S. Blackburn` / `H.Kelsen` / `J.Woods`），或中文名写在方括号里
@@ -455,14 +455,14 @@ def link_citations(body: str, refs: list[RefEntry]) -> tuple[str, list[str], lis
         names = re.sub(r"\\[A-Za-z]+\*?|[{}]", " ", m.group("names")).strip()
         year = m.group("year")
         tail = m.group("tail").strip()
-        # 第 121 条（01 Tuomo_Aho 真稿）：括号里带 LaTeX 标记的（如
+        # 第 121 条（01 Avery_Blake 真稿）：括号里带 LaTeX 标记的（如
         # `(edited in \textit{Peter of Spain 1992})`）不是规范引用点；照替换会把
         # 收尾花括号当页码塞进 `\parencite{…，}）`，产物直接 `Too many }'s`。
         # 这种**保留原文**并进 unmatched，交给编辑处理。
         _probe_t = re.sub(r"\\([&%_#$])", r"\1", tail)
         if re.search(r"[\\{}]", _probe_t):
             # tail 里带 LaTeX 花括号/命令 → 页码不干净，保留原文（否则会出
-            # `\parencite{…，}）` 这类不平衡产物；01 Tuomo_Aho 实测）。
+            # `\parencite{…，}）` 这类不平衡产物；01 Avery_Blake 实测）。
             unmatched.append(m.group(0))
             return m.group(0)
         # names 可能是「苏珊·哈克」「李雷」「Haack」「Beall 和 Restall」

@@ -12,8 +12,8 @@ r"""`slcn/build.py` 的**中文作者拆分**判据（案例 71，2026-10-15 用
 判据
 ----
 **单个汉字长度的片段不可能是完整中文姓名** → 把「单字片段 + 下一个片段」两两合并。
-`/`、`／` 一并当分隔符（期刊里 `顺 真/汤 伟/李炜钰` 这种排法）。这个判据只在片段
-连一个字都不够时触发，所以**不会**把 `王刚 李晟` 两个真姓名并成一个——这正是
+`/`、`／` 一并当分隔符（期刊里 `顺 海/汤 宁/李敏` 这种排法）。这个判据只在片段
+连一个字都不够时触发，所以**不会**把 `王强 李强` 两个真姓名并成一个——这正是
 `convert.py:306-313` 那条「折叠空白后不足 5 字算一个名字」的判据所缺的性质。
 
 四组断言
@@ -24,7 +24,7 @@ r"""`slcn/build.py` 的**中文作者拆分**判据（案例 71，2026-10-15 用
      `coauthor_fields()` 为空（= 不再凭空产出 4 个占位符；这是缺陷的完整症状）。
   ③ 非回归：内联**改动前**的实现，对一批真实多作者串逐个比对，结果必须逐字相同。
   ④ 真实稿端到端（`build_docx`）：Lei_Li 不再有假第二作者、`\myfirstauthor` 是李雷；
-     Meimei_Han / Zhaoshi_Zeng 这类真·多作者稿仍然拆对。
+     Meimei_Han / Ning_Zeng 这类真·多作者稿仍然拆对。
 
 不联网、不写仓库（产物一律进临时目录）、不跑 corpus.py / build.sh。
 缺真实稿件时 `SKIP` 而不是失败（与 `test_coauthor_en.py` 的 ③ 组同一口径）。
@@ -53,7 +53,7 @@ _ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
 BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
                        "李雷 当代逻辑论题鸟瞰.docx")
 JINGRU = os.path.join(_ROOT, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
-ZENG = os.path.join(_ROOT, "2024年第1期(74)", "02 Zhaoshi_Zeng", "original",
+ZENG = os.path.join(_ROOT, "2024年第1期(74)", "02 Ning_Zeng", "original",
                     "原文--论栾调甫中国逻辑研究范式.docx")
 
 
@@ -106,20 +106,20 @@ print("── ① cn_author_names：必配反例表（真实字符串）──")
 
 _SINGLE_HAN_WITH_SPACE = [
     ("李  雷", ["李雷"]),          # 两个 ASCII 空格（期刊两字姓名的常见排法）
-    ("屈 凯", ["屈凯"]),
-    ("曾 昭式", ["曾昭式"]),        # 单字在前、三字名在后
+    ("屈 明", ["屈明"]),
+    ("曾 宁", ["曾宁"]),        # 单字在前、三字名在后
 ]
 _REAL_MULTI = [
-    ("王刚 李晟", ["王刚", "李晟"]),        # ★ 关键反例：不许并成一个
+    ("王强 李强", ["王强", "李强"]),        # ★ 关键反例：不许并成一个
     ("韩梅梅 王小明", ["韩梅梅", "王小明"]),
     ("张三、李四", ["张三", "李四"]),
-    ("邱德钧  陶景侃", ["邱德钧", "陶景侃"]),
-    ("曾昭式   凌敏", ["曾昭式", "凌敏"]),
-    ("李友广、李宗敏", ["李友广", "李宗敏"]),
-    ("王奇琦 郑伟平", ["王奇琦", "郑伟平"]),
+    ("邱伟  陶明", ["邱伟", "陶明"]),
+    ("曾宁   凌清", ["曾宁", "凌清"]),
+    ("李海、李宁", ["李海", "李宁"]),
+    ("王敏 郑海", ["王敏", "郑海"]),
 ]
 _SLASH = [
-    ("顺 真/汤 伟/李炜钰", ["顺真", "汤伟", "李炜钰"]),
+    ("顺 海/汤 宁/李敏", ["顺海", "汤宁", "李敏"]),
 ]
 
 for src, want in _SINGLE_HAN_WITH_SPACE:
@@ -141,10 +141,10 @@ check("① 含英文字母整条不拆（既有约定，见 docstring）",
 check("① 空 / None 不炸", build.cn_author_names("") == []
       and build.cn_author_names("   ") == [] and build.cn_author_names(None) == [])
 check("① 全角空格（U+3000）也是分隔符",
-      build.cn_author_names("王刚\u3000李晟") == ["王刚", "李晟"]
+      build.cn_author_names("王强\u3000李强") == ["王强", "李强"]
       and build.cn_author_names("李\u3000雷") == ["李雷"], "")
 check("① 末尾落单的单字片段原样保留（与改动前一致，不硬猜）",
-      build.cn_author_names("王刚 李") == ["王刚", "李"], "")
+      build.cn_author_names("王强 李") == ["王强", "李"], "")
 check("① 连着的单字片段两两合并（4 个单字 → 2 个名字）",
       build.cn_author_names("张 三 李 四") == ["张三", "李四"], "")
 check("① 纯标点片段不参与合并（`阿 · 迈农` 保持与改动前一致，不硬猜）",
@@ -164,9 +164,9 @@ check("② `coauthor_fields()` 为空 → 不再凭空产出 4 个占位符",
 check("② `coauthor_slot_count()` = 1（英文合著者槽位对表也不会错位）",
       build.coauthor_slot_count(_f) == 1, "")
 
-_f2 = build.author_fields("王刚 李晟")
+_f2 = build.author_fields("王强 李强")
 check("② 真·两作者仍然两个槽位",
-      _f2 == {"myfirstauthor": "\\kaishu 王刚", "mysecondauthor": "\\kaishu 李晟"}, f"{_f2}")
+      _f2 == {"myfirstauthor": "\\kaishu 王强", "mysecondauthor": "\\kaishu 李强"}, f"{_f2}")
 check("② 真·两作者的 `coauthor_fields()` 才该有 4 项（第二作者中文/英文槽位）",
       [n for n, _l in build.coauthor_fields(_f2)] == [
           "mysecondaffiliation", "mysecondemail",
@@ -182,9 +182,9 @@ check("② 普通单作者中文名逐字不变",
 print("\n── ③ 非回归：与改动前逐字相同（只在有单字片段时才允许不同）──")
 
 _REALISTIC = [s for s, _w in _REAL_MULTI + _SINGLE_HAN_WITH_SPACE + _SLASH] + [
-    "Jiawei Zhong", "李雷", "屈凯", "张燕京 李邢睿", "夏吾太 项智多杰",
-    "赵丽丽 孙悦", "吴静怡 郑建国", "何嘉怡 徐佳明", "牛子涵 熊明辉*",
-    "鲜于波1, 黄伟鑫1", "南亚伶 王克喜",
+    "Jiawei Zhong", "李雷", "屈明", "张敏 李海宁", "夏明 欧阳明海",
+    "赵丽丽 孙宁", "吴静怡 郑建国", "何嘉怡 徐强", "牛静 熊海*",
+    "鲜于明1, 黄泽晨1", "南晨 王海宁",
 ]
 _diff = [(s, old_cn_author_names(s), build.cn_author_names(s))
          for s in _REALISTIC
@@ -194,13 +194,13 @@ check("③ 22 条真实作者串里，结果与改动前不同的一律**只能*
       f"不同的：{[d for d in _diff]}")
 check("③ 真·多作者（两段都 ≥2 字）拆分逐字未变",
       all(old_cn_author_names(s) == build.cn_author_names(s)
-          for s in ["王刚 李晟", "韩梅梅 王小明", "邱德钧  陶景侃", "曾昭式   凌敏",
-                    "张三、李四", "李友广、李宗敏", "张燕京 李邢睿",
-                    "夏吾太 项智多杰", "赵丽丽 孙悦", "何嘉怡 徐佳明"]), "")
+          for s in ["王强 李强", "韩梅梅 王小明", "邱伟  陶明", "曾宁   凌清",
+                    "张三、李四", "李海、李宁", "张敏 李海宁",
+                    "夏明 欧阳明海", "赵丽丽 孙宁", "何嘉怡 徐强"]), "")
 check("③ 真·多作者的**槽位数**一个都没少",
       all(len(build.cn_author_names(s)) == len(old_cn_author_names(s))
-          for s in ["王刚 李晟", "韩梅梅 王小明", "邱德钧  陶景侃", "曾昭式   凌敏",
-                    "张三、李四", "王奇琦 郑伟平", "牛子涵 熊明辉*"]), "")
+          for s in ["王强 李强", "韩梅梅 王小明", "邱伟  陶明", "曾宁   凌清",
+                    "张三、李四", "王敏 郑海", "牛静 熊海*"]), "")
 
 
 # ── ④ 真实稿端到端 ───────────────────────────────────────────────────────
@@ -230,20 +230,20 @@ else:
               and "\\renewcommand{\\mysecondauthor}{\\kaishu 王小明}" in tex, "")
 
 if not os.path.isfile(ZENG):
-    skip("④ 端到端（Zhaoshi_Zeng 真两作者）", f"缺真实稿件（{ZENG}）")
+    skip("④ 端到端（Ning_Zeng 真两作者）", f"缺真实稿件（{ZENG}）")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         tex = build_tex(ZENG, os.path.join(tmp, "zeng"))
-        check("④ Zhaoshi_Zeng（`曾昭式 凌敏`）仍然拆成两作者",
-              "\n{\\kaishu 曾昭式}" in tex
-              and "\\renewcommand{\\mysecondauthor}{\\kaishu 凌敏}" in tex, "")
+        check("④ Ning_Zeng（`曾宁 凌清`）仍然拆成两作者",
+              "\n{\\kaishu 曾宁}" in tex
+              and "\\renewcommand{\\mysecondauthor}{\\kaishu 凌清}" in tex, "")
 
 
 # ── ⑤ 单作者代表稿：产物与改动前**逐字节相同** ──────────────────────────
 print("\n── ⑤ 单作者代表稿：新旧实现产物逐字节相同（`author_fields()` 也动了）──")
 
-LINHE = os.path.join(_ROOT, "2023年第5期(72)", "01 Linhe_Han", "original",
-                     "韩林合-康德论逻辑的本性-终版.docx")
+LINHE = os.path.join(_ROOT, "2023年第5期(72)", "01 Xue_Han", "original",
+                     "韩雪-康德论逻辑的本性-终版.docx")
 
 
 def old_author_fields(author):
@@ -268,7 +268,7 @@ def build_tex_old_impl(src, out_dir):
 
 
 if not os.path.isfile(LINHE):
-    skip("⑤ 单作者逐字节回归（Linhe_Han）", f"缺真实稿件（{LINHE}）")
+    skip("⑤ 单作者逐字节回归（Xue_Han）", f"缺真实稿件（{LINHE}）")
 else:
     from slcn import docxsource  # noqa: E402
 

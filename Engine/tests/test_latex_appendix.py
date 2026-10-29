@@ -2,7 +2,7 @@
 r"""第四十六批②：LaTeX 稿「参考文献之后的附录」迁移（86-05 PAGE_DIFF 实测）。
 
 缺陷：`sources.extract_body_text()` 截到**参考文献之前**（第 121 条），作者把附录写在
-`\printbibliography` 之后时整段附录被静默丢掉——86-05 WeiNong_Li 丢 3 个附录小节，
+`\printbibliography` 之后时整段附录被静默丢掉——86-05 Wei_Qiu 丢 3 个附录小节，
 生成 20 页 vs 人工 26 页（文本仅 66.7%）。
 修法：`build._latex_post_bibliography_tail()` 取出该段，`_insert_post_bibliography()`
 插到模板 `\printbibliography` 之后；只在确有非注释内容时生效（Word 通道与非附录稿不变）。

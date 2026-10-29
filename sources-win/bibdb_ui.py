@@ -1264,7 +1264,7 @@ class BibDbImportPage(BibDbPage):
         else:
             self.infer_hint.config(text=plain(
                 "没从路径认出「来源期」——留空表示不记录来源（不硬猜）。"
-                "例：…/2026年第2期(87)/02 Kun_Xing/reference.bib"))
+                "例：…/2026年第2期(87)/02 Hai_Xing/reference.bib"))
 
     def _update_dir_hint(self) -> None:
         if self._mode_key() == "single":

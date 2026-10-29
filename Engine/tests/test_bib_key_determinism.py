@@ -1,5 +1,5 @@
 #!/usr/bin/env python3.14
-r"""`slcn/docxsource.py` 的 **bib 键可复现性**判据（案例 74，2024_01_Wenwen_Jiao 实测）。
+r"""`slcn/docxsource.py` 的 **bib 键可复现性**判据（案例 74，2024_01_Min_Jiao 实测）。
 
 缺陷
 ----
@@ -8,7 +8,7 @@ r"""`slcn/docxsource.py` 的 **bib 键可复现性**判据（案例 74，2024_01
     return f"ref{abs(hash(a)) % 10000}{e.year}"
 
 CPython 对 `str` 的 `hash()` 受 **PYTHONHASHSEED 随机化**影响，每个进程都不同。实测同一篇
-`2024年第1期(74)/07 Wenwen_Jiao`，两个进程给出完全不同的 bib 键：
+`2024年第1期(74)/07 Min_Jiao`，两个进程给出完全不同的 bib 键：
 
     进程 1：ref56162006, ref30821998, ref10261987, …
     进程 2：ref36242006, ref46911998, ref64241987, …
@@ -63,7 +63,7 @@ FAILS = []
 SKIPS = []
 
 _ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
-JIAO = os.path.join(_ROOT, "2024年第1期(74)", "07 Wenwen_Jiao")
+JIAO = os.path.join(_ROOT, "2024年第1期(74)", "07 Min_Jiao")
 
 # 案例 74 的现场：这些作者串**以不可见字符开头**（U+FEFF，ZWNBSP/BOM）
 ZW = docxsource._ZERO_WIDTH
@@ -136,7 +136,7 @@ print("── ① 非兜底键逐字不变（改动前能分类的作者串，�
 
 # 真实作者串（含全库实测的正常条目 + 边界串）
 _NORMAL = [
-    ("李雷", "2005"), ("刘靖贤", "2013"), ("曾昭式", "1984"),
+    ("李雷", "2005"), ("刘靖贤", "2013"), ("曾宁", "1984"),
     ("罗素", "1918"), ("克里普克", "1980"), ("蒯因", "1970"), ("哈瑞", "1982"),
     ("Beall, J. C. and Restall, G.", "2006"),
     ("Beall, J. C.", "2006"), ("Xing", "1984"), ("Haack, S.", "1974"),
@@ -275,13 +275,13 @@ check("④ `_dedupe_keys()` 仍然给同年同作者加 a/b 后缀（含零宽/�
       _line(_lines1, "Z|") == "Z|SBlackburn1998a|SBlackburn1998b", _line(_lines1, "Z|"))
 
 if not _line(_lines1, "D|"):
-    skip("④ 真实稿跨进程键集合（Wenwen_Jiao）", f"缺真实稿件（{JIAO}）")
+    skip("④ 真实稿跨进程键集合（Min_Jiao）", f"缺真实稿件（{JIAO}）")
 else:
     _k1, _k2, _k3 = _line(_lines1, "D|")[2:], _line(_lines2, "D|")[2:], _line(_lines3, "D|")[2:]
     check("④ **同一个 docxsource.py 在两次独立进程里**对同一份真实稿产出的键集合完全相等",
           _k1 == _k2 == _k3, f"{len(_k1.split('|'))} 条键")
     _keys = _k1.split("|")
-    check("④ Wenwen_Jiao 的 16 条零宽文献全部走出兜底（键集合里不再有 ref 形态）",
+    check("④ Min_Jiao 的 16 条零宽文献全部走出兜底（键集合里不再有 ref 形态）",
           not [k for k in _keys if k.startswith("ref")], f"{[k for k in _keys if k.startswith('ref')]}")
     check("④ 该稿的键集合与人工成品要求一致：SBlackburn1998 在列",
           "SBlackburn1998" in _keys and "RAudi2006" in _keys, "")

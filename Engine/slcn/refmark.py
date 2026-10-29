@@ -765,7 +765,7 @@ def _fence_for(text: str) -> str:
 
 
 def _bibdb_source_text(record: dict, *, limit: int = 2) -> str:
-    """库记录的来源摘要：`2025年第6期(85)/01 Xiaoyang_Wang/name.bib`（多份时截断）。
+    """库记录的来源摘要：`2025年第6期(85)/01 Lei_Wang/name.bib`（多份时截断）。
 
     为什么写来源：任务书这一节的用途是「编辑一眼能核对库版本从哪来」——只写「已核实」
     而不给出处，就等于要求编辑无条件相信一个黑盒。

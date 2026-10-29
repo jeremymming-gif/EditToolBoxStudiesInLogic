@@ -76,7 +76,7 @@ check("兜底：没有参考文献标题也能定位（下标 44）", locate_tai
 check("兜底：解析结果与原有路径同一套判据",
       parse_tail_metadata(TAIL, locate_tail_block(TAIL, -1))["title_en"]
       == "Towards a Logic of Databases")
-check("英文块排在「参考文献」标题之前（01 Lili_Lu 的形态）也能定位",
+check("英文块排在「参考文献」标题之前（01 Ting_Lu 的形态）也能定位",
       locate_tail_block(["中文题名", "作者"] + ["正文"] * 30
                         + ["On the Legal Argument", "Abstract: body", "Keywords: kw",
                            "参考文献", "[1] 文献"], 34) == 32)
@@ -162,7 +162,7 @@ check("英文清单在文末块前：文末块题名/作者/摘要照旧解析",
 # ══ ② 标签正文 + 文末块解析（合成）════════════════════════════════════════
 print("\n── ② 标签正文与文末块解析 ──")
 
-BARE = ["Frege-Geach Problem and Practical Reasoning", "Wenwen Jiao", "Abstract",
+BARE = ["Frege-Geach Problem and Practical Reasoning", "Min Jiao", "Abstract",
         "Non-cognitivist explanations face the Frege-Geach problem."]
 check("标签独占一段 → 取下一段正文",
       _label_body(BARE, 2, _ABS_RE) == "Non-cognitivist explanations face the Frege-Geach problem.")
@@ -181,7 +181,7 @@ check("中文标签 `摘要` 后跟中文段 → 也不填（宁 fail 不误判�
 check("标签带正文时不受语言影响",
       _label_body(["摘要：本文讨论逻辑。"], 0, _ABS_RE) == "本文讨论逻辑。")
 
-# ② 英文题名：括号单位行不能当题名（05 Guoping_Du 的形态）
+# ② 英文题名：括号单位行不能当题名（05 Hai_Du 的形态）
 GPD = ["The Law of Excluded Middle as an Analytical Tool", "Du Guo-ping",
        "(Institute of Philosophy, Chinese Academy of Social Sciences, Beijing 100732, China)",
        "Abstract: The law of excluded middle is one of the three fundamental laws of logic.",
@@ -195,24 +195,24 @@ check("摘要/关键词取值不受影响",
       _t["abstract_en"].startswith("The law of excluded middle")
       and _t["keywords_en"].startswith("the law of excluded middle"))
 
-# ② 单位：`联系电话/通信地址/邮政编码` 不得混进 affiliation（05 Guoping_Du 的形态）
+# ② 单位：`联系电话/通信地址/邮政编码` 不得混进 affiliation（05 Hai_Du 的形态）
 BRIEF = ["The Law of Excluded Middle as an Analytical Tool", "Du Guo-ping",
          "Abstract: body", "Key words: kw",
-         "作者简介：", "作者：杜国平，1965年生。", "学位：博士", "职称：二级教授",
+         "作者简介：", "作者：杜海，1965年生。", "学位：博士", "职称：二级教授",
          "研究方向：现代逻辑及其应用",
          "工作单位：中国社会科学院哲学研究所、中国社会科学院大学哲学院",
-         "联系电话：18901393186", "电子邮箱：dgpnju@163.com",
+         "联系电话：18901393186", "电子邮箱：author009@sample.com",
          "通信地址：北京市通州区北苑广通小区7号楼1单元502室", "邮政编码：101100"]
 _b = parse_tail_metadata(BRIEF, 0)
 check("电话/地址/邮编不混进 affiliation_cn",
       "18901393186" not in (_b.get("affiliation_cn") or "")
       and "通信地址" not in (_b.get("affiliation_cn") or "")
       and "邮政编码" not in (_b.get("affiliation_cn") or ""), repr(_b.get("affiliation_cn")))
-check("带标签的邮箱仍能取到", _b.get("email") == "dgpnju@163.com", repr(_b.get("email")))
+check("带标签的邮箱仍能取到", _b.get("email") == "author009@sample.com", repr(_b.get("email")))
 
 # ② 但「中英文所属单位」那种正常单位块必须照旧（09 Jiawei_Zhong 的形态）
 JC = ["How Are Argumentative Actions Generated?", "Jiawei Zhong", "Abstract: body",
-      "Keywords: kw", "邮箱：chujw3@mail2.sysu.edu.cn", "中英文所属单位: ",
+      "Keywords: kw", "邮箱：author008@sample.edu.cn", "中英文所属单位: ",
       "中山大学逻辑与认知研究所", "中山大学哲学系",
       "Institute of Logic and Cognition, Sun Yat-sen University ",
       "Department of Philosophy, Sun Yat-sen University"]
@@ -222,7 +222,7 @@ check("中英文单位块：中文单位照旧",
 check("中英文单位块：英文单位照旧（作者名 phantom 缩进）",
       _j["affiliation_en"].startswith("Institute of Logic and Cognition, Sun Yat-sen University")
       and "Department of Philosophy" in _j["affiliation_en"], repr(_j["affiliation_en"][:60]))
-check("中英文单位块：邮箱照旧", _j["email"] == "chujw3@mail2.sysu.edu.cn")
+check("中英文单位块：邮箱照旧", _j["email"] == "author008@sample.edu.cn")
 
 # ══ ③ 现造的最小 docx ═════════════════════════════════════════════════════
 print("\n── ③ 最小 docx（脚注/中段/文末块）──")
@@ -362,7 +362,7 @@ check("B-105① 无参考文献标题：正文不再重复英文题名/作者简
       "Towards a Logic of Databases" not in d.body and "作者简介" not in d.body
       and "正文第 0 段。" in d.body, repr(d.body[-120:]))
 
-# B-105（71/06 Lili_Lu 实测）：英文块排在「参考文献」标题之前时，也要在英文块
+# B-105（71/06 Ting_Lu 实测）：英文块排在「参考文献」标题之前时，也要在英文块
 # 起点截断（旧实现只认参考文献标题 → 英文块留在正文，20 页 vs 人工 19）。
 p = make_docx(CN_HEAD + ["正文第 %d 段。" % i for i in range(30)]
               + ["On the Legal Argument in Legal Interpretation", "Zhang San",
@@ -410,39 +410,39 @@ CASES = [
      and d.abstract_en.startswith("The main viewpoints of logical exceptionalism")
      and d.author_en == "CHEN Bo" and tail_of(p) == 50,
      "文末英文块 + 全文没有「参考文献」标题"),
-    ("2023年第1期(68)/02 Liwu_Rong", "20160050669_O_editing",
+    ("2023年第1期(68)/02 Jie_Rong", "20160050669_O_editing",
      lambda d, p: d.title_en == "Conversational Hypothesis on Indicative Conditionals"
      and d.abstract_en.startswith("There is a common idea in contemporary logicians"),
      "文末英文块 + 没有「参考文献」标题"),
-    ("2023年第4期(71)/06 Lili_Lu", "20160050685_O_editing",
+    ("2023年第4期(71)/06 Ting_Lu", "20160050685_O_editing",
      lambda d, p: d.title_en == "On the Legal Argument in Legal Interpretation"
      and tail_of(p) == 71,
      "英文块排在「参考文献」标题**之前**"),
-    ("2024年第4期(77)/05 Guoping_Du", "杜国平",
+    ("2024年第4期(77)/05 Hai_Du", "杜海",
      lambda d, p: d.title_en == "The Law of Excluded Middle as an Analytical Tool"
      and d.author_en == "Du Guo-ping"
      and d.affiliation_en.startswith("Institute of Philosophy, Chinese Academy of Social Sciences")
      and d.affiliation_cn == "中国社会科学院大学哲学院\\\\ 中国社会科学院哲学研究所"
-     and d.email == "dgpnju@163.com",
+     and d.email == "author009@sample.com",
      "文末英文块 + 块后中文「作者简介」（电话/地址/邮编不得进单位）"),
-    ("2024年第6期(79)/06 Yuyu_Liu", "Mengzi on Rectification",
+    ("2024年第6期(79)/06 Min_Liu", "Mengzi on Rectification",
      lambda d, p: tail_of(p) == -1
      and d.abstract_en.startswith("Set in the context of pre-Qin period"),
      "英文块在开头（标签独占一段）+ 文末是英文文献表（不得当文末块）"),
-    ("2025年第6期(85)/04 YingJin_Xu", "Time-budget-sensitive",
+    ("2025年第6期(85)/04 Chen_Xu", "Time-budget-sensitive",
      lambda d, p: d.abstract_en.startswith("An idealized artificial general intelligence")
      and d.keywords_en.startswith("Need-for-Closure"),
      "开头英文块标签独占一段（Abstract / Keywords:）"),
-    ("2026年第2期(87)/07 Guangwu_Feng", "格赖斯和布兰顿",
+    ("2026年第2期(87)/07 Hai_Feng", "格赖斯和布兰顿",
      lambda d, p: d.title_en == "Grice and Brandom on Verbal Communication"
      and d.abstract_en.startswith("This article compares Grice"),
      "开头英文块 + 英文题名前有一个只有空格的段"),
-    ("2025年第4期(83)/01 Chao'an_He", "同时性因果与概念可能性 - 定稿",
+    ("2025年第4期(83)", "同时性因果与概念可能性 - 定稿",
      lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 10))
      and d.title_en == "Simultaneous Causation and Conceptual Possibility"
      and not any("不在文末清单编号范围" in w for w in d.warnings),
      "英文清单尾部 [4]–[9] 不得被切出参考文献区（B-120 批76）"),
-    ("2025年第4期(83)/02 Zhiheng_Tang", "再论同时性因果 - 定稿",
+    ("2025年第4期(83)/02 Ming_Tang", "再论同时性因果 - 定稿",
      lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 36))
      and d.title_en.startswith("More on Simultaneous Causation")
      and not any("不在文末清单编号范围" in w for w in d.warnings),
@@ -462,20 +462,20 @@ for _dir, needle, ok, why in CASES:
 
 # 反例：这些稿子必须一动不动（定位不变 / 不拿错误段落冒充）
 NEG = [
-    ("2025年第3期(82)/02 Zhiguang_Zhao", "New_Version_0",
+    ("2025年第3期(82)/02 Wei_Zhao", "New_Version_0",
      lambda d, p: tail_of(p) == -1
      and d.abstract_en.startswith(". In the present paper"),   # 开头那套取到的英文摘要
      "n=936：英文摘要在第 3 段、参考文献在第 908 段 → 兜底不命中"),
-    ("2024年第6期(79)/01 Wenfang_Wang", "A Careful inspection",
+    ("2024年第6期(79)/01 Xue_Wang", "A Careful inspection",
      lambda d, p: tail_of(p) == -1 and "普里斯特" not in (d.abstract_en or ""),
      "文末是**中文**元数据块 → 兜底只认英文标签，不命中"),
-    ("2023年第6期(73)/05 Yang_Hu", "revised version",
+    ("2023年第6期(73)/05 Chuan_Hu", "revised version",
      lambda d, p: tail_of(p) == -1,
      "英文摘要@1（开头）、参考文献@118 → 原有路径不变"),
-    ("2025年第6期(85)/04 YingJin_Xu", "汉语摘要",
+    ("2025年第6期(85)/04 Chen_Xu", "汉语摘要",
      lambda d, p: tail_of(p) == -1 and not (d.abstract_en or ""),
      "纯中文摘要片段（无英文块）→ 不命中"),
-    ("2026年第1期(86)/08 LingXin_Cai", "补充材料 20260117",
+    ("2026年第1期(86)/08 Min_Cai", "补充材料 20260117",
      lambda d, p: "Fallacies are a crucial component" not in (d.abstract_cn or ""),
      "中文 `摘要：` 独占一段、下一段是英文 → 不许写进 abstract_cn"),
     ("2026年第5期(90)/10 Lei_Li", "当代逻辑论题鸟瞰英文摘要",

@@ -205,7 +205,7 @@ check("⑤ check() 的条目总数不再把注释掉的旧条目算进去（tota
 # ══════════════════════════════════════════════════════════════════════════
 # 症状：Word 脚注体例的条目（整条在 note 里）被 expand_note_entries 拆成结构化字段时，
 #       **原样**把解析值写进 .bib —— 既不转义 &（LaTeX 特殊字符），也不把 `A & B`
-#       规范成 BibTeX 的 `A and B`。实测 10 Wei_Chen 的 author
+#       规范成 BibTeX 的 `A and B`。实测 10 Jie_Chen 的 author
 #       `van Eemeren, F. H. & van Haaften, T.` 原样落进 bib，biblatex 在
 #       `\namepartsuffix` 里遇到 `&` 报 Misplaced alignment tab，整篇编译失败。
 _NOTE_BIB = """@misc{ref03,

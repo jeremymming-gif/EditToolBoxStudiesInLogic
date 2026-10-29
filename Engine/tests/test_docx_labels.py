@@ -5,7 +5,7 @@
 -----
 `render_para()` 里 `fig_seq = 0` 是**函数内**计数器（每个段落从 1 重来），而 `parse_docx()`
 对每个段落各调一次 `render_para()` → 多段有图时每段的图都叫 `\\label{fig:1}`。
-实测 corpus 12 篇有 fig label 的产物里 **6 篇 label 重复**（`2025_04_YingJin_Xu` 6 个
+实测 corpus 12 篇有 fig label 的产物里 **6 篇 label 重复**（`2025_04_Chen_Xu` 6 个
 全是 `fig:1`）；hyperref 会报 "destination with the same identifier"，`\\ref` 会指错图。
 
 修法
@@ -115,7 +115,8 @@ def _real_check() -> None:
     for issue, slug in cands:
         if picked >= 3:
             break
-        if slug not in ("04 YingJin_Xu", "01 Yanjin_Chen", "06 Zhixi_Chen"):
+        # 按篇序号挑抽查对象（不硬编码真实作者名；B-269）
+        if slug.split(" ")[0] not in ("04", "01", "06"):
             continue
         art = os.path.join(root, issue, slug)
         ss = S.identify(art, verbose=False)

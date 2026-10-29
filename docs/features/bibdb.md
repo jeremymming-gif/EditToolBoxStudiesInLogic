@@ -119,7 +119,7 @@ python3 Engine/bibdb.py stats --json
 python3 Engine/bibdb.py query --key Fine1975 --bibtex --json
 
 # 入藏预览（不写库）
-python3 Engine/bibdb.py import-bib --bib /path/to/reference.bib --issue "2026年第2期(87)" --slug 02_Kun_Xing --dry-run --json
+python3 Engine/bibdb.py import-bib --bib /path/to/reference.bib --issue "2026年第2期(87)" --slug 02_Hai_Xing --dry-run --json
 
 # 待裁决条目（JSON，界面列表的数据源；只读）
 python3 Engine/bibdb.py conflicts --json --pending-only

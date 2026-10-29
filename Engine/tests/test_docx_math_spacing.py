@@ -8,7 +8,7 @@ r"""OMML 公式转换：**Unicode 数学命令与后续字母的粘连**（第 1
 `"\exists".isalpha()` **恒为 False** → 永远不补空格 → `∃q` 变 `\existsq`、`¬q` 变
 `\lnotq`，xelatex 报 Undefined control sequence，整篇编译失败。
 
-实测：期 87 子案例 5（06 Ruixue_Tang）正文 135 处 OMML 公式，产物里出现
+实测：期 87 子案例 5（06 Xiaomei_Tang）正文 135 处 OMML 公式，产物里出现
 `$\existsq\in K_{n-1}$` / `$...⊩\lnotq$` → 转换 rc=2、PDF 未通过。
 
 本套件钉住：
@@ -217,8 +217,8 @@ check("⑪ 确定性：同一输入重复调用输出逐字节相同（纯函数
 
 # ══════════════════════════════════════════════════════════════════════════
 # ⑫ 第四十五批 A：正文 `<w:t>` 里的手打数学符号 / 不可渲染字符
-#    88-02 Lu_Jiang：◻(U+25FB) 字体无字形 → 编译 Missing character；人工成品写 $\Box$。
-#    同段夹带变体选择符 U+E0176；88-07 Hu_Liu：私用区 U+F0A7（无字体、人工成品无）。
+#    88-02 Ning_Jiang：◻(U+25FB) 字体无字形 → 编译 Missing character；人工成品写 $\Box$。
+#    同段夹带变体选择符 U+E0176；88-07 Bo_Liu：私用区 U+F0A7（无字体、人工成品无）。
 # ══════════════════════════════════════════════════════════════════════════
 from slcn.docxxml import _split_text_run  # noqa: E402
 

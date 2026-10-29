@@ -38,7 +38,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 def fake_manuscripts(root: str, *, issues: bool = True) -> str:
     """造一个"像/不像"稿件库的目录。"""
     if issues:
-        os.makedirs(os.path.join(root, "2026年第5期(90)", "01 Lu_Wang"), exist_ok=True)
+        os.makedirs(os.path.join(root, "2026年第5期(90)", "01 Ning_Wang"), exist_ok=True)
     os.makedirs(os.path.join(root, "编辑笔记", "模板文件"), exist_ok=True)   # 引擎仓也有这个
     return root
 

@@ -64,7 +64,7 @@ finally:
 _FN_MERGED = ('<w:footnotes " + xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">')
 # 直接写正确字符串
 _FN = ('<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-       '<w:footnote w:id="1"><w:p><w:r><w:t>胡炳年、陈彦瑾，“广义论证视角下的农村彩礼说理”，'
+       '<w:footnote w:id="1"><w:p><w:r><w:t>胡炳年、陈静，“广义论证视角下的农村彩礼说理”，'
        '逻辑学研究，2018 年第 1 期。麦劲恒：《广式早茶说理的功能结构分析》，'
        '《逻辑学研究》2019 年第 2 期。</w:t></w:r></w:p></w:footnote></w:footnotes>')
 _DOC = ('<w:document ' + _NS + '><w:body>'

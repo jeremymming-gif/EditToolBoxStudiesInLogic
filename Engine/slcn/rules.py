@@ -64,7 +64,7 @@ RULES: list[Rule] = [
     Rule("en-name-paren", "英文人名与括号间需空格", r"([a-zA-Z])\((\d)", r"\1 (\2", "en"),
     Rule("en-dash", "英文破折号应为三条短横", r"(?<![-\w])—(?![-\w])", "---", "en"),
     # 第 121 条（期 88 实例测试）：字面 `...` 后**紧跟字母**时不能直接写 `\ldots`
-    # —— 会粘成 `\ldotsx` 这种未定义命令（05 YouAn_Su 真稿编译失败）。只在「后接字母」
+    # —— 会粘成 `\ldotsx` 这种未定义命令（05 Chen_Su 真稿编译失败）。只在「后接字母」
     # 这一种形态加 `{}` 隔离，其余形态输出保持逐字节不变。
     Rule("en-ellipsis-letter", "英文省略号后紧跟字母（用 { } 隔离）",
          r"\.\.\.(?!\.)(?=[A-Za-z])", r"\\ldots{}", "en"),
@@ -72,7 +72,7 @@ RULES: list[Rule] = [
     # ⛔ 已删除 Rule("en-apostrophe")。
     #    它在单篇（03 Jie_Zhou）消融中贡献 +0.025pp，貌似有益；
     #    但全库逐项核对显示 ’ 在人工成品里是**保留**的
-    #    （05 Wenzhong_Ma：docx 35 个 ’ → 成品保留 32 个，仅 6 处改直引号）。
+    #    （05 Jie_Ma：docx 35 个 ’ → 成品保留 32 个，仅 6 处改直引号）。
     #    这是「单篇调参过拟合」的典型样本——规则取舍必须以全库证据为准。
     Rule("en-cjk-quote", "英文稿里混入中文引号",
          r"[“”‘’]", r"\"", "en", safe=False),
@@ -119,7 +119,7 @@ UNICODE_MATH = {
     "⇔": r"\Leftrightarrow", "↦": r"\mapsto",
     # 同伦/同构「等价」符号：`≃` 在 Word 稿里常作为**普通文字**夹在两个公式之间
     # （`$A$≃$B$`），不映射就原样留在正文 → xelatex 报 Missing character（Times 无此字形）。
-    # 实测期 87 子案例 3（04 Fayang_Ye，案例 141）；均由模板已加载的 amssymb 提供。
+    # 实测期 87 子案例 3（04 Feng_Ye，案例 141）；均由模板已加载的 amssymb 提供。
     "≃": r"\simeq", "≅": r"\cong", "∼": r"\sim", "≉": r"\not\approx",
     "∈": r"\in", "∉": r"\notin", "∋": r"\ni",
     "⊆": r"\subseteq", "⊂": r"\subset", "⊇": r"\supseteq", "⊃": r"\supset",
@@ -128,13 +128,13 @@ UNICODE_MATH = {
     "⊥": r"\perp", "⊤": r"\top", "⊢": r"\vdash", "⊨": r"\models",
     # 强制（forcing / 语义后承）符号：`⊩` 是 OMML 稿里最常见的「双竖线带短横」，
     # 不映射就原样留在数学模式里 → xelatex 报 Missing character，PDF 里是空白
-    # （期 87 子案例 5 / 06 Ruixue_Tang，案例 141）。后六个是对偶/否定形式，
+    # （期 87 子案例 5 / 06 Xiaomei_Tang，案例 141）。后六个是对偶/否定形式，
     # 均由模板已加载的 amssymb 提供（模板第 21 行 `amsmath,amssymb,...`）。
     "⊩": r"\Vdash", "⊪": r"\Vvdash", "⊫": r"\VDash",
     "⊬": r"\nvdash", "⊭": r"\nvDash", "⊮": r"\nVdash", "⊯": r"\nVDash",
     "∞": r"\infty", "∑": r"\sum", "∏": r"\prod", "√": r"\sqrt{}",
     "ℵ": r"\aleph", "℘": r"\wp", "⊕": r"\oplus", "⊗": r"\otimes",
-    "□": r"\Box", "◻": r"\Box",  # ◻=U+25FB：88-02 Lu_Jiang 源稿手打（字体无字形）
+    "□": r"\Box", "◻": r"\Box",  # ◻=U+25FB：88-02 Ning_Jiang 源稿手打（字体无字形）
     "◇": r"\Diamond", "⋄": r"\diamond",
     "∴": r"\therefore", "∵": r"\because", "∅": r"\varnothing",
     "⟨": r"\langle", "⟩": r"\rangle",  # 期 90/05 Xiaoyu_Lin（LogicA F072/F073）

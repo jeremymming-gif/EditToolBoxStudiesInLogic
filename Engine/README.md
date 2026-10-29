@@ -195,9 +195,9 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 2. **反例测试** —— 新规则必须**同时**给出「不该命中的反例」，写进 `tests/test_*.py`；
    规则取舍先跑 `ablation_corpus.py` 消融，别凭直觉（这是本项目最重要的纪律）。
 3. **代表稿** —— `convert.py` 跑三篇代表稿：`03 Jie_Zhou`（LaTeX 通道）、
-   `10 Lei_Li`（Word 通道）、`Lu_Jiang`（脚注体例 + 英文稿），人眼核版面与页数。
+   `10 Lei_Li`（Word 通道）、`Ning_Jiang`（脚注体例 + 英文稿），人眼核版面与页数。
 4. **`corpus.py` 回归** —— `$PY corpus.py`（默认 `--jobs auto` 并行；`--jobs 1` = 旧串行）；
-   判据看**逐篇明细**而不是中位数。R5 的「`docxxml` 用 `id()` 去重、`05 Yang_Hu` ±0.03pp 抖动」
+   判据看**逐篇明细**而不是中位数。R5 的「`docxxml` 用 `id()` 去重、`05 Chuan_Hu` ±0.03pp 抖动」
    已在**第 125 条**修掉（去重改用元素身份）：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，
    不一致即回归。
 5. **重建 App + 包内 `cmp`** —— `cd EditToolBox && ./build.sh`，然后逐个 `cmp`

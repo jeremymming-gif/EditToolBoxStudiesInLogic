@@ -6,10 +6,10 @@ r"""docxxml 解析的**确定性**回归（R5；**第 125 条**，2026-10-18）�
 `slcn/docxxml.py` 曾用内建 `id()` 给 lxml 元素去重（`seen_drawings` / `seen_math`）。
 lxml 的元素代理是临时对象：没有引用就会被回收，同一个 XML 节点再访问时会换一个新代理，
 `id()` 跟着变化，而且旧地址还会被其它节点复用。后果不是「多算几遍」，而是：
-  ① 同一篇稿子**不同进程**跑，产物里的公式数会飘。实测 05 Yang_Hu 的 math 段
+  ① 同一篇稿子**不同进程**跑，产物里的公式数会飘。实测 05 Chuan_Hu 的 math 段
      12 个进程里出现 **245 / 249 / 254** 三种结果（正确值应为 276 = 每个 oMath 收一次）；
   ② 靠 `id()` 巧合「去重」= 命中旧地址的整条公式**从产物里消失**，没命中的又可能**重复**；
-  ③ corpus 的 Word 中位相似度因此 ±0.03pp 不可复现（`05 Yang_Hu/raw_ratio`，R5）。
+  ③ corpus 的 Word 中位相似度因此 ±0.03pp 不可复现（`05 Chuan_Hu/raw_ratio`，R5）。
 
 修法（第 125 条，只改去重，不改处理范围）
 ------------------------------------------
@@ -24,7 +24,7 @@ lxml 的元素代理是临时对象：没有引用就会被回收，同一个 XM
      图形（run 直接子 + mc:AlternateContent 内嵌）恰好 2 个占位，不重复；
   ② 反复解析（中间丢引用 + `gc.collect()`）结果逐字相同；
   ③ 静态守卫：`docxxml.py` 不许再用内建 `id()` / `hash()` 做去重（AST 检查，注释里提到不受影响）；
-  ④ 真实稿抽查（稿件库在时；CI 上 SKIP）：05 Yang_Hu 连解析三次签名一致、公式段 = 276、
+  ④ 真实稿抽查（稿件库在时；CI 上 SKIP）：05 Chuan_Hu 连解析三次签名一致、公式段 = 276、
      矢量形状占位 = 15。
 
 用法：
@@ -218,32 +218,39 @@ check("③ docxxml.py 不用 id()/hash() 给 lxml 元素去重（AST 守卫）",
       not _offenders, "；".join(_offenders[:5]))
 
 # ══════════════════════════════════════════════════════════════════════════
-# ④ 真实稿抽查（需要稿件库；CI 上 SKIP）—— 05 Yang_Hu 是 R5 的重灾区
+# ④ 真实稿抽查（需要稿件库；CI 上 SKIP）—— 05 Chuan_Hu 是 R5 的重灾区
 # ══════════════════════════════════════════════════════════════════════════
 from slcn.paths import manuscripts_root  # noqa: E402
 
 _root = manuscripts_root()
-_yanghu = ""
+_sample = ""
 if _root:
-    _cand = os.path.join(_root, "2023年第6期(73)", "05 Yang_Hu", "original",
-                         "20160050863 revised version (2).docx")
-    if os.path.exists(_cand):
-        _yanghu = _cand
-if not _yanghu:
-    skip("④ 真实稿 05 Yang_Hu 确定性", "本机没有稿件库 / 该 docx 不在原路径")
+    # 按「期号 + 篇序号」发现目录，不硬编码作者目录名（B-269）
+    import glob as _glob4
+    for _iss in sorted(os.listdir(_root)):
+        if not _iss.endswith("(73)"):
+            continue
+        _hits = [x for x in _glob4.glob(os.path.join(_root, _iss, "05 *", "original", "**", "*.docx"),
+                                        recursive=True)
+                 if "revised version (2)" in os.path.basename(x)]
+        if _hits:
+            _sample = sorted(_hits)[0]
+            break
+if not _sample:
+    skip("④ 真实稿 确定性 pin", "本机没有稿件库 / 该 docx 不在原路径")
 else:
     _real_sigs = []
     for _ in range(3):
-        _real_sigs.append(_snapshot(read_blocks(_yanghu)))
+        _real_sigs.append(_snapshot(read_blocks(_sample)))
         gc.collect()
-    check("④ 05 Yang_Hu 连解析 3 次签名完全一致",
+    check("④ 真实稿 连解析 3 次签名完全一致",
           all(s == _real_sigs[0] for s in _real_sigs[1:]),
           f"{len({repr(s) for s in _real_sigs})} 种结果"
           if any(s != _real_sigs[0] for s in _real_sigs[1:]) else "")
-    _real_blocks = read_blocks(_yanghu)
-    check("④ 05 Yang_Hu 公式段 = 276（每个 oMath 恰好一次；曾随机丢到 245–254）",
+    _real_blocks = read_blocks(_sample)
+    check("④ 真实稿 公式段 = 276（每个 oMath 恰好一次；曾随机丢到 245–254）",
           _count(_real_blocks, "math") == 276, f"{_count(_real_blocks, 'math')}")
-    check("④ 05 Yang_Hu 矢量形状占位 = 15",
+    check("④ 真实稿 矢量形状占位 = 15",
           _count(_real_blocks, "shape") == 15, f"{_count(_real_blocks, 'shape')}")
 
 shutil.rmtree(TMP, ignore_errors=True)

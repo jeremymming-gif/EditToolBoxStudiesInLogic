@@ -101,9 +101,9 @@ for raw in ["(Kripke 2007: 301)", "(Kripke 2007: 303)"]:
           f"body={b!r} un={u!r}")
 
 REFS_G = [E("AGregory2021", "A. Gregory", "2021", "Desire as Belief")]
-b_g, u_g, _l = link_citations("（何朝安，2021）", REFS_G)
-check("(a) 分例：`（何朝安，2021）` 未被配成 AGregory2021",
-      b_g == "（何朝安，2021）" and u_g == ["（何朝安，2021）"], f"body={b_g!r} un={u_g!r}")
+b_g, u_g, _l = link_citations("（何晨，2021）", REFS_G)
+check("(a) 分例：`（何晨，2021）` 未被配成 AGregory2021",
+      b_g == "（何晨，2021）" and u_g == ["（何晨，2021）"], f"body={b_g!r} un={u_g!r}")
 
 # 说明性括号（不是引用）：`（IPCAS，1955年正式成立）` 曾被硬配成 Shen1955。
 REFS_S = [E("Shen1955", "Shen, Y. [Yuting Shen]", "1955", "Two Semantical Paradoxes")]
@@ -173,7 +173,7 @@ check("(d) 兜底（机构作者）：换成 `\\parencite{Qinghua1926}` 且页�
       f"body={b3!r} un={u3!r}")
 check("(d) 兜底（机构作者）：留下警示", len(fallback_logs(l3)) == 1, repr(fallback_logs(l3)))
 
-# d4 引用名被正则多抓了一段（真实稿 Tuomo_Aho）：证据仍指向 Peter of Spain
+# d4 引用名被正则多抓了一段（真实稿 Avery_Blake）：证据仍指向 Peter of Spain
 b4, u4, l4 = link_citations(r"(edited in \textit{Peter of Spain 1992)",
                             [E("Peter1992", "Peter of Spain", "1992")])
 check("(d) 兜底（引用名带杂字）：`\\parencite{Peter1992}`",

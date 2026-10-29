@@ -2893,10 +2893,10 @@ check("q223-verdict-multi",
         + " json=\(q223Accepted(ConvertFeature.metadataSourceVerdict(path: "/x/meta.json", source: "/x/正文.docx")))")
 let q223SampleJSON = """
 {"schema":1,"source":"/tmp/正文.docx","channel":"word","lang":"zh",
- "rows":[{"field":"author_cn","label":"第一作者","value":"唐英英",
+ "rows":[{"field":"author_cn","label":"第一作者","value":"唐敏",
           "source":"补充文件: 作者信息.docx（第 1 个）","status":"已填（补充文件）"},
          {"field":"author_en","label":"第一作者英文姓名","value":"","source":"","status":"未识别"}],
- "conflicts":["第一作者：正文已有「张三」，未采用「唐英英」"],
+ "conflicts":["第一作者：正文已有「张三」，未采用「唐敏」"],
  "unidentified":["字段「通讯作者」没有对应模板槽位"],
  "warnings":["补充信息只补空、不覆盖正文"]}
 """

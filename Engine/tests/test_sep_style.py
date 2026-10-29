@@ -112,7 +112,7 @@ print("\n── (c) 规范化：把官网那份 biblatex 抄进来要能用 ─�
 # 用户给的官网原文（一字不改）
 OFFICIAL = """\
 @InCollection{sep-logic-preference,
-\tauthor       =\t{Liu, Fenrong and van der Torre, Leon},
+\tauthor       =\t{Liu, Fang and van der Torre, Leon},
 \ttitle        =\t{{Preference Logic}},
 \tbooktitle    =\t{The {Stanford} Encyclopedia of Philosophy},
 \teditor       =\t{Edward N. Zalta and Uri Nodelman},

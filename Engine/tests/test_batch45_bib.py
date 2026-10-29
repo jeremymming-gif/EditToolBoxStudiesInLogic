@@ -88,7 +88,7 @@ check("② bibnorm 亦不把 @Comment 吞成条目",
 
 # ── ③ footnotes：作者信息不提升 / 中文期刊脚注识别 / 定位不误判 ─────────
 f_author = footnotes.classify(
-    "作者简介：任然，（1984-）女，唐山师范学院讲师。基金项目：国家社科基金项目（22AZX019）。")
+    "作者简介：任静，（1984-）女，唐山师范学院讲师。基金项目：国家社科基金项目（22AZX019）。")
 check("③ 作者信息/基金脚注 → pure_note（87-7 不再生成 junk bib 条目）",
       f_author.kind == "pure_note")
 f_cn = footnotes.classify(

@@ -633,7 +633,7 @@ def _is_null(value: str) -> bool:
     return value.strip().lower() in ("", "null")
 
 
-#: 模板未填时的占位文本（2026 年第 3 期 `07 Hu_Liu` 实测；按「缺失」处理）
+#: 模板未填时的占位文本（2026 年第 3 期 `07 Bo_Liu` 实测；按「缺失」处理）
 _PLACEHOLDERS = frozenset((
     "标题", "摘要", "第一作者", "作者姓名", "单位", "单位一", "单位二", "单位三",
     "单位四", "单位五", "第一作者单位", "作者一", "作者二", "作者一，作者二",
@@ -792,7 +792,7 @@ _UNKNOWN_CMD_RE = re.compile(r"\\([A-Za-z]+)")
 def _local_macros(text: str) -> dict[str, str]:
     """收集文章自己 `\\newcommand{\\x}{...}` 的**无参**简单宏（摘要清洗用）。
 
-    例：2026 年第 3 期 `05 YouAn_Su` 的 `\\naraba` = `\\rightarrow`。
+    例：2026 年第 3 期 `05 Chen_Su` 的 `\\naraba` = `\\rightarrow`。
     """
     out: dict[str, str] = {}
     pat = re.compile(r"\\(?:newcommand|renewcommand|providecommand)\s*\{\s*\\([A-Za-z]+)\s*\}")

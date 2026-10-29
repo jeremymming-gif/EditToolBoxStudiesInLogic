@@ -2741,7 +2741,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="导入一份 .bib（--issue/--slug 默认按往期成品 bib 入 verified）")
     imp.add_argument("--bib", required=True, help="要导入的 .bib 路径")
     imp.add_argument("--issue", default="", help="期目录名，例 `2025年第6期(85)`")
-    imp.add_argument("--slug", default="", help="作者目录名，例 `01 Xiaoyang_Wang`")
+    imp.add_argument("--slug", default="", help="作者目录名，例 `01 Lei_Wang`")
     imp.add_argument("--verified", action="store_true",
                      help="显式标记已核实（没有期/篇时用；AI 结果不要用）")
     imp.add_argument("--unverified", action="store_true",

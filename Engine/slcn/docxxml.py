@@ -6,13 +6,13 @@
 
   1. `<m:oMath>` —— OMML 公式。李雷稿的 7 个逻辑符号（¬ ∧ ∨ → ↔ ∀ ∃）就是这么消失的，
      人工成品是 `否定$\\neg$、合取$\\land$`，我们却输出成 `否定、合取`（残句）。
-  2. run 级格式 `<w:i/>` —— 斜体。Lu_Jiang 正文有 414 处斜体，人工转成 185 处
+  2. run 级格式 `<w:i/>` —— 斜体。Ning_Jiang 正文有 414 处斜体，人工转成 185 处
      `\\emph/\\textit`，我们一处都拿不到。
   3. `word/footnotes.xml` —— **整个脚注文件**。`doc.paragraphs` 只读 `word/document.xml`。
-     Lu_Jiang 的 90 条参考文献全在脚注里（12,757 字符），因此连 `reference.bib`
+     Ning_Jiang 的 90 条参考文献全在脚注里（12,757 字符），因此连 `reference.bib`
      都没能生成，正文 72 处引用全部漏掉。
 
-这三样加起来，仅 Lu_Jiang 一篇就丢了 17.4% 的内容、少 4 页。
+这三样加起来，仅 Ning_Jiang 一篇就丢了 17.4% 的内容、少 4 页。
 
 本模块按文档顺序遍历 XML，把这些信息完整取回来。
 """
@@ -75,7 +75,7 @@ def _delim_tex(name: str, default: str) -> str:
 
     `\left\langle`/`\right\rangle` 等以字母结尾：后接字母内容（`\left\langlec`）会被
     TeX 并成未定义控制词 `\langlec` → `Undefined control sequence` + `Missing delimiter`
-    （第四十四批回归：87-5 Ruixue_Tang l.387）。补一个数学模式空格即解决（空格不进版面）。
+    （第四十四批回归：87-5 Xiaomei_Tang l.387）。补一个数学模式空格即解决（空格不进版面）。
     """
     tex = DELIM_LATEX.get(name, default)
     return tex + " " if tex and tex[-1].isascii() and tex[-1].isalpha() else tex
@@ -85,7 +85,7 @@ def _script_base(b: str) -> str:
     """给 sSub/sSup 的**基**加分组，避免双重上下标。
 
     基已带上下标（以 `}` 结尾，如 `P_{r}`）时再挂 `_`/`^` 会 `! Double subscript.`
-    （第四十四批回归：repo-69-01 CiHua_Xu 的 `{∑}_{t'∈T} P_{r}_{(t')}`）。
+    （第四十四批回归：repo-69-01 Hai_Xu 的 `{∑}_{t'∈T} P_{r}_{(t')}`）。
     人工/作者 LaTeX（`copy_fom_word.tex`）同款写法是 `{P_r}_{(t')}` → 这里输出 `{P_{r}}_{(t')}`。
     """
     return "{" + b + "}" if b and b.endswith("}") else b
@@ -359,7 +359,7 @@ def _math_to_tex(raw: str) -> str:
             # ⚠️ 判据是**命令最后一个字符**是不是字母，不是 `cmd.isalpha()`：
             #    `cmd` 以反斜杠开头，`"\exists".isalpha()` 恒为 False，于是永远不加空格，
             #    实测把 `∃q` 变成 `\existsq`、`¬q` 变成 `\lnotq` → 未定义控制序列、
-            #    整篇编译失败（期 87 子案例 5 / 06 Ruixue_Tang，案例 141）。
+            #    整篇编译失败（期 87 子案例 5 / 06 Xiaomei_Tang，案例 141）。
             #    `\sqrt{}` 这类以 `}` 结尾的命令自带定界，后面直接接字母是对的。
             if cmd.endswith("}") or not cmd[-1].isalpha():
                 out.append(cmd)
@@ -377,7 +377,7 @@ def ole_object_stats(document_xml: str, names: list[str]) -> tuple[int, int]:
     为什么需要它：作者用 MathType 写的公式在 docx 里是「OLE 包 + 预览图」
     （`<w:object>` + `word/embeddings/oleObject*.bin`），**不是** OMML；
     解析器只认 `<m:oMath>`，于是这些公式会**静默从产物里消失**——不报错、日志也不提。
-    期 87 子案例 2（03 Wenjing_Du）实测：`w:object` 561 处、embeddings 567 个、
+    期 87 子案例 2（03 Juan_Du）实测：`w:object` 561 处、embeddings 567 个、
     OMML 0 处，产物 PDF 少 2 页且正文里所有公式位置都是空的。
 
     调用方（`docxsource.parse_docx`）据此给编辑一条警告；本函数保持纯函数，便于测试。
@@ -391,7 +391,7 @@ def ole_object_stats(document_xml: str, names: list[str]) -> tuple[int, int]:
 
 _SYM_TAG = re.compile(r"<w:sym\b[^>]*?/?>")
 _W_SYM_LOCAL = "sym"
-#: LogicA 字体是「私有序号」字体；下列序号是从期 87 子案例 3（04 Fayang_Ye）
+#: LogicA 字体是「私有序号」字体；下列序号是从期 87 子案例 3（04 Feng_Ye）
 #: 的 docx 与人工成品 .tex 逐处对照得出的（不是猜测）：示例 `f:A→B`、`0=∅`、
 #: `∞-群胚`、`a∈A`、`f∼g`。未列出的字体/序号仍走 `symbol_run_stats()` 警告。
 LOGICA_SYM_CHARS = {
@@ -493,7 +493,7 @@ def _math_text_latex(text: str) -> str:
                 # 第四十四批①补：`<m:t>` 里的字面花括号必须转义——OMML 的分组/上下标
                 # 都是 XML 元素，文本里的 `{`/`}` 是作者手打的字面字符；原样输出会在
                 # 数学模式里提前闭合分组 → `! Extra }, or forgotten $` / `Missing $`
-                # （repo-73-05 Yang_Hu：`\{$f(α)$,$f(β₃)}\subset P$` 型）。
+                # （repo-73-05 Chuan_Hu：`\{$f(α)$,$f(β₃)}\subset P$` 型）。
                 out.append(seg.replace("{", "\\{").replace("}", "\\}"))
             buf = []
             in_text = False
@@ -527,7 +527,7 @@ def symbol_run_stats(xml_text: str) -> dict[str, int]:
     文字、也不是 OMML 公式，而是 `<w:sym>` 符号 run。解析器只读 `<w:t>`/`<m:t>`，
     这些字符会**静默丢失**（不报错、日志也不提）。
 
-    期 87 子案例 3（04 Fayang_Ye 的 .doc）实测 39 处 LogicA 符号：`→`（3）、
+    期 87 子案例 3（04 Feng_Ye 的 .doc）实测 39 处 LogicA 符号：`→`（3）、
     `∼`、`∧`/`⊢` 等全部消失，产物正文变成 `$f:A$$B$` 这种缺符号的样子；
     人工成品是 `$f:A\to B$`。字体的 char→Unicode 映射是**字体私有**的（LogicA 的
     0x22 才是 `→`），不能靠猜硬编；所以这里只计数、由调用方警告编辑人工核对。
@@ -598,10 +598,10 @@ class Para:
 
 
 # ── 第四十五批 A：源稿正文里的「手打数学符号 / 不可渲染字符」─────────────
-# 88-02 Lu_Jiang 实测（5 期基准 P0 MISSING_CHAR）：作者把模态必然算子手打成 ◻
+# 88-02 Ning_Jiang 实测（5 期基准 P0 MISSING_CHAR）：作者把模态必然算子手打成 ◻
 # （U+25FB，Times/宋体都没有字形）→ xelatex 报 12 处 Missing character；人工成品
 # 同一位置写作 `$\Box$`。同一段还夹带 1 个变体选择符 U+E0176（不可见，无字形）。
-# 88-07 Hu_Liu 实测：正文有 1 个私用区字符 U+F0A7（任何字体都没有；人工成品此位置
+# 88-07 Bo_Liu 实测：正文有 1 个私用区字符 U+F0A7（任何字体都没有；人工成品此位置
 # 没有该字符，直接是 `Q11: Your book…`）→ 丢弃。
 # ⚠️ 只收「有实测证据」的字符，不做全量私用区清理（避免误删正常内容）。
 TEXT_MATH_SYMBOLS = {"\u25fb": r"\Box"}
@@ -732,7 +732,7 @@ def _run_segments(r, handled_math: set) -> list[Seg]:
 
     # ⚠️ <w:drawing> 常被包在 <mc:AlternateContent><mc:Choice> 里，
     #    不是 <w:r> 的直接子元素——只遍历直接子节点会完全漏掉它们。
-    #    实测 03 HaoJian_Xiao 的 6 个矢量形状就是这么漏掉的。
+    #    实测 03 Chen_Xiao 的 6 个矢量形状就是这么漏掉的。
     for d in r.iter(W_DRAWING):
         if d not in seen_drawings:
             seen_drawings.add(d)

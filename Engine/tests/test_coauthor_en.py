@@ -16,7 +16,7 @@ r"""`slcn/build.py` 的**英文合著者槽位**判据（GAP 2，2026-10-15 用�
      （= 产物与从前逐字节相同的**结构性保证**）。
   ③ 真实稿端到端（`build_docx`）：`01 Meimei_Han` 的产物里 `affiliation 2` 消失、
      英文槽位写成占位符；把源稿的英文元数据换成显式列表时按位置填真值。
-  ④ 单作者代表稿（`01 Linhe_Han`）用「旧实现」（只显式化中文槽位）与新实现各跑一次，
+  ④ 单作者代表稿（`01 Xue_Han`）用「旧实现」（只显式化中文槽位）与新实现各跑一次，
      `.tex` **逐字节相同**。
 
 不联网、不写仓库（产物一律进临时目录）、不跑 corpus.py / build.sh。
@@ -44,8 +44,8 @@ SKIPS = []
 
 _ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
 JINGRU = os.path.join(_ROOT, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
-LINHE = os.path.join(_ROOT, "2023年第5期(72)", "01 Linhe_Han", "original",
-                     "韩林合-康德论逻辑的本性-终版.docx")
+LINHE = os.path.join(_ROOT, "2023年第5期(72)", "01 Xue_Han", "original",
+                     "韩雪-康德论逻辑的本性-终版.docx")
 
 
 def check(name, cond, detail=""):
@@ -200,7 +200,7 @@ else:
 print("\n── ④ 单作者代表稿：新实现 == 旧实现（逐字节）──")
 
 if not os.path.isfile(LINHE):
-    skip("④ 单作者回归（Linhe_Han）", f"缺真实稿件（{LINHE}）")
+    skip("④ 单作者回归（Xue_Han）", f"缺真实稿件（{LINHE}）")
 else:
     with tempfile.TemporaryDirectory() as tmp:
         a = build_tex(LINHE, os.path.join(tmp, "old"), old=True)

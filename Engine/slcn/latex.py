@@ -370,7 +370,7 @@ def copy_referenced_graphics(
 ) -> list[str]:
     """把正文 `\\includegraphics` 引用到的图片从源目录复制进产物目录。
 
-    第 121 条（04 Chen_Liu 真稿）：LaTeX 通道只搬正文，图片没跟着走 →
+    第 121 条（04 Yang_Liu 真稿）：LaTeX 通道只搬正文，图片没跟着走 →
     `Unable to load picture or PDF file 'Archit.pdf'`。按源目录（+`\\graphicspath`）
     找得到就复制（保持相对路径），找不到记 warning 交给编辑。
     """

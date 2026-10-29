@@ -146,9 +146,13 @@ try:
     if not _root:
         skip("⑤ 真实稿 pin", "本机没有稿件库")
     else:
-        _docx = os.path.join(_root, "2026年第2期(87)", "06 Ruixue_Tang",
-                             "original", "260310-修订-反事实怀疑论与联结词语境主义.docx")
-        if not os.path.isfile(_docx):
+        # 按「期号 + 篇序号」发现目录，不硬编码作者目录名（B-269）
+        import glob
+        _dirs = sorted(glob.glob(os.path.join(_root, "2026年第2期(87)", "06 *")))
+        _docx = (os.path.join(_dirs[0], "original",
+                              "260310-修订-反事实怀疑论与联结词语境主义.docx")
+                 if _dirs else "")
+        if not _docx or not os.path.isfile(_docx):
             skip("⑤ 真实稿 pin", "缺 87/06 源稿")
         else:
             import zipfile

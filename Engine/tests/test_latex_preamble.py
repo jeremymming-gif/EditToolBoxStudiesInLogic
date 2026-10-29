@@ -13,7 +13,7 @@ r"""LaTeX 前言依赖迁移 + 多文件正文（**第 120 条**，2026-10-17 ma
   ① `preamble` 基础判据：包名 / tikz 库 / 定义 / 已定义名扫描；注释不算。
   ② `plan_migration()` 差集：模板已提供的不重复搬；模板管理项（ctex/geometry/
      hyperref/本刊 sty）不搬；带选项的包原样搬；`\newtheorem` 同名去重；
-     正文符号依赖自动补包（`\llbracket` → stmaryrd，02 Xiaoxuan_Fu 场景）。
+     正文符号依赖自动补包（`\llbracket` → stmaryrd，02 Chen_Fu 场景）。
   ③ `build_latex()` 端到端：`\input` 展开（`expanded_inputs` + 正文内容）；
      包/库/定义进产物且只进一次；宏按「正文可达」过滤（未用到不搬）；传递闭包；
      宏名冲突自动改名（正文与定义同步）；元数据源前言同样参与迁移。
@@ -22,7 +22,7 @@ r"""LaTeX 前言依赖迁移 + 多文件正文（**第 120 条**，2026-10-17 ma
 之后追加（只增不改）：
 
   ⑤ 评审补钉（2026-10-17 独立评审发现的问题逐条钉住）。
-  ⑥ 本地旧 .sty 的定理环境迁移（第 127 条，期 87 02 Kun_Xing）。
+  ⑥ 本地旧 .sty 的定理环境迁移（第 127 条，期 87 02 Hai_Xing）。
   ⑦ **定义位置加固**（第 130 条，2026-10-18）：本地 .sty 的六类定义 + 普通宏、
      本地 .cls / 嵌套 .def、正文区定义提示（不迁移）、定义缺失预检、Word 通道零变化；
      补丁：`\newcounter` 依赖迁移与顺序、本地非标准命名 .sty 的包行不迁（按差集搬定义）。
@@ -375,7 +375,7 @@ except Exception as e:  # noqa: BLE001
 check("⑤ P2-3：stage_original 源在 original/ 内时跳过整目录归档、不删源",
       _guard_ok, _guard_err)
 
-# 无 .bib 而正文有引用 → 明确警告（05 Zhen_Liang 场景）
+# 无 .bib 而正文有引用 → 明确警告（05 Jing_Liang 场景）
 write("nobib/main.tex", r"""\documentclass{article}
 \begin{document}
 引用 \cite{somekey}。
@@ -390,7 +390,7 @@ check("⑤ BuildResult 默认 expanded_inputs=0（Word 通道不受影响）",
       build.BuildResult("t", None, None).expanded_inputs == 0)
 
 # ══════════════════════════════════════════════════════════════════════════
-# ⑥ 本地旧 .sty 的定理环境迁移（第 127 条，期 87 02 Kun_Xing 实测）
+# ⑥ 本地旧 .sty 的定理环境迁移（第 127 条，期 87 02 Hai_Xing 实测）
 # ══════════════════════════════════════════════════════════════════════════
 # 作者交来的是旧版本刊模板稿：`\usepackage{SLCN}` 的同目录 `SLCN.sty` 里定义了
 # 一批定理环境（模板 SLCN-MIX 没有 fact）。旧 sty 被当「模板管理的包」整份跳过 →
@@ -813,7 +813,7 @@ check("⑦ Word 通道零变化：产物照常（含正文与模板字段）",
 # 症状：作者 LaTeX 稿前言写 `\usepackage[numbers,sort&compress]{natbib}`，正文用
 # `\cite`；引擎把 natbib 当普通宏包照搬进产物 → 模板的 biblatex 报
 # `Package biblatex Error: Incompatible package 'natbib'` + `\bibhang already defined`
-# → 整篇编译失败（05 Pengfei_Song）。
+# → 整篇编译失败（05 Tao_Song）。
 # 修法：模板已用 biblatex 时，natbib/gbt7714 包行不迁；正文 natbib 专用引用命令
 # 改写成 biblatex 等价命令。
 _natbib_src = r"""\documentclass{article}
@@ -860,7 +860,7 @@ check("⑧ 端到端：日志/warnings 明确说明 biblatex 取代 natbib",
 # ── 第 141 条附：bbding 与模板 marvosym 的 \Cross 重名 ─────────────────────
 # 症状：模板 SLCN-MIX/SLEN 都 `\usepackage{marvosym}`（定义 `\Cross`= \mvchr{134}）；
 # 作者前言 `\usepackage{bbding}` 也被迁过去 → 加载 bbding 时报
-# `Command \Cross already defined`，整篇编译失败（05 Pengfei_Song）。
+# `Command \Cross already defined`，整篇编译失败（05 Tao_Song）。
 _bbding_src = r"""\documentclass{article}
 \usepackage{bbding}
 \begin{document}

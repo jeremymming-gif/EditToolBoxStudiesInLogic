@@ -972,9 +972,9 @@ def self_test() -> int:
     ok_n = 0
     bad_n = 0
     with tempfile.TemporaryDirectory(prefix="slcn_tpl_") as tmp:
-        product = os.path.join(tmp, "2024_03_Jia_Chen")
+        product = os.path.join(tmp, "2024_03_Kai_Chen")
         os.makedirs(product)
-        tex = os.path.join(product, "Jia_Chen.tex")
+        tex = os.path.join(product, "Kai_Chen.tex")
         with open(tex, "w", encoding="utf-8") as fh:
             fh.write(_SELFTEST_TEX)
         with open(os.path.join(product, "reference.bib"), "w", encoding="utf-8") as fh:

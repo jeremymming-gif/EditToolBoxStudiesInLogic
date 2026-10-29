@@ -78,30 +78,30 @@ check("清单顺序：90(10)→87(9)→88(7)→89(5)→86(10)",
 _86 = {c.key: c for c in cases if c.issue == "86"}
 check("86 期 manifest：10 篇映射（1..10 ↔ 稿件仓 01..10，4/5 LaTeX）",
       len(_86) == 10
-      and _86["86-01"].author == "Yu_Chen" and _86["86-01"].author_dir == "1"
-      and _86["86-05"].author == "WeiNong_Li" and _86["86-05"].source.endswith("qiudejun0724.tex")
-      and _86["86-10"].author == "Qiqi_Wang" and _86["86-10"].author_dir == "10"
+      and _86["86-01"].author == "Fan_Yang" and _86["86-01"].author_dir == "1"
+      and _86["86-05"].author == "Wei_Qiu" and _86["86-05"].source.endswith("qiudejun0724.tex")
+      and _86["86-10"].author == "Min_Wang" and _86["86-10"].author_dir == "10"
       and _86["86-04"].source.endswith(".tex") and _86["86-05"].source.endswith(".tex")
-      and _86["86-01"].manual_dir == "01 Yu_Chen")
+      and _86["86-01"].manual_dir == "01 Fan_Yang")
 check("86 期人工 bib：05/08 用作者名 bib，其余 reference.bib",
-      {k: c.manual_bib for k, c in _86.items()}["86-05"] == "WeiNong_Li.bib"
-      and {k: c.manual_bib for k, c in _86.items()}["86-08"] == "LingXin_Cai.bib"
+      {k: c.manual_bib for k, c in _86.items()}["86-05"] == "Wei_Qiu.bib"
+      and {k: c.manual_bib for k, c in _86.items()}["86-08"] == "Min_Cai.bib"
       and {k: c.manual_bib for k, c in _86.items()}["86-01"] == "reference.bib")
 check("期 90 默认工作区 = ~/Desktop/macCaseTest90（用户已迁移）",
       batch.DEFAULT_WORKSPACES["90"].name == "macCaseTest90")
 check("期 88/89 源映射与工作区（抽查 3 篇）",
       {c.key: c.source for c in cases}["88-01"] == "original/CONSEQ2026FINAL.docx"
       and {c.key: c.source for c in cases}["89-07"].endswith("WANGYIYAN.tex")
-      and {c.key: c.author for c in cases}["88-06"] == "Zhixi_Chen")
+      and {c.key: c.author for c in cases}["88-06"] == "Hao_Chen")
 check("期 87 子案例 1–9 ↔ 作者映射",
       [c.author for c in cases if c.issue == "87"] ==
-      ["Kun_Xing", "Wenjing_Du", "Fayang_Ye", "Pengfei_Song", "Ruixue_Tang",
-       "Guangwu_Feng", "Ran_Ren", "Runcheng_Liang", "Wei_Chen"])
+      ["Hai_Xing", "Juan_Du", "Feng_Ye", "Tao_Song", "Xiaomei_Tang",
+       "Hai_Feng", "Jing_Ren", "Chen_Liang", "Jie_Chen"])
 check("期 87 作者目录 = 1..9（子案例号，不是作者名）",
       [c.author_dir for c in cases if c.issue == "87"] == [str(i) for i in range(1, 10)])
 check("期 87 人工 bib 文件名特例（sub5/sub8 用作者名）",
-      {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-5"] == "Ruixue_Tang.bib"
-      and {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-8"] == "Runcheng_Liang.bib")
+      {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-5"] == "Xiaomei_Tang.bib"
+      and {c.key: c.manual_bib for c in cases if c.issue == "87"}["87-8"] == "Chen_Liang.bib")
 _m90 = {c.key: c.manual_dir for c in cases if c.issue == "90"}
 check("期 90 人工目录 = 01..10 篇序号（作者名由稿件仓发现，不硬编码）",
       _m90["90-05"].startswith("05 ")
@@ -584,8 +584,8 @@ try:
           and batch._parse_issue_code("2022年第6A期(67A)") == "67A"
           and batch._parse_issue_code("abc") == "")
     check("输出名 sanitize：空格/非法字符/首位数字",
-          batch.sanitize_output_name("Liwu Rong") == "Liwu_Rong"
-          and batch.sanitize_output_name("Yu Chen") == "Yu_Chen"
+          batch.sanitize_output_name("Jie Rong") == "Jie_Rong"
+          and batch.sanitize_output_name("Fan Yang") == "Fan_Yang"
           and batch.sanitize_output_name("Lei_Li") == "Lei_Li"
           and batch.sanitize_output_name("1st Case") == "A_1st_Case"
           and batch.sanitize_output_name("") == "Case")
@@ -613,10 +613,10 @@ try:
           and batch.plan_ai_status(2, None) is None
           and batch.plan_ai_status(0, None) is None)
     _out = batch.convert_common_args(
-        batch.CaseSpec(key="n", issue="repo", author="Liwu Rong", author_dir="."),
+        batch.CaseSpec(key="n", issue="repo", author="Jie Rong", author_dir="."),
         docx_p, TMP / "out", TMP)[0]
     check("convert_common_args：--name 用 sanitize 输出名",
-          _out[_out.index("--name") + 1] == "Liwu_Rong")
+          _out[_out.index("--name") + 1] == "Jie_Rong")
 
     # 合成「稿件仓」：不依赖引擎 identify 的内部判据（monkeypatch 成固定返回）
     repo = TMP / "repo"
@@ -904,8 +904,8 @@ finally:
     shutil.rmtree(TMP, ignore_errors=True)
 
 fi = batch.default_cases()[14]
-check("默认清单第 15 个案例 = 87-5 Ruixue_Tang（期 90 十篇之后）",
-      fi.key == "87-5" and fi.author == "Ruixue_Tang")
+check("默认清单第 15 个案例 = 87-5 Xiaomei_Tang（期 90 十篇之后）",
+      fi.key == "87-5" and fi.author == "Xiaomei_Tang")
 
 print()
 print("=" * 66)

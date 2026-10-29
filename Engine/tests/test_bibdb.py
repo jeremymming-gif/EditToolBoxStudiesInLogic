@@ -900,7 +900,7 @@ with tempfile.TemporaryDirectory(prefix="bibdb_gui_") as tmp:
 
     # ── dry-run：只算不写（库不存在也不能被新建）──
     r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
-                "--slug", "02 Kun_Xing", "--verified", "--dry-run", "--json", "--db", db)
+                "--slug", "02 Hai_Xing", "--verified", "--dry-run", "--json", "--db", db)
     payload = json.loads(r.stdout) if r.returncode == 0 else {}
     check("(n) import-bib --dry-run --json 退出 0、标 dry_run/written/db_existed",
           r.returncode == 0 and payload.get("dry_run") is True
@@ -915,13 +915,13 @@ with tempfile.TemporaryDirectory(prefix="bibdb_gui_") as tmp:
 
     # ── 真正导入 → 再 dry-run：库文件不变、明细为空 ──
     r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
-                "--slug", "02 Kun_Xing", "--verified", "--json", "--db", db)
+                "--slug", "02 Hai_Xing", "--verified", "--json", "--db", db)
     payload = json.loads(r.stdout) if r.returncode == 0 else {}
     check("(n) 真导入：written=true、库文件出现", r.returncode == 0
           and payload.get("written") is True and os.path.isfile(db))
     digest = read_bytes(db)
     r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
-                "--slug", "02 Kun_Xing", "--verified", "--dry-run", "--json", "--db", db)
+                "--slug", "02 Hai_Xing", "--verified", "--dry-run", "--json", "--db", db)
     payload = json.loads(r.stdout) if r.returncode == 0 else {}
     check("(n) 幂等输入的 dry-run：merged=2、changes 为空、库文件逐字节不变",
           r.returncode == 0 and payload.get("report", {}).get("merged") == 2
@@ -931,14 +931,14 @@ with tempfile.TemporaryDirectory(prefix="bibdb_gui_") as tmp:
     # ── 人读输出：明说「预览 / 未写库」──
     db_human = os.path.join(tmp, "gui_human.jsonl")
     r = run_cli("import-bib", "--bib", bib, "--issue", "2026年第2期(87)",
-                "--slug", "02 Kun_Xing", "--verified", "--dry-run", "--db", db_human)
+                "--slug", "02 Hai_Xing", "--verified", "--dry-run", "--db", db_human)
     check("(n) 人读 dry-run：明说「预览」「未写库」，且库没被建出来",
           r.returncode == 0 and "预览（dry-run" in r.stdout and "未写库" in r.stdout
           and not os.path.exists(db_human), (r.stdout + r.stderr)[:300])
 
     # ── import-dir：--root 给**一期目录**时只导入这一期（界面「入藏」选整期根目录）──
     root = os.path.join(tmp, "稿件库")
-    make_issue(root, "2026年第2期(87)", "02 Kun_Xing", "reference.bib", BASE_BIB)
+    make_issue(root, "2026年第2期(87)", "02 Hai_Xing", "reference.bib", BASE_BIB)
     make_issue(root, "2025年第1期(80)", "01 Other_Author", "reference.bib",
                "@article{Other2020, author = {Other, O.}, title = {Elsewhere}, year = {2020}}\n")
     issue_dir = os.path.join(root, "2026年第2期(87)")
@@ -2540,7 +2540,7 @@ ADV_BIB = """@article{Smith2020,
 }
 
 @incollection{Chen2018,
-  author = {Chen, Wei},
+  author = {Chen, Jie},
   editor = {Brown, Bob},
   title = {Modal Semantics},
   booktitle = {Proceedings of Logic Symposium},

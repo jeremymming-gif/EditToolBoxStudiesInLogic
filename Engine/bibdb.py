@@ -136,8 +136,8 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
     export PYTHONPATH="$PWD:$PWD/vendor"
     /opt/homebrew/bin/python3.14 bibdb.py init
     /opt/homebrew/bin/python3.14 bibdb.py import-bib \
-        --bib "../Studies_in_Logic_Database/2025年第6期(85)/01 Xiaoyang_Wang/name.bib" \
-        --issue "2025年第6期(85)" --slug "01 Xiaoyang_Wang"
+        --bib "../Studies_in_Logic_Database/2025年第6期(85)/01 Lei_Wang/name.bib" \
+        --issue "2025年第6期(85)" --slug "01 Lei_Wang"
     /opt/homebrew/bin/python3.14 bibdb.py query --doi 10.1007/s10992-020-09558-5
     /opt/homebrew/bin/python3.14 bibdb.py query --title "A Theory of Everything" --author Smith
     /opt/homebrew/bin/python3.14 bibdb.py stats

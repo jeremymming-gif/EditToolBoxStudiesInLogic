@@ -6,10 +6,10 @@ r"""Word 作者启发式的**人名可信度闸门**（第 141 条，2026-10-18�
 `convert.author_from_source()` 的 Word 通道逻辑是「第 1–5 段里找一段看着像姓名的」，
 旧判据只有：长度 ≤ 40、不以句号/冒号结尾。于是**把正文当作者**：
 
-  · 期 87 子案例 2（03 Wenjing_Du）：源稿没写作者名，第 4 段正文
+  · 期 87 子案例 2（03 Juan_Du）：源稿没写作者名，第 4 段正文
     `贝叶斯主义认为，确证并非仅仅是全有或全无的定性概念……` 被当成作者，
     输出名推导成 `Yesizhuyirenwei_Bei`；
-  · 子案例 3（04 Fayang_Ye）：第 2 段 `摘  要：…`（「摘」「要」之间有空格）
+  · 子案例 3（04 Feng_Ye）：第 2 段 `摘  要：…`（「摘」「要」之间有空格）
     没命中摘要行判据，单字「摘」被当作者。
 
 这与 `naming.py` 的原则冲突：「能确定才输出，不能确定就报错让用户显式指定，绝不靠猜」。
@@ -72,9 +72,9 @@ def make_docx(path, paras):
 # ══════════════════════════════════════════════════════════════════════════
 # ① 人名判据正例/反例
 # ══════════════════════════════════════════════════════════════════════════
-for good in ("李雷", "唐瑞雪", "冯光武", "任然", "梁润成", "陈伟", "陈  波",
-             "阿依古丽·买买提", "Michael Rathjen", "Wen-fang Wang", "F. H. van Eemeren",
-             "John M. Koller", "Yingjin Xu", "Niu Ju"):
+for good in ("李雷", "唐晓梅", "冯海", "任静", "梁晨", "陈杰", "陈  松",
+             "阿依古丽·买买提", "Elena Petrova", "Anna-Maria Schmidt", "F. H. van Eemeren",
+             "John M. Koller", "Chen Xu", "Jing Niu"):
     check(f"① 正例：{good!r} 是人名", looks_like_person_name(good))
 for bad in ("", "摘", "贝叶斯主义认为", "数学基础是数学哲学研究中的重要问题",
             "摘  要：数学基础是数学哲学研究中的重要问题", "关键词：逻辑；论证",
@@ -112,29 +112,29 @@ check("② 子案例 3 形态：`摘  要：` 之后的单字/正文不再被当
 # ══════════════════════════════════════════════════════════════════════════
 _p_ok = make_docx(os.path.join(TMP, "ok.docx"), [
     "格赖斯和布兰顿的语言交流思想比较研究",
-    "冯光武 广东外语外贸大学 陈水英 湖南工程学院",
+    "冯海 广东外语外贸大学 陈霞 湖南工程学院",
     "摘要：本文比较格赖斯与布兰顿的语言交流思想。",
     "关键词：交流；意义",
 ])
 _author_ok, _ = convert.author_from_source(_p_ok)
-check("③ 姓名 + 单位行仍读出第一作者（冯光武）", _author_ok == "冯光武", repr(_author_ok))
+check("③ 姓名 + 单位行仍读出第一作者（冯海）", _author_ok == "冯海", repr(_author_ok))
 
 _p_dash = make_docx(os.path.join(TMP, "dash.docx"), [
     "陈那派与正理派论战的跨文化思考",
-    "任然  张晓翔",
+    "任静  张小帆",
     "摘要：本文讨论陈那派与正理派的论战。",
 ])
 _author_dash, _ = convert.author_from_source(_p_dash)
-check("③ 多作者空格分隔仍取第一个（任然）", _author_dash == "任然", repr(_author_dash))
+check("③ 多作者空格分隔仍取第一个（任静）", _author_dash == "任静", repr(_author_dash))
 
 # ④ 拉丁姓名照旧（旧宽松口径不回退）
 _p_en = make_docx(os.path.join(TMP, "en.docx"), [
     "A Study of Logic",
-    "Michael Rathjen",
+    "Elena Petrova",
     "Abstract: This paper studies logic.",
 ])
 _author_en, _ = convert.author_from_source(_p_en)
-check("④ 英文作者行照旧（Michael Rathjen）", _author_en == "Michael Rathjen", repr(_author_en))
+check("④ 英文作者行照旧（Elena Petrova）", _author_en == "Elena Petrova", repr(_author_en))
 
 import shutil  # noqa: E402
 

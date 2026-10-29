@@ -87,7 +87,7 @@ CI 上就是这样，所以 CI 不该因为它们红。
 4. **全库回归**：`python3 corpus.py`（默认 `--jobs auto` 并行，约 2 分钟；`--jobs 1` = 旧串行），
    看逐篇明细而不是中位数；R5 的非确定性（`docxxml` 用 `id()` 去重 `<w:drawing>`/`<m:oMath>`）
    **已在第 125 条修掉**：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，不一致即回归。
-   历史基线数字的 ±0.03pp 抖动（`05 Yang_Hu`）见 `EditToolBox-notes/cases/62+.md` 第 122/125 条。
+   历史基线数字的 ±0.03pp 抖动（`05 Chuan_Hu`）见 `EditToolBox-notes/cases/62+.md` 第 122/125 条。
 5. **重建 App + 包内 cmp**：`./build.sh` 之后逐个比对包内引擎文件与仓库同名文件（"包内引擎过期"踩过）。
 6. **文档一致性**：`python3 tests/test_docs_consistency.py`（第四十一批 O2 起默认 `--no-test-runs`：
    不重复跑套件，**AUTO 的「测试计数行」不在此校验**）；**因此 full 之外必须显式跑一次

@@ -15,7 +15,7 @@
 4. `defined_names()` / `select_custom_macros()`：宏名冲突判据——模板用
    `\\newtheorem{prop}` 定义的 `\\prop`、或 `\\usepackage[all]{xy}` 里的 `\\ar`，
    文本扫描 `\\newcommand` 是看不到的，这里补上；
-5. 正文**没用到**的 `\\newcommand` 不搬（如 07 Yiyan_Wang 前言里的 `\\ar`，正文根本
+5. 正文**没用到**的 `\\newcommand` 不搬（如 07 Fang_Wang 前言里的 `\\ar`，正文根本
    没引用，搬过去反而与 xy 的 `\\ar` 冲突）——只搬正文可达的那些，并做传递闭包。
 
 **不做什么**：不改 `.bib`；不搬 `\\documentclass` / `\\setmainfont` 等版面级设置；
@@ -55,7 +55,7 @@ from .latex import (
 
 # 模板自己管理的宏包：作者稿里即使写了也不搬（选项/顺序与模板冲突，且模板是权威）。
 # 当前 .sty 的名字（如 SLCN-MIX）由调用方追加进来。
-# 第四十五批 A（86-05 WeiNong_Li 实测）：正文环境 → 提供该环境的宏包。
+# 第四十五批 A（86-05 Wei_Qiu 实测）：正文环境 → 提供该环境的宏包。
 # 作者常把宏包行写进同目录旧 .sty 而不是主前言；换用新模板后环境就没了。
 # 只收「已实测需要 + 与模板无冲突」的环境；其余仍走定义缺失预检 warning。
 ENV_PACKAGE_HINTS = {
@@ -79,7 +79,7 @@ TEMPLATE_MANAGED_PACKAGES = frozenset({
 # 模板 SLCN-MIX / SLEN 都在导言区 `\usepackage[backend=biber,...]{biblatex}`；
 # 作者若写 natbib / gbt7714（前者最常见），把包行照搬过来就是
 # `Package biblatex Error: Incompatible package 'natbib'` + `\bibhang already defined`
-# + 编译失败（期 87 子案例 4 / 05 Pengfei_Song 实测）。
+# + 编译失败（期 87 子案例 4 / 05 Tao_Song 实测）。
 # 处理：包行不迁；正文里的 natbib 专用引用命令改写成 biblatex 的等价命令，
 # 作者用的裸 `\cite` 在 biblatex 里本来就有定义，不用改。
 BIBLATEX_REPLACED_PACKAGES = frozenset({"natbib", "gbt7714"})
@@ -95,7 +95,7 @@ NATBIB_TO_BIBLATEX = {
 # 与**模板已加载宏包**重合同名命令的作者宏包（第 141 条，2026-10-18）。
 # 判据：只要模板里出现 `trigger` 里的任一宏包名，就说明该命令已由模板定义，
 # 作者再 `\usepackage` 这个包会在加载时报 `Command \X already defined` → 整篇失败。
-# 实测：期 87 子案例 4（05 Pengfei_Song）作者前言有 `\usepackage{bbding}`，而模板
+# 实测：期 87 子案例 4（05 Tao_Song）作者前言有 `\usepackage{bbding}`，而模板
 # SLCN-MIX/SLEN 都加载 marvosym（`\Cross` 由它定义）→ `Command \Cross already defined`。
 # 处理：整包不迁 + 明确警告（作者若真用到 bbding 专有符号，编译会在正文处报
 # Undefined control sequence，编辑按警告补即可；这比「加载阶段直接炸掉」可诊断）。
@@ -106,7 +106,7 @@ PACKAGE_COMMAND_CONFLICTS: dict[str, tuple[str, str]] = {
 
 # 常用「符号宏 → 宏包」对照（第 120 条，2026-10-17）。只收**符号类、不改变版面**的窄口
 # 映射：作者正文用了这些宏、但作者前言与模板都没加载对应宏包时自动补上。实测 02
-# Xiaoxuan_Fu 正文用了 \llbracket / \rrbracket（来自 stmaryrd），而它们只藏在作者同目录
+# Chen_Fu 正文用了 \llbracket / \rrbracket（来自 stmaryrd），而它们只藏在作者同目录
 # 的旧版 SLCN.sty 里——模板差集看不到，编译就报 Undefined control sequence。
 # 不碰 times / geometry / authblk 这类**版面级**宏包（那应由模板决定，不能从作者旧稿搬）。
 SYMBOL_PACKAGES: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -556,7 +556,7 @@ _PKG_LINE_SCAN_RE = re.compile(
 def env_package_lines(source_text: str, source_dir: str, body_text: str) -> list[str]:
     r"""正文用到、模板缺环境时，从**源稿确实写过**的本地支撑文件里取宏包行。
 
-    第四十五批 A（86-05 WeiNong_Li 实测）：正文用 `algorithm`/`algorithmic`，宏包行
+    第四十五批 A（86-05 Wei_Qiu 实测）：正文用 `algorithm`/`algorithmic`，宏包行
     写在作者同目录的旧 `SLCN.sty`（`\usepackage{algorithm}` / `\usepackage{algpseudocode}`）
     而不是主前言；初排换成现行模板后编译报
     `Environment algorithm undefined` / `\caption outside float`，整篇 rc=2。
@@ -844,7 +844,7 @@ def _plan_local_definitions(
     """
     # ── 本地支撑文件里的定义（第 127 条环境 → 第 130 条扩到六类 + 普通宏）──────
     # 作者交来的旧模板稿常把定义放在同目录的 .sty/.cls/.def/.cfg 里：定理环境
-    # （第 127 条，期 87 02 Kun_Xing）只是其中一类；普通宏（\definitionnamechange、
+    # （第 127 条，期 87 02 Hai_Xing）只是其中一类；普通宏（\definitionnamechange、
     # \cp/\cpp）、算子、列类型、颜色也在那里（2023(71) 04、2024(75) 05 真稿）。
     # 判据仍是「正文真正用到 + 模板没有」：旧文件往往同时是旧版完整模板，整份搬
     # 会破坏现行模板；模板已有的名字一律不搬（模板权威）。两种"不搬"必须说清楚：
@@ -1218,7 +1218,7 @@ def select_custom_macros(
     `{旧名: 新名}`（无冲突时为空）。
 
     为什么按「正文可达」过滤：作者前言里常有**正文根本没用**的定义（实测 07
-    Yiyan_Wang 的 `\\newcommand{\\ar}`），照搬会与模板加载的宏包（xy 的 `\\ar`）
+    Fang_Wang 的 `\\newcommand{\\ar}`），照搬会与模板加载的宏包（xy 的 `\\ar`）
     撞名而编译失败。传递闭包保证「A 用到 B、B 用到 C」时 B、C 也会搬。
     为什么改名而不是跳过：正文确实用到了、名字又被模板占了（如模板
     `\\newtheorem{prop}` 占住 `\\prop`），跳过会让正文里那几处直接变成未定义命令。

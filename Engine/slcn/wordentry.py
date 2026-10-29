@@ -66,7 +66,7 @@ def parse_reference_line(line: str) -> RefEntry | None:
 #: 中文逗号风格（本刊作者来稿里极常见）：
 #:   `陈清泚，“论证研究的认知社会学路径”，《自然辩证法研究》，2020年第2期，第103–108页。`
 #:   `郑建国，逻辑悖论研究引论，北京：人民出版社，2014年。`
-#:   `王雪君、郭佳宏，“对‘意外考试’悖论的一种非确定论解释”，世界哲学，2022年第1期，第152-159页。`
+#:   `王雪君、郭静，“对‘意外考试’悖论的一种非确定论解释”，世界哲学，2022年第1期，第152-159页。`
 #: 特征：作者到第一个**中文逗号**，题名到第二个，年份在后面的部分。英文/GB 风格走上面的 `_REF_RE`。
 _REF_CN_RE = re.compile(
     r"^(?P<author>[^，。；;]{2,60})[，,]\s*"
@@ -262,7 +262,7 @@ def _src_line_keys_for_works(doc, ref: str) -> list[str]:
     return keys if len(keys) >= 2 else []
 
 
-#: 英文「全名 + 年份在后」的参考文献区格式（期 88 / 06 Zhixi_Chen 真稿实测）：
+#: 英文「全名 + 年份在后」的参考文献区格式（期 88 / 06 Hao_Chen 真稿实测）：
 #:   `Jacobs, Scott, Jackson, Sally, 1989. Building a model of conversational argument. In …`
 #:   `Van Eemeren, Frans et al. 2014. Handbook of Argumentation Theory. …`
 #: 特征：作者是「姓, 名」成对用逗号连写（可带 et al./&），**年份在作者后、后跟句点**。
@@ -288,7 +288,7 @@ def _initials(given: str) -> str:
 
 
 def _parse_reference_line_en_fullname(s: str) -> RefEntry | None:
-    """解析 `Surname, Given, Surname2, Given2, YYYY. Title…` 英文条目（06 Zhixi_Chen 型）。"""
+    """解析 `Surname, Given, Surname2, Given2, YYYY. Title…` 英文条目（06 Hao_Chen 型）。"""
     if re.search(r"[\u4e00-\u9fa5]", s):
         return None
     if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
@@ -660,7 +660,7 @@ def _numbered_refs(
     first_mark = re.search(r"(?:^|\n)\s*[\[\(（]\s*\d{1,3}\s*[\]\)）]", text_all)
     # ⚠️ 只有「确实存在编号标记」时，首个标记前那一行才是「漏编号的第 1 条」；
     #    整份没有编号的（人年制英文/中文清单）必须交给 `parse_reference_line` 通道，
-    #    否则会被当成 N 条无编号条目、覆盖掉正确解析（期 88 Tuomo_Aho 实测）。
+    #    否则会被当成 N 条无编号条目、覆盖掉正确解析（期 88 Avery_Blake 实测）。
     prefix = text_all[: first_mark.start()] if first_mark else ""
     prefix_lines = [
         line.strip() for line in prefix.splitlines()
@@ -804,7 +804,7 @@ def _make_key_core(a: str, year: str, disambiguate: str = "") -> str | None:
 def make_key(e: RefEntry, disambiguate: str = "") -> str:
     """生成 bib 键。优先中文译名表，其次中文姓取拼音，再次西文姓。
 
-    案例 74（2024_01_Wenwen_Jiao）：**分类之前先剥零宽/BOM**。
+    案例 74（2024_01_Min_Jiao）：**分类之前先剥零宽/BOM**。
     这批西文文献的作者串以不可见字符开头（`'\\ufeffS. Blackburn'`、`'\\ufeffR. Audi'`），
     于是 `re.match(r"^[A-Za-z]", a)` 失配，本可以正常生成 `SBlackburn1998` 的条目
     只好走兜底键。实测该篇 16 条、全库 5 篇共 39 条落到兜底。
@@ -827,7 +827,7 @@ def make_key(e: RefEntry, disambiguate: str = "") -> str:
     # 兜底键必须**确定**（案例 74 的第二半）：
     # ⚠️ 不能用内置 `hash()`。CPython 对 str 的 `hash()` 受 **PYTHONHASHSEED 随机化**
     #    影响（每个进程都不同），因此同一个 `docxsource.py` 对同一份稿子在两个进程里
-    #    会给出**不同的 bib 键**——实测同一篇 2024_01_Wenwen_Jiao：
+    #    会给出**不同的 bib 键**——实测同一篇 2024_01_Min_Jiao：
     #      进程 1：ref56162006, ref30821998, ref10261987 …
     #      进程 2：ref36242006, ref46911998, ref64241987 …
     #    后果是正文里的 `\parencite{ref…}` 与 `reference.bib` 一起抖，产物不可复现，

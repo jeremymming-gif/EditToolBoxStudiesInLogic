@@ -81,7 +81,7 @@ def _tex_stats(path: str) -> dict:
 
 # macOS 解压 zip 时产生的垃圾，绝不能当成源稿：
 #   __MACOSX/ 目录，以及其中的 ._xxx AppleDouble 存根（每个只有 200~300 字节）。
-# 实测 03 Da_Fan 的 original/ 里就有 __MACOSX/，识别器一度把
+# 实测 03 Ning_Fan 的 original/ 里就有 __MACOSX/，识别器一度把
 # `._Focused Counterfactuals.tex`（275 字符）当成了正文源，相似度掉到 0.97%。
 _JUNK_DIRS = {"__MACOSX", ".Spotlight-V100", ".Trashes", ".fseventsd", ".DocumentRevisions-V100"}
 
@@ -111,7 +111,7 @@ EN_META_FIELDS = ("title_en", "subtitle_en", "abstract_en",
 
 # 「元数据表」= 除题名/作者/摘要/关键词之外**没有叙述正文**。
 #   · `当代逻辑论题鸟瞰英文摘要.docx`：doc.body 为空（整份文件就是一张表）→ 命中；
-#   · 同目录的**另一篇英文全文稿**（如 02 Lu_Jiang 的英文稿）：doc.body 上万字符
+#   · 同目录的**另一篇英文全文稿**（如 02 Ning_Jiang 的英文稿）：doc.body 上万字符
 #     → 不命中。这一条是必需的：否则会把**另一篇文章**的英文题名/摘要塞进本篇。
 _EN_SHEET_MAX_BODY = 200
 
@@ -440,7 +440,7 @@ def _docx_score(path: str) -> tuple[float, str]:
 def pick_main_docx(paths: list[str]) -> tuple[str, str]:
     """从多份 docx 里挑出正文档。全部都不像正文时返回 ('', 原因)。
 
-    实测 05 Zhen_Liang 的 original/ 里只有「缩写英文全称表.docx」「缩写汉译表.docx」，
+    实测 05 Jing_Liang 的 original/ 里只有「缩写英文全称表.docx」「缩写汉译表.docx」，
     正文其实是 PDF。这种必须判为无可用源，而不是拿一张缩写表去生成空稿。
     """
     if not paths:
@@ -473,7 +473,7 @@ def extract_body_text(text: str) -> str:
                 body = body[nl:]
     # 截到参考文献之前
     # 第 121 条：`\bibliographystyle` 是 BibTeX 时代的参考文献区起点；作者常把它写在
-    # `\begin{document}` 之后（03 Zhentao_Zhang 真稿），留在正文里会与模板 biblatex 冲突。
+    # `\begin{document}` 之后（03 Tao_Zhang 真稿），留在正文里会与模板 biblatex 冲突。
     for marker in ("\\printbibliography", "\\bibliographystyle", "\\bibliography{",
                    "\\begin{thebibliography}", "\\end{document}"):
         j = body.find(marker)

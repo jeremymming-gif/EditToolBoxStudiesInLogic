@@ -4,13 +4,13 @@ r"""英文来稿（期 88 实例测试用例三）暴露问题的回归判据（
 期 88 七篇英文来稿实测：编译 4/7、发现 3 个引擎 bug + 4 个英文 Word 解析缺陷。
 本套件逐条钉住修复（纯离线；不跑 xelatex）：
 
-  ① `\bibliographystyle` 在正文里（03 Zhentao_Zhang）→ 取正文时截掉；
-  ② 无花括号 `\newcommand\revieww` 要能解析/迁移（04 Chen_Liu）；
-  ③ 正文 `\includegraphics` 引用的图片要复制进产物目录（04 Chen_Liu）；
-  ④ `...` 后紧跟字母时输出 `\ldots{}`，不能粘成 `\ldotsx`（05 YouAn_Su）；
+  ① `\bibliographystyle` 在正文里（03 Tao_Zhang）→ 取正文时截掉；
+  ② 无花括号 `\newcommand\revieww` 要能解析/迁移（04 Yang_Liu）；
+  ③ 正文 `\includegraphics` 引用的图片要复制进产物目录（04 Yang_Liu）；
+  ④ `...` 后紧跟字母时输出 `\ldots{}`，不能粘成 `\ldotsx`（05 Chen_Su）；
   ⑤ 引擎自己写的 `<产物>.<时间戳>.bak` 算自己的产物（重跑不被拦）；
   ⑥ 英文「论述性脚注」降级为纯注释（01/02，且不含中文——中文脚注零变化）；
-  ⑦ 英文文末参考文献「全名 + 年份在后」格式能解析（06 Zhixi_Chen）；
+  ⑦ 英文文末参考文献「全名 + 年份在后」格式能解析（06 Hao_Chen）；
   ⑧ 英文无样式小标题：`N)` 编号 + 无编号 Title Case 短段（02/07）。
   ⑨ 真实稿语料在时做端到端抽查（不在则 SKIP）。
 
@@ -214,18 +214,18 @@ else:
     if all((tuomo, zhixi, hu, lu)):
         d1 = DS.parse_docx(tuomo)
         # 短英文文献脚注（有 p./pp. 或出版社词）仍按文献条目保留；散文脚注降级为注释。
-        check("⑨ 01 Tuomo_Aho：垃圾 bib 大幅减少（散文脚注不再进 bib）",
+        check("⑨ 01 Avery_Blake：垃圾 bib 大幅减少（散文脚注不再进 bib）",
               len(d1.bib_entries) <= 12, f"{len(d1.bib_entries)}")
-        check("⑨ 01 Tuomo_Aho：散文脚注保留为注释", d1.footnote_notes >= 40,
+        check("⑨ 01 Avery_Blake：散文脚注保留为注释", d1.footnote_notes >= 40,
               f"{d1.footnote_notes}")
         d2 = DS.parse_docx(zhixi)
-        check("⑨ 06 Zhixi_Chen：英文全名参考文献能批量解析", len(d2.refs) >= 40,
+        check("⑨ 06 Hao_Chen：英文全名参考文献能批量解析", len(d2.refs) >= 40,
               f"{len(d2.refs)}")
         d3 = DS.parse_docx(hu)
-        check("⑨ 07 Hu_Liu：无样式小标题识别 ≥ 8 个", len(d3.headings) >= 8,
+        check("⑨ 07 Bo_Liu：无样式小标题识别 ≥ 8 个", len(d3.headings) >= 8,
               f"{len(d3.headings)}")
         d4 = DS.parse_docx(lu)
-        check("⑨ 02 Lu_Jiang：`N)` 小标题补上（总数 ≥ 10）", len(d4.headings) >= 10,
+        check("⑨ 02 Ning_Jiang：`N)` 小标题补上（总数 ≥ 10）", len(d4.headings) >= 10,
               f"{len(d4.headings)}")
     else:
         skip("⑨ 真实稿抽查（期 88 英文来稿）", "期 88 有的 docx 不在原路径")

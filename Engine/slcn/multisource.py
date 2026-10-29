@@ -150,7 +150,7 @@ _LATEX_SYM = re.compile(r"\\(Box|Diamond|forall|exists|alpha|beta|neg|land|lor|t
 
 def _looks_like_article(text: str) -> bool:
     """判断是不是**完整的稿件**（有摘要/关键词，或正文够长且成段）。"""
-    # 纯参考文献文件不能算稿件。实测 01 Ulrich_Kohlenbach 的
+    # 纯参考文献文件不能算稿件。实测 01 Weston_Cole 的
     # `bibitem单列….docx` 就是一串 \bibitem，段落够长够多，
     # 会被误判成「另一个完整稿件版本」。
     if text.count("\\bibitem") >= 3:

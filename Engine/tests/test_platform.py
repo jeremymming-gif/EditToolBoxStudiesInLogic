@@ -1163,7 +1163,7 @@ _n5 = _wr.incollection_editor_list("in The Importance of What We Care About, 200
 _n5j = _wr.incollection_editor_list("in Journal of Philosophy, 68(1): 5-20", allow_c=False)
 _n5s = _wr.incollection_editor_list("in The Importance of What We Care About, p. 262", allow_c=False)
 _d3 = _wr.incollection_editor_list("in J. W. Davis, D. J. Hockney and W. K. Wilson (eds.), Philosophical Logic, Dordrecht: D. Reidel Publishing Company, pp. 74-88", allow_c=False)
-_coll = _fr.parse_numbered_item("沃斯、费布鲁赫、库伊（著），黄海婷（译），从哈克标准看知道者悖论的解决方案，逻辑学动态与评论，2025年第1辑（总第7辑）：3-36。")
+_coll = _fr.parse_numbered_item("沃斯、费布鲁赫、库伊（著），黄婷（译），从哈克标准看知道者悖论的解决方案，逻辑学动态与评论，2025年第1辑（总第7辑）：3-36。")
 check("(m6) D N5：`in 书名, 2005` 出 booktitle（allow_c=False 也认）；期刊/无年份短引不认；"
       "`in 编者 (eds.), 书名` 出 booktitle+editor；中文集刊 → @incollection；"
       "bibrender 无循环、footnotes re-export is 同一对象",

@@ -418,9 +418,9 @@ shutil.rmtree(_clean_dir, ignore_errors=True)
 # 真跑一次「检查tex信息」的预览：造一期合成稿件 → 引擎 → 解 JSON 填表格
 import json as _json  # noqa: E402
 _ic_dir = tempfile.mkdtemp(prefix="slcn_win_ic_")
-_art = os.path.join(_ic_dir, "01 Lu_Wang")
+_art = os.path.join(_ic_dir, "01 Ning_Wang")
 os.makedirs(_art, exist_ok=True)
-open(os.path.join(_art, "Lu_Wang.tex"), "w", encoding="utf-8").write(
+open(os.path.join(_art, "Ning_Wang.tex"), "w", encoding="utf-8").write(
     "\\documentclass[b5paper,10.5t,onecolumn,twoside]{ctexart}\n"
     "\\newcommand{\\myvolnumber}{19}      % 输入卷号\n"
     "\\newcommand{\\myissnumber}{5}       % 输入当年期号\n"
@@ -1169,7 +1169,7 @@ check("(i) 笔记仓/引擎脚本能定位（打包或开发形态都行；找�
 
 # 从路径推断来源期/篇目录名：判据与引擎 paths.ISSUE_RE / bibdb 作者目录正则同一口径
 _infer_cases = [
-    (r"D:\稿件\2026年第2期(87)\02 Kun_Xing\reference.bib", ("2026年第2期(87)", "02 Kun_Xing")),
+    (r"D:\稿件\2026年第2期(87)\02 Hai_Xing\reference.bib", ("2026年第2期(87)", "02 Hai_Xing")),
     ("/库/2025年第6期(85)/07-A_Author/x.bib", ("2025年第6期(85)", "07-A_Author")),
     ("/库/2026年第5期(90)/main.tex", ("2026年第5期(90)", "")),
     ("/tmp/随便一个目录/x.bib", ("", "")),

@@ -224,7 +224,7 @@ check("⑤b 判据函数：只在「首段（著）+ 次段（译/点校）」�
 # ⑤c 编号清单入口的「题名短于 4 字就丢掉」例外：**完整的**著/译形态下题名可能是 3 字书名
 #     （实测 `亚里士多德（著），张竹明（译），物理学，…`；丢掉整条会让正文 \parencite 悬空）。
 #     反例：只有（著）没有（译）时**不**放行——那时短「题名」多半是把译者/刊名切错了
-#     （实测 06 Mengyun_Wu：`亚里士多德（著）` + `颜一`，放行会多出一条垃圾条目）。
+#     （实测 06 Min_Wu：`亚里士多德（著）` + `颜一`，放行会多出一条垃圾条目）。
 from slcn.bibcheck import author_has_role_mark  # noqa: E402
 from slcn.docxsource import _numbered_refs  # noqa: E402
 

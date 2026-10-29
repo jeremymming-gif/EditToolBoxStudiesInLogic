@@ -31,7 +31,7 @@ from slcn import proofcheck as _pc  # noqa: E402
 def _guess_lang(tex: str, tex_path: str, given: str) -> str:
     """判语种：优先用引擎自己的 `convert.detect_lang`（看模板字段 mytitleCN/mytitleEN）。
 
-    ⚠️ 不要只看汉字比例：英文稿也带中文题名与摘要（实测 2024_03_Xiaoyang_Wang），
+    ⚠️ 不要只看汉字比例：英文稿也带中文题名与摘要（实测 2024_03_Lei_Wang），
     按比例会被判成中文稿，于是中文规则去管英文正文 —— 那正是 2026-10-15 第一版的问题。
     """
     if given in ("zh", "en"):

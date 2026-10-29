@@ -88,11 +88,11 @@ check("① 英文「参阅 X, “题名”, 出版信息…」→ reference_entr
       and str(_en.entry.get("year", "")) == "1962",
       f"kind={_en.kind_new} entry={_en.entry}")
 
-_cn = F.classify_citation("参阅徐佳明：《贝叶斯方法的基本原理及其哲学意蕴》，"
+_cn = F.classify_citation("参阅徐强：《贝叶斯方法的基本原理及其哲学意蕴》，"
                           "《哲学分析》2026年第1期。")
 check("① 中文「参阅 作者：《题名》，《刊名》年份」→ reference_entry（90-07 #45）",
       _cn.kind_new == F.CITATION_ENTRY
-      and str(_cn.entry.get("author", "")) == "徐佳明"
+      and str(_cn.entry.get("author", "")) == "徐强"
       and str(_cn.entry.get("title", "")) == "贝叶斯方法的基本原理及其哲学意蕴",
       f"kind={_cn.kind_new} entry={_cn.entry}")
 
@@ -154,7 +154,7 @@ check("③ Hacking 型：mixed_split + 干净 APA 字段 + note_before 保留「
 
 _multi = F.classify_citation(
     "笔者在若干关于真理的论文中，已经把枚举归纳法作为确立事实的方法。"
-    "参阅徐佳明：《归纳使真者与真之定义——基于系统本体论的统一多元真理论》，"
+    "参阅徐强：《归纳使真者与真之定义——基于系统本体论的统一多元真理论》，"
     "《武汉科技大学学报》，2024年第1期；《功能主义真理论的新进展：归纳-符合"
     "使真者理论》，《哲学分析》2025年第1期。")
 check("③ 多作品混合：multi_work + 两段题名（同段《刊名》不算第二部作品）",
@@ -228,10 +228,10 @@ _key4, _w4 = F.resolve_citation(_probe, _amb, strict=True)
 check("⑤ 负例：同档多候选（不同键）→ strict 拒绝（不猜）",
       _key4 is None and _w4 is not None, f"key={_key4}")
 
-_notitle = F.Footnote(fid=4, text="参见徐佳明，第66页。", ref_raw="参见徐佳明，第66页。")
-_ty_entries = [("Xu2024", {"author": "徐佳明", "title": "归纳使真者与真之定义",
+_notitle = F.Footnote(fid=4, text="参见徐强，第66页。", ref_raw="参见徐强，第66页。")
+_ty_entries = [("Xu2024", {"author": "徐强", "title": "归纳使真者与真之定义",
                              "year": "2024"}, ""),
-               ("Xu2025", {"author": "徐佳明", "title": "功能主义真理论的新进展",
+               ("Xu2025", {"author": "徐强", "title": "功能主义真理论的新进展",
                              "year": "2025"}, "")]
 _key5, _w5 = F.resolve_citation(_notitle, _ty_entries, strict=True)
 check("⑤ 负例：无题名（仅作者+页码）→ strict 拒绝（tier 4 不算）",
@@ -242,8 +242,8 @@ print("── ⑥ 文末清单原文行 → 既有键（唯一命中才算） �
 _fake_doc = SimpleNamespace(
     ref_raw_lines=[
         "[1] 托马斯•库恩：《科学革命的结构》（第四版），北京大学出版社，2012年。",
-        "[2] 徐佳明：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。",
-        "[3] 徐佳明：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期。",
+        "[2] 徐强：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。",
+        "[3] 徐强：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期。",
     ],
     ref_key_by_num={1: "Tuo2012", 2: "Xu2026", 3: "Xu2024"},
     refs=[],
@@ -262,18 +262,18 @@ check("⑥ 负例：题名过短（归一后 <4 字符）→ 不命中",
 check("⑥ 多作品 → 逐作品唯一命中才返回（90-07 #27）",
       _src_line_keys_for_works(
           _fake_doc,
-          "徐佳明：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期；"
+          "徐强：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期；"
           "《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。")
       == ["Xu2024", "Xu2026"],
       _src_line_keys_for_works(
           _fake_doc,
-          "徐佳明：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期；"
+          "徐强：《归纳使真者与真之定义》，《武汉科技大学学报》，2024年第1期；"
           "《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。"))
 
 _fake_prefix = SimpleNamespace(
     ref_raw_lines=["说明行（非清单）",
                    "[1] 托马斯•库恩：《科学革命的结构》，北京大学出版社，2012年。",
-                   "[2] 徐佳明：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。"],
+                   "[2] 徐强：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。"],
     ref_key_by_num={1: "Tuo2012", 2: "Xu2026"},
     refs=[],
 )
@@ -360,7 +360,7 @@ _docx = _make_docx(
     [
         "W. C. Salmon, The Foundations of Scientific Inference, Pittsburgh: "
         "University of Pittsburgh Press, 1966.",
-        "徐佳明：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。",
+        "徐强：《贝叶斯方法的基本原理及其哲学意蕴》，《哲学分析》2026年第1期。",
         "托马斯•库恩：《科学革命的结构》（第四版），金吾伦、胡新和 译，"
         "北京：北京大学出版社，2012年。",
     ],

@@ -148,7 +148,7 @@ class DocxDoc:
     keywords: str = ""
     # 中英双栏：英文文章的原稿常常先放英文题名/摘要/关键词，再放中文一套。
     # 若只取「第一个 Keywords 之后」当正文，就会把中文题名和中文摘要当成正文——
-    # 实测这让 02 Lu_Jiang 的内容准确率掉到 8.7%。
+    # 实测这让 02 Ning_Jiang 的内容准确率掉到 8.7%。
     title_cn: str = ""
     title_en: str = ""
     abstract_cn: str = ""

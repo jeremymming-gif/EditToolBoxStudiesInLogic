@@ -141,7 +141,7 @@ def detect_lang(source: str, metadata: str | None = None) -> tuple[str, str]:
                      if isinstance(b, Para) and segs_to_text(b.segs).strip()]
             # ⚠️ 只看**题名**，不要看前几段。英文稿的 docx 顺序常是
             #   英文题名 → 英文摘要 → 英文关键词 → 中文题名 → 中文摘要 → 中文关键词 → 正文，
-            #   取前 6 段会把中文块算进去，把英文稿误判成中文稿（实测 02 Lu_Jiang）。
+            #   取前 6 段会把中文块算进去，把英文稿误判成中文稿（实测 02 Ning_Jiang）。
             title = paras[0] if paras else ""
             if _has_cjk(title):
                 return "zh", f"题名以中文为主：{title[:24]}"
@@ -187,11 +187,11 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
 
             paras = [segs_to_text(b.segs).strip() for b in read_blocks(source)
                      if isinstance(b, Para) and segs_to_text(b.segs).strip()]
-            # 第 2 段常是「姓名, 单位, 邮编」（实测 Lu Jiang, Department of Philosophy,
+            # 第 2 段常是「姓名, 单位, 邮编」（实测 Ning Jiang, Department of Philosophy,
             # Sun Yat-sen University, 510275 共 76 字）。必须**先去单位再判断长度**，
             # 否则整段超长被挡掉，作者就读不出来了。
             # ⚠️ 原稿常见排布是「题名 → 副标题 → 作者」（实测 07 Jiayi_He：
-            #   [0] 题名  [1] ——评示例归纳论者…  [2] 何嘉怡 徐佳明）。
+            #   [0] 题名  [1] ——评示例归纳论者…  [2] 何嘉怡 徐强）。
             #   直接取第 2 段会把副标题当作者，输出名变成一串乱拼音。
             for i in range(1, min(6, len(paras))):
                 line = paras[i]
@@ -203,8 +203,8 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
                     continue  # 英文稿的 Abstract / Keywords 行
                 a = re.split(r"[,，、]", line)[0].strip()
                 a = re.sub(r"\b(Distinguished|Professor|Prof|Dr|Mr|Ms|Mrs)\.?\b.*$", "", a, flags=re.I)
-                # 多作者用空格分隔（`何嘉怡 徐佳明`）时取第一个；
-                # 但中文姓名内部也可能带空格（`陈  波`），用长度区分：
+                # 多作者用空格分隔（`何嘉怡 徐强`）时取第一个；
+                # 但中文姓名内部也可能带空格（`陈  松`），用长度区分：
                 # 折叠空白后不足 5 字的一律视为「一个名字」。
                 collapsed = re.sub(r"\s+", " ", a).strip()
                 if _has_cjk(a) and " " in collapsed and len(collapsed.replace(" ", "")) >= 5:
@@ -212,7 +212,7 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
                 else:
                     a = collapsed
                 a = a.strip(" .、—-")
-                # 英文作者行常带单位序号（`Niu Ju 1`、`Yingjin Xu1`）：尾部数字不是姓名
+                # 英文作者行常带单位序号（`Jing Niu 1`、`Chen Xu1`）：尾部数字不是姓名
                 # 的一部分，先去掉再做可信度判断（否则会被误判成「不像人名」而继续找，
                 # 反而落到下一段正文上）。
                 a = re.sub(r"[\s\d]+$", "", a).strip()

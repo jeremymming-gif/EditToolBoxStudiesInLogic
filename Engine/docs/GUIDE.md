@@ -196,7 +196,7 @@ $PY convert.py --source X.docx --out Y --dry-run
    `\multirow` → `multirow`、`\bm` → `bm`、`\textcolor` → `xcolor`…；只补符号类，
    不碰版面级宏包）。日志会列出「前言依赖迁移：宏包 N 个…」与「模板已提供、未重复搬：…」。
 3. **自定义命令按正文可达搬 + 冲突自动改名**：只搬**正文真的用到**的 `\newcommand`
-   （传递闭包：A 用到 B 就 B 也搬；正文没用到的不搬——实测 07 Yiyan_Wang 的 `\ar` 就是
+   （传递闭包：A 用到 B 就 B 也搬；正文没用到的不搬——实测 07 Fang_Wang 的 `\ar` 就是
    这样避开 xy 宏包冲突的）；与模板/宏包已定义名字冲突的（如模板 `\newtheorem{prop}`
    占住 `\prop`）自动改名（`\prop → \slcnprop`）并**正文与定义同步改**，
   日志与「⚠ 注意事项」里明写改名记录。
@@ -219,13 +219,13 @@ exit 2；老式 `.doc` → exit 2 提示另存 `.docx`/`.tex`（**第 63b 批起
 仅转换无果时保留原警告「未生成 reference.bib（需作者补交参考文献库）」，不再静默。
 
 **第 121 条补丁（2026-10-17，期 88 七篇英文来稿实测）**：
-- `\bibliographystyle` 也当成参考文献区起点截掉（03 Zhentao_Zhang：作者写在
+- `\bibliographystyle` 也当成参考文献区起点截掉（03 Tao_Zhang：作者写在
   `\begin{document}` 之后，残留会与模板 biblatex 冲突 `'\bibliographystyle' invalid for 'biblatex'`）。
-- 宏解析支持**无花括号**写法 `\newcommand\revieww[1]{…}` 与 `\newcommand*`（04 Chen_Liu）；
+- 宏解析支持**无花括号**写法 `\newcommand\revieww[1]{…}` 与 `\newcommand*`（04 Yang_Liu）；
 - 正文 `\includegraphics` 引用到的图片会从**源文件所在目录**（含 `\graphicspath`）复制进产物目录，
-  保持相对路径；找不到的记「⚠ 正文引用的图片找不到，未复制」交给编辑（04 Chen_Liu 的 `Archit.pdf`/`Figs/*`）；
+  保持相对路径；找不到的记「⚠ 正文引用的图片找不到，未复制」交给编辑（04 Yang_Liu 的 `Archit.pdf`/`Figs/*`）；
 - 英文规则 `en-ellipsis` 只在「`...` 后紧跟字母」时输出 `\ldots{}` 做隔离，其余形态逐字节不变
-  （05 YouAn_Su：源稿字面 `...x_n` 以前被粘成 `\ldotsx_n` → 未定义命令）；
+  （05 Chen_Su：源稿字面 `...x_n` 以前被粘成 `\ldotsx_n` → 未定义命令）；
 - 重跑自己的产物目录时，`<产物>.<时间戳>.bak` 视为本工具产物，不再需要 `--force`。
 
 **第 130 条加固（2026-10-18，定义"放在哪"都兼容）**：作者的定义不一定在 `.tex` 导言区：
@@ -704,10 +704,10 @@ EditToolBox 的 `DeleteTempFeature.swift`：
 |---|---|---|---|
 | 李雷 | `Lei_Li` | 周杰 | `Jie_Zhou` |
 | 韩梅梅 | `Meimei_Han` | 苏晓晴 | `Xiaoqing_Su` |
-| Michael Rathjen | `Michael_Rathjen` | Wen-fang Wang | `Wenfang_Wang` |
+| Elena Petrova | `Elena_Petrova` | Anna Schmidt | `Anna_Schmidt` |
 
 - 多作者**只取第一作者**
-- 中文取拼音，外文取原名；`Rathjen, Michael`（姓, 名）也能正确解析
+- 中文取拼音，外文取原名；`Petrova, Elena`（姓, 名）也能正确解析
 - 复姓（欧阳、司马…）与**多音字姓氏**（单 shàn、曾 zēng、薄 bó）有专门处理
 - 名字里出现**真歧义**的多音字（朝 cháo/zhāo、长 cháng/zhǎng）时**会提醒确认**，
   不静默猜——如读音不对请用 `--name` 覆盖
@@ -1303,7 +1303,7 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 |---|---|---|---|
 | 英文**论述性脚注**误判 | `classify()` 把含年份的散文脚注判成文献；`parse_entry()` 只能给出 note（无 author/title）时：全英文稿且文末有参考文献区 → 降级为**纯注释**（正文脚注原样保留、不进 bib）；中文稿/无文末区的短引注保留旧行为 | `slcn/docxsource.py::_entry_is_note_only()` / `_looks_short_bibliographic_note()` / `doc_is_en` | `tests/test_english_manuscripts.py` ⑥ |
 | 英文文末参考文献**「全名 + 年份在后」**格式 | 如 `Jacobs, Scott, Jackson, Sally, 1989. Title…` / `Van Eemeren, Frans et al. 2014. …` → 解析成编辑体例作者（`Jacobs, S. and Jackson, S.`）、年份、题名；不动既有 GB 英文/中文格式 | `slcn/docxsource.py::_parse_reference_line_en_fullname()` | ⑦ |
-| 无样式英文小标题 | `N)` 半角编号（02 Lu_Jiang 型）；以及**无编号、无样式、Title Case 短段**（07 Hu_Liu 访谈稿的 `On Logic Pluralism` 等），要求前后都是成段正文——只对全英文稿启用 | `classify_en_heading()` / `_looks_plain_en_title()` + ⑥ 前的上下文判据 | ⑧ |
+| 无样式英文小标题 | `N)` 半角编号（02 Ning_Jiang 型）；以及**无编号、无样式、Title Case 短段**（07 Bo_Liu 访谈稿的 `On Logic Pluralism` 等），要求前后都是成段正文——只对全英文稿启用 | `classify_en_heading()` / `_looks_plain_en_title()` + ⑥ 前的上下文判据 | ⑧ |
 | 英文纯注释里的引用 | 全英文稿的纯注释文本也做「（作者 年份）→ `\parencite{key}`」替换（人工成品同样做）；中文脚注不动 | `docxsource.link_citations()` 在 ⑤.3b 的预跑 | ⑥ |
 
 **已知残留（如实说清）**：英文散文脚注里的「叙述式引用」（如 `see King 2001, where…`，
@@ -1377,9 +1377,9 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 | 项 | 现状 |
 |---|---|
 | ~~**OMML 公式**~~ | ✅ **已修**：`docxxml.py` 直读 `<m:oMath>`，李雷稿 7 个符号已正确还原为 `$\neg$` 等 |
-| ~~**脚注丢失**~~ | ✅ **已修**：`docxxml.py` 读 `footnotes.xml`；Lu_Jiang 的 90 条脚注 → 68 个 bib 条目、68 处 `\parencite` |
-| ~~**斜体丢失**~~ | ✅ **已修**：run 级 `<w:i/>` → `\textit{}`；Lu_Jiang 从 0 处增至 323 处（人工 182） |
-| **斜体略多** | Lu_Jiang 323 处 vs 人工 182 —— 人工没有把每处斜体都包起来，属编辑取舍，待观察 |
+| ~~**脚注丢失**~~ | ✅ **已修**：`docxxml.py` 读 `footnotes.xml`；Ning_Jiang 的 90 条脚注 → 68 个 bib 条目、68 处 `\parencite` |
+| ~~**斜体丢失**~~ | ✅ **已修**：run 级 `<w:i/>` → `\textit{}`；Ning_Jiang 从 0 处增至 323 处（人工 182） |
+| **斜体略多** | Ning_Jiang 323 处 vs 人工 182 —— 人工没有把每处斜体都包起来，属编辑取舍，待观察 |
 | **引文阈值偏差** | 07 Jiayi_He 生成 24 个 quotation，人工 37 个。人工把短于三行的引文也放进了引用环境。用户已确认**不调低阈值**；实测调低到 40 字后 quotation 数 38≈37 精确匹配，但**页数反而多 1 页**，说明阈值不影响版面 |
 | **字符拼图需人工重画** | 工具只能检出并占位，**不能自动生成图片**。07 Jiayi_He 的两张图需人工参照原稿重画 |
 | **合并单元格需核对** | 92 张表里 19 张（21%）有合并单元格。`gridSpan` 已转 `\multicolumn`，但 `vMerge`（纵向合并）只做提示、未转 `\multirow` |
@@ -1398,7 +1398,7 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 | **拼音** | 未装 `pypinyin`，只覆盖 40 个常见姓氏 |
 | **译名对照** | 人工会补「（Gottlob Frege）」这类外文原名括注，10 Lei_Li 有 **22 处**。这是可复用的资产，应从历史语料建表 |
 | **公式重排** | 人工会把 `split` 改成 `aligned` 并重排，属编辑判断 |
-| **英文稿章节层级** | 已能认 `1.` / `1）`，但部分英文稿（如 01 Wenfang_Wang、06 Zhixi_Chen）仍有大量 L3，疑似元数据或参考文献结构差异，**待个案排查** |
+| **英文稿章节层级** | 已能认 `1.` / `1）`，但部分英文稿（如 01 Xue_Wang、06 Hao_Chen）仍有大量 L3，疑似元数据或参考文献结构差异，**待个案排查** |
 | **PDF 源稿** | 22 篇只有 PDF，本期不处理（需 OCR / Mathpix 路线） |
 | **LaTeX 前言依赖** | ✅ **已支持迁移**（第 120 条）：多文件 `\input` 展开、宏包 / tikz 库 / `\newtheorem` 等定义、符号宏自动补包；**边界**：纯离线不解析宏包内部定义，作者重定义宏包命令且正文被用到时仍可能 `already defined`（日志保留原报错，交编辑手工处理） |
 | **LaTeX 定义位置** | ✅ **已支持加固**（第 130 条）：本地 `.sty` 五类定义 + 普通宏、本地 `.cls` / `.def` / `.cfg`、正文区定义提示（不迁移）、编译前环境缺失预检；**边界**：纯离线不解析宏包内部定义（预检对宏包自带环境可能误报、只警告不阻断），`\def` / `\let` / `\renewenvironment` 不搬 |
@@ -1507,7 +1507,7 @@ Swift 侧只做界面 + 参数拼装 + 找路径，构建时把引擎打包进 a
 
 ---
 
-## 八、典型改善：Lu_Jiang
+## 八、典型改善：Ning_Jiang
 
 这篇稿子最能说明前述三项修复的价值（人工成品为基准）：
 
@@ -1530,7 +1530,7 @@ Swift 侧只做界面 + 参数拼装 + 找路径，构建时把引擎打包进 a
 |---|---|---|
 | Lei_Li（中文，Word） | 20 页 | 20 页 ✅ |
 | Jie_Zhou（中文，LaTeX） | 18 页 | 18 页 ✅ |
-| Lu_Jiang（英文，Word） | **25 页** | **25 页** ✅ |
+| Ning_Jiang（英文，Word） | **25 页** | **25 页** ✅ |
 
 ---
 

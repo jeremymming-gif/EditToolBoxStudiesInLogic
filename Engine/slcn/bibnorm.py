@@ -426,7 +426,7 @@ def move_book_editions(text: str) -> tuple[str, list[str]]:
     为什么要有这个「窄版本」：`normalize_bib()` 只跑在 **LaTeX 通道**
     （`slcn/build.py: build_latex`）；**Word 通道**的 `reference.bib` 是
     `docxsource.refs_to_bib()` / `footnotes.entry_to_bib()` 直接渲染出来的，没经过规范化。
-    于是同一部书走 LaTeX 通道会被搬、走 Word 通道不会——实测 `2026_02_Lu_Jiang`（英文 Word 稿）
+    于是同一部书走 LaTeX 通道会被搬、走 Word 通道不会——实测 `2026_02_Ning_Jiang`（英文 Word 稿）
     的三条 `Garson2013*` 就是这样漏下来的。
 
     ⚠️ 与 `normalize_bib()` 的区别（**故意**的）：这里**只改命中的那一条**，而且是**文本级**地
@@ -519,7 +519,7 @@ def _is_sep_like(fields: dict[str, str]) -> bool:
 
     为什么不能只复用 `is_sep_entry()`（只看 booktitle）：41 篇实测里有 SEP 词条被
     作者写成 `@article` + `journal = {The Stanford Encyclopedia of Philosophy}`
-    （Fenrong_Liu `hansson:sep`），只认 booktitle 会把它当正式期刊文章把网址删掉。
+    （Fang_Liu `hansson:sep`），只认 booktitle 会把它当正式期刊文章把网址删掉。
     `is_sep_entry()` 的既有语义（bibcheck 判据）**不动**，这里只做渲染判据。
     """
     for name in ("booktitle", "journal", "journaltitle"):
@@ -735,7 +735,7 @@ def strip_published_urls(text: str) -> tuple[str, list[str]]:
     为什么要有文本级版本：Word 通道的 `reference.bib` 是
     `docxsource.refs_to_bib()` / `footnotes.entry_to_bib()` 直接渲染的，不经过
     `normalize_bib()`（那是 LaTeX 通道）；不补这一步就会「同一篇稿、换个通道
-    DOI 就印出来」（实测 LingXin_Cai 86-08 的 1 处 doi.org 就是这样漏的）。
+    DOI 就印出来」（实测 Min_Cai 86-08 的 1 处 doi.org 就是这样漏的）。
 
     ⚠️ 只对**命中条目**重排字段（未命中的条目与条目间文本逐字节不动）；
     这是给机器生成的 bib 用的，不承担「任意作者 bib 的格式归一」。
@@ -1071,7 +1071,7 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
             k = key if len(parsed) == 1 else f"{key}{chr(96 + i2)}"
             vals = {fld: getattr(p, fld) for fld in _BIB_FIELDS if getattr(p, fld)}
             vals["note"] = f["note"].strip().replace("\n", " ")
-            # 第 141 条（2026-10-18，期 87 子案例 9 / 10 Wei_Chen）：写回 .bib 前必须
+            # 第 141 条（2026-10-18，期 87 子案例 9 / 10 Jie_Chen）：写回 .bib 前必须
             # ① 把 author 里的 `&` 规范成 BibTeX 的 `and`（否则 biblatex 在
             #    `\namepartsuffix` 里遇到 `&` 报 Misplaced alignment tab，整篇编译失败）；
             # ② 转义 LaTeX 特殊字符（`& % $ # _`）。从前的实现两件都没做，
@@ -1099,7 +1099,7 @@ def expand_note_entries(bib: str) -> tuple[str, list[str]]:
 #   · 人年制行解析按逗号切段 → `X著，Y译，《书名》，出版社，年。` 的**题名位被译者
 #     占用**（90-06：title={周煦良、汤永宽译}，rest={《存在主义…》…}）；
 #   · 编号清单里中文条目 `作者：《题名》，《期刊》，年` 的字段被切错（90-07：
-#     author={徐佳明：《…》} / title={期刊名} / title={译者}）；
+#     author={徐强：《…》} / title={期刊名} / title={译者}）；
 #   · 只有 note 的脚注引注条目（题名/作者空）仍进了 bib → 参考文献区出现**空题名
 #     碎片**（90-06 的 ref01–03、90-07 的 ref03–05）。
 #
