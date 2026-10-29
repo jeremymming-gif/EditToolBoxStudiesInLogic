@@ -849,10 +849,18 @@ L1_META_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
-# 题名归一（B-200）：产物把版次并入题名（87-1 `Topology, (2nd)`；89-06 `..., (Second
+# 题名归一（B-200/B-257）：产物把版次并入题名（87-1 `Topology, (2nd)`；89-06 `..., (Second
 # edition)`）、源清单常带外层 `{}`；只剥「逗号+尾部括号」与包裹花括号，不做子串匹配；
 # `missing` 保留原始题名 + `missing_raw` 双列复核。
+# B-257：旧顺序先剥版次尾、后剥 LaTeX 命令，`\textup{（修订版）}` 这类「命令包裹版次」
+# 识别不到（90-03 误报 SRC_BIB_MISSING）；引号字符集也只有 ASCII `"`，缺弯引号/CJK 引号。
 _VERSION_TAIL_RE = re.compile(r"(?:[,，]\s*[\(（][^)）]*[\)）]|[（][^）]*[）])\s*$")
+# 判据顺序常量（norm_title 单点使用）：命令 → 花括号 → 引号/装饰 → 空白 → 标点。
+_LATEX_CMD_RE = re.compile(r"\\[a-zA-Z]+\*?\s*")
+_BRACES_RE = re.compile(r"[{}]")
+_TITLE_DECOR_RE = re.compile(r"[\\\"'`~^_$&%#“”‘’「」『』]")
+_TITLE_SPACE_RE = re.compile(r"[\s\u3000]+")
+_TITLE_PUNCT_RE = re.compile(r"[，。、；：！？（）【】《》,.;:!?()\[\]<>-]")
 _TRANSLATOR_LINE_RE = re.compile(r"^[\u4e00-\u9fff·・、，,．.\s]{1,40}译$")
 
 
@@ -872,13 +880,21 @@ def is_translator_line(s: str) -> bool:
 
 
 def norm_title(s: str) -> str:
-    """题名集合覆盖用的归一化：剥外层 `{}` 与尾部版次括号，去命令/标点/空白并统一大小写。"""
+    """题名集合覆盖用的归一化（B-257 统一顺序）：剥外层 `{}` → 剥 LaTeX 命令 → 去全部
+    `{}` → 剥尾部版次括号 → 去引号/装饰符（ASCII + 弯引号 “”‘’ + CJK 「」『』）→ 去空白
+    → 去标点 → lower。
+
+    顺序本身是判据：旧顺序先剥版次尾、后剥命令，`\\textup{（修订版）}` 这类「命令包裹版次」
+    识别不到（90-03 SRC_BIB_MISSING 误报根因 a）；弯引号/CJK 引号不在旧字符集是根因 b
+    （`“真”` vs `‘真’`）。旧义「只剥尾部版次括号、不做子串匹配」与 title_coverage 判据不变。
+    """
     t = _strip_outer_braces(s)
+    t = _LATEX_CMD_RE.sub("", t)
+    t = _BRACES_RE.sub("", t)
     t = _VERSION_TAIL_RE.sub("", t).strip()
-    t = re.sub(r"\\[a-zA-Z]+\*?\s*", "", t)
-    t = re.sub(r"[{}\\\"'`~^_$&%#]", "", t)
-    t = re.sub(r"[\s\u3000]+", "", t)
-    t = re.sub(r"[，。、；：！？（）【】《》,.;:!?()\[\]<>-]", "", t)
+    t = _TITLE_DECOR_RE.sub("", t)
+    t = _TITLE_SPACE_RE.sub("", t)
+    t = _TITLE_PUNCT_RE.sub("", t)
     return t.lower()
 
 
@@ -2894,8 +2910,12 @@ def git_fingerprint() -> dict:
     return out
 
 
-def _compare_run_impl(current_run: dict, baseline_path, out_dir=None, label=""):
-    """--compare 判据入口：判据全在 tools/case_compare.py，本文件只做 import 兜底。"""
+def _compare_run_impl(current_run: dict, baseline_path, out_dir=None, label="",
+                      subset: bool = False):
+    """--compare 判据入口：判据全在 tools/case_compare.py，本文件只做 import 兜底。
+
+    B-257：`subset`（--compare-subset）原样透传给唯一判据实现 `compare_run`。
+    """
     try:
         from case_compare import compare_run  # noqa: PLC0415 —— 脚本运行时 tools/ 在 sys.path
     except ImportError:  # Engine 单测经 importlib 加载本文件时 tools/ 不在 sys.path
@@ -2905,7 +2925,17 @@ def _compare_run_impl(current_run: dict, baseline_path, out_dir=None, label=""):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         compare_run = module.compare_run
-    return compare_run(current_run, baseline_path, out_dir, label)
+    return compare_run(current_run, baseline_path, out_dir, label, subset)
+
+
+def summary_args(args: argparse.Namespace) -> dict:
+    """summary.json 的 args 口径（B-257，取代 B-206 的单键过滤）。
+
+    `--compare` / `--compare-subset` 只影响跑完后的对比阶段（不改变案例结果），且
+    `--compare-subset` 不写进 compare.json；因此都不落进 run args —— 默认模式与 subset
+    模式的 summary.json args 逐字节一致（A6），也保持 B-206「默认模式字节不变」。
+    """
+    return {k: v for k, v in vars(args).items() if k not in ("compare", "compare_subset")}
 
 
 def run_batch(args: argparse.Namespace) -> int:
@@ -2994,8 +3024,8 @@ def run_batch(args: argparse.Namespace) -> int:
         "manuscripts": str(man_repo), "repo_scan": repo_stats,
         "zero_cost": {"cleared": cleared, "violations": []},
         "cases": {}, "case_order": [c.key for c in cases],
-        # 过滤 --compare（B-206）：无模式时 summary.json 的 args 字节不变
-        "args": {k: v for k, v in vars(args).items() if k != "compare"},
+        # B-257：过滤 --compare/--compare-subset（对比阶段参数），两种模式 args 字节一致
+        "args": summary_args(args),
     }
     print(f"[批次] {len(cases)} 个案例 → {out_root}")
     print("[批次] 顺序：" + " → ".join(
@@ -3066,7 +3096,8 @@ def run_batch(args: argparse.Namespace) -> int:
             return 2
         try:
             compare_result = _compare_run_impl(
-                run, baseline, out_root, args.label or out_root.name)
+                run, baseline, out_root, args.label or out_root.name,
+                getattr(args, "compare_subset", False))
         except (ValueError, OSError) as exc:
             print(f"[用法] --compare 基线无效：{exc}", file=sys.stderr)
             return 2
@@ -3331,9 +3362,12 @@ def run_self_test() -> int:
           and SECTION_DIFF_INFO_LEVEL == "P2")
 
     d3 = next(c for c in default_cases() if c.key == "90-03")
-    check("90-03 manifest 声明附加源 metadata=example puzzle.tex",
-          d3.metadata == "example puzzle.tex"
-          and sum(1 for c in default_cases() if c.metadata) == 1)
+    # B-257 顺带修预存红：附加源名是运行时按稿件仓发现的（无稿库 → ""），旧断言硬编码
+    # "example puzzle.tex" 只在稿库恰好是那个文件名的机器上通过；改验发现值本身 + 计数一致。
+    _meta90_03 = _discover_meta_tex("90", "03")
+    check("90-03 manifest 声明附加源 metadata=运行时发现的 original/*.tex（无稿库则无）",
+          d3.metadata == _meta90_03
+          and sum(1 for c in default_cases() if c.metadata) == (1 if _meta90_03 else 0))
     with tempfile.TemporaryDirectory(prefix="slcn_selftest_") as td:
         ws = Path(td)
         (ws / "Jie_Zhou").mkdir(parents=True, exist_ok=True)
@@ -3573,6 +3607,78 @@ def run_self_test() -> int:
                   "")) or "")
           and "启动/导入失败" in (driver_interpreter_problem(
               "p", runner=lambda cmd, env: (1, "", "FileNotFoundError: no python")) or ""))
+
+    # ── B-257：题名归一化顺序（90-03 误报根因）/ 弯引号 / --compare-subset ─────
+    import contextlib as _ctx  # noqa: PLC0415
+    import io as _io  # noqa: PLC0415
+    check("B-257：norm_title 六组渲染形态等价（命令包裹版次/花括号/弯引号/CJK/版次）",
+          norm_title("逻辑悖论研究引论\\textup{（修订版）}")
+          == norm_title("逻辑悖论研究引论（修订版）")
+          and norm_title("维特根斯坦论“摩尔悖论”") == norm_title("维特根斯坦论‘摩尔悖论’")
+          and norm_title("循环的“真”") == norm_title("循环的‘真’")
+          and norm_title("{Principles of Neural Science}") == "principlesofneuralscience"
+          and norm_title("Topology, (2nd)") == norm_title("Topology（第二版）")
+          and norm_title("An Introduction to Decision Theory, (Second edition)")
+          == norm_title("An Introduction to Decision Theory")
+          and norm_title("逻辑悖论研究引论") != norm_title("逻辑悖论研究导论")
+          and norm_title("Topology") != norm_title("Topology and Algebra"))
+    check("B-257：90-03 三组真实题名 title_coverage missing_n=0；负例仍缺 1",
+          title_coverage(["逻辑悖论研究引论\\textup{（修订版）}",
+                          "维特根斯坦论“摩尔悖论”", "循环的“真”"],
+                         ["逻辑悖论研究引论（修订版）", "维特根斯坦论‘摩尔悖论’",
+                          "循环的‘真’"])["missing_n"] == 0
+          and title_coverage(["逻辑悖论研究引论"], ["逻辑悖论研究导论"])["missing_n"] == 1)
+
+    def _ov_case() -> dict:
+        return {"findings": [], "l1": {"ok": True, "cite_missing": [],
+                                       "ref_coverage": {"missing_n": 0}}}
+
+    with tempfile.TemporaryDirectory(prefix="b257_subset_") as _td:
+        _tdp = Path(_td)
+        _base_extra = _tdp / "baseline-extra.json"
+        _base_extra.write_text(json.dumps(
+            {"cases": {"90-03": _ov_case(), "87-1": _ov_case()}}, ensure_ascii=False),
+            encoding="utf-8")
+        _cur = {"cases": {"90-03": _ov_case()}}
+        _sub_out = _tdp / "subset-out"
+        _sub = _compare_run_impl(_cur, _base_extra, _sub_out, "subset-selftest", subset=True)
+        _sub_json = json.loads((_sub_out / "compare.json").read_text(encoding="utf-8"))
+        _sub_md = (_sub_out / "compare.md").read_text(encoding="utf-8")
+        _def_out = _tdp / "default-out"
+        _def = _compare_run_impl(_cur, _base_extra, _def_out, "subset-selftest")
+        _def_md = (_def_out / "compare.md").read_text(encoding="utf-8")
+        _base_only = _tdp / "baseline-only.json"
+        _base_only.write_text(json.dumps(
+            {"cases": {"87-9": _ov_case()}}, ensure_ascii=False), encoding="utf-8")
+        _add = _compare_run_impl(_cur, _base_only, None, "subset-add", subset=True)
+        _buf = _io.StringIO()
+        with _ctx.redirect_stderr(_buf):
+            _rc_missing = main(["--compare-subset"])
+        check("B-257：--compare-subset 正例：基线多案例 → skipped_cases，不判违规，末行 skipped",
+              _sub["violations"] == [] and _sub["allowed_changes"] == []
+              and _sub["skipped_cases"] == ["87-1"]
+              and _sub["summary_line"] == "COMPARE violations=0 allowed_changes=0 skipped=1"
+              and _sub_json.get("subset") is True
+              and _sub_json.get("skipped_cases") == ["87-1"]
+              and "## 跳过（基线有、当前无；--compare-subset）" in _sub_md)
+        check("B-257：--compare-subset 反例：case_added 仍违规；默认模式零回归",
+              [v["category"] for v in _add["violations"]] == ["case_added"]
+              and _add["skipped_cases"] == ["87-9"]
+              and len(_def["violations"]) == 1
+              and _def["violations"][0]["category"] == "case_removed"
+              and "subset" not in _def and "skipped_cases" not in _def
+              and "跳过" not in _def_md
+              and _def["summary_line"] == "COMPARE violations=1 allowed_changes=0")
+        check("B-257：--compare-subset 缺 --compare → rc=2（用法提示，不跑案例）",
+              _rc_missing == 2 and "--compare" in _buf.getvalue())
+        _a_default = build_parser().parse_args([])
+        _a_subset = build_parser().parse_args(["--compare", "x.json", "--compare-subset"])
+        check("B-257：summary.json args 过滤 --compare/--compare-subset（两模式字节一致）",
+              "compare" not in summary_args(_a_default)
+              and "compare_subset" not in summary_args(_a_subset)
+              and json.dumps(summary_args(_a_default), sort_keys=True)
+              == json.dumps(summary_args(_a_subset), sort_keys=True))
+
     print()
     print(f"失败 {len(fails)} 项" + (f"：{fails}" if fails else "（全部通过）"))
     return 1 if fails else 0
@@ -3613,6 +3719,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--compare", default="", metavar="BASELINE_SUMMARY_JSON",
                     help="与基线 summary.json 逐篇对比（写 <out>/compare.md/json；"
                          "末行 COMPARE violations=N；有违规 rc=3）")
+    ap.add_argument("--compare-subset", action="store_true",
+                    help="B-257：子集模式，仅配 --compare（缺 --compare rc=2）。基线有、当前无"
+                         "的案例记 skipped_cases 不判违规；末行追加 skipped=K；"
+                         "case_added/指标回归仍违规")
     ap.add_argument("--legacy-final", action="store_true",
                     help="B-117 过渡开关：旧口径（与最终人工成品逐项对照：PAGE_DIFF P1/"
                          "BIB_COUNT_DIFF/CITE_DIFF/SECTION_DIFF…，与批70 输出可比）")
@@ -3637,6 +3747,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.self_test:
         return run_self_test()
+    # B-257：--compare-subset 只能与 --compare 联用；缺 --compare → rc=2 且不跑案例
+    if args.compare_subset and not args.compare:
+        print("[用法] --compare-subset 只能与 --compare 联用"
+              "（基线有、当前无的案例改记 skipped_cases，不判违规）", file=sys.stderr)
+        return 2
     # A2（B-221）：真跑案例前自检 driver 解释器 ↔ Engine/vendor ABI；不匹配 rc=2 fail-fast
     if not check_driver_interpreter(args.python or sys.executable):
         return 2

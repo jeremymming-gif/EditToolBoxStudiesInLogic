@@ -29,6 +29,7 @@ r"""批量实例测试驱动 `tools/batch_case_test.py` 的判据单测（Phase1
 """
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -367,6 +368,52 @@ check("B-117：题名归一化覆盖（L1.3）+ 占位符按类型枚举（L1.5�
       and batch.placeholder_types("【未识别：第一作者姓名，请手工填写】"
                                   "【未识别：表题，请手工填写】【未识别：引文出处】")
       == {"作者元数据": 1, "图表题": 1, "引文出处": 1})
+
+# ── B-257：题名归一化顺序（90-03 SRC_BIB_MISSING 误报根因）/ 弯引号 / subset ──
+check("B-257：norm_title 渲染形态等价（命令包裹版次/花括号/弯引号/CJK/版次）",
+      batch.norm_title("逻辑悖论研究引论\\textup{（修订版）}")
+      == batch.norm_title("逻辑悖论研究引论（修订版）")
+      and batch.norm_title("维特根斯坦论“摩尔悖论”") == batch.norm_title("维特根斯坦论‘摩尔悖论’")
+      and batch.norm_title("循环的“真”") == batch.norm_title("循环的‘真’")
+      and batch.norm_title("{Principles of Neural Science}") == "principlesofneuralscience"
+      and batch.norm_title("Topology, (2nd)") == batch.norm_title("Topology（第二版）")
+      and batch.norm_title("An Introduction to Decision Theory, (Second edition)")
+      == batch.norm_title("An Introduction to Decision Theory")
+      and batch.norm_title("逻辑悖论研究引论") != batch.norm_title("逻辑悖论研究导论")
+      and batch.norm_title("Topology") != batch.norm_title("Topology and Algebra"))
+check("B-257：90-03 三组实测题名 title_coverage missing_n=0；负例仍缺 1",
+      batch.title_coverage(["逻辑悖论研究引论\\textup{（修订版）}",
+                            "维特根斯坦论“摩尔悖论”", "循环的“真”"],
+                           ["逻辑悖论研究引论（修订版）", "维特根斯坦论‘摩尔悖论’",
+                            "循环的‘真’"])["missing_n"] == 0
+      and batch.title_coverage(["逻辑悖论研究引论"], ["逻辑悖论研究导论"])["missing_n"] == 1)
+
+# B-257：--compare-subset（判据唯一实现在 tools/case_compare.compare_run）
+with tempfile.TemporaryDirectory(prefix="b257_subset_unit_") as _td:
+    import contextlib as _ctx
+    import io as _io
+    _tdp = Path(_td)
+
+    def _ov_case() -> dict:
+        return {"findings": [], "l1": {"ok": True, "cite_missing": [],
+                                       "ref_coverage": {"missing_n": 0}}}
+
+    _base = _tdp / "baseline.json"
+    _base.write_text(json.dumps({"cases": {"90-03": _ov_case(), "87-1": _ov_case()}}),
+                     encoding="utf-8")
+    _cur = {"cases": {"90-03": _ov_case()}}
+    _sub = batch._compare_run_impl(_cur, _base, _tdp / "subset", "unit-subset", subset=True)
+    _def = batch._compare_run_impl(_cur, _base, _tdp / "default", "unit-default")
+    _err = _io.StringIO()
+    with _ctx.redirect_stderr(_err):
+        _missing_rc = batch.main(["--compare-subset"])
+    check("B-257：--compare-subset 正反例（skipped 不判违规/默认零回归/缺 --compare rc=2）",
+          _sub["violations"] == [] and _sub["skipped_cases"] == ["87-1"]
+          and _sub["summary_line"] == "COMPARE violations=0 allowed_changes=0 skipped=1"
+          and "subset" not in _def and "skipped_cases" not in _def
+          and len(_def["violations"]) == 1
+          and _def["violations"][0]["category"] == "case_removed"
+          and _missing_rc == 2 and "--compare" in _err.getvalue())
 
 clo = batch.citations_closure(r"\parencite{A} \parencite{B}", bib_txt)
 check("citations_closure：引用键全部命中 → 无悬空",

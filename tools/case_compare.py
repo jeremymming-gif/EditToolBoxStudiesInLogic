@@ -5,7 +5,8 @@ r"""case_compare.py —— 批次运行对比 + corpus 回归（B-206，case-lab
 import 无副作用；不读真实稿/网络/仓库，只写显式 `--out`。
 允许：cite↑；parencite↑；bib↑ 且新增 bib 键都被当前正文引用（closure.cited，缺则
 l1.cite_keys；否则 bib_up_uncited）；findings 减少且无新 code、同 code 级别不升；
-l1_cite_missing↓；l1_ok false→true。违规：cite↓；bib↓；新增 finding code；同 code 级别升
+l1_cite_missing↓；l1_bib_missing↓（B-257 补：与 cite 对称，减少=允许、
+增加仍 unlisted_change）；l1_ok false→true。违规：cite↓；bib↓；新增 finding code；同 code 级别升
 （P2<P1<P0）；pages 变；l1_ok true→false；sha_ok true→false；案例增/删；允许清单之外的任何
 变化 → unlisted_change。缺失：基线有/当前无 → missing_in_current；基线无/当前有 →
 missing_in_baseline（保守）。
@@ -32,7 +33,7 @@ LEVEL_RANK = {"P2": 0, "P1": 1, "P0": 2}
 METRIC_ORDER = {n: i for i, n in enumerate(("case", "cite", "parencite", "footnote", "bib", "bib_keys", "pages", "sha_ok", "findings", "l1_ok", "l1_cite_missing", "l1_bib_missing"))}
 CSV_HEADER = ["issue", "slug", "channel", "lang", "ok", "raw_ratio", "content_acc", "l2", "l3", "ref_chars", "src_tbl", "out_tbl", "src_img", "out_img", "src_shape", "out_shape", "error"]
 # 简单 metric 统一规则：(增→allowed 类别, 减→violation 类别, 允许方向 +1/-1/0)
-SIMPLE_RULES = {"cite": ("cite_up", "cite_decrease", 1), "parencite": ("parencite_up", "unlisted_change", 1), "footnote": (None, "unlisted_change", 0), "pages": (None, "pages_changed", 0), "l1_cite_missing": ("l1_cite_missing_down", "unlisted_change", -1), "l1_bib_missing": (None, "unlisted_change", 0)}
+SIMPLE_RULES = {"cite": ("cite_up", "cite_decrease", 1), "parencite": ("parencite_up", "unlisted_change", 1), "footnote": (None, "unlisted_change", 0), "pages": (None, "pages_changed", 0), "l1_cite_missing": ("l1_cite_missing_down", "unlisted_change", -1), "l1_bib_missing": ("l1_bib_missing_down", "unlisted_change", -1)}
 # corpus.csv 的 l2/l3 = 差异块计数（slcn/score.py：L2 表层差异块 / L3 实质差异块，越少越好）
 # 方向判据单点：corpus_diff 的方向只在 `_corpus_conditions` 使用本常量，勿在别处复制。
 CORPUS_LOWER_IS_BETTER = ("l2", "l3")
@@ -187,12 +188,18 @@ def _totals(cases):
     return out
 
 
-def compare_run(current_run: dict, baseline_path, out_dir=None, label="") -> dict:
+def compare_run(current_run: dict, baseline_path, out_dir=None, label="", subset: bool = False) -> dict:
     """逐篇对比 current_run 与基线 summary.json；`out_dir` 非空时落盘 compare.md/json。
-    本函数不 print；stdout 末行由调用方打印 `result["summary_line"]`。"""
+    本函数不 print；stdout 末行由调用方打印 `result["summary_line"]`。
+
+    B-257 `subset`（--compare-subset）：基线有、当前无的案例（对单案例跑全量基线时的正常
+    现象）转记 `result["skipped_cases"]`（排序）与 compare.md「跳过」节，不再判 case_removed
+    违规；case_added / 指标回归仍按原判据违规。默认 False 时输出与旧版逐字节一致。
+    """
     cur_cases = _cases_of(current_run, "current_run"); base_cases = _cases_of(_load_json(baseline_path, "基线 summary.json"), "baseline")
     base_keys, cur_keys = set(base_cases), set(cur_cases)
     violations, allowed, details = [], [], {}
+    skipped = []
 
     def case_violation(key, category, before, after, detail):
         violations.append({"case": key, "metric": "case", "category": category, "before": before, "after": after, "detail": detail})
@@ -200,11 +207,21 @@ def compare_run(current_run: dict, baseline_path, out_dir=None, label="") -> dic
 
     for key in sorted(base_keys & cur_keys):
         details[key], case_violations, case_allowed = _compare_case(key, base_cases[key], cur_cases[key]); violations += case_violations; allowed += case_allowed
-    for key in sorted(base_keys - cur_keys): case_violation(key, "case_removed", "present", None, "基线有该案例、当前没有（案例消失）")
+    if subset:
+        skipped = sorted(base_keys - cur_keys)
+    else:
+        for key in sorted(base_keys - cur_keys): case_violation(key, "case_removed", "present", None, "基线有该案例、当前没有（案例消失）")
     for key in sorted(cur_keys - base_keys): case_violation(key, "case_added", None, "present", "当前有该案例、基线没有（案例新增）")
     sort_key = lambda x: (x["case"], METRIC_ORDER.get(x["metric"], 99), x["category"])  # noqa: E731
     violations.sort(key=sort_key); allowed.sort(key=sort_key)
-    result = {"label": label or "", "baseline": str(baseline_path), "current_cases": len(cur_cases), "baseline_cases": len(base_cases), "violations": violations, "allowed_changes": allowed, "cases": details, "totals_before": _totals(base_cases), "totals_after": _totals(cur_cases), "summary_line": f"COMPARE violations={len(violations)} allowed_changes={len(allowed)}"}
+    summary_line = f"COMPARE violations={len(violations)} allowed_changes={len(allowed)}"
+    if subset:
+        summary_line += f" skipped={len(skipped)}"
+    result = {"label": label or "", "baseline": str(baseline_path), "current_cases": len(cur_cases), "baseline_cases": len(base_cases), "violations": violations, "allowed_changes": allowed, "cases": details, "totals_before": _totals(base_cases), "totals_after": _totals(cur_cases), "summary_line": summary_line}
+    if subset:
+        # 默认模式不新增键（字节零回归）；subset 模式只在末尾加这两键
+        result["subset"] = True
+        result["skipped_cases"] = skipped
     if out_dir:
         out = Path(out_dir); out.mkdir(parents=True, exist_ok=True)
         (out / "compare.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -227,6 +244,11 @@ def _render_md(result):
     lines += _table(violations, ["case", "metric", "category", "before", "after", "detail"]) if violations else ["（无）"]
     lines += ["", f"## 允许变化（{len(allowed)}）", ""]
     lines += _table(allowed, ["case", "metric", "before", "after", "detail"]) if allowed else ["（无）"]
+    if result.get("subset"):
+        # B-257：subset 模式才有的「跳过」节（默认模式不出现，保证 compare.md 字节零回归）
+        _skipped = result.get("skipped_cases") or []
+        lines += ["", "## 跳过（基线有、当前无；--compare-subset）", ""]
+        lines += [f"跳过 {len(_skipped)} 个案例：" + "、".join(f"`{key}`" for key in _skipped)] if _skipped else ["（无）"]
     lines += ["", f"未变化案例：{unchanged}", "", result["summary_line"], ""]
     return "\n".join(lines)
 
@@ -427,9 +449,19 @@ def run_self_test() -> int:
         result = compare_run({"cases": cur}, baseline, tmp / "out", label="self-test")
         allowed = {(v["case"], v["category"]) for v in result["allowed_changes"]}
         hits = {(v["case"], v["category"]) for v in result["violations"]}
-        check("允许白名单 6 类且无多报", allowed == {("good", "cite_up"), ("good", "parencite_up"), ("good", "bib_up_cited"), ("good", "findings_down"), ("good", "l1_cite_missing_down"), ("good", "l1_ok_recovered")})
+        check("允许白名单 7 类且无多报（B-257 增 l1_bib_missing_down）", allowed == {("good", "cite_up"), ("good", "parencite_up"), ("good", "bib_up_cited"), ("good", "findings_down"), ("good", "l1_cite_missing_down"), ("good", "l1_ok_recovered"), ("bad", "l1_bib_missing_down")})
         check("违规白名单全中（cite↓/pages/新code/升格/sha/l1/bib↓/键集合/bib↑未引/增删）", hits >= {("bad", "cite_decrease"), ("bad", "pages_changed"), ("bad", "sha_ok_regressed"), ("bad", "l1_ok_regressed"), ("bad", "bib_decrease"), ("bad", "unlisted_change"), ("findings", "new_finding_code"), ("findings", "finding_level_up"), ("bib-keys", "unlisted_change"), ("uncited", "bib_up_uncited"), ("removed", "case_removed"), ("added", "case_added")})
-        check("缺失双向各 3 + 未变化案例 + summary_line/计数/label", sum(1 for v in result["violations"] if v["category"] == "missing_in_current") == 3 and sum(1 for v in result["violations"] if v["category"] == "missing_in_baseline") == 3 and result["cases"]["same"]["changed"] is False and result["summary_line"] == "COMPARE violations=21 allowed_changes=6" and result["current_cases"] == 10 and result["baseline_cases"] == 10 and result["label"] == "self-test" and result["baseline"] == str(baseline))
+        bib_down_base = tmp / "bib_down_base.json"
+        bib_down_base.write_text(json.dumps({"cases": {"90-03": _mk_case(bib_missing=3)}}, ensure_ascii=False), encoding="utf-8")
+        bib_up_base = tmp / "bib_up_base.json"
+        bib_up_base.write_text(json.dumps({"cases": {"90-03": _mk_case(bib_missing=0)}}, ensure_ascii=False), encoding="utf-8")
+        r_down = compare_run({"cases": {"90-03": _mk_case(bib_missing=0)}}, bib_down_base)
+        r_up = compare_run({"cases": {"90-03": _mk_case(bib_missing=3)}}, bib_up_base)
+        check("B-257：l1_bib_missing 减少 → 允许 l1_bib_missing_down（与 cite 对称）；增加 → unlisted_change 违规",
+              ("90-03", "l1_bib_missing_down") in {(v["case"], v["category"]) for v in r_down["allowed_changes"]}
+              and not r_down["violations"]
+              and ("90-03", "unlisted_change") in {(v["case"], v["category"]) for v in r_up["violations"]})
+        check("缺失双向各 3 + 未变化案例 + summary_line/计数/label", sum(1 for v in result["violations"] if v["category"] == "missing_in_current") == 3 and sum(1 for v in result["violations"] if v["category"] == "missing_in_baseline") == 3 and result["cases"]["same"]["changed"] is False and result["summary_line"] == "COMPARE violations=20 allowed_changes=7" and result["current_cases"] == 10 and result["baseline_cases"] == 10 and result["label"] == "self-test" and result["baseline"] == str(baseline))
         md_path = tmp / "out" / "compare.md"; saved = json.loads((tmp / "out" / "compare.json").read_text(encoding="utf-8"))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf): rc = main(["--compare-run", str(baseline), str(baseline), "--label", "cli"])
@@ -490,6 +522,47 @@ def run_self_test() -> int:
               and changed["changes"][0]["case"] == "a" and changed["changes"][0]["file"] == "A.tex"
               and changed["changes"][0]["before"] != changed["changes"][0]["after"])
 
+        # ── B-257：--compare-subset（基线有、当前无 → skipped；默认输出零回归）──
+        subset_base = dict(base)
+        subset_base["extra-1"] = _mk_case(); subset_base["extra-2"] = _mk_case()
+        subset_base_path = tmp / "subset-baseline.json"
+        subset_base_path.write_text(json.dumps({"cases": subset_base}, ensure_ascii=False), encoding="utf-8")
+        subset_out = tmp / "subset-out"
+        subset_result = compare_run({"cases": cur}, subset_base_path, subset_out, label="subset", subset=True)
+        subset_md = (subset_out / "compare.md").read_text(encoding="utf-8")
+        subset_saved = json.loads((subset_out / "compare.json").read_text(encoding="utf-8"))
+        subset_hits = {(v["case"], v["category"]) for v in subset_result["violations"]}
+        default_out = tmp / "default-out"
+        default_result = compare_run({"cases": cur}, baseline, default_out, label="self-test")
+        default_md = (default_out / "compare.md").read_text(encoding="utf-8")
+        default_saved = json.loads((default_out / "compare.json").read_text(encoding="utf-8"))
+        check("B-257 subset 正例：基线超集 → skipped_cases（排序）/不判 case_removed/末行 skipped=3",
+              subset_result["skipped_cases"] == ["extra-1", "extra-2", "removed"]
+              and not any(v["category"] == "case_removed" for v in subset_result["violations"])
+              and subset_result["summary_line"] == "COMPARE violations=19 allowed_changes=7 skipped=3"
+              and subset_result["violations"] == [v for v in default_result["violations"]
+                                                  if v["category"] != "case_removed"])
+        check("B-257 subset 落盘：compare.json 含 subset/skipped_cases；compare.md 含「跳过」节",
+              subset_saved.get("subset") is True
+              and subset_saved.get("skipped_cases") == ["extra-1", "extra-2", "removed"]
+              and "## 跳过（基线有、当前无；--compare-subset）" in subset_md
+              and "`extra-1`" in subset_md and "`removed`" in subset_md)
+        check("B-257 subset 反例：case_added/指标回归仍违规；默认模式无 subset 键且 md 无「跳过」",
+              ("added", "case_added") in subset_hits and ("bad", "cite_decrease") in subset_hits
+              and "subset" not in default_saved and "skipped_cases" not in default_saved
+              and "跳过" not in default_md
+              and default_saved["summary_line"] == "COMPARE violations=20 allowed_changes=7")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            subset_cli_rc = main(["--compare-run", str(baseline), str(baseline), "--compare-subset"])
+        err_buf = io.StringIO()
+        with contextlib.redirect_stderr(err_buf):
+            subset_missing_rc = main(["--compare-subset"])
+        check("B-257 subset CLI：--compare-run + --compare-subset 末行 skipped=0（rc 0）；缺 --compare-run rc=2",
+              subset_cli_rc == 0
+              and buf.getvalue().strip().splitlines()[-1] == "COMPARE violations=0 allowed_changes=0 skipped=0"
+              and subset_missing_rc == 2 and "--compare-run" in err_buf.getvalue())
+
     failed = checks.count(False)
     print()
     print(f"SELF-TEST {'FAIL' if failed else 'PASS'} n={len(checks)}" + (f" failed={failed}" if failed else ""))
@@ -500,6 +573,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="case_compare.py", description="批次运行对比（--compare-run）、corpus 回归 diff（--corpus-diff）与产品内容 hash 对比（B-221）；纯 stdlib、离线、只写 --out")
     ap.add_argument("--self-test", action="store_true", help="跑内置自检（hermetic，秒级）")
     ap.add_argument("--compare-run", nargs=2, metavar=("BASELINE_JSON", "CURRENT_JSON"), help="比较基线 summary.json 与当前 run/summary JSON")
+    ap.add_argument("--compare-subset", action="store_true", help="B-257：--compare-run 的子集模式（仅配 --compare-run，缺则 rc=2）：基线有、当前无的案例记 skipped_cases，不判违规")
     ap.add_argument("--corpus-diff", nargs=2, metavar=("BASELINE_CSV", "NEW_CSV"), help="比较两份 corpus.csv（按 issue+slug 对齐）")
     ap.add_argument("--write-product-hashes", nargs=2, metavar=("RUN_DIR", "OUT_JSON"), help="读 <RUN_DIR>/summary.json，逐案例对 <stem>.tex + reference.bib 出 sha256 清单 JSON（B-221）")
     ap.add_argument("--product-hash-baseline", nargs=2, metavar=("BASELINE_JSON", "RUN_DIR"), help="与产品 hash 基线清单比较，--out 落 product_hash_diff.{md,json}（B-221）")
@@ -512,6 +586,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.self_test: return run_self_test()
+    if args.compare_subset and not args.compare_run:
+        print("[用法] --compare-subset 只能与 --compare-run 联用（基线有、当前无的案例改记 skipped_cases，不判违规）", file=sys.stderr)
+        return 2
     try:
         if args.write_product_hashes:
             result = write_product_hashes(args.write_product_hashes[0], args.write_product_hashes[1])
@@ -520,7 +597,7 @@ def main(argv=None) -> int:
             result = product_hash_diff(args.product_hash_baseline[0], args.product_hash_baseline[1], args.out or None)
             print(result["summary_line"]); return 1 if result["changed_cases"] else 0
         if args.compare_run:
-            result = compare_run(_load_json(args.compare_run[1], "当前 run"), args.compare_run[0], args.out or None, args.label)
+            result = compare_run(_load_json(args.compare_run[1], "当前 run"), args.compare_run[0], args.out or None, args.label, args.compare_subset)
             print(result["summary_line"]); return 1 if result["violations"] else 0
         if args.corpus_diff:
             result = corpus_diff(args.corpus_diff[0], args.corpus_diff[1], args.out or None)
