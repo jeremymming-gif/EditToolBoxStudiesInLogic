@@ -108,11 +108,92 @@ check("期 90 人工目录 = 01..10 篇序号（作者名由稿件仓发现，�
       and [_m90[f"90-{i:02d}"].split(" ", 1)[0] for i in range(1, 11)]
       == [f"{i:02d}" for i in range(1, 11)])
 _meta90 = {c.key: c.metadata for c in cases if c.issue == "90" and c.metadata}
-check("期 90 附加源：只允许 90-03 声明（有稿件库时文件名由发现得到，非 main.tex）",
-      all(k == "90-03" and not v.endswith("main.tex") for k, v in _meta90.items()))
+
+
+def _independent_meta90_03() -> str:
+    """独立重算 90-03 附加源名（不调用被测发现函数；无稿库 → ""）。"""
+    try:
+        from slcn import paths as _paths
+        root = Path(_paths.manuscripts_root())
+    except Exception:
+        return ""
+    dirs = sorted(d for d in (root / batch.MANUAL_ROOTS["90"]).glob("03 *") if d.is_dir())
+    if not dirs:
+        return ""
+    for tex in sorted((dirs[0] / "original").glob("**/*.tex")):
+        if tex.name != "main.tex":
+            return tex.name
+    return ""
+
+
+_expected_meta90 = _independent_meta90_03()
+check("期 90 附加源：manifest = 独立重算（只 90-03、非 main.tex；无稿库则无）",
+      _meta90 == ({"90-03": _expected_meta90} if _expected_meta90 else {})
+      and all(not v.endswith("main.tex") for v in _meta90.values()))
 check("默认清单：无稿件库时 90 篇回落占位名 Paper01..Paper10（不硬编码真实作者）",
       all(_m90[f"90-{i:02d}"].endswith(f"Paper{i:02d}") for i in range(1, 11))
       if not batch._discover_issue_papers("90") else True)
+
+# ── B-266（修 b257 D-04）：附加源发现的独立期望源（不靠发现函数自证）──
+# 旧断言 `metadata == _discover_meta_tex(...)` 在发现选错文件/环境无稿库时都空通过；
+# 这里在假稿件库里放多份同名 main.tex 诱饵 + 多份候选 .tex，用字面期望断言选中哪一份，
+# 并加 1 条负例证明独立期望能捕获「发现选错」（旧式自洽断言在该负例下空通过=旧代码红）。
+def _fake_ms_root(base: Path, papers: dict[str, list[str]]) -> Path:
+    issue = base / batch.MANUAL_ROOTS["90"]
+    for dirname, rels in papers.items():
+        for rel in rels:
+            p = issue / dirname / "original" / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("% fixture（非真实稿件）", encoding="utf-8")
+    return base
+
+
+def _discover_with_root(root: Path) -> str:
+    """在假稿件库上调用发现：临时把 slcn.paths 指向假根（引擎缺失也可测）。"""
+    import types as _types
+    fake_slcn = _types.ModuleType("slcn")
+    fake_paths = _types.ModuleType("slcn.paths")
+    fake_paths.manuscripts_root = lambda: str(root)
+    fake_slcn.paths = fake_paths
+    saved = {k: sys.modules.get(k) for k in ("slcn", "slcn.paths")}
+    sys.modules["slcn"] = fake_slcn
+    sys.modules["slcn.paths"] = fake_paths
+    try:
+        return batch._discover_meta_tex("90", "03")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+
+with tempfile.TemporaryDirectory(prefix="slcn_meta_fixture_") as _td:
+    _root_a = _fake_ms_root(Path(_td) / "a", {
+        "03 Fixture Author": ["main.tex", "chapters/main.tex", "zzz/main.tex",
+                              "appendix/zzz_last.tex", "appendix/aaa_first.tex"],
+        "03 Other Author": ["other_paper.tex"],
+    })
+    (_root_a / batch.MANUAL_ROOTS["90"] / "03 Fixture Author" / "root_only.tex").write_text(
+        "% original/ 之外不参与", encoding="utf-8")
+    check("⑧b 附加源发现独立期望：多份同名 main.tex 全跳过 → 选中 appendix/aaa_first.tex",
+          _discover_with_root(_root_a) == "aaa_first.tex")
+    _root_b = _fake_ms_root(Path(_td) / "b", {
+        "03 Fixture Author": ["main.tex"], "03 Other Author": ["other_paper.tex"]})
+    check("⑧b 附加源发现独立期望：首篇无候选 → 空，不跨篇取 other_paper.tex",
+          _discover_with_root(_root_b) == "")
+
+    # 负例：注入「总选诱饵 main.tex」的错误发现；旧式自洽断言仍空通过，独立期望判红。
+    _orig_discover = batch._discover_meta_tex
+    batch._discover_meta_tex = lambda issue_code, no: "main.tex"
+    try:
+        _d3_poisoned = next(c for c in batch.default_cases() if c.key == "90-03")
+        _old_style_ok = _d3_poisoned.metadata == batch._discover_meta_tex("90", "03")
+        _indep_ok = _d3_poisoned.metadata == "aaa_first.tex"
+    finally:
+        batch._discover_meta_tex = _orig_discover
+    check("⑧b 负例：发现选错 → 旧式自洽断言空通过(True)、独立期望判红(False)（旧代码应红）",
+          _old_style_ok is True and _indep_ok is False)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) 分级：干净案例 / 各类 P0 / P1 / P2

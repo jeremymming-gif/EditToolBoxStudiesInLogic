@@ -20,8 +20,8 @@ jobs:
     name: 引擎（套件 + 文档看门狗）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: 装依赖
@@ -51,8 +51,8 @@ jobs:
     name: Swift 测试台 + Windows 外壳桥梁
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: 装依赖

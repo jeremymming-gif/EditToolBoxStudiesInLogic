@@ -9,7 +9,7 @@
 
 | 项 | 用途 | owner | 最后提交 | 测试/验证 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| `ai_settings_test/`（`main.swift` **3517 行**，批103 实测 `wc -l`） | mac 设置/argv 契约测试台 | mac-shell | 2026-10-21 | `bash tools/run_swift_tests.sh`（CI `ci.yml`） | active | 体量大，考虑拆分/共享 helper（单独立项，不在治理批做） |
+| `ai_settings_test/`（`main.swift` **3640 行**，批103 实测 `wc -l`） | mac 设置/argv 契约测试台 | mac-shell | 2026-10-21 | `bash tools/run_swift_tests.sh`（CI `ci.yml`） | active | 体量大，考虑拆分/共享 helper（单独立项，不在治理批做） |
 | `ai_store_test/` | mac AI 存储测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
 | `cutover_test/` | mac 切换测试台 | mac-shell | 2026-10-17 | `run_swift_tests.sh`（CI） | active | — |
 | `infocheck_test/` | mac 信息核查测试台 | mac-shell | 2026-10-16 | `run_swift_tests.sh`（CI） | active | — |
@@ -67,4 +67,4 @@
 - [x] 休眠项：每 5 批 prune 时复核（进 `TECH-ADVISOR.md` §6 深审：批75）
 - [x] **B-164（批103）**：4 件一次性 build 辅助 `git mv` → `tools/archive/`、本表状态 archived（判据：目录语义噪声降低；`grep` 零引用；可恢复）
 - [ ] 跨仓工具（`case_audit.py`/`gen_case_index.py`）是否迁回笔记仓或加 `--notes-dir` 说明（P2，需单独立项）
-- [ ] `ai_settings_test/main.swift`（3517 行，批104 实测 `wc -l`）是否抽公共 helper/拆分（P2，需单独立项，不在治理批做）
+- [ ] `ai_settings_test/main.swift`（3640 行，批104 实测 `wc -l`）是否抽公共 helper/拆分（P2，需单独立项，不在治理批做）

@@ -1382,7 +1382,8 @@ def l3_attribution(m: dict, man: dict | None) -> list[dict]:
             rows.append(row("文献条数", "BIB_COUNT_INFO", gen_bib, man_bib, gen_bib - man_bib,
                             L3_MANUAL, None,
                             f"源清单 {l1.get('ref_expected_n') or l1.get('ref_titles_n')} 条已全部覆盖；"
-                            f"最终人工版多出的条目不在源清单 → 人工后期修改（作者补充/编辑增补）"
+                            f"最终人工版多出的条目不在源清单 → 人工后期修改（作者补充/编辑增补）；"
+                            f"题名渲染差异（版本尾/引号）已归一化后再比对"
                             + (f"；多出题名：{manual_only[:6]}" if manual_only else "")))
     # ③b 源正文引用未匹配/指向未解析条目 → 需人工（L1 已显式列出，这里只做归因）
     unmatched = l1.get("unmatched_citations") or []
@@ -1427,8 +1428,9 @@ def l3_attribution(m: dict, man: dict | None) -> list[dict]:
                 rows.append(row("bib 键方案", "BIB_KEY_INFO", len(gen_cite_keys),
                                 len(man_cite_keys), len(gen_cite_keys) - len(man_cite_keys),
                                 L3_MANUAL, None,
-                                f"键集合不同主要来自人工后期修改（作者补充题名 "
-                                f"{manual_only_titles[:4]}）；产物独有 {only_gen[:4]} / "
+                                f"键集合不同主要来自人工后期修改：题名渲染差异（版本尾/引号）"
+                                f"归一化后仍不在产物题名集合 → 作者补充题名 "
+                                f"{manual_only_titles[:4]}；产物独有 {only_gen[:4]} / "
                                 f"人工独有 {only_man[:4]}"))
             else:
                 rows.append(row("bib 键方案", "BIB_KEY_INFO", len(gen_cite_keys),
@@ -3361,13 +3363,87 @@ def run_self_test() -> int:
           and PAGE_DIFF_LEVEL == "P1" and PAGE_DIFF_INFO_LEVEL == "P2"
           and SECTION_DIFF_INFO_LEVEL == "P2")
 
+    # ── B-266（修 b257 D-04）：附加源发现的独立期望源 ──
+    # 旧断言 `d3.metadata == _discover_meta_tex("90","03")` 与发现函数自洽：发现选错文件、
+    # 或环境无稿库时都空通过。改为在假稿件库里放多份同名 main.tex 诱饵 + 多份候选 .tex，
+    # 用字面期望断言「选中哪一份」；再加 1 条负例证明独立期望能捕获「发现选错」。
+    import types as _types
+
+    def _fake_ms_root(base: Path, papers: dict[str, list[str]]) -> Path:
+        issue = base / MANUAL_ROOTS["90"]
+        for dirname, rels in papers.items():
+            for rel in rels:
+                p = issue / dirname / "original" / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text("% fixture（非真实稿件）", encoding="utf-8")
+        return base
+
+    def _discover_with_root(root: Path) -> str:
+        """在假稿件库上调用发现：临时把 slcn.paths 指向假根（引擎缺失也可测）。"""
+        fake_slcn = _types.ModuleType("slcn")
+        fake_paths = _types.ModuleType("slcn.paths")
+        fake_paths.manuscripts_root = lambda: str(root)
+        fake_slcn.paths = fake_paths
+        saved = {k: sys.modules.get(k) for k in ("slcn", "slcn.paths")}
+        sys.modules["slcn"] = fake_slcn
+        sys.modules["slcn.paths"] = fake_paths
+        try:
+            return _discover_meta_tex("90", "03")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+    def _independent_meta90_03() -> str:
+        """独立重算（不调用被测发现函数）：首篇 `03 *` 目录 original/ 下字典序首个非 main.tex。"""
+        try:
+            from slcn import paths as _paths
+            root = Path(_paths.manuscripts_root())
+        except Exception:
+            return ""
+        dirs = sorted(d for d in (root / MANUAL_ROOTS["90"]).glob("03 *") if d.is_dir())
+        if not dirs:
+            return ""
+        for tex in sorted((dirs[0] / "original").glob("**/*.tex")):
+            if tex.name != "main.tex":
+                return tex.name
+        return ""
+
+    with tempfile.TemporaryDirectory(prefix="slcn_meta_selftest_") as td:
+        root_a = _fake_ms_root(Path(td) / "a", {
+            "03 Fixture Author": ["main.tex", "chapters/main.tex", "zzz/main.tex",
+                                 "appendix/zzz_last.tex", "appendix/aaa_first.tex"],
+            "03 Other Author": ["other_paper.tex"],
+        })
+        (root_a / MANUAL_ROOTS["90"] / "03 Fixture Author" / "root_only.tex").write_text(
+            "% original/ 之外不参与", encoding="utf-8")
+        check("附加源发现（独立期望）：多份同名 main.tex 全跳过 → 选中 appendix/aaa_first.tex",
+              _discover_with_root(root_a) == "aaa_first.tex")
+        root_b = _fake_ms_root(Path(td) / "b", {
+            "03 Fixture Author": ["main.tex"], "03 Other Author": ["other_paper.tex"]})
+        check("附加源发现（独立期望）：首篇无候选 → 空，不跨篇取 other_paper.tex",
+              _discover_with_root(root_b) == "")
+
+        # 负例：把发现实现替换成「总选诱饵 main.tex」，旧式自洽断言仍空通过；
+        # 独立期望（字面 aaa_first.tex）判红 —— 旧代码在此负例红。
+        _saved_discover = globals()["_discover_meta_tex"]
+        globals()["_discover_meta_tex"] = lambda issue_code, no: "main.tex"
+        try:
+            _d3_poisoned = next(c for c in default_cases() if c.key == "90-03")
+            _old_style_ok = _d3_poisoned.metadata == _discover_meta_tex("90", "03")
+            _indep_ok = _d3_poisoned.metadata == "aaa_first.tex"
+        finally:
+            globals()["_discover_meta_tex"] = _saved_discover
+        check("附加源发现负例：注入错误发现后旧式自洽断言空通过、独立期望判红",
+              _old_style_ok is True and _indep_ok is False)
+
     d3 = next(c for c in default_cases() if c.key == "90-03")
-    # B-257 顺带修预存红：附加源名是运行时按稿件仓发现的（无稿库 → ""），旧断言硬编码
-    # "example puzzle.tex" 只在稿库恰好是那个文件名的机器上通过；改验发现值本身 + 计数一致。
-    _meta90_03 = _discover_meta_tex("90", "03")
-    check("90-03 manifest 声明附加源 metadata=运行时发现的 original/*.tex（无稿库则无）",
-          d3.metadata == _meta90_03
-          and sum(1 for c in default_cases() if c.metadata) == (1 if _meta90_03 else 0))
+    _expected_meta90 = _independent_meta90_03()
+    check("90-03 manifest 附加源 = 独立重算值（无稿库则无；不只与发现函数自洽）",
+          d3.metadata == _expected_meta90
+          and sum(1 for c in default_cases() if c.metadata) == (1 if _expected_meta90 else 0))
     with tempfile.TemporaryDirectory(prefix="slcn_selftest_") as td:
         ws = Path(td)
         (ws / "Jie_Zhou").mkdir(parents=True, exist_ok=True)
