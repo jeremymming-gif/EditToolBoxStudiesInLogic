@@ -49,7 +49,10 @@ r"""`slcn/bibdb.py`（编辑部引用库）与开发用 CLI `bibdb.py` 的判据
       「只有 editor 没有 author」的记录）、跳过分类、风险标记（多编者/`(eds.)`/
       editor-only/大写 `AND`/粘连缩写）、MD+CSV+JSON 三件报告、dry-run **绝不写库**；
       `--apply --backup` 只改 editor + sha/updated_at、二次 dry-run 0 残留、二次 apply 0 变更；
-      报告无绝对路径/无时间戳、dry-run 两次逐字节相同（幂等）
+      报告无绝对路径/无时间戳、dry-run 两次逐字节相同（幂等）；
+      **真实库只读抽查**（B-260）：不变量先行（rc=0 / db_unchanged / 库 sha 前后相同），
+      统计用**结构自洽**（`0<=editor_only<=with_editor<=records`、`changes+skips==with_editor`）
+      而非历史状态白名单，库存在时**零 SKIP**（纯 helper 合成负例逐条判红）
   (u) `normalize-bib`（B-209 外部 .bib 只读规范化）：stdout 逐字节 = 唯一实现
       `bibnorm.normalize_bib()[0]`；`--json` 的 entries_in/out、changed_fields 前/后 diff、
       notes/risks/missing_required（复用 `bibcheck.check()`）；幂等；`--stdin` 与 `--bib`
@@ -2039,6 +2042,46 @@ def _make_editor_db(path: str) -> str:
     return path
 
 
+def _real_db_guard_ok(payload: dict, sha_before: str, sha_after: str) -> tuple[bool, str]:
+    """真实库只读抽查的纯判据：dry-run 报告必须「未写库 + 统计结构自洽」。
+
+    B-260：真实库随外部合并不停漂移，所以**不比对固定数字**（历史状态白名单必然过期，
+    且旧实现的 SKIP 位于本判据之前、会掩盖 dry-run 写库的回归）。这里只断报告对外契约
+    里的只读不变量（db_unchanged / 库 sha 前后相同）与统计结构自洽（数量关系，非具体值）。
+    返回 (ok, detail)：detail 汇总全部不通过的原因（通过时给结构摘要），失败可直接定位。
+    """
+    problems: list[str] = []
+    if payload.get("db_unchanged") is not True:
+        problems.append(f"db_unchanged={payload.get('db_unchanged')!r}（dry-run 疑似写了库）")
+    if sha_before != sha_after:
+        problems.append(f"库 sha 前后不同：{sha_before!r} → {sha_after!r}")
+    counts: dict[str, int] = {}
+    for field in ("records", "with_editor", "editor_only", "changes", "skips"):
+        value = payload.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            problems.append(f"{field}={value!r} 不是整数")
+        elif value < 0:
+            problems.append(f"{field}={value} 为负数")
+        else:
+            counts[field] = value
+    if len(counts) == 5:
+        records, with_editor = counts["records"], counts["with_editor"]
+        editor_only, changes, skips = counts["editor_only"], counts["changes"], counts["skips"]
+        if records <= 0:
+            problems.append(f"records={records}（真实库不应为空）")
+        if not 0 <= editor_only <= with_editor <= records:
+            problems.append(f"结构不自洽：editor_only({editor_only}) <= with_editor({with_editor})"
+                            f" <= records({records}) 不成立")
+        if changes + skips != with_editor:
+            problems.append(f"结构不自洽：changes({changes})+skips({skips})"
+                            f" != with_editor({with_editor})")
+    if problems:
+        return False, "；".join(problems)
+    return True, (f"records={counts['records']} with_editor={counts['with_editor']} "
+                  f"editor_only={counts['editor_only']} changes={counts['changes']} "
+                  f"skips={counts['skips']}")
+
+
 with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
     db = _make_editor_db(os.path.join(tmp, "editors.jsonl"))
     _seed = bibdb.Store.load(db)
@@ -2206,44 +2249,53 @@ with tempfile.TemporaryDirectory(prefix="bibdb_editors_") as tmp:
           r.returncode == 0 and p3.get("applied") == 0
           and read_bytes(db) == digest_after_apply,
           json.dumps(p3, ensure_ascii=False)[:300])
-    # ── 真库只读抽查（SKIP when absent）：数字与 Phase0 审计一致 ──
+    # ── 真库只读抽查（B-260：不变量先行；唯一 SKIP = 库缺失）──
+    # 真实库随外部合并不停漂移，历史状态白名单必然过期；旧实现还把 SKIP 放在 db_unchanged/sha
+    # 断言之前，dry-run 写库的回归会被静默掩盖。现在：库存在时**零 SKIP**——先断言只读不变量
+    # （rc=0 / db_unchanged / 库 sha 前后相同），再用「结构自洽」代替固定数字（见
+    # _real_db_guard_ok），并用合成负例逐条证明该判据不是永真（未知但自洽的状态 → OK）。
     try:
         real_db = bibdb.default_db_path()
-    except Exception:                     # 笔记仓不存在（CI/公开仓）→ 正常跳过
+    except Exception:                     # 笔记仓不存在（CI/公开仓）→ 唯一合理前置，跳过
         real_db = ""
     if not real_db or not os.path.isfile(real_db):
-        skip("(t) 真实引用库只读抽查", "库文件不存在（CI 上正常）")
+        skip("(t) 真实库只读不变量", "库文件不存在（CI/公开仓正常；本机实跑）")
     else:
         real_sha = bibdb.db_sha256(real_db)
         r = run_cli("normalize-editors", "--db", real_db, "--json")
         real = json.loads(r.stdout) if r.returncode == 0 else {}
-        # 兼容多种真实库状态：B3 apply 前 / B3 后 / 合并 apply 后（第四十三批起；之后每次
-        # 用户合并在本集合加一行当前状态即可 —— 断言仍是「dry-run 零变化 + 统计自洽」）
-        _states = {
-            (7950, 971, 29, 498, 473),      # B3 apply 前
-            (7950, 971, 29, 0, 971),        # B3 apply 后
-            (7067, 908, 24, 0, 908),        # 第一批合并 apply 后（7950-883）
-            (7051, 905, 24, 0, 905),        # 第二批合并 apply 后（7067-16，含 Segerberg 书版子集）
-            (7045, 904, 24, 0, 904),        # 用户 2026-10-23 引用库合并提交后（7051-6；B-201 批同步）
-            (7043, 904, 24, 0, 904),        # 用户用 B-201 新功能再合并 2 对后（7045-2；B-205 批同步）
-        }
-        _state = (real.get("records"), real.get("with_editor"), real.get("editor_only"),
-                  real.get("changes"), real.get("skips"))
-        # B-259 注（2026-10-28）：起批后引用库被外部任务持续编辑（8fd4fcb key 迁移 → fb54522 删 8 条 →
-        # a1470bb T2-1 迁移 24 条；with_editor 逐次增长、dry-run changes 一度为 2），
-        # 「dry-run 零变更 + 固定状态」前提不成立。此时按「只读快照不可用」SKIP 并留证据，
-        # 不把数据漂移写成 PASS；库静止时仍走下方原断言。
-        if real.get("changes") != 0 or _state not in _states:
-            skip("(t) 真实库只读：dry-run 不写库、统计自洽（兼容 B3/合并 apply 前后状态）",
-                 f"外部任务编辑中 state={_state}；证据 /tmp/b259-20261028/gates/G8_full_post.log")
-        else:
-            check("(t) 真实库只读：dry-run 不写库、统计自洽（兼容 B3/合并 apply 前后状态）",
-                  r.returncode == 0 and _state in _states
-                  and real.get("db_unchanged") is True
-                  and bibdb.db_sha256(real_db) == real_sha,
-                  json.dumps({k: real.get(k) for k in
-                              ("records", "with_editor", "editor_only", "changes",
-                               "skips", "db_unchanged")}, ensure_ascii=False))
+        sha_now = bibdb.db_sha256(real_db)
+        guard_ok, guard_detail = _real_db_guard_ok(
+            real, real.get("sha256_before", real_sha), real.get("sha256_after", sha_now))
+        check("(t) 真实库只读不变量：rc=0 / db_unchanged / 库 sha 前后不变 / 统计结构自洽",
+              r.returncode == 0 and real.get("db_unchanged") is True
+              and sha_now == real_sha and guard_ok,
+              f"rc={r.returncode} sha_now==real_sha={sha_now == real_sha}；{guard_detail}")
+        # ── 合成负例（纯 helper，逐条判红）：以本次真实 payload 为基线，证明判据非永真 ──
+        ok, why = _real_db_guard_ok(dict(real, db_unchanged=False), real_sha, real_sha)
+        check("(t) 负例：db_unchanged=False（dry-run 写了库）→ 判红", not ok and bool(why), why)
+        ok, why = _real_db_guard_ok(dict(real, sha256_before="0" * 64,
+                                         sha256_after="1" * 64), "0" * 64, "1" * 64)
+        check("(t) 负例：报告 sha256_before != sha256_after → 判红", not ok and bool(why), why)
+        # 实际库文件 sha 变化：payload 自洽（before==after）但外部实测 sha 已漂 → 判红
+        ok, why = _real_db_guard_ok(real, real_sha, hashlib.sha256(b"changed").hexdigest())
+        check("(t) 负例：真实库文件 sha 变化（db_sha256 前后不同）→ 判红",
+              not ok and bool(why), why)
+        ok, why = _real_db_guard_ok(dict(real, changes=int(real.get("changes") or 0) + 1),
+                                    real_sha, real_sha)
+        check("(t) 负例：changes+skips != with_editor → 判红", not ok and bool(why), why)
+        ok, why = _real_db_guard_ok(
+            dict(real, editor_only=int(real.get("with_editor") or 0) + 1), real_sha, real_sha)
+        check("(t) 负例：editor_only > with_editor → 判红", not ok and bool(why), why)
+        ok, why = _real_db_guard_ok(
+            dict(real, records=max(int(real.get("with_editor") or 1) - 1, 0)),
+            real_sha, real_sha)
+        check("(t) 负例：records < with_editor → 判红", not ok and bool(why), why)
+        # 正例：未知但结构自洽（无历史白名单）→ 必须 OK
+        ok, why = _real_db_guard_ok(
+            dict(real, changes=0, skips=int(real.get("with_editor") or 0)),
+            real_sha, real_sha)
+        check("(t) 正例：未知但结构自洽的状态 → 判 OK（无状态白名单）", ok, why)
 
 
 # ─────────────────────────────────────────────────────────────────────────
