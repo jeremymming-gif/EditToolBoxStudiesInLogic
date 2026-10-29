@@ -473,6 +473,65 @@ def _line_is_ascii(m: re.Match, tex: str, threshold: float = 0.70) -> bool:
     return letters / max(len(line), 1) >= threshold
 
 
+def _zh11_closer(mask: str, opener: int, math: str = "") -> int:
+    r"""`mask[opener]` 是开括号时，返回与它配对的右括号位置；没有则 -1。
+
+    `math` 非空时只看**数学区外**的括号（`math_mask` 上非空白处即数学区），
+    避免正文的 `，\cite` 被数学区里的 `（` 误豁免（B-273 fix round）。
+    """
+    depth = 0
+    for k in range(opener + 1, len(mask)):
+        if math and math[k] not in " \n":
+            continue
+        ch = mask[k]
+        if ch in _ZH11_PAREN_OPEN:
+            depth += 1
+        elif ch in _ZH11_PAREN_CLOSE:
+            if depth == 0:
+                return k
+            depth -= 1
+    return -1
+
+
+def _zh11_accept(m: re.Match, tex: str) -> bool:
+    r"""ZH-11 括号豁免（手册 §常规 5.2 正例 `（\ct{a6}，第8\cndash 12页）`）。
+
+    逗号与后面紧跟的 `\cite` 族命令如果**整体处于同一对**中文/英文括号内，说明是
+    「作者（年份，\cite{…}）」式的括注写法，不该报；正文句读照报。
+    括号配对在 `raw_mask`（注释/verbatim 已挖空）上算，嵌套按最近未闭合开括号；
+    括号未闭合时不豁免（避免把漏括号的正文静默掉）。
+    """
+    mask = raw_mask(tex)
+    math = math_mask(tex)
+    pos = m.start()
+    if _zh12_in_math(mask, pos):        # 数学区里的 `，\cite` 不适用这条中文口径
+        return True
+    depth = 0
+    opener = -1
+    k = pos - 1
+    while k >= 0:
+        if math[k] not in " \n":         # 数学区里的括号不参与配对（fix round）
+            k -= 1
+            continue
+        ch = mask[k]
+        if ch in _ZH11_PAREN_CLOSE:
+            depth += 1
+        elif ch in _ZH11_PAREN_OPEN:
+            if depth == 0:
+                opener = k
+                break
+            depth -= 1
+        k -= 1
+    if opener < 0:
+        return True
+    closer = _zh11_closer(mask, opener, math)
+    return not (closer > 0 and closer > m.end())
+
+
+#: ZH-11 括号豁免用的中文/英文圆括号。
+_ZH11_PAREN_OPEN = "(（"
+_ZH11_PAREN_CLOSE = ")）"
+
 RULES: list[Rule] = [
     # ── 中文稿件：半角标点混入（经验书「预校正·中文」逐条）──────────────
     Rule("ZH-01", "中文之间的半角逗号", "经验书 预校正·中文（检索英文句号逗号）",
@@ -513,9 +572,11 @@ RULES: list[Rule] = [
          "手册 §校对规范·常规 4.1（脚注在逗号处放逗号前、句号处放句号后）",
          r"([，,])[ \t]{0,3}(\\footnote\{)", "把脚注移到该标点之前", langs=("zh",), scope="raw"),
     Rule("ZH-11", "引文在逗号之后（应在标点之前）",
-         "手册 §校对规范·常规 5.1（文献引用位置与脚注同理）",
+         "手册 §校对规范·常规 5.1–5.2（文献引用位置与脚注同理；括注写法如"
+         "「（Sarah Moss，\\parencite{…}）」不报）",
          r"([，,])[ \t]{0,3}(\\(?:parencite|cite|footcite|textcite)\{)",
-         "把引用移到该标点之前", langs=("zh",), scope="raw"),
+         "把引用移到该标点之前（中文括号内的括注已豁免）", langs=("zh",), scope="raw",
+         accept=_zh11_accept),
     # ZH-12 用专用扫描（pattern 留空）：`\footnote{…}` 的花括号可能嵌套，
     # 正则 `[^}]*` 会在第一个 `}` 处截断；判据与替换见 `_zh12_hits()` / `check()`。
     Rule("ZH-12", "句末后的脚注紧跟汉字（间隔过小）",
@@ -533,8 +594,13 @@ RULES: list[Rule] = [
          r"\\mathbf\{", "改用 \\pmb{} 或 \\boldsymbol{}", langs=("zh", "en"), scope="math"),
 
     # ── 引用与版式（手册 §排版指南）────────────────────────────────────
-    Rule("ZH-16", "图表/式引用缺波浪号间隔", "手册 §间隔 4（如「表~\\ref{table1}~所示」）",
-         r"[图表式][ \t]{0,3}\\ref\{", "补波浪号：表~\\ref{...}~所示", langs=("zh",), scope="raw"),
+    Rule("ZH-16", "图表/式/中文序号引用缺波浪号间隔",
+         "手册 §间隔 4（如「表~\\ref{table1}~所示」）＋手册·章节/定理序号再提及"
+         "（「第~\\ref{…}~节」，中文文本里的序号引用需要波浪号增加间隔）",
+         r"(?:(?:表|图|式|第|章|节|条|定理|引理|命题|定义|推论)[ \t]{0,3}\\(?:eq)?ref\{"
+         r"|(?<![图表式第章节条理题义论])\\(?:eq)?ref\{[^}]*\}(?=节|条|页|所示))",
+         "补波浪号：表~\\ref{...}~所示、第~\\ref{...}~节、式~\\eqref{...}",
+         langs=("zh",), scope="raw"),
     Rule("ZH-17", "\\caption 里用 \\\\ 换行", "手册 §冷门问题汇总 1（应使用 \\newline）",
          r"\\caption\{[^{}]*\\\\", "caption 内换行用 \\newline", langs=("zh", "en"), scope="raw"),
     Rule("ZH-18", "楷体环境里的英文/数字未调正",
@@ -546,6 +612,17 @@ RULES: list[Rule] = [
 
     Rule("ZH-20", "楷体环境里用 \\textbf 加粗", "手册 §校对规范·常规 3（楷体环境下的加粗用 \\textsf）",
          r"\\textbf\{", "楷体环境（quotation / quote）内改用 \\textsf{}", langs=("zh",), scope="raw"),
+    # ZH-21 用专用扫描（pattern 留空）：`\footnote{…}` 可能嵌套，且要把句末标点搬到
+    # 命令之前，判据与替换见 `_zh21_hits()` / `check()`。
+    Rule("ZH-21", "脚注在句号前（应放句号后）",
+         "手册 §校对规范·常规 4.1（脚注若在句号处则放于句号后）",
+         "", "把句末标点移到脚注之前：文本。\\footnote{注}", langs=("zh",),
+         scope="raw", fixable=True),
+    # ZH-22 用专用扫描（pattern 留空）：要看环境配对，见 `_zh22_hits()`。
+    Rule("ZH-22", "表格/浮动体内的 \\footnote 会被吞",
+         "手册 §校对规范·常规 4.4（表格脚注需 \\footnotemark + 环境后 \\footnotetext）",
+         "", "改用 \\footnotemark{} + 环境后的 \\footnotetext{}", langs=("zh", "en"),
+         scope="raw"),
 
     # ── 英文稿件（手册 §英文文章的特殊规范；经验书 预校正·英文）──────────
     Rule("EN-01", "年份前的半角括号缺空格", "经验书 预校正·英文（检索 [a-zA-Z]\\(\\d）",
@@ -577,7 +654,7 @@ RULES: list[Rule] = [
 #: 2026-10-30（B-272）ZH-12 句末脚注后补 `\,` 也进入默认白名单（判据见 `_zh12_hits()`）。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
-    "ZH-09", "ZH-12", "ZH-14", "EN-01", "EN-02", "EN-03",
+    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "EN-01", "EN-02", "EN-03",
 )
 
 #: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
@@ -679,6 +756,106 @@ def _zh12_hits(tex: str, mask: str) -> list[tuple[int, int]]:
     return out
 
 
+
+#: ZH-21 只认句号/问号/叹号（手册 §常规 4.1「若在句号处则放于句号后」）；分号逗号不动。
+_ZH21_PUNCT = "。！？"
+
+#: 左邻这些标点时 ZH-21 不适用（脚注本就该位于该标点之前；逗号场景另归 ZH-10）
+_ZH21_LEFT_SKIP = "，,、；;：:。！？…—"
+
+
+def _zh21_sentence_start(mask: str, pos: int,
+                         spans: list[tuple[int, int]]) -> int:
+    r"""从 `pos` 往前找同一句的起点（跳过脚注内部的标点）。"""
+    k = pos - 1
+    while k >= 0:
+        if not _in_any(k, spans) and mask[k] in "。！？\n":
+            return k + 1
+        k -= 1
+    return 0
+
+
+def _zh21_hits(tex: str, mask: str) -> list[tuple[int, int]]:
+    r"""ZH-21（B-273）「脚注在句号前（应放句号后）」的专用扫描。
+
+    `\footnote{…}`（花括号配对、支持嵌套）右花括号**紧邻** `。！？` → 命中；
+    返回 `(start, end)`，`end` 是标点之后的位置，`replacement` 可把该标点直接
+    搬到脚注之前（`文本\footnote{注}。` → `文本。\footnote{注}`）。
+    排除：注释/数学区、脚注内容里再嵌的 `\footnote`、可选参数里（`\item[…]` 等）、
+    行首/段首没有前文、以及手册 §常规 4.2 的例外——同一句里已有另一处脚注时整句不报。
+    """
+    spans = _footnote_spans(mask)
+    opt = _optional_arg_spans(tex)
+    out: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        i = mask.find("\\footnote{", pos)
+        if i < 0:
+            break
+        pos = i + 1
+        end = _match_brace(mask, i + len("\\footnote{") - 1)
+        if end < 0 or end >= len(mask):      # end 是右花括号之后的位置；标点为末字符时 end == len-1
+            continue
+        if mask[end] not in _ZH21_PUNCT:
+            continue
+        left = i - 1
+        while left >= 0 and mask[left] in _ZH12_GAP:
+            left -= 1
+        if left < 0 or mask[left] in _ZH21_LEFT_SKIP:
+            continue
+        if _zh12_in_math(mask, i) or any(a < i < b for a, b in spans) or _in_any(i, opt):
+            continue
+        sent = _zh21_sentence_start(mask, i, spans)
+        if not mask[sent:i].strip():        # 行首/段首：没有前文
+            continue
+        if mask.find("\\footnote{", sent, i) >= 0:   # 手册 4.2：同句两处脚注都放标点前
+            continue
+        out.append((i, end + 1))
+    return out
+
+
+#: ZH-22 判定的浮动体/表格环境（`\footnote` 在这些环境里会被吞掉）。
+_FLOAT_ENVS = ("table", "tabular", "figure", "longtable")
+
+
+def _env_spans(mask: str, env: str) -> list[tuple[int, int]]:
+    r"""`\begin{env}`…`\end{env}` 的整段区间（`mask` 上算，注释/verbatim 不误报）。"""
+    spans: list[tuple[int, int]] = []
+    begin = "\\begin{" + env + "}"
+    end_mark = "\\end{" + env + "}"
+    for m in re.finditer(re.escape(begin), mask):
+        e = mask.find(end_mark, m.end())
+        if e > 0:
+            spans.append((m.start(), e + len(end_mark)))
+    return spans
+
+
+def _zh22_hits(tex: str, mask: str) -> list[tuple[int, int]]:
+    r"""ZH-22（B-273）「表格/浮动体内的 `\footnote` 会被吞」：环境内出现即报（只报不改）。
+
+    `\footnotemark` / `\footnotetext` 不匹配（本扫描只找 `\footnote{`）；注释/verbatim/数学区不算。
+    """
+    spans: list[tuple[int, int]] = []
+    for env in _FLOAT_ENVS:
+        spans.extend(_env_spans(mask, env))
+    if not spans:
+        return []
+    out: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        i = mask.find("\\footnote{", pos)
+        if i < 0:
+            break
+        pos = i + 1
+        end = _match_brace(mask, i + len("\\footnote{") - 1)
+        if end < 0:
+            continue
+        if not _in_any(i, spans) or _zh12_in_math(mask, i):
+            continue
+        out.append((i, end))
+    return out
+
+
 def _kaishu_spans(text: str) -> list[tuple[int, int]]:
     r"""楷体环境（quotation / quote）在原文里的区间（不含环境标记本身）。"""
     spans: list[tuple[int, int]] = []
@@ -731,6 +908,33 @@ def check(tex: str, lang: str = "zh") -> Report:
                 replacement=seg + "\\,",
             ))
 
+    # ZH-21（B-273）：脚注在句末标点前 → 把标点搬到脚注之前（手册 §常规 4.1）。
+    # 专用扫描：花括号配对、可嵌套；同句两处脚注的手册 4.2 例外整句跳过。
+    if lang == "zh":
+        for start, end in _zh21_hits(tex, masks["raw"]):
+            line, col = _line_col(tex, start)
+            seg = tex[start:end]
+            rep.hits.append(Hit(
+                rule_id="ZH-21", title="脚注在句号前（应放句号后）",
+                basis="手册 §校对规范·常规 4.1（脚注在句号处放于句号后）",
+                line=line, col=col, start=start, end=end,
+                text=seg.replace("\n", "⏎"),
+                advice="把句末标点移到脚注之前", fixable=True,
+                replacement=seg[-1] + seg[:-1],
+            ))
+
+    # ZH-22（B-273）：表格/浮动体里的 `\footnote` 会被吞掉（手册 §常规 4.4）；只报不改。
+    for start, end in _zh22_hits(tex, masks["raw"]):
+        line, col = _line_col(tex, start)
+        seg = tex[start:end]
+        rep.hits.append(Hit(
+            rule_id="ZH-22", title="表格/浮动体内的 \\footnote 会被吞",
+            basis="手册 §校对规范·常规 4.4（改用 \\footnotemark + \\footnotetext）",
+            line=line, col=col, start=start, end=end,
+            text=seg.replace("\n", "⏎"),
+            advice="改用 \\footnotemark{} + 环境后的 \\footnotetext{}", fixable=False,
+        ))
+
     # 楷体环境里的英文/数字（单独扫：要在区间内，且不在 \textup{} / \ct 等命令的参数里）
     if lang == "zh":
         for a, b in kaishu:
@@ -764,7 +968,7 @@ def apply_fixes(tex: str, rep: Report,
 
     `rule_ids`：只动这些规则（`None` = 全部 fixable，即 `--fix` 的默认口径）。
     初排转换接线时应传 `INITIAL_LAYOUT_FIXABLE`（2026-10-28 起含 ZH-08 新口径、
-    2026-10-30 B-272 起含 ZH-12 句末脚注补 `\,`）；
+    2026-10-30 B-272 起含 ZH-12 句末脚注补 `\,`、B-273 起含 ZH-21 脚注句号换位）；
     `OPT_IN_FIXABLE` 目前为空，供后批把「暂不默认启用」的规则单独列出。
     """
     todo = [h for h in rep.hits if h.fixable and h.replacement is not None

@@ -121,6 +121,23 @@ check("(a) ZH-11 正例：引文在逗号之前 → 不报",
       not hits_of("见文献\\parencite{Haack1974}，以及别的。\n", "ZH-11"))
 check("(a) ZH-11 反例：**英文稿**里的 `work, \\cite{x}` 不报（手册这条是中文口径）",
       not hits_of("Besides Burgess' work, \\cite{Holliday17} considered it.\n", "ZH-11", lang="en"))
+# S1（B-273）ZH-11 加括号内豁免：手册 §常规 5.2 的正例是「（作者，\\parencite{…}）」括注写法。
+# 实测（/tmp/b272-analysis-20261030/handbook-ideas.md §1）：成品 96 处 `，\\cite` 有 82 处在中文括号内。
+check("(a) ZH-11 反例：中文括号内的括注（手册正例 `（Sarah Moss，\\parencite{k}）`）不报",
+      not hits_of("（Sarah Moss，\\parencite{k}）\n", "ZH-11"))
+check("(a) ZH-11 正例：括号外的正文句读照报",
+      len(hits_of("文本，\\cite{k}正文。\n", "ZH-11")) == 1)
+check("(a) ZH-11 嵌套括号：按最近未闭合开括号判、命中整体在括号内 → 不报",
+      not hits_of("（甲（乙，\\cite{k}）丙）\n", "ZH-11"))
+check("(a) ZH-11 未闭合括号不豁免（照报，不把漏括号静默吞掉）",
+      len(hits_of("（甲，\\cite{k}正文。\n", "ZH-11")) == 1)
+# fix round（B-273 验收 V3-2）：数学区里的括号不参与配对——`$（$` 不能被当成正文括号。
+check("(a) ZH-11 数学区左括号不参与豁免：`$（$正文，\\cite{k}）` → 报",
+      len(hits_of("$（$正文，\\cite{k}）\n", "ZH-11")) == 1)
+check("(a) ZH-11 数学区**外**的正文括注仍按括号豁免（回归）",
+      not hits_of("（作者，\\cite{k}）\n", "ZH-11"))
+check("(a) ZH-11 数学区括号闭合也不把正文句读豁免",
+      len(hits_of("$（$正文，\\cite{k}）$。\n", "ZH-11")) == 1)
 # 句末标点后的脚注（手册 §常规 4.3；B-272 起 ZH-12 升级为「可自动改」）
 # 判据（spec b272-zh12-footnote-space §4）：句末标点（。！？…，可带闭引号/闭括号）
 # 后紧跟 `\footnote{…}`，右邻**紧接**汉字 → 插 `\,`；花括号配对、支持嵌套。
@@ -161,6 +178,39 @@ for _tex, _why in (
     check(f"(a) ZH-12 反例不报：{_why}", not hits_of(_tex, "ZH-12"), _tex)
 check("(a) ZH-12 反例：英文稿不按中文口径报",
       not hits_of("Done.\\footnote{note}This follows.\n", "ZH-12", lang="en"))
+# S2（B-273）ZH-21「脚注在句号前（应放句号后）」：手册 279「若在句号处则放于句号后」。
+for _tex, _why in (("文本\\footnote{注}。\n", "句号"),
+                   ("文本\\footnote{注}！\n", "叹号"),
+                   ("文本\\footnote{注}？\n", "问号"),
+                   ("文本\\footnote{注 {内层}}。\n", "嵌套花括号")):
+    _hs = hits_of(_tex, "ZH-21")
+    check(f"(a) ZH-21 脚注在句末标点前 → 报：{_why}", len(_hs) == 1, _tex)
+    check(f"(a) ZH-21 该处 fixable，替换把标点搬到脚注前：{_why}",
+          len(_hs) == 1 and _hs[0].fixable
+          and _hs[0].replacement == _tex[-2] + _tex[_hs[0].start:_hs[0].end - 1],
+          repr([_h.replacement for _h in _hs]))
+# 手册 §常规 4.2 的例外：一句话两处脚注、各对应一部分 → 都放标点前，整句不报。
+check("(a) ZH-21 反例：同句两处脚注（手册 4.2 例外）→ 不报",
+      not hits_of("张三说上海下雪了\\footnote{甲}，而李四说面包真好吃\\footnote{乙}。\n",
+                  "ZH-21"))
+for _tex, _why in (("文本。\\footnote{注}下一句。\n", "已是「句号在脚注前」的正确序"),
+                   ("文本，\\footnote{注}。\n", "左邻逗号不是本规则目标（逗号另归 ZH-10）"),
+                   ("\\footnote{注}。\n", "行首/段首没有前文"),
+                   ("% 文本\\footnote{注}。\n", "注释区"),
+                   ("$文本\\footnote{注}。$\n", "数学区"),
+                   ("\\item[文本\\footnote{注}。]\n", "可选参数内")):
+    check(f"(a) ZH-21 反例不报：{_why}", not hits_of(_tex, "ZH-21"), _tex)
+check("(a) ZH-21 反例：英文稿不按中文口径报",
+      not hits_of("Done\\footnote{note}.\n", "ZH-21", lang="en"))
+# fix round（B-273 验收 V3-1）：句末标点恰为字符串末字符（无尾随换行）时也要报。
+check("(a) ZH-21 无尾随换行（标点为末字符）→ 报",
+      len(hits_of("文本\\footnote{注}。", "ZH-21")) == 1)
+check("(a) ZH-21 无尾随换行：replacement 把标点搬到脚注前",
+      (lambda hs: len(hs) == 1 and hs[0].fixable
+       and hs[0].replacement == "。\\footnote{注}")(
+          hits_of("文本\\footnote{注}。", "ZH-21")))
+check("(a) ZH-21 无尾随换行：嵌套脚注同样报",
+      len(hits_of("文本\\footnote{注 {内层}}。", "ZH-21")) == 1)
 
 # 数学环境（手册 §数学环境）
 check("(a) ZH-13 数学里的三个点 → 报", len(hits_of("$a_1,...,a_n$\n", "ZH-13")) == 1)
@@ -170,9 +220,39 @@ check("(a) ZH-14 集合里的竖线 → 报，且建议改成 \\mid",
       [h.replacement for h in hits_of("$\\{x|x>5\\}$\n", "ZH-14")] == ["\\{x\\mid x>5\\}"])
 check("(a) ZH-14 反例：条件概率的竖线不在集合里 → 不报", not hits_of("$P(A|B)$\n", "ZH-14"))
 check("(a) ZH-15 \\mathbf → 报", len(hits_of("$\\mathbf{a+b}=c$\n", "ZH-15")) == 1)
+# S4（B-273）ZH-22「表格/浮动体内 \\footnote 会被吞」：手册 285–294（改用 \\footnotemark+\\footnotetext）。
+for _env, _why in (("table", "table 环境"), ("tabular", "tabular 环境"),
+                   ("figure", "figure 环境"), ("longtable", "longtable 环境")):
+    _tex = f"\\begin{{{_env}}}x\\footnote{{注}}\\end{{{_env}}}\n"
+    check(f"(a) ZH-22 {_why}内的 \\footnote → 报", len(hits_of(_tex, "ZH-22")) == 1, _tex)
+    check(f"(a) ZH-22 {_why}内命中仍**只报不改**",
+          not hits_of(_tex, "ZH-22")[0].fixable)
+for _tex, _why in (("表外\\footnote{注}。\n", "表格外"),
+                   ("\\begin{table}\\footnotemark\\end{table}\n", "\\footnotemark 不报"),
+                   ("\\begin{table}\\footnotetext{注}\\end{table}\n", "\\footnotetext 不报"),
+                   ("% \\begin{table}\\footnote{注}\\end{table}\n", "注释区"),
+                   ("\\begin{table}\\caption{a\\footnote{注}}\\end{table}\n",
+                    "table 内命中（\\caption 参数里的也算环境内）")):
+    _n = len(hits_of(_tex, "ZH-22"))
+    if _why.startswith("table 内命中"):
+        check(f"(a) ZH-22 正例（补充）：{_why}", _n == 1, _tex)
+    else:
+        check(f"(a) ZH-22 反例不报：{_why}", _n == 0, _tex)
 
 # 引用与版式（手册 §排版指南）
 check("(a) ZH-16 图表引用缺波浪号 → 报", len(hits_of("如表\\ref{table1}所示。\n", "ZH-16")) == 1)
+# S3（B-273）ZH-16 扩到中文序号与 \\eqref：手册 594「中文文本中的序号引用还需要波浪号」。
+for _tex, _why in (("第\\ref{sec}节。\n", "「第\\ref」缺前波浪号"),
+                   ("\\eqref{eq1}所示。\n", "\\eqref 后缺波浪号"),
+                   ("表\\ref{tab1}所示。\n", "「表\\ref」缺前波浪号"),
+                   ("定理\\ref{thm1}所示。\n", "中文序号+\\ref"),
+                   ("第\\eqref{sec}条。\n", "中文序号+\\eqref")):
+    check(f"(a) ZH-16 扩判据 → 报：{_why}", len(hits_of(_tex, "ZH-16")) == 1, _tex)
+for _tex, _why in (("第~\\ref{sec}~节。\n", "前后都有 `~`"),
+                   ("表~\\ref{tab1}~所示。\n", "前后都有 `~`"),
+                   ("式~\\eqref{eq1}~所示。\n", "eqref 前后都有 `~`"),
+                   ("第~\\ref{sec}~条。\n", "前后都有 `~`「条」")):
+    check(f"(a) ZH-16 反例不报：{_why}", not hits_of(_tex, "ZH-16"), _tex)
 check("(a) ZH-17 caption 里用 \\\\ → 报",
       len(hits_of("\\caption{第一行\\\\第二行}\n", "ZH-17")) == 1)
 check("(a) ZH-19 人名缩写 J.N. → 报", len(hits_of("J.N. Mohanty 说。\n", "ZH-19")) == 1)
@@ -277,7 +357,7 @@ check("(c) 初排白名单（INITIAL_LAYOUT_FIXABLE）下 ZH-08 同样改 `2-群
       w_out == mix_out and [h.rule_id for h in w_applied] == ["ZH-08"],
       f"applied={[h.rule_id for h in w_applied]}")
 check("(c) 初排白名单仍报其他 fixable 规则（ZH-01/06/09/12/14 都在名单里）",
-      set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-12", "ZH-14"}
+      set(P.INITIAL_LAYOUT_FIXABLE) >= {"ZH-01", "ZH-06", "ZH-09", "ZH-12", "ZH-14", "ZH-21"}
       and "ZH-08" in P.INITIAL_LAYOUT_FIXABLE and P.OPT_IN_FIXABLE == ())
 
 # ZH-12（B-272）：句末脚注后补 `\,` —— --fix 与初排白名单两条口径都生效、且幂等
@@ -295,6 +375,28 @@ zh12_w, zh12_wa = P.apply_fixes(zh12_tex, P.check(zh12_tex, lang="zh"),
                                 rule_ids=P.INITIAL_LAYOUT_FIXABLE)
 check("(c) ZH-12 在初排白名单（INITIAL_LAYOUT_FIXABLE）下同样自动改",
       zh12_w == zh12_new and [h.rule_id for h in zh12_wa] == ["ZH-12"])
+
+# ZH-21（B-273）：脚注在句号前 → 把句号搬到脚注之前；幂等；初排白名单同样生效。
+zh21_tex = "文本\\footnote{注}。\n"
+zh21_new, zh21_applied = P.apply_fixes(zh21_tex, P.check(zh21_tex, lang="zh"))
+check("(c) ZH-21 --fix：`文本\\footnote{注}。` → `文本。\\footnote{注}`",
+      zh21_new == "文本。\\footnote{注}\n" and [h.rule_id for h in zh21_applied] == ["ZH-21"],
+      repr(zh21_new))
+check("(c) ZH-21 幂等：对结果再跑不再新增",
+      P.apply_fixes(zh21_new, P.check(zh21_new, lang="zh"))[0] == zh21_new
+      and not [h for h in P.check(zh21_new, lang="zh").hits if h.rule_id == "ZH-21"])
+check("(c) ZH-21 嵌套脚注整段搬家、不破坏内容",
+      P.apply_fixes("文本\\footnote{见{内层}的注}。\n",
+                    P.check("文本\\footnote{见{内层}的注}。\n", lang="zh"))[0]
+      == "文本。\\footnote{见{内层}的注}\n")
+check("(c) ZH-21 无尾随换行 --fix：`文本\\footnote{注}。` → `文本。\\footnote{注}`",
+      P.apply_fixes("文本\\footnote{注}。",
+                    P.check("文本\\footnote{注}。", lang="zh"))[0]
+      == "文本。\\footnote{注}")
+zh21_w, zh21_wa = P.apply_fixes(zh21_tex, P.check(zh21_tex, lang="zh"),
+                                rule_ids=P.INITIAL_LAYOUT_FIXABLE)
+check("(c) ZH-21 在初排白名单（INITIAL_LAYOUT_FIXABLE）下同样自动改",
+      zh21_w == zh21_new and [h.rule_id for h in zh21_wa] == ["ZH-21"])
 
 # `apply_fixes(..., rule_ids=…)` 契约（engine-core E1 接线用）：**显式窄子集**只改这些 id。
 # E1 的首批窄白名单 = ZH-01..06（EN-03/ZH-14 留后批）；这里直接按 id 元组验，不依赖宽常量。
