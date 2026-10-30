@@ -824,6 +824,89 @@ def test_zero_change(tmp: str, head: str) -> None:
           snapshot(w1) == snapshot(w2))
 
 
+# ── ⑩ B-276：标准 LaTeX 前言回退（普通 article 稿，全合成样例）──────────────
+# 普通 article 稿没有本刊模板的 \my*，只有 \title/\author/\thanks/\begin{abstract}
+# 和「关键词：」行。B-276 的 texfront 只在**一个 \my* 都搬不到**时填槽；下面的
+# 断言同时锁住「模板 \my* 优先」与「--metadata-json 优先级不破」。
+_TEX_FRONT = r"""\documentclass{article}
+\title{示例题名}
+\author{{\kaishu 李雷}\thanks{示例大学哲学学院}\thanks{示例基金项目（编号：000000）资助}}
+\begin{document}
+\begin{abstract}
+这是示例摘要。
+\par\noindent\textbf{关键词：}示例关键词甲；示例关键词乙
+\end{abstract}
+这里是示例正文。
+\end{document}
+"""
+
+_TEX_FRONT_MY = r"""\documentclass{article}
+\newcommand{\mytitle}{模板题名}
+\title{示例题名}
+\author{李雷}
+\begin{document}
+这里是示例正文。
+\end{document}
+"""
+
+
+def test_texfront_fallback(tmp: str) -> None:
+    # 每个场景放独立子目录：引擎会把「源稿同目录里的完整模板稿」自动发现成元数据源
+    # （identify：含大量 \my* 模板宏），同目录混放会让本组断言测到错误对象。
+    d = os.path.join(tmp, "b276a")
+    os.makedirs(d, exist_ok=True)
+    src = write(os.path.join(d, "front.tex"), _TEX_FRONT)
+    out = os.path.join(d, "out")
+    r = run_convert(src, out, [])
+    check("⑩-1 B-276 无 \\my* 普通稿：CLI exit 0", r.returncode == 0,
+          (r.stderr or "")[-300:])
+    m = macros(out_tex(out))
+    check("⑩-2 texfront 回退填 mytitle", m.get("mytitle") == "示例题名",
+          f"mytitle={m.get('mytitle')!r}")
+    check("⑩-3 texfront 回退填 myfirstauthor（剥 \\thanks）",
+          (m.get("myfirstauthor") or "").strip() == "李雷",
+          f"myfirstauthor={m.get('myfirstauthor')!r}")
+    check("⑩-4 texfront 回退填 myfirstaffiliation（\\thanks 单位）",
+          "示例大学哲学学院" in (m.get("myfirstaffiliation") or ""))
+    check("⑩-5 texfront 回退填 myabstract", "示例摘要" in (m.get("myabstract") or ""))
+    check("⑩-6 texfront 回退填 mykeywords（拆出关键词行）",
+          "示例关键词乙" in (m.get("mykeywords") or "")
+          and "示例摘要" not in (m.get("mykeywords") or ""))
+    check("⑩-7 texfront 回退填 mygrants（\\thanks 基金）",
+          "示例基金项目" in (m.get("mygrants") or ""))
+    # --metadata-json 优先级不破：JSON 给的值覆盖 texfront 回退值
+    d2 = os.path.join(tmp, "b276b")
+    os.makedirs(d2, exist_ok=True)
+    src_json = write(os.path.join(d2, "front.tex"), _TEX_FRONT)
+    js = write_json(os.path.join(d2, "front.json"), {
+        "schema_version": 1, "title_cn": "JSON题名",
+        "authors": [{"name_cn": "韩梅梅", "affiliations_cn": ["示例大学"]}],
+    })
+    out2 = os.path.join(d2, "out")
+    r2 = run_convert(src_json, out2, ["--metadata-json", js])
+    check("⑩-8 --metadata-json + 前言回退：CLI exit 0", r2.returncode == 0,
+          (r2.stderr or "")[-300:])
+    m2 = macros(out_tex(out2))
+    check("⑩-9 --metadata-json 仍最高优先（覆盖 texfront 回退值）",
+          m2.get("mytitle") == "JSON题名"
+          and "韩梅梅" in (m2.get("myfirstauthor") or ""),
+          f"mytitle={m2.get('mytitle')!r} author={m2.get('myfirstauthor')!r}")
+    # 模板 \my* 优先：源码里既有 \my* 又有 \title 时，texfront 不得生效
+    d3 = os.path.join(tmp, "b276c")
+    os.makedirs(d3, exist_ok=True)
+    src2 = write(os.path.join(d3, "tpl.tex"), _TEX_FRONT_MY)
+    out3 = os.path.join(d3, "out")
+    r3 = run_convert(src2, out3, [])
+    check("⑩-10 模板 \\my* 存在时前言解析结果不被使用：CLI exit 0",
+          r3.returncode == 0, (r3.stderr or "")[-300:])
+    m3 = macros(out_tex(out3))
+    check("⑩-11 \\my* 优先（mytitle 来自模板宏而非 \\title）",
+          m3.get("mytitle") == "模板题名", f"mytitle={m3.get('mytitle')!r}")
+    check("⑩-12 \\my* 存在时 \\author 不被采用（作者仍走占位符/旧链）",
+          "李雷" not in (m3.get("myfirstauthor") or ""),
+          f"myfirstauthor={m3.get('myfirstauthor')!r}")
+
+
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="slcn_b63b_meta ")
     notes = os.path.join(tmp, "empty_notes")
@@ -841,6 +924,7 @@ def main() -> int:
         test_b223_json_as_metadata(tmp)
         test_placeholders(tmp)
         test_bad_json(tmp)
+        test_texfront_fallback(tmp)
         head = ensure_head_engine(tmp)
         test_zero_change(tmp, head)
     finally:

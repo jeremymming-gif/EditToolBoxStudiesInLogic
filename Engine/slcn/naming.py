@@ -319,129 +319,14 @@ def looks_like_person_name(name: str) -> bool:
 
 # ── 普通 article 的 \author{...} 回退（B-275 / TP-01，2026-10-30）────────────
 #
-# 本刊模板用 \myfirstauthor；作者交来的普通 article 只写 \author{...}
-# （常见形态：嵌套 \thanks 标单位/基金；\quad 多作者后跟译者）。
-# 没有模板宏时从这里取第一作者；口径与 --author 一致：**拿不准就返回空串**，
-# 由上层报错要求 --author/--name，绝不猜。
-
-# 多作者分隔：\\ 换行、\and、\quad/\qquad、全/半角逗号、顿号、分号
-_TEX_AUTHOR_SEP_RE = re.compile(r"\\\\|\\and\b|\\qquad\b|\\quad\b|[,，、;；]")
-
-# 字体/字号/上下标命令：出现在姓名前后的排版命令不是姓名内容
-_TEX_FONT_CMD_RE = re.compile(
-    r"\\(?:rm|bf|it|sl|sc|tt|em|kaishu|heiti|songti|fangsong|lishu|youyuan|"
-    r"large|Large|LARGE|huge|Huge|small|footnotesize|scriptsize|tiny|normalsize|"
-    r"textsuperscript|textsubscript)\b\s*"
-)
-
-# byline 里混进单位/组名的保守闸门：looks_like_person_name 的 2–6 汉字口径
-# 挡不住「研究组」「××大学」这类词，故对 \author 候选再加一道关键词否决。
-# 真实中文姓名几乎不会含这些词；命中即返回空串（继续要求 --author/--name）。
-_TEX_ORG_WORDS = (
-    "大学", "学院", "学校", "研究院", "研究所", "研究中心", "中心", "实验室",
-    "学部", "学系", "教研室", "编辑部", "委员会", "课题组", "研究组", "团队",
-    "小组", "公司", "集团", "医院", "出版社", "杂志社", "学会", "协会", "基金会",
-    "单位", "作者",
-)
-
-
-def _strip_tex_balanced_cmd(text: str, cmd: str) -> str:
-    """删除 text 里所有 ``\\cmd{...}``；花括号按 match_brace 配平（支持嵌套）。"""
-    from .latex import match_brace
-
-    pat = re.compile(r"\\" + re.escape(cmd) + r"(?![A-Za-z])")
-    out: list[str] = []
-    i = 0
-    while True:
-        m = pat.search(text, i)
-        if not m:
-            out.append(text[i:])
-            return "".join(out)
-        j = m.end()
-        while j < len(text) and text[j].isspace():
-            j += 1
-        if j >= len(text) or text[j] != "{":
-            out.append(text[i:m.end()])
-            i = m.end()
-            continue
-        try:
-            end = match_brace(text, j)
-        except ValueError:
-            out.append(text[i:m.end()])
-            i = m.end()
-            continue
-        out.append(text[i:m.start()])
-        i = end + 1
-
-
-def _strip_author_tail(name: str) -> str:
-    """去姓名后的常见尾缀：译/著、单位序号、括号注释；`陈 松` 这类姓名内空格不切。"""
-    s = re.sub(r"\s+", " ", name).strip()
-    s = re.sub(r"\s*(?:译注|译著|译者|译|著|编)$", "", s).strip()
-    s = re.sub(r"[\s\d*†‡¶§]+$", "", s).strip()
-    s = re.sub(r"\s*[（(][^（）()]*[）)]$", "", s).strip()
-    s = s.strip(" .,，、;；:：-—")
-    # 「李雷 示例大学」：姓名后的空格单位 → 只留姓名；`陈 松`（余下 1 字）不切
-    if " " in s and re.search(r"[\u4e00-\u9fff]", s):
-        head, _, rest = s.partition(" ")
-        if _looks_like_byline_author(head) and len(re.sub(r"\s+", "", rest)) >= 3:
-            s = head
-    return s
-
-
-def _looks_like_byline_author(name: str) -> bool:
-    if not looks_like_person_name(name):
-        return False
-    return not any(w in name for w in _TEX_ORG_WORDS)
-
-
-def _first_author_from_byline(content: str) -> str:
-    """从 \\author{...} 的花括号内容里取第一作者；拿不准返回空串。"""
-    for cmd in ("thanks", "textsuperscript", "textsubscript"):
-        content = _strip_tex_balanced_cmd(content, cmd)
-    content = _TEX_FONT_CMD_RE.sub("", content)
-    content = re.sub(r"[{}]", "", content).replace("~", " ")
-    first = _TEX_AUTHOR_SEP_RE.split(content)[0]
-    first = _strip_author_tail(first)
-    return first if _looks_like_byline_author(first) else ""
-
-
+# 本刊模板用 \myfirstauthor；作者交来的普通 article 只写 \author{...}。
+# **B-276 起解析实现只有一份**：`texfront.py` 的 `first_author_from_tex()`
+# （切分/剥 \thanks/\footnote/字体/上标 + 人名可信度闸门），这里只做转发，
+# 禁止两套解析并存。拿不准仍返回空串，由上层报错要求 --author/--name，不猜。
 def _author_from_document_author(text: str) -> str:
-    """从普通 article 的 ``\\author{...}`` 取第一作者（B-275）。
+    from .texfront import first_author_from_tex
 
-    只扫 ``\\begin{document}`` 之前的前言；先剥注释，再按 ``match_brace`` 取配平
-    内容（支持 ``\\thanks`` 嵌套），剥 ``\\thanks``/上标/字体命令后切分取首段。
-    """
-    from .latex import match_brace, strip_comments
-
-    text = strip_comments(text)
-    body = text.find("\\begin{document}")
-    if body >= 0:
-        text = text[:body]
-
-    pat = re.compile(r"\\author(?![A-Za-z])")
-    for m in pat.finditer(text):
-        i = m.end()
-        while i < len(text) and text[i].isspace():
-            i += 1
-        # 兼容 authblk 的 \author[1]{...} / \author[1,2]{...}
-        while i < len(text) and text[i] == "[":
-            j = text.find("]", i)
-            if j < 0:
-                break
-            i = j + 1
-            while i < len(text) and text[i].isspace():
-                i += 1
-        if i >= len(text) or text[i] != "{":
-            continue
-        try:
-            end = match_brace(text, i)
-        except ValueError:
-            continue
-        cand = _first_author_from_byline(text[i + 1 : end])
-        if cand:
-            return cand
-    return ""
+    return first_author_from_tex(text)
 
 
 def author_from_tex_metadata_ex(text: str) -> tuple[str, str]:

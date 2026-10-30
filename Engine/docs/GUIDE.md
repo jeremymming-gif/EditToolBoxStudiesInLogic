@@ -602,6 +602,38 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 - **`.docx` 元数据文件**（第 63 批 E2 的引擎能力）：**CLI 高级、GUI 不提供、不推荐**；仅 LaTeX 通道、只填第一作者槽位。
   **`.doc` 任何通道都不再转换**（另存 `.docx`/`.tex`）。
 
+#### 标准 LaTeX 前言自动识别（B-276，2026-10-30）
+
+**背景**：不少作者投来的是**普通 `article` 稿**——前言里只有 `\title{…}`、`\author{…}` 和
+`\thanks{…}`，没有本刊模板的 `\my*` 元数据宏。以前 ③ 搬运只认 `\my*`，这类稿子的题名/作者/单位/摘要/
+关键词只能全部写成「【未识别…】」占位符让编辑手工填。B-276 起引擎会**自动识别标准 LaTeX 前言**并填槽。
+
+**什么时候启用**：源稿（或 `--metadata` 给的 `.tex` 元数据文件）里**一个 `\my*` 宏都搬不到**时才启用；
+只要搬到一个 `\my*` 就完全不启用（**模板稿行为逐字节不变**）。优先级不变：
+`--metadata-json`（人工表单）> 旧 7 个覆盖参数 > `.tex` 元数据文件 > 源稿解析（`\my*` 优先，其次标准前言）。
+
+| 前言写法 | 落点 | 说明 |
+|---|---|---|
+| `\title{…}` | `mytitle` | 保留内部 `\\` 断行；`\shorttitle` / `\runningtitle` → `myrunningtitle`（没有就不填） |
+| `\author{…}` 第一作者 | `myfirstauthor` | 剥 `\thanks` / 字体命令 / 上标；顶层分隔 `\and` / `\\` / `,` / `，` / `、` / `;` / `；` / 字面 `and` 取首位；人名拿不准不采用 |
+| `\affil{…}` / `\affiliation{…}` / `\institute{…}`，或 `\thanks` 里的单位 | `myfirstaffiliation` | 按「大学 / 学院 / 研究所 / University / Institute / College / Department…」特征词判定 |
+| `\email{…}`，或作者/单位里的邮箱 | `myfirstemail` | 源稿没有不猜 |
+| `\begin{abstract}…\end{abstract}` / `\abstract{…}` | `myabstract` | 摘要里的 `\cite` / `\footnote` 原样保留 |
+| `\keywords{…}` / `\begin{keywords}` / 「关键词：…」行 / 「Keywords: …」行 | `mykeywords` | 分隔符保留原文；摘要环境末尾的关键词行会拆出来 |
+| `\thanks` 里含 基金/项目/资助/编号/fund/grant/NSFC 等 | `mygrants` | 其余 `\thanks` / `\footnote` 说明 → `mythanks`（分不清放这里，不丢信息） |
+
+**判据（保守，不猜）**：只解析**主文件**（`\input` 不展开）；注释先剥掉（注释掉的 `\author` 不认）；
+`\begin{document}` 前后都扫（正文里出现的 `\author{}` 作回退）；花括号按嵌套配平；空值 / `null` 视为
+无值；**不填英文槽**（`mytitleEN` / `myfirstauthorEN` / `myfirstaffiliationEN` 等）也不推导英文翻译；
+识别不了就返回 None，由既有占位符流程提示人工填写。日志多一行
+`标准 LaTeX 前言识别 N 个字段：…`；未识别字段照旧写「【未识别…】」占位符，用「填写元数据…」或
+`--metadata-json` 覆盖即可（人工值优先）。
+
+**实现与回归**：唯一实现在 `Engine/slcn/texfront.py`（纯函数解析器；输出名回退 `\author{}` 的作者解析
+也复用同一份实现，禁止两套解析并存）；定向套件 `Engine/tests/test_tex_frontmatter.py` +
+`Engine/tests/test_batch63b_metadata_json.py` 的 ⑩ 组。**模板稿（有 `\my*`）字节闸门**：B-276 不改变
+其产物任何字节。
+
 ### 开发者用的环境变量（不装工具箱也用不到）
 
 | 变量 | 作用 |

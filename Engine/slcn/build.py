@@ -1176,6 +1176,32 @@ def build_latex(
     if missing:
         warnings.append("以下编辑侧字段需人工填写：" + "、".join(missing))
 
+    # ── B-276：标准 LaTeX 前言回退（源稿一个 \\my* 都搬不到时）──────────────
+    # 本刊模板用 \\my* 宏；普通 article 来稿只有 \\title{}/\\author{}/
+    # \\begin{abstract}/「关键词：」行。仅当上面**完全没有**搬进任何 my* 字段时，
+    # 才用 texfront 保守解析标准前言并填模板已有槽位（识别不了就留空走占位符）。
+    # 模板 my* 永远优先：有 my* 的模板稿/来稿在这里一个字段都不会动 → 产物逐字节不变。
+    # 放在 override_fields()/structured_fields() 之前：--metadata-json > 旧覆盖参数 >
+    # 元数据文件 > 源稿解析 的既有优先级不变（后写的覆盖这里识别的值）。
+    if not moved_vals and meta_text:
+        try:
+            from .texfront import parse_tex_frontmatter
+            _front = parse_tex_frontmatter(meta_text)
+        except Exception as _exc:  # 解析器意外不得让整篇转换失败
+            _front = None
+            warnings.append(f"标准 LaTeX 前言解析异常（已忽略）：{_exc}")
+        if _front is not None:
+            _tex_fields: list[str] = []
+            for _name, _val in _front.template_values().items():
+                if _name not in tpl_fields or _val.strip() in ("", "null"):
+                    continue
+                tpl = set_field(tpl, _name, _val)
+                moved_vals[_name] = _val
+                _tex_fields.append(_name)
+            if _tex_fields:
+                say(f"   标准 LaTeX 前言识别 {len(_tex_fields)} 个字段："
+                    f"{'、'.join(_tex_fields)}")
+
     is_en = "mytitleCN" in tpl_fields
     # ── 手工覆盖：非空值优先于旧稿里的元数据（--title-cn / 界面输入）──
     ov, unknown_keys = override_fields(overrides, is_en)

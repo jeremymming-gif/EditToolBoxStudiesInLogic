@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -76,12 +77,117 @@ def sha(path: str) -> str:
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
 
 
+
+# ── B-276（标准 LaTeX 前言自动识别）───────────────────────────────────────
+# 合成稿 `\title{测试题名}` + `\author{张三}` 没有 \my* 模板宏，新引擎会从标准
+# LaTeX 前言回填 mytitle/myfirstauthor 等字段——「无 flag 默认零变化」的对照
+# 断言改为「除 B-276 前言回填字段外逐字节相同」，回填取值另有显式断言（见文件末尾）。
+
+_B276_FIELDS = (
+    "mytitle", "myrunningtitle", "myfirstauthor", "myfirstaffiliation",
+    "myfirstemail", "myabstract", "mykeywords", "mygrants", "mythanks",
+)
+_B276_LABELS = frozenset((
+    "中文题名", "页眉标题", "第一作者", "第一作者单位", "第一作者邮箱",
+    "中文摘要", "关键词", "基金", "致谢",
+))
+_B276_META_RE = re.compile(
+    r"### `META-LABEL-\d+` — 元数据缺失\n\n"
+    r"- 原文片段：`([^`]+)`\n"
+    r"- 需要确认：[^\n]*\n"
+    r"- 允许的 field：`[^`]*`\n"
+    r"\n{0,2}")
+
+
+def _b276_mask(text):
+    """把 B-276 会回填的字段值/条目归一（其余内容原样，便于逐字节对照）。"""
+    if isinstance(text, dict):
+        return {k: _b276_mask(v) for k, v in text.items()}
+    if not text:
+        return text
+    # ① 产物 .tex：my* 模板宏取值 → 统一占位（模板值在下一行 `{…}`）
+    for name in _B276_FIELDS:
+        text = re.sub(
+            r"(?m)^([ \t]*)%\s*(\\(?:newcommand|renewcommand|providecommand)\{\\"
+            + name + r"\})", r"\1\2", text)
+        text = re.sub(
+            r"(\\(?:newcommand|renewcommand|providecommand)\{\\" + name
+            + r"\})[^\n]*\n\{[^\n]*\}",
+            r"\1{<B276 前言回填>}", text)
+        text = re.sub(
+            r"(\\(?:newcommand|renewcommand|providecommand)\{\\" + name
+            + r"\})\{[^\n]*?\}",
+            r"\1{<B276 前言回填>}", text)
+    # ② 任务书：删掉「B-276 可回填标签」的元数据缺失块，标号与条数归一
+    text = _B276_META_RE.sub(
+        lambda m: "" if m.group(1) in _B276_LABELS else m.group(0), text)
+    text = re.sub(r"### `META-LABEL-\d+`", "### `META-LABEL-N`", text)
+    text = re.sub(r"共 \*\*\d+\*\* 项", "共 **N** 项", text)
+    # ③ 日志：前言识别行归一；未识别字段清单去掉 B-276 标签、计数归一；
+    #    初排低置信项计数归一（其余行原样）
+    text = re.sub(r"^[ \t]*标准 LaTeX 前言识别 \d+ 个字段：[^\n]*\n?",
+                  "", text, flags=re.M)
+    out_lines = []
+    for line in text.splitlines(keepends=True):
+        if ("未识别" in line and "个字段" in line) or "以下字段未能从源稿解析" in line:
+            m = re.search(r"：([^：\n]+)(\n?)$", line)
+            if m:
+                items = [x for x in m.group(1).split("、")
+                         if x.strip() not in _B276_LABELS]
+                line = line[:m.start(1)] + "、".join(items) + m.group(2)
+            line = re.sub(r"未识别 \d+ 个字段", "未识别 N 个字段", line)
+        out_lines.append(line)
+    text = "".join(out_lines)
+    text = re.sub(r"(含「初排低置信项」)\d+( 项)", r"\1N\2", text)
+    # ⑤ token 预算/低置信计数随前言回填字段数浮动：归一化
+    text = re.sub(r"(预计 \d+ 次调用 / )\d+( tokens)", r"\1N\2", text)
+    text = re.sub(r"prompt \d+ \+ completion \d+ = \d+ tokens",
+                  "prompt N + completion N = N tokens", text)
+    text = re.sub(r"(\d+) 条低置信 ID", r"N 条低置信 ID", text)
+    text = re.sub(r"tokens \d+\+\d+", "tokens N+N", text)
+    # ④ 任务书「占位符清单」表格：删掉 B-276 可回填标签的行
+    kept = []
+    for line in text.splitlines(keepends=True):
+        cells = [c.strip() for c in line.split("|")]
+        if len(cells) >= 3 and cells[1] in _B276_LABELS:
+            continue
+        kept.append(line)
+    text = "".join(kept)
+    return text
+
+
+def _b276_prod_text(folder: str) -> str:
+    """产物目录里第一份带 my* 模板宏定义的 .tex 文本（其余 .tex 返回空）。"""
+    for root, _dirs, files in os.walk(folder):
+        for name in files:
+            if name.endswith(".tex"):
+                t = read(os.path.join(root, name))
+                if "\\newcommand{\\mytitle}" in t:
+                    return t
+    return ""
+
+
+def _b276_assert_filled(check, stdout: str, prod: str) -> None:
+    """显式断言：B-276 前言回填了哪些字段、取值是什么（不靠 mask 过滤充数）。"""
+    _m = re.search(r"标准 LaTeX 前言识别 (\d+) 个字段：([^\n]*)", stdout)
+    check("B-276-1 日志报告前言识别字段：mytitle、myfirstauthor（可含后续字段）",
+          _m is not None and _m.group(2).startswith("mytitle、myfirstauthor"),
+          stdout[-400:])
+    check("B-276-2 产物回填取值：mytitle=测试题名、myfirstauthor=张三",
+          re.search(r"\\newcommand\{\\mytitle\}[^\n]*\n\s*\{测试题名\}", prod) is not None
+          and re.search(r"\\newcommand\{\\myfirstauthor\}[^\n]*\n\s*\{张三\}", prod)
+          is not None,
+          prod[:400])
+    check("B-276-3 未识别清单仍保留其余字段、不再含中文题名",
+          "页眉标题" in stdout and "中文题名" not in stdout,
+          stdout[-400:])
+
 def snapshot(folder: str) -> dict[str, str]:
     out: dict[str, str] = {}
     for root, _dirs, files in os.walk(folder):
         for name in files:
             p = os.path.join(root, name)
-            out[os.path.relpath(p, folder)] = sha(p)
+            out[os.path.relpath(p, folder)] = hashlib.sha256(_b276_mask(read(p)).encode("utf-8")).hexdigest()
     return out
 
 
@@ -306,7 +412,8 @@ def test_default_off(tmp: str, head: str) -> None:
     check("②-2 默认关不生成全文复核报告", not os.path.exists(report_path(out)))
     check("②-3 默认关与 HEAD 产物逐字节相同", snap_new == snap_old)
     check("②-4 默认关与 HEAD 日志逐字节相同（B-004 ZH-08 行过滤）",
-      _strip_zh08_log(stdout_new) == _strip_zh08_log(old.stdout))
+      _strip_zh08_log(_b276_mask(stdout_new))
+          == _strip_zh08_log(_b276_mask(old.stdout)))
     check("②-5 默认关没有全文请求（请求里无「本片正文」）",
           not any("本片正文" in str(p.get("user") or "") for p in prompts_new))
     check("②-6 HEAD 引擎同样没有全文请求",
@@ -468,7 +575,7 @@ def test_existing_verify_path(tmp: str, head: str) -> None:
     check("⑦-1 既有 --verify-refs 路径新/HEAD 均退出 0",
           new.returncode == 0 and old.returncode == 0)
     check("⑦-2 无 flag 时产物树与 HEAD 逐字节相同（含 AI 建议段）", snap_new == snap_old)
-    check("⑦-3 无 flag 时日志与 HEAD 逐字节相同", new.stdout == old.stdout)
+    check("⑦-3 无 flag 时日志与 HEAD 逐字节相同", _b276_mask(new.stdout) == _b276_mask(old.stdout))
     check("⑦-4 既有逐条 AI 请求数新/HEAD 相同（各 1 条 bib → 1 次）",
           n_new == 1 and n_old == 1, f"{n_new}/{n_old}")
     check("⑦-5 无 flag 时请求里没有全文分片标记（与全文通道互不影响）",
@@ -534,6 +641,22 @@ def test_report_is_own_product(tmp: str) -> None:
 # ── main ────────────────────────────────────────────────────────────────
 
 
+
+# ── B-276：标准 LaTeX 前言回填的显式取值断言（合成稿无 \my*）──────────────
+def test_b276_frontmatter_fill(tmp: str) -> None:
+    src, bibp, out = fixture(tmp, "b276", _BODY_ONLY)
+    cmd = [sys.executable, os.path.join(_ENGINE, "convert.py"),
+           "--source", src]
+    if bibp:
+        cmd += ["--bib", bibp]
+    cmd += ["--out", out, "--author", "张三",
+            "--no-original", "--coop-taskbook-only"]
+    r = subprocess.run(cmd, cwd=_ENGINE, env=make_env(), capture_output=True,
+                       text=True, encoding="utf-8", errors="replace",
+                       timeout=240)
+    _b276_assert_filled(check, r.stdout, _b276_prod_text(out))
+
+
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="slcn_b60_ft ")
     try:
@@ -543,6 +666,7 @@ def main() -> int:
         _NOTES = notes
         test_help_and_invalid(tmp)
         head = ensure_head_engine(tmp)
+        test_b276_frontmatter_fill(tmp)
         if head:
             test_default_off(tmp, head)
             test_existing_verify_path(tmp, head)
