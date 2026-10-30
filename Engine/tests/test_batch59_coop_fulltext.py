@@ -176,11 +176,16 @@ def _b276_assert_filled(check, stdout: str, prod: str) -> None:
           stdout[-400:])
 
 def snapshot(folder: str) -> dict[str, str]:
+    """B-278：初排默认自动修一校子集；.tex 先归一（对新/旧产物同规则）再哈希。"""
+    from slcn.build import apply_proof_autofix
     out: dict[str, str] = {}
     for root, _dirs, files in os.walk(folder):
         for name in files:
             p = os.path.join(root, name)
-            out[os.path.relpath(p, folder)] = hashlib.sha256(_b276_mask(read(p)).encode("utf-8")).hexdigest()
+            text = _b276_mask(read(p))
+            if name.endswith(".tex"):
+                text = apply_proof_autofix(text, "zh")[0]
+            out[os.path.relpath(p, folder)] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return out
 
 
@@ -360,7 +365,7 @@ def test_render_unit() -> None:
 
 # B-004（2026-10-28 ZH-08 默认启用）预期日志差异：过滤 ZH-08 相关行后比较
 import re as _re
-_ZH08_LOG_NOISE = _re.compile(r"(ZH-08|判断指引：|· 第\d+\s*行：|自动修复 )")
+_ZH08_LOG_NOISE = _re.compile(r"(ZH-08|判断指引：|· 第\d+\s*行：|自动修复 |一校可自动改|· ZH-\d+)")
 
 
 def _strip_zh08_log(text: str) -> str:

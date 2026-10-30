@@ -8,8 +8,9 @@
 本工具把那批规范逐条检出来，附「第几行 / 原文 / 建议 / 依据」，供编辑逐条处理。
 
 **默认只报不改**（与 `checkbib.py` 同一口径）：经验书原话是「并非修改所有匹配项，稍作观察」。
-加 `--fix` 才会把**无歧义**的那一小撮写到一个新文件（`<stem>_一校核查后.tex`），
-输入文件一个字节都不动。
+B-278 起，**可自动改**的规则命中不再逐条列出（初排转换已默认处理），摘要里只给规则计数；
+逐条只列需要人工判断的。加 `--fix` 仍会把可自动改项写到新文件
+（`<stem>_一校核查后.tex`），输入文件一个字节都不动。
 
 退出码：`0` 没有命中；`1` 有命中（正常情况，不是错误）；`2` 用法/文件错误。
 """
@@ -51,13 +52,21 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
                moves: list[str], fixed_path: str | None) -> str:
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     by = rep.by_rule()
+    # B-278：初排转换已默认自动修 fixable 子集，一校页只报**需要人工判断**的条目；
+    # 可自动改的按规则计数静默（`--fix` 仍会把它们补改并列出）。
+    fixable = [h for h in rep.hits if h.fixable]
+    manual: dict[str, list[_pc.Hit]] = {}
+    for h in rep.hits:
+        if not h.fixable:
+            manual.setdefault(h.rule_id, []).append(h)
     out: list[str] = [
         f"# 一校核查报告：{stem}",
         "",
         f"> 源文件：`{tex_path}`　｜　生成：{now}　｜　语种判据：`{rep.lang}`　｜　"
         f"规则数：{len(_pc.RULES)}",
         ">",
-        "> **默认只报不改**（《流程化经验书》原话：「并非修改所有匹配项，稍作观察」）。",
+        "> **可自动改的规则在初排转换时已默认处理，本报告不再逐条列出**"
+        "（《流程化经验书》原话「并非修改所有匹配项，稍作观察」）。",
         "> 每条都注明**依据**，便于回查《排校手册》原文。",
         "",
         "## 摘要",
@@ -67,13 +76,16 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
     ]
     order = [r.id for r in _pc.RULES]
     for rid in order:
-        hits = by.get(rid)
+        hits = manual.get(rid)
         if not hits:
             continue
         out.append(f"| `{rid}` | **{len(hits)}** | {hits[0].title} | {hits[0].basis} |")
-    if not by:
-        out.append("| — | 0 | 没有命中任何规则 | — |")
+    if not manual:
+        out.append("| — | 0 | 没有需要人工判断的命中 | — |")
     out += ["", f"**合计命中 {rep.n} 处。**", ""]
+    if fixable:
+        rids = "、".join(sorted({h.rule_id for h in fixable}))
+        out += [f"可自动修 {len(fixable)} 处（{rids}）：初排已默认处理，需补改请加 `--fix`。", ""]
 
     if fixed or moves:
         out += ["## 已自动改的部分（`--fix`）", ""]
@@ -93,21 +105,14 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
         out.append("")
 
     out += ["## 逐条", ""]
+    if not manual:
+        out += ["没有需要人工处理的条目（可自动改项已静默）。", ""]
     for rid in order:
-        hits = by.get(rid)
+        hits = manual.get(rid)
         if not hits:
             continue
         head = hits[0]
-        # 混合规则（如 ZH-08：只有「汉字-汉字」窄子集可自动改，其余只报）要标出可改条数，
-        # 不能因为 hits[0] 不可改就把整节标成「只报」、也不能反过来让人以为全都能改。
-        n_fix = sum(1 for h in hits if h.fixable)
-        if n_fix == len(hits):
-            flag = "（可自动改）"
-        elif n_fix:
-            flag = f"（可自动改 {n_fix}/{len(hits)} 处，其余需人工判断）"
-        else:
-            flag = ""
-        out += [f"### `{rid}` {head.title}{flag} —— {len(hits)} 处", "",
+        out += [f"### `{rid}` {head.title} —— {len(hits)} 处", "",
                 f"依据：{head.basis}", "",
                 f"建议：{head.advice}", "",
                 "| 行 | 列 | 原文 |", "|---|---|---|"]
@@ -154,30 +159,35 @@ def main(argv: list[str] | None = None) -> int:
     print(f"一校核查：{stem}（语种 {lang}）\n")
     rep = _pc.check(tex, lang=lang)
     by = rep.by_rule()
+    fixable = [h for h in rep.hits if h.fixable]
     if not by:
         print("  ✅ 没有命中任何规则。")
     for rid, hits in by.items():
-        n_fix = sum(1 for h in hits if h.fixable)
-        if n_fix == len(hits):
-            flag = "（可自动改）"
-        elif n_fix:
-            flag = f"（可自动改 {n_fix}/{len(hits)} 处）"
-        else:
-            flag = ""
-        print(f"  {rid}  {len(hits):3d} 处  {hits[0].title}{flag}")
-        for h in hits[:3]:
+        rest = [h for h in hits if not h.fixable]   # B-278：可自动改项静默
+        if not rest:
+            continue
+        print(f"  {rid}  {len(rest):3d} 处  {rest[0].title}")
+        for h in rest[:3]:
             print(f"        第 {h.line} 行：{h.text[:52]}")
-        if len(hits) > 3:
-            print(f"        …… 另有 {len(hits) - 3} 处")
+        if len(rest) > 3:
+            print(f"        …… 另有 {len(rest) - 3} 处")
+    if fixable:
+        print(f"  可自动修 {len(fixable)} 处（初排已默认处理，不逐条列出；`--fix` 可补）")
 
     fixed: list[_pc.Hit] = []
     fixed_path = None
     moves: list[str] = []
     if args.fix:
-        new_tex, fixed = _pc.apply_fixes(tex, rep)
-        new_tex, moves = _pc.move_marks_before_punct(
-            new_tex, kinds=tuple(k for k in ("footnote", "cite")
-                                 if any(h.rule_id in ("ZH-10", "ZH-11", "ZH-12") for h in rep.hits)))
+        # 位序类先搬（只搬报出来的命中 span），再按重查结果做替换（坐标才对得上）
+        rep_now = rep
+        move_spans = [(h.start, h.end) for h in rep.hits
+                      if h.rule_id in ("ZH-10", "ZH-11")]
+        if move_spans:
+            new_tex, moves = _pc.move_marks_before_punct(tex, spans=move_spans)
+            rep_now = _pc.check(new_tex, lang=lang)
+        else:
+            new_tex = tex
+        new_tex, fixed = _pc.apply_fixes(new_tex, rep_now)
         fixed_path = os.path.join(out_dir, f"{stem}_一校核查后.tex")
         # 原子写 + 旧版备份（UI 方案第 4 件）：这份是"改后稿"，可能被反复生成
         _fsutil.atomic_write(fixed_path, new_tex, newline="", log=print)

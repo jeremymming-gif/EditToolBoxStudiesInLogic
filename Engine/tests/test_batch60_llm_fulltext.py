@@ -183,11 +183,16 @@ def _b276_assert_filled(check, stdout: str, prod: str) -> None:
           stdout[-400:])
 
 def snapshot(folder: str) -> dict[str, str]:
+    """B-278：初排默认自动修一校子集；.tex 先归一（对新/旧产物同规则）再哈希。"""
+    from slcn.build import apply_proof_autofix
     out: dict[str, str] = {}
     for root, _dirs, files in os.walk(folder):
         for name in files:
             p = os.path.join(root, name)
-            out[os.path.relpath(p, folder)] = hashlib.sha256(_b276_mask(read(p)).encode("utf-8")).hexdigest()
+            text = _b276_mask(read(p))
+            if name.endswith(".tex"):
+                text = apply_proof_autofix(text, "zh")[0]
+            out[os.path.relpath(p, folder)] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return out
 
 
@@ -385,7 +390,7 @@ def test_help_and_invalid(tmp: str) -> None:
 
 # B-004（2026-10-28 ZH-08 默认启用）预期日志差异：过滤 ZH-08 相关行后比较
 import re as _re
-_ZH08_LOG_NOISE = _re.compile(r"(ZH-08|判断指引：|· 第\d+\s*行：|自动修复 )")
+_ZH08_LOG_NOISE = _re.compile(r"(ZH-08|判断指引：|· 第\d+\s*行：|自动修复 |一校可自动改|· ZH-\d+)")
 
 
 def _strip_zh08_log(text: str) -> str:
@@ -575,7 +580,7 @@ def test_existing_verify_path(tmp: str, head: str) -> None:
     check("⑦-1 既有 --verify-refs 路径新/HEAD 均退出 0",
           new.returncode == 0 and old.returncode == 0)
     check("⑦-2 无 flag 时产物树与 HEAD 逐字节相同（含 AI 建议段）", snap_new == snap_old)
-    check("⑦-3 无 flag 时日志与 HEAD 逐字节相同", _b276_mask(new.stdout) == _b276_mask(old.stdout))
+    check("⑦-3 无 flag 时日志与 HEAD 逐字节相同", _strip_zh08_log(_b276_mask(new.stdout)) == _strip_zh08_log(_b276_mask(old.stdout)))
     check("⑦-4 既有逐条 AI 请求数新/HEAD 相同（各 1 条 bib → 1 次）",
           n_new == 1 and n_old == 1, f"{n_new}/{n_old}")
     check("⑦-5 无 flag 时请求里没有全文分片标记（与全文通道互不影响）",

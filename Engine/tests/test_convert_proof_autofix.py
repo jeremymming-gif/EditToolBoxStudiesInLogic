@@ -12,9 +12,10 @@
 
 修法
 ----
-`build_docx(proof_autofix=True)`：⑤ 预校正之后、写文件之前，用 `proofcheck` 的
-**稳定两参数 API**（`check()` → 过滤 `Report` → `apply_fixes(tex, sub)`）只套用
-**窄集 ZH-01..ZH-06**。ZH-08/09/14、EN-01..03 本批不默认改（无消融与人工对照）。
+`build_docx(proof_autofix=True)` 与 `build_latex(proof_autofix=True)`：⑤ 预校正之后、
+写文件之前，用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
+`apply_fixes(tex, sub)`，ZH-10/11 另按命中 span 搬位）只套用**窄集**（B-278 起
+ZH-01..06、08、09、10、11、12、14、21、23、EN-01..03；EN-05 未验收不纳入）。
 `proof_autofix=False` = 与接入前逐字节相同；异常只写 warning、不阻断出稿。
 
 跑法
@@ -88,9 +89,10 @@ def make_docx_with_footnote(prefix_paras, run_para_xml, footnote_text):
 # ══════════════════════════════════════════════════════════════════════════
 # ①–④ 单元：_autofix_proof 只做窄集、语义与人工成品一致、幂等、不碰屏蔽区
 # ══════════════════════════════════════════════════════════════════════════
-check("① 白名单常量 = ZH-01..ZH-06 + ZH-08 + ZH-12（B-004 起连接号默认启用；B-272 起句末脚注补间隔）",
+check("① 白名单常量 = ZH-01..06 + 08/09/10/11/12/14/21/23 + EN-01..03（B-278）",
       _PROOF_AUTOFIX_IDS == ("ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06",
-                             "ZH-08", "ZH-12"),
+                             "ZH-08", "ZH-09", "ZH-10", "ZH-11", "ZH-12", "ZH-14",
+                             "ZH-21", "ZH-23", "EN-01", "EN-02", "EN-03"),
       repr(_PROOF_AUTOFIX_IDS))
 
 _new6, _h6 = _autofix_proof("甲、“乙”", "zh")
@@ -111,11 +113,20 @@ for name, tex in (
     ("注释 % 甲、乙", "% 甲、乙"),
     ("verbatim \\verb|甲、乙|", "\\verb|甲、乙|"),
     ("ZH-08 汉字-汉字（新口径静默）", "马丁-洛夫"),
-    ("ZH-09 页码范围（白名单外）", "第1-2页"),
-    ("ZH-14 集合竖线（白名单外）", "\\{a|b\\}"),
 ):
     _out, _h = _autofix_proof(tex, "zh")
-    check(f"④ 屏蔽区/白名单外不动：{name}", _out == tex and _h == {}, repr((_out, _h)))
+    check(f"④ 屏蔽区不动：{name}", _out == tex and _h == {}, repr((_out, _h)))
+
+# B-278 起 ZH-09（页码范围）与 ZH-14（集合竖线单根）在白名单内 → 默认自动改
+_new9, _h9 = _autofix_proof("第1-2页", "zh")
+check("④ ZH-09 默认启用：第1-2页 → 第1\\cndash 2页（双短横只给页码范围）",
+      _new9 == "第1\\cndash 2页" and _h9 == {"ZH-09": 1}, repr((_new9, _h9)))
+_new14, _h14 = _autofix_proof("$\\{a|b\\}$", "zh")
+check("④ ZH-14 默认启用：数学里单根竖线 → \\mid（成对竖线/绝对值不动）",
+      _new14 == "$\\{a\\mid b\\}$" and _h14 == {"ZH-14": 1}, repr((_new14, _h14)))
+_keep14, _hk14 = _autofix_proof("$\\{x: |x|>5\\}$", "zh")
+check("④ ZH-14 反例：成对竖线（绝对值）零改动",
+      _keep14 == "$\\{x: |x|>5\\}$" and _hk14 == {}, repr((_keep14, _hk14)))
 
 # ZH-08 新口径默认启用（B-004）：数字+CJK / 表图编号 → \edash；汉字-汉字仍静默
 _new8, _h8 = _autofix_proof("2-群胚 与 表2-9", "zh")

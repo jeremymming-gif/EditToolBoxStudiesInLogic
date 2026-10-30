@@ -979,6 +979,7 @@ def build_latex(
     bib_zero_cites_hints: bool = True,
     breakable_algorithm: bool = False,
     structured: dict | None = None,
+    proof_autofix: bool = True,
 ) -> BuildResult:
     """LaTeX 通道：多源合并成初排稿。
 
@@ -1373,10 +1374,10 @@ def build_latex(
     for rid, n in sorted(res.applied.items(), key=lambda x: -x[1]):
         say(f"   · {rid:24s} ×{n}")
 
-    audit = R.audit(tpl, lang=lang)
-
     # ZH-08 连接号：LaTeX 通道未接自动改，只提示人工判断（第四十三批）。
     #    ⚠️ 纯日志，异常绝不阻断出稿（与 ⑤′ 自动改同一纪律）。
+    #    提示刻意在 ⑥′ 自动改**之前**运行：报的是「初排尚未动手时」的命中，
+    #    自动改之后仍残留的（如白名单外/歧义项）才由编辑按提示判断。
     if dash_hints and lang == "zh":
         try:
             _report_dash_hints(tpl, lang, say)
@@ -1401,6 +1402,24 @@ def build_latex(
                                    n_end_list=_n_end_list)
         except Exception as e:  # noqa: BLE001
             warnings.append(f"B 类提示未执行（不影响出稿）：{type(e).__name__}: {e}")
+
+    # ⑥′（B-278）一校可自动修子集：LaTeX 通道同样默认套用（只改产物、不碰源稿）。
+    #    位置在提示之后、写盘之前：ZH-08 dash hints 报的是初排前命中（见上），
+    #    这里改完才落盘，audit 也按最终产物重算。
+    #    ⚠️ 失败绝不阻断出稿：只写 warning，产物照常生成（编辑宁可多检查，不能没稿）。
+    _pf: dict[str, int] = {}
+    if proof_autofix and lang == "zh":
+        try:
+            tpl, _pf = apply_proof_autofix(tpl, lang)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"一校可自动改子集未执行（不影响出稿）：{type(e).__name__}: {e}")
+        else:
+            if _pf:
+                say(f"   一校可自动改子集补齐 {sum(_pf.values())} 处")
+                for rid, n in sorted(_pf.items(), key=lambda x: -x[1]):
+                    say(f"   · {rid:24s} ×{n}")
+
+    audit = R.audit(tpl, lang=lang)
 
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
@@ -1472,7 +1491,7 @@ def build_latex(
         sty_path=sty_out,
         template=T.describe(tpl_sel),
         log=log,
-        rule_hits=res.applied,
+        rule_hits={**res.applied, **_pf},
         audit=audit,
         warnings=warnings,
         missing_fields=missing,
@@ -1793,11 +1812,16 @@ def _merge_en_metadata_source(
 # ZH-01..ZH-06 + ZH-09/14、EN-01..03 中的初排白名单。
 # 2026-10-30（B-272 / spec b272-zh12-footnote-space）：ZH-12「句末脚注后补 `\,`」进窄集，
 # 初排 Word 通道默认套用（判据在 `proofcheck._zh12_hits()`，支持嵌套花括号）。
+# 2026-10-30（B-278 / spec b278-proofcheck-default-autofix-rules-reliability）：窄集扩到
+# 一校 `INITIAL_LAYOUT_FIXABLE` 的**全部安全项**——ZH-09/10/11/14/21/23 入库；两通道初排
+# 默认自动修（`apply_proof_autofix`），LaTeX 通道只改产物、不碰源稿。ZH-10/11 本身
+# fixable=False，由 mover 按命中 span 搬位（不再全文乱搬）。
 #
 # 实现刻意只用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
 # `apply_fixes(tex, sub)`），不传 rules-docs 新增的 `rule_ids` 参数 → 回滚免疫。
 _PROOF_AUTOFIX_IDS: tuple[str, ...] = (
-    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08", "ZH-12",
+    "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08", "ZH-09",
+    "ZH-10", "ZH-11", "ZH-12", "ZH-14", "ZH-21", "ZH-23", "EN-01", "EN-02", "EN-03",
 )
 
 
@@ -2018,23 +2042,52 @@ def _report_bib_zero_cites(tex: str, n_bib: int, say, warnings: list[str],
     return True
 
 
-def _autofix_proof(tex: str, lang: str) -> tuple[str, dict[str, int]]:
-    """把一校 fixable 窄集套到初排稿上，返回 (新文本, {规则 id: 改动数})。
+def apply_proof_autofix(tex: str, lang: str) -> tuple[str, dict[str, int]]:
+    """把一校初排安全子集套到初排稿上，返回 (新文本, {规则 id: 改动数})。
+
+    两通道共用（Word ⑤′ 与 LaTeX 第 ⑥ 步之后），只改产物、不碰源稿。
+    ZH-10/11（脚注/引用在逗号后）不是 fixable 替换，而是按**命中 span** 用
+    `move_marks_before_punct` 搬位；同对括注内的「作者，引用」由 mover 复用
+    `_zh11_accept_at` 豁免。ZH-21 把脚注搬到句号后会新产生 ZH-12 场景，故最多
+    迭代 3 轮（每条规则自身幂等，某轮 0 变化即停）。
 
     ⚠️ 只动 `_PROOF_AUTOFIX_IDS`；`apply_fixes` 内部从后往前替换、与已改区间重叠的跳过，
        输入字符串不被就地修改。异常由调用方兜住（本函数不静默吞错）。
     """
     from . import proofcheck as _pc   # 惰性 import：proofcheck 只依赖 re/dataclass，无环
 
-    rep = _pc.check(tex, lang=lang)
-    sub = _pc.Report(
-        hits=[h for h in rep.hits if h.rule_id in _PROOF_AUTOFIX_IDS], lang=lang
-    )
-    new, applied = _pc.apply_fixes(tex, sub)
+    new = tex
     hits: dict[str, int] = {}
-    for h in applied:
-        hits[h.rule_id] = hits.get(h.rule_id, 0) + 1
+    for _ in range(3):
+        rep = _pc.check(new, lang=lang)
+        # ① 位置类：只搬本次**报出来的** ZH-10/ZH-11 命中区间（mover 自己不再全文扫）
+        spans = [(h.start, h.end) for h in rep.hits
+                 if h.rule_id in ("ZH-10", "ZH-11") and h.rule_id in _PROOF_AUTOFIX_IDS]
+        moved_any = False
+        if spans:
+            moved, logs = _pc.move_marks_before_punct(new, spans=spans)
+            for line in logs:
+                if line.startswith("第 "):
+                    rid = "ZH-10" if " footnote " in line else "ZH-11"
+                    hits[rid] = hits.get(rid, 0) + 1
+            moved_any = moved != new
+            new = moved
+        # ② 替换类：fixable 窄集（按 mover 后的文本重新定位）
+        rep = _pc.check(new, lang=lang)
+        sub = _pc.Report(
+            hits=[h for h in rep.hits if h.rule_id in _PROOF_AUTOFIX_IDS], lang=lang
+        )
+        fixed, applied = _pc.apply_fixes(new, sub)
+        for h in applied:
+            hits[h.rule_id] = hits.get(h.rule_id, 0) + 1
+        if fixed == new and not moved_any:
+            break
+        new = fixed
     return new, hits
+
+
+#: 旧名兼容（B-272 及更早的测试/调用方用 `_autofix_proof`）。
+_autofix_proof = apply_proof_autofix
 
 
 # ── 图表交叉引用接进初排（期 87 P2-2）──────────────────────────────────────
@@ -2150,13 +2203,14 @@ def build_docx(
                     按「仅同目录」口径发现，与 `find_bib()` 同一纪律）。
                     默认 None = 不接第二源 = 与从前逐字节相同（`corpus.py` /
                     `run_poc.py` 等既有调用方不带这个参数，行为不变）。
-    proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6）：True（默认）= 生成后
-                    自动套用 `slcn.proofcheck` 里 ZH-01..ZH-06 + ZH-08 + ZH-12 这 8 条
-                    确定性替换（ZH-08 自 2026-10-28 起按新口径默认启用：小写英文邻/
-                    汉字-汉字/数学/命令参数仍保持，不会改错；ZH-12 自 2026-10-30 起
-                    在句末标点后的脚注与紧随汉字之间补 `\\,`，见 B-272）；
+    proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6；B-278 扩到两通道全安全集）：
+                    True（默认）= 生成后自动套用 `_PROOF_AUTOFIX_IDS`（ZH-01…06、08、09、
+                    10、11、12、14、21、23、EN-01/02/03）：替换类用 `apply_fixes`，
+                    脚注/引文位序（ZH-10/11）按命中 span 搬位（mover），ZH-08 按 2026-10-28
+                    新口径（小写英文邻/汉字-汉字/数学/命令参数保持，不会改错），ZH-12 在
+                    句末标点后的脚注与紧随汉字之间补 `\\,`（B-272）；
                     False = 与接入前逐字节相同（`corpus.py --no-proof-autofix` 消融用）。
-                    只影响中文 Word 通道；LaTeX 通道与英文稿不受影响。
+                    只影响中文稿；LaTeX 通道同样默认套用（只改产物、不碰源稿）。
     dash_hints       **ZH-08 连接号提示**的日志开关（第四十三批，默认开）：
                     True = 命中数 + 前 20 条上下文（前后各 10 字）+ 判断指引；
                     False = 不打印。Word 通道在 ⑤′ 自动改**之后**报剩余（主要是数学紧邻
@@ -2577,12 +2631,13 @@ def build_docx(
     for rid, n in sorted(res.applied.items(), key=lambda x: -x[1]):
         say(f"   · {rid:24s} ×{n}")
 
-    # ⑤′ 一校可自动改子集（期 87 P1-6；B-004 起加 ZH-08）：只做确定性子集。
+    # ⑤′ 一校可自动改子集（期 87 P1-6；B-004 加 ZH-08；B-278 扩到全安全集）：
+    #    只做确定性子集，脚注/引文位序按命中 span 搬（mover），不全文乱搬。
     #    ⚠️ 失败绝不阻断出稿：只写 warning，产物照常生成（编辑宁可多检查，不能没稿）。
     _pf: dict[str, int] = {}
     if proof_autofix and lang == "zh":
         try:
-            tpl, _pf = _autofix_proof(tpl, lang)
+            tpl, _pf = apply_proof_autofix(tpl, lang)
         except Exception as e:  # noqa: BLE001
             warnings.append(f"一校可自动改子集未执行（不影响出稿）：{type(e).__name__}: {e}")
         else:

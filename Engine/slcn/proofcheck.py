@@ -187,6 +187,8 @@ class Rule:
     replace: object = None
     #: 命中后再过一道判据（返回 True 才算命中），用于压噪声
     accept: object = None
+    #: 只在楷体区间（quotation / quote 环境，或 `\kaishu` 开关作用域）内算命中
+    within_kaishu: bool = False
 
 
 # 半角 → 全角（只在「两侧都是中文」时用，所以不会被用在英文/数字语境里）
@@ -494,16 +496,19 @@ def _zh11_closer(mask: str, opener: int, math: str = "") -> int:
 
 
 def _zh11_accept(m: re.Match, tex: str) -> bool:
+    return _zh11_accept_at(tex, m.start(), m.end())
+
+
+def _zh11_accept_at(tex: str, pos: int, cmd_end: int) -> bool:
     r"""ZH-11 括号豁免（手册 §常规 5.2 正例 `（\ct{a6}，第8\cndash 12页）`）。
 
     逗号与后面紧跟的 `\cite` 族命令如果**整体处于同一对**中文/英文括号内，说明是
     「作者（年份，\cite{…}）」式的括注写法，不该报；正文句读照报。
     括号配对在 `raw_mask`（注释/verbatim 已挖空）上算，嵌套按最近未闭合开括号；
-    括号未闭合时不豁免（避免把漏括号的正文静默掉）。
+    括号未闭合时不豁免（避免把漏括号的正文静默掉）。`--fix` 的 mover 复用同一判据。
     """
     mask = raw_mask(tex)
     math = math_mask(tex)
-    pos = m.start()
     if _zh12_in_math(mask, pos):        # 数学区里的 `，\cite` 不适用这条中文口径
         return True
     depth = 0
@@ -525,12 +530,98 @@ def _zh11_accept(m: re.Match, tex: str) -> bool:
     if opener < 0:
         return True
     closer = _zh11_closer(mask, opener, math)
-    return not (closer > 0 and closer > m.end())
+    return not (closer > 0 and closer > cmd_end)
 
 
 #: ZH-11 括号豁免用的中文/英文圆括号。
 _ZH11_PAREN_OPEN = "(（"
 _ZH11_PAREN_CLOSE = ")）"
+
+
+# ── ZH-14（B-278）：集合里只改**单个**竖线；`\|` 与成对 `|…|`（绝对值）不动 ──
+def _zh14_accept(m: re.Match, tex: str) -> bool:
+    r"""只有**恰好一个**未转义竖线时才可自动改；成对竖线/`\|` 一律跳过（宁可不改）。"""
+    return len(re.findall(r"(?<!\\)\|", m.group(0))) == 1
+
+
+def _zh14_replace(m: re.Match) -> str:
+    return re.sub(r"(?<!\\)\|", r"\\mid ", m.group(0), count=1)
+
+
+# ── ZH-23（B-278）：带括号的引用组，句末标点应放在括号之前 ─────────────────
+#: 引用组里的 cite 族命令；`\pct/\pcp/\pcpp` 由模板自带括号（`（\ct{…}）`）。
+_ZH23_CITE_CMD = r"\\(?:ct|pct|pcp|pcpp|parencite|cite|footcite|textcite)\{"
+_ZH23_GROUP_RE = re.compile(
+    r"（[^（）]*?" + _ZH23_CITE_CMD + r"[^{}]*\}[^（）]*?）([。；])")
+_ZH23_BARE_RE = re.compile(r"\\(?:pct|pcp|pcpp)\{[^{}]*\}([。；])")
+
+
+def _zh23_sentence_bounds(mask: str, pos: int,
+                          spans: list[tuple[int, int]]) -> tuple[int, int]:
+    r"""`pos` 所在句的 `[起, 止)`（句读按 。！？与换行，跳过脚注内部）。"""
+    start = 0
+    k = pos - 1
+    while k >= 0:
+        if not _in_any(k, spans) and mask[k] in "。！？\n":
+            start = k + 1
+            break
+        k -= 1
+    end = len(mask)
+    k = pos
+    while k < len(mask):
+        if not _in_any(k, spans) and mask[k] in "。！？\n":
+            end = k + 1
+            break
+        k += 1
+    return start, end
+
+
+def _zh23_hits(tex: str, mask: str) -> list[tuple[int, int]]:
+    r"""ZH-23（B-278）「带括号引用组的句末标点应在括号之前」扫描。
+
+    `（…\cite{…}…）` / `（…\ct{…}…）`（中文全角括号）、以及自带括号形态的
+    `\pct{…}` / `\pcp{…}{…}` / `\pcpp{…}{…}{…}` **紧跟 `。`/`；`** → 命中，
+    `replacement` 把该标点搬到整组之前（`甲说（\parencite{k}）。` → `甲说。（\parencite{k}）`）。
+    排除：英文半角 `(...)`、不加括号的 `\cite{…}。`、`：` 场景、组内已有句末句读、
+    同句出现两组及以上（整句跳过，与手册 4.2「同句两处脚注」同一纪律）、
+    行首/句读后的独立括注（前面没有正文可承接搬过来的标点）。正文与脚注内同判。
+    """
+    spans = _footnote_spans(mask)
+    cands: list[tuple[int, int, str]] = []
+    for m in _ZH23_GROUP_RE.finditer(mask):
+        cands.append((m.start(), m.end(), "group"))
+    for m in _ZH23_BARE_RE.finditer(mask):
+        cands.append((m.start(), m.end(), "bare"))
+    cands.sort()
+    if not cands:
+        return []
+    # 同句多组：整句跳过（先按句聚合再逐条筛）。注意要数**全部**带括号引用组，
+    # 不能只数「后面紧跟句读」的候选：`甲（\ct{a}）说（\ct{b}）。` 只有后一组是候选，
+    # 但同句有两组 → 按手册 4.2 的保守口径整句不动。
+    group_any = re.compile(r"（[^（）]*?" + _ZH23_CITE_CMD + r"[^{}]*\}[^（）]*?）")
+    group_spans = [(m.start(), m.end()) for m in group_any.finditer(mask)]
+    counts: dict[tuple[int, int], int] = {}
+    for gs, _ge in group_spans:
+        bounds = _zh23_sentence_bounds(mask, gs, spans)
+        counts[bounds] = counts.get(bounds, 0) + 1
+    for start, _end, kind in cands:
+        if kind == "bare" and not any(gs <= start < ge for gs, ge in group_spans):
+            bounds = _zh23_sentence_bounds(mask, start, spans)
+            counts[bounds] = counts.get(bounds, 0) + 1
+    out: list[tuple[int, int]] = []
+    for start, end, _kind in cands:
+        if counts[_zh23_sentence_bounds(mask, start, spans)] > 1:
+            continue
+        body = mask[start:end - 1]
+        if "。" in body or "！" in body or "？" in body:   # 组内已有句末句读
+            continue
+        left = start - 1
+        while left >= 0 and mask[left] in " \t":
+            left -= 1
+        if left < 0 or mask[left] in "\n。！？；：":
+            continue
+        out.append((start, end))
+    return out
 
 RULES: list[Rule] = [
     # ── 中文稿件：半角标点混入（经验书「预校正·中文」逐条）──────────────
@@ -589,7 +680,7 @@ RULES: list[Rule] = [
          langs=("zh", "en"), scope="math"),
     Rule("ZH-14", "集合里的竖线应使用 \\mid", "手册 §数学环境·竖线的间隔",
          r"\\\{[^{}]*\|[^{}]*\\\}", "集合中的竖线用 \\mid", langs=("zh", "en"),
-         fixable=True, replace=lambda m: m.group(0).replace("|", "\\mid "), scope="math"),
+         fixable=True, accept=_zh14_accept, replace=_zh14_replace, scope="math"),
     Rule("ZH-15", "\\mathbf 加粗数学", "手册 §数学环境·加粗（建议 \\pmb / \\boldsymbol）",
          r"\\mathbf\{", "改用 \\pmb{} 或 \\boldsymbol{}", langs=("zh", "en"), scope="math"),
 
@@ -602,7 +693,8 @@ RULES: list[Rule] = [
          "补波浪号：表~\\ref{...}~所示、第~\\ref{...}~节、式~\\eqref{...}",
          langs=("zh",), scope="raw"),
     Rule("ZH-17", "\\caption 里用 \\\\ 换行", "手册 §冷门问题汇总 1（应使用 \\newline）",
-         r"\\caption\{[^{}]*\\\\", "caption 内换行用 \\newline", langs=("zh", "en"), scope="raw"),
+         r"\\caption(?:\[[^\]]*\])?\{[^{}]*\\\\", "caption 内换行用 \\newline",
+         langs=("zh", "en"), scope="raw"),
     Rule("ZH-18", "楷体环境里的英文/数字未调正",
          "手册 §校对规范·常规 3（楷体环境中的英文、数字、标点用 \\textup 调正）",
          r"", "用 \\textup{} 包住（\\ct 等命令自带）", langs=("zh",)),
@@ -611,11 +703,12 @@ RULES: list[Rule] = [
          langs=("zh", "en"), accept=_zh19_accept),
 
     Rule("ZH-20", "楷体环境里用 \\textbf 加粗", "手册 §校对规范·常规 3（楷体环境下的加粗用 \\textsf）",
-         r"\\textbf\{", "楷体环境（quotation / quote）内改用 \\textsf{}", langs=("zh",), scope="raw"),
+         r"\\textbf\{", "楷体环境（quotation / quote / \\kaishu 开关）内改用 \\textsf{}",
+         langs=("zh",), scope="raw", within_kaishu=True),
     # ZH-21 用专用扫描（pattern 留空）：`\footnote{…}` 可能嵌套，且要把句末标点搬到
     # 命令之前，判据与替换见 `_zh21_hits()` / `check()`。
-    Rule("ZH-21", "脚注在句号前（应放句号后）",
-         "手册 §校对规范·常规 4.1（脚注若在句号处则放于句号后）",
+    Rule("ZH-21", "脚注在句末标点前（应放标点后）",
+         "手册 §校对规范·常规 4.1（脚注若在句号处则放于句号后；`；` 视同 `。`）",
          "", "把句末标点移到脚注之前：文本。\\footnote{注}", langs=("zh",),
          scope="raw", fixable=True),
     # ZH-22 用专用扫描（pattern 留空）：要看环境配对，见 `_zh22_hits()`。
@@ -623,6 +716,11 @@ RULES: list[Rule] = [
          "手册 §校对规范·常规 4.4（表格脚注需 \\footnotemark + 环境后 \\footnotetext）",
          "", "改用 \\footnotemark{} + 环境后的 \\footnotetext{}", langs=("zh", "en"),
          scope="raw"),
+    # ZH-23 用专用扫描（pattern 留空）：要按括号配对、按句聚合，见 `_zh23_hits()`。
+    Rule("ZH-23", "带括号引用组的句末标点在括号之后",
+         "手册 §校对规范·常规 4.1/5.1–5.2（脚注与文献引用都放在逗号前、句号后）",
+         "", "把句末标点移到括号之前：文本。（\\parencite{…}）", langs=("zh",),
+         scope="raw", fixable=True),
 
     # ── 英文稿件（手册 §英文文章的特殊规范；经验书 预校正·英文）──────────
     Rule("EN-01", "年份前的半角括号缺空格", "经验书 预校正·英文（检索 [a-zA-Z]\\(\\d）",
@@ -654,7 +752,7 @@ RULES: list[Rule] = [
 #: 2026-10-30（B-272）ZH-12 句末脚注后补 `\,` 也进入默认白名单（判据见 `_zh12_hits()`）。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
-    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "EN-01", "EN-02", "EN-03",
+    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "ZH-23", "EN-01", "EN-02", "EN-03",
 )
 
 #: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
@@ -757,8 +855,8 @@ def _zh12_hits(tex: str, mask: str) -> list[tuple[int, int]]:
 
 
 
-#: ZH-21 只认句号/问号/叹号（手册 §常规 4.1「若在句号处则放于句号后」）；分号逗号不动。
-_ZH21_PUNCT = "。！？"
+#: ZH-21 认句号/问号/叹号/分号（手册 §常规 4.1；B-278 起 `；` 视同 `。`）；冒号不动。
+_ZH21_PUNCT = "。！？；"
 
 #: 左邻这些标点时 ZH-21 不适用（脚注本就该位于该标点之前；逗号场景另归 ZH-10）
 _ZH21_LEFT_SKIP = "，,、；;：:。！？…—"
@@ -857,12 +955,38 @@ def _zh22_hits(tex: str, mask: str) -> list[tuple[int, int]]:
 
 
 def _kaishu_spans(text: str) -> list[tuple[int, int]]:
-    r"""楷体环境（quotation / quote）在原文里的区间（不含环境标记本身）。"""
+    r"""楷体区间：quotation / quote 环境内容，以及 `\kaishu` 开关的作用域（B-278）。
+
+    `\kaishu` 是字体开关，作用到所在花括号组结束；写在顶层时按段落（空行）收口。
+    环境区间不含 `\begin`/`\end` 标记本身；开关区间不含 `\kaishu` 命令本身。
+    """
     spans: list[tuple[int, int]] = []
     for env in KAISHU_ENVS:
         for m in re.finditer(r"\\begin\{" + env + r"\}(.*?)\\end\{" + env + r"\}",
                              text, re.S):
             spans.append((m.start(1), m.end(1)))
+    # `\kaishu` 开关：向前扫出所在组（忽略 `\{` `\}`），区间到该组右花括号之前
+    for m in re.finditer(r"\\kaishu(?![A-Za-z])", text):
+        stack: list[int] = []
+        i = 0
+        while i < m.start():
+            c = text[i]
+            if c == "\\":
+                i += 2
+                continue
+            if c == "{":
+                stack.append(i)
+            elif c == "}" and stack:
+                stack.pop()
+            i += 1
+        if stack:
+            end = _match_brace(text, stack[-1])
+            if end > 0:
+                spans.append((m.end(), end - 1))
+        else:
+            para = re.search(r"\n[ \t]*\n", text[m.end():])
+            end = m.end() + (para.start() if para else len(text))
+            spans.append((m.end(), end))
     return spans
 
 
@@ -879,6 +1003,8 @@ def check(tex: str, lang: str = "zh") -> Report:
         if not rule.pattern:
             continue
         for m in re.finditer(rule.pattern, masks[rule.scope]):
+            if rule.within_kaishu and not _in_any(m.start(), kaishu):
+                continue
             if rule.accept and not rule.accept(m, tex):
                 continue
             line, col = _line_col(tex, m.start())
@@ -915,11 +1041,25 @@ def check(tex: str, lang: str = "zh") -> Report:
             line, col = _line_col(tex, start)
             seg = tex[start:end]
             rep.hits.append(Hit(
-                rule_id="ZH-21", title="脚注在句号前（应放句号后）",
-                basis="手册 §校对规范·常规 4.1（脚注在句号处放于句号后）",
+                rule_id="ZH-21", title="脚注在句末标点前（应放标点后）",
+                basis="手册 §校对规范·常规 4.1（脚注在句号处放于句号后；`；` 视同 `。`）",
                 line=line, col=col, start=start, end=end,
                 text=seg.replace("\n", "⏎"),
                 advice="把句末标点移到脚注之前", fixable=True,
+                replacement=seg[-1] + seg[:-1],
+            ))
+
+    # ZH-23（B-278）：带括号的引用组，句末标点应在括号之前（正文与脚注内同判）。
+    if lang == "zh":
+        for start, end in _zh23_hits(tex, masks["raw"]):
+            line, col = _line_col(tex, start)
+            seg = tex[start:end]
+            rep.hits.append(Hit(
+                rule_id="ZH-23", title="带括号引用组的句末标点在括号之后",
+                basis="手册 §校对规范·常规 4.1/5.1–5.2（引用与脚注都放在句号后、逗号前）",
+                line=line, col=col, start=start, end=end,
+                text=seg.replace("\n", "⏎"),
+                advice="把句末标点移到括号之前", fixable=True,
                 replacement=seg[-1] + seg[:-1],
             ))
 
@@ -939,11 +1079,12 @@ def check(tex: str, lang: str = "zh") -> Report:
     if lang == "zh":
         for a, b in kaishu:
             seg, seg_mask = tex[a:b], masks["text"][a:b]
-            for m in re.finditer(r"[A-Za-z0-9][A-Za-z0-9 .,;:()\-]*[A-Za-z0-9)]", seg_mask):
+            for m in re.finditer(r"[A-Za-z0-9](?:[A-Za-z0-9 .,;:()\-]*[A-Za-z0-9)])?", seg_mask):
                 raw = seg[m.start():m.end()]
-                if not re.search(r"[A-Za-z]", raw):
+                # 单字符数字（`第1章` 的 1）也要报；单个字母仍算噪声
+                if not re.search(r"[A-Za-z0-9]", raw):
                     continue
-                if len(raw.strip()) <= 1:
+                if len(raw.strip()) <= 1 and not raw.strip().isdigit():
                     continue
                 # `\textup{...}` 之内会被掩成空格 → 不会命中；这里再排掉纯标点
                 line, col = _line_col(tex, a + m.start())
@@ -1010,13 +1151,20 @@ _POSITION_RULES = {
 }
 
 
-def move_marks_before_punct(tex: str, kinds: tuple[str, ...] = ("footnote", "cite")) -> tuple[str, list[str]]:
+def move_marks_before_punct(tex: str, kinds: tuple[str, ...] = ("footnote", "cite"),
+                            spans: list[tuple[int, int]] | None = None
+                            ) -> tuple[str, list[str]]:
     r"""把「标点 + \\footnote{…} / \\cite{…}」改成「\\footnote{…} + 标点」。
 
     依据：手册 §校对规范·常规 4.1 / 5.1（脚注与文献引用都放在逗号前、句号后）。
     ⚠️ 只处理**紧邻**的情形（标点与命令之间只有空白），不动跨句子的；
     括号配对失败的一律跳过并记入日志（宁可不改，也不能改坏）。
+
+    `spans`（B-278）：只搬这些**命中区间**里的标点（初排/`--fix` 传 ZH-10/ZH-11 的
+    `Hit.start`）；为 `None` 时保持旧口径（全量扫，供单独调用/旧测试）。
+    cite 一律复用 `_zh11_accept_at`：同一对中文括注内的「逗号 + 引用」不搬。
     """
+    allowed = None if spans is None else {s for s, _e in spans}
     logs: list[str] = []
     out = tex
     changed = True
@@ -1025,21 +1173,30 @@ def move_marks_before_punct(tex: str, kinds: tuple[str, ...] = ("footnote", "cit
         for kind in kinds:
             pat = _POSITION_RULES[kind]
             for m in pat.finditer(out):
+                # 往前看：允许空白，然后是「，」或「,」
+                k = m.start()
+                while k > 0 and out[k - 1] in " \t":
+                    k -= 1
+                if k == 0 or out[k - 1] not in "，,":
+                    continue
+                if allowed is not None and (k - 1) not in allowed:
+                    continue
                 brace = out.index("{", m.start())
                 end = _match_brace(out, brace)
                 if end < 0:
                     logs.append(f"跳过：{out[m.start():m.start()+24]}… 花括号不配对")
                     continue
-                # 往前看：允许空白，然后是「，」或「,」
-                j = m.start()
-                k = j
-                while k > 0 and out[k - 1] in " \t":
-                    k -= 1
-                if k == 0 or out[k - 1] not in "，,":
+                if kind == "cite" and not _zh11_accept_at(out, k - 1, end):
                     continue
                 mark = out[k - 1]
                 cmd = out[m.start():end]
                 new = out[:k - 1] + cmd + mark + out[end:]
+                # 搬位可能吃掉「标点与命令之间」的空白（长度变化），
+                # 之后命中区间的绝对坐标随之平移；allowed 必须同步，否则同一轮里
+                # 后面的命中会被位置过期误跳过（B-278 实测：一句 4 处只搬 3 处）。
+                if allowed is not None and len(new) != len(out):
+                    delta = len(new) - len(out)
+                    allowed = {p + delta if p > k - 1 else p for p in allowed}
                 logs.append(f"第 {_line_col(out, k - 1)[0]} 行：把 {kind} 移到「{mark}」之前")
                 out = new
                 changed = True

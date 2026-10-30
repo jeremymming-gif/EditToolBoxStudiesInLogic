@@ -211,6 +211,50 @@ check("(a) ZH-21 无尾随换行：replacement 把标点搬到脚注前",
           hits_of("文本\\footnote{注}。", "ZH-21")))
 check("(a) ZH-21 无尾随换行：嵌套脚注同样报",
       len(hits_of("文本\\footnote{注 {内层}}。", "ZH-21")) == 1)
+# B-278：`；` 视同 `。`（手册把分号列为句末标点；冒号不纳入）。
+for _tex, _why in (("甲说\\footnote{注}；乙说。\n", "分号"),
+                   ("甲说\\footnote{注}；\n", "分号+换行")):
+    _hs = hits_of(_tex, "ZH-21")
+    check(f"(a) ZH-21 分号视同句末标点 → 报：{_why}", len(_hs) == 1, _tex)
+    check(f"(a) ZH-21 分号：replacement 把分号搬到脚注前：{_why}",
+          len(_hs) == 1 and _hs[0].replacement == "；\\footnote{注}",
+          repr([h.replacement for h in _hs]))
+check("(a) ZH-21 反例：脚注后冒号不纳入（冒号不是句末标点）",
+      not hits_of("甲说\\footnote{注}：乙说。\n", "ZH-21"))
+check("(a) ZH-21 分号 --fix 与幂等",
+      P.apply_fixes("甲说\\footnote{注}；乙说。\n",
+                    P.check("甲说\\footnote{注}；乙说。\n", lang="zh"))[0]
+      == "甲说；\\footnote{注}乙说。\n"
+      and not [h for h in P.check("甲说；\\footnote{注}乙说。\n", lang="zh").hits
+               if h.rule_id == "ZH-21"])
+
+# B-278 新增 ZH-23：带括号引用组的句末标点在括号后 → 搬到括号前（正文/脚注同判）。
+_zh23_cases = (
+    ("甲说（\\parencite{k}）。\n", "。（\\parencite{k}）", "\\parencite 组（正文）"),
+    ("甲说\\footnote{见（\\parencite{k}）。}随后。\n", "。（\\parencite{k}）", "脚注内同判"),
+    ("甲说（\\ct{k}）。\n", "。（\\ct{k}）", "\\ct 组"),
+    ("甲说\\pct{k}。\n", "。\\pct{k}", "自带括号的 \\pct 裸形态"),
+    ("甲说（\\parencite{k}）；乙说。\n", "；（\\parencite{k}）", "分号同样搬"),
+)
+for _tex, _repl, _why in _zh23_cases:
+    _hs = hits_of(_tex, "ZH-23")
+    check(f"(a) ZH-23 正例：{_why}", len(_hs) == 1 and _hs[0].fixable
+          and _hs[0].replacement == _repl,
+          repr([(h.text, h.replacement) for h in _hs]))
+for _tex, _why in (
+    ("甲（\\parencite{a}）说（\\parencite{b}）。\n", "同句两组（整句跳过）"),
+    ("甲（\\parencite{a}。另）。\n", "组内已有句号"),
+    ("甲(\\parencite{a}).\n", "英文半角括号"),
+    ("甲说。（\\parencite{k}）\n", "已是正确序"),
+    ("甲说：\\parencite{k}。\n", "冒号场景不纳入"),
+    ("甲说\\parencite{k}。\n", "不加括号的引用不动"),
+):
+    check(f"(a) ZH-23 反例不报：{_why}", not hits_of(_tex, "ZH-23"), _tex)
+check("(a) ZH-23 幂等：改完再跑不再新增",
+      P.apply_fixes("甲说（\\parencite{k}）。\n",
+                    P.check("甲说（\\parencite{k}）。\n", lang="zh"))[0]
+      == "甲说。（\\parencite{k}）\n"
+      and not hits_of("甲说。（\\parencite{k}）\n", "ZH-23"))
 
 # 数学环境（手册 §数学环境）
 check("(a) ZH-13 数学里的三个点 → 报", len(hits_of("$a_1,...,a_n$\n", "ZH-13")) == 1)
@@ -219,6 +263,10 @@ check("(a) ZH-13 反例：**正文文本**里的六个点不报（那条规则�
 check("(a) ZH-14 集合里的竖线 → 报，且建议改成 \\mid",
       [h.replacement for h in hits_of("$\\{x|x>5\\}$\n", "ZH-14")] == ["\\{x\\mid x>5\\}"])
 check("(a) ZH-14 反例：条件概率的竖线不在集合里 → 不报", not hits_of("$P(A|B)$\n", "ZH-14"))
+check("(a) ZH-14 反例：成对竖线（绝对值/条件）→ 不报（B-278 起只改单根）",
+      not hits_of("$\\{x: |x|>5\\}$\n", "ZH-14"))
+check("(a) ZH-14 反例：转义竖线 `\\|` 不算集合竖线",
+      not hits_of("$\\{x\\|x>5\\}$\n", "ZH-14"))
 check("(a) ZH-15 \\mathbf → 报", len(hits_of("$\\mathbf{a+b}=c$\n", "ZH-15")) == 1)
 # S4（B-273）ZH-22「表格/浮动体内 \\footnote 会被吞」：手册 285–294（改用 \\footnotemark+\\footnotetext）。
 for _env, _why in (("table", "table 环境"), ("tabular", "tabular 环境"),
@@ -255,6 +303,8 @@ for _tex, _why in (("第~\\ref{sec}~节。\n", "前后都有 `~`"),
     check(f"(a) ZH-16 反例不报：{_why}", not hits_of(_tex, "ZH-16"), _tex)
 check("(a) ZH-17 caption 里用 \\\\ → 报",
       len(hits_of("\\caption{第一行\\\\第二行}\n", "ZH-17")) == 1)
+check("(a) ZH-17 caption 可选参数（`\\caption[短]{…\\\\…}`）同样报",
+      len(hits_of("\\caption[短标题]{第一行\\\\第二行}\n", "ZH-17")) == 1)
 check("(a) ZH-19 人名缩写 J.N. → 报", len(hits_of("J.N. Mohanty 说。\n", "ZH-19")) == 1)
 check("(a) ZH-19 人名缩写 H.T / H.P（期 87 真实样本）→ 报，且仍**只报不改**",
       len(hits_of("（H.T.Colebrooke）\n", "ZH-19")) == 1
@@ -303,6 +353,12 @@ check("(b) 宏名不算正文：`\\hfill` 不报 ZH-18",
 check("(b) 但 `\\textbf{bold}` 的**参数**是楷体环境里的英文 → 要报（并另有 ZH-20 提示改用 \\textsf）",
       len(hits_of("\\begin{quotation}\\textbf{bold}\\end{quotation}\n", "ZH-18")) == 1
       and len(hits_of("\\begin{quotation}\\textbf{bold}\\end{quotation}\n", "ZH-20")) == 1)
+check("(b) ZH-20 只认楷体区间：楷体环境外的 `\\textbf{bold}` 不报（B-278）",
+      not hits_of("正文\\textbf{bold}不是楷体。\n", "ZH-20"))
+check("(b) ZH-20 认 `\\kaishu` 开关区间：`{\\kaishu \\textbf{bold}}` 报（B-278）",
+      len(hits_of("{\\kaishu \\textbf{bold}}\n", "ZH-20")) == 1)
+check("(b) ZH-18 楷体里的单字符数字（第1章）也要报（B-278）",
+      len(hits_of("\\begin{quotation}第1章\\end{quotation}\n", "ZH-18")) == 1)
 check("(b) 自带 `\\textup` 的命令参数不报 ZH-18",
       not hits_of("\\begin{quotation}\\textup{This is fine} \\ct{a6}\\end{quotation}\n", "ZH-18"))
 check("(b) 楷体环境里**裸露的英文**要报 ZH-18",
@@ -425,6 +481,31 @@ check("(c) 位置移动有日志（逐条说明改了哪一行）",
       len(logs) == 2 and all("移到" in x for x in logs), f"{logs}")
 check("(c) 反例：无法配对的花括号 → 跳过并记日志，不改坏",
       P.move_marks_before_punct("甲，\\footnote{没关完\n")[1][0].startswith("跳过"))
+# B-278：只搬「命中 span」里的逗号（初排/--fix 按 check() 命中喂 spans，不再全量扫）。
+_one = "甲，\\footnote{a}乙，\\parencite{b}丙。\n"
+_one_fh = hits_of(_one, "ZH-10")
+_one_out, _one_logs = P.move_marks_before_punct(
+    _one, spans=[(h.start, h.end) for h in _one_fh])
+check("(c) spans 口径：只搬传入 hit 的脚注逗号，另一处引文逗号不动",
+      _one_out == "甲\\footnote{a}，乙，\\parencite{b}丙。\n"
+      and len(_one_logs) == 1 and "footnote" in _one_logs[0],
+      repr((_one_out, _one_logs)))
+# B-278 回归：先搬的一处若吃掉「标点后空白」（长度变短），后面的命中坐标会平移，
+# 不能因为 allowed 位置过期而漏搬。
+_shift = "甲， \\footnote{a}乙，\\cite{b}丙。\n"
+_shift_hits = hits_of(_shift, "ZH-10") + hits_of(_shift, "ZH-11")
+_shift_out, _shift_logs = P.move_marks_before_punct(
+    _shift, spans=[(h.start, h.end) for h in _shift_hits])
+check("(c) spans 口径：前一处搬位缩短文本后，后一处命中仍被搬（坐标平移不丢）",
+      _shift_out == "甲\\footnote{a}，乙\\cite{b}，丙。\n" and len(_shift_logs) == 2,
+      repr((_shift_out, _shift_logs)))
+# 括注内同一对中文括号：引文前逗号不搬（与 ZH-11 报告豁免同判）。
+_paren = "甲（作者，\\parencite{k}，第8页）。\n"
+_pi = _paren.index("\\parencite")
+_paren_out, _paren_logs = P.move_marks_before_punct(
+    _paren, spans=[(_pi - 1, _pi + len("\\parencite{k}"))])
+check("(c) 括注内不搬：`（作者，\\parencite{k}，第8页）` 零改动",
+      _paren_out == _paren and _paren_logs == [], repr((_paren_out, _paren_logs)))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) CLI 契约 ──")
@@ -451,6 +532,30 @@ check("(d) 报告写到源文件同目录", os.path.exists(os.path.join(tmp, "De
 md = open(os.path.join(tmp, "Demo_一校核查.md"), encoding="utf-8").read()
 check("(d) 报告里有摘要表与依据", "## 摘要" in md and "依据" in md)
 check("(d) 报告里逐条列了行号", "| 行 |" in md)
+
+# B-278：可自动修项「初排已默认处理」，报告/控制台都静默；档 3（只报不改）照报。
+_silent_path = os.path.join(tmp, "Silent.tex")
+with open(_silent_path, "w", encoding="utf-8") as fh:
+    fh.write("甲,乙。\n")
+_rs = run("--tex", _silent_path)
+_smd = os.path.join(tmp, "Silent_一校核查.md")
+_md_s = open(_smd, encoding="utf-8").read() if os.path.exists(_smd) else ""
+check("(d) 可自动修项不进报告逐条（报告无 `| 行 |` 表，只留合计与可自动修行）",
+      "| 行 |" not in _md_s and "可自动修 1 处" in _md_s
+      and "没有需要人工处理的条目" in _md_s, _md_s[-300:])
+check("(d) 控制台不逐条列可自动修规则，只给一行总数",
+      "可自动修 1 处" in _rs.stdout and "ZH-01" not in _rs.stdout, _rs.stdout.strip())
+_t3_path = os.path.join(tmp, "Tier3.tex")
+_t3_tex = "\\begin{table}表\\footnote{注}\\end{table}\n"
+with open(_t3_path, "w", encoding="utf-8") as fh:
+    fh.write(_t3_tex)
+_rt3 = run("--tex", _t3_path, "--fix")
+_t3_out_path = os.path.join(tmp, "Tier3_一校核查后.tex")
+check("(d) 档 3（ZH-22 只报不改）--fix 不写盘改坏：产物与源逐字节相同",
+      os.path.exists(_t3_out_path)
+      and open(_t3_out_path, encoding="utf-8").read() == _t3_tex, _t3_out_path)
+check("(d) 档 3 仍进报告（ZH-22 出现在摘要）",
+      "ZH-22" in open(os.path.join(tmp, "Tier3_一校核查.md"), encoding="utf-8").read())
 
 r2 = run("--tex", tex_path, "--fix")
 check("(d) `--fix` 写出新文件、**输入文件字节不变**",
