@@ -14,7 +14,7 @@
   `slcn_python()` 依次尝试
     ① 环境变量 `SLCN_PYTHON`
     ② 已经装了 Python 的开发机：`python` / `python3` / Windows 的 `py` 启动器
-    ③ **冻结引擎**：`SLCNEngine.exe`（把十二个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
+    ③ **冻结引擎**：`SLCNEngine.exe`（把十三个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
        本文件的 `ENTRIES` 必须与它的 `ENTRIES` 逐项一致 —— 由 tests/test_bridge.py 守着）
        第 132 条起 `bibdb.py`（引用库 CLI）也在表里：Windows「引用库」5 页的数据源，
        四处入口表（外壳 `ENTRIES` / dispatcher `ENTRIES` / build-win.ps1 / 桥接断言）
@@ -40,10 +40,12 @@ import clean_logic as _clean_logic   # B-281：清理三模式的纯逻辑（同
 #: B-283：末尾追加 `envcheck.py`（首次运行环境自检）——**前 10 项顺序不动**。
 #: B-285b：再追加 `diagnose.py`（失败诊断）——**前 11 项顺序不动**，12 项与
 #: `Engine/engine_main.py: ENTRIES` 逐项一致（由 tests/test_bridge.py (b) 守着）。
+#: B-289：末尾追加 `dirpush.py`（目录摘要推送）——**前 12 项顺序不动**，13 项继续与
+#: `Engine/engine_main.py: ENTRIES` 逐项一致。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
            "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-           "envcheck.py", "diagnose.py")
+           "envcheck.py", "diagnose.py", "dirpush.py")
 
 
 # ── 日志分层（U4：摘要 / 原始两层，默认折叠原始）─────────────────────────
@@ -745,6 +747,61 @@ def toc_preview_call(*, report: str) -> EngineCall:
     return EngineCall(cmd, "toc.py", "目录预览")
 
 
+def dirpush_issues_csv(value) -> str:
+    """「纳入期」规范化：`"3, 1,2,1"` / `[3, 1]` → `"1,2,3"`；没有正数 → `""`。
+
+    与 mac `DirPushFeature.includeIssuesArgument` **同一口径**：只留正数、升序去重；
+    空串表示**不传** `--include-issues`（引擎按该年全部找到的期处理）。
+    全角逗号也当分隔符（编辑从 Word 里粘过来常见）。
+    """
+    parts = value.replace("，", ",").split(",") if isinstance(value, str) else list(value or ())
+    numbers = set()
+    for part in parts:
+        text = str(part).strip()
+        if not text:
+            continue
+        try:
+            number = int(text)
+        except ValueError:
+            continue
+        if number > 0:
+            numbers.add(number)
+    return ",".join(str(n) for n in sorted(numbers))
+
+
+def dirpush_call(*, issue: str, out_root: str = "", with_en_toc: bool = False,
+                 annual: bool = False, year="", include_issues="",
+                 dry_run: bool = False) -> EngineCall:
+    """「目录摘要推送」：期目录 + 输出根 → 引擎生成 docx（判据全在 `Engine/dirpush.py`）。
+
+    契约（`Engine/docs/ENGINE_API.md` §十五，与 mac `DirPushFeature.arguments` 逐项相同）：
+      基础 `--issue <期目录> --out <输出根>`；当期可加 `--with-en-toc`；
+      年度 `--annual`（+ `--year` / `--include-issues 1,2,3`，**年度不传 --with-en-toc**）；
+      末尾 `--json`，预览再加 `--dry-run`（不写盘，`outputs[]` 仍是计划路径）。
+    """
+    cmd = _base_cmd("dirpush.py")
+    if cmd is None:
+        raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
+    cmd += ["--issue", issue]
+    if out_root.strip():
+        cmd += ["--out", out_root.strip()]
+    if annual:
+        cmd.append("--annual")
+        year_text = str(year or "").strip()
+        if year_text:
+            cmd += ["--year", year_text]
+        csv = dirpush_issues_csv(include_issues)
+        if csv:
+            cmd += ["--include-issues", csv]
+    elif with_en_toc:
+        cmd.append("--with-en-toc")
+    cmd.append("--json")
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "dirpush.py",
+                      "目录摘要推送（年度总目录）" if annual else "目录摘要推送")
+
+
 def read_toc_result(path: str) -> dict:
     """读 `toc.py --result-json` 写的结果；文件不在/不是 JSON → `{}`（不猜、不炸）。"""
     try:
@@ -1428,6 +1485,9 @@ _RESULT_1 = {
     "proofcheck.py": "❗ 有命中项，请按报告逐条处理（不是程序出错）",
     "compileall.py": "⚠ 有文章编译失败（每篇的错误摘要见上面的日志）",
     "toc.py": "⚠ 已完成，但有需要人工核对的地方（见上面的日志）",
+    # B-289：dirpush 的退出码 1 是**真的内部异常**（`Engine/dirpush.py` 只有 CollectError
+    # 才走 2；其它异常 traceback + 1），与上面几个「1 = 有结果」不同口径，别照抄 ❗。
+    "dirpush.py": "❌ 引擎内部出错（退出码 1，见上面的日志与 traceback；产物可能只写了一半）",
 }
 _RESULT_1_DEFAULT = "❗ 完成，但有需要处理的结果（退出码 1，见上面的日志）"
 

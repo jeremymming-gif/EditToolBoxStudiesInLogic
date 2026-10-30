@@ -22,9 +22,11 @@
       （`--llm-fulltext`，默认关、会话态；只在 ⑪ 直连通道追加）；批62 入口收敛 B
       （普通默认无 --verify-refs，`use_ai` 内部等价 ⑪；回读页长标题）；
   (k) B-281 Windows/mac 对等：mac `NavPage`（顺序/标题/分组）与 Windows `self.tabs`/
-      `nav_groups` 对照**硬编码**对等清单（差异只允许已声明三项）；`sources-win/README.md`
-      不再宣称「与 mac 版功能对等」且指向《使用说明》§3.3；清理三模式（argv/确认文案/
-      撤销条件）静态守卫。
+      `nav_groups` 对照**硬编码**对等清单（B-289 起两壳 15/15，差异只剩已声明两项）；
+      `sources-win/README.md` 声明 15 页/13 入口/两处差异并指向《使用说明》§3.3；
+      清理三模式（argv/确认文案/撤销条件）静态守卫。
+  (o) B-289 目录摘要推送：Windows 页与 `Engine/dirpush.py` 的 argv 契约（年度不传
+      `--with-en-toc`）、只读 JSON 冻结字段、输出根默认值/记忆键、静态守卫。
 """
 from __future__ import annotations
 
@@ -217,19 +219,20 @@ check("(b) 外壳入口表与**打包 dispatcher** 的 `ENTRIES` 逐项一致"
       "（少一项 = 那个标签页在用户机器上直接退出 2）",
       set(E.ENTRIES) == set(_DISP.ENTRIES),
       f"外壳 {len(E.ENTRIES)} 个 {E.ENTRIES} ／ dispatcher {len(_DISP.ENTRIES)} 个 {_DISP.ENTRIES}")
-check("(b) 十二个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py，"
-      "B-283 起含环境自检 envcheck.py，B-285b 起含失败诊断 diagnose.py）",
+check("(b) 十三个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py，"
+      "B-283 起含环境自检 envcheck.py，B-285b 起含失败诊断 diagnose.py，B-289 起含"
+      "目录摘要推送 dirpush.py）",
       set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
                          "cleantemp.py", "compileall.py", "proofcheck.py",
                          "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-                         "envcheck.py", "diagnose.py"},
+                         "envcheck.py", "diagnose.py", "dirpush.py"},
       f"{E.ENTRIES}")
-check("(b) B-283/B-285b 的口径：前 10 项**顺序逐项不变**，envcheck 后追加 diagnose"
-      "（C8：默认零变化）",
+check("(b) B-283/B-285b/B-289 的口径：前 10 项**顺序逐项不变**，envcheck/diagnose/"
+      "dirpush 依次追加末尾（C8：默认零变化）",
       tuple(E.ENTRIES[:10]) == ("convert.py", "checkbib.py", "mergepdf.py",
                                 "cleantemp.py", "compileall.py", "proofcheck.py",
                                 "infocheck.py", "toc.py", "publish.py", "bibdb.py")
-      and tuple(E.ENTRIES[10:]) == ("envcheck.py", "diagnose.py")
+      and tuple(E.ENTRIES[10:]) == ("envcheck.py", "diagnose.py", "dirpush.py")
       and tuple(_DISP.ENTRIES) == tuple(E.ENTRIES),
       f"{E.ENTRIES}")
 
@@ -756,7 +759,7 @@ else:
         # 只做**不跑引擎**的交互：切到「引用库设置」页（on_activate 只做文件系统探测）、
         # 改两项设置并保存，验证 (a) 页能建出来 (b) 设置真的落到 settings.json
         # (c) 非法上限不落盘。跑引擎的读库/查库在 (i) 组用临时库验（不在窗口里依赖真实库）。
-        app.show_tab(12)
+        app.show_tab(13)          # B-289：dirpush 插到 8 后，引用库 5 页顺移到 9..13
         app.update()
         bs = app.bibdb_settings_tab
         bs.max_var.set("0")
@@ -772,7 +775,7 @@ else:
         app.update()
         _cfg3 = json.load(open(S.config_path(), encoding="utf-8"))
         print("非法上限不落盘=%d" % int(_cfg3.get("bibdb", {}).get("verifyMax") == 0))
-        print("引用库页=" + "|".join(tabs[8:13]))
+        print("引用库页=" + "|".join(tabs[9:14]))
         print("引用库侧栏=" + "|".join(
             app.nav.item(x, "text") for x in app.nav.get_children()))
         # ── 第五十五批：两段式协同 + AI 预算（真窗口证据）──
@@ -1041,12 +1044,12 @@ else:
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
-        check("(g) 十四个页都在（侧边栏顺序：单篇 4 + 整期 4 + 引用库 5 + 设置）",
+        check("(g) 十五个页都在（侧边栏顺序：单篇 4 + 整期 5 + 引用库 5 + 设置）",
               "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|"
-              "删除临时文件|库概况|查库|入藏|待裁决|引用库设置|设置"
-              in out, out.strip()[-220:])
+              "删除临时文件|目录摘要推送|库概况|查库|入藏|待裁决|引用库设置|设置"
+              in out, out.strip()[-240:])
         check("(g) **分组侧边栏**：两层结构（单篇稿件 / 整期装配 / 引用库 / 设置），"
-              "不是 14 个平级标签",
+              "不是 15 个平级标签",
               "侧栏=单篇稿件|整期装配|引用库|设置" in out,
               [l for l in out.splitlines() if l.startswith(("侧栏", "引用库侧栏"))])
         check("(g) 引用库 5 页在侧栏里（顺序：库概况/查库/入藏/待裁决/引用库设置）",
@@ -2090,20 +2093,22 @@ MAC_GROUPS = [
     ("整期装配", ["infocheck", "compile", "toc", "cleantemp", "merge", "dirpush"]),
     ("引用库", ["bibstats", "bibquery", "bibimport", "bibreview", "bibsettings"]),
 ]
-#: Windows 导航 14 页：顺序 = main.py `self.tabs`；标题 = 各 Tab 类的 `name`（侧栏用它）。
+#: Windows 导航 15 页：顺序 = main.py `self.tabs`；标题 = 各 Tab 类的 `name`（侧栏用它）。
 WIN_TITLES = [
     "初排转换", "文献回读校验", "合并文件", "一校核查", "检查tex信息",
     "生成目录", "编译全部", "删除临时文件",
+    "目录摘要推送",                                  # B-289：整期装配最后一步
     "库概况", "查库", "入藏", "待裁决", "引用库设置", "设置",
 ]
 #: Windows 侧栏三组（= main.py `nav_groups`；索引指向 `self.tabs`；设置页 = 组外末尾）。
 WIN_GROUPS = [
     ("单篇稿件", ["初排转换", "文献回读校验", "一校核查"]),
-    ("整期装配", ["检查tex信息", "生成目录", "编译全部", "删除临时文件", "合并文件"]),
+    ("整期装配", ["检查tex信息", "生成目录", "编译全部", "删除临时文件", "合并文件",
+                  "目录摘要推送"]),
     ("引用库", ["库概况", "查库", "入藏", "待裁决", "引用库设置"]),
 ]
-WIN_GROUP_INDEX = [("单篇稿件", (0, 1, 3)), ("整期装配", (4, 5, 6, 7, 2)),
-                   ("引用库", (8, 9, 10, 11, 12))]
+WIN_GROUP_INDEX = [("单篇稿件", (0, 1, 3)), ("整期装配", (4, 5, 6, 7, 2, 8)),
+                   ("引用库", (9, 10, 11, 12, 13))]
 
 
 def _parse_mac_nav() -> tuple[list[tuple[str, str]], list[tuple[str, list[str]]]]:
@@ -2198,23 +2203,21 @@ check("(k) mac NavPage 顺序/标题 = 硬编码对等清单（改 mac 导航须
       _mac_pages == MAC_PAGES, f"实际 {_mac_pages}")
 check("(k) mac 侧栏分组（singleArticle/assembly/library）= 硬编码清单（组顺序 + 组内页顺序）",
       _mac_groups == MAC_GROUPS, f"实际 {_mac_groups}")
-check("(k) Windows 导航 14 页：顺序/标题 = 硬编码清单（标题取各 Tab 类 name 属性）",
+check("(k) Windows 导航 15 页：顺序/标题 = 硬编码清单（标题取各 Tab 类 name 属性）",
       _win_titles == WIN_TITLES, f"实际 {_win_titles}")
 check("(k) Windows 侧栏分组 = 硬编码清单（组顺序 + 组内页顺序；设置页组外）",
       _win_group_index == WIN_GROUP_INDEX and _win_groups == WIN_GROUPS,
       f"实际 {_win_group_index}")
-_mac_title_set = {t for _, t in MAC_PAGES} - {"目录摘要推送", "待处理"}
+_mac_title_set = {t for _, t in MAC_PAGES} - {"待处理"}
 _win_title_set = set(WIN_TITLES) - {"待裁决"}
-check("(k) 页集合对等（只允许已声明差异：mac 独有「目录摘要推送」；引用库第四页标题不同）",
+check("(k) 页集合对等（B-289 起两壳 15/15；只允许已声明差异：引用库第四页标题不同）",
       _win_title_set == _mac_title_set
-      and len(_win_titles) == 14 and len(MAC_PAGES) == 15 and len(set(WIN_TITLES)) == 14)
+      and len(_win_titles) == 15 and len(MAC_PAGES) == 15 and len(set(WIN_TITLES)) == 15)
 _mac_title_of = dict(MAC_PAGES)
 _mac_group_norm = []
 for _name, _pages in MAC_GROUPS:
     _titles = [_mac_title_of[p] for p in _pages]
-    if _name == "整期装配":
-        _titles = [t for t in _titles if t != "目录摘要推送"]
-    else:
+    if _name != "整期装配":
         _titles = ["待裁决" if t == "待处理" else t for t in _titles]
     _mac_group_norm.append((_name, _titles))
 check("(k) 分组对等（组名/组顺序一致；只允许已声明差异：整期装配顺序不同、bibreview 标题不同）",
@@ -2224,13 +2227,17 @@ check("(k) 分组对等（组名/组顺序一致；只允许已声明差异：�
       and _mac_group_norm[1][1] != _win_groups[1][1]      # 顺序差异存在，且已声明
       and _mac_group_norm[2] == _win_groups[2])
 _mac_titles_all = [t for _, t in MAC_PAGES]
-check("(k) 差异只有已声明的三项：mac 多「目录摘要推送」/ bibreview 标题 / 整期装配顺序",
+check("(k) 差异只剩已声明的两处：bibreview 标题（待处理/待裁决）/ 整期装配顺序",
       [t for t in WIN_TITLES if t not in _mac_titles_all] == ["待裁决"]
-      and [t for t in _mac_titles_all if t not in WIN_TITLES] == ["目录摘要推送", "待处理"])
+      and [t for t in _mac_titles_all if t not in WIN_TITLES] == ["待处理"]
+      and len(_mac_titles_all) == len(WIN_TITLES) == 15)
 
-check("(k) sources-win/README.md 不再宣称「与 mac 版功能对等」「功能已对齐：mac 版的每一项」",
-      "与 mac 版功能对等" not in WIN_README
-      and "功能已对齐：mac 版的每一项" not in WIN_README)
+check("(k) sources-win/README.md 声明 15 页 / 13 入口 / 只剩两处已声明差异",
+      "## 十五个页面" in WIN_README
+      and "**15 个页面**" in WIN_README
+      and "十三个入口" in WIN_README
+      and "只剩两处已声明差异" in WIN_README
+      and "目录摘要推送" in WIN_README)
 check("(k) sources-win/README.md 把差异指向《使用说明》§3.3",
       "差异见《使用说明》§3.3" in WIN_README)
 check("(k) sources-win/README.md 的 clean 页说明 = 三模式 + 回收站/清空回收站",
@@ -2414,9 +2421,11 @@ check("(l) 设置页有「环境检查」「导出诊断包…」「复制安装
 check("(l) 子线程不碰 Tk：结果经 `queue.Queue` + 主线程 `after` 轮询回来自（项目纪律）",
       "self.after(120" in SETTINGS_TAB_SRC and "queue.Queue()" in SETTINGS_TAB_SRC
       and "self._env_queue.put(" in SETTINGS_TAB_SRC)
-check("(l) Windows 打包入口表也含 envcheck.py / diagnose.py，且与外壳 ENTRIES **同一张表**",
+check("(l) Windows 打包入口表也含 envcheck.py / diagnose.py / dirpush.py，"
+      "且与外壳 ENTRIES **同一张表**",
       "envcheck.py" in BUILD_PS1 and "diagnose.py" in BUILD_PS1
-      and "十二个入口" in BUILD_PS1
+      and "dirpush.py" in BUILD_PS1
+      and "十三个入口" in BUILD_PS1
       and all(e in BUILD_PS1 for e in E.ENTRIES)
       and BUILD_PS1.count("envcheck.py") >= 2)
 check("(l) settings：`envCheckDone` 默认 False、只收 bool（旧配置缺字段/垃圾值不炸）",
@@ -2779,11 +2788,11 @@ check("(m) P2 commit 成功但 rev-parse 失败时回退取 commit 输出 sha",
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (n) 失败诊断卡（B-285b）：红/中性口径 + 本地诊断包 + 日志轮转 + 旧引擎回退 ──")
 
-check("(n) 入口表：diagnose.py 追加在 envcheck.py 之后，前 11 项顺序逐项不变",
+check("(n) 入口表：dirpush.py 追加在 diagnose.py 之后，前 12 项顺序逐项不变",
       tuple(E.ENTRIES) == ("convert.py", "checkbib.py", "mergepdf.py",
                            "cleantemp.py", "compileall.py", "proofcheck.py",
                            "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-                           "envcheck.py", "diagnose.py")
+                           "envcheck.py", "diagnose.py", "dirpush.py")
       and tuple(_DISP.ENTRIES) == tuple(E.ENTRIES),
       f"{E.ENTRIES}")
 
@@ -2908,6 +2917,137 @@ check("(n) 旧引擎回退走「退出码 + 日志尾部」文案（不阻断运
 check("(n) 「查看文档」的候选真实存在（契约/使用说明/FAQ 至少一份）",
       bool(E.diagnosis_doc_path()) and os.path.isfile(E.diagnosis_doc_path()),
       str(E.diagnosis_doc_path()))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# (o) 目录摘要推送（B-289）：Windows 页 ↔ `Engine/dirpush.py` 契约
+#
+# 分工与 mac `DirPushFeature` 一致：参数拼装 / JSON 解析 / 结果摘要都是**纯函数**，
+# 界面只做「取值 → 调 engine → 显示」。这里不开窗，钉住四件事：
+#   ① argv 与 `Engine/dirpush.py`/ENGINE_API.md 的契约逐项对齐（年度不传 --with-en-toc）；
+#   ② 只读引擎 `--json` 的冻结字段（期头/篇数/摘要取到率/输出路径），界面不自算；
+#   ③ 输出根默认值与记忆键（settings options.dirpushOutRoot）不漂移；
+#   ④ 静态守卫：页面不联网、不写期目录、四个按钮与代码仓二次确认都在。
+print("\n── (o) 目录摘要推送（B-289）：页 / 入口 / argv 契约 ──")
+_DP_SRC = (SHELL / "tabs" / "dirpush.py").read_text(encoding="utf-8")
+check("(o) 页面文件在、继承 TabPage、标题「目录摘要推送」、路径选择器 pick=\"dir\"",
+      "class DirPushTab(TabPage)" in _DP_SRC
+      and 'name = "目录摘要推送"' in _DP_SRC and 'pick = "dir"' in _DP_SRC)
+check("(o) main.py：import + 实例化（cfg 共用设置页）+ self.tabs 第 9 项 + nav_groups 含索引 8",
+      "dirpush as _dp" in _MAIN_SRC
+      and "_dp.DirPushTab(" in _MAIN_SRC and "目录摘要推送" in _MAIN_SRC
+      and "self.dirpush_tab," in _MAIN_SRC
+      and '("整期装配", (4, 5, 6, 7, 2, 8))' in _MAIN_SRC
+      and '("引用库", (9, 10, 11, 12, 13))' in _MAIN_SRC)
+check("(o) main.py：_call_for 走 E.dirpush_call（页面不自己拼 argv）、_set_busy 含新页",
+      "E.dirpush_call(issue=path" in _MAIN_SRC
+      and "self.compile_tab, self.clean_tab, self.dirpush_tab)" in _MAIN_SRC)
+check("(o) 页面静态守卫：不联网、不写期目录、四个按钮 + 代码仓二次确认 + 英文目录仅当期",
+      not re.search(r"^\s*(?:import|from)\s+(?:urllib|requests|http|socket)", _DP_SRC, re.M)
+      and "预览（不写盘）" in _DP_SRC
+      and "打开文件" in _DP_SRC and "打开输出目录" in _DP_SRC
+      and "confirm_repo_root" in _DP_SRC and "REPO_MARKERS" in _DP_SRC
+      and "with_en_toc" in _DP_SRC)
+check("(o) settings：记忆键 options.dirpushOutRoot 默认空串（老配置缺键不炸）",
+      S.DEFAULTS["options"].get("dirpushOutRoot") == ""
+      and S._merge_defaults({})["options"].get("dirpushOutRoot") == ""
+      and S._merge_defaults({"options": {"dirpushOutRoot": "D:/x"}})[
+          "options"]["dirpushOutRoot"] == "D:/x")
+check("(o) engine：_RESULT_1 有 dirpush.py 的退出码 1 文案（traceback 也给人看）",
+      "dirpush.py" in E._RESULT_1 and "traceback" in E._RESULT_1["dirpush.py"])
+
+try:
+    import tabs.dirpush as _DP  # noqa: E402  需要 tkinter；缺 → 下面几条 SKIP
+    _DP_ERR = ""
+except Exception as _exc:  # noqa: BLE001
+    _DP, _DP_ERR = None, repr(_exc)
+
+if _DP is None:
+    print(f"SKIP  (o) dirpush 纯函数断言（import 失败：{_DP_ERR}）")
+else:
+    _c = E.dirpush_call(issue=r"E:\期\2026年第5期(90)", out_root=r"D:\push")
+    check("(o) 当期 argv：--issue/--out/--json，默认**不**带 --with-en-toc",
+          _c.entry == "dirpush.py" and _c.argv[2:] == [
+              "--issue", r"E:\期\2026年第5期(90)", "--out", r"D:\push", "--json"],
+          str(_c.argv))
+    check("(o) 英文目录：`--with-en-toc` 插在 `--json` 之前（当期专属）",
+          E.dirpush_call(issue="/x", with_en_toc=True).argv[-2:]
+          == ["--with-en-toc", "--json"])
+    check("(o) 预览：`--json` 之后追加 `--dry-run`（不写盘），其余参数逐项不变",
+          E.dirpush_call(issue="/x", out_root="/o", dry_run=True).argv[-2:]
+          == ["--json", "--dry-run"]
+          and E.dirpush_call(issue="/x", out_root="/o").argv[-3:]
+          == ["--out", "/o", "--json"])
+    _ann = E.dirpush_call(issue="/x", out_root="/o", annual=True, year="2026",
+                          include_issues="3, 1，3,0")
+    check("(o) 年度 argv：--annual + --year + --include-issues（升序去重、全角逗号也认），"
+          "且**绝不**传 --with-en-toc",
+          _ann.argv[2:] == ["--issue", "/x", "--out", "/o", "--annual", "--year", "2026",
+                            "--include-issues", "1,3", "--json"]
+          and "--with-en-toc" not in _ann.argv, str(_ann.argv))
+    check("(o) 年度选项缺省：年份/纳入期留空 → 对应开关不出现（交给引擎全扫描）",
+          E.dirpush_call(issue="/x", annual=True).argv[2:]
+          == ["--issue", "/x", "--annual", "--json"])
+    check("(o) 年度标签写明「年度总目录」（日志里分得清跑的是哪个模式）",
+          "年度总目录" in _ann.label and _c.label == "目录摘要推送")
+    check("(o) 纳入期解析：空/0/负数/重复都清掉，只留正整数升序（与 mac 同口径）",
+          E.dirpush_issues_csv("") == "" and E.dirpush_issues_csv("0, -1") == ""
+          and E.dirpush_issues_csv("5,2，2,10") == "2,5,10"
+          and E.dirpush_issues_csv(" 89 ") == "89")
+    check("(o) 默认输出根 = ~/Documents/sysu/编辑部/目录摘要推送（与引擎 collect.py 同一个）",
+          _DP.default_out_root().replace("\\", "/").endswith(
+              "Documents/sysu/编辑部/目录摘要推送"))
+    check("(o) resolve_out_root：配置空/缺键 → 默认根；有值 → 用户值（只读，不写盘）",
+          _DP.resolve_out_root({}) == _DP.default_out_root()
+          and _DP.resolve_out_root({"options": {"dirpushOutRoot": "  "}})
+          == _DP.default_out_root()
+          and _DP.resolve_out_root({"options": {"dirpushOutRoot": "D:/push"}}) == "D:/push")
+    check("(o) 代码仓内输出根要二次确认：三个仓名都认，普通目录不打扰",
+          all(_DP.repo_warning(os.path.join("C:/Users/x/Documents/GitHub", m, "push"))
+              for m in _DP.REPO_MARKERS)
+          and _DP.repo_warning(os.path.join(tempfile.gettempdir(), "push")) == "")
+    check("(o) 摘要取到率：ok/articles；0 篇 → 0/0（不除零）",
+          _DP.abstracts_rate({"counts": {"abstracts_ok": 4, "articles": 5}}) == "4/5"
+          and _DP.abstracts_rate({"counts": {"articles": 0}}) == "0/0"
+          and _DP.abstracts_rate(None) == "0/0")
+    _payload = {"schema": 1, "ok": True, "mode": "issue", "dry_run": True,
+                "outputs": ["/o/期/逻辑学研究2026年第5期目录摘要.docx"],
+                "issue": {"year": 2026, "number": 5, "vol": 8, "total": 90,
+                          "header_lines": ["二〇二六年第五期"], "with_en_toc": True},
+                "counts": {"zh_entries": 30, "en_entries": 12, "articles": 5,
+                           "abstracts_ok": 3, "abstracts_missing": 2,
+                           "column_entries": 3},
+                "warnings": ["第 3 期目录缺失"], "missing": [], "annual": None}
+    _noisy = ["期次：2026 年第 5 期", json.dumps(_payload, ensure_ascii=False, indent=2),
+              "错误：这个是 stderr 混进来的行"]
+    check("(o) parse_result：stderr 混入 + 多行缩进 JSON 也能抠出对象；垃圾 → None",
+          _DP.parse_result(_noisy) == _payload
+          and _DP.parse_result(["没有 JSON"]) is None
+          and _DP.parse_result([]) is None)
+    check("(o) error_message：优先含错误关键词的最后一行，否则最后一行，再否则退出码",
+          _DP.error_message(["第一行", "错误：找不到期目录", "结束"], 2) == "错误：找不到期目录"
+          and _DP.error_message(["第一行", "最后一行"], 2) == "最后一行"
+          and _DP.error_message(["", "  "], 7) == "引擎退出码 7")
+    _summary = _DP.summary_text(_payload, 0, dry_run=True)
+    check("(o) 结果摘要：期头/体例/篇数/摘要取到率/warnings/计划输出都来自引擎 JSON",
+          all(s in _summary for s in ("预览（dry-run：未写任何文件）", "第 5 期", "第 8 卷",
+                                      "总第 90 期", "中英文对照", "中文 30 / 英文 12",
+                                      "摘要取到 3/5", "第 3 期目录缺失",
+                                      "计划输出：")))
+    check("(o) 失败摘要：ok:false → 红字头；没有 JSON → 明说没返回（配上尾部两行）",
+          "❌ 引擎报告失败（退出码 2）" in _DP.summary_text(
+              {"ok": False, "outputs": []}, 2)
+          and "❌ 引擎没有返回结果 JSON" in _DP.summary_text(None, 2, tail="最后一行")
+          and "最后一行" in _DP.summary_text(None, 2, tail="最后一行"))
+    check("(o) 年度摘要：纳入期数/缺期只警告（不挡生成）",
+          "年度：2026 年，纳入 2 期（4,5）" in _DP.summary_text(
+              {"ok": True, "annual": {"year": 2026, "included": [4, 5],
+                                      "missing_issues": [3], "issues": []},
+               "counts": {}}, 0)
+          and "只警告" in _DP.summary_text(
+              {"ok": True, "annual": {"year": 2026, "included": [4, 5],
+                                      "missing_issues": [3], "issues": []},
+               "counts": {}}, 0))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

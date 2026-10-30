@@ -38,8 +38,9 @@ import theme  # noqa: E402
 # ── B-230 拆分：13 个 tab 页搬进 `tabs/`（纯搬运，行为零变化）──────────────
 # 实例化仍在 MainWindow 里，**属性名不变**（`self.info_tab` 等被 test_bridge 与
 # `window.tab_texts()` 依赖）。`tabs/__init__.py` 负责把 sources-win 放上 sys.path。
+# B-289：`tabs/dirpush.py`（目录摘要推送）是**新页**，不是搬出来的，排在最前。
 from tabs import (checkbib as _cb, clean as _cl, compileall as _ca, convert as _ct,
-                  infocheck as _ic, merge as _mg, proofcheck as _pc,
+                  dirpush as _dp, infocheck as _ic, merge as _mg, proofcheck as _pc,
                   settings_tab as _st, toc as _tc)
 from tabs.base import APP_TITLE, LOG_LINE_LIMIT, LOG_PLACEHOLDER, LOG_TRIM_CHUNK, TabPage
 
@@ -109,6 +110,10 @@ class MainWindow(tk.Tk):
         self.toc_tab = _tc.TocTab(self.content, "生成目录", self.start, self.stop)
         self.compile_tab = _ca.CompileAllTab(self.content, "编译全部", self.start, self.stop)
         self.clean_tab = _cl.CleanTab(self.content, "删除临时文件", self.start, self.stop)
+        # ── B-289：「目录摘要推送」（与 mac 同一引擎入口；Windows 侧一次跑一个模式）──
+        # cfg 与设置页共用同一份 dict：生成成功后把输出根写回 options.dirpushOutRoot。
+        self.dirpush_tab = _dp.DirPushTab(self.content, "目录摘要推送", self.start, self.stop,
+                                          cfg=self.cfg)
         # ── 第 132 条：「引用库」5 页（与 mac 同口径；数据源是 Engine/bibdb.py）──
         # 页面在 bibdb_ui.py（main.py 已经 1300+ 行，别继续膨胀）；这里只建对象、排进侧栏。
         self.bibdb_stats_tab = B.BibDbStatsPage(self.content, app=self)
@@ -120,7 +125,9 @@ class MainWindow(tk.Tk):
                                         post=self._q.put)
         self.tabs = [self.convert_tab, self.checkbib_tab, self.merge_tab, self.proof_tab,
                      self.info_tab, self.toc_tab, self.compile_tab, self.clean_tab,
-                     # 第 132 条：引用库分组（8..12）；「设置」仍是组外底部（13）
+                     # B-289：整期装配的最后一步（索引 8）；引用库顺移 9..13
+                     self.dirpush_tab,
+                     # 第 132 条：引用库分组（9..13）；「设置」仍是组外底部（14）
                      self.bibdb_stats_tab, self.bibdb_query_tab, self.bibdb_import_tab,
                      self.bibdb_review_tab, self.bibdb_settings_tab,
                      self.settings_tab]
@@ -131,8 +138,8 @@ class MainWindow(tk.Tk):
         #: 第 132 条起多一个与另两组**平行**的顶级分组「引用库」（按使用顺序排：
         #: 看概况 → 查库 → 入藏 → 待裁决 → 设置）。设置仍是组外的配置入口。
         self.nav_groups = [("单篇稿件", (0, 1, 3)),
-                           ("整期装配", (4, 5, 6, 7, 2)),
-                           ("引用库", (8, 9, 10, 11, 12))]
+                           ("整期装配", (4, 5, 6, 7, 2, 8)),
+                           ("引用库", (9, 10, 11, 12, 13))]
         for title, idxs in self.nav_groups:
             group = self.nav.insert("", "end", text=title, open=True)
             for i in idxs:
@@ -514,6 +521,14 @@ class MainWindow(tk.Tk):
                     except Exception as exc:  # noqa: BLE001  结果区出错不许弄断事件循环
                         self.log(f"❌ 生成目录结果区显示失败：{exc}")
                     continue
+                if isinstance(line, tuple) and line[0] == "__DIRPUSH__":
+                    # B-289：结果摘要区（期头/篇数/摘要取到率/warnings/输出）在主线程填。
+                    _tag, tab, payload, code, tail = line
+                    try:
+                        tab.apply_result(payload, code, tail=tail)
+                    except Exception as exc:  # noqa: BLE001
+                        self.log(f"❌ 目录摘要推送结果区显示失败：{exc}")
+                    continue
                 if isinstance(line, tuple) and line[0] == "__COOP__":
                     # 第五十五批：两段式协同跑完后，由工作线程把「发现到的暂存目录/
                     # 建议摘要」送回主线程再更新界面（Tk 控件只在主线程碰）。
@@ -596,6 +611,20 @@ class MainWindow(tk.Tk):
                 tab.confirm_trash(mode)      # 取消 → ValueError（什么都没动）
             return E.cleantemp_call(folder=path, mode=mode, dry_run=dry,
                                     trash=(mode == _clean.DEFAULT_MODE))
+        if isinstance(tab, _dp.DirPushTab):
+            # B-289：一次只跑一个模式（mac 的「当期 + 年度两趟」不照搬，见页头）。
+            annual = tab.mode_value() == _dp.MODE_ANNUAL
+            if annual and not tab.year_value():
+                raise ValueError("年度模式请先填「年份」（可先点「预览」自动带入）。")
+            if not tab.out_root_value():
+                raise ValueError("输出根不能为空。")
+            if not tab.confirm_repo_root():
+                # 输出根在代码仓内 + 用户点了「否」= 什么都没跑（不弹错误框，日志已够）。
+                raise ValueError("已取消（输出根在代码仓内，未生成）。")
+            return E.dirpush_call(issue=path, out_root=tab.out_root_value(),
+                                  with_en_toc=tab.with_en_toc_value(), annual=annual,
+                                  year=tab.year_value(),
+                                  include_issues=tab.include_value())
         if isinstance(tab, _cb.CheckBibTab):
             merge_into = ""
             if opts.get("merge_into_same_dir"):
@@ -643,6 +672,8 @@ class MainWindow(tk.Tk):
         self._t0 = time.monotonic()
         if isinstance(tab, _tc.TocTab):
             tab.clear_delivery()
+        if isinstance(tab, _dp.DirPushTab):
+            tab.begin_run()          # B-289：清掉上一次的产物按钮（别点到过期路径）
         tab.hide_diagnosis()
         tab.show_running(0.0)
         self._set_busy(True)
@@ -734,7 +765,15 @@ class MainWindow(tk.Tk):
                 pass
             tab.result_json_path = ""
         coop_payload: dict | None = None
+        # B-289：目录摘要推送的 --json 就在 stdout 里（stderr 也并进来了），跑完在这解析。
+        dirpush_payload: dict | None = None
+        if isinstance(tab, _dp.DirPushTab):
+            dirpush_payload = _dp.parse_result(run_lines)
         result = E.result_text(call.entry, code)
+        if isinstance(tab, _dp.DirPushTab) and code == 0 and dirpush_payload:
+            dirpush_outputs = [str(p) for p in (dirpush_payload.get("outputs") or [])]
+            result = (f"✅ 已生成 {len(dirpush_outputs)} 份 docx" if dirpush_outputs
+                      else "⚠ 引擎成功退出，但 --json 里没有 outputs 路径（见上面的日志）")
         if isinstance(tab, _tc.TocTab) and code == 0:
             result = ("✅ 生成并交付完成" if not tab.text_only_run
                       else "✅ 已生成 tex（仅生成，未落位/未编译）")
@@ -763,6 +802,10 @@ class MainWindow(tk.Tk):
                 toc_dir = str(toc_payload.get("tocDir") or "").strip()
                 if toc_dir:
                     path = toc_dir
+            if isinstance(tab, _dp.DirPushTab):
+                # 结果路径只认引擎 `outputs[]`（界面不自己拼路径）；dry-run 不产生按钮。
+                outputs = (dirpush_payload or {}).get("outputs") or []
+                path = str(outputs[0]) if (code == 0 and outputs) else ""
             undo = None
             # 清理跑完 → 给一个「撤销清理」按钮：把回收目录里的东西搬回去。
             # B-281：判定交给 `clean_logic.undo_available`（三种模式 + dry-run/永久删/
@@ -775,6 +818,12 @@ class MainWindow(tk.Tk):
             if isinstance(tab, _tc.TocTab):
                 self._q.put(("__TOC_RESULT__", tab, toc_payload, code,
                              E.output_tail(tail, count=2) if code not in (0, 1) else ""))
+            if isinstance(tab, _dp.DirPushTab):
+                self._q.put(("__DIRPUSH__", tab, dirpush_payload, code,
+                             E.output_tail(tail, count=2) if code != 0 else ""))
+                if code == 0 and dirpush_payload and dirpush_payload.get("ok"):
+                    # 契约：**每次生成成功后**记住输出根（mac `rememberOutRoot` 同一时点）。
+                    self._q.put(("__CALL__", tab.remember_out_root, ()))
             if coop_payload is not None:
                 self._q.put(("__COOP__", tab, coop_payload, code))
         self._q.put("__DONE__")
@@ -821,7 +870,7 @@ class MainWindow(tk.Tk):
         self._busy = busy
         for tab in (self.convert_tab, self.checkbib_tab, self.merge_tab,
                     self.proof_tab, self.info_tab, self.toc_tab,
-                    self.compile_tab, self.clean_tab):
+                    self.compile_tab, self.clean_tab, self.dirpush_tab):
             tab.run_button.config(state="disabled" if busy else "normal")
             tab.stop_button.config(state="normal" if busy else "disabled")
 

@@ -22,7 +22,7 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
-发布形态下这十二个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
+发布形态下这十三个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
 ⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-win/engine.py: ENTRIES` **必须逐项一致**：
 漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页）；
 配对守卫在 `sources-win/tests/test_bridge.py` 与 `Engine/tests/test_platform.py` (g) 组。
@@ -494,10 +494,11 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 同时 `refresh_aliases()` 改为**保留记录里已有 aliases（并集）**：改名/合并写进去的旧 key 不会在下次 `save()` 被清掉（真实库实测旧口径会丢 79 条记录的 254 个别名）；全局唯一性仍强制（同一 alias 只允许一条记录持有、alias 不得与别的 canonical key 同名）。
 
 **mac 界面的切换进度（第 95 条起，按用户定的顺序，第 99 条完成；引用库 5 页按第 132 条补）**：
-**十四页全部改调引擎** ——
+**十五页全部改调引擎** ——
 初排转换 / 文献回读校验 / 一校核查 / 生成目录（95）/ 检查tex信息（96）/
 删除临时文件 + 编译全部（98）/ **合并文件（99）** /
-**引用库 5 页**（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置，第 132 条）。
+**引用库 5 页**（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置，第 132 条）/
+**目录摘要推送**（B-289，Windows 同页同入口）。
 `sources-mac/` 里已经**没有任何文档逻辑**：界面只做「取值 → 拼参数 → 显示日志/表格」。
 切一个删一份 Swift 逻辑（`ContentFeature.swift` + `TocTemplate.swift` 已在第 95 条删除；
 `InfoCheckFeature.swift` 在第 96 条瘦身成"只拼参数 + 解产物"）。
@@ -575,7 +576,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
   pyinstaller --onefile --console --name SLCNEngine engine_main.py
   ```
 
-  支持十二个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+  支持十三个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
   `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`sources-win/build-win.ps1` ②④），
   自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
   这样用户机器上**不需要装 Python**；界面壳另冻一个 exe，两者放同一目录即可
@@ -744,3 +745,23 @@ python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] [--
 - 计数口径：`abstracts_ok` = 有可用**中文**摘要的篇数；`abstracts_missing` = 跳过篇数
   （中文摘要为模板占位符时按缺失处理，不回落英文摘要；年度模式两项均为 0）。
 - 只读保证：跑前跑后输入期目录 sha256 清单一致；同输入两遍 docx 逐字节相同（固定 zip 时间戳/docProps）。
+
+### GUI 契约（B-289；macOS / Windows 同一套）
+
+两个外壳都**只取值、拼参数、显示结果**，判据全部在 `slcn/pushcopy/` 与 `dirpush.py`：
+
+- **调用 argv**（Windows 页 = `sources-win/engine.py: dirpush_call()`，与 mac `DirPushFeature.arguments` 逐项对齐）：
+  当期 `dirpush.py --issue <期目录> [--out <根>] [--with-en-toc] --json`；预览再加 `--dry-run`（放在最后）；
+  年度 `dirpush.py --issue <期目录> --annual [--year <yyyy>] [--include-issues 1,2,3] [--out <根>] --json`。
+  **年度模式绝不传 `--with-en-toc`**（体例按期由设置 JSON 还原）；`--include-issues` 先升序去重、空列表不传。
+- **解析**：`--json` 的 stdout 就是结果对象（stderr 日志被外壳并进同一行流）→ 从后往前找行首 `{` 再 `json.loads`，
+  解析不了返回 `None` 而不是猜。GUI 只读本节的冻结字段。
+- **展示**：结果区给期头（年/期/卷/总期）、体例、目录条目数（中文/英文/文章）、摘要取到率
+  `abstracts_ok/articles`（0 篇 → `0/0`，不除零）、`warnings[]`、输出路径；`ok:false` 红字。
+  退出码 2/1 都展示 stderr/stdout 摘要（不清屏）；退出 1 的 traceback 也照原样留在日志里。
+- **结果路径只认 `outputs[]`**（界面不自己拼）；预览不出「打开文件」。
+- **输出根**：默认 `~/Documents/sysu/编辑部/目录摘要推送`（Windows 上 `~` = `%USERPROFILE%`）；
+  记忆键 mac `UserDefaults dirpush.outRoot` / Windows `settings.options.dirpushOutRoot`，
+  **只在生成成功后**记忆；输出根落在代码仓内 → 生成前二次确认（Windows 只认本项目三个仓名）。
+- **形态差异**：mac 可勾「同时生成年度汇总」→ 顺序跑两趟（当期 → 年度，`--with-en-toc` 只作用于当期）；
+  Windows 一次只跑一个模式（模式单选），不照搬两趟。

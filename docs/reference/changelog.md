@@ -9,6 +9,10 @@ description: 当前版本与历史 Release。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
 
+## 未发布（维护模式，B-289）
+
+- **Windows 新增「目录摘要推送」页**（整期装配组末，第 9 个 tab）：与 macOS 共用 `Engine/dirpush.py`，壳里只选目录/输出根、预览、生成并显示引擎 JSON 的结果摘要；模式单选（当期 / 年度总目录），输出根可改并在生成成功后记住，输出根在代码仓内先二次确认。引擎入口表 12→13（`dirpush.py` 追加末尾，前 12 项顺序不动）；两个外壳页面数对齐为 15/15。
+
 ## 1.4.1（2026-10-28，维护模式 B-233–B-248）
 
 - **修复：文末英文块/责任编辑块重复印刷**：相关稿页数回落（如 86-05 29→28）。

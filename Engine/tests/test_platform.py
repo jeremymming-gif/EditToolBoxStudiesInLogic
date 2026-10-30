@@ -114,6 +114,9 @@ ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "com
                # B-285b：`diagnose.py`（失败诊断）也是交付 CLI —— 两个外壳的「诊断卡」
                # 都走它；它与 engine_main 一起冻结进 Windows exe，mac 包同样要带。
                "diagnose.py",
+               # B-289：`dirpush.py`（目录摘要推送）也是交付 CLI —— mac 包与 Windows
+               # 分发器（SLCNEngine.exe）都带它，「目录摘要推送」页两个外壳共用一个入口。
+               "dirpush.py",
                "engine_main.py"]
 def _calls_utf8_stdio(tree: ast.AST) -> bool:
     """入口是否调了 `utf8_stdio()` —— 两种写法都认：
@@ -1240,9 +1243,10 @@ check("(m7) B-135 核心：库有非空值 → 覆盖现值/补齐缺失（fills
 # (n) 双壳页面集合一致性（B-230 壳契约；**静态解析**，不 import tkinter/tk）
 #
 # 口径（`notes/drafts/specs/b230-shell-split.md` §4.1 逐字核对过，**不是**「集合完全相等」）：
-#   mac `NavPage` 15 页 / win `tabs` 14 页；mac 只多「目录摘要推送」（B-225 仅 mac 交付，win 无此页），
+#   mac `NavPage` 15 页 / win `tabs` 15 页；两组页面集合**相等**（B-289 起 Windows 也有
+#   「目录摘要推送」，B-225 的「仅 mac 交付」缺口已补），
 #   唯一允许的中文别名是「待处理」(mac；B-188 改名) ⇄「待裁决」(win)，其余逐字相同；
-#   三个分组「单篇稿件 / 整期装配 / 引用库」逐组**集合**相等（整期装配 mac 多一页），
+#   三个分组「单篇稿件 / 整期装配 / 引用库」逐组**集合**相等（B-289 起整期装配也相等），
 #   **不比较组内顺序**（win 的「生成目录」在「编译全部」之前、mac 相反 —— 已知差异，登记不修）。
 #   缺文件（比如只拿了 Engine/ 的瘦检出）→ SKIP，绝不假 PASS。
 #   组号用 (n) 而不是 spec 写的 (i)：a–m 已占用，i1–i4 属 B-229 门面组（卡面 §1c）。
@@ -1273,22 +1277,24 @@ else:
     # win 中文名：各 tab 的类属性 `name = "..."`（「设置」是组外底部页，兜一层）
     _win_names = set(re.findall(r'^\s+name = "([^"]+)"', _win_all, re.M)) | {"设置"}
     _ALIAS = {"待处理": "待裁决"}       # B-188 只改了 mac 侧 → 唯一允许的别名
-    _MAC_ONLY = {"目录摘要推送"}        # B-225 只交付了 mac → 唯一允许的缺失页
+    _MAC_ONLY: set[str] = set()         # B-289 补齐 Windows 页后：**零个** mac 专属页
 
     _mac_zh = {_ALIAS.get(_t, _t) for _t in _mac_titles.values()}
     _mac_side = _mac_zh - _win_names
     _win_side = _win_names - _mac_zh
-    check("(n1) 双壳页面集合：mac NavPage 15 页 / win tabs 14 页，mac 仅多「目录摘要推送」，"
-          "win 没有 mac 之外的页（别名「待处理」⇄「待裁决」已归一）",
+    check("(n1) 双壳页面集合：mac NavPage 15 页 / win tabs 15 页，两侧互不缺失"
+          "（别名「待处理」⇄「待裁决」已归一；「目录摘要推送」B-289 起两侧都有）",
           _mac_side == _MAC_ONLY and _win_side == set(),
           f"mac={len(_mac_zh)} 页 / win={len(_win_names)} 页｜mac−win={sorted(_mac_side)}｜"
           f"win−mac={sorted(_win_side)}")
 
-    check("(n2) 允许清单自检（防白名单僵化）：目录摘要推送 在 mac、待处理 在 mac、"
+    check("(n2) 允许清单自检（防白名单僵化）：目录摘要推送 **两侧都在**、待处理 在 mac、"
           "待裁决 在 win、待处理 **不在** win（别名两侧各留一处才算没漂移）",
-          "目录摘要推送" in _mac_titles.values() and "待处理" in _mac_titles.values()
+          "目录摘要推送" in _mac_titles.values() and "目录摘要推送" in _win_names
+          and "待处理" in _mac_titles.values()
           and "待裁决" in _win_names and "待处理" not in _win_names,
           f"目录摘要推送@mac={'目录摘要推送' in _mac_titles.values()} "
+          f"目录摘要推送@win={'目录摘要推送' in _win_names} "
           f"待处理@mac={'待处理' in _mac_titles.values()} "
           f"待裁决@win={'待裁决' in _win_names} 待处理@win={'待处理' in _win_names}")
 
@@ -1320,7 +1326,7 @@ else:
 
     _GROUP_PAIRS = (("singleArticle", "单篇稿件"), ("assembly", "整期装配"),
                     ("library", "引用库"))
-    _MAC_GROUP_EXTRA = {"assembly": {"目录摘要推送"}}   # 整期装配：mac 多「目录摘要推送」
+    _MAC_GROUP_EXTRA: dict[str, set[str]] = {}          # B-289 起整期装配两壳也相等
     _group_bad: list[str] = []
     _group_detail: list[str] = []
     for _mac_key, _win_gname in _GROUP_PAIRS:
@@ -1334,7 +1340,7 @@ else:
         if not _ok:
             _group_bad.append(_win_gname)
     check("(n3) 分组一致性：单篇稿件 / 整期装配 / 引用库 三组「组名→中文名集合」逐组相等"
-          "（整期装配 mac 仅多「目录摘要推送」；不比较组内顺序）",
+          "（B-289 起整期装配也相等；不比较组内顺序）",
           not _group_bad and len(_win_groups) == 3 and all(_mac_groups.values()),
           "｜".join(_group_detail))
 

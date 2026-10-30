@@ -44,6 +44,9 @@ DEFAULTS: dict = {
         "mergeEditorsPage": True,
         "mergeBackCover": False,
         "mergeNestOutlines": True,
+        # B-289：「目录摘要推送」页记住的输出根（空 = 用引擎默认根
+        # `~/Documents/sysu/编辑部/目录摘要推送`；生成成功后由该页写回这里）。
+        "dirpushOutRoot": "",
     },
     "engineDir": "",
     # U4（2026-10-17 第十五批）日志两层：True = 显示「原始」层，False = 摘要（默认折叠原始）。
