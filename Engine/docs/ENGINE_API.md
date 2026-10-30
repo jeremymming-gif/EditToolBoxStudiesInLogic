@@ -611,6 +611,93 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 5. 改完跑：`tests/test_platform.py`（平台）、`tests/test_docs_consistency.py`（文档），
    以及 `README.md` 固定验收链条里的那六项。
 
+## 十一、失败诊断：`diagnose.py`（`diagnose.v1`，B-285a）
+
+失败之后先跑它：把「入口名 + 退出码 + 日志文件」翻成**一句结论 + 证据 + 2–4 条下一步**。
+只读（只读日志尾部 ≤16KB），不写产物、不联网；诊断本身不改变任何既有退出码。
+
+```bash
+python3 Engine/diagnose.py --entry convert.py --exit-code 2 --log "/tmp/convert-失败.log"
+python3 Engine/diagnose.py --entry compileall.py --exit-code 1 --log "…" --json
+```
+
+- `--entry` 必填：**入口文件名**（如 `convert.py`）；带路径/以 `.` 开头的会被拒。
+- `--exit-code` 必填：那次运行的退出码；`0` 表示没有失败，也给报告但不硬猜（`unknown` 低置信）。
+- `--log` 必填：失败那次运行的日志；只读尾部 ≤16KB（更早的旧行不参与分类）。
+- `--json`：stdout **恰好一个 JSON 对象**；默认是人类可读摘要。
+- 逐字节确定：同一日志 + 同一 `--generated-at` → 同一字节（复现/测试用）。
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 诊断成功（**不代表**被诊断那次运行成功） |
+| `2` | 参数错误（日志不存在、入口名不是文件名等用法错误） |
+
+既有入口的退出码语义（§二/§三/§五）一律不变。
+
+`diagnose.v1` 顶层 13 个契约键（顺序即 JSON 键序）：
+
+```json
+{
+  "schema": "diagnose.v1",
+  "entry": "compileall.py",
+  "exit_code": 1,
+  "category": "compile_tex_error",
+  "severity": "error",
+  "title": "编译时报错（TeX 源码问题）",
+  "reason": "为什么判成这一类（一句中文，不含 traceback）",
+  "evidence": {
+    "log_tail": ["日志尾部，最多 10 行"],
+    "matched_lines": ["参与判类的行，最多 10 行"],
+    "artifacts": ["日志里提到的产物路径，最多 10 个"]
+  },
+  "next_steps": ["编辑照着做的下一步，2–4 条"],
+  "doc_anchor": "ENGINE_API.md §十一 失败诊断（diagnose.v1）",
+  "confidence": 0.79,
+  "generated_at": "2026-10-30T12:00:00+0800",
+  "engine_version": "1.4.1"
+}
+```
+
+`category` 只有下面 17 个值；**无法归类一律 `unknown` 且 `confidence < 0.5`**，不硬猜：
+
+| category | 一句话 | 典型证据（真实日志写法） |
+| --- | --- | --- |
+| `usage` | 用法/参数不对 | `usage:`、`error: the following arguments are required` |
+| `source_missing` | 找不到源文件 | `找不到源文件`、`No such file or directory` |
+| `source_type` | 源文件类型不支持 | `不支持的文件类型`、只支持 `.tex` / `.docx` |
+| `source_empty` | 源文件是空的 | `源文件是空的`、`0 字节` |
+| `metadata_invalid` | 稿件基本信息读不出来 | `JSONDecodeError`、`稿件基本信息读取失败` |
+| `template_unavailable` | 模板缺失/不可用 | `SLCN-MIX.sty`、`找不到模板` |
+| `output_conflict` | 输出位置冲突，拒绝覆盖 | `输出目录已存在`、`拒绝覆盖` |
+| `compile_tool_missing` | 没装编译工具 | `找不到命令 xelatex`、`请确认已安装 TeX Live` |
+| `compile_tex_error` | 编译时报 TeX 错误 | `! Undefined control sequence.`、`xelatex 第 N 步失败` |
+| `compile_bib_error` | 参考文献处理失败 | `biber`、`I couldn't open database file` |
+| `compile_no_pdf` | 编译结束但没有 PDF | `未生成 PDF` |
+| `report_read_error` | 报告/JSON 读不出来 | `报告文件解析失败`、`JSONDecodeError` |
+| `permission_denied` | 权限不够 | `Permission denied`、`Errno 13` |
+| `file_locked` | 文件被别的程序占用 | `WinError 32`、`另一个程序正在使用此文件` |
+| `disk_full` | 磁盘满了 | `No space left on device`、`Errno 28` |
+| `cancelled` | 被用户/信号中断 | 退出码 130/143 或负数、`进程被用户终止` |
+| `unknown` | 还不知道为什么失败 | 没有任何已知关键字命中 |
+
+### 报告怎么读（四类报告的统一摘要头）
+
+一校核查 / 回读校验 / 信息检查 / 编译四类报告，最前面都是**同一个摘要块**：
+`**摘要**：一句结论` → `**计数**：…` → `**最需处理（top 5）**` → 折叠的
+`<details><summary>全部明细（N 条）</summary>`。结论先行、计数定规模、top5 决定先看哪几条；
+要逐条核对再展开 `<details>`。旧正文一字未删，在摘要块之后按原顺序排列。
+
+| 报告 | 摘要头落在 |
+| --- | --- |
+| `<stem>_一校核查.md` | 就地插在最前，旧正文不动 |
+| `<stem>_回读校验报告.md` / `合并后回读校验报告.md` | 就地插在最前，旧正文不动 |
+| `信息检查<时间戳>.txt` | **逐字节不变**（旧产物契约） |
+| `信息检查<时间戳>_摘要.md` | 新增文件：摘要头 + 逐篇明细 |
+| `<期目录>/编译报告.md` | 新增文件：结论 + 成功/失败计数 + 每篇失败首条 `!` 行与 `.log` 路径 |
+
+`engine_main.py` 的 ENTRIES（11→12）与双壳接线在 **B-285b** 完成；本批 `diagnose.py`
+可直接运行（`python3 Engine/diagnose.py`），不依赖打包 dispatcher。
+
 ## 十五、入口：`dirpush.py`（目录摘要推送，B-225）
 
 外壳只拼参数、只读 stdout/stderr；**所有判据在引擎**（`slcn/pushcopy/`）。

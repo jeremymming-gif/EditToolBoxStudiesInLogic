@@ -26,12 +26,48 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import pdfmerge as _pm  # noqa: E402
 from slcn import platform as _plat  # noqa: E402
+from slcn import report_header as _rh  # noqa: E402
 
 
 def _compile_pdf(out_dir: str, stem: str):
     """延迟导入 `convert.compile_pdf`（它 import 的东西多，--dry-run 时不必付这个成本）。"""
     import convert  # noqa: PLC0415
     return convert.compile_pdf(out_dir, stem)
+
+
+# ── B-285a：《编译报告.md》 ─────────────────────────────────────────────
+# 只**新增文件**：stdout / stderr / 退出码与改前逐字节一致（旧 CLI golden 判据）。
+# 报告本身不带时间戳，同样的编译结果 → 同样的字节。
+
+def _first_bang_line(log_path: str) -> str:
+    """取 `.log` 里首条 `!` 错误行（与 `convert.compile_pdf` 回显口径一致）。"""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return ""
+    for line in text.splitlines():
+        if line.lstrip().startswith("!"):
+            return line.strip()
+    return ""
+
+
+def _write_compile_report(root: str, total: int, ok: int, fail: int,
+                          failed: list[tuple[str, str, str]]) -> None:
+    """写 `<期目录>/编译报告.md`：结论 + 成功/失败计数 + 每篇失败首条 `!` 行与 `.log`。"""
+    rows: list[tuple[str, str, str]] = []
+    for art, sub, msg in failed:
+        log_path = os.path.join(sub, f"{art}.log")
+        first = _first_bang_line(log_path) or (msg.splitlines()[0].strip() if msg else "（日志为空）")
+        rows.append((art, first, log_path))
+    header = _rh.render(
+        conclusion="✅ 全部编译通过" if fail == 0 else f"❗ {fail} 篇编译失败",
+        counts=(("篇数", total), ("成功", ok), ("失败", fail)),
+        top=[f"`{art}`：{first}" for art, first, _lp in rows],
+        details=[f"`{art}`：{first}（日志：`{lp}`）" for art, first, lp in rows],
+    )
+    with open(os.path.join(root, "编译报告.md"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# 编译报告\n\n" + header)
 
 
 def compile_tex_xelatex(folder: str, stem: str, runs: int = 2) -> tuple[bool, str]:
@@ -148,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ok = fail = 0
     failures: list[str] = []
+    failed: list[tuple[str, str, str]] = []
     for name, art, _tex in targets:
         sub = os.path.join(root, name)
         print(f"第一步：Xelatex \"{art}.tex\"\n", end="")
@@ -160,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             fail += 1
             failures.append(f"{art}：{msg}")
+            failed.append((art, sub, msg))
             print(f"   ❌ {art}（{dt:.0f} 秒）{msg}")
 
     print()
@@ -168,6 +206,12 @@ def main(argv: list[str] | None = None) -> int:
         for f in failures:
             print(f"   · 编译失败 {f}")
     print(f"完成。编译 {len(targets)} 篇（成功 {ok} / 失败 {fail}）（目录：{root}）")
+    # B-285a：新增《编译报告.md》。写不了（只读目录/权限）也不改退出码与输出，
+    # 报告是附加产物，旧契约优先。
+    try:
+        _write_compile_report(root, len(targets), ok, fail, failed)
+    except OSError:
+        pass
     return 1 if fail else 0
 
 

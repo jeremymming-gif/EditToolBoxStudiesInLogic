@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from slcn import platform as _plat  # noqa: E402
 from slcn import fsutil as _fsutil  # noqa: E402
 from slcn import proofcheck as _pc  # noqa: E402
+from slcn import report_header as _rh  # noqa: E402
 
 
 def _guess_lang(tex: str, tex_path: str, given: str) -> str:
@@ -122,7 +123,21 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
         if len(hits) > 200:
             out.append(f"| … | | 另有 {len(hits) - 200} 处未列出 |")
         out.append("")
-    return "\n".join(out) + "\n"
+    # ── B-285a 摘要头：结论 / 计数 / top5 / 折叠明细（插正文最前，旧正文一字不改）──
+    n_manual = sum(len(v) for v in manual.values())
+    ranked = sorted(
+        ((len(manual[rid]), i, rid) for i, rid in enumerate(order) if rid in manual),
+        key=lambda t: (-t[0], t[1]))
+    header = _rh.render(
+        conclusion=("❗ 有 {} 处需要人工处理".format(n_manual) if n_manual
+                    else "✅ 没有需要人工处理的命中"),
+        counts=(("需人工", n_manual), ("可自动改", len(fixable)),
+                ("命中合计", rep.n), ("规则数", len(_pc.RULES))),
+        top=[f"`{rid}` {manual[rid][0].title}：{n} 处" for n, _, rid in ranked],
+        details=[f"`{rid}` 第 {h.line} 行：{h.text}"
+                 for rid in order for h in manual.get(rid, ())],
+    )
+    return _rh.insert("\n".join(out) + "\n", header)
 
 
 def main(argv: list[str] | None = None) -> int:

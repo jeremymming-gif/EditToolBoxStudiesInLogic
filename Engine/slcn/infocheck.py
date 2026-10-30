@@ -33,6 +33,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import pdfmerge as _pm
+from . import report_header as _rh
 
 #: 汉字范围。⚠️ 与 Swift 那份逐字一致：`\u4e00-\u9fa5`（**不是** 9fff）
 _CJK = re.compile(r"[\u4e00-\u9fa5]")
@@ -210,6 +211,42 @@ def _swift_json(value, indent: int = 0) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+# ── B-285a：报告摘要（四类报告同一套读法：结论 / 计数 / top5 / 折叠明细）──
+
+def _summary_dict(articles: list[ArticleInfo], inconsistencies: list[str]) -> dict:
+    """`.json` 里新增的 `summary` 键（数值与摘要头同源，不另算一套）。"""
+    return {
+        "conclusion": ("✅ 全部一致" if not inconsistencies
+                       else f"❗ 有 {len(inconsistencies)} 项不一致"),
+        "articles": len(articles),
+        "hasTeX": sum(1 for a in articles if a.hasTeX),
+        "hasPDF": sum(1 for a in articles if a.hasPDF),
+        "inconsistencies": len(inconsistencies),
+    }
+
+
+def _summary_md(articles: list[ArticleInfo], inconsistencies: list[str]) -> str:
+    """人读摘要文件：标题 + 摘要头（明细逐篇给字段/页数，问题项进 top5）。"""
+    details: list[str] = []
+    for a in articles:
+        title = a.chineseTitle or a.englishTitle or "（无标题）"
+        flag = "　⚠ 页数不符" if a.page_mismatch else ""
+        actual = a.actualPDFPages if a.actualPDFPages is not None else "—"
+        details.append(f"`{a.folderName}`：{title}"
+                       f"（声明 {a.pages or '—'} 页 / PDF {actual} 页）{flag}")
+    header = _rh.render(
+        conclusion=("✅ 全部一致" if not inconsistencies
+                    else f"❗ 有 {len(inconsistencies)} 项不一致"),
+        counts=(("篇数", len(articles)),
+                ("有 tex", sum(1 for a in articles if a.hasTeX)),
+                ("有 pdf", sum(1 for a in articles if a.hasPDF)),
+                ("不一致", len(inconsistencies))),
+        top=inconsistencies,
+        details=details,
+    )
+    return "# 信息检查摘要\n\n" + header
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────────
 
 def _first_sty(folder: str) -> str | None:
@@ -381,8 +418,11 @@ def process_folders(path: str, out_dir: str | None = None,
         return report
 
     base = os.path.join(out_dir, f"信息检查{stamp}")
+    inconsistencies = report.inconsistencies
 
-    # txt：CRLF（复刻原版在 Windows 文本模式写盘的结果）
+    # txt：CRLF（复刻原版在 Windows 文本模式写盘的结果）。
+    # B-285a 起这份 .txt 逐字节冻结（test_b285_report_header 会盯 sha256）——
+    # 需要人读摘要就写 `_摘要.md`，别动这里。
     with open(base + ".txt", "w", encoding="utf-8", newline="") as fh:
         fh.write("".join(output).replace("\n", "\r\n"))
 
@@ -390,8 +430,14 @@ def process_folders(path: str, out_dir: str | None = None,
         "generatedAt": stamp,
         "issueFolder": path,
         "articles": [a.__dict__ for a in articles],
+        # B-285a：只**新增** summary 键；旧字段一个不动（Swift 外壳忽略未知键）
+        "summary": _summary_dict(articles, inconsistencies),
     }
     with open(base + ".json", "w", encoding="utf-8", newline="") as fh:
         fh.write(_swift_json(payload))
+
+    # B-285a：另写一份人读摘要（四类报告同一套读法；旧 .txt / .json 旧字段不动）
+    with open(base + "_摘要.md", "w", encoding="utf-8", newline="") as fh:
+        fh.write(_summary_md(articles, inconsistencies))
 
     return report

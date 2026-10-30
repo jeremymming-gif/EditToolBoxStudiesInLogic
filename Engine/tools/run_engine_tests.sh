@@ -71,6 +71,9 @@ esac
 
 # quick 档白名单（名字同上 tests/<name>.py；按字母序）。每一行的理由都是**核实过的**：
 QUICK=(
+  test_b285_contract            # 本批总契约：旧 CLI golden / 文档 / quick 白名单 / 冻结快照
+  test_b285_diagnose            # B-285a diagnose.v1：17 类夹具 + CLI/只读/确定性
+  test_b285_report_header       # B-285a 四类报告摘要头 + 旧正文逐行找回
   test_bib_protection_forms     # 纯字符串判据（bib 保护写法），无文件/子进程依赖
   test_infocheck_toc            # 合成期目录快照 + 仓库内 fixtures；Swift 真差分缺席即 SKIP
   test_latex_preamble           # 纯文本判据 + 合成 .tex 构建；不读语料、不跑 TeX

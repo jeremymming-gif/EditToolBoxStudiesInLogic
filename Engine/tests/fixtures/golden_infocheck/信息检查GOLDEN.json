@@ -21,5 +21,12 @@
     }
   ],
   "generatedAt" : "GOLDEN",
-  "issueFolder" : "/var/folders/ts/f079f4394_96cwd4t3dzz2fm0000gn/T/slcn_icsnap_jj7mvwyi/2026年第5期(90)"
+  "issueFolder" : "/var/folders/ts/f079f4394_96cwd4t3dzz2fm0000gn/T/slcn_icsnap_jj7mvwyi/2026年第5期(90)",
+  "summary" : {
+    "articles" : 1,
+    "conclusion" : "✅ 全部一致",
+    "hasPDF" : 0,
+    "hasTeX" : 1,
+    "inconsistencies" : 0
+  }
 }

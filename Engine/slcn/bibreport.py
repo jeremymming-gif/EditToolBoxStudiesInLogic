@@ -26,7 +26,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from . import bibcheck, bibnorm
+from . import bibcheck, bibnorm, report_header as _rh
 from .bibparse import LEVEL_INFO, LEVEL_PROBLEM, Entry, Finding, _clip, parse_entries
 
 SECTION_ORDER = ("syntax", "spec", "cite", "diff")
@@ -950,7 +950,21 @@ def render(
         "> ⚠️ 本报告只回答「**退回的 bib 与任务书规范、原件、正文是否自洽**」；"
         "卷/期/页码/出版地是否与官方来源一致，仍由编辑按任务书第二节核实——工具不联网、不判断真伪。"
     )
-    return "\n".join(L)
+    # ── B-285a 摘要头：结论复用 `conclusion_line()` 单源，正文一个字不改 ──
+    problems = [f for f in rep.findings if f.level == LEVEL_PROBLEM]
+    infos = [f for f in rep.findings if f.level != LEVEL_PROBLEM]
+
+    def _finding_line(f: Finding) -> str:
+        where = SECTION_TITLES.get(f.section, f.section)
+        return f"[{where}] `{f.key or '（整份文件）'}`：{f.detail}"
+
+    header = _rh.render(
+        conclusion=conclusion_line(rep),
+        counts=(("问题", rep.n_problem), ("提示", rep.n_info), ("条目", rep.total)),
+        top=[_finding_line(f) for f in problems] + [_finding_line(f) for f in infos],
+        details=[_finding_line(f) for f in rep.findings],
+    )
+    return _rh.insert("\n".join(L), header)
 
 
 def conclusion_line(rep: Report) -> str:
