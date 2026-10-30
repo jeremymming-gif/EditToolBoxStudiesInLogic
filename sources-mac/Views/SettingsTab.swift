@@ -1,5 +1,7 @@
 import SwiftUI
 import Foundation
+import AppKit
+import UniformTypeIdentifiers
 
 /// 版本标识（第七十一批 B-119）：`版本号+git commit short sha[-dirty] (build 时间)`。
 ///
@@ -93,11 +95,16 @@ struct SettingsTab: View {
     @ObservedObject var budget: AIBudgetSettings
     @StateObject private var tester = AITestModel()
     @StateObject private var preset = AIPresetModel()
+    /// 环境检查（B-283）：状态与「设置」页同寿命；首跑那次在 `ToolboxApp` 里，
+    /// 这里只管手动重跑与导出（同一个 UserDefaults 键，谁跑都算「做过了」）。
+    @StateObject private var envModel = EnvCheckModel()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header
+                Divider()
+                envCheckSection
                 Divider()
                 aiForm
                 Divider()
@@ -117,7 +124,113 @@ struct SettingsTab: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             actionBar
         }
+        // 模型是 `@StateObject`，`settings` 只能在这里注入（init 里拿到的是包装器）。
+        .onAppear { envModel.settings = settings }
     }
+
+    // MARK: - 环境检查（B-283）
+
+    /// 说明文案（抽成变量，避免旧编译器类型检查超时 —— 与 `headerText` 同一个原因）。
+    private var envCheckIntroText: String {
+        "第一次打开 App 会自动检查一次；这里随时可以重跑。"
+            + "检查**不联网、不改任何文件、也不挡任何功能**："
+            + "缺 LibreOffice 只是不能转带 OLE 对象 / MathType 公式的 Word 稿，"
+            + "缺 git 只是引用库与笔记仓的同步操作不可用。"
+    }
+
+    private var envCheckSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("环境检查").font(.headline)
+                if envModel.done {
+                    Text("（首跑已检查）").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            Text(envCheckIntroText.plainMarkdown)
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Button {
+                    envModel.rerun()
+                } label: {
+                    Label("环境检查", systemImage: "checkmark.seal")
+                }
+                .disabled(envModel.running)
+
+                Button {
+                    exportDiagnostics()
+                } label: {
+                    Label("导出诊断包…", systemImage: "square.and.arrow.up")
+                }
+                .disabled(envModel.report == nil)
+
+                Button {
+                    copyInstallCommands()
+                } label: {
+                    Label("复制安装命令", systemImage: "doc.on.doc")
+                }
+                .disabled(envModel.report == nil)
+
+                if envModel.running {
+                    ProgressView().controlSize(.small)
+                    Text("检查中…").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            if !envModel.statusLine.isEmpty {
+                Text(envModel.statusLine)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(envModel.lines.joined(separator: "\n"))
+                .font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            Text("诊断包只含版本 / 构建标识 / 引擎版本 / 操作系统 / 检查结果，"
+                 + "不含稿件、作者信息、API Key 或引用库内容。")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
+    }
+
+    /// 「导出诊断包…」：选一个保存位置，写 `diagnostics.txt` + `envcheck.json` 再打 zip。
+    private func exportDiagnostics() {
+        guard envModel.report != nil else { return }
+        let panel = NSSavePanel()
+        panel.title = "导出诊断包"
+        panel.nameFieldStringValue = EnvCheck.defaultZipName()
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if envModel.exportPackage(to: url, version: AppVersion.display()) != nil {
+            envModel.note("✅ 诊断包已导出：\(url.path)")
+        } else {
+            envModel.note("❌ 导出失败：写不进那个目录，或系统没有 /usr/bin/zip。")
+        }
+    }
+
+    /// 「复制安装命令」：把缺项的平台安装命令拼成几行放进剪贴板（编辑去终端粘）。
+    private func copyInstallCommands() {
+        guard let report = envModel.report else { return }
+        let lines = report.items
+            .filter { $0.status != "ok" && !$0.installMac.isEmpty }
+            .map { "\($0.id): \($0.installMac)" }
+        guard !lines.isEmpty else {
+            envModel.note("✅ 没有缺项，不用装东西。")
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(lines.joined(separator: "\n"), forType: .string)
+        envModel.note("已复制 \(lines.count) 条安装命令。")
+    }
+
 
     // MARK: - 标题与厂商无关说明
 

@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import json
 import os
+import platform as _platform
+import queue
+import shutil
+import tempfile
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import engine as E
+import envcheck_logic as L
 import settings as S
 import theme
 from .base import APP_TITLE, _check
@@ -113,6 +118,43 @@ class SettingsTab(ttk.Frame):
         # 测试连接（mac 侧早就有这个按钮）：把"配对了没有"从玄学变事实
         ttk.Button(btns, text="测试连接", width=12,
                    command=self.test_connection).pack(side="left", padx=8)
+
+        # ── B-283：环境自检 + 诊断包（**非阻断**：缺依赖不挡任何功能）──────────
+        # 为什么放在设置页：它是「本机环境」的一次体检，与 AI 配置同属**一次性设置**；
+        # 不是每次任务都要点的东西。mac 侧同一节在「设置」页（`Views/SettingsTab.swift`）。
+        # 判据全部在引擎（`Engine/envcheck.py`）；这里只拼 argv、排版结果、导出 zip。
+        ttk.Separator(self, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", padx=10, pady=(14, 6))
+        row += 1
+        ttk.Label(self, text="环境检查", style="Heading.TLabel").grid(
+            row=row, column=0, columnspan=2, padx=10, sticky="w")
+        row += 1
+        env_btns = ttk.Frame(self)
+        env_btns.grid(row=row, column=0, columnspan=2, padx=10, pady=(4, 2), sticky="w")
+        row += 1
+        ttk.Button(env_btns, text="环境检查", width=14,
+                   command=self.env_check).pack(side="left")
+        ttk.Button(env_btns, text="导出诊断包…", width=14,
+                   command=self.export_diagnostics).pack(side="left", padx=8)
+        ttk.Button(env_btns, text="复制安装命令", width=14,
+                   command=self.copy_install_commands).pack(side="left")
+        self.env_status = ttk.Label(
+            self, text=L.done_text(bool(cfg.get("envCheckDone"))),
+            wraplength=760, justify="left", style="Muted.TLabel")
+        self.env_status.grid(row=row, column=0, columnspan=2, padx=10, sticky="w")
+        row += 1
+        self.env_text = tk.Text(self, height=9, wrap="word", font=theme.mono_font(),
+                                background=theme.COLOR["text_bg"],
+                                foreground=theme.COLOR["fg"],
+                                insertbackground=theme.COLOR["fg"],
+                                borderwidth=1, relief="solid", highlightthickness=0,
+                                state="disabled")
+        self.env_text.grid(row=row, column=0, columnspan=2, padx=10, pady=(4, 10),
+                           sticky="ew")
+        self.env_text.configure(height=9)
+        self._set_env_text([L.PLACEHOLDER])
+        self._env_payload: dict = {}
+        self._env_queue: queue.Queue = queue.Queue()
         self.refresh_status()
         self.refresh_key_status()
 
@@ -233,3 +275,104 @@ class SettingsTab(ttk.Frame):
         self.log(f"✅ 已保存设置（{time.strftime('%H:%M:%S')}，仅存在本机：{path}）") if hasattr(self, "log") else None
         self.key_status.config(
             text=f"✅ 已保存 · {time.strftime('%H:%M:%S')}（仅存在本机：{path}）")
+
+    # ── B-283：环境自检（工作线程跑引擎，主线程用 after 轮询结果）──────────
+    # 纪律：子线程**不碰 Tk 控件**（项目既有约定，见 `bibdb_ui.run_async` 的注释）；
+    # 这里用一条 `queue.Queue` + 主线程 `after` 轮询，不依赖 main.py 的消息分发。
+    def _set_env_text(self, lines: list[str]) -> None:
+        self.env_text.configure(state="normal")
+        self.env_text.delete("1.0", "end")
+        self.env_text.insert("1.0", "\n".join(lines))
+        self.env_text.configure(state="disabled")
+
+    def env_check(self) -> None:
+        """跑一次环境自检。缺项**不拦任何功能**，结果只显示在这张页里。"""
+        out_dir = tempfile.mkdtemp(prefix="slcn-envcheck-")
+        try:
+            call = E.envcheck_call(out_dir=out_dir)
+        except RuntimeError as e:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            messagebox.showerror(APP_TITLE, str(e))
+            return
+        self.env_status.configure(text="⏳ 检查中…（几秒；不联网、不改任何文件）")
+        self._set_env_text(["检查中…"])
+        threading.Thread(target=self._env_worker, args=(call, out_dir),
+                         daemon=True).start()
+        self.after(120, self._poll_env_result)
+
+    def _env_worker(self, call: E.EngineCall, out_dir: str) -> None:
+        lines: list[str] = []
+        try:
+            code = E.run_call(call, on_line=lines.append)
+            payload = L.parse(lines)
+            error = "" if payload else (lines[-1] if lines else "引擎没有输出")
+        except Exception as e:  # noqa: BLE001  自检失败不该让设置页崩
+            code, payload, error = -1, {}, str(e)
+        finally:
+            # `--out-dir` 用的临时目录只是探针，检查完就收掉（别在编辑机上堆垃圾）
+            shutil.rmtree(out_dir, ignore_errors=True)
+        self._env_queue.put((code, payload, error))
+
+    def _poll_env_result(self) -> None:
+        try:
+            code, payload, error = self._env_queue.get_nowait()
+        except queue.Empty:
+            self.after(120, self._poll_env_result)
+            return
+        self._show_env_result(code, payload, error)
+
+    def _show_env_result(self, code: int, payload: dict, error: str) -> None:
+        self._env_payload = payload or {}
+        if not payload:
+            self.env_status.configure(text=f"❌ 没读到检查结果（退出码 {code}）")
+            self._set_env_text([f"没读到检查结果（退出码 {code}）。", error or "见上面的日志。"])
+            return
+        self._set_env_text(L.body_lines(payload) + ["", L.summary_line(payload)])
+        self.env_status.configure(text=f"{L.summary_line(payload)}（退出码 {code}）")
+        # 「检查过」只用于这句状态说明；落盘失败也不该把结果弄丢，所以静默兜住。
+        self.cfg["envCheckDone"] = True
+        try:
+            S.save(self.cfg)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def copy_install_commands(self) -> None:
+        """把缺项的 Windows 安装命令复制到剪贴板（一次装齐）。"""
+        missing = L.missing_installs(self._env_payload)
+        if not missing:
+            self.env_status.configure(text="没有缺项，不用装任何东西。")
+            return
+        text = "\n".join(cmd for _title, cmd in missing if cmd)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.env_status.configure(text=f"✅ 已复制 {len(missing)} 条安装命令到剪贴板。")
+
+    def export_diagnostics(self) -> None:
+        """把这次结果打成 zip（diagnostics.txt + envcheck.json）。
+
+        ⚠️ 包里**只有**版本 / 系统 / 八项检查结论：不含稿件、作者、API Key、引用库。
+        zip 内容清单与文案由 `envcheck_logic` 的纯函数决定（mac 侧同口径）。
+        """
+        if not self._env_payload:
+            messagebox.showinfo(APP_TITLE, "先点「环境检查」，再导出诊断包（包里就是那次的结果）。")
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self, title="保存诊断包", defaultextension=".zip",
+            initialfile=f"环境诊断-{time.strftime('%Y%m%d-%H%M%S')}.zip",
+            filetypes=[("Zip 压缩包", "*.zip")])
+        if not target:
+            return
+        engine_version = E.engine_version()
+        diagnostics = L.diagnostics_text(
+            self._env_payload,
+            app_version=engine_version,
+            engine_version=engine_version,
+            platform_text=_platform.platform(),
+            run_mode="发布包（exe）" if E.frozen_engine_exe() else "源码（Python）",
+            generated_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+        try:
+            names = L.write_package(target, diagnostics, self._env_payload)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror(APP_TITLE, f"导出失败：{e}")
+            return
+        self.env_status.configure(text=f"✅ 诊断包已导出（{'、'.join(names)}）：{target}")

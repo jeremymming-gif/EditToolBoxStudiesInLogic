@@ -100,7 +100,7 @@ run_one() {
 }
 
 echo "▶ 编译并运行 Swift 测试台（生产源码本身）${ONLY:+—— --only $ONLY}"
-run_one ai_settings Core/ViewModels.swift Core/Support.swift Core/Log.swift \
+run_one ai_settings Core/ViewModels.swift Core/Support.swift Core/Log.swift Core/EnvCheck.swift \
   Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
   Features/CheckBibFeature.swift Features/MergeFeature.swift \
   Features/MetadataFormFeature.swift Views/SettingsTab.swift \

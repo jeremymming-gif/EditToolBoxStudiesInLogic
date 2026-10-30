@@ -248,7 +248,7 @@ if [ -f "$CONVERT_SRC/convert.py" ]; then
   # 的数据源，漏了它 = mac 包里这 5 页全部报「未找到 Engine/bibdb.py」。
   # Windows 包同样交付它（`engine_main.ENTRIES` / `sources-win/engine.py` 四处入口表）。
   # 它也是**交付入口**：`test_platform.py` 的 ENTRY_FILES 与这里两处都要改。
-  for _extra in cleantemp.py compileall.py proofcheck.py infocheck.py toc.py publish.py engine_main.py bibdb.py dirpush.py; do
+  for _extra in cleantemp.py compileall.py proofcheck.py infocheck.py toc.py publish.py engine_main.py bibdb.py dirpush.py envcheck.py; do
     [ -f "$CONVERT_SRC/$_extra" ] && cp "$CONVERT_SRC/$_extra" "$DEST/"
   done
   cp -R "$CONVERT_SRC/slcn" "$DEST/slcn"

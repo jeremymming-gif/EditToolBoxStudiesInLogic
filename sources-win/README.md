@@ -56,7 +56,7 @@ python main.py
 | **入藏** | `bibdb.py import-bib/import-dir --dry-run --json` | 先 dry-run 预览（**不写库**）再确认导入（`--verified`）；来源期/篇从路径推断、可改 |
 | **待裁决** | `bibdb.py report --out … --json` | 只读展示并重新生成 `CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv`（不改库本体） |
 | **引用库设置** | —（写 settings.json，由初排转换拼参数） | 核实上限 `--verify-max`、先算账 `--verify-plan`、全量 `--verify-all-refs`、先查库开关（关 = `--no-bibdb`）、笔记仓路径；**默认一个参数都不加** |
-| 设置 | — | 引擎状态、API 地址/Key/模型、检索工具；密钥只落本机并打码显示 |
+| 设置 | `envcheck.py --json` | 引擎状态、API 地址/Key/模型、检索工具；密钥只落本机并打码显示；**环境检查 / 导出诊断包**（B-283：八项依赖体检 + 安装命令，非阻断） |
 
 参数与退出码的权威说明在 [`Engine/docs/ENGINE_API.md`](../Engine/docs/ENGINE_API.md)。
 
@@ -70,7 +70,7 @@ python main.py
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File build-win.ps1
-# → build\dist\SLCNEngine.exe（引擎，十个入口冻成一个）
+# → build\dist\SLCNEngine.exe（引擎，十一个入口冻成一个）
 # → build\dist\编辑部工具箱.exe（界面；它会在自己旁边找 SLCNEngine.exe）
 ```
 

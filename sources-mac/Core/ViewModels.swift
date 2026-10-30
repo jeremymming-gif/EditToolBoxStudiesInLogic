@@ -530,6 +530,15 @@ final class AppSettings: ObservableObject {
     /// 界面一律用默认值 `AppSettings()`。
     private let storeDir: URL?
 
+    /// B-283：首次运行环境检查做没做过（**UserDefaults，不是 ai.json**）。
+    ///
+    /// 为什么不进 ai.json：它是一台机器的状态，与 AI 配置无关 —— 换一份 ai.json
+    /// 不该让 App 在下次启动时又弹一遍；反过来清了偏好就是「当成第一次装」。
+    /// 键名在这里定义：`Core/EnvCheck.swift` 引用它（EnvCheck 只在 ai_settings 台编译，
+    /// 而 ViewModels 在另外五个台也编译 —— 依赖方向只能是 EnvCheck → AppSettings）。
+    static let envCheckDoneKey = "envCheckDone"
+    private let defaults: UserDefaults
+
     /// 上次落盘的值，用于界面显示「有未保存的修改」。
     private var savedBase = ""
     private var savedKey = ""
@@ -544,9 +553,22 @@ final class AppSettings: ObservableObject {
     private var savedSearchTool: String = ""
     private var savedResponsesPath: String = ""
 
-    init(storeDirectory: URL? = nil) {
+    init(storeDirectory: URL? = nil, defaults: UserDefaults = .standard) {
         storeDir = storeDirectory
+        self.defaults = defaults
         loadAI()
+    }
+
+    // MARK: - 首次运行环境检查（B-283）
+
+    /// 是否已经做过首跑自检。**计算属性而不是 @Published**：唯一的状态在 UserDefaults，
+    /// 两份内存状态迟早会分叉（`EnvCheckModel` 写入时也会同步这里，界面重画即读到新值）。
+    var envCheckDone: Bool { defaults.bool(forKey: AppSettings.envCheckDoneKey) }
+
+    /// 置位（首跑跑完 / 「设置」页手动跑完都调用；只写一次，永远不会被清回 false）。
+    func markEnvCheckDone() {
+        defaults.set(true, forKey: AppSettings.envCheckDoneKey)
+        objectWillChange.send()
     }
 
     // MARK: 读写

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""把十个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
+"""把十一个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
 
     SLCNEngine.exe convert.py   --source "<稿件.docx>" --out "<输出目录>" --compile
     SLCNEngine.exe checkbib.py  --returned "<交回.bib>" --merge-into "<产物 reference.bib>"
     SLCNEngine.exe mergepdf.py  --folder "<期目录>" --editors-page --nest-outlines
     SLCNEngine.exe proofcheck.py --folder "<期目录>"
+    SLCNEngine.exe envcheck.py  --json --profile exe
     SLCNEngine.exe --version
 
 **为什么要它**：Windows 上不该要求编辑先装 Python。把十个入口冻成一个
@@ -34,9 +35,12 @@ sys.path.insert(0, HERE)
 #: 顺序与 `sources-win/engine.py: ENTRIES` 相同 —— 那条一致性由测试守着，别只改一边。
 #: 第 132 条加了 `bibdb.py`（引用库）：mac 包与 Windows 包共用同一份 CLI，
 #: Windows「引用库」5 页（库概况/查库/入藏/待裁决/设置）全靠它。
+#: B-283 在**末尾**加了 `envcheck.py`（首次运行环境自检）—— 前 10 项顺序不许动，
+#: 「设置」页的「环境检查」按钮与首跑自检都走这一条。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
-           "infocheck.py", "toc.py", "publish.py", "bibdb.py")
+           "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+           "envcheck.py")
 
 USAGE = f"""SLCN 引擎（打包版）
 
@@ -48,6 +52,7 @@ USAGE = f"""SLCN 引擎（打包版）
 例：
   SLCNEngine.exe convert.py  --source "稿件.docx" --out "输出目录" --compile
   SLCNEngine.exe mergepdf.py --folder "2026年第5期(90)" --editors-page
+  SLCNEngine.exe envcheck.py --json --profile exe
   SLCNEngine.exe --version
 
 每个入口自己的参数表：SLCNEngine.exe <入口> --help

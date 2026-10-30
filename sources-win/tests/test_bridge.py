@@ -217,10 +217,20 @@ check("(b) 外壳入口表与**打包 dispatcher** 的 `ENTRIES` 逐项一致"
       "（少一项 = 那个标签页在用户机器上直接退出 2）",
       set(E.ENTRIES) == set(_DISP.ENTRIES),
       f"外壳 {len(E.ENTRIES)} 个 {E.ENTRIES} ／ dispatcher {len(_DISP.ENTRIES)} 个 {_DISP.ENTRIES}")
-check("(b) 十个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py）",
+check("(b) 十一个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py，"
+      "B-283 起含环境自检 envcheck.py）",
       set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
                          "cleantemp.py", "compileall.py", "proofcheck.py",
-                         "infocheck.py", "toc.py", "publish.py", "bibdb.py"},
+                         "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+                         "envcheck.py"},
+      f"{E.ENTRIES}")
+check("(b) B-283 的口径：`envcheck.py` **追加在末尾**，前 10 项**顺序逐项不变**"
+      "（C8：默认零变化）",
+      tuple(E.ENTRIES[:10]) == ("convert.py", "checkbib.py", "mergepdf.py",
+                                "cleantemp.py", "compileall.py", "proofcheck.py",
+                                "infocheck.py", "toc.py", "publish.py", "bibdb.py")
+      and tuple(E.ENTRIES[10:]) == ("envcheck.py",)
+      and tuple(_DISP.ENTRIES[:10]) == tuple(E.ENTRIES[:10]),
       f"{E.ENTRIES}")
 
 c7 = E.infocheck_call(folder=r"E:\\期\\90", preview=True)
@@ -2293,6 +2303,130 @@ check("(k) main.py：运行按模式传参；撤销判定走 undo_available（--
 check("(k) 清空回收站成功不给撤销：页内标明永久/不可撤销（empty argv 无撤销）",
       "永久删除" in CLEAN_SRC and "不可撤销" in CLEAN_SRC
       and not CL.undo_available(["cleantemp.py", "--folder", "/x", "--empty-trash"]))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (l) 环境自检 envcheck（B-283：八项体检 / 诊断包 / 非阻断）──")
+
+import inspect  # noqa: E402
+
+import envcheck_logic as L  # noqa: E402  B-283：纯逻辑（无 tkinter / 无 engine）
+_SPEC_EV = importlib.util.spec_from_file_location("_envcheck_for_test",
+                                                  REPO / "Engine" / "envcheck.py")
+_EV = importlib.util.module_from_spec(_SPEC_EV)
+_SPEC_EV.loader.exec_module(_EV)
+
+check("(l) 引擎与外壳的八项检查 id **同一份、同一顺序**"
+      "（外壳自己判缺哪项 = 迟早与引擎分叉）",
+      tuple(_EV.CHECK_IDS) == tuple(L.CHECK_IDS) == (
+          "engine_bundle", "xelatex", "biber", "libreoffice",
+          "git", "disk_space", "output_writable", "template_bundle"),
+      f"{L.CHECK_IDS}")
+
+check("(l) 设置页的 argv：`envcheck.py --json`（界面要解析 JSON；人类可读那份给命令行）",
+      E.envcheck_call().entry == "envcheck.py"
+      and E.envcheck_call().argv[-1] == "--json"
+      and E.envcheck_call().argv[-2].endswith("envcheck.py"))
+c_ev = E.envcheck_call(out_dir=r"C:\\tmp\\envcheck", profile="exe")
+check("(l) `--out-dir` 与 `--profile` 都按顺序追加（诊断包要看输出目录可写）",
+      c_ev.argv[-4:] == ["--out-dir", r"C:\\tmp\\envcheck", "--profile", "exe"], c_ev.display)
+check("(l) 反例：不给 out_dir 就**不传** `--out-dir`（output_writable 只在给了才查）",
+      "--out-dir" not in E.envcheck_call().argv
+      and "--profile" not in E.envcheck_call().argv)
+check("(l) 反例：`json_output=False` → 不传 `--json`（命令行人类可读报告）",
+      "--json" not in E.envcheck_call(json_output=False).argv)
+
+_GOOD = {
+    "schema": "envcheck.v1", "profile": "source", "platform": "Darwin 27.0.0 (arm64)",
+    "checks": [
+        {"id": "engine_bundle", "title": "引擎运行时", "level": "required", "status": "ok",
+         "version": "1.4.1", "detail": "源码模式", "hint": "", "install": {"mac": "", "windows": ""}},
+        {"id": "git", "title": "git", "level": "optional", "status": "warn", "version": "",
+         "detail": "未找到 git", "hint": "只影响笔记仓 / 引用库的版本与同步操作 安装：xcode-select --install",
+         "install": {"mac": "xcode-select --install", "windows": "winget install --id Git.Git -e"}},
+    ],
+    "summary": {"ok": 1, "warn": 1, "fail": 0},
+}
+check("(l) 解析容忍引擎混进来的 stderr 行：取第一个 `{` 到最后一个 `}`",
+      L.parse("warning: xx\n" + json.dumps(_GOOD, ensure_ascii=False) + "\n尾行")["schema"]
+      == "envcheck.v1")
+check("(l) 反例：不是 envcheck.v1 / 根本不是 JSON → 返回 {}（界面说「没读到」而不是崩）",
+      L.parse("not json") == {} and L.parse('{"schema": "other.v1"}') == {}
+      and L.parse([""]) == {})
+_rows = L.check_rows(_GOOD)
+check("(l) 行规范化：状态记号 / 级别文字 / Windows 安装命令都取到",
+      _rows[0]["mark"] == "✅" and _rows[1]["mark"] == "⚠️"
+      and _rows[1]["level_text"] == "可选"
+      and _rows[1]["install_windows"] == "winget install --id Git.Git -e")
+check("(l) 正文只在**缺项**时打安装提示（与引擎人类报告同口径）",
+      any("→" in ln for ln in L.body_lines(_GOOD))
+      and not any("→" in ln for ln in L.body_lines(
+          {"schema": "envcheck.v1", "checks": [_GOOD["checks"][0]], "summary": {"ok": 1}},
+      )))
+check("(l) 小结三态：必需项缺失 > 可选缺失 > 全绿（退出码口径 2 / 1 / 0）",
+      L.summary_line({"checks": _GOOD["checks"], "summary": {"ok": 1, "warn": 1, "fail": 0}})
+      .startswith("⚠️")
+      and L.summary_line({"checks": _GOOD["checks"], "summary": {"ok": 1, "warn": 0, "fail": 1}})
+      .startswith("❌")
+      and L.summary_line({"checks": _GOOD["checks"], "summary": {"ok": 2, "warn": 0, "fail": 0}})
+      .startswith("✅"))
+check("(l) 「复制安装命令」只列缺项的 Windows 命令，不是把整张表抄一遍",
+      L.missing_installs(_GOOD) == [("git", "winget install --id Git.Git -e")])
+
+_diag = L.diagnostics_text(_GOOD, app_version="1.4.1", engine_version="1.4.1",
+                           platform_text="Windows 11", run_mode="发布包（exe）",
+                           generated_at="2026-10-30 12:00:00")
+check("(l) 诊断包正文含版本 / 系统 / 形态 / 结论，且写明不含稿件与密钥",
+      all(k in _diag for k in ("App 版本：1.4.1", "引擎版本：1.4.1", "操作系统：Windows 11",
+                               "运行形态：发布包（exe）", "✅ 引擎运行时", "⚠️ git",
+                               "不含稿件内容、作者信息、API Key 或引用库内容")))
+check("(l) 隐私守卫是**结构性的**：`diagnostics_text` 的参数表里没有配置/密钥/稿件入口",
+      set(inspect.signature(L.diagnostics_text).parameters) == {
+          "payload", "app_version", "engine_version", "platform_text",
+          "run_mode", "generated_at"},
+      f"{list(inspect.signature(L.diagnostics_text).parameters)}")
+
+_zip_dir = tempfile.mkdtemp(prefix="bridge_envcheck_")
+try:
+    _zip_path = os.path.join(_zip_dir, "环境诊断.zip")
+    _names = L.write_package(_zip_path, _diag, _GOOD)
+    import zipfile  # noqa: E402
+    with zipfile.ZipFile(_zip_path) as _zf:
+        _got = _zf.namelist()
+        _json_text = _zf.read("envcheck.json").decode("utf-8")
+        _txt = _zf.read("diagnostics.txt").decode("utf-8")
+    check("(l) 诊断包正好两个文件：diagnostics.txt + envcheck.json（C5）",
+          _names == ["diagnostics.txt", "envcheck.json"]
+          and sorted(_got) == ["diagnostics.txt", "envcheck.json"]
+          and json.loads(_json_text)["schema"] == "envcheck.v1"
+          and _txt == _diag)
+finally:
+    shutil.rmtree(_zip_dir, ignore_errors=True)
+
+SETTINGS_TAB_SRC = (SHELL / "tabs" / "settings_tab.py").read_text(encoding="utf-8")
+BUILD_PS1 = (SHELL / "build-win.ps1").read_text(encoding="utf-8")
+check("(l) 设置页有「环境检查」「导出诊断包…」「复制安装命令」三个按钮，"
+      "并走 `E.envcheck_call` + `envcheck_logic`（界面里不重写判据）",
+      all(s in SETTINGS_TAB_SRC for s in (
+          "环境检查", "导出诊断包…", "复制安装命令", "E.envcheck_call(",
+          "envcheck_logic as L", "L.body_lines(", "L.write_package(",
+          'self.cfg["envCheckDone"] = True')))
+check("(l) 子线程不碰 Tk：结果经 `queue.Queue` + 主线程 `after` 轮询回来自（项目纪律）",
+      "self.after(120" in SETTINGS_TAB_SRC and "queue.Queue()" in SETTINGS_TAB_SRC
+      and "self._env_queue.put(" in SETTINGS_TAB_SRC)
+check("(l) Windows 打包入口表也含 envcheck.py，且与外壳 ENTRIES **同一张表**",
+      "envcheck.py" in BUILD_PS1 and "十一个入口" in BUILD_PS1
+      and all(e in BUILD_PS1 for e in E.ENTRIES)
+      and BUILD_PS1.count("envcheck.py") >= 2)
+check("(l) settings：`envCheckDone` 默认 False、只收 bool（旧配置缺字段/垃圾值不炸）",
+      S.DEFAULTS["envCheckDone"] is False
+      and S._merge_defaults({})["envCheckDone"] is False
+      and S._merge_defaults({"envCheckDone": True})["envCheckDone"] is True
+      and S._merge_defaults({"envCheckDone": "yes"})["envCheckDone"] is False)
+check("(l) 非阻断：设置页的检查只改一句状态说明，不返回、不禁用、不弹错误框"
+      "（缺依赖时仍能点保存/转换）",
+      "PLACEHOLDER" in (SHELL / "envcheck_logic.py").read_text(encoding="utf-8")
+      and "done_text" in SETTINGS_TAB_SRC)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

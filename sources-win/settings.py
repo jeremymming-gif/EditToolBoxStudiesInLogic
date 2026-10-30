@@ -49,6 +49,9 @@ DEFAULTS: dict = {
     # U4（2026-10-17 第十五批）日志两层：True = 显示「原始」层，False = 摘要（默认折叠原始）。
     # 放在顶层而不是 options：它是**界面偏好**，不是任务选项。
     "logShowRaw": False,
+    # B-283：是否已经主动跑过「环境检查」（只用于设置页的一句状态说明；
+    # **不拦任何功能** —— 缺依赖照样能转换，检查只是提前告知）。
+    "envCheckDone": False,
     # ── 第 132 条：引用库（核实成本闸门 / 先查库 / 笔记仓路径）──
     # 默认值刻意是「**一个参数都不加**」：
     #   · verifyMax=None         → 不传 --verify-max（引擎默认 120 条；0 = 不限）
@@ -108,7 +111,7 @@ def _merge_defaults(raw: dict) -> dict:
         out["engineDir"] = raw["engineDir"]
     # 顶层布尔偏好（U4：日志「摘要/原始」选择）—— 从前面板外键会在这里被丢掉，
     # 于是「偏好落盘了、下次启动却不生效」。逐键白名单，避免把任意垃圾键带进来。
-    for key in ("logShowRaw",):
+    for key in ("logShowRaw", "envCheckDone"):
         if isinstance(raw.get(key), bool):
             out[key] = raw[key]
     # 第 132 条：引用库设置。**逐键校验**，不信配置文件里的任意垃圾：

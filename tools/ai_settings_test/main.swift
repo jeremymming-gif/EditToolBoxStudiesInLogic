@@ -3628,6 +3628,231 @@ check("b230-tab-family", "ConvertTab 族源文件齐全（拆分后同层多文�
         && !readSrcGlob("Views/ConvertTab*.swift").isEmpty,
       "files=\(b230TabFamily.joined(separator: ","))")
 
+
+// ===========================================================================
+// (B-283) 首次运行环境自检 / 诊断包 / 首跑只做一次
+//
+//     判据全在引擎（`Engine/envcheck.py`），这一层只做：解析 → 排版 → 首跑一次 →
+//     导出 zip。所以这里断的是「mac 侧与引擎/Windows 侧**同一份口径**」，
+//     以及「诊断包里**没有**稿件 / API Key 的位置」。
+// ===========================================================================
+section("B-283  mac 环境自检（envcheck.swift）")
+
+let b283EngineSrc = rawFile(projFile("Engine/envcheck.py"))
+let b283MainSrc = rawFile(projFile("Engine/engine_main.py"))
+let b283EnvSrc = readSrc("Core/EnvCheck.swift")
+let b283ToolboxSrc = readSrc("ToolboxApp.swift")
+let b283SettingsSrc = readSrc("Views/SettingsTab.swift")
+let b283ViewModelsSrc = readSrc("Core/ViewModels.swift")
+let b283RunnerSrc = rawFile(projFile("tools/run_swift_tests.sh"))
+
+/// 从 `Engine/envcheck.py` 的 `CHECK_IDS = (…)` 里抠出 id 列表（只认字面量，够用）。
+func b283PythonIDs(_ src: String) -> [String] {
+    guard let start = src.range(of: "CHECK_IDS = ("),
+          let end = src[start.upperBound...].firstIndex(of: ")") else { return [] }
+    var out: [String] = []
+    var current = ""
+    var inside = false
+    for ch in src[start.upperBound..<end] {
+        if ch == "\"" {
+            if inside { out.append(current); current = "" }
+            inside.toggle()
+        } else if inside {
+            current.append(ch)
+        }
+    }
+    return out
+}
+
+let b283IDs = b283PythonIDs(b283EngineSrc)
+check("b283-ids", "八项检查 id 与引擎 `Engine/envcheck.py: CHECK_IDS` 同一份、同顺序（外壳自己判缺哪项 = 迟早分叉）",
+      b283IDs.count == 8 && b283IDs == EnvCheck.checkIDs,
+      "swift=\(EnvCheck.checkIDs.joined(separator: ",")) python=\(b283IDs.joined(separator: ","))")
+
+let b283Sample = """
+[envcheck] 正在检查…
+{"schema":"envcheck.v1","profile":"exe","platform":"macOS 15.0 (arm64)，Python 3.14.8",
+ "checks":[
+  {"id":"engine_bundle","title":"引擎与 Python","level":"required","status":"ok","version":"1.4.1","detail":"随包内置 Python（打包形态）","hint":"","install":{"mac":"","windows":""}},
+  {"id":"git","title":"git","level":"optional","status":"warn","version":"2.39.3","detail":"版本太低","hint":"缺 git：引用库同步不可用","install":{"mac":"xcode-select --install","windows":"winget install --id Git.Git -e"}}
+ ],
+ "summary":{"ok":1,"warn":1,"fail":0}}
+[envcheck] 收尾一行
+"""
+let b283Parsed = EnvCheck.parse(b283Sample)
+check("b283-parse-noise", "解析容忍引擎混进来的 stderr 行（取第一个 `{` 到最后一个 `}`，与 Windows 同口径）",
+      b283Parsed?.items.count == 2 && b283Parsed?.profile == "exe" && b283Parsed?.platform.contains("macOS") == true,
+      "items=\(b283Parsed?.items.count ?? -1) profile=\(b283Parsed?.profile ?? "nil")")
+check("b283-parse-negative", "反例：不是 envcheck.v1 / 根本不是 JSON / 空串 → nil（界面说「没读到」而不是崩）",
+      EnvCheck.parse("{}") == nil && EnvCheck.parse("完全不是 JSON") == nil
+        && EnvCheck.parse("{\"schema\":\"envcheck.v0\",\"checks\":[]}") == nil
+        && EnvCheck.parse("") == nil,
+      "v0=\(EnvCheck.parse("{\"schema\":\"envcheck.v0\"}") == nil)")
+if let b283Parsed {
+    check("b283-summary-counts", "summary 计数 / install 两个平台都取到（复制安装命令要靠它）",
+          b283Parsed.ok == 1 && b283Parsed.warn == 1 && b283Parsed.fail == 0
+            && b283Parsed.items[1].installMac == "xcode-select --install"
+            && b283Parsed.items[1].installWindows.hasPrefix("winget"),
+          "ok=\(b283Parsed.ok) warn=\(b283Parsed.warn) fail=\(b283Parsed.fail)")
+    let b283Lines = EnvCheck.humanLines(b283Parsed)
+    check("b283-lines", "正文：每项一行 + 缩进的 detail；**只有缺项**才追加 `→ hint`（ok 项不吓人）",
+          b283Lines.filter { $0.hasPrefix("    → ") }.count == 1
+            && b283Lines.contains(where: { $0.contains("→ 缺 git") })
+            && b283Lines.contains(where: { $0.hasPrefix("    ") && !$0.hasPrefix("    → ") }),
+          "lines=\(b283Lines.count) hints=\(b283Lines.filter { $0.hasPrefix("    → ") }.count)")
+    check("b283-summary-line", "小结三态：必需项缺失 > 可选缺失 > 全绿（退出码 2 / 1 / 0 的口径）",
+          EnvCheck.summaryLine(b283Parsed).hasPrefix("⚠️")
+            && EnvCheck.summaryLine(EnvCheck.Report(schema: "envcheck.v1", profile: "source",
+                                                    platform: "macOS", items: [b283Parsed.items[0]],
+                                                    ok: 1, warn: 0, fail: 0)).hasPrefix("✅")
+            && EnvCheck.summaryLine(EnvCheck.Report(schema: "envcheck.v1", profile: "source",
+                                                    platform: "macOS", items: [b283Parsed.items[1]],
+                                                    ok: 0, warn: 0, fail: 1)).hasPrefix("❌"),
+          "warn=\(EnvCheck.summaryLine(b283Parsed).prefix(1))")
+    let b283FailReport = EnvCheck.Report(schema: "envcheck.v1", profile: "source", platform: "macOS",
+                                         items: [b283Parsed.items[0],
+                                                 EnvCheck.Item(id: "xelatex", title: "XeLaTeX（xelatex）",
+                                                               level: "required", status: "fail", version: "",
+                                                               detail: "没找到 xelatex",
+                                                               hint: "安装：brew install --cask mactex-no-gui",
+                                                               installMac: "brew install --cask mactex-no-gui",
+                                                               installWindows: "winget install --id MiKTeX.MiKTeX -e")],
+                                         ok: 1, warn: 0, fail: 1)
+    check("b283-firstrun-alert", "首跑只提示**必需项**缺失（含标题与一句「不挡其它功能」），可选缺失不弹",
+          b283FailReport.requiredFailures.count == 1
+            && EnvCheck.firstRunAlertText(b283FailReport).contains("XeLaTeX")
+            && EnvCheck.firstRunAlertText(b283FailReport).contains("不挡任何页面")
+            && EnvCheck.firstRunAlertText(b283Parsed).isEmpty,
+          "alert=\(EnvCheck.firstRunAlertText(b283FailReport).count) chars")
+
+    // 诊断包正文：版本 / 构建标识 / 形态 / 系统 / 结论 + 「不含…」声明。
+    let b283Text = EnvCheck.diagnosticsText(report: b283Parsed, version: "1.4.1+b283 (2026-10-30T12:00)",
+                                            generatedAt: "2026-10-30 12:00:00")
+    check("b283-diag-text", "诊断包正文含版本+构建标识 / 形态 / 系统 / 结论，并写明不含稿件与密钥",
+          b283Text.contains("1.4.1+b283") && b283Text.contains("发布包（exe）")
+            && b283Text.contains("macOS 15.0") && b283Text.contains("环境诊断")
+            && b283Text.contains("不含稿件内容、作者信息、API Key 或引用库内容"),
+          "len=\(b283Text.count) hasKeyDecl=\(b283Text.contains("API Key 或引用库内容"))")
+
+    // 两个文件写盘 + zip + 解压读回（C5：解压出来必须正好两样）。
+    let b283Dir = base.appendingPathComponent("b283-package", isDirectory: true)
+    wipe(b283Dir.path)
+    mkdir(b283Dir.path, 0o700)
+    let b283Zip = base.appendingPathComponent("b283-环境诊断.zip")
+    var b283Files: [URL] = []
+    do { b283Files = try EnvCheck.writeDiagnostics(report: b283Parsed, version: "1.4.1",
+                                                   generatedAt: "2026-10-30 12:00:00", in: b283Dir) } catch {
+        evidence("writeDiagnostics error", "\(error)")
+    }
+    let b283Zipped = EnvCheck.zip(b283Files, to: b283Zip)
+    var b283List: [String] = []
+    var b283JSON: [String: Any] = [:]
+    if b283Zipped {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        p.arguments = ["-Z1", b283Zip.path]
+        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        try? p.run(); p.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        b283List = out.split(separator: "\n").map(String.init).filter { !$0.isEmpty }.sorted()
+        let q = Process()
+        q.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        q.arguments = ["-p", b283Zip.path, EnvCheck.reportName]
+        let pipe2 = Pipe(); q.standardOutput = pipe2; q.standardError = Pipe()
+        try? q.run(); q.waitUntilExit()
+        b283JSON = json(String(data: pipe2.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+    }
+    check("b283-package", "诊断包正好两个文件（diagnostics.txt + envcheck.json），且能解压、JSON 仍是 envcheck.v1",
+          b283Zipped && b283List == EnvCheck.packageEntries.sorted()
+            && (b283JSON["schema"] as? String) == "envcheck.v1"
+            && (b283JSON["checks"] as? [[String: Any]])?.count == 2,
+          "files=\(b283List.joined(separator: ",")) zip=\(b283Zipped)")
+    check("b283-package-privacy", "隐私守卫是**结构性**的：`diagnosticsText` 只收 report/version/generatedAt，源码里没有密钥变量",
+          b283EnvSrc.contains("static func diagnosticsText(report: Report, version: String, generatedAt: String) -> String")
+            && !b283EnvSrc.contains("SLCN_LLM_KEY") && !b283EnvSrc.contains("settings.aiKey"),
+          "sig=\(b283EnvSrc.contains("static func diagnosticsText"))")
+}
+
+// argv / 首跑判据 / 键名唯一性
+check("b283-args", "argv：`--json` + `--out-dir`（GUI 要解析 JSON；人类可读那份留给命令行）",
+      EnvCheck.arguments(outDir: "/tmp/x") == ["--json", "--out-dir", "/tmp/x"],
+      "args=\(EnvCheck.arguments(outDir: "/tmp/x").joined(separator: " "))")
+check("b283-firstrun", "首跑判据只看 envCheckDone；手动重跑不受限（由 `rerun()` 直接走 start）",
+      EnvCheck.shouldRunFirstCheck(done: false) && !EnvCheck.shouldRunFirstCheck(done: true)
+        && b283EnvSrc.contains("func rerun() { start(firstRun: false) }"),
+      "once=\(EnvCheck.shouldRunFirstCheck(done: false))")
+check("b283-done-key", "键名只有一处字面量：EnvCheck.doneKey == AppSettings.envCheckDoneKey == \"envCheckDone\"",
+      EnvCheck.doneKey == "envCheckDone" && AppSettings.envCheckDoneKey == "envCheckDone"
+        && b283ViewModelsSrc.contains("static let envCheckDoneKey = \"envCheckDone\""),
+      "key=\(EnvCheck.doneKey)")
+
+// 置位真的落进 UserDefaults，且 AppSettings 立刻读到（同一台机器的状态，不是 ai.json）
+let b283Suite = "b283-envcheck-\(UUID().uuidString.prefix(8))"
+if let b283UD = UserDefaults(suiteName: b283Suite) {
+    b283UD.removePersistentDomain(forName: b283Suite)
+    let b283Model = EnvCheckModel(defaults: b283UD)
+    let b283Before = b283Model.done
+    b283Model.markDone()
+    let b283Settings = AppSettings(storeDirectory: base, defaults: b283UD)
+    check("b283-mark", "「做过了」落在 UserDefaults：markDone 后 AppSettings.envCheckDone 立刻是 true",
+          !b283Before && b283Model.done && b283Settings.envCheckDone
+            && b283UD.bool(forKey: "envCheckDone"),
+          "before=\(b283Before) after=\(b283Settings.envCheckDone)")
+    b283Settings.markEnvCheckDone()
+    b283UD.removePersistentDomain(forName: b283Suite)
+}
+
+// 接线静态守卫（ToolboxApp 不参与编译，只能看源码）
+check("b283-firstrun-wiring", "首跑接在 App 层：`.task { firstRun.runIfNeeded() }` + 非阻断 `.alert` 只绑必需项",
+      b283ToolboxSrc.contains("EnvCheckModel()")
+        && b283ToolboxSrc.contains(".task { firstRun.runIfNeeded() }")
+        && b283ToolboxSrc.contains(".alert(") && b283ToolboxSrc.contains("showFirstRunAlert")
+        && b283ToolboxSrc.contains("firstRunAlertText"),
+      "task=\(b283ToolboxSrc.contains(".task { firstRun.runIfNeeded() }"))")
+check("b283-settings-ui", "设置页：环境检查 / 导出诊断包… / 复制安装命令，且重跑走同一模型（不重写判据）",
+      ["环境检查", "导出诊断包…", "复制安装命令", "envModel.rerun()", "EnvCheck.defaultZipName()",
+       "envModel.exportPackage(to:", "NSSavePanel()", "import AppKit"].allSatisfy { b283SettingsSrc.contains($0) },
+      "buttons=\(b283SettingsSrc.contains("导出诊断包…"))")
+check("b283-settings-preserved", "设置页既有小节一个不少（默认零变化：只是多了一节）",
+      ["aiForm", "secretWarning", "privacy", "usage", "actionBar"].allSatisfy { b283SettingsSrc.contains($0) },
+      "sections=\(["aiForm", "secretWarning", "privacy", "usage"].filter { b283SettingsSrc.contains($0) }.count)/4")
+check("b283-harness-compiles", "ai_settings 台编译清单含 Core/EnvCheck.swift（否则这一组永远测不到）",
+      b283RunnerSrc.contains("Core/EnvCheck.swift"), "runner=\(b283RunnerSrc.contains("Core/EnvCheck.swift"))")
+check("b283-source-discipline", "EnvCheck.swift 只用 Foundation（不 import AppKit）、不碰密钥变量",
+      b283EnvSrc.hasPrefix("import Foundation") && !b283EnvSrc.contains("import AppKit")
+        && !b283EnvSrc.contains("SLCN_LLM_KEY"), "appkit=\(b283EnvSrc.contains("import AppKit"))")
+check("b283-engine-entry", "dispatcher 与外壳入口表都含 envcheck.py（mac 走同一份）",
+      b283MainSrc.contains("\"envcheck.py\"") && b283EngineSrc.contains("def main("),
+      "dispatcher=\(b283MainSrc.contains("\"envcheck.py\""))")
+
+// 真跑一次引擎（有 python3.14 才跑；缺了只记证据，不假装 PASS）
+let b283Py = "/opt/homebrew/bin/python3.14"
+let b283Script = projFile("Engine/envcheck.py")
+if FileManager.default.isExecutableFile(atPath: b283Py) && exists(b283Script) {
+    let b283Out = base.appendingPathComponent("b283-engine-out", isDirectory: true)
+    wipe(b283Out.path); mkdir(b283Out.path, 0o700)
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: b283Py)
+    proc.arguments = [b283Script, "--json", "--profile", "exe", "--out-dir", b283Out.path]
+    var b283Env = ProcessInfo.processInfo.environment
+    b283Env["PYTHONPATH"] = projFile("Engine/vendor")
+    proc.environment = b283Env
+    let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
+    try? proc.run(); proc.waitUntilExit()
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let engineReport = EnvCheck.parse(out)
+    let bundleItem = engineReport?.items.first(where: { $0.id == "engine_bundle" })
+    check("b283-engine-e2e", "真跑 `envcheck.py --json --profile exe`：mac 侧解析出 8 项，engine_bundle=ok 且 detail 含「随包内置」",
+          proc.terminationStatus == 0 && engineReport?.items.count == 8
+            && bundleItem?.status == "ok" && (bundleItem?.detail.contains("随包内置") ?? false),
+          "rc=\(proc.terminationStatus) items=\(engineReport?.items.count ?? -1) detail=\(bundleItem?.detail ?? "nil")")
+    check("b283-engine-outdir", "`--out-dir` 真的落了 envcheck.json（诊断包才带得走）",
+          exists(b283Out.appendingPathComponent("envcheck.json").path),
+          "file=\(exists(b283Out.appendingPathComponent("envcheck.json").path))")
+} else {
+    evidence("skip b283-engine-e2e", "本机没有 \(b283Py) 或 Engine/envcheck.py 不存在")
+}
+
 print("")
 print("================================================================")
 print("SUMMARY: \(passCount) PASS / \(failCount) FAIL")

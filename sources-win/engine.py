@@ -37,9 +37,12 @@ import clean_logic as _clean_logic   # B-281：清理三模式的纯逻辑（同
 
 #: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）。
 #: 第 132 条加了 `bibdb.py`（引用库）——它与 mac 包共用同一份 CLI，Windows 侧不重写判据。
+#: B-283：末尾追加 `envcheck.py`（首次运行环境自检）——**前 10 项顺序不动**，
+#: 既有的参数拼装/日志/退出码口径一个字节都不变。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
-           "infocheck.py", "toc.py", "publish.py", "bibdb.py")
+           "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+           "envcheck.py")
 
 
 # ── 日志分层（U4：摘要 / 原始两层，默认折叠原始）─────────────────────────
@@ -963,6 +966,37 @@ def bibdb_report_call(*, out_dir: str, db: str = "") -> EngineCall:
     if out_dir:
         cmd += ["--out", out_dir]
     return EngineCall(cmd, "bibdb.py", "引用库 · 生成待裁决清单")
+
+
+# ── 环境自检（B-283）：`envcheck.py` 的薄参数拼装 ─────────────────────────
+# 纪律与 `bibdb.py` 相同：**外壳不判定**「什么算缺依赖 / 退出码几」——
+# 那些判据只在 `Engine/envcheck.py`。这里只把界面取值拼成 argv，再把 `--json` 读回来显示。
+# 检查结果**不拦任何功能**（spec §4）：没装 LibreOffice 也能转换纯 LaTeX 稿。
+
+def _envcheck_cmd() -> list[str]:
+    cmd = _base_cmd("envcheck.py")
+    if cmd is None:
+        raise RuntimeError("找不到环境自检脚本 Engine/envcheck.py：请先在「设置」里指定 Engine 目录，"
+                           "或确认 SLCNEngine.exe 已随包一起安装。")
+    return cmd
+
+
+def envcheck_call(*, json_output: bool = True, out_dir: str = "",
+                  profile: str = "") -> EngineCall:
+    """一次环境自检：`envcheck.py --json [--out-dir DIR] [--profile auto|exe|source]`。
+
+    默认带 `--json`：界面要解析它排版（人类可读的那份是给命令行用户的）。
+    `out_dir` 给了就顺带检查该目录可写，并落一份 `envcheck.json` 进去（诊断包用）；
+    `profile` 留空 = 由引擎自动判断发布包/源码形态。
+    """
+    cmd = _envcheck_cmd()
+    if json_output:
+        cmd.append("--json")
+    if out_dir:
+        cmd += ["--out-dir", out_dir]
+    if profile:
+        cmd += ["--profile", profile]
+    return EngineCall(cmd, "envcheck.py", "环境自检")
 
 
 # ── 环境变量与执行 ───────────────────────────────────────────────────────

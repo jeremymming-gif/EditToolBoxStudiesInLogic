@@ -110,6 +110,7 @@ ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "com
                # 从前它被当成「mac 专属」，本测试还专门守卫「不进 Windows ENTRIES」——
                # Windows 版引用库做完后那条守卫必须反过来，否则一改 ENTRIES 就红。
                "bibdb.py",
+               "envcheck.py",
                "engine_main.py"]
 def _calls_utf8_stdio(tree: ast.AST) -> bool:
     """入口是否调了 `utf8_stdio()` —— 两种写法都认：
