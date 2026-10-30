@@ -402,8 +402,8 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
   `--fix` 只改 `fixable` 命中（`slcn/proofcheck.py` 的 `RULES` 里标 `fixable=True` 的那些）；
   `slcn/proofcheck.py` 导出 `apply_fixes(tex, rep, rule_ids=…)` —— `rule_ids` 传显式 id 子集时
   只改这些规则（传 `()` = 一处不改）。另导出三个常量：
-  `_PROOF_AUTOFIX_IDS`（17 条窄集，初排 Word/LaTeX **两条通道**默认在写盘前套用、只改产物不碰源稿）、
-  `INITIAL_LAYOUT_FIXABLE`（初排转换接线的完整建议集，15 条）、`OPT_IN_FIXABLE`（当前空元组）。
+  `_PROOF_AUTOFIX_IDS`（16 条窄集，初排 Word/LaTeX **两条通道**默认在写盘前套用、只改产物不碰源稿；ZH-23 自 B-280 起降为只报、已移出）、
+  `INITIAL_LAYOUT_FIXABLE`（初排转换接线的完整建议集，14 条）、`OPT_IN_FIXABLE`（当前空元组）。
 - `templatecheck`：默认写 `<产品目录>/<stem>_模板合规.md`（`--out` 可挪走）；
   **report-only，没有 `--fix`**，输入/产品文件字节零变化；canonical 模板取自 public 仓
   `编辑笔记/模板文件/`（`slcn/templates.py` 的 `TPL_DIR` / `AVAILABLE_STY`；`--template <path>` 可覆盖），

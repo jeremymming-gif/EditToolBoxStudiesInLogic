@@ -228,19 +228,21 @@ check("(a) ZH-21 分号 --fix 与幂等",
       and not [h for h in P.check("甲说；\\footnote{注}乙说。\n", lang="zh").hits
                if h.rule_id == "ZH-21"])
 
-# B-278 新增 ZH-23：带括号引用组的句末标点在括号后 → 搬到括号前（正文/脚注同判）。
+# B-278 新增 ZH-23：带括号引用组的句末标点在括号后（正文/脚注同判）；
+# B-280 起 ZH-23 降为只报（守卫 A：见/参见/详见/例如/譬如/诸如/即 前置跳过；
+# 守卫 B：`；` 收尾跳过），命中仍列出但 fixable=False。
 _zh23_cases = (
     ("甲说（\\parencite{k}）。\n", "。（\\parencite{k}）", "\\parencite 组（正文）"),
-    ("甲说\\footnote{见（\\parencite{k}）。}随后。\n", "。（\\parencite{k}）", "脚注内同判"),
+    ("甲说\\footnote{文本（\\parencite{k}）。}随后。\n", "。（\\parencite{k}）", "脚注内同判"),
     ("甲说（\\ct{k}）。\n", "。（\\ct{k}）", "\\ct 组"),
     ("甲说\\pct{k}。\n", "。\\pct{k}", "自带括号的 \\pct 裸形态"),
-    ("甲说（\\parencite{k}）；乙说。\n", "；（\\parencite{k}）", "分号同样搬"),
+    ("意见（\\parencite{k}）。\n", "。（\\parencite{k}）", "守卫 A 不误伤「意见」"),
 )
 for _tex, _repl, _why in _zh23_cases:
     _hs = hits_of(_tex, "ZH-23")
-    check(f"(a) ZH-23 正例：{_why}", len(_hs) == 1 and _hs[0].fixable
+    check(f"(a) ZH-23 正例：{_why}", len(_hs) == 1 and not _hs[0].fixable
           and _hs[0].replacement == _repl,
-          repr([(h.text, h.replacement) for h in _hs]))
+          repr([(h.text, h.replacement, h.fixable) for h in _hs]))
 for _tex, _why in (
     ("甲（\\parencite{a}）说（\\parencite{b}）。\n", "同句两组（整句跳过）"),
     ("甲（\\parencite{a}。另）。\n", "组内已有句号"),
@@ -248,13 +250,28 @@ for _tex, _why in (
     ("甲说。（\\parencite{k}）\n", "已是正确序"),
     ("甲说：\\parencite{k}。\n", "冒号场景不纳入"),
     ("甲说\\parencite{k}。\n", "不加括号的引用不动"),
+    # B-280 守卫 A：引用组是及物动词/引导语的宾语 → 跳过（不报不改）
+    ("见（\\parencite{k}）。\n", "守卫 A：见"),
+    ("参见（\\parencite{k}）。\n", "守卫 A：参见"),
+    ("详见（\\parencite{k}）。\n", "守卫 A：详见"),
+    ("例如（\\parencite{k}）。\n", "守卫 A：例如"),
+    ("譬如（\\parencite{k}）。\n", "守卫 A：譬如"),
+    ("诸如（\\parencite{k}）。\n", "守卫 A：诸如"),
+    ("即（\\parencite{k}）。\n", "守卫 A：即"),
+    # B-280 守卫 B：`；` 收尾的分句归属会滑向下一分句 → 跳过
+    ("甲说（\\parencite{k}）；乙说。\n", "守卫 B：； 收尾"),
 ):
     check(f"(a) ZH-23 反例不报：{_why}", not hits_of(_tex, "ZH-23"), _tex)
-check("(a) ZH-23 幂等：改完再跑不再新增",
+check("(a) ZH-23 Rule.fixable is False（B-280 过渡态：只报不改）",
+      next(r for r in P.RULES if r.id == "ZH-23").fixable is False)
+check("(a) ZH-23 不在初排自动修白名单（INITIAL_LAYOUT_FIXABLE，15→14）",
+      "ZH-23" not in P.INITIAL_LAYOUT_FIXABLE
+      and len(P.INITIAL_LAYOUT_FIXABLE) == 14,
+      repr(P.INITIAL_LAYOUT_FIXABLE))
+check("(a) ZH-23 只报：apply_fixes 不动文本",
       P.apply_fixes("甲说（\\parencite{k}）。\n",
                     P.check("甲说（\\parencite{k}）。\n", lang="zh"))[0]
-      == "甲说。（\\parencite{k}）\n"
-      and not hits_of("甲说。（\\parencite{k}）\n", "ZH-23"))
+      == "甲说（\\parencite{k}）。\n")
 
 # 数学环境（手册 §数学环境）
 check("(a) ZH-13 数学里的三个点 → 报", len(hits_of("$a_1,...,a_n$\n", "ZH-13")) == 1)

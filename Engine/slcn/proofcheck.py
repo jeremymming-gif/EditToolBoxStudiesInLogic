@@ -555,6 +555,33 @@ _ZH23_GROUP_RE = re.compile(
     r"（[^（）]*?" + _ZH23_CITE_CMD + r"[^{}]*\}[^（）]*?）([。；])")
 _ZH23_BARE_RE = re.compile(r"\\(?:pct|pcp|pcpp)\{[^{}]*\}([。；])")
 
+#: B-280 守卫 A（ZH-23）：组前若以这些及物动词/引导语收尾，引用组是它们的宾语
+#: （`见（…cite…）。`），句末标点不能前移 → 跳过不报。按 token 精确后缀匹配。
+_ZH23_GUARD_A_WORDS: tuple[str, ...] = ("参见", "详见", "例如", "譬如", "诸如", "即", "见")
+#: 回看窗口：组左括号前最多取 6 个非空白字符（允许其间夹顿号/空格）。
+_ZH23_GUARD_A_WINDOW = 6
+
+
+def _zh23_guard_a(mask: str, start: int) -> bool:
+    r"""B-280 守卫 A：组前 ≤6 个非空白字符以「见/参见/详见/例如/譬如/诸如/即」收尾。
+
+    「意见（…）」里的「见」是名词、不是及物动词，不触发守卫。
+    """
+    chars: list[str] = []
+    k = start - 1
+    while k >= 0 and len(chars) < _ZH23_GUARD_A_WINDOW:
+        if not mask[k].isspace():
+            chars.append(mask[k])
+        k -= 1
+    before = "".join(reversed(chars))
+    for word in _ZH23_GUARD_A_WORDS:
+        if not before.endswith(word):
+            continue
+        if word == "见" and before.endswith("意见"):
+            continue
+        return True
+    return False
+
 
 def _zh23_sentence_bounds(mask: str, pos: int,
                           spans: list[tuple[int, int]]) -> tuple[int, int]:
@@ -585,6 +612,9 @@ def _zh23_hits(tex: str, mask: str) -> list[tuple[int, int]]:
     排除：英文半角 `(...)`、不加括号的 `\cite{…}。`、`：` 场景、组内已有句末句读、
     同句出现两组及以上（整句跳过，与手册 4.2「同句两处脚注」同一纪律）、
     行首/句读后的独立括注（前面没有正文可承接搬过来的标点）。正文与脚注内同判。
+
+    B-280 守卫：A=组前 ≤6 字以「见/参见/详见/例如/譬如/诸如/即」收尾（引用组作宾语）→ 跳过；
+    B=`；` 收尾（分句归属会滑向下一分句）→ 跳过。ZH-23 自 B-280 起**只报不改**。
     """
     spans = _footnote_spans(mask)
     cands: list[tuple[int, int, str]] = []
@@ -612,6 +642,9 @@ def _zh23_hits(tex: str, mask: str) -> list[tuple[int, int]]:
     for start, end, _kind in cands:
         if counts[_zh23_sentence_bounds(mask, start, spans)] > 1:
             continue
+        # 守卫 B（B-280）：`；` 收尾 → 跳过（引用归属会滑向下一分句）。
+        if mask[end - 1] == "；":
+            continue
         body = mask[start:end - 1]
         if "。" in body or "！" in body or "？" in body:   # 组内已有句末句读
             continue
@@ -619,6 +652,9 @@ def _zh23_hits(tex: str, mask: str) -> list[tuple[int, int]]:
         while left >= 0 and mask[left] in " \t":
             left -= 1
         if left < 0 or mask[left] in "\n。！？；：":
+            continue
+        # 守卫 A（B-280）：组前是「见/参见/详见/例如/即…」→ 跳过（引用组作宾语）。
+        if _zh23_guard_a(mask, start):
             continue
         out.append((start, end))
     return out
@@ -717,10 +753,11 @@ RULES: list[Rule] = [
          "", "改用 \\footnotemark{} + 环境后的 \\footnotetext{}", langs=("zh", "en"),
          scope="raw"),
     # ZH-23 用专用扫描（pattern 留空）：要按括号配对、按句聚合，见 `_zh23_hits()`。
+    # B-280 起降为**只报**（守卫 A+B 观察期；是否放回自动修留待后续批次/用户决定）。
     Rule("ZH-23", "带括号引用组的句末标点在括号之后",
          "手册 §校对规范·常规 4.1/5.1–5.2（脚注与文献引用都放在逗号前、句号后）",
          "", "把句末标点移到括号之前：文本。（\\parencite{…}）", langs=("zh",),
-         scope="raw", fixable=True),
+         scope="raw", fixable=False),
 
     # ── 英文稿件（手册 §英文文章的特殊规范；经验书 预校正·英文）──────────
     Rule("EN-01", "年份前的半角括号缺空格", "经验书 预校正·英文（检索 [a-zA-Z]\\(\\d）",
@@ -750,9 +787,11 @@ RULES: list[Rule] = [
 #: 2026-10-28 用户拍板（m01116/m01132，选项 A）：ZH-08 连接号按新口径**默认启用**；
 #: 汉字-汉字、小写英文邻、数学/命令参数/URL 等仍在 ZH-08 内部静默，不会改产物。
 #: 2026-10-30（B-272）ZH-12 句末脚注后补 `\,` 也进入默认白名单（判据见 `_zh12_hits()`）。
+#: 2026-10-30（B-280）ZH-23 在守卫 A+B 观察期降为**只报**，从本白名单移除（15→14）；
+#: 是否放回自动修留待后续批次/用户决定（见 `Engine/docs/PROOF_RULES.md` ZH-23 条）。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
-    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "ZH-23", "EN-01", "EN-02", "EN-03",
+    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "EN-01", "EN-02", "EN-03",
 )
 
 #: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
@@ -1059,7 +1098,7 @@ def check(tex: str, lang: str = "zh") -> Report:
                 basis="手册 §校对规范·常规 4.1/5.1–5.2（引用与脚注都放在句号后、逗号前）",
                 line=line, col=col, start=start, end=end,
                 text=seg.replace("\n", "⏎"),
-                advice="把句末标点移到括号之前", fixable=True,
+                advice="把句末标点移到括号之前", fixable=False,
                 replacement=seg[-1] + seg[:-1],
             ))
 
@@ -1109,7 +1148,8 @@ def apply_fixes(tex: str, rep: Report,
 
     `rule_ids`：只动这些规则（`None` = 全部 fixable，即 `--fix` 的默认口径）。
     初排转换接线时应传 `INITIAL_LAYOUT_FIXABLE`（2026-10-28 起含 ZH-08 新口径、
-    2026-10-30 B-272 起含 ZH-12 句末脚注补 `\,`、B-273 起含 ZH-21 脚注句号换位）；
+    2026-10-30 B-272 起含 ZH-12 句末脚注补 `\,`、B-273 起含 ZH-21 脚注句号换位；
+    B-280 起 ZH-23 降为只报、不在该集合内）；
     `OPT_IN_FIXABLE` 目前为空，供后批把「暂不默认启用」的规则单独列出。
     """
     todo = [h for h in rep.hits if h.fixable and h.replacement is not None

@@ -1813,15 +1813,17 @@ def _merge_en_metadata_source(
 # 2026-10-30（B-272 / spec b272-zh12-footnote-space）：ZH-12「句末脚注后补 `\,`」进窄集，
 # 初排 Word 通道默认套用（判据在 `proofcheck._zh12_hits()`，支持嵌套花括号）。
 # 2026-10-30（B-278 / spec b278-proofcheck-default-autofix-rules-reliability）：窄集扩到
-# 一校 `INITIAL_LAYOUT_FIXABLE` 的**全部安全项**——ZH-09/10/11/14/21/23 入库；两通道初排
+# 一校 `INITIAL_LAYOUT_FIXABLE` 的**安全项**——ZH-09/10/11/14/21 入库；两通道初排
 # 默认自动修（`apply_proof_autofix`），LaTeX 通道只改产物、不碰源稿。ZH-10/11 本身
 # fixable=False，由 mover 按命中 span 搬位（不再全文乱搬）。
+# 2026-10-30（B-280 / spec b280-zh23-guards-a-b）：ZH-23 在守卫 A+B 观察期降为**只报**，
+# 移出窄集（17→16）；初排两通道都不再自动改它，一校核查仍把它列入报告。
 #
 # 实现刻意只用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
 # `apply_fixes(tex, sub)`），不传 rules-docs 新增的 `rule_ids` 参数 → 回滚免疫。
 _PROOF_AUTOFIX_IDS: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08", "ZH-09",
-    "ZH-10", "ZH-11", "ZH-12", "ZH-14", "ZH-21", "ZH-23", "EN-01", "EN-02", "EN-03",
+    "ZH-10", "ZH-11", "ZH-12", "ZH-14", "ZH-21", "EN-01", "EN-02", "EN-03",
 )
 
 
@@ -2203,9 +2205,9 @@ def build_docx(
                     按「仅同目录」口径发现，与 `find_bib()` 同一纪律）。
                     默认 None = 不接第二源 = 与从前逐字节相同（`corpus.py` /
                     `run_poc.py` 等既有调用方不带这个参数，行为不变）。
-    proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6；B-278 扩到两通道全安全集）：
+    proof_autofix   **一校可自动改子集接进初排**（期 87 P1-6；B-278 扩到两通道安全集）：
                     True（默认）= 生成后自动套用 `_PROOF_AUTOFIX_IDS`（ZH-01…06、08、09、
-                    10、11、12、14、21、23、EN-01/02/03）：替换类用 `apply_fixes`，
+                    10、11、12、14、21、EN-01/02/03）：替换类用 `apply_fixes`，
                     脚注/引文位序（ZH-10/11）按命中 span 搬位（mover），ZH-08 按 2026-10-28
                     新口径（小写英文邻/汉字-汉字/数学/命令参数保持，不会改错），ZH-12 在
                     句末标点后的脚注与紧随汉字之间补 `\\,`（B-272）；
