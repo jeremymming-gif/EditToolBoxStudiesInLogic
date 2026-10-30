@@ -22,7 +22,9 @@ import Foundation
 ///     （压掉的位置记 warning，不静默），所以 GUI 永远不会生成带空档的 JSON；
 ///   · 多单位数组每项一行，由引擎用 `\\` 拼接（GUI 不预拼、不设分隔符）；
 ///   · `running_title_cn/en` 本表单 v1 不暴露（不写键 = 未提供）；
-///   · 本表单只在**普通转换**下传（两段式协同引擎对 JSON 明确 exit 2；只扫描不产出交付物）。
+///   · 普通转换与**两段式第一段**都下传（B-287 起引擎接受 `--metadata-json` + 协同）：
+///     第一段把值写进暂存 `.tex` 并在状态里记 sha256，第二段从状态继承、不需要再传；
+///     只扫描源稿不产出交付物 → 不传。
 struct MetadataForm: Equatable {
 
     // MARK: - 契约常量
@@ -41,17 +43,21 @@ struct MetadataForm: Equatable {
     /// - `formOnly`：只显示「填写元数据…」表单。普通转换（`coop == false`）走这里；
     ///   「只扫描源稿」也按普通处理（引擎 `--scan` 在消费 overrides 之前就 `return 0`，
     ///   人工元数据对它没有意义，入口不因此消失——扫描只是当次动作）。
-    /// - `inlineFallback`：表单不适用，显示旧「正文信息覆盖」7 内联字段兜底。
-    ///   两段式协同走这里：引擎对 `--metadata-json` + 协同**明确 exit 2**（批63b v1 不支持）。
+    /// - `formWithInlineFallback`：表单是主入口 + 旧「正文信息覆盖」7 内联字段折叠兜底
+    ///   （表单填了的字段运行前清零对应内联值）。B-287 起两段式第一段走这里：
+    ///   引擎接受 `--metadata-json` + 协同，值写进暂存 `.tex`，第二段从状态继承。
+    /// - `inlineFallback`：只显示旧 7 内联字段（B-287 前两段式的入口；保留 case 兼容旧调用方，
+    ///   `entryMode` 不再返回它）。
     enum MetadataEntryMode: Equatable {
         case formOnly
+        case formWithInlineFallback
         case inlineFallback
     }
 
     /// 本次运行的入口路由；与 `ConvertFeature.arguments()` 的
     /// `let coop = o.scanOnly ? .off : o.coopPhase` 同口径（只扫描时协同被忽略）。
     static func entryMode(scanOnly: Bool, coop: Bool) -> MetadataEntryMode {
-        (coop && !scanOnly) ? .inlineFallback : .formOnly
+        (coop && !scanOnly) ? .formWithInlineFallback : .formOnly
     }
 
     // MARK: - B-111：高级选项「第一作者」→ 表单第一作者中文姓名（单向预填）
@@ -460,8 +466,10 @@ struct MetadataForm: Equatable {
     }
 
     /// 这次运行该不该下传 `--metadata-json`：
-    /// 只扫描源稿不产出交付物 → 不传；两段式协同 → 引擎会 exit 2，**不传**。
+    /// 只扫描源稿不产出交付物 → 不传；普通转换与两段式第一段都传。
+    /// 第二段由 `ConvertFeature.arguments()` 走最小集（从暂存状态继承），不经过这里。
     static func shouldAttach(scanOnly: Bool, coop: Bool) -> Bool {
-        !scanOnly && !coop
+        _ = coop
+        return !scanOnly
     }
 }

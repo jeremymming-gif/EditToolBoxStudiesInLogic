@@ -64,9 +64,10 @@
    单片失败 fail-soft（标「AI 建议不可用」，退出码 0）；预算闸超限 exit 2 零请求。
    位置：`Engine/convert.py` 的 `--llm-fulltext` / `render_llm_fulltext_report()`；`Engine/tests/test_batch60_llm_fulltext.py`。
 
-9. **人工元数据只经 `--metadata-json`**（第 63b 批）：GUI「填写元数据…」→ 临时 JSON → 该参数；**不传时产物/argv/stdout 与批 63 逐字节相同**，
-   空值不覆盖、缺字段仍写占位；**两段式协同 + `--metadata-json` → exit 2**（v1 不支持）；`.doc/.docx` 自动元数据识别已取消，`.docx` 仅 CLI 高级兜底。
-   位置：`Engine/convert.py` 的 `load_metadata_json()` / `--metadata-json`；`Engine/slcn/build.py` 的 `structured_fields()`；`Engine/tests/test_batch63b_metadata_json.py`。
+9. **人工元数据只经 `--metadata-json`**（第 63b 批；B-287 起两段式同用）：GUI「填写元数据…」→ 临时 JSON → 该参数；**不传时产物/argv/stdout 与批 63 逐字节相同**，
+   空值不覆盖、缺字段仍写占位；**两段式第一段写进暂存 `.tex` 并在状态 `structured_metadata` 记 sha256（schema 仍 1）**，第二段不带 JSON、照旧从暂存状态继承；
+   第二段显式带 JSON 必须 sha256 相同，不同 / 旧状态无该键 → exit 2（请重跑第一段）；`.doc/.docx` 自动元数据识别已取消，`.docx` 仅 CLI 高级兜底。
+   位置：`Engine/convert.py` 的 `load_metadata_json()` / `--metadata-json`；`Engine/slcn/coop.py` 的 `make_structured_metadata()` / `check_structured_metadata()`；`Engine/slcn/build.py` 的 `structured_fields()`；`Engine/tests/test_batch63b_metadata_json.py`、`Engine/tests/test_b287_coop_metadata.py`。
 
 ## 四、判据与体例的权威位置
 

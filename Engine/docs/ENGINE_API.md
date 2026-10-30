@@ -51,7 +51,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--source` | **必填**。`.docx` / `.doc` / `.tex` |
 | `--out` | **必填**。产物写到 `<out>/<作者名>/` |
 | `--metadata` | 元数据文件（上一轮模板稿等）。**第 63b 批起元数据推荐路线 = GUI「填写元数据…」表单 → `--metadata-json`**；**`.doc/.docx` 自动元数据识别已取消**（B2 方案回退、GUI 入口撤下）。**Word 源**指到 `.docx` 仍当「英文元数据第二源」（第 76 条，行为不变）。**第 63 批 E2 的 `.docx` 能力保留、但降级为高级兜底**：**仅 LaTeX 通道**支持 `.tex` / `.docx`（`.docx` → Word 解析器提取题名/作者/单位/邮箱/摘要/关键词 → 临时 `.tex`；多作者只填第一作者槽位；不承诺 Word→LaTeX 全文转换、不搬前言依赖；0 字段/坏 docx/未知二进制 → exit 2）；**`.docx` = CLI 高级、GUI 不提供、不推荐**；老式 `.doc` 任何通道都不再转换（直接给 → exit 2 提示另存 `.docx`/`.tex`；第 63b 批起 GUI 的 `textutil` 转换已撤）；**两段式 + Word 元数据文件 → exit 2**。`.tex`/无元数据逐字节不变。详见下「元数据文件契约」 |
-| `--metadata-json` | **第 63b 批（GUI 人工元数据）**：结构化 JSON 文件（多作者 1–5 / 每位多单位 / 中英题名摘要关键词 / 邮箱），供 GUI「填写元数据…」表单下传，也是 CLI 高级入口。**优先级最高**（> 旧 7 个覆盖参数 > `--metadata` 元数据文件）；空值不覆盖、缺字段仍写「【未识别…】」占位；坏 JSON/文件不存在/类型错/作者 >5/作者跳号/两段式同用 → **exit 2 且不产生产物**；不传时产物/argv/stdout 与批 63 逐字节相同。结构/映射/错误清单见下「`--metadata-json` 契约」 |
+| `--metadata-json` | **第 63b 批（GUI 人工元数据）**：结构化 JSON 文件（多作者 1–5 / 每位多单位 / 中英题名摘要关键词 / 邮箱），供 GUI「填写元数据…」表单下传，也是 CLI 高级入口。**优先级最高**（> 旧 7 个覆盖参数 > `--metadata` 元数据文件）；空值不覆盖、缺字段仍写「【未识别…】」占位；坏 JSON/文件不存在/类型错/作者 >5/作者跳号 → **exit 2 且不产生产物**；**B-287 起两段式第一段可用**（值写进暂存 `.tex`、状态记 sha256），第二段不带 JSON、从暂存状态继承；第二段显式带 JSON 须 sha256 相同，不同/旧状态无记录 → **exit 2**（请重跑第一段）。不传时产物/argv/stdout 与批 63 逐字节相同。结构/映射/错误清单见下「`--metadata-json` 契约」 |
 | `--refs` / `--bib` / `--name` / `--author` / `--lang` / `--sty` / `--skeleton` | 见 `convert.py --help`。⚠️ 第 134 条起 `--refs` 的自动发现改保守：**有真 `.bib`**（`--bib` / 源内 `\addbibresource` / `\bibliography` 指向且文件存在 / 同目录 `.bib`）时**不自动合并**附件（要合并请显式 `--refs`）；无真 bib 时自动挑候选（真 BibTeX 优先，文本清单须过结构校验：拒 `\href{...}` / 相邻 `}{` / 疑似一行两条），日志逐条写「采用 / 跳过 + 原因」 |
 | `--vol --issue --year --pages --received --editor --grants` | 编辑侧出版信息，不填就留模板默认值 |
 | `--compile` `--clean` `--source-pdf` | 编译出 PDF / 清中间文件 / 导出原稿 PDF（供矢量形状截图） |
@@ -81,7 +81,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 **多作者只填第一作者槽位**（`myfirstauthor`）；**只取元数据，不做 Word→LaTeX 全文转换、不搬前言依赖**。
 错误一律 exit 2（`die()`，stderr）：提取 0 字段 / `.docx` 损坏或不是有效 Word / 未知二进制文件 / 老式 `.doc`
 （提示另存 `.docx`/`.tex`；第 63b 批起 GUI 不再自动转 `.doc`）/ **两段式（`--coop-taskbook-only`/`--coop-replies`）+ Word 元数据文件**
-（临时文件无法跨进程复用；改用 `.tex` 元数据或先跑普通转换）。`.tex` 元数据 / 不给 `--metadata` → 与批62
+（临时文件无法跨进程复用；改用 `.tex` 元数据或先跑普通转换）。**人工填写元数据（`--metadata-json`）B-287 起可用于两段式第一段**（值进暂存 `.tex`、状态记 sha256，第二段从状态继承）。`.tex` 元数据 / 不给 `--metadata` → 与批62
 逐字节相同；Word 源 + `.docx` 英文第二源（第 76 条）不变。GUI↔CLI 见下。
 
 
@@ -117,8 +117,16 @@ Word 通道同样生效）。这是 GUI「填写元数据…」表单的下传�
 - 全部字段为空 / 没有可写作者 → warning「没有可写入的字段 / 作者（按未提供处理）」，产物与不传该参数一致。
 - 文件不存在 / 不可读 / JSON 语法错（报 `文件:行:列`）/ 顶层不是对象 / 字段类型错（报路径，如
   `authors[1].affiliations_cn 必须是字符串数组`）→ **exit 2，不产生产物目录**。
-- **两段式协同（`--coop-taskbook-only` / `--coop-replies`）+ `--metadata-json` → exit 2**（v1 不支持：
-  第二段按暂存状态重跑，JSON 无法跨进程保留）。
+- **两段式协同（B-287 起）**：`--coop-taskbook-only`（第一段）+ `--metadata-json` 照常接受——值写进暂存 `.tex`，
+  状态顶层记 `structured_metadata`（见下「两段式暂存状态」）；`--coop-replies`（第二段）不带 JSON 时从暂存状态继承
+  （交付 `.tex` 已含值，不重排版）；第二段显式带 JSON 必须与记录的 sha256 相同，不同 / 旧状态无该键 → exit 2
+  （提示重跑第一段）。第一段不带 JSON 时状态不写该键、`params` 指纹逐字节不变（默认零变化）。
+
+**两段式暂存状态（B-287 起）**：`_AI协同状态.json` 顶层可选
+`structured_metadata = {"schema":"metadata.v1","origin":"cli-json"|"gui-form","values":{…},"sha256":"…"}`；
+`sha256` = 归一化 `values` 的 canonical JSON 哈希（`sort_keys` + 紧凑分隔符）；`schema` 仍为 1，不带人工元数据时
+不写该键。`params` 仅在带人工元数据时多一项 `structured_metadata_sha256`（与上面同值、随 fingerprint 一起算）。
+第二段显式带 JSON 时与 `sha256` 比对；旧状态无该键 → exit 2「请重跑第一段」。
 
 **映射（`is_en = "mytitleCN" in tpl_fields`，与 `build.py` 现有分流同源）**：
 
@@ -179,8 +187,8 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 - **`.doc/.docx` 自动识别已撤下**：LaTeX 源的「元数据文件」**只接受 `.tex`**（picker 显示 `.tex`/`.docx`；选中/拖入
   `.docx` 等其它类型时界面立即拦下、写日志并清空该路径）；**Word 源 `.docx` 的「英文元数据第二源」
   （第 76 条）行为不变**，可显式指定；`.doc` 不再转临时 `.docx`（提示另存 `.docx`）。CLI 高级兜底见上「元数据文件契约」。
-- **两段式协同 v1 不支持人工元数据**：协同模式下「填写元数据…」按钮禁用、运行时不传 `--metadata-json` 并写日志
-  （引擎对二者同用也明确 exit 2）；请改用普通转换或 `.tex` 元数据文件。
+- **两段式协同（B-287 起）**：表单随时可用；第一段表单值随 `--metadata-json` 写进初排，第二段 argv 保持最小集
+  （不带 JSON、沿用初排元数据；表单后来改动不生效，GUI 运行前会记一行日志提示）；不再禁用按钮/不再报「暂不支持」。
 - **本次运行有效**：表单值不持久化（只在当前 App 会话内存里）；不改变默认路径。
 默认路径零变化：不加 `--llm-fulltext`、两栏保持默认、表单全空且元数据文件留空时，argv/产物/stdout 与批 63 逐字节相同。
 

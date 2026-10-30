@@ -50,6 +50,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import clean as _clean, platform as _plat, refmark as _refmark  # noqa: E402
 from slcn import naming as N, paths as _paths, sources as _sources, templates as T, bibitem_convert as _bibitem  # noqa: E402  B-233 转换开关
+from slcn import coop as _coop  # noqa: E402  B-287：人工元数据来源/摘要（状态记录）
 
 # ── B-229：旧 convert 的 81 个顶层符号全部从 owning 模块显式 re-export（`is` 同一对象）──
 from slcn.convert_metadata import (  # noqa: E402
@@ -260,14 +261,10 @@ def main() -> int:
     _meta_paths = [p for p in _meta_paths if p not in _meta_json_paths]
     metadata = _meta_paths[0] if _meta_paths else None
     # 批63b：GUI 人工元数据（结构化 JSON）——优先级最高；坏 JSON/不存在 exit 2。
-    # 协同两段式第二段按暂存状态重跑（参数存 state 里，不含 JSON）→ 明确不支持，
-    # 与 Word 元数据文件同一先例，绝不静默丢元数据。
+    # B-287：两段式也接受：第一段写进暂存 `.tex` 并把归一化值记进状态，第二段只
+    # 校验 sha256（交付物来自暂存 `.tex`，不重新排版）；旧状态兼容见 check_structured_metadata。
     structured_meta: dict | None = None
     if args.metadata_json:
-        if args.coop_taskbook_only or args.coop_replies:
-            die("--metadata-json 暂不支持协同两段式"
-                "（第二段按暂存状态重跑，人工元数据无法跨进程保留）："
-                "请先完成两段式，或改用普通转换 / .tex 元数据文件。")
         try:
             structured_meta, _mj_warnings = load_metadata_json(args.metadata_json)
         except MetadataJSONError as e:
@@ -275,9 +272,6 @@ def main() -> int:
         for _w in _mj_warnings:
             print(f"  ⚠ {_w}")
     for _jp in _meta_json_paths:
-        if args.coop_taskbook_only or args.coop_replies:
-            die("--metadata 指向 .json 时暂不支持协同两段式"
-                "（第二段按暂存状态重跑，人工元数据无法跨进程保留）：请改用普通转换。")
         try:
             _st, _jw = load_metadata_json(_jp)
         except MetadataJSONError as e:
@@ -301,6 +295,11 @@ def main() -> int:
                 _filled += 1
             print(f"人工元数据（--metadata {os.path.basename(_jp)}）：补入 {_filled} 项"
                   "（与 --metadata-json 重复时以先给的为准）")
+    # B-287：人工元数据来源（GUI 表单临时 JSON / 命令行 JSON）——只进状态记录。
+    _structured_origin = ""
+    if structured_meta:
+        _structured_origin = _coop.metadata_origin(
+            args.metadata_json or (_meta_json_paths[0] if _meta_json_paths else ""))
     # B-223：元数据/补充信息合并预览（dry-run 只读）。给 GUI「预览」按钮用：只读源稿
     # 与补充源，输出预览 JSON；**不建产物目录、不写产物、不写交接单、不留临时文件**。
     if args.metadata_preview_out:
@@ -449,6 +448,7 @@ def main() -> int:
             args, source=source, metadata=metadata or "", out_root=out_root,
             final_dir=final_dir, stage_dir=coop_stage, stem=stem,
             lang=lang, sty=sel.sty, skeleton=sel.skeleton,
+            structured=structured_meta, structured_origin=_structured_origin,
         )
     if args.coop_taskbook_only:
         out_dir = coop_stage
@@ -666,7 +666,9 @@ def main() -> int:
         run_coop_taskbook(args, res, source=source, metadata=metadata or "",
                           out_root=out_root, out_dir=out_dir, final_dir=final_dir,
                           stem=stem, lang=lang, sel=sel, coop_taskbook_path=coop_taskbook_path,
-                          coop_bib_keys=coop_bib_keys, coop_bibdb=coop_bibdb)
+                          coop_bib_keys=coop_bib_keys, coop_bibdb=coop_bibdb,
+                          structured_metadata=structured_meta,
+                          structured_origin=_structured_origin)
 
     # ⑨ 编译（**放在 ⑪ 之后**：并进 reference.bib 的 AI 结果要体现在 PDF 里）
     compile_failed = ""

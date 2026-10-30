@@ -21,8 +21,9 @@ enum ConvertFeature {
         /// 拼成多个 `--metadata`（引擎 append；单值语义与 v1.4.0 逐字节相同）。
         var metadataSources: [String] = []
         /// 批63b：人工填写元数据的临时 JSON 路径（--metadata-json；空 = 不传）。
-        /// 由 `run()` 写成 `/tmp` 文件、运行结束清理；只在普通转换下传
-        /// （两段式协同引擎会 exit 2；只扫描源稿不产出交付物）。
+        /// 由 `run()` 写成 `/tmp` 文件、运行结束清理；普通转换与两段式**第一段**都下传
+        /// （B-287 起引擎接受 JSON + 协同，值写进暂存 `.tex`）；第二段走
+        /// `CoopFeature.secondPhaseArguments` 最小集，天然不含它；只扫描不产出交付物。
         var metadataJSON = ""
         var bib = ""             // --bib
         var refs = ""            // --refs
@@ -454,10 +455,11 @@ enum ConvertFeature {
         // 旧单值字段仍先拼：只给 `metadata` 时 argv 与批63 逐字节相同。
         for path in o.metadataSources { add("--metadata", path) }
         // 批63b：人工填写元数据 → 临时 JSON（引擎优先级最高：JSON > 旧 7 参数 > --metadata）。
-        // **只在普通转换下传**：两段式协同引擎对 JSON 明确 exit 2（v1 不支持），
+        // B-287：普通转换与两段式**第一段**都下传（引擎接受 JSON + 协同，值写进暂存 .tex）；
+        // 第二段在本函数开头就 `return secondPhaseArguments`，天然不含它。
         // 只扫描源稿不产出交付物、传了也没意义。默认空路径时 add() 自动跳过 →
         // 「没打开过表单」的 argv 与批63 逐字节相同。
-        if coop == .off && !o.scanOnly {
+        if !o.scanOnly {
             add("--metadata-json", o.metadataJSON)
         }
         add("--bib", o.bib)

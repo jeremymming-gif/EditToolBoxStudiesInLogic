@@ -2768,17 +2768,18 @@ check("q63b-argv-json",
 var q63bScanOpts = q63bArgvOpts; q63bScanOpts.scanOnly = true
 var q63bPh1Opts = q63bArgvOpts; q63bPh1Opts.coopPhase = .first
 var q63bPh2Opts = q63bArgvOpts; q63bPh2Opts.coopPhase = .second
-check("q63b-argv-not-coop-scan",
-      "两段式（ph1/ph2）与「只扫描源稿」都不传 --metadata-json（引擎对 JSON+协同 exit 2；扫描不产出交付物）",
-      !ConvertFeature.arguments(q63bScanOpts).contains("--metadata-json")
-        && !ConvertFeature.arguments(q63bPh1Opts).contains("--metadata-json")
-        && !ConvertFeature.arguments(q63bPh2Opts).contains("--metadata-json"),
-      "scan=\(ConvertFeature.arguments(q63bScanOpts)) ph2=\(ConvertFeature.arguments(q63bPh2Opts))")
+check("q63b-argv-coop-routing",
+      "B-287：两段式**第一段**传 --metadata-json（引擎接受 JSON+协同）；第二段最小集与「只扫描」都不传",
+      ConvertFeature.arguments(q63bPh1Opts).contains("--metadata-json")
+        && ConvertFeature.arguments(q63bPh1Opts).contains("/tmp/meta.json")
+        && !ConvertFeature.arguments(q63bPh2Opts).contains("--metadata-json")
+        && !ConvertFeature.arguments(q63bScanOpts).contains("--metadata-json"),
+      "ph1=\(ConvertFeature.arguments(q63bPh1Opts)) scan=\(ConvertFeature.arguments(q63bScanOpts))")
 check("q63b-attach-rule",
-      "下传规则纯函数：普通转换 true；只扫描 / 两段式 false（GUI 与 argv 用同一判据）",
+      "下传规则纯函数：普通转换/两段式 true；只扫描 false（GUI 与 argv 用同一判据）",
       MetadataForm.shouldAttach(scanOnly: false, coop: false)
         && !MetadataForm.shouldAttach(scanOnly: true, coop: false)
-        && !MetadataForm.shouldAttach(scanOnly: false, coop: true),
+        && MetadataForm.shouldAttach(scanOnly: false, coop: true),
       "ok")
 
 // ── 元数据文件三通道（Lead 修正：不能一刀切砍掉 Word 源 .docx「英文元数据第二源」）
@@ -2943,13 +2944,14 @@ check("q63b-run-wiring",
         && q63TabSrc.contains("MetadataForm.removeTemporaryFile(temp)")
         && q63TabSrc.contains("不会静默丢掉已填内容")
         && q63TabSrc.contains("coversInlineOverride")
-        && q63TabSrc.contains("两段式协同暂不支持人工填写元数据"),
+        && q63TabSrc.contains("coopSecondPhaseMetadataNoteText")
+        && q63TabSrc.contains("第二段沿用初排元数据"),
       "verdict=\(q63TabSrc.contains("metadataPathVerdict")) cleanup=\(q63TabSrc.contains("removeTemporaryFile(temp)"))")
 check("q63b-conv-wiring",
-      "ConvertFeature：Options.metadataJSON + arguments() 加 --metadata-json（仅 coop==off && !scanOnly）",
+      "ConvertFeature：Options.metadataJSON + arguments() 加 --metadata-json（B-287：仅 !scanOnly；ph2 最小集早退）",
       q63ConvSrc.contains("var metadataJSON = \"\"")
         && q63ConvSrc.contains("add(\"--metadata-json\", o.metadataJSON)")
-        && q63ConvSrc.contains("if coop == .off && !o.scanOnly"),
+        && q63ConvSrc.contains("if !o.scanOnly"),
       "opt=\(q63ConvSrc.contains("var metadataJSON")) flag=\(q63ConvSrc.contains("--metadata-json"))")
 check("q63b-form-log-text",
       "统计/日志文案在纯逻辑里：包含「将写入」「位作者」「项字段」",
@@ -2959,15 +2961,16 @@ check("q63b-form-log-text",
 
 // ═══════════════════════════════════════════════════════════════════════════
 // (q67) 批67 B-017：初排页元数据入口合并（单一入口）+ 模板上限说明/达限提示
-//        方案A：不改模板/引擎；普通转换只显示表单，两段式只显示旧 7 内联兜底。
+//        方案A：不改模板/引擎；普通转换只显示表单，两段式 = 表单主入口 + 折叠内联兜底
+//        （B-287 起；此前两段式只显示旧 7 内联兜底）。
 // ═══════════════════════════════════════════════════════════════════════════
 section("T-q67  B-017：单一元数据入口（路由判据）/ 模板上限说明 / 达限可操作提示")
 
 check("q67-entry-mode",
-      "单入口路由纯逻辑：普通转换 → formOnly；两段式 → inlineFallback；只扫描忽略协同 → formOnly"
-        + "（与 arguments() 的「只扫描时协同被忽略」同口径）",
+      "单入口路由纯逻辑：普通转换 → formOnly；两段式 → formWithInlineFallback；"
+        + "只扫描忽略协同 → formOnly（与 arguments() 同口径）",
       MetadataForm.entryMode(scanOnly: false, coop: false) == .formOnly
-        && MetadataForm.entryMode(scanOnly: false, coop: true) == .inlineFallback
+        && MetadataForm.entryMode(scanOnly: false, coop: true) == .formWithInlineFallback
         && MetadataForm.entryMode(scanOnly: true, coop: true) == .formOnly,
       "normal=\(MetadataForm.entryMode(scanOnly: false, coop: false)) "
         + "coop=\(MetadataForm.entryMode(scanOnly: false, coop: true)) "
@@ -3029,17 +3032,16 @@ check("q67-aff-limit-hint",
       "hints2=\(q67Aff2) hints3=\(q67Aff3)")
 
 check("q67-ui-single-entry",
-      "ConvertTab 接线路由：唯一判据 entryMode → 普通渲染表单 / 两段式渲染内联兜底；"
-        + "入口旁常驻上限说明；两段式「人工元数据表单不适用」说明与已填表单不下传提醒；"
-        + "只扫描也有不下传日志（不静默）",
+      "ConvertTab 接线路由：唯一判据 entryMode → 普通只渲染表单 / 两段式表单+折叠内联兜底；"
+        + "入口旁常驻上限说明；两段式第一段下传说明；只扫描也有不下传日志（不静默）",
       q63TabSrc.contains("MetadataForm.entryMode(scanOnly: false, coop: model.options.coop)")
         && q63TabSrc.contains("metadataFormSection")
-        && q63TabSrc.contains("coopMetadataFallbackSection")
+        && q63TabSrc.contains(".formWithInlineFallback")
+        && q63TabSrc.contains("DisclosureGroup(Self.inlineOverrideHeaderText)")
         && q63TabSrc.contains("MetadataForm.limitSummary")
-        && q63TabSrc.contains("人工元数据表单不适用")
-        && q63TabSrc.contains("已填表单")
+        && q63TabSrc.contains("metadataFormCoopHintText")
         && q63TabSrc.contains("只扫描源稿不产出交付物，本次不下传人工填写内容"),
-      "entry=\(q63TabSrc.contains("MetadataForm.entryMode")) fallback=\(q63TabSrc.contains("coopMetadataFallbackSection"))")
+      "entry=\(q63TabSrc.contains("MetadataForm.entryMode")) fallback=\(q63TabSrc.contains("formWithInlineFallback"))")
 
 check("q67-ui-sheet-limits",
       "表单内上限交互：作者区/单位行显示计数与常驻上限说明；达限时橙色可操作提示 + 按钮 help（无需猜原因）",

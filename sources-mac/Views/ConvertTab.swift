@@ -52,8 +52,8 @@ struct ConvertTab: View {
     // 批67（B-017）：旧「正文信息覆盖」不再是常驻入口——只在**两段式**模式作兜底显示
     // （普通转换的唯一人工元数据入口是「填写元数据…」表单）。
     static let inlineOverrideHeaderText: String =
-        "正文信息覆盖（两段式兜底；只覆盖第一作者/题名/摘要/单位/邮箱；"
-        + "多作者请改用 `.tex` 元数据文件）"
+        "正文信息覆盖（折叠兜底；表单优先，只覆盖第一作者/题名/摘要/单位/邮箱；"
+        + "多作者请填上面的表单）"
     static let inlineOverrideWarningText: String =
         "⚠ 手工覆盖的生效取决于引擎版本：用旧版引擎时日志会提示"
         + "「尚不支持 overrides 参数」，此时不影响转换本身。"
@@ -81,12 +81,9 @@ struct ConvertTab: View {
         "元数据（推荐人工填写；值直接写入交付产物，留空 = 不覆盖）"
     // B-017：普通转换的常驻上限说明（与表单内、docs 同口径；明细来自纯逻辑常量）。
     static let metadataFormLimitText: String = MetadataForm.limitSummary
-    static let metadataFormCoopFallbackTitleText: String =
-        "元数据（两段式协同：人工元数据表单不适用）"
     static let metadataFormCoopHintText: String =
-        "⚠ 两段式协同暂不支持人工填写元数据（引擎会直接退出 2）：表单入口按模式让位，"
-        + "本次不会下传表单内容。请按下面「正文信息覆盖」兜底字段填第一作者/题名/摘要/单位/邮箱"
-        + "（第一段生效；第二段从暂存状态继承，不用重填），或改用普通转换/`.tex` 元数据文件。"
+        "两段式：表单随**第一段**写进初排并在暂存状态记下 sha256；第二段沿用初排元数据"
+        + "（第二段里再改表单不生效）。表单填了的字段优先于「正文信息覆盖」折叠兜底。"
     static let metadataFormPriorityHintText: String =
         "表单优先于 `.tex` 元数据文件；临时 JSON 只在本次运行有效，跑完即删。"
     // AI 说明文案（批63b R2：View 本体在 `ConvertAiHintViews.swift`，文案常量留在本文件，
@@ -130,10 +127,9 @@ struct ConvertTab: View {
         "⚠ 未配置 AI，本次只会生成《文献核实任务书》（不会调用任何模型，"
         + "reference.bib 一个字节不改）。请到「设置」标签页填写 API 地址与模型名，"
         + "「测试连接」可用后再回来勾选。"
-    private static let coopMetadataUnsupportedLogText: String =
-        "元数据：⚠ 两段式协同暂不支持人工填写元数据（引擎会直接退出 2），"
-        + "本次**未下传**表单内容；请改用普通转换，或在「正文信息覆盖」兜底字段里填，"
-        + "或保留 .tex 元数据文件。\n"
+    private static let coopSecondPhaseMetadataNoteText: String =
+        "元数据：第二段沿用初排元数据（从暂存状态继承），表单里后来的改动不生效；"
+        + "要改元数据请重跑第一段。\n"
     private static let scanOnlyMetadataIgnoredLogText: String =
         "元数据：只扫描源稿不产出交付物，本次不下传人工填写内容"
         + "（用「开始转换」跑才生效）。\n"
@@ -615,15 +611,15 @@ struct ConvertTab: View {
     }
 
     /// 批63b：人工填写元数据 → 临时 JSON（--metadata-json，引擎侧优先级最高）。
-    /// 只在普通转换下传（两段式引擎会 exit 2；只扫描不产出交付物）；写失败直接中止——
+    /// 普通转换与两段式**第一段**都下传（B-287：引擎接受 JSON + 协同，值进暂存 .tex）；
+    /// 第二段走最小集、不经过这里；只扫描不产出交付物。写失败直接中止——
     /// 绝不静默丢掉编辑刚填的元数据。
     private func attachMetadataJSON(scanOnly: Bool, coopOn: Bool,
                                     to o: inout ConvertFeature.Options) -> MetadataJSONAttachment {
         guard model.metadataForm.hasAnyValue else { return .notNeeded }
         guard MetadataForm.shouldAttach(scanOnly: scanOnly, coop: coopOn) else {
-            // 两段式 / 只扫描都不下传表单；**不静默**（B-017：只扫描这条也补一句）。
-            if coopOn { log.append(Self.coopMetadataUnsupportedLogText) }
-            else if scanOnly { log.append(Self.scanOnlyMetadataIgnoredLogText) }
+            // 只剩「只扫描」不下传表单；**不静默**（B-017）。
+            if scanOnly { log.append(Self.scanOnlyMetadataIgnoredLogText) }
             return .notNeeded
         }
         guard let json = model.metadataForm.jsonString() else { return .notNeeded }
@@ -650,7 +646,8 @@ struct ConvertTab: View {
 
     /// 批63b：表单优先于旧 7 个内联覆盖字段——表单**填了的字段**在 GUI 侧清零对应内联值。
     /// 逐字段清零而不是一刀切：避免丢掉「先填内联、后只填了表单作者」这类混合输入的值。
-    /// 只在表单**真的下传**时清零：两段式/只扫描下传不了表单，内联值必须原样保留。
+    /// 只在表单**真的下传**时清零：只扫描下传不了表单，内联值必须原样保留
+    /// （两段式第一段也下传，所以同样按字段清零）。
     /// B-017 起普通模式已不渲染内联字段，本函数保留作**防御**（旧状态/旧调用方双源保护）。
     private func clearOverriddenInlineFields(in o: inout ConvertFeature.Options) {
         for field in MetadataForm.InlineOverrideField.allCases
@@ -719,6 +716,9 @@ struct ConvertTab: View {
         o.coopRepliesPaths = paths
         o.coopStage = stage.stageDir
         o.coopApply = model.coopApply     // ⚠ 运行前定格：之后改勾选不影响本次
+        if model.metadataForm.hasAnyValue {
+            log.append(Self.coopSecondPhaseMetadataNoteText)
+        }
         o = CoopFeature.prepare(o, phase: .second)
         model.coopFailure = ""
         model.coopSuggestions = nil       // 新摘要等第二段成功后从 state.stats/jsonl 读

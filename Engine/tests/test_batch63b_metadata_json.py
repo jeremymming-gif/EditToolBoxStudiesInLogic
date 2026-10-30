@@ -710,9 +710,13 @@ def test_bad_json(tmp: str) -> None:
 
     out = os.path.join(d, "out", "coop")
     r = run_convert(src, out, ["--metadata-json", js_ok, "--coop-taskbook-only"])
-    check("⑧-4 协同两段式 + JSON → exit 2 + 明确限制",
-          r.returncode == 2 and "暂不支持协同两段式" in (r.stdout + r.stderr)
-          and not os.path.exists(out), (r.stdout + r.stderr)[-300:])
+    stage_tex = os.path.join(out, "Meta_待核", "Meta.tex")
+    m = macros(stage_tex, "mytitle") if os.path.isfile(stage_tex) else {}
+    check("⑧-4 协同两段式 + JSON → 第一段接受并写进暂存 .tex（B-287 解除限制）",
+          r.returncode == 0 and m.get("mytitle") == "x"
+          and not os.path.exists(os.path.join(out, "Meta"))
+          and "暂不支持" not in (r.stdout + r.stderr),
+          (r.stdout + r.stderr)[-300:])
 
 
 # ── ⑥b 批223：`--metadata-preview-out` 只读预览（表单最高优先；旧判据不变） ──

@@ -326,7 +326,9 @@ def _coop_locate_state(args) -> tuple[str, dict | None, list[str]]:
 
 def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
                      final_dir: str, stage_dir: str, stem: str,
-                     lang: str, sty: str, skeleton: str) -> int:
+                     lang: str, sty: str, skeleton: str,
+                     structured: dict | None = None,
+                     structured_origin: str = "") -> int:
     """`--coop-replies` 的全部收尾逻辑（见模块头注释的第三段）。
 
     任何一步失败都**不 promote**：最终交付目录要么是旧的那一份，要么根本不存在。
@@ -349,10 +351,22 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         end_list_priority=bool(getattr(args, "end_list_priority", False)),
         number_cite_map=bool(getattr(args, "number_cite_map", False)),
         c_class_union=resolve_c_class_union(args), stage_dir=stage_dir,
+        # B-287：ph2 不必重复给 JSON；显式给了才把 sha 带进本次参数（不参与
+        # check_ph2 的逐项比较，单独校验——见下）。
+        structured_sha256=(coop.structured_metadata_sha256(structured)
+                          if structured else ""),
     )
     ok, why = coop.check_ph2(state, params)
     if not ok:
         die(why)
+    # B-287：第二段不能改人工元数据。显式给了 JSON 时与初排记录比 sha256；
+    # 不给则沿用暂存 `.tex` 里的值（promote 直接交付，不重排版）。
+    _ok_sm, _why_sm = coop.check_structured_metadata(state, structured)
+    if not _ok_sm:
+        die(_why_sm)
+    if structured:
+        print(f"   人工元数据与初排一致（sha256 {coop.structured_metadata_sha256(structured)[:12]}…；"
+              f"来源 {structured_origin or 'cli-json'}）")
 
     # 最终目录已有内容时，只有「全是本工具产物」才允许原子替换；否则要 --force。
     if os.path.isdir(final_dir) and not args.force:
@@ -1229,7 +1243,8 @@ def build_arg_parser():
     return ap
 
 def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_dir,
-                      stem, lang, sel, coop_taskbook_path, coop_bib_keys, coop_bibdb):
+                      stem, lang, sel, coop_taskbook_path, coop_bib_keys, coop_bibdb,
+                      structured_metadata=None, structured_origin=""):
     """⑬ 协同初排第一段收尾（B-229：从 `main` 纯搬运外提；语句逐字/顺序不变）。"""
     bib_text2 = ""
     if res.bib_path and os.path.isfile(res.bib_path):
@@ -1318,13 +1333,20 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
         end_list_priority=bool(getattr(args, "end_list_priority", False)),
         number_cite_map=bool(getattr(args, "number_cite_map", False)),
         c_class_union=resolve_c_class_union(args), stage_dir=out_dir,
+        structured_sha256=(_coop.structured_metadata_sha256(structured_metadata)
+                           if structured_metadata else ""),
     )
+    # B-287：人工元数据跨进程保留——值+sha256 进状态；ph2 不重新排版，只用它
+    # 校验「第二段有没有偷偷改元数据」。没有人工元数据时状态与旧版逐字节相同。
+    _sm = _coop.make_structured_metadata(structured_metadata,
+                                         origin=structured_origin or "cli-json")
     coop_state = _coop.build_state(
         params=coop_params, taskbook_path=coop_taskbook_path, stage_dir=out_dir,
         final_dir=final_dir, bib_keys=coop_bib_keys, low_items=coop_low_items,
         budget_article=args.ai_budget_tokens,
         budget_batch=args.ai_batch_budget_tokens,
         engine_version=ENGINE_VERSION,
+        structured_metadata=_sm,
     )
     coop_state["reference_bib"] = os.path.abspath(res.bib_path) if res.bib_path else ""
     coop_state["tex"] = os.path.abspath(res.tex_path) if getattr(res, "tex_path", "") else ""

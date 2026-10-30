@@ -252,12 +252,13 @@ extension ConvertTab {
         EditorControlsRow(editors: editors, selection: $model.options.editor)
     }
 
-    /// 高级：元数据入口（B-017：普通=表单 / 两段式=内联兜底）+ 引用环境阈值。
+    /// 高级：元数据入口（B-017：普通=表单 / 两段式=表单+折叠内联兜底）+ 引用环境阈值。
     private var advancedMetadataSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider().padding(.vertical, 2)
-            if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop)
-                != .inlineFallback {
+            // 多份补充信息（B-223）仍只在普通转换显示：两段式沿用既有口径（忽略，见
+            // ConvertTab.applyMetadataFileVerdict），不给界面制造「能传」的错觉。
+            if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop) == .formOnly {
                 metadataSourcesSection
             }
             metadataEntrySection
@@ -266,48 +267,25 @@ extension ConvertTab {
         }
     }
 
-    /// B-017：**单一元数据入口**。路由判据只有一份——
+    /// B-017/B-287：**单一元数据入口**。路由判据只有一份——
     /// `MetadataForm.entryMode(scanOnly:coop:)`（纯逻辑，`tools/ai_settings_test` 直接断言）：
     ///   · 普通转换 → 只显示「填写元数据…」表单（旧 7 内联字段不渲染）；
-    ///   · 两段式协同 → 表单不适用（引擎对 JSON + 协同明确 exit 2），只显示旧 7 内联兜底。
+    ///   · 两段式第一段 → 表单是主入口；旧 7 内联字段折叠作兜底（表单填了的字段优先）。
     @ViewBuilder private var metadataEntrySection: some View {
-        if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop) == .inlineFallback {
-            coopMetadataFallbackSection
+        if MetadataForm.entryMode(scanOnly: false, coop: model.options.coop)
+            == .formWithInlineFallback {
+            metadataFormSection
+            Text(Self.metadataFormCoopHintText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup(Self.inlineOverrideHeaderText) {
+                inlineOverrideSection
+            }
+            .font(.caption)
         } else {
             metadataFormSection
         }
-    }
-
-    /// 两段式：人工元数据表单不适用 → 说明 + 「已填表单不下传」提醒 + 旧内联兜底。
-    private var coopMetadataFallbackSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(Self.metadataFormCoopFallbackTitleText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(Self.metadataFormCoopHintText)
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            if model.metadataForm.hasAnyValue {
-                coopFormValuesRow
-            }
-            inlineOverrideSection
-        }
-    }
-
-    /// 两段式下表单已填内容不会下传：明确提醒 + 一键清空（绝不静默丢值）。
-    private var coopFormValuesRow: some View {
-        HStack(spacing: 12) {
-            Text(coopFormValuesNotAttachedText())
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-            Button("清空表单") { model.metadataForm = MetadataForm() }
-        }
-    }
-
-    private func coopFormValuesNotAttachedText() -> String {
-        "已填表单：" + model.metadataForm.summaryLine() + "（两段式不下传，本次不会写进产物）"
     }
 
     /// 高级：引用环境阈值（原与元数据同段；B-017 拆成小 View 保持表达式小）。
@@ -328,11 +306,9 @@ extension ConvertTab {
         VStack(alignment: .leading, spacing: 10) {
             // ---------- 正文信息手工覆盖（两段式兜底输入路径） ----------
             // 引擎按版面启发式解析题名/作者/摘要，总有解析不出来或
-            // 解析错的稿子。这里是两段式下的兜底：填了就覆盖自动解析结果。
+            // 解析错的稿子。这里是两段式下的**折叠兜底**：填了就覆盖自动解析结果
+            // （表单填过的字段运行前会被清零，所以表单优先）。
             // 全部留空 = 不覆盖，与旧版行为一致。
-            Text(Self.inlineOverrideHeaderText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Text("中文题名")
                 TextField("留空则用自动解析结果", text: $model.options.titleCn)
@@ -372,8 +348,8 @@ extension ConvertTab {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
-        // B-017：本 section 只在两段式模式渲染，而两段式**不下传**表单 →
-        // 不能再按「表单有值」置灰（否则用户两段式下两个入口都不可用）。
+        // B-017/B-287：本 section 只在两段式的折叠兜底里渲染；两段式第一段会下传表单，
+        // 但同一字段的表单值在运行前清零内联值 → 这里不按「表单有值」置灰。
     }
 
     // MARK: - B-223：元数据 / 补充信息（多份，可选；只补空、表单最高优先）
@@ -452,8 +428,8 @@ extension ConvertTab {
         return Self.metadataPlaceholderLatexText
     }
 
-    /// 普通转换：初排页**唯一**的人工元数据入口（表单在 sheet 里；这里放入口 + 摘要 +
-    /// 常驻上限说明）。B-017：旧 7 内联字段在此模式不再渲染。
+    /// 普通转换 / 两段式第一段：初排页**唯一**的人工元数据入口（表单在 sheet 里；
+    /// 这里放入口 + 摘要 + 常驻上限说明）。B-017：旧 7 内联字段不再常驻渲染。
     private var metadataFormSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(Self.metadataFormTitleText)
@@ -497,7 +473,7 @@ extension ConvertTab {
         } label: {
             Label("填写元数据…", systemImage: "square.and.pencil")
         }
-        // B-017：普通模式唯一入口。两段式模式**整段不渲染**（引擎对 JSON + 协同 exit 2），
-        // 不再靠「禁用按钮」表达——禁用但旁边的兜底字段也置灰时用户会卡死。
+        // B-017/B-287：表单是普通转换与两段式第一段的唯一主入口；
+        // 两段式的旧 7 内联字段只作折叠兜底。
     }
 }

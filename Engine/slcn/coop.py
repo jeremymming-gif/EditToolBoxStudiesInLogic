@@ -2189,11 +2189,67 @@ def merge_apply_summaries(*parts: dict | None) -> dict:
 # ── 两段式状态 / 指纹 ────────────────────────────────────────────────────
 
 
+# ── B-287：结构化人工元数据（两段式跨进程保留）──────────────────────────────
+# `--metadata-json`（批63b）只在一次进程里有效；两段式第二段按暂存状态重跑，
+# 临时 JSON 早就删了。所以第一段把**归一化后的值**与 sha256 记进状态，第二段
+# 只用它做「有没有被改过」的校验——交付物来自暂存 `.tex`，不重新排版。
+STRUCTURED_METADATA_SCHEMA = "metadata.v1"
+
+
+def metadata_origin(path: str = "") -> str:
+    """人工元数据来源：GUI 表单临时 JSON（`slcn_metadata_*`）还是命令行 JSON。
+
+    GUI 的临时文件名由 `MetadataFormFeature.tempFilePath()` 固定为
+    `slcn_metadata_<源稿名>_<时间戳>_<pid>.json`——引擎与外壳没有第二个通道可
+    区分来源，故按这一命名契约判定（命令行用同名文件只会让记录里的 origin
+    偏保守，不影响任何判据）。
+    """
+    name = os.path.basename(path or "")
+    return "gui-form" if name.startswith("slcn_metadata_") else "cli-json"
+
+
+def structured_metadata_sha256(values: dict | None) -> str:
+    """归一化值 → 稳定 sha256（键排序；同一份 JSON 两次运行逐字节相同）。"""
+    return sha256_text(_canonical(values or {}))
+
+
+def make_structured_metadata(values: dict | None, *,
+                             origin: str = "cli-json") -> dict | None:
+    """状态里的 `structured_metadata` 节；没有人工元数据 → None（旧状态不变）。"""
+    if not values:
+        return None
+    return {
+        "schema": STRUCTURED_METADATA_SCHEMA,
+        "origin": origin or "cli-json",
+        "values": values,
+        "sha256": structured_metadata_sha256(values),
+    }
+
+
+def check_structured_metadata(state: dict | None,
+                              current_values: dict | None) -> tuple[bool, str]:
+    """ph2 显式给人工元数据时：必须与初排记录逐字节一致（sha256）。"""
+    if not current_values:
+        return True, ""
+    recorded = (state or {}).get("structured_metadata")
+    if not isinstance(recorded, dict) or not recorded.get("sha256"):
+        return False, (
+            "这份初排状态里没有记录人工元数据（旧版暂存，或第一段没带 JSON）："
+            "第二段带 --metadata-json 无法续跑，请重跑第一段"
+            "（--coop-taskbook-only --metadata-json …）后再回填。")
+    if structured_metadata_sha256(current_values) != str(recorded.get("sha256")):
+        return False, (
+            "人工元数据已变更（sha256 与初排时不一致）：第二段按初排的元数据"
+            "交付，不能中途改；请重跑第一段（--coop-taskbook-only）后再回填。")
+    return True, ""
+
+
 def build_params(*, source: str, metadata: str, out_root: str, stem: str,
                  lang: str, sty: str, skeleton: str,
                  verify_refs: bool, no_ai_merge: bool,
                  end_list_priority: bool = False, number_cite_map: bool = False,
-                 c_class_union: bool = True, stage_dir: str = "") -> dict:
+                 c_class_union: bool = True, stage_dir: str = "",
+                 structured_sha256: str = "") -> dict:
     """关键参数（源稿/元数据都带 sha256）——ph2 必须逐项对得上才允许续跑。"""
     source = os.path.abspath(source)
     metadata = os.path.abspath(metadata) if metadata else ""
@@ -2215,6 +2271,11 @@ def build_params(*, source: str, metadata: str, out_root: str, stem: str,
         "c_class_union": bool(c_class_union),
         "stage_dir": os.path.abspath(stage_dir) if stage_dir else "",
     }
+    # B-287：只有真的带了人工元数据才加这一项——不带时 params 与旧版逐字节相同
+    # （C5 默认零变化）。它**不参与** `check_ph2` 的逐项比较（第二段的值来自
+    # 状态，不是命令行），单独由 `check_structured_metadata()` 校验。
+    if structured_sha256:
+        params["structured_metadata_sha256"] = str(structured_sha256)
     params["fingerprint"] = sha256_text(_canonical(params))
     return params
 
@@ -2231,11 +2292,12 @@ def state_path(stage_dir: str) -> str:
 def build_state(*, params: dict, taskbook_path: str, stage_dir: str, final_dir: str,
                 bib_keys: Iterable[str], low_items: Iterable[dict],
                 budget_article: int, budget_batch: int,
-                engine_version: str = "") -> dict:
+                engine_version: str = "",
+                structured_metadata: dict | None = None) -> dict:
     low_items = list(low_items)
     keys = list(dict.fromkeys(str(k) for k in bib_keys))
     low_ids = [str(it["id"]) for it in low_items]
-    return {
+    state = {
         "schema": SCHEMA_VERSION,
         "phase": "ph1",
         "created_at": _now(),
@@ -2256,6 +2318,10 @@ def build_state(*, params: dict, taskbook_path: str, stage_dir: str, final_dir: 
                    "note": "外部 chat 通道不产生 API 费用；预算闸只约束直接 API 通道"},
         "history": [],
     }
+    # B-287：只有第一段真的带了人工元数据才写这一节——旧状态（无该键）照常可读。
+    if structured_metadata:
+        state["structured_metadata"] = structured_metadata
+    return state
 
 
 def save_state(stage_dir: str, state: dict) -> str:
