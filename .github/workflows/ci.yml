@@ -49,7 +49,11 @@ jobs:
 
   swift:
     name: Swift 测试台 + Windows 外壳桥梁
-    runs-on: macos-14
+    # 2026-10-31：macos-14 runner 镜像 2026-11-02 退役；当前有 scheduled macOS 14 brownout
+    # （job 0 秒 cancelled，annotation 引用 actions/runner-images#13518）。迁 macos-15：
+    # 与 release.yml 的 macOS 构建作业一致（同样因旧 Xcode 对超大 SwiftUI View 类型检查
+    # 超时而先迁），避免 brownout 窗口内 CI 无法转绿。
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
