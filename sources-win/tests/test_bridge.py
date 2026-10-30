@@ -20,10 +20,15 @@
       建议摘要、回复导入、AI token 预算设置（纯逻辑，全部 headless）；批59 全文 AI 核查
       范围映射（默认关；仅第一段带 `--coop-fulltext context|full`）；批60 直连全文核查
       （`--llm-fulltext`，默认关、会话态；只在 ⑪ 直连通道追加）；批62 入口收敛 B
-      （普通默认无 --verify-refs，`use_ai` 内部等价 ⑪；回读页长标题）。
+      （普通默认无 --verify-refs，`use_ai` 内部等价 ⑪；回读页长标题）；
+  (k) B-281 Windows/mac 对等：mac `NavPage`（顺序/标题/分组）与 Windows `self.tabs`/
+      `nav_groups` 对照**硬编码**对等清单（差异只允许已声明三项）；`sources-win/README.md`
+      不再宣称「与 mac 版功能对等」且指向《使用说明》§3.3；清理三模式（argv/确认文案/
+      撤销条件）静态守卫。
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -52,6 +57,7 @@ def _read_all_shell_sources() -> str:
 
 all_src = _read_all_shell_sources()
 
+import clean_logic as CL  # noqa: E402  B-281：清理三模式的纯逻辑（无 tkinter）
 import coop as C  # noqa: E402  第五十五批：两段式协同的纯逻辑（无 tkinter）
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
@@ -2045,6 +2051,248 @@ check("(j) 设置页有单篇/单批 token 预算输入 + 红字错误位；隐�
 check("(j) 三个纯逻辑模块都不 import tkinter（engine/settings/coop 可 headless 测）",
       all(not re.search(r"^\s*(?:import|from)\s+tkinter", (SHELL / name).read_text(
           encoding="utf-8"), re.M) for name in ("engine.py", "settings.py", "coop.py")))
+
+# ─────────────────────────────────────────────────────────────────────────
+# ── (k) B-281：Windows 与 mac 的「页面对等」+ clean 三模式静态守卫 ──────────
+# 背景：`sources-win/README.md` 从前写「与 mac 版功能对等」「功能已对齐：mac 版的每一
+# 项」，但实际有三处**已声明差异**（mac 独有「目录摘要推送」；引用库第四页 mac 叫「待
+# 处理」、Windows 叫「待裁决」；整期装配组内顺序不同）。这里把「允许的差异」钉成硬编
+# 码清单：mac 导航（NavPage/title/分组）或 Windows 导航（main.py: self.tabs / nav_groups）
+# 改了却没同步这张清单 + README + 《使用说明》§3.3 → 这组红。清单**故意硬编码**（不跟
+# 源码自动漂移）：改导航必须人工审一遍并同步三处文档。
+print("\n── (k) Windows/mac 对等清单 + clean 三模式静态守卫 ──")
+MAC_MAIN = REPO / "sources-mac" / "Views" / "MainWindow.swift"
+WIN_README = (SHELL / "README.md").read_text(encoding="utf-8")
+CLEAN_SRC = (SHELL / "tabs" / "clean.py").read_text(encoding="utf-8")
+MAIN_SRC = (SHELL / "main.py").read_text(encoding="utf-8")
+
+#: mac `NavPage.allCases` 顺序 + `title`（读 MainWindow.swift 解析后必须等于这张表）。
+MAC_PAGES = [
+    ("convert", "初排转换"), ("checkbib", "文献回读校验"), ("proofcheck", "一校核查"),
+    ("merge", "合并文件"), ("infocheck", "检查tex信息"), ("compile", "编译全部"),
+    ("toc", "生成目录"), ("cleantemp", "删除临时文件"), ("dirpush", "目录摘要推送"),
+    ("bibstats", "库概况"), ("bibquery", "查库"), ("bibimport", "入藏"),
+    ("bibreview", "待处理"), ("bibsettings", "引用库设置"), ("settings", "设置"),
+]
+#: mac 侧栏三组（Section 顺序即此顺序；设置页在组外）。
+MAC_GROUPS = [
+    ("单篇稿件", ["convert", "checkbib", "proofcheck"]),
+    ("整期装配", ["infocheck", "compile", "toc", "cleantemp", "merge", "dirpush"]),
+    ("引用库", ["bibstats", "bibquery", "bibimport", "bibreview", "bibsettings"]),
+]
+#: Windows 导航 14 页：顺序 = main.py `self.tabs`；标题 = 各 Tab 类的 `name`（侧栏用它）。
+WIN_TITLES = [
+    "初排转换", "文献回读校验", "合并文件", "一校核查", "检查tex信息",
+    "生成目录", "编译全部", "删除临时文件",
+    "库概况", "查库", "入藏", "待裁决", "引用库设置", "设置",
+]
+#: Windows 侧栏三组（= main.py `nav_groups`；索引指向 `self.tabs`；设置页 = 组外末尾）。
+WIN_GROUPS = [
+    ("单篇稿件", ["初排转换", "文献回读校验", "一校核查"]),
+    ("整期装配", ["检查tex信息", "生成目录", "编译全部", "删除临时文件", "合并文件"]),
+    ("引用库", ["库概况", "查库", "入藏", "待裁决", "引用库设置"]),
+]
+WIN_GROUP_INDEX = [("单篇稿件", (0, 1, 3)), ("整期装配", (4, 5, 6, 7, 2)),
+                   ("引用库", (8, 9, 10, 11, 12))]
+
+
+def _parse_mac_nav() -> tuple[list[tuple[str, str]], list[tuple[str, list[str]]]]:
+    """从 Swift 源码抠 NavPage 的 case 顺序/标题/分组（只读文本，不跑 swiftc）。"""
+    src = MAC_MAIN.read_text(encoding="utf-8")
+    block = re.search(r"enum NavPage[^{]*\{(.*?)^\}", src, re.S | re.M)
+    if not block:
+        raise ValueError("MainWindow.swift 里找不到 `enum NavPage`")
+    body = block.group(1)
+    cases: list[str] = []
+    for line in body.splitlines():
+        m = re.match(r"\s*case\s+([a-z]+(?:\s*,\s*[a-z]+)*)\s*$", line)
+        if m:
+            cases += [x.strip() for x in m.group(1).split(",") if x.strip()]
+    title_block = re.search(r"var title: String \{(.*?)\n    \}", body, re.S)
+    if not title_block:
+        raise ValueError("MainWindow.swift 里找不到 NavPage.title")
+    titles: dict[str, str] = {}
+    for m in re.finditer(r'case\s+\.([a-z]+):\s*return\s+"([^"]+)"', title_block.group(1)):
+        titles[m.group(1)] = m.group(2)
+    pages = [(c, titles[c]) for c in cases if c in titles]
+
+    def group(name: str) -> list[str]:
+        m = re.search(rf"static let {name}: \[NavPage\] = \[([^\]]*)\]", body)
+        if not m:
+            raise ValueError(f"MainWindow.swift 里找不到 NavPage.{name}")
+        return [x.strip().lstrip(".") for x in m.group(1).split(",") if x.strip()]
+
+    return pages, [("单篇稿件", group("singleArticle")),
+                   ("整期装配", group("assembly")),
+                   ("引用库", group("library"))]
+
+
+def _parse_win_nav() -> tuple[list[str], list[tuple[str, tuple[int, ...]]]]:
+    """从 main.py 源码 AST 抠 `self.tabs` 顺序与 `nav_groups`（不执行 tkinter）。
+
+    页标题取各 Tab 类的 `name` 类属性（侧栏 `self.tabs[i].name` 用的就是它）；类名从
+    `__init__` 里的构造调用（`self.clean_tab = _cl.CleanTab(...)`）映射出来。
+    """
+    tree = ast.parse(MAIN_SRC)
+    win_cls = next(n for n in tree.body
+                   if isinstance(n, ast.ClassDef) and n.name == "MainWindow")
+    init = next(n for n in win_cls.body
+                if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+    classes: dict[str, str] = {}
+    order: list[str] = []
+    groups: list[tuple[str, tuple[int, ...]]] = []
+    for node in ast.walk(init):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target = node.targets[0]
+        if not (isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                and target.value.id == "self"):
+            continue
+        if target.attr == "tabs" and isinstance(node.value, ast.List):
+            order = [e.attr for e in node.value.elts
+                     if isinstance(e, ast.Attribute) and isinstance(e.value, ast.Name)
+                     and e.value.id == "self"]
+        elif target.attr == "nav_groups":
+            groups = list(ast.literal_eval(node.value))
+        elif isinstance(node.value, ast.Call):
+            func = node.value.func
+            classes[target.attr] = (func.attr if isinstance(func, ast.Attribute)
+                                    else func.id if isinstance(func, ast.Name) else "")
+
+    class_titles: dict[str, str] = {}
+    sources = [*sorted((SHELL / "tabs").glob("*.py")), SHELL / "bibdb_ui.py"]
+    for py in sources:
+        for node in ast.parse(py.read_text(encoding="utf-8")).body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for st in node.body:
+                if (isinstance(st, ast.Assign) and len(st.targets) == 1
+                        and isinstance(st.targets[0], ast.Name)
+                        and st.targets[0].id == "name"
+                        and isinstance(st.value, ast.Constant)
+                        and isinstance(st.value.value, str)):
+                    class_titles[node.name] = st.value.value
+    titles = [class_titles.get(classes.get(attr, ""), "") for attr in order]
+    return titles, groups
+
+
+try:
+    _mac_pages, _mac_groups = _parse_mac_nav()
+except (OSError, ValueError) as exc:          # 源码结构变了 → 让下面的断言红，而不是炸掉
+    _mac_pages, _mac_groups = [], []
+    print(f"  （mac 导航解析失败：{exc}）")
+_win_titles, _win_group_index = _parse_win_nav()
+_win_groups = [(name, [_win_titles[i] for i in idxs]) for name, idxs in _win_group_index]
+
+check("(k) mac NavPage 顺序/标题 = 硬编码对等清单（改 mac 导航须同步本清单与文档）",
+      _mac_pages == MAC_PAGES, f"实际 {_mac_pages}")
+check("(k) mac 侧栏分组（singleArticle/assembly/library）= 硬编码清单（组顺序 + 组内页顺序）",
+      _mac_groups == MAC_GROUPS, f"实际 {_mac_groups}")
+check("(k) Windows 导航 14 页：顺序/标题 = 硬编码清单（标题取各 Tab 类 name 属性）",
+      _win_titles == WIN_TITLES, f"实际 {_win_titles}")
+check("(k) Windows 侧栏分组 = 硬编码清单（组顺序 + 组内页顺序；设置页组外）",
+      _win_group_index == WIN_GROUP_INDEX and _win_groups == WIN_GROUPS,
+      f"实际 {_win_group_index}")
+_mac_title_set = {t for _, t in MAC_PAGES} - {"目录摘要推送", "待处理"}
+_win_title_set = set(WIN_TITLES) - {"待裁决"}
+check("(k) 页集合对等（只允许已声明差异：mac 独有「目录摘要推送」；引用库第四页标题不同）",
+      _win_title_set == _mac_title_set
+      and len(_win_titles) == 14 and len(MAC_PAGES) == 15 and len(set(WIN_TITLES)) == 14)
+_mac_title_of = dict(MAC_PAGES)
+_mac_group_norm = []
+for _name, _pages in MAC_GROUPS:
+    _titles = [_mac_title_of[p] for p in _pages]
+    if _name == "整期装配":
+        _titles = [t for t in _titles if t != "目录摘要推送"]
+    else:
+        _titles = ["待裁决" if t == "待处理" else t for t in _titles]
+    _mac_group_norm.append((_name, _titles))
+check("(k) 分组对等（组名/组顺序一致；只允许已声明差异：整期装配顺序不同、bibreview 标题不同）",
+      [n for n, _ in _mac_group_norm] == [n for n, _ in _win_groups]
+      and _mac_group_norm[0] == _win_groups[0]
+      and sorted(_mac_group_norm[1][1]) == sorted(_win_groups[1][1])
+      and _mac_group_norm[1][1] != _win_groups[1][1]      # 顺序差异存在，且已声明
+      and _mac_group_norm[2] == _win_groups[2])
+_mac_titles_all = [t for _, t in MAC_PAGES]
+check("(k) 差异只有已声明的三项：mac 多「目录摘要推送」/ bibreview 标题 / 整期装配顺序",
+      [t for t in WIN_TITLES if t not in _mac_titles_all] == ["待裁决"]
+      and [t for t in _mac_titles_all if t not in WIN_TITLES] == ["目录摘要推送", "待处理"])
+
+check("(k) sources-win/README.md 不再宣称「与 mac 版功能对等」「功能已对齐：mac 版的每一项」",
+      "与 mac 版功能对等" not in WIN_README
+      and "功能已对齐：mac 版的每一项" not in WIN_README)
+check("(k) sources-win/README.md 把差异指向《使用说明》§3.3",
+      "差异见《使用说明》§3.3" in WIN_README)
+check("(k) sources-win/README.md 的 clean 页说明 = 三模式 + 回收站/清空回收站",
+      all(s in WIN_README for s in (
+          "编译临时文件", "交付收尾（白名单）", "工作区旧件（每期留最新合并 PDF）",
+          "清空回收站", ".toolbox-trash")))
+
+check("(k) clean_logic：三模式标题/顺序与 mac `CleanMode.title` 逐字一致",
+      [CL.mode_title(m) for m in CL.MODE_ORDER]
+      == ["编译临时文件", "交付收尾（白名单）", "工作区旧件（每期留最新合并 PDF）"]
+      and CL.mode_labels() == [CL.MODE_TITLES[m] for m in CL.MODE_ORDER])
+check("(k) clean_logic：模式说明与 mac `CleanMode.detail` 逐字一致",
+      CL.mode_detail("aux")
+      == "清编译中间文件；不动 .tex/.pdf/.sty/.bib/.log，也不进 original/（作者来稿）。"
+      and CL.mode_detail("delivery").startswith("交付前收尾：保留白名单与 tex 引用闭包")
+      and CL.mode_detail("workspace").startswith("工作区旧件：每期只留最新一份「合并*.pdf」"))
+check("(k) clean_logic 不 import tkinter（纯逻辑；mac/Linux/CI 可 headless 断言）",
+      not re.search(r"^\s*(?:import|from)\s+tkinter",
+                    (SHELL / "clean_logic.py").read_text(encoding="utf-8"), re.M))
+_argv_pairs = [
+    ({"trash": True}, {}),
+    ({"dry_run": True, "trash": True}, {"dry_run": True}),
+    ({"mode": "delivery"}, {"mode": "delivery"}),
+    ({"mode": "delivery", "dry_run": True}, {"mode": "delivery", "dry_run": True}),
+    ({"mode": "workspace", "delete": True}, {"mode": "workspace", "delete": True}),
+]
+check("(k) 清理 argv：engine `cleantemp_call` 与 clean_logic `cleantemp_args` 逐字节一致；"
+      "aux 默认参数与从前完全不变",
+      all(E.cleantemp_call(folder="/x", **ekw).argv[2:] == CL.cleantemp_args("/x", **ckw)
+          for ekw, ckw in _argv_pairs)
+      and E.cleantemp_call(folder="/x").argv[2:] == ["--folder", "/x"]
+      and E.cleantemp_call(folder="/x", dry_run=True).argv[2:] == ["--folder", "/x", "--dry-run"]
+      and E.cleantemp_call(folder="/x", dry_run=True, trash=True).argv[2:]
+      == ["--folder", "/x", "--dry-run", "--trash"]
+      and E.cleantemp_call(folder="/x", empty_trash=True).argv[2:]
+      == ["--folder", "/x", "--empty-trash"]
+      and E.cleantemp_call(folder="/x", restore_trash="/x/.toolbox-trash/t").argv[2:]
+      == ["--folder", "/x", "--restore", "/x/.toolbox-trash/t"])
+check("(k) 撤销条件：三模式真跑都有撤销；预演/永久删/清空回收站/撤销自身都没有",
+      CL.undo_available(E.cleantemp_call(folder="/x", trash=True).argv)
+      and CL.undo_available(E.cleantemp_call(folder="/x", mode="delivery").argv)
+      and CL.undo_available(E.cleantemp_call(folder="/x", mode="workspace").argv)
+      and not CL.undo_available(
+          E.cleantemp_call(folder="/x", dry_run=True, trash=True).argv)
+      and not CL.undo_available(
+          E.cleantemp_call(folder="/x", mode="delivery", delete=True).argv)
+      and not CL.undo_available(E.cleantemp_call(folder="/x", empty_trash=True).argv)
+      and not CL.undo_available(
+          E.cleantemp_call(folder="/x", restore_trash="/x/.toolbox-trash/t").argv))
+check("(k) 确认框文案：三模式都写明「可撤销」并点名清什么；清空回收站写明"
+      "「不可撤销」「永久」「无法恢复」「还想撤销…请先取消」",
+      all("可撤销" in CL.confirm_text(m)[0] + CL.confirm_text(m)[1] for m in CL.MODE_ORDER)
+      and "编译中间文件" in CL.confirm_text("aux")[1]
+      and "交付残留" in CL.confirm_text("delivery")[1]
+      and "工作区旧件" in CL.confirm_text("workspace")[1]
+      and CL.empty_trash_text()[0] == "清空回收站（不可撤销）"
+      and "永久" in CL.empty_trash_text()[1]
+      and "无法恢复" in CL.empty_trash_text()[1]
+      and "还想撤销" in CL.empty_trash_text()[1]
+      and "请先点「取消」" in CL.empty_trash_text()[1])
+check("(k) clean 页静态守卫：三模式下拉 + 模式说明 + 「清空回收站…」按钮 + 先预演勾选都在",
+      all(s in CLEAN_SRC for s in (
+          "清理模式：", "CL.mode_labels()", "mode_detail", "mode()",
+          "清空回收站…", "confirm_empty_trash", "先预演（只列出会删哪些，不真删）", "v_dry")))
+check("(k) main.py：运行按模式传参；撤销判定走 undo_available（--trash / --mode 两条"
+      "成功路径都能挂出「撤销清理」）",
+      "tab.mode()" in MAIN_SRC and "undo_available(call.argv)" in MAIN_SRC
+      and '"撤销清理"' in MAIN_SRC
+      and "trash=(mode == _clean.DEFAULT_MODE)" in MAIN_SRC)
+check("(k) 清空回收站成功不给撤销：页内标明永久/不可撤销（empty argv 无撤销）",
+      "永久删除" in CLEAN_SRC and "不可撤销" in CLEAN_SRC
+      and not CL.undo_available(["cleantemp.py", "--folder", "/x", "--empty-trash"]))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

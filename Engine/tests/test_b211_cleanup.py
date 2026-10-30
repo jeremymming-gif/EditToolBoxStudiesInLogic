@@ -192,18 +192,36 @@ print("\n── (c) --empty-trash ──")
 root3 = tempfile.mkdtemp(prefix="b211_et_")
 for name in ("a-2024_01_01_000000", "b-2024_01_01_000000"):
     mkfile(os.path.join(root3, C.TRASH_DIR, name, "x.aux"))
+TRASH3 = os.path.join(root3, C.TRASH_DIR)
 r = run("cleantemp.py", "--folder", root3, "--empty-trash", "--dry-run")
 check("(c) dry-run：报告将清空 2 个、零写入",
       r.returncode == 0 and "将清空回收站 2 个" in r.stdout
       and len(trash_dirs(root3)) == 2, last_line(r))
+check("(c) dry-run 不动目录：.toolbox-trash/ 仍在（预演不删目录）",
+      os.path.isdir(TRASH3) and "已删除空的回收站目录" not in r.stdout)
 r = run("cleantemp.py", "--folder", root3, "--empty-trash")
 check("(c) 清空 2 个回收目录、契约行精确",
       r.returncode == 0 and trash_dirs(root3) == []
       and last_line(r) == f"完成。已清空回收站 2 个回收目录（目录：{root3}）", last_line(r))
+# B-281：真跑清空后回收站目录本身也删掉（不然期目录里留一个空 .toolbox-trash/）
+check("(c) 回收站里清空后，.toolbox-trash/ 目录本身被删除", not os.path.exists(TRASH3))
+check("(c) 删目录的提示打在契约行之前（契约行仍逐字不变）",
+      "已删除空的回收站目录：.toolbox-trash" in r.stdout
+      and r.stdout.index("已删除空的回收站目录") < r.stdout.index("完成。已清空回收站"))
 r = run("cleantemp.py", "--folder", root3, "--empty-trash")
 check("(c) 回收站不存在/已空 → 0，仍退出 0",
       r.returncode == 0 and last_line(r) == f"完成。已清空回收站 0 个回收目录（目录：{root3}）",
       last_line(r))
+check("(c) 再跑一次也没重建空目录（不存在就不动）", not os.path.exists(TRASH3))
+# 清空之后还能正常清理/重建回收站（删目录不影响 trash_clean）
+mkfile(os.path.join(root3, "new.aux"), "N")
+r = run("cleantemp.py", "--folder", root3, "--trash")
+check("(c) 删目录后 trash_clean 仍可重建回收站并用 --empty-trash 清空",
+      r.returncode == 0 and len(trash_dirs(root3)) == 1, last_line(r))
+r = run("cleantemp.py", "--folder", root3, "--empty-trash")
+check("(c) 重建后再清空：1 个 + 目录再次删除",
+      r.returncode == 0 and last_line(r) == f"完成。已清空回收站 1 个回收目录（目录：{root3}）"
+      and not os.path.exists(TRASH3), last_line(r))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) --mode delivery：白名单优先 / 引用闭包 / 整体拒绝 ──")

@@ -33,6 +33,8 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
+import clean_logic as _clean_logic   # B-281：清理三模式的纯逻辑（同目录、无 tkinter）
+
 #: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）。
 #: 第 132 条加了 `bibdb.py`（引用库）——它与 mac 包共用同一份 CLI，Windows 侧不重写判据。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
@@ -633,24 +635,38 @@ def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,
 
 
 def cleantemp_call(*, folder: str, dry_run: bool = False,
-                   trash: bool = False, restore_trash: str = "") -> EngineCall:
+                   trash: bool = False, restore_trash: str = "",
+                   mode: str = "aux", delete: bool = False,
+                   empty_trash: bool = False) -> EngineCall:
     """「删除临时文件」：`cleantemp.py --folder …`（参数与 mac 界面一致 + 可回收模式）。
 
     `trash=True` → **移入 `<目录>/.toolbox-trash/<时间戳>/`**（可撤销）；界面用这条。
     `restore_trash=<回收目录>` → 撤销，把文件搬回原处（不覆盖已存在的文件）。
-    老行为（直接删）仍是默认值：mac 外壳不传 `--trash` 时逐字节不变。
+    B-281：`mode=aux|delivery|workspace` 与 mac `DeleteTempFeature.CleanMode` 逐项对齐；
+    `delete=True`（delivery/workspace）= 引擎永久删；`empty_trash=True` = 清空回收站
+    （不可撤销）。老调用（只传 `folder` / `dry_run` / `trash`）拼出的 argv **逐字节不变**。
     """
     cmd = _base_cmd("cleantemp.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
-    cmd += ["--folder", folder]
     if restore_trash:
-        cmd += ["--restore", restore_trash]
+        cmd += ["--folder", folder, "--restore", restore_trash]
         return EngineCall(cmd, "cleantemp.py", "撤销清理")
-    if dry_run:
-        cmd.append("--dry-run")
-    if trash:
-        cmd.append("--trash")
+    if empty_trash:
+        cmd += ["--folder", folder, "--empty-trash"]
+        if dry_run:
+            cmd.append("--dry-run")
+        return EngineCall(cmd, "cleantemp.py", "清空回收站")
+    mode = _clean_logic.normalize_mode(mode)
+    if mode == _clean_logic.DEFAULT_MODE:
+        # ⚠️ 老路径：不传模式时 argv 必须与 B-211 之前逐字节一致（mac 外壳仍走这条）。
+        cmd += ["--folder", folder]
+        if dry_run:
+            cmd.append("--dry-run")
+        if trash:
+            cmd.append("--trash")
+        return EngineCall(cmd, "cleantemp.py", "删除临时文件")
+    cmd += _clean_logic.cleantemp_args(folder, mode=mode, dry_run=dry_run, delete=delete)
     return EngineCall(cmd, "cleantemp.py", "删除临时文件")
 
 

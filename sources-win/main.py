@@ -29,6 +29,7 @@ from tkinter import messagebox, ttk
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bibdb_ui as B  # noqa: E402  第 132 条：引用库 5 页（拆文件，见 bibdb_ui.py 抬头）
+import clean_logic as _clean  # noqa: E402  B-281：清理三模式的纯逻辑（无 tkinter）
 import coop as C  # noqa: E402  第 55/56 批：两段式 AI 协同初排的纯逻辑（无 tkinter）
 import engine as E  # noqa: E402
 import settings as S  # noqa: E402
@@ -575,10 +576,14 @@ class MainWindow(tk.Tk):
             return E.compileall_call(folder=path, **opts)
         if isinstance(tab, _cl.CleanTab):
             # UI 方案第 3 件：**先预览再动手**，且动手的方式是"移到回收目录"（可撤销）。
-            # 老行为（直接删）仍保留在 CLI 默认值里，mac 外壳不受影响。
-            if not tab.v_dry.get():
-                tab.confirm_trash()          # 取消 → ValueError（什么都没动）
-            return E.cleantemp_call(folder=path, trash=True)
+            # B-281：三种清理模式与 mac `DeleteTempFeature.CleanMode` 对齐（aux/delivery/
+            # workspace）；勾「先预演」= 只预演不写（`--dry-run`），勾掉才真动手。
+            mode = tab.mode()
+            dry = bool(tab.v_dry.get())
+            if not dry:
+                tab.confirm_trash(mode)      # 取消 → ValueError（什么都没动）
+            return E.cleantemp_call(folder=path, mode=mode, dry_run=dry,
+                                    trash=(mode == _clean.DEFAULT_MODE))
         if isinstance(tab, _cb.CheckBibTab):
             merge_into = ""
             if opts.get("merge_into_same_dir"):
@@ -741,8 +746,11 @@ class MainWindow(tk.Tk):
                 if toc_dir:
                     path = toc_dir
             undo = None
-            # 清理跑完 → 给一个「撤销清理」按钮：把回收目录里的东西搬回去
-            if isinstance(tab, _cl.CleanTab) and code == 0 and path and "--trash" in call.argv:
+            # 清理跑完 → 给一个「撤销清理」按钮：把回收目录里的东西搬回去。
+            # B-281：判定交给 `clean_logic.undo_available`（三种模式 + dry-run/永久删/
+            # 清空回收站都不给撤销），不再只认 aux 的 `--trash`。
+            if (isinstance(tab, _cl.CleanTab) and code == 0 and path
+                    and _clean.undo_available(call.argv)):
                 undo = ("撤销清理", path)
             self._q.put(("__RESULT__", tab, result,
                          path, time.monotonic() - self._t0, undo))

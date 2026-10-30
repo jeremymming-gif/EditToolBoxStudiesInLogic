@@ -679,7 +679,14 @@ def empty_trash(
     log: Callable[[str], None] | None = None,
     dry_run: bool = False,
 ) -> int:
-    """清空 `<root>/.toolbox-trash/` 下所有回收目录，返回清掉的个数（不存在 → 0）。"""
+    """清空 `<root>/.toolbox-trash/` 下所有回收目录，返回清掉的个数（不存在 → 0）。
+
+    B-281：真跑清空后若回收站目录**已空**，把它本身也删掉（否则每清一次都会在期目录
+    里留一个空的 `.toolbox-trash/`，Windows 资源管理器里看着像没清干净）。目录里还剩
+    东西（某个回收目录删失败）或权限不允许时**静默保留**，行为与从前一致。
+    预演（`dry_run`）不删目录。给外壳的契约行完全不变；「已删除空的回收站目录」这行
+    提示只打在契约行**之前**（`cleantemp.py` 在 `empty_trash` 返回后才打印契约行）。
+    """
     emit = log or (lambda _s: None)
     trash_root = os.path.join(root, TRASH_DIR)
     if not os.path.isdir(trash_root):
@@ -700,4 +707,12 @@ def empty_trash(
             n += 1
         except OSError as e:
             emit(f"Error deleting {name}: {e}")
+    if dry_run:
+        return n
+    try:
+        if os.path.isdir(trash_root) and not os.listdir(trash_root):
+            os.rmdir(trash_root)
+            emit(f"已删除空的回收站目录：{TRASH_DIR}")
+    except OSError:
+        pass  # 权限/竞态：目录留着就行，不向编辑报错
     return n

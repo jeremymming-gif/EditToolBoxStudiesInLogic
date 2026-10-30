@@ -31,7 +31,7 @@ python main.py
 
 **用户机器**（发布形态，不需要装 Python）：见下面「打包」。
 
-## 十四个页面（与 mac 版功能对等）
+## 十四个页面（与 mac 版对等；差异见《使用说明》§3.3）
 
 界面用**分组侧边栏**（2026-10-17 起；UI 方案候选 B）：一层是组、二层是页 ——
 「单篇稿件」= 初排转换 / 文献回读校验 / 一校核查；
@@ -50,7 +50,7 @@ python main.py
 | **检查tex信息** | `infocheck.py --folder …` | 汇总各篇卷期年/页码/题目/作者/字号/行距并与 PDF 实际页数对比；界面用 `--preview` 填表格（不落文件） |
 | **生成目录** | `toc.py --report … --place --compile` | 一键最终交付：生成两份目录 → 缺 `000 Table of Contents` 自动创建 → 落位固定名（`Chinese Content.tex/.pdf`、`contents.tex/.pdf`）→ XeLaTeX ×2 编译；结果区列出 4 路径/模板来源/页数并可打开目录。模板继承与栏目行在引擎侧；「读取篇目」用 `--preview`，勾选写入 `目录设置.json`；高级开关「仅生成 tex（不落位）」默认关（旧行为） |
 | **编译全部** | `compileall.py --folder …` | 对每个 `NN 作者/` 跑 xelatex → biber → xelatex ×2；跳过 `000 目录`，某篇失败只停那一篇 |
-| **删除临时文件** | `cleantemp.py --folder …` | 递归删编译中间文件（不删 `.tex/.pdf/.log`）；默认先预演 |
+| **删除临时文件** | `cleantemp.py --folder … [--mode delivery\|workspace] [--empty-trash]` | 三种模式：编译临时文件（默认）/ 交付收尾（白名单）/ 工作区旧件（每期留最新合并 PDF）。结果默认移入 `.toolbox-trash/`（横幅可「撤销清理」）；「清空回收站…」永久删除（会再确认一次）。「先预演」勾选 = 只列出会删哪些 |
 | **库概况** | `bibdb.py stats/lint --json` | 引用库条数/期数/最近更新/冲突数/lint 结果；只读，可打开库文件夹 |
 | **查库** | `bibdb.py query --key/--doi/--title --bibtex --json` | 按 key（含别名）/DOI/题名模糊查，选中复制 BibTeX；只读 |
 | **入藏** | `bibdb.py import-bib/import-dir --dry-run --json` | 先 dry-run 预览（**不写库**）再确认导入（`--verified`）；来源期/篇从路径推断、可改 |
@@ -96,9 +96,12 @@ pwsh -ExecutionPolicy Bypass -File build-win.ps1
 | 日志靠 `out_txt.insert(...)` 就地打印 | 逐行读子进程 stdout（`PYTHONUNBUFFERED=1`），**实时**显示，可「停止」 |
 | 7 个标签页各自一套实现 | **十四个页面**，每页都起子进程调同一个引擎入口（界面里不放文档逻辑） |
 
-**功能已对齐**：mac 版的每一项，本壳都有一页，且都起子进程调同一个引擎入口
+**对等口径**：Windows 外壳 **14 个页面**，每页都起子进程调同一个引擎入口
 （2026-10-15/16 分三批搬完：合并文件、删除临时文件、编译全部、一校核查、检查tex信息、
-生成目录；第 132 条补齐引用库 5 页）。
+生成目录；第 132 条补齐引用库 5 页）。与 mac 的 **15 个页面**相比只有三处已声明差异：
+mac 独有「目录摘要推送」页；引用库第四页 macOS 叫「待处理」（可处理）、Windows 叫
+「待裁决」（只读查看）；「整期装配」组内顺序不同（Windows 把「生成目录」排在
+「编译全部」之前）。逐项对照见 [《使用说明》§3.3](../使用说明.md#33-平台差异)。
 **没有任何一页在 Windows 侧另写逻辑** —— 这是"两个平台算出来的结果一致"的唯一保证。
 
 ## 测试
