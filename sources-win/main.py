@@ -85,6 +85,11 @@ class MainWindow(tk.Tk):
         self.sidebar = ttk.Frame(self.body, width=184)
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)          # 固定宽度：别被长标签名撑开
+        # B-274（用户 m02462）：侧栏底部常驻「版本 x.y.z」，**只看版本号**。
+        # 先 pack 底部条再 pack 导航：Tk 按 pack 顺序分配空间，这样 label 不会被 nav 挤掉。
+        self.version_label = ttk.Label(self.sidebar, text="版本 …", style="Muted.TLabel",
+                                       anchor="w")
+        self.version_label.pack(side="bottom", fill="x", padx=12, pady=(4, 8))
         self.nav = ttk.Treeview(self.sidebar, show="tree", selectmode="browse")
         self.nav.pack(fill="both", expand=True, padx=(8, 4), pady=8)
         self.content = ttk.Frame(self.body)
@@ -190,6 +195,9 @@ class MainWindow(tk.Tk):
         self.log(f"{APP_TITLE}")
         self.log(E.status().describe())
         self.log("运行日志：\n")
+        # B-274：版本号后台算（冻结形态要起一次 `SLCNEngine.exe --version`，别卡启动），
+        # 算完经 `post(("__VERSION__", …))` 回主线程贴到侧栏底部。
+        threading.Thread(target=self._load_version_label, daemon=True).start()
         self.after(80, self._drain)
 
     # ── 侧边栏导航（UI 方案候选 B）──
@@ -276,6 +284,18 @@ class MainWindow(tk.Tk):
         收尾」送回主线程执行 —— Tkinter 不是线程安全的（见 `_worker` 的注释）。
         """
         self._q.put(item)
+
+    def _load_version_label(self) -> None:
+        """后台取引擎版本号并回主线程贴到侧栏底部（B-274）。
+
+        取不到时 `E.engine_version()` 已兜底返回「未知」；这里再不碰控件，
+        只经队列把 `("__VERSION__", "版本 x.y.z")` 交给 `_drain`。
+        """
+        try:
+            text = f"版本 {E.engine_version()}"
+        except Exception:  # noqa: BLE001  版本号取不到不该让外壳起不来
+            text = "版本 未知"
+        self.post(("__VERSION__", text))
 
     # ── 日志 ──
     @staticmethod
@@ -441,6 +461,10 @@ class MainWindow(tk.Tk):
                     self._proc = None
                     self._running_tab = None
                     self._set_busy(False)
+                    continue
+                if isinstance(line, tuple) and line[0] == "__VERSION__":
+                    # B-274：版本号后台算完（失败时是「版本 未知」）→ 贴到侧栏底部
+                    self.version_label.config(text=str(line[1]))
                     continue
                 if isinstance(line, tuple) and line[0] == "__REPORT__":
                     _tag, tab, payload = line

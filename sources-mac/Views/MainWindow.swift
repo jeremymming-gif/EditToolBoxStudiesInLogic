@@ -52,6 +52,15 @@ struct MainWindow: View {
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 160, ideal: 190)
+            // B-274（用户 m02462）：侧栏底部常驻「版本 x.y.z」，**只看版本号**——
+            // 完整构建标识（commit/dirty/时间）仍在「设置」页（`AppVersion.display`）。
+            .safeAreaInset(edge: .bottom) {
+                Text("版本 \(AppVersion.number())")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
         } detail: {
             VSplitView {
                 // 全部页面都建好、只显示当前那页：这样切页**不会丢状态**

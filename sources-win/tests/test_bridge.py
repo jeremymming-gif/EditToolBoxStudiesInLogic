@@ -111,6 +111,71 @@ st = E.status()
 check("(a) `status()` 在本机是「可用」的（有引擎目录 + 有 Python）", st.ok, st.describe())
 check("(a) `describe()` 把运行方式写清楚", "引擎目录" in st.describe(), st.describe())
 
+# ── B-274（用户 m02462）：侧栏底部版本号的数据源 —— headless 可测 ──
+# 版本号**只有一份**：`Engine/slcn/__init__.py::__version__`。三条路径：源码形态读文件 /
+# 冻结形态解析 `SLCNEngine.exe --version` / 都找不到 → 「未知」（界面照常、不崩）。
+_ver_src = (REPO / "Engine" / "slcn" / "__init__.py").read_text(encoding="utf-8")
+_ver_m = re.search(r'^__version__\s*=\s*"([^"]+)"', _ver_src, re.M)
+_expected_ver = _ver_m.group(1) if _ver_m else ""
+E._ENGINE_VERSION_CACHE = None
+check("(a) B-274：`engine_version()` 与唯一版本源 `Engine/slcn/__init__.py` 一致",
+      bool(_expected_ver) and E.engine_version() == _expected_ver,
+      f"{E.engine_version()} vs {_expected_ver}")
+check("(a) B-274：`engine_version()` 形如 x.y.z（侧栏只显示版本号）",
+      bool(re.fullmatch(r"\d+\.\d+\.\d+", E.engine_version())), E.engine_version())
+
+_saved_slcn = E.slcn_engine
+_saved_frozen = E.frozen_engine_exe
+_saved_run = E.subprocess.run
+_src_eng_dir = tempfile.mkdtemp(prefix="slcn_ver_engine_")
+try:
+    _p = pathlib.Path(_src_eng_dir)
+    (_p / "slcn").mkdir()
+    (_p / "convert.py").write_text("# 合成引擎目录（B-274 测试用）\n", encoding="utf-8")
+    (_p / "slcn" / "__init__.py").write_text('__version__ = "9.8.7"\n', encoding="utf-8")
+    E.slcn_engine = lambda: _src_eng_dir
+    E.frozen_engine_exe = lambda: None
+    E._ENGINE_VERSION_CACHE = None
+    check("(a) B-274：源码形态从 `<Engine>/slcn/__init__.py` 读版本号（不另设第二版本源）",
+          E.engine_version() == "9.8.7", E.engine_version())
+finally:
+    E.slcn_engine = _saved_slcn
+    E.frozen_engine_exe = _saved_frozen
+    shutil.rmtree(_src_eng_dir, ignore_errors=True)
+
+class _FakeVersionProc:      # 冻结形态：`SLCNEngine.exe --version` 的输出形态（B-274）
+    stdout = "SLCN 引擎 9.9.9-test（打包版）｜ 运行方式=冻结 exe\r\n"
+    stderr = ""
+
+try:
+    E.slcn_engine = lambda: None
+    E.frozen_engine_exe = lambda: "SLCNEngine.exe"
+    E.subprocess.run = lambda *a, **k: _FakeVersionProc()
+    E._ENGINE_VERSION_CACHE = None
+    check("(a) B-274：冻结形态解析 `--version` 输出里的版本号",
+          E.engine_version() == "9.9.9-test", E.engine_version())
+finally:
+    E.slcn_engine = _saved_slcn
+    E.frozen_engine_exe = _saved_frozen
+    E.subprocess.run = _saved_run
+
+try:
+    E.slcn_engine = lambda: None
+    E.frozen_engine_exe = lambda: None
+    E._ENGINE_VERSION_CACHE = None
+    check("(a) B-274：两种形态都找不到 → 「未知」（侧栏显示「版本 未知」、界面不崩）",
+          E.engine_version() == "未知", E.engine_version())
+finally:
+    E.slcn_engine = _saved_slcn
+    E.frozen_engine_exe = _saved_frozen
+    E._ENGINE_VERSION_CACHE = None
+
+E._ENGINE_VERSION_CACHE = None
+_v_first, _v_second = E.engine_version(), E.engine_version()
+check("(a) B-274：版本号结果缓存（第二次不再读盘 / 不再起子进程）", _v_first == _v_second,
+      f"{_v_first} / {_v_second}")
+E._ENGINE_VERSION_CACHE = None
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (b) 拼命令行：必须与 ENGINE_API 的契约一致 ──")
 c = E.convert_call(source=r"C:\稿\张三.docx", out=r"D:\产物", compile_pdf=True,
@@ -617,6 +682,13 @@ else:
         print("侧栏=" + "|".join(groups))
         app.show_tab(4)
         print("切页=" + (app.nav.selection()[0] if app.nav.selection() else ""))
+        # ── B-274：侧栏底部版本号（后台线程算 → 队列 → `_drain` 贴 label）──
+        # 版本号可能读文件、冻结形态还会起子进程：等它回到主线程再读 label 文本。
+        t0v = time.time()
+        while time.time() - t0v < 10 and app.version_label.cget("text") == "版本 …":
+            app.update()
+            time.sleep(0.02)
+        print("版本标签=" + str(app.version_label.cget("text")))
         app.log("自检：写一行日志")
         app.update()
         # ⚠️ **真跑一次**「检查tex信息」：走界面真实代码路径（`start` → 工作线程 → 队列 → 填表）。
@@ -966,6 +1038,11 @@ else:
               [l for l in out.splitlines() if l.startswith("引用库页")])
         check("(g) 切页会同步侧栏选中态", "切页=tab:4" in out,
               [l for l in out.splitlines() if l.startswith("切页")])
+        _vlines = [l.split("=", 1)[1] for l in out.splitlines() if l.startswith("版本标签=")]
+        _vline = _vlines[0] if _vlines else ""
+        check("(g) B-274：侧栏底部常驻「版本 x.y.z」（只有版本号、与引擎 __version__ 一致）",
+              bool(_expected_ver) and _vline == f"版本 {_expected_ver}",
+              _vline or [l for l in out.splitlines() if l.startswith("版本标签")])
         check("(g) 「引用库设置」页能把设置写进 settings.json（第 132 条）",
               "引用库设置落盘=1" in out,
               [l for l in out.splitlines() if l.startswith("引用库设置落盘")])

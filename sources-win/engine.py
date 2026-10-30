@@ -133,6 +133,52 @@ def frozen_engine_exe() -> str | None:
     return None
 
 
+# ── 版本号（B-274，用户 m02462：侧栏底部只显示版本号）────────────────────
+# 版本号**只有一份**：`Engine/slcn/__init__.py::__version__`（见该文件抬头）——
+#   · 源码形态（开发 / 仓库里直接跑）：读 `<Engine>/slcn/__init__.py` 的那一行；
+#   · 冻结形态（双击 exe）：没有源码可读，就调 `SLCNEngine.exe --version` 解析输出。
+# 这里**不另写第二份版本号**；读不到就给「未知」，界面照常显示别的、不崩。
+_VERSION_LINE_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.M)
+_ENGINE_CLI_VERSION_RE = re.compile(r"SLCN 引擎 ([0-9][0-9A-Za-z.\-+]*)")
+_ENGINE_VERSION_CACHE: str | None = None
+
+
+def engine_version() -> str:
+    """当前引擎版本号（`x.y.z`），结果缓存；取不到返回 `"未知"`（B-274）。
+
+    缓存的意义：侧栏 label 只在启动时取一次，且冻结形态会起一次子进程；
+    测试可把 `_ENGINE_VERSION_CACHE` 置 None 后重取。
+    """
+    global _ENGINE_VERSION_CACHE
+    if _ENGINE_VERSION_CACHE is not None:
+        return _ENGINE_VERSION_CACHE
+    version = "未知"
+    try:
+        eng = slcn_engine()
+        if eng:
+            init_py = os.path.join(eng, "slcn", "__init__.py")
+            try:
+                with open(init_py, encoding="utf-8") as fh:
+                    m = _VERSION_LINE_RE.search(fh.read())
+                if m:
+                    version = m.group(1)
+            except OSError:
+                pass
+        if version == "未知":
+            exe = frozen_engine_exe()
+            if exe:
+                proc = subprocess.run([exe, "--version"], capture_output=True,
+                                      timeout=15, encoding="utf-8", errors="replace")
+                m = _ENGINE_CLI_VERSION_RE.search((proc.stdout or "") + "\n"
+                                                  + (proc.stderr or ""))
+                if m:
+                    version = m.group(1)
+    except Exception:  # noqa: BLE001  版本号取不到不该让外壳崩（界面显示「版本 未知」）
+        version = "未知"
+    _ENGINE_VERSION_CACHE = version
+    return version
+
+
 # ── 引用库（第 132 条）：笔记仓 / 库文件 / 清单文件的定位 ────────────────
 # 为什么由**外壳**算这些路径：引擎在发布形态里位于 `dist/`（PyInstaller 临时目录），
 # 从那儿往上找不到仓库根；而引用库按 `SLCN_NOTES` 定位

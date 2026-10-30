@@ -41,6 +41,16 @@ enum AppVersion {
                       buildTime: info?[buildTimeKey] as? String,
                       dirty: (info?[buildDirtyKey] as? Bool) ?? false)
     }
+
+    /// 侧栏底部常驻的**短版本号**（B-274，用户 m02462「只看版本号即可，不要增加其他内容」）。
+    ///
+    /// 与 `display` 的区别：只取 `CFBundleShortVersionString`，**不带** commit / dirty / build 时间。
+    /// 缺失时给 `0.0.0`（不空串、不假装有值）；设置页仍用 `display` 的完整构建标识。
+    static func number(_ bundle: Bundle = .main) -> String {
+        let raw = (bundle.infoDictionary?["CFBundleShortVersionString"] as? String) ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "0.0.0" : trimmed
+    }
 }
 
 /// 「设置」页的界面状态。
