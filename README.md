@@ -1,155 +1,120 @@
 # 编辑部工具箱（SLCN Editorial Toolbox）
 
-《逻辑学研究》编辑部自用的稿件处理工具箱。把作者提交的 **Word / LaTeX 文稿**转成符合本刊
-排版规范的**可编译初排稿**，并处理参考文献核实、整期 PDF 合并等编辑环节。
+把编辑部从「来稿」到「成刊」的重复劳动自动化：初排转换、文献核实、一校核查、整期装配。
+macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果。
 
-> 🌐 **项目主页** <https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/> ｜ ⬇️ **下载** <https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest> ｜ 🪟 **Windows 安装** <https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install#windows>
->
-> 主页含功能总览、Windows 优先的安装说明、快速上手与 FAQ；**Windows 版解压即用，不需要另装 Python**。
+[项目主页](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) ｜ [下载最新版](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) ｜ [安装与首次打开](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)
 
-- **一个引擎，两个外壳**：所有逻辑都在 Python 引擎（`Engine/`）里，界面只负责取值、拼参数、显示日志。
-- **macOS 外壳**：SwiftUI（`sources-mac/`），构建出 `dist/编辑部工具箱.app`。
-- **Windows 外壳**：Tkinter（`sources-win/`），打成两个 exe，用户机器**不需要装 Python**；
-  14 页（三组侧边栏 + 设置，与 macOS 版对等）：初排转换 / 文献回读校验 / 一校核查 / 合并文件 /
-  检查tex信息 / 编译全部 / 生成目录 / 删除临时文件 / 库概况 / 查库 / 入藏 / 待裁决 /
-  引用库设置 / 设置。
-- **引用库维护闭环（B-188，macOS）**：「待裁决」页改名「待处理」= 字段冲突 + 库健康 + 已处理留痕；
-  新增共享条目编辑器（表单 + 原始 BibTeX）、重复/近重复对照合并（逐字段选源；**不自动合并**，
-  新 key 可沿用其中一条记录的 key，B-201）、缺字段归位批量预览；4 处折叠行整行可点开合（B-202）。
-  写库一律 dry-run 预览 → 用户确认 → `--expect-db-sha256` 校验 → 原子写 →
-  成功后自动本地 git commit（只提交 `bib_db/bibliography.jsonl`，**绝不自动 push**）；「待处理」页
-  版本区可手动提交/推送/回退到上一个提交（备份制已取消）。推送只推仅含 `bib_db/` 文件的连续未推送提交，
-  notes 其它提交不推、被挡住时只提示不代推、代理失效自动重试一次（B-203）；重复告警可用
-  `bib_db/health-ignore.json` 按裁决静音（B-204；库文件不动）；待处理页重复/近重复行可「确认不同（不再提示）」，
-  确认后自动写 sidecar 并本地 commit（只该文件、不推送；B-205，可 git revert 撤销）。Windows 版本批未改，仍为只读「待裁决」。
-- 参考文献环节可选接大模型（**用你自己的 API key**，密钥只存本机、只走环境变量，绝不进命令行）。
-- **初排元数据人工填写（第 63b 批）**：题名/作者（1–5 位，可多单位）/摘要/关键词在初排页「高级选项 → 填写元数据…」
-  一次填好，值**直接写入交付产物**；`.doc/.docx` 自动元数据识别已取消（`.tex` 元数据文件保留为高级兜底）。
+## 能做什么
 
-> 这是编辑部的工作工具，不是通用软件：默认模板、字段规范、判据都按本刊体例写死，
-> 换刊使用需要改 `Engine/slcn/` 下的规则与 `编辑笔记/模板文件/` 下的模板。
+- **初排转换**：`.docx` / `.tex` 来稿 → 本刊模板排版稿（`.tex` + PDF + `reference.bib`），自动展开多文件、迁移前言依赖、复制图片，并默认套用无歧义的标点与脚注位置修正。
+- **文献核实**：把来稿引用与 `reference.bib` 对照。可选直连大模型（需自备 API），也可走「两段式」外部对话流程（不产生 API 费用）。
+- **一校核查**：按排版手册与校对经验逐条核查初排稿；初排已默认改好无歧义项，报告只列需要人工判断的命中，可一键补写修正（另存新文件）。
+- **整期装配**：检查 tex 信息 → 编译全部 → 生成中英目录 → 删除临时文件 → 合并成刊 →（macOS）生成目录摘要推送文案。
+- **编辑部引用库**：查库、入藏、待处理（字段冲突、重复、健康检查）；写库有 dry-run 与备份，提交由人工完成。
+- **命令行**：引擎每个入口都能单独调用，便于脚本化与批量处理。
 
----
+## 平台与下载
 
-## 下载（编辑部同事看这里）
-
-**<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>** ——
-免安装包；**点进去最上面那个就是当前版本**（版本号也可以在 App 的「设置」页看到）：
-
-| 平台 | 下载哪个 | 首次打开 |
+| 平台 | 安装方式 | 需要 Python 吗 |
 |---|---|---|
-| Windows | `EditToolBox-<版本>-Windows-x64.zip`（解压后**两个 exe 放在同一个文件夹**） | SmartScreen 蓝屏提示 →「更多信息」→「**仍要运行**」 |
-| macOS（Apple 芯片） | `EditToolBox-<版本>-macOS-arm64.zip` | 双击提示「已损坏，无法打开」→ 右键点 App →「打开」→ 再点「打开」 |
+| Windows 10/11（x64） | 解压即用：`SLCNEngine.exe` 与 `编辑部工具箱.exe` 放在同一文件夹，双击后者 | 不需要 |
+| macOS（Apple 芯片） | `编辑部工具箱.app` 拖进「应用程序」 | 系统需有 python3 |
 
-每个版本另附 `FIRST-OPEN-Windows.txt` / `FIRST-OPEN-macOS.txt`（内容同上，照实说明），
-以及 `latest.json`（App 启动时比对它，**只提示、不自动替换**）。
-**两个平台都未做代码签名与公证**（编辑部 2026-10-16 定案），所以首次打开会被系统拦一下 ——
-**不是文件坏了**。写给编辑的完整用法见 [`使用说明.md`](使用说明.md)。
-
----
+安装包未做代码签名：Windows 首次运行点「更多信息 → 仍要运行」；macOS 首次右键「打开」，或按[安装说明](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)移除隔离标记。下载页附各平台的 `FIRST-OPEN` 说明，`latest.json` 指向当前版本。本页不记录版本历史，变更见[版本记录](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/reference/changelog)。
 
 ## 快速开始
+### 直接使用（编辑部）
 
-### 依赖
+1. 从 [Releases](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) 下载对应平台的 zip。
+2. Windows：解压到任意目录，两个 exe 保持同目录，双击 `编辑部工具箱.exe`。
+3. macOS：解压后把 `编辑部工具箱.app` 拖入「应用程序」，首次右键「打开」。
 
-| 需要什么 | 说明 |
-|---|---|
-| Python ≥ 3.11 | 引擎用；按下面的命令把三个包装进 `Engine/vendor/` |
-| TeX（`xelatex` + `biber`） | TeX Live / MacTeX / MiKTeX 均可，需在 PATH 里 |
-| LibreOffice | **条件必需**（仅当：Word 稿用 MathType/OLE 公式，或要用「导出原稿 PDF」截矢量形状时；LaTeX 稿、Word 自带 OMML 公式稿可不装）：缺失时转换仍完成（fail-soft），但公式图位置显示「公式图缺失」占位、**产物不可直接送排**。**不随工具箱分发**，需自行安装；检查/安装见 [`使用说明.md`](使用说明.md) §一「Word 公式图（MathType）与 LibreOffice（条件必需）」 |
-| Xcode 命令行工具 | **可选**：只有构建 mac 外壳需要（`swiftc`） |
+### 从源码运行（开发）
 
-```bash
-cd Engine
-python3 -m pip install --target vendor -r requirements.txt
-```
-
-### macOS
+| 依赖 | 用途 | 必需性 |
+|---|---|---|
+| Python 3.14 | 引擎运行与测试（`vendor/` 依赖按 3.14 预编译） | 源码运行必需 |
+| XeLaTeX + biber | 编译排版稿（TeX Live / MiKTeX / MacTeX） | 必需 |
+| LibreOffice | 转换含 MathType / OLE 公式的 Word 稿；缺失时公式图为占位 | 按稿件情况 |
+| Xcode Command Line Tools | macOS 打包 `.app` | 仅 macOS 构建 |
 
 ```bash
-./build.sh                      # 构建 dist/编辑部工具箱.app（把引擎与模板一起打进包内）
-open dist/编辑部工具箱.app
-```
+# 安装引擎依赖（一次）
+cd Engine && python3 -m pip install --target vendor -r requirements.txt
 
-下载来的 `.app` 若被 Gatekeeper 拦（提示「已损坏」），见上面的「下载」一节
-（本应用未做 Apple 签名与公证；Release 里的 `FIRST-OPEN-macOS.txt` 也写了这两步）。
+# macOS：构建 App，产物 dist/编辑部工具箱.app
+./build.sh && open dist/编辑部工具箱.app
 
-### Windows
-
-```powershell
+# Windows：构建两个 exe，产物 build\dist\
 cd sources-win
 pwsh -ExecutionPolicy Bypass -File build-win.ps1
-# 产出：build\dist\SLCNEngine.exe（引擎，十个 CLI 冻成一个）与 build\dist\编辑部工具箱.exe（界面）
 ```
 
-### 命令行（引擎单独用也成）
+> 上面命令里的 `python3` 指你用来跑引擎的解释器；本机实测用 `/opt/homebrew/bin/python3.14`（`vendor/` 内的预编译依赖只适配 3.14）。CI 在云端用 Python 3.12 安装依赖后跑同一套测试。
+
+### 只用引擎（命令行）
+
+引擎入口都在 `Engine/` 下：`convert.py`（初排转换）、`checkbib.py`（文献核实）、`proofcheck.py`（一校核查）、`infocheck.py`、`toc.py`、`compileall.py`、`mergepdf.py`、`cleantemp.py`、`publish.py`、`bibdb.py`。参数、退出码与输出格式见 [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md)。
 
 ```bash
 cd Engine
-export PYTHONPATH="$PWD/vendor"
-
-python3 convert.py  --source "作者稿件.docx" --out "输出目录" --compile --verify-refs
-python3 checkbib.py --returned "编辑改回的.bib" --original "原件.bib" --tex "正文.tex"
-python3 mergepdf.py --folder "2026年第5期(90)" --editors-page --nest-outlines
-python3 proofcheck.py --tex "初排稿.tex"          # 一校核查（默认只报不改；--fix 另存新文件）
-python3 compileall.py  --folder "2026年第5期(90)"  # 编译全部
-python3 cleantemp.py   --folder "2026年第5期(90)" --dry-run
-python3 infocheck.py   --folder "2026年第5期(90)"   # 检查tex信息（卷期年/页码/题目/作者 + PDF 页数）
-python3 toc.py         --report "2026年第5期(90)/信息检查<时间戳>.txt"   # 生成中英文目录
-python3 convert.py --version      # 引擎版本 + 运行环境
+PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 convert.py --source <来稿> --out <期目录> --compile
 ```
 
-参数与退出码的**权威说明**见 [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md)。
+## 文档地图
 
----
+| 文档 | 读者 | 内容 |
+|---|---|---|
+| [`使用说明.md`](使用说明.md) | 编辑部同事 | 面向使用者的操作手册（可直接转发） |
+| [官网文档](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) | 所有人 | 快速上手、安装、常见问题、已知限制 |
+| [`Engine/docs/GUIDE.md`](Engine/docs/GUIDE.md) | 引擎使用者 | 引擎用法、参数与行为细节 |
+| [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md) | 集成 / 脚本 | 各 CLI 参数、退出码与输出契约 |
+| [`Engine/docs/PROOF_RULES.md`](Engine/docs/PROOF_RULES.md) | 一校核查 | 核查规则表与未实现项 |
+| [`Engine/docs/RULES.md`](Engine/docs/RULES.md) | 维护者 | 排版与工程口径 |
+| [`RELEASING.md`](RELEASING.md) | 维护者 | 发版与公开流程 |
 
-## 目录
+## 仓库结构
 
 ```text
-Engine/                  引擎（Python，唯一一份逻辑）
-├── convert.py           初排转换（Word / LaTeX → 可编译初排稿）
-├── checkbib.py          参考文献回读校验 / 把编辑改回的 .bib 并回产物
-├── mergepdf.py          合并一期的 PDF（扉页、目录、各篇、封底 + 重建书签）
-├── proofcheck.py        一校核查：按《排校手册》《流程化经验书》逐条核查初排稿
-├── infocheck.py         检查 tex 信息（卷期年/页码/题目/作者 + PDF 实际页数）
-├── toc.py               生成目录（中英文，模板继承上一期成品）
-├── publish.py           本期出刊向导（CLI-only：检查信息 → 目录 → 合并 → 编译；GUI 已删该页）
-├── bibdb.py             编辑部引用库 CLI（两个平台的「引用库」5 页都调它）
-├── compileall.py        编译一期里所有文章的 .tex（xelatex → biber → xelatex ×2）
-├── cleantemp.py         删除编译临时文件（不删 .tex / .pdf / .log）
-├── engine_main.py       打包入口：把上面十个 CLI 冻成一个 exe（`ENTRIES` 要与外壳一致）
-├── slcn/                解析、规范、bib 判据、AI 任务书与合并等模块
-├── docs/                GUIDE（用法）/ RULES（判据）/ ENGINE_API（对外壳的契约）
-│                        （内部仓另有 cases/：案例法，含作者信息，不随公开仓发布）
-└── tests/               套件（每个文件都是独立脚本，打印 PASS/FAIL）
-sources-mac/                 macOS 外壳（SwiftUI）
-sources-win/            Windows 外壳（Tkinter）+ 打包脚本 + 桥梁测试
-编辑笔记/模板文件/         本刊排版模板（.sty 与骨架），引擎运行时必需
-tools/                   改名/拆仓脚本、Swift 测试台、假端点等开发工具
-build.sh                 macOS 构建
-RELEASING.md             发布与拆仓手册（含签名、Release、拆仓流程）
-THIRD_PARTY.md           第三方归属与许可证
+Engine/            引擎（Python）：convert / checkbib / proofcheck / infocheck / toc /
+                   compileall / mergepdf / cleantemp / publish / bibdb 等入口
+  slcn/            引擎内部模块（初排、核查、引用库、元数据等）
+  docs/            GUIDE、ENGINE_API、PROOF_RULES、RULES 等工程文档
+  tests/           引擎测试套件
+sources-mac/       macOS 外壳（SwiftUI）
+sources-win/       Windows 外壳（Tkinter）
+编辑笔记/模板文件/  本刊模板与样式（随 App 发布）
+tools/             开发与验收工具
+build.sh           macOS App 打包脚本
 ```
 
-## 测试
+## 开发与测试
 
 ```bash
-cd Engine && PYTHONPATH="$PWD/vendor" python3 tools/gen_docs.py   # 现算状态并刷新 README 的 AUTO 块
-PYTHONPATH="$PWD/vendor" python3 tests/test_docs_consistency.py   # 文档看门狗
-for f in tests/test_*.py; do python3 "$f" | tail -1; done          # 全部套件
-PYTHONPATH="$PWD/Engine/vendor" python3 sources-win/tests/test_bridge.py
+# 生成 Engine/README.md 中的统计块（数字唯一出处，勿手抄）
+cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tools/gen_docs.py
+
+# 文档一致性与路径真实性检查
+cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_docs_consistency.py
+
+# 引擎全部测试套件（逐个跑，只看最后一行）
+cd Engine && for f in tests/test_*.py; do PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 "$f" | tail -1; done
+
+# Windows 外壳桥接测试（不改界面，只读引擎 API）
+PYTHONPATH=Engine/vendor /opt/homebrew/bin/python3.14 sources-win/tests/test_bridge.py
+
+# 一键自检（--full 含全部套件）
+cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tools/selfcheck.py --full
 ```
 
-`Engine/README.md` 里的 **AUTO 块**是现算出来的（套件数、断言数、App 包内一致性等），
-不要手抄数字——`tools/gen_docs.py --check` 会当场抓住过期。
+- [`Engine/README.md`](Engine/README.md) 的统计块由脚本生成，改文档后请跑一次 `--check` 确认无差异。
+- 完整开发约定、红线与验收清单见 [`AGENTS.md`](AGENTS.md)。
 
-## 许可与归属
+## 许可与注意
 
-- 本项目：**MIT**，见 [`LICENSE`](LICENSE)。
-- 第三方组件（界面骨架 Editorialbox、随包依赖 pypdf / pypinyin / lxml 等）：见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
+MIT，见 [`LICENSE`](LICENSE)；第三方组件与许可见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
-## 注意
-
-- **本仓是公开的工具仓**；作者来稿与编辑内部资料（排校手册等）**不在**这里。
-- 参考文献的联网核实需要自备 API 配置；工具**不**内置任何密钥。
-- 默认**不**自动替换已安装的应用（升级提示只提示，不动文件）。
+1. 本仓是公开代码与模板，不含真实期刊数据；稿件与编辑部数据保存在内部仓库。
+2. 启用联网文献核实需自备并填写 API 配置，费用由服务商计费。
+3. 覆盖安装不会自动迁移旧配置，升级前请先备份。
