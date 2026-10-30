@@ -35,6 +35,10 @@ enum ProofCheckFeature {
     }
 
     static func run(options o: Options, log: Logger) {
+        DiagnoseRun.begin(entry: "proofcheck.py")
+        func startupFailure() {
+            DiagnoseRun.finish(entry: "proofcheck.py", exitCode: -1, toolDir: nil)
+        }
         let tex = o.tex.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tex.isEmpty else {
             log("请先选择初排稿 .tex 文件。\n")
@@ -50,11 +54,13 @@ enum ProofCheckFeature {
                 + "（官方 ./build.sh 会把它打包进去）；")
             log("② 从 app 所在目录逐级向上找 Engine/proofcheck.py"
                 + "（开发时把 app 放在仓库的  下即可命中）。\n")
+            startupFailure()
             return
         }
         let toolDir = (tool as NSString).deletingLastPathComponent
         guard let py = EngineLocator.locatePython(toolDir: toolDir) else {
             log("未找到 python3。请先安装（brew install python3）。\n")
+            startupFailure()
             return
         }
 
@@ -79,6 +85,7 @@ enum ProofCheckFeature {
             environment: extra,
             log: log
         )
+        DiagnoseRun.finish(entry: "proofcheck.py", exitCode: status, toolDir: toolDir)
 
         log("\n")
         // U3：用户取消 → 只说「已取消」，不许讲成失败

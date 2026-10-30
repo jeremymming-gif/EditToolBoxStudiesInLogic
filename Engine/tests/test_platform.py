@@ -111,6 +111,9 @@ ENTRY_FILES = ["convert.py", "checkbib.py", "mergepdf.py", "proofcheck.py", "com
                # Windows 版引用库做完后那条守卫必须反过来，否则一改 ENTRIES 就红。
                "bibdb.py",
                "envcheck.py",
+               # B-285b：`diagnose.py`（失败诊断）也是交付 CLI —— 两个外壳的「诊断卡」
+               # 都走它；它与 engine_main 一起冻结进 Windows exe，mac 包同样要带。
+               "diagnose.py",
                "engine_main.py"]
 def _calls_utf8_stdio(tree: ast.AST) -> bool:
     """入口是否调了 `utf8_stdio()` —— 两种写法都认：

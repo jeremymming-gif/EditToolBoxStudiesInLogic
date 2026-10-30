@@ -152,3 +152,9 @@ git -C ../EditToolBox-notes commit -m "引用库：回退到上一个提交" -- 
 > Windows 上把 `python3` 换成 `python`，示例路径 `/path/to/...` 换成本机路径（如 `C:\...\reference.bib`）。
 > 打包版：Windows 用与界面 exe 同目录的 `SLCNEngine.exe bibdb.py …`；macOS 的引擎随 App 放在
 > `Contents/Resources/Engine/`，用 `python3` 直接跑其中的 `bibdb.py` 即可。
+
+## 失败诊断（文献回读校验 / 引用库）
+
+文献回读校验（`checkbib.py`）退出码 1 表示「有对不上的条目，不是失败」，出**中性卡**；
+退出码 0 不出卡。卡片给出类别、原因与下一步，证据为脱敏后的日志尾部；
+诊断包只存本地、复制到剪贴板，不会上传引用库或稿件内容。

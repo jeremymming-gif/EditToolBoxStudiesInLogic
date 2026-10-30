@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""把十一个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
+"""把十二个 CLI 冻成**一个** exe 的入口（第 89 条，给 Windows 发布包用）。
 
     SLCNEngine.exe convert.py   --source "<稿件.docx>" --out "<输出目录>" --compile
     SLCNEngine.exe checkbib.py  --returned "<交回.bib>" --merge-into "<产物 reference.bib>"
     SLCNEngine.exe mergepdf.py  --folder "<期目录>" --editors-page --nest-outlines
     SLCNEngine.exe proofcheck.py --folder "<期目录>"
     SLCNEngine.exe envcheck.py  --json --profile exe
+    SLCNEngine.exe diagnose.py  --entry convert.py --exit-code 2 --log "<日志>" --json
     SLCNEngine.exe --version
 
-**为什么要它**：Windows 上不该要求编辑先装 Python。把十个入口冻成一个
+**为什么要它**：Windows 上不该要求编辑先装 Python。把十二个入口冻成一个
 `SLCNEngine.exe`（PyInstaller `--onefile`），Tkinter 外壳直接调这个 exe
 （见 `sources-win/engine.py: frozen_engine_exe()`），用户机器上零依赖。
 
-**为什么不是八个 exe**：冻结一次要几十 MB，八个 exe 就是八份运行时。
+**为什么不是十二个 exe**：冻结一次要几十 MB，十二个 exe 就是十二份运行时。
 
 ⚠️ **`ENTRIES` 必须与外壳的 `sources-win/engine.py: ENTRIES` 逐项一致**，而且
 `build-win.ps1` 的 `--hidden-import` 与自检都要按它逐项走。2026-10-17 实测：
@@ -37,10 +38,12 @@ sys.path.insert(0, HERE)
 #: Windows「引用库」5 页（库概况/查库/入藏/待裁决/设置）全靠它。
 #: B-283 在**末尾**加了 `envcheck.py`（首次运行环境自检）—— 前 10 项顺序不许动，
 #: 「设置」页的「环境检查」按钮与首跑自检都走这一条。
+#: B-285b 继续在**末尾**加 `diagnose.py`（失败诊断）—— 前 11 项顺序不动；两个外壳的
+#: 诊断卡都通过这一条调用（旧引擎没有这一项时外壳回退「退出码 + 日志尾部」，不阻断）。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
            "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-           "envcheck.py")
+           "envcheck.py", "diagnose.py")
 
 USAGE = f"""SLCN 引擎（打包版）
 
@@ -88,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.argv = ["convert.py", *rest]
         return convert.main()
     # 其余入口的签名统一是 `main(argv=None)`（checkbib / mergepdf / cleantemp /
-    # compileall / proofcheck / infocheck / toc），所以按名字动态 import 即可 ——
+    # compileall / proofcheck / infocheck / toc / publish / bibdb / envcheck / diagnose），
+    # 所以按名字动态 import 即可 ——
     # 一个一个 if 下去，下次加入口就会漏掉一个（这正是本文件踩过的坑）。
     mod = importlib.import_module(entry[:-3])
     return mod.main(rest)

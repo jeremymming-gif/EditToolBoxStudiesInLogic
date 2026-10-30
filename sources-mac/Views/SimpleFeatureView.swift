@@ -21,6 +21,8 @@ struct SimpleFeatureView: View {
     /// 「撤销」按钮（只有「删除临时文件」页用；移入回收目录后可一键还原）
     var undoTitle: String? = nil
     var onUndo: ((_ folder: String, _ artifactPath: String) -> Void)? = nil
+    /// 本页对应哪个引擎入口的失败诊断卡（空 = 不出卡；只有「编译全部」传它）
+    var diagnosisEntry: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -101,6 +103,10 @@ struct SimpleFeatureView: View {
                 )
             }
 
+            if !diagnosisEntry.isEmpty {
+                DiagnosisCard(entry: diagnosisEntry)
+            }
+
             Spacer()
         }
         .padding(20)
@@ -173,12 +179,15 @@ struct SimpleTab: View {
     let action: (_ path: String, _ log: Logger) -> Void
     var undoTitle: String? = nil
     var onUndo: ((_ folder: String, _ artifactPath: String) -> Void)? = nil
+    /// 「编译全部」是本文件唯一的 SimpleTab 页；它要显示 compileall.py 的诊断卡。
+    var diagnosisEntry: String = "compileall.py"
 
     @StateObject private var model = PathRunnerModel()
 
     var body: some View {
         SimpleFeatureView(model: model, help: help, pickKind: pickKind, log: log,
-                          action: action, undoTitle: undoTitle, onUndo: onUndo)
+                          action: action, undoTitle: undoTitle, onUndo: onUndo,
+                          diagnosisEntry: diagnosisEntry)
     }
 }
 

@@ -217,20 +217,20 @@ check("(b) 外壳入口表与**打包 dispatcher** 的 `ENTRIES` 逐项一致"
       "（少一项 = 那个标签页在用户机器上直接退出 2）",
       set(E.ENTRIES) == set(_DISP.ENTRIES),
       f"外壳 {len(E.ENTRIES)} 个 {E.ENTRIES} ／ dispatcher {len(_DISP.ENTRIES)} 个 {_DISP.ENTRIES}")
-check("(b) 十一个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py，"
-      "B-283 起含环境自检 envcheck.py）",
+check("(b) 十二个入口名字都在表里（写错名字 = 同上；第 132 条起含引用库 bibdb.py，"
+      "B-283 起含环境自检 envcheck.py，B-285b 起含失败诊断 diagnose.py）",
       set(E.ENTRIES) == {"convert.py", "checkbib.py", "mergepdf.py",
                          "cleantemp.py", "compileall.py", "proofcheck.py",
                          "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-                         "envcheck.py"},
+                         "envcheck.py", "diagnose.py"},
       f"{E.ENTRIES}")
-check("(b) B-283 的口径：`envcheck.py` **追加在末尾**，前 10 项**顺序逐项不变**"
+check("(b) B-283/B-285b 的口径：前 10 项**顺序逐项不变**，envcheck 后追加 diagnose"
       "（C8：默认零变化）",
       tuple(E.ENTRIES[:10]) == ("convert.py", "checkbib.py", "mergepdf.py",
                                 "cleantemp.py", "compileall.py", "proofcheck.py",
                                 "infocheck.py", "toc.py", "publish.py", "bibdb.py")
-      and tuple(E.ENTRIES[10:]) == ("envcheck.py",)
-      and tuple(_DISP.ENTRIES[:10]) == tuple(E.ENTRIES[:10]),
+      and tuple(E.ENTRIES[10:]) == ("envcheck.py", "diagnose.py")
+      and tuple(_DISP.ENTRIES) == tuple(E.ENTRIES),
       f"{E.ENTRIES}")
 
 c7 = E.infocheck_call(folder=r"E:\\期\\90", preview=True)
@@ -2414,8 +2414,9 @@ check("(l) 设置页有「环境检查」「导出诊断包…」「复制安装
 check("(l) 子线程不碰 Tk：结果经 `queue.Queue` + 主线程 `after` 轮询回来自（项目纪律）",
       "self.after(120" in SETTINGS_TAB_SRC and "queue.Queue()" in SETTINGS_TAB_SRC
       and "self._env_queue.put(" in SETTINGS_TAB_SRC)
-check("(l) Windows 打包入口表也含 envcheck.py，且与外壳 ENTRIES **同一张表**",
-      "envcheck.py" in BUILD_PS1 and "十一个入口" in BUILD_PS1
+check("(l) Windows 打包入口表也含 envcheck.py / diagnose.py，且与外壳 ENTRIES **同一张表**",
+      "envcheck.py" in BUILD_PS1 and "diagnose.py" in BUILD_PS1
+      and "十二个入口" in BUILD_PS1
       and all(e in BUILD_PS1 for e in E.ENTRIES)
       and BUILD_PS1.count("envcheck.py") >= 2)
 check("(l) settings：`envCheckDone` 默认 False、只收 bool（旧配置缺字段/垃圾值不炸）",
@@ -2774,6 +2775,139 @@ check("(m) P2 dirty_other 两侧路径统一 `/` 后比较（Windows 不误算�
       and 'path_norm = os.path.normcase(path.replace(' in _git_src)
 check("(m) P2 commit 成功但 rev-parse 失败时回退取 commit 输出 sha",
       "sha 取自 git commit 输出" in _git_src and "re.search(" in _git_src)
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (n) 失败诊断卡（B-285b）：红/中性口径 + 本地诊断包 + 日志轮转 + 旧引擎回退 ──")
+
+check("(n) 入口表：diagnose.py 追加在 envcheck.py 之后，前 11 项顺序逐项不变",
+      tuple(E.ENTRIES) == ("convert.py", "checkbib.py", "mergepdf.py",
+                           "cleantemp.py", "compileall.py", "proofcheck.py",
+                           "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+                           "envcheck.py", "diagnose.py")
+      and tuple(_DISP.ENTRIES) == tuple(E.ENTRIES),
+      f"{E.ENTRIES}")
+
+check("(n) 五页共用一张卡：convert / proofcheck / infocheck / compileall / checkbib",
+      tuple(E.DIAGNOSIS_ENTRIES) == ("convert.py", "proofcheck.py", "infocheck.py",
+                                     "compileall.py", "checkbib.py"),
+      f"{E.DIAGNOSIS_ENTRIES}")
+
+_RED = (("convert.py", 2), ("infocheck.py", 2), ("compileall.py", 1))
+_NEUTRAL = (("proofcheck.py", 1), ("checkbib.py", 1))
+check("(n) 红卡口径：convert exit 2 / infocheck exit 2 / compileall exit 1 / 启动失败 <0（C1）",
+      all(E.diagnosis_level(e, c) == "error" for e, c in _RED)
+      and E.diagnosis_level("convert.py", -1) == "error"
+      and E.diagnosis_level("infocheck.py", -1) == "error"
+      and E.diagnosis_level("compileall.py", -1) == "error"
+      and E.diagnosis_level("proofcheck.py", -1) == "error",
+      str([(e, c, E.diagnosis_level(e, c)) for e, c in _RED]))
+check("(n) 中性卡：proofcheck / checkbib exit 1；exit 0 一律不出卡（C2/C3）",
+      all(E.diagnosis_level(e, c) == "neutral" for e, c in _NEUTRAL)
+      and all(E.diagnosis_level(e, 0) is None for e in E.DIAGNOSIS_ENTRIES)
+      and E.diagnosis_level("convert.py", 1) is None
+      and E.diagnosis_level("infocheck.py", 3) is None
+      and E.diagnosis_level("proofcheck.py", 2) is None
+      and E.diagnosis_level("checkbib.py", 2) is None
+      and E.diagnosis_level("toc.py", 2) is None,
+      str([(e, c, E.diagnosis_level(e, c)) for e, c in
+           (("proofcheck.py", 1), ("checkbib.py", 1), ("convert.py", 0),
+            ("convert.py", 1), ("proofcheck.py", 2), ("checkbib.py", 2))]))
+
+_dcall = E.diagnose_call("convert.py", 2, "/tmp/本次.log")
+_dargs = _dcall.argv
+check("(n) diagnose_call：diagnose.py + `--entry/--exit-code/--log/--json`（与契约一致）",
+      _dcall.entry == "diagnose.py"
+      and _dargs[-7:] == ["--entry", "convert.py", "--exit-code", "2",
+                          "--log", "/tmp/本次.log", "--json"],
+      f"argv={_dargs}")
+
+_RAW = ("sk-live-abcdef123456 api_key=SECRETVALUE token: TOKENVALUE "
+        "Authorization: Bearer abc.def-123 正常行 tokenization 不受影响")
+_MASKED = E.mask_secrets(_RAW)
+check("(n) 脱敏：sk- / api_key= / token: / Bearer 都被替换（C4 的输入侧）",
+      "sk-live" not in _MASKED and "SECRETVALUE" not in _MASKED
+      and "TOKENVALUE" not in _MASKED and "abc.def" not in _MASKED
+      and "sk-live" not in E.mask_secrets(_MASKED),
+      _MASKED)
+check("(n) 脱敏反例：tokenization / risk-free 这类词**不能**误伤",
+      "tokenization" in _MASKED
+      and E.mask_secrets("risk-free tokenization") == "risk-free tokenization",
+      E.mask_secrets("risk-free tokenization"))
+
+_REPORT = {
+    "schema": "diagnose.v1", "entry": "convert.py", "exit_code": 2,
+    "category": "template_unavailable", "severity": "error",
+    "title": "缺少排版模板", "reason": "找不到模板文件",
+    "next_steps": ["把模板目录放回编辑笔记/模板文件", "重跑转换"],
+    "doc_anchor": "ENGINE_API.md §十一 失败诊断（diagnose.v1）",
+    "confidence": 0.86, "engine_version": "9.9.9",
+}
+_PACK = E.diagnosis_pack(
+    entry="convert.py", exit_code=2, level="error", report=_REPORT,
+    log_tail=["最后一行：找不到模板", "sk-live-abcdef123456", "api_key=SECRETVALUE"],
+    engine_version="9.9.9", generated_at="2026-10-31 12:00:00")
+check("(n) 诊断包含类别/标题/原因/下一步/日志尾部，且 ≤16KB（C4/C5）",
+      all(k in _PACK for k in ("template_unavailable", "缺少排版模板", "找不到模板文件",
+                               "把模板目录放回", "最后一行：找不到模板", "退出码：2"))
+      and len(_PACK.encode("utf-8")) <= 16 * 1024,
+      f"{len(_PACK.encode('utf-8'))} bytes")
+check("(n) 诊断包不含密钥（C4）、写明零上传、含说明",
+      "sk-live" not in _PACK and "SECRETVALUE" not in _PACK
+      and "不会上传" in _PACK and "不含稿件正文" in _PACK)
+_FALLBACK = E.diagnosis_pack(entry="convert.py", exit_code=2, level="error",
+                             report=None, log_tail=["最后一行报错"], engine_version="1.0")
+check("(n) 旧引擎回退：diagnose.py 缺失/崩溃时仍出卡（退出码 + 日志尾部，C7）",
+      "诊断器不可用" in _FALLBACK and "退出码：2" in _FALLBACK
+      and "最后一行报错" in _FALLBACK and "下一步" in _FALLBACK)
+check("(n) 回退解析：非 JSON / 非 diagnose.v1 / 缺键 → None（绝不猜）",
+      E.parse_diagnosis("不是 JSON") is None
+      and E.parse_diagnosis('{"schema": "envcheck.v1"}') is None
+      and E.parse_diagnosis('{"schema": "diagnose.v1", "entry": "x.py"}') is None
+      and E.parse_diagnosis(json.dumps({"schema": "diagnose.v1", "entry": "x.py",
+                                        "category": "usage", "title": "t",
+                                        "reason": "r", "next_steps": []}))["category"] == "usage")
+
+# 日志轮转 + 落盘脱敏（D-05：留 20 份；原文行脱敏）
+_dir = tempfile.mkdtemp(prefix="slcn_diaglog_")
+try:
+    for _i in range(25):
+        E.save_diagnosis_log("convert.py", [f"行{_i}", "sk-live-abcdef123456"],
+                             directory=_dir, stamp=f"20261031-{_i:06d}")
+    _names = sorted(n for n in os.listdir(_dir) if n.endswith(".log"))
+    _newest = open(os.path.join(_dir, _names[-1]), encoding="utf-8").read()
+    _oldest = open(os.path.join(_dir, _names[0]), encoding="utf-8").read()
+    check("(n) 日志留 20 份：连写 25 次只留最新 20（D-05）",
+          len(_names) == 20 and _names[0] == "20261031-000005-convert.log"
+          and _names[-1] == "20261031-000024-convert.log",
+          f"{len(_names)} 份：{_names[:1]}…{_names[-1:]}")
+    check("(n) 落盘日志已脱敏、仍是原始行数（不是丢弃证据）",
+          "行24" in _newest and "sk-live" not in _newest
+          and "行5" in _oldest and _newest.count("\n") == 2,
+          _newest)
+finally:
+    shutil.rmtree(_dir, ignore_errors=True)
+
+_BASE_SRC = (SHELL / "tabs" / "base.py").read_text(encoding="utf-8")
+_MAIN_SRC = (SHELL / "main.py").read_text(encoding="utf-8")
+check("(n) 五页共用诊断卡基座：DiagnosisCard + show_diagnosis + 三个按钮 + 证据折叠",
+      all(s in _BASE_SRC for s in (
+          "class DiagnosisCard", "def show_diagnosis", "def toggle_evidence",
+          "打开日志", "复制诊断包", "查看文档", "grid_remove()")))
+check("(n) main：worker 结果之后调 _post_diagnosis；__DIAG__ 只在主线程碰控件",
+      "self._post_diagnosis(tab, call.entry, code, run_lines)" in _MAIN_SRC
+      and 'self._q.put(("__DIAG__"' in _MAIN_SRC
+      and 'line[0] == "__DIAG__"' in _MAIN_SRC
+      and "tab.show_diagnosis(" in _MAIN_SRC)
+check("(n) 每次运行先隐藏旧卡（上一次的失败不会残留在新结果旁边）",
+      "tab.hide_diagnosis()\n        tab.show_running(0.0)" in _MAIN_SRC)
+check("(n) 诊断自身失败不阻断：异常 → report=None 仍出回退卡，且不抛给 worker",
+      "except Exception:  # noqa: BLE001  旧引擎/诊断崩溃 → 回退" in _MAIN_SRC
+      and 'self._q.put(f"⚠️ 诊断包生成失败（不影响结果）：{exc}")' in _MAIN_SRC)
+check("(n) 旧引擎回退走「退出码 + 日志尾部」文案（不阻断运行结果）",
+      "已回退为「退出码 + 日志尾部」" in (SHELL / "engine.py").read_text(encoding="utf-8"))
+check("(n) 「查看文档」的候选真实存在（契约/使用说明/FAQ 至少一份）",
+      bool(E.diagnosis_doc_path()) and os.path.isfile(E.diagnosis_doc_path()),
+      str(E.diagnosis_doc_path()))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

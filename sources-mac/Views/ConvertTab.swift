@@ -219,6 +219,8 @@ struct ConvertTab: View {
             if model.options.coop {
                 coopPanel
             }
+            // B-285b：失败诊断卡（红卡 = 转换 exit 2 / 启动失败；成功与取消不出卡）
+            DiagnosisCard(entry: "convert.py")
         }
         .padding(16)
     }

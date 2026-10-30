@@ -484,6 +484,18 @@ class MainWindow(tk.Tk):
                     except Exception as exc:  # noqa: BLE001
                         self.log(f"❌ 界面回调出错：{exc}")
                     continue
+                if isinstance(line, tuple) and line[0] == "__DIAG__":
+                    # B-285b：诊断卡（红/中性）或「本次不出卡」→ 隐藏旧卡。
+                    _tag, tab, level, report, log_path, pack, tail = line
+                    if tab is not None:
+                        try:
+                            if level == "hide":
+                                tab.hide_diagnosis()
+                            else:
+                                tab.show_diagnosis(level, report, log_path, pack, tail)
+                        except Exception as exc:  # noqa: BLE001
+                            self.log(f"❌ 诊断卡显示失败：{exc}")
+                    continue
                 if isinstance(line, tuple) and line[0] == "__RESULT__":
                     _tag, tab, text, path, seconds, undo = line
                     if isinstance(undo, tuple) and len(undo) == 2:
@@ -631,6 +643,7 @@ class MainWindow(tk.Tk):
         self._t0 = time.monotonic()
         if isinstance(tab, _tc.TocTab):
             tab.clear_delivery()
+        tab.hide_diagnosis()
         tab.show_running(0.0)
         self._set_busy(True)
         # ⚠️ 路径必须在**主线程**里取好再交给工作线程：Tk 控件不能跨线程碰 ——
@@ -678,6 +691,7 @@ class MainWindow(tk.Tk):
     def _worker(self, call: E.EngineCall, tab=None, path: str = "") -> None:
         last = {"line": ""}
         tail: list[str] = []                 # 失败时给界面看「日志尾部」（只留最后几行）
+        run_lines: list[str] = []            # B-285b：诊断落盘/复制包用的整段输出
 
         def _on_line(line: str) -> None:
             self._q.put(line)
@@ -686,6 +700,9 @@ class MainWindow(tk.Tk):
                 tail.append(line)
                 if len(tail) > 8:
                     del tail[0]
+            run_lines.append(line)
+            if len(run_lines) > 4000:
+                del run_lines[:500]
 
         # 第五十五批：两段式协同**绝不**把 API 配置传给子进程（外部 chat 通道零上传/
         # 零费用；与 mac `CoopFeature.prepare` 强制 useAI=false 同一口径）。
@@ -740,6 +757,7 @@ class MainWindow(tk.Tk):
         #    （2026-10-17 审计实测，H3）。文案与 mac 各页逐字对齐，且在 bridge 里有守卫。
         self._q.put(f"{result}（退出码 {code}）")
         if tab is not None:
+            self._post_diagnosis(tab, call.entry, code, run_lines)
             path = E.artifact_path(last["line"]) if code == 0 else ""
             if isinstance(tab, _tc.TocTab):
                 toc_dir = str(toc_payload.get("tocDir") or "").strip()
@@ -760,6 +778,44 @@ class MainWindow(tk.Tk):
             if coop_payload is not None:
                 self._q.put(("__COOP__", tab, coop_payload, code))
         self._q.put("__DONE__")
+
+    def _post_diagnosis(self, tab, entry: str, code: int, lines: list[str]) -> None:
+        """B-285b：按退出码决定出不出卡；出卡就落日志 → 调 diagnose.py → 拼本地诊断包。
+
+        ⚠️ 全程在 worker 线程：只碰纯函数与 ``self._q``，不碰任何 Tk 控件。
+        旧引擎（没有 diagnose.py）或诊断本身失败 → ``report=None``，仍出卡（回退口径），
+        绝不阻断运行结果的主流程。
+        """
+        level = E.diagnosis_level(entry, code)
+        if not level:
+            self._q.put(("__DIAG__", tab, "hide", None, "", "", []))
+            return
+        log_path = ""
+        try:
+            log_path = E.save_diagnosis_log(entry, lines)
+        except Exception as exc:  # noqa: BLE001  写缓存失败也不阻断
+            self._q.put(f"⚠️ 诊断日志保存失败（不影响结果）：{exc}")
+        report = None
+        if log_path:
+            try:
+                dcall = E.diagnose_call(entry, code, log_path)
+                out: list[str] = []
+                dcode = E.run_call(dcall, on_line=out.append)
+                if dcode == 0:
+                    report = E.parse_diagnosis("\n".join(out))
+            except Exception:  # noqa: BLE001  旧引擎/诊断崩溃 → 回退
+                report = None
+        try:
+            pack = E.diagnosis_pack(
+                entry=entry, exit_code=code, level=level, report=report,
+                log_tail=[str(x) for x in lines][-10:],
+                engine_version=E.engine_version(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            pack = ""
+            self._q.put(f"⚠️ 诊断包生成失败（不影响结果）：{exc}")
+        self._q.put(("__DIAG__", tab, level, report, log_path, pack,
+                     [str(x) for x in lines][-10:]))
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy

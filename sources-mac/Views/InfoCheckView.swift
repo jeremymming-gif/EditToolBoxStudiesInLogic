@@ -56,6 +56,8 @@ struct InfoCheckView: View {
                 }
             }
 
+            DiagnosisCard(entry: "infocheck.py")
+
             if let report = model.report {
                 Divider()
                 summary(report)

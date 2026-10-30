@@ -14,7 +14,7 @@
   `slcn_python()` 依次尝试
     ① 环境变量 `SLCN_PYTHON`
     ② 已经装了 Python 的开发机：`python` / `python3` / Windows 的 `py` 启动器
-    ③ **冻结引擎**：`SLCNEngine.exe`（把十个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
+    ③ **冻结引擎**：`SLCNEngine.exe`（把十二个 CLI 冻成一个 exe，见 `Engine/engine_main.py`；
        本文件的 `ENTRIES` 必须与它的 `ENTRIES` 逐项一致 —— 由 tests/test_bridge.py 守着）
        第 132 条起 `bibdb.py`（引用库 CLI）也在表里：Windows「引用库」5 页的数据源，
        四处入口表（外壳 `ENTRIES` / dispatcher `ENTRIES` / build-win.ps1 / 桥接断言）
@@ -37,12 +37,13 @@ import clean_logic as _clean_logic   # B-281：清理三模式的纯逻辑（同
 
 #: CLI 入口（与 `Engine/docs/ENGINE_API.md` 一致）。
 #: 第 132 条加了 `bibdb.py`（引用库）——它与 mac 包共用同一份 CLI，Windows 侧不重写判据。
-#: B-283：末尾追加 `envcheck.py`（首次运行环境自检）——**前 10 项顺序不动**，
-#: 既有的参数拼装/日志/退出码口径一个字节都不变。
+#: B-283：末尾追加 `envcheck.py`（首次运行环境自检）——**前 10 项顺序不动**。
+#: B-285b：再追加 `diagnose.py`（失败诊断）——**前 11 项顺序不动**，12 项与
+#: `Engine/engine_main.py: ENTRIES` 逐项一致（由 tests/test_bridge.py (b) 守着）。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
            "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-           "envcheck.py")
+           "envcheck.py", "diagnose.py")
 
 
 # ── 日志分层（U4：摘要 / 原始两层，默认折叠原始）─────────────────────────
@@ -1099,6 +1100,216 @@ def envcheck_call(*, json_output: bool = True, out_dir: str = "",
     if profile:
         cmd += ["--profile", profile]
     return EngineCall(cmd, "envcheck.py", "环境自检")
+
+
+# ── 失败诊断（B-285b）：`diagnose.py` 的薄接线 ───────────────────────────
+# 判据（17 类 / 标题 / 下一步 / 置信度）只在 `Engine/slcn/diagnose.py`，外壳只做四件事：
+#   ① 判定**要不要出卡**（红：转换 exit 2、信息检查 exit 2、全编译 exit 1、启动失败 <0；
+#      中性：一校核查 / 文献回读 exit 1；0 一律不出卡）；
+#   ② 把本次运行的日志落进应用缓存（`%LOCALAPPDATA%/编辑部工具箱/logs`，留 20 份）；
+#   ③ 调 `diagnose.py --json` 拿 13 键 JSON（旧引擎没有它 → 回退，不阻断）；
+#   ④ 拼一份**零上传**的本地诊断包文本（≤16KB，日志尾部已脱敏）。
+# 与 mac 侧 `sources-mac/Core/Diagnose.swift` 同一口径；两平台必须给出同样的类别/原因/下一步。
+
+DIAGNOSIS_ENTRIES = ("convert.py", "proofcheck.py", "infocheck.py",
+                     "compileall.py", "checkbib.py")
+DIAGNOSIS_RED_EXITS = {"convert.py": (2,), "infocheck.py": (2,), "compileall.py": (1,)}
+DIAGNOSIS_NEUTRAL_EXITS = {"proofcheck.py": (1,), "checkbib.py": (1,)}
+DIAGNOSIS_PACK_LIMIT = 16 * 1024
+DIAGNOSIS_LOG_KEEP = 20
+
+#: 与 `Engine/slcn/diagnose.py: _SECRET_PATTERNS` 同一口径（两平台各一份，测试逐条对拍）。
+_SECRET_PATTERNS = (
+    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{3,}"),
+    re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|slcn_llm_key)"
+               r"\s*[=:]\s*[^\s,，;；]+"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
+)
+
+
+def mask_secrets(text: str) -> str:
+    """把日志/诊断包里的密钥字样替换成 `***`（确定性、幂等）。"""
+    out = text or ""
+    for pattern in _SECRET_PATTERNS:
+        out = pattern.sub("***", out)
+    return out
+
+
+def diagnosis_level(entry: str, code: int) -> str | None:
+    """要不要出诊断卡、出哪一种。`None` = 不出卡（成功 / 非失败口径）。"""
+    if entry not in DIAGNOSIS_ENTRIES or code == 0:
+        return None
+    if code < 0:
+        return "error"          # 启动失败 / 被中止：一律红卡
+    if code in DIAGNOSIS_RED_EXITS.get(entry, ()):
+        return "error"
+    if code in DIAGNOSIS_NEUTRAL_EXITS.get(entry, ()):
+        return "neutral"
+    return None                 # 未列出的退出码：不出卡（维持旧行为）
+
+
+def app_logs_dir() -> str:
+    """应用缓存的日志目录（D-05）：Windows `%LOCALAPPDATA%/编辑部工具箱/logs`。"""
+    base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if not base:
+        base = os.path.join(os.path.expanduser("~"), ".local", "share")
+    path = os.path.join(base, "编辑部工具箱", "logs")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _log_stamp() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def save_diagnosis_log(entry: str, lines, *, directory: str | None = None,
+                       keep: int = DIAGNOSIS_LOG_KEEP, stamp: str | None = None) -> str:
+    """把一次运行的输出落进应用缓存（已脱敏），并只留最近 `keep` 份。返回文件路径。"""
+    folder = directory or app_logs_dir()
+    os.makedirs(folder, exist_ok=True)
+    stem = entry[:-3] if entry.endswith(".py") else entry
+    name = f"{stamp or _log_stamp()}-{stem}.log"
+    path = os.path.join(folder, name)
+    body = "".join(str(line).rstrip("\n") + "\n" for line in lines)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(mask_secrets(body))
+    prune_diagnosis_logs(folder, keep=keep)
+    return path
+
+
+def prune_diagnosis_logs(directory: str, *, keep: int = DIAGNOSIS_LOG_KEEP) -> list[str]:
+    """日志轮转：按文件名的时间戳前缀排序，只留最近 `keep` 份。返回删掉的文件名。"""
+    try:
+        names = sorted(n for n in os.listdir(directory)
+                       if n.endswith(".log") and re.match(r"^\d{8}-\d{6}-", n))
+    except OSError:
+        return []
+    removed = []
+    victims = names[:-keep] if keep > 0 else names
+    for name in victims:
+        try:
+            os.remove(os.path.join(directory, name))
+            removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
+def _diagnose_cmd() -> list[str]:
+    cmd = _base_cmd("diagnose.py")
+    if cmd is None:
+        raise RuntimeError("找不到失败诊断脚本 Engine/diagnose.py（旧版引擎）："
+                           "已回退为「退出码 + 日志尾部」，不影响其他功能。")
+    return cmd
+
+
+def diagnose_call(entry: str, exit_code: int, log_path: str) -> EngineCall:
+    """一次失败诊断：`diagnose.py --entry X --exit-code N --log PATH --json`。"""
+    cmd = _diagnose_cmd()
+    cmd += ["--entry", entry, "--exit-code", str(int(exit_code)), "--log", log_path, "--json"]
+    return EngineCall(cmd, "diagnose.py", "失败诊断")
+
+
+def parse_diagnosis(text: str) -> dict | None:
+    """解析 diagnose.py 的 `--json` 输出；不是合法 diagnose.v1 就返回 None（走回退）。"""
+    raw = (text or "").strip()
+    start = raw.find("{")
+    if start < 0:
+        return None
+    try:
+        data = json.loads(raw[start:])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != "diagnose.v1":
+        return None
+    if not all(data.get(k) for k in ("entry", "category", "title", "reason")):
+        return None
+    if not isinstance(data.get("next_steps"), list):
+        return None
+    return data
+
+
+def diagnosis_doc_path(engine_dir: str | None = None) -> str | None:
+    """「查看文档」按钮打开哪一份：契约 → 使用说明 → FAQ。"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.dirname(here)
+    candidates = []
+    if engine_dir:
+        candidates.append(os.path.join(engine_dir, "docs", "ENGINE_API.md"))
+    candidates += [
+        os.path.join(repo, "使用说明.md"),
+        os.path.join(repo, "docs", "reference", "faq.md"),
+        os.path.join(repo, "docs", "reference", "known-limitations.md"),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def diagnosis_pack(*, entry: str, exit_code: int, level: str,
+                   report: dict | None = None, log_tail=(),
+                   engine_version: str = "", generated_at: str = "",
+                   envcheck_json: str = "") -> str:
+    """本地诊断包文本（零上传）：类别/原因/下一步 + 脱敏日志尾部；≤16KB。"""
+    from datetime import datetime
+    if not generated_at:
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    head = [
+        "编辑部工具箱 · 失败诊断包（本地生成，不会上传）",
+        f"生成时间：{generated_at}",
+        f"入口：{entry}",
+        f"退出码：{exit_code}",
+        f"卡片：{'红色（失败）' if level == 'error' else '中性（有结果）'}",
+    ]
+    if report:
+        head += [
+            f"类别：{report.get('category', '')}",
+            f"标题：{report.get('title', '')}",
+            f"原因：{report.get('reason', '')}",
+            f"置信度：{report.get('confidence', '')}",
+            f"引擎版本：{report.get('engine_version') or engine_version or ''}",
+            "下一步：",
+        ]
+        for i, step in enumerate(report.get("next_steps") or [], 1):
+            head.append(f"  {i}. {step}")
+        head.append(f"依据文档：{report.get('doc_anchor', '')}")
+    else:
+        head += [
+            "类别：（诊断器不可用：旧版引擎没有 diagnose.py，或本次诊断本身失败）",
+            "标题：本次运行没有成功",
+            "原因：只拿到退出码。先看下面的日志尾部；升级到带 diagnose.py 的版本后会有完整诊断。",
+            "下一步：",
+            "  1. 看「日志尾部」最后几行的报错，按提示修正输入或环境后重跑。",
+            "  2. 若反复失败，点「复制诊断包」把这份文本发给维护者；"
+            "日志文件在应用缓存目录（「打开日志」按钮可直接打开）。",
+            "  3. 需要完整契约时看 Engine/docs/ENGINE_API.md §十一。",
+            "引擎版本：" + (engine_version or ""),
+        ]
+    footer = [
+        "说明：本文件只含退出码、诊断结论与脱敏后的日志尾部；不含稿件正文、"
+        "作者信息、bib 条目或 API Key；不会上传任何地方。",
+    ]
+    if envcheck_json:
+        footer.insert(0, "环境自检（节选）：\n" + mask_secrets(envcheck_json)[:2000])
+    else:
+        footer.insert(0, "环境自检：见「设置 → 环境检查」；诊断包不含 envcheck.json 原文。")
+    evidence = [mask_secrets(str(line)) for line in log_tail if str(line).strip()]
+
+    def render() -> str:
+        body = ["证据（日志末尾，已脱敏）："] + (evidence or ["（本次没有捕获到日志行）"])
+        return "\n".join(head + [""] + body + footer) + "\n"
+
+    text = render()
+    # 硬上限：超了从证据里去掉最早的行（保留结论与最后几行）。
+    while len(text.encode("utf-8")) > DIAGNOSIS_PACK_LIMIT and len(evidence) > 1:
+        evidence = evidence[1:]
+        text = render()
+    data = text.encode("utf-8")
+    if len(data) > DIAGNOSIS_PACK_LIMIT:
+        text = data[:DIAGNOSIS_PACK_LIMIT - 64].decode("utf-8", "ignore") + "\n…（已截断）\n"
+    return text
 
 
 # ── 环境变量与执行 ───────────────────────────────────────────────────────

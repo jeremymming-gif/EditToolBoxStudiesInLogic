@@ -182,8 +182,9 @@ def test_engine_main_deferral() -> None:
 
     expected = ("convert.py", "checkbib.py", "mergepdf.py", "cleantemp.py", "compileall.py",
                 "proofcheck.py", "infocheck.py", "toc.py", "publish.py", "bibdb.py",
-                "envcheck.py")
-    check("(e) ENTRIES 仍是 11 项且未偷偷加 diagnose.py（接线延 B-285b）",
+                "envcheck.py", "diagnose.py")
+    # B-285b：按 spec §9 把 11→12 接上；前 11 项顺序不动。
+    check("(e) ENTRIES 已按 B-285b 接上 12 项（diagnose.py 末尾、前 11 项顺序不动）",
           tuple(ENTRIES) == expected, str(ENTRIES))
     # R5 隐私：新文件不得含真实姓名/邮箱/API key（针样在运行时拼，避免本文件自我命中）
     email = re.compile(r"[\w.+-]+" + r"@" + r"[\w-]+\.[\w.]+")

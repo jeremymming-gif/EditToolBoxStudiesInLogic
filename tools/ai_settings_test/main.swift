@@ -3875,6 +3875,132 @@ if FileManager.default.isExecutableFile(atPath: b283Py) && exists(b283Script) &&
     evidence("skip b283-engine-e2e", "本机没有 \(b283Py) 或 Engine/envcheck.py 不存在")
 }
 
+// ============================================================================
+// B-285b：失败诊断（Diagnose.swift）—— 红/中性口径、脱敏、诊断包、日志轮转、接线
+// ============================================================================
+section("B-285b 失败诊断：红/中性口径 + 脱敏 + 诊断包 + 日志轮转 + 旧引擎回退")
+
+func b285bLevel(_ entry: String, _ code: Int) -> String {
+    Diagnose.level(entry: entry, exitCode: code)?.rawValue ?? "none"
+}
+
+let b285bCases: [(String, Int, String)] = [
+    ("convert.py", 2, "error"), ("infocheck.py", 2, "error"), ("compileall.py", 1, "error"),
+    ("convert.py", -1, "error"),
+    ("proofcheck.py", 1, "neutral"), ("checkbib.py", 1, "neutral"),
+    ("convert.py", 0, "none"), ("proofcheck.py", 0, "none"),
+    ("proofcheck.py", 2, "none"), ("checkbib.py", 2, "none"),
+    ("convert.py", 1, "none"), ("convert.py", -2, "none"),
+]
+check("b285b-red-neutral", "红卡 = 转换 2 / 信息检查 2 / 全编译 1 / 启动失败 <0；中性 = 一校 + 回读 exit 1；0 与取消不出卡",
+      b285bCases.allSatisfy { b285bLevel($0.0, $0.1) == $0.2 },
+      b285bCases.map { "\($0.0):\($0.1)=\(b285bLevel($0.0, $0.1))" }.joined(separator: " "))
+
+let b285bMasked = Diagnose.maskSecrets(
+    "sk-live-abcdef123456 api_key=SECRETVALUE token: TOKENVALUE Authorization: Bearer abc.def")
+check("b285b-mask", "脱敏：sk- / api_key= / token: / Bearer 全部替换为 ***",
+      !b285bMasked.contains("sk-live") && !b285bMasked.contains("SECRETVALUE")
+        && !b285bMasked.contains("TOKENVALUE") && b285bMasked.contains("***"),
+      b285bMasked)
+check("b285b-mask-negative", "脱敏反例：tokenization / risk-free 这类词不能误伤",
+      Diagnose.maskSecrets("tokenization risk-free") == "tokenization risk-free",
+      Diagnose.maskSecrets("tokenization risk-free"))
+
+let b285bEvidence = DiagnosisEvidence(logTail: ["报错：找不到模板", "api_key=SECRETVALUE"],
+                                     matchedLines: [], artifacts: [])
+let b285bReport = DiagnosisReport(
+    schema: "diagnose.v1", entry: "convert.py", exitCode: 2,
+    category: "template_unavailable", severity: "error", title: "缺少模板",
+    reason: "找不到模板文件", evidence: b285bEvidence,
+    nextSteps: ["装模板", "重跑"], docAnchor: "ENGINE_API.md §十一",
+    confidence: 0.86, generatedAt: "2026-10-31 00:00:00", engineVersion: "9.9.9")
+let b285bPack = Diagnose.pack(entry: "convert.py", exitCode: 2, level: .error,
+                              report: b285bReport, logTail: b285bEvidence.logTail)
+check("b285b-pack", "诊断包含类别/原因/下一步/依据文档/引擎版本，≤16KB，脱敏且写明零上传",
+      b285bPack.contains("template_unavailable") && b285bPack.contains("找不到模板文件")
+        && b285bPack.contains("装模板") && b285bPack.contains("ENGINE_API.md §十一")
+        && b285bPack.contains("9.9.9") && b285bPack.utf8.count <= Diagnose.packLimit
+        && !b285bPack.contains("sk-live") && !b285bPack.contains("SECRETVALUE")
+        && b285bPack.contains("不会上传"),
+      "\(b285bPack.utf8.count) bytes")
+
+let b285bFallbackPack = Diagnose.pack(entry: "convert.py", exitCode: 2, level: .error,
+                                      report: nil, logTail: ["最后一行报错"])
+check("b285b-fallback", "旧引擎回退包：写明诊断器不可用 + 保留退出码与日志尾部（C7）",
+      b285bFallbackPack.contains("诊断器不可用") && b285bFallbackPack.contains("退出码：2")
+        && b285bFallbackPack.contains("最后一行报错"),
+      "fallback pack \(b285bFallbackPack.utf8.count) bytes")
+
+let b285bCard = Diagnose.makeCard(entry: "convert.py", exitCode: 2, level: .error,
+                                  report: nil, lines: ["最后一行报错"], logPath: "/tmp/x.log")
+check("b285b-fallback-card", "诊断器不可用 → 仍出卡（fallback=true，证据取日志尾部）",
+      b285bCard.fallback && b285bCard.reason.contains("诊断器不可用")
+        && b285bCard.evidence == ["最后一行报错"] && b285bCard.steps.count >= 2,
+      b285bCard.reason)
+
+let b285bNames = (0..<25).map { String(format: "20261031-%06d-convert.log", $0) } + ["notes.txt"]
+let b285bDeleted = Diagnose.logsToDelete(names: b285bNames, keep: Diagnose.logKeep)
+check("b285b-log-rotation", "日志轮转：连写 25 份只删最旧 5 份（D-05），非时间戳文件不动",
+      b285bDeleted.count == 5
+        && b285bDeleted.first == "20261031-000000-convert.log"
+        && b285bDeleted.last == "20261031-000004-convert.log"
+        && !b285bDeleted.contains("notes.txt"),
+      b285bDeleted.joined(separator: ","))
+
+let b285bTmp = FileManager.default.temporaryDirectory
+    .appendingPathComponent("b285b-diag-\(UUID().uuidString)")
+try? FileManager.default.createDirectory(at: b285bTmp, withIntermediateDirectories: true)
+if let b285bLogPath = Diagnose.saveLog(entry: "convert.py",
+                                       lines: ["sk-live-zzz", "普通行"],
+                                       directory: b285bTmp.path, stamp: "20261031-120000") {
+    let b285bBody = (try? String(contentsOfFile: b285bLogPath, encoding: .utf8)) ?? ""
+    check("b285b-log", "落盘日志已脱敏、仍保留原始行（不是丢证据），文件真实存在",
+          exists(b285bLogPath) && !b285bBody.contains("sk-live")
+            && b285bBody.contains("普通行") && b285bBody.contains("***"),
+          b285bLogPath)
+}
+for i in 0..<25 {
+    _ = Diagnose.saveLog(entry: "convert.py", lines: ["行\(i)"], directory: b285bTmp.path,
+                         stamp: String(format: "20261031-%06d", i), keep: Diagnose.logKeep)
+}
+let b285bLogCount = ((try? FileManager.default.contentsOfDirectory(atPath: b285bTmp.path)) ?? [])
+    .filter { $0.hasSuffix(".log") }.count
+check("b285b-log-keep", "应用缓存日志只留最近 20 份（多写 25 份后仍为 20）",
+      b285bLogCount == Diagnose.logKeep, "count=\(b285bLogCount)")
+try? FileManager.default.removeItem(at: b285bTmp)
+
+let b285bWiring: [(String, String)] = [
+    ("Features/ConvertFeature.swift", "DiagnoseRun.finish(entry: \"convert.py\""),
+    ("Features/ProofCheckFeature.swift", "DiagnoseRun.finish(entry: \"proofcheck.py\""),
+    ("Features/InfoCheckFeature.swift", "DiagnoseRun.finish(entry: \"infocheck.py\""),
+    ("Features/CompileFeature.swift", "DiagnoseRun.finish(entry: \"compileall.py\""),
+    ("Views/ConvertTab.swift", "DiagnosisCard(entry: \"convert.py\")"),
+    ("Views/ProofCheckView.swift", "DiagnosisCard(entry: \"proofcheck.py\")"),
+    ("Views/InfoCheckView.swift", "DiagnosisCard(entry: \"infocheck.py\")"),
+    ("Views/SimpleFeatureView.swift", "DiagnosisCard(entry: diagnosisEntry)"),
+    ("Views/DiagnosisCard.swift", "DiagnosisCenter.shared"),
+    ("Core/Support.swift", "ShellRunLog.append("),
+]
+check("b285b-wiring", "四个 Feature + 四个 View 已接线；DiagnosisCard 观察中心；Shell.run 记录原始行",
+      b285bWiring.allSatisfy { readSrc($0.0).contains($0.1) },
+      b285bWiring.filter { !readSrc($0.0).contains($0.1) }.map { $0.0 }.joined(separator: ","))
+
+let b285bEngineMain = (try? String(contentsOfFile: projFile("Engine/engine_main.py"),
+                                   encoding: .utf8)) ?? ""
+let b285bEngineDiag = (try? String(contentsOfFile: projFile("Engine/slcn/diagnose.py"),
+                                   encoding: .utf8)) ?? ""
+let b285bWin = (try? String(contentsOfFile: projFile("sources-win/engine.py"),
+                            encoding: .utf8)) ?? ""
+let b285bRunner = (try? String(contentsOfFile: projFile("tools/run_swift_tests.sh"),
+                               encoding: .utf8)) ?? ""
+check("b285b-entry", "引擎 dispatcher 含 diagnose.py；引擎有 mask_secrets；双壳共用五个入口同一张表",
+      b285bEngineMain.contains("\"diagnose.py\"") && b285bEngineDiag.contains("def mask_secrets")
+        && b285bWin.contains("DIAGNOSIS_ENTRIES") && b285bWin.contains("\"infocheck.py\": (2,)"),
+      "entry=\(b285bEngineMain.contains("\"diagnose.py\""))")
+check("b285b-suite", "ai_settings 测试台编译 Diagnose.swift（新文件进台，不是只在 app 里）",
+      b285bRunner.contains("Core/Diagnose.swift"), "runner contains Diagnose.swift")
+
+
 print("")
 print("================================================================")
 print("SUMMARY: \(passCount) PASS / \(failCount) FAIL")

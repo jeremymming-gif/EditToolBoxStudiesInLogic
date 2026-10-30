@@ -92,6 +92,8 @@ struct ProofCheckView: View {
                 }
             }
 
+            DiagnosisCard(entry: "proofcheck.py")
+
             Spacer()
         }
         .padding(20)

@@ -25,6 +25,10 @@ enum CompileFeature {
     }
 
     static func run(folderPath rawPath: String, log: Logger) {
+        DiagnoseRun.begin(entry: "compileall.py")
+        func startupFailure(_ dir: String?) {
+            DiagnoseRun.finish(entry: "compileall.py", exitCode: -1, toolDir: dir)
+        }
         let path = PathKit.normalize(rawPath)
         log("运行全编译的函数\n")
         log("文件夹路径：\(path)\n")
@@ -38,15 +42,18 @@ enum CompileFeature {
             log("未找到编译引擎 Engine/compileall.py。\n")
             log("按顺序找两处：① app 包内 Contents/Resources/Engine/compileall.py；")
             log("② 从 app 所在目录逐级向上找 Engine/compileall.py\n")
+            startupFailure(nil)
             return
         }
         let toolDir = (tool as NSString).deletingLastPathComponent
         guard let py = EngineLocator.locatePython(toolDir: toolDir) else {
             log("未找到 python3。请先安装（brew install python3）。\n")
+            startupFailure(toolDir)
             return
         }
         guard Shell.locate("xelatex") != nil else {
             log("未找到命令 xelatex，请确认已安装 TeX Live / MacTeX。\n")
+            startupFailure(toolDir)
             return
         }
 
@@ -57,6 +64,7 @@ enum CompileFeature {
             environment: EngineLocator.environment(toolDir: toolDir),
             log: log
         )
+        DiagnoseRun.finish(entry: "compileall.py", exitCode: status, toolDir: toolDir)
         log("\n")
         // U3：用户取消 → 只说「已取消」，不许讲成失败（已编完的篇目仍保留 PDF）
         if status == Shell.cancelledStatus {

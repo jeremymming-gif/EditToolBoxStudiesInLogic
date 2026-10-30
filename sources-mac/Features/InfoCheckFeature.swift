@@ -145,6 +145,10 @@ enum InfoCheckFeature {
     /// 跑一遍检查，返回报告（给界面的表格与提示）。失败返回 nil。
     @discardableResult
     static func run(folderPath rawPath: String, log: Logger) -> InfoReport? {
+        DiagnoseRun.begin(entry: "infocheck.py")
+        func startupFailure(_ dir: String?) {
+            DiagnoseRun.finish(entry: "infocheck.py", exitCode: -1, toolDir: dir)
+        }
         let path = PathKit.normalize(rawPath)
         log("运行检查文件的函数\n")
         log("当前目录为：\(path)\n")
@@ -158,11 +162,13 @@ enum InfoCheckFeature {
             log("未找到检查引擎 Engine/infocheck.py。\n")
             log("按顺序找两处：① app 包内 Contents/Resources/Engine/infocheck.py；")
             log("② 从 app 所在目录逐级向上找 Engine/infocheck.py\n")
+            startupFailure(nil)
             return nil
         }
         let toolDir = (tool as NSString).deletingLastPathComponent
         guard let py = EngineLocator.locatePython(toolDir: toolDir) else {
             log("未找到 python3。请先安装（brew install python3）。\n")
+            startupFailure(toolDir)
             return nil
         }
 
@@ -174,6 +180,7 @@ enum InfoCheckFeature {
             environment: EngineLocator.environment(toolDir: toolDir),
             log: log
         )
+        DiagnoseRun.finish(entry: "infocheck.py", exitCode: status, toolDir: toolDir)
         log("\n")
         // U3：用户取消 → 只说「已取消」
         if status == Shell.cancelledStatus {

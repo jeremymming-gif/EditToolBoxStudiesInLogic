@@ -300,6 +300,41 @@ enum EngineOutput {
     }
 }
 
+/// 一轮引擎运行的**原始输出行**缓冲（失败诊断取日志尾部用）。
+///
+/// 为什么放在这里：`Logger` 的 `onLine` 只有一个接收者（视图用来抓契约行），
+/// 不能再挂第二份；而 `Shell.run` 是**唯一**的引擎进程入口，在这里记录最省事。
+/// `capture` 不记录 —— 诊断器自己走 capture，避免把诊断输出算进上一轮日志。
+enum ShellRunLog {
+    private static let lock = NSLock()
+    private static var lines: [String] = []
+    private static var pending = ""
+    private static let limit = 4000
+
+    static func begin() {
+        lock.lock(); lines = []; pending = ""; lock.unlock()
+    }
+
+    /// 子进程输出是**按块**来的：保留最后一个不完整片段，拼到下一块再成行。
+    static func append(_ chunk: String) {
+        guard !chunk.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        pending += chunk
+        while let idx = pending.firstIndex(of: "\n") {
+            lines.append(String(pending[pending.startIndex..<idx]))
+            pending = String(pending[pending.index(after: idx)...])
+        }
+        if lines.count > limit { lines.removeFirst(lines.count - limit + 500) }
+    }
+
+    static func snapshot() -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        var out = lines
+        if !pending.isEmpty { out.append(pending) }
+        return out
+    }
+}
+
 enum Shell {
 
     /// U3：用户按「取消」时 `Shell.run` / `Shell.capture` 的返回值。
@@ -375,6 +410,7 @@ enum Shell {
                     log: Logger?) -> Int32 {
         // U8：引擎调用前检查解释器版本（`Shell.run` 是唯一的调用入口，一处就够）
         if let warning = EngineLocator.pythonVersionWarning(tool) { log?(warning) }
+        ShellRunLog.begin()
         guard let executable = locate(tool) else {
             log?("未找到命令 \(tool)，请确认已安装 TeX Live / MacTeX。\n")
             return -1
@@ -433,8 +469,10 @@ enum Shell {
                 let data = handle.availableData
                 if data.isEmpty { break }
                 if let s = String(data: data, encoding: .utf8) {
+                    ShellRunLog.append(s)
                     log?(s)
                 } else if let s = String(data: data, encoding: .isoLatin1) {
+                    ShellRunLog.append(s)
                     log?(s)
                 }
             }

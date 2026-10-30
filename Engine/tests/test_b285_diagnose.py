@@ -212,6 +212,54 @@ def test_artifacts_and_tail() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_redaction() -> None:
+    _FAKE_KEY = "sk" + "-abcdef1234567890"
+    print("\n── (f) 脱敏：密钥 / API key / token / Bearer 不出现在任何输出 ──")
+    secret_log = (
+        f"❌ 找不到源文件：/tmp/稿件/正文.tex（{'api' + '_key'}=SECRET_VALUE_123）\n"
+        f"调用接口时带了 {_FAKE_KEY} 和 token=SECRET_TOKEN_456\n"
+        "SLCN_LLM_KEY=SECRET_LLM_789 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9\n"
+        "tokenization 这个词是方法名，不该被掩码"
+    )
+    rep = DG.build(entry="convert.py", exit_code=2, log_text=secret_log,
+                   generated_at=FIXED_TIME, engine_version="1.4.1")
+    blob = DG.render_json(rep) + DG.render_text(rep)
+    leaked = [s for s in ("SECRET_VALUE_123", _FAKE_KEY,
+                          "SECRET_TOKEN_456", "SECRET_LLM_789", "eyJhbGciOiJIUzI1NiJ9")
+              if s in blob]
+    check("(f) 报告（JSON+人类摘要）不含密钥原文", not leaked, str(leaked))
+    check("(f) 掩码后仍能正确分类", rep["category"] == "source_missing", rep["category"])
+    check("(f) log_tail 已脱敏（含 ***、不含密钥）",
+          any("***" in ln for ln in rep["evidence"]["log_tail"])
+          and not any("SECRET_" in ln for ln in rep["evidence"]["log_tail"]))
+    check("(f) matched_lines 已脱敏",
+          all("SECRET_" not in ln for ln in rep["evidence"]["matched_lines"]),
+          str(rep["evidence"]["matched_lines"]))
+    check("(f) reason 引用的日志行也已脱敏", "SECRET_" not in rep["reason"], rep["reason"])
+    check("(f) 不误伤普通单词 tokenization", "tokenization" in blob)
+    check("(f) 同输入两次逐字节相同",
+          DG.render_json(rep) == DG.render_json(DG.build(
+              entry="convert.py", exit_code=2, log_text=secret_log,
+              generated_at=FIXED_TIME, engine_version="1.4.1")))
+    check("(f) mask_secrets 幂等",
+          DG.mask_secrets(DG.mask_secrets(secret_log)) == DG.mask_secrets(secret_log))
+    check("(f) 无秘密的日志原样通过（不误改）",
+          DG.mask_secrets("❌ 找不到源文件：/tmp/正文.tex") == "❌ 找不到源文件：/tmp/正文.tex")
+
+    tmp = tempfile.mkdtemp(prefix="slcn_diag_mask_")
+    try:
+        log = os.path.join(tmp, "convert.log")
+        with open(log, "w", encoding="utf-8") as fh:
+            fh.write(secret_log + "\n")
+        r = run("--entry", "convert.py", "--exit-code", "2", "--log", log, "--json",
+                "--generated-at", FIXED_TIME)
+        check("(f) CLI --json 输出不含密钥原文",
+              r.returncode == 0 and "SECRET_" not in r.stdout
+              and _FAKE_KEY not in r.stdout, r.stdout[:120])
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_cli() -> None:
     print("\n── (e) CLI：单 JSON、人类摘要、exit 0/2、只读 ──")
     tmp = tempfile.mkdtemp(prefix="slcn_diag_cli_")
@@ -267,6 +315,7 @@ def main() -> int:
     test_schema_and_determinism()
     test_unknown_fallback()
     test_artifacts_and_tail()
+    test_redaction()
     test_cli()
     print("\n" + "=" * 64)
     if _fails:

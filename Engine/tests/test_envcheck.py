@@ -315,8 +315,8 @@ check("(h) engine_main.ENTRIES 前 10 项与既有顺序逐项一致（C8）",
           "convert.py", "checkbib.py", "mergepdf.py", "cleantemp.py", "compileall.py",
           "proofcheck.py", "infocheck.py", "toc.py", "publish.py", "bibdb.py"),
       repr(_dispatcher.ENTRIES))
-check("(h) 第 11 项（末尾）是 envcheck.py",
-      _dispatcher.ENTRIES[10:] == ("envcheck.py",), repr(_dispatcher.ENTRIES))
+check("(h) 第 11 项是 envcheck.py、第 12 项是 diagnose.py（B-285b 追加末尾）",
+      _dispatcher.ENTRIES[10:] == ("envcheck.py", "diagnose.py"), repr(_dispatcher.ENTRIES))
 
 with tempfile.TemporaryDirectory() as td:
     tmp = pathlib.Path(td)

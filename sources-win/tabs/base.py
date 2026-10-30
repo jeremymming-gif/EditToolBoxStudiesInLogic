@@ -12,6 +12,8 @@ import tkinter as tk
 from tkinter import filedialog as fd
 from tkinter import messagebox, ttk
 
+import theme
+
 
 def plain(text: str) -> str:
     """把界面文案里的 markdown 记号去掉（Tk 不解析 markdown，会**原样显示**）。
@@ -53,6 +55,112 @@ LOG_LINE_LIMIT = 4000
 LOG_TRIM_CHUNK = 500
 #: 空状态（观察③）：日志区还没有任何一行时显示的那句灰字。
 LOG_PLACEHOLDER = "运行任务后，日志会显示在这里…"
+
+
+class DiagnosisCard(ttk.Frame):
+    """失败诊断卡（B-285b）：红卡 = 失败；中性卡 = 有结果但不是程序出错。
+
+    三件事都**在本地完成**：打开日志（应用缓存里的文件）、复制诊断包（纯文本）、
+    查看文档（契约/使用说明）。卡里只放引擎给的类别标题、人话原因、2–4 步下一步，
+    与可折叠的日志尾部证据 —— 判据一条都不在 Tk 里。
+    """
+
+    def __init__(self, parent, *, on_open_log, on_copy_pack, on_open_doc):
+        super().__init__(parent)
+        self._on_open_log = on_open_log
+        self._on_copy_pack = on_copy_pack
+        self._on_open_doc = on_open_doc
+        self._log_path = ""
+        self._pack = ""
+        self._evidence_shown = False
+        self.columnconfigure(0, weight=1)
+
+        self.title_label = ttk.Label(self, text="", font=("TkDefaultFont", 10, "bold"),
+                                     wraplength=740, justify="left")
+        self.title_label.grid(row=0, column=0, sticky="w")
+        self.meta_label = ttk.Label(self, text="", foreground=theme.COLOR["muted"],
+                                    wraplength=740, justify="left")
+        self.meta_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.reason_label = ttk.Label(self, text="", wraplength=740, justify="left")
+        self.reason_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.steps_label = ttk.Label(self, text="", wraplength=740, justify="left")
+        self.steps_label.grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+        btns = ttk.Frame(self)
+        btns.grid(row=4, column=0, sticky="w", pady=(6, 0))
+        self.log_btn = ttk.Button(btns, text="打开日志", width=10, command=self._open_log)
+        self.log_btn.pack(side="left")
+        self.copy_btn = ttk.Button(btns, text="复制诊断包", width=12, command=self._copy_pack)
+        self.copy_btn.pack(side="left", padx=6)
+        self.doc_btn = ttk.Button(btns, text="查看文档", width=10, command=self._open_doc)
+        self.doc_btn.pack(side="left")
+        self.evidence_btn = ttk.Button(btns, text="显示日志证据", width=12,
+                                       command=self.toggle_evidence)
+        self.evidence_btn.pack(side="left", padx=(6, 0))
+        self.status_label = ttk.Label(btns, text="", foreground=theme.COLOR["ok"])
+        self.status_label.pack(side="left", padx=(8, 0))
+
+        self.evidence_label = ttk.Label(self, text="", wraplength=740, justify="left",
+                                        font=("TkFixedFont", 9))
+        self.evidence_label.grid(row=5, column=0, sticky="w", pady=(6, 0))
+        self.evidence_label.grid_remove()
+
+    # ── 显示 ────────────────────────────────────────────────────────────────
+    def show(self, *, level: str, title: str, meta: str, reason: str,
+             steps, evidence, log_path: str, pack: str) -> None:
+        prefix = "❌" if level == "error" else "⚠️"
+        self.title_label.config(text=f"{prefix} {title}",
+                                foreground=theme.COLOR["error"] if level == "error" else theme.COLOR["warn"])
+        self.meta_label.config(text=meta)
+        self.reason_label.config(text=reason)
+        step_text = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
+        self.steps_label.config(text=("下一步：\n" + step_text) if step_text else "")
+        lines = [str(ln).rstrip() for ln in evidence if str(ln).strip()][-10:]
+        self.evidence_label.config(text="\n".join(lines) or "（本次没有捕获到日志行）")
+        self._log_path = log_path or ""
+        self._pack = pack or ""
+        self.log_btn.config(state="normal" if self._log_path else "disabled")
+        self.copy_btn.config(state="normal" if self._pack else "disabled")
+        self.status_label.config(text="")
+        self._evidence_shown = False
+        self.evidence_label.grid_remove()
+        self.evidence_btn.config(text="显示日志证据")
+        self.grid()
+
+    def hide(self) -> None:
+        self._log_path = ""
+        self._pack = ""
+        self.grid_remove()
+
+    def toggle_evidence(self) -> None:
+        self._evidence_shown = not self._evidence_shown
+        if self._evidence_shown:
+            self.evidence_label.grid()
+            self.evidence_btn.config(text="隐藏日志证据")
+        else:
+            self.evidence_label.grid_remove()
+            self.evidence_btn.config(text="显示日志证据")
+
+    # ── 三个按钮 ────────────────────────────────────────────────────────────
+    def _open_log(self) -> None:
+        if self._log_path:
+            self._on_open_log(self._log_path)
+
+    def _copy_pack(self) -> None:
+        if not self._pack:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._pack)
+            if self._on_copy_pack:
+                self._on_copy_pack(self._pack)
+            self.status_label.config(text="已复制诊断包（本地文本，不会上传）")
+        except tk.TclError as e:
+            self.status_label.config(text=f"复制失败：{e}")
+
+    def _open_doc(self) -> None:
+        if self._on_open_doc:
+            self._on_open_doc()
 
 
 class TabPage(ttk.Frame):
@@ -114,6 +222,19 @@ class TabPage(ttk.Frame):
         self.result_bar.grid_remove()          # 跑完/运行中才出现
         self._result_path = ""
 
+        # ── 失败诊断卡（B-285b）──
+        # 红卡：转换 exit 2 / 信息检查 exit 2 / 全编译 exit 1 / 启动失败 <0；
+        # 中性卡：一校核查、文献回读 exit 1；exit 0 不出卡。判据在 engine.diagnosis_level。
+        self.diagnosis_card = DiagnosisCard(
+            self,
+            on_open_log=self._open_diagnosis_log,
+            on_copy_pack=self._log_diagnosis_copied,
+            on_open_doc=self._open_diagnosis_doc,
+        )
+        self.diagnosis_card.grid(row=row, column=0, padx=10, pady=(0, 6), sticky="ew"); row += 1
+        self.diagnosis_card.grid_remove()
+        self._diagnosis_log_path = ""
+
         self.options = ttk.Frame(self)
         self.options.grid(row=row, column=0, padx=10, sticky="w"); row += 1
         self.build_options(self.options)
@@ -172,6 +293,71 @@ class TabPage(ttk.Frame):
             self._undo_cmd = None
             self.undo_btn.pack_forget()
         self.result_bar.grid()
+
+    # ── 失败诊断卡 ─────────────────────────────────────────────────────────
+    def show_diagnosis(self, level: str, report: dict | None, log_path: str,
+                       pack: str, log_tail=()) -> None:
+        """把引擎的 diagnose.v1（或回退信息）画成卡；`report=None` = 旧引擎回退。"""
+        report = report or {}
+        evidence = ((report.get("evidence") or {}).get("log_tail")
+                    if isinstance(report.get("evidence"), dict) else None) or list(log_tail)
+        title = report.get("title") or (
+            "本次运行失败" if level == "error" else "本次运行有需要处理的结果")
+        category = report.get("category") or "old-engine"
+        exit_code = report.get("exit_code", "?")
+        meta = f"退出码 {exit_code}｜类别 {category}"
+        if report.get("confidence") is not None:
+            meta += f"｜置信度 {report.get('confidence')}"
+        reason = report.get("reason") or (
+            "诊断器不可用（旧版引擎没有 diagnose.py，或诊断本身失败）："
+            "先按退出码与下面的日志尾部排查；升级后会有完整诊断。")
+        steps = report.get("next_steps") or [
+            "看「日志证据」里最后几行的报错，按提示修正输入或环境后重跑。",
+            "仍失败就点「复制诊断包」，把这份本地文本发给维护者。",
+            "需要完整契约时点「查看文档」看 ENGINE_API.md §十一。",
+        ]
+        steps = [str(s) for s in steps][:4]
+        self._diagnosis_log_path = log_path or ""
+        self.diagnosis_card.show(level=level, title=title, meta=meta, reason=reason,
+                                 steps=steps, evidence=evidence,
+                                 log_path=self._diagnosis_log_path, pack=pack)
+        self.diagnosis_card.grid()
+
+    def hide_diagnosis(self) -> None:
+        self._diagnosis_log_path = ""
+        self.diagnosis_card.hide()
+
+    def _log_diagnosis_copied(self, _pack: str) -> None:
+        # 有的页面把 log 方法挂在窗口上；没有也绝不能因一行提示崩掉。
+        log = getattr(self, "log", None)
+        if callable(log):
+            log("（已复制诊断包：本地文本，未上传任何地方）")
+
+    def _open_diagnosis_log(self, path: str) -> None:
+        try:
+            if os.name == "nt":
+                os.startfile(path)                    # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["open", path])
+        except Exception as e:                        # noqa: BLE001
+            messagebox.showerror(APP_TITLE, f"打不开诊断日志：\n{path}\n\n{e}")
+
+    def _open_diagnosis_doc(self) -> None:
+        try:
+            import engine as _E
+            doc = _E.diagnosis_doc_path(_E.slcn_engine())
+        except Exception:                             # noqa: BLE001
+            doc = None
+        if not doc:
+            messagebox.showinfo(APP_TITLE, "没找到文档。\n可在仓库根看：使用说明.md、Engine/docs/ENGINE_API.md。")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(doc)                     # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["open", doc])
+        except Exception as e:                        # noqa: BLE001
+            messagebox.showerror(APP_TITLE, f"打不开文档：\n{doc}\n\n{e}")
 
     def _undo_result(self) -> None:
         cb = self._undo_cmd

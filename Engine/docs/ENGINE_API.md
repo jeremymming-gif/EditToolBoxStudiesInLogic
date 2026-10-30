@@ -22,7 +22,7 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
-发布形态下这十个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
+发布形态下这十二个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
 ⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-win/engine.py: ENTRIES` **必须逐项一致**：
 漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页）；
 配对守卫在 `sources-win/tests/test_bridge.py` 与 `Engine/tests/test_platform.py` (g) 组。
@@ -575,7 +575,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
   pyinstaller --onefile --console --name SLCNEngine engine_main.py
   ```
 
-  支持十个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
+  支持十二个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
   `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`sources-win/build-win.ps1` ②④），
   自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
   这样用户机器上**不需要装 Python**；界面壳另冻一个 exe，两者放同一目录即可
@@ -695,8 +695,26 @@ python3 Engine/diagnose.py --entry compileall.py --exit-code 1 --log "…" --jso
 | `信息检查<时间戳>_摘要.md` | 新增文件：摘要头 + 逐篇明细 |
 | `<期目录>/编译报告.md` | 新增文件：结论 + 成功/失败计数 + 每篇失败首条 `!` 行与 `.log` 路径 |
 
-`engine_main.py` 的 ENTRIES（11→12）与双壳接线在 **B-285b** 完成；本批 `diagnose.py`
-可直接运行（`python3 Engine/diagnose.py`），不依赖打包 dispatcher。
+`engine_main.py` 的 ENTRIES（11→12）已于 B-285b 完成：`diagnose.py` 追加在 `envcheck.py` 之后，
+前 11 项顺序不动；`sources-win/engine.py`、`sources-win/build-win.ps1` 与桥接测试逐项同表。
+
+### GUI 契约（B-285b；macOS / Windows 同一套）
+
+两个外壳都**只取值、拼参数、显示结果**，诊断逻辑全部在本节与 `slcn/diagnose.py`：
+
+- **何时出卡**：每次运行结束后、仅当 `diagnosis_level(entry, exit_code)` 非空；退出码 0 不出卡。
+  红卡（`error`）：`convert.py`=2、`infocheck.py`=2、`compileall.py`=1、启动失败（<0）；
+  中性卡（`neutral`）：`proofcheck.py`=1、`checkbib.py`=1（有命中不是失败）。
+- **调用**：`diagnose.py --entry <入口> --exit-code <码> --log <本次运行日志> --json`；GUI 把 JSON 解码为
+  13 键对象，字段一字不改（`evidence.log_tail`/`matched_lines` 已脱敏）。
+- **日志**：应用缓存目录（macOS `~/Library/Application Support/编辑部工具箱/logs`，
+  Windows `%LOCALAPPDATA%\编辑部工具箱\logs`），文件名 `<时间戳>-<入口>.log`，保留最近 20 份；
+  日志只落**脱敏后**的原始行，不落稿件正文。
+- **诊断包**：本地纯文本（版本、入口/退出码、类别/原因/下一步、脱敏日志尾部、环境自检），≤16KB，
+  **零上传**，不含正文/bib 密钥；复制到剪贴板即可随反馈贴出。
+- **按钮**：打开日志 / 复制诊断包 / 查看文档（本节）。
+- **旧引擎回退**：找不到 `diagnose.py`、诊断退出码非 0 或 JSON 不合 schema 时，卡片回退为
+  「退出码 + 最后 10 行日志 + 默认三步」，**不阻断**任何既有流程，也不改变退出码。
 
 ## 十五、入口：`dirpush.py`（目录摘要推送，B-225）
 

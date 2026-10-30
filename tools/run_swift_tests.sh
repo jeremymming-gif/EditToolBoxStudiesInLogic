@@ -101,23 +101,24 @@ run_one() {
 
 echo "▶ 编译并运行 Swift 测试台（生产源码本身）${ONLY:+—— --only $ONLY}"
 run_one ai_settings Core/ViewModels.swift Core/Support.swift Core/Log.swift Core/EnvCheck.swift \
+  Core/Diagnose.swift \
   Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
   Features/CheckBibFeature.swift Features/MergeFeature.swift \
   Features/MetadataFormFeature.swift Views/SettingsTab.swift \
   "$PROJ"/tools/ai_settings_test/main.swift
-run_one ai_store Core/ViewModels.swift Core/Support.swift Core/Log.swift \
+run_one ai_store Core/ViewModels.swift Core/Support.swift Core/Log.swift Core/Diagnose.swift \
   Features/InfoCheckFeature.swift Features/MergeFeature.swift "$PROJ"/tools/ai_store_test/main.swift
-run_one proofcheck Core/ViewModels.swift Core/Support.swift Core/Log.swift \
+run_one proofcheck Core/ViewModels.swift Core/Support.swift Core/Log.swift Core/Diagnose.swift \
   Features/InfoCheckFeature.swift Features/ConvertFeature.swift Features/CoopFeature.swift \
   Features/ProofCheckFeature.swift \
   Features/MergeFeature.swift "$PROJ"/tools/proofcheck_test/main.swift
-run_one toc Core/Support.swift Core/Log.swift Core/ViewModels.swift \
+run_one toc Core/Support.swift Core/Log.swift Core/ViewModels.swift Core/Diagnose.swift \
   Features/InfoCheckFeature.swift Features/TocSettings.swift Features/TocFeature.swift \
   Features/MergeFeature.swift "$PROJ"/tools/toc_test/main.swift
-run_one infocheck Core/Support.swift Core/Log.swift Core/ViewModels.swift \
+run_one infocheck Core/Support.swift Core/Log.swift Core/ViewModels.swift Core/Diagnose.swift \
   Features/InfoCheckFeature.swift Features/MergeFeature.swift \
   "$PROJ"/tools/infocheck_test/main.swift
-run_one cutover Core/Support.swift Core/Log.swift Core/ViewModels.swift \
+run_one cutover Core/Support.swift Core/Log.swift Core/ViewModels.swift Core/Diagnose.swift \
   Features/InfoCheckFeature.swift Features/DeleteTempFeature.swift Features/CompileFeature.swift \
   Features/MergeFeature.swift "$PROJ"/tools/cutover_test/main.swift
 # 第 7 台（B-143，批76）：引用库 GUI 纯逻辑（待裁决默认过滤/计数/空态 + warning 明细分类/

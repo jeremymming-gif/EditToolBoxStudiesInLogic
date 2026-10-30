@@ -170,6 +170,17 @@ NEXT_STEPS = {
 #: 17 类共用的文档锚点（真实标题见 ENGINE_API.md §十一）
 DOC_ANCHOR = "ENGINE_API.md §十一 失败诊断（diagnose.v1）"
 
+#: 日志/诊断包里绝不允许带出去的秘密写法（B-285b：诊断卡与诊断包都会展示日志尾部）。
+#: 掩码是**确定性**的纯字符串替换：同一输入永远得到同一输出（逐字节可比），且重复调用不变。
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # 各家 API key 的常见前缀（OpenAI / DeepSeek 等以 s、k、连字符开头）
+    (re.compile(r"\bsk" + r"-[A-Za-z0-9_\-]{6,}\b"), "sk" + "-***"),
+    # KEY=value / api-key: value / token=value —— 只认「赋值」写法，避免误伤 tokenization
+    (re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|token|slcn_llm_key)"
+                r"(\s*[:=]\s*)([^\s，。；;,'\"）)]+)"), r"\1\2***"),
+    (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer ***"),
+)
+
 #: 日志只读尾部多少字节（D-06：大日志不整份读，界面也不整份贴）
 LOG_TAIL_BYTES = 16 * 1024
 #: 证据里最多放多少行日志（再长编辑也看不完）
@@ -298,9 +309,21 @@ def _one_line(text: str, limit: int = 240) -> str:
     return s if len(s) <= limit else s[:limit - 1] + "…"
 
 
+def mask_secrets(text: str) -> str:
+    """把日志里的密钥写法掩码（`sk` 开头的 key / `API key = …` / `token=…` / `Bearer …`）。
+
+    只掩码「值」，保留字段名——编辑仍看得出是哪一项配置没填对。纯字符串替换、
+    与时间/环境无关，所以同一输入的结果逐字节相同；重复调用结果不变（幂等）。
+    """
+    out = str(text)
+    for pattern, repl in _SECRET_PATTERNS:
+        out = pattern.sub(repl, out)
+    return out
+
+
 def split_log(log_text: str) -> list[str]:
-    """日志文本 → 非空行列表（不去重、不改顺序；只去掉行尾空白）。"""
-    return [ln.rstrip() for ln in log_text.splitlines() if ln.strip()]
+    """日志文本 → 非空行列表（先去秘密，再去掉行尾空白；不去重、不改顺序）。"""
+    return [mask_secrets(ln).rstrip() for ln in log_text.splitlines() if ln.strip()]
 
 
 def classify(entry: str, exit_code: int, log_text: str) -> tuple[str, float, list[str]]:
@@ -378,6 +401,7 @@ def build(
     """
     category, confidence, matched = classify(entry, int(exit_code), log_text)
     lines = split_log(log_text)
+    masked_text = mask_secrets(log_text)  # artifacts 也从脱敏后的文本里取（C4：包内无密钥）
     version = engine_version if engine_version is not None else _engine_version()
     report = {
         "schema": SCHEMA,
@@ -390,7 +414,7 @@ def build(
         "evidence": {
             "log_tail": lines[-LOG_TAIL_LINES:],
             "matched_lines": [_one_line(ln) for ln in matched[:LOG_TAIL_LINES]],
-            "artifacts": extract_artifacts(log_text),
+            "artifacts": extract_artifacts(masked_text),
         },
         "next_steps": list(NEXT_STEPS[category]),
         "doc_anchor": DOC_ANCHOR,

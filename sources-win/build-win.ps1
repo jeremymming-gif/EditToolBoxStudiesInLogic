@@ -3,7 +3,7 @@
 #   pwsh -ExecutionPolicy Bypass -File build-win.ps1
 #
 # 产出（都在 build\dist\ 下）：
-#   SLCNEngine.exe      引擎（**十一个入口**冻成一个；用户机器上不需要装 Python）
+#   SLCNEngine.exe      引擎（**十二个入口**冻成一个；用户机器上不需要装 Python）
 #   编辑部工具箱.exe     界面（Tkinter 外壳；它会在自己旁边找 SLCNEngine.exe）
 #
 # ⚠️ 本文件存为 **UTF-8 带 BOM**：Windows PowerShell 5.1 读不带 BOM 的 .ps1
@@ -56,7 +56,7 @@ Write-Host "▶ 装依赖（Windows 轮子）…" -ForegroundColor Cyan
 & $VenvPip install --disable-pip-version-check --quiet --upgrade pip
 & $VenvPip install --disable-pip-version-check --quiet lxml pypdf pypinyin pyinstaller
 
-# ── ② 冻结引擎：十一个 CLI 入口 → 一个 exe ──────────────────────────────
+# ── ② 冻结引擎：十二个 CLI 入口 → 一个 exe ──────────────────────────────
 # ⚠️ 这张表必须与 `Engine/engine_main.py: ENTRIES` **逐项一致**（配对守卫在
 #    tests/test_bridge.py 的 (b) 组）。少一项的后果不是"少个功能"，而是那个标签页
 #    在用户机器上直接「❌ 不认识的入口」退出 2 —— 2026-10-17 v1.0.1 实测：
@@ -64,11 +64,12 @@ Write-Host "▶ 装依赖（Windows 轮子）…" -ForegroundColor Cyan
 # 第 132 条：`bibdb.py`（引用库 CLI）也在表里 —— Windows「引用库」5 页的数据源。
 # 漏了它，那 5 页在用户机器上全部「❌ 不认识的入口」退出 2。
 # B-283：`envcheck.py`（环境自检）**追加在末尾**——前 10 项顺序不动（C8 的默认零变化）。
-# B-283：envcheck.py 追加在**末尾**（前 10 项顺序不动 —— 外壳 ENTRIES 与本表逐项一致，
-# 顺序变了「旧入口编号/文档」就对不上）。它同样是 hidden-import + 冒烟 `--help` 的对象。
+# B-285b：`diagnose.py`（失败诊断）再追加在**末尾**——前 11 项顺序不动；它同样是
+# hidden-import + 冒烟 `--help` 的对象。四处入口表必须一起改，桥接 (b)(l)(n) 组守着。
 $Entries = @("convert.py", "checkbib.py", "mergepdf.py",
              "cleantemp.py", "compileall.py", "proofcheck.py",
-             "infocheck.py", "toc.py", "publish.py", "bibdb.py", "envcheck.py")
+             "infocheck.py", "toc.py", "publish.py", "bibdb.py",
+             "envcheck.py", "diagnose.py")
 
 Write-Host "▶ 冻结引擎 → SLCNEngine.exe…" -ForegroundColor Cyan
 Push-Location $EngineDir

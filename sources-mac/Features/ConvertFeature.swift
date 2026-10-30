@@ -727,9 +727,16 @@ enum ConvertFeature {
     static func run(options o: Options, knobs liveKnobs: AIEngineKnobs? = nil,
                     log: Logger) -> Int32 {
         let coop: CoopFeature.Phase = o.scanOnly ? .off : o.coopPhase
+        // B-285b：失败诊断（红卡口径见 Diagnose.level；成功/取消不出卡）
+        DiagnoseRun.begin(entry: "convert.py")
+
+        func startupFailure() -> Int32 {
+            DiagnoseRun.finish(entry: "convert.py", exitCode: -1, toolDir: nil)
+            return -1
+        }
         guard !o.source.isEmpty else {
             log("请先选择源文件（Word 文稿或 LaTeX 文件）。\n")
-            return -1
+            return startupFailure()
         }
         guard let tool = locateTool() else {
             log("未找到转换引擎 Engine/convert.py。\n")
@@ -740,12 +747,12 @@ enum ConvertFeature {
             log("「设置」页底部「转换引擎」一行只读显示当前解析到的实际路径："
                 + "若那里显示「未找到 Engine/convert.py」，说明两处都没命中，"
                 + "请重新用 build.sh 构建，或把 Engine 目录放进 app 包的 Resources 内。\n")
-            return -1
+            return startupFailure()
         }
         let toolDir = (tool as NSString).deletingLastPathComponent
         guard let py = locatePython(toolDir: toolDir) else {
             log("未找到 python3。请先安装（brew install python3）。\n")
-            return -1
+            return startupFailure()
         }
 
         log("═" .padding(toLength: 66, withPad: "═", startingAt: 0) + "\n")
@@ -817,6 +824,7 @@ enum ConvertFeature {
             environment: extra,
             log: log
         )
+        DiagnoseRun.finish(entry: "convert.py", exitCode: status, toolDir: toolDir)
 
         log("\n")
         // U3：用户取消 → 只说「已取消」，**不许**讲成失败（产物可能只写了一半）
