@@ -2428,6 +2428,353 @@ check("(l) 非阻断：设置页的检查只改一句状态说明，不返回、
       "PLACEHOLDER" in (SHELL / "envcheck_logic.py").read_text(encoding="utf-8")
       and "done_text" in SETTINGS_TAB_SRC)
 
+
+# ─────────────────────────────────────────────────────────────────────────
+print("\n── (m) 待裁决写库 + 本地版本层（B-282a）──")
+
+import subprocess  # noqa: E402
+
+import bibdb_git as GitLayer  # noqa: E402  B-282a：写库后只提交库文件
+
+_git_src = (SHELL / "bibdb_git.py").read_text(encoding="utf-8")
+check("(m) `bibdb_git.py` 存在、纯逻辑（不 import tkinter）、五个入口都在",
+      bool(_git_src) and not re.search(r"^\s*(?:import|from)\s+tkinter", _git_src, re.M)
+      and all(f"def {name}(" in _git_src
+              for name in ("find_git", "locate_repo", "preflight", "commit_db", "status")),
+      f"{len(_git_src)} 字符")
+check("(m) 版本层只用列表 argv / 无 shell=True / 不 push、pull、fetch、切分支",
+      "shell=True" not in _git_src
+      and all(f'"{word}"' not in _git_src for word in ("push", "pull", "fetch", "checkout")))
+check("(m) 库文件的唯一合法相对路径与 mac 同值",
+      GitLayer.DB_RELATIVE_PATH == "bib_db/bibliography.jsonl")
+
+check("(m) commit message 与 mac 同格式：label / 记录数 / 12 位 sha 前后",
+      GitLayer.commit_message("裁决 C003 keep", 1, "a" * 64, "b" * 64)
+      == "引用库：裁决 C003 keep（记录 1 条；sha aaaaaaaaaaaa→bbbbbbbbbbbb）")
+check("(m) 空 label → 「写库」；note 第二行；sha 不足 12 位不补零",
+      GitLayer.commit_message("", 12, "abc", "")
+      == "引用库：写库（记录 12 条；sha abc→）"
+      and GitLayer.commit_message("替换 C007", 1, "a" * 12, "b" * 12, note="人工核对")
+      == "引用库：替换 C007（记录 1 条；sha aaaaaaaaaaaa→bbbbbbbbbbbb）\n备注：人工核对")
+
+_git_bin = GitLayer.find_git()
+check("(m) find_git()：找到的路径必须真实存在（找不到返回 None，写库仍可用）",
+      _git_bin is None or os.path.isfile(_git_bin), str(_git_bin))
+check("(m) 失败 soft 语义：空库路径 / 不存在文件都不抛异常、返回 ok=False + error",
+      (lambda r1, r2: (r1.get("ok") is False and bool(r1.get("error"))
+                       and r2.get("ok") is False and bool(r2.get("error"))
+                       and r1.get("soft") is True))(GitLayer.commit_db("", "m"),
+                                                      GitLayer.commit_db(
+                                                          os.path.join(tempfile.gettempdir(),
+                                                                       "no-such-b282.jsonl"),
+                                                          "m")))
+
+if _git_bin is None:
+    check("(m) git 仓库夹具（本机没装 git：按 SKIP 记通过）", True, "SKIP: 找不到 git")
+else:
+    _synth = ("{\"key\": \"synthetic-b282\", \"entry_type\": \"article\", "
+              "\"fields\": {\"title\": \"Synthetic\"}, \"verified\": true}\n")
+    _env = os.environ.copy()
+    _env.update({"GIT_AUTHOR_NAME": "B282 Test", "GIT_AUTHOR_EMAIL": "b282@example.invalid",
+                 "GIT_COMMITTER_NAME": "B282 Test",
+                 "GIT_COMMITTER_EMAIL": "b282@example.invalid"})
+
+    def _git(root, *args):
+        return subprocess.run([_git_bin, "-C", root, *args], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              env=_env, shell=False)
+
+    _root = tempfile.mkdtemp(prefix="bridge_b282_repo_")
+    try:
+        os.makedirs(os.path.join(_root, "bib_db"))
+        _db = os.path.join(_root, "bib_db", "bibliography.jsonl")
+        with open(_db, "w", encoding="utf-8") as _fh:
+            _fh.write(_synth)
+        _other = os.path.join(_root, "notes.txt")
+        with open(_other, "w", encoding="utf-8") as _fh:
+            _fh.write("synthetic\n")
+        _git(_root, "init", "-q")
+        _git(_root, "config", "user.name", "B282 Test")
+        _git(_root, "config", "user.email", "b282@example.invalid")
+        _git(_root, "add", "-A")
+        _git(_root, "commit", "-qm", "fixture")
+        _loc = GitLayer.locate_repo(_db)
+        check("(m) locate_repo：库在仓库里的 bib_db/bibliography.jsonl 时通过",
+              _loc.get("ok") is True
+              and os.path.normcase(os.path.realpath(_loc.get("repo_root") or ""))
+              == os.path.normcase(os.path.realpath(_root))
+              and _loc.get("db_rel") == GitLayer.DB_RELATIVE_PATH, str(_loc.get("error")))
+        _wrong_dir = os.path.join(_root, "data")
+        os.makedirs(_wrong_dir)
+        _wrong = os.path.join(_wrong_dir, "bibliography.jsonl")
+        with open(_wrong, "w", encoding="utf-8") as _fh:
+            _fh.write(_synth)
+        _bad = GitLayer.locate_repo(_wrong)
+        check("(m) locate_repo 拒绝「库不在 bib_db/bibliography.jsonl」（防误提交别的文件）",
+              _bad.get("ok") is False and "bib_db/bibliography.jsonl" in _bad.get("error", ""),
+              _bad.get("error", ""))
+        _outside = tempfile.mkdtemp(prefix="bridge_b282_outside_")
+        try:
+            _out_db = os.path.join(_outside, "bibliography.jsonl")
+            with open(_out_db, "w", encoding="utf-8") as _fh:
+                _fh.write(_synth)
+            _bad2 = GitLayer.locate_repo(_out_db)
+            check("(m) locate_repo 拒绝不在 git 仓库里的库（soft：写库仍可用）",
+                  _bad2.get("ok") is False and "git" in _bad2.get("error", ""))
+        finally:
+            shutil.rmtree(_outside, ignore_errors=True)
+
+        _pre = GitLayer.preflight(_db)
+        check("(m) preflight 只读：分支 / 身份 / 库干净 / 无 upstream（behind=None）",
+              _pre.get("ok") is True and _pre.get("branch") in ("master", "main")
+              and _pre.get("identity_ok") is True and not _pre.get("dirty_db")
+              and _pre.get("upstream") == "" and _pre.get("behind") is None, str(_pre))
+        with open(_other, "a", encoding="utf-8") as _fh:
+            _fh.write("dirty\n")
+        _pre2 = GitLayer.preflight(_db)
+        check("(m) preflight 区分库文件与其它脏文件（其它改动不会提交）",
+              _pre2.get("dirty_db") is False and _pre2.get("dirty_other") >= 1
+              and "notes.txt" in (_pre2.get("dirty_paths") or []), str(_pre2.get("dirty_paths")))
+        _head_before = _git(_root, "rev-parse", "HEAD").stdout.strip()
+        with open(_db, "a", encoding="utf-8") as _fh:
+            _fh.write(_synth.replace("synthetic-b282", "synthetic-b282-2"))
+        _msg = "引用库：测试裁决（记录 1 条；sha aaaaaaaaaaaa→bbbbbbbbbbbb）"
+        _res = GitLayer.commit_db(_db, _msg)
+        _head_after = _git(_root, "rev-parse", "HEAD").stdout.strip()
+        _subject = _git(_root, "log", "-1", "--pretty=%s").stdout.strip()
+        _names = [line for line in _git(_root, "show", "--pretty=", "--name-only",
+                                        "HEAD").stdout.splitlines() if line.strip()]
+        check("(m) commit_db：真生成一次提交、message 精确、只含库文件一个路径",
+              _res.get("ok") is True and _res.get("committed") is True
+              and _res.get("sha_after") == _head_after and _head_after != _head_before
+              and _subject == _msg and _names == [GitLayer.DB_RELATIVE_PATH],
+              f"{_res} / {_names}")
+        check("(m) commit_db：库文件无改动时不空提交",
+              (lambda r: r.get("ok") is True and r.get("committed") is False
+               and _git(_root, "rev-parse", "HEAD").stdout.strip() == _head_after)(
+                  GitLayer.commit_db(_db, _msg)))
+        check("(m) commit_db：其它脏文件仍留在工作树（确实没被 add 进来）",
+              "notes.txt" in _git(_root, "status", "--porcelain").stdout)
+
+        # S4：commit_db 不信调用方缓存的 git 状态，自己重跑探针。构造一次真实
+        # merge 冲突（同一行两边改成不同内容），此时即使库文件有改动也绝不提交。
+        _git(_root, "add", "-A")
+        _git(_root, "commit", "-qm", "clean before merge")
+        _base = _pre.get("branch") or "master"
+        _git(_root, "checkout", "-q", "-b", "b282-side")
+        with open(_other, "w", encoding="utf-8") as _fh:
+            _fh.write("side\n")
+        _git(_root, "add", "-A")
+        _git(_root, "commit", "-qm", "side edit")
+        _git(_root, "checkout", "-q", _base)
+        with open(_other, "w", encoding="utf-8") as _fh:
+            _fh.write("main\n")
+        _git(_root, "add", "-A")
+        _git(_root, "commit", "-qm", "main edit")
+        _git(_root, "merge", "b282-side")       # 预期冲突，MERGE_HEAD 留下
+        _head_in_merge = _git(_root, "rev-parse", "HEAD").stdout.strip()
+        with open(_db, "a", encoding="utf-8") as _fh:
+            _fh.write(_synth.replace("synthetic-b282", "synthetic-b282-merge"))
+        _merge_res = GitLayer.commit_db(_db, "引用库：merge 中禁止提交")
+        check("(m) S4：commit_db 独立探针——merge/冲突未完成时 soft 失败、不提交",
+              _merge_res.get("ok") is False and _merge_res.get("committed") is False
+              and _merge_res.get("soft") is True
+              and "merge" in str(_merge_res.get("error"))
+              and _git(_root, "rev-parse", "HEAD").stdout.strip() == _head_in_merge,
+              str(_merge_res))
+        _git(_root, "merge", "--abort")
+    finally:
+        shutil.rmtree(_root, ignore_errors=True)
+
+    _root2 = tempfile.mkdtemp(prefix="bridge_b282_identity_")
+    _empty_home = tempfile.mkdtemp(prefix="bridge_b282_home_")
+    _saved_env = dict(os.environ)
+    try:
+        os.makedirs(os.path.join(_root2, "bib_db"))
+        _db2 = os.path.join(_root2, "bib_db", "bibliography.jsonl")
+        with open(_db2, "w", encoding="utf-8") as _fh:
+            _fh.write(_synth)
+        _git2_env = os.environ.copy()
+        subprocess.run([_git_bin, "-C", _root2, "init", "-q"], capture_output=True,
+                       text=True, env=_git2_env, shell=False)
+        subprocess.run([_git_bin, "-C", _root2, "add", "-A"], capture_output=True,
+                       text=True, env=_git2_env, shell=False)
+        for _name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                      "GIT_COMMITTER_EMAIL", "EMAIL"):
+            os.environ.pop(_name, None)
+        os.environ["HOME"] = _empty_home
+        os.environ["XDG_CONFIG_HOME"] = _empty_home
+        os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+        # 多数 git 会在 user.name/email 缺失时按「系统用户名@主机名」自动编一个；
+        # 用 user.useConfigOnly 强制它报错，才测得到「身份缺失 = soft 失败」。
+        os.environ["GIT_CONFIG_COUNT"] = "1"
+        os.environ["GIT_CONFIG_KEY_0"] = "user.useConfigOnly"
+        os.environ["GIT_CONFIG_VALUE_0"] = "true"
+        _ident = GitLayer.commit_db(_db2, "引用库：身份缺失测试")
+        check("(m) 身份缺失 = soft 失败（不抛异常；写库成功与否不受版本层影响）",
+              _ident.get("ok") is False and _ident.get("soft") is True
+              and "身份未配置" in str(_ident.get("error")), str(_ident))
+    finally:
+        os.environ.clear()
+        os.environ.update(_saved_env)
+        shutil.rmtree(_root2, ignore_errors=True)
+        shutil.rmtree(_empty_home, ignore_errors=True)
+
+_c_m = E.bibdb_conflicts_call(pending_only=True, db="D")
+check("(m) conflicts argv：`conflicts --pending-only --json --db D`",
+      _c_m.argv[-5:] == ["conflicts", "--pending-only", "--json", "--db", "D"]
+      and _c_m.entry == "bibdb.py")
+_r_m = E.bibdb_resolve_call(key="K", action="adopt", incoming_sha256="SHA",
+                            expect_db_sha256="DB", db="D")
+check("(m) resolve argv：key/action/incoming/expect/json/db 顺序（带指纹）",
+      _r_m.argv[-9:] == ["--action", "adopt", "--incoming-sha256", "SHA",
+                         "--expect-db-sha256", "DB", "--json", "--db", "D"], _r_m.display)
+_r2_m = E.bibdb_resolve_call(key="K", action="defer", all_fields=True, db="D")
+check("(m) resolve argv：无指纹时 keep/defer 传 `--all-fields`，不带 incoming",
+      _r2_m.argv[-4:] == ["--all-fields", "--json", "--db", "D"]
+      and "--incoming-sha256" not in _r2_m.argv and "--dry-run" not in _r2_m.argv)
+check("(m) resolve 反例：动作未知 / key 为空 → ValueError（不起子进程）",
+      _raises_value_error(E.bibdb_resolve_call, key="K", action="bogus")
+      and _raises_value_error(E.bibdb_resolve_call, key="  ", action="keep"))
+_rep_m = E.bibdb_replace_call(key="K", bib="/tmp/x.bib", incoming_sha256="SHA",
+                              dry_run=True, db="D")
+check("(m) replace argv：action replace + --bib + 指纹 + dry-run 末尾",
+      _rep_m.argv[-10:] == ["--action", "replace", "--incoming-sha256", "SHA",
+                            "--bib", "/tmp/x.bib", "--json", "--db", "D", "--dry-run"],
+      _rep_m.display)
+check("(m) replace 反例：缺 bib / 缺指纹 → ValueError",
+      _raises_value_error(E.bibdb_replace_call, key="K", bib="", incoming_sha256="SHA")
+      and _raises_value_error(E.bibdb_replace_call, key="K", bib="/tmp/x.bib",
+                              incoming_sha256=""))
+_adopt_m = E.bibdb_adopt_all_call(expect_db_sha256="DB", dry_run=True, db="D")
+check("(m) adopt-all argv：`resolve --adopt-all-pending --expect-db-sha256 … --json "
+      "--db D --dry-run`",
+      _adopt_m.argv[-7:] == ["--adopt-all-pending", "--expect-db-sha256", "DB",
+                             "--json", "--db", "D", "--dry-run"], _adopt_m.display)
+_ui_src_m = (SHELL / "bibdb_ui.py").read_text(encoding="utf-8")
+check("(m) 待裁决页仍走 engine 包装 + 版本层（不自己拼 git 命令 / 不复制引擎判据）",
+      all(s in _ui_src_m for s in ("E.bibdb_conflicts_call(", "E.bibdb_resolve_call(",
+                                   "E.bibdb_replace_call(", "E.bibdb_adopt_all_call(",
+                                   "G.commit_db(", "G.commit_message("))
+      and "subprocess" not in _ui_src_m.split("import bibdb_git as G", 1)[1].split(
+          "import engine as E", 1)[0])
+check("(m) 写成功才提交：UI 只在 `written and not already` 分支进 `_start_commit`",
+      "written and not already" in _ui_src_m
+      and "_start_commit(meta, payload)" in _ui_src_m
+      and "versionNotice" not in _ui_src_m)
+
+# ── P1 复核（B-282 修复轮）：S1 verified 展示 / S4 写前新鲜预检 / S7 确认明细 ──
+_ui_tree_m = ast.parse(_ui_src_m)
+
+
+def _ui_fn_m(name: str) -> str:
+    """只取 `BibDbReviewPage` 里的方法（同名 `_show_detail` 在查库页也有一个）。"""
+    for node in ast.walk(_ui_tree_m):
+        if isinstance(node, ast.ClassDef) and node.name == "BibDbReviewPage":
+            for child in node.body:
+                if isinstance(child, ast.FunctionDef) and child.name == name:
+                    return ast.get_source_segment(_ui_src_m, child) or ""
+    return ""
+
+
+def _order_ok_m(src: str, first: str, second: str) -> bool:
+    first_at, second_at = src.find(first), src.find(second)
+    return first_at >= 0 and second_at >= 0 and first_at < second_at
+
+
+_detail_src = _ui_fn_m("_show_detail")
+check("(m) S1 详情面板：显示「已核实：是/否」+ 已核实红字风险（与 mac 对等）",
+      '("已核实", "是" if verified else "否")' in _detail_src
+      and "库内已核实记录" in _detail_src
+      and 'self.detail.tag_add("risk"' in _detail_src,
+      _detail_src[:100])
+check("(m) S1 红字标签在 build 里注册；汇总行显示「已核实 N 条」（有则红字）",
+      'self.detail.tag_configure("risk", foreground=theme.COLOR["error"])' in _ui_src_m
+      and "已核实 {verified} 条" in _ui_fn_m("_on_loaded")
+      and 'theme.COLOR["error"] if verified else theme.COLOR["fg"]'
+      in _ui_fn_m("_on_loaded"))
+
+_write_src = _ui_fn_m("_write")
+check("(m) S4 逐条写库：真写前重跑 G.status（refresh 在 resolve 之前），并按新状态判 blocked/behind",
+      _order_ok_m(_write_src, "_refresh_git_status()", "E.bibdb_resolve_call(")
+      and "_git_blocked()" in _write_src and "_behind_ok()" in _write_src)
+_adopt_write_src = _ui_fn_m("_adopt_all_write")
+check("(m) S4 全部采用真写：确认后重跑 status，blocked/behind 在 adopt-all 真写调用之前",
+      _order_ok_m(_adopt_write_src, "_refresh_git_status()",
+                  "E.bibdb_adopt_all_call(")
+      and "_git_blocked()" in _adopt_write_src
+      and "_behind_ok()" in _adopt_write_src)
+_replace_confirm_src = _ui_fn_m("_replace_confirm")
+check("(m) S4 替换真写：重跑 status，blocked/behind 在 replace 真写调用之前",
+      _order_ok_m(_replace_confirm_src, "_refresh_git_status()",
+                  "E.bibdb_replace_call(")
+      and "_git_blocked()" in _replace_confirm_src
+      and "_behind_ok()" in _replace_confirm_src)
+check("(m) S4 git 行：merge 与 conflict/rebase 一样红条",
+      'git.get("merge")' in _ui_fn_m("_render_git")
+      and "merge 进行中" in _ui_fn_m("_render_git"))
+
+_adopt_preview_src = _ui_fn_m("_on_adopt_preview")
+check("(m) S7 全部采用：确认框用 adopt_confirm_detail（计数+已核实+逐条 old → new），预览不写库",
+      "adopt_confirm_detail(" in _adopt_preview_src
+      and "mb.askyesno(" in _adopt_preview_src
+      and "dry_run=False" not in _adopt_preview_src)
+
+_cd_node = next((node for node in _ui_tree_m.body
+                 if isinstance(node, ast.FunctionDef)
+                 and node.name == "adopt_confirm_detail"), None)
+_ns_m: dict = {}
+if _cd_node is not None:
+    exec(compile(ast.get_source_segment(_ui_src_m, _cd_node) or "",
+                 "<adopt_confirm_detail>", "exec"), _ns_m)
+_cd = _ns_m.get("adopt_confirm_detail")
+check("(m) S7 确认文本是模块级纯函数（不依赖 Tk，可 headless 断言）", callable(_cd))
+
+if callable(_cd):
+    _ad = [
+        {"record_key": "rk1", "bib_key": "Alpha2020",
+         "fields": {"title": {"old": "Old T", "new": "New T"},
+                    "note": {"old": "x", "new": "", "remove": True}}},
+        {"record_key": "rk2", "bib_key": "Beta2019",
+         "fields": {"year": {"old": "", "new": "2020"}}},
+    ]
+    _conf = _cd(adopted=_ad, records=2, skipped=3, pending_before=5,
+                pending_after=3, verified_keys={"rk1"})
+    check("(m) S7 确认文本：记录/字段计数 + 已核实风险 + 逐条 `key: field old → new`",
+          "将采用 2 条冲突 / 2 条记录 / 3 个字段；跳过 3 条。" in _conf
+          and "待裁决 5 → 3 条。" in _conf
+          and "⚠ 其中已核实 1 条" in _conf
+          and "Alpha2020: title Old T → New T" in _conf
+          and "Alpha2020: note x → （删除）" in _conf
+          and "Beta2019: year （空） → 2020" in _conf, _conf)
+    _conf0 = _cd(adopted=_ad, records=2, skipped=0, pending_before=5,
+                 pending_after=3, verified_keys=set())
+    check("(m) S7 无已核实记录时明写「已核实 0 条」",
+          "其中已核实 0 条（本次不改已核实记录）。" in _conf0, _conf0)
+    _many = [{"record_key": f"rk{i}", "bib_key": f"K{i:02d}",
+              "fields": {"title": {"old": f"v{i}", "new": f"w{i}"}}}
+             for i in range(1, 13)]
+    _conf12 = _cd(adopted=_many, records=12, skipped=0, pending_before=12,
+                  pending_after=0, verified_keys=set())
+    check("(m) S7 超过 10 条只列前 10 条 + 「…等 N 条」",
+          "…等 12 条" in _conf12
+          and "K01: title v1 → w1" in _conf12
+          and "K10: title v10 → w10" in _conf12
+          and "K11: title v11 → w11" not in _conf12
+          and "K12: title" not in _conf12)
+
+check("(m) P2 GIT_ASKPASS 用赋值强制覆盖继承值（不 setdefault）",
+      'env["GIT_ASKPASS"] = "true"' in _git_src
+      and 'setdefault("GIT_ASKPASS"' not in _git_src)
+check("(m) P2 身份缺失话术不再引导 mac 的「提交…」按钮",
+      "提交…" not in GitLayer.IDENTITY_ERROR
+      and "身份未配置" in GitLayer.IDENTITY_ERROR)
+check("(m) P2 dirty_other 两侧路径统一 `/` 后比较（Windows 不误算库文件）",
+      'rel_norm = os.path.normcase(rel.replace(' in _git_src
+      and 'path_norm = os.path.normcase(path.replace(' in _git_src)
+check("(m) P2 commit 成功但 rev-parse 失败时回退取 commit 输出 sha",
+      "sha 取自 git commit 输出" in _git_src and "re.search(" in _git_src)
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)
 if fails:

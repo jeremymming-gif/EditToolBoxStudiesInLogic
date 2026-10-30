@@ -968,6 +968,108 @@ def bibdb_report_call(*, out_dir: str, db: str = "") -> EngineCall:
     return EngineCall(cmd, "bibdb.py", "引用库 · 生成待裁决清单")
 
 
+# ── 待裁决 / 写库（B-282a）：与 mac `BibDbFeature` 同一组 argv ──────────────
+# 判据全部在引擎：这里只拼参数、读 `--json`。写库一律带 `--expect-db-sha256`
+# （列表加载时的库 sha），过期时引擎退出 2、库一个字节都不动。
+# 注意：**不传 `--backup`** —— 写库成功后由 `bibdb_git.py` 只提交库文件。
+
+RESOLVE_ACTIONS = ("keep", "adopt", "defer", "replace")
+
+
+def bibdb_conflicts_call(*, db: str = "", pending_only: bool = False) -> EngineCall:
+    """待裁决列表：`bibdb.py conflicts --json [--pending-only]`。"""
+    cmd = _bibdb_cmd() + ["conflicts"]
+    if pending_only:
+        cmd.append("--pending-only")
+    cmd.append("--json")
+    if db:
+        cmd += ["--db", db]
+    return EngineCall(cmd, "bibdb.py", "引用库 · 待裁决列表")
+
+
+def bibdb_resolve_call(*, key: str, action: str, incoming_sha256: str = "",
+                       all_fields: bool = False, note: str = "",
+                       expect_db_sha256: str = "", dry_run: bool = False,
+                       db: str = "") -> EngineCall:
+    """逐条裁决：`bibdb.py resolve --key … --action keep|adopt|defer …`。
+
+    `incoming_sha256` 非空时传 `--incoming-sha256`（mac 对 keep/adopt/defer 都这样）；
+    为空时 keep/defer 传 `--all-fields`。adopt/replace 必须有指纹（界面已先置灰）。
+    """
+    action = str(action or "").strip()
+    if action not in RESOLVE_ACTIONS:
+        raise ValueError(f"未知的裁决动作：{action!r}（只认 {'/'.join(RESOLVE_ACTIONS)}）")
+    name = str(key or "").strip()
+    if not name:
+        raise ValueError("缺少库内记录 key（不能裁决）。")
+    cmd = _bibdb_cmd() + ["resolve", "--key", name, "--action", action]
+    fingerprint = str(incoming_sha256 or "").strip()
+    if fingerprint:
+        cmd += ["--incoming-sha256", fingerprint]
+    elif all_fields:
+        cmd.append("--all-fields")
+    note_text = str(note or "").strip()
+    if note_text:
+        cmd += ["--note", note_text]
+    expect = str(expect_db_sha256 or "").strip()
+    if expect:
+        cmd += ["--expect-db-sha256", expect]
+    cmd.append("--json")
+    if db:
+        cmd += ["--db", db]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "bibdb.py", f"引用库 · 裁决（{action}）")
+
+
+def bibdb_replace_call(*, key: str, bib: str, incoming_sha256: str, note: str = "",
+                       expect_db_sha256: str = "", dry_run: bool = False,
+                       db: str = "") -> EngineCall:
+    """编辑并替换：`bibdb.py resolve --key … --action replace --incoming-sha256 … --bib …`。"""
+    name = str(key or "").strip()
+    bib_path = str(bib or "").strip()
+    fingerprint = str(incoming_sha256 or "").strip()
+    if not name:
+        raise ValueError("缺少库内记录 key（不能替换）。")
+    if not bib_path:
+        raise ValueError("缺少替换用的 .bib 文件路径。")
+    if not fingerprint:
+        raise ValueError("这条冲突没有指纹（incoming sha256 为空）：请改用「全部采用」或"
+                         "重新生成清单后再试。")
+    cmd = _bibdb_cmd() + ["resolve", "--key", name, "--action", "replace",
+                          "--incoming-sha256", fingerprint, "--bib", bib_path]
+    note_text = str(note or "").strip()
+    if note_text:
+        cmd += ["--note", note_text]
+    expect = str(expect_db_sha256 or "").strip()
+    if expect:
+        cmd += ["--expect-db-sha256", expect]
+    cmd.append("--json")
+    if db:
+        cmd += ["--db", db]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "bibdb.py", "引用库 · 替换预览" if dry_run else "引用库 · 替换")
+
+
+def bibdb_adopt_all_call(*, note: str = "", expect_db_sha256: str = "",
+                         dry_run: bool = False, db: str = "") -> EngineCall:
+    """全部采用：`bibdb.py resolve --adopt-all-pending …`（单次原子写，一次提交）。"""
+    cmd = _bibdb_cmd() + ["resolve", "--adopt-all-pending"]
+    note_text = str(note or "").strip()
+    if note_text:
+        cmd += ["--note", note_text]
+    expect = str(expect_db_sha256 or "").strip()
+    if expect:
+        cmd += ["--expect-db-sha256", expect]
+    cmd.append("--json")
+    if db:
+        cmd += ["--db", db]
+    if dry_run:
+        cmd.append("--dry-run")
+    return EngineCall(cmd, "bibdb.py", "引用库 · 全部采用预览" if dry_run else "引用库 · 全部采用")
+
+
 # ── 环境自检（B-283）：`envcheck.py` 的薄参数拼装 ─────────────────────────
 # 纪律与 `bibdb.py` 相同：**外壳不判定**「什么算缺依赖 / 退出码几」——
 # 那些判据只在 `Engine/envcheck.py`。这里只把界面取值拼成 argv，再把 `--json` 读回来显示。

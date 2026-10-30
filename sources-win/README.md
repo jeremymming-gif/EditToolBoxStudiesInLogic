@@ -54,7 +54,7 @@ python main.py
 | **库概况** | `bibdb.py stats/lint --json` | 引用库条数/期数/最近更新/冲突数/lint 结果；只读，可打开库文件夹 |
 | **查库** | `bibdb.py query --key/--doi/--title --bibtex --json` | 按 key（含别名）/DOI/题名模糊查，选中复制 BibTeX；只读 |
 | **入藏** | `bibdb.py import-bib/import-dir --dry-run --json` | 先 dry-run 预览（**不写库**）再确认导入（`--verified`）；来源期/篇从路径推断、可改 |
-| **待裁决** | `bibdb.py report --out … --json` | 只读展示并重新生成 `CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv`（不改库本体） |
+| **待裁决** | `bibdb.py conflicts / resolve --json` | 引用库字段冲突：列出待裁决条目（C 编号、逐字段旧→新），逐条「保留旧值 / 采用新值 / 待人工」、编辑并替换、一键全部采用；每次写库成功后**只对 `bib_db/bibliography.jsonl` 做本地 commit（绝不推送）**，git 不可用只黄字提示、不回滚写库。另可重新生成 `CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv` |
 | **引用库设置** | —（写 settings.json，由初排转换拼参数） | 核实上限 `--verify-max`、先算账 `--verify-plan`、全量 `--verify-all-refs`、先查库开关（关 = `--no-bibdb`）、笔记仓路径；**默认一个参数都不加** |
 | 设置 | `envcheck.py --json` | 引擎状态、API 地址/Key/模型、检索工具；密钥只落本机并打码显示；**环境检查 / 导出诊断包**（B-283：八项依赖体检 + 安装命令，非阻断） |
 
@@ -100,7 +100,7 @@ pwsh -ExecutionPolicy Bypass -File build-win.ps1
 （2026-10-15/16 分三批搬完：合并文件、删除临时文件、编译全部、一校核查、检查tex信息、
 生成目录；第 132 条补齐引用库 5 页）。与 mac 的 **15 个页面**相比只有三处已声明差异：
 mac 独有「目录摘要推送」页；引用库第四页 macOS 叫「待处理」（可处理）、Windows 叫
-「待裁决」（只读查看）；「整期装配」组内顺序不同（Windows 把「生成目录」排在
+「待裁决」（可逐条裁决字段冲突）；「整期装配」组内顺序不同（Windows 把「生成目录」排在
 「编译全部」之前）。逐项对照见 [《使用说明》§3.3](../使用说明.md#33-平台差异)。
 **没有任何一页在 Windows 侧另写逻辑** —— 这是"两个平台算出来的结果一致"的唯一保证。
 

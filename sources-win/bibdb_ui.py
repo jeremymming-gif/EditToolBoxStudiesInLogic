@@ -27,14 +27,18 @@ import 本文件、建 5 个页对象（PyInstaller 看到的是同一张 import
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog as fd
+from tkinter import messagebox as mb
 from tkinter import ttk
 
+import bibdb_git as G
 import engine as E
 import settings as S
 import theme
@@ -1512,58 +1516,181 @@ class BibDbImportPage(BibDbPage):
 
 # ── ④ 待裁决 ────────────────────────────────────────────────────────────
 
+def adopt_confirm_detail(*, adopted, records, skipped, pending_before, pending_after,
+                         verified_keys, limit: int = 10) -> str:
+    """「全部采用」二次确认文本：计数 + 已核实风险 + 逐条 old → new（S7）。
+
+    与 mac `BibDbReviewSheets.swift` 同口径：至少列出记录/字段计数、库内已核实
+    条数与逐条 `key: 字段 旧值 → 新值`；超过 `limit` 条只列前 `limit` 条并注明总数。
+    `verified_keys` 是库内 verified 记录的 record_key 集合（来自列表数据）。
+    """
+    changes: list[str] = []
+    verified_count = 0
+    for entry in adopted:
+        if not isinstance(entry, dict):
+            continue
+        record_key = str(entry.get("record_key") or "")
+        if record_key in verified_keys:
+            verified_count += 1
+        key = str(entry.get("bib_key") or record_key or "?")
+        fields = entry.get("fields") if isinstance(entry.get("fields"), dict) else {}
+        for name, change in fields.items():
+            pair = change if isinstance(change, dict) else {}
+            old = str(pair.get("old") or "").strip() or "（空）"
+            if pair.get("remove"):
+                new = "（删除）"
+            else:
+                new = str(pair.get("new") or "").strip() or "（空）"
+            changes.append(f"{key}: {name} {old} → {new}")
+    lines = [
+        f"将采用 {len(adopted)} 条冲突 / {int(records or 0)} 条记录 / "
+        f"{len(changes)} 个字段；跳过 {int(skipped or 0)} 条。",
+        f"待裁决 {pending_before} → {pending_after} 条。",
+    ]
+    if verified_count:
+        lines.append(f"⚠ 其中已核实 {verified_count} 条：采用新值会改已出版核对结果，"
+                     "请逐条核对下面的 old → new。")
+    else:
+        lines.append("其中已核实 0 条（本次不改已核实记录）。")
+    lines.append("逐条变更（key: 字段 旧值 → 新值）：")
+    lines.extend("  · " + line for line in changes[:limit])
+    if len(changes) > limit:
+        lines.append(f"  …等 {len(changes)} 条")
+    lines.append("确认后单次写库，并只把 bib_db/bibliography.jsonl 提交到本地 git（不 push）。")
+    return "\n".join(lines)
+
+
 class BibDbReviewPage(BibDbPage):
     name = "待裁决"        # 侧栏里显示的名字（组 → 页的第二层）
-    """待裁决：只读展示 `<笔记仓>/bib_db/` 下的清单文件，可一键重新生成。
+    """待裁决：逐条裁决写库，写成功后只把库文件提交到本地 git（B-282a）。
 
-    **产品边界（用户已定案）：只读清单、不自动改库。** 清单只写
-    `CONFLICTS.md` / `DUPLICATES.md` / `duplicates.csv` 三个文件，
-    `bibliography.jsonl` 一个字节都不动；裁决由维护者按清单手工做。
+    与 mac「待处理」对等：keep / adopt / defer 三按钮、编辑并替换、全部采用；
+    每次写库都带 `--expect-db-sha256`（列表加载时的库 sha），过期时引擎退出 2、
+    库一个字节都不动 → 提示刷新并临时置灰。写库成功后由 `bibdb_git.py` **只**
+    `git add/commit -- bib_db/bibliography.jsonl`，绝不 push/pull/切分支；
+    git 不可用/身份缺失只黄字提示，**不改写库成功与否的语义**。
     """
 
     page_title = "引用库 · 待裁决"
-    page_subtitle = """引用库里已核实条目遇到「同一作品、不同期成品 bib 字段写法不同」时，库不会
-静默改掉旧值，只把差异留档成 conflicts。这一页把待裁决清单（中文、逐条可勾选）的
-状态显示出来，并可以一键重新生成。
-⚠ 这一页只读清单、不自动改库：清单只写 CONFLICTS.md / DUPLICATES.md / duplicates.csv
-三个文件，bibliography.jsonl 一个字节都不动。裁决方法写在清单末尾「裁决方法」一节。"""
+    page_subtitle = """引用库里已核实条目遇到「同一作品、不同期成品 bib 字段写法不同」时，库不会静默改掉
+旧值，只把差异留档成 conflicts。这一页把待裁决清单逐条列出来：可以「保留旧值 / 采用新值 /
+待人工」，也可以编辑后替换、或全部采用；写库会先带库指纹校验，过期只提示刷新、绝不盲写。
+写库成功后只把 bib_db/bibliography.jsonl 提交到本地 git（不 push / 不 pull / 不切分支）。"""
 
+    COLUMNS = ("no", "key", "title", "year", "state")
+    HEADS = ("C 编号", "库内 key", "题名", "年份", "状态")
+    WIDTHS = (66, 190, 330, 56, 80)
+    ACTION_TITLES = {"keep": "保留旧值", "adopt": "采用新值", "defer": "待人工",
+                     "replace": "替换"}
+    RESOLUTION_TITLES = {"keep": "保留旧值", "adopt": "采用新值", "defer": "待人工"}
+    FIELD_LABELS = {"title": "题名", "author": "作者", "editor": "编者", "year": "年份",
+                    "journal": "期刊", "booktitle": "书名", "publisher": "出版者",
+                    "volume": "卷", "number": "期", "pages": "页码", "doi": "DOI",
+                    "url": "URL", "note": "附注", "edition": "版次", "address": "出版地"}
+
+    # ── 建页 ──
     def build(self, parent: ttk.Frame) -> None:
         self._running = False
+        self._items: list[dict] = []
+        self._by_no: dict[str, dict] = {}
+        self._db_sha = ""
+        self._stale = False
+        self._git: dict | None = None
+        self._replace: dict | None = None
+        self._notice: tuple[str, str] | None = None
+        self._loaded_pending_only = True
+
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", pady=(0, 4))
+        self.reload_btn = ttk.Button(bar, text="刷新", width=8, command=self.reload)
+        self.reload_btn.pack(side="left")
+        self.pending_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="只看待裁决", variable=self.pending_var,
+                        command=self.reload).pack(side="left", padx=(8, 4))
+        self.regen_btn = ttk.Button(bar, text="重新生成清单", width=14,
+                                    command=self.regenerate)
+        self.regen_btn.pack(side="left", padx=(10, 4))
+        self.open_dir_btn = ttk.Button(bar, text="打开清单文件夹", width=14,
+                                       command=self.open_folder)
+        self.open_dir_btn.pack(side="left")
+        self.busy = ttk.Label(bar, text="", style="Muted.TLabel")
+        self.busy.pack(side="left", padx=8)
+
+        self.count_label = ttk.Label(parent, text="", style="Section.TLabel")
+        self.count_label.pack(anchor="w", pady=(2, 2))
+        self.git_line = ttk.Label(parent, text="git：未检查", style="Muted.TLabel",
+                                  wraplength=880, justify="left")
+        self.git_line.pack(fill="x")
+        self.status = StatusLine(parent)
+        self.status.pack(fill="x", pady=(2, 0))
+
+        split = ttk.Frame(parent)
+        split.pack(fill="both", expand=True, pady=(4, 2))
+        split.columnconfigure(0, weight=3)
+        split.columnconfigure(1, weight=2)
+        split.rowconfigure(0, weight=1)
+        left = ttk.Frame(split)
+        left.grid(row=0, column=0, sticky="nsew")
+        right = ttk.Frame(split)
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.tree = _tree(left, self.COLUMNS, self.HEADS, self.WIDTHS, height=13)
+        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+
+        detail_box = ttk.Frame(right)
+        detail_box.pack(fill="both", expand=True)
+        self.detail = tk.Text(detail_box, height=13, width=50, wrap="word",
+                              background=theme.COLOR["text_bg"],
+                              foreground=theme.COLOR["fg"],
+                              insertbackground=theme.COLOR["fg"],
+                              borderwidth=1, relief="solid", highlightthickness=0,
+                              state="disabled")
+        self.detail.tag_configure("risk", foreground=theme.COLOR["error"])
+        detail_scroll = ttk.Scrollbar(detail_box, orient="vertical",
+                                      command=self.detail.yview)
+        self.detail.configure(yscrollcommand=detail_scroll.set)
+        self.detail.pack(side="left", fill="both", expand=True)
+        detail_scroll.pack(side="right", fill="y")
+
+        actions = ttk.Frame(parent)
+        actions.pack(fill="x", pady=(6, 2))
+        self.keep_btn = ttk.Button(actions, text="保留旧值", width=10,
+                                   command=lambda: self._write("keep"))
+        self.keep_btn.pack(side="left")
+        self.adopt_btn = ttk.Button(actions, text="采用新值", width=10,
+                                    style="Accent.TButton",
+                                    command=lambda: self._write("adopt"))
+        self.adopt_btn.pack(side="left", padx=4)
+        self.defer_btn = ttk.Button(actions, text="待人工", width=10,
+                                    command=lambda: self._write("defer"))
+        self.defer_btn.pack(side="left")
+        self.replace_btn = ttk.Button(actions, text="编辑并替换…", width=12,
+                                      command=self._open_replace)
+        self.replace_btn.pack(side="left", padx=(12, 4))
+        self.adopt_all_btn = ttk.Button(actions, text="全部采用…", width=12,
+                                        command=self._adopt_all)
+        self.adopt_all_btn.pack(side="left")
+        self.hint = ttk.Label(actions, text="", style="Muted.TLabel")
+        self.hint.pack(side="left", padx=8)
+
+        self.message = ttk.Label(parent, text="", wraplength=880, justify="left",
+                                 foreground=theme.COLOR["ok"])
+        self.message.pack(fill="x", pady=(2, 0))
+        self.git_notice = ttk.Label(parent, text="", wraplength=880, justify="left",
+                                    foreground=theme.COLOR["warn"])
+        self.git_notice.pack(fill="x")
+
         self.rows = InfoRows(parent)
-        self.rows.pack(fill="x")
+        self.rows.pack(fill="x", pady=(6, 0))
         self.v_notes = self.rows.add("笔记仓")
         self.v_dir = self.rows.add("清单目录")
         self.v_db = self.rows.add("库文件")
 
-        bar = ttk.Frame(parent)
-        bar.pack(fill="x", pady=(6, 4))
-        self.regen_btn = ttk.Button(bar, text="重新生成清单", width=16,
-                                    style="Accent.TButton", command=self.regenerate)
-        self.regen_btn.pack(side="left")
-        self.open_file_btn = ttk.Button(bar, text="打开清单", width=10, state="disabled",
-                                        command=self.open_primary)
-        self.open_file_btn.pack(side="left", padx=6)
-        self.open_dir_btn = ttk.Button(bar, text="打开清单文件夹", width=14,
-                                       command=self.open_folder)
-        self.open_dir_btn.pack(side="left")
-        self.reload_btn = ttk.Button(bar, text="刷新", width=8, command=self.reload_files)
-        self.reload_btn.pack(side="left", padx=6)
-        self.busy = ttk.Label(bar, text="", style="Muted.TLabel")
-        self.busy.pack(side="left", padx=6)
-
-        self.status = StatusLine(parent)
-        self.status.pack(fill="x", pady=(2, 2))
-        self.message = ttk.Label(parent, text="", style="Muted.TLabel", wraplength=800,
-                                 justify="left")
-        self.message.pack(fill="x")
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=8)
         ttk.Label(parent, text="清单文件（只读）", style="Section.TLabel").pack(anchor="w")
-
         self.file_rows: dict[str, dict] = {}
         for name in E.BIBDB_REPORT_FILES:
             row = ttk.Frame(parent)
-            row.pack(fill="x", pady=2)
+            row.pack(fill="x", pady=1)
             ttk.Label(row, text=name, width=16).pack(side="left")
             state = ttk.Label(row, text="（还没生成）", style="Muted.TLabel")
             state.pack(side="left", padx=8)
@@ -1571,29 +1698,899 @@ class BibDbReviewPage(BibDbPage):
                                 command=lambda n=name: self.open_named(n))
             button.pack(side="left")
             self.file_rows[name] = {"state": state, "button": button}
-
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=8)
-        ttk.Label(parent, text="怎么读这三个文件", style="Section.TLabel").pack(anchor="w")
-        guides = (
-            "CONFLICTS.md：字段冲突待裁决清单（按期 → 篇 → 条目；每条列「已核实旧值 vs 新稿值」"
-            "与建议，带勾选框）。默认「保留旧值」——已核实旧值是已出版成品里的人工核对结果。",
-            "DUPLICATES.md：同作品不同 key 的候选对（前 200 对，按相似度降序）。"
-            "仅供参考，工具不会自动合并（误合并学术事实比重复更糟）。"
-            "全量见 duplicates.csv（Excel 可直接打开）。",
-            "同一份库重复生成清单，三个文件逐字节相同（清单里不含生成时间）——"
-            "所以重新生成后 git 里没有 diff 就说明库没变。",
-        )
-        for text in guides:
-            ttk.Label(parent, text=plain(text), style="Muted.TLabel",
-                      wraplength=800, justify="left").pack(fill="x", pady=1)
+        ttk.Label(parent, text=plain(
+            "CONFLICTS.md 是同一批冲突的中文清单（逐条带旧值/新值与建议）；"
+            "DUPLICATES.md / duplicates.csv 是同作品候选对，仅供参考、不会自动合并。"
+            "重新生成清单只写这三个文件，不改库。"),
+            style="Muted.TLabel", wraplength=880, justify="left").pack(fill="x", pady=(2, 0))
 
     def on_activate(self) -> None:
-        self.reload_files()
+        self.reload()
 
+    # ── 路径 ──
     def _paths(self) -> tuple[str | None, str | None, str | None]:
         notes = self.notes_root()
         return notes, E.notes_dir(notes), E.bibdb_db_path(notes)
 
+    def _current_db(self) -> str:
+        _notes, _directory, db = self._paths()
+        return db or ""
+
+    # ── 读列表 + git 状态 ──
+    def reload(self, notice: tuple[str, str] | None = None) -> None:
+        if self._running:
+            return
+        if notice is not None:
+            self._notice = notice
+        notes, directory, db = self._paths()
+        self.v_notes.set(notes or "（未找到私有笔记仓）")
+        self.v_dir.set(directory or "（找不到私有笔记仓：请到「引用库设置」页指定）")
+        self.v_db.set(db or "（找不到私有笔记仓）")
+        self.reload_files()
+        self._loaded_pending_only = bool(self.pending_var.get())
+        if not db or not os.path.isfile(db):
+            self._items = []
+            self._by_no = {}
+            self._db_sha = ""
+            self._git = None
+            self._fill_tree()
+            self._render_git()
+            self.count_label.config(text="（还没有引用库文件）")
+            self._sync_actions()
+            self.status.show("warn", f"引用库文件还不存在：{db or '（未找到）'}\n"
+                                     "先到「入藏」页导入一份 .bib，再来裁决。")
+            return
+        try:
+            call = E.bibdb_conflicts_call(db=db,
+                                          pending_only=self._loaded_pending_only)
+        except RuntimeError as exc:
+            self.status.show("error", str(exc))
+            return
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+        self._running = True
+        self._stale = False
+        self.busy.config(text="正在读取待裁决清单…")
+        self.status.clear()
+        self._sync_actions()
+        self.log(f"引用库待裁决：读取列表（{db}）")
+
+        def work() -> dict:
+            started = time.monotonic()
+            code, lines = collect_call(call, api=api, notes=manual)
+            payload = E.parse_json_lines(lines)
+            try:
+                git_info = G.status(db)
+            except Exception as exc:  # noqa: BLE001  版本层失败只黄字，不影响读列表
+                git_info = {"ok": False, "error": f"git 状态检查失败：{exc}"}
+            return {"code": code, "lines": lines, "payload": payload,
+                    "git": git_info, "seconds": time.monotonic() - started}
+
+        run_async(self.post, work, self._on_loaded)
+
+    def _on_loaded(self, result: dict) -> None:
+        self._running = False
+        self.busy.config(text="")
+        self._git = result.get("git") if isinstance(result.get("git"), dict) else None
+        self._render_git()
+        notice, self._notice = self._notice, None
+        if notice is not None:
+            self.message.config(text=plain(notice[1]),
+                                foreground=theme.COLOR.get(notice[0], theme.COLOR["ok"]))
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        if code != 0 or not isinstance(payload, dict):
+            self._items = []
+            self._fill_tree()
+            self.count_label.config(text="")
+            self.status.show("error", "❌ 读取待裁决清单失败（退出码 "
+                             f"{code}）：{E.output_tail(result.get('lines') or [], count=2)}")
+            self._sync_actions()
+            return
+        raw = payload.get("items") or []
+        self._items = [item for item in raw if isinstance(item, dict)]
+        self._by_no = {self._no(item): item for item in self._items}
+        self._db_sha = str(payload.get("db_sha256") or "")
+        self._stale = False
+        totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+        try:
+            total = int(totals.get("total") or 0)
+            pending = int(totals.get("pending") or 0)
+            resolved = int(totals.get("resolved") or 0)
+        except (TypeError, ValueError):
+            total = pending = resolved = 0
+        shown = len(self._items)
+        verified = sum(1 for item in self._items
+                       if item.get("pending") and item.get("verified") is True)
+        count_text = (f"待裁决 {pending} 条 / 已裁决 {resolved} 条 / 共 {total} 条"
+                      + (f"（当前列表 {shown} 条）" if self._loaded_pending_only else "")
+                      + (f" · ⚠ 已核实 {verified} 条" if verified
+                         else " · 已核实 0 条"))
+        self.count_label.config(
+            text=plain(count_text),
+            foreground=theme.COLOR["error"] if verified else theme.COLOR["fg"])
+        self._fill_tree()
+        if not self._items:
+            self.status.show("ok", "当前没有待裁决条目。")
+        else:
+            self.status.show("ok", f"已读取列表：{shown} 条；库指纹 {self._db_sha[:12]}…")
+        self._sync_actions()
+
+    # ── 列表 / 详情 ──
+    @staticmethod
+    def _no(item: dict) -> str:
+        try:
+            return f"C{int(item.get('stable_no') or 0):03d}"
+        except (TypeError, ValueError):
+            return "C000"
+
+    def _state_text(self, item: dict) -> str:
+        if item.get("pending"):
+            return "待裁决"
+        resolution = str(item.get("resolution") or "")
+        return "已裁决：" + self.RESOLUTION_TITLES.get(resolution, resolution or "—")
+
+    def _fill_tree(self) -> None:
+        previous = ""
+        selection = self.tree.selection()
+        if selection:
+            previous = selection[0]
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        for item in self._items:
+            no = self._no(item)
+            try:
+                self.tree.insert("", "end", iid=no, values=(
+                    no, str(item.get("record_key") or ""), str(item.get("title") or ""),
+                    str(item.get("year") or ""), self._state_text(item)))
+            except tk.TclError:      # 极端情况：重复编号（引擎不应发生）
+                continue
+        children = self.tree.get_children()
+        target = previous if previous in children else (children[0] if children else "")
+        if target:
+            self.tree.selection_set(target)
+            self.tree.focus(target)
+            self.tree.see(target)
+        else:
+            self._on_select()
+
+    def _on_select(self, _event=None) -> None:
+        self._show_detail(self._selected_item())
+        self._sync_actions()
+
+    def _selected_item(self) -> dict | None:
+        selection = self.tree.selection()
+        if not selection:
+            return None
+        return self._by_no.get(selection[0])
+
+    def _show_detail(self, item: dict | None) -> None:
+        risk_text = ""
+        if item is None:
+            text = "在左侧选一条冲突，这里会显示字段差异与建议。"
+        else:
+            verified = item.get("verified") is True
+            lines = [f"{self._no(item)} · {self._state_text(item)}", ""]
+            if verified:
+                risk_text = ("⚠ 库内已核实记录：采用新值会改已出版核对结果，"
+                             "请先逐条核对。")
+                lines.append(risk_text)
+                lines.append("")
+            fields = (("库内记录 key", item.get("record_key")),
+                      ("来源 bib key", item.get("bib_key")),
+                      ("题名", item.get("title")),
+                      ("作者", item.get("author")),
+                      ("年份", item.get("year")),
+                      ("类型", item.get("entry_type")),
+                      ("已核实", "是" if verified else "否"),
+                      ("来源", "/".join(str(part) for part in
+                                        (item.get("issue"), item.get("slug"))
+                                        if part) or "（无期/篇）"),
+                      ("来源文件", item.get("file")),
+                      ("入库时间", item.get("at")),
+                      ("新稿指纹", item.get("incoming_sha256")),
+                      ("建议", item.get("advice")))
+            for label, value in fields:
+                if value:
+                    lines.append(f"{label}：{value}")
+            if not item.get("pending"):
+                lines.append(f"裁决：{item.get('resolution') or '—'}"
+                             f"（{item.get('resolved_at') or '—'}）")
+            diff = item.get("diff") if isinstance(item.get("diff"), dict) else {}
+            lines.append("")
+            lines.append(f"字段差异（{len(diff)} 个；旧值 → 新稿值）：" if diff else
+                         "字段差异：无（可能只是在来源/核实状态上不同）")
+            for name, change in diff.items():
+                label = self.FIELD_LABELS.get(str(name), str(name))
+                if isinstance(change, dict):
+                    old = str(change.get("old") or "").strip() or "（空）"
+                    new = str(change.get("new") or "").strip() or "（空）"
+                else:
+                    old, new = "", str(change)
+                lines.append(f"  · {label}：{old} → {new}")
+            text = "\n".join(lines)
+        self.detail.configure(state="normal")
+        self.detail.delete("1.0", "end")
+        self.detail.insert("1.0", plain(text))
+        if risk_text:
+            needle = plain(risk_text)
+            start = self.detail.search(needle, "1.0", "end")
+            if start:
+                self.detail.tag_add("risk", start, f"{start}+{len(needle)}c")
+        self.detail.configure(state="disabled")
+
+    # ── 按钮状态 / git 行 ──
+    def _sync_actions(self) -> None:
+        busy = self._running or self._replace is not None
+        item = self._selected_item() if hasattr(self, "tree") else None
+        pending = bool(item and item.get("pending"))
+        fingerprint = bool(item and str(item.get("incoming_sha256") or "").strip())
+        usable = bool(pending and not busy and not self._stale)
+        for button in (self.keep_btn, self.defer_btn):
+            button.config(state="normal" if usable else "disabled")
+        self.adopt_btn.config(state="normal" if usable and fingerprint else "disabled")
+        self.replace_btn.config(state="normal" if usable and fingerprint else "disabled")
+        pending_count = sum(1 for it in self._items if it.get("pending"))
+        self.adopt_all_btn.config(state="normal" if (
+            pending_count and not busy and not self._stale) else "disabled")
+        self.reload_btn.config(state="disabled" if busy else "normal")
+        self.regen_btn.config(state="disabled" if busy else "normal")
+        if self._stale:
+            self.hint.config(text="库已变化：先刷新再裁决。")
+        elif pending and not fingerprint:
+            self.hint.config(text="这条没有新稿指纹：只能保留旧值 / 待人工。")
+        elif busy:
+            self.hint.config(text="正在处理…")
+        else:
+            self.hint.config(text="")
+
+    def _render_git(self) -> None:
+        git = self._git
+        if not isinstance(git, dict):
+            self.git_line.config(text="git：未检查（写库仍可用）",
+                                 foreground=theme.COLOR["muted"])
+            return
+        if not git.get("ok"):
+            self.git_line.config(text="git：" + plain(str(git.get("error") or "不可用"))
+                                 + "（写库仍可用，只是不生成版本提交）",
+                                 foreground=theme.COLOR["warn"])
+            return
+        text = f"git：{git.get('branch') or '（没有分支）'}"
+        if git.get("upstream"):
+            text += (f" · upstream {git['upstream']} ↓{git.get('behind')}"
+                     f" ↑{git.get('ahead')}")
+        else:
+            text += " · 无 upstream"
+        text += " · 库文件" + ("有未提交改动（本次提交会一并包含）"
+                               if git.get("dirty_db") else "干净")
+        if int(git.get("dirty_other") or 0):
+            text += f" · 其它 {git['dirty_other']} 个改动不会提交"
+        text += " · 身份" + ("已配置" if git.get("identity_ok") else "未配置（不会生成提交）")
+        if git.get("conflict"):
+            text += " · ⛔ 有未解决冲突"
+        if git.get("rebase"):
+            text += " · ⛔ rebase 进行中"
+        if git.get("merge"):
+            text += " · ⛔ merge 进行中"
+        color = theme.COLOR["muted"]
+        if git.get("conflict") or git.get("rebase") or git.get("merge"):
+            color = theme.COLOR["error"]
+        elif (git.get("dirty_db") or not git.get("identity_ok")
+              or not git.get("upstream")):
+            color = theme.COLOR["warn"]
+        self.git_line.config(text=plain(text), foreground=color)
+
+    def _refresh_git_status(self) -> bool:
+        """写库入口重跑只读 git 预检：页面加载时缓存的 `self._git` 可能已过期（S4）。"""
+        db = self._current_db()
+        if not db or not os.path.isfile(db):
+            return False
+        try:
+            git_info = G.status(db)
+        except Exception as exc:  # noqa: BLE001  git 失败只黄字，不阻断写库
+            git_info = {"ok": False, "error": f"git 状态检查失败：{exc}"}
+        self._git = git_info
+        self._render_git()
+        return True
+
+    def _git_blocked(self) -> bool:
+        git = self._git if isinstance(self._git, dict) else {}
+        if not git.get("ok"):
+            return False
+        if git.get("conflict") or git.get("rebase") or git.get("merge"):
+            self.status.show("error", "⛔ 仓库有未解决的合并冲突 / rebase / merge 进行中："
+                                     "先处理完 git 状态再写库。")
+            return True
+        return False
+
+    def _behind_ok(self) -> bool:
+        git = self._git if isinstance(self._git, dict) else {}
+        behind = git.get("behind") if git.get("ok") else None
+        if isinstance(behind, int) and behind > 0:
+            return bool(mb.askyesno(
+                "本地落后 upstream",
+                f"当前分支落后 upstream {behind} 个提交。本工具不会自动 pull；"
+                "仍要写库并只提交库文件吗？"))
+        return True
+
+    @staticmethod
+    def _is_stale_text(text: str) -> bool:
+        raw = str(text or "")
+        return ("sha256" in raw and ("不符" in raw or "刷新" in raw)) or "库已变化" in raw
+
+    # ── 逐条裁决（keep / adopt / defer）──
+    def _write(self, action: str) -> None:
+        item = self._selected_item()
+        if item is None:
+            self.status.show("warn", "先在列表里选一条冲突。")
+            return
+        if self._running or self._replace is not None:
+            return
+        if self._stale:
+            self.status.show("warn", "库已变化：先点「刷新」再裁决（本次没有写库）。")
+            return
+        if not item.get("pending"):
+            self.status.show("warn", "这条已经裁决过；要重做请重新生成清单后刷新。")
+            return
+        fingerprint = str(item.get("incoming_sha256") or "").strip()
+        if action in ("adopt", "replace") and not fingerprint:
+            self.status.show("warn", "这条没有新稿指纹：不能采用/替换；可保留旧值或待人工。")
+            return
+        db = self._current_db()
+        if not db or not os.path.isfile(db):
+            self.status.show("warn", "找不到引用库文件，无法写库。")
+            return
+        # S4：写库前重跑只读 git 预检（页面加载时缓存的 self._git 可能已过期）。
+        self._refresh_git_status()
+        if self._git_blocked() or not self._behind_ok():
+            return
+        try:
+            call = E.bibdb_resolve_call(
+                key=str(item.get("record_key") or ""), action=action,
+                incoming_sha256=fingerprint, all_fields=not fingerprint,
+                expect_db_sha256=self._db_sha, db=db)
+        except (RuntimeError, ValueError) as exc:
+            self.status.show("error", str(exc))
+            return
+        no = self._no(item)
+        self._running = True
+        self.busy.config(text="正在写库…")
+        self.status.clear()
+        self.message.config(text="")
+        self.git_notice.config(text="")
+        self._sync_actions()
+        self.log(f"引用库裁决：{no} {action}（key={item.get('record_key')}）")
+        meta = {"label": f"裁决 {no} {self.ACTION_TITLES.get(action, action)}",
+                "action_text": f"裁决 {no} {action}", "record_count": 1,
+                "kind": "resolve", "action": action, "no": no}
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+
+        def work() -> dict:
+            started = time.monotonic()
+            code, lines = collect_call(call, api=api, notes=manual)
+            return {"code": code, "lines": lines, "payload": E.parse_json_lines(lines),
+                    "meta": meta, "seconds": time.monotonic() - started}
+
+        run_async(self.post, work, self._on_written)
+
+    def _on_written(self, result: dict) -> None:
+        self._running = False
+        self.busy.config(text="")
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        lines = result.get("lines") or []
+        if code != 0 or not isinstance(payload, dict):
+            tail = E.output_tail(lines, count=2)
+            if self._is_stale_text(tail):
+                self._stale = True
+                self.status.show("warn", "库已变化（sha256 不符）：本次没有写库；"
+                                         "请先「刷新」再裁决。")
+                self.log("引用库裁决：库指纹已过期，未写库（请刷新）。")
+            else:
+                self.status.show("error", f"❌ {meta.get('label', '裁决')}失败（未写库，"
+                                 f"退出码 {code}）：{tail}")
+                self.log(f"❌ 引用库裁决失败：{tail}")
+            self._sync_actions()
+            return
+        if payload.get("error"):
+            self.status.show("error", "❌ " + plain(str(payload["error"])))
+            self._sync_actions()
+            return
+        written = bool(payload.get("written"))
+        already = bool(payload.get("already"))
+        no = str(meta.get("no") or "裁决")
+        if written and not already:
+            self.status.show("ok", f"✅ 已写入 {no}（{self.ACTION_TITLES.get(meta.get('action'), '')}）："
+                             f"库 sha {str(payload.get('db_sha256_before') or '')[:12]}… → "
+                             f"{str(payload.get('db_sha256_after') or '')[:12]}…")
+            self.log(f"✅ 引用库裁决已写库：{no} {meta.get('action')}")
+            self._start_commit(meta, payload)
+            return
+        if already:
+            self._notice = ("ok", f"这条已经裁决过（库未再改，未生成新提交）。")
+        else:
+            self._notice = ("warn", "引擎没有写库（库未改）：可能是这条已无差异或已被处理。")
+        self._sync_actions()
+        self.reload()
+
+    # ── 本地提交（只提交库文件）──
+    def _start_commit(self, meta: dict, payload: dict) -> None:
+        db = self._current_db()
+        message = G.commit_message(
+            str(meta.get("action_text") or "裁决"),
+            int(meta.get("record_count") or 1),
+            str(payload.get("db_sha256_before") or ""),
+            str(payload.get("db_sha256_after") or ""))
+        self.busy.config(text="正在本地提交（只提交库文件；不 push）…")
+        self._running = True
+        self._sync_actions()
+
+        def work() -> dict:
+            try:
+                commit = G.commit_db(db, message)
+            except Exception as exc:  # noqa: BLE001  版本层失败绝不改写库语义
+                commit = {"ok": False, "committed": False, "soft": True,
+                          "error": f"版本层异常：{exc}"}
+            try:
+                git_info = G.status(db)
+            except Exception as exc:  # noqa: BLE001
+                git_info = {"ok": False, "error": f"git 状态检查失败：{exc}"}
+            return {"commit": commit, "git": git_info, "meta": meta}
+
+        run_async(self.post, work, self._on_committed)
+
+    def _on_committed(self, result: dict) -> None:
+        self._running = False
+        self.busy.config(text="")
+        commit = result.get("commit") if isinstance(result.get("commit"), dict) else {}
+        self._git = result.get("git") if isinstance(result.get("git"), dict) else None
+        self._render_git()
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        no = str(meta.get("no") or "裁决")
+        if commit.get("committed"):
+            sha = G.short_sha(str(commit.get("sha_after") or ""))
+            self._notice = ("ok", f"✅ 已写入 {no}；已本地提交 {sha}（未推送）。")
+            self.git_notice.config(text="")
+            self.log(f"引用库版本：已本地提交 {sha}（仅 {G.DB_RELATIVE_PATH}，未推送）")
+        elif commit.get("ok"):
+            self._notice = ("ok", f"✅ 已写入 {no}；库文件没有可提交改动（未空提交）。")
+            self.git_notice.config(text="⚠ 写库已成功，但库文件没有可提交改动：未生成提交。")
+            self.log("引用库版本：库文件无改动，未生成空提交。")
+        else:
+            error = plain(str(commit.get("error") or "未知原因"))
+            self._notice = ("warn", f"已写入 {no}（写库成功）；本地提交未生成。")
+            self.git_notice.config(text="⚠ 写库已成功，但未生成版本提交：" + error)
+            self.log(f"⚠ 引用库版本：未生成提交：{error}")
+        self._sync_actions()
+        self.reload()
+
+    # ── 全部采用 ──
+    def _adopt_all(self) -> None:
+        if self._running or self._replace is not None:
+            return
+        if self._stale:
+            self.status.show("warn", "库已变化：先点「刷新」再全部采用。")
+            return
+        pending = [it for it in self._items if it.get("pending")]
+        if not pending:
+            self.status.show("warn", "当前没有待裁决条目。")
+            return
+        db = self._current_db()
+        if not db or not os.path.isfile(db):
+            self.status.show("warn", "找不到引用库文件，无法写库。")
+            return
+        # 预览前先刷新 git 状态；真正的 behind 二次确认放在确认后的真写入口。
+        self._refresh_git_status()
+        if self._git_blocked():
+            return
+        try:
+            call = E.bibdb_adopt_all_call(expect_db_sha256=self._db_sha, dry_run=True,
+                                          db=db)
+        except (RuntimeError, ValueError) as exc:
+            self.status.show("error", str(exc))
+            return
+        self._running = True
+        self.busy.config(text="正在预览「全部采用」（dry-run，不写库）…")
+        self.status.clear()
+        self.message.config(text="")
+        self.git_notice.config(text="")
+        self._sync_actions()
+        self.log("引用库待裁决：全部采用 · 预览（dry-run）")
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+
+        def work() -> dict:
+            code, lines = collect_call(call, api=api, notes=manual)
+            return {"code": code, "lines": lines, "payload": E.parse_json_lines(lines)}
+
+        run_async(self.post, work, self._on_adopt_preview)
+
+    def _on_adopt_preview(self, result: dict) -> None:
+        self._running = False
+        self.busy.config(text="")
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        lines = result.get("lines") or []
+        if code != 0 or not isinstance(payload, dict):
+            tail = E.output_tail(lines, count=2)
+            if self._is_stale_text(tail):
+                self._stale = True
+                self.status.show("warn", "库已变化（sha256 不符）：预览没有写库；请先刷新。")
+            else:
+                self.status.show("error", f"❌ 全部采用预览失败（库未改，退出码 {code}）：{tail}")
+            self._sync_actions()
+            return
+        if payload.get("written"):
+            self.status.show("error", "⛔ 预览竟然写了库（引擎违反 dry-run 契约），请立即检查！")
+            self._sync_actions()
+            return
+        adopted = payload.get("adopted") if isinstance(payload.get("adopted"), list) else []
+        skipped = payload.get("skipped") if isinstance(payload.get("skipped"), list) else []
+        if not adopted:
+            self.status.show("warn", "没有可采用的待裁决冲突（预览 0 条）。")
+            self._sync_actions()
+            return
+        before = payload.get("totals_before") or {}
+        after = payload.get("totals_after") or {}
+        verified_keys = {str(it.get("record_key") or "") for it in self._items
+                         if it.get("pending") and it.get("verified") is True}
+        detail = plain(adopt_confirm_detail(
+            adopted=adopted, records=int(payload.get("records") or 0),
+            skipped=len(skipped), pending_before=before.get("pending"),
+            pending_after=after.get("pending"), verified_keys=verified_keys))
+        self._sync_actions()
+        if not mb.askyesno("确认全部采用（写库）", detail):
+            self.status.show("warn", "已取消：未写库（预览没有改库）。")
+            return
+        self._adopt_all_write(payload)
+
+    def _adopt_all_write(self, preview: dict) -> None:
+        db = self._current_db()
+        if not db or not os.path.isfile(db):
+            self.status.show("warn", "找不到引用库文件，无法写库。")
+            self._sync_actions()
+            return
+        # S4：确认后、真写前再刷新一次 git 状态（预览期间仓库可能变化）。
+        self._refresh_git_status()
+        if self._git_blocked() or not self._behind_ok():
+            self._sync_actions()
+            return
+        try:
+            call = E.bibdb_adopt_all_call(expect_db_sha256=self._db_sha, dry_run=False,
+                                          db=db)
+        except (RuntimeError, ValueError) as exc:
+            self.status.show("error", str(exc))
+            return
+        adopted = preview.get("adopted") if isinstance(preview.get("adopted"), list) else []
+        # 与 mac 同口径：动作文案里的 N 是「记录数」payload.records（不是冲突条数）。
+        records = int(preview.get("records") or len(adopted) or 0)
+        meta = {"label": "全部采用", "action_text": f"一键采用 {records} 条",
+                "record_count": records, "kind": "adopt-all", "no": "全部"}
+        self._running = True
+        self.busy.config(text="正在全部采用（写库）…")
+        self.status.clear()
+        self._sync_actions()
+        self.log(f"引用库待裁决：全部采用（写库，{len(adopted)} 条冲突）")
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+
+        def work() -> dict:
+            code, lines = collect_call(call, api=api, notes=manual)
+            return {"code": code, "lines": lines, "payload": E.parse_json_lines(lines),
+                    "meta": meta}
+
+        run_async(self.post, work, self._on_adopt_written)
+
+    def _on_adopt_written(self, result: dict) -> None:
+        self._running = False
+        self.busy.config(text="")
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        lines = result.get("lines") or []
+        if code != 0 or not isinstance(payload, dict):
+            tail = E.output_tail(lines, count=2)
+            if self._is_stale_text(tail):
+                self._stale = True
+                self.status.show("warn", "库已变化（sha256 不符）：本次没有写库；请先刷新。")
+            else:
+                self.status.show("error", f"❌ 全部采用失败（库未改或已回滚，退出码 "
+                                 f"{code}）：{tail}")
+                self.log(f"❌ 全部采用失败：{tail}")
+            self._sync_actions()
+            return
+        if payload.get("error"):
+            self.status.show("error", "❌ " + plain(str(payload["error"])))
+            self._sync_actions()
+            return
+        if not payload.get("written"):
+            self._notice = ("warn", "全部采用没有写库（库未改）。")
+            self._sync_actions()
+            self.reload()
+            return
+        adopted = payload.get("adopted") if isinstance(payload.get("adopted"), list) else []
+        before = payload.get("totals_before") or {}
+        after = payload.get("totals_after") or {}
+        self.status.show("ok", f"✅ 已全部采用：{len(adopted)} 条冲突 / "
+                         f"{int(payload.get('records') or 0)} 条记录；"
+                         f"待裁决 {before.get('pending')} → {after.get('pending')}")
+        self.log(f"✅ 引用库全部采用：{len(adopted)} 条冲突")
+        self._start_commit(meta, payload)
+
+    # ── 编辑并替换 ──
+    def _open_replace(self) -> None:
+        if self._running or self._replace is not None:
+            return
+        item = self._selected_item()
+        if item is None:
+            self.status.show("warn", "先在列表里选一条冲突。")
+            return
+        if self._stale:
+            self.status.show("warn", "库已变化：先点「刷新」再替换。")
+            return
+        if not item.get("pending"):
+            self.status.show("warn", "这条已经裁决过。")
+            return
+        if not str(item.get("incoming_sha256") or "").strip():
+            self.status.show("warn", "这条没有新稿指纹：不能用替换；可保留旧值或待人工。")
+            return
+        db = self._current_db()
+        if not db or not os.path.isfile(db):
+            self.status.show("warn", "找不到引用库文件，无法替换。")
+            return
+        # 打开编辑器前刷新一次；真正的 behind 二次确认在「确认替换」真写入口。
+        self._refresh_git_status()
+        if self._git_blocked():
+            return
+        try:
+            call = E.bibdb_query_call("key", str(item.get("record_key") or ""), db=db)
+        except (RuntimeError, ValueError) as exc:
+            self.status.show("error", str(exc))
+            return
+        self._running = True
+        self.busy.config(text="正在读取库内 BibTeX…")
+        self._sync_actions()
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+
+        def work() -> dict:
+            code, lines = collect_call(call, api=api, notes=manual)
+            return {"code": code, "lines": lines, "payload": E.parse_json_lines(lines),
+                    "item": item, "db": db}
+
+        run_async(self.post, work, self._on_replace_loaded)
+
+    def _on_replace_loaded(self, result: dict) -> None:
+        self._running = False
+        self.busy.config(text="")
+        item = result.get("item") if isinstance(result.get("item"), dict) else None
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        if item is None:
+            self._sync_actions()
+            return
+        if code != 0 or not isinstance(payload, dict):
+            self.status.show("error", "读取库内 BibTeX 失败：" +
+                             E.output_tail(result.get("lines") or [], count=2))
+            self._sync_actions()
+            return
+        hits = payload.get("hits") if isinstance(payload.get("hits"), list) else []
+        bibtex = ""
+        for hit in hits:
+            if isinstance(hit, dict) and str(hit.get("key") or "") == \
+                    str(item.get("record_key") or ""):
+                bibtex = str(hit.get("bibtex") or "")
+                break
+        if not bibtex and hits and isinstance(hits[0], dict):
+            bibtex = str(hits[0].get("bibtex") or "")
+        if not bibtex:
+            self.status.show("error", "查不到这条记录的 BibTeX（库可能刚被改动）：请先刷新。")
+            self._sync_actions()
+            return
+        self._build_replace_dialog(item, str(result.get("db") or self._current_db()), bibtex)
+        self._sync_actions()
+
+    def _build_replace_dialog(self, item: dict, db: str, bibtex: str) -> None:
+        top = tk.Toplevel(self)
+        no = self._no(item)
+        top.title(f"编辑并替换 · {no}")
+        top.transient(self.winfo_toplevel())
+        top.geometry("820x580")
+        top.columnconfigure(0, weight=1)
+        top.rowconfigure(2, weight=1)
+        ttk.Label(top, text=plain(
+            f"{no} · {item.get('record_key')} —— 修改下面的 BibTeX（必须恰好 1 条、"
+            "key 不能改），先「预览（dry-run）」看字段变化，再「确认替换（写库）」。"),
+            wraplength=780, justify="left").grid(row=0, column=0, sticky="w",
+                                                 padx=10, pady=(8, 2))
+        ttk.Label(top, text=plain(
+            "替换走引擎 resolve --action replace：字段规范化/key 查重等判据全在引擎；"
+            "写库成功后会只提交 bib_db/bibliography.jsonl（不 push）。"),
+            style="Muted.TLabel", wraplength=780, justify="left").grid(
+            row=1, column=0, sticky="w", padx=10, pady=(0, 4))
+        text_frame = ttk.Frame(top)
+        text_frame.grid(row=2, column=0, sticky="nsew", padx=10)
+        text_frame.columnconfigure(0, weight=1)
+        text_frame.rowconfigure(0, weight=1)
+        editor = tk.Text(text_frame, wrap="none", undo=True, font=theme.mono_font(),
+                         background=theme.COLOR["text_bg"], foreground=theme.COLOR["fg"],
+                         insertbackground=theme.COLOR["fg"],
+                         borderwidth=1, relief="solid", highlightthickness=0)
+        ybar = ttk.Scrollbar(text_frame, orient="vertical", command=editor.yview)
+        editor.configure(yscrollcommand=ybar.set)
+        editor.grid(row=0, column=0, sticky="nsew")
+        ybar.grid(row=0, column=1, sticky="ns")
+        editor.insert("1.0", bibtex)
+        status = StatusLine(top)
+        status.grid(row=3, column=0, sticky="w", padx=10, pady=(4, 0))
+        buttons = ttk.Frame(top)
+        buttons.grid(row=4, column=0, sticky="e", padx=10, pady=8)
+        preview_btn = ttk.Button(buttons, text="预览（dry-run，不写库）",
+                                 command=self._replace_preview)
+        preview_btn.pack(side="left")
+        confirm_btn = ttk.Button(buttons, text="确认替换（写库）", style="Accent.TButton",
+                                 state="disabled", command=self._replace_confirm)
+        confirm_btn.pack(side="left", padx=6)
+        ttk.Button(buttons, text="取消", command=self._close_replace).pack(side="left")
+        temp_dir = tempfile.mkdtemp(prefix="slcn-replace-")
+        self._replace = {"top": top, "editor": editor, "item": item, "db": db,
+                         "status": status, "preview_btn": preview_btn,
+                         "confirm_btn": confirm_btn, "temp_dir": temp_dir,
+                         "signature": "", "busy": False}
+        top.protocol("WM_DELETE_WINDOW", self._close_replace)
+        top.grab_set()
+        editor.focus_set()
+
+    def _replace_preview(self) -> None:
+        state = self._replace
+        if state is None or state["busy"]:
+            return
+        content = state["editor"].get("1.0", "end-1c").strip()
+        if not content:
+            state["status"].show("warn", "BibTeX 内容为空。")
+            return
+        bib_path = os.path.join(state["temp_dir"], "entry.bib")
+        try:
+            with open(bib_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(content + "\n")
+        except OSError as exc:
+            state["status"].show("error", f"写临时文件失败：{exc}")
+            return
+        item = state["item"]
+        try:
+            call = E.bibdb_replace_call(
+                key=str(item.get("record_key") or ""), bib=bib_path,
+                incoming_sha256=str(item.get("incoming_sha256") or ""),
+                expect_db_sha256=self._db_sha, dry_run=True, db=state["db"])
+        except (RuntimeError, ValueError) as exc:
+            state["status"].show("error", str(exc))
+            return
+        state["busy"] = True
+        state["signature"] = content
+        state["preview_btn"].config(state="disabled")
+        state["confirm_btn"].config(state="disabled")
+        state["status"].show("warn", "正在预览（dry-run，不写库）…")
+        self._replace_call(call, dry_run=True)
+
+    def _replace_confirm(self) -> None:
+        state = self._replace
+        if state is None or state["busy"]:
+            return
+        content = state["editor"].get("1.0", "end-1c").strip()
+        if not state["signature"] or content != state["signature"]:
+            state["status"].show("warn", "内容在预览后改过了：请重新预览。")
+            state["confirm_btn"].config(state="disabled")
+            return
+        bib_path = os.path.join(state["temp_dir"], "entry.bib")
+        item = state["item"]
+        db = state["db"]
+        if not db or not os.path.isfile(db):
+            state["status"].show("warn", "找不到引用库文件，无法写库。")
+            return
+        # S4：真写前重跑只读 git 预检（打开编辑器后仓库可能变化）。
+        self._refresh_git_status()
+        if self._git_blocked():
+            state["status"].show("error", "⛔ 仓库有未解决的合并冲突 / rebase / merge "
+                                 "进行中：先处理完 git 状态再替换。")
+            return
+        if not self._behind_ok():
+            return
+        try:
+            call = E.bibdb_replace_call(
+                key=str(item.get("record_key") or ""), bib=bib_path,
+                incoming_sha256=str(item.get("incoming_sha256") or ""),
+                expect_db_sha256=self._db_sha, dry_run=False, db=state["db"])
+        except (RuntimeError, ValueError) as exc:
+            state["status"].show("error", str(exc))
+            return
+        state["busy"] = True
+        state["preview_btn"].config(state="disabled")
+        state["confirm_btn"].config(state="disabled")
+        state["status"].show("warn", "正在写库（replace）…")
+        self._replace_call(call, dry_run=False)
+
+    def _replace_call(self, call: E.EngineCall, *, dry_run: bool) -> None:
+        state = self._replace
+        if state is None:
+            return
+        api = self.app.cfg.get("api")
+        manual = self.app.cfg.get("notesRepoPath", "")
+
+        def work() -> dict:
+            code, lines = collect_call(call, api=api, notes=manual)
+            return {"code": code, "lines": lines, "payload": E.parse_json_lines(lines),
+                    "dry_run": dry_run}
+
+        run_async(self.post, work, self._on_replace_result)
+
+    def _on_replace_result(self, result: dict) -> None:
+        state = self._replace
+        if state is None:
+            return
+        state["busy"] = False
+        state["preview_btn"].config(state="normal")
+        payload = result.get("payload")
+        code = int(result.get("code") or 0)
+        dry_run = bool(result.get("dry_run"))
+        lines = result.get("lines") or []
+        if code != 0 or not isinstance(payload, dict):
+            tail = E.output_tail(lines, count=2)
+            if self._is_stale_text(tail):
+                self._stale = True
+                state["status"].show("warn", "库已变化（sha256 不符）：本次没有写库；请刷新。")
+                self._close_replace()
+                self.reload()
+                return
+            state["status"].show("error", ("替换预览失败：" if dry_run else "替换失败（未写库）：")
+                                 + tail)
+            return
+        if payload.get("error"):
+            state["status"].show("error", "❌ " + plain(str(payload["error"])))
+            return
+        if dry_run:
+            if payload.get("written"):
+                state["status"].show("error", "⛔ 预览竟然写了库（引擎违反 dry-run 契约）！")
+                return
+            fields = (payload.get("replaced_fields") or payload.get("adopted_fields")
+                      or payload.get("fields") or [])
+            change_text = "、".join(str(name) for name in fields) or "（引擎未列出字段变化）"
+            state["status"].show(
+                "warn", f"预览（dry-run，库未改）：将替换字段 {change_text}。"
+                "确认无误再点「确认替换（写库）」。")
+            state["confirm_btn"].config(state="normal")
+            return
+        if not payload.get("written"):
+            state["status"].show("warn", "引擎没有写库（库未改）。")
+            return
+        item = state["item"]
+        no = self._no(item)
+        self._close_replace()
+        self._running = True
+        self._sync_actions()
+        self.status.show("ok", f"✅ 已替换 {no}（记录 {item.get('record_key')}）")
+        self.log(f"✅ 引用库替换已写库：{no} {item.get('record_key')}")
+        self._start_commit({"action_text": f"裁决 {no} replace", "record_count": 1,
+                            "label": f"替换 {no}", "no": no}, payload)
+
+    def _close_replace(self) -> None:
+        state = self._replace
+        if state is None:
+            return
+        self._replace = None
+        try:
+            state["top"].grab_release()
+        except tk.TclError:
+            pass
+        try:
+            state["top"].destroy()
+        except tk.TclError:
+            pass
+        shutil.rmtree(state.get("temp_dir") or "", ignore_errors=True)
+        self._sync_actions()
+
+    # ── 清单文件（只读；沿用旧页能力）──
     def reload_files(self) -> None:
         notes, directory, db = self._paths()
         self.v_notes.set(notes or "（未找到私有笔记仓）")
@@ -1603,8 +2600,6 @@ class BibDbReviewPage(BibDbPage):
         self._files = {info["name"]: info for info in infos}
         self._refresh_file_rows()
         self.open_dir_btn.config(state="normal" if directory else "disabled")
-        existing = [info for info in infos if info.get("exists")]
-        self.open_file_btn.config(state="normal" if existing else "disabled")
 
     def _refresh_file_rows(self) -> None:
         for name, widgets in self.file_rows.items():
@@ -1663,6 +2658,7 @@ class BibDbReviewPage(BibDbPage):
             text = "❌ 重新生成待裁决清单失败：" + E.output_tail(result.get("lines") or [], count=2)
             self.status.show("error", text)
             self.log(text)
+            self._sync_actions()
             return
         conflicts = payload.get("conflicts") or {}
         reports = payload.get("reports") or []
@@ -1675,9 +2671,10 @@ class BibDbReviewPage(BibDbPage):
         text = (f"✅ 已重新生成清单：写入/更新 {written} 个文件；"
                 f"字段冲突 {conflict_records} 条记录 / {conflict_total} 处差异；"
                 f"同作品候选对 {int(payload.get('pairs') or 0)} 对。")
-        self.message.config(text=text)
+        self.message.config(text=text, foreground=theme.COLOR["ok"])
         self.reload_files()
         self.log(text)
+        self._sync_actions()
 
     def open_named(self, name: str) -> None:
         info = (getattr(self, "_files", {}) or {}).get(name) or {}
