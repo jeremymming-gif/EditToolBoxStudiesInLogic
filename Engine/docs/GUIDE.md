@@ -88,7 +88,7 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 | 「目标文件夹已存在」拒绝出稿 | 目录里有**不属于本工具**的文件（更可能是编辑部已有稿件目录）。确认无误会再 `--force` | 「3.1 正式工具」 |
 | `ImportError: cannot import name 'etree' from 'lxml'` | vendor 里是给另一个 Python 版本编译的 lxml；挂载必须用 `append()` 而不是 `insert(0)` | 「六·五」并入过程① |
 | `ValueError: badly formed help string` | `argparse` 的 help 串里 `%` 没转义成 `%%`（Python 3.14 直接起不来） | 「六·五」并入过程③ |
-| 拿不到作者名时报错退出 | **刻意的**：不给作者就不猜，用 `--author` / `--name` 指定 | 「3.2」命名规则 |
+| 拿不到作者名时报错退出 | **刻意的**：不给作者就不猜，用 `--author` / `--name` 指定。普通 `article` 稿没有 `\myfirstauthor` 时，引擎会从 `\author{}` 读第一作者（剥 `\thanks`、取首作者）；拿不准仍报错，要求 `--author/--name` | 「3.2」命名规则 |
 | 编译报错 | `.log` 是**故意不删**的（`--clean` 也保留），先看它 | 「3.2」输出目录规范 |
 | 矢量图形变占位符 | 矢量形状（非内嵌图片）只能检出 + 占位 + 导出原稿 PDF，**需人工对照截图** | 「六、已知限制」 |
 

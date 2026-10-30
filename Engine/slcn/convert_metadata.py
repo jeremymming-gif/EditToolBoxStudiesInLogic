@@ -233,9 +233,10 @@ def author_from_source(source: str, metadata: str | None = None) -> tuple[str, s
             text = open(p, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        a = N.author_from_tex_metadata(text)
+        # B-275：模板宏 \myfirstauthor 优先，普通 article 回退 \author{} 第一作者
+        a, origin = N.author_from_tex_metadata_ex(text)
         if a:
-            return a, f"{os.path.basename(p)} 的 \\myfirstauthor：{a}"
+            return a, f"{os.path.basename(p)} 的 {origin}：{a}"
     return "", ""
 
 
