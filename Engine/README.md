@@ -129,9 +129,9 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**121 套件 / 5509 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**121 套件 / 5504 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
-套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 33
+套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48
 `test_b204_health_ignore` 40 ｜ `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 83 ｜ `test_b268_conflict` 15
 `test_b268_frontmatter` 17 ｜ `test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b270_url_note` 27
@@ -146,16 +146,16 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 `test_batch63b_metadata_json` 76 ｜ `test_batch68_bibparse` 36 ｜ `test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 53
 `test_batch70_b001` 46 ｜ `test_batch_case_test` 0 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45
 `test_bib_url_render` 58 ｜ `test_bibdb` 384 ｜ `test_bibdb_rehash` 31 ｜ `test_bibdb_verify` 54
-`test_bibnorm` 46 ｜ `test_bibparse_inline_pct` 50 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105
+`test_bibnorm` 46 ｜ `test_bibparse_inline_pct` 50 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 77
 `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35
-`test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 73 ｜ `test_docx_labels` 41
+`test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 73 ｜ `test_docx_labels` 38
 `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26
 `test_en_abstract_sibling` 66 ｜ `test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_evidence_injection` 27
 `test_footnote_id0` 12 ｜ `test_incollection_fields` 41 ｜ `test_infocheck_toc` 135 ｜ `test_issue_tools` 69
 `test_latex_appendix` 20 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
 `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
 `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18
-`test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19
+`test_multisource_discovery` 21 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19
 `test_pdfmerge` 36 ｜ `test_platform` 76 ｜ `test_proofcheck` 252 ｜ `test_publish` 58
 `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29
 `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_run_record` 36
@@ -180,9 +180,9 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 - `n_headings` 合计 **587**；`n_bib` 合计 **2222**
 - sha256[:12]：`baselines/docx_audit.csv` = `9e5f3e596fcc`，`baselines/docx_audit.txt` = `4f2d552c20d1`（来源：笔记仓冻结基线；与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.56%**、Word **89.44%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
+**corpus 回归**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
-**占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**232 处 / 53 篇**
+**占位符**：本仓不含稿件库（拆仓后的工具仓 / 新克隆），这一行由稿件仓里的运行给出
 
 **红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：本机工作区状态不写进提交物；现况见 `out/gen_docs-state.txt`（不提交）
 <!-- AUTO:STATE:END -->
