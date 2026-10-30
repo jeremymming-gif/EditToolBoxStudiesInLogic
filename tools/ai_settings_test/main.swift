@@ -3826,9 +3826,24 @@ check("b283-engine-entry", "dispatcher 与外壳入口表都含 envcheck.py（ma
       "dispatcher=\(b283MainSrc.contains("\"envcheck.py\""))")
 
 // 真跑一次引擎（有 python3.14 才跑；缺了只记证据，不假装 PASS）
+// CI runner 无 TeX/LibreOffice，故用 stub PATH 固定环境；与 Engine/tests/test_envcheck.py 做法一致
+// （required 的 xelatex/biber 必须命中，可选 soffice 命中才不会把 rc 降成 1；本机装没装 TeX 都不影响断言）。
 let b283Py = "/opt/homebrew/bin/python3.14"
 let b283Script = projFile("Engine/envcheck.py")
-if FileManager.default.isExecutableFile(atPath: b283Py) && exists(b283Script) {
+let b283StubDir = base.appendingPathComponent("b283-stub-bin", isDirectory: true)
+mkdir(b283StubDir.path, 0o700)
+let b283Stubs: [(String, String)] = [
+    ("xelatex", "#!/bin/sh\necho \"XeTeX 3.141592653-2.6-0.999995 (TeX Live 2024)\"\n"),
+    ("biber", "#!/bin/sh\necho \"biber version: 2.19\"\n"),
+    ("soffice", "#!/bin/sh\necho \"LibreOffice 24.8.1.2 420(Build:2)\"\n"),
+]
+var b283StubOK = true
+for (name, text) in b283Stubs {
+    let p = b283StubDir.appendingPathComponent(name).path
+    writeRaw(p, text, perm: 0o755)
+    if !FileManager.default.isExecutableFile(atPath: p) { b283StubOK = false }
+}
+if FileManager.default.isExecutableFile(atPath: b283Py) && exists(b283Script) && b283StubOK {
     let b283Out = base.appendingPathComponent("b283-engine-out", isDirectory: true)
     wipe(b283Out.path); mkdir(b283Out.path, 0o700)
     let proc = Process()
@@ -3836,7 +3851,12 @@ if FileManager.default.isExecutableFile(atPath: b283Py) && exists(b283Script) {
     proc.arguments = [b283Script, "--json", "--profile", "exe", "--out-dir", b283Out.path]
     var b283Env = ProcessInfo.processInfo.environment
     b283Env["PYTHONPATH"] = projFile("Engine/vendor")
+    // 假 PATH 放在最前：stub 命中即固定结果；原 PATH 保留 git 等真实工具（可选检查靠它）
+    b283Env["PATH"] = b283StubDir.path + ":" + (b283Env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+    b283Env.removeValue(forKey: "SLCN_SOFFICE")   // 显式指错会让可选 soffice 出 warn
+    b283Env.removeValue(forKey: "SLCN_PYTHON")
     proc.environment = b283Env
+    evidence("b283-engine-e2e PATH", "stub=\(b283StubDir.path)（xelatex/biber/soffice）")
     let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = Pipe()
     try? proc.run(); proc.waitUntilExit()
     let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -3849,6 +3869,8 @@ if FileManager.default.isExecutableFile(atPath: b283Py) && exists(b283Script) {
     check("b283-engine-outdir", "`--out-dir` 真的落了 envcheck.json（诊断包才带得走）",
           exists(b283Out.appendingPathComponent("envcheck.json").path),
           "file=\(exists(b283Out.appendingPathComponent("envcheck.json").path))")
+} else if !b283StubOK {
+    evidence("skip b283-engine-e2e", "stub PATH 创建失败，无法固定环境（不假装 PASS）：\(b283StubDir.path)")
 } else {
     evidence("skip b283-engine-e2e", "本机没有 \(b283Py) 或 Engine/envcheck.py 不存在")
 }
