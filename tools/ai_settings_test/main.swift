@@ -3592,13 +3592,16 @@ check("m62-coop-guidance", "两段式面板有引导：任务书 = 两段式第�
       m62TabSrc.contains("文献核实任务书 = 两段式第一段产物")
         && m62TabSrc.contains("--verify-refs（高级）"),
       "guidance=\(m62TabSrc.contains("文献核实任务书 = 两段式第一段产物"))")
-// CheckBib 页：标题/引导改为回读比对查看器；能力（体检/并回/入藏/重新编译）一个不少
+// CheckBib 页（B-286 起叫「参考文献规范化」）：标题/引导随改名同步；能力（体检/并回/入藏/重新编译）一个不少
 let m62CheckBibSrc = readSrc("Views/CheckBibView.swift")
 let m62CheckBibFeat = readSrc("Features/CheckBibFeature.swift")
-check("m62-checkbib-title", "CheckBib 页标题 = 回读/比对报告查看器（高级：手动并回，离线）；不再引导“生成任务书”",
-      m62CheckBibSrc.contains("回读/比对报告查看器（高级：手动并回，离线）")
+check("m62-checkbib-title", "CheckBib 页标题 = 参考文献规范化（高级：手动并回，离线）（B-286 改名）；引导说明两段式第二段自动完成 + 引用库入口；不再引导“生成任务书”",
+      m62CheckBibSrc.contains("参考文献规范化（高级：手动并回，离线）")
+        && m62CheckBibSrc.contains("第二段自动完成")
+        && m62CheckBibSrc.contains("引用库 → 参考文献规范化")
         && !m62CheckBibSrc.contains("使用说明：编辑拿《文献核实任务书》改完参考文献后交回"),
-      "title=\(m62CheckBibSrc.contains("回读/比对报告查看器（高级：手动并回，离线）"))")
+      "title=\(m62CheckBibSrc.contains("参考文献规范化（高级：手动并回，离线）")) "
+        + "两段式=\(m62CheckBibSrc.contains("第二段自动完成"))")
 check("m62-checkbib-capabilities", "CheckBib 页能力保留：并回 / 入藏引用库 / 重新编译该篇入口仍在，Feature 仍调 checkbib.py（--merge-into）",
       m62CheckBibSrc.contains("并回") && m62CheckBibSrc.contains("入藏")
         && m62CheckBibSrc.contains("重新编译")

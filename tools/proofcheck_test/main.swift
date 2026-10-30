@@ -92,22 +92,24 @@ check("(c) MainWindow 建了 `ProofCheckModel` 并传给页面",
       && mainWindow.contains("ProofCheckView(log: log, model: proofModel)"))
 // 注意：要比的是**导航定义**的位置，不是文档注释里那几个词
 // （注释里也会出现「一校核查」，第一版就栽在这上面）
-// 2026-10-17 起界面从 TabView 换成「分组侧边栏」：顺序由 `NavPage.singleArticle` 定义，
-// 一校核查必须在「文献回读校验」之后（编辑流程：回读校验 → 一校核查）。
+// 2026-10-17 起界面从 TabView 换成「分组侧边栏」：顺序由 `NavPage.singleArticle` 定义。
+// B-286（用户 m01037）：原「文献回读校验」页改名「参考文献规范化」并**降级**到「引用库」组——
+// 「单篇稿件」组只剩 初排 → 一校核查 两步（初排后的文献核对由两段式 AI 协同第二段自动完成）。
 // ⚠️ 要取**定义**那一行（`static let singleArticle = [...]`），不是 List 里 `ForEach(...)` 的用法行
 let orderLine = mainWindow.split(separator: "\n")
     .first { $0.contains("static let singleArticle") } ?? ""
 let order = orderLine.description
-let iBib = order.range(of: ".checkbib")?.lowerBound
-let iProof = order.range(of: ".proofcheck")?.lowerBound
+// 抠出 `[...]` 里的页名，按「恰等于两项」断言：多一项（例如把 .checkbib 放回）也算红
+let singleRaw = order.components(separatedBy: "[").last ?? ""
+let singlePages = (singleRaw.components(separatedBy: "]").first ?? "")
+    .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
 // B-235：「合并文件」从「单篇稿件」移到「整期装配」，单篇组不再含 `.merge`
 let assemblyLine = mainWindow.split(separator: "\n")
     .first { $0.contains("static let assembly") } ?? ""
 let assemblyOrder = assemblyLine.description
-check("(c) 「单篇稿件」组顺序：初排 → 文献回读校验 → **一校核查**（不含合并文件；编辑流程）",
-      order.contains(".convert") && iBib != nil && iProof != nil
-      && iBib! < iProof! && !order.contains(".merge"),
-      order.isEmpty ? "<没找到 singleArticle 定义>" : String(order.prefix(120)))
+check("(c) 「单篇稿件」组 = 初排 → **一校核查**（B-286：恰两项，文献页已迁入「引用库」组）",
+      singlePages == [".convert", ".proofcheck"],
+      order.isEmpty ? "<没找到 singleArticle 定义>" : singlePages.joined(separator: "|"))
 check("(c) 「合并文件」页归「整期装配」组（B-235）",
       assemblyOrder.contains(".merge"),
       assemblyOrder.isEmpty ? "<没找到 assembly 定义>" : String(assemblyOrder.prefix(120)))

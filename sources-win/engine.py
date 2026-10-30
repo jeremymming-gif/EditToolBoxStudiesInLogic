@@ -605,7 +605,7 @@ def convert_call(*, source: str, out: str, compile_pdf: bool = False,
 
 def checkbib_call(*, returned: str, original: str = "", tex: str = "",
                   merge_into: str = "", out: str = "") -> EngineCall:
-    """「文献回读校验」：`checkbib.py --returned … [--merge-into …]`。"""
+    """「参考文献规范化」：`checkbib.py --returned … [--merge-into …]`。"""
     cmd = _base_cmd("checkbib.py")
     if cmd is None:
         raise RuntimeError("找不到引擎：请先在「设置」里指定 Engine 目录或 SLCNEngine.exe")
@@ -618,7 +618,7 @@ def checkbib_call(*, returned: str, original: str = "", tex: str = "",
         cmd += ["--merge-into", merge_into]
     if out:
         cmd += ["--out", out]
-    return EngineCall(cmd, "checkbib.py", "文献回读校验")
+    return EngineCall(cmd, "checkbib.py", "参考文献规范化")
 
 
 def merge_call(*, folder: str, out: str = "", nest_outlines: bool = False,

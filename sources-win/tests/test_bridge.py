@@ -776,6 +776,11 @@ else:
         _cfg3 = json.load(open(S.config_path(), encoding="utf-8"))
         print("非法上限不落盘=%d" % int(_cfg3.get("bibdb", {}).get("verifyMax") == 0))
         print("引用库页=" + "|".join(tabs[9:14]))
+        # B-286：分组归属变了（「参考文献规范化」从单篇组迁到引用库组），直接读侧栏子节点
+        print("单篇组页=" + "|".join(
+            app.nav.item(x, "text") for x in app.nav.get_children(app.nav.get_children()[0])))
+        print("引用库组页=" + "|".join(
+            app.nav.item(x, "text") for x in app.nav.get_children(app.nav.get_children()[2])))
         print("引用库侧栏=" + "|".join(
             app.nav.item(x, "text") for x in app.nav.get_children()))
         # ── 第五十五批：两段式协同 + AI 预算（真窗口证据）──
@@ -821,10 +826,12 @@ else:
                                         and not ct.ai_hint.winfo_ismapped()))
         print("回读页标题=" + app.checkbib_tab.page_title)
         print("回读页引导=%d" % int(
-            app.checkbib_tab.name == "文献回读校验"
+            app.checkbib_tab.name == "参考文献规范化"
             and "本页不生成《文献核实任务书》" in app.checkbib_tab.instruction
             and "手动并回" in app.checkbib_tab.instruction
-            and "离线体检" in app.checkbib_tab.instruction))
+            and "离线体检" in app.checkbib_tab.instruction
+            and "第二段自动完成" in app.checkbib_tab.instruction
+            and "引用库 → 参考文献规范化" in app.checkbib_tab.instruction))
         print("协同默认关=%d" % int(not ct.v_coop.get()))
         print("协同面板默认隐藏=%d" % int(not ct.coop_panel.winfo_ismapped()))
         ct.v_coop.set(True)
@@ -1044,17 +1051,22 @@ else:
         check("(g) 真开一次窗口：控件全部建成、写日志、正常退出",
               r.returncode == 0 and "窗口建成" in out,
               f"rc={r.returncode} {(r.stderr or '').strip()[-160:]}")
-        check("(g) 十五个页都在（侧边栏顺序：单篇 4 + 整期 5 + 引用库 5 + 设置）",
-              "初排转换|文献回读校验|合并文件|一校核查|检查tex信息|生成目录|编译全部|"
+        check("(g) 十五个页都在（侧边栏顺序：单篇 2 + 整期 6 + 引用库 6 + 设置）",
+              "初排转换|参考文献规范化|合并文件|一校核查|检查tex信息|生成目录|编译全部|"
               "删除临时文件|目录摘要推送|库概况|查库|入藏|待裁决|引用库设置|设置"
               in out, out.strip()[-240:])
         check("(g) **分组侧边栏**：两层结构（单篇稿件 / 整期装配 / 引用库 / 设置），"
               "不是 15 个平级标签",
               "侧栏=单篇稿件|整期装配|引用库|设置" in out,
               [l for l in out.splitlines() if l.startswith(("侧栏", "引用库侧栏"))])
-        check("(g) 引用库 5 页在侧栏里（顺序：库概况/查库/入藏/待裁决/引用库设置）",
+        check("(g) 引用库 5 页仍在侧栏里（顺序：库概况/查库/入藏/待裁决/引用库设置）",
               "引用库页=库概况|查库|入藏|待裁决|引用库设置" in out,
               [l for l in out.splitlines() if l.startswith("引用库页")])
+        check("(g) B-286：侧栏分组归属——单篇组 = 初排转换|一校核查；"
+              "引用库组 = 库概况|查库|入藏|待裁决|参考文献规范化|引用库设置",
+              "单篇组页=初排转换|一校核查" in out
+              and "引用库组页=库概况|查库|入藏|待裁决|参考文献规范化|引用库设置" in out,
+              [l for l in out.splitlines() if l.startswith(("单篇组页", "引用库组页"))])
         check("(g) 切页会同步侧栏选中态", "切页=tab:4" in out,
               [l for l in out.splitlines() if l.startswith("切页")])
         _vlines = [l.split("=", 1)[1] for l in out.splitlines() if l.startswith("版本标签=")]
@@ -1102,14 +1114,15 @@ else:
               [l for l in out.splitlines() if l.startswith("直连全文")])
         check("(g) 批62 入口收敛 B（真控件）：独立「出文献核实任务书」勾选已隐藏；普通初排默认 "
               "argv 无 --verify-refs；勾「用 AI 处理参考文献」后内部自动带（⑪），AI 说明/"
-              "全文区按勾选展开收起；协同面板有引导文案；回读页长标题在正文顶部、侧栏短名不变",
+              "全文区按勾选展开收起；协同面板有引导文案；回读页（B-286 起名「参考文献规范化」）"
+              "长标题在正文顶部、侧栏短名同步改名",
               "入口收敛默认关=1" in out and "入口收敛隐藏勾选=1" in out
               and "入口收敛AI展开=1" in out and "入口收敛AI提示=1" in out
               and "入口收敛默认argv=1" in out and "入口收敛AIargv=1" in out
               and "入口收敛取消复原=1" in out
               and any(l.startswith("入口收敛协同引导=") and "两段式第一段产物" in l
                       and "--verify-refs" in l for l in out.splitlines())
-              and "回读页标题=回读/比对报告查看器（高级：手动并回，离线）" in out
+              and "回读页标题=参考文献规范化（高级：手动并回，离线）" in out
               and "回读页引导=1" in out,
               [l for l in out.splitlines()
                if l.startswith(("入口收敛", "回读页"))])
@@ -2042,14 +2055,15 @@ check("(j) 批62：初排页**不再暴露**独立「出文献核实任务书」
       and "self.v_ai = tk.BooleanVar(value=False)" in all_src
       and 'args["use_ai"] = bool(self.v_ai.get())' in all_src
       and "self.v_ai.set(True)" not in all_src)   # 只由用户点勾，代码不得偷偷打开
-check("(j) 批62：两段式面板引导文案与 mac 逐字一致；回读页定位改为"
-      "「回读/比对报告查看器（高级：手动并回，离线）」但侧栏短名不变、能力保留"
-      "（并回/入藏/离线体检），并明确「本页不生成任务书」",
+check("(j) 批62 + B-286：两段式面板引导文案与 mac 逐字一致；回读页（现名「参考文献规范化」）"
+      "定位标题随改名同步为「参考文献规范化（高级：手动并回，离线）」、侧栏短名同改、能力保留"
+      "（并回/入藏/离线体检），并明确「本页不生成任务书」+ 两段式第二段自动完成 + 引用库入口",
       "文献核实任务书 = 两段式第一段产物" in all_src
       and "CLI --verify-refs（高级）" in all_src
-      and 'page_title = "回读/比对报告查看器（高级：手动并回，离线）"' in all_src
-      and 'name = "文献回读校验"' in all_src
+      and 'page_title = "参考文献规范化（高级：手动并回，离线）"' in all_src
+      and 'name = "参考文献规范化"' in all_src
       and "本页不生成《文献核实任务书》" in all_src
+      and "第二段自动完成" in all_src and "引用库 → 参考文献规范化" in all_src
       and "并回产物 reference.bib" in all_src and "入藏到引用库" in all_src)
 check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
       "与 mac 强制 useAI=false 同口径）",
@@ -2081,7 +2095,7 @@ MAIN_SRC = (SHELL / "main.py").read_text(encoding="utf-8")
 
 #: mac `NavPage.allCases` 顺序 + `title`（读 MainWindow.swift 解析后必须等于这张表）。
 MAC_PAGES = [
-    ("convert", "初排转换"), ("checkbib", "文献回读校验"), ("proofcheck", "一校核查"),
+    ("convert", "初排转换"), ("checkbib", "参考文献规范化"), ("proofcheck", "一校核查"),
     ("merge", "合并文件"), ("infocheck", "检查tex信息"), ("compile", "编译全部"),
     ("toc", "生成目录"), ("cleantemp", "删除临时文件"), ("dirpush", "目录摘要推送"),
     ("bibstats", "库概况"), ("bibquery", "查库"), ("bibimport", "入藏"),
@@ -2089,26 +2103,26 @@ MAC_PAGES = [
 ]
 #: mac 侧栏三组（Section 顺序即此顺序；设置页在组外）。
 MAC_GROUPS = [
-    ("单篇稿件", ["convert", "checkbib", "proofcheck"]),
+    ("单篇稿件", ["convert", "proofcheck"]),
     ("整期装配", ["infocheck", "compile", "toc", "cleantemp", "merge", "dirpush"]),
-    ("引用库", ["bibstats", "bibquery", "bibimport", "bibreview", "bibsettings"]),
+    ("引用库", ["bibstats", "bibquery", "bibimport", "bibreview", "checkbib", "bibsettings"]),
 ]
 #: Windows 导航 15 页：顺序 = main.py `self.tabs`；标题 = 各 Tab 类的 `name`（侧栏用它）。
 WIN_TITLES = [
-    "初排转换", "文献回读校验", "合并文件", "一校核查", "检查tex信息",
+    "初排转换", "参考文献规范化", "合并文件", "一校核查", "检查tex信息",
     "生成目录", "编译全部", "删除临时文件",
     "目录摘要推送",                                  # B-289：整期装配最后一步
     "库概况", "查库", "入藏", "待裁决", "引用库设置", "设置",
 ]
 #: Windows 侧栏三组（= main.py `nav_groups`；索引指向 `self.tabs`；设置页 = 组外末尾）。
 WIN_GROUPS = [
-    ("单篇稿件", ["初排转换", "文献回读校验", "一校核查"]),
+    ("单篇稿件", ["初排转换", "一校核查"]),
     ("整期装配", ["检查tex信息", "生成目录", "编译全部", "删除临时文件", "合并文件",
                   "目录摘要推送"]),
-    ("引用库", ["库概况", "查库", "入藏", "待裁决", "引用库设置"]),
+    ("引用库", ["库概况", "查库", "入藏", "待裁决", "参考文献规范化", "引用库设置"]),
 ]
-WIN_GROUP_INDEX = [("单篇稿件", (0, 1, 3)), ("整期装配", (4, 5, 6, 7, 2, 8)),
-                   ("引用库", (9, 10, 11, 12, 13))]
+WIN_GROUP_INDEX = [("单篇稿件", (0, 3)), ("整期装配", (4, 5, 6, 7, 2, 8)),
+                   ("引用库", (9, 10, 11, 12, 1, 13))]
 
 
 def _parse_mac_nav() -> tuple[list[tuple[str, str]], list[tuple[str, list[str]]]]:
@@ -2933,12 +2947,13 @@ _DP_SRC = (SHELL / "tabs" / "dirpush.py").read_text(encoding="utf-8")
 check("(o) 页面文件在、继承 TabPage、标题「目录摘要推送」、路径选择器 pick=\"dir\"",
       "class DirPushTab(TabPage)" in _DP_SRC
       and 'name = "目录摘要推送"' in _DP_SRC and 'pick = "dir"' in _DP_SRC)
-check("(o) main.py：import + 实例化（cfg 共用设置页）+ self.tabs 第 9 项 + nav_groups 含索引 8",
+check("(o) main.py：import + 实例化（cfg 共用设置页）+ self.tabs 第 9 项 + nav_groups 含索引 8"
+      "（B-286：引用库组 = 9,10,11,12,1,13）",
       "dirpush as _dp" in _MAIN_SRC
       and "_dp.DirPushTab(" in _MAIN_SRC and "目录摘要推送" in _MAIN_SRC
       and "self.dirpush_tab," in _MAIN_SRC
       and '("整期装配", (4, 5, 6, 7, 2, 8))' in _MAIN_SRC
-      and '("引用库", (9, 10, 11, 12, 13))' in _MAIN_SRC)
+      and '("引用库", (9, 10, 11, 12, 1, 13))' in _MAIN_SRC)
 check("(o) main.py：_call_for 走 E.dirpush_call（页面不自己拼 argv）、_set_busy 含新页",
       "E.dirpush_call(issue=path" in _MAIN_SRC
       and "self.compile_tab, self.clean_tab, self.dirpush_tab)" in _MAIN_SRC)

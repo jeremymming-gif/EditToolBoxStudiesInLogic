@@ -169,7 +169,7 @@ class TabPage(ttk.Frame):
     instruction = ""
     pick = "dir"          # 'dir' | 'file'
     #: 页内长标题（可选）。批62：侧栏保持短名（185px 宽带不动长串），
-    #: 「文献回读校验」这类页的定位长标题在**正文顶部**显示 —— 与 mac 同做法。
+    #: 「参考文献规范化」这类页的定位长标题在**正文顶部**显示 —— 与 mac 同做法。
     page_title = ""
 
     def __init__(self, parent, name, on_run, on_stop):

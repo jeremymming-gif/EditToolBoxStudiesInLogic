@@ -168,7 +168,7 @@ enum NavPage: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .convert: return "初排转换"
-        case .checkbib: return "文献回读校验"
+        case .checkbib: return "参考文献规范化"
         case .proofcheck: return "一校核查"
         case .merge: return "合并文件"
         case .infocheck: return "检查tex信息"
@@ -206,19 +206,25 @@ enum NavPage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// 「单篇稿件」组（按编辑流程排）：初排 → 回读校验 → 一校核查。
+    /// 「单篇稿件」组（按编辑流程排）：初排 → 一校核查（**两步**）。
     ///
-    /// ⚠️ 顺序本身被 `tools/proofcheck_test` 断言（一校核查必须在回读校验之后）——
-    /// 那是编辑流程：编辑拿《文献核实任务书》改完交回 .bib，接着就按手册逐条核查。
-    static let singleArticle: [NavPage] = [.convert, .checkbib, .proofcheck]
+    /// B-286（用户 m01037）：原「文献回读校验」页改名「参考文献规范化」，并从本组**降级**
+    /// 到「引用库」组——它是离线体检 / 手工并回的维护动作，不是单篇生产的必经步骤；
+    /// 初排后的文献核对由两段式 AI 协同第二段自动完成（见 `docs/features/single.md`）。
+    ///
+    /// ⚠️ 顺序本身被 `tools/proofcheck_test` 断言（单篇组恰 = [.convert, .proofcheck]）。
+    static let singleArticle: [NavPage] = [.convert, .proofcheck]
 
     /// 「整期装配」组：查信息 → 编译 → 做目录 → 清临时文件 → 合并成刊 → 推送文案。
     /// （整期合并 PDF 用本组「合并文件」页，B-235 从「单篇稿件」移入。）
     static let assembly: [NavPage] = [.infocheck, .compile, .toc, .cleantemp, .merge, .dirpush]
 
-    /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待处理 → 设置。
-    /// 排序就是使用顺序：先知道库里有什么，再查/入藏，要人工处理才去「待处理」页。
-    static let library: [NavPage] = [.bibstats, .bibquery, .bibimport, .bibreview, .bibsettings]
+    /// 「引用库」组（第 132 条，与另两组平行）：看概况 → 查库 → 入藏 → 待处理 → 规范化 → 设置。
+    /// 排序就是使用顺序：先知道库里有什么，再查/入藏，要人工处理才去「待处理」页；
+    /// B-286 起「参考文献规范化」（原名「文献回读校验」）排在「待处理」之后、「引用库设置」
+    /// 之前——离线体检 / 手动并回与引用库维护是一件事。
+    static let library: [NavPage] = [.bibstats, .bibquery, .bibimport, .bibreview,
+                                     .checkbib, .bibsettings]
 }
 
 /// 只显示当前页：隐藏的页面保留状态但不可点、不进无障碍树

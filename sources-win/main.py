@@ -102,7 +102,8 @@ class MainWindow(tk.Tk):
         self.convert_tab = _ct.ConvertTab(self.content, "初排转换", self.start, self.stop,
                                       cfg=self.cfg, ai_knobs_sink=self._set_ai_knobs)
         # _cb.CheckBibTab 多两样：「入藏到引用库」按钮要写运行日志 + 后台线程回传（第 132 条）。
-        self.checkbib_tab = _cb.CheckBibTab(self.content, "文献回读校验", self.start, self.stop,
+        # B-286：与 mac 同口径改名「参考文献规范化」，并从「单篇稿件」降级到「引用库」组。
+        self.checkbib_tab = _cb.CheckBibTab(self.content, "参考文献规范化", self.start, self.stop,
                                         log=self.log, post=self.post, cfg=self.cfg)
         self.merge_tab = _mg.MergeTab(self.content, "合并文件", self.start, self.stop)
         self.proof_tab = _pc.ProofCheckTab(self.content, "一校核查", self.start, self.stop)
@@ -114,7 +115,7 @@ class MainWindow(tk.Tk):
         # cfg 与设置页共用同一份 dict：生成成功后把输出根写回 options.dirpushOutRoot。
         self.dirpush_tab = _dp.DirPushTab(self.content, "目录摘要推送", self.start, self.stop,
                                           cfg=self.cfg)
-        # ── 第 132 条：「引用库」5 页（与 mac 同口径；数据源是 Engine/bibdb.py）──
+        # ── 第 132 条：「引用库」6 页（B-286 起含「参考文献规范化」；与 mac 同口径）──
         # 页面在 bibdb_ui.py（main.py 已经 1300+ 行，别继续膨胀）；这里只建对象、排进侧栏。
         self.bibdb_stats_tab = B.BibDbStatsPage(self.content, app=self)
         self.bibdb_query_tab = B.BibDbQueryPage(self.content, app=self)
@@ -136,10 +137,12 @@ class MainWindow(tk.Tk):
 
         #: 分组 → 页（顺序就是侧栏里的顺序；`设置` 单独放在最下面，照 WinUI 的惯例）
         #: 第 132 条起多一个与另两组**平行**的顶级分组「引用库」（按使用顺序排：
-        #: 看概况 → 查库 → 入藏 → 待裁决 → 设置）。设置仍是组外的配置入口。
-        self.nav_groups = [("单篇稿件", (0, 1, 3)),
+        #: 看概况 → 查库 → 入藏 → 待处理 → 规范化 → 设置）。设置仍是组外的配置入口。
+        #: B-286（用户 m01037）：「文献回读校验」改名「参考文献规范化」并**降级**到引用库组
+        #: （单篇生产流程只剩 初排 → 一校核查 两步）；`self.tabs` 下标不变，只改分组归属。
+        self.nav_groups = [("单篇稿件", (0, 3)),
                            ("整期装配", (4, 5, 6, 7, 2, 8)),
-                           ("引用库", (9, 10, 11, 12, 13))]
+                           ("引用库", (9, 10, 11, 12, 1, 13))]
         for title, idxs in self.nav_groups:
             group = self.nav.insert("", "end", text=title, open=True)
             for i in idxs:

@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// 「文献回读校验」页的界面状态。
+/// 「参考文献规范化」页的界面状态。
 /// 与 ConvertModel 同理，用 ObservableObject 而不是 @State ——
 /// 运行在工作线程里，需要从逃逸闭包回写 running / reportPath。
 final class CheckBibModel: ObservableObject {
@@ -51,7 +51,8 @@ final class CheckBibModel: ObservableObject {
     @Published var libraryMessage = ""
 }
 
-/// 「文献回读校验」页：编辑拿《文献核实任务书》改完参考文献交回 `.bib` 后，
+/// 「参考文献规范化」页（B-286 由「文献回读校验」改名，侧栏从「单篇稿件」降级到「引用库」）：
+/// 编辑拿《文献核实任务书》改完参考文献交回 `.bib` 后，
 /// 这一页对着任务书前的原件做一次**离线体检**（语法 / 编辑部规范 /
 /// 引用键闭合 / 逐字段对比），并把报告原样贴进下方运行日志。
 ///
@@ -66,7 +67,7 @@ struct CheckBibView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
 
-                Text("回读/比对报告查看器（高级：手动并回，离线）")
+                Text("参考文献规范化（高级：手动并回，离线）")
                     .font(.title3)
                     .bold()
                 Text("""
@@ -74,6 +75,9 @@ struct CheckBibView: View {
                 以及与基准 reference.bib 的**逐字段对比**（改 key 会让正文引用悬空，是最危险的一类）。
                 需要时可把通过核对的条目**手动并回**产物（高级操作：并回前自动备份 `.ai前`，
                 并回后可以「重新编译该篇」）。
+
+                初排后的文献核对由**两段式 AI 协同**的第二段自动完成；只有需要**离线**手动核验 /
+                并回时才到本页。侧栏路径：引用库 → 参考文献规范化。
 
                 只查自洽性，**不联网**核实真伪（真伪由编辑核实）。
 

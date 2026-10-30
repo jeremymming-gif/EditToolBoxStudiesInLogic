@@ -201,7 +201,7 @@ enum CheckBibFeature {
             return nil
         }
         guard let tool = locateTool() else {
-            log("未找到文献回读校验脚本 Engine/checkbib.py（并回用的是同一个脚本）。\n")
+            log("未找到参考文献规范化脚本 Engine/checkbib.py（并回用的是同一个脚本）。\n")
             return nil
         }
         let engineDir = (tool as NSString).deletingLastPathComponent
@@ -400,7 +400,7 @@ enum CheckBibFeature {
             }
         }
         guard let tool = locateTool() else {
-            log("未找到文献回读校验脚本 Engine/checkbib.py。\n")
+            log("未找到参考文献规范化脚本 Engine/checkbib.py。\n")
             log("按顺序找两处：① app 包内 Contents/Resources/Engine/checkbib.py"
                 + "（官方 ./build.sh 会把 Engine 打包进去）；")
             log("② 顺着 Engine/convert.py 的定位结果取同级的 checkbib.py"
