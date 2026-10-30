@@ -7,13 +7,19 @@
   (b) **C1** `--json` 是合法 `envcheck.v1`：字段齐全、8 项、summary 与 checks 对得上；
   (c) **C2** 假 PATH 里什么都没有 → 人类输出列出缺失 + **当前平台**安装命令，退出 2；
   (d) **C3** 只有可选项缺失（无 git；`SLCN_SOFFICE` 指错）→ 必需项全 ok，退出 1；
-  (e) **C4** 同一套假 PATH（有 TeX、无 python3.14）：source 判 fail 退出 2，exe 退出 0；
+  (e) **C4** 同一套假 PATH（有 TeX、有 soffice、无 python3.14）：source 判 fail 退出 2，exe 退出 0；
   (f) 单元级失败路径（注入探测）：soffice 真缺失 / 模板缺失 / 磁盘不足 / 输出目录不可写；
   (g) `--out-dir`：可写时落 `envcheck.json`；只读时判 fail 且**不**炸在半路；
-  (h) dispatcher：`engine_main.ENTRIES` 原十项顺序不变、第 11 项是 envcheck，且真能跑通。
+  (h) dispatcher：`engine_main.ENTRIES` 原十项顺序不变、第 11 项是 envcheck，且真能跑通（PATH 同样备齐 soffice，理由见下）。
 
 为什么用假 PATH 而不是「依赖本机装没装 TeX」：验收机器上三样工具**恰好都在**，
 真缺的状态只能靠假 PATH 造；工具用 `#!/bin/sh` 小脚本 + `chmod 0o755`，测完自清。
+
+为什么 (e)/(h) 的假 PATH 里还要放一个 `soffice`：`libreoffice` 是**可选**检查，缺它只把
+退出码从 0 降到 1（不是失败）。本机 macOS 靠 `slcn.platform.find_soffice()` 的
+`/Applications/LibreOffice.app/...` 兜底才碰巧找到；Linux CI 没有这条兜底，不造 stub 时
+`--profile exe` 的 rc 会变成 1，C4/C8 的两条「退出 0」断言就会**随机器变红**。
+
 `sources-win/tests/test_bridge.py` 的 (l) 组还从外壳侧断言同一份 argv 口径。
 """
 from __future__ import annotations
@@ -53,6 +59,7 @@ STUBS = {
     "biber": '#!/bin/sh\necho "biber version: 2.19"\n',
     "python3.14": "#!/bin/sh\necho \"3.14.8\"\n",
     "git": '#!/bin/sh\necho "git version 2.39.3"\n',
+    "soffice": '#!/bin/sh\necho "LibreOffice 24.8.1.2 420(Build:2)"\n',
 }
 
 
@@ -212,7 +219,8 @@ print("── (e) C4：同一 PATH（有 TeX、无 python3.14）source 失败 / 
 
 with tempfile.TemporaryDirectory() as td:
     tmp = pathlib.Path(td)
-    bin_dir = make_bin(tmp, ("xelatex", "biber", "git"))
+    # soffice 也是 stub：libreoffice 可选，缺它 exe 侧会降到 1（见抬头「为什么…放 soffice」）
+    bin_dir = make_bin(tmp, ("xelatex", "biber", "git", "soffice"))
     r_src = cli(["--json", "--profile", "source"], bin_dir)
     src = json.loads(r_src.stdout)
     bundle = by_id(src).get("engine_bundle") or {}
@@ -312,7 +320,8 @@ check("(h) 第 11 项（末尾）是 envcheck.py",
 
 with tempfile.TemporaryDirectory() as td:
     tmp = pathlib.Path(td)
-    bin_dir = make_bin(tmp, ("xelatex", "biber", "git"))
+    # 同上：soffice 必须在 PATH 里，否则可选项 warn 会把 rc=0 变成 rc=1
+    bin_dir = make_bin(tmp, ("xelatex", "biber", "git", "soffice"))
     r = cli(["envcheck.py", "--json", "--profile", "exe"], bin_dir,
             script=ENGINE / "engine_main.py")
     ok = r.returncode == 0
