@@ -22,7 +22,7 @@ from .wordmeta import (AFFIL_EN_JOIN, META_SCAN, _ABS_RE, _HEAD1, _HEAD2, _HEAD_
                        _HEAD_EN3, _KW_RE, _REF_HEADS, _abs_body_cn, _is_clc_meta_only,
                        _is_cn_dot_heading, _is_cn_numbered_heading, _is_subtitle,
                        _is_title_candidate, _known_cn_authors, _known_en_authors,
-                       _label_body, _tail_abstract_cn, collect_affiliations, collect_emails,
+                       _label_body, _tail_abstract_cn, collect_affiliations, collect_emails, _looks_like_placeholder_author,
                        head_author_after, head_title_index, locate_tail_block, parse_tail_metadata)
 from .wordrender import (_looks_plain_en_title, classify_en_heading, find_char_diagrams,
                          render_para, table_env)
@@ -513,7 +513,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
         cand = plains[k].strip()
         if not cand:
             continue
-        if len(cand) <= 40 and not cand.endswith(("。", "：")):
+        if len(cand) <= 40 and not cand.endswith(("。", "：")) and not _looks_like_placeholder_author(cand):
             doc.author = re.sub(r"\s+", " ", cand).strip()
         break
 

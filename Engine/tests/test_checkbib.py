@@ -636,12 +636,15 @@ if bib is None:
 else:
     entries = _bib_entries(btext)
     keys = [e.key for e in entries]
-    rename_key = None
-    for k in keys:
-        if k in bibcheck.cited_keys(ttext):
-            rename_key = k
-            break
-    rename_key = rename_key or keys[0]
+
+    def _matchable(e):  # D-15：改名检测靠 title 或 author+year 签名；只有 author 的 @misc 两个签名都为空
+        return bool((e.fields.get("title") or "").strip()) or bool(
+            (e.fields.get("author") or "").strip() and (e.fields.get("year") or "").strip()
+        )
+
+    cited = bibcheck.cited_keys(ttext)
+    rename_key = next((e.key for e in entries if e.key in cited and _matchable(e)), None)
+    rename_key = rename_key or next((e.key for e in entries if _matchable(e)), None) or keys[0]
     # B-222 B/U3：corpus 产物变化后，首引键可能恰好也是唯一带 pages 的条目；
     # rename_key == victim_key 时 drop_field 会定位不到（测试夹具选样缺陷，非产品缺陷）。
     victim_key = next((e.key for e in entries

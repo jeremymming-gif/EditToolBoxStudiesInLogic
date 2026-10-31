@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from .wordcore import (SURNAME_PINYIN, _has_cjk, _strip_zero_width)
 from .wordentry import (_NUMBERED_PREFIX_RE)
@@ -927,6 +928,21 @@ def _strip_author_markers(t: str) -> str:
     s = re.sub(r"\s*\b\d{1,2}\b\s*", " ", s)
     return re.sub(r"\s+", " ", s).strip(" ,，;；")
 
+# 模板占位作者（不是真实姓名）：`First Author`、`First AuthorSecond Author`（docx 里
+# 换行/制表被 plain 连写）、`Author`、`Corresponding Author`、`xxx@xxx.xxx` 等。
+# 归一化（NFKC、casefold、去空白/标点/数字）后**整串**必须全由占位词拼接而成，
+# 所以 `Alex Sample`、`Mei Lin`、`Oliver Board`、`John Author` 都不会误伤。
+_PLACEHOLDER_AUTHOR_RE = re.compile(
+    r"^(?:first|second|third|fourth|fifth|corresponding|sample|author|authors|name|"
+    r"names|the|your|last|x{2,})+$")
+
+
+def _looks_like_placeholder_author(t: str) -> bool:
+    """模板占位作者行；真名一律返回 False（判不出时按「不是占位」处理）。"""
+    s = unicodedata.normalize("NFKC", t or "").casefold()
+    s = re.sub(r"[\W_\d]+", "", s)
+    return bool(s) and bool(_PLACEHOLDER_AUTHOR_RE.match(s))
+
 
 def _author_row_name(t: str) -> str:
     r"""英文作者行里的姓名部分；判不出返回 ""（不猜）。
@@ -947,6 +963,8 @@ def _author_row_name(t: str) -> str:
         return ""
     s = _strip_author_markers(s)
     if not s:
+        return ""
+    if _looks_like_placeholder_author(s):
         return ""
     parts = [p.strip() for p in re.split(r"[,，;；]", s) if p.strip()]
     if not parts or not _looks_like_person_name(parts[0]):
