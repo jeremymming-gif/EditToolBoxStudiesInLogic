@@ -24,6 +24,20 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+
+def _child_env() -> dict[str, str]:
+    """P4：给引擎子进程固定的 UTF-8 stdio 环境。
+
+    PyInstaller 冻结的 SLCNEngine 在 Windows 上没有控制台时，`print` 默认按
+    locale（cp936）编码；父进程按 UTF-8 解码就会得到乱码，`--version` 的
+    "SLCN 引擎 X.Y.Z" 也因此匹配不到（打包版显示「未知」）。
+    统一注入 PYTHONIOENCODING/PYTHONUTF8，dev 与打包模式行为一致。
+    """
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return env
+
 ENTRIES = (
     "convert.py",
     "checkbib.py",
@@ -128,7 +142,9 @@ class EngineStatus:
 
     @property
     def ok(self) -> bool:
-        return bool(self.engine_dir and (self.frozen_exe or self.python))
+        # P4：打包模式（flet pack + 同目录 SLCNEngine sidecar）下没有 Engine 源码目录，
+        # 此时只要冻结 sidecar 在就算可用；源码模式（dev）仍要求 Engine 目录 + 解释器。
+        return bool(self.frozen_exe or (self.engine_dir and self.python))
 
     def describe(self) -> str:
         if self.frozen_exe:
@@ -196,15 +212,14 @@ def find_engine_exe() -> str:
 
 def engine_version() -> str:
     engine_dir = find_engine_dir()
-    if not engine_dir:
-        return "未知"
-    init_py = Path(engine_dir) / "slcn" / "__init__.py"
-    try:
-        match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_py.read_text(encoding="utf-8"), re.M)
-        if match:
-            return match.group(1)
-    except OSError:
-        pass
+    if engine_dir:
+        init_py = Path(engine_dir) / "slcn" / "__init__.py"
+        try:
+            match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_py.read_text(encoding="utf-8"), re.M)
+            if match:
+                return match.group(1)
+        except OSError:
+            pass
     exe = find_engine_exe()
     if exe:
         try:
@@ -212,6 +227,7 @@ def engine_version() -> str:
                 [exe, "--version"], capture_output=True, text=True,
                 encoding="utf-8", errors="replace", timeout=10,
                 creationflags=CREATE_NO_WINDOW,
+                env=_child_env(),
             )
             match = re.search(r"SLCN 引擎 ([0-9][0-9A-Za-z.\-+]*)", proc.stdout + proc.stderr)
             if match:
@@ -228,12 +244,13 @@ def engine_status() -> EngineStatus:
     status.frozen_exe = find_engine_exe()
     status.mode = "frozen" if status.frozen_exe else "dev"
     status.version = engine_version() if status.engine_dir or status.frozen_exe else "未知"
-    if not status.engine_dir:
-        status.problems.append("找不到 Engine 目录（可用设置里的「引擎目录」或 SLCN_ENGINE 指定）")
-    else:
+    if status.engine_dir:
         missing = [entry for entry in ("convert.py", "checkbib.py") if not (Path(status.engine_dir) / entry).exists()]
         if missing:
             status.problems.append(f"Engine 目录缺少入口：{', '.join(missing)}")
+    elif not status.frozen_exe:
+        # P4：sidecar（同目录 SLCNEngine）存在时不需要 Engine 源码目录，不算问题。
+        status.problems.append("找不到 Engine 目录（可用设置里的「引擎目录」或 SLCN_ENGINE 指定）")
     if not status.frozen_exe and not status.python:
         status.problems.append("找不到可用于运行引擎的 Python 解释器")
     return status

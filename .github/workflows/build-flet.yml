@@ -1,0 +1,189 @@
+name: Build Flet Shell
+
+# B-246c P4：Flet 单壳双平台打包（Windows / macOS）。
+#   · 引擎 sidecar：Windows 复用 sources-win/build-win.ps1；macOS 用等价的 PyInstaller onefile。
+#   · 应用：flet pack（onefile；macOS 出 .app），sidecar 放到可执行文件同目录。
+#   · 产物：XuehengToolbox-<Engine版本>-<平台>.zip（内含 FIRST-OPEN 说明与 sha256.txt）。
+#   · 只产 artifact，**不做** tag / Release / 签名（发版留人工按 release.yml）。
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+    paths:
+      - "sources-flet/**"
+      - ".github/workflows/build-flet.yml"
+      - "编辑笔记/模板文件/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-flet-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: flet-pack（${{ matrix.platform }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: 版本号（唯一出处 Engine/slcn/__init__.py）
+        id: ver
+        run: |
+          V=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' Engine/slcn/__init__.py | head -1)
+          if [ -z "$V" ]; then V="0.0.0"; fi
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+          echo "Engine 版本：$V"
+
+      - name: 装依赖
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet
+          python -m pip show flet pyinstaller | sed -n '1,12p'
+
+      # ── 引擎 sidecar ────────────────────────────────────────────────
+      - name: 引擎 sidecar（Windows：复用 sources-win/build-win.ps1）
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File sources-win/build-win.ps1
+          New-Item -ItemType Directory -Force build-flet | Out-Null
+          Copy-Item sources-win/build/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
+          & build-flet/SLCNEngine.exe --version | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sidecar 自检失败（SLCNEngine.exe --version）" }
+
+      - name: 引擎 sidecar（macOS：PyInstaller onefile，等价入口表）
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          mkdir -p build-flet
+          ( cd Engine && python -m PyInstaller --noconfirm --clean --onefile --console \
+              --name SLCNEngine \
+              --distpath ../build-flet/dist-engine \
+              --workpath ../build-flet/work-engine \
+              --specpath ../build-flet \
+              --hidden-import convert --hidden-import checkbib --hidden-import mergepdf \
+              --hidden-import cleantemp --hidden-import compileall --hidden-import proofcheck \
+              --hidden-import infocheck --hidden-import toc --hidden-import publish \
+              --hidden-import bibdb --hidden-import envcheck --hidden-import diagnose \
+              --hidden-import dirpush \
+              --add-data "$GITHUB_WORKSPACE/编辑笔记/模板文件:编辑笔记/模板文件" \
+              engine_main.py )
+          cp build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
+          chmod +x build-flet/SLCNEngine
+          ./build-flet/SLCNEngine --version
+
+      # ── Flet 应用 ───────────────────────────────────────────────────
+      - name: flet pack（Windows：onefile + 版本资源）
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $V = "${{ steps.ver.outputs.value }}"
+          New-Item -ItemType Directory -Force build-flet | Out-Null
+          Push-Location build-flet
+          try {
+            flet pack ..\sources-flet\app\main.py --name XuehengToolbox `
+              --product-name "学衡工具箱" --product-version "$V" --file-version "$V.0" `
+              --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" `
+              --distpath dist --yes
+            if ($LASTEXITCODE -ne 0) { throw "flet pack 失败（rc=$LASTEXITCODE）" }
+          } finally {
+            Pop-Location
+          }
+          Get-ChildItem build-flet/dist | Out-Host
+
+      - name: flet pack（macOS：onefile .app，未签名）
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          ( cd build-flet && flet pack ../sources-flet/app/main.py --name XuehengToolbox --distpath dist --yes )
+          ls -la build-flet/dist
+
+      # ── sidecar 定位自检（engine_bridge，不经 GUI） ────────────────
+      - name: sidecar 定位自检
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine.exe --run-help
+          else
+            python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine --run-help
+          fi
+
+      # ── 组装 zip ───────────────────────────────────────────────────
+      - name: 组装并校验 zip（Windows）
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $V = "${{ steps.ver.outputs.value }}"
+          $pkg = "pkg-win"
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Copy-Item build-flet/dist/XuehengToolbox.exe $pkg/
+          Copy-Item build-flet/SLCNEngine.exe $pkg/
+          Copy-Item sources-flet/packaging/FIRST-OPEN-Windows.txt $pkg/
+          $lines = Get-ChildItem $pkg -File | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          }
+          $lines | Set-Content -Encoding ascii "$pkg/sha256.txt"
+          $zip = "XuehengToolbox-$V-Windows-x64.zip"
+          Compress-Archive -Path "$pkg/*" -DestinationPath $zip -Force
+          $zhash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "zip: $zip"
+          Write-Host "sha256: $zhash"
+          "### Windows artifact" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "zip: $zip" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "sha256: $zhash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: 组装并校验 zip（macOS）
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.value }}"
+          APP=$(find build-flet/dist -maxdepth 1 -name "*.app" -print -quit || true)
+          mkdir -p pkg-mac
+          if [ -n "$APP" ]; then
+            cp -R "$APP" pkg-mac/
+            APPDIR=$(basename "$APP")
+            cp build-flet/SLCNEngine "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
+            chmod +x "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
+            shasum -a 256 "pkg-mac/$APPDIR/Contents/MacOS/XuehengToolbox" > pkg-mac/sha256.txt
+          else
+            cp build-flet/dist/XuehengToolbox pkg-mac/
+            cp build-flet/SLCNEngine pkg-mac/
+            shasum -a 256 pkg-mac/XuehengToolbox > pkg-mac/sha256.txt
+          fi
+          cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
+          shasum -a 256 pkg-mac/SLCNEngine >> pkg-mac/sha256.txt
+          ZIP="XuehengToolbox-$V-macOS-arm64.zip"
+          ditto -c -k --keepParent pkg-mac "$ZIP"
+          ZHASH=$(shasum -a 256 "$ZIP" | awk '{print $1}')
+          echo "zip: $ZIP"
+          echo "sha256: $ZHASH"
+          printf '### macOS artifact\n\nzip: %s\nsha256: %s\n' "$ZIP" "$ZHASH" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── 上传 ───────────────────────────────────────────────────────
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flet-${{ matrix.platform }}-${{ steps.ver.outputs.value }}
+          path: XuehengToolbox-${{ steps.ver.outputs.value }}-*.zip
+          if-no-files-found: error
+          retention-days: 14

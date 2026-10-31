@@ -1,0 +1,26 @@
+学衡工具箱 · macOS 首次运行说明（未签名版）
+================================================
+
+1) 解压得到 XuehengToolbox.app（应用内已带引擎 SLCNEngine，请勿单独拆开或移动）。
+   如果压缩包内还有 SLCNEngine 文件，它已放在 .app 的 Contents/MacOS/ 里，无需手动处理。
+
+2) 首次打开：不要双击（Gatekeeper 会拦未签名应用）。请
+   - 方式 A：在 Finder 里右键（或 Control+单击）XuehengToolbox.app →「打开」→ 再点「打开」；
+   - 方式 B：双击被拦后，打开「系统设置 → 隐私与安全性」，在底部点「仍要打开」。
+   这是未签名/未公证应用的正常提示（0 成本发布，不做 Apple 签名）。
+
+3) 若提示「无法验证开发者 / 已损坏」：
+   终端执行  xattr -dr com.apple.quarantine /path/to/XuehengToolbox.app  再打开。
+
+4) 打开后看首页「引擎状态」卡：应显示「冻结引擎 · .../SLCNEngine」与版本号。
+   自检：终端执行  ./XuehengToolbox.app/Contents/MacOS/SLCNEngine --version  应打印版本号。
+
+5) 数据只写本机（设置文件 ~/Library/Application Support/EditToolBox/settings.json），
+   不联网、不上传。日志在应用内「运行日志」区。
+
+6) 完整性校验（可选）：
+   shasum -a 256 XuehengToolbox.app/Contents/MacOS/XuehengToolbox
+   与压缩包内 sha256.txt 对照；zip 的 sha256 见 CI 运行摘要。
+
+已知限制：未签名/未公证；arm64（Apple Silicon）构建，Intel Mac 不保证；
+文件拖放走「浏览...」原生对话框；托盘/标题栏为平台旁路实现。
