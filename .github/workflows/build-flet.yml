@@ -160,46 +160,42 @@ jobs:
           "zip: $zip" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           "sha256: $zhash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: 组装并校验 zip（macOS）
+      - name: macOS: 检查 dist
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          echo "== build-flet =="
+          ls -la build-flet || true
+          echo "== build-flet/dist =="
+          ls -la build-flet/dist
+          test -d build-flet/dist
+          test -f build-flet/SLCNEngine
+
+      - name: macOS: 组装 pkg-mac
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          rm -rf pkg-mac
+          mkdir -p pkg-mac
+          # 把 flet pack 产物整体搬入（无论 .app 还是单二进制）
+          ditto build-flet/dist pkg-mac
+          cp build-flet/SLCNEngine pkg-mac/SLCNEngine
+          chmod +x pkg-mac/SLCNEngine
+          cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
+          ls -la pkg-mac
+          ls -la pkg-mac/*/Contents/MacOS 2>/dev/null || true
+
+      - name: macOS: 计算 sha256
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+
+      - name: macOS: 生成 zip
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.value }}"
-          echo "== dist 内容 =="
-          ls -la build-flet/dist || true
-          # 注意：macOS 自带 BSD find 没有 -maxdepth；这里用 ls 的 glob 取顶层 .app。
-          APP=$(ls -d build-flet/dist/*.app 2>/dev/null | head -1 || true)
-          mkdir -p pkg-mac
-          if [ -n "$APP" ]; then
-            cp -R "$APP" pkg-mac/
-            APPDIR=$(basename "$APP")
-            MACOS_DIR="pkg-mac/$APPDIR/Contents/MacOS"
-            cp build-flet/SLCNEngine "$MACOS_DIR/SLCNEngine"
-            chmod +x "$MACOS_DIR/SLCNEngine"
-            MAINEXE=""
-            for f in "$MACOS_DIR"/*; do
-              if [ -f "$f" ] && [ -x "$f" ] && [ "$(basename "$f")" != "SLCNEngine" ]; then MAINEXE="$f"; break; fi
-            done
-            if [ -z "$MAINEXE" ]; then
-              echo "::error::找不到 .app 主可执行文件"; ls -la "$MACOS_DIR"; exit 1
-            fi
-            echo "主可执行：$MAINEXE"
-            shasum -a 256 "$MAINEXE" > pkg-mac/sha256.txt
-          else
-            MAINEXE=""
-            for f in build-flet/dist/*; do
-              if [ -f "$f" ] && [ -x "$f" ]; then MAINEXE="$f"; break; fi
-            done
-            if [ -z "$MAINEXE" ]; then
-              echo "::error::找不到 macOS 产物（既无 .app 也无可执行文件）"; ls -la build-flet/dist; exit 1
-            fi
-            echo "主可执行：$MAINEXE"
-            cp "$MAINEXE" pkg-mac/XuehengToolbox
-            cp build-flet/SLCNEngine pkg-mac/
-            shasum -a 256 pkg-mac/XuehengToolbox > pkg-mac/sha256.txt
-          fi
-          cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
-          shasum -a 256 pkg-mac/SLCNEngine >> pkg-mac/sha256.txt
           ZIP="XuehengToolbox-$V-macOS-arm64.zip"
           ditto -c -k --keepParent pkg-mac "$ZIP"
           ZHASH=$(shasum -a 256 "$ZIP" | awk '{print $1}')
