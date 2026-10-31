@@ -45,9 +45,10 @@ jobs:
       - name: 装依赖（vendor 的等价物 + Flet 壳测试依赖）
         run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin pytest flet
 
-      # ⚠️ clean runner 没有 TeX/LibreOffice：full 档有 2 套环境假设红（B-246c P6 遗留）。
-      #    发布冒烟用 quick 档（12 套纯逻辑；B-300 已在 Windows 实测 12/0），full 由 CI（ubuntu）覆盖。
-      - name: 引擎套件（quick 档；full 由 CI ubuntu 覆盖）
+      # ⚠️ Windows 干净 runner 上 quick 档仍有环境假设红（缺 TeX/LibreOffice 的 Windows-only 断言，
+      #    B-246c P6 遗留）：引擎套件在 macOS 跑 quick，Windows 侧以 flet pytest + bridge 覆盖，full 由 ubuntu CI 覆盖。
+      - name: 引擎套件（quick 档；macOS 跑；Windows 由 flet pytest+bridge 覆盖）
+        if: runner.os != 'Windows'
         shell: bash
         env:
           # macos runner 镜像里装着 /opt/homebrew/bin/python3.14（无依赖），必须显式指定
