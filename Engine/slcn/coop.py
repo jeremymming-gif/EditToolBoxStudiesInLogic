@@ -132,6 +132,223 @@ def atomic_write_json(path: str, data: Any) -> None:
     atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
+# ── B-288：任务书三卷（卷 A 文献核实 / 卷 B 全文核查 / 卷 C 元数据与脚注）──────
+#
+# 卷标题刻意**不占 `## 四/五`**：`## 四、逐条清单` 与 `## 五、未解析的文献区原文`
+# 是既有契约（`test_batch54/56/59` 都在用），卷标题只能另起 `## 卷 X`。
+# 默认单文件三卷（A → B → C 顺序不变，附一/附二/附三/附四 标题也不改）；
+# `--coop-split` 才另写 `<stem>_文献核实_卷A/B/C.md`，并把 3 个路径交给 state。
+
+TASKBOOK_VOLUMES: tuple[str, ...] = ("A", "B", "C")
+
+_VOLUME_TITLES = {
+    "zh": {"A": "## 卷 A 文献核实", "B": "## 卷 B 全文核查",
+           "C": "## 卷 C 元数据与脚注"},
+    "en": {"A": "## Volume A · Bibliography verification",
+           "B": "## Volume B · Full-text check",
+           "C": "## Volume C · Metadata and footnotes"},
+}
+
+_VOLUME_EMPTY = {
+    "zh": {
+        "B": "> 本次未启用 `--coop-fulltext`：本卷没有正文全文/引用上下文；"
+             "启用后本卷才有内容。",
+        "C": "> 本次未启用 `--coop-fulltext`：本卷没有脚注/占位符清单与初排分析。",
+    },
+    "en": {
+        "B": "> `--coop-fulltext` was not enabled: this volume has no full text or "
+             "citation context.",
+        "C": "> `--coop-fulltext` was not enabled: this volume has no footnote/"
+             "placeholder list and no pre-layout analysis.",
+    },
+}
+
+_FOOTER_ZH = {
+    "A": [
+        "### 卷 A · 回填模板", "",
+        "```json",
+        '{"id": "FN-1", "verdict": "confirmed", "field": "", "value": "", '
+        '"span": "任务书原文里逐字连续的一段", "note": ""}',
+        "```", "",
+        "- `verdict` 三选一：`confirmed`（原样可用）/ `corrected`（另给 `field`+`value`）"
+        "/ `unresolved`（拿不准，`note` 说明）。",
+        "- `span` 必须是任务书原文里**逐字连续**的一段（Exact Match）；"
+        "`corrected` 时 `field`/`value` 必填。",
+        "- BibTeX 改动直接回在 `reference.bib`（完整、可编译），不要只回 JSON。",
+        "", "### 卷 A · 自检清单", "",
+        "- [ ] 每条回复的 `id` 都能在本卷附一找到，且只出现一次。",
+        "- [ ] `span` 与任务书原文逐字相同（没有改写/省略）。",
+        "- [ ] `corrected` 项都给了 `field` 与 `value`。",
+        "- [ ] 没有用表格、没有改写正文、没有报数学区/异型空格。",
+        "", "### 卷 A · 失败报告格式", "",
+        '- **找不到证据**：`{"id": "FN-1", "verdict": "unresolved", '
+        '"note": "找不到证据：已查来源 A/B/C"}`',
+        '- **字段冲突**：`{"id": "FN-1", "verdict": "unresolved", '
+        '"note": "冲突：来源 X 说 …，来源 Y 说 …"}`',
+        "- **越界请求**：不回复该项，在本卷末尾单列一行 "
+        "`越界：…（不在本任务范围）`。",
+    ],
+    "B": [
+        "### 卷 B · 回填模板", "",
+        "```text",
+        "【全文核查】",
+        "位置：<任务书正文里逐字连续的一段>",
+        "问题：<一句话>",
+        "建议：<只给建议，不改写正文>",
+        "```", "",
+        "### 卷 B · 自检清单", "",
+        "- [ ] 每条问题都有 Exact Match 位置（逐字片段）。",
+        "- [ ] 数学区与异型空格没有报。",
+        "- [ ] 只报告，没有改写正文、没有用表格。",
+        "", "### 卷 B · 失败报告格式", "",
+        "- **找不到证据**：写「位置 + 找不到证据（已查 …）」，不要猜。",
+        "- **字段冲突**：并列写出冲突双方（来源与说法），不裁决。",
+        "- **越界请求**：单列一行 `越界：…（不在本任务范围）`。",
+    ],
+    "C": [
+        "### 卷 C · 回填模板", "",
+        "```text",
+        "【元数据与脚注】",
+        "id：META-1 / FN-1",
+        "字段/值（META）：<宏名> = <建议值>",
+        "位置（FN）：<逐字片段>",
+        "处理：确认 / 建议改为 …",
+        "```", "",
+        "### 卷 C · 自检清单", "",
+        "- [ ] META 项写清宏名与建议值；FN 项写清 Exact Match 位置。",
+        "- [ ] 脚注/占位符只在本卷报，不与卷 A 的 bib 条目混在一起。",
+        "- [ ] 只报告，不改写正文。",
+        "", "### 卷 C · 失败报告格式", "",
+        "- **找不到证据**：`找不到证据：<字段/位置>（已查 …）`。",
+        "- **字段冲突**：`冲突：<字段> 在产物与任务书里不一致（… vs …）`。",
+        "- **越界请求**：`越界：…（不在本任务范围）`。",
+    ],
+}
+
+_FOOTER_EN = {
+    "A": [
+        "### Volume A · Reply template", "",
+        "```json",
+        '{"id": "FN-1", "verdict": "confirmed", "field": "", "value": "", '
+        '"span": "verbatim fragment of the taskbook", "note": ""}',
+        "```", "",
+        "- `verdict`: `confirmed` (usable as is) / `corrected` (also give `field` + "
+        "`value`) / `unresolved` (not sure; explain in `note`).",
+        "- `span` must be a **verbatim, contiguous** fragment of the taskbook; for "
+        "`corrected`, `field`/`value` are required.",
+        "- Return BibTeX changes directly in `reference.bib` (complete, compilable); "
+        "do not send JSON only.",
+        "", "### Volume A · Self-check", "",
+        "- [ ] Every reply `id` exists in this volume's Appendix 1 and appears once.",
+        "- [ ] `span` matches the taskbook verbatim (no rewording/omission).",
+        "- [ ] Every `corrected` item has both `field` and `value`.",
+        "- [ ] No tables, no manuscript rewriting, no math/non-ASCII spacing reports.",
+        "", "### Volume A · Failure report format", "",
+        '- **Evidence not found**: `{"id": "FN-1", "verdict": "unresolved", '
+        '"note": "not found: checked sources A/B/C"}`',
+        '- **Conflicting fields**: `{"id": "FN-1", "verdict": "unresolved", '
+        '"note": "conflict: source X says …, source Y says …"}`',
+        "- **Out-of-scope request**: do not reply to that item; add one line "
+        "`Out of scope: … (not part of this task)` at the end.",
+    ],
+    "B": [
+        "### Volume B · Reply template", "",
+        "```text",
+        "[Full-text check]",
+        "location: <verbatim contiguous fragment of the taskbook>",
+        "problem: <one sentence>",
+        "suggestion: <suggestion only; never rewrite the manuscript>",
+        "```", "",
+        "### Volume B · Self-check", "",
+        "- [ ] Every problem has an Exact Match location.",
+        "- [ ] No math and no non-ASCII spacing reports.",
+        "- [ ] Report only; no manuscript rewriting, no tables.",
+        "", "### Volume B · Failure report format", "",
+        "- **Evidence not found**: write \"location + not found (checked …)\"; do not guess.",
+        "- **Conflicting fields**: list both sides (source and claim) without deciding.",
+        "- **Out-of-scope request**: add one line `Out of scope: … (not part of this task)`.",
+    ],
+    "C": [
+        "### Volume C · Reply template", "",
+        "```text",
+        "[Metadata and footnotes]",
+        "id: META-1 / FN-1",
+        "field/value (META): <macro name> = <suggested value>",
+        "location (FN): <verbatim fragment>",
+        "action: confirm / suggest changing to …",
+        "```", "",
+        "### Volume C · Self-check", "",
+        "- [ ] META items give the macro name and value; FN items give the Exact Match location.",
+        "- [ ] Footnotes/placeholders are reported only here, not mixed with Volume A entries.",
+        "- [ ] Report only; never rewrite the manuscript.",
+        "", "### Volume C · Failure report format", "",
+        "- **Evidence not found**: `not found: <field/location> (checked …)`.",
+        "- **Conflicting fields**: `conflict: <field> differs between output and taskbook (… vs …)`.",
+        "- **Out-of-scope request**: `Out of scope: … (not part of this task)`.",
+    ],
+}
+
+
+def volume_footer(volume: str, lang: str = "zh") -> list[str]:
+    """卷末三段：回填模板 / 自检清单 / 失败报告格式（zh/en）。"""
+    return (_FOOTER_EN if str(lang).lower() == "en" else _FOOTER_ZH)[
+        str(volume).upper()]
+
+
+def write_taskbook_volumes(path: str, stem: str, *, section: str, backfill: str,
+                           fulltext: str = "", inputs: str = "",
+                           analysis: str = "", lang: str = "zh",
+                           split: bool = False, out_dir: str = "") -> list[str]:
+    """把 refmark 已写出的任务书重排成三卷，返回 split 文件路径（未 split = []）。
+
+    卷 A = 任务卡/前言 + `## 一` 起的主体（逐条清单等）+ 附一 + 附二 + 卷末；
+    卷 B = 附三（全文/引用上下文）+ 卷末；卷 C = 附三·补充 + 附四 + 卷末。
+    没有 `--coop-fulltext` 时 B/C 给出「本卷本次为空」的说明，结构仍然齐。
+    **只给 refmark 真生成过任务书的路径调用**：兜底任务书保持旧字节不变。
+    """
+    lk = "en" if str(lang).lower() == "en" else "zh"
+    titles = _VOLUME_TITLES[lk]
+    empty = _VOLUME_EMPTY[lk]
+    with open(path, encoding="utf-8", errors="replace") as f:
+        base = f.read()
+    cut = base.find("\n## 一、")
+    if cut < 0:
+        head, body = base, ""
+    else:
+        # `head` 保留 v1 的 `---` 分隔线（v1 在这里是 `intro\n\n---\n\n## 一`）；
+        # 卷 A 标题插在 `---` 之后、`## 一` 之前，这样「去掉卡与卷标题」就**逐字节**
+        # 还原成 v1 任务书（C2 的对照口径）。
+        head, body = base[:cut].rstrip("\n"), base[cut + 1:]
+    # 卷 A 用**字符串拼接**复刻旧的追加口径（`base + "\n" + 附一 + "\n" + "\n" + 附二`）：
+    # 附一/附二的渲染文本自带前导空行，用 `"\n\n".join` 会多出一行（③-2 会红）。
+    a = (head + "\n\n" + titles["A"] + "\n\n" + body
+         + "\n" + section + "\n" + "\n" + backfill + "\n\n"
+         + "\n".join(volume_footer("A", lk)) + "\n")
+    b = (titles["B"] + "\n\n" + (fulltext or empty["B"]).strip("\n")
+         + "\n\n" + "\n".join(volume_footer("B", lk)) + "\n")
+    c = [titles["C"]] + [x.strip("\n") for x in (inputs, analysis) if x]
+    if not (inputs or analysis):
+        c.append(empty["C"])
+    c_text = "\n\n".join(c) + "\n\n" + "\n".join(volume_footer("C", lk)) + "\n"
+    text = a + "\n---\n\n" + b + "\n---\n\n" + c_text
+    atomic_write_text(path, text)
+    if not split:
+        return []
+    paths: list[str] = []
+    for name, chunk in (("A", a), ("B", b), ("C", c_text)):
+        p = os.path.join(out_dir, f"{stem}_文献核实_卷{name}.md")
+        if name == "A":
+            body_txt = chunk
+        else:
+            head_txt = (f"# 参考文献核实任务书 · {stem}（卷 {name}）\n\n"
+                        f"> 同一份任务书的第 {TASKBOOK_VOLUMES.index(name) + 1}/3 卷；"
+                        "TASK-ID 见卷 A 的任务卡。\n\n")
+            body_txt = head_txt + chunk
+        atomic_write_text(p, body_txt)
+        paths.append(os.path.abspath(p))
+    return paths
+
+
 def _canonical(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -2293,7 +2510,10 @@ def build_state(*, params: dict, taskbook_path: str, stage_dir: str, final_dir: 
                 bib_keys: Iterable[str], low_items: Iterable[dict],
                 budget_article: int, budget_batch: int,
                 engine_version: str = "",
-                structured_metadata: dict | None = None) -> dict:
+                structured_metadata: dict | None = None,
+                taskbook_version: int | None = None,
+                taskbook_task_id: str = "",
+                taskbook_volumes: Iterable[str] | None = None) -> dict:
     low_items = list(low_items)
     keys = list(dict.fromkeys(str(k) for k in bib_keys))
     low_ids = [str(it["id"]) for it in low_items]
@@ -2321,6 +2541,14 @@ def build_state(*, params: dict, taskbook_path: str, stage_dir: str, final_dir: 
     # B-287：只有第一段真的带了人工元数据才写这一节——旧状态（无该键）照常可读。
     if structured_metadata:
         state["structured_metadata"] = structured_metadata
+    # B-288：任务书 v2 元信息——**只增键、不 bump SCHEMA_VERSION**（旧状态没有这三键，
+    # `load_state`/`check_ph2` 不看它们；只有第二段要展示时才按缺省处理）。
+    if taskbook_version:
+        state["taskbook_version"] = int(taskbook_version)
+    if taskbook_task_id:
+        state["taskbook_task_id"] = str(taskbook_task_id)
+    if taskbook_volumes:
+        state["taskbook_volumes"] = [os.path.abspath(p) for p in taskbook_volumes]
     return state
 
 

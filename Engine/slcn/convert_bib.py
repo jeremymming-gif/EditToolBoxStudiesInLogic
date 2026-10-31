@@ -5,7 +5,9 @@ import os, re
 
 from slcn import aibib as _aibib, bibdb as _bibdb
 from slcn import coop as _coop, paths as _paths, refmark as _refmark, search as _search
-from slcn.convert_metadata import WORD_EXT, die
+from slcn import ruleset as _ruleset, taskcard as _taskcard
+from slcn import __version__ as _ENGINE_VERSION
+from slcn.convert_metadata import WORD_EXT, die, detect_lang
 from slcn.convert_stage import (
     LLM_FULLTEXT_CHUNK_CHARS, LLM_FULLTEXT_REPORT_SUFFIX, _FINISH_WHY,
     _fulltext_chunk_items, _llm_fulltext_review, _llm_fulltext_system,
@@ -428,6 +430,29 @@ def run_verify_refs(args, res, *, out_dir, stem, verify_max):
     #    或有原文」都生成；两种旧情形的产物逐字节不变（第五节只在「0 条 + 有原文」时追加）。
     if res.bib_path or raw_ref_lines:
         print("\n⑪ 生成参考文献核实任务书", flush=True)
+        # B-288：任务书 v2 的任务卡需要 TASK-ID。ID 的输入**不复用**
+        # `params["fingerprint"]`：指纹不含稿件 sha256/语种，转发任务书后分不清稿件。
+        # `verify-max` 与 mode 拼进 scope 串：同一份 bib 换 --verify-max 必须换 ID（C1）。
+        _scope_keys = (sorted(scope.scope_keys)
+                       if scope.scope_keys is not None else ["*"])
+        _scope_keys = [*_scope_keys,
+                       f"verify-max={verify_max}", f"mode={scope.mode}"]
+        try:
+            _src_sha = (_coop.sha256_file(args.source)
+                        if os.path.isfile(args.source) else "")
+        except OSError:
+            _src_sha = ""
+        # 语种与任务卡同源：`convert.py` 的 `lang` 是局部变量（门面这一批不许改），
+        # `run_coop_taskbook()` 拿到的是同一个 `args.lang or detect_lang(...)`。
+        try:
+            _lang = args.lang or detect_lang(
+                args.source, getattr(args, "metadata", None))[0]
+        except Exception:  # noqa: BLE001  判语种失败不该连累任务书生成
+            _lang = args.lang or "zh"
+        _tid = _taskcard.task_id(
+            source_sha256=_src_sha, engine_version=_ENGINE_VERSION,
+            ruleset_id=_ruleset.RULESET_ID, schema=_taskcard.TASKBOOK_SCHEMA,
+            kind="BIB", lang=_lang, scope_keys=_scope_keys, label=stem)
         # 第 128 条：只把**本次核实范围**内的条目列进逐条清单（`scope_keys=None` = 全量，
         # 与旧行为逐字节相同；给了集合则任务书头部多一行「本次核实范围」说明）。
         md = _refmark.build(bib_text, stem, raw_ref_lines=raw_ref_lines,
@@ -440,7 +465,9 @@ def run_verify_refs(args, res, *, out_dir, stem, verify_max):
                             # 第五十六批：协同任务书把第三节第 10 条限定为
                             # 「文献条目部分」，并指明附一的 JSON 按附一格式回复
                             # （非协同任务书逐字节不变）。
-                            coop=bool(args.coop_taskbook_only))
+                            coop=bool(args.coop_taskbook_only),
+                            task_id=_tid, lang=_lang,
+                            ruleset=_ruleset.RULESET_ID)
         path = os.path.join(out_dir, f"{stem}_文献核实.md")
         with open(path, "w", encoding="utf-8", newline="\n") as f:
             f.write(md)

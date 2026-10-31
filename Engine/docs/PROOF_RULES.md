@@ -70,3 +70,21 @@
 2. **对照**：用消融/人工成品核对；命中超过人工成品口径时必须说明属用户已接受的预期差异。
 3. **正反例**：在 `tests/test_proofcheck.py` 至少各一条，反例覆盖注释、数学、宏名、键参数；改判据必须同时改反例。
 4. **同步**：`RULES`、本表、`GUIDE.md`/`ENGINE_API.md`/`docs/features/single.md` 与初排白名单 `_PROOF_AUTOFIX_IDS` 一起改；文档计数由 `tools/gen_docs.py` 注入，不手抄。
+
+## 七、与任务书 v2 免报清单的关系（第 288 批，B-288）
+
+任务书 v2 的「任务卡」里有一段 **29 条免报清单**，逐行 `id · 检查什么 · 默认动作`。它**不是**第二份规则表：
+由 `slcn/ruleset.py` 的 `no_report_lines(lang)` 在生成任务书时**从 `proofcheck.RULES` 现生成**
+（条数、id 集合、顺序都与 `RULES` 相同；英文只是标题/动作的翻译表），`rules_digest()` 把
+29 条（含默认动作）压成短摘要写进卡头。`RULESET_ID` = `proof29+fmt11+v1`：`proof29` = 本表 29 条，
+`fmt11` = `refmark.FORMAT_MD` 第三节 11 条格式硬要求，`v1` = 清单口径首版。
+
+- **默认动作同义**：卡里的「初排自动改 / 初排自动搬位 / 仅 --fix / 只报（噪声大）/ 只报」与
+  `proofcheck.default_action(rule)` 一一对应，也与本表 §二「默认动作」列同义（`ZH-10`/`ZH-11` 是
+  位置类的「初排自动搬位」，其余按白名单/`fixable`/`noisy` 推导）。
+- **改规则仍按 §六 四要素**：`RULES` 一变，卡与 `rules_digest()` 下次生成时会自动跟着变；
+  **不要**在 `ruleset.py` 里另存规则表或改死条数。
+- **第 10 条边界**：`FORMAT_MD` 第 10 条在**协同任务书**里只约束 BibTeX 部分（`_ITEM10_COOP`），
+  附一 JSON 按附一格式单独回复、不受该条限制；非协同任务书仍用 `_ITEM10_PLAIN`（逐字节不变）。
+- **直连 API 通道不注入任务卡**：`convert_stage` 的全文核查 system prompt 仍只复用
+  `SPEC_MD`/`SOURCES_MD`/`FORMAT_MD`（这三个常量一字节未改）。

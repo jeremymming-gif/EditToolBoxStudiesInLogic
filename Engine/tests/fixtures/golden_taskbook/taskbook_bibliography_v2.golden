@@ -1,0 +1,381 @@
+# 参考文献核实任务书 · San_Zhang
+
+> 这份文件是**给编辑（和他们各自的 AI）**用的：把「一、规范」+「二、来源」+「三、格式」连同下面逐条清单一起交给 AI，或自己按来源查证，再把回答粘回 `reference.bib`。
+> 工具**不做联网核实**，也不预设你用哪家 AI。
+
+- 条目总数：**3**
+- 离线核对：必补字段 **5** 项，建议核对 4 项
+
+## 任务卡（先读这一页；与下面的规范同等效力）
+
+- **TASK-ID**：`BIB-San_Zhang-19db7b80`｜**任务书版本**：v2｜**规则集**：`proof29+fmt11+v1`（摘要 `114227c93f18`）
+- **角色**：文献核实/全文核查助手——只**报告**问题，**不改写**正文或文献条目。
+- **交付摘要**：`reference.bib` 给完整可编译的 bibtex 代码块；逐条问题按附一 JSON 回复（`id`/`verdict`/`span`/`field`/`value`）。
+  - 第 10 条「只输出那个 bibtex 代码块」**只覆盖 BibTeX 部分**；附一 JSON 另起代码块**单列**，不受第 10 条限制。
+- **铁律（5 条，违反任一条该条建议作废）**：
+  1. **不改写正文**、不润色、不增删；只报告，不替作者决定。
+  2. **不用表格**；回复只用纯文本与代码块。
+  3. 定位一律 **Exact Match**：给原样片段，不改字、不省略、不加省略号。
+  4. **数学区一律不报**（`$…$`、`\(…\)`、`\begin{equation}` 内的空格/标点/连字符）。
+  5. **忽略异型空格与间距**（`~`、窄空格、全角空格、多余空格）——不报、不改。
+
+- **免报清单（29 条，生成自 `proofcheck.RULES`；格式 `id · 检查什么 · 默认动作`）**：
+  - `ZH-01` · 中文之间的半角逗号 · 初排自动改
+  - `ZH-02` · 中文之间的半角句号 · 初排自动改
+  - `ZH-03` · 中文之间的半角冒号 · 初排自动改
+  - `ZH-04` · 中文之间的半角分号 · 初排自动改
+  - `ZH-05` · 中文之间的半角问号/叹号 · 初排自动改
+  - `ZH-06` · 顿号后紧跟引号 · 初排自动改
+  - `ZH-07` · 中文旁的半角括号 · 只报（噪声大）
+  - `ZH-08` · 中文旁的半角短杠 · 初排自动改
+  - `ZH-09` · 「第N-N页」缺双短横命令 · 初排自动改
+  - `ZH-10` · 脚注在逗号/句号之后（应在标点之前） · 初排自动搬位
+  - `ZH-11` · 引文在逗号之后（应在标点之前） · 初排自动搬位
+  - `ZH-12` · 句末后的脚注紧跟汉字（间隔过小） · 初排自动改
+  - `ZH-13` · 省略号用三个英文点 · 只报
+  - `ZH-14` · 集合里的竖线应使用 \mid · 初排自动改
+  - `ZH-15` · \mathbf 加粗数学 · 只报
+  - `ZH-16` · 图表/式/中文序号引用缺波浪号间隔 · 只报
+  - `ZH-17` · \caption 里用 \\ 换行 · 只报
+  - `ZH-18` · 楷体环境里的英文/数字未调正 · 只报
+  - `ZH-19` · 人名缩写之间缺空格 · 只报
+  - `ZH-20` · 楷体环境里用 \textbf 加粗 · 只报
+  - `ZH-21` · 脚注在句末标点前（应放标点后） · 初排自动改
+  - `ZH-22` · 表格/浮动体内的 \footnote 会被吞 · 只报
+  - `ZH-23` · 带括号引用组的句末标点在括号之后 · 只报
+  - `EN-01` · 年份前的半角括号缺空格 · 初排自动改
+  - `EN-02` · 英文旁的冒号缺空格 · 初排自动改
+  - `EN-03` · 英文里的弯引号/中文标点（Word 粘贴的痕迹） · 初排自动改
+  - `EN-05` · 页码缺 \, 间隔 · 只报
+  - `EN-06` · 章节标题大小写待核 · 只报
+  - `ALL-01` · 位图插图（非矢量） · 只报
+
+- **正反例（全部为合成脱敏样例，不含真实稿件内容）**：
+  - ✅ bib：`@article{San_Zhang2020, ...}` 字段齐全 → 只确认，不改。
+  - ✅ bib：`author = {Doe, J.}` 已倒装 → 只确认，不改。
+  - ❌ bib：把 `Doe, J.` 改成 `John Doe` → 体例改写，越界，不报。
+  - ❌ bib：给 `title` 加花括号保护大小写 → 越界，不报。
+  - ✅ 全文：`见 \cite{San_Zhang2020}` 与 bib 键不一致 → 只报「键不存在」并给 Exact Match 片段。
+  - ❌ 全文：把 `$x=1$` 报成「空格不规范」→ 数学区不报。
+
+---
+
+## 一、编辑部 bib 规范（**必须遵守**）
+
+### 1. 条目类型按文献实际类型选
+| 文献 | 用什么 | 必备字段（缺一不可） |
+|---|---|---|
+| 期刊论文 | `@article` | author, title, year, journal, volume, number, pages |
+| 专著 | `@book` | author, title, year, publisher, address（再版另加 edition） |
+| 书中章节 / 论文集里的文章 | `@incollection` | author, title, booktitle, year, publisher, pages |
+| 会议论文 | `@inproceedings` | author, title, booktitle, year, pages |
+| 中文学位论文 | `@thesis` | author, title, type={博士学位论文}/={硕士学位论文}, institution, date |
+| 英文学位论文 | `@phdthesis` / `@mastersthesis` | author, title, school, year |
+
+- `@conference` 一律改成 `@inproceedings`。
+- 类型判错是最常见的问题：**书被当成期刊论文**、**书中章节被当成书**都要改。
+
+### 2. 字段写法（照抄这些惯例）
+
+- **（核实范围：**全字段**都要对官方来源核一遍）**：author / title / 类型 /
+  journal 或 booktitle / volume / number / pages / publisher / address / edition / year
+  —— **一个字段都不许跳过**，包括你「觉得没问题」的那些。
+  为什么要把范围写死：编辑与 AI 都习惯只盯一两个显眼项（实测最常见的是只看卷/期），
+  而 **address（出版地）、edition（版次）、类型**恰恰是书籍与章节条目最容易错的地方
+  （全库实测：`@book` 的 address 出现率只有 61%），类型判错还会把整条的必备字段表换掉
+  （本表第 1 条）。**核实 ≠ 补全**：只写来源确认过的值；来源里查不到的字段**照旧省略**，
+  并在条目上方写 `% ⚠ 待核实：<字段>（原因）`（第三节第 6 条）——「编错的卷号比空缺更糟」。
+- **每条核实过的条目，都要在它上方写一行来源标注**：
+  `% 来源：<官方页面 URL 或来源说明>`（与「待核实」注释同一落点：bibtex 代码块**内部**、
+  紧挨条目的上一行，见第三节第 11 条）。
+  为什么必须有它：**没有这一行，「查过官方来源」与「凭记忆写的」在产物里长得一模一样** ——
+  编辑事后完全分不出哪些条目可以信、哪些要重查。
+  URL 拿不到时写来源说明（`% 来源：WorldCat 书目页（未记下 URL）`），
+  **绝不许编一个看起来像 URL 的字符串**。
+- **页码用双短横**：`pages = {24--43}`（《排校手册》：页码范围用双短横，不是短横）
+- **期号去掉前导零**：`number = {3}`，不要写 `03`
+- **月份保留三字母缩写**：`month = {nov}`，不要写 `11`
+- **中文文献必须带 `userf = {cn}`**：`SCLN-MIX.sty` 据此把标点改成中文样式。
+  判定只看 `author` 与 `title`：含汉字 → `cn`；含日文假名 → `jp`；纯英文 → **不填**。
+  （全库实测：cn 1038 条、jp 45 条、不填 3551 条；人工已标注的 1642 条里判定一致 1640 条 = 99.9%。
+  ⚠️ **不要**用 note、publisher 等出版信息去做这个判定。）
+- **英文作者 / 编者一律倒装成「姓, 名」**（编辑部 2026-10-15 定，**硬规则**）：
+  `author = {Dillard, J. P. and Segrin, C. and Harden, J. M.}`。
+  · **源稿写「名 姓」也要转过来**——这不是「修改」，是套用体例（见下条「非必要不修改」的例外）。
+    实测依据：`2026年第5期(90)/01 Meimei_Han` 人工成品里英文条目 **20/20 全倒装**。
+  · 全名缩成**首字母**，**中名首字母全部保留**：`Jonathan L. Kvanvig` → `Kvanvig, J. L.`；
+    `A. J. Ayer` → `Ayer, A. J.`；`Jerry L Morgan` → `Morgan, J. L.`。
+  · 多作者用 `and` 连接、**每一个**都倒装；**同一条里不能混用**两种写法。
+  · ⚠️ BibTeX 里**逗号是「姓, 名」的倒装符**：写成 `{J. P. Dillard, C. Segrin and J. M. Harden}`
+    会编译成「**C. S. J. P. Dillard and J. M. Harden**」这种错名（编辑部实测）。
+  · 虚词 `van`/`von`/`de` **小写**、随其后的姓氏参与排序：`B. C. van Fraassen` → `van Fraassen, B. C.`；
+    要按 V 排序就写波浪号 `van~Fraassen, B. C.`（《排校手册》）。
+  · 编者标记写在姓后的花括号里：`J. Salerno (ed.)` → `{Salerno (ed.)}, J.`。
+  · **中文、日文姓名不倒装**（`党学哲`、`太田方`、`焦循` 原样）。
+- **中文多作者仍用 `and`**：`author = {刘淘宁 and 顿新国}`（源稿的顿号/逗号要改）；
+  **但中文译著例外，见下一条**。
+- **中文译著写「原作者（著），译者（译）」**（《排校手册》源码 `reference.bib` 的实例：
+  `焦循（著），沈文倬（点校）`、`黑格尔（著），杨一之（译）`）：
+  `author = {阿斯海姆（著），郑建国、万林（译）}`、`{克里普克（著），梅文（译）}`、
+  `{沃斯、费布鲁赫、库伊（著），吴静怡（译）}`。
+  ⚠️ 这里**保留中文逗号与顿号**，**不要**改成 `and`——`（著）`/`（译）` 是姓名的一部分，
+  这个逗号不是多作者分隔符；多个原作者之间用顿号，多个译者之间也用顿号。
+  （引擎侧的自动解析只到「作者字段不倒装中文姓名」这一步，译者的补全靠这一条人工/AI 判断。）
+- **出版地写进 `address`**：书籍尤其重要（实测人工 bib 里 61% 的书带 address）
+- **斯坦福哲学百科（SEP）词条有固定形状**（编辑部 2026-10-15 定；成品 `10 Lei_Li` 的
+  `Steinberger2022` 就是这一形状）：**整条照下面的样子写，不要一条一个样**。
+
+  ```bibtex
+  @incollection{Steinberger2022,
+    author    = {Steinberger, F.},
+    title     = {The Normative Status of Logic},
+    booktitle = {The Stanford Encyclopedia of Philosophy},
+    editor    = {Zalta, E. N. and Nodelman, U.},
+    edition   = {Winter 2022},
+    publisher = {Metaphysics Research Lab, Stanford University},
+    year      = {2022},
+    url       = {https://plato.stanford.edu/archives/win2022/entries/logic-normative/}
+  }
+  ```
+
+  - **类型**：`@incollection`（不要写成 `@article` / `@misc` / `@online` / `@InProceedings`）。
+  - **`booktitle` 固定写 `The Stanford Encyclopedia of Philosophy`**：不要带 `(Winter 2022)` 这类尾巴——
+    季节与年份归 `edition` 与 `url`。
+  - **`editor` 照该词条页当前给的写**：近年是 `Zalta, E. N. and Nodelman, U.`，
+    更早的存档只有 `Zalta, E. N.`。**照你引用的那一版存档页写**，不要照抄别的年份。
+  - **`edition` = 存档季节 + 年份**：`Winter 2022` / `Fall 2025` / `Spring 2016`。
+    ⚠️ **往期刊物不统一：有的条目有这个字段、有的没有**——**官网上写了就写，没写就不补**，
+    更不要从 URL 里「推」一个出来（第 3 条：不确定的值不要猜）。
+  - **`url` = 带存档路径的永久链接**（`…/archives/win2022/entries/logic-normative/`）：
+  它与 `edition` 的季节/年份**必须对得上**；不要写 `…/entries/logic-normative/` 这种「当前版」短链接。
+  - **`publisher` 固定写 `Metaphysics Research Lab, Stanford University`**；
+   **不写 `address`**（官网 bib 没有这个字段），**不写 `pages`**（词条没有页码）。
+  - **这些值去哪里拿**：词条页面自带官方的 **BibTeX / 引用**块，照它抄，再按下面这张表改成我们的形状：
+
+    | 官网 biblatex 里 | 我们写成 | 为什么 |
+    |---|---|---|
+    | `howpublished = {\url{…}}` | `url = {…}` | 我们的样式只认 `url`，`howpublished` 印不出来 |
+    | `booktitle = {The {Stanford} Encyclopedia of Philosophy}` | `booktitle = {The Stanford Encyclopedia of Philosophy}` | 本刊 bib 不写保护花括号 |
+    | `edition = {{F}all 2025}` | `edition = {Fall 2025}` | 同上 |
+    | `urldate = {…}` | **删掉** | 本刊不写访问日期 |
+    | `key = sep-logic-preference` | **换成我们自己的 key**（第三节第 1 条） | 正文 `\parencite{…}` 用的是我们的 key——**改 key 必须同时确认正文那一处也改了**，否则引用会悬空 |
+
+  - 官网给的 `author` / `editor` 是「名 姓」，**按本表第一条照旧倒装**
+    （`Florian Steinberger` → `Steinberger, F.`；`Edward N. Zalta and Uri Nodelman` →
+    `Zalta, E. N. and Nodelman, U.`）。
+    ⚠️ 你可能会在往期成品里看到不倒装的写法（`10 Lei_Li` 那份 bib 就是）：**两种写法印出来完全一样**
+    ——SLCN 样式统一按「名首字母. 姓」排印（2026-10-15 用成品 PDF 核对过），
+    所以这里按编辑部已定的硬规则走，不必为此改样例。
+- **英文条目的标题会被排成「句首大写」——专名、副标题首字母等必须用花括号保护**（编辑部 2026-10-15 定；
+  机制在**模板源码** `编辑笔记/模板文件/SLCN-MIX.sty` 第 733 行——不是风格偏好）：
+
+  ```latex
+  \DeclareFieldFormat[article,inproceedings,incollection,misc]{title}
+      {\cegen{“#1”}{``\MakeSentenceCase{#1}''}}   % userf=cn 走中文分支（不改大小写），否则**句首大写**
+  ```
+
+  也就是说：**不带 `userf = {cn}` 的** `@article` / `@incollection` / `@inproceedings` / `@misc` 条目，
+  标题会被 `\MakeSentenceCase` 处理，**没被保护的大写字母会被压成小写**
+  （成品 PDF 实证：`{Two Dogmas of {E}mpiricism}` 漏掉那个 `{E}` 之后印成 `…of empiricism`）。
+  必须保护的有四类：
+
+  | # | 保护什么 | 怎么写 | 例子 |
+  |---|---|---|---|
+  | 1 | **专名 / 术语的首字母** | 用 `{}` **只裹住那个字母** | `title = {Two Dogmas of {E}mpiricism}` |
+  | 2 | **副标题（冒号后）的首字母** | 同上 | `title = {A Cognitive Approach to Human Communication: {A}n Action Assembly Theory}` |
+  | 3 | **罗马数字 / 编号 / 单字母变量** | 同上 | `Part {I}`、`Generalizing {L}`、`{M}aps of {b}ounded {r}ationality` |
+  | 4 | **标题里不想被当成标题正文的括号说明** | `\textup{(}…\textup{)}` | `Introduction to Logic 	extup{(}14th Edition 	extup{)}` |
+
+  ⚠️ **`@book` 的标题不做句首大写**（模板对 `[book]` 只加斜体），书名的保护可有可无；
+  **中文条目（`userf = {cn}`）也一律不需要**保护。
+  ⚠️ **只裹住需要保护的那一个字母，不要整段加括号**：`{Two Dogmas Of Empiricism}` 会把整句锁死。
+- **英文书籍的版次写进 `title`，不单列 `edition`**（编辑部 2026-10-15 定；模板 `reference.bib` 里
+  一个 `edition` 字段都没有）：
+
+  ```bibtex
+  @book{a7,
+    author    = {Toulmin, S. E.},
+    year      = {2003},
+    title     = {The Uses of Argument, (Updated Edition)},
+    address   = {Cambridge},
+    publisher = {Cambridge University Press},
+  }
+  ```
+
+  · 版次写在书名之后、**放进括号**，与书名之间**加一个逗号**：`… Argument, (Updated Edition)`。
+  · **工具会自动搬**：`convert.py` 产出 `reference.bib` 时，凡是**英文 `@book`** 单列的 `edition`
+    都会被并进书名（并在改动说明里记一笔）——你照规范写就行，漏了也不会印错位置。
+  · ⚠️ **例外：SEP 词条**的 `edition` 是「存档季节 + 年份」，**照旧单列**（见上一条）。
+  · ⚠️ 往期成品里出现过把版次塞进 `address` 的写法（`address = {Second Edition, London}`），
+    那是权宜之计，**不要再学**。
+- **只有编者、没有作者的书（编文集）：编者写进 `author` 并加 `(eds.)`**（编辑部 2026-10-15 定）；
+
+  ```bibtex
+  @book{a17,
+    author    = {{F. H. van Eemeren and P. Wu~(eds.)}},
+    year      = {2017},
+    title     = {Contextualizing Pragma-dialectics},
+    address   = {Amsterdam},
+    publisher = {John Benjamins},
+  }
+  ```
+
+  · **外面多套一层花括号**（`{{…}}`）：让 BibTeX 把这串当成**一个整体名**，不去拆「名/姓」；
+  · 编者**超过 3 人时缩为 2–3 人**再加 `(eds.)`（全列太长）；
+  · `(eds.)` 与最后一位编者之间用**不断行空格 `~`**：`P. Wu~(eds.)`；单人编者写 `(ed.)`；
+  · **单列 `editor` 只用于「有作者、另有编者」的情形**（例如 SEP 词条：`author` 是词条作者、
+    `editor` 是百科主编）。
+- **作者 / 编者人数过多**（《排校手册》§校对规范·参考文献 第 2 条）：**作者 > 4 人、或编者 > 3 人**时
+  写 `{D. Lewis and others}`（手册原文「只需在 bib 文件对应的括号里填写为 `{D. Lewis and others}`」）。
+  ⚠️ 与上一条的分工：**编文集**（只有编者、没有作者）用 `(eds.)` 那种形态；
+  **普通多作者条目**的长名单用 `and others`。
+- **不要写 `doi` / `isbn`**（编辑部 2026-10-14 定）：这两个编号**只用来核实**——
+  拿它们去查官方页面、确认卷期页码出版地，但**最终 bib 里不保留这两个字段**。
+- **不要编造**：查不到就写 `未查到`；**同一篇文章的标准要统一，非必要不修改**（《排校手册》原话）。
+  ⚠️ **作者字段是这条的例外**：英文作者一律倒装是编辑部已定的体例，
+  源稿写成「名 姓」时必须转换（见本表第一条），改字段写法本身不算「不必要的修改」。
+- **逐条清单里给了「源稿原文」就以它为准**（2026-10-15，第 66/68 条的教训）：
+  若**源稿原文**与「解析得到的条目」不一致（原文里有刊名/卷期/页码/作者而条目缺，
+  或同一字段的值不同），按**源稿原文**补全或纠正字段——我们解析源稿时可能丢字段，
+  那是工具的错，不是源稿的错。
+  ⚠️ **原文里没有的信息仍然不许编**（查不到就写 `未查到` / 省略该字段，见上一条）：
+  「以原文为准」是**上限**，不是「可以拿常识补全」的许可。
+  没有「源稿原文」的条目（例如作者自带的 `.bib`）按原样核实，不要凭空造一段原文出来。
+
+### 3. 这一批文献的已知问题（离线核对结果，见下面逐条清单）
+
+## 二、查证来源（按优先级，请优先用**官方**来源）
+
+1. **期刊官网 / 出版社官网** —— 卷、期、页码、DOI 以官网为准（最权威）。
+2. **中文文章 → 知网（CNKI）**：https://www.cnki.net
+   查中文期刊文章的卷、期、页码、作者单位。
+3. **书籍 → WorldCat**：https://search.worldcat.org/
+   查**出版地**、**版本**（第几版）、出版年、出版社全名——这几项最容易错。
+4. 其他可用：DOI 解析（https://doi.org/…）、出版社书目页、国家图书馆、Google Books。
+5. **斯坦福哲学百科（SEP）词条**：直接用它**词条页自带的官方 BibTeX / 引用块**
+   （一次给全：存档 URL、季节版次、编者、出版者），再按第一节第 2 条那张表改成我们的形状。
+   这是本条里**唯一**「照着抄就够」的文献类型——不要凭记忆拼 SEP 的字段。
+
+⚠️ 聚合站、二手转载、AI 记忆里的字段都不可靠，**不要**作为唯一依据；
+   AI 若无法联网核实，请明确写「未查到」，不要猜。
+⚠️ **能用检索工具就必须用**：若你（或调你的工具）有联网检索能力，请**先检索**上面这些官方
+   来源，再逐字段比对；把**实际打开过**的页面 URL 写进每条上方的 `% 来源：` 标注
+   （第三节第 11 条）。检索不到就照旧省略字段 + `% ⚠ 待核实：…`，**不要**用记忆顶替检索结果。
+
+---
+
+## 三、请交付**完整、可直接编译的 .bib 文本**
+
+不要输出「`key: field = value`」这种差异清单——编辑要的是**能直接替换 `reference.bib`
+并立刻编译的整份 BibTeX**。请把所有条目（**包括没有改动的**）完整写在**一个**代码块里：
+
+````
+```bibtex
+@article{JPDillard1989,
+  author  = {Dillard, J. P. and Segrin, C. and Harden, J. M.},
+  title   = {Primary and Secondary Goals in the Production of Interpersonal Influence Messages},
+  journal = {Communication Monographs},
+  volume  = {56},
+  number  = {1},
+  pages   = {19--38},
+  year    = {1989},
+  doi     = {10.1080/03637758909390247}
+}
+```
+````
+
+硬性要求：
+
+1. **key 一律不改**——正文里的 `\parencite{key}` 靠它对应，改 key 会让全文引用悬空。
+2. **英文作者 / 编者一律倒装**（第一节第 2 条）：`{Dillard, J. P. and Segrin, C.}`。
+   源稿是「名 姓」也要转；多作者用 `and`、**每个**都倒装、**不要混用**两种写法。
+   中文译著写 `{原作者（著），译者（译）}`（保留中文逗号/顿号，**不要**改成 `and`）。
+3. **每条写全所有已知字段**，顺序照上面的规范（author → title → journal/booktitle/editor
+   → publisher → address → edition → volume → number → pages → year → userf）。
+   **`doi` 与 `isbn` 一律不写**——它们只用于核实。
+   ⚠️ **核实范围见第一节第 2 条第一项：所有字段都要对官方来源核一遍**（含 address /
+   edition / 类型），不能只看卷/期/页码。
+4. **中文条目必须带 `userf = {cn}`**；纯英文条目**不填**。
+5. 页码用 `--`；期号去前导零；月份用三字母缩写（`nov`）。
+6. **查不到的字段就省略该字段**，并在该条目上方加一行注释：
+   `% ⚠ 待核实：<字段>（原因）`。
+   ⚠️ **这行注释必须写在那个 bibtex 代码块内部、紧挨着该条目的上一行**：
+
+   ```bibtex
+   % ⚠ 待核实：volume（官网只有在线优先版，期号两说）
+   @article{X2020,
+     author  = {…},
+     title   = {…},
+     year    = {2020}
+   }
+   ```
+
+   写到代码块**外面**（例如写在条目后面的 `}` 之后）工具读不到那条说明：
+   回读校验只把「条目上方的注释」当成这条的一部分，于是会把同一个缺失字段报成
+   **问题**而不是**提示**——工具看着像在反复挑错，其实是说明放错了地方。
+7. **不确定的值不要猜**：宁可保留原值，并用注释写出两种可能，例如
+   `% ⚠ pages 有 13--23 / 14--24 两说，建议核原刊`（同样写在**代码块内部、条目上方**）。
+8. 若改动了**条目类型**（如 `@book` → `@incollection`），在条目上方（**代码块内部**）加
+   `% 类型已改：<原类型> → <新类型>（理由）`。
+9. 不要写解释性段落；需要说明的，一律写成 `%` 注释放在对应条目**上方、且在代码块内部**。
+10. **文献条目部分**的输出只包含那个 bibtex 代码块，不要额外的前言后语；任务书末尾「附一、初排低置信项」要求的 JSON 回复，按附一规定的格式**单独给出**，**不受本条限制**（两部分都要交，见文末「附二、回填说明」）。
+11. **每条你核实过的条目，上方都要有一行来源标注**（与第 6 条的「待核实」同一落点：
+    代码块**内部**、紧挨条目的上一行）：
+
+    ```bibtex
+    % 来源：https://www.worldcat.org/title/… （WorldCat 书目页，2026-10-15 查）
+    @book{Fodor1983,
+      author    = {Fodor, J. A.},
+      title     = {The Modularity of Mind},
+      publisher = {MIT Press},
+      address   = {Cambridge, MA},
+      year      = {1983}
+    }
+    ```
+
+    · **写你实际打开过的页面 URL**（期刊官网 / 出版社官网 / WorldCat / CNKI…）；
+      拿不到 URL 就写来源说明（`% 来源：WorldCat 书目页（未记下 URL）`）——
+      **绝不许编一个看起来像 URL 的字符串**。
+    · 这一行是**给编辑的审计线索**：没有它，「查过官方来源」与「凭记忆写的」在产物里
+      长得一模一样（这也是本工具的纪律：不许让「核实过」这件事看不见）。
+    · 只有**真的核过**的条目才写。凭记忆顺手补的条目写 `% 来源：` 会比不写更糟 ——
+      那等于给编辑一个假的信任信号。
+
+---
+
+## 四、逐条清单
+
+### `San_Zhang2020` — `@article`
+
+```
+@article{San_Zhang2020,
+author = {San, Zhang},
+  title = {Logic and Computation},
+  journal = {Journal of Logic},
+  year = {2020},}
+```
+- ❗ **必补**：volume、number、pages
+
+### `Doe1999` — `@book`
+
+```
+@book{Doe1999,
+author = {Doe, Jane},
+  title = {A Book of Logic},
+  publisher = {Doe Press},
+  year = {1999},}
+```
+- ❗ **必补**：address
+- 建议核对：edition
+
+### `Quine1970` — `@inproceedings`
+
+```
+@inproceedings{Quine1970,
+author = {Quine, W. V. O.},
+  title = {Philosophy of Logic},
+  booktitle = {Proceedings of Mind},
+  year = {1970},}
+```
+- ❗ **必补**：pages
+- 建议核对：publisher、address、editor

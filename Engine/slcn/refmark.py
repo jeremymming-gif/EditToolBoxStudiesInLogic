@@ -877,7 +877,10 @@ def build(bib_text: str, stem: str, note: str = "",
           evidence_note: str = "",
           cite_keys: set[str] | None = None,
           bibdb_hits: list[dict] | None = None,
-          coop: bool = False) -> str:
+          coop: bool = False,
+          task_id: str = "",
+          lang: str = "zh",
+          ruleset: str = "") -> str:
     """生成整份 markdown 任务书。
 
     `raw_ref_lines` = 源稿参考文献区的**原文行**（`DocxDoc.ref_raw_lines`）。
@@ -912,6 +915,11 @@ def build(bib_text: str, stem: str, note: str = "",
     只改第三节第 10 条——把「只输出那个 bibtex 代码块」限定为**文献条目部分**，并指明
     任务书末尾「附一、初排低置信项」的 JSON 按附一格式单独回复。默认 False =
     与旧输出**逐字节相同**（非协同任务书里没有附一，不能提它）。
+
+    `task_id` / `lang` / `ruleset` = **任务书 v2 任务卡**（B-288）：`task_id` 非空时
+    在首个 `#` 之后、`## 一` 之前插入一张 ≤60 行的任务卡（`slcn/taskcard.py`）；
+    空串（默认）时**一行都不插**，输出与旧签名调用逐字节相同。`lang` 只决定卡的语言
+    （zh/en），`ruleset` 是卡头显示的规则集 id（空串 → `slcn.ruleset` 现取）。
     """
     format_md = FORMAT_MD.replace(_ITEM10_PLAIN, _ITEM10_COOP) if coop else FORMAT_MD
     raw_by_key = raw_by_key or {}
@@ -969,6 +977,12 @@ def build(bib_text: str, stem: str, note: str = "",
                  "必须改写成 `姓, 名`（第一节第 2 条：这是硬规则，不是「修改」）")
     if note:
         L += ["", note]
+    # B-288：任务书 v2 的任务卡——位置固定在首个 `#` 之后、`## 一` 之前（SPEC_MD 首行）。
+    # 默认 task_id="" → 一行都不插，旧签名调用的输出逐字节不变（C2 的硬要求）。
+    if task_id:
+        from . import taskcard
+        L += [""] + taskcard.render_card(
+            "BIB", lang, task_id, coop=coop, ruleset_id=ruleset).splitlines()
     L += ["", "---", "", SPEC_MD, SOURCES_MD, "---", "", format_md, "---", "", "## 四、逐条清单", ""]
 
     for etype_raw, key, body in entries:

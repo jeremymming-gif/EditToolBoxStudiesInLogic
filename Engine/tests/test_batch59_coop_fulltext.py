@@ -2,7 +2,9 @@
 r"""第五十九批：全文 AI 核查通道①（`--coop-fulltext {context,full}` + 任务书附三）判据测试。
 
 Lead 2026-10-20 拍板（全部离线：不联网、不调付费 API、不读稿件库、不跑 TeX）：
-  · 默认关：不带 flag 时任务书/产物/日志与 HEAD（`git archive HEAD`）**逐字节相同**；
+  · 默认关：不带 flag 时任务书/产物/日志与 HEAD（`git archive HEAD`）**逐字节相同**
+    （B-288 起任务书默认新增「任务卡 + 三卷标题 + 卷末模板」；这些**只由 B-288 新增**，
+    本测试用 `_b288_mask()` 精确剥掉后再对照 → 其余正文仍逐字节相同，不是放松断言）；
   · `context`：引用/脚注锚点 ±300 字窗口合并；约 4 万字符起只提示（批63：不截断）；
   · `full`：正文全文；约 8 万字符起只提示（批63：**不截断、整篇发送**，保留 tokens_est）；
   · 仅 `--coop-taskbook-only` 有效，非法组合退出 2；
@@ -92,6 +94,31 @@ _B276_META_RE = re.compile(
     r"\n{0,2}")
 
 
+_B288_META_RE = re.compile(
+    r"\n\n## 任务卡[^\n]*\n")
+_B288_VOLA_RE = re.compile(r"\n\n## 卷 A 文献核实(?=\n)")
+_B288_FOOTA_RE = re.compile(r"\n\n### 卷 A · 回填模板")
+
+
+def _b288_mask(text: str) -> str:
+    """B-288：剥掉任务书 v2 新增的**任务卡/卷 A 标题/卷末模板**（含 B/C 两卷）。
+
+    只动 B-288 新增的行；剥完剩下的正文必须与 HEAD 的 v1 任务书逐字节相同。
+    位置是写死的（卡在首个 `#` 之后、`---` 之前；卷 A 标题在 `---` 与 `## 一` 之间；
+    卷末模板从 `### 卷 A · 回填模板` 到 EOF），所以不用宽松正则。
+    """
+    m = _B288_META_RE.search(text)
+    if m:
+        end = text.find("\n\n---\n\n## 卷 A 文献核实", m.end())
+        if end >= 0:
+            text = text[:m.start()] + text[end:]
+    text = _B288_VOLA_RE.sub("", text, count=1)
+    m = _B288_FOOTA_RE.search(text)
+    if m:
+        text = text[:m.start()] + "\n"
+    return text
+
+
 def _b276_mask(text):
     """把 B-276 会回填的字段值/条目归一（其余内容原样，便于逐字节对照）。"""
     if isinstance(text, dict):
@@ -146,6 +173,9 @@ def _b276_mask(text):
             continue
         kept.append(line)
     text = "".join(kept)
+    # ⑥ B-288：任务书 v2 的卡/三卷/卷末模板剥掉；任务书行数随卡增长 → 归一
+    text = _b288_mask(text)
+    text = re.sub(r"(文献核实\.md（)\d+( 行）)", r"\1N\2", text)
     return text
 
 
@@ -195,6 +225,21 @@ def make_env() -> dict:
         if key.startswith(("SLCN_LLM_", "SLCN_SEARCH_", "SLCN_NOTES")):
             env.pop(key, None)
     env["PYTHONPATH"] = os.pathsep.join([_ENGINE, os.path.join(_ENGINE, "vendor")])
+    # HEAD 引擎是 `git archive` 到临时目录的副本：它从自己的路径找不到稿件库（同级目录
+    # 不在那里），于是「五、库内已核实」只有新引擎有 → ③ 的逐字节对照假红。显式把
+    # **同一份**稿件库（若本机有）钉进 ENV，两边看到同一个库，对照才是真的。
+    try:
+        from slcn import paths as _paths
+        _root = _paths.manuscripts_root()
+        if _root:
+            env[_paths.ENV_VAR] = _root
+        # 引用库（任务书「五、库内已核实」）在**笔记仓** `bib_db/` 下；HEAD 副本从自己的
+        # 路径同样找不到笔记仓。两边钉同一个笔记仓，库命中才一致。
+        _notes = _paths.notes_root()
+        if _notes:
+            env[_paths.NOTES_ENV] = _notes
+    except Exception:  # noqa: BLE001  稿件库/笔记仓都是可选依赖；没有时两边都查不到，仍一致
+        pass
     return env
 
 
@@ -386,9 +431,11 @@ def test_no_flag_zero_change(tmp: str, head: str) -> None:
     snap_old = {k: v for k, v in snapshot(os.path.join(_stage(out))).items()
                 if k != coop.STATE_NAME}
     check("③-1 无 flag ph1 退出 0", new.returncode == 0, new.stderr[-300:])
-    check("③-2 无 flag 任务书与 HEAD 逐字节相同", _b276_mask(tb_new) == _b276_mask(tb_old))
-    check("③-3 无 flag 产物树（tex/bib/任务书）与 HEAD 逐字节相同", snap_new == snap_old)
-    check("③-4 无 flag 日志与 HEAD 逐字节相同（除输出路径相同外；B-004 ZH-08 行过滤）",
+    check("③-2 无 flag 任务书去掉 B-288 卡/卷结构后与 HEAD 逐字节相同",
+          _b276_mask(tb_new) == _b276_mask(tb_old))
+    check("③-3 无 flag 产物树（tex/bib/任务书）与 HEAD 逐字节相同（任务书按 B-288 掩码归一）",
+          snap_new == snap_old)
+    check("③-4 无 flag 日志与 HEAD 逐字节相同（B-004 ZH-08 行过滤；B-288 任务书行数归一）",
       _strip_zh08_log(_b276_mask(new.stdout))
           == _strip_zh08_log(_b276_mask(old.stdout)))
     check("③-5 无 flag 任务书没有「附三」", coop.FULLTEXT_TITLE not in tb_new)

@@ -5,6 +5,7 @@ import argparse, inspect, os, re, shutil
 
 from slcn import __version__ as ENGINE_VERSION, clean as _clean
 from slcn import coop as _coop, platform as _plat, refmark as _refmark
+from slcn import taskcard as _taskcard
 from slcn.build import build_docx, build_latex  # 门面 main 直接调用（契约 i2：门面只 import 4 模块）
 from slcn.convert_compile import compile_pdf
 from slcn.convert_metadata import _OVERRIDE_FIELDS, die, is_own_product, resolve_c_class_union
@@ -1094,6 +1095,12 @@ def build_arg_parser():
                          "只保留体积估算与超长提示（外部 chat 有长度限制时请自行分段）。"
                          "仅配合 --coop-taskbook-only；不新增改正文类建议（回复格式/校验/"
                          "`--coop-apply` 与从前一致）。")
+    ap.add_argument("--coop-split", action="store_true",
+                    help="（B-288）把三卷任务书**另存**为 3 个文件 "
+                         "`<stem>_文献核实_卷A/B/C.md`（卷 A 文献核实 / 卷 B 全文核查 / "
+                         "卷 C 元数据与脚注），并把路径写进 `_AI协同状态.json` 的 "
+                         "`taskbook_volumes`。默认关：单文件三卷不变。"
+                         "仅配合 --coop-taskbook-only 有意义。")
     ap.add_argument("--coop-stage", default=None, metavar="DIR",
                     help="协同初排的暂存目录（默认 `<out>/<stem>_待核/`）；"
                          "状态文件 `_AI协同状态.json` 写在这里，不随交付进入最终目录。")
@@ -1266,6 +1273,12 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
         current_fields=_tex_cur,
     )
     section = _coop.render_low_confidence_section(coop_low_items)
+    backfill = _coop.render_backfill_section()
+    # B-288：三卷（卷 A 文献核实 / 卷 B 全文核查 / 卷 C 元数据与脚注）。
+    # **只在 refmark 已生成带任务卡的任务书时生效**：`test_batch59_coop_fulltext` ③ 的
+    # 兜底路径（没有 --verify-refs、bib 与文献区原文都没有）必须逐字节不变，所以那里
+    # 保持旧的追加写法，不出现卷标题。
+    booked = bool(coop_taskbook_path) and os.path.isfile(coop_taskbook_path)
     if not coop_taskbook_path:
         # 极端情形：bib 与文献区原文都没有（任务书主流程不生成）——仍给一份
         # 只含低置信项的任务书，保证「第一段一定有交付物」。
@@ -1275,14 +1288,12 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
             f"# 参考文献核实任务书 · {stem}\n\n"
             "> 本次没有可解析的参考文献条目；下面只列初排低置信项。\n"
             "> 请按 ID 逐条回复 JSON（格式见下）。\n")
-    with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
-        f.write("\n" + section + "\n")
-        # 第五十六批：附二把「回填=完整 BibTeX + 附一 JSON 两部分」写死，
-        # 防止模型/编辑只交一半（真实首测：只导入 JSON → 文献回填 0/9）。
-        f.write("\n" + _coop.render_backfill_section() + "\n")
     # 第五十九批：附三、正文全文/引用上下文（--coop-fulltext；默认关）。
     # **只进任务书**：回复 JSON 契约/校验/--coop-apply 完全不变，不新增改正文类建议。
     coop_fulltext_info: dict | None = None
+    _ft_sec = ""
+    _inputs_sec = ""
+    _analysis_sec = ""
     if args.coop_fulltext:
         try:
             _ft = _coop.extract_fulltext(
@@ -1291,8 +1302,7 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
             print(f"   ⚠ 附三跳过：{type(e).__name__}: {e}")
             _ft = {}
         if _ft.get("chars"):
-            with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
-                f.write("\n" + _coop.render_fulltext_section(_ft) + "\n")
+            _ft_sec = _coop.render_fulltext_section(_ft)
             coop_fulltext_info = {k: _ft[k] for k in
                                   ("mode", "chars", "truncated", "tokens_est")}
             _ft_note = ("超长（未截断，整篇发送）" if _ft.get("over_limit")
@@ -1316,14 +1326,30 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
             _inputs_sec = _coop.render_analysis_inputs_section(
                 footnotes=_fn_rows, placeholders=_ph_rows)
             if _inputs_sec:
-                with open(coop_taskbook_path, "a", encoding="utf-8",
-                          newline="\n") as f:
-                    f.write("\n" + _inputs_sec + "\n")
                 print(f"   任务书附四输入清单：脚注 {len(_fn_rows)} 条 / "
                       f"占位符 {len(_ph_rows)} 个（+{len(_inputs_sec)} 字符）")
-            with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
-                f.write("\n" + _coop.render_analysis_section() + "\n")
+            _analysis_sec = _coop.render_analysis_section()
             print("   任务书附四：初排分析指令（report-only；只报告、不写产物）")
+    _split = bool(getattr(args, "coop_split", False))
+    if booked:
+        _tb_split = _coop.write_taskbook_volumes(
+            coop_taskbook_path, stem, section=section, backfill=backfill,
+            fulltext=_ft_sec, inputs=_inputs_sec, analysis=_analysis_sec,
+            lang=lang, split=_split, out_dir=out_dir)
+    else:
+        # 兜底路径：保持旧的追加写法（逐字节不变），不出现卷标题。
+        with open(coop_taskbook_path, "a", encoding="utf-8", newline="\n") as f:
+            f.write("\n" + section + "\n")
+            # 第五十六批：附二把「回填=完整 BibTeX + 附一 JSON 两部分」写死，
+            # 防止模型/编辑只交一半（真实首测：只导入 JSON → 文献回填 0/9）。
+            f.write("\n" + backfill + "\n")
+            if _ft_sec:
+                f.write("\n" + _ft_sec + "\n")
+            if _inputs_sec:
+                f.write("\n" + _inputs_sec + "\n")
+            if _analysis_sec:
+                f.write("\n" + _analysis_sec + "\n")
+        _tb_split = []
     if not coop_bib_keys and bib_text2:
         coop_bib_keys = [b.key for b in _coop.parse_bib_blocks(bib_text2) if b.closed]
     coop_params = _coop.build_params(
@@ -1340,6 +1366,15 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
     # 校验「第二段有没有偷偷改元数据」。没有人工元数据时状态与旧版逐字节相同。
     _sm = _coop.make_structured_metadata(structured_metadata,
                                          origin=structured_origin or "cli-json")
+    # B-288：任务书 v2 的 TASK-ID 从**已写出的任务书**里读回（卡里的那串就是唯一真源；
+    # 门面 `convert.py` 这一批不许改，没法把 ID 传进来）。旧任务书没有卡 → 空串 → 不写键。
+    _tb_id = ""
+    if booked:
+        try:
+            with open(coop_taskbook_path, encoding="utf-8", errors="replace") as f:
+                _tb_id = _taskcard.extract_task_id(f.read())
+        except OSError:
+            _tb_id = ""
     coop_state = _coop.build_state(
         params=coop_params, taskbook_path=coop_taskbook_path, stage_dir=out_dir,
         final_dir=final_dir, bib_keys=coop_bib_keys, low_items=coop_low_items,
@@ -1347,6 +1382,10 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
         budget_batch=args.ai_batch_budget_tokens,
         engine_version=ENGINE_VERSION,
         structured_metadata=_sm,
+        # B-288：只增键，不 bump SCHEMA_VERSION；旧状态缺这三键照常工作。
+        taskbook_version=(_taskcard.TASKBOOK_VERSION if _tb_id else None),
+        taskbook_task_id=_tb_id,
+        taskbook_volumes=_tb_split,
     )
     coop_state["reference_bib"] = os.path.abspath(res.bib_path) if res.bib_path else ""
     coop_state["tex"] = os.path.abspath(res.tex_path) if getattr(res, "tex_path", "") else ""

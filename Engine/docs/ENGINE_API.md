@@ -288,6 +288,18 @@ B-120 段；回归见 `tests/test_tail_block.py`。
 （`coop.analysis_evidence_base()`；附四 schema 示例/指令不再能当逐字证据）。
 通道②（直连 API 全文核查）由第 60 批的 `--llm-fulltext` 提供：默认关、会外发正文并产生费用。**第 63 批起默认自动应用**（仅 BIB/META/FN、全走批57安全闸；`--no-llm-fulltext-apply` 关；`--llm-fulltext-max-chars N` 默认 40000、0 = 不限）；两壳「设置」页新增「API 核查字符上限」「全文核查结果自动应用」两栏，GUI↔CLI 映射见下。
 
+**第 288 批（B-288，任务书 v2）**：任务书文首新增「任务卡」（`slcn/taskcard.py`）——含与
+`params["fingerprint"]` **无关**的独立 `TASK-ID`（`<KIND>-<Author>-<8 hex>`；sha256 覆盖源稿
+sha256 / 引擎版本 / 规则集 / 附一 schema / kind / 语种 / 核实范围，`--verify-max` 变则 ID 变）、
+5 条角色铁律、格式硬要求摘要、由 `proofcheck.RULES` **现生成**的 29 条免报清单（`slcn/ruleset.py`，
+`RULESET_ID=proof29+fmt11+v1`）与合成脱敏正反例（卡 ≤60 行，zh/en 双语）。正文按
+「`## 卷 A 文献核实` / `## 卷 B 全文核查` / `## 卷 C 元数据与脚注`」三卷组织，每卷卷末给
+「回填模板 / 自检清单 / 失败报告格式」；默认**单文件**，`--coop-split` 才另存
+`<名>_文献核实_卷A/B/C.md` 并在 `_AI协同状态.json` 增 `taskbook_version` / `taskbook_task_id` /
+`taskbook_volumes`（**只增键、schema 仍 1**，旧状态照常读）。`refmark.build()` 不传 `task_id` 时
+输出与 v1 **逐字节相同**；`SPEC_MD` / `SOURCES_MD` / `FORMAT_MD` / `_ITEM10_COOP` 未改（直连 API
+prompt 复用它们，仍不含任务卡）。附一 JSON schema、`--coop-replies` 契约与其余产物名不变。
+
 **核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的
 条目**」——⑪ 跑前会在 stdout 打一行
 `源 bib N 条；正文引用 M 条 → 本次核实 M 条（跳过 N-M 条未引用）`；

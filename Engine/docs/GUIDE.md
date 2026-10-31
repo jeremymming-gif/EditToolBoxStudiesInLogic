@@ -379,7 +379,7 @@ zhangsan@example.edu.cn                  ← 邮箱行（中英并列可写「�
 ```bash
 # 第一段（ph1）：只写暂存目录 + 任务书，最终交付目录本次不写；不调用任何 API
 $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
-    --verify-refs --no-ai-merge --coop-taskbook-only [--coop-fulltext {context,full}]
+    --verify-refs --no-ai-merge --coop-taskbook-only [--coop-fulltext {context,full}] [--coop-split]
 # → <期目录>/<名_姓>_待核/：初排产物 + <名>_文献核实.md
 #    任务书末尾含「附一、初排低置信项」与「附二、回填说明」（第 56 批）
 #    第 59 批起可加 --coop-fulltext：任务书再附「附三、正文全文/引用上下文」（默认不加=不含正文）
@@ -407,6 +407,13 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
   **第 75 批（B-132）起附一 `unresolved` 允许 note-only**：`verdict=unresolved` 且**无 `span`**
   但带 `note` 的回复不再整条拒绝——收下并保留说明（`<名>_AI建议.md` 的「三、待人工」列出，
   note 不丢）；`corrected` 仍强制 `span`/`field`/`value` 与白名单（不放宽），note-only 的 note 必填。
+- **任务书 v2（第 288 批，B-288）**：ph1 的任务书文首多一张「任务卡」（TASK-ID + 5 条铁律 +
+  29 条免报清单 + 合成正反例，zh/en），正文按「卷 A 文献核实 / 卷 B 全文核查 / 卷 C 元数据与
+  脚注」三卷组织，每卷卷末给回填模板/自检清单/失败报告格式；默认仍是**一个** `<名>_文献核实.md`。
+  TASK-ID 与 `params["fingerprint"]` 独立（换 `--verify-max` 会变），可用来对账「编辑手里的卡」与
+  「本次初排」；`_AI协同状态.json` 只增 `taskbook_version` / `taskbook_task_id` /
+  `taskbook_volumes` 三键（schema 仍 1，旧状态照常续跑）。CLI 高级 `--coop-split` 才把三卷另存成
+  `<名>_文献核实_卷A/B/C.md`（两壳/面板不带该开关）。不加 `--coop-taskbook-only` 时产物与旧版逐字节相同。
 - **全文 AI 核查（第 59 批，可选，默认关；第 63 批取消字符上限；第 74 批增附四）**：ph1 加 `--coop-fulltext {context,full}` 时，任务书在「附二」后
   再附「**附三、正文全文/引用上下文**」：`context` = 正文 `\...cite*` / `\footnote` 锚点前后各 300 字窗口合并，
   `full` = 正文全文。**第 63 批起不再截断**（此前 context 4 万 / full 8 万字符上限取消，不静默丢、整篇写入；

@@ -191,6 +191,33 @@ class Rule:
     within_kaishu: bool = False
 
 
+def default_action(rule: "Rule") -> str:
+    """这条规则的**默认动作**（纯函数；B-288 任务卡「免报清单」用）。
+
+    返回值与 `docs/PROOF_RULES.md` §二「默认动作」列的**首个词**同义，共五种：
+
+    * `初排自动改` —— 在初排白名单 `INITIAL_LAYOUT_FIXABLE` 里（14 条）；
+    * `初排自动搬位` —— ZH-10/ZH-11：不是替换而是按命中 span 搬标点
+      （`build._PROOF_AUTOFIX_IDS` 另含这两条；它们**不在** `fixable`/白名单里，
+      所以必须单列，不能按 `fixable` 推）；
+    * `仅 --fix` —— 可修但默认初排不启用（当前为空集，保留分支给后批）；
+    * `只报（噪声大）` —— `noisy=True` 且不在白名单里（ZH-07）；
+    * `只报` —— 其余（含 `fixable=False` 的语义类规则）。
+
+    判据顺序不能换：ZH-08 同时 `noisy=True` 又在初排白名单里，表里是「初排自动改」。
+    `INITIAL_LAYOUT_FIXABLE` 定义在本模块后半段，函数体内按全局名读取（调用时已注册）。
+    """
+    if rule.id in ("ZH-10", "ZH-11"):
+        return "初排自动搬位"
+    if rule.id in INITIAL_LAYOUT_FIXABLE:
+        return "初排自动改"
+    if rule.noisy:
+        return "只报（噪声大）"
+    if rule.fixable:
+        return "仅 --fix"
+    return "只报"
+
+
 # 半角 → 全角（只在「两侧都是中文」时用，所以不会被用在英文/数字语境里）
 _HALF2FULL = {",": "，", ".": "。", ":": "：", ";": "；", "?": "？", "!": "！"}
 
