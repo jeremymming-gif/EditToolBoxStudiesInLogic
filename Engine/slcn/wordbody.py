@@ -1200,7 +1200,6 @@ def parse_docx(path: str, quote_threshold: int = 105,
             def _alias_key(_k: str) -> str:
                 # B-199：多作品键是 "K1,K2" 逗号串 → **逐键**改写（整串 .get 永不命中）
                 return ",".join(_union_alias.get(p, p) for p in str(_k).split(","))
-
             for _fid, _k in list(keymap.items()):
                 keymap[_fid] = _alias_key(_k)
             for _fid, _fn in fn_objs.items():
@@ -1211,8 +1210,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
             for _old, _newk in _union_alias.items():
                 if _old in doc.ref_raw_by_key and _newk not in doc.ref_raw_by_key:
                     doc.ref_raw_by_key[_newk] = doc.ref_raw_by_key.pop(_old)
-        # 中文文献条目型兜底（86-03）：解析字段可能为空 → 指纹相同被 union 合并成 1 条；
-        # 这里把丢掉的 guard 条目按原键补回（内容来自原文，仍由 entry_to_bib 兜底渲染）。
+        # 中文文献条目型兜底（86-03）：字段可能为空被 union 合并 → 按原键补回 guard 条目。
         _now_keys = {k for k, _e, _r in doc.bib_entries}
         for _gfid in _guard_entries:
             _gf = fn_objs.get(_gfid)
@@ -1227,7 +1225,9 @@ def parse_docx(path: str, quote_threshold: int = 105,
                          f"{len(_end_entries_snapshot)} 条 + 脚注条目 "
                          f"{len(_new_entries)} 条 → {len(doc.bib_entries)} 条")
             doc.warnings.append(say_union)
-
+        from .wordbody_b312 import apply_footnote_container_fields as _b312_apply  # B-312 修法 A
+        if (_b312_n := _b312_apply(doc)):  # c_class_union 门控内；--no-c-class-union 零执行
+            doc.warnings.append(f"   脚注/编号条目容器字段补全：{_b312_n} 条（B-312 修法 A）")
     # ⑤.3b 第 121 条：英文纯注释（含上一步由英文散文脚注降级来的）里的
     # 人年制引用也替换成 \parencite——人工成品在脚注里同样做了引用替换。
     # 只处理**不含中文**的注释，中文脚注体例保持逐字节不变。
