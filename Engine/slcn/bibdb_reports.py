@@ -957,13 +957,25 @@ AUTHOR_REPORT_APPLY = "B2-author-normalize-apply.md"
 
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
 #: 机构/组织作者的明显词（人名里一般不会出现；命中就整条不动）
+#: B-291：补罗马字日文机构词（长音/无长音变体 `Kankōkai|Kankokai` 等）；`Board` 不作
+#: 孤立判据（`Oliver Board` 是真人名，B-248 误报），只认下面 `Board of/for/on …` 组合。
 _INSTITUTION_RE = re.compile(
     r"\b(?:Association|Society|Organization|Organisation|Institute|University|Universit[äa]t|"
     r"College|School|Department|Faculty|Center|Centre|Committee|Council|Group|Team|Consortium|"
-    r"Network|Agency|Office|Bureau|Board|Panel|Project|Workshop|Conference|Congress|Foundation|"
+    r"Network|Agency|Office|Bureau|Panel|Project|Workshop|Conference|Congress|Foundation|"
     r"Corporation|Company|Inc|Ltd|Press|Publishing|Ministry|Government|Bank|Laboratory|Lab|"
     r"Commission|Federation|Union|Academy|Trust|Forum|Initiative|Platform|Alliance|Coalition|"
-    r"Staff|Members|Contributors|Editors|Editorial)\b", re.I)
+    r"Staff|Members|Contributors|Editors|Editorial|"
+    r"Daigaku|Kank[oō]kai|Hensh[ūu]bu|Sh[ūu]eisha)\b", re.I)
+#: `Board` 单独出现不算机构（`Oliver Board` 是人名）；只有「Board of/for/on …」组合才算。
+_INSTITUTION_BOARD_RE = re.compile(r"\bBoard\s+(?:of|for|on)\b", re.I)
+
+
+def is_institution_author(value: str) -> bool:
+    """作者/编者值是否疑似机构/组织（`_author_skip_reason()` 机构判据的单点）。"""
+    text = (value or "").strip()
+    return bool(text and (_INSTITUTION_RE.search(text)
+                          or _INSTITUTION_BOARD_RE.search(text)))
 
 
 def _author_skip_reason(value: str) -> str:
@@ -973,7 +985,7 @@ def _author_skip_reason(value: str) -> str:
         return "空值"
     if _CJK_RE.search(text):
         return "含中文/日文（不倒装）"
-    if _INSTITUTION_RE.search(text):
+    if is_institution_author(text):
         return "疑似机构/组织作者（不推断）"
     if re.search(r"@|https?://", text):
         return "含邮箱/网址（不推断）"

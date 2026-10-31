@@ -3126,6 +3126,15 @@ class Store:
           · `duplicate_content`：一组内容相同的记录被 ack（keys 列全该组）→ 整组不提示；
           · sidecar 坏 / version 不对 / key 解析不了 → **不抛异常、errors 仍 0**，只多一条
             聚合 warning（`warning_items[].code="health_ignore"`，count = 问题数）。
+
+        B-291 增补（作者/编者未倒装可见性，**只读**、不改库、不改退出码）：
+          · `counts.needs_inversion` = `{author, editor, institution}`：按角色统计
+            `not author_is_inverted()` 的非空值条数；`institution` 是其中机构名条数
+            （判据 `is_institution_author()`，与库→稿件回填的机构名守卫同源）；
+          · 非零时追加一条 `warnings`/`warning_items`（code=`needs_inversion`），
+            `counts.warnings` 相应 +1；只提示、不自动改值。
+          · 顶层 `needs_inversion` 与 `counts.needs_inversion` **同值**（spec C4 的
+            `--json.needs_inversion` 字面 + B-143 counts 口径，只加不改）。
         """
         errors: list[str] = list(self.problems)
         warnings: list[str] = []
@@ -3151,6 +3160,12 @@ class Store:
         unknown_types: Counter[str] = Counter()
         unknown_type_keys: dict[str, list[str]] = {}
         conflict_pending_rows: list[str] = []
+        # B-291：未倒装残留只读计数（author/editor 两个角色 + 其中机构名条数）
+        inversion_needs = {"author": 0, "editor": 0}
+        inversion_institutions = 0
+        inversion_keys: list[str] = []
+        # 局部 import：`bibdb_reports` 顶层 `from slcn import bibdb`，放模块顶部会循环
+        from .bibdb_reports import is_institution_author
 
         def _item(code: str, registry: str, detail: str, action: str, count: int,
                   keys_sample: "list[str] | None" = None,
@@ -3214,6 +3229,15 @@ class Store:
             if not entry_year(fields):
                 missing_year += 1
                 missing_year_keys.append(key)
+            # B-291：未倒装（含机构名）只读计数——不改库，只让残留可见
+            for role in ("author", "editor"):
+                value = str(fields.get(role) or "").strip()
+                if value and not bibnorm.author_is_inverted(value):
+                    inversion_needs[role] += 1
+                    if is_institution_author(value):
+                        inversion_institutions += 1
+                    if key not in inversion_keys:
+                        inversion_keys.append(key)
             doi = fields.get("doi") or ""
             if doi and not normalize_doi(doi):
                 bad_doi += 1
@@ -3349,6 +3373,23 @@ class Store:
                   "文件坏了不阻塞 lint，但 ack 可能不生效）",
                   len(problems), [os.path.basename(health["path"])],
                   [os.path.basename(health["path"])])
+        # B-291：author/editor 未倒装残留（只读信号；人名候选走 `normalize-authors`，
+        # 机构名由人工确认后加花括号——本批只报告、不写库）。
+        inversion_total = inversion_needs["author"] + inversion_needs["editor"]
+        if inversion_total:
+            detail = (f"author/editor 未倒装 {inversion_total} 条"
+                      f"（author {inversion_needs['author']} / "
+                      f"editor {inversion_needs['editor']}；其中机构名 "
+                      f"{inversion_institutions} 条）")
+            warnings.append(detail)
+            _item("needs_inversion", "other", detail,
+                  "人名候选看 `bibdb.py normalize-authors --dry-run`；机构名确认后加花括号"
+                  "（本批只报告，不自动倒装）",
+                  inversion_total, inversion_keys[:5], inversion_keys)
+        # B-291：`{author,editor,institution}`（顶层 alias 与 counts 内同值，见返回处注释）
+        needs_inversion = {"author": inversion_needs["author"],
+                           "editor": inversion_needs["editor"],
+                           "institution": inversion_institutions}
         counts = {
             "records": len(self._by_key),
             "raw_lines": len(records),
@@ -3365,9 +3406,14 @@ class Store:
             "near_duplicates": pair_total,
             # B-204：被 sidecar 抑制的 pair 数（审计；不影响「待办」口径）
             "near_duplicates_acknowledged": near_acked,
+            # B-291：author/editor 未倒装条数 + 其中机构名条数（只读；不写库）
+            "needs_inversion": needs_inversion,
         }
+        # 顶层 `needs_inversion` 与 `counts.needs_inversion` **同值**：前者对 spec C4 的
+        # `--json.needs_inversion` 字面，后者与 B-143/B-204 的 counts 口径一致（只加不改）。
         return {"ok": not errors, "errors": errors[:200],
                 "warnings": warnings[:100], "warning_items": warning_items[:100],
+                "needs_inversion": needs_inversion,
                 "counts": counts}
 
 

@@ -992,12 +992,14 @@ def _en_entry_fields(e: RefEntry) -> dict:
 
 
 #: 机构/组织作者（不推断倒装；人名里一般不会出现）
+#: B-291：补罗马字日文机构词（长音/无长音变体），否则 Word 通道会把
+#: `Kokumin Bunko Kankōkai` 倒装成 `Kankōkai, K. B.` 写进 .bib。
 _EN_ORG_RE = re.compile(
     r"\b(?:Organization|Organisation|Association|Society|Institute|University|College|"
     r"Department|Faculty|Center|Centre|Committee|Council|Group|Consortium|Network|"
     r"Agency|Office|Bureau|Board|Panel|Project|Foundation|Corporation|Company|Inc|Ltd|"
     r"Press|Publishing|Ministry|Government|Laboratory|Commission|Federation|Union|"
-    r"Academy|WHO|UNESCO|ISO)\b", re.I)
+    r"Academy|WHO|UNESCO|ISO|Daigaku|Kank[oō]kai|Hensh[ūu]bu|Sh[ūu]eisha)\b", re.I)
 
 
 def _finalize_en_entry(e: RefEntry) -> RefEntry:

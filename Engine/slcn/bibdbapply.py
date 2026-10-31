@@ -429,8 +429,13 @@ def _render_library_text(value: str) -> str:
 def _render_library_candidates(etype: str,
                                record_fields: dict) -> list[tuple[str, str]]:
     """库记录（已 `canonical_fields`）→ 白名单候选 ``[(字段名, 渲染终值)]``（固定顺序）。
-    doi/url 的 B-189 清理需与产物字段合并，留给 `plan_library_fills()` 单点处理。"""
+    doi/url 的 B-189 清理需与产物字段合并，留给 `plan_library_fills()` 单点处理。
+
+    B-291：`author`/`editor` 先过机构名守卫（`is_institution_author()`，与
+    `_author_skip_reason()` 同源）——机构/组织值（含罗马字日文 `Kankōkai` 等）原样保留，
+    不再被倒装成 `Center, B. N. N.` 式；人名仍走 `normalize_author_field()`（行为不变）。"""
     from . import bibnorm
+    from .bibdb_reports import is_institution_author
 
     names = list(APPLY_FIELDS) + list(POLICY_FIELDS)
     if str(etype or "").strip().lower() in ONLINE_TYPES:
@@ -442,7 +447,7 @@ def _render_library_candidates(etype: str,
         raw = record_fields.get(name)
         if not isinstance(raw, str) or not raw.strip():
             continue                      # 库缺/空 → 保留产物原值（绝不写空值）
-        if name in ("author", "editor"):
+        if name in ("author", "editor") and not is_institution_author(raw):
             raw = bibnorm.normalize_author_field(raw)
         value = _render_library_text(raw)
         if not _safe_value_ok(value):

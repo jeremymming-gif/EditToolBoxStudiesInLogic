@@ -505,6 +505,9 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
   `warning_items[].code="health_ignore"`（registry=`other`，count=问题数）；坏条目忽略、好条目照常生效。
   `report-duplicates` 仍**全量审计**（不读 sidecar）；lint 只读，库字节 sha 不变。
 
+- **B-291 增补（只加不改）**：`counts` 新增 `needs_inversion:{author,editor,institution}`（author/editor 未倒装条数，`institution` = 其中机构名条数；口径 = `bibnorm.author_is_inverted`，CJK/花括号/单名视为已倒装），`warnings`/`warning_items` 新增 `code="needs_inversion"`（registry=`other`，仅 N>0 时出现；**只报告、不自动倒装**，exit code 与 0/1 口径不变）。
+  库→稿件默认回填（`bibdbapply.plan_library_fills`）遇机构名不再倒装（判据 `slcn.bibdb_reports.is_institution_author`，如 `Kokumin Bunko Kankōkai`、`Oliver Board` 仍按人名倒装），人名行为不变。
+
 **写前安全闸（B-127，`resolve` 全部写动作通用；`restore` 用同名单个参数）**：
 - `--expect-db-sha256 SHA`：**完整** 64 位十六进制，与库当前字节 sha256 一致才写；不符/格式错 → 退出 2 且**零写入**（GUI 列表/指纹过期防线）。
 - `--backup DIR`：PATH 是**目录**（不存在则写前创建；已存在同名文件 → 退出 2）→ 真的会产生写入时，写前复制一份 `bibliography-<UTCts>-<库sha前12位>.jsonl`（UTC 时间戳、定长）；dry-run / 幂等无变化**不产生备份**；同名备份已存在 → 退出 2（绝不覆盖旧备份）。

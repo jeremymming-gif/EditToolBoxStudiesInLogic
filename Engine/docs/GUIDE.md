@@ -1279,6 +1279,8 @@ safe **98.92%→99.87%**、候选 **17→2**、未命中 0；全库 84 篇 **377
 关闭，无库 / 无 bib / 读库失败**完全静默**。只增日志：`.tex` / `reference.bib` / 任务书 / argv 一律不变；
 执行核实时仍走上面旧口径（打印 `引用库：命中 X 条已核实…` 并写任务书第五节），不重复跑。
 
+**回填守卫（B-291）**：默认回填写库值时，机构名（`Center`/`University`/`Press`/`Daigaku`/`Kankōkai`/`Henshūbu`/`Shūeisha` 等；判据 `slcn/bibdb_reports.py` 的 `is_institution_author`）原样写回，不再倒装成 `Center, B. N. N.`；人名仍按编辑部规则倒装。
+
 开关（**默认口径 = 执行核实且默认库存在时自动启用**）：
 
 ```bash

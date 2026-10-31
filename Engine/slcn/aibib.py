@@ -456,6 +456,10 @@ def normalize_role_fields(entry_text: str, e: Entry, body_off: int) -> tuple[str
     """
     edits: list[tuple[int, int, str]] = []
     notes: list[str] = []
+    # B-291：机构/组织作者不倒装（与库→稿件回填 `bibdbapply` 同源守卫；
+    # 局部 import 避开 `bibdb_reports` 顶层 `from slcn import bibdb` 的循环）。
+    from .bibdb_reports import is_institution_author
+
     for name, s, en in top_field_spans(e.body):
         if name not in ROLE_FIELDS:
             continue
@@ -464,6 +468,8 @@ def normalize_role_fields(entry_text: str, e: Entry, body_off: int) -> tuple[str
         #    `entry_text` 照样成立；但要比对/替换的值必须取自 `entry_text`
         #    （否则注释内容会被当成空白读，替换也会把注释抹掉）。
         old = entry_text[vs:ve]
+        if is_institution_author(old):
+            continue                      # 机构名原样保留（含花括号写法）
         new = bibnorm.normalize_author_field(old)
         if new != old:
             edits.append((vs, ve, new))
