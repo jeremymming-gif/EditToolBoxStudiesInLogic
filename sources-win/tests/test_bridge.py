@@ -246,6 +246,14 @@ check("(b) B-283/B-285b/B-289 的口径：前 10 项**顺序逐项不变**，env
       and tuple(_DISP.ENTRIES) == tuple(E.ENTRIES),
       f"{E.ENTRIES}")
 
+# B-311（B-006）：引擎新增 `--coop-slice` 是**可选**参数 —— 默认 None（=关）；
+# 外壳不勾分片时一个参数都不加，默认 argv 与从前逐字节相同。
+_stage_src = (REPO / "Engine" / "slcn" / "convert_stage.py").read_text(encoding="utf-8")
+check("(b) B-311：`--coop-slice` 默认 None（缺省=关；不传时引擎行为不变）",
+      'add_argument("--coop-slice"' in _stage_src
+      and 'default=None' in _stage_src[_stage_src.index('add_argument("--coop-slice"'):][:260],
+      "convert_stage.py 里找不到默认 None 的 --coop-slice")
+
 c7 = E.infocheck_call(folder=r"E:\\期\\90", preview=True)
 check("(b) 检查tex信息：`--folder` + `--preview`（界面表格用）",
       c7.entry == "infocheck.py" and "--folder" in c7.argv and "--preview" in c7.argv)
@@ -2001,6 +2009,45 @@ try:
 finally:
     shutil.rmtree(_j_root, ignore_errors=True)
 
+# B-311：分片/三档状态/回填来源前缀的纯函数（headless，不建窗口）
+check("(j) B-311：slice_mode 不勾=空串（不追加任何 argv）、勾=40、非法/0 回落 40",
+      C.slice_mode(False) == "" and C.slice_mode(True) == "40"
+      and C.slice_mode(True, 0) == "40" and C.slice_mode(True, "坏") == "40")
+_t311 = {"bib_total": 4, "bib_replied": 2, "bib_pending": 2,
+         "low_total": 2, "low_replied": 1, "low_applied": 0,
+         "low_pending_manual": 1}
+check("(j) B-014：status_tier 五组合真值表（完成/需核对 N/失败/旧状态/无 stats）",
+      C.status_tier(_t311) == ("review", 3)
+      and C.status_tier({**_t311, "bib_replied": 4, "bib_pending": 0,
+                         "low_pending_manual": 0}) == ("done", 0)
+      and C.status_tier(_t311, failed=True) == ("failed", 0)
+      and C.status_tier(_t311, legacy=True) == ("review", 3)
+      and C.status_tier(None, legacy=True) == ("review", 0))
+check("(j) B-014：reply_prefix 区分剪贴板/目录/文件（Windows 不用 emoji）",
+      C.reply_prefix("/tmp/回填剪贴板-20261031-1.md") == "[剪贴板] "
+      and C.reply_prefix("/tmp/slcn-coop-clip-x/a.md") == "[剪贴板] "
+      and C.reply_prefix("/tmp") == "[目录] "
+      and C.reply_prefix("/tmp/回复.md") == "[文件] ")
+_j311 = tempfile.mkdtemp(prefix="b311_j_")
+try:
+    with open(os.path.join(_j311, C.STATE_NAME), "w", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "phase": "ph1",
+            "taskbook_task_id": "BIB-20261031-demo",
+            "taskbook_volumes": ["/tmp/卷A.md", "/tmp/卷B.md", ""],
+            "taskbook_slices": [{"index": 1, "total": 2, "path": "/tmp/片1.md"},
+                                {"index": 2, "total": 2, "path": "/tmp/片2.md"}],
+        }))
+    _j_stage = C.load_stage(_j311)
+    check("(j) B-311/B-288b：CoopStage 只读 state 的 TASK-ID/分卷/分片（空项过滤）",
+          _j_stage is not None
+          and _j_stage.taskbook_task_id == "BIB-20261031-demo"
+          and _j_stage.taskbook_volumes == ["/tmp/卷A.md", "/tmp/卷B.md"]
+          and [x["path"] for x in _j_stage.taskbook_slices]
+              == ["/tmp/片1.md", "/tmp/片2.md"])
+finally:
+    shutil.rmtree(_j311, ignore_errors=True)
+
 # ── main.py 源码守卫：协同 UI 的接线点（真窗口在 (g)；这里防「没接上」）──
 # B-230：这些页面已搬进 `tabs/*.py`，源码守卫扫整个外壳（all_src）
 check("(j) 初排转换页：默认关的「AI 协同初排（两段式）」+ 协同操作区默认隐藏",
@@ -2083,6 +2130,32 @@ check("(j) 批62 + B-286：两段式面板引导文案与 mac 逐字一致；回
       and "本页不生成《文献核实任务书》" in all_src
       and "第二段自动完成" in all_src and "引用库 → 参考文献规范化" in all_src
       and "并回产物 reference.bib" in all_src and "入藏到引用库" in all_src)
+check("(j) B-311（B-006）：初排页分片开关**默认不勾**；勾了才在 ph1 argv 末尾追加"
+      "`--coop-slice 40`（经 `C.slice_mode`；不改 `sources-win/engine.py`）",
+      "self.v_coop_slice = tk.BooleanVar(value=False)" in all_src
+      and "C.slice_mode(self.v_coop_slice.get())" in all_src
+      and 'call.argv += ["--coop-slice", slice_value]' in all_src
+      and "按片拆分任务书（每片 40 条，带片号 / TASK-ID）" in all_src)
+check("(j) B-288b：TASK-ID caption + 分片列表/路径 + 三个「打开卷 A/B/C」按钮"
+      "（都读 state 的只读字段；旧状态不显示）",
+      "任务书 TASK-ID：" in all_src
+      and "stage.taskbook_task_id" in all_src
+      and "stage.taskbook_slices" in all_src and "stage.taskbook_volumes" in all_src
+      and '"打开卷 " + _label' in all_src)
+check("(j) B-014：三档状态在结果区第一行（`C.status_tier` + 固定文案/颜色；"
+      "⛔ 失败优先级最高）",
+      "C.status_tier(" in all_src and "✅ 完成" in all_src
+      and "⚠ 需核对" in all_src and "⛔ 失败" in all_src
+      and "self._set_coop_tier(\"failed\")" in all_src)
+check("(j) B-014：回填已选清单用 `[剪贴板]/[目录]/[文件]` 文字前缀（Windows 不用 emoji），"
+      "底层路径不变（仍以 .md 结尾）",
+      "C.reply_prefix(path) + path" in all_src and "reply_prefix" in (SHELL / "coop.py").read_text(encoding="utf-8"))
+_theme_src = (SHELL / "theme.py").read_text(encoding="utf-8")
+check("(j) B-014：Listbox 焦点环恢复（共享 style_listbox：thickness=1 + accent + line），"
+      "toc 页同受益（不另改 toc.py）",
+      "highlightthickness=1" in _theme_src and 'highlightcolor=COLOR["accent"]' in _theme_src
+      and 'highlightbackground=COLOR["line"]' in _theme_src
+      and "takefocus=True" in _theme_src)
 check("(j) 协同运行**不把 API 配置传给引擎**（`api=None`，外部 chat 零上传/零费用；"
       "与 mac 强制 useAI=false 同口径）",
       "api=None if coop_phase else" in all_src)
@@ -2263,6 +2336,39 @@ check("(k) 差异只剩已声明的两处：bibreview 标题（待处理/待裁�
       [t for t in WIN_TITLES if t not in _mac_titles_all] == ["待裁决"]
       and [t for t in _mac_titles_all if t not in WIN_TITLES] == ["待处理"]
       and len(_mac_titles_all) == len(WIN_TITLES) == 15)
+
+# B-311（B-006/B-288b/B-014）：这批新增界面**两壳对等**（写域名不同，但文案/入口/默认值
+# 同一口径）。mac 侧在 Views/ConvertTabCoop.swift + Features/CoopFeature.swift，win 侧在
+# tabs/convert.py + coop.py；这里逐字对照，防止只改一壳。
+_mac_coop_src = (REPO / "sources-mac" / "Views" / "ConvertTabCoop.swift").read_text(
+    encoding="utf-8")
+_mac_feature_src = (REPO / "sources-mac" / "Features" / "CoopFeature.swift").read_text(
+    encoding="utf-8")
+_win_convert_src = (SHELL / "tabs" / "convert.py").read_text(encoding="utf-8")
+_win_coop_src = (SHELL / "coop.py").read_text(encoding="utf-8")
+check("(k) B-311：分片开关文案/默认关两壳一致（mac 会话态静态变量、win tk.BooleanVar(False)）",
+      "按片拆分任务书（每片 40 条，带片号 / TASK-ID）" in _mac_coop_src
+      and "按片拆分任务书（每片 40 条，带片号 / TASK-ID）" in _win_convert_src
+      and "static var coopSliceEnabled = false" in _mac_feature_src
+      and "self.v_coop_slice = tk.BooleanVar(value=False)" in _win_convert_src)
+check("(k) B-288b：TASK-ID caption / 分卷按钮 / 分片入口两壳同名（读 state 同一批键）",
+      "任务书 TASK-ID：" in _mac_coop_src and "任务书 TASK-ID：" in _win_convert_src
+      and "打开卷 " in _mac_coop_src and '"打开卷 " + _label' in _win_convert_src
+      and "打开分片" in _mac_coop_src and "taskbook_slices" in _win_convert_src
+      and "taskbookTaskID" in _mac_feature_src and "taskbook_task_id" in _win_coop_src)
+check("(k) B-014：三档状态文案两壳同口径（完成 / 需核对 N 处 / 失败；失败优先）",
+      "✅ 完成" in _win_convert_src and "⚠ 需核对" in _win_convert_src
+      and "⛔ 失败" in _win_convert_src
+      and '"需核对 \\(count) 处"' in _mac_coop_src
+      and '"完成"' in _mac_coop_src and '"失败"' in _mac_coop_src
+      and "xmark.octagon.fill" in _mac_coop_src
+      and "status_tier" in _win_coop_src and "statusTier" in _mac_feature_src)
+check("(k) B-014：回填来源图标两壳同义不同形（mac SF Symbols / win 方括号文字；均无 emoji）",
+      "doc.on.clipboard" in _mac_coop_src and "folder" in _mac_coop_src
+      and "doc.text" in _mac_coop_src
+      and "📋" not in _mac_coop_src and "📁" not in _mac_coop_src
+      and "[剪贴板] " in _win_coop_src and "[目录] " in _win_coop_src
+      and "[文件] " in _win_coop_src)
 
 check("(k) sources-win/README.md 声明 15 页 / 13 入口 / 只剩两处已声明差异",
       "## 十五个页面" in WIN_README

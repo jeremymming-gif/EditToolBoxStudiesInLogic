@@ -41,6 +41,9 @@ extension ConvertTab {
             Text(Self.coopFulltextHintText)
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // ---------- B-006：任务书自动分片（默认关；不勾 → argv 逐字节不变）----------
+            Divider()
+            coopSliceToggleRow
             coopStageSection
         }
         .padding(10)
@@ -74,6 +77,23 @@ extension ConvertTab {
             .labelsHidden()
             .padding(.leading, 18)
         }
+    }
+
+    private var coopSliceToggleRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle("按片拆分任务书（每片 40 条，带片号 / TASK-ID）",
+                   isOn: coopSliceBinding)
+                .toggleStyle(.checkbox)
+            Text("（分片后请逐片回传；不勾 = 与从前一样只有一份任务书）")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 分片开关是**会话态**：默认关、不落盘；写在 `CoopFeature` 里（写域内，最小改动）。
+    private var coopSliceBinding: Binding<Bool> {
+        Binding(get: { CoopFeature.coopSliceEnabled },
+                set: { CoopFeature.coopSliceEnabled = $0 })
     }
 
     @ViewBuilder private var coopStageSection: some View {
@@ -158,12 +178,49 @@ extension ConvertTab {
 
     @ViewBuilder private var deliveredResultSection: some View {
         if let result = model.coopResult {
+            deliveredTierRow(result)
             Text(result.summaryLine)
                 .font(.callout).bold()
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             deliveredZeroBibWarning(result)
             deliveredLegacyNote(result)
+        }
+    }
+
+    /// B-014 U6-3：结果区第一行的三档状态（图标 + 文字 + 颜色，三通道）。
+    @ViewBuilder private func deliveredTierRow(_ result: CoopFeature.CoopResult) -> some View {
+        let tier = CoopFeature.statusTier(stats: result.stats, legacy: result.stats.legacy)
+        HStack(spacing: 6) {
+            Image(systemName: tierSymbol(tier.tier))
+            Text(tierText(tier.tier, count: tier.count))
+        }
+        .font(.callout).bold()
+        .foregroundStyle(tierColor(tier.tier))
+        .accessibilityLabel(tierText(tier.tier, count: tier.count))
+    }
+
+    private func tierSymbol(_ tier: String) -> String {
+        switch tier {
+        case "failed": return "xmark.octagon.fill"
+        case "review": return "exclamationmark.triangle.fill"
+        default: return "checkmark.circle.fill"
+        }
+    }
+
+    private func tierText(_ tier: String, count: Int) -> String {
+        switch tier {
+        case "failed": return "失败"
+        case "review": return count > 0 ? "需核对 \(count) 处" : "需核对"
+        default: return "完成"
+        }
+    }
+
+    private func tierColor(_ tier: String) -> Color {
+        switch tier {
+        case "failed": return .red
+        case "review": return .orange
+        default: return .green
         }
     }
 
@@ -193,6 +250,9 @@ extension ConvertTab {
             .font(.system(.caption, design: .monospaced))
             .textSelection(.enabled)
         pendingStageButtons(stage)
+        pendingTaskbookMeta(stage)
+        pendingSlicesSection(stage)
+        pendingVolumesRow(stage)
         Divider().padding(.vertical, 2)
         Text("回填导入").font(.callout).bold()
         pendingRepliesImportRow
@@ -235,6 +295,56 @@ extension ConvertTab {
         }
     }
 
+    /// B-288b：TASK-ID 一行 caption（旧状态没有这个键 → 不显示）。
+    @ViewBuilder private func pendingTaskbookMeta(_ stage: CoopFeature.StageState) -> some View {
+        if !stage.taskbookTaskID.isEmpty {
+            Text("任务书 TASK-ID：\(stage.taskbookTaskID)"
+                 + "（分片/分卷时按片回传；片头 TASK-ID 必须与本次一致）")
+                .font(.caption).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// B-006：分片列表（片号 + 文件名，点「打开分片」直达该片）。
+    @ViewBuilder private func pendingSlicesSection(_ stage: CoopFeature.StageState) -> some View {
+        if !stage.taskbookSlices.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(stage.taskbookSlices, id: \.path) { slice in
+                    HStack(spacing: 6) {
+                        Button("打开分片 \(slice.index)/\(slice.total)") {
+                            openPath(slice.path)
+                        }
+                        .buttonStyle(.borderless)
+                        Text((slice.path as NSString).lastPathComponent)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+            }
+        }
+    }
+
+    /// B-288b：分卷入口（`--coop-split` 写出的卷 A/B/C；旧状态没有就不显示）。
+    @ViewBuilder private func pendingVolumesRow(_ stage: CoopFeature.StageState) -> some View {
+        if !stage.taskbookVolumes.isEmpty {
+            HStack(spacing: 8) {
+                Text("分卷：").font(.caption).foregroundStyle(.secondary)
+                ForEach(Array(stage.taskbookVolumes.enumerated()), id: \.offset) { index, path in
+                    Button("打开卷 \(volumeLetter(index))") { openPath(path) }
+                        .buttonStyle(.borderless)
+                }
+            }
+        }
+    }
+
+    private func volumeLetter(_ index: Int) -> String {
+        let letters = ["A", "B", "C"]
+        return index >= 0 && index < letters.count ? letters[index] : String(index + 1)
+    }
+
     @ViewBuilder private var pendingRunningSpinner: some View {
         if model.running {
             ProgressView().controlSize(.small)
@@ -266,8 +376,9 @@ extension ConvertTab {
 
     private func pendingReplyRow(index: Int, item: CoopFeature.ReplyItem) -> some View {
         HStack(spacing: 6) {
-            Text(replyIcon(item))
+            Image(systemName: replyIcon(item))
                 .font(.caption)
+                .foregroundStyle(.secondary)
             Text(item.displayName).font(.caption)
             Text(item.path)
                 .font(.system(.caption2, design: .monospaced))
@@ -283,8 +394,10 @@ extension ConvertTab {
         .padding(.leading, 12)
     }
 
+    /// B-014 U6-2：mac 用 SF Symbols（不再用 emoji；`Text` 文案一个字不改）。
     private func replyIcon(_ item: CoopFeature.ReplyItem) -> String {
-        CoopFeature.isClipboardDraft(item.path) ? "📋" : (item.isDirectory ? "📁" : "📄")
+        CoopFeature.isClipboardDraft(item.path)
+            ? "doc.on.clipboard" : (item.isDirectory ? "folder" : "doc.text")
     }
 
     private var pendingApplySection: some View {

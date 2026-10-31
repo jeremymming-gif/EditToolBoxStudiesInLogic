@@ -43,6 +43,17 @@ enum CoopFeature {
     /// 低置信建议清单后缀（`coop.SUGGESTIONS_SUFFIX`，后面补 `.md` / `.jsonl`）
     static let suggestionsSuffix = "_AI建议"
 
+    /// B-006：本窗口「按片拆分任务书」的勾选（会话态，默认关、不落盘）。
+    /// 勾上后 `firstPhaseFlags` 在 `--coop-taskbook-only` 之后追加 `--coop-slice 40`；
+    /// 不勾时**一个参数都不加**（off 时 argv 逐字节不变）。
+    ///
+    /// 为什么放在这里而不是 `ConvertFeature.Options`：Stage B 的写域只含
+    /// `CoopFeature.swift` / `ConvertTabCoop.swift`，`ConvertFeature.swift` 是冻结文件；
+    /// 分片开关是**纯会话态**（不参与持久化、不影响普通转换），放这里最小。
+    static var coopSliceEnabled = false
+    /// 每片条数（B-006 定稿 30–50 条/片；界面固定取中值 40）。
+    static let coopSlicePer = 40
+
     // MARK: - 路径标准化
 
     /// 与 `PathKit.normalize` 同一口径：展开 `~`、去首尾空白、标准化、相对路径补 CWD。
@@ -70,6 +81,8 @@ enum CoopFeature {
     /// 传了只会让日志与事实不符（引擎虽然会忽略，但「界面承诺 = 引擎真收到的东西」）。
     static func firstPhaseFlags(_ o: ConvertFeature.Options) -> [String] {
         var a = ["--verify-refs", "--no-ai-merge", "--coop-taskbook-only"]
+        // B-006：分片开关（默认关）——不勾时下面一行不进 argv，与从前逐字节相同。
+        if coopSliceEnabled { a += ["--coop-slice", String(coopSlicePer)] }
         let stage = normalizePath(o.coopStage)
         if !stage.isEmpty { a += ["--coop-stage", stage] }
         return a
@@ -127,6 +140,13 @@ enum CoopFeature {
 
     // MARK: - 暂存目录状态（只读 `_AI协同状态.json`）
 
+    /// 一片任务书的只读引用（state `taskbook_slices` 的一项；路径由引擎写、界面只读）。
+    struct TaskbookSlice: Equatable {
+        var index = 0
+        var total = 0
+        var path = ""
+    }
+
     /// 一个 ph1 暂存目录的状态摘要（**不是交付目录**；GUI 不许把它当产物目录展示）。
     struct StageState: Equatable {
         var stageDir = ""
@@ -149,6 +169,12 @@ enum CoopFeature {
         var legacyBibReplied = 0
         var legacyLowTotal = 0
         var legacyAppliedLow = 0
+        /// B-288b：任务书 TASK-ID（引擎写进 state；旧状态没有 → 空串）。
+        var taskbookTaskID = ""
+        /// B-288b：`--coop-split` 写出的卷 A/B/C 绝对路径（旧状态 → 空数组）。
+        var taskbookVolumes: [String] = []
+        /// B-006：第一段写出的分片清单（旧状态 → 空数组）。
+        var taskbookSlices: [TaskbookSlice] = []
 
         /// 是否已经完成第二段并交付。
         var delivered: Bool { phase == "done" && !deliveredTo.isEmpty }
@@ -214,6 +240,15 @@ enum CoopFeature {
             ? replied.count
             : replied.filter { bibKeys.contains($0) }.count
         s.legacyAppliedLow = intValue(obj["applied_low_confidence"]) ?? 0
+        s.taskbookTaskID = stringValue(obj["taskbook_task_id"])
+        s.taskbookVolumes = stringArray(obj["taskbook_volumes"])
+        s.taskbookSlices = (obj["taskbook_slices"] as? [[String: Any]] ?? []).compactMap { item in
+            let path = stringValue(item["path"])
+            guard !path.isEmpty else { return nil }
+            return TaskbookSlice(index: intValue(item["index"]) ?? 0,
+                                 total: intValue(item["total"]) ?? 0,
+                                 path: path)
+        }
         s.stem = stringValue(params["stem"])
         if s.stem.isEmpty && !s.stageDir.isEmpty {
             // 兜底：默认暂存目录名 = `<stem>_待核`
@@ -574,6 +609,21 @@ enum CoopFeature {
         return "文献回填 \(stats.bibReplied)/\(stats.bibTotal)（\(mergedText)，"
             + "未回填 \(stats.effectiveBibPending)）｜低置信回复 \(stats.lowReplied)"
             + "（应用 \(stats.lowApplied) / 仅记录待人工 \(stats.lowPendingManual)）"
+    }
+
+    /// 三档状态（B-014 U6-3）：`("done", 0)` / `("review", n)` / `("failed", 0)`。
+    ///
+    /// 真值表与 win `coop.status_tier` **逐条相同**（两壳同一张 fixture 表）：
+    /// 运行失败 → failed；没有 stats（旧状态/读不到）→ review 0；`n` 只从现有
+    /// stats 键求和（文献未回填 + 低置信仅记录待人工），不新增任何引擎统计；
+    /// legacy（回退估算）即便 n=0 也归 review（不能宣称「完成」）。
+    static func statusTier(stats: CoopStats?, legacy: Bool,
+                           failed: Bool = false) -> (tier: String, count: Int) {
+        if failed { return ("failed", 0) }
+        guard let stats = stats else { return ("review", 0) }
+        let n = max(0, stats.effectiveBibPending) + max(0, stats.lowPendingManual)
+        if n > 0 || legacy { return ("review", n) }
+        return ("done", 0)
     }
 
     /// 读 state.stats（旧状态回退：协同记录 → 旧 state 字段 → 建议 jsonl），并算摘要/警告。

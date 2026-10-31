@@ -193,6 +193,26 @@ class ConvertTab(TabPage):
         for _btn in (self.coop_taskbook_btn, self.coop_stage_btn, self.coop_deliver_btn,
                      self.coop_record_btn, self.coop_suggest_btn):
             _btn.pack(side="left", padx=(0, 6))
+        # ── B-288b：TASK-ID 展示（引擎写进 state；旧状态没有就不显示）──────────
+        self.coop_task_id_label = ttk.Label(self.coop_panel, text="",
+                                            style="Muted.TLabel",
+                                            wraplength=820, justify="left")
+        self.coop_task_id_label.pack(anchor="w")
+        # ── B-006：分片列表/路径（第一段写入 state 后才有内容）──────────────
+        self.v_coop_slices = tk.StringVar(value="")
+        ttk.Label(self.coop_panel, textvariable=self.v_coop_slices,
+                  style="Muted.TLabel", wraplength=820,
+                  justify="left").pack(anchor="w")
+        # ── B-288b：分卷入口（`--coop-split`；三个固定按钮，缺卷时禁用）────
+        vol_row = ttk.Frame(self.coop_panel)
+        vol_row.pack(anchor="w", pady=(2, 0))
+        ttk.Label(vol_row, text="分卷：", style="Muted.TLabel").pack(side="left")
+        self.coop_volume_btns: list[ttk.Button] = []
+        for _label in ("A", "B", "C"):
+            _b = ttk.Button(vol_row, text="打开卷 " + _label, width=10,
+                            state="disabled")
+            _b.pack(side="left", padx=(0, 6))
+            self.coop_volume_btns.append(_b)
         # ── 批59：全文 AI 核查（任务书附正文；默认关，软件零上传/零费用）─────────
         # 用户 2026-10-20 授权全文外发（可选即可），但**默认不勾**；勾了才在 ph1 的
         # argv 追加 `--coop-fulltext context|full`（引擎把正文/引用上下文附进任务书，
@@ -218,6 +238,16 @@ class ConvertTab(TabPage):
                  "⚠ 只对「开始第一段（出任务书）」生效；第二段续跑与交付不受影响。",
             style="Muted.TLabel", wraplength=820, justify="left")
         self.coop_fulltext_hint.pack(anchor="w")
+        # ── B-006：任务书自动分片（默认关）──────────────────────────────────
+        # 不勾 → `coop_ph1_call` 一个参数都不加（argv 与从前逐字节相同）。
+        # 勾了才在 ph1 argv 末尾追加 `--coop-slice 40`（固定 40 条/片，落 30–50 区间）。
+        slice_row = ttk.Frame(self.coop_panel)
+        slice_row.pack(anchor="w", pady=(4, 0))
+        self.v_coop_slice = tk.BooleanVar(value=False)
+        _check(slice_row, "按片拆分任务书（每片 40 条，带片号 / TASK-ID）",
+               self.v_coop_slice).pack(side="left")
+        ttk.Label(slice_row, text="（分片后请逐片回传；不勾 = 与从前一样只有一份任务书）",
+                  style="Muted.TLabel").pack(side="left", padx=(8, 0))
         # ── 批56：回填导入（多文件/目录/剪贴板 → 已选清单；可移除/清空）──────────
         # 用户实测：mac 上多选两个文件被折叠成父目录、只导入了 json 丢了 bibtex。
         # 这里把「已选清单」做成可见、可改的：每个路径按顺序作为一个 `--coop-replies`
@@ -264,6 +294,10 @@ class ConvertTab(TabPage):
                              "文献字段→bib、元数据→.tex 的 \\my*、citation_unmatched 脚注→.tex 的 "
                              "\\parencite；须在运行前勾选，交付后重跑是幂等早退",
                   style="Muted.TLabel").pack(side="left", padx=(6, 0))
+        # ── B-014 U6-3：三档状态（结果区第一行；文案固定 ✅完成/⚠需核对 N 处/⛔失败）──
+        self.v_coop_tier = tk.StringVar(value="")
+        self.coop_tier_label = ttk.Label(self.coop_panel, textvariable=self.v_coop_tier)
+        self.coop_tier_label.pack(anchor="w", pady=(3, 0))
         self.v_coop_summary = tk.StringVar(value="")
         ttk.Label(self.coop_panel, textvariable=self.v_coop_summary, style="Muted.TLabel",
                   wraplength=820, justify="left").pack(anchor="w", pady=(3, 0))
@@ -369,10 +403,47 @@ class ConvertTab(TabPage):
             state=_on(stage.delivery_dir if delivered else ""))
         self.coop_record_btn.config(state=_on(stage.record_path if delivered else ""))
         self.coop_suggest_btn.config(state=_on(stage.suggestions_md if stage else ""))
+        task_id = stage.taskbook_task_id if stage else ""
+        self.coop_task_id_label.config(
+            text=(f"任务书 TASK-ID：{task_id}（分片/分卷时按片回传；片头 TASK-ID 必须一致）"
+                  if task_id else ""))
+        self._refresh_coop_slices(stage)
+        volumes = stage.taskbook_volumes if stage else []
+        for btn, path in zip(self.coop_volume_btns, (volumes + ["", "", ""])[:3]):
+            btn.config(state=_on(path), command=lambda p=path: self._coop_open(p))
         # 批56：第二段要「已选回填清单」非空才可运行（无回填时明确禁用，不让人白点）
         self.coop_import_btn.config(
             state="normal" if (stage and not delivered and self._coop_sel.count > 0)
             else "disabled")
+
+    def _refresh_coop_slices(self, stage: C.CoopStage | None) -> None:
+        """把 `taskbook_slices` 显示成「分片 k/n：路径」（没有分片时清空）。"""
+        slices = stage.taskbook_slices if stage else []
+        if not slices:
+            self.v_coop_slices.set("")
+            return
+        parts = []
+        for item in slices:
+            try:
+                index, total = int(item.get("index") or 0), int(item.get("total") or 0)
+            except (TypeError, ValueError):
+                index, total = 0, 0
+            path = str(item.get("path") or "")
+            parts.append(f"分片 {index}/{total}：{path}")
+        self.v_coop_slices.set("｜".join(parts) +
+                               "（回填时请逐片导入；缺片只会提示，不会改动产物）")
+
+    def _set_coop_tier(self, tier: str, count: int = 0) -> None:
+        """三档状态文字 + 颜色（文字/颜色双通道，不靠颜色单一区分）。"""
+        if tier == "failed":
+            self.v_coop_tier.set("⛔ 失败")
+            self.coop_tier_label.config(foreground=theme.COLOR["error"])
+        elif tier == "review":
+            self.v_coop_tier.set(f"⚠ 需核对 {count} 处" if count else "⚠ 需核对")
+            self.coop_tier_label.config(foreground=theme.COLOR["warn"])
+        else:
+            self.v_coop_tier.set("✅ 完成")
+            self.coop_tier_label.config(foreground=theme.COLOR["ok"])
 
     def apply_coop_result(self, payload: dict, code: int) -> None:
         """工作线程跑完后的协同结果 → 界面状态（只能主线程调；`_worker` 经队列送来）。"""
@@ -386,6 +457,7 @@ class ConvertTab(TabPage):
                 if stage is not None and stage.found > 1 else "")
         if code == 0 and phase == "ph1" and stage is not None:
             self._set_coop_warning("")
+            self._set_coop_tier("review")      # 第一段只出任务书：待人工核实
             self.v_coop_status.set(f"状态：{stage.status_text}")
             self.v_coop_summary.set(
                 f"暂存目录：{stage.stage_dir}｜任务书："
@@ -405,8 +477,12 @@ class ConvertTab(TabPage):
             self.v_coop_summary.set(
                 f"交付目录：{stage.delivery_dir}｜{text}｜协同记录：{C.RECORD_NAME}{cand}")
             self._set_coop_warning(str(summary.get("warning") or ""))
+            self._set_coop_tier(*C.status_tier(
+                summary.get("stats") or {}, legacy=bool(summary.get("legacy")),
+                failed=False))
         else:
             self._set_coop_warning("")
+            self._set_coop_tier("failed")
             why = payload.get("error") or f"退出码 {code}"
             self.v_coop_status.set(f"状态：{C.STATUS_FAILED}（{why}）")
             if stage is not None:
@@ -463,7 +539,7 @@ class ConvertTab(TabPage):
         paths = self._coop_sel.paths
         self.coop_list.delete(0, tk.END)
         for path in paths:
-            self.coop_list.insert(tk.END, path)
+            self.coop_list.insert(tk.END, C.reply_prefix(path) + path)
         self.v_coop_sel.set(self._coop_sel.label())
         has_items = bool(paths)
         self.coop_remove_btn.config(state="normal" if has_items else "disabled")
@@ -541,7 +617,13 @@ class ConvertTab(TabPage):
         args["coop_taskbook_only"] = True
         args["coop_fulltext"] = C.coop_fulltext_mode(self.v_coop_fulltext.get(),
                                                      self.v_coop_fulltext_scope.get())
-        return E.convert_call(source=self.path(), out=out, **args)
+        call = E.convert_call(source=self.path(), out=out, **args)
+        # B-006：分片开关**默认关** → 一个参数都不加（argv 与从前逐字节相同）。
+        # 勾了才追加 `--coop-slice 40`；追加在末尾（argparse 与位置无关）。
+        slice_value = C.slice_mode(self.v_coop_slice.get())
+        if slice_value:
+            call.argv += ["--coop-slice", slice_value]
+        return call
 
     def coop_ph2_call(self, replies) -> E.EngineCall:
         """第二段 argv（最小集）：**重复** `--coop-replies`（按已选顺序）+ 其余由状态继承。

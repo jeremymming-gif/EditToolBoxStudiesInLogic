@@ -2112,6 +2112,70 @@ check("n1b-ph1-stage", "ph1 + 自定义暂存目录 → 恰好带 `--coop-stage 
       n1bArgv.contains("--coop-stage") && n1bArgv.last == n1bStage,
       "tail=\(Array(n1bArgv.suffix(2)))")
 
+// B-311 S1：分片开关（默认关 → argv 逐字节不变；开启 → 恰好一个 --coop-slice 40）
+let b006Off = CoopFeature.firstPhaseFlags(ConvertFeature.Options())
+check("b006-slice-off", "B-006：分片开关默认关 → ph1 仍是三个契约旗标，argv 里没有 --coop-slice",
+      b006Off == ["--verify-refs", "--no-ai-merge", "--coop-taskbook-only"],
+      "flags=\(b006Off)")
+CoopFeature.coopSliceEnabled = true
+let b006On = CoopFeature.firstPhaseFlags(ConvertFeature.Options())
+CoopFeature.coopSliceEnabled = false
+check("b006-slice-on", "B-006：勾选分片 → 恰好追加一个 `--coop-slice 40`（在 --coop-taskbook-only 之后）",
+      b006On == ["--verify-refs", "--no-ai-merge", "--coop-taskbook-only",
+                 "--coop-slice", "40"]
+        && b006On.filter { $0 == "--coop-slice" }.count == 1,
+      "flags=\(b006On)")
+check("b006-slice-reset", "B-006：测试把会话态还原为关（不影响后续用例）",
+      CoopFeature.coopSliceEnabled == false && CoopFeature.coopSlicePer == 40, "ok")
+
+// B-311 S2：state → StageState 的只读字段（旧状态没有这些键 → 空值，不崩）
+let b006State: [String: Any] = [
+    "phase": "ph1",
+    "taskbook_task_id": "BIB-20261031-demo",
+    "taskbook_volumes": ["/tmp/volA.md", "/tmp/volB.md", ""],
+    "taskbook_slices": [
+        ["index": 1, "total": 2, "path": "/tmp/s1.md"],
+        ["index": 2, "total": 2, "path": "/tmp/s2.md"],
+        ["index": 3, "total": 2],
+    ],
+]
+let b006Parsed = CoopFeature.parseState(b006State, stageDir: "/tmp/stage")
+check("b006-state-task-id", "B-288b：state.taskbook_task_id → StageState.taskbookTaskID",
+      b006Parsed?.taskbookTaskID == "BIB-20261031-demo", "id=\(b006Parsed?.taskbookTaskID ?? "nil")")
+check("b006-state-volumes", "B-288b：state.taskbook_volumes → StageState.taskbookVolumes（空串过滤）",
+      b006Parsed?.taskbookVolumes == ["/tmp/volA.md", "/tmp/volB.md"],
+      "vols=\(b006Parsed?.taskbookVolumes ?? [])")
+check("b006-state-slices", "B-006：state.taskbook_slices → StageState.taskbookSlices（缺 path 的项丢掉）",
+      b006Parsed?.taskbookSlices == [CoopFeature.TaskbookSlice(index: 1, total: 2, path: "/tmp/s1.md"),
+                                     CoopFeature.TaskbookSlice(index: 2, total: 2, path: "/tmp/s2.md")],
+      "slices=\(b006Parsed?.taskbookSlices ?? [])")
+let b006Legacy = CoopFeature.parseState(["phase": "ph1"], stageDir: "/tmp/stage")
+check("b006-state-legacy", "B-006：旧状态没有 taskbook_* 键 → 空串/空数组（默认路径零变化）",
+      b006Legacy?.taskbookTaskID == "" && b006Legacy?.taskbookVolumes == []
+        && b006Legacy?.taskbookSlices == [], "ok")
+
+// B-311 S3：三档状态真值表（与 win coop.status_tier 同一张表）
+var b006Done = CoopFeature.CoopStats()
+b006Done.bibTotal = 4; b006Done.bibReplied = 4; b006Done.bibPending = 0
+b006Done.lowTotal = 1; b006Done.lowReplied = 1; b006Done.lowApplied = 1
+b006Done.lowPendingManual = 0
+check("b006-tier-done", "B-014：全部回填且应用 → 完成（0 处）",
+      CoopFeature.statusTier(stats: b006Done, legacy: false).tier == "done"
+        && CoopFeature.statusTier(stats: b006Done, legacy: false).count == 0, "ok")
+var b006Review = b006Done
+b006Review.bibPending = 2; b006Review.lowPendingManual = 1
+let b006ReviewTier = CoopFeature.statusTier(stats: b006Review, legacy: false)
+check("b006-tier-review", "B-014：未回填 2 + 低置信待人工 1 → 需核对 3 处",
+      b006ReviewTier.tier == "review" && b006ReviewTier.count == 3,
+      "tier=\(b006ReviewTier.tier) n=\(b006ReviewTier.count)")
+let b006NilTier = CoopFeature.statusTier(stats: nil, legacy: true)
+check("b006-tier-legacy", "B-014：旧状态（没有 stats）→ 需核对 0，不宣称完成",
+      b006NilTier.tier == "review" && b006NilTier.count == 0, "ok")
+let b006FailTier = CoopFeature.statusTier(stats: b006Done, legacy: false, failed: true)
+check("b006-tier-failed",
+      "B-014：运行失败 → 失败（优先级最高，不显示计数）",
+      b006FailTier.tier == "failed" && b006FailTier.count == 0, "ok")
+
 // ═══════════════════════════════════════════════════════════════════════════
 // (n59) 第 59 批：全文 AI 核查（任务书附正文）—— 默认零变化 / context|full 映射 / 仅 ph1
 // ═══════════════════════════════════════════════════════════════════════════

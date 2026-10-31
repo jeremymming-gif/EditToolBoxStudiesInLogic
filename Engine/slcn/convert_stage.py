@@ -390,6 +390,15 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         die(f"回填路径里没有可读文本：{coop.format_reply_paths(args.coop_replies)}"
             "（支持 .md/.txt/.bib/.json 等）")
 
+    # B-311（B-006）：片标记与本次 TASK-ID/片号不符 → 按串稿拒收该文件；
+    # 其余原样交给 parse_replies（旧状态没有 taskbook_slices → 原样返回、零日志）。
+    texts, _slice_rejected, _slice_all_rejected = _coop.filter_slice_state_replies(
+        texts, state)
+    for _nm, _why in _slice_rejected:
+        print(f"   ⚠ 分片拒收：{_nm}（{_why}）")
+    if _slice_all_rejected:
+        die("回填文本都因分片标记被拒收（可能拿错了任务书）；未改任何产物。")
+
     # 批74（B-133）：附四「初排分析」——只在 ph1 启用 --coop-fulltext 时解析
     # （state.analysis）；旧 state 无该键 → 按未启用处理（行为与旧版逐字节相同）。
     # **report-only**：解析结果只落报告，不进入任何 apply 通道（`--coop-apply` 也不碰它）。
@@ -424,6 +433,12 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     print(f"   回填来源：{len(texts)} 个文本 / {_n_paths} 个路径"
           "（多路径按命令行顺序；目录内按文件名排序；同一路径去重）")
     print(f"   文献字段：{parse_report.summary()}")
+    # B-311：缺片只提示（不改变回填/并入口径）；错片也只提示、键照常接受。
+    _slice_lines = coop.slice_reply_lines(coop.state_slices(state), parse_report)
+    if _slice_lines:
+        print("   ⚠ 分片：" + "；".join(_slice_lines))
+    for _slice_line in coop.slice_cross_lines(coop.state_slices(state), texts):
+        print(f"   ⚠ 分片：{_slice_line}")
     print(f"   低置信项：{low_report.summary()}")
     if analysis_report is not None:
         print(f"   全文分析（附四，report-only）：{analysis_report.summary()}")
@@ -1123,6 +1138,13 @@ def build_arg_parser():
                          "卷 C 元数据与脚注），并把路径写进 `_AI协同状态.json` 的 "
                          "`taskbook_volumes`。默认关：单文件三卷不变。"
                          "仅配合 --coop-taskbook-only 有意义。")
+    ap.add_argument("--coop-slice", type=int, default=None, metavar="N",
+                    help="（B-311/B-006）把卷 A 的「逐条清单」按每片 N 条切成多份任务书 "
+                         "`<stem>_文献核实_分片{k}-{n}.md`，片头带 B311-SLICE 标记，"
+                         "路径写进 `_AI协同状态.json` 的 `taskbook_slices`。"
+                         "默认/0=不分片（任务书与状态逐字节不变）；负数退出 2。"
+                         "第二段仍用 --coop-replies：缺片只提示，片标记与本次 TASK-ID "
+                         "不符的回复按串稿拒收。仅配合 --coop-taskbook-only。")
     ap.add_argument("--coop-stage", default=None, metavar="DIR",
                     help="协同初排的暂存目录（默认 `<out>/<stem>_待核/`）；"
                          "状态文件 `_AI协同状态.json` 写在这里，不随交付进入最终目录。")
@@ -1275,6 +1297,11 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
                       stem, lang, sel, coop_taskbook_path, coop_bib_keys, coop_bibdb,
                       structured_metadata=None, structured_origin=""):
     """⑬ 协同初排第一段收尾（B-229：从 `main` 纯搬运外提；语句逐字/顺序不变）。"""
+    # B-311（B-006）：分片开关先校验（负数退出 2；0/缺省=关，默认路径零变化）。
+    try:
+        _slice_size = _coop.normalize_slice_size(getattr(args, "coop_slice", None))
+    except ValueError as e:
+        die(str(e))
     bib_text2 = ""
     if res.bib_path and os.path.isfile(res.bib_path):
         bib_text2 = open(res.bib_path, encoding="utf-8", errors="replace").read()
@@ -1372,6 +1399,11 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
             if _analysis_sec:
                 f.write("\n" + _analysis_sec + "\n")
         _tb_split = []
+    # B-311（B-006）：卷 A 逐条清单按 N 条分片（逻辑在 coop；size=0 → 不读不写）。
+    _tb_slices, _slice_msg = _coop.prepare_taskbook_slices(
+        coop_taskbook_path, stem=stem, out_dir=out_dir, size=_slice_size, lang=lang)
+    if _slice_msg:
+        print(f"   {_slice_msg}")
     if not coop_bib_keys and bib_text2:
         coop_bib_keys = [b.key for b in _coop.parse_bib_blocks(bib_text2) if b.closed]
     coop_params = _coop.build_params(
@@ -1409,6 +1441,12 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
         taskbook_task_id=_tb_id,
         taskbook_volumes=_tb_split,
     )
+    # B-311（B-006）：只增键、不 bump SCHEMA_VERSION；没分片时一个键都不加
+    # （默认状态与旧版逐字节相同）。写完立刻自检一遍（编号/标记/文件名）。
+    if _tb_slices:
+        coop_state["taskbook_slices"] = _tb_slices
+        for _slice_warn in _coop.check_slice_set(_tb_slices, _tb_id):
+            print(f"   ⚠ 分片自检：{_slice_warn}")
     coop_state["reference_bib"] = os.path.abspath(res.bib_path) if res.bib_path else ""
     coop_state["tex"] = os.path.abspath(res.tex_path) if getattr(res, "tex_path", "") else ""
     # 批79（B-131）：交付记录标记（**只读汇总的开关 + 核实通道的库分类计数**）。

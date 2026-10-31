@@ -78,6 +78,21 @@ def status_text(phase: str | None) -> str:
     return f"状态未知（{phase}）"
 
 
+def slice_mode(enabled: bool, per: int = 40) -> str:
+    """「按片拆分任务书」开关 → `--coop-slice` 的值（**默认关 = 空串，argv 逐字节不变**）。
+
+    GUI 固定 40 条/片（B-006 定稿的 30–50 区间中值）；不勾时调用方不拼这个参数。
+    传进来的值非法（≤0）时回落 40，绝不把 0 当成「开」发出去。
+    """
+    if not enabled:
+        return ""
+    try:
+        per = int(per)
+    except (TypeError, ValueError):
+        per = 40
+    return str(per if per > 0 else 40)
+
+
 def coop_fulltext_mode(enabled: bool, scope: str = FULLTEXT_CONTEXT) -> str:
     """界面「全文 AI 核查」勾选 + 范围 → `--coop-fulltext` 的取值（批59，纯逻辑）。
 
@@ -157,6 +172,27 @@ class CoopStage:
     @property
     def final_dir(self) -> str:
         return str(self.state.get("final_dir") or "")
+    @property
+    def taskbook_task_id(self) -> str:
+        """B-288b：任务书里的 TASK-ID（引擎写进 state；旧状态没有 → 空串）。"""
+        return str(self.state.get("taskbook_task_id") or "")
+
+    @property
+    def taskbook_volumes(self) -> list[str]:
+        """B-288b：`--coop-split` 写出的卷 A/B/C 绝对路径（旧状态 → 空清单）。"""
+        raw = self.state.get("taskbook_volumes") or []
+        if not isinstance(raw, list):
+            return []
+        return [str(p) for p in raw if str(p or "").strip()]
+
+    @property
+    def taskbook_slices(self) -> list[dict]:
+        """B-006：第一段写出的分片清单（每项 index/total/volume/path/first/last/keys）。"""
+        raw = self.state.get("taskbook_slices") or []
+        if not isinstance(raw, list):
+            return []
+        return [dict(item) for item in raw if isinstance(item, dict)]
+
 
     @property
     def delivered_to(self) -> str:
@@ -397,6 +433,28 @@ def effective_bib_pending(stats: dict) -> int:
     return pending
 
 
+def status_tier(stats: dict | None, *, legacy: bool = False,
+                failed: bool = False) -> tuple[str, int]:
+    """三档状态（B-014 U6-3）：`("done", 0)` / `("review", n)` / `("failed", 0)`。
+
+    真值表与 mac `CoopFeature.statusTier` **逐条相同**：
+      · 运行失败 → failed（产物可能有效，但本次不算完成）；
+      · 没有 stats（旧状态/读不到）→ review 0（计数不可用，界面注明「约」）；
+      · `n` **只从现有 stats 键求和**（不新增统计）：文献未回填 + 低置信仅记录待人工；
+      · legacy（回退估算）即便 n=0 也归 review（口径是估算，不能宣称「完成」）。
+    """
+    if failed:
+        return ("failed", 0)
+    if not stats:
+        return ("review", 0)
+    pending = effective_bib_pending(stats)
+    low = int(stats.get("low_pending_manual") or 0)
+    n = max(0, pending) + max(0, low)
+    if n > 0 or legacy:
+        return ("review", n)
+    return ("done", 0)
+
+
 def stats_line(stats: dict, *, merged: int | None = None) -> str:
     """第二段成功摘要（与 mac `CoopFeature.formatResult` **逐字一致**）：
 
@@ -452,6 +510,16 @@ def summarize_stage(stage: CoopStage) -> dict:
 
 
 # ── 回填导入：已选清单（纯逻辑；界面只负责摆放控件）─────────────────────
+
+
+def reply_prefix(path: str) -> str:
+    """已选清单每行的来源前缀（B-014 U6-2：Windows 不用 emoji，统一方括号文字）。"""
+    if os.path.isdir(path):
+        return "[目录] "
+    name = os.path.basename(path)
+    if name.startswith(CLIPBOARD_PREFIX) or "slcn-coop-clip-" in path:
+        return "[剪贴板] "
+    return "[文件] "
 
 
 class ReplySelection:

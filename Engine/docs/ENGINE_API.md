@@ -309,6 +309,10 @@ sha256 / 引擎版本 / 规则集 / 附一 schema / kind / 语种 / 核实范围
 输出与 v1 **逐字节相同**；`SPEC_MD` / `SOURCES_MD` / `FORMAT_MD` / `_ITEM10_COOP` 未改（直连 API
 prompt 复用它们，仍不含任务卡）。附一 JSON schema、`--coop-replies` 契约与其余产物名不变。
 
+**第 311 批（B-311/B-006，默认关）**：`--coop-slice N`（缺省/`0`=不分片，负数退出 2；仅配合 `--coop-taskbook-only`）把卷 A 逐条清单按每片 N 条切成 `<名>_文献核实_分片{k}-{n}.md`（片头 `<!-- B311-SLICE k/n · TASK-ID … -->`、结尾 `B311-SLICE-END`），只在分片时给 `_AI协同状态.json` 增 `taskbook_slices`（`[{index,total,volume,path,first,last,keys}]`，唯一新增键、schema 仍 1；旧状态照常读）。
+第二段仍用 `--coop-replies`：缺片只提示（回填/并入口径不变）；片标记 TASK-ID/片号与本次不符的文件按串稿拒收，`parse_replies` 既有拒绝文案与语义不变。
+默认路径零变化：不分片时任务书/状态/CLI 默认/argv 逐字节不变（两壳开关默认关）。
+
 **核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的
 条目**」——⑪ 跑前会在 stdout 打一行
 `源 bib N 条；正文引用 M 条 → 本次核实 M 条（跳过 N-M 条未引用）`；

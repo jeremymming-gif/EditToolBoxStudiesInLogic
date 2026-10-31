@@ -349,6 +349,335 @@ def write_taskbook_volumes(path: str, stem: str, *, section: str, backfill: str,
     return paths
 
 
+# ── B-311（B-006）：任务书分片（卷 A 逐条清单按 N 条一片）─────────────────
+#
+# 分片是**第一段的可选输出**：`--coop-slice N` 时把卷 A 的逐条清单按 N 条一组
+# 切成 `<stem>_文献核实_分片{k}-{n}.md`，每片自带头（任务卡/SPEC/SOURCES/FORMAT）
+# 与本片条目 + 卷 A 页脚。默认不切片 → 任务书/状态/argv 逐字节不变。
+# 第二段仍用 `--coop-replies`：片标记只用于提示/按标记拒收，**不改**
+# `parse_replies` 的既有拒绝文案与语义（白名单仍是 state.keys.bib）。
+
+#: 分片头/尾标记（机器可读；只用于第二段提示与串稿拒收，不影响条目解析）。
+SLICE_MARK_PREFIX = "<!-- B311-SLICE "
+SLICE_END_PREFIX = "<!-- B311-SLICE-END "
+
+_SLICE_MARK_RE = re.compile(
+    r"<!--\s*B311-SLICE\s+(\d+)\s*/\s*(\d+)"
+    r"(?:\s*·\s*TASK-ID\s+([^\s·]+))?"
+    r"(?:\s*·\s*第\s*(\d+)\s*[–-]\s*(\d+)\s*条\s*/\s*共\s*(\d+)\s*条)?\s*-->")
+_TASK_ID_IN_TEXT_RE = re.compile(r"\*\*TASK-ID\*\*[：:]\s*`([^`\n]+)`")
+
+
+def normalize_slice_size(value: Any) -> int:
+    """`--coop-slice` 的口径：None/0 = 不分片；负数 → ValueError。
+
+    B-311 任务书的硬口径是「缺省/0=关」（Stage A 草稿写的是 0 退出 2；以任务书为准，
+    偏差记在 impl.md）。非整数由 argparse 的 `type=int` 先拦，这里只兜负数。
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError(f"--coop-slice 需要整数（0=不分片）：{value!r}")
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"--coop-slice 需要整数（0=不分片）：{value!r}") from None
+    if n < 0:
+        raise ValueError(f"--coop-slice 不能为负（0=不分片）：{n}")
+    return n
+
+
+def taskbook_volume_a(text: str, lang: str = "zh") -> str:
+    """从整份三卷任务书里切出卷 A（`---` + 卷 B 标题之前）；找不到卷 B 时原样返回。"""
+    lk = "en" if str(lang).lower() == "en" else "zh"
+    sep = "\n---\n\n" + _VOLUME_TITLES[lk]["B"]
+    i = (text or "").find(sep)
+    return text if i < 0 else text[:i]
+
+
+def _split_checklist_entries(text: str):
+    """把卷 A 拆成（逐条清单标题及之前, [(key, 条目块)], 清单之后）。
+
+    没有 `## 四、逐条清单` → None（调用方按「本次没有条目」处理）。
+    """
+    m = re.search(r"(?m)^## 四、逐条清单[ \t]*\n", text or "")
+    if not m:
+        return None
+    start = m.end()
+    end_m = re.search(r"(?m)^## ", text[start:])
+    end = start + end_m.start() if end_m else len(text)
+    region = text[start:end]
+    heads = list(re.finditer(r"(?m)^### `([^`\n]+)`", region))
+    entries: list[tuple[str, str]] = []
+    for idx, head in enumerate(heads):
+        stop = heads[idx + 1].start() if idx + 1 < len(heads) else len(region)
+        entries.append((head.group(1), region[head.start():stop]))
+    return text[:start], entries, text[end:]
+
+
+def parse_slice_marker(text: str) -> dict | None:
+    """读回复文本里的 `B311-SLICE k/n · TASK-ID …` 片标记（没有 → None）。"""
+    for line in str(text or "").splitlines():
+        if "B311-SLICE" not in line or "B311-SLICE-END" in line:
+            continue
+        m = _SLICE_MARK_RE.search(line)
+        if m:
+            return {
+                "index": int(m.group(1)), "total": int(m.group(2)),
+                "task_id": (m.group(3) or "").strip(),
+                "first": int(m.group(4)) if m.group(4) else 0,
+                "last": int(m.group(5)) if m.group(5) else 0,
+                "entries": int(m.group(6)) if m.group(6) else 0,
+            }
+    return None
+
+
+def write_taskbook_slices(text: str, *, stem: str, out_dir: str, size: int,
+                          lang: str = "zh") -> list[dict]:
+    """把整份任务书的卷 A 逐条清单切成每片 `size` 条，写分片文件并返回 state 清单。
+
+    返回的每一项就是 `_AI协同状态.json` 的 `taskbook_slices` 元素：
+    `{"index","total","volume","path","first","last","keys"}`（绝对路径）。
+    条目数 ≤ size（或没有清单）→ 不落盘、返回 []，由调用方打印一行说明。
+    """
+    n_size = normalize_slice_size(size)
+    if n_size <= 0:
+        return []
+    parsed = _split_checklist_entries(taskbook_volume_a(text, lang))
+    if parsed is None:
+        return []
+    prefix, entries, _rest = parsed
+    total = len(entries)
+    if total <= n_size:
+        return []
+    n_slices = (total + n_size - 1) // n_size
+    m = _TASK_ID_IN_TEXT_RE.search(text or "")
+    task_id = m.group(1).strip() if m else ""
+    lk = "en" if str(lang).lower() == "en" else "zh"
+    title0, _nl, prefix_rest = prefix.partition("\n")
+    if not title0.startswith("# "):
+        title0, prefix_rest = f"# 参考文献核实任务书 · {stem}", prefix
+    slices: list[dict] = []
+    for k in range(n_slices):
+        chunk = entries[k * n_size:(k + 1) * n_size]
+        first = k * n_size + 1
+        last = first + len(chunk) - 1
+        keys = [key for key, _block in chunk]
+        head_bits = [f"B311-SLICE {k + 1}/{n_slices}"]
+        if task_id:
+            head_bits.append(f"TASK-ID {task_id}")
+        head_bits.append(f"第 {first}–{last} 条 / 共 {total} 条")
+        header = "<!-- " + " · ".join(head_bits) + " -->"
+        if lk == "en":
+            title = title0 + f" (part {k + 1}/{n_slices})"
+            note = (f"> This is part {k + 1} of {n_slices} of the same taskbook "
+                    f"({len(chunk)} entries). Reply with the whole part; its number "
+                    "and TASK-ID must match this header.")
+        else:
+            title = title0 + f"（分片 {k + 1}/{n_slices}）"
+            note = (f"> 这是同一份任务书的第 {k + 1} 片（共 {n_slices} 片，本片 "
+                    f"{len(chunk)} 条）。回填时请**整片**回传：片号、TASK-ID 必须与片头一致。")
+        body = (header + "\n" + title + "\n\n" + note + "\n"
+                + prefix_rest.rstrip("\n") + "\n\n"
+                + "".join(block for _key, block in chunk)
+                + "\n" + "\n".join(volume_footer("A", lk)) + "\n")
+        body += ("<!-- B311-SLICE-END " + f"{k + 1}/{n_slices} · 本片 {len(chunk)} 条："
+                 + ",".join(keys) + " -->\n")
+        path = os.path.join(out_dir, f"{stem}_文献核实_分片{k + 1}-{n_slices}.md")
+        atomic_write_text(path, body)
+        slices.append({
+            "index": k + 1, "total": n_slices, "volume": "A",
+            "path": os.path.abspath(path), "first": first, "last": last,
+            "keys": keys,
+        })
+    return slices
+
+
+def prepare_taskbook_slices(path: str, *, stem: str, out_dir: str, size: int,
+                            lang: str = "zh") -> tuple[list[dict], str]:
+    """第一段：读写好的任务书 → 切片。返回 `(slices, 给人看的一行提示)`。
+
+    `size` 为 0（缺省/`--coop-slice 0`）→ 返回空且**不读不写**，调用方连一行
+    日志都不打印（默认路径零变化的又一道保险）。逻辑全在 coop，`convert_stage`
+    只负责把提示打出来（B-311 行数上限）。
+    """
+    if not size:
+        return [], ""
+    if not path or not os.path.isfile(path):
+        return [], "任务书分片：本次是兜底任务书（没有逐条清单），未分片"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError as e:
+        return [], f"⚠ 任务书分片跳过：读不了任务书（{e}）"
+    slices = write_taskbook_slices(text, stem=stem, out_dir=out_dir, size=size, lang=lang)
+    if not slices:
+        return [], f"任务书分片：条目数 ≤ {size} 条（或没有逐条清单），未分片"
+    return slices, (f"任务书分片：每片 ≤ {size} 条，共 {slices[0]['total']} 片"
+                    f"（{os.path.basename(slices[0]['path'])} 起）")
+
+
+def state_slices(state: dict | None) -> list[dict]:
+    """读 state 的分片清单（旧状态没有该键 → []；坏项忽略）。"""
+    raw = (state or {}).get("taskbook_slices")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def check_slice_set(slices: list[dict], taskbook_task_id: str = "") -> list[str]:
+    """校验 state 的分片清单（文件在不在/编号连不连续/标记与文件名符不符）。
+
+    只返回中文告警行，**不改任何文件**（缺片/重复/串稿按提示处理）。
+    """
+    warns: list[str] = []
+    if not isinstance(slices, list) or not slices:
+        return warns
+    total = 0
+    seen: dict[int, dict] = {}
+    for item in slices:
+        try:
+            idx = int(item.get("index") or 0)
+            n = int(item.get("total") or 0)
+        except (TypeError, ValueError):
+            warns.append("分片清单里有编号非整数的项（已忽略）")
+            continue
+        total = n or total
+        if idx <= 0 or idx > n:
+            warns.append(f"分片编号越界：{idx}/{n}")
+        if idx in seen:
+            warns.append(f"分片编号重复：第 {idx} 片出现两次")
+        seen[idx] = item
+        path = str(item.get("path") or "")
+        name = os.path.basename(path) if path else "（空路径）"
+        if not path or not os.path.isfile(path):
+            warns.append(f"分片文件缺失：第 {idx}/{n} 片 {name}")
+            continue
+        if not name.endswith(f"_分片{idx}-{n}.md"):
+            warns.append(f"片标记与文件名不符：{name}（标记 {idx}/{n}）")
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                body = f.read()
+        except OSError as e:
+            warns.append(f"分片读不了：{name}（{e}）")
+            continue
+        mk = parse_slice_marker(body)
+        if mk is None:
+            warns.append(f"分片缺 B311-SLICE 标记：{name}")
+            continue
+        if mk["index"] != idx or mk["total"] != n:
+            warns.append(f"片标记与文件名不符：{name}"
+                         f"（标记 {mk['index']}/{mk['total']}）")
+        if taskbook_task_id and mk["task_id"] and mk["task_id"] != taskbook_task_id:
+            warns.append(f"分片 TASK-ID 不符：{name}"
+                         f"（{mk['task_id']} ≠ {taskbook_task_id}）")
+        if not [k for k in item.get("keys") or [] if str(k).strip()]:
+            warns.append(f"分片没有键清单：第 {idx}/{n} 片")
+    missing = [i for i in range(1, total + 1) if i not in seen]
+    if total and missing:
+        warns.append("分片编号不连续：缺第 "
+                     + "、".join(str(i) for i in missing) + f" 片（共 {total} 片）")
+    return warns
+
+
+def filter_slice_state_replies(
+        texts: list[tuple[str, str]], state: dict | None) -> tuple[
+            list[tuple[str, str]], list[tuple[str, str]], bool]:
+    """第二段：按 `state.taskbook_slices` 过滤回复。返回 `(kept, rejected, 全军覆没)`。
+
+    旧状态没有分片键 → 原样返回且 `rejected=[]`（调用方连一行日志都不打印）。
+    """
+    slices = state_slices(state)
+    if not slices:
+        return list(texts), [], False
+    kept, rejected = filter_slice_replies(
+        texts, taskbook_task_id=str((state or {}).get("taskbook_task_id") or ""),
+        slices=slices)
+    return kept, rejected, not kept
+
+
+
+def filter_slice_replies(texts: Iterable[tuple[str, str]], *, taskbook_task_id: str = "",
+                         slices: Iterable[dict] | None = None,
+                         ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """按片标记拒收串稿文件；返回（保留的文本, [(文件名, 原因)]）。
+
+    没有片标记的回复原样保留（片标记只是 B-311 的可选增强，不改变旧用法的语义）。
+    """
+    total = 0
+    for item in slices or []:
+        try:
+            total = max(total, int(item.get("total") or 0))
+        except (TypeError, ValueError):
+            continue
+    kept: list[tuple[str, str]] = []
+    rejected: list[tuple[str, str]] = []
+    for name, text in texts:
+        mk = parse_slice_marker(text)
+        if mk is None:
+            kept.append((name, text))
+            continue
+        tid = mk.get("task_id") or ""
+        if taskbook_task_id and tid and tid != taskbook_task_id:
+            rejected.append((str(name),
+                             f"分片标记的 TASK-ID 是 {tid}，本次任务书是 "
+                             f"{taskbook_task_id}（按串稿拒收）"))
+            continue
+        if total and not (1 <= mk["index"] <= total and mk["total"] == total):
+            rejected.append((str(name),
+                             f"分片标记 {mk['index']}/{mk['total']} 不在本次分片清单 "
+                             f"1/{total} 里（按串稿拒收）"))
+            continue
+        kept.append((name, text))
+    return kept, rejected
+
+
+def slice_reply_lines(slices: Iterable[dict] | None, report: ParseReport) -> list[str]:
+    """缺片提示：某一片的键一个都没收到（ok/rejected 都算收到了）→ 一行中文。"""
+    lines: list[str] = []
+    for item in slices or []:
+        keys = [str(k) for k in item.get("keys") or [] if str(k).strip()]
+        if not keys:
+            continue
+        got = [k for k in keys
+               if (report.status or {}).get(k) in ("ok", "rejected")]
+        if not got:
+            lines.append(f"第 {item.get('index')}/{item.get('total')} 片未收到任何回填"
+                         f"（本片 {len(keys)} 条）")
+    return lines
+
+
+def slice_cross_lines(slices: Iterable[dict] | None,
+                      texts: Iterable[tuple[str, str]]) -> list[str]:
+    """错片提示：某片文件里出现了别的片的键（**只提示，接受键不变**）。"""
+    owner: dict[str, int] = {}
+    for item in slices or []:
+        try:
+            idx = int(item.get("index") or 0)
+        except (TypeError, ValueError):
+            continue
+        for key in item.get("keys") or []:
+            owner[str(key)] = idx
+    warns: list[str] = []
+    if not owner:
+        return warns
+    for name, text in texts:
+        mk = parse_slice_marker(text)
+        if mk is None:
+            continue
+        foreign: list[str] = []
+        for block in parse_bib_blocks(text or ""):
+            j = owner.get(block.key)
+            if j and j != mk["index"]:
+                foreign.append(block.key)
+        if foreign:
+            js = sorted({owner[x] for x in foreign})
+            warns.append(f"{name} 标为第 {mk['index']} 片，但含第 "
+                         + "、".join(str(j) for j in js) + " 片的键："
+                         + "、".join(list(dict.fromkeys(foreign))[:6]))
+    return warns
+
+
 def _canonical(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -363,6 +692,9 @@ def _is_coop_artifact_name(name: str) -> bool:
     """状态/记录/任务书/建议/全文分析报告不是「回填回复」：目录输入时跳过，避免自己吃自己。"""
     return (name in (STATE_NAME, RECORD_NAME)
             or name.endswith("_文献核实.md")
+            # B-288 的卷文件 / B-311 的分片文件也是任务书本体，不是回填回复。
+            or re.search(r"_文献核实_卷[ABC]\.md$", name) is not None
+            or re.search(r"_文献核实_分片\d+-\d+\.md$", name) is not None
             or SUGGESTIONS_SUFFIX in name
             or ANALYSIS_SUFFIX in name)
 

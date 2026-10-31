@@ -145,7 +145,15 @@ def style_listbox(widget: tk.Listbox) -> None:
 
     调用点在 `main.TocTab` 建列表之后 —— 颜色只从 `COLOR` 来，主文件里不写死。
     """
+    # B-014 U6-1：`highlightthickness=0` 会把**系统键盘焦点环**整个关掉 —— 用 Tab
+    # 走进列表时界面上没有任何反馈（键盘用户无法判断焦点在哪）。这里恢复一圈描边：
+    # 平时用分隔线色，`focus` 时切主色（与 TEntry 的焦点口径一致：颜色之外还有一圈
+    # 粗细变化，不靠颜色单一通道）。
     widget.configure(background=COLOR["text_bg"], foreground=COLOR["fg"],
                      selectbackground=COLOR["accent"],
                      selectforeground=COLOR["on_accent"],
-                     borderwidth=1, relief="solid", highlightthickness=0)
+                     borderwidth=1, relief="solid",
+                     highlightthickness=1,
+                     highlightcolor=COLOR["accent"],
+                     highlightbackground=COLOR["line"],
+                     takefocus=True)
