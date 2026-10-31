@@ -84,7 +84,7 @@ if _HERE not in sys.path:
 #    与自动通道**同一个**合并核心，否则「自动挡下了改名、手动却放过去」这种分叉迟早
 #    会出现。它同样是纯离线的（只 import 标准库 + bibcheck/bibnorm/bibparse/bibreport），
 #    ⑤ 组因此把它加进了允许清单，并**单独**对它扫一遍「不联网 / 不调模型」。
-from slcn import aibib, bibreport  # noqa: E402
+from slcn import aibib, bibcheck, bibreport  # noqa: E402
 from slcn import platform as _plat  # noqa: E402
 from slcn.bibparse import (  # noqa: E402,F401  （薄壳：旧名字全部原样导出，测试与下游不受影响）
     LEVEL_INFO,
@@ -447,6 +447,13 @@ def main(argv: list[str] | None = None) -> int:
     _batch45_notices(rep, texts)
 
     text = render(rep)
+    # B-307 S5：结构体检**只追加**在既有报告之后（可解析性一节已由 analyze 列出，
+    # 这里补「花括号不配平 → split_entries 静默吞并」这一条；既有行一个字不动）。
+    _syntax_tail = bibcheck.format_syntax_section(
+        bibcheck.balance_warnings(texts["returned"] or "")
+    )
+    if _syntax_tail:
+        text += "\n\n" + _syntax_tail
     if a.out:
         out_path = _resolve_out(a.out, a.returned, merged=False)
         try:

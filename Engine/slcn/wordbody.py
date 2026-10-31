@@ -19,8 +19,8 @@ from .wordentry import (_NUMBERED_PREFIX_RE, _citation_title_year, _dedupe_keys,
 from .wordcitebody import (_FN_BARE_NUM_RE, link_citations)
 from .wordmeta import (AFFIL_EN_JOIN, META_SCAN, _ABS_RE, _HEAD1, _HEAD2, _HEAD_CN_ARABIC,
                        _HEAD_CN_DOT, _HEAD_CN_SPACE, _HEAD_EN1, _HEAD_EN2, _HEAD_EN2_HALF,
-                       _HEAD_EN3, _KW_RE, _REF_HEADS, _abs_body_cn, _is_clc_meta_only,
-                       _is_cn_dot_heading, _is_cn_numbered_heading, _is_subtitle,
+                       _HEAD_CN_ART_RE, _HEAD_EN3, _KW_RE, _REF_HEADS, _abs_body_cn, _is_clc_meta_only,
+                       _cn_arabic_run_ids, _is_cn_dot_heading, _is_cn_numbered_heading, _is_subtitle,
                        _is_title_candidate, _known_cn_authors, _known_en_authors,
                        _label_body, _tail_abstract_cn, collect_affiliations, collect_emails, _looks_like_placeholder_author,
                        head_author_after, head_title_index, locate_tail_block, parse_tail_metadata)
@@ -1305,6 +1305,7 @@ def parse_docx(path: str, quote_threshold: int = 105,
                   if k + 1 < len(nonempty_paras) else "")
         if not _is_cn_dot_heading(prev_t) and not _is_cn_dot_heading(next_t):
             lone_cn_dot.add(id(p))
+    cn_arabic_run_ids = _cn_arabic_run_ids(nonempty_paras)  # D-09：`N、` 连续编号段不是标题
 
     # ⑤.7 无样式英文小标题（第 121 条，07 Bo_Liu 型）：只对**全英文**稿件启用，
     # 且要求「前面是成段正文、后面是成段正文」，避免把正文里的短句误判成标题。
@@ -1462,7 +1463,8 @@ def parse_docx(path: str, quote_threshold: int = 105,
             h = _HEAD2.sub("", plain).strip()
             doc.headings.append((2, h))
             out.append(f"\n\\subsection{{{h}}}\n")
-        elif (m_cn := _HEAD_CN_ARABIC.match(plain)) and _is_cn_numbered_heading(m_cn.group("t")):
+        elif (m_cn := _HEAD_CN_ARABIC.match(plain)) and _is_cn_numbered_heading(m_cn.group("t")) \
+                and not (id(para) in cn_arabic_run_ids and _HEAD_CN_ART_RE.match(plain)):
             # 新式中文标题 `1 引言`：编号要去掉（人工成品就是 `\section{引言}`）
             h = m_cn.group("t").strip()
             doc.headings.append((1, h))
@@ -1496,5 +1498,3 @@ def parse_docx(path: str, quote_threshold: int = 105,
 
     convert_bibitem_refs(doc)
     return doc
-
-

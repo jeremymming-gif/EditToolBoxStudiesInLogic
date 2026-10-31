@@ -54,6 +54,10 @@ jobs:
     # 与 release.yml 的 macOS 构建作业一致（同样因旧 Xcode 对超大 SwiftUI View 类型检查
     # 超时而先迁），避免 brownout 窗口内 CI 无法转绿。
     runs-on: macos-15
+    env:
+      # B-307：并行 3 台 + CI 专用 `-Onone`（本地 11 门仍用默认 `-O`）
+      SLCN_SWIFT_JOBS: "3"
+      SLCN_SWIFT_OPTLVL: "-Onone"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

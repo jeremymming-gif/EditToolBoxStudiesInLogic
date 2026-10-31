@@ -187,6 +187,10 @@ class Report:
     total: int = 0
     issues: list[Issue] = field(default_factory=list)
     by_type: dict[str, int] = field(default_factory=dict)
+    # B-307 S5：结构体检（花括号不配平 / 可解析性 problem）。**只报告**：
+    # 刻意不进 `issues`，所以 `ok` / `n_must` / `n_nice` / `n_unstructured` 的口径
+    # 一个字没变（`docx_audit.csv` 冻结基线、checkbib 退出码都不受影响）。
+    syntax: list[Issue] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -203,6 +207,77 @@ class Report:
     @property
     def n_nice(self) -> int:
         return sum(1 for i in self.issues if i.severity == "nice")
+
+
+# ── B-307 S5：结构体检（**只报告**；`split_entries` 的切分判据一个字不动）──────
+#
+# 背景（B-303 B2）：退回版 bib 里 11/62 份结构坏——花括号不配平、key 重复、字段名写成
+# 数字。`split_entries()` 对「不配平」没有报错通道：从坏条目起花括号深度永远回不到 0，
+# 这一条会把到文件尾的内容整段并进自己的字段体；而 `_ENT` 正则仍会在被吞掉的区域里
+# 认出后面的 `@type{key,`，于是**条目数虚高、字段互相串**。字段核对只会说「这条缺
+# author」，编辑看不出「从这里起文件已经坏了」。
+# 这里只**追加** `severity="syntax"` 的提示：不进 `issues`，不改解析/计数/退出码。
+
+def _balance_scan(bib: str):
+    """按 `split_entries()` 的同一套预处理与扫描，产出 (类型, 键, 起行, 深度)。"""
+    bib = strip_bib_comments(bib)
+    from .bibnorm import _strip_non_bib_blocks
+
+    # 剥 `@comment{}` 会挪位置（整段删除）；行号以剥注释后的文本为准——整行注释只删
+    # 字符不删换行，所以行号与原文一致；只有文件里出现多行 `@comment{}` 时才会偏移。
+    bib = _strip_non_bib_blocks(bib)
+    for m in _ENT.finditer(bib):
+        i = m.end()
+        depth = 1
+        j = i
+        while j < len(bib) and depth > 0:
+            if bib[j] == "{":
+                depth += 1
+            elif bib[j] == "}":
+                depth -= 1
+            j += 1
+        yield m.group(1), m.group(2).strip(), bib.count("\n", 0, m.start()) + 1, depth
+
+
+def balance_warnings(bib: str) -> list[Issue]:
+    """报「花括号不配平」的条目（第几行、哪个键）：只报告，不修复、不改切分。"""
+    out: list[Issue] = []
+    for etype, key, line, depth in _balance_scan(bib):
+        if depth > 0:
+            out.append(
+                Issue(
+                    key,
+                    etype.lower(),
+                    "balance",
+                    f"第 {line} 行 @{etype}{{{key},… 起花括号不配平（到文件尾仍缺 {depth} 个 `}}`）；"
+                    f"split_entries 会把余下内容整段并进这一条",
+                    "syntax",
+                )
+            )
+            break  # 后面所有条目都在同一片被吞掉的区域里，报第一条就够定位
+    return out
+
+
+def parse_syntax_issues(bib: str) -> list[Issue]:
+    """把 `bibparse.parse_entries` 的 **problem 级**发现转成只报告条目。"""
+    from .bibparse import LEVEL_PROBLEM, parse_entries
+
+    _entries, findings = parse_entries(bib)
+    return [
+        Issue(f.key, "syntax", "parse", f.detail, "syntax")
+        for f in findings
+        if f.level == LEVEL_PROBLEM
+    ]
+
+
+def format_syntax_section(issues: list[Issue]) -> str:
+    """只报告小节（checkbib 追加在既有输出之后；没有条目时返回空串）。"""
+    if not issues:
+        return ""
+    L = [f"── 结构体检（{len(issues)} 条，只报告、不计入上面的结论）──"]
+    for i in sorted(issues, key=lambda x: (x.etype, x.key, x.detail)):
+        L.append(f"  [{i.etype}] {i.key or '（整份文件）'}：{i.detail}")
+    return "\n".join(L)
 
 
 def check(bib: str) -> Report:
@@ -253,6 +328,9 @@ def check(bib: str) -> Report:
                     continue
                 kind = "missing" if n not in f else "empty"
                 rep.issues.append(Issue(key, etype, kind, n, sev))
+    # B-307 S5：结构体检只报告（不进 issues；`docx_audit.csv` 的 bib_must / bib_unstructured
+    # 与 `ok` 都不受影响）。初排留档的核对报告由 `format_report` 追加到末尾。
+    rep.syntax = balance_warnings(bib) + parse_syntax_issues(bib)
     return rep
 
 
@@ -534,6 +612,16 @@ def unify_types(bib: str) -> tuple[str, list[str]]:
     return _ENT.sub(repl, bib), notes
 
 
+def _append_syntax(L: list[str], rep: Report) -> None:
+    """B-307 S5：把结构体检**追加**在报告末尾（既有行一个字不动）。"""
+    if not rep.syntax:
+        return
+    L.append("")
+    L.append(f"  ── 结构体检（{len(rep.syntax)} 条，只报告、不计入上面的必补/建议）──")
+    for i in sorted(rep.syntax, key=lambda x: (x.etype, x.key, x.detail)):
+        L.append(f"      [{i.etype}] {i.key or '（整份文件）'}：{i.detail}")
+
+
 def format_report(rep: Report, title: str = "参考文献核对报告") -> str:
     """生成人可读报告。"""
     L = [
@@ -546,6 +634,7 @@ def format_report(rep: Report, title: str = "参考文献核对报告") -> str:
     ]
     if not rep.issues:
         L.append("  ✅ 未发现问题。")
+        _append_syntax(L, rep)
         return "\n".join(L)
 
     unstruct = [i for i in rep.issues if i.severity == "unstructured"]
@@ -573,6 +662,7 @@ def format_report(rep: Report, title: str = "参考文献核对报告") -> str:
             L.append("      ❗ 必补：" + "、".join(sorted({i.detail for i in must})))
         if nice:
             L.append("      · 建议：" + "、".join(sorted({i.detail for i in nice})))
+    _append_syntax(L, rep)
     return "\n".join(L)
 
 

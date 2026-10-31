@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from .wordcore import (SURNAME_PINYIN, _has_cjk, _strip_zero_width)
+from .wordcore import (SURNAME_PINYIN, _has_cjk, _strip_zero_width, escape_latex)
 from .wordentry import (_NUMBERED_PREFIX_RE)
 
 # ── 文档解析 ──────────────────────────────────────────────────────────────
@@ -27,7 +27,12 @@ _HEAD2 = re.compile(r"^（[一二三四五六七八九十]+）\s*")
 # ⚠️ 数字与标题之间**可以没有空格**：实测 2026_05_Meimei_Han 写的是
 #    `1示例悖论的逻辑结构与严格性问题`（`4  结语` 那种带空格的也有），
 #    旧规则要求 `\s+`，于是 6 个节标题只认出 1 个。
-_HEAD_CN_ARABIC = re.compile(r"^\d{1,2}(?:\s+|(?=[\u4e00-\u9fff]))(?P<t>\S.*)$")
+# ⚠️ B-307 S4：**顿号编号** `1、引言` 也要认（案例 60：04 Yingying_Wang 的 6 个真标题
+#    `1、引言`…`6、结论` 因旧规则只认空格/紧跟汉字而整篇丢失，`n_headings = 0`）。
+#    顿号后允许空格（`1、 引言`），但**紧跟数字**时一律不认——`1、2、3`、`1、2、3 个问题`
+#    这类编号枚举/行内引用不是标题。判据仍复用 `_is_cn_numbered_heading`，不另写一套。
+_HEAD_CN_ARABIC = re.compile(
+    r"^\d{1,2}(?:\s+|、\s*(?!\d)|(?=[\u4e00-\u9fff]))(?P<t>\S.*)$")
 # `N. 标题`（阿拉伯数字 + **点**）—— 与 `N 标题` 同族，只是编号后多一个点。
 # 实测 04 Lei_Li：一篇 6 个小节全写成 `1. 莱布尼茨` / `5. 维特根斯坦`（人名小节），
 # 旧判据那一句 `rest[:1].isupper()` 是为英文 `1. Introduction` 写的，于是 6 个标题
@@ -43,6 +48,8 @@ _HEAD_CN_BAD_TAIL = ("年", "月", "日", "世纪", "年代", "页", "卷", "期
 # （。！？；）、逗号/冒号/西文标点仍拒绝；长标题超 40 字仍拒绝。
 # 默认路径：不含顿号的标题判定逐字节不变。
 _CN_HEAD_PUNCT = "。；，：；！？,;:!?"
+# D-09：`N、` 形式的**编号前缀**本身（不带后面的标题字），连续编号段判据用。
+_HEAD_CN_ART_RE = re.compile(r"^\d{1,2}、")
 
 
 def _is_cn_numbered_heading(t: str) -> bool:
@@ -78,6 +85,29 @@ def _is_cn_dot_heading(t: str) -> bool:
     # 与 _HEAD_EN1 分支同一条：句中带句点的多半是文献条目/编号说明，不是标题
     return "." not in rest and _is_cn_numbered_heading(rest)
 
+
+def _cn_arabic_run_ids(paras: list) -> set[int]:
+    """D-09：`N、` **连续编号段**（`1、`/`2、`/`3、` 连排）里所有段落的 `id()` 集合。
+
+    ⚠️ 这是**结构**判据（与 `_is_cn_dot_heading` 的「连排名单」同族）：相邻两段都是
+    `N、` 形式、都过 `_is_cn_numbered_heading`、且编号正好 +1 → 两段互为列表项/定义
+    条款（链式传递，`1、2、3` 起头、结尾各覆盖一次）。真标题后面跟的是**成段正文**，
+    如 71/04 的 `1、引言`…`6、结论`、86/03 的单条 `4、“问亡灵”…`，都不进集合。
+    实测反例：75/06 赵震「定义 4.1 如下：」后连排 4 条 `N、g满足…`，旧判据把前 3 条
+    认成 3 个 `\\section`（`n_headings` 3→6，B-307 上一轮 BLOCKED 的直接原因）。
+    """
+    out: set[int] = set()
+    for k in range(len(paras) - 1):
+        a, b = (escape_latex(p.plain).strip() for p in paras[k:k + 2])
+        ma, mb = _HEAD_CN_ARABIC.match(a), _HEAD_CN_ARABIC.match(b)
+        na, nb = _HEAD_CN_ART_RE.match(a), _HEAD_CN_ART_RE.match(b)
+        # `na.group()[:-1]` = `1、` 去掉顿号后的编号（只在两者都是顿号形式时才取值）
+        if not (ma and mb and na and nb) or int(na.group()[:-1]) + 1 != int(nb.group()[:-1]):
+            continue
+        if _is_cn_numbered_heading(ma.group("t")) and _is_cn_numbered_heading(mb.group("t")):
+            out |= {id(paras[k]), id(paras[k + 1])}
+    return out
+
 # 结构标记必须**中英双认**。实测 01 Xue_Wang 是英文稿，用的是
 # `Abstract:` / `Keywords:`；只认中文标记会让正文区直接取空（相似度掉到 1%）。
 #
@@ -92,7 +122,23 @@ _ABS_LEAD = r"^[\s\u3000]*"
 #    但也不能无条件认：`摘要式阅读`/`摘要性…`/`摘要化…` 里的「摘要」只是**构词语素**，
 #    不是标签（全库实测这三个后缀字在标签位置 0 命中，这条纯粹是反例防线；
 #    万一认错，代价是 fail——不会把正文写进 `\myabstractCN`）。
-_ABS_RE = re.compile(_ABS_LEAD + r"(?:摘\s*要(?![式性化])|Abstract)\s*[:：]?\s*", re.I)
+# ⚠️ B-307 S6（B-303 B3 的两条长尾）：
+#    ① 校对说明行 `摘要部分，共2处` 曾被当成摘要标签：标签行**行尾附近**出现
+#       `共N处` 的一律不算标签（行首 20 字内出现、且离行尾不超过 6 字——真摘要正文
+#       里的「共 N 处」不会这样贴着行尾；这条只挡校对语，不放宽任何正文判据）。
+#    ② `Abstract.` 的句点要吃掉：从前 `Abstract. ` 让 `abstract_en` 读成 `'. '`
+#       （2023年第6期(73) 06 Xiaoqi_Zhang）。点后还有正文（`Abstract. The…`）照旧取正文；
+#       **标签独占一段**仍是标签（正文由 `_label_body` 往下取一段，既有断言零改动）。
+#    ③ 标签后只允许**非标点**内容开头：`摘要：，…` 这类不是标签（标签后必须有非标点内容）。
+_ABS_NOTE_GUARD = r"(?![^\n]{0,20}共\s*\d+\s*处[^\n]{0,6}$)"
+_ABS_RE = re.compile(
+    _ABS_LEAD
+    + _ABS_NOTE_GUARD
+    + r"(?:摘\s*要(?![式性化])|Abstract(?:\.(?=\s|$))?)"
+    + r"\s*[:：]?\s*"
+    + r"(?![，。；、,;：:！？!?])",
+    re.I,
+)
 # 关键词标签**不**跟着放宽段首空白：关键词有 7 篇 fail，不在本轮验收范围内，而
 # `kw_blocks` 里「先出现的空正文块」会把后面有正文的块挡掉（`next()` 取第一个 cjk 块），
 # 放宽它可能凭空造出 ok→fail。摘要这条路另写了「向下取正文」的判据（见 _abs_body_cn）。
@@ -150,7 +196,11 @@ _HEAD_EN1 = re.compile(r"^\d{1,2}\.\s+(?P<t>\S.*)$")
 _HEAD_EN2 = re.compile(r"^\d{1,2}）\s*(?P<t>\S.*)$")
 # 第 121 条（期 88 / 02 Ning_Jiang 真稿）：英文子标题写 `2) Problems with …`（半角右括号）。
 _HEAD_EN2_HALF = re.compile(r"^\d{1,2}\)\s*(?P<t>[A-Z].*)$")
-_HEAD_EN3 = re.compile(r"^\d{1,2}\.\d{1,2}\s+(?P<t>\S.*)$")  # 1.2 Title
+# ⚠️ B-307 S4：`1.1引言`（点号编号与汉字之间**无空格**）也要认——旧规则要求 `\s+`，
+#    这类标题会整行留在正文里。只在**下一个字符是汉字**时放宽（英文 `1.2Title` 仍不认，
+#    与 `_HEAD_CN_DOT` 的「点后是数字」边界互不影响）；层级由 `classify_en_heading`
+#    判为 2（子节），与 `1.2 标题` 一致。
+_HEAD_EN3 = re.compile(r"^\d{1,2}\.\d{1,2}(?:\s+|(?=[\u4e00-\u9fff]))(?P<t>\S.*)$")
 
 # 元数据块只可能出现在开头这么多段之内
 META_SCAN = 20
