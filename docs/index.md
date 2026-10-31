@@ -12,6 +12,9 @@ hero:
       text: 快速上手
       link: /guide/quickstart
     - theme: alt
+      text: 模板下载
+      link: /templates/
+    - theme: alt
       text: 下载最新版（Windows / macOS）
       link: https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest
 features:
@@ -66,6 +69,13 @@ features:
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/features/single"><strong>功能总览</strong><span>单篇稿件、整期装配、引用库与成本控制。</span></a>
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/reference/faq"><strong>常见问题</strong><span>联网与费用、API key、编译失败、打不开怎么办。</span></a>
   <a class="doc-card" href="/EditToolBoxStudiesInLogic/reference/known-limitations"><strong>已知限制与绕行</strong><span>v1.4.1 仍存在的限制与绕行办法。</span></a>
+</div>
+
+## 模板与维护
+
+<div class="doc-cards doc-cards-2">
+  <a class="doc-card" href="/templates/"><strong>投稿与排版模板</strong><span>Word / LaTeX 模板、样式文件、参考文献体例与投稿检查清单（9 件资产可下载）。</span></a>
+  <a class="doc-card" href="/maintain/quickstart"><strong>维护者指南</strong><span>本机接入、自检命令、文档站维护与故障速查（命令级，可直接照做）。</span></a>
 </div>
 
 ## 界面

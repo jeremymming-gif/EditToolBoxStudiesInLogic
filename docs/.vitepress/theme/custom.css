@@ -86,8 +86,14 @@
   margin: 20px 0 8px;
 }
 
+/* 两卡版本（首页「模板与维护」）：宽屏两列，窄屏单列 */
+.doc-cards-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+
 @media (max-width: 767px) {
-  .doc-cards {
+  .doc-cards,
+  .doc-cards-2 {
     grid-template-columns: 1fr;
   }
 }

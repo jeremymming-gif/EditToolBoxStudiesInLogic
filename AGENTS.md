@@ -111,3 +111,16 @@ CI 上就是这样，所以 CI 不该因为它们红。
 5. **用户文档只写当前版本**：`使用说明.md` 与官网 `docs/` 用户页只描述**最新版本怎么用**——
    不写批次号、条号、开发史与维护者内容；历史与维护者资料放 `Engine/docs/HISTORY.md`，
    变更历史放 `docs/reference/changelog.md`。
+
+## 维护者接入（命令级，公开仓）
+
+公开仓只放**可复制的命令与指针**；案例、成本、人员与内部流程留在**笔记仓**。新维护者从零接入按下列顺序：
+
+1. **本机接入**（Windows / macOS 双平台单命令源）：[`docs/maintain/quickstart.md`](docs/maintain/quickstart.md) §1；
+2. **自检与门禁**：同页 §2 —— `Engine/tools/selfcheck.py`（quick；发版前 `--full`）+ 文档看门狗（本清单上面第 3 条）；
+3. **构建/发版**：`RELEASING.md`，macOS 用 `build.sh`，Windows 用 `sources-win/build-win.ps1`；
+4. **文档站维护**：同页 §4 —— Node ≥ 18；改/加页面必须同步 `docs/.vitepress/config.mts` 的 nav/sidebar；
+   下载资产放 `docs/public/templates/`；
+5. **故障速查**：[`docs/maintain/troubleshooting.md`](docs/maintain/troubleshooting.md)。
+
+第一次接入只读 1→2→5 即可；涉及改代码/发版时再走 3→4，并遵守本清单与「红线」。

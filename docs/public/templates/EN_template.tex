@@ -1,0 +1,255 @@
+%!TEX encoding = UTF-8 Unicode
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%                                                                       %%
+%%            LaTeX English Template for "Studies in Logic"              %%
+%%                                                                       %%
+%%                            Ver 1.31                                   %%
+%%                                                                       %%
+%%        You can modify it and distribute it freely     2014.06.04      %%
+%%                                                                       %%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%-------------------------------------------------------------------------%
+%   Copy it to a new file with a new name and save it with SLEN.sty 
+%   in the same folder. Use it as the basis for your article.
+%   Delete % signs as needed.
+%   Use XeLaTex to compile.
+%   Please use BibTex to compile conference.
+%-------------------------------------------------------------------------%
+
+%=========================================================================%
+%      Part 1: For editors only
+%              Authors just ignore it and proceed to Part 2.
+%=========================================================================%
+
+%-------------------------------------------------------------------------%
+%    1.1 设定纸张大小、正文字体大小
+%-------------------------------------------------------------------------%
+\documentclass[b5paper,11pt,onecolumn,twoside,UTF8,fontset=windows]{article}
+\usepackage{SLEN}                                                         % 加载版面格式
+\setmainfont{Times New Roman}
+%-------------------------------------------------------------------------%
+%    1.2 填入卷期号、出版年月
+%-------------------------------------------------------------------------%
+\newcommand{\myvolnumber}{x}                                              % 输入卷号
+\newcommand{\myissnumber}{x}                                              % 输入当年期号
+\newcommand{\mypubyear}{xxxx}                                             % 输入出版年份
+
+%-------------------------------------------------------------------------%
+%    1.3 填入起止页码、页数
+%-------------------------------------------------------------------------%
+\newcommand{\myfirstpage}{1}                                              % 输入起始页码
+\newcommand{\mylastpage}{10}                                              % 输入终止页码
+\newcommand{\mypages}{10}                                                 % 输入页数
+
+%-------------------------------------------------------------------------%
+%    1.4 填入收稿日期、修改稿日期
+%-------------------------------------------------------------------------%
+\newcommand{\receiveddate}{xxxx-xx-xx}                                    % 输入收稿日期
+\newcommand{\revisiondate}{null}                                          % 预置修改稿日期为空，勿改此行
+%\renewcommand{\revisiondate}{xxxx-xx-xx}                                 % 输入修改稿日期（若有），并取消该行注释
+
+%-------------------------------------------------------------------------%
+%    1.5 填入作者、单位中译名
+%-------------------------------------------------------------------------%
+\newcommand{\mysecondauthorCN}{null}                                      % Default for second author. Do not change it!
+\newcommand{\mythirdauthorCN}{null}                                       % Default for third author. Do not change it!
+\newcommand{\myfourthauthorCN}{null}
+\newcommand{\myfifthauthorCN}{null}
+
+\newcommand{\myfirstauthorCN}                                             % Insert the first author name.
+{第一作者}
+
+\newcommand{\myfirstaffiliationCN}                                        % Insert the First author's affiliation, with \\\small seperating multiple affiliations
+{单位一
+\\另一单位}
+
+%\renewcommand{\mysecondauthorCN}{Second Author}                          % Insert the second author if any
+\newcommand{\mysecondaffiliationCN}                                       % Insert the second author's affiliation, with \\\small separating multiple affiliations
+{单位二}
+
+%\renewcommand{\mythirdauthorCN}{Third Author}                            % Insert the third author if any
+\newcommand{\mythirdaffiliationCN}                                        % Insert the third author's affiliation, with \\\small separating multiple affiliations
+{单位三}
+
+
+%\renewcommand{\myfourthauthorCN}{Fourth Author}
+\newcommand{\myfourthaffiliationCN}{单位四}
+
+%\renewcommand{\myfifthauthorCN}{Fifth Author}
+\newcommand{\myfifthaffiliationCN}{单位五}
+%-------------------------------------------------------------------------%
+%    1.6 填入中文标题和摘要（默认为空）
+%-------------------------------------------------------------------------%
+\newcommand{\mytitleCN}                                                   % Insert Chinese title
+{标题}
+\newcommand{\myabstractCN}                                                % Insert Chinese abstract
+{摘要}
+
+%-------------------------------------------------------------------------%
+%    1.7 填入文章类型
+%  (original, bookreview, conferencereport)默认为original
+%-------------------------------------------------------------------------%
+\newcommand{\myarticletype}
+{original}
+
+\newcommand{\reviewbooktitle}                                             % 若文章为书评，请输入所评书的出版信息
+{The information of the book reviewed by the author}
+
+\newcommand{\reviewbooktitleEN}{null}                                     % 预置所评书的中译版为空
+%\renewcommand{\reviewbooktitleEN}{中译版信息}                            % 若书有中译版，请输入中译版信息并取消该行注释
+
+%-------------------------------------------------------------------------%
+%    1.8 缺省设置
+%-------------------------------------------------------------------------%
+\newcommand{\mysecondauthor}{null}                                        % Default for second author. Do not change it!
+\newcommand{\mythirdauthor}{null}                                         % Default for third author. Do not change it!
+
+
+%=========================================================================%
+%               Part 2: For Authors (You start from here)
+%=========================================================================%
+
+%-------------------------------------------------------------------------%
+%    2.1 Insert title, author(s), affiliation(s), and email address(es)
+%-------------------------------------------------------------------------%
+\newcommand{\mytitle}                                                     % Insert the title of your paper.
+{Insert Your Title Here}
+
+\newcommand{\myrunningtitle}                                              % Insert the title for displaying on the header in case your title is too long
+{Insert Your Title for the Header}
+
+\newcommand{\myfirstauthor}                                               % Insert the first author name.
+{First Author}
+
+\newcommand{\myfirstaffiliation}{                                         % Insert the First author's affiliation
+{Department 1, University 1} \\
+{another affiliation}
+}
+
+\newcommand{\myfirstemail}                                                % Insert the second author's email address
+{xxxx@xxxx.xxx}
+
+%\renewcommand{\mysecondauthor}{Second Author}                            % Insert the second author if any
+
+\newcommand{\mysecondaffiliation}{                                        % Insert the second author's affiliation
+{Department 2, University 2} \\
+{ another affiliation}
+}
+
+\newcommand{\mysecondemail}                                               % Insert the second author's email address
+{xxxx@xxxx.xxx}
+
+%\renewcommand{\mythirdauthor}{Third Author}                              % Insert the third author if any
+
+\newcommand{\mythirdaffiliation}{                                         % Insert the third author's affiliation
+{Department 3, University 3} \\
+{another affiliation}
+}
+
+\newcommand{\mythirdemail}                                                % Insert the third author's email address
+{xxxx@xxxx.xxx}
+
+\newcommand{\myfourthauthor}{null}
+
+%\renewcommand{\myfourthauthor}{Fourth Author}
+\newcommand{\myfourthaffiliation}{
+{Department 4, University 4}
+}
+\newcommand{\myfourthemail}
+{xxxx@xxxx.xxx}
+
+\newcommand{\myfifthauthor}{null}
+
+%\renewcommand{\myfifthauthor}{Fifth Author}
+\newcommand{\myfifthaffiliation}{
+{Department 5, University 5}
+}
+\newcommand{\myfifthemail}
+{ xxxx@xxxx.xxx}
+
+%-------------------------------------------------------------------------%
+%    2.2 Insert grants, acknowledgements, or other notes if needed
+%-------------------------------------------------------------------------%
+\newcommand{\mythanks}{null}                                              % Insert grants, acknowledgements, or other notes if needed
+
+%-------------------------------------------------------------------------%
+%    2.3 Insert abstract
+%-------------------------------------------------------------------------%
+\newcommand{\myabstract}
+{Insert your abstract here.}
+
+%-------------------------------------------------------------------------%
+%    2.4 Insert the packages your document requires and
+%        place your own definitions if needed
+%-------------------------------------------------------------------------%
+\usepackage[pdfborder=0, CJKbookmarks=true]{hyperref}               % 使用内部超链接，其中第二个选项用于支持中文书签		
+\usepackage{caption}
+%\captionsetup[figure]{name={Figure},labelsep=colon}					
+\addbibresource{reference.bib}									%insert the xxx.bib here
+%-------------------------------------------------------------------------%
+%    2.5 Just ignore this part
+%-------------------------------------------------------------------------%
+\begin{document}
+\begingroup
+\makeatletter
+\let\@makefnmark\relax\footnotetext{%
+    \ifthenelse{\equal{\revisiondate}{null}}{%
+    \hspace{-1.5em}\emph{Received} \receiveddate}{%
+    \hspace{-1.5em}\emph{Received} \receiveddate \quad
+    \emph{Revision Received} \revisiondate}
+}
+\makeatother
+\endgroup
+\printtitlepage
+
+%-------------------------------------------------------------------------%
+%    2.6 Body text
+%-------------------------------------------------------------------------%
+\section{Introduction}
+
+\section{A New Section}
+
+\begin{lemma}
+This is a lemma.
+\end{lemma}
+
+\begin{theorem}
+This is a theorem.
+\end{theorem}
+
+
+
+%-------------------------------------------------------------------------%
+%    2.7 References
+%-------------------------------------------------------------------------%
+\vspace{2ex}
+\printbibliography
+
+%-------------------------------------------------------------------------%
+%    2.8 Output author information of non-origional articles (Just ignore it)
+%-------------------------------------------------------------------------%
+\ifthenelse{\equal{\myarticletype}{original}}{}{%
+\vspace*{4ex}
+\noindent\myfirstauthor\\                                                 % 第一作者
+{\myfirstaffiliation}\\                                                     % 第一作者单位
+{\myfirstemail}                                                             % 第一作者email
+% \vspace*{1ex}
+% {\mysecondauthor}\\                                                       % 第二作者
+%{ \mysecondaffiliation}\\                                                  % 第二作者单位
+% {\mysecondemail }                                                         % 第二作者email
+% \vspace*{1ex}
+% \mythirdauthor\\                                                        % 第三作者
+% \mythirdaffiliation\\                                                   % 第三作者单位
+% \mythirdemail                                                           % 第三作者email
+}
+
+%-------------------------------------------------------------------------%
+%    2.9 Output Chinese abstract if needed (Just ignore it)
+%-------------------------------------------------------------------------%
+\ifthenelse{\equal{\mytitleCN}{null}}{}{%
+    \newpage
+    \printtitlepageCN
+}
+
+\end{document}

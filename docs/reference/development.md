@@ -48,7 +48,7 @@ PYTHONPATH=Engine/vendor python3 sources-win/tests/test_bridge.py
 cd docs
 npm install
 npm run docs:dev      # 本地预览 http://localhost:5173/EditToolBoxStudiesInLogic/
-npm run docs:build    # 产出 docs/.vitepress/dist
+npm run docs:build    # 产出在 docs/.vitepress/ 下的 dist（构建时生成，不入库）
 ```
 
 推送到 `main` 且改动 `docs/**` 时，GitHub Actions 会自动构建并部署到 GitHub Pages。

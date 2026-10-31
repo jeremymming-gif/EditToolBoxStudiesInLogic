@@ -213,6 +213,16 @@ DOC_FILES = [ENGINE / "README.md", REPO / "AGENTS.md", ENGINE / "HANDOFF.md",
              ROOT_README, TOOL_MANUAL]
 OPTIONAL_DOCS = {REPO / "AGENTS.md", ENGINE / "HANDOFF.md"}
 DOC_FILES += sorted((ENGINE / "docs").rglob("*.md"))
+# B-313B/B-305：文档站（VitePress）页面也纳入看门狗 —— 站内页面里的仓库路径引用
+# 与 README/AGENTS 一样会过时。构建产物（.vitepress/dist）与依赖目录（node_modules）
+# 不是文档，排除；其余 docs/**/*.md 全部检查。
+_DOCS_SITE = REPO / "docs"
+_DOCS_EXCLUDE = {".vitepress", "node_modules", "dist"}
+if _DOCS_SITE.is_dir():
+    DOC_FILES += sorted(
+        p for p in _DOCS_SITE.rglob("*.md")
+        if not any(part in _DOCS_EXCLUDE for part in p.parts)
+    )
 PREFIXES = ("Engine/", "slcn/", "tools/", "tests/", "docs/", "编辑笔记/",
             # 两个外壳的目录也纳入：否则文档里写 `sources-win/tests/…` 时，
             # 左边界规则会把中间那段 `tests/…` 拦掉（含 `/` 前缀），**等于没人检查**

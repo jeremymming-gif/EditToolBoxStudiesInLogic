@@ -67,7 +67,8 @@ PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 convert.py --source <来�
 | 文档 | 读者 | 内容 |
 |---|---|---|
 | [`使用说明.md`](使用说明.md) | 编辑部同事 | 面向使用者的操作手册（可直接转发） |
-| [官网文档](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) | 所有人 | 快速上手、安装、常见问题、已知限制 |
+| [官网文档](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) | 所有人 | 快速上手、安装、模板下载、常见问题、已知限制 |
+| [`docs/maintain/quickstart.md`](docs/maintain/quickstart.md) | 维护者 | 本机接入、自检命令、文档站维护与故障速查 |
 | [`Engine/docs/GUIDE.md`](Engine/docs/GUIDE.md) | 引擎使用者 | 引擎用法、参数与行为细节 |
 | [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md) | 集成 / 脚本 | 各 CLI 参数、退出码与输出契约 |
 | [`Engine/docs/PROOF_RULES.md`](Engine/docs/PROOF_RULES.md) | 一校核查 | 核查规则表与未实现项 |

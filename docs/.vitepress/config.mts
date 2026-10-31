@@ -11,8 +11,9 @@ export default defineConfig({
   base: '/EditToolBoxStudiesInLogic/',
   cleanUrls: true,
   lastUpdated: true,
-  // docs/public/templates/*.docx 是公开下载文件（非 VitePress 页面），死链检查按预期跳过
-  ignoreDeadLinks: [/^\/templates\/.+\.docx(\?.*)?$/],
+  // docs/public/templates/ 下是公开下载资产（Word/LaTeX 模板与样式，非 VitePress 页面），
+  // 死链检查按预期跳过；B-313B 起模板页直接下载 pdf/tex/bib/sty，全部放行。
+  ignoreDeadLinks: [/^\/templates\/.+\.(docx|pdf|tex|bib|sty)(\?.*)?$/],
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/EditToolBoxStudiesInLogic/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#3451b2' }],
@@ -24,7 +25,8 @@ export default defineConfig({
     nav: [
       { text: '入门', link: '/guide/quickstart', activeMatch: '/guide/' },
       { text: '功能', link: '/features/single', activeMatch: '/features/' },
-      { text: '参考', link: '/reference/faq', activeMatch: '/reference/' },
+      { text: '模板', link: '/templates/', activeMatch: '/templates/' },
+      { text: '参考', link: '/reference/faq', activeMatch: '/(reference|maintain)/' },
       { text: '下载', link: 'https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest' }
     ],
     sidebar: [
@@ -32,8 +34,7 @@ export default defineConfig({
         text: '入门',
         items: [
           { text: '快速上手', link: '/guide/quickstart' },
-          { text: '安装说明', link: '/guide/install' },
-          { text: '投稿模板（Word）', link: '/guide/submission-template' }
+          { text: '安装说明', link: '/guide/install' }
         ]
       },
       {
@@ -45,12 +46,24 @@ export default defineConfig({
         ]
       },
       {
+        text: '模板',
+        items: [
+          { text: '模板总览与下载', link: '/templates/' },
+          { text: 'Word 模板与填写说明', link: '/templates/word' },
+          { text: 'LaTeX 模板与编译链', link: '/templates/latex' },
+          { text: '本刊参考文献体例', link: '/templates/reference-style' },
+          { text: '投稿检查清单', link: '/templates/checklist' }
+        ]
+      },
+      {
         text: '参考',
         items: [
           { text: '常见问题', link: '/reference/faq' },
           { text: '已知限制与绕行', link: '/reference/known-limitations' },
-          { text: '版本记录', link: '/reference/changelog' },
-          { text: '开发与构建', link: '/reference/development' }
+          { text: '环境检查与诊断', link: '/reference/environment-check' },
+          { text: '维护者接入', link: '/maintain/quickstart' },
+          { text: '故障速查（维护者）', link: '/maintain/troubleshooting' },
+          { text: '版本记录', link: '/reference/changelog' }
         ]
       }
     ],
