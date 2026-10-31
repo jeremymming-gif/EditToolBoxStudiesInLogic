@@ -166,8 +166,9 @@ jobs:
           set -euo pipefail
           V="${{ steps.ver.outputs.value }}"
           echo "== dist 内容 =="
-          find build-flet/dist -maxdepth 2 -print | head -40
-          APP=$(find build-flet/dist -maxdepth 1 -name "*.app" -print -quit || true)
+          ls -la build-flet/dist || true
+          # 注意：macOS 自带 BSD find 没有 -maxdepth；这里用 ls 的 glob 取顶层 .app。
+          APP=$(ls -d build-flet/dist/*.app 2>/dev/null | head -1 || true)
           mkdir -p pkg-mac
           if [ -n "$APP" ]; then
             cp -R "$APP" pkg-mac/
@@ -175,16 +176,20 @@ jobs:
             MACOS_DIR="pkg-mac/$APPDIR/Contents/MacOS"
             cp build-flet/SLCNEngine "$MACOS_DIR/SLCNEngine"
             chmod +x "$MACOS_DIR/SLCNEngine"
-            # 主可执行文件名不写死（flet pack 可能按 --name 或产品名生成）；取 MacOS/ 下
-            # 第一个可执行文件（排除 sidecar）。
-            MAINEXE=$(find "$MACOS_DIR" -maxdepth 1 -type f -perm -u+x ! -name SLCNEngine -print -quit || true)
+            MAINEXE=""
+            for f in "$MACOS_DIR"/*; do
+              if [ -f "$f" ] && [ -x "$f" ] && [ "$(basename "$f")" != "SLCNEngine" ]; then MAINEXE="$f"; break; fi
+            done
             if [ -z "$MAINEXE" ]; then
               echo "::error::找不到 .app 主可执行文件"; ls -la "$MACOS_DIR"; exit 1
             fi
             echo "主可执行：$MAINEXE"
             shasum -a 256 "$MAINEXE" > pkg-mac/sha256.txt
           else
-            MAINEXE=$(find build-flet/dist -maxdepth 1 -type f -perm -u+x -print -quit || true)
+            MAINEXE=""
+            for f in build-flet/dist/*; do
+              if [ -f "$f" ] && [ -x "$f" ]; then MAINEXE="$f"; break; fi
+            done
             if [ -z "$MAINEXE" ]; then
               echo "::error::找不到 macOS 产物（既无 .app 也无可执行文件）"; ls -la build-flet/dist; exit 1
             fi
