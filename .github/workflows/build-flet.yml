@@ -160,7 +160,7 @@ jobs:
           "zip: $zip" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
           "sha256: $zhash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: macOS: 检查 dist
+      - name: macOS 检查 dist
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
@@ -171,7 +171,7 @@ jobs:
           test -d build-flet/dist
           test -f build-flet/SLCNEngine
 
-      - name: macOS: 组装 pkg-mac
+      - name: macOS 组装 pkg-mac
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
@@ -185,13 +185,13 @@ jobs:
           ls -la pkg-mac
           ls -la pkg-mac/*/Contents/MacOS 2>/dev/null || true
 
-      - name: macOS: 计算 sha256
+      - name: macOS 计算 sha256
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
           ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
 
-      - name: macOS: 生成 zip
+      - name: macOS 生成 zip
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
