@@ -77,7 +77,10 @@ def _git_root() -> pathlib.Path:
 
 
 REPO = _git_root()                                  # 仓库根
-PY = "/opt/homebrew/bin/python3.14"
+# B-304/B300-06：别把解释器路径硬编码成 mac 的 Homebrew 路径 —— Windows 上那里没有文件，
+# 内部 gen_docs 子进程会 FileNotFoundError 把 (a) 项误红。mac 的 python3.14 跑本文件时
+# sys.executable 就是 /opt/homebrew/bin/python3.14，行为逐字节不变；老路径只作兜底。
+PY = sys.executable if sys.version_info >= (3, 14) else "/opt/homebrew/bin/python3.14"
 FAILS: list[str] = []
 
 

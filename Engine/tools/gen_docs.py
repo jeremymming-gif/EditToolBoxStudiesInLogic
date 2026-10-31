@@ -240,9 +240,16 @@ def run_tests() -> tuple[list[tuple[str, int, int]], int]:
 # 所以公开仓里这两行必然没有数据。这不等于「工具坏了」——必须与「跑过但对不上」分开报，
 # 否则新克隆一开就 `--check` 失败（2026-10-15 拆仓预演实测）。
 def has_manuscripts() -> bool:
+    r"""本机有没有稿件库：探测逻辑唯一来源 = `slcn/paths.py:manuscripts_root()`。
+
+    B-304/D-18：旧实现只扫**公开仓根**有没有 `20xx年第N期` 目录 —— Windows 上稿件仓
+    并排放在仓外（`D:\GitHub\Studies_in_Logic_Database`）就误判「本仓不含稿件库」，
+    输出降级文本 → 与 README 的 corpus/占位符数字不一致 → `--check` 误红（非真实回归）。
+    paths 的探测顺序（SLCN_MANUSCRIPTS → 老布局上级 → 两仓并排）与 mac 既有行为一致。
+    """
     try:
-        return any("年第" in p.name and "期" in p.name for p in REPO.iterdir() if p.is_dir())
-    except OSError:
+        return _slcn_paths().manuscripts_root() is not None
+    except Exception:  # noqa: BLE001 —— 探测失败按「没有稿件库」降级（与旧实现同语义）
         return False
 
 
@@ -767,7 +774,11 @@ def environment_complete() -> tuple[bool, list[str]]:
     except Exception as e:  # noqa: BLE001
         missing.append(f"xelatex（探测异常 {type(e).__name__}）")
     try:
-        if _sh.which("soffice") is None and _sh.which("libreoffice") is None:
+        from slcn import platform as _plat
+        # B-304/D-18：Windows 的 LibreOffice 安装器**不**把 soffice 加进 PATH ——
+        # 旧实现只看 `shutil.which("soffice")`，于是本机明明装了也误判「缺 LibreOffice」
+        # → 一直走宽松模式。改用平台模块的统一定位（SLCN_SOFFICE → PATH → 常见安装位置）。
+        if _plat.find_soffice() is None:
             missing.append("LibreOffice")
     except Exception as e:  # noqa: BLE001
         missing.append(f"LibreOffice（探测异常 {type(e).__name__}）")

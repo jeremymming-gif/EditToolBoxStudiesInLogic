@@ -390,7 +390,8 @@ def main() -> int:
         print(f"    {r.slug[:26]:28s} [{r.channel:6s}] 相似度 {r.raw * 100:6.2f}%  "
               f"L2={r.l2:4d} L3={r.l3:4d}")
 
-    with open(os.path.join(OUT, "corpus.csv"), "w", encoding="utf-8") as f:
+    # B-304：newline="" → '\n' 不转 os.linesep，corpus.csv 跨平台逐字节一致（否则 Windows 落 CRLF）
+    with open(os.path.join(OUT, "corpus.csv"), "w", encoding="utf-8", newline="") as f:
         f.write("issue,slug,channel,lang,ok,raw_ratio,content_acc,l2,l3,ref_chars,"
                 "src_tbl,out_tbl,src_img,out_img,src_shape,out_shape,error\n")
         for r in rows:
