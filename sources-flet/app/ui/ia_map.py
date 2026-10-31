@@ -22,7 +22,8 @@ NAV_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
              ("single", "单篇稿件", "DESCRIPTION_OUTLINED"),
              ("issue", "整期装配", "VIEW_AGENDA_OUTLINED")]),
     ("资料", [("bib", "引用库", "LIBRARY_BOOKS_OUTLINED")]),
-    ("系统", [("settings", "设置", "SETTINGS_OUTLINED")]),
+    ("系统", [("settings", "设置", "SETTINGS_OUTLINED"),
+             ("help", "帮助与关于", "HELP_OUTLINE")]),
 ]
 
 LEGACY_TAB_ORDER = [
@@ -82,11 +83,53 @@ IA_MAP: list[dict] = [
 # 旧 9 个平级入口（B-289 之前）：前 8 页 + 设置；其余 6 页为后续批次新增
 LEGACY_ENTRY_COUNT = 9
 
+# ── P3 完成度（T1：15 页矩阵）─────────────────────────────────────────────
+# done=本机可验证且已实现；readonly=只读视图/有意降级（写操作留 P4）；deferred=本机无法验证
+P3_STATUS: dict[int, str] = {
+    0: "done",
+    1: "done",
+    2: "done",
+    3: "done",
+    4: "done",
+    5: "done",
+    6: "done",
+    7: "done",
+    8: "done",
+    9: "done",
+    10: "done",
+    11: "readonly",
+    12: "readonly",
+    13: "done",
+    14: "done",
+}
+
+P3_NOTE: dict[int, str] = {
+    11: "入藏会写库：P3 仅做只读说明与入口指引，写库留 P4（按 spec 需用户显式授权）",
+    12: "待裁决/ack-duplicates 会写 sidecar：P3 只读展示口径，写操作留 P4",
+    9: "概况：Engine/bibdb.py stats --json（只读）",
+    10: "查库：Engine/bibdb.py query --json（只读）",
+    14: "设置页：外观/缩放/路径/环境检查（envcheck --json）/关于与诊断",
+}
+
+for _row in IA_MAP:
+    _row["p3_status"] = P3_STATUS.get(_row["idx"], "deferred")
+    _row["p3_note"] = P3_NOTE.get(_row["idx"], "")
+
+# IA 之外的 P3 页面：帮助与关于（新页）+ 任务书页（IA 无此页 → N/A）
+P3_PAGES: list[dict] = [
+    {"key": "help", "title": "帮助与关于", "group": "系统",
+     "status": "done", "note": "版本/许可/链接/诊断入口；IA 无对应旧页"},
+    {"key": "taskbook", "title": "任务书页", "group": "—",
+     "status": "na", "note": "IA 15 页矩阵无此页 → N/A（任务书由引擎两段式协同在外部 open）"},
+]
+
 
 def stats() -> dict:
     total = len(IA_MAP)
     implemented = sum(1 for row in IA_MAP if row["first_batch"].startswith("骨架已实现"))
     pages = sorted({row["new_page"] for row in IA_MAP})
+    p3_done = sum(1 for row in IA_MAP if row.get("p3_status") == "done")
+    p3_readonly = sum(1 for row in IA_MAP if row.get("p3_status") == "readonly")
     return {
         "legacy_pages": total,
         "legacy_entries": LEGACY_ENTRY_COUNT,
@@ -94,4 +137,9 @@ def stats() -> dict:
         "new_page_keys": pages,
         "mapped_in_first_batch": implemented,
         "unmapped": total - implemented,
+        "p3_done": p3_done,
+        "p3_readonly": p3_readonly,
+        "p3_deferred": total - p3_done - p3_readonly,
+        "p3_extra_pages": [page["key"] for page in P3_PAGES if page["status"] == "done"],
+        "p3_na_pages": [page["key"] for page in P3_PAGES if page["status"] == "na"],
     }

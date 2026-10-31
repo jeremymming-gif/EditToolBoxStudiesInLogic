@@ -1,4 +1,4 @@
-"""学衡工具箱 · Flet 单壳（B-246c P2）。
+"""学衡工具箱 · Flet 单壳（B-246c P2 / P3）。
 
 一个窗口 = 一个应用：左侧分组导航 + 页面区 + 状态栏。
 页面只做「取值 → 拼参数 → 显示日志」，判定全部在 Engine（见 app/services/engine_bridge.py）。
@@ -8,6 +8,13 @@ P2 自动化钩子（证据脚本用，生产环境不设即无副作用）：
   P2_ZOOM / P2_WINSIZE(WxH) / P2_AUTO_CLOSE_MS / P2_AUTORUN / P2_CANCEL_MS / P2_OPEN_PICKER(dir|file)
   P2_DEMO_SINGLE_SOURCE / P2_DEMO_SINGLE_OUT / P2_DEMO_BIB / P2_DEMO_PROOF_TEX
   P2_DEMO_ISSUE / P2_DEMO_TOC / P2_SELFTEST(theme|zoom)
+P3 扩展（同样只在设置时生效；P3_* 会自动归一为 P2_* 复用既有钩子）：
+  P3_MARKER / P3_SETTINGS / P3_THEME / P3_PAGE / P3_DPI / P3_ZOOM / P3_WINSIZE / P3_AUTORUN …
+  P3_TRAY=1           启动托盘（显示/隐藏/退出）
+  P3_TRAY_TEST=show,hide,show   自动触发托盘动作并记录 marker
+  P3_TITLEBAR_PROBE=1 实测 DwmSetWindowAttribute 深色标题栏并记录结果
+  P3_DRAG_PROBE=1     尝试 DragAcceptFiles 并记录窗口拖放能力
+  P3_GEOMETRY_TEST=1  移动窗口 → 记录几何 → 保存 → 校验恢复钳制
 退出语义：窗口关闭 = 立即终止进程；因此启用 prevent_close + WindowEvent.CLOSE，
 先落盘设置再 destroy（Flet 1.0 的 atexit/缓冲写不保证执行）。
 """
@@ -26,6 +33,7 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from services import winplat
 from services.settings_store import SettingsStore
 from ui import components as C
 from ui import pages as P
@@ -33,7 +41,7 @@ from ui.ia_map import NAV_GROUPS
 from ui.tokens import BASE_DPI, BASE_H, BASE_W, ZOOM_MAX, ZOOM_MIN, Tokens
 
 APP_TITLE = "学衡工具箱"
-APP_VERSION = "v0.3.0-p2"
+APP_VERSION = "v0.4.0-p3"
 try:
     FLET_VERSION = _pkg_version("flet")
 except Exception:  # noqa: BLE001
@@ -41,6 +49,22 @@ except Exception:  # noqa: BLE001
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 START = time.monotonic()
+
+
+def _bridge_p3_env() -> list[str]:
+    """P3_* 钩子归一为 P2_*（复用既有启动钩子）；返回本次归一的键。"""
+    bridged: list[str] = []
+    for key, value in list(os.environ.items()):
+        if not key.startswith("P3_"):
+            continue
+        target = "P2_" + key[3:]
+        if target not in os.environ:
+            os.environ[target] = value
+            bridged.append(key)
+    return bridged
+
+
+P3_BRIDGED = _bridge_p3_env()
 
 
 # ── DPI awareness（Python 默认 unaware：GetDpiForSystem 会假报 96）─────────
@@ -162,6 +186,12 @@ class App:
         self.prefill_hooks: dict = {}
         self._own_size = _parse_size(_env_str("P2_WINSIZE"))
         self.window_w, self.window_h = self._own_size or self._window_size()
+        # ── P3 平台补齐状态 ─────────────────────────────────────────
+        self.client_hwnd = 0
+        self.tray = None
+        self.titlebar_info: dict = {}
+        self.geometry: dict = {}
+        self.page_switches: list[float] = []
         self._configure_window()
 
     # ── 窗口 / 规模 ────────────────────────────────────────────────────
@@ -199,6 +229,16 @@ class App:
         page.window.prevent_close = True
         page.window.on_event = self.on_window_event
         page.on_resize = self.on_resize
+        # 多屏记忆：恢复上次位置（钳制到所在监视器工作区，绝不恢复到屏外）
+        left = self.store.get("window.left")
+        top = self.store.get("window.top")
+        if isinstance(left, (int, float)) and isinstance(top, (int, float)):
+            x, y = winplat.clamp_logical_position(int(left), int(top),
+                                                 self.window_w, self.window_h, self.system_dpi)
+            page.window.left = x
+            page.window.top = y
+            self.mark("geometry_restored", saved={"left": int(left), "top": int(top)},
+                      applied={"left": x, "top": y})
 
     # ── 标记（证据脚本读取）────────────────────────────────────────────
     def mark(self, event: str, **fields) -> None:
@@ -275,7 +315,7 @@ class App:
                 ),
                 ft.Column(spacing=0, controls=[
                     C.text("学衡工具箱", t, "h3", weight="semibold"),
-                    C.text("Flet 单壳 · P2", t, "caption", t.palette.text_faint),
+                    C.text("Flet 单壳 · P3", t, "caption", t.palette.text_faint),
                 ]),
             ]),
         )
@@ -312,12 +352,20 @@ class App:
     def goto(self, key: str) -> None:
         if key not in self.pages or key == self.current_page_key:
             return
+        t0 = time.monotonic()
         self.current_page_key = key
         self.store.set("last_page", key)
         self.content.content = self.pages[key].root
         self.sidebar.content = self._sidebar_content()
         self.page.update()
-        self.mark("nav_change", page=key)
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+        self.page_switches.append(elapsed_ms)
+        try:
+            self.pages[key].on_show()
+        except Exception as exc:  # noqa: BLE001
+            self.mark("on_show_error", page=key, error=f"{type(exc).__name__}: {exc}")
+        self.mark("nav_change", page=key, switch_ms=elapsed_ms,
+                  switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1))
 
     def _status_meta(self) -> str:
         engine = "引擎就绪" if self.engine_status.ok else "引擎缺失"
@@ -340,7 +388,17 @@ class App:
         self.rebuild_shell()
         self.persist()
         self.mark("theme_changed", theme=theme)
+        self.apply_titlebar()
         self.toast("已切换到" + ("深色" if theme == "dark" else "浅色") + "模式（已落盘）")
+
+    def apply_titlebar(self) -> None:
+        """深色标题栏跟随主题（DwmSetWindowAttribute；失败降级为系统默认，不影响界面）。"""
+        if not self.client_hwnd:
+            self.client_hwnd = winplat.find_client_window(APP_TITLE) or 0
+        if not self.client_hwnd:
+            return
+        self.titlebar_info = winplat.set_dark_titlebar(self.client_hwnd, self.theme == "dark")
+        self.mark("titlebar", theme=self.theme, **self.titlebar_info)
 
     def set_zoom(self, zoom: float) -> None:
         if self.running:
@@ -545,6 +603,20 @@ class App:
         if getattr(e, "type", None) == ft.WindowEventType.CLOSE:
             self._close_requested = True
             self.mark("close_requested")
+            if self.client_hwnd:
+                try:
+                    self.geometry = winplat.window_logical_rect(self.client_hwnd, self.system_dpi)
+                    if self.geometry:
+                        self.store.set("window.left", self.geometry["left"])
+                        self.store.set("window.top", self.geometry["top"])
+                        self.mark("geometry_saved", **self.geometry)
+                except Exception as exc:  # noqa: BLE001
+                    self.mark("geometry_error", error=f"{type(exc).__name__}: {exc}")
+            if self.tray is not None:
+                try:
+                    self.tray.stop()
+                except Exception:  # noqa: BLE001
+                    pass
             self.save_settings()
             self.page.run_task(self._destroy_window)
 
@@ -553,7 +625,12 @@ class App:
         try:
             await self.page.window.destroy()
         except Exception as exc:  # noqa: BLE001
-            self.mark("destroy_error", error=str(exc))
+            text = str(exc)
+            if "session closed" in text.lower():
+                # 关窗后客户端先关 session，此时 destroy 抛错无害（进程随之退出）。
+                self.mark("destroy_skipped", reason=text)
+            else:
+                self.mark("destroy_error", error=text)
 
     # ── 状态落盘 / 自动化 ───────────────────────────────────────────────
     def write_state(self) -> None:
@@ -581,6 +658,14 @@ class App:
             settings_path=str(self.store.path),
             settings_exists=self.settings_exists,
             engine=self.engine_status.to_dict(),
+            hwnd=self.client_hwnd,
+            titlebar=self.titlebar_info,
+            tray={"started": bool(getattr(self.tray, "started", False))} if self.tray else None,
+            geometry=self.geometry,
+            page_switches=self.page_switches[-10:],
+            page_switch_avg_ms=(round(sum(self.page_switches) / len(self.page_switches), 1)
+                                if self.page_switches else None),
+            p3_bridged=P3_BRIDGED,
             flet=FLET_VERSION,
             python=self.python_version,
         )
@@ -592,11 +677,30 @@ class App:
             pass
         self.mark("visible")
         self.write_state()
+        await self._wake_platform()
+        await self._platform_hooks()
+        self.write_state()
         self.mark("engine_status", **self.engine_status.to_dict())
         page_key = _env_str("P2_PAGE")
         if page_key and page_key in self.pages:
             self.goto(page_key)
         await self._apply_demo_hooks()
+        if _env_str("P2_ENVCHECK") in ("1", "true", "yes"):
+            settings_page = self.pages.get("settings")
+            if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
+                self.page.run_task(settings_page._envcheck_task)
+        bib_query = _env_str("P2_BIB_QUERY")
+        if bib_query:
+            self.page.run_task(self._bib_query_probe, bib_query)
+        bib_query_ui = _env_str("P2_BIB_QUERY_UI")
+        if bib_query_ui:
+            bib_page = self.pages.get("bib")
+            if bib_page is not None:
+                self.goto("bib")
+                bib_page._switch("query")
+                if bib_page.query_field is not None:
+                    bib_page.query_field.value = bib_query_ui
+                self.page.run_task(bib_page._run_query)
         autorun = _env_str("P2_AUTORUN")
         if autorun:
             await self._autorun(autorun)
@@ -623,6 +727,95 @@ class App:
                 await self.page.window.close()
             except Exception as exc:  # noqa: BLE001
                 self.mark("auto_close_error", error=str(exc))
+
+    # ── P3 平台补齐：客户端窗口旁路 / 标题栏 / 拖放探测 / 托盘 / 几何 ────
+    async def _bib_query_probe(self, title: str) -> None:
+        """证据钩子：直接打一次只读 bibliographic query 并记录结果（不写库）。"""
+        try:
+            call = EB.bibdb_query_call(title=title, limit=3)
+            result = await asyncio.to_thread(EB.read_json_command, call)
+            payload = result.get("json") or {}
+            hits = payload.get("hits") or []
+            self.mark("bib_query", ok=bool(result.get("ok")), title=title,
+                      code=result.get("code"), count=payload.get("count"),
+                      ambiguous=payload.get("ambiguous"),
+                      keys=[str(h.get("key")) for h in hits][:5],
+                      error=str(result.get("error") or ""))
+        except Exception as exc:  # noqa: BLE001
+            self.mark("bib_query", ok=False, title=title, error=f"{type(exc).__name__}: {exc}")
+
+    async def _wake_platform(self) -> None:
+        """首帧可见后接管外部窗口能力（跨进程，不侵入 Flutter 内部）。"""
+        self.client_hwnd = winplat.find_client_window(APP_TITLE) or 0
+        if not self.client_hwnd:
+            self.mark("client_window", ok=False, error="未找到 Flutter 客户端窗口")
+            return
+        info = winplat.window_info(self.client_hwnd)
+        self.mark("client_window", ok=True, **info)
+        self.titlebar_info = winplat.set_dark_titlebar(self.client_hwnd, self.theme == "dark")
+        self.mark("titlebar", theme=self.theme, **self.titlebar_info)
+        if _env_str("P3_DRAG_PROBE") in ("1", "true", "yes"):
+            self.mark("drag_register", **winplat.accept_drag_files(self.client_hwnd, True))
+
+    async def _platform_hooks(self) -> None:
+        tray_want = _env_str("P3_TRAY") in ("1", "true", "yes")
+        tray_test = _env_str("P3_TRAY_TEST")
+        if tray_want or tray_test:
+            from services.tray import TrayService
+
+            self.tray = TrayService(self)
+            self.mark("tray", **self.tray.start())
+        if tray_test and self.tray is not None:
+            for action in [a.strip() for a in tray_test.split(",") if a.strip()]:
+                await asyncio.sleep(0.45)
+                result = self.tray.invoke(action)
+                self.mark("tray_invoke", action=action, ok=result.get("ok"),
+                          error=result.get("error", ""))
+                await asyncio.sleep(0.25)
+                info = winplat.window_info(self.client_hwnd or 0)
+                self.mark("tray_window_state", action=action, visible=info.get("visible"),
+                          hwnd=info.get("hwnd"))
+                if action == "show":
+                    winplat.show_window(self.client_hwnd or 0, True, foreground=True)
+        if _env_str("P3_GEOMETRY_TEST") in ("1", "true", "yes"):
+            await asyncio.sleep(0.3)
+            await self._geometry_roundtrip()
+        if _env_str("P3_TITLEBAR_PROBE") in ("1", "true", "yes"):
+            for theme in ("dark", "light"):
+                if theme != self.theme and not self.running:
+                    self.set_theme(theme)
+                    await asyncio.sleep(0.4)
+                self.mark("titlebar_probe", theme=theme,
+                          **winplat.set_dark_titlebar(self.client_hwnd or 0, theme == "dark"))
+
+    async def _geometry_roundtrip(self) -> None:
+        """移动窗口 → 记录并落盘几何 → 越界钳制验证（多屏记忆的证据）。"""
+        before = winplat.window_info(self.client_hwnd or 0)
+        self.mark("geometry_before", rect_px=before.get("rect_px"))
+        mon = winplat._monitor_work_rect(hwnd=self.client_hwnd or 0) or {}
+        work = mon.get("work")
+        if not before.get("rect_px") or not work:
+            self.mark("geometry_skip", error="no rect/monitor")
+            return
+        scale = self.system_dpi / 96.0
+        self.page.window.left = int(round((work["right"] - 260) / scale))
+        self.page.window.top = int(round((work["top"] + 60) / scale))
+        self.page.update()
+        await asyncio.sleep(0.7)
+        after = winplat.window_info(self.client_hwnd or 0)
+        self.geometry = winplat.window_logical_rect(self.client_hwnd or 0, self.system_dpi)
+        if self.geometry:
+            self.store.set("window.left", self.geometry["left"])
+            self.store.set("window.top", self.geometry["top"])
+            self.persist()
+        self.mark("geometry_moved", rect_px=after.get("rect_px"), logical=self.geometry)
+        x, y = winplat.clamp_logical_position(99999, 99999, self.window_w, self.window_h,
+                                              self.system_dpi)
+        self.mark("geometry_clamp", requested={"left": 99999, "top": 99999},
+                  clamped={"left": x, "top": y}, monitor_work=work)
+        self.page.window.left = x
+        self.page.window.top = y
+        self.page.update()
 
     async def _apply_demo_hooks(self) -> None:
         source = _env_str("P2_DEMO_SINGLE_SOURCE")

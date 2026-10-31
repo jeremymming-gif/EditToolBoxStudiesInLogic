@@ -33,7 +33,7 @@ def _defaults() -> dict:
         "theme": "light",
         "zoom": 1.0,
         "last_page": "home",
-        "window": {"width": 1240, "height": 860},
+        "window": {"width": 1240, "height": 860, "left": None, "top": None},
         "recent": {
             "single_source": "",
             "single_out": "",

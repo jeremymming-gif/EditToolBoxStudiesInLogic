@@ -432,6 +432,105 @@ def dirpush_issues_csv(value: str) -> str:
     return ",".join(str(n) for n in sorted(seen))
 
 
+# ── 只读读库 / 环境检查（P3：引用库视图与设置页，不写库）────────────────
+def bibdb_stats_call() -> EngineCall:
+    """引用库概况（只读）：stats --json。"""
+    return _call("bibdb.py", ["stats", "--json"], "引用库概况")
+
+
+def bibdb_query_call(
+    *,
+    key: str = "",
+    title: str = "",
+    author: str = "",
+    year: str = "",
+    limit: int = 20,
+) -> EngineCall:
+    """引用库检索（只读）：query --json。只允许检索参数，绝不带写子命令。"""
+    args = ["query", "--json"]
+    if key.strip():
+        args += ["--key", key.strip()]
+    if title.strip():
+        args += ["--title", title.strip()]
+    if author.strip():
+        args += ["--author", author.strip()]
+    if year.strip():
+        args += ["--year", year.strip()]
+    args += ["--limit", str(max(1, min(int(limit or 20), 100)))]
+    return _call("bibdb.py", args, "引用库检索")
+
+
+def envcheck_call(out_dir: str = "") -> EngineCall:
+    """环境检查（只读）：envcheck --json。"""
+    args = ["--json"]
+    if out_dir:
+        args += ["--out-dir", out_dir]
+    return _call("envcheck.py", args, "环境检查")
+
+
+def parse_json_document(text: str):
+    """从多行 stdout 里解析最后一段完整 JSON 对象（引擎 JSON 带缩进，逐行 json.loads 不够）。"""
+    import json
+
+    decoder = json.JSONDecoder()
+    best = None
+    index = 0
+    while True:
+        start = text.find("{", index)
+        if start < 0:
+            return best
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            index = start + 1
+            continue
+        if isinstance(value, dict):
+            best = value
+        index = max(end, start + 1)
+
+
+def read_json_command(
+    call: EngineCall,
+    *,
+    timeout: float = 120.0,
+    notes: str = "",
+    env_extra: dict | None = None,
+) -> dict:
+    """同步执行只读子命令并解析 JSON（调用方放 asyncio.to_thread，避免阻塞 UI）。"""
+    import json
+
+    env = env_for_run(notes=notes)
+    if env_extra:
+        env.update({k: str(v) for k, v in env_extra.items() if v is not None})
+    result: dict = {"ok": False, "entry": call.entry, "label": call.label, "argv": call.argv}
+    try:
+        proc = subprocess.run(
+            call.argv,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=timeout,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        payload = parse_json_document(out)
+        result.update(
+            {
+                "ok": proc.returncode == 0 and payload is not None,
+                "code": proc.returncode,
+                "json": payload,
+                "lines": [ln for ln in out.splitlines() if ln.strip()][-80:],
+            }
+        )
+        if payload is None and proc.returncode != 0:
+            result["error"] = (proc.stderr or proc.stdout or "").strip()[-500:] or f"退出码 {proc.returncode}"
+    except (OSError, subprocess.SubprocessError) as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
 # ── 运行环境 ────────────────────────────────────────────────────────────
 def env_for_run(api: dict | None = None, notes: str = "") -> dict:
     env = dict(os.environ)

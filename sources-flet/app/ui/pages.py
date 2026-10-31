@@ -1,10 +1,11 @@
-"""P2 页面：工作台 / 单篇稿件（3 步）/ 整期装配（6 步）/ 引用库（P3 实装）/ 设置。
+"""P3 页面：工作台 / 单篇稿件（3 步）/ 整期装配（6 步）/ 引用库（只读）/ 设置 / 帮助与关于。
 
 页面只做三件事：取值（输入控件）→ 拼参数（services.engine_bridge）→ 显示日志（LogConsole）。
 不复制任何引擎判定逻辑；长任务走 asyncio 子进程，不阻塞 UI 线程。
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -13,7 +14,7 @@ import flet as ft
 
 from services import engine_bridge as EB
 from ui import components as C
-from ui.ia_map import NAV_GROUPS, stats as ia_stats
+from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
 
 STATUS_TEXT = {"idle": "待运行", "running": "运行中", "done": "已完成", "warn": "有提示", "error": "失败"}
 
@@ -159,7 +160,7 @@ class HomePage(BasePage):
         quick = ft.Row(spacing=t.sp("2"), controls=[
             entry_card("DESCRIPTION_OUTLINED", "单篇稿件", "初排转换 / 文献回读校验 / 一校核查", "single"),
             entry_card("VIEW_AGENDA_OUTLINED", "整期装配", "检查 → 目录 → 编译 → 合刊 → 清理 → 推送", "issue"),
-            entry_card("LIBRARY_BOOKS_OUTLINED", "引用库", "P3 实装（本期保留入口）", "bib"),
+            entry_card("LIBRARY_BOOKS_OUTLINED", "引用库", "只读查看（查库/统计）", "bib"),
         ])
 
         recent = self.app.store.get("recent", {}) or {}
@@ -173,7 +174,7 @@ class HomePage(BasePage):
             ]))
 
         body = C.page_body(
-            C.notice_bar("P2：单篇 3 步与整期 6 步已接真引擎；引用库与打包 CI 归 P3/P4。", t, "info"),
+            C.notice_bar("P3：单篇 3 步、整期 6 步已接真引擎；引用库为只读视图；写库与打包归 P4。", t, "info"),
             ft.Row(spacing=t.sp("2"), controls=[
                 C.card(ft.Column(spacing=t.sp("1"), controls=[
                     ft.Row(spacing=t.sp("2"), controls=[
@@ -876,29 +877,242 @@ class IssuePage(BasePage):
 
 # ── 引用库（P3 实装，P2 保留入口）────────────────────────────────────────
 class BibPage(BasePage):
+    """引用库（P3）：只读视图。
+
+    纪律：只调 bibdb.py 的只读子命令（stats / query / query-advanced / lint），
+    绝不写库；入藏（11 页）、待裁决（12 页）的写操作留 P4，并需用户显式授权。
+    """
+
     key = "bib"
+    VIEWS = [("overview", "概况"), ("query", "查库"), ("import", "入藏"),
+             ("review", "待处理"), ("settings", "设置")]
+
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self.view = "overview"
+        self.stats_data: dict | None = None
+        self.stats_error = ""
+        self.query_hits: list = []
+        self.query_meta: dict = {}
+        self.query_error = ""
+        self.view_slot: ft.Container | None = None
+        self.query_field: ft.TextField | None = None
 
     def build(self) -> ft.Control:
         t = self.t
-        header = C.page_header("引用库", "查库、入藏、待裁决都将在 P3 接入引擎（bibdb.py）；本页先保留 IA 入口。", t)
-        body = C.page_body(
-            header,
-            ft.Row(spacing=t.sp("2"), controls=[
-                C.stat_card("条目总数", "—", "等待 P3 读取 .bib", t),
-                C.stat_card("待裁决", "0", "队列为空", t),
-                C.stat_card("最近入藏", "—", "还没有操作记录", t),
-            ]),
-            C.card(C.empty_state("LIBRARY_BOOKS_OUTLINED", "引用库在 P3 实装",
-                                 "本骨架只验证 IA 与组件；引擎入口 bibdb.py 已就绪，P3 再接。", t,
-                                 height=260), t),
-            t=t, gap=12,
-        )
+        self.view_slot = ft.Container(expand=True)
+        header = C.page_header("引用库", "只读查看引用库统计与检索结果；写库操作在 P4（需授权）。", t,
+                               actions=[
+                                   C.secondary_button("刷新统计", lambda e: self.page.run_task(self._load_stats), t,
+                                                      icon="REFRESH"),
+                               ])
+        chips = ft.Row(spacing=t.sp("1"), wrap=True,
+                       controls=[C.chip(label, t, active=(key == self.view),
+                                        on_click=lambda e, k=key: self._switch(k))
+                                 for key, label in self.VIEWS])
+        notice = C.notice_bar("只读：本页只调用 bibdb.py 的只读子命令，绝不写库；"
+                              "入藏 / 待裁决的写入在 P4 实装。", t, "info")
+        body = C.page_body(header, chips, notice, self.view_slot, t=t, gap=12)
+        self._render()
         return body
+
+    # ── 视图切换 / 数据加载 ─────────────────────────────────────────────
+    def _switch(self, view: str) -> None:
+        self.view = view
+        self.mark("bib_view", view=view)
+        self._render()
+        if view == "overview" and self.stats_data is None:
+            self.page.run_task(self._load_stats)
+
+    async def _load_stats(self) -> None:
+        try:
+            call = EB.bibdb_stats_call()
+            result = await asyncio.to_thread(EB.read_json_command, call)
+        except RuntimeError as exc:
+            self.stats_error = str(exc)
+            result = {"ok": False, "error": str(exc), "json": {}}
+        self.stats_data = result.get("json") or None
+        self.stats_error = "" if result.get("ok") else str(result.get("error") or "读取失败")
+        stats = self.stats_data or {}
+        aliases = stats.get("aliases") or {}
+        conflicts = stats.get("conflicts") or {}
+        self.mark("bib_stats", ok=bool(result.get("ok")), code=result.get("code"),
+                  records=aliases.get("records"), aliases_total=aliases.get("total"),
+                  conflicts=conflicts.get("records"), bytes=stats.get("bytes"))
+        self._render()
+
+    async def _run_query(self) -> None:
+        keyword = (self.query_field.value or "").strip() if self.query_field else ""
+        self.mark("bib_query_begin", keyword=keyword)
+        if not keyword:
+            self.query_error = "请输入检索关键词"
+            self._render()
+            return
+        try:
+            call = EB.bibdb_query_call(title=keyword)
+            result = await asyncio.to_thread(EB.read_json_command, call)
+        except RuntimeError as exc:
+            self.query_error = str(exc)
+            result = {"ok": False, "error": str(exc), "json": {}}
+        payload = result.get("json") or {}
+        self.query_hits = payload.get("hits") or []
+        self.query_meta = {key: payload.get(key) for key in
+                           ("count", "ambiguous", "high", "db", "note") if payload.get(key) is not None}
+        self.query_error = "" if result.get("ok") else str(result.get("error") or "检索失败")
+        self.mark("bib_query", ok=bool(result.get("ok")), code=result.get("code"),
+                  keyword=keyword, count=len(self.query_hits), ambiguous=payload.get("ambiguous"))
+        self._render()
+
+    # ── 渲染 ───────────────────────────────────────────────────────────
+    def _render(self) -> None:
+        if self.view_slot is None:
+            return
+        builders = {
+            "overview": self._overview_view,
+            "query": self._query_view,
+            "import": lambda: self._readonly_view("import"),
+            "review": lambda: self._readonly_view("review"),
+            "settings": self._readonly_view,
+        }
+        builder = builders.get(self.view, self._overview_view)
+        try:
+            content = builder()
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            frames = traceback.extract_tb(exc.__traceback__)
+            self.mark("bib_render_error", error=f"{type(exc).__name__}: {exc}",
+                      where=[f"{f.name}:{f.lineno}" for f in frames][-4:])
+            return
+        self.view_slot.content = content
+        try:
+            # 构建期（未挂载）update 会抛 RuntimeError；忽略，等页面显示后自然生效。
+            self.view_slot.update()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _overview_view(self) -> ft.Control:
+        t = self.t
+        stats = self.stats_data or {}
+        aliases = stats.get("aliases") or {}
+        conflicts = stats.get("conflicts") or {}
+        entry_types = stats.get("entry_types") or {}
+        size_mb = (stats.get("bytes") or 0) / 1024 / 1024
+        cards = ft.Row(spacing=t.sp("2"), controls=[
+            C.stat_card("条目总数", str(aliases.get("records") or "—"),
+                        f"别名合计 {aliases.get('total') or '—'} 条 · 只读", t),
+            C.stat_card("冲突 / 待裁决", str(conflicts.get("records") or "0"),
+                        f"冲突合计 {conflicts.get('total') or 0} 条", t),
+            C.stat_card("库文件", f"{size_mb:.1f} MB" if stats.get("bytes") else "—",
+                        "本地 jsonl · 不联网", t),
+        ])
+        type_line = "、".join(f"{k} {v}" for k, v in list(entry_types.items())[:6]) or "—"
+        info = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("库信息", t, note="只读"),
+            self._kv("库文件", str(stats.get("db") or "（未知）")),
+            self._kv("条目类型", type_line),
+            self._kv("创建时间范围", " → ".join(stats.get("created_range") or []) or "—"),
+            self._kv("工作区脏标记", "dirty" if stats.get("dirty") else "clean"),
+            self._kv("重复内容", str(stats.get("duplicate_content") or 0)),
+            self._kv("读取状态", self.stats_error or ("已读取" if self.stats_data else "未读取")),
+        ]), t)
+        return ft.Column(spacing=t.sp("2"), controls=[cards, info])
+
+    def _query_view(self) -> ft.Control:
+        t = self.t
+        self.query_field = ft.TextField(
+            label="题名关键词", dense=True, expand=True, text_size=t.font("small"),
+            border_color=t.palette.border, focused_border_color=t.palette.accent,
+            content_padding=C._pad(t, 10, 8, 10, 8),
+            on_submit=lambda e: self.page.run_task(self._run_query),
+        )
+        run_row = ft.Row(spacing=t.sp("1"), controls=[
+            self.query_field,
+            C.primary_button("检索", lambda e: self.page.run_task(self._run_query), t, icon="SEARCH"),
+        ])
+        controls: list = [C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("查库", t, note="只读检索：调 bibdb.py query --json"),
+            run_row,
+            C.text("示例：题名「逻辑」；结果按置信度排序，歧义会标出。", t, "caption", t.palette.text_faint),
+        ]), t)]
+        if self.query_error:
+            controls.append(C.notice_bar(self.query_error, t, "warn"))
+        if self.query_meta:
+            meta = " · ".join(f"{k}={v}" for k, v in self.query_meta.items())
+            controls.append(C.card(ft.Column(spacing=t.sp("half"), controls=[
+                C.text(meta, t, "caption", t.palette.text_faint),
+                self._hits_list(),
+            ]), t))
+        elif self.query_hits:
+            controls.append(C.card(self._hits_list(), t))
+        return ft.Column(spacing=t.sp("2"), controls=controls)
+
+    def _hits_list(self) -> ft.Control:
+        t = self.t
+        rows: list = []
+        for hit in self.query_hits[:20]:
+            record = hit.get("record") or {}
+            fields = record.get("fields") or {}
+            title = str(fields.get("title") or record.get("key") or "（无题名）")
+            author = str(fields.get("author") or "")
+            year = str(fields.get("year") or "")
+            key = str(record.get("key") or hit.get("key") or "")
+            tag = hit.get("confidence") or ""
+            rows.append(ft.Row(spacing=t.sp("1"), controls=[
+                ft.Icon(C.ic("MENU_BOOK", "BOOK"), size=t.px(16), color=t.palette.accent),
+                C.text(title, t, "small", weight="medium"),
+                C.text(f"{author} {year}".strip(), t, "small", t.palette.text_muted),
+                ft.Container(expand=True),
+                C.badge(key or "—", t, "neutral"), *(
+                    [C.badge(f"置信 {tag}", t, "accent")] if tag else []),
+            ]))
+        if not rows:
+            rows.append(C.text("没有匹配条目（库里没有该题名，或关键词太宽）", t, "small",
+                               t.palette.text_muted))
+        return ft.Column(spacing=t.sp("1"), controls=rows)
+
+    def _readonly_view(self, kind: str = "settings") -> ft.Control:
+        t = self.t
+        stats = self.stats_data or {}
+        conflicts = (stats.get("conflicts") or {}).get("records")
+        if kind == "import":
+            title, desc = "入藏（只读占位）", ("把回读校验通过的条目写入引用库属于写库操作，"
+                                        "P4 实装并需用户授权；本页先只读展示状态。")
+        elif kind == "review":
+            title, desc = "待处理（只读占位）", ("冲突/待裁决队列的裁决会写库 sidecar，P4 实装；"
+                                          f"当前冲突 {conflicts if conflicts is not None else '—'} 条。")
+        else:
+            title, desc = "引用库设置（只读占位）", ("校验阈值 / AI 查找开关等写设置项在 P4 归位；"
+                                              "设置页（系统组）已含引擎与环境检查。")
+        return C.card(C.empty_state("LOCK_OUTLINE", title, desc, t, height=240), t)
+
+    # ── 小工具 ─────────────────────────────────────────────────────────
+    def _kv(self, label: str, value: str) -> ft.Row:
+        t = self.t
+        return ft.Row(spacing=t.sp("1"), controls=[
+            C.text(label, t, "small", t.palette.text_muted),
+            ft.Container(expand=True),
+            C.text(str(value), t, "small", t.palette.text),
+        ])
+
+    def on_show(self) -> None:
+        if self.view == "overview" and self.stats_data is None:
+            self.page.run_task(self._load_stats)
+
+    def refresh_running(self) -> None:
+        pass
+
 
 
 # ── 设置 ───────────────────────────────────────────────────────────────────
 class SettingsPage(BasePage):
     key = "settings"
+
+    def __init__(self, app) -> None:
+        super().__init__(app)
+        self.envcheck_data: dict | None = None
+        self.envcheck_error = ""
+        self.envcheck_slot = ft.Container()
 
     def build(self) -> ft.Control:
         t = self.t
@@ -965,12 +1179,34 @@ class SettingsPage(BasePage):
             self._kv("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
         ]), t)
 
+        envcheck = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("环境检查", t, note="调 Engine/envcheck.py --json（只读）"),
+            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                C.secondary_button("运行环境检查", lambda e: self.page.run_task(self._envcheck_task), t,
+                                   icon="HEALTH_AND_SAFETY_OUTLINED"),
+                C.text("检查 TeX 工具链、引擎、字体与路径；只读，不改系统。", t, "caption",
+                       t.palette.text_faint),
+            ]),
+            self.envcheck_slot,
+        ]), t)
+
+        diagnostics = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("关于与诊断", t, note="诊断包（zip）在 P4 归入发布流程"),
+            self._kv("设置文件", str(self.app.store.path)),
+            self._kv("日志/诊断", "引擎原始日志不落盘；诊断包 P4 生成"),
+            ft.Row(spacing=t.sp("1"), controls=[
+                C.text_button("打开设置目录", lambda e: self.app.open_path(str(self.app.store.path.parent)), t),
+                C.text_button("复制诊断信息", lambda e: self._copy_diagnosis(), t),
+            ]),
+        ]), t)
+
         header = C.page_header(
-            "设置", "外观、引擎、路径与日志；所有设置持久化，不依赖系统注册表。", t,
+            "设置", "外观、引擎、路径、环境检查与诊断；所有设置持久化，不依赖系统注册表。", t,
             actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
                                       icon="SAVE_OUTLINED")],
         )
-        page = C.page_body(header, engine_card, appearance, paths, logs, about, t=t, gap=12)
+        page = C.page_body(header, engine_card, appearance, paths, envcheck, logs, about,
+                           diagnostics, t=t, gap=12)
         return page
 
     # ── 小工具 ─────────────────────────────────────────────────────────
@@ -1013,8 +1249,157 @@ class SettingsPage(BasePage):
         ref = self.fields.get("engine_override")
         self.app.browse_field(ref, "选择引擎目录", "dir", "engine_override", store_prefix="paths")
 
+    # ── 环境检查（只读，调 Engine/envcheck.py --json）───────────────────
+    async def _envcheck_task(self) -> None:
+        t = self.t
+        try:
+            self.envcheck_slot.content = C.text("检查中…（TeX / 引擎 / 字体，约 3–10 秒）", t, "small",
+                                                t.palette.text_muted)
+            self.envcheck_slot.update()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            call = EB.envcheck_call()
+            result = await asyncio.to_thread(EB.read_json_command, call)
+        except RuntimeError as exc:
+            result = {"ok": False, "error": str(exc), "json": {}}
+        payload = result.get("json") or {}
+        self.envcheck_data = payload if payload else None
+        self.envcheck_error = "" if result.get("ok") else str(result.get("error") or "环境检查失败")
+        checks = payload.get("checks") or []
+        ok_count = sum(1 for c in checks if self._check_ok(c))
+        failed = [c for c in checks if not self._check_ok(c)]
+        self.app.mark("envcheck", ok=bool(result.get("ok")), code=result.get("code"),
+                      checks=len(checks), ok_count=ok_count,
+                      failed=[str(c.get("id")) for c in failed][:20],
+                      profile=payload.get("profile"), platform=payload.get("platform"))
+        if result.get("ok"):
+            self.app.set_check_done(True)
+        self._render_envcheck()
+
+    @staticmethod
+    def _check_ok(check: dict) -> bool:
+        return (check.get("status") or "") in ("ok", "ok-ish", "pass", "pass-ish", "success")
+
+    def _render_envcheck(self) -> None:
+        t = self.t
+        slot = self.envcheck_slot
+        if self.envcheck_error:
+            slot.content = C.notice_bar(self.envcheck_error, t, "warn")
+        elif not self.envcheck_data:
+            slot.content = C.text("尚未运行。检查结果只读展示，不修改系统。", t, "small",
+                                  t.palette.text_muted)
+        else:
+            payload = self.envcheck_data
+            checks = payload.get("checks") or []
+            rows: list = [C.text(f"{payload.get('profile', '')} · {payload.get('platform', '')}",
+                                 t, "caption", t.palette.text_faint)]
+            for check in checks[:18]:
+                status = check.get("status") or ""
+                color = (t.palette.success if self._check_ok(check)
+                         else (t.palette.warn if status.startswith("warn") else t.palette.error))
+                rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                   controls=[
+                    ft.Container(width=t.px(8), height=t.px(8), border_radius=99, bgcolor=color),
+                    C.text(str(check.get("title") or check.get("id") or ""), t, "small", weight="medium"),
+                    C.text(str(check.get("version") or ""), t, "small", t.palette.text_muted),
+                    ft.Container(expand=True),
+                    C.badge(str(status or "?"), t, "success" if self._check_ok(check) else "warn"),
+                ]))
+            slot.content = ft.Column(spacing=t.sp("1"), controls=rows)
+        try:
+            slot.update()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _copy_diagnosis(self) -> None:
+        engine = self.app.engine_status
+        envcheck = self.envcheck_data or {}
+        lines = [
+            f"{self.app.app_version} · Flet {self.app.flet_version} · Python {self.app.python_version}",
+            f"platform={self.app.page.platform} dpi={self.app.dpi} "
+            f"window={self.app.window_w}x{self.app.window_h}",
+            f"engine={engine.describe()} version={engine.version} dir={engine.engine_dir}",
+            f"settings={self.app.store.path}",
+            f"envcheck={envcheck.get('profile', '未运行')} checks={len(envcheck.get('checks') or [])}",
+            f"hwnd={self.app.client_hwnd} titlebar={self.app.titlebar_info}",
+        ]
+        self.app.copy_text("\n".join(lines))
+        self.app.mark("diagnosis_copied")
+
     def refresh_running(self) -> None:
         pass
 
 
-PAGE_CLASSES = [HomePage, SinglePage, IssuePage, BibPage, SettingsPage]
+class HelpPage(BasePage):
+    """帮助与关于（P3 新增）：怎么用 / 快捷键 / IA 15 页速览 / 版本与许可。"""
+
+    key = "help"
+
+    def build(self) -> ft.Control:
+        t = self.t
+        app = self.app
+        header = C.page_header("帮助与关于", "怎么用、快捷键、版本与许可；IA 15 页映射速览。", t)
+        usage = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("怎么用", t),
+            self._bullet("单篇稿件：选源稿件（必填）→ 勾处理选项 → 运行；日志与产物都在本页。"),
+            self._bullet("整期装配：选期目录 → 6 步流水线按顺序跑；删除临时文件会二次确认。"),
+            self._bullet("引用库：只读查看统计与检索；写库在 P4，且需用户授权。"),
+            self._bullet("设置：外观 / 缩放 / 引擎目录 / 环境检查 / 诊断信息。"),
+        ]), t)
+        shortcuts = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("快捷键与交互", t),
+            self._kv("运行 / 停止", "页面右上按钮；运行中可随时停止（隐藏子进程 + 终止进程树）"),
+            self._kv("文件选择", "「浏览…」打开 Windows 原生对话框（目录/文件）"),
+            self._kv("主题", "左栏底部「深色模式」开关，立即落盘，下次启动恢复"),
+            self._kv("文件拖放", "Flutter 窗口不接收系统拖放（P3 实测见报告）→ 用「浏览…」代替"),
+        ]), t)
+        ia_card = C.card(ft.Column(spacing=t.sp("half"), controls=[
+            C.section_title("IA 15 页映射速览", t, note="状态：done / readonly / deferred"),
+            *[self._ia_row(row) for row in IA_MAP],
+        ]), t)
+        about = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("版本与许可", t),
+            self._kv("应用版本", app.app_version),
+            self._kv("外壳", f"Flet {app.flet_version} · Python {app.python_version}"),
+            self._kv("引擎", f"{app.engine_status.version} · {app.engine_status.mode}"),
+            self._kv("许可", "内部工具；第三方：Flet (Apache-2.0)、Python (PSF)、pystray (LGPL)"),
+            self._kv("额外页（IA 之外）", "、".join(f"{p['title']}（{p['status']}）" for p in P3_PAGES)),
+        ]), t)
+        return C.page_body(header, usage, shortcuts, ia_card, about, t=t, gap=12)
+
+    # ── 小工具 ─────────────────────────────────────────────────────────
+    def _bullet(self, value: str) -> ft.Row:
+        t = self.t
+        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.START, controls=[
+            ft.Icon(C.ic("CHEVRON_RIGHT"), size=t.px(16), color=t.palette.accent),
+            C.text(value, t, "small"),
+        ])
+
+    def _kv(self, label: str, value: str) -> ft.Row:
+        t = self.t
+        return ft.Row(spacing=t.sp("1"), controls=[
+            C.text(label, t, "small", t.palette.text_muted),
+            ft.Container(expand=True),
+            C.text(str(value), t, "small", t.palette.text),
+        ])
+
+    def _ia_row(self, row: dict) -> ft.Row:
+        t = self.t
+        status = P3_STATUS.get(int(row.get("idx", 0)), "deferred")
+        tone = {"done": "success", "readonly": "warn", "deferred": "neutral"}.get(status, "neutral")
+        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+            C.text(str(row.get("idx", "")), t, "caption", t.palette.text_faint),
+            C.text(str(row.get("old_page", "")), t, "small"),
+            C.text("→", t, "caption", t.palette.text_faint),
+            C.text(f"{row.get('new_page', '')} · {row.get('new_view', '')}", t, "small",
+                   t.palette.text_muted),
+            ft.Container(expand=True),
+            C.badge(status, t, tone),
+        ])
+
+    def refresh_running(self) -> None:
+        pass
+
+
+PAGE_CLASSES = [HomePage, SinglePage, IssuePage, BibPage, SettingsPage, HelpPage]
