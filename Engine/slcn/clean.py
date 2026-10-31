@@ -298,6 +298,133 @@ def restore(
     return len(done), done
 
 
+# ── B-303：coop 旧交付目录回收 ─────────────────────────────────────────────
+#
+# `coop.promote_stage()` 覆盖既有交付时把旧目录 rename 成 `<交付>.coop-bak-<时间>` 留在
+# 交付根同级——原子交付要它（失败能 rollback），但交付成功后它再没人用，编辑器眼里就是
+# 一堆看不见的重复目录。用户 2026-10-31 拍板方案 A：**交付成功后自动移入交付根回收站**
+# （同一交付只留最近 1 份），promote 的原子语义、失败回滚一个字面都不动 —— 这里只做
+# 交付**之后**的收尾，走的是 `--trash/--restore/--empty-trash` 同一套回收站。
+
+#: promote 给旧交付目录留的备份名标记：`<交付名>.coop-bak-<时间戳>`
+COOP_BAK_MARK = ".coop-bak-"
+
+#: 同一交付在回收站里保留的旧版本份数（S2：只留最近 1 份）
+COOP_BAK_KEEP = 1
+
+
+def _entry_rel(entry: object) -> str:
+    return str(entry.get("path") or "") if isinstance(entry, dict) else ""
+
+
+def _entry_type(entry: object) -> str:
+    return str(entry.get("type") or "") if isinstance(entry, dict) else ""
+
+
+def _manifest_entries(trash_root: str) -> list[dict]:
+    """读回收目录的 manifest `entries`；读不到/结构不对 → 空（回收站要能容忍残缺）。"""
+    try:
+        with open(os.path.join(trash_root, "manifest.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    entries = data.get("entries")
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def _drop_manifest_entries(trash_root: str, rels: set[str]) -> None:
+    """从 manifest 摘掉 `rels` 条目；条目摘空后清单与该回收目录一起收掉（不留空壳/悬空项）。"""
+    manifest = os.path.join(trash_root, "manifest.json")
+    try:
+        with open(manifest, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return
+    left = [e for e in entries if _entry_rel(e) not in rels]
+    if left:
+        data["entries"] = left
+        try:
+            with open(manifest, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+        return
+    try:  # 与 `empty_trash()` 的「清空后不留空壳」同口径
+        os.remove(manifest)
+        os.rmdir(trash_root)
+    except OSError:
+        pass
+
+
+def _coop_bak_hits(root: str, prefix: str) -> list[tuple[str, str]]:
+    """回收站里所有 `<prefix>` 开头的**目录**条目 → [(回收目录, 条目相对路径)]，按目录名排序。"""
+    parent = os.path.join(root, TRASH_DIR)
+    if not os.path.isdir(parent):
+        return []
+    hits: list[tuple[str, str]] = []
+    for name in sorted(os.listdir(parent)):
+        trash_root = os.path.join(parent, name)
+        if not os.path.isdir(trash_root):
+            continue
+        for entry in _manifest_entries(trash_root):
+            rel = _entry_rel(entry)
+            if _entry_type(entry) == "dir" and rel and rel.startswith(prefix):
+                hits.append((trash_root, rel))
+    return hits
+
+
+def _prune_coop_bak(root: str, prefix: str, *, newest: str = "",
+                    keep: int = COOP_BAK_KEEP) -> list[str]:
+    """同一交付只留最近 `keep` 份：删多余条目 + 同步 manifest（**只动 `.coop-bak-` 条目**）。"""
+    if keep < 1:
+        return []
+    hits = _coop_bak_hits(root, prefix)
+    # 本次新建的回收目录排在最后 = 一定保住（不靠时间戳/时钟排序）
+    hits.sort(key=lambda h: (h[0] == newest, h[0]))
+    dropped: list[str] = []
+    for trash_root, rel in hits[:max(0, len(hits) - keep)]:
+        target = os.path.join(trash_root, rel)
+        try:
+            shutil.rmtree(target)
+        except OSError:
+            if os.path.isdir(target):
+                continue  # 还在（删不掉）：条目也留着，manifest 不悬空
+        _drop_manifest_entries(trash_root, {rel})
+        dropped.append(rel)
+    return dropped
+
+
+def retire_coop_bak(final_dir: str, backup_dir: str, *,
+                    stamp: str | None = None) -> str:
+    """B-303：把 promote 留下的旧交付目录移入回收站，同一交付只留最近 1 份。
+
+    · 落点：`<root>/.toolbox-trash/<basename(root)>-<stamp>/<basename(backup_dir)>`
+      （`root` = 交付目录的父目录；manifest schema=2、条目 `type="dir"`，`restore()` 可整棵搬回）；
+    · 剪枝：回收站里其他 `'<交付名>.coop-bak-'` 目录条目一并清掉并同步各自 manifest
+      （**不碰**回收站里别的文件/目录；删空的回收目录连清单一起收掉）；
+    · 移动失败照常抛（`FileNotFoundError`/`OSError`）——调用方降级成 warning：
+      「回收旧备份」是收尾动作，绝不能连累已经成功的交付。
+    返回回收站内的绝对路径。
+    """
+    final = os.path.abspath(final_dir)
+    backup = os.path.abspath(backup_dir)
+    if not os.path.isdir(backup):
+        raise FileNotFoundError(f"旧交付目录不存在：{backup}")
+    root = os.path.dirname(final) or os.curdir
+    stamp = stamp or _stamp()
+    trash_root = trash_dir(root, stamp)
+    os.makedirs(trash_root, exist_ok=True)
+    name = os.path.basename(backup)
+    dst = os.path.join(trash_root, name)
+    shutil.move(backup, dst)
+    _write_manifest(trash_root, root, stamp, "coop-bak", [(name, "dir")])
+    _prune_coop_bak(root, os.path.basename(final) + COOP_BAK_MARK, newest=trash_root)
+    return dst
+
+
 # ── B-211：交付目录收尾 ───────────────────────────────────────────────────
 
 

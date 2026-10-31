@@ -292,6 +292,9 @@ B-120 段；回归见 `tests/test_tail_block.py`。
 （`FN-*` 的 `mixed_manual`/`citation_unmatched`）时新增可见「清单缺条」节（只报告、不补条目；无该类项时
 记录与旧版逐字节相同）。**第 75 批（B-140①）**：附四 evidence 校验基准 = 任务书**附四之前**的内容
 （`coop.analysis_evidence_base()`；附四 schema 示例/指令不再能当逐字证据）。
+**B-303（Part A）**：ph2 交付成功后旧交付目录（promote 留在交付根同级的 `<交付名>.coop-bak-<时间>`）自动
+移入 `<交付根>/.toolbox-trash/<根名>-<stamp>/`（manifest schema=2、`type="dir"`、`--restore` 可整棵搬回），
+同一交付只留最近 1 份；回收失败只 warning、不影响交付；`_AI协同记录.md`「五、旧交付目录（回收站）」写回收站内相对路径。
 通道②（直连 API 全文核查）由第 60 批的 `--llm-fulltext` 提供：默认关、会外发正文并产生费用。**第 63 批起默认自动应用**（仅 BIB/META/FN、全走批57安全闸；`--no-llm-fulltext-apply` 关；`--llm-fulltext-max-chars N` 默认 40000、0 = 不限）；两壳「设置」页新增「API 核查字符上限」「全文核查结果自动应用」两栏，GUI↔CLI 映射见下。
 
 **第 288 批（B-288，任务书 v2）**：任务书文首新增「任务卡」（`slcn/taskcard.py`）——含与

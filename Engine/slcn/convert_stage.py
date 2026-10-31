@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse, inspect, os, re, shutil
 
-from slcn import __version__ as ENGINE_VERSION, clean as _clean
+from slcn import __version__ as ENGINE_VERSION, clean as _clean, paths as _paths
 from slcn import coop as _coop, platform as _plat, refmark as _refmark
 from slcn import taskcard as _taskcard
 from slcn.build import build_docx, build_latex  # 门面 main 直接调用（契约 i2：门面只 import 4 模块）
@@ -595,6 +595,24 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     except Exception as e:  # noqa: BLE001  交付失败必须收口，最终目录保持原样
         die(f"原子交付失败（最终交付目录保持原样）：{type(e).__name__}: {e}\n"
             f"  可修复后重跑 --coop-replies；暂存目录仍在 {stage_dir}")
+    # B-303（Part A）：旧交付目录**回收**——原先留在交付根同级的 `<交付名>.coop-bak-<时间>`
+    # 改走既有回收站（manifest schema=2、type="dir"、`--restore` 可整棵搬回），同一交付只留
+    # 最近 1 份。收尾动作失败只 warning：交付已经成功，绝不能被「搬旧备份」拖成失败。
+    _old_backup = promoted.get("backup", "")
+    _retired_rel, _retire_err = "", ""
+    if _old_backup:
+        try:
+            _retired_rel = _paths.rel(  # 跨盘符安全（test_platform (f)）
+                _clean.retire_coop_bak(final_dir, _old_backup),
+                os.path.dirname(os.path.abspath(final_dir)))
+        except Exception as e:  # noqa: BLE001  回收失败 = 旧目录留在同级，提示手动清理
+            _retire_err = f"{type(e).__name__}: {e}"
+    _backup_note = ""
+    if _retired_rel:
+        _backup_note = f"已移入回收站：`{_retired_rel}`（可在「删除临时文件」恢复/清空）"
+    elif _old_backup:
+        _backup_note = (f"未能移入回收站：`{os.path.basename(_old_backup)}`"
+                        "（仍在交付根同级，请手动清理）")
     # 批79（B-131）：交付记录口径——**只读汇总**（不写产物；不新写解析器）。
     # 旧状态无 delivery 标记 → `None` → 记录与旧版逐字节相同（来源：新 ph1 才写该标记）。
     _delivery = None
@@ -628,7 +646,7 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         low_report=low_report, merge_summary=merge_summary,
         apply_summary=apply_summary, final_dir=final_dir,
         no_ai_merge=bool(args.no_ai_merge), compiled=compiled,
-        backup=promoted.get("backup", ""),
+        backup=_backup_note,
         fulltext=state.get("fulltext"),
         # 批74：协同记录「六」节只在**真的收到附四对象**时出现（spec §2.4）；
         # 启用附四但回复里没有附四对象 → 与旧版记录逐字节相同（旧回复兼容）。
@@ -660,8 +678,12 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
     else:
         print(f"   ⚠ 暂存目录未清理（保留）：{stage_dir}")
 
-    if promoted.get("backup"):
-        print(f"   旧交付目录已备份：{os.path.basename(promoted['backup'])}")
+    if _retired_rel:
+        print(f"   旧交付目录已移入回收站：{_retired_rel}"
+              "（可在「删除临时文件」恢复/清空）")
+    elif _old_backup:
+        print(f"   ⚠ 旧交付目录未能移入回收站（不影响交付）：{_retire_err}\n"
+              f"     仍在：{_old_backup}（可手动删除）")
     # 第五十六批：最终摘要统一为「x/y + 可应用/待人工」口径（数字全部来自状态 stats）。
     print(f"   回填：{_stats['bib_replied']} 条（未回填 {_stats['bib_pending']} 条）；"
           f"低置信回复：{_stats['low_replied']} 条"

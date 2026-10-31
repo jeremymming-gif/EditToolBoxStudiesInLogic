@@ -3053,8 +3053,8 @@ def render_record(*, stem: str, phase: str, parse_report: ParseReport | None,
     if compiled:
         L += ["## 四、编译", "", f"- {compiled}", ""]
     if backup:
-        L += ["## 五、交付备份", "",
-              f"- 旧交付目录已备份为：`{backup}`（新目录交付成功后才保留）", ""]
+        L += ["## 五、旧交付目录（回收站）", "",
+              f"- {backup}", ""]
     # 批79（B-131）：交付记录节——**只在状态里有交付标记时出现**（旧状态 → 记录逐字节不变）。
     # 位置固定在既有编号节之后、附四/清单缺条节之前；标题不带序号，既有节编号一个都不动。
     if delivery:
