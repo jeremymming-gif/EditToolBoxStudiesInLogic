@@ -932,7 +932,9 @@ def parse_note(text: str) -> list[Parsed]:
 # 与已支持的 GB/T 7714（`作者. 题名[J]. 刊名, 年(期): 页`）**顺序不同**：
 # 这里是「作者, 年份, 题名, ...」，年份在题名**之前**。
 
-_NUM_ITEM = re.compile(r"^\s*[\[\(（]?\s*(\d{1,3})\s*[\]\)）]?\s*[.、]?\s*", re.M)
+# B-290 F3：标号括号与 wordentry._NUMBERED_PREFIX_RE 同源——补 `〔〕/【】/［］`。
+_NUM_ITEM = re.compile(
+    r"^\s*[\[\(（〔【［]?\s*(\d{1,3})\s*[\]\)）〕】］]?\s*[.、]?\s*", re.M)
 
 
 _BAD_MARKER = re.compile(r"(?m)^(\s*)\[(\d{1,3})(?=[ \t]+[^\s\[\]()（）])")
@@ -962,7 +964,9 @@ def split_numbered_raw(text: str) -> list[tuple[str, str]]:
     薄包装，只为兼容旧调用方（返回值形状不变）。
     """
     text = _normalize_numbered_markers(text)
-    marks = list(re.finditer(r"(?:^|\n)\s*[\[\(（]\s*(\d{1,3})\s*[\]\)）]", text))
+    # B-290 F3：`〔1〕/【1】/［1］` 与 ASCII `[1]` 同权（此前三类标号切不出条目）。
+    marks = list(re.finditer(
+        r"(?:^|\n)\s*[\[\(（〔【［]\s*(\d{1,3})\s*[\]\)）〕】］]", text))
     if len(marks) < 2:
         return []
     out: list[tuple[str, str]] = []
@@ -1352,15 +1356,54 @@ def _parse_apa_book(p: Parsed, after: str, retrieved: str,
     return False
 
 
+#: B-290 F1：作者列表尾之后、括号年之前允许出现的残段（中名缩写/et al./连接词/位阶词）。
+_APA_AUTHOR_TAIL_OK = frozenset({
+    "van", "von", "de", "der", "den", "del", "di", "da", "le", "la", "du",
+    "dos", "ten", "ter", "bin", "ibn", "and", "et", "al", "others", "ed",
+    "eds", "trans", "jr", "sr", "ii", "iii", "iv",
+})
+
+
+def _apa_marker_after_authors(pre: str) -> bool:
+    """B-290 F1：括号年/`(n.d.)` 必须紧接在**作者列表末尾**，不能落在题名内部。
+
+    `Smith, J. A title with a year (2000) inside. Journal, 1, 1-2.` 里那个 `(2000)`
+    是题名的一部分；旧实现直接当成出版年，把题名当成了作者。这里用两道形状判据挡：
+      1) 年份前的残段必须收在句点/右括号（作者尾是缩写点、`(Ed.)` 或 `et al.`）；
+      2) 残段里除中名缩写、姓氏/机构大写词与 `van/von/de/…`、`and/et/al/ed/…`
+         这些连接/位阶词外，不许出现小写词（`a title with a year` 会在这里露馅）。
+    判据只用于**定位**年份；作者串仍交给 `_apa_author_gap` 原口径。
+    """
+    s = pre.strip()
+    if not s:
+        return False
+    if not re.search(r"(?:[A-Za-z]\.|[.)）])\s*$", s):
+        return False
+    # ⚠️ 姓名含变音符（`Hájek`/`Müller`）：用 Unicode 词字符切，别用 ASCII 类
+    for w in re.findall(r"\w[\w'’\-]*", s):
+        if w.isupper() or w[0].isupper():
+            continue
+        if w.lower() in _APA_AUTHOR_TAIL_OK:
+            continue
+        return False
+    return True
+
+
 def _parse_apa_item(t: str) -> Parsed | None:
     """识别并解析 APA 体例条目；不是 APA 形状返回 None（绝不抢其它体例）。"""
     m = _APA_YEAR.search(t)
+    if m and not _apa_marker_after_authors(t[: m.start()]):
+        # B-290 F1：括号年落在题名里 → 不是出版年（继续试 `(n.d.)`/裸年路径）
+        m = None
     if m:
         author_pre = t[: m.start()]
         after = t[m.end():].strip()
         year = m.group("year")
     else:
         nd = _APA_ND.search(t)
+        if nd and not _apa_marker_after_authors(t[: nd.start()]):
+            # B-290 F1：`(n.d.)` 同样必须紧接作者列表末尾（题名里的不认）
+            nd = None
         if nd:
             author_pre = t[: nd.start()]
             after = t[nd.end():].strip()
@@ -1442,6 +1485,46 @@ def _cn_collection_journal(journal: str, raw: str) -> bool:
                 or _CN_COLLECTION_ISSUE_RE.search(raw or j))
 
 
+def _year_end_rewrite(head: str, rest: str) -> tuple[list[str], str, str, str] | None:
+    """P0-1（B-290 S3）：`作者列表. 题名. 出版社, 1982.` → (作者段, 题名, 出版社, 年)。
+
+    `parse_numbered_item` 无引号分支按逗号切，英文多作者行会被切碎（只留第 1 作者、
+    第 2 作者当题名）。这里先由 `_split_author_title()` 切出**完整作者列表**，再从 `rest`
+    的句点边界里找「句点 + 出版社段 + 逗号 + 年末裸年份」，并用 `_pub_addr()`/
+    `_PUB_CUES` 校验出版社一侧——宁可少改、不可错改，不成立返回 None 由调用方回退旧行为。
+    """
+    if not head or not rest:
+        return None
+    raw_segs = [x.strip() for x in re.split(r"[，,]", head) if x.strip()]
+    # 作者串还会被逗号切成「中名缩写段 / 单字母段」（`van Eemeren, F. H., & …`），
+    # 把这类残段并回前一个姓名段，作者列表数才是真实作者数。
+    segs: list[str] = []
+    for seg in raw_segs:
+        _core = seg.lstrip("&").strip()
+        if segs and re.fullmatch(r"(?:[A-Z]\.\s*)+", _core):
+            segs[-1] = f"{segs[-1]} {seg}"
+            continue
+        if segs and re.fullmatch(r"[A-Z]", _core) and segs[-1][:1] in "&a":
+            segs[-1] = f"{segs[-1]} {seg}"
+            continue
+        segs.append(seg)
+    if len(segs) < 2:
+        return None
+    for m in re.finditer(r"[.。]\s+", rest):
+        tail = rest[m.end():]
+        ym = re.search(r"[,，]\s*((?:19|20)\d{2})[a-z]?\s*[.。]?\s*$", tail)
+        if not ym:
+            continue
+        pub = tail[: ym.start()].strip(" ,，.。")
+        title = rest[: m.start()].strip(" .。")
+        if len(title) < 4 or len(pub) < 3:
+            continue
+        if not (_pub_addr(pub)[0] or re.search(_PUB_CUES, pub)):
+            continue
+        return segs, title, pub, ym.group(1)
+    return None
+
+
 def parse_numbered_item(seg: str) -> Parsed:
     """解析 `作者, 年份, "题名", 刊名, 卷(期): 页` 这种。"""
     t = seg.strip().rstrip(".。")
@@ -1481,12 +1564,32 @@ def parse_numbered_item(seg: str) -> Parsed:
         rest = post.lstrip(" ,，.。\"'“”‘’")
     else:
         # 无引号：`付敏，亚相容解悖方案研究，2021年，北京：社会科学文献出版社。`
-        parts = [x.strip() for x in re.split(r"[，,]", t) if x.strip()]
+        # P0-1（B-290 S3）：英文多作者 + 年末裸年份（`Kahneman D., Slovic P., &
+        # Tversky A. 题名. 出版社, 1982.`）——旧实现按逗号切后只取第 1 作者、
+        # 第 2 作者被当成题名。先切出完整作者列表，再把末尾「出版社, 年份」回填成
+        # 逗号体例；括号年 APA 路径已在 `_parse_apa_item` 返回，零变化。
+        _auth_n = 0
+        _year_end = ""
+        _parts: list[str] | None = None
+        if (not re.search(r"[\u4e00-\u9fff]", t)
+                and re.search(r"[,，]\s*(?:19|20)\d{2}[a-z]?\s*[.。]?\s*$", t)):
+            _head, _rest_t = _split_author_title(t)
+            if _head and re.search(r"\s(?:&|and)\s", _head):
+                _rw = _year_end_rewrite(_head, _rest_t)
+                if _rw:
+                    _segs, _title_t, _pub_t, _year_t = _rw
+                    _parts = list(_segs) + [_title_t, _pub_t, _year_t]
+                    _auth_n, _year_end = len(_segs), _year_t
+        parts = _parts if _parts is not None else [
+            x.strip() for x in re.split(r"[，,]", t) if x.strip()]
         # ⚠️ 中文著/译体例（`原作者（著），译者（译），真题名，…`）：前**两**段都是作者，
         #    那个中文逗号是「著者 → 译者」的分界，不是「作者 → 题名」的分界。
         #    不识别的话，译者那段会被当成题名（真题名就此丢失、还多一个假题名），
         #    实测见第 64 条与 `_translation_author_segments()` 的注释。
         n_auth = _translation_author_segments(parts)
+        if _auth_n:
+            # P0-1：作者段已由 `_split_author_title` 切好，覆盖译者体例判据
+            n_auth = _auth_n
         # B-220 N3：英文多作者编号清单——`R. E. Young, A. L. Becker and K. L. Pike, 1970,
         # …`（旧实现只取第 1 作者，第 2 作者被当成题名；实测 90 期 Young1970/
         # vanEemeren2014/2009、90-04 Parr2022）。只在「续段像英文作者名、且其后紧跟
@@ -1539,9 +1642,13 @@ def parse_numbered_item(seg: str) -> Parsed:
                                + body[_k].strip(" ,，"))
                 del body[1:_join_n + 1]
         rest = "，".join(body[1:])
-        ym = re.search(r"((?:19|20)\d{2})", year_prefix or t)
-        if ym:
-            p.year = ym.group(1)
+        if _year_end:
+            # P0-1：年末裸年份已由 `_year_end_rewrite` 定位（题名里的年份不能抢先）
+            p.year = _year_end
+        else:
+            ym = re.search(r"((?:19|20)\d{2})", year_prefix or t)
+            if ym:
+                p.year = ym.group(1)
 
     p.pages = _pages(rest)
     v, n = _vol_issue(rest)

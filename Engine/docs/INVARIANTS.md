@@ -69,6 +69,9 @@
    第二段显式带 JSON 必须 sha256 相同，不同 / 旧状态无该键 → exit 2（请重跑第一段）；`.doc/.docx` 自动元数据识别已取消，`.docx` 仅 CLI 高级兜底。
    位置：`Engine/convert.py` 的 `load_metadata_json()` / `--metadata-json`；`Engine/slcn/coop.py` 的 `make_structured_metadata()` / `check_structured_metadata()`；`Engine/slcn/build.py` 的 `structured_fields()`；`Engine/tests/test_batch63b_metadata_json.py`、`Engine/tests/test_b287_coop_metadata.py`。
 
+10. **编号清单标号五括号并列 + biber 成功判据**（B-290）：编号清单标号认 `[N]`/`（N）`/`(N)`/`〔N〕`/`【N】`/`［N］`/`N.`，同一条目解析结果一致，ASCII 通道产物逐字节不变；`--compile` 的 biber 步在有 `.bcf` 时要求 `.bbl` 非空且 `.blg` 无 ERROR（否则 exit 2），无 `.bcf`（无 cite）容忍非零退出码。
+    位置：`Engine/slcn/wordentry.py`、`Engine/slcn/footref.py`、`Engine/slcn/convert_compile.py`；`Engine/tests/test_b290_bib_parse_fixes.py`。
+
 ## 四、判据与体例的权威位置
 
 1. **代码说了算**：体例签名、bib 规范、作者倒装、引用点匹配等判据的权威实现都在 `Engine/slcn/`；

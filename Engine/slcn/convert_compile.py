@@ -43,8 +43,28 @@ def clean_stale_compile_artifacts(out_dir: str, stem: str) -> list[str]:
     return removed
 
 
+def _tail_log_lines(path: str, *, prefix: str = "!", contains: str = "") -> list[str]:
+    """读日志里最多 3 行错误（`prefix` = 行首标记；`contains` = 行内关键词）。"""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return [
+                ln.strip() for ln in fh
+                if (ln.startswith(prefix) if prefix else True) and contains in ln
+            ][:3]
+    except OSError:
+        return []
+
+
 def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:
-    """xelatex → biber -l=zh_pinyin → xelatex ×2。"""
+    """xelatex → biber -l=zh_pinyin → xelatex ×2。
+
+    B-290 F5：biber 的退出码**不再无条件容忍**。无参考文献的稿子（没有 `.bcf`）biber
+    本来就可能非零，仍照旧放行；一旦有 `.bcf`，biber 非零就是真错——读 `.blg` 的
+    `ERROR` 行，且**只有 `.bbl` 非空**才判成功，否则 `convert --compile` 会拿一个
+    空 `.bbl` 出「编译成功」的假 PDF（实测：坏 bib 时 PDF 4388B、正文 Citations 全空）。
+    """
     # 先清上一轮中间产物：否则第一次 xelatex 会读到旧 .bbl/.aux（见上面注释）
     clean_stale_compile_artifacts(out_dir, stem)
     steps = [
@@ -59,17 +79,26 @@ def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:
         r = subprocess.run(
             cmd, cwd=out_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
         )
-        if r.returncode != 0 and i != 2:  # biber 无参考文献时可能非零，容忍
-            log = os.path.join(out_dir, f"{stem}.log")
-            detail = ""
-            if os.path.exists(log):
-                hits = [
-                    ln.strip()
-                    for ln in open(log, encoding="utf-8", errors="replace")
-                    if ln.startswith("!")
-                ][:3]
-                detail = "；".join(hits)
-            return False, f"{cmd[0]} 第 {i} 步失败（退出码 {r.returncode}）{('：' + detail) if detail else ''}"
+        if r.returncode == 0:
+            continue
+        if i == 2:  # biber：有 .bcf 才严格判定
+            bcf = os.path.join(out_dir, f"{stem}.bcf")
+            if not os.path.exists(bcf):
+                continue  # 无参考文献：biber 退出码无意义，照旧放行
+            bbl = os.path.join(out_dir, f"{stem}.bbl")
+            bbl_ok = os.path.exists(bbl) and os.path.getsize(bbl) > 0
+            blg_errors = _tail_log_lines(
+                os.path.join(out_dir, f"{stem}.blg"), prefix="", contains="ERROR")
+            if bbl_ok and not blg_errors:
+                continue  # 非零但产物完好（biber 偶发告警）→ 放行
+            detail = "；".join(blg_errors)
+            if not detail:
+                detail = "未生成 .bbl（参考文献为空）"
+            return False, (f"biber 第 {i} 步失败（退出码 {r.returncode}）：{detail}"
+                           f"（请检查 .bib 是否有语法错误，见 {stem}.blg）")
+        log = os.path.join(out_dir, f"{stem}.log")
+        detail = "；".join(_tail_log_lines(log))
+        return False, f"{cmd[0]} 第 {i} 步失败（退出码 {r.returncode}）{('：' + detail) if detail else ''}"
     pdf = os.path.join(out_dir, f"{stem}.pdf")
     if not os.path.exists(pdf):
         return False, "编译结束但未生成 PDF"

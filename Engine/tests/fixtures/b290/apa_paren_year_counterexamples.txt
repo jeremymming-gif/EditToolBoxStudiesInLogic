@@ -1,0 +1,3 @@
+Smith, J. A title with a year (2000) inside. Journal, 1, 1-2.
+Smith, J. (2000). A title (2nd ed.). Publisher.
+Smith, J. (n.d.). A title (2000). Publisher.

@@ -91,7 +91,7 @@ def _parse_reference_line_en(s: str) -> RefEntry | None:
         return None
     # ⚠️ 编号清单（`[12] …` / `12. …`）有专门通道 `_numbered_refs`，英文分支同样必须让路。
     #    2026-10-17 校准第一版没让路 → `test_cn_journal_numbered` 4 条端到端断言转红。
-    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|〔\d+〕|【\d+】|［\d+］|\d+[.、])\s*", s):
         return None
     m = _REF_EN_RE.match(s)
     if not m:
@@ -291,7 +291,7 @@ def _parse_reference_line_en_fullname(s: str) -> RefEntry | None:
     """解析 `Surname, Given, Surname2, Given2, YYYY. Title…` 英文条目（06 Hao_Chen 型）。"""
     if re.search(r"[\u4e00-\u9fa5]", s):
         return None
-    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|〔\d+〕|【\d+】|［\d+］|\d+[.、])\s*", s):
         return None
     m = _REF_EN_FULLNAME_RE.match(s)
     if not m:
@@ -347,7 +347,7 @@ def _parse_reference_line_cn2(s: str) -> RefEntry | None:
     """中文逗号风格、**年份在第 2 段**的条目。"""
     if not re.search(r"[\u4e00-\u9fa5]", s):
         return None
-    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|〔\d+〕|【\d+】|［\d+］|\d+[.、])\s*", s):
         return None
     m = _REF_CN2_RE.match(s)
     if not m:
@@ -374,7 +374,7 @@ def _parse_reference_line_cn(s: str) -> RefEntry | None:
     # ⚠️ 编号清单（`[12] 作者，题名，…` / `12. 作者…`）有**专门的通道**（`_numbered_refs`），
     #    这里必须让路：2026-10-17 第一版没让路，把 `test_cn_journal_numbered` 的 4 条端到端
     #    断言打红了（编号条目被这里当成普通中文条目，通道就收不到了）。
-    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|\d+[.、])\s*", s):
+    if re.match(r"^\s*(?:\[\d+\]|（\d+）|\(\d+\)|〔\d+〕|【\d+】|［\d+］|\d+[.、])\s*", s):
         return None
     # ⚠️ 只处理**含中文**的行：英文条目走 `_parse_reference_line_en`。
     #    2026-10-17 校准前，英文条目（`A. Aldini, S.A. Alexander, P. Graziani, 2022, “题名”, …`）
@@ -402,8 +402,10 @@ def _parse_reference_line_cn(s: str) -> RefEntry | None:
 
 #: 编号清单行前缀（含**写歪的** `[2 Author…` 少括号）：人年制新兜底一律让路，
 #: 由 `_numbered_refs()` 收（案例 116 的 ① 契约：编号清单 4 条必须进 bib_entries）。
+#: B-290 F3：补 `〔1〕/【1】/［1］` 三种日/中文标号——旧式只认 `[1]/(（1）` 与 `1.`，
+#: 这三类清单行因此被人年制兜底当正文解析（前缀吃进 author）。ASCII 匹配面不变。
 _NUMBERED_PREFIX_RE = re.compile(
-    r"^\s*(?:\[\s*\d+|（\s*\d+|\(\s*\d+|\d+\s*[.、])"
+    r"^\s*(?:\[\s*\d+|（\s*\d+|\(\s*\d+|〔\s*\d+|【\s*\d+|［\s*\d+|\d+\s*[.、])"
 )
 
 
@@ -657,7 +659,9 @@ def _numbered_refs(
     # 旧实现整段丢弃。这里把标题行去掉后、首标记之前的内容按行补成第 1..n 条；
     # 这类条目没有编号，**不写 num2key**（不能影响正文编号→键映射）。
     text_all = "\n".join(lines)
-    first_mark = re.search(r"(?:^|\n)\s*[\[\(（]\s*\d{1,3}\s*[\]\)）]", text_all)
+    # B-290 F3：与 `_NUMBERED_PREFIX_RE` 同源的字符类（补 `〔〕/【】/［］`）。
+    first_mark = re.search(
+        r"(?:^|\n)\s*[\[\(（〔【［]\s*\d{1,3}\s*[\]\)）〕】］]", text_all)
     # ⚠️ 只有「确实存在编号标记」时，首个标记前那一行才是「漏编号的第 1 条」；
     #    整份没有编号的（人年制英文/中文清单）必须交给 `parse_reference_line` 通道，
     #    否则会被当成 N 条无编号条目、覆盖掉正确解析（期 88 Avery_Blake 实测）。
@@ -681,7 +685,7 @@ def _numbered_refs(
     for seq, (raw, seg) in enumerate(footref.split_numbered_raw("\n".join(lines)), 1):
         # 编号取**原文标号本身**（`[2]` → 2），不能用 enumerate 的位置：
         # 清单允许首条无编号（P0-5）时，位置与正文里的编号会差 1。
-        _nm = re.match(r"^\s*[\[\(（]\s*(\d{1,3})\s*[\]\)）]", raw)
+        _nm = re.match(r"^\s*[\[\(（〔【［]\s*(\d{1,3})\s*[\]\)）〕】］]", raw)
         num = int(_nm.group(1)) if _nm else seq
         it = footref.parse_numbered_item(seg)
         # ⚠️ 题名短于 4 字通常是「切错了」（把译者/刊名切成了题名）。

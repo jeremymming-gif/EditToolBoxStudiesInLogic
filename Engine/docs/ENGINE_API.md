@@ -197,7 +197,9 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 ⚠️ 具体到 `--compile`：**⑨ 编译未通过 = 失败 = 退出码 2**（`.tex` 产物照样留着，
 消息走 stderr；stdout 的**最后一行仍是契约行** `完成。产物目录：…`）。
 这条路 2026-10-17 之前是 `return 0`：界面上显示 ✅ 完成，而 PDF 其实没编出来
-（案例第 107 条）。
+（案例第 107 条）。**B-290 起 biber 步（第 2 步）不再无条件容忍**：有 `.bcf` 时要求 `.bbl`
+非空且 `.blg` 无 ERROR，否则按「编译未通过」exit 2（stderr 带 `.blg` 的 ERROR 行）；
+无 cite（无 `.bcf`）稿仍容忍非零退出码，照旧出稿（不误伤无参考文献稿）。
 ⚠️ 具体到 `--verify-refs`（第 128 条）：本次核实条数超过 `--verify-max` 且未加
 `--verify-all-refs` → **退出码 2**（闸门在生成任务书 / 检索 / 调 AI **之前**；stderr 给出
 「调上限 / 显式全量 / 先看账」三条路，stdout 已有跑前量化行）。**这不是 `--compile` 那种
@@ -271,6 +273,10 @@ Keywords）紧跟在**英文参考文献清单**之后时，旧实现从英文 A
 未命中稿产物逐字节不变。全库只读 dry-run：`num2key` 1561→1605、N∉可靠映射 14→0、
 解析变化稿 4/213（41 篇回归案例集 0 变化）。口径见 `docs/GUIDE.md`「Word 编号体例稿…」
 B-120 段；回归见 `tests/test_tail_block.py`。
+
+**B-290（编号清单标号括号扩展；无契约变化）**：文末编号清单标号亦认 `〔N〕`/`【N】`/`［N］`
+（与 `[N]` 同权，`ref_key_by_num`/`num2key` 一致；ASCII 通道产物逐字节不变，回归见
+`tests/test_b290_bib_parse_fixes.py`）。
 
 **两段式协同（`--coop-*`）的 argv 契约（第 54–59 批，外壳拼参数用）**：第一段 =
 `--verify-refs --no-ai-merge --coop-taskbook-only [--coop-stage DIR] [--coop-fulltext context|full]`；
