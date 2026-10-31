@@ -52,7 +52,15 @@ jobs:
         env:
           # macos runner 镜像里装着 /opt/homebrew/bin/python3.14（无依赖），必须显式指定
           SLCN_TEST_PYTHON: python
-        run: bash Engine/tools/run_engine_tests.sh quick
+        run: |
+          set -o pipefail
+          bash Engine/tools/run_engine_tests.sh quick 2>&1 | tee /tmp/quick-engine.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::quick 引擎套件失败 rc=$rc；关键摘要："
+            grep -E '.FAIL|汇总|ERROR|Traceback' /tmp/quick-engine.log | head -20 || true
+          fi
+          exit "$rc"
 
       - name: Flet 壳单元测试（不启动 GUI）
         run: python -m pytest sources-flet/tests -q
