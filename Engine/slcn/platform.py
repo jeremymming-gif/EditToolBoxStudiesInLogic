@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import platform as _platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -82,6 +83,59 @@ def find_soffice() -> str | None:
         if os.path.exists(cand):
             return cand
     return None
+
+
+def no_window_kwargs() -> dict[str, int]:
+    r"""B300-03（B-304）：给 `subprocess.run/Popen` 的「别弹控制台窗口」参数。
+
+    为什么必须做：从 Windows 界面 exe（`--noconsole`）触发子进程（xelatex / biber /
+    soffice / git / python）时，每个子进程都会**新建一个可见控制台窗口**；
+    `soffice.exe --version` 甚至停在 `Press Enter to continue...` 等你按键。
+
+    实现：Windows 上返回 `{"creationflags": CREATE_NO_WINDOW}`；POSIX 上
+    `creationflags` 无意义 → 返回 `{}`（同一份调用代码两平台通用，行为一字不变）。
+    """
+    if sys.platform == "win32":
+        flag = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return {"creationflags": flag} if flag else {}
+    return {}
+
+
+def run_no_window(cmd, *, quiet: bool = False, **kwargs):
+    r"""subprocess.run(cmd, **kwargs)，但 Windows 上不弹控制台窗口（POSIX 原样）。
+
+    quiet=True 时把 stdout/stderr 丢掉（编译类子进程的输出本来就不看）；
+    要收输出时显式传 capture_output=True 等参数，其余语义与 subprocess.run 一致。
+    """
+    if quiet:
+        kwargs.setdefault('stdout', subprocess.DEVNULL)
+        kwargs.setdefault('stderr', subprocess.DEVNULL)
+    return subprocess.run(cmd, **kwargs, **no_window_kwargs())
+
+
+def soffice_cli_for(path: str | None) -> str | None:
+    r"""把定位到的 soffice 换成「命令行首选入口」：Windows 优先同目录 `soffice.com`。
+
+    为什么：Windows 上 `soffice.exe --version` 打印版本后会停在
+    `Press Enter to continue...` 且新建可见控制台窗口；同目录的 `soffice.com`
+    （LibreOffice 自带控制台包装器）立即返回、不弹窗。**没有 .com 时回退 .exe**；
+    macOS / Linux 原样返回（零变化）。
+    """
+    if not path:
+        return None
+    if sys.platform == "win32" and path.lower().endswith(".exe"):
+        com = path[: -len(".exe")] + ".com"
+        if os.path.exists(com):
+            return com
+    return path
+
+
+def soffice_cli() -> str | None:
+    r"""定位 LibreOffice（`SLCN_SOFFICE` → PATH → 常见安装位置）并返回命令行入口。
+
+    调用方**一律用它**起转换/探测；版本探测绝不再对 `soffice.exe` 直接跑 `--version`。
+    """
+    return soffice_cli_for(find_soffice())
 
 
 def file_uri(path: str) -> str:

@@ -104,8 +104,20 @@ else:
         G.normalize_for_check(body, lenient=False).encode("utf-8")).hexdigest()
     project = {"schema": G.AUTO_INPUTS_SCHEMA, "inputs": inputs, "test_rows": [],
                "block_sha256": block_sha}
-    check("(b4) 输入与块指纹一致 → 快速通道命中（不跑套件）",
-          G.fast_check_ok(body, project, inputs))
+    # B-304/B-300-09：「快速通道命中」只在**前提齐全**时成立 —— 缺 TeX / LibreOffice /
+    # 稿件库的机器上 gen_docs 故意走宽松模式、绝不复用缓存（`environment_complete()`
+    # 是 fast_check_ok 的硬前提）。本机前提不全时改钉两条等价契约，负例仍在：
+    #   ① 真输入下必须**不**命中（宽松模式不复用缓存）；
+    #   ② 把 env_complete 补成 True 的自洽输入 → 必须命中（契约本身与机器无关）。
+    if COMPLETE:
+        check("(b4) 输入与块指纹一致 → 快速通道命中（不跑套件）",
+              G.fast_check_ok(body, project, inputs))
+    else:
+        check("(b4a) 前提不全 → 快速通道**不**命中（宽松模式不复用缓存）",
+              not G.fast_check_ok(body, project, inputs))
+        _all_ok = dict(inputs, env_complete=True)
+        check("(b4b) 补上 env_complete 的自洽输入 → 命中（契约本身与机器无关）",
+              G.fast_check_ok(body, dict(project, inputs=_all_ok), _all_ok))
     check("(b5) 基线 sha 变 → 快速通道**不**命中（回退现算比对 → 能抓 README 未跟随）",
           not G.fast_check_ok(body, project, dict(inputs, notes_audit_csv_sha256="deadbeef")))
 

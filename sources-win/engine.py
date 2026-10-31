@@ -175,8 +175,11 @@ def engine_version() -> str:
         if version == "未知":
             exe = frozen_engine_exe()
             if exe:
+                # B300-03（B-304）：冻结引擎是 console exe；从无控制台的界面进程里
+                # 直接起它会闪一个黑框。加 CREATE_NO_WINDOW（POSIX 上该值为 0）。
                 proc = subprocess.run([exe, "--version"], capture_output=True,
-                                      timeout=15, encoding="utf-8", errors="replace")
+                                      timeout=15, encoding="utf-8", errors="replace",
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
                 m = _ENGINE_CLI_VERSION_RE.search((proc.stdout or "") + "\n"
                                                   + (proc.stderr or ""))
                 if m:

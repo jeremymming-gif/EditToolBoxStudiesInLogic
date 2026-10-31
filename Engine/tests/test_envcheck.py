@@ -55,22 +55,33 @@ PY = sys.executable
 PLAT = "windows" if os.name == "nt" else "mac"
 
 STUBS = {
-    "xelatex": '#!/bin/sh\necho "XeTeX 3.141592653-2.6-0.999995 (TeX Live 2024)"\n',
-    "biber": '#!/bin/sh\necho "biber version: 2.19"\n',
-    "python3.14": "#!/bin/sh\necho \"3.14.8\"\n",
-    "git": '#!/bin/sh\necho "git version 2.39.3"\n',
-    "soffice": '#!/bin/sh\necho "LibreOffice 24.8.1.2 420(Build:2)"\n',
+    "xelatex": "XeTeX 3.141592653-2.6-0.999995 (TeX Live 2024)",
+    "biber": "biber version: 2.19",
+    "python3.14": "3.14.8",
+    "git": "git version 2.39.3",
+    "soffice": "LibreOffice 24.8.1.2 420(Build:2)",
 }
 
 
 def make_bin(tmp: pathlib.Path, names: tuple[str, ...]) -> pathlib.Path:
-    """在 tmp 里放几个可执行假工具（`#!/bin/sh` + 固定输出）。"""
+    """在 tmp 里放几个可执行假工具（固定输出 STUBS 里的那一行）。
+
+    POSIX：`#!/bin/sh` 小脚本 + `chmod 0o755`。
+    Windows：`shutil.which` 只按 `PATHEXT` 找文件名，**看不见无扩展名的文件**，
+    所以写成 `<name>.CMD`（内容 `@echo <行>`；CreateProcess 会自动经 cmd.exe 执行，
+    输出与 mac 上的 echo 一致）——见 B-304/T5、B300-09。
+    """
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
     for name in names:
-        path = bin_dir / name
-        path.write_text(STUBS[name], encoding="utf-8")
-        os.chmod(path, 0o755)
+        line = STUBS[name]
+        if os.name == "nt":
+            (bin_dir / (name + ".CMD")).write_text(
+                "@echo " + line + "\r\n", encoding="utf-8")
+        else:
+            path = bin_dir / name
+            path.write_text('#!/bin/sh\necho "' + line + '"\n', encoding="utf-8")
+            os.chmod(path, 0o755)
     return bin_dir
 
 
@@ -291,9 +302,17 @@ print("── (g) --out-dir 只读：判 fail、报告写不进去也不能炸 �
 with tempfile.TemporaryDirectory() as td:
     tmp = pathlib.Path(td)
     bin_dir = make_bin(tmp, ("xelatex", "biber"))
-    ro = tmp / "ro-out"
-    ro.mkdir()
-    os.chmod(ro, 0o500)
+    if os.name == "nt":
+        # Windows 的 chmod 不产生 POSIX 只读语义（目录照样能写进去），换个
+        # **同一种失败**的造法：拿一个已存在的普通文件当 --out-dir
+        # （makedirs → FileExistsError；写报告 → OSError 打「报告没能写到」）。
+        # 三条断言与 mac 分支逐字相同。见 B-304/T5、B300-09。
+        ro = tmp / "ro-out"
+        ro.write_text("not a dir", encoding="utf-8")
+    else:
+        ro = tmp / "ro-out"
+        ro.mkdir()
+        os.chmod(ro, 0o500)
     try:
         r = cli(["--json", "--profile", "exe", "--out-dir", str(ro)], bin_dir)
         report = json.loads(r.stdout)
@@ -305,7 +324,8 @@ with tempfile.TemporaryDirectory() as td:
         check("(g) 没有把半个文件留在只读目录里",
               not (ro / "envcheck.json").exists())
     finally:
-        os.chmod(ro, 0o700)
+        if os.name != "nt":
+            os.chmod(ro, 0o700)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("── (h) dispatcher：ENTRIES 追加末尾、原十项顺序不变、真能跑通 ──")

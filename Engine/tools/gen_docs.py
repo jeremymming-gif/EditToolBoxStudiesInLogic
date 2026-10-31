@@ -84,7 +84,24 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-PY = "/opt/homebrew/bin/python3.14"
+# B300-06：**不要**硬编码 mac 的解释器路径（Windows 上直接 FileNotFoundError [WinError 2]，
+# README 的 AUTO 块从此再也生不出来）。优先级：
+#   ① 环境变量 `SLCN_PYTHON`（要**本机原生**路径；CI/临时切解释器时用）
+#   ② 当前解释器 `sys.executable`（要求 ≥3.14：套件与引擎都要求 3.14）
+#   ③ 原 mac 路径兜底（从更老的 python 启动时行为保持原样，方便发现而不是静默跑错）
+# mac 上照旧用 /opt/homebrew/bin/python3.14 跑时 ①→③ 都不生效、② 给出同一个路径，
+# 因此 Path(PY).stem 与套件子进程完全不变 —— AUTO 块**逐字节不变**。
+def _default_python() -> str:
+    env = os.environ.get("SLCN_PYTHON", "").strip()
+    if env:
+        return env
+    exe = sys.executable
+    if exe and sys.version_info >= (3, 14):
+        return exe
+    return "/opt/homebrew/bin/python3.14"
+
+
+PY = _default_python()
 BEGIN = "<!-- AUTO:STATE:BEGIN -->"
 END = "<!-- AUTO:STATE:END -->"
 
@@ -669,7 +686,9 @@ def build_block(run_test_suites: bool = True,
     if test_section is None:
         # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
         #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
-        t = (f"**测试**（`{Path(PY).name}` + `PYTHONPATH=Engine/vendor`）："
+        # B300-06：用 `.stem` 而不是 `.name` —— 否则 Windows 上会写 `python3.14.exe`，
+        # 同一份 README 在 mac 上 `--check` 就红（AUTO 块跨平台必须一致）。
+        t = (f"**测试**（`{Path(PY).stem}` + `PYTHONPATH=Engine/vendor`）："
              f"**{len(rows)} 套件 / {total} 项断言 / FAIL {sum(f for _, _, f in rows)} 行**")
         t += " ✅" if not bad else " ❌ " + "、".join(f"{n}({f} FAIL)" for n, f in bad)
         t += "（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）"
@@ -827,7 +846,10 @@ def _flush_block(new: str, head: str, tail: str) -> tuple[str, bool]:
     stable = head + "\n" + new + tail
     changed = stable != read_readme()
     if changed:
-        README.write_text(stable, encoding="utf-8")
+        # B-304：显式 newline="\n" —— Windows 上 Path.write_text 默认做 os.linesep 转换，
+        # 会把 README 整体改成 CRLF（git 显示全文件 468/234 行变更）。README 是核对物，
+        # 必须两平台都写 LF。
+        README.write_text(stable, encoding="utf-8", newline="\n")
     record_git_state()
     return new, changed
 

@@ -46,15 +46,103 @@ Write-Host "  版本：$Version"
 New-Item -ItemType Directory -Force -Path $BuildDir, $DistDir | Out-Null
 
 # ── ① 构建用 venv（装 Windows 轮子 + PyInstaller）─────────────────────────
-if (-not (Test-Path (Join-Path $VenvDir "Scripts\python.exe"))) {
+# B-300-01：这里**绝不裸调 `python`**——PATH 上的 python 可能是 3.10 或
+# WindowsApps 的占位档。先找 py 启动器 / python3.14 并**真跑一次**
+# 验证 >= 3.14；找不到就报错退出，不猜。
+function Get-PyVersion([string]$ExePath, [string[]]$LauncherArgs) {
+    try {
+        $out = & $ExePath @LauncherArgs -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
+    } catch { return "" }
+    if ($LASTEXITCODE -ne 0 -or -not $out) { return "" }
+    return ([string]($out | Select-Object -Last 1)).Trim()
+}
+
+$PyExe = $null
+$PyLaunch = @()
+$pyCmd = Get-Command py -ErrorAction SilentlyContinue
+if ($pyCmd) {
+    $ver = Get-PyVersion $pyCmd.Source @("-3.14")
+    if ($ver -match '^3\.(1[4-9]|[2-9][0-9])\.') { $PyExe = $pyCmd.Source; $PyLaunch = @("-3.14") }
+}
+if (-not $PyExe) {
+    foreach ($cand in @("python3.14", "python")) {
+        $c = Get-Command $cand -ErrorAction SilentlyContinue
+        if (-not $c) { continue }
+        $ver = Get-PyVersion $c.Source @()
+        if ($ver -match '^3\.(1[4-9]|[2-9][0-9])\.') { $PyExe = $c.Source; $PyLaunch = @(); break }
+    }
+}
+if (-not $PyExe) {
+    throw "找不到 Python 3.14（需要 3.14 及以上；装好后重跑，或用 py -3.14 验证）"
+}
+Write-Host "  构建解释器：$PyExe $($PyLaunch -join ' ')" -ForegroundColor DarkGray
+
+# 旧 venv 可能是别的版本建的（B-300-01 现场就是 3.10 venv）——版本不对就删掉重建。
+$needVenv = $true
+$VenvPy = Join-Path $VenvDir "Scripts\python.exe"
+if (Test-Path $VenvPy) {
+    $venvVer = Get-PyVersion $VenvPy @()
+    if ($venvVer -match '^3\.(1[4-9]|[2-9][0-9])\.') { $needVenv = $false }
+    else {
+        Write-Host "▶ 旧 venv 是 Python $venvVer，不是 3.14+：删掉重建…" -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $VenvDir
+    }
+}
+if ($needVenv) {
     Write-Host "▶ 建构建用 venv…" -ForegroundColor Cyan
-    python -m venv $VenvDir
+    & $PyExe @PyLaunch -m venv $VenvDir
+    if ($LASTEXITCODE -ne 0) { throw "建 venv 失败（解释器：$PyExe，rc=$LASTEXITCODE）" }
 }
 $VenvPy  = Join-Path $VenvDir "Scripts\python.exe"
 $VenvPip = Join-Path $VenvDir "Scripts\pip.exe"
 Write-Host "▶ 装依赖（Windows 轮子）…" -ForegroundColor Cyan
 & $VenvPip install --disable-pip-version-check --quiet --upgrade pip
 & $VenvPip install --disable-pip-version-check --quiet lxml pypdf pypinyin pyinstaller
+
+# ── ①-b exe 版本资源（B-300-04：属性里不能是空的）────────────────────
+# 版本号仍只来自 Engine\slcn\__init__.py；PyInstaller 用 --version-file 注入。
+# 企业/作者信息用中性占位值（公开仓不放真实个人信息）。
+if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)$') {
+    throw "版本号格式不是 X.Y.Z：$Version（Engine\slcn\__init__.py）"
+}
+$V1 = [int]$Matches[1]; $V2 = [int]$Matches[2]; $V3 = [int]$Matches[3]
+$FileVer = "$V1, $V2, $V3, 0"
+$VersionFileEngine = Join-Path $BuildDir "version-slcengine.txt"
+$VersionFileShell  = Join-Path $BuildDir "version-toolbox.txt"
+
+function New-VersionFile([string]$Path, [string]$InternalName, [string]$Description, [string]$OriginalFilename) {
+    $body = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($FileVer),
+    prodvers=($FileVer),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', 'SLCN Toolbox'),
+        StringStruct('FileDescription', '$Description'),
+        StringStruct('FileVersion', '$Version'),
+        StringStruct('InternalName', '$InternalName'),
+        StringStruct('OriginalFilename', '$OriginalFilename'),
+        StringStruct('ProductName', '编辑部工具箱'),
+        StringStruct('ProductVersion', '$Version')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"@
+    [IO.File]::WriteAllText($Path, $body, (New-Object System.Text.UTF8Encoding($false)))
+}
+New-VersionFile $VersionFileEngine "SLCNEngine" "SLCNEngine（编辑部工具箱引擎）" "SLCNEngine.exe"
+New-VersionFile $VersionFileShell  "EditorialToolbox" "编辑部工具箱（Windows 界面）" "编辑部工具箱.exe"
 
 # ── ② 冻结引擎：十三个 CLI 入口 → 一个 exe ──────────────────────────────
 # ⚠️ 这张表必须与 `Engine/engine_main.py: ENTRIES` **逐项一致**（配对守卫在
@@ -86,6 +174,7 @@ try {
         $PyArgs += @("--hidden-import", [IO.Path]::GetFileNameWithoutExtension($e))
     }
     $PyArgs += @("--add-data", "$TplSrc;编辑笔记\模板文件", "engine_main.py")
+    $PyArgs += @("--version-file", $VersionFileEngine)
     & $VenvPy @PyArgs
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 冻结引擎失败（rc=$LASTEXITCODE）" }
 } finally { Pop-Location }
@@ -100,6 +189,7 @@ try {
         --specpath $BuildDir `
         --add-binary "$DistDir\SLCNEngine.exe;." `
         --add-data "$TplSrc;编辑笔记\模板文件" `
+        --version-file $VersionFileShell `
         main.py
 } finally { Pop-Location }
 

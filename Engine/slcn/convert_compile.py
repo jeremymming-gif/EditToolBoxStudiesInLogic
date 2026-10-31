@@ -76,9 +76,8 @@ def compile_pdf(out_dir: str, stem: str) -> tuple[bool, str]:
     for i, cmd in enumerate(steps, 1):
         if shutil.which(cmd[0]) is None:
             return False, f"找不到命令 {cmd[0]}，请确认已安装 TeX Live"
-        r = subprocess.run(
-            cmd, cwd=out_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
-        )
+        from . import platform as _plat  # noqa: PLC0415  控制台窗口（B300-03）
+        r = _plat.run_no_window(cmd, cwd=out_dir, quiet=True, check=False)
         if r.returncode == 0:
             continue
         if i == 2:  # biber：有 .bcf 才严格判定

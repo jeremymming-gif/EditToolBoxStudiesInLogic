@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: 装依赖（vendor 的等价物）
         run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: 打包（引擎 exe + 界面 exe）
         shell: pwsh
         run: ./sources-win/build-win.ps1

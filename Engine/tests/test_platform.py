@@ -55,6 +55,9 @@ PY = sys.executable
 def child(code: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ENGINE) + os.pathsep + env.get("PYTHONPATH", "")
+    # B-304/B-300-09：Windows 上子进程 stdout 默认按 cp936 编码，而测试用 `.decode()`
+    #（UTF-8）读中文输出会炸；这里固定 UTF-8，两平台输出一致（env_extra 仍可覆盖）。
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     env.update(env_extra or {})
     return subprocess.run([PY, "-c", code], capture_output=True, env=env, cwd=str(ENGINE))
 
@@ -256,11 +259,12 @@ check("(e) `slcn.__version__` 存在且形如 x.y.z",
       isinstance(__version__, str) and len(__version__.split(".")) == 3, __version__)
 r = child("import subprocess, sys; "
           "print(subprocess.run([sys.executable, 'convert.py', '--version'], "
-          "capture_output=True, text=True).stdout.strip())")
+          "capture_output=True, text=True, encoding='utf-8').stdout.strip())")
 check("(e) `convert.py --version` 打得出来，且**不要求 --source**",
       r.returncode == 0 and __version__ in r.stdout.decode(), r.stdout.decode().strip()[:90])
 r = child("import subprocess, sys; "
-          "p=subprocess.run([sys.executable, 'checkbib.py', '--version'], capture_output=True, text=True); "
+          "p=subprocess.run([sys.executable, 'checkbib.py', '--version'], capture_output=True, "
+          "text=True, encoding='utf-8'); "
           "print(p.returncode, p.stdout.strip())")
 check("(e) `checkbib.py --version` 同样可用",
       r.returncode == 0 and __version__ in r.stdout.decode(), r.stdout.decode().strip()[:90])
@@ -1406,6 +1410,44 @@ check("(o2) 扫描范围非空（防 (o1) 真空绿）：mac 壳 Swift 源、win
       f"mac={'有' if _NOLEAK_MAC_DIR.is_dir() else '缺'}{_O2_MAC_N} 文件｜"
       f"win={'有' if _NOLEAK_WIN_DIR.is_dir() else '缺'}{_O2_WIN_N} 文件｜"
       f"slcn={_O2_DIST_N} 个 .py｜合计扫 {len(_NOLEAK_FILES)}")
+
+# ── (p) B300-03：子进程「不弹控制台窗口」平台口径 + soffice 命令行入口 ──────
+_NW = P.no_window_kwargs()
+if sys.platform == "win32":
+    _nw_ok = _NW == {"creationflags": subprocess.CREATE_NO_WINDOW}
+else:
+    _nw_ok = _NW == {}
+check("(p1) no_window_kwargs()：win32 带 CREATE_NO_WINDOW、POSIX 返回空 dict", _nw_ok,
+      f"platform={sys.platform} kwargs={_NW}")
+
+with tempfile.TemporaryDirectory() as _p_td:
+    _p_exe = pathlib.Path(_p_td) / "soffice.exe"
+    _p_com = pathlib.Path(_p_td) / "soffice.com"
+    _p_exe.write_bytes(b"")
+    _p_old = os.environ.get("SLCN_SOFFICE")
+    try:
+        os.environ["SLCN_SOFFICE"] = str(_p_exe)
+        _p_only_exe = P.soffice_cli()
+        _p_com.write_bytes(b"")
+        _p_with_com = P.soffice_cli()
+    finally:
+        if _p_old is None:
+            os.environ.pop("SLCN_SOFFICE", None)
+        else:
+            os.environ["SLCN_SOFFICE"] = _p_old
+if sys.platform == "win32":
+    _p_cli_ok = (_p_only_exe == str(_p_exe) and _p_with_com == str(_p_com))
+else:
+    _p_cli_ok = (_p_only_exe == str(_p_exe) and _p_with_com == str(_p_exe))
+check("(p2) Windows 上 soffice_cli() 有 .com 时优先 .com、缺 .com 回退 .exe；POSIX 原样返回",
+      _p_cli_ok, f"only_exe={_p_only_exe} with_com={_p_with_com}")
+
+_P_PROD = [p for pat in ("*.py", "slcn/*.py", "tools/*.py") for p in ENGINE.glob(pat)]
+_p_src_hits = sorted(p.relative_to(ENGINE).as_posix() for p in _P_PROD
+                     if "soffice.exe" in p.read_text(encoding="utf-8"))
+check("(p3) 生产代码里 `soffice.exe` 只出现在 platform.py（候选表/回退），"
+      "任何版本探测/转换都不会直接对 .exe 起进程",
+      _p_src_hits == ["slcn/platform.py"], f"命中={_p_src_hits}")
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

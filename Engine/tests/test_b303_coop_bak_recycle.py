@@ -60,7 +60,9 @@ def tree(root: str) -> dict[str, bytes]:
         for name in sorted(filenames):
             full = os.path.join(dirpath, name)
             with open(full, "rb") as fh:
-                out[os.path.relpath(full, root)] = fh.read()
+                # B-304/B-300-09：Windows 的 relpath 用反斜杠，断言写的是 "旧/附表.txt" ——
+                # 统一成 "/" 再比对（POSIX 上是空操作，断言强度不变）。
+                out[os.path.relpath(full, root).replace(os.sep, "/")] = fh.read()
     return out
 
 

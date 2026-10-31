@@ -97,12 +97,18 @@ def _missing_hint(title: str, install_key: str, impact: str) -> str:
 
 # ── 小工具：跑一次 `--version` 并抽版本号（找不到/超时一律返回空串） ──────────
 
+# B300-03：从 GUI（冻结的界面 exe）触发自检时，子进程会各弹一个控制台黑框
+# （`soffice --version` / xelatex / biber / git 都会）。统一走 slcn.platform 的
+# no_window_kwargs()：Windows 加 CREATE_NO_WINDOW，POSIX 返回 {}（行为一字不变）。
+_NO_WINDOW_KW = _plat.no_window_kwargs()
+
+
 def _run_version(exe: str, args: tuple[str, ...] = ("--version",),
                  timeout: float = 20.0) -> str:
     try:
         proc = subprocess.run(
             [exe, *args], capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=timeout,
+            errors="replace", timeout=timeout, **_NO_WINDOW_KW,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -273,9 +279,9 @@ def _soffice_probe() -> tuple[str, str]:
     override = os.environ.get("SLCN_SOFFICE", "").strip()
     if override:
         if os.path.exists(override):
-            return override, ""
+            return _plat.soffice_cli_for(override), ""
         return "", f"环境变量 SLCN_SOFFICE 指向的路径不存在：{override}"
-    path = _plat.find_soffice()
+    path = _plat.soffice_cli()
     return path, "" if path else "自动探测没找到 soffice"
 
 

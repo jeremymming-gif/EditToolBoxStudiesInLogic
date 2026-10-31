@@ -37,6 +37,7 @@ import tempfile
 from dataclasses import dataclass, field
 
 from . import paths as _paths
+from . import platform as _plat
 from . import toctemplate as _tt
 
 #: 目录成品固定名：`(语言键, 文件主干)`。顺序即编译/合并顺序（先中文、后英文）。
@@ -195,7 +196,8 @@ def check_windows_fonts() -> tuple[bool, str]:
         try:
             proc = subprocess.run(
                 ["xelatex", "-interaction=nonstopmode", "probe.tex"],
-                cwd=work, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                cwd=work, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                **_plat.no_window_kwargs())
         except OSError as e:
             res = (False, f"启动 xelatex 失败：{e}")
             _FONT_CHECK_CACHE = res

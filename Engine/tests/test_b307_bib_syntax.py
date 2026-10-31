@@ -93,10 +93,14 @@ print("\n── ③ checkbib CLI ──")
 
 
 def run_cli(path):
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join([_ENGINE, os.path.join(_ENGINE, "vendor")]))
+    # B-304/B-300-09：子进程输出含中文；Windows 的文本模式默认按 cp936 解码，
+    # 显式钉 UTF-8（并让子进程也输出 UTF-8），两平台行为一致。
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([_ENGINE, os.path.join(_ENGINE, "vendor")]),
+               PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     return subprocess.run(
         [sys.executable, os.path.join(_ENGINE, "checkbib.py"), "--returned", path],
         cwd=_ENGINE, env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
     )
 
 

@@ -38,7 +38,7 @@ def available() -> bool:
 
 def docx_to_pdf(src: str, out_dir: str, timeout: int = 180) -> tuple[str | None, str]:
     """把 docx/doc 转成 PDF，返回 (PDF 路径, 提示信息)。"""
-    soffice = find_soffice()
+    soffice = _plat.soffice_cli()
     if not soffice:
         return None, "未找到 soffice（LibreOffice），跳过原稿 PDF 导出"
 
@@ -59,7 +59,8 @@ def docx_to_pdf(src: str, out_dir: str, timeout: int = 180) -> tuple[str | None,
         os.path.abspath(src),
     ]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False,
+                            **_plat.no_window_kwargs())
     except subprocess.TimeoutExpired:
         return None, f"LibreOffice 转换超时（{timeout}s）"
 
@@ -89,7 +90,8 @@ def page_texts(pdf: str) -> list[str]:
     exe = shutil.which("pdftotext")
     if exe:
         try:
-            r = subprocess.run([exe, "-layout", pdf, "-"], capture_output=True, text=True, timeout=120, check=False)
+            r = subprocess.run([exe, "-layout", pdf, "-"], capture_output=True, text=True,
+                               timeout=120, check=False, **_plat.no_window_kwargs())
             return r.stdout.split("\f")
         except Exception:  # noqa: BLE001
             pass

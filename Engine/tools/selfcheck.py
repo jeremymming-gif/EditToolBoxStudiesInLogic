@@ -73,8 +73,11 @@ def _env() -> dict:
 
 
 def run(cmd: list[str], cwd: str | None = None, timeout: int = 1800) -> tuple[int, str]:
+    from slcn import platform as _slcn_plat  # noqa: PLC0415  控制台窗口（B300-03）
+
     r = subprocess.run(cmd, cwd=cwd or ENGINE, env=_env(), capture_output=True,
-                       text=True, encoding="utf-8", errors="replace", timeout=timeout)
+                       text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                       **_slcn_plat.no_window_kwargs())
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 

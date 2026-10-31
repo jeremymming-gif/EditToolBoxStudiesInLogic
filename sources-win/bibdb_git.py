@@ -77,6 +77,7 @@ def _run(git: str, args: list[str], *, timeout: float = READ_TIMEOUT,
     argv += list(args)
     try:
         proc = subprocess.run(argv, capture_output=True, text=True,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                               encoding="utf-8", errors="replace",
                               timeout=timeout, env=_git_env(), shell=False)
     except subprocess.TimeoutExpired:

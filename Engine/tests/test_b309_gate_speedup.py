@@ -68,6 +68,21 @@ def text_of(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.is_file() else ""
 
 
+def native(path_str: str) -> Path:
+    """把 Git Bash 打印的 MSYS 路径转成当前平台的原生路径。
+
+    `run_engine_tests.sh` 用 `${TMPDIR:-/tmp}` 建日志目录，Git Bash 打印的是
+    `/tmp/slcn_engine_tests.XXXX`；Windows 上 `Path("/tmp/...")` 会变成「当前盘根下的
+    \\tmp\\...」判非目录。用 bash 自带的 `cygpath -w` 转换（POSIX 上原样返回）。
+    见 B-304/T5、B300-09。
+    """
+    if os.name != "nt":
+        return Path(path_str)
+    r = run(["bash", "-c", 'cygpath -w "$1"', "_", path_str])
+    out = (r.stdout or "").strip()
+    return Path(out) if out else Path(path_str)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (a) corpus.py --out：输出根可换 / worker 带 OUT / CSV 可复现 ──")
 _tmp = Path(tempfile.mkdtemp(prefix="b309_corpus_"))
@@ -170,7 +185,7 @@ try:
           and "PASS test_ok" in out and "FAIL test_red" in out
           and "⚠️ test_flaky" in out and "PASS test_shared_paths" in out)
     _kept = re.search(r"完整日志：([^\s）]+)", out)
-    _logs = Path(_kept.group(1)) if _kept else None
+    _logs = native(_kept.group(1)) if _kept else None
     check("(b) 有红时保留日志目录并打印路径", _logs is not None and _logs.is_dir(), str(_logs))
     _allow_log = (_logs / "test_shared_paths.allow.log") if _logs else Path("/nonexistent")
     _par_log = (_logs / "test_flaky.par.log") if _logs else Path("/nonexistent")
@@ -190,7 +205,7 @@ try:
           f"rc={r1.returncode}")
     _kept2 = re.search(r"完整日志：([^\s）]+)", r1.stdout + r1.stderr)
     if _kept2:
-        shutil.rmtree(_kept2.group(1), ignore_errors=True)
+        shutil.rmtree(native(_kept2.group(1)), ignore_errors=True)
     r2 = run(["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_eng),
              env=_suite_env(SLCN_TEST_JOBS="0"))
     check("(b) 非法 SLCN_TEST_JOBS=0 → 退出 2 且说明原因",

@@ -122,7 +122,7 @@ def _newest_report(root: str) -> str:
 def _run_script(argv: list[str]) -> _StepResult:
     """起子进程跑一个引擎入口，**只看退出码**（判据仍由那个入口自己决定）。"""
     try:
-        proc = subprocess.run([PY] + argv, cwd=ENGINE_DIR)
+        proc = subprocess.run([PY] + argv, cwd=ENGINE_DIR, **_plat.no_window_kwargs())
     except OSError as e:  # 解释器都起不来：致命
         return _StepResult(2, reason=f"启动失败：{e}")
     return _StepResult(proc.returncode)

@@ -89,6 +89,7 @@ def compile_tex_xelatex(folder: str, stem: str, runs: int = 2) -> tuple[bool, st
             r = subprocess.run(
                 ["xelatex", "-interaction=nonstopmode", f"{stem}.tex"],
                 cwd=folder, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                **_plat.no_window_kwargs(),
             )
         except OSError as e:  # 命令在但起不来（权限/坏软链）：致命
             return False, f"启动 xelatex 失败：{e}"

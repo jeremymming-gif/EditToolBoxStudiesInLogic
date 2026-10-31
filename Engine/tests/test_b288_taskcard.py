@@ -16,6 +16,7 @@ import hashlib
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 _ENGINE = Path(__file__).resolve().parent.parent
@@ -218,17 +219,21 @@ def test_c7() -> None:
 
 
 def test_state() -> None:
+    # B-304/B-300-09：`build_state()` 把 taskbook_volumes 归一成**绝对路径**
+    # （mac 上 "/a" 本来就是绝对路径；Windows 上 abspath("/a") 会变成 "<当前盘>:\a"）。
+    # 用系统临时目录下的绝对路径：归一前后逐字相等，断言仍是精确列表相等。
+    _vols = [os.path.join(tempfile.gettempdir(), f"b288-vol{i}.md") for i in (1, 2, 3)]
     common = dict(params={"source": "x.tex", "source_sha256": "y"},
                   taskbook_path="", stage_dir=".", final_dir=".",
                   bib_keys=["A"], low_items=[], budget_article=0, budget_batch=0,
                   engine_version="1.4.1")
     new = coop.build_state(**common, taskbook_version=2, taskbook_task_id=TID,
-                           taskbook_volumes=["/a", "/b", "/c"])
+                           taskbook_volumes=_vols)
     old = coop.build_state(**common)
     check("⑧-1 SCHEMA_VERSION 仍是 1（不 bump）", new["schema"] == 1)
     check("⑧-2 taskbook_version/task_id/volumes 三键写入", new.get("taskbook_version") == 2
           and new.get("taskbook_task_id") == TID
-          and new.get("taskbook_volumes") == ["/a", "/b", "/c"])
+          and new.get("taskbook_volumes") == _vols)
     check("⑧-3 旧调用不写这三键（旧状态兼容）",
           "taskbook_version" not in old and "taskbook_task_id" not in old)
     check("⑧-4 check_ph2 接受新键状态", coop.check_ph2(new, common["params"])[0])

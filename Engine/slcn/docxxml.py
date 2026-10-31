@@ -821,6 +821,8 @@ def _soffice_bin() -> str:
     """
     import shutil
 
+    from . import platform as _plat
+
     cands = [
         os.environ.get("SLCN_SOFFICE", ""),
         shutil.which("soffice") or "",
@@ -828,7 +830,7 @@ def _soffice_bin() -> str:
     ]
     for c in cands:
         if c and os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
+            return _plat.soffice_cli_for(c) or ""
     return ""
 
 
@@ -885,6 +887,8 @@ def _convert_wmf_batch(items: list[tuple[str, bytes]]) -> dict[str, bytes]:
     import subprocess
     import tempfile
 
+    from . import platform as _plat
+
     soffice = _soffice_bin()
     if not soffice or not items:
         return {}
@@ -916,7 +920,8 @@ def _convert_wmf_batch(items: list[tuple[str, bytes]]) -> dict[str, bytes]:
         cmd = [soffice, "--headless", "--norestore", "--convert-to", "pdf",
                "--outdir", tmpdir, *sha2input.values()]
         try:
-            subprocess.run(cmd, capture_output=True, timeout=600)
+            subprocess.run(cmd, capture_output=True, timeout=600,
+                           **_plat.no_window_kwargs())
         except Exception:  # noqa: BLE001 —— 转换失败不阻断出稿
             return out
         for sha, inp in sha2input.items():

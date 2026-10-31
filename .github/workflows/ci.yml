@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: 装依赖
         run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
       - name: AUTO 块是否过期（独立守卫；CI 无稿件库/out 产物 → 信息性）
@@ -72,7 +72,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: 装依赖
         run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
       - name: Swift 测试台（6 个）
