@@ -5,6 +5,12 @@
 （那是刻意的设计，见 `engine.py` 开头）。界面只负责「取值 → 调这两个模块 → 显示日志」，
 所以逻辑部分在 mac / Linux / CI 上都能验；只有 (g)(h) 两组会真开一次窗口（缺 tkinter 时 SKIP）。
 
+B-309 门禁/CI 用 `SLCN_BRIDGE_SKIP_GUI=1` 跳过**只有 GUI 才需要**的三个探针：
+  · (g) 真开一次窗口（含 180 秒子进程等待）；
+  · (h) 真窗口那半组（跨平台夹具的 3 条断言照跑）；
+  · (o) 需要 `import tabs.dirpush` 的纯函数断言（该页面 import tkinter；静态守卫照跑）。
+默认不设该变量 → 行为与旧版逐项一致。
+
 钉住这些事：
   (a) 引擎与解释器的定位顺序（环境变量 → 打包形态 → 开发形态）；
   (b) 拼出来的命令行**与 `Engine/docs/ENGINE_API.md` 的契约一致**（参数名、顺序、布尔开关）；
@@ -44,6 +50,10 @@ SHELL = pathlib.Path(__file__).resolve().parent.parent
 REPO = SHELL.parent                       # ← 仓根；从前写成 `.parent.parent`（= GitHub/），
                                           #   于是 (g) 组给的 PYTHONPATH 指到了不存在的目录
 sys.path.insert(0, str(SHELL))
+
+# B-309：门禁/CI 只要纯逻辑证据时用它跳过「真窗口 / 需要 tkinter 的页面 import」。
+# 只认 "1"（默认不设 = 旧行为）；跳过的每个探针都会打一行带变量名的 SKIP。
+_SKIP_GUI = os.environ.get("SLCN_BRIDGE_SKIP_GUI") == "1"
 
 
 def _read_all_shell_sources() -> str:
@@ -668,10 +678,15 @@ def _tk_python() -> str | None:
 import subprocess  # noqa: E402
 import textwrap  # noqa: E402
 
-tkpy = _tk_python()
+if _SKIP_GUI:
+    print("SKIP  (g) SLCN_BRIDGE_SKIP_GUI=1：按约定跳过真窗口（默认不跳过；门禁用）")
+    tkpy = None
+else:
+    tkpy = _tk_python()
 win_out = ""          # (g) 子进程的 stdout；(h) 组的「摘要/原始」断言要在这里找证据
 if tkpy is None:
-    print("SKIP  (g) 本机没有带 tkinter 的解释器（Windows 上跑得到）")
+    if not _SKIP_GUI:
+        print("SKIP  (g) 本机没有带 tkinter 的解释器（Windows 上跑得到）")
 else:
     # 给 (g) 用的合成期目录：一篇文章的 tex（不含 PDF —— 页数那条另有诚实化断言）
     gdir = tempfile.mkdtemp(prefix="slcn_bridge_issue_")
@@ -1187,7 +1202,10 @@ def _marker(name: str) -> str:
 
 
 if not _marker("默认模式"):
-    print("SKIP  (h) 真窗口那一步没跑（本机没有 tkinter / 窗口服务起不来）")
+    if _SKIP_GUI:
+        print("SKIP  (h) 真窗口那一步没跑（SLCN_BRIDGE_SKIP_GUI=1）")
+    else:
+        print("SKIP  (h) 真窗口那一步没跑（本机没有 tkinter / 窗口服务起不来）")
     print("      —— 夹具那 3 条仍然有效；Windows 上这组会全跑")
 else:
     check("(h) 默认是**摘要**（原始层折叠）：`logShowRaw` 缺省为 False",
@@ -2971,14 +2989,20 @@ check("(o) settings：记忆键 options.dirpushOutRoot 默认空串（老配置�
 check("(o) engine：_RESULT_1 有 dirpush.py 的退出码 1 文案（traceback 也给人看）",
       "dirpush.py" in E._RESULT_1 and "traceback" in E._RESULT_1["dirpush.py"])
 
-try:
-    import tabs.dirpush as _DP  # noqa: E402  需要 tkinter；缺 → 下面几条 SKIP
-    _DP_ERR = ""
-except Exception as _exc:  # noqa: BLE001
-    _DP, _DP_ERR = None, repr(_exc)
+_DP, _DP_ERR = None, ""
+if _SKIP_GUI:
+    _DP_ERR = "SLCN_BRIDGE_SKIP_GUI=1"
+else:
+    try:
+        import tabs.dirpush as _DP  # noqa: E402  需要 tkinter；缺 → 下面几条 SKIP
+    except Exception as _exc:  # noqa: BLE001
+        _DP_ERR = repr(_exc)
 
 if _DP is None:
-    print(f"SKIP  (o) dirpush 纯函数断言（import 失败：{_DP_ERR}）")
+    if _SKIP_GUI:
+        print("SKIP  (o) dirpush 纯函数断言（SLCN_BRIDGE_SKIP_GUI=1；页面静态守卫仍跑）")
+    else:
+        print(f"SKIP  (o) dirpush 纯函数断言（import 失败：{_DP_ERR}）")
 else:
     _c = E.dirpush_call(issue=r"E:\期\2026年第5期(90)", out_root=r"D:\push")
     check("(o) 当期 argv：--issue/--out/--json，默认**不**带 --with-en-toc",

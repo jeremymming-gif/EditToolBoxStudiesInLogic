@@ -34,13 +34,23 @@ jobs:
         #    `python3.14 tools/gen_docs.py --check` 做严格判定。
         continue-on-error: true
         working-directory: Engine
-        run: python tools/gen_docs.py --check
+        run: |
+          # B-309：AUTO 块里依赖稿件库/out 产物的数字在 CI runner 上无法重现；显式 SKIP
+          # 并退出 0（旧版直接跑 gen_docs --check → 恒 exit 1，只能靠 continue-on-error
+          # 压成灰，日志里全是噪声）。本机约定解释器不在 = CI Linux runner，跳过。
+          if [ ! -x /opt/homebrew/bin/python3.14 ]; then
+            echo "SKIP：没有 /opt/homebrew/bin/python3.14（CI runner）；AUTO 严格守卫留在发版机 selfcheck --full"
+            exit 0
+          fi
+          python tools/gen_docs.py --check
       - name: 文档看门狗
         working-directory: Engine
         run: python tests/test_docs_consistency.py
       - name: 全部套件
         env:
           SLCN_DUMP_RED_LOGS: "1"
+          # B-309：ubuntu runner 上 3 路并行（红套件仍会串行复核；汇总行/退出码语义不变）
+          SLCN_TEST_JOBS: "3"
           # 解释器必须显式指定（macos 镜像自带 /opt/homebrew/bin/python3.14，但没有 pip 装的依赖）
           SLCN_TEST_PYTHON: python
         run: bash Engine/tools/run_engine_tests.sh full

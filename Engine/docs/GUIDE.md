@@ -769,7 +769,7 @@ $PY run_poc.py
 python3 run_poc.py --only tex
 
 # 全库回归（68 篇，约 10 分钟）
-$PY corpus.py [--sty X.sty]
+$PY corpus.py [--sty X.sty] [--out DIR]   # --out：明细写到别处（默认仍 out/corpus）；门禁两遍各写独立目录，canonical out/corpus 只读
 
 # 规则消融：单篇版快，全库版准（抽样 30 篇，避免单篇过拟合）
 python3 ablation.py
@@ -791,6 +791,7 @@ cd Engine && bash tools/run_engine_tests.sh full    # 默认档 = 全部 tests/t
 - 每套一行 `PASS/FAIL` + 它自己的末行摘要；结尾汇总「N 套件，红 M」，**有红退出码非 0**。
 - quick 白名单写在脚本注释里；quick 全绿不等于能发版 —— **full 才是回归的完整口径**。
 - 解释器优先 `/opt/homebrew/bin/python3.14`，找不到回落 `python3`；`PYTHONPATH` 自动指向 `Engine/vendor`。
+- `SLCN_TEST_JOBS=4` 开并行档（默认 1 = 旧的逐套串行）；并行红的套件会自动串行复核，抖动不计红，汇总行与退出码口径不变。
 
 ### 3.4 依赖
 

@@ -17,6 +17,11 @@
     PYTHONPATH="$PWD/vendor" python3 corpus.py                 # 自动并行
     PYTHONPATH="$PWD/vendor" python3 corpus.py --jobs 1        # 串行（旧行为）
     PYTHONPATH="$PWD/vendor" python3 corpus.py --limit 5 --jobs 1
+    PYTHONPATH="$PWD/vendor" python3 corpus.py --out /tmp/corpus-p1 --jobs 5
+
+`--out DIR`（B-309）把**整棵输出根**换到 DIR：`corpus.csv` 与每篇的产物目录都落在
+DIR 下，默认仍是 `Engine/out/corpus`（旧行为一字不改）。门禁的「两遍一致」用两个
+独立目录各跑一遍，从而**不改写**仓库里的 canonical `out/corpus/`。
 """
 
 from __future__ import annotations
@@ -220,10 +225,15 @@ def run_one(issue: str, slug: str, target: str) -> Row:
     )
 
 
-def _worker_init(sty, skeleton, proof_autofix) -> None:
-    """进程池初始化：把 main() 里解析的全局样式/骨架/自动改开关带进子进程。"""
-    global STY, SKELETON, PROOF_AUTOFIX
+def _worker_init(sty, skeleton, proof_autofix, out_dir) -> None:
+    """进程池初始化：把 main() 里解析的全局样式/骨架/自动改开关/输出根带进子进程。
+
+    `out_dir` 必须走 initargs：macOS 上 Python 3.14 的默认启动方式是 spawn，
+    子进程重新 import 本模块，**不会**继承父进程里改过的模块全局 `OUT`。
+    """
+    global STY, SKELETON, PROOF_AUTOFIX, OUT
     STY, SKELETON, PROOF_AUTOFIX = sty, skeleton, proof_autofix
+    OUT = out_dir
 
 
 def _worker_run(item: tuple[str, str, str]) -> Row:
@@ -259,7 +269,13 @@ def main() -> int:
     ap.add_argument("--jobs", default="auto", help="进程数：auto（默认，min(8, CPU)）/ 1 / N；1 = 串行")
     ap.add_argument("--no-proof-autofix", action="store_true",
                     help="初排不套用一校可自动改子集（ZH-01..06；消融/对照用，默认开）")
+    ap.add_argument("--out", default=None, metavar="DIR",
+                    help="输出根目录（默认 Engine/out/corpus；门禁两遍各给独立目录，"
+                         "避免改写仓库里的 canonical 产物）")
     args = ap.parse_args()
+    global OUT
+    if args.out:
+        OUT = os.path.abspath(os.path.expanduser(args.out))
     STY, SKELETON = args.sty, args.skeleton
     PROOF_AUTOFIX = not args.no_proof_autofix
 
@@ -267,7 +283,8 @@ def main() -> int:
     if args.limit:
         items = items[: args.limit]
     os.makedirs(OUT, exist_ok=True)
-    print(f"共 {len(items)} 篇有同名目标成品，开始回归…\n")
+    print(f"共 {len(items)} 篇有同名目标成品，开始回归…")
+    print(f"输出根：{_paths.rel(OUT)}\n")
 
     try:
         if str(args.jobs).lower() == "auto":
@@ -299,7 +316,7 @@ def main() -> int:
         with concurrent.futures.ProcessPoolExecutor(
                 max_workers=jobs,
                 initializer=_worker_init,
-                initargs=(STY, SKELETON, PROOF_AUTOFIX)) as ex:
+                initargs=(STY, SKELETON, PROOF_AUTOFIX, OUT)) as ex:
             futures = [ex.submit(_worker_run, it) for it in items]
             for fut in concurrent.futures.as_completed(futures):
                 done += 1

@@ -34,6 +34,13 @@
 #   15 次 windows 运行里套件打印的全部诊断都被 `tail -3` 吃掉，**而且** `set -e`+pipefail
 #   在第一套红时就退出 —— 排在 test_llm_finish_reason 之后的 17 套在 Windows 上从来没跑过。
 #   这个脚本从设计上就是「跑完全部套件、逐套留日志」，CI 复用它才是唯一一份逻辑。
+#
+# B-309 并行档：`SLCN_TEST_JOBS=N`（≥1；默认 1 = 旧串行行为，输出/退出码逐字不变）。
+#   · >1 时同时最多跑 N 套；**并行的红套件会再串行复核一遍**，只有串行仍红才计红
+#     （并行红/串行绿 = 抖动：显式警告、日志留着，但不计红）。
+#   · 固定端口 / 共享路径的套件要放 SERIAL_ALLOWLIST（串行跑，仍计入总数）。本批审计
+#     Engine/tests 全库：无固定端口、无固定 /tmp 写、无仓库 out/ 写 → 默认空。
+#   · 汇总行格式与退出码语义不变：`汇总：N 套件，红 R ｜ full 档耗时 S 秒`；退出码 = 红套数。
 set -uo pipefail
 
 # `-h` 要读自己的抬头：必须在 cd 之前把自身路径**绝对化**（cd 之后 $0 的相对路径就找不到自己了）
@@ -65,7 +72,7 @@ export PYTHONPATH="$PWD/vendor"
 MODE="${1:-full}"
 case "$MODE" in
   quick|full) ;;
-  -h|--help) sed -n '2,29p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) awk 'NR>1 && /^set -uo pipefail$/{exit} NR>1{sub(/^# ?/,""); print}' "$SELF"; exit 0 ;;
   *) echo "用法：bash tools/run_engine_tests.sh [quick|full]（默认 full；CI 加 SLCN_DUMP_RED_LOGS=1）" >&2; exit 2 ;;
 esac
 
@@ -122,6 +129,176 @@ else
   echo "▶ full 档：全部 ${#FILES[@]} 套（含真跑 TeX、mock 端点、真实稿件语料的套件）"
 fi
 echo "  解释器 $PY ｜ PYTHONPATH=$PYTHONPATH"
+
+# ── B-309 并行档 ──────────────────────────────────────────────────────────
+# 并发本身交给 `xargs -P`（macOS bash 3.2 没有 `wait -n`，自己写池子要绕 set -u 的
+# 空数组展开坑）；结果落成 `<name>.par.log` + `.rc`，再按 FILES 原序统一裁决、打印，
+# 所以输出顺序和旧版一致，只是行内耗时变短。
+JOBS="${SLCN_TEST_JOBS:-1}"
+case "$JOBS" in
+  ''|*[!0-9]*)
+    echo "❌ SLCN_TEST_JOBS 只能是 ≥1 的整数，收到：$JOBS" >&2
+    exit 2 ;;
+esac
+if [ "$JOBS" -lt 1 ]; then
+  echo "❌ SLCN_TEST_JOBS 只能是 ≥1 的整数，收到：$JOBS" >&2
+  exit 2
+fi
+[ "$JOBS" -gt "${#FILES[@]}" ] && JOBS="${#FILES[@]}"
+
+# 串行 allowlist（默认空；理由见文件抬头「并行安全审计」）。环境变量只用于追加/测试：
+# `SLCN_TEST_SERIAL_ALLOWLIST=test_x,test_y`。这里的套件**照跑**、照计数，只是不并发。
+SERIAL_ALLOWLIST=(
+)
+ALLOW=()
+if [ -n "${SLCN_TEST_SERIAL_ALLOWLIST:-}" ]; then
+  _old_ifs="$IFS"; IFS=','
+  for _n in $SLCN_TEST_SERIAL_ALLOWLIST; do
+    _n="$(printf '%s' "$_n" | tr -d '[:space:]')"
+    [ -n "$_n" ] && ALLOW+=("$_n")
+  done
+  IFS="$_old_ifs"
+fi
+
+suite_rc() { if [ -f "$1" ]; then tr -d '[:space:]' < "$1"; else echo 1; fi; }
+suite_bad() { grep -cE '^[[:space:]]*FAIL\b' "$1" 2>/dev/null | tr -d '[:space:]'; }
+# 红 = 退出码非 0，或退出码 0 但套件自己打了 FAIL 行（旧版同一口径）
+suite_red() {
+  local rc bad
+  rc="$(suite_rc "$2")"; bad="$(suite_bad "$1")"
+  [ "${rc:-1}" -ne 0 ] || [ "${bad:-0}" -ne 0 ]
+}
+
+# 红的细节：贴 FAIL 行（最多 8 行）；CI 加 SLCN_DUMP_RED_LOGS=1 时贴完整日志
+dump_red() {  # $1=name $2=log
+  echo "         $1 的 FAIL 行"
+  grep -E '^[[:space:]]*FAIL\b' "$2" | head -8 | sed 's/^/         /'
+  if [ "${SLCN_DUMP_RED_LOGS:-0}" = "1" ]; then
+    echo "         ──────── $1 完整日志（$(wc -l < "$2" | tr -d ' ') 行）────────"
+    sed 's/^/         /' "$2"
+    echo "         ──────── $1 完整日志结束 ────────"
+  fi
+}
+
+run_parallel() {
+  local f name log rcf slog last why bad_lines done_allow=0
+  local TOTAL="${#FILES[@]}" RED=0 RED_PAR=0 RED_ALLOW=0 FLAKY=0 PAR_RED=0
+  local ALLOW_FILES=() PAR_FILES=()
+  for f in "${FILES[@]}"; do
+    name="$(basename "$f" .py)"
+    _hit=0
+    for _a in ${ALLOW[@]+"${ALLOW[@]}"}; do
+      [ "$_a" = "$name" ] && _hit=1
+    done
+    if [ "$_hit" -eq 1 ]; then ALLOW_FILES+=("$f"); else PAR_FILES+=("$f"); fi
+  done
+  echo "  并行档：SLCN_TEST_JOBS=${JOBS}（串行 allowlist ${#ALLOW_FILES[@]} 套 / 并行 ${#PAR_FILES[@]} 套）"
+
+  if [ "${#ALLOW_FILES[@]}" -gt 0 ]; then
+    echo "▶ 串行 allowlist：${#ALLOW_FILES[@]} 套（固定端口/共享路径，理由见脚本注释）"
+    for f in "${ALLOW_FILES[@]}"; do
+      name="$(basename "$f" .py)"
+      log="$LOG_DIR/$name.allow.log"
+      SLCN_TEST_PHASE=serial "$PY" -u "$f" >"$log" 2>&1
+      echo $? >"$log.rc"
+      printf '  … %s（串行）\n' "$name"
+    done
+  fi
+
+  if [ "${#PAR_FILES[@]}" -gt 0 ]; then
+    echo "▶ 并行：最多 $JOBS 路（红套件随后串行复核）"
+    export SLCN_B309_PY="$PY" SLCN_B309_LOGDIR="$LOG_DIR"
+    printf '%s\n' "${PAR_FILES[@]}" | xargs -n 1 -P "$JOBS" bash -c '
+      f="$1"; n="$(basename "$f" .py)"
+      SLCN_TEST_PHASE=parallel "$SLCN_B309_PY" -u "$f" > "$SLCN_B309_LOGDIR/$n.par.log" 2>&1
+      echo $? > "$SLCN_B309_LOGDIR/$n.par.log.rc"
+    ' _
+    unset SLCN_B309_PY SLCN_B309_LOGDIR
+  fi
+
+  # 1) 并行红 → 逐套串行复核（同一份 PY、同一套环境；phase 标记便于套件自检/复现）
+  for f in ${PAR_FILES[@]+"${PAR_FILES[@]}"}; do
+    name="$(basename "$f" .py)"
+    log="$LOG_DIR/$name.par.log"
+    if suite_red "$log" "$log.rc"; then
+      PAR_RED=$((PAR_RED + 1))
+      echo "  ↺ 串行复核 ${name}（并行红）"
+      SLCN_TEST_PHASE=serial "$PY" -u "$f" >"$LOG_DIR/$name.serial.log" 2>&1
+      echo $? >"$LOG_DIR/$name.serial.log.rc"
+    fi
+  done
+  if [ "$PAR_RED" -gt 0 ]; then
+    echo "  并行红 $PAR_RED 套已串行复核"
+  fi
+
+  # 2) 按 FILES 原序打印（和串行档同样的 PASS/FAIL 行格式）
+  for f in "${FILES[@]}"; do
+    name="$(basename "$f" .py)"
+    if [ -f "$LOG_DIR/$name.allow.log" ]; then
+      log="$LOG_DIR/$name.allow.log"; rcf="$log.rc"
+      if suite_red "$log" "$rcf"; then
+        RED_ALLOW=$((RED_ALLOW + 1))
+        bad_lines="$(suite_bad "$log")"
+        if [ "$(suite_rc "$rcf")" -ne 0 ]; then why="退出码 $(suite_rc "$rcf")"
+        else why="退出码 0 但有 $bad_lines 行 FAIL（套件自己的退出码没跟上）"; fi
+        last="$(grep -v '^[[:space:]]*$' "$log" | tail -1 | tr -d '\r')"
+        printf '  %-4s %-34s %s｜%s\n' "FAIL" "$name" "$why" "${last:-（没有输出）}"
+        dump_red "$name" "$log"
+      else
+        last="$(grep -v '^[[:space:]]*$' "$log" | tail -1 | tr -d '\r')"
+        printf '  %-4s %-34s %s\n' "PASS" "$name" "${last:-（没有输出，可疑）}"
+      fi
+      continue
+    fi
+    log="$LOG_DIR/$name.par.log"
+    if ! suite_red "$log" "$log.rc"; then
+      last="$(grep -v '^[[:space:]]*$' "$log" | tail -1 | tr -d '\r')"
+      printf '  %-4s %-34s %s\n' "PASS" "$name" "${last:-（没有输出，可疑）}"
+      continue
+    fi
+    slog="$LOG_DIR/$name.serial.log"
+    if suite_red "$slog" "$slog.rc"; then
+      RED_PAR=$((RED_PAR + 1))
+      bad_lines="$(suite_bad "$slog")"
+      if [ "$(suite_rc "$slog.rc")" -ne 0 ]; then why="退出码 $(suite_rc "$slog.rc")"
+      else why="退出码 0 但有 $bad_lines 行 FAIL（套件自己的退出码没跟上）"; fi
+      last="$(grep -v '^[[:space:]]*$' "$slog" | tail -1 | tr -d '\r')"
+      printf '  %-4s %-34s %s｜%s\n' "FAIL" "$name" "$why" "${last:-（没有输出）}"
+      dump_red "$name" "$slog"
+    else
+      FLAKY=$((FLAKY + 1))
+      printf '  %-4s %-34s %s\n' "⚠️" "$name" "并行红 / 串行绿（抖动，不计红；并行日志 ${log}）"
+    fi
+  done
+  RED=$((RED_PAR + RED_ALLOW))
+
+  T1="$(now)"
+  ELAPSED="$(LC_NUMERIC=C awk -v a="$T0" -v b="$T1" 'BEGIN{printf "%.1f", b-a}')"
+  echo
+  echo "并行：$JOBS 路，串行 allowlist ${#ALLOW_FILES[@]} 套"
+  if [ "$PAR_RED" -gt 0 ]; then
+    echo "并行红 $PAR_RED 套 → 串行复核红 $RED_PAR 套（抖动 $FLAKY 套）"
+  fi
+  echo "汇总：$TOTAL 套件，红 $RED ｜ $MODE 档耗时 ${ELAPSED} 秒"
+  if [ "$FLAKY" -gt 0 ]; then
+    KEEP_LOGS=1
+    echo "⚠️ 抖动 $FLAKY 套（并行红/串行绿；日志：${LOG_DIR}）"
+  fi
+  if [ "$RED" -eq 0 ]; then
+    echo "✅ 全部通过"
+    exit 0
+  fi
+  KEEP_LOGS=1
+  echo "❌ 有 $RED 套红（完整日志：${LOG_DIR}）"
+  if [ "$MODE" = quick ]; then
+    echo "   ⚠️ quick 只覆盖纯逻辑套件；修完请再跑一次 full"
+  fi
+  exit "$RED"
+}
+
+if [ "$JOBS" -gt 1 ]; then
+  run_parallel
+fi
 
 TOTAL=0
 RED=0
