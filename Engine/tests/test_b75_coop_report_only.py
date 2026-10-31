@@ -559,8 +559,9 @@ def test_cli_ph1(tmp: str, head: str) -> None:
           and "`\\myfirstaffiliation`" in tb)
     check("④-4 无 C 类脚注数据 → 脚注清单块不出现（只在有数据时）",
           coop.ANALYSIS_FOOTNOTE_TITLE not in tb)
-    check("④-5 附四仍是任务书最后一节",
-          tb.rstrip().endswith("你的建议只供编辑人工裁决。"))
+    check("④-5 附四仍是任务书正文（卷 C）的最后一节（B-288 卷末模板之前）",
+          "### 卷 C · 回填模板" in tb and
+          tb.split("### 卷 C · 回填模板", 1)[0].rstrip().endswith("你的建议只供编辑人工裁决。"))
     m = re.search(r"任务书附四输入清单：脚注 (\d+) 条 / 占位符 (\d+) 个"
                   r"（\+(\d+) 字符）", p1.stdout)
     check("④-6 日志报告输入清单增量（条数/字符）",
