@@ -36,6 +36,11 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # B-246c P4 fix：Windows runner 默认 ANSI 代码页 1252，Python 打印中文会
+      # UnicodeEncodeError（首个 CI 的 sidecar 自检即因此失败）；统一 UTF-8。
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v5
 
@@ -54,10 +59,10 @@ jobs:
       - name: 装依赖
         run: |
           python -m pip install --disable-pip-version-check --upgrade pip
-          # B-246c P4 fix: 只装 `flet` 不含 CLI（flet-cli/flet-desktop 是独立分发），
-          # 必须装 flet[all]，否则 `flet pack` 命令不存在（首个 CI 双平台同因失败）。
-          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller "flet[all]"
-          command -v flet || { echo "flet CLI 缺失（flet[all] 安装失败）"; exit 1; }
+          # flet 1.0.5 自带的 `flet` 命令即含 pack 子命令；装了之后必须存在（首个 CI 曾
+          # 在此后 step 才炸，保留显式检查方便以后定位）。
+          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet
+          command -v flet || { echo "flet CLI 缺失"; exit 1; }
           python -m pip show flet pyinstaller | sed -n '1,12p'
 
       # ── 引擎 sidecar ────────────────────────────────────────────────
@@ -160,16 +165,31 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.value }}"
+          echo "== dist 内容 =="
+          find build-flet/dist -maxdepth 2 -print | head -40
           APP=$(find build-flet/dist -maxdepth 1 -name "*.app" -print -quit || true)
           mkdir -p pkg-mac
           if [ -n "$APP" ]; then
             cp -R "$APP" pkg-mac/
             APPDIR=$(basename "$APP")
-            cp build-flet/SLCNEngine "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
-            chmod +x "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
-            shasum -a 256 "pkg-mac/$APPDIR/Contents/MacOS/XuehengToolbox" > pkg-mac/sha256.txt
+            MACOS_DIR="pkg-mac/$APPDIR/Contents/MacOS"
+            cp build-flet/SLCNEngine "$MACOS_DIR/SLCNEngine"
+            chmod +x "$MACOS_DIR/SLCNEngine"
+            # 主可执行文件名不写死（flet pack 可能按 --name 或产品名生成）；取 MacOS/ 下
+            # 第一个可执行文件（排除 sidecar）。
+            MAINEXE=$(find "$MACOS_DIR" -maxdepth 1 -type f -perm -u+x ! -name SLCNEngine -print -quit || true)
+            if [ -z "$MAINEXE" ]; then
+              echo "::error::找不到 .app 主可执行文件"; ls -la "$MACOS_DIR"; exit 1
+            fi
+            echo "主可执行：$MAINEXE"
+            shasum -a 256 "$MAINEXE" > pkg-mac/sha256.txt
           else
-            cp build-flet/dist/XuehengToolbox pkg-mac/
+            MAINEXE=$(find build-flet/dist -maxdepth 1 -type f -perm -u+x -print -quit || true)
+            if [ -z "$MAINEXE" ]; then
+              echo "::error::找不到 macOS 产物（既无 .app 也无可执行文件）"; ls -la build-flet/dist; exit 1
+            fi
+            echo "主可执行：$MAINEXE"
+            cp "$MAINEXE" pkg-mac/XuehengToolbox
             cp build-flet/SLCNEngine pkg-mac/
             shasum -a 256 pkg-mac/XuehengToolbox > pkg-mac/sha256.txt
           fi

@@ -22,7 +22,21 @@ from pathlib import Path
 CREATE_NO_WINDOW = 0x08000000
 
 
+def _utf8_stdio() -> None:
+    """B-246c P4 fix：Windows CI（cp1252 控制台）打印中文 JSON 会 UnicodeEncodeError。
+
+    证据根/本机是 cp936 能过，GitHub Windows runner 默认 ANSI=1252 必炸；
+    统一把 stdout/stderr 指到 UTF-8（不可用时退回 replace，保证自检结论可见）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    _utf8_stdio()
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     run_help = "--run-help" in sys.argv[1:]
     if not argv:
