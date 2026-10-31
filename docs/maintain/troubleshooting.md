@@ -18,14 +18,15 @@ PYTHONPATH="$PWD/vendor" python3.14 envcheck.py --json     # 外壳读的就是�
 ```
 
 - 退出码 `0` = 必需项齐；`1` = 必需齐、可选项缺（功能受限）；`2` = 必需项缺失。
-- 八项含义、安装命令与诊断包内容见[环境检查与诊断](/reference/environment-check)。
+- 八项含义与安装命令见[环境检查与诊断](/reference/environment-check)。
 
 ## 2. 引擎找不到
 
 现象：日志「找不到 Engine/convert.py」或启动即失败。
 
 1. 确认 `Engine/convert.py` 存在（源码形态）；
-2. 发布包形态：两个 exe（`编辑部工具箱.exe` 与 `SLCNEngine.exe`）必须在**同一目录**；
+2. 发布包形态：两个 exe（`XuehengToolbox.exe` 与引擎 sidecar `SLCNEngine.exe`）必须在**同一目录**；
+   macOS 为 `XuehengToolbox.app`，sidecar 已打进 `Contents/MacOS/SLCNEngine`（通常不用改）；
 3. 源码运行时可显式指定：环境变量 `SLCN_ENGINE` 指向 `Engine/` 目录（该目录必须含 `convert.py`）；
 4. 源码运行还需要 `PYTHONPATH` 含依赖目录（`Engine/vendor` 或已安装的 lxml/pypinyin/pypdf）。
 
@@ -71,7 +72,7 @@ py -3.14 -X utf8 Engine/tests/test_docs_consistency.py
 ## 8. 升级前收集什么
 
 - 版本号（`Engine/slcn/__init__.py` 是唯一出处）与构建提交；
-- App 内「导出诊断包…」生成的 zip（只含版本、系统、八项检查结论，不含稿件/密钥/引用库）；
-- 复现步骤 + 日志尾部（App「打开日志」定位本次运行日志）。
+- 「设置 → 环境检查」的结果（只读八项，可截图/复制；不含稿件/密钥/引用库）；
+- 复现步骤 + 日志尾部（日志区可切「只看摘要」或复制原始输出）。
 
-> 仍无法定位时，把上述三样（版本、诊断包、日志尾部）交给维护者/上游，并注明「发布包还是源码形态」。
+> 仍无法定位时，把上述三样（版本、环境检查结果、日志尾部）交给维护者/上游，并注明「发布包还是源码形态」。

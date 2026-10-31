@@ -9,34 +9,40 @@ description: 仓库结构、构建命令、文档站本地开发。
 
 ```text
 Engine/         Python 引擎（唯一一份文档逻辑）
-sources-mac/    macOS 外壳（SwiftUI）
-sources-win/    Windows 外壳（Tkinter）
+sources-flet/   Flet 单壳（默认产品线；Windows/macOS 共用同一套界面）
+sources-win/    Windows 外壳（Tkinter，frozen：仅源码回退参考）
+sources-mac/    macOS 外壳（SwiftUI，frozen：仅源码回退参考）
 编辑笔记/模板文件/ 本刊排版模板
 docs/           本站（VitePress 文档站）
 ```
 
-一个引擎、两个外壳：文档逻辑全在 `Engine/`，外壳只做「取值 → 拼参数 → 显示日志」，
-保证两个平台算出来的结果一致。
+一个引擎、一个默认外壳：文档逻辑全在 `Engine/`，Flet 单壳只做「取值 → 拼参数 → 显示日志」（`services/engine_bridge.py`），
+保证两个平台算出来的结果一致。旧 Tkinter/SwiftUI 外壳自 v1.5.0 起 frozen，不再随发布线构建。
 
 ## 构建
 
 ```bash
-# macOS App（产物 dist/编辑部工具箱.app）
-bash build.sh
+# Flet 单壳：开发运行（热重载）与单元测试
+cd sources-flet
+python3 -m flet run app/main.py
+python3 -m pytest tests -q
 
-# Windows 包（在 Windows 上；产物 sources-win/build/dist/ 下的两个 exe）
-cd sources-win
-pwsh -ExecutionPolicy Bypass -File build-win.ps1
+# Flet 单壳：打包（onefile；引擎 sidecar 另由 CI/打包脚本产出）
+python3 -m flet pack app/main.py --name XuehengToolbox --distpath dist --yes
+
+# 打包口径与发布线说明
+cat sources-flet/packaging/README.md
 
 # 引擎测试（依赖装进 Engine/vendor）
 cd Engine
 python3 -m pip install --target vendor -r requirements.txt
 PYTHONPATH="$PWD/vendor" python3 tools/selfcheck.py --full
 
-# Swift 测试台
-bash tools/run_swift_tests.sh
+# 旧外壳构建脚本（frozen，仅回退参考）
+bash build.sh                                  # 旧 macOS App
+cd sources-win && pwsh -ExecutionPolicy Bypass -File build-win.ps1   # 旧 Windows 两个 exe
 
-# Windows 外壳桥接测试（Windows 或带 tkinter 的环境）
+# 旧 Windows 外壳桥接测试（冻结前回归参考）
 PYTHONPATH=Engine/vendor python3 sources-win/tests/test_bridge.py
 ```
 

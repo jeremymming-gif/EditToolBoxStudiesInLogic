@@ -1,8 +1,17 @@
-name: 构建与发布（macOS + Windows）
-
+# 构建与发布（Flet 单壳 · macOS + Windows）
+#
+# B-246c P5：产品线已切到 Flet 单壳（sources-flet/）。旧 Tk（sources-win/）与 SwiftUI
+# （sources-mac/）**冻结**：仅保留源码作回退参考，不再发布。
+#
 # 触发：
-#   · 打 tag（v1.0.1 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
+#   · 打 tag（v1.5.0 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
 #   · 手动 workflow_dispatch → 只跑测试与构建，**不**建 Release（用来验证打包脚本）
+#
+# 打包口径与 `.github/workflows/build-flet.yml` 一致（两条流水线共用）：
+#   · 引擎 sidecar：Windows 复用 `sources-win/build-win.ps1`（只取其产出的 SLCNEngine.exe）；
+#                    macOS 用等价 PyInstaller onefile（同一入口表/模板数据）
+#   · 应用：`flet pack`（onefile；macOS 出 .app），sidecar 放在可执行文件同目录
+#     （macOS 为 `.app/Contents/MacOS/SLCNEngine`）
 on:
   push:
     tags: ["v*"]
@@ -12,13 +21,14 @@ permissions:
   contents: write          # 建 Release 需要
 
 env:
-  # 版本号只有一处：Engine/slcn/__init__.py 的 __version__
+  # 版本号只有一处：Engine/slcn/__init__.py 的 __version__（P5 不动它，由发版批次统一改）
   PYTHONUNBUFFERED: "1"
   # Windows: 控制台默认 cp1252，测试脚本打印中文会 UnicodeEncodeError
   PYTHONIOENCODING: "utf-8"
+  PYTHONUTF8: "1"
 
 jobs:
-  # ── ① 纯逻辑测试：两个平台各跑一遍（不需要 TeX / LibreOffice）────────────
+  # ── ① 纯逻辑测试：两个平台各跑一遍（不需要 TeX / LibreOffice / GUI）─────────
   test:
     name: 测试（${{ matrix.os }}）
     strategy:
@@ -32,88 +42,116 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: 装依赖（vendor 的等价物）
-        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
+      - name: 装依赖（vendor 的等价物 + Flet 壳测试依赖）
+        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin pytest flet
 
-      # ⚠️ 只跑**不依赖稿件库**的套件：本仓（公开的工具仓）里没有作者稿件，
-      #    依赖真实稿件的断言都自带 SKIP（见各套件里的 `缺真实稿件` 分支）。
-      #    全库回归（corpus.py / docx_audit.py）留在稿件仓里跑，它们要 132 份源稿。
-      #
-      # ⚠️ 这里**不写行内循环**，而是复用 `Engine/tools/run_engine_tests.sh`（唯一一份逻辑）：
-      #    旧写法 `python "$f" | tail -3` 有两处致命伤（案例第 102 条）——
-      #      ① `tail -3` 把每套的 stdout 砍到最后 3 行，且管道要等进程结束才吐，
-      #         套件打印的诊断（`[DIAG] …`）**一次都没进过 CI 日志**；
-      #      ② `set -e` + GitHub 默认的 pipefail 在第一套红时就退出 ——
-      #         排在 test_llm_finish_reason 之后的 17 套在 Windows 上**从来没跑过**。
-      #    改后：40 套全跑完，红的套件连完整日志一起贴出来（SLCN_DUMP_RED_LOGS=1）。
+      # ⚠️ 只跑**不依赖稿件库**的套件（公开仓没有作者稿件，相关断言自带 SKIP）。
+      #    唯一逻辑在 Engine/tools/run_engine_tests.sh，别在 workflow 里写行内循环。
       - name: 引擎套件（不依赖稿件库的部分）
         shell: bash
         env:
           SLCN_DUMP_RED_LOGS: "1"
-          # ⚠️ 必须显式指定解释器：脚本的本机约定是 /opt/homebrew/bin/python3.14，
-          #    而 macos-14 的 runner 镜像里**真的装着**它 —— 但它没有下面 pip 装的依赖
-          #    （2026-10-16 实测：不指定 → macos 作业 19 套件全红）。这里用 setup-python 的。
+          # macos-14 runner 镜像里装着 /opt/homebrew/bin/python3.14（无依赖），必须显式指定
           SLCN_TEST_PYTHON: python
         run: bash Engine/tools/run_engine_tests.sh full
 
-      - name: Windows 外壳（桥梁）测试
+      - name: Flet 壳单元测试（不启动 GUI）
+        run: python -m pytest sources-flet/tests -q
+
+      - name: Windows 外壳（桥梁）测试（旧壳冻结，仍作为回归参考）
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           cd sources-win
           PYTHONPATH="$PWD/../Engine/vendor" python tests/test_bridge.py | tail -4
 
-  # ── ② macOS：构建 .app 并打包 ────────────────────────────────────────────
+  # ── ② macOS：引擎 sidecar + Flet .app + zip ───────────────────────────────
   macos:
-    name: 构建 macOS 应用
+    name: 构建 macOS 应用（Flet）
     needs: test
-    # 2026-10-20：macos-14 镜像的旧 Xcode 对超大 SwiftUI View 表达式类型检查超时
-    # （ConvertTab.body 已拆分仍偶发）；构建作业改用 macos-15（较新 Xcode）。
-    # 测试作业仍跑 macos-14，保留旧系统覆盖。
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
       - name: 读取版本号（唯一出处）
         id: ver
         run: |
           V=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' Engine/slcn/__init__.py | head -1)
-          echo "version=${V:-0.0.0}" >> "$GITHUB_OUTPUT"
-      - name: 构建 .app
-        run: ./build.sh
-      - name: 打包（zip 保留可执行位与签名）
-        run: |
-          cd dist
-          zip -qry "EditToolBox-${{ steps.ver.outputs.version }}-macOS-arm64.zip" "编辑部工具箱.app"
-      # ⚠️ 未签名/未公证：下载后会撞 Gatekeeper（「已损坏」）。这是 2026-10-15 的决定
-      #    （不买 Apple Developer 账号），所以资产里附一份说明，正文里也写清处理方法。
-      # ⚠️ 资产名必须**纯 ASCII**：GitHub 会把文件名里的非 ASCII 字符**直接删掉** ——
-      #    `首次打开（macOS）.txt` 上传后就成了 `macOS.txt`（2026-10-17 发 v1.0.1 时实测）。
-      #    文件**内容**照旧是中文，只有**文件名**用 ASCII。
-      - name: 附一份「首次打开」说明
-        run: |
-          cat > "FIRST-OPEN-macOS.txt" <<'TXT'
-          《编辑部工具箱》macOS 版首次打开说明
-          ------------------------------------------------
-          本应用**未做 Apple 签名与公证**（编辑部决定不购买开发者账号），
-          从网上下载后直接双击会被 Gatekeeper 拦下，提示「已损坏，无法打开」。
-          这不是文件坏了，是系统隔离标记造成的。处理方法（二选一）：
+          echo "value=${V:-0.0.0}" >> "$GITHUB_OUTPUT"
 
-            方法一（推荐）：右键点应用 → 选「打开」→ 在弹窗里再点「打开」。
-            方法二（终端一条命令）：
-                xattr -dr com.apple.quarantine "/Applications/编辑部工具箱.app"
+      - name: 装依赖
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet
 
-          另外：本应用需要系统里有 python3 与 TeX（xelatex/biber）；
-          合并 PDF、导出原稿 PDF 另外需要 LibreOffice（条件必需：仅合并 / 导出原稿 PDF 需要）。
-          TXT
+      - name: 引擎 sidecar（PyInstaller onefile，等价 Tk 版入口表）
+        run: |
+          set -euo pipefail
+          mkdir -p build-flet
+          ( cd Engine && python -m PyInstaller --noconfirm --clean --onefile --console \
+              --name SLCNEngine \
+              --distpath ../build-flet/dist-engine \
+              --workpath ../build-flet/work-engine \
+              --specpath ../build-flet \
+              --hidden-import convert --hidden-import checkbib --hidden-import mergepdf \
+              --hidden-import cleantemp --hidden-import compileall --hidden-import proofcheck \
+              --hidden-import infocheck --hidden-import toc --hidden-import publish \
+              --hidden-import bibdb --hidden-import envcheck --hidden-import diagnose \
+              --hidden-import dirpush \
+              --add-data "$GITHUB_WORKSPACE/编辑笔记/模板文件:编辑笔记/模板文件" \
+              engine_main.py )
+          cp build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
+          chmod +x build-flet/SLCNEngine
+          ./build-flet/SLCNEngine --version
+
+      - name: flet pack（onefile .app，未签名）
+        run: |
+          set -euo pipefail
+          ( cd build-flet && flet pack ../sources-flet/app/main.py --name XuehengToolbox --distpath dist --yes )
+          ls -la build-flet/dist
+
+      - name: sidecar 定位自检（engine_bridge，不经 GUI）
+        run: python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine --run-help
+
+      - name: 组装发布包（.app + Contents/MacOS/SLCNEngine + FIRST-OPEN）
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.value }}"
+          APP=$(find build-flet/dist -maxdepth 1 -name "*.app" -print -quit || true)
+          mkdir -p pkg-mac
+          if [ -n "$APP" ]; then
+            cp -R "$APP" pkg-mac/
+            APPDIR=$(basename "$APP")
+            cp build-flet/SLCNEngine "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
+            chmod +x "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
+          else
+            cp build-flet/dist/XuehengToolbox pkg-mac/
+            cp build-flet/SLCNEngine pkg-mac/
+          fi
+          # ⚠️ 资产名必须纯 ASCII（GitHub 会删掉文件名里的非 ASCII 字符）；
+          #    文件内容仍是中文，只有文件名用 ASCII。说明文字统一放 sources-flet/packaging。
+          cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
+          ZIP="EditToolBox-$V-macOS-arm64.zip"
+          ( cd pkg-mac && zip -qry "../$ZIP" . )
+          ZHASH=$(shasum -a 256 "$ZIP" | awk '{print $1}')
+          echo "zip: $ZIP"
+          echo "sha256: $ZHASH"
+          printf '### macOS artifact\n\nzip: %s\nsha256: %s\n' "$ZIP" "$ZHASH" >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: macos-app
           path: |
-            dist/EditToolBox-*.zip
-            FIRST-OPEN-macOS.txt
+            EditToolBox-*-macOS-arm64.zip
+            sources-flet/packaging/FIRST-OPEN-macOS.txt
+          if-no-files-found: error
 
-  # ── ③ Windows：冻结引擎 + 界面，打成一个发布目录 ─────────────────────────
+  # ── ③ Windows：引擎 sidecar + Flet exe + zip ──────────────────────────────
   windows:
-    name: 构建 Windows 应用
+    name: 构建 Windows 应用（Flet）
     needs: test
     runs-on: windows-latest
     steps:
@@ -121,49 +159,82 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
-      - name: 打包（引擎 exe + 界面 exe）
-        shell: pwsh
-        run: ./sources-win/build-win.ps1
-      - name: 组装发布目录
+
+      - name: 读取版本号（唯一出处）
+        id: ver
+        shell: bash
+        run: |
+          V=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' Engine/slcn/__init__.py | head -1)
+          if [ -z "$V" ]; then V="0.0.0"; fi
+          echo "value=$V" >> "$GITHUB_OUTPUT"
+          echo "Engine 版本：$V"
+
+      - name: 装依赖
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet
+
+      - name: 引擎 sidecar（复用 sources-win/build-win.ps1，只取 SLCNEngine.exe）
         shell: pwsh
         run: |
-          $V = (Select-String -Path Engine\slcn\__init__.py -Pattern '^__version__ = "(.*)"').Matches.Groups[1].Value
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item sources-win\build\dist\SLCNEngine.exe dist\
-          Copy-Item "sources-win\build\dist\编辑部工具箱.exe" dist\
-          Compress-Archive -Path dist\SLCNEngine.exe, "dist\编辑部工具箱.exe" `
-                           -DestinationPath "EditToolBox-$V-Windows-x64.zip" -Force
-      # ⚠️ RELEASING.md 第 155 行：**资产里必须照实说明**「首次打开」这一步，不许说成小问题。
-      #    未签名 exe 会撞 SmartScreen（蓝色「Windows 已保护你的电脑」），
-      #    而编辑部已定案不做代码签名（R9）—— 所以只能把处理方法写清楚（与 mac 那份对称）。
-      - name: 附一份「首次打开」说明
+          $ErrorActionPreference = "Stop"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File sources-win/build-win.ps1
+          New-Item -ItemType Directory -Force build-flet | Out-Null
+          Copy-Item sources-win/build/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
+          & build-flet/SLCNEngine.exe --version | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "sidecar 自检失败（SLCNEngine.exe --version）" }
+
+      - name: flet pack（onefile + 版本资源）
         shell: pwsh
         run: |
-          $TXT = @'
-          《编辑部工具箱》Windows 版首次打开说明
-          ------------------------------------------------
-          本程序**未做代码签名**（编辑部决定不购买代码签名证书），
-          从网上下载后双击会被 SmartScreen 拦下，出现蓝色提示
-          「Windows 已保护你的电脑」。这不是文件坏了，也不是中毒。
+          $ErrorActionPreference = "Stop"
+          $V = "${{ steps.ver.outputs.value }}"
+          New-Item -ItemType Directory -Force build-flet | Out-Null
+          Push-Location build-flet
+          try {
+            flet pack ..\sources-flet\app\main.py --name XuehengToolbox `
+              --product-name "学衡工具箱" --product-version "$V" --file-version "$V.0" `
+              --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" `
+              --distpath dist --yes
+            if ($LASTEXITCODE -ne 0) { throw "flet pack 失败（rc=$LASTEXITCODE）" }
+          } finally {
+            Pop-Location
+          }
+          Get-ChildItem build-flet/dist | Out-Host
 
-            处理方法：点「更多信息」→ 再点「仍要运行」。
+      - name: sidecar 定位自检（engine_bridge，不经 GUI）
+        run: python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine.exe --run-help
 
-          另外两点：
-            · 本包是**免安装**的：解压后两个 exe 必须放在**同一个目录**里
-              （「编辑部工具箱.exe」启动时会在自己旁边找 SLCNEngine.exe）。
-            · 用「初排转换」编译 PDF 需要系统里有 TeX（xelatex/biber）；
-              合并 PDF、导出原稿 PDF 另外需要 LibreOffice（条件必需：仅合并 / 导出原稿 PDF 需要）。
-          '@
-          Set-Content -Path "FIRST-OPEN-Windows.txt" -Value $TXT -Encoding UTF8
-          Get-Item "FIRST-OPEN-Windows.txt" | Select-Object Name, Length
+      - name: 组装并校验 zip（exe + sidecar + FIRST-OPEN + sha256）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $V = "${{ steps.ver.outputs.value }}"
+          $pkg = "pkg-win"
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          Copy-Item build-flet/dist/XuehengToolbox.exe $pkg/
+          Copy-Item build-flet/SLCNEngine.exe $pkg/
+          Copy-Item sources-flet/packaging/FIRST-OPEN-Windows.txt $pkg/
+          $lines = Get-ChildItem $pkg -File | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)"
+          }
+          $lines | Set-Content -Encoding ascii "$pkg/sha256.txt"
+          Compress-Archive -Path "$pkg/*" -DestinationPath "EditToolBox-$V-Windows-x64.zip" -Force
+          $zhash = (Get-FileHash "EditToolBox-$V-Windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
+          Write-Host "sha256: $zhash"
+          "### Windows artifact" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          "sha256: $zhash" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app
           path: |
             EditToolBox-*-Windows-x64.zip
-            FIRST-OPEN-Windows.txt
+            sources-flet/packaging/FIRST-OPEN-Windows.txt
+          if-no-files-found: error
 
-  # ── ④ 发 Release（只在打 tag 时）────────────────────────────────────────
+  # ── ④ 发 Release（只在打 tag 时；workflow_dispatch 不建 Release）──────────
   release:
     name: 建 Release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -175,7 +246,7 @@ jobs:
         with:
           path: assets
           merge-multiple: true
-      - name: 生成 latest.json（外壳启动时比对它，只提示不自动替换）
+      - name: 生成 latest.json（应用启动时比对它，只提示不自动替换）
         run: |
           V="${GITHUB_REF_NAME#v}"
           cat > assets/latest.json <<JSON
@@ -187,50 +258,55 @@ jobs:
           }
           JSON
           ls -la assets
-      # ⚠️ RELEASING.md：未签名/未公证的后果要**在正文里也照实写**（不能只塞在资产里），
-      #    且不许说成小问题。`--notes` 是**前置**到自动生成的提交清单之前的（见 `gh release create -h`）。
-      - name: 写 Release 正文（首次打开的两种处理办法必须写在正文里）
+      # ⚠️ 未签名/未公证的后果要**在正文里也照实写**（不能只塞在资产里），且不许说成小问题。
+      #    自 v1.5.0 起产品线是 Flet 单壳；旧 Tk/SwiftUI 版冻结、不再发布。
+      - name: 写 Release 正文（Flet 单壳口径）
         run: |
           V="${GITHUB_REF_NAME#v}"
           cat > /tmp/notes.raw <<'MD'
-          Windows / macOS **免安装**包。本版**未做代码签名、未做公证**（编辑部 2026-10-16 定案），
-          首次打开会被系统拦一下 —— **不是文件坏了，也不是中毒**。
+          **Flet 单壳版**（v1.5.0 起默认产品线；旧 Tk（Windows）与 SwiftUI（macOS）版已冻结，
+          仅保留源码作回退参考，不再发布）。Windows / macOS **免安装**包。
+
+          本版**未做代码签名、未做公证**（编辑部 2026-10-16 定案），首次打开会被系统拦一下
+          —— **不是文件坏了，也不是中毒**。
 
           | 平台 | 会看到什么 | 怎么打开 |
           |---|---|---|
-          | macOS | 双击提示「已损坏，无法打开」 | 右键点应用 →「打开」→ 弹窗里再点「打开」；<br>或终端一条命令：`xattr -dr com.apple.quarantine "/Applications/编辑部工具箱.app"` |
+          | macOS | 双击提示「已损坏，无法打开」 | 右键点应用 →「打开」→ 弹窗里再点「打开」；<br>或终端一条命令：`xattr -dr com.apple.quarantine "/Applications/XuehengToolbox.app"` |
           | Windows | 蓝色 SmartScreen「Windows 已保护你的电脑」 | 点「更多信息」→ 再点「**仍要运行**」 |
 
           **下载哪个**
 
           - `EditToolBox-@V@-macOS-arm64.zip`（Apple 芯片）＋ 说明 `FIRST-OPEN-macOS.txt`
-          - `EditToolBox-@V@-Windows-x64.zip`（内含两个 exe，**必须放在同一个目录**）＋ 说明 `FIRST-OPEN-Windows.txt`
+          - `EditToolBox-@V@-Windows-x64.zip`（内含 `XuehengToolbox.exe` 与引擎 sidecar
+            `SLCNEngine.exe`，**必须放在同一个目录**）＋ 说明 `FIRST-OPEN-Windows.txt`
           - `latest.json`：应用启动时比对它，**只提示、不自动替换**
 
           **运行环境**：「初排转换」编译 PDF 需要系统里有 TeX（`xelatex`/`biber`）；
           合并 PDF、导出原稿 PDF 另外需要 LibreOffice（条件必需：仅合并 / 导出原稿 PDF 需要）。
+          macOS 版需要系统自带 `python3`（打包版引擎 sidecar 已内置，不再需要自行安装 Python 依赖）。
 
-          **本版改动（v1.4.0 之后）**
+          **本版变化（相对 Tk/SwiftUI 版）**
 
-          - **修复：文末英文块/责任编辑块重复印刷**：相关稿页数回落（如 86-05 29→28）。
-          - **修复：Word 参考文献字段**不再因类型判错被裁掉；引用库有值以库为准（缺字段保留原值，不编造）；同目录 `refs`/`bibitem` 附件不再被误当英文元数据第二来源。
-          - **修复：连接号自动修正**不再吞汉字（`2-群胚` 不再丢字）；数学/命令/URL 保护面；页码 `-{1,2}` 修复。
-          - **修复：脚注/混排文献解析**：作者缩写不再切错；`misc` 类型字段回填并按全字段渲染 → **87-9 参考文献 8 条字段完整**（该稿 15→16 页，属预期行为变化）。
-          - **行为变化：ZH-08 连接号在 Word 初排默认启用**（小写邻保持、汉字-汉字不动、大写/数字/缩写升一字线、数学紧邻只提示、`--` 仅页码升级）。
-          - **行为变化：内置目录模板升级**：中文升级为 2026 年第 3 期(88) 版式；英文同步升级，中英目录同版。
-          - **行为变化：手写 `\bibitem` 自动转标准 bib 条目**；「元数据/补充信息」单入口多选并合并字段（冲突可见、表单最高优先）；「合并文件」页移入「整期装配」分组。
-          - **工具**：模板合规校验（只报告不阻断，输出 `_模板合规.md`）；构建源码树快照；门禁环境自检 + 门禁清单补齐。
+          - 双平台统一为 **Flet 单壳**，界面按「单篇 / 整期 / 引用库 / 设置」重新组织；深浅色跟随、
+            界面缩放随屏幕工作区钳制。
+          - 新增「整期装配」六步流水线（检查 → 生成目录 → 编译 → 合并 → 清理 → 目录摘要推送），
+            可逐步执行、可中途取消（隐藏式终止进程树）。
+          - 引用库改为**只读视图**（统计与查库）；写库（入藏 / 待裁决）留到后续版本。
+          - 设置页新增**环境检查**（TeX / biber / LibreOffice / 字体 / 磁盘），结果只读展示。
+          - 退出语义改为「先落盘再退出」（主题 / 缩放 / 最近路径 / 上次页 / 窗口几何）。
 
           **如实说明（未验证 / 已知限制）**
 
-          - **86-05 附录 9pt**：属人工后期体例、非引擎缺陷；需要 9pt 时在稿件 tex 附录前加 `\zihao{-5}`、全文末 `\zihao{5}` 复位。
-          - **GAP 3 项（判据/体例口径，不阻断）**：86-10 判据误报；88-01/88-02 注内引用与人工 page-locator 口径——待编辑部拍板。
-          - **L1 少量计数误报**：源清单计数类误报（历史口径），不影响产物。
-          - **Word 英文标题页 KNOWN 141**：人工版式与引擎默认差异，按已知项接受。
-          - **Windows 平台覆盖有限**：桥梁测试 238/0 通过，真机冒烟仅发版前各一次。
-          - **LibreOffice 条件必需**：未安装时合并/导出 PDF 功能降级并 warning，初排不受影响。
-          - **公开仓真实内容残留**：按 2026-10-25 口径接受，不影响功能与产物。
-          - **GUI 窗口级点击**：受屏幕锁定限制，以源码/断言/二进制/真实 PDF 等价证据验收。
+          - **系统拖放不可用**：Flet/Flutter 桌面窗口不接收资源管理器拖放（已实测），统一走
+            「浏览…」打开的 Windows 原生对话框。
+          - **IME 候选窗**：中文输入本身可用（已实测），但候选窗位置/跟随未做自动化验证，需人工确认。
+          - **onefile 冷启动偏慢**：首次启动约 4.4–4.6s（第二次约 2.4s），体积约 75–85MiB。
+          - **未签名 / 未公证**：见上表；macOS 首次打开必须右键→打开或 `xattr` 去隔离。
+          - **macOS 侧仅 CI 验证**：本机为 Windows，mac 构建/运行由 CI macos runner 验证，
+            未做人工真机走查。
+          - **Windows 平台覆盖有限**：真机冒烟按发版前执行；Linux 不在发布范围。
+          - TeX/LibreOffice 属条件依赖：未安装时编译/合并/导出功能降级并给出可读错误，其余功能可用。
 
           MD
           sed "s/@V@/$V/g" /tmp/notes.raw > /tmp/notes.md
@@ -239,9 +315,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # ⚠️ 只把**文件**交给 gh：artifact 合并后可能带目录（`assets/*` 会把目录当资产传，直接报错），
-          #    而这一步**只在打 tag 时跑**、没法用 workflow_dispatch 预演 —— 所以写成不依赖目录布局的形式。
-          #    用 `while read` 而不是 `mapfile`：本机 bash 3.2 没有 mapfile（CI 上是 5，但脚本要两边都能跑）。
+          # ⚠️ 只把**文件**交给 gh：artifact 合并后可能带目录。用 while read 而不是 mapfile
+          #    （本机 bash 3.2 没有 mapfile；CI 上是 5，但脚本要两边都能跑）。
           FILES=()
           while IFS= read -r f; do FILES+=("$f"); done <<< "$(find assets -type f | sort)"
           echo "将要上传 ${#FILES[@]} 个资产："

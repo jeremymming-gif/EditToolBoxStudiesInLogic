@@ -49,16 +49,20 @@ py -3.14 -X utf8 Engine/tests/test_docs_consistency.py
 
 ## 3. 构建（只在需要发版时）
 
-```bash
-# macOS App
-bash build.sh
+桌面端自 v1.5.0 起是 **Flet 单壳**（`sources-flet/`）；旧 `build.sh` / `sources-win/build-win.ps1` 已 frozen，仅回退参考。
 
-# Windows（在 Windows 上，产物在 sources-win/build/dist/ 下两个 exe）
-cd sources-win
-powershell -ExecutionPolicy Bypass -File build-win.ps1
+```bash
+# Flet 单壳：开发运行与单元测试
+cd sources-flet
+python3 -m flet run app/main.py
+python3 -m pytest tests -q
+
+# 打包口径（sidecar + flet pack）与本地复刻命令
+cat sources-flet/packaging/README.md
 ```
 
-发版流程与 tag/Release 口径见 `RELEASING.md`；构建前先跑第 2 节自检。
+发版：先手动跑一次 `.github/workflows/build-flet.yml`（只产 artifact、不建 Release）验证双平台打包链路，
+再按 tag 流程走 `release.yml`；流程、资产名与签名口径见 `RELEASING.md`；构建前先跑第 2 节自检。
 
 ## 4. 文档站维护
 
@@ -79,7 +83,7 @@ npm run docs:build     # 构建产物在 docs/.vitepress/ 下的 dist（构建�
 ## 5. 故障速查
 
 环境检查不过、引擎找不到、编译失败、文档站构建失败、看门狗变红：见[故障速查](/maintain/troubleshooting)。
-八项环境检查与诊断包说明见[环境检查与诊断](/reference/environment-check)。
+八项环境检查说明见[环境检查与诊断](/reference/environment-check)。
 
 ## 6. 指针
 

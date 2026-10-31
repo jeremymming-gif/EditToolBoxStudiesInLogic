@@ -138,8 +138,19 @@ bash tools/sync_to_public.sh --rebuild --push
 
 ## 5. 发版（打 tag 即自动出双平台资产）
 
+> **产品线（B-246c P5 起）**：桌面端默认 **Flet 单壳**（`sources-flet/`）。旧 SwiftUI（`sources-mac/`）
+> 与 Tkinter（`sources-win/`）外壳 **frozen**：只保留源码作回退参考，**不再发布**，也不在 release.yml 里构建。
+
+**发版前（建议每次）**：手动跑一次 `.github/workflows/build-flet.yml`（`workflow_dispatch`），
+确认双平台打包链路是绿的——它只产 artifact、不建 Release；本地等价的 Flet 壳自检：
+
 ```bash
-V=v1.0.2                       # ← 换成要发的版本；已发过哪些：gh release list
+cd sources-flet && python3.14 -m pytest tests -q          # 单元测试（不启动 GUI）
+cd .. && python3.14 sources-flet/packaging/sidecar_check.py <本机引擎 sidecar> --run-help
+```
+
+```bash
+V=v1.5.0                       # ← 换成要发的版本；已发过哪些：gh release list
 git tag "$V" && git push origin "$V"
 ```
 
@@ -151,14 +162,17 @@ git tag "$V" && git push origin "$V"
 > （默认严格，会跑套件，约 61s）或 `python3.14 tools/selfcheck.py --full --strict-tests`。原因：`full` 档内
 > `test_docs_consistency` 默认用 `--no-test-runs`（不重复跑套件），AUTO 的「测试计数行」不再由它守卫。
 
-`.github/workflows/release.yml` 会：
+`.github/workflows/release.yml` 会（v1.5.0 起改走 Flet 发布线）：
 
 | job | 干什么 |
 |---|---|
-| `test` | macos-14 与 windows-latest 各跑一遍**不依赖稿件库**的引擎套件 + 外壳桥梁测试 |
-| `macos` | `./build.sh` 出 `.app` → 打成 `EditToolBox-<版本>-macOS-arm64.zip`，并附一份说明 `FIRST-OPEN-macOS.txt` |
-| `windows` | `sources-win/build-win.ps1` → 冻结 `SLCNEngine.exe` + 界面 exe → `EditToolBox-<版本>-Windows-x64.zip`，并附一份说明 `FIRST-OPEN-Windows.txt` |
-| `release` | 汇总资产 + 生成 `latest.json`（外壳启动时比对它，**只提示、不自动替换**），写正文（含两个平台的「首次打开」处理办法）并建 Release |
+| `test` | macos-14 与 windows-latest 各跑一遍**不依赖稿件库**的引擎套件 + `sources-flet/tests` pytest + 旧壳桥梁测试（冻结前回归参考） |
+| `macos` | PyInstaller onefile 出引擎 sidecar `SLCNEngine` → `flet pack` 出 `XuehengToolbox.app`（sidecar 放进 `Contents/MacOS/`）→ 打成 `EditToolBox-<版本>-macOS-arm64.zip`，并附说明 `FIRST-OPEN-macOS.txt` |
+| `windows` | `sources-win/build-win.ps1` 只取 `SLCNEngine.exe` → `flet pack` 出 `XuehengToolbox.exe` → `EditToolBox-<版本>-Windows-x64.zip`（exe + sidecar + `FIRST-OPEN-Windows.txt` + `sha256.txt`） |
+| `release` | 汇总资产 + 生成 `latest.json`（应用启动时比对它，**只提示、不自动替换**），写 Flet 口径正文（含两个平台的「首次打开」处理办法与已知限制）并建 Release |
+
+> 打包口径与 `.github/workflows/build-flet.yml` 一致：两条流水线共用同一套 sidecar/flet pack 步骤，
+> 改一处必须同步改另一处（`test` job 除外：它只跑测试）。
 
 > ⚠️ **两份说明的文件名必须是纯 ASCII**：GitHub 上传资产时会把文件名里的非 ASCII 字符
 > **直接删掉** —— `首次打开（macOS）.txt` 会变成 `macOS.txt`（2026-10-17 发 v1.0.1 时实测）。

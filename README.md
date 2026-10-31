@@ -3,6 +3,9 @@
 把编辑部从「来稿」到「成刊」的重复劳动自动化：初排转换、文献核实、一校核查、整期装配。
 macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果。
 
+桌面端自 **v1.5.0** 起统一为 **Flet 单壳**（`sources-flet/`，Windows/macOS 同一套界面与交互）；
+旧的 SwiftUI（macOS）与 Tkinter（Windows）外壳已 **frozen**——保留源码作回退参考，不再发布。
+
 [项目主页](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) ｜ [下载最新版](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) ｜ [安装与首次打开](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)
 
 ## 能做什么
@@ -18,8 +21,10 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 
 | 平台 | 安装方式 | 需要 Python 吗 |
 |---|---|---|
-| Windows 10/11（x64） | 解压即用：`SLCNEngine.exe` 与 `编辑部工具箱.exe` 放在同一文件夹，双击后者 | 不需要 |
-| macOS（Apple 芯片） | `编辑部工具箱.app` 拖进「应用程序」 | 系统需有 python3 |
+| Windows 10/11（x64） | 解压即用：`XuehengToolbox.exe`（Flet 单壳）与引擎 `SLCNEngine.exe` 放在同一文件夹，双击前者 | 不需要 |
+| macOS（Apple 芯片） | `XuehengToolbox.app` 拖进「应用程序」（引擎 sidecar 已打包进 App） | 不需要 |
+
+> 旧版外壳（SwiftUI / Tkinter）自 v1.5.0 起 **frozen**：不再提供下载、不再更新；源码仍在 `sources-mac/`、`sources-win/` 仅供回退参考。
 
 安装包未做代码签名：Windows 首次运行点「更多信息 → 仍要运行」；macOS 首次右键「打开」，或按[安装说明](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)移除隔离标记。下载页附各平台的 `FIRST-OPEN` 说明，`latest.json` 指向当前版本。本页不记录版本历史，变更见[版本记录](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/reference/changelog)。
 
@@ -27,29 +32,34 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 ### 直接使用（编辑部）
 
 1. 从 [Releases](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) 下载对应平台的 zip。
-2. Windows：解压到任意目录，两个 exe 保持同目录，双击 `编辑部工具箱.exe`。
-3. macOS：解压后把 `编辑部工具箱.app` 拖入「应用程序」，首次右键「打开」。
+2. Windows：解压到任意目录，`XuehengToolbox.exe` 与 `SLCNEngine.exe` 保持同目录，双击 `XuehengToolbox.exe`。
+3. macOS：解压后把 `XuehengToolbox.app` 拖入「应用程序」，首次右键「打开」。
+
+界面按「工作台 / 单篇稿件 / 整期装配 / 引用库 / 设置 / 帮助与关于」组织；单篇与整期都是一页流式操作，日志与产物同屏可见。旧版 Tk/SwiftUI 界面的说明仅作历史参考。
 
 ### 从源码运行（开发）
 
 | 依赖 | 用途 | 必需性 |
 |---|---|---|
-| Python 3.14 | 引擎运行与测试（`vendor/` 依赖按 3.14 预编译） | 源码运行必需 |
+| Python 3.14 | 引擎运行与测试（`vendor/` 依赖按 3.14 预编译）；Flet 壳开发同样用 3.14 | 源码运行必需 |
+| `flet` + `flet-desktop` | 运行/打包 Flet 单壳（`pip install flet flet-desktop`） | 桌面端开发必需 |
 | XeLaTeX + biber | 编译排版稿（TeX Live / MiKTeX / MacTeX） | 必需 |
 | LibreOffice | 转换含 MathType / OLE 公式的 Word 稿；缺失时公式图为占位 | 按稿件情况 |
-| Xcode Command Line Tools | macOS 打包 `.app` | 仅 macOS 构建 |
+| PyInstaller | `flet pack` 与引擎 sidecar 打包 | 仅打包时需要 |
 
 ```bash
 # 安装引擎依赖（一次）
 cd Engine && python3 -m pip install --target vendor -r requirements.txt
 
-# macOS：构建 App，产物 dist/编辑部工具箱.app
-./build.sh && open dist/编辑部工具箱.app
+# Flet 单壳：直接运行（开发期，热重载）
+cd sources-flet && python3 -m flet run app/main.py
 
-# Windows：构建两个 exe，产物 build\dist\
-cd sources-win
-pwsh -ExecutionPolicy Bypass -File build-win.ps1
+# Flet 单壳：打包（引擎 sidecar 另由 CI/脚本产出，见 sources-flet/packaging/README.md）
+cd sources-flet && python3 -m flet pack app/main.py --name XuehengToolbox --distpath dist --yes
 ```
+
+> 旧外壳的构建脚本（`./build.sh`、`sources-win/build-win.ps1`）仍保留，但**已冻结**、不再用于发版；
+> 当前发布线见 [`RELEASING.md`](RELEASING.md) 与 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
 > 上面命令里的 `python3` 指你用来跑引擎的解释器；本机实测用 `/opt/homebrew/bin/python3.14`（`vendor/` 内的预编译依赖只适配 3.14）。CI 在云端用 Python 3.12 安装依赖后跑同一套测试。
 
@@ -83,11 +93,15 @@ Engine/            引擎（Python）：convert / checkbib / proofcheck / infoch
   slcn/            引擎内部模块（初排、核查、引用库、元数据等）
   docs/            GUIDE、ENGINE_API、PROOF_RULES、RULES 等工程文档
   tests/           引擎测试套件
-sources-mac/       macOS 外壳（SwiftUI）
-sources-win/       Windows 外壳（Tkinter）
+sources-flet/      桌面外壳（Flet 单壳，默认产品线；Windows/macOS 共用）
+  app/             main.py + ui/（设计系统、页面、IA 映射）+ services/（引擎桥、设置）
+  packaging/       打包说明与 sidecar 自检脚本（发布线共用）
+  tests/           Flet 壳单元测试（pytest，不启动 GUI）
+sources-win/       Windows 外壳（Tkinter，**frozen**：仅源码回退参考）
+sources-mac/       macOS 外壳（SwiftUI，**frozen**：仅源码回退参考）
 编辑笔记/模板文件/  本刊模板与样式（随 App 发布）
 tools/             开发与验收工具
-build.sh           macOS App 打包脚本
+build.sh           旧 macOS App 打包脚本（frozen）
 ```
 
 ## 开发与测试
@@ -102,8 +116,11 @@ cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_do
 # 引擎全部测试套件（逐个跑，只看最后一行）
 cd Engine && for f in tests/test_*.py; do PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 "$f" | tail -1; done
 
-# Windows 外壳桥接测试（不改界面，只读引擎 API）
+# Windows 外壳桥接测试（旧壳冻结，仍作为回归参考）
 PYTHONPATH=Engine/vendor /opt/homebrew/bin/python3.14 sources-win/tests/test_bridge.py
+
+# Flet 单壳单元测试（不启动 GUI；含引擎桥 argv、设置迁移、IA 映射）
+cd sources-flet && /opt/homebrew/bin/python3.14 -m pytest tests -q
 
 # 一键自检（--full 含全部套件）
 cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tools/selfcheck.py --full

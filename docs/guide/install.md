@@ -1,9 +1,12 @@
 ---
 title: 安装说明
-description: Windows / macOS 安装、首次打开与常见问题。
+description: Windows / macOS 安装、首次打开与常见问题（Flet 单壳 v1.5.0 起）。
 ---
 
 # 安装说明
+
+> 桌面端自 **v1.5.0** 起为 **Flet 单壳**：Windows/macOS 同一套界面，产物由 `.github/workflows/build-flet.yml`
+> 与 `release.yml` 两条流水线共用同一套打包口径。旧 SwiftUI / Tkinter 版本已 frozen、不再发布。
 
 ## 下载
 
@@ -20,8 +23,9 @@ description: Windows / macOS 安装、首次打开与常见问题。
 编辑部同事多数使用 Windows；按下面四步即可。
 
 1. 下载 `EditToolBox-<版本>-Windows-x64.zip`，解压到任意目录（路径尽量不含特殊符号）；
-2. 解压后得到 `编辑部工具箱.exe` 与 `SLCNEngine.exe`，**两个 exe 必须放在同一个文件夹**（压缩包已按此排好，不要拆开）；
-3. 双击 `编辑部工具箱.exe` 运行；**不需要另装 Python**（引擎已冻进 `SLCNEngine.exe`）；
+2. 解压后得到 `XuehengToolbox.exe`（Flet 单壳）与 `SLCNEngine.exe`（引擎 sidecar），
+   **两个 exe 必须放在同一个文件夹**（压缩包已按此排好，不要拆开）；
+3. 双击 `XuehengToolbox.exe` 运行；**不需要另装 Python**（Flet 运行时与引擎都已打包）；
 4. 首次运行若弹出蓝色的 SmartScreen 提示（「Windows 已保护你的电脑」）：点 **「更多信息」→「仍要运行」**（只需一次）。
 
 > 编译 LaTeX 需要本机安装 **TeX Live**（或 MiKTeX），`xelatex`、`biber` 要在 PATH 里；只做转换不编译则不需要。
@@ -33,9 +37,10 @@ description: Windows / macOS 安装、首次打开与常见问题。
 
 macOS 版目前只提供 Apple 芯片（arm64）包。
 
-1. 下载 `EditToolBox-<版本>-macOS-arm64.zip`，解压得到 `编辑部工具箱.app`，拖进「应用程序」；
-2. 首次打开若提示「无法验证开发者」或「已损坏」：在访达里 **右键点 App → 打开 → 仍要打开**（只需一次）；
-3. 引擎与依赖随 App 打包；App 运行需要本机有 `python3`（首次运行会体检版本，提示版本不对时按提示安装后重开 App）。
+1. 下载 `EditToolBox-<版本>-macOS-arm64.zip`，解压得到 `XuehengToolbox.app`，拖进「应用程序」；
+2. 首次打开若提示「无法验证开发者」或「已损坏」：在访达里 **右键点 App → 打开 → 仍要打开**（只需一次），
+   或终端执行 `xattr -dr com.apple.quarantine "/Applications/XuehengToolbox.app"`；
+3. **不需要另装 Python**：引擎 sidecar 已打进 App（`Contents/MacOS/SLCNEngine`），Flet 运行时随包分发。
 
 > 编译 LaTeX 需要本机安装 **TeX Live / MacTeX**（自带 `xelatex`、`biber`）；只做转换不编译则不需要。
 >
@@ -51,17 +56,20 @@ macOS 版目前只提供 Apple 芯片（arm64）包。
 
 | 现象 | 处理 |
 |---|---|
-| Windows 提示缺少 DLL / 打不开 | 确认解压完整（不要在压缩包里直接运行），两个 exe 放在同一个文件夹 |
+| Windows 提示缺少 DLL / 打不开 | 确认解压完整（不要在压缩包里直接运行），`XuehengToolbox.exe` 与 `SLCNEngine.exe` 放在同一个文件夹 |
 | Windows 首次运行被 SmartScreen 拦截 | 「更多信息」→「仍要运行」；确认文件是从 Releases 解压出来的完整包 |
-| macOS 提示「已损坏，无法打开」 | 右键 → 打开；或系统设置 → 隐私与安全性 → 仍要打开 |
-| 找不到引擎 | Windows 确认 `SLCNEngine.exe` 与 `编辑部工具箱.exe` 在同一个文件夹；macOS 在设置页确认「引擎路径」（App 自带引擎，通常不用改） |
-| 转换成功但编译失败 | 检查是否安装 TeX 发行版（TeX Live / MiKTeX / MacTeX）、`xelatex` 是否在 PATH |
-| Word 稿转换后公式位置是「公式图缺失」占位 | 作者用了 MathType/OLE 公式，本机未装或未找到 LibreOffice；装好后**重跑一次初排转换**（见 `使用说明.md` §一「Word 公式图（MathType）与 LibreOffice（条件必需）」） |
+| macOS 提示「已损坏，无法打开」 | 右键 → 打开；或系统设置 → 隐私与安全性 → 仍要打开；或 `xattr -dr com.apple.quarantine <App>` |
+| 首页显示「引擎缺失」 | 确认 `SLCNEngine.exe` 与 `XuehengToolbox.exe` 在同一目录；或在「设置 → 路径 → 引擎目录」手动指定 |
+| 拖文件到窗口没有反应 | Flet/Flutter 桌面窗口不接收系统拖放（已实测）；点「浏览…」用原生文件对话框，或把路径粘贴进输入框 |
+| 首次启动明显偏慢（约 4–5 秒） | onefile 包要解压运行时，属已知现象；第二次启动通常约 2 秒 |
+| 中文输入正常但候选窗位置不理想 | IME 候选窗未做自动化验证，属已知限制；可先确认系统输入法状态，仍异常请附截图反馈 |
+| 转换成功但编译失败 | 检查是否安装 TeX 发行版（TeX Live / MiKTeX / MacTex）、`xelatex` 是否在 PATH；「设置 → 环境检查」可一键只读诊断 |
+| Word 稿转换后公式位置是「公式图缺失」占位 | 作者用了 MathType/OLE 公式，本机未装或未找到 LibreOffice；装好后**重跑一次初排转换** |
 
 更多问题见[常见问题](../reference/faq)。
 
 ## 装好之后仍然失败？
 
-先看 App 里的**诊断卡**：它把退出码翻成一句原因 + 2–4 条下一步，并给出「打开日志 / 复制诊断包 / 查看文档」。
-红卡 = 初排转换(2)、信息检查(2)、编译全部(1)、启动失败(<0)；参考文献规范化/引用校验退出码 1 是中性卡（有命中，不是失败）。
-找不到 `xelatex`/`biber`/`python3` 属工具缺失，按本文对应小节补齐后重跑；诊断包只在本机生成，不会上传。
+先看 **设置 → 环境检查**（只读调用 `Engine/envcheck.py --json`，显示 TeX / biber / LibreOffice / 字体 / 磁盘检查）
+与运行日志区（可切「只看摘要」）：失败时结果横幅给出可读原因与产物路径，日志尾部保留原始输出。
+找不到 `xelatex`/`biber` 属工具缺失，按本文对应小节补齐后重跑；诊断信息只在本机生成，不会上传。

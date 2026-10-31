@@ -8,6 +8,10 @@ description: 把已核实的参考文献沉淀成编辑部资产，核实前先�
 引用库（bib 库）把**已核实的参考文献**沉淀下来：以后核实新稿时先查库，命中就走现成版本，
 不重复花钱检索、也让体例更统一。
 
+> **Flet 单壳（v1.5.0 起）当前提供只读视图**：库概况（条目总数/别名/冲突/库文件大小/类型分布/时间范围）
+> 与**查库**（按题名/作者/年份/键检索，调 `bibdb.py` 只读子命令，**绝不写库**）。入藏、待处理与写库操作
+> 仍随旧 Tk/SwiftUI 外壳（v1.5.0 起 frozen）；Flet 版的写库能力将在后续批次评估，且需授权。
+
 两个平台的界面都有同一套**六个页面**（库概况 / 查库 / 入藏 / 待处理·待裁决 / 参考文献规范化 / 引用库设置），
 底层是同一份 `Engine/bibdb.py`（macOS 包与 Windows 包都随包交付）。macOS 版的「待处理」页
 功能完整（字段冲突 + 库健康 + 已处理，见下）；Windows 版「待裁决」页已对齐其中的字段冲突
@@ -151,11 +155,13 @@ git -C ../EditToolBox-notes commit -m "引用库：回退到上一个提交" -- 
 ```
 
 > Windows 上把 `python3` 换成 `python`，示例路径 `/path/to/...` 换成本机路径（如 `C:\...\reference.bib`）。
-> 打包版：Windows 用与界面 exe 同目录的 `SLCNEngine.exe bibdb.py …`；macOS 的引擎随 App 放在
-> `Contents/Resources/Engine/`，用 `python3` 直接跑其中的 `bibdb.py` 即可。
+> 打包版：Windows 用与界面 exe 同目录的 `SLCNEngine.exe bibdb.py …`；macOS 的引擎 sidecar 随
+> `XuehengToolbox.app` 放在 `Contents/MacOS/SLCNEngine`（旧 SwiftUI 外壳的 `Contents/Resources/Engine/`
+> 已 frozen，仅源码回退参考）。
 
-## 失败诊断（参考文献规范化 / 引用库）
+## 失败时看什么（参考文献回读校验 / 引用库）
 
-参考文献规范化（`checkbib.py`，原名文献回读校验）退出码 1 表示「有对不上的条目，不是失败」，出**中性卡**；
-退出码 0 不出卡。卡片给出类别、原因与下一步，证据为脱敏后的日志尾部；
-诊断包只存本地、复制到剪贴板，不会上传引用库或稿件内容。
+参考文献回读校验（`checkbib.py`，原名文献回读校验）退出码 1 表示「有对不上的条目，不是失败」，
+Flet 单壳在日志区给末行契约（结果横幅可复制）；退出码 0 无提示。引用库页是**只读视图**，
+查询错误直接显示在页面内（含引擎报错原文）。旧壳的诊断卡 / 诊断包随旧 Tk/SwiftUI 外壳 frozen，
+v1.5.0 起不再提供。
