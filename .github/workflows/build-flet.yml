@@ -54,7 +54,10 @@ jobs:
       - name: 装依赖
         run: |
           python -m pip install --disable-pip-version-check --upgrade pip
-          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet
+          # B-246c P4 fix: 只装 `flet` 不含 CLI（flet-cli/flet-desktop 是独立分发），
+          # 必须装 flet[all]，否则 `flet pack` 命令不存在（首个 CI 双平台同因失败）。
+          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller "flet[all]"
+          command -v flet || { echo "flet CLI 缺失（flet[all] 安装失败）"; exit 1; }
           python -m pip show flet pyinstaller | sed -n '1,12p'
 
       # ── 引擎 sidecar ────────────────────────────────────────────────
