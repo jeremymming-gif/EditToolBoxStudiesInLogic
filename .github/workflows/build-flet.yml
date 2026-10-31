@@ -179,17 +179,20 @@ jobs:
           mkdir -p pkg-mac
           # 把 flet pack 产物整体搬入（无论 .app 还是单二进制）
           ditto build-flet/dist pkg-mac
-          cp build-flet/SLCNEngine pkg-mac/SLCNEngine
-          chmod +x pkg-mac/SLCNEngine
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          if [ -n "$APPDIR" ]; then
+            # sidecar 必须与 .app 主可执行同目录，engine_bridge 才找得到
+            cp build-flet/SLCNEngine "$APPDIR/Contents/MacOS/SLCNEngine"
+            chmod +x "$APPDIR/Contents/MacOS/SLCNEngine"
+            ( cd "$APPDIR/Contents/MacOS" && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+          else
+            cp build-flet/SLCNEngine pkg-mac/SLCNEngine
+            chmod +x pkg-mac/SLCNEngine
+            ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+          fi
           cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
           ls -la pkg-mac
           ls -la pkg-mac/*/Contents/MacOS 2>/dev/null || true
-
-      - name: macOS 计算 sha256
-        if: matrix.platform == 'macos'
-        run: |
-          set -euo pipefail
-          ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
 
       - name: macOS 生成 zip
         if: matrix.platform == 'macos'

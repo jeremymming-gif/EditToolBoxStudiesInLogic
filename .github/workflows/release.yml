@@ -116,26 +116,47 @@ jobs:
       - name: sidecar 定位自检（engine_bridge，不经 GUI）
         run: python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine --run-help
 
+      # ⚠️ macOS runner 自带 BSD find，不支持 GNU 的 -maxdepth（历史 run 41241488672 即因此失败）。
+      #    一律用 ditto/ls 组装，禁止 `find ... -maxdepth`。
+      - name: macOS 检查 dist 与 sidecar（BSD find 兼容）
+        run: |
+          set -euo pipefail
+          echo "== build-flet =="
+          ls -la build-flet || true
+          echo "== build-flet/dist =="
+          ls -la build-flet/dist
+          test -d build-flet/dist
+          test -x build-flet/SLCNEngine
+
       - name: 组装发布包（.app + Contents/MacOS/SLCNEngine + FIRST-OPEN）
         run: |
           set -euo pipefail
-          V="${{ steps.ver.outputs.value }}"
-          APP=$(find build-flet/dist -maxdepth 1 -name "*.app" -print -quit || true)
+          rm -rf pkg-mac
           mkdir -p pkg-mac
-          if [ -n "$APP" ]; then
-            cp -R "$APP" pkg-mac/
-            APPDIR=$(basename "$APP")
-            cp build-flet/SLCNEngine "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
-            chmod +x "pkg-mac/$APPDIR/Contents/MacOS/SLCNEngine"
+          # 把 flet pack 产物整体搬入（.app 或单二进制都适用）
+          ditto build-flet/dist pkg-mac
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          if [ -n "$APPDIR" ]; then
+            cp build-flet/SLCNEngine "$APPDIR/Contents/MacOS/SLCNEngine"
+            chmod +x "$APPDIR/Contents/MacOS/SLCNEngine"
+            ( cd "$APPDIR/Contents/MacOS" && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
           else
-            cp build-flet/dist/XuehengToolbox pkg-mac/
-            cp build-flet/SLCNEngine pkg-mac/
+            cp build-flet/SLCNEngine pkg-mac/SLCNEngine
+            chmod +x pkg-mac/SLCNEngine
+            ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
           fi
           # ⚠️ 资产名必须纯 ASCII（GitHub 会删掉文件名里的非 ASCII 字符）；
           #    文件内容仍是中文，只有文件名用 ASCII。说明文字统一放 sources-flet/packaging。
           cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
+          ls -la pkg-mac
+          ls -la pkg-mac/*/Contents/MacOS 2>/dev/null || true
+
+      - name: 生成发布 zip（macOS，ditto 保留 .app 结构）
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.value }}"
           ZIP="EditToolBox-$V-macOS-arm64.zip"
-          ( cd pkg-mac && zip -qry "../$ZIP" . )
+          ditto -c -k --keepParent pkg-mac "$ZIP"
           ZHASH=$(shasum -a 256 "$ZIP" | awk '{print $1}')
           echo "zip: $ZIP"
           echo "sha256: $ZHASH"
