@@ -715,10 +715,11 @@ def bibdb_import_dir_call(
     return _call("bibdb.py", args, "整期入藏预览" if dry_run else "整期写入引用库")
 
 
-def bibdb_conflicts_call(*, pending_only: bool = True) -> EngineCall:
+def bibdb_conflicts_call(*, pending_only: bool = True, db: str = "") -> EngineCall:
     """待裁决清单（只读）：conflicts --json [--pending-only]。"""
     args = ["conflicts", "--json"]
     _append_flag(args, "--pending-only", pending_only)
+    _append_opt(args, "--db", db)
     return _call("bibdb.py", args, "待裁决清单")
 
 
@@ -734,6 +735,7 @@ def bibdb_resolve_call(
     note: str = "",
     expect_db_sha256: str = "",
     dry_run: bool = False,
+    db: str = "",
 ) -> EngineCall:
     """记录冲突裁决：resolve --json（默认写库；dry_run=True 只预览）。"""
     args = ["resolve", "--json"]
@@ -749,7 +751,128 @@ def bibdb_resolve_call(
     _append_opt(args, "--note", note)
     _append_flag(args, "--dry-run", dry_run)
     _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    _append_opt(args, "--db", db)
     return _call("bibdb.py", args, "裁决预览" if dry_run else "记录裁决")
+
+
+# ── 写库高级能力（批 109 W1b）：编辑 / 合并 / 字段归位 / 健康 / 确认重复 ──
+def bibdb_lint_call(*, with_records: bool = False, db: str = "") -> EngineCall:
+    """库健康检查（只读）：lint --json（退出码 1 = 有警告，仍带完整 JSON）。"""
+    args = ["lint", "--json"]
+    _append_flag(args, "--with-records", with_records)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "库健康检查")
+
+
+def bibdb_edit_call(
+    *,
+    key: str,
+    fields: dict | None = None,
+    new_key: str = "",
+    entry_type: str = "",
+    note: str = "",
+    dry_run: bool = True,
+    expect_db_sha256: str = "",
+    backup: str = "",
+    db: str = "",
+) -> EngineCall:
+    """编辑条目：edit --json（默认 dry-run）。
+
+    `fields` 是**整份字段字典**（引擎整份替换，不是 patch）；`--new-key` 保留旧 key 为别名。
+    注意：`--bib` 是「改从 .bib 文件读取整份字段」，与库路径无关；库路径只能走 `--db`。
+    """
+    import json
+
+    args = ["edit", "--json"]
+    _append_opt(args, "--key", key)
+    if fields is not None:
+        args += ["--json-fields", json.dumps(fields, ensure_ascii=False, sort_keys=True)]
+    _append_opt(args, "--new-key", new_key)
+    _append_opt(args, "--entry-type", entry_type)
+    _append_opt(args, "--note", note)
+    _append_flag(args, "--dry-run", dry_run)
+    if not dry_run:
+        args.append("--apply")
+    _append_opt(args, "--backup", backup)
+    _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "编辑预览" if dry_run else "编辑条目")
+
+
+def bibdb_merge_call(
+    *,
+    keys: list | tuple,
+    new_key: str = "",
+    entry_type: str = "",
+    field_sources: dict | None = None,
+    note: str = "",
+    dry_run: bool = True,
+    expect_db_sha256: str = "",
+    backup: str = "",
+    db: str = "",
+) -> EngineCall:
+    """合并重复条目：merge-records --json（默认 dry-run）。"""
+    args = ["merge-records", "--json"]
+    picked = [str(item).strip() for item in (keys or []) if str(item).strip()]
+    if picked:
+        args += ["--keys", ",".join(picked)]
+    _append_opt(args, "--new-key", new_key)
+    _append_opt(args, "--entry-type", entry_type)
+    for field, source in (field_sources or {}).items():
+        field, source = str(field or "").strip(), str(source or "").strip()
+        if field and source:
+            args += ["--field-source", f"{field}={source}"]
+    _append_opt(args, "--note", note)
+    _append_flag(args, "--dry-run", dry_run)
+    if not dry_run:
+        args.append("--apply")
+    _append_opt(args, "--backup", backup)
+    _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "合并预览" if dry_run else "合并条目")
+
+
+def bibdb_suggest_fixes_call(*, registry: str = "missing_field", limit: int = 0,
+                             db: str = "") -> EngineCall:
+    """字段归位候选（只读）：suggest-field-fixes --json。"""
+    args = ["suggest-field-fixes", "--json"]
+    if str(registry or "").strip():
+        args += ["--registry", str(registry).strip()]
+    if int(limit or 0) > 0:
+        args += ["--limit", str(int(limit))]
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "字段归位候选")
+
+
+def bibdb_report_duplicates_call(*, out: str = "", db: str = "") -> EngineCall:
+    """查重报告（读库 + 写报告文件）：report-duplicates --json --out 临时目录。"""
+    args = ["report-duplicates", "--json"]
+    _append_opt(args, "--out", out)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "查重报告")
+
+
+def bibdb_ack_duplicates_call(
+    *,
+    code: str = "near_duplicates",
+    keys: list | tuple = (),
+    reason: str = "",
+    dry_run: bool = True,
+    db: str = "",
+) -> EngineCall:
+    """确认「不是重复」（写 health-ignore.json sidecar，不动库）：ack-duplicates。"""
+    args = ["ack-duplicates", "--json"]
+    if str(code or "").strip():
+        args += ["--code", str(code).strip()]
+    picked = [str(item).strip() for item in (keys or []) if str(item).strip()]
+    if picked:
+        args += ["--keys", ",".join(picked)]
+    _append_opt(args, "--reason", reason)
+    _append_flag(args, "--dry-run", dry_run)
+    if not dry_run:
+        args.append("--apply")
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "确认非重复")
 
 
 def envcheck_call(out_dir: str = "") -> EngineCall:

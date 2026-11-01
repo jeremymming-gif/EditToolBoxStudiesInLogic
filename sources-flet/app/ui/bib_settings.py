@@ -1,8 +1,11 @@
-"""引用库 · 设置（批 109 W1a）：库文件只读统计 + Git 版本层（提交 / 推送 / 回退）。
+"""引用库 · 设置（批 109 W1a + W1b R6）：库文件只读统计 + 核实成本闸门 + Git 版本层。
 
 旧壳 Tk 的设置页（`bibdb_ui.py::BibDbSettingsPage`）只有核实成本闸门与笔记仓路径；Git
 版本层在旧壳「待处理」页。Flet 单壳把两件事并到「引用库 → 设置」：
 
+* 核实成本闸门（W1b R6）：核实上限 / 先算账（--verify-plan）/ 允许全量核实
+  （--verify-all-refs，开时二次确认）/ 先查引用库（--no-bibdb）+ 当前生效值；值存在
+  `settings.json` 的 `bibdb` 段（P2_SETTINGS 隔离，旧配置 `verifyMax` 等键兼容）；
 * 库文件：路径、是否存在、条目数（`bibdb.py stats --json`）、文件大小、打开库文件夹；
 * 版本层（复用 `services/bib_git.py`）：分支 / upstream / 未推送 / 脏否 / 最近 3 条提交；
 * 写操作一律二次确认，且**只动本地 git**：提交只含 `bib_db/bibliography.jsonl`；推送只推
@@ -15,11 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import flet as ft
 
 from services import bib_git as GIT
 from services import engine_bridge as EB
+from services import settings_store as SS
 from ui import components as C
 
 
@@ -166,6 +171,13 @@ class BibSettingsView:
         self.busy = False
         self.error = ""
         self.notices: list[tuple[str, str]] = []
+        # 批 109 W1b（R6）：核实成本闸门 —— 值存在 settings.bibdb 段（P2_SETTINGS 隔离）。
+        self.bibdb_text = SS.verify_max_text(self._bibdb())
+        self.bibdb_plan = bool(self._bibdb().get("verify_plan"))
+        self.bibdb_all = bool(self._bibdb().get("verify_all_refs"))
+        self.bibdb_lookup = bool(self._bibdb().get("lookup_enabled", True))
+        self.bibdb_error = ""
+        self.bibdb_receipt = ""
 
     # -- 小工具 ---------------------------------------------------------
     def _notes(self) -> str:
@@ -174,6 +186,10 @@ class BibSettingsView:
     def _db(self) -> str:
         stats = self.stats or self.page.stats_data or {}
         return str(stats.get("db") or "") or GIT.default_db(self._notes())
+
+    def _bibdb(self) -> dict:
+        store = self.page.app.store
+        return SS.bibdb_section(getattr(store, "data", None) or {})
 
     def _refresh(self) -> None:
         self.page._render()
@@ -217,7 +233,8 @@ class BibSettingsView:
         t = self.page.t
         if not self.loaded and not self.loading:
             self._run(self.ensure_loaded())
-        controls: list = [self._library_card(), self._git_card(), self._boundary_card()]
+        controls: list = [self._bibdb_card(), self._library_card(), self._git_card(),
+                          self._boundary_card()]
         controls += [C.notice_bar(message, t, tone) for tone, message in self.notices]
         return ft.Column(spacing=t.sp("2"), controls=controls)
 
@@ -228,6 +245,120 @@ class BibSettingsView:
             ft.Container(expand=True),
             C.text(str(value), t, "small", t.palette.text, selectable=True),
         ])
+
+    # -- 核实成本闸门（R6，文案与旧壳 BibDbSettingsPage 对齐）--------------
+    def _bibdb_card(self) -> ft.Control:
+        t = self.page.t
+        db = self._db()
+        exists = bool(db) and os.path.exists(db)
+        section = self._bibdb()
+        self._max_hint = C.text(self.bibdb_error, t, "caption",
+                                t.palette.error if self.bibdb_error else t.palette.text_faint)
+        max_row = ft.Row(spacing=t.sp("half"), wrap=True,
+                         vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+            ft.TextField(label="核实上限", value=self.bibdb_text, width=120, dense=True,
+                         text_size=t.font("small"), on_change=self._on_verify_max,
+                         border_color=t.palette.error if self.bibdb_error else None,
+                         focused_border_color=t.palette.error if self.bibdb_error else None),
+            C.text(f"条（0 = 不限；留空 = 引擎默认 {SS.DEFAULT_VERIFY_MAX} 条，本次不传 --verify-max）",
+                   t, "small", t.palette.text_muted),
+        ])
+        rows = [self._kv(label, value) for label, value in
+                SS.bibdb_effective_rows(section, db=db, db_exists=exists)]
+        rows.append(self._kv("笔记仓路径",
+                             self._notes() or "（未设置：在「设置」页指定，或让引擎自动探测）"))
+        rows.append(self._kv("库文件", db or "（未找到：先在「入藏」页导入）"))
+        return C.card(ft.Column(spacing=t.sp("half"), controls=[
+            C.section_title("核实成本闸门", t, note="引用库 · 核实链路；值存在本机 settings.json"),
+            C.text("第 128 条起默认只核实正文引用到的条目，并对条数设上限：超过上限且没开"
+                   "「允许全量核实」时，引擎会先退出 2 并打印范围与预计检索/AI 次数。"
+                   "看到退出 2 不是程序错误，是让你先看账再决定。", t, "small", t.palette.text_muted),
+            max_row, self._max_hint,
+            C.option_row("核实前先算账（--verify-plan）",
+                         "开了它，转换照常写出产物，但不生成任务书、不检索、不调用 AI，只打印"
+                         "「本次会核实多少条、预计检索/AI 多少次、约多少钱」后退出 0。看完成本账"
+                         "关掉它再跑一次才会真正核实。", t, icon="CALCULATE_OUTLINED",
+                         checked=self.bibdb_plan, on_change=self._on_verify_plan),
+            C.option_row("允许全量核实（--verify-all-refs）",
+                         "越过上限闸门（正文 \\nocite{*} 本身也要求全量）。默认不开：全量核实会为"
+                         "没被正文引用的条目也花检索/AI 的钱（期 87 实测：376 条 $1.8+）。", t,
+                         icon="ALL_INCLUSIVE", checked=self.bibdb_all, on_change=self._on_verify_all),
+            C.option_row("核实前先查引用库（默认开）",
+                         "开着：执行核实时若引用库存在，先按 DOI / 题名 / key 查库 —— 命中已核实"
+                         "条目的键不调检索 API、不调 AI（仍逐条写进任务书「五、库内已核实」，"
+                         "字段差异只提示、不改 reference.bib）。关掉 = 本次一律不查库"
+                         "（传 --no-bibdb，输出与接入引用库之前逐字节相同）。", t,
+                         icon="SEARCH", checked=self.bibdb_lookup, on_change=self._on_lookup),
+            C.section_title("当前生效值", t, note="下一次「初排转换」的核实链路会用这些"),
+            *rows,
+            C.text("补充：这些值只在「初排转换」走核实链路（AI 面板）时进 argv；普通初排没有"
+                   "核实入口、不传这些参数。「先算账」开着时引擎只打印核实计划就退出 0，"
+                   "本次不会真正核实。", t, "caption", t.palette.text_faint),
+            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                C.primary_button("保存引用库设置", lambda e: self._save_bibdb(), t,
+                                 icon="SAVE_OUTLINED"),
+                C.text(self.bibdb_receipt, t, "small", t.palette.text_muted),
+            ]),
+        ]), t)
+
+    def _on_verify_max(self, e=None) -> None:
+        self.bibdb_text = "" if e is None else str(e.control.value or "")
+        _, error = SS.parse_verify_max(self.bibdb_text)
+        self.bibdb_error = error or ""
+        hint = getattr(self, "_max_hint", None)
+        if hint is not None:
+            hint.value = self.bibdb_error
+            hint.color = self.page.t.palette.error if self.bibdb_error else self.page.t.palette.text_faint
+            try:  # 未挂载时 update 会抛 RuntimeError：忽略，下次 build 生效
+                hint.update()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_verify_plan(self, e) -> None:
+        self.bibdb_plan = bool(e.control.value)
+
+    def _on_verify_all(self, e) -> None:
+        if not bool(e.control.value):
+            self.bibdb_all = False
+            return
+        C.confirm(self.page.page, self.page.t, title="允许全量核实？",
+                  message="全量核实会为没被正文引用的条目也花检索/AI 的钱（期 87 实测："
+                          "376 条 $1.8+）。确认只影响核实链路，不会改库文件。", confirm_label="允许",
+                  on_confirm=lambda: self._set_all_refs(True))
+        # 复选框先回到关：确认后由 _set_all_refs 重建为开。
+        self.bibdb_all = False
+        self._refresh()
+
+    def _on_lookup(self, e) -> None:
+        self.bibdb_lookup = bool(e.control.value)
+
+    def _set_all_refs(self, value: bool) -> None:
+        self.bibdb_all = bool(value)
+        self._refresh()
+
+    def _save_bibdb(self) -> None:
+        value, error = SS.parse_verify_max(self.bibdb_text)
+        if error:
+            self.bibdb_error = error
+            self.bibdb_receipt = "未保存：核实上限输入有误（修好再保存）。"
+            self._refresh()
+            return
+        store = self.page.app.store
+        try:
+            store.set("bibdb.verify_max", value)
+            store.set("bibdb.verify_plan", bool(self.bibdb_plan))
+            store.set("bibdb.verify_all_refs", bool(self.bibdb_all))
+            store.set("bibdb.lookup_enabled", bool(self.bibdb_lookup))
+            store.save()
+        except Exception as exc:  # noqa: BLE001
+            self.bibdb_receipt = f"❌ 保存失败：{exc}"
+            self._refresh()
+            return
+        self.bibdb_receipt = f"✅ 已保存 · {time.strftime('%H:%M:%S')}（仅存在本机：{store.path}）"
+        self.page.mark("bib_settings_bibdb", ok=True, verify_max=value,
+                       verify_plan=bool(self.bibdb_plan), verify_all_refs=bool(self.bibdb_all),
+                       lookup_enabled=bool(self.bibdb_lookup))
+        self._refresh()
 
     def _library_card(self) -> ft.Control:
         t = self.page.t

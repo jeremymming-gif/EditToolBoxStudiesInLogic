@@ -13,28 +13,34 @@ description: 把已核实的参考文献沉淀成编辑部资产，核实前先�
 > `--expect-db-sha256` 真写）；「待处理」含字段冲突逐条裁决与版本库状态区（写后自动本地
 > commit；推送 / 回退都要二次确认）。「查库」分基本 / 高级两页签：高级 = 多字段 AND +
 > 包含/前缀/精确/模糊 + 年份表达式 + 排序/最多/严格，命中给 why-hit 并可直接复制 BibTeX；
-> 「设置」页集中库文件统计（路径 / 是否存在 / 条目数）与版本层（提交 / 推送 / 回退）。
+> 「设置」页集中库文件统计（路径 / 是否存在 / 条目数）、版本层（提交 / 推送 / 回退）与
+> **核实成本闸门**（核实上限 / 先算账 / 全量核实 / 先查库，存 `settings.bibdb` 段）。
+> 批 109 W1b 另加四个写库视图：**编辑**（按 key 打开、整份字段预填、dry-run 差异预览）、
+> **查重合并**（候选对 → 两键对照 → 逐字段选来源 → 预览 → `merge-records --apply`）、
+> **字段归位**（`suggest-field-fixes` 候选 → 勾选 → 逐条 dry-run → 合 1 条提交）、
+> **库健康**（lint 计数 + 最近库提交留痕 + 批量裁决 dry-run 预览 → 二次确认 → 合 1 条提交）。
 > 旧 Tk/SwiftUI 外壳自 v1.5.0 frozen，仅源码回退参考。
 
 三个界面（macOS / Windows / Flet 单壳）底层是同一份 `Engine/bibdb.py`（macOS 包与 Windows 包都随包交付），页面集不同：
 macOS 与 Windows 是**六个页面**（库概况 / 查库 / 入藏 / 待处理·待裁决 / 参考文献规范化 / 引用库设置）；
-**Flet 单壳的引用库只有 BibPage 的 5 个视图**（概况 / 查库 / 入藏 / 待处理 / 设置），
-「参考文献规范化」已并入「单篇稿件」页的步骤（见 `sources-flet/app/ui/pages.py` 与
-`sources-flet/app/ui/ia_map.py`）。macOS 版的「待处理」页功能完整（字段冲突 + 库健康 + 已处理，见下）；
-Windows 版「待裁决」页已对齐其中的字段冲突部分（逐条 keep/adopt/defer、编辑并替换、一键全部采用；
-写库成功后自动本地 commit 库文件）；Flet 版「待处理」页提供字段冲突逐条裁决与版本库状态区
-（无库健康 / 已处理两段；写成功后同样自动本地 commit）。
+**Flet 单壳的引用库是 BibPage 的 9 个视图**（概况 / 查库 / 入藏 / 待处理 / 编辑 / 查重合并 /
+字段归位 / 库健康 / 设置），「参考文献规范化」已并入「单篇稿件」页的步骤（见
+`sources-flet/app/ui/pages.py` 与 `sources-flet/app/ui/ia_map.py`）。macOS 版的「待处理」页功能完整
+（字段冲突 + 库健康 + 已处理，见下）；Windows 版「待裁决」页已对齐其中的字段冲突部分（逐条
+keep/adopt/defer、编辑并替换、一键全部采用；写库成功后自动本地 commit 库文件）；Flet 版把
+「待处理」拆成字段冲突与版本库状态区，另设「编辑 / 查重合并 / 字段归位 / 库健康」四个写库视图
+（库健康视图含 lint 计数、已处理留痕与批量裁决 dry-run，写成功后同样自动本地 commit）。
 
-## 页面集（macOS / Windows 六个页面；Flet 5 个视图）
+## 页面集（macOS / Windows 六个页面；Flet 9 个视图）
 
 | 页面 | 作用 |
 |---|---|
 | **库概况** | 条数 / 期数 / 最近更新 / **字段冲突（待裁决 / 历史已裁决）** / lint 健康（**橙色 warning 可「查看明细」按类下钻**：每条给 key/原因/建议操作；**author/editor 未倒装（含机构名）只报告、不自动改**）/ 库路径；一键打开库文件夹 |
 | **查库** | 按 key（也认别名）/ DOI / 题名查询；显示是否已核实、来源期；一键复制 BibTeX。Flet 版分**基本检索 / 高级检索**两页签：高级支持 10 个字段 × 4 种匹配（包含/前缀/精确/模糊，年份/DOI/别名不收模糊）多行 **AND**、年份表达式（`2003` / `1990-2000` / `>=2010`）、排序（相关度/年份/作者）、最多 1–200 条、严格（模糊门槛 0.90），命中行给 **why-hit**（每条条件的字段/模式/分数/片段），详情只读 |
 | **入藏** | 选单篇 `.bib` / 整期目录 / **粘贴 bib 文本** → **预览（dry-run，不写库）** → 确认导入；来源期/篇自动推断且可改；粘贴时「入库口径」单选：**未核实（默认）** / 已人工核对 / 成品 bib（期+篇） |
-| **待处理**（macOS / Flet；Windows 版叫「待裁决」，只含字段冲突部分） | 字段冲突 + 库健康 + 已处理三段（macOS；详见下文「待处理中心」）；Flet 版为字段冲突 + 版本库状态区 |
+| **待处理**（macOS / Flet；Windows 版叫「待裁决」，只含字段冲突部分） | 字段冲突 + 库健康 + 已处理三段（macOS；详见下文「待处理中心」）；Flet 版为字段冲突 + 版本库状态区，并把库健康 / 编辑 / 查重合并 / 字段归位拆成独立视图 |
 | **参考文献规范化**（原「文献回读校验」） | 离线体检外部改回的整份 .bib（规范/引用闭合/逐字段 diff）、手动并回产物、入藏引用库；不生成任务书 |
-| **引用库设置** | macOS / Windows：核实上限、先算账、允许全量核实、先查库开关、库路径。Flet 版：库文件（路径 / 是否存在 / 条目数 / 大小，可打开库文件夹）+ Git 版本层（分支 / upstream / 未推送 / 脏否 / 最近 3 条提交；「提交…」「推送…」「回退到上一个提交…」都要二次确认；推送只推连续仅含 `bib_db/` 的提交、绝不 force；绝不自动 push/pull/切分支） |
+| **引用库设置** | macOS / Windows：核实上限、先算账、允许全量核实、先查库开关、库路径。Flet 版：库文件（路径 / 是否存在 / 条目数 / 大小，可打开库文件夹）+ Git 版本层（分支 / upstream / 未推送 / 脏否 / 最近 3 条提交；「提交…」「推送…」「回退到上一个提交…」都要二次确认；推送只推连续仅含 `bib_db/` 的提交、绝不 force；绝不自动 push/pull/切分支）+ **核实成本闸门**（核实上限文本框实时校验、先算账 / 允许全量核实 / 先查引用库三个开关、当前生效值预览，保存进 `settings.bibdb`；默认一个参数都不加） |
 
 > **「待裁决」与「库概况」橙字是两个数据源**：「待裁决」页读引擎 `conflicts`
 > （字段冲突裁决；默认只列待裁决，已裁决可开关查看、灰显、编号不重排）；「库概况」页橙色文字读引擎
@@ -57,6 +63,27 @@ Windows 版「待裁决」页已对齐其中的字段冲突部分（逐条 keep/
   最近 3 条提交）。提交 / 推送 / 回退**都要二次确认**；推送只推「连续仅含 `bib_db/`
   文件」的前缀，遇到其它提交整次拒绝、绝不 force；回退 = checkout 上一个提交的库文件
   再生成新提交（不 hard reset、不推送）。git 不可用时只黄字提示，不碰库内容。
+
+## 写库高级能力（Flet，批 109 W1b）
+
+「编辑 / 查重合并 / 字段归位 / 库健康」四个视图与设置页的核实成本闸门，全部走同一套写库三步：
+**dry-run 预览**（记下 `db_sha256_before`）→ **二次确认** → 去掉 `--dry-run`、加 `--apply` 并带
+`--expect-db-sha256` 真写 → 写后只做 **1 条**本地提交（只 `git add bib_db/bibliography.jsonl`，
+绝不推送、绝不切分支）。任何一步失败都显示引擎中文错误、不回滚已写数据；版本层失败只黄字。
+
+| 视图 | 引擎命令（Flet 参数 ↔ argv） | 关键行为 |
+|---|---|---|
+| 编辑 | `edit --json --key K --json-fields <完整字段字典>`；预览 `--dry-run`，真写 `--apply --expect-db-sha256 SHA`；可选 `--new-key` / `--entry-type` | 编辑器**整份替换**字段（引擎语义，不是 patch）：提交的是表单全部字段，空值 = 删除；预览逐字段 `旧 → 新`；改 key 时旧 key 自动进 `aliases`；记录有未裁决冲突时引擎拒绝编辑并提示先去「待处理」 |
+| 查重合并 | `merge-records --json --keys A,B --new-key K`；逐字段 `--field-source field=key`；预览 `--dry-run`，真写 `--apply --expect-db-sha256 SHA` | 候选对来自 `report-duplicates`（引擎把 `duplicates.csv` 写进 `--out` 临时目录，读完即删，不写笔记仓）；两键对照逐字段选来源 → 预览合并后 aliases 与记录数 → 确认；合并结果可用「设置 → 回退」再退回（只提示，不自动回退） |
+| 字段归位 | `suggest-field-fixes --json --registry missing_field --limit N`（只读候选）；应用 = 逐条 `edit --json-fields <原字段+选中候选>` | 每条给缺失字段与候选值/证据/风险；勾选后先逐条 dry-run 预览，确认后逐条真写（sha 链式更新，中途失败立即停），**全部写完合 1 条提交** |
+| 库健康 | `lint --json` + `conflicts --json --pending-only` + 版本层最近库提交 | 记录 / 已核实 / 未核实 / 冲突（待裁决、已裁决）/ 近似重复 / 需反转（作者·编者·机构）/ errors·warnings 计数；已处理留痕 = 最近库提交 sha + 主题；「确认非重复」走 `ack-duplicates`（只写 `health-ignore.json` sidecar、不改库、不自动提交） |
+| 库健康 · 批量裁决 | 全部采用：`resolve --adopt-all-pending`；所选：逐条 `resolve --action adopt --incoming-sha256 …`；都先 `--dry-run` 再 `--apply` | 先出账（待裁决 N → M、受影响记录/冲突条数、sha 前后）→ 二次确认 → 真写 → **合 1 条**提交；当前没有待裁决项时按钮置灰并提示「零写入」 |
+
+**核实成本闸门（设置页，R6）**：`settings.bibdb` 段四个键 —— `verify_max`（留空 = 引擎默认 120 条、
+不传 `--verify-max`；`0` = 不限，真传）、`verify_plan`（`--verify-plan`：只算账）、`verify_all_refs`
+（`--verify-all-refs`：越过上限，勾选要二次确认）、`lookup_enabled`（关 = `--no-bibdb`）。
+默认四键都是「不加参数」，普通初排 argv 与接入引用库之前逐字节相同；只有走核实链路（AI 面板）时才
+注入这些参数。旧 Tk 配置的 `bibdb.{verifyMax,verifyPlan,verifyAllRefs,lookupEnabled}` 会自动迁移。
 
 ## 待处理中心（macOS）
 
@@ -169,6 +196,22 @@ python3 Engine/bibdb.py resolve --adopt-all-pending --dry-run --json
 # 编辑裁决 bib（恰好 1 条、key 必须等于库内记录 key；dry-run 先预览 replaced_fields）
 python3 Engine/bibdb.py resolve --key Fine1975 --action replace --incoming-sha256 <冲突指纹> \
   --bib /tmp/edited.bib --dry-run --json
+
+# 编辑一条（--json-fields 是**整份字段字典**；先 --dry-run 预览，真写加 --apply 与 sha 闸）
+python3 Engine/bibdb.py edit --key Fine1975 --json-fields '{"title":"题名","author":"作者","year":"1975"}' --dry-run --json
+python3 Engine/bibdb.py edit --key Fine1975 --json-fields '…' --apply --expect-db-sha256 <库 sha> --json
+
+# 查重合并（先 dry-run 看 field_comparison 与 aliases，再 --apply）
+python3 Engine/bibdb.py merge-records --keys A,B --new-key A --field-source title=B --dry-run --json
+
+# 字段归位候选（只读）
+python3 Engine/bibdb.py suggest-field-fixes --json --limit 50
+
+# 查重报告（产物要写临时目录；默认 --out = 库目录 = 私有笔记仓）
+python3 Engine/bibdb.py report-duplicates --out /tmp/bibdb-dupes --json
+
+# 确认两键不是重复（只写库旁的 health-ignore.json，不改库）
+python3 Engine/bibdb.py ack-duplicates --code near_duplicates --keys A,B --reason "同一本书" --json
 
 # 重新生成待裁决清单
 python3 Engine/bibdb.py report --out ../EditToolBox-notes/bib_db

@@ -19,6 +19,16 @@ APP_NAME = "编辑部工具箱"
 SCHEMA_KEY = "flet"
 SCHEMA_VERSION = 2
 
+#: 旧壳 `settings.py` 的 `DEFAULT_VERIFY_MAX`（只给界面显示，不参与判据）
+DEFAULT_VERIFY_MAX = 120
+#: 引用库「核实」段（R6）：与 Tk 版 `bibdb` 段同口径，缺省 = 一个参数都不加
+BIBDB_DEFAULTS = {
+    "verify_max": None,
+    "verify_plan": False,
+    "verify_all_refs": False,
+    "lookup_enabled": True,
+}
+
 
 def settings_path() -> Path:
     override = os.environ.get("P2_SETTINGS", "").strip()
@@ -63,6 +73,8 @@ def _defaults() -> dict:
             "log_summary_only": True,
         },
         "paths": {"engine_dir": "", "notes_repo": ""},
+        # 引用库核实段（R6）：None = 不传 --verify-max（引擎默认 120 条）
+        "bibdb": dict(BIBDB_DEFAULTS),
         "log_show_raw": False,
         "env_check_done": False,
         "engine_override": "",
@@ -136,6 +148,9 @@ class SettingsStore:
             legacy["log_show_raw"] = show_raw
         if self.raw.get("envCheckDone") is True:
             legacy["env_check_done"] = True
+        mapped_bibdb = _legacy_bibdb(self.raw.get("bibdb"))
+        if mapped_bibdb:
+            legacy["bibdb"] = mapped_bibdb
         return legacy
 
     # ── 写入 ────────────────────────────────────────────────────────────
@@ -182,3 +197,118 @@ class SettingsStore:
         recent = self.data.setdefault("recent", {})
         if value:
             recent[key] = value
+
+
+# ── 引用库核实段（R6）：纯函数，可直接单测；不碰 flet、不跑引擎 ────────────
+def _legacy_bibdb(raw) -> dict:
+    """Tk 版 `bibdb` 段 → 家壳同名键（只映射四键，不改其它键语义）。"""
+    if not isinstance(raw, dict):
+        return {}
+    mapped: dict = {}
+    value, error = parse_verify_max(raw.get("verifyMax"))
+    if error is None and value is not None:
+        mapped["verify_max"] = value
+    for new_key, old_key in (("verify_plan", "verifyPlan"),
+                             ("verify_all_refs", "verifyAllRefs"),
+                             ("lookup_enabled", "lookupEnabled")):
+        if isinstance(raw.get(old_key), bool):
+            mapped[new_key] = raw[old_key]
+    return mapped
+
+
+def parse_verify_max(text) -> tuple[int | None, str | None]:
+    """「核实上限」输入 → (值, 错误)。空 = None（引擎默认）；0 = 不限且真传。"""
+    raw = "" if text is None else str(text).strip()
+    if not raw:
+        return None, None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, "上限必须是整数（0 = 不限；留空 = 引擎默认 120 条）"
+    if value < 0:
+        return None, "上限不能是负数（要「不限」请填 0）"
+    return value, None
+
+
+def bibdb_section(cfg) -> dict:
+    """取 `bibdb` 段并归一（缺省/坏值一律回默认；也接受直接传段本身）。"""
+    section = cfg if isinstance(cfg, dict) else {}
+    nested = section.get("bibdb")
+    if isinstance(nested, dict):
+        section = nested
+    out = dict(BIBDB_DEFAULTS)
+    value = section.get("verify_max")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        value = None
+    out["verify_max"] = value
+    out["verify_plan"] = bool(section.get("verify_plan"))
+    out["verify_all_refs"] = bool(section.get("verify_all_refs"))
+    out["lookup_enabled"] = bool(section.get("lookup_enabled", True))
+    return out
+
+
+def verify_max_text(cfg) -> str:
+    """输入框预填文本：设过才显示数字，否则空（= 引擎默认）。"""
+    value = bibdb_section(cfg)["verify_max"]
+    return "" if value is None else str(value)
+
+
+def verify_max_summary(cfg) -> str:
+    value = bibdb_section(cfg)["verify_max"]
+    if value is None:
+        return f"引擎默认 {DEFAULT_VERIFY_MAX} 条（本次不传 --verify-max）"
+    if value == 0:
+        return "不限（--verify-max 0）"
+    return f"{value} 条（--verify-max）"
+
+
+def bibdb_convert_args(cfg) -> dict:
+    """引用库核实段 → `convert_call` 关键字。默认全不传 = 零 argv 变化。"""
+    section = bibdb_section(cfg)
+    args: dict = {}
+    if section["verify_max"] is not None:
+        args["verify_max"] = section["verify_max"]
+    if section["verify_plan"]:
+        args["verify_plan"] = True
+    if section["verify_all_refs"]:
+        args["verify_all_refs"] = True
+    if not section["lookup_enabled"]:
+        args["no_bibdb"] = True
+    return args
+
+
+def bibdb_effective_rows(cfg, *, db: str = "", db_exists: bool = False) -> list[tuple[str, str]]:
+    """「当前生效值」四行（旧壳 ④ 同文）：下一次「初排转换」会用这些。"""
+    section = bibdb_section(cfg)
+    if section["verify_plan"]:
+        plan = "开（本次只算账，不生成任务书 / 不检索 / 不调 AI）"
+    else:
+        plan = "关（照常核实）"
+    all_refs = "开（越过上限闸门）" if section["verify_all_refs"] else "关（受上限约束）"
+    if not section["lookup_enabled"]:
+        lookup = "关（本次传 --no-bibdb）"
+    elif db_exists and db:
+        lookup = f"开（库：{db}）"
+    elif section["lookup_enabled"]:
+        lookup = "开（但库文件不存在：引擎会优雅跳过查库）"
+    else:  # pragma: no cover - 上面两分支已穷尽
+        lookup = "关（本次传 --no-bibdb）"
+    return [
+        ("核实上限", verify_max_summary(section)),
+        ("先算账", plan),
+        ("全量核实", all_refs),
+        ("先查引用库", lookup),
+    ]
+
+
+def bibdb_convert_hint(cfg) -> str:
+    """「初排转换」页的核实范围回显（旧壳 refresh_bibdb_hint 同口径）。"""
+    section = bibdb_section(cfg)
+    text = "核实范围：" + verify_max_summary(section)
+    if section["verify_all_refs"]:
+        text += "；已允许全量核实"
+    if section["verify_plan"]:
+        text += "；先算账（本次只打印计划，不真正核实）"
+    if not section["lookup_enabled"]:
+        text += "；本次不查引用库（--no-bibdb）"
+    return text + "（在「引用库 → 设置」改；默认 = 一个参数都不加）"

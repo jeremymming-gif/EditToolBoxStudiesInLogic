@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+import json
+
+from services import settings_store as SS
 from ui import bib_settings as BS
 
 
@@ -83,6 +86,76 @@ def test_git_available_blocks_conflict_merge_rebase():
     assert BS.git_available({"ok": False, "error": "x"}) is False
     for flag in ("conflict", "merge", "rebase"):
         assert BS.git_available(_probe(**{flag: True})) is False
+
+
+class _FakeApp:
+    def __init__(self, store) -> None:
+        self.store = store
+        self.notes_repo = ""
+        self.toasts: list[str] = []
+
+    def toast(self, message: str) -> None:
+        self.toasts.append(message)
+
+
+class _FakeBibPage:
+    """只给 `BibSettingsView` 用到的壳：`app.store` / `mark` / `_render`。"""
+
+    def __init__(self, store) -> None:
+        self.app = _FakeApp(store)
+        self.stats_data = None
+        self.events: list[tuple[str, dict]] = []
+        self.renders = 0
+
+    def mark(self, event: str, **fields) -> None:
+        self.events.append((event, fields))
+
+    def _render(self) -> None:
+        self.renders += 1
+
+
+def _view(tmp_path, monkeypatch):
+    monkeypatch.setenv("P2_SETTINGS", str(tmp_path / "settings.json"))
+    store = SS.SettingsStore()
+    store.load()
+    return BS.BibSettingsView(_FakeBibPage(store)), store
+
+
+def test_save_bibdb_writes_section(tmp_path, monkeypatch):
+    view, store = _view(tmp_path, monkeypatch)
+    view.bibdb_text = "0"
+    view.bibdb_plan, view.bibdb_all, view.bibdb_lookup = True, False, False
+    view._save_bibdb()
+    assert store.data["bibdb"] == {"verify_max": 0, "verify_plan": True,
+                                   "verify_all_refs": False, "lookup_enabled": False}
+    assert view.bibdb_receipt.startswith("✅ 已保存 · ")
+    raw = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert raw["flet"]["bibdb"]["verify_max"] == 0
+    # 生效值：0 = 不限，真进 argv；先算账开 = --verify-plan；关掉查库 = --no-bibdb
+    assert SS.bibdb_convert_args(store.data) == {"verify_max": 0, "verify_plan": True,
+                                                 "no_bibdb": True}
+    assert any(event == "bib_settings_bibdb" for event, _ in view.page.events)
+
+
+def test_save_bibdb_rejects_bad_max(tmp_path, monkeypatch):
+    view, store = _view(tmp_path, monkeypatch)
+    view.bibdb_text = "-3"
+    view._save_bibdb()
+    assert view.bibdb_receipt == "未保存：核实上限输入有误（修好再保存）。"
+    assert view.bibdb_error == "上限不能是负数（要「不限」请填 0）"
+    assert store.data["bibdb"]["verify_max"] is None          # 一个键都没写
+    assert (tmp_path / "settings.json").exists() is False
+    assert not any(event == "bib_settings_bibdb" for event, _ in view.page.events)
+
+
+def test_on_verify_max_hint_without_mount(tmp_path, monkeypatch):
+    """输入非法时 hint 立刻变红字；控件未挂载（无 update）也不能崩。"""
+    view, _store = _view(tmp_path, monkeypatch)
+    view._on_verify_max(None)
+    assert view.bibdb_error == ""
+    fake = type("E", (), {"control": type("C", (), {"value": "abc"})()})()
+    view._on_verify_max(fake)
+    assert view.bibdb_error == "上限必须是整数（0 = 不限；留空 = 引擎默认 120 条）"
 
 
 def test_library_summary_and_sizes():

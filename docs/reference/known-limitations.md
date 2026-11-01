@@ -19,7 +19,9 @@ description: v1.5.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 | 未签名 / 未公证 | Windows SmartScreen「Windows 已保护你的电脑」；macOS「已损坏，无法打开」 | 首次打开多一步 | Windows「更多信息 → 仍要运行」；macOS 右键→打开 或 `xattr -dr com.apple.quarantine` | 无（2026-10-16 定案不签名） |
 | macOS 仅 CI 验证 | 本机为 Windows；mac 构建/运行由 CI macos runner 验证 | mac 侧缺少人工真机走查 | 发版前在 mac 上按 `FIRST-OPEN-macOS.txt` 走一遍关键路径 | 发版流程固定项 |
 | Windows 平台覆盖 | 真机冒烟只在发版前各做一次 | 平台长尾风险 | 每次发版前按 `windows-smoke-checklist.md` 逐项走、留回执；pytest 常跑 | 发版流程固定项 |
-| 引用库写库（P6） | Flet 版「待处理」只含字段冲突与版本库状态区；库健康 / 已处理两段仍只在 macOS 版。Flet「设置」页已提供库文件统计与版本层（含「提交…」手动补提交、推送、回退，均二次确认）；核实成本闸门（核实上限 / 先算账 / 全量核实）仍未搬进 Flet（`settings.bibdb` 待实装） | 库健康与核实成本闸门在 Flet 上不可用；手动补提交已可用 | 库健康用 `Engine/bibdb.py lint --with-records`，已处理用 `report`；核实成本闸门暂用 CLI（`--verify-plan` / `--verify-max`）或旧壳 | 后续版本 |
+| 引用库写库（P6） | Flet 版「待处理」含字段冲突与版本库状态区；批 109 W1b 起另有「编辑 / 查重合并 / 字段归位 / 库健康」四个视图（含批量裁决 dry-run 预览与已处理留痕），「设置」页补上核实成本闸门（核实上限 / 先算账 / 全量核实 / 先查库，存 `settings.bibdb` 段）。仍缺：从「查库结果 / 待裁决 / 入藏结果」一键跳到编辑器的深链（目前只能在「编辑」视图按 key 打开） | 深链要手动抄 key；其余写库能力已可用 | 库健康也可用 `Engine/bibdb.py lint --with-records`，已处理用 `report`；核实成本闸门也可用 CLI（`--verify-plan` / `--verify-max`） | 后续版本（深链需改 `bib_advanced.py` / `bib_write.py`） |
+| 引用库核实上限与 AI 面板 | 走 AI 直连核实链路时，`services/engine_bridge.py` 的 `ai_verify_call` 会用 AI 面板的「单篇核实条数」覆盖 `settings.bibdb` 的 `verify_max`（`verify_plan` / `verify_all_refs` / `lookup_enabled` 仍透传） | 两个上限同时存在时以 AI 面板为准 | 需要引用库上限生效时：把 AI 面板的「单篇核实条数」设为同值，或走非 AI 设值/CLI | 后续版本（需统一两处预算键） |
+| 查重候选与 sidecar | 「查重合并」把 `report-duplicates` 的产物写到**临时目录**（读完即删，不写笔记仓）；同页「确认非重复」调用 `ack-duplicates`，只写库目录旁的 `health-ignore.json`（不改库、不自动提交，`git status` 会显示该未跟踪文件） | 需要把 sidecar 纳入版本管理时得手动提交 | 需要留档时在笔记仓手动 `git add bib_db/health-ignore.json` 并提交；重新审计仍会列出全部候选（引擎设计如此） | 无（引擎既有语义） |
 | AI 全文直连核查 | Flet 面板只做「文献元数据直连核实」与「两段式任务书」；`--llm-fulltext`（正文分片直连 + 自动应用）没有界面入口 | 需要全文直连核查时只能走 CLI | `Engine/convert.py --verify-refs --llm-fulltext …`（见 `Engine/docs/ENGINE_API.md`），同样受预算闸约束 | 后续版本 |
 
 ## 引擎与版面（沿用）

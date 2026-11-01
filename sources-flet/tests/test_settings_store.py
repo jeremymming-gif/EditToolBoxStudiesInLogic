@@ -115,3 +115,80 @@ def test_settings_path_env(monkeypatch, tmp_path):
     target = tmp_path / "custom" / "s.json"
     monkeypatch.setenv("P2_SETTINGS", str(target))
     assert SS.settings_path() == target
+
+
+# ── 批 109 W1b（R6）：bibdb 段（核实成本闸门）──────────────────────────────
+@pytest.mark.parametrize("text,value,error", [
+    ("", None, None),          # 留空 = 引擎默认 120 条（本次不传 --verify-max）
+    ("0", 0, None),            # 0 = 不限，必须真传
+    (" 120 ", 120, None),
+    ("-1", None, "上限不能是负数（要「不限」请填 0）"),
+    ("abc", None, "上限必须是整数（0 = 不限；留空 = 引擎默认 120 条）"),
+])
+def test_parse_verify_max(text, value, error):
+    assert SS.parse_verify_max(text) == (value, error)
+
+
+def test_bibdb_defaults_zero_argv():
+    data = SS._defaults()
+    assert data["bibdb"] == {"verify_max": None, "verify_plan": False,
+                             "verify_all_refs": False, "lookup_enabled": True}
+    # 默认「一个参数都不加」：普通初排 argv 与接入引用库之前逐字节相同。
+    assert SS.bibdb_convert_args(data) == {}
+    assert SS.bibdb_convert_args({}) == {}
+
+
+def test_bibdb_convert_args_nondefault():
+    cfg = {"bibdb": {"verify_max": 0, "verify_plan": True,
+                     "verify_all_refs": True, "lookup_enabled": False}}
+    assert SS.bibdb_convert_args(cfg) == {"verify_max": 0, "verify_plan": True,
+                                          "verify_all_refs": True, "no_bibdb": True}
+
+
+def test_verify_max_summary_three_states():
+    assert SS.verify_max_summary({"bibdb": {"verify_max": None}}) == \
+        "引擎默认 120 条（本次不传 --verify-max）"
+    assert SS.verify_max_summary({"bibdb": {"verify_max": 0}}) == "不限（--verify-max 0）"
+    assert SS.verify_max_summary({"bibdb": {"verify_max": 50}}) == "50 条（--verify-max）"
+    assert SS.verify_max_text({"bibdb": {"verify_max": None}}) == ""
+    assert SS.verify_max_text({"bibdb": {"verify_max": 0}}) == "0"
+
+
+def test_bibdb_legacy_tk_mapping(store):
+    st, path = store
+    _write(path, {"bibdb": {"verifyMax": 0, "verifyPlan": True,
+                            "verifyAllRefs": False, "lookupEnabled": False}})
+    data, _ = st.load()
+    assert data["bibdb"] == {"verify_max": 0, "verify_plan": True,
+                             "verify_all_refs": False, "lookup_enabled": False}
+    # 非法旧值（负数）不迁移，回落默认（宁可不带参数也不悄悄改行为）
+    _write(path, {"bibdb": {"verifyMax": -5}})
+    data, _ = st.load()
+    assert data["bibdb"]["verify_max"] is None
+
+
+def test_bibdb_roundtrip(store):
+    st, path = store
+    st.load()
+    st.set("bibdb.verify_max", 0)
+    st.set("bibdb.verify_plan", True)
+    st.set("bibdb.lookup_enabled", False)
+    st.save()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["flet"]["bibdb"] == {"verify_max": 0, "verify_plan": True,
+                                    "verify_all_refs": False, "lookup_enabled": False}
+    data, exists = SS.SettingsStore().load()
+    assert exists is True
+    assert data["bibdb"]["verify_max"] == 0 and data["bibdb"]["verify_plan"] is True
+    # 只新增 bibdb 段，其它键语义不变
+    assert data["options"]["convert_compile"] is True
+
+
+def test_bibdb_effective_rows():
+    rows = SS.bibdb_effective_rows({"bibdb": {"verify_max": None}}, db="", db_exists=False)
+    assert len(rows) == 4
+    assert rows[0][0] == "核实上限"
+    assert rows[0][1] == "引擎默认 120 条（本次不传 --verify-max）"
+    assert rows[3][1] == "开（但库文件不存在：引擎会优雅跳过查库）"
+    off = SS.bibdb_effective_rows({"bibdb": {"lookup_enabled": False}})
+    assert off[3][1] == "关（本次传 --no-bibdb）"

@@ -13,8 +13,12 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from services import settings_store as SS
 from ui import ai_panel as AIP
 from ui import bib_advanced as BA
+from ui import bib_ops as BO
+from ui import bib_ops_dupes as BOD
+from ui import bib_ops_health as BOH
 from ui import bib_settings as BS
 from ui import bib_write as BW
 from ui import components as C
@@ -342,6 +346,7 @@ class SinglePage(BasePage):
             C.section_title("处理选项", t, note="默认勾选常用项"),
             C.card(ft.Column(spacing=0, controls=self._interleave(rows)), t),
             advanced,
+            C.text(SS.bibdb_convert_hint(self.app.store.data), t, "caption", p.text_faint),
             self._ai_section(),
         ])
 
@@ -427,7 +432,10 @@ class SinglePage(BasePage):
                 name=self.field("convert_name"), bib=self.field("convert_bib"),
             )
             if self._ai is not None:
-                return self._ai.build_call(**kwargs)
+                # 批 109 W1b（R6）：引用库设置只在核实链路（AI 面板 → verify_refs）
+                # 进 argv；普通初排没有核实入口，绝不注入 --verify-plan（否则会变成只算账）。
+                bibdb = SS.bibdb_convert_args(self.app.store.data)
+                return self._ai.build_call(**kwargs, **bibdb)
             return EB.convert_call(**kwargs)
         if self.flow_key == "checkbib":
             returned = self.field("bib_returned")
@@ -909,7 +917,9 @@ class BibPage(BasePage):
 
     key = "bib"
     VIEWS = [("overview", "概况"), ("query", "查库"), ("import", "入藏"),
-             ("review", "待处理"), ("settings", "设置")]
+             ("review", "待处理"), ("settings", "设置"),
+             ("edit", "编辑"), ("dupes", "查重合并"), ("fieldfix", "字段归位"),
+             ("health", "库健康")]
 
     def __init__(self, app) -> None:
         super().__init__(app)
@@ -922,6 +932,10 @@ class BibPage(BasePage):
         self.settings_view = BS.BibSettingsView(self)
         self.import_view = BW.BibImportView(self)
         self.review_view = BW.BibReviewView(self)
+        self.editor_view = BO.BibEditorView(self)
+        self.dupes_view = BOD.BibDuplicatesView(self)
+        self.fieldfix_view = BOH.BibFieldFixView(self)
+        self.health_view = BOH.BibHealthView(self)
 
     def build(self) -> ft.Control:
         t = self.t
@@ -935,9 +949,10 @@ class BibPage(BasePage):
                        controls=[C.chip(label, t, active=(key == self.view),
                                         on_click=lambda e, k=key: self._switch(k))
                                  for key, label in self.VIEWS])
-        notice = C.notice_bar("写库：入藏与待裁决都要二次确认，写前校验库 sha256（不符即拒绝、零写入）；"
-                              "写成功后自动本地提交（每次写库 1 条提交，批量「全部采用」也只 1 条；"
-                              "只提交 bib_db/bibliography.jsonl、不推送）。", t, "info")
+        notice = C.notice_bar("写库：编辑 / 查重合并 / 字段归位 / 批量裁决都要先预览、再二次确认，"
+                              "写前校验库 sha256（不符即拒绝、零写入）；写成功后自动本地提交"
+                              "（每次写库 1 条提交，批量操作也只 1 条；只提交 bib_db/bibliography.jsonl、"
+                              "不推送）。库健康视图只读；「确认非重复」只写 sidecar、不改库。", t, "info")
         body = C.page_body(header, chips, notice, self.view_slot, t=t, gap=12)
         self._render()
         return body
@@ -953,6 +968,12 @@ class BibPage(BasePage):
             self.review_view.ensure_loaded()
         elif view == "settings":
             self.page.run_task(self.settings_view.ensure_loaded)
+        elif view == "dupes":
+            self.page.run_task(self.dupes_view.ensure_loaded)
+        elif view == "fieldfix":
+            self.page.run_task(self.fieldfix_view.ensure_loaded)
+        elif view == "health":
+            self.page.run_task(self.health_view.ensure_loaded)
 
     async def _load_stats(self) -> None:
         try:
@@ -988,6 +1009,10 @@ class BibPage(BasePage):
             "import": self.import_view.build,
             "review": self.review_view.build,
             "settings": self.settings_view.build,
+            "edit": self.editor_view.build,
+            "dupes": self.dupes_view.build,
+            "fieldfix": self.fieldfix_view.build,
+            "health": self.health_view.build,
         }
         builder = builders.get(self.view, self._overview_view)
         try:
@@ -1049,6 +1074,12 @@ class BibPage(BasePage):
             self.review_view.ensure_loaded()
         elif self.view == "settings":
             self.page.run_task(self.settings_view.ensure_loaded)
+        elif self.view == "dupes":
+            self.page.run_task(self.dupes_view.ensure_loaded)
+        elif self.view == "fieldfix":
+            self.page.run_task(self.fieldfix_view.ensure_loaded)
+        elif self.view == "health":
+            self.page.run_task(self.health_view.ensure_loaded)
 
     def refresh_running(self) -> None:
         pass
