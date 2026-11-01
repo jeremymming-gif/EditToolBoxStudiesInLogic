@@ -97,3 +97,34 @@ def test_bib_query_page_uses_shared_dropdown_helper():
     src = inspect.getsource(BA)
     assert "ft.Dropdown(" not in src, "查库页应统一走 C.dropdown（字号同源）"
     assert src.count("C.dropdown(") >= 4, "基本检索 2 个 + 高级检索 2 个"
+
+
+# ── 4. GUI-16：下拉框高度与同排输入框齐平（Material 默认 48 不随 Tokens 缩放）────
+def test_dropdown_helper_default_height_tracks_tokens():
+    """用户反馈（m02432）：查库基本检索里左侧下拉框比右侧输入框大太多。
+
+    锁死：默认高度随 Tokens 缩放（不再吃 Material 固定 48），且与 dense TextField
+    同一量级（行高 + 上下留白），缩放后两边一起长。
+    """
+    small, big = _t(1.0), _t(1.6)
+    dd_small = C.dropdown(small, value="k", options=[("k", "key")])
+    dd_big = C.dropdown(big, value="k", options=[("k", "key")])
+
+    def expected(t):
+        return t.px(18) + t.font("body") * 1.5
+
+    assert dd_small.height == pytest.approx(expected(small), rel=1e-3)
+    assert dd_big.height == pytest.approx(expected(big), rel=1e-3)
+    assert dd_big.height > dd_small.height, "下拉框必须随缩放一起变高"
+    # 与同排 dense TextField 的可见高度同一量级（不许再出现「下拉高出一大截」）
+    tf_like = big.font("body") * 1.2 + big.px(16)
+    assert abs(dd_big.height - tf_like) <= big.px(10)
+
+
+def test_dropdown_helper_explicit_height_and_padding():
+    t = _t(1.0)
+    dd = C.dropdown(t, value="k", options=[("k", "key")], height=t.px(44))
+    assert dd.height == pytest.approx(t.px(44), rel=1e-3)
+    # 收紧上下 padding：Material 默认留白太大，会让下拉比输入框肥
+    pad = dd.content_padding
+    assert pad is not None and pad.top <= t.px(8) + 0.5
