@@ -325,6 +325,12 @@ def convert_call(
     editor: str = "",
     grants: str = "",
     lang: str = "",
+    metadata_json: str = "",
+    metadata_preview_out: str = "",
+    refs: str = "",
+    sty: str = "",
+    skeleton: str = "",
+    force: bool = False,
     extra: str = "",
 ) -> EngineCall:
     args = ["--source", source, "--out", out]
@@ -345,6 +351,14 @@ def convert_call(
         ("--received", received), ("--editor", editor), ("--grants", grants), ("--lang", lang),
     ):
         _append_opt(args, flag, value)
+    # 批 109 W2a CV-001..003：元数据三入口（人工 JSON / 只读预览）与
+    # 初排 P1 的 --force/--refs/--sty/--skeleton；全部按「非空才传」。
+    _append_opt(args, "--metadata-json", metadata_json)
+    _append_opt(args, "--metadata-preview-out", metadata_preview_out)
+    _append_opt(args, "--refs", refs)
+    _append_opt(args, "--sty", sty)
+    _append_opt(args, "--skeleton", skeleton)
+    _append_flag(args, "--force", force)
     if extra:
         args.extend(extra.split())
     return _call("convert.py", args, "初排转换")
@@ -439,18 +453,33 @@ def ai_verify_call(*, source: str, out: str, ai: dict, no_ai_merge: bool = True,
     return EngineCall(entry=call.entry, argv=args, label="AI 核实（直连 API）")
 
 
-def checkbib_call(*, returned: str, original: str = "", tex: str = "", out: str = "") -> EngineCall:
+def checkbib_call(
+    *,
+    returned: str = "",
+    original: str = "",
+    tex: str = "",
+    out: str = "",
+    returned_stdin: bool = False,
+    list_keys: bool = False,
+) -> EngineCall:
     # 批 109 Wave 0 / S1：**不传 --merge-into**。该参数在 Engine/checkbib.py 里是
     # 「就地覆盖写回的目标文件」（aibib.apply_merge_to_file），外壳曾把用户正文 .tex
     # 当目标传入，会损坏来稿；Flet 无法保证目标准确，故按任务书方案 B 关闭并回入口。
     # 证据：C:\slcn-work\p6-2026-11-01\evidence\b109-parity\report.md（S1 行）与
     #       C:\slcn-work\p6-2026-11-01\prompts\b109-wave0-safety-taskbook.md §S1。
     # --tex 只作只读统计输入（报告用），列表模式永不写文件。
-    args = ["--returned", returned]
+    # 批 109 W2a NR-002/003/011：交回来源两态（文件 / 粘贴走标准输入），
+    # 以及只打印键名的 --list-keys（粘贴模式的「识别」预览用；永不写文件）。
+    args: list[str] = ["--list-keys"] if list_keys else []
+    if returned_stdin:
+        args.append("--returned-stdin")
+    else:
+        args.extend(["--returned", returned])
     _append_opt(args, "--original", original)
     _append_opt(args, "--tex", tex)
     _append_opt(args, "--out", out)
-    return _call("checkbib.py", args, "文献回读校验")
+    label = "识别文献键" if list_keys else "参考文献规范化"
+    return _call("checkbib.py", args, label)
 
 
 def proofcheck_call(*, tex: str, fix: bool = False, lang: str = "") -> EngineCall:
@@ -1007,8 +1036,13 @@ async def run_call(
     cwd: str | None = None,
     api: dict | None = None,
     notes: str = "",
+    stdin_text: str | None = None,
 ) -> int:
-    """流式执行一次引擎调用；返回退出码。取消请调用方 kill_tree(proc)。"""
+    """流式执行一次引擎调用；返回退出码。取消请调用方 kill_tree(proc)。
+
+    `stdin_text` 非 None 时把文本喂给子进程标准输入并关闭（批 109 W2a：
+    参考文献规范化的「粘贴交回 .bib」模式 —— ``--returned-stdin``，不落中间文件）。
+    """
     env = env_for_run(api, notes)
     kwargs = {}
     if os.name == "nt":
@@ -1019,13 +1053,21 @@ async def run_call(
         *call.argv,
         cwd=cwd or None,
         env=env,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=(asyncio.subprocess.PIPE if stdin_text is not None
+               else asyncio.subprocess.DEVNULL),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         **kwargs,
     )
     if on_proc is not None:
         on_proc(proc)
+    if stdin_text is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(stdin_text.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
     try:
         assert proc.stdout is not None
         while True:

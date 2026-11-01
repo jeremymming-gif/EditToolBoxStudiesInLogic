@@ -23,6 +23,10 @@ description: v1.5.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 | 引用库核实上限与 AI 面板 | 走 AI 直连核实链路时，`services/engine_bridge.py` 的 `ai_verify_call` 会用 AI 面板的「单篇核实条数」覆盖 `settings.bibdb` 的 `verify_max`（`verify_plan` / `verify_all_refs` / `lookup_enabled` 仍透传） | 两个上限同时存在时以 AI 面板为准 | 需要引用库上限生效时：把 AI 面板的「单篇核实条数」设为同值，或走非 AI 设值/CLI | 后续版本（需统一两处预算键） |
 | 查重候选与 sidecar | 「查重合并」把 `report-duplicates` 的产物写到**临时目录**（读完即删，不写笔记仓）；同页「确认非重复」调用 `ack-duplicates`，只写库目录旁的 `health-ignore.json`（不改库、不自动提交，`git status` 会显示该未跟踪文件） | 需要把 sidecar 纳入版本管理时得手动提交 | 需要留档时在笔记仓手动 `git add bib_db/health-ignore.json` 并提交；重新审计仍会列出全部候选（引擎设计如此） | 无（引擎既有语义） |
 | AI 全文直连核查 | Flet 面板只做「文献元数据直连核实」与「两段式任务书」；`--llm-fulltext`（正文分片直连 + 自动应用）没有界面入口 | 需要全文直连核查时只能走 CLI | `Engine/convert.py --verify-refs --llm-fulltext …`（见 `Engine/docs/ENGINE_API.md`），同样受预算闸约束 | 后续版本 |
+| 参考文献规范化页的「并回」 | 图形壳已移除并回入口（Wave 0 防覆盖正文），页内只做离线体检；「重新编译该篇」也未复刻（旧壳直接调 xelatex/biber，单壳不写文档逻辑），入藏走引用库页既有入口 | 交回 bib 的并回与重编需命令行 | `Engine/checkbib.py --returned … --merge-into <产物>/reference.bib --out …`（并回前自动备份 `.ai前`）；重编按旧壳四步 xelatex → biber → xelatex ×2 | 后续版本（并回需先解决覆盖正文风险） |
+| 内容模板页「生成并交付」默认 | 内容模板 tab 尚未迁到 Flet（属整期装配页），「生成目录」步骤仍默认「仅生成 tex」（Wave 0 安全默认，保留） | 出成品目录要先手动改选项 | 生成目录步骤取消勾选「仅生成 tex」，一次出中英文目录与 PDF | 后续版本（随内容模板页迁移恢复「生成并交付」默认） |
+| 元数据表单的边界 | 英文关键词两个模板都没有槽位（引擎日志提示人工放置）；责编仍是自由文本，未接 `convert.py --list-editors` 下拉 | 填了英文关键词不会自动落版；责编名要手打 | 英文关键词人工放置；责编按引擎可识别的写法填，名单可用 CLI `--list-editors` 查 | 后续版本 |
+
 
 ## 引擎与版面（沿用）
 

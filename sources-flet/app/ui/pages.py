@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -22,6 +24,8 @@ from ui import bib_ops_health as BOH
 from ui import bib_settings as BS
 from ui import bib_write as BW
 from ui import components as C
+from ui import metadata_form as MF
+from ui import normalize as NR
 from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
 
 STATUS_TEXT = {"idle": "待运行", "running": "运行中", "done": "已完成", "warn": "有提示", "error": "失败"}
@@ -67,7 +71,8 @@ class BasePage:
         return self.app.t
 
     def add_picker(self, label: str, recent_key: str, hint: str, *, kind: str = "file",
-                   required: bool = True, show_note: bool = True) -> ft.Container:
+                   required: bool = True, show_note: bool = True,
+                   on_change=None) -> ft.Container:
         ref: list = []
         value = self.app.store.get(f"recent.{recent_key}", "") or ""
 
@@ -77,6 +82,8 @@ class BasePage:
         def _changed(e) -> None:
             self.app.store.set_recent(recent_key, e.control.value.strip())
             self.mark("path_change", field=recent_key, value=e.control.value)
+            if on_change is not None:
+                on_change(e)
 
         control = C.path_picker(
             label, value, hint, self.t,
@@ -228,9 +235,9 @@ class SinglePage(BasePage):
             "desc": "作者来稿（LaTeX / Word）→ 符合本刊规范的可编译初排 tex（可顺带编译 PDF、清理临时文件）",
         },
         "checkbib": {
-            "label": "文献回读校验",
+            "label": "参考文献规范化",
             "icon": "CHECK_CIRCLE_OUTLINE",
-            "desc": "交回的稿件里的引用与 .bib 条目逐条比对，可回读校验 reference.bib 并查看差异",
+            "desc": "交回的 .bib 离线体检（语法/规范/引用键闭合/逐字段对比），只出《回读校验报告》",
         },
         "proofcheck": {
             "label": "一校核查",
@@ -249,6 +256,9 @@ class SinglePage(BasePage):
         self._stop_btn = None
         self._chips_row = None
         self._ai = None
+        self._norm = None
+        self._meta_panel = None
+        self._meta_temp = ""
 
     # ── 构建 ───────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
@@ -316,6 +326,9 @@ class SinglePage(BasePage):
             C.option_row("导出原稿 PDF", "保留原始稿件并另存一份 PDF 备查", t,
                          icon="PICTURE_AS_PDF_OUTLINED", checked=bool(options.get("convert_source_pdf", False)),
                          on_change=lambda e: self.app.set_option("convert_source_pdf", e.control.value)),
+            C.option_row("强制覆盖（--force）", "产物已存在时仍重跑并覆盖（谨慎）", t,
+                         icon="WARNING_AMBER_ROUNDED", checked=bool(options.get("convert_force", False)),
+                         on_change=lambda e: self.app.set_option("convert_force", e.control.value)),
         ]
         advanced = ft.ExpansionTile(
             title=C.text("高级参数（卷 / 期 / 年 / 页码 / 收稿）", t, "small", p.text_muted),
@@ -333,6 +346,16 @@ class SinglePage(BasePage):
                     self._meta_field("convert_name", "篇名", 320),
                     self._meta_field("convert_bib", "参考文献 .bib", 320),
                 ]),
+                ft.Row(spacing=t.sp("1"), controls=[
+                    self._meta_field("convert_lang", "语种（zh / en，可空）", 240),
+                    self._meta_field("convert_editor", "责编", 160),
+                    self._meta_field("convert_grants", "基金", 300),
+                ]),
+                ft.Row(spacing=t.sp("1"), controls=[
+                    self._meta_field("convert_refs", "附加参考文献（--refs，可空）", 320),
+                    self._meta_field("convert_sty", "样式文件（--sty，可空）", 300),
+                    self._meta_field("convert_skeleton", "模板骨架（--skeleton，可空）", 300),
+                ]),
             ])],
             expanded=False,
         )
@@ -345,6 +368,9 @@ class SinglePage(BasePage):
             self.add_picker("输出根目录", "single_out", "产物写到该目录下的 <作者>/ 里", kind="dir"),
             C.section_title("处理选项", t, note="默认勾选常用项"),
             C.card(ft.Column(spacing=0, controls=self._interleave(rows)), t),
+            C.section_title("元数据（人工填写，可选）", t,
+                            note="表单 → --metadata-json；「预览元数据」= 同一 argv + --metadata-preview-out"),
+            self._build_metadata_section(),
             advanced,
             C.text(SS.bibdb_convert_hint(self.app.store.data), t, "caption", p.text_faint),
             self._ai_section(),
@@ -355,19 +381,19 @@ class SinglePage(BasePage):
         return self._ai.build()
 
     def _build_checkbib(self) -> ft.Control:
+        # 批 109 W2a：整页交给 ui/normalize.py（改名「参考文献规范化」+ 粘贴模式 +
+        # 报告默认路径 + 识别；Wave 0 / S1：**没有任何并回入口**）。
+        self._norm = NR.NormalizePanel(self)
+        return self._norm.build()
+
+    def _build_metadata_section(self) -> ft.Control:
         t = self.t
-        return ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title("输入", t, note="只填交回稿件即可；其余可选"),
-            self.add_picker("交回稿件", "bib_returned", "作者交回 .docx / .tex", kind="file"),
-            self.add_picker("原始稿件", "bib_original", "用于对照（可选）", kind="file", required=False),
-            # 批 109 Wave 0 / S1：原「把结论并回正文」勾选（--merge-into）已移除——
-            # 引擎的 --merge-into 是「就地产物 .bib」而非报告，旧实现会把用户正文 .tex
-            # 覆盖写回。Flet 无法保证安全目标，按任务书方案 B 关闭入口（CLI 仍可用）。
-            # 证据见 b109-parity/report.md S1 与 b109-wave0-safety-taskbook.md §S1。
-            self.add_picker("正文 tex", "bib_tex", "可选：只读比对（--tex，不写回任何文件）", kind="file",
-                            required=False),
-            self.add_picker("报告输出目录", "bib_out", "报告默认写在该目录（可选）", kind="dir",
-                            required=False),
+        self._meta_panel = MF.MetadataPanel(self)
+        return ft.Column(spacing=t.sp("1"), controls=[
+            self._meta_panel.build(),
+            ft.Row(spacing=t.sp("1"), controls=[
+                C.secondary_button("预览元数据", self._on_metadata_preview, t, icon="PREVIEW"),
+            ]),
         ])
 
     def _build_proofcheck(self) -> ft.Control:
@@ -407,12 +433,42 @@ class SinglePage(BasePage):
             self.app.toast(str(exc))
             return
         self.app.mark("form_submit", flow=self.flow_key, call=call.to_dict())
-        self.page.run_task(self._run, call)
+        # 批 109 W2a 返工：只有「参考文献规范化」的粘贴模式才读 stdin；切流程后残留的
+        # _norm 不许把粘贴正文漏进 convert/proofcheck（它们不读 stdin）。
+        stdin_text = None
+        if self.flow_key == "checkbib" and self._norm is not None:
+            stdin_text = self._norm.stdin_text()
+        self.page.run_task(self._run, call, stdin_text)
+
+    def _on_metadata_preview(self, e=None) -> None:
+        """CV-002/003：跑与「开始转换」同一 argv，只多 --metadata-preview-out（只读）。"""
+        if self.app.running:
+            return
+        preview_path = os.path.join(tempfile.gettempdir(),
+                                    f"slcn_metadata_preview_{os.getpid()}.json")
+        try:
+            call = self._build_call(preview_path=preview_path)
+        except ValueError as exc:
+            self.app.toast(str(exc))
+            return
+        self.app.mark("metadata_preview", call=call.to_dict())
+        self.page.run_task(self._run, call, None, preview_path)
+
+    def _on_paste_preview(self) -> None:
+        """NR-003/015：--list-keys + --returned-stdin，只打印「N 条：key…」，永不写文件。"""
+        text = self._norm.pasted_text() if self._norm is not None else ""
+        self.page.run_task(self._run_paste_preview, NR.preview_call(), text)
+
+    async def _run_paste_preview(self, call: EB.EngineCall, text: str) -> None:
+        lines: list[str] = []
+        code = await EB.run_call(call, on_line=lines.append, stdin_text=text)
+        if self._norm is not None:
+            self._norm.set_preview_line(NR.preview_text(code, lines, text))
 
     def _on_stop(self, e=None) -> None:
         self.app.stop_run()
 
-    def _build_call(self) -> EB.EngineCall:
+    def _build_call(self, preview_path: str = "") -> EB.EngineCall:
         if self.flow_key == "convert":
             source = self.field("single_source")
             out = self.field("single_out")
@@ -430,7 +486,17 @@ class SinglePage(BasePage):
                 year=self.field("convert_year"), pages=self.field("convert_pages"),
                 received=self.field("convert_received"), author=self.field("convert_author"),
                 name=self.field("convert_name"), bib=self.field("convert_bib"),
+                lang=self.field("convert_lang"), editor=self.field("convert_editor"),
+                grants=self.field("convert_grants"), refs=self.field("convert_refs"),
+                sty=self.field("convert_sty"), skeleton=self.field("convert_skeleton"),
+                force=bool(options.get("convert_force", False)),
+                metadata_preview_out=preview_path,
             )
+            if self._meta_panel is not None:
+                # 人工元数据：写临时 JSON（运行结束删除），argv 里是 --metadata-json。
+                self._cleanup_meta_temp()
+                self._meta_temp, _text = self._meta_panel.payload_for_run()
+                kwargs["metadata_json"] = self._meta_temp
             if self._ai is not None:
                 # 批 109 W1b（R6）：引用库设置只在核实链路（AI 面板 → verify_refs）
                 # 进 argv；普通初排没有核实入口，绝不注入 --verify-plan（否则会变成只算账）。
@@ -438,15 +504,11 @@ class SinglePage(BasePage):
                 return self._ai.build_call(**kwargs, **bibdb)
             return EB.convert_call(**kwargs)
         if self.flow_key == "checkbib":
-            returned = self.field("bib_returned")
-            if not returned:
-                raise ValueError("请先选择交回稿件")
             # 批 109 Wave 0 / S1：只做离线体检/报告；正文 tex 仅作 --tex 只读输入，
             # 不再传写入型 --merge-into（原实现会把正文 .tex 覆盖写回）。
-            return EB.checkbib_call(
-                returned=returned, original=self.field("bib_original"),
-                tex=self.field("bib_tex"), out=self.field("bib_out"),
-            )
+            if self._norm is None:
+                raise ValueError("参考文献规范化页还没准备好，请重开该步骤")
+            return self._norm.build_call()
         tex = self.field("proof_tex")
         if not tex:
             raise ValueError("请先选择初排 tex")
@@ -456,7 +518,8 @@ class SinglePage(BasePage):
             fix=bool(options.get("proofcheck_fix", False)),
         )
 
-    async def _run(self, call: EB.EngineCall) -> None:
+    async def _run(self, call: EB.EngineCall, stdin_text: str | None = None,
+                   preview_path: str = "") -> None:
         page = self.page
         self.app.begin_run(call)
         self._result.reset()
@@ -466,7 +529,7 @@ class SinglePage(BasePage):
             panel.reset_run()
         code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
                                  api=panel.api_env() if panel is not None else None,
-                                 notes=self.app.notes_repo)
+                                 notes=self.app.notes_repo, stdin_text=stdin_text)
         self.app.finish_run(call, code)
         level = "warn" if self.app.cancel_requested else EB.result_level(call.entry, code)
         text = "⏹ 已取消" if self.app.cancel_requested else EB.result_text(call.entry, code)
@@ -476,13 +539,56 @@ class SinglePage(BasePage):
                 text, level = notice, "error"
             panel.after_run(call, code)
         artifact = EB.artifact_path(self.app.last_line)
+        if preview_path:
+            self._show_metadata_preview(preview_path)
+            if not self.app.cancel_requested:
+                text, level = "元数据预览完成（只读：未建产物目录、未写产物）", "info"
+                artifact = ""
+        if self.flow_key == "checkbib" and self._norm is not None:
+            self._echo_checkbib_report(code)  # NR-010：报告正文进日志（不改 Engine）
+            self._norm.refresh_after_run()
         self._result.show(text, level=level, artifact=artifact)
         if artifact:
             self.app.store.set_recent(self._artifact_recent_key(), artifact)
+        self._cleanup_meta_temp()
         try:
             page.update()
         except Exception:  # noqa: BLE001
             pass
+
+    def _echo_checkbib_report(self, code: int) -> None:
+        """NR-010：引擎带 --out 时只回一行结论，这里把报告正文逐行贴进运行日志。"""
+        if self.app.cancel_requested or code not in (0, 1):
+            return
+        report = getattr(self._norm, "last_report", "") if self._norm is not None else ""
+        if not report:
+            self._on_line("（未生成报告：没有可回显的报告路径，只有上面的结论行）")
+            return
+        try:
+            with open(report, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            self._on_line(f"（报告读取失败：{report}；只有上面的结论行，可稍后手动打开）")
+            return
+        self._on_line(f"== 文本报告：{os.path.basename(report)} ==")
+        for line in lines:
+            self._on_line(line)
+
+    def _show_metadata_preview(self, path: str) -> None:
+        payload = None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, ValueError):
+            payload = None
+        MF.remove_temp(path)
+        if self._meta_panel is not None:
+            self._meta_panel.show_preview(payload)
+
+    def _cleanup_meta_temp(self) -> None:
+        if self._meta_temp:
+            MF.remove_temp(self._meta_temp)
+            self._meta_temp = ""
 
     def _artifact_recent_key(self) -> str:
         return {

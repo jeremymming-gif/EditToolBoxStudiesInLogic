@@ -22,7 +22,7 @@ features:
       src: /icons/single.svg
       alt: ''
     title: 单篇稿件
-    details: 初排转换（Word / LaTeX → 可编译 .tex）、一校核查；文献核对由两段式第二段自动完成。
+    details: 初排转换（Word / LaTeX → 可编译 .tex）、人工元数据表单（`--metadata-json` / 只读预览）、参考文献规范化、一校核查。
   - icon:
       src: /icons/assembly.svg
       alt: ''
