@@ -5,14 +5,11 @@ name: Build Flet Shell
 #   · 应用：flet pack（onefile；macOS 出 .app），sidecar 放到可执行文件同目录。
 #   · 产物：EditToolBox-<Engine版本>-<平台>.zip（内含 FIRST-OPEN 说明与 sha256.txt）。
 #   · 只产 artifact，**不做** tag / Release / 签名（发版留人工按 release.yml）。
+#   · 触发：仅 workflow_dispatch（手动，发版前验证用）；日常 push 不再打包。
+# 2026-11-01 CI 去冗余（用户拍板）：打包只在**手动触发**（发版前验证）时运行，不再随 push 跑；
+# 发布时的产物由 release.yml 在 tag 上独立构建。日常 push 的验证由 ci.yml 的 windows job 承担。
 on:
   workflow_dispatch:
-  push:
-    branches: ["**"]
-    paths:
-      - "sources-flet/**"
-      - ".github/workflows/build-flet.yml"
-      - "编辑笔记/模板文件/**"
 
 permissions:
   contents: read

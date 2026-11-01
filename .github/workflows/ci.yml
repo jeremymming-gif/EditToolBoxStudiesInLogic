@@ -1,6 +1,8 @@
 name: CI
 
-# 每次 push / PR 都跑：引擎全套件 + 文档看门狗 + Swift 测试台 + 外壳桥梁。
+# 每次 push / PR 都跑：引擎全套件 + 文档看门狗（ubuntu）+ Windows 轻量覆盖（Flet 壳 + 引擎稳定子集）。
+# 2026-11-01：SwiftUI/Tk 旧壳已冻结、不再发布 → 旧壳 job 下线；Windows 侧改为 Flet 壳测试与
+# 引擎稳定子集（full 套件仍由 ubuntu job 覆盖；clean-runner 环境假设红见 B-246c P6 遗留）。
 # 设计要点：
 #   · 重活验收（全库普查/回归、代表稿）**需要稿件库**，CI 上没有 —— 那些工具会打印一行说明并
 #     正常退出（0），所以这里不会因为它们红（见 Engine/slcn/paths.py）；
@@ -57,26 +59,38 @@ jobs:
       - name: 案例索引是否过期（没有笔记仓时自动跳过）
         run: python tools/gen_case_index.py --check
 
-  swift:
-    name: Swift 测试台 + Windows 外壳桥梁
-    # 2026-10-31：macos-14 runner 镜像 2026-11-02 退役；当前有 scheduled macOS 14 brownout
-    # （job 0 秒 cancelled，annotation 引用 actions/runner-images#13518）。迁 macos-15：
-    # 与 release.yml 的 macOS 构建作业一致（同样因旧 Xcode 对超大 SwiftUI View 类型检查
-    # 超时而先迁），避免 brownout 窗口内 CI 无法转绿。
-    runs-on: macos-15
+  windows:
+    name: Windows：Flet 壳测试 + 引擎稳定子集
+    # 2026-11-01 用户拍板：CI 去冗余 —— 删「Swift 测试台 + Windows 外壳桥梁」（旧壳冻结），
+    # 换成 Flet 单壳 + Windows 上不依赖 TeX/LibreOffice/稿件库的引擎稳定子集。
+    # full 引擎套件仍由上面的 ubuntu job 覆盖；quick 全档在干净 Windows runner 有环境假设红（B-246c P6）。
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     env:
-      # B-307：并行 3 台 + CI 专用 `-Onone`（本地 11 门仍用默认 `-O`）
-      SLCN_SWIFT_JOBS: "3"
-      SLCN_SWIFT_OPTLVL: "-Onone"
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - name: 装依赖
-        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin
-      - name: Swift 测试台（6 个）
-        run: bash tools/run_swift_tests.sh
-      - name: Windows 外壳桥梁测试（不需要 Windows；真窗口那条缺 tkinter 时 SKIP）
-        working-directory: sources-win
-        run: python tests/test_bridge.py | tail -3
+        run: python -m pip install --disable-pip-version-check lxml pypdf pypinyin flet pystray Pillow pytest
+      - name: Flet 壳测试
+        run: python -m pytest sources-flet/tests -q
+      - name: 引擎稳定子集（不依赖 TeX/LibreOffice/稿件库）
+        run: |
+          cd Engine
+          export PYTHONPATH="."
+          fails=0
+          for t in tests/test_paths.py tests/test_proofcheck.py tests/test_latex_preamble.py tests/test_infocheck_toc.py tests/test_merge_into.py tests/test_bib_protection_forms.py tests/test_mock_keyed_responses.py; do
+            echo "== $t"
+            if ! python "$t"; then
+              echo "::error::$t failed"
+              fails=$((fails+1))
+            fi
+          done
+          echo "subset failures: $fails"
+          test "$fails" -eq 0
