@@ -12,6 +12,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -353,17 +354,29 @@ class Mock:
         env = dict(os.environ)
         for key in [k for k in env if k.startswith(("SLCN_LLM_", "SLCN_SEARCH_", "SLCN_NOTES"))]:
             env.pop(key, None)
-        self.proc = subprocess.Popen(
-            [sys.executable, str(MOCK), "--port", str(self.port), "--mode", "normal"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/__stats", timeout=1):
-                    return self
-            except OSError:
-                time.sleep(0.1)
-        raise RuntimeError("mock LLM 没起来")
+        # CI 上曾出现子进程 15s 内没响应就报「没起来」（本地全绿）：失败时把 stderr 尾带出来，
+        # 并换端口重试一次；仍失败才报错，避免把「环境慢/端口被占」误当成用例失败原因不明。
+        last_err = ""
+        for _attempt in range(2):
+            self.port = _free_port()
+            self.base = f"http://127.0.0.1:{self.port}/v1"
+            err = tempfile.TemporaryFile()
+            self.proc = subprocess.Popen(
+                [sys.executable, str(MOCK), "--port", str(self.port), "--mode", "normal"],
+                stdout=subprocess.DEVNULL, stderr=err, env=env)
+            deadline = time.time() + 40
+            while time.time() < deadline:
+                if self.proc.poll() is not None:
+                    break
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/__stats", timeout=1):
+                        return self
+                except OSError:
+                    time.sleep(0.1)
+            err.seek(0)
+            last_err = err.read().decode("utf-8", "replace")[-800:]
+            self.__exit__(None, None, None)
+        raise RuntimeError(f"mock LLM 没起来（stderr 尾：{last_err}）")
 
     def stats(self) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/__stats", timeout=5) as rsp:
