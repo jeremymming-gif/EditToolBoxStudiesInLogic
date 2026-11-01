@@ -242,7 +242,7 @@ check("(c) 默认分支仍在：只认 `=1`、不设变量时照旧走 `_tk_pyth
       and "tkpy = _tk_python()" in _src)
 
 # ─────────────────────────────────────────────────────────────────────────
-print("\n── (d) ci.yml：3 路并行 / AUTO 守卫显式 SKIP / 桥梁不设 SKIP_GUI ──")
+print("\n── (d) ci.yml：3 路并行 / AUTO 守卫显式 SKIP / 旧壳下线 / Windows 轻量覆盖 / build-flet 手动 ──")
 _ci = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 check("(d) engine 全部套件步骤带 SLCN_TEST_JOBS: \"3\"",
       re.search(r'SLCN_TEST_JOBS: "3"[\s\S]{0,400}?run_engine_tests\.sh full', _ci)
@@ -251,11 +251,19 @@ check("(d) AUTO 守卫缺本机解释器时显式 SKIP 并退出 0",
       "if [ ! -x /opt/homebrew/bin/python3.14 ]" in _ci
       and "exit 0" in _ci.split("if [ ! -x /opt/homebrew/bin/python3.14 ]", 1)[1][:400]
       and "SKIP：没有 /opt/homebrew/bin/python3.14" in _ci)
-check("(d) swift 桥梁步骤不设 SLCN_BRIDGE_SKIP_GUI（spec S5：CI 不设，走默认分支）",
-      "SLCN_BRIDGE_SKIP_GUI" not in _ci)
-check("(d) 桥梁步骤仍按默认行为真跑 `python tests/test_bridge.py`",
-      re.search(r"Windows 外壳桥梁测试[\s\S]{0,300}?run: python tests/test_bridge\.py", _ci)
-      is not None)
+# 2026-11-01 用户拍板 CI 去冗余：SwiftUI/Tk 旧壳冻结 → 旧壳 job 下线；
+# Windows 侧改为 Flet 壳测试 + 引擎稳定子集（不依赖 TeX/LibreOffice/稿件库）。
+check("(d) 旧壳 job 已下线（ci.yml 不再跑 Swift 测试台 / Windows 外壳桥梁）",
+      "run_swift_tests.sh" not in _ci and "test_bridge.py" not in _ci)
+check("(d) Windows 轻量 job 存在：Flet 壳测试 + 引擎稳定子集",
+      "Windows：Flet 壳测试 + 引擎稳定子集" in _ci
+      and "runs-on: windows-latest" in _ci
+      and "python -m pytest sources-flet/tests -q" in _ci
+      and "tests/test_paths.py" in _ci and "tests/test_proofcheck.py" in _ci
+      and "tests/test_b285_diagnose.py" not in _ci)  # 环境假设红：不入干净 runner
+check("(d) build-flet 只在手动触发（发版前验证），不随 push 打包",
+      "workflow_dispatch:" in (REPO / ".github/workflows/build-flet.yml").read_text(encoding="utf-8")
+      and "push:" not in (REPO / ".github/workflows/build-flet.yml").read_text(encoding="utf-8").split("permissions:", 1)[0])
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (e) 笔记仓 tools/run_gates.py（S1）：--help / lint 解析 / 依赖留痕 ──")
