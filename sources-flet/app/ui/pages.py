@@ -16,6 +16,7 @@ import flet as ft
 
 from services import engine_bridge as EB
 from services import settings_store as SS
+from ui import assembly as ASM
 from ui import ai_panel as AIP
 from ui import bib_advanced as BA
 from ui import bib_ops as BO
@@ -27,6 +28,7 @@ from ui import checks as CK
 from ui import components as C
 from ui import metadata_form as MF
 from ui import normalize as NR
+from ui import settings_shell as SHELL
 from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
 
 STATUS_TEXT = {"idle": "待运行", "running": "运行中", "done": "已完成", "warn": "有提示", "error": "失败"}
@@ -751,180 +753,26 @@ class IssuePage(BasePage):
 
     # ── 各步骤参数 ─────────────────────────────────────────────────────
     def _build_params(self, key: str) -> ft.Control:
-        t = self.t
         self.fields = {k: v for k, v in self.fields.items() if k in ("issue_dir", "toc_report")}
-        step = next(s for s in self.STEPS if s["key"] == key)
-        title = C.text(step["title"], t, "h3", weight="semibold")
-        rows: list = [C.text(step["desc"], t, "small", t.palette.text_muted)]
-        if key == "infocheck":
-            rows += CK.info_params(self)
-        elif key == "toc":
-            options = self.app.store.get("options", {}) or {}
-            rows += [
-                self.add_picker("信息检查报告", "toc_report", "期目录下的 信息检查*.txt", kind="file"),
-                C.option_row("仅生成 tex（不落位、不编译）", "只出目录 tex，交给下一阶段人工检查", t,
-                             icon="DESCRIPTION_OUTLINED", checked=bool(options.get("toc_text_only", True)),
-                             on_change=lambda e: self.app.set_option("toc_text_only", e.control.value)),
-            ]
-        elif key == "compileall":
-            options = self.app.store.get("options", {}) or {}
-            rows += [
-                self._meta_field("compile_only", "只编这几篇（如 01,03；可空）", 260),
-                C.option_row("只预演（--dry-run）", "列出将要编译的篇目，不真跑 xelatex", t,
-                             icon="SCIENCE_OUTLINED", checked=bool(options.get("compileall_dry_run", False)),
-                             on_change=lambda e: self.app.set_option("compileall_dry_run", e.control.value)),
-            ]
-        elif key == "merge":
-            options = self.app.store.get("options", {}) or {}
-            rows += [
-                self._meta_field("merge_out", "输出文件（可空）", 420),
-                C.option_row("嵌套书签", " --nest-outlines", t, icon="BOOKMARKS_OUTLINED",
-                             checked=bool(options.get("merge_nest", False)),
-                             on_change=lambda e: self.app.set_option("merge_nest", e.control.value)),
-                C.option_row("加入编辑页", "--editors-page", t, icon="PEOPLE_OUTLINED",
-                             checked=bool(options.get("merge_editors", False)),
-                             on_change=lambda e: self.app.set_option("merge_editors", e.control.value)),
-                C.option_row("加封底", "--back-cover", t, icon="LAST_PAGE_OUTLINED",
-                             checked=bool(options.get("merge_back_cover", False)),
-                             on_change=lambda e: self.app.set_option("merge_back_cover", e.control.value)),
-            ]
-        elif key == "cleantemp":
-            options = self.app.store.get("options", {}) or {}
-            rows += [
-                # 批 109 Wave 0 / S2：外壳只保留 --trash（移入 .toolbox-trash，可从
-                # 回收站恢复），永久删除参数（--delete / --empty-trash）一律不提供。
-                # 证据见 b109-parity/report.md S2 与任务书 §S2。
-                C.notice_bar("清理一律移入系统回收站（--trash），可从回收站或期目录恢复；"
-                             "本页不提供永久删除。", t, "info"),
-                C.option_row("只预演（--dry-run）", "列出将清理的文件，不真删", t,
-                             icon="SCIENCE_OUTLINED", checked=bool(options.get("cleantemp_dry_run", False)),
-                             on_change=lambda e: self.app.set_option("cleantemp_dry_run", e.control.value)),
-            ]
-        elif key == "dirpush":
-            options = self.app.store.get("options", {}) or {}
-            rows += [
-                self.add_picker("输出根", "dirpush_out", "目录摘要 docx 输出根（可空）", kind="dir",
-                                required=False),
-                C.option_row("含英文目录", "--with-en-toc", t, icon="TRANSLATE",
-                             checked=bool(options.get("dirpush_with_en_toc", False)),
-                             on_change=lambda e: self.app.set_option("dirpush_with_en_toc", e.control.value)),
-                C.option_row("只预演（--dry-run）", "打印计划，不写文件", t, icon="SCIENCE_OUTLINED",
-                             checked=bool(options.get("dirpush_dry_run", False)),
-                             on_change=lambda e: self.app.set_option("dirpush_dry_run", e.control.value)),
-            ]
-        engine_note = C.text(f"引擎：{self.app.engine_status.describe()}", t, "caption",
-                             t.palette.text_faint)
-        engine_note.max_lines = 2
-        engine_note.overflow = ft.TextOverflow.ELLIPSIS
-        rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                           controls=[
-            C.primary_button("运行这一步", lambda e, k=key: self._run_step(k), t, icon="PLAY_ARROW",
-                             disabled=not self.app.engine_status.ok),
-            ft.Container(expand=True, content=engine_note),
-        ]))
-        return ft.Column(spacing=t.sp("1"), controls=rows)
+        return ASM.build_params(self, key)
 
     # ── 构建调用 ───────────────────────────────────────────────────────
     def _issue_dir(self) -> str:
         return self.field("issue_dir")
 
     def _build_step_call(self, key: str) -> EB.EngineCall:
-        issue = self._issue_dir()
-        if not issue:
-            raise ValueError("请先选择期目录")
-        options = self.app.store.get("options", {}) or {}
-        if key == "infocheck":
-            return EB.infocheck_call(folder=issue)
-        if key == "toc":
-            report = self.field("toc_report")
-            if not report:
-                latest = self._latest_report(issue)
-                if latest:
-                    report = latest
-                    self.set_field("toc_report", latest)
-            if not report:
-                raise ValueError("请先选择信息检查报告（可先运行「检查 tex 信息」）")
-            return EB.toc_call(report=report, text_only=bool(options.get("toc_text_only", True)))
-        if key == "compileall":
-            return EB.compileall_call(folder=issue, only=self.field("compile_only"),
-                                      dry_run=bool(options.get("compileall_dry_run", False)))
-        if key == "merge":
-            return EB.merge_call(
-                folder=issue, out=self.field("merge_out"),
-                nest_outlines=bool(options.get("merge_nest", False)),
-                editors_page=bool(options.get("merge_editors", False)),
-                back_cover=bool(options.get("merge_back_cover", False)),
-            )
-        if key == "cleantemp":
-            dry_run = bool(options.get("cleantemp_dry_run", False))
-            # 批 109 Wave 0 / S2：固定 --trash（可恢复），不传任何永久删除参数。
-            return EB.cleantemp_call(folder=issue, dry_run=dry_run)
-        if key == "dirpush":
-            return EB.dirpush_call(
-                issue=issue, out_root=self.field("dirpush_out"),
-                with_en_toc=bool(options.get("dirpush_with_en_toc", False)),
-                dry_run=bool(options.get("dirpush_dry_run", False)),
-            )
-        raise ValueError(f"未知步骤：{key}")
+        return ASM.build_step_call(self, key)
 
     @staticmethod
     def _latest_report(issue: str) -> str:
-        try:
-            reports = sorted(Path(issue).glob("信息检查*.txt"), key=lambda p: p.stat().st_mtime)
-            return str(reports[-1]) if reports else ""
-        except OSError:
-            return ""
+        return ASM.TOC.latest_report(issue)
 
     # ── 运行 ───────────────────────────────────────────────────────────
     def _run_step(self, key: str) -> None:
-        if self.app.running:
-            return
-        try:
-            call = self._build_step_call(key)
-        except (ValueError, RuntimeError) as exc:
-            self.app.toast(str(exc))
-            self.mark("validation_error", step=key, reason=str(exc))
-            return
-        if (key == "cleantemp"
-                and not (self.app.store.get("options", {}) or {}).get("cleantemp_dry_run", False)
-                and not getattr(self.app, "auto_confirm", False)):
-            def _confirmed() -> None:
-                self._status[key] = "running"
-                self._refresh_steps()
-                self.mark("confirm_clean", step=key)
-                self.page.run_task(self._run_calls, [(key, call)])
-
-            C.confirm(self.page, self.t, title="确认清理临时文件？",
-                      message="临时文件将移入系统回收站（期目录内 .toolbox-trash），"
-                              "可从回收站或该目录恢复；本页不提供永久删除。",
-                      confirm_label="开始清理", on_confirm=_confirmed)
-            return
-        self._status[key] = "running"
-        self._refresh_steps()
-        self.page.run_task(self._run_calls, [(key, call)])
+        ASM.run_step(self, key)
 
     def _run_all(self) -> None:
-        if self.app.running:
-            return
-        if not self._issue_dir():
-            self.app.toast("请先选择期目录")
-            self.mark("validation_error", step="all", reason="missing issue dir")
-            return
-        try:
-            calls = []
-            for step in self.STEPS:
-                key = step["key"]
-                if key == "cleantemp":
-                    # 全流程里的清理默认预演，避免一键误删（仍固定 --trash，可恢复）
-                    calls.append((key, EB.cleantemp_call(folder=self._issue_dir(), dry_run=True)))
-                    continue
-                calls.append((key, self._build_step_call(key)))
-        except (ValueError, RuntimeError) as exc:
-            self.app.toast(str(exc))
-            self.mark("validation_error", step="all", reason=str(exc))
-            return
-        self.mark("run_all_submit", steps=[k for k, _ in calls])
-        self.page.run_task(self._run_calls, calls, True)
+        ASM.run_all(self)
 
     def _on_stop(self, e=None) -> None:
         self.app.stop_run()
@@ -950,6 +798,7 @@ class IssuePage(BasePage):
             self._refresh_steps()
             artifact = EB.artifact_path(self.app.last_line)
             await CK.after_issue_step(self, key, call, code, cancelled, artifact)
+            ASM.after_step(self, key, call, code, cancelled, artifact)
             level = "warn" if cancelled else EB.result_level(call.entry, code)
             text = "⏹ 已取消" if cancelled else EB.result_text(call.entry, code)
             self._result.show(text, level=level, artifact=artifact)
@@ -1199,6 +1048,7 @@ class SettingsPage(BasePage):
         self.envcheck_data: dict | None = None
         self.envcheck_error = ""
         self.envcheck_slot = ft.Container()
+        self.connection_slot = ft.Container()
 
     def build(self) -> ft.Control:
         t = self.t
@@ -1246,17 +1096,6 @@ class SettingsPage(BasePage):
             self._path_field("notes_repo", "私有笔记仓（可空）", kind="dir"),
         ]), t)
 
-        logs = C.card(ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title("日志", t, note="默认只看摘要，原始行可展开"),
-            C.option_row("只看摘要", "隐藏非摘要行（引擎 SUMMARY_MARKERS 判据）", t,
-                         icon="FILTER_ALT_OUTLINED",
-                         checked=bool(options.get("log_summary_only", True)),
-                         on_change=lambda e: self.app.set_option("log_summary_only", e.control.value)),
-            C.option_row("首次环境检查已完成", "兼容 Tk 版 envCheckDone", t, icon="CHECK_CIRCLE_OUTLINE",
-                         checked=bool(self.app.store.get("env_check_done", False)),
-                         on_change=lambda e: self.app.set_check_done(e.control.value)),
-        ]), t)
-
         about = C.card(ft.Column(spacing=t.sp("1"), controls=[
             C.section_title("关于", t),
             self._kv("应用版本", self.app.app_version),
@@ -1265,26 +1104,11 @@ class SettingsPage(BasePage):
             self._kv("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
         ]), t)
 
-        envcheck = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("环境检查", t, note="调 Engine/envcheck.py --json（只读）"),
-            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.secondary_button("运行环境检查", lambda e: self.page.run_task(self._envcheck_task), t,
-                                   icon="HEALTH_AND_SAFETY_OUTLINED"),
-                C.text("检查 TeX 工具链、引擎、字体与路径；只读，不改系统。", t, "caption",
-                       t.palette.text_faint),
-            ]),
-            self.envcheck_slot,
-        ]), t)
-
-        diagnostics = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("关于与诊断", t, note="诊断包（zip）在 P4 归入发布流程"),
-            self._kv("设置文件", str(self.app.store.path)),
-            self._kv("日志/诊断", "引擎原始日志不落盘；诊断包 P4 生成"),
-            ft.Row(spacing=t.sp("1"), controls=[
-                C.text_button("打开设置目录", lambda e: self.app.open_path(str(self.app.store.path.parent)), t),
-                C.text_button("复制诊断信息", lambda e: self._copy_diagnosis(), t),
-            ]),
-        ]), t)
+        envcheck = SHELL.envcheck_card(self)
+        proxy = SHELL.proxy_card(self)
+        logs = SHELL.logs_card(self)
+        advanced = SHELL.advanced_card(self)
+        diagnostics = SHELL.diagnostics_card(self)
 
         header = C.page_header(
             "设置", "外观、引擎、路径、环境检查与诊断；所有设置持久化，不依赖系统注册表。", t,
@@ -1292,7 +1116,7 @@ class SettingsPage(BasePage):
                                       icon="SAVE_OUTLINED")],
         )
         page = C.page_body(header, engine_card, appearance, paths, AIP.AiSettings(self).build(),
-                           envcheck, logs, about, diagnostics, t=t, gap=12)
+                           envcheck, proxy, logs, advanced, about, diagnostics, t=t, gap=12)
         return page
 
     # ── 小工具 ─────────────────────────────────────────────────────────
@@ -1365,53 +1189,13 @@ class SettingsPage(BasePage):
 
     @staticmethod
     def _check_ok(check: dict) -> bool:
-        return (check.get("status") or "") in ("ok", "ok-ish", "pass", "pass-ish", "success")
+        return SHELL.check_ok(check)
 
     def _render_envcheck(self) -> None:
-        t = self.t
-        slot = self.envcheck_slot
-        if self.envcheck_error:
-            slot.content = C.notice_bar(self.envcheck_error, t, "warn")
-        elif not self.envcheck_data:
-            slot.content = C.text("尚未运行。检查结果只读展示，不修改系统。", t, "small",
-                                  t.palette.text_muted)
-        else:
-            payload = self.envcheck_data
-            checks = payload.get("checks") or []
-            rows: list = [C.text(f"{payload.get('profile', '')} · {payload.get('platform', '')}",
-                                 t, "caption", t.palette.text_faint)]
-            for check in checks[:18]:
-                status = check.get("status") or ""
-                color = (t.palette.success if self._check_ok(check)
-                         else (t.palette.warn if status.startswith("warn") else t.palette.error))
-                rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                   controls=[
-                    ft.Container(width=t.px(8), height=t.px(8), border_radius=99, bgcolor=color),
-                    C.text(str(check.get("title") or check.get("id") or ""), t, "small", weight="medium"),
-                    C.text(str(check.get("version") or ""), t, "small", t.palette.text_muted),
-                    ft.Container(expand=True),
-                    C.badge(str(status or "?"), t, "success" if self._check_ok(check) else "warn"),
-                ]))
-            slot.content = ft.Column(spacing=t.sp("1"), controls=rows)
-        try:
-            slot.update()
-        except Exception:  # noqa: BLE001
-            pass
+        SHELL.render_envcheck(self)
 
     def _copy_diagnosis(self) -> None:
-        engine = self.app.engine_status
-        envcheck = self.envcheck_data or {}
-        lines = [
-            f"{self.app.app_version} · Flet {self.app.flet_version} · Python {self.app.python_version}",
-            f"platform={self.app.page.platform} dpi={self.app.dpi} "
-            f"window={self.app.window_w}x{self.app.window_h}",
-            f"engine={engine.describe()} version={engine.version} dir={engine.engine_dir}",
-            f"settings={self.app.store.path}",
-            f"envcheck={envcheck.get('profile', '未运行')} checks={len(envcheck.get('checks') or [])}",
-            f"hwnd={self.app.client_hwnd} titlebar={self.app.titlebar_info}",
-        ]
-        self.app.copy_text("\n".join(lines))
-        self.app.mark("diagnosis_copied")
+        SHELL.copy_diagnosis(self)
 
     def refresh_running(self) -> None:
         pass
@@ -1434,11 +1218,10 @@ class HelpPage(BasePage):
             self._bullet("设置：外观 / 缩放 / 引擎目录 / 环境检查 / 诊断信息。"),
         ]), t)
         shortcuts = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("快捷键与交互", t),
-            self._kv("运行 / 停止", "页面右上按钮；运行中可随时停止（隐藏子进程 + 终止进程树）"),
-            self._kv("文件选择", "「浏览…」打开 Windows 原生对话框（目录/文件）"),
-            self._kv("主题", "左栏底部「深色模式」开关，立即落盘，下次启动恢复"),
-            self._kv("文件拖放", "Flutter 窗口不接收系统拖放（P3 实测见报告）→ 用「浏览…」代替"),
+            C.section_title("快捷键与交互", t, note="与外壳实际绑定同源"),
+            *SHELL.shortcut_rows(t),
+            C.text("运行中可随时停止（隐藏子进程 + 终止进程树）；「浏览…」用系统对话框；"
+                   "Flutter 窗口不接收系统文件拖放。", t, "caption", t.palette.text_faint),
         ]), t)
         ia_card = C.card(ft.Column(spacing=t.sp("half"), controls=[
             C.section_title("IA 15 页映射速览", t, note="状态：done / readonly / deferred"),

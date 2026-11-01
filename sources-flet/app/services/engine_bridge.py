@@ -502,10 +502,14 @@ def infocheck_call(*, folder: str, preview: bool = False) -> EngineCall:
     return _call("infocheck.py", args, "检查 tex 信息")
 
 
-def toc_call(*, report: str, template: str = "", text_only: bool = False, result_json: str = "") -> EngineCall:
+def toc_call(*, report: str, template: str = "", text_only: bool = False,
+             result_json: str = "", preview: bool = False, settings: str = "") -> EngineCall:
     args = ["--report", report]
     _append_opt(args, "--template", template)
-    if not text_only:
+    _append_opt(args, "--settings", settings)
+    if preview:
+        args.append("--preview")
+    elif not text_only:
         args.extend(["--place", "--compile"])
         _append_opt(args, "--result-json", result_json)
     return _call("toc.py", args, "生成目录")
@@ -531,13 +535,18 @@ def merge_call(
     return _call("mergepdf.py", args, "合并文件")
 
 
-def cleantemp_call(*, folder: str, dry_run: bool = False) -> EngineCall:
-    # 批 109 Wave 0 / S2：固定 --trash（移入 <期目录>/.toolbox-trash，可 --restore 恢复）。
-    # 外壳不暴露 --delete / --empty-trash 等永久删除参数。
-    # 证据：b109-parity/report.md S2 与 b109-wave0-safety-taskbook.md §S2。
+def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
+                   restore: str = "") -> EngineCall:
+    # S2/D-49：aux 档固定 --trash（移入 <期目录>/.toolbox-trash，可 --restore 恢复）；
+    # delivery/workspace 引擎自身即移入回收站。外壳不暴露 --delete / --empty-trash。
+    if restore:
+        return _call("cleantemp.py", ["--folder", folder, "--restore", restore], "撤销清理")
     args = ["--folder", folder]
+    if mode and mode != "aux":
+        args.extend(["--mode", mode])
     _append_flag(args, "--dry-run", dry_run)
-    args.append("--trash")
+    if not mode or mode == "aux":
+        args.append("--trash")
     return _call("cleantemp.py", args, "删除临时文件")
 
 

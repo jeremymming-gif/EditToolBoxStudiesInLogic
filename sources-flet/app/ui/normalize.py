@@ -9,7 +9,7 @@
 - 粘贴模式且没填原件：报告落系统临时目录，并提示把「原件 .bib」指向产物里的
   reference.bib（NR-001：并回目标 = ``dirname(交回稿)/reference.bib``，**只提示不并回**）。
 
-Wave 0 / S1 红线：不提供任何「并回」按钮，也不暴露 ``--merge-into`` / ``--delete``。
+Wave 0 / S1 红线：不提供任何「并回」按钮，也不暴露 ``--merge-into`` 或永久删除参数。
 """
 
 from __future__ import annotations

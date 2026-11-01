@@ -37,6 +37,7 @@ from services import winplat
 from services.settings_store import SettingsStore
 from ui import components as C
 from ui import pages as P
+from ui import settings_shell as SHELL
 from ui.ia_map import NAV_GROUPS
 from ui.tokens import BASE_DPI, BASE_H, BASE_W, ZOOM_MAX, ZOOM_MIN, Tokens
 
@@ -264,6 +265,7 @@ class App:
     def boot(self) -> None:
         self.mark("process_start", title=APP_TITLE, argv=sys.argv[1:])
         self.rebuild_shell()
+        SHELL.install_hotkeys(self)
 
     def rebuild_shell(self) -> None:
         self.t = Tokens(self.theme, self.zoom, self.dpi)
@@ -492,6 +494,14 @@ class App:
     def record_line(self, line: str) -> None:
         self.line_count += 1
         self.last_line = line
+        SHELL.log_buffer(self).add(line)
+        if self.current_page_key == "settings" and self.line_count % 5 == 0:
+            page = self.pages.get("settings")
+            if page is not None and getattr(page, "log_list", None) is not None:
+                try:
+                    SHELL.render_logs(page)
+                except Exception:  # noqa: BLE001
+                    pass
         if self.first_line_ms is None and self.run_start_mono:
             self.first_line_ms = round((time.monotonic() - self.run_start_mono) * 1000, 1)
             self.mark("first_line", ms=self.first_line_ms, text=line[:120])
@@ -699,6 +709,11 @@ class App:
         if _env_str("P2_ENVCHECK") in ("1", "true", "yes"):
             settings_page = self.pages.get("settings")
             if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
+                self.page.run_task(settings_page._envcheck_task)
+        elif not self.settings_exists and SHELL.first_run_needed(self.store):
+            settings_page = self.pages.get("settings")
+            if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
+                self.mark("envcheck_first_run")
                 self.page.run_task(settings_page._envcheck_task)
         bib_query = _env_str("P2_BIB_QUERY")
         if bib_query:

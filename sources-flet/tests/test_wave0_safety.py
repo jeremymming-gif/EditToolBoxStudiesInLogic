@@ -65,18 +65,34 @@ def test_s1_checkbib_tex_is_read_only_input(engine):
     assert args.count("paper.tex") == 1 and args[args.index("--tex") + 1] == "paper.tex"
 
 
-# ── S2：清理固定 --trash，无永久删除参数 ─────────────────────────────
+# ── S2：清理固定 --trash，无永久删除参数（D-49 允许 --mode / --restore）──
 def test_s2_cleantemp_fixed_trash_no_permanent_delete(engine):
-    assert set(inspect.signature(EB.cleantemp_call).parameters) == {"folder", "dry_run"}
-    assert args_of(EB.cleantemp_call(folder="f")) == ["--folder", "f", "--trash"]
-    assert args_of(EB.cleantemp_call(folder="f", dry_run=True)) == [
-        "--folder", "f", "--dry-run", "--trash"]
+    params = set(inspect.signature(EB.cleantemp_call).parameters)
+    assert {"folder", "mode", "dry_run", "restore"} <= params
+    calls = [
+        EB.cleantemp_call(folder="f"),
+        EB.cleantemp_call(folder="f", dry_run=True),
+        EB.cleantemp_call(folder="f", mode="aux"),
+        EB.cleantemp_call(folder="f", mode="delivery"),
+        EB.cleantemp_call(folder="f", mode="workspace", dry_run=True),
+        EB.cleantemp_call(folder="f", restore="t"),
+    ]
+    assert args_of(calls[0]) == ["--folder", "f", "--trash"]
+    assert args_of(calls[1]) == ["--folder", "f", "--dry-run", "--trash"]
+    assert args_of(calls[3]) == ["--folder", "f", "--mode", "delivery"]
+    assert args_of(calls[4]) == ["--folder", "f", "--mode", "workspace", "--dry-run"]
+    assert args_of(calls[5]) == ["--folder", "f", "--restore", "t"]
+    for call in calls:
+        assert "--delete" not in call.argv and "--empty-trash" not in call.argv
 
 
 def test_s2_shell_has_no_permanent_delete_controls():
+    all_app = "\n".join("\n".join(_string_constants(path)) for path in APP.rglob("*.py"))
+    for flag in ("--delete", "--empty-trash"):
+        assert flag not in all_app
     pages = "\n".join(_string_constants(APP / "ui" / "pages.py"))
-    for flag in ("--delete", "--empty-trash", "--restore", "--mode"):
-        assert flag not in pages
+    assert "--restore" not in pages
+    assert "--mode" not in pages
     assert "cleantemp_trash" not in SS._defaults()["options"]
     assert "checkbib_merge" not in SS._defaults()["options"]
 

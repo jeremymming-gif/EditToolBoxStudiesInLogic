@@ -193,6 +193,10 @@ class SettingsStore:
         options = self.data.setdefault("options", {})
         options.update(kwargs)
 
+    def defaults_copy(self) -> dict:
+        """恢复默认：返回一份全新的默认设置（不共享嵌套）。"""
+        return _defaults()
+
     def set_recent(self, key: str, value: str) -> None:
         recent = self.data.setdefault("recent", {})
         if value:
