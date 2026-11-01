@@ -13,7 +13,7 @@ import os
 import tempfile
 from pathlib import Path
 
-APP_NAME = "XuehengToolbox"
+APP_NAME = "编辑部工具箱"
 SCHEMA_KEY = "flet"
 SCHEMA_VERSION = 2
 
@@ -25,7 +25,7 @@ def settings_path() -> Path:
     appdata = os.environ.get("APPDATA", "").strip()
     if appdata:
         return Path(appdata) / "EditToolBox" / "settings.json"
-    return Path.home() / ".xueheng" / "settings.json"
+    return Path.home() / ".editorial-toolbox" / "settings.json"
 
 
 def _defaults() -> dict:

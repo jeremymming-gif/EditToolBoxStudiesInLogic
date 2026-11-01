@@ -28,7 +28,7 @@ python3 -m flet run app/main.py
 python3 -m pytest tests -q
 
 # Flet 单壳：打包（onefile；引擎 sidecar 另由 CI/打包脚本产出）
-python3 -m flet pack app/main.py --name XuehengToolbox --distpath dist --yes
+python3 -m flet pack app/main.py --name 编辑部工具箱 --distpath dist --yes
 
 # 打包口径与发布线说明
 cat sources-flet/packaging/README.md

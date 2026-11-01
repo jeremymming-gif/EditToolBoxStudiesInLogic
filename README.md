@@ -21,8 +21,8 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 
 | 平台 | 安装方式 | 需要 Python 吗 |
 |---|---|---|
-| Windows 10/11（x64） | 解压即用：`XuehengToolbox.exe`（Flet 单壳）与引擎 `SLCNEngine.exe` 放在同一文件夹，双击前者 | 不需要 |
-| macOS（Apple 芯片） | `XuehengToolbox.app` 拖进「应用程序」（引擎 sidecar 已打包进 App） | 不需要 |
+| Windows 10/11（x64） | 解压即用：`编辑部工具箱.exe`（Flet 单壳）与引擎 `SLCNEngine.exe` 放在同一文件夹，双击前者 | 不需要 |
+| macOS（Apple 芯片） | `编辑部工具箱.app` 拖进「应用程序」（引擎 sidecar 已打包进 App） | 不需要 |
 
 > 旧版外壳（SwiftUI / Tkinter）自 v1.5.0 起 **frozen**：不再提供下载、不再更新；源码仍在 `sources-mac/`、`sources-win/` 仅供回退参考。
 
@@ -32,8 +32,8 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 ### 直接使用（编辑部）
 
 1. 从 [Releases](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) 下载对应平台的 zip。
-2. Windows：解压到任意目录，`XuehengToolbox.exe` 与 `SLCNEngine.exe` 保持同目录，双击 `XuehengToolbox.exe`。
-3. macOS：解压后把 `XuehengToolbox.app` 拖入「应用程序」，首次右键「打开」。
+2. Windows：解压到任意目录，`编辑部工具箱.exe` 与 `SLCNEngine.exe` 保持同目录，双击 `编辑部工具箱.exe`。
+3. macOS：解压后把 `编辑部工具箱.app` 拖入「应用程序」，首次右键「打开」。
 
 界面按「工作台 / 单篇稿件 / 整期装配 / 引用库 / 设置 / 帮助与关于」组织；单篇与整期都是一页流式操作，日志与产物同屏可见。旧版 Tk/SwiftUI 界面的说明仅作历史参考。
 
@@ -55,7 +55,7 @@ cd Engine && python3 -m pip install --target vendor -r requirements.txt
 cd sources-flet && python3 -m flet run app/main.py
 
 # Flet 单壳：打包（引擎 sidecar 另由 CI/脚本产出，见 sources-flet/packaging/README.md）
-cd sources-flet && python3 -m flet pack app/main.py --name XuehengToolbox --distpath dist --yes
+cd sources-flet && python3 -m flet pack app/main.py --name 编辑部工具箱 --distpath dist --yes
 ```
 
 > 旧外壳的构建脚本（`./build.sh`、`sources-win/build-win.ps1`）仍保留，但**已冻结**、不再用于发版；

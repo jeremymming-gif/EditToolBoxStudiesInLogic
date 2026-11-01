@@ -1,4 +1,4 @@
-"""学衡工具箱 · Flet 单壳（B-246c P2 / P3）。
+"""编辑部工具箱 · Flet 单壳（B-246c P2 / P3）。
 
 一个窗口 = 一个应用：左侧分组导航 + 页面区 + 状态栏。
 页面只做「取值 → 拼参数 → 显示日志」，判定全部在 Engine（见 app/services/engine_bridge.py）。
@@ -40,8 +40,8 @@ from ui import pages as P
 from ui.ia_map import NAV_GROUPS
 from ui.tokens import BASE_DPI, BASE_H, BASE_W, ZOOM_MAX, ZOOM_MIN, Tokens
 
-APP_TITLE = "学衡工具箱"
-APP_VERSION = "v0.4.0-p3"
+APP_TITLE = "编辑部工具箱"
+APP_VERSION = "v1.5.0"
 try:
     FLET_VERSION = _pkg_version("flet")
 except Exception:  # noqa: BLE001
@@ -314,8 +314,8 @@ class App:
                     content=ft.Icon(C.ic("AUTO_AWESOME", "STAR"), size=t.px(20), color=t.palette.accent),
                 ),
                 ft.Column(spacing=0, controls=[
-                    C.text("学衡工具箱", t, "h3", weight="semibold"),
-                    C.text("Flet 单壳 · P3", t, "caption", t.palette.text_faint),
+                    C.text("编辑部工具箱", t, "h3", weight="semibold"),
+                    C.text("Flet 单壳", t, "caption", t.palette.text_faint),
                 ]),
             ]),
         )
@@ -392,13 +392,21 @@ class App:
         self.toast("已切换到" + ("深色" if theme == "dark" else "浅色") + "模式（已落盘）")
 
     def apply_titlebar(self) -> None:
-        """深色标题栏跟随主题（DwmSetWindowAttribute；失败降级为系统默认，不影响界面）。"""
-        if not self.client_hwnd:
-            self.client_hwnd = winplat.find_client_window(APP_TITLE) or 0
-        if not self.client_hwnd:
-            return
-        self.titlebar_info = winplat.set_dark_titlebar(self.client_hwnd, self.theme == "dark")
-        self.mark("titlebar", theme=self.theme, **self.titlebar_info)
+        """深色标题栏跟随主题（DwmSetWindowAttribute；失败降级为系统默认，不影响界面）。
+
+        P6a 热修：平台旁路（winplat）在发布包里可能不可用（如无窗口/权限），
+        任何异常都必须吞掉并记 mark，绝不能冒到 Flet UI 回调导致错误页。
+        """
+        try:
+            if not self.client_hwnd:
+                self.client_hwnd = winplat.find_client_window(APP_TITLE) or 0
+            if not self.client_hwnd:
+                return
+            self.titlebar_info = winplat.set_dark_titlebar(self.client_hwnd, self.theme == "dark")
+            self.mark("titlebar", theme=self.theme, **self.titlebar_info)
+        except Exception as exc:  # noqa: BLE001 - 平台旁路失败不得影响主题切换
+            self.mark("titlebar_error", theme=self.theme,
+                      error=f"{type(exc).__name__}: {exc}")
 
     def set_zoom(self, zoom: float) -> None:
         if self.running:
@@ -745,17 +753,25 @@ class App:
             self.mark("bib_query", ok=False, title=title, error=f"{type(exc).__name__}: {exc}")
 
     async def _wake_platform(self) -> None:
-        """首帧可见后接管外部窗口能力（跨进程，不侵入 Flutter 内部）。"""
-        self.client_hwnd = winplat.find_client_window(APP_TITLE) or 0
-        if not self.client_hwnd:
-            self.mark("client_window", ok=False, error="未找到 Flutter 客户端窗口")
-            return
-        info = winplat.window_info(self.client_hwnd)
-        self.mark("client_window", ok=True, **info)
-        self.titlebar_info = winplat.set_dark_titlebar(self.client_hwnd, self.theme == "dark")
-        self.mark("titlebar", theme=self.theme, **self.titlebar_info)
-        if _env_str("P3_DRAG_PROBE") in ("1", "true", "yes"):
-            self.mark("drag_register", **winplat.accept_drag_files(self.client_hwnd, True))
+        """首帧可见后接管外部窗口能力（跨进程，不侵入 Flutter 内部）。
+
+        P6a 热修：整个平台接管段包 try/except —— winplat 在发布包里可能整体不可用，
+        失败只记 mark 并放弃平台增强，绝不向 UI 抛异常。
+        """
+        try:
+            self.client_hwnd = winplat.find_client_window(APP_TITLE) or 0
+            if not self.client_hwnd:
+                self.mark("client_window", ok=False, error="未找到 Flutter 客户端窗口")
+                return
+            info = winplat.window_info(self.client_hwnd)
+            self.mark("client_window", ok=True, **info)
+            self.titlebar_info = winplat.set_dark_titlebar(self.client_hwnd, self.theme == "dark")
+            self.mark("titlebar", theme=self.theme, **self.titlebar_info)
+            if _env_str("P3_DRAG_PROBE") in ("1", "true", "yes"):
+                self.mark("drag_register", **winplat.accept_drag_files(self.client_hwnd, True))
+        except Exception as exc:  # noqa: BLE001 - 平台增强失败不影响应用
+            self.mark("platform_error", where="wake",
+                      error=f"{type(exc).__name__}: {exc}")
 
     async def _platform_hooks(self) -> None:
         tray_want = _env_str("P3_TRAY") in ("1", "true", "yes")

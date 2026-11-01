@@ -167,8 +167,8 @@ git tag "$V" && git push origin "$V"
 | job | 干什么 |
 |---|---|
 | `test` | macos-14 与 windows-latest 各跑一遍**不依赖稿件库**的引擎套件 + `sources-flet/tests` pytest + 旧壳桥梁测试（冻结前回归参考） |
-| `macos` | PyInstaller onefile 出引擎 sidecar `SLCNEngine` → `flet pack` 出 `XuehengToolbox.app`（sidecar 放进 `Contents/MacOS/`）→ 打成 `EditToolBox-<版本>-macOS-arm64.zip`，并附说明 `FIRST-OPEN-macOS.txt` |
-| `windows` | `sources-win/build-win.ps1` 只取 `SLCNEngine.exe` → `flet pack` 出 `XuehengToolbox.exe` → `EditToolBox-<版本>-Windows-x64.zip`（exe + sidecar + `FIRST-OPEN-Windows.txt` + `sha256.txt`） |
+| `macos` | PyInstaller onefile 出引擎 sidecar `SLCNEngine` → `flet pack` 出 `编辑部工具箱.app`（sidecar 放进 `Contents/MacOS/`）→ 打成 `EditToolBox-<版本>-macOS-arm64.zip`，并附说明 `FIRST-OPEN-macOS.txt` |
+| `windows` | `sources-win/build-win.ps1` 只取 `SLCNEngine.exe` → `flet pack` 出 `编辑部工具箱.exe` → `EditToolBox-<版本>-Windows-x64.zip`（exe + sidecar + `FIRST-OPEN-Windows.txt` + `sha256.txt`） |
 | `release` | 汇总资产 + 生成 `latest.json`（应用启动时比对它，**只提示、不自动替换**），写 Flet 口径正文（含两个平台的「首次打开」处理办法与已知限制）并建 Release |
 
 > 打包口径与 `.github/workflows/build-flet.yml` 一致：两条流水线共用同一套 sidecar/flet pack 步骤，

@@ -13,7 +13,7 @@ from typing import Optional
 
 from services import winplat
 
-ICON_TITLE = "学衡工具箱"
+ICON_TITLE = "编辑部工具箱"
 
 
 def _make_image():
@@ -84,7 +84,7 @@ class TrayService:
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", self.quit),
             )
-            self.icon = pystray.Icon("xueheng-toolbox", _make_image(), ICON_TITLE, menu)
+            self.icon = pystray.Icon("editorial-toolbox", _make_image(), ICON_TITLE, menu)
             self._thread = threading.Thread(target=self.icon.run, name="tray", daemon=True)
             self._thread.start()
             self.started = True

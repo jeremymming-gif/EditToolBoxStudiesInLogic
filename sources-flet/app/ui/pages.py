@@ -194,7 +194,7 @@ class HomePage(BasePage):
                         C.secondary_button("环境检查", lambda e: self.app.goto("settings"), t,
                                            icon="CHECK_CIRCLE_OUTLINE"),
                     ]),
-                    C.text("环境检查/诊断包在 P3 落地；现在先用引擎版本做探活。", t,
+                    C.text("环境检查见「设置 → 环境检查」；这里先用引擎版本做探活。", t,
                            "caption", t.palette.text_faint),
                 ]), t, expand=True),
             ]),

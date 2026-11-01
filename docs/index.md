@@ -58,8 +58,8 @@ features:
   <a href="/EditToolBoxStudiesInLogic/guide/install">安装说明</a>
 </div>
 
-- **Windows**：下载 `EditToolBox-<版本>-Windows-x64.zip`，解压即用，**不需要另装 Python**（`XuehengToolbox.exe` 与 `SLCNEngine.exe` 放同一个文件夹）；首次运行 SmartScreen 选「更多信息 → 仍要运行」。
-- **macOS**（Apple 芯片）：解压后把 `XuehengToolbox.app` 放进「应用程序」；首次打开如被拦截，**右键 → 打开**。
+- **Windows**：下载 `EditToolBox-<版本>-Windows-x64.zip`，解压即用，**不需要另装 Python**（`编辑部工具箱.exe` 与 `SLCNEngine.exe` 放同一个文件夹）；首次运行 SmartScreen 选「更多信息 → 仍要运行」。
+- **macOS**（Apple 芯片）：解压后把 `编辑部工具箱.app` 放进「应用程序」；首次打开如被拦截，**右键 → 打开**。
 - 编译 LaTeX 需要本机安装 TeX Live（Windows 可用 MiKTeX，macOS 可用 MacTeX）。
 - 旧 SwiftUI / Tkinter 版本自 v1.5.0 起 frozen，仅保留源码作回退参考、不再发布。
 

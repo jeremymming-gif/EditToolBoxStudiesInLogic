@@ -156,7 +156,7 @@ git -C ../EditToolBox-notes commit -m "引用库：回退到上一个提交" -- 
 
 > Windows 上把 `python3` 换成 `python`，示例路径 `/path/to/...` 换成本机路径（如 `C:\...\reference.bib`）。
 > 打包版：Windows 用与界面 exe 同目录的 `SLCNEngine.exe bibdb.py …`；macOS 的引擎 sidecar 随
-> `XuehengToolbox.app` 放在 `Contents/MacOS/SLCNEngine`（旧 SwiftUI 外壳的 `Contents/Resources/Engine/`
+> `编辑部工具箱.app` 放在 `Contents/MacOS/SLCNEngine`（旧 SwiftUI 外壳的 `Contents/Resources/Engine/`
 > 已 frozen，仅源码回退参考）。
 
 ## 失败时看什么（参考文献回读校验 / 引用库）

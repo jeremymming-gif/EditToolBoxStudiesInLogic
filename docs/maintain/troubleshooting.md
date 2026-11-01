@@ -25,8 +25,8 @@ PYTHONPATH="$PWD/vendor" python3.14 envcheck.py --json     # 外壳读的就是�
 现象：日志「找不到 Engine/convert.py」或启动即失败。
 
 1. 确认 `Engine/convert.py` 存在（源码形态）；
-2. 发布包形态：两个 exe（`XuehengToolbox.exe` 与引擎 sidecar `SLCNEngine.exe`）必须在**同一目录**；
-   macOS 为 `XuehengToolbox.app`，sidecar 已打进 `Contents/MacOS/SLCNEngine`（通常不用改）；
+2. 发布包形态：两个 exe（`编辑部工具箱.exe` 与引擎 sidecar `SLCNEngine.exe`）必须在**同一目录**；
+   macOS 为 `编辑部工具箱.app`，sidecar 已打进 `Contents/MacOS/SLCNEngine`（通常不用改）；
 3. 源码运行时可显式指定：环境变量 `SLCN_ENGINE` 指向 `Engine/` 目录（该目录必须含 `convert.py`）；
 4. 源码运行还需要 `PYTHONPATH` 含依赖目录（`Engine/vendor` 或已安装的 lxml/pypinyin/pypdf）。
 

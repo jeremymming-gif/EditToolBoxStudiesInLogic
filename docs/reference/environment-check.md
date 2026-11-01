@@ -34,7 +34,7 @@ description: 自检检查哪八项、缺依赖怎么装、结果怎么看。
 `engine_bundle` 的两种形态：
 
 - **发布包（exe / app）**：Python 运行时**随包内置**，不要求本机装 Python。这是
-  `XuehengToolbox.exe` + 同目录 `SLCNEngine.exe`，以及 macOS `XuehengToolbox.app`（sidecar 在
+  `编辑部工具箱.exe` + 同目录 `SLCNEngine.exe`，以及 macOS `编辑部工具箱.app`（sidecar 在
   `Contents/MacOS/SLCNEngine`）的常态。
 - **源码（source）**：要求 PATH（或环境变量 `SLCN_PYTHON`）上有 **Python 3.14**，且
   `lxml` / `pypinyin` / `pypdf` 可导入（通常装在 `Engine/vendor/`）。

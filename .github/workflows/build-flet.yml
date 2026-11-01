@@ -3,7 +3,7 @@ name: Build Flet Shell
 # B-246c P4：Flet 单壳双平台打包（Windows / macOS）。
 #   · 引擎 sidecar：Windows 复用 sources-win/build-win.ps1；macOS 用等价的 PyInstaller onefile。
 #   · 应用：flet pack（onefile；macOS 出 .app），sidecar 放到可执行文件同目录。
-#   · 产物：XuehengToolbox-<Engine版本>-<平台>.zip（内含 FIRST-OPEN 说明与 sha256.txt）。
+#   · 产物：EditToolBox-<Engine版本>-<平台>.zip（内含 FIRST-OPEN 说明与 sha256.txt）。
 #   · 只产 artifact，**不做** tag / Release / 签名（发版留人工按 release.yml）。
 on:
   workflow_dispatch:
@@ -61,7 +61,7 @@ jobs:
           python -m pip install --disable-pip-version-check --upgrade pip
           # flet 1.0.5 自带的 `flet` 命令即含 pack 子命令；装了之后必须存在（首个 CI 曾
           # 在此后 step 才炸，保留显式检查方便以后定位）。
-          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet
+          python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet pystray Pillow
           command -v flet || { echo "flet CLI 缺失"; exit 1; }
           python -m pip show flet pyinstaller | sed -n '1,12p'
 
@@ -108,8 +108,8 @@ jobs:
           New-Item -ItemType Directory -Force build-flet | Out-Null
           Push-Location build-flet
           try {
-            flet pack ..\sources-flet\app\main.py --name XuehengToolbox `
-              --product-name "学衡工具箱" --product-version "$V" --file-version "$V.0" `
+            flet pack ..\sources-flet\app\main.py --name 编辑部工具箱 `
+              --product-name "编辑部工具箱" --product-version "$V" --file-version "$V.0" `
               --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" `
               --distpath dist --yes
             if ($LASTEXITCODE -ne 0) { throw "flet pack 失败（rc=$LASTEXITCODE）" }
@@ -122,7 +122,7 @@ jobs:
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
-          ( cd build-flet && flet pack ../sources-flet/app/main.py --name XuehengToolbox --distpath dist --yes )
+          ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 --distpath dist --yes )
           ls -la build-flet/dist
 
       # ── sidecar 定位自检（engine_bridge，不经 GUI） ────────────────
@@ -143,7 +143,7 @@ jobs:
           $V = "${{ steps.ver.outputs.value }}"
           $pkg = "pkg-win"
           New-Item -ItemType Directory -Force $pkg | Out-Null
-          Copy-Item build-flet/dist/XuehengToolbox.exe $pkg/
+          Copy-Item build-flet/dist/编辑部工具箱.exe $pkg/
           Copy-Item build-flet/SLCNEngine.exe $pkg/
           Copy-Item sources-flet/packaging/FIRST-OPEN-Windows.txt $pkg/
           $lines = Get-ChildItem $pkg -File | ForEach-Object {
@@ -151,7 +151,7 @@ jobs:
             "$h  $($_.Name)"
           }
           $lines | Set-Content -Encoding ascii "$pkg/sha256.txt"
-          $zip = "XuehengToolbox-$V-Windows-x64.zip"
+          $zip = "EditToolBox-$V-Windows-x64.zip"
           Compress-Archive -Path "$pkg/*" -DestinationPath $zip -Force
           $zhash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           Write-Host "zip: $zip"
@@ -199,7 +199,7 @@ jobs:
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.value }}"
-          ZIP="XuehengToolbox-$V-macOS-arm64.zip"
+          ZIP="EditToolBox-$V-macOS-arm64.zip"
           ditto -c -k --keepParent pkg-mac "$ZIP"
           ZHASH=$(shasum -a 256 "$ZIP" | awk '{print $1}')
           echo "zip: $ZIP"
@@ -211,6 +211,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flet-${{ matrix.platform }}-${{ steps.ver.outputs.value }}
-          path: XuehengToolbox-${{ steps.ver.outputs.value }}-*.zip
+          path: EditToolBox-${{ steps.ver.outputs.value }}-*.zip
           if-no-files-found: error
           retention-days: 14

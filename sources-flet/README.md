@@ -30,5 +30,5 @@ python3 -m pytest tests -q               # 单元测试（不启动 GUI）
 
 发布口径由仓库根 `.github/workflows/build-flet.yml`（只产 artifact）与 `.github/workflows/release.yml`
 （打 tag 才建 Release）共用：引擎 sidecar 与 `flet pack` 应用打包，产物 zip 内
-`XuehengToolbox.exe` / `XuehengToolbox.app` 与引擎 sidecar（`SLCNEngine.exe` / `Contents/MacOS/SLCNEngine`）
+`编辑部工具箱.exe` / `编辑部工具箱.app` 与引擎 sidecar（`SLCNEngine.exe` / `Contents/MacOS/SLCNEngine`）
 必须保持同目录/同 App 内布局。本地复刻命令见 [`packaging/README.md`](packaging/README.md)。

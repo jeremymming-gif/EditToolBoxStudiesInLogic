@@ -1,19 +1,19 @@
-学衡工具箱 · Windows 首次运行说明（未签名版）
+编辑部工具箱 · Windows 首次运行说明（未签名版）
 ================================================
 
 1) 解压后目录里应有三个文件，请勿分开移动：
-   XuehengToolbox.exe    主程序（Flet 单壳）
+   编辑部工具箱.exe    主程序（Flet 单壳）
    SLCNEngine.exe        引擎（sidecar；主程序在自己旁边找它）
    FIRST-OPEN-Windows.txt 本说明
 
-2) 双击 XuehengToolbox.exe。首次启动需要解包（3~10 秒），之后会快。
+2) 双击 编辑部工具箱.exe。首次启动需要解包（3~10 秒），之后会快。
    若出现 Windows SmartScreen「已保护你的电脑」：
      点「更多信息」→「仍要运行」。这是未签名程序的正常提示，不是病毒。
    若杀毒软件误报：加入信任/白名单即可（发布包未做数字签名，0 成本发布）。
 
 3) 打开后看首页「引擎状态」卡：
    - 正常应显示「冻结引擎 · ...\SLCNEngine.exe」与版本号；
-   - 若显示引擎缺失：确认 SLCNEngine.exe 与 XuehengToolbox.exe 在同一目录；
+   - 若显示引擎缺失：确认 SLCNEngine.exe 与 编辑部工具箱.exe 在同一目录；
      也可在「设置 → 路径 → 引擎目录」手动指向该目录。
    自检：命令行执行  SLCNEngine.exe --version  应打印版本号。
 
@@ -21,7 +21,7 @@
    日志在应用内「运行日志」区，可「清空」「只看摘要」。
 
 5) 完整性校验（可选）：PowerShell 里执行
-   Get-FileHash .\XuehengToolbox.exe -Algorithm SHA256
+   Get-FileHash .\编辑部工具箱.exe -Algorithm SHA256
    与压缩包内 sha256.txt 对照。zip 的 sha256 见 CI 运行摘要。
 
-已知限制：未签名（SmartScreen 提示）；托盘为旁路实现；文件拖放走「浏览...」原生对话框。
+已知限制：未签名（SmartScreen 提示）；托盘为旁路实现（依赖 pystray/Pillow，已随包安装）；文件拖放走「浏览...」原生对话框。

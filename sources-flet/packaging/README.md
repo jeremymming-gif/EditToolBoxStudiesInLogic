@@ -9,22 +9,22 @@
 Windows（onefile exe + 同目录 sidecar）：
 
 ```
-XuehengToolbox.exe         # flet pack 产物
+编辑部工具箱.exe         # flet pack 产物
 SLCNEngine.exe             # 引擎 sidecar（sources-win/build-win.ps1 冻结）
 FIRST-OPEN-Windows.txt
 sha256.txt
-→ XuehengToolbox-<Engine版本>-Windows-x64.zip
+→ EditToolBox-<Engine版本>-Windows-x64.zip
 ```
 
 macOS（`.app` + 包内 sidecar）：
 
 ```
-XuehengToolbox.app/
-  Contents/MacOS/XuehengToolbox      # flet pack 产物
+编辑部工具箱.app/
+  Contents/MacOS/编辑部工具箱      # flet pack 产物
   Contents/MacOS/SLCNEngine         # PyInstaller onefile 引擎（必须同目录，bridge 才能找到）
 FIRST-OPEN-macOS.txt
 sha256.txt
-→ XuehengToolbox-<Engine版本>-macOS-arm64.zip
+→ EditToolBox-<Engine版本>-macOS-arm64.zip
 ```
 
 `engine_bridge.find_engine_exe()` 的顺序：`P2_ENGINE_EXE/SLCN_ENGINE_EXE` → 可执行文件同目录
@@ -46,8 +46,8 @@ pwsh -ExecutionPolicy Bypass -File sources-win/build-win.ps1
 # 2) Flet 应用（等价于 CI 命令）
 New-Item -ItemType Directory -Force build-flet | Out-Null
 Push-Location build-flet
-flet pack ..\sources-flet\app\main.py --name XuehengToolbox `
-  --product-name "学衡工具箱" --product-version "<Engine版本>" --file-version "<Engine版本>.0" `
+flet pack ..\sources-flet\app\main.py --name 编辑部工具箱 `
+  --product-name "编辑部工具箱" --product-version "<Engine版本>" --file-version "<Engine版本>.0" `
   --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" --distpath dist --yes
 Pop-Location
 # 3) 组装：把 sources-win\build\dist\SLCNEngine.exe 复制到 build-flet\dist\ 再试运行
