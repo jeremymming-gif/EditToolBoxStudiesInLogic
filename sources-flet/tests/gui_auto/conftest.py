@@ -9,6 +9,10 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 
+# 非 Windows 不收集走查用例：`harness.py` 导入即 dlopen(user32)（ctypes.WinDLL 解码
+# 依赖的库），mac 上会 OSError 打断整个 pytest 会话。Windows 行为保持不变。
+collect_ignore = [] if sys.platform.startswith("win") else ["test_gui_auto.py"]
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("gui_auto", "GUI 自动走查（真实桌面）")

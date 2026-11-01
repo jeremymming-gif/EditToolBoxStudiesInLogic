@@ -32,7 +32,9 @@ _LONG = wintypes.LONG
 _LPARAM = wintypes.LPARAM
 _UINT = wintypes.UINT
 
-_WNDENUMPROC = ctypes.WINFUNCTYPE(_BOOL, _HWND, _LPARAM)
+#: EnumWindows 回调类型。`ctypes.WINFUNCTYPE` 只存在于 Windows；mac/Linux 上
+#: 模块导入不得崩（GUI-08），因此条件定义。所有使用点都在 `IS_WIN` 分支内。
+_WNDENUMPROC = ctypes.WINFUNCTYPE(_BOOL, _HWND, _LPARAM) if IS_WIN else None
 
 
 class _RECT(ctypes.Structure):

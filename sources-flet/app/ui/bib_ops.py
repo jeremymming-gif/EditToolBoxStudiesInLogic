@@ -381,7 +381,15 @@ class _OpsView:
                   confirm_label=confirm_label, on_confirm=lambda: on_confirm(None))
 
     def _run(self, task) -> None:
-        self.page.page.run_task(task)
+        """调度协程对象（调用点写 `self._run(self._load())`）。
+
+        flet 1.0.5 的 `Page.run_task` 只收 coroutine function（GUI-04b），所以把协程
+        对象包成 async 函数再交给它；签名与行为不变，调用点无需改动。
+        """
+        async def _await_task() -> None:
+            await task
+
+        self.page.page.run_task(_await_task)
 
     async def _read(self, call) -> dict:
         try:

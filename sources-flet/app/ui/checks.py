@@ -14,7 +14,7 @@ import asyncio
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import flet as ft
 
@@ -233,13 +233,26 @@ def read_proof_report(path: str) -> ProofReport:
     return parse_proof_report(text)
 
 
+def _path_stem(value: str) -> str:
+    """文件名主干；同时认 POSIX 与 Windows 路径（与宿主平台无关）。
+
+    POSIX 上 `Path(r"C:\\稿\\a.tex").stem` 会把整串当文件名（反斜杠不是分隔符），
+    报告名就成了 `C:\\稿\\a_一校核查.md`。判据：含反斜杠，或盘符后紧跟分隔符
+    （`C:\\` / `C:/`）即按 `PureWindowsPath` 解析；否则用 `PurePosixPath`，
+    原有 POSIX 路径语义不变（含 `a:b.tex` 这种带冒号的 POSIX 文件名）。
+    """
+    if "\\" in value or re.match(r"^[A-Za-z]:[\\/]", value):
+        return PureWindowsPath(value).stem
+    return PurePosixPath(value).stem
+
+
 def proof_report_name(tex: str) -> str:
-    stem = Path(tex).stem if tex else "<名字>"
+    stem = _path_stem(tex) if tex else "<名字>"
     return f"{stem}_一校核查.md"
 
 
 def proof_fix_name(tex: str) -> str:
-    stem = Path(tex).stem if tex else "<名字>"
+    stem = _path_stem(tex) if tex else "<名字>"
     return f"{stem}_一校核查后.tex"
 
 

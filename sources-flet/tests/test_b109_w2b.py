@@ -211,8 +211,17 @@ def test_parse_proof_report_fallback_without_header():
 
 
 def test_proof_report_and_lang_texts():
+    # GUI-08 伴生：报告名要同时认 Windows 与 POSIX 路径（宿主平台无关）
     assert CK.proof_report_name(r"C:\稿\a.tex") == "a_一校核查.md"
+    assert CK.proof_report_name("C:/稿/a.tex") == "a_一校核查.md"
+    assert CK.proof_report_name(r"稿\a.tex") == "a_一校核查.md"
+    assert CK.proof_report_name("/tmp/稿/a.tex") == "a_一校核查.md"
+    assert CK.proof_report_name("a:b.tex") == "a:b_一校核查.md"  # POSIX 文件名里的冒号
+    assert CK.proof_report_name("a.tex") == "a_一校核查.md"
+    assert CK.proof_report_name("") == "<名字>_一校核查.md"
     assert CK.proof_fix_name("a.tex") == "a_一校核查后.tex"
+    assert CK.proof_fix_name(r"C:\稿\a.tex") == "a_一校核查后.tex"
+    assert CK.proof_fix_name("/tmp/稿/a.tex") == "a_一校核查后.tex"
     assert CK.proof_lang_label("") == "自动"
     assert CK.proof_lang_label("zh") == "中文（zh）" and CK.proof_lang_label("en") == "英文（en）"
     assert CK.proof_result_text(0) == "✅ 完成：没有命中任何规则。"

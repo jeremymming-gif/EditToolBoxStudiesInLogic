@@ -260,7 +260,15 @@ class BibQueryView:
         self.notices = list(notes)[-4:]
 
     def _run(self, task) -> None:
-        self.page.page.run_task(task)
+        """调度协程对象（调用点写 `self._run(self._run_basic())`）。
+
+        flet 1.0.5 的 `Page.run_task` 只收 coroutine function（GUI-04b），所以把协程
+        对象包成 async 函数再交给它；签名与行为不变，调用点无需改动。
+        """
+        async def _await_task() -> None:
+            await task
+
+        self.page.page.run_task(_await_task)
 
     def current(self) -> dict | None:
         if 0 <= self.selected < len(self.hits):

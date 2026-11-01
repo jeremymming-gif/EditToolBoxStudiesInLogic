@@ -192,7 +192,8 @@ class App:
             self.mark("version_fallback", engine_version=self._version_info["engine_version"],
                       fallback=self.app_version)
         self._close_requested = False
-        self._browse_task = None
+        # 注意：不要在这里存 browse task 句柄 —— 会遮蔽下方同名 async 方法（GUI-04：
+        # flet 1.0.5 的 run_task 只收 coroutine function）。句柄需要的话改名，别复用方法名。
         self.prefill_hooks: dict = {}
         self._own_size = _parse_size(_env_str("P2_WINSIZE"))
         self.window_w, self.window_h = self._own_size or self._window_size()
@@ -638,7 +639,10 @@ class App:
             self.toast("运行中不能打开文件对话框")
             return
         self.mark("picker_open_begin", kind=kind, key=key)
-        self.page.run_task(self._browse_task, ref, dialog_title, kind, key, store_prefix)
+        try:
+            self.page.run_task(self._browse_task, ref, dialog_title, kind, key, store_prefix)
+        except Exception as exc:  # noqa: BLE001  调度失败也落到中文提示（GUI-04 加固）
+            self._picker_error(f"run_task: {type(exc).__name__}: {exc}")
 
     async def _browse_task(self, ref, dialog_title: str, kind: str, key: str, store_prefix: str) -> None:
         try:
