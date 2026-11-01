@@ -20,7 +20,7 @@ description: v1.5.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 | macOS 仅 CI 验证 | 本机为 Windows；mac 构建/运行由 CI macos runner 验证 | mac 侧缺少人工真机走查 | 发版前在 mac 上按 `FIRST-OPEN-macOS.txt` 走一遍关键路径 | 发版流程固定项 |
 | Windows 平台覆盖 | 真机冒烟只在发版前各做一次 | 平台长尾风险 | 每次发版前按 `windows-smoke-checklist.md` 逐项走、留回执；pytest 常跑 | 发版流程固定项 |
 | 引用库写库（P6） | Flet 版「待处理」只含字段冲突与版本库状态区；库健康 / 已处理两段仍只在 macOS 版，也没有「手动补提交」按钮 | 三段合一的处理中心与手动补提交在 Flet 上不可用 | 库健康用 `Engine/bibdb.py lint --with-records`，已处理用 `report`；提交由写库成功后的自动本地 commit 完成（入藏与待裁决都有） | 后续版本 |
-| 设置项取舍 | Flet 版设置页聚焦外观/路径/日志/环境检查；旧 Tk 版的 AI 配置页未迁移 | 需要 AI 核实时走 CLI | `Engine/convert.py --verify-refs` 等 CLI 参数（见 `Engine/docs/ENGINE_API.md`） | 后续版本 |
+| AI 全文直连核查 | Flet 面板只做「文献元数据直连核实」与「两段式任务书」；`--llm-fulltext`（正文分片直连 + 自动应用）没有界面入口 | 需要全文直连核查时只能走 CLI | `Engine/convert.py --verify-refs --llm-fulltext …`（见 `Engine/docs/ENGINE_API.md`），同样受预算闸约束 | 后续版本 |
 
 ## 引擎与版面（沿用）
 

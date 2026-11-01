@@ -13,6 +13,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from services import ai_prefs
+
 APP_NAME = "编辑部工具箱"
 SCHEMA_KEY = "flet"
 SCHEMA_VERSION = 2
@@ -65,6 +67,8 @@ def _defaults() -> dict:
         "log_show_raw": False,
         "env_check_done": False,
         "engine_override": "",
+        # AI 段：总开关默认关；Key 只写本机设置文件，不进日志/证据/仓库
+        "ai": ai_prefs.defaults(),
         "updated_at": "",
     }
 

@@ -13,6 +13,7 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from ui import ai_panel as AIP
 from ui import bib_write as BW
 from ui import components as C
 from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
@@ -241,6 +242,7 @@ class SinglePage(BasePage):
         self._run_btn = None
         self._stop_btn = None
         self._chips_row = None
+        self._ai = None
 
     # ── 构建 ───────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
@@ -282,6 +284,7 @@ class SinglePage(BasePage):
             self.app.toast("运行中不能切换步骤，先停止")
             return
         self.flow_key = key
+        self._ai = None
         self._render_chips()
         builder = {
             "convert": self._build_convert,
@@ -337,7 +340,12 @@ class SinglePage(BasePage):
             C.section_title("处理选项", t, note="默认勾选常用项"),
             C.card(ft.Column(spacing=0, controls=self._interleave(rows)), t),
             advanced,
+            self._ai_section(),
         ])
+
+    def _ai_section(self) -> ft.Control:
+        self._ai = AIP.AiPanel(self)
+        return self._ai.build()
 
     def _build_checkbib(self) -> ft.Control:
         t = self.t
@@ -405,7 +413,7 @@ class SinglePage(BasePage):
             if not out:
                 raise ValueError("请先选择输出根目录")
             options = self.app.store.get("options", {}) or {}
-            return EB.convert_call(
+            kwargs = dict(
                 source=source, out=out,
                 compile_pdf=bool(options.get("convert_compile", True)),
                 clean=bool(options.get("convert_clean", False)),
@@ -415,6 +423,9 @@ class SinglePage(BasePage):
                 received=self.field("convert_received"), author=self.field("convert_author"),
                 name=self.field("convert_name"), bib=self.field("convert_bib"),
             )
+            if self._ai is not None:
+                return self._ai.build_call(**kwargs)
+            return EB.convert_call(**kwargs)
         if self.flow_key == "checkbib":
             returned = self.field("bib_returned")
             if not returned:
@@ -444,11 +455,20 @@ class SinglePage(BasePage):
         self.app.begin_run(call)
         self._result.reset()
         self._log.clear()
+        panel = self._ai if self.flow_key == "convert" else None
+        if panel is not None:
+            panel.reset_run()
         code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
+                                 api=panel.api_env() if panel is not None else None,
                                  notes=self.app.notes_repo)
         self.app.finish_run(call, code)
         level = "warn" if self.app.cancel_requested else EB.result_level(call.entry, code)
         text = "⏹ 已取消" if self.app.cancel_requested else EB.result_text(call.entry, code)
+        if panel is not None:
+            notice = panel.budget_notice()
+            if notice:
+                text, level = notice, "error"
+            panel.after_run(call, code)
         artifact = EB.artifact_path(self.app.last_line)
         self._result.show(text, level=level, artifact=artifact)
         if artifact:
@@ -469,6 +489,8 @@ class SinglePage(BasePage):
         self.app.record_line(line)
         summary = EB.is_summary_line(line)
         self._log.add_line(line, _level_of_line(line), summary)
+        if self._ai is not None and self.flow_key == "convert":
+            self._ai.on_line(line)
 
     def _safe_update(self, *controls) -> None:
         for control in controls:
@@ -486,6 +508,8 @@ class SinglePage(BasePage):
             self._stop_btn.disabled = not running
         if getattr(self, "_busy", None) is not None:
             self._busy.visible = running
+        if self._ai is not None:
+            self._ai.refresh_running()
         self._safe_update(*(c for c in (self._run_btn, self._stop_btn, getattr(self, "_busy", None)) if c is not None))
 
     # 证据钩子 ─────────────────────────────────────────────────────────
@@ -1213,8 +1237,8 @@ class SettingsPage(BasePage):
             actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
                                       icon="SAVE_OUTLINED")],
         )
-        page = C.page_body(header, engine_card, appearance, paths, envcheck, logs, about,
-                           diagnostics, t=t, gap=12)
+        page = C.page_body(header, engine_card, appearance, paths, AIP.AiSettings(self).build(),
+                           envcheck, logs, about, diagnostics, t=t, gap=12)
         return page
 
     # ── 小工具 ─────────────────────────────────────────────────────────

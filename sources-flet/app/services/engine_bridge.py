@@ -349,6 +349,95 @@ def convert_call(
     return _call("convert.py", args, "初排转换")
 
 
+# ── AI：协同两段式 / 直连核实（批 107 P2） ──────────────────────────────
+# 三个入口都只是「把界面取值拼成引擎参数」；文档逻辑与预算闸都在 Engine/。
+def ai_settings_env(ai: dict) -> dict:
+    """AI 设置 → `run_call(api=…)` 的环境映射。
+
+    Key **只**经环境变量 `SLCN_LLM_KEY` 交给子进程：`EngineCall.to_dict()` 会进
+    运行证据（P2MARK / marker 文件），argv 里出现密钥就等于写进证据。
+    """
+    if not isinstance(ai, dict):
+        return {}
+    api: dict = {}
+    for src, dst in (("base", "base"), ("key", "key"), ("model", "model")):
+        value = str(ai.get(src) or "").strip()
+        if value:
+            api[dst] = value
+    protocol = str(ai.get("protocol") or "").strip()
+    if protocol in ("chat", "responses"):
+        api["protocol"] = protocol
+    api["thinking"] = "1" if ai.get("thinking") else "0"
+    return api
+
+
+def _budget_arg(value):
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0, int(text, 10))
+    except ValueError:
+        return None
+
+
+def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
+                  **convert_kwargs) -> EngineCall:
+    """第一段：出核实任务书（尚未交付、零上传）。"""
+    call = convert_call(source=source, out=out, verify_refs=True, **convert_kwargs)
+    extra = ["--coop-taskbook-only", "--no-ai-merge"]
+    if fulltext in ("context", "full"):
+        extra.extend(["--coop-fulltext", fulltext])
+    _append_opt(extra, "--coop-stage", stage)
+    return EngineCall(entry=call.entry, argv=list(call.argv) + extra,
+                      label="协同初排 · 第一段（出任务书，尚未交付）")
+
+
+def coop_ph2_call(*, source: str, out: str, replies, stage: str = "",
+                  apply: bool = False, **convert_kwargs) -> EngineCall:
+    """第二段：导入回填（`--coop-apply` 才改产物，否则只记录）。"""
+    paths = [str(path).strip() for path in (replies or []) if str(path or "").strip()]
+    if not paths:
+        raise ValueError("导入回填至少要一个回填文件")
+    call = convert_call(source=source, out=out, **convert_kwargs)
+    extra: list[str] = []
+    for path in paths:
+        extra.extend(["--coop-replies", path])
+    _append_opt(extra, "--coop-stage", stage)
+    if apply:
+        extra.append("--coop-apply")
+    return EngineCall(entry=call.entry, argv=list(call.argv) + extra,
+                      label="协同初排 · 第二段（" + ("应用回填" if apply else "仅记录") + "）")
+
+
+def ai_verify_call(*, source: str, out: str, ai: dict, no_ai_merge: bool = True,
+                   **convert_kwargs) -> EngineCall:
+    """直连核实：Key 不进 argv（见 `ai_settings_env`），预算参数总是显式传。"""
+    settings = ai if isinstance(ai, dict) else {}
+    if not str(settings.get("key") or "").strip():
+        raise ValueError("直连核实需要 API Key：请先在「设置 → AI」填好（Key 只经环境变量传给引擎）")
+    convert_kwargs.pop("verify_refs", None)
+    convert_kwargs.pop("verify_max", None)
+    verify_max = settings.get("verify_max") or 0
+    try:
+        verify_max = int(verify_max) or None
+    except (TypeError, ValueError):
+        verify_max = None
+    call = convert_call(source=source, out=out, verify_refs=True,
+                        verify_max=verify_max, **convert_kwargs)
+    args = list(call.argv)
+    _append_opt(args, "--llm-base", str(settings.get("base") or "").strip())
+    _append_opt(args, "--llm-model", str(settings.get("model") or "").strip())
+    protocol = str(settings.get("protocol") or "").strip()
+    if protocol in ("chat", "responses"):
+        _append_opt(args, "--llm-protocol", protocol)
+    _append_opt(args, "--ai-budget-tokens", _budget_arg(settings.get("article_budget_tokens")))
+    _append_opt(args, "--ai-batch-budget-tokens", _budget_arg(settings.get("batch_budget_tokens")))
+    if no_ai_merge:
+        args.append("--no-ai-merge")
+    return EngineCall(entry=call.entry, argv=args, label="AI 核实（直连 API）")
+
+
 def checkbib_call(*, returned: str, original: str = "", tex: str = "", merge_into: str = "", out: str = "") -> EngineCall:
     args = ["--returned", returned]
     _append_opt(args, "--original", original)
