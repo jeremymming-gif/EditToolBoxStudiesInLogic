@@ -182,7 +182,7 @@ class SinglePage(BasePage):
     # ── 构建 ───────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
         t = self.t
-        self._log = C.LogConsole(t, height=150, title="运行日志")
+        self._log = C.LogConsole(t, height=200, title="运行日志", dock=True)
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
         self._proof = CK.single_card(self)
@@ -209,7 +209,8 @@ class SinglePage(BasePage):
         self._busy = status.controls[3]
         flow_bar = ft.Column(spacing=t.sp("half"), controls=[status, self._flow_desc])
         body = C.page_body(header, flow_bar, self._flow_box, self._result.root,
-                           self._proof.root, self._log.root, t=t, gap=10)
+                           self._proof.root, t=t, gap=10,
+                           overlay=self._log.dock_root, overlay_reserve=64)
         self.refresh_running()
         return body
 
@@ -263,33 +264,31 @@ class SinglePage(BasePage):
                          icon="WARNING_AMBER_ROUNDED", checked=bool(options.get("convert_force", False)),
                          on_change=lambda e: self.app.set_option("convert_force", e.control.value)),
         ]
-        advanced = ft.ExpansionTile(
-            title=C.text("高级参数（卷 / 期 / 年 / 页码 / 收稿）", t, "small", p.text_muted),
-            subtitle=C.text("缺省不填；填了才传给引擎", t, "caption", p.text_faint),
-            controls=[ft.Column(spacing=t.sp("1"), controls=[
-                ft.Row(spacing=t.sp("1"), controls=[
-                    self._meta_field("convert_vol", "卷", 90),
-                    self._meta_field("convert_issue", "期", 90),
-                    self._meta_field("convert_year", "年份", 110),
-                    self._meta_field("convert_pages", "页码", 110),
-                    self._meta_field("convert_received", "收稿日期", 150),
-                ]),
-                ft.Row(spacing=t.sp("1"), controls=[
-                    self._meta_field("convert_author", "作者", 200),
-                    self._meta_field("convert_name", "篇名", 320),
-                    self._meta_field("convert_bib", "参考文献 .bib", 320),
-                ]),
-                ft.Row(spacing=t.sp("1"), controls=[
-                    self._meta_field("convert_lang", "语种（zh / en，可空）", 240),
-                    self._meta_field("convert_editor", "责编", 160),
-                    self._meta_field("convert_grants", "基金", 300),
-                ]),
-                ft.Row(spacing=t.sp("1"), controls=[
-                    self._meta_field("convert_refs", "附加参考文献（--refs，可空）", 320),
-                    self._meta_field("convert_sty", "样式文件（--sty，可空）", 300),
-                    self._meta_field("convert_skeleton", "模板骨架（--skeleton，可空）", 300),
-                ]),
-            ])],
+        # 高级参数：始终可见（用户反馈：别再藏进小字 ExpansionTile）。
+        advanced = C.card(ft.Row(
+            wrap=True, spacing=t.sp("1"), run_spacing=t.sp("1"),
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                self._meta_field("convert_vol", "卷", 90),
+                self._meta_field("convert_issue", "期", 90),
+                self._meta_field("convert_year", "年份", 110),
+                self._meta_field("convert_pages", "页码", 110),
+                self._meta_field("convert_received", "收稿日期", 150),
+                self._meta_field("convert_author", "作者", 200),
+                self._meta_field("convert_name", "篇名", 320),
+                self._meta_field("convert_bib", "参考文献 .bib", 320),
+                self._meta_field("convert_lang", "语种（zh / en，可空）", 240),
+                self._meta_field("convert_editor", "责编", 160),
+                self._meta_field("convert_grants", "基金", 300),
+                self._meta_field("convert_refs", "附加参考文献（--refs，可空）", 320),
+                self._meta_field("convert_sty", "样式文件（--sty，可空）", 300),
+                self._meta_field("convert_skeleton", "模板骨架（--skeleton，可空）", 300),
+            ],
+        ), t, pad=12)
+        # 元数据表单：默认收起（保留 MetadataPanel 本体，不改表单逻辑）。
+        metadata = ft.ExpansionTile(
+            title=C.text("元数据（可选）", t, role="item-title"),
+            controls=[self._build_metadata_section()],
             expanded=False,
         )
         return ft.Column(spacing=t.sp("2"), controls=[
@@ -301,10 +300,9 @@ class SinglePage(BasePage):
             self.add_picker("输出根目录", "single_out", "产物写到该目录下的 <作者>/ 里", kind="dir"),
             C.section_title("处理选项", t, note="默认勾选常用项"),
             C.card(ft.Column(spacing=0, controls=self._interleave(rows)), t),
-            C.section_title("元数据（人工填写，可选）", t,
-                            note="表单 → --metadata-json；「预览元数据」= 同一 argv + --metadata-preview-out"),
-            self._build_metadata_section(),
+            C.section_title("高级参数", t),
             advanced,
+            metadata,
             C.text(SS.bibdb_convert_hint(self.app.store.data), t, "caption", p.text_faint),
             self._ai_section(),
         ])
@@ -425,6 +423,7 @@ class SinglePage(BasePage):
         self.app.begin_run(call)
         self._result.reset()
         self._log.clear()
+        self._log.expand()      # 运行即展开底部日志浮层（VSCode 输出面板式）
         CK.before_run(self)
         CK.on_proof_log(self)
         panel = self._ai if self.flow_key == "convert" else None

@@ -101,7 +101,13 @@ def page_header(title: str, subtitle: str, t: Tokens, actions: list | None = Non
     )
 
 
-def page_body(*controls, t: Tokens, gap: float = 16) -> ft.Container:
+def page_body(*controls, t: Tokens, gap: float = 16, overlay=None,
+              overlay_reserve: float = 0) -> ft.Control:
+    """页面内容区。给了 `overlay` 就改成 Stack：内容在下、浮层在上（后入 = z 更高）。
+
+    `overlay_reserve` 是给浮层留出的底部内边距（px），避免浮层遮住内容最后一行。
+    浮层自身用 `left/right/bottom=0` 贴住内容区底部（VSCode 输出面板式）。
+    """
     body = ft.Column(
         controls=list(controls),
         spacing=t.sp("2") if gap == 16 else t.px(gap),
@@ -109,10 +115,15 @@ def page_body(*controls, t: Tokens, gap: float = 16) -> ft.Container:
         expand=True,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
-    return ft.Container(
+    if overlay is not None and overlay_reserve:
+        body.controls.append(ft.Container(height=t.px(overlay_reserve)))
+    box = ft.Container(
         padding=_pad(t, 24, 12, 24, 18), expand=True, content=body,
         bgcolor=t.palette.bg,
     )
+    if overlay is None:
+        return box
+    return ft.Stack(controls=[box, overlay], expand=True)
 
 
 # ── 按钮 ────────────────────────────────────────────────────────────────────
@@ -416,7 +427,8 @@ class LogConsole:
     FLUSH_INTERVAL_S = 0.1
     FLUSH_BATCH = 32
 
-    def __init__(self, t: Tokens, *, height: float = 200, title: str = "运行日志") -> None:
+    def __init__(self, t: Tokens, *, height: float = 200, title: str = "运行日志",
+                 dock: bool = False) -> None:
         self.t = t
         self._lines: list[tuple[str, str, bool]] = []
         self._fold_only = False
@@ -424,35 +436,94 @@ class LogConsole:
         self._dirty = 0
         self._last_update = 0.0
         self._flush_scheduled = False
+        self.dock = dock
+        self._expanded = not dock
         self.list = ft.ListView(expand=True, spacing=t.px(2), auto_scroll=True, padding=0)
         self.empty = text("等待运行…", t, "small", t.palette.log_muted)
         self.list.controls.append(self.empty)
         self._fold_switch = ft.Switch(
             value=False, label="只看摘要", on_change=self._on_fold, active_color=t.palette.accent,
         )
+        # 浮层标题栏（收起后只剩这一行）：标题 + 展开/收起 + 只看摘要 + 清空。
+        self._toggle_btn = None
+        toolbar_controls = [
+            ft.Icon(ic("TERMINAL"), size=t.px(18), color=t.palette.text_muted),
+            text(title, t, role="section"),
+            ft.Container(expand=True),
+            self._fold_switch,
+        ]
+        if dock:
+            self._toggle_btn = icon_button(
+                "KEYBOARD_ARROW_UP", "展开日志", self._on_toggle, t)
+            toolbar_controls.append(self._toggle_btn)
+        toolbar_controls.append(text_button("清空", self._on_clear, t))
         toolbar = ft.Row(
             spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Icon(ic("TERMINAL"), size=t.px(18), color=t.palette.text_muted),
-                text(title, t, role="section"),
-                ft.Container(expand=True),
-                self._fold_switch,
-                text_button("清空", self._on_clear, t),
-            ],
+            controls=toolbar_controls,
         )
+        # 收起 = 标题栏仍在；展开 = 固定高度日志区（VSCode 输出面板观感）。
+        self._log_box = ft.Container(
+            height=t.px(height), bgcolor=t.palette.log_bg,
+            border=box(t), border_radius=t.radius("md"),
+            padding=_pad(t, 12, 10, 12, 10),
+            content=self.list, visible=self._expanded,
+        )
+        root_kwargs = {}
+        if dock:
+            root_kwargs = {
+                "bgcolor": t.palette.surface,
+                "border": ft.Border(top=_side(t)),
+                "border_radius": 0,
+                "padding": _pad(t, 16, 6, 16, 6),
+            }
+        else:
+            root_kwargs = {
+                "bgcolor": t.palette.surface_2,
+                "border_radius": t.radius("lg"),
+                "padding": _pad(t, 16, 14, 16, 14),
+            }
         self.root = ft.Container(
-            bgcolor=t.palette.surface_2, border_radius=t.radius("lg"),
-            padding=_pad(t, 16, 14, 16, 14),
-            content=ft.Column(spacing=t.sp("1"), controls=[
-                toolbar,
-                ft.Container(
-                    height=t.px(height), bgcolor=t.palette.log_bg,
-                    border=box(t), border_radius=t.radius("md"),
-                    padding=_pad(t, 12, 10, 12, 10),
-                    content=self.list,
-                ),
-            ]),
+            content=ft.Column(spacing=t.sp("1"), controls=[toolbar, self._log_box]),
+            **root_kwargs,
         )
+        # Stack 定位壳：贴内容区底部、跨满宽度（由 page_body(overlay=...) 使用）。
+        self.dock_root = ft.Container(left=0, right=0, bottom=0, content=self.root)
+
+    # -- 浮层收展 -----------------------------------------------------
+    def _on_toggle(self, e) -> None:
+        self.toggle()
+
+    def toggle(self) -> None:
+        self.set_expanded(not self._expanded)
+
+    def expand(self) -> None:
+        self.set_expanded(True)
+
+    def collapse(self) -> None:
+        self.set_expanded(False)
+
+    def set_expanded(self, value: bool) -> None:
+        if not self.dock:
+            return
+        self._expanded = bool(value)
+        self._log_box.visible = self._expanded
+        if self._toggle_btn is not None:
+            self._toggle_btn.icon = ic("KEYBOARD_ARROW_DOWN" if self._expanded
+                                       else "KEYBOARD_ARROW_UP")
+            self._toggle_btn.tooltip = "收起日志" if self._expanded else "展开日志"
+        self.list.auto_scroll = True
+        self._update_root()
+
+    @property
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def _update_root(self) -> None:
+        try:
+            self.root.update()
+        except Exception:  # noqa: BLE001 未挂载（构建期/证据脚本）
+            pass
+
 
     # -- 内部 ---------------------------------------------------------
     def _on_fold(self, e) -> None:
