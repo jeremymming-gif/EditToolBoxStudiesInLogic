@@ -24,6 +24,34 @@ from ui.bib_ops import (DUPE_SHOW, _OpsView, _text, duplicate_pair_lines,
 from ui.bib_write import explain_result
 
 
+# ── 对比表（纯函数 + 列宽；可直接单测）─────────────────────────────────
+#: 缺失值占位：左右两列都显示，不合并成单列（用户要能同时看到「另一侧是什么」）。
+EMPTY_VALUE = "（空）"
+#: 对比表列宽（px；经 t.px 随缩放换算）：字段名 / 保留侧单选。
+MERGE_FIELD_WIDTH = 84
+MERGE_CHOICE_WIDTH = 104
+
+
+def merge_field_rows(left: dict | None, right: dict | None) -> list[tuple[str, str, str]]:
+    """两条记录的字段并集 → [(字段名, 左值, 右值)]，缺失值统一「（空）」。
+
+    同一字段永远左右**同时成列**：不靠展开行或下拉菜单才能知道另一条记录的值。
+    """
+    names: list[str] = []
+    for record in (left, right):
+        for name, _value in ordered_fields(record):
+            if name not in names:
+                names.append(name)
+    left_fields = (left or {}).get("fields") or {}
+    right_fields = (right or {}).get("fields") or {}
+    rows: list[tuple[str, str, str]] = []
+    for name in names:
+        rows.append((name,
+                     _text(left_fields.get(name)) or EMPTY_VALUE,
+                     _text(right_fields.get(name)) or EMPTY_VALUE))
+    return rows
+
+
 # ── R2 查重合并 ─────────────────────────────────────────────────────────
 class BibDuplicatesView(_OpsView):
     """查重合并：报告候选对 → 对比两条 / 选字段来源 → 预览 → 合并 + 1 条提交。"""
@@ -270,27 +298,7 @@ class BibDuplicatesView(_OpsView):
 
     def _merge_card(self) -> ft.Control:
         t = self.t
-        left_key, right_key = self._left_key(), self._right_key()
-        names: list[str] = []
-        for record in (self.left, self.right):
-            for name, _ in ordered_fields(record):
-                if name not in names:
-                    names.append(name)
-        rows = []
-        for name in names:
-            left_value = _text((self.left.get("fields") or {}).get(name))
-            right_value = _text((self.right.get("fields") or {}).get(name))
-            choice = ft.Dropdown(
-                value=self.field_choice.get(name, "left"), dense=True, width=t.px(260),
-                text_size=t.font("body"), options=[
-                    ft.DropdownOption(key="left", text=f"{left_key}：{left_value or '（空）'}"),
-                    ft.DropdownOption(key="right", text=f"{right_key}：{right_value or '（空）'}"),
-                ],
-                on_select=lambda e, n=name: self.field_choice.__setitem__(
-                    n, e.control.value or "left"))
-            rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                               controls=[C.text(field_label(name), t, "small",
-                                                t.palette.text_muted), choice]))
+        rows = merge_field_rows(self.left, self.right)
         top = ft.Row(spacing=t.sp("1"), wrap=True,
                      vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.TextField(label="合并后 key", value=self.new_key, dense=True, width=t.px(200),
@@ -308,8 +316,80 @@ class BibDuplicatesView(_OpsView):
             C.section_title(f"对比 · {duplicate_pair_title(self.pair)}", t,
                             note="逐字段选保留哪一条的值（默认左）"),
             top,
-            *(rows[:40]),
+            self._merge_header(),
+            *(self._merge_row(name, left_value, right_value)
+              for name, left_value, right_value in rows[:40]),
         ]), t)
+
+    def _merge_header(self) -> ft.Control:
+        """列头：字段 | 左：<key> | 右：<key> | 保留 —— 两侧 key 同时可见。"""
+        t = self.t
+        return ft.Container(
+            bgcolor=t.palette.surface_2, border_radius=t.radius("sm"),
+            padding=C._pad(t, 8, 6, 8, 6),
+            content=ft.Row(spacing=t.sp("1"),
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=[
+                ft.Container(width=t.px(MERGE_FIELD_WIDTH),
+                             content=C.text("字段", t, "caption", t.palette.text_muted,
+                                            weight="medium")),
+                self._merge_head_cell(f"左：{self._left_key()}"),
+                self._merge_head_cell(f"右：{self._right_key()}"),
+                ft.Container(width=t.px(MERGE_CHOICE_WIDTH),
+                             content=C.text("保留", t, "caption", t.palette.text_muted,
+                                            weight="medium")),
+            ]))
+
+    def _merge_head_cell(self, label: str) -> ft.Control:
+        t = self.t
+        return ft.Container(expand=True, content=C.text(
+            label, t, "caption", t.palette.text_muted, weight="medium",
+            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=label))
+
+    def _merge_row(self, name: str, left_value: str, right_value: str) -> ft.Control:
+        """一行三列（字段名 | 左值 | 右值）+ 行内单选；选中侧加底色，另一侧弱化。"""
+        t = self.t
+        side = self.field_choice.get(name) or "left"
+
+        def _choose(e, field=name) -> None:
+            self.field_choice[field] = str(e.control.value or "left")
+            self._refresh()
+
+        radio_style = ft.TextStyle(size=t.font("small"))
+        return ft.Container(
+            padding=C._pad(t, 8, 4, 8, 4),
+            border=ft.Border(bottom=C._side(t, t.palette.border)),
+            content=ft.Row(spacing=t.sp("1"),
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=[
+                ft.Container(width=t.px(MERGE_FIELD_WIDTH),
+                             content=C.text(field_label(name), t, "small",
+                                            t.palette.text_muted, max_lines=2,
+                                            overflow=ft.TextOverflow.ELLIPSIS)),
+                self._merge_value(left_value, side == "left"),
+                self._merge_value(right_value, side == "right"),
+                ft.Container(width=t.px(MERGE_CHOICE_WIDTH), content=ft.RadioGroup(
+                    value=side, on_change=_choose,
+                    content=ft.Row(spacing=0, controls=[
+                        ft.Radio(label="左", value="left", label_style=radio_style),
+                        ft.Radio(label="右", value="right", label_style=radio_style),
+                    ]))),
+            ]))
+
+    def _merge_value(self, value: str, chosen: bool) -> ft.Control:
+        """单侧值：长值换行 + 省略 + tooltip（完整值可悬停看），不撑破卡片。"""
+        t = self.t
+        empty = not value or value == EMPTY_VALUE
+        color = (t.palette.text_faint if empty else
+                 (t.palette.text if chosen else t.palette.text_muted))
+        return ft.Container(
+            expand=True,
+            padding=C._pad(t, 8, 6, 8, 6),
+            bgcolor=t.palette.accent_soft if chosen else None,
+            border_radius=t.radius("sm"),
+            content=C.text(value, t, "small", color, max_lines=3,
+                           overflow=ft.TextOverflow.ELLIPSIS,
+                           tooltip=None if empty else value))
 
     def _merge_preview_card(self) -> ft.Control:
         t = self.t

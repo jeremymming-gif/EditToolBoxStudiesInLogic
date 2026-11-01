@@ -335,8 +335,8 @@ class BibQueryView:
                                C.text("正在查询…" if self.busy else "", t, "small",
                                       t.palette.text_faint)])
         self.page.query_field = field  # main.py 的 P2_BIB_QUERY_UI 自检钩子沿用旧入口
-        hint = C.text(f"例：{QUERY_HINTS[self.mode]}", t, "caption", t.palette.text_faint)
-        return ft.Column(spacing=t.sp("half"), controls=[bar, hint])
+        # 批 112 收尾（用户反馈）：示例只留在输入框 hint_text 一处，下方不再重复同一句。
+        return bar
 
     def _advanced_panel(self) -> ft.Control:
         t = self.page.t
