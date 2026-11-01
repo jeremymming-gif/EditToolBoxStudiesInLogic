@@ -325,7 +325,7 @@ class BibImportView:
         if self.mode == "dir":
             return []
         t = self.t
-        common = dict(dense=True, text_size=t.font("small"),
+        common = dict(dense=True, text_size=t.font("body"),
                       border_color=t.palette.border, focused_border_color=t.palette.accent,
                       content_padding=C._pad(t, 10, 8, 10, 8), width=t.px(240))
         return [
@@ -363,7 +363,7 @@ class BibImportView:
             label="粘贴 bib 文本", value=self.text_value, multiline=True,
             min_lines=6, max_lines=14, hint_text="把 bib 条目粘贴到这里；预览/写入时写成临时文件，"
                                                  "不改动任何源文件",
-            text_size=t.font("small"), border_color=t.palette.border,
+            text_size=t.font("body"), border_color=t.palette.border,
             focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=self._on_text_change,

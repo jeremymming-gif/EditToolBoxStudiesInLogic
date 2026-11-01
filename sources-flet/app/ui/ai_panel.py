@@ -95,7 +95,7 @@ class AiPanel:
         self._scope_row = ft.Row(spacing=t.sp("1"), visible=self._fulltext,
                                  controls=self._scope_controls())
         self._stage_field = ft.TextField(
-            value="", dense=True, text_size=t.font("small"), expand=True,
+            value="", dense=True, text_size=t.font("body"), expand=True,
             hint_text="留空 = 按输出根目录与源稿自动发现",
             on_change=self._on_stage_input,
         )
@@ -216,7 +216,7 @@ class AiPanel:
 
     def _reply_row(self, value: str = "") -> ft.Row:
         t = self.t
-        field = ft.TextField(value=value, dense=True, text_size=t.font("small"), expand=True,
+        field = ft.TextField(value=value, dense=True, text_size=t.font("body"), expand=True,
                              hint_text="回填文件路径", on_change=lambda e: self._refresh_mode())
         ref = [field]
 
@@ -461,7 +461,7 @@ class AiSettings:
         key_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.text("API Key", t, "small", p.text_muted),
             ft.TextField(value=ai["key"], password=True, can_reveal_password=True, dense=True,
-                         text_size=t.font("small"), expand=True,
+                         text_size=t.font("body"), expand=True,
                          hint_text="只存本机设置 JSON；不进命令行、不进日志",
                          on_change=self._on_key_typing, on_blur=self._on_key_commit),
             C.text_button("清除", lambda e: self._clear_key(), t),
@@ -494,7 +494,7 @@ class AiSettings:
 
     def _text_row(self, key: str, label: str, value: str) -> ft.Row:
         t, p = self.t, self.t.palette
-        field = ft.TextField(value=str(value or ""), dense=True, text_size=t.font("small"),
+        field = ft.TextField(value=str(value or ""), dense=True, text_size=t.font("body"),
                              expand=True, on_blur=lambda e, k=key: self._save({k: e.control.value}))
         return ft.Row(spacing=t.sp("1"), controls=[
             C.text(label, t, "small", p.text_muted),
@@ -504,7 +504,7 @@ class AiSettings:
     def _budget_row(self, key: str, label: str, ai: dict) -> ft.Row:
         t, p = self.t, self.t.palette
         field = ft.TextField(value=str(ai.get(key, 0)), dense=True, width=130,
-                             text_size=t.font("small"),
+                             text_size=t.font("body"),
                              on_blur=lambda e, k=key: self._save_budget(k, e))
         return ft.Row(spacing=t.sp("1"), controls=[
             C.text(label, t, "small", p.text_muted),

@@ -35,11 +35,13 @@ import flet as ft
 from services import engine_bridge as EB
 from services import winplat
 from services.settings_store import SettingsStore
+from ui import brand
 from ui import components as C
 from ui import pages as P
 from ui import settings_shell as SHELL
 from ui.ia_map import NAV_GROUPS
-from ui.tokens import BASE_DPI, BASE_H, BASE_W, ZOOM_MAX, ZOOM_MIN, Tokens
+from ui.tokens import (BASE_DPI, BASE_H, BASE_W, DARK, FONT_FAMILY, LIGHT,
+                       ZOOM_MAX, ZOOM_MIN, Tokens)
 
 APP_TITLE = "编辑部工具箱"
 APP_VERSION = "v1.5.0"
@@ -213,12 +215,26 @@ class App:
         by_h = (work_logical_h - 160) / (BASE_H * dpi_k)
         return max(ZOOM_MIN, round(min(ZOOM_MAX, by_w, by_h), 2))
 
+    @staticmethod
+    def _flet_theme(palette) -> ft.Theme:
+        """Flet 主题是 palette 的投影，不再用 INDIGO 种子色另开第二真源。"""
+        return ft.Theme(
+            color_scheme=ft.ColorScheme(
+                primary=palette.accent, on_primary=palette.on_accent,
+                secondary=palette.accent_hover, on_secondary=palette.on_accent,
+                surface=palette.surface, on_surface=palette.text,
+                error=palette.error, on_error=palette.on_accent,
+                outline=palette.border,
+            ),
+            font_family=FONT_FAMILY,
+        )
+
     def _configure_window(self) -> None:
         page = self.page
         page.title = APP_TITLE
         page.theme_mode = ft.ThemeMode.DARK if self.theme == "dark" else ft.ThemeMode.LIGHT
-        page.theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO, use_material3=True)
-        page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.INDIGO, use_material3=True)
+        page.theme = self._flet_theme(LIGHT)
+        page.dark_theme = self._flet_theme(DARK)
         page.bgcolor = self.t.palette.bg
         page.padding = 0
         page.spacing = 0
@@ -230,6 +246,9 @@ class App:
         page.window.prevent_close = True
         page.window.on_event = self.on_window_event
         page.on_resize = self.on_resize
+        # 窗口图标：品牌 ICO 存在才设，缺失/打包异常静默降级（不弹错误页）
+        if brand.apply_window_icon(page):
+            self.mark("brand_icon", source="window")
         # 多屏记忆：恢复上次位置（钳制到所在监视器工作区，绝不恢复到屏外）
         left = self.store.get("window.left")
         top = self.store.get("window.top")
@@ -272,12 +291,11 @@ class App:
         self.engine_status = EB.engine_status()
         key = self.current_page_key or str(self.store.get("last_page", "home") or "home")
         self.pages = {cls.key: cls(self) for cls in P.PAGE_CLASSES}
-        for page_obj in self.pages.values():      # 所有页都先建好：导航/预填不依赖惰性构建
-            if page_obj.root is None:
-                page_obj.root = page_obj.build()
         if key not in self.pages:
             key = "home"
         self.current_page_key = key
+        # 惰性构建：启动/换主题/改缩放只建当前页；其余页首次导航时再 build（goto 内兜底）。
+        self.pages[key].ensure_built()
         self.status_bar = C.StatusBar(self.t)
         self.toast_ctl = C.Toast(self.t)
         self.sidebar = ft.Container(
@@ -307,20 +325,16 @@ class App:
     def _sidebar_content(self) -> ft.Control:
         t = self.t
         items: list = []
-        brand = ft.Container(
+        brand_box = ft.Container(
             padding=C._pad(t, 18, 18, 18, 16),
             content=ft.Row(spacing=t.sp("2"), controls=[
-                ft.Container(
-                    width=t.px(36), height=t.px(36), border_radius=t.radius("md"),
-                    bgcolor=t.palette.accent_soft, alignment=ft.Alignment.CENTER,
-                    content=ft.Icon(C.ic("AUTO_AWESOME", "STAR"), size=t.px(20), color=t.palette.accent),
-                ),
+                brand.sidebar_mark(t, 36),
                 ft.Column(spacing=0, controls=[
                     C.text("编辑部工具箱", t, "h3", weight="semibold"),
                 ]),
             ]),
         )
-        items.append(brand)
+        items.append(brand_box)
         for group, entries in NAV_GROUPS:
             items.append(C.nav_group_label(group, t))
             for key, label, icon in entries:
@@ -356,7 +370,7 @@ class App:
         t0 = time.monotonic()
         self.current_page_key = key
         self.store.set("last_page", key)
-        self.content.content = self.pages[key].root
+        self.content.content = self.pages[key].ensure_built()
         self.sidebar.content = self._sidebar_content()
         self.page.update()
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
@@ -709,10 +723,12 @@ class App:
         if _env_str("P2_ENVCHECK") in ("1", "true", "yes"):
             settings_page = self.pages.get("settings")
             if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
+                settings_page.ensure_built()
                 self.page.run_task(settings_page._envcheck_task)
         elif not self.settings_exists and SHELL.first_run_needed(self.store):
             settings_page = self.pages.get("settings")
             if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
+                settings_page.ensure_built()
                 self.mark("envcheck_first_run")
                 self.page.run_task(settings_page._envcheck_task)
         bib_query = _env_str("P2_BIB_QUERY")
@@ -861,11 +877,13 @@ class App:
         if source or out or bib or proof:
             page = self.pages.get("single")
             if page:
+                page.ensure_built()
                 page.prefill(source=source, out=out, bib=bib, proof_tex=proof,
                              flow=_env_str("P2_DEMO_FLOW", "convert"))
         if issue or toc:
             page = self.pages.get("issue")
             if page:
+                page.ensure_built()
                 page.prefill(issue_dir=issue, toc_report=toc)
 
     async def _open_picker(self, kind: str) -> None:
@@ -891,6 +909,7 @@ class App:
             if page is None:
                 self.mark("autorun_error", error="no single page")
                 return
+            page.ensure_built()
             page.prefill(flow=target,
                          source=_env_str("P2_DEMO_SINGLE_SOURCE"),
                          out=_env_str("P2_DEMO_SINGLE_OUT"),
@@ -902,6 +921,7 @@ class App:
             if page is None:
                 self.mark("autorun_error", error="no issue page")
                 return
+            page.ensure_built()
             page.prefill(issue_dir=_env_str("P2_DEMO_ISSUE"), toc_report=_env_str("P2_DEMO_TOC"))
             page.select_step(target)
             page.run_step_demo(target)
@@ -909,6 +929,7 @@ class App:
             page = self.pages.get("issue")
             if page is None:
                 return
+            page.ensure_built()
             page.prefill(issue_dir=_env_str("P2_DEMO_ISSUE"), toc_report=_env_str("P2_DEMO_TOC"))
             page.run_all_demo()
         await self._wait_run_finished()

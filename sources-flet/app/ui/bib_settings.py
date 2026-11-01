@@ -257,7 +257,7 @@ class BibSettingsView:
         max_row = ft.Row(spacing=t.sp("half"), wrap=True,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.TextField(label="核实上限", value=self.bibdb_text, width=120, dense=True,
-                         text_size=t.font("small"), on_change=self._on_verify_max,
+                         text_size=t.font("body"), on_change=self._on_verify_max,
                          border_color=t.palette.error if self.bibdb_error else None,
                          focused_border_color=t.palette.error if self.bibdb_error else None),
             C.text(f"条（0 = 不限；留空 = 引擎默认 {SS.DEFAULT_VERIFY_MAX} 条，本次不传 --verify-max）",

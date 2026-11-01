@@ -115,7 +115,7 @@ def _cleantemp_params(page) -> list:
     mode = cleantemp_mode(page)
     mode_box = ft.Dropdown(
         label="清理档位", value=mode, width=t.px(300), dense=True,
-        text_size=t.font("small"),
+        text_size=t.font("body"),
         options=[ft.DropdownOption(key=key, text=MODE_LABELS[key]) for key in MODE_KEYS],
         on_select=lambda e: _set_mode(page, e.control.value),
     )
@@ -160,7 +160,7 @@ def _restore_row(page) -> ft.Control:
         selected = names[0]
     dropdown = ft.Dropdown(
         label="回收目录", value=selected, width=t.px(320), dense=True,
-        text_size=t.font("small"),
+        text_size=t.font("body"),
         options=[ft.DropdownOption(key=str(path), text=path.name) for path in choices],
         on_select=lambda e: page.app.store.set("form.cleantemp_restore",
                                                str(e.control.value or "")),

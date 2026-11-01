@@ -374,7 +374,7 @@ class MetadataPanel:
             label=label, value=value, hint_text=placeholder, dense=not multiline,
             multiline=multiline, min_lines=2 if multiline else None,
             max_lines=5 if multiline else None,
-            text_size=t.font("small"), width=t.px(width) if width else None,
+            text_size=t.font("body"), width=t.px(width) if width else None,
             expand=True if not width else None,
             border_color=t.palette.border, focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 10, 8, 10, 8),

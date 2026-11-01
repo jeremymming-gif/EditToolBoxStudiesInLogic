@@ -111,14 +111,14 @@ class DirPushPanel:
         self.feedback = ft.Container()
         self.mode = ft.Dropdown(
             label="推送范围", value=self.app.store.get("form.dirpush_mode", MODE_ISSUE) or MODE_ISSUE,
-            width=self.t.px(180), dense=True, text_size=self.t.font("small"),
+            width=self.t.px(180), dense=True, text_size=self.t.font("body"),
             options=[ft.DropdownOption(key=MODE_ISSUE, text="当期目录摘要"),
                      ft.DropdownOption(key=MODE_ANNUAL, text="年度总目录")],
             on_select=self._mode_changed,
         )
         self.year = ft.TextField(
             label="年度（yyyy，可空）", value=self.app.store.get("form.dirpush_year", "") or "",
-            dense=True, text_size=self.t.font("small"), width=self.t.px(150),
+            dense=True, text_size=self.t.font("body"), width=self.t.px(150),
             border_color=self.t.palette.border, focused_border_color=self.t.palette.accent,
             content_padding=C._pad(self.t, 10, 8, 10, 8),
             on_change=lambda e: self._store_value("form.dirpush_year", e.control.value),
@@ -126,7 +126,7 @@ class DirPushPanel:
         self.issues = ft.TextField(
             label="只含这些期号（如 1,2,3；年度可空）",
             value=self.app.store.get("form.dirpush_issues", "") or "",
-            dense=True, text_size=self.t.font("small"), expand=True,
+            dense=True, text_size=self.t.font("body"), expand=True,
             border_color=self.t.palette.border, focused_border_color=self.t.palette.accent,
             content_padding=C._pad(self.t, 10, 8, 10, 8),
             on_change=lambda e: self._store_value("form.dirpush_issues", e.control.value),

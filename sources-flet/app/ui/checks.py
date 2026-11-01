@@ -644,7 +644,7 @@ def proofcheck_section(page) -> ft.Control:
         value=current,
         width=t.px(150),
         dense=True,
-        text_size=t.font("small"),
+        text_size=t.font("body"),
         options=[ft.DropdownOption(key="", text="自动"),
                  ft.DropdownOption(key="zh", text="中文"),
                  ft.DropdownOption(key="en", text="英文")],

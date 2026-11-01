@@ -389,7 +389,7 @@ def logs_card(page) -> ft.Control:
         current = "all"
     page.log_filter = ft.Dropdown(
         label="级别", value=current, width=t.px(130), dense=True,
-        text_size=t.font("small"),
+        text_size=t.font("body"),
         options=[ft.DropdownOption(key=key, text=text) for key, text in LEVELS],
         on_select=lambda e: _set_filter(page, e.control.value),
     )

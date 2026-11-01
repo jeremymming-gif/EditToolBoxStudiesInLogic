@@ -22,6 +22,7 @@ import flet as ft
 
 from services import engine_bridge as EB
 from ui import components as C
+from ui import tokens as T
 
 #: 六列表头与列宽（旧壳 Treeview：题名/作者/年份/key/状态/来源）
 TABLE_COLUMNS = (("题名", 300), ("作者", 130), ("年份", 54),
@@ -308,7 +309,7 @@ class BibQueryView:
             value=self.mode,
             width=t.px(96),
             dense=True,
-            text_size=t.font("small"),
+            text_size=t.font("body"),
             options=[ft.DropdownOption(key=key, text=mode_label(key)) for key in EB.QUERY_MODES],
             on_select=self._on_mode,
         )
@@ -316,7 +317,7 @@ class BibQueryView:
             value=self.basic_text,
             dense=True,
             expand=True,
-            text_size=t.font("small"),
+            text_size=t.font("body"),
             hint_text=QUERY_HINTS[self.mode],
             border_color=t.palette.border,
             focused_border_color=t.palette.accent,
@@ -340,12 +341,12 @@ class BibQueryView:
         add = C.secondary_button("+ 加一行", lambda e: self._add_row(), t)
         reset = C.text_button("重置", lambda e: self._reset_advanced(), t)
         sort_box = ft.Dropdown(
-            value=self.sort, width=t.px(96), dense=True, text_size=t.font("small"),
+            value=self.sort, width=t.px(96), dense=True, text_size=t.font("body"),
             options=[ft.DropdownOption(key=key, text=sort_label(key)) for key in EB.QUERY_SORTS],
             on_select=self._on_sort,
         )
         limit = ft.TextField(
-            value=self.limit_text, width=t.px(64), dense=True, text_size=t.font("small"),
+            value=self.limit_text, width=t.px(64), dense=True, text_size=t.font("body"),
             text_align=ft.TextAlign.CENTER, border_color=t.palette.border,
             focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 6, 8, 6, 8), on_change=self._on_limit_change,
@@ -374,21 +375,21 @@ class BibQueryView:
         field = str(row.get("field") or "author")
         field_box = ft.Dropdown(
             value=field, width=t.px(96), dense=True,
-            text_size=t.font("small"),
+            text_size=t.font("body"),
             options=[ft.DropdownOption(key=key, text=field_label(key))
                      for key in EB.QUERY_FIELDS],
             on_select=lambda e, i=index: self._on_field(i, e),
         )
         mode_box = ft.Dropdown(
             value=normalize_mode(field, str(row.get("mode") or "contains")),
-            width=t.px(96), dense=True, text_size=t.font("small"),
+            width=t.px(96), dense=True, text_size=t.font("body"),
             options=[ft.DropdownOption(key=key, text=match_label(key))
                      for key in mode_options(field)],
             on_select=lambda e, i=index: self._on_match_mode(i, e),
         )
         value = ft.TextField(
             value=str(row.get("value") or ""), width=t.px(360), dense=True,
-            text_size=t.font("small"), hint_text="值（如 Smith / 1975 / 10.1007/…）",
+            text_size=t.font("body"), hint_text="值（如 Smith / 1975 / 10.1007/…）",
             border_color=t.palette.border, focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=lambda e, i=index: self._on_value(i, e),
@@ -469,11 +470,11 @@ class BibQueryView:
                                        "small", t.palette.text_muted))
                 controls.append(C.text("\n".join(view["why"]), t, "small",
                                        t.palette.text_muted, selectable=True,
-                                       font_family="Consolas"))
+                                       font_family=T.FONT_FAMILY_MONO))
         bibtex = (view or {}).get("bibtex") or BIBTEX_PLACEHOLDER
         controls.append(ft.TextField(
             value=bibtex if view else "", read_only=True, multiline=True,
-            min_lines=7, max_lines=7, text_size=t.font("small"),
+            min_lines=7, max_lines=7, text_size=t.font("body"),
             border_color=t.palette.border, content_padding=C._pad(t, 10, 8, 10, 8),
         ))
         return ft.Column(spacing=t.sp("half"), controls=controls)

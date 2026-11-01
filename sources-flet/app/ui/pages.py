@@ -68,6 +68,12 @@ class BasePage:
     def build(self):
         raise NotImplementedError
 
+    def ensure_built(self):
+        """惰性构建入口：没有 root 才 build；导航、预填、证据钩子都走这里。"""
+        if self.root is None:
+            self.root = self.build()
+        return self.root
+
     # 公共小工具 ───────────────────────────────────────────────────────
     @property
     def t(self):
@@ -103,7 +109,7 @@ class BasePage:
 
         control = ft.TextField(
             label=label, value=self.app.store.get(f"form.{key}", "") or "",
-            dense=True, text_size=self.t.font("small"),
+            dense=True, text_size=self.t.font("body"),
             border_color=self.t.palette.border, focused_border_color=self.t.palette.accent,
             width=self.t.px(width), on_change=_changed,
             content_padding=C._pad(self.t, 10, 8, 10, 8),
@@ -274,6 +280,7 @@ class SinglePage(BasePage):
                                          disabled=not self.app.engine_status.ok)
         self._stop_btn = C.secondary_button("停止", self._on_stop, t, icon="STOP", disabled=True)
         self._chips_row = ft.Row(spacing=t.sp("1"), controls=[])
+        self._flow_desc = C.text("", t, role="small", color=t.palette.text_muted)
         self._render_chips()
         header = C.page_header(
             "单篇稿件", "一次只做一件事：选文件 → 勾选项 → 运行；日志与产物都在这一页。", t,
@@ -287,7 +294,8 @@ class SinglePage(BasePage):
             C.busy_bar(t, visible=False),
         ])
         self._busy = status.controls[2]
-        body = C.page_body(header, status, self._flow_box, self._result.root,
+        flow_bar = ft.Column(spacing=t.sp("half"), controls=[status, self._flow_desc])
+        body = C.page_body(header, flow_bar, self._flow_box, self._result.root,
                            self._proof.root, self._log.root, t=t, gap=10)
         self.refresh_running()
         return body
@@ -299,6 +307,7 @@ class SinglePage(BasePage):
                    on_click=lambda e, k=key: self._switch_flow(k))
             for key in self.FLOWS
         ]
+        self._flow_desc.value = self.FLOWS[self.flow_key]["desc"]
 
     def _switch_flow(self, key: str) -> None:
         if self.app.running:
@@ -315,7 +324,7 @@ class SinglePage(BasePage):
         self._flow_box.controls = [builder()]
         self._result.reset()
         CK.on_flow_switch(self)
-        self._safe_update(self._chips_row, self._flow_box)
+        self._safe_update(self._chips_row, self._flow_desc, self._flow_box)
 
     # ── 三个步骤的输入卡 ────────────────────────────────────────────────
     def _build_convert(self) -> ft.Control:
@@ -649,7 +658,7 @@ class IssuePage(BasePage):
          "desc": "扫描整期 tex，输出 10 列清单（篇目/页码/字号行距…）"},
         {"key": "toc", "title": "生成目录", "icon": "TOC", "desc": "用信息检查报告生成目录 tex（可落位编译）"},
         {"key": "compileall", "title": "编译全部", "icon": "PICTURE_AS_PDF_OUTLINED",
-         "desc": "逐篇 xelatex→biber→xelatex×2（跳过 000 目录）"},
+         "desc": "逐篇 xelatex→biber→xelatex×2；期目录形如 20xx年第N期(…)，同名 PDF 直接覆盖（跳过 000 目录）"},
         {"key": "merge", "title": "合并文件", "icon": "MERGE", "desc": "把各篇 PDF 合为一期合刊"},
         {"key": "cleantemp", "title": "删除临时文件", "icon": "CLEANING_SERVICES",
          "desc": "三档清理：辅助文件 / 交付收尾 / 工作区（危险）"},
@@ -1102,6 +1111,7 @@ class SettingsPage(BasePage):
             self._kv("Flet / Python", f"{self.app.flet_version} · {self.app.python_version}"),
             self._kv("窗口 / DPI", f"{self.app.window_w}×{self.app.window_h} @ {self.app.dpi} ({self.app.dpi / 96:.0%})"),
             self._kv("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
+            self._kv("许可", "专有软件 · © 2026 Jeremymming（第三方许可见 THIRD_PARTY.md）"),
         ]), t)
 
         envcheck = SHELL.envcheck_card(self)
@@ -1212,10 +1222,17 @@ class HelpPage(BasePage):
         header = C.page_header("帮助与关于", "怎么用、快捷键、版本与许可；IA 15 页映射速览。", t)
         usage = C.card(ft.Column(spacing=t.sp("1"), controls=[
             C.section_title("怎么用", t),
+            self._bullet("工作台：引擎状态 + 各页入口，点卡片直达。"),
             self._bullet("单篇稿件：选源稿件（必填）→ 勾处理选项 → 运行；日志与产物都在本页。"),
             self._bullet("整期装配：选期目录 → 6 步流水线按顺序跑；删除临时文件会二次确认。"),
             self._bullet("引用库：查库/统计只读；入藏与待裁决写库前预览、二次确认、sha 闸，写后本地提交。"),
             self._bullet("设置：外观 / 缩放 / 引擎目录 / 环境检查 / 诊断信息。"),
+        ]), t)
+        boundary = C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("边界与安全", t, note="写操作都有前置闸门"),
+            self._bullet("作者来稿只读：不改来稿目录里的任何文件，产物只写输出目录。"),
+            self._bullet("写库 = dry-run 预览 → 二次确认 → sha 校验 → 原子写；只做本地 commit，绝不自动 push。"),
+            self._bullet("引擎全程本地运行；只有你显式开启的 AI 任务书会把正文片段交给你配置的模型服务。"),
         ]), t)
         shortcuts = C.card(ft.Column(spacing=t.sp("1"), controls=[
             C.section_title("快捷键与交互", t, note="与外壳实际绑定同源"),
@@ -1232,10 +1249,12 @@ class HelpPage(BasePage):
             self._kv("应用版本", app.app_version),
             self._kv("外壳", f"Flet {app.flet_version} · Python {app.python_version}"),
             self._kv("引擎", f"{app.engine_status.version} · {app.engine_status.mode}"),
-            self._kv("许可", "内部工具；第三方：Flet (Apache-2.0)、Python (PSF)、pystray (LGPL)"),
+            self._kv("许可", "专有软件 · Copyright © 2026 Jeremymming. All rights reserved."
+                             "（v1.0.0–v1.5.0 历史版本仍为 MIT）"),
+            self._kv("第三方", "Flet (Apache-2.0) · Python (PSF) · pystray (LGPL) · Pillow (HPND)"),
             self._kv("额外页（IA 之外）", "、".join(f"{p['title']}（{p['status']}）" for p in P3_PAGES)),
         ]), t)
-        return C.page_body(header, usage, shortcuts, ia_card, about, t=t, gap=12)
+        return C.page_body(header, usage, boundary, shortcuts, ia_card, about, t=t, gap=12)
 
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _bullet(self, value: str) -> ft.Row:

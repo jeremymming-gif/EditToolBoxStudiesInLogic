@@ -28,6 +28,33 @@ FONT_WEIGHT: dict[str, str] = {
     "regular": "W_400", "medium": "W_500", "semibold": "W_600", "bold": "W_700",
 }
 
+# 字体族：不打包字体，走系统栈（Windows/macOS/Linux 都能落到一款无衬线）。
+FONT_FAMILY = "Segoe UI, PingFang SC, Noto Sans CJK SC, Arial, sans-serif"
+FONT_FAMILY_MONO = "Cascadia Mono, Consolas, SF Mono, Menlo, DejaVu Sans Mono, monospace"
+
+#: 语义排版角色 → (字号键, 字重键)。组件只引用角色，不再各自拼字号+字重：
+#: 这是「同级标题字重一致 / 输入框字号=正文」的唯一出处（B-109 W4 收编）。
+TEXT_ROLE: dict[str, tuple[str, str]] = {
+    "page-title": ("h1", "semibold"),
+    "page-subtitle": ("body", "regular"),
+    "section": ("h3", "semibold"),
+    "item-title": ("h3", "semibold"),
+    "step-title": ("body", "semibold"),
+    "dialog-title": ("h2", "semibold"),
+    "body": ("body", "regular"),
+    "body-strong": ("body", "semibold"),
+    "meta": ("caption", "regular"),
+    "caption": ("caption", "regular"),
+    "small": ("small", "regular"),
+    "badge": ("caption", "medium"),
+    "nav-label": ("body", "medium"),
+    "control": ("body", "regular"),
+    "log": ("small", "regular"),
+    "mono": ("small", "regular"),
+}
+#: 需要等宽字体的角色（日志行、路径、ID）。
+MONO_ROLES = frozenset({"log", "mono"})
+
 
 @dataclass(frozen=True)
 class Palette:
@@ -146,6 +173,19 @@ class Tokens:
 
     def weight(self, key: str) -> str:
         return FONT_WEIGHT[key]
+
+    # -- 排版角色 --------------------------------------------------------
+    @property
+    def font_family(self) -> str:
+        return FONT_FAMILY
+
+    @property
+    def mono_family(self) -> str:
+        return FONT_FAMILY_MONO
+
+    def text_role(self, role: str) -> tuple[str, str]:
+        """角色 → (字号键, 字重键)；未知角色直接报错，避免又出现裸字号散点。"""
+        return TEXT_ROLE[role]
 
     # -- 布局 ------------------------------------------------------------
     @property

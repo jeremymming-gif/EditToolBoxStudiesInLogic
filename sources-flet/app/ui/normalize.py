@@ -244,7 +244,7 @@ class NormalizePanel:
         ]
         self._out_field = ft.TextField(
             label="报告输出（可选）", value=self.page.app.store.get(self.OUT_KEY, "") or "",
-            hint_text=HINT_OUT, dense=True, text_size=t.font("small"),
+            hint_text=HINT_OUT, dense=True, text_size=t.font("body"),
             border_color=t.palette.border, focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=self._on_out_change,
@@ -288,7 +288,7 @@ class NormalizePanel:
         paste = ft.TextField(
             label="交回的 .bib 文本", value=self.page.app.store.get(self.PASTE_KEY, "") or "",
             hint_text=HINT_PASTE, multiline=True, min_lines=6, max_lines=12,
-            text_size=t.font("small"), border_color=t.palette.border,
+            text_size=t.font("body"), border_color=t.palette.border,
             focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 10, 8, 10, 8), on_change=self._on_paste_change,
         )

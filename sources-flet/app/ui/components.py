@@ -8,10 +8,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import flet as ft
 
-from ui.tokens import Tokens
+from ui.tokens import MONO_ROLES, Tokens
 
 # ── 小工具 ──────────────────────────────────────────────────────────────────
 def ic(name: str, fallback: str = "CIRCLE") -> str:
@@ -37,7 +38,15 @@ def box(t: Tokens, color: str | None = None, width: float = 1) -> ft.Border:
 
 
 def text(value: str, t: Tokens, size: str = "body", color: str | None = None,
-         weight: str = "regular", **kwargs) -> ft.Text:
+         weight: str = "regular", *, role: str | None = None, **kwargs) -> ft.Text:
+    """唯一的文字出口：给了 role 就用 tokens 里的字号+字重（忽略 size/weight）。"""
+    font_family = kwargs.pop("font_family", None)
+    if role is not None:
+        size, weight = t.text_role(role)
+        if font_family is None and role in MONO_ROLES:
+            font_family = t.mono_family
+    if font_family:
+        kwargs["font_family"] = font_family
     return ft.Text(
         value, size=t.font(size), color=color or t.palette.text,
         weight=_w(t, weight), **kwargs,
@@ -65,22 +74,21 @@ def card(content, t: Tokens, *, pad: float = 16, bgcolor: str | None = None,
 
 
 def section_title(title: str, t: Tokens, note: str | None = None) -> ft.Row:
-    controls = [text(title, t, "h3", weight="semibold")]
     if note:
-        controls[-1] = controls[0]
         return ft.Row(
-            controls=[text(title, t, "h3", weight="semibold"),
+            controls=[text(title, t, role="section"),
                       ft.Container(expand=True),
                       text(note, t, "caption", t.palette.text_faint)],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
-    return ft.Row(controls=controls)
+    return ft.Row(controls=[text(title, t, role="section")])
 
 
 def page_header(title: str, subtitle: str, t: Tokens, actions: list | None = None) -> ft.Row:
     left = ft.Column(
         spacing=t.sp("half"),
-        controls=[text(title, t, "h1", weight="semibold"), text(subtitle, t, "body", t.palette.text_muted)],
+        controls=[text(title, t, role="page-title"),
+                  text(subtitle, t, role="page-subtitle", color=t.palette.text_muted)],
     )
     return ft.Row(
         controls=[ft.Container(content=left, expand=True),
@@ -233,7 +241,7 @@ def option_row(label: str, desc: str, t: Tokens, *, icon: str | None = None,
         alignment=ft.Alignment.CENTER,
         content=ft.Icon(ic(icon or "CHECK_CIRCLE_OUTLINE"), size=t.px(18), color=p.text_muted),
     )
-    title_row = [text(label, t, "h3", weight="medium")]
+    title_row = [text(label, t, role="item-title")]
     if badge_label:
         title_row.append(badge(badge_label, t, "accent"))
     title_row.append(ft.Container(expand=True))
@@ -266,7 +274,7 @@ def empty_state(icon: str, title: str, desc: str, t: Tokens, *, height: float | 
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Icon(ic(icon, "INBOX"), size=t.px(34), color=t.palette.text_faint),
-                text(title, t, "h3", t.palette.text_muted, weight="medium"),
+                text(title, t, role="item-title", color=t.palette.text_muted),
                 text(desc, t, "caption", t.palette.text_faint),
             ],
         ),
@@ -299,12 +307,24 @@ def chip(label: str, t: Tokens, *, active: bool, on_click) -> ft.Container:
 
 # ── 日志台（流式 / 清空 / 折叠）────────────────────────────────────────────
 class LogConsole:
-    """运行日志：行级颜色 + 摘要/原始折叠 + 清空；页面只调 add_line/clear。"""
+    """运行日志：行级颜色 + 摘要/原始折叠 + 清空；页面只调 add_line/clear。
+
+    渲染合并：引擎一次可刷上千行，逐行 `update()` 等于每行一次 UI 往返。
+    这里「控件立即入列、渲染限流」（≥100ms 或攒够 32 行才发一次），
+    并去掉逐行 `empty in controls` 的 O(n²) 判等（那是 2000 行 14 秒的主因）。
+    """
+
+    FLUSH_INTERVAL_S = 0.1
+    FLUSH_BATCH = 32
 
     def __init__(self, t: Tokens, *, height: float = 200, title: str = "运行日志") -> None:
         self.t = t
         self._lines: list[tuple[str, str, bool]] = []
         self._fold_only = False
+        self._empty_visible = True
+        self._dirty = 0
+        self._last_update = 0.0
+        self._flush_scheduled = False
         self.list = ft.ListView(expand=True, spacing=t.px(2), auto_scroll=True, padding=0)
         self.empty = text("等待运行…", t, "small", t.palette.log_muted)
         self.list.controls.append(self.empty)
@@ -315,7 +335,7 @@ class LogConsole:
             spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Icon(ic("TERMINAL"), size=t.px(18), color=t.palette.text_muted),
-                text(title, t, "h3", weight="semibold"),
+                text(title, t, role="section"),
                 ft.Container(expand=True),
                 self._fold_switch,
                 text_button("清空", self._on_clear, t),
@@ -349,8 +369,7 @@ class LogConsole:
             level, p.log_text)
 
     def _item(self, value: str, level: str) -> ft.Text:
-        return ft.Text(value, size=self.t.font("small"), color=self._color(level),
-                       font_family="Consolas", selectable=True)
+        return text(value, self.t, role="log", color=self._color(level), selectable=True)
 
     def _render(self) -> None:
         controls: list = []
@@ -358,6 +377,7 @@ class LogConsole:
             if self._fold_only and not summary:
                 continue
             controls.append(self._item(value, level))
+        self._empty_visible = not controls
         self.list.controls = controls or [self.empty]
         self._update()
 
@@ -366,6 +386,37 @@ class LogConsole:
             self.list.update()
         except Exception:  # noqa: BLE001  页面还没挂载时忽略（构建期调用）
             pass
+
+    def _touch(self) -> None:
+        """合并渲染：控件已入列，限流发 update；尾部行由定时任务在 100ms 内补刷。"""
+        self._dirty += 1
+        now = time.monotonic()
+        if self._dirty >= self.FLUSH_BATCH or (now - self._last_update) >= self.FLUSH_INTERVAL_S:
+            self._flush(now)
+            return
+        try:
+            target = self.list.page
+        except RuntimeError:      # 未挂载的控件访问 .page 会抛错（构建期/证据脚本）
+            target = None
+        if target is None or self._flush_scheduled:
+            return
+        self._flush_scheduled = True
+        try:
+            target.run_task(self._flush_later)
+        except Exception:  # noqa: BLE001 - 无事件循环（证据脚本/构建期）：下次 add_line 兜底
+            self._flush_scheduled = False
+
+    async def _flush_later(self) -> None:
+        try:
+            await asyncio.sleep(self.FLUSH_INTERVAL_S)
+        finally:
+            self._flush_scheduled = False
+        self._flush(time.monotonic())
+
+    def _flush(self, now: float) -> None:
+        self._dirty = 0
+        self._last_update = now
+        self._update()
 
     # -- 对外 ---------------------------------------------------------
     def add_line(self, value: str, level: str = "info", summary: bool = True) -> None:
@@ -376,14 +427,16 @@ class LogConsole:
             return
         if self._fold_only and not summary:
             return
-        if self.empty in self.list.controls:
-            self.list.controls.remove(self.empty)
+        if self._empty_visible:
+            self.list.controls = []
+            self._empty_visible = False
         self.list.controls.append(self._item(value, level))
-        self._update()
+        self._touch()
 
     def clear(self) -> None:
         self._lines.clear()
         self.list.controls = [self.empty]
+        self._empty_visible = True
         self._update()
 
 
@@ -474,7 +527,7 @@ def confirm(page: ft.Page, t: Tokens, *, title: str, message: str,
 
     dialog = ft.AlertDialog(
         modal=True,
-        title=text(title, t, "h2", weight="semibold"),
+        title=text(title, t, role="dialog-title"),
         content=ft.Container(width=t.px(360), content=text(message, t, "body", t.palette.text_muted)),
         actions=[
             text_button("取消", _cancel, t),
@@ -499,7 +552,7 @@ def notice_bar(message: str, t: Tokens, tone: str = "info") -> ft.Container:
         padding=_pad(t, 12, 8, 12, 8),
         content=ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.Icon(ic(icon, fallback), size=t.px(16), color=fg),
-            ft.Text(message, size=t.font("small"), color=fg, expand=True),
+            text(message, t, role="small", color=fg, expand=True),
         ]),
     )
 
@@ -511,8 +564,8 @@ class ResultBanner:
         self.on_open = on_open
         self.on_copy = on_copy
         self.icon = ft.Icon(ic("INFO_OUTLINE", "INFO"), size=t.px(18), color=t.palette.text_muted)
-        self.title = ft.Text("尚未运行", size=t.font("body"), weight=_w(t, "semibold"), color=t.palette.text)
-        self.detail = ft.Text("", size=t.font("small"), color=t.palette.text_muted)
+        self.title = text("尚未运行", t, role="body-strong")
+        self.detail = text("", t, role="small", color=t.palette.text_muted)
         self.open_btn = text_button("打开产物", self._open, t)
         self.copy_btn = text_button("复制路径", self._copy, t)
         self.root = ft.Container(

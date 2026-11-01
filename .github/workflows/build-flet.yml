@@ -109,6 +109,7 @@ jobs:
             flet pack ..\sources-flet\app\main.py --name 编辑部工具箱 `
               --product-name "编辑部工具箱" --product-version "$V" --file-version "$V.0" `
               --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" `
+              --icon ..\sources-flet\packaging\assets\logo.ico `
               --distpath dist --yes
             if ($LASTEXITCODE -ne 0) { throw "flet pack 失败（rc=$LASTEXITCODE）" }
           } finally {
@@ -120,7 +121,7 @@ jobs:
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
-          ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 --distpath dist --yes )
+          ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 --icon ../sources-flet/packaging/assets/logo.icns --distpath dist --yes )
           ls -la build-flet/dist
 
       # ── sidecar 定位自检（engine_bridge，不经 GUI） ────────────────

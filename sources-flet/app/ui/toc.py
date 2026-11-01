@@ -110,13 +110,13 @@ class TocPanel:
         self.editor_box = ft.Column(spacing=self.t.sp("1"))
         self.kind = ft.Dropdown(
             label="栏目类型", width=self.t.px(160), dense=True,
-            text_size=self.t.font("small"),
+            text_size=self.t.font("body"),
             options=[ft.DropdownOption(key=key, text=TS.KIND_LABELS[key])
                      for key in TS.COLUMN_KINDS],
             on_select=lambda e: self._set_value("columnKind", self.kind.value),
         )
         self.add_box = ft.Dropdown(label="可加入的篇目", width=self.t.px(300), dense=True,
-                                   text_size=self.t.font("small"), options=[])
+                                   text_size=self.t.font("body"), options=[])
 
     # ── 参数区 ─────────────────────────────────────────────────────────
     def params(self) -> list:
@@ -247,7 +247,7 @@ class TocPanel:
     def _field(self, key: str, label: str, width: float = 220) -> ft.TextField:
         return ft.TextField(
             label=label, value=str(self.values.get(key) or ""), dense=True,
-            text_size=self.t.font("small"), width=self.t.px(width),
+            text_size=self.t.font("body"), width=self.t.px(width),
             border_color=self.t.palette.border,
             focused_border_color=self.t.palette.accent,
             content_padding=C._pad(self.t, 10, 8, 10, 8),

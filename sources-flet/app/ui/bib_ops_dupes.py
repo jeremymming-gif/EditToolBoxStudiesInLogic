@@ -281,7 +281,7 @@ class BibDuplicatesView(_OpsView):
             right_value = _text((self.right.get("fields") or {}).get(name))
             choice = ft.Dropdown(
                 value=self.field_choice.get(name, "left"), dense=True, width=t.px(260),
-                text_size=t.font("small"), options=[
+                text_size=t.font("body"), options=[
                     ft.DropdownOption(key="left", text=f"{left_key}：{left_value or '（空）'}"),
                     ft.DropdownOption(key="right", text=f"{right_key}：{right_value or '（空）'}"),
                 ],
@@ -293,11 +293,11 @@ class BibDuplicatesView(_OpsView):
         top = ft.Row(spacing=t.sp("1"), wrap=True,
                      vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.TextField(label="合并后 key", value=self.new_key, dense=True, width=t.px(200),
-                         text_size=t.font("small"), border_color=t.palette.border,
+                         text_size=t.font("body"), border_color=t.palette.border,
                          focused_border_color=t.palette.accent,
                          on_change=lambda e: setattr(self, "new_key", e.control.value or "")),
             ft.TextField(label="条目类型", value=self.entry_type, dense=True, width=t.px(150),
-                         text_size=t.font("small"), border_color=t.palette.border,
+                         text_size=t.font("body"), border_color=t.palette.border,
                          focused_border_color=t.palette.accent,
                          on_change=lambda e: setattr(self, "entry_type", e.control.value or "")),
             C.primary_button("预览合并（dry-run）", lambda e: self._ask_preview_merge(), t,

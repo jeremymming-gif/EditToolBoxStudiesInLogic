@@ -30,6 +30,13 @@ def _make_image():
     return image
 
 
+def _tray_image():
+    """品牌 PNG 优先；缺失/读图失败退回内置图形（托盘图标不得让服务起不来）。"""
+    from ui import brand
+
+    return brand.tray_image() or _make_image()
+
+
 class TrayService:
     def __init__(self, app) -> None:
         self.app = app
@@ -84,7 +91,7 @@ class TrayService:
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", self.quit),
             )
-            self.icon = pystray.Icon("editorial-toolbox", _make_image(), ICON_TITLE, menu)
+            self.icon = pystray.Icon("editorial-toolbox", _tray_image(), ICON_TITLE, menu)
             self._thread = threading.Thread(target=self.icon.run, name="tray", daemon=True)
             self._thread.start()
             self.started = True

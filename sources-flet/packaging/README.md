@@ -38,6 +38,21 @@ sha256.txt
 - artifact：`actions/upload-artifact@v4`，name `flet-<os>-<版本>`；zip 的 sha256 打印在运行摘要里。
 - **不做** tag / Release / 签名；E2E 发版仍需人工确认（B-246c 红线）。
 
+## 品牌资产（图标）
+
+`packaging/assets/` 是窗口图标、侧栏标志与托盘图标的单一来源，全部由脚本从矢量参数重新生成：
+
+```powershell
+py -3.14 sources-flet/packaging/assets/make_logo.py   # 需 Pillow，重写下列文件
+```
+
+- `logo-1024.png` / `logo-256.png`：方形母版与侧栏标志（`ui/brand.py` 运行时读）；
+- `logo.ico`（7 个尺寸）：Windows `flet pack --icon`；
+- `logo.icns`：macOS `flet pack --icon`。
+
+`flet pack` 命令里加 `--icon` 才会把图标写进 exe / `.app`（CI 的 `build-flet.yml`、`release.yml` 已带）；
+`ui/brand.py` 找不到资产时按图标回退，托盘也回退到运行时绘制，不影响启动。
+
 ## 本地复刻（Windows）
 
 ```powershell
@@ -48,7 +63,8 @@ New-Item -ItemType Directory -Force build-flet | Out-Null
 Push-Location build-flet
 flet pack ..\sources-flet\app\main.py --name 编辑部工具箱 `
   --product-name "编辑部工具箱" --product-version "<Engine版本>" --file-version "<Engine版本>.0" `
-  --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" --distpath dist --yes
+  --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" --distpath dist --yes `
+  --icon ..\sources-flet\packaging\assets\logo.ico
 Pop-Location
 # 3) 组装：把 sidecar 输出目录里的 SLCNEngine.exe 复制到 build-flet\dist\ 再试运行
 ```
@@ -69,3 +85,5 @@ python -m PyInstaller --noconfirm --clean --onefile --console --name SLCNEngine 
 
 注：入口表必须与 `Engine/engine_main.py: ENTRIES` 逐项一致（Windows 侧由 `build-win.ps1` 维护，
 两边同表）；模板目录 `编辑笔记/模板文件` 必须打进包，否则 convert 生成不了初排稿。
+
+> 图标路径说明：传 `--pyinstaller-build-args=--workpath/--specpath` 时，PyInstaller 按 spec 文件目录解析 `--icon`，请给**绝对路径**；直接 `flet pack`（默认 specpath=当前目录）时相对路径即可。

@@ -200,7 +200,7 @@ class BibFieldFixView(_OpsView):
                 continue
             boxes.append(ft.Dropdown(
                 label=field_label(field), value=picked.get(field, ""), dense=True,
-                width=t.px(300), text_size=t.font("small"), options=options,
+                width=t.px(300), text_size=t.font("body"), options=options,
                 on_change=lambda e, i=index, f=field: self.choice.setdefault(i, {}).__setitem__(
                     f, e.control.value or "")))
         checked = index in self.selected

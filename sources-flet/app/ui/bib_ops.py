@@ -554,7 +554,7 @@ class BibEditorView(_OpsView):
         t = self.t
         key_field = ft.TextField(
             label="条目 key", value=self.key_text, dense=True, width=t.px(220),
-            text_size=t.font("small"), border_color=t.palette.border,
+            text_size=t.font("body"), border_color=t.palette.border,
             focused_border_color=t.palette.accent,
             on_change=lambda e: setattr(self, "key_text", e.control.value or ""))
         buttons = ft.Row(spacing=t.sp("1"), wrap=True,
@@ -583,7 +583,7 @@ class BibEditorView(_OpsView):
         for name, value in ordered_fields(record):
             boxes.append(ft.TextField(
                 label=field_label(name), value=_text(self.field_values.get(name, value)),
-                dense=True, width=t.px(280), text_size=t.font("small"),
+                dense=True, width=t.px(280), text_size=t.font("body"),
                 border_color=t.palette.border, focused_border_color=t.palette.accent,
                 on_change=lambda e, n=name: self.field_values.__setitem__(
                     n, e.control.value or "")))
@@ -591,12 +591,12 @@ class BibEditorView(_OpsView):
                           vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.TextField(
                 label="条目类型", value=self.entry_type, dense=True, width=t.px(160),
-                text_size=t.font("small"), border_color=t.palette.border,
+                text_size=t.font("body"), border_color=t.palette.border,
                 focused_border_color=t.palette.accent,
                 on_change=lambda e: setattr(self, "entry_type", e.control.value or "")),
             ft.TextField(
                 label="新 key（留空 = 不改）", value=self.new_key, dense=True, width=t.px(220),
-                text_size=t.font("small"), border_color=t.palette.border,
+                text_size=t.font("body"), border_color=t.palette.border,
                 focused_border_color=t.palette.accent,
                 on_change=lambda e: setattr(self, "new_key", e.control.value or "")),
         ])
