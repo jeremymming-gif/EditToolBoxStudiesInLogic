@@ -22,7 +22,6 @@ import flet as ft
 
 from services import engine_bridge as EB
 from ui import components as C
-from ui import tokens as T
 
 #: 六列表头与列宽（旧壳 Treeview：题名/作者/年份/key/状态/来源）
 TABLE_COLUMNS = (("题名", 300), ("作者", 130), ("年份", 54),
@@ -300,9 +299,8 @@ class BibQueryView:
                 padding=C._pad(t, 14, 6, 14, 6),
                 border=ft.Border(bottom=C._side(t, t.palette.accent if active else t.palette.border,
                                                2 if active else 1)),
-                content=C.text(label, t, "small",
-                               t.palette.accent if active else t.palette.text_muted,
-                               weight="medium" if active else "regular"),
+                content=C.text(label, t, role="tab-selected" if active else "small",
+                               color=t.palette.accent if active else t.palette.text_muted),
             ))
         return ft.Row(spacing=t.sp("1"), controls=tabs)
 
@@ -466,7 +464,7 @@ class BibQueryView:
         log_btn = C.secondary_button(
             "在运行日志里显示", lambda e: self._show_in_log(), t, disabled=not view)
         head = ft.Row(controls=[
-            C.text(detail_title(view), t, "h3", weight="semibold"),
+            C.text(detail_title(view), t, role="section"),
             ft.Container(expand=True), log_btn, copy_btn,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
         controls: list = [head]
@@ -476,9 +474,8 @@ class BibQueryView:
             if view["why"]:
                 controls.append(C.text(f"命中原因（{len(view['why'])} 项条件都满足）：", t,
                                        "small", t.palette.text_muted))
-                controls.append(C.text("\n".join(view["why"]), t, "small",
-                                       t.palette.text_muted, selectable=True,
-                                       font_family=T.FONT_FAMILY_MONO))
+                controls.append(C.text("\n".join(view["why"]), t, role="mono",
+                                       color=t.palette.text_muted, selectable=True))
         bibtex = (view or {}).get("bibtex") or BIBTEX_PLACEHOLDER
         controls.append(ft.TextField(
             value=bibtex if view else "", read_only=True, multiline=True,

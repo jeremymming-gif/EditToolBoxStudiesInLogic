@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, replace
 
 BASE_DPI = 144.0          # 本机系统 DPI（150%）
@@ -28,9 +29,23 @@ FONT_WEIGHT: dict[str, str] = {
     "regular": "W_400", "medium": "W_500", "semibold": "W_600", "bold": "W_700",
 }
 
-# 字体族：不打包字体，走系统栈（Windows/macOS/Linux 都能落到一款无衬线）。
-FONT_FAMILY = "Segoe UI, PingFang SC, Noto Sans CJK SC, Arial, sans-serif"
-FONT_FAMILY_MONO = "Cascadia Mono, Consolas, SF Mono, Menlo, DejaVu Sans Mono, monospace"
+# 字体族：不打包字体，正文用系统默认（macOS = SF Pro + PingFang SC，Windows =
+# Segoe UI + 微软雅黑，均由系统按字符自动回退）。
+#
+# 注意（批 112 GUI-07）：这里曾写成 "Segoe UI, PingFang SC, …" 逗号串。Flet 1.0.5 的
+# `ft.Theme.font_family` 是**单个 Optional[str]**（不是 CSS font-family），整串会被当成
+# 一个不存在的族名 → 实际落平台默认。因此正文族改为 None（= 不指定，交给系统），
+# 等宽族用平台单族 + `font_family_fallback` 显式回退。
+FONT_FAMILY: str | None = None
+if sys.platform == "darwin":
+    FONT_FAMILY_MONO = "Menlo"
+    MONO_FALLBACK: tuple[str, ...] = ("SF Mono", "Monaco")
+elif sys.platform == "win32":
+    FONT_FAMILY_MONO = "Consolas"
+    MONO_FALLBACK = ("Cascadia Mono", "Courier New")
+else:
+    FONT_FAMILY_MONO = "DejaVu Sans Mono"
+    MONO_FALLBACK = ("Liberation Mono", "Courier New")
 
 #: 语义排版角色 → (字号键, 字重键)。组件只引用角色，不再各自拼字号+字重：
 #: 这是「同级标题字重一致 / 输入框字号=正文」的唯一出处（B-109 W4 收编）。
@@ -48,6 +63,12 @@ TEXT_ROLE: dict[str, tuple[str, str]] = {
     "small": ("small", "regular"),
     "badge": ("caption", "medium"),
     "nav-label": ("body", "medium"),
+    # 选中态（用户 GUI-01 / 批 112 S1）：**选中 = W500，未选 = W400**；
+    # 字号随场景（chip/tab = small，nav/步骤卡/配对卡 = body），字重只有一个来源。
+    "item-selected": ("body", "medium"),
+    "chip-selected": ("small", "medium"),
+    "tab-selected": ("small", "medium"),
+    "step-selected": ("body", "medium"),
     "control": ("body", "regular"),
     "log": ("small", "regular"),
     "mono": ("small", "regular"),
@@ -176,12 +197,18 @@ class Tokens:
 
     # -- 排版角色 --------------------------------------------------------
     @property
-    def font_family(self) -> str:
+    def font_family(self) -> str | None:
+        """正文族：None = 平台默认（Flet 的 font_family 只收单个族名，不能是逗号串）。"""
         return FONT_FAMILY
 
     @property
     def mono_family(self) -> str:
         return FONT_FAMILY_MONO
+
+    @property
+    def mono_fallback(self) -> tuple[str, ...]:
+        """等宽族的显式回退（组件的 ft.Text 出口会带上它）。"""
+        return MONO_FALLBACK
 
     def text_role(self, role: str) -> tuple[str, str]:
         """角色 → (字号键, 字重键)；未知角色直接报错，避免又出现裸字号散点。"""

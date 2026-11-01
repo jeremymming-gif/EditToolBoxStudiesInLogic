@@ -125,7 +125,9 @@ def structural_checks() -> list[dict]:
     option = C.option_row("编译 PDF", "说明", t, icon="PICTURE_AS_PDF",
                           checked=True, badge_label="主要")
     label = option.controls[1].controls[0].controls[0]
-    add("选项名「编译 PDF」字重", label.weight, ft.FontWeight.W_500)
+    # 批 112 S1：产品侧 item-title=W600（option_row 标题走 role="item-title"，h3/semibold），
+    # 旧断言 W500 是历史遗留；Windows 复核时以本断言为准。
+    add("选项名「编译 PDF」字重", label.weight, ft.FontWeight.W_600)
     add("选项名「编译 PDF」字号", label.size, t.font("h3"))
 
     active = C.nav_item("HOME", "工作台", t, active=True, on_click=lambda e: None)

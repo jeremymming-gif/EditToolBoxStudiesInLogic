@@ -226,8 +226,13 @@ class App:
         return max(ZOOM_MIN, round(min(ZOOM_MAX, by_w, by_h), 2))
 
     @staticmethod
-    def _flet_theme(palette) -> ft.Theme:
-        """Flet 主题是 palette 的投影，不再用 INDIGO 种子色另开第二真源。"""
+    def _flet_theme(palette, t: Tokens | None = None) -> ft.Theme:
+        """Flet 主题是 palette 的投影，不再用 INDIGO 种子色另开第二真源。
+
+        `font_family` 只收单个族名（FONT_FAMILY=None 即交给系统默认）；输入框默认字号
+        用 Material 3 的 bodyLarge 统一成正文 14（批 112 GUI-07）。
+        """
+        tokens = t or Tokens()
         return ft.Theme(
             color_scheme=ft.ColorScheme(
                 primary=palette.accent, on_primary=palette.on_accent,
@@ -237,14 +242,15 @@ class App:
                 outline=palette.border,
             ),
             font_family=FONT_FAMILY,
+            text_theme=ft.TextTheme(body_large=ft.TextStyle(size=tokens.font("body"))),
         )
 
     def _configure_window(self) -> None:
         page = self.page
         page.title = APP_TITLE
         page.theme_mode = ft.ThemeMode.DARK if self.theme == "dark" else ft.ThemeMode.LIGHT
-        page.theme = self._flet_theme(LIGHT)
-        page.dark_theme = self._flet_theme(DARK)
+        page.theme = self._flet_theme(LIGHT, self.t)
+        page.dark_theme = self._flet_theme(DARK, self.t)
         page.bgcolor = self.t.palette.bg
         page.padding = 0
         page.spacing = 0
@@ -393,6 +399,11 @@ class App:
         self.status_bar.set_meta(self._status_meta())
         self.page.update()
         self.mark("shell_built", page=key, theme=self.theme, zoom=self.zoom, dpi=self.dpi)
+        # 族 B：重建后页面是全新实例，必须补 on_show（幂等）：恢复磁盘视图 + 触发数据加载。
+        try:
+            self.pages[key].on_show()
+        except Exception as exc:  # noqa: BLE001
+            self.mark("on_show_error", page=key, error=f"{type(exc).__name__}: {exc}")
 
     def _sidebar_content(self) -> ft.Control:
         t = self.t
@@ -402,7 +413,7 @@ class App:
             content=ft.Row(spacing=t.sp("2"), controls=[
                 brand.sidebar_mark(t, 36),
                 ft.Column(spacing=0, controls=[
-                    C.text("编辑部工具箱", t, "h3", weight="semibold"),
+                    C.text("编辑部工具箱", t, role="section"),
                 ]),
             ]),
         )
@@ -816,6 +827,15 @@ class App:
         page_key = _env_str("P2_PAGE")
         if page_key and page_key in self.pages:
             self.goto(page_key)
+        # 批 112 T-C：跨平台自动化钩子——直接落到 bib 的指定子视图（10 视图覆盖用）。
+        bib_view = _env_str("P2_BIB_VIEW")
+        if bib_view:
+            bib_page = self.pages.get("bib")
+            if bib_page is not None and bib_view in bib_page.view_keys():
+                self.goto("bib")
+                bib_page._switch(bib_view, source="env")
+            else:
+                self.mark("bib_view_error", view=bib_view, reason="unknown_view")
         await self._apply_demo_hooks()
         if _env_str("P2_ENVCHECK") in ("1", "true", "yes"):
             settings_page = self.pages.get("settings")

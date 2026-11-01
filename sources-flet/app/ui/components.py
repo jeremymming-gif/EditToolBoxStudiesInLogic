@@ -47,6 +47,9 @@ def text(value: str, t: Tokens, size: str = "body", color: str | None = None,
             font_family = t.mono_family
     if font_family:
         kwargs["font_family"] = font_family
+        # Flet 的 font_family 只收单个族名；回退必须显式给（批 112 GUI-07）。
+        if font_family == t.mono_family:
+            kwargs.setdefault("font_family_fallback", list(t.mono_fallback))
     return ft.Text(
         value, size=t.font(size), color=color or t.palette.text,
         weight=_w(t, weight), **kwargs,
@@ -193,7 +196,7 @@ def nav_item(icon: str, label: str, t: Tokens, *, active: bool, on_click) -> ft.
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Icon(ic(icon), size=t.px(18), color=color),
-                text(label, t, "body", color, weight="medium" if active else "regular"),
+                text(label, t, role="item-selected" if active else "body", color=color),
             ],
         ),
     )
@@ -300,8 +303,8 @@ def chip(label: str, t: Tokens, *, active: bool, on_click) -> ft.Container:
         border=box(t) if not active else box(t, p.accent_soft),
         border_radius=t.radius("pill"),
         padding=_pad(t, 14, 7, 14, 7),
-        content=text(label, t, "small", p.on_accent_soft if active else p.text_muted,
-                     weight="medium" if active else "regular"),
+        content=text(label, t, role="chip-selected" if active else "small",
+                     color=p.on_accent_soft if active else p.text_muted),
     )
 
 

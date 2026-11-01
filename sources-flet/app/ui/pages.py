@@ -87,7 +87,7 @@ class HomePage(BasePage):
                         content=ft.Icon(C.ic(icon, "CIRCLE"), size=t.px(20), color=t.palette.accent),
                     ),
                     ft.Column(spacing=t.sp("half"), expand=True, controls=[
-                        C.text(title, t, "h3", weight="semibold"),
+                        C.text(title, t, role="section"),
                         C.text(desc, t, "small", t.palette.text_muted),
                     ]),
                     ft.Icon(C.ic("CHEVRON_RIGHT", "NAVIGATE_NEXT"), size=t.px(18),
@@ -116,7 +116,7 @@ class HomePage(BasePage):
             ft.Row(spacing=t.sp("2"), controls=[
                 C.card(ft.Column(spacing=t.sp("1"), controls=[
                     ft.Row(spacing=t.sp("2"), controls=[
-                        C.text("引擎状态", t, "h3", weight="semibold"),
+                        C.text("引擎状态", t, role="section"),
                         ft.Container(expand=True),
                         engine_chip,
                     ]),
@@ -125,7 +125,7 @@ class HomePage(BasePage):
                            "caption", t.palette.text_faint),
                 ]), t, expand=True),
                 C.card(ft.Column(spacing=t.sp("1"), controls=[
-                    C.text("快捷操作", t, "h3", weight="semibold"),
+                    C.text("快捷操作", t, role="section"),
                     ft.Row(spacing=t.sp("1"), controls=[
                         C.secondary_button("打开设置", lambda e: self.app.goto("settings"), t,
                                            icon="SETTINGS_OUTLINED"),
@@ -171,7 +171,8 @@ class SinglePage(BasePage):
 
     def __init__(self, app) -> None:
         super().__init__(app)
-        self.flow_key = "convert"
+        saved_flow = app.store.get("single_flow", "convert")
+        self.flow_key = saved_flow if saved_flow in self.FLOWS else "convert"
         self._flow_box = ft.Column(spacing=12)
         self._log = None
         self._result = None
@@ -200,7 +201,7 @@ class SinglePage(BasePage):
             "单篇稿件", "一次只做一件事：选文件 → 勾选项 → 运行；日志与产物都在这一页。", t,
             actions=[self._stop_btn, self._run_btn],
         )
-        self._flow_box.controls = [self._build_convert()]
+        self._flow_box.controls = [self._flow_builder(self.flow_key)()]
         self._proof.root.visible = False
         status = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             self._chips_row,
@@ -213,6 +214,14 @@ class SinglePage(BasePage):
                            self._proof.root, self._log.root, t=t, gap=10)
         self.refresh_running()
         return body
+
+    def _flow_builder(self, key: str):
+        """按 flow_key 选构建器（重建 shell 后恢复上次步骤也走这里）。"""
+        return {
+            "convert": self._build_convert,
+            "checkbib": self._build_checkbib,
+            "proofcheck": self._build_proofcheck,
+        }.get(key, self._build_convert)
 
     def _render_chips(self) -> None:
         t = self.t
@@ -227,15 +236,13 @@ class SinglePage(BasePage):
         if self.app.running:
             self.app.toast("运行中不能切换步骤，先停止")
             return
+        if key not in self.FLOWS:
+            return
         self.flow_key = key
+        self.app.store.set("single_flow", key)
         self._ai = None
         self._render_chips()
-        builder = {
-            "convert": self._build_convert,
-            "checkbib": self._build_checkbib,
-            "proofcheck": self._build_proofcheck,
-        }[key]
-        self._flow_box.controls = [builder()]
+        self._flow_box.controls = [self._flow_builder(key)()]
         self._result.reset()
         CK.on_flow_switch(self)
         self._safe_update(self._chips_row, self._flow_desc, self._flow_box)
@@ -665,7 +672,7 @@ class IssuePage(BasePage):
                 ),
                 ft.Icon(C.ic(step["icon"], "CIRCLE"), size=t.px(18), color=color),
                 ft.Column(spacing=0, expand=True, controls=[
-                    C.text(step["title"], t, "body", weight="semibold"),
+                    C.text(step["title"], t, role="step-selected" if selected else "body"),
                     C.text(step["desc"], t, "caption", t.palette.text_faint),
                 ]),
                 C.status_chip(STATUS_TEXT.get(state, "待运行"), t, state),
@@ -816,7 +823,10 @@ class BibPage(BasePage):
 
     def __init__(self, app) -> None:
         super().__init__(app)
-        self.view = "overview"
+        # 批 112 族 B：视图状态落 store，主题/缩放重建 shell 后不回到 overview。
+        saved_view = app.store.get("bib_view", "overview")
+        self.view = saved_view if saved_view in self.view_keys() else "overview"
+        self._chips_row: ft.Row | None = None
         self.stats_data: dict | None = None
         self.stats_error = ""
         self.query_field: ft.TextField | None = None  # P2_BIB_QUERY_UI 自检钩子用
@@ -830,6 +840,10 @@ class BibPage(BasePage):
         self.fieldfix_view = BOH.BibFieldFixView(self)
         self.health_view = BOH.BibHealthView(self)
 
+    @classmethod
+    def view_keys(cls) -> set[str]:
+        return {key for key, _ in cls.VIEWS}
+
     def build(self) -> ft.Control:
         t = self.t
         self.view_slot = ft.Container(expand=True)
@@ -838,23 +852,44 @@ class BibPage(BasePage):
                                    C.secondary_button("刷新统计", lambda e: self.page.run_task(self._load_stats), t,
                                                       icon="REFRESH"),
                                ])
-        chips = ft.Row(spacing=t.sp("1"), wrap=True,
-                       controls=[C.chip(label, t, active=(key == self.view),
-                                        on_click=lambda e, k=key: self._switch(k))
-                                 for key, label in self.VIEWS])
+        self._chips_row = ft.Row(spacing=t.sp("1"), wrap=True, controls=[])
+        self._render_chips()
         notice = C.notice_bar("写库：编辑 / 查重合并 / 字段归位 / 批量裁决都要先预览、再二次确认，"
                               "写前校验库 sha256（不符即拒绝、零写入）；写成功后自动本地提交"
                               "（每次写库 1 条提交，批量操作也只 1 条；只提交 bib_db/bibliography.jsonl、"
                               "不推送）。库健康视图只读；「确认非重复」只写 sidecar、不改库。", t, "info")
-        body = C.page_body(header, chips, notice, self.view_slot, t=t, gap=12)
+        body = C.page_body(header, self._chips_row, notice, self.view_slot, t=t, gap=12)
         self._render()
         return body
 
+    def _render_chips(self) -> None:
+        """9 个视图 chip 只建一次；高亮跟着 self.view 走，_switch 时原地换 active。"""
+        if self._chips_row is None:
+            return
+        t = self.t
+        self._chips_row.controls = [
+            C.chip(label, t, active=(key == self.view),
+                   on_click=lambda e, k=key: self._switch(k))
+            for key, label in self.VIEWS
+        ]
+
+    def _safe_update(self, *controls) -> None:
+        for control in controls:
+            try:
+                control.update()
+            except Exception:  # noqa: BLE001
+                pass
+
     # ── 视图切换 / 数据加载 ─────────────────────────────────────────────
-    def _switch(self, view: str) -> None:
+    def _switch(self, view: str, *, source: str = "ui") -> None:
+        if view not in self.view_keys():
+            return
         self.view = view
-        self.mark("bib_view", view=view)
+        self.app.store.set("bib_view", view)
+        self.mark("bib_view", view=view, source=source)
+        self._render_chips()
         self._render()
+        self._safe_update(self._chips_row)
         if view == "overview" and self.stats_data is None:
             self.page.run_task(self._load_stats)
         elif view == "review":
@@ -961,6 +996,9 @@ class BibPage(BasePage):
         ])
 
     def on_show(self) -> None:
+        # 族 B：重建 shell 后新实例已从 store 恢复 view；这里补一次渲染 + 数据加载（幂等）。
+        self._render_chips()
+        self._render()
         if self.view == "overview" and self.stats_data is None:
             self.page.run_task(self._load_stats)
         elif self.view == "review":

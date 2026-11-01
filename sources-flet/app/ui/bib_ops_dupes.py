@@ -254,8 +254,9 @@ class BibDuplicatesView(_OpsView):
     def _pair_card(self, row: dict) -> ft.Control:
         t = self.t
         active = _text(row.get("pair_no")) == self.active_pair
-        controls: list = [C.text(duplicate_pair_title(row), t, "body", t.palette.text,
-                                  weight="semibold" if active else "regular")]
+        controls: list = [C.text(duplicate_pair_title(row), t,
+                                  role="item-selected" if active else "body",
+                                  color=t.palette.text)]
         controls += [C.text(line, t, "small", t.palette.text_muted)
                      for line in duplicate_pair_lines(row)]
         controls.append(ft.Row(spacing=t.sp("1"), wrap=True, controls=[

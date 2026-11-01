@@ -358,7 +358,7 @@ class InfoCheckCard:
         )
         self.root = C.card(ft.Column(spacing=t.sp("1"), controls=[
             ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text("信息检查结果", t, "h3", weight="semibold"),
+                C.text("信息检查结果", t, role="section"),
                 self.chip,
                 ft.Container(expand=True),
                 self.open_btn,
@@ -460,7 +460,7 @@ def _stat(label: str, value: str, t) -> ft.Container:
         padding=C._pad(t, 10, 8, 10, 8),
         content=ft.Column(spacing=0, controls=[
             C.text(label, t, "caption", t.palette.text_muted),
-            C.text(value, t, "h3", weight="semibold"),
+            C.text(value, t, role="section"),
         ]),
     )
 
@@ -482,7 +482,7 @@ class ProofCheckCard:
                                            disabled=True)
         self.root = C.card(ft.Column(spacing=t.sp("1"), controls=[
             ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text("一校核查结果", t, "h3", weight="semibold"),
+                C.text("一校核查结果", t, role="section"),
                 self.chip,
                 ft.Container(expand=True),
                 self.open_btn,
