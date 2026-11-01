@@ -311,12 +311,9 @@ class BibQueryView:
 
     def _basic_panel(self) -> ft.Control:
         t = self.page.t
-        mode_box = ft.Dropdown(
-            value=self.mode,
-            width=t.px(96),
-            dense=True,
-            text_size=t.font("body"),
-            options=[ft.DropdownOption(key=key, text=mode_label(key)) for key in EB.QUERY_MODES],
+        mode_box = C.dropdown(
+            t, value=self.mode,
+            options=[(key, mode_label(key)) for key in EB.QUERY_MODES],
             on_select=self._on_mode,
         )
         field = ft.TextField(
@@ -346,9 +343,9 @@ class BibQueryView:
         row_controls = [self._adv_row(index, row) for index, row in enumerate(self.rows)]
         add = C.secondary_button("+ 加一行", lambda e: self._add_row(), t)
         reset = C.text_button("重置", lambda e: self._reset_advanced(), t)
-        sort_box = ft.Dropdown(
-            value=self.sort, width=t.px(96), dense=True, text_size=t.font("body"),
-            options=[ft.DropdownOption(key=key, text=sort_label(key)) for key in EB.QUERY_SORTS],
+        sort_box = C.dropdown(
+            t, value=self.sort,
+            options=[(key, sort_label(key)) for key in EB.QUERY_SORTS],
             on_select=self._on_sort,
         )
         limit = ft.TextField(
@@ -379,18 +376,14 @@ class BibQueryView:
     def _adv_row(self, index: int, row: dict) -> ft.Control:
         t = self.page.t
         field = str(row.get("field") or "author")
-        field_box = ft.Dropdown(
-            value=field, width=t.px(96), dense=True,
-            text_size=t.font("body"),
-            options=[ft.DropdownOption(key=key, text=field_label(key))
-                     for key in EB.QUERY_FIELDS],
+        field_box = C.dropdown(
+            t, value=field,
+            options=[(key, field_label(key)) for key in EB.QUERY_FIELDS],
             on_select=lambda e, i=index: self._on_field(i, e),
         )
-        mode_box = ft.Dropdown(
-            value=normalize_mode(field, str(row.get("mode") or "contains")),
-            width=t.px(96), dense=True, text_size=t.font("body"),
-            options=[ft.DropdownOption(key=key, text=match_label(key))
-                     for key in mode_options(field)],
+        mode_box = C.dropdown(
+            t, value=normalize_mode(field, str(row.get("mode") or "contains")),
+            options=[(key, match_label(key)) for key in mode_options(field)],
             on_select=lambda e, i=index: self._on_match_mode(i, e),
         )
         value = ft.TextField(

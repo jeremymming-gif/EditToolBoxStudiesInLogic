@@ -271,8 +271,11 @@ class App:
         # 批 112 GUI-09：按钮/输入框等「客户端自绘」文本走 Material TextTheme 默认值，
         # 不乘 Tokens.k → 与非按钮文本（全部 t.font()×k）在缩放/DPI 偏离 1.0 时比例漂移。
         # 这里把 TextTheme 全量投影到 tokens 字号（×k），按钮字与正文同源、同缩放。
-        def _ts(key: str, weight: ft.FontWeight | None = None) -> ft.TextStyle:
-            return ft.TextStyle(size=tokens.font(key), weight=weight)
+        def _ts(key: str, weight: ft.FontWeight | None = None,
+                color: str | None = None) -> ft.TextStyle:
+            return ft.TextStyle(size=tokens.font(key), weight=weight, color=color)
+
+        text_color = palette.text
 
         label_weight = ft.FontWeight.W_500
         return ft.Theme(
@@ -284,24 +287,43 @@ class App:
                 outline=palette.border,
             ),
             font_family=FONT_FAMILY,
+            # 批 112 GUI-11：非按钮文本槽位必须带显式颜色。TextTheme 只给 size 时 color 为
+            # None，TextField 的输入文字会落到客户端默认色（深色主题的浅色）而背景是浅色
+            # → 白字白底不可读。label_* 不带色，按钮自己的 color/style 决定前景。
             text_theme=ft.TextTheme(
-                display_large=_ts("display"), display_medium=_ts("display"),
-                display_small=_ts("h1"),
-                headline_large=_ts("h1"), headline_medium=_ts("h2"),
-                headline_small=_ts("h3"),
-                title_large=_ts("h2"), title_medium=_ts("h3"), title_small=_ts("body"),
-                body_large=_ts("body"), body_medium=_ts("small"), body_small=_ts("caption"),
+                display_large=_ts("display", color=text_color),
+                display_medium=_ts("display", color=text_color),
+                display_small=_ts("h1", color=text_color),
+                headline_large=_ts("h1", color=text_color),
+                headline_medium=_ts("h2", color=text_color),
+                headline_small=_ts("h3", color=text_color),
+                title_large=_ts("h2", color=text_color),
+                title_medium=_ts("h3", color=text_color),
+                title_small=_ts("body", color=text_color),
+                body_large=_ts("body", color=text_color),
+                body_medium=_ts("small", color=text_color),
+                body_small=_ts("caption", color=text_color),
                 label_large=_ts("body", label_weight), label_medium=_ts("small"),
                 label_small=_ts("caption"),
             ),
         )
 
-    def _configure_window(self) -> None:
+    def _apply_page_theme(self) -> None:
+        """把当前 Tokens 投影到 page.theme / page.dark_theme。
+
+        必须在 `rebuild_shell()` 里重放（缩放/DPI 变化会换 Tokens）：flet 客户端自绘文本
+        （下拉菜单项、对话框、Tooltip 等）读的是 page.theme 的 TextTheme，不重放就会停在
+        旧 k 上；而控件自己的 `text_size` 已乘新 k → 同屏两套字号（GUI-10 根因）。
+        """
         page = self.page
-        page.title = APP_TITLE
         page.theme_mode = ft.ThemeMode.DARK if self.theme == "dark" else ft.ThemeMode.LIGHT
         page.theme = self._flet_theme(LIGHT, self.t)
         page.dark_theme = self._flet_theme(DARK, self.t)
+
+    def _configure_window(self) -> None:
+        page = self.page
+        page.title = APP_TITLE
+        self._apply_page_theme()
         page.bgcolor = self.t.palette.bg
         page.padding = 0
         page.spacing = 0
@@ -420,6 +442,7 @@ class App:
 
     def rebuild_shell(self) -> None:
         self.t = Tokens(self.theme, self.zoom, self.dpi)
+        self._apply_page_theme()  # GUI-10：缩放换了 Tokens → 客户端自绘文本的字号必须同步重放
         self.engine_status = EB.engine_status()
         key = self.current_page_key or str(self.store.get("last_page", "home") or "home")
         self.pages = {cls.key: cls(self) for cls in P.PAGE_CLASSES}

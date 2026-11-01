@@ -157,6 +157,33 @@ def text_button(label: str, on_click, t: Tokens) -> ft.TextButton:
     return ft.TextButton(label, style=_button_style(t), on_click=on_click)
 
 
+# ── 下拉框 ──────────────────────────────────────────────────────────────────
+def dropdown(t: Tokens, *, value: str | None, options: list[tuple[str, str]],
+             on_select=None, width: float | None = None, dense: bool = True,
+             label: str | None = None, **kwargs) -> ft.Dropdown:
+    """统一下拉框字号：关闭态（text_style）与菜单项（option.style）同锚正文 role。
+
+    背景（批 112 GUI-10）：flet 1.0.5 关闭态字号走 `text_size`/`text_style`，菜单项走
+    客户端 TextTheme；两者任一来源不同步就会出现「上面 key 大、菜单里 key 小」。这里
+    显式双写，菜单项与关闭态永远同字号（与 main._flet_theme 的全量投影互补）。
+    """
+    body = t.font("body")
+    text_color = t.palette.text
+    item_style = ft.ButtonStyle(text_style=ft.TextStyle(size=body, color=text_color))
+    return ft.Dropdown(
+        value=value,
+        options=[ft.DropdownOption(key=key, text=text, style=item_style)
+                 for key, text in options],
+        width=width,
+        dense=dense,
+        text_size=t.font("body"),
+        text_style=ft.TextStyle(size=body, color=text_color),
+        label=label,
+        on_select=on_select,
+        **kwargs,
+    )
+
+
 def icon_button(icon: str, tooltip: str, on_click, t: Tokens, *,
                 color: str | None = None) -> ft.IconButton:
     return ft.IconButton(ic(icon), tooltip=tooltip, on_click=on_click,
