@@ -1,11 +1,11 @@
 ---
 title: 已知限制与绕行
-description: v1.5.0（Flet 单壳）当前仍存在的限制与可操作的绕行办法（随版本维护）。
+description: v1.6.0（Flet 单壳）当前仍存在的限制与可操作的绕行办法（随版本维护）。
 ---
 
 # 已知限制与绕行
 
-适用版本：**v1.5.0**（Flet 单壳）。只列当前版本仍存在的限制，已修复项不入表。
+适用版本：**v1.6.0**（Flet 单壳）。只列当前版本仍存在的限制，已修复项不入表。
 本页随版本维护，与 GitHub Release 正文「如实说明」同源。
 
 ## 平台与界面（Flet 单壳）
@@ -17,7 +17,7 @@ description: v1.5.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 | onefile 冷启动偏慢 | 首次启动约 **4.4–4.6s**（二次约 2.4s），因 onefile 需解压运行时 | 首次体验略慢 | 无（可接受）；后续可评估 onedir 分发 | 观察 |
 | 安装包体积 | Windows zip 约 **75–85MiB**、macOS 包同量级（含 Flet 运行时与引擎） | 下载体积较大 | 网络慢时用支持断点的下载工具 | 无（预期） |
 | 未签名 / 未公证 | Windows SmartScreen「Windows 已保护你的电脑」；macOS「已损坏，无法打开」 | 首次打开多一步 | Windows「更多信息 → 仍要运行」；macOS 右键→打开 或 `xattr -dr com.apple.quarantine` | 无（已定案不签名） |
-| macOS 仅 CI 验证 | 本机为 Windows；mac 构建/运行由 CI macos runner 验证 | mac 侧缺少人工真机走查 | 发版前在 mac 上按 `FIRST-OPEN-macOS.txt` 走一遍关键路径 | 发版流程固定项 |
+| Windows 真机验证 | 批 112 起维护机为 macOS：GUI 与引擎已在 mac 真机逐页验证；Windows 侧由 CI windows runner + 发版前冒烟覆盖 | Windows 长尾（DWM 深色标题栏 / 托盘 / 多 DPI / IME）缺少逐批人工走查 | 发版前按 `windows-smoke-checklist.md` 逐项走并留回执；`pytest` 常跑 | 发版流程固定项 |
 | Windows 平台覆盖 | 真机冒烟只在发版前各做一次 | 平台长尾风险 | 每次发版前按 `windows-smoke-checklist.md` 逐项走、留回执；pytest 常跑 | 发版流程固定项 |
 | 引用库写库 | Flet 版「待处理」含字段冲突与版本库状态区；另有「编辑 / 查重合并 / 字段归位 / 库健康」四个视图（含批量裁决 dry-run 预览与已处理留痕），「设置」页补上核实成本闸门（核实上限 / 先算账 / 全量核实 / 先查库，存 `settings.bibdb` 段）。仍缺：从「查库结果 / 待裁决 / 入藏结果」一键跳到编辑器的深链（目前只能在「编辑」视图按 key 打开） | 深链要手动抄 key；其余写库能力已可用 | 库健康也可用 `Engine/bibdb.py lint --with-records`，已处理用 `report`；核实成本闸门也可用 CLI（`--verify-plan` / `--verify-max`） | 后续版本（深链需改 `bib_advanced.py` / `bib_write.py`） |
 | 引用库核实上限与 AI 面板 | 走 AI 直连核实链路时，`services/engine_bridge.py` 的 `ai_verify_call` 会用 AI 面板的「单篇核实条数」覆盖 `settings.bibdb` 的 `verify_max`（`verify_plan` / `verify_all_refs` / `lookup_enabled` 仍透传） | 两个上限同时存在时以 AI 面板为准 | 需要引用库上限生效时：把 AI 面板的「单篇核实条数」设为同值，或走非 AI 设值/CLI | 后续版本（需统一两处预算键） |

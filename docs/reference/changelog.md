@@ -5,9 +5,31 @@ description: 当前版本与历史 Release。
 
 # 版本记录
 
-当前版本：**1.5.0**（Flet 单壳，macOS + Windows）。
+当前版本：**1.6.0**（Flet 单壳，macOS + Windows）。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
+
+## 1.6.0（2026-11-02）
+
+- **批 112 · GUI 质量（P0）**：修复 18 个「浏览…」入口的 `run_task` TypeError（GUI-04）、引用库
+  31 处把协程对象当任务调度（GUI-04b）、`winplat` 在模块级调用 `WINFUNCTYPE` 导致 macOS 导入即崩
+  （GUI-08）。
+- **GUI 质量（P1）**：选中态统一为 `item-selected`（GUI-01）；字体栈收敛为单族 + fallback（GUI-02）；
+  引用库 9/9 视图 chips 高亮（GUI-05）；按钮字号与正文同源缩放（GUI-09）；下拉菜单关闭态字号与菜单项
+  同源、输入框字色（GUI-10/11）；下拉框高度与同排输入框齐平（GUI-16）。
+- **引用库 10 视图 / 4 组两级信息架构**：新增「规范化」视图（只读，从单篇稿件页整体迁入），组级导航为
+  「查阅 / 采录 / 治理 / 维护」，组内胶囊切换；视图与滚动状态在主题切换、缩放重建后保留。单篇稿件页
+  回到「初排转换 / 一校核查」两个流程。
+- **单篇页布局**：高级参数 14 字段常显、元数据折叠，运行日志改为底部浮层（200px，可收展）；查库示例
+  只留输入框 hint；查重合并改为逐字段左/右值并排 + 行内单选来源。
+- **深色切换不再重建界面**：换肤走原地 retint 热路径，壳侧中位 11.1ms / P95 12.3ms（阈值 40/80ms），
+  `shell_built=1`、`theme_retint_fallback=0`；6 页 × light/dark 逐像素对比 24 对均 ≤0.5%
+  （其中 22 对 0.000%）。
+- **英文稿引擎规则**：初排不再用 `lang == "zh"` 挡住英文稿的 EN-01/02/03；新增内置 pass
+  `fix_en_marks`——正文引用外层括号（EN-10）、脚注/引用与逗号、句号位序（EN-11）、统一半角标点；
+  `math_spans()` 修复数学区配对（英文稿 58 处弯引号残留清零）。
+- **验收**：Flet 壳 `pytest sources-flet/tests -q` → 361 passed / 5 skipped / 0 failed（基线 343/5）；
+  引擎 141 套件 0 红；真实用例矩阵 96 行（41 行自动断言，不可自动化的 9 类单列留证）。
 
 ## 1.5.0
 
