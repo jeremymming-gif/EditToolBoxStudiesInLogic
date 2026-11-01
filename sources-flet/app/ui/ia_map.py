@@ -44,11 +44,11 @@ IA_MAP: list[dict] = [
      "new_view": "步骤 4「合并文件」", "component": "步骤行 + 状态徽标 + 运行按钮",
      "action": "merge（P2 接 Engine/mergepdf.py）", "first_batch": "骨架已实现（模拟运行）"},
     {"idx": 3, "old_page": "一校核查", "old_group": "单篇稿件", "new_page": "单篇稿件",
-     "new_view": "步骤「一校核查」", "component": "PathPicker + OptionRow + 运行按钮 + 结果卡",
-     "action": "proofcheck（P2 接 Engine/proofcheck.py）", "first_batch": "骨架已实现（模拟运行）"},
+     "new_view": "步骤「一校核查」", "component": "PathPicker + 语种下拉 + --fix 开关 + 计数卡/规则表 + 打开报告",
+     "action": "proofcheck（Engine/proofcheck.py；报告 md 摘要 + 契约行计数）", "first_batch": "已实装（W2b）"},
     {"idx": 4, "old_page": "检查tex信息", "old_group": "整期装配", "new_page": "整期装配",
-     "new_view": "步骤 1「检查 tex 信息」", "component": "期目录 PathPicker + 单步运行",
-     "action": "infocheck（P2 接 Engine/infocheck.py）", "first_batch": "骨架已实现（模拟运行）"},
+     "new_view": "步骤 1「检查tex信息」", "component": "期目录 PathPicker + 单步运行 + 10 列结果表 + 摘要/打开报告",
+     "action": "infocheck（Engine/infocheck.py --preview JSON）", "first_batch": "已实装（W2b）"},
     {"idx": 5, "old_page": "生成目录", "old_group": "整期装配", "new_page": "整期装配",
      "new_view": "步骤 2「生成目录」", "component": "单步运行 + 结果徽标",
      "action": "toc（P2 接 Engine/toc.py）", "first_batch": "骨架已实现（模拟运行）"},
@@ -127,7 +127,10 @@ P3_PAGES: list[dict] = [
 
 def stats() -> dict:
     total = len(IA_MAP)
-    implemented = sum(1 for row in IA_MAP if row["first_batch"].startswith("骨架已实现"))
+    implemented = sum(
+        1 for row in IA_MAP
+        if row["first_batch"].startswith(("骨架已实现", "已实装"))
+    )
     pages = sorted({row["new_page"] for row in IA_MAP})
     p3_done = sum(1 for row in IA_MAP if row.get("p3_status") == "done")
     p3_readonly = sum(1 for row in IA_MAP if row.get("p3_status") == "readonly")

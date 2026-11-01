@@ -116,6 +116,13 @@ def artifact_path(last_line: str) -> str:
             for probe in (candidate, candidate.rstrip(_ARTIFACT_TRAIL)):
                 if not probe:
                     continue
+                # 契约行里的「有 tex 2 / 有 pdf 1」会被当成路径起点；
+                # 根目录/盘符根不是产物，跳过继续找后面的「报告：…」。
+                bare = probe.strip()
+                if bare in ("/", "\\") or (
+                    len(bare) == 3 and bare[1] == ":" and bare[2] in "\\/"
+                ):
+                    continue
                 try:
                     if Path(probe).exists():
                         return probe

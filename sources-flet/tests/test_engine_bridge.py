@@ -109,6 +109,11 @@ def test_artifact_path(tmp_path):
     target.write_bytes(b"%PDF-1.4")
     line = f"完成。合并文件：{target}（共 3 页）"
     assert EB.artifact_path(line) == str(target)
+    # 信息检查契约行里的「有 tex 2 / 有 pdf 1」不能当成根路径产物
+    info_line = (
+        f"完成。检查 2 篇（有 tex 2 / 有 pdf 1；不一致 0 项）（报告：{target}）"
+    )
+    assert EB.artifact_path(info_line) == str(target)
     assert EB.artifact_path("没有路径的一行") == ""
 
 

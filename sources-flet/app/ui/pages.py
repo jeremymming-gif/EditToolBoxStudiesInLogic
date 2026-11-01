@@ -23,6 +23,7 @@ from ui import bib_ops_dupes as BOD
 from ui import bib_ops_health as BOH
 from ui import bib_settings as BS
 from ui import bib_write as BW
+from ui import checks as CK
 from ui import components as C
 from ui import metadata_form as MF
 from ui import normalize as NR
@@ -266,6 +267,7 @@ class SinglePage(BasePage):
         self._log = C.LogConsole(t, height=150, title="运行日志")
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
+        self._proof = CK.single_card(self)
         self._run_btn = C.primary_button("运行", self._on_run, t, icon="PLAY_ARROW",
                                          disabled=not self.app.engine_status.ok)
         self._stop_btn = C.secondary_button("停止", self._on_stop, t, icon="STOP", disabled=True)
@@ -276,14 +278,15 @@ class SinglePage(BasePage):
             actions=[self._stop_btn, self._run_btn],
         )
         self._flow_box.controls = [self._build_convert()]
+        self._proof.root.visible = False
         status = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             self._chips_row,
             ft.Container(expand=True),
             C.busy_bar(t, visible=False),
         ])
         self._busy = status.controls[2]
-        body = C.page_body(header, status, self._flow_box, self._result.root, self._log.root,
-                           t=t, gap=10)
+        body = C.page_body(header, status, self._flow_box, self._result.root,
+                           self._proof.root, self._log.root, t=t, gap=10)
         self.refresh_running()
         return body
 
@@ -309,6 +312,7 @@ class SinglePage(BasePage):
         }[key]
         self._flow_box.controls = [builder()]
         self._result.reset()
+        CK.on_flow_switch(self)
         self._safe_update(self._chips_row, self._flow_box)
 
     # ── 三个步骤的输入卡 ────────────────────────────────────────────────
@@ -397,18 +401,7 @@ class SinglePage(BasePage):
         ])
 
     def _build_proofcheck(self) -> ft.Control:
-        t = self.t
-        options = self.app.store.get("options", {}) or {}
-        return ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title("输入", t, note="初排后的 tex"),
-            self.add_picker("初排 tex", "proof_tex", "初排产物 .tex", kind="file"),
-            ft.Row(spacing=t.sp("2"), controls=[
-                self._meta_field("proof_lang", "语种（zh / en，可空）", 240),
-            ]),
-            C.option_row("同时写修正稿", "传 --fix：另写 <stem>_一校核查后.tex", t,
-                         icon="AUTO_FIX_HIGH", checked=bool(options.get("proofcheck_fix", False)),
-                         on_change=lambda e: self.app.set_option("proofcheck_fix", e.control.value)),
-        ])
+        return CK.proofcheck_section(self)
 
     @staticmethod
     def _interleave(rows: list) -> list:
@@ -524,6 +517,8 @@ class SinglePage(BasePage):
         self.app.begin_run(call)
         self._result.reset()
         self._log.clear()
+        CK.before_run(self)
+        CK.on_proof_log(self)
         panel = self._ai if self.flow_key == "convert" else None
         if panel is not None:
             panel.reset_run()
@@ -539,6 +534,7 @@ class SinglePage(BasePage):
                 text, level = notice, "error"
             panel.after_run(call, code)
         artifact = EB.artifact_path(self.app.last_line)
+        text, level = CK.after_proof_run(self, call, code, artifact, text, level)
         if preview_path:
             self._show_metadata_preview(preview_path)
             if not self.app.cancel_requested:
@@ -647,8 +643,8 @@ class IssuePage(BasePage):
     key = "issue"
 
     STEPS = [
-        {"key": "infocheck", "title": "检查 tex 信息", "icon": "FACT_CHECK_OUTLINED",
-         "desc": "扫描整期 tex，输出 9 列清单（篇目/作者/页码…）"},
+        {"key": "infocheck", "title": "检查tex信息", "icon": "FACT_CHECK_OUTLINED",
+         "desc": "扫描整期 tex，输出 10 列清单（篇目/页码/字号行距…）"},
         {"key": "toc", "title": "生成目录", "icon": "TOC", "desc": "用信息检查报告生成目录 tex（可落位编译）"},
         {"key": "compileall", "title": "编译全部", "icon": "PICTURE_AS_PDF_OUTLINED",
          "desc": "逐篇 xelatex→biber→xelatex×2（跳过 000 目录）"},
@@ -666,6 +662,7 @@ class IssuePage(BasePage):
         self._params_box = ft.Column(spacing=10)
         self._log = None
         self._result = None
+        self._info = None
         self._run_btn = None
         self._stop_btn = None
         self._run_all_btn = None
@@ -676,6 +673,7 @@ class IssuePage(BasePage):
         self._log = C.LogConsole(t, height=150, title="整期日志")
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
+        self._info = CK.issue_card(self)
         disabled = not self.app.engine_status.ok
         self._run_all_btn = C.primary_button("运行整期流水线", lambda e: self._run_all(),
                                             t, icon="PLAY_ARROW", disabled=disabled)
@@ -704,6 +702,7 @@ class IssuePage(BasePage):
                     self._params_box,
                 ]), t),
                 self._result.root,
+                self._info.root,
                 self._log.root,
             ]),
         ])
@@ -758,10 +757,7 @@ class IssuePage(BasePage):
         title = C.text(step["title"], t, "h3", weight="semibold")
         rows: list = [C.text(step["desc"], t, "small", t.palette.text_muted)]
         if key == "infocheck":
-            rows += [
-                C.text("读取上方「期目录」，扫描后在本目录写 信息检查<时间戳>.txt / .json。", t,
-                       "caption", t.palette.text_faint),
-            ]
+            rows += CK.info_params(self)
         elif key == "toc":
             options = self.app.store.get("options", {}) or {}
             rows += [
@@ -943,6 +939,7 @@ class IssuePage(BasePage):
             self.app.begin_run(call)
             self._log.clear()
             self._result.reset()
+            CK.before_issue_step(self, key)
             code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
                                      notes=self.app.notes_repo)
             self.app.finish_run(call, code)
@@ -952,6 +949,7 @@ class IssuePage(BasePage):
                 self._status[key] = "idle"
             self._refresh_steps()
             artifact = EB.artifact_path(self.app.last_line)
+            await CK.after_issue_step(self, key, call, code, cancelled, artifact)
             level = "warn" if cancelled else EB.result_level(call.entry, code)
             text = "⏹ 已取消" if cancelled else EB.result_text(call.entry, code)
             self._result.show(text, level=level, artifact=artifact)
