@@ -143,7 +143,8 @@
 ```bash
 python3 run_poc.py --list-templates              # 列出可用模板
 python3 run_poc.py --only tex                    # 用默认模板
-python3 run_poc.py --sty SLCN.sty                # 换成历史版本样式
+# 历史版本样式：站点已不下发，需自备文件或从 tag v1.5.0 取回；引擎仍兼容 SLCN.sty / SLCN-MIX4.sty
+python3 run_poc.py --sty SLCN.sty                # 换用历史版本样式
 python3 run_poc.py --sty ./my.sty --skeleton ./my_template.tex   # 完全自定义
 python3 corpus.py --sty SLEN.sty                 # 全库回归时统一覆盖
 ```
