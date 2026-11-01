@@ -38,6 +38,23 @@ _KEY_ARGS = ("cite", "parencite", "textcite", "footcite", "nocite", "ref", "eqre
              "include", "usepackage", "documentclass", "bibliography", "addbibresource")
 
 
+#: 数学区三种形态：环境、`\[..\]`/`\(..\)`、行内 `$..$`（允许 `$$..$$`）。
+#: 行内用**单一正则一次配对**，不能先用 `\$\$.*?\$\$` 再 `\$[^$]*\$`：紧邻的
+#: `$\lnot$$\Box$` 会被 `$$` 规则错认成行间公式，进而把后面整段正文当成数学区
+#: （批 112 收尾：英文稿 9 行弯引号因此漏修，见 `tests/test_b312_post_en_rules.py`）。
+_MATH_ENV_RE = re.compile(r"\\begin\{(" + "|".join(_MATH_ENVS) + r")\*?\}.*?\\end\{\1\*?\}", re.S)
+_MATH_PAREN_RE = re.compile(r"\\\[.*?\\\]|\\\(.*?\\\)", re.S)
+_MATH_INLINE_RE = re.compile(r"(?<!\\)(\${1,2})(?:(?!\1).)*?\1", re.S)
+
+
+def math_spans(text: str) -> list[tuple[int, int]]:
+    r"""所有数学区 `(start, end)`：环境 / 行间 `\[..\]` / 行内 `$..$`（含 `$$..$$`）。"""
+    spans: list[tuple[int, int]] = []
+    for pat in (_MATH_ENV_RE, _MATH_PAREN_RE, _MATH_INLINE_RE):
+        spans.extend((m.start(), m.end()) for m in pat.finditer(text))
+    return spans
+
+
 # ── 屏蔽层 ───────────────────────────────────────────────────────────────
 
 def visible_mask(text: str) -> str:
@@ -56,11 +73,11 @@ def visible_mask(text: str) -> str:
 
     # 顺序有讲究：先挖掉「大块」的（verbatim / 数学），再处理命令与注释
     for pat in (r"\\begin\{(?:verbatim|lstlisting)\}.*?\\end\{(?:verbatim|lstlisting)\}",
-                r"\\begin\{(" + "|".join(_MATH_ENVS) + r")\*?\}.*?\\end\{\1\*?\}",
-                r"\\\[.*?\\\]", r"\$\$.*?\$\$", r"\\\(.*?\\\)", r"\$[^$]*\$",
                 r"\\verb\*?\|[^|]*\|", r"\\verb\*?(.)(.*?)\1"):
         for m in re.finditer(pat, text, re.S):
             blank_match(m)
+    for a, b in math_spans(text):             # 环境/行间/行内数学一次挖干净
+        blank(a, b)
     masked = "".join(buf)                     # 中间结果：先按上面的块屏蔽一次
     # 注释：`%` 到行尾（`\%` 是字面百分号，不算注释）
     for m in re.finditer(r"(?<!\\)%.*", masked):
@@ -96,12 +113,8 @@ def math_mask(text: str) -> str:
         for i in range(a, b):
             buf[i] = text[i]
 
-    env_pat = "\\\\begin\\{(" + "|".join(_MATH_ENVS) + ")\\*?\\}.*?\\\\end\\{\\1\\*?\\}"
-    for pat in (env_pat, "\\\\\\[.*?\\\\\\]", "\\$\\$.*?\\$\\$", "\\\\\\(.*?\\\\\\)"):
-        for m in re.finditer(pat, text, re.S):
-            keep(m.start(), m.end())
-    for m in re.finditer(r"(?<!\\)\$[^$]*?\$", text):      # 行内 $...$
-        keep(m.start(), m.end())
+    for a, b in math_spans(text):
+        keep(a, b)
     return "".join(buf)
 
 
@@ -1271,3 +1284,145 @@ def move_marks_before_punct(tex: str, kinds: tuple[str, ...] = ("footnote", "cit
             if changed:
                 break
     return out, logs
+
+
+# ── 英文稿：引用外层括号 + 脚注/引用位序（B-312）─────────────────────────────
+#
+# 依据：手册 §校对规范·常规 4.1（脚注在逗号前、句号后）、5.1–5.2（文献引用的位置与
+# 脚注同理）、§英文文章特殊规范（英文稿一律半角标点；正文里的括号式引用外面**再包
+# 一层字面括号**，成品形态 `(\parencite[p.~33]{k1,k2})`）。
+#
+# **为什么单独一个 pass**：zh 侧这三条位序由 ZH-10/ZH-11/ZH-21 只报 + 初排 mover 实现，
+# 但它们 `langs = ("zh",)`、判据是中文标点「，。！？」，英文稿只有半角 `, .` —— 直接
+# 复用会把 zh 报告搞脏。也不该为英文**新增规则 id**：`proof29+fmt11+v1`（29 条）是锁定
+# 契约，`docs/PROOF_RULES.md` 表恰好 29 行、taskbook golden 里带 RULESET_ID + 摘要，
+# 加一条就全线漂移。所以做成初排**内置 pass**：只在 `lang == "en"` 时由
+# `build.apply_proof_autofix` 调用，不进 `check()` 报告、不改 RULESET_ID；改动计数用
+# `EN-10`（外层括号）/`EN-11`（位序）两个 **pass 键**（不是规则 id）记在 `rule_hits` 里。
+#
+# 纪律与 zh mover 一致：只搬**紧邻**的、括号配对失败一律跳过、幂等。
+
+#: 只包 `\parencite`：`\textcite` 是「作者（年）」的行文引用，加括号会改意思。
+_EN_CITE_RE = re.compile(r"\\parencite(?![a-zA-Z])")
+_EN_MARK_RE = re.compile(r"\\(?:footnote|parencite)(?![a-zA-Z])")
+
+
+def _en_mark_spans(tex: str) -> list[tuple[str, int, int]]:
+    r"""`(kind, start, end)`：英文稿里 `\footnote{…}` / `\parencite[opt]{…}` 的整段。"""
+    spans: list[tuple[str, int, int]] = []
+    for m in _EN_MARK_RE.finditer(tex):
+        kind = "footnote" if m.group(0) == "\\footnote" else "cite"
+        i = m.end()
+        while i < len(tex) and tex[i] in " \t*":
+            i += 1
+        if kind == "cite" and i < len(tex) and tex[i] == "[":
+            j = tex.find("]", i)
+            if j < 0:
+                continue
+            i = j + 1
+            while i < len(tex) and tex[i] in " \t":
+                i += 1
+        if i >= len(tex) or tex[i] != "{":
+            continue
+        e = _match_brace(tex, i)
+        if e < 0:
+            continue
+        spans.append((kind, m.start(), e))
+    return spans
+
+
+def _en_group(tex: str, s: int, e: int) -> tuple[int, int]:
+    r"""已经把外层括号包好的 `(\parencite{…})` → 连括号一起算作「标点标记」的区间。"""
+    if s > 0 and e < len(tex) and tex[s - 1] == "(" and tex[e] == ")":
+        return s - 1, e + 1
+    return s, e
+
+
+def en_outer_parens(tex: str) -> tuple[str, int]:
+    r"""给英文稿里**裸写**的 `\parencite[postnote]{keys}` 补一层字面括号（手册 §常规 5.2）。
+
+    成品形态 `(\parencite[p.~33]{k1,k2})`。跳过：脚注体、可选参数、数学区、注释里的
+    引用（脚注里是句子，不是正文括注）；左边已经有左括号、或右边紧跟右括号的也不再包
+    （幂等）。前一个字符不是空白/左括号时补一个空格，避免 `word(\parencite{…})`。
+    """
+    raw = raw_mask(tex)
+    mathm = math_mask(tex)
+    fn = _footnote_spans(tex)
+    opt = _optional_arg_spans(tex)
+    out, n = tex, 0
+    for kind, s, e in reversed(_en_mark_spans(tex)):
+        if kind != "cite":
+            continue
+        if _in_any(s, fn) or _in_any(s, opt):
+            continue
+        if _zh12_in_math(mathm, s):
+            continue
+        if raw[s] == " " and tex[s] != " ":        # 注释里
+            continue
+        j = s - 1
+        while j >= 0 and tex[j] in " \t":
+            j -= 1
+        k = e
+        while k < len(tex) and tex[k] in " \t":
+            k += 1
+        if (j >= 0 and tex[j] == "(") or (k < len(tex) and tex[k] == ")"):
+            continue                                   # 已在括号里（含 `( … )` 留白）
+        pre = "" if s > 0 and tex[s - 1] in " \t\n(" else " "
+        out = out[:s] + pre + "(" + out[s:e] + ")" + out[e:]
+        n += 1
+    return out, n
+
+
+def en_move_marks(tex: str) -> tuple[str, int]:
+    r"""英文稿的脚注/引用位序：放到**逗号前、句号后**（手册 §常规 4.1 / 5.1–5.2）。
+
+      · `text, (\parencite{k})` → `text (\parencite{k}),`
+      · `text (\parencite{k}). More` → `text. (\parencite{k}) More`
+
+    只搬紧邻的情形（标点与标记之间只有空白）；`;` / `:` / 省略号 `...` 不碰 ——
+    手册第 4.1/5.1 只钉了逗号与句号，冒号分号两侧都有人写，宁可不改。
+    """
+    out, n = tex, 0
+    for _kind, s, e in reversed(_en_mark_spans(tex)):
+        gs, ge = _en_group(tex, s, e)
+        # ① 逗号后 → 逗号前：空白跟着标记一起往前搬
+        k = gs
+        while k > 0 and tex[k - 1] in " \t":
+            k -= 1
+        if k > 0 and tex[k - 1] == ",":
+            gap = tex[k:gs]
+            mark = tex[gs:ge]
+            out = out[:k - 1] + gap + mark + "," + out[ge:]
+            n += 1
+            continue
+        # ② 句号前 → 句号后：句号前面是空格时，标记跟过去
+        po = ge
+        if po >= len(tex) or tex[po] != ".":
+            continue
+        if po + 1 < len(tex) and tex[po + 1] not in " \t\n":   # `.5` / `...` / `.)` 不动
+            continue
+        left = tex[:gs].rstrip(" \t")
+        gap = tex[len(left):gs] or " "
+        mark = tex[gs:ge]
+        out = out[:len(left)] + "." + gap + mark + tex[po + 1:]
+        n += 1
+    return out, n
+
+
+def fix_en_marks(tex: str) -> tuple[str, dict[str, int]]:
+    r"""英文稿初排内置 pass 的总入口：外层括号（`EN-10`）+ 位序（`EN-11`）。
+
+    顺序有讲究：先包括号、再搬位序 —— mover 的「句号后」判据看的是标记**外侧**的
+    `)`，裸命令先包起来才能一次判对。两趟各自幂等，最多迭代 3 轮。
+    """
+    hits: dict[str, int] = {}
+    out = tex
+    for _ in range(3):
+        new, n_wrap = en_outer_parens(out)
+        new, n_pos = en_move_marks(new)
+        hits["EN-10"] = hits.get("EN-10", 0) + n_wrap
+        hits["EN-11"] = hits.get("EN-11", 0) + n_pos
+        if new == out:
+            break
+        out = new
+    return out, {k: v for k, v in hits.items() if v}

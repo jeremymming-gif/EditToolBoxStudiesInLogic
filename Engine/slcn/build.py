@@ -1408,7 +1408,7 @@ def build_latex(
     #    这里改完才落盘，audit 也按最终产物重算。
     #    ⚠️ 失败绝不阻断出稿：只写 warning，产物照常生成（编辑宁可多检查，不能没稿）。
     _pf: dict[str, int] = {}
-    if proof_autofix and lang == "zh":
+    if proof_autofix:
         try:
             tpl, _pf = apply_proof_autofix(tpl, lang)
         except Exception as e:  # noqa: BLE001
@@ -2055,11 +2055,20 @@ def apply_proof_autofix(tex: str, lang: str) -> tuple[str, dict[str, int]]:
 
     ⚠️ 只动 `_PROOF_AUTOFIX_IDS`；`apply_fixes` 内部从后往前替换、与已改区间重叠的跳过，
        输入字符串不被就地修改。异常由调用方兜住（本函数不静默吞错）。
+
+    英文稿（B-312）：`lang == "en"` 时另跑 `proofcheck.fix_en_marks` —— 引用外层括号
+    `(\parencite[…]{k})`（记 `EN-10`）+ 逗号前/句号后的位序（记 `EN-11`）。ZH-10/11/21
+    的 `langs` 是 `("zh",)`、判据是中文标点，英文稿判据是半角 `, .`，故不复用；也**不新增
+    规则 id**（`proof29+fmt11+v1` 是锁定契约，见 `docs/RULES.md` §四.5「英文稿特殊规则」）。
     """
     from . import proofcheck as _pc   # 惰性 import：proofcheck 只依赖 re/dataclass，无环
 
     new = tex
     hits: dict[str, int] = {}
+    if lang == "en":
+        # 先跑一遍：外层括号会改变 zh mover 那条「句号紧贴命令」的前视判据（`)` 之后才是句号）
+        new, _en0 = _pc.fix_en_marks(new)
+        hits.update(_en0)
     for _ in range(3):
         rep = _pc.check(new, lang=lang)
         # ① 位置类：只搬本次**报出来的** ZH-10/ZH-11 命中区间（mover 自己不再全文扫）
@@ -2082,6 +2091,10 @@ def apply_proof_autofix(tex: str, lang: str) -> tuple[str, dict[str, int]]:
         fixed, applied = _pc.apply_fixes(new, sub)
         for h in applied:
             hits[h.rule_id] = hits.get(h.rule_id, 0) + 1
+        if lang == "en":
+            fixed, _en = _pc.fix_en_marks(fixed)
+            for _ek, _ev in _en.items():
+                hits[_ek] = hits.get(_ek, 0) + _ev
         if fixed == new and not moved_any:
             break
         new = fixed
@@ -2637,7 +2650,7 @@ def build_docx(
     #    只做确定性子集，脚注/引文位序按命中 span 搬（mover），不全文乱搬。
     #    ⚠️ 失败绝不阻断出稿：只写 warning，产物照常生成（编辑宁可多检查，不能没稿）。
     _pf: dict[str, int] = {}
-    if proof_autofix and lang == "zh":
+    if proof_autofix:
         try:
             tpl, _pf = apply_proof_autofix(tpl, lang)
         except Exception as e:  # noqa: BLE001
