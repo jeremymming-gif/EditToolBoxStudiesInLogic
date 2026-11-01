@@ -42,7 +42,7 @@ from ui import pages as P
 from ui import settings_shell as SHELL
 from ui.ia_map import NAV_GROUPS
 from ui.tokens import (BASE_DPI, BASE_H, BASE_W, DARK, FONT_FAMILY, LIGHT,
-                       ZOOM_MAX, ZOOM_MIN, Tokens)
+                       ZOOM_MAX, ZOOM_MIN, Tokens, palette_remap)
 
 APP_TITLE = "编辑部工具箱"
 # 兜底值；正常显示走 services.version_info（引擎 __version__ 单一来源）。
@@ -139,6 +139,16 @@ def _env_float(name: str, default: float | None) -> float | None:
         return default
 
 
+def _env_int(name: str, default: int = 0) -> int:
+    raw = _env_str(name)
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        return default
+
+
 def _parse_size(raw: str) -> tuple[int, int] | None:
     if not raw or "x" not in raw.lower():
         return None
@@ -147,6 +157,30 @@ def _parse_size(raw: str) -> tuple[int, int] | None:
         return max(200, int(left)), max(150, int(right))
     except ValueError:
         return None
+
+
+#: 批 112 S2「换肤不重建」：要原地改写的颜色属性（背景 / 前景两张映射表分工）。
+_RETINT_BG_ATTRS = ("bgcolor", "fill_color", "border_color", "focused_border_color",
+                    "hover_color", "icon_color", "active_color", "thumb_color",
+                    "track_color", "inactive_track_color", "cursor_color",
+                    "selection_color", "check_color")
+_RETINT_FG_ATTRS = ("color",)
+_RETINT_CHILD_ATTRS = ("content", "controls", "actions", "title", "subtitle", "leading",
+                       "trailing", "children", "label", "rows", "columns", "cells")
+_RETINT_BORDER_SIDES = ("top", "right", "bottom", "left")
+
+
+def _retint_attr(obj, name: str):
+    """控件没设过的属性在 flet 1.0.5 下抛 AttributeError；统一降级为 None。"""
+    try:
+        return getattr(obj, name)
+    except AttributeError:
+        return None
+
+
+def _retint_walkable(obj) -> bool:
+    return (isinstance(obj, ft.Control) or hasattr(obj, "controls")
+            or type(obj).__module__.startswith("flet"))
 
 
 class App:
@@ -363,6 +397,9 @@ class App:
         self.mark("process_start", title=APP_TITLE, argv=sys.argv[1:])
         self.rebuild_shell()
         SHELL.install_hotkeys(self)
+        cycle_count = _env_int("P2_THEME_CYCLES", 0)
+        if cycle_count > 0:
+            self.page.run_task(self._theme_cycles, cycle_count)
 
     def rebuild_shell(self) -> None:
         self.t = Tokens(self.theme, self.zoom, self.dpi)
@@ -426,14 +463,15 @@ class App:
                                         on_click=lambda e, k=key: self.goto(k)))
         items.append(ft.Container(expand=True))
         items.append(C.divider(t))
+        self.theme_switch = ft.Switch(value=self.theme == "dark", active_color=t.palette.accent,
+                                      on_change=self.on_theme_switch)
         items.append(ft.Container(
             padding=C._pad(t, 18, 8, 18, 8),
             content=ft.Row(spacing=t.sp("1"), controls=[
                 ft.Icon(C.ic("DARK_MODE"), size=t.px(18), color=t.palette.text_muted),
                 C.text("深色模式", t, "small", t.palette.text_muted),
                 ft.Container(expand=True),
-                ft.Switch(value=self.theme == "dark", active_color=t.palette.accent,
-                          on_change=self.on_theme_switch),
+                self.theme_switch,
             ]),
         ))
         engine_ok = self.engine_status.ok
@@ -480,14 +518,168 @@ class App:
             return
         if theme not in ("light", "dark") or theme == self.theme:
             return
+        t0 = time.perf_counter()
+        old = self.t
+        built = bool(self.page.controls)
+        mode = "retint" if built else "rebuild"
+        self.mark("theme_begin", theme=theme, mode=mode)
         self.theme = theme
         self.store.set("theme", theme)
+        self.t = Tokens(theme, self.zoom, self.dpi)
         self.page.theme_mode = ft.ThemeMode.DARK if theme == "dark" else ft.ThemeMode.LIGHT
-        self.rebuild_shell()
-        self.persist()
-        self.mark("theme_changed", theme=theme)
+        retinted = 0
+        if built:
+            try:
+                retinted = self._retint_shell(old)
+            except Exception as exc:  # noqa: BLE001 - 换肤失败退回重建，不能停在半套皮肤
+                mode = "rebuild"
+                self.mark("theme_retint_fallback", theme=theme,
+                          error=f"{type(exc).__name__}: {exc}")
+                self.rebuild_shell()
+        else:
+            self.rebuild_shell()
+        self.page.bgcolor = self.t.palette.bg
+        self.status_bar.set_meta(self._status_meta())
+        self.page.update()
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        self.mark("theme_changed", theme=theme, mode=mode, duration_ms=elapsed_ms,
+                  retinted=retinted)
         self.apply_titlebar()
+        self.persist()
         self.toast("已切换到" + ("深色" if theme == "dark" else "浅色") + "模式（已落盘）")
+
+    # ── 换肤不重建（批 112 S2 · GUI-03）────────────────────────────────
+    def _retint_shell(self, old: Tokens) -> int:
+        """把已构建的外壳从 old 皮肤原地换到 self.t：只改颜色属性，不重建控件。
+
+        返回改写的颜色属性个数（marker 里记 retinted）。兜底见 set_theme：
+        这里抛异常时由调用方退回 rebuild_shell 并记 theme_retint_fallback。
+        """
+        target = "dark" if self.theme == "dark" else "light"
+        bg_map = palette_remap(target)
+        fg_map = palette_remap(target, role="fg")
+        log_areas = self._retint_log_areas(self.page, old.palette.log_bg)
+        changed = self._retint(self.page, bg_map, fg_map)
+        # 浅色板里 #FFFFFF 一词多义：_retint 按「背景」角色统一换成 surface，
+        # 侧栏与日志区在这里按语义名改回自己的目标色（仍然只改属性）。
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is not None and sidebar.bgcolor != self.t.palette.sidebar:
+            sidebar.bgcolor = self.t.palette.sidebar
+            changed += 1
+        for area in log_areas:
+            if area.bgcolor != self.t.palette.log_bg:
+                area.bgcolor = self.t.palette.log_bg
+                changed += 1
+        switch = getattr(self, "theme_switch", None)
+        if switch is not None:
+            switch.value = self.theme == "dark"
+        changed += self._refresh_tokens(old)
+        return changed
+
+    def _retint(self, root, bg_map: dict[str, str],
+                fg_map: dict[str, str] | None = None) -> int:
+        """递归改写控件树上的颜色属性（不重建控件）；返回改写个数。"""
+        return self._retint_node(root, bg_map, fg_map or bg_map, set())
+
+    def _retint_node(self, node, bg_map: dict[str, str], fg_map: dict[str, str],
+                     seen: set[int]) -> int:
+        if not _retint_walkable(node) or id(node) in seen:
+            return 0
+        seen.add(id(node))
+        changed = 0
+        for attr in _RETINT_BG_ATTRS:
+            value = _retint_attr(node, attr)
+            if isinstance(value, str) and value in bg_map:
+                setattr(node, attr, bg_map[value])
+                changed += 1
+        for attr in _RETINT_FG_ATTRS:
+            value = _retint_attr(node, attr)
+            if isinstance(value, str) and value in fg_map:
+                setattr(node, attr, fg_map[value])
+                changed += 1
+        border = _retint_attr(node, "border")
+        if isinstance(border, ft.Border):
+            sides = {}
+            border_changed = False
+            for name in _RETINT_BORDER_SIDES:
+                side = getattr(border, name, None)
+                if not isinstance(side, ft.BorderSide):
+                    sides[name] = side
+                    continue
+                new_color = bg_map.get(side.color) if isinstance(side.color, str) else None
+                if new_color is None:
+                    sides[name] = side
+                else:
+                    sides[name] = ft.BorderSide(width=side.width, color=new_color,
+                                                stroke_align=side.stroke_align,
+                                                style=side.style)
+                    border_changed = True
+            if border_changed:
+                setattr(node, "border", ft.Border(**sides))
+                changed += 1
+        for attr in _RETINT_CHILD_ATTRS:
+            child = _retint_attr(node, attr)
+            if isinstance(child, list):
+                for item in child:
+                    changed += self._retint_node(item, bg_map, fg_map, seen)
+            elif child is not None:
+                changed += self._retint_node(child, bg_map, fg_map, seen)
+        return changed
+
+    def _retint_log_areas(self, node, log_bg: str, out: list | None = None,
+                          seen: set[int] | None = None) -> list:
+        """收集日志区容器（浅色下也是 #FFFFFF，换肤前先按「ListView + log_bg」认出来）。"""
+        out = [] if out is None else out
+        seen = set() if seen is None else seen
+        if not _retint_walkable(node) or id(node) in seen:
+            return out
+        seen.add(id(node))
+        if (isinstance(node, ft.Container) and node.bgcolor == log_bg
+                and isinstance(node.content, ft.ListView)):
+            out.append(node)
+        for attr in _RETINT_CHILD_ATTRS:
+            child = _retint_attr(node, attr)
+            if isinstance(child, list):
+                for item in child:
+                    self._retint_log_areas(item, log_bg, out, seen)
+            elif child is not None:
+                self._retint_log_areas(child, log_bg, out, seen)
+        return out
+
+    def _refresh_tokens(self, old: Tokens) -> int:
+        """刷新持 Tokens 快照的 helper（LogConsole / ResultBanner…），后续新增内容不再用旧色。"""
+        new = self.t
+        seen: set[int] = set()
+        changed = 0
+        for owner in [self, *self.pages.values()]:
+            try:
+                values = list(vars(owner).values())
+            except TypeError:
+                continue
+            for obj in values:
+                if obj is None or id(obj) in seen:
+                    continue
+                seen.add(id(obj))
+                if getattr(obj, "t", None) is old:
+                    try:
+                        obj.t = new
+                        changed += 1
+                    except AttributeError:
+                        pass
+        return changed
+
+    async def _theme_cycles(self, count: int) -> None:
+        """P2_THEME_CYCLES：连续切主题 count 次（走公开 set_theme，验证热路径不重建）。"""
+        try:
+            await asyncio.sleep(0.6)
+            self.mark("theme_cycles_begin", cycles=count)
+            for index in range(1, count + 1):
+                self.set_theme("dark" if self.theme == "light" else "light")
+                self.mark("theme_cycle", index=index, theme=self.theme)
+                await asyncio.sleep(0.4)
+            self.mark("theme_cycles_done", cycles=count)
+        except Exception as exc:  # noqa: BLE001 - 证据钩子失败不得影响应用
+            self.mark("theme_cycles_error", error=f"{type(exc).__name__}: {exc}")
 
     def apply_titlebar(self) -> None:
         """深色标题栏跟随主题（DwmSetWindowAttribute；失败降级为系统默认，不影响界面）。

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 
 BASE_DPI = 144.0          # 本机系统 DPI（150%）
 BASE_W, BASE_H = 1240, 860  # 设计基准逻辑窗口尺寸（P0 实测定稿）
@@ -159,6 +159,35 @@ DARK = Palette(
     log_text="#D8E1EA",
     log_muted="#6E7681",
 )
+
+
+#: 浅色板里 #FFFFFF 同时是 sidebar / surface / on_accent / log_bg —— 纯值映射分不清
+#: 角色，所以按「背景」「前景」两类给重复源色排一个先到先得的优先级。
+_ROLE_PRIORITY: dict[str, tuple[str, ...]] = {
+    "bg": ("surface", "sidebar", "on_accent", "log_bg"),
+    "fg": ("on_accent", "sidebar", "surface", "log_bg"),
+}
+
+
+def palette_remap(target: str, role: str = "bg") -> dict[str, str]:
+    """当前主题色值 → target 主题色值（原地换肤用；不重建控件）。
+
+    `role="bg"` 管背景类属性（bgcolor / border_color / fill_color …），
+    `role="fg"` 管前景 `color`：两者只对 #FFFFFF 这类一词多义的源色有区别。
+    反向（dark→light）时 4 个白目标合一，两个角色给出同一张表。
+    """
+    if target not in ("light", "dark"):
+        raise ValueError(f"unknown theme: {target!r}")
+    if role not in _ROLE_PRIORITY:
+        raise ValueError(f"unknown role: {role!r}")
+    src, dst = (LIGHT, DARK) if target == "dark" else (DARK, LIGHT)
+    names = [field.name for field in fields(Palette)]
+    ordered = list(_ROLE_PRIORITY[role]) + [name for name in names
+                                            if name not in _ROLE_PRIORITY[role]]
+    mapping: dict[str, str] = {}
+    for name in ordered:
+        mapping.setdefault(getattr(src, name), getattr(dst, name))
+    return mapping
 
 
 class Tokens:
