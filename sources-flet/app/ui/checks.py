@@ -28,6 +28,8 @@ INFO_COLUMNS = (
 )
 EMPTY_INFO = "（还没检查：选一期的目录，点「运行」）"
 UNREADABLE_INFO = "⚠️ 报告已生成，但读不回结构化数据（表格留空）。报告文件仍在目录里，可直接打开查看。"
+#: 非 0 退出码的统一后续建议（用户可执行；不要求“发给技术人员”）。
+FAIL_HINT = "请查看上方输出；常见原因是 TeX 工具链未装好或路径含特殊字符，可到「设置 → 环境检查」看修复建议。"
 INFO_DIR_HINT = (
     "期目录要选**整期根目录**（内含 `01 作者/` 等篇目子目录），"
     "不要选 `000 Table of Contents` 那一层。"
@@ -265,7 +267,7 @@ def proof_result_text(code: int, *, tex: str = "", fix: bool = False) -> str:
     elif code < 0:
         return "❌ 启动失败。"
     else:
-        return f"❌ 核查失败（退出码 {code}）。请把上面的报错发给技术人员。"
+        return f"❌ 核查失败（退出码 {code}）。{FAIL_HINT}"
     if fix:
         text += f"已另写修正稿：{proof_fix_name(tex)}（输入文件未改动）。"
     return text
@@ -411,7 +413,7 @@ class InfoCheckCard:
         self.report = ""
         self.articles = []
         self._set_chip("检查失败", "error")
-        self.summary.value = f"❌ 检查失败（退出码 {code}）。请把上面的报错发给技术人员。"
+        self.summary.value = f"❌ 检查失败（退出码 {code}）。{FAIL_HINT}"
         self.warning.visible = False
         self.table_box.controls = []
         self.table_box.visible = False

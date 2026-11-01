@@ -77,11 +77,28 @@ def _defaults() -> dict:
         "bibdb": dict(BIBDB_DEFAULTS),
         "log_show_raw": False,
         "env_check_done": False,
+        # 关闭窗口 → 最小化到托盘（仅 Windows；默认关，见 App.set_tray_enabled）
+        "tray_enabled": False,
         "engine_override": "",
         # AI 段：总开关默认关；Key 只写本机设置文件，不进日志/证据/仓库
         "ai": ai_prefs.defaults(),
         "updated_at": "",
     }
+
+
+def normalize_tray_enabled(value) -> bool:
+    """托盘开关归一：缺省/坏值一律 False；兼容手改配置里的 "true"/"1"。
+
+    非 Windows 的运行时判断在 App 里做；这里只保证存储值是真正的 bool，
+    避免旧配置缺键或写成字符串时把「关闭即退出」变成意外的隐藏。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return False
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -120,6 +137,7 @@ class SettingsStore:
         if isinstance(section, dict):
             # 已保存过的 Flet 段拥有最终优先级（旧键只在首次迁移时生效）
             self.data = _deep_merge(self.data, section)
+        self.data["tray_enabled"] = normalize_tray_enabled(self.data.get("tray_enabled"))
         return self.data, self.exists
 
     def _legacy_view(self) -> dict:

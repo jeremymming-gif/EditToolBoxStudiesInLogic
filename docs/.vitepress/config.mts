@@ -11,9 +11,15 @@ export default defineConfig({
   base: '/EditToolBoxStudiesInLogic/',
   cleanUrls: true,
   lastUpdated: true,
-  // docs/public/templates/ 下是公开下载资产（Word/LaTeX 模板与样式，非 VitePress 页面），
-  // 死链检查按预期跳过；B-313B 起模板页直接下载 pdf/tex/bib/sty，全部放行。
-  ignoreDeadLinks: [/^\/templates\/.+\.(docx|pdf|tex|bib|sty)(\?.*)?$/],
+  // docs/public/templates/ 下是公开下载资产（Word/LaTeX 模板，非 VitePress 页面）。
+  // VitePress 只把 KNOWN_EXTENSIONS（含 docx/pdf/tex/bib）内的链接当资产，.sty 不在其中，
+  // 会按页面链接做死链检测；因此 .sty 必须逐条放行本页实际提供的两个文件（精确路径，不设通配），
+  // 其余下载链接仍按 /templates/ 正则放行——只放行可下载资产，避免链接失效时被静默放过（404 无人发现）。
+  ignoreDeadLinks: [
+    /^\/templates\/.+\.(docx|pdf|tex|bib)(\?.*)?$/,
+    /^\/templates\/SLCN-MIX\.sty(\?.*)?$/,
+    /^\/templates\/SLEN\.sty(\?.*)?$/
+  ],
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/EditToolBoxStudiesInLogic/logo.svg' }],
     ['meta', { name: 'theme-color', content: '#3451b2' }],

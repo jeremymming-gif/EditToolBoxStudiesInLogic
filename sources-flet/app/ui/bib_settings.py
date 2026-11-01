@@ -427,36 +427,36 @@ class BibSettingsView:
             self.page.app.open_path(os.path.dirname(db))
 
     # -- 动作（全部二次确认）--------------------------------------------
+    def _git_guard(self) -> bool:
+        """版本层不可用 → 统一提示并刷新（提交/推送/回退共用，避免三份同文）。"""
+        if git_available(self.probe or {}):
+            return True
+        self._notice("error", "版本库不可用（未就绪，或有冲突/变基/合并）。先点「刷新」重试。")
+        self._refresh()
+        return False
+
     def _ask_commit(self) -> None:
         if self.busy:
             return
-        probe = self.probe or {}
-        if not git_available(probe):
-            self._notice("error", "版本层不可用（未就绪或有冲突/变基/合并），先点「刷新」重试。")
-            self._refresh()
+        if not self._git_guard():
             return
         C.confirm(self.page.page, self.page.t, title="提交引用库改动？",
-                  message=commit_confirm_text(probe), confirm_label="提交",
+                  message=commit_confirm_text(self.probe or {}), confirm_label="提交",
                   on_confirm=lambda: self._run(self._do_commit()))
 
     def _ask_push(self) -> None:
         if self.busy:
             return
-        probe = self.probe or {}
-        if not git_available(probe):
-            self._notice("error", "版本层不可用（未就绪或有冲突/变基/合并），先点「刷新」重试。")
-            self._refresh()
+        if not self._git_guard():
             return
         C.confirm(self.page.page, self.page.t, title="推送引用库提交？",
-                  message=push_confirm_text(probe), confirm_label="推送",
+                  message=push_confirm_text(self.probe or {}), confirm_label="推送",
                   on_confirm=lambda: self._run(self._do_push()))
 
     def _ask_rollback(self) -> None:
         if self.busy:
             return
-        if not git_available(self.probe or {}):
-            self._notice("error", "版本层不可用（未就绪或有冲突/变基/合并），先点「刷新」重试。")
-            self._refresh()
+        if not self._git_guard():
             return
         C.confirm(self.page.page, self.page.t, title="回退引用库到上一个提交？",
                   message=rollback_confirm_text(), confirm_label="回退",

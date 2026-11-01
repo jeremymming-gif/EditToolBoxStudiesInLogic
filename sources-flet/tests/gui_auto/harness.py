@@ -637,8 +637,9 @@ class RunContext:
         }
 
     def session(self, tag: str, *, page: str = "home",
-                extra_env: dict[str, str] | None = None) -> "AppSession":
-        return AppSession(self, tag, page=page, extra_env=extra_env)
+                extra_env: dict[str, str] | None = None,
+                settings: dict | None = None) -> "AppSession":
+        return AppSession(self, tag, page=page, extra_env=extra_env, settings=settings)
 
     def record(self, name: str, **data) -> None:
         row = {"scenario": name, **data}
@@ -670,7 +671,8 @@ class RunContext:
 # ── 会话：真实进程 + 窗口 + 交互 ─────────────────────────────────────────
 class AppSession:
     def __init__(self, ctx: RunContext, tag: str, *, page: str = "home",
-                 extra_env: dict[str, str] | None = None) -> None:
+                 extra_env: dict[str, str] | None = None,
+                 settings: dict | None = None) -> None:
         self.ctx = ctx
         self.tag = tag
         self.page = page
@@ -678,7 +680,7 @@ class AppSession:
         self.dir = ctx.sessions_dir / tag
         self.dir.mkdir(parents=True, exist_ok=True)
         self.settings = self.dir / "settings.json"
-        self.settings.write_text("{}", encoding="utf-8")
+        self.settings.write_text(json.dumps(settings or {}, ensure_ascii=False), encoding="utf-8")
         self.marker_path = self.dir / "markers.jsonl"
         self.marker_path.unlink(missing_ok=True)
         self.stdout_path = self.dir / "stdout.log"

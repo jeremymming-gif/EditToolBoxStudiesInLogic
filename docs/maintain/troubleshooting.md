@@ -48,7 +48,7 @@ PYTHONPATH="$PWD/vendor" python3.14 envcheck.py --json     # 外壳读的就是�
 ## 5. 文档站构建失败
 
 - 本地 `npm run docs:build` 报 Node 版本：本站需要 **Node ≥ 18**（CI 用 Node 20）；本机 Node 16 时不要在本地构建，改由 CI 验证；
-- 死链：VitePress 会检查站内链接；下载资产（`.docx/.pdf/.tex/.bib/.sty`）已在 `docs/.vitepress/config.mts` 的 `ignoreDeadLinks` 里按 `/templates/` 规则放行；
+- 死链：VitePress 会检查站内链接；下载资产（`.docx/.pdf/.tex/.bib`）由 `docs/.vitepress/config.mts` 的 `ignoreDeadLinks` 按 `/templates/` 正则放行；`.sty` 只逐条放行 `SLCN-MIX.sty` / `SLEN.sty` 两个精确路径（其余 `.sty` 链接会让构建报错，避免 404 静默）；
 - 页面没有入口：检查 `config.mts` 的 nav/sidebar 是否已登记（nav 5 项、sidebar 4 组）；
 - 部署后 404：等 Pages 构建完成或强制刷新；下载链接 404 时用仓库 `docs/public/templates/` 源文件直链。
 

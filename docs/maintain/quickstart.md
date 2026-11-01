@@ -46,11 +46,13 @@ py -3.14 -X utf8 Engine/tests/test_docs_consistency.py
 - 看门狗期望输出末行「失败 0 项（全部通过）」；路径引用坏掉时会逐条列出。
 - 历史叙述行（含「已删/已移除/历史/曾/不再」等）按约定豁免，见 `AGENTS.md`「文档维护」。
 - Windows 上请带 `-X utf8`（否则中文输出可能乱码）；`PYTHONPATH` 用分号分隔。
+- AI 核实入口：GUI 在「设置」页填 API 配置与预算上限；命令行用 `Engine/convert.py --verify-refs`
+  （参数与计费口径见 `Engine/docs/ENGINE_API.md`）。
 
 ## 3. 构建（只在需要发版时）
 
-桌面端自 v1.5.0 起是 **Flet 单壳**（`sources-flet/`）。历史：旧 `build.sh` / `sources-win/build-win.ps1`
-已随旧壳于 2026-11-01（批 108）删除，不再用于发版；v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回）。
+桌面端自 v1.5.0 起是 **Flet 单壳**（`sources-flet/`）。旧的外壳构建脚本（`build.sh` / `sources-win/build-win.ps1`）
+已随旧壳移除，不再用于发版；v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回）。
 
 ```bash
 # Flet 单壳：开发运行与单元测试

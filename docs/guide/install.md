@@ -6,7 +6,7 @@ description: Windows / macOS 安装、首次打开与常见问题（Flet 单壳 
 # 安装说明
 
 > 桌面端自 **v1.5.0** 起为 **Flet 单壳**：Windows/macOS 同一套界面，产物由 `.github/workflows/build-flet.yml`
-> 与 `release.yml` 两条流水线共用同一套打包口径。旧 SwiftUI / Tkinter 版本已 frozen、不再发布。
+> 与 `release.yml` 两条流水线共用同一套打包口径。
 
 ## 下载
 

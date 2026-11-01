@@ -1,4 +1,4 @@
-"""GUI 自动走查场景（S1–S7）与控件树断言（A 类）。
+"""GUI 自动走查场景（S1–S8）与控件树断言（A 类）。
 
 每个 ``sN_*`` 函数都是一个独立场景：自己启动真实进程、自己断言、自己关闭。
 pytest 入口在 test_gui_auto.py；本模块也可被单独 import 做手工调试。
@@ -379,6 +379,62 @@ def s7_close(ctx: H.RunContext) -> dict:
         session._shutdown(force=True)
 
 
+# ── S8 关闭到托盘（A + B + E）──────────────────────────────────────────────
+def s8_tray_close(ctx: H.RunContext) -> dict:
+    """启用托盘后：原生关闭 → 窗口隐藏、进程不退出 → 托盘显示 → 托盘退出。"""
+    session = ctx.session(
+        "s8", page="home",
+        extra_env={"P3_TRAY_TEST": "wait:15,show,wait:8,quit"},
+        settings={"flet": {"tray_enabled": True}},
+    )
+    session.start()
+    try:
+        started = session.wait_event("tray_started", lambda e: e.get("started") is True, timeout=20)
+        hwnd = session.window.hwnd
+        H.expect(bool(H.user32.IsWindowVisible(hwnd)), "S8 启动后窗口应可见")
+        session.screenshot("s8_before_close", compare=False)
+
+        H.user32.PostMessageW(hwnd, H.WM_CLOSE, 0, 0)
+        close_ev = session.wait_event("close_to_tray", timeout=12)
+        hide_ev = session.wait_event("tray_hide", timeout=12)
+        H.expect(session.proc.poll() is None, "S8 关闭到托盘后进程不应退出")
+        hidden = not bool(H.user32.IsWindowVisible(hwnd))
+        H.expect(hidden, f"S8 窗口应隐藏；close={close_ev} hide={hide_ev}")
+
+        show_ev = session.wait_event("tray_show", timeout=25)
+        deadline = time.monotonic() + 10
+        restored = False
+        while time.monotonic() < deadline:
+            if H.user32.IsWindowVisible(hwnd):
+                restored = True
+                break
+            time.sleep(0.2)
+        H.expect(restored, f"S8 托盘「显示主窗口」后窗口应重新可见；show={show_ev}")
+        session.settle(0.8)
+        session.screenshot("s8_restored", compare=False)
+
+        known = H.tree_pids(session.proc.pid)
+        quit_ev = session.wait_event("tray_quit", timeout=20)
+        rc = session.proc.wait(20)
+        session._rc = int(rc)
+        leftovers = session.leftover_pids()
+        H.expect(rc == 0, f"S8 托盘退出码应为 0，实际 {rc}")
+        H.expect(not leftovers, f"S8 托盘退出后仍有残留进程: {leftovers}")
+        session._shutdown(force=False, known=known)
+        info = {
+            "rc": rc,
+            "tray_started": started,
+            "hidden": hidden,
+            "restored": restored,
+            "close_events": [e.get("event") for e in (close_ev, hide_ev, show_ev, quit_ev)],
+            "leftovers": leftovers,
+        }
+        ctx.record("S8_tray_close", **info)
+        return info
+    finally:
+        session._shutdown(force=True)
+
+
 SCENARIOS = {
     "s1": s1_launch,
     "s2": s2_navigation,
@@ -387,4 +443,5 @@ SCENARIOS = {
     "s5": s5_bib_views,
     "s6": s6_buttons,
     "s7": s7_close,
+    "s8": s8_tray_close,
 }

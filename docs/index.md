@@ -36,6 +36,11 @@ features:
   - icon:
       src: /icons/cost.svg
       alt: ''
+    title: AI 辅助（可选）
+    details: 文献核实与全文核查**默认关闭**；在「设置」页填 API 配置后，由单篇稿件页的选项开启。预算上限可调（单篇默认 3 万 token、批量 100 万 token，0 = 不限），费用在服务商侧计费；不开启也能完成全部离线流程。
+  - icon:
+      src: /icons/cost.svg
+      alt: ''
     title: 成本控制
     details: 核实只核正文引用、上限可调、先算账预览；引用库命中不花钱。
 ---
@@ -61,7 +66,7 @@ features:
 - **Windows**：下载 `EditToolBox-<版本>-Windows-x64.zip`，解压即用，**不需要另装 Python**（`编辑部工具箱.exe` 与 `SLCNEngine.exe` 放同一个文件夹）；首次运行 SmartScreen 选「更多信息 → 仍要运行」。
 - **macOS**（Apple 芯片）：解压后把 `编辑部工具箱.app` 放进「应用程序」；首次打开如被拦截，**右键 → 打开**。
 - 编译 LaTeX 需要本机安装 TeX Live（Windows 可用 MiKTeX，macOS 可用 MacTeX）。
-- 旧 SwiftUI / Tkinter 版本自 v1.5.0 起 frozen，仅保留源码作回退参考、不再发布。
+- 旧版 SwiftUI / Tkinter 外壳已移除；需要旧壳源码回退时，可按 MIT 从 `v1.5.0` 标签取回。
 
 ## 文档
 
@@ -86,9 +91,12 @@ features:
 ## 安全与费用
 
 ::: tip 默认离线可用
-转换、参考文献规范化、整期装配都不联网。需要联网的能力（AI 文献核实 / 检索证据）在 Flet 单壳里走引擎 CLI
-（`Engine/convert.py --verify-refs` 等，需自备 API；参数与计费口径见 `Engine/docs/ENGINE_API.md`），
-应用本身不上传稿件、不自动联网。
+转换、参考文献规范化、整期装配都不联网。需要联网的 AI 文献核实**默认关闭**，在「设置」页填 API 配置与预算上限后，
+由单篇稿件页的选项开启；应用本身不上传稿件、不自动联网。
 :::
+
+## 历史归档
+
+旧外壳时代的文档已归档，仅供查阅、不要照做：[归档与旧版双壳使用说明](/archive/)。
 
 </div>

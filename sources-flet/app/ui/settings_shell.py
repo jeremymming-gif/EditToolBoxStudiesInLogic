@@ -16,6 +16,7 @@ import flet as ft
 
 from services import ai_prefs as AI
 from services import engine_bridge as EB
+from services import winplat
 from ui import components as C
 
 LOG_LIMIT = 4000
@@ -258,6 +259,49 @@ def envcheck_card(page) -> ft.Control:
                                  t, "info"))
     rows.append(page.envcheck_slot)
     return C.card(ft.Column(spacing=t.sp("1"), controls=rows), t)
+
+
+def tray_card(page) -> ft.Control:
+    """窗口与托盘：托盘开关只在 Windows 可用（默认关）。"""
+    t = page.t
+    app = page.app
+
+    def _status_text() -> str:
+        if not winplat.IS_WIN:
+            return "托盘是 Windows 功能；macOS 上关闭窗口即退出。"
+        if getattr(app, "tray_active", False):
+            return "托盘已启动：关闭窗口后从通知区菜单「显示主窗口」恢复，选「退出」才结束。"
+        if bool(getattr(app, "tray_enabled", False)):
+            return "已启用但托盘尚未启动（启动失败会自动回退）；关掉再打开可重试。"
+        return "未启用：关闭窗口即退出。"
+
+    status = C.text(_status_text(), t, "caption", t.palette.text_faint)
+
+    def _toggle(e) -> None:
+        app.set_tray_enabled(bool(e.control.value))
+        switch.value = bool(getattr(app, "tray_enabled", False))
+        status.value = _status_text()
+        try:
+            switch.update()
+            status.update()
+        except Exception:  # noqa: BLE001
+            pass
+
+    switch = ft.Switch(value=bool(getattr(app, "tray_enabled", False)),
+                       active_color=t.palette.accent, disabled=not winplat.IS_WIN,
+                       on_change=_toggle)
+    return C.card(ft.Column(spacing=t.sp("2"), controls=[
+        C.section_title("窗口与托盘", t, note="仅 Windows"),
+        ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+            C.text("关闭窗口时最小化到托盘", t, "body"),
+            ft.Container(expand=True),
+            switch,
+        ]),
+        status,
+        C.text("启用后立即尝试启动托盘图标；启动失败会回退为关闭窗口即退出，"
+               "不会让窗口关不掉。设置写入本机设置文件，下次启动沿用。",
+               t, "caption", t.palette.text_muted),
+    ]), t)
 
 
 def first_run_needed(store) -> bool:

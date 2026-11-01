@@ -13,7 +13,7 @@ description: 本刊 LaTeX 投稿模板（CN/EN）、样式文件与 XeLaTeX + bi
 |---|---|
 | [CN_template.tex](/templates/CN_template.tex?download=1) · [CN_template.pdf](/templates/CN_template.pdf) | 中文稿模板 + 示例 PDF |
 | [EN_template.tex](/templates/EN_template.tex?download=1) · [EN_template.pdf](/templates/EN_template.pdf) | 英文稿模板 + 示例 PDF |
-| [SLCN.sty](/templates/SLCN.sty?download=1) · [SLCN-MIX.sty](/templates/SLCN-MIX.sty?download=1) · [SLCN-MIX4.sty](/templates/SLCN-MIX4.sty?download=1) | 中文样式（与 `CN_template.tex` 同目录） |
+| [SLCN-MIX.sty](/templates/SLCN-MIX.sty?download=1) | 中文样式（与 `CN_template.tex` 同目录） |
 | [SLEN.sty](/templates/SLEN.sty?download=1) | 英文样式（与 `EN_template.tex` 同目录） |
 | [reference.bib](/templates/reference.bib?download=1) | 参考文献库示例（biblatex） |
 

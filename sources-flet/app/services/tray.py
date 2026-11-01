@@ -1,8 +1,9 @@
-"""P3 · 托盘（pystray 旁路）：显示 / 隐藏 / 退出。
+"""Windows 托盘（pystray）：显示 / 隐藏 / 退出。
 
 说明：
 - Flet 1.0.5 无 TrayIcon API；本模块在**服务进程**里用 pystray 建托盘图标，
   窗口操作走 winplat（跨进程 ShowWindow / WM_CLOSE），不碰 Flutter 内部。
+- 仅在 Windows 启用（设置「窗口与托盘 → 关闭窗口时最小化到托盘」，默认关）。
 - 退出 = 向 flet 客户端窗口发 WM_CLOSE，走应用 prevent_close 保存 → destroy 正常链路。
 - 失败（无 pystray / 托盘不可用）一律降级：返回 started=False 并 mark，不影响主流程。
 """
@@ -61,21 +62,29 @@ class TrayService:
         hwnd = self._hwnd()
         ok = winplat.show_window(hwnd, True, foreground=True)
         self._mark("tray_show", ok=ok, hwnd=hwnd)
+        if ok:
+            self._status("已从托盘恢复")
 
     def hide(self, *_args) -> None:
         hwnd = self._hwnd()
         ok = winplat.show_window(hwnd, False)
         self._mark("tray_hide", ok=ok, hwnd=hwnd)
         if ok:
-            self.app.status_bar.set_status("已隐藏到托盘")
-            try:
-                self.app.page.update()
-            except Exception:  # noqa: BLE001
-                pass
+            self._status("已隐藏到托盘")
+
+    def _status(self, text: str) -> None:
+        """托盘线程改状态栏：失败不影响托盘动作。"""
+        try:
+            self.app.status_bar.set_status(text)
+            self.app.page.update()
+        except Exception:  # noqa: BLE001
+            pass
 
     def quit(self, *_args) -> None:
         hwnd = self._hwnd()
         self._mark("tray_quit", hwnd=hwnd)
+        # 先置退出标记：下面的 WM_CLOSE 只会走正常销毁，不会再被「最小化到托盘」拦下。
+        self.app._quitting = True
         self.stop()
         winplat.close_window(hwnd)  # → 应用 prevent_close 保存/销毁链路
 

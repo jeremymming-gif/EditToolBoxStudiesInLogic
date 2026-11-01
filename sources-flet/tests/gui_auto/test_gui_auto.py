@@ -62,3 +62,11 @@ def test_gui_s7_native_close(gui_ctx):
     """S7：点原生标题栏 X，进程 exit 0、无残留进程。"""
     info = S.s7_close(gui_ctx)
     assert info["rc"] == 0 and info["native_close_ok"], info
+
+
+def test_gui_s8_tray_close(gui_ctx):
+    """S8：启用托盘后关闭窗口→隐藏到托盘、进程存活；托盘显示/退出可恢复与退出。"""
+    info = S.s8_tray_close(gui_ctx)
+    assert info["tray_started"]["started"] is True, info
+    assert info["hidden"] and info["restored"], info
+    assert info["rc"] == 0 and not info["leftovers"], info

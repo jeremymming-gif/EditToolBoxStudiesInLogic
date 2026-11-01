@@ -29,7 +29,9 @@ from ui import components as C
 from ui import metadata_form as MF
 from ui import normalize as NR
 from ui import settings_shell as SHELL
-from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
+from ui.base_page import BasePage
+from ui.help_page import HelpPage
+from ui.ia_map import stats as ia_stats
 
 STATUS_TEXT = {"idle": "待运行", "running": "运行中", "done": "已完成", "warn": "有提示", "error": "失败"}
 
@@ -52,94 +54,6 @@ def _basename(path: str) -> str:
         return Path(path).name if path else ""
     except (OSError, ValueError):
         return path
-
-
-class BasePage:
-    key = "base"
-
-    def __init__(self, app) -> None:
-        self.app = app
-        self.page = app.page
-        self.fields: dict[str, list] = {}
-        self.root = None
-        self._run_stats: dict = {}
-
-    # 子类实现 ─────────────────────────────────────────────────────────
-    def build(self):
-        raise NotImplementedError
-
-    def ensure_built(self):
-        """惰性构建入口：没有 root 才 build；导航、预填、证据钩子都走这里。"""
-        if self.root is None:
-            self.root = self.build()
-        return self.root
-
-    # 公共小工具 ───────────────────────────────────────────────────────
-    @property
-    def t(self):
-        return self.app.t
-
-    def add_picker(self, label: str, recent_key: str, hint: str, *, kind: str = "file",
-                   required: bool = True, show_note: bool = True,
-                   on_change=None) -> ft.Container:
-        ref: list = []
-        value = self.app.store.get(f"recent.{recent_key}", "") or ""
-
-        def _browse(e) -> None:
-            self.app.browse_field(ref, f"选择{label}", kind, recent_key)
-
-        def _changed(e) -> None:
-            self.app.store.set_recent(recent_key, e.control.value.strip())
-            self.mark("path_change", field=recent_key, value=e.control.value)
-            if on_change is not None:
-                on_change(e)
-
-        control = C.path_picker(
-            label, value, hint, self.t,
-            on_change=_changed, on_browse=_browse, required=required,
-            show_note=show_note, field_ref=ref,
-        )
-        self.fields[recent_key] = ref
-        return control
-
-    # ── 表单小工具 ─────────────────────────────────────────────────────
-    def _meta_field(self, key: str, label: str, width: float) -> ft.TextField:
-        def _changed(e) -> None:
-            self.app.store.set(f"form.{key}", e.control.value.strip())
-
-        control = ft.TextField(
-            label=label, value=self.app.store.get(f"form.{key}", "") or "",
-            dense=True, text_size=self.t.font("body"),
-            border_color=self.t.palette.border, focused_border_color=self.t.palette.accent,
-            width=self.t.px(width), on_change=_changed,
-            content_padding=C._pad(self.t, 10, 8, 10, 8),
-        )
-        self.fields[key] = [control]
-        return control
-
-    def field(self, recent_key: str) -> str:
-        ref = self.fields.get(recent_key)
-        if not ref:
-            return ""
-        return (ref[0].value or "").strip()
-
-    def set_field(self, recent_key: str, value: str) -> None:
-        ref = self.fields.get(recent_key)
-        if ref:
-            ref[0].value = value
-            try:
-                ref[0].update()
-            except Exception:  # noqa: BLE001
-                pass
-
-    def mark(self, event: str, **fields) -> None:
-        self.app.mark(event, page=self.key, **fields)
-
-    def refresh_running(self) -> None:
-        pass
-
-    def on_show(self) -> None:
-        pass
 
 
 # ── 工作台 ─────────────────────────────────────────────────────────────────
@@ -198,7 +112,7 @@ class HomePage(BasePage):
             ]))
 
         body = C.page_body(
-            C.notice_bar("P6：单篇 3 步、整期 6 步、引用库（查库/入藏/待裁决/版本层）已接真引擎。", t, "info"),
+            C.notice_bar("已接真引擎：单篇 3 步、整期 6 步、引用库（查库/入藏/待裁决/版本层）。", t, "info"),
             ft.Row(spacing=t.sp("2"), controls=[
                 C.card(ft.Column(spacing=t.sp("1"), controls=[
                     ft.Row(spacing=t.sp("2"), controls=[
@@ -207,7 +121,7 @@ class HomePage(BasePage):
                         engine_chip,
                     ]),
                     C.text(engine_note, t, "small", t.palette.text_muted),
-                    C.text(f"项目版本 {self.app.app_version} · Flet {self.app.flet_version}", t,
+                    C.text(f"应用版本 {self.app.app_version} · Flet {self.app.flet_version}", t,
                            "caption", t.palette.text_faint),
                 ]), t, expand=True),
                 C.card(ft.Column(spacing=t.sp("1"), controls=[
@@ -533,9 +447,17 @@ class SinglePage(BasePage):
         panel = self._ai if self.flow_key == "convert" else None
         if panel is not None:
             panel.reset_run()
-        code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
-                                 api=panel.api_env() if panel is not None else None,
-                                 notes=self.app.notes_repo, stdin_text=stdin_text)
+        try:
+            code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
+                                     api=panel.api_env() if panel is not None else None,
+                                     notes=self.app.notes_repo, stdin_text=stdin_text)
+        except Exception as exc:  # noqa: BLE001 - 引擎缺失/启动失败一律给中文提示
+            self.app.finish_run(call, -1)
+            text = f"❌ 任务启动失败：{exc}"
+            self._result.show(text, level="error")
+            self.app.toast(f"任务启动失败：{exc}")
+            self.mark("run_start_error", error=f"{type(exc).__name__}: {exc}")
+            return
         self.app.finish_run(call, code)
         level = "warn" if self.app.cancel_requested else EB.result_level(call.entry, code)
         text = "⏹ 已取消" if self.app.cancel_requested else EB.result_text(call.entry, code)
@@ -797,8 +719,17 @@ class IssuePage(BasePage):
             self._log.clear()
             self._result.reset()
             CK.before_issue_step(self, key)
-            code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
-                                     notes=self.app.notes_repo)
+            try:
+                code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
+                                         notes=self.app.notes_repo)
+            except Exception as exc:  # noqa: BLE001 - 引擎缺失/启动失败一律给中文提示
+                self.app.finish_run(call, -1)
+                self._status[key] = "error"
+                self._refresh_steps()
+                self._result.show(f"❌ 任务启动失败：{exc}", level="error")
+                self.app.toast(f"任务启动失败：{exc}")
+                self.mark("run_start_error", step=key, error=f"{type(exc).__name__}: {exc}")
+                return
             self.app.finish_run(call, code)
             cancelled = self.app.cancel_requested
             self._status[key] = "error" if (code != 0 and not cancelled) else ("warn" if code == 1 else "done")
@@ -1070,7 +1001,7 @@ class SettingsPage(BasePage):
             ("设置文件", str(self.app.store.path)),
         ]
         engine_card = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("引擎", t, note="P2 只做探活；诊断包/环境检查归 P3"),
+            C.section_title("引擎", t, note="探测只读；诊断包与环境检查见下方"),
             *[self._kv(label, value) for label, value in status_rows],
             ft.Row(spacing=t.sp("1"), controls=[
                 C.secondary_button("重新检测", lambda e: self._rescan(), t, icon="REFRESH"),
@@ -1099,6 +1030,8 @@ class SettingsPage(BasePage):
                    "caption", t.palette.text_faint),
         ]), t)
 
+        tray = SHELL.tray_card(self)
+
         paths = C.card(ft.Column(spacing=t.sp("2"), controls=[
             C.section_title("路径", t, note="引擎目录留空 = 自动定位"),
             self._path_field("engine_override", "引擎目录（可空）", kind="dir"),
@@ -1125,7 +1058,7 @@ class SettingsPage(BasePage):
             actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
                                       icon="SAVE_OUTLINED")],
         )
-        page = C.page_body(header, engine_card, appearance, paths, AIP.AiSettings(self).build(),
+        page = C.page_body(header, engine_card, appearance, tray, paths, AIP.AiSettings(self).build(),
                            envcheck, proxy, logs, advanced, about, diagnostics, t=t, gap=12)
         return page
 
@@ -1206,85 +1139,6 @@ class SettingsPage(BasePage):
 
     def _copy_diagnosis(self) -> None:
         SHELL.copy_diagnosis(self)
-
-    def refresh_running(self) -> None:
-        pass
-
-
-class HelpPage(BasePage):
-    """帮助与关于（P3 新增）：怎么用 / 快捷键 / IA 15 页速览 / 版本与许可。"""
-
-    key = "help"
-
-    def build(self) -> ft.Control:
-        t = self.t
-        app = self.app
-        header = C.page_header("帮助与关于", "怎么用、快捷键、版本与许可；IA 15 页映射速览。", t)
-        usage = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("怎么用", t),
-            self._bullet("工作台：引擎状态 + 各页入口，点卡片直达。"),
-            self._bullet("单篇稿件：选源稿件（必填）→ 勾处理选项 → 运行；日志与产物都在本页。"),
-            self._bullet("整期装配：选期目录 → 6 步流水线按顺序跑；删除临时文件会二次确认。"),
-            self._bullet("引用库：查库/统计只读；入藏与待裁决写库前预览、二次确认、sha 闸，写后本地提交。"),
-            self._bullet("设置：外观 / 缩放 / 引擎目录 / 环境检查 / 诊断信息。"),
-        ]), t)
-        boundary = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("边界与安全", t, note="写操作都有前置闸门"),
-            self._bullet("作者来稿只读：不改来稿目录里的任何文件，产物只写输出目录。"),
-            self._bullet("写库 = dry-run 预览 → 二次确认 → sha 校验 → 原子写；只做本地 commit，绝不自动 push。"),
-            self._bullet("引擎全程本地运行；只有你显式开启的 AI 任务书会把正文片段交给你配置的模型服务。"),
-        ]), t)
-        shortcuts = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("快捷键与交互", t, note="与外壳实际绑定同源"),
-            *SHELL.shortcut_rows(t),
-            C.text("运行中可随时停止（隐藏子进程 + 终止进程树）；「浏览…」用系统对话框；"
-                   "Flutter 窗口不接收系统文件拖放。", t, "caption", t.palette.text_faint),
-        ]), t)
-        ia_card = C.card(ft.Column(spacing=t.sp("half"), controls=[
-            C.section_title("IA 15 页映射速览", t, note="状态：done / readonly / deferred"),
-            *[self._ia_row(row) for row in IA_MAP],
-        ]), t)
-        about = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("版本与许可", t),
-            self._kv("应用版本", app.app_version),
-            self._kv("外壳", f"Flet {app.flet_version} · Python {app.python_version}"),
-            self._kv("引擎", f"{app.engine_status.version} · {app.engine_status.mode}"),
-            self._kv("许可", "专有软件 · Copyright © 2026 Jeremymming. All rights reserved."
-                             "（v1.0.0–v1.5.0 历史版本仍为 MIT）"),
-            self._kv("第三方", "Flet (Apache-2.0) · Python (PSF) · pystray (LGPL) · Pillow (HPND)"),
-            self._kv("额外页（IA 之外）", "、".join(f"{p['title']}（{p['status']}）" for p in P3_PAGES)),
-        ]), t)
-        return C.page_body(header, usage, boundary, shortcuts, ia_card, about, t=t, gap=12)
-
-    # ── 小工具 ─────────────────────────────────────────────────────────
-    def _bullet(self, value: str) -> ft.Row:
-        t = self.t
-        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.START, controls=[
-            ft.Icon(C.ic("CHEVRON_RIGHT"), size=t.px(16), color=t.palette.accent),
-            C.text(value, t, "small"),
-        ])
-
-    def _kv(self, label: str, value: str) -> ft.Row:
-        t = self.t
-        return ft.Row(spacing=t.sp("1"), controls=[
-            C.text(label, t, "small", t.palette.text_muted),
-            ft.Container(expand=True),
-            C.text(str(value), t, "small", t.palette.text),
-        ])
-
-    def _ia_row(self, row: dict) -> ft.Row:
-        t = self.t
-        status = P3_STATUS.get(int(row.get("idx", 0)), "deferred")
-        tone = {"done": "success", "readonly": "warn", "deferred": "neutral"}.get(status, "neutral")
-        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            C.text(str(row.get("idx", "")), t, "caption", t.palette.text_faint),
-            C.text(str(row.get("old_page", "")), t, "small"),
-            C.text("→", t, "caption", t.palette.text_faint),
-            C.text(f"{row.get('new_page', '')} · {row.get('new_view', '')}", t, "small",
-                   t.palette.text_muted),
-            ft.Container(expand=True),
-            C.badge(status, t, tone),
-        ])
 
     def refresh_running(self) -> None:
         pass

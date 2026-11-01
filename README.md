@@ -3,8 +3,9 @@
 把编辑部从「来稿」到「成刊」的重复劳动自动化：初排转换、文献核实、一校核查、整期装配。
 macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果。
 
-桌面端自 **v1.5.0** 起统一为 **Flet 单壳**（`sources-flet/`，Windows/macOS 同一套界面与交互）；
-旧的 SwiftUI（macOS）与 Tkinter（Windows）外壳已 **frozen**——保留源码作回退参考，不再发布。
+桌面端自 **v1.5.0** 起统一为 **Flet 单壳**（`sources-flet/`，Windows / macOS 同一套界面与操作）。
+更早的 SwiftUI（macOS）与 Tkinter（Windows）外壳已**移除**；需要旧壳源码回退时，可按 MIT 从 `v1.5.0`
+标签取回（`git archive v1.5.0 sources-win sources-mac`），历史版本不再发布更新。
 
 [项目主页](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/) ｜ [下载最新版](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) ｜ [安装与首次打开](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)
 
@@ -25,19 +26,17 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 | Windows 10/11（x64） | 解压即用：`编辑部工具箱.exe`（Flet 单壳）与引擎 `SLCNEngine.exe` 放在同一文件夹，双击前者 | 不需要 |
 | macOS（Apple 芯片） | `编辑部工具箱.app` 拖进「应用程序」（引擎 sidecar 已打包进 App） | 不需要 |
 
-> 历史：旧版外壳（SwiftUI / Tkinter）已于 2026-11-01（批 108）删除，不再提供下载、不再更新；
-> v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回），需要回退可 `git archive v1.5.0 sources-win sources-mac`。
-
-安装包未做代码签名：Windows 首次运行点「更多信息 → 仍要运行」；macOS 首次右键「打开」，或按[安装说明](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)移除隔离标记。下载页附各平台的 `FIRST-OPEN` 说明，`latest.json` 指向当前版本。本页不记录版本历史，变更见[版本记录](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/reference/changelog)。
+> 安装包未做代码签名：Windows 首次运行点「更多信息 → 仍要运行」；macOS 首次右键「打开」，或按[安装说明](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)移除隔离标记。下载页附各平台的 `FIRST-OPEN` 说明，`latest.json` 指向当前版本。本页不记录版本历史，变更见[版本记录](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/reference/changelog)。
 
 ## 快速开始
+
 ### 直接使用（编辑部）
 
 1. 从 [Releases](https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases/latest) 下载对应平台的 zip。
 2. Windows：解压到任意目录，`编辑部工具箱.exe` 与 `SLCNEngine.exe` 保持同目录，双击 `编辑部工具箱.exe`。
 3. macOS：解压后把 `编辑部工具箱.app` 拖入「应用程序」，首次右键「打开」。
 
-界面按「工作台 / 单篇稿件 / 整期装配 / 引用库 / 设置 / 帮助与关于」组织；单篇与整期都是一页流式操作，日志与产物同屏可见。旧版 Tk/SwiftUI 界面的说明仅作历史参考。
+界面按「工作台 / 单篇稿件 / 整期装配 / 引用库 / 设置 / 帮助与关于」组织；单篇与整期都是一页流式操作，日志与产物同屏可见。
 
 ### 从源码运行（开发）
 
@@ -49,29 +48,49 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 | LibreOffice | 转换含 MathType / OLE 公式的 Word 稿；缺失时公式图为占位 | 按稿件情况 |
 | PyInstaller | `flet pack` 与引擎 sidecar 打包 | 仅打包时需要 |
 
-```bash
-# 安装引擎依赖（一次）
-cd Engine && python3 -m pip install --target vendor -r requirements.txt
+`Windows`（PowerShell，在仓库根执行；安装依赖只需一次）：
 
-# Flet 单壳：直接运行（开发期，热重载）
-cd sources-flet && python3 -m flet run app/main.py
+```powershell
+cd Engine
+py -3.14 -m pip install --target vendor -r requirements.txt
+$env:PYTHONPATH = "$PWD\vendor"
+py -3.14 convert.py --version
 
-# Flet 单壳：打包（引擎 sidecar 另由 CI/脚本产出，见 sources-flet/packaging/README.md）
-cd sources-flet && python3 -m flet pack app/main.py --name 编辑部工具箱 --distpath dist --yes
+# Flet 单壳：开发期运行（热重载）
+cd ..\sources-flet
+py -3.14 -m flet run app/main.py
 ```
 
-> 历史：旧外壳的构建脚本（`./build.sh`、`sources-win/build-win.ps1`）已随旧壳删除，不再用于发版；
-> 当前发布线见 [`RELEASING.md`](RELEASING.md) 与 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
+`macOS / Linux`（解释器名按本机安装，需 3.14）：
 
-> 上面命令里的 `python3` 指你用来跑引擎的解释器；本机实测用 `/opt/homebrew/bin/python3.14`（`vendor/` 内的预编译依赖只适配 3.14）。CI 在云端用 Python 3.12 安装依赖后跑同一套测试。
+```bash
+cd Engine
+python3.14 -m pip install --target vendor -r requirements.txt
+export PYTHONPATH="$PWD/vendor"
+python3.14 convert.py --version
+
+cd ../sources-flet
+python3.14 -m flet run app/main.py
+```
+
+> `vendor/` 里的依赖是按 **Python 3.14** 预编译的，`py -3.14` / `python3.14` 必须指向 3.14。
+> 打包（引擎 sidecar + `flet pack`）见 [`sources-flet/packaging/README.md`](sources-flet/packaging/README.md)；
+> 发布线与 tag 流程见 [`RELEASING.md`](RELEASING.md) 与 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
 ### 只用引擎（命令行）
 
 引擎入口都在 `Engine/` 下：`convert.py`（初排转换）、`checkbib.py`（文献核实）、`proofcheck.py`（一校核查）、`infocheck.py`、`toc.py`、`compileall.py`、`mergepdf.py`、`cleantemp.py`、`publish.py`、`bibdb.py`。参数、退出码与输出格式见 [`Engine/docs/ENGINE_API.md`](Engine/docs/ENGINE_API.md)。
 
+```powershell
+# Windows PowerShell（在 Engine\ 下）
+$env:PYTHONPATH="$PWD\vendor"
+py -3.14 convert.py --source <来稿> --out <期目录> --compile
+```
+
 ```bash
-cd Engine
-PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 convert.py --source <来稿> --out <期目录> --compile
+# macOS / Linux
+export PYTHONPATH="$PWD/vendor"
+python3.14 convert.py --source <来稿> --out <期目录> --compile
 ```
 
 ## 文档地图
@@ -95,7 +114,7 @@ Engine/            引擎（Python）：convert / checkbib / proofcheck / infoch
   slcn/            引擎内部模块（初排、核查、引用库、元数据等）
   docs/            GUIDE、ENGINE_API、PROOF_RULES、RULES 等工程文档
   tests/           引擎测试套件
-sources-flet/      桌面外壳（Flet 单壳，默认产品线；Windows/macOS 共用）
+sources-flet/      桌面外壳（Flet 单壳，Windows/macOS 共用）
   app/             main.py + ui/（设计系统、页面、IA 映射）+ services/（引擎桥、设置）
   packaging/       打包说明与 sidecar 自检脚本（发布线共用）
   tests/           Flet 壳单元测试（pytest，不启动 GUI）
@@ -103,24 +122,20 @@ sources-flet/      桌面外壳（Flet 单壳，默认产品线；Windows/macOS 
 tools/             开发与验收工具
 ```
 
-## 开发与测试
+## 开发与测试（维护者）
 
-```bash
-# 生成 Engine/README.md 中的统计块（数字唯一出处，勿手抄）
-cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tools/gen_docs.py
+`Windows`（PowerShell，在仓库根；前提同「从源码运行」）：
 
-# 文档一致性与路径真实性检查
-cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_docs_consistency.py
-
-# 引擎全部测试套件（逐个跑，只看最后一行）
-cd Engine && for f in tests/test_*.py; do PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 "$f" | tail -1; done
-
-# Flet 单壳单元测试（不启动 GUI；含引擎桥 argv、设置迁移、IA 映射）
-cd sources-flet && /opt/homebrew/bin/python3.14 -m pytest tests -q
-
-# 一键自检（--full 含全部套件）
-cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tools/selfcheck.py --full
+```powershell
+cd Engine
+$env:PYTHONPATH = "$PWD\vendor"
+py -3.14 tools/gen_docs.py                    # 刷新 AUTO 数字块（数字唯一出处，勿手抄）
+py -3.14 tests/test_docs_consistency.py       # 文档看门狗（期望「失败 0 项」）
+py -3.14 tools/selfcheck.py --full            # 一键自查（含全部套件与严格数字校验）
+py -3.14 -m pytest ..\sources-flet\tests -q    # Flet 壳测试（期望 226 passed / 9 skipped）
 ```
+
+`macOS / Linux` 用同一组命令，把 `py -3.14` 换成 `python3.14`、`$env:` 换成 `export`。
 
 - [`Engine/README.md`](Engine/README.md) 的统计块由脚本生成，改文档后请跑一次 `--check` 确认无差异。
 - 完整开发约定、红线与验收清单见 [`AGENTS.md`](AGENTS.md)。

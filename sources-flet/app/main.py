@@ -33,6 +33,7 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from services import version_info as VERSION
 from services import winplat
 from services.settings_store import SettingsStore
 from ui import brand
@@ -44,7 +45,8 @@ from ui.tokens import (BASE_DPI, BASE_H, BASE_W, DARK, FONT_FAMILY, LIGHT,
                        ZOOM_MAX, ZOOM_MIN, Tokens)
 
 APP_TITLE = "编辑部工具箱"
-APP_VERSION = "v1.5.0"
+# 兜底值；正常显示走 services.version_info（引擎 __version__ 单一来源）。
+APP_VERSION = VERSION.FALLBACK_VERSION
 try:
     FLET_VERSION = _pkg_version("flet")
 except Exception:  # noqa: BLE001
@@ -184,6 +186,11 @@ class App:
         self.cancel_requested = False
         self._marker_path = Path(_env_str("P2_MARKER")) if _env_str("P2_MARKER") else None
         self._marker_lock = asyncio.Lock()
+        self._version_info = VERSION.resolve(self.engine_status)
+        self.app_version = self._version_info["version"]
+        if self._version_info["source"] == "fallback":
+            self.mark("version_fallback", engine_version=self._version_info["engine_version"],
+                      fallback=self.app_version)
         self._close_requested = False
         self._browse_task = None
         self.prefill_hooks: dict = {}
@@ -192,6 +199,8 @@ class App:
         # ── P3 平台补齐状态 ─────────────────────────────────────────
         self.client_hwnd = 0
         self.tray = None
+        self.tray_enabled = bool(self.store.get("tray_enabled")) and winplat.IS_WIN
+        self._quitting = False
         self.titlebar_info: dict = {}
         self.geometry: dict = {}
         self.page_switches: list[float] = []
@@ -259,6 +268,68 @@ class App:
             page.window.top = y
             self.mark("geometry_restored", saved={"left": int(left), "top": int(top)},
                       applied={"left": x, "top": y})
+
+    # ── 托盘（仅 Windows；设置项 tray_enabled，默认关）──────────────────
+    @property
+    def tray_active(self) -> bool:
+        return bool(self.tray is not None and getattr(self.tray, "started", False))
+
+    def _start_tray(self, *, force: bool = False, reason: str = "setting") -> dict:
+        """启动托盘；失败自动回退（关闭窗口仍退出），返回 start() 的结果。"""
+        if not winplat.IS_WIN:
+            return {"started": False, "error": "托盘仅 Windows 可用"}
+        if self.tray_active:
+            return {"started": True, "error": ""}
+        from services.tray import TrayService
+
+        service = TrayService(self)
+        result = service.start()
+        self.mark("tray", **result, reason=reason, forced=force)
+        if result.get("started"):
+            self.tray = service
+            return result
+        self.tray = None
+        if not force:
+            self.tray_enabled = False
+            self.store.set("tray_enabled", False)
+            self.persist()
+            self.toast("托盘启动失败，已回退为关闭窗口即退出（可稍后重试）。")
+        return result
+
+    def set_tray_enabled(self, value: bool) -> None:
+        """设置页开关：立即生效并落盘；非 Windows 不接受开启。"""
+        if not winplat.IS_WIN:
+            self.tray_enabled = False
+            self.store.set("tray_enabled", False)
+            self.persist()
+            self.toast("托盘是 Windows 功能，当前平台不可用。")
+            return
+        enabled = bool(value)
+        self.tray_enabled = enabled
+        self.store.set("tray_enabled", enabled)
+        self.persist()
+        self.mark("tray_pref", enabled=enabled)
+        if enabled:
+            if self._start_tray(reason="setting").get("started"):
+                self.toast("已启用：关闭窗口时最小化到托盘，从托盘菜单退出。")
+            return
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception as exc:  # noqa: BLE001
+                self.mark("tray_stop_error", error=f"{type(exc).__name__}: {exc}")
+            self.tray = None
+        self.toast("已关闭托盘：关闭窗口即退出。")
+
+    def _hide_to_tray(self) -> None:
+        self.mark("close_to_tray")
+        try:
+            self.tray.hide()
+        except Exception as exc:  # noqa: BLE001 - 隐藏失败退回正常退出
+            self.mark("tray_hide_error", error=f"{type(exc).__name__}: {exc}")
+            self.tray = None
+            self.save_settings()
+            self.page.run_task(self._destroy_window)
 
     # ── 标记（证据脚本读取）────────────────────────────────────────────
     def mark(self, event: str, **fields) -> None:
@@ -479,7 +550,11 @@ class App:
 
     def refresh_engine_status(self) -> None:
         self.engine_status = EB.engine_status()
+        VERSION.cache_clear()
+        self._version_info = VERSION.resolve(self.engine_status)
+        self.app_version = self._version_info["version"]
         self.mark("engine_status", **self.engine_status.to_dict())
+        self.mark("app_version", version=self.app_version, source=self._version_info["source"])
 
     # ── 运行编排 ────────────────────────────────────────────────────────
     def begin_run(self, call: EB.EngineCall) -> None:
@@ -568,7 +643,7 @@ class App:
     async def _browse_task(self, ref, dialog_title: str, kind: str, key: str, store_prefix: str) -> None:
         try:
             if self._picker is None:
-                self.mark("picker_error", error="file picker 未初始化")
+                self._picker_error("file picker 未初始化")
                 return
             if kind == "dir":
                 value = await self._picker.get_directory_path(dialog_title=dialog_title)
@@ -577,6 +652,7 @@ class App:
                 value = files[0].path if files else None
             self.mark("picker_result", kind=kind, key=key, value=value or "")
             if not value:
+                self._picker_error("", cancel=True)
                 return
             ref[0].value = value
             try:
@@ -593,7 +669,16 @@ class App:
                 self.store.set_recent(key, value)
             self.persist()
         except Exception as exc:  # noqa: BLE001
-            self.mark("picker_error", error=f"{type(exc).__name__}: {exc}")
+            self._picker_error(f"{type(exc).__name__}: {exc}")
+
+    def _picker_error(self, error: str, *, cancel: bool = False) -> None:
+        """文件选择失败/取消都要有中文提示（B4）；失败不弹系统错误，可改手输。"""
+        if cancel:
+            self.mark("picker_cancel")
+            self.toast("已取消选择")
+            return
+        self.mark("picker_error", error=error)
+        self.toast("无法打开文件选择器。可重试「浏览…」，或把路径直接粘贴到输入框。")
 
     def open_path(self, value: str) -> None:
         path = (value or "").strip()
@@ -647,6 +732,11 @@ class App:
                         self.mark("geometry_saved", **self.geometry)
                 except Exception as exc:  # noqa: BLE001
                     self.mark("geometry_error", error=f"{type(exc).__name__}: {exc}")
+            if self.tray_active and not self._quitting:
+                # 启用托盘：关闭窗口 = 最小化到托盘；退出只走托盘菜单「退出」（A2）。
+                self.save_settings()
+                self._hide_to_tray()
+                return
             if self.tray is not None:
                 try:
                     self.tray.stop()
@@ -695,7 +785,10 @@ class App:
             engine=self.engine_status.to_dict(),
             hwnd=self.client_hwnd,
             titlebar=self.titlebar_info,
-            tray={"started": bool(getattr(self.tray, "started", False))} if self.tray else None,
+            tray={"started": bool(getattr(self.tray, "started", False)) if self.tray else False,
+                  "enabled": self.tray_enabled,
+                  "active": self.tray_active,
+                  "error": str(getattr(self.tray, "error", "") or "") if self.tray else ""},
             geometry=self.geometry,
             page_switches=self.page_switches[-10:],
             page_switch_avg_ms=(round(sum(self.page_switches) / len(self.page_switches), 1)
@@ -811,12 +904,19 @@ class App:
         tray_want = _env_str("P3_TRAY") in ("1", "true", "yes")
         tray_test = _env_str("P3_TRAY_TEST")
         if tray_want or tray_test:
-            from services.tray import TrayService
-
-            self.tray = TrayService(self)
-            self.mark("tray", **self.tray.start())
-        if tray_test and self.tray is not None:
+            # 环境变量是调试入口；行为与设置项一致（同样走 _start_tray 的失败回退）。
+            self._start_tray(force=True, reason="env")
+        elif self.tray_enabled:
+            self._start_tray(reason="setting")
+        if tray_test and self.tray_active:
             for action in [a.strip() for a in tray_test.split(",") if a.strip()]:
+                if action.startswith("wait:"):
+                    try:
+                        await asyncio.sleep(max(0.0, float(action.split(":", 1)[1])))
+                    except ValueError:
+                        self.mark("tray_invoke", action=action, ok=False,
+                                  error="wait 需要秒数，例如 wait:15")
+                    continue
                 await asyncio.sleep(0.45)
                 result = self.tray.invoke(action)
                 self.mark("tray_invoke", action=action, ok=result.get("ok"),
@@ -890,7 +990,7 @@ class App:
         try:
             self.mark("picker_open_begin", kind=kind, key="env")
             if self._picker is None:
-                self.mark("picker_error", error="file picker 未初始化")
+                self._picker_error("file picker 未初始化")
                 return
             if kind == "dir":
                 value = await self._picker.get_directory_path(dialog_title="选择稿件所在目录")
@@ -898,8 +998,10 @@ class App:
                 files = await self._picker.pick_files(dialog_title="选择稿件", allow_multiple=False)
                 value = files[0].path if files else None
             self.mark("picker_result", kind=kind, value=value or "")
+            if not value:
+                self._picker_error("", cancel=True)
         except Exception as exc:  # noqa: BLE001
-            self.mark("picker_error", error=f"{type(exc).__name__}: {exc}")
+            self._picker_error(f"{type(exc).__name__}: {exc}")
 
     async def _autorun(self, target: str) -> None:
         await asyncio.sleep(0.5)

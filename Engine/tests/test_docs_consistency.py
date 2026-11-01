@@ -316,6 +316,28 @@ check(f"(b) {len(DOC_FILES) - len(CASE_FILES)} 份文档里的路径引用全部
       (f"缺失 {len(missing)} 处，豁免窗口里的引用 {exempted} 处：\n        "
        + "\n        ".join(missing[:15])) if missing else f"（历史叙述行豁免 {exempted} 处）")
 
+# ── (b2) 站点模板资产与页面文案一致（删样式后残留链接不许静默 404）────────
+print("\n── (b2) 站点模板资产计数与模板页文案 ──")
+TPL_DIR = REPO / "docs" / "public" / "templates"
+if not TPL_DIR.is_dir():
+    print("SKIP  (b2) 本仓不含文档站（`docs/public/templates/` 有意不带）—— 资产计数跳过")
+else:
+    _assets = sorted(p.name for p in TPL_DIR.iterdir() if p.is_file())
+    _stys = sorted(n for n in _assets if n.endswith(".sty"))
+    check("(b2a) 站点模板资产 9 件，样式只留中文 SLCN-MIX.sty + 英文 SLEN.sty",
+          len(_assets) == 9 and _stys == ["SLCN-MIX.sty", "SLEN.sty"],
+          f"资产 {len(_assets)} 件：{_assets}；样式 {_stys}")
+    _pages = [REPO / "docs" / "templates" / "index.md", REPO / "docs" / "templates" / "latex.md"]
+    _text = "".join(p.read_text(encoding="utf-8") for p in _pages if p.is_file())
+    _stale = [g for g in ("SLCN.sty", "SLCN-MIX4.sty") if g in _text]
+    check("(b2b) 模板页不再引用已下线的中文样式（SLCN.sty / SLCN-MIX4.sty）",
+          not _stale, f"仍在引用：{_stale}" if _stale else "只引用 SLCN-MIX.sty")
+    _counted = [p.name for p in (REPO / "docs" / "index.md", REPO / "docs" / "templates" / "index.md")
+                if p.is_file() and f"{len(_assets)} 件资产" in p.read_text(encoding="utf-8")]
+    check("(b2c) 「N 件资产」文案与实际文件数一致",
+          bool(_counted), f"`{len(_assets)} 件资产` 出现在：{_counted}" if _counted
+          else f"没有页面写「{len(_assets)} 件资产」")
+
 # ── (c) 条目号可查 ─────────────────────────────────────────────────────────
 print("\n── (c) 每处「第 N 条」都能查到 `### N.` ──")
 CASES = sorted((ENGINE / "docs" / "cases").glob("*.md"))
