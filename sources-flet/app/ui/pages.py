@@ -808,25 +808,58 @@ class IssuePage(BasePage):
 
 
 # ── 引用库（P3 实装，P2 保留入口）────────────────────────────────────────
+#: 写库视图共用的一行后果提示（W1/W2 压到 1 行；全文进 notice 的 info tooltip）。
+BIB_WRITE_NOTICE = "预览 → 二次确认 → 原子写；只提交 bibliography.jsonl，不推送。"
+BIB_WRITE_VIEWS = ("import", "review", "edit", "dupes", "fieldfix")
+#: notice 的 info tooltip 全文（T9 的 help_content 再收录同一份口径，别改这里再抄一遍）。
+BIB_WRITE_RULES = (
+    "W1 写库四步：干跑预览 → 二次确认 → 校验 bibliography.jsonl 的 sha256"
+    "（不符即拒绝、零写入）→ 原子替换。\n"
+    "W2 只本地：写成功后自动本地提交 1 条（批量也只 1 条），"
+    "只提交 bib_db/bibliography.jsonl；不 git push、不同步远端。\n"
+    "W3 只读不写：概况 / 查库 / 规范化 / 库健康不写库；规范化只产出报告文件。"
+)
+
+
 class BibPage(BasePage):
-    """引用库（P6）：概况/查库只读；入藏与待裁决是真写（二次确认 + sha 闸）。
+    """引用库（P6）：10 视图 / 4 组两级导航；概况/查库只读，入藏与待裁决是真写。
 
     写库一律先干跑预览、再带 `--expect-db-sha256` 真写，写完自动本地提交
     （只提交 bib_db/bibliography.jsonl）；推送/回退要二次确认（B-190 契约）。
     """
 
     key = "bib"
-    VIEWS = [("overview", "概况"), ("query", "查库"), ("import", "入藏"),
-             ("review", "待处理"), ("settings", "设置"),
-             ("edit", "编辑"), ("dupes", "查重合并"), ("fieldfix", "字段归位"),
-             ("health", "库健康")]
+    #: 10 视图（IA 序：查阅 → 采录 → 治理 → 维护）。key 沿用旧名，只新增 `normalize`。
+    VIEWS = [("overview", "概况"), ("query", "查库"), ("normalize", "规范化"),
+             ("import", "入藏"), ("review", "待处理"), ("edit", "编辑"),
+             ("dupes", "查重合并"), ("fieldfix", "字段归位"),
+             ("health", "库健康"), ("settings", "设置")]
+    #: 4 组两级导航：组 key → (组标签, 组内视图 key；顺序即胶囊顺序)。
+    GROUPS = {
+        "read": ("查阅", ("overview", "query")),
+        "intake": ("采录", ("normalize", "import")),
+        "treat": ("治理", ("review", "edit", "dupes", "fieldfix")),
+        "maint": ("维护", ("health", "settings")),
+    }
+    GROUP_ORDER = ("read", "intake", "treat", "maint")
+    #: 页头权限芯片：只读视图不出 notice，靠这一枚自解释。
+    VIEW_ACCESS = {"overview": "只读", "query": "只读", "normalize": "只读",
+                   "import": "写库", "review": "写库", "edit": "写库",
+                   "dupes": "写库", "fieldfix": "写库", "health": "只读",
+                   "settings": "配置"}
+    #: 视图级 notice：{view: (tone, 一行文案)}；缺键 = 该视图不出 notice。
+    VIEW_NOTICES = {key: ("info", BIB_WRITE_NOTICE) for key in BIB_WRITE_VIEWS}
+    VIEW_LABELS = {key: label for key, label in VIEWS}
 
     def __init__(self, app) -> None:
         super().__init__(app)
         # 批 112 族 B：视图状态落 store，主题/缩放重建 shell 后不回到 overview。
-        saved_view = app.store.get("bib_view", "overview")
-        self.view = saved_view if saved_view in self.view_keys() else "overview"
+        self.view = SS.pick(app.store, "bib_view", self.view_keys(), "overview")
+        self.group = self.group_of(self.view)
+        self._group_row: ft.Row | None = None
         self._chips_row: ft.Row | None = None
+        self._notice_slot: ft.Container | None = None
+        self._status_slot: ft.Row | None = None
         self.stats_data: dict | None = None
         self.stats_error = ""
         self.query_field: ft.TextField | None = None  # P2_BIB_QUERY_UI 自检钩子用
@@ -844,34 +877,81 @@ class BibPage(BasePage):
     def view_keys(cls) -> set[str]:
         return {key for key, _ in cls.VIEWS}
 
+    @classmethod
+    def group_of(cls, view: str) -> str:
+        """视图 → 所属组 key（未知视图按第一组处理，与 set_view 的回落一致）。"""
+        for group in cls.GROUP_ORDER:
+            if view in cls.GROUPS[group][1]:
+                return group
+        return cls.GROUP_ORDER[0]
+
     def build(self) -> ft.Control:
         t = self.t
         self.view_slot = ft.Container(expand=True)
-        header = C.page_header("引用库", "查库与统计只读；入藏 / 待裁决是写库操作（预览后二次确认）。", t,
-                               actions=[
-                                   C.secondary_button("刷新统计", lambda e: self.page.run_task(self._load_stats), t,
-                                                      icon="REFRESH"),
-                               ])
+        self._status_slot = ft.Row(spacing=t.sp("1"), controls=[])
+        header = C.page_header("引用库", "统计只读 · 写库需二次确认", t, actions=[
+            self._status_slot,
+            C.secondary_button("刷新统计", lambda e: self.page.run_task(self._load_stats), t,
+                               icon="REFRESH"),
+        ])
+        self._group_row = ft.Row(spacing=t.sp("1"), controls=[])
         self._chips_row = ft.Row(spacing=t.sp("1"), wrap=True, controls=[])
-        self._render_chips()
-        notice = C.notice_bar("写库：编辑 / 查重合并 / 字段归位 / 批量裁决都要先预览、再二次确认，"
-                              "写前校验库 sha256（不符即拒绝、零写入）；写成功后自动本地提交"
-                              "（每次写库 1 条提交，批量操作也只 1 条；只提交 bib_db/bibliography.jsonl、"
-                              "不推送）。库健康视图只读；「确认非重复」只写 sidecar、不改库。", t, "info")
-        body = C.page_body(header, self._chips_row, notice, self.view_slot, t=t, gap=12)
+        self._notice_slot = ft.Container()
+        self._render_nav()
+        nav = ft.Column(spacing=t.sp("1"),
+                        controls=[self._group_row, self._chips_row, self._notice_slot])
+        body = C.page_body(header, nav, self.view_slot, t=t, gap=12)
         self._render()
         return body
 
-    def _render_chips(self) -> None:
-        """9 个视图 chip 只建一次；高亮跟着 self.view 走，_switch 时原地换 active。"""
-        if self._chips_row is None:
+    def _render_nav(self) -> None:
+        """两级导航：组条（4 组 tab）+ 当前组胶囊 + 视图 notice + 页头状态芯片。
+
+        组条 active 跟着 `self.group`；切视图时只换胶囊与 notice，组条原地不动
+        （批 112 P1：高亮必须每次重绘，不能只在 build 里建一次）。
+        """
+        if self._group_row is None or self._chips_row is None:
             return
         t = self.t
-        self._chips_row.controls = [
-            C.chip(label, t, active=(key == self.view),
-                   on_click=lambda e, k=key: self._switch(k))
-            for key, label in self.VIEWS
+        self.group = self.group_of(self.view)
+        self._group_row.controls = [
+            C.group_tab(self.GROUPS[group][0], t, active=(group == self.group),
+                        on_click=lambda e, g=group: self.set_group(g))
+            for group in self.GROUP_ORDER
         ]
+        self._chips_row.controls = [
+            C.chip(self.VIEW_LABELS[key], t, active=(key == self.view),
+                   on_click=lambda e, k=key: self.set_view(k))
+            for key in self.GROUPS[self.group][1]
+        ]
+        if self._notice_slot is not None:
+            self._notice_slot.content = self._notice_control()
+        if self._status_slot is not None:
+            self._status_slot.controls = self._status_chips()
+        self._safe_update(*[c for c in (self._group_row, self._chips_row,
+                                        self._notice_slot, self._status_slot) if c is not None])
+
+    def _notice_control(self) -> ft.Control | None:
+        """当前视图的 1 行后果提示；全文挂在这条 notice 的 info tooltip 里（W1/W2/W3）。"""
+        spec = self.VIEW_NOTICES.get(self.view)
+        if not spec:
+            return None
+        tone, message = spec
+        bar = C.notice_bar(message, self.t, tone)
+        try:
+            bar.tooltip = ft.Tooltip(message=BIB_WRITE_RULES, wait_duration=0.4)
+        except Exception:  # noqa: BLE001  Flet 版本差异：没有 Tooltip 就退化成一行
+            pass
+        return bar
+
+    def _status_chips(self) -> list:
+        """页头状态芯片：当前视图权限 + （有则）工作区未提交。"""
+        t = self.t
+        access = self.VIEW_ACCESS.get(self.view, "只读")
+        chips = [C.status_chip(access, t, "running" if access == "写库" else "idle")]
+        if (self.stats_data or {}).get("dirty"):
+            chips.append(C.status_chip("未提交", t, "warn"))
+        return chips
 
     def _safe_update(self, *controls) -> None:
         for control in controls:
@@ -881,15 +961,44 @@ class BibPage(BasePage):
                 pass
 
     # ── 视图切换 / 数据加载 ─────────────────────────────────────────────
-    def _switch(self, view: str, *, source: str = "ui") -> None:
+    def set_view(self, view: str, *, source: str = "legacy") -> None:
+        """切视图唯一入口：白名单 → store（view + 组记忆）→ mark → 重绘 → 按需加载。
+
+        非法值回落 overview 并 mark `bib_view_invalid`（不静默忽略，便于 P2 断言）。
+        """
+        view = str(view or "")
         if view not in self.view_keys():
-            return
+            self.mark("bib_view_invalid", view=view, source=source)
+            view = "overview"
         self.view = view
-        self.app.store.set("bib_view", view)
-        self.mark("bib_view", view=view, source=source)
-        self._render_chips()
+        self.group = self.group_of(view)
+        store = self.app.store
+        store.set("bib_view", view)
+        memory = store.get("bib_group_memory", {}) or {}
+        memory = dict(memory) if isinstance(memory, dict) else {}
+        memory[self.group] = view
+        store.set("bib_group_memory", memory)
+        self.mark("bib_view", view=view, source=source, group=self.group)
+        self._render_nav()
         self._render()
-        self._safe_update(self._chips_row)
+        self._ensure_loaded(view)
+
+    def set_group(self, group: str) -> None:
+        """点组条：进该组上次视图；没有记忆（或记忆已不在本组）就用组内首项。"""
+        if group not in self.GROUPS:
+            return
+        memory = self.app.store.get("bib_group_memory", {}) or {}
+        target = memory.get(group) if isinstance(memory, dict) else None
+        if target not in self.GROUPS[group][1]:
+            target = self.GROUPS[group][1][0]
+        self.set_view(target, source="group")
+
+    def _switch(self, view: str, *, source: str = "ui") -> None:
+        """兼容别名：main.py 的 P2_BIB_VIEW / P2_BIB_QUERY_UI 仍走这个入口。"""
+        self.set_view(view, source=source)
+
+    def _ensure_loaded(self, view: str) -> None:
+        """按视图惰性加载（幂等；协程统一走 page.run_task）。"""
         if view == "overview" and self.stats_data is None:
             self.page.run_task(self._load_stats)
         elif view == "review":
@@ -934,6 +1043,8 @@ class BibPage(BasePage):
         builders = {
             "overview": self._overview_view,
             "query": self.query_view.build,
+            # T4（S3a2）落地前的占位：规范化面板整体迁到 ui/normalize.py 的 NormalizeView。
+            "normalize": self._normalize_placeholder,
             "import": self.import_view.build,
             "review": self.review_view.build,
             "settings": self.settings_view.build,
@@ -960,31 +1071,79 @@ class BibPage(BasePage):
             pass
 
     def _overview_view(self) -> ft.Control:
+        """概览：三张统计卡 → 「下一步」动作 → 折叠的库详情（动作在前、事实在后）。"""
         t = self.t
         stats = self.stats_data or {}
         aliases = stats.get("aliases") or {}
         conflicts = stats.get("conflicts") or {}
-        entry_types = stats.get("entry_types") or {}
+        loaded = self.stats_data is not None
+        records = aliases.get("records")
+        conflict_n = conflicts.get("records") or 0
         size_mb = (stats.get("bytes") or 0) / 1024 / 1024
-        cards = ft.Row(spacing=t.sp("2"), controls=[
-            C.stat_card("条目总数", str(aliases.get("records") or "—"),
-                        f"别名合计 {aliases.get('total') or '—'} 条 · 只读", t),
-            C.stat_card("冲突 / 待裁决", str(conflicts.get("records") or "0"),
-                        f"冲突合计 {conflicts.get('total') or 0} 条", t),
+        reading = "读取失败" if self.stats_error else "正在读取…"
+        controls: list = []
+        if self.stats_error:
+            controls.append(ft.Row(spacing=t.sp("1"),
+                                   vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                ft.Container(expand=True, content=C.notice_bar(self.stats_error, t, "error")),
+                C.text_button("重试", lambda e: self.page.run_task(self._load_stats), t),
+            ]))
+        controls.append(ft.Row(spacing=t.sp("2"), controls=[
+            C.stat_card("条目总数", "—" if not loaded else str(records or 0),
+                        reading if not loaded else f"别名合计 {aliases.get('total') or 0} 条 · 只读", t),
+            C.stat_card("冲突 · 待裁决", "—" if not loaded else str(conflict_n),
+                        reading if not loaded else ("去「待处理」逐条处理" if conflict_n else "当前无待裁决"), t),
             C.stat_card("库文件", f"{size_mb:.1f} MB" if stats.get("bytes") else "—",
-                        "本地 jsonl · 不联网", t),
-        ])
+                        "bibliography.jsonl", t),
+        ]))
+        if loaded and not records:
+            controls.append(C.card(C.empty_state(
+                "INBOX", "库里还没有条目", "入藏：选择 .bib → 预览 → 确认", t), t))
+        else:
+            controls.append(self._next_card(conflict_n, loaded=loaded))
+        controls.append(self._detail_card(stats))
+        return ft.Column(spacing=t.sp("2"), controls=controls)
+
+    def _next_card(self, conflicts: int, *, loaded: bool = True) -> ft.Control:
+        """「下一步」：只列当下能做的事；计数为 0 的冲突项降级成一行静态说明。"""
+        t = self.t
+        rows: list = [C.action_row("FACT_CHECK", "去体检交回的 .bib", "只出报告，不改库", t,
+                                   on_click=lambda e: self.set_view("normalize"))]
+        if conflicts:
+            rows.append(C.action_row("GAVEL", f"处理 {conflicts} 条冲突", "逐条裁决", t,
+                                     on_click=lambda e: self.set_view("review")))
+        elif loaded:
+            rows.append(C.text("无待裁决冲突", t, "caption", t.palette.text_faint))
+        rows.append(C.action_row("LIBRARY_ADD", "入藏新条目", "选择文件并运行", t,
+                                 on_click=lambda e: self.set_view("import")))
+        return C.card(ft.Column(spacing=t.sp("half"),
+                                controls=[C.section_title("下一步", t), *rows]), t)
+
+    def _detail_card(self, stats: dict) -> ft.Control:
+        """库详情：静态事实折进 ExpansionTile；工作区脏标记已上浮到页头芯片。"""
+        t = self.t
+        entry_types = stats.get("entry_types") or {}
         type_line = "、".join(f"{k} {v}" for k, v in list(entry_types.items())[:6]) or "—"
-        info = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("库信息", t, note="只读"),
-            self._kv("库文件", str(stats.get("db") or "（未知）")),
-            self._kv("条目类型", type_line),
-            self._kv("创建时间范围", " → ".join(stats.get("created_range") or []) or "—"),
-            self._kv("工作区脏标记", "dirty" if stats.get("dirty") else "clean"),
-            self._kv("重复内容", str(stats.get("duplicate_content") or 0)),
-            self._kv("读取状态", self.stats_error or ("已读取" if self.stats_data else "未读取")),
+        tile = ft.ExpansionTile(
+            title=C.text("库详情", t, "small", t.palette.text_muted),
+            controls=[ft.Column(spacing=t.sp("half"), controls=[
+                self._kv("库文件", str(stats.get("db") or "（未知）")),
+                self._kv("条目类型", type_line),
+                self._kv("创建时间范围", " → ".join(stats.get("created_range") or []) or "—"),
+                self._kv("重复内容", str(stats.get("duplicate_content") or 0)),
+                self._kv("读取状态", self.stats_error or ("已读取" if self.stats_data else "未读取")),
+            ])],
+            expanded=False,
+        )
+        return C.card(tile, t, pad=12)
+
+    def _normalize_placeholder(self) -> ft.Control:
+        """T4 占位（S3a2 接 NormalizeView 后删掉本方法，别留到批次末）。"""
+        t = self.t
+        return C.card(ft.Column(spacing=t.sp("1"), controls=[
+            C.section_title("规范化", t),
+            C.text("规范化面板迁移中", t, "small", t.palette.text_muted),
         ]), t)
-        return ft.Column(spacing=t.sp("2"), controls=[cards, info])
 
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _kv(self, label: str, value: str) -> ft.Row:
@@ -996,24 +1155,17 @@ class BibPage(BasePage):
         ])
 
     def on_show(self) -> None:
-        # 族 B：重建 shell 后新实例已从 store 恢复 view；这里补一次渲染 + 数据加载（幂等）。
-        self._render_chips()
-        self._render()
-        if self.view == "overview" and self.stats_data is None:
-            self.page.run_task(self._load_stats)
-        elif self.view == "review":
-            self.review_view.ensure_loaded()
-        elif self.view == "settings":
-            self.page.run_task(self.settings_view.ensure_loaded)
-        elif self.view == "dupes":
-            self.page.run_task(self.dupes_view.ensure_loaded)
-        elif self.view == "fieldfix":
-            self.page.run_task(self.fieldfix_view.ensure_loaded)
-        elif self.view == "health":
-            self.page.run_task(self.health_view.ensure_loaded)
+        # 族 B：重建 shell 后新实例已从 store 恢复 view；这里校正高亮 + 补加载（幂等）。
+        self._render_nav()
+        self._ensure_loaded(self.view)
 
     def refresh_running(self) -> None:
         pass
+
+
+def group_of(view: str) -> str:
+    """模块级别名：测试与 S3a2 可直接 `pages.group_of(view)`，页面内走 `BibPage.group_of`。"""
+    return BibPage.group_of(view)
 
 
 

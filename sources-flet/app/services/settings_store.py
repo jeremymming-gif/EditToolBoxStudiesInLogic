@@ -77,6 +77,10 @@ def _defaults() -> dict:
         "bibdb": dict(BIBDB_DEFAULTS),
         "log_show_raw": False,
         "env_check_done": False,
+        # 引用库导航（批 112 S3a1）：当前视图 + 每组「上次视图」记忆。
+        # 只写内存，退出时随 main.py 的唯一 save 落盘；切视图不产生磁盘 IO。
+        "bib_view": "overview",
+        "bib_group_memory": {},
         # 关闭窗口 → 最小化到托盘（仅 Windows；默认关，见 App.set_tray_enabled）
         "tray_enabled": False,
         "engine_override": "",
@@ -99,6 +103,20 @@ def normalize_tray_enabled(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return False
+
+
+def pick(store, dotted: str, allowed, default):
+    """白名单取值（纯函数，不写盘）：缺键 / 非法值一律回 `default`。
+
+    `store` 显式传入，只需实现 `get(dotted, default)`（`SettingsStore` 或测试假壳），
+    这样本函数可直接单测；页面侧也可用 `store.pick(dotted, allowed, default)` 三参形式。
+    """
+    value = store.get(dotted, default)
+    try:
+        valid = value in allowed
+    except TypeError:  # 手改配置把值写成 list/dict 时 `in` 会抛，视为非法
+        valid = False
+    return value if valid else default
 
 
 def _deep_merge(base: dict, patch: dict) -> dict:
@@ -197,6 +215,10 @@ class SettingsStore:
                 return default
             node = node[part]
         return node
+
+    def pick(self, dotted: str, allowed, default):
+        """白名单取值：缺键或值不在 `allowed` 内一律回 `default`（纯读取，不写盘）。"""
+        return pick(self, dotted, allowed, default)
 
     def set(self, dotted: str, value) -> None:
         node = self.data

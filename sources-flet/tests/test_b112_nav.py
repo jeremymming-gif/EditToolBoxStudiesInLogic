@@ -73,11 +73,15 @@ class FakeApp:
 def _make_bib(data: dict | None = None) -> tuple[P.BibPage, FakeApp]:
     app = FakeApp(data)
     page = P.BibPage(app)
-    # 不构建真实子视图：只测 chip 行 + 状态持久化。
+    # 不构建真实子视图：只测两级导航 + 状态持久化。
     page._render = lambda: None
     page._safe_update = lambda *controls: None
+    page._ensure_loaded = lambda view: None
+    page._group_row = ft.Row(spacing=4, controls=[])
     page._chips_row = ft.Row(spacing=4, wrap=True, controls=[])
-    page._render_chips()
+    page._notice_slot = ft.Container()
+    page._status_slot = ft.Row(spacing=4, controls=[])
+    page._render_nav()
     # 子视图的 ensure_loaded 是协程；单测不跑事件循环，替换成同步空桩。
     for name in ("review_view", "settings_view", "dupes_view", "fieldfix_view", "health_view"):
         getattr(page, name).ensure_loaded = lambda *args, **kwargs: None
@@ -90,20 +94,23 @@ def _active_chips(page: P.BibPage) -> list:
 
 
 # ── 静态契约 ────────────────────────────────────────────────────────────────
-def test_bib_views_are_nine_and_unique() -> None:
+def test_bib_views_are_ten_in_ia_order() -> None:
     keys = [key for key, _ in P.BibPage.VIEWS]
-    assert len(keys) == 9
-    assert keys == ["overview", "query", "import", "review", "settings",
-                    "edit", "dupes", "fieldfix", "health"]
+    assert len(keys) == 10
+    assert keys == ["overview", "query", "normalize", "import", "review",
+                    "edit", "dupes", "fieldfix", "health", "settings"]
     assert P.BibPage.view_keys() == set(keys)
 
 
-def test_switch_persists_view_and_rerenders_chips() -> None:
-    source = inspect.getsource(P.BibPage._switch)
+def test_set_view_persists_view_and_rerenders_nav() -> None:
+    source = inspect.getsource(P.BibPage.set_view)
     assert 'store.set("bib_view", view)' in source
-    assert "_render_chips()" in source
+    assert 'store.set("bib_group_memory", memory)' in source
+    assert "_render_nav()" in source
     assert "_render()" in source
     assert "source=source" in source
+    # 兼容入口仍在：main.py 的 P2_BIB_VIEW / P2_BIB_QUERY_UI 走 _switch。
+    assert "self.set_view(view, source=source)" in inspect.getsource(P.BibPage._switch)
 
 
 def test_single_switch_persists_flow() -> None:
@@ -133,9 +140,10 @@ def test_after_boot_has_p2_bib_view_hook() -> None:
 def test_pages_do_not_build_chips_inside_build_anymore() -> None:
     source = inspect.getsource(P.BibPage.build)
     assert "self._chips_row" in source
-    assert "self._render_chips()" in source
-    # build 里不应再出现内联的 chip 列表推导。
+    assert "self._render_nav()" in source
+    # build 里不应再出现内联的 chip（或旧的一次性 _render_chips）列表推导。
     assert "C.chip(" not in source
+    assert "_render_chips()" not in source
 
 
 # ── 运行时：BibPage 视图状态 ────────────────────────────────────────────────
@@ -167,20 +175,27 @@ def test_each_view_switch_highlights_exactly_one_chip() -> None:
         assert active[0].content.weight == ft.FontWeight.W_500
 
 
-def test_illegal_switch_is_ignored() -> None:
+def test_illegal_switch_falls_back_to_overview() -> None:
     page, app = _make_bib({"bib_view": "query"})
     page._switch("bogus")
-    assert page.view == "query"
-    assert app.store.get("bib_view") == "query"
-    assert not any(event == "bib_view" for event, _ in app.marks)
+    # S3a1 起非法视图不再静默忽略：回落 overview 并留痕（便于 P2 冒烟发现坏参数）。
+    assert page.view == "overview"
+    assert app.store.get("bib_view") == "overview"
+    assert any(event == "bib_view_invalid" and fields.get("view") == "bogus"
+               for event, fields in app.marks)
 
 
-def test_chip_click_forwards_to_switch() -> None:
+def test_chip_click_forwards_to_set_view() -> None:
     page, app = _make_bib()
-    chip = page._chips_row.controls[5]
-    chip.on_click(None)
+    # 两级导航：先点「治理」组条（无记忆 → 组内首项 review），再点组内「编辑」胶囊。
+    page._group_row.controls[2].on_click(None)
+    assert page.view == "review"
+    labels = [chip.content.value for chip in page._chips_row.controls]
+    assert labels == ["待处理", "编辑", "查重合并", "字段归位"]
+    page._chips_row.controls[labels.index("编辑")].on_click(None)
     assert page.view == "edit"
     assert app.store.get("bib_view") == "edit"
+    assert app.store.get("bib_group_memory") == {"treat": "edit"}
 
 
 def test_switch_marks_source_ui_and_env_override() -> None:

@@ -308,6 +308,59 @@ def chip(label: str, t: Tokens, *, active: bool, on_click) -> ft.Container:
     )
 
 
+def group_tab(label: str, t: Tokens, *, active: bool, on_click=None,
+              badge_label: str | None = None) -> ft.Container:
+    """两级导航的一级（组 tab）：文字色 + 下划线表示选中，比二级 chip 矮。
+
+    `badge_label` 预留给「治理」组的未处理数（P2 钩子暂不传，接口先留）。
+    """
+    p = t.palette
+    row = [text(label, t, size="small", weight="semibold",
+                color=p.accent if active else p.text_muted)]
+    if badge_label:
+        row.append(badge(str(badge_label), t, "accent" if active else "neutral"))
+    return ft.Container(
+        on_click=on_click,
+        padding=_pad(t, 10, 6, 10, 6),
+        border_radius=t.radius("sm"),
+        content=ft.Column(spacing=t.px(4), controls=[
+            ft.Row(spacing=t.px(4), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                   controls=row),
+            ft.Container(height=max(1, t.px(2)), bgcolor=p.accent if active else None),
+        ]),
+    )
+
+
+def action_row(icon: str, title: str, caption: str, t: Tokens, *, on_click=None,
+               trailing=None) -> ft.Container:
+    """「下一步」动作行：图标方块 + 标题 + 一句操作结果，右侧箭头（或自定义尾控件）。
+
+    `caption` 只写点了会发生什么（如「选择文件并运行」），不写教学说明。
+    """
+    p = t.palette
+    leading = ft.Container(
+        width=t.px(32), height=t.px(32), bgcolor=p.surface_2,
+        border_radius=t.radius("sm"), alignment=ft.Alignment.CENTER,
+        content=ft.Icon(ic(icon), size=t.px(18), color=p.accent),
+    )
+    middle = [text(title, t, role="item-title")]
+    if caption:
+        middle.append(text(caption, t, "caption", p.text_muted, max_lines=1,
+                           overflow=ft.TextOverflow.ELLIPSIS))
+    tail = trailing if trailing is not None else ft.Icon(
+        ic("CHEVRON_RIGHT", "ARROW_FORWARD"), size=t.px(18), color=p.text_faint)
+    return ft.Container(
+        on_click=on_click,
+        ink=on_click is not None,
+        border_radius=t.radius("sm"),
+        padding=_pad(t, 8, 8, 8, 8),
+        content=ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                       controls=[leading,
+                                 ft.Column(spacing=t.px(2), expand=True, controls=middle),
+                                 tail]),
+    )
+
+
 # ── 日志台（流式 / 清空 / 折叠）────────────────────────────────────────────
 class LogConsole:
     """运行日志：行级颜色 + 摘要/原始折叠 + 清空；页面只调 add_line/clear。
