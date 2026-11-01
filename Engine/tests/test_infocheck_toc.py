@@ -1069,31 +1069,31 @@ _l_en2 = open(_l_outs2[0], encoding="utf-8").read()
 check("(l7) 端到端反例：英文名非空 ⇒ 英文 tex 生成 `Column: Preference Logic`",
       "Column: Preference Logic" in _l_en2)
 
-print("\n── (n) 双源守卫：Swift 内置模板 ↔ slcn/content_templates.py ──")
-# 为什么常驻：`content_templates.py` 是生成物，手改它、或改 Swift 却不重生成，都会让
-# mac/win 两台壳的兜底模板漂移；此前全仓只有生成器自带校验，没有任何测试调用它。
+print("\n── (n) 双源守卫：内置模板 JSON 夹具 ↔ slcn/content_templates.py ──")
+# 为什么常驻：`content_templates.py` 是生成物，手改它、或改夹具却不重生成，都会让
+# 兜底模板漂移；此前全仓只有生成器自带校验，没有任何测试调用它。
 import difflib
 import importlib.util
 
-_SWIFT = ENGINE.parent / "sources-mac/Features/ContentTemplates.swift"
+_FIXTURE = ENGINE / "tests/fixtures/content_templates.json"
 _CT_PY = ENGINE / "slcn/content_templates.py"
 _GEN_PY = ENGINE / "tools/gen_content_templates.py"
 
-# n1：进程内按 Swift 源重算期望全文，再与生成物逐字节比（不 sys.path 引入工具，免得污染导入面）
+# n1：进程内按夹具重算期望全文，再与生成物逐字节比（不 sys.path 引入工具，免得污染导入面）
 _n1_ok = False
-_n1_detail = f"缺 Swift 源：{_SWIFT}（双源一致是本组主题，缺源必须红、不许 SKIP）"
-if _SWIFT.is_file():
+_n1_detail = f"缺模板夹具：{_FIXTURE}（双源一致是本组主题，缺源必须红、不许 SKIP）"
+if _FIXTURE.is_file():
     _spec = importlib.util.spec_from_file_location("b231_gen_content_templates", str(_GEN_PY))
     _gen = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_gen)
-    _exp = _gen.render(_gen.parse_swift(str(_SWIFT)))
+    _exp = _gen.render(_gen.load_fixture(str(_FIXTURE)))
     _cur = open(_CT_PY, encoding="utf-8").read()
     _n1_ok = _cur == _exp
     _diff3 = list(difflib.unified_diff(_cur.splitlines(), _exp.splitlines(),
-                                       "slcn/content_templates.py", "Swift→render（期望）",
+                                       "slcn/content_templates.py", "夹具→render（期望）",
                                        lineterm=""))
     _n1_detail = "" if _n1_ok else " | ".join(_diff3[:3])
-check("(n1) 进程内双源逐字节：render(parse_swift(Swift)) == slcn/content_templates.py",
+check("(n1) 进程内双源逐字节：render(load_fixture(JSON)) == slcn/content_templates.py",
       _n1_ok, _n1_detail)
 
 # n2：钉 sys.executable 跑 CLI —— CI 的解释器叫 `python`，不能假设 python3/python3.14 在 PATH 里

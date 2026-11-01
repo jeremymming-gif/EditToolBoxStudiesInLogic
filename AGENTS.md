@@ -10,9 +10,11 @@
 《逻辑学研究》编辑部的稿件处理工具箱：把作者来稿（LaTeX / Word）转成符合本刊规范的
 **可编译初排稿**，并处理编译、目录、合刊、清理、一校核查等环节。
 
-**一个引擎，两个外壳**：所有文档逻辑都在 `Engine/`（Python，**唯一一份**）；
-`sources-mac/`（SwiftUI）与 `sources-win/`（Tkinter）只做「取值 → 拼参数 → 显示日志」。
-外壳里**不许**再写文档逻辑 —— 这是"两个平台算出来的结果一致"的唯一保证。
+**一个引擎，一个外壳**：所有文档逻辑都在 `Engine/`（Python，**唯一一份**）；
+`sources-flet/`（Flet）只做「取值 → 拼参数 → 显示日志」。
+外壳里**不许**再写文档逻辑 —— 这是"界面与 CLI 结果一致"的唯一保证。
+历史：旧 Tk（`sources-win/`）与 SwiftUI（`sources-mac/`）壳已于 2026-11-01（批 108）删除，
+v1.0.0–v1.5.0 历史版本仍可按 MIT 取回（`git archive v1.5.0 sources-win sources-mac`）。
 
 ## 目录地图
 
@@ -27,11 +29,9 @@ Engine/                 引擎（Python，唯一一份逻辑）
   │                       / PROOF_RULES（手册规范→规则，含未实现清单）
   ├── tests/              套件（每个文件独立可跑）
   └── out/                产物（gitignore）
-sources-mac/            mac 界面（SwiftUI）
-sources-win/            Windows 界面（Tkinter）+ 打包脚本 + 桥梁测试
-tools/                  开发工具：Swift 测试台与总跑手、案例索引生成器、模板生成器…
+sources-flet/           Flet 图形外壳（唯一壳；app/ + tests/ + packaging/）
+tools/                  开发工具：门禁证据夹具、案例索引生成器、模板生成器…
 编辑笔记/模板文件/        本刊排版模板（引擎运行时必需，随包发布）
-build.sh                构建 mac 版 .app（把 Engine/ 与模板打包进 Resources）
 ```
 
 ## 怎么跑
@@ -50,11 +50,11 @@ python3 tools/selfcheck.py           # quick；发版前用 --full
 # 只查案例库（编号/索引/状态/相似度/历史路径；在公开仓根跑）
 python3 ../tools/case_audit.py --check
 
-# Swift 测试台（7 个，headless；一条命令跑完）
-bash tools/run_swift_tests.sh        # 期望「全部测试台 0 FAIL」
+# Flet 壳测试（pytest；跨平台）
+python3 -m pytest sources-flet/tests -q     # 期望 78 passed / 8 skipped
 
-# Windows 外壳桥梁测试（不需 Windows；真窗口那条要带 tkinter 的解释器）
-PYTHONPATH=Engine/vendor python3 sources-win/tests/test_bridge.py
+# Windows 打包（flet pack；引擎 sidecar 由 Engine/tools/build_win_sidecar.ps1 生成）
+py -3.14 -m flet.cli pack sources-flet/app/main.py --name 编辑部工具箱 --yes
 ```
 
 **重活验收需要稿件库**（全库普查 / 全库回归 / 代表稿）。引擎用 `Engine/slcn/paths.py`
@@ -88,14 +88,14 @@ CI 上就是这样，所以 CI 不该因为它们红。
    看逐篇明细而不是中位数；R5 的非确定性（`docxxml` 用 `id()` 去重 `<w:drawing>`/`<m:oMath>`）
    **已在第 125 条修掉**：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，不一致即回归。
    历史基线数字的 ±0.03pp 抖动（`05 Chuan_Hu`）见 `EditToolBox-notes/cases/62+.md` 第 122/125 条。
-5. **重建 App + 包内 cmp**：`./build.sh` 之后逐个比对包内引擎文件与仓库同名文件（"包内引擎过期"踩过）。
+5. **打包冒烟**：`flet pack` 产物（Windows exe）跑一次，逐项核对包内引擎与仓库同名文件（"包内引擎过期"踩过）。
 6. **文档一致性**：`python3 tests/test_docs_consistency.py`（第四十一批 O2 起默认 `--no-test-runs`：
    不重复跑套件，**AUTO 的「测试计数行」不在此校验**）；**因此 full 之外必须显式跑一次
    `python3 tools/gen_docs.py --check`（默认严格，跑套件，约 61s）**——它是测试计数行的唯一严格守卫
    （发版前必跑；`selfcheck --full --strict-tests` 亦可）。
-7. **Swift 改动**：`bash tools/run_swift_tests.sh`（7 个测试台 0 FAIL）。
+7. **Flet 壳改动**：`python3 -m pytest sources-flet/tests -q`（0 failed；≥78 passed/8 skipped）。
 
-> 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README 已与仓库不同，下次 `./build.sh` 会同步"。
+> 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README/版本已与仓库不同，下次 `flet pack` 会同步"。
 > **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick，第四十一批 O3 起不再整跑套件）/
 > `--full`（发版前，含严格测试计数校验）——覆盖本清单的离线部分。
 
@@ -118,7 +118,7 @@ CI 上就是这样，所以 CI 不该因为它们红。
 
 1. **本机接入**（Windows / macOS 双平台单命令源）：[`docs/maintain/quickstart.md`](docs/maintain/quickstart.md) §1；
 2. **自检与门禁**：同页 §2 —— `Engine/tools/selfcheck.py`（quick；发版前 `--full`）+ 文档看门狗（本清单上面第 3 条）；
-3. **构建/发版**：`RELEASING.md`，macOS 用 `build.sh`，Windows 用 `sources-win/build-win.ps1`；
+3. **构建/发版**：`RELEASING.md`；Windows 用 `Engine/tools/build_win_sidecar.ps1` + `flet pack`，macOS 由 CI 打包；
 4. **文档站维护**：同页 §4 —— Node ≥ 18；改/加页面必须同步 `docs/.vitepress/config.mts` 的 nav/sidebar；
    下载资产放 `docs/public/templates/`；
 5. **故障速查**：[`docs/maintain/troubleshooting.md`](docs/maintain/troubleshooting.md)。

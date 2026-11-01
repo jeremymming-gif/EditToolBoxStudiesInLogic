@@ -30,11 +30,11 @@
 ## 二、架构：文档逻辑只有一份
 
 1. **所有文档逻辑在 `Engine/`（Python），只有一份**；外壳只做「取值 → 拼参数 → 显示日志」，外壳里不许再写文档规则。
-   位置：仓库根 `AGENTS.md`「一个引擎，两个外壳」；`Engine/docs/ENGINE_API.md` 八（外壳的义务 1）。
-2. **mac 侧证据**：`sources-mac/Features/MergeFeature.swift` 自述「识别逻辑**不在 Swift 里**」——
+   位置：仓库根 `AGENTS.md`「一个引擎，两个外壳」（历史提法；批108 起旧双壳已删，唯一外壳为 `sources-flet/`）；`Engine/docs/ENGINE_API.md` 八（外壳的义务 1）。
+2. **旧 mac 侧证据（旧壳已删，历史）**：`sources-mac/Features/MergeFeature.swift` 当年自述「识别逻辑**不在 Swift 里**」——
    合并顺序与附加页识别只剩 `Engine/slcn/pdfmerge.py` 一份（同名 Swift 实现已删）。
-3. **Windows 侧证据**：`sources-win/engine.py` 是外壳与引擎之间的**唯一**桥梁（不 import tkinter，可离窗口测试），
-   入口名单 `ENTRIES` 与 `Engine/docs/ENGINE_API.md` 一致。
+3. **Flet 侧证据**：`sources-flet/app/services/engine_bridge.py` 是外壳与引擎之间的**唯一**桥梁（可离窗口测试），
+   入口名单 `ENTRIES` 与 `Engine/docs/ENGINE_API.md` 一致（旧 `sources-win/engine.py` 已删，历史）。
 4. **界面要的数据一律问引擎**（`--preview` / `--detect`），界面不自己解析报告；否则会出现「预览说 A、运行时是 B」。
    位置：`Engine/docs/ENGINE_API.md` 五「给外壳的注意」。
 
@@ -96,7 +96,7 @@
 
 1. **只增不改**：新增 CLI 参数必须带默认值（老外壳不传也能跑），不改既有参数的默认行为与默认路径。
    位置：`Engine/docs/ENGINE_API.md` 十.1；先例 `build_docx(metadata_path=None)`。
-2. **版本号只有一处**：`Engine/slcn/__init__.py` 的 `__version__`；仓库根的 `build.sh` 与 Windows 打包脚本**现取**它，不许写死。
+2. **版本号只有一处**：`Engine/slcn/__init__.py` 的 `__version__`；`Engine/tools/build_win_sidecar.ps1` **现取**它，不许写死（旧 `build.sh` 已删，历史）。
 3. **平台中立**：交付模块里文本模式 `open()` 必须显式写 `encoding=`（Windows 读中文源稿乱码的根因）；
    静态守卫在 `Engine/tests/test_platform.py` 的 (d) 组。
 4. **改完要跑的守卫**：`Engine/tests/test_docs_consistency.py`（AUTO 块不过期 / 引用路径存在 / 条目号可查 / 案例零丢失）、
@@ -126,7 +126,7 @@
    落在框上的文件拖拽（行级目标 `isTargeted=true` 但 `perform` 永不触发）。③ **严禁**在
    `onChange` / 拖放回调里**同步跑子进程**：拖放落地发生在 CoreDrag 提交动画事务里，
    主线程阻塞会重入并 SIGSEGV；一律后台线程 + 世代号、结果回主线程。
-   位置：`sources-mac/Views/MainWindow.swift`（`PageVisible`）、`sources-mac/Views/PathDropField.swift`、
+   位置（旧壳已删，历史）：`sources-mac/Views/MainWindow.swift`（`PageVisible`）、`sources-mac/Views/PathDropField.swift`、
    `sources-mac/Core/ViewModels.swift`（`EditorsProbeModel.refresh`）、
    `sources-mac/Views/ContentTab.swift`（`loadReport`）；案例 126。
 9. **LaTeX 自定义定义的位置加固只增不改**（第 130 条）：本地支撑文件（同目录

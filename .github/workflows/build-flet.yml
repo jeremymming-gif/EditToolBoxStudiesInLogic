@@ -1,7 +1,8 @@
 name: Build Flet Shell
 
 # B-246c P4：Flet 单壳双平台打包（Windows / macOS）。
-#   · 引擎 sidecar：Windows 复用 sources-win/build-win.ps1；macOS 用等价的 PyInstaller onefile。
+#   · 引擎 sidecar：Windows 用 Engine/tools/build_win_sidecar.ps1（旧 build-win.ps1 的引擎段）；
+#     macOS 用等价的 PyInstaller onefile。
 #   · 应用：flet pack（onefile；macOS 出 .app），sidecar 放到可执行文件同目录。
 #   · 产物：EditToolBox-<Engine版本>-<平台>.zip（内含 FIRST-OPEN 说明与 sha256.txt）。
 #   · 只产 artifact，**不做** tag / Release / 签名（发版留人工按 release.yml）。
@@ -63,14 +64,14 @@ jobs:
           python -m pip show flet pyinstaller | sed -n '1,12p'
 
       # ── 引擎 sidecar ────────────────────────────────────────────────
-      - name: 引擎 sidecar（Windows：复用 sources-win/build-win.ps1）
+      - name: 引擎 sidecar（Windows：Engine/tools/build_win_sidecar.ps1）
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          pwsh -NoProfile -ExecutionPolicy Bypass -File sources-win/build-win.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File Engine/tools/build_win_sidecar.ps1
           New-Item -ItemType Directory -Force build-flet | Out-Null
-          Copy-Item sources-win/build/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
+          Copy-Item dist/win-sidecar/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
           & build-flet/SLCNEngine.exe --version | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "sidecar 自检失败（SLCNEngine.exe --version）" }
 

@@ -134,9 +134,10 @@
 ### 重新构建
 
 ```bash
+# 旧壳构建（已删，历史：源码见 v1.5.0 tag；当前见 RELEASING.md）
 bash build.sh                        # mac：生成 dist/编辑部工具箱.app
 cd sources-win && pwsh -File build-win.ps1   # Windows：生成两个 exe
-bash tools/build_cli.sh              # mac：命令行版（仅合并/目录等，便于批量与回归）
+bash tools/build_cli.sh              # mac：命令行版（已删，历史）
 ```
 
 **引擎的依赖**（只有直接跑命令行才需要；`.app` 与 Windows exe 都已打包好）：

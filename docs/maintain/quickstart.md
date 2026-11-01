@@ -49,7 +49,8 @@ py -3.14 -X utf8 Engine/tests/test_docs_consistency.py
 
 ## 3. 构建（只在需要发版时）
 
-桌面端自 v1.5.0 起是 **Flet 单壳**（`sources-flet/`）；旧 `build.sh` / `sources-win/build-win.ps1` 已 frozen，仅回退参考。
+桌面端自 v1.5.0 起是 **Flet 单壳**（`sources-flet/`）。历史：旧 `build.sh` / `sources-win/build-win.ps1`
+已随旧壳于 2026-11-01（批 108）删除，不再用于发版；v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回）。
 
 ```bash
 # Flet 单壳：开发运行与单元测试

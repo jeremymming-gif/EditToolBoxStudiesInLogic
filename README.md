@@ -24,7 +24,8 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 | Windows 10/11（x64） | 解压即用：`编辑部工具箱.exe`（Flet 单壳）与引擎 `SLCNEngine.exe` 放在同一文件夹，双击前者 | 不需要 |
 | macOS（Apple 芯片） | `编辑部工具箱.app` 拖进「应用程序」（引擎 sidecar 已打包进 App） | 不需要 |
 
-> 旧版外壳（SwiftUI / Tkinter）自 v1.5.0 起 **frozen**：不再提供下载、不再更新；源码仍在 `sources-mac/`、`sources-win/` 仅供回退参考。
+> 历史：旧版外壳（SwiftUI / Tkinter）已于 2026-11-01（批 108）删除，不再提供下载、不再更新；
+> v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回），需要回退可 `git archive v1.5.0 sources-win sources-mac`。
 
 安装包未做代码签名：Windows 首次运行点「更多信息 → 仍要运行」；macOS 首次右键「打开」，或按[安装说明](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/guide/install)移除隔离标记。下载页附各平台的 `FIRST-OPEN` 说明，`latest.json` 指向当前版本。本页不记录版本历史，变更见[版本记录](https://jeremymming-gif.github.io/EditToolBoxStudiesInLogic/reference/changelog)。
 
@@ -58,7 +59,7 @@ cd sources-flet && python3 -m flet run app/main.py
 cd sources-flet && python3 -m flet pack app/main.py --name 编辑部工具箱 --distpath dist --yes
 ```
 
-> 旧外壳的构建脚本（`./build.sh`、`sources-win/build-win.ps1`）仍保留，但**已冻结**、不再用于发版；
+> 历史：旧外壳的构建脚本（`./build.sh`、`sources-win/build-win.ps1`）已随旧壳删除，不再用于发版；
 > 当前发布线见 [`RELEASING.md`](RELEASING.md) 与 [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
 > 上面命令里的 `python3` 指你用来跑引擎的解释器；本机实测用 `/opt/homebrew/bin/python3.14`（`vendor/` 内的预编译依赖只适配 3.14）。CI 在云端用 Python 3.12 安装依赖后跑同一套测试。
@@ -97,11 +98,8 @@ sources-flet/      桌面外壳（Flet 单壳，默认产品线；Windows/macOS 
   app/             main.py + ui/（设计系统、页面、IA 映射）+ services/（引擎桥、设置）
   packaging/       打包说明与 sidecar 自检脚本（发布线共用）
   tests/           Flet 壳单元测试（pytest，不启动 GUI）
-sources-win/       Windows 外壳（Tkinter，**frozen**：仅源码回退参考）
-sources-mac/       macOS 外壳（SwiftUI，**frozen**：仅源码回退参考）
 编辑笔记/模板文件/  本刊模板与样式（随 App 发布）
 tools/             开发与验收工具
-build.sh           旧 macOS App 打包脚本（frozen）
 ```
 
 ## 开发与测试
@@ -116,9 +114,6 @@ cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tests/test_do
 # 引擎全部测试套件（逐个跑，只看最后一行）
 cd Engine && for f in tests/test_*.py; do PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 "$f" | tail -1; done
 
-# Windows 外壳桥接测试（旧壳冻结，仍作为回归参考）
-PYTHONPATH=Engine/vendor /opt/homebrew/bin/python3.14 sources-win/tests/test_bridge.py
-
 # Flet 单壳单元测试（不启动 GUI；含引擎桥 argv、设置迁移、IA 映射）
 cd sources-flet && /opt/homebrew/bin/python3.14 -m pytest tests -q
 
@@ -131,7 +126,8 @@ cd Engine && PYTHONPATH="$PWD/vendor" /opt/homebrew/bin/python3.14 tools/selfche
 
 ## 许可与注意
 
-MIT，见 [`LICENSE`](LICENSE)；第三方组件与许可见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
+专有（All rights reserved），见 [`LICENSE`](LICENSE)；历史版本 v1.0.0–v1.5.0 仍按 MIT 发布（不可撤回）。
+第三方组件与许可见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
 1. 本仓是公开代码与模板，不含真实期刊数据；稿件与编辑部数据保存在内部仓库。
 2. 启用联网文献核实需自备并填写 API 配置，费用由服务商计费。

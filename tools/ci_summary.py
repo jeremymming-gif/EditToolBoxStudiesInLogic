@@ -12,7 +12,7 @@ job 日志目录）→ 生成 `ci_summary.md`（job 表 / 失败 step / **归因
    `exceeded the maximum execution time`。
 3. **依赖安装失败**：失败 step 名含 `装依赖` / `pip` / `install` / `requirements`。
 4. **文档 AUTO 过期**：失败 step 名含 `AUTO` / `文档看门狗` / `gen_docs` / `docs_consistency`。
-5. **测试红**：失败 step 名含 `套件` / `测试` / `测试台` / `test` / `swift` / `桥梁`。
+5. **测试红**：失败 step 名含 `套件` / `测试` / `测试台` / `test` / `flet` / `壳测试`。
 6. **其它**：兜底（含「job 红但找不到失败 step」——绝不静默当绿）。
 
 只依赖 `name` / `status` / `conclusion` / `jobs[].steps[]`（`databaseId` / `startedAt` /
@@ -42,7 +42,7 @@ FAIL_CONCLUSIONS = {"failure", "timed_out", "cancelled", "startup_failure", "act
 
 _DEPS_HINTS = ("装依赖", "pip", "install", "requirements", "setup-python", "npm", "cargo")
 _DOCS_HINTS = ("auto", "文档看门狗", "gen_docs", "docs_consistency", "文档一致性")
-_TESTS_HINTS = ("套件", "测试", "测试台", "test", "swift", "桥梁", "pytest", "unittest")
+_TESTS_HINTS = ("套件", "测试", "测试台", "test", "flet", "壳测试", "pytest", "unittest")
 _TIMEOUT_HINTS = ("timed out", "timeout", "exceeded the maximum execution time",
                   "the job has exceeded")
 

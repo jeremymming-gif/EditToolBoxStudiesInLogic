@@ -6,8 +6,8 @@
 · 设置页 AI 段的默认值，与旧 settings.json 的向后兼容（没有 `ai` 段 = 全默认）；
 · 总开关 / Key / 预算三道闸门，以及「这一次运行走哪一段」的判定；
 · 直连上传预览的**字段白名单**（只列文献元数据与任务书摘要，正文永不进预览）；
-· 协同暂存目录发现（只读镜像 `_AI协同状态.json`，口径对齐 `sources-win/coop.py`，
-  但**不 import 旧外壳**）。
+· 协同暂存目录发现（只读镜像 `_AI协同状态.json`，口径对齐旧 Tk 壳 `sources-win/coop.py`——
+  历史文件，2026-11-01 批 108 已删除；但**不 import 旧外壳**）。
 
 密钥红线：`key` 只存在本地设置 JSON 与内存里；命令行（argv）只经环境变量
 `SLCN_LLM_KEY` 传给引擎，日志/证据/仓库里永远不出现。
@@ -25,7 +25,7 @@ PROTOCOLS = ("chat", "responses")
 DEFAULT_ARTICLE_BUDGET = 30000
 DEFAULT_BATCH_BUDGET = 1000000
 
-# ── 协同暂存（与 Engine/slcn/coop.py、sources-win/coop.py 同口径） ──────
+# ── 协同暂存（与 Engine/slcn/coop.py 同口径；旧 Tk 壳文件属历史） ──────
 STATE_NAME = "_AI协同状态.json"
 STAGE_SUFFIX = "_待核"
 FULLTEXT_CONTEXT = "context"

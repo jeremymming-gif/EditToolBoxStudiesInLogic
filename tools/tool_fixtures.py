@@ -5,7 +5,7 @@
 的 `--self-test` 共用：在 `tempfile.TemporaryDirectory()` 里生成
 
 - 假 `gate_plan.json`（必跑 / 可跳 / 延后 + 规则 id + last 基线）
-- 假证据目录（full 写前写后、gen_docs 写一次 + AUTO 数字、lint、docs、Swift 7 台）
+- 假证据目录（full 写前写后、gen_docs 写一次 + AUTO 数字、lint、docs、Flet 壳 pytest、flet pack）
 - 假 `gh run view --json` 落盘产物（绿 + 5 类红：测试 / 依赖 / 文档 AUTO / 超时 / 取消）
 - 假 KPI 行（基线 vs 本批，含回归）
 
@@ -20,7 +20,7 @@ import json
 import os
 import re
 
-FIXTURE_VERSION = "1.1.0"
+FIXTURE_VERSION = "1.2.0"
 
 # 夹具里的「上一批」基线（对应真实 gate_plan.json 的 last 字段）
 LAST_BATCH = 76
@@ -86,14 +86,15 @@ def gate_plan_doc(batch: int = THIS_BATCH) -> dict:
          "skip_when": ["gen_docs_noop_and_no_code_change"],
          "reasons": [{"rule": "gen_docs_changed_readme", "detail": "无法从变更推断 → 保守必跑"}],
          "last": {"batch": LAST_BATCH, "suites": 106, "red": 0, "seconds": 125.7}},
-        {"id": "build", "status": "skipped",
-         "cmd": "./build.sh (exactly once)",
-         "evidence": ["seconds", "cmp_28", "manifest", "engine_py_sha", "artifact_sha"],
-         "required_when": ["app_bundle_inputs_changed"],
+        {"id": "flet_pack", "status": "required",
+         "cmd": "py -3.14 -m flet.cli pack sources-flet/app/main.py --name 编辑部工具箱 --distpath <out>/flet-dist --yes",
+         "evidence": ["rc", "artifact_sha", "artifact_size", "app_version", "seconds", "log"],
+         "required_when": ["app_bundle_inputs_changed", "sources_flet_changed"],
          "skip_when": ["only_notes_or_gen_docs_or_docs_changed"],
-         "reasons": [{"rule": "only_notes_or_gen_docs_or_docs_changed",
-                      "detail": "skip_when 命中（跳过须 Lead 在 ACCEPT 确认）"}],
-         "last": {"batch": LAST_BATCH, "seconds": 29.6, "cmp": "28/28", "o5": 1}},
+         "reasons": [{"rule": "sources_flet_changed", "detail": "required_when 命中"}],
+         "last": {"batch": LAST_BATCH, "rc": 0, "app_version": "1.5.0",
+                  "artifact_sha": "a517c01099da6be9b933b26c987bfbc26d03cb6599ac8cbd086406eb91117cba",
+                  "artifact_size": 68420345, "seconds": 45.4}},
         {"id": "lint", "status": "required",
          "cmd": "cd Engine && PYTHONPATH=.:vendor python3 bibdb.py lint --db <db.jsonl>",
          "evidence": ["rc", "errors", "warnings", "records", "db_sha_before", "db_sha_after"],
@@ -107,13 +108,14 @@ def gate_plan_doc(batch: int = THIS_BATCH) -> dict:
          "required_when": ["always"], "skip_when": [],
          "reasons": [{"rule": "always", "detail": "required_when 命中"}],
          "last": {"batch": LAST_BATCH, "rc": 0, "failures": 0}},
-        {"id": "swift", "status": "required",
-         "cmd": "bash tools/run_swift_tests.sh",
-         "evidence": ["beds", "fail", "pass_total"],
-         "required_when": ["swift_or_sources_mac_changed", "acceptance_batch"],
+        {"id": "flet_pytest", "status": "required",
+         "cmd": "py -3.14 -m pytest sources-flet/tests -q",
+         "evidence": ["passed", "skipped", "failed", "rc", "log"],
+         "required_when": ["sources_flet_changed", "acceptance_batch"],
          "skip_when": ["only_notes_changed"],
          "reasons": [{"rule": "acceptance_batch", "detail": "required_when 命中"}],
-         "last": {"batch": LAST_BATCH, "beds": 7, "fail": 0, "pass_total": 583}},
+         "last": {"batch": LAST_BATCH, "passed": 78, "skipped": 8, "failed": 0,
+                  "seconds": 3.2, "rc": 0}},
         {"id": "ci_watch", "status": "deferred",
          "cmd": "gh run view <id> --json status,conclusion",
          "evidence": ["ci_run_id", "ci_conclusion", "docs_run_id", "docs_conclusion"],
@@ -232,22 +234,41 @@ def docs_log(failures: int = 0, exit_code: int = 0) -> str:
     )
 
 
-DEFAULT_SWIFT_BEDS = (("ai_settings", 411), ("ai_store", 14), ("proofcheck", 18),
-                      ("toc", 16), ("infocheck", 26), ("cutover", 49), ("bibdb_ux", 49))
+FIXTURE_ARTIFACT_SHA = "a517c01099da6be9b933b26c987bfbc26d03cb6599ac8cbd086406eb91117cba"
 
 
-def swift_log(beds=DEFAULT_SWIFT_BEDS, fail: int = 0, exit_code: int = 0) -> str:
-    lines = ["▶ 编译并运行 Swift 测试台（生产源码本身；夹具）"]
-    total = 0
-    for name, passed in beds:
-        total += passed
-        lines.append(f"  {name:<14} SUMMARY: {passed} PASS / 0 FAIL")
-    if fail:
-        # 夹具：把失败记在最后一台上，总数相应扣减
-        lines[-1] = f"  {beds[-1][0]:<14} SUMMARY: {max(0, beds[-1][1] - fail)} PASS / {fail} FAIL"
-        total -= fail
-    lines.append("✅ 全部测试台 0 FAIL" if fail == 0 else "❌ 有测试台 FAIL（夹具）")
-    lines.append(f"EXIT={exit_code} elapsed=129s")
+def flet_pytest_log(passed: int = 78, skipped: int = 8, failed: int = 0,
+                    seconds: float = 3.22, exit_code=None) -> str:
+    """pytest -q 形态的 Flet 壳测试日志（只打印非零类别，与真 pytest 一致）。"""
+    code = (1 if failed else 0) if exit_code is None else exit_code
+    total = passed + skipped + failed
+    lines = [f"▶ py -3.14 -m pytest sources-flet/tests -q（夹具）",
+             "." * min(total, 60) + (" [ 50%]" if total > 60 else ""),
+             " " * 39 + "[100%]"]
+    counts = []
+    if failed:
+        counts.append(f"{failed} failed")
+    if passed:
+        counts.append(f"{passed} passed")
+    if skipped:
+        counts.append(f"{skipped} skipped")
+    lines.append(f"{', '.join(counts)} in {seconds:.2f}s")
+    lines.append(f"EXIT={code}")
+    return "\n".join(lines) + "\n"
+
+
+def flet_pack_log(artifact_sha: str = FIXTURE_ARTIFACT_SHA, artifact_size: int = 68420345,
+                  app_version: str = "1.5.0", exit_code: int = 0,
+                  seconds: float = 45.4) -> str:
+    """flet pack 日志：产物名 + sha256 + 字节数 + 版本 + 退出码。"""
+    lines = ["▶ py -3.14 -m flet.cli pack（夹具）",
+             "artifact: 编辑部工具箱.exe",
+             f"artifact_sha: {artifact_sha}",
+             f"artifact_size: {artifact_size}",
+             f"app_version: {app_version}"]
+    if exit_code:
+        lines.append("❌ pack 失败（夹具）")
+    lines.append(f"EXIT={exit_code} elapsed={seconds:.1f}s")
     return "\n".join(lines) + "\n"
 
 
@@ -289,11 +310,11 @@ EVIDENCE_FILENAMES = {
     "gen_docs_write": ("03-gen_docs_write.log", "auto-numbers.txt"),
     "lint": ("04-lint.log", None),
     "docs": ("05-docs.log", None),
-    "swift": ("06-swift.log", None),
+    "flet_pytest": ("06-flet-pytest.log", None),
+    "flet_pack": ("06-flet-pack.log", None),
     # generic 门禁（B-152）：默认计划里是可跳/延后，`generic=True` 时才写证据
     "corpus_two": ("07-corpus-two.log", None),
     "docx_audit": ("08-docx-audit.log", None),
-    "build": ("09-build.log", None),
     "ci_watch": ("10-ci.json", None),
 }
 
@@ -331,21 +352,6 @@ def audit_log(success: int = 132, fail: int = 0, csv_sha: str = FIXTURE_CSV_SHA,
     )
 
 
-def build_log(cmp: str = "28/28", o5: int = 1, app_version: str = "1.3.0+fixture",
-              seconds: float = 29.6, exit_code: int = 0) -> str:
-    """打包日志（B-152）：cmp / o5 / app_version / 产物 sha。"""
-    return (
-        "▶ ./build.sh（夹具）\n"
-        f"cmp: {cmp} 一致\n"
-        f"o5: {o5}\n"
-        f"app_version: {app_version}\n"
-        f"artifact_sha: {'b' * 64}\n"
-        f"engine_py_sha: {'c' * 64}\n"
-        f"manifest: manifest-fixture.json\n"
-        f"EXIT={exit_code} elapsed={int(round(seconds))}s\n"
-    )
-
-
 def ci_watch_json(run_id: int = 40000000001, conclusion: str = "success",
                   docs_run_id: int = 40000000002, docs_conclusion: str = "success") -> dict:
     """`gh run view --json` 形态（含 docs 工作流；B-152）。"""
@@ -359,12 +365,13 @@ def ci_watch_json(run_id: int = 40000000001, conclusion: str = "success",
 def build_evidence_dir(root: str, *, omit=(), pre=(107, 2, 131.5, 2),
                        post=(107, 0, 128.0, 0), auto=(106, 4244, 0),
                        lint=(0, 18, 7051, 0), docs=(0, 0),
-                       swift=(DEFAULT_SWIFT_BEDS, 0, 0), gen_docs_exit: int = 0,
+                       flet_pytest=(78, 8, 0, 3.22, 0), flet_pack=None,
+                       gen_docs_exit: int = 0,
                        readme_diff: bool = True, rc_style: str = "exit",
                        generic: bool = False, gen_docs_noop: bool = False) -> dict:
     """在 root 下生成一套完整证据；`omit` 里的门禁**不写文件**（用于缺证据反例）。
 
-    `generic=True` 时额外写 generic 门禁证据（corpus/docx_audit/build/ci_watch；
+    `generic=True` 时额外写 generic 门禁证据（corpus/docx_audit/ci_watch；
     B-152——默认计划里它们是可跳/延后，不需要证据文件）。
     """
     os.makedirs(root, exist_ok=True)
@@ -394,11 +401,11 @@ def build_evidence_dir(root: str, *, omit=(), pre=(107, 2, 131.5, 2),
         files["gen_docs_write"] = gw_name
     put("lint", EVIDENCE_FILENAMES["lint"][0], lint_log(*lint))
     put("docs", EVIDENCE_FILENAMES["docs"][0], docs_log(*docs))
-    put("swift", EVIDENCE_FILENAMES["swift"][0], swift_log(*swift))
+    put("flet_pytest", EVIDENCE_FILENAMES["flet_pytest"][0], flet_pytest_log(*flet_pytest))
+    put("flet_pack", EVIDENCE_FILENAMES["flet_pack"][0], flet_pack_log(*(flet_pack or ())))
     if generic:
         put("corpus_two", EVIDENCE_FILENAMES["corpus_two"][0], corpus_log())
         put("docx_audit", EVIDENCE_FILENAMES["docx_audit"][0], audit_log())
-        put("build", EVIDENCE_FILENAMES["build"][0], build_log())
         if "ci_watch" not in omit:
             write_json(os.path.join(root, EVIDENCE_FILENAMES["ci_watch"][0]), ci_watch_json())
             files["ci_watch"] = EVIDENCE_FILENAMES["ci_watch"][0]
@@ -440,15 +447,16 @@ def ci_green() -> dict:
         ci_step(8, "案例索引是否过期（没有笔记仓时自动跳过）"),
         ci_step(9, "Complete job"),
     ], database_id=119327869151)
-    swift = ci_job("Swift 测试台 + Windows 外壳桥梁", [
+    windows = ci_job("Windows：Flet 壳测试 + 引擎稳定子集", [
         ci_step(1, "Set up job"),
         ci_step(2, "Run actions/checkout@v4"),
-        ci_step(3, "装依赖"),
-        ci_step(4, "Swift 测试台（7 个）"),
-        ci_step(5, "Windows 外壳桥梁测试"),
-        ci_step(6, "Complete job"),
+        ci_step(3, "Run actions/setup-python@v5"),
+        ci_step(4, "装依赖"),
+        ci_step(5, "Flet 壳测试"),
+        ci_step(6, "引擎稳定子集（pytest）"),
+        ci_step(7, "Complete job"),
     ], database_id=119327869659)
-    return ci_run([engine, swift])
+    return ci_run([engine, windows])
 
 
 # 5 类归因 + 1 类「其它」：失败 step 名字按真实 workflow 的措辞造
@@ -474,10 +482,10 @@ def ci_red(case: str = "tests") -> dict:
     ], conclusion=job_conclusion,
         status="completed" if job_conclusion != "cancelled" else "completed",
         database_id=119327869151)
-    swift = ci_job("Swift 测试台 + Windows 外壳桥梁", [ci_step(1, "Set up job")],
-                   database_id=119327869659)
+    windows = ci_job("Windows：Flet 壳测试 + 引擎稳定子集",
+                     [ci_step(1, "Set up job")], database_id=119327869659)
     run_conclusion = "cancelled" if job_conclusion == "cancelled" else "failure"
-    return ci_run([engine, swift], conclusion=run_conclusion)
+    return ci_run([engine, windows], conclusion=run_conclusion)
 
 
 def failing_job_log(case: str = "tests") -> str:
@@ -519,7 +527,8 @@ def kpi_row(batch: int, **over) -> dict:
         "rework_count": 0,
         "lead_closure_steps": 40,
         "review_findings": 4,
-        "gates_required": ["full", "gen_docs_write", "full_post", "lint", "docs", "swift"],
+        "gates_required": ["full_pre", "gen_docs_write", "full_post", "flet_pack",
+                           "lint", "docs", "flet_pytest"],
         "gates_skipped": [],
         "tools_used": ["fixture/tools.py"],
         "checkpoint_snapshot": True,

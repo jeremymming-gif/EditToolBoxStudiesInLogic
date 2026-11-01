@@ -1,14 +1,14 @@
 # 构建与发布（Flet 单壳 · macOS + Windows）
 #
-# B-246c P5：产品线已切到 Flet 单壳（sources-flet/）。旧 Tk（sources-win/）与 SwiftUI
-# （sources-mac/）**冻结**：仅保留源码作回退参考，不再发布。
+# B-246c P5：产品线已切到 Flet 单壳（sources-flet/）。旧 Tk / SwiftUI 双壳已于批108 删除
+# （历史源码见 v1.5.0 tag），不再发布。
 #
 # 触发：
 #   · 打 tag（v1.5.0 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
 #   · 手动 workflow_dispatch → 只跑测试与构建，**不**建 Release（用来验证打包脚本）
 #
 # 打包口径与 `.github/workflows/build-flet.yml` 一致（两条流水线共用）：
-#   · 引擎 sidecar：Windows 复用 `sources-win/build-win.ps1`（只取其产出的 SLCNEngine.exe）；
+#   · 引擎 sidecar：Windows 用 `Engine/tools/build_win_sidecar.ps1`（只产 SLCNEngine.exe）；
 #                    macOS 用等价 PyInstaller onefile（同一入口表/模板数据）
 #   · 应用：`flet pack`（onefile；macOS 出 .app），sidecar 放在可执行文件同目录
 #     （macOS 为 `.app/Contents/MacOS/SLCNEngine`）
@@ -65,13 +65,6 @@ jobs:
 
       - name: Flet 壳单元测试（不启动 GUI）
         run: python -m pytest sources-flet/tests -q
-
-      - name: Windows 外壳（桥梁）测试（旧壳冻结，仍作为回归参考）
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cd sources-win
-          PYTHONPATH="$PWD/../Engine/vendor" python tests/test_bridge.py | tail -4
 
   # ── ② macOS：引擎 sidecar + Flet .app + zip ───────────────────────────────
   macos:
@@ -203,13 +196,13 @@ jobs:
           python -m pip install --disable-pip-version-check --upgrade pip
           python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet pystray Pillow
 
-      - name: 引擎 sidecar（复用 sources-win/build-win.ps1，只取 SLCNEngine.exe）
+      - name: 引擎 sidecar（Engine/tools/build_win_sidecar.ps1，只取 SLCNEngine.exe）
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          pwsh -NoProfile -ExecutionPolicy Bypass -File sources-win/build-win.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File Engine/tools/build_win_sidecar.ps1
           New-Item -ItemType Directory -Force build-flet | Out-Null
-          Copy-Item sources-win/build/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
+          Copy-Item dist/win-sidecar/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
           & build-flet/SLCNEngine.exe --version | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "sidecar 自检失败（SLCNEngine.exe --version）" }
 

@@ -1,5 +1,6 @@
 # ─────────────────────────────────────────────────────────────
 # Swift 编译缓存与中间产物 —— 合计约 265MB，绝对不能提交
+#   （历史：SwiftUI 壳已于 2026-11-01 批 108 删除；规则保留，构建旧版本时仍会生成）
 #   .mc     Swift 模块缓存（264MB！）
 #   .build  编译中间产物
 # 这两个目录由编译器自动生成，删掉后下次构建会重建。
@@ -16,7 +17,8 @@
 #   结果公开仓里 `git add -A` 把 373 个 dist 文件（29MB 的 .app）与 460 个 vendor 文件
 #   （mac 轮子）一起提交了。规则必须跟着目录走。
 #
-#   dist/   成品 App 由 `bash build.sh` 重建；公开仓的发布走 GitHub Release 资产，
+#   dist/   旧 SwiftUI 成品 App 的产物目录（历史：`build.sh` 与旧壳已于 2026-11-01 批 108 删除，
+#           历史版本可 `git archive v1.5.0` 取回）；公开仓的发布走 GitHub Release 资产，
 #           不再把 .app 提交进版本库。
 #   vendor/ Python 依赖，按 `Engine/requirements.txt` 装：
 #           `python3 -m pip install --target vendor -r requirements.txt`

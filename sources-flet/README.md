@@ -1,8 +1,8 @@
 # sources-flet —— Flet 单壳（桌面端默认产品线）
 
 自 **v1.5.0** 起，编辑部工具箱的 Windows / macOS 桌面端统一为这里的 **Flet 单壳**。
-旧外壳 `sources-win/`（Tkinter）与 `sources-mac/`（SwiftUI）已 **frozen**：保留源码作回退参考，
-不再随发布线构建（详见仓库根 `README.md` 与 `RELEASING.md`）。
+历史：旧外壳 `sources-win/`（Tkinter）与 `sources-mac/`（SwiftUI）已于 2026-11-01（批 108）删除；
+v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回），需要回退可 `git archive v1.5.0 sources-win sources-mac`。
 
 ## 结构
 

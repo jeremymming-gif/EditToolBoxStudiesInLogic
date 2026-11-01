@@ -1,5 +1,11 @@
 # 使用与运维指南（GUIDE）
 
+> ⚠️ **历史文档范围（2026-11-01 批 108 标注）**：本手册描述的是 **v1.5.0 及以前的旧外壳界面**
+> （Tk `sources-win/` / SwiftUI `sources-mac/`）。这两套旧壳已于 2026-11-01（批 108）删除，
+> 当前唯一外壳是 **Flet（`sources-flet/`）**：Flet 单壳的用户手册见仓库 `docs/features/` 与
+> `sources-flet/README.md`。旧 `build.sh` / `一键构建.command` 同样已删（历史版本可 `git archive v1.5.0`
+> 取回）；Windows 打包现为 `Engine/tools/build_win_sidecar.ps1` + `py -3.14 -m flet.cli pack …`，
+> macOS 由 CI 打包。
 > 本文件是 `README.md` 的**细节层**：用法、依赖、GUI 各页、目录结构、已知限制、合并记录、
 > 下一步。README 只回答「这是什么 / 先读哪份」。
 >
@@ -13,9 +19,9 @@
 > ⚠️ **两条红线**（原文在下面「三、用法」末尾）：**原稿只读**；**稿件仓不做任何 git 写操作**
 > （工具箱仓与笔记仓的提交口径另见仓库根 `AGENTS.md` 红线 3）。
 
-## GUI 各页在干什么（速查，mac 15 页 / Windows 15 页：均不含组外的「设置」）
+## GUI 各页在干什么（速查：旧 mac/Windows 双壳各 15 页，均已删，历史；Flet 单壳 15 页见 `sources-flet/app/ui/ia_map.py`）
 
-App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + 右侧当前功能页 + 下方运行日志**」
+（旧壳已删，历史对照）App（`dist/编辑部工具箱.app`）主窗口曾是「**左侧分组侧边栏 + 右侧当前功能页 + 下方运行日志**」
 （`sources-mac/Views/MainWindow.swift`，Windows 版同一套结构）。侧边栏按用途分三组——
 「单篇稿件」「整期装配」「引用库」——外加一个「设置」：「初排转换」是每篇稿子的第一步；文献核实有**两个主要入口**：
 两段式 AI 协同（第一段产出任务书）与「文献回读校验」页（离线回读/手动并回，高级），CLI `--verify-refs` 仍可使用
@@ -33,22 +39,26 @@ App（`dist/编辑部工具箱.app`）主窗口是「**左侧分组侧边栏 + �
 > 两者都停**整棵进程树**（Python 引擎 + 它起的 `xelatex`），已写出的产物保留；
 > 取消**不是失败**：横幅显示「⏹ 已取消」，日志不再补「失败」话术。
 
-| 页面 | 干什么 | 细节/权威实现 |
+| 页面 | 干什么 | 细节/权威实现（引擎侧；旧壳文件已删） |
 |---|---|---|
-| 初排转换 | 选源文件 → 出初排稿（本文件「三、用法」的 GUI 形态）；第 62 批起**普通初排不再默认生成《文献核实任务书》**（初排页独立「生成参考文献核实任务书」勾选已收敛掉）；任务书由两段式第一段产出，或 CLI `--verify-refs`（高级）；初排**默认只读比对引用库**（日志一行，见 §3.10）；勾「用 AI 处理参考文献（直连 API，会产生费用）」且「设置」页配好端点时，**AI 返回的条目会按四条安全校验并入 `reference.bib`**（回滚副本 `reference.bib.ai前`，见 §3.5）。**能不能联网核实**由「设置」页的「通道 / 联网检索」决定，并写进任务书头部与「六、合并记录」（§3.7）。勾上它 → 内部自动带 `--verify-refs`（引擎生成任务书并并入核实结果；第 62 批起不再有独立任务书勾选，AI 建议与「六、合并记录」仍写在那份任务书里）；想只要任务书、不动 bib，勾「**保留原 reference.bib（不并入 AI 结果）**」（= `--no-ai-merge`，只在勾了 AI 时显示）；只想要任务书、不调 AI → 用两段式第一段或 CLI `--verify-refs`。第 55 批起另有**默认关闭**的「AI 协同初排（两段式）」：第一段只写暂存目录 + 任务书 → 导入外部 chat 回复 → 第二段才交付（见 §3.1「两段式 AI 协同初排」）；第 56 批起回填支持**多文件/目录/剪贴板**一起导入、第二段沿用页面「清理编译中间文件」（`--clean`），摘要按「文献回填 x/y｜低置信回复 a」显示、0 回填有橙色警告；第 59 批起两段式面板另有**默认不勾**的「全文 AI 核查（任务书附正文）」（可选 context / full 范围；第 63 批起不设字符上限，见 §3.1）；第 60 批起直连 AI 区另有**默认不勾**的「全文 AI 核查（直连 API，会产生费用）」（`--llm-fulltext`；第 63 批起启用自动应用（默认开，仅 BIB/META/FN，全走批57安全闸，`--no-llm-fulltext-apply` 可关）、上限可配（`--llm-fulltext-max-chars N`，默认 40000，0 = 不限），并取消通道①的 4/8 万字符截断；见 §3.5）；**第 63b 批起元数据推荐用「高级选项 → 填写元数据…」人工填写**（多作者 1–5 / 多单位 / 中英题名摘要关键词，值直接进产物；`.doc/.docx` 自动识别已取消，见 §3.1「元数据：GUI 人工填写」） | `sources-mac/Views/ConvertTab.swift`、`sources-mac/Features/ConvertFeature.swift`、`sources-mac/Features/CoopFeature.swift`、第 64 条 |
+| 初排转换 | 选源文件 → 出初排稿（本文件「三、用法」的 GUI 形态）；第 62 批起**普通初排不再默认生成《文献核实任务书》**（初排页独立「生成参考文献核实任务书」勾选已收敛掉）；任务书由两段式第一段产出，或 CLI `--verify-refs`（高级）；初排**默认只读比对引用库**（日志一行，见 §3.10）；勾「用 AI 处理参考文献（直连 API，会产生费用）」且「设置」页配好端点时，**AI 返回的条目会按四条安全校验并入 `reference.bib`**（回滚副本 `reference.bib.ai前`，见 §3.5）。**能不能联网核实**由「设置」页的「通道 / 联网检索」决定，并写进任务书头部与「六、合并记录」（§3.7）。勾上它 → 内部自动带 `--verify-refs`（引擎生成任务书并并入核实结果；第 62 批起不再有独立任务书勾选，AI 建议与「六、合并记录」仍写在那份任务书里）；想只要任务书、不动 bib，勾「**保留原 reference.bib（不并入 AI 结果）**」（= `--no-ai-merge`，只在勾了 AI 时显示）；只想要任务书、不调 AI → 用两段式第一段或 CLI `--verify-refs`。第 55 批起另有**默认关闭**的「AI 协同初排（两段式）」：第一段只写暂存目录 + 任务书 → 导入外部 chat 回复 → 第二段才交付（见 §3.1「两段式 AI 协同初排」）；第 56 批起回填支持**多文件/目录/剪贴板**一起导入、第二段沿用页面「清理编译中间文件」（`--clean`），摘要按「文献回填 x/y｜低置信回复 a」显示、0 回填有橙色警告；第 59 批起两段式面板另有**默认不勾**的「全文 AI 核查（任务书附正文）」（可选 context / full 范围；第 63 批起不设字符上限，见 §3.1）；第 60 批起直连 AI 区另有**默认不勾**的「全文 AI 核查（直连 API，会产生费用）」（`--llm-fulltext`；第 63 批起启用自动应用（默认开，仅 BIB/META/FN，全走批57安全闸，`--no-llm-fulltext-apply` 可关）、上限可配（`--llm-fulltext-max-chars N`，默认 40000，0 = 不限），并取消通道①的 4/8 万字符截断；见 §3.5）；**第 63b 批起元数据推荐用「高级选项 → 填写元数据…」人工填写**（多作者 1–5 / 多单位 / 中英题名摘要关键词，值直接进产物；`.doc/.docx` 自动识别已取消，见 §3.1「元数据：GUI 人工填写」） | 第 64 条 |
 | 文献回读校验 | 第 62 批起页顶标题「**回读/比对报告查看器（高级：手动并回，离线）**」（侧栏短名不变），本页**不生成**《文献核实任务书》；编辑交回的 `.bib` 做离线体检（语法/规范/引用闭合/与原件 diff，**不联网核实真伪**）；可填「报告输出（可选）」= 文件路径或已存在的目录（留空 = 自动落点，行为不变）；**英文作者未倒装算问题**、中文译著缺「（著）/（译）」算提示（第 63 条）。体检成功后出现「**并回**」按钮：把交回的 `.bib` 并进「原件 .bib」那一栏指定的产物 `reference.bib`（与自动通道同一份合并核心；原文件先备份为 `.ai前`），并回后可「**重新编译该篇**」。报告与「初排转换」并入后自检的报告是**同一份实现**（第 64 条） | `checkbib.py`、`slcn/bibreport.py`、`slcn/aibib.py`、第 55/57/63/64 条 |
-| 一校核查 | 选初排稿 `.tex`，按 29 条规则逐条核查（脚注/引用位置、半角标点、图表引用间隔、英文弯引号…）。初排转换已默认把无歧义项改好，报告只列需人工判断的命中；可勾「顺手把无歧义的改掉」补写（另存新文件，输入文件不动）。报告写稿件同目录 `<名字>_一校核查.md` | `sources-mac/Features/ProofCheckFeature.swift`、`Engine/slcn/proofcheck.py`、`Engine/docs/PROOF_RULES.md` |
-| 合并文件 | 把各篇合成一期（扉页 → 编委页 → 中英目录 → 各篇 → 封底，重建书签） | `sources-mac/Features/MergeFeature.swift` |
-| 检查 tex 信息 | 查 tex 里编辑关心的字段是否齐（并核对 PDF 实际页数） | `sources-mac/Features/InfoCheckFeature.swift` |
-| 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） | `sources-mac/Features/CompileFeature.swift` |
-| 生成目录 | 选检查报告 → **一键最终交付**：生成中英文目录 → 缺 `000 Table of Contents` 自动创建 → 落位固定名（`Chinese Content.tex/.pdf`、`contents.tex/.pdf`）→ XeLaTeX ×2 编译；结果区列出 4 个固定名路径/模板来源/页数；高级开关「仅生成 tex（不落位）」默认关（旧行为）。模板继承、条目断行/栏目行与单页适配都在引擎侧 | `sources-mac/Features/TocFeature.swift`、`sources-win/main.py`、`Engine/toc.py`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
-| 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest v2，`--restore` 撤销、`--empty-trash` 清空） | `sources-mac/Features/DeleteTempFeature.swift`、`Engine/cleantemp.py`、`Engine/slcn/clean.py` |
-| 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `sources-mac/Views/BibDbStatsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `sources-mac/Views/BibDbQueryView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单。**批73 起 mac 入藏页另有「粘贴 bib 文本」模式**（1..N 条 → 临时文件先 `import-bib --dry-run --json` 预览 → 入库口径单选：未核实（默认）/ 已人工核对 `--verified` / 成品 bib（期+篇）；**引擎零改动**，粘贴文本走的就是 `import-bib`） | `sources-mac/Views/BibDbImportView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 待处理 / 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件。**批73（B-127）起 mac 待裁决页可直接看条目列表并逐条裁决**：列表数据来自 `bibdb.py conflicts --json`（C 编号与 `CONFLICTS.md` 同源）；行内三按钮 keep / adopt / defer；「一键全部采用…」（高亮+二次确认+逐条 old→new 预览，引擎 `resolve --adopt-all-pending`，**同记录字段重叠整体拒绝**）；「编辑裁决 bib…」（预填库内条目→`resolve --action replace --dry-run` 预览差异→确认应用，**裁决不改 key**）；**B-190 起取消备份制**：写库成功后自动本地 git commit（只 `bib_db/bibliography.jsonl`、绝不自动 push），页面**版本库状态区**显示分支/库文件脏否/未推送提交数/最近 3 条库提交，并提供「提交…」「推送…」「回退到上一个提交…」（均二次确认；**B-203 起推送只推「仅含 `bib_db/` 文件」的连续未推送提交**：notes 其它提交不推、被 notes 提交挡住时只推前面的 bib 前缀并黄字列 sha/文件、首条即 notes/merge 整次拒推、代理失效自动清代理重试一次、不 force；回退 = `checkout HEAD~1 -- 库文件` + 新 commit，不 hard reset、不 push）；git 不可用/非 repo 时写库照旧成功、只黄字提示版本层失败。所有写动作串行置灰，写前带 `--expect-db-sha256`。**B-188 起 mac 此页改名「待处理」**：①字段冲突（上述能力）②库健康（`lint --with-records` 按 8 类折叠到受影响记录，行内「编辑条目 / 对照合并」；**B-202 起 4 处折叠行整行可点**——已裁决行/健康分类/已处理段/单条留痕；**B-204 起 `bib_db/health-ignore.json` 可静音人工裁决为不同条目的重复告警**：near_duplicates / duplicate_content，lint 只读、库字节不变、`report-duplicates` 仍全量）；**B-205 起重复/近重复行可「确认不同（不再提示）」**：行内二次确认 → 引擎 `ack-duplicates` 写 `bib_db/health-ignore.json` + 自动本地 commit（只 sidecar、不推送）+ 刷新列表；撤销用 `git revert` 或删该条目③已处理（冲突裁决 + 记录 `edits[]` 留痕：动作/时间，默认折叠；B-190 起不再展示备份 sha）；新增共享条目编辑器（`edit --dry-run/--apply`，key 默认只读、改 key 旧 key 进 aliases）、对照合并（`merge-records`，逐字段选源、新 key 自动建议、**不自动合并**；**B-201 起新 key 可沿用其中一条被合并键**，其余旧 key 全进 aliases）、字段归位批量预览（`suggest-field-fixes` + 逐条 `edit --apply`）；性能：listState 缓存 + LazyVStack + 进页不自动重载（sha/mtime 判新鲜）+ 一次性跳转意图。Windows 版此页名为「待裁决」，字段冲突的逐条裁决（keep/adopt/defer）、编辑并替换、一键全部采用已对齐（写后自动本地 commit 库文件、绝不推送；库健康/已处理仍只在 macOS） | `sources-mac/Views/BibDbReviewView.swift`、`BibDbEditorSheet.swift`、`BibDbMergeSheet.swift`、`BibDbFieldFixSheet.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 引用库设置（引用库） | 引用库路径 / 数据库位置 / 规范化（B1/B2/B3）的 dry-run 与 apply 入口；本机偏好写 `settings.json`，**只有 dry-run 默认安全** | `sources-mac/Views/BibDbSettingsView.swift`、`sources-win/bibdb_ui.py`、`Engine/bibdb.py`，第 132 条 |
-| 设置 | AI 端点配置（明文存本机用户目录）+ 请求旋钮（思考模式 / 输出上限 / **通道** / **联网检索**）+ 体检（①②③④ + **⑤ 检索探针**）+ 隐私文案；**第 55 批新增「单篇预算 / 单批预算」token 预算闸**（默认 30000 / 1000000，0 = 不限，留空 = 不传；只约束直连 API，外部 chat 两段式不生效）；「保存」才落盘、「清空」只清输入框（见下表后说明）。保存/测试按钮**固定在本页底部**、不需要滚到页面末尾。第 60 批起隐私口径：默认只发条目/片段，勾选「全文 AI 核查（直连 API）」后才把正文分片发给你配置的端点（默认不勾、不持久化、会产生费用）；**第 63 批新增「API 核查字符上限」（默认 40000，0 = 不限）与「全文核查结果自动应用」（默认开，走批57安全闸）** | `sources-mac/Views/SettingsTab.swift`、`sources-win/settings.py`，第 47/58/62/69 条 |
+| 一校核查 | 选初排稿 `.tex`，按 29 条规则逐条核查（脚注/引用位置、半角标点、图表引用间隔、英文弯引号…）。初排转换已默认把无歧义项改好，报告只列需人工判断的命中；可勾「顺手把无歧义的改掉」补写（另存新文件，输入文件不动）。报告写稿件同目录 `<名字>_一校核查.md` | `Engine/slcn/proofcheck.py`、`Engine/docs/PROOF_RULES.md` |
+| 合并文件 | 把各篇合成一期（扉页 → 编委页 → 中英目录 → 各篇 → 封底，重建书签） |  |
+| 检查 tex 信息 | 查 tex 里编辑关心的字段是否齐（并核对 PDF 实际页数） |  |
+| 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） |  |
+| 生成目录 | 选检查报告 → **一键最终交付**：生成中英文目录 → 缺 `000 Table of Contents` 自动创建 → 落位固定名（`Chinese Content.tex/.pdf`、`contents.tex/.pdf`）→ XeLaTeX ×2 编译；结果区列出 4 个固定名路径/模板来源/页数；高级开关「仅生成 tex（不落位）」默认关（旧行为）。模板继承、条目断行/栏目行与单页适配都在引擎侧 | `Engine/toc.py`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
+| 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest v2，`--restore` 撤销、`--empty-trash` 清空） | `Engine/cleantemp.py`、`Engine/slcn/clean.py` |
+| 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `Engine/bibdb.py`，第 132 条 |
+| 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `Engine/bibdb.py`，第 132 条 |
+| 入藏（引用库） | 把一份成品 `.bib` 或一整期目录导进编辑部引用库：先预览、确认才写库（单篇按「往期成品 bib」入已核实）；写库后提示重算待裁决清单。**批73 起 mac 入藏页另有「粘贴 bib 文本」模式**（1..N 条 → 临时文件先 `import-bib --dry-run --json` 预览 → 入库口径单选：未核实（默认）/ 已人工核对 `--verified` / 成品 bib（期+篇）；**引擎零改动**，粘贴文本走的就是 `import-bib`） | `Engine/bibdb.py`，第 132 条 |
+| 待处理 / 待裁决（引用库） | 冲突裁决清单：逐条 keep / defer / adopt（`adopt` 必须用指纹、重叠冲突默认拒绝）；裁决结果落库，清单是给人看的文件。**批73（B-127）起 mac 待裁决页可直接看条目列表并逐条裁决**：列表数据来自 `bibdb.py conflicts --json`（C 编号与 `CONFLICTS.md` 同源）；行内三按钮 keep / adopt / defer；「一键全部采用…」（高亮+二次确认+逐条 old→new 预览，引擎 `resolve --adopt-all-pending`，**同记录字段重叠整体拒绝**）；「编辑裁决 bib…」（预填库内条目→`resolve --action replace --dry-run` 预览差异→确认应用，**裁决不改 key**）；**B-190 起取消备份制**：写库成功后自动本地 git commit（只 `bib_db/bibliography.jsonl`、绝不自动 push），页面**版本库状态区**显示分支/库文件脏否/未推送提交数/最近 3 条库提交，并提供「提交…」「推送…」「回退到上一个提交…」（均二次确认；**B-203 起推送只推「仅含 `bib_db/` 文件」的连续未推送提交**：notes 其它提交不推、被 notes 提交挡住时只推前面的 bib 前缀并黄字列 sha/文件、首条即 notes/merge 整次拒推、代理失效自动清代理重试一次、不 force；回退 = `checkout HEAD~1 -- 库文件` + 新 commit，不 hard reset、不 push）；git 不可用/非 repo 时写库照旧成功、只黄字提示版本层失败。所有写动作串行置灰，写前带 `--expect-db-sha256`。**B-188 起 mac 此页改名「待处理」**：①字段冲突（上述能力）②库健康（`lint --with-records` 按 8 类折叠到受影响记录，行内「编辑条目 / 对照合并」；**B-202 起 4 处折叠行整行可点**——已裁决行/健康分类/已处理段/单条留痕；**B-204 起 `bib_db/health-ignore.json` 可静音人工裁决为不同条目的重复告警**：near_duplicates / duplicate_content，lint 只读、库字节不变、`report-duplicates` 仍全量）；**B-205 起重复/近重复行可「确认不同（不再提示）」**：行内二次确认 → 引擎 `ack-duplicates` 写 `bib_db/health-ignore.json` + 自动本地 commit（只 sidecar、不推送）+ 刷新列表；撤销用 `git revert` 或删该条目③已处理（冲突裁决 + 记录 `edits[]` 留痕：动作/时间，默认折叠；B-190 起不再展示备份 sha）；新增共享条目编辑器（`edit --dry-run/--apply`，key 默认只读、改 key 旧 key 进 aliases）、对照合并（`merge-records`，逐字段选源、新 key 自动建议、**不自动合并**；**B-201 起新 key 可沿用其中一条被合并键**，其余旧 key 全进 aliases）、字段归位批量预览（`suggest-field-fixes` + 逐条 `edit --apply`）；性能：listState 缓存 + LazyVStack + 进页不自动重载（sha/mtime 判新鲜）+ 一次性跳转意图。Windows 版此页名为「待裁决」，字段冲突的逐条裁决（keep/adopt/defer）、编辑并替换、一键全部采用已对齐（写后自动本地 commit 库文件、绝不推送；库健康/已处理仍只在 macOS） | `Engine/bibdb.py`，第 132 条 |
+| 引用库设置（引用库） | 引用库路径 / 数据库位置 / 规范化（B1/B2/B3）的 dry-run 与 apply 入口；本机偏好写 `settings.json`，**只有 dry-run 默认安全** | `Engine/bibdb.py`，第 132 条 |
+| 设置 | AI 端点配置（明文存本机用户目录）+ 请求旋钮（思考模式 / 输出上限 / **通道** / **联网检索**）+ 体检（①②③④ + **⑤ 检索探针**）+ 隐私文案；**第 55 批新增「单篇预算 / 单批预算」token 预算闸**（默认 30000 / 1000000，0 = 不限，留空 = 不传；只约束直连 API，外部 chat 两段式不生效）；「保存」才落盘、「清空」只清输入框（见下表后说明）。保存/测试按钮**固定在本页底部**、不需要滚到页面末尾。第 60 批起隐私口径：默认只发条目/片段，勾选「全文 AI 核查（直连 API）」后才把正文分片发给你配置的端点（默认不勾、不持久化、会产生费用）；**第 63 批新增「API 核查字符上限」（默认 40000，0 = 不限）与「全文核查结果自动应用」（默认开，走批57安全闸）** | 第 47/58/62/69 条 |
+
+> **旧壳实现文件（历史）**：上表第三列原列的 `sources-mac/…`（SwiftUI）与 `sources-win/…`（Tk）界面文件
+> 已随 2026-11-01（批 108）删除；本表只保留引擎侧权威实现。旧壳源码可 `git archive v1.5.0` 取回，
+> Flet 单壳的页面入口见 `sources-flet/app/ui/ia_map.py`。
 
 > **「保存」与「清空」的语义（2026-10-15 用户实测报的 bug，见第 62 条）**
 >
@@ -477,8 +487,8 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
   `--ai-batch-budget-tokens`（单批，默认 1000000），0 = 不限；超预计用量先打印账、退出 2、
   不发起任何请求。**外部 chat 回填零费用**。
 - **GUI 接入（第 55–56 批，第 59 批加全文选项；mac / Windows 两壳对等）**：「初排转换」页新增**默认关闭**的
-  「AI 协同初排（两段式；外部 chat 免费流程）」勾选（mac：`sources-mac/Views/ConvertTab.swift` +
-  `sources-mac/Features/CoopFeature.swift`；Win：`sources-win/main.py` + `sources-win/coop.py`）。
+  「AI 协同初排（两段式；外部 chat 免费流程）」勾选（旧壳实现：mac `sources-mac/Views/ConvertTab.swift` +
+  `sources-mac/Features/CoopFeature.swift`、Win `sources-win/main.py` + `sources-win/coop.py`；旧壳已删，Flet 单壳见 `sources-flet/app/`）。
   勾上后出现说明与状态区：第一段跑完状态 **「待人工核实（未交付）」**，按钮「打开任务书」「打开暂存目录」；
   第 56 批起回填区改为**已选清单**：mac「添加文件…／添加目录…／从剪贴板导入」+ 每项「移除」+「全部清除」，
   Win「添加回填文件…／添加回填目录…／从剪贴板导入」+「移除选中」+「全部清除」——多文件 / 目录 / 剪贴板
@@ -1363,7 +1373,7 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 
 ```
                       ← 唯一的顶层项目（界面 + 引擎，2026-10 合并）
-├── sources-mac/                     Swift 界面
+├── sources-flet/                    Flet 界面（唯一壳；旧 Tk/SwiftUI 壳已删）
 ├── Engine/                      ← Python 转换引擎（原 slcn-convert/）
 │   ├── convert.py           ★ 正式工具：源文件 → 规范命名的初排稿
 │   ├── run_poc.py           端到端驱动 + 打分报告
@@ -1411,8 +1421,6 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 │       ├── rules.py         预校正规则库（每条标注 safe 与否）
 │       ├── build.py         装配器：模板 + 元数据 + 正文 + 规则
 │       └── score.py         打分器：两级比对 + L2/L3 分档
-├── build.sh                 构建 app（把 Engine/ 打包进 Resources）
-├── 一键构建.command          双击构建（给不熟悉命令行的同事）
 └── 使用说明.md               面向编辑的使用说明
 ```
 
@@ -1471,14 +1479,11 @@ $PY Engine/bibdb.py rehash [--dry-run | --apply] [--json]     # B-126：规范�
 `python-docx` / `lxml` 相当的成熟替代，硬写一遍等于把 6600 行逻辑重做且必然引入新 bug。
 所以 Swift 侧只做**界面 + 参数拼装 + 找路径**。
 
-```bash
-cd EditToolBox && ./build.sh
-# → dist/编辑部工具箱.app（26 MB）
-```
-
-`build.sh` 会把 `Engine/`（含 `vendor/`）与 `编辑笔记/模板文件/` 一并打进 app 的
-Resources（app 内分别是 `Resources/Engine/` 与 `Resources/编辑笔记/模板文件/`），
-因此 **app 可以单独拷走运行**，不依赖仓库路径。
+> **（历史）** 本节记录的是旧 SwiftUI `.app` 的合并与打包过程：`build.sh` 与 `一键构建.command`
+> 已于 2026-11-01（批 108）删除，历史版本可 `git archive v1.5.0` 取回。当前打包：Windows 用
+> `Engine/tools/build_win_sidecar.ps1` 生成引擎 sidecar + `py -3.14 -m flet.cli pack sources-flet/app/main.py …`；
+> macOS 由 CI 打包。sidecar 同样把 `Engine/`（含 `vendor/`）与 `编辑笔记/模板文件/` 一并装进产物，
+> 因此 **产物可以单独拷走运行**，不依赖仓库路径。
 
 
 > 📌 **本节（原 §六·五）里的第 45–61 条案例已迁到
@@ -1507,12 +1512,12 @@ ImportError: cannot import name 'etree' from 'lxml'
 
 **④ 模板文件要一起打包**
 工具按「**从 `slcn/` 逐级向上找 `编辑笔记/模板文件`**」定位
-（`slcn/templates.py: _find_repo_dir()`），所以 `build.sh` 把模板放到 Resources
-下同名位置即可，无需改代码。这个上溯写法还有个好处：引擎无论待在仓库里
+（`slcn/templates.py: _find_repo_dir()`），所以旧 `build.sh`（已删）把模板放到 Resources
+下同名位置即可，无需改代码；现在的 sidecar/`flet pack` 同理。这个上溯写法还有个好处：引擎无论待在仓库里
 （`Engine/`）还是 app 包里（`Resources/Engine/`），**两种深度都能命中**
 ——2026-10 合并时正是靠它避免把层数写死。
 
-**验证（2026-10-13 结构合并后重做）**：
+**验证（历史；2026-10-13 结构合并后重做）**：
 
 ① app 包内、用 **`/opt/homebrew/bin/python3` 3.14**（系统里没有 lxml，靠 `vendor/`
    回退）、在 `/tmp` 这种**中立目录**下完整实跑 Lei_Li → **20 页**，与人工成品一致；
@@ -1529,12 +1534,13 @@ ImportError: cannot import name 'etree' from 'lxml'
 
 ## 七、与 EditToolBox 合并（✅ 2026-10 已完成，本节留作设计记录）
 
-用户计划后续把本工具并入 EditToolBox（SwiftUI 原生 app）。为此已做如下准备：
+（历史）用户当时计划把本工具并入 EditToolBox（SwiftUI 原生 app）；旧壳已于批 108 删除，本节留作设计记录。
+当时已做如下准备：
 
 | 措施 | 说明 |
 |---|---|
 | **引擎与界面分离** | 全部逻辑在 `slcn/` 包内，`convert.py` 只是薄薄一层 CLI，没有任何界面依赖 |
-| **清理规则对齐** | `slcn/clean.py` 与 `sources-mac/Features/DeleteTempFeature.swift` 的后缀列表、递归方式、大小写处理、日志文案**逐项一致**，合并时不会出现两套行为 |
+| **清理规则对齐** | `slcn/clean.py` 与旧壳 `sources-mac/Features/DeleteTempFeature.swift`（已删）的后缀列表、递归方式、大小写处理、日志文案**逐项一致**，合并时不会出现两套行为 |
 | **模板选择可编程** | `slcn/templates.py: resolve(lang, sty, skeleton)` 可直接被 Swift 侧调用（经 CLI 或内嵌解释器） |
 | **单篇函数化** | `build_latex(...)` / `build_docx(...)` 都是纯函数式调用，接收显式路径并返回结果对象，便于包进 app 的功能标签页 |
 | **日志可注入** | `clean.clean(root, log=...)` 接受回调，对应 EditToolBox 的 `Logger` |

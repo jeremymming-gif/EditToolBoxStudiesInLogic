@@ -1,10 +1,10 @@
 # 引擎接口契约（ENGINE_API）
 
-**这份文件是什么**：`Engine/`（Python，唯一一份逻辑）与**外壳**（mac 的 SwiftUI、Windows 的
-Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事：找路径、拼参数、显示日志——
+**这份文件是什么**：`Engine/`（Python，唯一一份逻辑）与**外壳**（`sources-flet/`，Flet 前端）之间的**契约**。
+旧 mac SwiftUI / Windows Tkinter 外壳已于批108 删除（历史，源码见 v1.5.0 tag）。外壳只做三件事：找路径、拼参数、显示日志——
 **逻辑一行都不许复制进外壳**。
 
-> ⚠️ **改引擎的 CLI / 退出码 / 产物路径 / 关键输出行 → 必须同时改这份文件与两个外壳。**
+> ⚠️ **改引擎的 CLI / 退出码 / 产物路径 / 关键输出行 → 必须同时改这份文件与 `sources-flet/` 外壳。**
 > 反之：新增参数**一律要带默认值**，老外壳不传也能跑（这条是硬要求，见 `build_docx(metadata_path=None)`
 > 与 `--llm-search-tool` 的先例）。
 
@@ -17,15 +17,14 @@ Tkinter，以及将来任何前端）之间的**契约**。外壳只做三件事
                                                  + cleantemp.py + compileall.py + proofcheck.py + slcn/）
 <仓库>/Engine/engine_main.py   ← 打包用：把**十个** CLI 冻成**一个** exe 的分发入口（第 89 条）
 <仓库>/Engine/vendor/          ← 随包依赖（pypdf / pypinyin / lxml）
-<仓库>/sources-mac/                ← mac 外壳（SwiftUI）
-<仓库>/sources-win/           ← Windows 外壳（Tkinter，见 §七）
+<仓库>/sources-flet/          ← 唯一外壳（Flet；旧 sources-mac/、sources-win/ 已删，历史）
 ```
 
 **调用方式**：外壳起一个**子进程**，用**绝对路径**调 `convert.py` / `checkbib.py` / `mergepdf.py`。
 发布形态下这十三个入口被冻成一个 exe，外壳改调 `SLCNEngine.exe <入口> …`（见 §九·打包）。
-⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-win/engine.py: ENTRIES` **必须逐项一致**：
-漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页）；
-配对守卫在 `sources-win/tests/test_bridge.py` 与 `Engine/tests/test_platform.py` (g) 组。
+⚠️ `engine_main.py: ENTRIES` 与外壳的 `sources-flet/app/services/engine_bridge.py: ENTRIES` **必须逐项一致**：
+漏一个，那个外壳页在用户机器上就是「❌ 不认识的入口」退出 2（2026-10-17 实测坏了 5 页，历史）；
+配对守卫在 `Engine/tests/test_platform.py` (g) 与 `Engine/tests/test_b309_gate_speedup.py` (c)。
 引擎**不做源文件自动发现**（`--source` 必填），也**不假设 CWD**（内部一律用绝对路径）。
 
 ```bash
@@ -282,8 +281,7 @@ B-120 段；回归见 `tests/test_tail_block.py`。
 `--verify-refs --no-ai-merge --coop-taskbook-only [--coop-stage DIR] [--coop-fulltext context|full]`；
 第二段 = `--coop-replies <回填>… [--coop-apply] [--compile] [--clean]`（`--source` / `--out` 两段都必填）。
 `--coop-fulltext` **只能随第一段**（否则 exit 2）、**默认不传**；两壳只在两段式面板勾选「全文 AI 核查」且
-第一段时追加 `--coop-fulltext context|full`，第二段与普通转换绝不带（mac `tools/ai_settings_test` / win
-`sources-win/tests/test_bridge.py` 钉住）。任务书 = `refmark` 任务书 + 附一 + 附二 +（可选）附三 +（可选）附三·补充（附四输入清单：脚注 fid+摘要 /
+第一段时追加 `--coop-fulltext context|full`，第二段与普通转换绝不带（旧壳测试台已删，历史；现由 `Engine/tests/test_infocheck_toc.py` 与 `test_platform.py` 守参数表）。任务书 = `refmark` 任务书 + 附一 + 附二 +（可选）附三 +（可选）附三·补充（附四输入清单：脚注 fid+摘要 /
 占位符 类型+位置，第 75 批 B-139；只在有数据时出现）+（可选）附四；
 **附三只用于回答附一**；**附四（第 74 批 B-133，report-only）只要求 AI 结合全文给出初排分析建议、只报告不写产物**
 （ph2 落 `<名>_AI全文分析.md/.jsonl` + 协同记录「六、全文分析」计数），默认关时任务书/stdout 与批 58 逐字节相同。
@@ -389,7 +387,7 @@ python3 mergepdf.py --folder "<期目录>" [--out <合并.pdf>] [--nest-outlines
 - **最后一行**：`完成。合并文件：<绝对路径>（共 N 页）` —— 外壳靠它拿产物路径与页数。
 - 逻辑在 `slcn/pdfmerge.py`。**两个外壳都已改调它**（第 99 条）：
   mac 侧原来的 `PDFMerger.swift` / `ExtraPages.swift` / `EditorsPage.swift` **已删除**，
-  `sources-mac/Features/MergeFeature.swift` 只剩「拼参数 + 转发 + 解析 `--detect` 的预览」。
+  （旧壳已删，历史）`sources-mac/Features/MergeFeature.swift` 当年只剩「拼参数 + 转发 + 解析 `--detect` 的预览」。
   切换前两条路（Swift + PDFKit 那条与引擎这条）的输出已用真实成品期目录**逐条比对过**
   （176 页、102 条大纲、层级/名字/页码全同，见 `tests/test_pdfmerge.py` 的 (f) 组）。
 - **`--detect`**：只探测不合并，输出「会插哪一份编委页/封底页、扉页页数」的 JSON ——
@@ -425,7 +423,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（29 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改**：报告只列需人工判断的命中，可自动改项由初排通道默认处理（`--fix` 可补写新文件） | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `templatecheck.py` | **模板合规校验（report-only MVP，B-002）**：核查产品目录或初排稿的 8 条模板/初排规范（T1–T8，见 `docs/TEMPLATE_RULES.md`）；**只报不改，无 `--fix`**；不注册 App/GUI/打包入口（`--self-test` 走内建夹具） | `0` 无 FAIL；`1` ≥1 FAIL；`2` 用法/输入/写报告错误 | `完成。模板合规：PASS p / FAIL f / SKIP s（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
-| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。**B-226 起支持一键最终交付**（默认仍只生成 tex，向后兼容）：`--place` 生成后**落位固定名**（缺 `000*` 时**自动创建** `000 Table of Contents`）→ `000*/Chinese Content.tex`／`contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留供下一期继承）；`--compile` 落位后先做 **Windows 字体前置检查**（SimSun/SimHei/KaiTi，缺字体 **rc=2**、**绝不静默换字体**）→ `xelatex ×2` → 页数 > 1 时**一次性压缩行距**做单页适配（`\vdistance` 中英同一机制；本期成品小行距按 40pt 压、继承模板的大行距按「压到人工量级」估算；总压缩上限 320pt；压到上限仍 > 1 页 ⇒ rc=2 + 原因；`--compile` 隐含 `--place`）；`--result-json <路径>` 写 GUI 用的结构化结果：`templateSource`（`本期成品`/`上一期`/`内置模板`/`显式指定`）、`templateNote`、`tocDir`、`placed{zhTex,zhPdf,enTex,enPdf}`、`compiled`、`pages{zh,en}`、`column{enabled,title}`、`manualEdits[{kind,article,note}]`、`warnings`。落位/编译/单页适配/字体检查的唯一实现在 `slcn/tocdelivery.py`（`publish.py` 第 ④ 步共用同一份，禁止第二份实现）。模板优先级：本期成品 → 显式 `--template` → 上一期 → 内置。内置模板来源与升级：源头是 `sources-mac/Features/ContentTemplates.swift`，由 `Engine/tools/gen_content_templates.py` 生成 `Engine/slcn/content_templates.py`（生成物禁手改）；**2026-10-27 起内置中文模板 = 2026 年第 3 期(88) 版式**（B-231 ③-A，用户批准）；**B-243 起内置英文模板 = 同期(88) 英文版式**（用户 2026-10-27 定序），仍是最后兜底、每期按需人工微调，**不是版式标准**；`Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻校验 Swift↔py 逐字节一致（要改模板只改 Swift 源再重生成）。**显式不做**（B-231 ③-B，用户 2026-10-27 **不批**）：回退到内置模板时不改 `rc`（仍 0）、不 fail-hard、不报错，唯一后续待定项是用 `--check` 在报告期做显式告警。决策见 notes 仓 `drafts/b231-card.md` 与 `drafts/specs/b231-template-hardening.md` §2③。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、或报告不可用 | `完成。生成目录 N 份（<目录>）` |
+| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。**B-226 起支持一键最终交付**（默认仍只生成 tex，向后兼容）：`--place` 生成后**落位固定名**（缺 `000*` 时**自动创建** `000 Table of Contents`）→ `000*/Chinese Content.tex`／`contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留供下一期继承）；`--compile` 落位后先做 **Windows 字体前置检查**（SimSun/SimHei/KaiTi，缺字体 **rc=2**、**绝不静默换字体**）→ `xelatex ×2` → 页数 > 1 时**一次性压缩行距**做单页适配（`\vdistance` 中英同一机制；本期成品小行距按 40pt 压、继承模板的大行距按「压到人工量级」估算；总压缩上限 320pt；压到上限仍 > 1 页 ⇒ rc=2 + 原因；`--compile` 隐含 `--place`）；`--result-json <路径>` 写 GUI 用的结构化结果：`templateSource`（`本期成品`/`上一期`/`内置模板`/`显式指定`）、`templateNote`、`tocDir`、`placed{zhTex,zhPdf,enTex,enPdf}`、`compiled`、`pages{zh,en}`、`column{enabled,title}`、`manualEdits[{kind,article,note}]`、`warnings`。落位/编译/单页适配/字体检查的唯一实现在 `slcn/tocdelivery.py`（`publish.py` 第 ④ 步共用同一份，禁止第二份实现）。模板优先级：本期成品 → 显式 `--template` → 上一期 → 内置。内置模板来源与升级：源头是 `Engine/tests/fixtures/content_templates.json`（旧 Swift 源已删，历史），由 `Engine/tools/gen_content_templates.py` 生成 `Engine/slcn/content_templates.py`（生成物禁手改）；**2026-10-27 起内置中文模板 = 2026 年第 3 期(88) 版式**（B-231 ③-A，用户批准）；**B-243 起内置英文模板 = 同期(88) 英文版式**（用户 2026-10-27 定序），仍是最后兜底、每期按需人工微调，**不是版式标准**；`Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻校验 JSON 夹具↔py 逐字节一致（要改模板只改夹具再重生成）。**显式不做**（B-231 ③-B，用户 2026-10-27 **不批**）：回退到内置模板时不改 `rc`（仍 0）、不 fail-hard、不报错，唯一后续待定项是用 `--check` 在报告期做显式告警。决策见 notes 仓 `drafts/b231-card.md` 与 `drafts/specs/b231-template-hardening.md` §2③。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、或报告不可用 | `完成。生成目录 N 份（<目录>）` |
 | `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；**B-259 增补** `query-advanced` 高级检索（11 字段 × contains/prefix/exact/fuzzy、年份表达式、排序/分页/why-hit；**只读**，旧三模式零改动）；`stats` 概况；`lint` 体检；`rehash` 规范化规则升级后重算 `content_sha256`（B-126；默认 dry-run、`--apply` 才写）；`conflicts` 列冲突条目（B-127；只读，GUI 待裁决页数据源）；`resolve` 记录冲突裁决（keep / defer / adopt / **replace**；写前可选 `--expect-db-sha256` + `--backup DIR`；`--adopt-all-pending` 一键全部采用）；`restore --backup` 从备份整库恢复（不 reopen；**CLI 保留向后兼容，B-190 起 GUI 不再调用/不再有备份入口**）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup`）；**B-188 增补**：`edit`（通用条目编辑，可 `--new-key`，旧 key 自动进 aliases）、`merge-records`（合并 2+ 条重复记录）、`suggest-field-fixes`（只读：缺字段归位候选）；**B-190 起 `edit`/`merge-records` 的 `--backup` 改可选**（不传 = 不写备份文件；GUI 改用 git 版本层，最后写库仍是同一套 sha 闸 + 原子写 + 写后复核）；`lint --with-records` 给全量受影响 key。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定。**新子命令/新参数全部是加法：不传时老行为与老 `--json` 键不变** | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
 
 **产物**：
@@ -535,7 +533,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 删除临时文件 + 编译全部（98）/ **合并文件（99）** /
 **引用库 5 页**（库概况 / 查库 / 入藏 / 待裁决 / 引用库设置，第 132 条）/
 **目录摘要推送**（B-289，Windows 同页同入口）。
-`sources-mac/` 里已经**没有任何文档逻辑**：界面只做「取值 → 拼参数 → 显示日志/表格」。
+`sources-flet/` 里**没有任何文档逻辑**：界面只做「取值 → 拼参数 → 显示日志/表格」（旧 `sources-mac/` 已删，历史）。
 切一个删一份 Swift 逻辑（`ContentFeature.swift` + `TocTemplate.swift` 已在第 95 条删除；
 `InfoCheckFeature.swift` 在第 96 条瘦身成"只拼参数 + 解产物"）。
 
@@ -603,8 +601,8 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 ## 九、版本、打包与升级
 
 - **版本号只有一处**：`Engine/slcn/__init__.py` 的 `__version__`。
-  `convert.py --version` / `checkbib.py --version` 打印它；mac 的 `build.sh` **现取**它写进
-  `Info.plist`（从前写死 `1.0`，双平台之后必然漂移）；Windows 打包脚本同样从它取。
+  `convert.py --version` / `checkbib.py --version` 打印它；`Engine/tools/build_win_sidecar.ps1` **现取**它写进
+  exe 版本资源（从前写死 `1.0`；旧 mac `build.sh` 已删，历史）。
 - **Windows 冻结分发的约定**（第 89 条）：引擎用 `engine_main.py` 冻成**一个**
   `SLCNEngine.exe`，外壳调 `SLCNEngine.exe convert.py --source …`（**第一个参数就是入口名**）：
 
@@ -613,10 +611,9 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
   ```
 
   支持十三个入口 + `--version`/`--help`；不认识的入口打印用法并退出 2。
-  `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`sources-win/build-win.ps1` ②④），
+  `--hidden-import` 与打包自检都按 `ENTRIES` 逐项走（`Engine/tools/build_win_sidecar.ps1`），
   自检会**逐入口**跑 `--help` 并做一次最小转换 —— 只查 `--version` 查不出漏冻的入口。
-  这样用户机器上**不需要装 Python**；界面壳另冻一个 exe，两者放同一目录即可
-  （外壳的 `sources-win/engine.py: frozen_engine_exe()` 会先找它）。
+  这样用户机器上**不需要装 Python**；Flet 壳由 `sources-flet/packaging/` 另冻 exe（旧壳已删，历史：当年 `sources-win/engine.py: frozen_engine_exe()` 会先找它）。
 - **Release 资产命名建议**（同一 tag 下）：
   `SLCN-<版本>-macOS-arm64.dmg`、`SLCN-<版本>-Windows-x64-setup.exe`、
   `SLCN-<版本>-source.zip`、`latest.json`。
@@ -733,7 +730,7 @@ python3 Engine/diagnose.py --entry compileall.py --exit-code 1 --log "…" --jso
 | `<期目录>/编译报告.md` | 新增文件：结论 + 成功/失败计数 + 每篇失败首条 `!` 行与 `.log` 路径 |
 
 `engine_main.py` 的 ENTRIES（11→12）已于 B-285b 完成：`diagnose.py` 追加在 `envcheck.py` 之后，
-前 11 项顺序不动；`sources-win/engine.py`、`sources-win/build-win.ps1` 与桥接测试逐项同表。
+前 11 项顺序不动；Flet 桥 `sources-flet/app/services/engine_bridge.py`、`Engine/tools/build_win_sidecar.ps1` 与 `Engine/tests/test_platform.py` (g) 逐项同表（旧壳已删，历史）。
 
 ### GUI 契约（B-285b；macOS / Windows 同一套）
 
@@ -786,7 +783,7 @@ python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] [--
 
 两个外壳都**只取值、拼参数、显示结果**，判据全部在 `slcn/pushcopy/` 与 `dirpush.py`：
 
-- **调用 argv**（Windows 页 = `sources-win/engine.py: dirpush_call()`，与 mac `DirPushFeature.arguments` 逐项对齐）：
+- **调用 argv**（Flet 桥 `sources-flet/app/services/engine_bridge.py` 的 dirpush 调用；旧壳已删，历史）：
   当期 `dirpush.py --issue <期目录> [--out <根>] [--with-en-toc] --json`；预览再加 `--dry-run`（放在最后）；
   年度 `dirpush.py --issue <期目录> --annual [--year <yyyy>] [--include-issues 1,2,3] [--out <根>] --json`。
   **年度模式绝不传 `--with-en-toc`**（体例按期由设置 JSON 还原）；`--include-issues` 先升序去重、空列表不传。

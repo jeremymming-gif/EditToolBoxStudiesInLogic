@@ -1,7 +1,8 @@
 """引擎桥：Flet 外壳 ↔ Engine 的唯一通道。
 
 本模块**不 import** tkinter / flet，可在纯控制台与 pytest 下导入测试。
-argv 语义与 `sources-win/engine.py` 对齐（同一个引擎入口，不为 Flet 另造口径）。
+argv 语义与旧 Tk 壳 `sources-win/engine.py`（历史文件，2026-11-01 已删除）对齐
+（同一个引擎入口，不为 Flet 另造口径）。
 
 口径：
 - dev 模式：解释器 = `P2_ENGINE_PYTHON` / 当前解释器（python3.14 绝对路径）/ `py -3.14`，
@@ -256,7 +257,7 @@ def engine_status() -> EngineStatus:
     return status
 
 
-# ── 命令构造（与 sources-win/engine.py 同口径） ─────────────────────────
+# ── 命令构造（与旧 Tk 壳 engine.py 同口径；旧壳属历史） ──────────────────
 @dataclass
 class EngineCall:
     entry: str

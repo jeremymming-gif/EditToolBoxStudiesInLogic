@@ -114,7 +114,8 @@ print("WORKER_OUT_OK")
 
     def _corpus_run(out_dir: Path) -> subprocess.CompletedProcess:
         return run([PY, "-c", _script, str(out_dir)], cwd=str(ENGINE),
-                   env=clean_env(PYTHONPATH=str(ENGINE / "vendor")))
+                   env=clean_env(PYTHONPATH=str(ENGINE / "vendor"),
+                                 PYTHONUTF8="1"))
 
     d1, d2 = _tmp / "p1", _tmp / "p2"
     r1, r2 = _corpus_run(d1), _corpus_run(d2)
@@ -215,31 +216,34 @@ finally:
     shutil.rmtree(_tmp, ignore_errors=True)
 
 # ─────────────────────────────────────────────────────────────────────────
-print("\n── (c) test_bridge.py：SLCN_BRIDGE_SKIP_GUI=1 只跳 GUI 探针 ──")
-_bridge = REPO / "sources-win" / "tests" / "test_bridge.py"
-r = run([PY, str(_bridge)], cwd=str(REPO), timeout=300,
-        env=clean_env(SLCN_BRIDGE_SKIP_GUI="1", PYTHONPATH=str(ENGINE / "vendor")))
-_bout = r.stdout + r.stderr
-check("(c) 退出码 0、纯逻辑断言全过（失败 0 项）",
-      r.returncode == 0 and "失败 0 项（全部通过）" in _bout, f"rc={r.returncode}")
-_m = re.search(r"全部 (\d+) 项断言通过", _bout)
-check("(c) 断言数没塌（>300 项；只少了 GUI 那三条）",
-      _m is not None and int(_m.group(1)) > 300, _m.group(0) if _m else _bout[-300:])
-check("(c) (g) 显式 SKIP 且点名变量",
-      "SKIP  (g) SLCN_BRIDGE_SKIP_GUI=1" in _bout)
-check("(c) (h) 真窗口那半组显式 SKIP（跨平台夹具仍跑）",
-      "SKIP  (h) 真窗口那一步没跑（SLCN_BRIDGE_SKIP_GUI=1）" in _bout
-      and "(h) 跨平台夹具" in _bout)
-check("(c) (o) 需要 tkinter 的 import 那组显式 SKIP（静态守卫仍跑）",
-      "SKIP  (o) dirpush 纯函数断言（SLCN_BRIDGE_SKIP_GUI=1" in _bout
-      and "(o) 页面静态守卫" in _bout)
-check("(c) 真窗口专属断言一条都没跑",
-      "(g) 真开一次窗口：控件全部建成" not in _bout
-      and "(h) 默认是**摘要**" not in _bout and "(o) 当期 argv" not in _bout)
-_src = _bridge.read_text(encoding="utf-8")
-check("(c) 默认分支仍在：只认 `=1`、不设变量时照旧走 `_tk_python()`",
-      '_SKIP_GUI = os.environ.get("SLCN_BRIDGE_SKIP_GUI") == "1"' in _src
-      and "tkpy = _tk_python()" in _src)
+print("\n── (c) Flet 桥契约：engine_bridge.ENTRIES 与 engine_main 逐项一致 ──")
+# 旧 (c) 真跑 sources-win/tests/test_bridge.py（Tk 外壳的桥）；批108 删旧壳后那条路没了。
+# 等价的「分发器不漂」契约改钉静态事实源：Flet 桥的 ENTRIES 必须与 engine_main.ENTRIES
+# **逐项同序**（桥靠它决定把哪个入口转给 sidecar），且桥里仍有 sidecar 定位/启动逻辑。
+# 不 import flet（Engine 套件不依赖 GUI 运行时），只读源码 —— 漏一个入口的后果与旧壳同型：
+# 那个页在用户机器上「❌ 不认识的入口」退出 2。
+_bridge = REPO / "sources-flet" / "app" / "services" / "engine_bridge.py"
+check("(c) Flet 桥源文件在仓内", _bridge.is_file(), str(_bridge))
+_em_entries: tuple[str, ...] = ()
+try:
+    _spec_em = importlib.util.spec_from_file_location("_engine_main_c", ENGINE / "engine_main.py")
+    _em_mod = importlib.util.module_from_spec(_spec_em)
+    _spec_em.loader.exec_module(_em_mod)
+    _em_entries = tuple(_em_mod.ENTRIES)
+except Exception as _e:  # noqa: BLE001
+    print(f"FAIL  (c) 读 engine_main.ENTRIES 失败：{_e}")
+if _bridge.is_file():
+    _src = _bridge.read_text(encoding="utf-8")
+    _bm = re.search(r"ENTRIES\s*=\s*\((.*?)\)", _src, re.S)
+    _bridge_entries = tuple(re.findall(r'"([^"]+\.py)"', _bm.group(1) if _bm else ""))
+    check("(c) Flet 桥 ENTRIES 与 engine_main.ENTRIES 逐项同序"
+          "（桥/分发器两份表漂一个 = 那个页在用户机器上「不认识的入口」退出 2）",
+          bool(_bridge_entries) and _bridge_entries == _em_entries,
+          f"bridge={_bridge_entries} ／ engine_main={_em_entries}")
+    check("(c) 桥仍负责 sidecar 定位/启动（冻结 exe 是用户机器上唯一的引擎）",
+          re.search(r"def [a-z_]*(?:sidecar|engine_exe)[a-z_]*\(", _src) is not None
+          and "SLCNEngine" in _src,
+          "未找到 sidecar 定位函数或 SLCNEngine 字样")
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (d) ci.yml：3 路并行 / AUTO 守卫显式 SKIP / 旧壳下线 / Windows 轻量覆盖 / build-flet 手动 ──")

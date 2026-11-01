@@ -1,28 +1,24 @@
 # 第三方组件与归属声明
 
-本工具箱包含或复用了下列第三方作品。**发布（公开仓库 / Release）前请先读第 4 节**。
+本工具箱包含或复用了下列第三方作品。**发布（公开仓库 / Release）前请先读第 5 节**。
+本仓库自 2026-11-01（批 108）起按专有软件发布（见 [`LICENSE`](LICENSE)）；
+第三方组件各自的许可证不受影响。
 
 ---
 
-## 1. 界面骨架：`Editorialbox`（MIT）
+## 1. 现役运行时与打包依赖
 
-Windows 外壳（`sources-win/`）的 Tkinter 布局与中文交互取自 chenphilo 的
-[`Editorialbox`](https://github.com/chenphilo/Editorialbox)（本项目通过 fork
-`jeremymming-gif/WindowsToolBox` 引入）：
+| 组件 | 用途 | 许可证 |
+|---|---|---|
+| [flet](https://github.com/flet-dev/flet)（含 `flet-desktop`） | 唯一的图形外壳（`sources-flet/`） | Apache-2.0 |
+| [PyInstaller](https://pyinstaller.org/) | `flet pack` 把 Flet 应用冻结为 Windows `.exe` | GPL-2.0-or-later（含「打包非 GPL 程序」特殊例外，产物不受 GPL 传染） |
+| [pystray](https://github.com/moses-palmer/pystray) | 托盘图标/后台驻留 | LGPL-3.0 |
+| [Pillow](https://python-pillow.org/) | 图标与图片处理 | MIT-CMU |
+| [Flutter Engine](https://flutter.dev/) | `flet-desktop` 的渲染与窗口后端 | BSD-3-Clause（Flutter 类许可） |
+| [Python](https://www.python.org/) | 运行时（引擎与 Flet 壳） | PSF-2.0 |
 
-```text
-MIT License
-
-Copyright (c) 2024 chenphilo
-```
-
-- **复用的是**：标签页 + 路径输入框 + 浏览/运行按钮 + 底部日志框这套交互与中文说明文字。
-- **没有复用**：它的功能实现（`merge.py` / `outinfo.py` / `c_bibtex.py` / `compileallpdf.py` /
-  `singlecheck.py` / `charti_build_content.py` / `deletetemp.py`）——那些逻辑由本项目的
-  `Engine/` 提供，外壳一律起子进程调引擎 CLI（见 `sources-win/README.md` 的改动清单）。
-- **没有复制**它的 `icon.ico`（打包时需自备图标）。
-- mac 侧的 PDF 合并实现（`sources-mac/Core/PDFMerger.swift`）在注释里说明它是**按行为复刻**
-  PyPDF2 `PdfMerger` 的语义，不是复制其代码。
+上述包由打包/运行环境提供，许可证全文随其 wheel/发行版分发；`flet pack` 产物内也保留
+PyInstaller 的许可信息。
 
 ## 2. 随包 Python 依赖（`Engine/vendor/`）
 
@@ -42,16 +38,31 @@ Copyright (c) 2024 chenphilo
 编辑部自己的模板，**不属于第三方**；引用的中英文字体（Times New Roman、KaiTi 等）
 由用户系统提供，本项目不打包字体。
 
-## 4. 公开前的三件事（2026-10-17 复查：前两条**已办**）
+## 4. 历史归属：旧 Tk/SwiftUI 壳与 Editorialbox（仅历史版本）
 
-1. ~~本项目自己的许可证还没选~~ **已办**：仓库根已放 [`LICENSE`](LICENSE)（**MIT**，
-   与上面复用的 MIT 代码一致；第三方是 BSD-3/MIT，都兼容）。
-2. **稿件仓必须与工具仓分开**：本仓库跟踪了**未发表的作者来稿**（期号目录下 1900+ 个文件），
-   **绝不能**为了发 Release 而把整个仓库公开。拆仓方案见 `Engine/docs/ENGINE_API.md` §八
-   与 `docs/cases/62+.md` 的相关条目。
-3. **署名**：公开仓库的 README 里应保留第 1 节的 MIT 声明与上游链接。
+- 旧 Windows（Tkinter）与 macOS（SwiftUI）单壳已于 2026-11-01（批 108）**删除**；
+  历史源码仍可从 tag 取回：`git archive v1.5.0 sources-win sources-mac`，归档清单见笔记仓
+  `baselines/archive/legacy-shells-2026-11-01/`。
+- 旧 Windows 壳**曾**复用 chenphilo 的 [`Editorialbox`](https://github.com/chenphilo/Editorialbox)
+  （MIT；Copyright (c) 2024 chenphilo）的 Tkinter 布局与中文交互：标签页 + 路径输入框 +
+  浏览/运行按钮 + 底部日志框。**没有复用**其功能实现（`merge.py` / `outinfo.py` /
+  `c_bibtex.py` / `compileallpdf.py` / `singlecheck.py` / `charti_build_content.py` /
+  `deletetemp.py`），也没有复制其 `icon.ico`。当前仓库**不含**旧壳或 Editorialbox 代码。
+- v1.0.0–v1.5.0 历史版本按 **MIT License** 发布，该授权**不可撤回**；Editorialbox 的 MIT
+  归属仅适用于这些历史版本。
+- G9 文案/代码比对（批 108）结论：Flet 新壳与旧壳之间**无实质复制**（连续 ≥8 汉字或
+  ≥5 英文词相同、代码 token 近似均逐条人工复核），故不构成对旧壳/Editorialbox 文案的再使用；
+  比对证据留存于项目档案。
 
-## 5. 公式转换：OMML→MathML→LaTeX 栈（`Engine/vendor_omml/`，第四十四批②）
+## 5. 公开前的三件事
+
+1. **许可证**：仓库根 [`LICENSE`](LICENSE) 为**专有（All rights reserved，仅覆盖未来版本）**；
+   v1.0.0–v1.5.0 仍为 MIT，见第 4 节。
+2. **稿件仓必须与工具仓分开**：稿件（未发表的作者来稿）只存在于私有稿件仓，
+   **绝不能**为了发 Release 而把稿件仓公开。拆仓方案见 `Engine/docs/ENGINE_API.md` §八。
+3. **署名**：公开仓库 README 的「许可与归属」一节指向第 4 节的历史 MIT 声明与上游链接。
+
+## 6. 公式转换：OMML→MathML→LaTeX 栈（`Engine/vendor_omml/`，第四十四批②）
 
 Word 公式（OMML）的**可选**新转换后端（`docxxml.omml_to_latex(..., use_omml_stack=True)`；
 默认 `USE_OMML_STACK = False`，不改变现有产物）。源码逐字节 vendored，不装包、无新运行时：
@@ -63,9 +74,9 @@ Word 公式（OMML）的**可选**新转换后端（`docxxml.omml_to_latex(..., 
 
 - 完整许可证文本：`Engine/vendor_omml/LICENSE-omml2mathml-Apache-2.0.txt`、`LICENSE-py-mathml-to-latex-MIT.md`；归属声明 `Engine/vendor_omml/NOTICE`；来源/校验和/更新策略 `Engine/vendor_omml/SOURCES.md`。
 - **上游均不再维护**（XSL 2007 beta；py 2024-11 最后提交）→ 本项目**不追随上游更新**，行为由 `Engine/tests/test_omml_stack.py` 的 149 条真实公式 fixture 锁住；升级须同时更新 `SOURCES.md` 校验和与 fixture 断言。
-- 打包：`build.sh` / Windows 打包白名单（`tools/gen_docs.py` 的 `APP_FILES`）在**启用 OMML 栈**（默认切换）那一批需要把 `Engine/vendor_omml/` 纳入；默认关闭时 App 包不含它也能正常工作（会自动回退旧实现）。
+- 打包：`flet pack` 的打包清单（`tools/gen_docs.py` 的 `APP_FILES`）在**启用 OMML 栈**（默认切换）那一批需要把 `Engine/vendor_omml/` 纳入；默认关闭时 App 包不含它也能正常工作（会自动回退旧实现）。
 
-## 6. 外部依赖程序（条件必需）：LibreOffice（**不随包分发**）
+## 7. 外部依赖程序（条件必需）：LibreOffice（**不随包分发**）
 
 本工具箱在两类场景（对含 MathType/OLE 公式的 Word 稿属**条件必需**）会调用用户本机安装的 LibreOffice（`soffice`）：
 

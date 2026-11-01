@@ -1,6 +1,7 @@
 """引用库本地版本层（B-190 / B-203）：写库后**只**提交 `bib_db/bibliography.jsonl`。
 
-这是 `sources-win/bibdb_git.py` 与 mac `Features/BibDbGit.swift` 的 Flet 对等物，
+这是旧 Tk 壳 `sources-win/bibdb_git.py`（历史文件，2026-11-01 已删除）与 mac 历史实现
+`Features/BibDbGit.swift` 的 Flet 对等物：
 只做 git 调用与结果解析（**不 import flet**，测试与无窗口环境都能直接跑）：
 
 * `notes_root()` / `default_db()` —— 按「设置里的笔记仓 → `SLCN_NOTES` → 仓库同级

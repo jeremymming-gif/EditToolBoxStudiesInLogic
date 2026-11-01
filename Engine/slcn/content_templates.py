@@ -1,13 +1,14 @@
 r"""内置目录模板 —— **本文件由 `tools/gen_content_templates.py` 生成，不要手改**。
 
-源头：`sources-mac/Features/ContentTemplates.swift`（mac 界面的内置模板常量，
-其上游是 Windows 原版 `charti_build_content.py` 里写死的模板；中/英内置模板已于 2026-10-27 升级为 2026 年第 3 期(88) 版式，与 Windows 原版不再逐字节一致）。
+源头：`tests/fixtures/content_templates.json`（四个模板串的**真实字符**，不含任何转义；
+中/英内置模板已于 2026-10-27 升级为 2026 年第 3 期(88) 版式，其上游是 Windows 原版
+`charti_build_content.py` 里写死的模板；旧外壳退役后模板独立存在，沿革见 git 记录）。
 
 「生成目录」只在**找不到可继承的成品**时才用它（正常路径是继承上一期的
 `000 Table of Contents/Chinese Content.tex` 或 `contents.tex`）。即便如此，
-它也必须与 Swift 那份逐字节一致 —— 否则两个平台在兜底情形下会产出不同的目录。
+它也必须与夹具逐字节一致 —— 否则兜底情形下会产出不同的目录。
 
-要改模板：改 Swift 那份，然后跑
+要改模板：改 `tests/fixtures/content_templates.json`，然后跑
 `python3 tools/gen_content_templates.py`。
 """
 

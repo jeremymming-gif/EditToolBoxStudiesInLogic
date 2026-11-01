@@ -9,8 +9,8 @@
 --------------------
 - 必跑门禁**没有**证据文件 → `FAIL`（并在「缺证据」节逐条列出）。
 - 有证据但**关键字段解析不出** → `UNKNOWN`（不是 PASS）。
-- 证据表明失败（写后仍有红套件 / lint 有 error / docs 有失败项 / Swift 有 FAIL /
-  gen_docs 写失败）→ `FAIL`。
+- 证据表明失败（写后仍有红套件 / lint 有 error / docs 有失败项 / Flet 壳 pytest 有 failed /
+  flet pack 退出码非 0 / gen_docs 写失败）→ `FAIL`。
 - 写前（`*_pre`）门禁的红是「既有基线」：记 `WARN` 并在摘要里点名（不吞掉、不算通过）。
 - 可跳门禁一律列出命中规则 id；延后门禁单列（`ci_watch` 待 push 后必跑）。
 - 退出码字段兼容三种等价写法（各取**最后一个**匹配）：`EXIT=<n>` > `rc=<n>` >
@@ -34,8 +34,8 @@
 
   {"gates": {"lint": {"patterns": ["my-lint-*.log"], "kind": "lint"}}}
 
-kind 取值：`full` / `gen_docs` / `lint` / `docs` / `swift` / `corpus` / `audit` /
-`build` / `ci` / `generic`。
+kind 取值：`full` / `gen_docs` / `lint` / `docs` / `flet_pytest` / `flet_pack` /
+`corpus` / `audit` / `ci` / `generic`。
 
 证据格式约定（B-152；**门禁跑完按此落盘，`batch_accept` 才能解析**）
 ---------------------------------------------------------------
@@ -50,8 +50,9 @@ kind 取值：`full` / `gen_docs` / `lint` / `docs` / `swift` / `corpus` / `audi
    （判库未被改写；真实 bibdb lint 默认不打印这两行 → **由验收人用 `printf` 追加到日志末尾**）。
 5. `corpus_two`：两条 `shasum` 输出行（`<64 hex>  out/corpus/corpus.csv`，按出现顺序 = pass1/pass2），
    或键值行 `pass1_sha:` / `pass2_sha:` / `diff_rows:`。
-6. `build`：`cmp=28/28`、`o5=1`、`app_version=…`、`artifact_sha=…`、`engine_py_sha=…`、
-   `manifest=…`、`elapsed=Ns`。
+6. `flet_pytest`：pytest `-q` 汇总行 `78 passed, 8 skipped in 3.22s`（类别缺省即 0，
+   汇总行在才算解析成功）；`flet_pack`：`artifact_sha: <64 hex>`、`artifact_size: <字节>`、
+   `app_version: …`、`elapsed=Ns`。
 7. `ci_watch`：`gh run view … --json …` 的落盘 JSON（顶层 run 或 `{"runs": [...]}`；
    `docs` 工作流按 `workflowName`/`name` 含 `docs`/`文档` 识别），或键值行
    `ci_run_id:` / `ci_conclusion:` / `docs_run_id:` / `docs_conclusion:`。
@@ -72,7 +73,7 @@ import sys
 import tempfile
 import time
 
-TOOL_VERSION = "1.2.0"
+TOOL_VERSION = "1.3.0"
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
 MD_LINE_LIMIT = 40
 
@@ -94,10 +95,12 @@ DEFAULT_GATE_SPECS = {
                                "final_state": ["*final-state*.log", "*final_state*.log"]}},
     "lint": {"kind": "lint", "patterns": ["*lint*.log"]},
     "docs": {"kind": "docs", "patterns": ["*docs.log", "*docs-consistency*.log"]},
-    "swift": {"kind": "swift", "patterns": ["*swift*.log"]},
+    "flet_pytest": {"kind": "flet_pytest",
+                    "patterns": ["*flet-pytest*.log", "*flet_pytest*.log"]},
+    "flet_pack": {"kind": "flet_pack",
+                  "patterns": ["*flet-pack*.log", "*flet_pack*.log"]},
     "corpus_two": {"kind": "corpus", "patterns": ["*corpus*.log", "*corpus*.txt"]},
     "docx_audit": {"kind": "audit", "patterns": ["*audit*.log", "*audit*.txt"]},
-    "build": {"kind": "build", "patterns": ["*build*.log"]},
     "ci_watch": {"kind": "ci", "patterns": ["*ci*.json"]},
 }
 # 写前基线门禁：红不判 FAIL（记 WARN）；写后门禁红 = FAIL
@@ -227,14 +230,6 @@ GENERIC_FIELD_SPECS = {
         "diff_vs_notes_baseline": {"conv": "str",
                                    "patterns": [r"^diff_vs_notes_baseline\s*[:=]\s*(\S+)"]},
     },
-    "build": {
-        "cmp_28": {"conv": "str", "patterns": [r"^cmp(?:_28)?\s*[:=]\s*(\d+/\d+)"]},
-        "o5": {"conv": "int", "patterns": [r"^o5\s*[:=]\s*(\d+)"]},
-        "app_version": {"conv": "str", "patterns": [r"^app_version\s*[:=]\s*(\S+)"]},
-        "artifact_sha": {"conv": "str", "patterns": [r"^artifact_sha\s*[:=]\s*" + SHA64]},
-        "engine_py_sha": {"conv": "str", "patterns": [r"^engine_py_sha\s*[:=]\s*" + SHA64]},
-        "manifest": {"conv": "str", "patterns": [r"^manifest\s*[:=]\s*(\S+)"]},
-    },
     "ci_watch": {
         "ci_run_id": {"conv": "int", "patterns": [r"^ci_run_id\s*[:=]\s*(\d+)"]},
         "ci_conclusion": {"conv": "str", "patterns": [r"^ci_conclusion\s*[:=]\s*(\S+)"]},
@@ -320,16 +315,38 @@ def parse_docs(text: str, path: str) -> dict:
     }
 
 
-def parse_swift(text: str, path: str) -> dict:
-    pairs = re.findall(r"SUMMARY:\s*(\d+) PASS / (\d+) FAIL", text)
-    if not pairs:
-        return {"beds": None, "fail": None, "pass_total": None, "rc": _rc(text),
-                "log": os.path.basename(path)}
+def parse_flet_pytest(text: str, path: str) -> dict:
+    """Flet 壳 pytest -q（B-108）：`78 passed, 8 skipped in 3.22s`；缺省类别记 0。"""
+    out = {"passed": None, "skipped": None, "failed": None,
+           "rc": _rc(text), "log": os.path.basename(path)}
+    line = None
+    for ln in text.splitlines():
+        if re.search(r"\b\d+ (?:passed|failed|skipped)\b", ln) and \
+                re.search(r"\bin [\d.]+s", ln):
+            line = ln
+            break
+    if line is None:
+        return out
+    counts = {kind: int(n) for n, kind in
+              re.findall(r"(\d+) (passed|failed|skipped)\b", line)}
+    out["passed"] = counts.get("passed", 0)
+    out["skipped"] = counts.get("skipped", 0)
+    out["failed"] = counts.get("failed", 0)
+    out["seconds"] = _float(r"in ([\d.]+)s", line)
+    return out
+
+
+def parse_flet_pack(text: str, path: str) -> dict:
+    """flet pack（B-108）：产物 sha256、字节数、app 版本、退出码。"""
+    sha = re.search(r"^artifact_sha\s*[:=]\s*" + SHA64, text, re.M)
+    size = re.search(r"^artifact_size\s*[:=]\s*(\d+)", text, re.M)
+    ver = re.search(r"^app_version\s*[:=]\s*(\S+)", text, re.M)
     return {
-        "beds": len(pairs),
-        "pass_total": sum(int(p) for p, _ in pairs),
-        "fail": sum(int(f) for _, f in pairs),
+        "artifact_sha": sha.group(1) if sha else None,
+        "artifact_size": int(size.group(1)) if size else None,
+        "app_version": ver.group(1) if ver else None,
         "rc": _rc(text),
+        "seconds": _float(r"elapsed=([\d.]+)s", text),
         "log": os.path.basename(path),
     }
 
@@ -372,16 +389,6 @@ def parse_docx_audit(text: str, path: str, aux: dict) -> dict:
     return out
 
 
-def parse_build(text: str, path: str, aux: dict) -> dict:
-    """打包（B-152）：`cmp=28/28`、`o5=1`、`app_version`、产物 sha、`elapsed`。"""
-    spec = GENERIC_FIELD_SPECS["build"]
-    out = {"log": os.path.basename(path), "rc": _rc(text),
-           "seconds": _float(r"elapsed=([\d.]+)s", text)}
-    for field, meta in spec.items():
-        out[field] = _field_value(text, field, meta["patterns"], meta["conv"])
-    return out
-
-
 def parse_ci(text: str, path: str, aux: dict) -> dict:
     """CI 结论（B-152）：`gh run view --json` 落盘 JSON，或 `ci_run_id:`/`ci_conclusion:` 键值行。"""
     spec = GENERIC_FIELD_SPECS["ci_watch"]
@@ -416,10 +423,10 @@ PARSERS = {
     "gen_docs": parse_gen_docs,
     "lint": lambda text, path, aux: parse_lint(text, path),
     "docs": lambda text, path, aux: parse_docs(text, path),
-    "swift": lambda text, path, aux: parse_swift(text, path),
+    "flet_pytest": lambda text, path, aux: parse_flet_pytest(text, path),
+    "flet_pack": lambda text, path, aux: parse_flet_pack(text, path),
     "corpus": parse_corpus,
     "audit": parse_docx_audit,
-    "build": parse_build,
     "ci": parse_ci,
     "generic": lambda text, path, aux: {"log": os.path.basename(path), "rc": _rc(text)},
 }
@@ -442,9 +449,9 @@ FIELD_ALIASES = {
     "db_sha_before": "db_sha_before",
     "db_sha_after": "db_sha_after",
     "failures": "failures",
-    "beds": "beds",
-    "fail": "fail",
-    "pass_total": "pass_total",
+    "passed": "passed",
+    "skipped": "skipped",
+    "failed": "failed",
     # generic 门禁（B-152）：同名直通 + gates.json/夹具里的历史别名
     "sha_pass1": "sha_pass1",
     "sha_pass2": "sha_pass2",
@@ -454,13 +461,9 @@ FIELD_ALIASES = {
     "diff_vs_notes_baseline": "diff_vs_notes_baseline",
     "success": "success",
     "csv_sha": "csv_sha",
-    "cmp_28": "cmp_28",
-    "cmp": "cmp_28",
-    "o5": "o5",
     "app_version": "app_version",
     "artifact_sha": "artifact_sha",
-    "engine_py_sha": "engine_py_sha",
-    "manifest": "manifest",
+    "artifact_size": "artifact_size",
     "ci_run_id": "ci_run_id",
     "ci_conclusion": "ci_conclusion",
     "docs_run_id": "docs_run_id",
@@ -515,13 +518,13 @@ def judge_gate(gate: dict, fields: dict, missing: list) -> dict:
         if rc is not None and rc != 0:
             verdict = FAIL
             notes.append(f"文档看门狗退出码 {rc}")
-    if gid == "swift":
-        if fields.get("fail"):
+    if gid == "flet_pytest":
+        if fields.get("failed"):
             verdict = FAIL
-            notes.append(f"Swift FAIL {fields['fail']}")
+            notes.append(f"Flet 壳 pytest 失败 {fields['failed']} 项")
         if rc is not None and rc != 0:
             verdict = FAIL
-            notes.append(f"Swift 退出码 {rc}")
+            notes.append(f"Flet 壳 pytest 退出码 {rc}")
     # ---- generic 门禁（B-152）：最小可判证据，仍「绝不静默 PASS」 ----
     if gid == "corpus_two":
         p1, p2 = fields.get("sha_pass1"), fields.get("sha_pass2")
@@ -542,18 +545,13 @@ def judge_gate(gate: dict, fields: dict, missing: list) -> dict:
         if rc is not None and rc != 0:
             verdict = FAIL
             notes.append(f"docx_audit 退出码 {rc}")
-    if gid == "build":
-        cmp_val = fields.get("cmp_28")
-        if cmp_val is not None and str(cmp_val) != "28/28":
-            verdict = FAIL
-            notes.append(f"包内 cmp {cmp_val} ≠ 28/28")
-        o5 = fields.get("o5")
-        if o5 is not None and o5 != 1:
-            verdict = FAIL
-            notes.append(f"o5={o5} ≠ 1")
+    if gid == "flet_pack":
         if rc is not None and rc != 0:
             verdict = FAIL
-            notes.append(f"build 退出码 {rc}")
+            notes.append(f"flet pack 退出码 {rc}")
+        if fields.get("artifact_sha") and fields.get("artifact_size") == 0:
+            verdict = FAIL
+            notes.append("flet pack 产物大小为 0")
     if gid == "ci_watch":
         conclusion = fields.get("ci_conclusion")
         if conclusion is not None and str(conclusion) != "success":
@@ -723,9 +721,9 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
                    f"{_fmt(f.get('records'))} 条")
         elif gid == "docs":
             key = f"失败 {_fmt(f.get('failures'))} 项 / rc {_fmt(f.get('rc'))}"
-        elif gid == "swift":
-            key = (f"{_fmt(f.get('beds'))} 台 / {_fmt(f.get('pass_total'))} PASS / "
-                   f"{_fmt(f.get('fail'))} FAIL")
+        elif gid == "flet_pytest":
+            key = (f"{_fmt(f.get('passed'))} passed / {_fmt(f.get('skipped'))} skipped / "
+                   f"{_fmt(f.get('failed'))} failed / rc {_fmt(f.get('rc'))}")
         elif gid == "corpus_two":
             same = f.get("sha_pass1") is not None and f.get("sha_pass1") == f.get("sha_pass2")
             key = (f"两遍 sha {'一致' if same else '不一致'}（{_fmt(f.get('sha_pass1'))}） / "
@@ -733,9 +731,10 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
         elif gid == "docx_audit":
             key = (f"成功 {_fmt(f.get('success'))} / 失败 {_fmt(f.get('fail'))} / "
                    f"csv {_fmt(f.get('csv_sha'))}")
-        elif gid == "build":
-            key = (f"cmp {_fmt(f.get('cmp_28'))} / o5 {_fmt(f.get('o5'))} / "
-                   f"{_fmt(f.get('app_version'))}")
+        elif gid == "flet_pack":
+            sha = _fmt(f.get("artifact_sha"))
+            key = (f"rc {_fmt(f.get('rc'))} / sha {sha[:12]} / "
+                   f"{_fmt(f.get('artifact_size'))}B / v{_fmt(f.get('app_version'))}")
         elif gid == "ci_watch":
             key = f"run {_fmt(f.get('ci_run_id'))} / {_fmt(f.get('ci_conclusion'))}"
         else:
@@ -772,7 +771,8 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
     by_id = {r["id"]: r for r in doc["gates"]}
     for gid, fields in (("full_post", ("suites", "red")), ("gen_docs_write",
                                                            ("auto_suites", "auto_assertions")),
-                        ("lint", ("errors", "warnings")), ("swift", ("beds", "pass_total"))):
+                        ("lint", ("errors", "warnings")),
+                        ("flet_pytest", ("passed", "failed"))):
         row = by_id.get(gid)
         if not row:
             continue
@@ -784,7 +784,8 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
                 continue
             last_key = {"suites": "suites", "red": "red", "auto_suites": "auto_suites",
                         "auto_assertions": "auto_assertions", "errors": "errors",
-                        "warnings": "warnings", "beds": "beds", "pass_total": "pass_total"}[key]
+                        "warnings": "warnings", "passed": "passed",
+                        "failed": "failed"}[key]
             parts.append(f"{key} {_fmt(f[key])}{_delta(f[key], last.get(last_key))}")
         if parts:
             extra = ""
@@ -798,6 +799,12 @@ def render_md(doc: dict, batch: int, plan_path: str, ev_dir: str, kpi: dict) -> 
     if docs_row:
         lines.append(f"- docs：失败 {_fmt(docs_row['fields'].get('failures'))} 项"
                      f"（证据 {docs_row['evidence']}）")
+    pack_row = by_id.get("flet_pack")
+    if pack_row:
+        pf = pack_row["fields"]
+        lines.append(f"- flet_pack：rc {_fmt(pf.get('rc'))} / "
+                     f"产物 {_fmt(pf.get('artifact_size'))}B / 版本 {_fmt(pf.get('app_version'))}"
+                     f"（证据 {pack_row['evidence']}）")
     lines.append("")
     lines.append("## 与 KPI 对照")
     if not kpi:
@@ -853,16 +860,6 @@ def kpi_cross_check(kpi_doc, batch: int, doc: dict) -> dict:
     if audit_row:
         cmp("audit_csv_sha", row.get("audit_csv_sha"),
             (audit_row.get("fields") or {}).get("csv_sha"))
-    skipped_ids = [r["id"] for r in doc["skipped"]]
-    build_kpi = row.get("build_count")
-    if isinstance(build_kpi, int):
-        if build_kpi == 0 and "build" in skipped_ids:
-            checks.append("build_count 0（build 跳过）✓")
-        elif build_kpi == 1 and "build" not in skipped_ids:
-            checks.append("build_count 1（build 已跑）✓")
-        else:
-            checks.append(f"build_count {build_kpi} 与 build 状态（{'跳过' if 'build' in skipped_ids else '必跑'}）不一致")
-            status = "warn"
     return {"batch": batch, "status": status, "checks": checks,
             "source": os.path.basename(str(kpi_doc.get("__path__") or "batch-kpi.json"))}
 
@@ -913,17 +910,19 @@ def run_self_test() -> int:
 
     # cwd 夹具（B-149）：与真实 gate_plan 同口径，仅呈现、不参与判据
     PLAN_CWD = {"full_pre": "engine", "full_post": "engine", "gen_docs_write": "engine",
-                "lint": "public_root", "docs": "engine", "swift": "public_root",
-                "corpus_two": "engine", "docx_audit": "engine", "build": "public_root",
+                "lint": "public_root", "docs": "engine", "flet_pytest": "public_root",
+                "flet_pack": "public_root",
+                "corpus_two": "engine", "docx_audit": "engine",
                 "ci_watch": "public_root"}
 
     def run(td, tag, *, omit=(), post=(107, 0, 128.0, 0), pre=(106, 2, 131.5, 2),
-            lint=(0, 18, 7051, 0), swift=(fixtures.DEFAULT_SWIFT_BEDS, 0, 0),
+            lint=(0, 18, 7051, 0), flet_pytest=(78, 8, 0, 3.22, 0), flet_pack=None,
             plan_rows=None, rc_style="exit", with_cwd=False, generic=False,
             overrides=None, gen_docs_noop=False):
         root = os.path.join(td, tag)
         ev = os.path.join(root, "evidence")
-        fixtures.build_evidence_dir(ev, omit=omit, pre=pre, post=post, lint=lint, swift=swift,
+        fixtures.build_evidence_dir(ev, omit=omit, pre=pre, post=post, lint=lint,
+                                    flet_pytest=flet_pytest, flet_pack=flet_pack,
                                     rc_style=rc_style, generic=generic,
                                     gen_docs_noop=gen_docs_noop)
         for gid, val in (overrides or {}).items():
@@ -1015,7 +1014,7 @@ def run_self_test() -> int:
     def t_skip_rules(td):
         _, doc, md, _ = run(td, "skip")
         ids = [r["id"] for r in doc["skipped"]]
-        if ids != ["corpus_two", "docx_audit", "build"]:
+        if ids != ["corpus_two", "docx_audit"]:
             return False, f"跳过项 {ids}"
         if "only_tools_docs_gui_changed" not in md or "no_parse_change" not in md:
             return False, "accept.md 未列规则 id"
@@ -1114,7 +1113,7 @@ def run_self_test() -> int:
         return True, f"缺 cwd → cwd 列 — + WARN；判定仍 {doc['verdict']}（rc 0）"
 
     # ---- generic 门禁解析器（B-152） ----
-    GENERIC_IDS = ("corpus_two", "docx_audit", "build", "ci_watch")
+    GENERIC_IDS = ("corpus_two", "docx_audit", "ci_watch")
     GENERIC_REQUIRED = {gid: "required" for gid in GENERIC_IDS}
 
     def t_generic_parsed(td):
@@ -1123,7 +1122,6 @@ def run_self_test() -> int:
         rows = {r["id"]: r for r in doc["gates"] if r["id"] in GENERIC_IDS}
         want = {"corpus_two": ("sha_pass1", "sha_pass2", "diff_rows"),
                 "docx_audit": ("success", "fail", "csv_sha"),
-                "build": ("cmp_28", "o5", "app_version"),
                 "ci_watch": ("ci_run_id", "ci_conclusion")}
         for gid, keys in want.items():
             f = rows[gid]["fields"]
@@ -1136,9 +1134,8 @@ def run_self_test() -> int:
             return False, "accept.md 仍显示「（无解析器）」"
         if rows["corpus_two"]["fields"].get("equal") is not True:
             return False, "corpus 的 equal 字段未判 True"
-        return True, ("4 门 generic 均解析且 PASS（corpus "
-                      f"{rows['corpus_two']['fields']['sha_pass1'][:8]}… / build cmp "
-                      f"{rows['build']['fields']['cmp_28']} / ci run "
+        return True, ("3 门 generic 均解析且 PASS（corpus "
+                      f"{rows['corpus_two']['fields']['sha_pass1'][:8]}… / ci run "
                       f"{rows['ci_watch']['fields']['ci_run_id']}）")
 
     def t_corpus_sha_mismatch_fail(td):
@@ -1152,20 +1149,19 @@ def run_self_test() -> int:
         return True, "两遍 sha 不一致 → FAIL（exit 1）"
 
     def t_generic_thresholds_fail(td):
-        """docx fail>0 / build cmp≠28/28、o5≠1 / ci 结论非 success → FAIL。"""
+        """docx fail>0 / ci 结论非 success → FAIL。"""
         rc, doc, md, _ = run(td, "generic-red", generic=True, plan_rows=GENERIC_REQUIRED,
                              overrides={"docx_audit": fixtures.audit_log(fail=2),
-                                        "build": fixtures.build_log(cmp="27/28", o5=0),
                                         "ci_watch": fixtures.ci_watch_json(
                                             conclusion="failure")})
         verdicts = {r["id"]: r["verdict"] for r in doc["gates"] if r["id"] in GENERIC_IDS}
-        bad = [gid for gid in ("docx_audit", "build", "ci_watch")
+        bad = [gid for gid in ("docx_audit", "ci_watch")
                if verdicts.get(gid) != FAIL]
         if rc != 1 or bad:
             return False, f"阈值未判 FAIL：{verdicts} / rc {rc}"
-        if "cmp 27/28" not in md:
-            return False, "accept.md 未点名 build 的 cmp 字段"
-        return True, "docx fail / build cmp+o5 / ci 非 success → 全 FAIL（exit 1）"
+        if "失败 2 篇" not in md:
+            return False, "accept.md 未点名 docx_audit 失败篇数"
+        return True, "docx fail>0 / ci 非 success → 全 FAIL（exit 1）"
 
     def t_generic_missing_unknown(td):
         """有证据文件但字段取不到 → 仍判 UNKNOWN（不因加了解析器就放宽）。"""
@@ -1188,6 +1184,40 @@ def run_self_test() -> int:
         if row["verdict"] != PASS or rc != 0 or f.get("equal") is not True:
             return False, f"键值形态未解析（{row['verdict']} / rc {rc} / {f}）"
         return True, "键值行形态（pass1_sha:/pass2_sha:）→ PASS"
+
+    def t_flet_pytest_fail(td):
+        """Flet 壳 pytest 有 failed / rc≠0 → FAIL。"""
+        rc, doc, md, _ = run(td, "flet-red",
+                             overrides={"flet_pytest": fixtures.flet_pytest_log(failed=2)})
+        row = next(r for r in doc["gates"] if r["id"] == "flet_pytest")
+        if row["verdict"] != FAIL or rc != 1:
+            return False, f"pytest failed=2 未判 FAIL（{row['verdict']} / rc {rc}）"
+        if row["fields"].get("failed") != 2 or "2 failed" not in md:
+            return False, f"failed 字段/md 未点名（{row['fields'].get('failed')}）"
+        return True, "Flet 壳 pytest failed 2 → FAIL（exit 1）且点名"
+
+    def t_flet_pack_parsed(td):
+        """flet pack：sha256 / 字节数 / 版本进 accept.md 与 json。"""
+        rc, doc, md, _ = run(td, "pack-ok")
+        row = next(r for r in doc["gates"] if r["id"] == "flet_pack")
+        f = row["fields"]
+        if rc != 0 or row["verdict"] != PASS:
+            return False, f"flet_pack 未判 PASS（{row['verdict']} / rc {rc}）"
+        if f.get("artifact_sha") != fixtures.FIXTURE_ARTIFACT_SHA \
+                or f.get("artifact_size") != 68420345 or f.get("app_version") != "1.5.0":
+            return False, f"字段未解析：{f}"
+        if "68420345B" not in md or "sha " not in md:
+            return False, "accept.md 未点名产物 sha/大小"
+        return True, "flet pack 解析 sha/大小/版本 → PASS，md 点名"
+
+    def t_flet_pack_fail(td):
+        """flet pack 退出码非 0 → FAIL。"""
+        rc, doc, _, _ = run(td, "pack-red",
+                            overrides={"flet_pack": fixtures.flet_pack_log(exit_code=1)})
+        row = next(r for r in doc["gates"] if r["id"] == "flet_pack")
+        if row["verdict"] != FAIL or rc != 1:
+            return False, f"pack rc=1 未判 FAIL（{row['verdict']} / rc {rc}）"
+        return True, "flet pack 退出码 1 → FAIL（exit 1）"
 
     def t_gen_docs_noop_ok(td):
         """B-159 幂等写：clean 树「AUTO 块已是最新」→ 0 diff 属预期，不得判 FAIL。"""
@@ -1235,6 +1265,9 @@ def run_self_test() -> int:
         check("generic_thresholds_fail", lambda: t_generic_thresholds_fail(td))
         check("generic_missing_unknown", lambda: t_generic_missing_unknown(td))
         check("corpus_kv_form", lambda: t_corpus_kv_form(td))
+        check("flet_pytest_fail", lambda: t_flet_pytest_fail(td))
+        check("flet_pack_parsed", lambda: t_flet_pack_parsed(td))
+        check("flet_pack_fail", lambda: t_flet_pack_fail(td))
         check("gen_docs_noop_ok", lambda: t_gen_docs_noop_ok(td))
         check("ci_no_docs_run", lambda: t_ci_no_docs_run(td))
         check("determinism", lambda: t_determinism(td))

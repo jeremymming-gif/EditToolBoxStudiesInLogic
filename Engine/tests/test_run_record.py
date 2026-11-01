@@ -5,11 +5,12 @@
   ① 临时目录生成 manifest、**字段齐全**（9 个必需字段 + label/meta）；
   ② 二次运行**不覆盖**（文件名带时间戳，先前的文件逐字节不变）；
   ③ **失败退出仍写 manifest**（exit_code 透传）；
-  ④ `--record-only`（build.sh 末尾用）按给定事实写；
+  ④ `--record-only`（构建收尾用；旧 `build.sh` 已删，模式不变）按给定事实写；
   ⑤ `--artifact` 的 sha256 与文件内容一致；artifact 不存在 → null；
   ⑥ `engine_py_sha256` 确定性（同代码 = 同指纹、64 位 hex）；
   ⑦ `--tee` 日志落盘、`--meta k=v` 透传、原子写无残留 `.tmp`。
-  ⑧ build.sh「源码树静默快照」：按标记抽出两个函数在 /tmp 夹具上验证（确定性 /
+  ⑧ 源码树静默快照（`Engine/tools/source_tree_sha.py`，旧 `build.sh` 逻辑的 Python 迁移）：
+     在 /tmp 夹具上验证（确定性 /
      源码改动 → changed=1 + 明示警告 / out、__pycache__、*.pyc 等产物改动不误报），
      并锁住 snapshot 四字段经既有 `--meta` 通道原样落盘的向后兼容契约。
 
@@ -132,19 +133,19 @@ try:
     check("③ 失败 manifest 仍带 purpose（verify-build）", mf.get("purpose") == "verify-build",
           mf.get("purpose"))
 
-    # ── ④ record-only（build.sh 末尾用）─────────────────────────────────
+    # ── ④ record-only（构建收尾用；旧 build.sh 已删）─────────────────────
     d3 = os.path.join(_TMP, "rec")
     started = (datetime.now() - timedelta(seconds=10)).isoformat(timespec="seconds")
     precomputed_sha = "a" * 64
     rc, out, err = run_rr(["--record-only", "--label", "unit-rec", "--out-dir", d3,
-                           "--started-at", started, "--command", "bash build.sh",
+                           "--started-at", started, "--command", "build_win_sidecar.ps1",
                            "--exit-code", "7", "--engine-sha", precomputed_sha,
                            "--purpose", "real-build", "--meta", "app_version=1.2.1"])
     ms = manifests(d3)
     mr = load(ms[0]) if ms else {}
     check("④ record-only 成功且不执行命令", rc == 0 and len(ms) == 1, f"rc={rc}")
     check("④ record-only 字段正确（command/exit_code=7/duration≥9s）",
-          mr.get("command") == "bash build.sh" and mr.get("exit_code") == 7
+          mr.get("command") == "build_win_sidecar.ps1" and mr.get("exit_code") == 7
           and float(mr.get("duration_s", 0)) >= 9, {k: mr.get(k) for k in ("command", "exit_code", "duration_s")})
     check("④ record-only meta 透传", (mr.get("meta") or {}).get("app_version") == "1.2.1", mr.get("meta"))
     check("④ --engine-sha（开始时算好的指纹）原样写入", mr.get("engine_py_sha256") == precomputed_sha,
@@ -152,7 +153,7 @@ try:
     check("④ record-only purpose（real-build）", mr.get("purpose") == "real-build", mr.get("purpose"))
     # 真跑 / 验证跑可机读区分：同目录里再来一条 verify-build 的**失败**构建
     rc, _, _ = run_rr(["--record-only", "--label", "unit-rec", "--out-dir", d3,
-                       "--started-at", started, "--command", "bash build.sh",
+                       "--started-at", started, "--command", "build_win_sidecar.ps1",
                        "--exit-code", "1", "--purpose", "verify-build",
                        "--meta", "failed=true"])
     ms = manifests(d3)
@@ -197,33 +198,14 @@ try:
           bool(path) and all(k in ml for k in REQUIRED) and ml.get("meta", {}).get("mode") == "check",
           path)
 
-    # ── ⑧ build.sh 源码树静默快照：函数级受控验证 + snapshot meta 契约 ─────
-    # build.sh 在构建开始/结束各算一次源码树 sha（覆盖构建输入，排除 out/__pycache__ 等产物），
-    # 不一致 → 明示警告 + manifest 记 source_tree_changed=1。这里按 build.sh 内的标记抽取
-    # 两个函数，在 /tmp 小夹具上验证：确定性、改动源码触发、改动产物不误报；并锁住 build.sh
-    # 依赖的 `--meta k=v` 透传契约（快照字段只追加，不改 run_record.py 的字段校验）。
-    build_sh = os.path.join(_REPO, "build.sh")
-    block8 = ""
-    try:
-        with open(build_sh, encoding="utf-8") as fh:
-            blines = fh.read().splitlines()
-        i0 = next(i for i, s in enumerate(blines)
-                  if s.startswith("# >>> SOURCE-TREE-SNAPSHOT-BEGIN"))
-        i1 = next(i for i, s in enumerate(blines)
-                  if s.startswith("# <<< SOURCE-TREE-SNAPSHOT-END"))
-        block8 = "\n".join(blines[i0 + 1:i1])
-    except (OSError, StopIteration):
-        block8 = ""
-    check("⑧ build.sh 可抽取源码树快照函数（标记块存在）",
-          bool(block8) and "_source_tree_sha()" in block8, f"block={len(block8)}B")
-    bash_usable = False
-    _bash = shutil.which("bash")
-    if _bash:
-        try:
-            bash_usable = subprocess.run([_bash, "-c", "exit 0"], capture_output=True,
-                                         timeout=30).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            bash_usable = False
+    # ── ⑧ 源码树静默快照（v1.5.0 build.sh 的 Python 迁移）：受控夹具验证 + snapshot meta 契约 ──
+    # 旧 shell 版从 build.sh 标记块抽两个函数跑 bash；批108 删除 build.sh 后，逻辑迁到
+    # Engine/tools/source_tree_sha.py（sha 语义等价，见该文件 docstring）。这里在 /tmp 小夹具上
+    # 验证：确定性、改动产物不误报、改动源码触发 changed=1 + 明示警告；并锁住 `--meta k=v`
+    # 透传契约（快照字段只追加，不改 run_record.py 的字段校验）。
+    srctree = os.path.join(_REPO, "Engine", "tools", "source_tree_sha.py")
+    check("⑧ 源码树快照工具存在（旧 build.sh 逻辑已迁移到 Engine/tools/source_tree_sha.py）",
+          os.path.isfile(srctree), srctree)
     fx = os.path.join(_TMP, "srctree-fixture")
     for rel in ("build.sh", "Engine/a.py", "sources-mac/A.swift", "sources-win/x.py",
                 "编辑笔记/模板文件/t.tex", "Resources/i.icns",
@@ -234,50 +216,45 @@ try:
         os.makedirs(os.path.dirname(p) or fx, exist_ok=True)
         with open(p, "w", encoding="utf-8") as fh:
             fh.write("payload\n")
-    probe = os.path.join(_TMP, "srctree_probe.sh")
-    with open(probe, "w", encoding="utf-8") as fh:
-        fh.write("#!/bin/bash\nset -euo pipefail\n" + block8 + """
-fx="$1"
-_source_tree_sha "$fx"; s1="$SOURCE_TREE_SHA_LAST"; n="$SOURCE_TREE_FILE_COUNT"
-_source_tree_sha "$fx"; s2="$SOURCE_TREE_SHA_LAST"
-echo "DET=$([ "$s1" = "$s2" ] && echo 1 || echo 0)"
-echo "FILES=$n"
-# 产物 / 非输入改动：out/、__pycache__（*.pyc）、Engine/.DS_Store、非 .swift —— 都不该改变 sha
-printf 'y\\n' >> "$fx/Engine/out/generated.py"
-printf 'w\\n' >> "$fx/Engine/__pycache__/old.pyc"
-printf 'v\\n' >> "$fx/sources-win/__pycache__/bridge.pyc"
-printf 'u\\n' >> "$fx/sources-mac/README.md"
-_source_tree_sha "$fx"; s3="$SOURCE_TREE_SHA_LAST"
-echo "EXCL_SAME=$([ "$s1" = "$s3" ] && echo 1 || echo 0)"
-# 真源码改动 → 前后不一致 → changed=1 + 明示警告
-printf 'x\\n' >> "$fx/Engine/a.py"
-_source_tree_check "$fx" "$s1" 2>"$fx/warn.txt"
-echo "MUT_CHANGED=$SOURCE_TREE_CHANGED"
-grep -q '构建期间源码被修改（写手未静默）：source_tree changed' "$fx/warn.txt" \
-  && echo "WARN_HIT=1" || echo "WARN_HIT=0"
-""")
-    if not bash_usable:
-        skip("⑧ build.sh 源码树快照三查（确定性/产物排除/源码改动）",
-             "本机无可用 bash（Windows 的 bash 可能是 WSL 存根；build.sh 只在 macOS/Linux 跑）")
-    else:
-        r8 = subprocess.run([_bash, probe, fx], capture_output=True, text=True,
-                            encoding="utf-8", errors="replace", timeout=120)
-        v8 = {}
-        for line in (r8.stdout or "").splitlines():
-            if "=" in line:
-                k, val = line.split("=", 1)
-                v8[k] = val
+
+    def _snap(*extra: str):
+        r = subprocess.run([sys.executable, srctree, "--root", fx, "--json", *extra],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120)
+        try:
+            payload = json.loads(r.stdout) if r.returncode == 0 else {}
+        except ValueError:
+            payload = {}
+        return r, payload
+
+    if os.path.isfile(srctree):
+        r1, j1 = _snap()
+        r2, j2 = _snap()
         check("⑧ 快照确定性：同态两次同 sha、夹具恰 6 个输入文件",
-              r8.returncode == 0 and v8.get("DET") == "1" and v8.get("FILES") == "6",
-              {"rc": r8.returncode, "out": (r8.stdout or "")[-200:], "err": (r8.stderr or "")[-200:]})
+              r1.returncode == 0 and j1.get("sha") not in (None, "", "unknown")
+              and j1.get("sha") == j2.get("sha") and j1.get("files") == 6,
+              {"sha": str(j1.get("sha"))[:16], "files": j1.get("files"),
+               "err": (r1.stderr or "")[-160:]})
+        # 产物 / 非输入改动：out/、__pycache__（*.pyc）、Engine/.DS_Store、非 .swift —— 都不该改变 sha
+        for rel in ("Engine/out/generated.py", "Engine/__pycache__/old.pyc",
+                    "sources-win/__pycache__/bridge.pyc", "sources-mac/README.md"):
+            with open(os.path.join(fx, rel), "a", encoding="utf-8") as fh:
+                fh.write("y\n")
+        _r3, j3 = _snap()
         check("⑧ 产物/非输入改动不改变 sha（out/__pycache__/*.pyc/.DS_Store/非 .swift 均排除）",
-              v8.get("EXCL_SAME") == "1", v8.get("EXCL_SAME"))
+              j3.get("sha") == j1.get("sha"), str(j3.get("sha"))[:16])
+        # 真源码改动 → 前后不一致 → changed=1 + 明示警告（退出码仍为 0，快照不改变构建判定）
+        with open(os.path.join(fx, "Engine/a.py"), "a", encoding="utf-8") as fh:
+            fh.write("x\n")
+        r4, j4 = _snap("--check-against", str(j1.get("sha")))
+        warn_hit = "构建期间源码被修改（写手未静默）：source_tree changed" in (r4.stderr or "")
         check("⑧ 源码改动 → source_tree_changed=1 且警告文本命中",
-              v8.get("MUT_CHANGED") == "1" and v8.get("WARN_HIT") == "1",
-              {k: v8.get(k) for k in ("MUT_CHANGED", "WARN_HIT")})
+              r4.returncode == 0 and j4.get("changed") == 1 and warn_hit,
+              {"rc": r4.returncode, "changed": j4.get("changed"), "warn": warn_hit})
+
     d6 = os.path.join(_TMP, "srctree-meta")
     rc6, _, _ = run_rr(["--record-only", "--label", "unit-srctree", "--out-dir", d6,
-                        "--started-at", started, "--command", "bash build.sh",
+                        "--started-at", started, "--command", "build_win_sidecar.ps1",
                         "--exit-code", "0", "--engine-sha", precomputed_sha,
                         "--purpose", "verify-build",
                         "--meta", "source_tree_sha_start=" + "b" * 64,

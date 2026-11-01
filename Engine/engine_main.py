@@ -11,17 +11,18 @@
     SLCNEngine.exe --version
 
 **为什么要它**：Windows 上不该要求编辑先装 Python。把十三个入口冻成一个
-`SLCNEngine.exe`（PyInstaller `--onefile`），Tkinter 外壳直接调这个 exe
-（见 `sources-win/engine.py: frozen_engine_exe()`），用户机器上零依赖。
+`SLCNEngine.exe`（PyInstaller `--onefile`），Flet 外壳直接调这个 exe
+（见 `sources-flet/app/services/engine_bridge.py`），用户机器上零依赖。
 
 **为什么不是十三个 exe**：冻结一次要几十 MB，十三个 exe 就是十三份运行时。
 
-⚠️ **`ENTRIES` 必须与外壳的 `sources-win/engine.py: ENTRIES` 逐项一致**，而且
-`build-win.ps1` 的 `--hidden-import` 与自检都要按它逐项走。2026-10-17 实测：
-这张表停留在"三个入口"（89 条时的规模），而外壳已经长到 8 个入口 ——
-于是**发布的 Windows 包里 9 个标签页有 5 个直接失败**（「❌ 不认识的入口」退出 2），
-而桥接测试那句"打包 dispatcher 认这几个"只比了外壳自己的表（**假保证**）。
-配对守卫在 `sources-win/tests/test_bridge.py` (b) 组，打包自检在 `build-win.ps1`。
+⚠️ **`ENTRIES` 必须与 Flet 桥的 `sources-flet/app/services/engine_bridge.py: ENTRIES` 逐项一致**，
+而且 `Engine/tools/build_win_sidecar.ps1` 的 `$Entries`、`--hidden-import` 与自检都要按它逐项走。
+2026-10-17 实测（历史，旧 Tk 外壳时期）：这张表停留在"三个入口"（89 条时的规模），
+而外壳已经长到 8 个入口 —— 于是**发布的 Windows 包里 9 个标签页有 5 个直接失败**
+（「❌ 不认识的入口」退出 2），而桥接测试那句"打包 dispatcher 认这几个"只比了外壳
+自己的表（**假保证**）。配对守卫现在在 `Engine/tests/test_platform.py` (g) 与
+`Engine/tests/test_b309_gate_speedup.py` (c)，打包自检在 `build_win_sidecar.ps1`。
 """
 
 from __future__ import annotations
@@ -34,15 +35,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 #: 允许通过本 exe 调用的入口（键 = 命令行里写的名字）。
-#: 顺序与 `sources-win/engine.py: ENTRIES` 相同 —— 那条一致性由测试守着，别只改一边。
-#: 第 132 条加了 `bibdb.py`（引用库）：mac 包与 Windows 包共用同一份 CLI，
-#: Windows「引用库」5 页（库概况/查库/入藏/待裁决/设置）全靠它。
+#: 顺序与 `sources-flet/app/services/engine_bridge.py: ENTRIES` 相同 —— 那条一致性由测试守着，别只改一边。
+#: 第 132 条加了 `bibdb.py`（引用库）：两条 shell 线共用同一份 CLI，
+#: 「引用库」页（库概况/查库/入藏/待裁决/设置）全靠它。
 #: B-283 在**末尾**加了 `envcheck.py`（首次运行环境自检）—— 前 10 项顺序不许动，
 #: 「设置」页的「环境检查」按钮与首跑自检都走这一条。
-#: B-285b 继续在**末尾**加 `diagnose.py`（失败诊断）—— 前 11 项顺序不动；两个外壳的
-#: 诊断卡都通过这一条调用（旧引擎没有这一项时外壳回退「退出码 + 日志尾部」，不阻断）。
-#: B-289 再在**末尾**加 `dirpush.py`（目录摘要推送）—— 前 12 项顺序不动；Windows 侧
-#: 「目录摘要推送」页与 mac 走同一条引擎 CLI（判据全在 `Engine/dirpush.py`）。
+#: B-285b 继续在**末尾**加 `diagnose.py`（失败诊断）—— 前 11 项顺序不动；外壳的
+#: 诊断卡通过这一条调用（旧引擎没有这一项时外壳回退「退出码 + 日志尾部」，不阻断）。
+#: B-289 再在**末尾**加 `dirpush.py`（目录摘要推送）—— 前 12 项顺序不动；
+#: 「目录摘要推送」页走同一条引擎 CLI（判据全在 `Engine/dirpush.py`）。
 ENTRIES = ("convert.py", "checkbib.py", "mergepdf.py",
            "cleantemp.py", "compileall.py", "proofcheck.py",
            "infocheck.py", "toc.py", "publish.py", "bibdb.py",

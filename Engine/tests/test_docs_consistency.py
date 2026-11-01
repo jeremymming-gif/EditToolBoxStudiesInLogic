@@ -224,11 +224,10 @@ if _DOCS_SITE.is_dir():
         if not any(part in _DOCS_EXCLUDE for part in p.parts)
     )
 PREFIXES = ("Engine/", "slcn/", "tools/", "tests/", "docs/", "编辑笔记/",
-            # 两个外壳的目录也纳入：否则文档里写 `sources-win/tests/…` 时，
-            # 左边界规则会把中间那段 `tests/…` 拦掉（含 `/` 前缀），**等于没人检查**
-            # （2026-10-16 发现：`AGENTS.md` 里一条过期路径就是这么漏过去的）。
-            "sources-mac/", "sources-win/")
-# ⚠️ **左边界**不能少（`(?<![A-Za-z0-9_/])`）：像 `sources-win/tests/test_bridge.py`
+            # 旧 Tk/SwiftUI 外壳（sources-win/、sources-mac/）已于 2026-11-01 批 108 删除：
+            # 文档里只会以「历史/已删除」句出现，不再作为仓库路径检查（见 EXEMPT_WORDS）。
+            "sources-flet/")
+# ⚠️ **左边界**不能少（`(?<![A-Za-z0-9_/])`）：像 `sources-flet/tests/…`
 #    这样的路径里含 `tests/`，没有左边界时正则会把中间那段当成独立引用，
 #    再按 `Engine/tests/…` 去解析 → 报「路径不存在」的假失败（2026-10-15 实测）。
 TOKEN = re.compile(r"(?<![A-Za-z0-9_/])(?:" + "|".join(re.escape(x) for x in PREFIXES) + r")[^\s`（）()「」【】,，。；;：:｜|]+")

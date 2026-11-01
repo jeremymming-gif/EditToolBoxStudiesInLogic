@@ -10,7 +10,7 @@ Windows（onefile exe + 同目录 sidecar）：
 
 ```
 编辑部工具箱.exe         # flet pack 产物
-SLCNEngine.exe             # 引擎 sidecar（sources-win/build-win.ps1 冻结）
+SLCNEngine.exe             # 引擎 sidecar（由 Engine/tools/build_win_sidecar.ps1 生成）
 FIRST-OPEN-Windows.txt
 sha256.txt
 → EditToolBox-<Engine版本>-Windows-x64.zip
@@ -41,8 +41,8 @@ sha256.txt
 ## 本地复刻（Windows）
 
 ```powershell
-# 1) 引擎 sidecar（复用现有脚本；会顺带构建 Tk 壳并自检，忽略即可）
-pwsh -ExecutionPolicy Bypass -File sources-win/build-win.ps1
+# 1) 引擎 sidecar（只构建 SLCNEngine.exe）
+pwsh -ExecutionPolicy Bypass -File Engine/tools/build_win_sidecar.ps1
 # 2) Flet 应用（等价于 CI 命令）
 New-Item -ItemType Directory -Force build-flet | Out-Null
 Push-Location build-flet
@@ -50,7 +50,7 @@ flet pack ..\sources-flet\app\main.py --name 编辑部工具箱 `
   --product-name "编辑部工具箱" --product-version "<Engine版本>" --file-version "<Engine版本>.0" `
   --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" --distpath dist --yes
 Pop-Location
-# 3) 组装：把 sources-win\build\dist\SLCNEngine.exe 复制到 build-flet\dist\ 再试运行
+# 3) 组装：把 sidecar 输出目录里的 SLCNEngine.exe 复制到 build-flet\dist\ 再试运行
 ```
 
 macOS 引擎 sidecar 等价命令（CI 里就是这么做的）：

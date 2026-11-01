@@ -272,9 +272,10 @@ r = child("import sys; sys.path.insert(0,'.'); from slcn import platform as P; p
 check("(e) `describe()` 报出系统 + Python 版本（同事报错时要这一行）",
       r.returncode == 0 and "Python" in r.stdout.decode() and len(r.stdout.decode().strip()) > 12,
       r.stdout.decode().strip())
-bs = (ENGINE.parent / "build.sh").read_text(encoding="utf-8")
-check("(e) `build.sh` 的版本号是**现取**的，不再写死（双平台防漂移）",
-      "slcn/__init__.py" in bs and "CFBundleShortVersionString</key><string>$APP_VERSION" in bs)
+_ps_text = (ENGINE / "tools" / "build_win_sidecar.ps1").read_text(encoding="utf-8")
+check("(e) 打包脚本的版本号是**现取**的，不再写死（旧 build.sh 已删，防双平台漂移的判据不变）",
+      'slcn\\__init__.py' in _ps_text.replace("/", "\\") and "__version__" in _ps_text
+      and "1.5.0" not in _ps_text)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (f) 跨盘符路径：`paths.rel()` 不许让一句汇报打断整个转换 ──")
@@ -353,24 +354,31 @@ print("\n── (g) 打包 dispatcher 的入口表（Windows 包只认表里的�
 import engine_main as _em  # noqa: E402  模块级只定义 ENTRIES/USAGE，没有副作用
 
 CLIS = [f for f in ENTRY_FILES if f != "engine_main.py"]
-# ── 打包白名单守卫（2026-10-17 macOS 实例测试）──────────────────────────
-# `build.sh` 打包 Engine 用的是**白名单**：2026-10-17 新增 `publish.py` 时只改了
+# ── 打包白名单守卫（2026-10-17 macOS 实例测试；批108 迁到 Windows sidecar）──
+# 旧壳时期 `build.sh` 打包 Engine 用的是**白名单**：2026-10-17 新增 `publish.py` 时只改了
 # `engine_main.ENTRIES`、漏了 build.sh → v1.0.10 的 mac 包里「本期出刊」直接报
 # 「未找到出刊编排引擎 Engine/publish.py」（界面在、引擎不在）。
 # ⚠️ 这与案例 106 同型：`gen_docs` 的「App 包内一致性」只比对**已有文件**是否一致，
-#    **发现不了"少了一个文件"**。所以必须单独钉住"白名单覆盖全部交付 CLI"。
-try:
-    from pathlib import Path as _P
-    _repo = _P(__file__).resolve().parent.parent.parent
-    _build_sh = _repo / "build.sh"
-    if _build_sh.exists():
-        _bs = _build_sh.read_text(encoding="utf-8")
-        _not_packaged = [n for n in ENTRY_FILES if n not in _bs]
-        check("(g) `build.sh` 打包白名单覆盖**全部**交付 CLI"
-              "（少一个 = 那个入口在 mac 包里根本不存在）",
-              not _not_packaged, f"build.sh 未提及: {_not_packaged}")
-except Exception as _e:  # noqa: BLE001
-    print(f"SKIP  (g) build.sh 白名单守卫（{_e}）")
+#    **发现不了"少了一个文件"**。批108 删旧壳后，打包白名单的守卫迁到
+#    `Engine/tools/build_win_sidecar.ps1` 的 `$Entries`（Windows sidecar 的唯一入口表）。
+_SIDECAR_PS = ENGINE / "tools" / "build_win_sidecar.ps1"
+check("(g) 引擎 sidecar 打包脚本在仓内（旧 build.sh 白名单守卫的接替者）",
+      _SIDECAR_PS.is_file(), str(_SIDECAR_PS))
+_ps_entries: tuple[str, ...] = ()
+if _SIDECAR_PS.is_file():
+    _ps_text = _SIDECAR_PS.read_text(encoding="utf-8")
+    _ps_m = re.search(r"\$Entries\s*=\s*@\(([^)]*)\)", _ps_text, re.S)
+    _ps_entries = tuple(re.findall(r'"([^"]+\.py)"', _ps_m.group(1) if _ps_m else ""))
+    _not_packaged = [n for n in CLIS if n not in _ps_entries]
+    check("(g) `build_win_sidecar.ps1` 的 `$Entries` 覆盖**全部**交付 CLI"
+          "（少一个 = 那个入口在 Windows 包里根本不存在；engine_main.py 是冻结入口本身，另行验证）",
+          not _not_packaged, f"sidecar 未提及: {_not_packaged}")
+    check("(g) sidecar 以 `engine_main.py` 为冻结入口（dispatcher 本体进包）",
+          '"engine_main.py"' in _ps_text)
+    check("(g) sidecar `$Entries` 与 `engine_main.ENTRIES` **逐项同序**"
+          "（旧 build-win.ps1 的 13 项表已迁到 Engine/tools/build_win_sidecar.ps1）",
+          _ps_entries == _em.ENTRIES,
+          f"ps={_ps_entries} ／ py={_em.ENTRIES}")
 
 check("(g) dispatcher 的 `ENTRIES` 覆盖**全部**交付 CLI"
       "（漏一个 = 那个入口在 Windows 包里「不认识的入口」退出 2）",
@@ -380,42 +388,38 @@ check("(g) `ENTRIES` 里每个名字都真的有对应文件（防写错名）",
       repr([e for e in _em.ENTRIES if not (ENGINE / e).is_file()]))
 
 # ── 两平台共同交付的 CLI（第 132 条）：bibdb.py ───────────────────────────
-# 它同时进 **mac app 包**与 **Windows 包**（两边 GUI 的「引用库」5 页：库概况/查库/
+# 它同时进 **Flet 包**与 **Windows 包**（两边 GUI 的「引用库」5 页：库概况/查库/
 # 入藏/待裁决/设置，数据源都是这一份 CLI）。所以它既在 ENTRY_FILES（交付口径：
-# utf8_stdio、open() 编码、build.sh 白名单），也必须在 Windows 分发器 `ENTRIES` 里。
+# utf8_stdio、open() 编码、sidecar 白名单），也必须在 Flet 桥与分发器 `ENTRIES` 里。
 # ⚠️ 从前本测试钉的是「bibdb.py 刻意**不进** Windows ENTRIES（引用库只做 mac）」；
 #    Windows 版做完后那条守卫必须删掉/反转 —— 留着的话，谁把 bibdb.py 加进分发器
-#    都会被测试判红，而漏加的后果是 Windows「引用库」5 页全废（与 publish.py 同型）。
-_MAC_ONLY_CLI = "bibdb.py"
-if "_build_sh" not in globals():
-    _build_sh = None                     # 读 build.sh 失败时上面已 SKIP，这里也别把测试弄崩
-if _build_sh is not None and _build_sh.exists():
-    check("(g) `build.sh` 打包白名单含 mac 专属 CLI `bibdb.py`"
-          "（漏了 = 包里「引用库」5 页全废）",
-          _MAC_ONLY_CLI in _bs, "build.sh 未提及 bibdb.py")
-    try:
-        _gd = (ENGINE / "tools" / "gen_docs.py").read_text(encoding="utf-8")
-        check("(g) `gen_docs.py` 的 `APP_FILES` 含 `bibdb.py`"
-              "（包内一致性比对覆盖它；`gen_docs` 只比已有文件，发现不了缺文件）",
-              f'"{_MAC_ONLY_CLI}"' in _gd, "gen_docs.py APP_FILES 未提及 bibdb.py")
-    except OSError as _e:  # noqa: BLE001
-        print(f"SKIP  (g) gen_docs APP_FILES 守卫（{_e}）")
-    _bibdb_text = (ENGINE / _MAC_ONLY_CLI).read_text(encoding="utf-8")
-    check("(g) mac 专属 CLI `bibdb.py` 也调了 utf8_stdio()"
-          "（GUI 用管道读它的中文 JSON；窄编码下不许崩）",
-          "utf8_stdio(" in _bibdb_text)
-check("(g) `bibdb.py` **两个平台都交付**：Windows 分发器 `ENTRIES` 也认它"
-      "（漏了 = Windows「引用库」5 页全部「❌ 不认识的入口」退出 2）",
-      _MAC_ONLY_CLI in _em.ENTRIES,
-      f"dispatcher ENTRIES = {_em.ENTRIES}")
+#    都会被测试判红，而漏加的后果是「引用库」5 页全废（与 publish.py 同型）。
+_MAC_ONLY_CLI = "bibdb.py"          # 变量名保留历史：批108 起两壳都交付
+try:
+    _gd = (ENGINE / "tools" / "gen_docs.py").read_text(encoding="utf-8")
+    check("(g) `gen_docs.py` 的 `APP_FILES` 含 `bibdb.py`"
+          "（包内一致性比对覆盖它；`gen_docs` 只比已有文件，发现不了缺文件）",
+          f'"{_MAC_ONLY_CLI}"' in _gd, "gen_docs.py APP_FILES 未提及 bibdb.py")
+except OSError as _e:  # noqa: BLE001
+    print(f"SKIP  (g) gen_docs APP_FILES 守卫（{_e}）")
+_bibdb_text = (ENGINE / _MAC_ONLY_CLI).read_text(encoding="utf-8")
+check("(g) 共同交付 CLI `bibdb.py` 也调了 utf8_stdio()"
+      "（GUI 用管道读它的中文 JSON；窄编码下不许崩）",
+      "utf8_stdio(" in _bibdb_text)
+_BRIDGE_SRC = ENGINE.parent / "sources-flet" / "app" / "services" / "engine_bridge.py"
+check("(g) `bibdb.py` **Flet 桥也交付**：桥的 `ENTRIES` 认它"
+      "（漏了 = Flet「引用库」页全部「❌ 不认识的入口」退出 2）",
+      _MAC_ONLY_CLI in _em.ENTRIES
+      and _BRIDGE_SRC.is_file()
+      and _MAC_ONLY_CLI in _BRIDGE_SRC.read_text(encoding="utf-8"),
+      f"dispatcher ENTRIES = {_em.ENTRIES}｜bridge {'有' if _BRIDGE_SRC.is_file() else '缺'}")
 # 别再只断言「进不进」：名字写错（如 bibdb）也会让分发器拒收。文件存在性已由
 # 上面 `all((ENGINE / e).is_file())` 守；这里再钉一次名字的**拼写**与交付口径。
-check("(g) `bibdb.py` 的入口名与文件逐字一致，且在 `sources-win/engine.py` 的 ENTRIES 里"
-      "（外壳/dispatcher 两份表由 sources-win/tests/test_bridge.py (b) 逐项比）",
+check("(g) `bibdb.py` 的入口名与文件逐字一致，且 sidecar `$Entries` 也认它"
+      "（桥/分发器两份表由 test_b309 (c) 逐项比）",
       (_MAC_ONLY_CLI in _em.ENTRIES)
       and (ENGINE / _MAC_ONLY_CLI).is_file()
-      and (_MAC_ONLY_CLI in (ENGINE.parent / "sources-win" / "engine.py")
-           .read_text(encoding="utf-8")))
+      and _MAC_ONLY_CLI in _ps_entries)
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (h) 文档覆盖：engine CLI 的 argparse 子命令名必须写进 ENGINE_API.md ──")
@@ -1244,138 +1248,69 @@ check("(m7) B-135 核心：库有非空值 → 覆盖现值/补齐缺失（fills
       "a=%r b=%r c=%r d=%r e=%r plans=%s" % (_ok7a, _ok7b, _ok7c, _ok7d, _ok7e, _pl7))
 
 # ─────────────────────────────────────────────────────────────────────────
-# (n) 双壳页面集合一致性（B-230 壳契约；**静态解析**，不 import tkinter/tk）
+# (n) 单壳页集合契约（批108：旧双壳已删，契约迁到 Flet 的 IA 映射）
 #
-# 口径（`notes/drafts/specs/b230-shell-split.md` §4.1 逐字核对过，**不是**「集合完全相等」）：
-#   mac `NavPage` 15 页 / win `tabs` 15 页；两组页面集合**相等**（B-289 起 Windows 也有
-#   「目录摘要推送」，B-225 的「仅 mac 交付」缺口已补），
-#   唯一允许的中文别名是「待处理」(mac；B-188 改名) ⇄「待裁决」(win)，其余逐字相同；
-#   三个分组「单篇稿件 / 整期装配 / 引用库」逐组**集合**相等（B-289 起整期装配也相等），
-#   **不比较组内顺序**（win 的「生成目录」在「编译全部」之前、mac 相反 —— 已知差异，登记不修）。
-#   缺文件（比如只拿了 Engine/ 的瘦检出）→ SKIP，绝不假 PASS。
-#   组号用 (n) 而不是 spec 写的 (i)：a–m 已占用，i1–i4 属 B-229 门面组（卡面 §1c）。
-_PAGES_ROOT = ENGINE.parent
-_MAC_PAGES_SRC = _PAGES_ROOT / "sources-mac" / "Views" / "MainWindow.swift"
-_WIN_TABS_DIR = _PAGES_ROOT / "sources-win" / "tabs"
-_WIN_PAGES_SRC = ([_PAGES_ROOT / "sources-win" / "main.py"]
-                  + sorted(_WIN_TABS_DIR.glob("*.py"))
-                  + [_PAGES_ROOT / "sources-win" / "bibdb_ui.py"])
-_PAGES_MISSING = [str(_p) for _p in [_MAC_PAGES_SRC, _WIN_TABS_DIR] + _WIN_PAGES_SRC
-                  if not _p.exists()]
+# 旧口径是 mac `NavPage` 15 页 ⇄ win `tabs` 15 页（静态解析两份旧壳源码，缺文件 SKIP）。
+# 批108 删掉两个旧壳后，等价的「页集合」事实源是 `sources-flet/app/ui/ia_map.py`：
+#   · `LEGACY_TAB_ORDER` = 旧 Tk 版 15 个页名（按旧页签顺序）；
+#   · `IA_MAP` = 旧页 → 新 IA（页 + 视图/步骤）的逐页迁移表，共 15 行；
+#   · `NAV_GROUPS` = 新 IA 的 4 组导航（工作区/资料/系统）。
+# 这里钉三件事：两列旧页名逐项一致（无缺/无多、顺序也不许漂）、唯一允许的别名
+# 「待处理」(mac 改名) ⇄「待裁决」(Tk 原名) 仍按 B-188 口径存在、且每个 new_page
+# 都能落到某个导航组里（组整合没有漏页）。缺文件 = 红（不再 SKIP：文件就在仓库里）。
+_IA_MAP_SRC = ENGINE.parent / "sources-flet" / "app" / "ui" / "ia_map.py"
+check("(n0) Flet IA 映射源文件在仓内（旧双壳页集合契约的接替者）",
+      _IA_MAP_SRC.is_file(), str(_IA_MAP_SRC))
+if _IA_MAP_SRC.is_file():
+    _ia_src = _IA_MAP_SRC.read_text(encoding="utf-8")
 
-if _PAGES_MISSING:
-    for _g in ("n1", "n2", "n3"):
-        print(f"SKIP  ({_g}) 双壳页面集合：缺 {len(_PAGES_MISSING)} 处源文件，"
-              f"本机不判（{_PAGES_MISSING[:3]}）")
-else:
-    _mac_src = _MAC_PAGES_SRC.read_text(encoding="utf-8")
-    _win_src = [_p.read_text(encoding="utf-8") for _p in _WIN_PAGES_SRC]
-    _win_all = "\n".join(_win_src)
-    _win_main = _win_src[0]
+    def _str_list(name: str) -> list[str]:
+        _m = re.search(rf"{name}\s*=\s*\[(.*?)\]", _ia_src, re.S)
+        return re.findall(r'"([^"]+)"', _m.group(1)) if _m else []
 
-    # mac 中文名：只取 `var title: String` 的 switch（`var symbol` 那段是 SF Symbol 英文名，
-    # 一起收会把中文名覆盖成图标名）。
-    _mac_title_block = re.search(r"var title: String \{(.*?)\n    \}", _mac_src, re.S)
-    _mac_titles = dict(re.findall(r'case \.(\w+): return "([^"]+)"',
-                                 _mac_title_block.group(1) if _mac_title_block else ""))
-    # win 中文名：各 tab 的类属性 `name = "..."`（「设置」是组外底部页，兜一层）
-    _win_names = set(re.findall(r'^\s+name = "([^"]+)"', _win_all, re.M)) | {"设置"}
+    _legacy_pages = _str_list("LEGACY_TAB_ORDER")
+    _ia_map_block = re.search(r"IA_MAP[^=]*=\s*\[(.*?)\n\]", _ia_src, re.S)
+    _ia_map_txt = _ia_map_block.group(1) if _ia_map_block else ""
+    _old_pages = re.findall(r'"old_page":\s*"([^"]+)"', _ia_map_txt)
+    _new_pages = re.findall(r'"new_page":\s*"([^"]+)"', _ia_map_txt)
+    check("(n1) 旧页集合：`LEGACY_TAB_ORDER` 15 页 ⇄ `IA_MAP.old_page` 15 行逐项同序"
+          "（少一行 = 某个旧页的功能没人接；多一行 = 迁移表写了不存在的页）",
+          len(_legacy_pages) == 15 and _old_pages == _legacy_pages,
+          f"legacy={len(_legacy_pages)} 页｜ia_map={len(_old_pages)} 行｜"
+          f"legacy−map={sorted(set(_legacy_pages) - set(_old_pages))}｜"
+          f"map−legacy={sorted(set(_old_pages) - set(_legacy_pages))}")
+
     _ALIAS = {"待处理": "待裁决"}       # B-188 只改了 mac 侧 → 唯一允许的别名
-    _MAC_ONLY: set[str] = set()         # B-289 补齐 Windows 页后：**零个** mac 专属页
+    _alias_ok = ("待裁决" in _old_pages and "待处理" not in _old_pages
+                 and re.search(r'"new_view":\s*"视图「待处理」"', _ia_src) is not None)
+    check("(n2) 别名沿革：旧页名仍是「待裁决」、新 IA 视图叫「待处理」"
+          "（B-188 改名的唯一允许别名；两边各留一处才算没漂移）",
+          _alias_ok, f"待裁决@old={'待裁决' in _old_pages} 待处理@old={'待处理' in _old_pages}")
 
-    _mac_zh = {_ALIAS.get(_t, _t) for _t in _mac_titles.values()}
-    _mac_side = _mac_zh - _win_names
-    _win_side = _win_names - _mac_zh
-    check("(n1) 双壳页面集合：mac NavPage 15 页 / win tabs 15 页，两侧互不缺失"
-          "（别名「待处理」⇄「待裁决」已归一；「目录摘要推送」B-289 起两侧都有）",
-          _mac_side == _MAC_ONLY and _win_side == set(),
-          f"mac={len(_mac_zh)} 页 / win={len(_win_names)} 页｜mac−win={sorted(_mac_side)}｜"
-          f"win−mac={sorted(_win_side)}")
-
-    check("(n2) 允许清单自检（防白名单僵化）：目录摘要推送 **两侧都在**、待处理 在 mac、"
-          "待裁决 在 win、待处理 **不在** win（别名两侧各留一处才算没漂移）",
-          "目录摘要推送" in _mac_titles.values() and "目录摘要推送" in _win_names
-          and "待处理" in _mac_titles.values()
-          and "待裁决" in _win_names and "待处理" not in _win_names,
-          f"目录摘要推送@mac={'目录摘要推送' in _mac_titles.values()} "
-          f"目录摘要推送@win={'目录摘要推送' in _win_names} "
-          f"待处理@mac={'待处理' in _mac_titles.values()} "
-          f"待裁决@win={'待裁决' in _win_names} 待处理@win={'待处理' in _win_names}")
-
-    # (n3) 分组：mac 三个 static let 名单 × win `self.nav_groups` 的索引 → 组名→中文名集合。
-    # mac 侧 key（NavPage）→ 中文名（过别名）；组名按编辑流程一一对应。
-    _mac_groups: dict[str, set[str]] = {}
-    for _key in ("singleArticle", "assembly", "library"):
-        _gm = re.search(r"static let %s: \[NavPage\] = \[(.*?)\]" % _key, _mac_src, re.S)
-        _mac_groups[_key] = {_ALIAS.get(_mac_titles.get(_k, "?" + _k),
-                                        _mac_titles.get(_k, "?" + _k))
-                             for _k in (re.findall(r"\.(\w+)", _gm.group(1)) if _gm else [])}
-    # win 侧：`self.tabs` 的属性顺序就是侧栏索引；属性 → 页类 → 类属性的 name
-    _tabs_block = re.search(r"self\.tabs = \[(.*?)\]", _win_main, re.S)
-    _win_attrs = re.findall(r"self\.(\w+)", _tabs_block.group(1)) if _tabs_block else []
-    _win_cls = dict(re.findall(r"self\.(\w+) = (?:[A-Za-z_]\w*\.)?(\w+)\(", _win_main))
-    _win_tab_names = []
-    for _a in _win_attrs:
-        _cm = (re.search(r'^class %s\b.*?^\s+name = "([^"]+)"' % _win_cls[_a], _win_all,
-                         re.S | re.M) if _a in _win_cls else None)
-        _win_tab_names.append(_cm.group(1) if _cm else "?" + _a)
-    _ng_block = re.search(r"self\.nav_groups = \[(.*?)\]", _win_main, re.S)
-    _win_groups: dict[str, set[str]] = {}
-    for _gname, _idxs in re.findall(r'\("([^"]+)",\s*\(([\d,\s]+)\)\)',
-                                    _ng_block.group(1) if _ng_block else ""):
-        _win_groups[_gname] = {
-            (_ALIAS.get(_win_tab_names[int(_i)], _win_tab_names[int(_i)])
-             if 0 <= int(_i) < len(_win_tab_names) else "?idx" + _i.strip())
-            for _i in _idxs.split(",") if _i.strip()}
-
-    _GROUP_PAIRS = (("singleArticle", "单篇稿件"), ("assembly", "整期装配"),
-                    ("library", "引用库"))
-    _MAC_GROUP_EXTRA: dict[str, set[str]] = {}          # B-289 起整期装配两壳也相等
-    _group_bad: list[str] = []
-    _group_detail: list[str] = []
-    for _mac_key, _win_gname in _GROUP_PAIRS:
-        _mg = _mac_groups.get(_mac_key, set())
-        _wg = _win_groups.get(_win_gname, set())
-        _extra, _miss = _mg - _wg, _wg - _mg
-        _ok = _extra == _MAC_GROUP_EXTRA.get(_mac_key, set()) and _miss == set()
-        _group_detail.append("%s(mac=%d/win=%d) mac−win=%s win−mac=%s%s"
-                             % (_win_gname, len(_mg), len(_wg), sorted(_extra),
-                                sorted(_miss), "" if _ok else " ✗"))
-        if not _ok:
-            _group_bad.append(_win_gname)
-    check("(n3) 分组一致性：单篇稿件 / 整期装配 / 引用库 三组「组名→中文名集合」逐组相等"
-          "（B-289 起整期装配也相等；不比较组内顺序）",
-          not _group_bad and len(_win_groups) == 3 and all(_mac_groups.values()),
-          "｜".join(_group_detail))
+    _nav_block = re.search(r"NAV_GROUPS[^=]*=\s*\[(.*?)\n\]", _ia_src, re.S)
+    _nav_pages = re.findall(r'\("(?:home|single|issue|bib|settings|help)",\s*"([^"]+)"',
+                            _nav_block.group(1) if _nav_block else "")
+    _orphan = sorted(set(_new_pages) - set(_nav_pages))
+    check("(n3) 组整合无漏页：`IA_MAP.new_page` 每个值都落进 `NAV_GROUPS` 的某个组"
+          "（旧「单篇稿件/整期装配/引用库」三组已收成 4 组导航，新页不在组里 = 用户点不到）",
+          bool(_new_pages) and not _orphan,
+          f"new_pages={sorted(set(_new_pages))}｜nav={_nav_pages}｜orphan={_orphan}")
 
 # ─────────────────────────────────────────────────────────────────────────
-# (o) 分发不泄漏：swift 侧外壳**不许**再绑 publish.py（B-231 ④；静态扫描，不 import 外壳）
+# (o) 分发不泄漏：Flet 外壳**不许**再绑 publish.py（B-231 ④；静态扫描，不 import 外壳）
 #
 # 口径（根 `README.md`「一个引擎，两个外壳」+「Engine/ 引擎（Python，唯一一份逻辑）」；
-# `Engine/docs/ENGINE_API.md` 与根 `README.md:116` 都把 `publish.py` 标成 **CLI-only**
-# —— 2026-10-21 第 71 批 B-116 起 GUI「本期出刊」页已删，逻辑只在引擎里）：
-#   · 扫描集 = 仓库根 `sources-mac/**/*.swift` + `sources-win/**/*.py`；
-#   · **排除** `sources-win/engine.py` —— Windows 分发器的 `ENTRIES` **必须**含 publish.py
-#     （跨平台交付事实，已由 (g) 组守，这里不重复断言）；
-#   · **排除** `sources-win/tests/` —— 测试夹具故意逐字引用入口表；
-#   · 命中 = `\bpublish\.py\b` 或当年的 GUI 绑定符号 `PublishTab` / `PublishFeature` /
-#     `publish_call`（任一出现 = 「本期出刊」页被接回外壳，B-227 删页后的回潮）。
-#
-# 路径口径修正（见 `ROOT/DECISIONS.md` b231-i4）：提示词写的 `Engine/vendor/README.md` 与
-# `Engine/native/slcn` 在本树里**都不存在**（`Engine/vendor/` 是被 .gitignore 的 pip 依赖
-# 目录、没有 README；`git ls-files` 无任何 `native/` 路径），`tools/batch_accept.py` 也没有
-# 可复用的源码扫描函数（只有 `parse_*` / `judge_gate` 证据解析）。故按上面这份**真实口径**
-# 就地扫描（**未复制任何既有逻辑**，因为没有可复用的实现）。
+# `Engine/docs/ENGINE_API.md` 把 `publish.py` 标成 **CLI-only** —— 2026-10-21 第 71 批
+# B-116 起 GUI「本期出刊」页已删，逻辑只在引擎里）。批108 删旧壳后扫描集换成
+# `sources-flet/app/**/*.py`，**排除** `app/services/engine_bridge.py`：那是分发器，
+# 它的 `ENTRIES` **必须**含 publish.py（跨平台交付事实，由 (g) 组与 (c) 组守）。
+# 命中 = `\bpublish\.py\b` 或当年的 GUI 绑定符号 `PublishTab` / `PublishFeature` /
+# `publish_call`（任一出现 = 「本期出刊」页被接回外壳，B-227 删页后的回潮）。
 _NOLEAK_ROOT = ENGINE.parent
-_NOLEAK_MAC_DIR = _NOLEAK_ROOT / "sources-mac"
-_NOLEAK_WIN_DIR = _NOLEAK_ROOT / "sources-win"
-_NOLEAK_WIN_ENTRY = _NOLEAK_WIN_DIR / "engine.py"   # 分发器入口表：必须含 publish.py（(g) 组守）
-_NOLEAK_MAC_FILES = sorted(_NOLEAK_MAC_DIR.rglob("*.swift")) if _NOLEAK_MAC_DIR.is_dir() else []
-_NOLEAK_WIN_FILES = ([p for p in sorted(_NOLEAK_WIN_DIR.rglob("*.py"))
-                      if p != _NOLEAK_WIN_ENTRY
-                      and "tests" not in p.relative_to(_NOLEAK_WIN_DIR).parts]
-                     if _NOLEAK_WIN_DIR.is_dir() else [])
-_NOLEAK_FILES = _NOLEAK_MAC_FILES + _NOLEAK_WIN_FILES
+_NOLEAK_APP_DIR = _NOLEAK_ROOT / "sources-flet" / "app"
+_NOLEAK_BRIDGE = _NOLEAK_APP_DIR / "services" / "engine_bridge.py"
+_NOLEAK_FILES = ([p for p in sorted(_NOLEAK_APP_DIR.rglob("*.py")) if p != _NOLEAK_BRIDGE]
+                 if _NOLEAK_APP_DIR.is_dir() else [])
 _NOLEAK_RE = re.compile(r"\bpublish\.py\b|PublishTab|PublishFeature|publish_call")
 _no_leaks: list[str] = []
 for _p in _NOLEAK_FILES:
@@ -1389,26 +1324,25 @@ for _p in _NOLEAK_FILES:
         if _m:
             _no_leaks.append(f"{_p.relative_to(_NOLEAK_ROOT)}:{_ln}:{_m.group(0)}")
 
-check("(o1) swift 侧外壳零 publish.py 绑定：sources-mac/**/*.swift + sources-win/**/*.py"
-      "（排除分发器 engine.py 与 tests/）里不许出现 publish.py / PublishTab / "
+check("(o1) Flet 外壳零 publish.py 绑定：`sources-flet/app/**/*.py`"
+      "（排除分发器 services/engine_bridge.py）里不许出现 publish.py / PublishTab / "
       "PublishFeature / publish_call —— 外壳只许 CLI 起引擎，不许把删掉的「本期出刊」页接回来",
       not _no_leaks,
-      f"扫 {len(_NOLEAK_FILES)} 个外壳源文件（mac {len(_NOLEAK_MAC_FILES)} / "
-      f"win {len(_NOLEAK_WIN_FILES)}）｜命中 {len(_no_leaks)} 处：{_no_leaks[:5]}")
+      f"扫 {len(_NOLEAK_FILES)} 个外壳源文件｜命中 {len(_no_leaks)} 处：{_no_leaks[:5]}")
 
 # (o2) 反向防僵化：上面那条**必须真有文件可扫**，否则「零命中」是真空绿（缺目录 → 红，不 SKIP）。
-#     另钉住分发引擎目录仍在原地：Swift 侧（`build.sh` 打包进 App 的 `Resources/Engine`）与
-#     两个外壳共用同一份 `Engine/slcn`；提示词写作 `Engine/native/slcn`，实测只有 `Engine/slcn`。
+#     另钉住分发引擎目录仍在原地：Flet 壳（`sources-flet/app/services/engine_bridge.py`）
+#     与 sidecar 共用同一份 `Engine/slcn`；提示词写作 `Engine/native/slcn`，实测只有 `Engine/slcn`。
 _NOLEAK_DIST = ENGINE / "slcn"
-_O2_MAC_N = len(_NOLEAK_MAC_FILES)
-_O2_WIN_N = len(_NOLEAK_WIN_FILES)
+_O2_APP_N = len(_NOLEAK_FILES)
 _O2_DIST_N = len(sorted(_NOLEAK_DIST.glob("*.py"))) if _NOLEAK_DIST.is_dir() else 0
-check("(o2) 扫描范围非空（防 (o1) 真空绿）：mac 壳 Swift 源、win 壳 py 源各 >0 且两目录都在"
-      "扫描范围内；分发引擎目录 Engine/slcn 存在且非空",
-      _NOLEAK_MAC_DIR.is_dir() and _NOLEAK_WIN_DIR.is_dir()
-      and _O2_MAC_N > 0 and _O2_WIN_N > 0 and _O2_DIST_N > 0,
-      f"mac={'有' if _NOLEAK_MAC_DIR.is_dir() else '缺'}{_O2_MAC_N} 文件｜"
-      f"win={'有' if _NOLEAK_WIN_DIR.is_dir() else '缺'}{_O2_WIN_N} 文件｜"
+_O2_BRIDGE_OK = (_NOLEAK_BRIDGE.is_file()
+                 and "publish.py" in _NOLEAK_BRIDGE.read_text(encoding="utf-8"))
+check("(o2) 扫描范围非空（防 (o1) 真空绿）：Flet app 目录在、>0 个 .py、分发器存在且含 "
+      "publish.py、分发引擎目录 Engine/slcn 存在且非空",
+      _NOLEAK_APP_DIR.is_dir() and _O2_APP_N > 0 and _O2_BRIDGE_OK and _O2_DIST_N > 0,
+      f"app={'有' if _NOLEAK_APP_DIR.is_dir() else '缺'}{_O2_APP_N} 文件｜"
+      f"bridge={'有' if _NOLEAK_BRIDGE.is_file() else '缺'} 含 publish.py={_O2_BRIDGE_OK}｜"
       f"slcn={_O2_DIST_N} 个 .py｜合计扫 {len(_NOLEAK_FILES)}")
 
 # ── (p) B300-03：子进程「不弹控制台窗口」平台口径 + soffice 命令行入口 ──────

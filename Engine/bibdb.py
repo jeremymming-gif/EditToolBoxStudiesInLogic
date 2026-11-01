@@ -7,10 +7,10 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
   · **编辑器/开发者离线维护**：种子导入、抽查、体检；
   · **初排转换**（`convert.py`）在核实参考文献前查库 → 那一步的接口在
     `slcn/bibdb.py`；
-  · **两个平台 GUI 的「引用库」5 页**（库概况/查库/入藏/待裁决/设置，第 132 条）——
-    mac 包由 `build.sh` 打包、Windows 包由分发器 `engine_main.ENTRIES` 与
-    `sources-win/engine.py: ENTRIES` 收录（四处入口表必须同时改，见
-    `Engine/tests/test_platform.py` 与 `sources-win/tests/test_bridge.py` 的守卫）。
+  · **单壳 GUI 的「引用库」5 页**（库概况/查库/入藏/待裁决/设置，第 132 条）——
+    Flet 壳由 `engine_main.ENTRIES` 与 `sources-flet/app/services/engine_bridge.py: ENTRIES`
+    收录（两处入口表必须同时改，见 `Engine/tests/test_platform.py` (g) 的守卫；
+    旧 mac/Windows 外壳已删，历史）。
 所以它只做「人看/脚本跑/界面管道读 JSON」的薄壳：所有逻辑在 `slcn/bibdb.py`。
 
 默认库位置

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-从 Windows 原版程序里提取的 LaTeX 模板，生成 Swift 源文件（历史工具，dormant）。
+历史工具（dormant）：把 Windows 原版程序里的 LaTeX 模板常量写成模板夹具。
+
+最初它会生成 Swift 源 `ContentTemplates.swift`（v1.5.0 的 mac 外壳常量）；批108 删除旧外壳后，
+模板字面量改由 `Engine/tests/fixtures/content_templates.json` 承载，本脚本随之改为写那份 JSON。
+它是**一次性提取工具**，不是日常改模板的入口：日常改模板直接编辑 JSON 夹具，再跑
+`Engine/tools/gen_content_templates.py` 重生成 Python 侧。
 
 输出曾逐字节来自 exe 内的字节码常量；**2026-10-27 起中/英内置模板已升级为 2026 年第 3 期(88) 版式**，
-与 Windows 原版不再逐字节一致（现值台账见 `spec/charti.md` STEP 1b）。**重跑本脚本会覆盖这次升级，慎用**；
-现在改模板的路径是：直接改 `sources-mac/Features/ContentTemplates.swift` 的字面量，再跑
-`Engine/tools/gen_content_templates.py` 重生成 Python 侧并重冻结 golden。
+与 Windows 原版不再逐字节一致。**重跑本脚本会覆盖这次升级，慎用。**
 """
+import json
 import os
 
 TEMPLATES = [
@@ -16,51 +20,22 @@ TEMPLATES = [
 ]
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                   "..", "sources-mac", "Features", "ContentTemplates.swift")
-
-
-def swift_escape(s: str) -> str:
-    out = []
-    for ch in s:
-        if ch == "\\":
-            out.append("\\\\")
-        elif ch == '"':
-            out.append('\\"')
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ch == "\t":
-            out.append("\\t")
-        else:
-            out.append(ch)
-    return "".join(out)
+                   "..", "Engine", "tests", "fixtures", "content_templates.json")
 
 
 def main():
-    lines = [
-        "// ⚠️ 本文件原由 tools/gen_templates.py 从 Windows 原版程序提取生成。",
-        "// 2026-10-27 起中/英内置目录模板已升级为 2026 年第 3 期(88) 版式，与 Windows 原版不再逐字节一致；",
-        "// 重跑提取脚本会覆盖这次升级 —— 改模板请直接改下面的字面量，再跑 Engine/tools/gen_content_templates.py 重生成并重冻结 golden。",
-        "",
-        "enum ContentTemplates {",
-        "",
-    ]
-
+    values = {}
     for name, path in TEMPLATES:
         with open(path, encoding="utf-8") as f:
-            content = f.read()
-        lines.append("    /// %s —— %d 个字符" % (name, len(content)))
-        lines.append('    static let %s = "%s"' % (name, swift_escape(content)))
-        lines.append("")
-
-    lines.append("    /// 原程序编译时把中英文目录的结尾视为同一个字符串（内容相同被去重）")
-    lines.append("    static let enContentEnd = chContentEnd")
-    lines.append("}")
+            values[name] = f.read()
+    # 原程序编译时把中英文目录的结尾视为同一个字符串（内容相同被去重）
+    values["enContentEnd"] = values["chContentEnd"]
 
     target = os.path.normpath(OUT)
-    with open(target, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(values, f, ensure_ascii=False, indent=1)
+        f.write("\n")
     print("已生成", target)
 
 

@@ -1,8 +1,9 @@
 # SLCN 稿件转换器
 
 把作者提交的 **LaTeX 源文件**或 **Word 文稿**，转换为符合《逻辑学研究》标准的**可编译初排稿**
-（`.tex` + `.bib` + `.pdf`）。引擎是 Python（`convert.py` + `slcn/`），界面是 SwiftUI
-（`sources-mac/`，15 个页面/四组侧边栏），构建时引擎被打包进 App 的 `Resources/Engine/`。
+（`.tex` + `.bib` + `.pdf`）。引擎是 Python（`convert.py` + `slcn/`），界面是 Flet
+（`sources-flet/`，唯一壳，15 个页面）：Windows 打包时引擎由 `Engine/tools/build_win_sidecar.ps1`
+编成 sidecar 一并装进 exe（`py -3.14 -m flet.cli pack …`），macOS 由 CI 打包。
 它**只服务「初排」这一个环节**：一校~四校、目录序号前缀（三校/蓝样后才由人工加）、蓝样都不归它管。
 
 **本文件只是入口**：这是什么 → 红线 → 怎么跑 → 该读哪份文档 → 当前状态 → 验收链条 → 维护规则。
@@ -28,9 +29,9 @@ Lei_Li/
     └── 李雷 当代逻辑论题鸟瞰.docx
 ```
 
-**仓库地图（目录级）**：`Engine/` 引擎（Python，唯一一份逻辑）｜`sources-mac/` 界面
-（SwiftUI，15 个页面）｜`Engine/docs/` 文档｜`<期号>目录/` 真实稿件（**只读**）｜
-`编辑笔记/` 模板与《排校手册》（规范的权威文本）。
+**仓库地图（目录级）**：`Engine/` 引擎（Python，唯一一份逻辑）｜`sources-flet/` 界面
+（Flet，唯一壳，15 个页面；旧 Tk/SwiftUI 壳已于 2026-11-01 批 108 删除）｜`Engine/docs/` 文档｜
+`<期号>目录/` 真实稿件（**只读**）｜`编辑笔记/` 模板与《排校手册》（规范的权威文本）。
 
 ---
 
@@ -93,7 +94,7 @@ LibreOffice 免费开源但**不随工具箱打包/分发**（含 MathType 公�
 **源文件必须显式给（`--source` 必填）**，工具不做自动发现；`run_poc.py` / `corpus.py` 的自动发现
 **只给回归用**。完整参数表、依赖、GUI 各页在干什么、报错对照，见
 [`docs/GUIDE.md`](docs/GUIDE.md) 与 **[`使用说明.md`](../使用说明.md)**（后者是面向编辑的操作手册）。
-GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页面按编辑流程分组排（单篇稿件 → 整期装配 → 引用库 → 设置）。
+GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分组排（单篇稿件 → 整期装配 → 引用库 → 设置）；Windows exe 由 `flet pack` 产出、引擎 sidecar 由 `tools/build_win_sidecar.ps1` 生成（旧 mac `.app` 与 `build.sh` 已于批 108 删除）。
 
 ---
 
@@ -104,7 +105,7 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 | 第一次接触这个项目（人或 AI） | `AGENTS.md`（仓库根：必读顺序 + 禁止事项 + 验收清单）→ 本文件 |
 | **跑起来**：依赖、CLI 参数、GUI 各页、常见报错对照 | [`Engine/docs/GUIDE.md`](docs/GUIDE.md) |
 | **查判据/口径**：三态、体例签名、bib 规范、任务书、占位符与覆盖键 | [`Engine/docs/RULES.md`](docs/RULES.md) |
-| **写给外壳的契约**：CLI / 退出码 / 环境变量 / 产物路径 / 平台要求（mac 外壳与 Windows 外壳都按它调） | [`Engine/docs/ENGINE_API.md`](docs/ENGINE_API.md) |
+| **写给外壳的契约**：CLI / 退出码 / 环境变量 / 产物路径 / 平台要求（Flet 外壳按它调；旧 mac/Windows 双壳已删） | [`Engine/docs/ENGINE_API.md`](docs/ENGINE_API.md) |
 | **一校核查规则表**：《排校手册》《流程化经验书》的规范 → 可执行规则（含**未实现清单与原因**） | [`Engine/docs/PROOF_RULES.md`](docs/PROOF_RULES.md) |
 | **模板合规规则表**：初排稿/产品目录的 8 条 report-only 规则（T1–T8）与降级清单 | [`Engine/docs/TEMPLATE_RULES.md`](docs/TEMPLATE_RULES.md) |
 | 查某个 bug/规则的**根因 + 实测 + 验收**（第 1–30 条） | [`Engine/docs/cases/01-30.md`](docs/cases/01-30.md) |
@@ -129,43 +130,43 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3.14` + `PYTHONPATH=Engine/vendor`）：**138 套件 / 6415 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python` + `PYTHONPATH=Engine/vendor`）：**139 套件 / 6416 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48
-`test_b204_health_ignore` 40 ｜ `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 89 ｜ `test_b268_conflict` 15
+`test_b204_health_ignore` 40 ｜ `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 85 ｜ `test_b268_conflict` 15
 `test_b268_frontmatter` 17 ｜ `test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b270_url_note` 27
 `test_b285_contract` 48 ｜ `test_b285_diagnose` 179 ｜ `test_b285_report_header` 64 ｜ `test_b287_coop_metadata` 43
 `test_b288_taskcard` 52 ｜ `test_b290_bib_parse_fixes` 43 ｜ `test_b291_bibdb_institution_guard` 64 ｜ `test_b301_placeholder_author` 41
 `test_b303_coop_bak_recycle` 30 ｜ `test_b307_abs_label` 27 ｜ `test_b307_bib_syntax` 21 ｜ `test_b307_heading_no_sep` 36
-`test_b309_gate_speedup` 34 ｜ `test_b311_slices` 53 ｜ `test_b71_word_author_meta` 81 ｜ `test_b73_bibdb_adjudication` 84
-`test_b73_footnote_bare_cite` 45 ｜ `test_b74_fulltext_analysis` 99 ｜ `test_b74_gen_docs_write_once` 14 ｜ `test_b75_b137_cite_residual` 39
-`test_b75_coop_report_only` 63 ｜ `test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22 ｜ `test_b79_b131_delivery_record` 27
-`test_bare_email` 30 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10 ｜ `test_batch47b` 4
-`test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8 ｜ `test_batch49_no_cites` 10
-`test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 101 ｜ `test_batch56_coop` 54
-`test_batch57_coop_apply` 71 ｜ `test_batch58_bibdb_auto` 79 ｜ `test_batch58_bibdb_hits` 54 ｜ `test_batch59_coop_fulltext` 59
-`test_batch60_llm_fulltext` 69 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14 ｜ `test_batch63_chat_no_limit` 20
-`test_batch63_fulltext_apply` 39 ｜ `test_batch63_metadata_docx` 37 ｜ `test_batch63b_metadata_json` 88 ｜ `test_batch68_bibparse` 36
-`test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 53 ｜ `test_batch70_b001` 46 ｜ `test_batch_case_test` 0
-`test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bib_url_render` 58 ｜ `test_bibdb` 384
-`test_bibdb_rehash` 31 ｜ `test_bibdb_verify` 54 ｜ `test_bibnorm` 46 ｜ `test_bibparse_inline_pct` 50
-`test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27 ｜ `test_cn_author_split` 28
-`test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5
-`test_convert_proof_autofix` 74 ｜ `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 16
-`test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 66 ｜ `test_en_slot_placeholder` 9
-`test_english_manuscripts` 28 ｜ `test_envcheck` 46 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 12
-`test_incollection_fields` 41 ｜ `test_infocheck_toc` 135 ｜ `test_issue_tools` 69 ｜ `test_latex_appendix` 20
-`test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21
-`test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61
-`test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22
-`test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36
-`test_platform` 76 ｜ `test_proofcheck` 293 ｜ `test_publish` 58 ｜ `test_ref_raw_lines` 34
-`test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29 ｜ `test_refs_batch45a2` 27
-`test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20 ｜ `test_run_record` 36
-`test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25 ｜ `test_table_images` 14
-`test_tail_block` 58 ｜ `test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
-`test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
+`test_b309_gate_speedup` 31 ｜ `test_b311_slices` 53 ｜ `test_b312_footnote_container` 13 ｜ `test_b71_word_author_meta` 81
+`test_b73_bibdb_adjudication` 84 ｜ `test_b73_footnote_bare_cite` 45 ｜ `test_b74_fulltext_analysis` 99 ｜ `test_b74_gen_docs_write_once` 14
+`test_b75_b137_cite_residual` 39 ｜ `test_b75_coop_report_only` 63 ｜ `test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22
+`test_b79_b131_delivery_record` 27 ｜ `test_bare_email` 30 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10
+`test_batch47b` 4 ｜ `test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8
+`test_batch49_no_cites` 10 ｜ `test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 101
+`test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 71 ｜ `test_batch58_bibdb_auto` 79 ｜ `test_batch58_bibdb_hits` 54
+`test_batch59_coop_fulltext` 59 ｜ `test_batch60_llm_fulltext` 69 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14
+`test_batch63_chat_no_limit` 20 ｜ `test_batch63_fulltext_apply` 39 ｜ `test_batch63_metadata_docx` 35 ｜ `test_batch63b_metadata_json` 88
+`test_batch68_bibparse` 36 ｜ `test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 53 ｜ `test_batch70_b001` 46
+`test_batch_case_test` 0 ｜ `test_bib_key_determinism` 26 ｜ `test_bib_protection_forms` 45 ｜ `test_bib_url_render` 58
+`test_bibdb` 384 ｜ `test_bibdb_rehash` 29 ｜ `test_bibdb_verify` 51 ｜ `test_bibnorm` 46
+`test_bibparse_inline_pct` 50 ｜ `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 27
+`test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19
+`test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 74 ｜ `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45
+`test_docx_quote_footnote` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 66
+`test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_envcheck` 45 ｜ `test_evidence_injection` 27
+`test_footnote_id0` 12 ｜ `test_incollection_fields` 41 ｜ `test_infocheck_toc` 135 ｜ `test_issue_tools` 69
+`test_latex_appendix` 20 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
+`test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
+`test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18
+`test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19
+`test_pdfmerge` 36 ｜ `test_platform` 82 ｜ `test_proofcheck` 293 ｜ `test_publish` 58
+`test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29
+`test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20
+`test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
+`test_table_images` 11 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70
+`test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
 
 **普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，132 份源稿；成功解析 **132** 份 / 解析失败 **0** 份；三态互斥、相加 = 篇数）：
 
@@ -205,9 +206,10 @@ GUI 一句话：`dist/编辑部工具箱.app` 可直接拷走运行，15 个页�
    判据看**逐篇明细**而不是中位数。R5 的「`docxxml` 用 `id()` 去重、`05 Chuan_Hu` ±0.03pp 抖动」
    已在**第 125 条**修掉（去重改用元素身份）：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，
    不一致即回归。
-5. **重建 App + 包内 `cmp`** —— `cd EditToolBox && ./build.sh`，然后逐个 `cmp`
-   包内 `Resources/Engine/` 的引擎文件与仓库同名文件（「包内引擎过期」是本项目踩过的坑）。
-   ⚠️ `build.sh` 是**共享资源**：并行会话时必须**串行**，不要两边同时构建。
+5. **重新打包 + 包内 `cmp`** —— Windows：`Engine/tools/build_win_sidecar.ps1` 生成引擎 sidecar，再
+   `py -3.14 -m flet.cli pack sources-flet/app/main.py …`；打包后逐个 `cmp` 包内引擎文件与仓库同名文件
+   （「包内引擎过期」是本项目踩过的坑；macOS 由 CI 打包）。旧 `build.sh` / `一键构建.command` 已删，
+   历史版本可 `git archive v1.5.0` 取回；⚠️ 打包共用 `dist/` 与 sidecar 中间产物，并行会话必须**串行**。
 6. **文档一致性** —— `$PY tests/test_docs_consistency.py`（内含 `tools/gen_docs.py --check`，
    AUTO 块不许过期；引用路径必须存在；每处 `第 N 条` 必须可查；案例条目零丢失）。
 7. **一键自查** —— `$PY tools/selfcheck.py`（quick）/`--full`：把 1/2/5/6 的离线部分 +

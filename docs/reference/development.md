@@ -9,15 +9,14 @@ description: 仓库结构、构建命令、文档站本地开发。
 
 ```text
 Engine/         Python 引擎（唯一一份文档逻辑）
-sources-flet/   Flet 单壳（默认产品线；Windows/macOS 共用同一套界面）
-sources-win/    Windows 外壳（Tkinter，frozen：仅源码回退参考）
-sources-mac/    macOS 外壳（SwiftUI，frozen：仅源码回退参考）
+sources-flet/   Flet 单壳（唯一壳；Windows/macOS 共用同一套界面）
 编辑笔记/模板文件/ 本刊排版模板
 docs/           本站（VitePress 文档站）
 ```
 
 一个引擎、一个默认外壳：文档逻辑全在 `Engine/`，Flet 单壳只做「取值 → 拼参数 → 显示日志」（`services/engine_bridge.py`），
-保证两个平台算出来的结果一致。旧 Tkinter/SwiftUI 外壳自 v1.5.0 起 frozen，不再随发布线构建。
+保证两个平台算出来的结果一致。历史：旧 Tkinter/SwiftUI 外壳已于 2026-11-01（批 108）删除，
+v1.0.0–v1.5.0 历史版本仍按 MIT 发布（不可撤回）。
 
 ## 构建
 
@@ -38,12 +37,10 @@ cd Engine
 python3 -m pip install --target vendor -r requirements.txt
 PYTHONPATH="$PWD/vendor" python3 tools/selfcheck.py --full
 
-# 旧外壳构建脚本（frozen，仅回退参考）
-bash build.sh                                  # 旧 macOS App
-cd sources-win && pwsh -ExecutionPolicy Bypass -File build-win.ps1   # 旧 Windows 两个 exe
-
-# 旧 Windows 外壳桥接测试（冻结前回归参考）
-PYTHONPATH=Engine/vendor python3 sources-win/tests/test_bridge.py
+# 引擎测试（依赖装进 Engine/vendor）
+cd Engine
+python3 -m pip install --target vendor -r requirements.txt
+PYTHONPATH="$PWD/vendor" python3 tools/selfcheck.py --full
 ```
 
 ## 文档站本地开发
