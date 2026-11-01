@@ -564,6 +564,112 @@ def bibdb_query_call(
     return _call("bibdb.py", args, "引用库检索")
 
 
+# 旧壳查库页的两组常量（bibdb_ui.py QUERY_MODES / ADVANCED_*；顺序即界面顺序）
+QUERY_MODES = ("key", "doi", "title")
+QUERY_MODE_LABELS = {"key": "key", "doi": "DOI", "title": "题名"}
+QUERY_FIELDS = ("author", "editor", "title", "booktitle", "journal",
+                "publisher", "year", "doi", "alias", "any")
+QUERY_FIELD_LABELS = {
+    "author": "作者", "editor": "编者", "title": "题名", "booktitle": "书名",
+    "journal": "期刊", "publisher": "出版社", "year": "年份", "doi": "DOI",
+    "alias": "别名", "any": "任意",
+}
+QUERY_MATCH_MODES = ("contains", "prefix", "exact", "fuzzy")
+QUERY_MATCH_LABELS = {"contains": "包含", "prefix": "前缀", "exact": "精确", "fuzzy": "模糊"}
+QUERY_SORTS = ("relevance", "year", "author")
+QUERY_SORT_LABELS = {"relevance": "相关度", "year": "年份", "author": "作者"}
+QUERY_NO_FUZZY = ("year", "doi", "alias")
+
+
+def _limit_value(raw, *, default: int = 20) -> int:
+    """limit 1–200；报错句子与旧壳逐字一致（`raw!r` 保留原始输入，便于人核对）。
+
+    `None` = 调用方没给（用默认值）；显式空串 = 非数字，按旧壳报错（Spinbox 被清空时
+    旧壳同样是「limit 必须是 1–200 的整数：''」）。
+    """
+    if raw is None:
+        return default
+    if str(raw).strip() == "":
+        raise ValueError(f"limit 必须是 1–200 的整数：{raw!r}")
+    try:
+        number: int | None = int(str(raw).strip())
+    except (TypeError, ValueError):
+        number = None
+    if number is None or not 1 <= number <= 200:
+        raise ValueError(f"limit 必须是 1–200 的整数：{raw!r}")
+    return number
+
+
+def bibdb_query_basic_call(
+    mode: str,
+    value: str,
+    *,
+    limit: int | str = 10,
+    bibtex: bool = True,
+    db: str = "",
+) -> EngineCall:
+    """基本检索（只读）：query --key|--doi|--title --json [--bibtex]。
+
+    与旧壳 `engine.py` 的 bibdb_query 同口径：方式三选一、`--bibtex` 让每条命中带
+    可直接粘贴的 BibTeX；`--limit` 只在题名（模糊匹配）时对旧壳有意义，这里统一给
+    引擎（默认 10，与引擎一致）。
+    """
+    mode = (mode or "key").strip()
+    if mode not in QUERY_MODES:
+        raise ValueError(f"未知的检索方式：{mode}（只认 key/doi/title）")
+    text = (value or "").strip()
+    args = ["query", "--json"]
+    args += [f"--{mode}", text]
+    args += ["--limit", str(_limit_value(limit, default=10))]
+    _append_flag(args, "--bibtex", bibtex)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, f"引用库 · 查库（{QUERY_MODE_LABELS[mode]}）")
+
+
+def bibdb_query_advanced_call(
+    *,
+    terms: list[tuple[str, str, str]] | list[dict],
+    sort: str = "relevance",
+    limit: int | str = 20,
+    strict: bool = False,
+    bibtex: bool = True,
+    db: str = "",
+) -> EngineCall:
+    """高级检索（只读）：query-advanced，多行条件 AND。
+
+    `terms` 每项 `(field, value, mode)`（也接受同名字典）。口径对齐旧壳：空值行跳过；
+    字段 10 项、模式 4 项、排序 3 项；每行都显式带 `--mode field=mode`；`--strict`
+    （模糊门槛 0.90）与 `--min-score=0.75`（引擎默认）二选一，不叠加。
+    """
+    rows: list[tuple[str, str, str]] = []
+    for term in terms or []:
+        if isinstance(term, dict):
+            field, value, mode = term.get("field"), term.get("value"), term.get("mode")
+        else:
+            field, value, mode = (list(term) + ["", "", ""])[:3]
+        value = str(value or "").strip()
+        if not value:
+            continue  # 旧壳：空值行跳过（不算条件）
+        rows.append((str(field or "").strip(), value, str(mode or "").strip()))
+    if not rows:
+        raise ValueError("高级检索至少要填一行检索条件。")
+    if sort not in QUERY_SORTS:
+        raise ValueError(f"未知的排序方式：{sort}（只认 relevance/year/author）")
+    args = ["query-advanced"]
+    for field, value, mode in rows:
+        if field not in QUERY_FIELDS:
+            raise ValueError(f"未知的检索字段：{field}（只认 10 个字段）")
+        if mode not in QUERY_MATCH_MODES:
+            raise ValueError(f"未知的匹配方式：{mode}（只认 contains/prefix/exact/fuzzy）")
+        args += [f"--{field}", value, "--mode", f"{field}={mode}"]
+    args += ["--sort", sort, "--limit", str(_limit_value(limit, default=20))]
+    args.append("--strict" if strict else "--min-score=0.75")
+    _append_flag(args, "--bibtex", bibtex)
+    args.append("--json")
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "引用库 · 高级检索")
+
+
 # ── 写库调用（B-246c P6：入藏 / 待裁决；默认 dry-run，写前带 sha 闸）──────
 def bibdb_import_call(
     *,

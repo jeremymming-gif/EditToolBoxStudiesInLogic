@@ -14,6 +14,8 @@ import flet as ft
 
 from services import engine_bridge as EB
 from ui import ai_panel as AIP
+from ui import bib_advanced as BA
+from ui import bib_settings as BS
 from ui import bib_write as BW
 from ui import components as C
 from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
@@ -224,7 +226,7 @@ class SinglePage(BasePage):
         "checkbib": {
             "label": "文献回读校验",
             "icon": "CHECK_CIRCLE_OUTLINE",
-            "desc": "交回的稿件里的引用与 .bib 条目逐条比对，可把结论并回正文",
+            "desc": "交回的稿件里的引用与 .bib 条目逐条比对，可回读校验 reference.bib 并查看差异",
         },
         "proofcheck": {
             "label": "一校核查",
@@ -914,11 +916,10 @@ class BibPage(BasePage):
         self.view = "overview"
         self.stats_data: dict | None = None
         self.stats_error = ""
-        self.query_hits: list = []
-        self.query_meta: dict = {}
-        self.query_error = ""
+        self.query_field: ft.TextField | None = None  # P2_BIB_QUERY_UI 自检钩子用
         self.view_slot: ft.Container | None = None
-        self.query_field: ft.TextField | None = None
+        self.query_view = BA.BibQueryView(self)
+        self.settings_view = BS.BibSettingsView(self)
         self.import_view = BW.BibImportView(self)
         self.review_view = BW.BibReviewView(self)
 
@@ -950,6 +951,8 @@ class BibPage(BasePage):
             self.page.run_task(self._load_stats)
         elif view == "review":
             self.review_view.ensure_loaded()
+        elif view == "settings":
+            self.page.run_task(self.settings_view.ensure_loaded)
 
     async def _load_stats(self) -> None:
         try:
@@ -969,26 +972,11 @@ class BibPage(BasePage):
         self._render()
 
     async def _run_query(self) -> None:
-        keyword = (self.query_field.value or "").strip() if self.query_field else ""
-        self.mark("bib_query_begin", keyword=keyword)
-        if not keyword:
-            self.query_error = "请输入检索关键词"
-            self._render()
-            return
-        try:
-            call = EB.bibdb_query_call(title=keyword)
-            result = await asyncio.to_thread(EB.read_json_command, call)
-        except RuntimeError as exc:
-            self.query_error = str(exc)
-            result = {"ok": False, "error": str(exc), "json": {}}
-        payload = result.get("json") or {}
-        self.query_hits = payload.get("hits") or []
-        self.query_meta = {key: payload.get(key) for key in
-                           ("count", "ambiguous", "high", "db", "note") if payload.get(key) is not None}
-        self.query_error = "" if result.get("ok") else str(result.get("error") or "检索失败")
-        self.mark("bib_query", ok=bool(result.get("ok")), code=result.get("code"),
-                  keyword=keyword, count=len(self.query_hits), ambiguous=payload.get("ambiguous"))
-        self._render()
+        """兼容 `P2_BIB_QUERY_UI` 自检钩子：把旧入口接到新的查库视图（基本检索 / 题名）。"""
+        value = (self.query_field.value or "").strip() if self.query_field else ""
+        if value:
+            self.query_view.basic_text = value
+        await self.query_view._run_basic()
 
     # ── 渲染 ───────────────────────────────────────────────────────────
     def _render(self) -> None:
@@ -996,10 +984,10 @@ class BibPage(BasePage):
             return
         builders = {
             "overview": self._overview_view,
-            "query": self._query_view,
+            "query": self.query_view.build,
             "import": self.import_view.build,
             "review": self.review_view.build,
-            "settings": self._readonly_view,
+            "settings": self.settings_view.build,
         }
         builder = builders.get(self.view, self._overview_view)
         try:
@@ -1045,74 +1033,6 @@ class BibPage(BasePage):
         ]), t)
         return ft.Column(spacing=t.sp("2"), controls=[cards, info])
 
-    def _query_view(self) -> ft.Control:
-        t = self.t
-        self.query_field = ft.TextField(
-            label="题名关键词", dense=True, expand=True, text_size=t.font("small"),
-            border_color=t.palette.border, focused_border_color=t.palette.accent,
-            content_padding=C._pad(t, 10, 8, 10, 8),
-            on_submit=lambda e: self.page.run_task(self._run_query),
-        )
-        run_row = ft.Row(spacing=t.sp("1"), controls=[
-            self.query_field,
-            C.primary_button("检索", lambda e: self.page.run_task(self._run_query), t, icon="SEARCH"),
-        ])
-        controls: list = [C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("查库", t, note="只读检索：调 bibdb.py query --json"),
-            run_row,
-            C.text("示例：题名「逻辑」；结果按置信度排序，歧义会标出。", t, "caption", t.palette.text_faint),
-        ]), t)]
-        if self.query_error:
-            controls.append(C.notice_bar(self.query_error, t, "warn"))
-        if self.query_meta:
-            meta = " · ".join(f"{k}={v}" for k, v in self.query_meta.items())
-            controls.append(C.card(ft.Column(spacing=t.sp("half"), controls=[
-                C.text(meta, t, "caption", t.palette.text_faint),
-                self._hits_list(),
-            ]), t))
-        elif self.query_hits:
-            controls.append(C.card(self._hits_list(), t))
-        return ft.Column(spacing=t.sp("2"), controls=controls)
-
-    def _hits_list(self) -> ft.Control:
-        t = self.t
-        rows: list = []
-        for hit in self.query_hits[:20]:
-            record = hit.get("record") or {}
-            fields = record.get("fields") or {}
-            title = str(fields.get("title") or record.get("key") or "（无题名）")
-            author = str(fields.get("author") or "")
-            year = str(fields.get("year") or "")
-            key = str(record.get("key") or hit.get("key") or "")
-            tag = hit.get("confidence") or ""
-            rows.append(ft.Row(spacing=t.sp("1"), controls=[
-                ft.Icon(C.ic("MENU_BOOK", "BOOK"), size=t.px(16), color=t.palette.accent),
-                C.text(title, t, "small", weight="medium"),
-                C.text(f"{author} {year}".strip(), t, "small", t.palette.text_muted),
-                ft.Container(expand=True),
-                C.badge(key or "—", t, "neutral"), *(
-                    [C.badge(f"置信 {tag}", t, "accent")] if tag else []),
-            ]))
-        if not rows:
-            rows.append(C.text("没有匹配条目（库里没有该题名，或关键词太宽）", t, "small",
-                               t.palette.text_muted))
-        return ft.Column(spacing=t.sp("1"), controls=rows)
-
-    def _readonly_view(self, kind: str = "settings") -> ft.Control:
-        t = self.t
-        stats = self.stats_data or {}
-        conflicts = (stats.get("conflicts") or {}).get("records")
-        if kind == "import":
-            title, desc = "入藏（只读占位）", ("把回读校验通过的条目写入引用库属于写库操作，"
-                                        "P4 实装并需用户授权；本页先只读展示状态。")
-        elif kind == "review":
-            title, desc = "待处理（只读占位）", ("冲突/待裁决队列的裁决会写库 sidecar，P4 实装；"
-                                          f"当前冲突 {conflicts if conflicts is not None else '—'} 条。")
-        else:
-            title, desc = "引用库设置（只读占位）", ("校验阈值 / AI 查找开关等写设置项在 P4 归位；"
-                                              "设置页（系统组）已含引擎与环境检查。")
-        return C.card(C.empty_state("LOCK_OUTLINE", title, desc, t, height=240), t)
-
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _kv(self, label: str, value: str) -> ft.Row:
         t = self.t
@@ -1127,6 +1047,8 @@ class BibPage(BasePage):
             self.page.run_task(self._load_stats)
         elif self.view == "review":
             self.review_view.ensure_loaded()
+        elif self.view == "settings":
+            self.page.run_task(self.settings_view.ensure_loaded)
 
     def refresh_running(self) -> None:
         pass
