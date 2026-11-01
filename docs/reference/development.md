@@ -22,7 +22,7 @@ docs/           本站（VitePress 文档站）
 ```bash
 # Flet 单壳：开发运行（热重载）与单元测试
 cd sources-flet
-python3 -m flet run app/main.py
+python3 -m flet.cli run app/main.py
 python3 -m pytest tests -q
 
 # Flet 单壳：打包（onefile；引擎 sidecar 另由 CI/打包脚本产出）

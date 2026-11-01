@@ -19,7 +19,7 @@ packaging/       发布/打包共用材料：FIRST-OPEN-*.txt、sidecar_check.py
 
 ```bash
 cd sources-flet
-python3 -m flet run app/main.py          # 开发运行（热重载）
+python3 -m flet.cli run app/main.py      # 开发运行（热重载；需 flet/flet-desktop/flet-cli 1.0.5）
 python3 -m pytest tests -q               # 单元测试（不启动 GUI）
 ```
 

@@ -57,7 +57,7 @@ py -3.14 -X utf8 Engine/tests/test_docs_consistency.py
 ```bash
 # Flet 单壳：开发运行与单元测试
 cd sources-flet
-python3 -m flet run app/main.py
+python3 -m flet.cli run app/main.py
 python3 -m pytest tests -q
 
 # 打包口径（sidecar + flet pack）与本地复刻命令

@@ -43,7 +43,7 @@ macOS 与 Windows 使用同一个引擎，同一份输入得到同样的结果�
 | 依赖 | 用途 | 必需性 |
 |---|---|---|
 | Python 3.14 | 引擎运行与测试（`vendor/` 依赖按 3.14 预编译）；Flet 壳开发同样用 3.14 | 源码运行必需 |
-| `flet` + `flet-desktop` | 运行/打包 Flet 单壳（`pip install flet flet-desktop`） | 桌面端开发必需 |
+| `flet` + `flet-desktop` + `flet-cli` | 运行/打包 Flet 单壳（`pip install flet flet-desktop flet-cli`；与发布版一致锁 **1.0.5**） | 桌面端开发必需 |
 | XeLaTeX + biber | 编译排版稿（TeX Live / MiKTeX / MacTeX） | 必需 |
 | LibreOffice | 转换含 MathType / OLE 公式的 Word 稿；缺失时公式图为占位 | 按稿件情况 |
 | PyInstaller | `flet pack` 与引擎 sidecar 打包 | 仅打包时需要 |
@@ -58,7 +58,7 @@ py -3.14 convert.py --version
 
 # Flet 单壳：开发期运行（热重载）
 cd ..\sources-flet
-py -3.14 -m flet run app/main.py
+py -3.14 -m flet.cli run app/main.py
 ```
 
 `macOS / Linux`（解释器名按本机安装，需 3.14）：
@@ -70,7 +70,7 @@ export PYTHONPATH="$PWD/vendor"
 python3.14 convert.py --version
 
 cd ../sources-flet
-python3.14 -m flet run app/main.py
+python3.14 -m flet.cli run app/main.py
 ```
 
 > `vendor/` 里的依赖是按 **Python 3.14** 预编译的，`py -3.14` / `python3.14` 必须指向 3.14。
