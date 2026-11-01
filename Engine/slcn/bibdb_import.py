@@ -12,7 +12,7 @@ import os, re, sys
 from slcn import bibdb, fsutil, paths
 from slcn.bibdb_core import (
     _db_path, _open_store, _print_changes, _print_import_report, _print_json,
-    _report_line, _source_note, _store_snapshot,
+    _report_line, _source_note, _store_snapshot, _write_guard,
 )  # noqa: F401
 from slcn.bibdb_reports import (
     _record_brief,
@@ -173,18 +173,21 @@ def cmd_import_bib(args) -> int:
         if text_warning:
             print(f"⚠️ {text_warning}", file=sys.stderr)
         path, store = _open_store(args, create=True)
+        db_sha_before, _ = _write_guard(path, args)
         db_existed = os.path.isfile(path)
         before = _store_snapshot(store)
         report = store.import_bib_text(text, source, verified=verified, force=args.force)
         changes = _change_rows(before, store)
         # dry-run = 只算不写：晚一点才调 `store.save()`，这里直接跳过（库文件也不会被新建）
         written = False if args.dry_run else store.save()
+        db_sha_after = bibdb.db_sha256(path)
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     payload = {"db": path, "bib": bib_path, "source": source,
                "verified": verified, "written": written,
                "dry_run": bool(args.dry_run), "db_existed": db_existed,
+               "db_sha256_before": db_sha_before, "db_sha256_after": db_sha_after,
                "report": report.summary(), "changes": changes}
     if args.json:
         _print_json(payload)
@@ -214,6 +217,7 @@ def cmd_import_dir(args) -> int:
         path = _db_path(args)
         db_existed = os.path.isfile(path)
         path, store = _open_store(args, create=True)
+        db_sha_before, _ = _write_guard(path, args)
         before = _store_snapshot(store)
         if issue_only:
             result = _import_one_issue(store, issue_only, force=args.force,
@@ -226,11 +230,13 @@ def cmd_import_dir(args) -> int:
         changes = _change_rows(before, store)
         written = False if args.dry_run else store.save()
         stats = store.stats()
+        db_sha_after = bibdb.db_sha256(path)
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     payload = {"db": path, "written": written,
                "dry_run": bool(args.dry_run), "db_existed": db_existed,
+               "db_sha256_before": db_sha_before, "db_sha256_after": db_sha_after,
                "root": os.path.abspath(root),
                "scope": "issue" if issue_only else "manuscripts",
                "result": result, "stats": stats, "changes": changes}

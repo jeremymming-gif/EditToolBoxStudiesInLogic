@@ -477,6 +477,88 @@ def bibdb_query_call(
     return _call("bibdb.py", args, "引用库检索")
 
 
+# ── 写库调用（B-246c P6：入藏 / 待裁决；默认 dry-run，写前带 sha 闸）──────
+def bibdb_import_call(
+    *,
+    bib: str = "",
+    issue: str = "",
+    slug: str = "",
+    dry_run: bool = True,
+    force: bool = False,
+    verified: bool = False,
+    unverified: bool = False,
+    expect_db_sha256: str = "",
+) -> EngineCall:
+    """入藏单份 bib：import-bib --json（dry_run=True 只算不写）。"""
+    args = ["import-bib", "--json"]
+    _append_opt(args, "--bib", bib)
+    _append_opt(args, "--issue", issue)
+    _append_opt(args, "--slug", slug)
+    _append_flag(args, "--force", force)
+    _append_flag(args, "--verified", verified)
+    _append_flag(args, "--unverified", unverified)
+    _append_flag(args, "--dry-run", dry_run)
+    _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    return _call("bibdb.py", args, "入藏预览" if dry_run else "写入引用库")
+
+
+def bibdb_import_dir_call(
+    *,
+    root: str = "",
+    through_year: int | str = "",
+    finished_only: bool = False,
+    dry_run: bool = True,
+    force: bool = False,
+    expect_db_sha256: str = "",
+) -> EngineCall:
+    """入藏整期目录 / 稿件库：import-dir --json（dry_run=True 只算不写）。"""
+    args = ["import-dir", "--json"]
+    _append_opt(args, "--root", root)
+    _append_opt(args, "--through-year", through_year)
+    _append_flag(args, "--finished-only", finished_only)
+    _append_flag(args, "--force", force)
+    _append_flag(args, "--dry-run", dry_run)
+    _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    return _call("bibdb.py", args, "整期入藏预览" if dry_run else "整期写入引用库")
+
+
+def bibdb_conflicts_call(*, pending_only: bool = True) -> EngineCall:
+    """待裁决清单（只读）：conflicts --json [--pending-only]。"""
+    args = ["conflicts", "--json"]
+    _append_flag(args, "--pending-only", pending_only)
+    return _call("bibdb.py", args, "待裁决清单")
+
+
+def bibdb_resolve_call(
+    *,
+    key: str = "",
+    action: str = "keep",
+    fields: str = "",
+    all_fields: bool = False,
+    incoming_sha256: str = "",
+    bib: str = "",
+    adopt_all_pending: bool = False,
+    note: str = "",
+    expect_db_sha256: str = "",
+    dry_run: bool = False,
+) -> EngineCall:
+    """记录冲突裁决：resolve --json（默认写库；dry_run=True 只预览）。"""
+    args = ["resolve", "--json"]
+    if adopt_all_pending:
+        args.append("--adopt-all-pending")
+    else:
+        _append_opt(args, "--key", key)
+        _append_opt(args, "--action", action)
+    _append_opt(args, "--fields", fields)
+    _append_flag(args, "--all-fields", all_fields)
+    _append_opt(args, "--incoming-sha256", incoming_sha256)
+    _append_opt(args, "--bib", bib)
+    _append_opt(args, "--note", note)
+    _append_flag(args, "--dry-run", dry_run)
+    _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    return _call("bibdb.py", args, "裁决预览" if dry_run else "记录裁决")
+
+
 def envcheck_call(out_dir: str = "") -> EngineCall:
     """环境检查（只读）：envcheck --json。"""
     args = ["--json"]

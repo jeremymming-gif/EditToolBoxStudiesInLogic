@@ -2751,6 +2751,9 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument("--dry-run", action="store_true",
                      help="预览：照常算新增/合并/冲突/跳过，但**不写库**"
                           "（--json 时带逐条 changes；界面「入藏」页的预览）")
+    imp.add_argument("--expect-db-sha256", default="", metavar="SHA",
+                     help="写前安全闸：校验库当前字节 sha256（完整 64 位十六进制）；"
+                          "不符 → 退出 2 且零写入（防界面预览过期后误写）")
     imp.add_argument("--json", action="store_true", help="机器可读输出")
     imp.set_defaults(func=cmd_import_bib)
 
@@ -2768,6 +2771,9 @@ def build_parser() -> argparse.ArgumentParser:
     ind.add_argument("--dry-run", action="store_true",
                      help="预览：照常算新增/合并/冲突/跳过，但**不写库**"
                           "（--json 时带逐条 changes；界面「入藏」页的预览）")
+    ind.add_argument("--expect-db-sha256", default="", metavar="SHA",
+                     help="写前安全闸：校验库当前字节 sha256（完整 64 位十六进制）；"
+                          "不符 → 退出 2 且零写入（防界面预览过期后误写）")
     ind.add_argument("--json", action="store_true", help="机器可读输出")
     ind.set_defaults(func=cmd_import_dir)
 

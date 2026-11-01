@@ -13,6 +13,7 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from ui import bib_write as BW
 from ui import components as C
 from ui.ia_map import IA_MAP, NAV_GROUPS, P3_PAGES, P3_STATUS, stats as ia_stats
 
@@ -160,7 +161,7 @@ class HomePage(BasePage):
         quick = ft.Row(spacing=t.sp("2"), controls=[
             entry_card("DESCRIPTION_OUTLINED", "单篇稿件", "初排转换 / 文献回读校验 / 一校核查", "single"),
             entry_card("VIEW_AGENDA_OUTLINED", "整期装配", "检查 → 目录 → 编译 → 合刊 → 清理 → 推送", "issue"),
-            entry_card("LIBRARY_BOOKS_OUTLINED", "引用库", "只读查看（查库/统计）", "bib"),
+            entry_card("LIBRARY_BOOKS_OUTLINED", "引用库", "查库、入藏与待裁决（写库需二次确认）", "bib"),
         ])
 
         recent = self.app.store.get("recent", {}) or {}
@@ -174,7 +175,7 @@ class HomePage(BasePage):
             ]))
 
         body = C.page_body(
-            C.notice_bar("P3：单篇 3 步、整期 6 步已接真引擎；引用库为只读视图；写库与打包归 P4。", t, "info"),
+            C.notice_bar("P6：单篇 3 步、整期 6 步、引用库（查库/入藏/待裁决/版本层）已接真引擎。", t, "info"),
             ft.Row(spacing=t.sp("2"), controls=[
                 C.card(ft.Column(spacing=t.sp("1"), controls=[
                     ft.Row(spacing=t.sp("2"), controls=[
@@ -877,10 +878,10 @@ class IssuePage(BasePage):
 
 # ── 引用库（P3 实装，P2 保留入口）────────────────────────────────────────
 class BibPage(BasePage):
-    """引用库（P3）：只读视图。
+    """引用库（P6）：概况/查库只读；入藏与待裁决是真写（二次确认 + sha 闸）。
 
-    纪律：只调 bibdb.py 的只读子命令（stats / query / query-advanced / lint），
-    绝不写库；入藏（11 页）、待裁决（12 页）的写操作留 P4，并需用户显式授权。
+    写库一律先干跑预览、再带 `--expect-db-sha256` 真写，写完自动本地提交
+    （只提交 bib_db/bibliography.jsonl）；推送/回退要二次确认（B-190 契约）。
     """
 
     key = "bib"
@@ -897,11 +898,13 @@ class BibPage(BasePage):
         self.query_error = ""
         self.view_slot: ft.Container | None = None
         self.query_field: ft.TextField | None = None
+        self.import_view = BW.BibImportView(self)
+        self.review_view = BW.BibReviewView(self)
 
     def build(self) -> ft.Control:
         t = self.t
         self.view_slot = ft.Container(expand=True)
-        header = C.page_header("引用库", "只读查看引用库统计与检索结果；写库操作在 P4（需授权）。", t,
+        header = C.page_header("引用库", "查库与统计只读；入藏 / 待裁决是写库操作（预览后二次确认）。", t,
                                actions=[
                                    C.secondary_button("刷新统计", lambda e: self.page.run_task(self._load_stats), t,
                                                       icon="REFRESH"),
@@ -910,8 +913,9 @@ class BibPage(BasePage):
                        controls=[C.chip(label, t, active=(key == self.view),
                                         on_click=lambda e, k=key: self._switch(k))
                                  for key, label in self.VIEWS])
-        notice = C.notice_bar("只读：本页只调用 bibdb.py 的只读子命令，绝不写库；"
-                              "入藏 / 待裁决的写入在 P4 实装。", t, "info")
+        notice = C.notice_bar("写库：入藏与待裁决都要二次确认，写前校验库 sha256（不符即拒绝、零写入）；"
+                              "写成功后自动本地提交（每次写库 1 条提交，批量「全部采用」也只 1 条；"
+                              "只提交 bib_db/bibliography.jsonl、不推送）。", t, "info")
         body = C.page_body(header, chips, notice, self.view_slot, t=t, gap=12)
         self._render()
         return body
@@ -923,6 +927,8 @@ class BibPage(BasePage):
         self._render()
         if view == "overview" and self.stats_data is None:
             self.page.run_task(self._load_stats)
+        elif view == "review":
+            self.review_view.ensure_loaded()
 
     async def _load_stats(self) -> None:
         try:
@@ -970,8 +976,8 @@ class BibPage(BasePage):
         builders = {
             "overview": self._overview_view,
             "query": self._query_view,
-            "import": lambda: self._readonly_view("import"),
-            "review": lambda: self._readonly_view("review"),
+            "import": self.import_view.build,
+            "review": self.review_view.build,
             "settings": self._readonly_view,
         }
         builder = builders.get(self.view, self._overview_view)
@@ -1098,6 +1104,8 @@ class BibPage(BasePage):
     def on_show(self) -> None:
         if self.view == "overview" and self.stats_data is None:
             self.page.run_task(self._load_stats)
+        elif self.view == "review":
+            self.review_view.ensure_loaded()
 
     def refresh_running(self) -> None:
         pass
@@ -1344,7 +1352,7 @@ class HelpPage(BasePage):
             C.section_title("怎么用", t),
             self._bullet("单篇稿件：选源稿件（必填）→ 勾处理选项 → 运行；日志与产物都在本页。"),
             self._bullet("整期装配：选期目录 → 6 步流水线按顺序跑；删除临时文件会二次确认。"),
-            self._bullet("引用库：只读查看统计与检索；写库在 P4，且需用户授权。"),
+            self._bullet("引用库：查库/统计只读；入藏与待裁决写库前预览、二次确认、sha 闸，写后本地提交。"),
             self._bullet("设置：外观 / 缩放 / 引擎目录 / 环境检查 / 诊断信息。"),
         ]), t)
         shortcuts = C.card(ft.Column(spacing=t.sp("1"), controls=[
