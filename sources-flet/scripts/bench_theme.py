@@ -23,8 +23,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app"
-DEFAULT_PY = Path("/Users/zhangwenming/slcn-work/p6-2026-11-01/venv-b112/bin/python")
-DEFAULT_OUT = Path("/Users/zhangwenming/slcn-work/p6-2026-11-01/evidence/b112-impl-s2/bench")
+# 默认值按环境推导（不写死本机路径）；可用 --python/--out 覆盖。
+DEFAULT_PY = Path(os.environ.get("SLCN_BENCH_PYTHON", sys.executable))
+DEFAULT_OUT = Path(os.environ.get("SLCN_BENCH_OUT", str(Path.cwd() / "bench-theme-out")))
 
 
 def p95(values) -> float:
