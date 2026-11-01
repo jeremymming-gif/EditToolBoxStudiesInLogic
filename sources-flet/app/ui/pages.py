@@ -30,6 +30,7 @@ from ui import metadata_form as MF
 from ui import normalize as NR
 from ui import settings_shell as SHELL
 from ui.base_page import BasePage
+from ui.tokens import ZOOM_MIN
 from ui.help_page import HelpPage
 from ui.ia_map import stats as ia_stats
 
@@ -108,7 +109,11 @@ class HomePage(BasePage):
             recent_rows.append(ft.Row(spacing=t.sp("1"), controls=[
                 C.text(label, t, "small", t.palette.text_muted),
                 ft.Container(expand=True),
-                C.text(_basename(value) or "（空）", t, "small", t.palette.text),
+                ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT, content=C.text(
+                    _basename(value) or "（空）", t, "small", t.palette.text,
+                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                    tooltip=None if not value else value,
+                )),
             ]))
 
         body = C.page_body(
@@ -120,7 +125,8 @@ class HomePage(BasePage):
                         ft.Container(expand=True),
                         engine_chip,
                     ]),
-                    C.text(engine_note, t, "small", t.palette.text_muted),
+                    C.text(engine_note, t, "small", t.palette.text_muted,
+                           max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, tooltip=engine_note),
                     C.text(f"应用版本 {self.app.app_version} · Flet {self.app.flet_version}", t,
                            "caption", t.palette.text_faint),
                 ]), t, expand=True),
@@ -136,7 +142,7 @@ class HomePage(BasePage):
                            "caption", t.palette.text_faint),
                 ]), t, expand=True),
             ]),
-            C.section_title("两条生产线", t, note="单篇逐篇处理；整期按 6 步流水线"),
+            C.section_title("工作入口", t, note="单篇逐篇处理 · 整期 6 步流水线 · 引用库独立维护"),
             quick,
             C.section_title("继续上次", t, note="最近使用的路径都落在设置文件里"),
             C.card(ft.Column(spacing=t.sp("2"), controls=recent_rows), t),
@@ -616,20 +622,29 @@ class IssuePage(BasePage):
             border_radius=t.radius("md"),
             padding=C._pad(t, 12, 10, 12, 10),
             on_click=lambda e, k=step["key"]: self._select(k),
-            content=ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                ft.Container(
-                    width=t.px(26), height=t.px(26), border_radius=t.radius("pill"),
-                    bgcolor=t.palette.surface if not selected else t.palette.surface_2,
-                    alignment=ft.Alignment.CENTER,
-                    content=C.text(str(index + 1), t, "small", t.palette.text_muted, "semibold"),
-                ),
-                ft.Icon(C.ic(step["icon"], "CIRCLE"), size=t.px(18), color=color),
-                ft.Column(spacing=0, expand=True, controls=[
-                    C.text(step["title"], t, role="step-selected" if selected else "body"),
-                    C.text(step["desc"], t, "caption", t.palette.text_faint),
+            # 批 112 A-01：标题列只吃剩余宽度；标题/描述两行省略，运行按钮下沉到第二行，
+            # 避免 1.6×/窄窗下被序号+芯片+按钮挤成竖排。
+            content=ft.Column(spacing=t.sp("1"), controls=[
+                ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                    ft.Container(
+                        width=t.px(26), height=t.px(26), border_radius=t.radius("pill"),
+                        bgcolor=t.palette.surface if not selected else t.palette.surface_2,
+                        alignment=ft.Alignment.CENTER,
+                        content=C.text(str(index + 1), t, "small", t.palette.text_muted, "semibold"),
+                    ),
+                    ft.Icon(C.ic(step["icon"], "CIRCLE"), size=t.px(18), color=color),
+                    ft.Column(spacing=0, expand=True, controls=[
+                        C.text(step["title"], t, role="step-selected" if selected else "body",
+                               max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                        C.text(step["desc"], t, "caption", t.palette.text_faint,
+                               max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
+                    ]),
+                    C.status_chip(STATUS_TEXT.get(state, "待运行"), t, state),
                 ]),
-                C.status_chip(STATUS_TEXT.get(state, "待运行"), t, state),
-                C.text_button("运行", lambda e, k=step["key"]: self._run_step(k), t),
+                ft.Row(spacing=t.sp("1"), controls=[
+                    ft.Container(expand=True),
+                    C.text_button("运行", lambda e, k=step["key"]: self._run_step(k), t),
+                ]),
             ]),
         )
 
@@ -1104,7 +1119,9 @@ class BibPage(BasePage):
         return ft.Row(spacing=t.sp("1"), controls=[
             C.text(label, t, "small", t.palette.text_muted),
             ft.Container(expand=True),
-            C.text(str(value), t, "small", t.palette.text),
+            ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT, content=C.text(
+                str(value), t, "small", t.palette.text, max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value))),
         ])
 
     def on_show(self) -> None:
@@ -1164,8 +1181,8 @@ class SettingsPage(BasePage):
             ]),
             ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                 C.text("界面缩放", t, "body"),
-                ft.Slider(min=0.8, max=2.0, divisions=12, value=float(self.app.store.get("zoom", 1.0)),
-                          active_color=t.palette.accent, expand=True,
+                # 批 112 A-05：滑块量程与屏幕钳制后的真实上限一致，不再先给 2.0× 再强钳。
+                ft.Slider(**self._zoom_slider_spec(t), active_color=t.palette.accent, expand=True,
                           on_change=self._zoom_changed),
                 C.text(f"{self.app.effective_zoom:.2f}×（上限 {self.app.max_zoom:.2f}×）", t,
                        "small", t.palette.text_muted, "medium"),
@@ -1202,8 +1219,10 @@ class SettingsPage(BasePage):
             actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
                                       icon="SAVE_OUTLINED")],
         )
-        page = C.page_body(header, engine_card, appearance, tray, paths, AIP.AiSettings(self).build(),
-                           envcheck, proxy, logs, advanced, about, diagnostics, t=t, gap=12)
+        # 批 112 A-06：环境检查上提到引擎卡之后，首屏可见（原先在折叠线以下第 7 张卡）。
+        page = C.page_body(header, engine_card, envcheck, appearance, tray, paths,
+                           AIP.AiSettings(self).build(), proxy, logs, advanced, about, diagnostics,
+                           t=t, gap=12)
         return page
 
     # ── 小工具 ─────────────────────────────────────────────────────────
@@ -1212,7 +1231,9 @@ class SettingsPage(BasePage):
         return ft.Row(spacing=t.sp("1"), controls=[
             C.text(label, t, "small", t.palette.text_muted),
             ft.Container(expand=True),
-            C.text(str(value), t, "small", t.palette.text),
+            ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT, content=C.text(
+                str(value), t, "small", t.palette.text, max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value))),
         ])
 
     def _path_field(self, key: str, label: str, *, kind: str = "dir") -> ft.Container:
@@ -1228,6 +1249,16 @@ class SettingsPage(BasePage):
                                 on_browse=_browse, show_note=False, field_ref=ref)
         self.fields[key] = ref
         return control
+
+    def _zoom_slider_spec(self, t) -> dict:
+        hi = max(1.2, round(float(self.app.max_zoom), 2))
+        lo = min(float(ZOOM_MIN), hi - 0.2)
+        return {
+            "min": lo,
+            "max": hi,
+            "divisions": max(1, int(round((hi - lo) / 0.1))),
+            "value": min(max(float(self.app.store.get("zoom", 1.0)), lo), hi),
+        }
 
     def _zoom_changed(self, e) -> None:
         value = round(float(e.control.value), 2)

@@ -287,6 +287,13 @@ class App:
                 outline=palette.border,
             ),
             font_family=FONT_FAMILY,
+            # 批 112 A-03：复选框走主题投影（默认 1px 黑框与全站胶囊/紫色语言不一致）。
+            checkbox_theme=ft.CheckboxTheme(
+                fill_color=palette.accent,
+                check_color=palette.on_accent,
+                border_side=ft.BorderSide(tokens.px(1), palette.border_strong),
+                shape=ft.RoundedRectangleBorder(radius=tokens.px(4)),
+            ),
             # 批 112 GUI-11：非按钮文本槽位必须带显式颜色。TextTheme 只给 size 时 color 为
             # None，TextField 的输入文字会落到客户端默认色（深色主题的浅色）而背景是浅色
             # → 白字白底不可读。label_* 不带色，按钮自己的 color/style 决定前景。

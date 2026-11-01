@@ -63,7 +63,9 @@ class _FakeApp:
         self.page = _FletPage()
         self.running = False
         self.t = Tokens("light", 1.0, 96)
-        self.engine_status = type("_S", (), {"ok": True})()
+        self.engine_status = type("_S", (), {"ok": True, "version": "1.6.0",
+                                            "engine_dir": "/tmp/engine",
+                                            "describe": lambda self: "源码引擎 · /tmp/engine"})()
         self.toasts: list[str] = []
         self.marked: list = []
 
@@ -198,3 +200,42 @@ def test_logconsole_api_unchanged_and_flow_mode_intact():
     log.clear()
     assert log._lines == [] and log.list.controls == [log.empty]
     # 用完即弃的控件不能有「挂着未 update」的副作用：上面调用均不抛异常。
+
+
+# ── 5. 批 112 A-01：整期装配步骤行给标题列稳定宽度（缩放/窄窗不竖排） ──────
+def _build_issue():
+    app = _FakeApp()
+    page = P.IssuePage(app)
+    root = page.build()
+    return page, root
+
+
+def test_issue_step_row_keeps_title_column_widable():
+    page, _root = _build_issue()
+    row = page._step_row(0, page.STEPS[0])
+    assert isinstance(row.content, ft.Column), "步骤行应是两行结构（标题行 + 操作行）"
+    head, actions = row.content.controls
+    assert isinstance(head, ft.Row) and isinstance(actions, ft.Row)
+    title_cols = [c for c in head.controls if isinstance(c, ft.Column)]
+    assert title_cols and title_cols[0].expand is True, "标题列必须 expand 吃剩余宽度"
+    texts = [c for c in _walk(title_cols[0]) if isinstance(c, ft.Text)]
+    assert texts[0].max_lines == 2 and texts[0].overflow == ft.TextOverflow.ELLIPSIS
+    assert texts[1].max_lines == 2 and texts[1].overflow == ft.TextOverflow.ELLIPSIS
+    labels = [str(getattr(c, "content", "")) for c in actions.controls]
+    assert any("运行" in label for label in labels), "运行按钮应下沉到第二行"
+
+
+# ── 6. 批 112 A-05：设置页缩放滑块量程 = 屏幕钳制后的真实上限 ──────────────
+def test_zoom_slider_spec_follows_max_zoom():
+    app = _FakeApp()
+    app.max_zoom = 1.6
+    app.store.set("zoom", 1.6)
+    page = P.SettingsPage(app)
+    spec = page._zoom_slider_spec(page.t)
+    assert spec["max"] == 1.6, "滑块上限必须是实际 max_zoom（不再固定 2.0）"
+    assert spec["value"] == 1.6
+    assert spec["min"] <= 0.8
+    assert isinstance(spec["divisions"], int) and spec["divisions"] >= 1
+    app.store.set("zoom", 0.5)
+    page2 = P.SettingsPage(app)
+    assert page2._zoom_slider_spec(page2.t)["value"] >= spec["min"]

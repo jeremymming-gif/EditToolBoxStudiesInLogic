@@ -55,3 +55,15 @@ def test_label_slots_keep_widget_color():
         style = getattr(tex, slot)
         assert style is not None
         assert style.color is None, f"{slot} 不应写死颜色（会污染按钮前景）"
+
+
+def test_checkbox_theme_projects_palette_accent():
+    """批 112 A-03：复选框走主题投影，不再落客户端 1px 黑框。"""
+    for theme, palette in (("light", LIGHT), ("dark", DARK)):
+        theme_obj = _themes(theme)
+        assert theme_obj.checkbox_theme is not None, f"{theme} 缺 checkbox_theme"
+        box = theme_obj.checkbox_theme
+        assert box.fill_color == palette.accent
+        assert box.check_color == palette.on_accent
+        assert box.border_side is not None and box.border_side.width > 0
+        assert box.shape is not None
