@@ -171,7 +171,8 @@ def text_button(label: str, on_click, t: Tokens) -> ft.TextButton:
 # ── 下拉框 ──────────────────────────────────────────────────────────────────
 def dropdown(t: Tokens, *, value: str | None, options: list[tuple[str, str]],
              on_select=None, width: float | None = None, dense: bool = True,
-             label: str | None = None, **kwargs) -> ft.Dropdown:
+             label: str | None = None, height: float | None = None,
+             **kwargs) -> ft.Dropdown:
     """统一下拉框字号：关闭态（text_style）与菜单项（option.style）同锚正文 role。
 
     背景（批 112 GUI-10）：flet 1.0.5 关闭态字号走 `text_size`/`text_style`，菜单项走
@@ -181,13 +182,18 @@ def dropdown(t: Tokens, *, value: str | None, options: list[tuple[str, str]],
     body = t.font("body")
     text_color = t.palette.text
     item_style = ft.ButtonStyle(text_style=ft.TextStyle(size=body, color=text_color))
+    # 高度与同排 TextField（dense + 上下 content_padding 8）齐平：默认 Material 下拉
+    # 高度固定 48，不随 Tokens 缩放，放大后会比输入框高出一截（批 112 收尾 GUI-16）。
+    box_h = height if height is not None else (t.px(18) + body * 1.5)
     return ft.Dropdown(
         value=value,
         options=[ft.DropdownOption(key=key, text=text, style=item_style)
                  for key, text in options],
         width=width,
+        height=box_h,
+        content_padding=_pad(t, 10, 8, 10, 8),
         dense=dense,
-        text_size=t.font("body"),
+        text_size=t.font("body"),  # 守卫 test_b109_w45：输入类控件字号必须锚 body role
         text_style=ft.TextStyle(size=body, color=text_color),
         label=label,
         on_select=on_select,
