@@ -1,4 +1,4 @@
-"""GUI 自动走查场景（S1–S8）与控件树断言（A 类）。
+"""GUI 自动走查场景（S1–S10）与控件树断言（A 类）。
 
 每个 ``sN_*`` 函数都是一个独立场景：自己启动真实进程、自己断言、自己关闭。
 pytest 入口在 test_gui_auto.py；本模块也可被单独 import 做手工调试。
@@ -16,9 +16,20 @@ from ui import tokens as T
 from . import harness as H
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-FLOW_LABELS = ["初排转换", "文献回读校验", "一校核查"]
-BIB_VIEWS = ["overview", "query", "import", "review", "settings"]
-BIB_LABELS = ["概况", "查库", "入藏", "待处理", "设置"]
+FLOW_LABELS = ["初排转换", "一校核查"]  # 单篇页两 flow（checkbib 已迁「引用库 → 规范化」）
+BIB_VIEWS = ["overview", "query", "normalize", "import", "review",
+             "edit", "dupes", "fieldfix", "health", "settings"]
+BIB_LABELS = ["概况", "查库", "规范化", "入藏", "待处理",
+              "编辑", "查重合并", "字段归位", "库健康", "设置"]
+BIB_GROUPS = ["read", "intake", "treat", "maint"]
+BIB_GROUP_LABELS = ["查阅", "采录", "治理", "维护"]
+BIB_GROUP_VIEWS = {
+    "read": ("overview", "query"),
+    "intake": ("normalize", "import"),
+    "treat": ("review", "edit", "dupes", "fieldfix"),
+    "maint": ("health", "settings"),
+}
+BIB_VIEW_GROUP = {view: group for group, views in BIB_GROUP_VIEWS.items() for view in views}
 NAV_SEQUENCE = ["home", "single", "issue", "bib", "settings", "help"]
 
 
@@ -55,16 +66,33 @@ def _click_until_event(session: H.AppSession, dip: tuple[float, float], event: s
 
 
 def _chip_region(session: H.AppSession, img) -> tuple[int, int, int, int]:
+    """二级胶囊行：bib 页在组条下一行（y≈143.5），single 页仍是一行（y≈96.7）。"""
+    bx, by = session.border
+    width, _height = img.size
+    left = int(round(bx + 236 * session.scale))
+    top_dip, bottom_dip = (118, 176) if session.page == "bib" else (70, 130)
+    top = int(round(by + top_dip * session.scale))
+    bottom = int(round(by + bottom_dip * session.scale))
+    return (left, top, width, bottom)
+
+
+def _group_region(session: H.AppSession, img) -> tuple[int, int, int, int]:
+    """一级组条行（只在 bib 页）：y≈103.5，取 accent 下划线/文字色做选中判定。"""
     bx, by = session.border
     width, _height = img.size
     left = int(round(bx + 236 * session.scale))
     top = int(round(by + 70 * session.scale))
-    bottom = int(round(by + 130 * session.scale))
+    bottom = int(round(by + 126 * session.scale))
     return (left, top, width, bottom)
 
 
 def _active_chip_center(session: H.AppSession, img):
     return H.active_row_center(img, H.ACCENT_SOFT, _chip_region(session, img), min_count=20)
+
+
+def _active_group_center(session: H.AppSession, img):
+    # 组条选中态是 accent 文字 + 2px 下划线（宽约 26DIP），min_count 取小值。
+    return H.active_row_center(img, H.ACCENT, _group_region(session, img), min_count=10)
 
 
 def _click_chip(session: H.AppSession, dip: tuple[float, float],
@@ -261,7 +289,7 @@ def s3_theme(ctx: H.RunContext) -> dict:
         return info
 
 
-# ── S4 单篇页三步骤（A + C + D）─────────────────────────────────────────
+# ── S4 单篇页两步骤 + 跳转规范化（A + C + D）────────────────────────────
 def s4_single_flows(ctx: H.RunContext) -> dict:
     fixtures = ensure_fixtures()
     env = {
@@ -271,7 +299,7 @@ def s4_single_flows(ctx: H.RunContext) -> dict:
     }
     with ctx.session("s4", page="single", extra_env=env) as session:
         session.settle(0.8)
-        names = ["convert", "checkbib", "proofcheck"]
+        names = ["convert", "proofcheck"]
         rows: list[dict] = []
         imgs: dict[str, object] = {}
         img = session.screenshot("s4_flow_convert")
@@ -280,7 +308,7 @@ def s4_single_flows(ctx: H.RunContext) -> dict:
         imgs["convert"] = img
         rows.append({"flow": FLOW_LABELS[0], "center_x_dip": round(
             (center[0] - session.border[0]) / session.scale, 1)})
-        for index in (1, 2):
+        for index in (1,):
             label = FLOW_LABELS[index]
             img = _click_chip(session, H.SINGLE_CHIPS[index], H.SINGLE_CHIPS[index][0])
             center = _active_chip_center(session, img)
@@ -292,44 +320,143 @@ def s4_single_flows(ctx: H.RunContext) -> dict:
             img = session.screenshot(f"s4_flow_{names[index]}")
             imgs[names[index]] = img
             rows.append({"flow": label, "center_x_dip": round(actual_x, 1)})
-        # 三个 flow 的内容区必须真的不同（高亮 chip 只占一小块）
+        H.expect(len(rows) == len(FLOW_LABELS) == 2,
+                 f"S4 单篇页应只剩 2 个步骤胶囊，实际 {len(rows)}")
+        # 两个步骤的内容区必须真的不同（高亮 chip 只占一小块）
         width, height = img.size
         content = H.regions_for(session, width, height)["content"]
-        for a, b in (("convert", "checkbib"), ("checkbib", "proofcheck"), ("convert", "proofcheck")):
-            left, top, right, bottom = content
-            stats = H.diff_stats(imgs[a].crop((left, top, right, bottom)),
-                                 imgs[b].crop((left, top, right, bottom)))
-            H.expect(stats["mean"] > 0.3,
-                     f"S4 切换 {a}→{b} 后内容区几乎没变化: {stats}")
-        ctx.record("S4_single_flows", flows=rows)
-        return {"flows": rows}
+        left, top, right, bottom = content
+        stats = H.diff_stats(imgs["convert"].crop((left, top, right, bottom)),
+                             imgs["proofcheck"].crop((left, top, right, bottom)))
+        H.expect(stats["mean"] > 0.3,
+                 f"S4 切换 convert→proofcheck 后内容区几乎没变化: {stats}")
+        # 跳转按钮：单篇页保留入口，点击后落到「引用库 → 规范化」
+        jump = _click_until_event(
+            session, H.JUMP_BTN, "bib_normalize_jump", timeout=4.0,
+            offsets=((0, 0), (0, 6), (0, -6), (-8, 0), (8, 0),
+                     (-24, 0), (24, 0), (-45, 0), (45, 0)))
+        view_ev = session.wait_event(
+            "bib_view",
+            lambda e: e.get("view") == "normalize" and e.get("source") == "single",
+            timeout=8.0)
+        session.settle(0.8)
+        session.screenshot("s4_jump_normalize")
+        render_err = session.last_event("bib_render_error")
+        H.expect(render_err is None, f"S4 跳转规范化后渲染报错: {render_err}")
+        info = {"flows": rows, "jump": jump, "bib_view": view_ev}
+        ctx.record("S4_single_flows", **info)
+        return info
 
 
-# ── S5 引用库五视图（B + C + D）─────────────────────────────────────────
+# ── S5 引用库 10 视图 / 4 组（B + C + D）────────────────────────────────
 def s5_bib_views(ctx: H.RunContext) -> dict:
-    rows = []
+    """10 视图全覆盖 + 两级导航高亮。
+
+    坐标只校验 2 点（组条 1 点 + 胶囊 1 点，`±12 DIP`）；其余视图一律用
+    ``P2_BIB_VIEW`` 启动（不点坐标），避免窗口缩放/主题差异把坐标走查拖红。
+    """
+    rows: list[dict] = []
     with ctx.session("s5", page="bib") as session:
         session.wait_event("bib_stats", timeout=30)
         session.settle(0.6)
-        for index, (view, label) in enumerate(zip(BIB_VIEWS, BIB_LABELS)):
-            if index == 0:
-                img = session.screenshot("s5_view_overview")
-            else:
-                base_after = sum(1 for e in session.events() if e.get("event") == "bib_view")
-                err_after = sum(1 for e in session.events() if e.get("event") == "bib_render_error")
-                _click_until_event(
-                    session, H.BIB_CHIPS[index], "bib_view",
-                    lambda e, wanted=view: e.get("view") == wanted,
-                    timeout=4.0, offsets=((0, 0), (0, 5), (0, -5), (-6, 0), (6, 0)),
-                )
-                H.expect(not session.has_event("bib_render_error", after=err_after),
-                         f"S5 视图「{label}」渲染报错: {session.last_event('bib_render_error')}")
-                session.settle(0.6)
-                img = session.screenshot(f"s5_view_{view}")
-            rows.append({"view": view, "label": label,
-                         "bib_view_event": session.last_event("bib_view")})
-        ctx.record("S5_bib_views", views=rows)
-        return {"views": rows}
+        # ① 组条：点「采录」，应进组内首项「规范化」
+        group = "intake"
+        group_ev = _click_until_event(
+            session, H.bib_group_pos(group), "bib_view",
+            lambda e: e.get("group") == group, timeout=4.0,
+            offsets=((0, 0), (0, 5), (0, -5), (5, 0), (-5, 0)))
+        session.settle(0.6)
+        img = session.screenshot("s5_group_intake")
+        center = _active_group_center(session, img)
+        H.expect(center is not None, "S5 组条「采录」未出现选中态（accent 下划线）")
+        actual_x = (center[0] - session.border[0]) / session.scale
+        H.expect(abs(actual_x - H.bib_group_pos(group)[0]) <= 12,
+                 f"S5 组条「采录」高亮中心 x={actual_x:.1f}DIP 与点击坐标 "
+                 f"{H.bib_group_pos(group)[0]} 偏差 >12DIP")
+        rows.append({"kind": "group", "group": group, "view": group_ev.get("view"),
+                     "source": "click", "center_x_dip": round(actual_x, 1)})
+        # ② 胶囊：点「入藏」，应切到 import（与组默认视图不同，能区分点错行）
+        view = "import"
+        view_ev = _click_until_event(
+            session, H.bib_chip_pos(view), "bib_view",
+            lambda e: e.get("view") == view, timeout=4.0,
+            offsets=((0, 0), (0, 5), (0, -5), (5, 0), (-5, 0)))
+        session.settle(0.6)
+        img = session.screenshot("s5_view_import_click")
+        center = _active_chip_center(session, img)
+        H.expect(center is not None, "S5 胶囊「入藏」未出现选中态")
+        actual_x = (center[0] - session.border[0]) / session.scale
+        H.expect(abs(actual_x - H.bib_chip_pos(view)[0]) <= 12,
+                 f"S5 胶囊「入藏」高亮中心 x={actual_x:.1f}DIP 与点击坐标 "
+                 f"{H.bib_chip_pos(view)[0]} 偏差 >12DIP")
+        H.expect(not session.has_event("bib_render_error"),
+                 f"S5 视图「入藏」渲染报错: {session.last_event('bib_render_error')}")
+        rows.append({"kind": "chip", "group": BIB_VIEW_GROUP[view], "view": view,
+                     "source": "click", "center_x_dip": round(actual_x, 1)})
+    # ③ 其余 9 个视图（含规范化）：P2_BIB_VIEW 启动，零坐标
+    for view, label in zip(BIB_VIEWS, BIB_LABELS):
+        with ctx.session(f"s5_{view}", page="bib",
+                         extra_env={"P2_BIB_VIEW": view}) as session:
+            ev = session.wait_event(
+                "bib_view",
+                lambda e, wanted=view: e.get("view") == wanted, timeout=30.0)
+            H.expect(ev.get("source") == "env",
+                     f"S5「{label}」不是 P2_BIB_VIEW 钩子进入: {ev}")
+            H.expect(ev.get("group") == BIB_VIEW_GROUP[view],
+                     f"S5「{label}」组别错误: {ev} 期望 {BIB_VIEW_GROUP[view]}")
+            session.settle(0.8)
+            img = session.screenshot(f"s5_view_{view}")
+            # 10/10 高亮：启动即该视图，用色块几何中心校验（免点击、免坐标误差）
+            center = _active_chip_center(session, img)
+            H.expect(center is not None, f"S5 视图「{label}」胶囊未高亮")
+            actual_x = (center[0] - session.border[0]) / session.scale
+            H.expect(abs(actual_x - H.bib_chip_pos(view)[0]) <= 12,
+                     f"S5 视图「{label}」胶囊高亮 x={actual_x:.1f}DIP 与 IA 序 "
+                     f"{H.bib_chip_pos(view)[0]} 偏差 >12DIP")
+            group = BIB_VIEW_GROUP[view]
+            gcenter = _active_group_center(session, img)
+            H.expect(gcenter is not None, f"S5 视图「{label}」所属组条未高亮")
+            gactual = (gcenter[0] - session.border[0]) / session.scale
+            H.expect(abs(gactual - H.bib_group_pos(group)[0]) <= 12,
+                     f"S5 视图「{label}」组条高亮 x={gactual:.1f}DIP 与组序 "
+                     f"{H.bib_group_pos(group)[0]} 偏差 >12DIP")
+            err = session.last_event("bib_render_error")
+            H.expect(err is None, f"S5 视图「{label}」渲染报错: {err}")
+            rows.append({"kind": "view", "group": group, "view": view,
+                         "label": label, "source": "env",
+                         "center_x_dip": round(actual_x, 1),
+                         "group_x_dip": round(gactual, 1),
+                         "bib_view_event": ev})
+    ctx.record("S5_bib_views", views=rows)
+    return {"views": rows}
+
+
+# ── S10 「引用库 → 规范化」P2_BIB_VIEW 启动（B + D）─────────────────────
+def s10_bib_normalize_env(ctx: H.RunContext) -> dict:
+    """P2_BIB_VIEW=normalize 启动断言：视图/组别正确、无渲染报错、面板标题就位。"""
+    from ui import normalize as N
+    from ui import pages as P
+
+    H.expect(dict(P.BibPage.VIEWS).get("normalize") == "规范化",
+             "S10 IA 里 normalize 的标签不是「规范化」")
+    H.expect(P.BibPage.group_of("normalize") == "intake",
+             "S10 normalize 不在采录组")
+    H.expect(N.PAGE_TITLE == "参考文献规范化", "S10 规范化面板标题变了")
+    with ctx.session("s10", page="bib",
+                     extra_env={"P2_BIB_VIEW": "normalize"}) as session:
+        ev = session.wait_event(
+            "bib_view", lambda e: e.get("view") == "normalize", timeout=30.0)
+        H.expect(ev.get("source") == "env", f"S10 不是 P2_BIB_VIEW 进入: {ev}")
+        H.expect(ev.get("group") == "intake", f"S10 组别错误: {ev}")
+        session.settle(0.8)
+        session.screenshot("s10_bib_normalize")
+        err = session.last_event("bib_render_error")
+        H.expect(err is None, f"S10 规范化视图渲染报错: {err}")
+        info = {"bib_view": ev, "panel_title": N.PAGE_TITLE,
+                "views_label": dict(P.BibPage.VIEWS)["normalize"],
+                "group": P.BibPage.group_of("normalize")}
+        ctx.record("S10_bib_normalize", **info)
+        return info
 
 
 # ── S6 运行/停止按钮状态（B + D + E）────────────────────────────────────
@@ -446,4 +573,5 @@ SCENARIOS = {
     "s6": s6_buttons,
     "s7": s7_close,
     "s8": s8_tray_close,
+    "s10": s10_bib_normalize_env,
 }

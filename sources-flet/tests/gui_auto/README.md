@@ -31,7 +31,7 @@ $env:SLCN_GUI_AUTO="1"; py -3.14 -m pytest sources-flet/tests/gui_auto -v
 | 1a/1b/1c 入藏预览 | 引用库→入藏视图可渲染；**不做真实写库**（见「不能自动化」） | B/C |
 | 2 待处理（C 编号/差异/建议/版本库卡） | 引用库→待处理视图可渲染；只读，不点推送/回退/采用 | B/C |
 | 3 写库二次确认 | 只验证「写库说明/二次确认」文案在页面上可见；不点确认写入 | C |
-| 4 排版一致性 | A：`section_title`/`option_row`/`nav_item`/`LogConsole` 的字重与字号；C：单篇三 flow、引用库五视图截图 | A/C |
+| 4 排版一致性 | A：`section_title`/`option_row`/`nav_item`/`LogConsole` 的字重与字号；C：单篇两 flow、引用库 10 视图（4 组两级导航）截图 | A/C |
 | 5 记录 | 脚本输出退出码 + `report.json`（含覆盖矩阵结果） | E |
 
 ## 场景
@@ -41,9 +41,11 @@ $env:SLCN_GUI_AUTO="1"; py -3.14 -m pytest sources-flet/tests/gui_auto -v
   `nav_change` → 断言侧栏高亮位置 → 截图 diff。
 - **S3** 深色切换：点侧栏 Switch，等 `theme_changed`/`titlebar` → 等 toast 消失（2.2s）→
   截图、取背景/侧栏颜色 → 切回浅色与初始图一致。
-- **S4** 单篇三步骤：初排转换/文献回读校验/一校核查三个 chip 真实点击 + 高亮位置 +
-  三份截图内容两两不同（固定 fixture 路径，避免截图含随机路径）。
-- **S5** 引用库五视图：概况/查库/入藏/待处理/设置，等 `bib_view` 标记后截图。
+- **S4** 单篇两步骤：初排转换/一校核查两个 chip 真实点击 + 高亮位置 + 两份截图内容不同
+  （固定 fixture 路径，避免截图含随机路径）；「去引用库 → 规范化」跳转按钮可点且落位。
+- **S5** 引用库 10 视图 / 4 组：概况·查库（查阅）/ 规范化·入藏（采录）/ 待处理·编辑·查重合并·字段归位（治理）/
+  库健康·设置（维护），等 `bib_view` 标记后截图，并在 chips 带内断言被点视图高亮（`accent_soft` 连通块=1）。
+- **S10** 规范化宿主：`P2_BIB_VIEW=normalize` 启动即进「引用库 → 规范化」，面板标题与只读提示可见。
 - **S6** 运行/停止：空表单点「运行」→ `validation_error`，不得出现 `run_start`；
   点「停止」→ 不得出现 `cancel_requested`/`cancel_no_proc`。
 - **S7** 关闭：点原生标题栏 X → `close_requested`/`settings_saved`、exit 0、无残留进程。

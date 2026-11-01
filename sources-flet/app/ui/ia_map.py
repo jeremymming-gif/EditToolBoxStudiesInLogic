@@ -11,8 +11,8 @@
   系统   · 设置
 
 「取长补短」的两条关键取舍（详见 p1-design.md）：
-1. 「参考文献规范化」回归「单篇稿件」生产链（mac 分组口径）：它的输入是单篇 returned.docx，
-   Tk 版 B-286 把它降级到「引用库」组是历史产物；新 IA 只保留一条学习路径。
+1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → 规范化」，与「入藏」同组（采录）：它的输入是
+   单篇 returned.docx，体检放在入库前；「单篇稿件」页只留「去引用库 → 规范化」跳转，不再有第三步骤。
 2. 「整期装配」从 6 个平级页签改为一个页面的 6 个**步骤**：一期流水线天然有顺序，
    一屏能看到「进度 + 当前步骤 + 日志」比 6 次点页签更接近真实工作。
 """
@@ -37,9 +37,9 @@ IA_MAP: list[dict] = [
     {"idx": 0, "old_page": "初排转换", "old_group": "单篇稿件", "new_page": "单篇稿件",
      "new_view": "步骤「初排转换」", "component": "PathPicker + OptionRow×4 + 运行按钮 + LogConsole",
      "action": "convert（P2 接 Engine/convert.py）", "first_batch": "骨架已实现（模拟运行）"},
-    {"idx": 1, "old_page": "参考文献规范化", "old_group": "引用库", "new_page": "单篇稿件",
-     "new_view": "步骤「参考文献规范化」", "component": "PathPicker + OptionRow + 运行按钮",
-     "action": "checkbib（P2 接 Engine/checkbib.py）", "first_batch": "骨架已实现（模拟运行）"},
+    {"idx": 1, "old_page": "参考文献规范化", "old_group": "引用库", "new_page": "引用库",
+     "new_view": "视图「规范化」（采录组）", "component": "PathPicker + OptionRow + 运行按钮 + LogConsole",
+     "action": "checkbib（Engine/checkbib.py；只出报告、不并回、不写库）", "first_batch": "已实装（S3a2）"},
     {"idx": 2, "old_page": "合并文件", "old_group": "整期装配", "new_page": "整期装配",
      "new_view": "步骤 4「合并文件」", "component": "步骤行 + 状态徽标 + 运行按钮",
      "action": "merge（P2 接 Engine/mergepdf.py）", "first_batch": "骨架已实现（模拟运行）"},
@@ -131,6 +131,8 @@ def stats() -> dict:
         1 for row in IA_MAP
         if row["first_batch"].startswith(("骨架已实现", "已实装"))
     )
+    # IA_MAP idx1 从「单篇稿件」迁到「引用库 → 规范化」（采录组）后，new_pages 仍是 4 个：
+    # 单篇稿件 / 整期装配 / 引用库 / 设置；15 个旧页的映射总数不变。
     pages = sorted({row["new_page"] for row in IA_MAP})
     p3_done = sum(1 for row in IA_MAP if row.get("p3_status") == "done")
     p3_readonly = sum(1 for row in IA_MAP if row.get("p3_status") == "readonly")

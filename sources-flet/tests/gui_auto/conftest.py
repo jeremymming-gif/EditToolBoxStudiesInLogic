@@ -13,6 +13,30 @@ HERE = Path(__file__).resolve().parent
 # 依赖的库），mac 上会 OSError 打断整个 pytest 会话。Windows 行为保持不变。
 collect_ignore = [] if sys.platform.startswith("win") else ["test_gui_auto.py"]
 
+#: 引用库 10 视图（与 scenarios.BIB_VIEWS 同步）。按视图参数化时优先用 P2_BIB_VIEW
+#: 启动（不点坐标）；坐标只用于 S5 的两点高亮校验（组条 1 点 + 胶囊 1 点）。
+BIB_VIEW_IDS = [
+    "overview", "query", "normalize", "import", "review",
+    "edit", "dupes", "fieldfix", "health", "settings",
+]
+
+
+def bib_view_env(view: str) -> dict[str, str]:
+    """按视图启动的环境变量（不点坐标；S5 / S10 共用）。"""
+    return {"P2_BIB_VIEW": view}
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """用例声明 ``bib_view`` 参数即展开 10 视图（配合 ``bib_view_env`` 启动）。"""
+    if "bib_view" in metafunc.fixturenames:
+        metafunc.parametrize("bib_view", BIB_VIEW_IDS, ids=BIB_VIEW_IDS)
+
+
+@pytest.fixture
+def bib_view_env_for(bib_view: str) -> dict[str, str]:
+    """给按视图参数化的用例：``gui_ctx.session(..., extra_env=bib_view_env_for)``。"""
+    return bib_view_env(bib_view)
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("gui_auto", "GUI 自动走查（真实桌面）")

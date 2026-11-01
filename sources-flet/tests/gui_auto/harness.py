@@ -53,16 +53,49 @@ NAV_Y = {
     "help": 425.7,
 }
 SWITCH = (186.7, 703.3)
-SINGLE_CHIPS = [(301.3, 96.7), (403.3, 96.7), (506.7, 96.7)]
+SINGLE_CHIPS = [(301.3, 96.7), (391.3, 96.7)]  # 两 flow：初排转换 / 一校核查
+# 跳转按钮「去引用库 → 规范化」：胶囊行右侧（busy_bar 不可见时贴右缘）。**估位**：
+# 内容右缘≈1201、按钮宽≈195 → 中心≈1103.5；Windows 复核按实测校正。
+JUMP_BTN = (1103.5, 96.7)
 RUN_BTN = (1155.0, 41.0)
 STOP_BTN = (1051.3, 42.0)
-BIB_CHIPS = [
-    (288.0, 100.3),
-    (352.7, 100.3),
-    (417.3, 100.3),
-    (487.3, 100.3),
-    (556.7, 100.3),
-]
+# 引用库两级导航（10 视图 / 4 组）：组条在上一行、胶囊在下一行。
+# 坐标按 150% DPI 的布局公式估位：内容左≈259.7；chip 宽 2 字≈56.7、3 字≈67.3、4 字≈77.9，
+# 间距 8；组 tab 宽≈46、间距 8；组条中心 y≈100.0、胶囊中心 y≈143.0。
+# **未在 Windows 实测**：复核时以 S5 的高亮断言为准（偏差 >12 DIP 即失败）。
+BIB_GROUP_POS = {
+    "read": (282.7, 100.0),
+    "intake": (336.7, 100.0),
+    "treat": (390.7, 100.0),
+    "maint": (444.7, 100.0),
+}
+BIB_CHIP_POS = {
+    "overview": (288.0, 143.0),
+    "query": (352.7, 143.0),
+    "normalize": (293.4, 143.0),
+    "import": (363.4, 143.0),
+    "review": (293.4, 143.0),
+    "edit": (363.4, 143.0),
+    "dupes": (438.7, 143.0),
+    "fieldfix": (524.6, 143.0),
+    "health": (293.4, 143.0),
+    "settings": (363.4, 143.0),
+}
+_BIB_VIEW_ORDER = (
+    "overview", "query", "normalize", "import", "review",
+    "edit", "dupes", "fieldfix", "health", "settings",
+)
+BIB_CHIPS = [BIB_CHIP_POS[view] for view in _BIB_VIEW_ORDER]
+
+
+def bib_group_pos(group: str) -> tuple[float, float]:
+    """组条中心（client DIP）；未知组回落到第一组。"""
+    return BIB_GROUP_POS.get(group, BIB_GROUP_POS["read"])
+
+
+def bib_chip_pos(view: str) -> tuple[float, float]:
+    """视图胶囊中心（client DIP）；未知视图回落到「概况」。"""
+    return BIB_CHIP_POS.get(view, BIB_CHIP_POS["overview"])
 LIGHT_SIDEBAR = (255, 255, 255)
 LIGHT_BG = (246, 248, 250)
 DARK_SIDEBAR = (15, 20, 27)
