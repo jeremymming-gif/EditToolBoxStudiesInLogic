@@ -286,7 +286,7 @@ class BibDuplicatesView(_OpsView):
                     ft.DropdownOption(key="left", text=f"{left_key}：{left_value or '（空）'}"),
                     ft.DropdownOption(key="right", text=f"{right_key}：{right_value or '（空）'}"),
                 ],
-                on_change=lambda e, n=name: self.field_choice.__setitem__(
+                on_select=lambda e, n=name: self.field_choice.__setitem__(
                     n, e.control.value or "left"))
             rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                controls=[C.text(field_label(name), t, "small",
