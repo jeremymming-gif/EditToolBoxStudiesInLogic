@@ -51,7 +51,7 @@ python3 tools/selfcheck.py           # quick；发版前用 --full
 python3 ../tools/case_audit.py --check
 
 # Flet 壳测试（pytest；跨平台）
-python3 -m pytest sources-flet/tests -q     # 期望 <!-- B112-COUNT:待S4实测回填 --> passed / skipped（Windows 的 gui_auto 需交互桌面，另计）
+python3 -m pytest sources-flet/tests -q     # 期望 334 passed / 5 skipped（Windows 的 gui_auto 需交互桌面，另计）
 
 # Windows 打包（flet pack；引擎 sidecar 由 Engine/tools/build_win_sidecar.ps1 生成）
 py -3.14 -m flet.cli pack sources-flet/app/main.py --name 编辑部工具箱 --yes
@@ -99,7 +99,7 @@ CI 上就是这样，所以 CI 不该因为它们红。
    不重复跑套件，**AUTO 的「测试计数行」不在此校验**）；**因此 full 之外必须显式跑一次
    `python3 tools/gen_docs.py --check`（默认严格，跑套件，约 61s）**——它是测试计数行的唯一严格守卫
    （发版前必跑；`selfcheck --full --strict-tests` 亦可）。
-7. **Flet 壳改动**：`python3 -m pytest sources-flet/tests -q`（0 failed；≥<!-- B112-COUNT:待S4实测回填 --> passed / skipped；`sources-flet/tests/gui_auto` 需 Windows 交互桌面，另跑并复核）。
+7. **Flet 壳改动**：`python3 -m pytest sources-flet/tests -q`（0 failed；≥334 passed / 5 skipped；`sources-flet/tests/gui_auto` 需 Windows 交互桌面，另跑并复核）。
 
 > 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README/版本已与仓库不同，下次 `flet pack` 会同步"。
 > **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick，第四十一批 O3 起不再整跑套件）/
