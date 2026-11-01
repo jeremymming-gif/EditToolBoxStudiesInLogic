@@ -246,14 +246,19 @@ def test_only_write_views_carry_a_one_line_notice() -> None:
     for key in P.BibPage.view_keys():
         page.set_view(key)
         seen[key] = page._notice_slot.content
-    for key in ("import", "review", "edit", "dupes", "fieldfix"):
+    # 批 112 T8：库健康会写库（批量裁决/字段归位同口径），并入写库通知组。
+    for key in ("import", "review", "edit", "dupes", "fieldfix", "health"):
         assert seen[key] is not None, key
         assert seen[key].tooltip is not None, key  # 详情压到 tooltip
-    for key in ("overview", "query", "normalize", "health", "settings"):
+    for key in ("overview", "query", "normalize", "settings"):
         assert seen[key] is None, key
     # 只读 / 写库权限上浮到页头状态芯片。
     page.set_view("query")
     assert [chip.content.value for chip in page._status_slot.controls] == ["只读"]
+    page.set_view("normalize")
+    assert [chip.content.value for chip in page._status_slot.controls] == ["只读"]
+    page.set_view("health")
+    assert [chip.content.value for chip in page._status_slot.controls] == ["写库"]
     page.set_view("edit")
     assert [chip.content.value for chip in page._status_slot.controls] == ["写库"]
 

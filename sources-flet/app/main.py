@@ -6,6 +6,7 @@
 P2 自动化钩子（证据脚本用，生产环境不设即无副作用）：
   P2_MARKER / P2_SETTINGS / P2_THEME(light|dark) / P2_PAGE / P2_DPI(96|120|144|192)
   P2_ZOOM / P2_WINSIZE(WxH) / P2_AUTO_CLOSE_MS / P2_AUTORUN / P2_CANCEL_MS / P2_OPEN_PICKER(dir|file)
+  P2_BIB_VIEW(view) / P2_SINGLE_FLOW(convert|proofcheck) / P2_AUTORUN_LEGACY=1
   P2_DEMO_SINGLE_SOURCE / P2_DEMO_SINGLE_OUT / P2_DEMO_BIB / P2_DEMO_PROOF_TEX
   P2_DEMO_ISSUE / P2_DEMO_TOC / P2_SELFTEST(theme|zoom)
 P3 扩展（同样只在设置时生效；P3_* 会自动归一为 P2_* 复用既有钩子）：
@@ -518,6 +519,17 @@ class App:
             self.mark("on_show_error", page=key, error=f"{type(exc).__name__}: {exc}")
         self.mark("nav_change", page=key, switch_ms=elapsed_ms,
                   switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1))
+
+    def open_bib_view(self, view: str, *, source: str = "nav") -> None:
+        """跨页入口：去「引用库」并切到指定视图（source=single 表示从单篇页跳来）。
+
+        `goto` 对同 key 会早退，所以这里必须**无条件** set_view，不能只在换页时切。
+        """
+        bib_page = self.pages.get("bib")
+        if bib_page is None:
+            return
+        self.goto("bib")
+        bib_page.set_view(view, source=source)
 
     def _status_meta(self) -> str:
         engine = "引擎就绪" if self.engine_status.ok else "引擎缺失"
@@ -1042,8 +1054,25 @@ class App:
             if bib_page is not None and bib_view in bib_page.view_keys():
                 self.goto("bib")
                 bib_page._switch(bib_view, source="env")
+                self.mark("bib_view_hook", view=bib_view, source="env")
+            elif bib_page is not None:
+                # 非法视图不静默：回落概况并留证据（P2 冒烟据此断言）。
+                self.mark("bib_view_invalid", view=bib_view, reason="unknown_view")
+                self.goto("bib")
+                bib_page._switch("overview", source="env_fallback")
+                self.mark("bib_view_hook", view="overview", source="env_fallback")
             else:
-                self.mark("bib_view_error", view=bib_view, reason="unknown_view")
+                self.mark("bib_view_error", view=bib_view, reason="no_bib_page")
+        # 批 112 S3a2：单篇页只剩 convert/proofcheck 两步，启动即可直达。
+        single_flow = _env_str("P2_SINGLE_FLOW")
+        if single_flow:
+            single_page = self.pages.get("single")
+            if single_page is not None and single_flow in single_page.FLOWS:
+                self.goto("single")
+                single_page._switch_flow(single_flow)
+                self.mark("single_flow_hook", flow=single_flow, source="env")
+            elif single_page is not None:
+                self.mark("single_flow_invalid", flow=single_flow, reason="unknown_flow")
         await self._apply_demo_hooks()
         if _env_str("P2_ENVCHECK") in ("1", "true", "yes"):
             settings_page = self.pages.get("settings")
@@ -1235,10 +1264,40 @@ class App:
         except Exception as exc:  # noqa: BLE001
             self._picker_error(f"{type(exc).__name__}: {exc}")
 
+    async def _autorun_normalize(self) -> None:
+        """P2_AUTORUN=checkbib 的新路径：进「引用库 → 规范化」，有样例才真跑。
+
+        checkbib 只读（产出报告文件、绝不写库）；没给 P2_DEMO_BIB 时只到面板预填，
+        不触发运行，避免旧证据脚本在无输入时把 `_wait_run_finished` 空等到超时。
+        """
+        bib_page = self.pages.get("bib")
+        if bib_page is None:
+            self.mark("autorun_error", error="no bib page")
+            return
+        self.open_bib_view("normalize", source="autorun")
+        view = bib_page.normalize_view
+        view.ensure_built()
+        bib = _env_str("P2_DEMO_BIB")
+        if not bib:
+            self.mark("autorun_normalize_ready", bib="", ran=False)
+            return
+        view.set_field("bib_returned", bib)
+        bib_page.mark("demo_prefill", flow="normalize", bib=bib)
+        self.mark("autorun_normalize_run", bib=bib)
+        view._on_run()
+
     async def _autorun(self, target: str) -> None:
         await asyncio.sleep(0.5)
         self.mark("autorun_begin", target=target)
-        if target in ("convert", "checkbib", "proofcheck"):
+        legacy_checkbib = _env_str("P2_AUTORUN_LEGACY") in ("1", "true", "yes")
+        normalize_redirect = False
+        if target == "checkbib" and not legacy_checkbib:
+            # 批 112 S3a2：交回 .bib 体检改道「引用库 → 规范化」；旧单篇路径只在
+            # P2_AUTORUN_LEGACY=1 时保留一次（兼容旧证据脚本，下批可删）。
+            await self._autorun_normalize()
+            await asyncio.sleep(0.2)  # 让 run_task 的 begin_run 先落地
+            normalize_redirect = True
+        elif target in ("convert", "checkbib", "proofcheck"):
             page = self.pages.get("single")
             if page is None:
                 self.mark("autorun_error", error="no single page")
@@ -1266,7 +1325,8 @@ class App:
             page.ensure_built()
             page.prefill(issue_dir=_env_str("P2_DEMO_ISSUE"), toc_report=_env_str("P2_DEMO_TOC"))
             page.run_all_demo()
-        await self._wait_run_finished()
+        if not normalize_redirect or self.run_seen or self.running:
+            await self._wait_run_finished()
         cancel_after = _env_float("P2_CANCEL_MS", None)
         self.mark("autorun_end", target=target, code_seen=self.line_count)
 

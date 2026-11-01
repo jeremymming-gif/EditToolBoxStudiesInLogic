@@ -1,4 +1,4 @@
-"""P3 页面：工作台 / 单篇稿件（3 步）/ 整期装配（6 步）/ 引用库（只读）/ 设置 / 帮助与关于。
+"""P3 页面：工作台 / 单篇稿件（2 步）/ 整期装配（6 步）/ 引用库（10 视图）/ 设置 / 帮助与关于。
 
 页面只做三件事：取值（输入控件）→ 拼参数（services.engine_bridge）→ 显示日志（LogConsole）。
 不复制任何引擎判定逻辑；长任务走 asyncio 子进程，不阻塞 UI 线程。
@@ -96,7 +96,7 @@ class HomePage(BasePage):
             )
 
         quick = ft.Row(spacing=t.sp("2"), controls=[
-            entry_card("DESCRIPTION_OUTLINED", "单篇稿件", "初排转换 / 文献回读校验 / 一校核查", "single"),
+            entry_card("DESCRIPTION_OUTLINED", "单篇稿件", "初排转换 / 一校核查", "single"),
             entry_card("VIEW_AGENDA_OUTLINED", "整期装配", "检查 → 目录 → 编译 → 合刊 → 清理 → 推送", "issue"),
             entry_card("LIBRARY_BOOKS_OUTLINED", "引用库", "查库、入藏与待裁决（写库需二次确认）", "bib"),
         ])
@@ -157,11 +157,6 @@ class SinglePage(BasePage):
             "icon": "DESCRIPTION_OUTLINED",
             "desc": "作者来稿（LaTeX / Word）→ 符合本刊规范的可编译初排 tex（可顺带编译 PDF、清理临时文件）",
         },
-        "checkbib": {
-            "label": "参考文献规范化",
-            "icon": "CHECK_CIRCLE_OUTLINE",
-            "desc": "交回的 .bib 离线体检（语法/规范/引用键闭合/逐字段对比），只出《回读校验报告》",
-        },
         "proofcheck": {
             "label": "一校核查",
             "icon": "SEARCH",
@@ -180,7 +175,7 @@ class SinglePage(BasePage):
         self._stop_btn = None
         self._chips_row = None
         self._ai = None
-        self._norm = None
+        self._norm_hinted = False
         self._meta_panel = None
         self._meta_temp = ""
 
@@ -203,12 +198,15 @@ class SinglePage(BasePage):
         )
         self._flow_box.controls = [self._flow_builder(self.flow_key)()]
         self._proof.root.visible = False
+        self._norm_jump_btn = C.secondary_button(
+            "去引用库 → 规范化", self._goto_normalize, t, icon="FACT_CHECK")
         status = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             self._chips_row,
             ft.Container(expand=True),
+            self._norm_jump_btn,
             C.busy_bar(t, visible=False),
         ])
-        self._busy = status.controls[2]
+        self._busy = status.controls[3]
         flow_bar = ft.Column(spacing=t.sp("half"), controls=[status, self._flow_desc])
         body = C.page_body(header, flow_bar, self._flow_box, self._result.root,
                            self._proof.root, self._log.root, t=t, gap=10)
@@ -219,7 +217,6 @@ class SinglePage(BasePage):
         """按 flow_key 选构建器（重建 shell 后恢复上次步骤也走这里）。"""
         return {
             "convert": self._build_convert,
-            "checkbib": self._build_checkbib,
             "proofcheck": self._build_proofcheck,
         }.get(key, self._build_convert)
 
@@ -316,12 +313,6 @@ class SinglePage(BasePage):
         self._ai = AIP.AiPanel(self)
         return self._ai.build()
 
-    def _build_checkbib(self) -> ft.Control:
-        # 批 109 W2a：整页交给 ui/normalize.py（改名「参考文献规范化」+ 粘贴模式 +
-        # 报告默认路径 + 识别；Wave 0 / S1：**没有任何并回入口**）。
-        self._norm = NR.NormalizePanel(self)
-        return self._norm.build()
-
     def _build_metadata_section(self) -> ft.Control:
         t = self.t
         self._meta_panel = MF.MetadataPanel(self)
@@ -358,12 +349,14 @@ class SinglePage(BasePage):
             self.app.toast(str(exc))
             return
         self.app.mark("form_submit", flow=self.flow_key, call=call.to_dict())
-        # 批 109 W2a 返工：只有「参考文献规范化」的粘贴模式才读 stdin；切流程后残留的
-        # _norm 不许把粘贴正文漏进 convert/proofcheck（它们不读 stdin）。
-        stdin_text = None
-        if self.flow_key == "checkbib" and self._norm is not None:
-            stdin_text = self._norm.stdin_text()
-        self.page.run_task(self._run, call, stdin_text)
+        self.page.run_task(self._run, call)
+
+    def _goto_normalize(self, e=None) -> None:
+        """跳「引用库 → 规范化」（唯一跨页入口在 App.open_bib_view，source=single 供冒烟断言）。"""
+        self.app.open_bib_view("normalize", source="single")
+        if not self._norm_hinted:
+            self._norm_hinted = True
+            self.app.toast("已切到「引用库 → 规范化」")
 
     def _on_metadata_preview(self, e=None) -> None:
         """CV-002/003：跑与「开始转换」同一 argv，只多 --metadata-preview-out（只读）。"""
@@ -378,17 +371,6 @@ class SinglePage(BasePage):
             return
         self.app.mark("metadata_preview", call=call.to_dict())
         self.page.run_task(self._run, call, None, preview_path)
-
-    def _on_paste_preview(self) -> None:
-        """NR-003/015：--list-keys + --returned-stdin，只打印「N 条：key…」，永不写文件。"""
-        text = self._norm.pasted_text() if self._norm is not None else ""
-        self.page.run_task(self._run_paste_preview, NR.preview_call(), text)
-
-    async def _run_paste_preview(self, call: EB.EngineCall, text: str) -> None:
-        lines: list[str] = []
-        code = await EB.run_call(call, on_line=lines.append, stdin_text=text)
-        if self._norm is not None:
-            self._norm.set_preview_line(NR.preview_text(code, lines, text))
 
     def _on_stop(self, e=None) -> None:
         self.app.stop_run()
@@ -428,12 +410,6 @@ class SinglePage(BasePage):
                 bibdb = SS.bibdb_convert_args(self.app.store.data)
                 return self._ai.build_call(**kwargs, **bibdb)
             return EB.convert_call(**kwargs)
-        if self.flow_key == "checkbib":
-            # 批 109 Wave 0 / S1：只做离线体检/报告；正文 tex 仅作 --tex 只读输入，
-            # 不再传写入型 --merge-into（原实现会把正文 .tex 覆盖写回）。
-            if self._norm is None:
-                raise ValueError("参考文献规范化页还没准备好，请重开该步骤")
-            return self._norm.build_call()
         tex = self.field("proof_tex")
         if not tex:
             raise ValueError("请先选择初排 tex")
@@ -480,9 +456,6 @@ class SinglePage(BasePage):
             if not self.app.cancel_requested:
                 text, level = "元数据预览完成（只读：未建产物目录、未写产物）", "info"
                 artifact = ""
-        if self.flow_key == "checkbib" and self._norm is not None:
-            self._echo_checkbib_report(code)  # NR-010：报告正文进日志（不改 Engine）
-            self._norm.refresh_after_run()
         self._result.show(text, level=level, artifact=artifact)
         if artifact:
             self.app.store.set_recent(self._artifact_recent_key(), artifact)
@@ -491,24 +464,6 @@ class SinglePage(BasePage):
             page.update()
         except Exception:  # noqa: BLE001
             pass
-
-    def _echo_checkbib_report(self, code: int) -> None:
-        """NR-010：引擎带 --out 时只回一行结论，这里把报告正文逐行贴进运行日志。"""
-        if self.app.cancel_requested or code not in (0, 1):
-            return
-        report = getattr(self._norm, "last_report", "") if self._norm is not None else ""
-        if not report:
-            self._on_line("（未生成报告：没有可回显的报告路径，只有上面的结论行）")
-            return
-        try:
-            with open(report, encoding="utf-8") as handle:
-                lines = handle.read().splitlines()
-        except OSError:
-            self._on_line(f"（报告读取失败：{report}；只有上面的结论行，可稍后手动打开）")
-            return
-        self._on_line(f"== 文本报告：{os.path.basename(report)} ==")
-        for line in lines:
-            self._on_line(line)
 
     def _show_metadata_preview(self, path: str) -> None:
         payload = None
@@ -529,7 +484,6 @@ class SinglePage(BasePage):
     def _artifact_recent_key(self) -> str:
         return {
             "convert": "single_out",
-            "checkbib": "bib_out",
             "proofcheck": "proof_tex",
         }[self.flow_key]
 
@@ -810,22 +764,24 @@ class IssuePage(BasePage):
 # ── 引用库（P3 实装，P2 保留入口）────────────────────────────────────────
 #: 写库视图共用的一行后果提示（W1/W2 压到 1 行；全文进 notice 的 info tooltip）。
 BIB_WRITE_NOTICE = "预览 → 二次确认 → 原子写；只提交 bibliography.jsonl，不推送。"
-BIB_WRITE_VIEWS = ("import", "review", "edit", "dupes", "fieldfix")
+BIB_WRITE_VIEWS = ("import", "review", "edit", "dupes", "fieldfix", "health")
 #: notice 的 info tooltip 全文（T9 的 help_content 再收录同一份口径，别改这里再抄一遍）。
 BIB_WRITE_RULES = (
     "W1 写库四步：干跑预览 → 二次确认 → 校验 bibliography.jsonl 的 sha256"
     "（不符即拒绝、零写入）→ 原子替换。\n"
     "W2 只本地：写成功后自动本地提交 1 条（批量也只 1 条），"
     "只提交 bib_db/bibliography.jsonl；不 git push、不同步远端。\n"
-    "W3 只读不写：概况 / 查库 / 规范化 / 库健康不写库；规范化只产出报告文件。"
+    "W3 只读不写：概况 / 查库 / 规范化不写库；规范化只产出报告文件"
+    "（库健康与字段归位是写库视图，批量裁决同样走 W1 四步）。"
 )
 
 
 class BibPage(BasePage):
-    """引用库（P6）：10 视图 / 4 组两级导航；概况/查库只读，入藏与待裁决是真写。
+    """引用库（P6）：10 视图 / 4 组两级导航；概况/查库/规范化只读，6 个写入视图写库。
 
-    写库一律先干跑预览、再带 `--expect-db-sha256` 真写，写完自动本地提交
-    （只提交 bib_db/bibliography.jsonl）；推送/回退要二次确认（B-190 契约）。
+    写入面（入藏 / 待处理 / 编辑 / 查重合并 / 字段归位 / 库健康）一律先干跑预览、
+    再带 `--expect-db-sha256` 真写，写完自动本地提交（只提交 bib_db/bibliography.jsonl）；
+    推送/回退要二次确认（B-190 契约）。
     """
 
     key = "bib"
@@ -845,7 +801,7 @@ class BibPage(BasePage):
     #: 页头权限芯片：只读视图不出 notice，靠这一枚自解释。
     VIEW_ACCESS = {"overview": "只读", "query": "只读", "normalize": "只读",
                    "import": "写库", "review": "写库", "edit": "写库",
-                   "dupes": "写库", "fieldfix": "写库", "health": "只读",
+                   "dupes": "写库", "fieldfix": "写库", "health": "写库",
                    "settings": "配置"}
     #: 视图级 notice：{view: (tone, 一行文案)}；缺键 = 该视图不出 notice。
     VIEW_NOTICES = {key: ("info", BIB_WRITE_NOTICE) for key in BIB_WRITE_VIEWS}
@@ -872,6 +828,8 @@ class BibPage(BasePage):
         self.dupes_view = BOD.BibDuplicatesView(self)
         self.fieldfix_view = BOH.BibFieldFixView(self)
         self.health_view = BOH.BibHealthView(self)
+        # 批 112 S3a2：规范化面板（uid 单例，日志/报告跨重绘保留）。
+        self.normalize_view = NR.NormalizeView(self)
 
     @classmethod
     def view_keys(cls) -> set[str]:
@@ -970,7 +928,10 @@ class BibPage(BasePage):
         if view not in self.view_keys():
             self.mark("bib_view_invalid", view=view, source=source)
             view = "overview"
+        previous = self.view
         self.view = view
+        if previous == "normalize" and view != "normalize":
+            self.normalize_view.on_leave()
         self.group = self.group_of(view)
         store = self.app.store
         store.set("bib_view", view)
@@ -1011,6 +972,8 @@ class BibPage(BasePage):
             self.page.run_task(self.fieldfix_view.ensure_loaded)
         elif view == "health":
             self.page.run_task(self.health_view.ensure_loaded)
+        elif view == "normalize":
+            self.normalize_view.ensure_loaded()
 
     async def _load_stats(self) -> None:
         try:
@@ -1043,8 +1006,7 @@ class BibPage(BasePage):
         builders = {
             "overview": self._overview_view,
             "query": self.query_view.build,
-            # T4（S3a2）落地前的占位：规范化面板整体迁到 ui/normalize.py 的 NormalizeView。
-            "normalize": self._normalize_placeholder,
+            "normalize": self.normalize_view.ensure_built,
             "import": self.import_view.build,
             "review": self.review_view.build,
             "settings": self.settings_view.build,
@@ -1137,14 +1099,6 @@ class BibPage(BasePage):
         )
         return C.card(tile, t, pad=12)
 
-    def _normalize_placeholder(self) -> ft.Control:
-        """T4 占位（S3a2 接 NormalizeView 后删掉本方法，别留到批次末）。"""
-        t = self.t
-        return C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("规范化", t),
-            C.text("规范化面板迁移中", t, "small", t.palette.text_muted),
-        ]), t)
-
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _kv(self, label: str, value: str) -> ft.Row:
         t = self.t
@@ -1160,7 +1114,8 @@ class BibPage(BasePage):
         self._ensure_loaded(self.view)
 
     def refresh_running(self) -> None:
-        pass
+        # 规范化视图自带运行/停止按钮与日志；只有构建过才需要同步（幂等）。
+        self.normalize_view.refresh_running()
 
 
 def group_of(view: str) -> str:

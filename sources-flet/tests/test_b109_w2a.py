@@ -221,14 +221,18 @@ def test_run_call_accepts_stdin_text():
 
 def test_single_page_flow_renamed_and_merge_not_reintroduced():
     from ui import pages
-    assert pages.SinglePage.FLOWS["checkbib"]["label"] == "参考文献规范化"
+    # 批 112 S3a2：交回 .bib 体检已迁到「引用库 → 规范化」，单篇页只剩 2 步。
+    assert set(pages.SinglePage.FLOWS) == {"convert", "proofcheck"}
+    assert "checkbib" not in pages.SinglePage.FLOWS
+    assert not hasattr(pages.SinglePage, "_build_checkbib")
+    assert not hasattr(pages.SinglePage, "_echo_checkbib_report")
     assert not hasattr(pages.SinglePage, "_on_merge")
     source = open(NR.__file__, encoding="utf-8").read()
     assert "--merge-into" in source  # 只允许出现在「已停用」提示文案里
     assert "merge_back" not in source
 
 
-# ── 返工（NR-010 报告回显 / 跨流程 stdin 守卫）：最小假壳，不建控件、不跑引擎 ──
+# ── NR-010 报告回显 / stdin 守卫迁到 NormalizeView：最小假壳，不建控件、不跑引擎 ──
 class _FakeLog:
     def __init__(self):
         self.lines = []
@@ -243,17 +247,29 @@ class _FakeLog:
 class _FakeResult:
     def __init__(self):
         self.text = ""
+        self.level = ""
 
     def reset(self):
         self.text = ""
 
     def show(self, text, level="info", artifact=""):
         self.text = text
+        self.level = level
 
 
 class _FakeStore:
+    def __init__(self):
+        self.recent = {}
+        self.values = {}
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+    def set(self, key, value):
+        self.values[key] = value
+
     def set_recent(self, key, path):
-        pass
+        self.recent[key] = path
 
 
 class _FakeApp:
@@ -263,9 +279,10 @@ class _FakeApp:
         self.last_line = ""
         self.notes_repo = None
         self.store = _FakeStore()
+        self.toasts = []
 
     def begin_run(self, call):
-        pass
+        self.began = True
 
     def finish_run(self, call, code):
         self.code = code
@@ -279,22 +296,23 @@ class _FakeApp:
     def track_proc(self, proc):
         pass
 
+    def toast(self, message):
+        self.toasts.append(message)
 
-class _FakeNorm:
-    def __init__(self, report=""):
-        self.last_report = report
-        self.refreshed = 0
+    def open_path(self, value):
+        pass
 
-    def stdin_text(self):
-        return "粘贴的 bib 正文"
+    def copy_text(self, value):
+        pass
 
-    def refresh_after_run(self):
-        self.refreshed += 1
+    def stop_run(self):
+        self.running = False
 
 
 class _FakeFletPage:
     def __init__(self):
         self.tasks = []
+        self.services = []
 
     def update(self):
         pass
@@ -303,16 +321,66 @@ class _FakeFletPage:
         self.tasks.append((handler, args))
 
 
-def _fake_single_page(report=""):
+class _FakeNorm:
+    """面板替身：只为 NormalizeView._run 提供报告路径与刷新计数。"""
+
+    def __init__(self, report=""):
+        self.last_report = report
+        self.refreshed = 0
+        self.mode = "file"
+
+    def stdin_text(self):
+        return "粘贴的 bib 正文"
+
+    def refresh_after_run(self):
+        self.refreshed += 1
+
+    def set_preview_line(self, text):
+        self.preview_line = text
+
+
+class _FakeHost:
+    """BibPage 替身：只实现 NormalizeView 用到的宿主面。"""
+
+    def __init__(self):
+        self.t = None
+        self.app = _FakeApp()
+        self.page = _FakeFletPage()
+        self.fields = {}
+        self.root = None
+
+    def field(self, key):
+        return self.fields.get(key, "")
+
+    def set_field(self, key, value):
+        self.fields[key] = value
+
+    def add_picker(self, *args, **kwargs):
+        pass
+
+    def mark(self, name, **kwargs):
+        pass
+
+
+def _fake_normalize_view(report=""):
+    host = _FakeHost()
+    view = NR.NormalizeView(host)
+    view.panel = _FakeNorm(report)
+    view._log = _FakeLog()
+    view._result = _FakeResult()
+    return view, host
+
+
+def _fake_single_page():
     from ui import pages
 
     class _Fake(pages.SinglePage):
         def __init__(self):
-            self.flow_key = "checkbib"
+            self.flow_key = "convert"
             self._ai = None
-            self._norm = _FakeNorm(report)
             self._meta_panel = None
             self._meta_temp = ""
+            self._norm_hinted = False
             self._log = _FakeLog()
             self._result = _FakeResult()
             self.app = _FakeApp()
@@ -321,11 +389,10 @@ def _fake_single_page(report=""):
     return _Fake()
 
 
-def test_checkbib_run_echoes_report_body_into_log(tmp_path, monkeypatch):
-    from ui import pages
+def test_normalize_run_echoes_report_body_into_log(tmp_path, monkeypatch):
     report = tmp_path / "reference_回读校验报告.md"
     report.write_text("结论：1 处问题 / 2 处提示\n\n- [问题] 第 2 行：缺标题\n", encoding="utf-8")
-    page = _fake_single_page(str(report))
+    view, host = _fake_normalize_view(str(report))
     call = NR.build_argv("a.bib", mode=NR.MODE_FILE, out=str(report))
 
     async def fake_run_call(call, on_line=None, on_proc=None, api=None, notes=None,
@@ -334,16 +401,16 @@ def test_checkbib_run_echoes_report_body_into_log(tmp_path, monkeypatch):
         return 1
 
     monkeypatch.setattr(EB, "run_call", fake_run_call)
-    asyncio.run(pages.SinglePage._run(page, call))
-    joined = "\n".join(page._log.lines)
+    asyncio.run(view._run(call))
+    joined = "\n".join(view._log.lines)
     assert "== 文本报告：reference_回读校验报告.md ==" in joined
     assert "- [问题] 第 2 行：缺标题" in joined  # 正文真的逐行进日志
-    assert page._norm.refreshed == 1
+    assert view.panel.refreshed == 1
+    assert view._result.text  # 结果条照常刷新
 
 
-def test_checkbib_run_missing_report_does_not_crash(tmp_path, monkeypatch):
-    from ui import pages
-    page = _fake_single_page(str(tmp_path / "没有这个报告.md"))
+def test_normalize_run_missing_report_does_not_crash(tmp_path, monkeypatch):
+    view, _ = _fake_normalize_view(str(tmp_path / "没有这个报告.md"))
     call = NR.build_argv("a.bib", mode=NR.MODE_FILE)
 
     async def fake_run_call(call, on_line=None, on_proc=None, api=None, notes=None,
@@ -352,21 +419,26 @@ def test_checkbib_run_missing_report_does_not_crash(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(EB, "run_call", fake_run_call)
-    asyncio.run(pages.SinglePage._run(page, call))
-    joined = "\n".join(page._log.lines)
+    asyncio.run(view._run(call))
+    joined = "\n".join(view._log.lines)
     assert "结论：0 处问题" in joined and "报告读取失败" in joined
-    assert page._result.text  # 结果条照常刷新
-    assert page._norm.refreshed == 1
+    assert view._result.text  # 结果条照常刷新
+    assert view.panel.refreshed == 1
 
 
-def test_stdin_text_only_passed_for_checkbib_flow():
+def test_stdin_text_only_passed_for_normalize_flow(monkeypatch):
+    # 规范化（粘贴模式）才把正文走 stdin；单篇页 convert/proofcheck 只收 argv。
+    view, host = _fake_normalize_view()
+    call = NR.build_argv("a.bib", mode=NR.MODE_FILE)
+    view.panel.build_call = lambda: call
+    view._on_run()
+    handler, args = host.page.tasks[-1]
+    assert handler == view._run and args == (call, "粘贴的 bib 正文")
+
     page = _fake_single_page()
     page._build_call = lambda preview_path="": NR.build_argv("a.bib", mode=NR.MODE_FILE)
     for flow in ("convert", "proofcheck"):
         page.flow_key = flow
         page._on_run()
-        assert page.page.tasks[-1][1][1] is None  # 粘贴正文不漏进不读 stdin 的引擎
-    page.flow_key = "checkbib"
-    page._on_run()
-    assert page.page.tasks[-1][1][1] == "粘贴的 bib 正文"
-
+        handler, args = page.page.tasks[-1]
+        assert handler == page._run and len(args) == 1  # 粘贴正文不漏进不读 stdin 的引擎

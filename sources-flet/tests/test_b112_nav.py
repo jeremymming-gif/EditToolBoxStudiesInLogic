@@ -237,12 +237,12 @@ def test_switch_flow_persists_and_builds_selected(monkeypatch) -> None:
     page, app = _make_single()
     monkeypatch.setattr(P.CK, "on_flow_switch", lambda page: None)
     monkeypatch.setattr(page, "_flow_builder", lambda key: (lambda: ft.Text(key)))
-    page._switch_flow("checkbib")
-    assert page.flow_key == "checkbib"
-    assert app.store.get("single_flow") == "checkbib"
-    assert page._flow_box.controls[0].value == "checkbib"
     page._switch_flow("proofcheck")
+    assert page.flow_key == "proofcheck"
     assert app.store.get("single_flow") == "proofcheck"
+    assert page._flow_box.controls[0].value == "proofcheck"
+    page._switch_flow("convert")
+    assert app.store.get("single_flow") == "convert"
 
 
 def test_flow_builder_maps_every_flow() -> None:
@@ -254,11 +254,11 @@ def test_flow_builder_maps_every_flow() -> None:
 
 
 def test_rebuild_restores_single_flow_through_constructor() -> None:
-    """族 B 链路：store 里是 checkbib → 新实例的 __init__ 必须直接恢复。"""
-    page, _ = _make_single({"single_flow": "checkbib"})
-    assert page.flow_key == "checkbib"
+    """族 B 链路：store 里是 proofcheck → 新实例的 __init__ 必须直接恢复。"""
+    page, _ = _make_single({"single_flow": "proofcheck"})
+    assert page.flow_key == "proofcheck"
     # build 用恢复后的 key 选构建器（静态契约另有断言）。
-    assert P.SinglePage.FLOWS[page.flow_key]["label"] == "参考文献规范化"
+    assert P.SinglePage.FLOWS[page.flow_key]["label"] == "一校核查"
 
 
 def test_tokens_are_importable_without_window() -> None:

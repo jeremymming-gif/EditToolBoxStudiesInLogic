@@ -323,7 +323,7 @@ class NormalizePanel:
         if self._filled_note_lbl is not None:
             self._filled_note_lbl.value = self._filled_note
         try:
-            self.page.root.update()
+            self.page.refresh()
         except Exception:  # noqa: BLE001
             pass
 
@@ -365,16 +365,21 @@ class NormalizePanel:
         self._refresh_mode_ui()
 
     def _on_paste_clipboard(self, e=None) -> None:
-        try:
-            text = self.page.clipboard if hasattr(self.page, "clipboard") else ""
-        except Exception:  # noqa: BLE001
-            text = ""
+        """异步读剪贴板（flet 1.0 的 Clipboard.get 是协程）：交给宿主回调回填。"""
+        read = getattr(self.page, "clipboard", None)
+        if not callable(read):
+            self.page.app.toast("当前外壳不支持读剪贴板：请把交回的 .bib 手动粘贴到文本框。")
+            return
+        read(self._on_clipboard_read)
+
+    def _on_clipboard_read(self, text) -> None:
+        text = (text or "").strip() if isinstance(text, str) else ""
         if not text:
             self.page.app.toast("剪贴板里没有可导入的文本：先把交回的 .bib 复制到剪贴板再点这里。")
             return
         self.page.app.store.set(self.PASTE_KEY, text)
         self._render_returned()
-        self._preview_line = f"{len(text.strip())} 字符"
+        self._preview_line = f"{len(text)} 字符"
         self._refresh_mode_ui()
         self.page.toast("已粘贴剪贴板文本")
 
@@ -402,7 +407,7 @@ class NormalizePanel:
         if self._auto_lbl is not None:
             self._auto_lbl.value = self.auto_report_line()
         try:
-            self.page.root.update()
+            self.page.refresh()
         except Exception:  # noqa: BLE001
             pass
 
@@ -450,3 +455,232 @@ class NormalizePanel:
 
     def stdin_text(self) -> str | None:
         return self.pasted_text() if self.mode == MODE_PASTE else None
+
+
+# ── 引用库「规范化」视图宿主（批 112 S3a2） ─────────────────────────────
+def _line_level(text: str) -> str:
+    """日志行颜色（只影响显示，与单篇页同口径；判定仍在 Engine）。"""
+    line = text or ""
+    if "❌" in line or "错误" in line or "Traceback" in line:
+        return "error"
+    if "⚠" in line or "警告" in line or "❗" in line:
+        return "warn"
+    if "✅" in line or "完成。" in line:
+        return "ok"
+    if EB.is_summary_line(line):
+        return "info"
+    return "dim"
+
+
+class NormalizeView:
+    """「引用库 → 规范化」视图：NormalizePanel + 运行面（日志 / 结果 / 停止）。
+
+    NormalizePanel 原寄生在「单篇稿件 → 参考文献规范化」；批 112 S3a2 把它整体
+    迁到引用库，单篇页只留一个跳转按钮。本类只补宿主职责（面板需要的
+    t/app/field/add_picker/toast/refresh/clipboard + 运行日志与结果横幅），
+    argv 与报告解析仍全在面板与 Engine，视图不复制任何判定。
+    """
+
+    def __init__(self, host) -> None:
+        self.host = host  # BibPage（BasePage：t/app/page/fields/field/set_field/add_picker/mark）
+        self.panel = NormalizePanel(self)
+        self._root = None
+        self._log = None
+        self._result = None
+        self._busy = None
+        self._stop_btn = None
+        self._clipboard = None
+
+    # —— 面板宿主契约：转发到 BibPage，视图不重建输入控件 ——
+    @property
+    def t(self):
+        return self.host.t
+
+    @property
+    def app(self):
+        return self.host.app
+
+    @property
+    def page(self):
+        return self.host.page
+
+    @property
+    def fields(self):
+        return self.host.fields
+
+    def add_picker(self, *args, **kwargs):
+        return self.host.add_picker(*args, **kwargs)
+
+    def field(self, key: str) -> str:
+        return self.host.field(key)
+
+    def set_field(self, key: str, value: str) -> None:
+        self.host.set_field(key, value)
+
+    def mark(self, event: str, **fields) -> None:
+        self.host.mark(event, **fields)
+
+    def toast(self, message: str) -> None:
+        self.app.toast(message)
+
+    def refresh(self) -> None:
+        """面板刷新入口（原 `page.root.update()`）：只刷本视图根，未挂载时忽略。"""
+        target = self._root if self._root is not None else getattr(self.host, "root", None)
+        if target is None:
+            return
+        try:
+            target.update()
+        except Exception:  # noqa: BLE001  构建期/已销毁：等挂载后自然生效
+            pass
+
+    def clipboard(self, on_text) -> None:
+        """异步读剪贴板（flet 1.0 的 Clipboard.get 是协程），结果回调给面板。"""
+        service = self._clipboard
+        if service is None:
+            on_text("")
+            return
+
+        async def _read() -> None:
+            text = ""
+            try:
+                text = await service.get() or ""
+            except Exception as exc:  # noqa: BLE001  客户端不支持时给中文提示
+                self.mark("clipboard_error", error=f"{type(exc).__name__}: {exc}")
+            on_text(text)
+
+        try:
+            self.page.run_task(_read)
+        except Exception:  # noqa: BLE001
+            on_text("")
+
+    def _mount_clipboard(self) -> None:
+        if self._clipboard is not None:
+            return
+        try:
+            clipboard = ft.Clipboard()
+            self.page.services.append(clipboard)
+            self._clipboard = clipboard
+        except Exception:  # noqa: BLE001  无 GUI（单测假 page）时不挂，退化为手动粘贴
+            self._clipboard = None
+
+    # —— 构建 ——
+    def ensure_built(self) -> ft.Control:
+        if self._root is None:
+            self.build()
+        return self._root
+
+    def build(self) -> ft.Control:
+        t = self.t
+        self._mount_clipboard()
+        self._log = C.LogConsole(t, height=170, title="运行日志")
+        self._result = C.ResultBanner(t, on_open=self.app.open_path,
+                                      on_copy=lambda path: self.app.copy_text(path))
+        self._busy = C.busy_bar(t, visible=False)
+        self._stop_btn = C.secondary_button("停止", lambda e: self.app.stop_run(), t,
+                                            icon="STOP", disabled=True)
+        self._root = ft.Column(spacing=t.sp("2"), controls=[
+            self.panel.build(),
+            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                   controls=[self._busy, ft.Container(expand=True), self._stop_btn]),
+            self._result.root,
+            self._log.root,
+        ])
+        # 证据钩子：P2_BIB_VIEW=normalize 冒烟据此断言「面板标题出现」。
+        self.mark("normalize_view_built", title=PAGE_TITLE, mode=self.panel.mode,
+                  label="规范化")
+        return self._root
+
+    def ensure_loaded(self) -> None:
+        self.ensure_built()
+        self.refresh_running()
+
+    def on_leave(self) -> None:
+        """离开视图：日志与报告留在控件里，只同步一次运行态（幂等）。"""
+        self.refresh_running()
+
+    def refresh_running(self) -> None:
+        running = bool(getattr(self.app, "running", False))
+        if self._busy is not None:
+            self._busy.visible = running
+        if self._stop_btn is not None:
+            self._stop_btn.disabled = not running
+        for control in (self._busy, self._stop_btn):
+            if control is not None:
+                try:
+                    control.update()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    # —— 运行面（与单篇页同一套外壳职责，不复制引擎判定） ——
+    def _on_run(self, e=None) -> None:
+        if getattr(self.app, "running", False):
+            return
+        try:
+            call = self.panel.build_call()
+        except ValueError as exc:
+            self.app.toast(str(exc))
+            self.mark("validation_error", reason=str(exc))
+            return
+        self.mark("form_submit", flow="normalize", call=call.to_dict())
+        self.page.run_task(self._run, call, self.panel.stdin_text())
+
+    async def _run(self, call: EB.EngineCall, stdin_text: str | None = None) -> None:
+        self.app.begin_run(call)
+        self._result.reset()
+        self._log.clear()
+        self.refresh_running()
+        try:
+            code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
+                                     notes=self.app.notes_repo, stdin_text=stdin_text)
+        except Exception as exc:  # noqa: BLE001 - 引擎缺失/启动失败一律给中文提示
+            self.app.finish_run(call, -1)
+            text = f"❌ 任务启动失败：{exc}"
+            self._result.show(text, level="error")
+            self.app.toast(f"任务启动失败：{exc}")
+            self.mark("run_start_error", error=f"{type(exc).__name__}: {exc}")
+            return
+        self.app.finish_run(call, code)
+        level = "warn" if self.app.cancel_requested else EB.result_level(call.entry, code)
+        text = "⏹ 已取消" if self.app.cancel_requested else EB.result_text(call.entry, code)
+        self._echo_report(code)  # NR-010：报告正文进日志（不改 Engine）
+        self.panel.refresh_after_run()
+        artifact = EB.artifact_path(self.app.last_line)
+        self._result.show(text, level=level, artifact=artifact)
+        if artifact:
+            self.app.store.set_recent("bib_out", artifact)
+        self.refresh_running()
+        try:
+            self.page.update()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _echo_report(self, code: int) -> None:
+        if self.app.cancel_requested or code not in (0, 1):
+            return
+        report = getattr(self.panel, "last_report", "")
+        if not report:
+            self._on_line("（未生成报告：没有可回显的报告路径，只有上面的结论行）")
+            return
+        try:
+            with open(report, encoding="utf-8") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            self._on_line(f"（报告读取失败：{report}；只有上面的结论行，可稍后手动打开）")
+            return
+        self._on_line(f"== 文本报告：{os.path.basename(report)} ==")
+        for line in lines:
+            self._on_line(line)
+
+    def _on_line(self, line: str) -> None:
+        self.app.record_line(line)
+        self._log.add_line(line, _line_level(line), EB.is_summary_line(line))
+
+    def _on_paste_preview(self) -> None:
+        """只读识别：--list-keys + --returned-stdin，只算键、永不写文件。"""
+        text = self.panel.pasted_text()
+        self.page.run_task(self._run_paste_preview, preview_call(), text)
+
+    async def _run_paste_preview(self, call: EB.EngineCall, text: str) -> None:
+        lines: list[str] = []
+        code = await EB.run_call(call, on_line=lines.append, stdin_text=text)
+        self.panel.set_preview_line(preview_text(code, lines, text))
