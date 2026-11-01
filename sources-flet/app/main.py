@@ -315,7 +315,6 @@ class App:
                 ),
                 ft.Column(spacing=0, controls=[
                     C.text("编辑部工具箱", t, "h3", weight="semibold"),
-                    C.text("Flet 单壳", t, "caption", t.palette.text_faint),
                 ]),
             ]),
         )
