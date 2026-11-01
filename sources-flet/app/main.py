@@ -267,6 +267,13 @@ class App:
         用 Material 3 的 bodyLarge 统一成正文 14（批 112 GUI-07）。
         """
         tokens = t or Tokens()
+        # 批 112 GUI-09：按钮/输入框等「客户端自绘」文本走 Material TextTheme 默认值，
+        # 不乘 Tokens.k → 与非按钮文本（全部 t.font()×k）在缩放/DPI 偏离 1.0 时比例漂移。
+        # 这里把 TextTheme 全量投影到 tokens 字号（×k），按钮字与正文同源、同缩放。
+        def _ts(key: str, weight: ft.FontWeight | None = None) -> ft.TextStyle:
+            return ft.TextStyle(size=tokens.font(key), weight=weight)
+
+        label_weight = ft.FontWeight.W_500
         return ft.Theme(
             color_scheme=ft.ColorScheme(
                 primary=palette.accent, on_primary=palette.on_accent,
@@ -276,7 +283,16 @@ class App:
                 outline=palette.border,
             ),
             font_family=FONT_FAMILY,
-            text_theme=ft.TextTheme(body_large=ft.TextStyle(size=tokens.font("body"))),
+            text_theme=ft.TextTheme(
+                display_large=_ts("display"), display_medium=_ts("display"),
+                display_small=_ts("h1"),
+                headline_large=_ts("h1"), headline_medium=_ts("h2"),
+                headline_small=_ts("h3"),
+                title_large=_ts("h2"), title_medium=_ts("h3"), title_small=_ts("body"),
+                body_large=_ts("body"), body_medium=_ts("small"), body_small=_ts("caption"),
+                label_large=_ts("body", label_weight), label_medium=_ts("small"),
+                label_small=_ts("caption"),
+            ),
         )
 
     def _configure_window(self) -> None:

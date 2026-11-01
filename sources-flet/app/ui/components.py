@@ -116,6 +116,18 @@ def page_body(*controls, t: Tokens, gap: float = 16) -> ft.Container:
 
 
 # ── 按钮 ────────────────────────────────────────────────────────────────────
+def _button_style(t: Tokens) -> ft.ButtonStyle:
+    """批 112 GUI-09：按钮字号锚定正文 role（×k），不再吃 Material labelLarge 的固定值。
+
+    与 main._flet_theme 的 label_large 双保险：theme 管全局（输入框/勾选/下拉标签），
+    这里再显式给四个按钮补 text_style/icon_size，保证任何主题/版本下都同源缩放。
+    """
+    return ft.ButtonStyle(
+        text_style=ft.TextStyle(size=t.font("body"), weight=ft.FontWeight.W_500),
+        icon_size=t.px(18),
+    )
+
+
 def primary_button(label: str, on_click, t: Tokens, *, icon: str | None = None,
                    disabled: bool = False) -> ft.FilledButton:
     return ft.FilledButton(
@@ -123,6 +135,7 @@ def primary_button(label: str, on_click, t: Tokens, *, icon: str | None = None,
         icon=ic(icon) if icon else None,
         bgcolor=t.palette.accent,
         color=t.palette.on_accent,
+        style=_button_style(t),
         on_click=on_click,
         disabled=disabled,
     )
@@ -133,18 +146,21 @@ def secondary_button(label: str, on_click, t: Tokens, *, icon: str | None = None
     return ft.OutlinedButton(
         label,
         icon=ic(icon) if icon else None,
+        style=_button_style(t),
         on_click=on_click,
         disabled=disabled,
     )
 
 
 def text_button(label: str, on_click, t: Tokens) -> ft.TextButton:
-    return ft.TextButton(label, on_click=on_click)
+    # 批 112 GUI-09：TextButton 同样吃 labelLarge，显式锚定正文 role。
+    return ft.TextButton(label, style=_button_style(t), on_click=on_click)
 
 
 def icon_button(icon: str, tooltip: str, on_click, t: Tokens, *,
                 color: str | None = None) -> ft.IconButton:
     return ft.IconButton(ic(icon), tooltip=tooltip, on_click=on_click,
+                         icon_size=t.px(20),
                          icon_color=color or t.palette.text_muted)
 
 
