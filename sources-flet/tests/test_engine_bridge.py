@@ -80,8 +80,10 @@ def test_convert_verify_branches(engine):
 
 
 def test_period_calls_argv(engine):
-    assert args_of(EB.checkbib_call(returned="r.bib", merge_into="m.bib")) == [
-        "--returned", "r.bib", "--merge-into", "m.bib"]
+    # 批 109 Wave 0 / S1：壳层永不传写入型 --merge-into；--tex 只作只读输入。
+    assert args_of(EB.checkbib_call(returned="r.bib", tex="t.tex", out="o")) == [
+        "--returned", "r.bib", "--tex", "t.tex", "--out", "o"]
+    assert "--merge-into" not in args_of(EB.checkbib_call(returned="r.bib", tex="t.tex"))
     assert args_of(EB.proofcheck_call(tex="t.tex", fix=True, lang="en")) == [
         "--tex", "t.tex", "--lang", "en", "--fix"]
     assert args_of(EB.infocheck_call(folder="f", preview=True)) == ["--folder", "f", "--preview"]
@@ -92,11 +94,10 @@ def test_period_calls_argv(engine):
         "--folder", "f", "--only", "01,03", "--dry-run"]
     merge = args_of(EB.merge_call(folder="f", nest_outlines=True, editors_page=True))
     assert set(merge) >= {"--folder", "--nest-outlines", "--editors-page"}
-    assert args_of(EB.cleantemp_call(folder="f")) == ["--folder", "f"]
-    assert args_of(EB.cleantemp_call(folder="f", trash=True))[-1] == "--trash"
-    assert args_of(EB.cleantemp_call(folder="f", restore_trash="p")) == ["--folder", "f", "--restore", "p"]
-    assert args_of(EB.cleantemp_call(folder="f", empty_trash=True, dry_run=True)) == [
-        "--folder", "f", "--empty-trash", "--dry-run"]
+    # 批 109 Wave 0 / S2：清理固定 --trash（可恢复），不存在永久删除参数。
+    assert args_of(EB.cleantemp_call(folder="f")) == ["--folder", "f", "--trash"]
+    assert args_of(EB.cleantemp_call(folder="f", dry_run=True)) == [
+        "--folder", "f", "--dry-run", "--trash"]
     annual = args_of(EB.dirpush_call(issue="i", annual=True, year="2026", include_issues="2,1"))
     assert "--annual" in annual and "--json" in annual
     assert annual[annual.index("--include-issues") + 1] == "1,2"

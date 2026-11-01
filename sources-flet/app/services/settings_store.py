@@ -54,11 +54,10 @@ def _defaults() -> dict:
             "convert_clean": False,
             "convert_source_pdf": False,
             "convert_verify": False,
-            "checkbib_merge": False,
             "proofcheck_fix": False,
+            # 批 109 Wave 0 / S4：与旧壳一致，默认「仅生成 tex」（不落位、不编译）。
             "toc_text_only": True,
             "compileall_dry_run": False,
-            "cleantemp_trash": True,
             "dirpush_with_en_toc": False,
             "dirpush_dry_run": False,
             "log_summary_only": True,

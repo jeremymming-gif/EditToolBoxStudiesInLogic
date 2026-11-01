@@ -439,11 +439,16 @@ def ai_verify_call(*, source: str, out: str, ai: dict, no_ai_merge: bool = True,
     return EngineCall(entry=call.entry, argv=args, label="AI 核实（直连 API）")
 
 
-def checkbib_call(*, returned: str, original: str = "", tex: str = "", merge_into: str = "", out: str = "") -> EngineCall:
+def checkbib_call(*, returned: str, original: str = "", tex: str = "", out: str = "") -> EngineCall:
+    # 批 109 Wave 0 / S1：**不传 --merge-into**。该参数在 Engine/checkbib.py 里是
+    # 「就地覆盖写回的目标文件」（aibib.apply_merge_to_file），外壳曾把用户正文 .tex
+    # 当目标传入，会损坏来稿；Flet 无法保证目标准确，故按任务书方案 B 关闭并回入口。
+    # 证据：C:\slcn-work\p6-2026-11-01\evidence\b109-parity\report.md（S1 行）与
+    #       C:\slcn-work\p6-2026-11-01\prompts\b109-wave0-safety-taskbook.md §S1。
+    # --tex 只作只读统计输入（报告用），列表模式永不写文件。
     args = ["--returned", returned]
     _append_opt(args, "--original", original)
     _append_opt(args, "--tex", tex)
-    _append_opt(args, "--merge-into", merge_into)
     _append_opt(args, "--out", out)
     return _call("checkbib.py", args, "文献回读校验")
 
@@ -490,21 +495,13 @@ def merge_call(
     return _call("mergepdf.py", args, "合并文件")
 
 
-def cleantemp_call(
-    *, folder: str, dry_run: bool = False, trash: bool = False,
-    restore_trash: str = "", mode: str = "aux", empty_trash: bool = False,
-) -> EngineCall:
+def cleantemp_call(*, folder: str, dry_run: bool = False) -> EngineCall:
+    # 批 109 Wave 0 / S2：固定 --trash（移入 <期目录>/.toolbox-trash，可 --restore 恢复）。
+    # 外壳不暴露 --delete / --empty-trash 等永久删除参数。
+    # 证据：b109-parity/report.md S2 与 b109-wave0-safety-taskbook.md §S2。
     args = ["--folder", folder]
-    if restore_trash:
-        args.extend(["--restore", restore_trash])
-    elif empty_trash:
-        args.append("--empty-trash")
-        _append_flag(args, "--dry-run", dry_run)
-    elif mode == "aux":
-        _append_flag(args, "--dry-run", dry_run)
-        _append_flag(args, "--trash", trash)
-    else:
-        args.extend(["--mode", mode])
+    _append_flag(args, "--dry-run", dry_run)
+    args.append("--trash")
     return _call("cleantemp.py", args, "删除临时文件")
 
 

@@ -27,7 +27,11 @@ def test_defaults_when_missing(store):
     assert exists is False
     assert data["theme"] in ("light", "dark")
     assert data["options"]["convert_compile"] is True
-    assert data["options"]["cleantemp_trash"] is True
+    # 批 109 Wave 0 / S4：默认只生成 tex（不落位、不编译）。
+    assert data["options"]["toc_text_only"] is True
+    # S1/S2 关闭的入口不再保留设置键。
+    assert "checkbib_merge" not in data["options"]
+    assert "cleantemp_trash" not in data["options"]
     assert data["recent"]["single_source"] == ""
     assert path.exists() is False
 

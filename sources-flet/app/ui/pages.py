@@ -349,17 +349,18 @@ class SinglePage(BasePage):
 
     def _build_checkbib(self) -> ft.Control:
         t = self.t
-        options = self.app.store.get("options", {}) or {}
         return ft.Column(spacing=t.sp("2"), controls=[
             C.section_title("输入", t, note="只填交回稿件即可；其余可选"),
             self.add_picker("交回稿件", "bib_returned", "作者交回 .docx / .tex", kind="file"),
             self.add_picker("原始稿件", "bib_original", "用于对照（可选）", kind="file", required=False),
-            self.add_picker("正文 tex", "bib_tex", "可选：把结论写回正文时用", kind="file", required=False),
+            # 批 109 Wave 0 / S1：原「把结论并回正文」勾选（--merge-into）已移除——
+            # 引擎的 --merge-into 是「就地产物 .bib」而非报告，旧实现会把用户正文 .tex
+            # 覆盖写回。Flet 无法保证安全目标，按任务书方案 B 关闭入口（CLI 仍可用）。
+            # 证据见 b109-parity/report.md S1 与 b109-wave0-safety-taskbook.md §S1。
+            self.add_picker("正文 tex", "bib_tex", "可选：只读比对（--tex，不写回任何文件）", kind="file",
+                            required=False),
             self.add_picker("报告输出目录", "bib_out", "报告默认写在该目录（可选）", kind="dir",
                             required=False),
-            C.option_row("把结论并回正文", "传入 --merge-into（须选正文 tex 与报告输出）", t,
-                         icon="MERGE", checked=bool(options.get("checkbib_merge", False)),
-                         on_change=lambda e: self.app.set_option("checkbib_merge", e.control.value)),
         ])
 
     def _build_proofcheck(self) -> ft.Control:
@@ -430,16 +431,11 @@ class SinglePage(BasePage):
             returned = self.field("bib_returned")
             if not returned:
                 raise ValueError("请先选择交回稿件")
-            options = self.app.store.get("options", {}) or {}
-            merge = bool(options.get("checkbib_merge", False))
-            tex = self.field("bib_tex")
-            out = self.field("bib_out")
-            if merge and not tex:
-                raise ValueError("并回正文需要选正文 tex")
+            # 批 109 Wave 0 / S1：只做离线体检/报告；正文 tex 仅作 --tex 只读输入，
+            # 不再传写入型 --merge-into（原实现会把正文 .tex 覆盖写回）。
             return EB.checkbib_call(
-                returned=returned, original=self.field("bib_original"), tex=tex,
-                merge_into=tex if merge and out else (tex if merge else ""),
-                out=out,
+                returned=returned, original=self.field("bib_original"),
+                tex=self.field("bib_tex"), out=self.field("bib_out"),
             )
         tex = self.field("proof_tex")
         if not tex:
@@ -683,11 +679,12 @@ class IssuePage(BasePage):
         elif key == "cleantemp":
             options = self.app.store.get("options", {}) or {}
             rows += [
-                C.notice_bar("危险动作：默认移入 .toolbox-trash；勾选「直接删除」会在确认后真删。", t, "warn"),
-                C.option_row("移入回收站（--trash）", "默认安全模式", t, icon="RESTORE_FROM_TRASH_OUTLINED",
-                             checked=bool(options.get("cleantemp_trash", True)),
-                             on_change=lambda e: self.app.set_option("cleantemp_trash", e.control.value)),
-                C.option_row("只预演（--dry-run）", "列出将删除的文件，不真删", t,
+                # 批 109 Wave 0 / S2：外壳只保留 --trash（移入 .toolbox-trash，可从
+                # 回收站恢复），永久删除参数（--delete / --empty-trash）一律不提供。
+                # 证据见 b109-parity/report.md S2 与任务书 §S2。
+                C.notice_bar("清理一律移入系统回收站（--trash），可从回收站或期目录恢复；"
+                             "本页不提供永久删除。", t, "info"),
+                C.option_row("只预演（--dry-run）", "列出将清理的文件，不真删", t,
                              icon="SCIENCE_OUTLINED", checked=bool(options.get("cleantemp_dry_run", False)),
                              on_change=lambda e: self.app.set_option("cleantemp_dry_run", e.control.value)),
             ]
@@ -748,8 +745,8 @@ class IssuePage(BasePage):
             )
         if key == "cleantemp":
             dry_run = bool(options.get("cleantemp_dry_run", False))
-            trash = bool(options.get("cleantemp_trash", True))
-            return EB.cleantemp_call(folder=issue, dry_run=dry_run, trash=trash)
+            # 批 109 Wave 0 / S2：固定 --trash（可恢复），不传任何永久删除参数。
+            return EB.cleantemp_call(folder=issue, dry_run=dry_run)
         if key == "dirpush":
             return EB.dirpush_call(
                 issue=issue, out_root=self.field("dirpush_out"),
@@ -786,7 +783,8 @@ class IssuePage(BasePage):
                 self.page.run_task(self._run_calls, [(key, call)])
 
             C.confirm(self.page, self.t, title="确认清理临时文件？",
-                      message="默认移入 .toolbox-trash（可恢复）；若勾选过「直接删除 / 恢复」，请确认这是你要的结果。",
+                      message="临时文件将移入系统回收站（期目录内 .toolbox-trash），"
+                              "可从回收站或该目录恢复；本页不提供永久删除。",
                       confirm_label="开始清理", on_confirm=_confirmed)
             return
         self._status[key] = "running"
@@ -805,9 +803,8 @@ class IssuePage(BasePage):
             for step in self.STEPS:
                 key = step["key"]
                 if key == "cleantemp":
-                    # 全流程里的清理默认预演，避免一键误删
-                    calls.append((key, EB.cleantemp_call(folder=self._issue_dir(), dry_run=True,
-                                                         trash=True)))
+                    # 全流程里的清理默认预演，避免一键误删（仍固定 --trash，可恢复）
+                    calls.append((key, EB.cleantemp_call(folder=self._issue_dir(), dry_run=True)))
                     continue
                 calls.append((key, self._build_step_call(key)))
         except (ValueError, RuntimeError) as exc:

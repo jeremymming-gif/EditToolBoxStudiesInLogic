@@ -198,12 +198,19 @@ class BibImportView:
         self.file_path = str(store.get("recent.bib_import_file", "") or "")
         self.dir_path = str(store.get("recent.bib_import_dir", "") or "")
         self.text_value = ""
+        # 批 109 Wave 0 / S3：入藏口径与旧壳对齐——表单提供 --issue/--slug，
+        # 且默认视为已核实（--verified）；取消勾选则显式传 --unverified。
+        self.issue = str(store.get("recent.bib_issue", "") or "")
+        self.slug = str(store.get("recent.bib_slug", "") or "")
+        self.verified = True
         self.preview: dict | None = None
         self.done: dict | None = None
         self.commit: dict | None = None
         self.error = ""
         self.busy = False
         self.expect_sha = ""
+        self.stale = False            # dry-run 预览是否已因输入变更而作废
+        self.preview_signature: tuple | None = None
         self._temp_dir = ""
         self._file_ref: list = []
         self._dir_ref: list = []
@@ -220,11 +227,62 @@ class BibImportView:
     def _set_mode(self, mode: str) -> None:
         self.mode = mode
         self.error = ""
+        self._invalidate_preview()
         self.page.mark("bib_import_mode", mode=mode)
         self.page._render()
 
     def _picked(self, ref: list, fallback: str) -> str:
         return ((ref[0].value or "").strip() if ref else "") or fallback
+
+    # 输入指纹 / 过期判定（批 109 Wave 0 / S3）────────────────────────
+    def _signature(self) -> tuple:
+        """当前输入指纹：来源模式 + 源路径/文本 + 入藏口径（issue/slug/verified）。"""
+        path = ""
+        if self.mode == "file":
+            path = self._picked(self._file_ref, self.file_path).strip()
+        elif self.mode == "dir":
+            path = self._picked(self._dir_ref, self.dir_path).strip()
+        text = self._text_value() if self.mode == "text" else ""
+        meta = () if self.mode == "dir" else (
+            self.issue.strip(), self.slug.strip(), bool(self.verified))
+        return (self.mode, path, meta, text)
+
+    def _invalidate_preview(self) -> None:
+        """任何输入变更：已生成的 dry-run 预览立即过期，确认写入被禁用。"""
+        if self.preview is not None:
+            self.stale = True
+            self.expect_sha = ""      # 旧库 sha 闸一并作废，重新预览才重新取
+
+    def _preview_stale(self) -> bool:
+        if self.stale:
+            return True
+        if self.preview is None:
+            return False
+        return self.preview_signature is not None and self._signature() != self.preview_signature
+
+    def _on_file_change(self, e) -> None:
+        self.file_path = (e.control.value or "").strip()
+        self._invalidate_preview()
+
+    def _on_dir_change(self, e) -> None:
+        self.dir_path = (e.control.value or "").strip()
+        self._invalidate_preview()
+
+    def _on_text_change(self, e) -> None:
+        self.text_value = e.control.value or ""
+        self._invalidate_preview()
+
+    def _on_issue_change(self, e) -> None:
+        self.issue = (e.control.value or "").strip()
+        self._invalidate_preview()
+
+    def _on_slug_change(self, e) -> None:
+        self.slug = (e.control.value or "").strip()
+        self._invalidate_preview()
+
+    def _on_verified_change(self, e) -> None:
+        self.verified = bool(e.control.value)
+        self._invalidate_preview()
 
     # 构建 ─────────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
@@ -250,6 +308,7 @@ class BibImportView:
                        t, "caption", t.palette.text_muted),
                 chips,
                 *source,
+                *self._meta_controls(),
                 actions,
             ]), t),
         ]
@@ -261,19 +320,42 @@ class BibImportView:
             controls.append(self._done_card())
         return ft.Column(spacing=t.sp("2"), controls=controls)
 
+    def _meta_controls(self) -> list:
+        """入藏口径：期 / 篇 / 已核实（整期目录入藏没有这些旗标，故不显示）。"""
+        if self.mode == "dir":
+            return []
+        t = self.t
+        common = dict(dense=True, text_size=t.font("small"),
+                      border_color=t.palette.border, focused_border_color=t.palette.accent,
+                      content_padding=C._pad(t, 10, 8, 10, 8), width=t.px(240))
+        return [
+            ft.Row(spacing=t.sp("2"), wrap=True, controls=[
+                ft.TextField(label="期（--issue，可空）", value=self.issue,
+                             hint_text="如 2026年第5期(90)", on_change=self._on_issue_change,
+                             **common),
+                ft.TextField(label="篇（--slug，可空）", value=self.slug,
+                             hint_text="如 01 Meimei_Han", on_change=self._on_slug_change,
+                             **common),
+            ]),
+            C.option_row("已人工核实（--verified）",
+                         "默认与旧壳一致：入藏记为已核实；取消则显式传 --unverified", t,
+                         icon="VERIFIED", checked=bool(self.verified),
+                         on_change=self._on_verified_change),
+        ]
+
     def _source_control(self) -> ft.Control:
         t = self.t
         if self.mode == "file":
             return C.path_picker(
                 "bib 文件", self.file_path, "选择回读校验导出的 .bib（只读源文件）", t,
-                on_change=lambda e: setattr(self, "file_path", e.control.value.strip()),
+                on_change=self._on_file_change,
                 on_browse=lambda e: self.page.app.browse_field(
                     self._file_ref, "选择 bib 文件", "file", "bib_import_file"),
                 required=True, field_ref=self._file_ref)
         if self.mode == "dir":
             return C.path_picker(
                 "整期目录", self.dir_path, "选一期目录（如 20xx年第N期(…)）或稿件库根目录", t,
-                on_change=lambda e: setattr(self, "dir_path", e.control.value.strip()),
+                on_change=self._on_dir_change,
                 on_browse=lambda e: self.page.app.browse_field(
                     self._dir_ref, "选择整期目录", "dir", "bib_import_dir"),
                 required=True, field_ref=self._dir_ref)
@@ -284,7 +366,7 @@ class BibImportView:
             text_size=t.font("small"), border_color=t.palette.border,
             focused_border_color=t.palette.accent,
             content_padding=C._pad(t, 10, 8, 10, 8),
-            on_change=lambda e: setattr(self, "text_value", e.control.value or ""),
+            on_change=self._on_text_change,
         )
 
     # 预览 / 写库 ─────────────────────────────────────────────────────
@@ -328,8 +410,15 @@ class BibImportView:
         if "root" in args:
             return EB.bibdb_import_dir_call(root=args["root"], dry_run=dry_run,
                                             expect_db_sha256=expect_sha)
-        return EB.bibdb_import_call(bib=args.get("bib", ""), dry_run=dry_run,
-                                    expect_db_sha256=expect_sha)
+        # 批 109 Wave 0 / S3：入藏必须带口径旗标（旧壳固定 --verified；引擎默认 False）。
+        # 未勾选「已核实」时用 --unverified 显式压过「issue+slug 即算已核实」的引擎语义。
+        issue = self.issue.strip()
+        slug = self.slug.strip()
+        return EB.bibdb_import_call(
+            bib=args.get("bib", ""), dry_run=dry_run, expect_db_sha256=expect_sha,
+            issue=issue, slug=slug, verified=bool(self.verified),
+            unverified=not bool(self.verified),
+        )
 
     async def _call(self, call: EB.EngineCall) -> dict:
         self.busy = True
@@ -353,6 +442,8 @@ class BibImportView:
         if result.get("ok") and payload:
             self.preview = payload
             self.expect_sha = str(payload.get("db_sha256_before") or "")
+            self.preview_signature = self._signature()
+            self.stale = False
             self.done = None
             self.commit = None
             counts = import_counts(payload)
@@ -363,6 +454,8 @@ class BibImportView:
         else:
             self.preview = None
             self.expect_sha = ""
+            self.preview_signature = None
+            self.stale = False
             self.error = explain_result(result)
             self.page.mark("bib_import_preview", ok=False, code=result.get("code"),
                            mode=self.mode, error=self.error[:200])
@@ -371,10 +464,20 @@ class BibImportView:
     def _confirm_write(self, e=None) -> None:
         if not self.preview:
             return
+        if self._preview_stale():
+            # 输入在预览后变了：不弹确认框，先把预览作废并要求重新预览（零写入）。
+            self.stale = True
+            self.page.mark("bib_import_stale_block", mode=self.mode, action="confirm")
+            self.page._render()
+            return
         counts = import_counts(self.preview)
         db = str(self.preview.get("db") or self._db())
+        meta = ("整期目录（期/篇由目录名推导）" if self.mode == "dir"
+                else f"期：{self.issue or '未指定'}；篇：{self.slug or '未指定'}；"
+                     f"{'已核实 --verified' if self.verified else '未核实 --unverified'}")
         message = (f"将写入引用库：新增 {counts['new']} 条、更新 {counts['updated']} 条、"
                    f"冲突 {counts['conflicts']} 条（共解析 {counts['entries']} 条）。\n"
+                   f"入藏口径：{meta}\n"
                    f"库：{db}\n"
                    "写前校验库 sha256（不符即拒绝、零写入）；写成功后自动本地提交，"
                    "只提交 bib_db/bibliography.jsonl，不推送。")
@@ -383,6 +486,14 @@ class BibImportView:
 
     async def _write(self) -> None:
         if not self.preview:
+            return
+        if self._preview_stale():
+            # 双保险：确认按钮之外再校验一次（写入调用绝不在过期预览上执行）。
+            self.stale = True
+            self.expect_sha = ""
+            self.error = "输入已变更，dry-run 预览已过期：请重新预览后再写入（本次未写库）。"
+            self.page.mark("bib_import_stale_block", mode=self.mode, action="write")
+            self.page._render()
             return
         result = await self._call(self._build_call(dry_run=False, expect_sha=self.expect_sha))
         payload = result.get("json") or {}
@@ -397,6 +508,8 @@ class BibImportView:
         self.done = payload
         self.preview = None
         self.expect_sha = ""
+        self.stale = False
+        self.preview_signature = None
         counts = import_counts(payload)
         self.page.stats_data = None            # 概况页下次进入时重新读
         self.page.mark("bib_import_write", ok=True, code=result.get("code"),
@@ -420,6 +533,8 @@ class BibImportView:
         self.commit = None
         self.error = ""
         self.expect_sha = ""
+        self.stale = False
+        self.preview_signature = None
         self.page._render()
 
     # 渲染片段 ────────────────────────────────────────────────────────
@@ -447,6 +562,12 @@ class BibImportView:
         warnings = import_warnings(payload)
         controls: list = [
             C.section_title("预览结果", t, note="dry-run：库文件一个字节都没动"),
+        ]
+        if self._preview_stale():
+            controls.append(C.notice_bar(
+                "输入已变更，此预览已过期；请「重新预览」后再确认写入（写库按钮已禁用）。",
+                t, "warn"))
+        controls += [
             cards,
             C.text(f"库：{payload.get('db') or '（未知）'}"
                    f"（{'已存在' if payload.get('db_existed') else '写库时新建'}）· "
@@ -458,7 +579,7 @@ class BibImportView:
             controls.append(C.notice_bar("；".join(warnings), t, "warn"))
         controls.append(ft.Row(spacing=t.sp("1"), wrap=True, controls=[
             C.primary_button("确认写入…", self._confirm_write, t, icon="SAVE",
-                             disabled=self.busy),
+                             disabled=self.busy or self._preview_stale()),
             C.secondary_button("重新预览", lambda e: self.page.page.run_task(self._preview), t,
                                icon="REFRESH", disabled=self.busy)]))
         return C.card(ft.Column(spacing=t.sp("1"), controls=controls), t)

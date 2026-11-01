@@ -448,7 +448,11 @@ class App:
         try:
             self.store.save()
         except OSError as exc:
+            # 批 109 Wave 0 / S5：保存失败不再静默——给出可读原因（磁盘/权限），
+            # 不弹栈、不影响后续操作（见任务书 §S5 与 b109-parity/report.md）。
             self.mark("settings_save_error", error=str(exc))
+            reason = exc.strerror or str(exc) or "未知错误"
+            self.toast(f"设置保存失败：{reason}（设置未写入，请检查磁盘空间与写入权限）")
 
     def save_settings(self, toast: bool = False) -> None:
         self.store.set("last_page", self.current_page_key)
