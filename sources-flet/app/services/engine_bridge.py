@@ -242,8 +242,33 @@ def find_engine_exe() -> str:
     return first_existing_path(*found)
 
 
+_ENGINE_VERSION_CACHE: dict[tuple, str] = {}
+
+
 def engine_version() -> str:
+    """引擎版本；同进程内按 (engine_dir, exe) 缓存。
+
+    打包形态下每次读版本都要启动一次 SLCNEngine（PyInstaller onefile，
+    每次解包约 23MB），启动期有多处调用会叠加成明显卡顿；源码形态读文件即可。
+    用 (engine_dir, exe) 作 key，设置里改引擎目录后自动失效。
+    """
     engine_dir = find_engine_dir()
+    exe = find_engine_exe()
+    cache_key = (engine_dir, exe)
+    cached = _ENGINE_VERSION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    version = _read_engine_version(engine_dir, exe)
+    _ENGINE_VERSION_CACHE[cache_key] = version
+    return version
+
+
+def clear_engine_version_cache() -> None:
+    """测试/刷新用：清掉版本缓存。"""
+    _ENGINE_VERSION_CACHE.clear()
+
+
+def _read_engine_version(engine_dir: str | None, exe: str | None) -> str:
     if engine_dir:
         init_py = Path(engine_dir) / "slcn" / "__init__.py"
         try:
@@ -252,7 +277,6 @@ def engine_version() -> str:
                 return match.group(1)
         except OSError:
             pass
-    exe = find_engine_exe()
     if exe:
         try:
             proc = subprocess.run(
