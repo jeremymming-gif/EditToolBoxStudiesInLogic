@@ -185,6 +185,36 @@ def _retint_walkable(obj) -> bool:
             or type(obj).__module__.startswith("flet"))
 
 
+
+def _retint_border_side(side, mapping: dict[str, str]):
+    """`BorderSide` → 目标主题色；无需改写返回 None（宽度/风格/对齐保持原值）。"""
+    if not isinstance(side, ft.BorderSide):
+        return None
+    if not isinstance(side.color, str) or side.color not in mapping:
+        return None
+    return ft.BorderSide(width=side.width, color=mapping[side.color],
+                         stroke_align=side.stroke_align, style=side.style)
+
+
+def _retint_input_border(border, mapping: dict[str, str]):
+    """`InputBorder`（Outline / Underline）换肤色：只改 `side`，保留圆角与间隙。
+
+    批 113 E 起所有 TextField 都用 `border=ControlStateValue[InputBorder]`
+    （弃用 border_color/focused_border_color 后），所以原地换肤也必须能重染它们，
+    否则切主题后输入框边框会停在上一个主题的颜色。返回 None 表示无需替换。
+    """
+    if not isinstance(border, (ft.OutlineInputBorder, ft.UnderlineInputBorder)):
+        return None
+    side = _retint_border_side(getattr(border, "side", None), mapping)
+    if side is None:
+        return None
+    kwargs: dict = {"side": side}
+    for attr in ("border_radius", "gap_padding"):
+        value = getattr(border, attr, None)
+        if value is not None:
+            kwargs[attr] = value
+    return type(border)(**kwargs)
+
 class App:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
@@ -659,6 +689,22 @@ class App:
                 setattr(node, attr, fg_map[value])
                 changed += 1
         border = _retint_attr(node, "border")
+        if isinstance(border, dict):
+            # 批 113 E：border=ControlStateValue[InputBorder]（DEFAULT/FOCUSED…）
+            new_map: dict = {}
+            map_changed = False
+            for key, item in border.items():
+                new_item = _retint_input_border(item, bg_map)
+                new_map[key] = new_item if new_item is not None else item
+                map_changed = map_changed or new_item is not None
+            if map_changed:
+                setattr(node, "border", new_map)
+                changed += 1
+        elif border is not None and not isinstance(border, ft.Border):
+            new_border = _retint_input_border(border, bg_map)
+            if new_border is not None:
+                setattr(node, "border", new_border)
+                changed += 1
         if isinstance(border, ft.Border):
             sides = {}
             border_changed = False
@@ -1066,7 +1112,18 @@ class App:
             python=self.python_version,
         )
 
+    def _on_page_error(self, e) -> None:
+        """`Page.on_error`：未捕获的界面异常落 startup.log（便于事后定位）。"""
+        message = str(getattr(e, "data", "") or e)
+        SLOG.log("page_error", message=message[:2000])
+        try:
+            self.toast("界面出现未处理异常（已记录到启动日志）")
+        except Exception:  # noqa: BLE001 - 出错兜底本身不能再炸
+            pass
+
     async def after_boot(self) -> None:
+        # 批 113 C-2：客户端未处理异常兜底——写启动日志 + 轻提示，不再静默。
+        self.page.on_error = self._on_page_error
         SLOG.log("after_boot_begin")
         try:
             await self.page.wait_until_visible()
@@ -1406,6 +1463,13 @@ def _launch() -> None:
     SLOG.install()
     SLOG.log("launch_begin", argv=sys.argv[1:], platform=sys.platform)
     if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        # B113：打包版把 Flet 桌面客户端随包放在 `.app/Contents/Resources/flet-client/`。
+        # 用 FLET_VIEW_PATH 指过去，首启就不再从 GitHub 下载并解压到 `~/.flet/client`
+        # （约 135MB，10–30s 无窗口）。只设环境变量；源码模式 / 旧包（没有随包客户端）一律 no-op。
+        flet_client_dir = Path(sys.executable).resolve().parent.parent / "Resources" / "flet-client"
+        if (flet_client_dir / "Flet.app").is_dir():
+            os.environ.setdefault("FLET_VIEW_PATH", str(flet_client_dir))
+            SLOG.log("flet_view_path", path=str(flet_client_dir))
         try:
             _settings, exists = SettingsStore().load()
         except Exception:  # noqa: BLE001
