@@ -9,7 +9,6 @@ PATH（/usr/bin:/bin:/usr/sbin:/sbin），不含 MacTeX（/Library/TeX/texbin）
 from __future__ import annotations
 
 import os
-import sys
 
 from services import engine_bridge as EB
 
@@ -17,27 +16,27 @@ from services import engine_bridge as EB
 def test_augment_path_prepends_existing_dir(tmp_path):
     tool = tmp_path / "texbin"
     tool.mkdir()
-    out = EB._augment_path("/usr/bin:/bin", extra=(str(tool),))
+    out = EB._augment_path("/usr/bin:/bin", extra=(str(tool),), platform="darwin")
     assert out == f"{tool}:/usr/bin:/bin"
 
 
 def test_augment_path_keeps_unmodified_when_dir_missing(tmp_path):
     missing = tmp_path / "no-such-dir"
-    assert EB._augment_path("/usr/bin:/bin", extra=(str(missing),)) == "/usr/bin:/bin"
+    assert EB._augment_path("/usr/bin:/bin", extra=(str(missing),), platform="darwin") == "/usr/bin:/bin"
 
 
 def test_augment_path_dedupes_existing_entry(tmp_path):
     tool = tmp_path / "texbin"
     tool.mkdir()
     path = f"{tool}:/usr/bin:/bin"
-    assert EB._augment_path(path, extra=(str(tool),)) == path
+    assert EB._augment_path(path, extra=(str(tool),), platform="darwin") == path
 
 
-def test_augment_path_noop_off_darwin(monkeypatch, tmp_path):
+def test_augment_path_noop_off_darwin(tmp_path):
     tool = tmp_path / "texbin"
     tool.mkdir()
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert EB._augment_path("/usr/bin:/bin", extra=(str(tool),)) == "/usr/bin:/bin"
+    for platform in ("win32", "linux"):
+        assert EB._augment_path("/usr/bin:/bin", extra=(str(tool),), platform=platform) == "/usr/bin:/bin"
 
 
 def test_child_env_carries_augmented_path(monkeypatch, tmp_path):

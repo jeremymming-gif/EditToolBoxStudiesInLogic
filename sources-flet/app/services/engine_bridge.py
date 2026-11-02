@@ -32,7 +32,8 @@ _MAC_TOOL_DIRS = (
 )
 
 
-def _augment_path(path: str, extra: tuple[str, ...] = _MAC_TOOL_DIRS) -> str:
+def _augment_path(path: str, extra: tuple[str, ...] = _MAC_TOOL_DIRS,
+                  *, platform: str | None = None) -> str:
     """macOS：Finder/LaunchServices 启动的 app 只有系统默认 PATH。
 
     系统默认 PATH 不含 MacTeX（/Library/TeX/texbin）与 Homebrew，导致
@@ -40,7 +41,7 @@ def _augment_path(path: str, extra: tuple[str, ...] = _MAC_TOOL_DIRS) -> str:
     继而 GUI「环境检查失败」；同一 PATH 也会让 convert 找不到 TeX 工具。
     仅 darwin 生效：把存在且尚未入 PATH 的工具目录前置（不改 Windows/Linux）。
     """
-    if sys.platform != "darwin":
+    if (sys.platform if platform is None else platform) != "darwin":
         return path
     parts = [item for item in path.split(os.pathsep) if item]
     missing = [d for d in extra if os.path.isdir(d) and d not in parts]
