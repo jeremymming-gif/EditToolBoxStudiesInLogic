@@ -1,7 +1,12 @@
-"""P4 打包自检：engine_bridge 在「sidecar 同目录」布局下能否定位引擎（不进 GUI）。
+"""P4/B113 打包自检：engine_bridge 在「sidecar 随包」布局下能否定位引擎（不进 GUI）。
 
 用法：
-    python sources-flet/packaging/sidecar_check.py <SLCNEngine 路径> [--run-help]
+    python sources-flet/packaging/sidecar_check.py <SLCNEngine 路径或目录> [--run-help]
+
+路径两种形态都收（B113 起 sidecar 目录化）：
+    · PyInstaller --onefile → 单个可执行文件 `SLCNEngine`；
+    · PyInstaller --onedir  → 目录 `SLCNEngine/`（内含 `SLCNEngine[.exe]` 与 `_internal/`）；
+      传目录时先解析出内部可执行文件，再做全部检查。
 
 检查项：
   1. sidecar 文件存在且可执行；
@@ -35,28 +40,46 @@ def _utf8_stdio() -> None:
             pass
 
 
+def resolve_sidecar(path: Path) -> Path:
+    """把「文件或目录」解析成真正可执行的 sidecar（B113 目录化）。
+
+    --onedir 的产物根目录里是同名可执行：macOS/Linux 为 `SLCNEngine`，
+    Windows 为 `SLCNEngine.exe`，旁边另有 `_internal/`。
+    """
+    path = Path(path)
+    if path.is_dir():
+        for name in ("SLCNEngine", "SLCNEngine.exe"):
+            inner = path / name
+            if inner.is_file():
+                return inner.resolve()
+    return path.resolve()
+
+
 def main() -> int:
     _utf8_stdio()
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
     run_help = "--run-help" in sys.argv[1:]
     if not argv:
-        print("usage: sidecar_check.py <path-to-SLCNEngine> [--run-help]")
+        print("usage: sidecar_check.py <path-to-SLCNEngine|onedir-dir> [--run-help]")
         return 2
 
-    sidecar = Path(argv[0]).resolve()
+    raw = Path(argv[0]).resolve()
+    sidecar = resolve_sidecar(raw)
     app_dir = Path(__file__).resolve().parents[1] / "app"
     sys.path.insert(0, str(app_dir))
 
     result: dict = {
+        "input": str(raw),
         "sidecar": str(sidecar),
-        "exists": sidecar.exists(),
+        "onedir": sidecar != raw,
+        "exists": sidecar.is_file(),
         "run_help": bool(run_help),
         "checks": {},
         "ok": False,
     }
 
-    if not sidecar.exists():
-        result["error"] = "sidecar 不存在"
+    if not sidecar.is_file():
+        result["error"] = "sidecar 不存在（传目录时，目录里也没有 SLCNEngine/SLCNEngine.exe）"
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1
 

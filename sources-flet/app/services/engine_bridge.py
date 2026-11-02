@@ -231,18 +231,50 @@ def find_engine_python() -> str:
     return shutil.which("python3.14") or shutil.which("python") or ""
 
 
+def first_existing_file(*candidates: str) -> str:
+    """第一个**存在且是文件**的候选。
+
+    与 `first_existing_path` 的区别：目录不算命中。sidecar 目录化后
+    `<根>/SLCNEngine` 可能是一整个目录，不能当成可执行的壳。
+    """
+    for item in candidates:
+        if item and Path(item).is_file():
+            return str(Path(item))
+    return ""
+
+
+def _frozen_sidecar_roots() -> list[Path]:
+    """打包形态下 sidecar 的落点（文件形态与 `--onedir` 目录形态都在这些根下）。
+
+    · Windows/Linux：flet pack 产物与 sidecar 同目录（exe 所在目录）；
+    · macOS：sidecar 目录在 `.app/Contents/Resources/SLCNEngine/`，
+      `Contents/MacOS/` 只留同名 launcher（两处都要能解析）。
+    """
+    if not getattr(sys, "frozen", False):
+        return []
+    exe_dir = Path(sys.executable).resolve().parent
+    roots = [exe_dir]
+    if sys.platform == "darwin" and exe_dir.name == "MacOS":
+        roots.append(exe_dir.parent / "Resources")
+    roots.append(exe_dir / "_internal")
+    return roots
+
+
 def find_engine_exe() -> str:
     override = os.environ.get("P2_ENGINE_EXE") or os.environ.get("SLCN_ENGINE_EXE") or ""
     if override:
         return override if Path(override).exists() else ""
     names = ("SLCNEngine.exe", "SLCNEngine")
-    roots = [Path(sys.executable).resolve().parent] if getattr(sys, "frozen", False) else []
-    roots.append(repo_root())
-    found = []
-    for root in roots:
+    candidates: list[str] = []
+    for root in _frozen_sidecar_roots():
         for name in names:
-            found.append(str(root / name))
-    return first_existing_path(*found)
+            # PyInstaller --onefile：sidecar 就是根下的单个可执行文件（旧包，兼容保留）
+            candidates.append(str(root / name))
+            # PyInstaller --onedir：<根>/SLCNEngine/SLCNEngine[.exe] + <根>/SLCNEngine/_internal/
+            candidates.append(str(root / "SLCNEngine" / name))
+    for name in names:
+        candidates.append(str(repo_root() / name))
+    return first_existing_file(*candidates)
 
 
 _ENGINE_VERSION_CACHE: dict[tuple, str] = {}

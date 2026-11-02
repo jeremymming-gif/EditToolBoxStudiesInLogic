@@ -7,11 +7,16 @@
 #   · 打 tag（v1.5.0 这种）→ 跑测试 + 双平台构建 + 建 Release（附 latest.json）
 #   · 手动 workflow_dispatch → 只跑测试与构建，**不**建 Release（用来验证打包脚本）
 #
-# 打包口径与 `.github/workflows/build-flet.yml` 一致（两条流水线共用）：
-#   · 引擎 sidecar：Windows 用 `Engine/tools/build_win_sidecar.ps1`（只产 SLCNEngine.exe）；
-#                    macOS 用等价 PyInstaller onefile（同一入口表/模板数据）
-#   · 应用：`flet pack`（onefile；macOS 出 .app），sidecar 放在可执行文件同目录
-#     （macOS 为 `.app/Contents/MacOS/SLCNEngine`）
+# 打包口径（批113 起引擎 sidecar **目录化** = PyInstaller --onedir）：
+#   · 引擎 sidecar：macOS 在本 workflow 里直接打；Windows 用
+#     `sources-flet/packaging/build_win_sidecar_onedir.ps1`
+#     （入口表 / 模板数据 / 版本资源与 `Engine/tools/build_win_sidecar.ps1` 一致）
+#   · 应用：`flet pack`（onefile；macOS 出 .app）
+#   · sidecar 落点：macOS = `.app/Contents/Resources/SLCNEngine/`
+#     （`.app/Contents/MacOS/SLCNEngine` 留同名 launcher，旧路径/文档命令照旧可用）；
+#     Windows = exe 同目录的 `SLCNEngine\SLCNEngine.exe`
+#   · Flet 桌面客户端随包（macOS）：`.app/Contents/Resources/flet-client/Flet.app`，
+#     运行期由 main.py 用 FLET_VIEW_PATH 指过去，首启不再下载/解压到 ~/.flet/client
 on:
   push:
     tags: ["v*"]
@@ -88,11 +93,11 @@ jobs:
           python -m pip install --disable-pip-version-check --upgrade pip
           python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet pystray Pillow
 
-      - name: 引擎 sidecar（PyInstaller onefile，等价 Tk 版入口表）
+      - name: 引擎 sidecar（PyInstaller --onedir，等价 Tk 版入口表）
         run: |
           set -euo pipefail
           mkdir -p build-flet
-          ( cd Engine && python -m PyInstaller --noconfirm --clean --onefile --console \
+          ( cd Engine && python -m PyInstaller --noconfirm --clean --onedir --console \
               --name SLCNEngine \
               --distpath ../build-flet/dist-engine \
               --workpath ../build-flet/work-engine \
@@ -104,9 +109,12 @@ jobs:
               --hidden-import dirpush \
               --add-data "$GITHUB_WORKSPACE/编辑笔记/模板文件:编辑笔记/模板文件" \
               engine_main.py )
-          cp build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
-          chmod +x build-flet/SLCNEngine
-          ./build-flet/SLCNEngine --version
+          # --onedir 产出的是**目录**：dist-engine/SLCNEngine/{SLCNEngine,_internal/}
+          rm -rf build-flet/SLCNEngine
+          cp -R build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
+          chmod +x build-flet/SLCNEngine/SLCNEngine
+          ls -la build-flet/SLCNEngine
+          ./build-flet/SLCNEngine/SLCNEngine --version
 
       - name: flet pack（onefile .app，未签名）
         run: |
@@ -114,7 +122,7 @@ jobs:
           ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 --icon ../sources-flet/packaging/assets/logo.icns --distpath dist --yes )
           ls -la build-flet/dist
 
-      - name: sidecar 定位自检（engine_bridge，不经 GUI）
+      - name: sidecar 定位自检（engine_bridge，不经 GUI；传目录形态，验证 --onedir 解析）
         run: python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine --run-help
 
       # ⚠️ macOS runner 自带 BSD find，不支持 GNU 的 -maxdepth（历史 run 41241488672 即因此失败）。
@@ -127,9 +135,10 @@ jobs:
           echo "== build-flet/dist =="
           ls -la build-flet/dist
           test -d build-flet/dist
-          test -x build-flet/SLCNEngine
+          test -x build-flet/SLCNEngine/SLCNEngine
+          test -d build-flet/SLCNEngine/_internal
 
-      - name: 组装发布包（.app + Contents/MacOS/SLCNEngine + FIRST-OPEN）
+      - name: 组装发布包（.app + Contents/Resources/SLCNEngine/ + FIRST-OPEN）
         run: |
           set -euo pipefail
           rm -rf pkg-mac
@@ -138,19 +147,63 @@ jobs:
           ditto build-flet/dist pkg-mac
           APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
           if [ -n "$APPDIR" ]; then
-            cp build-flet/SLCNEngine "$APPDIR/Contents/MacOS/SLCNEngine"
+            # --onedir sidecar 是**目录**（SLCNEngine + _internal/）：整体放 Resources，
+            # 不占 Contents/MacOS（那里是 .app 的可执行区，只留一个同名 launcher）。
+            rm -rf "$APPDIR/Contents/Resources/SLCNEngine"
+            cp -R build-flet/SLCNEngine "$APPDIR/Contents/Resources/SLCNEngine"
+            chmod +x "$APPDIR/Contents/Resources/SLCNEngine/SLCNEngine"
+            # Contents/MacOS/SLCNEngine 仍是可执行入口（launcher，转调 Resources 里的真身），
+            # 所以 FIRST-OPEN 文档里的 `.../Contents/MacOS/SLCNEngine --version` 照旧可用。
+            printf '%s\n' '#!/bin/sh' \
+              'here=$(cd "$(dirname "$0")" && pwd)' \
+              'exec "$here/../Resources/SLCNEngine/SLCNEngine" "$@"' \
+              > "$APPDIR/Contents/MacOS/SLCNEngine"
             chmod +x "$APPDIR/Contents/MacOS/SLCNEngine"
-            ( cd "$APPDIR/Contents/MacOS" && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+            ( cd "$APPDIR/Contents/Resources/SLCNEngine" && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
           else
-            cp build-flet/SLCNEngine pkg-mac/SLCNEngine
-            chmod +x pkg-mac/SLCNEngine
-            ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+            rm -rf pkg-mac/SLCNEngine
+            cp -R build-flet/SLCNEngine pkg-mac/SLCNEngine
+            chmod +x pkg-mac/SLCNEngine/SLCNEngine
+            ( cd pkg-mac/SLCNEngine && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
           fi
           # ⚠️ 资产名必须纯 ASCII（GitHub 会删掉文件名里的非 ASCII 字符）；
           #    文件内容仍是中文，只有文件名用 ASCII。说明文字统一放 sources-flet/packaging。
           cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
           ls -la pkg-mac
           ls -la pkg-mac/*/Contents/MacOS 2>/dev/null || true
+          ls -la pkg-mac/*/Contents/Resources/SLCNEngine 2>/dev/null | head -20 || true
+
+      - name: 随包 Flet 桌面客户端（FLET_VIEW_PATH，免首启下载/解压 ~135MB）
+        run: |
+          set -euo pipefail
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR" || { echo "没有 .app 可装配随包客户端"; exit 1; }
+          # flet_desktop 的缓存目录就是 .app 的父目录（与运行期 FLET_VIEW_PATH 同口径）
+          CLIENT=$(python -c 'import flet_desktop; print(flet_desktop.ensure_client_cached())')
+          SRC=$(ls -d "$CLIENT"/*.app 2>/dev/null | head -1 || true)
+          test -n "$SRC" || { echo "客户端目录里没有 .app：$CLIENT"; exit 1; }
+          mkdir -p "$APPDIR/Contents/Resources/flet-client"
+          rm -rf "$APPDIR/Contents/Resources/flet-client/Flet.app"
+          ditto "$SRC" "$APPDIR/Contents/Resources/flet-client/Flet.app"
+          du -sh "$APPDIR/Contents/Resources/flet-client/Flet.app"
+
+      - name: Info.plist 收口（禁多实例 + 版本号）
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.value }}"
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR"
+          PLIST="$APPDIR/Contents/Info.plist"
+          PB=/usr/libexec/PlistBuddy
+          # 重复双击不要开出第二个实例
+          $PB -c "Add :LSMultipleInstancesProhibited bool true" "$PLIST" 2>/dev/null \
+            || $PB -c "Set :LSMultipleInstancesProhibited true" "$PLIST"
+          # 版本号与引擎同一出处（Engine/slcn/__init__.py）；键缺失时 Add
+          for key in CFBundleVersion CFBundleShortVersionString; do
+            $PB -c "Set :$key $V" "$PLIST" 2>/dev/null \
+              || $PB -c "Add :$key string $V" "$PLIST"
+          done
+          plutil -p "$PLIST" | grep -E 'LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
 
       - name: 生成发布 zip（macOS，ditto 保留 .app 结构）
         run: |
@@ -196,14 +249,12 @@ jobs:
           python -m pip install --disable-pip-version-check --upgrade pip
           python -m pip install --disable-pip-version-check lxml pypdf pypinyin pyinstaller flet pystray Pillow
 
-      - name: 引擎 sidecar（Engine/tools/build_win_sidecar.ps1，只取 SLCNEngine.exe）
+      - name: 引擎 sidecar（PyInstaller --onedir，入口表与 engine_main.py 一致）
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          pwsh -NoProfile -ExecutionPolicy Bypass -File Engine/tools/build_win_sidecar.ps1
-          New-Item -ItemType Directory -Force build-flet | Out-Null
-          Copy-Item dist/win-sidecar/dist/SLCNEngine.exe build-flet/SLCNEngine.exe
-          & build-flet/SLCNEngine.exe --version | Out-Host
+          pwsh -NoProfile -ExecutionPolicy Bypass -File sources-flet/packaging/build_win_sidecar_onedir.ps1
+          & build-flet/dist-engine/SLCNEngine/SLCNEngine.exe --version | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "sidecar 自检失败（SLCNEngine.exe --version）" }
 
       - name: flet pack（onefile + 版本资源）
@@ -225,8 +276,8 @@ jobs:
           }
           Get-ChildItem build-flet/dist | Out-Host
 
-      - name: sidecar 定位自检（engine_bridge，不经 GUI）
-        run: python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine.exe --run-help
+      - name: sidecar 定位自检（engine_bridge，不经 GUI；传目录形态，验证 --onedir 解析）
+        run: python sources-flet/packaging/sidecar_check.py build-flet/dist-engine/SLCNEngine --run-help
 
       - name: 组装并校验 zip（exe + sidecar + FIRST-OPEN + sha256）
         shell: pwsh
@@ -236,12 +287,17 @@ jobs:
           $pkg = "pkg-win"
           New-Item -ItemType Directory -Force $pkg | Out-Null
           Copy-Item build-flet/dist/编辑部工具箱.exe $pkg/
-          Copy-Item build-flet/SLCNEngine.exe $pkg/
+          # --onedir sidecar：整个目录进包（SLCNEngine\SLCNEngine.exe + SLCNEngine\_internal\）
+          Copy-Item -Recurse -Force build-flet/dist-engine/SLCNEngine $pkg/SLCNEngine
           Copy-Item sources-flet/packaging/FIRST-OPEN-Windows.txt $pkg/
           $lines = Get-ChildItem $pkg -File | ForEach-Object {
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
             "$h  $($_.Name)"
           }
+          # 目录形态 sidecar：目录本身不能直接哈希，单独记内部可执行文件一行
+          $sidecarRel = "SLCNEngine/SLCNEngine.exe"
+          $sh = (Get-FileHash (Join-Path $pkg $sidecarRel) -Algorithm SHA256).Hash.ToLower()
+          $lines += "$sh  $sidecarRel"
           $lines | Set-Content -Encoding ascii "$pkg/sha256.txt"
           Compress-Archive -Path "$pkg/*" -DestinationPath "EditToolBox-$V-Windows-x64.zip" -Force
           $zhash = (Get-FileHash "EditToolBox-$V-Windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
