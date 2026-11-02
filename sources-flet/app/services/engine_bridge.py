@@ -25,6 +25,29 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+_MAC_TOOL_DIRS = (
+    "/Library/TeX/texbin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+)
+
+
+def _augment_path(path: str, extra: tuple[str, ...] = _MAC_TOOL_DIRS) -> str:
+    """macOS：Finder/LaunchServices 启动的 app 只有系统默认 PATH。
+
+    系统默认 PATH 不含 MacTeX（/Library/TeX/texbin）与 Homebrew，导致
+    `envcheck.py` 的 `shutil.which("xelatex")`/`("biber")` 误报缺失，
+    继而 GUI「环境检查失败」；同一 PATH 也会让 convert 找不到 TeX 工具。
+    仅 darwin 生效：把存在且尚未入 PATH 的工具目录前置（不改 Windows/Linux）。
+    """
+    if sys.platform != "darwin":
+        return path
+    parts = [item for item in path.split(os.pathsep) if item]
+    missing = [d for d in extra if os.path.isdir(d) and d not in parts]
+    if not missing:
+        return path
+    return os.pathsep.join(missing + parts)
+
 
 def _child_env() -> dict[str, str]:
     """P4：给引擎子进程固定的 UTF-8 stdio 环境。
@@ -37,6 +60,7 @@ def _child_env() -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    env["PATH"] = _augment_path(env.get("PATH", ""))
     return env
 
 ENTRIES = (
