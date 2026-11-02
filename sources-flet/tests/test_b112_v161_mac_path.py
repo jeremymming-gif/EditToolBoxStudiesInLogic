@@ -57,3 +57,22 @@ def test_child_env_carries_augmented_path(monkeypatch, tmp_path):
 def test_mac_tool_dirs_cover_texbin_and_homebrew():
     assert "/Library/TeX/texbin" in EB._MAC_TOOL_DIRS
     assert "/opt/homebrew/bin" in EB._MAC_TOOL_DIRS
+
+
+def test_env_for_run_augments_path_on_darwin(monkeypatch, tmp_path):
+    tool = tmp_path / "texbin"
+    tool.mkdir()
+    monkeypatch.setattr(EB, "_MAC_TOOL_DIRS", (str(tool),))
+    monkeypatch.setattr(EB.sys, "platform", "darwin")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    env = EB.env_for_run()
+    assert env["PATH"].split(os.pathsep)[0] == str(tool)
+
+
+def test_env_for_run_noop_off_darwin(monkeypatch, tmp_path):
+    tool = tmp_path / "texbin"
+    tool.mkdir()
+    monkeypatch.setattr(EB, "_MAC_TOOL_DIRS", (str(tool),))
+    monkeypatch.setattr(EB.sys, "platform", "win32")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert EB.env_for_run()["PATH"] == "/usr/bin:/bin"

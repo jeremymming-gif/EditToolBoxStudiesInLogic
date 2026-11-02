@@ -132,7 +132,7 @@ $env:PYTHONPATH = "$PWD\vendor"
 py -3.14 tools/gen_docs.py                    # 刷新 AUTO 数字块（数字唯一出处，勿手抄）
 py -3.14 tests/test_docs_consistency.py       # 文档看门狗（期望「失败 0 项」）
 py -3.14 tools/selfcheck.py --full            # 一键自查（含全部套件与严格数字校验）
-py -3.14 -m pytest ..\sources-flet\tests -q    # Flet 壳测试（期望 377 passed / 5 skipped）
+py -3.14 -m pytest ..\sources-flet\tests -q    # Flet 壳测试（期望 379 passed / 5 skipped）
 ```
 
 `macOS / Linux` 用同一组命令，把 `py -3.14` 换成 `python3.14`、`$env:` 换成 `export`。

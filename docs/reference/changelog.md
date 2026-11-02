@@ -22,7 +22,7 @@ description: 当前版本与历史 Release。
   每次 onefile 解包约 23MB）。
 - **首启体验**：首启先用系统通知提示「正在准备运行环境（约 10–30 秒）」，避免误以为没启动而反复点击；
   首启不再自动跑环境检查（改为设置页显式入口 + 首启提示），避免 sidecar 首次解包约 10s 与失败黄条误报。
-- **验收**：Flet 壳 `pytest sources-flet/tests -q` → 377 passed / 5 skipped / 0 failed（基线 369/5）；
+- **验收**：Flet 壳 `pytest sources-flet/tests -q` → 379 passed / 5 skipped / 0 failed（基线 369/5）；
   引擎 141 套件 0 红。
 
 ## 1.6.0（2026-11-02）

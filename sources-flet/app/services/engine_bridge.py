@@ -32,7 +32,7 @@ _MAC_TOOL_DIRS = (
 )
 
 
-def _augment_path(path: str, extra: tuple[str, ...] = _MAC_TOOL_DIRS,
+def _augment_path(path: str, extra: tuple[str, ...] | None = None,
                   *, platform: str | None = None) -> str:
     """macOS：Finder/LaunchServices 启动的 app 只有系统默认 PATH。
 
@@ -41,6 +41,8 @@ def _augment_path(path: str, extra: tuple[str, ...] = _MAC_TOOL_DIRS,
     继而 GUI「环境检查失败」；同一 PATH 也会让 convert 找不到 TeX 工具。
     仅 darwin 生效：把存在且尚未入 PATH 的工具目录前置（不改 Windows/Linux）。
     """
+    if extra is None:
+        extra = _MAC_TOOL_DIRS
     if (sys.platform if platform is None else platform) != "darwin":
         return path
     parts = [item for item in path.split(os.pathsep) if item]
@@ -282,7 +284,7 @@ def _read_engine_version(engine_dir: str | None, exe: str | None) -> str:
         try:
             proc = subprocess.run(
                 [exe, "--version"], capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=10,
+                encoding="utf-8", errors="replace", timeout=30,
                 creationflags=CREATE_NO_WINDOW,
                 env=_child_env(),
             )
@@ -1051,6 +1053,9 @@ def env_for_run(api: dict | None = None, notes: str = "") -> dict:
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    # v1.6.1：Finder/程序坞启动的 app 只有系统默认 PATH；所有引擎子进程
+    # （envcheck/convert/…）统一补齐 MacTeX 与 Homebrew 工具目录。
+    env["PATH"] = _augment_path(env.get("PATH", ""))
     api = api or {}
     mapping = {
         "SLCN_LLM_BASE": api.get("base"),
