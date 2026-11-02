@@ -34,6 +34,7 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from services import startup_log as SLOG
 from services import version_info as VERSION
 from services import winplat
 from services.settings_store import SettingsStore
@@ -437,6 +438,8 @@ class App:
             except OSError:
                 pass
         print("P2MARK " + line, flush=True)
+        if event in SLOG.LIFECYCLE_EVENTS:
+            SLOG.log(event, **fields)
 
     # ── 外壳 ────────────────────────────────────────────────────────────
     def boot(self) -> None:
@@ -1064,6 +1067,7 @@ class App:
         )
 
     async def after_boot(self) -> None:
+        SLOG.log("after_boot_begin")
         try:
             await self.page.wait_until_visible()
         except Exception:  # noqa: BLE001
@@ -1110,11 +1114,16 @@ class App:
                 settings_page.ensure_built()
                 self.page.run_task(settings_page._envcheck_task)
         elif not self.settings_exists and SHELL.first_run_needed(self.store):
+            # v1.6.1：首启不再自动跑环境检查（打包形态每次解包 sidecar ≈10s，且失败会误报成
+            # 「环境检查失败」黄条）。改为设置页里的显式入口 + 首启提示，失败不阻塞启动。
             settings_page = self.pages.get("settings")
-            if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
+            if settings_page is not None:
                 settings_page.ensure_built()
-                self.mark("envcheck_first_run")
-                self.page.run_task(settings_page._envcheck_task)
+            self.mark("envcheck_first_run_skipped", reason="v1.6.1: first-run auto check disabled")
+            try:
+                self.toast("首次启动：建议到「设置 → 环境检查」跑一次，确认 TeX 工具链可用。")
+            except Exception:  # noqa: BLE001 - 提示失败不影响启动
+                pass
         bib_query = _env_str("P2_BIB_QUERY")
         if bib_query:
             self.page.run_task(self._bib_query_probe, bib_query)
@@ -1153,6 +1162,7 @@ class App:
                 await self.page.window.close()
             except Exception as exc:  # noqa: BLE001
                 self.mark("auto_close_error", error=str(exc))
+        SLOG.log("after_boot_done")
 
     # ── P3 平台补齐：客户端窗口旁路 / 标题栏 / 拖放探测 / 托盘 / 几何 ────
     async def _bib_query_probe(self, title: str) -> None:
@@ -1391,5 +1401,30 @@ def main(page: ft.Page) -> None:
     page.run_task(app.after_boot)
 
 
-if __name__ == "__main__":
+def _launch() -> None:
+    """进程入口：先落启动日志/首启提示，再交给 Flet。"""
+    SLOG.install()
+    SLOG.log("launch_begin", argv=sys.argv[1:], platform=sys.platform)
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        try:
+            _settings, exists = SettingsStore().load()
+        except Exception:  # noqa: BLE001
+            exists = True
+        if not exists:
+            SLOG.log("first_run_detected")
+            # 首启要解压 Flet 桌面客户端（~135MB）与 onefile 解包，可能 10–40s 无窗口：
+            # 先给系统通知，避免用户以为没启动而反复点击（v1.6.1）。
+            try:
+                subprocess.Popen(
+                    ["osascript", "-e",
+                     'display notification "首次启动正在准备运行环境（约 10–30 秒），请稍候…" '
+                     'with title "编辑部工具箱"'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except Exception:  # noqa: BLE001
+                pass
     ft.run(main, view=ft.AppView.FLET_APP)
+
+
+if __name__ == "__main__":
+    _launch()

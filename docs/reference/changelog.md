@@ -5,9 +5,25 @@ description: 当前版本与历史 Release。
 
 # 版本记录
 
-当前版本：**1.6.0**（Flet 单壳，macOS + Windows）。
+当前版本：**1.6.1**（Flet 单壳，macOS + Windows）。
 
 完整变更以 GitHub Releases 为准：<https://github.com/jeremymming-gif/EditToolBoxStudiesInLogic/releases>
+
+## 1.6.1（2026-11-02）
+
+- **环境检查失败修复**：从 Finder / 程序坞启动的 app 只有系统默认 `PATH`，找不到 MacTeX
+  （`/Library/TeX/texbin`）与 Homebrew 工具；引擎桥现在为子进程前置 mac 工具目录
+  （`_augment_path`，仅 darwin、只加存在且不在 `PATH` 的目录），同一修复也覆盖初排/一校的
+  `xelatex` / `biber` 调用。最小 `PATH` 下环境检查由 6/8 恢复为 8/8。
+- **启动诊断日志**：打包形态把启动生命周期与未捕获异常写入
+  `~/Library/Logs/编辑部工具箱/startup.log`（Windows `%LOCALAPPDATA%\编辑部工具箱\Logs\startup.log`，
+  超过 512KB 轮转一次）；日志不含稿件内容与业务路径，用于定位「窗口一闪 / 启动很慢 / 首启很久」。
+- **启动开销**：引擎版本探测结果缓存——启动期只 spawn 一次 `SLCNEngine --version`（原来 3 次，
+  每次 onefile 解包约 23MB）。
+- **首启体验**：首启先用系统通知提示「正在准备运行环境（约 10–30 秒）」，避免误以为没启动而反复点击；
+  首启不再自动跑环境检查（改为设置页显式入口 + 首启提示），避免 sidecar 首次解包约 10s 与失败黄条误报。
+- **验收**：Flet 壳 `pytest sources-flet/tests -q` → 377 passed / 5 skipped / 0 failed（基线 369/5）；
+  引擎 141 套件 0 红。
 
 ## 1.6.0（2026-11-02）
 
