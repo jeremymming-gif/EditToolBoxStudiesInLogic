@@ -16,27 +16,32 @@ from services import engine_bridge as EB
 def test_augment_path_prepends_existing_dir(tmp_path):
     tool = tmp_path / "texbin"
     tool.mkdir()
-    out = EB._augment_path("/usr/bin:/bin", extra=(str(tool),), platform="darwin")
-    assert out == f"{tool}:/usr/bin:/bin"
+    sep = os.pathsep  # darwin 语义下为 ":"；Windows runner 上为 ";"，用宿主分隔符构造再断言
+    out = EB._augment_path(f"/usr/bin{sep}/bin", extra=(str(tool),), platform="darwin")
+    assert out == f"{tool}{sep}/usr/bin{sep}/bin"
 
 
 def test_augment_path_keeps_unmodified_when_dir_missing(tmp_path):
     missing = tmp_path / "no-such-dir"
-    assert EB._augment_path("/usr/bin:/bin", extra=(str(missing),), platform="darwin") == "/usr/bin:/bin"
+    sep = os.pathsep
+    src = f"/usr/bin{sep}/bin"
+    assert EB._augment_path(src, extra=(str(missing),), platform="darwin") == src
 
 
 def test_augment_path_dedupes_existing_entry(tmp_path):
     tool = tmp_path / "texbin"
     tool.mkdir()
-    path = f"{tool}:/usr/bin:/bin"
+    sep = os.pathsep
+    path = f"{tool}{sep}/usr/bin{sep}/bin"
     assert EB._augment_path(path, extra=(str(tool),), platform="darwin") == path
 
 
 def test_augment_path_noop_off_darwin(tmp_path):
     tool = tmp_path / "texbin"
     tool.mkdir()
+    src = "/usr/bin:/bin"
     for platform in ("win32", "linux"):
-        assert EB._augment_path("/usr/bin:/bin", extra=(str(tool),), platform=platform) == "/usr/bin:/bin"
+        assert EB._augment_path(src, extra=(str(tool),), platform=platform) == src
 
 
 def test_child_env_carries_augmented_path(monkeypatch, tmp_path):
