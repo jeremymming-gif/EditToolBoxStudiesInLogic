@@ -248,8 +248,12 @@ class TocPanel:
         return ft.TextField(
             label=label, value=str(self.values.get(key) or ""), dense=True,
             text_size=self.t.font("body"), width=self.t.px(width),
-            border_color=self.t.palette.border,
-            focused_border_color=self.t.palette.accent,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, self.t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, self.t.palette.accent)),
+            },
             content_padding=C._pad(self.t, 10, 8, 10, 8),
             on_change=lambda e, k=key: self._set_value(k, e.control.value),
         )

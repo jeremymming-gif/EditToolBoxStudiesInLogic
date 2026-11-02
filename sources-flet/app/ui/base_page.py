@@ -66,7 +66,12 @@ class BasePage:
         control = ft.TextField(
             label=label, value=self.app.store.get(f"form.{key}", "") or "",
             dense=True, text_size=self.t.font("body"),
-            border_color=self.t.palette.border, focused_border_color=self.t.palette.accent,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, self.t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, self.t.palette.accent)),
+            },
             width=self.t.px(width), on_change=_changed,
             content_padding=C._pad(self.t, 10, 8, 10, 8),
         )

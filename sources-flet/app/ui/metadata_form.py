@@ -376,7 +376,12 @@ class MetadataPanel:
             max_lines=5 if multiline else None,
             text_size=t.font("body"), width=t.px(width) if width else None,
             expand=True if not width else None,
-            border_color=t.palette.border, focused_border_color=t.palette.accent,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=on_change,
         )

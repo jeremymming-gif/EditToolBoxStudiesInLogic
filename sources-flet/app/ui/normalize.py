@@ -245,7 +245,12 @@ class NormalizePanel:
         self._out_field = ft.TextField(
             label="报告输出（可选）", value=self.page.app.store.get(self.OUT_KEY, "") or "",
             hint_text=HINT_OUT, dense=True, text_size=t.font("body"),
-            border_color=t.palette.border, focused_border_color=t.palette.accent,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=self._on_out_change,
         )
@@ -288,8 +293,13 @@ class NormalizePanel:
         paste = ft.TextField(
             label="交回的 .bib 文本", value=self.page.app.store.get(self.PASTE_KEY, "") or "",
             hint_text=HINT_PASTE, multiline=True, min_lines=6, max_lines=12,
-            text_size=t.font("body"), border_color=t.palette.border,
-            focused_border_color=t.palette.accent,
+            text_size=t.font("body"),
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
             content_padding=C._pad(t, 10, 8, 10, 8), on_change=self._on_paste_change,
         )
         self.page.fields["bib_paste"] = [paste]

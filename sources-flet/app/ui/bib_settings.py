@@ -257,6 +257,8 @@ class BibSettingsView:
     # -- 核实成本闸门（R6，文案与旧壳 BibDbSettingsPage 对齐）--------------
     def _bibdb_card(self) -> ft.Control:
         t = self.page.t
+        border_col = t.palette.error if self.bibdb_error else t.palette.border
+        focus_col = t.palette.error if self.bibdb_error else t.palette.accent
         db = self._db()
         exists = bool(db) and os.path.exists(db)
         section = self._bibdb()
@@ -266,8 +268,12 @@ class BibSettingsView:
                          vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.TextField(label="核实上限", value=self.bibdb_text, width=120, dense=True,
                          text_size=t.font("body"), on_change=self._on_verify_max,
-                         border_color=t.palette.error if self.bibdb_error else None,
-                         focused_border_color=t.palette.error if self.bibdb_error else None),
+                         border={
+                             ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                                 side=ft.BorderSide(1, border_col)),
+                             ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                                 side=ft.BorderSide(2, focus_col)),
+                         }),
             C.text(f"条（0 = 不限；留空 = 引擎默认 {SS.DEFAULT_VERIFY_MAX} 条，本次不传 --verify-max）",
                    t, "small", t.palette.text_muted),
         ])

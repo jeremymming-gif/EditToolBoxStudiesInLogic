@@ -26,6 +26,9 @@ from pathlib import Path
 APP_DIRNAME = "编辑部工具箱"
 MAX_BYTES = 512 * 1024  # 超过即轮转一次，只留上一份，避免无限增长
 
+#: 模块导入时刻：t_ms 用来量「从 import 起过了多久」，便于定位启动慢在哪一段。
+_T0 = time.monotonic()
+
 #: 只把启动/窗口/异常相关事件写盘，避免高频事件把日志刷满。
 LIFECYCLE_EVENTS = frozenset({
     "launch_begin",
@@ -83,6 +86,7 @@ def log(event: str, **fields) -> None:
         "event": event,
         "ts": time.time(),
         "mono": round(time.monotonic(), 3),
+        "t_ms": round((time.monotonic() - _T0) * 1000, 1),
         "pid": os.getpid(),
         "frozen": bool(getattr(sys, "frozen", False)),
     }
@@ -90,8 +94,9 @@ def log(event: str, **fields) -> None:
     try:
         line = json.dumps(payload, ensure_ascii=False, default=str)
     except Exception:  # noqa: BLE001 - 字段不可序列化时降级
-        line = json.dumps({"event": event, "ts": payload["ts"], "pid": payload["pid"],
-                           "note": "fields_not_serializable"}, ensure_ascii=False)
+        line = json.dumps({"event": event, "ts": payload["ts"], "t_ms": payload["t_ms"],
+                           "pid": payload["pid"], "note": "fields_not_serializable"},
+                          ensure_ascii=False)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _rotate(path)

@@ -322,8 +322,12 @@ class BibQueryView:
             expand=True,
             text_size=t.font("body"),
             hint_text=QUERY_HINTS[self.mode],
-            border_color=t.palette.border,
-            focused_border_color=t.palette.accent,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=self._on_basic_change,
             on_submit=lambda e: self._run(self._run_basic()),
@@ -350,8 +354,13 @@ class BibQueryView:
         )
         limit = ft.TextField(
             value=self.limit_text, width=t.px(64), dense=True, text_size=t.font("body"),
-            text_align=ft.TextAlign.CENTER, border_color=t.palette.border,
-            focused_border_color=t.palette.accent,
+            text_align=ft.TextAlign.CENTER,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
             content_padding=C._pad(t, 6, 8, 6, 8), on_change=self._on_limit_change,
             on_submit=lambda e: self._run(self._run_advanced()),
         )
@@ -389,7 +398,12 @@ class BibQueryView:
         value = ft.TextField(
             value=str(row.get("value") or ""), width=t.px(360), dense=True,
             text_size=t.font("body"), hint_text="值（如 Smith / 1975 / 10.1007/…）",
-            border_color=t.palette.border, focused_border_color=t.palette.accent,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
             content_padding=C._pad(t, 10, 8, 10, 8),
             on_change=lambda e, i=index: self._on_value(i, e),
             on_submit=lambda e: self._run(self._run_advanced()),
@@ -473,7 +487,13 @@ class BibQueryView:
         controls.append(ft.TextField(
             value=bibtex if view else "", read_only=True, multiline=True,
             min_lines=7, max_lines=7, text_size=t.font("body"),
-            border_color=t.palette.border, content_padding=C._pad(t, 10, 8, 10, 8),
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    side=ft.BorderSide(1, t.palette.border)),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    side=ft.BorderSide(2, t.palette.accent)),
+            },
+            content_padding=C._pad(t, 10, 8, 10, 8),
         ))
         return ft.Column(spacing=t.sp("half"), controls=controls)
 
