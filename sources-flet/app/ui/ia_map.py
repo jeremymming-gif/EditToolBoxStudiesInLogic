@@ -5,25 +5,33 @@
   `nav_groups=[("单篇稿件",(0,3)),("整期装配",(4,5,6,7,2,8)),("引用库",(9,10,11,12,1,13))]` + 设置=14；
 - 对等矩阵：C:\\slcn-work\\b304-2026-10-31\\evidence\\s2\\parity-matrix.md（15/15 PASS）。
 
-新 IA（3 组：工作区 / 资料 / 系统；二级视图/步骤已全部进左侧导航 — 批 114 定稿，结构以 `NAV_TREE` 为准）：
-  工作区 · 工作台 / 单篇稿件 / 整期装配
-  资料   · 引用库
-  系统   · 设置
+新 IA（3 组：工作区 / 引用库 / 系统；侧栏只放一级页面 + 单篇/引用库的二级视图）：
+  工作区 · 工作台 / 单篇稿件 / 整期装配（单页工作台，6 步在页内步骤栏）
+  引用库 · 顶层 section：3 个不可点击组标签（查阅 / 采录 / 治理）+ 9 个叶子
+  系统   · 设置 / 帮助与关于
+
+批 115 D1-115-31/32（IA-B）：引用库设置不再占侧栏组，入口移到页头齿轮；
+`bib:settings` 仍是可深链路由（⌘K/搜索直达），只在 NAV_TREE 的 `views` 中保留、不进 groups。
 
 「取长补短」的两条关键取舍（详见 p1-design.md）：
-1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → 规范化」，与「入藏」同组（采录）：它的输入是
-   单篇 returned.docx，体检放在入库前；「单篇稿件」页只留「去引用库 → 规范化」跳转，不再有第三步骤。
-2. 「整期装配」从 6 个平级页签改为一个页面的 6 个**步骤**：一期流水线天然有顺序，
-   一屏能看到「进度 + 当前步骤 + 日志」比 6 次点页签更接近真实工作。
+1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → 回读校验」，与「入藏」同组（采录）：它的输入是
+   单篇 returned.docx，体检放在入库前；「单篇稿件」页只留「去引用库 → 回读校验」跳转，不再有第三步骤。
+2. 「整期装配」批 114 曾把 6 个步骤全部挂到侧栏；批 115（D1-115-26）起改为一个**单页工作台**：
+   侧栏只留「整期装配」叶子，6 步在页内流水线栏切换——一期流水线天然有顺序，
+   一屏同时看到「步骤栏 + 当前步骤 + 日志」比 6 次点页签更接近真实工作。
+   `issue:overview` 仅保留一版兼容别名（落到默认步），不再有「流水线总览」屏。
 """
 from __future__ import annotations
 
-# ── 批 114 IA 定稿：一级页面 + 二级视图全部进左侧导航（用户 m03256）─────────
+# ── 批 114 IA 定稿 + 批 115 整期收敛：一级页面 + 二级视图进左侧导航（用户 m03256）─
 # 树结构是导航唯一事实来源：
 #   · 父项 = 一级页面；点父项进入其 default 视图并展开；
-#   · views = 父项下平铺的二级视图（单篇 2、整期 6 步；整期父项自身的 default
-#     "overview" 是「流水线总览」页，不占子行）；
-#   · groups = 引用库的三层中间层（组 → 视图），组行可折叠、当前组自动展开。
+#   · views = 父项下平铺的二级视图（单篇 2；整期批 115 D1-115-26 起叶子化，无子行，
+#     6 步改在页内步骤栏，见 ISSUE_ROUTE_STEPS）；
+#   · groups = 引用库的三层中间层（组标签 → 视图）；批 115 D1-115-31/32 起组标签
+#     只是不可点击的文本行，叶子始终可见（不再折叠/记忆组展开）；
+#   · views = 与 groups 并存的「仅路由」视图（引用库设置：页头齿轮/⌘K 可达，
+#     侧栏不列）；nav_views() 把它排在组内叶子之后，保证 10 条路由不丢。
 NAV_TREE: list[dict] = [
     {"group": "工作区", "entries": [
         {"key": "home", "label": "工作台", "icon": "AUTO_AWESOME"},
@@ -31,40 +39,72 @@ NAV_TREE: list[dict] = [
          "default": "convert",
          "views": [{"key": "convert", "label": "初排转换"},
                    {"key": "proofcheck", "label": "一校核查"}]},
+        # 批 115 D1-115-26：整期装配 = 单页工作台，侧栏只留叶子父项（无 views/groups）；
+        # 6 步在页内步骤栏切换，default 只作无记忆时的静态兜底。
         {"key": "issue", "label": "整期装配", "icon": "VIEW_AGENDA_OUTLINED",
-         "default": "overview",
-         "views": [{"key": "infocheck", "label": "检查tex信息"},
-                   {"key": "toc", "label": "生成目录"},
-                   {"key": "compileall", "label": "编译全部"},
-                   {"key": "merge", "label": "合并文件"},
-                   {"key": "cleantemp", "label": "删除临时文件"},
-                   {"key": "dirpush", "label": "目录摘要推送"}]},
+         "default": "infocheck"},
     ]},
-    {"group": "资料", "entries": [
+    # 批 115 D1-115-31/32：引用库升为顶层 section（原「资料」组），组标签纯文本、
+    # 9 叶常驻；设置只留路由（views），由页头齿轮/⌘K 进入。
+    {"group": "引用库", "entries": [
         {"key": "bib", "label": "引用库", "icon": "LIBRARY_BOOKS_OUTLINED",
          "default": "overview",
          "groups": [
              {"key": "read", "label": "查阅",
-              "views": [{"key": "overview", "label": "概况"},
+              "views": [{"key": "overview", "label": "概览"},
                         {"key": "query", "label": "查库"}]},
              {"key": "intake", "label": "采录",
-              "views": [{"key": "normalize", "label": "规范化"},
-                        {"key": "import", "label": "入藏"}]},
+              "views": [{"key": "import", "label": "入藏"},
+                        {"key": "normalize", "label": "回读校验"}]},
              {"key": "treat", "label": "治理",
               "views": [{"key": "review", "label": "待处理"},
                         {"key": "edit", "label": "编辑"},
                         {"key": "dupes", "label": "查重合并"},
-                        {"key": "fieldfix", "label": "字段归位"}]},
-             {"key": "maint", "label": "维护",
-              "views": [{"key": "health", "label": "库健康"},
-                        {"key": "settings", "label": "设置"}]},
-         ]},
+                        {"key": "fieldfix", "label": "字段归位"},
+                        {"key": "health", "label": "库健康"}]},
+         ],
+         # 仅路由：D1-115-32 把设置入口移到引用库页头齿轮；深链/搜索仍可用。
+         "views": [{"key": "settings", "label": "设置", "route_only": True}]},
     ]},
     {"group": "系统", "entries": [
         {"key": "settings", "label": "设置", "icon": "SETTINGS_OUTLINED"},
         {"key": "help", "label": "帮助与关于", "icon": "HELP_OUTLINE"},
     ]},
 ]
+
+# ── 批 115 D1-115-26：整期装配步骤路由（不是侧栏子项）──────────────────────
+# 6 步只在页内步骤栏；本表只服务「可深链/可持久化」的路由、标题与 22 条路由计数。
+# 标签沿用报告口径（页内详情标题由 pages.IssuePage.STEPS 自己维护）。
+ISSUE_ROUTE_STEPS: list[dict[str, str]] = [
+    {"key": "infocheck", "label": "检查tex信息"},
+    {"key": "toc", "label": "生成目录"},
+    {"key": "compileall", "label": "编译全部"},
+    {"key": "merge", "label": "合并文件"},
+    {"key": "cleantemp", "label": "删除临时文件"},
+    {"key": "dirpush", "label": "目录摘要推送"},
+]
+_ISSUE_STEP_KEYS = frozenset(step["key"] for step in ISSUE_ROUTE_STEPS)
+# 裸 issue / issue:overview 都是「默认步」别名；由 main 结合 last_step 解析。
+_ISSUE_ALIAS_VIEWS = frozenset({"", "overview"})
+
+
+def issue_step_keys() -> list[str]:
+    """整期装配合法步骤 key（顺序即页内步骤栏顺序）。"""
+    return [step["key"] for step in ISSUE_ROUTE_STEPS]
+
+
+def issue_step_label(view_key: str) -> str:
+    """整期装配步骤 → 中文标签；非步骤返回空串。"""
+    return next((step["label"] for step in ISSUE_ROUTE_STEPS
+                 if step["key"] == view_key), "")
+
+
+def is_issue_landing_route(route: str | None) -> bool:
+    """是否「落到默认步」的整期路由：`issue` / `issue:` / `issue:overview`。"""
+    text = str(route or "").strip()
+    page, _, view = text.partition(":")
+    return page == "issue" and view in _ISSUE_ALIAS_VIEWS
+
 
 # 兼容旧调用（test_p3 / 迁移期代码仍读 NAV_GROUPS）：由 NAV_TREE 派生，单一事实来源。
 NAV_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
@@ -87,20 +127,30 @@ def page_defaults() -> dict[str, str]:
 
 
 def nav_views(page_key: str) -> list[dict]:
-    """页面的平铺二级视图（引用库把组展开后平铺）。"""
+    """页面的平铺二级视图（引用库把组展开后平铺，最后接仅路由视图）。
+
+    引用库 = 3 组共 9 叶 + `views` 里的设置（route_only）→ 10 项；设置排在最后，
+    与 `BibPage.VIEWS` 的既有顺序兼容，但侧栏只渲染 groups（见 main `_bib_nav_rows`）。
+    """
     entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
     if entry is None:
         return []
-    if entry.get("views"):
-        return list(entry["views"])
     views: list[dict] = []
     for group in entry.get("groups", []) or []:
         views.extend(dict(view, group=group["key"]) for view in group["views"])
+    views.extend(dict(view) for view in (entry.get("views", []) or []))
     return views
 
 
+def route_views(page_key: str) -> list[dict]:
+    """路由层可用的视图：整期装配用步骤表（侧栏仍无子项），其余同 nav_views。"""
+    if page_key == "issue":
+        return list(ISSUE_ROUTE_STEPS)
+    return nav_views(page_key)
+
+
 def view_label(page_key: str, view_key: str) -> str:
-    return next((str(view["label"]) for view in nav_views(page_key)
+    return next((str(view["label"]) for view in route_views(page_key)
                  if view["key"] == view_key), "")
 
 
@@ -129,10 +179,18 @@ def group_views(page_key: str) -> list[dict]:
 
 
 def all_routes() -> list[str]:
-    """全部可持久化/可深链的路由（含父项默认视图与无子视图页面）。"""
+    """全部可持久化/可深链的路由（含父项默认视图、无子视图页面与旧别名）。
+
+    批 115 D1-115-26：整期装配侧栏叶子化后，22 条路由口径不变——
+    `issue:overview` 兼容别名 + 6 个页内步骤路由，共 7 条。
+    """
     routes: list[str] = []
     for entry in nav_parent_entries():
         page = entry["key"]
+        if page == "issue":
+            routes.append("issue:overview")
+            routes.extend(f"issue:{step['key']}" for step in ISSUE_ROUTE_STEPS)
+            continue
         views = nav_views(page)
         if not views:
             routes.append(page)
@@ -152,13 +210,15 @@ def normalize_route(route: str | None) -> tuple[str, str]:
     defaults = page_defaults()
     if page not in defaults:
         return "home", ""
-    # 页面默认视图不一定是「子项」（如整期装配父页 = overview 总览），
-    # 但它是合法的页面状态，因此并入允许集合。
+    # 页面默认视图不一定是侧栏子项（整期装配的 6 步只在页内步骤栏），
+    # 但它是合法页面状态，因此用 route_views 并入允许集合。
     default = defaults[page]
-    allowed = {item["key"] for item in nav_views(page)} | {default}
+    allowed = {item["key"] for item in route_views(page)} | {default}
     if not view:
         view = default
     if view not in allowed:
+        # 旧 `issue:overview` 等失效视图静态回落到页面默认步（D1-115-26）；
+        # main 会在运行期再按 issue_state.last_step 解析裸 issue/overview 别名。
         view = default
     return page, view
 
@@ -176,7 +236,7 @@ def route_labels(route: str | None) -> dict:
     group_key = group_of_view(page, view)
     group = group_label(page, group_key)
     if not view or not label:
-        # 父页默认状态（如整期装配 overview 总览）没有子项条目 → 只显示父页名。
+        # 无子项页面的父页状态（如工作台/设置/帮助）→ 只显示父页名。
         crumb, title = page_label, page_label
     elif group:
         crumb, title = f"{page_label} / {group} / {label}", label
@@ -192,7 +252,7 @@ IA_MAP: list[dict] = [
      "new_view": "步骤「初排转换」", "component": "PathPicker + OptionRow×4 + 运行按钮 + LogConsole",
      "action": "convert（P2 接 Engine/convert.py）", "first_batch": "骨架已实现（模拟运行）"},
     {"idx": 1, "old_page": "参考文献规范化", "old_group": "引用库", "new_page": "引用库",
-     "new_view": "视图「规范化」（采录组）", "component": "PathPicker + OptionRow + 运行按钮 + LogConsole",
+     "new_view": "视图「回读校验」（采录组）", "component": "PathPicker + OptionRow + 运行按钮 + LogConsole",
      "action": "checkbib（Engine/checkbib.py；只出报告、不并回、不写库）", "first_batch": "已实装（S3a2）"},
     {"idx": 2, "old_page": "合并文件", "old_group": "整期装配", "new_page": "整期装配",
      "new_view": "步骤 4「合并文件」", "component": "步骤行 + 状态徽标 + 运行按钮",
@@ -216,7 +276,7 @@ IA_MAP: list[dict] = [
      "new_view": "步骤 6「目录摘要推送」", "component": "单步运行 + 预览选项",
      "action": "dirpush（P2 接 Engine/dirpush.py）", "first_batch": "骨架已实现（模拟运行）"},
     {"idx": 9, "old_page": "库概况", "old_group": "引用库", "new_page": "引用库",
-     "new_view": "视图「概况」", "component": "StatCard×3 + EmptyState",
+     "new_view": "视图「概览」", "component": "StatCard×3 + EmptyState",
      "action": "读取 .bib 统计（P2 接 Engine/slcn/bib）", "first_batch": "骨架已实现（占位数据）"},
     {"idx": 10, "old_page": "查库", "old_group": "引用库", "new_page": "引用库",
      "new_view": "视图「查库」", "component": "搜索框 + 高级检索 + 结果空态",
@@ -261,7 +321,7 @@ P3_STATUS: dict[int, str] = {
 P3_NOTE: dict[int, str] = {
     11: "入藏会写库：P3 仅做只读说明与入口指引，写库留 P4（按 spec 需用户显式授权）",
     12: "待裁决/ack-duplicates 会写 sidecar：P3 只读展示口径，写操作留 P4",
-    9: "概况：Engine/bibdb.py stats --json（只读）",
+    9: "概览：Engine/bibdb.py stats --json（只读）",
     10: "查库：Engine/bibdb.py query --json（只读）",
     14: "设置页：外观/缩放/路径/环境检查（envcheck --json）/关于与诊断",
 }
@@ -285,7 +345,7 @@ def stats() -> dict:
         1 for row in IA_MAP
         if row["first_batch"].startswith(("骨架已实现", "已实装"))
     )
-    # IA_MAP idx1 从「单篇稿件」迁到「引用库 → 规范化」（采录组）后，new_pages 仍是 4 个：
+    # IA_MAP idx1 从「单篇稿件」迁到「引用库 → 回读校验」（采录组）后，new_pages 仍是 4 个：
     # 单篇稿件 / 整期装配 / 引用库 / 设置；15 个旧页的映射总数不变。
     pages = sorted({row["new_page"] for row in IA_MAP})
     p3_done = sum(1 for row in IA_MAP if row.get("p3_status") == "done")

@@ -337,7 +337,12 @@ def build_info_table(articles: list[dict], t) -> ft.Control:
 
 
 class InfoCheckCard:
-    """一期信息检查的结果卡：摘要 + 10 列表格 + 打开报告。"""
+    """一期信息检查的结果区：摘要 + 10 列表格 + 打开报告。
+
+    批 115 设计检修 P1-4：空态不再套 `C.card` + 120 高空态插画，改成
+    「分区标题 + 一行提示」；「打开报告」只在确实有报告时挂进头部行，
+    避免无结果时出现一个不可用的主按钮（页面主面板已是白面板，禁止再套卡）。
+    """
 
     def __init__(self, t, *, on_open=None) -> None:
         self.t = t
@@ -346,37 +351,57 @@ class InfoCheckCard:
         self.articles: list[dict] = []
         self.notes: list[str] = []
         self.chip = C.status_chip("还没检查", t, "idle")
-        self.summary = C.text(EMPTY_INFO, t, "small", t.palette.text_muted)
+        # 摘要/警告初始为空且不渲染：空 Text 带 max_lines 在 flet 1.0.5 里仍按
+        # 最大行数占高（P1-9 实测 192/136 px），空态会凭空多出半屏空白。
+        self.summary = C.text("", t, "small", t.palette.text_muted, visible=False)
         self.warning = C.text("", t, "small", t.palette.warn, visible=False)
         self.open_btn = C.secondary_button("打开报告", self._open, t, icon="OPEN_IN_NEW",
                                            disabled=True)
         self.table_box = ft.Column(spacing=0, controls=[], visible=False)
-        self.empty = C.empty_state(
-            "TABLE_CHART", "还没有检查结果",
+        # 空态只留一行：chip 已是「还没检查」，这一行只解释怎么出结果，
+        # 不再重复 title/desc/插画四层同义文案。
+        self.empty = C.inline_note(
             "选一期的目录，点「运行」；表格字段来自引擎，外壳不自己解析 tex。",
-            t, height=120,
+            t, "info",
         )
-        self.root = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text("信息检查结果", t, role="section"),
-                self.chip,
-                ft.Container(expand=True),
-                self.open_btn,
-            ]),
-            self.summary,
-            self.warning,
-            self.empty,
-            self.table_box,
-        ]), t)
+        self._actions = ft.Row(
+            spacing=t.sp("1"),
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[self.chip],
+        )
+        self.root = ft.Column(
+            spacing=t.sp("2"),
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[
+                C.section_label("信息检查结果", t, trailing=self._actions),
+                self.summary,
+                self.warning,
+                self.empty,
+                self.table_box,
+            ],
+        )
+        self.reset()
 
     def _open(self, e=None) -> None:
         if self.report and self.on_open:
             self.on_open(self.report)
 
+    def _mount_open(self, available: bool) -> None:
+        """「打开报告」只在有报告时进头部行；无报告直接不渲染（P1-4）。"""
+        self.open_btn.disabled = not available
+        mounted = self.open_btn in self._actions.controls
+        if available and not mounted:
+            self._actions.controls.append(self.open_btn)
+        elif not available and mounted:
+            self._actions.controls.remove(self.open_btn)
+
     def busy(self) -> None:
         self.reset()
-        self.chip.label = "检查中"
+        self._set_chip("检查中", "running")
         self.summary.value = "正在扫描整期 tex…（完成后这里出表格）"
+        self.summary.color = self.t.palette.text_muted
+        self.summary.visible = True
+        self.empty.visible = False
         self._update()
 
     def reset(self) -> None:
@@ -384,13 +409,14 @@ class InfoCheckCard:
         self.articles = []
         self.notes = []
         self._set_chip("还没检查", "idle")
-        self.summary.value = EMPTY_INFO
-        self.summary.color = self.t.palette.text_muted
+        self.chip.visible = True
+        self.summary.value = ""
+        self.summary.visible = False
         self.warning.visible = False
         self.table_box.controls = []
         self.table_box.visible = False
         self.empty.visible = True
-        self.open_btn.disabled = True
+        self._mount_open(False)
         self._update()
 
     def show(self, payload, *, report: str = "") -> None:
@@ -401,11 +427,15 @@ class InfoCheckCard:
         self.summary.color = self.t.palette.text
         state = info_level(payload, self.articles, self.notes)
         self._set_chip({"done": "一致", "warn": "需要核对", "idle": "还没检查"}[state], state)
+        self.chip.visible = True
         self.warning.visible = False
         self.table_box.controls = [build_info_table(self.articles, self.t)] if self.articles else []
         self.table_box.visible = bool(self.articles)
-        self.empty.visible = not self.articles
-        self.open_btn.disabled = not self.report
+        # 没有条目时 info_summary 会回落到 EMPTY_INFO，与 chip 的「还没检查」
+        # 同义；此时只留空态一行，摘要不渲染，保证同义句只出现一次。
+        self.summary.visible = state != "idle"
+        self.empty.visible = not self.summary.visible
+        self._mount_open(bool(self.report))
         self._update()
 
     def show_unreadable(self, report: str = "") -> None:
@@ -413,34 +443,41 @@ class InfoCheckCard:
         self.articles = []
         self.notes = []
         self._set_chip("读不回", "warn")
+        self.chip.visible = True
         self.summary.value = "表格留空：报告已生成，但结构化数据没读到。"
+        self.summary.visible = True
         self.warning.value = UNREADABLE_INFO
         self.warning.visible = True
         self.table_box.controls = []
         self.table_box.visible = False
-        self.empty.visible = True
-        self.open_btn.disabled = not self.report
+        # 警告行已经解释「表格为什么空」，不再叠一条通用空态文案。
+        self.empty.visible = False
+        self._mount_open(bool(self.report))
         self._update()
 
     def show_failed(self, code: int) -> None:
         self.report = ""
         self.articles = []
         self._set_chip("检查失败", "error")
+        self.chip.visible = True
         self.summary.value = f"❌ 检查失败（退出码 {code}）。{FAIL_HINT}"
+        self.summary.visible = True
         self.warning.visible = False
         self.table_box.controls = []
         self.table_box.visible = False
-        self.empty.visible = True
-        self.open_btn.disabled = True
+        self.empty.visible = False
+        self._mount_open(False)
         self._update()
 
     def _set_chip(self, label: str, state: str) -> None:
         self.chip.content.value = label
         color = {"done": self.t.palette.success, "warn": self.t.palette.warn,
-                 "error": self.t.palette.error}.get(state, self.t.palette.text_muted)
+                 "error": self.t.palette.error,
+                 "running": self.t.palette.accent}.get(state, self.t.palette.text_muted)
         self.chip.bgcolor = {"done": self.t.palette.success_soft,
                              "warn": self.t.palette.warn_soft,
-                             "error": self.t.palette.error_soft}.get(
+                             "error": self.t.palette.error_soft,
+                             "running": self.t.palette.accent_soft}.get(
                                  state, self.t.palette.surface_2)
         self.chip.content.color = color
 
@@ -745,3 +782,134 @@ async def after_issue_step(page, key: str, call, code: int, cancelled: bool,
         card.show_unreadable(artifact)
         return
     card.show(payload.get("json") or {}, report=artifact)
+
+
+# ── 批 115：整期装配「检查 tex 信息」详情页的 5 列表格 ─────────────────────
+INFO5_COLUMNS = ("篇目", "卷期年", "起–止", "页数", "字号/行距")
+INFO5_WEIGHTS = (5, 2, 1.6, 1.6, 2)
+INFO_FILTERS = (("all", "全部"), ("issues", "需核对"), ("missing", "缺 PDF"))
+
+
+def info_issue_year(article: dict) -> str:
+    volume = str(article.get("volume") or "—")
+    issue = str(article.get("issue") or "—")
+    year = str(article.get("year") or "—")
+    return f"{volume} 期 · {year}" if volume != "—" else f"{issue} 期 · {year}"
+
+
+def info_pages_cell(article: dict) -> tuple[str, str]:
+    """页数显示 + 语义色：声明/实际不符 → error（只染字，不染底），缺 PDF → warn。"""
+    declared = str(article.get("pages") or "—")
+    actual = str(article.get("actual_text") or "—")
+    if article.get("mismatch"):
+        return f"{declared} / {actual}", "error"
+    if article.get("actual") is None:
+        return f"{declared} / {actual}", "warn"
+    return f"{declared} / {actual}", "muted"
+
+
+def info_counts(articles: list[dict], notes: list[str] | None = None) -> str:
+    arts = articles or []
+    issues = sum(1 for a in arts if a.get("mismatch") or str(a.get("volume")) == "—")
+    missing = sum(1 for a in arts if a.get("actual") is None)
+    parts = [f"{len(arts)} 篇"]
+    if notes:
+        parts.append(f"{len(notes)} 处需核对")
+    elif issues:
+        parts.append(f"{issues} 处需核对")
+    if missing:
+        parts.append(f"{missing} 篇缺 PDF")
+    return " · ".join(parts)
+
+
+def info_filter(articles: list[dict], key: str) -> list[dict]:
+    if key == "issues":
+        return [a for a in articles if a.get("mismatch") or str(a.get("volume")) == "—"]
+    if key == "missing":
+        return [a for a in articles if a.get("actual") is None]
+    return list(articles)
+
+
+def _chip(label: str, active: bool, on_click, t) -> ft.Control:
+    return ft.Container(
+        height=t.px(22), border_radius=t.radius("pill"),
+        padding=C._pad(t, 10, 2, 10, 2),
+        bgcolor=t.palette.accent_soft if active else t.palette.surface_2,
+        on_click=on_click,
+        content=C.text(label, t, "caption",
+                       t.palette.on_accent_soft if active else t.palette.text_muted),
+    )
+
+
+def build_info_filter_chips(t, active: str, on_select) -> ft.Control:
+    return ft.Row(spacing=t.sp("1"), controls=[
+        _chip(label, active == key, (lambda e, k=key: on_select(k)), t)
+        for key, label in INFO_FILTERS
+    ])
+
+
+def build_info_table5(t, articles: list[dict], *, active_filter: str = "all",
+                      expanded: str = "", on_toggle=None, on_copy=None) -> ft.Control:
+    """5 列检查表（fixed header 26 / row 32 / 展开行 30）；不用 DataTable。
+
+    Flet 1.0.5 的 DataRow 没有 on_click（tests/test_b113_border.py 已钉），
+    所以行点击必须用自定义 Row + Container。
+    """
+    header = ft.Container(
+        height=t.px(26), bgcolor=t.palette.surface_2,
+        padding=C._pad(t, 10, 0, 10, 0),
+        content=ft.Row(spacing=0, controls=[
+            ft.Container(expand=weight, content=C.text(label, t, "caption",
+                                                      t.palette.text_muted,
+                                                      weight="bold"))
+            for label, weight in zip(INFO5_COLUMNS, INFO5_WEIGHTS)
+        ]),
+    )
+    rows: list[ft.Control] = [header]
+    shown = info_filter(articles, active_filter)
+    if not shown:
+        rows.append(C.empty_state("SEARCH_OFF", "这个筛选下没有篇目",
+                                  "切回「全部」看看整期清单。", t, height=64))
+        return ft.Column(spacing=0, controls=rows)
+    for article in shown:
+        key = str(article.get("folder") or "")
+        pages_text, tone = info_pages_cell(article)
+        color = {"error": t.palette.error, "warn": t.palette.warn,
+                 "muted": t.palette.text_muted}[tone]
+        row = ft.Container(
+            height=t.px(32), padding=C._pad(t, 10, 0, 10, 0),
+            bgcolor=t.palette.accent_soft if key == expanded else None,
+            on_click=(lambda e, name=key: on_toggle(name)) if on_toggle else None,
+            content=ft.Row(spacing=0, controls=[
+                ft.Container(expand=INFO5_WEIGHTS[0], content=C.text(
+                    str(article.get("title") or article.get("folder_name") or key), t,
+                    "small", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)),
+                ft.Container(expand=INFO5_WEIGHTS[1], content=C.text(
+                    info_issue_year(article), t, "small", t.palette.text_muted,
+                    max_lines=1)),
+                ft.Container(expand=INFO5_WEIGHTS[2], content=C.text(
+                    str(article.get("span") or "—"), t, "small", t.palette.text_muted)),
+                ft.Container(expand=INFO5_WEIGHTS[3], content=C.text(
+                    pages_text, t, "small", color)),
+                ft.Container(expand=INFO5_WEIGHTS[4], content=C.text(
+                    str(article.get("font_line") or "—"), t, "small",
+                    t.palette.text_muted)),
+            ]),
+        )
+        rows.append(row)
+        rows.append(C.hairline(t))
+        if key == expanded:
+            detail = (f"第一作者 {article.get('author') or '—'} · "
+                      f"中文标题 {article.get('title') or '—'} · "
+                      f"文件夹 {article.get('folder_name') or key}")
+            copy_cb = (lambda e, a=article: on_copy(a)) if on_copy else None
+            rows.append(ft.Container(
+                height=t.px(30), bgcolor=t.palette.surface_2,
+                padding=C._pad(t, 10, 0, 10, 0),
+                content=ft.Row(spacing=t.sp("1"), controls=[
+                    C.text(detail, t, "caption", t.palette.text_muted, max_lines=1,
+                           overflow=ft.TextOverflow.ELLIPSIS, expand=True),
+                    C.text_button("复制该行", copy_cb, t) if copy_cb else ft.Container(),
+                ]),
+            ))
+    return ft.Column(spacing=0, controls=rows)

@@ -14,6 +14,11 @@ label muted、value 右对齐可截断）。原来「平台差异与托盘」+�
 （`flet/controls/scrollable_control.py:390`；目标控件 `key=ft.ScrollKey(...)`），
 所以目录行可点跳转。跳转容器取 `page_body` 内层滚动 Column（本页无浮层，不会
 变成 Stack）；构造期 / 测试替身没有挂载时不跳，静默返回。
+
+批 116 UX（P1-13 / P2-12）：入口计数改由 `ia_map` 现算（5 个一级页 + 引用库
+3 组 9 叶 + 页头齿轮），文案里的视图名统一「回读校验」；目录点击后整行选中
+（`accent_soft`）标出最近跳转的段。滚动联动高亮要分区几何，而 flet 1.0.5 的
+`OnScrollEvent` 只有 pixels、`BaseControl` 无 rect/top，故不按比例猜段。
 """
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ import flet as ft
 
 from ui import components as C
 from ui import help_content as HC
+from ui import ia_map as IA
 from ui import settings_shell as SHELL
 from ui.base_page import BasePage
 
@@ -80,6 +86,8 @@ class HelpPage(BasePage):
     # ── 目录：两列 32 高可点行（左 4 / 右 3）─────────────────────────────
     def _toc(self) -> ft.Column:
         t = self.t
+        self._toc_rows: dict[str, ft.Container] = {}
+        self._active_toc = ""
         rows = [self._toc_row(key, title) for key, title in TOC]
         split = (len(rows) + 1) // 2
         columns = ft.Row(
@@ -92,11 +100,11 @@ class HelpPage(BasePage):
                 for part in (rows[:split], rows[split:])
             ],
         )
-        return self._section("toc", "目录", "点击段落名跳转", columns)
+        return self._section("toc", "目录", "点击段名跳转；高亮为最近跳转的段", columns)
 
     def _toc_row(self, key: str, title: str) -> ft.Container:
         t = self.t
-        return C.table_row(
+        row = C.table_row(
             [
                 C.text(title, t, "small", weight="medium"),
                 ft.Row(spacing=0, controls=[
@@ -108,9 +116,12 @@ class HelpPage(BasePage):
             t,
             on_click=lambda e, anchor=key: self._jump(anchor),
         )
+        self._toc_rows[key] = row
+        return row
 
     def _jump(self, anchor: str) -> None:
-        """目录点击 → 把内层滚动 Column 滚到对应分区（未挂载时静默返回）。"""
+        """目录点击 → 高亮该行 + 把内层滚动 Column 滚到对应分区（未挂载时静默返回）。"""
+        self._mark_toc(anchor)
         scroll = getattr(self, "_scroll", None)
         page = getattr(self, "page", None)
         if scroll is None or page is None:
@@ -119,6 +130,23 @@ class HelpPage(BasePage):
             page.run_task(self._scroll_to, f"{ANCHOR}{anchor}")
         except Exception:  # noqa: BLE001 构建期 / 测试替身：跳转失败不影响页面
             pass
+
+    def _mark_toc(self, anchor: str) -> None:
+        """选中态 = 最近一次跳转的段（与 `table_row(selected=True)` 同一材质）。
+
+        P2-12 的「滚动到某段就高亮」在 flet 1.0.5 拿不到分区几何
+        （`OnScrollEvent` 只有 pixels，`BaseControl` 无 rect/top），
+        故这里只记「最近跳转」，滚动联动留 backlog；不按比例猜段。
+        """
+        self._active_toc = anchor
+        rows = getattr(self, "_toc_rows", None) or {}
+        selected = self.t.palette.accent_soft
+        for key, row in rows.items():
+            row.bgcolor = selected if key == anchor else None
+            try:
+                row.update()
+            except Exception:  # noqa: BLE001 构建期 / 测试替身
+                pass
 
     async def _scroll_to(self, anchor: str) -> None:
         try:
@@ -129,10 +157,22 @@ class HelpPage(BasePage):
     # ── 功能入口（去 92px 标签列：标题 + 入口路径一行，说明在下）───────────
     def _entries(self) -> ft.Column:
         return self._section(
-            "entries", "功能入口", "侧栏六个入口 + 单篇页里的 AI 面板",
+            "entries", "功能入口", self._entries_note(),
             *[self._entry(name, where, self._entry_detail(name, detail))
               for name, where, detail in HC.ENTRIES],
         )
+
+    def _entries_note(self) -> str:
+        """入口计数从导航树现算（`ia_map` 是唯一事实来源，不写死「六个入口」）。
+
+        引用库在侧栏没有父行：3 组组标签 + 9 叶直接常驻，设置走页头齿轮
+        （`bib:settings` 仅路由）；一级页行 = 工作台 / 单篇 / 整期 / 设置 / 帮助 共 5 行。
+        """
+        top = [entry for entry in IA.nav_parent_entries() if entry["key"] != "bib"]
+        groups = IA.group_views("bib")
+        leaves = [view for view in IA.nav_views("bib") if not view.get("route_only")]
+        return (f"侧栏 {len(top)} 个一级页 + 引用库 {len(groups)} 组 {len(leaves)} 叶"
+                "（页头齿轮进设置）+ 单篇页里的 AI 面板")
 
     def _entry_detail(self, name: str, detail: str) -> str:
         if name != "AI 任务书":

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
 from pathlib import Path
 
@@ -14,8 +15,8 @@ from services import engine_bridge as EB
 from services import toc_settings as TS
 from ui import components as C
 
-PREVIEW_HINT = "预览只读：显示模板来源与篇目清单，不写任何文件。"
-TEXT_ONLY_HINT = "「仅生成 tex」不落位不编译；要 PDF 请点「生成并编译」。"
+PREVIEW_HINT = "目录生成：自动取最新信息检查报告；栏目表可直接编辑，再保存到 目录设置.json。"
+TEXT_ONLY_HINT = "只生成 tex，不落位、不编译；取消勾选后点右上「生成目录」会落位并编译。"
 
 
 def latest_report(issue: str) -> str:
@@ -118,33 +119,48 @@ class TocPanel:
     def params(self) -> list:
         options = self.app.store.get("options", {}) or {}
         self.editor_box.controls = self._editor_controls()
+        report = self._report()
+        if report:
+            try:
+                stamp = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(report)).strftime("%m-%d %H:%M")
+            except OSError:
+                stamp = ""
+            hint = f"最新：{os.path.basename(report)}" + (f" · {stamp} 修改" if stamp else "")
+        else:
+            hint = "还没有信息检查报告；先生成第 1 步报告，这里会自动取最新"
         return [
             C.notice_bar(PREVIEW_HINT, self.t, "info"),
             self.page.add_picker("信息检查报告", "toc_report", "期目录下的 信息检查*.txt",
                                  kind="file"),
+            C.text(hint, self.t, "caption", self.t.palette.text_muted),
             self.page.add_picker("目录模板（可空）", "toc_template",
                                  "指定模板期目录；空 = 本期成品 → 上一期 → 内置",
                                  kind="dir", required=False),
             self.page.add_picker("目录设置 JSON（可空）", "toc_settings",
                                  "默认读写报告同目录的 目录设置.json", kind="file",
                                  required=False),
-            C.option_row("仅生成 tex（不落位、不编译）", TEXT_ONLY_HINT, self.t,
-                         icon="DESCRIPTION_OUTLINED",
-                         checked=bool(options.get("toc_text_only", True)),
-                         on_change=lambda e: self.app.set_option("toc_text_only",
-                                                                 e.control.value)),
+            # 批 115：主操作只留在详情头（唯一主按钮）。栏目表相关全部是次操作；
+            # 注：pinned test_b114_toc_grid 要求参数区保留 4 个描边按钮且可换行，
+            # 故此处用 4 个 28 高次按钮（无主色），不在本页提供第二个运行入口。
             ft.Row(spacing=self.t.sp("1"), wrap=True,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.primary_button("预览", lambda e: self.page.page.run_task(self._preview_task),
-                                 self.t, icon="PREVIEW"),
-                C.secondary_button("读取栏目表", lambda e: self._load_settings(), self.t,
-                                   icon="UPLOAD_FILE"),
-                C.secondary_button("保存栏目表", lambda e: self._save_settings(), self.t,
-                                   icon="SAVE_OUTLINED"),
-                C.primary_button("生成并编译",
-                                 lambda e: self.page.page.run_task(self._generate_task),
-                                 self.t, icon="PLAY_ARROW"),
-            ]),
+                       C.secondary_button("读取栏目表", lambda e: self._load_settings(),
+                                          self.t, height=self.t.px(28)),
+                       C.secondary_button("保存栏目表", lambda e: self._save_settings(),
+                                          self.t, height=self.t.px(28)),
+                       C.secondary_button("打开目录设置",
+                                          lambda e: self.app.open_path(self._settings_path()),
+                                          self.t, height=self.t.px(28)),
+                       C.secondary_button("打开结果 JSON",
+                                          lambda e: self.app.open_path(self._toc_result_path()),
+                                          self.t, height=self.t.px(28)),
+                   ]),
+            C.option_row("仅生成 tex（不落位、不编译）", TEXT_ONLY_HINT, self.t,
+                         icon="DESCRIPTION_OUTLINED",
+                         checked=bool(options.get("toc_text_only", False)),
+                         on_change=lambda e: self.app.set_option("toc_text_only",
+                                                                 e.control.value)),
             self.info,
             self.editor_box,
             self.feedback,
@@ -160,6 +176,10 @@ class TocPanel:
             if report:
                 self.page.set_field("toc_report", report)
         return report
+
+    def _toc_result_path(self) -> str:
+        report = self._report()
+        return os.path.join(os.path.dirname(report), "目录结果.json") if report else ""
 
     def _settings_path(self) -> str:
         explicit = self.page.field("toc_settings")

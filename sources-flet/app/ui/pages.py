@@ -22,6 +22,7 @@ from services import startup_log as SLOG
 from ui import assembly as ASM
 from ui import ai_panel as AIP
 from ui import bib_advanced as BA
+from ui import bib_host as BH
 from ui import bib_ops as BO
 from ui import bib_ops_dupes as BOD
 from ui import bib_ops_health as BOH
@@ -29,6 +30,7 @@ from ui import bib_settings as BS
 from ui import bib_write as BW
 from ui import checks as CK
 from ui import components as C
+from ui import dirpush as DIRPUSH
 from ui import metadata_form as MF
 from ui import normalize as NR
 from ui import settings_shell as SHELL
@@ -87,6 +89,9 @@ def _valid_date(value: str) -> str | None:
         return "日期不存在"
     return None
 
+
+
+_SECTION_RE = _re.compile(r"▶\s*\d{2}/06\s+[^·]+·\s*([a-z]+)\s*·")
 
 
 def _level_of_line(text: str) -> str:
@@ -406,7 +411,9 @@ class SinglePage(BasePage):
         self._run_btn = None
         self._stop_btn = None
         self._ai = None
-        # 批 114（用户 m03256）：二级视图进导航 → 页头=面包屑 + 子项标题，不再有 chip 行。
+        # 批 115 P1-2（设计评审；D1-115-24）：Single 只有 2 级（页面→子页），
+        # 按「breadcrumb 只在层级 >2 出现」去 crumb；h1 是唯一锚点。
+        # `_crumb` 仅保留属性给旧测试/外部调用，不进入布局、不显示。
         self._crumb = None
         self._child_title = None
         self._flow_desc = None
@@ -422,14 +429,18 @@ class SinglePage(BasePage):
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
         self._proof = CK.single_card(self)
+        # 批 116 SINGLE-FN：结果卡下方的产物动作行（有产物才显示；见 _sync_artifact_actions）。
+        self._artifact_row = self._build_artifact_actions()
         self._run_btn = C.primary_button("运行", self._on_run, t, icon="PLAY_ARROW",
                                          disabled=not self.app.engine_status.ok)
         self._stop_btn = C.secondary_button("停止", self._on_stop, t, icon="STOP", disabled=True)
         self._sync_header()
+        # 批 115 P1-2：页头只有 h1 + 说明（crumb 已去）；列存起来供测试核对。
+        self._title_col = ft.Column(spacing=t.sp("xs"), expand=True,
+                                    controls=[self._child_title, self._flow_desc])
         header = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
                         controls=[
-                            ft.Column(spacing=t.sp("xs"), expand=True,
-                                      controls=[self._crumb, self._child_title, self._flow_desc]),
+                            self._title_col,
                             ft.Row(spacing=t.sp("1"),
                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                    controls=[self._stop_btn, self._run_btn]),
@@ -437,7 +448,7 @@ class SinglePage(BasePage):
         self._flow_box.controls = [self._flow_builder(self.flow_key)()]
         self._proof.root.visible = False
         self._norm_jump_btn = C.secondary_button(
-            "去引用库 → 规范化", self._goto_normalize, t, icon="FACT_CHECK")
+            "去引用库 → 回读校验", self._goto_normalize, t, icon="FACT_CHECK")
         # 批 115：入口搬出页头胶囊行，落到输入区末尾（结果区之前），功能不变。
         norm_row = ft.Row(spacing=t.sp("2"), alignment=ft.MainAxisAlignment.END,
                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -453,7 +464,7 @@ class SinglePage(BasePage):
         self._log_spacer = ft.Container(height=t.px(40))
         self._log.on_layout_change = self._sync_log_reserve
         body = C.page_body(header, status, self._flow_box, norm_row, self._result.root,
-                           self._proof.root, self._log_spacer, t=t, gap=10,
+                           self._artifact_row, self._proof.root, self._log_spacer, t=t, gap=10,
                            overlay=self._log.dock_root, overlay_reserve=0,
                            panel=True)
         self.refresh_running()
@@ -490,11 +501,9 @@ class SinglePage(BasePage):
         }.get(key, self._build_convert)
 
     def _sync_header(self) -> None:
-        """页头=面包屑「单篇稿件 / 子项」+ 22/600 子项标题（批 114 去 chip 行）。"""
+        """页头=h1 子项标题 + 说明（批115 P1-2：2 级页面去 crumb，h1 唯一锚点）。"""
         t = self.t
         flow = self.FLOWS[self.flow_key]
-        if self._crumb is None:
-            self._crumb = C.text("单篇稿件", t, "caption", t.palette.text_muted)
         if self._child_title is None:
             self._child_title = C.text(flow["label"], t, role="page-title")
         if self._flow_desc is None:
@@ -516,9 +525,10 @@ class SinglePage(BasePage):
             self._flow_box.controls = [self._flow_builder(view)()]
             if self._result is not None:
                 self._result.reset()
+            self._sync_artifact_actions("")
             CK.on_flow_switch(self)
         self._sync_header()
-        self._safe_update(self._flow_box, self._crumb, self._child_title, self._flow_desc)
+        self._safe_update(self._flow_box, self._child_title, self._flow_desc)
         self.mark("single_flow", flow=view, source=source)
 
     def _switch_flow(self, key: str) -> None:
@@ -890,7 +900,11 @@ class SinglePage(BasePage):
         ))
 
     def _design_w(self) -> float:
-        """布局断点用「设计宽」：优先已设窗口宽（window_w/k），构建期 page.width 可能还是 800。"""
+        """设计栅格宽（设计 px）：窗口逻辑宽 / k（k=zoom，DPI 已交给 Flutter）。
+
+        批 115 P1-8：这里的 /k 是栅格换算（zoom 后能放多少设计 px），不是旧 DPI
+        放大；k=1.0 时就是窗口逻辑宽。构建期 page.width 可能还是 800，故优先 window_w。
+        """
         try:
             width = float(getattr(self.app, "window_w", 0) or 0)
         except (TypeError, ValueError):
@@ -904,7 +918,7 @@ class SinglePage(BasePage):
             return 1240.0  # 测试 FakeApp：按 1240 基准宽处理
 
     def _option_tiles(self, options: dict) -> ft.Control:
-        """处理选项 2×2 卡片网格（窄宽降为单列）；替代原先一列四行的紧凑列表。"""
+        """处理选项 2 列卡片网格（内容宽 <900 才降单列）；替代原先一列四行的紧凑列表。"""
         t = self.t
         specs = (
             ("编译 PDF", "调用 xelatex 生成正文 PDF（长任务，日志实时滚动）",
@@ -915,6 +929,10 @@ class SinglePage(BasePage):
              "PICTURE_AS_PDF_OUTLINED", "convert_source_pdf", False, None),
             ("强制覆盖（--force）", "产物已存在时仍重跑并覆盖（谨慎）",
              "WARNING_AMBER_ROUNDED", "convert_force", False, None),
+            # 批 116 SINGLE-FN（F1 P0-1）：引擎 --dry-run 在生成前返回，
+            # 只算「将要做什么」；默认关，勾选后仍走同一套 argv。
+            ("只预演（不落盘）", "列出将生成什么，不建产物、不写任何文件",
+             "PREVIEW", "convert_dry_run", False, None),
         )
         tiles = [
             C.option_tile(label, desc, t, icon=icon, badge_label=badge_label,
@@ -922,7 +940,7 @@ class SinglePage(BasePage):
                           on_change=lambda e, k=key: self.app.set_option(k, e.control.value))
             for label, desc, icon, key, default, badge_label in specs
         ]
-        if self._design_w() >= 1120:
+        if self._design_w() >= 900:
             rows = []
             for index in range(0, len(tiles), 2):
                 pair = tiles[index:index + 2]
@@ -995,6 +1013,8 @@ class SinglePage(BasePage):
                 grants=self.field("convert_grants"), refs=self.field("convert_refs"),
                 sty=self.field("convert_sty"), skeleton=self.field("convert_skeleton"),
                 force=bool(options.get("convert_force", False)),
+                # 批 116 SINGLE-FN（F1 P0-1）：只预演不落盘；默认 False。
+                dry_run=bool(options.get("convert_dry_run", False)),
                 metadata_preview_out=preview_path,
             )
             if self._meta_panel is not None:
@@ -1020,6 +1040,9 @@ class SinglePage(BasePage):
     async def _run(self, call: EB.EngineCall, stdin_text: str | None = None,
                    preview_path: str = "") -> None:
         page = self.page
+        # 批 116 SINGLE-FN：预演标记取自已拼好的 argv（tile → _build_call → --dry-run）。
+        dry_run = self.flow_key == "convert" and "--dry-run" in call.argv
+        self._sync_artifact_actions("")
         self.app.begin_run(call)
         self._result.reset()
         self._log.clear()
@@ -1055,7 +1078,13 @@ class SinglePage(BasePage):
             if not self.app.cancel_requested:
                 text, level = "元数据预览完成（只读：未建产物目录、未写产物）", "info"
                 artifact = ""
+        elif dry_run and code == 0 and not self.app.cancel_requested:
+            # 批 116 SINGLE-FN（F1 P0-1）：预演只读。引擎会打印「将创建…」的路径，
+            # 但那些路径尚未落盘；显式清空 artifact，也不写最近记录。
+            text, level = "预演完成（只读：未建产物目录、未写产物）", "ok"
+            artifact = ""
         self._result.show(text, level=level, artifact=artifact)
+        self._sync_artifact_actions(artifact)
         if artifact:
             self.app.store.set_recent(self._artifact_recent_key(), artifact)
         self._cleanup_meta_temp()
@@ -1063,6 +1092,37 @@ class SinglePage(BasePage):
             page.update()
         except Exception:  # noqa: BLE001
             pass
+
+    def _build_artifact_actions(self) -> ft.Row:
+        """结果卡下方的产物动作行：打开产物目录（与卡内「打开产物」并存）。
+
+        批 116 SINGLE-FN：没有 artifact 时整行隐藏（visible=False，不占布局）；
+        初排成功后才由 _sync_artifact_actions 显示。
+        """
+        t = self.t
+        self._open_dir_btn = C.secondary_button(
+            "打开产物目录", self._on_open_artifact_dir, t, icon="FOLDER_OPEN")
+        return ft.Row(spacing=t.sp("2"), alignment=ft.MainAxisAlignment.END,
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      visible=False, controls=[self._open_dir_btn])
+
+    def _sync_artifact_actions(self, artifact: str) -> None:
+        """有产物才显示目录动作行；同时记住当前 artifact 供按钮使用。"""
+        self._artifact = artifact or ""
+        row = getattr(self, "_artifact_row", None)
+        if row is None:
+            return
+        row.visible = bool(self._artifact) and self.flow_key == "convert"
+        self._safe_update(row)
+
+    def _on_open_artifact_dir(self, e=None) -> None:
+        """在文件管理器里打开产物所在目录（只读动作，不改任何文件）。"""
+        artifact = getattr(self, "_artifact", "")
+        if not artifact:
+            return
+        ok, error = EB.open_path(os.path.dirname(artifact))
+        if not ok:
+            self.app.toast(error)
 
     def _show_metadata_preview(self, path: str) -> None:
         payload = None
@@ -1133,165 +1193,1382 @@ class SinglePage(BasePage):
 
 # ── 整期装配 ───────────────────────────────────────────────────────────────
 class IssuePage(BasePage):
-    key = "issue"
+    """整期装配工作台（批 115 / D1-115-26：七页合一的单页工作台）。
+
+    页面结构（自上而下）：页头 56 · 期目录上下文条 44 · 流水线栏（宽窗 216 / 窄窗
+    54 高横条）+ 某一步详情 · 日志 dock（收 40 / 展 200）。右侧侧栏与路由由
+    `main.py`/`ia_map.py` 负责；本页只认 `activate(view)` 与 `issue:overview` 别名。
+    """
 
     STEPS = [
-        {"key": "infocheck", "title": "检查tex信息", "icon": "FACT_CHECK_OUTLINED",
-         "desc": "扫描整期 tex，输出 10 列清单（篇目/页码/字号行距…）"},
-        {"key": "toc", "title": "生成目录", "icon": "TOC", "desc": "用信息检查报告生成目录 tex（可落位编译）"},
-        {"key": "compileall", "title": "编译全部", "icon": "PICTURE_AS_PDF_OUTLINED",
-         "desc": "逐篇 xelatex→biber→xelatex×2；期目录形如 20xx年第N期(…)，同名 PDF 直接覆盖（跳过 000 目录）"},
-        {"key": "merge", "title": "合并文件", "icon": "MERGE", "desc": "把各篇 PDF 合为一期合刊"},
-        {"key": "cleantemp", "title": "删除临时文件", "icon": "CLEANING_SERVICES",
-         "desc": "三档清理：辅助文件 / 交付收尾 / 工作区（危险）"},
-        {"key": "dirpush", "title": "目录摘要推送", "icon": "PUSH_PIN_OUTLINED",
-         "desc": "按刊期生成当期目录摘要 docx（可只预演）"},
+        {"key": "infocheck", "title": "检查 tex 信息", "icon": "FACT_CHECK_OUTLINED",
+         "desc": "扫描整期 tex，核对卷期年 / 页码 / 字号行距；只读，不改任何稿件。"},
+        {"key": "toc", "title": "生成目录", "icon": "LIST_ALT_OUTLINED",
+         "desc": "取最新信息检查报告，生成中英文目录 tex；可落位并编译。"},
+        {"key": "compileall", "title": "编译全部", "icon": "TERMINAL",
+         "desc": "逐篇 xelatex ×3（含 biber）；跳过 000；同名 PDF 覆盖。"},
+        {"key": "merge", "title": "合并 PDF", "icon": "PICTURE_AS_PDF",
+         "desc": "按篇序合并整期 PDF；可插编委页 / 封底 / 书签。"},
+        {"key": "cleantemp", "title": "删除临时文件", "icon": "DELETE_SWEEP_OUTLINED",
+         "desc": "把中间文件移入期目录/.toolbox-trash；可撤销，不永久删除。"},
+        {"key": "dirpush", "title": "推送目录摘要", "icon": "IOS_SHARE",
+         "desc": "生成《目录摘要》docx 并写入推送根；只预演时不动文件。"},
     ]
+    ACTIONS = {
+        "infocheck": ("运行检查", "重新检查"),
+        "toc": ("生成目录", "重新生成"),
+        "compileall": ("开始编译", "重新编译"),
+        "merge": ("合并 PDF", "重新合并"),
+        "cleantemp": ("预览清理", "开始清理…"),
+        "dirpush": ("生成摘要", "重新推送"),
+    }
+    key = "issue"
+    title = "整期装配"
+    GROUPS = (("01–04", "正文流水线"), ("05–06", "收尾（可选）"))
+    LOG_LIMIT = 2000
 
     def __init__(self, app) -> None:
         super().__init__(app)
-        # 批 114（用户 m03256）：父页 = 流水线总览，每步 = 独立子页；"overview" 表示父页。
         self.selected = "overview"
+        self._status: dict = {step["key"]: "idle" for step in self.STEPS}
+        self._run_results: list = []
         self._content_box = ft.Column(spacing=10)
         self._params_box = ft.Column(spacing=10)
+        self._overview_stacked = None
+        self._step_pages: list = []
+        self._step_run_btns: dict = {}
         self._log = None
         self._result = None
         self._info = None
-        self._run_btn = None
-        self._stop_btn = None
-        self._run_all_btn = None
-        self._step_run_btns: dict[str, ft.Control] = {}
-        self._status: dict[str, str] = {step["key"]: "idle" for step in self.STEPS}
-        self._crumb = None
-        self._child_title = None
-        self._flow_desc = None
-        # 批 115 P3-C2：日志改 dock 浮层，底部 spacer 按收展/拖拽让位；窄窗总览单列。
         self._log_spacer = None
-        self._overview_stacked: bool | None = None
+        self._log_expanded = False
+        self._log_filter = "step"
+        self._log_step_key = ""
+        self._log_buffer: list[str] = []
+        self._log_lines = 0
+        self._info_payload = None
+        self._info_articles: list = []
+        self._info_notes: list = []
+        self._info_report = ""
+        self._info_filter = "all"
+        self._info_expanded = ""
+        self._compile_rows: dict = {}
+        self._compile_order: list = []
+        self._compile_current = ""
+        self._compile_summary = ""
+        self._compile_plan: list = []
+        self._merge_info: dict = {}
+        self._toc_payload: dict = {}
+        self._ct_preview: dict = {}
+        self._detail_status = None
+        self._detail_primary = None
+        self._shell = None
+        self._rail_box = None
+        self._detail_box = None
+        self._keyboard_installed = False
+        self._run_backup: list = []
+        self._crumb = None            # D1-115-26：2 级页面不再有 crumb，仅保留属性兼容
+        self._step_run_primary = None  # 详情头唯一主按钮（旧测试/外部读取用）
 
-    def _sync_header(self) -> None:
-        t = self.t
-        step = self._step_by_key(self.selected)
-        if step is None:
-            page_label, child = "整期装配", "流水线总览"
-            desc = "一期稿件从检查到合刊是一条固定流水线：一屏看得到进度、当前步骤和日志。"
-        else:
-            page_label, child, desc = "整期装配", str(step["title"]), str(step["desc"])
-        if self._crumb is None:
-            self._crumb = C.text("整期装配", t, "caption", t.palette.text_muted)
-        if self._child_title is None:
-            self._child_title = C.text(child, t, role="page-title")
-        if self._flow_desc is None:
-            self._flow_desc = C.text(desc, t, "small", color=t.palette.text_muted)
-        self._crumb.value = page_label
-        self._child_title.value = child
-        self._flow_desc.value = desc
-
-    def _step_by_key(self, key: str) -> dict | None:
-        for step in self.STEPS:
-            if step["key"] == key:
-                return step
-        return None
-
+    # ── 页面骨架 ───────────────────────────────────────────────────────
     def build(self) -> ft.Control:
         t = self.t
         self._log = C.LogConsole(t, height=150, title="整期日志", dock=True,
-                                toast=self.app.toast, mark=self.mark)
+                                 toast=self.app.toast, mark=self.mark)
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
         self._info = CK.issue_card(self)
-        disabled = not self.app.engine_status.ok
-        self._run_all_btn = C.primary_button("运行整期流水线", lambda e: self._run_all(),
-                                            t, icon="PLAY_ARROW", disabled=disabled)
-        self._stop_btn = C.secondary_button("取消", self._on_stop, t, icon="STOP", disabled=True)
-        self.selected = "overview"
-        self._sync_header()
-        header = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                        controls=[
-                            ft.Column(spacing=t.sp("xs"), expand=True,
-                                      controls=[self._crumb, self._child_title, self._flow_desc]),
-                            ft.Row(spacing=t.sp("1"),
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                   controls=[self._stop_btn, self._run_all_btn]),
-                        ])
-        self._issue_picker = self.add_picker("期目录", "issue_dir", "整期根目录（扉页/000/01 作者…）", kind="dir")
+        self._child_title = C.text("整期装配", t, role="page-title")
+        self._flow_desc = C.text("一期稿件，从检查到合刊。", t, "small",
+                                 color=t.palette.text_muted)
+        self._issue_picker = self._build_issue_row()
+        # 页面级唯一主操作：运行整期…（运行中 → 停止；失败后 → 从失败处继续…）
+        self._run_all_btn = C.primary_button(
+            "运行整期…", lambda e: self._open_runall(), t, icon="PLAY_ARROW",
+            disabled=not self.app.engine_status.ok)
+        self._continue_btn = C.secondary_button(
+            "从失败处继续…", lambda e: self._continue_from_failure(), t, icon="REPLAY")
+        self._stop_btn = C.danger_button("停止", lambda e: self._confirm_stop(), t,
+                                         icon="STOP")
+        self._run_all_secondary = self._continue_btn
         self._step_run_btns = {}
+        self._header_actions = ft.Row(spacing=t.sp("1"),
+                                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                      controls=[])
+        self._title_col = ft.Column(spacing=t.sp("xs"), expand=True,
+                                    controls=[self._child_title, self._flow_desc])
+        header = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
+                        controls=[self._title_col, self._header_actions])
+        context = self._build_context()
+        self._content_box = ft.Column(spacing=0, expand=True)
         self._content_box.controls = [self._build_overview()]
-        # 批 115 P3-C2：与 SinglePage 同一套日志 dock —— 浮层贴内容区底部，
-        # 页面底部 spacer 按收展/拖拽后的实际高度让位（见 _sync_log_reserve）。
+        self._shell = ft.Column(spacing=t.sp("2"), controls=[])
+        self._detail_box = ft.Container(content=self._content_box, expand=True)
+        self._rail_box = ft.Container(content=None)
+        self._refresh_layout()
+        self._log.set_expanded(False)
         self._log_spacer = ft.Container(height=t.px(40))
         self._log.on_layout_change = self._sync_log_reserve
-        body = C.page_body(header, self._content_box, self._log_spacer, t=t, gap=10,
-                           overlay=self._log.dock_root, overlay_reserve=0,
-                           panel=True)
+        self._sync_header()
+        self._sync_run_actions()
+        self._install_keyboard()
+        landing = self._default_view()
+        if landing != "overview":
+            # 期目录已存（上次会话/预填）→ 直接落到默认步，不再经过总览。
+            self.selected = landing
+            self._content_box.controls = [self._build_step_page(landing)]
+            self._sync_header()
+            self._sync_run_actions()
+        body = C.page_body(header, context, self._shell, self._log_spacer, t=t, gap=10,
+                           overlay=self._log.dock_root, overlay_reserve=0, panel=True)
         self.refresh_running()
+        self._restore_issue_state()
         return body
 
+    def _build_issue_row(self) -> ft.Control:
+        """期目录上下文条：28 高单行路径 + 「更换…」+ 清空（spec 44 高横条）。"""
+        t = self.t
+        ref: list = []
+        self.fields["issue_dir"] = ref
+
+        def _changed(e) -> None:
+            self.app.store.set_recent("issue_dir", (e.control.value or "").strip())
+            self.mark("path_change", field="issue_dir", value=e.control.value)
+            self._on_issue_changed(e)
+
+        field = C.text_field(
+            t, value=self.app.store.get("recent.issue_dir", "") or "",
+            hint_text="整期根目录（扉页 / 000 / 01 作者…）",
+            on_change=_changed, field_ref=ref, expand=True, mono=True, clearable=False,
+            prefix_icon="FOLDER_OUTLINED",
+        )
+
+        def _browse(e) -> None:
+            self.app.browse_field(ref, "选择期目录", "dir", "issue_dir")
+
+        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[field,
+                                C.secondary_button("更换…", _browse, t, icon="FOLDER_OPEN"),
+                                C.text_button("✕", lambda e: self._clear_issue(), t)])
+
+    def _browse_issue(self, e=None) -> None:
+        """无期目录空态的 CTA：直接唤起现有目录选择器。"""
+        ref = self.fields.get("issue_dir") if getattr(self, "fields", None) else None
+        if ref is None:
+            ref = []
+            self.fields["issue_dir"] = ref
+        self.app.browse_field(ref, "选择期目录", "dir", "issue_dir")
+
+    def _clear_issue(self) -> None:
+        self.set_field("issue_dir", "")
+        self.app.store.set_recent("issue_dir", "")
+        self._on_issue_changed(None)
+
+    def _build_context(self) -> ft.Control:
+        t = self.t
+        return ft.Container(
+            height=t.px(44), padding=C._pad(t, 10, 4, 10, 4),
+            bgcolor=t.palette.surface_2, border_radius=t.radius("md"),
+            content=self._issue_picker,
+        )
+
+    def _refresh_layout(self) -> None:
+        """宽窗 = 左流水线 216 + 详情；内容宽 <880 → 54 高横条 + 单列详情。"""
+        shell = getattr(self, "_shell", None)
+        if shell is None:
+            return
+        t = self.t
+        self._rail_box.content = self._progress_band() if self._narrow() else self._rail()
+        if self._narrow():
+            # 窄窗：54 高横条由详情页顶部自带（`_build_step_page`），外壳不再重复一条。
+            shell.controls = [self._detail_box]
+        else:
+            shell.controls = [ft.Row(
+                spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[ft.Container(width=t.px(216), content=self._rail_box),
+                          self._detail_box])]
+        self._safe_update(shell)
+
+    def _rail(self) -> ft.Control:
+        t = self.t
+        rows: list = [self._rail_group("生产 4 步")]
+        for index, step in enumerate(self.STEPS):
+            if index == 4:
+                rows.append(self._rail_group("收尾（可选）"))
+            rows.append(self._rail_row(index, step))
+        rows.append(ft.Container(height=t.px(8)))
+        rows.append(C.text("⌘1–6 切换 · ↑↓ 选择", t, "caption", t.palette.text_faint))
+        return ft.Column(spacing=0, controls=rows)
+
+    def _rail_group(self, label: str) -> ft.Control:
+        """宽态流水线分组线：1160 内容宽 940 时与 6 个步骤行一起出现。"""
+        t = self.t
+        return ft.Container(
+            height=t.px(26), padding=C._pad(t, 8, 0, 8, 0),
+            content=ft.Row(spacing=t.sp("1"),
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=[C.text(label, t, "caption", t.palette.text_faint),
+                                     ft.Container(expand=True, content=C.hairline(t))]))
+
+    def _rail_row(self, index: int, step: dict) -> ft.Control:
+        t = self.t
+        key = step["key"]
+        state = self._state_of(key)
+        active = key == self.selected
+        color = self._state_color(state)
+        return ft.Container(
+            height=t.px(50), padding=C._pad(t, 10, 4, 8, 4),
+            border_radius=t.radius("sm"),
+            bgcolor=t.palette.sel_tint if active else None,
+            on_click=lambda e, k=key: self._select(k),
+            content=ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=[
+                ft.Container(width=t.px(22), content=C.text(f"{index + 1:02d}", t, "mono",
+                                                            t.palette.text_muted)),
+                ft.Column(spacing=0, expand=True, controls=[
+                    C.text(str(step["title"]), t, "body",
+                           t.palette.sel_text if active else t.palette.text,
+                           weight="medium" if active else "regular", max_lines=1,
+                           overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Row(spacing=t.sp("half"), controls=[
+                        C.status_dot(self._tone(state), t),
+                        C.text(self._state_word(state), t, "caption", color, max_lines=1),
+                    ]),
+                ]),
+                ft.Container(width=t.px(2), height=t.px(28),
+                             bgcolor=t.palette.accent if active else None,
+                             border_radius=t.radius("pill")),
+            ]),
+        )
+
     def _sync_log_reserve(self) -> None:
-        """日志 dock 收展/拖拽后同步底部占位（两档与 SinglePage 一致，日志高 150）。"""
         spacer = getattr(self, "_log_spacer", None)
         log = getattr(self, "_log", None)
         if spacer is None or log is None:
             return
-        if log.is_expanded:
-            height = self.t.px(46) + log._log_height
-        else:
-            height = self.t.px(40)
+        height = (self.t.px(46) + log._log_height
+                  if log.is_expanded else self.t.px(40))
         if spacer.height == height:
             return
         spacer.height = height
         try:
             spacer.update()
-        except Exception:  # noqa: BLE001 未挂载（构建期/证据脚本）
+        except Exception:  # noqa: BLE001
             pass
 
-    def _logical_width(self) -> float:
-        """窗口逻辑宽（含侧栏），构建期 flet 的 800×600 默认值视为「未布局」。"""
-        page = getattr(self.app, "page", None)
-        try:
-            width = float(getattr(page, "width", 0) or 0)
-            height = float(getattr(page, "height", 0) or 0)
-        except (TypeError, ValueError):
-            width = height = 0.0
-        if width == 800 and height == 600:
-            width = 0.0
-        if width <= 0:
-            try:
-                width = float(getattr(self.app, "window_w", 0) or 0)
-            except (TypeError, ValueError):
-                width = 0.0
-        return width
+    def _sync_log_dock(self) -> None:
+        log = getattr(self, "_log", None)
+        if log is not None and hasattr(log, "set_expanded"):
+            log.set_expanded(bool(self._log_expanded))
 
-    def _narrow(self) -> bool:
-        """内容宽 < 900 → 总览右列下移；无窗口信息（FakeApp）按宽屏。
+    def _sync_header(self) -> None:
+        # P2-1：产品行固定，不再随步骤 desc 漂移；步骤说明留在详情页。
+        child, desc = "整期装配", "一期稿件，从检查到合刊。"
+        if self._child_title is not None:
+            self._child_title.value = child
+        if self._flow_desc is not None:
+            self._flow_desc.value = desc
+        self._sync_detail_status()
 
-        断点按**窗口逻辑宽**算（页宽 - 侧栏 220/56），不是 `_design_width()`
-        （后者按 BASE_DPI 144 放大，1000 宽窗口会算成 1500，永远判宽）。
-        """
-        width = self._logical_width()
-        if width <= 0:  # 仅测试假壳：允许直接给设计宽
-            try:
-                width = float(self.app._design_width())
-            except (AttributeError, TypeError, ValueError):
+    def _sync_run_actions(self) -> None:
+        t = self.t
+        actions = getattr(self, "_header_actions", None)
+        if actions is None:
+            return
+        if self.app.running:
+            controls = [self._stop_btn]
+        elif self._has_failed():
+            controls = [self._continue_btn, self._run_all_btn]
+        else:
+            controls = [self._run_all_btn]
+        if getattr(self, "_run_all_secondary", None) is not None:
+            self._run_all_secondary.disabled = bool(self.app.running)
+        if not self.field("issue_dir"):
+            self._run_all_btn.disabled = True
+            self._run_all_btn.tooltip = "先选择期目录"
+        else:
+            self._run_all_btn.disabled = not self.app.engine_status.ok
+            self._run_all_btn.tooltip = (None if self.app.engine_status.ok
+                                         else "引擎未就绪")
+        actions.controls = controls
+        self._safe_update(actions)
+
+    def _has_failed(self) -> bool:
+        return any(self._state_of(key) == "error" for key in self._status)
+
+    # ── 路由 / 子页 ────────────────────────────────────────────────────
+    def _default_view(self) -> str:
+        if not getattr(self, "fields", None):
+            return "overview"
+        issue = self.field("issue_dir")
+        if not issue:
+            return "overview"
+        state = self._issue_state(issue)
+        last = str(state.get("last_step") or "")
+        if last in [step["key"] for step in self.STEPS]:
+            return last
+        for step in self.STEPS:
+            if self._state_of(step["key"]) in ("idle", "cancelled"):
+                return step["key"]
+        return self.STEPS[0]["key"]
+
+    def activate(self, view: str, *, source: str = "nav") -> None:
+        if view in ("", "overview"):
+            view = self._default_view()
+            if view == "overview":
+                # 无期目录（或旧测试）→ 兼容总览树；正常有期目录时 _default_view 返回某一步。
+                self.selected = "overview"
+                if getattr(self, "_content_box", None) is not None:
+                    self._content_box.controls = [self._build_overview()]
+                    self._sync_header()
+                    self._sync_run_actions()
+                    self._safe_update(self._content_box)
+                self.mark("issue_activate", step="overview", source=source)
+                return
+        step = self._step_by_key(view)
+        if step is None:
+            return
+        if self.app.running and view != getattr(self, "selected", ""):
+            self.app.toast("运行中不能切换步骤，先停止")
+            return
+        self.selected = str(step["key"])
+        if getattr(self, "_content_box", None) is not None:
+            self._step_run_btns = {}
+            self._sync_header()
+            self._sync_run_actions()
+            self._content_box.controls = [self._build_step_page(self.selected)]
+            self.refresh_running()
+            self._refresh_layout()
+            self._safe_update(self._child_title, self._flow_desc, self._content_box)
+            self._persist_issue_state()
+        self.mark("issue_activate", step=self.selected, source=source)
+
+    def _build_step_page(self, key: str) -> ft.Control:
+        t = self.t
+        controls: list = []
+        if self._narrow():
+            controls.append(self._progress_band())
+        controls += [
+            self._detail_header(key),
+            C.text(self._step_desc(key), t, "small", t.palette.text_muted),
+            C.hairline(t),
+            C.section_label("参数", t,
+                            note=(None if key == "infocheck" else "改动即时保存")),
+            self._build_params(key),
+            self._result_zone(key),
+        ]
+        return ft.Column(spacing=t.sp("2"), controls=controls)
+
+    def _detail_header(self, key: str) -> ft.Control:
+        t = self.t
+        index = [s["key"] for s in self.STEPS].index(key)
+        state = self._state_of(key)
+        self._detail_status = C.text(self._status_text(key), t, "caption",
+                                     self._state_color(state))
+        self._detail_primary = self._primary_button(key)
+        self._step_run_primary = self._detail_primary
+        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[
+            C.text(f"{index + 1:02d}", t, "mono", t.palette.text_muted),
+            C.text(self._step_title(key), t, "h2"),
+            C.status_dot(self._tone(state), t),
+            self._detail_status,
+            ft.Container(expand=True),
+            self._detail_primary,
+        ])
+
+    def _primary_button(self, key: str) -> ft.Control:
+        t = self.t
+        label = self._primary_label(key)
+        btn = C.primary_button(label, lambda e, k=key: self._primary_action(k), t,
+                               height=t.px(28), disabled=self._primary_disabled(key))
+        reason = self._primary_reason(key)
+        if reason:
+            btn.tooltip = reason
+        self._step_run_btns[key] = btn
+        return btn
+
+    def _primary_label(self, key: str) -> str:
+        state = self._state_of(key)
+        running = self.app.running and self._state_of(key) == "running"
+        if key == "cleantemp":
+            if running:
+                return "正在移入…" if self._preview_valid() else "取消预演"
+            if ASM.cleantemp_dry_run(self):
+                return "预览清理"
+            return "开始清理…" if self._preview_valid() else "开始清理…"
+        if key == "compileall" and running:
+            return "停止"
+        if key == "infocheck" and running:
+            return "取消"
+        first, again = self.ACTIONS.get(key, ("运行", "重新运行"))
+        if state in ("done", "warn", "error", "cancelled"):
+            return again
+        return first
+
+    def _primary_disabled(self, key: str) -> bool:
+        if not self.app.engine_status.ok:
+            return True
+        if not self.field("issue_dir"):
+            return True
+        if self.app.running:
+            return not (key == self.selected and key in ("compileall", "infocheck"))
+        if key == "cleantemp":
+            if ASM.cleantemp_dry_run(self):
                 return False
+            return not self._preview_valid()
+        if key == "dirpush" and DIRPUSH.validation_error(self):
+            return True
+        return False
+
+    def _primary_reason(self, key: str) -> str:
+        if not self.field("issue_dir"):
+            return "先在上方选择期目录"
+        if not self.app.engine_status.ok:
+            return "引擎未就绪：先到「设置 → 引擎」检查"
+        if self.app.running:
+            return "运行中：等当前步骤结束"
+        if key == "cleantemp" and not ASM.cleantemp_dry_run(self) and not self._preview_valid():
+            return "先勾回「只预演」，跑一次预演"
+        if key == "dirpush":
+            err = DIRPUSH.validation_error(self)
+            if err:
+                return err
+        return ""
+
+    def _primary_action(self, key: str) -> None:
+        if self.app.running:
+            if key == "compileall":
+                self._confirm_stop("停止编译？已完成篇目的 PDF 会保留；当前篇可能留下半成品，下次编译会覆盖。")
+            elif key == "infocheck":
+                self._confirm_stop("停止检查？已扫描的部分不会写入报告。")
+            else:
+                self.app.toast("运行中，完成后才能切换")
+            return
+        if not self.field("issue_dir"):
+            self.app.toast("先选择期目录")
+            return
+        if key == "dirpush":
+            err = DIRPUSH.validation_error(self)
+            if err:
+                self.app.toast(err)
+                return
+        if key == "cleantemp":
+            self._cleantemp_primary()
+            return
+        if (key == "toc" and not ASM._toc_text_only(self)
+                and not getattr(self.app, "auto_confirm", False)):
+            def _go() -> None:
+                self._run_step("toc")
+            C.confirm(self.page, self.t, title="重新生成目录？",
+                      message="会覆盖 000 目录中同名 tex/PDF 并重新编译（约 1–3 分钟）；稿件不受影响。",
+                      confirm_label="重新生成", on_confirm=_go)
+            return
+        if key == "merge":
+            out = self.field("merge_out")
+            if (out and os.path.isfile(os.path.expanduser(out))
+                and not getattr(self.app, "auto_confirm", False)):
+                self._confirm_overwrite(out)
+                return
+        self._run_step(key)
+
+    def _confirm_overwrite(self, path: str) -> None:
+        t = self.t
         try:
-            rail = width < BREAK["rail"]
-            sidebar = self.app.t.rail_width / max(self.app.t.k, 1e-6) if rail else SIDEBAR_W
-        except (AttributeError, TypeError, ValueError):
-            sidebar = SIDEBAR_W
-        return width - sidebar < BREAK["columns"]
+            size = f"{os.path.getsize(os.path.expanduser(path)) / (1024 * 1024):.1f} MB"
+            mtime = _dt.datetime.fromtimestamp(
+                os.path.getmtime(os.path.expanduser(path))).strftime("%m-%d %H:%M")
+        except OSError:
+            size, mtime = "?", "?"
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=C.text("覆盖已有文件？", t, "h2"),
+            content=ft.Container(width=t.px(480), content=ft.Column([
+                C.text(f"「{os.path.basename(path)}」已存在：{size}，{mtime} 修改。",
+                       t, "small"),
+                C.text("覆盖会原地写入，不能撤销，也不会进废纸篓。", t, "caption",
+                       t.palette.text_muted),
+                C.text(os.path.abspath(os.path.expanduser(path)), t, "mono",
+                       t.palette.text_muted, max_lines=2),
+            ], spacing=t.sp("1"), tight=True)),
+            actions=[
+                C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
+                C.danger_button("覆盖并合并", lambda e: self._merge_confirmed(), t),
+            ],
+        )
+        self.page.show_dialog(dialog)
 
-    def on_resize(self) -> None:
-        """跨过 900 断点才重建总览（main.App.on_resize 每帧回调，不抖动）。"""
-        if self._overview_stacked is None or self.selected != "overview":
-            return
-        if self._narrow() == self._overview_stacked:
-            return
-        self._content_box.controls = [self._build_overview()]
-        self._safe_update(self._content_box)
+    def _merge_confirmed(self) -> None:
+        C.dismiss_top_dialog(self.page)
+        self._run_step("merge")
 
-    # ── 父页：流水线总览 ───────────────────────────────────────────────
+    def _confirm_stop(self, message: str = "已完成步骤保留，当前步标记已取消。") -> None:
+        def _go() -> None:
+            self.app.stop_run()
+        C.confirm(self.page, self.t, title="停止当前步骤？", message=message,
+                  confirm_label="停止", on_confirm=_go)
+
+    # ── 运行整期对话框 ────────────────────────────────────────────────
+    def _open_runall(self) -> None:
+        t = self.t
+        if not self.field("issue_dir"):
+            self.app.toast("先选择期目录")
+            return
+        if self.app.running:
+            self.app.toast("正在运行，先停止")
+            return
+        chosen = {step["key"]: i < 4 for i, step in enumerate(self.STEPS)}
+        skip = {"done": True}
+        rows: list = []
+        danger = C.notice_bar(
+            "05 会真实删除临时文件（移入系统回收站，可恢复）；本次未勾选「只预演」时不再二次确认。",
+            t, "error")
+        danger.visible = bool(chosen.get("cleantemp"))
+        self._runall_danger = danger
+        for index, step in enumerate(self.STEPS):
+            if index == 4:
+                rows.append(ft.Container(height=t.px(8)))
+            if index == 4:
+                rows.append(danger)
+            rows.append(C.option_row(
+                f"{index + 1:02d} {step['title']}",
+                "默认不跑 · 危险" if index >= 4 else "整期流水线",
+                t, checked=chosen[step["key"]],
+                on_change=lambda e, k=step["key"]: (
+                    chosen.__setitem__(k, bool(e.control.value)),
+                    setattr(danger, "visible", bool(chosen.get("cleantemp"))),
+                    self._safe_update(danger))))
+        rows.append(C.option_row(
+            "跳过已完成的步骤",
+            f"已完成 {sum(1 for s in self.STEPS if self._state_of(s['key']) == 'done')} 步",
+            t, checked=True,
+            on_change=lambda e: skip.__setitem__("done", bool(e.control.value))))
+        def _start(e) -> None:
+            C.dismiss_top_dialog(self.page)
+            keys = [s["key"] for s in self.STEPS if chosen[s["key"]]]
+            if skip["done"]:
+                done = {k for k in keys if self._state_of(k) == "done"}
+                keys = [k for k in keys if k not in done]
+            if not keys:
+                self.app.toast("没有要运行的步骤")
+                return
+            self._expand_log()
+            self.page.run_task(ASM.run_all, self, keys)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=C.text("运行整期流水线", t, "h2"),
+            content=ft.Container(width=t.px(600), height=t.px(470),
+                                 content=ft.Column(rows + [
+                                     ft.Container(height=t.px(4)),
+                                     C.text("某步失败即停（rc≥2），已完成步骤保留；05/06 默认不跑。",
+                                            t, "caption", t.palette.text_faint),
+                                 ], spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO)),
+            actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
+                     C.primary_button("开始运行", _start, t)],
+        )
+        self.page.show_dialog(dialog)
+
+    def _continue_from_failure(self) -> None:
+        failed = [s["key"] for s in self.STEPS if self._state_of(s["key"]) == "error"]
+        if not failed:
+            self.app.toast("没有失败步骤")
+            return
+        first = failed[0]
+        start = [s["key"] for s in self.STEPS].index(first)
+        keys = [s["key"] for s in self.STEPS[start:] if self._state_of(s["key"]) != "done"]
+        self._expand_log()
+        self.page.run_task(ASM.run_all, self, keys)
+
+    def _expand_log(self) -> None:
+        self._log_expanded = True
+        if self._log is not None:
+            self._log.set_expanded(True)
+        self._sync_log_reserve()
+
+    # ── 参数 / 结果 ────────────────────────────────────────────────────
+    def _build_params(self, key: str) -> ft.Control:
+        self.fields = {k: v for k, v in self.fields.items()
+                       if k in ("issue_dir", "toc_report", "compile_only", "merge_out",
+                                "dirpush_out")}
+        params = ASM.build_params(self, key)
+        if isinstance(params, ft.Column) and params.controls:
+            params.controls = params.controls[1:]
+            self._drop_legacy_step_run(params)
+        return params
+
+    @staticmethod
+    def _drop_legacy_step_run(params: ft.Column) -> None:
+        if not params.controls:
+            return
+        last = params.controls[-1]
+        if not isinstance(last, ft.Row):
+            return
+        kept = [c for c in last.controls
+                if not (isinstance(c, ft.OutlinedButton)
+                        and str(getattr(c, "content", "")) == "运行这一步")]
+        if len(kept) != len(last.controls):
+            if kept:
+                last.controls = kept
+            else:
+                params.controls.pop()
+
+    def _result_zone(self, key: str) -> ft.Control:
+        t = self.t
+        parts = [self._result.root if self._result is not None else ft.Container()]
+        if key == "infocheck":
+            parts.append(self._info_result())
+        elif key == "toc":
+            parts.append(self._toc_result())
+        elif key == "compileall":
+            parts.append(self._compile_result())
+        elif key == "merge":
+            parts.append(self._merge_result())
+        elif key == "cleantemp":
+            parts.append(self._cleantemp_result())
+        elif key == "dirpush":
+            parts.append(self._dirpush_result())
+        return ft.Column(spacing=t.sp("2"), controls=parts)
+
+    def _empty_result(self, title: str, desc: str, height: int = 72,
+                      action: ft.Control | None = None) -> ft.Control:
+        t = self.t
+        inner = [C.text(title, t, "small", t.palette.text_muted),
+                 C.text(desc, t, "caption", t.palette.text_faint,
+                        text_align=ft.TextAlign.CENTER)]
+        if action is not None:
+            inner.append(action)
+            height = max(height, 120)
+        return ft.Container(
+            height=t.px(height), border=ft.Border.all(1, t.palette.border),
+            border_radius=t.radius("md"), alignment=ft.Alignment.CENTER,
+            content=ft.Column(spacing=t.sp("half"), horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                              controls=inner),
+        )
+
+    def _info_result(self) -> ft.Control:
+        t = self.t
+        payload = self._info_payload
+        if not payload:
+            if not self.field("issue_dir"):
+                return self._empty_result(
+                    "还没有选择期目录",
+                    "先选一期稿件的根目录，再运行检查；切到别的步再回来，结果还在。",
+                    action=C.primary_button("选择期目录", self._browse_issue, t,
+                                            height=t.px(30), icon="FOLDER_OPEN"))
+            return self._empty_result(
+                "还没有检查结果",
+                "点右上「运行检查」，或按 Enter；切到别的步再回来，结果还在。")
+        articles = self._info_articles
+        verdict = CK.info_summary(payload, articles=articles, notes=self._info_notes)
+        tone = "warn" if self._info_notes else "info"
+        head = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[
+            C.text(verdict, t, "small", t.palette.warn if self._info_notes else t.palette.text,
+                   max_lines=2, expand=True),
+            CK.build_info_filter_chips(t, self._info_filter, self._set_info_filter),
+        ])
+        return ft.Column(spacing=t.sp("1"), controls=[
+            C.section_label("检查结果", t, trailing=C.badge("只读", t, "success")),
+            C.hairline(t),
+            head,
+            C.text(CK.info_counts(articles, self._info_notes), t, "caption",
+                   t.palette.text_muted),
+            CK.build_info_table5(t, articles, active_filter=self._info_filter,
+                                 expanded=self._info_expanded,
+                                 on_toggle=self._toggle_info_row,
+                                 on_copy=self._copy_info_row),
+            C.text(f"报告：{self._info_report or '—'}", t, "caption",
+                   t.palette.text_faint, max_lines=2),
+        ])
+
+    def _toc_result(self) -> ft.Control:
+        t = self.t
+        if not self._toc_payload:
+            return self._empty_result("还没有生成目录",
+                                      "点右上「生成目录」；默认取最新信息检查报告。")
+        payload = self._toc_payload
+        placed = payload.get("placed") or {}
+        column = payload.get("column") or {}
+        lines = [
+            f"输出：{placed.get('zhPdf') or placed.get('zhTex') or '—'}",
+            f"篇目：{(payload.get('articles') or {}).get('inToc', '—')} 篇",
+            f"栏目：{column.get('enabled', '—')} 个（{column.get('title', '—')}）",
+            "已编译 / 已落位" if payload.get("compiled") else "仅 tex · 未落位、未编译",
+        ]
+        actions = []
+        zh_pdf = str(placed.get("zhPdf") or "")
+        zh_tex = str(placed.get("zhTex") or "")
+        if zh_pdf:
+            actions.append(C.text_button("打开 PDF", lambda e: self.app.open_path(zh_pdf), t))
+        elif zh_tex:
+            actions.append(C.text_button("打开 tex", lambda e: self.app.open_path(zh_tex), t))
+        if report := self._latest_report():
+            result_json = os.path.join(os.path.dirname(report), "目录结果.json")
+            if os.path.exists(result_json):
+                actions.append(C.text_button("打开结果 JSON",
+                                             lambda e: self.app.open_path(result_json), t))
+            actions.append(C.text_button("复制结果路径",
+                                         lambda e: self.app.copy_text(str(placed.get("zhPdf") or placed.get("zhTex") or "")),
+                                         t))
+        if payload.get("textOnly"):
+            lines.append("仅 tex · 未落位、未编译 · 步骤 4 合并需要 000 目录 PDF")
+        return ft.Column(spacing=t.sp("1"), controls=[
+            C.section_label("生成结果", t), C.hairline(t),
+            *[C.text(line, t, "caption", t.palette.text_muted) for line in lines],
+            ft.Row(spacing=t.sp("1"), wrap=True, controls=actions) if actions else ft.Container(),
+        ])
+
+    def _dirpush_result(self) -> ft.Control:
+        t = self.t
+        status = self._status.get("dirpush")
+        artifact = str(getattr(status, "artifact", "") or "")
+        if not artifact:
+            return self._empty_result("还没有推送记录",
+                                      "在上方选好输出根与范围，点右上「生成摘要」。")
+        actions = [
+            C.text_button("打开 docx", lambda e: self.app.open_path(artifact), t),
+            C.text_button("打开所在目录",
+                          lambda e: self.app.open_path(os.path.dirname(artifact)), t),
+            C.text_button("复制路径", lambda e: self.app.copy_text(artifact), t),
+        ]
+        return ft.Column(spacing=t.sp("1"), controls=[
+            C.section_label("推送结果", t), C.hairline(t),
+            C.text(os.path.basename(artifact), t, "small", t.palette.text),
+            ft.Row(spacing=t.sp("1"), wrap=True, controls=actions),
+        ])
+
+    def _compile_result(self) -> ft.Control:
+        t = self.t
+        if not self._compile_rows:
+            return self._empty_result("还没有编译记录",
+                                      "点右上「开始编译」；可先只预演。")
+        rows = [ft.Container(
+            height=t.px(24), bgcolor=t.palette.surface_2,
+            padding=C._pad(t, 8, 0, 8, 0),
+            content=ft.Row(controls=[C.text("篇目", t, "caption", t.palette.text_muted, expand=5),
+                                     C.text("状态", t, "caption", t.palette.text_muted, expand=2),
+                                     C.text("耗时", t, "caption", t.palette.text_muted, expand=2),
+                                     C.text("PDF", t, "caption", t.palette.text_muted, expand=5)]))]
+        order = self._compile_order or list(self._compile_rows)
+        for stem in order:
+            row = self._compile_rows.get(stem) or {}
+            status = row.get("status", "pending")
+            word = {"pending": "等待", "compiling": "编译中", "ok": "成功",
+                    "fail": "失败", "skip": "跳过"}.get(status, status)
+            color = {"ok": t.palette.success, "fail": t.palette.error,
+                     "compiling": t.palette.accent}.get(status, t.palette.text_muted)
+            rows.append(ft.Container(
+                height=t.px(32), padding=C._pad(t, 8, 0, 8, 0),
+                content=ft.Row(controls=[
+                    C.text(stem, t, "small", expand=5, max_lines=1,
+                           overflow=ft.TextOverflow.ELLIPSIS),
+                    C.text(word, t, "caption", color, expand=2),
+                    C.text(f"{row.get('seconds', '—')}s", t, "caption", expand=2),
+                    C.text(os.path.basename(row.get("pdf", "") or "") or "—", t, "mono",
+                           t.palette.text_muted, expand=5, max_lines=1,
+                           overflow=ft.TextOverflow.ELLIPSIS),
+                ])))
+        summary = self._compile_summary or f"计划 {len(order)} 篇"
+        failed = [stem for stem in order
+                  if (self._compile_rows.get(stem) or {}).get("status") == "fail"]
+        actions: list = []
+        if failed:
+            actions.append(C.secondary_button("重试失败项", lambda e: self._retry_failed_compile(),
+                                              t, height=28))
+            actions.append(C.text_button("重新编译全部", lambda e: self._recompile_all(), t))
+        if self._state_of("compileall") == "cancelled":
+            prefixes = self._done_prefixes()
+            remaining = [p for p in self._plan_prefixes() if p not in prefixes]
+            actions.append(C.secondary_button(
+                f"继续编译剩余 {len(remaining)} 篇",
+                lambda e: self._continue_compile(remaining), t, height=28))
+        report = os.path.join(self.field("issue_dir") or "", "编译报告.md")
+        if os.path.exists(report):
+            actions.append(C.text_button("打开编译报告.md",
+                                         lambda e: self.app.open_path(report), t))
+        return ft.Column(spacing=0, controls=[
+            C.section_label("编译结果", t), C.hairline(t),
+            C.text(summary, t, "caption", t.palette.text_muted),
+            ft.Column(rows, spacing=0),
+            ft.Row(spacing=t.sp("1"), wrap=True, controls=actions) if actions else ft.Container(),
+        ])
+
+    def _plan_prefixes(self) -> list[str]:
+        plan = self._compile_plan
+        if not plan:
+            plan = ASM.compile_plan(self.field("issue_dir") or "",
+                                    self.field("compile_only") or "")
+        return [target.prefix for target in plan]
+
+    def _done_prefixes(self) -> list[str]:
+        plan = {target.stem: target.prefix for target in self._compile_plan}
+        return [plan[s] for s, row in self._compile_rows.items()
+                if (row or {}).get("status") == "ok" and s in plan]
+
+    def _set_compile_only(self, prefixes: list[str]) -> None:
+        self.set_field("compile_only", ",".join(prefixes))
+
+    def _retry_failed_compile(self) -> None:
+        plan = {target.stem: target.prefix for target in self._compile_plan}
+        failed = [plan[s] for s, row in self._compile_rows.items()
+                  if (row or {}).get("status") == "fail" and s in plan]
+        if not failed:
+            self.app.toast("没有失败项")
+            return
+        self._set_compile_only(sorted(dict.fromkeys(failed)))
+        self._run_step("compileall")
+
+    def _recompile_all(self) -> None:
+        self.set_field("compile_only", "")
+        self._run_step("compileall")
+
+    def _continue_compile(self, prefixes: list[str]) -> None:
+        self._set_compile_only(prefixes)
+        self._run_step("compileall")
+
+    def _merge_result(self) -> ft.Control:
+        t = self.t
+        if not self._merge_info:
+            return self._empty_result("还没有运行记录。",
+                                      "第 3 步还没跑 —— 先编译，合并才不会缺篇。")
+        info = self._merge_info
+        lines = [f"✅ 合并完成 · {info.get('pages', '—')} 页"]
+        if info.get("missing"):
+            lines.append(f"⚠ 合并完成，缺 {info.get('missing')} 篇：{info.get('names', '')}")
+        path = str(info.get("path") or "")
+        actions: list = []
+        if path:
+            actions = [
+                C.text_button("打开文件", lambda e: self.app.open_path(path), t),
+                C.text_button("打开所在目录",
+                              lambda e: self.app.open_path(os.path.dirname(path)), t),
+                C.text_button("复制路径", lambda e: self.app.copy_text(path), t),
+            ]
+        return ft.Column(spacing=t.sp("1"), controls=[
+            C.section_label("合并结果", t), C.hairline(t),
+            *[C.text(line, t, "caption", t.palette.warn if "⚠" in line
+                     else t.palette.text_muted) for line in lines],
+            C.text(path, t, "mono", t.palette.text_faint, max_lines=1,
+                   overflow=ft.TextOverflow.ELLIPSIS) if path else ft.Container(),
+            ft.Row(spacing=t.sp("1"), wrap=True, controls=actions) if actions else ft.Container(),
+        ])
+
+    def _cleantemp_result(self) -> ft.Control:
+        t = self.t
+        preview = self._ct_preview or {}
+        if not preview:
+            return self._empty_result("尚未预演", "先点「预览清理」看数量；预演不动磁盘。")
+        if preview.get("ok"):
+            return ft.Column(spacing=t.sp("1"), controls=[
+                C.section_label("清理结果", t), C.hairline(t),
+                C.text(f"预演：{preview.get('count', 0)} 项待清理 · "
+                       f"{str(preview.get('ts', ''))[11:16]}", t, "caption",
+                       t.palette.text_muted),
+            ])
+        return C.text(f"上次预演失败（rc={preview.get('code')}）："
+                      f"{preview.get('error') or '看日志'}", t, "caption", t.palette.error)
+
+    # ── infocheck 交互 ─────────────────────────────────────────────────
+    def _set_log_filter(self, key: str) -> None:
+        """切「本步 / 整期」；本次运行内记住用户选择。"""
+        if key not in ("step", "all"):
+            return
+        self._log_filter = key
+        self._log_user_filter = True
+        self.page.update()
+
+    def _set_info_filter(self, key: str) -> None:
+        self._info_filter = key
+        self._info_expanded = ""
+        self._refresh_info_box()
+
+    def _toggle_info_row(self, key: str) -> None:
+        self._info_expanded = "" if self._info_expanded == key else key
+        self._refresh_info_box()
+
+    def _copy_info_row(self, article: dict) -> None:
+        cells = [str(article.get("title") or ""),
+                 CK.info_issue_year(article),
+                 str(article.get("span") or ""),
+                 CK.info_pages_cell(article)[0],
+                 str(article.get("font_line") or "")]
+        self.app.copy_text("\t".join(cells))
+
+    def _refresh_info_box(self) -> None:
+        box = getattr(self, "_info_box", None)
+        if box is not None:
+            box.controls = [self._info_result()]
+            self._safe_update(box)
+
+    # ── 状态 / 持久化 ──────────────────────────────────────────────────
+    def _state_of(self, key: str) -> str:
+        status = self._status.get(key, "idle")
+        if hasattr(status, "state"):
+            return str(status.state)
+        return str(status or "idle")
+
+    @staticmethod
+    def _state_word(state: str) -> str:
+        return {"idle": "未运行", "running": "运行中", "done": "成功",
+                "warn": "有警告", "error": "失败", "cancelled": "已取消",
+                "skipped": "已跳过"}.get(state, "未运行")
+
+    def _tone(self, state: str) -> str:
+        return {"done": "ok", "running": "run", "warn": "warn",
+                "error": "error", "cancelled": "idle"}.get(state, "idle")
+
+    def _status_text(self, key: str) -> str:
+        state = self._state_of(key)
+        status = self._status.get(key)
+        word = self._state_word(state)
+        duration = getattr(status, "duration_ms", None)
+        if state in ("done", "warn") and duration:
+            return f"{word} · {max(1, round(duration / 1000))} 秒"
+        return word
+
+    def _issue_state(self, issue: str) -> dict:
+        data = self.app.store.get("issue_state", {}) or {}
+        entry = data.get(issue) if isinstance(data, dict) else None
+        return entry if isinstance(entry, dict) else {}
+
+    def _persist_issue_state(self) -> None:
+        if not getattr(self, "fields", None):
+            return
+        issue = self.field("issue_dir")
+        if not issue:
+            return
+        data = dict(self.app.store.get("issue_state", {}) or {})
+        data[issue] = {
+            "schema": 1,
+            "last_step": self.selected,
+            "statuses": {
+                key: (value.as_dict() if hasattr(value, "as_dict")
+                      else {"state": str(value)})
+                for key, value in self._status.items()
+            },
+        }
+        self.app.store.set("issue_state", data)
+        save = getattr(self.app, "save_settings", None)
+        if callable(save):
+            try:
+                save(toast=False)
+            except TypeError:
+                save()
+
+    def _restore_issue_state(self) -> None:
+        issue = self.field("issue_dir")
+        if not issue:
+            return
+        entry = self._issue_state(issue)
+        if not entry:
+            return
+        statuses = entry.get("statuses") or {}
+        for key, value in statuses.items():
+            if key not in self._status or not isinstance(value, dict):
+                continue
+            state = str(value.get("state") or "idle")
+            if state == "running":
+                state = "cancelled"
+            self._status[key] = ASM.StepStatus(
+                state,
+                exit_code=value.get("exit_code"),
+                duration_ms=value.get("duration_ms"),
+                started_at=value.get("started_at", ""),
+                finished_at=value.get("finished_at", ""),
+                artifact=value.get("artifact", ""),
+                error=value.get("error", ""),
+            )
+        last = str(entry.get("last_step") or "")
+        if last in [step["key"] for step in self.STEPS] and not self.app.running:
+            self.selected = last
+            if self._content_box is not None:
+                self._content_box.controls = [self._build_step_page(last)]
+
+    def _on_issue_changed(self, event=None) -> None:
+        self._ct_preview = {}
+        self._info_payload = None
+        self._info_articles = []
+        self._info_report = ""
+        self._restore_issue_state()
+        landing = self._default_view()
+        self.selected = landing
+        if getattr(self, "_content_box", None) is not None:
+            self._content_box.controls = ([self._build_overview()] if landing == "overview"
+                                          else [self._build_step_page(landing)])
+            self._refresh_layout()
+            self._sync_header()
+            self._sync_run_actions()
+            self._safe_update(self._content_box)
+
+    # ── 运行入口 ───────────────────────────────────────────────────────
+    def _run_step(self, key: str) -> None:
+        # 统一入口：唯一主按钮与旧测试都走 ASM.run_step(self, key)；
+        # 这里只负责日志展开与守卫，参数/确认逻辑见 _primary_action。
+        if not self._issue_dir():
+            self.app.toast("先选择期目录")
+            return
+        self._expand_log()
+        ASM.run_step(self, key)
+
+    def _run_all(self) -> None:
+        self._open_runall()
+
+    def _on_stop(self) -> None:
+        self._confirm_stop()
+
+    def _step_run_state(self) -> tuple[bool, str | None]:
+        if self.app.running:
+            return True, "运行中：等当前任务结束，或先点右上角「停止」"
+        if not self.app.engine_status.ok:
+            return True, "引擎未就绪：先到「设置 → 引擎」检查"
+        return False, None
+
+    def _step_run_button(self, step: dict) -> ft.OutlinedButton:
+        t = self.t
+        disabled, reason = self._step_run_state()
+        btn = C.secondary_button("运行", lambda e, k=step["key"]: self._run_step(k), t,
+                                 icon="PLAY_ARROW", disabled=disabled,
+                                 height=t.control_h())
+        if reason:
+            btn.tooltip = reason
+        self._step_run_btns[step["key"]] = btn
+        return btn
+
+    def _select(self, key: str) -> None:
+        if key not in [step["key"] for step in self.STEPS] and key != "overview":
+            return
+        navigate = getattr(self.app, "navigate", None)
+        if callable(navigate):
+            navigate(f"issue:{key}", source="page")
+            return
+        self.activate(key, source="page")
+
+    def _apply_status(self, key: str, code: int, cancelled: bool,
+                      duration: float = 0.0, artifact: str = "") -> None:
+        if cancelled:
+            state = "cancelled"
+        elif code == 0:
+            state = "done"
+        elif code == 1:
+            state = "warn"
+        else:
+            state = "error"
+        self._status[key] = ASM.StepStatus(
+            state, exit_code=code, duration_ms=duration,
+            started_at=ASM._now(), finished_at=ASM._now(), artifact=artifact or "")
+        refresh = getattr(self, "_refresh_steps", None)
+        if callable(refresh):
+            refresh()
+
+    async def _run_calls(self, calls: list, sequential: bool = True) -> None:
+        """逐条执行（测试/旧路径）；与 ASM._run_sequence 同样写状态、不清日志。"""
+        for key, call in calls:
+            started = time.monotonic()
+            self._status[key] = ASM.StepStatus("running", started_at=ASM._now())
+            self._refresh_steps()
+            CK.before_issue_step(self, key)
+            self.app.begin_run(call)
+            try:
+                code = await EB.run_call(call, on_line=self._on_line,
+                                         on_proc=getattr(self.app, "track_proc", None),
+                                         notes=self.app.notes_repo)
+            except Exception as exc:  # noqa: BLE001
+                code = -1
+                self._result.show(f"❌ 任务启动失败：{exc}", level="error")
+            self.app.finish_run(call, code)
+            cancelled = bool(getattr(self.app, "cancel_requested", False))
+            duration = (time.monotonic() - started) * 1000
+            artifact = EB.artifact_path(str(getattr(self.app, "last_line", "") or ""))
+            self._apply_status(key, code, cancelled, duration, artifact=artifact)
+            try:
+                await CK.after_issue_step(self, key, call, code, cancelled, artifact)
+            except Exception:  # noqa: BLE001
+                pass
+            ASM.after_step(self, key, call, code, cancelled, artifact)
+            self._refresh_steps()
+            if cancelled or code >= 2:
+                break
+
+    LOG_LIMIT = 2000
+
+    def _on_line(self, line: str) -> None:
+        text = str(line)
+        try:
+            self.app.record_line(text)
+        except Exception:  # noqa: BLE001
+            pass
+        stamped = _SECTION_RE.match(text)
+        if stamped:
+            self._log_step_key = stamped.group(1)
+        # 批 115 / D1-115-26：段头切分日志；「本步」过滤只显示当前步段，
+        # 「整期」全显示。用户手动切换后本次运行不再自动跟随。
+        show = True
+        if self._log_filter == "step" and self._log_step_key:
+            show = self._log_step_key == self.selected
+        if show:
+            self._log.add_line(text, _level_of_line(text), EB.is_summary_line(text))
+        self._log_buffer.append(text)
+        if len(self._log_buffer) > self.LOG_LIMIT:
+            del self._log_buffer[:len(self._log_buffer) - self.LOG_LIMIT]
+        self._log_lines += 1
+        if self.selected == "compileall":
+            self._feed_compile(text)
+        if self.selected == "merge":
+            self._feed_merge(text)
+        if self.selected == "infocheck" and "正在扫描" in text:
+            self._detail_status.value = text.strip()[:40]
+
+    def _feed_compile(self, text: str) -> None:
+        event = ASM.compile_event(text)
+        if not event:
+            return
+        kind, data = event
+        if kind == "start":
+            self._compile_current = data["stem"]
+            row = self._compile_rows.setdefault(data["stem"], {})
+            row.update({"status": "compiling"})
+            if data["stem"] not in self._compile_order:
+                self._compile_order.append(data["stem"])
+        elif kind == "ok":
+            row = self._compile_rows.setdefault(data["stem"], {})
+            row.update({"status": "ok", "seconds": data.get("seconds")})
+            plan = {target.stem: target for target in self._compile_plan}
+            if data["stem"] in plan:
+                row["pdf"] = plan[data["stem"]].pdf
+        elif kind == "fail":
+            self._compile_rows.setdefault(data["stem"], {}).update(
+                {"status": "fail", "seconds": data.get("seconds"),
+                 "message": data.get("message", "")})
+        elif kind == "summary":
+            self._compile_summary = (f"{'✅' if not data['fail'] else '⚠'} "
+                                     f"{data['ok']} 成功 / {data['fail']} 失败"
+                                     f" · 共 {data['targets']} 篇")
+        if self._detail_primary is not None and self.selected == "compileall":
+            self._detail_status.value = f"运行中 · {len(self._compile_rows)} 篇已开始"
+
+    def _feed_merge(self, text: str) -> None:
+        match = _re.search(r"完成。合并文件：(.+?)（共 (\d+) 页）", text)
+        if match:
+            self._merge_info = {"path": match.group(1), "pages": int(match.group(2))}
+        match = _re.search(r"⚠ 有 (\d+) 个预期文件没找到：(.+)", text)
+        if match:
+            info = dict(self._merge_info or {})
+            info.update({"missing": int(match.group(1)), "names": match.group(2)})
+            self._merge_info = info
+
+    def _refresh_steps(self) -> None:
+        if self._log is not None:
+            self._sync_log_dock()
+        self._sync_header()
+        self._sync_run_actions()
+        self._sync_info_from_card()
+        if self.selected == "toc":
+            self._sync_toc_payload()
+        if getattr(self, "_rail_box", None) is not None:
+            self._rail_box.content = (self._progress_band() if self._narrow()
+                                      else self._rail())
+        if not self.app.running:
+            self._persist_issue_state()
+        self._safe_update(self._rail_box, self._header_actions)
+
+    def _sync_info_from_card(self) -> None:
+        info = self._info
+        if info is None:
+            return
+        articles = getattr(info, "articles", None)
+        if articles is None:
+            return
+        self._info_articles = list(articles or [])
+        self._info_payload = getattr(info, "payload", None) or (
+            {"articles": articles} if articles else None)
+        self._info_notes = list(getattr(info, "notes", None) or [])
+        self._info_report = str(getattr(info, "report", "") or "")
+        box = getattr(self, "_info_box", None)
+        if box is not None:
+            box.controls = [self._info_result()]
+
+    def _sync_toc_payload(self) -> None:
+        report = self.field("toc_report")
+        if not report:
+            return
+        path = os.path.join(os.path.dirname(report), "目录结果.json")
+        payload = EB.toc_result(path)
+        if payload:
+            self._toc_payload = payload
+
+    def refresh_running(self) -> None:
+        self._sync_run_actions()
+        disabled, reason = self._step_run_state()
+        for btn in self._step_run_btns.values():
+            try:
+                btn.disabled = disabled
+                btn.tooltip = reason
+                btn.update()
+            except Exception:  # noqa: BLE001
+                pass
+        self._sync_detail_status()
+
+    def _sync_detail_status(self) -> None:
+        if self._detail_status is not None and self.selected != "overview":
+            state = self._state_of(self.selected)
+            self._detail_status.value = self._status_text(self.selected)
+            self._detail_status.color = self._state_color(state)
+        if self._detail_primary is not None and self.selected != "overview":
+            self._detail_primary.content = self._primary_label(self.selected)
+            self._detail_primary.disabled = self._primary_disabled(self.selected)
+            reason = self._primary_reason(self.selected)
+            self._detail_primary.tooltip = reason or None
+        self._safe_update(self._detail_status, self._detail_primary)
+
+    def _safe_update(self, *controls) -> None:
+        for control in controls:
+            if control is None:
+                continue
+            try:
+                control.update()
+            except Exception:  # noqa: BLE001 未挂载（构建期/测试桩）
+                pass
+
+    def _state_color(self, state: str):
+        t = self.t
+        return {"done": t.palette.success, "running": t.palette.accent,
+                "warn": t.palette.warn, "error": t.palette.error,
+                "cancelled": t.palette.text_muted}.get(state, t.palette.text_faint)
+
+    def _preview_valid(self) -> bool:
+        return ASM.cleantemp_preview_ok(self)
+
+    def _cleantemp_primary(self) -> None:
+        if ASM.cleantemp_dry_run(self):
+            self._expand_log()
+            self.page.run_task(ASM._preview_task, self)
+            return
+        if not self._preview_valid():
+            self.app.toast("先勾回「只预演」，跑一次预演")
+            return
+        self._open_clean_confirm()
+
+    def _open_clean_confirm(self) -> None:
+        t = self.t
+        preview = self._ct_preview or {}
+        issue = self.field("issue_dir")
+        mode = ASM.cleantemp_mode(self)
+        label = ASM.CLEANTEMP_MODES.get(mode, {}).get("title", mode)
+        confirm_word = {"input": ""}
+        can_go = {"ok": mode != "workspace"}
+        def _on_confirm_word(e) -> None:
+            value = e.control.value or ""
+            confirm_word["input"] = value
+            can_go["ok"] = value.strip() == "清理"
+            btn.disabled = not can_go["ok"]
+            try:
+                btn.update()
+            except Exception:  # noqa: BLE001 —— 构建期/未挂载
+                pass
+
+        field = C.text_field(t, hint_text="输入「清理」以继续", width=t.px(200),
+                             on_change=_on_confirm_word)
+        btn = C.danger_button("移入回收目录", lambda e: self._clean_now(), t,
+                              disabled=not can_go["ok"])
+        target = f"{issue}/.toolbox-trash/（新建目录）"
+        target_box = ft.SelectionArea(content=ft.Container(
+            padding=C._pad(t, 8, 6, 8, 6), bgcolor=t.palette.surface_2,
+            border_radius=t.radius("sm"),
+            content=C.text(target, t, "mono", t.palette.text, max_lines=None)))
+        rows = [
+            C.kv_row(t, "档位", f"{label} · {preview.get('count', 0)} 项"),
+            ft.Column(spacing=t.px(2), controls=[
+                C.text("目标", t, "caption", t.palette.text_faint),
+                target_box,
+            ]),
+            C.text("数量来自刚才的预演，实际以运行时文件系统为准。", t, "caption",
+                   t.palette.text_muted),
+        ]
+        if mode == "workspace":
+            rows.append(field)
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=C.text("开始清理？", t, "h2"),
+            content=ft.Container(width=t.px(520),
+                                 content=ft.Column(rows, spacing=t.sp("1"),
+                                                   scroll=ft.ScrollMode.AUTO)),
+            actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
+                     btn],
+        )
+        self.page.show_dialog(dialog)
+
+    def _clean_now(self) -> None:
+        C.dismiss_top_dialog(self.page)
+        self._ct_preview = {}
+        ASM.run_cleantemp_confirmed(self)
+
+    # ── 兼容旧测试/旧入口 ──────────────────────────────────────────────
+    def prefill(self, issue_dir: str = "", toc_report: str = "") -> None:
+        if issue_dir:
+            self.set_field("issue_dir", issue_dir)
+        if toc_report:
+            self.set_field("toc_report", toc_report)
+        self._restore_issue_state()
+        landing = self._default_view()
+        if landing != "overview" and landing != self.selected:
+            self.activate(landing, source="prefill")
+
+    def select_step(self, key: str) -> None:
+        navigate = getattr(self.app, "navigate", None)
+        if callable(navigate):
+            navigate(f"issue:{key}", source="page")
+        else:
+            self.activate(key, source="page")
+
+    def run_step_demo(self, key: str) -> None:
+        self._run_step(key)
+
+    def run_all_demo(self) -> None:
+        self._open_runall()
+
+    # ── 键盘 ───────────────────────────────────────────────────────────
+    def _install_keyboard(self) -> None:
+        page = getattr(self.app, "page", None)
+        if page is None or self._keyboard_installed:
+            return
+        if getattr(page, "on_keyboard_event", None) is None:
+            page.on_keyboard_event = self._on_key
+        self._keyboard_installed = True
+
+    def _on_key(self, event) -> None:
+        key = str(getattr(event, "key", "") or "")
+        meta = bool(getattr(event, "meta", False) or getattr(event, "ctrl", False))
+        if meta and key in ("1", "2", "3", "4", "5", "6"):
+            self._select(self.STEPS[int(key) - 1]["key"])
+            return
+        if key == "ArrowDown":
+            self._move_selection(1)
+            return
+        if key == "ArrowUp":
+            self._move_selection(-1)
+            return
+        if key == "Escape":
+            if self._log_expanded and self._log is not None:
+                self._log_expanded = False
+                self._log.set_expanded(False)
+                self._sync_log_reserve()
+                return
+            if self.app.running:
+                self._confirm_stop()
+
+    def _move_selection(self, delta: int) -> None:
+        keys = [step["key"] for step in self.STEPS]
+        current = self.selected if self.selected in keys else keys[0]
+        index = max(0, min(len(keys) - 1, keys.index(current) + delta))
+        self._select(keys[index])
+
     def _build_overview(self) -> ft.Control:
+        """旧「流水线总览」树：仅保留兼容（路由默认已直接落到某一步）。
+
+        批 115 / D1-115-26 删除总览页；此方法保留给旧测试与空期目录兜底，
+        页面主体仍按工作台布局渲染。
+        """
         t = self.t
         rows: list = []
         for i, step in enumerate(self.STEPS):
@@ -1318,16 +2595,9 @@ class IssuePage(BasePage):
                                 ft.Container(content=right, expand=6)])
 
     def _overview_step_row(self, index: int, step: dict) -> ft.Container:
-        # 批 115 P3-C2：描边卡 + 24 圆号 + status_chip → 36 高发丝行（行间由调用方
-        # 插 C.hairline）；状态用小圆点 + 文字，行内直接「运行」。
         t = self.t
         key = step["key"]
-        state = self._status.get(key, "idle")
-        tone = {"done": "ok", "running": "run", "warn": "warn",
-                "error": "error"}.get(state, "idle")
-        color = {"done": t.palette.success, "running": t.palette.accent,
-                 "warn": t.palette.warn, "error": t.palette.error}.get(
-                     state, t.palette.text_faint)
+        state = self._state_of(key)
         return ft.Container(
             height=t.px(36),
             on_click=lambda e, k=key: self._select(k),
@@ -1343,41 +2613,22 @@ class IssuePage(BasePage):
                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ]),
                 ft.Row(spacing=t.sp("half"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                       controls=[C.status_dot(tone, t),
-                                 C.text(STATUS_TEXT.get(state, "待运行"), t, "caption",
-                                        color, max_lines=1)]),
+                       controls=[C.status_dot(self._tone(state), t),
+                                 C.text(self._state_word(state), t, "caption",
+                                        self._state_color(state), max_lines=1)]),
                 self._step_run_button(step),
             ]),
         )
 
-    # ── 子页：单步（进度带 + 参数 + 运行本步 + 日志）────────────────────
-    def _build_step_page(self, key: str) -> ft.Control:
-        # 批 115 P3-C2：页头已有 22 标题 + desc，卡内不再重复；去卡片，参数区
-        # 直接落在白面板上。运行入口只留参数区底部的「运行这一步」。
-        t = self.t
-        self._params_box.controls = [self._build_params(key)]
-        self._step_run_btns = {}
-        return ft.Column(spacing=t.sp("2"), controls=[
-            self._progress_band(),
-            C.section_label("参数", t, note="步骤说明见页头；取消在右上角"),
-            C.hairline(t),
-            self._params_box,
-            self._result.root,
-            self._info.root,
-        ])
-
     def _progress_band(self) -> ft.Control:
-        """页顶常驻 54 高 6 段进度带：点段可直接切步骤（用户 m03256 规格②）。"""
+        """窄窗（内容宽 <880）54 高横条：6 段等宽，点段切步。"""
         t = self.t
         segs: list = []
         for i, step in enumerate(self.STEPS):
-            state = self._status.get(step["key"], "idle")
+            state = self._state_of(step["key"])
             active = step["key"] == self.selected
-            tone = {"done": "ok", "running": "run", "warn": "warn",
-                    "error": "error"}.get(state, "idle")
-            bar_color = {"done": t.palette.success, "running": t.palette.accent,
-                         "warn": t.palette.warn, "error": t.palette.error}.get(
-                             state, t.palette.border)
+            tone = self._tone(state)
+            bar_color = self._state_color(state) if state != "idle" else t.palette.border
             segs.append(ft.Container(
                 expand=True, bgcolor=t.palette.accent_soft if active else None,
                 border_radius=t.radius("sm"), padding=C._pad(t, 8, 4, 8, 4),
@@ -1391,7 +2642,6 @@ class IssuePage(BasePage):
                                weight="medium" if active else "regular", max_lines=1,
                                overflow=ft.TextOverflow.ELLIPSIS),
                     ]),
-                    # 批 115 P3-C2：状态 chip 换成 2px 色条（六段并排时不挤成徽章墙）。
                     ft.Container(height=t.px(2), bgcolor=bar_color,
                                  border_radius=t.radius("pill")),
                 ]),
@@ -1403,202 +2653,75 @@ class IssuePage(BasePage):
             content=ft.Row(spacing=t.sp("1"), controls=segs),
         )
 
-    def activate(self, view: str, *, source: str = "nav") -> None:
-        """导航激活：overview=父页总览，6 个步骤 key=子页。"""
-        step = self._step_by_key(view) if view not in ("", "overview") else None
-        if view not in ("", "overview") and step is None:
-            return
-        if self.app.running and view != getattr(self, "selected", ""):
-            self.app.toast("运行中不能切换步骤，先取消")
-            return
-        self.selected = "overview" if step is None else str(step["key"])
-        if getattr(self, "_content_box", None) is not None:
-            self._step_run_btns = {}
-            self._sync_header()
-            self._content_box.controls = ([self._build_overview()] if step is None
-                                          else [self._build_step_page(self.selected)])
-            self.refresh_running()
-            self._safe_update(self._crumb, self._child_title, self._flow_desc,
-                              self._content_box)
-        self.mark("issue_activate", step=self.selected, source=source)
-
-    # ── 步骤按钮 / 旧入口兼容 ─────────────────────────────────────────
-    def _step_run_state(self) -> tuple[bool, str | None]:
-        """步骤「运行」的 disabled 态与原因（用户 m02990：不可用时必须说明原因）。"""
-        if not self.app.engine_status.ok:
-            return True, "引擎未就绪：先到「设置 → 引擎」检查后再运行"
-        if self.app.running:
-            return True, "运行中：等当前任务结束，或先点右上角「取消」"
-        return False, None
-
-    def _step_run_button(self, step: dict) -> ft.OutlinedButton:
-        """步骤「运行」= 明确的描边按钮（全屏主色只留给「运行整期流水线」）。"""
-        t = self.t
-        disabled, reason = self._step_run_state()
-        btn = C.secondary_button("运行", lambda e, k=step["key"]: self._run_step(k), t,
-                                 icon="PLAY_ARROW", disabled=disabled,
-                                 height=t.control_h())
-        if reason:
-            btn.tooltip = reason
-        self._step_run_btns[step["key"]] = btn
-        return btn
-
-    def _select(self, key: str) -> None:
-        """旧入口（行点击/测试）：统一走路由，保证侧栏高亮与页头同步。"""
-        if key not in [step["key"] for step in self.STEPS] and key != "overview":
-            return
-        navigate = getattr(self.app, "navigate", None)
-        if callable(navigate):
-            navigate(f"issue:{key}", source="page")
-            return
-        self.activate(key, source="page")
-
-    # ── 各步骤参数 ─────────────────────────────────────────────────────
-    def _build_params(self, key: str) -> ft.Control:
-        self.fields = {k: v for k, v in self.fields.items() if k in ("issue_dir", "toc_report")}
-        params = ASM.build_params(self, key)
-        # 批 115 P3-C2：首行是步骤 desc（页头 22 标题下已显示），去掉重复；
-        # 其余（含底部「运行这一步」）保持 ASM 原样。
-        if isinstance(params, ft.Column) and params.controls:
-            params.controls = params.controls[1:]
-        return params
-
-    # ── 构建调用 ───────────────────────────────────────────────────────
+    # ── 小工具 ─────────────────────────────────────────────────────────
     def _issue_dir(self) -> str:
         return self.field("issue_dir")
 
-    def _build_step_call(self, key: str) -> EB.EngineCall:
+    def _build_step_call(self, key: str):
+        if not self._issue_dir():
+            raise ValueError("请先选择期目录")
         return ASM.build_step_call(self, key)
 
-    @staticmethod
-    def _latest_report(issue: str) -> str:
-        return ASM.TOC.latest_report(issue)
+    def _latest_report(self) -> str:
+        import ui.toc as TOC
 
-    # ── 运行 ───────────────────────────────────────────────────────────
-    def _run_step(self, key: str) -> None:
-        log = getattr(self, "_log", None)
-        if log is not None:  # 批 115 P3-C2：日志改 dock 后运行即展开，默认不占屏
-            log.expand()
-        ASM.run_step(self, key)
+        report = TOC.latest_report(self._issue_dir())
+        if report:
+            self.set_field("toc_report", report)
+        return report
 
-    def _run_all(self) -> None:
-        log = getattr(self, "_log", None)
-        if log is not None:
-            log.expand()
-        ASM.run_all(self)
+    def _step_title(self, key: str) -> str:
+        step = self._step_by_key(key)
+        return str(step["title"]) if step else key
 
-    def _on_stop(self, e=None) -> None:
-        self.app.stop_run()
+    def _step_desc(self, key: str) -> str:
+        step = self._step_by_key(key)
+        return str(step["desc"]) if step else ""
 
-    async def _run_calls(self, calls: list, sequential: bool = False) -> None:
-        last_code = 0
-        for key, call in calls:
-            if self.app.cancel_requested:
-                break
-            self._status[key] = "running"
-            self._refresh_steps()
-            self.app.begin_run(call)
-            self._log.clear()
-            self._result.reset()
-            CK.before_issue_step(self, key)
+    def _step_by_key(self, key: str) -> dict | None:
+        for step in self.STEPS:
+            if step["key"] == key:
+                return step
+        return None
+
+    def _logical_width(self) -> float:
+        page = getattr(self.app, "page", None)
+        try:
+            width = float(getattr(page, "width", 0) or 0)
+            height = float(getattr(page, "height", 0) or 0)
+        except (TypeError, ValueError):
+            width = height = 0.0
+        if width == 800 and height == 600:
+            width = 0.0
+        if width <= 0:
             try:
-                code = await EB.run_call(call, on_line=self._on_line, on_proc=self.app.track_proc,
-                                         notes=self.app.notes_repo)
-            except Exception as exc:  # noqa: BLE001 - 引擎缺失/启动失败一律给中文提示
-                self.app.finish_run(call, -1)
-                self._status[key] = "error"
-                self._refresh_steps()
-                self._result.show(f"❌ 任务启动失败：{exc}", level="error")
-                self.app.toast(f"任务启动失败：{exc}")
-                self.mark("run_start_error", step=key, error=f"{type(exc).__name__}: {exc}")
-                return
-            self.app.finish_run(call, code)
-            cancelled = self.app.cancel_requested
-            self._status[key] = "error" if (code != 0 and not cancelled) else ("warn" if code == 1 else "done")
-            if cancelled:
-                self._status[key] = "idle"
-            self._refresh_steps()
-            artifact = EB.artifact_path(self.app.last_line)
-            await CK.after_issue_step(self, key, call, code, cancelled, artifact)
-            ASM.after_step(self, key, call, code, cancelled, artifact)
-            level = "warn" if cancelled else EB.result_level(call.entry, code)
-            text = "⏹ 已取消" if cancelled else EB.result_text(call.entry, code)
-            self._result.show(text, level=level, artifact=artifact)
-            if artifact:
-                self.app.store.set_recent("issue_dir", str(Path(self._issue_dir())))
-            last_code = code
+                width = float(getattr(self.app, "window_w", 0) or 0)
+            except (TypeError, ValueError):
+                width = 0.0
+        return width
+
+    def _narrow(self) -> bool:
+        width = self._logical_width()
+        if width <= 0:
             try:
-                self.page.update()
-            except Exception:  # noqa: BLE001
-                pass
-            if cancelled:
-                break
-        self._refresh_steps()
+                width = float(self.app._design_width())
+            except (AttributeError, TypeError, ValueError):
+                return False
+        try:
+            rail = width < BREAK["rail"]
+            sidebar = self.app.t.rail_width / max(self.app.t.k, 1e-6) if rail else SIDEBAR_W
+        except (AttributeError, TypeError, ValueError):
+            sidebar = SIDEBAR_W
+        return width - sidebar < 880
 
-    def _on_line(self, line: str) -> None:
-        self.app.record_line(line)
-        self._log.add_line(line, _level_of_line(line), EB.is_summary_line(line))
-
-    def _refresh_steps(self) -> None:
-        """状态变化后重绘当前视图（总览或单步子页），并同步所有「运行」按钮状态。"""
-        if getattr(self, "_content_box", None) is None:
+    def on_resize(self) -> None:
+        if getattr(self, "_shell", None) is None:
             return
-        self._step_run_btns = {}
-        if self.selected == "overview":
+        if self.selected == "overview" and self._content_box is not None:
+            # D1-115-26：内容宽跨 880 时总览树/工作台宽度一起换；不重建步骤页，
+            # 避免运行中的输入框被重置。
             self._content_box.controls = [self._build_overview()]
-        else:
-            self._content_box.controls = [self._build_step_page(self.selected)]
-        self.refresh_running()
-        self._safe_update(self._content_box)
-
-    def _safe_update(self, *controls) -> None:
-        for control in controls:
-            try:
-                control.update()
-            except Exception:  # noqa: BLE001
-                pass
-
-    def refresh_running(self) -> None:
-        running = self.app.running
-        disabled = not self.app.engine_status.ok
-        if self._run_all_btn is not None:
-            self._run_all_btn.disabled = running or disabled
-        if self._stop_btn is not None:
-            self._stop_btn.disabled = not running
-        # 步骤卡的「运行」也跟随运行/引擎状态禁用，并在 tooltip 里说明原因。
-        step_disabled, step_reason = self._step_run_state()
-        for btn in self._step_run_btns.values():
-            btn.disabled = step_disabled
-            btn.tooltip = step_reason
-        self._safe_update(*(c for c in (self._run_all_btn, self._stop_btn)
-                            if c is not None),
-                          *self._step_run_btns.values())
-
-    # 证据钩子 ─────────────────────────────────────────────────────────
-    def prefill(self, issue_dir: str = "", toc_report: str = "") -> None:
-        if issue_dir:
-            self.set_field("issue_dir", issue_dir)
-            self.app.store.set_recent("issue_dir", issue_dir)
-        if toc_report:
-            self.set_field("toc_report", toc_report)
-        self.mark("demo_prefill", issue_dir=issue_dir, toc_report=toc_report)
-
-    def select_step(self, key: str) -> None:
-        """兼容旧入口（P2_ISSUE_STEP / GUI 钩子）：统一走路由。"""
-        if key not in [step["key"] for step in self.STEPS]:
-            return
-        navigate = getattr(self.app, "navigate", None)
-        if callable(navigate):
-            navigate(f"issue:{key}", source="hook")
-        else:
-            self.activate(key, source="hook")
-        self.mark("step_selected", step=key)
-
-    def run_step_demo(self, key: str) -> None:
-        self._run_step(key)
-
-    def run_all_demo(self) -> None:
-        self._run_all()
+        self._refresh_layout()
 
 
 # ── 引用库（P3 实装，P2 保留入口）────────────────────────────────────────
@@ -1616,422 +2739,15 @@ BIB_WRITE_RULES = (
 )
 
 
-class BibPage(BasePage):
-    """引用库（P6）：10 视图 / 4 组两级导航；概况/查库/规范化只读，6 个写入视图写库。
+class BibPage(BH.BibHost):
+    """引用库薄宿主（批 115 BHOST）：10 个页面模块的路由 / 懒加载 / 宿主 API。
 
-    写入面（入藏 / 待处理 / 编辑 / 查重合并 / 字段归位 / 库健康）一律先干跑预览、
-    再带 `--expect-db-sha256` 真写，写完自动本地提交（只提交 bib_db/bibliography.jsonl）；
-    推送/回退要二次确认（B-190 契约）。
+    页面自绘 `bib_shell.page_shell`（唯一 h1、权限 chip、最多 1 个动作 + 齿轮），
+    宿主只切内容、转发生命周期并维护旧 BibPage 的兼容成员；实现见 `app/ui/bib_host.py`。
     """
-
-    key = "bib"
-    #: 10 视图（IA 序：查阅 → 采录 → 治理 → 维护）。key 沿用旧名，只新增 `normalize`。
-    VIEWS = [("overview", "概况"), ("query", "查库"), ("normalize", "规范化"),
-             ("import", "入藏"), ("review", "待处理"), ("edit", "编辑"),
-             ("dupes", "查重合并"), ("fieldfix", "字段归位"),
-             ("health", "库健康"), ("settings", "设置")]
-    #: 4 组两级导航：组 key → (组标签, 组内视图 key；顺序即侧栏子项顺序)。
-    GROUPS = {
-        "read": ("查阅", ("overview", "query")),
-        "intake": ("采录", ("normalize", "import")),
-        "treat": ("治理", ("review", "edit", "dupes", "fieldfix")),
-        "maint": ("维护", ("health", "settings")),
-    }
-    GROUP_ORDER = ("read", "intake", "treat", "maint")
-    #: 页头权限芯片：只读视图不出 notice，靠这一枚自解释。
-    VIEW_ACCESS = {"overview": "只读", "query": "只读", "normalize": "只读",
-                   "import": "写库", "review": "写库", "edit": "写库",
-                   "dupes": "写库", "fieldfix": "写库", "health": "写库",
-                   "settings": "配置"}
-    #: 视图级 notice：{view: (tone, 一行文案)}；缺键 = 该视图不出 notice。
-    VIEW_NOTICES = {key: ("info", BIB_WRITE_NOTICE) for key in BIB_WRITE_VIEWS}
-    VIEW_LABELS = {key: label for key, label in VIEWS}
-
-    def __init__(self, app) -> None:
-        super().__init__(app)
-        # 批 112 族 B：视图状态落 store，主题/缩放重建 shell 后不回到 overview。
-        self.view = SS.pick(app.store, "bib_view", self.view_keys(), "overview")
-        self.group = self.group_of(self.view)
-        # 批 114（用户 m03256）：两行 tab（组条 + 胶囊）删除 → 页头=面包屑+子项标题。
-        self._crumb: ft.Row | None = None
-        self._child_title: ft.Text | None = None
-        self._notice_slot: ft.Container | None = None
-        self._status_slot: ft.Row | None = None
-        self.stats_data: dict | None = None
-        self.lint_counts: dict | None = None  # lint counts（真实警告数；与 stats 并行取）
-        self.stats_error = ""
-        self.query_field: ft.TextField | None = None  # P2_BIB_QUERY_UI 自检钩子用
-        self.view_slot: ft.Container | None = None
-        self.query_view = BA.BibQueryView(self)
-        self.settings_view = BS.BibSettingsView(self)
-        self.import_view = BW.BibImportView(self)
-        self.review_view = BW.BibReviewView(self)
-        self.editor_view = BO.BibEditorView(self)
-        self.dupes_view = BOD.BibDuplicatesView(self)
-        self.fieldfix_view = BOH.BibFieldFixView(self)
-        self.health_view = BOH.BibHealthView(self)
-        # 批 112 S3a2：规范化面板（uid 单例，日志/报告跨重绘保留）。
-        self.normalize_view = NR.NormalizeView(self)
-
-    @classmethod
-    def view_keys(cls) -> set[str]:
-        return {key for key, _ in cls.VIEWS}
-
-    @classmethod
-    def group_of(cls, view: str) -> str:
-        """视图 → 所属组 key（未知视图按第一组处理，与 set_view 的回落一致）。"""
-        for group in cls.GROUP_ORDER:
-            if view in cls.GROUPS[group][1]:
-                return group
-        return cls.GROUP_ORDER[0]
-
-    TOOLBAR_TITLE = "引用库"
-
-    def toolbar_meta(self) -> str:
-        """页头计数：条数 = bib_stats.records，警告 = lint.counts.warnings（真实值）。
-
-        旧实现误用 aliases.records（有别名记录数）当条数、conflicts.records 当警告数，
-        会显示成 2,081 条 / 135 条警告；真实值是 3,883 条 / 76 条警告（lint）。
-        未加载时显示「统计读取中…」；lint 未回前只显示条数。
-        """
-        stats = self.stats_data or {}
-        records = stats.get("records")
-        if not isinstance(records, (int, float)):
-            return "统计读取中…"
-        text = f"{int(records):,} 条"
-        warnings = (self.lint_counts or {}).get("warnings")
-        if isinstance(warnings, (int, float)) and warnings:
-            text += f" · {int(warnings):,} 条警告"
-        return text
-
-    def toolbar_action(self):
-        return ("采集", "ADD", lambda e: self.set_view("import", source="toolbar"))
-
-    def _sync_toolbar_meta(self) -> None:
-        syncer = getattr(self.app, "_sync_toolbar", None)
-        if callable(syncer) and getattr(self.app, "toolbar", None) is not None:
-            syncer()
-
-    def build(self) -> ft.Control:
-        t = self.t
-        self.view_slot = ft.Container(expand=True)
-        self._status_slot = ft.Row(spacing=t.sp("1"), controls=[])
-        self._notice_slot = ft.Container(visible=False)
-        self._sync_header()
-        head = ft.Column(spacing=t.sp("xs"), controls=[
-            self._crumb,
-            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[self._child_title, ft.Container(expand=True),
-                             self._status_slot]),
-        ])
-        body = C.panel(head, self._notice_slot, self.view_slot, t=t, pad=(24, 10, 24, 12))
-        self._render()
-        return body
-
-    def _sync_header(self) -> None:
-        """页头=面包屑「引用库 / 组」+ 22/600 视图标题（批 114 删两行 tab）。"""
-        t = self.t
-        self.group = self.group_of(self.view)
-        crumb = f"引用库 / {self.GROUPS[self.group][0]}"
-        if self._crumb is None:
-            self._crumb = ft.Row(spacing=t.sp("half"), controls=[
-                C.text(crumb, t, "caption", t.palette.text_muted)])
-            self._child_title = C.text(self.VIEW_LABELS[self.view], t, role="page-title")
-        else:
-            self._crumb.controls[0].value = crumb
-            self._child_title.value = self.VIEW_LABELS[self.view]
-        if self._notice_slot is not None:
-            self._notice_slot.content = self._notice_control()
-            self._notice_slot.visible = self._notice_slot.content is not None
-        if self._status_slot is not None:
-            self._status_slot.controls = self._status_chips()
-        self._safe_update(*[c for c in (self._crumb, self._child_title,
-                                        self._notice_slot, self._status_slot)
-                            if c is not None])
-        self._sync_toolbar_meta()
-
-    def _render_nav(self) -> None:
-        """兼容旧名：实际只刷新页头（面包屑/标题/notice/状态），导航已在侧栏。"""
-        self._sync_header()
-
-    def _notice_control(self) -> ft.Control | None:
-        """写库视图的一行后果提示（tooltip 里是全文）；只读视图不出。"""
-        spec = self.VIEW_NOTICES.get(self.view)
-        if not spec:
-            return None
-        tone, message = spec
-        bar = C.notice_bar(message, self.t, tone)
-        try:
-            bar.tooltip = ft.Tooltip(message=BIB_WRITE_RULES, wait_duration=0.4)
-        except Exception:  # noqa: BLE001  Flet 版本差异：没有 Tooltip 就退化成一行
-            pass
-        return bar
-
-    def _status_chips(self) -> list:
-        """页头右侧状态：权限一句话 + （有则）未提交；不用胶囊。"""
-        t = self.t
-        access = self.VIEW_ACCESS.get(self.view, "只读")
-        tone = "warn" if access == "写库" else "ok"
-        chips = [ft.Row(spacing=t.sp("half"), controls=[
-            C.status_dot(tone, t),
-            C.text(access, t, "caption", color=t.palette.text_muted),
-        ])]
-        if (self.stats_data or {}).get("dirty"):
-            chips.append(ft.Row(spacing=t.sp("half"), controls=[
-                C.status_dot("warn", t),
-                C.text("未提交", t, "caption", color=t.palette.text_muted),
-            ]))
-        return chips
-
-    def _safe_update(self, *controls) -> None:
-        for control in controls:
-            try:
-                control.update()
-            except Exception:  # noqa: BLE001
-                pass
-
-    # ── 视图切换 / 数据加载 ─────────────────────────────────────────────
-    def activate(self, view: str, *, source: str = "nav") -> None:
-        """导航激活视图：白名单 → store（view + 组记忆）→ mark → 重绘 → 按需加载。
-
-        非法值回落 overview 并 mark `bib_view_invalid`（不静默忽略，便于 P2 断言）。
-        """
-        view = str(view or "")
-        if view not in self.view_keys():
-            self.mark("bib_view_invalid", view=view, source=source)
-            view = "overview"
-        previous = self.view
-        self.view = view
-        if previous == "normalize" and view != "normalize":
-            self.normalize_view.on_leave()
-        self.group = self.group_of(view)
-        store = self.app.store
-        store.set("bib_view", view)
-        memory = store.get("bib_group_memory", {}) or {}
-        memory = dict(memory) if isinstance(memory, dict) else {}
-        memory[self.group] = view
-        store.set("bib_group_memory", memory)
-        self.mark("bib_view", view=view, source=source, group=self.group)
-        self._sync_header()
-        self._render()
-        self._ensure_loaded(view)
-
-    def set_view(self, view: str, *, source: str = "legacy") -> None:
-        """旧入口（工具栏/子视图/GUI 钩子）：有路由时统一 navigate，无路由则本页激活。"""
-        navigate = getattr(self.app, "navigate", None)
-        if callable(navigate):
-            navigate(f"bib:{view}", source=source)
-            return
-        self.activate(view, source=source)
-
-    def set_group(self, group: str) -> None:
-        """点组（旧入口）：进该组上次视图；导航版本由侧栏组行承担。"""
-        if group not in self.GROUPS:
-            return
-        memory = self.app.store.get("bib_group_memory", {}) or {}
-        target = memory.get(group) if isinstance(memory, dict) else None
-        if target not in self.GROUPS[group][1]:
-            target = self.GROUPS[group][1][0]
-        self.set_view(target, source="group")
-
-    def _switch(self, view: str, *, source: str = "ui") -> None:
-        """兼容别名：main.py 的 P2_BIB_VIEW / P2_BIB_QUERY_UI 仍走这个入口。"""
-        self.set_view(view, source=source)
-
-    def _ensure_loaded(self, view: str) -> None:
-        """按视图惰性加载（幂等；协程统一走 page.run_task）。"""
-        # 页头/工具栏的计数来自 bib_stats：任何视图首开都补一次统计（只读）。
-        if self.stats_data is None:
-            self.page.run_task(self._load_stats)
-        if view == "review":
-            self.review_view.ensure_loaded()
-        elif view == "settings":
-            self.page.run_task(self.settings_view.ensure_loaded)
-        elif view == "dupes":
-            self.page.run_task(self.dupes_view.ensure_loaded)
-        elif view == "fieldfix":
-            self.page.run_task(self.fieldfix_view.ensure_loaded)
-        elif view == "health":
-            self.page.run_task(self.health_view.ensure_loaded)
-        elif view == "normalize":
-            self.normalize_view.ensure_loaded()
-
-    async def _load_stats(self) -> None:
-        """并行读取库概况（stats）与体检计数（lint）：页头条数/警告都用真实值。
-
-        lint 退出码 1 = 有警告（仍带完整 JSON），所以只要 JSON 在就取 counts。
-        """
-
-        async def _read(call) -> dict:
-            try:
-                return await asyncio.to_thread(EB.read_json_command, call)
-            except RuntimeError as exc:  # 引擎缺失时不阻塞页面
-                return {"ok": False, "error": str(exc), "json": {}}
-
-        result, lint_result = await asyncio.gather(
-            _read(EB.bibdb_stats_call()), _read(EB.bibdb_lint_call()))
-        self.stats_data = result.get("json") or None
-        lint_json = lint_result.get("json") or {}
-        self.lint_counts = (lint_json.get("counts") or None) if lint_json else None
-        self.stats_error = "" if result.get("ok") else str(result.get("error") or "读取失败")
-        stats = self.stats_data or {}
-        aliases = stats.get("aliases") or {}
-        conflicts = stats.get("conflicts") or {}
-        counts = self.lint_counts or {}
-        self.mark("bib_stats", ok=bool(result.get("ok")), code=result.get("code"),
-                  records=stats.get("records"), warnings=counts.get("warnings"),
-                  aliases_total=aliases.get("total"), conflicts=conflicts.get("records"),
-                  bytes=stats.get("bytes"))
-        self._render()
-        self._sync_toolbar_meta()
-        self._update_toolbar()
-
-    def _update_toolbar(self) -> None:
-        """_sync_toolbar_meta 只换了 toolbar.content；这里补一次控件更新。
-
-        verify4 发现：overview/health/settings 冷启动时页头持久停在「统计读取中…」，
-        根因是只替换 content 未推送到客户端（_render 只更新 view_slot）。
-        """
-        toolbar = getattr(self.app, "toolbar", None)
-        if toolbar is None:
-            return
-        try:
-            toolbar.update()
-        except Exception:  # noqa: BLE001 构建期未挂载时忽略，挂载后会自然生效
-            pass
-
-    async def _run_query(self) -> None:
-        """兼容 `P2_BIB_QUERY_UI` 自检钩子：把旧入口接到新的查库视图（基本检索 / 题名）。"""
-        value = (self.query_field.value or "").strip() if self.query_field else ""
-        if value:
-            self.query_view.basic_text = value
-        await self.query_view._run_basic()
-
-    # ── 渲染 ───────────────────────────────────────────────────────────
-    def _render(self) -> None:
-        if self.view_slot is None:
-            return
-        builders = {
-            "overview": self._overview_view,
-            "query": self.query_view.build,
-            "normalize": self.normalize_view.ensure_built,
-            "import": self.import_view.build,
-            "review": self.review_view.build,
-            "settings": self.settings_view.build,
-            "edit": self.editor_view.build,
-            "dupes": self.dupes_view.build,
-            "fieldfix": self.fieldfix_view.build,
-            "health": self.health_view.build,
-        }
-        builder = builders.get(self.view, self._overview_view)
-        try:
-            content = builder()
-        except Exception as exc:  # noqa: BLE001
-            import traceback
-
-            frames = traceback.extract_tb(exc.__traceback__)
-            self.mark("bib_render_error", error=f"{type(exc).__name__}: {exc}",
-                      where=[f"{f.name}:{f.lineno}" for f in frames][-4:])
-            return
-        self.view_slot.content = content
-        try:
-            # 构建期（未挂载）update 会抛 RuntimeError；忽略，等页面显示后自然生效。
-            self.view_slot.update()
-        except Exception:  # noqa: BLE001
-            pass
-
-    def _overview_view(self) -> ft.Control:
-        """概览：三张统计卡 → 「下一步」动作 → 折叠的库详情（动作在前、事实在后）。"""
-        t = self.t
-        stats = self.stats_data or {}
-        aliases = stats.get("aliases") or {}
-        conflicts = stats.get("conflicts") or {}
-        loaded = self.stats_data is not None
-        records = stats.get("records")
-        conflict_n = conflicts.get("records") or 0
-        conflict_total = conflicts.get("total") or 0
-        size_mb = (stats.get("bytes") or 0) / 1024 / 1024
-        reading = "读取失败" if self.stats_error else "正在读取…"
-        controls: list = []
-        if self.stats_error:
-            controls.append(ft.Row(spacing=t.sp("1"),
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                ft.Container(expand=True, content=C.notice_bar(self.stats_error, t, "error")),
-                C.secondary_button("重试", lambda e: self.page.run_task(self._load_stats), t,
-                                   icon="REFRESH"),
-            ]))
-        controls.append(ft.Row(spacing=t.sp("2"), controls=[
-            C.stat_card("条目总数", "—" if not loaded else str(records or 0),
-                        reading if not loaded else f"别名合计 {aliases.get('total') or 0} 条 · 只读", t),
-            C.stat_card("冲突 · 涉及记录", "—" if not loaded else str(conflict_n),
-                        reading if not loaded else (f"共 {conflict_total} 条冲突 · 去「待处理」裁决" if conflict_n else "当前无冲突"), t),
-            C.stat_card("库文件", f"{size_mb:.1f} MB" if stats.get("bytes") else "—",
-                        "bibliography.jsonl", t),
-        ]))
-        if loaded and not records:
-            controls.append(C.card(C.empty_state(
-                "INBOX", "库里还没有条目", "入藏：选择 .bib → 预览 → 确认", t), t))
-        else:
-            controls.append(self._next_card(conflict_n, loaded=loaded))
-        controls.append(self._detail_card(stats))
-        return ft.Column(spacing=t.sp("2"), controls=controls)
-
-    def _next_card(self, conflicts: int, *, loaded: bool = True) -> ft.Control:
-        """「下一步」：只列当下能做的事；计数为 0 的冲突项降级成一行静态说明。"""
-        t = self.t
-        rows: list = [C.action_row("FACT_CHECK", "去体检交回的 .bib", "只出报告，不改库", t,
-                                   on_click=lambda e: self.set_view("normalize"))]
-        if conflicts:
-            rows.append(C.action_row("GAVEL", f"处理 {conflicts} 条冲突", "逐条裁决", t,
-                                     on_click=lambda e: self.set_view("review")))
-        elif loaded:
-            rows.append(C.text("无待裁决冲突", t, "caption", t.palette.text_faint))
-        rows.append(C.action_row("LIBRARY_ADD", "入藏新条目", "选择文件并运行", t,
-                                 on_click=lambda e: self.set_view("import")))
-        return C.card(ft.Column(spacing=t.sp("half"),
-                                controls=[C.section_title("下一步", t), *rows]), t)
-
-    def _detail_card(self, stats: dict) -> ft.Control:
-        """库详情：静态事实折进 ExpansionTile；工作区脏标记已上浮到页头芯片。"""
-        t = self.t
-        entry_types = stats.get("entry_types") or {}
-        type_line = "、".join(f"{k} {v}" for k, v in list(entry_types.items())[:6]) or "—"
-        tile = ft.ExpansionTile(
-            title=C.text("库详情", t, "small", t.palette.text_muted),
-            controls=[ft.Column(spacing=t.sp("half"), controls=[
-                self._kv("库文件", str(stats.get("db") or "（未知）")),
-                self._kv("条目类型", type_line),
-                self._kv("创建时间范围", " → ".join(stats.get("created_range") or []) or "—"),
-                self._kv("重复内容", str(stats.get("duplicate_content") or 0)),
-                self._kv("读取状态", self.stats_error or ("已读取" if self.stats_data else "未读取")),
-            ])],
-            expanded=False,
-        )
-        return C.card(tile, t, pad=12)
-
-    # ── 小工具 ─────────────────────────────────────────────────────────
-    def _kv(self, label: str, value: str) -> ft.Row:
-        t = self.t
-        return ft.Row(spacing=t.sp("1"), controls=[
-            C.text(label, t, "small", t.palette.text_muted),
-            ft.Container(expand=True),
-            ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT, content=C.text(
-                str(value), t, "small", t.palette.text, max_lines=1,
-                overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value))),
-        ])
-
-    def on_show(self) -> None:
-        # 族 B：重建 shell 后新实例已从 store 恢复 view；这里校正高亮 + 补加载（幂等）。
-        self._render_nav()
-        self._ensure_loaded(self.view)
-
-    def on_resize(self) -> None:
-        if self.view == "query":
-            self.query_view.on_resize()
-
-    def refresh_running(self) -> None:
-        # 规范化视图自带运行/停止按钮与日志；只有构建过才需要同步（幂等）。
-        self.normalize_view.refresh_running()
+    # 兼容旧模块级常量：测试与说明文案仍从 pages 导入。
+    WRITE_NOTICE = BIB_WRITE_NOTICE
+    WRITE_VIEWS = BIB_WRITE_VIEWS
 
 
 def group_of(view: str) -> str:

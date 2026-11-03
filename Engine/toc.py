@@ -65,7 +65,10 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
         placed["enPdf"] = delivery.pdfs.get("en", "")
         pages = {"zh": int(delivery.pages.get("zh") or 0),
                  "en": int(delivery.pages.get("en") or 0)}
+    # 批 115 / D1-115-29：给工作台详情页的篇目计数（additive；旧字段一个不动）。
+    articles = _toc.list_articles(report)
     return {
+        "articles": {"total": len(articles), "inToc": len(articles)},
         "templateSource": source,
         "templateNote": note,
         "tocDir": delivery.toc_dir if delivery is not None else _td.find_toc_dir(report_dir),
@@ -143,6 +146,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.template:
         settings.templateFolder = args.template
 
+    # 批 115：`--preview` 与正式生成共用「模板来源」口径；此值必须在预览分支前算好
+    # （从前只在下面正式生成前赋值，预览读到未绑定变量直接 UnboundLocalError，GUI 必挂）。
+    note = _toc.template_source_note(report, settings)
+
     if args.preview:
         # 给界面用的预览：篇目清单 + 模板来源 + 生效的设置。
         # 为什么由引擎出而不是界面自己解析报告：解析口径必须与真正生成时**完全一致**，
@@ -156,7 +163,6 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, ensure_ascii=False))
         return 0
 
-    note = _toc.template_source_note(report, settings)
     print("运行生成目录的函数\n")
     print(f"报告：{report}")
     print(f"模板：{note}\n")

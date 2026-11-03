@@ -123,7 +123,8 @@ def test_info_card_lifecycle_texts():
     card._open()
     assert called == ["C:/report.txt"]
     card.show_unreadable("C:/report.txt")
-    assert card.warning.value == CK.UNREADABLE_INFO and card.empty.visible
+    # 批 115 设计检修 P1-4：警告行已解释「表格为什么空」，通用空态不再叠加。
+    assert card.warning.value == CK.UNREADABLE_INFO and card.empty.visible is False
     card.show_failed(2)
     assert card.chip.content.value == "检查失败" and card.table_box.visible is False
 

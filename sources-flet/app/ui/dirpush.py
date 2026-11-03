@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 
 import flet as ft
@@ -42,6 +43,97 @@ def repo_warning(out_root: str, repo=None) -> str:
                     "污染工作树。")
     except OSError:
         return ""
+    return ""
+
+
+def _resolve(path: str) -> Path:
+    return Path(os.path.expanduser(str(path or "").strip())).resolve()
+
+
+def validate_out_root(out_root: str, issue: str) -> tuple[str, str]:
+    """输出根校验（按 spec 顺序）；error 阻断，warn 只提示（仓内需二次确认）。"""
+    text = str(out_root or "").strip()
+    if not text:
+        return "ok", ""
+    if not (text.startswith("~/") or os.path.isabs(text)):
+        return "error", "请用绝对路径，或以 ~/ 开头的路径"
+    target = _resolve(text)
+    if target.exists() and target.is_file():
+        return "error", "这个路径是文件，请选目录"
+    try:
+        issue_path = _resolve(issue)
+        if target == issue_path or issue_path in target.parents:
+            return "error", "输出根不能放在期目录内（作者来稿只读）"
+    except OSError:
+        pass
+    probe = target
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    if probe.exists() and not probe.is_dir():
+        return "error", "这个路径是文件，请选目录"
+    if probe.exists() and not os.access(probe, os.W_OK):
+        return "error", "目录不可写，请换一个位置"
+    warn = repo_warning(text)
+    if warn:
+        return "warn", warn
+    return "ok", ""
+
+
+def year_error(text: str) -> str:
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    if not re.fullmatch(r"\d{4}", text) or not (2000 <= int(text) <= 2100):
+        return "年度请填 4 位数字，如 2026"
+    return ""
+
+
+def normalize_issues(text: str) -> tuple[list[int], list[str]]:
+    """年度「只含这些期号」：接受 , ， 、 空格；非法片段原样列出，不静默丢弃。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return [], []
+    good: list[int] = []
+    bad: list[str] = []
+    for part in re.split(r"[,，、\s]+", raw):
+        if not part:
+            continue
+        if part.isdigit() and int(part) > 0:
+            good.append(int(part))
+        else:
+            bad.append(part)
+    return good, bad
+
+
+def issues_caption(text: str) -> str:
+    good, bad = normalize_issues(text)
+    if bad:
+        return "只填期号，用逗号分隔，如 1,2,3"
+    if not good:
+        return "留空 = 纳入该年度全部期"
+    return "将纳入第 " + "、".join(str(n) for n in good) + " 期"
+
+
+def _mode(page) -> str:
+    value = str(page.app.store.get("form.dirpush_mode", MODE_ISSUE) or MODE_ISSUE)
+    return value if value in (MODE_ISSUE, MODE_ANNUAL) else MODE_ISSUE
+
+
+def validation_error(page) -> str:
+    """运行前校验：返回一条中文错误；空串表示可运行。"""
+    issue = str(page.field("issue_dir") or "").strip()
+    if not issue:
+        return "先选择期目录"
+    level, message = validate_out_root(page.field("dirpush_out"), issue)
+    if level == "error":
+        return message
+    if _mode(page) == MODE_ANNUAL:
+        err = year_error(page.app.store.get("form.dirpush_year", ""))
+        if err:
+            return err
+        _good, bad = normalize_issues(page.app.store.get("form.dirpush_issues", ""))
+        if bad:
+            return "只填期号，用逗号分隔，如 1,2,3"
     return ""
 
 
@@ -128,7 +220,8 @@ class DirPushPanel:
         self.annual_rows = ft.Column(spacing=self.t.sp("1"), visible=False)
         self.annual_rows.controls = [ft.Row(spacing=self.t.sp("1"), controls=[
             C.form_field(self.t, "年度（yyyy，可空）", self.year),
-            C.form_field(self.t, "只含这些期号（如 1,2,3；年度可空）", self.issues, expand=True),
+            C.form_field(self.t, "只含这些期号（如 1,2,3；年度可空）", self.issues,
+                         expand=True),
         ])]
 
     def _store_value(self, key: str, value) -> None:
@@ -143,34 +236,81 @@ class DirPushPanel:
         except Exception:  # noqa: BLE001
             pass
 
+    def _switch_row(self, label: str, desc: str, checked: bool, on_change,
+                    *, disabled: bool = False, reason: str = ""):
+        """开关行：复用 C.option_row（禁止在页面里裸建 Switch）。
+
+        年度模式下英文开关按 spec 置灰并给原因：on_change 置空（点了不生效）
+        + 0.55 透明度 + 原因文案，保留可见而不是隐藏。
+        """
+        row = C.option_row(label, reason if disabled else desc, self.t,
+                           icon="TRANSLATE" if "英文" in label else "SCIENCE_OUTLINED",
+                           checked=checked,
+                           on_change=None if disabled else on_change)
+        if disabled:
+            row.opacity = 0.55
+            row.tooltip = reason
+        return row
+
     def params(self) -> list:
+        t = self.t
         options = self.app.store.get("options", {}) or {}
-        self.annual_rows.visible = (self.mode.value or MODE_ISSUE) == MODE_ANNUAL
-        return [
-            C.notice_bar("先预览（--dry-run）不写文件；输出根落在代码仓内会二次确认。",
-                         self.t, "info"),
-            self.page.add_picker("输出根", "dirpush_out", "目录摘要 docx 输出根（可空 = 引擎默认）",
+        mode = self.mode.value or MODE_ISSUE
+        annual = mode == MODE_ANNUAL
+        self.annual_rows.visible = annual
+        out_root = self.page.field("dirpush_out")
+        default_root = EB.dirpush_default_out_root()
+        target = out_root or default_root
+        level, message = validate_out_root(out_root, self.page.field("issue_dir"))
+        rows: list = [
+            C.notice_bar("先预演（只预演开关）不写文件；输出根落在代码仓内会二次确认。",
+                         t, "info"),
+            self.page.add_picker("输出根", "dirpush_out",
+                                 f"目录摘要 docx 输出根；留空 = 引擎默认 {default_root}",
                                  kind="dir", required=False),
-            ft.Row(spacing=self.t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[C.form_field(self.t, "推送范围", self.mode)]),
+            C.text(f"留空 = 引擎默认：{default_root}", t, "caption",
+                   t.palette.text_faint, max_lines=1,
+                   overflow=ft.TextOverflow.ELLIPSIS),
+            ft.Container(
+                padding=ft.Padding.symmetric(horizontal=t.px(10), vertical=t.px(6)),
+                bgcolor=t.palette.surface_2, border_radius=t.radius("sm"),
+                content=ft.Column(spacing=2, controls=[
+                    C.text("将写入", t, "caption", t.palette.text_muted),
+                    C.text(target, t, "mono", t.palette.text, max_lines=1,
+                           overflow=ft.TextOverflow.ELLIPSIS),
+                    C.text("预演：只校验、不写文件" if self._dry_run() else
+                           "同根下同名 docx 会被覆盖（不保留 .bak）· 先预演一次",
+                           t, "caption", t.palette.text_faint, max_lines=2),
+                ]),
+            ),
+        ]
+        if level == "error":
+            rows.append(C.notice_bar(message, t, "error"))
+        elif level == "warn":
+            rows.append(C.notice_bar("仓内输出：" + message, t, "warn"))
+        rows += [
+            ft.Row(spacing=t.sp("1"), controls=[C.form_field(t, "推送范围", self.mode)]),
             self.annual_rows,
-            C.option_row("含英文目录", "当期模式加 --with-en-toc", self.t, icon="TRANSLATE",
-                         checked=bool(options.get("dirpush_with_en_toc", False)),
-                         on_change=lambda e: self.app.set_option("dirpush_with_en_toc",
-                                                                 e.control.value)),
-            C.option_row("只预演（--dry-run）", "采集并校验，不写文件", self.t,
-                         icon="SCIENCE_OUTLINED",
-                         checked=bool(options.get("dirpush_dry_run", False)),
-                         on_change=lambda e: self.app.set_option("dirpush_dry_run",
-                                                                 e.control.value)),
-            ft.Row(spacing=self.t.sp("1"), controls=[
-                C.primary_button("预览/生成", lambda e: self.start(False), self.t,
-                                 icon="PLAY_ARROW"),
-                C.secondary_button("只看预览（dry-run）", lambda e: self.start(True), self.t,
-                                   icon="SCIENCE_OUTLINED"),
-            ]),
+            self._switch_row("含英文目录",
+                             "当期模式加 --with-en-toc",
+                             bool(options.get("dirpush_with_en_toc", False)),
+                             lambda e: self.app.set_option("dirpush_with_en_toc",
+                                                           e.control.value),
+                             disabled=annual,
+                             reason="年度体例按各期《目录摘要设置.json》还原，此开关只作用于当期"),
+            self._switch_row("只预演",
+                             "采集并校验，不写文件（--dry-run）",
+                             bool(options.get("dirpush_dry_run", False)),
+                             lambda e: self.app.set_option("dirpush_dry_run",
+                                                           e.control.value)),
+            C.text(issues_caption(self.app.store.get("form.dirpush_issues", ""))
+                   if annual else "", t, "caption", t.palette.text_faint),
             self.feedback,
         ]
+        return rows
+
+    def _dry_run(self) -> bool:
+        return bool((self.app.store.get("options", {}) or {}).get("dirpush_dry_run", False))
 
     def values(self) -> dict:
         return {

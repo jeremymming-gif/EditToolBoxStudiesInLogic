@@ -42,6 +42,10 @@ class AiPanel:
         self._mode_ctl: ft.Text | None = None
         self._status_ctl: ft.Text | None = None
         self._summary_ctl: ft.Text | None = None
+        # 批 115 P1-9：状态/摘要无内容时整段不渲染。空 Text 若带 max_lines，
+        # flet 1.0.5 仍按最大行数占高（实测 12/8 行 = 192/136 px），是 AI 卡
+        # 半屏空白的直接来源。
+        self._feedback: ft.Column | None = None
         self._buttons: list[ft.Control] = []
         self._lines: list[str] = []
         self._last_mode = AI.MODE_PLAIN
@@ -51,17 +55,21 @@ class AiPanel:
         t, p = self.t, self.t.palette
         ai = AI.from_store(self.app.store)
         if not ai["enabled"]:
-            return C.card(ft.Column(spacing=t.sp("1"), controls=[
-                C.section_title("AI 助手", t, note="总开关关着，本页不出现任何 AI 入口"),
-                C.notice_bar("AI 功能已在「设置 → AI」关闭：这里不显示任何 AI 选项，也不会有任何 API 调用。",
-                             t, tone="info"),
-            ]), t)
+            # 批 115 P1-9：总开关关着时只留一行说明，不再用 C.card 撑出大块空白。
+            return C.inline_note(
+                "AI 助手：总开关关着（「设置 → AI」），本页不显示 AI 选项，也不会有任何 API 调用。",
+                t, "info")
 
         self._coop_box = ft.Column(spacing=t.sp("1"), visible=False, controls=self._coop_controls())
         self._direct_box = ft.Column(spacing=t.sp("1"), visible=False, controls=self._direct_controls())
         self._mode_ctl = C.text("本次运行：普通初排（不碰 AI）", t, "small", p.accent, "medium")
-        self._status_ctl = C.text("", t, "caption", p.text_muted, max_lines=12, selectable=True)
-        self._summary_ctl = C.text("", t, "small", p.text_muted, max_lines=8, selectable=True)
+        self._status_ctl = C.text("", t, "caption", p.text_muted, max_lines=12,
+                                  selectable=True, visible=False)
+        self._summary_ctl = C.text("", t, "small", p.text_muted, max_lines=8,
+                                   selectable=True, visible=False)
+        # 状态/摘要合在一段里：两行都空时整段 visible=False，不占高也不留空行。
+        self._feedback = ft.Column(spacing=t.sp("1"), visible=False,
+                                   controls=[self._status_ctl, self._summary_ctl])
         open_settings = C.text_button("打开 AI 设置", lambda e: self.app.goto("settings"), t)
         self._buttons.append(open_settings)
         card = C.card(ft.Column(spacing=t.sp("2"), controls=[
@@ -76,8 +84,7 @@ class AiPanel:
             self._direct_box,
             C.notice_bar("直连核实会产生 API 费用；禁止把未刊稿发给任何外部模型（含 AI）。", t, tone="warn"),
             self._mode_ctl,
-            self._status_ctl,
-            self._summary_ctl,
+            self._feedback,
             ft.Row(spacing=t.sp("1"), controls=[open_settings]),
         ]), t)
         self._refresh_mode()
@@ -412,10 +419,21 @@ class AiPanel:
         self._safe_update(self._summary_ctl)
 
     # ── 显示小工具 ─────────────────────────────────────────────────────
+    def _sync_feedback(self, *controls) -> None:
+        """状态/摘要都空时收起整段：空 Text 带 max_lines 在 1.0.5 仍按行数占高。"""
+        if self._feedback is None:
+            return
+        status = self._status_ctl.value if self._status_ctl is not None else ""
+        summary = self._summary_ctl.value if self._summary_ctl is not None else ""
+        self._feedback.visible = bool(str(status or "").strip() or str(summary or "").strip())
+        self._safe_update(self._feedback, *controls)
+
     def _set_status(self, text: str) -> None:
         if self._status_ctl is not None:
-            self._status_ctl.value = text
-            self._safe_update(self._status_ctl)
+            value = str(text or "")
+            self._status_ctl.value = value
+            self._status_ctl.visible = bool(value)
+            self._sync_feedback(self._status_ctl)
 
     def _set_summary(self, text: str, tone: str = "info") -> None:
         if self._summary_ctl is None:
@@ -426,9 +444,11 @@ class AiPanel:
             "error": self.t.palette.error,
             "info": self.t.palette.text_muted,
         }
-        self._summary_ctl.value = text
+        value = str(text or "")
+        self._summary_ctl.value = value
+        self._summary_ctl.visible = bool(value)
         self._summary_ctl.color = colors.get(tone, self.t.palette.text_muted)
-        self._safe_update(self._summary_ctl)
+        self._sync_feedback(self._summary_ctl)
 
     def _show_stage(self, stage) -> None:
         summary = stage.summary

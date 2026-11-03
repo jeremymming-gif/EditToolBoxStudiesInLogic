@@ -556,9 +556,13 @@ def danger_button(label: str, on_click, t: Tokens, *, icon: str | None = None,
     """危险动作：tint 式（danger_soft 底 + danger 字），不用大红块。"""
     b = t.buttons
     style = _button_style(t)
-    style.color = b.danger
+    # P1-6：tint 只在可用态；disabled 必须是灰底灰字，不能仍亮红。
+    style.color = {ft.ControlState.DEFAULT: b.danger,
+                   ft.ControlState.HOVERED: b.danger,
+                   ft.ControlState.DISABLED: b.off_fg}
     style.bgcolor = {ft.ControlState.DEFAULT: b.danger_soft,
-                     ft.ControlState.HOVERED: b.danger_soft}
+                     ft.ControlState.HOVERED: b.danger_soft,
+                     ft.ControlState.DISABLED: b.off_bg}
     return ft.TextButton(label, icon=ic(icon) if icon else None,
                          height=height if height is not None else t.control_h(),
                          style=style, on_click=on_click, disabled=disabled)

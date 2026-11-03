@@ -1310,25 +1310,43 @@ if _IA_MAP_SRC.is_file():
         return [v["key"] for g in entry.get("groups", []) for v in g["views"]]
 
     _single = _views(_by_key.get("single", {}))
-    _issue = _views(_by_key.get("issue", {}))
+    _issue_entry = _by_key.get("issue", {})
     _bib_groups = _by_key.get("bib", {}).get("groups", [])
     _bib_views = [v["key"] for g in _bib_groups for v in g["views"]]
+    _bib_route_views = [v["key"] for v in _by_key.get("bib", {}).get("views", [])]
+    _issue_steps: list[str] = []
+    for _node in _ast.parse(_ia_src).body:
+        _target = None
+        if isinstance(_node, _ast.AnnAssign) and isinstance(_node.target, _ast.Name):
+            _target = _node.target
+        elif isinstance(_node, _ast.Assign):
+            _target = next((t for t in _node.targets
+                            if isinstance(t, _ast.Name) and t.id == "ISSUE_ROUTE_STEPS"), None)
+        if _target is not None and _target.id == "ISSUE_ROUTE_STEPS":
+            _issue_steps = [s["key"] for s in _ast.literal_eval(_node.value)]
     _expected_single = {"convert", "proofcheck"}
-    _expected_issue = {"infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"}
-    _expected_groups = {"read", "intake", "treat", "maint"}
+    _expected_issue_steps = ["infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"]
+    _expected_groups = {"read", "intake", "treat"}
     _orphan = sorted(set(_new_pages) - set(_parent_labels))
     _routes = [f"{e['key']}:{v}" for e in _entries for v in _views(e)]
-    check("(n3) NAV_TREE 树完整性：6 个父项、单篇 2 视图、整期 6 步、引用库 4 组 10 视图、"
-          "route 唯一、且 `IA_MAP.new_page` 都能落到某个父项（导航改结构必须同步这张表）",
+    check("(n3) NAV_TREE 树完整性：6 个父项、单篇 2 视图、整期叶子（6 步走 ISSUE_ROUTE_STEPS）、"
+          "引用库 3 组 9 叶 + 设置仅路由、route 唯一、且 `IA_MAP.new_page` 都能落到某个父项"
+          "（导航改结构必须同步这张表；批 115 D1-115-26/31 改结构时同步改本断言）",
           _parent_keys == ["home", "single", "issue", "bib", "settings", "help"]
           and set(_single) == _expected_single
-          and set(_issue) == _expected_issue
+          and not _issue_entry.get("views") and not _issue_entry.get("groups")
+          and _issue_steps == _expected_issue_steps
           and {g["key"] for g in _bib_groups} == _expected_groups
-          and len(_bib_views) == 10 and len(set(_bib_views)) == 10
+          and len(_bib_views) == 9 and len(set(_bib_views)) == 9
+          and _bib_route_views == ["settings"]
+          and _by_key.get("bib", {}).get("default") == "overview"
+          and _issue_entry.get("default") == "infocheck"
           and len(_routes) == len(set(_routes))
           and not _orphan,
-          f"parents={_parent_keys}｜single={sorted(_single)}｜issue={sorted(_issue)}｜"
-          f"bib_groups={[g['key'] for g in _bib_groups]}｜bib_views={len(_bib_views)}｜"
+          f"parents={_parent_keys}｜single={sorted(_single)}｜"
+          f"issue_leaf={not _issue_entry.get('views') and not _issue_entry.get('groups')}｜"
+          f"issue_steps={_issue_steps}｜bib_groups={[g['key'] for g in _bib_groups]}｜"
+          f"bib_views={len(_bib_views)}｜bib_route_views={_bib_route_views}｜"
           f"routes={len(_routes)}｜orphan={_orphan}")
 
 # ─────────────────────────────────────────────────────────────────────────

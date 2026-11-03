@@ -6,15 +6,18 @@
 - 字号：标题 22 / 正文 13 / 元信息 11 / 分区标签 11.5 / 表头 11；控件统一 28 高、6 圆角；
 - 颜色是「中性底 + 主色 + 语义色」两套（浅 / 深），全部 ≥ WCAG AA；
 - 主按钮有 C（石板蓝）/ D（石墨）两套，由设置页选择，运行时只换 token、不重建窗口；
-- 用户缩放 0.8–2.0 与 DPI 仿真共用 `Tokens.k` 一个乘数，所有像素都过 `px()/sp()/font()`，
-  **禁止**在组件里写裸数字——这是 4 档 DPI 不裁切的唯一保证。
+- 批 115 P0-1（用户批准方案 A）：`Tokens.k` **只等于用户 zoom**，DPI 交给
+  Flutter/OS 处理；设计基准 1240×860 逻辑 px 即 1.0×。所有像素都过
+  `px()/sp()/font()`，**禁止**在组件里写裸数字——这是缩放不裁切的唯一保证。
 """
 from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, fields
 
-BASE_DPI = 144.0          # 本机系统 DPI（150%）
+#: 历史 DPI 基准（旧 `k = zoom × dpi / 144`）。批 115 P0-1 起渲染不再使用，
+#: 只作为旧 zoom 一次性迁移的换算分母（见 main._migrate_zoom_value）。
+BASE_DPI = 144.0
 BASE_W, BASE_H = 1240, 860  # 设计基准逻辑窗口尺寸（P0 实测定稿）
 ZOOM_MIN, ZOOM_MAX = 0.8, 2.0
 
@@ -22,6 +25,14 @@ ZOOM_MIN, ZOOM_MAX = 0.8, 2.0
 SIDEBAR_W = 220           # 侧栏设计宽
 TOOLBAR_H = 52            # 统一工具栏
 CONTROL_H = 28            # 输入框 / 下拉 / 按钮统一高度
+
+#: 侧栏「常显滚动条」的设计高度阈值（批 115 P1-12）。
+#: 1160×780 / 1000×700 下导航内容高于可视区，AUTO 只在滚动瞬间显示滚动条，
+#: 评审看到的是「被裁且无提示」；设计高低于该值时导航列改用 ALWAYS。
+SIDEBAR_SCROLL_H = 820
+
+#: 内容面板右缘 gutter（设计像素，批 115 P2-11）：让面板 10px 圆角完整露出。
+CONTENT_GUTTER = 10
 
 #: 各场景行高（设计像素）。
 ROW_H: dict[str, int] = {
@@ -167,7 +178,9 @@ LIGHT = Palette(
     border_strong="#C7C7CC",
     text="#1D1D1F",
     text_muted="#6E6E73",
-    text_faint="#8E8E93",
+    # 批 115 P1-11：11px 说明文字在 #FFFFFF 上需 ≥4.5（#8E8E93 仅 3.26）；
+    # #6E6E73 = 5.07 on white / 4.54 on #F2F2F7。与 text_muted 同值，重染同色。
+    text_faint="#6E6E73",
     accent="#3D5A80",
     accent_hover="#344D6E",
     on_accent="#FFFFFF",
@@ -181,7 +194,7 @@ LIGHT = Palette(
     error_soft="#F7E7E4",
     log_bg="#FFFFFF",
     log_text="#1D1D1F",
-    log_muted="#8E8E93",
+    log_muted="#6E6E73",
     nav_sel="#E5E5EA",
     link="#35597F",
     sel_tint="#E8EEF4",
@@ -200,8 +213,10 @@ DARK = Palette(
     border="#3A3A3C",
     border_strong="#545458",
     text="#F5F5F7",
-    text_muted="#A1A1A6",
-    text_faint="#8E8E93",
+    text_muted="#A8A8AD",
+    # 批 115 P1-11：暗色实测 #8E8E93 在 #2C2C2E 上仅 4.27；#A8A8AD 在
+    # surface/surface_2/sidebar/bg 上均 ≥4.5（#3A3A3C 上 4.53）。
+    text_faint="#A8A8AD",
     accent="#98C1D9",
     accent_hover="#ADD2E7",
     on_accent="#16232D",
@@ -215,7 +230,7 @@ DARK = Palette(
     error_soft="#33201F",
     log_bg="#1C1C1E",
     log_text="#F5F5F7",
-    log_muted="#8E8E93",
+    log_muted="#A8A8AD",
     nav_sel="#3A3A3C",
     link="#9CC3DC",
     sel_tint="#26343F",
@@ -311,17 +326,22 @@ BUTTON_PALETTES: dict[str, dict[str, ButtonColors]] = {
 
 
 class Tokens:
-    """一个主题 + 一个缩放乘数 = 一次构建皮肤；缩放变化必须整体重建（见 main.py）。"""
+    """一个主题 + 一个用户缩放乘数 = 一次构建皮肤；缩放变化必须整体重建（见 main.py）。
+
+    批 115 P0-1（方案 A）：DPI 由 Flutter/OS 负责（Flet 的窗口坐标本来就是逻辑 px），
+    因此 `k = zoom`；`dpi` 参数/属性只保留作诊断与截图元数据，**不再参与任何像素计算**。
+    旧壳的 `dpi_k = dpi / 144` 会把 mac 误报的 96 变成 0.667（设计按 67% 渲染），已删除。
+    """
 
     def __init__(self, theme: str = "light", zoom: float = 1.0,
                  dpi: int = int(BASE_DPI), button: str = "c") -> None:
         self.theme = "dark" if theme == "dark" else "light"
         self.palette = DARK if self.theme == "dark" else LIGHT
         self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(zoom)))
+        #: 诊断值（PNG 元数据 / 设置页「窗口 / DPI」行）；不参与 k。
         self.dpi = int(dpi)
-        self.dpi_k = self.dpi / BASE_DPI
-        #: 唯一乘数：DPI 仿真 × 用户缩放。所有像素 = 设计值 × k。
-        self.k = self.dpi_k * self.zoom
+        #: 唯一乘数：用户缩放。设计基准 1240×860 逻辑 px = 1.0×。
+        self.k = self.zoom
         self.button = button if button in BUTTON_PALETTES else "c"
 
     # -- 像素 ------------------------------------------------------------

@@ -92,7 +92,9 @@ _SUMMARY_PREFIX = re.compile(r"^(?:\[(\d+)/(\d+)\]|（\d+/\d+）|▶|[①-⑳])"
 
 _RESULT_1 = {
     "checkbib.py": "❗ 体检发现问题（退出码 1；不是程序出错）",
-    "proofcheck.py": "❗ 有命中项（退出码 1；不是程序出错）",
+    # 批 116 SINGLE-FN：proofcheck 的 1 不是崩溃，是「有命中项待人工核对」；
+    # 文案明确指向报告，避免用户把黄条当失败。
+    "proofcheck.py": "❗ 有需要核对的条目（命中的规则见报告；退出码 1，不是程序出错）",
     "compileall.py": "⚠ 有文章编译失败（退出码 1）",
     "toc.py": "⚠ 已完成，但有需要人工核对的内容（退出码 1）",
     "dirpush.py": "❌ 引擎内部出错（退出码 1）",
@@ -421,6 +423,7 @@ def convert_call(
     sty: str = "",
     skeleton: str = "",
     force: bool = False,
+    dry_run: bool = False,
     extra: str = "",
 ) -> EngineCall:
     args = ["--source", source, "--out", out]
@@ -449,6 +452,9 @@ def convert_call(
     _append_opt(args, "--sty", sty)
     _append_opt(args, "--skeleton", skeleton)
     _append_flag(args, "--force", force)
+    # 批 116 SINGLE-FN（F1 P0-1）：引擎 `convert_stage.py:1291` 的 `--dry-run`
+    # 在生成前返回（不建产物目录、不写任何文件）；壳只在初排页显式勾选时传。
+    _append_flag(args, "--dry-run", dry_run)
     if extra:
         args.extend(extra.split())
     return _call("convert.py", args, "初排转换")
@@ -594,7 +600,9 @@ def toc_call(*, report: str, template: str = "", text_only: bool = False,
         args.append("--preview")
     elif not text_only:
         args.extend(["--place", "--compile"])
-        _append_opt(args, "--result-json", result_json)
+    # 批 115 / D1-115-29：`--result-json` 无条件带（仅生成 tex 时也要写结构化结果，
+    # 详情页靠它显示篇目/栏目计数）；旧口径只在落位编译分支加，text_only 永远没有结果。
+    _append_opt(args, "--result-json", result_json)
     return _call("toc.py", args, "生成目录")
 
 
@@ -616,6 +624,44 @@ def merge_call(
     _append_flag(args, "--back-cover", back_cover)
     _append_flag(args, "--detect", detect)
     return _call("mergepdf.py", args, "合并文件")
+
+
+def dirpush_default_out_root() -> str:
+    """输出根的可见默认值（批 115）：空输入时界面显示这个路径，引擎仍按自己的默认走。"""
+    return os.path.expanduser("~/Documents/sysu/编辑部/目录摘要推送")
+
+
+def trash_info(trash_dir: str) -> dict:
+    """只读解析回收目录的 `manifest.json`（schema=2，批 115）。
+
+    返回 `{ok, error, count, entries, mode, createdAt}`；文件缺失/坏 JSON/schema 不认
+    都返回 `ok=False` 与可读的 error，**不抛异常、不写文件**（详情页降级显示）。
+    """
+    import json
+
+    path = Path(str(trash_dir or "")) / "manifest.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {"ok": False, "error": "读不回 manifest.json", "count": 0,
+                "entries": [], "mode": "", "createdAt": ""}
+    except ValueError as exc:
+        return {"ok": False, "error": f"manifest.json 不是合法 JSON：{exc}", "count": 0,
+                "entries": [], "mode": "", "createdAt": ""}
+    if not isinstance(data, dict) or int(data.get("schema") or 0) != 2:
+        return {"ok": False, "error": "manifest.json 版本不认识（需要 schema=2）",
+                "count": 0, "entries": [], "mode": "", "createdAt": ""}
+    entries = data.get("entries") or []
+    if not isinstance(entries, list):
+        entries = []
+    return {
+        "ok": True,
+        "error": "",
+        "count": len(entries),
+        "entries": entries,
+        "mode": str(data.get("mode") or ""),
+        "createdAt": str(data.get("createdAt") or ""),
+    }
 
 
 def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
@@ -799,6 +845,25 @@ def bibdb_query_advanced_call(
 
 
 # ── 写库调用（B-246c P6：入藏 / 待裁决；默认 dry-run，写前带 sha 闸）──────
+# 旧壳入藏预览只渲染前 20 行变化（`app/ui/bib_write.py:548`）；引擎返回全量
+# `changes`，没有 CLI 截断参数。页面按这个常量截断并展示说明，避免「明明还有变化
+# 却看不到」的错觉。
+BIB_IMPORT_PREVIEW_LIMIT = 20
+
+
+def import_preview_note(total: int, *, limit: int = BIB_IMPORT_PREVIEW_LIMIT) -> str:
+    """返回入藏预览截断说明；``total <= limit`` 时返回空串（无需提示）。
+
+    引擎的 import 预览 JSON 不分页，``changes`` 是全量；旧壳 UI 只画前 20 条。
+    页面可以用本函数生成一致的「其余 N 条未展开」文案，而不是各自硬编码。
+    """
+    count = max(0, int(total or 0))
+    cap = max(0, int(limit or 0))
+    if count <= cap:
+        return ""
+    return f"… 其余 {count - cap} 条变化未展开（仅预览前 {cap} 条，引擎返回 {count} 条）"
+
+
 def bibdb_import_call(
     *,
     bib: str = "",
@@ -858,14 +923,20 @@ def bibdb_resolve_call(
     fields: str = "",
     all_fields: bool = False,
     incoming_sha256: str = "",
+    allow_overlap: bool = False,
     bib: str = "",
     adopt_all_pending: bool = False,
     note: str = "",
     expect_db_sha256: str = "",
+    backup: str = "",
     dry_run: bool = False,
     db: str = "",
 ) -> EngineCall:
-    """记录冲突裁决：resolve --json（默认写库；dry_run=True 只预览）。"""
+    """记录冲突裁决：resolve --json（默认写库；dry_run=True 只预览）。
+
+    review 页逐条裁决请用 :func:`bibdb_conflicts_resolve_call`：它会强制 keep/defer/
+    adopt 带 ``incoming_sha256``，避免 ``--fields`` 一次命中同记录的多条待裁决冲突。
+    """
     args = ["resolve", "--json"]
     if adopt_all_pending:
         args.append("--adopt-all-pending")
@@ -875,9 +946,55 @@ def bibdb_resolve_call(
     _append_opt(args, "--fields", fields)
     _append_flag(args, "--all-fields", all_fields)
     _append_opt(args, "--incoming-sha256", incoming_sha256)
+    _append_flag(args, "--allow-overlap", allow_overlap)
     _append_opt(args, "--bib", bib)
     _append_opt(args, "--note", note)
     _append_flag(args, "--dry-run", dry_run)
+    _append_opt(args, "--backup", backup)
+    _append_opt(args, "--expect-db-sha256", expect_db_sha256)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "裁决预览" if dry_run else "记录裁决")
+
+
+def bibdb_conflicts_resolve_call(
+    *,
+    key: str,
+    action: str,
+    incoming_sha256: str,
+    note: str = "",
+    dry_run: bool = False,
+    expect_db_sha256: str = "",
+    backup: str = "",
+    db: str = "",
+) -> EngineCall:
+    """待处理页逐条裁决：resolve --json，keep/defer/adopt 必须带冲突指纹。
+
+    为什么强制指纹：引擎的 keep/defer/adopt 都接受 ``--incoming-sha256``；不传时只能
+    用 ``--fields`` 选，同一条记录里字段不重叠的多条待裁决冲突会被一次全部标掉（P0）。
+    本函数把「一次只裁决一条冲突」固化在桥层：``incoming_sha256`` 为空直接 ValueError，
+    不生成可能误写的命令。
+
+    ``action`` 只认 keep/defer/adopt（replace 需人工 BibTeX，走 :func:`bibdb_resolve_call`）。
+    ``backup`` 是引擎 ``--backup DIR``：真的写库时先在目录里生成整库备份；``dry_run=True``
+    时只算不写。``expect_db_sha256`` 是写前库字节 sha256 闸（完整 64 位）。
+    """
+    action = str(action or "").strip().lower()
+    if action not in ("keep", "defer", "adopt"):
+        raise ValueError(f"review 裁决只认 keep/defer/adopt，收到：{action!r}")
+    key = str(key or "").strip()
+    if not key:
+        raise ValueError(f"review 裁决 action={action} 必须给 key")
+    sha = str(incoming_sha256 or "").strip()
+    if not sha:
+        raise ValueError(
+            f"review 裁决 action={action} 必须给 incoming_sha256（冲突指纹），"
+            "否则同记录的其它待裁决冲突会被一起标掉"
+        )
+    args = ["resolve", "--json", "--key", key, "--action", action]
+    _append_opt(args, "--incoming-sha256", sha)
+    _append_opt(args, "--note", note)
+    _append_flag(args, "--dry-run", dry_run)
+    _append_opt(args, "--backup", backup)
     _append_opt(args, "--expect-db-sha256", expect_db_sha256)
     _append_opt(args, "--db", db)
     return _call("bibdb.py", args, "裁决预览" if dry_run else "记录裁决")
@@ -980,6 +1097,45 @@ def bibdb_report_duplicates_call(*, out: str = "", db: str = "") -> EngineCall:
     return _call("bibdb.py", args, "查重报告")
 
 
+def bibdb_report_call(*, db: str = "", out: str = "") -> EngineCall:
+    """通用引用库报告（读库 + 写报告文件）：report --json [--out DIR] [--db PATH]。
+
+    与 :func:`bibdb_report_duplicates_call`（只出查重报告）不同：``report`` 一次生成
+    CONFLICTS.md / DUPLICATES.md / duplicates.csv；只写报告文件，不改库本体。``out``
+    缺省是库目录，健康/查重页应显式给临时目录，避免把报告写进笔记仓。
+    """
+    args = ["report", "--json"]
+    _append_opt(args, "--out", out)
+    _append_opt(args, "--db", db)
+    return _call("bibdb.py", args, "引用库报告")
+
+
+def open_path(path: str) -> tuple[bool, str]:
+    """用系统默认程序打开文件/目录；失败不抛，返回 ``(ok, error)``。
+
+    health/dupes 页需要「打开报告文件/所在目录」能力，但不该为了一个失败弹窗把
+    页面搞崩：路径为空或不存在返回 ``(False, 原因)``，系统调用失败也只回原因。
+    子进程不等待（Popen），不阻塞 Flet UI；错误文本可直接展示，路径仍可让用户复制。
+    """
+    target = str(path or "").strip()
+    if not target:
+        return False, "没有可打开的路径"
+    if not Path(target).exists():
+        return False, f"路径不存在：{target}"
+    try:
+        if os.name == "nt":
+            os.startfile(target)  # type: ignore[attr-defined]  # Windows-only
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:  # noqa: BLE001
+        return False, f"打开失败：{exc}"
+    return True, ""
+
+
 def bibdb_ack_duplicates_call(
     *,
     code: str = "near_duplicates",
@@ -1057,18 +1213,27 @@ def read_json_command(
             timeout=timeout,
             creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
-        out = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-        payload = parse_json_document(out)
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        # 引擎的机器可读 JSON 只在 stdout；stderr 是警告/进度/错误。先单独解析 stdout，
+        # 避免警告文本里恰好出现的 `{...}` 抢走真正的 payload；个别入口把 JSON 打到
+        # stderr，解析不到时再回退合并流（旧行为）。`stderr` 独立成键供页面分节展示，
+        # `lines` 仍是合并流（日志面板保持原样）。
+        payload = parse_json_document(stdout)
+        if payload is None and stderr:
+            payload = parse_json_document(stderr)
+        out = stdout + ("\n" + stderr if stderr else "")
         result.update(
             {
                 "ok": proc.returncode == 0 and payload is not None,
                 "code": proc.returncode,
                 "json": payload,
+                "stderr": stderr.strip(),
                 "lines": [ln for ln in out.splitlines() if ln.strip()][-80:],
             }
         )
         if payload is None and proc.returncode != 0:
-            result["error"] = (proc.stderr or proc.stdout or "").strip()[-500:] or f"退出码 {proc.returncode}"
+            result["error"] = (stderr or stdout).strip()[-500:] or f"退出码 {proc.returncode}"
     except (OSError, subprocess.SubprocessError) as exc:  # noqa: BLE001
         result["error"] = f"{type(exc).__name__}: {exc}"
     return result

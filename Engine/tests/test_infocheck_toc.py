@@ -922,12 +922,14 @@ r_json = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _js
                          "--place", "--result-json", _json_out],
                         capture_output=True, text=True, encoding="utf-8", errors="replace",
                         env=os.environ, cwd=ENGINE)
-_schema_keys = {"templateSource", "templateNote", "tocDir", "placed", "compiled",
+_schema_keys = {"articles", "templateSource", "templateNote", "tocDir", "placed", "compiled",
                 "pages", "column", "manualEdits", "warnings"}
 _payload = json.load(open(_json_out, encoding="utf-8")) if os.path.isfile(_json_out) else {}
-check("(j18) `--place --result-json`：rc=0、JSON 写出、schema 字段固定",
+check("(j18) `--place --result-json`：rc=0、JSON 写出、schema 字段固定"
+      "（批 115 起 additive 增 articles:{total,inToc}）",
       r_json.returncode == 0 and os.path.isfile(_json_out)
       and set(_payload) == _schema_keys
+      and set(_payload.get("articles") or {}) == {"total", "inToc"}
       and set(_payload["placed"]) == {"zhTex", "zhPdf", "enTex", "enPdf"}
       and set(_payload["pages"]) == {"zh", "en"}
       and set(_payload["column"]) == {"enabled", "title"}

@@ -86,8 +86,9 @@ class FakeApp:
 
 # ── A. IA 树与 route ────────────────────────────────────────────────────────
 def test_nav_tree_has_three_sections_and_six_parents() -> None:
+    # 批 115 D1-115-31（IA-B）：引用库升为顶层 section，原「资料」不再作为导航分组。
     groups = [section["group"] for section in IA.NAV_TREE]
-    assert groups == ["工作区", "资料", "系统"]
+    assert groups == ["工作区", "引用库", "系统"]
     parents = [(entry["key"], entry["label"])
                for section in IA.NAV_TREE for entry in section["entries"]]
     assert parents == [("home", "工作台"), ("single", "单篇稿件"), ("issue", "整期装配"),
@@ -96,21 +97,36 @@ def test_nav_tree_has_three_sections_and_six_parents() -> None:
 
 def test_nav_tree_views_and_bib_groups_are_three_level() -> None:
     assert [view["key"] for view in IA.nav_views("single")] == ["convert", "proofcheck"]
-    assert [view["key"] for view in IA.nav_views("issue")] == [
+    # 批 115 D1-115-26：整期装配侧栏叶子化，6 步只在页内步骤栏（不再是子项）。
+    assert IA.nav_views("issue") == []
+    assert IA.issue_step_keys() == [
         "infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"]
+    # 批 115 D1-115-31/32：3 个不可点击组标签、9 叶常驻；健康并入治理，
+    # 设置降为仅路由（页头齿轮/⌘K），不再占第 4 组。
     bib_groups = IA.group_views("bib")
-    assert [group["key"] for group in bib_groups] == ["read", "intake", "treat", "maint"]
+    assert [group["key"] for group in bib_groups] == ["read", "intake", "treat"]
+    assert [group["label"] for group in bib_groups] == ["查阅", "采录", "治理"]
+    assert [view["key"] for view in bib_groups[1]["views"]] == ["import", "normalize"]
+    assert [view["label"] for view in bib_groups[1]["views"]] == ["入藏", "回读校验"]
     assert [view["key"] for view in bib_groups[2]["views"]] == [
-        "review", "edit", "dupes", "fieldfix"]
-    assert len(IA.nav_views("bib")) == 10
+        "review", "edit", "dupes", "fieldfix", "health"]
+    views = IA.nav_views("bib")
+    assert len(views) == 10
+    assert [view["key"] for view in views][-1] == "settings"
+    assert [view["label"] for view in views][:2] == ["概览", "查库"]
+    assert "回读校验" in {view["label"] for view in views}
+    assert "规范化" not in {view["label"] for view in views}
     assert IA.group_of_view("bib", "edit") == "treat"
+    assert IA.group_of_view("bib", "health") == "treat"
+    assert IA.group_of_view("bib", "settings") == ""   # 仅路由：侧栏不列，无组
 
 
 def test_all_routes_cover_parent_defaults_and_children() -> None:
     routes = IA.all_routes()
     assert len(routes) == 22
     assert set(routes) >= {"home", "settings", "help", "single:convert", "single:proofcheck",
-                           "issue:overview", "issue:toc", "bib:overview", "bib:edit"}
+                           "issue:overview", "issue:toc", "bib:overview", "bib:edit",
+                           "bib:settings"}   # 设置仅从侧栏移除，深链路由不减少
     assert len(set(routes)) == len(routes)
 
 
@@ -118,7 +134,9 @@ def test_all_routes_cover_parent_defaults_and_children() -> None:
     ("single:proofcheck", ("single", "proofcheck")),
     ("issue:toc", ("issue", "toc")),
     ("bib:edit", ("bib", "edit")),
-    ("issue", ("issue", "overview")),
+    # 批 115 D1-115-26：裸 issue 与旧 issue:overview 静态回落到默认步。
+    ("issue", ("issue", "infocheck")),
+    ("issue:overview", ("issue", "infocheck")),
     ("single", ("single", "convert")),
     ("bib:nope", ("bib", "overview")),
     ("nope", ("home", "")),
@@ -134,13 +152,20 @@ def test_route_labels_give_breadcrumb_and_child_title() -> None:
     assert labels["crumb"] == "引用库 / 治理 / 编辑"
     assert labels["title"] == "编辑"
     assert labels["group"] == "treat"
+    # 批 115 D1-115-31/32：normalize 全 UI 改名「回读校验」；设置无组但可深链。
+    normalize = IA.route_labels("bib:normalize")
+    assert normalize["view_label"] == "回读校验"
+    assert normalize["crumb"] == "引用库 / 采录 / 回读校验"
+    settings = IA.route_labels("bib:settings")
+    assert settings["crumb"] == "引用库 / 设置" and settings["group"] == ""
     single = IA.route_labels("single:proofcheck")
     assert single["crumb"] == "单篇稿件 / 一校核查"
     assert single["title"] == "一校核查"
-    # 整期父页是总览（不是子项条目）→ 只显示父页名，不出现空标题。
-    overview = IA.route_labels("issue")
-    assert overview["view"] == "overview"
-    assert overview["title"] == "整期装配"
+    # 批 115 D1-115-26：整期没有总览屏，静态默认步也要带步骤名（不再只显示父页名）。
+    issue = IA.route_labels("issue")
+    assert issue["view"] == "infocheck"
+    assert issue["title"] == "检查tex信息"
+    assert issue["crumb"] == "整期装配 / 检查tex信息"
 
 
 # ── B. 导航组件行高 / 缩进 ─────────────────────────────────────────────────
@@ -178,10 +203,14 @@ def test_nav_child_and_group_rows_are_28_high_with_indent() -> None:
 
 def test_sidebar_is_accordion_with_internal_scroll() -> None:
     source = inspect.getsource(M.App._sidebar_content)
+    bib_source = inspect.getsource(M.App._bib_nav_rows)
     assert "C.nav_parent(" in source
-    assert "C.nav_child(" in source
-    assert "C.nav_group(" in source
-    assert "ft.ScrollMode.AUTO" in source      # 导航超高内部滚动
+    assert "C.nav_child(" in bib_source
+    # 批 115 D1-115-31/32：引用库组标签是不可点击文本行，不再渲染 nav_group。
+    assert "C.nav_group(" not in source + bib_source
+    assert "_bib_section_header(" in source
+    assert "indent=48" in bib_source
+    assert "ft.ScrollMode.AUTO" in source      # 导航超高内部滚动（1000×700 可滚）
     assert "C.nav_item(" in source             # <720 的 56 图标条兜底仍在
     assert "compact=True" in source
 
@@ -325,11 +354,12 @@ def test_single_page_activate_switches_flow_without_chips() -> None:
     assert page.flow_key == "proofcheck"
     assert app.store.get("single_flow") == "proofcheck"
     assert page._flow_box.controls[0].value == "proofcheck"
-    # build 里不再有 chip 行，页头是面包屑 + 子项标题。
+    # 批 115 P1-2：2 级页面（页面→子页）去 crumb，h1 为唯一锚点。
     build_src = inspect.getsource(P.SinglePage.build)
     assert "C.chip(" not in build_src
     assert "_sync_header()" in build_src
-    assert "_crumb" in build_src and "_child_title" in build_src
+    assert "_child_title" in build_src and "_flow_desc" in build_src
+    assert "_crumb" not in build_src
 
 
 def test_issue_page_has_overview_and_step_subpages() -> None:
@@ -397,25 +427,43 @@ def test_bib_page_activate_keeps_group_memory() -> None:
 def test_search_index_lists_parents_and_children_with_routes() -> None:
     entries = SI.build_index(nav_tree=IA.NAV_TREE)
     pages = [entry for entry in entries if entry.kind == "page"]
-    assert len(pages) == 6 + 2 + 6 + 10  # 父项 6 + 单篇 2 + 整期 6 + 引用库 10
+    # 批 115 D1-115-31/32：父项 6 + 单篇 2 + 整期 0 + 引用库 10
+    # （9 叶 + 设置仅路由；设置仍可经 ⌘K/搜索直达，只是不在侧栏）。
+    assert len(pages) == 6 + 2 + 0 + 10
     actions = {entry.action for entry in pages}
     assert "goto:single" in actions
     assert "goto:single:proofcheck" in actions
-    assert "goto:issue:toc" in actions
+    assert "goto:issue" in actions
+    assert "goto:issue:toc" not in actions  # 步骤不再是页面子项
+    assert "goto:issue:overview" not in actions  # 也没有「流水线总览」第二入口
     assert "goto:bib:edit" in actions
+    assert "goto:bib:settings" in actions
+    bib_labels = {entry.label for entry in pages if entry.action.startswith("goto:bib:")}
+    assert "引用库 · 回读校验" in bib_labels
+    assert "引用库 · 概览" in bib_labels
+    assert "引用库 · 设置" in bib_labels
+    assert not any("规范化" in label for label in bib_labels)
     assert all(entry.action.startswith("goto:") for entry in pages)
 
 
 def test_search_commands_route_through_goto() -> None:
+    bib_views = [(view["key"], view["label"]) for view in IA.route_views("bib")]
     entries = SI.build_index(nav_tree=IA.NAV_TREE,
-                             bib_views=P.BibPage.VIEWS,
+                             bib_views=bib_views,
                              issue_steps=[(step["key"], step["title"])
                                           for step in P.IssuePage.STEPS])
     commands = [entry for entry in entries if entry.kind == "command"]
     bib_actions = [entry.action for entry in commands if "bib" in entry.action]
     issue_actions = [entry.action for entry in commands if "issue" in entry.action]
     assert "goto:bib:overview" in bib_actions
+    assert "goto:bib:settings" in bib_actions
     assert "goto:issue:infocheck" in issue_actions
+    # 批 115 D1-115-26：6 步仍可从搜索/命令面板直达（只是不再占侧栏子项）。
+    assert "goto:issue:toc" in issue_actions
+    # 批 115 D1-115-31/32：命令面板同样用 IA 新标签（回读校验），不再读 pages 旧名。
+    bib_labels = [entry.label for entry in commands if entry.action.startswith("goto:bib:")]
+    assert "引用库 · 回读校验" in bib_labels
+    assert not any("规范化" in label for label in bib_labels)
     # 10 个真命令（主题/缩放/引擎/运行…）保持 id 直呼，不改成 goto。
     assert any(entry.action == "theme.toggle" for entry in commands)
 

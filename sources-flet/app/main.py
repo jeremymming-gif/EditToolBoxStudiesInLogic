@@ -9,6 +9,7 @@ P2 自动化钩子（证据脚本用，生产环境不设即无副作用）：
   P2_BIB_VIEW(view) / P2_SINGLE_FLOW(convert|proofcheck) / P2_AUTORUN_LEGACY=1
   P2_DEMO_SINGLE_SOURCE / P2_DEMO_SINGLE_OUT / P2_DEMO_BIB / P2_DEMO_PROOF_TEX
   P2_DEMO_ISSUE / P2_DEMO_TOC / P2_SELFTEST(theme|zoom)
+  注：批 115 P0-1 起 P2_DPI 只作诊断/截图元数据，不参与缩放（DPI 交给 Flutter/OS）。
 P3 扩展（同样只在设置时生效；P3_* 会自动归一为 P2_* 复用既有钩子）：
   P3_MARKER / P3_SETTINGS / P3_THEME / P3_PAGE / P3_DPI / P3_ZOOM / P3_WINSIZE / P3_AUTORUN …
   P3_TRAY=1           启动托盘（显示/隐藏/退出）
@@ -44,9 +45,9 @@ from ui import pages as P
 from ui import search_index as SI
 from ui import settings_shell as SHELL
 from ui import ia_map as IA
-from ui.tokens import (BASE_DPI, BASE_H, BASE_W, BREAK, DARK, FONT_FAMILY, LIGHT,
-                       SIDEBAR_W, TONE_TAG, TOOLBAR_H, ZOOM_MAX, ZOOM_MIN, Tokens,
-                       palette_remap)
+from ui.tokens import (BASE_DPI, BASE_H, BASE_W, BREAK, CONTENT_GUTTER, DARK,
+                       FONT_FAMILY, LIGHT, SIDEBAR_SCROLL_H, SIDEBAR_W, TONE_TAG,
+                       TOOLBAR_H, ZOOM_MAX, ZOOM_MIN, Tokens, palette_remap)
 
 APP_TITLE = "编辑部工具箱"
 # 兜底值；正常显示走 services.version_info（引擎 __version__ 单一来源）。
@@ -163,6 +164,79 @@ def _parse_size(raw: str) -> tuple[int, int] | None:
         return None
 
 
+def _migrate_zoom_value(old_zoom: float, system_dpi: int) -> float:
+    """旧配置 zoom → 新语义 zoom 的**等效换算**（批 115 P0-1 方案 A）。
+
+    旧壳的 k = zoom × (dpi / 144)：mac 上 `_system_dpi()` 拿不到 Windows API 会返回
+    96，于是 zoom=1.6 实际只渲染 1.6×0.667≈1.067。新语义 k = zoom，所以迁移要让
+    **观感不变**：new_zoom = old_zoom × system_dpi / 144（Windows 真 144 DPI 时
+    new == old，无需变化）。这里只 round(3) 并挡掉超过 ZOOM_MAX 的值；**下限不在
+    此夹**——0.9@120 DPI 的等效值是 0.75（低于 ZOOM_MIN=0.8），换算必须如实返回
+    0.75，落到设置文件前再由 `migrate_zoom_settings` 夹到支持区间。
+    """
+    try:
+        dpi = float(system_dpi or 96)
+    except (TypeError, ValueError):
+        dpi = 96.0
+    try:
+        value = float(old_zoom) * dpi / BASE_DPI
+    except (TypeError, ValueError):
+        value = 1.0
+    return round(min(ZOOM_MAX, value), 3)
+
+
+def migrate_zoom_settings(store, system_dpi: int, exists: bool) -> dict:
+    """把旧 zoom 一次性迁移进 `store`（版本号守卫），返回迁移记录（无迁移 = {}）。
+
+    - 已有 `ui_scale_version >= 2`：不再迁移（幂等，重启不会二次缩小）。
+    - 配置文件不存在（首装）：没有旧 zoom，只置版本号，随首次 save 落盘。
+    - 存在旧配置：换算后的 zoom 与版本号一起落盘。即使本次用 P2_ZOOM 覆盖了
+      会话 zoom，也要迁移**磁盘值**——否则版本号变成 2 而 zoom 还是旧值，
+      下次正常启动就会直接按旧值放大（漏迁移）。
+    """
+    try:
+        version = int(store.get("ui_scale_version", 1) or 1)
+    except (TypeError, ValueError):
+        version = 1
+    if version >= 2:
+        return {}
+    if not exists:
+        store.set("ui_scale_version", 2)
+        return {"first_install": True}
+    try:
+        old_zoom = float(store.get("zoom", 1.0) or 1.0)
+    except (TypeError, ValueError):
+        old_zoom = 1.0
+    # 等效观感换算后再夹到支持区间（0.9@120=0.75 → 0.8；2.5@192=3.333 → 2.0）。
+    new_zoom = max(ZOOM_MIN, min(ZOOM_MAX, _migrate_zoom_value(old_zoom, system_dpi)))
+    store.set("zoom", new_zoom)
+    store.set("ui_scale_version", 2)
+    record = {"old": round(old_zoom, 3), "new": new_zoom,
+              "system_dpi": int(system_dpi or 96)}
+    try:
+        store.save()
+    except OSError as exc:  # 迁移失败不得拦启动；下次启动仍会重试（版本号未落盘）
+        record["save_error"] = f"{type(exc).__name__}: {exc}"
+    return record
+
+
+def max_zoom_for_work(work_w: int, work_h: int, system_dpi: int = 96) -> float:
+    """按屏幕工作区算用户缩放上限（k = zoom，窗口 = 1240×860×zoom 不越界）。
+
+    工作区先由物理 px 换算成逻辑 px（DPI/96），再与设计基准比；本机
+    `_screen_work()` 回退 1920×1080@96 → min(1.48, 1.07) ≈ 1.07×。
+    """
+    try:
+        dpi_scale = max(float(system_dpi or 96), 1.0) / 96.0
+    except (TypeError, ValueError):
+        dpi_scale = 1.0
+    work_logical_w = work_w / dpi_scale
+    work_logical_h = work_h / dpi_scale
+    by_w = (work_logical_w - 80) / BASE_W
+    by_h = (work_logical_h - 160) / BASE_H
+    return max(ZOOM_MIN, round(min(ZOOM_MAX, by_w, by_h), 2))
+
+
 #: 批 112 S2「换肤不重建」：要原地改写的颜色属性（背景 / 前景两张映射表分工）。
 _RETINT_BG_ATTRS = ("bgcolor", "fill_color", "border_color", "focused_border_color",
                     "hover_color", "icon_color", "active_color", "thumb_color",
@@ -231,6 +305,9 @@ class App:
         self.auto_confirm = os.environ.get("P2_AUTO_CONFIRM", "") == "1"
         settings, exists = self.store.load()
         self.settings_exists = exists
+        # 批 115 P0-1：旧 k 含 DPI，zoom 语义变了 → 首次升级把旧 zoom 换算成
+        # 「等效观感」一次（ui_scale_version=2 守卫）。必须在算 zoom 之前。
+        self.zoom_migration = migrate_zoom_settings(self.store, self.system_dpi, exists)
         if self.store.get("engine_override"):
             os.environ.setdefault("P2_ENGINE", str(self.store.get("engine_override")))
         self.notes_repo = str(self.store.get("paths.notes_repo", "") or "")
@@ -252,6 +329,9 @@ class App:
         # 批 114 导航（用户 m03256）：唯一路由状态 + accordion 展开状态。
         self.current_route = ""
         self.nav_open: dict = {"page": "", "group": ""}
+        # 批 115 D1-115-32：侧栏「引用库」徽标 = 待办冲突数；None/0 隐藏。
+        # BibPage owner 读引擎后调用 set_bib_badge(n)（本轮只留接口，不接引擎）。
+        self.bib_badge: int | None = None
         self.pages: dict[str, P.BasePage] = {}
         self.engine_status = EB.engine_status()
         self.last_line = ""
@@ -298,13 +378,12 @@ class App:
         return max(1000, width), max(700, height)
 
     def _compute_max_zoom(self) -> float:
-        """用户缩放上限按屏幕工作区钳制：窗口不越界（本屏约 1.6×）。"""
-        dpi_k = self.dpi / BASE_DPI
-        work_logical_w = self.work_w / (self.system_dpi / 96.0)
-        work_logical_h = self.work_h / (self.system_dpi / 96.0)
-        by_w = (work_logical_w - 80) / (BASE_W * dpi_k)
-        by_h = (work_logical_h - 160) / (BASE_H * dpi_k)
-        return max(ZOOM_MIN, round(min(ZOOM_MAX, by_w, by_h), 2))
+        """用户缩放上限按屏幕工作区钳制：窗口不越界（本机回退工作区约 1.07×）。
+
+        批 115 P0-1：k = zoom，不再含 DPI，所以上限只取决于工作区逻辑尺寸；
+        `self.dpi`（P2_DPI 诊断值）与上限无关。
+        """
+        return max_zoom_for_work(self.work_w, self.work_h, self.system_dpi)
 
     @staticmethod
     def _flet_theme(palette, t: Tokens | None = None) -> ft.Theme:
@@ -573,6 +652,25 @@ class App:
     def _sidebar_compact(self) -> bool:
         return self._design_width() < BREAK["rail"]
 
+    def _sidebar_short(self) -> bool:
+        """设计高 < SIDEBAR_SCROLL_H → 导航列常显滚动条（批 115 P1-12）。
+
+        1160×780 / 1000×700（单篇文章展开时更甚）导航内容高于可视区；AUTO 只在
+        滚动瞬间显示滚动条，评审看到的是「系统/设置/帮助被裁且无提示」。
+        """
+        height = float(self.window_h or 0)
+        if height <= 0:
+            return False
+        return height / max(self.t.k, 1e-6) < SIDEBAR_SCROLL_H
+
+    def _content_padding(self) -> ft.Padding:
+        """内容面板右缘 gutter（批 115 P2-11）：统一 10 设计像素。
+
+        面板右上 10px 圆角此前贴着窗口右缘被裁；留出与圆角等宽的纸色边，
+        1160 / 1000 两种宽度都能看见圆角，且不改变页面内部布局。
+        """
+        return ft.Padding(left=0, top=0, right=self.t.px(CONTENT_GUTTER), bottom=0)
+
     def _page_label(self, key: str) -> str:
         for entry in IA.nav_parent_entries():
             if entry["key"] == key:
@@ -586,8 +684,12 @@ class App:
         base = getattr(page, "TOOLBAR_TITLE", "") or labels["page_label"]
         title = base
         default_view = IA.page_defaults().get(labels["page"], "")
-        if labels["view"] and labels["view"] != default_view:
-            # 二级视图页：顶栏同时给出父页与子项，避免「只有子项」找不到归属。
+        # 二级视图页顶栏同时给出父页与子项，避免「只有子项」找不到归属。
+        # 整期装配（D1-115-26）没有总览屏，默认步也必须带步骤名：整期装配 · 检查tex信息。
+        # 引用库（D1-115-31/32）同理：工具栏标题 = 引用库 · <叶名>，默认叶概览也要带。
+        if labels["view"] and (labels["view"] != default_view
+                               or labels["page"] == "issue"
+                               or labels["page"] == "bib"):
             title = f"{base} · {labels['view_label']}"
         meta = ""
         reader = getattr(page, "toolbar_meta", None)
@@ -615,6 +717,10 @@ class App:
             return
         t = self.t
         self._toolbar_title = C.text("", t, role="page-title")
+        # 批 115 P1-2（toolbar 部分）：顶栏不再显示页面标题文字——否则与页面内
+        # h1 / 面包屑叠成三层同名。对象仍保留并继续被复用/改样式（有回归测试盯
+        # 复用），只是 visible=False 不参与布局；左侧只留 meta。
+        self._toolbar_title.visible = False
         self._toolbar_meta = C.text("", t, role="meta", color=t.palette.text_muted)
         # 批 114：搜索输入不再铺灰（surface_2），改为纸色底 + 发丝描边 + 放大镜。
         self._toolbar_search = C.search_field(
@@ -754,7 +860,10 @@ class App:
         store = getattr(self, "store", None)
         data = getattr(store, "data", None)
         data = data if isinstance(data, dict) else {}
-        bib_views = list(getattr(P.BibPage, "VIEWS", []) or [])
+        # 批 115 D1-115-31/32：搜索用 IA 的 10 条路由标签（概览 / 回读校验），
+        # 不再借 pages.BibPage.VIEWS（它仍写着旧名「规范化」，且页内顺序不同）。
+        bib_views = [(str(view["key"]), str(view["label"]))
+                     for view in IA.route_views("bib")]
         issue_steps = [(step.get("key"), step.get("title"))
                        for step in (getattr(P.IssuePage, "STEPS", []) or [])]
         return SI.build_index(
@@ -1024,7 +1133,9 @@ class App:
         )
         self.stage = ft.Stack(expand=True,
                               controls=[self.content, self._search_slot, self.toast_slot])
-        body = ft.Container(expand=True, bgcolor=self.t.palette.bg, content=self.stage)
+        body = ft.Container(expand=True, bgcolor=self.t.palette.bg,
+                            padding=self._content_padding(),
+                            content=self.stage)
         shell = ft.Column(spacing=0, expand=True, controls=[
             self.toolbar,
             ft.Row(spacing=0, expand=True, controls=[self.sidebar, body]),
@@ -1042,8 +1153,11 @@ class App:
         self.status_bar.set_meta(self._status_meta())
         self.page.update()
         self.mark("shell_built", page=key, route=self.current_route,
-                  theme=self.theme, zoom=self.zoom, dpi=self.dpi,
-                  sidebar=self.t.px(SIDEBAR_W), toolbar=self.t.px(TOOLBAR_H))
+                  theme=self.theme, zoom=self.zoom, dpi=self.dpi, k=self.t.k,
+                  zoom_migration=self.zoom_migration or None,
+                  sidebar=self.t.px(SIDEBAR_W), toolbar=self.t.px(TOOLBAR_H),
+                  content_gutter=self.t.px(CONTENT_GUTTER),
+                  nav_scroll=("always" if self._sidebar_short() else "auto"))
         # 族 B：重建后页面是全新实例，必须补 on_show（幂等）：恢复磁盘视图 + 触发数据加载。
         try:
             self.pages[key].on_show()
@@ -1051,9 +1165,60 @@ class App:
             self.mark("on_show_error", page=key, error=f"{type(exc).__name__}: {exc}")
 
     # ── 批 114 导航：唯一路由入口 + accordion 侧栏（用户 m03256）────────────
+    def _issue_landing_step(self) -> str:
+        """整期装配默认步（D1-115-26）：上次步骤 → 页面判定 → 静态兜底。
+
+        只服务裸 `issue` / `issue:overview` 别名；显式 `issue:<step>` 不经过这里，
+        因此深链与 P2_ISSUE_STEP 不会被历史记忆覆盖。
+        """
+        keys = set(IA.issue_step_keys())
+        issue_page = getattr(self, "pages", {}).get("issue") \
+            if isinstance(getattr(self, "pages", {}), dict) else None
+        step = ""
+        state = self.store.get("issue_state", {})
+        if isinstance(state, dict):
+            step = str(state.get("last_step") or "")
+            if step not in keys:
+                step = ""
+                path = str(self.store.get("recent.issue_dir", "") or "")
+                getter = getattr(issue_page, "_issue_dir", None) if issue_page else None
+                if not path and callable(getter):
+                    try:
+                        path = str(getter() or "")
+                    except Exception:  # noqa: BLE001 - 页面未构建时取不到期目录不算错
+                        path = ""
+                # 工作台 schema v1（D1-115-28）：issue_state 直接以期目录为键；
+                # 兼容早期草稿的 by_path/paths 包装。
+                per_path = state
+                nested = state.get("by_path") or state.get("paths")
+                if isinstance(nested, dict):
+                    per_path = nested
+                record = per_path.get(path) if path and isinstance(per_path, dict) else None
+                if isinstance(record, dict):
+                    step = str(record.get("last_step") or "")
+        if step not in keys:
+            # 页面契约（IM-ISSUE 重写后）：同目录上次步 > 首个未完成 > 第 1 步。
+            # 新页面叫 _default_view；保留 landing_step/_landing_step 兼容早期草稿。
+            resolver = getattr(issue_page, "_default_view", None) if issue_page else None
+            if not callable(resolver):
+                resolver = getattr(issue_page, "landing_step", None) if issue_page else None
+            if not callable(resolver):
+                resolver = getattr(issue_page, "_landing_step", None) if issue_page else None
+            if callable(resolver):
+                try:
+                    step = str(resolver() or "")
+                except Exception as exc:  # noqa: BLE001 - 判定失败回落静态默认步
+                    self.mark("issue_landing_error",
+                              error=f"{type(exc).__name__}: {exc}")
+                    step = ""
+        return step if step in keys else "infocheck"
+
     def _restore_route(self) -> str:
         raw = self.current_route or str(self.store.get("last_route", "") or "")
         page, view = IA.normalize_route(raw)
+        # 旧配置里的 issue / issue:overview 都落到当前工作台的默认步（D1-115-26）。
+        if page == "issue" and IA.is_issue_landing_route(raw):
+            view = self._issue_landing_step()
         return IA.route_string(page, view)
 
     def _nav_open_for(self, route: str) -> dict:
@@ -1074,7 +1239,8 @@ class App:
             if saved in {item["key"] for item in IA.nav_views("bib")}:
                 view = saved
         elif page_key == "issue":
-            view = "overview"
+            # 批 115 D1-115-26：整期装配是单页工作台，默认入口 = 上次步骤（无记录 → 第 1 步）。
+            view = self._issue_landing_step()
         return IA.route_string(page_key, view)
 
     def _route_view(self) -> str:
@@ -1100,19 +1266,83 @@ class App:
             self.page.update()
         self.mark("nav_toggle", page=page_key, expanded=not self.nav_open["collapsed"])
 
-    def _toggle_nav_group(self, group_key: str) -> None:
-        current = dict(self.nav_open or {})
-        opened = current.get("group") == group_key
-        current["group"] = "" if opened else group_key
-        current["page"] = "bib"
-        current["collapsed"] = False
-        self.nav_open = current
-        self.store.set("nav_open", dict(self.nav_open))
+    # ── 引用库侧栏（批 115 D1-115-31/32，IA-B）─────────────────────────
+    # section 行「引用库」+ 3 个不可点击组标签（查阅/采录/治理）+ 9 个常驻叶子；
+    # 设置不在侧栏（页头齿轮/⌘K 可达），组标签不折叠、不记忆展开。
+    def _bib_badge_count(self) -> int:
+        try:
+            value = int(getattr(self, "bib_badge", None))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, value)
+
+    def set_bib_badge(self, count) -> None:
+        """侧栏「引用库」徽标：待办冲突数；0/None 隐藏（D1-115-32）。
+
+        BibPage owner 在读到 pending/冲突计数后调用；本批只留接口与测试，不调引擎。
+        """
+        try:
+            value = None if count is None else max(0, int(count))
+        except (TypeError, ValueError):
+            value = None
+        self.bib_badge = value
+        self.mark("bib_badge", count=value, visible=bool(value))
         sidebar = getattr(self, "sidebar", None)
         if sidebar is not None:
             sidebar.content = self._sidebar_content()
-            self.page.update()
-        self.mark("nav_toggle", page="bib", group=group_key, expanded=not opened)
+            try:
+                self.page.update()
+            except Exception:  # noqa: BLE001 未挂载/测试替身
+                pass
+
+    def _bib_section_header(self) -> ft.Control:
+        """顶层 section 行「引用库」：纯文本 + 右侧待办徽标（无点击区）。"""
+        t = self.t
+        controls: list = [C.text("引用库", t, "caption", t.palette.text_faint,
+                                 weight="semibold")]
+        count = self._bib_badge_count()
+        if count:
+            controls.extend([ft.Container(expand=True),
+                             C.badge(f"{count:,}", t, tone="neutral")])
+        return ft.Container(
+            padding=C._pad(t, 4, 12, 2, 0),
+            content=ft.Row(spacing=t.sp("half"),
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=controls),
+        )
+
+    def _bib_nav_rows(self, t, active_view: str) -> list:
+        """3 个不可点击组标签 + 9 个叶子（始终可见；settings 不在此列）。"""
+        rows: list = []
+        groups = IA.group_views("bib")
+        leaves: list[str] = []
+        for group in groups:
+            rows.append(ft.Container(
+                height=t.px(22),
+                padding=C._pad(t, 36, 0, 8, 0),
+                content=C.text(str(group["label"]), t, "caption",
+                               t.palette.text_faint, weight="semibold"),
+            ))
+            for view in group["views"]:
+                vkey = str(view["key"])
+                leaves.append(vkey)
+                leaf = C.nav_child(
+                    str(view["label"]), t, indent=48,
+                    active=vkey == active_view,
+                    on_click=lambda e, v=vkey: self.navigate(
+                        f"bib:{v}", source="nav"))
+                leaf.height = t.px(25)  # IA-B：紧凑行，保证 1160×780 全叶可见
+                rows.append(leaf)
+        if not getattr(self, "_bib_nav_marked", False):
+            # 一次性证据 marker：GUI 冒烟据此核对「3 组 / 9 叶 / settings 仅路由」。
+            self._bib_nav_marked = True
+            self.mark("bib_nav_section", section="引用库",
+                      groups=[str(group["key"]) for group in groups],
+                      leaves=leaves,
+                      route_only=[str(view["key"]) for view in IA.nav_views("bib")
+                                  if view.get("route_only")],
+                      badge=self._bib_badge_count())
+        return rows
 
     def _sidebar_content(self) -> ft.Control:
         t = self.t
@@ -1123,73 +1353,65 @@ class App:
                            controls=[brand.aleph_mark(t, 22)])
         if not compact:
             brand_row.controls.append(C.text("编辑部工具箱", t, role="section"))
-        items.append(ft.Container(padding=C._pad(t, 16, 14, 16, 10), content=brand_row))
+        items.append(ft.Container(padding=C._pad(t, 16, 8, 16, 4), content=brand_row))
 
         active_page = self.current_page_key or "home"
         active_view = self._route_view()
         open_state = dict(self.nav_open or {})
         open_page = str(open_state.get("page") or active_page)
-        open_group = str(open_state.get("group") or "")
         collapsed = bool(open_state.get("collapsed"))
 
         nav_items: list = []
         for section in IA.NAV_TREE:
+            bib_section = any(str(entry.get("key")) == "bib"
+                              for entry in section["entries"])
             if not compact:
-                nav_items.append(C.nav_group_label(section["group"], t))
+                nav_items.append(self._bib_section_header() if bib_section
+                                 else C.nav_group_label(section["group"], t))
             for entry in section["entries"]:
                 key = str(entry["key"])
                 active = key == active_page
-                views = IA.nav_views(key)
-                groups = IA.group_views(key)
-                has_children = bool(views or groups)
                 if compact:
                     nav_items.append(C.nav_item(
                         str(entry["icon"]), str(entry["label"]), t, active=active,
                         compact=True, on_click=lambda e, k=key: self.goto(k)))
                     continue
+                if key == "bib":
+                    # 批 115 D1-115-31/32：引用库不再有可折叠父行；3 组标签 + 9 叶常驻。
+                    nav_items.extend(self._bib_nav_rows(
+                        t, active_view if active else ""))
+                    continue
+                views = IA.nav_views(key)
+                has_children = bool(views)
                 expanded = has_children and open_page == key and not collapsed
-                nav_items.append(C.nav_parent(
+                parent = C.nav_parent(
                     str(entry["icon"]), str(entry["label"]), t, active=active,
                     expanded=expanded, has_children=has_children,
                     on_click=lambda e, k=key: self.navigate(
                         self._nav_default_route(k), source="nav"),
-                    on_toggle=lambda e, k=key: self._toggle_nav_page(k)))
+                    on_toggle=lambda e, k=key: self._toggle_nav_page(k))
+                if key in ("settings", "help"):
+                    parent.height = t.px(26)  # 系统两行收紧，780 高不再压到主题开关
+                nav_items.append(parent)
                 if not expanded:
                     continue
-                if groups:
-                    for group in groups:
-                        gkey = str(group["key"])
-                        gexpanded = gkey == open_group
-                        nav_items.append(C.nav_group(
-                            str(group["label"]), t, expanded=gexpanded, indent=28,
-                            on_click=lambda e, g=gkey: self._toggle_nav_group(g)))
-                        if not gexpanded:
-                            continue
-                        for view in group["views"]:
-                            vkey = str(view["key"])
-                            nav_items.append(C.nav_child(
-                                str(view["label"]), t, indent=52,
-                                active=active and vkey == active_view,
-                                on_click=lambda e, v=vkey: self.navigate(
-                                    f"bib:{v}", source="nav")))
-                else:
-                    for view in views:
-                        vkey = str(view["key"])
-                        nav_items.append(C.nav_child(
-                            str(view["label"]), t, indent=52,
-                            active=active and vkey == active_view,
-                            on_click=lambda e, k=key, v=vkey: self.navigate(
-                                f"{k}:{v}", source="nav")))
+                for view in views:
+                    vkey = str(view["key"])
+                    nav_items.append(C.nav_child(
+                        str(view["label"]), t, indent=52,
+                        active=active and vkey == active_view,
+                        on_click=lambda e, k=key, v=vkey: self.navigate(
+                            f"{k}:{v}", source="nav")))
 
-        # 导航超高时内部滚动；主题开关与引擎页脚固定在最底部。
-        if compact:
-            items.extend(nav_items)
-            items.append(ft.Container(expand=True))
-        else:
-            items.append(ft.Container(
-                expand=True, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                content=ft.Column(spacing=0, expand=True, scroll=ft.ScrollMode.AUTO,
-                                  controls=nav_items)))
+        # 导航超高时内部滚动；短窗口常显滚动条（批 115 P1-12），主题开关与引擎
+        # 页脚固定在最底部。compact 图标条只有 6 项，用 AUTO 避免窄条里出现长条。
+        nav_scroll = ft.ScrollMode.AUTO
+        if not compact and self._sidebar_short():
+            nav_scroll = ft.ScrollMode.ALWAYS
+        items.append(ft.Container(
+            expand=True, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            content=ft.Column(spacing=0, expand=True, scroll=nav_scroll,
+                              controls=nav_items)))
         if compact:
             items.append(ft.Container(padding=C._pad(t, 15, 4, 15, 4), content=C.icon_button(
                 "DARK_MODE", "切换深浅色", lambda e: self.set_theme(
@@ -1245,7 +1467,13 @@ class App:
         - 无冒号的 route 走页面默认视图；非法 route 回落工作台（不静默丢用户）。
         - 同一页面内切换二级视图也要 activate + 重建侧栏（展开态/高亮随 route 变）。
         """
-        page_key, view_key = IA.normalize_route(route)
+        raw_route = str(route or "")
+        page_key, view_key = IA.normalize_route(raw_route)
+        # 批 115 D1-115-26：issue / issue:overview 只是别名，运行期落到默认步；
+        # 静态 normalize 的 infocheck 仅是无 store/无页面时的兜底。
+        if page_key == "issue" and IA.is_issue_landing_route(raw_route):
+            view_key = self._issue_landing_step()
+            self.mark("issue_alias", route=raw_route, step=view_key, source=source)
         route_str = IA.route_string(page_key, view_key)
         if page_key not in getattr(self, "pages", {}):
             return
@@ -1912,6 +2140,7 @@ class App:
             zoom=self.zoom,
             zoom_requested=self.zoom_requested,
             max_zoom=self.max_zoom,
+            k=self.t.k,
             theme=self.theme,
             platform=str(self.page.platform),
             pages=len(self.pages),

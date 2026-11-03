@@ -62,29 +62,37 @@ def test_issue_step_run_buttons_disabled_with_reason():
 
 
 # ── 2. 主操作唯一性：整期页只有页面级「运行整期流水线」是主色实心按钮 ───────
-def test_issue_primary_actions_are_limited_and_step_rows_are_not_filled():
+def test_issue_primary_actions_follow_subpage():
     page, root = _build_issue()
+    # 批 115（D1-115-26/29，覆盖旧 m03093）：整期页保留唯一页面级主色
+    # 「运行整期…」；进入某一步后，该步唯一主按钮落在详情头（不再挤进页头），
+    # 页头主色只有整期运行，步骤概览行仍是描边「运行」。
     filled = _of(root, ft.FilledButton)
     contents = [str(ctl.content) for ctl in filled]
-    # 用户 m03093：整期父页全屏唯一主色 = 「运行整期流水线」；6 步概览行上的
-    # 「运行」与子页的「运行这一步」都降为描边次操作（批 114 改导航子页）。
-    assert len(filled) == 1, f"整期页主操作必须唯一：{contents}"
-    assert contents.count("运行整期流水线") == 1
+    assert contents == ["运行整期…"], f"总览主操作必须唯一：{contents}"
+    assert filled[0] is page._run_all_btn
+    assert page._step_run_primary not in filled
     overview_runs = [ctl for ctl in _of(root, ft.OutlinedButton)
                      if str(ctl.content) == "运行"]
     assert len(overview_runs) == len(page.STEPS), "6 步概览行都要能直接运行"
     assert all(ctl.icon == C.ic("PLAY_ARROW") for ctl in overview_runs)
-    assert filled[0] is page._run_all_btn or page._run_all_btn in filled
-    # 步骤概览/子页上的运行按钮一律不是主色实心。
+    assert isinstance(page._run_all_secondary, ft.OutlinedButton)
+    assert str(page._run_all_secondary.content) == "从失败处继续…"
+
+    page.activate("toc")
+    header_filled = _of(page._header_actions, ft.FilledButton)
+    assert [str(ctl.content) for ctl in header_filled] == ["运行整期…"]
+    assert header_filled[0] is page._run_all_btn
+    detail_filled = _of(page._content_box, ft.FilledButton)
+    assert [str(ctl.content) for ctl in detail_filled] == ["生成目录"], \
+        "每步详情头必须有且只有一个主按钮"
+    assert detail_filled[0] is page._step_run_primary
+    # 步骤概览行的「运行」仍不是主色；参数区不再保留旧描边「运行这一步」副本。
     assert not _of([*page._step_run_btns.values()], ft.FilledButton)
     step_page = page._build_step_page("toc")
-    step_runs = [ctl for ctl in _of(step_page, ft.OutlinedButton)
-                 if str(ctl.content) == "运行这一步"]
-    assert step_runs, "运行这一步应是描边按钮（次操作）"
-    assert step_runs[0].icon == C.ic("PLAY_ARROW")
-    # 子页里的步骤专属主操作（如目录面板的「生成并编译」）不受影响；
-    # 守的是「运行这一步」自身绝不是实心主色。
-    assert step_runs[0] not in _of(step_page, ft.FilledButton)
+    legacy = [ctl for ctl in _of(step_page, ft.OutlinedButton)
+              if str(ctl.content) == "运行这一步"]
+    assert not legacy, "P1-3 后本步运行只在详情头，参数区旧副按钮应已移除"
 
 
 def test_single_page_primary_actions_within_limit_and_preview_is_button():
@@ -114,7 +122,9 @@ def test_danger_button_is_tinted_not_plain_link():
     assert isinstance(btn, ft.TextButton)
     state = ft.ControlState.DEFAULT
     assert btn.style.bgcolor[state] == t.buttons.danger_soft
-    assert btn.style.color == t.buttons.danger
+    assert btn.style.color[state] == t.buttons.danger
+    assert btn.style.color[ft.ControlState.DISABLED] == t.buttons.off_fg, \
+        "禁用态必须灰字，不能仍亮红"
 
 
 def test_destructive_sites_use_danger_button_static():

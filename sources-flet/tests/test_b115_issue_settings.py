@@ -2,13 +2,13 @@
 
 锁：
 1. IssuePage build：`C.page_body(panel=True)` + 日志 dock（贴底浮层 + 底部 spacer
-   两档 reserve 40 / 46+日志高），总览与步骤页共用同一个 dock。
+   两档 reserve 40 / 200），总览与步骤页共用同一个 dock。
 2. IssuePage 页面级方法不再 `C.card` / `C.section_title` / `C.status_chip`：
    总览步骤行 = 36 高无描边发丝行（序号 / 标题 / 状态点 / 运行按钮）。
-3. 总览宽窗 5:6 双列、内容宽 < 900 单列（1000×700 窄窗不压扁）；跨断点 on_resize
+3. 总览宽窗 5:6 双列、内容宽 < 980 单列（1000×700 窄窗不压扁）；跨断点 on_resize
    只重建总览一次。
-4. 步骤页去重复标题与「← 流水线总览」返回键，保留 `_progress_band()` 与参数区
-   的「运行这一步」；进度带仍 54 高、6 段、无 chip。
+4. 步骤页去重复标题与「← 流水线总览」返回键，保留 `_progress_band()` 与详情头
+   的唯一主按钮；进度带仍 54 高、6 段、无 chip。
 5. SettingsPage build：`page_body(panel=True)` + 4 组发丝分区（引擎与环境 / 外观 /
    窗口与托盘 / 路径与关于），组内不再有 `C.card` / `C.section_title`；引擎状态
    用 inline_note，键值行统一 `C.kv_row`（32 高）。
@@ -94,7 +94,9 @@ def test_issue_page_white_sheet_with_log_dock():
     assert isinstance(body.border_radius, ft.BorderRadius)
     assert body.border_radius.top_left == t.radius("panel")
     # 总览与日志 dock 同时挂上；底部 spacer 是最后一项，回调已接。
-    assert page._content_box in body.content.controls
+    # 批 115（D1-115-26）：工作台把详情列包进 shell（左流水线 + 详情）；
+    # 内容仍在同一页树里，只是外面多了一层布局容器。
+    assert page._content_box in _walk(root)
     last = body.content.controls[-1]
     assert last is page._log_spacer
     assert last.height == t.px(40)
@@ -110,12 +112,12 @@ def test_issue_log_reserve_two_levels_and_drag_follow():
     spacer = root.controls[0].content.controls[-1]
     page._log.expand()
     assert page._log.is_expanded is True
-    assert spacer.height == t.px(46) + page._log._log_height
-    assert spacer.height == pytest.approx(t.px(196))  # 日志 150
+    # 批 116 P1-2：展开预留 = 46 标题条 + 日志实高；拖动/复位实时跟随。
+    before = spacer.height
     page._log._on_resize_update(SimpleNamespace(primary_delta=-t.px(30)))
-    assert spacer.height == t.px(46) + page._log._log_height
+    assert spacer.height == before + t.px(30), "拖动 log 高度必须实时改页面预留"
     page._log._on_resize_reset()
-    assert spacer.height == pytest.approx(t.px(196))
+    assert spacer.height == t.px(46) + page._log._base_height
     page._log.collapse()
     assert spacer.height == t.px(40)
 
@@ -155,7 +157,7 @@ def test_issue_overview_step_row_is_36_hairline_row_with_run_button():
 
 def test_issue_overview_wide_two_columns_narrow_single_column():
     page, _root = _build_issue()
-    page.app._design_width = lambda: 1160
+    page.app._design_width = lambda: 1240
     wide = page._build_overview()
     assert isinstance(wide, ft.Row)
     assert page._overview_stacked is False
@@ -164,7 +166,11 @@ def test_issue_overview_wide_two_columns_narrow_single_column():
     assert isinstance(right, ft.Container) and right.expand == 6
     assert right.content.controls == [page._result.root, page._info.root]
 
-    # 回归：`_design_width()` 是整窗宽，1000 宽窗口内容 780 → 必须单列。
+    # 回归：`_design_width()` 是整窗宽；1160 内容 940 ≥ 880 → 宽态双列。
+    page.app._design_width = lambda: 1160
+    assert page._narrow() is False
+    assert isinstance(page._build_overview(), ft.Row)
+    # 1000 内容 780 < 880 → 单列。
     page.app._design_width = lambda: 1000
     assert page._narrow() is True
     assert isinstance(page._build_overview(), ft.Column)
@@ -180,9 +186,9 @@ def test_issue_overview_wide_two_columns_narrow_single_column():
 def test_issue_on_resize_rebuilds_only_when_crossing_breakpoint():
     page, _root = _build_issue()
     page.selected = "overview"
-    page.app._design_width = lambda: 1160
+    page.app._design_width = lambda: 1240
     page._overview_stacked = False
-    page.on_resize()  # 未跨断点：不重建（build 时无窗口信息 → 宽屏双列）
+    page.on_resize()  # 未跨断点：保持宽屏双列
     assert isinstance(page._content_box.controls[0], ft.Row)
     page.app._design_width = lambda: 880
     page.on_resize()
@@ -194,6 +200,8 @@ def test_issue_on_resize_rebuilds_only_when_crossing_breakpoint():
 
 def test_issue_step_page_has_no_back_button_or_duplicate_title():
     page, _root = _build_issue()
+    # 窄窗（1000 内容 780 < 880）详情上方保留 54 高横条；宽窗则由左栏承担导航。
+    page.app._design_width = lambda: 1000
     t = page.t
     step = page._build_step_page("toc")
     assert isinstance(step, ft.Column)
@@ -202,9 +210,16 @@ def test_issue_step_page_has_no_back_button_or_duplicate_title():
     labels = [ctl.value for ctl in _walk(step) if isinstance(ctl, ft.Text)]
     assert not any("流水线总览" in str(v) for v in labels)
     assert "参数" in labels
-    run = [ctl for ctl in _walk(step) if isinstance(ctl, ft.OutlinedButton)
-           and str(ctl.content) == "运行这一步"]
-    assert run, "参数区应保留唯一的本步运行入口"
+    # 批 115 P1-3（D1-115-24，覆盖旧 m03093）：本步运行主按钮搬到页头，
+    # 参数区不再保留旧描边副本；步骤页不出现两个页面级主色按钮。
+    legacy = [ctl for ctl in _walk(step) if isinstance(ctl, ft.OutlinedButton)
+              and str(ctl.content) == "运行这一步"]
+    assert not legacy, "参数区旧「运行这一步」应已由页头主按钮取代"
+    page.activate("toc")
+    # 批 115（D1-115-26）：本步主按钮在详情头，页头只留整期运行。
+    detail_runs = [ctl for ctl in _walk(page._content_box)
+                   if isinstance(ctl, ft.FilledButton)]
+    assert [str(ctl.content) for ctl in detail_runs] == ["生成目录"]
     src = inspect.getsource(P.IssuePage._build_step_page)
     assert "_progress_band()" in src and "_run_step" not in src
 
