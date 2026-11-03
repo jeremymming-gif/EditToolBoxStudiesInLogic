@@ -1123,7 +1123,9 @@ def open_path(path: str) -> tuple[bool, str]:
     if not Path(target).exists():
         return False, f"路径不存在：{target}"
     try:
-        if os.name == "nt":
+        # 用 sys.platform 而非 os.name 分支：测试可在任意平台 monkeypatch sys.platform
+        # 覆盖三平台路径（os.name 在 Windows CI 上会让 darwin 分支不可测）。
+        if sys.platform == "win32":
             os.startfile(target)  # type: ignore[attr-defined]  # Windows-only
         elif sys.platform == "darwin":
             subprocess.Popen(["open", target], stdout=subprocess.DEVNULL,
