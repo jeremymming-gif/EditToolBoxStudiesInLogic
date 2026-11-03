@@ -88,6 +88,53 @@ _BIB_VIEW_ORDER = (
 BIB_CHIPS = [BIB_CHIP_POS[view] for view in _BIB_VIEW_ORDER]
 
 
+# ── 批 114：二级视图迁入左侧导航（accordion；父行 30 / 组行 28 / 子行 28）──
+# 下列坐标是 150% DPI 的**估算**（导航改造后尚未在 Windows 实测）：
+# 复核时以 nav_change 事件的 route 字段为准，坐标偏差不应作为唯一判据。
+NAV_PARENT_H = 30
+NAV_GROUP_H = 28
+NAV_CHILD_H = 28
+NAV_CHILD_INDENT = 52
+NAV_GROUP_INDENT = 28
+NAV_CHILD_X = NAV_X + NAV_CHILD_INDENT - 6
+NAV_GROUP_X = NAV_X + NAV_GROUP_INDENT - 4
+# 子行从「父行中心 + 24」开始，逐行 +28；组行同高（28）。
+# 引用库：父项展开 → 4 组行 → 当前组展开的子行。
+_BIB_GROUPS_ORDER = ("read", "intake", "treat", "maint")
+_BIB_GROUP_VIEWS = {
+    "read": ("overview", "query"),
+    "intake": ("normalize", "import"),
+    "treat": ("review", "edit", "dupes", "fieldfix"),
+    "maint": ("health", "settings"),
+}
+
+
+def nav_route_clicks(page: str, view: str = "") -> list[tuple[float, float]]:
+    """route → 侧栏点击序列（父项 → [组行] → 子行）；估算坐标，未实测。"""
+    if view in ("", "overview") and page == "issue":
+        view = ""
+    if not view:
+        return [(NAV_X, NAV_Y[page])]
+    if page == "single":
+        offset = {"convert": 24, "proofcheck": 52}[view]
+        return [(NAV_X, NAV_Y["single"]), (NAV_CHILD_X, NAV_Y["single"] + offset)]
+    if page == "issue":
+        steps = ("infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush")
+        offset = 24 + 28 * steps.index(view)
+        return [(NAV_X, NAV_Y["issue"]), (NAV_CHILD_X, NAV_Y["issue"] + offset)]
+    if page == "bib":
+        group = next(g for g, views in _BIB_GROUP_VIEWS.items() if view in views)
+        gidx = _BIB_GROUPS_ORDER.index(group)
+        group_y = NAV_Y["bib"] + 24 + 28 * gidx
+        before = sum(len(_BIB_GROUP_VIEWS[g]) for g in _BIB_GROUPS_ORDER[:gidx])
+        idx = _BIB_GROUP_VIEWS[group].index(view)
+        view_y = group_y + 24 + 28 * (idx if group == _BIB_GROUPS_ORDER[0] else idx)
+        # 目标组行点击只展开该组；非首组时子行起点为组行 + 24。
+        return [(NAV_X, NAV_Y["bib"]), (NAV_GROUP_X, group_y),
+                (NAV_CHILD_X, view_y)]
+    return [(NAV_X, NAV_Y[page])]
+
+
 def bib_group_pos(group: str) -> tuple[float, float]:
     """组条中心（client DIP）；未知组回落到第一组。"""
     return BIB_GROUP_POS.get(group, BIB_GROUP_POS["read"])

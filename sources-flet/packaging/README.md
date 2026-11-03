@@ -40,13 +40,16 @@ sha256.txt
 
 ## 品牌资产（图标）
 
-`packaging/assets/` 是窗口图标、侧栏标志与托盘图标的单一来源，全部由脚本从矢量参数重新生成：
+`packaging/assets/` 是窗口图标、侧栏标志与托盘图标的单一来源。`logo-*` 由脚本从矢量参数重新生成；
+品牌 ℵ（`aleph-*.png`）与 Dock 玻璃图标（`glass-*.png`）是本轮设计导出的 PNG，脚本不重新生成：
 
 ```powershell
 py -3.14 sources-flet/packaging/assets/make_logo.py   # 需 Pillow，重写下列文件
 ```
 
-- `logo-1024.png` / `logo-256.png`：方形母版与侧栏标志（`ui/brand.py` 运行时读）；
+- `logo-1024.png` / `logo-256.png`：方形母版（旧版品牌；`ui/brand.py` 的回退链用）；
+- `aleph-slate-64.png` / `aleph-slate-light-64.png`：侧栏品牌 ℵ（浅色 / 深色主题，`ui/brand.py` 运行时读）；
+- `aleph-slate-1024.png`、`glass-slate-ink-1024.png`、`glass-slate-white-1024.png`：Dock/窗口图标的 1024 母版（P3 打包生成 `.icns` 用）；
 - `logo.ico`（7 个尺寸）：Windows `flet pack --icon`；
 - `logo.icns`：macOS `flet pack --icon`。
 

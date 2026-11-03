@@ -5,7 +5,7 @@
   `nav_groups=[("单篇稿件",(0,3)),("整期装配",(4,5,6,7,2,8)),("引用库",(9,10,11,12,1,13))]` + 设置=14；
 - 对等矩阵：C:\\slcn-work\\b304-2026-10-31\\evidence\\s2\\parity-matrix.md（15/15 PASS）。
 
-新 IA（4 组，组内「页面」= 一级导航；页内「视图/步骤」= 胶囊或分步）：
+新 IA（3 组：工作区 / 资料 / 系统；二级视图/步骤已全部进左侧导航 — 批 114 定稿，结构以 `NAV_TREE` 为准）：
   工作区 · 工作台 / 单篇稿件 / 整期装配
   资料   · 引用库
   系统   · 设置
@@ -18,20 +18,174 @@
 """
 from __future__ import annotations
 
-NAV_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
-    ("工作区", [("home", "工作台", "AUTO_AWESOME"),
-             ("single", "单篇稿件", "DESCRIPTION_OUTLINED"),
-             ("issue", "整期装配", "VIEW_AGENDA_OUTLINED")]),
-    ("资料", [("bib", "引用库", "LIBRARY_BOOKS_OUTLINED")]),
-    ("系统", [("settings", "设置", "SETTINGS_OUTLINED"),
-             ("help", "帮助与关于", "HELP_OUTLINE")]),
+# ── 批 114 IA 定稿：一级页面 + 二级视图全部进左侧导航（用户 m03256）─────────
+# 树结构是导航唯一事实来源：
+#   · 父项 = 一级页面；点父项进入其 default 视图并展开；
+#   · views = 父项下平铺的二级视图（单篇 2、整期 6 步；整期父项自身的 default
+#     "overview" 是「流水线总览」页，不占子行）；
+#   · groups = 引用库的三层中间层（组 → 视图），组行可折叠、当前组自动展开。
+NAV_TREE: list[dict] = [
+    {"group": "工作区", "entries": [
+        {"key": "home", "label": "工作台", "icon": "AUTO_AWESOME"},
+        {"key": "single", "label": "单篇稿件", "icon": "DESCRIPTION_OUTLINED",
+         "default": "convert",
+         "views": [{"key": "convert", "label": "初排转换"},
+                   {"key": "proofcheck", "label": "一校核查"}]},
+        {"key": "issue", "label": "整期装配", "icon": "VIEW_AGENDA_OUTLINED",
+         "default": "overview",
+         "views": [{"key": "infocheck", "label": "检查tex信息"},
+                   {"key": "toc", "label": "生成目录"},
+                   {"key": "compileall", "label": "编译全部"},
+                   {"key": "merge", "label": "合并文件"},
+                   {"key": "cleantemp", "label": "删除临时文件"},
+                   {"key": "dirpush", "label": "目录摘要推送"}]},
+    ]},
+    {"group": "资料", "entries": [
+        {"key": "bib", "label": "引用库", "icon": "LIBRARY_BOOKS_OUTLINED",
+         "default": "overview",
+         "groups": [
+             {"key": "read", "label": "查阅",
+              "views": [{"key": "overview", "label": "概况"},
+                        {"key": "query", "label": "查库"}]},
+             {"key": "intake", "label": "采录",
+              "views": [{"key": "normalize", "label": "规范化"},
+                        {"key": "import", "label": "入藏"}]},
+             {"key": "treat", "label": "治理",
+              "views": [{"key": "review", "label": "待处理"},
+                        {"key": "edit", "label": "编辑"},
+                        {"key": "dupes", "label": "查重合并"},
+                        {"key": "fieldfix", "label": "字段归位"}]},
+             {"key": "maint", "label": "维护",
+              "views": [{"key": "health", "label": "库健康"},
+                        {"key": "settings", "label": "设置"}]},
+         ]},
+    ]},
+    {"group": "系统", "entries": [
+        {"key": "settings", "label": "设置", "icon": "SETTINGS_OUTLINED"},
+        {"key": "help", "label": "帮助与关于", "icon": "HELP_OUTLINE"},
+    ]},
 ]
 
-LEGACY_TAB_ORDER = [
-    "初排转换", "参考文献规范化", "合并文件", "一校核查", "检查tex信息", "生成目录",
-    "编译全部", "删除临时文件", "目录摘要推送", "库概况", "查库", "入藏", "待裁决",
-    "引用库设置", "设置",
-]  # 15 页；Tk 版 9 个平级入口 = 前 8 页 + 设置（目录摘要推送/引用库系列为后加页）
+# 兼容旧调用（test_p3 / 迁移期代码仍读 NAV_GROUPS）：由 NAV_TREE 派生，单一事实来源。
+NAV_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
+    (section["group"],
+     [(entry["key"], entry["label"], entry["icon"]) for entry in section["entries"]])
+    for section in NAV_TREE
+]
+
+
+def nav_parent_entries() -> list[dict]:
+    """所有父项（一级页面），带所属分组名。"""
+    return [dict(entry, group=section["group"])
+            for section in NAV_TREE for entry in section["entries"]]
+
+
+def page_defaults() -> dict[str, str]:
+    """一级页面 → 默认二级视图（无二级视图的页面为空串）。"""
+    return {entry["key"]: str(entry.get("default", "") or "")
+            for entry in nav_parent_entries()}
+
+
+def nav_views(page_key: str) -> list[dict]:
+    """页面的平铺二级视图（引用库把组展开后平铺）。"""
+    entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
+    if entry is None:
+        return []
+    if entry.get("views"):
+        return list(entry["views"])
+    views: list[dict] = []
+    for group in entry.get("groups", []) or []:
+        views.extend(dict(view, group=group["key"]) for view in group["views"])
+    return views
+
+
+def view_label(page_key: str, view_key: str) -> str:
+    return next((str(view["label"]) for view in nav_views(page_key)
+                 if view["key"] == view_key), "")
+
+
+def group_of_view(page_key: str, view_key: str) -> str:
+    """引用库视图所属组的 key（其它页面返回空串）。"""
+    return next((str(view["group"]) for view in nav_views(page_key)
+                 if view["key"] == view_key and view.get("group")), "")
+
+
+def group_label(page_key: str, group_key: str) -> str:
+    entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
+    if entry is None:
+        return ""
+    return next((str(group["label"]) for group in entry.get("groups", []) or []
+                 if group["key"] == group_key), "")
+
+
+def group_views(page_key: str) -> list[dict]:
+    """引用库：组行列表（[{key,label,views}]）；其它页面返回空列表。"""
+    entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
+    if entry is None:
+        return []
+    return [{"key": str(group["key"]), "label": str(group["label"]),
+             "views": list(group["views"])}
+            for group in entry.get("groups", []) or []]
+
+
+def all_routes() -> list[str]:
+    """全部可持久化/可深链的路由（含父项默认视图与无子视图页面）。"""
+    routes: list[str] = []
+    for entry in nav_parent_entries():
+        page = entry["key"]
+        views = nav_views(page)
+        if not views:
+            routes.append(page)
+            continue
+        default = str(entry.get("default", "") or "")
+        if default:
+            routes.append(f"{page}:{default}")
+        routes.extend(f"{page}:{view['key']}" for view in views
+                      if view["key"] != default)
+    return routes
+
+
+def normalize_route(route: str | None) -> tuple[str, str]:
+    """把任意路由串归一成 (page, view)；非法时回落到工作台。"""
+    text = str(route or "").strip()
+    page, _, view = text.partition(":")
+    defaults = page_defaults()
+    if page not in defaults:
+        return "home", ""
+    # 页面默认视图不一定是「子项」（如整期装配父页 = overview 总览），
+    # 但它是合法的页面状态，因此并入允许集合。
+    default = defaults[page]
+    allowed = {item["key"] for item in nav_views(page)} | {default}
+    if not view:
+        view = default
+    if view not in allowed:
+        view = default
+    return page, view
+
+
+def route_string(page: str, view: str = "") -> str:
+    return f"{page}:{view}" if view else page
+
+
+def route_labels(route: str | None) -> dict:
+    """路由 → 面包屑/标题/分组标签。"""
+    page, view = normalize_route(route)
+    entry = next((item for item in nav_parent_entries() if item["key"] == page), None)
+    page_label = str(entry["label"]) if entry else page
+    label = view_label(page, view)
+    group_key = group_of_view(page, view)
+    group = group_label(page, group_key)
+    if not view or not label:
+        # 父页默认状态（如整期装配 overview 总览）没有子项条目 → 只显示父页名。
+        crumb, title = page_label, page_label
+    elif group:
+        crumb, title = f"{page_label} / {group} / {label}", label
+    else:
+        crumb, title = f"{page_label} / {label}", label
+    return {"page": page, "view": view, "page_label": page_label,
+            "view_label": label, "group": group_key, "group_label": group,
+            "crumb": crumb, "title": title}
+
 
 IA_MAP: list[dict] = [
     {"idx": 0, "old_page": "初排转换", "old_group": "单篇稿件", "new_page": "单篇稿件",

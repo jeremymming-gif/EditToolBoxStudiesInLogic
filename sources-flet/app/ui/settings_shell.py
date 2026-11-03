@@ -115,6 +115,14 @@ def hotkey_action(key: str, ctrl: bool = False, shift: bool = False,
 
 
 def on_key(app, event) -> None:
+    # 批 114：搜索框聚焦时 ↑↓/Escape 先交给搜索（Enter 走 TextField on_submit）。
+    search_hook = getattr(app, "search_key_handle", None)
+    if callable(search_hook):
+        try:
+            if search_hook(event):
+                return
+        except Exception:  # noqa: BLE001 搜索键盘处理失败不能拖垮全局热键
+            pass
     action = hotkey_action(getattr(event, "key", ""), bool(getattr(event, "ctrl", False)),
                            bool(getattr(event, "shift", False)),
                            bool(getattr(event, "alt", False)))
@@ -134,6 +142,10 @@ def on_key(app, event) -> None:
     elif action == "run":
         _run_current(app)
     elif action == "stop":
+        # 对话框打开时 Escape = 取消对话框（比停跑更符合预期，也避免误停）
+        if C.dismiss_top_dialog(app.page):
+            app.mark("dialog_dismissed", by="Escape")
+            return
         app.stop_run()
     elif action == "theme":
         app.set_theme("light" if app.theme == "dark" else "dark")
@@ -287,9 +299,8 @@ def tray_card(page) -> ft.Control:
         except Exception:  # noqa: BLE001
             pass
 
-    switch = ft.Switch(value=bool(getattr(app, "tray_enabled", False)),
-                       active_color=t.palette.accent, disabled=not winplat.IS_WIN,
-                       on_change=_toggle)
+    switch = C.switch(t, value=bool(getattr(app, "tray_enabled", False)),
+                      disabled=not winplat.IS_WIN, on_change=_toggle)
     return C.card(ft.Column(spacing=t.sp("2"), controls=[
         C.section_title("窗口与托盘", t, note="仅 Windows"),
         ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
@@ -431,15 +442,12 @@ def logs_card(page) -> ft.Control:
     current = str(page.app.store.get("form.log_filter", "all") or "all")
     if current not in dict(LEVELS):
         current = "all"
-    page.log_filter = ft.Dropdown(
-        label="级别", value=current, width=t.px(130), dense=True,
-        text_size=t.font("body"),
-        options=[ft.DropdownOption(key=key, text=text) for key, text in LEVELS],
+    page.log_filter = C.select(
+        t, value=current, width=t.px(130), label="级别", options=LEVELS,
         on_select=lambda e: _set_filter(page, e.control.value),
     )
-    page.log_follow = ft.Switch(
-        value=bool(page.app.store.get("form.log_follow", True)),
-        active_color=t.palette.accent,
+    page.log_follow = C.switch(
+        t, value=bool(page.app.store.get("form.log_follow", True)),
         on_change=lambda e: page.app.store.set("form.log_follow", bool(e.control.value)),
     )
     page.log_meta = C.text("", t, "caption", t.palette.text_faint)
@@ -448,16 +456,20 @@ def logs_card(page) -> ft.Control:
     page.log_slot = ft.Container(content=page.log_list)
     controls = [
         C.section_title("日志", t, note=f"内存最近 {LOG_LIMIT} 行；导出诊断包可留档"),
+        # 单行工具条：标签内联，下拉与按钮同为 control_h 高（用户 m02816：不许高矮不齐）。
         ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+            C.text("级别", t, "caption", t.palette.text_muted),
             page.log_filter,
             C.text("自动跟随", t, "caption", t.palette.text_muted),
             page.log_follow,
             ft.Container(expand=True),
             C.text_button("复制全部", lambda e: page.app.copy_text(
-                buffer.text(page.log_filter.value or "all")), t),
-            C.text_button("跳到最新", lambda e: _jump(page), t),
-            C.text_button("清空", lambda e: _clear_logs(page), t),
-            C.text_button("导出诊断包", lambda e: _export(page), t),
+                buffer.text(page.log_filter.value or "all")), t, height=t.control_h()),
+            C.text_button("跳到最新", lambda e: _jump(page), t, height=t.control_h()),
+            C.text_button("清空", lambda e: _clear_logs(page), t, height=t.control_h()),
+            # 用户 m02990：生成诊断包是明确动作 → 描边按钮（复制/跳转/清空仍为文字工具）。
+            C.secondary_button("导出诊断包", lambda e: _export(page), t, icon="ARCHIVE",
+                               height=t.control_h()),
         ]),
         page.log_meta,
         page.log_slot,
@@ -620,6 +632,28 @@ async def _probe_task(page, ai: dict) -> None:
     except Exception:  # noqa: BLE001
         pass
     page.mark("connection_result", ok=ok, detail=detail)
+
+
+# ── 外观：按钮配色 C/D ───────────────────────────────────────────────────
+def button_palette_row(page) -> ft.Control:
+    """「外观 → 按钮配色」：C 石板蓝 / D 石墨 radio；切换即时生效、落 settings.json。"""
+    t = page.t
+    current = getattr(page.app, "button_palette", "c")
+
+    def _changed(e) -> None:
+        page.app.set_button_palette(str(e.control.value or "c"))
+
+    row = ft.RadioGroup(
+        value=current, on_change=_changed,
+        content=ft.Row(spacing=t.sp("2"), controls=[
+            ft.Radio(value="c", label="C · 石板蓝"),
+            ft.Radio(value="d", label="D · 石墨"),
+        ]),
+    )
+    page.button_palette_group = row
+    return ft.Row(spacing=t.sp("1"), controls=[
+        C.text("按钮配色", t, "body"), row, ft.Container(expand=True),
+        C.text("C 标准 / D 去蓝", t, "caption", t.palette.text_faint)])
 
 
 # ── 高级 ─────────────────────────────────────────────────────────────────

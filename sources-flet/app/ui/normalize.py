@@ -54,7 +54,8 @@ HINT_OUT = "留空 = 自动（<名字>_回读校验报告.md）；也可填一�
 HINT_PASTE = "粘贴交回的 .bib 文本（走标准输入，不落中间文件）"
 HINT_PREVIEW_EMPTY = "粘贴后这里显示「识别到几条、键是什么」（不会写任何文件）。"
 DRAG_HINT_FILE = (
-    "三个路径都可以直接拖进来。选好「交回的 .bib」后，同目录下能找到的另一个 .bib、"
+    "三个路径都可直接粘贴（⌘V）或点「浏览…」选择（Flet 1.0.5 无系统级文件拖放，"
+    "所以不做假拖拽）。选好「交回的 .bib」后，同目录下能找到的另一个 .bib、"
     "以及同目录下唯一的那份 .tex，会自动填进下面两栏（不对就直接改）。"
 )
 DRAG_HINT_PASTE = (
@@ -242,17 +243,9 @@ class NormalizePanel:
             self.page.add_picker("正文 .tex（只读）", "bib_tex", HINT_TEX,
                                  kind="file", required=False),
         ]
-        self._out_field = ft.TextField(
-            label="报告输出（可选）", value=self.page.app.store.get(self.OUT_KEY, "") or "",
-            hint_text=HINT_OUT, dense=True, text_size=t.font("body"),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8),
-            on_change=self._on_out_change,
+        self._out_field = C.text_field(
+            t, value=self.page.app.store.get(self.OUT_KEY, "") or "",
+            hint_text=HINT_OUT, expand=True, on_change=self._on_out_change,
         )
         self.page.fields["bib_out"] = [self._out_field]
         self._auto_lbl = C.text(self.auto_report_line(), t, "caption", t.palette.text_faint)
@@ -267,7 +260,7 @@ class NormalizePanel:
         return ft.Column(spacing=t.sp("2"), controls=[
             *info,
             C.card(ft.Column(spacing=t.sp("1"), controls=[
-                self._out_field, self._auto_lbl,
+                C.form_field(t, "报告输出（可选）", self._out_field), self._auto_lbl,
                 C.text(OUT_NOTE, t, "caption", t.palette.text_faint),
             ]), t),
             actions,
@@ -290,21 +283,14 @@ class NormalizePanel:
                 on_change=lambda e: self._autofill_from_returned()))
             return
         t = self.page.t
-        paste = ft.TextField(
-            label="交回的 .bib 文本", value=self.page.app.store.get(self.PASTE_KEY, "") or "",
+        paste = C.text_field(
+            t, value=self.page.app.store.get(self.PASTE_KEY, "") or "",
             hint_text=HINT_PASTE, multiline=True, min_lines=6, max_lines=12,
-            text_size=t.font("body"),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8), on_change=self._on_paste_change,
+            expand=True, on_change=self._on_paste_change,
         )
         self.page.fields["bib_paste"] = [paste]
         self._returned_box.controls.extend([
-            paste,
+            C.form_field(t, "交回的 .bib 文本", paste),
             ft.Row(spacing=t.sp("1"), controls=[
                 C.secondary_button("从剪贴板粘贴", self._on_paste_clipboard, t, icon="CONTENT_PASTE"),
             ]),
@@ -582,18 +568,18 @@ class NormalizeView:
     def build(self) -> ft.Control:
         t = self.t
         self._mount_clipboard()
-        self._log = C.LogConsole(t, height=170, title="运行日志")
+        self._log = C.LogConsole(t, height=150, title="运行日志",
+                                toast=self.app.toast, mark=self.mark)
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
         self._busy = C.busy_bar(t, visible=False)
         self._stop_btn = C.secondary_button("停止", lambda e: self.app.stop_run(), t,
                                             icon="STOP", disabled=True)
-        self._root = ft.Column(spacing=t.sp("2"), controls=[
-            self.panel.build(),
-            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[self._busy, ft.Container(expand=True), self._stop_btn]),
-            self._result.root,
-            self._log.root,
+        run_head = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                          controls=[C.section_label("运行", t),
+                                    ft.Container(expand=True), self._busy, self._stop_btn])
+        self._root = ft.Column(spacing=t.sp("1"), controls=[
+            self.panel.build(), run_head, self._result.root, self._log.root,
         ])
         # 证据钩子：P2_BIB_VIEW=normalize 冒烟据此断言「面板标题出现」。
         self.mark("normalize_view_built", title=PAGE_TITLE, mode=self.panel.mode,

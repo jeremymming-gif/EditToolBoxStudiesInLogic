@@ -1,9 +1,10 @@
-"""批 112 S1：导航状态保持（GUI-05 / 族 B / P2_BIB_VIEW）契约测试。
+"""批 112 S1 + 批 114 导航：状态保持（GUI-05 / 族 B / P2_* 钩子）契约测试。
 
-三类断言：
-1. 纯静态契约（函数源码里的持久化 / on_show / 环境钩子）；
-2. 假 store + 假 page 的运行时单测（不启动 Flet 窗口）；
-3. 非法输入回退（bib_view / single_flow / 未知子视图）。
+二级视图迁入左侧导航后（用户 m03256），本文件守住「旧入口仍兼容」与状态持久化：
+1. BibPage 10 视图顺序、`set_view`/`_switch` 兼容入口、组记忆；
+2. SinglePage 流程恢复、`_switch_flow` 兼容入口；
+3. rebuild_shell/on_show、P2_BIB_VIEW/P2_SINGLE_FLOW 钩子（现在走 navigate）；
+4. 页内 tab（chip/组条）已删除，导航树本身由 test_b114_nav_tree.py 覆盖。
 """
 from __future__ import annotations
 
@@ -73,24 +74,18 @@ class FakeApp:
 def _make_bib(data: dict | None = None) -> tuple[P.BibPage, FakeApp]:
     app = FakeApp(data)
     page = P.BibPage(app)
-    # 不构建真实子视图：只测两级导航 + 状态持久化。
+    # 不构建真实子视图：只测视图状态 + 持久化。
     page._render = lambda: None
     page._safe_update = lambda *controls: None
     page._ensure_loaded = lambda view: None
-    page._group_row = ft.Row(spacing=4, controls=[])
-    page._chips_row = ft.Row(spacing=4, wrap=True, controls=[])
+    page._sync_header = lambda: None
     page._notice_slot = ft.Container()
     page._status_slot = ft.Row(spacing=4, controls=[])
-    page._render_nav()
-    # 子视图的 ensure_loaded 是协程；单测不跑事件循环，替换成同步空桩。
+    page.view_slot = ft.Container()
+    page.mark = lambda event, **fields: app.marks.append((event, fields))
     for name in ("review_view", "settings_view", "dupes_view", "fieldfix_view", "health_view"):
         getattr(page, name).ensure_loaded = lambda *args, **kwargs: None
     return page, app
-
-
-def _active_chips(page: P.BibPage) -> list:
-    accent = page.t.palette.accent_soft
-    return [chip for chip in page._chips_row.controls if chip.bgcolor == accent]
 
 
 # ── 静态契约 ────────────────────────────────────────────────────────────────
@@ -102,111 +97,112 @@ def test_bib_views_are_ten_in_ia_order() -> None:
     assert P.BibPage.view_keys() == set(keys)
 
 
-def test_set_view_persists_view_and_rerenders_nav() -> None:
-    source = inspect.getsource(P.BibPage.set_view)
-    assert 'store.set("bib_view", view)' in source
-    assert 'store.set("bib_group_memory", memory)' in source
-    assert "_render_nav()" in source
-    assert "_render()" in source
-    assert "source=source" in source
-    # 兼容入口仍在：main.py 的 P2_BIB_VIEW / P2_BIB_QUERY_UI 走 _switch。
-    assert "self.set_view(view, source=source)" in inspect.getsource(P.BibPage._switch)
+def test_set_view_routes_through_navigate_and_keeps_memory() -> None:
+    assert "navigate(f\"bib:{view}\", source=source)" in inspect.getsource(P.BibPage.set_view)
+    activate = inspect.getsource(P.BibPage.activate)
+    assert 'store.set("bib_view", view)' in activate
+    assert 'store.set("bib_group_memory", memory)' in activate
+    assert "self._sync_header()" in activate
+    assert "self._render()" in activate
+    assert "bib_view_invalid" in activate
+
+
+def test_switch_is_legacy_alias_for_set_view() -> None:
+    source = inspect.getsource(P.BibPage._switch)
+    assert "self.set_view(" in source
 
 
 def test_single_switch_persists_flow() -> None:
     source = inspect.getsource(P.SinglePage._switch_flow)
-    assert 'store.set("single_flow", key)' in source
-    assert "_flow_builder(key)" in source
+    assert "navigate(f\"single:{key}\"" in source
+    assert "self.activate(key, source=" in source
+    activate = inspect.getsource(P.SinglePage.activate)
+    assert 'store.set("single_flow"' in activate
+    assert "_flow_builder(view)" in activate
 
 
 def test_single_build_restores_flow_not_hardcoded_convert() -> None:
     source = inspect.getsource(P.SinglePage.build)
     assert "self._flow_builder(self.flow_key)()" in source
     assert "[self._build_convert()]" not in source
+    assert "C.chip(" not in source
 
 
 def test_rebuild_shell_calls_on_show_on_new_instance() -> None:
     source = inspect.getsource(M.App.rebuild_shell)
     assert "self.pages[key].on_show()" in source
+    # 导航版：恢复上次路由并在构建后 activate 子视图。
+    assert "IA.normalize_route(self._restore_route())" in source
+    assert 'activate(view_key, source="restore")' in source
 
 
 def test_after_boot_has_p2_bib_view_hook() -> None:
     source = inspect.getsource(M.App.after_boot)
     assert "P2_BIB_VIEW" in source
     assert "bib_view in bib_page.view_keys()" in source
-    assert '_switch(bib_view, source="env")' in source
+    assert 'navigate(f"bib:{bib_view}", source="env")' in source
 
 
 def test_pages_do_not_build_chips_inside_build_anymore() -> None:
-    source = inspect.getsource(P.BibPage.build)
-    assert "self._chips_row" in source
-    assert "self._render_nav()" in source
-    # build 里不应再出现内联的 chip（或旧的一次性 _render_chips）列表推导。
-    assert "C.chip(" not in source
-    assert "_render_chips()" not in source
+    bib_build = inspect.getsource(P.BibPage.build)
+    assert "_sync_header()" in bib_build
+    assert "C.chip(" not in bib_build
+    assert "_chips_row" not in bib_build
+    single_build = inspect.getsource(P.SinglePage.build)
+    assert "C.chip(" not in single_build
+    issue_build = inspect.getsource(P.IssuePage.build)
+    assert "_step_row(" not in issue_build  # 步骤卡列表已删，改导航子页
 
 
 # ── 运行时：BibPage 视图状态 ────────────────────────────────────────────────
 def test_bib_view_restored_from_store() -> None:
     page, _ = _make_bib({"bib_view": "query"})
     assert page.view == "query"
-    assert [chip.bgcolor is not None for chip in _active_chips(page)] == [True]
-    labels = [chip.content.value for chip in page._chips_row.controls]
-    assert labels[1] == "查库"
-    assert _active_chips(page)[0].content.value == "查库"
+    assert page.group == "read"
 
 
 @pytest.mark.parametrize("bad", ["", "nope", "overview2", None])
 def test_illegal_bib_view_falls_back_to_overview(bad) -> None:
     page, _ = _make_bib({"bib_view": bad})
     assert page.view == "overview"
-    assert _active_chips(page)[0].content.value == "概况"
 
 
-def test_each_view_switch_highlights_exactly_one_chip() -> None:
+def test_activate_switches_views_and_persists() -> None:
     page, app = _make_bib()
     for key in P.BibPage.view_keys():
-        page._switch(key)
+        P.BibPage.activate(page, key, source="test")
         assert page.view == key
         assert app.store.get("bib_view") == key
-        active = _active_chips(page)
-        assert len(active) == 1, key
-        assert active[0].content.value == dict(P.BibPage.VIEWS)[key]
-        assert active[0].content.weight == ft.FontWeight.W_500
+        assert any(event == "bib_view" and fields.get("view") == key
+                   for event, fields in app.marks)
 
 
-def test_illegal_switch_falls_back_to_overview() -> None:
+def test_illegal_activate_falls_back_to_overview() -> None:
     page, app = _make_bib({"bib_view": "query"})
-    page._switch("bogus")
-    # S3a1 起非法视图不再静默忽略：回落 overview 并留痕（便于 P2 冒烟发现坏参数）。
+    P.BibPage.activate(page, "bogus", source="test")
+    # 非法视图不再静默忽略：回落 overview 并留痕（便于 P2 冒烟发现坏参数）。
     assert page.view == "overview"
     assert app.store.get("bib_view") == "overview"
     assert any(event == "bib_view_invalid" and fields.get("view") == "bogus"
                for event, fields in app.marks)
 
 
-def test_chip_click_forwards_to_set_view() -> None:
+def test_activate_records_group_memory() -> None:
     page, app = _make_bib()
-    # 两级导航：先点「治理」组条（无记忆 → 组内首项 review），再点组内「编辑」胶囊。
-    page._group_row.controls[2].on_click(None)
-    assert page.view == "review"
-    labels = [chip.content.value for chip in page._chips_row.controls]
-    assert labels == ["待处理", "编辑", "查重合并", "字段归位"]
-    page._chips_row.controls[labels.index("编辑")].on_click(None)
-    assert page.view == "edit"
-    assert app.store.get("bib_view") == "edit"
+    P.BibPage.activate(page, "edit", source="test")
+    assert page.group == "treat"
     assert app.store.get("bib_group_memory") == {"treat": "edit"}
 
 
 def test_switch_marks_source_ui_and_env_override() -> None:
     page, app = _make_bib()
-    page._switch("health")
-    assert any(event == "bib_view" and fields.get("page") == "bib"
-               and fields.get("view") == "health" and fields.get("source") == "ui"
+    P.BibPage.activate(page, "health", source="ui")
+    assert any(event == "bib_view" and fields.get("view") == "health"
+               and fields.get("source") == "ui"
                for event, fields in app.marks)
-    page._switch("dupes", source="env")
-    assert any(event == "bib_view" and fields.get("page") == "bib"
-               and fields.get("view") == "dupes" and fields.get("source") == "env"
+    P.BibPage.activate(page, "dupes", source="env")
+    assert any(event == "bib_view" and fields.get("view") == "dupes"
+               and fields.get("source") == "env"
                for event, fields in app.marks)
 
 
@@ -214,11 +210,14 @@ def test_switch_marks_source_ui_and_env_override() -> None:
 def _make_single(data: dict | None = None) -> tuple[P.SinglePage, FakeApp]:
     app = FakeApp(data)
     page = P.SinglePage(app)
-    page._render_chips = lambda: None
     page._flow_box = ft.Column()
+    page._crumb = ft.Text("单篇稿件")
+    page._child_title = ft.Text("初排转换")
     page._flow_desc = ft.Text("")
     page._result = type("_Result", (), {"reset": lambda self: None})()
+    page._sync_header = lambda: None
     page._safe_update = lambda *controls: None
+    page.mark = lambda event, **fields: app.marks.append((event, fields))
     return page, app
 
 
@@ -257,7 +256,6 @@ def test_rebuild_restores_single_flow_through_constructor() -> None:
     """族 B 链路：store 里是 proofcheck → 新实例的 __init__ 必须直接恢复。"""
     page, _ = _make_single({"single_flow": "proofcheck"})
     assert page.flow_key == "proofcheck"
-    # build 用恢复后的 key 选构建器（静态契约另有断言）。
     assert P.SinglePage.FLOWS[page.flow_key]["label"] == "一校核查"
 
 

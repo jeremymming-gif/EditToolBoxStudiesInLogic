@@ -37,14 +37,16 @@ from services import engine_bridge as EB
 from services import startup_log as SLOG
 from services import version_info as VERSION
 from services import winplat
-from services.settings_store import SettingsStore
+from services.settings_store import SettingsStore, normalize_button_palette
 from ui import brand
 from ui import components as C
 from ui import pages as P
+from ui import search_index as SI
 from ui import settings_shell as SHELL
-from ui.ia_map import NAV_GROUPS
-from ui.tokens import (BASE_DPI, BASE_H, BASE_W, DARK, FONT_FAMILY, LIGHT,
-                       ZOOM_MAX, ZOOM_MIN, Tokens, palette_remap)
+from ui import ia_map as IA
+from ui.tokens import (BASE_DPI, BASE_H, BASE_W, BREAK, DARK, FONT_FAMILY, LIGHT,
+                       SIDEBAR_W, TONE_TAG, TOOLBAR_H, ZOOM_MAX, ZOOM_MIN, Tokens,
+                       palette_remap)
 
 APP_TITLE = "编辑部工具箱"
 # 兜底值；正常显示走 services.version_info（引擎 __version__ 单一来源）。
@@ -237,12 +239,19 @@ class App:
         self.zoom_requested = max(ZOOM_MIN, min(ZOOM_MAX, float(requested_zoom)))
         self.max_zoom = self._compute_max_zoom()
         self.zoom = min(self.zoom_requested, self.max_zoom)
-        self.t = Tokens(self.theme, self.zoom, self.dpi)
+        # 批 114 P2 v2：主按钮 C（石板蓝，默认）/ D（石墨）；旧配置缺键 → c。
+        self.button_palette = normalize_button_palette(self.store.get("button_palette"))
+        self.sidebar_open = True
+        self._sidebar_compact_cache: bool | None = None
+        self.t = Tokens(self.theme, self.zoom, self.dpi, self.button_palette)
         self.running = False
         self.run_seen = False
         self.proc = None
         self.current_call = None
         self.current_page_key = ""
+        # 批 114 导航（用户 m03256）：唯一路由状态 + accordion 展开状态。
+        self.current_route = ""
+        self.nav_open: dict = {"page": "", "group": ""}
         self.pages: dict[str, P.BasePage] = {}
         self.engine_status = EB.engine_status()
         self.last_line = ""
@@ -258,6 +267,12 @@ class App:
             self.mark("version_fallback", engine_version=self._version_info["engine_version"],
                       fallback=self.app_version)
         self._close_requested = False
+        # 批 114：顶栏搜索（真实索引，见 ui/search_index.py）。焦点用于全局 ↑↓ 选择。
+        self._search_query = ""
+        self._search_matches: list = []
+        self._search_selected = 0
+        self._search_focus = False
+        self._search_slot = None
         # 注意：不要在这里存 browse task 句柄 —— 会遮蔽下方同名 async 方法（GUI-04：
         # flet 1.0.5 的 run_task 只收 coroutine function）。句柄需要的话改名，别复用方法名。
         self.prefill_hooks: dict = {}
@@ -319,8 +334,16 @@ class App:
             ),
             font_family=FONT_FAMILY,
             # 批 112 A-03：复选框走主题投影（默认 1px 黑框与全站胶囊/紫色语言不一致）。
+            # 勾选态才填 accent；未选保持透明（只在 hover 时给淡 tint）。
+            # 旧写法 fill_color=palette.accent 会让「未勾选」也变实心色块（用户 m02238 复核发现）。
             checkbox_theme=ft.CheckboxTheme(
-                fill_color=palette.accent,
+                fill_color={
+                    ft.ControlState.DEFAULT: "transparent",
+                    ft.ControlState.HOVERED: palette.accent_soft,
+                    ft.ControlState.SELECTED: palette.accent,
+                    ft.ControlState.PRESSED: palette.accent_hover,
+                    ft.ControlState.DISABLED: "transparent",
+                },
                 check_color=palette.on_accent,
                 border_side=ft.BorderSide(tokens.px(1), palette.border_strong),
                 shape=ft.RoundedRectangleBorder(radius=tokens.px(4)),
@@ -480,27 +503,475 @@ class App:
         if cycle_count > 0:
             self.page.run_task(self._theme_cycles, cycle_count)
 
+    # ── 设计像素 / 断点 ────────────────────────────────────────────────
+    def _design_width(self) -> float:
+        """当前内容宽换算回设计像素（1240 基准）；<720 收 56 图标条。"""
+        width = 0.0
+        try:
+            width = float(self.page.width or 0)
+        except (TypeError, ValueError):
+            width = 0.0
+        if width <= 0:
+            width = float(self.window_w or 0)
+        return width / max(self.t.k, 1e-6)
+
+    def _sidebar_compact(self) -> bool:
+        return self._design_width() < BREAK["rail"]
+
+    def _page_label(self, key: str) -> str:
+        for entry in IA.nav_parent_entries():
+            if entry["key"] == key:
+                return str(entry["label"])
+        return APP_TITLE
+
+    # ── 工具栏（52 高，横跨全宽）───────────────────────────────────────
+    def _toolbar_spec(self):
+        page = self.pages.get(self.current_page_key)
+        labels = IA.route_labels(self.current_route or self.current_page_key)
+        base = getattr(page, "TOOLBAR_TITLE", "") or labels["page_label"]
+        title = base
+        default_view = IA.page_defaults().get(labels["page"], "")
+        if labels["view"] and labels["view"] != default_view:
+            # 二级视图页：顶栏同时给出父页与子项，避免「只有子项」找不到归属。
+            title = f"{base} · {labels['view_label']}"
+        meta = ""
+        reader = getattr(page, "toolbar_meta", None)
+        if callable(reader):
+            try:
+                meta = str(reader() or "")
+            except Exception as exc:  # noqa: BLE001 - 页头 meta 失败不得拖垮外壳
+                self.mark("toolbar_meta_error", page=self.current_page_key,
+                          error=f"{type(exc).__name__}: {exc}")
+        if not meta:
+            meta = "引擎就绪 · 本地只读" if self.engine_status.ok else "引擎缺失 · 只读"
+        action = None
+        reader = getattr(page, "toolbar_action", None)
+        if callable(reader):
+            try:
+                action = reader()
+            except Exception as exc:  # noqa: BLE001
+                self.mark("toolbar_action_error", page=self.current_page_key,
+                          error=f"{type(exc).__name__}: {exc}")
+        return title, meta, action
+
+    def _ensure_toolbar_parts(self) -> None:
+        """顶部栏控件只建一次：导航只改文案/动作，避免每次重建 TextField（perf 回归）。"""
+        if getattr(self, "_toolbar_row", None) is not None:
+            return
+        t = self.t
+        self._toolbar_title = C.text("", t, role="page-title")
+        self._toolbar_meta = C.text("", t, role="meta", color=t.palette.text_muted)
+        # 批 114：搜索输入不再铺灰（surface_2），改为纸色底 + 发丝描边 + 放大镜。
+        self._toolbar_search = C.search_field(
+            t, value=str(getattr(self, "_search_query", "") or ""),
+            hint_text="搜索页面、命令或最近记录",
+            width=t.px(236),
+            on_submit=self._on_search_submit,
+            on_change=self._on_search_change,
+        )
+        self._toolbar_search.on_focus = lambda e: self._set_search_focus(True)
+        self._toolbar_search.on_blur = lambda e: self._set_search_focus(False)
+        # 图标按钮与搜索框同高，工具栏不出现 26 vs 28 的 2px 高差（用户 m02816）。
+        self._toolbar_menu = C.icon_button("MENU", "收起 / 展开侧栏", self.toggle_sidebar, t,
+                                           color=t.palette.text_muted, height=t.control_h())
+        self._toolbar_tune = C.icon_button("TUNE", "外观与缩放",
+                                           lambda e: self.goto("settings"), t,
+                                           color=t.palette.text_muted, height=t.control_h())
+        self._toolbar_action_slot = ft.Container()
+        self._toolbar_action_key = None
+        self._toolbar_action_btn = None
+        # 用户 m02855：搜索框 + 右侧「外观」图标一起放进白色圆角胶囊，
+        # 在 sidebar 灰工具栏上也是一块完整的白卡搜索区（搜索框本身不再描边）。
+        self._toolbar_search_card = ft.Container(
+            height=t.px(32),
+            bgcolor=t.palette.surface,
+            border=C.box(t),
+            border_radius=t.radius("pill"),
+            padding=C._pad(t, 12, 0, 4, 0),
+            content=ft.Row(
+                spacing=t.sp("half"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[self._toolbar_search, self._toolbar_tune]),
+        )
+        self._toolbar_row = ft.Row(
+            spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[self._toolbar_menu, self._toolbar_title, self._toolbar_meta,
+                      ft.Container(expand=True), self._toolbar_search_card,
+                      self._toolbar_action_slot])
+        self._toolbar_tokens = t
+        self.toolbar_search = self._toolbar_search
+
+    def _apply_toolbar_theme(self) -> None:
+        """Tokens 变了（换主题/缩放/DPI）时只改样式，不重建控件。"""
+        t = self.t
+        title_size, title_weight = t.text_role("page-title")
+        meta_size, meta_weight = t.text_role("meta")
+        self._toolbar_title.size = t.font(title_size)
+        self._toolbar_title.weight = C._w(t, title_weight)
+        self._toolbar_title.color = t.palette.text
+        self._toolbar_meta.size = t.font(meta_size)
+        self._toolbar_meta.weight = C._w(t, meta_weight)
+        self._toolbar_meta.color = t.palette.text_muted
+        search = self._toolbar_search
+        search.width = t.px(236)
+        search.height = t.control_h()
+        search.text_size = t.font("body")
+        search.filled = False
+        search.fill_color = None
+        search.bgcolor = t.palette.surface
+        # 描边交给外层白卡胶囊，输入框本身透明无框（用户 m02855）。
+        search.border = None
+        search.content_padding = C._pad(t, 8, 4, 8, 4)
+        search.hint_style = ft.TextStyle(size=t.font("body"), color=t.palette.text_faint)
+        search.text_style = ft.TextStyle(size=t.font("body"), color=t.palette.text)
+        card = self._toolbar_search_card
+        card.height = t.px(32)
+        card.bgcolor = t.palette.surface
+        card.border = C.box(t, color=(t.palette.accent if getattr(self, "_search_focus", False)
+                                      else t.palette.border))
+        card.border_radius = t.radius("pill")
+        card.padding = C._pad(t, 12, 0, 4, 0)
+        card.content.spacing = t.sp("half")
+        self._toolbar_menu.icon_color = t.palette.text_muted
+        self._toolbar_tune.icon_color = t.palette.text_muted
+        self._toolbar_menu.height = t.control_h()
+        self._toolbar_tune.height = t.control_h()
+        self._toolbar_row.spacing = t.sp("1")
+
+    def _toolbar_content(self) -> ft.Control:
+        t = self.t
+        title, meta, action = self._toolbar_spec()
+        self._ensure_toolbar_parts()
+        self._apply_toolbar_theme()
+        self._toolbar_title.value = title
+        self._toolbar_meta.value = meta
+        if action:
+            label, icon, handler = action
+            key = (label, icon)
+            fresh = self._toolbar_tokens is not t
+            if key != self._toolbar_action_key or self._toolbar_action_btn is None or fresh:
+                btn = C.primary_button(label, handler, t, icon=icon)
+                self._toolbar_action_btn = btn
+                self._toolbar_action_key = key
+                self._toolbar_action_slot.content = btn
+            else:
+                self._toolbar_action_btn.on_click = handler
+        else:
+            self._toolbar_action_slot.content = None
+            self._toolbar_action_key = None
+            self._toolbar_action_btn = None
+        self._toolbar_tokens = t
+        self.toolbar_search = self._toolbar_search
+        return self._toolbar_row
+
+    def _toolbar(self) -> ft.Container:
+        t = self.t
+        self.toolbar = ft.Container(
+            height=t.px(TOOLBAR_H), bgcolor=t.palette.sidebar,
+            padding=C._pad(t, 12, 0, 12, 0), content=self._toolbar_content(),
+        )
+        return self.toolbar
+
+    def _sync_toolbar(self) -> None:
+        toolbar = getattr(self, "toolbar", None)
+        if toolbar is not None:
+            toolbar.content = self._toolbar_content()
+
+    # ── 顶栏搜索：真实索引（页面 / 命令 / 最近记录）─────────────────────
+    # 旧实现只存字符串 + 6 个页面别名 = 用户 m02696 说的「假搜索」。现在：
+    # · 数据源见 ui/search_index.py（页面、命令、recent.* 路径、notes_repo）；
+    # · 输入即时过滤并展示可点结果，Enter 执行第一条，↑↓ 由全局热键前置处理；
+    # · 结果是真动作（goto / open_bib_view / issue step / 主题 / 引擎 / 文件记录），
+    #   不存在「点一下只弹提示」的假结果。
+    def _set_search_focus(self, value: bool) -> None:
+        self._search_focus = bool(value)
+        # 搜索胶囊是唯一描边层：聚焦时描边换成 accent，失焦恢复发丝边。
+        card = getattr(self, "_toolbar_search_card", None)
+        if card is None:
+            return
+        card.border = C.box(self.t, color=(self.t.palette.accent if value
+                                           else self.t.palette.border))
+        try:
+            card.update()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _search_entries(self) -> list:
+        store = getattr(self, "store", None)
+        data = getattr(store, "data", None)
+        data = data if isinstance(data, dict) else {}
+        bib_views = list(getattr(P.BibPage, "VIEWS", []) or [])
+        issue_steps = [(step.get("key"), step.get("title"))
+                       for step in (getattr(P.IssuePage, "STEPS", []) or [])]
+        return SI.build_index(
+            nav_tree=IA.NAV_TREE, bib_views=bib_views, issue_steps=issue_steps,
+            recent=data.get("recent"), paths=data.get("paths"),
+        )
+
+    def _search_matches_now(self, query: str | None = None) -> list:
+        text = (self._search_query if query is None else str(query or "")).strip()
+        if not text:
+            return []
+        try:
+            return SI.match_entries(self._search_entries(), text, limit=SI.DEFAULT_LIMIT)
+        except Exception as exc:  # noqa: BLE001 索引坏掉不能拖垮顶栏
+            self.mark("search_index_error", error=f"{type(exc).__name__}: {exc}")
+            return []
+
+    def _update_search_slot(self, slot=None) -> None:
+        slot = slot if slot is not None else getattr(self, "_search_slot", None)
+        if slot is None:
+            return
+        try:
+            slot.update()
+        except Exception:  # noqa: BLE001 构建期/未挂载
+            pass
+
+    def _search_panel_content(self, query: str, matches: list) -> ft.Column:
+        t, p = self.t, self.t.palette
+        icons = {"page": "APPS", "command": "BOLT", "recent": "HISTORY",
+                 "path": "FOLDER_OPEN"}
+        rows: list = []
+        for index, entry in enumerate(matches):
+            selected = index == getattr(self, "_search_selected", 0)
+            rows.append(ft.Container(
+                padding=C._pad(t, 8, 6, 8, 6),
+                border_radius=t.radius("sm"),
+                bgcolor=p.sel_tint if selected else None,
+                on_click=lambda e, item=entry: self._run_search_entry(item),
+                content=ft.Row(spacing=t.sp("1"),
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                               controls=[
+                    ft.Icon(C.ic(icons.get(entry.kind, "SEARCH"), "CIRCLE"),
+                            size=t.px(14), color=p.text_muted),
+                    ft.Column(spacing=0, expand=True, controls=[
+                        C.text(entry.label, t, "small", p.text, max_lines=1,
+                               overflow=ft.TextOverflow.ELLIPSIS),
+                        *([C.text(entry.detail, t, "caption", p.text_faint, max_lines=1,
+                                  overflow=ft.TextOverflow.ELLIPSIS)]
+                          if entry.detail else []),
+                    ]),
+                    C.text(SI.KIND_LABELS.get(entry.kind, ""), t, "caption", p.text_faint),
+                ]),
+            ))
+        header = ft.Row(spacing=t.sp("1"), controls=[
+            C.text(f"搜索「{query}」", t, "caption", p.text_muted),
+            ft.Container(expand=True),
+            C.text(f"{len(matches)} 条", t, "caption", p.text_faint),
+        ])
+        body: list = rows or [C.text("没有匹配的页面、命令或最近记录。", t, "small", p.text_muted)]
+        return ft.Column(spacing=t.px(2), controls=[
+            header, *body, C.text(SI.SOURCE_NOTE, t, "caption", p.text_faint),
+        ])
+
+    def _refresh_search_panel(self) -> None:
+        slot = getattr(self, "_search_slot", None)
+        if slot is None:
+            return
+        query = str(getattr(self, "_search_query", "") or "").strip()
+        if not query:
+            self._search_matches = []
+            self._search_selected = 0
+            slot.visible = False
+            slot.content = None
+            self._update_search_slot(slot)
+            return
+        matches = self._search_matches_now(query)
+        self._search_matches = matches
+        if matches:
+            self._search_selected = max(0, min(int(getattr(self, "_search_selected", 0) or 0),
+                                              len(matches) - 1))
+        else:
+            self._search_selected = 0
+        slot.content = self._search_panel_content(query, matches)
+        slot.visible = True
+        self._update_search_slot(slot)
+
+    def _on_search_change(self, e) -> None:
+        # F2：导航/重建后保留搜索词；批 114：即时过滤 + 结果显示（不再只是存字符串）。
+        self._search_query = str(getattr(e.control, "value", "") or "")
+        self._search_selected = 0
+        self._refresh_search_panel()
+
+    def _on_search_submit(self, e) -> None:
+        query = str(getattr(e.control, "value", "") or "").strip()
+        self._search_query = str(getattr(e.control, "value", "") or "")
+        if not query:
+            self._refresh_search_panel()
+            return
+        matches = self._search_matches_now(query)
+        if not matches:
+            self.toast("没有匹配的页面、命令或最近记录")
+            try:
+                self.page.update()
+            except Exception:  # noqa: BLE001 构建期
+                pass
+            self._refresh_search_panel()
+            return
+        self._run_search_entry(matches[min(int(getattr(self, "_search_selected", 0) or 0),
+                                          len(matches) - 1)])
+
+    def _clear_search(self) -> None:
+        self._search_query = ""
+        self._search_matches = []
+        self._search_selected = 0
+        search = getattr(self, "_toolbar_search", None)
+        if search is not None:
+            search.value = ""
+            C.sync_clearable(search)     # m03131：程序化清空后收起输入框内 ✕
+            try:
+                search.update()
+            except Exception:  # noqa: BLE001
+                pass
+        slot = getattr(self, "_search_slot", None)
+        if slot is not None:
+            slot.visible = False
+            slot.content = None
+            self._update_search_slot(slot)
+
+    def _run_search_entry(self, entry) -> None:
+        """执行一条搜索结果：全部落到真实动作，失败有中文兜底。"""
+        action = str(getattr(entry, "action", "") or "")
+        label = str(getattr(entry, "label", "") or "")
+        self._clear_search()
+        try:
+            if action.startswith("goto:"):
+                route = action.split(":", 1)[1]
+                self.navigate(route, source="search")
+                self.toast(f"已打开「{IA.route_labels(route)['title']}」")
+                return
+            elif action.startswith("bib:"):
+                self.open_bib_view(action.split(":", 1)[1], source="search")
+                self.toast(f"已打开「{label}」")
+                return
+            elif action.startswith("issue:"):
+                step = action.split(":", 1)[1]
+                self.navigate(f"issue:{step}", source="search")
+                self.toast(f"已打开「{label}」")
+                return
+            elif action.startswith("open:"):
+                path = action.split(":", 1)[1]
+                if Path(path).exists():
+                    self.open_path(path)
+                else:
+                    self.toast(f"记录不存在：{path}")
+                return
+            elif action == "theme.toggle":
+                self.set_theme("light" if self.theme == "dark" else "dark")
+                return
+            elif action in ("theme.light", "theme.dark"):
+                self.set_theme(action.split(".", 1)[1])
+                return
+            elif action == "engine.refresh":
+                self.refresh_engine_status()
+                self.rebuild_shell()
+                self.toast("引擎状态已刷新")
+                return
+            elif action == "run.current":
+                SHELL._run_current(self)
+                return
+            elif action == "stop.current":
+                self.stop_run()
+                return
+            elif action == "new.single":
+                self.goto("single")
+                self.toast("已打开「单篇稿件」")
+                return
+            elif action in ("zoom.in", "zoom.out", "zoom.reset"):
+                if action == "zoom.reset":
+                    target = 1.0
+                else:
+                    target = round(self.zoom + (0.1 if action == "zoom.in" else -0.1), 2)
+                self.set_zoom(target)
+                return
+        except Exception as exc:  # noqa: BLE001 单条结果打不开不能炸壳
+            self.mark("search_error", action=action, error=f"{type(exc).__name__}: {exc}")
+            self.toast("这个结果暂时打不开，请改用左侧导航")
+            return
+        self.toast("这个结果暂时打不开，请改用左侧导航")
+
+    def _search_move(self, delta: int) -> None:
+        matches = getattr(self, "_search_matches", []) or []
+        if not matches:
+            return
+        self._search_selected = (int(getattr(self, "_search_selected", 0) or 0) + delta) % len(matches)
+        self._refresh_search_panel()
+
+    def search_key_handle(self, event) -> bool:
+        """全局热键前置：搜索框聚焦时 ↑↓ 选择、Escape 收起结果。
+
+        Enter 走 TextField 的 on_submit（Flet 里文本框内的 Enter 不会冒泡成普通键），
+        所以这里不重复处理 Enter，避免两条路径各执行一次。
+        """
+        if not getattr(self, "_search_focus", False):
+            return False
+        key = str(getattr(event, "key", "") or "")
+        if key in ("Arrow Down", "ArrowDown", "Down", "Arrow Up", "ArrowUp", "Up"):
+            self._search_move(1 if "Down" in key or key == "Down" else -1)
+            return True
+        if key == "Escape" and getattr(self, "_search_query", ""):
+            self._clear_search()
+            try:
+                self.page.update()
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        return False
+
     def rebuild_shell(self) -> None:
-        self.t = Tokens(self.theme, self.zoom, self.dpi)
+        self.t = Tokens(self.theme, self.zoom, self.dpi, self.button_palette)
         self._apply_page_theme()  # GUI-10：缩放换了 Tokens → 客户端自绘文本的字号必须同步重放
         self.engine_status = EB.engine_status()
-        key = self.current_page_key or str(self.store.get("last_page", "home") or "home")
+        # 批 114：重启恢复上次路由（last_route，旧配置由 settings_store 迁移而来）。
+        page_key, view_key = IA.normalize_route(self._restore_route())
+        key = page_key
         self.pages = {cls.key: cls(self) for cls in P.PAGE_CLASSES}
         if key not in self.pages:
-            key = "home"
+            key, view_key = "home", ""
         self.current_page_key = key
+        self.current_route = IA.route_string(key, view_key)
+        self.nav_open = self._nav_open_for(self.current_route)
         # 惰性构建：启动/换主题/改缩放只建当前页；其余页首次导航时再 build（goto 内兜底）。
         self.pages[key].ensure_built()
+        activate = getattr(self.pages[key], "activate", None)
+        if view_key and callable(activate):
+            try:
+                activate(view_key, source="restore")
+            except Exception as exc:  # noqa: BLE001 恢复失败回落默认视图
+                self.mark("activate_error", page=key, view=view_key,
+                          error=f"{type(exc).__name__}: {exc}")
+                view_key = IA.page_defaults().get(key, "")
+                self.current_route = IA.route_string(key, view_key)
+        self._sidebar_compact_cache = None
         self.status_bar = C.StatusBar(self.t)
         self.toast_ctl = C.Toast(self.t)
+        self.toolbar = self._toolbar()
+        compact = self._sidebar_compact() or not self.sidebar_open
         self.sidebar = ft.Container(
-            width=self.t.px(236), bgcolor=self.t.palette.sidebar,
-            border=ft.Border(right=C._side(self.t)), content=self._sidebar_content(),
+            width=self.t.px(self.t.rail_width if compact else SIDEBAR_W),
+            bgcolor=self.t.palette.sidebar, content=self._sidebar_content(),
         )
-        self.content = ft.Container(expand=True, content=self.pages[key].root)
-        self.toast_slot = ft.Container(padding=C._pad(self.t, 24, 0, 24, 0), content=self.toast_ctl.root)
-        body = ft.Column(spacing=0, expand=True, controls=[self.toast_slot, self.content])
+        self.content = ft.Container(
+            expand=True, bgcolor=self.t.palette.surface,
+            border_radius=ft.BorderRadius(top_left=self.t.px(10), top_right=self.t.px(10),
+                                          bottom_left=0, bottom_right=0),
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS, content=self.pages[key].root,
+        )
+        self.toast_slot = ft.Container(
+            padding=C._pad(self.t, 24, 12, 24, 0), alignment=ft.Alignment.TOP_CENTER,
+            left=0, right=0, top=0, content=self.toast_ctl.root,
+        )
+        # 批 114：搜索结果下拉（Overlay 层，位于页面内容之上、toast 之下）。
+        self._search_slot = ft.Container(
+            visible=False, width=self.t.px(380), top=self.t.px(6), right=self.t.px(12),
+            bgcolor=self.t.palette.surface, border=C.box(self.t),
+            border_radius=self.t.radius("md"),
+            padding=C._pad(self.t, 8, 8, 8, 8),
+        )
+        self.stage = ft.Stack(expand=True,
+                              controls=[self.content, self._search_slot, self.toast_slot])
+        body = ft.Container(expand=True, bgcolor=self.t.palette.bg, content=self.stage)
         shell = ft.Column(spacing=0, expand=True, controls=[
+            self.toolbar,
             ft.Row(spacing=0, expand=True, controls=[self.sidebar, body]),
             self.status_bar.root,
         ])
@@ -515,93 +986,283 @@ class App:
         self.page.window.min_height = min_h
         self.status_bar.set_meta(self._status_meta())
         self.page.update()
-        self.mark("shell_built", page=key, theme=self.theme, zoom=self.zoom, dpi=self.dpi)
+        self.mark("shell_built", page=key, route=self.current_route,
+                  theme=self.theme, zoom=self.zoom, dpi=self.dpi,
+                  sidebar=self.t.px(SIDEBAR_W), toolbar=self.t.px(TOOLBAR_H))
         # 族 B：重建后页面是全新实例，必须补 on_show（幂等）：恢复磁盘视图 + 触发数据加载。
         try:
             self.pages[key].on_show()
         except Exception as exc:  # noqa: BLE001
             self.mark("on_show_error", page=key, error=f"{type(exc).__name__}: {exc}")
 
+    # ── 批 114 导航：唯一路由入口 + accordion 侧栏（用户 m03256）────────────
+    def _restore_route(self) -> str:
+        raw = self.current_route or str(self.store.get("last_route", "") or "")
+        page, view = IA.normalize_route(raw)
+        return IA.route_string(page, view)
+
+    def _nav_open_for(self, route: str) -> dict:
+        page, view = IA.normalize_route(route)
+        return {"page": page, "group": IA.group_of_view(page, view) if view else "",
+                "collapsed": False}
+
+    def _nav_default_route(self, page_key: str) -> str:
+        """进入父项时打开的默认视图（旧行为：单篇/引用库记住上次视图）。"""
+        defaults = IA.page_defaults()
+        view = defaults.get(page_key, "")
+        if page_key == "single":
+            saved = str(self.store.get("single_flow", "") or "")
+            if saved in {item["key"] for item in IA.nav_views("single")}:
+                view = saved
+        elif page_key == "bib":
+            saved = str(self.store.get("bib_view", "") or "")
+            if saved in {item["key"] for item in IA.nav_views("bib")}:
+                view = saved
+        elif page_key == "issue":
+            view = "overview"
+        return IA.route_string(page_key, view)
+
+    def _route_view(self) -> str:
+        return IA.normalize_route(self.current_route)[1]
+
+    def _toggle_nav_page(self, page_key: str) -> None:
+        """父行 chevron：只展开/收起，不导航（规格：箭头点击区不触发导航）。"""
+        current = dict(self.nav_open or {})
+        same = current.get("page") == page_key
+        collapsed = bool(current.get("collapsed")) if same else False
+        self.nav_open = {
+            "page": page_key if not same or collapsed else page_key,
+            "group": (current.get("group") or "") if same else self._nav_open_for(
+                IA.route_string(page_key, IA.page_defaults().get(page_key, "")))["group"],
+            "collapsed": (not collapsed) if same else False,
+        }
+        if same and not collapsed:
+            self.nav_open["collapsed"] = True
+        self.store.set("nav_open", dict(self.nav_open))
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is not None:
+            sidebar.content = self._sidebar_content()
+            self.page.update()
+        self.mark("nav_toggle", page=page_key, expanded=not self.nav_open["collapsed"])
+
+    def _toggle_nav_group(self, group_key: str) -> None:
+        current = dict(self.nav_open or {})
+        opened = current.get("group") == group_key
+        current["group"] = "" if opened else group_key
+        current["page"] = "bib"
+        current["collapsed"] = False
+        self.nav_open = current
+        self.store.set("nav_open", dict(self.nav_open))
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is not None:
+            sidebar.content = self._sidebar_content()
+            self.page.update()
+        self.mark("nav_toggle", page="bib", group=group_key, expanded=not opened)
+
     def _sidebar_content(self) -> ft.Control:
         t = self.t
+        compact = self._sidebar_compact() or not self.sidebar_open
+        self._sidebar_compact_cache = compact
         items: list = []
-        brand_box = ft.Container(
-            padding=C._pad(t, 18, 18, 18, 16),
-            content=ft.Row(spacing=t.sp("2"), controls=[
-                brand.sidebar_mark(t, 36),
-                ft.Column(spacing=0, controls=[
-                    C.text("编辑部工具箱", t, role="section"),
-                ]),
-            ]),
-        )
-        items.append(brand_box)
-        for group, entries in NAV_GROUPS:
-            items.append(C.nav_group_label(group, t))
-            for key, label, icon in entries:
-                active = key == self.current_page_key
-                items.append(C.nav_item(icon, label, t, active=active,
-                                        on_click=lambda e, k=key: self.goto(k)))
-        items.append(ft.Container(expand=True))
-        items.append(C.divider(t))
-        self.theme_switch = ft.Switch(value=self.theme == "dark", active_color=t.palette.accent,
-                                      on_change=self.on_theme_switch)
-        items.append(ft.Container(
-            padding=C._pad(t, 18, 8, 18, 8),
-            content=ft.Row(spacing=t.sp("1"), controls=[
-                ft.Icon(C.ic("DARK_MODE"), size=t.px(18), color=t.palette.text_muted),
-                C.text("深色模式", t, "small", t.palette.text_muted),
-                ft.Container(expand=True),
-                self.theme_switch,
-            ]),
-        ))
-        engine_ok = self.engine_status.ok
-        items.append(ft.Container(
-            padding=C._pad(t, 18, 2, 18, 12),
-            content=ft.Column(spacing=0, controls=[
-                C.text(self.app_version + " · " + FLET_VERSION, t, "caption", t.palette.text_faint),
-                C.text(("引擎就绪" if engine_ok else "引擎缺失") + " · 本地运行", t, "caption",
-                       t.palette.text_faint),
-            ]),
-        ))
-        return ft.Column(spacing=t.sp("half"), expand=True, controls=items)
+        brand_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=[brand.aleph_mark(t, 22)])
+        if not compact:
+            brand_row.controls.append(C.text("编辑部工具箱", t, role="section"))
+        items.append(ft.Container(padding=C._pad(t, 16, 14, 16, 10), content=brand_row))
 
-    def goto(self, key: str) -> None:
-        if key not in self.pages or key == self.current_page_key:
+        active_page = self.current_page_key or "home"
+        active_view = self._route_view()
+        open_state = dict(self.nav_open or {})
+        open_page = str(open_state.get("page") or active_page)
+        open_group = str(open_state.get("group") or "")
+        collapsed = bool(open_state.get("collapsed"))
+
+        nav_items: list = []
+        for section in IA.NAV_TREE:
+            if not compact:
+                nav_items.append(C.nav_group_label(section["group"], t))
+            for entry in section["entries"]:
+                key = str(entry["key"])
+                active = key == active_page
+                views = IA.nav_views(key)
+                groups = IA.group_views(key)
+                has_children = bool(views or groups)
+                if compact:
+                    nav_items.append(C.nav_item(
+                        str(entry["icon"]), str(entry["label"]), t, active=active,
+                        compact=True, on_click=lambda e, k=key: self.goto(k)))
+                    continue
+                expanded = has_children and open_page == key and not collapsed
+                nav_items.append(C.nav_parent(
+                    str(entry["icon"]), str(entry["label"]), t, active=active,
+                    expanded=expanded, has_children=has_children,
+                    on_click=lambda e, k=key: self.navigate(
+                        self._nav_default_route(k), source="nav"),
+                    on_toggle=lambda e, k=key: self._toggle_nav_page(k)))
+                if not expanded:
+                    continue
+                if groups:
+                    for group in groups:
+                        gkey = str(group["key"])
+                        gexpanded = gkey == open_group
+                        nav_items.append(C.nav_group(
+                            str(group["label"]), t, expanded=gexpanded, indent=28,
+                            on_click=lambda e, g=gkey: self._toggle_nav_group(g)))
+                        if not gexpanded:
+                            continue
+                        for view in group["views"]:
+                            vkey = str(view["key"])
+                            nav_items.append(C.nav_child(
+                                str(view["label"]), t, indent=52,
+                                active=active and vkey == active_view,
+                                on_click=lambda e, v=vkey: self.navigate(
+                                    f"bib:{v}", source="nav")))
+                else:
+                    for view in views:
+                        vkey = str(view["key"])
+                        nav_items.append(C.nav_child(
+                            str(view["label"]), t, indent=52,
+                            active=active and vkey == active_view,
+                            on_click=lambda e, k=key, v=vkey: self.navigate(
+                                f"{k}:{v}", source="nav")))
+
+        # 导航超高时内部滚动；主题开关与引擎页脚固定在最底部。
+        if compact:
+            items.extend(nav_items)
+            items.append(ft.Container(expand=True))
+        else:
+            items.append(ft.Container(
+                expand=True, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                content=ft.Column(spacing=0, expand=True, scroll=ft.ScrollMode.AUTO,
+                                  controls=nav_items)))
+        if compact:
+            items.append(ft.Container(padding=C._pad(t, 15, 4, 15, 4), content=C.icon_button(
+                "DARK_MODE", "切换深浅色", lambda e: self.set_theme(
+                    "light" if self.theme == "dark" else "dark"), t,
+                color=t.palette.text_muted)))
+        else:
+            self.theme_switch = C.switch(
+                t, value=self.theme == "dark", on_change=self.on_theme_switch)
+            items.append(ft.Container(
+                padding=C._pad(t, 16, 2, 16, 2),
+                content=ft.Row(spacing=t.sp("1"), controls=[
+                    ft.Icon(C.ic("DARK_MODE"), size=t.px(16), color=t.palette.text_muted),
+                    C.text("深色模式", t, "small", t.palette.text_muted),
+                    ft.Container(expand=True),
+                    self.theme_switch,
+                ]),
+            ))
+            engine_ok = self.engine_status.ok
+            engine_version = str(self._version_info.get("engine_version") or self.app_version)
+            items.append(C.divider(t))
+            items.append(ft.Container(
+                padding=C._pad(t, 16, 8, 16, 10),
+                content=ft.Column(spacing=t.sp("xs"), controls=[
+                    ft.Row(spacing=t.sp("half"), controls=[
+                        C.status_dot("ok" if engine_ok else "error", t),
+                        C.text(f"引擎 {engine_version} · " + ("就绪" if engine_ok else "缺失"),
+                               t, "caption", t.palette.text_muted),
+                    ]),
+                    C.text(f"本地运行 · {self.app_version}", t, "caption", t.palette.text_faint),
+                ]),
+            ))
+        return ft.Column(spacing=0, expand=True, controls=items)
+
+    def toggle_sidebar(self, e=None) -> None:
+        self.sidebar_open = not self.sidebar_open
+        self._rebuild_sidebar()
+        self.mark("sidebar_toggled", open=self.sidebar_open,
+                  compact=self._sidebar_compact())
+
+    def _rebuild_sidebar(self) -> None:
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is None:
             return
+        compact = self._sidebar_compact() or not self.sidebar_open
+        sidebar.width = self.t.px(self.t.rail_width if compact else SIDEBAR_W)
+        sidebar.content = self._sidebar_content()
+        self._sync_toolbar()
+        self.page.update()
+
+    def navigate(self, route: str, *, source: str = "nav") -> None:
+        """唯一路由入口：`single:proofcheck` / `issue:toc` / `bib:edit`（用户 m03256）。
+
+        - 无冒号的 route 走页面默认视图；非法 route 回落工作台（不静默丢用户）。
+        - 同一页面内切换二级视图也要 activate + 重建侧栏（展开态/高亮随 route 变）。
+        """
+        page_key, view_key = IA.normalize_route(route)
+        route_str = IA.route_string(page_key, view_key)
+        if page_key not in getattr(self, "pages", {}):
+            return
+        same_page = page_key == self.current_page_key
         t0 = time.monotonic()
-        self.current_page_key = key
-        self.store.set("last_page", key)
-        self.content.content = self.pages[key].ensure_built()
-        self.sidebar.content = self._sidebar_content()
+        self.current_page_key = page_key
+        self.current_route = route_str
+        self.nav_open = self._nav_open_for(route_str)
+        self.store.set("last_route", route_str)
+        self.store.set("last_page", page_key)
+        self.store.set("nav_open", dict(self.nav_open))
+        page = self.pages[page_key]
+        root = page.ensure_built()
+        activate = getattr(page, "activate", None)
+        if callable(activate):
+            try:
+                activate(view_key, source=source)
+            except Exception as exc:  # noqa: BLE001 单页激活失败不得炸壳
+                self.mark("activate_error", page=page_key, view=view_key,
+                          error=f"{type(exc).__name__}: {exc}")
+        content = getattr(self, "content", None)
+        if content is not None and content.content is not root:
+            content.content = root
+        sidebar = getattr(self, "sidebar", None)
+        if sidebar is not None:
+            sidebar.content = self._sidebar_content()
+        self._sync_toolbar()
         self.page.update()
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
-        self.page_switches.append(elapsed_ms)
-        try:
-            self.pages[key].on_show()
-        except Exception as exc:  # noqa: BLE001
-            self.mark("on_show_error", page=key, error=f"{type(exc).__name__}: {exc}")
-        self.mark("nav_change", page=key, switch_ms=elapsed_ms,
-                  switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1))
+        if not same_page:
+            self.page_switches.append(elapsed_ms)
+            try:
+                page.on_show()
+            except Exception as exc:  # noqa: BLE001
+                self.mark("on_show_error", page=page_key,
+                          error=f"{type(exc).__name__}: {exc}")
+        self.mark("nav_change", route=route_str, page=page_key, view=view_key,
+                  source=source, switch_ms=elapsed_ms,
+                  switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1)
+                  if self.page_switches else None)
+
+    def goto(self, key: str) -> None:
+        """兼容旧调用：`goto("bib")` = 去该页默认路由；带冒号时等价 navigate。"""
+        if ":" in str(key or ""):
+            self.navigate(key, source="goto")
+            return
+        if key not in self.pages:
+            return
+        if key == self.current_page_key and self.page is not None:
+            return
+        self.navigate(self._nav_default_route(key), source="goto")
 
     def open_bib_view(self, view: str, *, source: str = "nav") -> None:
         """跨页入口：去「引用库」并切到指定视图（source=single 表示从单篇页跳来）。
 
-        `goto` 对同 key 会早退，所以这里必须**无条件** set_view，不能只在换页时切。
+        批 114 起与导航共用 `navigate`：同页/跨页都会真正激活该视图，不会早退。
         """
-        bib_page = self.pages.get("bib")
-        if bib_page is None:
-            return
-        self.goto("bib")
-        bib_page.set_view(view, source=source)
+        self.navigate(f"bib:{view}", source=source)
 
     def _status_meta(self) -> str:
-        engine = "引擎就绪" if self.engine_status.ok else "引擎缺失"
-        return (f"{APP_TITLE} · Flet {FLET_VERSION} · {self.theme} · {self.dpi}dpi · "
-                f"{self.dpi / 96.0:.0%} · {self.zoom:.2f}× · {engine}")
+        """状态栏右侧只留一句人话：不写 DPI / Flet 版本 / 缩放等实现细节。"""
+        version = str(getattr(self, "app_version", "") or "")
+        if not version:
+            return "本地只读"
+        return f"本地只读 · {version if version.startswith('v') else 'v' + version}"
 
     # ── 主题 / 缩放 / 设置 ──────────────────────────────────────────────
     def on_theme_switch(self, e) -> None:
-        self.set_theme("dark" if e.control.value else "light")
+        target = "dark" if e.control.value else "light"
+        if target == self.theme:
+            return  # 侧栏重建会重放一次 Switch 的初始值，忽略回声，避免启动即被翻面
+        self.set_theme(target)
 
     def set_theme(self, theme: str) -> None:
         if self.running:
@@ -616,7 +1277,7 @@ class App:
         self.mark("theme_begin", theme=theme, mode=mode)
         self.theme = theme
         self.store.set("theme", theme)
-        self.t = Tokens(theme, self.zoom, self.dpi)
+        self.t = Tokens(theme, self.zoom, self.dpi, getattr(self, "button_palette", "c"))
         self.page.theme_mode = ft.ThemeMode.DARK if theme == "dark" else ft.ThemeMode.LIGHT
         retinted = 0
         if built:
@@ -649,6 +1310,10 @@ class App:
         target = "dark" if self.theme == "dark" else "light"
         bg_map = palette_remap(target)
         fg_map = palette_remap(target, role="fg")
+        # 主按钮 C/D 的颜色不在 23 色板里，单独按按钮语义映射（同主题浅/深互换）。
+        button_map = self._button_color_map(old.buttons, self.t.buttons)
+        bg_map.update(button_map)
+        fg_map.update(button_map)
         log_areas = self._retint_log_areas(self.page, old.palette.log_bg)
         changed = self._retint(self.page, bg_map, fg_map)
         # 浅色板里 #FFFFFF 一词多义：_retint 按「背景」角色统一换成 surface，
@@ -656,6 +1321,14 @@ class App:
         sidebar = getattr(self, "sidebar", None)
         if sidebar is not None and sidebar.bgcolor != self.t.palette.sidebar:
             sidebar.bgcolor = self.t.palette.sidebar
+            changed += 1
+        toolbar = getattr(self, "toolbar", None)
+        if toolbar is not None and toolbar.bgcolor != self.t.palette.sidebar:
+            toolbar.bgcolor = self.t.palette.sidebar
+            changed += 1
+        panel = getattr(self, "content", None)
+        if panel is not None and panel.bgcolor != self.t.palette.surface:
+            panel.bgcolor = self.t.palette.surface
             changed += 1
         for area in log_areas:
             if area.bgcolor != self.t.palette.log_bg:
@@ -666,6 +1339,40 @@ class App:
             switch.value = self.theme == "dark"
         changed += self._refresh_tokens(old)
         return changed
+
+    # ── 按钮配色 C/D（批 114 P2 v2）────────────────────────────────────
+    @staticmethod
+    def _button_color_map(old, new) -> dict[str, str]:
+        """两套按钮配色之间的旧→新颜色映射（同色不映射）。"""
+        mapping: dict[str, str] = {}
+        for name in getattr(old, "__dataclass_fields__", {}):
+            before = getattr(old, name, None)
+            after = getattr(new, name, None)
+            if isinstance(before, str) and isinstance(after, str) and before != after:
+                mapping[before] = after
+        return mapping
+
+    def set_button_palette(self, palette: str) -> None:
+        """切换主按钮 C（石板蓝）/ D（石墨）：原地 retint，不重建窗口或页面。"""
+        key = normalize_button_palette(palette)
+        if key == self.button_palette:
+            return
+        old = self.t
+        self.button_palette = key
+        self.store.set("button_palette", key)
+        self.t = Tokens(self.theme, self.zoom, self.dpi, key)
+        built = bool(self.page.controls)
+        changed = 0
+        if built:
+            mapping = self._button_color_map(old.buttons, self.t.buttons)
+            changed = self._retint(self.page, mapping, mapping)
+            changed += self._refresh_tokens(old)
+            self.status_bar.set_meta(self._status_meta())
+            self.page.update()
+        self.mark("button_palette_changed", palette=key, changed=changed,
+                  mode="retint" if built else "deferred")
+        self.persist()
+        self.toast("按钮配色：" + self.t.button_label)
 
     def _retint(self, root, bg_map: dict[str, str],
                 fg_map: dict[str, str] | None = None) -> int:
@@ -724,6 +1431,15 @@ class App:
             if border_changed:
                 setattr(node, "border", ft.Border(**sides))
                 changed += 1
+        changed += self._retint_style(node, bg_map)
+        # 语义色标签（hover / 选中行）：浅色板里 surface_2 与 sidebar 同为 #F2F2F7，
+        # 只靠颜色换肤会歧义；带 tone: 标签的容器按调色板字段名改回目标色。
+        tag = _retint_attr(node, "data")
+        if isinstance(tag, str) and tag.startswith(TONE_TAG) and isinstance(node, ft.Container):
+            color = getattr(self.t.palette, tag[len(TONE_TAG):], None)
+            if isinstance(color, str) and node.bgcolor != color:
+                node.bgcolor = color
+                changed += 1
         for attr in _RETINT_CHILD_ATTRS:
             child = _retint_attr(node, attr)
             if isinstance(child, list):
@@ -731,6 +1447,38 @@ class App:
                     changed += self._retint_node(item, bg_map, fg_map, seen)
             elif child is not None:
                 changed += self._retint_node(child, bg_map, fg_map, seen)
+        return changed
+
+    @staticmethod
+    def _retint_style(node, mapping: dict[str, str]) -> int:
+        """按钮的 bgcolor/color 状态字典不在控件属性上，换肤与 C/D 都要单独重染。"""
+        style = getattr(node, "style", None)
+        if not isinstance(style, ft.ButtonStyle) or not mapping:
+            return 0
+        changed = 0
+        for attr in ("bgcolor", "color", "icon_color", "overlay_color"):
+            value = getattr(style, attr, None)
+            if isinstance(value, dict):
+                new = {state: (mapping.get(color, color) if isinstance(color, str) else color)
+                       for state, color in value.items()}
+                if new != value:
+                    setattr(style, attr, new)
+                    changed += 1
+            elif isinstance(value, str) and value in mapping:
+                setattr(style, attr, mapping[value])
+                changed += 1
+        side = getattr(style, "side", None)
+        if isinstance(side, dict):
+            new_side = {state: (_retint_border_side(item, mapping) or item)
+                        for state, item in side.items()}
+            if new_side != side:
+                style.side = new_side
+                changed += 1
+        elif isinstance(side, ft.BorderSide):
+            new_side = _retint_border_side(side, mapping)
+            if new_side is not None:
+                style.side = new_side
+                changed += 1
         return changed
 
     def _retint_log_areas(self, node, log_bg: str, out: list | None = None,
@@ -854,6 +1602,8 @@ class App:
 
     def save_settings(self, toast: bool = False) -> None:
         self.store.set("last_page", self.current_page_key)
+        self.store.set("last_route", self.current_route or self.current_page_key or "home")
+        self.store.set("nav_open", dict(self.nav_open or {}))
         self.persist()
         self.mark("settings_saved", file=str(self.store.path), exists=self.store.path.exists())
         if toast:
@@ -969,6 +1719,7 @@ class App:
                 self._picker_error("", cancel=True)
                 return
             ref[0].value = value
+            C.sync_clearable(ref[0])     # m03131：浏览回填后显示框内 ✕
             try:
                 ref[0].update()
             except Exception:  # noqa: BLE001
@@ -1032,6 +1783,18 @@ class App:
         except (TypeError, ValueError):
             width = height = 0
         self.mark("resize", page_width=width, page_height=height)
+        # 720 设计像素断点：收成 56 图标条 / 展开 220。只在跨断点时重建侧栏，拖动不抖动。
+        if getattr(self, "sidebar", None) is not None:
+            compact = self._sidebar_compact() or not self.sidebar_open
+            if compact != self._sidebar_compact_cache:
+                self._rebuild_sidebar()
+        # 页面级断点（表格列集 / 工作入口 3→2→1）：只在跨阈值时重建当前视图。
+        page_obj = self.pages.get(self.current_page_key)
+        if page_obj is not None and hasattr(page_obj, "on_resize"):
+            try:
+                page_obj.on_resize()
+            except Exception as exc:  # noqa: BLE001
+                self.mark("page_resize_error", error=f"{type(exc).__name__}: {exc}")
 
     def on_window_event(self, e) -> None:
         if getattr(e, "type", None) == ft.WindowEventType.CLOSE:
@@ -1094,6 +1857,8 @@ class App:
             platform=str(self.page.platform),
             pages=len(self.pages),
             current_page=self.current_page_key,
+            current_route=self.current_route,
+            nav_open=dict(self.nav_open or {}),
             settings_path=str(self.store.path),
             settings_exists=self.settings_exists,
             engine=self.engine_status.to_dict(),
@@ -1137,20 +1902,18 @@ class App:
         self.mark("engine_status", **self.engine_status.to_dict())
         page_key = _env_str("P2_PAGE")
         if page_key and page_key in self.pages:
-            self.goto(page_key)
+            self.navigate(self._nav_default_route(page_key), source="env")
         # 批 112 T-C：跨平台自动化钩子——直接落到 bib 的指定子视图（10 视图覆盖用）。
         bib_view = _env_str("P2_BIB_VIEW")
         if bib_view:
             bib_page = self.pages.get("bib")
             if bib_page is not None and bib_view in bib_page.view_keys():
-                self.goto("bib")
-                bib_page._switch(bib_view, source="env")
+                self.navigate(f"bib:{bib_view}", source="env")
                 self.mark("bib_view_hook", view=bib_view, source="env")
             elif bib_page is not None:
                 # 非法视图不静默：回落概况并留证据（P2 冒烟据此断言）。
                 self.mark("bib_view_invalid", view=bib_view, reason="unknown_view")
-                self.goto("bib")
-                bib_page._switch("overview", source="env_fallback")
+                self.navigate("bib:overview", source="env_fallback")
                 self.mark("bib_view_hook", view="overview", source="env_fallback")
             else:
                 self.mark("bib_view_error", view=bib_view, reason="no_bib_page")
@@ -1159,12 +1922,21 @@ class App:
         if single_flow:
             single_page = self.pages.get("single")
             if single_page is not None and single_flow in single_page.FLOWS:
-                self.goto("single")
-                single_page._switch_flow(single_flow)
+                self.navigate(f"single:{single_flow}", source="env")
                 self.mark("single_flow_hook", flow=single_flow, source="env")
             elif single_page is not None:
                 self.mark("single_flow_invalid", flow=single_flow, reason="unknown_flow")
         await self._apply_demo_hooks()
+        # 批 114（用户 m03037）：GUI 自检可直达整期装配的某一步，只选中不运行。
+        issue_step = _env_str("P2_ISSUE_STEP")
+        if issue_step:
+            issue_page = self.pages.get("issue")
+            steps = getattr(issue_page, "STEPS", []) if issue_page is not None else []
+            if issue_page is not None and any(step["key"] == issue_step for step in steps):
+                self.navigate(f"issue:{issue_step}", source="env")
+                self.mark("issue_step_hook", step=issue_step, source="env")
+            else:
+                self.mark("issue_step_invalid", step=issue_step, reason="unknown_step")
         if _env_str("P2_ENVCHECK") in ("1", "true", "yes"):
             settings_page = self.pages.get("settings")
             if settings_page is not None and hasattr(settings_page, "_envcheck_task"):
@@ -1188,10 +1960,10 @@ class App:
         if bib_query_ui:
             bib_page = self.pages.get("bib")
             if bib_page is not None:
-                self.goto("bib")
-                bib_page._switch("query")
+                self.navigate("bib:query", source="env")
                 if bib_page.query_field is not None:
                     bib_page.query_field.value = bib_query_ui
+                    C.sync_clearable(bib_page.query_field)   # m03131
                 self.page.run_task(bib_page._run_query)
         autorun = _env_str("P2_AUTORUN")
         if autorun:

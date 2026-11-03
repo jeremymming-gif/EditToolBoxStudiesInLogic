@@ -33,6 +33,10 @@ Engine/out/
 __pycache__/
 *.pyc
 
+# pytest 缓存（`pytest` 自己会在缓存目录里写一个只含 `*` 的 .gitignore，
+# 但那个文件本身没有被忽略；在仓根、`sources-flet/`、`sources-flet/app/` 实测都会生成）—— 2026-11-03 补。
+.pytest_cache/
+
 # ─────────────────────────────────────────────────────────────
 # macOS 系统文件
 # ─────────────────────────────────────────────────────────────
@@ -41,6 +45,9 @@ __pycache__/
 
 # tools/ 里编译出来的诊断工具（源码 dump_outline.swift 已提交，可重新编译）
 tools/dump_outline
+
+# Flet 运行时解包/客户端缓存（独立仓内 .gitignore 兜底，这里再显式忽略）
+.flet/
 
 # 项目主页（VitePress）构建产物与依赖
 docs/node_modules/

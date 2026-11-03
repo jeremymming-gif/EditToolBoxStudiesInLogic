@@ -368,23 +368,17 @@ class MetadataPanel:
 
     # ── 控件工厂 ────────────────────────────────────────────────────────
     def _field(self, value: str, label: str, placeholder: str, width: float, *,
-               multiline: bool = False, on_change=None) -> ft.TextField:
+               multiline: bool = False, on_change=None) -> ft.Control:
         t = self.page.t
-        return ft.TextField(
-            label=label, value=value, hint_text=placeholder, dense=not multiline,
-            multiline=multiline, min_lines=2 if multiline else None,
-            max_lines=5 if multiline else None,
-            text_size=t.font("body"), width=t.px(width) if width else None,
+        field = C.text_field(
+            t, value=value, hint_text=placeholder,
+            width=t.px(width) if width else None,
             expand=True if not width else None,
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8),
+            multiline=multiline, min_lines=2 if multiline else 1,
+            max_lines=5 if multiline else 1,
             on_change=on_change,
         )
+        return C.form_field(t, label, field, expand=True if not width else None)
 
     def _small_button(self, label: str, on_click, *, disabled: bool = False):
         return C.secondary_button(label, on_click, self.page.t, disabled=disabled)
@@ -459,7 +453,9 @@ class MetadataPanel:
         header: list = [C.text(title, t, "small", t.palette.text)]
         if index > 0:
             header.append(ft.Container(expand=True))
-            header.append(C.text_button("删除", lambda e, i=index: self._on_remove_author(i), t))
+            # 用户 m02990：破坏性动作「删除作者」→ danger 按钮，不再是无样式文字链。
+            header.append(C.danger_button("删除", lambda e, i=index: self._on_remove_author(i), t,
+                                          icon="DELETE_OUTLINE"))
         rows: list = [ft.Row(spacing=t.sp("1"), controls=header),
                       ft.Row(spacing=t.sp("1"), controls=[
                           ft.Container(expand=True, content=self._field(
@@ -475,14 +471,16 @@ class MetadataPanel:
         for lang, label in (("cn", "单位（中文）"), ("en", "单位（英文）")):
             lines = author.affil(lang)
             affil_rows = [
-                ft.Row(spacing=t.sp("1"), controls=[
+                # 输入框 48（浮动标签）→「删」按钮底边与控制行齐平（用户 m02816）。
+                C.field_row(
                     ft.Container(expand=True, content=self._field(
                         line, f"{label} {pos + 1}", "", 0,
                         on_change=lambda e, i=index, lg=lang, p=pos:
                             self._on_affiliation(i, lg, p, e.control.value))),
-                    C.text_button("删", lambda e, i=index, lg=lang, p=pos:
-                                  self._on_remove_affiliation(i, lg, p), t),
-                ]) for pos, line in enumerate(lines)
+                    # 删除单位是破坏性动作 → danger 按钮（同行 48 高，与输入框齐平）。
+                    C.danger_button("删", lambda e, i=index, lg=lang, p=pos:
+                                    self._on_remove_affiliation(i, lg, p), t),
+                    t) for pos, line in enumerate(lines)
             ]
             limit = self.form.affiliation_limit_hint(index, lang)
             affil_rows.append(ft.Row(spacing=t.sp("1"), controls=[

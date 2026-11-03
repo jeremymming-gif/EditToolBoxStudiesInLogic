@@ -23,10 +23,6 @@ import flet as ft
 from services import engine_bridge as EB
 from ui import components as C
 
-#: 六列表头与列宽（旧壳 Treeview：题名/作者/年份/key/状态/来源）
-TABLE_COLUMNS = (("题名", 300), ("作者", 130), ("年份", 54),
-                 ("key", 130), ("状态", 60), ("来源", 170))
-
 DEFAULT_ROWS_TEXT = "输入查询内容后按回车或点「查询」。"
 NO_NOTES = "找不到私有笔记仓。请先到「引用库 → 引用库设置」页指定笔记仓路径。"
 ADVANCED_HINT = ("多行之间是 AND（都要满足）；年份行可填 2003 / 1990-2000 / >=2010；"
@@ -275,21 +271,36 @@ class BibQueryView:
         return None
 
     # -- 构建 -----------------------------------------------------------
+    def _design_width(self) -> float:
+        """设计像素宽：窗口 CSS 宽 ÷ 缩放（断点判断不看物理像素）。"""
+        try:
+            width = float(self.page.page.width or 0)
+        except Exception:  # noqa: BLE001
+            width = 0.0
+        if width <= 0:
+            width = float(getattr(self.page.app, "window_w", 0) or 0)
+        return width / max(self.page.t.k, 1e-6)
+
+    def on_resize(self) -> None:
+        """按设计宽切换列集 / 详情排布；只在跨阈值时重建，不随拖动抖。"""
+        width = self._design_width()
+        if abs(width - getattr(self, "_build_width", width)) >= 40:
+            self._build_width = width
+            self._refresh()
+
     def build(self) -> ft.Control:
+        self._build_width = self._design_width()
         t = self.page.t
         panel = self._basic_panel() if self.tab_index == 0 else self._advanced_panel()
-        intro = C.text("按 key（也认别名）、DOI 或题名（模糊匹配）查引用库；高级检索是多条件 AND。"
-                       "这一页只读：查询不会改库，也不会调检索 / AI。", t, "caption",
-                       t.palette.text_faint)
-        controls: list = [intro, self._tab_bar(), panel]
-        controls += [C.notice_bar(msg, t, tone) for tone, msg in self.notices]
-        controls += [C.text(self.rows_text, t, "small", t.palette.text_muted), self._table()]
-        controls += [C.divider(t), self._detail_panel()]
+        controls: list = [panel]
+        controls += [C.inline_note(msg, t, tone) for tone, msg in self.notices]
+        controls += [self._meta_row(), self._results()]
         if self.log_lines:
             controls.append(self._log_console())
-        return ft.Column(spacing=t.sp("1"), controls=controls)
+        return ft.Column(spacing=t.sp("1"), controls=controls, expand=True)
 
     def _tab_bar(self) -> ft.Control:
+        """兼容旧入口（测试按源码断言 tab role）；新页用搜索行里的「高级检索」切换。"""
         t = self.page.t
         tabs = []
         for index, label in enumerate(("基本检索", "高级检索")):
@@ -297,10 +308,10 @@ class BibQueryView:
             tabs.append(ft.Container(
                 on_click=lambda e, i=index: self._switch_tab(i),
                 padding=C._pad(t, 14, 6, 14, 6),
-                border=ft.Border(bottom=C._side(t, t.palette.accent if active else t.palette.border,
-                                               2 if active else 1)),
+                border=ft.Border(bottom=C._side(t, t.buttons.tab_underline if active
+                                                else t.palette.border, 2 if active else 1)),
                 content=C.text(label, t, role="tab-selected" if active else "small",
-                               color=t.palette.accent if active else t.palette.text_muted),
+                               color=t.palette.text if active else t.palette.text_muted),
             ))
         return ft.Row(spacing=t.sp("1"), controls=tabs)
 
@@ -309,35 +320,36 @@ class BibQueryView:
         self.page.mark("bib_query_tab", tab="basic" if index == 0 else "advanced")
         self._refresh()
 
+    def _search_input(self, value: str, *, hint: str, on_change, on_submit,
+                      width: float | None = None, expand: bool = False,
+                      align=ft.TextAlign.LEFT, bold: bool = False) -> ft.TextField:
+        t = self.page.t
+        return C.text_field(
+            t, value=value, width=t.px(width) if width else None,
+            expand=expand, text_align=align, hint_text=hint,
+            on_change=on_change, on_submit=on_submit,
+        )
+
     def _basic_panel(self) -> ft.Control:
         t = self.page.t
-        mode_box = C.dropdown(
+        mode_box = C.select(
             t, value=self.mode,
             options=[(key, mode_label(key)) for key in EB.QUERY_MODES],
-            on_select=self._on_mode,
+            on_select=self._on_mode, width=t.px(96),
         )
-        field = ft.TextField(
-            value=self.basic_text,
-            dense=True,
-            expand=True,
-            text_size=t.font("body"),
-            hint_text=QUERY_HINTS[self.mode],
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8),
+        field = C.text_field(
+            t, value=self.basic_text, expand=True, hint_text=QUERY_HINTS[self.mode],
             on_change=self._on_basic_change,
             on_submit=lambda e: self._run(self._run_basic()),
         )
+        toggle_label = "基本检索" if self.tab_index else "高级检索"
         bar = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                      controls=[mode_box, field,
                                C.primary_button("查询", lambda e: self._run(self._run_basic()), t,
                                                 disabled=self.busy),
-                               C.text("正在查询…" if self.busy else "", t, "small",
-                                      t.palette.text_faint)])
+                               C.text_button(toggle_label,
+                                             lambda e: self._switch_tab(1 - self.tab_index), t,
+                                             height=t.control_h())])
         self.page.query_field = field  # main.py 的 P2_BIB_QUERY_UI 自检钩子沿用旧入口
         # 批 112 收尾（用户反馈）：示例只留在输入框 hint_text 一处，下方不再重复同一句。
         return bar
@@ -346,65 +358,52 @@ class BibQueryView:
         t = self.page.t
         row_controls = [self._adv_row(index, row) for index, row in enumerate(self.rows)]
         add = C.secondary_button("+ 加一行", lambda e: self._add_row(), t)
-        reset = C.text_button("重置", lambda e: self._reset_advanced(), t)
-        sort_box = C.dropdown(
+        reset = C.text_button("重置", lambda e: self._reset_advanced(), t,
+                              height=t.control_h())
+        sort_box = C.select(
             t, value=self.sort,
             options=[(key, sort_label(key)) for key in EB.QUERY_SORTS],
-            on_select=self._on_sort,
+            on_select=self._on_sort, width=t.px(112),
         )
-        limit = ft.TextField(
-            value=self.limit_text, width=t.px(64), dense=True, text_size=t.font("body"),
-            text_align=ft.TextAlign.CENTER,
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 6, 8, 6, 8), on_change=self._on_limit_change,
+        limit = self._search_input(
+            self.limit_text, hint="最多", width=64, align=ft.TextAlign.CENTER,
+            on_change=self._on_limit_change,
             on_submit=lambda e: self._run(self._run_advanced()),
         )
         strict = ft.Checkbox(label="严格（模糊门槛 0.90）", value=self.strict,
                              on_change=self._on_strict)
-        controls = ft.Row(spacing=t.sp("1"), wrap=True,
-                          vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                          controls=[C.text("排序", t, "small", t.palette.text_muted), sort_box,
-                                    C.text("最多", t, "small", t.palette.text_muted), limit,
-                                    strict,
-                                    C.primary_button("查询", lambda e: self._run(self._run_advanced()),
-                                                     t, disabled=self.busy),
-                                    C.text("正在查询…" if self.busy else "", t, "small",
-                                           t.palette.text_faint)])
+        bar = ft.Row(spacing=t.sp("1"), wrap=True,
+                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                     controls=[C.text("排序", t, "caption", t.palette.text_muted), sort_box,
+                               C.text("最多", t, "caption", t.palette.text_muted), limit,
+                               strict,
+                               C.primary_button("查询", lambda e: self._run(self._run_advanced()),
+                                                t, disabled=self.busy),
+                               C.text("正在查询…" if self.busy else "", t, "caption",
+                                      t.palette.text_faint)])
         return ft.Column(spacing=t.sp("half"), controls=[
             *row_controls,
             ft.Row(spacing=t.sp("1"), controls=[add, reset]),
-            controls,
+            bar,
             C.text(ADVANCED_HINT, t, "caption", t.palette.text_faint),
         ])
 
     def _adv_row(self, index: int, row: dict) -> ft.Control:
         t = self.page.t
         field = str(row.get("field") or "author")
-        field_box = C.dropdown(
+        field_box = C.select(
             t, value=field,
             options=[(key, field_label(key)) for key in EB.QUERY_FIELDS],
-            on_select=lambda e, i=index: self._on_field(i, e),
+            on_select=lambda e, i=index: self._on_field(i, e), width=t.px(96),
         )
-        mode_box = C.dropdown(
+        mode_box = C.select(
             t, value=normalize_mode(field, str(row.get("mode") or "contains")),
             options=[(key, match_label(key)) for key in mode_options(field)],
-            on_select=lambda e, i=index: self._on_match_mode(i, e),
+            on_select=lambda e, i=index: self._on_match_mode(i, e), width=t.px(96),
         )
-        value = ft.TextField(
-            value=str(row.get("value") or ""), width=t.px(360), dense=True,
-            text_size=t.font("body"), hint_text="值（如 Smith / 1975 / 10.1007/…）",
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8),
+        value = self._search_input(
+            str(row.get("value") or ""), hint="值（如 Smith / 1975 / 10.1007/…）",
+            expand=True,
             on_change=lambda e, i=index: self._on_value(i, e),
             on_submit=lambda e: self._run(self._run_advanced()),
         )
@@ -413,92 +412,116 @@ class BibQueryView:
         return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                       controls=[field_box, mode_box, value, delete])
 
+    def _columns(self) -> list[tuple[str, float, bool]]:
+        """断点列集：窄窗先收「来源/状态/作者」，不做横向滚动。"""
+        width = self._design_width()
+        columns: list[tuple[str, float, bool]] = [
+            ("题名", 3.2, False), ("作者", 1.8, False),
+            ("年份", 0.8, True), ("key", 1.9, True),
+        ]
+        if width >= 900:
+            columns.append(("状态", 0.9, False))
+        if width >= 980:
+            columns.append(("来源", 1.6, False))
+        return columns
+
+    def _meta_text(self) -> str:
+        if not self.hits:
+            return ""  # 空态提示只在输入框 hint_text 一处，行内不再重复
+        total = self.payload.get("total_matched") or len(self.hits)
+        try:
+            total_n = int(total)
+        except (TypeError, ValueError):
+            total_n = len(self.hits)
+        seconds = "很快" if (self.elapsed or 0) < 0.05 else f"{self.elapsed:.2f} s"
+        return f"1–{len(self.hits)} / {total_n:,} · {seconds}"
+
+    def _meta_row(self) -> ft.Control:
+        t = self.page.t
+        right: list = []
+        if self.hits:
+            right.append(C.text(f"按{sort_label(self.sort)}排序", t, "caption",
+                                t.palette.text_faint))
+        return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[C.text(self._meta_text(), t, "caption",
+                                       t.palette.text_muted),
+                                ft.Container(expand=True), *right])
+
     def _table(self) -> ft.Control:
         t = self.page.t
-        header = ft.Container(
-            bgcolor=t.palette.surface_2,
-            padding=C._pad(t, 8, 6, 8, 6),
-            content=ft.Row(spacing=0, controls=[
-                ft.Container(width=t.px(width), content=C.text(name, t, "caption",
-                                                              t.palette.text_muted, weight="medium"))
-                for name, width in TABLE_COLUMNS
-            ]),
-        )
-        rows = [self._table_row(index, hit_view(hit, index))
+        columns = self._columns()
+        labels = [name for name, _w, _mono in columns]
+        weights = [w for _name, w, _mono in columns]
+        mono = tuple(i for i, (_name, _w, is_mono) in enumerate(columns) if is_mono)
+        header = C.table_header(labels, t, weights)
+        rows = [self._table_row(index, hit_view(hit, index), columns, weights, mono)
                 for index, hit in enumerate(self.hits)]
-        if not rows:
-            rows = [C.text("（结果会显示在这里）" if not self.payload else "（没有可显示的记录）",
-                           t, "small", t.palette.text_faint)]
-        total = sum(width for _name, width in TABLE_COLUMNS)
-        # 旧壳 Treeview 高 8 行：超过 8 条时固定高度、内部纵向滚动，最多 200 条也不会把页面撑长。
-        height = t.px(288) if len(self.hits) > 8 else None
-        body = ft.Column(spacing=0, controls=rows,
-                         scroll=ft.ScrollMode.AUTO if height else None)
-        table = ft.Column(spacing=0, width=t.px(total),
-                          controls=[header, ft.Container(height=height, content=body)])
-        return ft.Row(scroll=ft.ScrollMode.AUTO, controls=[table])
+        empty = C.empty_line("输入条件后点「查询」" if not self.payload
+                             else "没有可显示的记录", t)
+        return C.table_panel(header, rows, t, empty=empty)
 
-    def _table_row(self, index: int, view: dict) -> ft.Control:
+    def _table_row(self, index: int, view: dict, columns, weights, mono) -> ft.Control:
         t = self.page.t
         selected = index == self.selected
-        cells = [
-            C.text(view["title"], t, "small", max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-            C.text(view["author"], t, "small", t.palette.text_muted, max_lines=1,
-                   overflow=ft.TextOverflow.ELLIPSIS),
-            C.text(view["year"], t, "small", t.palette.text_muted),
-            C.text(view["key"], t, "small", t.palette.text_muted, max_lines=1,
-                   overflow=ft.TextOverflow.ELLIPSIS),
-            C.text(view["status"], t, "small", t.palette.text_muted),
-            C.text(view["source"] or "（无来源记录）", t, "small", t.palette.text_muted,
-                   max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-        ]
-        return ft.Container(
-            on_click=lambda e, i=index: self._select(i),
-            bgcolor=t.palette.accent_soft if selected else None,
-            padding=C._pad(t, 8, 4, 8, 4),
-            content=ft.Row(spacing=0, controls=[
-                ft.Container(width=t.px(width), content=cell)
-                for cell, (_name, width) in zip(cells, TABLE_COLUMNS)
-            ]),
-        )
+        values = {
+            "题名": view["title"] or "（无题名）",
+            "作者": view["author"] or "—",
+            "年份": view["year"] or "—",
+            "key": view["key"] or "—",
+            "状态": view["status"] or "—",
+            "来源": view["source"] or "（无来源记录）",
+        }
+        cells = [values.get(name, "—") for name in (c[0] for c in columns)]
+        return C.table_row(cells, t, weights=weights, selected=selected,
+                           on_click=lambda e, i=index: self._select(i),
+                           height=32, mono=mono)
 
-    def _detail_panel(self) -> ft.Control:
+    def _results(self) -> ft.Control:
+        t = self.page.t
+        table = ft.Container(content=self._table(), expand=True)
+        if not self.hits:
+            return table  # 空态只留表头 + 一句动作提示，详情区等有结果再出现
+        detail = self._detail_panel(width=360 if self._design_width() >= 1120 else None)
+        if self._design_width() >= 1120:
+            return ft.Row(spacing=t.sp("2"), expand=True,
+                          controls=[table, ft.Container(width=t.px(360), content=detail)])
+        return ft.Column(spacing=t.sp("2"), expand=True, controls=[table, detail])
+
+    def _detail_panel(self, width: float | None = None) -> ft.Control:
         t = self.page.t
         view = self.current()
+        count = len(self.hits)
+        lede = f"已选 {self.selected + 1}/{count}" if view else (
+            f"0/{count} 条结果" if count else "尚未查询")
         copy_btn = C.primary_button(
             "复制 BibTeX", lambda e: self._run(self._copy_bibtex()), t,
             disabled=not view or not view["bibtex"])
-        log_btn = C.secondary_button(
-            "在运行日志里显示", lambda e: self._show_in_log(), t, disabled=not view)
-        head = ft.Row(controls=[
-            C.text(detail_title(view), t, role="section"),
-            ft.Container(expand=True), log_btn, copy_btn,
-        ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        log_btn = C.text_button("在日志中查看", lambda e: self._show_in_log(), t)
+        log_btn.disabled = not view
+        head = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[C.section_label(lede, t), ft.Container(expand=True),
+                                log_btn, copy_btn])
         controls: list = [head]
         if view:
-            controls.append(C.text(f"来源：{view['source'] or '（无来源记录）'}", t, "small",
-                                   t.palette.text_muted, selectable=True))
+            controls.append(C.text(f"来源：{view['source'] or '（无来源记录）'}", t,
+                                   "caption", t.palette.text_muted, selectable=True))
             if view["why"]:
-                controls.append(C.text(f"命中原因（{len(view['why'])} 项条件都满足）：", t,
-                                       "small", t.palette.text_muted))
-                controls.append(C.text("\n".join(view["why"]), t, role="mono",
-                                       color=t.palette.text_muted, selectable=True))
+                controls.append(C.text("命中原因：" + "；".join(view["why"]), t, "caption",
+                                       t.palette.text_faint, max_lines=2,
+                                       overflow=ft.TextOverflow.ELLIPSIS,
+                                       selectable=True))
         bibtex = (view or {}).get("bibtex") or BIBTEX_PLACEHOLDER
-        controls.append(ft.TextField(
-            value=bibtex if view else "", read_only=True, multiline=True,
-            min_lines=7, max_lines=7, text_size=t.font("body"),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8),
-        ))
-        return ft.Column(spacing=t.sp("half"), controls=controls)
+        box = C.text_field(
+            t, value=bibtex if view else "", read_only=True, multiline=True,
+            min_lines=6, max_lines=6, mono=True,
+        )
+        controls.append(box)
+        panel = ft.Column(spacing=t.sp("1"), controls=controls)
+        return ft.Container(width=t.px(width) if width else None, content=panel)
 
     def _log_console(self) -> ft.Control:
-        console = C.LogConsole(self.page.t, height=120, title="运行日志（本页）")
+        console = C.LogConsole(self.page.t, height=120, title="运行日志（本页）",
+                               toast=self.page.app.toast, mark=self.page.mark)
         for line in self.log_lines:
             console.add_line(line)
         return console.root

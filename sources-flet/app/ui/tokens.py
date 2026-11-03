@@ -1,29 +1,68 @@
 """B-246c P1 · 设计 tokens（颜色 / 间距 / 字号 / 圆角 / 图标 / 缩放）。
 
-设计约束（见 p1/p1-design.md D1）：
-- 间距走 **8px 栅格**（4 为半格，仅用于图标内衬与紧凑行）；
-- 字号层级 24 / 20 / 16 / 14 / 12（标题区另有 28 展示字号，用于工作台主标题）；
-- 圆角 8 / 12 / 16（胶囊用 999）；
-- 颜色是「中性底 + INDIGO 主色 + 成功/警告/错误」两套（浅 / 深），全部 ≥ WCAG AA；
+批 114 P2 v2 起按 S1m-native 定稿（b114-redesign/style-round2/styles.md）取值：
+
+- 间距仍走 8px 栅格，界面行高另给 ROW_H（26/28/30/32/52/58）；
+- 字号：标题 22 / 正文 13 / 元信息 11 / 分区标签 11.5 / 表头 11；控件统一 28 高、6 圆角；
+- 颜色是「中性底 + 主色 + 语义色」两套（浅 / 深），全部 ≥ WCAG AA；
+- 主按钮有 C（石板蓝）/ D（石墨）两套，由设置页选择，运行时只换 token、不重建窗口；
 - 用户缩放 0.8–2.0 与 DPI 仿真共用 `Tokens.k` 一个乘数，所有像素都过 `px()/sp()/font()`，
   **禁止**在组件里写裸数字——这是 4 档 DPI 不裁切的唯一保证。
 """
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields
 
 BASE_DPI = 144.0          # 本机系统 DPI（150%）
 BASE_W, BASE_H = 1240, 860  # 设计基准逻辑窗口尺寸（P0 实测定稿）
 ZOOM_MIN, ZOOM_MAX = 0.8, 2.0
 
+# ── 尺寸 token（S1m-native）──────────────────────────────────────────────────
+SIDEBAR_W = 220           # 侧栏设计宽
+TOOLBAR_H = 52            # 统一工具栏
+CONTROL_H = 28            # 输入框 / 下拉 / 按钮统一高度
+
+#: 各场景行高（设计像素）。
+ROW_H: dict[str, int] = {
+    "sidebar": 28,
+    "table": 32,
+    "list": 30,
+    "entry": 52,
+    "band": 58,
+    "tab": 34,
+    "toolbar": 52,
+    "status": 26,
+}
+
+#: 断点（设计像素）：窗口设计宽小于该值即进入紧凑分支。
+BREAK: dict[str, int] = {
+    "rail": 720,       # 首页：侧栏收成 56 图标条
+    "columns": 900,    # 表格：收掉次要列
+    "detail": 860,     # 查库：详情由右侧改为下方
+}
+
 # ── 8px 栅格 ────────────────────────────────────────────────────────────────
 SPACE: dict[str, int] = {
-    "half": 4, "1": 8, "2": 16, "3": 24, "4": 32, "6": 48,
+    "half": 4, "xs": 2, "s": 6, "1": 8, "10": 10, "12": 12, "14": 14,
+    "2": 16, "20": 20, "3": 24, "4": 32, "6": 48,
 }
-RADIUS: dict[str, int] = {"sm": 8, "md": 12, "lg": 16, "pill": 999}
-FONT: dict[str, int] = {
-    "display": 28, "h1": 24, "h2": 20, "h3": 16, "body": 14, "small": 13, "caption": 12,
+RADIUS: dict[str, int] = {
+    "mark": 4, "control": 6, "sm": 8, "popover": 8, "panel": 10,
+    "md": 12, "lg": 16, "pill": 999,
+}
+FONT: dict[str, float] = {
+    "display": 28,
+    "title": 22, "h1": 22,
+    "stat": 20,
+    "h2": 18,
+    "section": 15, "h3": 15, "item": 15,
+    "body": 13,
+    "nav": 13,
+    "table": 12.5,
+    "small": 12,
+    "section-label": 11.5, "log": 11.5, "mono": 11.5,
+    "caption": 11, "meta": 11,
 }
 FONT_WEIGHT: dict[str, str] = {
     "regular": "W_400", "medium": "W_500", "semibold": "W_600", "bold": "W_700",
@@ -52,17 +91,21 @@ else:
 TEXT_ROLE: dict[str, tuple[str, str]] = {
     "page-title": ("h1", "semibold"),
     "page-subtitle": ("body", "regular"),
-    "section": ("h3", "semibold"),
-    "item-title": ("h3", "semibold"),
+    "section": ("section", "semibold"),
+    "section-label": ("section-label", "semibold"),
+    "item-title": ("item", "semibold"),
     "step-title": ("body", "semibold"),
     "dialog-title": ("h2", "semibold"),
     "body": ("body", "regular"),
     "body-strong": ("body", "semibold"),
-    "meta": ("caption", "regular"),
+    "meta": ("meta", "regular"),
     "caption": ("caption", "regular"),
     "small": ("small", "regular"),
     "badge": ("caption", "medium"),
-    "nav-label": ("body", "medium"),
+    "nav-label": ("nav", "regular"),
+    "nav-selected": ("nav", "medium"),
+    "table-head": ("meta", "semibold"),
+    "stat": ("stat", "semibold"),
     # 选中态（用户 GUI-01 / 批 112 S1）：**选中 = W500，未选 = W400**；
     # 字号随场景（chip/tab = small，nav/步骤卡/配对卡 = body），字重只有一个来源。
     "item-selected": ("body", "medium"),
@@ -70,8 +113,8 @@ TEXT_ROLE: dict[str, tuple[str, str]] = {
     "tab-selected": ("small", "medium"),
     "step-selected": ("body", "medium"),
     "control": ("body", "regular"),
-    "log": ("small", "regular"),
-    "mono": ("small", "regular"),
+    "log": ("log", "regular"),
+    "mono": ("mono", "regular"),
 }
 #: 需要等宽字体的角色（日志行、路径、ID）。
 MONO_ROLES = frozenset({"log", "mono"})
@@ -104,69 +147,96 @@ class Palette:
     log_bg: str
     log_text: str
     log_muted: str
+    # S1m 增量：侧栏选中底 / 链接 / 选中 tint / 下划线 / 危险 tint。
+    nav_sel: str = "#E5E5EA"
+    link: str = "#35597F"
+    sel_tint: str = "#E8EEF4"
+    sel_text: str = "#33506F"
+    tab_underline: str = "#3D5A80"
+    danger: str = "#B3121C"
+    danger_soft: str = "#FBE7E9"
 
 
 LIGHT = Palette(
-    bg="#F6F8FA",
-    sidebar="#FFFFFF",
+    bg="#F5F5F7",
+    sidebar="#F2F2F7",
     surface="#FFFFFF",
-    surface_2="#F0F3F7",
-    surface_3="#E7EDF3",
-    border="#D0D7DE",
-    border_strong="#AFB8C1",
-    text="#1F2328",
-    text_muted="#57606A",
-    text_faint="#8C959F",
-    accent="#4F46E5",
-    accent_hover="#4338CA",
+    surface_2="#F2F2F7",
+    surface_3="#E8E8ED",
+    border="#DFDFE4",
+    border_strong="#C7C7CC",
+    text="#1D1D1F",
+    text_muted="#6E6E73",
+    text_faint="#8E8E93",
+    accent="#3D5A80",
+    accent_hover="#344D6E",
     on_accent="#FFFFFF",
-    accent_soft="#E0E7FF",
-    on_accent_soft="#312E81",
-    success="#1A7F37",
-    success_soft="#DAFBE1",
-    warn="#9A6700",
-    warn_soft="#FFF8C5",
-    error="#CF222E",
-    error_soft="#FFEBE9",
+    accent_soft="#E8EEF4",
+    on_accent_soft="#33506F",
+    success="#2C6A45",
+    success_soft="#E8F0EA",
+    warn="#7A5300",
+    warn_soft="#F6EEDC",
+    error="#A3312B",
+    error_soft="#F7E7E4",
     log_bg="#FFFFFF",
-    log_text="#24292F",
-    log_muted="#8C959F",
+    log_text="#1D1D1F",
+    log_muted="#8E8E93",
+    nav_sel="#E5E5EA",
+    link="#35597F",
+    sel_tint="#E8EEF4",
+    sel_text="#33506F",
+    tab_underline="#3D5A80",
+    danger="#B3121C",
+    danger_soft="#FBE7E9",
 )
 
 DARK = Palette(
-    bg="#0D1117",
-    sidebar="#0F141B",
-    surface="#161B22",
-    surface_2="#1C232C",
-    surface_3="#232B36",
-    border="#30363D",
-    border_strong="#3D444D",
-    text="#E6EDF3",
-    text_muted="#9BA7B4",
-    text_faint="#6E7681",
-    accent="#818CF8",
-    accent_hover="#A5B4FC",
-    on_accent="#0B1220",
-    accent_soft="#2A2F63",
-    on_accent_soft="#C7D2FE",
-    success="#3FB950",
-    success_soft="#12261A",
-    warn="#D29922",
-    warn_soft="#2B2110",
-    error="#F85149",
-    error_soft="#2D1416",
-    log_bg="#0B0F14",
-    log_text="#D8E1EA",
-    log_muted="#6E7681",
+    bg="#1E1E1E",
+    sidebar="#252527",
+    surface="#2C2C2E",
+    surface_2="#3A3A3C",
+    surface_3="#48484A",
+    border="#3A3A3C",
+    border_strong="#545458",
+    text="#F5F5F7",
+    text_muted="#A1A1A6",
+    text_faint="#8E8E93",
+    accent="#98C1D9",
+    accent_hover="#ADD2E7",
+    on_accent="#16232D",
+    accent_soft="#26343F",
+    on_accent_soft="#C8DCEA",
+    success="#6FBF8B",
+    success_soft="#1E2A22",
+    warn="#D9A441",
+    warn_soft="#332A18",
+    error="#E5766E",
+    error_soft="#33201F",
+    log_bg="#1C1C1E",
+    log_text="#F5F5F7",
+    log_muted="#8E8E93",
+    nav_sel="#3A3A3C",
+    link="#9CC3DC",
+    sel_tint="#26343F",
+    sel_text="#C8DCEA",
+    tab_underline="#98C1D9",
+    danger="#FF6B62",
+    danger_soft="#3A1D1B",
 )
 
 
-#: 浅色板里 #FFFFFF 同时是 sidebar / surface / on_accent / log_bg —— 纯值映射分不清
-#: 角色，所以按「背景」「前景」两类给重复源色排一个先到先得的优先级。
+#: 浅色板里 #FFFFFF 同时是 sidebar / surface / on_accent / log_bg，#F2F2F7 同时是
+#: sidebar 与 surface_2 —— 纯值映射分不清角色，所以按「背景」「前景」两类给重复源色
+#: 排一个先到先得的优先级；必须区分的节点另带 `data="tone:<palette 字段>"` 语义标签，
+#: 换肤时由 main._retint_node 精确改写（见 `_TONE_TAG`）。
 _ROLE_PRIORITY: dict[str, tuple[str, ...]] = {
     "bg": ("surface", "sidebar", "on_accent", "log_bg"),
     "fg": ("on_accent", "sidebar", "surface", "log_bg"),
 }
+
+#: 语义标签前缀：`data="tone:surface_2"` → 换主题时 bgcolor 直接取目标色板同名字段。
+TONE_TAG = "tone:"
 
 
 def palette_remap(target: str, role: str = "bg") -> dict[str, str]:
@@ -190,10 +260,61 @@ def palette_remap(target: str, role: str = "bg") -> dict[str, str]:
     return mapping
 
 
+@dataclass(frozen=True)
+class ButtonColors:
+    """一套主按钮配色（C 石板蓝 / D 石墨）。设置页只选名字，不碰色号。"""
+    fill: str
+    hover: str
+    press: str
+    on: str
+    off_bg: str
+    off_fg: str
+    link: str
+    sel_tint: str
+    sel_text: str
+    tab_underline: str
+    danger: str
+    danger_soft: str
+
+
+#: C = 石板蓝（默认）、D = 石墨（去蓝模式）；链接色两套都取 C 组，保证可读。
+BUTTON_PALETTES: dict[str, dict[str, ButtonColors]] = {
+    "c": {
+        "light": ButtonColors(
+            fill="#3D5A80", hover="#344D6E", press="#2A4059", on="#FFFFFF",
+            off_bg="#D9E0E8", off_fg="#98A5B4",
+            link="#35597F", sel_tint="#E8EEF4", sel_text="#33506F",
+            tab_underline="#3D5A80", danger="#B3121C", danger_soft="#FBE7E9",
+        ),
+        "dark": ButtonColors(
+            fill="#98C1D9", hover="#ADD2E7", press="#7FAAC6", on="#16232D",
+            off_bg="#37404A", off_fg="#78838F",
+            link="#9CC3DC", sel_tint="#26343F", sel_text="#C8DCEA",
+            tab_underline="#98C1D9", danger="#FF6B62", danger_soft="#3A1D1B",
+        ),
+    },
+    "d": {
+        "light": ButtonColors(
+            fill="#1C1C1E", hover="#3A3A3C", press="#0F0F11", on="#FFFFFF",
+            off_bg="#E5E5EA", off_fg="#8E8E93",
+            link="#35597F", sel_tint="#E8EEF4", sel_text="#33506F",
+            tab_underline="#1C1C1E", danger="#B3121C", danger_soft="#FBE7E9",
+        ),
+        "dark": ButtonColors(
+            fill="#E6E6EA", hover="#FFFFFF", press="#D1D1D6", on="#1C1C1E",
+            off_bg="#3A3A3C", off_fg="#8E8E93",
+            link="#9CC3DC", sel_tint="#26343F", sel_text="#C8DCEA",
+            tab_underline="#E6E6EA", danger="#FF6B62", danger_soft="#3A1D1B",
+        ),
+    },
+}
+
+
 class Tokens:
     """一个主题 + 一个缩放乘数 = 一次构建皮肤；缩放变化必须整体重建（见 main.py）。"""
 
-    def __init__(self, theme: str = "light", zoom: float = 1.0, dpi: int = int(BASE_DPI)) -> None:
+    def __init__(self, theme: str = "light", zoom: float = 1.0,
+                 dpi: int = int(BASE_DPI), button: str = "c") -> None:
         self.theme = "dark" if theme == "dark" else "light"
         self.palette = DARK if self.theme == "dark" else LIGHT
         self.zoom = max(ZOOM_MIN, min(ZOOM_MAX, float(zoom)))
@@ -201,6 +322,7 @@ class Tokens:
         self.dpi_k = self.dpi / BASE_DPI
         #: 唯一乘数：DPI 仿真 × 用户缩放。所有像素 = 设计值 × k。
         self.k = self.dpi_k * self.zoom
+        self.button = button if button in BUTTON_PALETTES else "c"
 
     # -- 像素 ------------------------------------------------------------
     def px(self, value: float) -> float:
@@ -224,6 +346,16 @@ class Tokens:
     def weight(self, key: str) -> str:
         return FONT_WEIGHT[key]
 
+    def row_h(self, key: str) -> float:
+        return self.px(ROW_H[key])
+
+    def control_h(self) -> float:
+        return self.px(CONTROL_H)
+
+    def break_at(self, width: float, key: str) -> bool:
+        """设计宽（物理宽 / k）小于断点 → True。调用方负责把物理宽 / k。"""
+        return width < BREAK[key]
+
     # -- 排版角色 --------------------------------------------------------
     @property
     def font_family(self) -> str | None:
@@ -243,6 +375,16 @@ class Tokens:
         """角色 → (字号键, 字重键)；未知角色直接报错，避免又出现裸字号散点。"""
         return TEXT_ROLE[role]
 
+    # -- 按钮 ------------------------------------------------------------
+    @property
+    def buttons(self) -> ButtonColors:
+        """当前按钮配色（C/D × 浅/深）。"""
+        return BUTTON_PALETTES[self.button][self.theme]
+
+    @property
+    def button_label(self) -> str:
+        return "C · 石板蓝" if self.button == "c" else "D · 石墨"
+
     # -- 布局 ------------------------------------------------------------
     @property
     def window_size(self) -> tuple[int, int]:
@@ -254,7 +396,11 @@ class Tokens:
 
     @property
     def sidebar_width(self) -> int:
-        return round(232 * self.k)
+        return round(SIDEBAR_W * self.k)
+
+    @property
+    def rail_width(self) -> int:
+        return round(56 * self.k)
 
     @property
     def screenshot_dpi(self) -> int:
@@ -266,14 +412,11 @@ class Tokens:
         return self.theme == "dark"
 
     def with_theme(self, theme: str) -> "Tokens":
-        return Tokens(theme, self.zoom, self.dpi)
+        return Tokens(theme, self.zoom, self.dpi, self.button)
+
+    def with_button(self, button: str) -> "Tokens":
+        return Tokens(self.theme, self.zoom, self.dpi, button)
 
     def __repr__(self) -> str:  # 便于 marker 里留证
         return (f"Tokens(theme={self.theme}, zoom={self.zoom:.2f}, dpi={self.dpi}, "
-                f"k={self.k:.3f})")
-
-
-def dpi_preset(target: int) -> int:
-    """P1_DPI 只接受四档，避免截图目录出现奇怪档位。"""
-    target = int(target)
-    return target if target in (96, 120, 144, 192) else int(BASE_DPI)
+                f"k={self.k:.3f}, button={self.button})")

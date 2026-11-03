@@ -109,51 +109,45 @@ def _view(values=None):
 
 
 # ── 8. open_bib_view：先 goto 再 set_view，同页也必切 ─────────────────────
-def test_open_bib_view_goes_to_bib_then_sets_view():
-    calls = []
-
-    class _Bib:
-        def set_view(self, view, *, source):
-            calls.append(("set_view", view, source))
-
-    class _App:
-        pages = {"bib": _Bib()}
-
-        def goto(self, key):
-            calls.append(("goto", key))
-
-    M.App.open_bib_view(_App(), "normalize", source="single")
-    assert calls == [("goto", "bib"), ("set_view", "normalize", "single")]
-
-
-def test_open_bib_view_keeps_working_when_goto_early_returns():
-    calls = []
-
-    class _Bib:
-        def set_view(self, view, *, source):
-            calls.append(("set_view", view, source))
-
-    class _App:
-        pages = {"bib": _Bib()}
-
-        def goto(self, key):
-            calls.append(("goto", key))  # 已在 bib：真实 goto 会 return，不影响下面
-
-    M.App.open_bib_view(_App(), "normalize", source="single")
-    assert ("set_view", "normalize", "single") in calls
-
-
-def test_open_bib_view_without_bib_page_is_noop():
+def test_open_bib_view_delegates_to_navigate():
     calls = []
 
     class _App:
-        pages = {}
-
-        def goto(self, key):
-            calls.append(key)
+        def navigate(self, route, *, source="nav"):
+            calls.append((route, source))
 
     M.App.open_bib_view(_App(), "normalize", source="single")
-    assert calls == []
+    assert calls == [("bib:normalize", "single")]
+
+
+def test_open_bib_view_defaults_to_nav_source():
+    calls = []
+
+    class _App:
+        def navigate(self, route, *, source="nav"):
+            calls.append((route, source))
+
+    M.App.open_bib_view(_App(), "edit")
+    assert calls == [("bib:edit", "nav")]
+
+
+def test_navigate_without_bib_page_is_noop():
+    app = object.__new__(M.App)
+    app.pages = {}
+    app.store = type("_S", (), {"set": lambda self, k, v: None})()
+    app.current_page_key = "home"
+    app.current_route = "home"
+    app.nav_open = {"page": "home", "group": ""}
+    app.page = type("_P", (), {"update": lambda self: None})()
+    app.marks = []
+
+    def mark(event, **fields):
+        app.marks.append(event)
+
+    app.mark = mark
+    M.App.navigate(app, "bib:normalize", source="test")
+    assert app.current_page_key == "home"  # 页面不存在 → 不动
+    assert app.marks == []
 
 
 # ── 9. NormalizeView 宿主契约 ─────────────────────────────────────────────
@@ -281,9 +275,10 @@ def test_p2_hooks_are_wired_in_source():
     source = open(os.path.join(APP_DIR, "main.py"), encoding="utf-8").read()
     assert "P2_BIB_VIEW(view) / P2_SINGLE_FLOW(convert|proofcheck) / P2_AUTORUN_LEGACY=1" in source
     assert "def open_bib_view(self, view: str, *, source: str" in source
-    assert "bib_page.set_view(view, source=source)" in source
+    assert 'navigate(f"bib:{bib_view}", source="env")' in source
     assert 'self.mark("bib_view_hook", view=bib_view, source="env")' in source
     assert 'source="env_fallback"' in source  # 非法视图回落概况并留证据
+    assert 'navigate(f"single:{single_flow}", source="env")' in source
     assert 'self.mark("single_flow_hook", flow=single_flow, source="env")' in source
     assert 'legacy_checkbib = _env_str("P2_AUTORUN_LEGACY")' in source
     assert "await self._autorun_normalize()" in source

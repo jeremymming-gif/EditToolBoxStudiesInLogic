@@ -109,40 +109,27 @@ class DirPushPanel:
         self.app = page.app
         self.t = page.t
         self.feedback = ft.Container()
-        self.mode = ft.Dropdown(
-            label="推送范围", value=self.app.store.get("form.dirpush_mode", MODE_ISSUE) or MODE_ISSUE,
-            width=self.t.px(180), dense=True, text_size=self.t.font("body"),
-            options=[ft.DropdownOption(key=MODE_ISSUE, text="当期目录摘要"),
-                     ft.DropdownOption(key=MODE_ANNUAL, text="年度总目录")],
+        self.mode = C.select(
+            self.t, value=self.app.store.get("form.dirpush_mode", MODE_ISSUE) or MODE_ISSUE,
+            width=self.t.px(180), label="推送范围",
+            options=[(MODE_ISSUE, "当期目录摘要"), (MODE_ANNUAL, "年度总目录")],
             on_select=self._mode_changed,
         )
-        self.year = ft.TextField(
-            label="年度（yyyy，可空）", value=self.app.store.get("form.dirpush_year", "") or "",
-            dense=True, text_size=self.t.font("body"), width=self.t.px(150),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, self.t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, self.t.palette.accent)),
-            },
-            content_padding=C._pad(self.t, 10, 8, 10, 8),
+        self.year = C.text_field(
+            self.t, value=self.app.store.get("form.dirpush_year", "") or "",
+            width=self.t.px(150),
             on_change=lambda e: self._store_value("form.dirpush_year", e.control.value),
         )
-        self.issues = ft.TextField(
-            label="只含这些期号（如 1,2,3；年度可空）",
-            value=self.app.store.get("form.dirpush_issues", "") or "",
-            dense=True, text_size=self.t.font("body"), expand=True,
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, self.t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, self.t.palette.accent)),
-            },
-            content_padding=C._pad(self.t, 10, 8, 10, 8),
+        self.issues = C.text_field(
+            self.t, value=self.app.store.get("form.dirpush_issues", "") or "",
+            expand=True,
             on_change=lambda e: self._store_value("form.dirpush_issues", e.control.value),
         )
         self.annual_rows = ft.Column(spacing=self.t.sp("1"), visible=False)
-        self.annual_rows.controls = [ft.Row(spacing=self.t.sp("1"), controls=[self.year, self.issues])]
+        self.annual_rows.controls = [ft.Row(spacing=self.t.sp("1"), controls=[
+            C.form_field(self.t, "年度（yyyy，可空）", self.year),
+            C.form_field(self.t, "只含这些期号（如 1,2,3；年度可空）", self.issues, expand=True),
+        ])]
 
     def _store_value(self, key: str, value) -> None:
         self.app.store.set(key, str(value or "").strip())
@@ -165,7 +152,7 @@ class DirPushPanel:
             self.page.add_picker("输出根", "dirpush_out", "目录摘要 docx 输出根（可空 = 引擎默认）",
                                  kind="dir", required=False),
             ft.Row(spacing=self.t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[self.mode]),
+                   controls=[C.form_field(self.t, "推送范围", self.mode)]),
             self.annual_rows,
             C.option_row("含英文目录", "当期模式加 --with-en-toc", self.t, icon="TRANSLATE",
                          checked=bool(options.get("dirpush_with_en_toc", False)),

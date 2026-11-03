@@ -72,7 +72,7 @@ def test_theme_unifies_textfield_size_to_body() -> None:
     assert theme.font_family is None
     assert theme.text_theme is not None
     assert theme.text_theme.body_large is not None
-    assert theme.text_theme.body_large.size == t.font("body") == 14
+    assert theme.text_theme.body_large.size == t.font("body") == 13
     # 带 Tokens 时按当前缩放取字号（不引入第二个真源）。
     zoomed = T.Tokens(zoom=1.25)
     assert M.App._flet_theme(T.LIGHT, zoomed).text_theme.body_large.size == zoomed.font("body")
@@ -104,10 +104,12 @@ def _read(rel: str) -> str:
     return (APP_DIR / rel).read_text(encoding="utf-8")
 
 
-def test_step_card_uses_role_not_w600() -> None:
+def test_step_rows_use_role_not_w600() -> None:
+    # 批 114：步骤卡列表删除（改导航子页）；概览行/进度带仍走角色表而非裸字重。
     source = _read("ui/pages.py")
-    assert 'role="step-selected" if selected else "body"' in source
-    assert 'C.text(step["title"], t, "body", weight="semibold")' not in source
+    assert 'role="step-selected"' not in source
+    assert 'C.text(str(step["title"]), t, role="body"' in source
+    assert 'weight="semibold"' not in source.split("def _overview_step_row")[1].split("def ")[0]
 
 
 def test_tab_bar_uses_role() -> None:
@@ -141,7 +143,9 @@ def test_eight_section_roles_present() -> None:
     }
     for rel, count in expected.items():
         source = _read(rel)
-        assert source.count('role="section"') >= count, rel
+        # S1m：区块标题也可由 section_label 统一渲染（11.5/600），两者都算 section 角色。
+        assert (source.count('role="section"') + source.count("C.section_label(")
+                + source.count("self._section(") >= count), rel
 
 
 # ── gui_auto 断言与产品侧对齐 ──────────────────────────────────────────────

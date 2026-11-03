@@ -198,11 +198,10 @@ class BibFieldFixView(_OpsView):
                 boxes.append(C.text(f"{field_label(field)}：无候选（需人工补）", t, "small",
                                     t.palette.text_faint))
                 continue
-            boxes.append(ft.Dropdown(
-                label=field_label(field), value=picked.get(field, ""), dense=True,
-                width=t.px(300), text_size=t.font("body"), options=options,
+            boxes.append(C.form_field(t, field_label(field), C.select(
+                t, value=picked.get(field, ""), width=t.px(300), options=options,
                 on_select=lambda e, i=index, f=field: self.choice.setdefault(i, {}).__setitem__(
-                    f, e.control.value or "")))
+                    f, e.control.value or ""))))
         checked = index in self.selected
         head = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                       controls=[
@@ -442,11 +441,15 @@ class BibHealthView(_OpsView):
     def _health_card(self) -> ft.Control:
         t = self.t
         counts = self.counts
-        cards = ft.Row(spacing=t.sp("1"), wrap=True, controls=[
-            C.stat_card("记录", str(_int(counts.get("records"))), "库内条目", t),
-            C.stat_card("待裁决", str(_int(counts.get("pending"))), "冲突队列", t),
-            C.stat_card("警告", str(_int(counts.get("warnings"))), "lint", t),
-            C.stat_card("近似重复", str(_int(counts.get("near"))), "对", t),
+        cards = ft.Row(spacing=t.sp("1"), wrap=False, controls=[
+            C.stat_card("记录", str(_int(counts.get("records"))), "库内条目", t,
+                        expand=False, width=t.px(150)),
+            C.stat_card("待裁决", str(_int(counts.get("pending"))), "冲突队列", t,
+                        expand=False, width=t.px(150)),
+            C.stat_card("警告", str(_int(counts.get("warnings"))), "lint", t,
+                        expand=False, width=t.px(150)),
+            C.stat_card("近似重复", str(_int(counts.get("near"))), "对", t,
+                        expand=False, width=t.px(150)),
         ])
         controls: list = [C.section_title(
             "库健康", t, note="lint --json（退出码 1 = 有警告，仍出完整 JSON）"), cards]

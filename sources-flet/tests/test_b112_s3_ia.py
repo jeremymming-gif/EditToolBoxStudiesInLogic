@@ -83,33 +83,23 @@ def _make_page(data: dict | None = None) -> tuple[P.BibPage, FakeApp]:
     page._render = lambda: None
     page._safe_update = lambda *controls: None
     page._ensure_loaded = lambda view: None
-    page._group_row = ft.Row(spacing=4, controls=[])
-    page._chips_row = ft.Row(spacing=4, wrap=True, controls=[])
+    page._crumb = None
+    page._child_title = None
     page._notice_slot = ft.Container()
     page._status_slot = ft.Row(spacing=4, controls=[])
     for name in ("review_view", "settings_view", "dupes_view", "fieldfix_view", "health_view"):
         getattr(page, name).ensure_loaded = lambda *args, **kwargs: None
-    page._render_nav()
+    page._sync_header()
     return page, app
 
 
-def _tabs(page: P.BibPage) -> list[tuple[str, bool]]:
-    """组条 → [(标签, 是否 active)]；active 由下划线颜色判定。"""
-    out = []
-    accent = page.t.palette.accent
-    for tab in page._group_row.controls:
-        col = tab.content
-        out.append((col.controls[0].controls[0].value, col.controls[1].bgcolor == accent))
-    return out
+def _crumb(page: P.BibPage) -> str:
+    """页头面包屑（批 114：引用库 / 组）。"""
+    return page._crumb.controls[0].value
 
 
-def _chips(page: P.BibPage) -> list[str]:
-    return [chip.content.value for chip in page._chips_row.controls]
-
-
-def _active_chips(page: P.BibPage) -> list[str]:
-    soft = page.t.palette.accent_soft
-    return [chip.content.value for chip in page._chips_row.controls if chip.bgcolor == soft]
+def _title(page: P.BibPage) -> str:
+    return page._child_title.value
 
 
 # ── 1. 视图表 ──────────────────────────────────────────────────────────────
@@ -203,41 +193,42 @@ def test_set_view_marks_group_and_source() -> None:
 
 
 # ── 6. 两级导航渲染 ────────────────────────────────────────────────────────
-def test_render_nav_builds_group_bar_and_current_group_chips() -> None:
+def _status_texts(page: P.BibPage) -> list[str]:
+    """S1m 状态区不再是胶囊 chip：小圆点 + 一句权限说明。"""
+    out: list[str] = []
+    for top in page._status_slot.controls:
+        stack = [top]
+        while stack:
+            node = stack.pop()
+            value = getattr(node, "value", None)
+            if isinstance(value, str):
+                out.append(value)
+            stack.extend(getattr(node, "controls", None) or [])
+    return out
+
+
+def test_sync_header_builds_breadcrumb_and_child_title() -> None:
     page, _ = _make_page({"bib_view": "import"})
 
-    assert [label for label, _ in _tabs(page)] == ["查阅", "采录", "治理", "维护"]
-    assert [label for label, active in _tabs(page) if active] == ["采录"]
-    assert _chips(page) == ["规范化", "入藏"]
-    assert _active_chips(page) == ["入藏"]
+    assert _crumb(page) == "引用库 / 采录"
+    assert _title(page) == "入藏"
+    assert page._notice_slot.content is not None  # 写库视图有后果提示
 
 
-def test_switch_group_changes_chips_and_moves_active_tab() -> None:
+def test_activate_moves_breadcrumb_and_group_memory() -> None:
     page, app = _make_page({"bib_view": "import"})
 
-    page._group_row.controls[3].on_click(None)  # 维护
-
-    assert page.view == "health"
-    assert page.group == "maint"
+    page.activate("health", source="test")  # 维护组
+    assert page.view == "health" and page.group == "maint"
+    assert _crumb(page) == "引用库 / 维护"
+    assert _title(page) == "库健康"
     assert app.store.get("bib_view") == "health"
-    assert [label for label, active in _tabs(page) if active] == ["维护"]
-    assert _chips(page) == ["库健康", "设置"]
-    assert _active_chips(page) == ["库健康"]
 
-    # 回「采录」：该组尚无记忆 → 组内首项（design §7 的默认：intake → normalize）。
-    page._group_row.controls[1].on_click(None)
-    assert page.view == "normalize"
-    labels = _chips(page)
-    assert labels == ["规范化", "入藏"]
-    page._chips_row.controls[labels.index("入藏")].on_click(None)
-    assert page.view == "import"
-    assert _active_chips(page) == ["入藏"]
-
-    # 离开再回来：沿用组内记忆 import，而不是组内首项。
-    page._group_row.controls[0].on_click(None)
+    # 回「采录」：该组已有记忆 import → 沿用，而不是组内首项 normalize。
+    page.activate("import", source="test")
+    assert _crumb(page) == "引用库 / 采录"
+    page.set_group("read")
     assert page.view == "overview"
-    page._group_row.controls[1].on_click(None)
-    assert page.view == "import"
 
 
 def test_only_write_views_carry_a_one_line_notice() -> None:
@@ -254,13 +245,13 @@ def test_only_write_views_carry_a_one_line_notice() -> None:
         assert seen[key] is None, key
     # 只读 / 写库权限上浮到页头状态芯片。
     page.set_view("query")
-    assert [chip.content.value for chip in page._status_slot.controls] == ["只读"]
+    assert _status_texts(page) == ["只读"]
     page.set_view("normalize")
-    assert [chip.content.value for chip in page._status_slot.controls] == ["只读"]
+    assert _status_texts(page) == ["只读"]
     page.set_view("health")
-    assert [chip.content.value for chip in page._status_slot.controls] == ["写库"]
+    assert _status_texts(page) == ["写库"]
     page.set_view("edit")
-    assert [chip.content.value for chip in page._status_slot.controls] == ["写库"]
+    assert _status_texts(page) == ["写库"]
 
 
 # ── 11. settings_store.pick ────────────────────────────────────────────────
@@ -300,9 +291,9 @@ def test_group_tab_active_state_is_color_and_underline() -> None:
     t = Tokens()
     on = C.group_tab("治理", t, active=True)
     off = C.group_tab("维护", t, active=False)
-    assert on.content.controls[1].bgcolor == t.palette.accent
+    assert on.content.controls[1].bgcolor == t.buttons.tab_underline
     assert off.content.controls[1].bgcolor is None
-    assert on.content.controls[0].controls[0].color == t.palette.accent
+    assert on.content.controls[0].controls[0].color == t.palette.text
     assert off.content.controls[0].controls[0].color == t.palette.text_muted
     # 比胶囊矮：组条无背景色。
     assert on.bgcolor is None

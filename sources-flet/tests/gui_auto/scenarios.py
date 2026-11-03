@@ -125,6 +125,25 @@ def nav_click(session: H.AppSession, key: str) -> dict:
     return event
 
 
+def nav_route_click(session: H.AppSession, page: str, view: str = "",
+                    *, timeout: float = 4.0) -> dict:
+    """按「估算坐标」走侧栏 accordion：父项 → [组行] → 子行，等 nav_change。
+
+    批 114：二级视图已全部迁入左侧导航（页内 tab/chip 删除）。坐标是估算值，
+    因此断言以 nav_change 的 route/view 为准，坐标只作为点击落点。
+    """
+    for dip in H.nav_route_clicks(page, view):
+        session.click_dip(*dip)
+        session.settle(0.35)
+    event = session.wait_event(
+        "nav_change",
+        lambda e: e.get("page") == page and (not view or e.get("view") == view),
+        timeout=timeout,
+    )
+    session.settle(0.5)
+    return event
+
+
 def _sample(session: H.AppSession, img, dip: tuple[float, float]):
     bx, by = session.border
     x = int(round(bx + dip[0] * session.scale))
@@ -303,25 +322,19 @@ def s4_single_flows(ctx: H.RunContext) -> dict:
         rows: list[dict] = []
         imgs: dict[str, object] = {}
         img = session.screenshot("s4_flow_convert")
-        center = _active_chip_center(session, img)
-        H.expect(center is not None, "S4 初排转换 chip 未高亮")
         imgs["convert"] = img
-        rows.append({"flow": FLOW_LABELS[0], "center_x_dip": round(
-            (center[0] - session.border[0]) / session.scale, 1)})
-        for index in (1,):
-            label = FLOW_LABELS[index]
-            img = _click_chip(session, H.SINGLE_CHIPS[index], H.SINGLE_CHIPS[index][0])
-            center = _active_chip_center(session, img)
-            H.expect(center is not None, f"S4 chip「{label}」未高亮")
-            actual_x = (center[0] - session.border[0]) / session.scale
-            H.expect(abs(actual_x - H.SINGLE_CHIPS[index][0]) <= 12,
-                     f"S4 chip「{label}」中心 x={actual_x:.1f}DIP 与期望 "
-                     f"{H.SINGLE_CHIPS[index][0]} 偏差过大")
-            img = session.screenshot(f"s4_flow_{names[index]}")
-            imgs[names[index]] = img
-            rows.append({"flow": label, "center_x_dip": round(actual_x, 1)})
+        ev0 = session.wait_event(
+            "nav_change", lambda e: e.get("route") == "single:convert", timeout=8.0)
+        H.expect(ev0.get("view") == "convert", f"S4 默认路由不是初排转换: {ev0}")
+        rows.append({"flow": FLOW_LABELS[0], "route": "single:convert"})
+        ev1 = nav_route_click(session, "single", "proofcheck")
+        H.expect(ev1.get("route") == "single:proofcheck",
+                 f"S4 导航未切到一校核查: {ev1}")
+        img = session.screenshot(f"s4_flow_{names[1]}")
+        imgs["proofcheck"] = img
+        rows.append({"flow": FLOW_LABELS[1], "route": "single:proofcheck"})
         H.expect(len(rows) == len(FLOW_LABELS) == 2,
-                 f"S4 单篇页应只剩 2 个步骤胶囊，实际 {len(rows)}")
+                 f"S4 单篇页应只有 2 个步骤子页，实际 {len(rows)}")
         # 两个步骤的内容区必须真的不同（高亮 chip 只占一小块）
         width, height = img.size
         content = H.regions_for(session, width, height)["content"]
@@ -359,36 +372,16 @@ def s5_bib_views(ctx: H.RunContext) -> dict:
     with ctx.session("s5", page="bib") as session:
         session.wait_event("bib_stats", timeout=30)
         session.settle(0.6)
-        # ① 组条：点「采录」，应进组内首项「规范化」
-        group = "intake"
-        group_ev = _click_until_event(
-            session, H.bib_group_pos(group), "bib_view",
-            lambda e: e.get("group") == group, timeout=4.0,
-            offsets=((0, 0), (0, 5), (0, -5), (5, 0), (-5, 0)))
-        session.settle(0.6)
-        img = session.screenshot("s5_group_intake")
-        center = _active_group_center(session, img)
-        H.expect(center is not None, "S5 组条「采录」未出现选中态（accent 下划线）")
-        actual_x = (center[0] - session.border[0]) / session.scale
-        H.expect(abs(actual_x - H.bib_group_pos(group)[0]) <= 12,
-                 f"S5 组条「采录」高亮中心 x={actual_x:.1f}DIP 与点击坐标 "
-                 f"{H.bib_group_pos(group)[0]} 偏差 >12DIP")
-        rows.append({"kind": "group", "group": group, "view": group_ev.get("view"),
-                     "source": "click", "center_x_dip": round(actual_x, 1)})
-        # ② 胶囊：点「入藏」，应切到 import（与组默认视图不同，能区分点错行）
-        view = "import"
-        view_ev = _click_until_event(
-            session, H.bib_chip_pos(view), "bib_view",
-            lambda e: e.get("view") == view, timeout=4.0,
-            offsets=((0, 0), (0, 5), (0, -5), (5, 0), (-5, 0)))
+        # ① 侧栏三层：引用库 → 组「采录」→ 视图「入藏」
+        view_ev = nav_route_click(session, "bib", "import")
+        H.expect(view_ev.get("route") == "bib:import",
+                 f"S5 侧栏未切到引用库/入藏: {view_ev}")
         session.settle(0.6)
         img = session.screenshot("s5_view_import_click")
-        center = _active_chip_center(session, img)
-        H.expect(center is not None, "S5 胶囊「入藏」未出现选中态")
-        actual_x = (center[0] - session.border[0]) / session.scale
-        H.expect(abs(actual_x - H.bib_chip_pos(view)[0]) <= 12,
-                 f"S5 胶囊「入藏」高亮中心 x={actual_x:.1f}DIP 与点击坐标 "
-                 f"{H.bib_chip_pos(view)[0]} 偏差 >12DIP")
+        H.expect(not session.has_event("bib_render_error"),
+                 f"S5 视图「入藏」渲染报错: {session.last_event('bib_render_error')}")
+        rows.append({"kind": "nav", "group": BIB_VIEW_GROUP["import"], "view": "import",
+                     "source": "click", "nav_change": view_ev})
         H.expect(not session.has_event("bib_render_error"),
                  f"S5 视图「入藏」渲染报错: {session.last_event('bib_render_error')}")
         rows.append({"kind": "chip", "group": BIB_VIEW_GROUP[view], "view": view,
@@ -406,20 +399,10 @@ def s5_bib_views(ctx: H.RunContext) -> dict:
                      f"S5「{label}」组别错误: {ev} 期望 {BIB_VIEW_GROUP[view]}")
             session.settle(0.8)
             img = session.screenshot(f"s5_view_{view}")
-            # 10/10 高亮：启动即该视图，用色块几何中心校验（免点击、免坐标误差）
-            center = _active_chip_center(session, img)
-            H.expect(center is not None, f"S5 视图「{label}」胶囊未高亮")
-            actual_x = (center[0] - session.border[0]) / session.scale
-            H.expect(abs(actual_x - H.bib_chip_pos(view)[0]) <= 12,
-                     f"S5 视图「{label}」胶囊高亮 x={actual_x:.1f}DIP 与 IA 序 "
-                     f"{H.bib_chip_pos(view)[0]} 偏差 >12DIP")
-            group = BIB_VIEW_GROUP[view]
-            gcenter = _active_group_center(session, img)
-            H.expect(gcenter is not None, f"S5 视图「{label}」所属组条未高亮")
-            gactual = (gcenter[0] - session.border[0]) / session.scale
-            H.expect(abs(gactual - H.bib_group_pos(group)[0]) <= 12,
-                     f"S5 视图「{label}」组条高亮 x={gactual:.1f}DIP 与组序 "
-                     f"{H.bib_group_pos(group)[0]} 偏差 >12DIP")
+            nav = session.wait_event(
+                "nav_change", lambda e, wanted=view: e.get("view") == wanted, timeout=8.0)
+            H.expect(nav.get("route") == f"bib:{view}",
+                     f"S5 视图「{label}」路由错误: {nav}")
             err = session.last_event("bib_render_error")
             H.expect(err is None, f"S5 视图「{label}」渲染报错: {err}")
             rows.append({"kind": "view", "group": group, "view": view,

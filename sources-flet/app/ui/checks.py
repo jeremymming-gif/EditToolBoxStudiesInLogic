@@ -654,15 +654,9 @@ def proofcheck_section(page) -> ft.Control:
     if current not in ("", "zh", "en"):
         current = ""
 
-    dropdown = ft.Dropdown(
-        label="语种",
-        value=current,
-        width=t.px(150),
-        dense=True,
-        text_size=t.font("body"),
-        options=[ft.DropdownOption(key="", text="自动"),
-                 ft.DropdownOption(key="zh", text="中文"),
-                 ft.DropdownOption(key="en", text="英文")],
+    dropdown = C.select(
+        t, value=current, width=t.px(150), label="语种",
+        options=[("", "自动"), ("zh", "中文"), ("en", "英文")],
         on_select=lambda e: _store_lang(page, dropdown),
     )
     page.fields["proof_lang"] = [dropdown]
@@ -672,11 +666,11 @@ def proofcheck_section(page) -> ft.Control:
         "默认只出报告；勾「顺手把无歧义的改掉」才另写 `<名字>_一校核查后.tex`，输入文件不动。",
         "可自动改项在初排已默认处理，本报告只列需要人工判断的条目（每条给依据与建议）。",
     ]
-    return ft.Column(spacing=t.sp("2"), controls=[
-        C.section_title("输入", t, note="初排后的 tex · 只读"),
-        page.add_picker("初排 tex", "proof_tex", "初排产物 .tex（可拖入）", kind="file"),
+    # 用户 m02855：输入控件不再直接躺在纸灰页面上 → 与「高级参数」同材质的白卡片。
+    input_card = C.card(ft.Column(spacing=t.sp("2"), controls=[
+        page.add_picker("初排 tex", "proof_tex", "初排产物 .tex（可粘贴路径或点「浏览…」）", kind="file"),
         ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            dropdown,
+            C.form_field(t, "语种", dropdown),
             C.text("运行中会在下方日志实时滚动；完成后看结果卡。", t, "caption",
                    t.palette.text_faint),
         ]),
@@ -687,6 +681,10 @@ def proofcheck_section(page) -> ft.Control:
             checked=bool(options.get("proofcheck_fix", False)),
             on_change=lambda e: page.app.set_option("proofcheck_fix", e.control.value),
         ),
+    ]), t, pad=14)
+    return ft.Column(spacing=t.sp("2"), controls=[
+        C.section_title("输入", t, note="初排后的 tex · 只读"),
+        input_card,
         C.card(ft.Column(spacing=t.sp("half"), controls=[
             C.text(line, t, "caption", t.palette.text_muted) for line in help_lines
         ]), t),

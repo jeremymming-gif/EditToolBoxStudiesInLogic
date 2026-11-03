@@ -50,17 +50,21 @@ def test_palette_remap_complete_and_symmetric():
         value: sum(1 for field in fields(Palette) if getattr(LIGHT, field.name) == value)
         for value in _light_values()
     }
+    dark_counts = {
+        value: sum(1 for field in fields(Palette) if getattr(DARK, field.name) == value)
+        for value in _dark_values()
+    }
     for field in fields(Palette):
         light_value = getattr(LIGHT, field.name)
         dark_value = getattr(DARK, field.name)
-        assert back[dark_value] == light_value
-        if light_counts[light_value] == 1:
+        if light_counts[light_value] == 1 and dark_counts[dark_value] == 1:
+            assert back[dark_value] == light_value
             assert bg[light_value] == dark_value and fg[light_value] == dark_value
 
     # 一词多义：#FFFFFF 背景角色 → surface，前景角色 → on_accent。
     assert bg["#FFFFFF"] == DARK.surface
     assert fg["#FFFFFF"] == DARK.on_accent
-    assert bg["#8C959F"] == DARK.text_faint == DARK.log_muted
+    assert bg[LIGHT.text_faint] == DARK.text_faint == DARK.log_muted
     with pytest.raises(ValueError):
         palette_remap("sepia")
     with pytest.raises(ValueError):
@@ -162,7 +166,9 @@ def test_set_theme_retints_hot_path_without_rebuild(monkeypatch, capsys):
     assert app.page.bgcolor == DARK.bg
     assert app.sidebar.bgcolor == DARK.sidebar
     assert app.theme_switch.value is True
-    assert "dark" in app.status_bar.metas[-1]
+    meta = app.status_bar.metas[-1]
+    # S1m：状态栏只留一句人话，不再写 DPI / Flet / 缩放。
+    assert "dpi" not in meta and "Flet" not in meta and "×" not in meta
     assert app.log_result.t is app.t            # Tokens 快照已刷新
     marks = {row["event"]: row for row in _marks(capsys)}
     assert marks["theme_begin"]["mode"] == "retint"

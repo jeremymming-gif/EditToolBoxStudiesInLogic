@@ -16,6 +16,10 @@ from ui.tokens import Tokens
 ASSETS_NAME = "assets"
 SIDEBAR_PNG = "logo-256.png"
 WINDOW_ICON = "logo.ico"
+#: 侧栏 22×22 的 ℵ 品牌位（S1m-native）：浅色 slate 蓝、深色 slate-light。
+ALEPH_LIGHT = "aleph-slate-64.png"
+ALEPH_DARK = "aleph-slate-light-64.png"
+ALEPH_DARK_FALLBACK = "aleph-white-64.png"
 
 
 def _roots() -> list[Path]:
@@ -43,6 +47,24 @@ def sidebar_mark(t: Tokens, size: float = 36) -> ft.Control:
             if png else ft.Icon(C.ic("AUTO_AWESOME", "STAR"), size=t.px(20),
                                 color=t.palette.accent))
     return ft.Container(width=t.px(size), height=t.px(size), border_radius=t.radius("md"),
+                        alignment=ft.Alignment.CENTER, content=body)
+
+
+def aleph_mark(t: Tokens, size: float = 22) -> ft.Control:
+    """侧栏品牌位：22×22、圆角 4；品牌色 = slate（浅 slate-64 / 深 slate-light-64，深色缺则 white）。
+
+    文件缺失时回退矢量 AUTO_AWESOME（不画假字、不影响启动）；窗口图标仍走
+    `apply_window_icon`（logo-256 / logo.ico），本函数不碰窗口图标。
+    """
+    png = asset(ALEPH_DARK if t.is_dark else ALEPH_LIGHT)
+    if not png and t.is_dark:               # 浅色缺文件直接矢量，别把深色白 ℵ 放浅底上
+        png = asset(ALEPH_DARK_FALLBACK)
+    radius = t.radius("mark")
+    body = (ft.Image(src=png, width=t.px(size), height=t.px(size),
+                     fit=ft.BoxFit.CONTAIN, border_radius=radius)
+            if png else ft.Icon(C.ic("AUTO_AWESOME", "STAR"), size=t.px(size - 4),
+                                color=t.palette.accent))
+    return ft.Container(width=t.px(size), height=t.px(size), border_radius=radius,
                         alignment=ft.Alignment.CENTER, content=body)
 
 

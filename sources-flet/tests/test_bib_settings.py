@@ -161,7 +161,8 @@ def test_on_verify_max_hint_without_mount(tmp_path, monkeypatch):
 def test_library_summary_and_sizes():
     summary = BS.library_summary({
         "db": "D:/notes/bib_db/bibliography.jsonl",
-        "aliases": {"records": 376, "total": 400},
+        "records": 376,  # 真实条数取 stats.records，不是 aliases.records
+        "aliases": {"records": 120, "total": 400},
         "bytes": 3_605_834,
     })
     assert summary == {"db": "D:/notes/bib_db/bibliography.jsonl", "records": "376",

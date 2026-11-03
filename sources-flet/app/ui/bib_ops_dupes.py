@@ -299,29 +299,17 @@ class BibDuplicatesView(_OpsView):
     def _merge_card(self) -> ft.Control:
         t = self.t
         rows = merge_field_rows(self.left, self.right)
-        top = ft.Row(spacing=t.sp("1"), wrap=True,
-                     vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            ft.TextField(label="合并后 key", value=self.new_key, dense=True, width=t.px(200),
-                         text_size=t.font("body"),
-                         border={
-                             ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                                 side=ft.BorderSide(1, t.palette.border)),
-                             ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                                 side=ft.BorderSide(2, t.palette.accent)),
-                         },
-                         on_change=lambda e: setattr(self, "new_key", e.control.value or "")),
-            ft.TextField(label="条目类型", value=self.entry_type, dense=True, width=t.px(150),
-                         text_size=t.font("body"),
-                         border={
-                             ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                                 side=ft.BorderSide(1, t.palette.border)),
-                             ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                                 side=ft.BorderSide(2, t.palette.accent)),
-                         },
-                         on_change=lambda e: setattr(self, "entry_type", e.control.value or "")),
-            C.primary_button("预览合并（dry-run）", lambda e: self._ask_preview_merge(), t,
-                             icon="VISIBILITY", disabled=self.busy),
-        ])
+        # 两个浮动字段（48）与预览按钮同行等高（用户 m02816）。
+        top = C.field_row(
+            C.form_field(t, "合并后 key", C.text_field(
+                t, value=self.new_key, width=t.px(200),
+                on_change=lambda e: setattr(self, "new_key", e.control.value or ""))),
+            [C.form_field(t, "条目类型", C.text_field(
+                t, value=self.entry_type, width=t.px(150),
+                on_change=lambda e: setattr(self, "entry_type", e.control.value or ""))),
+             C.primary_button("预览合并（dry-run）", lambda e: self._ask_preview_merge(), t,
+                              icon="VISIBILITY", disabled=self.busy)],
+            t)
         return C.card(ft.Column(spacing=t.sp("1"), controls=[
             C.section_title(f"对比 · {duplicate_pair_title(self.pair)}", t,
                             note="逐字段选保留哪一条的值（默认左）"),

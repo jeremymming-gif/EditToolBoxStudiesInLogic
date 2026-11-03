@@ -325,22 +325,14 @@ class BibImportView:
         if self.mode == "dir":
             return []
         t = self.t
-        common = dict(dense=True, text_size=t.font("body"),
-                      border={
-                          ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                              side=ft.BorderSide(1, t.palette.border)),
-                          ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                              side=ft.BorderSide(2, t.palette.accent)),
-                      },
-                      content_padding=C._pad(t, 10, 8, 10, 8), width=t.px(240))
         return [
             ft.Row(spacing=t.sp("2"), wrap=True, controls=[
-                ft.TextField(label="期（--issue，可空）", value=self.issue,
-                             hint_text="如 2026年第5期(90)", on_change=self._on_issue_change,
-                             **common),
-                ft.TextField(label="篇（--slug，可空）", value=self.slug,
-                             hint_text="如 01 Meimei_Han", on_change=self._on_slug_change,
-                             **common),
+                C.form_field(t, "期（--issue，可空）", C.text_field(
+                    t, value=self.issue, width=t.px(240),
+                    hint_text="如 2026年第5期(90)", on_change=self._on_issue_change)),
+                C.form_field(t, "篇（--slug，可空）", C.text_field(
+                    t, value=self.slug, width=t.px(240),
+                    hint_text="如 01 Meimei_Han", on_change=self._on_slug_change)),
             ]),
             C.option_row("已人工核实（--verified）",
                          "默认与旧壳一致：入藏记为已核实；取消则显式传 --unverified", t,
@@ -364,20 +356,12 @@ class BibImportView:
                 on_browse=lambda e: self.page.app.browse_field(
                     self._dir_ref, "选择整期目录", "dir", "bib_import_dir"),
                 required=True, field_ref=self._dir_ref)
-        return ft.TextField(
-            label="粘贴 bib 文本", value=self.text_value, multiline=True,
-            min_lines=6, max_lines=14, hint_text="把 bib 条目粘贴到这里；预览/写入时写成临时文件，"
-                                                 "不改动任何源文件",
-            text_size=t.font("body"),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            content_padding=C._pad(t, 10, 8, 10, 8),
+        return C.form_field(t, "粘贴 bib 文本", C.text_field(
+            t, value=self.text_value, multiline=True, min_lines=6, max_lines=14,
+            expand=True,
+            hint_text="把 bib 条目粘贴到这里；预览/写入时写成临时文件，不改动任何源文件",
             on_change=self._on_text_change,
-        )
+        ), expand=True)
 
     # 预览 / 写库 ─────────────────────────────────────────────────────
     def _source_args(self) -> tuple[dict, str, str]:
@@ -552,7 +536,7 @@ class BibImportView:
         t = self.t
         payload = self.preview or {}
         counts = import_counts(payload)
-        cards = ft.Row(spacing=t.sp("1"), wrap=True, controls=[
+        cards = ft.Row(spacing=t.sp("1"), wrap=False, controls=[
             C.stat_card("新增", str(counts["new"]), "写库后新增条目", t),
             C.stat_card("更新", str(counts["updated"]), "已有条目被更新", t),
             C.stat_card("冲突", str(counts["conflicts"]), "写库后进「待处理」", t),
@@ -906,10 +890,13 @@ class BibReviewView:
         resolved = _as_int(totals.get("resolved"))
         controls: list = [
             C.section_title("待裁决", t, note="conflicts --json --pending-only（只读）"),
-            ft.Row(spacing=t.sp("2"), wrap=True, controls=[
-                C.stat_card("待裁决", str(pending), "写库后从此队列移除", t),
-                C.stat_card("冲突合计", str(total), f"已裁决 {resolved}", t),
-                C.stat_card("库 sha256", sha_short(self.db_sha, 12), "写前 sha 闸", t),
+            ft.Row(spacing=t.sp("2"), wrap=False, controls=[
+                C.stat_card("待裁决", str(pending), "写库后从此队列移除", t,
+                            expand=False, width=t.px(150)),
+                C.stat_card("冲突合计", str(total), f"已裁决 {resolved}", t,
+                            expand=False, width=t.px(150)),
+                C.stat_card("库 sha256", sha_short(self.db_sha, 12), "写前 sha 闸", t,
+                            expand=False, width=t.px(150)),
             ]),
             ft.Row(spacing=t.sp("1"), wrap=True, controls=[
                 C.secondary_button("刷新清单", lambda e: self.page.page.run_task(self._load), t,
@@ -941,7 +928,7 @@ class BibReviewView:
             ft.Row(spacing=t.sp("1"), wrap=True, controls=[
                 C.badge(f"C{_as_int(item.get('stable_no')):03d}", t, "accent"),
                 C.text(conflict_title(item), t, "small", weight="medium"),
-                ft.Container(expand=True),
+                ft.Container(width=t.px(8)),
                 C.badge(conflict_where(item), t, "neutral"),
                 C.badge(str(item.get("entry_type") or "—"), t, "neutral"),
             ]),
@@ -964,12 +951,14 @@ class BibReviewView:
             C.secondary_button("待查证…", lambda e, i=item: self._defer(i), t,
                                disabled=self.busy),
         ]))
-        rows.append(ft.Row(spacing=t.sp("1"), controls=[
+        # 路径选择列（浮动字段 48）与「替换…」按钮同行等高（用户 m02816）。
+        rows.append(C.field_row(
             C.path_picker("人工裁决 bib", "", "恰好 1 条条目，key 必须等于库内记录 key", t,
                           on_browse=lambda e, r=ref: self.page.app.browse_field(
                               r, "选择人工裁决 bib", "file", "bib_resolve_bib"),
                           required=False, show_note=False, field_ref=ref),
             C.secondary_button("替换…", lambda e, i=item: self._replace(i), t,
                                icon="SWAP_HORIZ", disabled=self.busy),
-        ]))
+            t, height=t.px(48),
+        ))
         return C.card(ft.Column(spacing=t.sp("1"), controls=rows), t)

@@ -40,12 +40,6 @@ def article_rows(payload: dict) -> list[dict]:
     return rows
 
 
-def list_label(row: dict, limit: int = 34) -> str:
-    title = row.get("title") or ""
-    short = title[:limit] + ("…" if len(title) > limit else "")
-    return f"{row.get('name', '')} {short}".strip()
-
-
 def preview_lines(payload: dict) -> list[str]:
     payload = payload or {}
     lines = [f"模板来源：{payload.get('templateSource') or '（未知）'}"]
@@ -108,15 +102,17 @@ class TocPanel:
         self.info = ft.Container()
         self.feedback = ft.Container()
         self.editor_box = ft.Column(spacing=self.t.sp("1"))
-        self.kind = ft.Dropdown(
-            label="栏目类型", width=self.t.px(160), dense=True,
-            text_size=self.t.font("body"),
-            options=[ft.DropdownOption(key=key, text=TS.KIND_LABELS[key])
-                     for key in TS.COLUMN_KINDS],
-            on_select=lambda e: self._set_value("columnKind", self.kind.value),
+        # 用户 m03037：栏目类型改成 48 高浮动下拉（C.select_box），与右侧输入框盒高一致；
+        # 初始控件在 _editor_controls() 里按当前值重建（选项里可能含自定义类型）。
+        self.kind = C.select_box(
+            self.t, "栏目类型",
+            value_text=TS.KIND_LABELS.get(TS.COLUMN_KINDS[0], TS.COLUMN_KINDS[0]),
+            options=[(key, TS.KIND_LABELS[key]) for key in TS.COLUMN_KINDS],
+            on_select=self._on_kind_select, expand=True,
         )
-        self.add_box = ft.Dropdown(label="可加入的篇目", width=self.t.px(300), dense=True,
-                                   text_size=self.t.font("body"), options=[])
+        # 可加入的篇目：expand 占满表单行，避免固定 300 宽在窄面板里把「加入」挤出画面。
+        self.add_box = C.select(self.t, value="", label="可加入的篇目",
+                                options=[], expand=True)
 
     # ── 参数区 ─────────────────────────────────────────────────────────
     def params(self) -> list:
@@ -137,7 +133,8 @@ class TocPanel:
                          checked=bool(options.get("toc_text_only", True)),
                          on_change=lambda e: self.app.set_option("toc_text_only",
                                                                  e.control.value)),
-            ft.Row(spacing=self.t.sp("1"), controls=[
+            ft.Row(spacing=self.t.sp("1"), wrap=True,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                 C.primary_button("预览", lambda e: self.page.page.run_task(self._preview_task),
                                  self.t, icon="PREVIEW"),
                 C.secondary_button("读取栏目表", lambda e: self._load_settings(), self.t,
@@ -204,57 +201,77 @@ class TocPanel:
 
     def _editor_controls(self) -> list:
         t = self.t
-        self.kind.value = str(self.values.get("columnKind") or "")
-        if self.kind.value not in TS.COLUMN_KINDS:
-            self.kind.options = [ft.DropdownOption(key=key, text=TS.KIND_LABELS[key])
-                                 for key in TS.COLUMN_KINDS]
-            self.kind.options.append(ft.DropdownOption(key=self.kind.value, text=self.kind.value))
-        else:
-            self.kind.options = [ft.DropdownOption(key=key, text=TS.KIND_LABELS[key])
-                                 for key in TS.COLUMN_KINDS]
+        # 用户 m03037：栏目类型 / 栏目名称 / 栏目英文名 / 主持人 排成 2×2 等宽网格；
+        # 栏目类型用 48 高 C.select_box，与三个浮动输入框盒高一致、基线对齐；
+        # 窄面板（两格放不下）由 C.form_grid 自动降单列，不再挤出画面。
+        kind_value = str(self.values.get("columnKind") or "")
+        kind_options = [(key, TS.KIND_LABELS[key]) for key in TS.COLUMN_KINDS]
+        if kind_value and kind_value not in TS.COLUMN_KINDS:
+            kind_options.append((kind_value, kind_value))
+        self.kind = C.select_box(
+            t, "栏目类型",
+            value_text=dict(kind_options).get(kind_value)
+            or dict(kind_options).get(TS.COLUMN_KINDS[0], "未指定"),
+            options=kind_options, on_select=self._on_kind_select, expand=True,
+        )
         name = self._field("columnName", "栏目名称（中文）")
         name_en = self._field("columnNameEN", "栏目英文名（可空）")
-        host = self._field("columnHost", "主持人（可空）", width=200)
+        host = self._field("columnHost", "主持人（可空）")
         rows: list = [
-            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[self.kind, name, name_en, host]),
+            C.form_grid(t, [
+                self.kind,
+                C.form_field(t, "栏目名称（中文）", name),
+                C.form_field(t, "栏目英文名（可空）", name_en),
+                C.form_field(t, "主持人（可空）", host),
+            ]),
         ]
         if not self.selected:
             rows.append(C.text("栏目篇目：尚未选择。预览后从下拉里加入，或读入已有栏目表。",
                                t, "caption", t.palette.text_faint))
         for index, article in enumerate(self.selected):
+            # 用户 m03037：篇目名占满剩余宽度并单行省略——超长篇名不会把 ↑↓/删除 挤出面板。
             rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                controls=[
-                C.text(article, t, "small", weight="medium"),
-                ft.Container(expand=True),
+                ft.Container(
+                    expand=True,
+                    content=C.text(article, t, "small", weight="medium", max_lines=1,
+                                   overflow=ft.TextOverflow.ELLIPSIS, tooltip=article),
+                ),
                 C.text_button("↑", lambda e, i=index: self._move(i, -1), t),
                 C.text_button("↓", lambda e, i=index: self._move(i, 1), t),
-                C.text_button("删除", lambda e, i=index: self._remove(i), t),
+                # 用户 m02990：移除篇目是破坏性动作 → danger 按钮；↑↓ 属列表内微调保留文字链。
+                C.danger_button("删除", lambda e, i=index: self._remove(i), t,
+                                icon="DELETE_OUTLINE"),
             ]))
         remaining = [row["name"] for row in self.available if row["name"] not in self.selected]
-        self.add_box.options = [ft.DropdownOption(key=name, text=name) for name in remaining]
+        self.add_box.options = [(name, name) for name in remaining]
         self.add_box.value = remaining[0] if remaining else ""
         if remaining:
-            rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                               controls=[self.add_box,
-                                         C.secondary_button("加入栏目",
-                                                            lambda e: self._add(), t)]))
+            # 标签上置的下拉 → 按钮与下拉控制行底边齐平（用户 m02816/m03037）；
+            # form_field + add_box 都 expand，行宽随面板收缩，不再固定 300 宽溢出。
+            rows.append(C.field_row(
+                C.form_field(t, "可加入的篇目", self.add_box, expand=True),
+                C.secondary_button("加入栏目", lambda e: self._add(), t), t))
         else:
             rows.append(C.text("没有可加入的篇目：先点「预览」取篇目清单。", t, "caption",
                                t.palette.text_faint))
         return rows
 
-    def _field(self, key: str, label: str, width: float = 220) -> ft.TextField:
-        return ft.TextField(
-            label=label, value=str(self.values.get(key) or ""), dense=True,
-            text_size=self.t.font("body"), width=self.t.px(width),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, self.t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, self.t.palette.accent)),
-            },
-            content_padding=C._pad(self.t, 10, 8, 10, 8),
+    def _on_kind_select(self, key: str, label: str) -> None:
+        """栏目类型选择：写入设置值并原地更新浮动下拉的显示文案（用户 m03037）。"""
+        self._set_value("columnKind", key)
+        box = getattr(self, "kind", None)
+        if box is not None and getattr(box, "_value_text", None) is not None:
+            box._value_text.value = label
+            try:
+                box._value_text.update()
+            except Exception:  # noqa: BLE001 - 未挂载时仅更新数据
+                pass
+
+    def _field(self, key: str, label: str) -> ft.TextField:
+        """栏目编辑区输入框：expand 填满网格格，标签由 form_field 浮动显示。"""
+        return C.text_field(
+            self.t, value=str(self.values.get(key) or ""), expand=True,
             on_change=lambda e, k=key: self._set_value(k, e.control.value),
         )
 

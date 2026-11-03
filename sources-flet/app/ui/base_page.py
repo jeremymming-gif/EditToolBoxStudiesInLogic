@@ -59,24 +59,17 @@ class BasePage:
         return control
 
     # ── 表单小工具 ─────────────────────────────────────────────────────
-    def _meta_field(self, key: str, label: str, width: float):
+    def _meta_field(self, key: str, label: str, width: float = 0):
+        """高级参数单行输入；width=0 表示随父容器流式铺满（网格用）。"""
         def _changed(e) -> None:
             self.app.store.set(f"form.{key}", e.control.value.strip())
 
-        control = ft.TextField(
-            label=label, value=self.app.store.get(f"form.{key}", "") or "",
-            dense=True, text_size=self.t.font("body"),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, self.t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, self.t.palette.accent)),
-            },
-            width=self.t.px(width), on_change=_changed,
-            content_padding=C._pad(self.t, 10, 8, 10, 8),
+        control = C.text_field(
+            self.t, value=self.app.store.get(f"form.{key}", "") or "",
+            width=(self.t.px(width) if width else None), on_change=_changed,
         )
         self.fields[key] = [control]
-        return control
+        return C.form_field(self.t, label, control)
 
     def field(self, recent_key: str) -> str:
         ref = self.fields.get(recent_key)
@@ -88,6 +81,7 @@ class BasePage:
         ref = self.fields.get(recent_key)
         if ref:
             ref[0].value = value
+            C.sync_clearable(ref[0])     # m03131：程序化回填后同步框内 ✕
             try:
                 ref[0].update()
             except Exception:  # noqa: BLE001

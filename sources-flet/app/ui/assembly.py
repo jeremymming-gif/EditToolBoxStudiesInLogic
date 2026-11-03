@@ -81,7 +81,9 @@ def build_params(page, key: str) -> ft.Control:
     elif key == "merge":
         options = page.app.store.get("options", {}) or {}
         rows += [
-            page._meta_field("merge_out", "输出文件（可空）", 420),
+            # 用户 m03037：右侧参数卡内宽约 398（1000 宽窗口）→ 固定 420 会横向溢出，
+            # 收到 300 后 1240/1000 两档都不越界。
+            page._meta_field("merge_out", "输出文件（可空）", 300),
             C.option_row("嵌套书签", "--nest-outlines", t, icon="BOOKMARKS_OUTLINED",
                          checked=bool(options.get("merge_nest", False)),
                          on_change=lambda e: page.app.set_option("merge_nest", e.control.value)),
@@ -103,8 +105,10 @@ def build_params(page, key: str) -> ft.Control:
     engine_note.overflow = ft.TextOverflow.ELLIPSIS
     rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                        controls=[
-        C.primary_button("运行这一步", lambda e, k=key: run_step(page, k), t, icon="PLAY_ARROW",
-                         disabled=not page.app.engine_status.ok),
+        # 用户 m03093：全屏唯一主色留给页面级「运行整期流水线」；
+        # 当前步骤的「运行这一步」是次操作 → 描边按钮（等高、图标、引擎未就绪禁用）。
+        C.secondary_button("运行这一步", lambda e, k=key: run_step(page, k), t, icon="PLAY_ARROW",
+                           disabled=not page.app.engine_status.ok),
         ft.Container(expand=True, content=engine_note),
     ]))
     return ft.Column(spacing=t.sp("1"), controls=rows)
@@ -113,16 +117,15 @@ def build_params(page, key: str) -> ft.Control:
 def _cleantemp_params(page) -> list:
     t = page.t
     mode = cleantemp_mode(page)
-    mode_box = ft.Dropdown(
-        label="清理档位", value=mode, width=t.px(300), dense=True,
-        text_size=t.font("body"),
-        options=[ft.DropdownOption(key=key, text=MODE_LABELS[key]) for key in MODE_KEYS],
+    mode_box = C.select(
+        t, value=mode, width=t.px(300), label="清理档位",
+        options=[(key, MODE_LABELS[key]) for key in MODE_KEYS],
         on_select=lambda e: _set_mode(page, e.control.value),
     )
     rows: list = [
         C.notice_bar("清理一律移入 `<期目录>/.toolbox-trash/`，可撤销；本页不提供永久删除。",
                      t, "info"),
-        mode_box,
+        C.form_field(t, "清理档位", mode_box),
         C.option_row("只预演（--dry-run）", "列出将清理的文件与数量，不真删", t,
                      icon="SCIENCE_OUTLINED", checked=cleantemp_dry_run(page),
                      on_change=lambda e: page.app.set_option("cleantemp_dry_run",
@@ -158,19 +161,20 @@ def _restore_row(page) -> ft.Control:
     names = [str(path) for path in choices]
     if selected not in names:
         selected = names[0]
-    dropdown = ft.Dropdown(
-        label="回收目录", value=selected, width=t.px(320), dense=True,
-        text_size=t.font("body"),
-        options=[ft.DropdownOption(key=str(path), text=path.name) for path in choices],
+    dropdown = C.select(
+        t, value=selected, width=t.px(320), label="回收目录",
+        options=[(str(path), path.name) for path in choices],
         on_select=lambda e: page.app.store.set("form.cleantemp_restore",
                                                str(e.control.value or "")),
     )
+    # 标签上置的下拉（控件的控制行在列底）→ 按钮与下拉控制行底边齐平（m02816）。
     return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                   controls=[
         C.text("撤销清理", t, "body"),
-        dropdown,
-        C.secondary_button("恢复所选目录", lambda e: restore(page, dropdown.value or ""), t,
-                           icon="RESTORE"),
+        C.field_row(C.form_field(t, "回收目录", dropdown),
+                    C.secondary_button("恢复所选目录",
+                                       lambda e: restore(page, dropdown.value or ""),
+                                       t, icon="RESTORE"), t),
     ])
 
 

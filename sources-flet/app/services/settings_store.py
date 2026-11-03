@@ -28,6 +28,14 @@ BIBDB_DEFAULTS = {
     "verify_all_refs": False,
     "lookup_enabled": True,
 }
+#: 批 114 导航迁移用：引用库视图 → 组（与 ui/ia_map.NAV_TREE 同口径；这里只是
+#: 纯数据，避免 services 反向依赖 app/ui。新增视图时两处同步）。
+BIB_VIEW_GROUPS = {
+    "overview": "read", "query": "read",
+    "normalize": "intake", "import": "intake",
+    "review": "treat", "edit": "treat", "dupes": "treat", "fieldfix": "treat",
+    "health": "maint", "settings": "maint",
+}
 
 
 def settings_path() -> Path:
@@ -81,6 +89,12 @@ def _defaults() -> dict:
         # 只写内存，退出时随 main.py 的唯一 save 落盘；切视图不产生磁盘 IO。
         "bib_view": "overview",
         "bib_group_memory": {},
+        # 批 114 导航（用户 m03256）：上次路由 + 当前展开的页面/组。
+        # route 形如 `single:proofcheck` / `issue:toc` / `bib:edit`；无二级视图的页面就是 key。
+        "last_route": "home",
+        "nav_open": {"page": "home", "group": ""},
+        # 主按钮配色（批 114 P2 v2）：「c」石板蓝（默认）/「d」石墨。
+        "button_palette": "c",
         # 关闭窗口 → 最小化到托盘（仅 Windows；默认关，见 App.set_tray_enabled）
         "tray_enabled": False,
         "engine_override": "",
@@ -103,6 +117,12 @@ def normalize_tray_enabled(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return False
+
+
+def normalize_button_palette(value) -> str:
+    """按钮配色归一：只认 C/D，缺键或坏值回默认 C（旧配置必须能读）。"""
+    text = str(value or "").strip().lower()
+    return text if text in ("c", "d") else "c"
 
 
 def pick(store, dotted: str, allowed, default):
@@ -156,7 +176,44 @@ class SettingsStore:
             # 已保存过的 Flet 段拥有最终优先级（旧键只在首次迁移时生效）
             self.data = _deep_merge(self.data, section)
         self.data["tray_enabled"] = normalize_tray_enabled(self.data.get("tray_enabled"))
+        # 旧 settings.json 没有该键 → _defaults 已补 "c"；坏值/大写也归一。
+        self.data["button_palette"] = normalize_button_palette(
+            self.data.get("button_palette"))
+        # 批 114：没有 last_route 的旧配置（或手改成坏值）→ 由 last_page / single_flow /
+        # bib_view 推导一次；之后按新键读写。坏 nav_open 也补成合法 dict。
+        # 注意：_defaults 本身带 last_route="home"，所以「是否迁移」要看保存文件里
+        # 是否真的写过该键，而不是看合并后的 data。
+        saved_route = section.get("last_route") if isinstance(section, dict) else None
+        route = self.data.get("last_route")
+        if not isinstance(route, str) or not route.strip():
+            self._migrate_route()
+        elif not isinstance(saved_route, str) or not saved_route.strip():
+            self._migrate_route()
+        open_state = self.data.get("nav_open")
+        if not isinstance(open_state, dict):
+            self.data["nav_open"] = {"page": "", "group": ""}
         return self.data, self.exists
+
+    def _migrate_route(self) -> None:
+        """旧键 → last_route / nav_open（仅首次迁移或坏值时调用；不删旧键）。"""
+        page = str(self.data.get("last_page") or "home")
+        flow = str(self.data.get("single_flow") or "convert")
+        view = str(self.data.get("bib_view") or "overview")
+        if page == "single":
+            route = f"single:{flow if flow in ('convert', 'proofcheck') else 'convert'}"
+        elif page == "issue":
+            route = "issue:overview"
+        elif page == "bib":
+            route = f"bib:{view if view in BIB_VIEW_GROUPS else 'overview'}"
+        elif page in ("home", "settings", "help"):
+            route = page
+        else:
+            route = "home"
+        page_key = route.partition(":")[0]
+        group = BIB_VIEW_GROUPS.get(route.partition(":")[2], "") if page_key == "bib" else ""
+        self.data["last_route"] = route
+        self.data["nav_open"] = {"page": page_key, "group": group}
+
 
     def _legacy_view(self) -> dict:
         """把 Tk 版遗留键映射成家壳能用的初值（只读，不删原键）。"""

@@ -1,8 +1,9 @@
 """批 112 收尾后修复 B：单篇稿件页布局（高级参数 / 元数据折叠 / 日志浮层）。
 
 锁四件事（不建窗口、不跑引擎）：
-1. 高级参数（卷/期/年份/页码/收稿…）始终可见，不再藏在 `expanded=False` 的 ExpansionTile；
-2. 元数据表单收进默认收起的 ExpansionTile（保留 MetadataPanel 本体与「预览元数据」）；
+1. 高级参数（卷/期/年份/页码/收稿…）始终可见，不在任何折叠区里；
+2. 元数据表单在默认展开的 CollapsibleSection 中（批 114 用户 m02696），保留
+   MetadataPanel 本体与扁平「预览元数据」；
 3. 日志浮层与 body 同在 Stack，浮层后入（z-order 高）、贴底、标题栏常驻，运行时自动展开；
 4. `LogConsole.add_line/clear` 接口不变，IssuePage 的非 dock 用法保持旧布局。
 """
@@ -116,6 +117,11 @@ def _walk(control, *, skip_collapsed: bool = False):
         yield from _walk(child, skip_collapsed=skip_collapsed)
 
 
+def _field_label(ctl):
+    """批 114 F1：浮动 label 改成 form_field 上置，控件上留 _form_label 元数据。"""
+    return getattr(ctl, "_form_label", None) or getattr(ctl, "label", None)
+
+
 def _build_single():
     app = _FakeApp()
     page = P.SinglePage(app)
@@ -124,37 +130,42 @@ def _build_single():
 
 
 # ── 1. 高级参数始终可见 ────────────────────────────────────────────────────
-def test_advanced_params_visible_not_inside_collapsed_tile():
+def test_advanced_params_visible_outside_metadata_section():
     page, root = _build_single()
-    labels = {ctl.label for ctl in _walk(root, skip_collapsed=True)
-              if isinstance(ctl, ft.TextField) and ctl.label}
+    labels = {_field_label(ctl) for ctl in _walk(root)
+              if isinstance(ctl, ft.TextField)}
+    labels.discard(None)
     required = {"卷", "期", "年份", "页码", "收稿日期", "作者", "篇名", "基金"}
     assert required <= labels, f"高级参数未直接出现在主流程: 缺 {required - labels}"
-    # 折进去的 ExpansionTile 里不该再有这些字段（元数据表单另算）。
-    tiles = [ctl for ctl in _walk(root, skip_collapsed=True)
-             if isinstance(ctl, ft.ExpansionTile)]
-    assert len(tiles) == 1, "单篇初排页只该有一个折叠块（元数据）"
-    inside = [ctl for child in _children(tiles[0]) for ctl in _walk(child)]
-    assert "卷" not in {ctl.label for ctl in inside if isinstance(ctl, ft.TextField)}
+    # 高级参数不在元数据折叠区里；且整页不再有 ExpansionTile（改用 CollapsibleSection）。
+    assert not [ctl for ctl in _walk(root) if isinstance(ctl, ft.ExpansionTile)]
+    meta_labels = {_field_label(ctl) for ctl in _walk(page._meta_section.body.content)
+                   if isinstance(ctl, ft.TextField)}
+    meta_labels.discard(None)
+    assert required.isdisjoint(meta_labels), "高级参数被塞进元数据区"
 
 
-# ── 2. 元数据默认收起且保留面板与预览入口 ─────────────────────────────────
-def test_metadata_folded_by_default_and_panel_kept():
+# ── 2. 元数据默认展开且保留面板与扁平预览入口 ─────────────────────────────
+def test_metadata_expanded_by_default_and_panel_kept():
     page, root = _build_single()
-    tiles = [ctl for ctl in _walk(root) if isinstance(ctl, ft.ExpansionTile)]
-    assert len(tiles) == 1
-    tile = tiles[0]
-    assert isinstance(tile.title, ft.Text)
-    assert tile.title.value == "元数据（可选）"
-    assert tile.expanded is False
+    section = page._meta_section
+    assert isinstance(section, C.CollapsibleSection)
+    assert section.expanded is True
+    assert section.title_label.value == "元数据（可选）"
+    assert section.body.visible is True
+    assert isinstance(section._toggle_btn, ft.IconButton)   # 扁平箭头，不是 Material 折叠块
     assert page._meta_panel is not None
-    hidden = [ctl for child in _children(tile) for ctl in _walk(child)]
-    hidden_labels = {ctl.label for ctl in hidden
-                     if isinstance(ctl, ft.TextField) and ctl.label}
-    assert {"中文题名", "英文题名"} <= hidden_labels, "元数据表单本体被搬走/重写了"
-    button_labels = {str(getattr(ctl, "content", "")) for ctl in hidden
-                     if isinstance(ctl, (ft.TextButton, ft.OutlinedButton))}
-    assert "预览元数据" in button_labels
+    panel_controls = list(_walk(section.body.content))
+    panel_labels = {_field_label(ctl) for ctl in panel_controls
+                    if isinstance(ctl, ft.TextField)}
+    panel_labels.discard(None)
+    assert {"中文题名", "英文题名"} <= panel_labels, "元数据表单本体被搬走/重写了"
+    # 用户 m02990：预览是明确动作 → 描边按钮（不再是纯文字链）。
+    previews = [ctl for ctl in panel_controls if isinstance(ctl, ft.OutlinedButton)
+                and str(ctl.content) == "预览元数据"]
+    assert previews, "「预览元数据」应为明确的描边按钮（m02990 按钮语义统一）"
+    assert previews[0].icon is not None, "动作按钮应带图标，避免和链接混淆"
+    assert not [ctl for ctl in _walk(root) if isinstance(ctl, ft.ExpansionTile)]
 
 
 # ── 3. 日志浮层：Stack 后入、贴底、标题栏常驻、运行自动展开 ────────────────
@@ -210,19 +221,19 @@ def _build_issue():
     return page, root
 
 
-def test_issue_step_row_keeps_title_column_widable():
+def test_issue_overview_step_row_keeps_title_column_widable():
+    # 批 114：步骤卡列表改为导航子页，父页只留一行式概览（序号/图标/标题/状态/运行）。
     page, _root = _build_issue()
-    row = page._step_row(0, page.STEPS[0])
-    assert isinstance(row.content, ft.Column), "步骤行应是两行结构（标题行 + 操作行）"
-    head, actions = row.content.controls
-    assert isinstance(head, ft.Row) and isinstance(actions, ft.Row)
-    title_cols = [c for c in head.controls if isinstance(c, ft.Column)]
+    row = page._overview_step_row(0, page.STEPS[0])
+    assert isinstance(row, ft.Container) and isinstance(row.content, ft.Row)
+    title_cols = [c for c in row.content.controls if isinstance(c, ft.Column)]
     assert title_cols and title_cols[0].expand is True, "标题列必须 expand 吃剩余宽度"
     texts = [c for c in _walk(title_cols[0]) if isinstance(c, ft.Text)]
-    assert texts[0].max_lines == 2 and texts[0].overflow == ft.TextOverflow.ELLIPSIS
-    assert texts[1].max_lines == 2 and texts[1].overflow == ft.TextOverflow.ELLIPSIS
-    labels = [str(getattr(c, "content", "")) for c in actions.controls]
-    assert any("运行" in label for label in labels), "运行按钮应下沉到第二行"
+    assert texts[0].max_lines == 1 and texts[0].overflow == ft.TextOverflow.ELLIPSIS
+    assert texts[1].max_lines == 1 and texts[1].overflow == ft.TextOverflow.ELLIPSIS
+    buttons = [c for c in _walk(row) if isinstance(c, ft.OutlinedButton)]
+    labels = [str(getattr(b.content, "value", b.content)) for b in buttons]
+    assert any("运行" in label for label in labels), "概览行也要能直接运行该步"
 
 
 # ── 6. 批 112 A-05：设置页缩放滑块量程 = 屏幕钳制后的真实上限 ──────────────

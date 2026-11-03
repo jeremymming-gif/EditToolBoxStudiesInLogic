@@ -560,26 +560,18 @@ class BibEditorView(_OpsView):
 
     def _input_card(self) -> ft.Control:
         t = self.t
-        key_field = ft.TextField(
-            label="条目 key", value=self.key_text, dense=True, width=t.px(220),
-            text_size=t.font("body"),
-            border={
-                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                    side=ft.BorderSide(1, t.palette.border)),
-                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                    side=ft.BorderSide(2, t.palette.accent)),
-            },
-            on_change=lambda e: setattr(self, "key_text", e.control.value or ""))
-        buttons = ft.Row(spacing=t.sp("1"), wrap=True,
-                         vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            C.secondary_button("载入条目", lambda e: self._run(self._load()), t, icon="SEARCH"),
-            C.text("按 key 载入（也认别名）；只读预览不改库。", t, "caption",
-                   t.palette.text_faint),
-        ])
+        key_field = C.form_field(t, "条目 key", C.text_field(
+            t, value=self.key_text, width=t.px(220),
+            on_change=lambda e: setattr(self, "key_text", e.control.value or "")))
+        # 浮动字段 48 →「载入条目」跟随 48（用户 m02816：同一行不许高矮不齐）。
         return C.card(ft.Column(spacing=t.sp("1"), controls=[
             C.section_title("编辑条目", t, note="先 dry-run 预览，再二次确认写库"),
-            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[key_field, buttons]),
+            C.field_row(key_field, [
+                C.secondary_button("载入条目", lambda e: self._run(self._load()), t,
+                                   icon="SEARCH"),
+                C.text("按 key 载入（也认别名）；只读预览不改库。", t, "caption",
+                       t.palette.text_faint),
+            ], t),
         ]), t)
 
     def _fields_card(self) -> ft.Control:
@@ -594,39 +586,19 @@ class BibEditorView(_OpsView):
         ])
         boxes = []
         for name, value in ordered_fields(record):
-            boxes.append(ft.TextField(
-                label=field_label(name), value=_text(self.field_values.get(name, value)),
-                dense=True, width=t.px(280), text_size=t.font("body"),
-                border={
-                    ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                        side=ft.BorderSide(1, t.palette.border)),
-                    ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                        side=ft.BorderSide(2, t.palette.accent)),
-                },
+            boxes.append(C.form_field(t, field_label(name), C.text_field(
+                t, value=_text(self.field_values.get(name, value)),
+                width=t.px(280),
                 on_change=lambda e, n=name: self.field_values.__setitem__(
-                    n, e.control.value or "")))
+                    n, e.control.value or ""))))
         meta_row = ft.Row(spacing=t.sp("1"), wrap=True,
                           vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            ft.TextField(
-                label="条目类型", value=self.entry_type, dense=True, width=t.px(160),
-                text_size=t.font("body"),
-                border={
-                    ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                        side=ft.BorderSide(1, t.palette.border)),
-                    ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                        side=ft.BorderSide(2, t.palette.accent)),
-                },
-                on_change=lambda e: setattr(self, "entry_type", e.control.value or "")),
-            ft.TextField(
-                label="新 key（留空 = 不改）", value=self.new_key, dense=True, width=t.px(220),
-                text_size=t.font("body"),
-                border={
-                    ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                        side=ft.BorderSide(1, t.palette.border)),
-                    ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                        side=ft.BorderSide(2, t.palette.accent)),
-                },
-                on_change=lambda e: setattr(self, "new_key", e.control.value or "")),
+            C.form_field(t, "条目类型", C.text_field(
+                t, value=self.entry_type, width=t.px(160),
+                on_change=lambda e: setattr(self, "entry_type", e.control.value or ""))),
+            C.form_field(t, "新 key（留空 = 不改）", C.text_field(
+                t, value=self.new_key, width=t.px(220),
+                on_change=lambda e: setattr(self, "new_key", e.control.value or ""))),
         ])
         actions = ft.Row(spacing=t.sp("1"), wrap=True,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[

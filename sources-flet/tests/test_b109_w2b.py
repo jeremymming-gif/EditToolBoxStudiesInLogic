@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services import engine_bridge as EB  # noqa: E402
 from ui import checks as CK  # noqa: E402
+from ui import components as C  # noqa: E402
 from ui import pages  # noqa: E402
 from ui.tokens import Tokens  # noqa: E402
 
@@ -369,7 +370,7 @@ def test_proof_section_wires_lang_dropdown_and_fix_option():
     page = _Page()
     section = CK.proofcheck_section(page)
     dropdown = page.fields["proof_lang"][0]
-    assert isinstance(dropdown, ft.Dropdown) and dropdown.label == "语种"
+    assert isinstance(dropdown, C.Select) and dropdown.label == "语种"
     assert [opt.key for opt in dropdown.options] == ["", "zh", "en"]
     assert [opt.text for opt in dropdown.options] == ["自动", "中文", "英文"]
     labels = _texts(section)

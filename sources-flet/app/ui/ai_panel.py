@@ -94,17 +94,26 @@ class AiPanel:
                                     ])
         self._scope_row = ft.Row(spacing=t.sp("1"), visible=self._fulltext,
                                  controls=self._scope_controls())
-        self._stage_field = ft.TextField(
-            value="", dense=True, text_size=t.font("body"), expand=True,
-            hint_text="留空 = 按输出根目录与源稿自动发现",
+        # 暂存目录：描边浮动标签 + 浏览目录 + 自动发现（m02696 去灰底；flet 1.0.5
+        # 无系统级文件拖放 API，输入方式统一为「粘贴路径或点浏览」）。
+        self._stage_field = C.floating_field(
+            t, "暂存目录（可空）", value="", expand=True,
+            hint="留空 = 按输出根目录与源稿自动发现",
             on_change=self._on_stage_input,
         )
+        stage_ref = [self._stage_field]
+
+        def _pick_stage(e) -> None:
+            self.app.browse_field(stage_ref, "选择暂存目录", "dir", "ai_stage")
+            self._stage_user = True
+
+        browse_stage = C.secondary_button("浏览…", _pick_stage, t, icon="FOLDER_OPEN")
         self._reply_fields = []
         self._reply_box = ft.Column(spacing=t.sp("1"), controls=[self._reply_row()])
         add = C.secondary_button("添加回填文件", lambda e: self._add_reply(None), t, icon="ADD")
         discover = C.secondary_button("自动发现暂存目录", lambda e: self._auto_discover(), t,
                                       icon="SEARCH")
-        self._buttons.extend([add, discover])
+        self._buttons.extend([add, discover, browse_stage])
         apply_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.Checkbox(value=self._apply, on_change=self._on_apply),
             C.text("第二段直接改产物（--coop-apply）", t, "small"),
@@ -114,8 +123,10 @@ class AiPanel:
             C.text("第一段不交付、不联网；第二段只读本地回填文件。", t, "caption", t.palette.text_faint),
             self._fulltext_row,
             self._scope_row,
-            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[C.text("暂存目录", t, "small"), self._stage_field, discover]),
+            # 浮动字段 48 → 两个按钮跟随 48（用户 m02816：同一行不许高矮不齐）。
+            C.field_row(self._stage_field, [browse_stage, discover], t),
+            C.text("可直接粘贴路径（⌘V），或点「浏览…」选择目录；「自动发现」按输出根目录与"
+                   "源稿回推暂存目录。", t, "caption", t.palette.text_faint),
             C.text("回填文件（一份回复一个文件；路径可粘贴）", t, "small", t.palette.text_muted),
             self._reply_box,
             add,
@@ -216,18 +227,23 @@ class AiPanel:
 
     def _reply_row(self, value: str = "") -> ft.Row:
         t = self.t
-        field = ft.TextField(value=value, dense=True, text_size=t.font("body"), expand=True,
-                             hint_text="回填文件路径", on_change=lambda e: self._refresh_mode())
+        # 回填文件：描边浮动标签（不要灰底块）+ 扁平「选择…/删除」。
+        field = C.floating_field(
+            t, "回填文件（可空）", value=value, expand=True,
+            hint="路径可粘贴，或点「选择…」",
+            on_change=lambda e: self._refresh_mode())
         ref = [field]
 
         def _pick(e) -> None:
             self.app.browse_field(ref, "选择回填文件", "file", "ai_reply")
 
-        row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            field,
-            C.text_button("选择…", _pick, t),
-            C.text_button("删除", lambda e, f=field: self._remove_reply(f), t),
-        ])
+        # 浮动字段 48 → 同行按钮也跟随 48（m02816 等高）；用户 m02990：
+        # 「选择…」是明确动作 → 描边按钮；「删除」是破坏性动作 → danger 按钮。
+        row = C.field_row(field, [
+            C.secondary_button("选择…", _pick, t, icon="ATTACH_FILE"),
+            C.danger_button("删除", lambda e, f=field: self._remove_reply(f), t,
+                            icon="DELETE_OUTLINE"),
+        ], t)
         self._reply_fields.append(field)
         return row
 
@@ -269,6 +285,7 @@ class AiPanel:
         if self._stage_field is None:
             return
         self._stage_field.value = stage.stage_dir
+        C.sync_clearable(self._stage_field)     # m03131：程序化回填后显示框内 ✕
         self._safe_update(self._stage_field)
         if user:
             self._stage_user = True
@@ -460,11 +477,12 @@ class AiSettings:
         self._key_label = C.text(AI.mask_key(ai["key"]), t, "caption", p.text_faint)
         key_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.text("API Key", t, "small", p.text_muted),
-            ft.TextField(value=ai["key"], password=True, can_reveal_password=True, dense=True,
-                         text_size=t.font("body"), expand=True,
+            C.text_field(t, value=ai["key"], password=True, can_reveal_password=True,
+                         expand=True,
                          hint_text="只存本机设置 JSON；不进命令行、不进日志",
                          on_change=self._on_key_typing, on_blur=self._on_key_commit),
-            C.text_button("清除", lambda e: self._clear_key(), t),
+            C.text_button("清除", lambda e: self._clear_key(), t,
+                          height=t.control_h()),
         ])
         self._protocol_row = ft.Row(spacing=t.sp("1"), controls=self._protocol_controls())
         enabled = C.option_row("AI 功能总开关", "关 = 所有 AI 入口隐藏、零调用", t,
@@ -494,8 +512,8 @@ class AiSettings:
 
     def _text_row(self, key: str, label: str, value: str) -> ft.Row:
         t, p = self.t, self.t.palette
-        field = ft.TextField(value=str(value or ""), dense=True, text_size=t.font("body"),
-                             expand=True, on_blur=lambda e, k=key: self._save({k: e.control.value}))
+        field = C.text_field(t, value=str(value or ""), expand=True,
+                             on_blur=lambda e, k=key: self._save({k: e.control.value}))
         return ft.Row(spacing=t.sp("1"), controls=[
             C.text(label, t, "small", p.text_muted),
             field,
@@ -503,8 +521,7 @@ class AiSettings:
 
     def _budget_row(self, key: str, label: str, ai: dict) -> ft.Row:
         t, p = self.t, self.t.palette
-        field = ft.TextField(value=str(ai.get(key, 0)), dense=True, width=130,
-                             text_size=t.font("body"),
+        field = C.text_field(t, value=str(ai.get(key, 0)), width=130,
                              on_blur=lambda e, k=key: self._save_budget(k, e))
         return ft.Row(spacing=t.sp("1"), controls=[
             C.text(label, t, "small", p.text_muted),

@@ -50,7 +50,7 @@ def library_summary(stats: dict | None) -> dict:
     aliases = stats.get("aliases") or {}
     return {
         "db": str(stats.get("db") or "（未知；引擎未解析到笔记仓）"),
-        "records": str(aliases.get("records") if aliases.get("records") is not None else "—"),
+        "records": str(stats.get("records") if stats.get("records") is not None else "—"),
         "aliases_total": str(aliases.get("total") if aliases.get("total") is not None else "—"),
         "size": fmt_size(stats.get("bytes")),
     }
@@ -266,14 +266,9 @@ class BibSettingsView:
                                 t.palette.error if self.bibdb_error else t.palette.text_faint)
         max_row = ft.Row(spacing=t.sp("half"), wrap=True,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            ft.TextField(label="核实上限", value=self.bibdb_text, width=120, dense=True,
-                         text_size=t.font("body"), on_change=self._on_verify_max,
-                         border={
-                             ft.ControlState.DEFAULT: ft.OutlineInputBorder(
-                                 side=ft.BorderSide(1, border_col)),
-                             ft.ControlState.FOCUSED: ft.OutlineInputBorder(
-                                 side=ft.BorderSide(2, focus_col)),
-                         }),
+            C.form_field(t, "核实上限", C.text_field(
+                t, value=self.bibdb_text, width=120,
+                on_change=self._on_verify_max)),
             C.text(f"条（0 = 不限；留空 = 引擎默认 {SS.DEFAULT_VERIFY_MAX} 条，本次不传 --verify-max）",
                    t, "small", t.palette.text_muted),
         ])

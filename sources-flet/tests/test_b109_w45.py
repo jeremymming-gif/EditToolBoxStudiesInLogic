@@ -80,10 +80,18 @@ def test_option_row_and_empty_state_use_the_same_title_weight():
 def test_every_input_field_uses_body_font_size():
     offenders = []
     for path in sorted((APP / "ui").glob("*.py")) + [APP / "main.py"]:
+        if path.name == "components.py":
+            continue  # 唯一构造点：字号在 helper 内由 tokens 决定，下面运行时锁死
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if "text_size=" in line and 'font("body")' not in line:
                 offenders.append(f"{path.name}:{number}")
     assert offenders == []
+    from ui.components import text_field
+
+    t = _tokens()
+    assert text_field(t).text_size == t.font("body")
+    assert text_field(t, multiline=True).text_size == t.font("body")
+    assert text_field(t, mono=True).text_size == t.font("mono")
 
 
 # ── W4 · 品牌资产 / 窗口图标降级 ────────────────────────────────────────────

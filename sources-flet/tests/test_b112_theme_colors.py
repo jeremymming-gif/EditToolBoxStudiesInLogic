@@ -58,12 +58,18 @@ def test_label_slots_keep_widget_color():
 
 
 def test_checkbox_theme_projects_palette_accent():
-    """批 112 A-03：复选框走主题投影，不再落客户端 1px 黑框。"""
+    """批 112 A-03 / 批 114 修正：复选框走主题投影，且「未勾选」不得是实心色块。
+
+    旧期望 `fill_color == palette.accent` 会让未选态也填 accent（用户 m02238 复核发现
+    实心方块）；现改为按 ControlState 投影：SELECTED=accent、DEFAULT/HOVERED 透明或淡 tint。
+    """
     for theme, palette in (("light", LIGHT), ("dark", DARK)):
         theme_obj = _themes(theme)
         assert theme_obj.checkbox_theme is not None, f"{theme} 缺 checkbox_theme"
         box = theme_obj.checkbox_theme
-        assert box.fill_color == palette.accent
+        assert isinstance(box.fill_color, dict), f"{theme} fill_color 应为状态映射"
+        assert box.fill_color[ft.ControlState.SELECTED] == palette.accent
+        assert box.fill_color[ft.ControlState.DEFAULT] == "transparent"
         assert box.check_color == palette.on_accent
         assert box.border_side is not None and box.border_side.width > 0
         assert box.shape is not None

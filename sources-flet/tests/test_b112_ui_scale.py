@@ -74,10 +74,10 @@ def test_button_helpers_anchor_body_role_and_icons():
         assert style.text_style is not None
         assert style.text_style.size == t.font("body")
         assert style.text_style.weight == ft.FontWeight.W_500
-        assert style.icon_size == t.px(18)
+        assert style.icon_size == t.px(14)
 
     icon_btn = C.icon_button("REFRESH", "刷新", None, t)
-    assert icon_btn.icon_size == t.px(20)
+    assert icon_btn.icon_size == t.px(16)
 
 
 def test_button_helpers_scale_with_zoom():
