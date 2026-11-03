@@ -1262,23 +1262,23 @@ _IA_MAP_SRC = ENGINE.parent / "sources-flet" / "app" / "ui" / "ia_map.py"
 check("(n0) Flet IA 映射源文件在仓内（旧双壳页集合契约的接替者）",
       _IA_MAP_SRC.is_file(), str(_IA_MAP_SRC))
 if _IA_MAP_SRC.is_file():
+    import ast as _ast
+
     _ia_src = _IA_MAP_SRC.read_text(encoding="utf-8")
-
-    def _str_list(name: str) -> list[str]:
-        _m = re.search(rf"{name}\s*=\s*\[(.*?)\]", _ia_src, re.S)
-        return re.findall(r'"([^"]+)"', _m.group(1)) if _m else []
-
-    _legacy_pages = _str_list("LEGACY_TAB_ORDER")
     _ia_map_block = re.search(r"IA_MAP[^=]*=\s*\[(.*?)\n\]", _ia_src, re.S)
     _ia_map_txt = _ia_map_block.group(1) if _ia_map_block else ""
     _old_pages = re.findall(r'"old_page":\s*"([^"]+)"', _ia_map_txt)
     _new_pages = re.findall(r'"new_page":\s*"([^"]+)"', _ia_map_txt)
-    check("(n1) 旧页集合：`LEGACY_TAB_ORDER` 15 页 ⇄ `IA_MAP.old_page` 15 行逐项同序"
+
+    # 批 114 起旧页签集合不再维护 LEGACY_TAB_ORDER（页面/视图全部迁入左侧导航），
+    # 契约改为：迁移表 15 行仍在、旧页不重复、新页只落在 4 个一级页面里。
+    _PAGE_SET = {"单篇稿件", "整期装配", "引用库", "设置"}
+    check("(n1) 迁移表完整：`IA_MAP` 15 行、old_page 无重复、new_page ⊆ 4 个一级页面"
           "（少一行 = 某个旧页的功能没人接；多一行 = 迁移表写了不存在的页）",
-          len(_legacy_pages) == 15 and _old_pages == _legacy_pages,
-          f"legacy={len(_legacy_pages)} 页｜ia_map={len(_old_pages)} 行｜"
-          f"legacy−map={sorted(set(_legacy_pages) - set(_old_pages))}｜"
-          f"map−legacy={sorted(set(_old_pages) - set(_legacy_pages))}")
+          len(_old_pages) == 15 and len(set(_old_pages)) == 15
+          and set(_new_pages) <= _PAGE_SET,
+          f"ia_map={len(_old_pages)} 行｜重复={sorted({x for x in _old_pages if _old_pages.count(x) > 1})}｜"
+          f"new_page={sorted(set(_new_pages))}")
 
     _ALIAS = {"待处理": "待裁决"}       # B-188 只改了 mac 侧 → 唯一允许的别名
     _alias_ok = ("待裁决" in _old_pages and "待处理" not in _old_pages
@@ -1287,14 +1287,49 @@ if _IA_MAP_SRC.is_file():
           "（B-188 改名的唯一允许别名；两边各留一处才算没漂移）",
           _alias_ok, f"待裁决@old={'待裁决' in _old_pages} 待处理@old={'待处理' in _old_pages}")
 
-    _nav_block = re.search(r"NAV_GROUPS[^=]*=\s*\[(.*?)\n\]", _ia_src, re.S)
-    _nav_pages = re.findall(r'\("(?:home|single|issue|bib|settings|help)",\s*"([^"]+)"',
-                            _nav_block.group(1) if _nav_block else "")
-    _orphan = sorted(set(_new_pages) - set(_nav_pages))
-    check("(n3) 组整合无漏页：`IA_MAP.new_page` 每个值都落进 `NAV_GROUPS` 的某个组"
-          "（旧「单篇稿件/整期装配/引用库」三组已收成 4 组导航，新页不在组里 = 用户点不到）",
-          bool(_new_pages) and not _orphan,
-          f"new_pages={sorted(set(_new_pages))}｜nav={_nav_pages}｜orphan={_orphan}")
+    # NAV_TREE 是导航唯一事实来源（批 114 定稿）：静态解析（literal_eval，不 import 壳）。
+    _nav_tree = []
+    for _node in _ast.parse(_ia_src).body:
+        _target = None
+        if isinstance(_node, _ast.AnnAssign) and isinstance(_node.target, _ast.Name):
+            _target = _node.target
+        elif isinstance(_node, _ast.Assign):
+            _target = next((t for t in _node.targets
+                            if isinstance(t, _ast.Name) and t.id == "NAV_TREE"), None)
+        if _target is not None and _target.id == "NAV_TREE":
+            _nav_tree = _ast.literal_eval(_node.value)
+
+    _entries = [e for sec in _nav_tree for e in sec["entries"]]
+    _parent_keys = [e["key"] for e in _entries]
+    _parent_labels = [e["label"] for e in _entries]
+    _by_key = {e["key"]: e for e in _entries}
+
+    def _views(entry: dict) -> list[str]:
+        if entry.get("views"):
+            return [v["key"] for v in entry["views"]]
+        return [v["key"] for g in entry.get("groups", []) for v in g["views"]]
+
+    _single = _views(_by_key.get("single", {}))
+    _issue = _views(_by_key.get("issue", {}))
+    _bib_groups = _by_key.get("bib", {}).get("groups", [])
+    _bib_views = [v["key"] for g in _bib_groups for v in g["views"]]
+    _expected_single = {"convert", "proofcheck"}
+    _expected_issue = {"infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"}
+    _expected_groups = {"read", "intake", "treat", "maint"}
+    _orphan = sorted(set(_new_pages) - set(_parent_labels))
+    _routes = [f"{e['key']}:{v}" for e in _entries for v in _views(e)]
+    check("(n3) NAV_TREE 树完整性：6 个父项、单篇 2 视图、整期 6 步、引用库 4 组 10 视图、"
+          "route 唯一、且 `IA_MAP.new_page` 都能落到某个父项（导航改结构必须同步这张表）",
+          _parent_keys == ["home", "single", "issue", "bib", "settings", "help"]
+          and set(_single) == _expected_single
+          and set(_issue) == _expected_issue
+          and {g["key"] for g in _bib_groups} == _expected_groups
+          and len(_bib_views) == 10 and len(set(_bib_views)) == 10
+          and len(_routes) == len(set(_routes))
+          and not _orphan,
+          f"parents={_parent_keys}｜single={sorted(_single)}｜issue={sorted(_issue)}｜"
+          f"bib_groups={[g['key'] for g in _bib_groups]}｜bib_views={len(_bib_views)}｜"
+          f"routes={len(_routes)}｜orphan={_orphan}")
 
 # ─────────────────────────────────────────────────────────────────────────
 # (o) 分发不泄漏：Flet 外壳**不许**再绑 publish.py（B-231 ④；静态扫描，不 import 外壳）
