@@ -33,7 +33,7 @@ from ui import metadata_form as MF
 from ui import normalize as NR
 from ui import settings_shell as SHELL
 from ui.base_page import BasePage
-from ui.tokens import ZOOM_MIN
+from ui.tokens import BREAK, SIDEBAR_W, ZOOM_MIN
 from ui.help_page import HelpPage
 from ui.ia_map import stats as ia_stats
 
@@ -438,18 +438,49 @@ class SinglePage(BasePage):
         self._proof.root.visible = False
         self._norm_jump_btn = C.secondary_button(
             "去引用库 → 规范化", self._goto_normalize, t, icon="FACT_CHECK")
+        # 批 115：入口搬出页头胶囊行，落到输入区末尾（结果区之前），功能不变。
+        norm_row = ft.Row(spacing=t.sp("2"), alignment=ft.MainAxisAlignment.END,
+                          vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                          controls=[self._norm_jump_btn])
         status = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             C.busy_bar(t, visible=False),
                             ft.Container(expand=True),
-                            self._norm_jump_btn,
                         ])
         self._busy = status.controls[0]
-        body = C.page_body(header, status, self._flow_box, self._result.root,
-                           self._proof.root, t=t, gap=10,
-                           overlay=self._log.dock_root, overlay_reserve=64)
+        # 批 115 gap1：日志浮层不再用 page_body 的静态 overlay_reserve，改由页面
+        # 自己的底部 spacer 按 LogConsole 实际高度（收起/展开/拖拽）动态让位。
+        self._log_spacer = ft.Container(height=t.px(40))
+        self._log.on_layout_change = self._sync_log_reserve
+        body = C.page_body(header, status, self._flow_box, norm_row, self._result.root,
+                           self._proof.root, self._log_spacer, t=t, gap=10,
+                           overlay=self._log.dock_root, overlay_reserve=0,
+                           panel=True)
         self.refresh_running()
         return body
+
+    def _sync_log_reserve(self) -> None:
+        """日志浮层收展/拖拽后同步底部占位（审计 gap1：展开不得遮住最后一行）。
+
+        两档均按 1160×780 截图实测（evidence/b115-p3/impl-single/reserve-measure.txt）：
+        收起 dock 26.0 逻辑 px ≈ 设计 39（6+26+6 + 1px 顶边框），取 40 留 1px 余量；
+        展开 46 + `_log_height`（6+26+8+6 + 日志框，拖拽时跟随，实测 164.5 vs 164.0）。
+        """
+        spacer = getattr(self, "_log_spacer", None)
+        log = getattr(self, "_log", None)
+        if spacer is None or log is None:
+            return
+        if log.is_expanded:
+            height = self.t.px(46) + log._log_height
+        else:
+            height = self.t.px(40)
+        if spacer.height == height:
+            return
+        spacer.height = height
+        try:
+            spacer.update()
+        except Exception:  # noqa: BLE001 未挂载（构建期/证据脚本）
+            pass
 
     def _flow_builder(self, key: str):
         """按 flow_key 选构建器（重建 shell 后恢复上次步骤也走这里）。"""
@@ -512,20 +543,23 @@ class SinglePage(BasePage):
             expanded=True,
         )
         self._meta_section = metadata
-        # 用户 m02855：输入区不再让字段直接躺在纸灰页面上 → 与「高级参数」同材质的白卡片。
-        input_card = C.card(ft.Column(spacing=t.sp("2"), controls=[
-            # 必填语义已进每个输入框的 label（「源稿件（必填）」），不再另起一行提示。
-            self.add_picker("源稿件", "single_source",
-                            "作者来稿 .tex / .docx", kind="file"),
-            self.add_picker("输出根目录", "single_out",
-                            "产物写到该目录下的 <作者>/ 里", kind="dir"),
-        ]), t, pad=14)
+        # 批 115 D1-115-12：页面=一张纸白面板，分区用 section_label + 发丝线，
+        # 不再用页面级 C.card/C.section_title（用户 m02855 的「字段躺在纸灰底上」）。
         return ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title("输入", t),
-            input_card,
-            C.section_title("处理选项", t, note="默认勾选常用项"),
+            C.section_label("输入", t),
+            C.hairline(t),
+            # 必填语义已进每个输入框的 label（「源稿件（必填）」），不再另起一行提示。
+            ft.Column(spacing=t.sp("2"), controls=[
+                self.add_picker("源稿件", "single_source",
+                                "作者来稿 .tex / .docx", kind="file"),
+                self.add_picker("输出根目录", "single_out",
+                                "产物写到该目录下的 <作者>/ 里", kind="dir"),
+            ]),
+            C.section_label("处理选项", t, note="默认勾选常用项"),
+            C.hairline(t),
             rows,
             self._advanced_title(),
+            C.hairline(t),
             advanced,
             metadata.root,
             C.text(SS.bibdb_convert_hint(self.app.store.data), t, "caption", p.text_faint),
@@ -603,14 +637,10 @@ class SinglePage(BasePage):
 
     def _advanced_title(self) -> ft.Control:
         t = self.t
-        return ft.Row(
-            spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                C.text("高级参数", t, "section"),
-                ft.Container(expand=True),
-                C.secondary_button("清空高级参数", self._clear_advanced_params, t,
-                                   icon="CLEAR_ALL"),
-            ],
+        return C.section_label(
+            "高级参数", t,
+            trailing=C.secondary_button("清空高级参数", self._clear_advanced_params, t,
+                                        icon="CLEAR_ALL"),
         )
 
     def _clear_advanced_params(self, e=None) -> None:
@@ -702,7 +732,8 @@ class SinglePage(BasePage):
             blocks.append(ft.Column(spacing=t.px(10), controls=[
                 C.text(title, t, "caption", t.palette.text_muted), *rows,
             ]))
-        return C.card(ft.Column(spacing=t.px(16), controls=blocks), t, pad=14)
+        # 批 115：高级参数不再套页面级白卡，直接落在白面板上（分组标题保留）。
+        return ft.Column(spacing=t.px(16), controls=blocks)
 
     # ── 语种 / 责编下拉（用户 m02483；m03131 reset 下沉到 C.select_box）────
     def _lang_select(self) -> ft.Control:
@@ -1134,6 +1165,9 @@ class IssuePage(BasePage):
         self._crumb = None
         self._child_title = None
         self._flow_desc = None
+        # 批 115 P3-C2：日志改 dock 浮层，底部 spacer 按收展/拖拽让位；窄窗总览单列。
+        self._log_spacer = None
+        self._overview_stacked: bool | None = None
 
     def _sync_header(self) -> None:
         t = self.t
@@ -1161,7 +1195,7 @@ class IssuePage(BasePage):
 
     def build(self) -> ft.Control:
         t = self.t
-        self._log = C.LogConsole(t, height=150, title="整期日志",
+        self._log = C.LogConsole(t, height=150, title="整期日志", dock=True,
                                 toast=self.app.toast, mark=self.mark)
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
@@ -1183,78 +1217,152 @@ class IssuePage(BasePage):
         self._issue_picker = self.add_picker("期目录", "issue_dir", "整期根目录（扉页/000/01 作者…）", kind="dir")
         self._step_run_btns = {}
         self._content_box.controls = [self._build_overview()]
-        body = C.page_body(header, self._content_box, t=t, gap=10)
+        # 批 115 P3-C2：与 SinglePage 同一套日志 dock —— 浮层贴内容区底部，
+        # 页面底部 spacer 按收展/拖拽后的实际高度让位（见 _sync_log_reserve）。
+        self._log_spacer = ft.Container(height=t.px(40))
+        self._log.on_layout_change = self._sync_log_reserve
+        body = C.page_body(header, self._content_box, self._log_spacer, t=t, gap=10,
+                           overlay=self._log.dock_root, overlay_reserve=0,
+                           panel=True)
         self.refresh_running()
         return body
+
+    def _sync_log_reserve(self) -> None:
+        """日志 dock 收展/拖拽后同步底部占位（两档与 SinglePage 一致，日志高 150）。"""
+        spacer = getattr(self, "_log_spacer", None)
+        log = getattr(self, "_log", None)
+        if spacer is None or log is None:
+            return
+        if log.is_expanded:
+            height = self.t.px(46) + log._log_height
+        else:
+            height = self.t.px(40)
+        if spacer.height == height:
+            return
+        spacer.height = height
+        try:
+            spacer.update()
+        except Exception:  # noqa: BLE001 未挂载（构建期/证据脚本）
+            pass
+
+    def _logical_width(self) -> float:
+        """窗口逻辑宽（含侧栏），构建期 flet 的 800×600 默认值视为「未布局」。"""
+        page = getattr(self.app, "page", None)
+        try:
+            width = float(getattr(page, "width", 0) or 0)
+            height = float(getattr(page, "height", 0) or 0)
+        except (TypeError, ValueError):
+            width = height = 0.0
+        if width == 800 and height == 600:
+            width = 0.0
+        if width <= 0:
+            try:
+                width = float(getattr(self.app, "window_w", 0) or 0)
+            except (TypeError, ValueError):
+                width = 0.0
+        return width
+
+    def _narrow(self) -> bool:
+        """内容宽 < 900 → 总览右列下移；无窗口信息（FakeApp）按宽屏。
+
+        断点按**窗口逻辑宽**算（页宽 - 侧栏 220/56），不是 `_design_width()`
+        （后者按 BASE_DPI 144 放大，1000 宽窗口会算成 1500，永远判宽）。
+        """
+        width = self._logical_width()
+        if width <= 0:  # 仅测试假壳：允许直接给设计宽
+            try:
+                width = float(self.app._design_width())
+            except (AttributeError, TypeError, ValueError):
+                return False
+        try:
+            rail = width < BREAK["rail"]
+            sidebar = self.app.t.rail_width / max(self.app.t.k, 1e-6) if rail else SIDEBAR_W
+        except (AttributeError, TypeError, ValueError):
+            sidebar = SIDEBAR_W
+        return width - sidebar < BREAK["columns"]
+
+    def on_resize(self) -> None:
+        """跨过 900 断点才重建总览（main.App.on_resize 每帧回调，不抖动）。"""
+        if self._overview_stacked is None or self.selected != "overview":
+            return
+        if self._narrow() == self._overview_stacked:
+            return
+        self._content_box.controls = [self._build_overview()]
+        self._safe_update(self._content_box)
 
     # ── 父页：流水线总览 ───────────────────────────────────────────────
     def _build_overview(self) -> ft.Control:
         t = self.t
-        rows = [self._overview_step_row(i, step) for i, step in enumerate(self.STEPS)]
-        left = ft.Column(expand=5, spacing=t.sp("2"), controls=[
-            C.card(ft.Column(spacing=t.sp("2"), controls=[
-                C.section_title("期目录", t, note="一次运行会按顺序执行 6 步"),
-                self._issue_picker,
-            ]), t),
-            C.card(ft.Column(spacing=8, controls=[
-                C.section_title("流水线总览", t, note="点任一步进入该步参数"),
-                *rows,
-            ]), t),
+        rows: list = []
+        for i, step in enumerate(self.STEPS):
+            if i:
+                rows.append(C.hairline(t))
+            rows.append(self._overview_step_row(i, step))
+        left = ft.Column(spacing=t.sp("1"), controls=[
+            C.section_label("期目录", t, note="一次运行会按顺序执行 6 步"),
+            C.hairline(t),
+            self._issue_picker,
+            ft.Container(height=t.sp("1")),
+            C.section_label("流水线", t, note="点任一步进入该步参数"),
+            C.hairline(t),
+            ft.Column(spacing=0, controls=rows),
         ])
-        right = ft.Column(expand=6, spacing=t.sp("2"), controls=[
-            self._result.root, self._info.root, self._log.root,
+        right = ft.Column(spacing=t.sp("2"), controls=[
+            self._result.root, self._info.root,
         ])
+        self._overview_stacked = self._narrow()
+        if self._overview_stacked:
+            return ft.Column(spacing=t.sp("2"), controls=[left, right])
         return ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                      controls=[left, right])
+                      controls=[ft.Container(content=left, expand=5),
+                                ft.Container(content=right, expand=6)])
 
     def _overview_step_row(self, index: int, step: dict) -> ft.Container:
+        # 批 115 P3-C2：描边卡 + 24 圆号 + status_chip → 36 高发丝行（行间由调用方
+        # 插 C.hairline）；状态用小圆点 + 文字，行内直接「运行」。
         t = self.t
         key = step["key"]
         state = self._status.get(key, "idle")
+        tone = {"done": "ok", "running": "run", "warn": "warn",
+                "error": "error"}.get(state, "idle")
         color = {"done": t.palette.success, "running": t.palette.accent,
-                 "warn": t.palette.warn, "error": t.palette.error}.get(state, t.palette.text_faint)
+                 "warn": t.palette.warn, "error": t.palette.error}.get(
+                     state, t.palette.text_faint)
         return ft.Container(
-            border=C.box(t), border_radius=t.radius("md"),
-            padding=C._pad(t, 10, 8, 10, 8),
+            height=t.px(36),
             on_click=lambda e, k=key: self._select(k),
             content=ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                            controls=[
-                ft.Container(width=t.px(24), height=t.px(24), border_radius=t.radius("pill"),
-                             bgcolor=t.palette.surface_2, alignment=ft.Alignment.CENTER,
-                             content=C.text(str(index + 1), t, "small",
-                                            t.palette.text_muted, "semibold")),
-                ft.Icon(C.ic(step["icon"], "CIRCLE"), size=t.px(16), color=color),
+                ft.Container(width=t.px(22), alignment=ft.Alignment.CENTER_LEFT,
+                             content=C.text(f"{index + 1:02d}", t, "mono",
+                                            t.palette.text_faint)),
                 ft.Column(spacing=0, expand=True, controls=[
                     C.text(str(step["title"]), t, role="body", max_lines=1,
                            overflow=ft.TextOverflow.ELLIPSIS),
                     C.text(str(step["desc"]), t, "caption", t.palette.text_faint,
                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ]),
-                C.status_chip(STATUS_TEXT.get(state, "待运行"), t, state),
+                ft.Row(spacing=t.sp("half"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                       controls=[C.status_dot(tone, t),
+                                 C.text(STATUS_TEXT.get(state, "待运行"), t, "caption",
+                                        color, max_lines=1)]),
                 self._step_run_button(step),
             ]),
         )
 
     # ── 子页：单步（进度带 + 参数 + 运行本步 + 日志）────────────────────
     def _build_step_page(self, key: str) -> ft.Control:
+        # 批 115 P3-C2：页头已有 22 标题 + desc，卡内不再重复；去卡片，参数区
+        # 直接落在白面板上。运行入口只留参数区底部的「运行这一步」。
         t = self.t
-        step = self._step_by_key(key) or self.STEPS[0]
         self._params_box.controls = [self._build_params(key)]
         self._step_run_btns = {}
-        run_btn = self._step_run_button(step)
-        back = C.text_button("← 流水线总览", lambda e: self.app.navigate(
-            "issue:overview", source="page"), t)
-        params = C.card(ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title(str(step["title"]), t, note=str(step["desc"])),
-            self._params_box,
-            ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                   controls=[ft.Container(expand=True), back, run_btn]),
-        ]), t)
         return ft.Column(spacing=t.sp("2"), controls=[
             self._progress_band(),
-            params,
+            C.section_label("参数", t, note="步骤说明见页头；取消在右上角"),
+            C.hairline(t),
+            self._params_box,
             self._result.root,
-            self._log.root,
             self._info.root,
         ])
 
@@ -1265,25 +1373,27 @@ class IssuePage(BasePage):
         for i, step in enumerate(self.STEPS):
             state = self._status.get(step["key"], "idle")
             active = step["key"] == self.selected
-            tone_color = {"done": t.palette.success, "running": t.palette.accent,
-                          "warn": t.palette.warn, "error": t.palette.error}.get(
-                              state, t.palette.text_faint)
+            tone = {"done": "ok", "running": "run", "warn": "warn",
+                    "error": "error"}.get(state, "idle")
+            bar_color = {"done": t.palette.success, "running": t.palette.accent,
+                         "warn": t.palette.warn, "error": t.palette.error}.get(
+                             state, t.palette.border)
             segs.append(ft.Container(
                 expand=True, bgcolor=t.palette.accent_soft if active else None,
                 border_radius=t.radius("sm"), padding=C._pad(t, 8, 4, 8, 4),
                 on_click=lambda e, k=step["key"]: self._select(k),
-                content=ft.Column(spacing=0, alignment=ft.MainAxisAlignment.CENTER,
+                content=ft.Column(spacing=t.sp("half"), alignment=ft.MainAxisAlignment.CENTER,
                                   controls=[
                     ft.Row(spacing=t.sp("half"), controls=[
-                        C.status_dot("running" if state == "running" else
-                                     ("error" if state == "error" else
-                                      ("ok" if state == "done" else "warn")), t),
+                        C.status_dot(tone, t),
                         C.text(f"{i + 1}. {step['title']}", t, "small",
                                t.palette.text if active else t.palette.text_muted,
                                weight="medium" if active else "regular", max_lines=1,
                                overflow=ft.TextOverflow.ELLIPSIS),
                     ]),
-                    C.status_chip(STATUS_TEXT.get(state, "待运行"), t, state),
+                    # 批 115 P3-C2：状态 chip 换成 2px 色条（六段并排时不挤成徽章墙）。
+                    ft.Container(height=t.px(2), bgcolor=bar_color,
+                                 border_radius=t.radius("pill")),
                 ]),
             ))
         return ft.Container(
@@ -1346,7 +1456,12 @@ class IssuePage(BasePage):
     # ── 各步骤参数 ─────────────────────────────────────────────────────
     def _build_params(self, key: str) -> ft.Control:
         self.fields = {k: v for k, v in self.fields.items() if k in ("issue_dir", "toc_report")}
-        return ASM.build_params(self, key)
+        params = ASM.build_params(self, key)
+        # 批 115 P3-C2：首行是步骤 desc（页头 22 标题下已显示），去掉重复；
+        # 其余（含底部「运行这一步」）保持 ASM 原样。
+        if isinstance(params, ft.Column) and params.controls:
+            params.controls = params.controls[1:]
+        return params
 
     # ── 构建调用 ───────────────────────────────────────────────────────
     def _issue_dir(self) -> str:
@@ -1361,9 +1476,15 @@ class IssuePage(BasePage):
 
     # ── 运行 ───────────────────────────────────────────────────────────
     def _run_step(self, key: str) -> None:
+        log = getattr(self, "_log", None)
+        if log is not None:  # 批 115 P3-C2：日志改 dock 后运行即展开，默认不占屏
+            log.expand()
         ASM.run_step(self, key)
 
     def _run_all(self) -> None:
+        log = getattr(self, "_log", None)
+        if log is not None:
+            log.expand()
         ASM.run_all(self)
 
     def _on_stop(self, e=None) -> None:
@@ -1940,18 +2061,24 @@ class SettingsPage(BasePage):
             ("问题", "；".join(engine.problems) if engine.problems else "无"),
             ("设置文件", str(self.app.store.path)),
         ]
-        engine_card = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("引擎", t, note="探测只读；诊断包与环境检查见下方"),
-            *[self._kv(label, value) for label, value in status_rows],
+        # 批 115 P3-C2：12 张 C.card 长滚 → 4 组发丝分区（引擎与环境 / 外观 /
+        # 窗口与托盘 / 路径与关于）。组 = section_label + 1px 线，组内不再套卡片；
+        # settings_shell / ai_panel 的卡片用 _flat 去壳（那两个文件不在写域）。
+        engine_line = C.inline_note(
+            f"引擎{'就绪' if engine.ok else '未就绪'} · {engine.version or '版本未知'}",
+            t, "ok" if engine.ok else "warn")
+        engine_rows = C.block(
+            *[C.kv_row(t, label, value, mono=label in ("引擎目录", "设置文件"))
+              for label, value in status_rows],
             ft.Row(spacing=t.sp("1"), controls=[
                 C.secondary_button("重新检测", lambda e: self._rescan(), t, icon="REFRESH"),
                 C.secondary_button("引擎目录…", lambda e: self._browse_engine(), t, icon="FOLDER_OPEN_OUTLINED"),
             ]),
-        ]), t)
+            t=t, gap="1",
+        )
 
         options = self.app.store.get("options", {}) or {}
-        appearance = C.card(ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title("外观", t, note="深浅色与缩放都会落盘，下次启动恢复"),
+        appearance = C.block(
             ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                 C.text("深色模式", t, "body"),
                 ft.Container(expand=True),
@@ -1969,24 +2096,33 @@ class SettingsPage(BasePage):
             SHELL.button_palette_row(self),
             C.text(f"屏幕工作区钳制：本屏最大 {self.app.max_zoom:.2f}×；更大缩放会被限制，窗口不会越界。", t,
                    "caption", t.palette.text_faint),
-        ]), t)
+            t=t, gap="2",
+        )
 
         tray = SHELL.tray_card(self)
 
-        paths = C.card(ft.Column(spacing=t.sp("2"), controls=[
-            C.section_title("路径", t, note="引擎目录留空 = 自动定位"),
+        paths = C.block(
+            C.section_label("路径", t, note="引擎目录留空 = 自动定位"),
+            C.hairline(t),
             self._path_field("engine_override", "引擎目录（可空）", kind="dir"),
             self._path_field("notes_repo", "私有笔记仓（可空）", kind="dir"),
-        ]), t)
+            t=t, gap="1",
+        )
 
-        about = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("关于", t),
-            self._kv("应用版本", self.app.app_version),
-            self._kv("Flet / Python", f"{self.app.flet_version} · {self.app.python_version}"),
-            self._kv("窗口 / DPI", f"{self.app.window_w}×{self.app.window_h} @ {self.app.dpi} ({self.app.dpi / 96:.0%})"),
-            self._kv("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
-            self._kv("许可", "专有软件 · © 2026 Jeremymming（第三方许可见 THIRD_PARTY.md）"),
-        ]), t)
+        about_rows = [
+            ("应用版本", self.app.app_version),
+            ("Flet / Python", f"{self.app.flet_version} · {self.app.python_version}"),
+            ("窗口 / DPI", f"{self.app.window_w}×{self.app.window_h} @ {self.app.dpi} ({self.app.dpi / 96:.0%})"),
+            ("IA", f"{ia_stats()['legacy_pages']} 个旧页 → {ia_stats()['new_pages']} 页 + 子流程"),
+            ("许可", "专有软件 · © 2026 Jeremymming（第三方许可见 THIRD_PARTY.md）"),
+        ]
+        about = C.block(
+            C.section_label("关于", t),
+            C.hairline(t),
+            *[C.kv_row(t, label, value, mono=label == "应用版本")
+              for label, value in about_rows],
+            t=t, gap="1",
+        )
 
         envcheck = SHELL.envcheck_card(self)
         proxy = SHELL.proxy_card(self)
@@ -1999,22 +2135,85 @@ class SettingsPage(BasePage):
             actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
                                       icon="SAVE_OUTLINED")],
         )
-        # 批 112 A-06：环境检查上提到引擎卡之后，首屏可见（原先在折叠线以下第 7 张卡）。
-        page = C.page_body(header, engine_card, envcheck, appearance, tray, paths,
-                           AIP.AiSettings(self).build(), proxy, logs, advanced, about, diagnostics,
-                           t=t, gap=12)
+        # 批 112 A-06 的「环境检查首屏可见」保留：并入「引擎与环境」组首（inline_note
+        # 给出引擎状态/版本，下面就是「运行环境检查」与上次结果槽）。
+        page = C.page_body(
+            header,
+            self._group("引擎与环境", t,
+                        engine_line,
+                        self._flat(envcheck, "环境检查"),
+                        engine_rows,
+                        self._flat(AIP.AiSettings(self).build(), "AI"),
+                        self._flat(proxy, "网络代理"),
+                        self._flat(logs, "日志"),
+                        self._flat(diagnostics, "诊断包")),
+            self._group("外观", t, appearance),
+            self._group("窗口与托盘", t, self._flat(tray, "窗口与托盘")),
+            self._group("路径与关于", t, paths,
+                        self._flat(advanced, "高级"), about),
+            t=t, gap=12, panel=True,
+        )
         return page
 
     # ── 小工具 ─────────────────────────────────────────────────────────
-    def _kv(self, label: str, value: str) -> ft.Row:
-        t = self.t
-        return ft.Row(spacing=t.sp("1"), controls=[
-            C.text(label, t, "small", t.palette.text_muted),
-            ft.Container(expand=True),
-            ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT, content=C.text(
-                str(value), t, "small", t.palette.text, max_lines=1,
-                overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value))),
+    def _group(self, label: str, t, *controls, note: str | None = None) -> ft.Column:
+        """设置页分区：11.5 分区小标题 + 1px 发丝线 + 组内内容（无卡片底）。
+
+        组标题与组内去壳小标题同名时（如「窗口与托盘」只有一张卡）合并成一行，
+        note 上提到组头，避免同一分区出现两层同名标题。
+        """
+        body: list = []
+        for control in controls:
+            column, head = self._titled_column(control)
+            if column is not None and head is not None and str(head.controls[0].value) == label:
+                note = note or self._row_note(head, label)
+                column.controls = column.controls[1:]
+                control = column
+            body.append(control)
+        head = ft.Column(spacing=t.sp("half"), controls=[
+            C.section_label(label, t, note=note),
+            C.hairline(t),
         ])
+        return ft.Column(spacing=t.sp("1"), controls=[head, *body])
+
+    @staticmethod
+    def _titled_column(control: ft.Control):
+        """返回 (Column, 首行 Row)；只认「首行第一个控件是 Text」的标题行。"""
+        if isinstance(control, ft.Container) and isinstance(control.content, ft.Column):
+            column = control.content
+        elif isinstance(control, ft.Column):
+            column = control
+        else:
+            return None, None
+        if column.controls:
+            head = column.controls[0]
+            if (isinstance(head, ft.Row) and head.controls
+                    and isinstance(head.controls[0], ft.Text)):
+                return column, head
+        return None, None
+
+    @staticmethod
+    def _row_note(head: ft.Row, title: str) -> str | None:
+        for item in head.controls[1:]:
+            if isinstance(item, ft.Text) and item.value and str(item.value) != title:
+                return str(item.value)
+        return None
+
+    def _flat(self, control: ft.Control, title: str) -> ft.Control:
+        """给 settings_shell / ai_panel 的卡片去壳（定义不在本包写域，勿改那两处）。
+
+        取 Container.content 的 Column，把首行该卡的 `section_title` 换成同文案的
+        `section_label`（保留 note）；其余控件/回调原样返回。
+        """
+        t = self.t
+        column, head = self._titled_column(control)
+        if column is None:
+            return control
+        if head is None or str(head.controls[0].value) != title:
+            return column
+        note = self._row_note(head, title)
+        column.controls = [C.section_label(title, t, note=note), *column.controls[1:]]
+        return column
 
     def _path_field(self, key: str, label: str, *, kind: str = "dir") -> ft.Container:
         ref: list = []

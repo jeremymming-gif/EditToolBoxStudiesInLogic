@@ -32,7 +32,10 @@ def _make_image():
 
 
 def _tray_image():
-    """品牌 PNG 优先；缺失/读图失败退回内置图形（托盘图标不得让服务起不来）。"""
+    """品牌 PNG 优先（`packaging/assets/glass-slate-ink-64.png`，P3 图标口径 D1-115-03）；
+    缺失/读图失败退回内置图形（托盘图标不得让服务起不来）。路径解析与降级都在
+    `ui.brand.tray_image`：这里只决定「用图还是画图」，不重复拼 assets 路径。
+    """
     from ui import brand
 
     return brand.tray_image() or _make_image()

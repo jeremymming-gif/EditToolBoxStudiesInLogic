@@ -452,16 +452,15 @@ class InfoCheckCard:
 
 
 # ── UI：一校核查结果卡 ─────────────────────────────────────────────────────
-def _stat(label: str, value: str, t) -> ft.Container:
-    return ft.Container(
-        expand=True,
-        bgcolor=t.palette.surface_2,
-        border_radius=t.radius("sm"),
-        padding=C._pad(t, 10, 8, 10, 8),
-        content=ft.Column(spacing=0, controls=[
+def _stat(label: str, value: str, t) -> ft.Row:
+    """单行 inline stat：说明色 label + 正文色数值，不加底色/边框（批 115 去卡片）。"""
+    return ft.Row(
+        spacing=t.sp("1"),
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
             C.text(label, t, "caption", t.palette.text_muted),
-            C.text(value, t, role="section"),
-        ]),
+            C.text(value, t, "small", t.palette.text, "semibold"),
+        ],
     )
 
 
@@ -475,23 +474,28 @@ class ProofCheckCard:
         self.counts = {"manual": 0, "fixable": 0, "total": 0, "rule_count": 0}
         self.chip = C.status_chip("还没检查", t, "idle")
         self.conclusion = C.text("还没有核查结果", t, "small", t.palette.text_muted)
-        self.stats_row = ft.Row(spacing=t.sp("1"), controls=[])
+        self.stats_row = ft.Row(spacing=t.sp("2"), controls=[])
         self.rules_box = ft.Column(spacing=t.sp("half"), controls=[])
         self.warning = C.text("", t, "small", t.palette.warn, visible=False)
         self.open_btn = C.secondary_button("打开报告", self._open, t, icon="OPEN_IN_NEW",
                                            disabled=True)
-        self.root = C.card(ft.Column(spacing=t.sp("1"), controls=[
-            ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text("一校核查结果", t, role="section"),
-                self.chip,
-                ft.Container(expand=True),
-                self.open_btn,
-            ]),
-            self.conclusion,
-            self.stats_row,
-            self.warning,
-            self.rules_box,
-        ]), t)
+        # 批 115：结果区不再是一张卡 —— section_label + 发丝线分段，统计单行 inline。
+        self.root = ft.Column(
+            spacing=t.sp("2"),
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[
+                C.section_label("一校核查结果", t, trailing=ft.Row(
+                    spacing=t.sp("1"),
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[self.chip, self.open_btn],
+                )),
+                C.hairline(t),
+                self.conclusion,
+                self.stats_row,
+                self.warning,
+                self.rules_box,
+            ],
+        )
         self.reset()
 
     def _open(self, e=None) -> None:
@@ -647,7 +651,11 @@ def after_proof_run(page, call, code: int, artifact: str, text: str,
 
 
 def proofcheck_section(page) -> ft.Control:
-    """PC-012/015/016/019/048：一校步骤的输入卡（语种下拉 + 帮助）。"""
+    """PC-012/015/016/019/048：一校步骤的输入区（语种下拉 + 帮助）。
+
+    批 115：页面改「一张纸」白面板后，这里不再套 C.card —— 分区用
+    section_label + 发丝线，帮助行用 inline_note（文案不变）。
+    """
     t = page.t
     options = page.app.store.get("options", {}) or {}
     current = page.app.store.get("form.proof_lang", "") or ""
@@ -666,8 +674,8 @@ def proofcheck_section(page) -> ft.Control:
         "默认只出报告；勾「顺手把无歧义的改掉」才另写 `<名字>_一校核查后.tex`，输入文件不动。",
         "可自动改项在初排已默认处理，本报告只列需要人工判断的条目（每条给依据与建议）。",
     ]
-    # 用户 m02855：输入控件不再直接躺在纸灰页面上 → 与「高级参数」同材质的白卡片。
-    input_card = C.card(ft.Column(spacing=t.sp("2"), controls=[
+    # 批 115：输入控件直接落在白面板上；页面级 C.card 全部去掉。
+    input_area = ft.Column(spacing=t.sp("2"), controls=[
         page.add_picker("初排 tex", "proof_tex", "初排产物 .tex（可粘贴路径或点「浏览…」）", kind="file"),
         ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.form_field(t, "语种", dropdown),
@@ -681,13 +689,12 @@ def proofcheck_section(page) -> ft.Control:
             checked=bool(options.get("proofcheck_fix", False)),
             on_change=lambda e: page.app.set_option("proofcheck_fix", e.control.value),
         ),
-    ]), t, pad=14)
+    ])
     return ft.Column(spacing=t.sp("2"), controls=[
-        C.section_title("输入", t, note="初排后的 tex · 只读"),
-        input_card,
-        C.card(ft.Column(spacing=t.sp("half"), controls=[
-            C.text(line, t, "caption", t.palette.text_muted) for line in help_lines
-        ]), t),
+        C.section_label("输入", t, note="初排后的 tex · 只读"),
+        C.hairline(t),
+        input_area,
+        *[C.inline_note(line, t) for line in help_lines],
     ])
 
 

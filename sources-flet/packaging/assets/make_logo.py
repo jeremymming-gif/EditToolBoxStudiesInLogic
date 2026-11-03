@@ -5,7 +5,10 @@
 - 单色负形：白色书页 + 折角 + 三条目录线，无渐变、无文字、无阴影；
 - 4× 超采样后 LANCZOS 降采样，保证 16px 图标边缘干净。
 
-产物：`logo-1024.png`、`logo-256.png`、`logo.ico`（16–256 多尺寸，Windows 打包用）。
+产物：`logo-1024.png`、`logo-256.png`（旧品牌矢量母版，`ui/brand.py` 的兼容回退用）。
+`logo.ico` / `logo.icns` **不再由本脚本生成** —— 批 115 起打包图标由
+`make_pack_icons.py` 从 `glass-slate-ink-1024.png` 派生（P3 口径 D1-115-03），
+在这里写旧品牌会把打包产物覆盖回去。
 重跑：`py -3.14 sources-flet/packaging/assets/make_logo.py`（幂等，无外部依赖，仅 Pillow）。
 """
 from __future__ import annotations
@@ -19,7 +22,6 @@ SIZE = 1024
 SS = 4                      # 超采样倍数
 ACCENT = (79, 70, 229)      # #4F46E5
 WHITE = (255, 255, 255)
-ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 
 
 def _s(value: float) -> int:
@@ -53,13 +55,10 @@ def main() -> int:
     image = render()
     image.save(HERE / "logo-1024.png")
     image.resize((256, 256), Image.LANCZOS).save(HERE / "logo-256.png")
-    image.save(HERE / "logo.ico", format="ICO", sizes=ICO_SIZES)
-    try:                                   # macOS 打包（flet pack --icon 只吃 .icns）
-        image.save(HERE / "logo.icns", format="ICNS")
-    except (OSError, ValueError) as exc:   # 老 Pillow 无 ICNS 写支持时只跳过，不拦生成
-        print(f"icns skipped: {exc}")
+    # logo.ico / logo.icns 归 make_pack_icons.py（玻璃 slate 母版）；这里不碰，免得覆盖。
     print(f"logo: {HERE / 'logo-1024.png'}")
-    print(f"icon: {HERE / 'logo.ico'} sizes={len(ICO_SIZES)}")
+    print(f"logo: {HERE / 'logo-256.png'}")
+    print("pack icons: 由 make_pack_icons.py 生成（logo.icns / logo.ico）")
     return 0
 
 

@@ -348,6 +348,61 @@ class App:
                 border_side=ft.BorderSide(tokens.px(1), palette.border_strong),
                 shape=ft.RoundedRectangleBorder(radius=tokens.px(4)),
             ),
+            # 批 115 P3-C（审计 §2.4 gap3）：开关 / 滑杆 / 单选默认吃 Material 蓝，
+            # 与石板蓝强调色不一致。四类控件主题全部按 Palette 投影（light + dark 各一份，
+            # 都放在 _apply_page_theme() 里重放）；不设 Material 种子色，也不用 M3
+            # 第二真源（测试 test_b109_w45 会盯这两条）。
+            # 开关四态与 C.switch 同值（关闭态轨道 vs 纸面 ≥3:1，见 components.switch）。
+            switch_theme=ft.SwitchTheme(
+                thumb_color={
+                    ft.ControlState.DEFAULT: palette.surface,
+                    ft.ControlState.SELECTED: palette.on_accent,
+                    ft.ControlState.HOVERED: palette.surface,
+                    ft.ControlState.DISABLED: palette.surface_3,
+                },
+                track_color={
+                    ft.ControlState.DEFAULT: palette.text_muted,
+                    ft.ControlState.SELECTED: palette.accent,
+                    ft.ControlState.HOVERED: palette.text_muted,
+                    ft.ControlState.DISABLED: palette.border,
+                },
+                track_outline_color={
+                    ft.ControlState.DEFAULT: palette.text_muted,
+                    ft.ControlState.SELECTED: palette.accent,
+                    ft.ControlState.DISABLED: palette.border,
+                },
+                overlay_color={
+                    ft.ControlState.DEFAULT: "transparent",
+                    ft.ControlState.HOVERED: palette.accent_soft,
+                    ft.ControlState.SELECTED: palette.accent_soft,
+                    ft.ControlState.PRESSED: palette.accent_soft,
+                },
+            ),
+            # 缩放缓调节：活动轨/滑块 = accent，未活动轨 = border，悬浮晕 = accent_soft。
+            slider_theme=ft.SliderTheme(
+                active_track_color=palette.accent,
+                inactive_track_color=palette.border,
+                thumb_color=palette.accent,
+                overlay_color=palette.accent_soft,
+                value_indicator_color=palette.accent,
+                active_tick_mark_color=palette.accent,
+                inactive_tick_mark_color=palette.border_strong,
+                secondary_active_track_color=palette.accent_hover,
+            ),
+            # 单选（按钮配色 C/D）：选中环 = accent，未选 = border_strong，悬浮晕 = accent_soft。
+            radio_theme=ft.RadioTheme(
+                fill_color={
+                    ft.ControlState.DEFAULT: palette.border_strong,
+                    ft.ControlState.SELECTED: palette.accent,
+                    ft.ControlState.HOVERED: palette.accent,
+                    ft.ControlState.DISABLED: palette.border,
+                },
+                overlay_color={
+                    ft.ControlState.DEFAULT: "transparent",
+                    ft.ControlState.HOVERED: palette.accent_soft,
+                    ft.ControlState.SELECTED: palette.accent_soft,
+                },
+            ),
             # 批 112 GUI-11：非按钮文本槽位必须带显式颜色。TextTheme 只给 size 时 color 为
             # None，TextField 的输入文字会落到客户端默认色（深色主题的浅色）而背景是浅色
             # → 白字白底不可读。label_* 不带色，按钮自己的 color/style 决定前景。
@@ -1290,6 +1345,10 @@ class App:
                 self.rebuild_shell()
         else:
             self.rebuild_shell()
+        # 审计 §2.4 gap3：热切换走 retint、不重建控件，但 page.theme/dark_theme 还是
+        # 上一个 Tokens 的投影。这里按当前色板重放一遍（幂等；rebuild 分支已跑过），
+        # Switch/Slider/Radio 的控件主题才会随皮肤一起换。
+        self._apply_page_theme()
         self.page.bgcolor = self.t.palette.bg
         self.status_bar.set_meta(self._status_meta())
         self.page.update()

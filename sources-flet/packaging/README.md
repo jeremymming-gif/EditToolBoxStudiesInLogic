@@ -40,21 +40,27 @@ sha256.txt
 
 ## 品牌资产（图标）
 
-`packaging/assets/` 是窗口图标、侧栏标志与托盘图标的单一来源。`logo-*` 由脚本从矢量参数重新生成；
-品牌 ℵ（`aleph-*.png`）与 Dock 玻璃图标（`glass-*.png`）是本轮设计导出的 PNG，脚本不重新生成：
+`packaging/assets/` 是窗口图标、侧栏标志与托盘图标的单一来源。
+**P3 起打包 / 窗口 / 托盘统一用玻璃 slate 版**（DECISIONS D1-115-03：默认母版
+`glass-slate-ink-1024.png` —— 深色 ℵ + 浅灰玻璃板；`glass-slate-white-1024.png`
+是白 ℵ 备选，切换只改 `make_pack_icons.py` 的 `MASTER` 一行）。
 
-```powershell
-py -3.14 sources-flet/packaging/assets/make_logo.py   # 需 Pillow，重写下列文件
+```bash
+python sources-flet/packaging/assets/make_pack_icons.py   # 需 Pillow + 系统 iconutil（mac）
+python sources-flet/packaging/assets/make_logo.py         # 只重写旧品牌 logo-1024/256.png
 ```
 
-- `logo-1024.png` / `logo-256.png`：方形母版（旧版品牌；`ui/brand.py` 的回退链用）；
+- `logo.icns`：macOS `flet pack --icon`；由 `iconutil` 打包 iconset（16/32/64/128/256/512 + @2x，含 1024；iconset 建在临时目录，不入库）；
+- `logo.ico`：Windows `flet pack --icon` 与窗口/任务栏图标；Pillow 写 16/32/48/64/128/256 六档；
+- `glass-slate-ink-64.png` / `glass-slate-ink-256.png`：托盘 / 窗口 PNG 派生（`ui/brand.py` 运行时读）；
+- 文件名 `logo.icns` / `logo.ico` **保持不变**：`build-flet.yml`、`release.yml` 已按名引用，改名会动发版链；
+- `logo-1024.png` / `logo-256.png`：旧品牌方形母版（`ui/brand.py` 的兼容回退链）；
 - `aleph-slate-64.png` / `aleph-slate-light-64.png`：侧栏品牌 ℵ（浅色 / 深色主题，`ui/brand.py` 运行时读）；
-- `aleph-slate-1024.png`、`glass-slate-ink-1024.png`、`glass-slate-white-1024.png`：Dock/窗口图标的 1024 母版（P3 打包生成 `.icns` 用）；
-- `logo.ico`（7 个尺寸）：Windows `flet pack --icon`；
-- `logo.icns`：macOS `flet pack --icon`。
+- `aleph-slate-1024.png`：品牌 ℵ 的 1024 母版；`glass-slate-ink-1024.png` / `glass-slate-white-1024.png`：Dock/窗口图标 1024 母版（前者为默认）。
 
-`flet pack` 命令里加 `--icon` 才会把图标写进 exe / `.app`（CI 的 `build-flet.yml`、`release.yml` 已带）；
-`ui/brand.py` 找不到资产时按图标回退，托盘也回退到运行时绘制，不影响启动。
+`flet pack` 命令里加 `--icon` 才会把图标写进 exe / `.app`（CI 的 `build-flet.yml`、`release.yml` 已带；
+macOS 仅 `--icon <绝对或相对 logo.icns>`，无其它图标步骤）；
+`ui/brand.py` 找不到资产时逐级回退（窗口图标 `.ico` → 256 PNG → 旧 logo-256；托盘 → 运行时绘制），不影响启动。
 
 ## 本地复刻（Windows）
 

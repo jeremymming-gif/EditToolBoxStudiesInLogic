@@ -107,8 +107,10 @@ def test_appearance_card_has_c_d_radios_and_uses_set_plus_save(tmp_path):
 def test_button_palette_row_lives_in_appearance_card_not_advanced():
     build_src = inspect.getsource(P.SettingsPage.build)
     assert "SHELL.button_palette_row(self)" in build_src
-    # 外观卡内、且在外观卡结束（tray）之前。
-    start = build_src.index("appearance = C.card(")
+    # 外观组内、且在外观组结束（tray）之前。
+    # 批 115 P3-C2：设置页改 S1m-native，外观从 `C.card` 换成发丝线分组
+    # `C.block`（settings 页不再有卡片底），分组变量名不变。
+    start = build_src.index("appearance = C.block(")
     tray = build_src.index("tray = SHELL.tray_card(self)")
     assert start < build_src.index("SHELL.button_palette_row(self)") < tray
     assert "button_palette" not in inspect.getsource(SHELL.advanced_card)

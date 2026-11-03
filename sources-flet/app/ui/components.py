@@ -195,11 +195,15 @@ def page_header(title: str, subtitle: str, t: Tokens, actions: list | None = Non
 
 
 def page_body(*controls, t: Tokens, gap: float = 16, overlay=None,
-              overlay_reserve: float = 0) -> ft.Control:
+              overlay_reserve: float = 0, panel: bool = False) -> ft.Control:
     """页面内容区。给了 `overlay` 就改成 Stack：内容在下、浮层在上（后入 = z 更高）。
 
     `overlay_reserve` 是给浮层留出的底部内边距（px），避免浮层遮住内容最后一行。
     浮层自身用 `left/right/bottom=0` 贴住内容区底部（VSCode 输出面板式）。
+
+    `panel=True`（批 115 D1-115-12）：「一张纸」白面板——内容盒 bgcolor = surface、
+    顶部圆角 `t.radius("panel")`，与 `C.panel` 观感一致；padding / 滚动 / overlay
+    行为不变。默认 False（灰底，老页面零变化）。
     """
     body = ft.Column(
         controls=list(controls),
@@ -212,7 +216,10 @@ def page_body(*controls, t: Tokens, gap: float = 16, overlay=None,
         body.controls.append(ft.Container(height=t.px(overlay_reserve)))
     box = ft.Container(
         padding=_pad(t, 24, 12, 24, 18), expand=True, content=body,
-        bgcolor=t.palette.bg,
+        bgcolor=t.palette.surface if panel else t.palette.bg,
+        **({"border_radius": ft.BorderRadius(
+            top_left=t.radius("panel"), top_right=t.radius("panel"),
+            bottom_left=0, bottom_right=0)} if panel else {}),
     )
     if overlay is None:
         return box
@@ -288,6 +295,56 @@ def empty_line(message: str, t: Tokens, *, action=None) -> ft.Row:
         controls.append(action)
     return ft.Row(controls=controls, spacing=t.sp("1"),
                   vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+
+# ── 发丝线 / 键值行（批 115 P3-C 共享件，供去卡片后的页面复用）──────────────
+def vline(t: Tokens, height: float = 16) -> ft.Container:
+    """1px 竖直发丝线（统计带 / 入口列之间的分隔）；`height` 给设计像素。
+
+    线宽与颜色同 `_side()`：缩放 < 1 时仍保 1 物理 px，不会淡成半像素。
+    `data="tone:border"` 让 `main._retint_node` 换肤时按色板字段名精确改写
+    （深色板里 border 与 surface_2 同值，纯值映射会认错角色）。
+    """
+    side = _side(t)
+    return ft.Container(width=side.width, height=t.px(height), bgcolor=side.color,
+                        data=f"{TONE_TAG}border")
+
+
+def hairline(t: Tokens) -> ft.Container:
+    """1px 水平发丝线（去卡片后的分段线，替代裸 `ft.Container` 与卡片描边）。
+
+    宽度不写死：父 `Column` 用 `horizontal_alignment=STRETCH`（`page_body` /
+    `panel` / `block` 已如此）即整宽拉伸。颜色/线宽同 `vline`，带 tone 标签。
+    """
+    side = _side(t)
+    return ft.Container(height=side.width, bgcolor=side.color,
+                        data=f"{TONE_TAG}border")
+
+
+def kv_row(t: Tokens, label: str, value, mono: bool = False) -> ft.Container:
+    """设置 / 帮助的键值行：32 高、label muted、value 右对齐且可截断。
+
+    替代 Settings / Help 各自手写的 `_kv`（Bib 本批不动）。`mono=True` 走等宽角色
+    （版本号 / 路径 / ID）；超长值不换行，`tooltip` 给全文。
+    """
+    raw = "" if value is None else str(value)
+    label_ctl = text(label, t, "small", t.palette.text_muted,
+                     max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+    value_ctl = text(raw, t, role="mono" if mono else "small", color=t.palette.text,
+                     max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                     tooltip=raw or None)
+    return ft.Container(
+        height=t.row_h("table"),
+        content=ft.Row(
+            spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                label_ctl,
+                ft.Container(expand=True),
+                ft.Container(expand=True, alignment=ft.Alignment.CENTER_RIGHT,
+                             content=value_ctl),
+            ],
+        ),
+    )
 
 
 # ── 表格：固定表头 + 内滚（不再依赖 page_body 的 Column 滚动）────────────────
@@ -1513,6 +1570,9 @@ class LogConsole:
         self._flush_scheduled = False
         self.dock = dock
         self._expanded = not dock
+        # 批 115 gap1：收展 / 拖拽后宿主页面按实际日志高度重算底部占位。
+        # 默认 None（零行为变化）；回调无参，异常吞掉（构建期/未挂载）。
+        self.on_layout_change = None
         # 批 114 用户 m03074：日志要能任意多行拖选/Shift 选择。
         # 选型 B（保留 ListView 行渲染 + 外层 SelectionArea）：A 方案把正文改成
         # 一整块只读多行 TextField 会丢掉逐行颜色、自动滚底与限流渲染；SelectionArea
@@ -1609,6 +1669,7 @@ class LogConsole:
                 self._log_box.update()
             except Exception:  # noqa: BLE001 构建期/收起时可能未挂载
                 pass
+        self._notify_layout_change()
 
     def _on_resize_reset(self, e=None) -> None:
         self._log_height = self._base_height
@@ -1617,6 +1678,7 @@ class LogConsole:
             self._log_box.update()
         except Exception:  # noqa: BLE001
             pass
+        self._notify_layout_change()
 
     # -- 浮层收展 -----------------------------------------------------
     def _on_toggle(self, e) -> None:
@@ -1642,10 +1704,20 @@ class LogConsole:
             self._toggle_btn.tooltip = "收起日志" if self._expanded else "展开日志"
         self.list.auto_scroll = True
         self._update_root()
+        self._notify_layout_change()
 
     @property
     def is_expanded(self) -> bool:
         return self._expanded
+
+    def _notify_layout_change(self) -> None:
+        callback = self.on_layout_change
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 宿主重排失败不能拖垮日志
+            pass
 
     def _update_root(self) -> None:
         try:

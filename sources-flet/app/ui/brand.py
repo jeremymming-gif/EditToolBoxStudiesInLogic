@@ -14,8 +14,16 @@ from ui import components as C
 from ui.tokens import Tokens
 
 ASSETS_NAME = "assets"
+#: 旧品牌（B-109，紫底书页）：保留常量与回退链 —— 历史测试与打包引用仍可解析。
 SIDEBAR_PNG = "logo-256.png"
+#: 打包/窗口图标。批 115 起**内容**改由 `glass-slate-ink-1024.png` 派生（P3 图标口径，
+#: DECISIONS D1-115-03），但**文件名刻意不动**：CI 的 `flet pack --icon` 按此名引用，
+#: 改名会动发版链。`.ico` 仍是 Windows 最稳的窗口/任务栏载体。
 WINDOW_ICON = "logo.ico"
+#: 窗口图标 PNG 兜底：位图偏好平台或 `.ico` 缺失时用（与 .ico 同源）。
+WINDOW_PNG = "glass-slate-ink-256.png"
+#: 托盘：pystray 只吃位图；玻璃 slate 版与窗口图标同源，缺文件才回落旧 logo-256。
+TRAY_PNG = "glass-slate-ink-64.png"
 #: 侧栏 22×22 的 ℵ 品牌位（S1m-native）：浅色 slate 蓝、深色 slate-light。
 ALEPH_LIGHT = "aleph-slate-64.png"
 ALEPH_DARK = "aleph-slate-light-64.png"
@@ -54,7 +62,7 @@ def aleph_mark(t: Tokens, size: float = 22) -> ft.Control:
     """侧栏品牌位：22×22、圆角 4；品牌色 = slate（浅 slate-64 / 深 slate-light-64，深色缺则 white）。
 
     文件缺失时回退矢量 AUTO_AWESOME（不画假字、不影响启动）；窗口图标仍走
-    `apply_window_icon`（logo-256 / logo.ico），本函数不碰窗口图标。
+    `apply_window_icon`（logo.ico / glass-slate-ink-256.png），本函数不碰窗口图标。
     """
     png = asset(ALEPH_DARK if t.is_dark else ALEPH_LIGHT)
     if not png and t.is_dark:               # 浅色缺文件直接矢量，别把深色白 ℵ 放浅底上
@@ -69,8 +77,12 @@ def aleph_mark(t: Tokens, size: float = 22) -> ft.Control:
 
 
 def apply_window_icon(page) -> str:
-    """软设置窗口图标：属性不支持 / 文件缺失都静默跳过，返回实际设置的文件（空=未设）。"""
-    icon = asset(WINDOW_ICON) or asset(SIDEBAR_PNG)
+    """软设置窗口图标：属性不支持 / 文件缺失都静默跳过，返回实际设置的文件（空=未设）。
+
+    顺序即口径：`.ico`（Windows 打包与既有契约）→ 同源 256 PNG（位图平台 / .ico 未带）
+    → 旧 logo-256（兼容回退）。三者都缺才跳过 —— 图标不是功能，不拦启动。
+    """
+    icon = asset(WINDOW_ICON) or asset(WINDOW_PNG) or asset(SIDEBAR_PNG)
     if not icon:
         return ""
     try:
@@ -81,8 +93,12 @@ def apply_window_icon(page) -> str:
 
 
 def tray_image():
-    """托盘图标：优先品牌 PNG，缺失或读图失败返回 None（调用方回退内置图形）。"""
-    png = asset(SIDEBAR_PNG)
+    """托盘图标：优先玻璃 slate 64×64 PNG，缺失/读图失败返回 None（调用方回退内置图形）。
+
+    pystray 在 Windows 只吃位图；先给正好 64px 的派生图（不依赖运行时大图缩放），
+    旧 logo-256 仅作兼容回退。非 Windows 不建托盘，此路径不会被调用。
+    """
+    png = asset(TRAY_PNG) or asset(SIDEBAR_PNG)
     if not png:
         return None
     try:
