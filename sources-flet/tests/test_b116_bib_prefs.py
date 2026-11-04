@@ -171,10 +171,10 @@ def test_build_single_720_column_with_four_groups(tmp_path, monkeypatch):
     root = view.build()
     texts = _texts(root)
     assert texts.count("设置") == 1
-    assert any("01  库" == text for text in texts)
-    assert any("02  核实边界" == text for text in texts)
-    assert any("03  Git" == text for text in texts)
-    assert any("本页不写库内容" in text for text in texts)
+    assert any("01 库" == text for text in texts)
+    assert any("02 核实" == text for text in texts)
+    assert any("03 Git" == text for text in texts)
+    assert any("保存只改设置，不动库" in text for text in texts)
     widths = [c.width for c in _walk(root) if getattr(c, "width", None) == 720]
     assert widths, "单列必须限宽 720"
 
@@ -327,7 +327,7 @@ def test_commit_confirm_copy_and_write(tmp_path, monkeypatch):
     assert host.page.dialogs
     dialog = host.page.dialogs[-1]
     body = " ".join(_texts(dialog))
-    assert "只提交 bib_db/bibliography.jsonl" in body
+    assert "只提交 bibliography.jsonl" in body
     assert "不推送" in body
     asyncio.run(view._git_write("commit"))
     assert len(commits) == 1
@@ -351,8 +351,8 @@ def test_rollback_confirm_has_numbers_and_new_commit(tmp_path, monkeypatch):
     asyncio.run(view._rollback_click())
     assert host.page.dialogs
     body = " ".join(_texts(host.page.dialogs[-1]))
-    assert "影响文件 1 个" in body
-    assert "新增提交 1 条" in body
+    assert "1 个文件" in body
+    assert "1 条新提交" in body
     asyncio.run(view._rollback())
     assert rollbacks
     assert "已回退" in view.receipt

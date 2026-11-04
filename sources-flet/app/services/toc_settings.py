@@ -89,15 +89,15 @@ def save(path: str, data: dict) -> tuple[bool, str]:
     """
     target = str(path or "")
     if not target:
-        return False, "没有保存位置：请先选信息检查报告或目录设置文件"
+        return False, "没有保存位置：先选报告或目录设置文件。"
     if os.path.isfile(target):
         try:
             with open(target, encoding="utf-8") as fh:
                 json.load(fh)
         except ValueError as exc:
-            return False, f"{FILE_NAME} 不是合法 JSON，已停止写入：{exc}"
+            return False, f"{FILE_NAME} 不是合法 JSON，未写入：{exc}"
         except OSError as exc:
-            return False, f"读不到 {FILE_NAME}，已停止写入：{exc}"
+            return False, f"读不到 {FILE_NAME}，未写入：{exc}"
         backup(target)
     folder = os.path.dirname(target)
     if folder:

@@ -100,7 +100,7 @@ def test_info_summary_four_variants():
 # ── 检查 tex 信息：表格渲染 ────────────────────────────────────────────────
 def test_info_table_has_ten_columns_and_red_mismatch_row():
     t = Tokens()
-    table = CK.build_info_table(CK.normalize_articles(_payload()), t).controls[0]
+    table = CK.build_info_table(CK.normalize_articles(_payload()), t).controls[0].content
     assert [col.label.value for col in table.columns] == list(CK.INFO_COLUMNS)
     assert len(table.rows) == 2
     bad, good = table.rows
@@ -126,7 +126,7 @@ def test_info_card_lifecycle_texts():
     # 批 115 设计检修 P1-4：警告行已解释「表格为什么空」，通用空态不再叠加。
     assert card.warning.value == CK.UNREADABLE_INFO and card.empty.visible is False
     card.show_failed(2)
-    assert card.chip.content.value == "检查失败" and card.table_box.visible is False
+    assert card.chip.content.value == "失败" and card.table_box.visible is False
 
 
 # ── 一校核查：报告解析 ─────────────────────────────────────────────────────
@@ -226,12 +226,12 @@ def test_proof_report_and_lang_texts():
     assert CK.proof_fix_name("/tmp/稿/a.tex") == "a_一校核查后.tex"
     assert CK.proof_lang_label("") == "自动"
     assert CK.proof_lang_label("zh") == "中文（zh）" and CK.proof_lang_label("en") == "英文（en）"
-    assert CK.proof_result_text(0) == "✅ 完成：没有命中任何规则。"
+    assert CK.proof_result_text(0) == "成功 · 没有命中任何规则。"
     assert CK.proof_result_text(1, tex="a.tex") == \
-        "✅ 完成：有命中。报告已写到稿件同目录的 a_一校核查.md。"
+        "成功 · 有命中，报告已写入稿件同目录的 a_一校核查.md。"
     assert "修正稿：a_一校核查后.tex" in CK.proof_result_text(1, tex="a.tex", fix=True)
-    assert CK.proof_result_text(2).startswith("❌ 核查失败（退出码 2）")
-    assert CK.proof_result_text(-1) == "❌ 启动失败。"
+    assert CK.proof_result_text(2).startswith("失败 · 核查未完成（退出码 2）")
+    assert CK.proof_result_text(-1) == "失败 · 无法启动。"
     lines = CK.proof_header_lines("a.tex", "zh", True)
     assert lines[0] == "══ 一校核查 ══" and lines[2] == "稿件：a.tex"
     assert lines[3] == "模式：报告 + 修正稿（--fix）" and lines[4] == "语种：中文（zh）"
@@ -421,9 +421,9 @@ def test_after_proof_run_handles_failure_and_cancel():
     page = _Page()
     page.fields["proof_tex"] = [ft.Text("a.tex")]
     text, _ = CK.after_proof_run(page, None, 2, "", "旧文案", "error")
-    assert text.startswith("❌ 核查失败（退出码 2）")
+    assert text.startswith("失败 · 核查未完成（退出码 2）")
     assert page._proof.reset_called and page._proof.root.visible is True
-    assert page._proof.conclusion.value.startswith("❌ 核查失败")
+    assert page._proof.conclusion.value.startswith("失败 · 核查未完成")
     page.app.cancel_requested = True
     text, _ = CK.after_proof_run(page, None, 1, "", "⏹ 已取消", "warn")
     assert text == "⏹ 已取消"

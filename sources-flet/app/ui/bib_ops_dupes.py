@@ -186,9 +186,9 @@ class BibDuplicatesView(_OpsView):
             return
         self._confirm(
             title="合并这两条记录？",
-            message=("确认后真写：两条记录合并成一条，旧 key 记进别名，写后只提交 "
+            message=("确认后写入：两条合并成一条，旧 key 记成别名，只提交 "
                      "bib_db/bibliography.jsonl 一条（不推送）。\n"
-                     "回退方式：到「设置」页用「回退到上一个提交…」（只提示，不自动回退）。"),
+                     "回退：「设置」页「回退到上一个提交…」（请自行操作）。"),
             confirm_label="确认合并",
             on_confirm=lambda e: self._run(self._write_merge()))
 
@@ -216,9 +216,8 @@ class BibDuplicatesView(_OpsView):
     def _ask_ack(self, row: dict) -> None:
         self._confirm(
             title="标记「不是重复」？",
-            message=("只会写库目录下的 sidecar health-ignore.json（让 lint 不再报这对），"
-                     "库文件一个字节都不动，也不会自动提交。\n"
-                     "之后想恢复报出，需要手动删该 sidecar 条目。"),
+            message=("只写库目录下的 sidecar health-ignore.json（lint 不再报这对），"
+                     "库文件不动、不提交。\n要恢复报出，手动删该条目。"),
             confirm_label="确认标记",
             on_confirm=lambda e: self._run(self._ack(row)))
 
@@ -266,8 +265,8 @@ class BibDuplicatesView(_OpsView):
         note = (f"候选 {pairs} 对" if self.loaded else "正在读取候选…")
         controls: list = [C.section_title(
             "查重合并", t, note="report-duplicates --json --out <临时目录>（不写笔记仓）"),
-            C.text("同作品不同 key 的候选对（题名/字段相似度，引擎现算）。报告只写临时目录，"
-                   "读完即删；合并写库后只提交库文件一条。", t, "small", t.palette.text_muted),
+            C.text("同作品不同 key 的候选对（题名/字段相似度）。报告只写临时目录，"
+                   "读完即删；合并后只提交库文件一条。", t, "small", t.palette.text_muted),
             ft.Row(spacing=t.sp("1"), wrap=True,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                        C.secondary_button("重新扫描", lambda e: self._run(self.ensure_loaded(True)),

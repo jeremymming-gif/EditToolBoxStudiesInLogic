@@ -28,9 +28,9 @@ ROLE = "readonly"
 MODES = (("key", "key"), ("doi", "DOI"), ("title", "题名"))
 MODE_LABELS = dict(MODES)
 HINTS = {
-    "key": "如 Fine1975（也认 aliases）",
+    "key": "如 Fine1975",
     "doi": "如 10.1007/s10992-020-09558-5",
-    "title": "如 逻辑研究（支持模糊）",
+    "title": "如 逻辑研究（可模糊）",
 }
 EMPTY_INPUT = "输入要查的内容：key、DOI 或题名。"
 NO_RESULT = "没有匹配的记录"
@@ -350,7 +350,7 @@ class QueryView:
             title=C.text("高级检索", t, "h2"),
             content=ft.Container(width=t.px(520), content=ft.Column(
                 spacing=t.sp("1"), tight=True, controls=[
-                    C.text("空行会被忽略；所有条件取交集。", t, "caption", t.palette.text_muted),
+                    C.text("空行忽略，条件取交集。", t, "caption", t.palette.text_muted),
                     *fields,
                     ft.Row(spacing=t.sp("1"), controls=[
                         C.text("排序", t, "caption", t.palette.text_muted),
@@ -366,7 +366,7 @@ class QueryView:
                                         self, "adv_strict", bool(e.control.value)),
                                     visual_density=ft.VisualDensity.COMPACT,
                                     splash_radius=0),
-                        C.text("严格匹配（strict）", t, "caption", t.palette.text_muted),
+                        C.text("严格匹配", t, "caption", t.palette.text_muted),
                     ]),
                 ])),
             actions=[
@@ -392,7 +392,7 @@ class QueryView:
         return width / max(self.t.k, 1e-6)
 
     def _query_button(self):
-        label = "查询中…" if self.running else ("重新查询" if self.loaded else "查询")
+        label = "运行中" if self.running else ("重新查询" if self.loaded else "查询")
         btn = C.primary_button(label, lambda e: self.query(), self.t, height=28)
         btn.disabled = self.running
         btn._bib_query_btn = True
@@ -407,18 +407,18 @@ class QueryView:
                           tooltip=self.error)
         if self.running:
             return ft.Row(spacing=t.sp("1"), controls=[
-                C.text(f"查询中… {self.elapsed:.1f} s", t, "caption", t.palette.text_muted),
+                C.text(f"运行中 · {self.elapsed:.1f} s", t, "caption", t.palette.text_muted),
                 C.text_button("取消", self._cancel_clicked, t, height=24),
             ])
         if self.cancelled:
-            return C.text("已取消查询，可重跑。", t, "caption", t.palette.text_muted)
+            return C.text("已取消，可重跑。", t, "caption", t.palette.text_muted)
         if self.loaded:
             total = self.total_matched or 0
             shown = min(self.count, total)
             tail = " · 已截断" if self.truncated else ""
             return C.text(f"1–{shown} / {total:,} · {_clock(self.elapsed)}{tail}",
                           t, "caption", t.palette.text_faint)
-        return C.text("只读 · 单次最多 200 条", t, "caption", t.palette.text_faint)
+        return C.text("", t, "caption", t.palette.text_faint)
 
     def _filter(self) -> ft.Control:
         t = self.t
@@ -460,7 +460,7 @@ class QueryView:
             empty_message=(NO_RESULT if self.loaded else "还没有查询"),
             empty_action=None, on_row_click=self._row_clicked,
             on_sort=self._on_sort, row_key="key", first_col_width=160,
-            scroll_x=False, height=None, page=self.page.page)
+            scroll_x=(self._build_width >= 1100), height=None, page=self.page.page)
         table._bib_first_col_width = 160
         table.empty_action = C.text_button(
             "清空筛选" if self.loaded else "查询", 
@@ -517,7 +517,7 @@ class QueryView:
                 C.text(str(value), t, "caption", t.palette.text,
                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value)),
             ]))
-        return ft.Column(spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO, controls=body)
+        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), controls=body)
 
     def _detail_actions(self) -> list:
         t = self.t
@@ -528,7 +528,7 @@ class QueryView:
         return [
             C.secondary_button("去编辑", lambda e: self._edit(key), t, height=28),
             C.secondary_button("复制 BibTeX", lambda e: self._copy_bibtex(hit), t, height=28),
-            C.text_button("在日志中查看", lambda e: self._open_log(key), t, height=28),
+            C.text_button("打开库文件", lambda e: self._open_log(key), t, height=28),
         ]
 
     def _edit(self, key: str) -> None:
@@ -589,7 +589,7 @@ class QueryView:
                                 f"{(self.total_matched or 0):,}",
                                 t, "caption", t.palette.text_faint))
         if self.limit >= ENGINE_CAP:
-            parts.append(C.text("引擎单次上限 200 条，请加条件", t, "caption",
+            parts.append(C.text("最多 200 条；请加条件", t, "caption",
                                 t.palette.text_faint))
         elif self.loaded and (self.total_matched or 0) > self.count:
             parts.append(C.text_button("载入更多", lambda e: self.load_more(), t, height=28))
@@ -627,7 +627,7 @@ class QueryView:
         if banner is not None:
             parts.append(banner)
         if self.cancelled:
-            parts.append(S.state_banner(t, "cancelled", message="已取消查询，可重跑。",
+            parts.append(S.state_banner(t, "cancelled", message="已取消，可重跑。",
                                         next_label="重试", on_next=lambda e: self.query()))
         table = self._table()
         footer = self._footer()
@@ -644,7 +644,7 @@ class QueryView:
 
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
-        meta = "只读 · 结果上限 200 条"
+        meta = "只读 · 最多 200 条"
         total = (getattr(self.page, "stats_data", None) or {}).get("records")
         if isinstance(total, int):
             meta = f"库 {total:,} 条 · {meta}"

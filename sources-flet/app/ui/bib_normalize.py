@@ -196,7 +196,7 @@ class NormalizeView:
                 except Exception:  # noqa: BLE001
                     pass
             if callable(dialog):
-                self.input_error = "请直接粘贴 .bib 路径；系统文件选择器不可用。"
+                self.input_error = "文件选择器不可用；请粘贴路径。"
                 self._refresh()
         return _handler
 
@@ -313,7 +313,7 @@ class NormalizeView:
             return
         if code not in (0, 1):
             self.error = (f"生成失败：{_first_line(' '.join(lines)) }"
-                          if lines else "生成失败：引擎退出码 %s" % code)
+                          if lines else "生成失败。")
             self._refresh()
             return
         try:
@@ -330,7 +330,7 @@ class NormalizeView:
             self.success = "体检完成，但报告格式无法解析；请打开报告查看。"
         elif counts["errors"]:
             self.success = (f"体检未通过：{counts['errors']} 错误、"
-                            f"{counts['warnings']} 警告；旧报告已更新。")
+                            f"{counts['warnings']} 警告。")
         else:
             self.success = f"体检通过：0 错误、{counts['warnings']} 警告。"
         self._mark("bib_normalize_run", returned=self.returned,
@@ -461,7 +461,7 @@ class NormalizeView:
     def _identify_button(self) -> ft.Control:
         # P1-14：说明「识别」只读列键，避免被误认成生成报告。
         btn = C.text_button("识别", lambda e: self.identify(), self.t, height=28)
-        btn.tooltip = "只读：用引擎列出交回稿里的键，用于核对，不写库"
+        btn.tooltip = "只读：列出交回稿的键，不写库"
         btn._bib_identify_btn = True
         return btn
 
@@ -510,7 +510,7 @@ class NormalizeView:
                 weights=[6, 38], height=32))
         if not rows:
             rows.append(S.empty_row(
-                t, "还没有报告。先选交回的 .bib，再生成报告。",
+                t, "还没有报告；先选 .bib 再生成。",
                 action=C.text_button("生成报告", lambda e: self.generate(), t, height=28)))
         remaining = max(0, len(self.data.get("rows") or []) - 4)
         footer = []
@@ -591,7 +591,7 @@ class NormalizeView:
                 page=self.page.page))
         if self.cancelled:
             parts.append(S.state_banner(t, "cancelled",
-                                        message="已取消，报告未写入；半份文件按过期处理。",
+                                        message="已取消，报告未写入。",
                                         next_label="重新生成",
                                         on_next=lambda e: self.generate()))
         if self.success and not self.running:
@@ -612,10 +612,10 @@ class NormalizeView:
         self._build_width = self._design_width()
         parts = [self._paths(), self._range_row(), *self._banners()]
         if self.loading:
-            parts.append(S.state_banner(t, "loading", message="正在读取上次报告…"))
+            parts.append(S.state_banner(t, "loading", message="运行中"))
         if self.running:
             parts.append(S.state_banner(
-                t, "running", message="正在体检：解析交回稿 → 字段对比 → 写报告",
+                t, "running", message="运行中：解析 → 对比 → 写报告",
                 stage=self.elapsed_text(), on_cancel=lambda e: self.cancel(),
                 page=self.page.page))
         if self.identified:
@@ -623,14 +623,14 @@ class NormalizeView:
                          else C.text(self.identified, t, "caption", t.palette.text_muted))
         parts.append(self._conclusion())
         parts.append(self._rows())
-        return ft.Column(spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO, expand=True,
+        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), expand=True,
                          controls=parts)
 
     def _dock(self) -> ft.Control:
         t = self.t
         if self.running:
             return ft.Row(spacing=t.sp("1"), controls=[
-                C.text("正在生成报告…", t, "caption", t.palette.text_muted),
+                C.text("运行中", t, "caption", t.palette.text_muted),
                 ft.Container(expand=True),
                 C.text_button("取消", lambda e: self.cancel(), t, height=28),
             ])
@@ -640,7 +640,7 @@ class NormalizeView:
         self._build_width = self._design_width()
         return S.page_shell(
             self.t, title=TITLE,
-            meta="只读 · checkbib 体检，只写报告",
+            meta="只读 · 只写报告",
             role_chip="readonly", action=self._open_report_button(),
             on_gear=lambda e: self._goto("settings"),
             body=self._body(), dock=self._dock(), dock_height=S.DOCK_H)

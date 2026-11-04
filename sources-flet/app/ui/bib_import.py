@@ -395,12 +395,12 @@ class BibImportView:
         if not commit.get("ok"):
             self._notify("没有可回退的本次提交")
             return
-        impact = "影响 1 个文件（bib_db/bibliography.jsonl）· 生成 1 条回退提交 · 不推送"
+        impact = "影响 1 个文件（bib_db/bibliography.jsonl）· 1 条回退提交"
         dialog = S.danger_confirm(
             self._flet(), self.t,
             title="回退本次入藏提交？",
             message=("把 bibliography.jsonl 恢复到本次写入前的版本，再生成一条新提交；"
-                     "其它文件不动，也不推送。"),
+                     "其它文件不动。"),
             impact=impact, confirm_label="回退这次提交",
             on_confirm=lambda e: self._task(self._revert))
         if dialog is not None:
@@ -431,7 +431,7 @@ class BibImportView:
         for value in (payload.get("error"), res.get("error"), res.get("stderr")):
             if value:
                 return str(value).strip().splitlines()[0][:300]
-        return f"引擎退出码 {res.get('code')}"
+        return "引擎没有返回原因。"
 
     # ── 计数 / 行 ───────────────────────────────────────────────────
     def _changes(self) -> list[dict]:
@@ -511,7 +511,7 @@ class BibImportView:
                          ])
         return S.page_shell(
             t, title=TITLE,
-            meta="导入 .bib / 整期目录 / 粘贴文本 · dry-run 预览 → 确认写入 · 只写 bibliography.jsonl，不推送",
+            meta="预览 → 确认 → 写入；只提交本地",
             role_chip=S.role_chip(t, "write"), body=body,
             notice=None, dock=self._dock())
 
@@ -567,7 +567,7 @@ class BibImportView:
                 C.floating_field(t, "slug", value=self.slug, hint="可空",
                                  on_change=self._on_slug, width=t.px(174)),
             ]))
-            controls.append(self._check("verified", "标为已核实（--verified）",
+            controls.append(self._check("verified", "标为已核实",
                                         self.verified))
         else:
             controls.append(ft.Row(spacing=t.sp("1"), controls=[
@@ -582,7 +582,7 @@ class BibImportView:
         more_label = "更多选项 ▾" if self.more_open else "更多选项 ▸"
         controls.append(C.text_button(more_label, self._toggle_more, t))
         if self.more_open:
-            controls.append(self._check("force", "允许覆盖待裁决冲突（--force）",
+            controls.append(self._check("force", "覆盖待裁决冲突",
                                         self.force))
         controls.append(ft.Container(height=t.px(32), content=ft.Row(
             spacing=t.sp("half"), controls=[
@@ -592,7 +592,7 @@ class BibImportView:
                 C.text("· 1 个文件", t, "caption", t.palette.text_faint),
             ])))
         busy = self.state == "loading"
-        preview_label = "预览中…" if busy else "预览（不写库）"
+        preview_label = "运行中" if busy else "预览（不写库）"
         preview_btn = (C.primary_button if self.payload is None
                        else C.secondary_button)(
             preview_label, lambda e: self._task(self._preview), t,
@@ -605,7 +605,7 @@ class BibImportView:
         ]))
         controls.append(C.text_button("清空表单", self._clear, t))
         controls.append(C.text(
-            "dry-run 不写盘；写入前会校验库 sha；只提交，不推送。",
+            "预览不写库；写入前校验库 sha。",
             t, "caption", t.palette.text_faint, max_lines=3))
         if not narrow:
             controls.append(C.text("", t, "caption", t.palette.text_faint))
@@ -620,7 +620,7 @@ class BibImportView:
         page = self._flet()
         picker = getattr(page, "file_picker", None) if page is not None else None
         if picker is None:
-            self._notify("这一步的「浏览…」需要宿主的文件选择器；也可直接粘贴路径")
+            self._notify("可直接粘贴路径，或点「浏览…」")
             return
         try:
             picker.pick_files(allow_multiple=False)
@@ -662,7 +662,7 @@ class BibImportView:
         t = self.t
         controls: list[ft.Control] = [
             C.section_label("预览结果", t,
-                            note="dry-run" if self.payload is None else "dry-run · 未写盘"),
+                            note="预览" if self.payload is None else "预览 · 未写库"),
             ft.Container(height=t.px(6)),
         ]
         if self.state == "success":
@@ -670,7 +670,7 @@ class BibImportView:
             controls.append(ft.Container(height=t.px(8)))
             controls.append(self._payload_block(dim=True))
         elif self.state in ("loading",):
-            controls.append(S.state_banner(t, "loading", message="预览中…"))
+            controls.append(S.state_banner(t, "loading", message="运行中"))
         elif self.state == "failure":
             controls.append(S.state_banner(
                 t, "failure", message=self.error or "预览失败",
@@ -722,14 +722,19 @@ class BibImportView:
                 weights=[0.7, 1.5, 0.8, 3.0], mono=(1,),
                 align=["left", "left", "left", "left"]))
         if not rows:
-            body_rows.append(S.empty_row(t, "这一口径下没有变化记录"))
-        table = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True,
+            body_rows.append(S.empty_row(t, "没有变化记录"))
+        # ≤8 行走 shrink-wrap（滚轮归页体）；只有长变化列表才保留独立滚动，
+        # 此时常显条让“这里还能滚”可见。
+        scrolling = len(rows) > 8
+        table = ft.Column(spacing=0, expand=scrolling,
+                          scroll=S.scrollbar() if scrolling else None,
                           controls=[
                               S.table_header_row(t, ["状态", "key", "动作", "题名 / 变化"],
                                                  weights=[0.7, 1.5, 0.8, 3.0],
                                                  mono=(1,)),
                               ft.Column(spacing=0, controls=body_rows),
                           ])
+        table._bib_shrink = not scrolling
         if len(rows) > self.shown:
             table.controls.append(ft.Container(
                 height=t.px(36), alignment=ft.Alignment.CENTER_LEFT,
@@ -748,7 +753,7 @@ class BibImportView:
                          content=table if not dim else ft.Container()),
         ]
         for line in warn_lines:
-            controls.append(C.text(f"⚠ {line}", t, "caption", t.palette.warn,
+            controls.append(C.text(f"注意 · {line}", t, "caption", t.palette.warn,
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS))
         return ft.Column(spacing=t.sp("half"), controls=controls)
 
@@ -772,8 +777,8 @@ class BibImportView:
         lines = [
             f"新增 {counts['new']} 条 · 更新 {counts['updated']} 条 · "
             f"冲突 {counts['conflicts']} 条（进待处理）",
-            f"库 sha {sha} · 只写 bibliography.jsonl · 生成 1 条本地提交 · 不推送",
-            "写入后库内容会变；页内不能撤销，只能回退这次提交。",
+            f"库 sha {sha} · 1 条本地提交 · 不推送",
+            "页内不可撤销，只能回退本次提交。",
         ]
         return ft.Container(
             bgcolor=p.accent_soft, border=C.box(t, p.accent),
@@ -794,7 +799,7 @@ class BibImportView:
         added = _int(payload.get("new") or payload.get("added") or payload.get("imported"))
         updated = _int(payload.get("updated") or payload.get("merged"))
         sha = _sha8(str((self.commit or {}).get("sha") or ""))
-        detail = f"提交 {sha or '未生成'} · 未 push" if sha else "已写入；版本提交未生成"
+        detail = f"已提交 {sha} · 未推送" if sha else "已写入；未生成提交"
         return S.result_banner(
             t, title=f"已写入 {added} 新增 · {updated} 更新", detail=detail,
             on_review=lambda e: self._goto_pending(),
@@ -821,19 +826,19 @@ class BibImportView:
         stale = has_preview and (self._is_stale() or self.state == "stale")
         if not has_preview:
             consequence = "尚未预览"
-            detail = "选好来源后点「预览（不写库）」；预览成功后确认写入才可用"
+            detail = "先预览（不写库），才能确认写入"
         elif stale:
             consequence = self._consequence()
             detail = f"预览已过期：{self.dirty_reason or '库 sha 已变化'}，先重新预览"
         else:
             consequence = self._consequence()
-            detail = "只写 bibliography.jsonl，不 push · commit only"
+            detail = "只写 bibliography.jsonl · 不推送"
         bar = S.confirm_bar(
             t, consequence=consequence,
             detail=detail, sha=_sha8(self.expect_sha) if has_preview else None,
             on_confirm=self._open_confirm,
             confirm_disabled=not self._can_confirm(),
-            confirm_label="写入中…" if self.state == "running" else "确认写入",
+            confirm_label="运行中" if self.state == "running" else "确认写入",
             # P1-7：重新预览只在已有陈旧预览时出现；首次预览/已就绪都不占位。
             on_repreview=(lambda e: self._task(self._preview)) if stale else None,
             stale=stale)

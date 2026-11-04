@@ -343,13 +343,13 @@ def build_diagnosis(app, envcheck: dict | None = None, logs: str = "") -> str:
     lines = [
         "=== 编辑部工具箱诊断 ===",
         f"生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"应用版本: {getattr(app, 'app_version', '?')} · Flet {getattr(app, 'flet_version', '?')}"
+        f"应用: {getattr(app, 'app_version', '?')} · Flet {getattr(app, 'flet_version', '?')}"
         f" · Python {getattr(app, 'python_version', '?')}",
         f"系统: {platform.platform()} · {platform.machine()}",
-        f"平台/DPI/窗口: {getattr(page, 'platform', '?')} · {getattr(app, 'dpi', '?')} dpi"
-        f" · {getattr(app, 'window_w', '?')}x{getattr(app, 'window_h', '?')}",
-        f"引擎: {getattr(engine, 'describe', lambda: '?')()} · 版本 {getattr(engine, 'version', '?')}"
-        f" · 目录 {getattr(engine, 'engine_dir', '?')}",
+        f"平台: {getattr(page, 'platform', '?')} · {getattr(app, 'dpi', '?')} dpi"
+        f" · 窗口 {getattr(app, 'window_w', '?')}×{getattr(app, 'window_h', '?')}",
+        f"引擎: {getattr(engine, 'describe', lambda: '?')()} · {getattr(engine, 'version', '?')}",
+        f"目录: {getattr(engine, 'engine_dir', '?')}",
         f"设置文件: {getattr(getattr(app, 'store', None), 'path', '?')}",
         "设置（脱敏）:",
         json.dumps(redact(getattr(getattr(app, "store", None), "data", {})),
@@ -402,18 +402,17 @@ def _export(page) -> None:
         page.app.open_path(str(Path(path).parent))
 
     C.confirm(page.page, page.t, title="导出诊断包？",
-              message="写入设置目录；包含版本、路径、设置（已脱敏）、环境检查与最近日志，"
-                      "不含 API Key。",
+              message="写入设置目录，含版本、路径、已脱敏设置与日志，不含 API Key。",
               confirm_label="导出", on_confirm=_confirmed)
 
 
 def diagnostics_card(page) -> ft.Control:
     t = page.t
     rows: list = [
-        C.section_title("诊断包", t, note="二次确认后写文件并打开目录"),
+        C.section_title("诊断包", t, note="确认后写文件并打开目录"),
         _kv("设置文件", str(page.app.store.path), t),
         _kv("诊断目录", str(diagnosis_dir(page.app)), t),
-        _kv("日志", f"内存最近 {log_buffer(page.app).count()} 行（上限 {LOG_LIMIT} 行）", t),
+        _kv("日志", f"内存最近 {log_buffer(page.app).count()} 行（上限 {LOG_LIMIT}）", t),
         ft.Row(spacing=t.sp("1"), controls=[
             C.primary_button("导出诊断包", lambda e: _export(page), t, icon="BUG_REPORT_OUTLINED"),
             C.text_button("复制诊断信息", lambda e: copy_diagnosis(page), t),
@@ -661,7 +660,7 @@ def advanced_card(page) -> ft.Control:
     t = page.t
     rows: list = [
         C.section_title("高级", t),
-        C.option_row("首次环境检查已完成", "兼容 Tk 版 envCheckDone；失败不阻塞启动", t,
+        C.option_row("首次环境检查已完成", "兼容旧版；失败不阻塞启动", t,
                      icon="CHECK_CIRCLE_OUTLINE",
                      checked=bool(page.app.store.get("env_check_done", False)),
                      on_change=lambda e: page.app.set_check_done(e.control.value)),
@@ -687,5 +686,5 @@ def _reset(page) -> None:
         page.app.rebuild_shell()
 
     C.confirm(page.page, page.t, title="恢复默认设置？",
-              message="会重置外观、路径、选项与 AI 设置（API Key 也会清空），再写入设置文件。",
+              message="会重置外观、路径、选项与 AI 设置，API Key 也会清空。",
               confirm_label="恢复默认", on_confirm=_confirmed)

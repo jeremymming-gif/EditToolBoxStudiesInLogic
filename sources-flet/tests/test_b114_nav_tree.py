@@ -212,7 +212,7 @@ def test_sidebar_is_accordion_with_internal_scroll() -> None:
     assert "_bib_section_header(" not in source
     assert "indent=48" not in bib_source
     assert "has_children=False" in bib_source
-    assert "ft.ScrollMode.AUTO" in source      # 导航超高内部滚动（1000×700 可滚）
+    assert "C.scrollbar(t)" in source          # 批 118：导航超高内部滚动、常显细条
     assert "C.nav_item(" in source             # <720 的 56 图标条兜底仍在
     assert "compact=True" in source
 

@@ -89,7 +89,7 @@ def test_bib_toolbar_meta_uses_real_records_and_lint_warnings():
     assert BibPage.toolbar_meta(page) == "3,883 条"
 
     page.stats_data = None  # 未加载
-    assert BibPage.toolbar_meta(page) == "统计读取中…"
+    assert BibPage.toolbar_meta(page) == "运行中"
 
 
 def test_search_capsule_focus_ring_switches_border_to_accent():

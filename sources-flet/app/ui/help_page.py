@@ -171,15 +171,15 @@ class HelpPage(BasePage):
         top = [entry for entry in IA.nav_parent_entries() if entry["key"] != "bib"]
         groups = IA.group_views("bib")
         leaves = [view for view in IA.nav_views("bib") if not view.get("route_only")]
-        return (f"侧栏 {len(top)} 个一级页 + 引用库 {len(groups)} 组 {len(leaves)} 叶"
-                "（页头齿轮进设置）+ 单篇页里的 AI 面板")
+        return (f"侧栏 {len(top)} 个一级页；引用库 {len(groups)} 组 {len(leaves)} 个视图"
+                "（页头齿轮进设置）；单篇页里的 AI 面板")
 
     def _entry_detail(self, name: str, detail: str) -> str:
         if name != "AI 任务书":
             return detail
         enabled = bool(self.app.store.get("ai.enabled", False))
         state = "已启用" if enabled else "已关闭"
-        return f"当前{state}；开启后按预算调用，禁止把未刊稿发给外部模型。"
+        return f"当前{state}；开启后按预算调用，禁止发送未刊稿。"
 
     def _entry(self, name: str, where: str, detail: str) -> ft.Column:
         t = self.t
@@ -285,7 +285,7 @@ class HelpPage(BasePage):
     # ── 边界与安全（一行一条，不铺底色）─────────────────────────────────
     def _boundary(self) -> ft.Column:
         t = self.t
-        return self._section("boundary", "边界与安全", "写操作都有前置闸门",
+        return self._section("boundary", "边界与安全", "写操作先预览再确认",
                              *[C.inline_note(line, t) for line in HC.BOUNDARY])
 
     # ── 版本与许可（短值走 32 高键值行；长文本整段换行，不截断）───────────

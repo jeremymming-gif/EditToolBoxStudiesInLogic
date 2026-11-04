@@ -52,8 +52,30 @@ DOCK_H_EXPANDED = 200
 NARROW_W = 1000
 DETAIL_STACK_BELOW = 1100
 
-WRITE_HINT = "预览 → 确认 → 只写 bibliography.jsonl，不推送"
+WRITE_HINT = "预览 → 确认 → 写入"
 READONLY_HINT = "只读视图 · 不写库"
+
+# ── 滚动条（批 118 P1-1）────────────────────────────────────────────────────
+# flet 1.0.5 的 ``Scrollbar`` 是 ``scroll=`` 的**配置对象**，不是包裹控件；
+# 本版没有 ``ScrollbarVisibility`` 枚举，``thumb_visibility`` 收 bool。
+# 桌面端 ``scroll_to`` 静默无效，因此“能不能滚”只能靠常显条自己说话。
+SCROLLBAR_T = 6
+
+
+def scrollbar(*, horizontal: bool = False) -> ft.Scrollbar:
+    """常显滚动条：6px、可拖、静止也在；横向条放底部。
+
+    页面级滚动列一律用它（``Column(scroll=S.scrollbar())``），内层表格只在
+    确实需要独立滚动时保留，其余 shrink-wrap 交给页体唯一滚动者。
+    """
+    return ft.Scrollbar(
+        thumb_visibility=True,
+        thickness=SCROLLBAR_T,
+        radius=3,
+        interactive=True,
+        orientation=(ft.ScrollbarOrientation.BOTTOM if horizontal
+                     else ft.ScrollbarOrientation.RIGHT),
+    )
 
 _ROLE_CHIPS = {
     "readonly": ("只读", "neutral", READONLY_HINT),
@@ -210,8 +232,10 @@ def page_shell(t: Tokens, *, title: str, meta: str, role_chip: Any = None,
         )
         children.append(notice_box)
 
+    # 右内边距多 6px：常显滚动条压在内容边缘时也不盖住最后一列文字。
     body_box = ft.Container(
-        expand=True, padding=_pad(t, PAGE_H_PAD, 12, PAGE_H_PAD, 0), content=body,
+        expand=True, padding=_pad(t, PAGE_H_PAD, 12, PAGE_H_PAD + SCROLLBAR_T, 0),
+        content=body,
     )
     children.append(body_box)
 
@@ -481,8 +505,10 @@ def detail_panel(t: Tokens, *, body: Any, title: str | None = None,
                               max_lines=1, overflow=ft.TextOverflow.ELLIPSIS))
 
     if isinstance(body, (list, tuple)):
-        body_ctl = ft.Column(controls=list(body), spacing=t.sp("2"), scroll=ft.ScrollMode.AUTO,
-                             expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        body_ctl = ft.Column(controls=list(body), spacing=t.sp("2"),
+                             scroll=scrollbar(), expand=True,
+                             horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+        body_ctl._bib_scroll = True
     else:
         body_ctl = ft.Container(expand=True, content=body)
     content.append(body_ctl)
@@ -495,7 +521,8 @@ def detail_panel(t: Tokens, *, body: Any, title: str | None = None,
 
     panel = ft.Container(
         width=t.px(width), border=ft.Border(left=_side(t)),
-        padding=_pad(t, 16, 0, 0, 0),
+        # 右 6px 给常显条留位，详情正文不被 thumb 压住。
+        padding=_pad(t, 16, 0, SCROLLBAR_T, 0),
         content=ft.Column(spacing=t.sp("2"), expand=True,
                           horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                           controls=content),
@@ -676,7 +703,7 @@ def confirm_bar(t: Tokens, *, consequence: str, detail: str | None = None,
     知道边界。stale 时禁用确认、把重新预览提为主按钮，避免拿旧 sha 覆盖新库。
     """
     p = t.palette
-    detail_text = detail or "只写 bibliography.jsonl，不 push"
+    detail_text = detail or "只写 bibliography.jsonl · 不推送"
     if sha:
         detail_text = f"库 sha {sha} · {detail_text}"
 
@@ -836,7 +863,7 @@ def _skeletons(t: Tokens, count: int = 3) -> list[ft.Control]:
 def _copy_button(t: Tokens, text: str, page, on_copy):
     """复制 stderr：默认 page.run_task + Clipboard，也可调用方接管。"""
     if on_copy is not None:
-        return C.text_button("复制 stderr", lambda e: on_copy(text), t,
+        return C.text_button("复制错误", lambda e: on_copy(text), t,
                              icon="CONTENT_COPY", height=28)
     if page is None or not hasattr(page, "run_task"):
         return None
@@ -851,7 +878,7 @@ def _copy_button(t: Tokens, text: str, page, on_copy):
 
         page.run_task(_job)
 
-    return C.text_button("复制 stderr", _click, t, icon="CONTENT_COPY", height=28)
+    return C.text_button("复制错误", _click, t, icon="CONTENT_COPY", height=28)
 
 
 def state_banner(t: Tokens, kind: str, *, message: str | None = None,
@@ -909,7 +936,7 @@ def state_banner(t: Tokens, kind: str, *, message: str | None = None,
                                ft.Column(spacing=0, expand=True,
                                          alignment=ft.MainAxisAlignment.CENTER,
                                          controls=[
-                                             C.text(stage or message or "运行中…", t,
+                                             C.text(stage or message or "运行中", t,
                                                     "section-label", fg, max_lines=1,
                                                     overflow=ft.TextOverflow.ELLIPSIS),
                                              *([C.text(detail, t, "caption",
@@ -947,8 +974,8 @@ def state_banner(t: Tokens, kind: str, *, message: str | None = None,
     # failure
     copy_btn = _copy_button(t, stderr or "", page, on_copy) if stderr else None
     acts = [a for a in (copy_btn, _next_action("重试")) if a is not None]
-    banner = _banner_44(t, "error", "ERROR_OUTLINE", "ERROR", message or "运行失败",
-                        detail or ("可复制 stderr 后重试" if stderr else None), acts)
+    banner = _banner_44(t, "error", "ERROR_OUTLINE", "ERROR", message or "失败",
+                        detail or ("可复制错误后重试" if stderr else None), acts)
     if not stderr:
         banner._bib_state = kind
         return banner

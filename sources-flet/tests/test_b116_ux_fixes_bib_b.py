@@ -200,7 +200,7 @@ def test_dupes_pair_drives_field_count_and_enables_editors():
     band = view._plan_band()
     texts = _texts(band)
     assert any("影响 2 条 → 1 条" in text for text in texts)
-    assert "2 字段取值 · 旧 key 记别名 · 未写库（dry-run）" in texts
+    assert "2 字段取值 · 旧 key 记别名 · 预览（不写库）" in texts
     key_field = [n for n in _walk(band)
                  if isinstance(n, ft.TextField) and n.hint_text == "合并后 key"][0]
     assert key_field.disabled is False
@@ -212,7 +212,7 @@ def test_dupes_pair_drives_field_count_and_enables_editors():
     view.left["fields"] = {"title": "A"}
     view.right["fields"] = {"title": "B"}
     texts2 = _texts(view._plan_band())
-    assert "1 字段取值 · 旧 key 记别名 · 未写库（dry-run）" in texts2
+    assert "1 字段取值 · 旧 key 记别名 · 预览（不写库）" in texts2
 
 
 # ── P1-9 字段归位：真实 candidates / 筛选 chip / 批量按钮 ──────────────

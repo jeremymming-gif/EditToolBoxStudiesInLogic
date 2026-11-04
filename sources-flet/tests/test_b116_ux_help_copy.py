@@ -83,7 +83,7 @@ def test_entry_count_follows_navigation_tree():
 
     joined = _joined()
     assert f"侧栏 {facts['top']} 个一级页" in joined
-    assert f"引用库 {len(facts['groups'])} 组 {len(facts['leaves'])} 叶" in joined
+    assert f"引用库 {len(facts['groups'])} 组 {len(facts['leaves'])} 个视图" in joined
     assert "页头齿轮进设置" in joined
     assert "单篇页里的 AI 面板" in joined
 
@@ -91,7 +91,7 @@ def test_entry_count_follows_navigation_tree():
 def test_entries_entry_documents_three_groups_nine_leaves_and_gear():
     joined = _joined()
     entry = next(detail for name, _where, detail in HC.ENTRIES if name == "引用库")
-    assert entry.startswith("3 组 9 叶：")
+    assert entry.startswith("3 组 9 个视图：")
     assert "bib:settings" in entry and "深链" in entry
     for group in _facts()["groups"]:
         assert group["label"] in entry, group["label"]

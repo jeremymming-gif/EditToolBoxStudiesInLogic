@@ -52,12 +52,9 @@ BIB_NAV_NARROW_BELOW = 1100
 #: 写库提示的 tooltip 全文（与 pages.BIB_WRITE_RULES 同口径；宿主先于 pages 导入，
 #: 不能反向 import，故这里保留一份说明文本，改口径时两处一起改）。
 BIB_WRITE_RULES = (
-    "W1 写库四步：干跑预览 → 二次确认 → 校验 bibliography.jsonl 的 sha256"
-    "（不符即拒绝、零写入）→ 原子替换。\n"
-    "W2 只本地：写成功后自动本地提交 1 条（批量也只 1 条），"
-    "只提交 bib_db/bibliography.jsonl；不 git push、不同步远端。\n"
-    "W3 只读不写：概况 / 查库 / 规范化不写库；规范化只产出报告文件"
-    "（库健康与字段归位是写库视图，批量裁决同样走 W1 四步）。"
+    "W1 写库四步：预览（不写库）→ 确认 → 校验 sha256 → 原子替换。\n"
+    "W2 只本地：写成功后自动提交 1 条，只含 bibliography.jsonl；绝不自动 push。\n"
+    "W3 概览 / 查库 / 回读校验只读，不写库。"
 )
 
 #: 旧 BibPage 属性名 → 新路由。`__getattr__` 返回懒实例化后的视图对象；
@@ -155,7 +152,7 @@ class BibHost(BasePage):
                    "import": "写库", "review": "写库", "edit": "写库",
                    "dupes": "写库", "fieldfix": "写库", "health": "写库",
                    "settings": "配置"}
-    VIEW_NOTICES = {key: ("info", "预览 → 二次确认 → 原子写；只提交 bibliography.jsonl，不推送。")
+    VIEW_NOTICES = {key: ("info", "预览 → 确认 → 写入；只提交本地。")
                     for key in ("import", "review", "edit", "dupes", "fieldfix", "health")}
     VIEW_LABELS = {key: label for key, label in VIEWS}
     TOOLBAR_TITLE = "引用库"
@@ -209,7 +206,7 @@ class BibHost(BasePage):
         stats = self.stats_data or {}
         records = stats.get("records")
         if not isinstance(records, (int, float)):
-            return "统计读取中…"
+            return "运行中"
         text = f"{int(records):,} 条"
         warnings = (self.lint_counts or {}).get("warnings")
         if isinstance(warnings, (int, float)) and warnings:

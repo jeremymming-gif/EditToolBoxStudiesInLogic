@@ -141,7 +141,7 @@ def test_health_band_and_conflict_units(monkeypatch):
     assert not any(isinstance(n, ft.Card) for n in _walk(view.build()))
     for value in ("76", "0", "12", "9"):
         assert value in texts
-    assert "警告句数，不是记录数" in joined
+    assert "警告句数（非记录数）" in joined
     assert "135 条" in texts and "157 处差异；去待处理" in joined
     assert "135 条冲突" not in joined
 
@@ -198,7 +198,7 @@ def test_health_ack_dry_run_then_apply(monkeypatch):
     asyncio.run(view._apply_ack())
     assert len(calls) == 2
     assert "--dry-run" in calls[0].argv and "--dry-run" not in calls[1].argv
-    assert "已写 2 项" in view.success and "库未改" in view.success
+    assert "已标记 2 项" in view.success and "库未改" in view.success
     assert view.selected == set()
     assert view.staged is False
 

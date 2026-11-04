@@ -27,24 +27,18 @@ SCHEMA_VERSION = 1
 MAX_AUTHORS = 5
 MAX_AFFILIATIONS = 3
 
-AUTHOR_LIMIT_SUMMARY = (
-    "作者上限 5 位：模板只有 \\myfirstauthor…\\myfifthauthor 五个槽位，不是可调设置。"
-)
-AFFILIATION_LIMIT_SUMMARY = "单位上限：每位作者每种语言最多 3 行（模板版式容量，第 4 行起会溢版）。"
+AUTHOR_LIMIT_SUMMARY = "作者最多 5 位（模板固定 5 个槽位）。"
+AFFILIATION_LIMIT_SUMMARY = "单位最多 3 行（每位作者、每种语言；第 4 行溢版）。"
 LIMIT_SUMMARY = AUTHOR_LIMIT_SUMMARY + AFFILIATION_LIMIT_SUMMARY
-AUTHOR_LIMIT_HINT = (
-    "作者已达模板上限 5 位：第 6 位没有槽位。请先删掉空作者行；确需更多署名请合并同单位作者，"
-    "或把补充信息移到正文致谢/前言（模板按连续作者数排版）。"
-)
+AUTHOR_LIMIT_HINT = "作者已满 5 位。先删空作者行；更多署名请合并同单位，或写进正文致谢。"
 AFFILIATION_LIMIT_HINT = (
-    "第 {n} 位作者的{lang}单位已到 3 行上限：第 4 行起会溢版。请删掉空行，"
-    "或把多个单位合并写到一行（也可移入脚注）。"
+    "第 {n} 位作者的{lang}单位已到 3 行上限，第 4 行会溢版。删空行或合并到一行。"
 )
 
-WARN_NO_AUTHOR = "未填写作者：作者信息仍由引擎自动解析（表单只覆盖已填字段）"
-WARN_EMPTY_AUTHOR = "第 {n} 位作者为空，已忽略（不会写入产物）"
-WARN_BAD_EMAIL = "第 {n} 位作者邮箱格式可疑：{email}（只提示，不阻断）"
-WARN_NO_NAME = "第 {n} 位作者没有姓名（只有单位/邮箱）：建议补姓名，否则该槽位会保留占位"
+WARN_NO_AUTHOR = "未填作者：仍用引擎自动解析的结果。"
+WARN_EMPTY_AUTHOR = "第 {n} 位作者为空，已跳过。"
+WARN_BAD_EMAIL = "第 {n} 位作者邮箱格式可疑：{email}（只提示）。"
+WARN_NO_NAME = "第 {n} 位作者没有姓名（只有单位/邮箱），该槽位会留占位。"
 
 #: (键, 标签, 是否多行)
 SCALARS = (
@@ -63,27 +57,18 @@ PLACEHOLDER = {
     "keywords_cn": "如：逻辑学；语义学",
     "keywords_en": "如：logic; semantics",
 }
-KEYWORDS_NOTE = (
-    "中文模板只有中文关键词槽；英文关键词两个模板都没有槽位，引擎会在日志里提示人工放置"
-    "（填了不会丢，只是不会自动落版）。"
-)
-FORM_TITLE = "元数据（推荐人工填写；值直接写入交付产物，留空 = 不覆盖）"
-FORM_NOTE = "值会直接写入交付产物；留空 = 不覆盖（沿用引擎自动解析）。"
-FORM_PRIORITY_NOTE = "表单优先于 .tex 元数据文件；临时 JSON 只在本次运行有效，跑完即删。"
-FORM_COOP_NOTE = (
-    "两段式：表单随第一段写进初排并在暂存状态记下 sha256；第二段沿用初排元数据"
-    "（第二段里再改表单不生效）。"
-)
+KEYWORDS_NOTE = "英文关键词两个模板都没有槽位；填了不会丢，但不会自动排版。"
+FORM_TITLE = "元数据"
+FORM_NOTE = "写入交付产物；留空 = 不覆盖。"
+FORM_PRIORITY_NOTE = "优先于 .tex 元数据；临时文件跑完即删。"
+FORM_COOP_NOTE = "两段式：表单随第一段写入；第二段沿用，改表单不生效。"
 
-PREVIEW_TITLE = "元数据 / 补充信息预览"
-PREVIEW_FAILED = "预览失败：没有拿到引擎的预览结果（原因见主窗口日志）。本次未写任何文件。"
-PREVIEW_EMPTY = "（还没有预览结果：点「预览元数据」先跑一次只读预览。）"
-PREVIEW_FOOTER = (
-    "状态：已填（正文解析 / 补充文件 / 表单）· 冲突-未采用 · 未识别 · 缺项。"
-    "只读预览：不建产物目录、不写产物、不写交接单。"
-)
-CONFLICT_HEADER = "冲突（正文/靠前的补充源已有该字段，未采用）"
-UNRECOGNIZED_HEADER = "未识别（源里的标签/字段没对上本刊模板槽位）"
+PREVIEW_TITLE = "元数据预览"
+PREVIEW_FAILED = "预览失败：没拿到引擎结果（详见日志）。未写任何文件。"
+PREVIEW_EMPTY = "（还没有预览；先点「预览元数据」。）"
+PREVIEW_FOOTER = "状态：已填 · 冲突-未采用 · 未识别 · 缺项。只读预览，不写文件。"
+CONFLICT_HEADER = "冲突（已有该字段，未采用）"
+UNRECOGNIZED_HEADER = "未识别（对不上模板槽位）"
 HINT_HEADER = "提示"
 
 
@@ -317,7 +302,7 @@ def preview_hint(payload: dict) -> str:
     channel = "Word 通道" if str(payload.get("channel") or "") == "word" else "LaTeX 通道"
     lang = str(payload.get("lang") or "zh")
     return (f"{channel} · 语种 {lang} · 共 {len(payload.get('rows') or [])} 行；"
-            "只读预览：不建产物目录、不写产物、不写交接单。")
+            "只读预览，不写文件。")
 
 
 def preview_view(payload) -> dict:
@@ -462,7 +447,7 @@ class MetadataPanel:
                               author.name_cn, "中文姓名", "", 0,
                               on_change=lambda e, i=index: self._on_author(i, "name_cn", e.control.value))),
                           ft.Container(expand=True, content=self._field(
-                              author.name_en, "英文姓名（拼音/英文名）", "", 0,
+                              author.name_en, "英文姓名", "", 0,
                               on_change=lambda e, i=index: self._on_author(i, "name_en", e.control.value))),
                           ft.Container(expand=True, content=self._field(
                               author.email, "邮箱", "", 0,
@@ -536,12 +521,10 @@ class MetadataPanel:
         if self._summary is None:
             return
         t = self.page.t
-        self._summary.value = self.form.summary_line()
         self._summary.color = t.palette.text_faint
-        t = self.page.t
         parts = [self.form.summary_line()]
         for warning in self.form.warnings():
-            parts.append("⚠ " + warning)
+            parts.append("注意 · " + warning)
         self._summary.value = "\n".join(parts)
 
     # ── 事件 ────────────────────────────────────────────────────────────

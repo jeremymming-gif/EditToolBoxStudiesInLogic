@@ -19,7 +19,7 @@ import main as M  # noqa: F401  （保证 app/ 在 sys.path，与其它壳测试
 from ui import pages as P
 from test_b112_post_b import _build_issue, _walk
 
-EMPTY = "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）"
+EMPTY = "还没有选择期目录"
 
 
 def _texts(root) -> list[str]:

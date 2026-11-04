@@ -194,8 +194,27 @@ def page_header(title: str, subtitle: str, t: Tokens, actions: list | None = Non
     )
 
 
+#: 常显滚动条宽度（设计像素）。批 118 P1-1：全壳统一口径。
+SCROLLBAR_THICKNESS = 6
+
+
+def scrollbar(t: Tokens, thickness: float = SCROLLBAR_THICKNESS) -> ft.Scrollbar:
+    """统一滚动条配置：静止也显示细条、可拖拽；无溢出时 Flet 不画条。
+
+    批 118 P1-1：flet 1.0.5 的 `Scrollbar` 是 `scroll=` 的配置对象，不是包裹
+    控件；`thumb_visibility=True` 即「ALWAYS」语义（实测无溢出时不画条）。
+    `thickness` 走设计像素，随 DPI / 用户缩放一起缩放。
+    """
+    return ft.Scrollbar(
+        thumb_visibility=True,
+        thickness=t.px(thickness),
+        interactive=True,
+    )
+
+
 def page_body(*controls, t: Tokens, gap: float = 16, overlay=None,
-              overlay_reserve: float = 0, panel: bool = False) -> ft.Control:
+              overlay_reserve: float = 0, panel: bool = False,
+              pad: tuple | None = None, tail: ft.Control | None = None) -> ft.Control:
     """页面内容区。给了 `overlay` 就改成 Stack：内容在下、浮层在上（后入 = z 更高）。
 
     `overlay_reserve` 是给浮层留出的底部内边距（px），避免浮层遮住内容最后一行。
@@ -204,18 +223,37 @@ def page_body(*controls, t: Tokens, gap: float = 16, overlay=None,
     `panel=True`（批 115 D1-115-12）：「一张纸」白面板——内容盒 bgcolor = surface、
     顶部圆角 `t.radius("panel")`，与 `C.panel` 观感一致；padding / 滚动 / overlay
     行为不变。默认 False（灰底，老页面零变化）。
+
+    批 118 P1-1：滚动统一用 `scrollbar(t)`（常显细条），并在滚动内容右缘留
+    `SCROLLBAR_THICKNESS` 设计像素，避免覆盖式细条压住卡片边；`pad` 可覆盖
+    内容盒内边距（Home 沿用 `panel` 的 24/12/24/10）。
+
+    `tail` 是留在内容右侧留白之外、但仍随页面滚动的尾控件（日志页的
+    动态底部 spacer）；滚动列仍以它为最后一个 control，保持收起/展开契约。
     """
-    body = ft.Column(
+    inner = ft.Column(
         controls=list(controls),
         spacing=t.sp("2") if gap == 16 else t.px(gap),
-        scroll=ft.ScrollMode.AUTO,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    scroll_controls = [ft.Container(
+        content=inner,
+        padding=_pad(t, 0, 0, SCROLLBAR_THICKNESS, 0),
+    )]
+    if tail is not None:
+        scroll_controls.append(tail)
+    body = ft.Column(
+        controls=scroll_controls,
+        spacing=0,
+        scroll=scrollbar(t),
         expand=True,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
     if overlay is not None and overlay_reserve:
         body.controls.append(ft.Container(height=t.px(overlay_reserve)))
+    left, top, right, bottom = pad or (24, 12, 24, 18)
     box = ft.Container(
-        padding=_pad(t, 24, 12, 24, 18), expand=True, content=body,
+        padding=_pad(t, left, top, right, bottom), expand=True, content=body,
         bgcolor=t.palette.surface if panel else t.palette.bg,
         **({"border_radius": ft.BorderRadius(
             top_left=t.radius("panel"), top_right=t.radius("panel"),
@@ -1358,14 +1396,14 @@ def path_picker(label: str, value: str, hint: str, t: Tokens, *, on_change=None,
     field = text_field(t, value=value or "", on_change=on_change, field_ref=field_ref)
     field = _apply_floating(
         field, t, label + suffix,
-        hint=hint or "可直接粘贴路径（⌘V），或点「浏览…」选择", expand=True)
+        hint=hint or "路径", expand=True)
     browse = secondary_button("浏览…", on_browse, t, icon="FOLDER_OPEN")
     controls: list[ft.Control] = [
         # 输入框 48（浮动标签）→ 浏览按钮跟随 48（用户 m02816：不能高矮不齐）。
         field_row(field, browse, t),
     ]
     if show_note:
-        controls.append(text("可直接粘贴路径（⌘V），或点「浏览…」选择文件/目录",
+        controls.append(text("可直接粘贴路径（⌘V），或点「浏览…」选择",
                              t, "caption", t.palette.text_faint))
     return ft.Column(spacing=t.sp("half"), controls=controls)
 
@@ -1581,8 +1619,16 @@ class LogConsole:
         # 选型 B（保留 ListView 行渲染 + 外层 SelectionArea）：A 方案把正文改成
         # 一整块只读多行 TextField 会丢掉逐行颜色、自动滚底与限流渲染；SelectionArea
         # 跨行选择交给 Flutter 选区机制，行控件/颜色/滚底全部保留，复制按钮兜底。
-        self.list = ft.ListView(expand=True, spacing=t.px(2), auto_scroll=True, padding=0)
+        self.list = ft.ListView(
+            expand=True, spacing=t.px(2), auto_scroll=True,
+            padding=_pad(t, 0, 0, 4, 0),
+            scroll=scrollbar(t, thickness=4),
+        )
         self._selection = ft.SelectionArea(content=self.list)
+        # Column 主轴不给子项紧约束：SelectionArea 会按内容高度铺开，ListView
+        # 便没有可滚动视口（也就没有滚动条，底行被 _log_box 裁掉）。套一层
+        # expand Container 把 200px 高度传下去，日志才真正滚 + 常显细条。
+        self._selection_host = ft.Container(expand=True, content=self._selection)
         self.empty = text("等待运行…", t, "small", t.palette.log_muted)
         self.list.controls.append(self.empty)
         # 用户 m02696：「只看摘要」原是 Material Switch（48 宽灰 pill）→ 改为扁平
@@ -1634,7 +1680,7 @@ class LogConsole:
             padding=_pad(t, 12, 8, 12, 10),
             content=ft.Column(
                 spacing=0, expand=True,
-                controls=[self._resize_handle, self._selection],
+                controls=[self._resize_handle, self._selection_host],
             ),
             visible=self._expanded,
         )

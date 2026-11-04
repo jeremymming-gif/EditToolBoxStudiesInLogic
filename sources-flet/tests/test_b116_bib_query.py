@@ -167,7 +167,7 @@ def test_query_cap_200_disables_load_more(monkeypatch):
     view.limit = 200
     view.total_matched = 3883
     texts = _texts(view.build())
-    assert "引擎单次上限 200 条，请加条件" in texts
+    assert "最多 200 条；请加条件" in texts
     assert "载入更多" not in texts
 
 

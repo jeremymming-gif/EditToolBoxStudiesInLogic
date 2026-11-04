@@ -15,8 +15,8 @@ from services import engine_bridge as EB
 from services import toc_settings as TS
 from ui import components as C
 
-PREVIEW_HINT = "目录生成：自动取最新信息检查报告；栏目表可直接编辑，再保存到 目录设置.json。"
-TEXT_ONLY_HINT = "只生成 tex，不落位、不编译；取消勾选后点右上「生成目录」会落位并编译。"
+PREVIEW_HINT = "自动取最新检查报告；栏目表可编辑，再保存到 目录设置.json。"
+TEXT_ONLY_HINT = "只生成 tex，不写入、不编译；取消勾选后会写入并编译。"
 
 
 def latest_report(issue: str) -> str:
@@ -78,7 +78,7 @@ def result_lines(payload: dict) -> list[str]:
     else:
         lines.append("人工改动：无")
     for warning in payload.get("warnings") or []:
-        lines.append(f"⚠️ {warning}")
+        lines.append(f"注意 · {warning}")
     return lines
 
 
@@ -188,7 +188,7 @@ class TocPanel:
                                           lambda e: self.app.open_path(self._toc_result_path()),
                                           self.t, height=self.t.px(28)),
                    ]),
-            C.option_row("仅生成 tex（不落位、不编译）", TEXT_ONLY_HINT, self.t,
+            C.option_row("仅生成 tex（不写入、不编译）", TEXT_ONLY_HINT, self.t,
                          icon="DESCRIPTION_OUTLINED",
                          checked=self._text_only(),
                          on_change=lambda e: self.app.set_option("toc_text_only",
@@ -418,7 +418,7 @@ class TocPanel:
         call = EB.toc_call(report=report, template=self.page.field("toc_template"),
                            settings=self.page.field("toc_settings"), text_only=text_only,
                            result_json=result_path)
-        hint = ("生成 tex 中…（仅生成 tex，不落位、不编译）" if text_only
+        hint = ("运行中 · 生成 tex（不写入、不编译）" if text_only
                 else "生成并编译中…（首次编译约 1–3 分钟）")
         self.feedback.content = C.text(hint, self.t, "small", self.t.palette.text_muted)
         self._safe_update(self.feedback)
@@ -430,12 +430,12 @@ class TocPanel:
         payload = result.get("json") or EB.toc_result(result_path)
         ok = bool(result.get("ok")) and bool(payload)
         rows: list = [C.text(line, self.t, "small") for line in result_lines(payload)]
-        warnings = [line for line in result_lines(payload) if line.startswith("⚠️")]
+        warnings = [line for line in result_lines(payload) if line.startswith("注意")]
         if not ok:
             rows.append(C.notice_bar(f"生成失败：{first_line(result.get('error')) or '没有结果 JSON'}",
                                      self.t, "error"))
         if ok and text_only:
-            rows.append(C.notice_bar("仅生成 tex，未落位 000。", self.t, "info"))
+            rows.append(C.notice_bar("仅生成 tex，未写入 000。", self.t, "info"))
         shown = {str(path) for _label, path in result_paths(payload)}
         for label, path, inferred in result_outputs(payload, self.page.field("issue_dir")):
             if path in shown:

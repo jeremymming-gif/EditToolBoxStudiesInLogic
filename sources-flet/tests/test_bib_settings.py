@@ -128,7 +128,7 @@ def test_save_bibdb_writes_section(tmp_path, monkeypatch):
     view._save_bibdb()
     assert store.data["bibdb"] == {"verify_max": 0, "verify_plan": True,
                                    "verify_all_refs": False, "lookup_enabled": False}
-    assert view.bibdb_receipt.startswith("✅ 已保存 · ")
+    assert view.bibdb_receipt.startswith("已保存 · ")
     raw = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     assert raw["flet"]["bibdb"]["verify_max"] == 0
     # 生效值：0 = 不限，真进 argv；先算账开 = --verify-plan；关掉查库 = --no-bibdb

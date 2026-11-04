@@ -49,9 +49,9 @@ def test_is_summary_line():
 
 
 def test_result_text_and_level():
-    assert EB.result_text("convert.py", 0) == "✅ 完成"
+    assert EB.result_text("convert.py", 0) == "完成"
     assert "编译失败" in EB.result_text("compileall.py", 1)
-    assert "命中" in EB.result_text("proofcheck.py", 1)
+    assert "核对" in EB.result_text("proofcheck.py", 1)
     assert "启动失败" in EB.result_text("convert.py", -1)
     assert "退出码 3" in EB.result_text("convert.py", 3)
     assert EB.result_level("convert.py", 0) == "ok"

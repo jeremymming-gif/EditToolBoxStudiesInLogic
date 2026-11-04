@@ -257,7 +257,7 @@ def test_file_sha256_and_commit_guard(tmp_path):
 
     result = GIT.commit_db(str(db), "")
     assert result["ok"] is False and result["committed"] is False and result["soft"] is True
-    assert "message 为空" in result["error"]
+    assert "缺少提交说明" in result["error"]
 
 
 def test_status_and_push_degrade_without_repo(tmp_path):

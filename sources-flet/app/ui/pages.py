@@ -187,7 +187,7 @@ class HomePage(BasePage):
     # ── 四区块 ─────────────────────────────────────────────────────────
     def build(self) -> ft.Control:
         t = self.t
-        panel = C.panel(
+        panel = C.page_body(
             self._band(),
             self._section("继续上次", trailing=self._trailing("全部记录", "single")),
             self._continue_rows(),
@@ -195,7 +195,7 @@ class HomePage(BasePage):
             self._entries(),
             self._section("最近活动", trailing=self._activity_link()),
             self._activity_rows(),
-            t=t, pad=(24, 12, 24, 10),
+            t=t, pad=(24, 12, 24, 10), panel=True,
         )
         self._kick_bib_stats()
         return panel
@@ -281,7 +281,7 @@ class HomePage(BasePage):
         specs = (
             ("单篇", "single_source", "single", "初排转换 / 一校核查"),
             ("整期", "issue_dir", "issue", "目录 / 合刊 / 清理"),
-            ("引用库", "bib_out", "bib", "查库 / 入藏 / 规范化"),
+            ("引用库", "bib_out", "bib", "查库 · 入藏 · 回读校验"),
         )
         rows: list = []
         for tag, key, target, meta in specs:
@@ -327,7 +327,7 @@ class HomePage(BasePage):
         items = (
             ("DESCRIPTION_OUTLINED", "单篇稿件", "初排转换 · 一校核查", "single"),
             ("VIEW_AGENDA_OUTLINED", "整期装配", "目录 · 合刊 · 清理", "issue"),
-            ("LIBRARY_BOOKS_OUTLINED", "引用库", "查库 · 入藏 · 规范化", "bib"),
+            ("LIBRARY_BOOKS_OUTLINED", "引用库", "查库 · 入藏 · 回读校验", "bib"),
         )
         controls: list = []
         for index, (icon, title, desc, key) in enumerate(items):
@@ -393,12 +393,12 @@ class SinglePage(BasePage):
         "convert": {
             "label": "初排转换",
             "icon": "DESCRIPTION_OUTLINED",
-            "desc": "作者来稿（LaTeX / Word）→ 符合本刊规范的可编译初排 tex（可顺带编译 PDF、清理临时文件）",
+            "desc": "LaTeX / Word → 初排 tex",
         },
         "proofcheck": {
             "label": "一校核查",
             "icon": "SEARCH",
-            "desc": "对初排后的 tex 做一校核查，输出核查报告（--fix 另写修正稿）",
+            "desc": "初排 tex 一校核查，输出报告。",
         },
     }
 
@@ -469,9 +469,9 @@ class SinglePage(BasePage):
         self._log.on_layout_change = self._sync_log_reserve
         body = C.page_body(header, self._chip_row, status, self._flow_box, norm_row,
                            self._result.root, self._artifact_row, self._proof.root,
-                           self._log_spacer, t=t, gap=10,
+                           t=t, gap=10,
                            overlay=self._log.dock_root, overlay_reserve=0,
-                           panel=True)
+                           panel=True, tail=self._log_spacer)
         self.refresh_running()
         return body
 
@@ -591,7 +591,7 @@ class SinglePage(BasePage):
                 self.add_picker("源稿件", "single_source",
                                 "作者来稿 .tex / .docx", kind="file"),
                 self.add_picker("输出根目录", "single_out",
-                                "产物写到该目录下的 <作者>/ 里", kind="dir"),
+                                "产物写到该目录下的 <作者>/ 里", kind="dir", show_note=False),
             ]),
             C.section_label("处理选项", t, note="默认勾选常用项"),
             C.hairline(t),
@@ -949,9 +949,9 @@ class SinglePage(BasePage):
         """处理选项 2 列卡片网格（内容宽 <900 才降单列）；替代原先一列四行的紧凑列表。"""
         t = self.t
         specs = (
-            ("编译 PDF", "调用 xelatex 生成正文 PDF（长任务，日志实时滚动）",
+            ("编译 PDF", "生成正文 PDF；日志实时滚动",
              "PICTURE_AS_PDF_OUTLINED", "convert_compile", True, "主要"),
-            ("清理临时文件", "删除 .aux / .log / .out 等中间文件",
+            ("清理临时文件", "删除 .aux / .log 等中间文件",
              "CLEANING_SERVICES", "convert_clean", False, None),
             ("导出原稿 PDF", "保留原始稿件并另存一份 PDF 备查",
              "PICTURE_AS_PDF_OUTLINED", "convert_source_pdf", False, None),
@@ -959,7 +959,7 @@ class SinglePage(BasePage):
              "WARNING_AMBER_ROUNDED", "convert_force", False, None),
             # 批 116 SINGLE-FN（F1 P0-1）：引擎 --dry-run 在生成前返回，
             # 只算「将要做什么」；默认关，勾选后仍走同一套 argv。
-            ("只预演（不落盘）", "列出将生成什么，不建产物、不写任何文件",
+            ("只预演（不写入）", "只列出将生成的文件，不写任何文件",
              "PREVIEW", "convert_dry_run", False, None),
         )
         tiles = [
@@ -1000,7 +1000,7 @@ class SinglePage(BasePage):
         self.app.open_bib_view("normalize", source="single")
         if not self._norm_hinted:
             self._norm_hinted = True
-            self.app.toast("已切到「引用库 → 规范化」")
+            self.app.toast("已切到「引用库 → 回读校验」")
 
     def _on_metadata_preview(self, e=None) -> None:
         """CV-002/003：跑与「开始转换」同一 argv，只多 --metadata-preview-out（只读）。"""
@@ -1086,14 +1086,14 @@ class SinglePage(BasePage):
                                      notes=self.app.notes_repo, stdin_text=stdin_text)
         except Exception as exc:  # noqa: BLE001 - 引擎缺失/启动失败一律给中文提示
             self.app.finish_run(call, -1)
-            text = f"❌ 任务启动失败：{exc}"
+            text = f"失败 · 无法启动任务：{exc}"
             self._result.show(text, level="error")
             self.app.toast(f"任务启动失败：{exc}")
             self.mark("run_start_error", error=f"{type(exc).__name__}: {exc}")
             return
         self.app.finish_run(call, code)
         level = "warn" if self.app.cancel_requested else EB.result_level(call.entry, code)
-        text = "⏹ 已取消" if self.app.cancel_requested else EB.result_text(call.entry, code)
+        text = "已取消" if self.app.cancel_requested else EB.result_text(call.entry, code)
         if panel is not None:
             notice = panel.budget_notice()
             if notice:
@@ -1233,7 +1233,7 @@ class IssuePage(BasePage):
         {"key": "infocheck", "title": "检查 tex 信息", "icon": "FACT_CHECK_OUTLINED",
          "desc": "扫描整期 tex，核对卷期年 / 页码 / 字号行距；只读，不改任何稿件。"},
         {"key": "toc", "title": "生成目录", "icon": "LIST_ALT_OUTLINED",
-         "desc": "取最新信息检查报告，生成中英文目录 tex；可落位并编译。"},
+         "desc": "读取最新信息检查报告，生成中英文目录 tex；可写入并编译。"},
         {"key": "compileall", "title": "编译全部", "icon": "TERMINAL",
          "desc": "逐篇 xelatex ×3（含 biber）；跳过 000；同名 PDF 覆盖。"},
         {"key": "merge", "title": "合并 PDF", "icon": "PICTURE_AS_PDF",
@@ -1368,8 +1368,9 @@ class IssuePage(BasePage):
         self._sync_header()
         self._sync_run_actions()
         self._install_keyboard()
-        body = C.page_body(header, self._shell, self._log_spacer, t=t, gap=10,
-                           overlay=self._log.dock_root, overlay_reserve=0, panel=True)
+        body = C.page_body(header, self._shell, t=t, gap=10,
+                           overlay=self._log.dock_root, overlay_reserve=0, panel=True,
+                           tail=self._log_spacer)
         self.refresh_running()
         self._restore_issue_state()
         return body
@@ -1652,9 +1653,9 @@ class IssuePage(BasePage):
             content=ft.Column(
                 spacing=t.sp("2"), horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
-                    C.text("还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）",
+                    C.text("还没有选择期目录",
                            t, "h2", text_align=ft.TextAlign.CENTER),
-                    C.text("选择后四个功能页共用这一期；换期会各自恢复上次结果。",
+                    C.text("选整期根目录，四个功能页共用。",
                            t, "caption", t.palette.text_faint),
                     C.primary_button("选择期目录", self._browse_issue, t,
                                      icon="FOLDER_OPEN"),
@@ -1764,7 +1765,7 @@ class IssuePage(BasePage):
     def _toc_report_cta(self) -> ft.Control:
         t = self.t
         return C.inline_note(
-            "还没有信息检查报告：先生成报告，目录才有卷期/栏目依据。", t, "warn",
+            "缺信息检查报告，先生成报告。", t, "warn",
             action=C.secondary_button("先生成检查报告",
                                       lambda e: self._run_infocheck_only(), t,
                                       icon="FACT_CHECK_OUTLINED", height=t.px(28)))
@@ -1772,7 +1773,7 @@ class IssuePage(BasePage):
     def _run_infocheck_only(self) -> None:
         """页内 CTA：直接跑「检查 tex 信息」单步；成功后回填 latest_report 并启用。"""
         if self._state_of("infocheck") == "running":
-            self.app.toast("检查正在进行")
+            self.app.toast("检查运行中")
             return
         self._run_step("infocheck")
 
@@ -1919,10 +1920,10 @@ class IssuePage(BasePage):
         running = self.app.running and self._state_of(key) == "running"
         if key == "cleantemp":
             if running:
-                return "正在移入…" if self._preview_valid() else "取消预演"
+                return "运行中…" if self._preview_valid() else "取消预演"
             if ASM.cleantemp_dry_run(self):
                 return "预览清理"
-            return "开始清理…" if self._preview_valid() else "开始清理…"
+            return "开始清理"
         if key == "compileall" and running:
             return "停止"
         if key == "infocheck" and running:
@@ -2040,13 +2041,13 @@ class IssuePage(BasePage):
             self.app.toast("先选择期目录")
             return
         if self.app.running:
-            self.app.toast("正在运行，先停止")
+            self.app.toast("运行中，先停止")
             return
         chosen = {step["key"]: i < 4 for i, step in enumerate(self.STEPS)}
         skip = {"done": True}
         rows: list = []
         danger = C.notice_bar(
-            "05 会真实删除临时文件（移入系统回收站，可恢复）；本次未勾选「只预演」时不再二次确认。",
+            "「清理临时文件」会真实删除（移入回收站，可恢复）；未勾选「只预演」时不再确认。",
             t, "error")
         danger.visible = bool(chosen.get("cleantemp"))
         self._runall_danger = danger
@@ -2056,8 +2057,8 @@ class IssuePage(BasePage):
             if index == 4:
                 rows.append(danger)
             rows.append(C.option_row(
-                f"{index + 1:02d} {step['title']}",
-                "默认不跑 · 危险" if index >= 4 else "整期装配",
+                step["title"],
+                "默认不跑 · 会删文件" if index >= 4 else "整期装配",
                 t, checked=chosen[step["key"]],
                 on_change=lambda e, k=step["key"]: (
                     chosen.__setitem__(k, bool(e.control.value)),
@@ -2086,9 +2087,9 @@ class IssuePage(BasePage):
             content=ft.Container(width=t.px(600), height=t.px(470),
                                  content=ft.Column(rows + [
                                      ft.Container(height=t.px(4)),
-                                     C.text("某步失败即停（rc≥2），已完成步骤保留；05/06 默认不跑。",
+                                     C.text("某步失败即停，已完成步骤保留；清理与推送默认不跑。",
                                             t, "caption", t.palette.text_faint),
-                                 ], spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO)),
+                                 ], spacing=t.sp("1"), scroll=C.scrollbar(t))),
             actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
                      C.primary_button("开始运行", _start, t)],
         )
@@ -2221,7 +2222,7 @@ class IssuePage(BasePage):
             f"输出：{placed.get('zhPdf') or placed.get('zhTex') or '—'}",
             f"篇目：{(payload.get('articles') or {}).get('inToc', '—')} 篇",
             f"栏目：{column.get('enabled', '—')} 个（{column.get('title', '—')}）",
-            "已编译 / 已落位" if payload.get("compiled") else "仅 tex · 未落位、未编译",
+            "已编译 / 已写入" if payload.get("compiled") else "仅 tex · 未写入、未编译",
         ]
         actions = []
         zh_pdf = str(placed.get("zhPdf") or "")
@@ -2239,7 +2240,7 @@ class IssuePage(BasePage):
                                          lambda e: self.app.copy_text(str(placed.get("zhPdf") or placed.get("zhTex") or "")),
                                          t))
         if payload.get("textOnly"):
-            lines.append("仅 tex · 未落位、未编译 · 步骤 4 合并需要 000 目录 PDF")
+            lines.append("仅 tex · 未写入、未编译；合并需要 000 目录 PDF")
         return ft.Column(spacing=t.sp("1"), controls=[
             C.section_label("生成结果", t), C.hairline(t),
             *[C.text(line, t, "caption", t.palette.text_muted) for line in lines],
@@ -2381,9 +2382,9 @@ class IssuePage(BasePage):
                 C.text(path, t, "mono", t.palette.text_faint, max_lines=1,
                        overflow=ft.TextOverflow.ELLIPSIS) if path else ft.Container(),
             ])
-        lines = [f"✅ 合并完成 · {pages} 页"]
+        lines = [f"合并完成 · {pages} 页"]
         if info.get("missing"):
-            lines.append(f"⚠ 合并完成，缺 {info.get('missing')} 篇：{info.get('names', '')}")
+            lines.append(f"合并完成，缺 {info.get('missing')} 篇：{info.get('names', '')}")
         path = str(info.get("path") or "")
         actions: list = []
         if path:
@@ -2395,7 +2396,7 @@ class IssuePage(BasePage):
             ]
         return ft.Column(spacing=t.sp("1"), controls=[
             C.section_label("合并结果", t), C.hairline(t),
-            *[C.text(line, t, "caption", t.palette.warn if "⚠" in line
+            *[C.text(line, t, "caption", t.palette.warn if "缺 " in line
                      else t.palette.text_muted) for line in lines],
             C.text(path, t, "mono", t.palette.text_faint, max_lines=1,
                    overflow=ft.TextOverflow.ELLIPSIS) if path else ft.Container(),
@@ -2432,8 +2433,7 @@ class IssuePage(BasePage):
         if not payload:
             return [
                 C.text("还没检测前置页", t, "small", t.palette.text_muted),
-                C.text("点「检测前置页」只读列出扉页 / 编委页 / 封底；"
-                       "编辑功能在后续批次提供。", t, "caption", t.palette.text_faint),
+                C.text("点「检测前置页」列出扉页、编委页与封底；暂不支持编辑。", t, "caption", t.palette.text_faint),
             ]
         return [
             self._prep_row("扉页", payload.get("coverPages"), count=True),
@@ -2517,7 +2517,7 @@ class IssuePage(BasePage):
             return ft.Column(spacing=t.sp("1"), controls=rows)
         tail = self._tail_lines("cleantemp", 3)
         rows = [C.section_label("清理结果", t), C.hairline(t),
-                C.inline_note(f"上次预演失败（rc={preview.get('code')}）："
+                C.inline_note(f"上次预演失败（退出码 {preview.get('code')}）："
                               f"{preview.get('error') or '看日志'}", t, "error")]
         if tail:
             rows.append(C.text("末 3 行：", t, "caption", t.palette.text_faint))
@@ -2803,7 +2803,7 @@ class IssuePage(BasePage):
                                          notes=self.app.notes_repo)
             except Exception as exc:  # noqa: BLE001
                 code = -1
-                self._result.show(f"❌ 任务启动失败：{exc}", level="error")
+                self._result.show(f"失败 · 无法启动任务：{exc}", level="error")
             self.app.finish_run(call, code)
             cancelled = bool(getattr(self.app, "cancel_requested", False))
             duration = (time.monotonic() - started) * 1000
@@ -2850,7 +2850,7 @@ class IssuePage(BasePage):
         if self.selected == "merge":
             self._feed_merge(text)
         if self.selected == "infocheck" and "正在扫描" in text:
-            self._detail_status.value = text.strip()[:40]
+            self._detail_status.value = "运行中"
 
     def _feed_compile(self, text: str) -> None:
         event = ASM.compile_event(text)
@@ -2874,8 +2874,7 @@ class IssuePage(BasePage):
                 {"status": "fail", "seconds": data.get("seconds"),
                  "message": data.get("message", "")})
         elif kind == "summary":
-            self._compile_summary = (f"{'✅' if not data['fail'] else '⚠'} "
-                                     f"{data['ok']} 成功 / {data['fail']} 失败"
+            self._compile_summary = (f"{data['ok']} 成功 / {data['fail']} 失败"
                                      f" · 共 {data['targets']} 篇")
         if self._detail_primary is not None and self.selected == "compileall":
             self._detail_status.value = f"运行中 · {len(self._compile_rows)} 篇已开始"
@@ -3039,7 +3038,7 @@ class IssuePage(BasePage):
             title=C.text("开始清理？", t, "h2"),
             content=ft.Container(width=t.px(520),
                                  content=ft.Column(rows, spacing=t.sp("1"),
-                                                   scroll=ft.ScrollMode.AUTO)),
+                                                   scroll=C.scrollbar(t))),
             actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
                      btn],
         )
@@ -3201,7 +3200,7 @@ BIB_WRITE_RULES = (
     "（不符即拒绝、零写入）→ 原子替换。\n"
     "W2 只本地：写成功后自动本地提交 1 条（批量也只 1 条），"
     "只提交 bib_db/bibliography.jsonl；不 git push、不同步远端。\n"
-    "W3 只读不写：概况 / 查库 / 规范化不写库；规范化只产出报告文件"
+    "只读视图：概况、查库、回读校验；回读校验只产出报告文件。"
     "（库健康与字段归位是写库视图，批量裁决同样走 W1 四步）。"
 )
 
@@ -3314,7 +3313,7 @@ class SettingsPage(BasePage):
         diagnostics = SHELL.diagnostics_card(self)
 
         header = C.page_header(
-            "设置", "外观、引擎、路径、环境检查与诊断；所有设置持久化，不依赖系统注册表。", t,
+            "设置", "外观、引擎、环境检查与诊断。", t,
             actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
                                       icon="SAVE_OUTLINED")],
         )

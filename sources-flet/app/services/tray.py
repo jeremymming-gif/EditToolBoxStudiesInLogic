@@ -98,8 +98,8 @@ class TrayService:
             import pystray
 
             menu = pystray.Menu(
-                pystray.MenuItem("显示主窗口", self.show, default=True),
-                pystray.MenuItem("隐藏主窗口", self.hide),
+                pystray.MenuItem("显示", self.show, default=True),
+                pystray.MenuItem("隐藏", self.hide),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", self.quit),
             )

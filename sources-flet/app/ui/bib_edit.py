@@ -378,7 +378,7 @@ class BibEditView:
         for value in (payload.get("error"), res.get("error"), res.get("stderr")):
             if value:
                 return str(value).strip().splitlines()[0][:300]
-        return f"引擎退出码 {res.get('code')}"
+        return "引擎没有返回原因。"
 
     # ── 输入 ─────────────────────────────────────────────────────────
     def _on_key_input(self, e) -> None:
@@ -520,9 +520,8 @@ class BibEditView:
             return
         dialog = S.danger_confirm(
             self._flet(), self.t, title="回退这次编辑？",
-            message=("把 bibliography.jsonl 恢复到本次写入前的版本，再生成一条新提交；"
-                     "其它文件不动，也不推送。"),
-            impact="影响 1 个文件（bibliography.jsonl）· 生成 1 条回退提交 · 不推送",
+            message=("恢复到本次写入前的版本，再生成一条回退提交；只动 bibliography.jsonl，不推送。"),
+            impact="1 个文件 · 1 条回退提交",
             confirm_label="回退这次提交", on_confirm=lambda e: self._task(self._revert))
         if dialog is not None:
             self._render()
@@ -568,7 +567,7 @@ class BibEditView:
         ])
         return S.page_shell(
             t, title=TITLE,
-            meta="按 key 载入一条记录 · dry-run 预览 → 确认写入 · 只写 bibliography.jsonl，不推送",
+            meta="按 key 载入一条记录 · 预览 → 写入",
             role_chip=S.role_chip(t, "write"),
             action=C.text_button("清空草稿", self._clear_draft, t),
             body=body, dock=self._dock())
@@ -608,7 +607,7 @@ class BibEditView:
             spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 field,
-                C.secondary_button("载入中…" if self.state == "loading" else "载入",
+                C.secondary_button("运行中" if self.state == "loading" else "载入",
                                    self._load_click, t, height=t.px(48),
                                    disabled=self.busy),
                 ft.Container(expand=True),
@@ -636,7 +635,7 @@ class BibEditView:
     def _hint_line(self) -> ft.Control:
         t = self.t
         return ft.Row(spacing=t.sp("1"), controls=[
-            C.text("整份替换；清空一个字段 = 写入时删除该字段", t, "caption",
+            C.text("整份替换；清空字段 = 写入时删除", t, "caption",
                    t.palette.text_faint, max_lines=1),
             ft.Container(expand=True),
             C.text(f"字段 {len(self.original)} 个", t, "caption", t.palette.text_faint),
@@ -650,15 +649,15 @@ class BibEditView:
         cols = [ft.Column(spacing=0, expand=True,
                           controls=[self._field_cell(name) for name in names_in])
                 for names_in in columns]
-        footnote = ("↓ 还有字段，滚动查看" if len(names) > 12 else "")
+        footnote = ("还有字段，滚动查看" if len(names) > 12 else "")
         return ft.Column(spacing=t.sp("half"), controls=[
             C.section_label("字段", t, note=f"{len(names)} 个"),
             ft.Container(
                 height=t.px(330), content=ft.Row(
                     spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO,
+                    controls=[ft.Column(spacing=0, scroll=S.scrollbar(),
                                         width=t.px(240), controls=cols[0].controls),
-                              ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO,
+                              ft.Column(spacing=0, scroll=S.scrollbar(),
                                         width=t.px(240), controls=cols[1].controls)])),
             C.text(footnote or " ", t, "caption", t.palette.text_faint, max_lines=1),
         ])
@@ -668,7 +667,7 @@ class BibEditView:
         value = self.values.get(name, "")
         field = C.floating_field(
             t, f"{field_label(name)}", value=value,
-            hint="空（写入即删除该字段）" if not value else None,
+            hint="空 = 删除该字段" if not value else None,
             on_change=lambda e, n=name: self._on_field(n, e), width=t.px(240))
         return ft.Container(
             height=t.px(66), padding=ft.Padding(left=0, top=0, right=0, bottom=t.px(2)),
@@ -698,11 +697,11 @@ class BibEditView:
              "hint": "字段", "tone": "success" if not missing_n else "warn"},
         ])
         controls: list[ft.Control] = [
-            C.section_label("差异", t, note="dry-run"),
+            C.section_label("差异", t, note="预览"),
             band,
         ]
         if not self.payload:
-            controls.append(C.text("先预览，这里列出将被写入的字段差异。", t, "caption",
+            controls.append(C.text("先预览，这里列出差异。", t, "caption",
                                    p.text_faint, max_lines=2))
         else:
             body = []
@@ -714,7 +713,7 @@ class BibEditView:
                 body.append(S.empty_row(t, "没有字段变化"))
             controls.append(ft.Container(
                 height=t.px(210), content=ft.Column(
-                    spacing=0, scroll=ft.ScrollMode.AUTO,
+                    spacing=0, scroll=S.scrollbar(),
                     controls=[S.table_header_row(t, ["字段", "原值", "新值"],
                                                  weights=[1.0, 1.4, 1.6], mono=(0,))]
                     + body)))
@@ -735,7 +734,7 @@ class BibEditView:
             controls.append(self._confirm_layer())
         controls.append(ft.Container(height=t.px(28), alignment=ft.Alignment.CENTER_LEFT,
                                      content=C.text(
-                                         "影响 · bibliography.jsonl 1 个文件 · 提交 1 条",
+                                         "1 个文件 · 1 条提交",
                                          t, "caption", p.text_faint)))
         return ft.Column(spacing=t.sp("half"), controls=controls)
 
@@ -750,8 +749,8 @@ class BibEditView:
             content=ft.Column(spacing=t.sp("half"), controls=[
                 C.text("确认写入这条记录？", t, role="body-strong"),
                 C.text(f"{changed} 个字段 · 库 sha {_sha8(self.expect_sha)} · "
-                       f"生成 1 条本地提交 · 不推送", t, "caption", p.on_accent_soft),
-                C.text("写入后页内不可撤销，只能回退这次提交。", t, "caption",
+                       f"1 条本地提交 · 不推送", t, "caption", p.on_accent_soft),
+                C.text("页内不可撤销，只能回退本次提交。", t, "caption",
                        p.on_accent_soft),
                 ft.Row(spacing=t.sp("1"), controls=[
                     C.text_button("取消", self._cancel_confirm, t),
@@ -767,14 +766,14 @@ class BibEditView:
             changed = len(diff_rows(self.payload)) or len(self._changed_fields())
             return S.result_banner(
                 t, title=f"已写入 {changed} 个字段",
-                detail=f"提交 {sha or '未生成'} · 未 push",
+                detail=f"已提交 {sha} · 未推送" if sha else "已写入；未生成提交",
                 on_review=lambda e: self._goto("review"),
                 on_revert=self._revert_confirm if commit.get("ok") else None)
         stale = self._is_stale() or self.state == "stale"
         changed = len(self._changed_fields())
         consequence = (f"将写入 {changed} 个字段（整份替换）" if self.loaded_key
                        else "先载入一条记录")
-        detail = "只写 bibliography.jsonl，不 push"
+        detail = "只写 bibliography.jsonl · 不推送"
         if self.conflicts:
             consequence = f"还有 {len(self.conflicts)} 条待裁决冲突：先去待处理裁决"
         if stale:
@@ -782,7 +781,7 @@ class BibEditView:
         return S.confirm_bar(
             t, consequence=consequence, detail=detail, sha=_sha8(self.expect_sha),
             on_confirm=self._open_confirm, confirm_disabled=not self._can_confirm(),
-            confirm_label="写入中…" if self.state == "running" else "确认写入",
+            confirm_label="运行中" if self.state == "running" else "确认写入",
             on_repreview=lambda e: self._task(self._preview),
             stale=stale and self.payload is not None)
 
@@ -792,4 +791,4 @@ class BibEditView:
             nav(view)
             return
         self._store_set("bib_view", view)
-        self._notify("已记录跳转目标；宿主接线后即可切换")
+        self._notify("暂不可跳转")

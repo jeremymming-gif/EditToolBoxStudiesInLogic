@@ -515,9 +515,9 @@ class BibEditorView(_OpsView):
             return
         self._confirm(
             title="写入引用库？",
-            message=("确认后去掉 --dry-run 并带 --expect-db-sha256 真写；"
-                     "写成功后只提交 bib_db/bibliography.jsonl 一条（不推送）。\n"
-                     "预览时看到的字段变化就是全部改动；库若已被别处修改，引擎会拒写。"),
+            message=("确认后去掉 --dry-run、带 --expect-db-sha256 写入；"
+                     "成功后只提交 bib_db/bibliography.jsonl 一条（不推送）。\n"
+                     "预览的字段变化就是全部改动；库若已被别处修改，引擎会拒写。"),
             confirm_label="确认写入",
             on_confirm=lambda e: self._run(self._write()))
 
@@ -604,11 +604,11 @@ class BibEditorView(_OpsView):
                          vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.primary_button("预览（dry-run）", lambda e: self._ask_preview(), t,
                              icon="VISIBILITY", disabled=self.busy),
-            C.text("整份字段替换：清空一格 = 删除该字段；换 key 会把旧 key 记成别名。",
+            C.text("整份字段替换：清空 = 删字段；换 key 会把旧 key 记成别名。",
                    t, "caption", t.palette.text_faint),
         ])
         return C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title(f"字段 · {meta}", t, note="必填项由引擎校验，这里不复制判据"),
+            C.section_title(f"字段 · {meta}", t, note="必填项由引擎校验"),
             meta_row,
             ft.Row(spacing=t.sp("1"), wrap=True, controls=boxes),
             actions,

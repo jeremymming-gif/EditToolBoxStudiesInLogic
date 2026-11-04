@@ -126,7 +126,7 @@ def parse_budget(raw, *, label: str = "预算") -> int:
     """预算输入 → 整数 tokens。空白/非法/负数都当场报错，绝不静默变成「不限」。"""
     text = str(raw if raw is not None else "").strip()
     if not text:
-        raise ValueError(f"{label}不能为空（填 0 = 不限，会失去费用闸）")
+        raise ValueError(f"{label}不能为空（0 = 不限，无费用上限）")
     try:
         value = int(text, 10)
     except ValueError as exc:
@@ -143,9 +143,9 @@ def channel_state(ai: dict | None) -> dict:
     keyed = bool(data["key"])
     reason = ""
     if not enabled:
-        reason = "AI 功能总开关关着（设置 → AI）"
+        reason = "AI 总开关关着（设置 → AI）"
     elif not keyed:
-        reason = "直连 API 未配置 Key（设置 → AI；协同初排不需要 Key）"
+        reason = "直连未配 Key（设置 → AI；协同初排不需要）"
     return {
         "enabled": enabled,
         "coop": enabled,
@@ -165,14 +165,14 @@ def fulltext_mode(enabled: bool, scope: str) -> str:
 def plan_mode(*, direct: bool, coop: bool, replies, stage: str) -> str:
     """判定本次运行走哪一种（纯函数，界面与测试共用）。"""
     if direct and coop:
-        raise ValueError("「AI 协同初排」与「AI 核实（直连）」只能二选一")
+        raise ValueError("「AI 协同初排」与「AI 核实」只能二选一")
     if direct:
         return MODE_DIRECT
     if not coop:
         return MODE_PLAIN
     if reply_paths(replies):
         if not str(stage or "").strip():
-            raise ValueError("导入回填前先选好暂存目录：先运行第一段，或在面板里点「自动发现」")
+            raise ValueError("先选暂存目录：跑完第一段，或点「自动发现」")
         return MODE_PH2
     return MODE_PH1
 
@@ -274,7 +274,7 @@ def stats_summary(state: dict | None) -> dict:
         low = keys.get("low_confidence") or []
         return {
             "available": False,
-            "text": f"第一段：文献 {len(bib)} 条、低置信 {len(low)} 项待核实（尚未导入回填）",
+            "text": f"第一段：文献 {len(bib)} 条 · 低置信 {len(low)} 项待核实（未回填）",
         }
     bib_total = _int_or(stats.get("bib_total"), 0)
     bib_replied = _int_or(stats.get("bib_replied"), 0)
@@ -292,7 +292,7 @@ def stats_summary(state: dict | None) -> dict:
         "low_replied": low_replied,
         "low_applied": low_applied,
         "low_pending_manual": pending_manual,
-        "text": (f"文献回填 {bib_replied}/{bib_total}、低置信回复 {low_replied} 条"
+        "text": (f"文献回填 {bib_replied}/{bib_total} · 低置信回复 {low_replied} 条"
                  f"（{applied_label} {low_applied} 条，待人工 {pending_manual} 条）"),
     }
 
@@ -411,7 +411,7 @@ def resolve_stage(stage_dir: str, *, out_root: str = "", source: str = "") -> Co
 
 
 # ── 预算闸命中 → 界面口径 ───────────────────────────────────────────────
-BUDGET_NOTICE = "预算不足，未发起请求（引擎在发出任何请求前退出；调高预算或改小核实范围）"
+BUDGET_NOTICE = "预算不足，未发起请求（调高预算或缩小核实范围）"
 BUDGET_MARKERS = ("预算闸", "预算不足")
 
 

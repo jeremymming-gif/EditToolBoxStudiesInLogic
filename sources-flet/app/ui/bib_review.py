@@ -177,7 +177,7 @@ class ReviewView:
         self.loading = False
         self._task_running = False
         if not result.get("ok"):
-            self.error = f"读取待处理失败：{_first_line(result.get('error'))}"
+            self.error = f"读取失败：{_first_line(result.get('error'))}"
             self._refresh()
             return
         data = result.get("json") or {}
@@ -430,8 +430,8 @@ class ReviewView:
             self.staged = None
             self.selected.clear()
             if written:
-                self.success = (f"写入成功 · {written} 条记录 · {fields_written} 个字段"
-                                " · 本地提交（未推送）")
+                self.success = (f"已完成 · {written} 条记录 · {fields_written} 个字段"
+                                " · 未推送")
             else:
                 self.success = "没有需要写入的内容。"
             self._mark("bib_review_write", records=written)
@@ -470,7 +470,7 @@ class ReviewView:
                                    content=C.text(label, t, "caption", t.palette.text_faint,
                                                   weight="semibold", max_lines=1))
                                  for w, label in zip(weight[1:],
-                                                     ["C#", "记录 key", "字段", "来源", "严重度"])]]))
+                                                     ["编号", "记录 key", "字段", "来源", "严重度"])]]))
         rows = []
         for row in self.rows:
             selected = row["no"] in self.selected
@@ -514,7 +514,7 @@ class ReviewView:
                 t, title="冲突详情", meta="选一行看字段；默认不自动选中。",
                 body=ft.Column(spacing=t.sp("1"), controls=[
                     C.empty_line("未选择冲突", t),
-                    C.text("左侧每行是一条待裁决冲突；同一记录可能有多条。", t,
+                    C.text("一行一条冲突；同一记录可能有多条。", t,
                            "caption", t.palette.text_faint, max_lines=3),
                 ]), width=DETAIL_W)
         item = row["item"]
@@ -558,11 +558,11 @@ class ReviewView:
         ]
         if adopted == 0:
             actions[0].disabled = True
-        note = C.text_field(t, value=self.note, hint_text="备注（可选，写入 --note）",
+        note = C.text_field(t, value=self.note, hint_text="备注（可选）",
                             on_change=lambda e: setattr(self, "note",
                                                         str(e.control.value or "")),
                             width=340)
-        body = ft.Column(spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO, controls=[
+        body = ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), controls=[
             C.text(f"{row['no']} · {row['severity']}", t, "caption", t.palette.text_faint),
             *lines,
             ft.Container(height=t.sp("half")),
@@ -581,7 +581,7 @@ class ReviewView:
             return None
         return S.batch_bar(
             t, count=len(rows),
-            actions=[C.text_button("暂存批选并确认", lambda e: self._stage_batch(), t,
+            actions=[C.text_button("暂存批选", lambda e: self._stage_batch(), t,
                                    height=28)],
             on_clear=lambda e: self.clear_selection())
 
@@ -593,10 +593,10 @@ class ReviewView:
             return None
         staged = self.staged
         if staged is None:
-            consequence = "先在详情里选择字段或批选，再确认写入。"
+            consequence = "先在详情选字段或批选，再确认写入。"
             detail = f"{self._pending_line()} · 本页只暂存意图"
         elif staged["kind"] == "batch":
-            consequence = f"将写入 {len(staged['rows'])} 条记录（逐条，非单事务）"
+            consequence = f"将写入 {len(staged['rows'])} 条记录（逐条）"
             detail = "失败即停；同一记录不同交回稿版本会被拦下。"
         elif staged["kind"] == "keep":
             consequence = "保留当前值，标记这条冲突为已裁决"
@@ -646,7 +646,7 @@ class ReviewView:
         if self.cancelled:
             parts.append(S.state_banner(t, "cancelled", message="已取消，未写入。"))
         if self.loading and not self.loaded:
-            parts.append(S.state_banner(t, "loading", message="正在读取待处理冲突…"))
+            parts.append(S.state_banner(t, "loading", message="运行中"))
         if self.error:
             pass
         queue = self._queue()
@@ -664,7 +664,7 @@ class ReviewView:
         if confirm is not None:
             parts.append(confirm)
         return ft.Column(spacing=t.sp("1"), expand=True,
-                         scroll=ft.ScrollMode.AUTO, controls=parts)
+                         scroll=S.scrollbar(), controls=parts)
 
     def _copy(self, text: str) -> None:
         fn = getattr(getattr(self.page, "app", None), "copy_text", None)
@@ -690,7 +690,7 @@ class ReviewView:
         return S.page_shell(
             self.t, title=TITLE,
             meta=(self._pending_line()
-                  if self.loaded else "正在读取待处理冲突…"),
+                  if self.loaded else "运行中"),
             role_chip="write", action=None,
             on_gear=lambda e: self._goto("settings"),
             body=ft.Column(spacing=0, expand=True, controls=[

@@ -250,7 +250,7 @@ def test_settings_switches_have_visible_labels_and_semantics(tmp_path, monkeypat
     plan_texts = _texts(by_key["bibdb.verify_plan"])
     assert any("不检索" in text for text in plan_texts)
     assert any("120" in text for text in _texts(by_key["bibdb.verify_all_refs"]))
-    assert any("--no-bibdb" in text for text in _texts(by_key["bibdb.lookup_enabled"]))
+    assert any("跳过检索" in text for text in _texts(by_key["bibdb.lookup_enabled"]))
 
 
 def test_settings_bottom_impact_bar_is_persistent_and_full(tmp_path, monkeypatch):
@@ -260,12 +260,14 @@ def test_settings_bottom_impact_bar_is_persistent_and_full(tmp_path, monkeypatch
     assert len(scroll) == 1 and len(bars) == 1
     bar = bars[0]
 
-    expected = "影响 1 个文件（bibliography.jsonl）· 生成 1 条新提交 · 不推送"
+    expected = "1 个文件 · 1 条新提交 · 不推送"
     assert expected in _texts(bar)
     assert any("推送 / 回退只在设置页" in text for text in _texts(bar))
     assert not _find(scroll[0], "_bib_impact_bar")   # 不进滚动区，不会被裁
     assert scroll[0].expand is True
-    assert scroll[0].scroll == ft.ScrollMode.AUTO
+    # 批 118 D2：设置页长表单改常显条（Scrollbar 配置对象，不是 AUTO）。
+    assert isinstance(scroll[0].scroll, ft.Scrollbar)
+    assert scroll[0].scroll.thumb_visibility is True
     assert getattr(scroll[0].controls[-1], "_bib_bottom_pad", False)
     assert scroll[0].controls[-1].height == 12
     for node in _walk(bar):
@@ -277,8 +279,8 @@ def test_settings_bottom_impact_bar_is_persistent_and_full(tmp_path, monkeypatch
 def test_settings_git_heading_and_commit_tooltip(tmp_path, monkeypatch):
     host, view, root = _prefs(tmp_path, monkeypatch)
     texts = _texts(root)
-    assert "03  Git" in texts
-    assert "本地提交 · 不推送" in texts
+    assert "03 Git" in texts
+    assert "只提交本地" in texts
     assert any(node.width == 720 for node in _walk(root)
                if isinstance(node, ft.Container))
 

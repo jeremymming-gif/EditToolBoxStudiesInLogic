@@ -27,17 +27,11 @@ INFO_COLUMNS = (
     "字号/行距", "第一作者", "中文标题",
 )
 EMPTY_INFO = "（还没检查：选一期的目录，点「运行」）"
-UNREADABLE_INFO = "⚠️ 报告已生成，但读不回结构化数据（表格留空）。报告文件仍在目录里，可直接打开查看。"
+UNREADABLE_INFO = "报告已生成，但结构化数据读不回；表格留空，可直接打开报告。"
 #: 非 0 退出码的统一后续建议（用户可执行；不要求“发给技术人员”）。
 FAIL_HINT = "请查看上方输出；常见原因是 TeX 工具链未装好或路径含特殊字符，可到「设置 → 环境检查」看修复建议。"
-INFO_DIR_HINT = (
-    "期目录要选**整期根目录**（内含 `01 作者/` 等篇目子目录），"
-    "不要选 `000 Table of Contents` 那一层。"
-)
-INFO_RUN_HINT = (
-    "运行后在期目录写 `信息检查<时间戳>.txt / .json`；下方结果表的 10 列与引擎 "
-    "`--preview` JSON 逐字段对齐（表格不自己解析 tex）。"
-)
+INFO_DIR_HINT = "选整期根目录（内含 01 作者/ 等篇目），不要选 000 目录。"
+INFO_RUN_HINT = "运行后写 信息检查<时间>.txt/.json；表格与 --preview JSON 逐字段对齐。"
 
 
 def _clean(value) -> str:
@@ -274,13 +268,13 @@ def proof_header_lines(tex: str, lang: str, fix: bool) -> list[str]:
 def proof_result_text(code: int, *, tex: str = "", fix: bool = False) -> str:
     """PC-011 / 041–045：完成与失败的文案（1 = 有命中，不是失败）。"""
     if code == 0:
-        text = "✅ 完成：没有命中任何规则。"
+        text = "成功 · 没有命中任何规则。"
     elif code == 1:
-        text = f"✅ 完成：有命中。报告已写到稿件同目录的 {proof_report_name(tex)}。"
+        text = f"成功 · 有命中，报告已写入稿件同目录的 {proof_report_name(tex)}。"
     elif code < 0:
-        return "❌ 启动失败。"
+        return "失败 · 无法启动。"
     else:
-        return f"❌ 核查失败（退出码 {code}）。{FAIL_HINT}"
+        return f"失败 · 核查未完成（退出码 {code}）。{FAIL_HINT}"
     if fix:
         text += f"已另写修正稿：{proof_fix_name(tex)}（输入文件未改动）。"
     return text
@@ -333,7 +327,11 @@ def build_info_table(articles: list[dict], t) -> ft.Control:
         border=C.box(t),
         border_radius=t.radius("sm"),
     )
-    return ft.Row(scroll=ft.ScrollMode.AUTO, controls=[table])
+    # 批 118 P2-3：10 列宽表横向常显细条；底部留 6px，细条不压最后一行。
+    return ft.Row(
+        scroll=C.scrollbar(t),
+        controls=[ft.Container(content=table, padding=C._pad(t, 0, 0, 0, 6))],
+    )
 
 
 class InfoCheckCard:
@@ -397,8 +395,8 @@ class InfoCheckCard:
 
     def busy(self) -> None:
         self.reset()
-        self._set_chip("检查中", "running")
-        self.summary.value = "正在扫描整期 tex…（完成后这里出表格）"
+        self._set_chip("运行中", "running")
+        self.summary.value = "运行中 · 扫描整期 tex…（完成后出表格）"
         self.summary.color = self.t.palette.text_muted
         self.summary.visible = True
         self.empty.visible = False
@@ -458,9 +456,9 @@ class InfoCheckCard:
     def show_failed(self, code: int) -> None:
         self.report = ""
         self.articles = []
-        self._set_chip("检查失败", "error")
+        self._set_chip("失败", "error")
         self.chip.visible = True
-        self.summary.value = f"❌ 检查失败（退出码 {code}）。{FAIL_HINT}"
+        self.summary.value = f"失败 · 检查未完成（退出码 {code}）。{FAIL_HINT}"
         self.summary.visible = True
         self.warning.visible = False
         self.table_box.controls = []
@@ -568,7 +566,7 @@ class ProofCheckCard:
             self._set_chip("读不回", "warn")
             self.conclusion.value = "报告已生成，但摘要没读到（计数留空）。可直接打开报告。"
             self.conclusion.color = self.t.palette.warn
-            self.warning.value = "⚠️ 报告已生成，但读不回结构化摘要（计数留空）。"
+            self.warning.value = "报告已生成，但摘要读不回（计数留空）。"
             self.warning.visible = True
             self.stats_row.controls = [_stat(label, "—", self.t) for label in
                                        ("需人工", "可自动改", "命中合计", "规则数")]
@@ -580,8 +578,8 @@ class ProofCheckCard:
         state = "warn" if report.manual else "done"
         self._set_chip("有命中" if report.manual else "没有命中", state)
         self.conclusion.value = report.conclusion or (
-            f"❗ 有 {report.manual} 处需要人工处理" if report.manual
-            else "✅ 没有需要人工处理的命中")
+            f"有 {report.manual} 处需要人工处理" if report.manual
+            else "没有需要人工处理的命中")
         self.conclusion.color = self.t.palette.warn if report.manual else self.t.palette.success
         self.stats_row.controls = [
             _stat("需人工", str(report.manual), self.t),
@@ -681,7 +679,7 @@ def after_proof_run(page, call, code: int, artifact: str, text: str,
         if card is not None:
             card.reset()
             card.root.visible = True
-            card.conclusion.value = f"❌ 核查失败（退出码 {code}）"
+            card.conclusion.value = f"失败 · 核查未完成（退出码 {code}）"
             card.conclusion.color = page.t.palette.error
             card._update()
     return proof_result_text(code, tex=tex, fix=fix), level

@@ -100,9 +100,9 @@ class BibFieldFixView(_OpsView):
         if not self.plan:
             return
         self._confirm(
-            title=f"应用 {len(self.plan)} 条字段归位？",
-            message=("确认后逐条真写（每条都带前一条的写后 sha 做闸门）；中途失败立即停，"
-                     "已写入的保留。\n全部写完后只提交 bib_db/bibliography.jsonl 一条（不推送）。"),
+            title=f"写入 {len(self.plan)} 条字段？",
+            message=("确认后逐条写入（每条带前一条的写后 sha 校验）；中途失败即停，"
+                     "已写入的保留。写完只提交 bib_db/bibliography.jsonl 一条（不推送）。"),
             confirm_label="确认应用",
             on_confirm=lambda e: self._run(self._apply()))
 
@@ -360,7 +360,7 @@ class BibHealthView(_OpsView):
             return
         self._confirm(
             title=f"{self.batch_label}？",
-            message=("确认后真写（带 --expect-db-sha256 闸门）；本次所有采用合并为 1 条版本提交，"
+            message=("确认后写入（带 --expect-db-sha256 校验）；本次合并为 1 条版本提交，"
                      "只提交 bib_db/bibliography.jsonl（不推送）。\n"
                      "失败会显示引擎原文；已写入的保留（不回滚）。"),
             confirm_label="确认写入",

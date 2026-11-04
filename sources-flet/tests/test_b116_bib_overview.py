@@ -229,7 +229,7 @@ def test_overview_empty_library_keeps_header_and_action(monkeypatch):
     host.view_obj = OV.OverviewView(host)
     _load(host)
     tree, texts = _labels(host)
-    assert "库里还没有条目；入藏第一份 .bib 后这里会列出待办。" in texts
+    assert "库里还没有条目；导入 .bib 后列出待办。" in texts
     assert any(isinstance(node, ft.FilledButton) and node.content == "入藏新条目"
                for node in _walk(tree))
 

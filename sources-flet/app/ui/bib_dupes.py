@@ -577,7 +577,7 @@ class BibDupesView:
         for value in (payload.get("error"), res.get("error"), res.get("stderr")):
             if value:
                 return str(value).strip().splitlines()[0][:300]
-        return f"引擎退出码 {res.get('code')}"
+        return "引擎没有返回原因。"
 
     def _mark_pair(self, e=None) -> None:
         pair = self._current()
@@ -606,7 +606,7 @@ class BibDupesView:
             title=C.text("标记这对不是重复？", t, role="dialog-title"),
             content=ft.Container(width=t.px(380), content=ft.Column(spacing=t.sp("1"),
                                                                    controls=[
-                C.text("只写 bib_db/health-ignore.json（旁车），不改库内容。", t,
+                C.text("只写旁车记录，不改库内条目。", t,
                        "small", t.palette.text_muted),
                 field])),
             actions=[C.text_button("取消", _close, t),
@@ -641,9 +641,8 @@ class BibDupesView:
             return
         dialog = S.danger_confirm(
             self._flet(), self.t, title="回退这次合并？",
-            message=("把 bibliography.jsonl 恢复到本次合并前的版本，再生成一条新提交；"
-                     "其它文件不动，也不推送。"),
-            impact="影响 1 个文件（bibliography.jsonl）· 生成 1 条回退提交 · 不推送",
+            message=("恢复到本次合并前的版本，再生成一条回退提交；只动 bibliography.jsonl，不推送。"),
+            impact="1 个文件 · 1 条回退提交",
             confirm_label="回退这次提交", on_confirm=lambda e: self._task(self._revert))
         if dialog is not None:
             self._render()
@@ -681,7 +680,7 @@ class BibDupesView:
         ])
         return S.page_shell(
             t, title=TITLE,
-            meta="候选对 → 并排对比 → 合并预览 → 确认写入 · 只写 bibliography.jsonl，不推送",
+            meta="选对候选 → 并排对比 → 预览写入",
             role_chip=S.role_chip(t, "write"),
             action=C.secondary_button("重新生成报告", lambda e: self._task(self._scan), t),
             body=body, dock=self._dock())
@@ -738,7 +737,7 @@ class BibDupesView:
             weights=[0.8, 2.0, 2.0, 3.4, 0.5, 0.7, 1.0],
             mono=(1, 2), align=["right", "left", "left", "left", "right", "right", "left"])]
         if self.state == "loading":
-            controls.append(S.empty_row(t, "正在读取候选…"))
+            controls.append(S.empty_row(t, "运行中"))
         elif not rows:
             controls.append(S.empty_row(
                 t, "没有匹配的候选对" if self.pairs else "没有待处理的候选对"))
@@ -752,8 +751,10 @@ class BibDupesView:
                                     "right", "left"],
                 selected=index == self.selected,
                 on_click=lambda e, i=index: self._select_index(i)))
-        return ft.Container(height=t.px(158), content=ft.Column(
-            spacing=0, scroll=ft.ScrollMode.AUTO, controls=controls))
+        # ≤20 行候选：不设固定高、不内滚，滚轮交给页体。
+        box = ft.Container(content=ft.Column(spacing=0, controls=controls))
+        box._bib_shrink = True
+        return box
 
     def _diff_section(self) -> ft.Control:
         t = self.t
@@ -763,7 +764,7 @@ class BibDupesView:
                                 content=C.text("选一对候选后，这里并排显示两条记录。", t,
                                                "caption", t.palette.text_faint))
         if self.selection_state == "loading":
-            return S.state_banner(t, "loading", message="正在读取两条记录…")
+            return S.state_banner(t, "loading", message="运行中")
         if self.selection_state == "failure":
             return S.state_banner(t, "failure", message=self.error or "读不到候选记录")
         names = pair_field_names(self.left, self.right)
@@ -828,8 +829,9 @@ class BibDupesView:
                             self._choice_chip("B", name, side == "B"),
                         ])),
                 ])))
-        return ft.Container(height=t.px(128), content=ft.Column(
-            spacing=0, scroll=ft.ScrollMode.AUTO, controls=rows))
+        box = ft.Container(content=ft.Column(spacing=0, controls=rows))
+        box._bib_shrink = True
+        return box
 
     def _value_cell(self, value: str, *, chosen: bool) -> ft.Control:
         t = self.t
@@ -907,7 +909,7 @@ class BibDupesView:
         # P1-8：未选对不编造「2 条→1 条 / 6 字段」；所有数字都由当前 pair 现算。
         if pair:
             impact = (f"影响 2 条 → 1 条 · 库 {total:,} → {total - 1:,}" if total
-                      else "影响 2 条 → 1 条 · 未写库（dry-run）")
+                      else "影响 2 条 → 1 条 · 预览（不写库）")
             field_note = f"{len(names)} 字段取值"
         else:
             impact = "影响 — · 先选一对候选"
@@ -935,7 +937,7 @@ class BibDupesView:
                            C.text(impact, t, "small", p.text_muted),
                            mark_btn,
                        ]),
-                C.text(f"{field_note} · 旧 key 记别名 · 未写库（dry-run）", t, "caption",
+                C.text(f"{field_note} · 旧 key 记别名 · 预览（不写库）", t, "caption",
                        p.text_faint, max_lines=1),
             ]))
 
@@ -948,20 +950,20 @@ class BibDupesView:
             label = self.merged_key or (pair.get("a") if pair else "")
             return S.result_banner(
                 t, title=f"已合并 2 条 → 1 条（{label}）",
-                detail=f"提交 {sha or '未生成'} · 未 push",
+                detail=f"已提交 {sha} · 未推送" if sha else "已合并；未生成提交",
                 on_review=lambda e: self._goto("health"),
                 on_revert=self._revert_confirm if commit.get("ok") else None)
         stale = self._is_stale() or self.state == "stale"
         pair = self._current()
         consequence = (f"将合并 {pair['a']} + {pair['b']} → {self.merged_key}"
                        if pair else "先选一对候选")
-        detail = "只写 bibliography.jsonl，不 push"
+        detail = "只写 bibliography.jsonl · 不推送"
         if stale:
             detail = f"预览已过期：{self.dirty_reason}，先重新预览"
         bar = S.confirm_bar(
             t, consequence=consequence, detail=detail, sha=_sha8(self.expect_sha),
             on_confirm=self._open_confirm, confirm_disabled=not self._can_confirm(),
-            confirm_label="合并中…" if self.state == "running" else "确认合并并写入",
+            confirm_label="运行中" if self.state == "running" else "确认写入",
             on_repreview=lambda e: self._task(self._preview),
             stale=stale and self.payload is not None)
         # 重新预览只在已有陈旧预览时出现。
@@ -975,4 +977,4 @@ class BibDupesView:
             nav(view)
             return
         self._store_set("bib_view", view)
-        self._notify("已记录跳转目标；宿主接线后即可切换")
+        self._notify("暂不可跳转")

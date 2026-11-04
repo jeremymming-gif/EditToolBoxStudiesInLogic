@@ -27,7 +27,9 @@ def test_log_console_has_resize_handle_with_mouse_cursor():
     box = console._log_box.content
     assert isinstance(box, ft.Column)
     assert box.controls[0] is handle
-    assert isinstance(box.controls[-1], ft.SelectionArea)
+    host = box.controls[-1]
+    assert isinstance(host, ft.Container) and host.expand is True
+    assert isinstance(host.content, ft.SelectionArea)
 
 
 def test_drag_up_increases_height_and_is_clamped():

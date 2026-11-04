@@ -161,7 +161,7 @@ def test_review_stage_detail_then_dry_run_then_apply(monkeypatch):
     assert len(calls) == 2
     assert "--dry-run" in calls[0].argv
     assert "--dry-run" not in calls[1].argv
-    assert "写入成功 · 1 条记录 · 1 个字段" in view.success
+    assert "已完成 · 1 条记录 · 1 个字段" in view.success
 
 
 def test_review_keep_action(monkeypatch):

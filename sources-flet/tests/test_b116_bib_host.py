@@ -287,7 +287,7 @@ def test_host_api_notify_run_task_reload(monkeypatch) -> None:
 
 def test_toolbar_meta_matches_legacy_contract(monkeypatch) -> None:
     page, _, _ = _host(monkeypatch)
-    assert page.toolbar_meta() == "统计读取中…"
+    assert page.toolbar_meta() == "运行中"
     page.stats_data = {"records": 3883}
     assert page.toolbar_meta() == "3,883 条"
     page.lint_counts = {"warnings": 76}

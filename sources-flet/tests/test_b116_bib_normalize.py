@@ -140,7 +140,7 @@ def test_normalize_initial_state_keeps_header_one_primary():
     texts = _texts(tree)
     assert NV.VIEW_KEY == "normalize" and NV.ROLE == "readonly"
     assert texts.count("回读校验") == 1
-    assert "还没有报告。先选交回的 .bib，再生成报告。" in texts
+    assert "还没有报告；先选 .bib 再生成。" in texts
     assert "级别" in texts and "问题" in texts  # 空态保留表头
     primaries = [n for n in _walk(tree) if isinstance(n, ft.FilledButton)]
     assert len(primaries) == 1 and primaries[0].content == "生成报告"

@@ -38,8 +38,8 @@ READ_TIMEOUT = 15.0
 WRITE_TIMEOUT = 30.0
 PUSH_TIMEOUT = 60.0
 
-IDENTITY_ERROR = ("git 身份未配置（user.name / user.email）：本次写库已成功，"
-                  "但未生成版本提交；配置好身份后再次写库即可补上提交。")
+IDENTITY_ERROR = ("git 未配置 user.name/email：已写库，"
+                  "未生成提交；配置好后再写库即可补上。")
 
 
 # ── 路径发现 ────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ def locate_repo(db: str) -> dict:
     """
     text = str(db or "").strip()
     if not text:
-        return {"ok": False, "error": "没有指定引用库路径（db 为空），无法定位 git 仓库。"}
+        return {"ok": False, "error": "没指定引用库路径，无法定位 git 仓库。"}
     # 统一取真实路径：目录联接 / 符号链接会让 `rev-parse --show-toplevel` 与输入
     # 路径写法不一致，先归一化再算相对路径。
     db_abs = os.path.realpath(os.path.abspath(text))
@@ -155,22 +155,22 @@ def locate_repo(db: str) -> dict:
         return {"ok": False, "error": f"引用库文件不存在：{db_abs}"}
     git = find_git()
     if not git:
-        return {"ok": False, "error": "找不到 git 可执行文件：本次写库仍成功，但不会生成版本提交。"}
+        return {"ok": False, "error": "找不到 git：已写库，未生成提交。"}
     directory = os.path.dirname(db_abs) or os.curdir
     code, out, err = _run(git, ["rev-parse", "--show-toplevel"], cwd=directory)
     if code != 0:
         return {"ok": False,
-                "error": ("引用库不在 git 仓库内（或仓库不可读）：本次写库仍成功，"
-                          "但不会生成版本提交。" + (" " + _one_line(err) if err else ""))}
+                "error": ("引用库不在 git 仓库内：已写库，"
+                          "未生成提交。" + (" " + _one_line(err) if err else ""))}
     repo_root = os.path.realpath(os.path.abspath(out.strip()))
     if not repo_root or not os.path.isdir(repo_root):
         return {"ok": False, "error": f"git 返回的仓库根目录不可用：{_one_line(out)}"}
     rel = os.path.relpath(db_abs, repo_root)
     if os.path.normcase(rel) != os.path.normcase(os.path.join(*DB_RELATIVE_PATH.split("/"))):
         return {"ok": False,
-                "error": (f"引用库必须位于笔记仓的 {DB_RELATIVE_PATH}"
-                          f"（当前相对路径是 {rel.replace(os.sep, '/')}）："
-                          "为防误提交别的文件，本次不生成版本提交。")}
+                "error": (f"引用库须在笔记仓的 {DB_RELATIVE_PATH}"
+                          f"（当前 {rel.replace(os.sep, '/')}）："
+                          "为避免误提交别的文件，未生成提交。")}
     return {"ok": True, "git": git, "repo_root": repo_root, "db_abs": db_abs,
             "db_rel": DB_RELATIVE_PATH}
 
@@ -230,7 +230,7 @@ def _probe(loc: dict) -> dict:
                 except ValueError:
                     pass
     if not result["upstream"]:
-        result["warnings"].append("当前分支没有 upstream：本地提交不会推送（本工具也不 push）。")
+        result["warnings"].append("当前分支没有 upstream：只提交本地，不推送。")
     code, out, _err = _run(git, ["status", "--porcelain", "--", rel], cwd=root)
     if code == 0:
         result["dirty_db"] = bool(out.strip())
@@ -251,7 +251,7 @@ def _probe(loc: dict) -> dict:
         result["dirty_other"] = len(other)
         result["dirty_paths"] = other[:10]
         if result["conflict"]:
-            result["warnings"].append("仓库有未解决的合并冲突：先处理冲突再写库。")
+            result["warnings"].append("仓库有未解决的合并冲突：先处理再写库。")
     code, out, _err = _run(git, ["rev-parse", "--git-dir"], cwd=root)
     if code == 0 and out.strip():
         git_dir = out.strip()
@@ -261,9 +261,9 @@ def _probe(loc: dict) -> dict:
                             or os.path.isdir(os.path.join(git_dir, "rebase-apply")))
         result["merge"] = os.path.isfile(os.path.join(git_dir, "MERGE_HEAD"))
         if result["rebase"]:
-            result["warnings"].append("仓库正在 rebase：先结束 rebase 再写库。")
+            result["warnings"].append("仓库正在 rebase：先结束后再写库。")
         if result["merge"]:
-            result["warnings"].append("仓库正在 merge：先结束 merge 再写库。")
+            result["warnings"].append("仓库正在 merge：先结束后再写库。")
     code, name, _err = _run(git, ["config", "user.name"], cwd=root)
     code2, email, _err2 = _run(git, ["config", "user.email"], cwd=root)
     name_s = name.strip() if code == 0 else ""
@@ -272,8 +272,8 @@ def _probe(loc: dict) -> dict:
     if result["identity_ok"]:
         result["identity"] = f"{name_s} <{email_s}>"
     else:
-        result["warnings"].append("git 身份未配置（user.name / user.email）："
-                                  "写库仍会成功，但不会生成版本提交。")
+        result["warnings"].append("git 未配置 user.name/email："
+                                  "写库仍会成功，但不会生成提交。")
     code, out, _err = _run(git, ["log", "--oneline", "-3", "--", rel], cwd=root)
     if code == 0:
         result["commits"] = parse_log_oneline(out, 3)
@@ -345,7 +345,7 @@ def commit_db(db: str, message: str) -> dict:
     subject = str(message or "").strip()
     if not subject:
         return {"ok": False, "committed": False, "soft": True,
-                "error": "缺少提交说明（message 为空）：本次不生成版本提交。"}
+                "error": "缺少提交说明：未生成提交。"}
     loc = locate_repo(text)
     if not loc.get("ok"):
         return {"ok": False, "committed": False, "soft": True,
@@ -362,8 +362,8 @@ def commit_db(db: str, message: str) -> dict:
     if blocked:
         return {"ok": False, "committed": False, "soft": True,
                 "error": ("git 仓库" + "、".join(blocked)
-                          + "：本次写库已成功，但为避免把未完成的合并/rebase 状态提交进去，"
-                            "未生成版本提交；请先处理完 git 状态再重试。")}
+                          + "：已写库，但为避免把未完成的合并/rebase 状态提交进去，"
+                            "未生成提交；请先处理完 git 状态再重试。")}
     code, out, err = _run(git, ["status", "--porcelain", "--", rel], cwd=root)
     if code != 0:
         return {"ok": False, "committed": False, "soft": False,
@@ -378,7 +378,7 @@ def commit_db(db: str, message: str) -> dict:
     code, out, err = _run(git, ["add", "--", rel], cwd=root, timeout=WRITE_TIMEOUT)
     if code != 0:
         return {"ok": False, "committed": False, "soft": False, "sha_before": sha_before,
-                "error": "git add 失败（未生成提交）：" + _error_of(out, err, "未知错误")}
+                "error": "git add 失败：" + _error_of(out, err, "未知错误")}
     code, commit_out, err = _run(git, ["commit", "-m", subject, "--", rel], cwd=root,
                                  timeout=WRITE_TIMEOUT)
     if code != 0:
@@ -389,7 +389,7 @@ def commit_db(db: str, message: str) -> dict:
         return {"ok": False, "committed": False, "soft": bool(identity_missing),
                 "sha_before": sha_before,
                 "error": IDENTITY_ERROR if identity_missing else
-                         "git commit 失败（未生成提交）："
+                         "git commit 失败："
                          + _error_of(commit_out, err, "未知错误")}
     code, head, _err = _run(git, ["rev-parse", "HEAD"], cwd=root)
     sha_after = head.strip() if code == 0 else ""
@@ -401,9 +401,9 @@ def commit_db(db: str, message: str) -> dict:
             return {"ok": True, "committed": True, "sha_before": sha_before,
                     "sha_after": match.group(1), "sha": match.group(1),
                     "message": subject, "soft": False,
-                    "reason": "rev-parse 失败，sha 取自 git commit 输出。"}
+                    "reason": "读不到 HEAD，sha 取自提交输出。"}
         return {"ok": False, "committed": True, "soft": True, "sha_before": sha_before,
-                "sha_after": "", "error": "提交已生成，但读不到新的 HEAD sha：请用 `git log -1` 核对。"}
+                "sha_after": "", "error": "已提交，但读不到 HEAD sha：请用 `git log -1` 核对。"}
     return {"ok": True, "committed": True, "sha_before": sha_before,
             "sha_after": sha_after, "sha": sha_after, "message": subject, "soft": False}
 
@@ -535,7 +535,7 @@ def push(db: str = "", *, notes_repo: str = "") -> dict:
     upstream = parse_upstream(out) if code == 0 else None
     if not upstream:
         return {"ok": False, "pushed": False, "soft": True,
-                "error": "当前分支没有 upstream：先 `git push -u` 建立跟踪再推送。"}
+                "error": "没有 upstream：先 `git push -u` 再推送。"}
     remote, branch = upstream
     code, out, err = _run(git, ["log", "--reverse", "--format=%x1e%H%x1f%P%x1f%s",
                                 "--name-only", "@{upstream}..HEAD"], cwd=root)
@@ -544,13 +544,13 @@ def push(db: str = "", *, notes_repo: str = "") -> dict:
                 "error": "读取未推送提交失败：" + _error_of(out, err, "未知错误")}
     plan = plan_push(parse_push_log(out))
     if plan["kind"] == "nothing":
-        return {"ok": True, "pushed": False, "reason": "没有待推送提交（upstream 已是 HEAD）。"}
+        return {"ok": True, "pushed": False, "reason": "没有待推送提交。"}
     if plan["kind"] == "blocked":
         commit = plan["commit"]
         where = plan["path"] or "（merge 提交）"
         return {"ok": False, "pushed": False, "soft": True,
                 "error": (f"最旧的未推送提交 {short_sha(commit['sha'])} 含非 bib_db/ 文件"
-                          f"（{where}）：整次拒绝推送（本工具只推仅含 bib_db/ 的连续提交，"
+                          f"（{where}）：整次拒绝（本工具只推仅含 bib_db/ 的连续提交，"
                           "不 force、不推送 notes 的提交）。")}
     tip = plan["tip"]
     count = plan["count"]

@@ -229,7 +229,7 @@ def test_issue_empty_state_replaces_overview_step_rows():
     assert not hasattr(P.IssuePage, "_build_overview")
     assert not hasattr(P.IssuePage, "_overview_step_row")
     texts = [str(ctl.value) for ctl in _walk(root) if isinstance(ctl, ft.Text)]
-    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in texts
+    assert "还没有选择期目录" in texts
     cta = [ctl for ctl in _walk(root) if isinstance(ctl, ft.FilledButton)
            and "选择期目录" in str(ctl.content)]
     assert len(cta) == 1, "空态必须给一个主按钮「选择期目录」"

@@ -675,7 +675,7 @@ class BibQueryView:
         else:
             self.rows_text = basic_summary(len(hits), elapsed)
             if self.mode == "key" and payload.get("ambiguous"):
-                self._notice("warn", "⚠ 有多条同 key/alias 的记录，需人工确认。")
+                self._notice("warn", "注意 · 有多条同 key/alias 记录，需人工确认。")
         if payload.get("error"):
             self._notice("warn", f"（引擎说明：{payload['error']}）")
         self.page.mark("bib_query_basic", ok=ok, mode=self.mode, count=len(hits),

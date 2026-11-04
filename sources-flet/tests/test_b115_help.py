@@ -80,7 +80,8 @@ def test_build_is_white_panel_and_scroll_host_is_toc_target():
     assert box.bgcolor == t.palette.surface
     assert isinstance(box.border_radius, ft.BorderRadius)
     assert box.border_radius.top_left == t.radius("panel")
-    assert box.content.scroll == ft.ScrollMode.AUTO
+    assert isinstance(box.content.scroll, ft.Scrollbar)
+    assert box.content.scroll.thumb_visibility is True
     assert page._scroll is box.content
 
 

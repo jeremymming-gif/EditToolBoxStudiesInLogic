@@ -34,6 +34,7 @@ from typing import Any, Callable, Iterable, Sequence
 import flet as ft
 
 from ui import components as C
+from ui import bib_shell as S
 from ui.tokens import Tokens
 
 TABLE_HEADER_H = 30
@@ -484,17 +485,21 @@ class BibTable:
                                on_scroll=self._scrolled)
             body._bib_list = True
         else:
-            body = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, expand=True,
+            body = ft.Column(spacing=0, scroll=S.scrollbar(), expand=True,
                              controls=rows or [self._empty()])
             body._bib_list = False
 
         if self.scroll_x:
-            grid = ft.Container(width=t.px(self._total_width()), content=ft.Column(
-                spacing=0, controls=[header, *rows] if rows else [header, self._empty()]))
-            scroller = ft.Row(scroll=ft.ScrollMode.AUTO, expand=True, controls=[grid],
+            # 两轴：外层 Row 定住视口高（底部常显横条始终可见），内层 Column
+            # 纵向滚动并带常显竖条；表头与行一起横向移动，不出现双表头。
+            inner = ft.Column(spacing=0, scroll=S.scrollbar(), expand=True,
+                              controls=rows or [self._empty()])
+            grid = ft.Column(spacing=0, width=t.px(self._total_width()), expand=True,
+                             controls=[header, inner])
+            scroller = ft.Row(scroll=S.scrollbar(horizontal=True), expand=True,
+                              controls=[grid],
                               vertical_alignment=ft.CrossAxisAlignment.START)
-            body = ft.ListView(expand=True, spacing=0, padding=0, controls=[scroller],
-                               on_scroll=self._scrolled if use_list else None)
+            body = ft.Container(expand=True, content=scroller)
             body._bib_list = use_list
             body._bib_scroll_x = True
 

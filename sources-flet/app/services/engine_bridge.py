@@ -91,13 +91,13 @@ SUMMARY_MARKERS = (
 _SUMMARY_PREFIX = re.compile(r"^(?:\[(\d+)/(\d+)\]|（\d+/\d+）|▶|[①-⑳])")
 
 _RESULT_1 = {
-    "checkbib.py": "❗ 体检发现问题（退出码 1；不是程序出错）",
+    "checkbib.py": "体检发现问题（退出码 1，不是程序出错）",
     # 批 116 SINGLE-FN：proofcheck 的 1 不是崩溃，是「有命中项待人工核对」；
     # 文案明确指向报告，避免用户把黄条当失败。
-    "proofcheck.py": "❗ 有需要核对的条目（命中的规则见报告；退出码 1，不是程序出错）",
-    "compileall.py": "⚠ 有文章编译失败（退出码 1）",
-    "toc.py": "⚠ 已完成，但有需要人工核对的内容（退出码 1）",
-    "dirpush.py": "❌ 引擎内部出错（退出码 1）",
+    "proofcheck.py": "有需要核对的条目（命中的规则见报告；退出码 1，不是程序出错）",
+    "compileall.py": "有文章编译失败（退出码 1）",
+    "toc.py": "已完成，但有需人工核对的内容（退出码 1）",
+    "dirpush.py": "引擎内部出错（退出码 1）",
 }
 _ARTIFACT_START = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
 _ARTIFACT_TRAIL = "。.…，,；;：: \t\n\r\"'）)」』】]}>"
@@ -115,12 +115,12 @@ def is_summary_line(text: str) -> bool:
 
 def result_text(entry: str, code: int) -> str:
     if code == 0:
-        return "✅ 完成"
+        return "完成"
     if code == 1:
-        return _RESULT_1.get(entry, "❗ 完成，但有需要处理的结果（退出码 1）")
+        return _RESULT_1.get(entry, "完成，但有需处理的结果（退出码 1）")
     if code < 0:
-        return "❌ 启动失败或被中止"
-    return f"❌ 失败（退出码 {code}）"
+        return "启动失败或被中止"
+    return f"失败（退出码 {code}）"
 
 
 def result_level(entry: str, code: int) -> str:
@@ -340,12 +340,12 @@ def engine_status() -> EngineStatus:
     if status.engine_dir:
         missing = [entry for entry in ("convert.py", "checkbib.py") if not (Path(status.engine_dir) / entry).exists()]
         if missing:
-            status.problems.append(f"Engine 目录缺少入口：{', '.join(missing)}")
+            status.problems.append(f"引擎目录缺少入口：{', '.join(missing)}")
     elif not status.frozen_exe:
         # P4：sidecar（同目录 SLCNEngine）存在时不需要 Engine 源码目录，不算问题。
-        status.problems.append("找不到 Engine 目录（可用设置里的「引擎目录」或 SLCN_ENGINE 指定）")
+        status.problems.append("找不到引擎目录：在设置里指定「引擎目录」，或设 SLCN_ENGINE。")
     if not status.frozen_exe and not status.python:
-        status.problems.append("找不到可用于运行引擎的 Python 解释器")
+        status.problems.append("找不到可用的 Python 解释器")
     return status
 
 
@@ -378,7 +378,7 @@ def base_cmd(entry: str) -> list[str] | None:
 def _call(entry: str, args: list[str], label: str = "") -> EngineCall:
     head = base_cmd(entry)
     if head is None:
-        raise RuntimeError("找不到引擎：请检查设置里的「引擎目录」或安装包是否带 SLCNEngine.exe")
+        raise RuntimeError("找不到引擎：检查「引擎目录」，或安装包是否带 SLCNEngine.exe。")
     return EngineCall(entry=entry, argv=head + args, label=label or entry.removesuffix(".py"))
 
 
@@ -501,7 +501,7 @@ def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
         extra.extend(["--coop-fulltext", fulltext])
     _append_opt(extra, "--coop-stage", stage)
     return EngineCall(entry=call.entry, argv=list(call.argv) + extra,
-                      label="协同初排 · 第一段（出任务书，尚未交付）")
+                      label="协同初排 · 第一段（出任务书）")
 
 
 def coop_ph2_call(*, source: str, out: str, replies, stage: str = "",
@@ -509,7 +509,7 @@ def coop_ph2_call(*, source: str, out: str, replies, stage: str = "",
     """第二段：导入回填（`--coop-apply` 才改产物，否则只记录）。"""
     paths = [str(path).strip() for path in (replies or []) if str(path or "").strip()]
     if not paths:
-        raise ValueError("导入回填至少要一个回填文件")
+        raise ValueError("先选至少一个回填文件")
     call = convert_call(source=source, out=out, **convert_kwargs)
     extra: list[str] = []
     for path in paths:
@@ -526,7 +526,7 @@ def ai_verify_call(*, source: str, out: str, ai: dict, no_ai_merge: bool = True,
     """直连核实：Key 不进 argv（见 `ai_settings_env`），预算参数总是显式传。"""
     settings = ai if isinstance(ai, dict) else {}
     if not str(settings.get("key") or "").strip():
-        raise ValueError("直连核实需要 API Key：请先在「设置 → AI」填好（Key 只经环境变量传给引擎）")
+        raise ValueError("直连核实要 API Key：先到「设置 → AI」填（只经环境变量传给引擎）")
     convert_kwargs.pop("verify_refs", None)
     convert_kwargs.pop("verify_max", None)
     verify_max = settings.get("verify_max") or 0
@@ -546,7 +546,7 @@ def ai_verify_call(*, source: str, out: str, ai: dict, no_ai_merge: bool = True,
     _append_opt(args, "--ai-batch-budget-tokens", _budget_arg(settings.get("batch_budget_tokens")))
     if no_ai_merge:
         args.append("--no-ai-merge")
-    return EngineCall(entry=call.entry, argv=args, label="AI 核实（直连 API）")
+    return EngineCall(entry=call.entry, argv=args, label="AI 核实（直连）")
 
 
 def checkbib_call(
@@ -651,7 +651,7 @@ def trash_info(trash_dir: str) -> dict:
         return {"ok": False, "error": f"manifest.json 不是合法 JSON：{exc}", "count": 0,
                 "entries": [], "mode": "", "createdAt": ""}
     if not isinstance(data, dict) or int(data.get("schema") or 0) != 2:
-        return {"ok": False, "error": "manifest.json 版本不认识（需要 schema=2）",
+        return {"ok": False, "error": "manifest.json 版本不认识（需 schema=2）",
                 "count": 0, "entries": [], "mode": "", "createdAt": ""}
     entries = data.get("entries") or []
     if not isinstance(entries, list):
@@ -867,7 +867,7 @@ def import_preview_note(total: int, *, limit: int = BIB_IMPORT_PREVIEW_LIMIT) ->
     cap = max(0, int(limit or 0))
     if count <= cap:
         return ""
-    return f"… 其余 {count - cap} 条变化未展开（仅预览前 {cap} 条，引擎返回 {count} 条）"
+    return f"… 其余 {count - cap} 条未展开（预览前 {cap} 条，共 {count} 条）"
 
 
 def bibdb_import_call(

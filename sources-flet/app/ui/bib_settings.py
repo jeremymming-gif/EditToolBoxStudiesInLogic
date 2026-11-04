@@ -90,7 +90,7 @@ def probe_lines(probe: dict | None) -> list[str]:
     blocked = [name for key, name in (("conflict", "冲突"), ("rebase", "变基"),
                                      ("merge", "合并")) if probe.get(key)]
     if blocked:
-        lines.append(f"仓库状态：{' / '.join(blocked)}进行中（提交/推送/回退都会被拒绝）")
+        lines.append(f"仓库状态：{' / '.join(blocked)}进行中（提交/推送/回退都会失败）")
     return lines
 
 
@@ -98,7 +98,7 @@ def library_confirm_text(probe: dict | None) -> str:
     probe = probe or {}
     branch = str(probe.get("branch") or "—")
     return (f"提交只含 bib_db/bibliography.jsonl；没有改动不会空提交。\n"
-            f"分支 {branch}：提交在本地生成，不推送、不改其它文件。")
+            f"分支 {branch}：只在本地提交，不推送。")
 
 
 def commit_confirm_text(probe: dict | None) -> str:
@@ -116,8 +116,8 @@ def push_confirm_text(probe: dict | None) -> str:
 
 def rollback_confirm_text() -> str:
     return ("回退 = `git checkout HEAD~1 -- bib_db/bibliography.jsonl` 再生成一次新提交"
-            "（不 hard reset、不推送、不改其它文件）。库内容会回到上一个版本，"
-            "已写库的本次改动将不可从工作区恢复（历史仍在 git 里）。")
+            "（不 hard reset、不推送、不改其它文件）。库内容回到上一个版本；"
+            "本次改动将从工作区丢失（历史仍在 git 里）。")
 
 
 def _tone_of(result: dict) -> str:
@@ -127,7 +127,7 @@ def _tone_of(result: dict) -> str:
 def commit_notice(result: dict | None) -> tuple[str, str]:
     result = result or {}
     if result.get("ok") and result.get("committed"):
-        return "success", f"已提交本地版本：{short_sha(str(result.get('sha') or ''))}（未推送）。"
+        return "success", f"已提交 {short_sha(str(result.get('sha') or ''))}（未推送）。"
     if result.get("ok") and not result.get("committed"):
         return "info", str(result.get("reason") or "库文件没有改动，未生成空提交。")
     return _tone_of(result), f"提交失败：{result.get('error') or result.get('reason') or '未知原因'}"
@@ -269,42 +269,40 @@ class BibSettingsView:
             C.form_field(t, "核实上限", C.text_field(
                 t, value=self.bibdb_text, width=120,
                 on_change=self._on_verify_max)),
-            C.text(f"条（0 = 不限；留空 = 引擎默认 {SS.DEFAULT_VERIFY_MAX} 条，本次不传 --verify-max）",
+            C.text(f"条（0 = 不限；留空 = 引擎默认 {SS.DEFAULT_VERIFY_MAX} 条）",
                    t, "small", t.palette.text_muted),
         ])
         rows = [self._kv(label, value) for label, value in
                 SS.bibdb_effective_rows(section, db=db, db_exists=exists)]
         rows.append(self._kv("笔记仓路径",
-                             self._notes() or "（未设置：在「设置」页指定，或让引擎自动探测）"))
-        rows.append(self._kv("库文件", db or "（未找到：先在「入藏」页导入）"))
+                             self._notes() or "（未设置：在「设置」页指定）"))
+        rows.append(self._kv("库文件", db or "（未找到：先到「入藏」导入）"))
         return C.card(ft.Column(spacing=t.sp("half"), controls=[
-            C.section_title("核实成本闸门", t, note="引用库 · 核实链路；值存在本机 settings.json"),
-            C.text("第 128 条起默认只核实正文引用到的条目，并对条数设上限：超过上限且没开"
-                   "「允许全量核实」时，引擎会先退出 2 并打印范围与预计检索/AI 次数。"
-                   "看到退出 2 不是程序错误，是让你先看账再决定。", t, "small", t.palette.text_muted),
+            C.section_title("核实费用", t, note="引用库 · 核实选项；值存在本机 settings.json"),
+            C.text("从第 128 条起只核实正文引用的条目。超过上限且未开「允许全量核实」时，"
+                   "引擎退出 2 并列出范围与预计费用——不是程序出错，先看账再决定。",
+                   t, "small", t.palette.text_muted),
             max_row, self._max_hint,
             C.option_row("核实前先算账（--verify-plan）",
-                         "开了它，转换照常写出产物，但不生成任务书、不检索、不调用 AI，只打印"
-                         "「本次会核实多少条、预计检索/AI 多少次、约多少钱」后退出 0。看完成本账"
-                         "关掉它再跑一次才会真正核实。", t, icon="CALCULATE_OUTLINED",
+                         "只算账、不核实：转换照常写产物，但不生成任务书、不检索、不调 AI，只打印"
+                         "「核实多少条、预计检索/AI 多少次、约多少钱」后退出 0。关掉再跑才真正核实。",
+                         t, icon="CALCULATE_OUTLINED",
                          checked=self.bibdb_plan, on_change=self._on_verify_plan),
             C.option_row("允许全量核实（--verify-all-refs）",
-                         "越过上限闸门（正文 \\nocite{*} 本身也要求全量）。默认不开：全量核实会为"
-                         "没被正文引用的条目也花检索/AI 的钱（期 87 实测：376 条 $1.8+）。", t,
+                         "越过上限（正文 \\nocite{*} 也要求全量）。默认不开：没被正文引用的条目"
+                         "也会花检索/AI 的钱（期 87：376 条 $1.8+）。", t,
                          icon="ALL_INCLUSIVE", checked=self.bibdb_all, on_change=self._on_verify_all),
             C.option_row("核实前先查引用库（默认开）",
-                         "开着：执行核实时若引用库存在，先按 DOI / 题名 / key 查库 —— 命中已核实"
-                         "条目的键不调检索 API、不调 AI（仍逐条写进任务书「五、库内已核实」，"
-                         "字段差异只提示、不改 reference.bib）。关掉 = 本次一律不查库"
-                         "（传 --no-bibdb，输出与接入引用库之前逐字节相同）。", t,
+                         "开：核实时若引用库存在，先按 DOI / 题名 / key 查库；命中的键不调检索、"
+                         "不调 AI（仍写进任务书「五、库内已核实」，字段差异只提示）。"
+                         "关 = 传 --no-bibdb，一律不查库。", t,
                          icon="SEARCH", checked=self.bibdb_lookup, on_change=self._on_lookup),
-            C.section_title("当前生效值", t, note="下一次「初排转换」的核实链路会用这些"),
+            C.section_title("当前生效值", t, note="下一次「初排转换」会用"),
             *rows,
-            C.text("补充：这些值只在「初排转换」走核实链路（AI 面板）时进 argv；普通初排没有"
-                   "核实入口、不传这些参数。「先算账」开着时引擎只打印核实计划就退出 0，"
-                   "本次不会真正核实。", t, "caption", t.palette.text_faint),
+            C.text("只影响「初排转换 → AI 协同初排」的核实；普通初排不传这些参数。",
+                   t, "caption", t.palette.text_faint),
             ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.primary_button("保存引用库设置", lambda e: self._save_bibdb(), t,
+                C.primary_button("保存设置", lambda e: self._save_bibdb(), t,
                                  icon="SAVE_OUTLINED"),
                 C.text(self.bibdb_receipt, t, "small", t.palette.text_muted),
             ]),
@@ -332,7 +330,7 @@ class BibSettingsView:
             return
         C.confirm(self.page.page, self.page.t, title="允许全量核实？",
                   message="全量核实会为没被正文引用的条目也花检索/AI 的钱（期 87 实测："
-                          "376 条 $1.8+）。确认只影响核实链路，不会改库文件。", confirm_label="允许",
+                          "376 条 $1.8+）。只影响核实，不改库文件。", confirm_label="允许",
                   on_confirm=lambda: self._set_all_refs(True))
         # 复选框先回到关：确认后由 _set_all_refs 重建为开。
         self.bibdb_all = False
@@ -360,10 +358,10 @@ class BibSettingsView:
             store.set("bibdb.lookup_enabled", bool(self.bibdb_lookup))
             store.save()
         except Exception as exc:  # noqa: BLE001
-            self.bibdb_receipt = f"❌ 保存失败：{exc}"
+            self.bibdb_receipt = f"保存失败：{exc}"
             self._refresh()
             return
-        self.bibdb_receipt = f"✅ 已保存 · {time.strftime('%H:%M:%S')}（仅存在本机：{store.path}）"
+        self.bibdb_receipt = f"已保存 · {time.strftime('%H:%M:%S')}（仅存在本机：{store.path}）"
         self.page.mark("bib_settings_bibdb", ok=True, verify_max=value,
                        verify_plan=bool(self.bibdb_plan), verify_all_refs=bool(self.bibdb_all),
                        lookup_enabled=bool(self.bibdb_lookup))

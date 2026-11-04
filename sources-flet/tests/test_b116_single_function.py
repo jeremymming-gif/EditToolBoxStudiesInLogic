@@ -2,7 +2,7 @@
 
 锁五组契约（全部离线：不建窗口、不跑真引擎）：
 1. `EB.convert_call(dry_run=...)` 只按需追加 `--dry-run`（引擎 convert_stage.py:1291）。
-2. 第 5 张处理选项「只预演（不落盘）」→ store `options.convert_dry_run` → argv。
+2. 第 5 张处理选项「只预演（不写入）」→ store `options.convert_dry_run` → argv。
 3. 预演 rc=0：文案「预演完成（只读：未建产物目录、未写产物）」、ok、artifact 清空、
    不写最近记录、目录动作行隐藏。
 4. 真实转换成功：结果卡下方「打开产物目录」行出现，点击打开 artifact 的 dirname；
@@ -94,10 +94,10 @@ def _dry_run_tile(page):
     for row in rows:
         for tile in row.controls:
             for ctl in _walk(tile):
-                if isinstance(ctl, ft.Text) and ctl.value == "只预演（不落盘）":
+                if isinstance(ctl, ft.Text) and ctl.value == "只预演（不写入）":
                     checkbox = next(c for c in _walk(tile) if isinstance(c, ft.Checkbox))
                     return checkbox
-    raise AssertionError("没有找到「只预演（不落盘）」选项卡")
+    raise AssertionError("没有找到「只预演（不写入）」选项卡")
 
 
 # ── 1. argv 拼装 ─────────────────────────────────────────────────────────

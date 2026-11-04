@@ -377,7 +377,7 @@ class BibFieldFixView:
         self.busy = True
         self.state = "loading"
         self.error = ""
-        self.stage = "正在读候选…"
+        self.stage = "运行中"
         self._render()
         res = await self._call(EB.bibdb_suggest_fixes_call(
             registry=self.registry, limit=FIX_LIMIT, db=self._db()))
@@ -551,7 +551,7 @@ class BibFieldFixView:
             return
         self.busy = True
         self.state = "running"
-        self.stage = "逐条 dry-run 0/%d" % len(rows)
+        self.stage = "预览 0/%d" % len(rows)
         self.error = ""
         self.dirty_reason = ""
         self.previewed = []
@@ -562,13 +562,13 @@ class BibFieldFixView:
             for index, row in enumerate(rows, start=1):
                 if not self.busy:  # 取消
                     break
-                self.stage = f"逐条 dry-run {index}/{len(rows)}"
+                self.stage = f"预览 {index}/{len(rows)}"
                 self.progress = (index, len(rows))
                 self._render()
                 res = await self._call(self._build_preview_call(row, sha))
                 if not res.get("ok"):
                     self.state = "failure"
-                    self.error = f"第 {index} 条 dry-run 失败：{self._error_text(res)}"
+                    self.error = f"第 {index} 条预览失败：{self._error_text(res)}"
                     self.stderr = str(res.get("stderr") or "")
                     self.busy = False
                     self._mark("bib_fieldfix_preview", ok=False, index=index,
@@ -603,7 +603,7 @@ class BibFieldFixView:
     def _preview_all(self, e=None) -> None:
         visible = [row["id"] for row in self._filtered()]
         if not visible:
-            self._notify("这个口径下没有可归位的字段")
+            self._notify("当前筛选下没有可归位的字段")
             return
         self.checked.update(visible)
         self._task(self._preview)
@@ -615,12 +615,11 @@ class BibFieldFixView:
             return
         keys = len({row["key"] for row in rows})
         fields = len({row["field"] for row in rows})
-        impact = (f"{len(rows)} 条建议 / {keys} 条记录 / {fields} 个字段 / "
-                  f"预计 {len(rows)} 次 edit / 库 sha {_sha8(self.scan_sha) or '—'} / "
-                  f"可 git 回退")
+        impact = (f"{len(rows)} 条建议 · {keys} 条记录 · {fields} 个字段 · "
+                  f"库 sha {_sha8(self.scan_sha) or '—'} · 可回退")
         dialog = S.danger_confirm(
             self._flet(), self.t, title="全部应用（先预览）",
-            message="这只是预览：逐条 dry-run 后回到确认条，真正写入仍要在确认条点「确认写入」。",
+            message="只是预览：预览后仍在确认条点「确认写入」。",
             impact=impact, confirm_label="全部预览", on_confirm=self._preview_all)
         if dialog is not None:
             self._render()
@@ -631,7 +630,7 @@ class BibFieldFixView:
         rows = list(self.previewed)
         self.busy = True
         self.state = "running"
-        self.stage = "写入中 0/%d" % len(rows)
+        self.stage = "写入 0/%d" % len(rows)
         self.written = 0
         self.failed_at = 0
         self._render()
@@ -653,7 +652,7 @@ class BibFieldFixView:
                 call = EB.bibdb_edit_call(
                     key=row["key"], fields=fields, entry_type=entry_type,
                     dry_run=False, expect_db_sha256=sha, backup=backup, db=db)
-            self.stage = f"写入中 {index}/{len(rows)}"
+            self.stage = f"写入 {index}/{len(rows)}"
             self._render()
             res = await self._call(call)
             if not res.get("ok"):
@@ -695,7 +694,7 @@ class BibFieldFixView:
         for value in (payload.get("error"), res.get("error"), res.get("stderr")):
             if value:
                 return _text(value).strip().splitlines()[0][:300]
-        return f"引擎退出码 {res.get('code')}"
+        return "引擎没有返回原因。"
 
     def _revert(self, e=None) -> None:
         if not (self.commit or {}).get("ok"):
@@ -703,9 +702,8 @@ class BibFieldFixView:
             return
         dialog = S.danger_confirm(
             self._flet(), self.t, title="回退这次字段归位？",
-            message=("把 bibliography.jsonl 恢复到本次写入前的版本，再生成一条新提交；"
-                     "其它文件不动，也不推送。"),
-            impact="影响 1 个文件（bibliography.jsonl）· 生成 1 条回退提交 · 不推送",
+            message=("恢复到本次写入前的版本，再生成一条回退提交；只动 bibliography.jsonl，不推送。"),
+            impact="1 个文件 · 1 条回退提交",
             confirm_label="回退这次提交", on_confirm=lambda e: self._task(self._rollback))
         if dialog is not None:
             self._render()
@@ -735,8 +733,7 @@ class BibFieldFixView:
         self.narrow = width <= S.NARROW_W
         self._bottom_holder = ft.Container(content=self._bottom())
         meta = (f"{len(self.rows)} 条建议 · {len({r['field'] for r in self.rows})} 个字段 · "
-                f"registry={self.registry} · 扫描 {self.scanned_at or '—'} · "
-                f"库 sha {self.scan_sha or '—'}")
+                f"扫描 {self.scanned_at or '—'}")
         body = ft.Column(spacing=0, expand=True, controls=[
             self._hint_line(),
             self._filter_row(),
@@ -767,11 +764,10 @@ class BibFieldFixView:
         if self.state == "cancelled":
             return S.state_banner(t, "cancelled", message="已取消预览，未写库")
         if self.state == "loading":
-            return S.state_banner(t, "loading", message=self.stage or "正在读候选…")
+            return S.state_banner(t, "loading", message=self.stage or "运行中")
         return ft.Container(
             height=t.px(28), content=C.text(
-                "预览 → 确认（含库 sha）→ 逐条原子写 · 只提交 bibliography.jsonl，"
-                "1 次提交，不推送", t, "caption", t.palette.text_faint, max_lines=1))
+                "预览 → 确认 → 逐条写入 · 1 条提交", t, "caption", t.palette.text_faint, max_lines=1))
 
     def _filter_row(self) -> ft.Control:
         t = self.t
@@ -843,10 +839,10 @@ class BibFieldFixView:
 
     def _columns(self) -> tuple[list[str], list[float], list, list[str]]:
         if self.narrow:
-            return (["☐", "记录", "字段", "缺失原因", "候选值", "置信度"],
+            return (["选", "记录", "字段", "缺失原因", "候选值", "置信度"],
                     [0.34, 2.46, 0.84, 1.44, 1.5, 0.64], [1, 2, 3, 4, 5],
                     ["left", "left", "left", "left", "left", "right"])
-        return (["☐", "记录", "key", "字段", "缺失原因", "候选值", "置信度", "来源"],
+        return (["选", "记录", "key", "字段", "缺失原因", "候选值", "置信度", "来源"],
                 [0.34, 2.5, 1.36, 0.84, 1.4, 1.48, 0.58, 0.56],
                 [2, 3, 5, 6, 7],
                 ["left", "left", "left", "left", "left", "left", "right", "left"])
@@ -865,7 +861,7 @@ class BibFieldFixView:
             controls.append(S.empty_row(t, "正在读候选…"))
         elif not rows:
             controls.append(S.empty_row(
-                t, "这个口径下没有要补的字段" if not self.rows else "没有匹配的建议"))
+                t, "当前筛选下没有要补的字段" if not self.rows else "没有匹配的建议"))
         for row in rows:
             controls.append(self._row_control(row, mono))
             if self.expanded == row["id"]:
@@ -873,7 +869,7 @@ class BibFieldFixView:
         # 尾部安全留白：滚到底时最后一行与底部常驻条之间留 12 px，不再贴边。
         controls.append(ft.Container(height=t.px(TABLE_BOTTOM_PAD)))
         return ft.Container(expand=True, content=ft.Column(
-            spacing=0, scroll=ft.ScrollMode.AUTO, controls=controls))
+            spacing=0, scroll=S.scrollbar(), controls=controls))
 
     def _row_control(self, row: dict, mono) -> ft.Control:
         t = self.t
@@ -929,7 +925,7 @@ class BibFieldFixView:
                     C.text(row["reason"] or "引擎没有给出缺失原因", t, "small",
                            p.text_muted),
                     C.text(f"来源 {row['source'] or '—'} · 置信度 {confidence_of(row)}"
-                           f"（引擎 risk={row['risk']}）", t, "caption", p.text_faint)]
+                           , t, "caption", p.text_faint)]
         candidate = row.get("candidate") or ""
         radios = ft.RadioGroup(
             value=self.manual.get(row["id"], candidate),
@@ -978,7 +974,7 @@ class BibFieldFixView:
             fields = len({row["field"] for row in self.previewed}) or self.written
             return S.result_banner(
                 t, title=f"已归位 {self.written} 条 · {fields} 个字段",
-                detail=f"提交 {sha or '未生成'} · 1 条提交 · 未 push",
+                detail=f"已提交 {sha} · 1 条提交 · 未推送" if sha else "已归位；未生成提交",
                 on_review=lambda e: self._goto("review"),
                 on_revert=self._revert if commit.get("ok") else None)
         if self.state == "failure" and self.written:
@@ -990,7 +986,7 @@ class BibFieldFixView:
             stale = bool(self.dirty_reason)
             consequence = (f"将写入 {len(self.previewed)} 条记录 · "
                            f"{len({row['field'] for row in self.previewed})} 个字段")
-            detail = "只提交 bibliography.jsonl（1 次提交）· 不推送 · 可 git 回退"
+            detail = "只写 bibliography.jsonl · 1 条提交 · 不推送"
             if stale:
                 detail = f"预览已过期：{self.dirty_reason}，先重新预览"
             return S.confirm_bar(
@@ -1002,7 +998,7 @@ class BibFieldFixView:
                 on_repreview=lambda e: self._task(self._preview), stale=stale)
         if self.state == "running":
             return S.state_banner(
-                t, "running", stage=self.stage or "逐条 dry-run", page=self._flet(),
+                t, "running", stage=self.stage or "逐条预览", page=self._flet(),
                 on_cancel=self._cancel)
         count = len(self.checked)
         actions = []
@@ -1024,7 +1020,7 @@ class BibFieldFixView:
             border=ft.Border(top=ft.BorderSide(0.6, t.palette.border)),
             padding=ft.Padding(left=t.px(12), top=0, right=t.px(12), bottom=0),
             alignment=ft.Alignment.CENTER_LEFT,
-            content=C.text("勾选要归位的字段后点「预览所选」；展开单条可手工覆盖。", t,
+            content=C.text("勾选字段 → 预览所选；展开可手工覆盖。", t,
                            "caption", t.palette.text_faint))
 
     def _goto(self, view: str) -> None:
@@ -1033,4 +1029,4 @@ class BibFieldFixView:
             nav(view)
             return
         self._store_set("bib_view", view)
-        self._notify("已记录跳转目标；宿主接线后即可切换")
+        self._notify("暂不可跳转")

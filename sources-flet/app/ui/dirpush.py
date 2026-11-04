@@ -39,8 +39,7 @@ def repo_warning(out_root: str, repo=None) -> str:
         return ""
     try:
         if target == root or root in target.parents:
-            return (f"输出根在代码仓内：{target}。生成会在仓库里留下未跟踪的 docx 文件，"
-                    "污染工作树。")
+            return f"输出根在代码仓内：{target}；会留下未跟踪文件，污染工作树。"
     except OSError:
         return ""
     return ""
@@ -112,8 +111,8 @@ def header_parse_error(issue: str) -> str:
         return ""
     marks = _VOLUME_RE.findall(blob) + _ISSUE_NO_RE.findall(blob)
     if marks and any("?" in mark or "？" in mark for mark in marks):
-        return ("000 目录的期头还没解析出卷/期（第 ? 卷 / 第 ? 期）："
-                "先在「检查 tex 信息」里核对卷期，或修正 000 目录期头后再推送")
+        return ("000 期头还没解析出卷期：先在「检查 tex 信息」核对，"
+                "或修正 000 目录期头后再推送")
     return ""
 
 
@@ -230,7 +229,7 @@ def summary_lines(payload: dict) -> list[str]:
     if not payload.get("ok", True):
         lines.append("引擎报告：本次没有生成（详见日志与下面的提示）。")
     for text in payload.get("warnings") or []:
-        lines.append(f"⚠️ {text}")
+        lines.append(f"注意 · {text}")
     return lines
 
 

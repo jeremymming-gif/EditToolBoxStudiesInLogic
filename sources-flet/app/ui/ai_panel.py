@@ -57,7 +57,7 @@ class AiPanel:
         if not ai["enabled"]:
             # 批 115 P1-9：总开关关着时只留一行说明，不再用 C.card 撑出大块空白。
             return C.inline_note(
-                "AI 助手：总开关关着（「设置 → AI」），本页不显示 AI 选项，也不会有任何 API 调用。",
+                "AI 助手已关闭（设置 → AI）；本页不调用 API。",
                 t, "info")
 
         self._coop_box = ft.Column(spacing=t.sp("1"), visible=False, controls=self._coop_controls())
@@ -75,7 +75,7 @@ class AiPanel:
         card = C.card(ft.Column(spacing=t.sp("2"), controls=[
             C.section_title("AI 助手", t, note="默认关；勾了才拼 AI 参数"),
             C.option_row("AI 协同初排（两段式）",
-                         "第一段出核实任务书 → 编辑交给任意 chat 模型 → 回填后第二段导入；零上传",
+                         "第一段出任务书 → 交给任意 chat 模型 → 回填后第二段导入；零上传",
                          t, icon="SYNC_ALT", checked=self._coop, on_change=self._on_coop),
             self._coop_box,
             C.option_row("AI 核实（直连 API）",
@@ -132,8 +132,8 @@ class AiPanel:
             self._scope_row,
             # 浮动字段 48 → 两个按钮跟随 48（用户 m02816：同一行不许高矮不齐）。
             C.field_row(self._stage_field, [browse_stage, discover], t),
-            C.text("可直接粘贴路径（⌘V），或点「浏览…」选择目录；「自动发现」按输出根目录与"
-                   "源稿回推暂存目录。", t, "caption", t.palette.text_faint),
+            C.text("可直接粘贴路径（⌘V），或点「浏览…」；「自动发现」按输出根与源稿回推。",
+                   t, "caption", t.palette.text_faint),
             C.text("回填文件（一份回复一个文件；路径可粘贴）", t, "small", t.palette.text_muted),
             self._reply_box,
             add,
@@ -163,7 +163,7 @@ class AiPanel:
             C.text(key_hint, t, "caption", p.text_muted if ai["key"] else p.warn),
             preview,
             merge_row,
-            C.text("核实范围上限在设置 → AI 的「单篇核实条数」；0 = 不限。", t, "caption", p.text_faint),
+            C.text("条数上限见「设置 → AI」；0 = 不限。", t, "caption", p.text_faint),
         ]
 
     def _upload_values(self, ai: dict) -> dict:
@@ -186,7 +186,7 @@ class AiPanel:
                    on_click=lambda e: self._set_scope(AI.FULLTEXT_CONTEXT)),
             C.chip(AI.FULLTEXT_FULL, t, active=self._scope == AI.FULLTEXT_FULL,
                    on_click=lambda e: self._set_scope(AI.FULLTEXT_FULL)),
-            C.text("开启后任务书会带正文片段/整篇；交外部模型前请确认未刊稿许可", t, "caption",
+            C.text("任务书会带正文；发给外部模型前请确认未刊稿许可", t, "caption",
                    t.palette.text_faint),
         ]
 
@@ -277,7 +277,7 @@ class AiPanel:
         stage = AI.discover_stage(out, source=source)
         if stage is None:
             self.app.toast("没找到暂存目录：先运行第一段")
-            self._set_status("没找到暂存目录。先勾「AI 协同初排」跑第一段，或手动填暂存目录。")
+            self._set_status("没找到暂存目录：先跑第一段，或手动填写。")
         else:
             self._fill_stage(stage, user=False)
             self._show_stage(stage)
@@ -329,7 +329,7 @@ class AiPanel:
             }[mode]
         except ValueError as exc:
             mode = AI.MODE_PLAIN
-            text = "⚠ " + str(exc)
+            text = "失败 · " + str(exc)
             cannot = "error"
         self._last_mode = mode
         self._mode_ctl.value = text
@@ -352,7 +352,7 @@ class AiPanel:
             return EB.convert_call(**convert_kwargs)
         channel = AI.channel_state(ai)
         if not channel["enabled"]:
-            raise ValueError("AI 功能总开关关着：先到「设置 → AI」打开，或取消勾选 AI 入口")
+            raise ValueError("AI 总开关关着：先到「设置 → AI」打开。")
         source = str(convert_kwargs.pop("source") or "")
         out = str(convert_kwargs.pop("out") or "")
         if mode == AI.MODE_PH1:
@@ -395,10 +395,10 @@ class AiPanel:
             if stage is not None:
                 self._fill_stage(stage, user=False)
                 self._show_stage(stage)
-                self._set_summary("第一段完成（尚未交付）：把任务书交给任意 chat 模型核实，"
-                                  "再把回填文件加进来跑第二段。", "warn")
+                self._set_summary("第一段完成（未交付）：把任务书交给 chat 模型核实，回填后跑第二段。",
+                                  "warn")
             else:
-                self._set_summary("第一段结束了，但没找到暂存目录：看日志里的「暂存目录」一行。", "warn")
+                self._set_summary("第一段结束，但没找到暂存目录：看日志「暂存目录」。", "warn")
         elif mode == AI.MODE_PH2 and code in (0, 2):
             stage = AI.resolve_stage(self._stage_text(), out_root=out, source=source)
             if stage is not None:
@@ -414,7 +414,7 @@ class AiPanel:
             elif code == 0:
                 self._set_summary("AI 核实完成：核实报告已写进产物目录。", "ok")
             else:
-                self._set_summary("AI 核实未完成：看运行日志（预算/网络/Key 都可能）。", "error")
+                self._set_summary("AI 核实未完成：看日志（预算、网络或 Key）。", "error")
         self._refresh_mode()
         self._safe_update(self._summary_ctl)
 
@@ -522,7 +522,7 @@ class AiSettings:
             self._budget_row("article_budget_tokens", "单篇预算 tokens", ai),
             self._budget_row("batch_budget_tokens", "批量预算 tokens", ai),
             self._budget_row("verify_max", "单篇核实条数（0 = 不限）", ai),
-            C.text("预算由引擎在发请求前执行：超限直接退出 2、零请求（界面显示「预算不足，未发起请求」）。",
+            C.text("预算在发请求前检查：超限即退出（退出码 2），不会发起请求。",
                    t, "caption", p.text_faint),
         ]
         return C.card(ft.Column(spacing=t.sp("2"), controls=[

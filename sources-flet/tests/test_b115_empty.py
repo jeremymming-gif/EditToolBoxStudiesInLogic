@@ -117,7 +117,7 @@ def test_info_check_unreadable_and_failed_do_not_duplicate_empty_line():
     assert card.open_btn in card._actions.controls
 
     card.show_failed(2)
-    assert card.chip.content.value == "检查失败"
+    assert card.chip.content.value == "失败"
     assert card.summary.visible is True and card.empty.visible is False
     assert card.open_btn not in card._actions.controls
 
@@ -130,7 +130,7 @@ def test_ai_panel_master_off_is_single_inline_note(tmp_path, monkeypatch):
     assert isinstance(view, ft.Row), "总开关关着时只留一行说明，不再套 C.card"
     assert not isinstance(view, ft.Container)
     text = " ".join(_texts(view))
-    assert "AI 助手" in text and "总开关关着" in text
+    assert "AI 助手" in text and "已关闭" in text
     assert not [ctl for ctl in _walk(view) if isinstance(ctl, ft.Checkbox)]
 
 

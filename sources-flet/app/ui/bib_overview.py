@@ -175,24 +175,24 @@ class OverviewView:
         self.error = ""
         self.cancelled = False
         self.success = ""
-        self.phase = "刷新中 0/5"
+        self.phase = "运行中 0/5"
         self._refresh()
         tmp = ""
         try:
-            self.phase = "刷新中 1/5"
+            self.phase = "运行中 1/5"
             stats_r, conflicts_r, lint_r = await asyncio.gather(
                 self._read(EB.bibdb_stats_call()),
                 self._read(EB.bibdb_conflicts_call(pending_only=True)),
                 self._read(EB.bibdb_lint_call()),
             )
-            self.phase = "刷新中 4/5"
+            self.phase = "运行中 4/5"
             tmp = tempfile.mkdtemp(prefix="bib-overview-")
             dup_r, sug_r = await asyncio.gather(
                 self._read(EB.bibdb_report_duplicates_call(out=tmp, db=self._db())),
                 self._read(EB.bibdb_suggest_fixes_call(
                     registry="missing_field", db=self._db())),
             )
-            self.phase = "刷新中 5/5"
+            self.phase = "运行中 5/5"
             self._apply(stats_r, conflicts_r, lint_r, dup_r, sug_r)
             self.loaded = True
             self.snapshot = _clock()
@@ -252,12 +252,12 @@ class OverviewView:
                             hint=(f"累计 {_num(total) or '—'} 条已裁决"
                                   if total is not None else "读取失败")),
             "warnings": cell("warnings", _num(warnings) if ok(lint_r) else None,
-                             hint=f"errors {_num(errors) if errors is not None else '—'}"),
+                             hint=f"{_num(errors) if errors is not None else '—'} 错误"),
             "pairs": cell("pairs", _num(pairs_pending) if ok(dup_r) else None,
                           hint=(f"{_num(pairs) or 0} 对已确认非重复"
                                 if acked is not None else "查重报告")),
             "suggest": cell("suggest", _num(suggest) if ok(sug_r) else None,
-                            hint="missing_field 注册表 · 只读"),
+                            hint="缺字段 · 只读"),
         }
         self.queue = {
             "conflict": {
@@ -267,16 +267,16 @@ class OverviewView:
             },
             "fieldfix": {
                 "value": f"{_num(suggest) or '—'} 条",
-                "impact": "缺 title / year 的字段归位候选",
+                "impact": "缺题名 / 年份的候选",
             },
             "lint": {
                 "value": f"{_num(warnings) or '—'} 条",
-                "impact": (f"errors {_num(errors) if errors is not None else '—'}"
+                "impact": (f"{_num(errors) if errors is not None else '—'} 错误"
                            f" · 倒置名 {_num(inverted) if inverted is not None else '—'}"),
             },
             "dupes": {
                 "value": f"{_num(pairs_pending) or '—'} 对待办",
-                "impact": (f"{_num(acked) or 0} 对已 ack"
+                "impact": (f"{_num(acked) or 0} 对已确认"
                            if acked is not None else "查重报告"),
             },
             "normalize": {
@@ -348,10 +348,9 @@ class OverviewView:
 
     def _meta(self) -> str:
         if not self.loaded:
-            return "正在读取库状态…" if self.loading else "只读 · 概览与下一步"
-        sha = _short_sha(self.db_sha) or "—"
+            return "运行中" if self.loading else "只读 · 概览与下一步"
         updated = str(self.detail.get("updated") or "")[:16].replace("T", " ") or "—"
-        return f"库 sha {sha} · 更新 {updated} · 快照 {self.snapshot or '—'}"
+        return f"更新 {updated} · 快照 {self.snapshot or '—'}"
 
     def _band(self) -> ft.Control:
         t = self.t
@@ -375,12 +374,12 @@ class OverviewView:
     def _queue_table(self) -> ft.Control:
         t = self.t
         header = S.table_header_row(
-            t, ["队列", "数量", "影响 · 口径", "下一步"],
+            t, ["队列", "数量", "影响 · 范围", "下一步"],
             weights=[17, 7, 22, 11], sortable=[False] * 4)
         rows: list = []
         if self.loaded and (self.detail.get("records") or 0) == 0:
             rows.append(S.empty_row(
-                t, "库里还没有条目；入藏第一份 .bib 后这里会列出待办。",
+                t, "库里还没有条目；导入 .bib 后列出待办。",
                 action=C.text_button("入藏新条目", lambda e: self._goto("import"), t,
                                      height=28)))
         else:
@@ -419,7 +418,7 @@ class OverviewView:
                            overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value)),
                 ]))
         body.append(ft.Container(height=t.sp("1")))
-        body.append(C.text("只读视图 · 不写 bibliography.jsonl", t, "caption",
+        body.append(C.text("只读 · 不写库", t, "caption",
                            t.palette.text_faint, max_lines=2))
         return ft.Container(
             width=None if self._build_width < 1100 else t.px(DETAIL_W),
@@ -438,7 +437,7 @@ class OverviewView:
                 detail=self.snapshot or "尚未读取", next_label="重新统计",
                 on_next=lambda e: self._schedule()))
         if self.loading and not self.loaded:
-            parts.append(S.state_banner(t, "loading", message="正在读取库状态…"))
+            parts.append(S.state_banner(t, "loading", message="运行中"))
         if self.stale:
             parts.append(S.stale_notice(
                 t, expected_sha=self.db_sha, actual_sha="",
@@ -456,7 +455,7 @@ class OverviewView:
                 spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[ft.Container(expand=True, content=table), detail]))
         parts.append(self._refresh_row())
-        return ft.Column(spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO, expand=True,
+        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), expand=True,
                          controls=parts)
 
     def _detail_grid(self) -> ft.Control:
@@ -483,7 +482,7 @@ class OverviewView:
             rows.append(ft.Row(spacing=t.sp("2"), controls=cells))
         return ft.Column(spacing=t.sp("half"), controls=[
             C.text("库详情", t, "caption", t.palette.text_faint, weight="semibold"), *rows,
-            C.text("只读视图 · 不写 bibliography.jsonl", t, "caption", t.palette.text_faint),
+            C.text("只读 · 不写库", t, "caption", t.palette.text_faint),
         ])
 
     def _refresh_row(self) -> ft.Control:
@@ -512,7 +511,7 @@ class OverviewView:
             return C.text(self.error, t, "caption", t.palette.error, max_lines=1,
                           overflow=ft.TextOverflow.ELLIPSIS,
                           tooltip=self.error)
-        hint = "只读 · 概览 / 查库 / 回读校验不写库" if not self.loading else self.phase
+        hint = "只读 · 本页不写库" if not self.loading else self.phase
         return C.text(hint, t, "caption", t.palette.text_faint, max_lines=1)
 
     def _copy(self, text: str) -> None:

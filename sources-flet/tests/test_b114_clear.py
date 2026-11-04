@@ -131,7 +131,9 @@ def test_log_console_wraps_list_in_selection_area_and_has_copy_button():
     console = C.LogConsole(t, height=150)
     box = console._log_box.content
     assert isinstance(box, ft.Column)
-    area = box.controls[-1]
+    host = box.controls[-1]
+    assert isinstance(host, ft.Container) and host.expand is True
+    area = host.content
     assert isinstance(area, ft.SelectionArea)
     assert area.content is console.list
     labels = [str(getattr(btn, "content", ""))

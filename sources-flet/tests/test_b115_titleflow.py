@@ -89,7 +89,7 @@ def test_issue_header_has_only_h1_and_desc_on_empty_and_step():
     assert _texts(root).count("整期装配") == 1
     assert page._child_title.value == "整期装配"
     # 批 117：无期目录时详情只是空态；有期目录才构建步骤页。
-    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in _texts(
+    assert "还没有选择期目录" in _texts(
         page._content_box)
     page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")

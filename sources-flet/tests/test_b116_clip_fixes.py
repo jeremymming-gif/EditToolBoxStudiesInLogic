@@ -194,7 +194,10 @@ def test_fieldfix_scroll_table_ends_with_bottom_safety_pad():
     table = view._table()
     assert isinstance(table, ft.Container) and table.expand is True
     column = table.content
-    assert isinstance(column, ft.Column) and column.scroll == ft.ScrollMode.AUTO
+    # 批 118 D2：字段归位主表改常显条（6px 可拖），仍保留尾部安全留白。
+    assert isinstance(column, ft.Column)
+    assert isinstance(column.scroll, ft.Scrollbar)
+    assert column.scroll.thumb_visibility is True
     last = column.controls[-1]
     assert isinstance(last, ft.Container) and last.content is None
     assert last.height == view.t.px(BF.TABLE_BOTTOM_PAD) >= 12

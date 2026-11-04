@@ -86,7 +86,7 @@ def test_every_function_page_has_embedded_issue_row():
 def test_empty_state_is_shared_across_four_pages():
     page, _root = _build_issue()
     assert page.field("issue_dir") == ""
-    sentence = "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）"
+    sentence = "还没有选择期目录"
     for view in page.VIEWS:
         detail = page._build_step_page(view["steps"][0])
         labels = _texts(detail)
@@ -165,7 +165,7 @@ def test_clear_issue_shows_empty_state_without_leaving_page():
     page._clear_issue()
     assert page.selected == "compileall", "清空目录不跳走"
     assert page._view_of_step(page.selected) == "produce"
-    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in \
+    assert "还没有选择期目录" in \
         _texts(page._content_box)
 
 
@@ -181,7 +181,7 @@ def test_merge_zero_pages_is_warning_not_success():
     assert page._state_of("merge") == "warn"
     # 正常篇数仍显示成功（防过度收紧）。
     page._merge_info = {"pages": 47, "path": "/tmp/out.pdf"}
-    assert any("✅ 合并完成 · 47 页" in value for value in _texts(page._merge_result()))
+    assert any("合并完成 · 47 页" in value for value in _texts(page._merge_result()))
 
 
 # ── 10. 清理预演失败：不再拦死清理；失败原因内联末 3 行 ────────────────
@@ -230,7 +230,7 @@ def test_toc_text_only_is_passed_and_annotated(tmp_path, monkeypatch):
     panel = TOC.TocPanel(page)
     asyncio.run(panel._generate_task())
     assert captured.get("text_only") is True, "toc.py 生成任务必须透传 text_only"
-    assert any("仅生成 tex，未落位 000" in value
+    assert any("仅生成 tex，未写入 000" in value
                for value in _texts(panel.feedback))
 
 

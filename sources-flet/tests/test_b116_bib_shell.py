@@ -137,7 +137,8 @@ def test_page_shell_header_body_dock_do_not_touch_status_bar() -> None:
     assert shell.border_radius.top_left == t.px(10)
     assert shell._bib_header.height == 72
     assert shell._bib_body.padding.left == 24
-    assert shell._bib_body.padding.right == 24
+    # 批 118 D2：右 24 + 6 给常显滚动条留位（24/12 设计 px 不变）。
+    assert shell._bib_body.padding.right == 30
     assert shell._bib_title.value == "引用库"
     assert shell._bib_title.size == 22
     assert shell._bib_meta.size == 11
@@ -357,7 +358,7 @@ def test_state_banner_covers_all_seven_states() -> None:
     assert failure._bib_stderr is not None
     banner = failure.controls[0]
     copy_btn = banner.content.controls[2]
-    assert copy_btn.content == "复制 stderr"
+    assert copy_btn.content == "复制错误"
     copy_btn.on_click(None)
     assert len(page.tasks) == 1  # Clipboard 协程交给 page.run_task，不阻塞 UI
 
@@ -514,11 +515,13 @@ def test_table_scroll_x_fixed_width_fallback_is_documented() -> None:
     # scroll_x 只保留一个 body（表头在 body 的横向 grid 里）；否则会出现两条表头。
     assert len(tree.controls) == 1
     body = tree.controls[0]
-    assert isinstance(body, ft.ListView) and body._bib_scroll_x is True
-    scroller = body.controls[0]
+    # 批 118 D2：改为两轴容器——外层 Container 定视口，横条常显且在视口底缘。
+    assert isinstance(body, ft.Container) and body._bib_scroll_x is True
+    scroller = body.content
     assert isinstance(scroller, ft.Row) and scroller.scroll is not None
     grid = scroller.controls[0]
-    assert grid.width == table._total_width()
+    assert isinstance(grid, ft.Column)
+    assert grid.width == t.px(table._total_width())
     assert "sticky" in T.STICKY_FALLBACK_NOTE
     assert "首列" in T.STICKY_FALLBACK_NOTE
 

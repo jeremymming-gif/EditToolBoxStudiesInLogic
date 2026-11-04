@@ -147,7 +147,7 @@ def test_issue_empty_state_is_centered_card_with_picker_cta():
     card = empty
     assert card.bgcolor == page.t.palette.surface
     texts = [ctl.value for ctl in _walk(empty) if isinstance(ctl, ft.Text)]
-    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in texts
+    assert "还没有选择期目录" in texts
     cta = [ctl for ctl in _walk(empty) if isinstance(ctl, ft.FilledButton)]
     assert len(cta) == 1 and str(cta[0].content) == "选择期目录"
     assert cta[0].icon == C.ic("FOLDER_OPEN")
@@ -159,7 +159,7 @@ def test_issue_empty_state_is_centered_card_with_picker_cta():
 
 def test_issue_empty_state_same_across_widths_and_views():
     page, _root = _build_issue()
-    sentence = "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）"
+    sentence = "还没有选择期目录"
     for width in (1240, 1160, 1000, 880):
         page.app._design_width = lambda w=width: w
         for view in page.VIEWS:
@@ -182,7 +182,7 @@ def test_issue_on_resize_keeps_current_view_empty_state():
     page.on_resize()
     assert page.selected == "toc"
     assert page._shell.controls == [page._nav_box, page._content_box]
-    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in [
+    assert "还没有选择期目录" in [
         ctl.value for ctl in _walk(page._content_box) if isinstance(ctl, ft.Text)]
     page.app._design_width = lambda: 880
     page.on_resize()
@@ -249,7 +249,8 @@ def test_settings_page_white_sheet_and_four_groups(tmp_path):
     assert root.border_radius.top_left == t.radius("panel")
     body = root.content
     assert isinstance(body, ft.Column)
-    groups = body.controls[1:]
+    # 批 118 P1-1：滚动 Column 内先包一层右缘 6px 留白容器，再是原内容。
+    groups = body.controls[0].content.controls[1:]
     assert len(groups) == 4
     labels = [group.controls[0].controls[0].controls[0].value for group in groups]
     assert labels == ["引擎与环境", "外观", "窗口与托盘", "路径与关于"]
@@ -276,7 +277,7 @@ def test_settings_engine_rows_merge_envcheck_and_use_kv_row(tmp_path):
     page, root = _build_settings(tmp_path)
     t = page.t
     body = root.content
-    engine_group = body.controls[1]
+    engine_group = body.controls[0].content.controls[1]
     note = engine_group.controls[1]
     assert isinstance(note, ft.Row)  # inline_note：状态点 + 状态/版本
     note_text = [str(ctl.value) for ctl in note.controls if isinstance(ctl, ft.Text)]

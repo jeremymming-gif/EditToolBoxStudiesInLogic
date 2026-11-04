@@ -24,15 +24,15 @@ ROLE = "readonly"
 COLUMN_W = 720
 VERIFY_KEYS = ("bibdb.verify_max", "bibdb.verify_plan",
                "bibdb.verify_all_refs", "bibdb.lookup_enabled")
-SWITCHES = (("bibdb.verify_plan", "先算账（--verify-plan）"),
-            ("bibdb.verify_all_refs", "允许全量核实（--verify-all-refs）"),
-            ("bibdb.lookup_enabled", "先查引用库（默认开）"))
+SWITCHES = (("bibdb.verify_plan", "先算账（不花钱）"),
+            ("bibdb.verify_all_refs", "允许全量核实"),
+            ("bibdb.lookup_enabled", "先查引用库"))
 
 # 每个开关的真实语义（键名来自 settings_store；说明来自引擎 --help / bibdb 文档）。
 SWITCH_HINTS = {
-    "bibdb.verify_plan": "只打印核实范围与预计检索 / AI 次数后退出；不建任务书、不检索、不调 AI。",
-    "bibdb.verify_all_refs": "越过默认 120 条闸门，正文未引用的条目也核实；可能产生 API 费用。",
-    "bibdb.lookup_enabled": "核实前先查本地已核实库；命中则跳过检索 / AI（关闭 = --no-bibdb）。",
+    "bibdb.verify_plan": "只算范围与费用，不检索、不调 AI。",
+    "bibdb.verify_all_refs": "越过 120 条上限；可能产生费用。",
+    "bibdb.lookup_enabled": "命中本地已核实库就跳过检索与费用。",
 }
 
 
@@ -262,7 +262,7 @@ class BibPrefsView:
         for value in (payload.get("error"), res.get("error"), res.get("stderr")):
             if value:
                 return _text(value).strip().splitlines()[0][:300]
-        return f"引擎退出码 {res.get('code')}"
+        return "引擎没有返回原因。"
 
     # ── 01 库 ────────────────────────────────────────────────────────
     def _db_stats(self) -> tuple[str, str, str, str]:
@@ -345,7 +345,7 @@ class BibPrefsView:
                 return
             except Exception:  # noqa: BLE001
                 pass
-        self._notify("无法打开访达（宿主未接线）")
+        self._notify("无法打开访达")
 
     def _group_db(self) -> ft.Control:
         t = self.t
@@ -362,17 +362,17 @@ class BibPrefsView:
         ]
         if not exists:
             rows.append(C.inline_note(
-                "库文件不存在。先去入藏导入，或检查笔记仓路径。", t, tone="warn",
+                "库文件不存在；先导入或检查路径。", t, tone="warn",
                 action=C.text_button("去入藏", lambda e: self._goto("import"), t)))
         return ft.Column(spacing=0, controls=[
-            C.section_label("01  库", t), C.hairline(t), *rows])
+            C.section_label("01 库", t), C.hairline(t), *rows])
 
     # ── 02 核实 ──────────────────────────────────────────────────────
     def _group_verify(self) -> ft.Control:
         t = self.t
         field = C.floating_field(
             t, "核实上限", value=self.verify_max, width=t.px(200),
-            hint="留空 = 引擎默认 120；0 = 不限",
+            hint="留空 120 条；0 = 不限",
             error=self.verify_error or None,
             on_change=self._on_verify_change, on_submit=lambda e: self._save())
         switches = [self._switch_row(key, label) for key, label in SWITCHES]
@@ -384,7 +384,7 @@ class BibPrefsView:
         save = C.primary_button("保存设置", lambda e: self._save(), t,
                                 disabled=not self._dirty())
         return ft.Column(spacing=t.sp("1"), controls=[
-            C.section_label("02  核实边界", t), C.hairline(t),
+            C.section_label("02 核实", t), C.hairline(t),
             ft.Row(spacing=t.sp("2"), controls=[field, save]),
             *switches, *( [receipt] if receipt is not None else []),
         ])
@@ -439,7 +439,7 @@ class BibPrefsView:
         if key == "bibdb.verify_all_refs" and value:
             dialog = S.danger_confirm(
                 self._flet(), self.t, title="允许全量核实？",
-                message="会为未被正文引用的条目花钱；期 87 实测 376 条 $1.8+。",
+                message="会为未被正文引用的条目付费；按次计费。",
                 impact="按次计费 · 可随时关掉", confirm_label="仍然开启",
                 on_confirm=lambda e: self._force_switch(key, True))
             if dialog is not None:
@@ -484,7 +484,7 @@ class BibPrefsView:
         if ok:
             self.receipt = f"已保存 · {now} · settings.json"
             self.receipt_tone = "success"
-            self._notify("设置已保存（settings.json）")
+            self._notify("设置已保存")
         else:
             self.receipt = "未保存 · 设置存储不可用"
             self.receipt_tone = "warn"
@@ -500,11 +500,11 @@ class BibPrefsView:
         if git.get("ok"):
             return ""
         if git.get("conflict"):
-            return "工作区有未解决的冲突"
+            return "工作区有未解决冲突"
         if git.get("merge"):
             return "仓库正在合并中"
         if git.get("rebase"):
-            return "仓库正在变基中"
+            return "仓库正在变基"
         return _text(git.get("error")) or "不是 git 仓库"
 
     def _ahead(self) -> int:
@@ -519,7 +519,7 @@ class BibPrefsView:
         branch = _text(git.get("branch"))
         dirty = bool(git.get("dirty_db") or git.get("dirty_other"))
         line = " · ".join(part for part in (
-            f"分支 · HEAD → {branch or '—'} · {_sha8(head)}",
+            f"{branch or '—'} · HEAD {_sha8(head)}",
             "工作区干净" if not dirty else "工作区有未提交改动") if part)
         actions = ft.Row(spacing=t.sp("1"), wrap=True, controls=[
             C.secondary_button("提交…", self._commit_click, t, disabled=not ok),
@@ -528,11 +528,11 @@ class BibPrefsView:
         ])
         hint = "" if ok else problem
         controls = [
-            C.section_label("03  Git", t, trailing=ft.Row(
+            C.section_label("03 Git", t, trailing=ft.Row(
                 spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
-                    C.text("本地提交 · 不推送", t, "caption", t.palette.text_muted),
-                    C.badge("本地 git · 可用" if ok else "不可用",
+                    C.text("只提交本地", t, "caption", t.palette.text_muted),
+                    C.badge("git 可用" if ok else "不可用",
                             t, tone="success" if ok else "warn"),
                 ])),
             C.hairline(t),
@@ -559,7 +559,7 @@ class BibPrefsView:
                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                            controls=[
                 ft.Column(spacing=0, expand=True, controls=[
-                    C.text("回退会生成一条新提交（不推送），只动 bibliography.jsonl。",
+                    C.text("回退 = 新提交（不推送），只动 bibliography.jsonl。",
                            t, "caption", p.text, max_lines=2),
                     C.text(live, t, "caption",
                            p.success if head == self.loaded_head else p.error),
@@ -569,8 +569,7 @@ class BibPrefsView:
 
     def _commit_message(self) -> str:
         head = _sha8(_text((self.git or {}).get("head")))
-        return (f"只提交 bib_db/bibliography.jsonl，库 sha {head}；不推送。"
-                f"（不影响其它文件）")
+        return f"只提交 bibliography.jsonl · 库 sha {head} · 不推送。"
 
     def _commit_click(self, e=None) -> None:
         if not self._git_ok():
@@ -591,7 +590,7 @@ class BibPrefsView:
         ahead = self._ahead()
         C.confirm(
             self._flet(), self.t, title="推送到 origin/main？",
-            message=(f"推送到 origin/main，{ahead} 条提交，库 sha "
+            message=(f"推送 {ahead} 条提交到 origin/main · 库 sha "
                      f"{_sha8(_text((self.git or {}).get('head')))}。"),
             confirm_label="推送", on_confirm=lambda e: self._task(
                 lambda: self._git_write("push")))
@@ -601,7 +600,7 @@ class BibPrefsView:
             return
         self.busy = True
         self.state = "running"
-        self.stage = "提交中…" if action == "commit" else "推送中…"
+        self.stage = "运行中"
         self._render()
         db = self._db()
         try:
@@ -615,7 +614,7 @@ class BibPrefsView:
         self.busy = False
         if isinstance(result, dict) and result.get("ok"):
             self.state = "ready"
-            self.receipt = (f"已提交 {_sha8(_text(result.get('sha')))}（未推送）"
+            self.receipt = (f"已提交 {_sha8(_text(result.get('sha')))} · 未推送"
                             if action == "commit" else "已推送")
             self.receipt_tone = "success"
             self._notify(self.receipt)
@@ -642,11 +641,10 @@ class BibPrefsView:
             self._render()
             return
         dialog = S.danger_confirm(
-            self._flet(), self.t, title="回退引用库到上一个提交？",
-            message=("把 …bib_db/bibliography.jsonl 恢复到上一个提交的版本，"
-                     "再生成一条新提交；其它文件不动。"),
-            impact="影响文件 1 个 · 新增提交 1 条 · 其它文件 0 个",
-            confirm_label="回退并生成新提交",
+            self._flet(), self.t, title="回退到上一个提交？",
+            message="恢复到上一个提交的版本，只动 bibliography.jsonl。",
+            impact="1 个文件 · 1 条新提交",
+            confirm_label="回退并提交",
             on_confirm=lambda e: self._task(self._rollback))
         if dialog is not None:
             self._render()
@@ -656,7 +654,7 @@ class BibPrefsView:
             return
         self.busy = True
         self.state = "running"
-        self.stage = "回退中…"
+        self.stage = "运行中"
         self._render()
         try:
             result = await asyncio.to_thread(GIT.rollback, self._db(),
@@ -666,7 +664,7 @@ class BibPrefsView:
         self.busy = False
         self.state = "ready"
         if isinstance(result, dict) and result.get("ok"):
-            self.receipt = f"已回退 · 生成新提交 {_sha8(_text(result.get('sha')))}（未推送）"
+            self.receipt = f"已回退 · 新提交 {_sha8(_text(result.get('sha')))} · 未推送"
             self.receipt_tone = "success"
             self._notify(self.receipt)
             self._task(self._load)
@@ -682,8 +680,7 @@ class BibPrefsView:
         t = self.t
         engine = _text((self.stats or {}).get("engine_version")) or "1.6.1"
         return ft.Container(content=C.text(
-            f"本页不写库内容 · 推送/回退只在此页 · v1.6.1（引擎 {engine}）"
-            f"· 配置存 settings.json", t, "caption", t.palette.text_faint,
+            f"推送/回退只在此页 · v1.6.1 · settings.json", t, "caption", t.palette.text_faint,
             max_lines=1))
 
     # ── 渲染 ─────────────────────────────────────────────────────────
@@ -708,10 +705,9 @@ class BibPrefsView:
                                ft.Column(spacing=0, expand=True,
                                          alignment=ft.MainAxisAlignment.CENTER,
                                          controls=[
-                                             C.text("影响 1 个文件（bibliography.jsonl）"
-                                                    "· 生成 1 条新提交 · 不推送",
+                                             C.text("1 个文件 · 1 条新提交 · 不推送",
                                                     t, "caption", p.text, max_lines=2),
-                                             C.text("提交只含 bibliography.jsonl；"
+                                             C.text("只含 bibliography.jsonl；"
                                                     "推送 / 回退只在设置页",
                                                     t, "caption", p.text_muted,
                                                     max_lines=2),
@@ -722,9 +718,9 @@ class BibPrefsView:
 
     def _body(self) -> ft.Control:
         t = self.t
-        meta = f"库 {self._db() or '—'} · 保存只写 settings.json · 不写库内容"
+        meta = "保存只改设置，不动库"
         scroll = ft.Column(
-            spacing=0, expand=True, scroll=ft.ScrollMode.AUTO, controls=[
+            spacing=0, expand=True, scroll=S.scrollbar(), controls=[
                 self._state_line(),
                 self._group_db(),
                 ft.Container(height=t.px(12)),
@@ -756,16 +752,16 @@ class BibPrefsView:
     def _state_line(self) -> ft.Control:
         t = self.t
         if self.state == "loading":
-            return S.state_banner(t, "loading", message="读取中…")
+            return S.state_banner(t, "loading", message="运行中")
         if self.state == "running":
-            return S.state_banner(t, "running", stage=self.stage or "提交中…",
+            return S.state_banner(t, "running", stage=self.stage or "运行中",
                                   page=self._flet())
         if self.error:
             return S.state_banner(t, "failure", message=self.error,
                                   stderr=self.stderr or None, page=self._flet())
         if self.stale:
             return S.stale_notice(t, title="HEAD 已变化",
-                                  detail="页面载入后 HEAD 变了，请先重新读取。",
+                                  detail="载入后 HEAD 变了，请重新读取。",
                                   on_repreview=lambda e: self._task(self._load))
         return ft.Container(height=t.px(4))
 
@@ -775,4 +771,4 @@ class BibPrefsView:
             nav(view)
             return
         self._store_set("bib_view", view)
-        self._notify("已记录跳转目标；宿主接线后即可切换")
+        self._notify("暂不可跳转")

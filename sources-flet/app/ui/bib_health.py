@@ -80,9 +80,9 @@ def count_hint(item: dict) -> str:
     if code == "conflict_pending":
         return f"{int(item.get('pending_total') or 0)} 处差异；去待处理"
     if code == "near_duplicates":
-        return "两两近似；可标记为不同条目"
+        return "相似；可标为不重复"
     if code == "duplicate_content":
-        return "内容相同的一组；可整组确认"
+        return "内容相同；可整组确认"
     return str(item.get("action") or "")
 
 
@@ -358,7 +358,7 @@ class HealthView:
     async def _apply_ack(self) -> None:
         pairs = self._ack_pairs()
         if not pairs:
-            self.error = "没有可确认的重复对；先展开行核对 keys。"
+            self.error = "没有可确认的重复对；先展开核对 key。"
             self.staged = False
             self._refresh()
             return
@@ -395,7 +395,7 @@ class HealthView:
         self._task_running = False
         self.staged = False
         if not self.error:
-            self.success = f"已写 {added} 项（清单 {len(pairs)}→{len(pairs) + added}），库未改"
+            self.success = f"已标记 {added} 项 · 清单 {len(pairs)}→{len(pairs) + added} · 库未改"
             self.selected.clear()
             self._mark("bib_health_ack", added=added)
             self._schedule(self._load)
@@ -458,20 +458,20 @@ class HealthView:
         errors = int(counts.get("errors") or 0)
         items = [
             {"label": "警告项", "value": _num(counts.get("warnings")),
-             "hint": "警告句数，不是记录数", "tone": "warn"},
+             "hint": "警告句数（非记录数）", "tone": "warn"},
             {"label": "错误", "value": _num(errors),
-             "hint": ">0 时先修错误，不看下表" if errors else "errors 0",
+             "hint": "有错先修，再看下表" if errors else "无错误",
              "tone": "error" if errors else ""},
             {"label": "规则类", "value": _num(classes),
-             "hint": "warning_items 条数", "tone": ""},
+             "hint": "规则类数", "tone": ""},
             {"label": "已确认", "value": _num(counts.get("near_duplicates_acknowledged")),
-             "hint": "仅近似重复 ack", "tone": ""},
+             "hint": "仅近似重复", "tone": ""},
         ]
         return S.summary_band(t, items)
 
     def _filter(self) -> ft.Control:
         t = self.t
-        field = C.text_field(t, value=self.text, hint_text="规则名 / code / 示例 key",
+        field = C.text_field(t, value=self.text, hint_text="规则名或示例 key",
                              on_change=self._on_text, width=260)
         field._bib_search_field = True
         rules = [("", "全部规则")] + [(item.get("code"), rule_label(str(item.get("code"))))
@@ -584,14 +584,15 @@ class HealthView:
                               t, height=22),
             ]))
         if not lines:
-            lines.append(C.text("引擎没有返回记录样本（--with-records 为空）。", t,
+            lines.append(C.text("没有记录样本。", t,
                                 "caption", t.palette.text_faint))
         top = f"共 {int(item.get('count') or len(records))} 项 · 最多展示 4 条"
-        return ft.Container(
-            height=t.px(112), padding=ft.Padding(left=t.px(62), right=t.px(8),
-                                                 top=t.px(6), bottom=t.px(6)),
+        box = ft.Container(
+            # 最多 5 行样例，shrink-wrap：页体是唯一滚动者，滚轮不被这层吞掉。
+            padding=ft.Padding(left=t.px(62), right=t.px(8),
+                               top=t.px(6), bottom=t.px(6)),
             bgcolor=t.palette.surface_2,
-            content=ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO, controls=[
+            content=ft.Column(spacing=0, controls=[
                 ft.Row(controls=[
                     C.text(top, t, "caption", t.palette.text_faint),
                     ft.Container(expand=True),
@@ -600,6 +601,8 @@ class HealthView:
                 ]),
                 *lines,
             ]))
+        box._bib_shrink = True
+        return box
 
     def _batch(self) -> ft.Control | None:
         t = self.t
@@ -618,7 +621,7 @@ class HealthView:
         before = int(self.counts.get("near_duplicates_acknowledged") or 0)
         return S.confirm_bar(
             t, consequence=f"影响 {len(pairs)} 项 · 清单 {before}→{before + len(pairs)}",
-            detail="只写 health-ignore.json sidecar；不改 bibliography.jsonl。",
+            detail="只写忽略清单，不改库内容。",
             sha=(self.db_sha[:8] + "…") if self.db_sha else None,
             on_confirm=lambda e: self.confirm_ack(),
             confirm_label="确认标记",
@@ -634,7 +637,7 @@ class HealthView:
                                           lambda e: self.load_more(), t, height=28))
         controls.append(ft.Container(expand=True))
         if self.report_time:
-            controls.append(C.text_button(f"打开上次报告 · {self.report_time} 生成",
+            controls.append(C.text_button(f"上次报告 · {self.report_time}",
                                           lambda e: self._open_report(), t, height=28))
         return ft.Row(spacing=t.sp("1"), controls=controls)
 
@@ -671,11 +674,11 @@ class HealthView:
             parts.append(S.state_banner(t, "cancelled",
                                         message=f"已取消，显示 {self.last_check} 的结果。"))
         if self.running and not self.loading:
-            parts.append(S.state_banner(t, "running", message="体检中…",
+            parts.append(S.state_banner(t, "running", message="运行中",
                                         on_cancel=lambda e: self.cancel(),
                                         page=self.page.page))
         if self.loading and not self.loaded:
-            parts.append(S.state_banner(t, "loading", message="正在读取库健康…"))
+            parts.append(S.state_banner(t, "loading", message="运行中"))
         if self.loaded and not self.items and not self.error:
             parts.append(S.state_banner(
                 t, "empty", message=f"没有待处理警告 · 上次体检 {self.last_check}",
@@ -690,7 +693,7 @@ class HealthView:
         confirm = self._confirm_bar()
         if confirm is not None:
             parts.append(confirm)
-        return ft.Column(spacing=t.sp("1"), scroll=ft.ScrollMode.AUTO, expand=True,
+        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), expand=True,
                          controls=parts)
 
     def cancel(self) -> None:
@@ -722,7 +725,7 @@ class HealthView:
     def _dock(self) -> ft.Control:
         t = self.t
         if self.running:
-            return C.text("体检中…", t, "caption", t.palette.text_muted)
+            return C.text("运行中", t, "caption", t.palette.text_muted)
         return C.text(f"上次体检 {self.last_check or '—'} · 只读",
                       t, "caption", t.palette.text_faint)
 
@@ -731,8 +734,8 @@ class HealthView:
         return S.page_shell(
             self.t, title=TITLE,
             meta=(f"{_num(self.counts.get('warnings'))} 条警告 · "
-                  f"{len(self.items)} 类 · errors {_num(self.counts.get('errors'))}"
-                  if self.loaded else "正在读取库健康…"),
+                  f"{len(self.items)} 类 · {_num(self.counts.get('errors'))} 错误"
+                  if self.loaded else "运行中"),
             role_chip="readonly",
             action=C.secondary_button("生成报告", lambda e: self.make_report(), self.t,
                                       height=28),

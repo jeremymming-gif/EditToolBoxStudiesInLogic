@@ -302,9 +302,9 @@ class BibImportView:
         controls: list = [
             C.card(ft.Column(spacing=t.sp("1"), controls=[
                 C.section_title("入藏", t, note="预览只算不写；确认后才写库"),
-                C.text("三种来源：回读校验导出的 .bib 文件 / 整期成品目录 / 直接粘贴 bib 文本。"
-                       "预览会显示新增、更新、冲突条数与逐条明细；写库前校验库 sha256，"
-                       "写成功后自动本地提交（只提交 bib_db/bibliography.jsonl）。",
+                C.text("三种来源：回读导出的 .bib / 整期成品目录 / 粘贴 bib 文本。"
+                       "预览显示新增、更新、冲突条数；写库前校验库 sha256，成功后自动本地提交"
+                       "（只提交 bib_db/bibliography.jsonl）。",
                        t, "caption", t.palette.text_muted),
                 chips,
                 *source,
@@ -469,11 +469,11 @@ class BibImportView:
         meta = ("整期目录（期/篇由目录名推导）" if self.mode == "dir"
                 else f"期：{self.issue or '未指定'}；篇：{self.slug or '未指定'}；"
                      f"{'已核实 --verified' if self.verified else '未核实 --unverified'}")
-        message = (f"将写入引用库：新增 {counts['new']} 条、更新 {counts['updated']} 条、"
+        message = (f"将写入：新增 {counts['new']} 条、更新 {counts['updated']} 条、"
                    f"冲突 {counts['conflicts']} 条（共解析 {counts['entries']} 条）。\n"
                    f"入藏口径：{meta}\n"
                    f"库：{db}\n"
-                   "写前校验库 sha256（不符即拒绝、零写入）；写成功后自动本地提交，"
+                   "写前校验库 sha256，不符即拒绝、零写入；成功后自动本地提交，"
                    "只提交 bib_db/bibliography.jsonl，不推送。")
         C.confirm(self.page.page, self.t, title="确认写入引用库？", message=message,
                   confirm_label="写入", on_confirm=lambda e: self.page.page.run_task(self._write))
@@ -551,15 +551,15 @@ class BibImportView:
             details.append(C.text(f"… 其余 {len(rows) - 20} 条变化未展开", t, "caption",
                                   t.palette.text_faint))
         if not details:
-            details.append(C.text("没有条目变化（幂等：这些内容早已在库里）", t, "small",
+            details.append(C.text("没有条目变化（这些内容已在库里）", t, "small",
                                   t.palette.text_muted))
         warnings = import_warnings(payload)
         controls: list = [
-            C.section_title("预览结果", t, note="dry-run：库文件一个字节都没动"),
+            C.section_title("预览结果", t, note="dry-run：库文件未改动"),
         ]
         if self._preview_stale():
             controls.append(C.notice_bar(
-                "输入已变更，此预览已过期；请「重新预览」后再确认写入（写库按钮已禁用）。",
+                "输入已变更，预览过期；请「重新预览」后再写入（写入按钮已禁用）。",
                 t, "warn"))
         controls += [
             cards,
@@ -587,7 +587,7 @@ class BibImportView:
                 f"冲突 {counts['conflicts']} 条；库 sha256 "
                 f"{sha_short(str(payload.get('db_sha256_before') or ''), 16)} → "
                 f"{sha_short(str(payload.get('db_sha256_after') or ''), 16)}"
-                if written else "库无变化（幂等，未重写、未生成提交）。")
+                if written else "库无变化（未重写、未生成提交）。")
         controls: list = [C.section_title("写入结果", t, note="已写库" if written else "无变化"),
                           C.text(line, t, "small", t.palette.text)]
         commit = self.commit or {}

@@ -144,7 +144,8 @@ def test_flat_nav_is_scrollable_with_all_rows_at_1160x780() -> None:
     nav = _nav_column(app)
     # 8 行 = 2 段标签（工作区/系统）+ 3 工作区叶 + 1 引用库叶 + 2 系统叶
     assert len(nav.controls) == 8
-    assert nav.scroll == ft.ScrollMode.ALWAYS, "780 高必须常显滚动条，否则用户不知道下面还有内容"
+    assert isinstance(nav.scroll, ft.Scrollbar)
+    assert nav.scroll.thumb_visibility is True, "780 高必须常显滚动条，否则用户不知道下面还有内容"
     labels = _texts(nav)
     for wanted in ("工作台", "单篇稿件", "整期装配", "引用库",
                    "系统", "设置", "帮助与关于"):
@@ -157,12 +158,14 @@ def test_flat_nav_is_scrollable_with_all_rows_at_1160x780() -> None:
     assert labels[-3:] == ["系统", "设置", "帮助与关于"]
 
 
-def test_short_windows_show_scrollbar_and_tall_windows_use_auto() -> None:
+def test_short_and_tall_windows_use_always_scrollbar() -> None:
     assert _sidebar_app(1000, 700)._sidebar_short() is True
     assert _sidebar_app(1160, 780)._sidebar_short() is True
     assert _sidebar_app(1240, 860)._sidebar_short() is False
-    assert _nav_column(_sidebar_app(1000, 700)).scroll == ft.ScrollMode.ALWAYS
-    assert _nav_column(_sidebar_app(1240, 860)).scroll == ft.ScrollMode.AUTO
+    # 批 118 P1-1：高矮窗统一 Scrollbar(thumb_visibility=True)；无溢出时 Flet 不画条。
+    for width, height in ((1000, 700), (1240, 860)):
+        scroll = _nav_column(_sidebar_app(width, height)).scroll
+        assert isinstance(scroll, ft.Scrollbar) and scroll.thumb_visibility is True
     assert SIDEBAR_SCROLL_H == 820
 
 
@@ -170,18 +173,19 @@ def test_compact_rail_keeps_settings_and_help_without_scrollbar_clutter() -> Non
     app = _sidebar_app(680, 700)
     assert app._sidebar_compact() is True
     nav = _nav_column(app)
-    assert nav.scroll == ft.ScrollMode.AUTO, "56px 图标条不常显滚动条"
+    assert isinstance(nav.scroll, ft.Scrollbar), "56px 图标条同样用统一配置（无溢出不画条）"
     # home / single / issue / bib / settings / help：系统两行仍在图标条里。
     assert len(nav.controls) == 6
     assert all(isinstance(row, ft.Container) for row in nav.controls)
     assert _texts(nav) == []  # 紧凑条只有图标，不显示分组标签/文字
 
 
-def test_sidebar_source_keeps_both_scroll_modes_and_guards_height() -> None:
+def test_sidebar_source_uses_shared_scrollbar_and_guards_height() -> None:
     src = inspect.getsource(M.App._sidebar_content)
-    assert "ft.ScrollMode.AUTO" in src
-    assert "ft.ScrollMode.ALWAYS" in src
-    assert "self._sidebar_short()" in src
+    assert "C.scrollbar(t)" in src
+    assert "ft.ScrollMode.AUTO" not in src
+    assert "C.SCROLLBAR_THICKNESS" in src
+    assert "clip_behavior=ft.ClipBehavior.ANTI_ALIAS" in src
     assert SIDEBAR_W == 220
 
 

@@ -47,7 +47,8 @@ def test_page_body_panel_default_keeps_gray_background():
     assert isinstance(box, ft.Container)
     assert box.bgcolor == t.palette.bg
     assert box.border_radius is None
-    assert box.content.scroll == ft.ScrollMode.AUTO
+    assert box.content.scroll == C.scrollbar(t)
+    assert box.content.scroll.thumb_visibility is True
 
 
 def test_page_body_panel_true_is_white_sheet_with_top_radius():

@@ -261,10 +261,10 @@ def _ct_preview_note(page) -> ft.Control:
     preview = _ct_preview(page)
     if cleantemp_preview_ok(page):
         when = str(preview.get("ts") or "")[11:16]
-        return C.text(f"预演：{preview.get('count', 0)} 项待清理 · {when} · "
-                      f"移入 .toolbox-trash/…", t, "caption", t.palette.text_muted)
+        return C.text(f"预演：{preview.get('count', 0)} 项 · {when} · 移入 .toolbox-trash",
+                      t, "caption", t.palette.text_muted)
     if preview and preview.get("mode") == mode and preview.get("issue") == page.field("issue_dir"):
-        return C.text(f"上次预演失败（rc={preview.get('code')}）：{preview.get('error') or '看日志'}",
+        return C.text(f"上次预演失败（退出码 {preview.get('code')}）：{preview.get('error') or '看日志'}",
                       t, "caption", t.palette.error, max_lines=2)
     return C.text("尚未预演：先点右上「预览清理」看数量；预演不动磁盘。", t, "caption",
                   t.palette.text_faint)
@@ -285,11 +285,11 @@ def _restore_row(page) -> ft.Control:
     issue = page.field("issue_dir")
     choices = trash_dirs(issue) if issue else []
     if not choices:
-        return C.text("恢复清理：暂无回收目录（清理后出现在 .toolbox-trash/）", t, "caption",
+        return C.text("暂无回收目录（清理后出现在 .toolbox-trash/）", t, "caption",
                       t.palette.text_faint)
     return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                   controls=[
-        C.text_button(f"恢复清理…（{len(choices)} 个回收目录）",
+        C.text_button(f"恢复清理（{len(choices)} 个目录）",
                       lambda e: restore_dialog(page), t, icon="RESTORE"),
     ])
 
@@ -583,7 +583,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             _log_line(page, _section_end(page, key, status), "error")
             page.app.toast(str(exc))
             page.mark("run_start_error", step=key, error=str(exc))
-            _result_show(page, f"❌ 无法启动：{exc}", "error")
+            _result_show(page, f"失败 · 无法启动：{exc}", "error")
             results.append(_record(key, status))
             _mark_pending(page, results, keys[position + 1:], "skipped")
             break
@@ -607,7 +607,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             page._refresh_steps()
             _log_line(page, _section_end(page, key, status), _STATE_LEVELS[state])
             if not cancelled:
-                page._result.show(f"❌ 任务启动失败：{exc}", level="error")
+                page._result.show(f"失败 · 无法启动任务：{exc}", level="error")
                 page.app.toast(f"任务启动失败：{exc}")
                 page.app.mark("run_start_error", step=key, error=str(exc))
             results.append(_record(key, status))
@@ -637,9 +637,9 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             await CK.after_issue_step(page, key, call, code, cancelled, artifact)
             after_step(page, key, call, code, cancelled, artifact)
         except Exception as exc:  # noqa: BLE001
-            _log_line(page, f"⚠ 步骤后处理失败：{type(exc).__name__}: {exc}", "warn")
+            _log_line(page, f"步骤后处理失败：{type(exc).__name__}: {exc}", "warn")
         if cancelled:
-            _result_show(page, "⏹ 已取消当前步骤（后续步骤未启动）", "warn", artifact)
+            _result_show(page, "已取消当前步骤（后续步骤未启动）", "warn", artifact)
         else:
             _result_show(page, EB.result_text(call.entry, code),
                          EB.result_level(call.entry, code), artifact)
@@ -687,8 +687,7 @@ def run_step(page, key: str) -> None:
             _start(page, key, call)
 
         C.confirm(page.page, page.t, title="确认清理临时文件？",
-                  message="临时文件将移入本期回收目录（.toolbox-trash）（期目录内 .toolbox-trash），"
-                          "可从回收站或该目录恢复；本页不提供永久删除。",
+                  message="临时文件会移入期目录的 .toolbox-trash（可恢复）；本页不做永久删除。",
                   confirm_label="开始清理", on_confirm=_confirmed)
         return
     if key == "dirpush":

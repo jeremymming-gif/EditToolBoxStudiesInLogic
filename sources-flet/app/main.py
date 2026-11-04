@@ -568,7 +568,7 @@ class App:
             self.tray_enabled = False
             self.store.set("tray_enabled", False)
             self.persist()
-            self.toast("托盘启动失败，已回退为关闭窗口即退出（可稍后重试）。")
+            self.toast("托盘启动失败，已回退：关闭窗口即退出。")
         return result
 
     def set_tray_enabled(self, value: bool) -> None:
@@ -1417,13 +1417,13 @@ class App:
                                    t.palette.text_faint))
                 nav_items.append(leaf)
 
-        # 导航超高时内部滚动；短窗口常显滚动条（批 115 P1-12），主题开关与引擎
-        # 页脚固定在最底部。compact 图标条只有 6 项，用 AUTO 避免窄条里出现长条。
-        nav_scroll = ft.ScrollMode.AUTO
-        if not compact and self._sidebar_short():
-            nav_scroll = ft.ScrollMode.ALWAYS
+        # 导航超高时内部滚动；批 118 P1-1：统一用常显细条（Scrollbar 配置对象，
+        # 无溢出时 Flet 不画条）。右侧留 6px，细条不压导航行；compact 图标条
+        # 宽度宝贵，不留白。
+        nav_scroll = C.scrollbar(t)
         items.append(ft.Container(
             expand=True, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            padding=C._pad(t, 0, 0, 0 if compact else C.SCROLLBAR_THICKNESS, 0),
             content=ft.Column(spacing=0, expand=True, scroll=nav_scroll,
                               controls=nav_items)))
         if compact:
@@ -2007,7 +2007,7 @@ class App:
             # 不弹栈、不影响后续操作（见任务书 §S5 与 b109-parity/report.md）。
             self.mark("settings_save_error", error=str(exc))
             reason = exc.strerror or str(exc) or "未知错误"
-            self.toast(f"设置保存失败：{reason}（设置未写入，请检查磁盘空间与写入权限）")
+            self.toast(f"设置保存失败：{reason}（设置未写入，请检查磁盘空间）")
 
     def save_settings(self, toast: bool = False) -> None:
         self.store.set("last_page", self.current_page_key)
@@ -2093,7 +2093,7 @@ class App:
         self.cancel_requested = True
         self.mark("cancel_requested", pid=getattr(self.proc, "pid", None),
                   entry=self.current_call.entry if self.current_call else "")
-        self.status_bar.set_status("正在停止…")
+        self.status_bar.set_status("停止请求已发送")
         if self.proc is not None:
             EB.kill_tree(self.proc)
         else:
@@ -2152,7 +2152,7 @@ class App:
             self.toast("已取消选择")
             return
         self.mark("picker_error", error=error)
-        self.toast("无法打开文件选择器。可重试「浏览…」，或把路径直接粘贴到输入框。")
+        self.toast("打不开文件选择器：可粘贴路径，或重试「浏览…」。")
 
     def open_path(self, value: str) -> None:
         path = (value or "").strip()
@@ -2360,7 +2360,7 @@ class App:
                 settings_page.ensure_built()
             self.mark("envcheck_first_run_skipped", reason="v1.6.1: first-run auto check disabled")
             try:
-                self.toast("首次启动：建议到「设置 → 环境检查」跑一次，确认 TeX 工具链可用。")
+                self.toast("首次启动：建议到「设置 → 环境检查」运行一次。")
             except Exception:  # noqa: BLE001 - 提示失败不影响启动
                 pass
         bib_query = _env_str("P2_BIB_QUERY")
@@ -2663,7 +2663,7 @@ def _launch() -> None:
             try:
                 subprocess.Popen(
                     ["osascript", "-e",
-                     'display notification "首次启动正在准备运行环境（约 10–30 秒），请稍候…" '
+                     'display notification "首次启动准备运行环境（约 10–30 秒），请稍候…" '
                      'with title "编辑部工具箱"'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
