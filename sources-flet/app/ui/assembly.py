@@ -375,7 +375,7 @@ def restore_dialog(page) -> None:
         actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(page.page), t),
                  C.primary_button("恢复", _go, t)],
     )
-    page.page.show_dialog(dialog)
+    C.show_dialog(page.page, dialog)
 
 
 # ── 调用构建 ─────────────────────────────────────────────────────────────

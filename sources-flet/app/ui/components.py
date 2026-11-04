@@ -2160,13 +2160,32 @@ def _invoke_confirm(cb) -> None:
 _open_dialogs: list = []
 
 
+def show_dialog(page, dialog) -> None:
+    """展示对话框并登记到全局栈（Esc / 取消 / 确认统一走 dismiss_top_dialog）。
+
+    为什么必须登记：批 121 的清理确认框直接 ``page.show_dialog()`` 未入栈，
+    导致「取消」「移入回收目录」点了都关不掉（用户 m02467 反馈）。
+    """
+    _open_dialogs.append(dialog)
+    page.show_dialog(dialog)
+
+
 def dismiss_top_dialog(page) -> bool:
-    """Escape 等全局按键关闭最上层对话框；返回是否真的关掉了一个。"""
-    if not _open_dialogs:
-        return False
-    _open_dialogs.pop()
-    page.pop_dialog()
-    return True
+    """关闭最上层对话框；返回是否真的关掉了一个。
+
+    兼容两类对话框：经 ``show_dialog()`` 登记的与历史未登记的（栈空时仍尝试
+    ``page.pop_dialog()``，避免旧入口再次卡死）。
+    """
+    popped = False
+    if _open_dialogs:
+        _open_dialogs.pop()
+        popped = True
+    try:
+        # Flet 1.0.5：Page.pop_dialog() 返回被关掉的对话框（无对话框时 None）。
+        removed = page.pop_dialog()
+        return popped or removed is not None
+    except Exception:  # noqa: BLE001 —— 测试桩/无对话框时不阻塞
+        return popped
 
 
 def confirm(page: ft.Page, t: Tokens, *, title: str, message: str,

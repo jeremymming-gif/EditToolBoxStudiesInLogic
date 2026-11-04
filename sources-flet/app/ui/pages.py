@@ -1981,7 +1981,7 @@ class IssuePage(BasePage):
                 C.danger_button("覆盖并合并", lambda e: self._merge_confirmed(), t),
             ],
         )
-        self.page.show_dialog(dialog)
+        C.show_dialog(self.page, dialog)
 
     def _merge_confirmed(self) -> None:
         C.dismiss_top_dialog(self.page)
@@ -2052,7 +2052,7 @@ class IssuePage(BasePage):
             actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
                      C.primary_button("开始运行", _start, t)],
         )
-        self.page.show_dialog(dialog)
+        C.show_dialog(self.page, dialog)
 
     def _expand_log(self) -> None:
         self._log_expanded = True
@@ -2990,14 +2990,21 @@ class IssuePage(BasePage):
             rows.append(field)
         dialog = ft.AlertDialog(
             modal=True,
-            title=C.text("开始清理？", t, "h2"),
+            title=ft.Row(
+                spacing=0,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    C.text("开始清理？", t, "h2"),
+                    ft.Container(expand=True),
+                    C.icon_button("CLOSE", "关闭", lambda e: C.dismiss_top_dialog(self.page), t),
+                ]),
             content=ft.Container(width=t.px(520),
                                  content=ft.Column(rows, spacing=t.sp("1"),
                                                    scroll=C.scrollbar(t))),
             actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
                      btn],
         )
-        self.page.show_dialog(dialog)
+        C.show_dialog(self.page, dialog)
 
     def _clean_now(self) -> None:
         C.dismiss_top_dialog(self.page)
