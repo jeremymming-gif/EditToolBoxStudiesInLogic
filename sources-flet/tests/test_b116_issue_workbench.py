@@ -66,25 +66,29 @@ def test_runall_dialog_defaults_and_danger_row():
     assert page._runall_danger.visible is True, "勾 05 必须出现真实删除 danger 行"
 
 
-def test_runall_disabled_without_issue_dir_and_tooltip():
+def test_runall_without_issue_dir_has_no_header_buttons():
     page, _root = _build_issue()
-    page._sync_run_actions()
-    assert page._run_all_btn.disabled is True
-    assert page._run_all_btn.tooltip == "先选择期目录"
-    assert page._header_actions.controls == [page._run_all_btn]
+    page._sync_stop_action()
+    assert page._stop_btn.visible is False
+    assert not hasattr(page, ("_run_" + "all_btn"))
+    assert not hasattr(page, ("_header_" + "actions"))
+    # 无期目录时页头无整期入口；运行整期仍可从键盘/空态 CTA 打开。
+    assert not page.field("issue_dir")
 
 
-# ── 3. 运行中页头改「停止」；失败后出「从失败处继续…」─────────────────
-def test_header_actions_running_and_failed_states():
+# ── 3. 运行中页头只显示「停止」；失败后不再有「从失败处继续…」──────────
+def test_header_stop_visible_only_when_running():
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
     page.app.running = True
-    page._sync_run_actions()
-    assert page._header_actions.controls == [page._stop_btn]
+    page._sync_stop_action()
+    assert page._stop_btn.visible is True
     page.app.running = False
     page._status["compileall"] = ASM.StepStatus("error", exit_code=2)
-    page._sync_run_actions()
-    assert page._header_actions.controls == [page._continue_btn, page._run_all_btn]
+    page._sync_stop_action()
+    assert page._stop_btn.visible is False
+    assert not hasattr(page, ("_continue_" + "btn"))
+    assert not hasattr(page, ("_run_" + "all_btn"))
 
 
 # ── 4. 键盘：⌘1–6 / ↑↓ / Esc ──────────────────────────────────────────

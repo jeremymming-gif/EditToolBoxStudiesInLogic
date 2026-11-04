@@ -727,7 +727,7 @@ class BibImportView:
         # 此时常显条让“这里还能滚”可见。
         scrolling = len(rows) > 8
         table = ft.Column(spacing=0, expand=scrolling,
-                          scroll=S.scrollbar() if scrolling else None,
+                          scroll=C.scrollbar(t) if scrolling else None,
                           controls=[
                               S.table_header_row(t, ["状态", "key", "动作", "题名 / 变化"],
                                                  weights=[0.7, 1.5, 0.8, 3.0],

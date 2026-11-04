@@ -306,7 +306,9 @@ def test_run_all_dialog_still_defaults_to_steps_one_to_four():
 
 def test_header_run_all_log_dock_and_keyboard_unchanged():
     page = _issue_page()
-    assert str(page._run_all_btn.content) == "运行整期…"
+    # 批 120 B-354：页头两按钮删除；键盘与日志 dock 入口不变。
+    assert not hasattr(page, ("_run_" + "all_btn"))
+    assert not hasattr(page, ("_header_" + "actions"))
     assert page._log.dock is True and page.LOG_LIMIT == 2000
     page.activate("infocheck")
     # 批 117：⌘1–4 切四个功能页（不再对应 6 个 step），⌘5/6 仍落到清理/推送页。

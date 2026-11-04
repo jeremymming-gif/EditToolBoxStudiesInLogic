@@ -55,28 +55,6 @@ DETAIL_STACK_BELOW = 1100
 WRITE_HINT = "预览 → 确认 → 写入"
 READONLY_HINT = "只读视图 · 不写库"
 
-# ── 滚动条（批 118 P1-1）────────────────────────────────────────────────────
-# flet 1.0.5 的 ``Scrollbar`` 是 ``scroll=`` 的**配置对象**，不是包裹控件；
-# 本版没有 ``ScrollbarVisibility`` 枚举，``thumb_visibility`` 收 bool。
-# 桌面端 ``scroll_to`` 静默无效，因此“能不能滚”只能靠常显条自己说话。
-SCROLLBAR_T = 6
-
-
-def scrollbar(*, horizontal: bool = False) -> ft.Scrollbar:
-    """常显滚动条：6px、可拖、静止也在；横向条放底部。
-
-    页面级滚动列一律用它（``Column(scroll=S.scrollbar())``），内层表格只在
-    确实需要独立滚动时保留，其余 shrink-wrap 交给页体唯一滚动者。
-    """
-    return ft.Scrollbar(
-        thumb_visibility=True,
-        thickness=SCROLLBAR_T,
-        radius=3,
-        interactive=True,
-        orientation=(ft.ScrollbarOrientation.BOTTOM if horizontal
-                     else ft.ScrollbarOrientation.RIGHT),
-    )
-
 _ROLE_CHIPS = {
     "readonly": ("只读", "neutral", READONLY_HINT),
     "write": ("写库", "accent", WRITE_HINT),
@@ -234,7 +212,7 @@ def page_shell(t: Tokens, *, title: str, meta: str, role_chip: Any = None,
 
     # 右内边距多 6px：常显滚动条压在内容边缘时也不盖住最后一列文字。
     body_box = ft.Container(
-        expand=True, padding=_pad(t, PAGE_H_PAD, 12, PAGE_H_PAD + SCROLLBAR_T, 0),
+        expand=True, padding=_pad(t, PAGE_H_PAD, 12, PAGE_H_PAD + C.SCROLLBAR_THICKNESS, 0),
         content=body,
     )
     children.append(body_box)
@@ -506,7 +484,7 @@ def detail_panel(t: Tokens, *, body: Any, title: str | None = None,
 
     if isinstance(body, (list, tuple)):
         body_ctl = ft.Column(controls=list(body), spacing=t.sp("2"),
-                             scroll=scrollbar(), expand=True,
+                             scroll=C.scrollbar(t), expand=True,
                              horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
         body_ctl._bib_scroll = True
     else:
@@ -522,7 +500,7 @@ def detail_panel(t: Tokens, *, body: Any, title: str | None = None,
     panel = ft.Container(
         width=t.px(width), border=ft.Border(left=_side(t)),
         # 右 6px 给常显条留位，详情正文不被 thumb 压住。
-        padding=_pad(t, 16, 0, SCROLLBAR_T, 0),
+        padding=_pad(t, 16, 0, C.SCROLLBAR_THICKNESS, 0),
         content=ft.Column(spacing=t.sp("2"), expand=True,
                           horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                           controls=content),

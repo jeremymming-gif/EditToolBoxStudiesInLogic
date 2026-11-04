@@ -623,7 +623,7 @@ class NormalizeView:
                          else C.text(self.identified, t, "caption", t.palette.text_muted))
         parts.append(self._conclusion())
         parts.append(self._rows())
-        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), expand=True,
+        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
                          controls=parts)
 
     def _dock(self) -> ft.Control:

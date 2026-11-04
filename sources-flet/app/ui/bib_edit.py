@@ -655,9 +655,9 @@ class BibEditView:
             ft.Container(
                 height=t.px(330), content=ft.Row(
                     spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                    controls=[ft.Column(spacing=0, scroll=S.scrollbar(),
+                    controls=[ft.Column(spacing=0, scroll=C.scrollbar(t),
                                         width=t.px(240), controls=cols[0].controls),
-                              ft.Column(spacing=0, scroll=S.scrollbar(),
+                              ft.Column(spacing=0, scroll=C.scrollbar(t),
                                         width=t.px(240), controls=cols[1].controls)])),
             C.text(footnote or " ", t, "caption", t.palette.text_faint, max_lines=1),
         ])
@@ -713,7 +713,7 @@ class BibEditView:
                 body.append(S.empty_row(t, "没有字段变化"))
             controls.append(ft.Container(
                 height=t.px(210), content=ft.Column(
-                    spacing=0, scroll=S.scrollbar(),
+                    spacing=0, scroll=C.scrollbar(t),
                     controls=[S.table_header_row(t, ["字段", "原值", "新值"],
                                                  weights=[1.0, 1.4, 1.6], mono=(0,))]
                     + body)))

@@ -869,7 +869,7 @@ class BibFieldFixView:
         # 尾部安全留白：滚到底时最后一行与底部常驻条之间留 12 px，不再贴边。
         controls.append(ft.Container(height=t.px(TABLE_BOTTOM_PAD)))
         return ft.Container(expand=True, content=ft.Column(
-            spacing=0, scroll=S.scrollbar(), controls=controls))
+            spacing=0, scroll=C.scrollbar(t), controls=controls))
 
     def _row_control(self, row: dict, mono) -> ft.Control:
         t = self.t

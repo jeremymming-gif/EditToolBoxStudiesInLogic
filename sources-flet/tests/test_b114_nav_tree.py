@@ -407,7 +407,7 @@ def test_issue_activate_switches_overview_alias_to_step_pages() -> None:
     page._flow_desc = ft.Text("")
     page._nav_box = ft.Container()
     page._sync_header = lambda: None
-    page._sync_run_actions = lambda: None
+    page._sync_stop_action = lambda: None
     page._sync_nav = lambda: None
     page._set_expanded = lambda key: None
     page._persist_issue_state = lambda *args, **kwargs: None

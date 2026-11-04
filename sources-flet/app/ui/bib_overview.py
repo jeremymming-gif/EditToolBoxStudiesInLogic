@@ -455,7 +455,7 @@ class OverviewView:
                 spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[ft.Container(expand=True, content=table), detail]))
         parts.append(self._refresh_row())
-        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), expand=True,
+        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
                          controls=parts)
 
     def _detail_grid(self) -> ft.Control:

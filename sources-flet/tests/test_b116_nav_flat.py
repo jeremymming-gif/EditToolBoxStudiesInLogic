@@ -7,11 +7,12 @@
    改由 Bib 白面板顶部的页内导航承载（见 test_b116_bib_inpage_nav.py）。
 3. 22 条路由与 issue 深链 alias 口径不变。
 4. SinglePage h1 固定「单篇稿件」，convert/proofcheck 改为 28 高页内 chip。
-5. 整期行右侧「完成/4」：有当期目录 + issue_state 才显示，行高仍 28。
+5. 整期行右侧不再有「完成/4」进度徽标（批 120 B-353 删除）；行高仍 28。
 6. 主题切换后深色模式开关的 thumb/track 四态颜色跟随新 Tokens（控件原位重建）。
 """
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import flet as ft
@@ -235,7 +236,7 @@ def test_single_chip_click_switches_flow_and_keeps_h1() -> None:
     assert "一校核查" in page._flow_desc.value
 
 
-# ── 6. 整期行进度徽标 ─────────────────────────────────────────────────────
+# ── 6. 整期行：进度徽标已删（批 120 B-353）─────────────────────────────────
 def _issue_data(statuses: dict) -> dict:
     return {
         "recent": {"issue_dir": "/tmp/一期"},
@@ -243,24 +244,29 @@ def _issue_data(statuses: dict) -> dict:
     }
 
 
-def test_issue_row_shows_done_over_four_badge_with_state() -> None:
+def test_issue_row_has_no_done_over_four_progress_badge() -> None:
     data = _issue_data({
         "infocheck": {"state": "done"},
-        "toc": {"state": "warn"},       # 有警告也算完成
+        "toc": {"state": "warn"},       # 旧口径算「完成」，现已不显示
         "merge": {"state": "error"},    # 失败不计
         "cleantemp": {"state": "running"},
     })
     app = _app(data=data)
     row = _row(_nav(app), "整期装配")
-    assert row.height == app.t.px(28), "徽标不得撑高整期行"
-    badge = row.content.controls[-1]
-    assert isinstance(badge, ft.Text)
-    assert badge.value == "1/4"
-    assert badge.size == app.t.font("caption")  # 11px
-    assert badge.color == app.t.palette.text_faint
+    assert row.height == app.t.px(28), "整期行仍为 28 高"
+    assert len(row.content.controls) == 2, "整期行不应再带进度徽标控件"
+    assert not any("/" in str(node.value or "")
+                   for node in _walk(row) if isinstance(node, ft.Text))
 
 
-def test_issue_badge_hidden_without_dir_or_state() -> None:
+def test_issue_badge_helper_construction_removed() -> None:
+    src = inspect.getsource(M.App)
+    assert ("_issue_" + "progress") not in src
+    assert ("done}/{" + "total}") not in src
+    assert ("_issue_" + "progress") not in inspect.getsource(M.App._sidebar_content)
+
+
+def test_issue_row_stays_plain_without_dir_or_state() -> None:
     cases = [
         {},                                              # 无任何状态
         {"issue_state": {"/tmp/x": {"statuses": {"toc": {"state": "done"}}}}},

@@ -27,8 +27,27 @@ from . import fsutil as _fsutil
 from . import infocheck as _ic          # 复用 extract_title / get_line_num（与 Swift 侧是同一份逻辑）
 from . import toctemplate as _tt
 
-#: 目录条目的换行写法（LaTeX 里是 `\\` 两字符）
+#: 目录条目的换行写法（LaTeX 里是 `\\` 两字符）——**表格行结束**。
 _LINEBREAK = "\\\\"
+
+#: 同一单元格内的软换行：两行标题的**第二行**必须用 `\newline`（B-355 D1）。
+#: 从前用的是 `\\`，那是「结束表格行」：第二行根本不在第一行单元格里，tabularx
+#: 把它当成新的一行参与列宽计算；继承模板的负胶（`\hspace{-7.5em}`）没有 `~~~~ `
+#: 前缀抵消，第二行前半截被裁掉（证据：`evidence/b120-toc-analysis/report.md` §3）。
+_CELL_LINEBREAK = "\\newline"
+
+# ── 版心尺寸估算（B-355 D4：宽度守卫与断行上限反推）─────────────────────
+# 数值来源：`evidence/b120-toc-analysis/measurements.txt` 与 xelatex 探针实测
+# （中文 `\large` 下）：130mm 正文宽 = \textwidth 369.88582pt；汉字 12pt/字；
+# `~~~~ ` 前缀 19.56001pt；页码数字 5.88pt/位；中文列距 2em+1.5em ≈ 38.325pt
+# （em=10.95pt）；英文列距 2em ≈ 21.9pt。这些常量只用于**估算告警**，不参与排版。
+_TEXTWIDTH_PT = 130.0 * 72.27 / 25.4
+_CHAR_PT = 12.0
+_PAGE_DIGIT_PT = 5.88
+_SPACING_PT = 2 * 10.95 + 1.5 * 10.95
+_SPACING_PT_EN = 2 * 10.95
+_PREFIX_PT = 19.56001
+_COLUMN_AUTHOR_PT = 0.26 * _TEXTWIDTH_PT
 
 
 @dataclass
@@ -317,30 +336,36 @@ def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | 
 
 # ── 生成条目 ─────────────────────────────────────────────────────────────
 
+def _zh_title_lines(e: TocEntry, wrap_limit: float, in_column: bool) -> list[str]:
+    r"""中文条目的标题行（`——` 副标题固定拆行；否则按断行上限折行）。
+
+    同时被 `chinese_entry`（生成）与 `_log_layout_guard`（宽度守卫）调用，
+    保证「量出来的行」就是「渲染出来的行」。
+    """
+    prefix = "~~~~ " if in_column else ""
+    if "——" in e.chineseTitle:
+        parts = e.chineseTitle.split("——")
+        return [parts[0].strip(), "——" + "——".join(parts[1:]).strip()]
+    wrapped = wrap_title(
+        e.chineseTitle,
+        # 上限里要扣掉 `~~~~ ` 缩进前缀的宽度，否则量的是标题、
+        # 渲染出来却多了前缀，实际会超
+        limit=wrap_limit - display_width(prefix),
+        is_english=False)
+    return [wrapped[0], wrapped[1]] if wrapped else [e.chineseTitle]
+
+
 def chinese_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
     """中文目录的一条。"""
     prefix = "~~~~ " if in_column else ""
-    title_lines = [e.chineseTitle]
-
-    if "——" in e.chineseTitle:
-        parts = e.chineseTitle.split("——")
-        title_lines = [parts[0].strip(),
-                       "——" + "——".join(parts[1:]).strip()]
-    else:
-        wrapped = wrap_title(e.chineseTitle,
-                             # 上限里要扣掉 `~~~~ ` 缩进前缀的宽度，否则量的是标题、
-                             # 渲染出来却多了前缀，实际会超
-                             limit=wrap_limit - display_width(prefix),
-                             is_english=False)
-        if wrapped:
-            title_lines = [wrapped[0], wrapped[1]]
+    title_lines = _zh_title_lines(e, wrap_limit, in_column)
 
     authors = "&\\textit{\\large " + prefix + "，".join(e.chineseAuthors) + "}"
 
     if len(title_lines) == 2:
-        # 第二行在同一个单元格内换行 —— 这是成品的写法
+        # 第二行是同一单元格内的软换行（`\newline`，B-355 D1），不是表格新行
         return ("{\\large " + prefix + title_lines[0] + "}\n"
-                + _LINEBREAK + "{\\large " + prefix + title_lines[1] + "}\n"
+                + _CELL_LINEBREAK + "{\\large " + prefix + title_lines[1] + "}\n"
                 + authors + "\n& " + e.page + _LINEBREAK)
     return ("{\\large " + prefix + title_lines[0] + "}\n"
             + authors + "\n& " + e.page + _LINEBREAK)
@@ -362,6 +387,87 @@ def english_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
                 + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
     return ("\\large " + prefix + e.englishTitle + _LINEBREAK + "\n"
             + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
+
+
+# ── 版心宽度守卫（B-355 D4）─────────────────────────────────────────────
+
+def _issue_layout(entries: list[tuple[str, TocEntry]], settings: "TocSettings",
+                  is_chinese: bool, column_layout: bool,
+                  log=lambda _s: None) -> float:
+    r"""按版心/列宽反推本期标题断行上限（B-355 D4 P1）。
+
+    为什么需要：历史设置 `titleWrapLimit=20` 是给「无 X 列的负胶模板」校准的；
+    改成 X 弹性列后第一列实际可用宽只有约 197pt（普通期）～218pt（栏目期），
+    20 字 = 240pt 会压进作者列。这里按真实列宽反推；P1 口径是「超预算只告警 +
+    自动取较小的值」，不阻断生成。
+    """
+    page_pt = max([len(e.page) for _, e in entries] + [1]) * _PAGE_DIGIT_PT
+    if is_chinese:
+        if column_layout:
+            author_pt = _COLUMN_AUTHOR_PT
+            prefix_pt, prefix_w = _PREFIX_PT, display_width("~~~~ ")
+        else:
+            author_pt = max(
+                [display_width("，".join(e.chineseAuthors)) * _CHAR_PT
+                 for _, e in entries] + [0.0])
+            prefix_pt, prefix_w = 0.0, 0.0
+        spacing_pt = _SPACING_PT
+        requested = float(settings.titleWrapLimit)
+    else:
+        author_pt = 0.0
+        prefix_pt, prefix_w = (_PREFIX_PT, display_width("~~~~ ")) if column_layout else (0.0, 0.0)
+        spacing_pt = _SPACING_PT_EN
+        requested = float(settings.titleWrapLimitEN)
+
+    x_pt = _TEXTWIDTH_PT - author_pt - page_pt - spacing_pt
+    # wrap_limit 的语义是「标题字符数上限」：中文 entry 内部会再扣 `~~~~ ` 前缀宽度，
+    # 英文 title 不带前缀，故这里只用列宽折算字符数；B-355 实测多加 prefix 会让
+    # 15 字 + 前缀溢出版心，LaTeX 二次折行成 3 行。
+    derived = x_pt / _CHAR_PT
+    applied = max(6.0, min(requested, derived))
+    if applied + 1e-6 < requested:
+        log(f"⚠️ 标题断行上限 {requested:g} 字超过版心可用宽度："
+            f"本期按 {applied:.2f} 字断行（避免压到作者/页码列）")
+    return applied
+
+
+def _log_layout_guard(head: str, entries: list[tuple[str, TocEntry]],
+                      settings: "TocSettings", is_chinese: bool,
+                      column_layout: bool, wrap_limit: float,
+                      log=lambda _s: None) -> None:
+    r"""D4 宽度守卫：负间距指纹 + 逐条估算宽度越界告警（只告警，不改版式）。"""
+    if "\\hspace{-" in head:
+        log("⚠️ 模板里仍含负间距（\\hspace{-…}），作者/页码可能压到标题列：请人工核对")
+
+    widths: list[float] = []
+    for folder_name, e in entries:
+        in_column = settings.contains(folder_name)
+        page_pt = max(1, len(e.page)) * _PAGE_DIGIT_PT
+        prefix_pt = _PREFIX_PT if in_column else 0.0
+        if is_chinese:
+            lines = _zh_title_lines(e, wrap_limit, in_column)
+            title_pt = max([display_width(ln) for ln in lines] + [0.0]) * _CHAR_PT + prefix_pt
+            author_pt = (_COLUMN_AUTHOR_PT if column_layout else
+                         display_width("，".join(e.chineseAuthors)) * _CHAR_PT)
+            widths.append(title_pt + author_pt + page_pt + _SPACING_PT)
+        else:
+            lines = wrap_title(
+                e.englishTitle,
+                limit=wrap_limit - display_width("~~~~ " if in_column else ""),
+                is_english=True)
+            title_pt = max([display_width(ln) for ln in (lines or (e.englishTitle,))]) * _CHAR_PT
+            author_pt = display_width(", ".join(e.englishAuthors)) * _CHAR_PT
+            widths.append(max(title_pt + prefix_pt, author_pt) + page_pt + _SPACING_PT_EN)
+
+    if not widths:
+        return
+    widest = max(widths)
+    if widest > _TEXTWIDTH_PT * 1.02:
+        log(f"⚠️ 目录条目估算宽 {widest:.1f}pt 超过版心 1.02×"
+            f"（{_TEXTWIDTH_PT * 1.02:.1f}pt）：标题可能压到作者/页码，请人工核对")
+    elif widest < _TEXTWIDTH_PT * 0.92:
+        log(f"⚠️ 目录条目估算宽 {widest:.1f}pt 不足版心 0.92×"
+            f"（{_TEXTWIDTH_PT * 0.92:.1f}pt）：右侧可能留白")
 
 
 # ── 本期设置（目录设置.json）─────────────────────────────────────────────
@@ -556,12 +662,29 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     parts = choice.parts
     log(f"模板来源：{choice.note}")
 
-    # ---- 头部：填入本期卷期信息，并统一使用 Windows 字体 ----
+    # ---- 头部：填入本期卷期信息，并统一使用 Windows 字体 + 规范列格式 ----
+    # B-355 D2/D3：继承模板的列定义是逐期手调负胶，普通期会把作者/页码拉进标题，
+    # 且无 X 列时右侧留白；生成前统一改写为规范形，识别不了就告警回退内置模板。
+    column_layout = settings.is_column_enabled and bool(settings.columnArticles)
     head = _tt.ensure_windows_fontset(_tt.patch_header(
         parts.head,
         volume=volume or "?", issue=issue or "?", year=year or "?",
         total_issue=total_issue or "?", publish_month=publish_month or "?",
         is_chinese=is_chinese))
+    try:
+        head = _tt.canonicalize_head(head, f"{base_name}.tex", is_column=column_layout)
+    except _tt.TemplateLayoutError as exc:
+        log(f"⚠️ 继承模板的列定义无法安全规范化（{exc}）：回退内置模板")
+        parts = _tt.builtin(f"{base_name}.tex")
+        head = _tt.ensure_windows_fontset(_tt.patch_header(
+            parts.head,
+            volume=volume or "?", issue=issue or "?", year=year or "?",
+            total_issue=total_issue or "?", publish_month=publish_month or "?",
+            is_chinese=is_chinese))
+        try:
+            head = _tt.canonicalize_head(head, f"{base_name}.tex", is_column=column_layout)
+        except _tt.TemplateLayoutError as exc2:
+            log(f"⚠️ 内置模板列定义异常（{exc2}）：保持原样生成，请人工核对")
 
     # ---- 栏目块 ----
     column_block = _tt.make_column_block(settings, parts.columnBlock, is_chinese)
@@ -576,15 +699,24 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
                 f"（条目仍带 ~~~~ 标记，{count} 篇）")
 
     # ---- 正文条目 ----
-    entries: list[str] = []
+    parsed: list[tuple[str, TocEntry]] = []
     for folder_name, block in articles:
         entry = parse_entry(folder_name, block)
         if entry.titleParseFailed:
             log(f"⚠️ {folder_name}：标题在检查报告里是「None」，"
                 "请回「检查tex信息」核对该篇 tex 的标题填写。")
+        parsed.append((folder_name, entry))
+
+    # B-355 D4：断行上限按版心/列宽反推（P1：超预算只告警 + 取较小的值），
+    # 再跑一遍宽度守卫（负间距指纹、超版心/右侧留白）。
+    wrap_limit = _issue_layout(parsed, settings, is_chinese, column_layout, log=log)
+    _log_layout_guard(head, parsed, settings, is_chinese, column_layout, wrap_limit, log=log)
+
+    entries: list[str] = []
+    for folder_name, entry in parsed:
         in_column = settings.contains(folder_name)
-        entries.append(chinese_entry(entry, in_column, settings.titleWrapLimit) if is_chinese
-                       else english_entry(entry, in_column, settings.titleWrapLimitEN))
+        entries.append(chinese_entry(entry, in_column, wrap_limit) if is_chinese
+                       else english_entry(entry, in_column, wrap_limit))
     body = "\n\n\\vdistance\n\n".join(entries)
 
     # ---- 拼装 ----

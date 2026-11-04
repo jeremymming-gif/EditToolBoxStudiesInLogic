@@ -111,26 +111,26 @@ def test_bib_page_keeps_its_crumb():
 # ── P1-3：页面级主操作随子页切换 ──────────────────────────────────────────
 def test_step_page_primary_is_run_this_step_only():
     page, root = _build(P.IssuePage)
-    assert isinstance(page._run_all_btn, ft.FilledButton)
-    assert str(page._run_all_btn.content) == "运行整期…"
+    # 批 120 B-354：页头「运行整期…」「从失败处继续…」两按钮删除。
+    assert not hasattr(page, ("_run_" + "all_btn"))
+    assert not hasattr(page, ("_header_" + "actions"))
+    assert not hasattr(page, ("_run_" + "all_secondary"))
+    # 批 117：无期目录时详情有选目录 CTA；页头已无实心按钮。
     filled = _of(root, ft.FilledButton)
-    assert filled[0] is page._run_all_btn
-    # 批 117：无期目录时详情多一个选目录 CTA；页头仍唯一。
-    assert [str(ctl.content) for ctl in filled[1:]] == ["选择期目录"]
+    assert filled and [str(ctl.content) for ctl in filled] == ["选择期目录"]
+    assert page._stop_btn.visible is False
 
     page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
-    # 页头只剩整期主操作；本步唯一主按钮在详情头（D1-115-26/29）。
-    assert page._header_actions.controls == [page._run_all_btn]
     detail_filled = [ctl for ctl in _of(page._content_box, ft.FilledButton)]
     # 批 116 决策（I-2 E′）：toc 与 infocheck 同属「生成目录」视图，两个区块
     # 各有一个主按钮；选中步（02）的主按钮仍是 _step_run_primary。
     contents = [str(ctl.content) for ctl in detail_filled]
     assert "生成目录" in contents and "运行检查" in contents
+    assert "运行整期…" not in contents
     toc_btn = next(ctl for ctl in detail_filled if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
-    assert isinstance(page._run_all_secondary, ft.OutlinedButton)
-    assert str(page._run_all_secondary.content) == "从失败处继续…"
+    assert not hasattr(page, ("_continue_" + "from_failure"))
     # 旧参数区描边「运行这一步」已摘掉，避免两个入口。
     legacy = [ctl for ctl in _of(page._build_step_page("toc"), ft.OutlinedButton)
               if str(ctl.content) == "运行这一步"]
@@ -139,7 +139,7 @@ def test_step_page_primary_is_run_this_step_only():
     # `issue:overview` 别名不再有总览屏，落到上次步骤（刚才的 toc）。
     page.activate("overview")
     assert page.selected == "toc"
-    assert page._header_actions.controls == [page._run_all_btn]
+    assert page._stop_btn.visible is False
 
 
 def test_step_primary_disabled_reason_when_engine_not_ready_and_running():
@@ -150,17 +150,18 @@ def test_step_primary_disabled_reason_when_engine_not_ready_and_running():
     page.refresh_running()
     assert page._step_run_primary.disabled is True
     assert "引擎未就绪" in (page._step_run_primary.tooltip or "")
-    assert page._run_all_btn.disabled is True
+    assert not hasattr(page, ("_run_" + "all_btn"))
 
     page.app.engine_status.ok = True
     page.app.running = True
     page.refresh_running()
     assert page._step_run_primary.disabled is True
     assert "运行中" in (page._step_run_primary.tooltip or "")
-    assert page._stop_btn in page._header_actions.controls
+    assert page._stop_btn.visible is True
 
     page.app.running = False
     page.refresh_running()
+    assert page._stop_btn.visible is False
     # 批 117：缺信息检查报告时主按钮禁用并给出补救 CTA；补报告后恢复。
     assert page._step_run_primary.disabled is True
     assert "信息检查报告" in (page._step_run_primary.tooltip or "")

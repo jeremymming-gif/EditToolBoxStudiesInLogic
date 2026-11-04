@@ -194,21 +194,27 @@ def page_header(title: str, subtitle: str, t: Tokens, actions: list | None = Non
     )
 
 
-#: 常显滚动条宽度（设计像素）。批 118 P1-1：全壳统一口径。
+#: 常显滚动条宽度（设计像素）。批 118 P1-1 全壳统一；批 120 B-352 唯一实现。
 SCROLLBAR_THICKNESS = 6
 
 
-def scrollbar(t: Tokens, thickness: float = SCROLLBAR_THICKNESS) -> ft.Scrollbar:
+def scrollbar(t: Tokens, *, thickness: float = SCROLLBAR_THICKNESS,
+              horizontal: bool = False, radius: float = 3.0) -> ft.Scrollbar:
     """统一滚动条配置：静止也显示细条、可拖拽；无溢出时 Flet 不画条。
 
-    批 118 P1-1：flet 1.0.5 的 `Scrollbar` 是 `scroll=` 的配置对象，不是包裹
-    控件；`thumb_visibility=True` 即「ALWAYS」语义（实测无溢出时不画条）。
-    `thickness` 走设计像素，随 DPI / 用户缩放一起缩放。
+    批 120 B-352：`bib_shell.scrollbar()` 合并进本函数，全壳唯一实现。
+    flet 1.0.5 的 `Scrollbar` 是 `scroll=` 的配置对象，不是包裹控件；
+    `thumb_visibility=True` 即「ALWAYS」语义（实测无溢出时不画条）。
+    `thickness`/`radius` 走设计像素，随 DPI / 用户缩放一起缩放；
+    `horizontal=True` 时横条贴底（`ScrollbarOrientation.BOTTOM`）。
     """
     return ft.Scrollbar(
         thumb_visibility=True,
         thickness=t.px(thickness),
+        radius=t.px(radius),
         interactive=True,
+        orientation=(ft.ScrollbarOrientation.BOTTOM if horizontal
+                     else ft.ScrollbarOrientation.RIGHT),
     )
 
 

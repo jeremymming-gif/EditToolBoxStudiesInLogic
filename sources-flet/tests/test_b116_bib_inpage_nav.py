@@ -184,7 +184,6 @@ def _sidebar_app(badge=None):
     app._sidebar_short = lambda: True
     app._theme_row = None
     app._sidebar_compact_cache = False
-    app._issue_progress = lambda: None
     app.page = FakePage()
     return app
 

@@ -693,7 +693,7 @@ class HealthView:
         confirm = self._confirm_bar()
         if confirm is not None:
             parts.append(confirm)
-        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), expand=True,
+        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
                          controls=parts)
 
     def cancel(self) -> None:

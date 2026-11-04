@@ -44,6 +44,10 @@ def test_scrollbar_helper_is_always_visible_thin_and_interactive():
     assert bar.interactive is True
     assert bar.thickness == t.px(C.SCROLLBAR_THICKNESS) == t.px(6)
     assert C.scrollbar(t, thickness=4).thickness == t.px(4)
+    # 批 120 B-352：radius / orientation 也收敛到唯一实现（横向条贴底）。
+    assert bar.radius == t.px(3)
+    assert bar.orientation == ft.ScrollbarOrientation.RIGHT
+    assert C.scrollbar(t, horizontal=True).orientation == ft.ScrollbarOrientation.BOTTOM
     # 只有一个宽度常量，避免各页各写一个数字。
     assert C.SCROLLBAR_THICKNESS == 6
 

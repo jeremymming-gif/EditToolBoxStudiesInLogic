@@ -74,25 +74,29 @@ def test_issue_step_run_buttons_disabled_with_reason():
         assert btn.disabled is False and btn.tooltip is None
 
 
-# ── 2. 主操作唯一性：整期页只有页面级「运行整期流水线」是主色实心按钮 ───────
-def test_issue_primary_actions_follow_subpage():
+# ── 2. 主操作唯一性：页头两按钮已删（批 120 B-354），主操作只在详情/空态 ────
+def test_issue_header_buttons_removed_and_detail_owns_primary():
     page, root = _build_issue()
-    # 批 117：无期目录时页头仍只有「运行整期…」，详情是选目录空态（CTA 也在 root 里）。
-    header_filled = _of(page._header_actions, ft.FilledButton)
-    contents = [str(ctl.content) for ctl in header_filled]
-    assert contents == ["运行整期…"], f"页头主操作必须唯一：{contents}"
-    assert header_filled[0] is page._run_all_btn
+    # 批 120 B-354：页头「运行整期…」「从失败处继续…」已删除，运行整期入口只剩
+    # 键盘与空态 CTA；页头只在运行中出现「停止」。
+    assert not hasattr(page, ("_run_" + "all_btn"))
+    assert not hasattr(page, ("_continue_" + "btn"))
+    assert not hasattr(page, ("_run_" + "all_secondary"))
+    assert not hasattr(page, ("_header_" + "actions"))
     assert page._step_run_primary is None
-    cta = [ctl for ctl in _of(root, ft.FilledButton) if str(ctl.content) == "选择期目录"]
-    assert len(cta) == 1 and cta[0] is not page._run_all_btn
-    assert isinstance(page._run_all_secondary, ft.OutlinedButton)
-    assert str(page._run_all_secondary.content) == "从失败处继续…"
+    assert page._stop_btn.visible is False, "停止只在运行中出现"
+    header_filled = _of(root, ft.FilledButton)
+    assert not any(str(ctl.content) == "运行整期…" for ctl in header_filled)
+    assert not any(str(ctl.content) == "从失败处继续…" for ctl in header_filled)
+    # 无期目录时详情是选目录空态（CTA 在 root 里），页头无实心按钮。
+    cta = [ctl for ctl in header_filled if str(ctl.content) == "选择期目录"]
+    assert len(cta) == 1
 
     page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
-    header_filled = _of(page._header_actions, ft.FilledButton)
-    assert [str(ctl.content) for ctl in header_filled] == ["运行整期…"]
-    assert header_filled[0] is page._run_all_btn
+    assert not any(str(ctl.content) == "运行整期…"
+                   for ctl in _of(page._content_box, ft.FilledButton))
+    assert page._stop_btn.visible is False
     detail_filled = _of(page._content_box, ft.FilledButton)
     # 批 116 决策（I-2 E′）：「生成目录」视图含 01/02 两个区块，逐区块各一个
     # 主按钮（01 运行检查、02 生成目录）；选中步的主按钮仍是 _step_run_primary。

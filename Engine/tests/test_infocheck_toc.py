@@ -257,7 +257,7 @@ check("(a) make_column_block：沿用上一期形态并替换名称与主持人"
       TT.make_column_block(settings2, ["{\\large \\bf{专栏：旧名}}",
                                        "&&\\textit{\\large 主持人：旧主持}",
                                        "\\\\[3.2 ex]"], True)
-      == ["{\\large \\bf{专栏：认知悖论研究}}", "&&\\textit{\\large 主持人：郑建国}", "\\\\[3.2 ex]"])
+      == ["{\\large \\bf{专栏：认知悖论研究}}", "&\\textit{\\large 主持人：郑建国}", "\\\\[3.2 ex]"])
 check("(a) make_column_block：没开栏目 → 空",
       TT.make_column_block(TOC.TocSettings(), ["x"], True) == [])
 check("(a) TocSettings.load：文件不存在 → 默认值；字段缺失 → 逐字段回落（旧 json 不清空）",
@@ -1052,7 +1052,7 @@ check("(l3) 反例：英文名非空但模板无栏目块 ⇒ 用默认间距 3m
       == ["\\large  \\bf{Column: Preference Logic} ", "\\\\[3mm]"])
 check("(l4) 中文栏目块不受英文名缺失影响（仍按上一期形态替换名称/主持人）",
       TT.make_column_block(_s_en_empty, _a_zh_shape, True)
-      == ["{\\large \\bf{专辑：偏好逻辑}}", "&&\\textit{\\large 主持人：某人}", "\\\\[3.2 ex]"])
+      == ["{\\large \\bf{专辑：偏好逻辑}}", "&\\textit{\\large 主持人：某人}", "\\\\[3.2 ex]"])
 # 端到端：EN 名空时生成的英文目录**没有 Column 行**，但栏目条目仍带 `~~~~`
 _l_root = tempfile.mkdtemp(prefix="slcn_col_en_")
 make_issue(_l_root)

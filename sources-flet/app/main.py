@@ -1320,47 +1320,6 @@ class App:
                             if view.get("route_only")])
         return leaf
 
-    def _issue_progress(self) -> tuple[int, int] | None:
-        """整期装配的「完成/4」进度；无当期目录或无状态记录时返回 None。
-
-        批 116 NAV-B+ / 批 117：只在侧栏整期行右侧显示，不新增控制区。
-        完成 = 该功能页内所有底层操作 done/warn（与 IssuePage 的「成功/有警告」
-        一致）；running/idle 不计。四个功能页相互独立，各自完成各计 1。
-        """
-        store = getattr(self, "store", None)
-        if store is None:
-            return None
-        path = str(store.get("recent.issue_dir", "") or "").strip()
-        if not path:
-            return None
-        data = store.get("issue_state", {})
-        if not isinstance(data, dict):
-            return None
-        # 兼容早期按 by_path/paths 分组的写法（与 _issue_landing_step 同口径）。
-        per_path = data
-        for nested_key in ("by_path", "paths"):
-            nested = data.get(nested_key)
-            if isinstance(nested, dict):
-                per_path = nested
-                break
-        record = per_path.get(path)
-        if not isinstance(record, dict):
-            return None
-        statuses = record.get("statuses")
-        if not isinstance(statuses, dict):
-            return None  # 有目录但还没跑过任何一步：无状态，不显示 0/4
-        def _state(key: str) -> str:
-            item = statuses.get(key)
-            return str((item.get("state") if isinstance(item, dict) else item) or "")
-
-        views = IA.ISSUE_VIEWS
-        done = 0
-        for view in views:
-            keys = list(view.get("steps") or [])
-            if keys and all(_state(key) in ("done", "warn") for key in keys):
-                done += 1
-        return done, len(views)
-
     def _sidebar_content(self) -> ft.Control:
         t = self.t
         compact = self._sidebar_compact() or not self.sidebar_open
@@ -1406,15 +1365,7 @@ class App:
                 if key in ("settings", "help"):
                     leaf.height = t.px(26)  # 系统两行收紧，780 高不再压到主题开关
                 else:
-                    leaf.height = t.px(28)  # 整期行高固定，进度徽标不撑行
-                if key == "issue":
-                    progress = self._issue_progress()
-                    if progress is not None:
-                        done, total = progress
-                        # label 已 expand，徽标自然贴右；11px muted 不抢主行。
-                        leaf.content.controls.append(
-                            C.text(f"{done}/{total}", t, "caption",
-                                   t.palette.text_faint))
+                    leaf.height = t.px(28)  # 整期行高固定（批 120 B-353 去进度徽标）
                 nav_items.append(leaf)
 
         # 导航超高时内部滚动；批 118 P1-1：统一用常显细条（Scrollbar 配置对象，

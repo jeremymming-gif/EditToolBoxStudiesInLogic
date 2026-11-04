@@ -720,7 +720,7 @@ class BibPrefsView:
         t = self.t
         meta = "保存只改设置，不动库"
         scroll = ft.Column(
-            spacing=0, expand=True, scroll=S.scrollbar(), controls=[
+            spacing=0, expand=True, scroll=C.scrollbar(t), controls=[
                 self._state_line(),
                 self._group_db(),
                 ft.Container(height=t.px(12)),

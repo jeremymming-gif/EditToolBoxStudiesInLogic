@@ -517,7 +517,7 @@ class QueryView:
                 C.text(str(value), t, "caption", t.palette.text,
                        max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value)),
             ]))
-        return ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), controls=body)
+        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), controls=body)
 
     def _detail_actions(self) -> list:
         t = self.t

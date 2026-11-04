@@ -1,7 +1,7 @@
 """批 118 D2：引用库滚动/布局契约（静态 + 控件树，不启窗口）。
 
 锁四条：
-1. 常显条只经 ``bib_shell.scrollbar()``（6px / thumb_visibility=True / 可拖），
+1. 常显条只经 ``C.scrollbar(t)``（6px / thumb_visibility=True / 可拖 / 圆角 / 横条贴底），
    页面级滚动列不再用静止即隐的 ``ScrollMode.AUTO``；
 2. 内层短表 shrink-wrap（health 样例、dupes 两表），页体是唯一滚动者；
 3. 宽表横向可滚且带常显横条（BibTable.scroll_x）；
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import flet as ft
 
-from ui import bib_shell as S
+from ui import components as C
 from ui import bib_table as T
 from ui.tokens import Tokens
 
@@ -26,23 +26,28 @@ def _src(name: str) -> str:
 
 
 def test_scrollbar_helper_is_always_on_config() -> None:
-    """常显配置：不是包裹控件，thumb 恒定、6px、可拖。"""
-    bar = S.scrollbar()
+    """常显配置：不是包裹控件，thumb 恒定、6px、可拖、圆角、方向随参数。"""
+    t = Tokens()
+    bar = C.scrollbar(t)
     assert isinstance(bar, ft.Scrollbar)
     assert bar.thumb_visibility is True
-    assert bar.thickness == S.SCROLLBAR_T == 6
+    assert bar.thickness == t.px(C.SCROLLBAR_THICKNESS) == t.px(6)
+    assert bar.radius == t.px(3)
     assert bar.interactive is True
     assert bar.orientation == ft.ScrollbarOrientation.RIGHT
-    hbar = S.scrollbar(horizontal=True)
+    hbar = C.scrollbar(t, horizontal=True)
     assert hbar.orientation == ft.ScrollbarOrientation.BOTTOM
 
 
 def test_shell_leaves_six_px_for_the_thumb() -> None:
     """页面主体右内边距 = 24 + 6；详情栏右 6px，条不压最后一列。"""
     src = _src("bib_shell.py")
-    assert "PAGE_H_PAD + SCROLLBAR_T" in src
-    assert "padding=_pad(t, 16, 0, SCROLLBAR_T, 0)" in src
-    assert "scroll=scrollbar()" in src
+    assert "PAGE_H_PAD + C.SCROLLBAR_THICKNESS" in src
+    assert "padding=_pad(t, 16, 0, C.SCROLLBAR_THICKNESS, 0)" in src
+    assert "scroll=C.scrollbar(t)" in src
+    # 批 120 B-352：bib 本地重复实现已删，宽度常量只留 components 一处。
+    assert "SCROLLBAR_T = 6" not in src
+    assert "def scrollbar(" not in src
 
 
 def test_page_scroll_columns_are_always_on() -> None:
@@ -51,7 +56,8 @@ def test_page_scroll_columns_are_always_on() -> None:
                  "bib_review.py", "bib_query.py", "bib_prefs.py",
                  "bib_fieldfix.py"):
         src = _src(name)
-        assert "S.scrollbar()" in src, f"{name} 未接常显条"
+        assert "C.scrollbar(t)" in src, f"{name} 未接常显条"
+        assert "S.scrollbar(" not in src, f"{name} 仍走 bib 本地旧 helper"
         assert "scroll=ft.ScrollMode.AUTO" not in src, f"{name} 仍有 AUTO 滚动列"
 
 
@@ -70,7 +76,7 @@ def test_import_table_shrinks_when_short_and_scrolls_when_long() -> None:
     """入藏变化 ≤8 行 shrink-wrap；长列表才保留独立滚动（常显条）。"""
     src = _src("bib_import.py")
     assert "scrolling = len(rows) > 8" in src
-    assert "scroll=S.scrollbar() if scrolling else None" in src
+    assert "scroll=C.scrollbar(t) if scrolling else None" in src
     assert "table._bib_shrink = not scrolling" in src
 
 

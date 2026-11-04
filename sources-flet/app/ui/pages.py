@@ -1334,23 +1334,16 @@ class IssuePage(BasePage):
         # 批 117：期目录输入内嵌进每个功能页（见 `_build_step_page`），
         # 页面不再有期目录条、左侧导航栏或窄窗横条。
         #
-        # 页面级唯一主操作：运行整期…（运行中 → 停止；失败后 → 从失败处继续…）
-        self._run_all_btn = C.primary_button(
-            "运行整期…", lambda e: self._open_runall(), t, icon="PLAY_ARROW",
-            disabled=not self.app.engine_status.ok)
-        self._continue_btn = C.secondary_button(
-            "从失败处继续…", lambda e: self._continue_from_failure(), t, icon="REPLAY")
+        # 批 120 B-354：页头两个整期入口按钮已删除（入口只剩键盘与空态 CTA）；
+        # 运行整期入口仍保留键盘与空态 CTA，页头只在运行中显示「停止」。
         self._stop_btn = C.danger_button("停止", lambda e: self._confirm_stop(), t,
                                          icon="STOP")
-        self._run_all_secondary = self._continue_btn
+        self._stop_btn.visible = False
         self._step_run_btns = {}
-        self._header_actions = ft.Row(spacing=t.sp("1"),
-                                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                      controls=[])
         self._title_col = ft.Column(spacing=t.sp("xs"), expand=True,
                                     controls=[self._child_title, self._flow_desc])
         header = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                        controls=[self._title_col, self._header_actions])
+                        controls=[self._title_col, self._stop_btn])
         landing = self._default_view()
         self.selected = landing
         self._set_expanded(landing)
@@ -1368,7 +1361,7 @@ class IssuePage(BasePage):
         self._log_spacer = ft.Container(height=t.px(52))
         self._log.on_layout_change = self._sync_log_reserve
         self._sync_header()
-        self._sync_run_actions()
+        self._sync_stop_action()
         self._install_keyboard()
         body = C.page_body(header, self._shell, t=t, gap=10,
                            overlay=self._log.dock_root, overlay_reserve=0, panel=True,
@@ -1542,31 +1535,13 @@ class IssuePage(BasePage):
             self._flow_desc.value = desc
         self._sync_detail_status()
 
-    def _sync_run_actions(self) -> None:
-        t = self.t
-        actions = getattr(self, "_header_actions", None)
-        if actions is None:
+    def _sync_stop_action(self) -> None:
+        """批 120 B-354：页头只保留运行中的「停止」，其余状态无页头按钮。"""
+        stop = getattr(self, "_stop_btn", None)
+        if stop is None:
             return
-        if self.app.running:
-            controls = [self._stop_btn]
-        elif self._has_failed():
-            controls = [self._continue_btn, self._run_all_btn]
-        else:
-            controls = [self._run_all_btn]
-        if getattr(self, "_run_all_secondary", None) is not None:
-            self._run_all_secondary.disabled = bool(self.app.running)
-        if not self.field("issue_dir"):
-            self._run_all_btn.disabled = True
-            self._run_all_btn.tooltip = "先选择期目录"
-        else:
-            self._run_all_btn.disabled = not self.app.engine_status.ok
-            self._run_all_btn.tooltip = (None if self.app.engine_status.ok
-                                         else "引擎未就绪")
-        actions.controls = controls
-        self._safe_update(actions)
-
-    def _has_failed(self) -> bool:
-        return any(self._state_of(key) == "error" for key in self._status)
+        stop.visible = bool(self.app.running)
+        self._safe_update(stop)
 
     # ── 路由 / 子页 ────────────────────────────────────────────────────
     def _default_view(self) -> str:
@@ -1619,7 +1594,7 @@ class IssuePage(BasePage):
             self._detail_status = None
             self._detail_primary = None
             self._sync_header()
-            self._sync_run_actions()
+            self._sync_stop_action()
             self._content_box.controls = [self._build_step_page(self.selected)]
             self.refresh_running()
             self._sync_nav()
@@ -2078,17 +2053,6 @@ class IssuePage(BasePage):
                      C.primary_button("开始运行", _start, t)],
         )
         self.page.show_dialog(dialog)
-
-    def _continue_from_failure(self) -> None:
-        failed = [s["key"] for s in self.STEPS if self._state_of(s["key"]) == "error"]
-        if not failed:
-            self.app.toast("没有失败步骤")
-            return
-        first = failed[0]
-        start = [s["key"] for s in self.STEPS].index(first)
-        keys = [s["key"] for s in self.STEPS[start:] if self._state_of(s["key"]) != "done"]
-        self._expand_log()
-        self.page.run_task(ASM.run_all, self, keys)
 
     def _expand_log(self) -> None:
         self._log_expanded = True
@@ -2707,7 +2671,7 @@ class IssuePage(BasePage):
             self.refresh_running()
             self._sync_nav()
             self._sync_header()
-            self._sync_run_actions()
+            self._sync_stop_action()
             self._safe_update(self._nav_box, self._content_box)
             self._persist_issue_state()
         if self._log is not None:
@@ -2877,14 +2841,14 @@ class IssuePage(BasePage):
         if self._log is not None:
             self._sync_log_dock()
         self._sync_header()
-        self._sync_run_actions()
+        self._sync_stop_action()
         self._sync_info_from_card()
         if self.selected == "toc":
             self._sync_toc_payload()
         self._sync_nav()
         if not self.app.running:
             self._persist_issue_state()
-        self._safe_update(self._nav_box, self._header_actions)
+        self._safe_update(self._nav_box, self._stop_btn)
 
     def _sync_info_from_card(self) -> None:
         info = self._info
@@ -2912,7 +2876,7 @@ class IssuePage(BasePage):
             self._toc_payload = payload
 
     def refresh_running(self) -> None:
-        self._sync_run_actions()
+        self._sync_stop_action()
         disabled, reason = self._step_run_state()
         for btn in self._step_run_btns.values():
             try:

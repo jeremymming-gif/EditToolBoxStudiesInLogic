@@ -562,7 +562,7 @@ class ReviewView:
                             on_change=lambda e: setattr(self, "note",
                                                         str(e.control.value or "")),
                             width=340)
-        body = ft.Column(spacing=t.sp("1"), scroll=S.scrollbar(), controls=[
+        body = ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), controls=[
             C.text(f"{row['no']} · {row['severity']}", t, "caption", t.palette.text_faint),
             *lines,
             ft.Container(height=t.sp("half")),
@@ -664,7 +664,7 @@ class ReviewView:
         if confirm is not None:
             parts.append(confirm)
         return ft.Column(spacing=t.sp("1"), expand=True,
-                         scroll=S.scrollbar(), controls=parts)
+                         scroll=C.scrollbar(t), controls=parts)
 
     def _copy(self, text: str) -> None:
         fn = getattr(getattr(self.page, "app", None), "copy_text", None)
