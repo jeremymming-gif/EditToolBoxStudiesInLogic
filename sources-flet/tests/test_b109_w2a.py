@@ -228,7 +228,7 @@ def test_single_page_flow_renamed_and_merge_not_reintroduced():
     assert not hasattr(pages.SinglePage, "_echo_checkbib_report")
     assert not hasattr(pages.SinglePage, "_on_merge")
     source = open(NR.__file__, encoding="utf-8").read()
-    assert "--merge-into" in source  # 只允许出现在「已停用」提示文案里
+    assert "--merge-into" in source  # 仅存于内部 docstring 的并回红线说明；可见文案写「合并到目标记录」
     assert "merge_back" not in source
 
 

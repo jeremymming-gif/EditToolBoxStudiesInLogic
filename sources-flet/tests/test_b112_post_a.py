@@ -3,7 +3,7 @@
 用户两条反馈各配回归：
 ① 基本检索的示例只在输入框 hint 出现一次（不再有下方「例：…」同文案重复）；
 ② 查重合并逐字段左/右值同时成列（缺值「（空）」），行内单选决定 field_choice，
-   不再用「只有单个下拉、点开才知道另一侧」的旧形态；写库入口（dry-run 预览）保留。
+   不再用「只有单个下拉、点开才知道另一侧」的旧形态；写库入口的「预览（不写库）」保留。
 """
 from __future__ import annotations
 
@@ -114,9 +114,9 @@ def test_merge_card_renders_left_right_columns() -> None:
     assert [group.value for group in groups] == ["left"] * 4
     for group in groups:
         assert [radio.value for radio in _views(group, ft.Radio)] == ["left", "right"]
-    # 写库入口（dry-run 预览）仍在（flet 1.0.5 的按钮标签在 content）
+    # 写库入口（预览、不写库）仍在（flet 1.0.5 的按钮标签在 content）
     assert any(isinstance(control, ft.FilledButton)
-               and control.content == "预览合并（dry-run）"
+               and control.content == "预览合并（不写库）"
                for control in _walk(card))
 
 

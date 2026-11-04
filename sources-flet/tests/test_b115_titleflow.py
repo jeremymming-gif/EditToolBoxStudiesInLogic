@@ -74,9 +74,9 @@ def test_single_header_has_only_h1_and_desc():
     page.activate("proofcheck")
     assert page._child_title.value == "单篇稿件"
     assert page._title_col.controls == [page._child_title, page._flow_desc]
-    assert [chip.content.value for chip in page._chip_row.controls] == [
+    assert [chip.content.value for chip in page._flow_chips] == [
         "初排转换", "一校核查"]
-    assert page._chip_row.controls[1].bgcolor == page.app.t.palette.sel_tint
+    assert page._flow_chips[1].bgcolor == page.app.t.palette.nav_sel
     assert page._crumb is None
 
 

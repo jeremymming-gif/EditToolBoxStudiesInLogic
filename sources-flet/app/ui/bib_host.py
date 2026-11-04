@@ -52,7 +52,7 @@ BIB_NAV_NARROW_BELOW = 1100
 #: 写库提示的 tooltip 全文（与 pages.BIB_WRITE_RULES 同口径；宿主先于 pages 导入，
 #: 不能反向 import，故这里保留一份说明文本，改口径时两处一起改）。
 BIB_WRITE_RULES = (
-    "W1 写库四步：预览（不写库）→ 确认 → 校验 sha256 → 原子替换。\n"
+    "W1 写库四步：预览（不写库）→ 确认 → 校验库指纹 → 原子替换。\n"
     "W2 只本地：写成功后自动提交 1 条，只含 bibliography.jsonl；绝不自动 push。\n"
     "W3 概览 / 查库 / 回读校验只读，不写库。"
 )
@@ -505,87 +505,12 @@ class BibHost(BasePage):
         width = self._logical_width()
         return 0 < width < BIB_NAV_NARROW_BELOW
 
-    def _bib_nav_chip(self, label: str, view_key: str, active: bool,
-                      tooltip: str = "") -> ft.Container:
-        """28 高 chip：选中用侧栏同款 nav_sel 灰 tint，未选中 hover surface_2。
-
-        批 116 BIB-NAV3：组标题不再可见；每组第一个 chip 用 tooltip 承载组名
-        （查阅/采录/治理），不新增任何可见文字。
-        """
-        t = self.t
-        p = t.palette
-        chip = ft.Container(
-            height=t.px(28),
-            border_radius=t.radius("control"),
-            padding=ft.Padding(left=t.px(10), top=0, right=t.px(10), bottom=0),
-            alignment=ft.Alignment.CENTER,
-            bgcolor=p.nav_sel if active else None,
-            tooltip=tooltip or None,
-            on_click=lambda e, key=view_key: self.navigate_route(f"bib:{key}"),
-            content=C.text(label, t, "small",
-                           p.text if active else p.text_muted,
-                           weight="semibold" if active else "medium"),
-        )
-
-        def _hover(e, box=chip, selected=active) -> None:
-            on = e.data in (True, "true", "True")
-            box.bgcolor = t.palette.nav_sel if selected else (
-                t.palette.surface_2 if on else None)
-            try:
-                box.update()
-            except Exception:  # noqa: BLE001 —— 未挂载时只改属性
-                pass
-
-        chip.on_hover = _hover
-        chip._bib_nav_chip = True
-        chip._bib_nav_key = view_key
-        chip._bib_nav_active = active
-        return chip
-
-    def _bib_nav_divider(self) -> ft.Container:
-        """组间发丝线：1×16、border 色，左右各 10 空隙（21 宽容器居中）。
-
-        批 116 BIB-NAV3：3 个可见组标题（查阅/采录/治理）改为细竖线，
-        组内 chip 仍 4 间距；外行 spacing=0，避免把 10 空隙叠加成 18。
-        """
-        t = self.t
-        divider = ft.Container(
-            width=t.px(21),
-            height=t.px(BIB_NAV_H),
-            alignment=ft.Alignment.CENTER,
-            content=ft.Container(width=t.px(1), height=t.px(16),
-                                 bgcolor=t.palette.border),
-        )
-        divider._bib_nav_divider = True
-        return divider
-
-    def _bib_nav_row(self, groups: list[dict], active: str) -> ft.Container:
-        """一组行（36 高）：组内 chip 间距 4，组间 1×16 发丝线（左右各 10）。"""
-        t = self.t
-        controls: list = []
-        for index, group in enumerate(groups):
-            if index:
-                controls.append(self._bib_nav_divider())
-            chips = [
-                self._bib_nav_chip(
-                    str(view["label"]), str(view["key"]),
-                    str(view["key"]) == active,
-                    tooltip=str(group["label"]) if position == 0 else "")
-                for position, view in enumerate(group["views"])
-            ]
-            controls.append(ft.Row(spacing=t.px(4),
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                   controls=chips))
-        return ft.Container(
-            height=t.px(BIB_NAV_H),
-            alignment=ft.Alignment.CENTER_LEFT,
-            content=ft.Row(spacing=0,
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                           controls=controls),
-        )
-
     def _bib_nav_control(self) -> ft.Container:
-        """Bib 白面板顶部的 3 组 9 chip 导航（无可见组标题）；settings 无选中。"""
+        """Bib 白面板顶部的 3 组 9 chip 导航（无可见组标题）；settings 无选中。
+
+        批 119：与单篇/整期共用 C.page_nav 唯一实现；窄窗按治理组整体下移
+        （查阅+采录 4 chip 一行，治理 5 chip 一行）。
+        """
         t = self.t
         groups = IA.group_views("bib")
         content_keys = {str(view["key"]) for group in groups for view in group["views"]}
@@ -593,35 +518,42 @@ class BibHost(BasePage):
         if active not in content_keys:
             active = ""
         narrow = self._nav_narrow()
-        if narrow:
-            split = next((index for index, group in enumerate(groups)
-                          if group["key"] == "treat"), len(groups))
-            row_groups = [groups[:split], groups[split:]]
-            body: ft.Control = ft.Column(spacing=0, controls=[
-                self._bib_nav_row(row_groups[0], active),
-                self._bib_nav_row(row_groups[1], active),
-            ])
-            height = BIB_NAV_H * 2
-        else:
-            row_groups = [groups]
-            body = self._bib_nav_row(groups, active)
-            height = BIB_NAV_H
+        split = next((index for index, group in enumerate(groups)
+                      if group["key"] == "treat"), len(groups))
+        row_groups = [groups[:split], groups[split:]] if narrow else [groups]
         # 行内相邻组计数：1000 两行时 read|intake 在行 1，intake|treat
         # 落在行间（不画多余分隔符），故实际渲染为 1。
         divider_count = sum(max(0, len(row) - 1) for row in row_groups)
-        nav = ft.Container(
-            height=t.px(height),
-            padding=ft.Padding(left=t.px(24), top=0, right=t.px(24), bottom=0),
-            bgcolor=t.palette.surface,
-            border=ft.Border(bottom=ft.BorderSide(width=t.px(1),
-                                                  color=t.palette.border)),
-            content=body,
-        )
-        nav._bib_inpage_nav = True
-        nav._bib_nav_narrow = narrow
-        nav._bib_nav_active = active
-        nav._bib_nav_keys = [str(view["key"]) for group in groups
-                             for view in group["views"]]
+        narrow_after = ""
+        if narrow and 0 < split < len(groups):
+            narrow_after = str(groups[split - 1]["views"][-1]["key"])
+        payload = [
+            [{"key": str(view["key"]), "label": str(view["label"]),
+              "tooltip": str(group["label"]) if position == 0 else None}
+             for position, view in enumerate(group["views"])]
+            for group in groups
+        ]
+
+        def _mark_chip(chip, item, is_active) -> None:
+            chip._bib_nav_chip = True
+            chip._bib_nav_key = str(item["key"])
+            chip._bib_nav_active = is_active
+
+        def _mark_bar(bar) -> None:
+            bar._bib_inpage_nav = True
+            bar._bib_nav_narrow = narrow
+            bar._bib_nav_active = active
+            bar._bib_nav_keys = [str(view["key"]) for group in groups
+                                 for view in group["views"]]
+
+        nav = C.page_nav(
+            t, groups=payload, active=active,
+            on_click=lambda key: self.navigate_route(f"bib:{key}"),
+            narrow=narrow, narrow_after=narrow_after,
+            divider_attr="_bib_nav_divider",
+            chip_attr=_mark_chip, bar_attrs=_mark_bar,
+            bar_pad=(24, 0, 24, 0), bgcolor=t.palette.surface,
+            palette_getter=lambda: self.t.palette)
         self._nav_narrow_cache = narrow
         # 证据 marker：组 / 空 captions / 渲染出的分隔符数 / 9 chip / 选中 / 断点。
         # 首次 build 时窗口可能还是 800 宽（随后 resize 到目标宽），故按

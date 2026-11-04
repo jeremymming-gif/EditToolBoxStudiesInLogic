@@ -257,7 +257,7 @@ def envcheck_card(page) -> ft.Control:
     t = page.t
     first_run = not bool(page.app.store.get("env_check_done", False))
     rows: list = [
-        C.section_title("环境检查", t, note="调 Engine/envcheck.py --json（只读）"),
+        C.section_title("环境检查", t, note="只读检查本机环境（不写文件）"),
         ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             C.secondary_button("运行环境检查",
                                lambda e: page.page.run_task(page._envcheck_task), t,

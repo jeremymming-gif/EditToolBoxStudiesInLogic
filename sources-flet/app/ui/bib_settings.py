@@ -283,23 +283,23 @@ class BibSettingsView:
                    "引擎退出 2 并列出范围与预计费用——不是程序出错，先看账再决定。",
                    t, "small", t.palette.text_muted),
             max_row, self._max_hint,
-            C.option_row("核实前先算账（--verify-plan）",
+            C.option_row("核实前先算账（只打印计划）",
                          "只算账、不核实：转换照常写产物，但不生成任务书、不检索、不调 AI，只打印"
                          "「核实多少条、预计检索/AI 多少次、约多少钱」后退出 0。关掉再跑才真正核实。",
                          t, icon="CALCULATE_OUTLINED",
                          checked=self.bibdb_plan, on_change=self._on_verify_plan),
-            C.option_row("允许全量核实（--verify-all-refs）",
+            C.option_row("允许全量核实",
                          "越过上限（正文 \\nocite{*} 也要求全量）。默认不开：没被正文引用的条目"
                          "也会花检索/AI 的钱（期 87：376 条 $1.8+）。", t,
                          icon="ALL_INCLUSIVE", checked=self.bibdb_all, on_change=self._on_verify_all),
             C.option_row("核实前先查引用库（默认开）",
                          "开：核实时若引用库存在，先按 DOI / 题名 / key 查库；命中的键不调检索、"
                          "不调 AI（仍写进任务书「五、库内已核实」，字段差异只提示）。"
-                         "关 = 传 --no-bibdb，一律不查库。", t,
+                         "关 = 不查引用库，一律不查库。", t,
                          icon="SEARCH", checked=self.bibdb_lookup, on_change=self._on_lookup),
             C.section_title("当前生效值", t, note="下一次「初排转换」会用"),
             *rows,
-            C.text("只影响「初排转换 → AI 协同初排」的核实；普通初排不传这些参数。",
+            C.text("只影响「初排转换 → AI 协同初排」的核实；普通初排不查引用库。",
                    t, "caption", t.palette.text_faint),
             ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                 C.primary_button("保存设置", lambda e: self._save_bibdb(), t,

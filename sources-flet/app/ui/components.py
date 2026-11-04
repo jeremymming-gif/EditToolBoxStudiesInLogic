@@ -1534,6 +1534,145 @@ def chip(label: str, t: Tokens, *, active: bool, on_click) -> ft.Container:
     )
 
 
+# ── 页内子导航（批 119：单篇 / 整期 / 引用库唯一实现）──────────────────────
+def nav_hover(t: Tokens, e, chip: ft.Container, active: bool,
+              palette_getter=None) -> None:
+    """页内导航 chip 的 hover：未选中 surface_2、选中保持 nav_sel。
+
+    `palette_getter` 用于主题热切换后仍取当前皮肤（默认用构建时 Tokens）。
+    """
+    p = palette_getter() if palette_getter is not None else t.palette
+    hovered = str(getattr(e, "data", "")).lower() in ("true", "1", "on")
+    chip.bgcolor = p.nav_sel if active else (p.surface_2 if hovered else None)
+    try:
+        chip.update()
+    except Exception:  # noqa: BLE001 —— 构建期/未挂载时只改属性
+        pass
+
+
+def nav_chip(label: str, t: Tokens, *, active: bool, on_click,
+             tone: str | None = None, key: str | None = None,
+             tooltip: str | None = None,
+             palette_getter=None) -> ft.Container:
+    """页内子导航的唯一 chip 实现（批 119）。
+
+    规格：28 高、`radius("control")`、左右 padding 10、文字 role small；
+    选中 `nav_sel` 底 + text + semibold，未选中 text_muted + medium；
+    只有传 `tone` 的步骤 chip（整期）才在标题右侧挂 6px 状态点。
+    """
+    p = palette_getter() if palette_getter is not None else t.palette
+    title = text(label, t, "small", p.text if active else p.text_muted,
+                 weight="semibold" if active else "medium")
+    content: ft.Control
+    if tone is None:
+        content = title
+    else:
+        content = ft.Row(
+            spacing=t.px(6), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[title, status_dot(tone, t)])
+    chip = ft.Container(
+        key=key, height=t.px(28), border_radius=t.radius("control"),
+        padding=_pad(t, 10, 0, 10, 0), alignment=ft.Alignment.CENTER,
+        bgcolor=p.nav_sel if active else None, tooltip=tooltip or None,
+        on_click=on_click, content=content)
+    chip.on_hover = lambda e, box=chip, sel=active: nav_hover(
+        t, e, box, sel, palette_getter=palette_getter)
+    return chip
+
+
+def _nav_split_rows(chips_by_group: list[list[ft.Control]],
+                    groups: list[list[dict]],
+                    split_after: str | None) -> list[list[list[ft.Control]]]:
+    """窄窗折行：把组切成两行；`split_after` 是首行最后一个 chip 的 key。"""
+    if not split_after:
+        return [chips_by_group]
+    rows: list[list[list[ft.Control]]] = [[]]
+    for group, group_chips in zip(groups, chips_by_group):
+        keys = [str(item["key"]) for item in group]
+        if split_after in keys:
+            index = keys.index(split_after)
+            rows[-1].append(group_chips[:index + 1])
+            rest = group_chips[index + 1:]
+            rows.append([rest] if rest else [])
+        else:
+            rows[-1].append(group_chips)
+    return [row for row in rows if row]
+
+
+def page_nav(t: Tokens, *, groups: list[list[dict]], active: str, on_click,
+             narrow: bool = False, narrow_after: str | None = None,
+             key_prefix: str | None = None, chip_attr=None,
+             divider_attr: str | None = None, bar_attrs=None,
+             bar_key: str | None = None,
+             bar_pad: tuple[float, float, float, float] = (24, 0, 24, 0),
+             bgcolor: str | None = None, palette_getter=None) -> ft.Container:
+    """三页共用的页内子导航条（批 119 唯一实现）。
+
+    `groups` 是组列表，每组是 item 列表；item = {"key", "label",
+    "tone"(可选，步骤状态点), "tooltip"(可选)}。`active` 是选中 key；
+    `narrow_after` 是窄窗首行最后一个 chip 的 key（整期 2+2、引用库 4+5）。
+    组间只画 1×16 发丝线（21 宽占位），无组标题；条高 36（窄窗 72）。
+
+    `chip_attr(chip, item, is_active)` / `bar_attrs(bar)` 供页面挂旧结构
+    锚点（如 `_bib_nav_chip`、`_bib_inpage_nav`）；`bar_pad` 只在引用库
+    全宽面板里用默认 24，单篇/整期页体本身已有 24 内边距故传 0。
+    """
+    chips_by_group: list[list[ft.Container]] = []
+    for group in groups:
+        row_chips: list[ft.Container] = []
+        for item in group:
+            item_key = str(item["key"])
+            is_active = item_key == active
+            chip = nav_chip(
+                str(item["label"]), t, active=is_active,
+                on_click=lambda e, k=item_key: on_click(k),
+                tone=item.get("tone"),
+                key=(f"{key_prefix}{item_key}" if key_prefix else None),
+                tooltip=item.get("tooltip"),
+                palette_getter=palette_getter)
+            if chip_attr is not None:
+                chip_attr(chip, item, is_active)
+            row_chips.append(chip)
+        chips_by_group.append(row_chips)
+
+    rows_chips = (_nav_split_rows(chips_by_group, groups, narrow_after)
+                  if narrow else [chips_by_group])
+
+    def _row(segments: list[list[ft.Container]]) -> ft.Container:
+        controls: list[ft.Control] = []
+        for index, segment in enumerate(segments):
+            if index:
+                divider = ft.Container(
+                    width=t.px(21), height=t.px(36),
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Container(width=t.px(1), height=t.px(16),
+                                         bgcolor=t.palette.border))
+                if divider_attr:
+                    setattr(divider, divider_attr, True)
+                controls.append(divider)
+            controls.append(ft.Row(
+                spacing=t.px(4), wrap=False,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=list(segment)))
+        return ft.Container(
+            height=t.px(36), alignment=ft.Alignment.CENTER_LEFT,
+            content=ft.Row(spacing=0, wrap=False,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=controls))
+
+    row_controls = [_row(segments) for segments in rows_chips]
+    bar = ft.Container(
+        key=bar_key, height=t.px(72 if narrow else 36),
+        padding=_pad(t, *bar_pad), bgcolor=bgcolor,
+        border=ft.Border(bottom=_side(t)),
+        content=(ft.Column(spacing=0, controls=row_controls)
+                 if narrow else row_controls[0]))
+    bar._page_nav_chips = [chip for group in chips_by_group for chip in group]
+    if bar_attrs is not None:
+        bar_attrs(bar)
+    return bar
+
+
 def group_tab(label: str, t: Tokens, *, active: bool, on_click=None,
               badge_label: str | None = None) -> ft.Container:
     """组 tab（查阅/采录/治理/维护）：选中 = 正文色 + 2px 下划线，34 高。

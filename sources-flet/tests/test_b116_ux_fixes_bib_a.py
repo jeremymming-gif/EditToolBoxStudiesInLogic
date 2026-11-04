@@ -281,8 +281,9 @@ def test_settings_git_heading_and_commit_tooltip(tmp_path, monkeypatch):
     texts = _texts(root)
     assert "03 Git" in texts
     assert "只提交本地" in texts
-    assert any(node.width == 720 for node in _walk(root)
-               if isinstance(node, ft.Container))
+    # 批 119：设置页正文铺满页壳（旧 720 限宽已删），不再留右侧空栏。
+    assert not any(node.width == 720 for node in _walk(root)
+                   if isinstance(node, ft.Container))
 
     # 最后提交 subject 被 32 高单行截断时，tooltip 必须是全文。
     values = [node for node in _walk(root)

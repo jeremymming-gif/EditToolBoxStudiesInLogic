@@ -531,7 +531,7 @@ class BibDupesView:
         if not res.get("ok"):
             if self._sha_mismatch(res):
                 self.state = "stale"
-                self.dirty_reason = "库 sha256 已变化，预览不再可信"
+                self.dirty_reason = "库指纹已变化，预览不再可信"
             else:
                 self.state = "failure"
             self.error = self._error_text(res)

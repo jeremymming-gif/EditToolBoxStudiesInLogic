@@ -96,7 +96,7 @@ class AiPanel:
         self._fulltext_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                     controls=[
                                         self._fulltext_chk,
-                                        C.text("把正文放进任务书（--coop-fulltext）", t, "small"),
+                                        C.text("把正文放进任务书", t, "small"),
                                         C.badge("谨慎", t, tone="warn"),
                                     ])
         self._scope_row = ft.Row(spacing=t.sp("1"), visible=self._fulltext,
@@ -123,7 +123,7 @@ class AiPanel:
         self._buttons.extend([add, discover, browse_stage])
         apply_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.Checkbox(value=self._apply, on_change=self._on_apply),
-            C.text("第二段直接改产物（--coop-apply）", t, "small"),
+            C.text("第二段直接改产物", t, "small"),
             C.text("不勾 = 只记录建议，产物不动", t, "caption", t.palette.text_faint),
         ])
         return [
@@ -156,7 +156,7 @@ class AiPanel:
         ])
         merge_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.Checkbox(value=self._no_ai_merge, on_change=self._on_merge),
-            C.text("不自动并回产物（--no-ai-merge）", t, "small"),
+            C.text("不自动并回产物", t, "small"),
         ])
         return [
             C.text(info, t, "caption", p.text_muted),
@@ -499,7 +499,7 @@ class AiSettings:
             C.text("API Key", t, "small", p.text_muted),
             C.text_field(t, value=ai["key"], password=True, can_reveal_password=True,
                          expand=True,
-                         hint_text="只存本机设置 JSON；不进命令行、不进日志",
+                         hint_text="只存本机设置，不进日志",
                          on_change=self._on_key_typing, on_blur=self._on_key_commit),
             C.text_button("清除", lambda e: self._clear_key(), t,
                           height=t.control_h()),

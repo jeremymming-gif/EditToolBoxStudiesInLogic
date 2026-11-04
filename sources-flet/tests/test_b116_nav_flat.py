@@ -212,25 +212,25 @@ def _single_page():
     return _build(P.SinglePage)
 
 
-def test_single_page_has_two_28px_flow_chips_with_selected_tint() -> None:
+def test_single_page_has_two_28px_flow_chips_with_selected_state() -> None:
     page, _root = _single_page()
-    chips = page._chip_row.controls
+    chips = page._flow_chips
     assert [chip.content.value for chip in chips] == ["初排转换", "一校核查"]
     assert all(chip.height == page.t.px(28) for chip in chips)
     assert all(chip.alignment == ft.Alignment.CENTER for chip in chips)
-    # 选中态是 palette 的 sel_tint，不反白、不铺主色。
-    assert chips[0].bgcolor == page.t.palette.sel_tint
+    # 批 119：选中态与整期/引用库统一为 palette 的 nav_sel，不反白、不铺主色。
+    assert chips[0].bgcolor == page.t.palette.nav_sel
     assert chips[1].bgcolor is None
     assert chips[0].bgcolor != page.t.palette.accent
 
 
 def test_single_chip_click_switches_flow_and_keeps_h1() -> None:
     page, _root = _single_page()
-    page._chip_row.controls[1].on_click(None)
+    page._flow_chips[1].on_click(None)
     assert page.flow_key == "proofcheck"
-    chips = page._chip_row.controls
+    chips = page._flow_chips
     assert chips[0].bgcolor is None
-    assert chips[1].bgcolor == page.t.palette.sel_tint
+    assert chips[1].bgcolor == page.t.palette.nav_sel
     assert page._child_title.value == "单篇稿件"
     assert "一校核查" in page._flow_desc.value
 

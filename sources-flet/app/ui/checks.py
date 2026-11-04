@@ -31,7 +31,7 @@ UNREADABLE_INFO = "报告已生成，但结构化数据读不回；表格留空�
 #: 非 0 退出码的统一后续建议（用户可执行；不要求“发给技术人员”）。
 FAIL_HINT = "请查看上方输出；常见原因是 TeX 工具链未装好或路径含特殊字符，可到「设置 → 环境检查」看修复建议。"
 INFO_DIR_HINT = "选整期根目录（内含 01 作者/ 等篇目），不要选 000 目录。"
-INFO_RUN_HINT = "运行后写 信息检查<时间>.txt/.json；表格与 --preview JSON 逐字段对齐。"
+INFO_RUN_HINT = "运行后写检查报告；表格与预览结果逐字段对齐。"
 
 
 def _clean(value) -> str:
@@ -258,9 +258,9 @@ def proof_header_lines(tex: str, lang: str, fix: bool) -> list[str]:
     """PC-014：运行前打印核查抬头（稿件/模式/语种）。"""
     return [
         "══ 一校核查 ══",
-        "工具：proofcheck.py",
+        "工具：一校核查",
         f"稿件：{tex or '（未选择）'}",
-        "模式：" + ("报告 + 修正稿（--fix）" if fix else "只出报告"),
+        "模式：" + ("报告 + 修正稿" if fix else "只出报告"),
         f"语种：{proof_lang_label(lang)}",
     ]
 
@@ -719,7 +719,7 @@ def proofcheck_section(page) -> ft.Control:
         ]),
         C.option_row(
             "顺手把无歧义的改掉（另存新文件）",
-            "传 --fix：另写 <stem>_一校核查后.tex；输入文件不改",
+            "另写一份「一校核查后」副本；输入文件不改",
             t, icon="AUTO_FIX_HIGH",
             checked=bool(options.get("proofcheck_fix", False)),
             on_change=lambda e: page.app.set_option("proofcheck_fix", e.control.value),

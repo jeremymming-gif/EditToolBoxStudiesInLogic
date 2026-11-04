@@ -436,8 +436,8 @@ class SinglePage(BasePage):
                                          disabled=not self.app.engine_status.ok)
         self._stop_btn = C.secondary_button("停止", self._on_stop, t, icon="STOP", disabled=True)
         self._sync_header()
-        # 批 116 NAV-B：侧栏不再展开单篇子项，convert/proofcheck 收到页内 chip；
-        # 放在页头下、内容面板顶部（28 高，选中用 palette sel_tint，不反白）。
+        # 批 119：convert/proofcheck 的页内子导航与整期/引用库共用 C.page_nav；
+        # 放在页头下、内容面板顶部（28 高 chip，选中 nav_sel）。
         self._chip_row = self._build_flow_chips()
         # 批 115 P1-2：页头只有 h1 + 说明（crumb 已去）；列存起来供测试核对。
         self._title_col = ft.Column(spacing=t.sp("xs"), expand=True,
@@ -516,26 +516,28 @@ class SinglePage(BasePage):
         self._child_title.value = "单篇稿件"
         self._flow_desc.value = flow["desc"]
 
-    def _build_flow_chips(self) -> ft.Row:
-        """页内步骤 chip（初排转换/一校核查）；选中用 sel_tint，不反白不高亮主色。"""
+    def _build_flow_chips(self) -> ft.Container:
+        """页内步骤导航条（批 119：与整期/引用库共用 C.page_nav 唯一实现）。"""
         t = self.t
-        chips: list[ft.Control] = []
-        for key, flow in self.FLOWS.items():
-            chip = C.chip(
-                flow["label"], t, active=key == self.flow_key,
-                on_click=lambda e, v=key: self._switch_flow(v))
-            chip.height = t.px(28)
-            chip.alignment = ft.Alignment.CENTER
-            chips.append(chip)
-        return ft.Row(spacing=t.sp("half"), controls=chips,
-                      vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        groups = [[{"key": key, "label": flow["label"]}
+                   for key, flow in self.FLOWS.items()]]
+        nav = C.page_nav(
+            t, groups=groups, active=self.flow_key,
+            on_click=self._switch_flow,
+            # 页体已有 24 内边距；条内不再叠加，chip 左缘与页头对齐。
+            bar_pad=(0, 0, 0, 0),
+            palette_getter=lambda: self.t.palette)
+        self._flow_chips = list(nav._page_nav_chips)
+        return nav
 
     def _sync_chips(self) -> None:
-        """activate 后原地换 chip 的选中态（不重建整行，保持位置）。"""
-        row = getattr(self, "_chip_row", None)
-        if row is None:
+        """activate 后原地换导航 chip 的选中态（条壳保留，不重建整页）。"""
+        bar = getattr(self, "_chip_row", None)
+        if bar is None:
             return
-        row.controls = self._build_flow_chips().controls
+        fresh = self._build_flow_chips()
+        bar.content = fresh.content
+        self._safe_update(bar)
 
     def activate(self, view: str, *, source: str = "nav") -> None:
         """导航切到 convert/proofcheck（本页唯一二级视图入口）。"""
@@ -747,11 +749,11 @@ class SinglePage(BasePage):
             ft.Container(expand=True, content=self._adv_path_input(
                 "convert_bib", "参考文献 .bib", "如 refs.bib", kind="file")),
             ft.Container(expand=True, content=self._adv_path_input(
-                "convert_refs", "附加参考文献 --refs", "如 extra.bib", kind="file")),
+                "convert_refs", "附加参考文献", "如 extra.bib", kind="file")),
             ft.Container(expand=True, content=self._adv_path_input(
-                "convert_sty", "样式文件 --sty", "如 SLCN-MIX.sty", kind="file")),
+                "convert_sty", "样式文件", "如 SLCN-MIX.sty", kind="file")),
             ft.Container(expand=True, content=self._adv_path_input(
-                "convert_skeleton", "模板骨架 --skeleton", "如 templates/slcn", kind="dir")),
+                "convert_skeleton", "模板骨架", "如 templates/slcn", kind="dir")),
         ]
         wide = self._design_w() >= 1120
         blocks: list[ft.Control] = []
@@ -955,7 +957,7 @@ class SinglePage(BasePage):
              "CLEANING_SERVICES", "convert_clean", False, None),
             ("导出原稿 PDF", "保留原始稿件并另存一份 PDF 备查",
              "PICTURE_AS_PDF_OUTLINED", "convert_source_pdf", False, None),
-            ("强制覆盖（--force）", "产物已存在时仍重跑并覆盖（谨慎）",
+            ("强制覆盖", "产物已存在时仍重跑并覆盖（谨慎）",
              "WARNING_AMBER_ROUNDED", "convert_force", False, None),
             # 批 116 SINGLE-FN（F1 P0-1）：引擎 --dry-run 在生成前返回，
             # 只算「将要做什么」；默认关，勾选后仍走同一套 argv。
@@ -1455,66 +1457,48 @@ class IssuePage(BasePage):
         return 0 < width < 1100
 
     def _nav_chip(self, view: dict, active: bool) -> ft.Container:
+        """薄包装：单 chip 构建走 C.nav_chip（批 119 三页唯一实现）。"""
         t = self.t
-        p = t.palette
         key = str(view["key"])
         state = self._view_state(key)
-        chip = ft.Container(
-            key=f"issue-nav-{key}",
-            height=t.px(28), border_radius=t.radius("control"),
-            padding=C._pad(t, 10, 0, 10, 0),
-            alignment=ft.Alignment.CENTER,
-            bgcolor=p.nav_sel if active else None,
-            tooltip=f"{view['title']}：{self._state_word(state)}",
+        chip = C.nav_chip(
+            str(view["title"]), t, active=active,
             on_click=lambda e, k=key: self._select_view(k),
-            content=ft.Row(
-                spacing=t.px(6),
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    C.text(str(view["title"]), t, "small",
-                           p.text if active else p.text_muted,
-                           weight="semibold" if active else "medium"),
-                    C.status_dot(self._view_tone(state), t),
-                ]),
-        )
-        chip.on_hover = lambda e, box=chip, sel=active: self._nav_hover(e, box, sel)
+            tone=self._view_tone(state),
+            key=f"issue-nav-{key}",
+            tooltip=f"{view['title']}：{self._state_word(state)}",
+            palette_getter=lambda: self.t.palette)
         self._nav_chips[key] = chip
         return chip
 
     def _nav_hover(self, e, chip: ft.Container, active: bool) -> None:
-        p = self.t.palette
-        hovered = str(getattr(e, "data", "")).lower() in ("true", "1", "on")
-        chip.bgcolor = p.nav_sel if active else (p.surface_2 if hovered else None)
-        self._safe_update(chip)
-
-    def _nav_row(self, views: list) -> ft.Container:
-        t = self.t
-        active = self._view_of_step(self.selected)
-        return ft.Container(
-            height=t.px(36), alignment=ft.Alignment.CENTER_LEFT,
-            content=ft.Row(
-                spacing=t.px(4),
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[self._nav_chip(view, str(view["key"]) == active)
-                          for view in views]))
+        C.nav_hover(self.t, e, chip, active,
+                    palette_getter=lambda: self.t.palette)
 
     def _nav_bar(self) -> ft.Control:
-        """36 高导航条：1160 一行 4 chip；内容宽 <1100 折两行（高度 72）。"""
+        """36 高导航条（窄窗 72）：批 119 共用 C.page_nav；整期窄窗 2+2 折行。"""
         t = self.t
-        if self._nav_narrow():
-            bar = ft.Column(spacing=0, controls=[
-                self._nav_row(self.VIEWS[:2]),
-                self._nav_row(self.VIEWS[2:]),
-            ])
-            height = 36 * 2
-        else:
-            bar = self._nav_row(self.VIEWS)
-            height = 36
-        return ft.Container(
-            key="issue-nav", height=t.px(height),
-            border=ft.Border(bottom=ft.BorderSide(width=t.px(1),
-                                                  color=t.palette.border)),
-            content=bar)
+        items = []
+        for view in self.VIEWS:
+            key = str(view["key"])
+            state = self._view_state(key)
+            items.append({
+                "key": key,
+                "label": str(view["title"]),
+                "tone": self._view_tone(state),
+                "tooltip": f"{view['title']}：{self._state_word(state)}",
+            })
+        return C.page_nav(
+            t, groups=[items], active=self._view_of_step(self.selected),
+            on_click=self._select_view, narrow=self._nav_narrow(),
+            narrow_after=str(self.VIEWS[1]["key"]),
+            key_prefix="issue-nav-",
+            chip_attr=lambda chip, item, is_active: self._nav_chips.__setitem__(
+                str(item["key"]), chip),
+            bar_key="issue-nav",
+            # 页体已有 24 内边距；条内不再叠加，chip 左缘与页头对齐。
+            bar_pad=(0, 0, 0, 0),
+            palette_getter=lambda: self.t.palette)
 
     def _sync_nav(self) -> None:
         """只换导航条本身（换期/状态变化/宽度变化），正文控件保留。"""
@@ -3196,7 +3180,7 @@ BIB_WRITE_NOTICE = "预览 → 二次确认 → 原子写；只提交 bibliograp
 BIB_WRITE_VIEWS = ("import", "review", "edit", "dupes", "fieldfix", "health")
 #: notice 的 info tooltip 全文（T9 的 help_content 再收录同一份口径，别改这里再抄一遍）。
 BIB_WRITE_RULES = (
-    "W1 写库四步：干跑预览 → 二次确认 → 校验 bibliography.jsonl 的 sha256"
+    "W1 写库四步：预览（不写库）→ 二次确认 → 校验 bibliography.jsonl 的库指纹"
     "（不符即拒绝、零写入）→ 原子替换。\n"
     "W2 只本地：写成功后自动本地提交 1 条（批量也只 1 条），"
     "只提交 bib_db/bibliography.jsonl；不 git push、不同步远端。\n"

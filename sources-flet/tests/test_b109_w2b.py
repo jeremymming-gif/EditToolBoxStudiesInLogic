@@ -234,7 +234,7 @@ def test_proof_report_and_lang_texts():
     assert CK.proof_result_text(-1) == "失败 · 无法启动。"
     lines = CK.proof_header_lines("a.tex", "zh", True)
     assert lines[0] == "══ 一校核查 ══" and lines[2] == "稿件：a.tex"
-    assert lines[3] == "模式：报告 + 修正稿（--fix）" and lines[4] == "语种：中文（zh）"
+    assert lines[3] == "模式：报告 + 修正稿" and lines[4] == "语种：中文（zh）"
 
 
 # ── 页面钩子（stub page，不跑引擎）────────────────────────────────────────
@@ -376,7 +376,7 @@ def test_proof_section_wires_lang_dropdown_and_fix_option():
     assert [opt.text for opt in dropdown.options] == ["自动", "中文", "英文"]
     labels = _texts(section)
     assert "顺手把无歧义的改掉（另存新文件）" in labels
-    assert any("--fix" in line for line in labels)
+    assert any("另写一份「一校核查后」副本" in line for line in labels)
     dropdown.value = "zh"
     CK._store_lang(page, dropdown)
     assert page.app.store.get("form.proof_lang") == "zh"

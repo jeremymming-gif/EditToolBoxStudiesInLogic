@@ -357,10 +357,10 @@ def verify_max_text(cfg) -> str:
 def verify_max_summary(cfg) -> str:
     value = bibdb_section(cfg)["verify_max"]
     if value is None:
-        return f"引擎默认 {DEFAULT_VERIFY_MAX} 条（不传 --verify-max）"
+        return f"引擎默认 {DEFAULT_VERIFY_MAX} 条"
     if value == 0:
-        return "不限（--verify-max 0）"
-    return f"{value} 条（--verify-max）"
+        return "不限（上限设 0）"
+    return f"{value} 条（上限）"
 
 
 def bibdb_convert_args(cfg) -> dict:
@@ -387,13 +387,13 @@ def bibdb_effective_rows(cfg, *, db: str = "", db_exists: bool = False) -> list[
         plan = "关（照常核实）"
     all_refs = "开（越过上限）" if section["verify_all_refs"] else "关（受上限约束）"
     if not section["lookup_enabled"]:
-        lookup = "关（本次传 --no-bibdb）"
+        lookup = "关（本次不查引用库）"
     elif db_exists and db:
         lookup = f"开（库：{db}）"
     elif section["lookup_enabled"]:
         lookup = "开（库文件不存在，会跳过查库）"
     else:  # pragma: no cover - 上面两分支已穷尽
-        lookup = "关（本次传 --no-bibdb）"
+        lookup = "关（本次不查引用库）"
     return [
         ("核实上限", verify_max_summary(section)),
         ("先算账", plan),
@@ -411,5 +411,5 @@ def bibdb_convert_hint(cfg) -> str:
     if section["verify_plan"]:
         text += "；先算账（只打印计划）"
     if not section["lookup_enabled"]:
-        text += "；本次不查引用库（--no-bibdb）"
+        text += "；本次不查引用库"
     return text + "（在「引用库 → 设置」改；默认不加参数）"

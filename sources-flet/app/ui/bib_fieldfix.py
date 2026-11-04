@@ -616,7 +616,7 @@ class BibFieldFixView:
         keys = len({row["key"] for row in rows})
         fields = len({row["field"] for row in rows})
         impact = (f"{len(rows)} 条建议 · {keys} 条记录 · {fields} 个字段 · "
-                  f"库 sha {_sha8(self.scan_sha) or '—'} · 可回退")
+                  f"库指纹 {_sha8(self.scan_sha) or '—'} · 可回退")
         dialog = S.danger_confirm(
             self._flet(), self.t, title="全部应用（先预览）",
             message="只是预览：预览后仍在确认条点「确认写入」。",

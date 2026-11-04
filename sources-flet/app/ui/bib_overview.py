@@ -397,7 +397,7 @@ class OverviewView:
         d = self.detail
         lines = [
             ("库文件", _basename(d.get("path") or "")),
-            ("库 sha", _short_sha(d.get("sha") or "") or "—"),
+            ("库指纹", _short_sha(d.get("sha") or "") or "—"),
             ("记录", _num(d.get("records")) or "—"),
             ("来源", _num(d.get("sources")) or "—"),
             ("已核实 / 未核实", f"{_num(d.get('verified')) or '—'} / {_num(d.get('unverified')) or '—'}"),
@@ -464,7 +464,7 @@ class OverviewView:
         d = self.detail
         pairs = [
             ("库文件", _basename(d.get("path") or "")),
-            ("库 sha", _short_sha(d.get("sha") or "") or "—"),
+            ("库指纹", _short_sha(d.get("sha") or "") or "—"),
             ("记录 / 来源", f"{_num(d.get('records')) or '—'} / {_num(d.get('sources')) or '—'}"),
             ("已核实 / 未核实", f"{_num(d.get('verified')) or '—'} / {_num(d.get('unverified')) or '—'}"),
             ("累计冲突 / 待办", f"{_num(d.get('conflicts')) or '—'} / {_num(d.get('pending')) or '—'}"),

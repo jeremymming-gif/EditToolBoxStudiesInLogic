@@ -348,7 +348,7 @@ def test_single_page_activate_switches_flow_with_page_chips() -> None:
     page._crumb = ft.Text("单篇稿件")
     page._child_title = ft.Text("单篇稿件")
     page._flow_desc = ft.Text("")
-    page._chip_row = ft.Row(controls=[ft.Text("old")])
+    page._chip_row = ft.Container()
     page._flow_builder = lambda key: (lambda: ft.Text(key))
     page._sync_header = lambda: None
     page._safe_update = lambda *controls: None
@@ -357,15 +357,16 @@ def test_single_page_activate_switches_flow_with_page_chips() -> None:
     assert page.flow_key == "proofcheck"
     assert app.store.get("single_flow") == "proofcheck"
     assert page._flow_box.controls[0].value == "proofcheck"
-    # 批 116 NAV-B：单篇不再有侧栏子项，convert/proofcheck 变成页内 28 高 chip。
-    assert [chip.content.value for chip in page._chip_row.controls] == [
+    # 批 119：单篇不再有侧栏子项，convert/proofcheck 变成页内 28 高 chip，
+    # 与整期/引用库共用 C.page_nav（选中态统一 nav_sel）。
+    assert [chip.content.value for chip in page._flow_chips] == [
         "初排转换", "一校核查"]
-    assert page._chip_row.controls[0].bgcolor is None
-    assert page._chip_row.controls[1].bgcolor == app.t.palette.sel_tint
+    assert page._flow_chips[0].bgcolor is None
+    assert page._flow_chips[1].bgcolor == app.t.palette.nav_sel
     build_src = inspect.getsource(P.SinglePage.build)
     assert "_build_flow_chips()" in build_src
-    assert "C.chip(" not in build_src  # chip 只在 helper 里构建
-    assert "C.chip(" in inspect.getsource(P.SinglePage._build_flow_chips)
+    assert "C.chip(" not in build_src  # nav chip 只在共享 helper 里构建
+    assert "C.page_nav(" in inspect.getsource(P.SinglePage._build_flow_chips)
     assert "_sync_header()" in build_src
     assert "_child_title" in build_src and "_flow_desc" in build_src
     assert "_crumb" not in build_src

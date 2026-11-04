@@ -264,7 +264,7 @@ class BibDuplicatesView(_OpsView):
         pairs = len(self.rows)
         note = (f"候选 {pairs} 对" if self.loaded else "正在读取候选…")
         controls: list = [C.section_title(
-            "查重合并", t, note="report-duplicates --json --out <临时目录>（不写笔记仓）"),
+            "查重合并", t, note="只读导出重复清单到临时目录（不写笔记仓）"),
             C.text("同作品不同 key 的候选对（题名/字段相似度）。报告只写临时目录，"
                    "读完即删；合并后只提交库文件一条。", t, "small", t.palette.text_muted),
             ft.Row(spacing=t.sp("1"), wrap=True,
@@ -306,7 +306,7 @@ class BibDuplicatesView(_OpsView):
             [C.form_field(t, "条目类型", C.text_field(
                 t, value=self.entry_type, width=t.px(150),
                 on_change=lambda e: setattr(self, "entry_type", e.control.value or ""))),
-             C.primary_button("预览合并（dry-run）", lambda e: self._ask_preview_merge(), t,
+             C.primary_button("预览合并（不写库）", lambda e: self._ask_preview_merge(), t,
                               icon="VISIBILITY", disabled=self.busy)],
             t)
         return C.card(ft.Column(spacing=t.sp("1"), controls=[
@@ -392,7 +392,7 @@ class BibDuplicatesView(_OpsView):
         t = self.t
         payload = self.preview or {}
         controls: list = [C.section_title("合并预览（未写库）", t,
-                                          note="库 sha256 " + GIT.short_sha(
+                                          note="库指纹 " + GIT.short_sha(
                                               _text(payload.get("db_sha256_before")), 8))]
         controls += [C.text(line, t, "small", t.palette.text)
                      for line in merge_preview_lines(payload)]

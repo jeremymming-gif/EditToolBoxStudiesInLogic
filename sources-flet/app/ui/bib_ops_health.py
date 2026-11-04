@@ -101,7 +101,7 @@ class BibFieldFixView(_OpsView):
             return
         self._confirm(
             title=f"写入 {len(self.plan)} 条字段？",
-            message=("确认后逐条写入（每条带前一条的写后 sha 校验）；中途失败即停，"
+            message=("确认后逐条写入（每条带前一条的写后库指纹校验）；中途失败即停，"
                      "已写入的保留。写完只提交 bib_db/bibliography.jsonl 一条（不推送）。"),
             confirm_label="确认应用",
             on_confirm=lambda e: self._run(self._apply()))
@@ -160,9 +160,9 @@ class BibFieldFixView(_OpsView):
         count = len(self.rows)
         return C.card(ft.Column(spacing=t.sp("1"), controls=[
             C.section_title("字段归位", t,
-                            note="suggest-field-fixes --json（只读候选；应用走 edit --json-fields）"),
+                            note="只读候选；勾选后逐条预览，确认后逐条写入"),
             C.text("引擎按本库已有条目猜缺失字段的候选值（附证据与风险）。勾选 + 选值后先逐条 "
-                   "dry-run 预览，确认后逐条真写，全部写完合 1 条提交；不静默批量写。",
+                   "预览（不写入），确认后逐条真写，全部写完合 1 条提交；不静默批量写。",
                    t, "small", t.palette.text_muted),
             ft.Row(spacing=t.sp("1"), wrap=True,
                    vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
@@ -230,7 +230,7 @@ class BibFieldFixView(_OpsView):
                  for item in self.plan]
         controls: list = [C.section_title(
             f"预览 · {len(self.plan)} 条（未写库）", t,
-            note="逐条 edit --dry-run；确认后写库合 1 条提交")]
+            note="逐条预览；确认后写库，合 1 条提交")]
         controls += [C.text(line, t, "small", t.palette.text) for line in lines[:30]]
         controls.append(ft.Row(spacing=t.sp("1"), wrap=True,
                                vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
@@ -360,7 +360,7 @@ class BibHealthView(_OpsView):
             return
         self._confirm(
             title=f"{self.batch_label}？",
-            message=("确认后写入（带 --expect-db-sha256 校验）；本次合并为 1 条版本提交，"
+            message=("确认后写入（写库前校验库指纹）；本次合并为 1 条版本提交，"
                      "只提交 bib_db/bibliography.jsonl（不推送）。\n"
                      "失败会显示引擎原文；已写入的保留（不回滚）。"),
             confirm_label="确认写入",
@@ -452,7 +452,7 @@ class BibHealthView(_OpsView):
                         expand=False, width=t.px(150)),
         ])
         controls: list = [C.section_title(
-            "库健康", t, note="lint --json（退出码 1 = 有警告，仍出完整 JSON）"), cards]
+            "库健康", t, note="只读检查（退出码 1 = 有警告，仍出完整结果）"), cards]
         controls += [C.text(line, t, "small", t.palette.text) for line in health_lines(counts)]
         controls.append(ft.Row(spacing=t.sp("1"), wrap=True,
                                vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
@@ -481,7 +481,7 @@ class BibHealthView(_OpsView):
         t = self.t
         pending = _int(self.counts.get("pending"))
         controls: list = [C.section_title(
-            "审阅批量裁决", t, note="先 dry-run 出账，再二次确认；合 1 条提交")]
+            "审阅批量裁决", t, note="先预览出账（不写入），再二次确认；合 1 条提交")]
         if pending <= 0:
             controls.append(C.text("当前没有待裁决冲突（库与预览一致，零写入）。",
                                    t, "small", t.palette.text_muted))
@@ -496,10 +496,10 @@ class BibHealthView(_OpsView):
                     else "（缺失）"), t, "caption", t.palette.text_faint),
             ]))
         controls.append(ft.Row(spacing=t.sp("1"), wrap=True, controls=[
-            C.secondary_button("预览所选（逐条 dry-run）",
+            C.secondary_button("预览所选（逐条不写库）",
                                lambda e: self._ask_preview_selected(), t,
                                disabled=self.busy or pending <= 0),
-            C.secondary_button("全部采用预览（--adopt-all-pending --dry-run）",
+            C.secondary_button("全部采用预览（不写库）",
                                lambda e: self._ask_adopt_all(), t,
                                disabled=self.busy or pending <= 0),
         ]))

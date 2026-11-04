@@ -119,7 +119,7 @@ def test_settings_path_env(monkeypatch, tmp_path):
 
 # ── 批 109 W1b（R6）：bibdb 段（核实成本闸门）──────────────────────────────
 @pytest.mark.parametrize("text,value,error", [
-    ("", None, None),          # 留空 = 引擎默认 120 条（不传 --verify-max）
+    ("", None, None),          # 留空 = 引擎默认 120 条（不加参数）
     ("0", 0, None),            # 0 = 不限，必须真传
     (" 120 ", 120, None),
     ("-1", None, "上限不能是负数（要「不限」请填 0）"),
@@ -147,9 +147,9 @@ def test_bibdb_convert_args_nondefault():
 
 def test_verify_max_summary_three_states():
     assert SS.verify_max_summary({"bibdb": {"verify_max": None}}) == \
-        "引擎默认 120 条（不传 --verify-max）"
-    assert SS.verify_max_summary({"bibdb": {"verify_max": 0}}) == "不限（--verify-max 0）"
-    assert SS.verify_max_summary({"bibdb": {"verify_max": 50}}) == "50 条（--verify-max）"
+        "引擎默认 120 条"
+    assert SS.verify_max_summary({"bibdb": {"verify_max": 0}}) == "不限（上限设 0）"
+    assert SS.verify_max_summary({"bibdb": {"verify_max": 50}}) == "50 条（上限）"
     assert SS.verify_max_text({"bibdb": {"verify_max": None}}) == ""
     assert SS.verify_max_text({"bibdb": {"verify_max": 0}}) == "0"
 
@@ -188,7 +188,7 @@ def test_bibdb_effective_rows():
     rows = SS.bibdb_effective_rows({"bibdb": {"verify_max": None}}, db="", db_exists=False)
     assert len(rows) == 4
     assert rows[0][0] == "核实上限"
-    assert rows[0][1] == "引擎默认 120 条（不传 --verify-max）"
+    assert rows[0][1] == "引擎默认 120 条"
     assert rows[3][1] == "开（库文件不存在，会跳过查库）"
     off = SS.bibdb_effective_rows({"bibdb": {"lookup_enabled": False}})
-    assert off[3][1] == "关（本次传 --no-bibdb）"
+    assert off[3][1] == "关（本次不查引用库）"

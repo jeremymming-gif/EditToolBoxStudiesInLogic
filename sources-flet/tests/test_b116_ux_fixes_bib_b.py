@@ -160,7 +160,7 @@ def test_import_stale_shows_repreview_only_then():
                     "db_sha256_before": "a" * 64}
     view.expect_sha = "a" * 64
     view.state = "stale"
-    view.dirty_reason = "库 sha 已变化"
+    view.dirty_reason = "库指纹已变化"
     tree = view.build()
     bar = [n for n in _walk(tree) if getattr(n, "_bib_confirm_bar", None)][0]
     assert bar._bib_repreview_btn.visible is True

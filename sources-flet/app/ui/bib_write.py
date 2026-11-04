@@ -303,7 +303,7 @@ class BibImportView:
             C.card(ft.Column(spacing=t.sp("1"), controls=[
                 C.section_title("入藏", t, note="预览只算不写；确认后才写库"),
                 C.text("三种来源：回读导出的 .bib / 整期成品目录 / 粘贴 bib 文本。"
-                       "预览显示新增、更新、冲突条数；写库前校验库 sha256，成功后自动本地提交"
+                       "预览显示新增、更新、冲突条数；写库前校验库指纹，成功后自动本地提交"
                        "（只提交 bib_db/bibliography.jsonl）。",
                        t, "caption", t.palette.text_muted),
                 chips,
@@ -327,15 +327,15 @@ class BibImportView:
         t = self.t
         return [
             ft.Row(spacing=t.sp("2"), wrap=True, controls=[
-                C.form_field(t, "期（--issue，可空）", C.text_field(
+                C.form_field(t, "期（可空）", C.text_field(
                     t, value=self.issue, width=t.px(240),
                     hint_text="如 2026年第5期(90)", on_change=self._on_issue_change)),
-                C.form_field(t, "篇（--slug，可空）", C.text_field(
+                C.form_field(t, "篇（可空）", C.text_field(
                     t, value=self.slug, width=t.px(240),
                     hint_text="如 01 Meimei_Han", on_change=self._on_slug_change)),
             ]),
-            C.option_row("已人工核实（--verified）",
-                         "默认与旧壳一致：入藏记为已核实；取消则显式传 --unverified", t,
+            C.option_row("已人工核实",
+                         "默认与旧壳一致：入藏记为已核实；取消则记为未核实", t,
                          icon="VERIFIED", checked=bool(self.verified),
                          on_change=self._on_verified_change),
         ]
@@ -468,12 +468,12 @@ class BibImportView:
         db = str(self.preview.get("db") or self._db())
         meta = ("整期目录（期/篇由目录名推导）" if self.mode == "dir"
                 else f"期：{self.issue or '未指定'}；篇：{self.slug or '未指定'}；"
-                     f"{'已核实 --verified' if self.verified else '未核实 --unverified'}")
+                     f"{'已核实' if self.verified else '未核实'}")
         message = (f"将写入：新增 {counts['new']} 条、更新 {counts['updated']} 条、"
                    f"冲突 {counts['conflicts']} 条（共解析 {counts['entries']} 条）。\n"
                    f"入藏口径：{meta}\n"
                    f"库：{db}\n"
-                   "写前校验库 sha256，不符即拒绝、零写入；成功后自动本地提交，"
+                   "写前校验库指纹，不符即拒绝、零写入；成功后自动本地提交，"
                    "只提交 bib_db/bibliography.jsonl，不推送。")
         C.confirm(self.page.page, self.t, title="确认写入引用库？", message=message,
                   confirm_label="写入", on_confirm=lambda e: self.page.page.run_task(self._write))
@@ -485,7 +485,7 @@ class BibImportView:
             # 双保险：确认按钮之外再校验一次（写入调用绝不在过期预览上执行）。
             self.stale = True
             self.expect_sha = ""
-            self.error = "输入已变更，dry-run 预览已过期：请重新预览后再写入（本次未写库）。"
+            self.error = "输入已变更，预览已过期：请重新预览后再写入（本次未写库）。"
             self.page.mark("bib_import_stale_block", mode=self.mode, action="write")
             self.page._render()
             return
@@ -555,7 +555,7 @@ class BibImportView:
                                   t.palette.text_muted))
         warnings = import_warnings(payload)
         controls: list = [
-            C.section_title("预览结果", t, note="dry-run：库文件未改动"),
+            C.section_title("预览结果", t, note="预览：库文件未改动"),
         ]
         if self._preview_stale():
             controls.append(C.notice_bar(
@@ -565,7 +565,7 @@ class BibImportView:
             cards,
             C.text(f"库：{payload.get('db') or '（未知）'}"
                    f"（{'已存在' if payload.get('db_existed') else '写库时新建'}）· "
-                   f"库 sha256 {sha_short(str(payload.get('db_sha256_before') or ''), 16)}",
+                   f"库指纹 {sha_short(str(payload.get('db_sha256_before') or ''), 16)}",
                    t, "caption", t.palette.text_faint),
             ft.Column(spacing=t.sp("half"), controls=details),
         ]
@@ -584,7 +584,7 @@ class BibImportView:
         written = bool(payload.get("written"))
         counts = import_counts(payload)
         line = (f"已写库：新增 {counts['new']} 条、更新 {counts['updated']} 条、"
-                f"冲突 {counts['conflicts']} 条；库 sha256 "
+                f"冲突 {counts['conflicts']} 条；库指纹 "
                 f"{sha_short(str(payload.get('db_sha256_before') or ''), 16)} → "
                 f"{sha_short(str(payload.get('db_sha256_after') or ''), 16)}"
                 if written else "库无变化（未重写、未生成提交）。")
@@ -741,7 +741,7 @@ class BibReviewView:
     def _adopt(self, item: dict) -> None:
         sha = str(item.get("incoming_sha256") or "")
         if not sha:
-            self.page.app.toast("该条没有冲突指纹（incoming_sha256），不能采用新稿值")
+            self.page.app.toast("该条没有冲突指纹，不能采用新稿值")
             return
         lines = conflict_diff_lines(item, limit=6)
         self._confirm(
@@ -749,7 +749,7 @@ class BibReviewView:
             message=(f"C{_as_int(item.get('stable_no')):03d} · {conflict_title(item)}\n"
                      f"记录：{item.get('record_key')}（指纹 {sha[:12]}…）\n"
                      + ("\n".join(lines) + "\n" if lines else "")
-                     + "只改这些字段，key 不变；写库前校验库 sha256。\n"
+                     + "只改这些字段，key 不变；写库前校验库指纹。\n"
                      + "写成功后自动本地提交（只提交库文件）。"),
             confirm_label="采用新稿值",
             on_yes=lambda e: self.page.page.run_task(
@@ -766,7 +766,7 @@ class BibReviewView:
             title="用这份 bib 替换该记录？",
             message=(f"C{_as_int(item.get('stable_no')):03d} · {conflict_title(item)}\n"
                      f"记录：{item.get('record_key')}\n裁决 bib：{path}\n"
-                     "整条写 entry_type + fields，key 不变；写库前校验库 sha256。\n"
+                     "整条写 entry_type + fields，key 不变；写库前校验库指纹。\n"
                      "写成功后自动本地提交（只提交库文件）。"),
             confirm_label="替换",
             on_yes=lambda e: self.page.page.run_task(
@@ -779,7 +779,7 @@ class BibReviewView:
             title="一键全部采用新稿值？",
             message=(f"对全部 {pending} 条待裁决冲突逐条按 adopt 语义应用新稿值。\n"
                      "同记录待裁决冲突字段重叠 → 整体拒绝并列出冲突号（请逐条处理）。\n"
-                     "写库前校验库 sha256；写成功后自动本地提交（只提交库文件）。"),
+                     "写库前校验库指纹；写成功后自动本地提交（只提交库文件）。"),
             confirm_label="全部采用",
             on_yes=lambda e: self.page.page.run_task(self._resolve, adopt_all_pending=True))
 
@@ -889,13 +889,13 @@ class BibReviewView:
         total = _as_int(totals.get("total"))
         resolved = _as_int(totals.get("resolved"))
         controls: list = [
-            C.section_title("待裁决", t, note="conflicts --json --pending-only（只读）"),
+            C.section_title("待裁决", t, note="只读查询待裁决冲突"),
             ft.Row(spacing=t.sp("2"), wrap=False, controls=[
                 C.stat_card("待裁决", str(pending), "写库后从此队列移除", t,
                             expand=False, width=t.px(150)),
                 C.stat_card("冲突合计", str(total), f"已裁决 {resolved}", t,
                             expand=False, width=t.px(150)),
-                C.stat_card("库 sha256", sha_short(self.db_sha, 12), "写前 sha 闸", t,
+                C.stat_card("库指纹", sha_short(self.db_sha, 12), "写前校验库指纹", t,
                             expand=False, width=t.px(150)),
             ]),
             ft.Row(spacing=t.sp("1"), wrap=True, controls=[

@@ -1,7 +1,8 @@
 """引用库 · 设置（批 115 夜间重设计，BPAGES-B）。
 
 契约：`evidence/b115-bib-redesign/pages/settings/spec.md`。本页不写库内容；
-单列 720、四组（01 库 / 02 核实 / 03 Git / 04 关于），只有「保存设置」是主色，
+正文铺满页壳（批 119 去固定宽，右侧不再留空白竖栏）、四组
+（01 库 / 02 核实 / 03 Git / 04 关于），只有「保存设置」是主色，
 提交/推送是次要动作，回退单独放在页尾危险区（56 高，生成新提交，不 push）。
 """
 from __future__ import annotations
@@ -21,7 +22,6 @@ VIEW_KEY = "settings"
 TITLE = "设置"
 ROLE = "readonly"
 
-COLUMN_W = 720
 VERIFY_KEYS = ("bibdb.verify_max", "bibdb.verify_plan",
                "bibdb.verify_all_refs", "bibdb.lookup_enabled")
 SWITCHES = (("bibdb.verify_plan", "先算账（不花钱）"),
@@ -84,7 +84,7 @@ def _size_text(size) -> str:
 
 
 class BibPrefsView:
-    """设置：单列 720 / 四组 / 保存 dirty 才启用 / 危险区在页尾。"""
+    """设置：正文铺满页壳（批119 去固定宽）/ 四组 / 保存 dirty 才启用 / 危险区在页尾。"""
 
     def __init__(self, page) -> None:
         self.page = page
@@ -569,7 +569,7 @@ class BibPrefsView:
 
     def _commit_message(self) -> str:
         head = _sha8(_text((self.git or {}).get("head")))
-        return f"只提交 bibliography.jsonl · 库 sha {head} · 不推送。"
+        return f"只提交 bibliography.jsonl · 库指纹 {head} · 不推送。"
 
     def _commit_click(self, e=None) -> None:
         if not self._git_ok():
@@ -590,7 +590,7 @@ class BibPrefsView:
         ahead = self._ahead()
         C.confirm(
             self._flet(), self.t, title="推送到 origin/main？",
-            message=(f"推送 {ahead} 条提交到 origin/main · 库 sha "
+            message=(f"推送 {ahead} 条提交到 origin/main · 库指纹 "
                      f"{_sha8(_text((self.git or {}).get('head')))}。"),
             confirm_label="推送", on_confirm=lambda e: self._task(
                 lambda: self._git_write("push")))
@@ -735,7 +735,7 @@ class BibPrefsView:
         scroll.controls.append(bottom_pad)
         scroll._bib_scroll_body = True
         body = ft.Container(
-            width=t.px(COLUMN_W), expand=True,
+            expand=True,
             content=ft.Column(spacing=t.sp("1"), expand=True, controls=[
                 scroll,
                 self._impact_bar(),

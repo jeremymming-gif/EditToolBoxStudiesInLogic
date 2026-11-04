@@ -225,7 +225,7 @@ def summary_lines(payload: dict) -> list[str]:
         lines.append(f"{'计划输出' if payload.get('dry_run') else '输出'}："
                      f"{item['path']}（{size_text(item['size'])}）")
     if payload.get("dry_run"):
-        lines.append("dry-run：未写任何文件。")
+        lines.append("预览：未写任何文件。")
     if not payload.get("ok", True):
         lines.append("引擎报告：本次没有生成（详见日志与下面的提示）。")
     for text in payload.get("warnings") or []:
@@ -332,14 +332,14 @@ class DirPushPanel:
             ft.Row(spacing=t.sp("1"), controls=[C.form_field(t, "推送范围", self.mode)]),
             self.annual_rows,
             self._switch_row("含英文目录",
-                             "当期模式加 --with-en-toc",
+                             "当期模式附加英文目录",
                              bool(options.get("dirpush_with_en_toc", False)),
                              lambda e: self.app.set_option("dirpush_with_en_toc",
                                                            e.control.value),
                              disabled=annual,
                              reason="年度体例按各期《目录摘要设置.json》还原，此开关只作用于当期"),
             self._switch_row("只预演",
-                             "采集并校验，不写文件（--dry-run）",
+                             "采集并校验，不写文件",
                              bool(options.get("dirpush_dry_run", False)),
                              lambda e: self.app.set_option("dirpush_dry_run",
                                                            e.control.value)),

@@ -480,7 +480,7 @@ class BibEditView:
         if not res.get("ok"):
             if self._sha_mismatch(res):
                 self.state = "stale"
-                self.dirty_reason = "库 sha256 已变化，预览不再可信"
+                self.dirty_reason = "库指纹已变化，预览不再可信"
             else:
                 self.state = "failure"
             self.error = self._error_text(res)
@@ -748,7 +748,7 @@ class BibEditView:
             padding=ft.Padding(left=t.px(10), top=t.px(8), right=t.px(10), bottom=t.px(8)),
             content=ft.Column(spacing=t.sp("half"), controls=[
                 C.text("确认写入这条记录？", t, role="body-strong"),
-                C.text(f"{changed} 个字段 · 库 sha {_sha8(self.expect_sha)} · "
+                C.text(f"{changed} 个字段 · 库指纹 {_sha8(self.expect_sha)} · "
                        f"1 条本地提交 · 不推送", t, "caption", p.on_accent_soft),
                 C.text("页内不可撤销，只能回退本次提交。", t, "caption",
                        p.on_accent_soft),

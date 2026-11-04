@@ -417,9 +417,9 @@ def test_single_page_source_and_output_labels_required_and_browsable():
 def test_single_page_engine_extra_files_have_browse_buttons():
     page, root = _build_single()
     labels = {"convert_bib": "参考文献 .bib（可空）",
-              "convert_refs": "附加参考文献 --refs（可空）",
-              "convert_sty": "样式文件 --sty（可空）",
-              "convert_skeleton": "模板骨架 --skeleton（可空）"}
+              "convert_refs": "附加参考文献（可空）",
+              "convert_sty": "样式文件（可空）",
+              "convert_skeleton": "模板骨架（可空）"}
     fields = {key: page.fields[key][0] for key in labels}
     for key, shown in labels.items():
         assert fields[key]._form_label == shown

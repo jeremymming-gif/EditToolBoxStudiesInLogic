@@ -115,7 +115,7 @@ def test_dirpush_summary_reads_engine_json():
     lines = DP.summary_lines(payload)
     assert any("2026 年第 2 期" in line for line in lines)
     assert any("中文 3" in line for line in lines)
-    assert any("dry-run" in line for line in lines)
+    assert any("预览" in line for line in lines)
     assert any("代码仓内" in line for line in lines)
     assert DP.size_text(2048) == "2 KB"
 

@@ -1,4 +1,4 @@
-"""批 116：设置页（单列 720 / 四组 / 危险区）定向测试。"""
+"""批 116：设置页（正文铺满页壳 / 四组 / 危险区）定向测试。"""
 from __future__ import annotations
 
 import asyncio
@@ -164,7 +164,7 @@ def _view(tmp_path, **kwargs):
 
 
 # ── 布局 ──────────────────────────────────────────────────────────────
-def test_build_single_720_column_with_four_groups(tmp_path, monkeypatch):
+def test_build_full_width_column_with_four_groups(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
     _install(monkeypatch)
     asyncio.run(view._load())
@@ -175,8 +175,9 @@ def test_build_single_720_column_with_four_groups(tmp_path, monkeypatch):
     assert any("02 核实" == text for text in texts)
     assert any("03 Git" == text for text in texts)
     assert any("保存只改设置，不动库" in text for text in texts)
+    # 批 119：去掉旧 720 限宽，正文铺满页壳，右侧不再留空白竖栏。
     widths = [c.width for c in _walk(root) if getattr(c, "width", None) == 720]
-    assert widths, "单列必须限宽 720"
+    assert not widths, "设置页必须铺满页壳，不再限宽 720"
 
 
 def test_no_card_helper_in_source():

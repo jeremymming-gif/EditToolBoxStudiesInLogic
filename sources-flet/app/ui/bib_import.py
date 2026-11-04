@@ -354,7 +354,7 @@ class BibImportView:
         if not res.get("ok"):
             if self._sha_mismatch(res):
                 self.state = "stale"
-                self.dirty_reason = "库 sha256 已变化，预览不再可信"
+                self.dirty_reason = "库指纹已变化，预览不再可信"
                 self.error = self._error_text(res)
             else:
                 self.state = "failure"
@@ -605,7 +605,7 @@ class BibImportView:
         ]))
         controls.append(C.text_button("清空表单", self._clear, t))
         controls.append(C.text(
-            "预览不写库；写入前校验库 sha。",
+            "预览不写库；写入前校验库指纹。",
             t, "caption", t.palette.text_faint, max_lines=3))
         if not narrow:
             controls.append(C.text("", t, "caption", t.palette.text_faint))
@@ -704,7 +704,7 @@ class BibImportView:
             {"label": "冲突", "value": str(counts["conflicts"]), "hint": "条 · 进待处理", "tone": "warn"},
             {"label": "跳过", "value": str(counts["skipped"]), "hint": "条 · 未改动", "tone": "neutral"},
         ])
-        meta = (f"库 sha {sha or '—'} · 解析 {counts['entries']} 条 · "
+        meta = (f"库指纹 {sha or '—'} · 解析 {counts['entries']} 条 · "
                 f"耗时 {self.elapsed:.1f}s")
         chips = ft.Row(spacing=t.sp("half"), controls=[
             C.chip(f"{label} {self._chip_count(key)}", t, active=self.filter == key,
@@ -777,7 +777,7 @@ class BibImportView:
         lines = [
             f"新增 {counts['new']} 条 · 更新 {counts['updated']} 条 · "
             f"冲突 {counts['conflicts']} 条（进待处理）",
-            f"库 sha {sha} · 1 条本地提交 · 不推送",
+            f"库指纹 {sha} · 1 条本地提交 · 不推送",
             "页内不可撤销，只能回退本次提交。",
         ]
         return ft.Container(
@@ -829,7 +829,7 @@ class BibImportView:
             detail = "先预览（不写库），才能确认写入"
         elif stale:
             consequence = self._consequence()
-            detail = f"预览已过期：{self.dirty_reason or '库 sha 已变化'}，先重新预览"
+            detail = f"预览已过期：{self.dirty_reason or '库指纹已变化'}，先重新预览"
         else:
             consequence = self._consequence()
             detail = "只写 bibliography.jsonl · 不推送"

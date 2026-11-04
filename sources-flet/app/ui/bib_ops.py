@@ -308,7 +308,7 @@ def batch_preview_lines(payload: dict | None) -> list[str]:
         f"待裁决 {_int(before.get('pending'))} 条 → {_int(after.get('pending'))} 条",
         f"受影响记录 {_int(payload.get('records'))} 条、冲突 {_int(payload.get('conflicts'))} 条"
         f"（采用 {len(adopted) if isinstance(adopted, list) else 0} 条）",
-        f"库 sha256：{GIT.short_sha(str(payload.get('db_sha256_before') or ''), 8)}"
+        f"库指纹：{GIT.short_sha(str(payload.get('db_sha256_before') or ''), 8)}"
         f" → {GIT.short_sha(str(payload.get('db_sha256_after') or ''), 8)}",
     ]
     skipped = payload.get("skipped")
@@ -515,9 +515,9 @@ class BibEditorView(_OpsView):
             return
         self._confirm(
             title="写入引用库？",
-            message=("确认后去掉 --dry-run、带 --expect-db-sha256 写入；"
+            message=("确认后写入（先预览、不写库）；"
                      "成功后只提交 bib_db/bibliography.jsonl 一条（不推送）。\n"
-                     "预览的字段变化就是全部改动；库若已被别处修改，引擎会拒写。"),
+                     "预览的字段变化就是全部改动；库若已被别处修改，会拒写。"),
             confirm_label="确认写入",
             on_confirm=lambda e: self._run(self._write()))
 
@@ -565,7 +565,7 @@ class BibEditorView(_OpsView):
             on_change=lambda e: setattr(self, "key_text", e.control.value or "")))
         # 浮动字段 48 →「载入条目」跟随 48（用户 m02816：同一行不许高矮不齐）。
         return C.card(ft.Column(spacing=t.sp("1"), controls=[
-            C.section_title("编辑条目", t, note="先 dry-run 预览，再二次确认写库"),
+            C.section_title("编辑条目", t, note="先预览（不写入），再二次确认写库"),
             C.field_row(key_field, [
                 C.secondary_button("载入条目", lambda e: self._run(self._load()), t,
                                    icon="SEARCH"),
@@ -602,7 +602,7 @@ class BibEditorView(_OpsView):
         ])
         actions = ft.Row(spacing=t.sp("1"), wrap=True,
                          vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-            C.primary_button("预览（dry-run）", lambda e: self._ask_preview(), t,
+            C.primary_button("预览（不写库）", lambda e: self._ask_preview(), t,
                              icon="VISIBILITY", disabled=self.busy),
             C.text("整份字段替换：清空 = 删字段；换 key 会把旧 key 记成别名。",
                    t, "caption", t.palette.text_faint),
@@ -620,7 +620,7 @@ class BibEditorView(_OpsView):
         lines = edit_diff_lines(payload.get("field_changes"))
         controls: list = [C.section_title(
             "预览（未写库）", t,
-            note="库 sha256 " + GIT.short_sha(_text(payload.get("db_sha256_before")), 8))]
+            note="库指纹 " + GIT.short_sha(_text(payload.get("db_sha256_before")), 8))]
         controls += [C.text(line, t, "small", t.palette.text) for line in lines] or [
             C.text("字段没有变化。", t, "small", t.palette.text_muted)]
         aliases = payload.get("aliases_added")

@@ -705,7 +705,7 @@ def confirm_bar(t: Tokens, *, consequence: str, detail: str | None = None,
     p = t.palette
     detail_text = detail or "只写 bibliography.jsonl · 不推送"
     if sha:
-        detail_text = f"库 sha {sha} · {detail_text}"
+        detail_text = f"库指纹 {sha} · {detail_text}"
 
     if on_repreview is None:
         rep_btn = C.secondary_button(repreview_label, None, t, height=28)
