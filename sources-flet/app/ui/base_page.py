@@ -30,6 +30,14 @@ class BasePage:
             self.root = self.build()
         return self.root
 
+    def theme_roots(self) -> list:
+        """换肤时要重染的根控件；懒加载宿主覆盖此方法补充未挂载的缓存树。
+
+        批 116：`root` 一旦 build 就长期复用，主题热切换必须把「已构建但当前
+        未挂载」的页面也染到新皮肤，否则导航回来是旧色。
+        """
+        return [self.root] if self.root is not None else []
+
     # 公共小工具 ───────────────────────────────────────────────────────
     @property
     def t(self):

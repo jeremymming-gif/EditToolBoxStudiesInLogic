@@ -84,9 +84,13 @@ def test_issue_primary_actions_follow_subpage():
     assert [str(ctl.content) for ctl in header_filled] == ["运行整期…"]
     assert header_filled[0] is page._run_all_btn
     detail_filled = _of(page._content_box, ft.FilledButton)
-    assert [str(ctl.content) for ctl in detail_filled] == ["生成目录"], \
-        "每步详情头必须有且只有一个主按钮"
-    assert detail_filled[0] is page._step_run_primary
+    # 批 116 决策（I-2 E′）：「生成目录」视图含 01/02 两个区块，逐区块各一个
+    # 主按钮（01 运行检查、02 生成目录）；选中步的主按钮仍是 _step_run_primary。
+    contents = [str(ctl.content) for ctl in detail_filled]
+    assert contents.count("生成目录") == 1 and contents.count("运行检查") == 1, \
+        "每个区块的详情头必须有且只有一个主按钮"
+    toc_btn = next(ctl for ctl in detail_filled if str(ctl.content) == "生成目录")
+    assert toc_btn is page._step_run_primary
     # 步骤概览行的「运行」仍不是主色；参数区不再保留旧描边「运行这一步」副本。
     assert not _of([*page._step_run_btns.values()], ft.FilledButton)
     step_page = page._build_step_page("toc")

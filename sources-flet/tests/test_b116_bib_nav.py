@@ -1,8 +1,9 @@
-"""批 115 BNAV：引用库侧栏（IA-B，D1-115-31/32）与 10 视图深链。
+"""批 116 BIB-NAV2：引用库侧栏单叶（IA 方案 A）与 10 视图深链。
 
 锁定的契约：
-- 侧栏 = section 行「引用库」+ 3 个不可点击组标签（查阅/采录/治理）
-  + 9 个常驻叶子；设置只在页头齿轮/⌘K，不进侧栏，但 `bib:settings` 仍可深链。
+- 侧栏引用库 section 只有一个叶子「引用库」（图标 + 待处理徽标），
+  无组 caption、无 9 子行、无 chevron；3 组 9 视图移入 Bib 页内 chip 导航。
+- 设置只在页头齿轮/⌘K，不进侧栏，但 `bib:settings` 仍可深链。
 - normalize 显示名「回读校验」贯穿 IA / 搜索索引 / 工具栏标题。
 - `set_bib_badge(n)` 暴露给 BibPage owner：待办冲突数，0/None 隐藏。
 """
@@ -14,6 +15,7 @@ import inspect
 import flet as ft
 
 import main as M
+from ui import components as C
 from ui import ia_map as IA
 from ui import search_index as SI
 from ui.tokens import Tokens
@@ -76,6 +78,7 @@ def _nav_app() -> M.App:
     app.t = Tokens()
     app.bib_badge = None
     app._bib_nav_marked = False
+    app.store = FakeStore()
     app.marks = []
     app.calls = []
     app.mark = lambda event, **fields: app.marks.append((event, fields))
@@ -118,62 +121,71 @@ def test_ia_contract_three_groups_nine_leaves_and_settings_route_only() -> None:
     assert IA.route_labels("bib:normalize")["view_label"] == "回读校验"
 
 
-def test_sidebar_rows_have_quiet_group_labels_and_nine_clickable_leaves() -> None:
+def test_sidebar_has_one_bib_leaf_no_captions_no_children() -> None:
+    # 批 116 决策：引用库在侧栏只留一个叶子；3 组 9 视图移入页内 chip 导航。
     app = _nav_app()
     t = app.t
-    rows = M.App._bib_nav_rows(app, t, "review")
-    assert len(rows) == 3 + 9
+    leaf = M.App._bib_sidebar_leaf(app, t, False)
+    assert leaf.height == t.px(28)
+    assert leaf.bgcolor is None
+    assert leaf.padding.left == t.px(8)
+    assert callable(leaf.on_click)
+    controls = leaf.content.controls
+    assert len(controls) == 2  # 图标 + 文本；0 徽标隐藏
+    assert controls[0].icon == C.ic("LIBRARY_BOOKS_OUTLINED")
+    assert controls[1].value == "引用库"
+    assert controls[1].expand is True
+    # 无 chevron/子行：控件里没有「展开/收起」热区，也没有二级缩进行。
+    assert not any(getattr(control, "tooltip", None) in ("展开", "收起")
+                   for control in controls)
 
-    group_rows = [rows[index] for index in (0, 3, 6)]
-    assert [row.content.value for row in group_rows] == ["查阅", "采录", "治理"]
-    for row in group_rows:
-        # 纯文本行：无点击回调、无展开箭头；始终渲染（不折叠）。
-        assert getattr(row, "on_click", None) is None
-        assert row.height == t.px(22)
-        assert row.padding.left == t.px(36)
-
-    leaf_rows = [row for index, row in enumerate(rows) if index not in (0, 3, 6)]
-    assert [(row.content.controls[0].value) for row in leaf_rows] == [
-        label for _, label in BIB_LEAVES]
-    assert all(callable(row.on_click) for row in leaf_rows)
-    assert all(row.padding.left == t.px(48) for row in leaf_rows)
-    assert all(row.height == t.px(25) for row in leaf_rows)
-    assert "设置" not in [row.content.controls[0].value for row in leaf_rows]
-
-    # 叶子可直接导航；当前叶高亮，其余不亮。
-    leaf_rows[0].on_click(None)
+    leaf.on_click(None)
     assert app.calls == [("bib:overview", "nav")]
-    active = [row for row in leaf_rows if row.bgcolor == t.palette.nav_sel]
-    assert len(active) == 1
-    assert active[0].content.controls[0].value == "待处理"
+    assert "C.nav_child" not in inspect.getsource(M.App._bib_sidebar_leaf)
+    assert "has_children=False" in inspect.getsource(M.App._bib_sidebar_leaf)
 
 
-def test_bib_nav_marker_records_structure_and_is_emitted_once() -> None:
+def test_sidebar_bib_leaf_is_active_on_every_bib_route() -> None:
+    app = _nav_app()
+    t = app.t
+    active = M.App._bib_sidebar_leaf(app, t, True)
+    assert active.bgcolor == t.palette.nav_sel
+    assert active.content.controls[1].color == t.palette.text
+    inactive = M.App._bib_sidebar_leaf(app, t, False)
+    assert inactive.content.controls[1].color == t.palette.text_muted
+
+
+def test_bib_nav_marker_records_single_leaf_and_is_emitted_once() -> None:
     app = _nav_app()
     app.bib_badge = 157
-    M.App._bib_nav_rows(app, app.t, "overview")
-    M.App._bib_nav_rows(app, app.t, "overview")
+    M.App._bib_sidebar_leaf(app, app.t, True)
+    M.App._bib_sidebar_leaf(app, app.t, True)
     markers = [fields for event, fields in app.marks if event == "bib_nav_section"]
     assert len(markers) == 1
     marker = markers[0]
     assert marker["section"] == "引用库"
+    assert marker["leaf"] == "bib"
+    assert marker["label"] == "引用库"
+    assert marker["icon"] == "LIBRARY_BOOKS_OUTLINED"
     assert marker["groups"] == ["read", "intake", "treat"]
     assert marker["leaves"] == [key for key, _ in BIB_LEAVES]
     assert marker["route_only"] == ["settings"]
     assert marker["badge"] == 157
 
 
-def test_bib_section_header_badge_only_for_positive_count() -> None:
+def test_sidebar_leaf_badge_only_for_positive_count() -> None:
     app = _nav_app()
+    t = app.t
     app.bib_badge = 0
-    header = M.App._bib_section_header(app)
-    assert header.content.controls[0].value == "引用库"
-    assert len(header.content.controls) == 1  # 0 隐藏
+    leaf = M.App._bib_sidebar_leaf(app, t, False)
+    assert len(leaf.content.controls) == 2  # 0 隐藏
 
     app.bib_badge = 3883
-    header = M.App._bib_section_header(app)
-    assert len(header.content.controls) == 3
-    assert header.content.controls[2].content.value == "3,883"
+    leaf = M.App._bib_sidebar_leaf(app, t, False)
+    assert len(leaf.content.controls) == 3
+    badge = leaf.content.controls[2]
+    assert badge.content.value == "3,883"
+    assert badge.bgcolor == t.palette.surface_2  # neutral，不抢主行
 
 
 def test_set_bib_badge_clamps_hides_and_rebuilds_sidebar() -> None:
@@ -239,12 +251,14 @@ def test_bare_bib_lands_default_or_last_view_and_settings_is_not_sidebar() -> No
     assert M.App._nav_default_route(app, "bib") == "bib:overview"
 
     sidebar_source = inspect.getsource(M.App._sidebar_content)
-    rows_source = inspect.getsource(M.App._bib_nav_rows)
+    leaf_source = inspect.getsource(M.App._bib_sidebar_leaf)
     assert 'key == "bib"' in sidebar_source
-    assert "C.nav_group(" not in sidebar_source + rows_source
-    # 叶子只来自 group_views（9 叶）；settings 仅在 marker 里以 route_only 记录。
-    assert 'for view in group["views"]' in rows_source
-    assert 'bib:settings' not in rows_source
+    assert "C.nav_group(" not in sidebar_source + leaf_source
+    assert "C.nav_child" not in sidebar_source + leaf_source
+    # 侧栏叶子不列 settings；settings 仅在 marker 里以 route_only 记录。
+    assert 'bib:settings' not in leaf_source
+    assert "C.badge" in leaf_source
+    assert "has_children=False" in leaf_source
 
 
 def test_search_index_lists_all_ten_bib_routes_with_new_labels() -> None:

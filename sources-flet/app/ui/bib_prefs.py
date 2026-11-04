@@ -181,6 +181,9 @@ class BibPrefsView:
     def _render(self) -> None:
         if self._root is not None:
             self._root.content = self._body()
+            replant = getattr(self.page, "_replant_nav", None)
+            if callable(replant):
+                replant()
         page = self._flet()
         update = getattr(page, "update", None)
         if callable(update):

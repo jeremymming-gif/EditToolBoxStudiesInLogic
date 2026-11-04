@@ -48,7 +48,8 @@ def test_issue_rail_visible_at_1160_with_group_headers():
     row = page._shell.controls[0]
     assert isinstance(row, ft.Row)
     rail_texts = _texts(page._rail_box)
-    assert "生产 4 步" in rail_texts
+    # 批 116 决策（I-2 E′）：宽栏分组标题「正文流水线」。
+    assert "正文流水线" in rail_texts
     assert "收尾（可选）" in rail_texts
 
     page.app._design_width = lambda: 1000
@@ -62,14 +63,14 @@ def test_issue_log_reserve_follows_dock_and_drag():
     page, root = _build_issue()
     t = page.t
     spacer = root.controls[0].content.controls[-1]
-    assert spacer.height == t.px(40)
+    assert spacer.height == t.px(52)
     page._log.expand()
-    assert spacer.height == t.px(46) + page._log._log_height
+    assert spacer.height == t.px(54) + page._log._log_height
     before = spacer.height
     page._log._on_resize_update(SimpleNamespace(primary_delta=-t.px(30)))
     assert spacer.height == before + t.px(30)
     page._log.collapse()
-    assert spacer.height == t.px(40)
+    assert spacer.height == t.px(52)
 
 
 # ── 3. 清理确认：完整路径 + 灰底灰字禁用 + 520 宽 ─────────────────────
@@ -153,7 +154,11 @@ def test_infocheck_readonly_hides_save_note():
     page.activate("infocheck")
     labels = _texts(page._content_box)
     assert "参数" in labels
-    assert "改动即时保存" not in labels
+    # 批 116 决策（I-2 E′）：01 与 02 同屏两个区块，01 只读、02 才写参数；
+    # 「改动即时保存」只属于 02 区块，断言按区块范围收窄。
+    info_labels = _texts(page._section_refs["infocheck"])
+    assert "改动即时保存" not in info_labels
+    assert "改动即时保存" in _texts(page._section_refs["toc"])
     page.activate("toc")
     assert "改动即时保存" in _texts(page._content_box)
 

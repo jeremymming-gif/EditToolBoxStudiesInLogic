@@ -768,6 +768,13 @@ def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
     """流水线每步结束后补记结构化结果（显示与状态收尾由 _run_sequence 负责）。"""
     if cancelled:
         return
+    # 批 116：03 编译成功后由页面决定是否把详情滚到 04（不自动运行 04）。
+    hook = getattr(page, "on_step_finished", None)
+    if callable(hook):
+        try:
+            hook(key, code)
+        except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+            pass
     if key == "toc" and code == 0:
         report = page.field("toc_report")
         path = os.path.join(os.path.dirname(report), "目录结果.json") if report else ""
@@ -919,6 +926,13 @@ async def _detect_task(page, call: EB.EngineCall) -> None:
         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     payload = result.get("json") or {}
     if result.get("ok"):
+        # 批 116 I-2：detect 结果落到 04 区块的只读「前置页」卡（不提供编辑）。
+        setter = getattr(page, "set_prep_pages", None)
+        if callable(setter):
+            try:
+                setter(payload)
+            except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+                pass
         editors = payload.get("editorsPage") or {}
         back = payload.get("backCover") or {}
         lines = [

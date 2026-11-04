@@ -5,13 +5,17 @@
   `nav_groups=[("单篇稿件",(0,3)),("整期装配",(4,5,6,7,2,8)),("引用库",(9,10,11,12,1,13))]` + 设置=14；
 - 对等矩阵：C:\\slcn-work\\b304-2026-10-31\\evidence\\s2\\parity-matrix.md（15/15 PASS）。
 
-新 IA（3 组：工作区 / 引用库 / 系统；侧栏只放一级页面 + 单篇/引用库的二级视图）：
-  工作区 · 工作台 / 单篇稿件 / 整期装配（单页工作台，6 步在页内步骤栏）
-  引用库 · 顶层 section：3 个不可点击组标签（查阅 / 采录 / 治理）+ 9 个叶子
+新 IA（3 组：工作区 / 引用库 / 系统；侧栏只放目的地，二级视图/步骤进页内）：
+  工作区 · 工作台 / 单篇稿件 / 整期装配（三叶平铺；单篇 2 步为页内 chip，
+           整期 6 步在页内步骤栏）
+  引用库 · 侧栏一个叶子；页内二级导航 = 3 组 caption（查阅 / 采录 / 治理）+ 9 个 chip
   系统   · 设置 / 帮助与关于
 
+批 116 BIB-NAV2（用户拍板方案 A）：引用库侧栏叶子化，9 个子视图移入页内顶部 chip 导航
+（`BIB_INPAGE_GROUPS`）；工作区/系统保持扁平。侧栏不再出现组 caption 与 9 个子行。
+批 116 NAV-B：单篇的两个视图只作为页内 chip（`single:convert` / `single:proofcheck` 仍是路由）。
 批 115 D1-115-31/32（IA-B）：引用库设置不再占侧栏组，入口移到页头齿轮；
-`bib:settings` 仍是可深链路由（⌘K/搜索直达），只在 NAV_TREE 的 `views` 中保留、不进 groups。
+`bib:settings` 仍是可深链路由（⌘K/搜索直达），只在 NAV_TREE 的 `views` 中保留。
 
 「取长补短」的两条关键取舍（详见 p1-design.md）：
 1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → 回读校验」，与「入藏」同组（采录）：它的输入是
@@ -23,18 +27,18 @@
 """
 from __future__ import annotations
 
-# ── 批 114 IA 定稿 + 批 115 整期收敛：一级页面 + 二级视图进左侧导航（用户 m03256）─
-# 树结构是导航唯一事实来源：
-#   · 父项 = 一级页面；点父项进入其 default 视图并展开；
-#   · views = 父项下平铺的二级视图（单篇 2；整期批 115 D1-115-26 起叶子化，无子行，
-#     6 步改在页内步骤栏，见 ISSUE_ROUTE_STEPS）；
-#   · groups = 引用库的三层中间层（组标签 → 视图）；批 115 D1-115-31/32 起组标签
-#     只是不可点击的文本行，叶子始终可见（不再折叠/记忆组展开）；
-#   · views = 与 groups 并存的「仅路由」视图（引用库设置：页头齿轮/⌘K 可达，
-#     侧栏不列）；nav_views() 把它排在组内叶子之后，保证 10 条路由不丢。
+# ── 批 114 IA 定稿 + 批 115/116 收敛：树是路由/语义唯一来源 ───────────────
+# 批 116 BIB-NAV2（方案 A，用户拍板）：侧栏只渲染「目的地」，全部扁平、无 chevron、无子行：
+#   · 工作区三页一律叶子；单篇的两个 views 只作页内 chip 与路由记忆；
+#   · 整期的 6 步仍在页内步骤栏（ISSUE_ROUTE_STEPS），侧栏只有一个整期叶子；
+#   · 引用库在侧栏只剩一个叶子（图标保留、右侧待处理徽标）；原来的 3 个 caption
+#     与 9 个子行全部移入 Bib 页内的二级导航（BIB_INPAGE_GROUPS）；
+#   · 引用库视图在 NAV_TREE 里平铺并带 group，设置 route_only 只服务深链/⌘K；
+#     nav_views() 仍返回 10 项，22 条路由与既有顺序不变。
 NAV_TREE: list[dict] = [
     {"group": "工作区", "entries": [
         {"key": "home", "label": "工作台", "icon": "AUTO_AWESOME"},
+        # 批 116 NAV-B：views 只作页内 chip/路由/上次视图记忆，侧栏不再展开。
         {"key": "single", "label": "单篇稿件", "icon": "DESCRIPTION_OUTLINED",
          "default": "convert",
          "views": [{"key": "convert", "label": "初排转换"},
@@ -44,27 +48,24 @@ NAV_TREE: list[dict] = [
         {"key": "issue", "label": "整期装配", "icon": "VIEW_AGENDA_OUTLINED",
          "default": "infocheck"},
     ]},
-    # 批 115 D1-115-31/32：引用库升为顶层 section（原「资料」组），组标签纯文本、
-    # 9 叶常驻；设置只留路由（views），由页头齿轮/⌘K 进入。
+    # 批 115 D1-115-31/32：引用库升为顶层 section（原「资料」组）；设置只留路由，
+    # 由页头齿轮/⌘K 进入。批 116 BIB-NAV2：引用库叶子化，9 视图移入页内导航。
     {"group": "引用库", "entries": [
         {"key": "bib", "label": "引用库", "icon": "LIBRARY_BOOKS_OUTLINED",
          "default": "overview",
-         "groups": [
-             {"key": "read", "label": "查阅",
-              "views": [{"key": "overview", "label": "概览"},
-                        {"key": "query", "label": "查库"}]},
-             {"key": "intake", "label": "采录",
-              "views": [{"key": "import", "label": "入藏"},
-                        {"key": "normalize", "label": "回读校验"}]},
-             {"key": "treat", "label": "治理",
-              "views": [{"key": "review", "label": "待处理"},
-                        {"key": "edit", "label": "编辑"},
-                        {"key": "dupes", "label": "查重合并"},
-                        {"key": "fieldfix", "label": "字段归位"},
-                        {"key": "health", "label": "库健康"}]},
-         ],
-         # 仅路由：D1-115-32 把设置入口移到引用库页头齿轮；深链/搜索仍可用。
-         "views": [{"key": "settings", "label": "设置", "route_only": True}]},
+         "views": [
+             {"key": "overview", "label": "概览", "group": "read"},
+             {"key": "query", "label": "查库", "group": "read"},
+             {"key": "import", "label": "入藏", "group": "intake"},
+             {"key": "normalize", "label": "回读校验", "group": "intake"},
+             {"key": "review", "label": "待处理", "group": "treat"},
+             {"key": "edit", "label": "编辑", "group": "treat"},
+             {"key": "dupes", "label": "查重合并", "group": "treat"},
+             {"key": "fieldfix", "label": "字段归位", "group": "treat"},
+             {"key": "health", "label": "库健康", "group": "treat"},
+             # 仅路由：D1-115-32 把设置入口移到引用库页头齿轮；深链/搜索仍可用。
+             {"key": "settings", "label": "设置", "route_only": True},
+         ]},
     ]},
     {"group": "系统", "entries": [
         {"key": "settings", "label": "设置", "icon": "SETTINGS_OUTLINED"},
@@ -72,6 +73,15 @@ NAV_TREE: list[dict] = [
     ]},
 ]
 
+# 批 116 BIB-NAV2：引用库页内二级导航的单一事实来源（3 组 9 个可切换视图）。
+# 侧栏只保留一个「引用库」叶子，本表供 bib_host 渲染 chip、group_views()/group_label()
+# 派生组信息；设置不在此表（页头齿轮进入，导航条不选中任何 chip）。
+BIB_INPAGE_GROUPS: list[dict] = [
+    {"key": "read", "label": "查阅", "views": ["overview", "query"]},
+    {"key": "intake", "label": "采录", "views": ["import", "normalize"]},
+    {"key": "treat", "label": "治理",
+     "views": ["review", "edit", "dupes", "fieldfix", "health"]},
+]
 # ── 批 115 D1-115-26：整期装配步骤路由（不是侧栏子项）──────────────────────
 # 6 步只在页内步骤栏；本表只服务「可深链/可持久化」的路由、标题与 22 条路由计数。
 # 标签沿用报告口径（页内详情标题由 pages.IssuePage.STEPS 自己维护）。
@@ -106,6 +116,63 @@ def is_issue_landing_route(route: str | None) -> bool:
     return page == "issue" and view in _ISSUE_ALIAS_VIEWS
 
 
+# ── 批 116 ISSUE4（用户拍板 I-2：E′ 四步工作台）──────────────────────────
+# 4 个视图把 6 个步骤按**消费关系**折叠：01→02（toc 必读 infocheck 报告）、
+# 03→04（merge 消费 compileall 产物）；05/06 各自独立。
+# 视图只影响「页内呈现」：不进 NAV_TREE、不进 route_views、不新增路由——
+# 6 条 `issue:<step>` 深链仍是唯一入口，22 条路由总数不变。
+# 呈现顺序 = 下列顺序；`steps` 的顺序即详情区块顺序（01 在 02 上、03 在 04 上）。
+# 批 116 ISSUE4-D：rail / 窄窗横条不再显示 `01–02` 这类序号（用户拍板），
+# `range` 字段随之删除，不留没人读的序号数据。
+# 216 宽栏去掉 44px 序号列后 caption 可用宽约 180px，四条中文 caption 均 ≤143px，
+# 因此完整显示、不再用省略号；caption 仍只写「区块动作」，不重复标题。
+ISSUE_VIEWS: list[dict] = [
+    {"key": "catalog", "title": "生成目录", "short": "生成目录",
+     "steps": ["infocheck", "toc"],
+     "caption": "检查 tex 信息 · 生成目录"},
+    {"key": "produce", "title": "编译并合并", "short": "编译合并",
+     "steps": ["compileall", "merge"],
+     "caption": "编译全部 · 合并 PDF"},
+    {"key": "clean", "title": "清理临时文件", "short": "清理临时",
+     "steps": ["cleantemp"],
+     "caption": "删除临时文件（移入回收站）"},
+    {"key": "push", "title": "生成推送文案", "short": "推送文案",
+     "steps": ["dirpush"],
+     "caption": "目录摘要推送（生成 docx）"},
+]
+_ISSUE_VIEW_KEYS = frozenset(view["key"] for view in ISSUE_VIEWS)
+
+
+def is_issue_view(view_key: str) -> bool:
+    """`view_key` 是否是整期装配的 4 个页内视图之一（呈现层判定）。"""
+    return str(view_key or "") in _ISSUE_VIEW_KEYS
+
+
+def issue_views() -> list[dict]:
+    """整期装配的 4 个页内视图（顺序即栏内顺序）。"""
+    return [dict(view, steps=list(view["steps"])) for view in ISSUE_VIEWS]
+
+
+def issue_view_steps(view_key: str) -> list[str]:
+    """视图 → 步骤 key 列表；未知视图返回空表。"""
+    return next((list(view["steps"]) for view in ISSUE_VIEWS
+                 if view["key"] == view_key), [])
+
+
+def issue_view_of(step_key: str) -> str:
+    """步骤 → 所属视图 key；未知步骤返回空串。"""
+    for view in ISSUE_VIEWS:
+        if step_key in view["steps"]:
+            return str(view["key"])
+    return ""
+
+
+def issue_view_title(view_key: str) -> str:
+    """视图 → 中文标题；未知视图返回空串。"""
+    return next((str(view["title"]) for view in ISSUE_VIEWS
+                 if view["key"] == view_key), "")
+
+
 # 兼容旧调用（test_p3 / 迁移期代码仍读 NAV_GROUPS）：由 NAV_TREE 派生，单一事实来源。
 NAV_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
     (section["group"],
@@ -127,10 +194,10 @@ def page_defaults() -> dict[str, str]:
 
 
 def nav_views(page_key: str) -> list[dict]:
-    """页面的平铺二级视图（引用库把组展开后平铺，最后接仅路由视图）。
+    """页面的平铺二级视图（组内的平铺展开 + 仅路由视图）。
 
-    引用库 = 3 组共 9 叶 + `views` 里的设置（route_only）→ 10 项；设置排在最后，
-    与 `BibPage.VIEWS` 的既有顺序兼容，但侧栏只渲染 groups（见 main `_bib_nav_rows`）。
+    批 116 BIB-NAV2：引用库的 10 项直接平铺在 `views` 上（前 9 项带 group，
+    设置 route_only 排最后）；兼容仍用 `groups` 描述的页面。
     """
     entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
     if entry is None:
@@ -161,21 +228,30 @@ def group_of_view(page_key: str, view_key: str) -> str:
 
 
 def group_label(page_key: str, group_key: str) -> str:
-    entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
-    if entry is None:
-        return ""
-    return next((str(group["label"]) for group in entry.get("groups", []) or []
+    """组 key → 中文标签（引用库来自 BIB_INPAGE_GROUPS，其它页面来自 groups）。"""
+    return next((str(group["label"]) for group in group_views(page_key)
                  if group["key"] == group_key), "")
 
 
 def group_views(page_key: str) -> list[dict]:
-    """引用库：组行列表（[{key,label,views}]）；其它页面返回空列表。"""
+    """引用库：页内二级导航的组行（[{key,label,views}]）；其它页面沿用 groups。"""
     entry = next((item for item in nav_parent_entries() if item["key"] == page_key), None)
     if entry is None:
         return []
-    return [{"key": str(group["key"]), "label": str(group["label"]),
-             "views": list(group["views"])}
-            for group in entry.get("groups", []) or []]
+    if entry.get("groups"):
+        return [{"key": str(group["key"]), "label": str(group["label"]),
+                 "views": list(group["views"])}
+                for group in entry.get("groups", []) or []]
+    if page_key != "bib":
+        return []
+    by_key = {str(view["key"]): view for view in nav_views(page_key)}
+    groups: list[dict] = []
+    for spec in BIB_INPAGE_GROUPS:
+        views = [by_key[key] for key in spec["views"] if key in by_key]
+        if views:
+            groups.append({"key": str(spec["key"]), "label": str(spec["label"]),
+                           "views": views})
+    return groups
 
 
 def all_routes() -> list[str]:

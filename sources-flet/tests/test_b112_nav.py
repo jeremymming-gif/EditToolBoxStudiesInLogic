@@ -125,7 +125,8 @@ def test_single_build_restores_flow_not_hardcoded_convert() -> None:
     source = inspect.getsource(P.SinglePage.build)
     assert "self._flow_builder(self.flow_key)()" in source
     assert "[self._build_convert()]" not in source
-    assert "C.chip(" not in source
+    # 批 116 NAV-B：单篇步骤改成页内 chip，由 helper 构建（build 里不写 C.chip）。
+    assert "_build_flow_chips()" in source
 
 
 def test_rebuild_shell_calls_on_show_on_new_instance() -> None:
@@ -143,13 +144,14 @@ def test_after_boot_has_p2_bib_view_hook() -> None:
     assert 'navigate(f"bib:{bib_view}", source="env")' in source
 
 
-def test_pages_do_not_build_chips_inside_build_anymore() -> None:
+def test_bib_and_issue_build_keep_chips_out_single_uses_flow_chip_row() -> None:
+    # 批 116 NAV-B：只有单篇的步骤 chip 合法（页内导航）；引用库/整期仍不建 chip。
     bib_build = inspect.getsource(P.BibPage.build)
     assert "_sync_header()" in bib_build
     assert "C.chip(" not in bib_build
     assert "_chips_row" not in bib_build
     single_build = inspect.getsource(P.SinglePage.build)
-    assert "C.chip(" not in single_build
+    assert "_build_flow_chips()" in single_build
     issue_build = inspect.getsource(P.IssuePage.build)
     assert "_step_row(" not in issue_build  # 步骤卡列表已删，改导航子页
 

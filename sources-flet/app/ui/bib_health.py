@@ -47,6 +47,11 @@ WARN_CODES = {"conflict_pending", "near_duplicates", "duplicate_content",
               "unknown_entry_type", "alias_duplicate", "alias_self",
               "alias_ambiguous", "alias_conflict", "health_ignore"}
 PAGE_SIZE = 9
+# 严重度筛选固定宽：5 字「全部严重度」在 13 px 正文下约 65 px，加左右内边距 8/8、
+# 箭头 14 与行间距 6，width=100 时可用文字宽只剩约 52 px → 省略成「全部严…」
+# （批 116 CLIP-A P1）。124 是刚好放下 5 字的临界，132 再留 8 px 余量；
+# 1160 与 1000 两种窗口宽度都实测整字显示（evidence/b116-impl/clip-fix-a）。
+SEVERITY_FILTER_W = 132
 
 
 def rule_label(code: str) -> str:
@@ -475,7 +480,9 @@ class HealthView:
                                on_select=self._on_rule, width=110)
         severity = C.select(t, value=self.severity_filter,
                             options=[("", "全部严重度"), ("警告", "警告"), ("提示", "提示")],
-                            on_select=self._on_severity, width=100)
+                            on_select=self._on_severity, width=SEVERITY_FILTER_W)
+        # 菜单项是整字的；选中值在窄窗被挤时 tooltip 兜底（宽度已按整字留足）。
+        severity.tooltip = "按严重度筛选：全部严重度 / 警告 / 提示"
         ackable = ft.Container(
             height=t.px(24), padding=ft.Padding(left=t.px(4), right=t.px(8), top=0, bottom=0),
             content=ft.Row(spacing=t.sp("half"), controls=[

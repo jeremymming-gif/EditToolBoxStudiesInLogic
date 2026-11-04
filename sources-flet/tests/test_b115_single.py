@@ -8,7 +8,7 @@
 3. SinglePage build：根是 Stack、内容盒是白面板、底部 spacer 是最后一个 control。
 4. SinglePage 页面级不再用 C.card / C.section_title（AST 检查方法体）。
 5. 日志 reserve 两档：收起 40（截图实测 dock 26.0 逻辑px ≈ 设计 39，留 1px）；
-   展开 46 + `_log_height`（拖拽跟随，复位回 200）。
+   展开 54 + `_log_height`（拖拽跟随，复位回 200）。
 6. `checks.proofcheck_section` 去卡：section_label + hairline + 4 行 inline_note。
 """
 from __future__ import annotations
@@ -151,7 +151,7 @@ def test_single_page_builds_white_sheet_with_spacer_last():
     last = body.content.controls[-1]
     assert isinstance(last, ft.Container)
     assert last is page._log_spacer
-    assert last.height == t.px(40)
+    assert last.height == t.px(52)
     assert page._log.on_layout_change == page._sync_log_reserve
 
 
@@ -176,18 +176,18 @@ def test_single_page_log_reserve_two_levels_and_drag_follow():
     page, root = _build_single()
     t = page.t
     spacer = root.controls[0].content.controls[-1]
-    assert spacer.height == t.px(40)
+    assert spacer.height == t.px(52)
     page._log.expand()
-    assert spacer.height == t.px(46) + page._log._log_height
-    assert spacer.height == t.px(246)
-    assert spacer.height > t.px(40)
+    assert spacer.height == t.px(54) + page._log._log_height
+    assert spacer.height == t.px(254)
+    assert spacer.height > t.px(52)
     page._log._on_resize_update(SimpleNamespace(primary_delta=-t.px(30)))
-    assert spacer.height == t.px(46) + page._log._log_height
-    assert spacer.height == t.px(276)
+    assert spacer.height == t.px(54) + page._log._log_height
+    assert spacer.height == t.px(284)
     page._log._on_resize_reset()
-    assert spacer.height == t.px(246)
+    assert spacer.height == t.px(254)
     page._log.collapse()
-    assert spacer.height == t.px(40)
+    assert spacer.height == t.px(52)
 
 
 # ── 6. 一校核查去卡 ─────────────────────────────────────────────────────

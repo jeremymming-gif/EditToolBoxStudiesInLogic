@@ -64,15 +64,19 @@ def test_single_header_has_only_h1_and_desc():
     page, root = _build(P.SinglePage)
     assert page._crumb is None, "页头 crumb 只保留属性兼容，不应再创建"
     assert page._title_col.controls == [page._child_title, page._flow_desc]
-    assert _texts(root).count("单篇稿件") == 0, "2 级页面不应再出现父级 crumb"
+    # 批 116 NAV-B：h1 固定「单篇稿件」，不再靠父级 crumb 标识页面。
+    assert _texts(root).count("单篇稿件") == 1, "页头应固定一个「单篇稿件」h1"
     titles = [ctl for ctl in _walk(root)
               if isinstance(ctl, ft.Text) and ctl.value == page._child_title.value]
     assert len(titles) == 1, "页头只能有一个同名 h1（toolbar 标题已隐藏）"
     assert titles[0] is page._child_title
-    # 切子页后 h1/desc 仍由 _sync_header 更新，crumb 不复活。
+    # 切子页只换说明与 chip 选中态，h1 不变；crumb 不复活（批 116 NAV-B）。
     page.activate("proofcheck")
-    assert page._child_title.value == "一校核查"
+    assert page._child_title.value == "单篇稿件"
     assert page._title_col.controls == [page._child_title, page._flow_desc]
+    assert [chip.content.value for chip in page._chip_row.controls] == [
+        "初排转换", "一校核查"]
+    assert page._chip_row.controls[1].bgcolor == page.app.t.palette.sel_tint
     assert page._crumb is None
 
 
@@ -111,8 +115,12 @@ def test_step_page_primary_is_run_this_step_only():
     # 页头只剩整期主操作；本步唯一主按钮在详情头（D1-115-26/29）。
     assert page._header_actions.controls == [page._run_all_btn]
     detail_filled = [ctl for ctl in _of(page._content_box, ft.FilledButton)]
-    assert [str(ctl.content) for ctl in detail_filled] == ["生成目录"]
-    assert detail_filled[0] is page._step_run_primary
+    # 批 116 决策（I-2 E′）：toc 与 infocheck 同属「生成目录」视图，两个区块
+    # 各有一个主按钮；选中步（02）的主按钮仍是 _step_run_primary。
+    contents = [str(ctl.content) for ctl in detail_filled]
+    assert "生成目录" in contents and "运行检查" in contents
+    toc_btn = next(ctl for ctl in detail_filled if str(ctl.content) == "生成目录")
+    assert toc_btn is page._step_run_primary
     assert isinstance(page._run_all_secondary, ft.OutlinedButton)
     assert str(page._run_all_secondary.content) == "从失败处继续…"
     # 旧参数区描边「运行这一步」已摘掉，避免两个入口。

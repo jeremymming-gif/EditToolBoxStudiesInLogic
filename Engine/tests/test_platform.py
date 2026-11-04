@@ -1326,28 +1326,56 @@ if _IA_MAP_SRC.is_file():
             _issue_steps = [s["key"] for s in _ast.literal_eval(_node.value)]
     _expected_single = {"convert", "proofcheck"}
     _expected_issue_steps = ["infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush"]
-    _expected_groups = {"read", "intake", "treat"}
     _orphan = sorted(set(_new_pages) - set(_parent_labels))
     _routes = [f"{e['key']}:{v}" for e in _entries for v in _views(e)]
+
+    # 批 116 BIB-NAV2 / ISSUE4：页内二级导航的单一事实来源（静态解析，不 import 壳）。
+    def _module_list(name: str) -> list:
+        for _node in _ast.parse(_ia_src).body:
+            _target = None
+            if isinstance(_node, _ast.AnnAssign) and isinstance(_node.target, _ast.Name):
+                _target = _node.target
+            elif isinstance(_node, _ast.Assign):
+                _target = next((t for t in _node.targets
+                                if isinstance(t, _ast.Name) and t.id == name), None)
+            if _target is not None and _target.id == name:
+                return _ast.literal_eval(_node.value)
+        return []
+
+    _bib_inpage = _module_list("BIB_INPAGE_GROUPS")
+    _bib_inpage_groups = [g["key"] for g in _bib_inpage]
+    _bib_inpage_views = [v for g in _bib_inpage for v in g["views"]]
+    _bib_entry_views = [v["key"] for v in _by_key.get("bib", {}).get("views", [])]
+    _issue_views = _module_list("ISSUE_VIEWS")
+    _issue_view_keys = [v["key"] for v in _issue_views]
+    _issue_view_steps = [step for v in _issue_views for step in v["steps"]]
+
     check("(n3) NAV_TREE 树完整性：6 个父项、单篇 2 视图、整期叶子（6 步走 ISSUE_ROUTE_STEPS）、"
-          "引用库 3 组 9 叶 + 设置仅路由、route 唯一、且 `IA_MAP.new_page` 都能落到某个父项"
-          "（导航改结构必须同步这张表；批 115 D1-115-26/31 改结构时同步改本断言）",
+          "引用库叶子化（10 条 route views；设置 route_only）+ 页内 3 组 9 叶、"
+          "整期 4 个页内视图覆盖 6 步、route 唯一、且 `IA_MAP.new_page` 都能落到某个父项"
+          "（导航改结构必须同步这张表；批 116 NAV-B/BIB-NAV2/ISSUE4 改结构时同步改本断言）",
           _parent_keys == ["home", "single", "issue", "bib", "settings", "help"]
           and set(_single) == _expected_single
           and not _issue_entry.get("views") and not _issue_entry.get("groups")
           and _issue_steps == _expected_issue_steps
-          and {g["key"] for g in _bib_groups} == _expected_groups
-          and len(_bib_views) == 9 and len(set(_bib_views)) == 9
-          and _bib_route_views == ["settings"]
+          and not _by_key.get("bib", {}).get("groups")
+          and _bib_entry_views == ["overview", "query", "import", "normalize", "review",
+                                   "edit", "dupes", "fieldfix", "health", "settings"]
+          and _bib_inpage_groups == ["read", "intake", "treat"]
+          and _bib_inpage_views == ["overview", "query", "import", "normalize", "review",
+                                    "edit", "dupes", "fieldfix", "health"]
+          and _issue_view_keys == ["catalog", "produce", "clean", "push"]
+          and _issue_view_steps == ["infocheck", "toc", "compileall", "merge",
+                                    "cleantemp", "dirpush"]
           and _by_key.get("bib", {}).get("default") == "overview"
           and _issue_entry.get("default") == "infocheck"
           and len(_routes) == len(set(_routes))
           and not _orphan,
           f"parents={_parent_keys}｜single={sorted(_single)}｜"
           f"issue_leaf={not _issue_entry.get('views') and not _issue_entry.get('groups')}｜"
-          f"issue_steps={_issue_steps}｜bib_groups={[g['key'] for g in _bib_groups]}｜"
-          f"bib_views={len(_bib_views)}｜bib_route_views={_bib_route_views}｜"
-          f"routes={len(_routes)}｜orphan={_orphan}")
+          f"issue_steps={_issue_steps}｜bib_groups={_bib_inpage_groups}｜"
+          f"bib_views={len(_bib_inpage_views)}｜bib_route_views={_bib_entry_views}｜"
+          f"issue_views={_issue_view_keys}｜routes={len(_routes)}｜orphan={_orphan}")
 
 # ─────────────────────────────────────────────────────────────────────────
 # (o) 分发不泄漏：Flet 外壳**不许**再绑 publish.py（B-231 ④；静态扫描，不 import 外壳）

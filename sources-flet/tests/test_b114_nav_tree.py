@@ -203,13 +203,15 @@ def test_nav_child_and_group_rows_are_28_high_with_indent() -> None:
 
 def test_sidebar_is_accordion_with_internal_scroll() -> None:
     source = inspect.getsource(M.App._sidebar_content)
-    bib_source = inspect.getsource(M.App._bib_nav_rows)
+    bib_source = inspect.getsource(M.App._bib_sidebar_leaf)
     assert "C.nav_parent(" in source
-    assert "C.nav_child(" in bib_source
-    # 批 115 D1-115-31/32：引用库组标签是不可点击文本行，不再渲染 nav_group。
+    # 批 116 决策：引用库侧栏只留一个叶子；9 视图移入 Bib 页内 chip 导航。
+    assert "C.nav_child(" not in source + bib_source
     assert "C.nav_group(" not in source + bib_source
-    assert "_bib_section_header(" in source
-    assert "indent=48" in bib_source
+    assert "_bib_sidebar_leaf(" in source
+    assert "_bib_section_header(" not in source
+    assert "indent=48" not in bib_source
+    assert "has_children=False" in bib_source
     assert "ft.ScrollMode.AUTO" in source      # 导航超高内部滚动（1000×700 可滚）
     assert "C.nav_item(" in source             # <720 的 56 图标条兜底仍在
     assert "compact=True" in source
@@ -335,7 +337,7 @@ def test_settings_bad_route_migrates_once(tmp_path) -> None:
 
 
 # ── E. 页面侧：activate / 页头 / 进度带 ────────────────────────────────────
-def test_single_page_activate_switches_flow_without_chips() -> None:
+def test_single_page_activate_switches_flow_with_page_chips() -> None:
     page = object.__new__(P.SinglePage)
     app = FakeApp()
     page.app = app
@@ -344,8 +346,9 @@ def test_single_page_activate_switches_flow_without_chips() -> None:
     page._result = type("_Result", (), {"reset": lambda self: None})()
     page._ai = None
     page._crumb = ft.Text("单篇稿件")
-    page._child_title = ft.Text("初排转换")
+    page._child_title = ft.Text("单篇稿件")
     page._flow_desc = ft.Text("")
+    page._chip_row = ft.Row(controls=[ft.Text("old")])
     page._flow_builder = lambda key: (lambda: ft.Text(key))
     page._sync_header = lambda: None
     page._safe_update = lambda *controls: None
@@ -354,9 +357,15 @@ def test_single_page_activate_switches_flow_without_chips() -> None:
     assert page.flow_key == "proofcheck"
     assert app.store.get("single_flow") == "proofcheck"
     assert page._flow_box.controls[0].value == "proofcheck"
-    # 批 115 P1-2：2 级页面（页面→子页）去 crumb，h1 为唯一锚点。
+    # 批 116 NAV-B：单篇不再有侧栏子项，convert/proofcheck 变成页内 28 高 chip。
+    assert [chip.content.value for chip in page._chip_row.controls] == [
+        "初排转换", "一校核查"]
+    assert page._chip_row.controls[0].bgcolor is None
+    assert page._chip_row.controls[1].bgcolor == app.t.palette.sel_tint
     build_src = inspect.getsource(P.SinglePage.build)
-    assert "C.chip(" not in build_src
+    assert "_build_flow_chips()" in build_src
+    assert "C.chip(" not in build_src  # chip 只在 helper 里构建
+    assert "C.chip(" in inspect.getsource(P.SinglePage._build_flow_chips)
     assert "_sync_header()" in build_src
     assert "_child_title" in build_src and "_flow_desc" in build_src
     assert "_crumb" not in build_src
@@ -371,7 +380,8 @@ def test_issue_page_has_overview_and_step_subpages() -> None:
     assert "_run_step" not in step_src  # 运行按钮由 _step_run_button 提供
     band_src = inspect.getsource(P.IssuePage._progress_band)
     assert "t.px(54)" in band_src
-    assert "self.STEPS" in band_src
+    # 批 116 决策（I-2 E′）：窄窗横条按 4 个视图分段，不再是 6 个 step。
+    assert "self.VIEWS" in band_src
     overview_src = inspect.getsource(P.IssuePage._build_overview)
     assert "self.STEPS" in overview_src
 

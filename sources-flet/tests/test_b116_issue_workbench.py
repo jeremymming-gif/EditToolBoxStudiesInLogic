@@ -22,7 +22,7 @@ def test_workbench_shell_regions_and_no_card_glue():
     assert page._detail_box is not None
     assert root is not None and page._log.dock is True
     assert page._log.is_expanded is False
-    assert page._log_spacer.height == page.t.px(40)
+    assert page._log_spacer.height == page.t.px(52)
     src = _src()
     for banned in ("C.card(", "C.section_title(", "C.status_chip("):
         assert banned not in src, f"工作台主体不许再出现 {banned}"
@@ -44,7 +44,9 @@ def test_narrow_content_gets_horizontal_strip():
     assert row.controls[1] is page._detail_box
     texts = [ctl.value for ctl in _walk(page._rail_box)
              if isinstance(ctl, ft.Text)]
-    assert "生产 4 步" in texts and "收尾（可选）" in texts
+    # 批 116 决策（I-2 E′）：6 步折成 4 视图，宽栏分组标题随之改为
+    # 「正文流水线」（4 视图的前 3 个）与「收尾（可选）」（推送）。
+    assert "正文流水线" in texts and "收尾（可选）" in texts
 
 
 # ── 2. 运行整期对话框：默认 1–4、05 danger 行、跳过已完成 ──────────────

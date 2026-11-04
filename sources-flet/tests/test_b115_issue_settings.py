@@ -99,7 +99,7 @@ def test_issue_page_white_sheet_with_log_dock():
     assert page._content_box in _walk(root)
     last = body.content.controls[-1]
     assert last is page._log_spacer
-    assert last.height == t.px(40)
+    assert last.height == t.px(52)
     assert page._log.on_layout_change == page._sync_log_reserve
     # 钉住批 114 路由契约：build 里重建总览。
     src = inspect.getsource(P.IssuePage.build)
@@ -117,9 +117,9 @@ def test_issue_log_reserve_two_levels_and_drag_follow():
     page._log._on_resize_update(SimpleNamespace(primary_delta=-t.px(30)))
     assert spacer.height == before + t.px(30), "拖动 log 高度必须实时改页面预留"
     page._log._on_resize_reset()
-    assert spacer.height == t.px(46) + page._log._base_height
+    assert spacer.height == t.px(54) + page._log._base_height
     page._log.collapse()
-    assert spacer.height == t.px(40)
+    assert spacer.height == t.px(52)
 
 
 # ── 2. IssuePage 去卡 / 发丝行 ─────────────────────────────────────────
@@ -219,7 +219,12 @@ def test_issue_step_page_has_no_back_button_or_duplicate_title():
     # 批 115（D1-115-26）：本步主按钮在详情头，页头只留整期运行。
     detail_runs = [ctl for ctl in _walk(page._content_box)
                    if isinstance(ctl, ft.FilledButton)]
-    assert [str(ctl.content) for ctl in detail_runs] == ["生成目录"]
+    # 批 116 决策（I-2 E′）：toc 所在「生成目录」视图同时承载 01/02 两个区块，
+    # 每个区块各有自己的主按钮；本步（02）的主按钮仍是 _step_run_primary。
+    contents = [str(ctl.content) for ctl in detail_runs]
+    assert "生成目录" in contents and "运行检查" in contents
+    toc_btn = next(ctl for ctl in detail_runs if str(ctl.content) == "生成目录")
+    assert toc_btn is page._step_run_primary
     src = inspect.getsource(P.IssuePage._build_step_page)
     assert "_progress_band()" in src and "_run_step" not in src
 
@@ -229,10 +234,11 @@ def test_issue_progress_band_keeps_height_and_uses_bars_not_chips():
     t = page.t
     band = page._progress_band()
     assert band.height == t.px(54)
-    assert len(band.content.controls) == len(page.STEPS) == 6
+    # 批 116 决策（I-2 E′）：横条 = 4 个视图（生成目录/编译并合并/清理/推送）。
+    assert len(band.content.controls) == len(page.VIEWS) == 4
     bars = [ctl for ctl in _walk(band)
             if isinstance(ctl, ft.Container) and ctl.height == t.px(2)]
-    assert len(bars) == 6
+    assert len(bars) == 4
     assert "status_chip" not in _calls(P.IssuePage._progress_band)
 
 

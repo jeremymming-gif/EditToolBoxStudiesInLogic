@@ -1266,9 +1266,10 @@ class App:
             self.page.update()
         self.mark("nav_toggle", page=page_key, expanded=not self.nav_open["collapsed"])
 
-    # ── 引用库侧栏（批 115 D1-115-31/32，IA-B）─────────────────────────
-    # section 行「引用库」+ 3 个不可点击组标签（查阅/采录/治理）+ 9 个常驻叶子；
-    # 设置不在侧栏（页头齿轮/⌘K 可达），组标签不折叠、不记忆展开。
+    # ── 引用库侧栏（批 116 BIB-NAV2，方案 A）─────────────────────────────
+    # 侧栏 section 只留一个叶子「引用库」（图标保留 + 待处理徽标）；3 组 9 个
+    # 子视图移到 Bib 页内顶部 chip 导航（BIB_INPAGE_GROUPS）。徽标 0/None 隐藏，
+    # 数值沿用 set_bib_badge()；settings 仍只走页头齿轮/深链，不占侧栏。
     def _bib_badge_count(self) -> int:
         try:
             value = int(getattr(self, "bib_badge", None))
@@ -1295,54 +1296,66 @@ class App:
             except Exception:  # noqa: BLE001 未挂载/测试替身
                 pass
 
-    def _bib_section_header(self) -> ft.Control:
-        """顶层 section 行「引用库」：纯文本 + 右侧待办徽标（无点击区）。"""
-        t = self.t
-        controls: list = [C.text("引用库", t, "caption", t.palette.text_faint,
-                                 weight="semibold")]
+    def _bib_sidebar_leaf(self, t, active: bool) -> ft.Control:
+        """唯一引用库叶子：无 chevron、无子行；右侧待处理徽标。"""
+        leaf = C.nav_parent(
+            "LIBRARY_BOOKS_OUTLINED", "引用库", t, active=active,
+            expanded=False, has_children=False,
+            on_click=lambda e: self.navigate(
+                self._nav_default_route("bib"), source="nav"))
+        leaf.height = t.px(28)
         count = self._bib_badge_count()
         if count:
-            controls.extend([ft.Container(expand=True),
-                             C.badge(f"{count:,}", t, tone="neutral")])
-        return ft.Container(
-            padding=C._pad(t, 4, 12, 2, 0),
-            content=ft.Row(spacing=t.sp("half"),
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                           controls=controls),
-        )
-
-    def _bib_nav_rows(self, t, active_view: str) -> list:
-        """3 个不可点击组标签 + 9 个叶子（始终可见；settings 不在此列）。"""
-        rows: list = []
-        groups = IA.group_views("bib")
-        leaves: list[str] = []
-        for group in groups:
-            rows.append(ft.Container(
-                height=t.px(22),
-                padding=C._pad(t, 36, 0, 8, 0),
-                content=C.text(str(group["label"]), t, "caption",
-                               t.palette.text_faint, weight="semibold"),
-            ))
-            for view in group["views"]:
-                vkey = str(view["key"])
-                leaves.append(vkey)
-                leaf = C.nav_child(
-                    str(view["label"]), t, indent=48,
-                    active=vkey == active_view,
-                    on_click=lambda e, v=vkey: self.navigate(
-                        f"bib:{v}", source="nav"))
-                leaf.height = t.px(25)  # IA-B：紧凑行，保证 1160×780 全叶可见
-                rows.append(leaf)
+            leaf.content.controls.append(C.badge(f"{count:,}", t, tone="neutral"))
         if not getattr(self, "_bib_nav_marked", False):
-            # 一次性证据 marker：GUI 冒烟据此核对「3 组 / 9 叶 / settings 仅路由」。
+            # 一次性证据 marker：GUI 冒烟核对「侧栏单叶 / 9 视图在页内 / settings 仅路由」。
             self._bib_nav_marked = True
-            self.mark("bib_nav_section", section="引用库",
-                      groups=[str(group["key"]) for group in groups],
-                      leaves=leaves,
-                      route_only=[str(view["key"]) for view in IA.nav_views("bib")
-                                  if view.get("route_only")],
-                      badge=self._bib_badge_count())
-        return rows
+            groups = IA.group_views("bib")
+            self.mark(
+                "bib_nav_section", section="引用库", leaf="bib", label="引用库",
+                icon="LIBRARY_BOOKS_OUTLINED", badge=count,
+                groups=[str(group["key"]) for group in groups],
+                leaves=[str(view["key"]) for group in groups for view in group["views"]],
+                route_only=[str(view["key"]) for view in IA.nav_views("bib")
+                            if view.get("route_only")])
+        return leaf
+
+    def _issue_progress(self) -> tuple[int, int] | None:
+        """整期装配的「完成/6」进度；无当期目录或无状态记录时返回 None。
+
+        批 116 NAV-B+：只在侧栏整期行右侧显示，不新增控制区。完成 = 该步
+        done/warn（与 IssuePage 的「成功/有警告」一致），running/idle 不计。
+        """
+        store = getattr(self, "store", None)
+        if store is None:
+            return None
+        path = str(store.get("recent.issue_dir", "") or "").strip()
+        if not path:
+            return None
+        data = store.get("issue_state", {})
+        if not isinstance(data, dict):
+            return None
+        # 兼容早期按 by_path/paths 分组的写法（与 _issue_landing_step 同口径）。
+        per_path = data
+        for nested_key in ("by_path", "paths"):
+            nested = data.get(nested_key)
+            if isinstance(nested, dict):
+                per_path = nested
+                break
+        record = per_path.get(path)
+        if not isinstance(record, dict):
+            return None
+        statuses = record.get("statuses")
+        if not isinstance(statuses, dict):
+            return None  # 有目录但还没跑过任何一步：无状态，不显示 0/6
+        steps = IA.issue_step_keys()
+        done = 0
+        for key in steps:
+            item = statuses.get(key)
+            state = item.get("state") if isinstance(item, dict) else item
+            if str(state or "") in ("done", "warn"):
+                done += 1
+        return done, len(steps)
 
     def _sidebar_content(self) -> ft.Control:
         t = self.t
@@ -1356,18 +1369,15 @@ class App:
         items.append(ft.Container(padding=C._pad(t, 16, 8, 16, 4), content=brand_row))
 
         active_page = self.current_page_key or "home"
-        active_view = self._route_view()
-        open_state = dict(self.nav_open or {})
-        open_page = str(open_state.get("page") or active_page)
-        collapsed = bool(open_state.get("collapsed"))
 
         nav_items: list = []
         for section in IA.NAV_TREE:
             bib_section = any(str(entry.get("key")) == "bib"
                               for entry in section["entries"])
-            if not compact:
-                nav_items.append(self._bib_section_header() if bib_section
-                                 else C.nav_group_label(section["group"], t))
+            # 批 116 BIB-NAV2：引用库 section 只渲染一个叶子，caption 与之同名会重复，
+            # 因此该 section 不再画组标签；工作区/系统 caption 不变。
+            if not compact and not bib_section:
+                nav_items.append(C.nav_group_label(section["group"], t))
             for entry in section["entries"]:
                 key = str(entry["key"])
                 active = key == active_page
@@ -1377,31 +1387,31 @@ class App:
                         compact=True, on_click=lambda e, k=key: self.goto(k)))
                     continue
                 if key == "bib":
-                    # 批 115 D1-115-31/32：引用库不再有可折叠父行；3 组标签 + 9 叶常驻。
-                    nav_items.extend(self._bib_nav_rows(
-                        t, active_view if active else ""))
+                    # 批 116 BIB-NAV2 / 方案 A：3 组 9 视图已移入 Bib 页内顶部
+                    # chip 导航；侧栏只留一个叶子，任何 bib:* 路由都选中。
+                    nav_items.append(self._bib_sidebar_leaf(t, active))
                     continue
-                views = IA.nav_views(key)
-                has_children = bool(views)
-                expanded = has_children and open_page == key and not collapsed
-                parent = C.nav_parent(
+                # 批 116 NAV-B（方案 B）：侧栏只放目的地，工作区/系统一律叶子，
+                # 无 chevron、无子行。单篇的 convert/proofcheck 改页内 chip，
+                # 整期的 6 步仍在页内 rail；点击单篇沿用上次视图。
+                leaf = C.nav_parent(
                     str(entry["icon"]), str(entry["label"]), t, active=active,
-                    expanded=expanded, has_children=has_children,
+                    expanded=False, has_children=False,
                     on_click=lambda e, k=key: self.navigate(
-                        self._nav_default_route(k), source="nav"),
-                    on_toggle=lambda e, k=key: self._toggle_nav_page(k))
+                        self._nav_default_route(k), source="nav"))
                 if key in ("settings", "help"):
-                    parent.height = t.px(26)  # 系统两行收紧，780 高不再压到主题开关
-                nav_items.append(parent)
-                if not expanded:
-                    continue
-                for view in views:
-                    vkey = str(view["key"])
-                    nav_items.append(C.nav_child(
-                        str(view["label"]), t, indent=52,
-                        active=active and vkey == active_view,
-                        on_click=lambda e, k=key, v=vkey: self.navigate(
-                            f"{k}:{v}", source="nav")))
+                    leaf.height = t.px(26)  # 系统两行收紧，780 高不再压到主题开关
+                else:
+                    leaf.height = t.px(28)  # 整期行高固定，进度徽标不撑行
+                if key == "issue":
+                    progress = self._issue_progress()
+                    if progress is not None:
+                        done, total = progress
+                        # label 已 expand，徽标自然贴右；11px muted 不抢主行。
+                        leaf.content.controls.append(
+                            C.text(f"{done}/{total}", t, "caption",
+                                   t.palette.text_faint))
+                nav_items.append(leaf)
 
         # 导航超高时内部滚动；短窗口常显滚动条（批 115 P1-12），主题开关与引擎
         # 页脚固定在最底部。compact 图标条只有 6 项，用 AUTO 避免窄条里出现长条。
@@ -1413,6 +1423,7 @@ class App:
             content=ft.Column(spacing=0, expand=True, scroll=nav_scroll,
                               controls=nav_items)))
         if compact:
+            self._theme_row = None
             items.append(ft.Container(padding=C._pad(t, 15, 4, 15, 4), content=C.icon_button(
                 "DARK_MODE", "切换深浅色", lambda e: self.set_theme(
                     "light" if self.theme == "dark" else "dark"), t,
@@ -1420,14 +1431,16 @@ class App:
         else:
             self.theme_switch = C.switch(
                 t, value=self.theme == "dark", on_change=self.on_theme_switch)
+            # 批 116 NAV-B+：留住主题行，切换时原位重建开关（见 _rebuild_theme_switch）。
+            self._theme_row = ft.Row(spacing=t.sp("1"), controls=[
+                ft.Icon(C.ic("DARK_MODE"), size=t.px(16), color=t.palette.text_muted),
+                C.text("深色模式", t, "small", t.palette.text_muted),
+                ft.Container(expand=True),
+                self.theme_switch,
+            ])
             items.append(ft.Container(
                 padding=C._pad(t, 16, 2, 16, 2),
-                content=ft.Row(spacing=t.sp("1"), controls=[
-                    ft.Icon(C.ic("DARK_MODE"), size=t.px(16), color=t.palette.text_muted),
-                    C.text("深色模式", t, "small", t.palette.text_muted),
-                    ft.Container(expand=True),
-                    self.theme_switch,
-                ]),
+                content=self._theme_row,
             ))
             engine_ok = self.engine_status.ok
             engine_version = str(self._version_info.get("engine_version") or self.app_version)
@@ -1598,11 +1611,16 @@ class App:
         bg_map = palette_remap(target)
         fg_map = palette_remap(target, role="fg")
         # 主按钮 C/D 的颜色不在 23 色板里，单独按按钮语义映射（同主题浅/深互换）。
+        # 只能用于 ButtonStyle：按钮的 on 色浅色是 #FFFFFF，与 surface 撞值，
+        # 若并进 bg_map 会把所有白底卡片染成按钮字色（批 116 实测 #16232D）。
         button_map = self._button_color_map(old.buttons, self.t.buttons)
-        bg_map.update(button_map)
-        fg_map.update(button_map)
+        style_map = dict(bg_map)
+        style_map.update(button_map)
         log_areas = self._retint_log_areas(self.page, old.palette.log_bg)
-        changed = self._retint(self.page, bg_map, fg_map)
+        changed = self._retint(self.page, bg_map, fg_map, style_map)
+        # 批 116：自绘页缓存着 build 时的 root，BibHost 还缓存着未挂载的视图树。
+        # 只染已挂载树会让它们在切换后停在旧皮肤，navigate() 一挂就是跨页混色。
+        changed += self._retint_offscreen(bg_map, fg_map, style_map)
         # 浅色板里 #FFFFFF 一词多义：_retint 按「背景」角色统一换成 surface，
         # 侧栏与日志区在这里按语义名改回自己的目标色（仍然只改属性）。
         sidebar = getattr(self, "sidebar", None)
@@ -1621,11 +1639,86 @@ class App:
             if area.bgcolor != self.t.palette.log_bg:
                 area.bgcolor = self.t.palette.log_bg
                 changed += 1
+        # 批 116 NAV-B+：主题开关的 thumb/track 是 ControlStateValue dict，
+        # _retint_node 只改 str 颜色，切换后会停在旧皮肤。这里用新 Tokens 原位
+        # 重建开关（尺寸/位置/on_change 不变）；无主题行时退回只同步 value。
+        changed += self._rebuild_theme_switch()
         switch = getattr(self, "theme_switch", None)
-        if switch is not None:
+        if switch is not None and getattr(self, "_theme_row", None) is None:
             switch.value = self.theme == "dark"
         changed += self._refresh_tokens(old)
         return changed
+
+    def _rebuild_theme_switch(self) -> int:
+        """原位重建侧栏深色模式开关，让 thumb/track 四态颜色跟随当前 Tokens。
+
+        返回替换数（0/1）。ControlStateValue 是 dict，_retint_node 不处理；
+        而浅色 #FFFFFF 同时是 surface/on_accent，按值映射分不清选中态语义，
+        所以选择整控件重建。只换 Row 里的那一个 child，行为/尺寸/位置不变。
+        """
+        row = getattr(self, "_theme_row", None)
+        if row is None:
+            return 0
+        controls = getattr(row, "controls", None)
+        if not isinstance(controls, list) or not controls:
+            return 0
+        old = getattr(self, "theme_switch", None)
+        try:
+            index = controls.index(old)
+        except (ValueError, TypeError):
+            index = len(controls) - 1
+        switch = C.switch(self.t, value=self.theme == "dark",
+                          on_change=self.on_theme_switch)
+        controls[index] = switch
+        self.theme_switch = switch
+        return 1
+
+    def _retint_offscreen(self, bg_map: dict[str, str], fg_map: dict[str, str],
+                          style_map: dict[str, str] | None = None) -> int:
+        """重染未挂载的缓存树：其他页面的 root 与 BibHost 未激活的视图 root。
+
+        批 116 根因：`_retint_shell` 只走 `self.page`（当前挂载树）；`self.pages`
+        里已 build 的页面 root、`BibHost._views` 里懒加载过的视图 root 会停在
+        旧皮肤，`navigate()` 之后直接上屏就是跨页颜色错误。这里在切换时一次
+        补齐，而不是在导航路径上按页打补丁。
+
+        已挂载树的节点 id 先收进 `seen`：明暗两板有同值色（如 `#F5F5F7` 既是
+        浅色 bg 又是深色 text），已经换过的树若再映射一次会串色，必须跳过。
+        """
+        mounted: set[int] = set()
+        self._collect_ids(self.page, mounted)
+        changed = 0
+        for page in self.pages.values():
+            for root in self._theme_roots(page):
+                if root is None or id(root) in mounted:
+                    continue
+                changed += self._retint_node(root, bg_map, fg_map, mounted, style_map)
+        return changed
+
+    @staticmethod
+    def _theme_roots(page) -> list:
+        """一个页面在换肤时要覆盖的根控件（懒加载宿主可返回多棵缓存树）。"""
+        getter = getattr(page, "theme_roots", None)
+        if callable(getter):
+            try:
+                return [root for root in getter() if root is not None]
+            except Exception as exc:  # noqa: BLE001 - 单页取根失败不拖垮整次换肤
+                SLOG.log("theme_roots_error", error=f"{type(exc).__name__}: {exc}")
+        root = getattr(page, "root", None)
+        return [root] if root is not None else []
+
+    def _collect_ids(self, node, out: set[int]) -> None:
+        """收集控件树节点 id（只遍历，不改颜色），供 `_retint_node` 去重。"""
+        if not _retint_walkable(node) or id(node) in out:
+            return
+        out.add(id(node))
+        for attr in _RETINT_CHILD_ATTRS:
+            child = _retint_attr(node, attr)
+            if isinstance(child, list):
+                for item in child:
+                    self._collect_ids(item, out)
+            elif child is not None:
+                self._collect_ids(child, out)
 
     # ── 按钮配色 C/D（批 114 P2 v2）────────────────────────────────────
     @staticmethod
@@ -1653,6 +1746,7 @@ class App:
         if built:
             mapping = self._button_color_map(old.buttons, self.t.buttons)
             changed = self._retint(self.page, mapping, mapping)
+            changed += self._retint_offscreen(mapping, mapping)
             changed += self._refresh_tokens(old)
             self.status_bar.set_meta(self._status_meta())
             self.page.update()
@@ -1662,12 +1756,18 @@ class App:
         self.toast("按钮配色：" + self.t.button_label)
 
     def _retint(self, root, bg_map: dict[str, str],
-                fg_map: dict[str, str] | None = None) -> int:
-        """递归改写控件树上的颜色属性（不重建控件）；返回改写个数。"""
-        return self._retint_node(root, bg_map, fg_map or bg_map, set())
+                fg_map: dict[str, str] | None = None,
+                style_map: dict[str, str] | None = None) -> int:
+        """递归改写控件树上的颜色属性（不重建控件）；返回改写个数。
+
+        `style_map` 是 `ButtonStyle` 专用映射（含不在色板里的按钮 C/D 配色）；
+        控件属性仍只用 bg/fg 色板映射，避免按钮 on 色与 surface 撞值。
+        """
+        return self._retint_node(root, bg_map, fg_map or bg_map, set(), style_map)
 
     def _retint_node(self, node, bg_map: dict[str, str], fg_map: dict[str, str],
-                     seen: set[int]) -> int:
+                     seen: set[int], style_map: dict[str, str] | None = None) -> int:
+        style_map = bg_map if style_map is None else style_map
         if not _retint_walkable(node) or id(node) in seen:
             return 0
         seen.add(id(node))
@@ -1718,7 +1818,7 @@ class App:
             if border_changed:
                 setattr(node, "border", ft.Border(**sides))
                 changed += 1
-        changed += self._retint_style(node, bg_map)
+        changed += self._retint_style(node, style_map)
         # 语义色标签（hover / 选中行）：浅色板里 surface_2 与 sidebar 同为 #F2F2F7，
         # 只靠颜色换肤会歧义；带 tone: 标签的容器按调色板字段名改回目标色。
         tag = _retint_attr(node, "data")
@@ -1731,9 +1831,9 @@ class App:
             child = _retint_attr(node, attr)
             if isinstance(child, list):
                 for item in child:
-                    changed += self._retint_node(item, bg_map, fg_map, seen)
+                    changed += self._retint_node(item, bg_map, fg_map, seen, style_map)
             elif child is not None:
-                changed += self._retint_node(child, bg_map, fg_map, seen)
+                changed += self._retint_node(child, bg_map, fg_map, seen, style_map)
         return changed
 
     @staticmethod
@@ -1789,11 +1889,29 @@ class App:
         return out
 
     def _refresh_tokens(self, old: Tokens) -> int:
-        """刷新持 Tokens 快照的 helper（LogConsole / ResultBanner…），后续新增内容不再用旧色。"""
+        """刷新持 Tokens 快照的 helper（LogConsole / ResultBanner…），后续新增内容不再用旧色。
+
+        批 116：BibHost 的懒加载视图各自在构造时抓了 `page.t` 快照；只刷页面
+        顶层变量会漏掉它们，切主题后视图再次 build 仍用旧色板（编辑/入藏/
+        查重合并/字段归位）。这里把 `_views` 里的视图也纳入刷新。
+        """
         new = self.t
         seen: set[int] = set()
         changed = 0
-        for owner in [self, *self.pages.values()]:
+        owners: list = [self, *self.pages.values()]
+        for page in self.pages.values():
+            views = getattr(page, "_views", None)
+            if isinstance(views, dict):
+                owners.extend(view for view in views.values() if view is not None)
+        for owner in owners:
+            # 视图对象本身就是快照持有者（self.t = page.t），先看 owner 自身；
+            # BasePage.t 是无 setter 的 property，写入失败会自然跳过。
+            if getattr(owner, "t", None) is old:
+                try:
+                    owner.t = new
+                    changed += 1
+                except AttributeError:
+                    pass
             try:
                 values = list(vars(owner).values())
             except TypeError:

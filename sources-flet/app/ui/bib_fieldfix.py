@@ -40,6 +40,13 @@ FIELD_LABELS = {"title": "题名", "author": "作者", "editor": "编者", "tran
 CONFIDENCE = {"low": "高", "medium": "中", "high": "低"}
 CONFIDENCE_LEVELS = ("高", "中", "低")
 RISK = {"高": "low", "中": "medium", "低": "high"}
+# 数据列右内边距：缺失原因列以「…」收尾，原先 0 内边距时与「候选值」列只剩约
+# 7 px 光学间距，两列被读成一句（批 116 CLIP-A P2）。12 px 是可读的最小列间距，
+# 同时给候选值列加宽（见 `_columns`），长出版社名不再一进来就省略。
+CELL_PAD_R = 12
+# 滚动表尾部留白：底部 44/56 常驻条紧贴表视口，滚到底时最后一行必须能完整
+# 露出且不贴条（批 116 CLIP-A P2：末行曾被切掉下半行）。
+TABLE_BOTTOM_PAD = 12
 
 
 def _sha8(sha: str) -> str:
@@ -313,6 +320,9 @@ class BibFieldFixView:
     def _render(self) -> None:
         if self._root is not None:
             self._root.content = self._body()
+            replant = getattr(self.page, "_replant_nav", None)
+            if callable(replant):
+                replant()
         page = self._flet()
         update = getattr(page, "update", None)
         if callable(update):
@@ -834,10 +844,10 @@ class BibFieldFixView:
     def _columns(self) -> tuple[list[str], list[float], list, list[str]]:
         if self.narrow:
             return (["☐", "记录", "字段", "缺失原因", "候选值", "置信度"],
-                    [0.34, 2.46, 0.84, 1.5, 1.4, 0.64], [1, 2, 3, 4, 5],
+                    [0.34, 2.46, 0.84, 1.44, 1.5, 0.64], [1, 2, 3, 4, 5],
                     ["left", "left", "left", "left", "left", "right"])
         return (["☐", "记录", "key", "字段", "缺失原因", "候选值", "置信度", "来源"],
-                [0.34, 2.5, 1.36, 0.84, 1.32, 1.32, 0.58, 0.56],
+                [0.34, 2.5, 1.36, 0.84, 1.4, 1.48, 0.58, 0.56],
                 [2, 3, 5, 6, 7],
                 ["left", "left", "left", "left", "left", "left", "right", "left"])
 
@@ -860,6 +870,8 @@ class BibFieldFixView:
             controls.append(self._row_control(row, mono))
             if self.expanded == row["id"]:
                 controls.append(self._expanded_row(row))
+        # 尾部安全留白：滚到底时最后一行与底部常驻条之间留 12 px，不再贴边。
+        controls.append(ft.Container(height=t.px(TABLE_BOTTOM_PAD)))
         return ft.Container(expand=True, content=ft.Column(
             spacing=0, scroll=ft.ScrollMode.AUTO, controls=controls))
 
@@ -881,18 +893,22 @@ class BibFieldFixView:
                                             max_lines=1)])))
             values = [field_label(row["field"]), row["reason"] or "—",
                       self._value_for(row) or "—", confidence_of(row)]
-            weights = [0.34, 2.46, 0.84, 1.5, 1.4, 0.64]
         else:
             values = [label, row["key"], field_label(row["field"]), row["reason"] or "—",
                       self._value_for(row) or "—", confidence_of(row),
                       row["source"] or "—"]
-            weights = [0.34, 2.5, 1.36, 0.84, 1.32, 1.32, 0.58, 0.56]
+        last = len(values) - 1
         for index, value in enumerate(values):
             cells.append(ft.Container(
                 expand=True, alignment=ft.Alignment.CENTER_LEFT,
+                # 末列不补内边距，右边缘才能和表头（表头统一右 8）对齐。
+                padding=ft.Padding(left=0, top=0, bottom=0,
+                                   right=t.px(CELL_PAD_R) if index < last else 0),
                 content=C.text(str(value), t,
                                "mono" if (index + 1) in (1, 2) else "small",
-                               max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)))
+                               max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                               # 省略号不是砍字：全文挂 tooltip，hover 可读。
+                               tooltip=(None if value in ("", "—") else str(value)))))
         control = ft.Container(
             height=t.px(32),
             bgcolor=t.palette.accent_soft if self.expanded == row["id"] else None,

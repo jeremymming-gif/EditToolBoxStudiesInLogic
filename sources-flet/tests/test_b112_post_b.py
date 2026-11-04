@@ -193,7 +193,7 @@ def test_log_dock_is_stacked_on_top_and_collapsed_by_default():
     last = body.content.controls[-1]
     # 批 115 P3-C1：底部 spacer 按截图实测改为 40（原 64 是旧 overlay_reserve；
     # 实测收起 dock 26.0 逻辑px ≈ 设计 39，见 impl-single/reserve-measure.txt）。
-    assert isinstance(last, ft.Container) and last.height == page.t.px(40)
+    assert isinstance(last, ft.Container) and last.height == page.t.px(52)
     # 运行入口必须自动展开浮层（源码契约，运行时再截图复核）。
     assert "_log.expand()" in inspect.getsource(P.SinglePage._run)
 

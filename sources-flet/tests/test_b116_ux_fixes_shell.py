@@ -138,15 +138,21 @@ def test_faint_value_is_shared_with_log_muted_and_retints_through_palette() -> N
 
 
 # ── P1 #12：导航列可滚动，短窗口常显滚动条，系统段可达 ─────────────────────
-def test_single_expanded_nav_is_scrollable_with_all_22_rows_at_1160x780() -> None:
+def test_flat_nav_is_scrollable_with_all_rows_at_1160x780() -> None:
+    # 批 116 决策：侧栏全扁平；引用库只剩一个叶子（9 视图移入页内 chip）。
     app = _sidebar_app(1160, 780)
     nav = _nav_column(app)
-    # 22 行 = 3 段标签 + 6 父项 + 单篇 2 叶 + 引用库 3 组标签 + 9 叶
-    assert len(nav.controls) == 22
+    # 8 行 = 2 段标签（工作区/系统）+ 3 工作区叶 + 1 引用库叶 + 2 系统叶
+    assert len(nav.controls) == 8
     assert nav.scroll == ft.ScrollMode.ALWAYS, "780 高必须常显滚动条，否则用户不知道下面还有内容"
     labels = _texts(nav)
-    for wanted in ("单篇稿件", "初排转换", "一校核查", "引用库", "系统", "设置", "帮助与关于"):
+    for wanted in ("工作台", "单篇稿件", "整期装配", "引用库",
+                   "系统", "设置", "帮助与关于"):
         assert wanted in labels, f"导航缺少 {wanted}"
+    # 单篇/整期/引用库的二级视图都不再出现在侧栏（批 116 NAV-B / BIB-NAV2）。
+    for gone in ("初排转换", "一校核查", "检查tex信息",
+                 "查阅", "采录", "治理", "概览", "待处理", "库健康"):
+        assert gone not in labels, f"扁平侧栏不应再有子项/组标签 {gone}"
     # 系统段是列表尾部：滚动到底即可见（控件存在，不依赖窗口高度重建）。
     assert labels[-3:] == ["系统", "设置", "帮助与关于"]
 

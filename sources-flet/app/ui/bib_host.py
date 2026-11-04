@@ -28,6 +28,7 @@ from services import settings_store as SS
 from services import startup_log as SLOG
 from ui import bib_shell as S
 from ui import components as C
+from ui import ia_map as IA
 from ui.base_page import BasePage
 
 #: 路由 → (模块, 类, 叶名, 角色)。叶名与 ia_map/页面模块的 TITLE 保持一致。
@@ -43,6 +44,10 @@ VIEW_SPECS: dict[str, tuple[str, str, str, str]] = {
     "health": ("ui.bib_health", "HealthView", "库健康", "write"),
     "settings": ("ui.bib_prefs", "BibPrefsView", "设置", "write"),
 }
+
+#: 批 116 BIB-NAV2：页内二级导航条高度（单行 36）与两行断点（设计宽 <1100）。
+BIB_NAV_H = 36
+BIB_NAV_NARROW_BELOW = 1100
 
 #: 写库提示的 tooltip 全文（与 pages.BIB_WRITE_RULES 同口径；宿主先于 pages 导入，
 #: 不能反向 import，故这里保留一份说明文本，改口径时两处一起改）。
@@ -173,6 +178,8 @@ class BibHost(BasePage):
         self._stats_loading = False
         self._root: ft.Control | None = None
         self._width_bucket: int | None = None
+        self._nav_narrow_cache: bool | None = None
+        self._bib_inpage_marked = False
         self._normalize_adapter = _NormalizeCompat(self)
 
     # ── 兼容旧属性（main.py / 旧测试）──────────────────────────────────
@@ -454,6 +461,21 @@ class BibHost(BasePage):
         self._render()
         return self._root
 
+    def theme_roots(self) -> list:
+        """宿主根 + 10 个懒加载视图已 build 的 root（含当前未挂载的缓存树）。
+
+        批 116：主题热切换只染挂载树会漏掉 `_views` 里已存在的视图；切完后
+        再导航到「编辑/入藏/查重合并/字段归位」就会看到旧皮肤。
+        """
+        roots = super().theme_roots()
+        seen = {id(root) for root in roots}
+        for view in self._views.values():
+            root = getattr(view, "_root", None)
+            if root is not None and id(root) not in seen:
+                roots.append(root)
+                seen.add(id(root))
+        return roots
+
     def _sync_header(self) -> None:
         """维护旧页头状态（crumb/子标题/notice/状态）；不再挂到控件树。"""
         t = self.t
@@ -479,6 +501,215 @@ class BibHost(BasePage):
     def _render_nav(self) -> None:
         """兼容旧名：导航已在侧栏，实际只刷新旧页头状态。"""
         self._sync_header()
+
+    # ── 页内二级导航（批 116 BIB-NAV2，方案 A）──────────────────────────
+    def _nav_narrow(self) -> bool:
+        """设计宽 < 1100 时两行分组换行；0（未挂载）按宽窗单行。"""
+        width = self._logical_width()
+        return 0 < width < BIB_NAV_NARROW_BELOW
+
+    def _bib_nav_chip(self, label: str, view_key: str, active: bool,
+                      tooltip: str = "") -> ft.Container:
+        """28 高 chip：选中用侧栏同款 nav_sel 灰 tint，未选中 hover surface_2。
+
+        批 116 BIB-NAV3：组标题不再可见；每组第一个 chip 用 tooltip 承载组名
+        （查阅/采录/治理），不新增任何可见文字。
+        """
+        t = self.t
+        p = t.palette
+        chip = ft.Container(
+            height=t.px(28),
+            border_radius=t.radius("control"),
+            padding=ft.Padding(left=t.px(10), top=0, right=t.px(10), bottom=0),
+            alignment=ft.Alignment.CENTER,
+            bgcolor=p.nav_sel if active else None,
+            tooltip=tooltip or None,
+            on_click=lambda e, key=view_key: self.navigate_route(f"bib:{key}"),
+            content=C.text(label, t, "small",
+                           p.text if active else p.text_muted,
+                           weight="semibold" if active else "medium"),
+        )
+
+        def _hover(e, box=chip, selected=active) -> None:
+            on = e.data in (True, "true", "True")
+            box.bgcolor = t.palette.nav_sel if selected else (
+                t.palette.surface_2 if on else None)
+            try:
+                box.update()
+            except Exception:  # noqa: BLE001 —— 未挂载时只改属性
+                pass
+
+        chip.on_hover = _hover
+        chip._bib_nav_chip = True
+        chip._bib_nav_key = view_key
+        chip._bib_nav_active = active
+        return chip
+
+    def _bib_nav_divider(self) -> ft.Container:
+        """组间发丝线：1×16、border 色，左右各 10 空隙（21 宽容器居中）。
+
+        批 116 BIB-NAV3：3 个可见组标题（查阅/采录/治理）改为细竖线，
+        组内 chip 仍 4 间距；外行 spacing=0，避免把 10 空隙叠加成 18。
+        """
+        t = self.t
+        divider = ft.Container(
+            width=t.px(21),
+            height=t.px(BIB_NAV_H),
+            alignment=ft.Alignment.CENTER,
+            content=ft.Container(width=t.px(1), height=t.px(16),
+                                 bgcolor=t.palette.border),
+        )
+        divider._bib_nav_divider = True
+        return divider
+
+    def _bib_nav_row(self, groups: list[dict], active: str) -> ft.Container:
+        """一组行（36 高）：组内 chip 间距 4，组间 1×16 发丝线（左右各 10）。"""
+        t = self.t
+        controls: list = []
+        for index, group in enumerate(groups):
+            if index:
+                controls.append(self._bib_nav_divider())
+            chips = [
+                self._bib_nav_chip(
+                    str(view["label"]), str(view["key"]),
+                    str(view["key"]) == active,
+                    tooltip=str(group["label"]) if position == 0 else "")
+                for position, view in enumerate(group["views"])
+            ]
+            controls.append(ft.Row(spacing=t.px(4),
+                                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                   controls=chips))
+        return ft.Container(
+            height=t.px(BIB_NAV_H),
+            alignment=ft.Alignment.CENTER_LEFT,
+            content=ft.Row(spacing=0,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=controls),
+        )
+
+    def _bib_nav_control(self) -> ft.Container:
+        """Bib 白面板顶部的 3 组 9 chip 导航（无可见组标题）；settings 无选中。"""
+        t = self.t
+        groups = IA.group_views("bib")
+        content_keys = {str(view["key"]) for group in groups for view in group["views"]}
+        active = str(getattr(self, "view", "") or "")
+        if active not in content_keys:
+            active = ""
+        narrow = self._nav_narrow()
+        if narrow:
+            split = next((index for index, group in enumerate(groups)
+                          if group["key"] == "treat"), len(groups))
+            row_groups = [groups[:split], groups[split:]]
+            body: ft.Control = ft.Column(spacing=0, controls=[
+                self._bib_nav_row(row_groups[0], active),
+                self._bib_nav_row(row_groups[1], active),
+            ])
+            height = BIB_NAV_H * 2
+        else:
+            row_groups = [groups]
+            body = self._bib_nav_row(groups, active)
+            height = BIB_NAV_H
+        # 行内相邻组计数：1000 两行时 read|intake 在行 1，intake|treat
+        # 落在行间（不画多余分隔符），故实际渲染为 1。
+        divider_count = sum(max(0, len(row) - 1) for row in row_groups)
+        nav = ft.Container(
+            height=t.px(height),
+            padding=ft.Padding(left=t.px(24), top=0, right=t.px(24), bottom=0),
+            bgcolor=t.palette.surface,
+            border=ft.Border(bottom=ft.BorderSide(width=t.px(1),
+                                                  color=t.palette.border)),
+            content=body,
+        )
+        nav._bib_inpage_nav = True
+        nav._bib_nav_narrow = narrow
+        nav._bib_nav_active = active
+        nav._bib_nav_keys = [str(view["key"]) for group in groups
+                             for view in group["views"]]
+        self._nav_narrow_cache = narrow
+        # 证据 marker：组 / 空 captions / 渲染出的分隔符数 / 9 chip / 选中 / 断点。
+        # 首次 build 时窗口可能还是 800 宽（随后 resize 到目标宽），故按
+        # (narrow, dividers, active) 去重补记一次最终布局，避免宽窗日志误报两行。
+        marker = (narrow, divider_count, active)
+        if getattr(self, "_bib_inpage_marker_state", None) != marker:
+            self._bib_inpage_marker_state = marker
+            self._bib_inpage_marked = True
+            self.mark("bib_inpage_nav",
+                      groups=[str(group["key"]) for group in groups],
+                      captions=[],
+                      dividers=divider_count,
+                      chips=[str(view["key"]) for group in groups
+                             for view in group["views"]],
+                      active=active, narrow=narrow)
+        return nav
+
+    def _shell_panel(self, content):
+        """找到内容里的 page_shell 面板。
+
+        写库页（edit/dupes/fieldfix/import/settings）的 `build()` 先包一层
+        `_root = Container(content=self._body())`，而 `_body()` 才返回 page_shell；
+        概览/查库等直接返回 page_shell。两种都要挂导航，故向下最多解 3 层容器。
+        """
+        node = content
+        for _ in range(3):
+            if getattr(node, "_bib_shell", False):
+                return node
+            node = getattr(node, "content", None)
+            if not isinstance(node, ft.Control):
+                return None
+        return None
+
+    def _attach_nav(self, content) -> object:
+        """把导航条插进 page_shell 的白色面板（页头之上）；非 shell 内容不动。"""
+        panel = self._shell_panel(content)
+        if panel is None:
+            return content
+        inner = getattr(panel, "content", None)
+        if not isinstance(inner, ft.Column) or not inner.controls:
+            return content
+        nav = self._bib_nav_control()
+        inner.controls.insert(0, nav)
+        panel._bib_inpage_nav = nav
+        return content
+
+    def _replant_nav(self) -> None:
+        """视图异步重绘后把导航条重新插回 page_shell。
+
+        批 116 验收回归（BIB-NAV3 之后）：edit/dupes/fieldfix/import/prefs 的
+        `_render()` 会用 `self._root.content = self._body()` 整块替换内容，
+        连 `_attach_nav` 插进旧 page_shell 的导航一起丢掉（navigate("bib:settings")
+        后导航条消失，深链反而正常）。视图重绘后回调本方法做幂等补插；
+        首个子控件已是导航时直接返回，不重建、不触发 update。
+        """
+        content = getattr(self.view_slot, "content", None)
+        panel = self._shell_panel(content)
+        if panel is None:
+            return
+        inner = getattr(panel, "content", None)
+        if not isinstance(inner, ft.Column) or not inner.controls:
+            return
+        if getattr(inner.controls[0], "_bib_inpage_nav", False):
+            return
+        nav = self._bib_nav_control()
+        inner.controls.insert(0, nav)
+        panel._bib_inpage_nav = nav
+
+    def _refresh_nav(self) -> None:
+        """断点跨过 1100 时原位替换导航条，不重建整页（保输入/滚动状态）。"""
+        panel = self._shell_panel(getattr(self.view_slot, "content", None))
+        if panel is None:
+            return
+        inner = getattr(panel, "content", None)
+        if not isinstance(inner, ft.Column) or not inner.controls:
+            return
+        if not getattr(inner.controls[0], "_bib_inpage_nav", False):
+            return
+        nav = self._bib_nav_control()
+        inner.controls[0] = nav
+        panel._bib_inpage_nav = nav
+        try:
+            panel.update()
+        except Exception:  # noqa: BLE001 —— 未挂载
+            pass
 
     def _notice_control(self):
         spec = self.VIEW_NOTICES.get(self.view)
@@ -531,6 +762,7 @@ class BibHost(BasePage):
                       where=[f"{f.name}:{f.lineno}" for f in frames][-4:])
             SLOG.log("bib_render_error", view=view, error=error)
             content = self._fallback(view)
+        content = self._attach_nav(content)
         self._wire_gear(content)
         self.view_slot.content = content
         try:
@@ -584,6 +816,10 @@ class BibHost(BasePage):
         return 2
 
     def on_resize(self) -> None:
+        # 批 116 BIB-NAV2：先按 1100 断点换行/并回导航条，再让视图自己重排。
+        narrow = self._nav_narrow()
+        if narrow != getattr(self, "_nav_narrow_cache", None):
+            self._refresh_nav()
         instance = self._views.get(self.view)
         handler = getattr(instance, "on_resize", None)
         if callable(handler):
