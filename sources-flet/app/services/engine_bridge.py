@@ -667,11 +667,13 @@ def trash_info(trash_dir: str) -> dict:
 
 
 def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
-                   restore: str = "") -> EngineCall:
+                   all_reports: bool = False, restore: str = "") -> EngineCall:
     # S2/D-49：aux 档固定 --trash（移入 <期目录>/.toolbox-trash，可 --restore 恢复）；
     # delivery/workspace 引擎自身即移入回收站。外壳不暴露 --delete / --empty-trash。
     # B-117：一律带 `--json`——预览/撤销要 read_json_command 解析结果；真实清理同样带，
     # 引擎把人类日志改走 stderr（run_call 仍合并进日志），stdout 只留一个 JSON。
+    # B-121 B-357：`--mode tocwork` 清理生成中间件与旧检查报告；`--all-reports` 连最新一组
+    # 《信息检查》报告一起清（默认保留最新一组，仅 tocwork 模式可用）。
     if restore:
         return _call("cleantemp.py",
                      ["--folder", folder, "--restore", restore, "--json"], "撤销清理")
@@ -679,10 +681,13 @@ def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
     if mode and mode != "aux":
         args.extend(["--mode", mode])
     _append_flag(args, "--dry-run", dry_run)
+    if mode == "tocwork" and all_reports:
+        args.append("--all-reports")
     if not mode or mode == "aux":
         args.append("--trash")
     args.append("--json")
-    return _call("cleantemp.py", args, "删除临时文件")
+    label = "清理生成中间件" if mode == "tocwork" else "删除临时文件"
+    return _call("cleantemp.py", args, label)
 
 
 def dirpush_call(

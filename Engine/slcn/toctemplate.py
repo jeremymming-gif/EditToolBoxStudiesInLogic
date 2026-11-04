@@ -427,9 +427,9 @@ def canonicalize_head(head: str, file_name: str, *, is_column: bool = False) -> 
 def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]:
     r"""生成本期栏目块：中文沿用上一期形态（含间距/主持人），只替换名称与主持人。
 
-    英文表头**数据驱动**（B-226 P1 补充，用户 2026-10-25 复核口径）：
+    英文表头**数据驱动**（B-121，用户 2026-11-04 追加口径）：
       · 填了 `columnNameEN` ⇒ 生成 `Column: <英文名>`（间距沿用模板里的 `\\[..]`，没有则 3mm）；
-      · `columnNameEN` 为空 ⇒ **不生成英文表头行**（不拿中文名回退），
+      · `columnNameEN` 为空 ⇒ 回退中文栏目名生成 `Column: <columnName>`（不再整行丢弃），
         条目仍按 `columnArticles` 带 `~~~~` 前缀。
     为什么不做逐期特例：人工 89 期英文写的是一行 `Special Issue: Preference Logic`（不是 `Column:`），
     这是同事的手工改法，进 P2「允许清单」逐条确认，不在代码里复刻（架构护栏 2：「禁止按期硬编码」）。
@@ -438,7 +438,9 @@ def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]
         return []
 
     if not is_chinese:
-        name_en = (settings.columnNameEN or "").strip()
+        # B-121：英文名没填时回退中文栏目名（`Column: <columnNameEN/columnName>`）
+        name_en = ((settings.columnNameEN or "").strip()
+                   or (settings.columnName or "").strip())
         if not name_en:
             return []
         spacing = next((ln for ln in shape if _SPACING_RE.match(ln)), None) if shape else None

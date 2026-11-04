@@ -678,9 +678,9 @@ class BibPrefsView:
     # ── 04 关于 ──────────────────────────────────────────────────────
     def _footer(self) -> ft.Control:
         t = self.t
-        engine = _text((self.stats or {}).get("engine_version")) or "1.6.1"
+        engine = _text((self.stats or {}).get("engine_version")) or "1.7.0"
         return ft.Container(content=C.text(
-            f"推送/回退只在此页 · v1.6.1 · settings.json", t, "caption", t.palette.text_faint,
+            f"推送/回退只在此页 · v1.7.0 · settings.json", t, "caption", t.palette.text_faint,
             max_lines=1))
 
     # ── 渲染 ─────────────────────────────────────────────────────────

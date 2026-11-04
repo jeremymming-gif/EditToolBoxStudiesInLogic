@@ -432,9 +432,11 @@ check("(e) 报告不在期目录里 → 退出码 1（不是 0）", r_no.returnc
 check("(e) 明说「无法确定总第 N 期」",
       "无法确定" in r_no.stdout and "总第" in r_no.stdout and "?" in r_no.stdout,
       r_no.stdout.strip()[-120:])
-check("(e) 两份目录仍已生成（产物可用，只是需人工补期号）",
-      len([f for f in os.listdir(no_issue_dir)
-           if f.startswith(("contents_", "Chinese Content_"))]) == 2,
+check("(e) 两份目录仍已生成（落 .toolbox-tmp，产物可用，只是需人工补期号）",
+      len([f for f in os.listdir(os.path.join(no_issue_dir, ".toolbox-tmp"))
+           if f.startswith(("contents_", "Chinese Content_"))]) == 2
+      and not any(f.startswith(("contents_", "Chinese Content_"))
+                  for f in os.listdir(no_issue_dir)),
       repr(sorted(os.listdir(no_issue_dir))))
 check("(e) 契约行仍是 stdout 最后一行（外壳靠它拿产物）",
       bool(_no_out) and _no_out[-1].startswith("完成。"), _no_out[-1] if _no_out else "<empty>")
@@ -1041,9 +1043,11 @@ _s_en_empty = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", co
                               columnArticles=["Ning_Wang"])
 _s_en_full = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnNameEN="Preference Logic",
                              columnHost="某人", columnArticles=["Ning_Wang"])
-check("(l1) 英文名空 ⇒ 英文栏目块为空（**不拿中文名回退**、不生成 `Column: 偏好逻辑`）",
-      TT.make_column_block(_s_en_empty, _en_shape, False) == []
-      and TT.make_column_block(_s_en_empty, [], False) == [])
+check("(l1) 英文名空 ⇒ 回退中文栏目名生成 `Column: 偏好逻辑`（B-121 口径）",
+      TT.make_column_block(_s_en_empty, _en_shape, False)
+      == ["\\large  \\bf{Column: 偏好逻辑} ", "\\\\[6.2mm]"]
+      and TT.make_column_block(_s_en_empty, [], False)
+      == ["\\large  \\bf{Column: 偏好逻辑} ", "\\\\[3mm]"])
 check("(l2) 英文名非空 ⇒ 生成 `Column: <EN>` + 沿用模板间距",
       TT.make_column_block(_s_en_full, _en_shape, False)
       == ["\\large  \\bf{Column: Preference Logic} ", "\\\\[6.2mm]"])
@@ -1053,16 +1057,15 @@ check("(l3) 反例：英文名非空但模板无栏目块 ⇒ 用默认间距 3m
 check("(l4) 中文栏目块不受英文名缺失影响（仍按上一期形态替换名称/主持人）",
       TT.make_column_block(_s_en_empty, _a_zh_shape, True)
       == ["{\\large \\bf{专辑：偏好逻辑}}", "&\\textit{\\large 主持人：某人}", "\\\\[3.2 ex]"])
-# 端到端：EN 名空时生成的英文目录**没有 Column 行**，但栏目条目仍带 `~~~~`
+# 端到端：EN 名空时 Column 行用中文栏目名回退，栏目条目仍带 `~~~~`
 _l_root = tempfile.mkdtemp(prefix="slcn_col_en_")
 make_issue(_l_root)
 _l_report = make_report(_l_root)
 _l_outs = TOC.run(_l_report, _s_en_empty, log=lambda _s: None, stamp="COL")
 _l_en = open(_l_outs[0], encoding="utf-8").read()
 _l_zh = open(_l_outs[1], encoding="utf-8").read()
-check("(l5) 端到端：英文名空 ⇒ 英文 tex 无 `Column:` 行 / 无中文栏目名，条目仍带 `~~~~`",
-      "Column:" not in _l_en and "专栏：" not in _l_en and "偏好逻辑" not in _l_en
-      and "~~~~ " in _l_en,
+check("(l5) 端到端：英文名空 ⇒ 英文 tex 生成 `Column: 偏好逻辑`（中文名回退），条目仍带 `~~~~`",
+      "Column: 偏好逻辑" in _l_en and "~~~~ " in _l_en,
       repr([ln for ln in _l_en.split("\n") if "~~~~" in ln][:1]))
 check("(l6) 端到端反例：中文 tex 仍生成「专辑：偏好逻辑」表头",
       "专辑：偏好逻辑" in _l_zh)

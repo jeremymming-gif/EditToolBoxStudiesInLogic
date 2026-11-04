@@ -843,3 +843,143 @@ def empty_trash(
     except OSError:
         pass  # 权限/竞态：目录留着就行，不向编辑报错
     return n
+
+
+# ── B-121 B2/B3：生成中间件与旧检查报告（默认移回收站，可 restore）────────
+#: 生成目录的中间件目录（与 `slcn/toc.py` 的 `TOC_WORK_DIR` 同一口径；两边独立常量
+#: 是为了 clean.py 不反向依赖 toc.py，清理器能单独跑）。
+TOC_WORK_DIR = ".toolbox-tmp"
+
+#: `信息检查<stamp>.txt/.json/_摘要.md`：一组报告三件套共用同一个 stamp。
+_INFO_CHECK_RE = re.compile(
+    r"^信息检查(\d{4}_\d{2}_\d{2}_\d{2}_\d{2}_\d{2})(?:_摘要)?\.(?:txt|json|md)$")
+
+#: 期目录根的生成中间 tex（zh `Chinese Content_<stamp>.tex` / en `contents_<stamp>.tex`）；
+#: 兼容 atomic_write 的 `.bak` 备份。
+_TIMESTAMP_TEX_RE = re.compile(
+    r"^(?:Chinese Content|contents)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.tex(?:\.bak)?$")
+
+#: 生成目录结果 JSON（壳/引擎都会写；旧文件散落在期目录根）。
+_TOC_RESULT_NAMES = ("目录结果.json",)
+
+
+def toc_work_candidates(root: str, *, keep_reports: int = 1,
+                        all_reports: bool = False) -> list[tuple[str, str]]:
+    """列出「生成中间件与旧检查报告」类目待清理的文件。
+
+    返回 `[(相对路径, 类别)]`，类别取 `toc-temp`（隐藏工作目录/根时间戳 tex）、
+    `toc-result`（目录结果 JSON）、`info-report`（旧信息检查报告）。
+
+    · `.toolbox-tmp/` 内容全部算中间件；
+    · 期目录根的时间戳 zh/en tex（B1 之前的旧散落文件）算中间件；
+    · `目录结果.json` 算生成结果残留；
+    · `信息检查*` 按 stamp 分组：默认**保留最新一组**（txt/json/_摘要 同 stamp 一起留），
+      `all_reports=True` 时连最新一组也清（用户显式选择全清）。
+    """
+    if not os.path.isdir(root):
+        return []
+    items: list[tuple[str, str]] = []
+
+    work = os.path.join(root, TOC_WORK_DIR)
+    if os.path.isdir(work):
+        for dirpath, dirnames, filenames in os.walk(work):
+            dirnames[:] = sorted(d for d in dirnames if d != TRASH_DIR)
+            for fname in sorted(filenames):
+                items.append((P.rel(os.path.join(dirpath, fname), root), "toc-temp"))
+
+    for fname in sorted(os.listdir(root)):
+        if _TIMESTAMP_TEX_RE.match(fname):
+            items.append((fname, "toc-temp"))
+        elif fname in _TOC_RESULT_NAMES:
+            items.append((fname, "toc-result"))
+
+    groups: dict[str, list[str]] = {}
+    for fname in sorted(os.listdir(root)):
+        m = _INFO_CHECK_RE.match(fname)
+        if m:
+            groups.setdefault(m.group(1), []).append(fname)
+    stamps = sorted(groups, reverse=True)
+    drop = stamps if all_reports else stamps[max(0, keep_reports):]
+    for stamp in sorted(drop):
+        for fname in sorted(groups[stamp]):
+            items.append((fname, "info-report"))
+    return items
+
+
+def toc_work_clean(
+    root: str,
+    *,
+    keep_reports: int = 1,
+    all_reports: bool = False,
+    log: Callable[[str], None] | None = None,
+    dry_run: bool = False,
+    delete: bool = False,
+    failures: list[tuple[str, str]] | None = None,
+) -> tuple[int, str]:
+    """B-121：清理生成中间件与旧检查报告，返回 `(清理数, 回收目录)`。
+
+    默认**移入** `<root>/.toolbox-trash/<basename>-<stamp>/`（manifest schema=2，
+    可 `restore()` 撤销）；`delete=True` 才永久删。绝不触碰 `000*` 成品、最终
+    `.tex/.pdf/.sty/.bib` 与 `目录设置.json`（候选表只认白名单模式）。
+    """
+    emit = log or (lambda _s: None)
+    fails = failures if failures is not None else []
+    if not os.path.isdir(root):
+        emit(f"路径不是文件夹：{root}")
+        return 0, ""
+    cands = toc_work_candidates(root, keep_reports=keep_reports,
+                                all_reports=all_reports)
+    if not cands:
+        return 0, ""
+
+    stamp = _stamp()
+    trash_root = "" if delete else trash_dir(root, stamp)
+    moved: list[str] = []
+    total_size = 0
+    toc_dir = os.path.join(root, TOC_WORK_DIR)
+    for rel, _kind in cands:
+        full = os.path.join(root, rel)
+        if not os.path.isfile(full):
+            continue
+        try:
+            total_size += os.path.getsize(full)
+        except OSError:
+            pass
+        if dry_run:
+            emit(("Will delete: " if delete else "Will move: ") + rel)
+            moved.append(rel)
+            continue
+        try:
+            if delete:
+                os.remove(full)
+                emit(f"Deleted: {rel}")
+            else:
+                target = os.path.join(trash_root, rel)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.move(full, target)
+                emit(f"Moved: {rel}")
+            moved.append(rel)
+        except OSError as e:
+            emit(f"Error {'deleting' if delete else 'moving'} {rel}: {e}")
+            fails.append((rel, str(e)))
+
+    # 空壳的 .toolbox-tmp 顺手收掉；里面还有东西/权限不允许时静默保留
+    if not dry_run and os.path.isdir(toc_dir):
+        try:
+            if not os.listdir(toc_dir):
+                os.rmdir(toc_dir)
+        except OSError:
+            pass
+
+    if dry_run:
+        emit(f"（预演）将{'删除' if delete else '移入回收目录'} {len(moved)} 个文件，"
+             f"共 {_human_size(total_size)}。")
+        return len(moved), trash_root
+
+    if moved and not delete:
+        _write_manifest(trash_root, root, stamp, "tocwork",
+                        [(rel, "file") for rel in moved])
+        emit(f"已移入回收目录 {len(moved)} 个文件。")
+    elif moved:
+        emit(f"已删除 {len(moved)} 个文件。")
+    return len(moved), trash_root if moved else ""

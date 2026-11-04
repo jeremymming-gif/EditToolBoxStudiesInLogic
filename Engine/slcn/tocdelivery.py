@@ -13,8 +13,9 @@ r"""目录交付：**落位 + 编译 + 单页适配 + 字体前置检查**的唯
 
   ① `find_toc_dir` / `ensure_toc_dir`：找 `000*` 目录；**缺了自动创建** `000 Table of Contents`
      （2026-10-25 用户拍板：本期出刊不再依赖该页前置步骤，见 B-227）；
-  ② `place_tex`：期目录根下最新的 `Chinese Content_<时间戳>.tex` / `contents_<时间戳>.tex`
-     复制为 `000*/Chinese Content.tex` / `contents.tex`（覆盖旧成品，根下的时间戳 tex 留着给下一期继承）；
+  ② `place_tex`：取期目录 `.toolbox-tmp/` 下最新的 `Chinese Content_<时间戳>.tex` /
+     `contents_<时间戳>.tex`（没有时回退期目录根的旧散落文件）复制为
+     `000*/Chinese Content.tex` / `contents.tex`（覆盖旧成品；中间 tex 留在隐藏目录）；
   ③ `check_windows_fonts`：编译前用最小 ctexart + `fontset=windows` 探针检查 SimSun/SimHei/KaiTi
      可用（**绝不静默换字体**；结果在进程内缓存，一次交付只探一次）；
   ④ `compile_pdfs`：`xelatex ×2`（复用 `compileall.compile_tex_xelatex`，延迟 import）；
@@ -42,6 +43,11 @@ from . import toctemplate as _tt
 
 #: 目录成品固定名：`(语言键, 文件主干)`。顺序即编译/合并顺序（先中文、后英文）。
 TEX_STEMS = (("zh", "Chinese Content"), ("en", "contents"))
+
+#: 生成目录的隐藏工作目录（B-121）：中间 tex 先落这里，期目录根不再散落。
+#: 与 `slcn.toc.TOC_WORK_DIR` 同值（不 import 该模块以免拉入 infocheck/docx 重依赖）；
+#: 双源一致性由 `tests/test_b121_toc_workdir.py` 守卫。
+_TOC_WORK_DIR = ".toolbox-tmp"
 
 #: 日志里 xelatex 的页数行：`Output written on contents.pdf (2 pages).`
 _PAGES_RE = re.compile(r"Output written on .*?\((\d+)\s+pages?\)")
@@ -127,11 +133,17 @@ def ensure_toc_dir(root: str) -> str:
 # ── ② 落位 ───────────────────────────────────────────────────────────────
 
 def newest_timestamped_tex(root: str, stem: str) -> str:
-    """期目录根下最新的 `<stem>_<时间戳>.tex`；没有返回空串。"""
-    cands = glob.glob(os.path.join(root, f"{stem}_*.tex"))
-    if not cands:
-        return ""
-    return max(cands, key=lambda p: (os.path.getmtime(p), p))
+    """期目录里最新的 `<stem>_<时间戳>.tex`；没有返回空串。
+
+    B-121 起中间 tex 落在 `<期目录>/.toolbox-tmp/`，**优先**取那里的最新一份；
+    为兼容旧版本散落在期目录根的 `<stem>_<时间戳>.tex`，隐藏目录为空时回退根目录。
+    两处都有时取隐藏目录（新链路）——不会被遗留旧文件“抢”回落位源。
+    """
+    for folder in (os.path.join(root, _TOC_WORK_DIR), root):
+        cands = glob.glob(os.path.join(folder, f"{stem}_*.tex"))
+        if cands:
+            return max(cands, key=lambda p: (os.path.getmtime(p), p))
+    return ""
 
 
 def place_tex(root: str, toc_dir: str,
@@ -146,7 +158,8 @@ def place_tex(root: str, toc_dir: str,
         src = newest_timestamped_tex(root, stem)
         if not src:
             raise DeliveryError(
-                f"期目录根下没有 `{stem}_<时间戳>.tex` —— 请先生成目录（toc.py / 向导第 2 步）")
+                f"期目录下没有 `{stem}_<时间戳>.tex`（`.toolbox-tmp/` 与期目录根都没有）"
+                f" —— 请先生成目录（toc.py / 向导第 2 步）")
         dst = os.path.join(toc_dir, f"{stem}.tex")
         try:
             shutil.copyfile(src, dst)

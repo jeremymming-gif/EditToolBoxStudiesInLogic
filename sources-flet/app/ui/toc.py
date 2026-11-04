@@ -15,8 +15,61 @@ from services import engine_bridge as EB
 from services import toc_settings as TS
 from ui import components as C
 
-PREVIEW_HINT = "自动取最新检查报告；栏目表可编辑，再保存到 目录设置.json。"
+PREVIEW_HINT = ("自动取最新检查报告；栏目表自动读入、运行前自动保存，"
+                "预览与生成无需先点「保存栏目表」。")
 TEXT_ONLY_HINT = "只生成 tex，不写入、不编译；取消勾选后会写入并编译。"
+
+#: 批 121（B-355/E 车道接口）：生成中间件统一放期目录的 `.toolbox-tmp/`。
+TMP_DIR = ".toolbox-tmp"
+RESULT_JSON_NAME = "目录结果.json"
+
+
+def result_json_path(report: str) -> str:
+    """结果 JSON 的目标路径：`<报告目录>/.toolbox-tmp/目录结果.json`。
+
+    报告目录为空（测试桩只给相对文件名）时回退旧路径 `目录结果.json`，
+    保持批 120 之前的调用口径。
+    """
+    if not report:
+        return ""
+    report_dir = os.path.dirname(report)
+    if not report_dir:
+        return RESULT_JSON_NAME
+    return os.path.join(report_dir, TMP_DIR, RESULT_JSON_NAME)
+
+
+def legacy_result_json_path(report: str) -> str:
+    """旧版结果 JSON 路径（兼容用户已有文件与旧测试）。"""
+    if not report:
+        return ""
+    return os.path.join(os.path.dirname(report), RESULT_JSON_NAME)
+
+
+def existing_result_json_path(report: str) -> str:
+    """「打开结果 JSON」用：新路径优先，旧路径兜底，都没有则返回新目标路径。"""
+    for path in (result_json_path(report), legacy_result_json_path(report)):
+        if path and os.path.exists(path):
+            return path
+    return result_json_path(report)
+
+
+def ensure_result_dir(report: str) -> str:
+    """生成前创建结果目录（`.toolbox-tmp/`），返回结果 JSON 路径；失败抛 OSError。"""
+    path = result_json_path(report)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return path
+
+
+def read_result(report: str) -> dict:
+    """读结果 JSON：新路径优先，旧路径兜底（返回 {} 表示都没有/读不了）。"""
+    for path in (result_json_path(report), legacy_result_json_path(report)):
+        if path and os.path.exists(path):
+            payload = EB.toc_result(path)
+            if payload:
+                return payload
+    return {}
 
 
 def latest_report(issue: str) -> str:
@@ -146,12 +199,19 @@ class TocPanel:
         # 可加入的篇目：expand 占满表单行，避免固定 300 宽在窄面板里把「加入」挤出画面。
         self.add_box = C.select(self.t, value="", label="可加入的篇目",
                                 options=[], expand=True)
+        # 批 121 A1/A2：自动读入/自动保存的状态。
+        # `_loaded_path` = 已自动读过的设置文件；`_saved_snapshot` = 上次读/写的内容快照；
+        # `_dirty` = 用户是否在面板里改过（只有改过才自动写文件，避免空跑覆盖手改文件）。
+        self._loaded_path = ""
+        self._saved_snapshot = self._snapshot()
+        self._dirty = False
 
     # ── 参数区 ─────────────────────────────────────────────────────────
     def params(self) -> list:
         options = self.app.store.get("options", {}) or {}
-        self.editor_box.controls = self._editor_controls()
         report = self._report()
+        self._auto_load_settings(report)
+        self.editor_box.controls = self._editor_controls()
         if report:
             try:
                 stamp = datetime.datetime.fromtimestamp(
@@ -208,6 +268,7 @@ class TocPanel:
 
     def _set_value(self, key: str, value) -> None:
         self.values[key] = str(value or "").strip()
+        self._mark_dirty()
 
     def _report(self) -> str:
         report = self.page.field("toc_report")
@@ -218,8 +279,8 @@ class TocPanel:
         return report
 
     def _toc_result_path(self) -> str:
-        report = self._report()
-        return os.path.join(os.path.dirname(report), "目录结果.json") if report else ""
+        """「打开结果 JSON」：新路径（.toolbox-tmp）优先，旧路径兜底。"""
+        return existing_result_json_path(self._report())
 
     def _settings_path(self) -> str:
         explicit = self.page.field("toc_settings")
@@ -228,6 +289,81 @@ class TocPanel:
         report = self._report()
         return TS.path_for(os.path.dirname(report)) if report else ""
 
+    # ── 批 121 A1/A2/A4：自动读入、自动保存、负向校验 ───────────────────
+    def _snapshot(self) -> dict:
+        data = dict(self.values)
+        data["columnArticles"] = list(self.selected)
+        return TS.normalize(data)
+
+    def _mark_dirty(self) -> None:
+        self._dirty = True
+
+    def _auto_load_settings(self, report: str) -> None:
+        """A1：选定报告后自动读默认 目录设置.json，回填栏目表。
+
+        只在「生效路径」变化时读一次；用户已改过（`_dirty`）则先自动保存再切换，
+        避免预览/生成/切报告把刚编辑的栏目表冲掉。
+        """
+        path = self._settings_path()
+        if not path or path == self._loaded_path:
+            return
+        if self._dirty:
+            self.sync_settings()
+        data, error = TS.read(path)
+        self._loaded_path = path
+        if error:
+            self._notice(error, "error")
+            self.page.mark("toc_settings_error", path=path, error=error)
+            self._saved_snapshot = self._snapshot()
+            return
+        if not os.path.isfile(path):
+            # 文件还不存在：保留面板里的值，等用户改动后再自动写（不凭空建空文件）。
+            self._saved_snapshot = self._snapshot()
+            return
+        self.values = data
+        self.selected = list(data.get("columnArticles") or [])
+        self._saved_snapshot = self._snapshot()
+        self._dirty = False
+        self.page.mark("toc_settings_loaded", path=path, articles=len(self.selected),
+                       auto=True)
+
+    def sync_settings(self, force: bool = False) -> tuple[str, str]:
+        """A2/A6：把面板的 `values` + `selected` 合并写回生效路径。
+
+        返回 `(path, error)`；`error` 非空表示写失败（调用方必须显式报错并中止）。
+        - 生效路径：显式「目录设置 JSON」优先，否则报告同目录（与引擎默认一致）；
+        - 无改动且文件已存在时不重写，避免每次运行都产生一份 .bak；
+        - 用户没改过且文件不存在时不创建空文件（等首次编辑）。
+        """
+        path = self._settings_path()
+        if not path:
+            return "", "没有保存位置：先选信息检查报告或目录设置 JSON"
+        data = dict(self.values)
+        data["columnArticles"] = list(self.selected)
+        snapshot = TS.normalize(data)
+        if not force and snapshot == self._saved_snapshot:
+            return path, ""
+        ok, message = TS.save(path, data)
+        if not ok:
+            return path, message
+        self._saved_snapshot = snapshot
+        self._dirty = False
+        self.page.mark("toc_settings_saved", path=message, articles=len(self.selected),
+                       kind=str(data.get("columnKind") or ""), auto=not force)
+        return path, ""
+
+    def column_issue(self) -> tuple[bool, str]:
+        """A4 负向校验：返回 `(是否阻止运行, 提示文案)`。"""
+        kind = str(self.values.get("columnKind") or "").strip()
+        name = str(self.values.get("columnName") or "").strip()
+        if kind and not name:
+            return True, (f"已选栏目类型「{kind}」但栏目名称为空：请填写栏目名称，"
+                          "或把类型改成「本期无栏目」。")
+        if not kind and self.selected:
+            return False, ("栏目类型为空，但已勾选篇目：本次按「本期无栏目」生成，"
+                           "勾选不会生效。")
+        return False, ""
+
     # ── 栏目表 ─────────────────────────────────────────────────────────
     def _load_settings(self) -> None:
         path = self._settings_path()
@@ -235,29 +371,27 @@ class TocPanel:
             self._notice("请先选信息检查报告或目录设置文件", "warn")
             return
         data, error = TS.read(path)
+        self._loaded_path = path
         if error:
             self._notice(error, "error")
             self.page.mark("toc_settings_error", path=path, error=error)
             return
         self.values = data
         self.selected = list(data.get("columnArticles") or [])
+        self._saved_snapshot = self._snapshot()
+        self._dirty = False
         self.editor_box.controls = self._editor_controls()
         self._notice(f"已读入：{path}", "info")
         self.page.mark("toc_settings_loaded", path=path, articles=len(self.selected))
         self._safe_update(self.editor_box)
 
     def _save_settings(self) -> None:
-        path = self._settings_path()
-        data = dict(self.values)
-        data["columnArticles"] = list(self.selected)
-        ok, message = TS.save(path, data)
-        if not ok:
-            self._notice(message, "error")
-            self.page.mark("toc_settings_error", path=path, error=message)
+        path, error = self.sync_settings(force=True)
+        if error:
+            self._notice(error, "error")
+            self.page.mark("toc_settings_error", path=path, error=error)
             return
-        self._notice(f"已保存：{message}（原文件已备份）", "success")
-        self.page.mark("toc_settings_saved", path=message, articles=len(self.selected),
-                       kind=data.get("columnKind", ""))
+        self._notice(f"已保存：{path}（原文件已备份）", "success")
 
     def _editor_controls(self) -> list:
         t = self.t
@@ -286,7 +420,7 @@ class TocPanel:
             ]),
         ]
         if not self.selected:
-            rows.append(C.text("栏目篇目：尚未选择。预览后从下拉里加入，或读入已有栏目表。",
+            rows.append(C.text("栏目篇目：尚未选择。从下方「可加入的篇目」加入，或读取已有栏目表。",
                                t, "caption", t.palette.text_faint))
         for index, article in enumerate(self.selected):
             # 用户 m03037：篇目名占满剩余宽度并单行省略——超长篇名不会把 ↑↓/删除 挤出面板。
@@ -313,7 +447,7 @@ class TocPanel:
                 C.form_field(t, "可加入的篇目", self.add_box, expand=True),
                 C.secondary_button("加入栏目", lambda e: self._add(), t), t))
         else:
-            rows.append(C.text("没有可加入的篇目：先点「预览」取篇目清单。", t, "caption",
+            rows.append(C.text("没有可加入的篇目：先生成第 1 步「检查 tex 信息」报告，篇目会自动取最新报告。", t, "caption",
                                t.palette.text_faint))
         return rows
 
@@ -339,17 +473,20 @@ class TocPanel:
         target = index + delta
         if 0 <= target < len(self.selected):
             self.selected[index], self.selected[target] = self.selected[target], self.selected[index]
+            self._mark_dirty()
             self._render_editor()
 
     def _remove(self, index: int) -> None:
         if 0 <= index < len(self.selected):
             self.selected.pop(index)
+            self._mark_dirty()
             self._render_editor()
 
     def _add(self) -> None:
         name = self.add_box.value or ""
         if name and name not in self.selected:
             self.selected.append(name)
+            self._mark_dirty()
             self._render_editor()
 
     def _render_editor(self) -> None:
@@ -364,9 +501,21 @@ class TocPanel:
             self._notice("请先选信息检查报告（可先运行「检查 tex 信息」）", "error")
             self.page.mark("validation_error", step="toc", reason="missing report")
             return
+        blocked, hint = self.column_issue()
+        if blocked:
+            self._notice(hint, "warn")
+            self.page.mark("toc_column_invalid", reason=hint, blocked=True)
+            return
+        if hint:
+            self._notice(hint, "warn")
+        settings_path, save_error = self.sync_settings()
+        if save_error:
+            self._notice(f"栏目表保存失败：{save_error}", "error")
+            self.page.mark("toc_settings_error", path=settings_path, error=save_error)
+            return
         self.info.content = C.text("预览中…", self.t, "small", self.t.palette.text_muted)
         call = EB.toc_call(report=report, template=self.page.field("toc_template"),
-                           settings=self.page.field("toc_settings"), preview=True)
+                           settings=settings_path, preview=True)
         try:
             result = await asyncio.to_thread(EB.read_json_command, call, timeout=180,
                                              notes=self.app.notes_repo)
@@ -413,10 +562,27 @@ class TocPanel:
             self._notice("请先选信息检查报告（可先运行「检查 tex 信息」）", "error")
             self.page.mark("validation_error", step="toc", reason="missing report")
             return
-        result_path = os.path.join(os.path.dirname(report), "目录结果.json")
+        blocked, hint = self.column_issue()
+        if blocked:
+            self._notice(hint, "warn")
+            self.page.mark("toc_column_invalid", reason=hint, blocked=True)
+            return
+        if hint:
+            self._notice(hint, "warn")
+        settings_path, save_error = self.sync_settings()
+        if save_error:
+            self._notice(f"栏目表保存失败：{save_error}", "error")
+            self.page.mark("toc_settings_error", path=settings_path, error=save_error)
+            return
+        try:
+            result_path = ensure_result_dir(report)
+        except OSError as exc:
+            self._notice(f"无法创建结果目录：{exc}", "error")
+            self.page.mark("toc_generated", ok=False, error=str(exc), text_only=self._text_only())
+            return
         text_only = self._text_only()
         call = EB.toc_call(report=report, template=self.page.field("toc_template"),
-                           settings=self.page.field("toc_settings"), text_only=text_only,
+                           settings=settings_path, text_only=text_only,
                            result_json=result_path)
         hint = ("运行中 · 生成 tex（不写入、不编译）" if text_only
                 else "生成并编译中…（首次编译约 1–3 分钟）")
@@ -427,8 +593,9 @@ class TocPanel:
                                              notes=self.app.notes_repo)
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "json": {}}
-        payload = result.get("json") or EB.toc_result(result_path)
-        ok = bool(result.get("ok")) and bool(payload)
+        payload = result.get("json") or read_result(report)
+        # 引擎正式生成只回日志、不打印 JSON；有结果 JSON 就算成功（退出码 1 仅表示需人工核对）。
+        ok = bool(payload)
         rows: list = [C.text(line, self.t, "small") for line in result_lines(payload)]
         warnings = [line for line in result_lines(payload) if line.startswith("注意")]
         if not ok:
@@ -436,6 +603,9 @@ class TocPanel:
                                      self.t, "error"))
         if ok and text_only:
             rows.append(C.notice_bar("仅生成 tex，未写入 000。", self.t, "info"))
+        if ok and result.get("code") not in (0, None):
+            rows.append(C.notice_bar(
+                f"引擎退出码 {result.get('code')}：产物已生成，请人工核对提醒项。", self.t, "warn"))
         shown = {str(path) for _label, path in result_paths(payload)}
         for label, path, inferred in result_outputs(payload, self.page.field("issue_dir")):
             if path in shown:
@@ -458,7 +628,8 @@ class TocPanel:
         self._safe_update(self.feedback)
         if ok:
             self.app.store.set_recent("toc_report", report)
-        self.page.mark("toc_generated", ok=ok, result=result_path, text_only=text_only,
+        self.page.mark("toc_generated", ok=ok, result=result_path,
+                       settings=settings_path, text_only=text_only,
                        warnings=len(warnings),
                        zh_pdf=bool((payload.get("placed") or {}).get("zhPdf")),
                        error=str(result.get("error") or ""))

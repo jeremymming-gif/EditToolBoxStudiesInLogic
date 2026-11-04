@@ -3,7 +3,7 @@
 
     python3 cleantemp.py --folder "<期目录或任意目录>" [--dry-run] [--trash] [--json] [--version]
     python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/时间戳 目录>"
-    python3 cleantemp.py --folder "<目录>" --mode {delivery,workspace} [--dry-run] [--delete]
+    python3 cleantemp.py --folder "<目录>" --mode {delivery,workspace,tocwork} [--dry-run] [--delete]
     python3 cleantemp.py --folder "<期目录>" --empty-trash
 
 两种"真动手"的方式（aux 模式，旧行为）：
@@ -13,6 +13,10 @@
 B-211 起新增两种可撤销模式（默认移入回收站，`--delete` 才永久删）：
   · `--mode delivery`：交付目录收尾（先预检 tex 引用闭包；白名单优先；未识别保留）；
   · `--mode workspace`：工作区旧件（每期 `合并*.pdf` 只留最新；固定交付物永不删）；
+  · `--mode tocwork`（B-121）：生成中间件与旧检查报告 —— `<期目录>/.toolbox-tmp/` 内容、
+    期目录根的时间戳中英目录 tex、`目录结果.json`、旧 `信息检查*`；默认保留最新一组
+    信息检查报告（txt/json/_摘要 同 stamp 一起留），`--all-reports` 才连最新一组全清。
+    与 delivery/workspace 一样默认移入回收站（`--restore` 可撤销），`--delete` 才永久删。
   · `--empty-trash`：清空 `<目录>/.toolbox-trash/` 下的回收目录。
 
 `--json`（批 117）：人类可读日志改走 stderr，stdout 只留**一个** JSON 结果对象（最后一行）。
@@ -79,11 +83,15 @@ def main(argv: list[str] | None = None) -> int:
                          "可用 --restore 撤销")
     ap.add_argument("--restore", metavar="回收目录", default="",
                     help="把某个回收目录里的文件搬回原处（不覆盖已存在的文件；兼容旧 manifest）")
-    ap.add_argument("--mode", choices=("aux", "delivery", "workspace"), default="aux",
+    ap.add_argument("--mode", choices=("aux", "delivery", "workspace", "tocwork"),
+                    default="aux",
                     help="aux=编译中间文件（默认，旧行为）；delivery=交付目录收尾；"
-                         "workspace=工作区旧件（合并 PDF 只留最新）")
+                         "workspace=工作区旧件（合并 PDF 只留最新）；"
+                         "tocwork=生成中间件与旧检查报告（默认保留最新一组报告）")
     ap.add_argument("--delete", action="store_true",
-                    help="delivery/workspace 模式：永久删除（默认移入回收站）")
+                    help="delivery/workspace/tocwork 模式：永久删除（默认移入回收站）")
+    ap.add_argument("--all-reports", action="store_true",
+                    help="tocwork 模式：旧检查报告也全清（默认保留最新一组 txt/json/_摘要）")
     ap.add_argument("--empty-trash", action="store_true",
                     help="清空 <目录>/.toolbox-trash/ 下的所有回收目录")
     ap.add_argument("--json", action="store_true",
@@ -146,7 +154,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.mode != "aux" and args.trash:
-        return _die("--trash 只用于 aux 模式；delivery/workspace 默认就移入回收站（永久删用 --delete）")
+        return _die("--trash 只用于 aux 模式；delivery/workspace/tocwork 默认就移入回收站"
+                    "（永久删用 --delete）")
+    if args.all_reports and args.mode != "tocwork":
+        return _die("--all-reports 只用于 tocwork 模式")
     if args.trash and args.delete:
         return _die("--trash 与 --delete 不能同时用（一个移入回收站、一个永久删）")
 
@@ -163,6 +174,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.mode == "aux":
         return _run_aux(root, args, say=say, log=log, finish=finish)
+
+    if args.mode == "tocwork":
+        say("清理生成中间件与旧检查报告\n")
+        say(f"路径：{root}\n")
+        failures: list[tuple[str, str]] = []
+        n, trash_root = _clean.toc_work_clean(
+            root, all_reports=args.all_reports, log=log,
+            dry_run=args.dry_run, delete=args.delete, failures=failures)
+        if failures:
+            print(f"\n❌ 清理未完成：成功 {n} 项，失败 {len(failures)} 项",
+                  file=sys.stderr)
+            finish(mode=args.mode, count=n, ok=False, trash=trash_root,
+                   error=f"清理未完成：成功 {n} 项，失败 {len(failures)} 项",
+                   failures=failures)
+            return 2
+        say()
+        if args.delete:
+            verb = "将删除" if args.dry_run else "已删除"
+            say(f"完成。{verb} {n} 项（目录：{root}）")
+            finish(mode=args.mode, count=n)
+        else:
+            verb = "将移入回收目录" if args.dry_run else "已移入回收目录"
+            where = trash_root or "（无可清理文件）"
+            say(f"完成。{verb} {n} 项（回收目录：{where}）")
+            finish(mode=args.mode, count=n, trash=trash_root)
+        return 0
 
     failures: list[tuple[str, str]] = []
     if args.mode == "delivery":

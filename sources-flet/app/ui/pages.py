@@ -1241,7 +1241,7 @@ class IssuePage(BasePage):
         {"key": "merge", "title": "合并 PDF", "icon": "PICTURE_AS_PDF",
          "desc": "按篇序合并整期 PDF；可插编委页 / 封底 / 书签。"},
         {"key": "cleantemp", "title": "删除临时文件", "icon": "DELETE_SWEEP_OUTLINED",
-         "desc": "把中间文件移入期目录/.toolbox-trash；可撤销，不永久删除。"},
+         "desc": "把 aux / 日志 / 时间戳 tex / 目录结果 / 旧信息检查移入期目录/.toolbox-trash；可恢复，不永久删除。"},
         {"key": "dirpush", "title": "推送目录摘要", "icon": "IOS_SHARE",
          "desc": "生成《目录摘要》docx 并写入推送根；只预演时不动文件。"},
     ]
@@ -2180,10 +2180,13 @@ class IssuePage(BasePage):
         elif zh_tex:
             actions.append(C.text_button("打开 tex", lambda e: self.app.open_path(zh_tex), t))
         if report := self._latest_report():
-            result_json = os.path.join(os.path.dirname(report), "目录结果.json")
+            from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
+            result_json = TOC.existing_result_json_path(report)
             if os.path.exists(result_json):
                 actions.append(C.text_button("打开结果 JSON",
                                              lambda e: self.app.open_path(result_json), t))
+            else:  # B-121 B-357：可能已被「清理临时文件」移入回收目录
+                lines.append("结果 JSON 不在期目录（可能随临时文件清入回收站）；需要时重新生成。")
             actions.append(C.text_button("复制结果路径",
                                          lambda e: self.app.copy_text(str(placed.get("zhPdf") or placed.get("zhTex") or "")),
                                          t))
@@ -2446,7 +2449,11 @@ class IssuePage(BasePage):
             rows = [C.section_label("清理结果", t), C.hairline(t),
                     C.text(f"预演：{preview.get('count', 0)} 项待清理 · "
                            f"{str(preview.get('ts', ''))[11:16]}", t, "caption",
-                           t.palette.text_muted)]
+                           t.palette.text_muted),
+                    C.text("范围：aux/日志 / .toolbox-tmp 中间件 / 时间戳中英 tex / "
+                           "目录结果 JSON / 旧《信息检查》报告（默认保留最新一组）；"
+                           "可恢复，最终 tex/pdf 与 目录设置.json 不动。", t, "caption",
+                           t.palette.text_faint, max_lines=3)]
             items = [str(x) for x in (preview.get("items") or []) if str(x).strip()]
             if not items:
                 lines = [str(x) for x in (preview.get("lines") or []) if str(x).strip()]
@@ -2870,8 +2877,8 @@ class IssuePage(BasePage):
         report = self.field("toc_report")
         if not report:
             return
-        path = os.path.join(os.path.dirname(report), "目录结果.json")
-        payload = EB.toc_result(path)
+        from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
+        payload = TOC.read_result(report)
         if payload:
             self._toc_payload = payload
 

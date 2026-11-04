@@ -15,6 +15,7 @@ from pathlib import Path
 import flet as ft
 
 from services import engine_bridge as EB
+from services import toc_settings as TS
 from ui import checks as CK
 from ui import components as C
 from ui import dirpush as DIRPUSH
@@ -170,6 +171,18 @@ def _ct_preview(page) -> dict:
     return getattr(page, "_ct_preview", None) or {}
 
 
+def cleantemp_include_tocwork(page) -> bool:
+    """B-121 B-357：清理时是否追加 `--mode tocwork`（默认勾选，保持旧设置兼容）。"""
+    options = page.app.store.get("options", {}) or {}
+    return bool(options.get("cleantemp_tocwork", True))
+
+
+def cleantemp_all_reports(page) -> bool:
+    """旧《信息检查》报告是否连最新一组也清（默认保留，显式勾选才全清）。"""
+    options = page.app.store.get("options", {}) or {}
+    return bool(options.get("cleantemp_all_reports", False))
+
+
 def cleantemp_preview_ok(page, mode: str | None = None) -> bool:
     """有效预演 = 同期目录 + 同档位 + rc0（批 115；切档/换目录/清理成功即失效）。"""
     preview = _ct_preview(page)
@@ -230,17 +243,34 @@ def _cleantemp_params(page) -> list:
     t = page.t
     mode = cleantemp_mode(page)
     rows: list = [
-        C.notice_bar("三档都移入 `<期目录>/.toolbox-trash/<目录名>-<时间戳>/`；可恢复，不永久删除。",
-                     t, "info"),
+        C.notice_bar("三档都移入 `<期目录>/.toolbox-trash/<目录名>-<时间戳>/`，可恢复、不永久删除；"
+                     "最终 tex/pdf 与 目录设置.json 不动。", t, "info"),
         ft.Column(spacing=t.sp("1"), horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
                   controls=[_ct_choice_row(page, key) for key in MODE_KEYS]),
         _ct_preview_note(page),
+        C.option_row("含生成中间件与旧检查报告",
+                     "追加一次 tocwork 清理：.toolbox-tmp/、时间戳中英 tex、目录结果 JSON、"
+                     "旧《信息检查》报告（默认保留最新一组）；移入回收站可恢复", t,
+                     icon="DELETE_SWEEP_OUTLINED", checked=cleantemp_include_tocwork(page),
+                     on_change=lambda e: _set_tocwork(page, e.control.value)),
         C.option_row("只预演（不写入）", "默认开；列出将清理的文件与数量，不动磁盘", t,
                      icon="SCIENCE_OUTLINED", checked=cleantemp_dry_run(page),
                      on_change=lambda e: _set_dry(page, e.control.value)),
         _restore_row(page),
     ]
     return rows
+
+
+def _set_tocwork(page, value) -> None:
+    page.app.store.set("options.cleantemp_tocwork", bool(value))
+    save = getattr(page.app, "save_settings", None)
+    if callable(save):
+        try:
+            save(toast=False)
+        except TypeError:
+            save()
+    page.mark("cleantemp_tocwork", value=bool(value))
+    page._refresh_steps()
 
 
 def _set_dry(page, value) -> None:
@@ -365,9 +395,32 @@ def build_step_call(page, key: str) -> EB.EngineCall:
                 page.set_field("toc_report", latest)
         if not report:
             raise ValueError("请先选择信息检查报告（可先运行「检查 tex 信息」）")
-        result_json = os.path.join(os.path.dirname(report), "目录结果.json")
+        # 批 121 A6：整期装配与面板共用同一份自动保存后的栏目设置。
+        # 面板在场 → 校验 + 自动保存（失败显式中止）；否则按「已保存默认文件 → recent」回退。
+        settings = ""
+        panel = getattr(page, "_toc_panel", None)
+        if panel is not None:
+            blocked, hint = panel.column_issue()
+            if blocked:
+                raise ValueError(hint)
+            path, error = panel.sync_settings()
+            if error:
+                raise ValueError(f"栏目表保存失败：{error}")
+            if path and os.path.isfile(path):
+                settings = path
+        if not settings:
+            saved = TS.path_for(os.path.dirname(report))
+            if os.path.isfile(saved):
+                settings = saved
+        if not settings:
+            settings = _recent(page, "toc_settings")
+        # 批 121 B-355 接口：结果 JSON 落期目录 `.toolbox-tmp/`；建目录失败回退旧路径。
+        try:
+            result_json = TOC.ensure_result_dir(report)
+        except OSError:
+            result_json = TOC.legacy_result_json_path(report)
         return EB.toc_call(report=report, template=_recent(page, "toc_template"),
-                           settings=_recent(page, "toc_settings"),
+                           settings=settings,
                            text_only=bool(_toc_text_only(page)),
                            result_json=result_json)
     if key == "compileall":
@@ -381,8 +434,15 @@ def build_step_call(page, key: str) -> EB.EngineCall:
             back_cover=bool(options.get("merge_back_cover", False)),
         )
     if key == "cleantemp":
-        return EB.cleantemp_call(folder=issue, mode=cleantemp_mode(page),
-                                 dry_run=cleantemp_dry_run(page))
+        mode = cleantemp_mode(page)
+        dry = cleantemp_dry_run(page)
+        call = EB.cleantemp_call(folder=issue, mode=mode, dry_run=dry)
+        if cleantemp_include_tocwork(page) and not dry and mode != "tocwork":
+            # B-121 B-357：同一次确认里串行追加一次 tocwork（同一 .toolbox-trash 可 restore）。
+            call._followup = EB.cleantemp_call(
+                folder=issue, mode="tocwork", dry_run=False,
+                all_reports=cleantemp_all_reports(page))
+        return call
     if key == "dirpush":
         return DIRPUSH.build_call(
             issue=issue, out_root=page.field("dirpush_out"),
@@ -614,8 +674,22 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             _mark_pending(page, results, keys[position + 1:],
                           "cancelled" if cancelled else "skipped")
             break
-        duration = round((time.monotonic() - started) * 1000, 1)
         page.app.finish_run(call, code)
+        followup = getattr(call, "_followup", None)
+        if (followup is not None and code == 0
+                and not getattr(page.app, "cancel_requested", False)):
+            _log_line(page, f"▶ 追加清理：{followup.label or followup.entry}", "dim")
+            page.app.begin_run(followup)
+            try:
+                code = await EB.run_call(
+                    followup, on_line=lambda line: _on_line(page, line),
+                    on_proc=page.app.track_proc, notes=page.app.notes_repo,
+                )
+            except Exception as exc:  # noqa: BLE001
+                code = -1
+                _log_line(page, f"追加清理启动失败：{type(exc).__name__}: {exc}", "error")
+            page.app.finish_run(followup, code)
+        duration = round((time.monotonic() - started) * 1000, 1)
         cancelled = bool(getattr(page.app, "cancel_requested", False))
         if cancelled:
             state = "cancelled"
@@ -773,12 +847,12 @@ def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
             pass
     if key == "toc" and code == 0:
         report = page.field("toc_report")
-        path = os.path.join(os.path.dirname(report), "目录结果.json") if report else ""
-        payload = EB.toc_result(path)
+        payload = TOC.read_result(report) if report else {}
         page.mark("toc_result", ok=bool(payload), pages=(payload.get("pages") or {}),
                   warnings=len(payload.get("warnings") or []))
     elif key == "cleantemp":
-        page.mark("cleantemp_done", code=code, artifact=artifact)
+        page.mark("cleantemp_done", code=code, artifact=artifact,
+                  tocwork=bool(getattr(call, "_followup", None)))
     elif key == "dirpush":
         page.mark("dirpush_done", code=code, artifact=artifact)
 
@@ -962,17 +1036,32 @@ async def _preview_task(page) -> None:
         page.app.toast("请先选择期目录")
         page.mark("validation_error", step="cleantemp", reason="missing issue dir")
         return
-    call = EB.cleantemp_call(folder=issue, mode=cleantemp_mode(page), dry_run=True)
-    try:
-        result = await asyncio.to_thread(EB.read_json_command, call, timeout=300,
-                                         notes=page.app.notes_repo)
-        lines = result.get("lines") or []
-        ok = bool(result.get("ok"))
-        error = str(result.get("error") or "")
-    except Exception as exc:  # noqa: BLE001
-        lines, ok, error = [], False, f"{type(exc).__name__}: {exc}"
+    mode = cleantemp_mode(page)
+    calls: list[tuple[str, EB.EngineCall]] = [
+        (mode, EB.cleantemp_call(folder=issue, mode=mode, dry_run=True))]
+    if cleantemp_include_tocwork(page) and mode != "tocwork":
+        calls.append(("tocwork", EB.cleantemp_call(
+            folder=issue, mode="tocwork", dry_run=True,
+            all_reports=cleantemp_all_reports(page))))
+    lines: list = []
+    ok = True
+    error = ""
+    texts: list = []
+    for call_mode, call in calls:
+        try:
+            result = await asyncio.to_thread(EB.read_json_command, call, timeout=300,
+                                             notes=page.app.notes_repo)
+            part_lines = result.get("lines") or []
+        except Exception as exc:  # noqa: BLE001
+            part_lines, result = [], {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        lines.extend(part_lines)
+        if not result.get("ok"):
+            ok = False
+            error = error or str(result.get("error") or "")
+            continue
+        texts.append(preview_summary(part_lines, call_mode))
     if ok:
-        text = preview_summary(lines, cleantemp_mode(page))
+        text = "\n".join(texts) or preview_summary(lines, mode)
         level = "info"
     else:
         text, level = f"预览失败：{error or '看日志'}（检查引擎与期目录）", "error"

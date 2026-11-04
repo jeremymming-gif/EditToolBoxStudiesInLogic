@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from . import fsutil as _fsutil
 from . import infocheck as _ic          # 复用 extract_title / get_line_num（与 Swift 侧是同一份逻辑）
+from . import paths as _paths
 from . import toctemplate as _tt
 
 #: 目录条目的换行写法（LaTeX 里是 `\\` 两字符）——**表格行结束**。
@@ -48,6 +49,15 @@ _SPACING_PT = 2 * 10.95 + 1.5 * 10.95
 _SPACING_PT_EN = 2 * 10.95
 _PREFIX_PT = 19.56001
 _COLUMN_AUTHOR_PT = 0.26 * _TEXTWIDTH_PT
+
+#: 生成目录的中间件目录（B-121 B1）：时间戳中间 tex 一律落在期目录下这个隐藏目录，
+#: 不再散落到期目录根（用户实测「清理临时文件」清不掉根下时间戳文件）。
+TOC_WORK_DIR = ".toolbox-tmp"
+
+
+def toc_work_dir(report_dir: str) -> str:
+    """返回期目录下的生成中间件目录（绝对路径；**不创建**）。"""
+    return os.path.join(os.path.abspath(report_dir), TOC_WORK_DIR)
 
 
 @dataclass
@@ -692,11 +702,14 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
         count = len(settings.columnArticles)
         if is_chinese:
             log(f"本期栏目：{settings.chinese_column_title}（{count} 篇）")
-        elif (settings.columnNameEN or "").strip():
-            log(f"本期栏目：Column: {settings.columnNameEN.strip()}（{count} 篇）")
         else:
-            log(f"本期栏目：英文栏未填英文名 → 不生成 Column 行"
-                f"（条目仍带 ~~~~ 标记，{count} 篇）")
+            # B-121（用户 2026-11-04 追加）：英文表头 `Column: <columnNameEN/columnName>`；
+            # 没填英文名时回退中文栏目名，不再像旧口径那样静默丢掉整行。
+            if not (settings.columnNameEN or "").strip():
+                log("本期栏目：英文名未填，Column 行回退用中文栏目名")
+            log(f"本期栏目：{settings.english_column_title}（{count} 篇）")
+            if not parts.columnBlock:
+                log("⚠️ 继承模板没有栏目块：已按内置形态生成 Column 行（默认间距 3mm）")
 
     # ---- 正文条目 ----
     parsed: list[tuple[str, TocEntry]] = []
@@ -727,12 +740,17 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
         result += "\n" + "\n".join(column_block) + "\n\n\n%中间主体\n\n"
     result += body + "\n\n" + parts.tail
 
-    out_path = os.path.join(report_dir, f"{base_name}_{date_str}.tex")
+    # B-121 B1：时间戳中间 tex 落在期目录隐藏工作目录，不再散乱到期目录根
+    work_dir = toc_work_dir(report_dir)
+    os.makedirs(work_dir, exist_ok=True)
+    out_path = os.path.join(work_dir, f"{base_name}_{date_str}.tex")
     # 原子写 + 旧版备份（UI 方案第 4 件）：目录 .tex 每期都会覆盖上一版，
     # 同事手工调过的版式万一被盖掉，还能从同目录的 `.bak` 捞回来。
     _fsutil.atomic_write(out_path, result, newline="", log=log)
 
     log(f"{label}目录TeX文件已生成")
+    log(f"中间文件：{_paths.rel(out_path, report_dir)}"
+        "（期目录隐藏工作目录，不散落期目录根）")
     return out_path
 
 
