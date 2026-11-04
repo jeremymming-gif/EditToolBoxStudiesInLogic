@@ -95,9 +95,9 @@ def test_period_calls_argv(engine):
     merge = args_of(EB.merge_call(folder="f", nest_outlines=True, editors_page=True))
     assert set(merge) >= {"--folder", "--nest-outlines", "--editors-page"}
     # 批 109 Wave 0 / S2：清理固定 --trash（可恢复），不存在永久删除参数。
-    assert args_of(EB.cleantemp_call(folder="f")) == ["--folder", "f", "--trash"]
+    assert args_of(EB.cleantemp_call(folder="f")) == ["--folder", "f", "--trash", "--json"]
     assert args_of(EB.cleantemp_call(folder="f", dry_run=True)) == [
-        "--folder", "f", "--dry-run", "--trash"]
+        "--folder", "f", "--dry-run", "--trash", "--json"]
     annual = args_of(EB.dirpush_call(issue="i", annual=True, year="2026", include_issues="2,1"))
     assert "--annual" in annual and "--json" in annual
     assert annual[annual.index("--include-issues") + 1] == "1,2"

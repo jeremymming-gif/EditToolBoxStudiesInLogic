@@ -29,24 +29,20 @@ def test_workbench_shell_regions_and_no_card_glue():
     assert "运行整期" in src and "issue_state" in src
 
 
-def test_narrow_content_gets_horizontal_strip():
+def test_narrow_content_nav_wraps_two_rows():
     page, _root = _build_issue()
-    page.app._design_width = lambda: 1000  # 内容 780 < 880
+    page.app._design_width = lambda: 1000  # <1100 → 两行
     page._refresh_layout()
-    # D1-115-26：窄窗横条只出现一次，由详情页顶部自带（外壳不再重复）。
-    assert page._shell.controls == [page._detail_box]
-    assert page._progress_band().height == page.t.px(54)
-    page.app._design_width = lambda: 1160  # 内容 940 ≥ 880
+    # 批 117：左栏/横条已删除，外壳恒为「导航条 + 正文」。
+    assert page._shell.controls == [page._nav_box, page._content_box]
+    assert page._nav_box.content.height == page.t.px(72)
+    page.app._design_width = lambda: 1160  # ≥1100 → 单行
     page._refresh_layout()
-    row = page._shell.controls[0]
-    assert isinstance(row, ft.Row) and len(row.controls) == 2
-    assert row.controls[0].width == page.t.px(216)
-    assert row.controls[1] is page._detail_box
-    texts = [ctl.value for ctl in _walk(page._rail_box)
+    assert page._nav_box.content.height == page.t.px(36)
+    texts = [ctl.value for ctl in _walk(page._nav_box)
              if isinstance(ctl, ft.Text)]
-    # 批 116 决策（I-2 E′）：6 步折成 4 视图，宽栏分组标题随之改为
-    # 「正文流水线」（4 视图的前 3 个）与「收尾（可选）」（推送）。
-    assert "正文流水线" in texts and "收尾（可选）" in texts
+    assert "正文流水线" not in texts and "收尾（可选）" not in texts
+    assert all(view["title"] in texts for view in page.VIEWS)
 
 
 # ── 2. 运行整期对话框：默认 1–4、05 danger 行、跳过已完成 ──────────────
@@ -96,10 +92,12 @@ def test_keyboard_digit_jumps_and_escape_stops():
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
     page.activate("infocheck")
+    # 批 117：⌘3 = 「清理临时文件」功能页（不再是第 3 个 step）。
     page._on_key(SimpleNamespace(key="3", ctrl=True, meta=False))
-    assert page.selected == "compileall"
+    assert page.selected == "cleantemp"
+    page.activate("infocheck")
     page._on_key(SimpleNamespace(key="ArrowDown", ctrl=False, meta=False))
-    assert page.selected == "merge"
+    assert page.selected == "toc"
 
     shown: list = []
     page.app.page.show_dialog = lambda dialog: shown.append(dialog)

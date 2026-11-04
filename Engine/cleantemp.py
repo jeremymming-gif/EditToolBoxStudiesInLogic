@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """删除编译临时文件（对应 mac 版的「删除临时文件」，第 91 条搬进引擎）。
 
-    python3 cleantemp.py --folder "<期目录或任意目录>" [--dry-run] [--trash] [--version]
+    python3 cleantemp.py --folder "<期目录或任意目录>" [--dry-run] [--trash] [--json] [--version]
     python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/时间戳 目录>"
     python3 cleantemp.py --folder "<目录>" --mode {delivery,workspace} [--dry-run] [--delete]
     python3 cleantemp.py --folder "<期目录>" --empty-trash
@@ -15,6 +15,9 @@ B-211 起新增两种可撤销模式（默认移入回收站，`--delete` 才永
   · `--mode workspace`：工作区旧件（每期 `合并*.pdf` 只留最新；固定交付物永不删）；
   · `--empty-trash`：清空 `<目录>/.toolbox-trash/` 下的回收目录。
 
+`--json`（批 117）：人类可读日志改走 stderr，stdout 只留**一个** JSON 结果对象（最后一行）。
+结果 schema 见 `docs/ENGINE_API.md`。不传 `--json` 时输出与旧版逐字节一致。
+
 删哪些：`.aux .bbl .bcf .blg .out .run.xml .synctex.gz` 与 macOS 的 `.DS_Store`。
 **不删**：`.tex .pdf .sty .bib .log`（`.log` 是排错用的，故意留着）。
 名单与判据在 `slcn/clean.py`（与 mac 那份 Swift 逐项一致）。
@@ -23,6 +26,7 @@ B-211 起新增两种可撤销模式（默认移入回收站，`--delete` 才永
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 
@@ -35,6 +39,28 @@ from slcn import platform as _plat  # noqa: E402
 def _die(msg: str) -> int:
     print(f"\n❌ {msg}\n", file=sys.stderr)
     return 2
+
+
+# 引擎日志里表示「真搬运」的行前缀；JSON 的 entries 直接从这里取，
+# 避免再写一套清点逻辑（计数与列表同源，不会一个 12 一个 11）。
+_ENTRY_ACTIONS = {
+    "Will move: ": "move",
+    "Moved: ": "move",
+    "Will delete: ": "delete",
+    "Deleted: ": "delete",
+    "Will restore: ": "restore",
+    "Restored: ": "restore",
+}
+
+
+def _collect_entries(lines: list[str]) -> list[dict]:
+    entries: list[dict] = []
+    for line in lines:
+        for prefix, action in _ENTRY_ACTIONS.items():
+            if line.startswith(prefix):
+                entries.append({"path": line[len(prefix):], "action": action})
+                break
+    return entries
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="delivery/workspace 模式：永久删除（默认移入回收站）")
     ap.add_argument("--empty-trash", action="store_true",
                     help="清空 <目录>/.toolbox-trash/ 下的所有回收目录")
+    ap.add_argument("--json", action="store_true",
+                    help="stdout 只输出一个 JSON 结果对象（人类日志改走 stderr）")
     args = ap.parse_args(argv)
 
     root = os.path.abspath(os.path.expanduser(args.folder))
@@ -67,18 +95,54 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n❌ 路径不是文件夹：{root}\n", file=sys.stderr)
         return 2
 
+    # 批 117：`--json` 时人类日志走 stderr，stdout 只留结果 JSON。
+    # `logged` 收集引擎的搬运行，供 entries 使用（与计数同源）。
+    json_mode = bool(args.json)
+    human = sys.stderr if json_mode else sys.stdout
+    logged: list[str] = []
+
+    def say(line: str = "") -> None:
+        print(line, file=human)
+
+    def log(line) -> None:
+        text = str(line)
+        logged.append(text)
+        print(text, file=human)
+
+    def finish(*, mode: str, count: int, ok: bool = True, trash: str = "",
+               restore: str = "", error: str = "",
+               failures: list[tuple[str, str]] | None = None) -> None:
+        if not json_mode:
+            return
+        entries = _collect_entries(logged)
+        print(json.dumps({
+            "ok": ok,
+            "command": "cleantemp",
+            "mode": mode,
+            "dryRun": bool(args.dry_run),
+            "root": root,
+            "count": count,
+            "entryCount": len(entries),
+            "entries": entries,
+            "trashDir": trash,
+            "restoreDir": restore,
+            "failures": [{"path": p, "error": e} for p, e in (failures or [])],
+            "warnings": [],
+            "error": error,
+        }, ensure_ascii=False), file=sys.stdout)
+
     if args.restore:
         trash_root = os.path.abspath(os.path.expanduser(args.restore))
         if not os.path.isdir(trash_root):
             print(f"\n❌ 回收目录不存在：{trash_root}\n", file=sys.stderr)
             return 2
-        print("撤销清理（从回收目录搬回）\n")
-        print(f"路径：{root}\n")
-        n, _files = _clean.restore(root, trash_root, log=lambda s: print(s),
-                                   dry_run=args.dry_run)
-        print()
+        say("撤销清理（从回收目录搬回）\n")
+        say(f"路径：{root}\n")
+        n, _files = _clean.restore(root, trash_root, log=log, dry_run=args.dry_run)
+        say()
         verb = "将恢复" if args.dry_run else "已恢复"
-        print(f"完成。{verb} {n} 个文件（目录：{root}）")
+        say(f"完成。{verb} {n} 个文件（目录：{root}）")
+        finish(mode="restore", count=n, restore=trash_root)
         return 0
 
     if args.mode != "aux" and args.trash:
@@ -87,16 +151,18 @@ def main(argv: list[str] | None = None) -> int:
         return _die("--trash 与 --delete 不能同时用（一个移入回收站、一个永久删）")
 
     if args.empty_trash:
-        print("清空回收站\n")
-        print(f"路径：{root}\n")
-        n = _clean.empty_trash(root, log=lambda s: print(s), dry_run=args.dry_run)
-        print()
+        say("清空回收站\n")
+        say(f"路径：{root}\n")
+        n = _clean.empty_trash(root, log=log, dry_run=args.dry_run)
+        say()
         verb = "将清空" if args.dry_run else "已清空"
-        print(f"完成。{verb}回收站 {n} 个回收目录（目录：{root}）")
+        say(f"完成。{verb}回收站 {n} 个回收目录（目录：{root}）")
+        finish(mode="empty-trash", count=n,
+               trash=os.path.join(root, _clean.TRASH_DIR))
         return 0
 
     if args.mode == "aux":
-        return _run_aux(root, args)
+        return _run_aux(root, args, say=say, log=log, finish=finish)
 
     failures: list[tuple[str, str]] = []
     if args.mode == "delivery":
@@ -110,54 +176,63 @@ def main(argv: list[str] | None = None) -> int:
             for m in missing:
                 print(f"  - {m}", file=sys.stderr)
             print("", file=sys.stderr)
+            finish(mode=args.mode, count=0, ok=False,
+                   error=f"引用缺失 {len(missing)} 项（整体拒绝，未写入任何文件）")
             return 2
-        print("交付目录收尾清理\n")
-        print(f"路径：{root}\n")
+        say("交付目录收尾清理\n")
+        say(f"路径：{root}\n")
         n, trash_root = _clean.delivery_clean(
-            root, log=lambda s: print(s), dry_run=args.dry_run, delete=args.delete,
+            root, log=log, dry_run=args.dry_run, delete=args.delete,
             failures=failures)
     else:
-        print("工作区旧件清理\n")
-        print(f"路径：{root}\n")
+        say("工作区旧件清理\n")
+        say(f"路径：{root}\n")
         n, trash_root = _clean.workspace_clean(
-            root, log=lambda s: print(s), dry_run=args.dry_run, delete=args.delete,
+            root, log=log, dry_run=args.dry_run, delete=args.delete,
             failures=failures)
 
     if failures:
         # 有失败项：不打成功契约行（外壳据此判「已完成」），非零退出码。
         print(f"\n❌ 清理未完成：成功 {n} 项，失败 {len(failures)} 项（失败项见上方）",
               file=sys.stderr)
+        finish(mode=args.mode, count=n, ok=False, trash=trash_root,
+               error=f"清理未完成：成功 {n} 项，失败 {len(failures)} 项",
+               failures=failures)
         return 2
 
-    print()
+    say()
     if args.delete:
         verb = "将删除" if args.dry_run else "已删除"
-        print(f"完成。{verb} {n} 项（目录：{root}）")
+        say(f"完成。{verb} {n} 项（目录：{root}）")
+        finish(mode=args.mode, count=n)
     else:
         verb = "将移入回收目录" if args.dry_run else "已移入回收目录"
         where = trash_root or "（无可清理文件）"
-        print(f"完成。{verb} {n} 项（回收目录：{where}）")
+        say(f"完成。{verb} {n} 项（回收目录：{where}）")
+        finish(mode=args.mode, count=n, trash=trash_root)
     return 0
 
 
-def _run_aux(root: str, args: argparse.Namespace) -> int:
+def _run_aux(root: str, args: argparse.Namespace, *, say, log, finish) -> int:
     """aux 模式：默认路径输出与 B-211 之前**逐字节一致**（旧外壳只认这一段）。"""
-    print("删除临时文件\n")
-    print(f"路径：{root}\n")
+    say("删除临时文件\n")
+    say(f"路径：{root}\n")
     if args.trash:
-        n, trash_root = _clean.trash(root, log=lambda s: print(s), dry_run=args.dry_run)
-        print()
+        n, trash_root = _clean.trash(root, log=log, dry_run=args.dry_run)
+        say()
         # 契约行：外壳靠它拿「移了几个」与「回收目录在哪」（撤销按钮要用）
         verb = "将移入回收目录" if args.dry_run else "已移入回收目录"
-        print(f"完成。{verb} {n} 个临时文件（回收目录：{trash_root or '（无可清理文件）'}）")
+        say(f"完成。{verb} {n} 个临时文件（回收目录：{trash_root or '（无可清理文件）'}）")
+        finish(mode="aux", count=n, trash=trash_root)
         return 0
 
-    n, _files = _clean.clean(root, log=lambda s: print(s), dry_run=args.dry_run)
+    n, _files = _clean.clean(root, log=log, dry_run=args.dry_run)
 
-    print()
+    say()
     # 契约行（`docs/ENGINE_API.md`）：外壳靠它拿「删了几个」
     verb = "将删除" if args.dry_run else "已删除"
-    print(f"完成。{verb} {n} 个临时文件（目录：{root}）")
+    say(f"完成。{verb} {n} 个临时文件（目录：{root}）")
+    finish(mode="aux", count=n)
     return 0
 
 

@@ -223,19 +223,19 @@ def _build_issue():
     return page, root
 
 
-def test_issue_overview_step_row_keeps_title_column_widable():
-    # 批 114：步骤卡列表改为导航子页，父页只留一行式概览（序号/图标/标题/状态/运行）。
-    page, _root = _build_issue()
-    row = page._overview_step_row(0, page.STEPS[0])
-    assert isinstance(row, ft.Container) and isinstance(row.content, ft.Row)
-    title_cols = [c for c in row.content.controls if isinstance(c, ft.Column)]
-    assert title_cols and title_cols[0].expand is True, "标题列必须 expand 吃剩余宽度"
-    texts = [c for c in _walk(title_cols[0]) if isinstance(c, ft.Text)]
-    assert texts[0].max_lines == 1 and texts[0].overflow == ft.TextOverflow.ELLIPSIS
-    assert texts[1].max_lines == 1 and texts[1].overflow == ft.TextOverflow.ELLIPSIS
-    buttons = [c for c in _walk(row) if isinstance(c, ft.OutlinedButton)]
-    labels = [str(getattr(b.content, "value", b.content)) for b in buttons]
-    assert any("运行" in label for label in labels), "概览行也要能直接运行该步"
+def test_issue_empty_state_replaces_overview_step_rows():
+    # 批 117：旧「流水线总览」整页删除，无期目录时详情区只留选择期目录的空态。
+    page, root = _build_issue()
+    assert not hasattr(P.IssuePage, "_build_overview")
+    assert not hasattr(P.IssuePage, "_overview_step_row")
+    texts = [str(ctl.value) for ctl in _walk(root) if isinstance(ctl, ft.Text)]
+    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in texts
+    cta = [ctl for ctl in _walk(root) if isinstance(ctl, ft.FilledButton)
+           and "选择期目录" in str(ctl.content)]
+    assert len(cta) == 1, "空态必须给一个主按钮「选择期目录」"
+    assert page.selected == page.STEPS[0]["key"]
+    assert not [ctl for ctl in _walk(root) if isinstance(ctl, ft.OutlinedButton)
+                and str(ctl.content) == "运行"]
 
 
 # ── 6. 批 112 A-05：设置页缩放滑块量程 = 屏幕钳制后的真实上限 ──────────────

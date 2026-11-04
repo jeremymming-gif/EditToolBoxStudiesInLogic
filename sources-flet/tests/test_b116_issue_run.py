@@ -389,7 +389,7 @@ def test_dirpush_repo_guard_only_when_selected(tmp_path, engine, monkeypatch):
     marker = len(page.page.tasks)
     ASM.run_all(page, ["dirpush"])
     assert len(page.page.tasks) == marker
-    assert page.app.toasts[-1] == "输出根在代码仓内，整期流水线已停止；请改输出根或勾选只预演"
+    assert page.app.toasts[-1] == "输出根在代码仓内，整期运行已停止；请改输出根或勾选只预演"
     assert page.app.marks[-1] == ("validation_error", {"step": "all", "reason": "repo out root"})
 
 

@@ -122,7 +122,7 @@ def nav_entries(nav_tree=()) -> list[SearchEntry]:
 
 
 def command_entries(bib_views=(), issue_steps=()) -> list[SearchEntry]:
-    """常用命令 + 引用库 10 视图 + 整期装配 6 步。"""
+    """常用命令 + 引用库 10 视图 + 整期装配 4 功能页 / 6 个底层操作。"""
     entries = [
         SearchEntry(kind="command", key=cmd_id, label=label, detail=detail,
                     keywords=keywords, action=cmd_id)

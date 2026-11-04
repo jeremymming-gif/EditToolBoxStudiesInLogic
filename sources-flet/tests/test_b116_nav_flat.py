@@ -7,7 +7,7 @@
    改由 Bib 白面板顶部的页内导航承载（见 test_b116_bib_inpage_nav.py）。
 3. 22 条路由与 issue 深链 alias 口径不变。
 4. SinglePage h1 固定「单篇稿件」，convert/proofcheck 改为 28 高页内 chip。
-5. 整期行右侧「完成/6」：有当期目录 + issue_state 才显示，行高仍 28。
+5. 整期行右侧「完成/4」：有当期目录 + issue_state 才显示，行高仍 28。
 6. 主题切换后深色模式开关的 thumb/track 四态颜色跟随新 Tokens（控件原位重建）。
 """
 from __future__ import annotations
@@ -243,7 +243,7 @@ def _issue_data(statuses: dict) -> dict:
     }
 
 
-def test_issue_row_shows_done_over_six_badge_with_state() -> None:
+def test_issue_row_shows_done_over_four_badge_with_state() -> None:
     data = _issue_data({
         "infocheck": {"state": "done"},
         "toc": {"state": "warn"},       # 有警告也算完成
@@ -255,7 +255,7 @@ def test_issue_row_shows_done_over_six_badge_with_state() -> None:
     assert row.height == app.t.px(28), "徽标不得撑高整期行"
     badge = row.content.controls[-1]
     assert isinstance(badge, ft.Text)
-    assert badge.value == "2/6"
+    assert badge.value == "1/4"
     assert badge.size == app.t.font("caption")  # 11px
     assert badge.color == app.t.palette.text_faint
 

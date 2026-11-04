@@ -371,36 +371,45 @@ def test_single_page_activate_switches_flow_with_page_chips() -> None:
     assert "_crumb" not in build_src
 
 
-def test_issue_page_has_overview_and_step_subpages() -> None:
+def test_issue_page_builds_empty_state_or_step_subpage() -> None:
+    # 批 117：旧「流水线总览」删除；build 只挂当前视图（无期目录时 = 空态）。
     build_src = inspect.getsource(P.IssuePage.build)
-    assert "_build_overview()" in build_src
+    assert "_build_overview" not in build_src
+    assert "_build_step_page(landing)" in build_src
     assert "_content_box" in build_src
     step_src = inspect.getsource(P.IssuePage._build_step_page)
-    assert "_progress_band()" in step_src
-    assert "_run_step" not in step_src  # 运行按钮由 _step_run_button 提供
-    band_src = inspect.getsource(P.IssuePage._progress_band)
-    assert "t.px(54)" in band_src
-    # 批 116 决策（I-2 E′）：窄窗横条按 4 个视图分段，不再是 6 个 step。
-    assert "self.VIEWS" in band_src
-    overview_src = inspect.getsource(P.IssuePage._build_overview)
-    assert "self.STEPS" in overview_src
+    assert "_build_empty_detail()" in step_src
+    assert "_build_issue_row()" in step_src
+    assert "_run_step" not in step_src
+    # 批 117：54 高横条/216 左栏删除，导航改为页内 4 chip。
+    assert "_progress_band" not in step_src
+    nav_src = inspect.getsource(P.IssuePage._nav_bar)
+    assert "self.VIEWS" in nav_src
+    assert "_nav_narrow()" in nav_src
+    empty_src = inspect.getsource(P.IssuePage._build_empty_detail)
+    assert "还没有选择期目录" in empty_src and "_browse_issue" in empty_src
+    assert "self.STEPS" not in inspect.getsource(P.IssuePage.build)
 
 
-def test_issue_activate_switches_overview_and_step_pages() -> None:
+def test_issue_activate_switches_overview_alias_to_step_pages() -> None:
     page = object.__new__(P.IssuePage)
     app = FakeApp()
     page.app = app
-    page.selected = "overview"
+    page.selected = ""
     page._content_box = ft.Column()
-    page._overview = ft.Column()
     page._step_pages = []
-    page._build_overview = lambda: page._overview
+    page._default_view = lambda: "infocheck"
     page._build_step_page = lambda key: (page._step_pages.append(key)
                                          or ft.Column([ft.Text(key)]))
     page._crumb = ft.Text("整期装配")
     page._child_title = ft.Text("整期装配")
     page._flow_desc = ft.Text("")
+    page._nav_box = ft.Container()
     page._sync_header = lambda: None
+    page._sync_run_actions = lambda: None
+    page._sync_nav = lambda: None
+    page._set_expanded = lambda key: None
+    page._persist_issue_state = lambda *args, **kwargs: None
     page.refresh_running = lambda: None
     page._safe_update = lambda *controls: None
     page.mark = lambda event, **fields: app.marks.append((event, fields))
@@ -408,9 +417,11 @@ def test_issue_activate_switches_overview_and_step_pages() -> None:
     assert page.selected == "toc"
     assert page._step_pages == ["toc"]
     assert page._content_box.controls[0].controls[0].value == "toc"
+    # `issue:overview` 只保留别名兼容：落到默认首视图，不再有 overview 屏。
     P.IssuePage.activate(page, "overview", source="test")
-    assert page.selected == "overview"
-    assert page._content_box.controls == [page._overview]
+    assert page.selected == "infocheck"
+    assert page._step_pages[-1] == "infocheck"
+    assert page._content_box.controls[0].controls[0].value == "infocheck"
 
 
 def test_bib_page_activate_keeps_group_memory() -> None:

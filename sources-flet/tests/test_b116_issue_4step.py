@@ -69,36 +69,34 @@ def test_issue_routes_still_22_and_six_deep_links():
 
 
 # ── 2. rail：4 行 + 分组标题；窄窗 54 横条 4 段 ────────────────────────
-def test_rail_draws_four_views_with_group_headers():
+def test_nav_chips_draw_four_views_without_group_headers():
+    # 批 117：216 rail 与「正文流水线/收尾（可选）」分组标题整体删除，
+    # 换成与「引用库」同款的页内 4 chip。
     page, _root = _build_issue()
-    texts = _texts(page._rail())
-    assert "正文流水线" in texts and "收尾（可选）" in texts
+    texts = _texts(page._nav_bar())
+    assert "正文流水线" not in texts and "收尾（可选）" not in texts
     for view in page.VIEWS:
         assert str(view["title"]) in texts
-        assert str(view["caption"]) in texts
+        assert str(view["caption"]) not in texts, "chip 只有标题，不再放 caption"
     assert not any(re.fullmatch(r"\d{2}(–\d{2})?", value) for value in texts), \
-        "宽栏不再显示 01–02/03–04/05/06"
-    rows = [ctl for ctl in _walk(page._rail())
-            if isinstance(ctl, ft.Container) and ctl.on_click is not None]
-    assert len(rows) == 4, "宽栏只画 4 个可点视图（不是 6 个 step）"
+        "导航不再显示 01–02/03–04/05/06"
+    chips = [ctl for ctl in _walk(page._nav_bar())
+             if isinstance(ctl, ft.Container) and ctl.on_click is not None]
+    assert len(chips) == 4, "导航只画 4 个可点功能页（不是 6 个 step）"
 
 
-def test_narrow_band_has_four_segments_and_click_switches_view():
+def test_narrow_nav_wraps_two_rows_and_click_switches_view():
     page, _root = _build_issue()
-    page.app._design_width = lambda: 1000  # 内容 780 < 880 → 横条
+    page.set_field("issue_dir", "/tmp/期目录")
+    page.app._design_width = lambda: 1000  # <1100 → 两行
     page._refresh_layout()
-    assert page._shell.controls == [page._detail_box]
-    band = page._progress_band()
-    assert band.height == page.t.px(54)
-    segs = band.content.controls
-    assert len(segs) == len(page.VIEWS) == 4
-    labels = _texts(band)
-    assert labels == [view["short"] for view in page.VIEWS], \
-        "54 横条只显示 4 个短标题，序号已去掉"
-    for view in page.VIEWS:
-        assert view["short"] in labels, "窄窗 4 段都要有短标题"
-    # 点第 2 段 → 进入「编译并合并」视图的首区块（03）。
-    segs[1].on_click(SimpleNamespace())
+    assert page._nav_box.content.height == page.t.px(72)
+    rows = page._nav_box.content.content.controls
+    assert len(rows) == 2 and all(isinstance(row, ft.Container) for row in rows)
+    chips = page._nav_chips
+    assert set(chips) == {"catalog", "produce", "clean", "push"}
+    # 点第 2 个 chip → 进入「编译并合并」的展开区块（默认 03）。
+    chips["produce"].on_click(SimpleNamespace())
     assert page.selected == "compileall"
 
 
@@ -311,9 +309,17 @@ def test_header_run_all_log_dock_and_keyboard_unchanged():
     assert str(page._run_all_btn.content) == "运行整期…"
     assert page._log.dock is True and page.LOG_LIMIT == 2000
     page.activate("infocheck")
-    for index, step in enumerate(page.STEPS, start=1):
+    # 批 117：⌘1–4 切四个功能页（不再对应 6 个 step），⌘5/6 仍落到清理/推送页。
+    for index, view in enumerate(page.VIEWS, start=1):
         page._on_key(SimpleNamespace(key=str(index), ctrl=True, meta=False))
-        assert page.selected == step["key"], f"⌘{index} 仍对应第 {index} 步"
+        assert page._view_of_step(page.selected) == view["key"], \
+            f"⌘{index} 应进「{view['title']}」"
+        assert page.expanded_step(view["key"]) in view["steps"]
+    page._on_key(SimpleNamespace(key="5", ctrl=True, meta=False))
+    assert page.selected == "cleantemp"
+    page._on_key(SimpleNamespace(key="6", ctrl=True, meta=False))
+    assert page.selected == "dirpush"
+    assert page.expanded_step("push") == "dirpush"
 
 
 def test_help_text_describes_four_views_not_six_steps():

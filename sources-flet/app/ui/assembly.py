@@ -64,17 +64,14 @@ def cleantemp_dry_run(page) -> bool:
 
 
 def _toc_text_only(page) -> bool:
-    """「仅生成 tex」开关（批 115 / D1-115-29）：新默认 False。
+    """「仅生成 tex」开关（批 115 / D1-115-29；批 117 改为纯读取）。
 
-    旧 store 缺键（旧默认 true）→ 一次性写 False 并记 `toc_text_only_migrated`，
-    详情页读到迁移标记会显示一句说明；用户显式改过就按用户的来。
+    只读页面 store 的 `options.toc_text_only`：缺键按 False（新默认），已有值原样尊重。
+    **不再写 store / 不再写迁移标记**——读取开关不该悄悄改用户设置；旧 store 里存下的
+    True 也保持原样（批 115 的一次性迁移已把缺键写成 False，不在此重复判断）。
     """
-    options = page.app.store.get("options", {}) or {}
-    if "toc_text_only" in options:
-        return bool(options.get("toc_text_only"))
-    page.app.store.set("options.toc_text_only", False)
-    page.app.store.set("options.toc_text_only_migrated", True)
-    return False
+    value = page.app.store.get("options.toc_text_only", False)
+    return bool(value)
 
 
 CLEANTEMP_MODES = {
@@ -371,7 +368,7 @@ def build_step_call(page, key: str) -> EB.EngineCall:
         result_json = os.path.join(os.path.dirname(report), "目录结果.json")
         return EB.toc_call(report=report, template=_recent(page, "toc_template"),
                            settings=_recent(page, "toc_settings"),
-                           text_only=_toc_text_only(page),
+                           text_only=bool(_toc_text_only(page)),
                            result_json=result_json)
     if key == "compileall":
         return EB.compileall_call(folder=issue, only=page.field("compile_only"),
@@ -636,7 +633,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         page._status[key] = status
         page._refresh_steps()
         results.append(_record(key, status))
-        try:  # 后处理（信息卡/目录结果）失败不应打断流水线状态收尾
+        try:  # 后处理（信息卡/目录结果）失败不应打断运行状态收尾
             await CK.after_issue_step(page, key, call, code, cancelled, artifact)
             after_step(page, key, call, code, cancelled, artifact)
         except Exception as exc:  # noqa: BLE001
@@ -729,7 +726,7 @@ def _start(page, key: str, call: EB.EngineCall) -> None:
 
 
 def run_all(page, keys: list[str] | None = None) -> None:
-    """整期流水线。
+    """整期装配一键运行。
 
     默认只跑 1–4 步（``DEFAULT_RUN_ALL_KEYS``）；调用方（确认框）可显式传入
     含 ``cleantemp``/``dirpush`` 的 keys，此时按页面当前 mode/dry_run 正常构建、
@@ -754,7 +751,7 @@ def run_all(page, keys: list[str] | None = None) -> None:
     if "dirpush" in selected and not _dirpush_dry(page):
         warning = DIRPUSH.repo_warning(page.field("dirpush_out"))
         if warning:
-            page.app.toast("输出根在代码仓内，整期流水线已停止；请改输出根或勾选只预演")
+            page.app.toast("输出根在代码仓内，整期运行已停止；请改输出根或勾选只预演")
             page.mark("validation_error", step="all", reason="repo out root")
             return
     # 参数在轮到该步时才构建（infocheck 新产出的报告要让 toc 自动发现）。
@@ -765,7 +762,7 @@ def run_all(page, keys: list[str] | None = None) -> None:
 
 def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
                artifact: str) -> None:
-    """流水线每步结束后补记结构化结果（显示与状态收尾由 _run_sequence 负责）。"""
+    """每一步结束后补记结构化结果（显示与状态收尾由 _run_sequence 负责）。"""
     if cancelled:
         return
     # 批 116：03 编译成功后由页面决定是否把详情滚到 04（不自动运行 04）。

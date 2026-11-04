@@ -7,7 +7,7 @@
 
 新 IA（3 组：工作区 / 引用库 / 系统；侧栏只放目的地，二级视图/步骤进页内）：
   工作区 · 工作台 / 单篇稿件 / 整期装配（三叶平铺；单篇 2 步为页内 chip，
-           整期 6 步在页内步骤栏）
+           整期 4 功能页在页内 chip）
   引用库 · 侧栏一个叶子；页内二级导航 = 3 组 caption（查阅 / 采录 / 治理）+ 9 个 chip
   系统   · 设置 / 帮助与关于
 
@@ -21,16 +21,16 @@
 1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → 回读校验」，与「入藏」同组（采录）：它的输入是
    单篇 returned.docx，体检放在入库前；「单篇稿件」页只留「去引用库 → 回读校验」跳转，不再有第三步骤。
 2. 「整期装配」批 114 曾把 6 个步骤全部挂到侧栏；批 115（D1-115-26）起改为一个**单页工作台**：
-   侧栏只留「整期装配」叶子，6 步在页内流水线栏切换——一期流水线天然有顺序，
-   一屏同时看到「步骤栏 + 当前步骤 + 日志」比 6 次点页签更接近真实工作。
-   `issue:overview` 仅保留一版兼容别名（落到默认步），不再有「流水线总览」屏。
+   侧栏只留「整期装配」叶子，4 个功能在页内 chip 切换（生成目录 / 编译并合并 /
+   清理临时文件 / 生成推送文案）——它们彼此独立，不要求按顺序执行。
+   `issue:overview` 仅保留一版兼容别名（落到默认功能页），不再有旧「总览」屏。
 """
 from __future__ import annotations
 
 # ── 批 114 IA 定稿 + 批 115/116 收敛：树是路由/语义唯一来源 ───────────────
 # 批 116 BIB-NAV2（方案 A，用户拍板）：侧栏只渲染「目的地」，全部扁平、无 chevron、无子行：
 #   · 工作区三页一律叶子；单篇的两个 views 只作页内 chip 与路由记忆；
-#   · 整期的 6 步仍在页内步骤栏（ISSUE_ROUTE_STEPS），侧栏只有一个整期叶子；
+#   · 整期的 6 个底层操作仍走 ISSUE_ROUTE_STEPS，由页内 4 个功能页承载；
 #   · 引用库在侧栏只剩一个叶子（图标保留、右侧待处理徽标）；原来的 3 个 caption
 #     与 9 个子行全部移入 Bib 页内的二级导航（BIB_INPAGE_GROUPS）；
 #   · 引用库视图在 NAV_TREE 里平铺并带 group，设置 route_only 只服务深链/⌘K；
@@ -44,7 +44,7 @@ NAV_TREE: list[dict] = [
          "views": [{"key": "convert", "label": "初排转换"},
                    {"key": "proofcheck", "label": "一校核查"}]},
         # 批 115 D1-115-26：整期装配 = 单页工作台，侧栏只留叶子父项（无 views/groups）；
-        # 6 步在页内步骤栏切换，default 只作无记忆时的静态兜底。
+        # 4 个功能页由页内 chip 切换，default 只作无记忆时的静态兜底。
         {"key": "issue", "label": "整期装配", "icon": "VIEW_AGENDA_OUTLINED",
          "default": "infocheck"},
     ]},
@@ -83,7 +83,7 @@ BIB_INPAGE_GROUPS: list[dict] = [
      "views": ["review", "edit", "dupes", "fieldfix", "health"]},
 ]
 # ── 批 115 D1-115-26：整期装配步骤路由（不是侧栏子项）──────────────────────
-# 6 步只在页内步骤栏；本表只服务「可深链/可持久化」的路由、标题与 22 条路由计数。
+# 整期 4 功能页在页内 chip；本表只服务「可深链/可持久化」的路由、标题与 22 条路由计数。
 # 标签沿用报告口径（页内详情标题由 pages.IssuePage.STEPS 自己维护）。
 ISSUE_ROUTE_STEPS: list[dict[str, str]] = [
     {"key": "infocheck", "label": "检查tex信息"},
@@ -99,7 +99,7 @@ _ISSUE_ALIAS_VIEWS = frozenset({"", "overview"})
 
 
 def issue_step_keys() -> list[str]:
-    """整期装配合法步骤 key（顺序即页内步骤栏顺序）。"""
+    """整期装配底层操作 key（顺序即执行顺序）。"""
     return [step["key"] for step in ISSUE_ROUTE_STEPS]
 
 
@@ -286,7 +286,7 @@ def normalize_route(route: str | None) -> tuple[str, str]:
     defaults = page_defaults()
     if page not in defaults:
         return "home", ""
-    # 页面默认视图不一定是侧栏子项（整期装配的 6 步只在页内步骤栏），
+    # 页面默认视图不一定是侧栏子项（整期装配的 4 功能页在页内 chip），
     # 但它是合法页面状态，因此用 route_views 并入允许集合。
     default = defaults[page]
     allowed = {item["key"] for item in route_views(page)} | {default}

@@ -80,7 +80,7 @@ def test_single_header_has_only_h1_and_desc():
     assert page._crumb is None
 
 
-def test_issue_header_has_only_h1_and_desc_on_overview_and_step():
+def test_issue_header_has_only_h1_and_desc_on_empty_and_step():
     page, root = _build(P.IssuePage)
     # 批 115（D1-115-26）：2 级工作台 h1 固定「整期装配」；步骤名在详情头 h2，
     # 不再把页头 h1 换成步骤名（否则来回切换时页标题会跳）。
@@ -88,6 +88,10 @@ def test_issue_header_has_only_h1_and_desc_on_overview_and_step():
     assert page._title_col.controls == [page._child_title, page._flow_desc]
     assert _texts(root).count("整期装配") == 1
     assert page._child_title.value == "整期装配"
+    # 批 117：无期目录时详情只是空态；有期目录才构建步骤页。
+    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in _texts(
+        page._content_box)
+    page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
     assert page._child_title.value == "整期装配"
     # 批 116 P2-1：页头副标题固定产品行，不再随步骤 desc 漂移。
@@ -109,8 +113,12 @@ def test_step_page_primary_is_run_this_step_only():
     page, root = _build(P.IssuePage)
     assert isinstance(page._run_all_btn, ft.FilledButton)
     assert str(page._run_all_btn.content) == "运行整期…"
-    assert [ctl is page._run_all_btn for ctl in _of(root, ft.FilledButton)] == [True]
+    filled = _of(root, ft.FilledButton)
+    assert filled[0] is page._run_all_btn
+    # 批 117：无期目录时详情多一个选目录 CTA；页头仍唯一。
+    assert [str(ctl.content) for ctl in filled[1:]] == ["选择期目录"]
 
+    page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
     # 页头只剩整期主操作；本步唯一主按钮在详情头（D1-115-26/29）。
     assert page._header_actions.controls == [page._run_all_btn]
@@ -128,7 +136,9 @@ def test_step_page_primary_is_run_this_step_only():
               if str(ctl.content) == "运行这一步"]
     assert not legacy
 
+    # `issue:overview` 别名不再有总览屏，落到上次步骤（刚才的 toc）。
     page.activate("overview")
+    assert page.selected == "toc"
     assert page._header_actions.controls == [page._run_all_btn]
 
 
@@ -151,12 +161,18 @@ def test_step_primary_disabled_reason_when_engine_not_ready_and_running():
 
     page.app.running = False
     page.refresh_running()
+    # 批 117：缺信息检查报告时主按钮禁用并给出补救 CTA；补报告后恢复。
+    assert page._step_run_primary.disabled is True
+    assert "信息检查报告" in (page._step_run_primary.tooltip or "")
+    page.set_field("toc_report", __file__)
+    page.refresh_running()
     assert page._step_run_primary.disabled is False
     assert page._step_run_primary.tooltip is None
 
 
 def test_step_primary_visible_at_1000_width():
     page, _root = _build(P.IssuePage, width=1000)
+    page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
     assert str(page._step_run_primary.content) == "生成目录"
     assert page._step_run_primary in _of(page._content_box, ft.FilledButton)

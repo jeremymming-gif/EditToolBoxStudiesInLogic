@@ -79,6 +79,44 @@ def validate_out_root(out_root: str, issue: str) -> tuple[str, str]:
     return "ok", ""
 
 
+_ISSUE_TOKEN = r"(?:\d+|[一二三四五六七八九十百]+|[?？])"
+_VOLUME_RE = re.compile(rf"第\s*{_ISSUE_TOKEN}\s*卷")
+_ISSUE_NO_RE = re.compile(rf"第\s*{_ISSUE_TOKEN}\s*期")
+
+
+def header_parse_error(issue: str) -> str:
+    """期头预检（批 117 P1）：000 下的目录 tex 是否还留着「第 ? 卷 / 第 ? 期」。
+
+    引擎在报告缺卷期时会静默写 `?` 占位并 EXIT 0（B 包实测），直到推送才报错。
+    这里只读已落位的 000 tex；还没生成目录（000 不存在/无 tex）时不拦——那不是
+    本期要在这里解决的问题。发现 `?` 就禁用推送按钮并给可执行原因。
+    """
+    if not str(issue or "").strip():
+        return ""
+    try:
+        folder = _resolve(issue) / "000"
+    except OSError:
+        return ""
+    if not folder.is_dir():
+        return ""
+    blob = ""
+    try:
+        for path in sorted(folder.glob("*.tex")):
+            try:
+                blob += path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+    except OSError:
+        return ""
+    if not blob:
+        return ""
+    marks = _VOLUME_RE.findall(blob) + _ISSUE_NO_RE.findall(blob)
+    if marks and any("?" in mark or "？" in mark for mark in marks):
+        return ("000 目录的期头还没解析出卷/期（第 ? 卷 / 第 ? 期）："
+                "先在「检查 tex 信息」里核对卷期，或修正 000 目录期头后再推送")
+    return ""
+
+
 def year_error(text: str) -> str:
     text = str(text or "").strip()
     if not text:
@@ -124,6 +162,9 @@ def validation_error(page) -> str:
     issue = str(page.field("issue_dir") or "").strip()
     if not issue:
         return "先选择期目录"
+    header_err = header_parse_error(issue)
+    if header_err:
+        return header_err
     level, message = validate_out_root(page.field("dirpush_out"), issue)
     if level == "error":
         return message

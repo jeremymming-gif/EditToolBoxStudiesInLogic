@@ -101,9 +101,10 @@ def test_issue_page_white_sheet_with_log_dock():
     assert last is page._log_spacer
     assert last.height == t.px(52)
     assert page._log.on_layout_change == page._sync_log_reserve
-    # 钉住批 114 路由契约：build 里重建总览。
+    # 钉住批 117 契约：build 只挂当前视图；旧「流水线总览」整页已删除。
     src = inspect.getsource(P.IssuePage.build)
-    assert "_build_overview()" in src and "_content_box" in src
+    assert "_build_overview" not in src
+    assert "_build_step_page(landing)" in src and "_content_box" in src
 
 
 def test_issue_log_reserve_two_levels_and_drag_follow():
@@ -124,89 +125,81 @@ def test_issue_log_reserve_two_levels_and_drag_follow():
 
 # ── 2. IssuePage 去卡 / 发丝行 ─────────────────────────────────────────
 def test_issue_page_methods_have_no_cards_titles_or_chips():
-    for func in (P.IssuePage.build, P.IssuePage._build_overview,
-                 P.IssuePage._overview_step_row, P.IssuePage._build_step_page,
-                 P.IssuePage._progress_band):
+    for func in (P.IssuePage.build, P.IssuePage._build_empty_detail,
+                 P.IssuePage._build_step_page, P.IssuePage._nav_bar):
         calls = _calls(func)
         assert "card" not in calls, f"{func.__name__} 仍在建页面级 C.card"
         assert "section_title" not in calls, f"{func.__name__} 仍在用 C.section_title"
         assert "status_chip" not in calls, f"{func.__name__} 仍在用 C.status_chip"
-    assert "section_label" in _calls(P.IssuePage._build_overview)
-    assert "hairline" in _calls(P.IssuePage._build_overview)
-    assert "status_dot" in _calls(P.IssuePage._overview_step_row)
+    empty_calls = _calls(P.IssuePage._build_empty_detail)
+    assert "primary_button" in empty_calls and "text" in empty_calls
+    assert "status_dot" in _calls(P.IssuePage._detail_header)
 
 
-def test_issue_overview_step_row_is_36_hairline_row_with_run_button():
+def test_issue_empty_state_is_centered_card_with_picker_cta():
+    # 批 117：无期目录的详情区 = 说明 + 选目录主按钮；不再有旧 6 行概览。
     page, _root = _build_issue()
-    t = page.t
-    row = page._overview_step_row(0, page.STEPS[0])
-    assert isinstance(row, ft.Container) and isinstance(row.content, ft.Row)
-    assert row.height == t.px(36)
-    assert row.border is None  # 无描边卡
-    first = row.content.controls[0]
-    assert isinstance(first, ft.Container) and first.width == t.px(22)
-    assert isinstance(first.content, ft.Text) and first.content.value == "01"
-    runs = [ctl for ctl in _walk(row) if isinstance(ctl, ft.OutlinedButton)
-            and str(ctl.content) == "运行"]
-    assert len(runs) == 1
-    dots = [ctl for ctl in _walk(row)
-            if isinstance(ctl, ft.Container) and ctl.width == t.px(6)
-            and ctl.height == t.px(6)]
-    assert dots, "步骤行应保留状态小圆点"
+    calls = []
+    page._browse_issue = lambda e=None: calls.append("browse")
+    empty = page._build_empty_detail()
+    # 批 117：空态固定为一块卡片（四页共用），不再叠窄窗横条/结果条。
+    assert isinstance(empty, ft.Container)
+    card = empty
+    assert card.bgcolor == page.t.palette.surface
+    texts = [ctl.value for ctl in _walk(empty) if isinstance(ctl, ft.Text)]
+    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in texts
+    cta = [ctl for ctl in _walk(empty) if isinstance(ctl, ft.FilledButton)]
+    assert len(cta) == 1 and str(cta[0].content) == "选择期目录"
+    assert cta[0].icon == C.ic("FOLDER_OPEN")
+    cta[0].on_click(None)
+    assert calls == ["browse"], "空态主按钮必须复用 _browse_issue 选目录路径"
+    assert not [ctl for ctl in _walk(empty) if isinstance(ctl, ft.OutlinedButton)
+                and str(ctl.content) == "运行"]
 
 
-def test_issue_overview_wide_two_columns_narrow_single_column():
+def test_issue_empty_state_same_across_widths_and_views():
     page, _root = _build_issue()
+    sentence = "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）"
+    for width in (1240, 1160, 1000, 880):
+        page.app._design_width = lambda w=width: w
+        for view in page.VIEWS:
+            step = page._build_step_page(view["steps"][0])
+            texts = [ctl.value for ctl in _walk(step) if isinstance(ctl, ft.Text)]
+            assert sentence in texts
+            assert "流水线总览" not in texts
+            # 批 117：空态里不再有 54 高横条/band，导航统一在标题下方。
+            bands = [ctl for ctl in step.controls
+                     if isinstance(ctl, ft.Container)
+                     and ctl.height == page.t.px(54)]
+            assert not bands, f"{width} 不应再出现 54 高横条"
+            assert len(page._nav_chips) == 4
+
+
+def test_issue_on_resize_keeps_current_view_empty_state():
+    page, _root = _build_issue()
+    page.selected = "toc"
     page.app._design_width = lambda: 1240
-    wide = page._build_overview()
-    assert isinstance(wide, ft.Row)
-    assert page._overview_stacked is False
-    left, right = wide.controls
-    assert isinstance(left, ft.Container) and left.expand == 5
-    assert isinstance(right, ft.Container) and right.expand == 6
-    assert right.content.controls == [page._result.root, page._info.root]
-
-    # 回归：`_design_width()` 是整窗宽；1160 内容 940 ≥ 880 → 宽态双列。
-    page.app._design_width = lambda: 1160
-    assert page._narrow() is False
-    assert isinstance(page._build_overview(), ft.Row)
-    # 1000 内容 780 < 880 → 单列。
-    page.app._design_width = lambda: 1000
-    assert page._narrow() is True
-    assert isinstance(page._build_overview(), ft.Column)
-
-    page.app._design_width = lambda: 880
-    narrow = page._build_overview()
-    assert isinstance(narrow, ft.Column)
-    assert page._overview_stacked is True
-    left2, right2 = narrow.controls  # 右列下移，不再左右挤
-    assert isinstance(left2, ft.Column) and isinstance(right2, ft.Column)
-
-
-def test_issue_on_resize_rebuilds_only_when_crossing_breakpoint():
-    page, _root = _build_issue()
-    page.selected = "overview"
-    page.app._design_width = lambda: 1240
-    page._overview_stacked = False
-    page.on_resize()  # 未跨断点：保持宽屏双列
-    assert isinstance(page._content_box.controls[0], ft.Row)
+    page.on_resize()
+    assert page.selected == "toc"
+    assert page._shell.controls == [page._nav_box, page._content_box]
+    assert "还没有选择期目录（一期稿件的根目录，含 000/01 作者… 等）" in [
+        ctl.value for ctl in _walk(page._content_box) if isinstance(ctl, ft.Text)]
     page.app._design_width = lambda: 880
     page.on_resize()
-    assert page._overview_stacked is True
-    assert isinstance(page._content_box.controls[0], ft.Column)
-    inner = page._content_box.controls[0]
-    assert isinstance(inner.controls[0], ft.Column)  # 单列：左列整宽在上
+    assert page.selected == "toc"
+    assert page._shell.controls == [page._nav_box, page._content_box]
 
 
 def test_issue_step_page_has_no_back_button_or_duplicate_title():
     page, _root = _build_issue()
-    # 窄窗（1000 内容 780 < 880）详情上方保留 54 高横条；宽窗则由左栏承担导航。
+    page.set_field("issue_dir", "/tmp/期目录")
+    # 批 117：每页内容区顶部是内嵌「期目录」行，不再有 54 高横条。
     page.app._design_width = lambda: 1000
     t = page.t
     step = page._build_step_page("toc")
     assert isinstance(step, ft.Column)
-    band = step.controls[0]
-    assert isinstance(band, ft.Container) and band.height == t.px(54)
+    first = step.controls[0]
+    assert isinstance(first, ft.Container) and first.key == "issue-dir-row"
     labels = [ctl.value for ctl in _walk(step) if isinstance(ctl, ft.Text)]
     assert not any("流水线总览" in str(v) for v in labels)
     assert "参数" in labels
@@ -226,20 +219,25 @@ def test_issue_step_page_has_no_back_button_or_duplicate_title():
     toc_btn = next(ctl for ctl in detail_runs if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
     src = inspect.getsource(P.IssuePage._build_step_page)
-    assert "_progress_band()" in src and "_run_step" not in src
+    assert "_build_empty_detail()" in src
+    assert "_build_issue_row()" in src and "_run_step" not in src
+    assert "_progress_band" not in src
 
 
-def test_issue_progress_band_keeps_height_and_uses_bars_not_chips():
+def test_issue_nav_bar_uses_chips_not_progress_band():
     page, _root = _build_issue()
     t = page.t
-    band = page._progress_band()
-    assert band.height == t.px(54)
-    # 批 116 决策（I-2 E′）：横条 = 4 个视图（生成目录/编译并合并/清理/推送）。
-    assert len(band.content.controls) == len(page.VIEWS) == 4
-    bars = [ctl for ctl in _walk(band)
-            if isinstance(ctl, ft.Container) and ctl.height == t.px(2)]
-    assert len(bars) == 4
-    assert "status_chip" not in _calls(P.IssuePage._progress_band)
+    assert not hasattr(P.IssuePage, "_progress_band"), "54 高进度横条已删除"
+    page.app._design_width = lambda: 1160
+    page._refresh_layout()
+    nav = page._nav_bar()
+    assert nav.height == t.px(36), "1160 单行 36 高"
+    chips = [ctl for ctl in _walk(nav)
+             if isinstance(ctl, ft.Container) and ctl.key
+             and str(ctl.key).startswith("issue-nav-")]
+    assert len(chips) == len(page.VIEWS) == 4
+    assert {chip.height for chip in chips} == {t.px(28)}
+    assert "status_chip" not in _calls(P.IssuePage._nav_bar)
 
 
 # ── 3. SettingsPage 白面板 / 四组 / kv_row ─────────────────────────────

@@ -923,7 +923,7 @@ r_json = subprocess.run([sys.executable, str(ENGINE / "toc.py"), "--report", _js
                         capture_output=True, text=True, encoding="utf-8", errors="replace",
                         env=os.environ, cwd=ENGINE)
 _schema_keys = {"articles", "templateSource", "templateNote", "tocDir", "placed", "compiled",
-                "pages", "column", "manualEdits", "warnings"}
+                "pages", "column", "manualEdits", "warnings", "outputs"}
 _payload = json.load(open(_json_out, encoding="utf-8")) if os.path.isfile(_json_out) else {}
 check("(j18) `--place --result-json`：rc=0、JSON 写出、schema 字段固定"
       "（批 115 起 additive 增 articles:{total,inToc}）",

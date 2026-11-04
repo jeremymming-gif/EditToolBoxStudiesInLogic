@@ -45,7 +45,7 @@ from slcn import toctemplate as _tt       # noqa: E402
 
 
 def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
-                 delivery, extra_warnings: list[str],
+                 delivery, extra_warnings: list[str], outputs: list[str] | None = None,
                  source: str = "", note: str = "") -> dict:
     """拼 `--result-json` 的固定 schema（GUI 依赖字段名，别随手改名）。
 
@@ -65,6 +65,25 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
         placed["enPdf"] = delivery.pdfs.get("en", "")
         pages = {"zh": int(delivery.pages.get("zh") or 0),
                  "en": int(delivery.pages.get("en") or 0)}
+    # 批 117：产物绝对路径。place → 000 下固定名；text-only → 根下实际时间戳文件
+    # （从 `_toc.run` 的返回值取，不 glob 猜，避免把上一期的旧文件当成这次的产物）。
+    out_paths = {"zhTex": "", "enTex": "", "zhPdf": "", "enPdf": ""}
+    if delivery is not None:
+        for key, field in (("zh", "zhTex"), ("en", "enTex")):
+            value = str(delivery.placed.get(key) or "")
+            if value:
+                out_paths[field] = os.path.abspath(value)
+        for key, field in (("zh", "zhPdf"), ("en", "enPdf")):
+            value = str(delivery.pdfs.get(key) or "")
+            if value:
+                out_paths[field] = os.path.abspath(value)
+    else:
+        for path in outputs or []:
+            name = os.path.basename(path)
+            if name.startswith("Chinese Content_"):
+                out_paths["zhTex"] = os.path.abspath(path)
+            elif name.startswith("contents_"):
+                out_paths["enTex"] = os.path.abspath(path)
     # 批 115 / D1-115-29：给工作台详情页的篇目计数（additive；旧字段一个不动）。
     articles = _toc.list_articles(report)
     return {
@@ -73,6 +92,7 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
         "templateNote": note,
         "tocDir": delivery.toc_dir if delivery is not None else _td.find_toc_dir(report_dir),
         "placed": placed,
+        "outputs": out_paths,
         "compiled": bool(delivery is not None and delivery.compiled),
         "pages": pages,
         "column": {
@@ -82,6 +102,28 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
         "manualEdits": _toc.manual_edits(report, settings),
         "warnings": list(extra_warnings),
     }
+
+
+def _issue_info_warning(report: str) -> str:
+    """卷号/期号解析不到时返回 warning 文本；都解析到则返回 ""（批 117）。
+
+    判断依据与生成目录时一致：读报告里的 `卷号：19  期号：5  年份：2026` 行。
+    报告里没有这一行时，模板只能写「第 ? 卷，第 ? 期」——不许静默成功。
+    """
+    try:
+        with open(report, encoding="utf-8", errors="replace") as fh:
+            volume, issue, _year = _toc.parse_issue_info(fh.readlines())
+    except OSError:
+        volume = issue = ""
+    if volume and issue:
+        return ""
+    missing = []
+    if not volume:
+        missing.append("卷号")
+    if not issue:
+        missing.append("期号")
+    return ("卷/期无法确定：期目录/报告中未解析到卷期信息"
+            f"（缺{'、'.join(missing)}）")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,6 +229,13 @@ def main(argv: list[str] | None = None) -> int:
                         "目录头部会写成「总第 ? 期」，请人工补。")
         print("⚠️ " + warnings[-1])
 
+    # 批 117：卷/期解析不到时也要出 warning（从前模板写成「第 ? 卷，第 ? 期」仍报成功）。
+    # 只警告、不改退出码：产物仍可用，属于「有结果、需人工核对」而非失败。
+    issue_warning = _issue_info_warning(report)
+    if issue_warning:
+        warnings.append(issue_warning)
+        print("⚠️ " + issue_warning)
+
     # ---- B-226：落位 / 编译（唯一实现在 slcn/tocdelivery.py）----
     delivery = None
     if args.place or args.compile:
@@ -207,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.result_json:
         path = os.path.abspath(os.path.expanduser(args.result_json))
         payload = _result_json(report, report_dir, settings, delivery, warnings,
+                               outputs=outputs,
                                source=template_source, note=template_note)
         try:
             parent = os.path.dirname(path)

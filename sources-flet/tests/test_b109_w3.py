@@ -46,15 +46,15 @@ def args_of(call: EB.EngineCall) -> list[str]:
 # ── 清理三档与撤销 ───────────────────────────────────────────────────────
 def test_cleantemp_three_modes_and_restore(engine):
     default = args_of(EB.cleantemp_call(folder="f"))
-    assert default == ["--folder", "f", "--trash"]
+    assert default == ["--folder", "f", "--trash", "--json"]
     assert "--mode" not in default and "--restore" not in default
 
     workspace = args_of(EB.cleantemp_call(folder="f", mode="workspace"))
-    assert workspace == ["--folder", "f", "--mode", "workspace"]
+    assert workspace == ["--folder", "f", "--mode", "workspace", "--json"]
     assert "--trash" not in workspace and "--delete" not in workspace
 
     undo = args_of(EB.cleantemp_call(folder="f", restore="/f/.toolbox-trash/x"))
-    assert undo == ["--folder", "f", "--restore", "/f/.toolbox-trash/x"]
+    assert undo == ["--folder", "f", "--restore", "/f/.toolbox-trash/x", "--json"]
     for call in (EB.cleantemp_call(folder="f"), EB.cleantemp_call(folder="f", mode="delivery"),
                  EB.cleantemp_call(folder="f", restore="t")):
         assert "--delete" not in call.argv and "--empty-trash" not in call.argv

@@ -16,6 +16,7 @@ D1-115-29 裁决：结果 JSON 增 `articles:{total,inToc}`，**不改任何旧�
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -89,10 +90,61 @@ def test_result_json() -> None:
                                  for k in ("zhTex", "zhPdf", "enTex", "enPdf")),
           repr(payload.get("placed")))
     check("(d) compiled false", payload.get("compiled") is False)
+    print("\n── (e) 批 117：outputs + 卷/期 warning ──")
+    outputs = payload.get("outputs") or {}
+    check("(e) outputs 四键",
+          set(outputs) == {"zhTex", "enTex", "zhPdf", "enPdf"}, repr(outputs))
+    for key, stem in (("zhTex", "Chinese Content_"), ("enTex", "contents_")):
+        value = str(outputs.get(key) or "")
+        check(f"(e) {key} 时间戳文件", os.path.basename(value).startswith(stem),
+              value)
+        check(f"(e) {key} 绝对路径且存在",
+              os.path.isabs(value) and os.path.isfile(value), value)
+    check("(e) 未编译 PDF 为空",
+          not outputs.get("zhPdf") and not outputs.get("enPdf"), repr(outputs))
+    check("(e) 卷/期 warning 已写",
+          any("卷/期无法确定" in w for w in (payload.get("warnings") or [])),
+          repr(payload.get("warnings")))
+
+
+def test_result_json_place() -> None:
+    """批 117：`--place` 时 outputs 指向 000 下固定名（而非根下时间戳文件）。"""
+    tmp = Path(tempfile.mkdtemp(prefix="slcn_toc_place_"))
+    issue = tmp / "2026年第5期(90)"
+    issue.mkdir()
+    report = issue / "信息检查TEST.txt"
+    report.write_text(REPORT, encoding="utf-8")
+    out = issue / "目录结果.json"
+    proc = subprocess.run(
+        [PY, str(ENGINE / "toc.py"), "--report", str(report),
+         "--place", "--result-json", str(out)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(ENGINE),
+    )
+    print("\n── (f) --place 的 outputs ──")
+    check("(f) place rc==0", proc.returncode == 0,
+          f"rc={proc.returncode} stderr={proc.stderr.strip()[-200:]}")
+    check("(f) 结果 JSON 已写", out.is_file(), str(out))
+    if not out.is_file():
+        return
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    outputs = payload.get("outputs") or {}
+    toc_dir = str(payload.get("tocDir") or "")
+    for key, fixed in (("zhTex", "Chinese Content.tex"), ("enTex", "contents.tex")):
+        value = str(outputs.get(key) or "")
+        check(f"(f) {key} 固定名", os.path.basename(value) == fixed, value)
+        check(f"(f) {key} 落在 000 下", os.path.dirname(value) == toc_dir, value)
+        check(f"(f) {key} 存在", os.path.isfile(value), value)
+    check("(f) 未编译 PDF 为空",
+          not outputs.get("zhPdf") and not outputs.get("enPdf"), repr(outputs))
+    check("(f) 期号 warning 已写",
+          any("卷/期无法确定" in w for w in (payload.get("warnings") or [])),
+          repr(payload.get("warnings")))
 
 
 def main() -> int:
     test_result_json()
+    test_result_json_place()
     print(f"\n结果：{_passed} passed / {len(_fails)} failed")
     if _fails:
         print("失败：" + "、".join(_fails))

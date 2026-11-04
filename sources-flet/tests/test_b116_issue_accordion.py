@@ -43,74 +43,61 @@ def _approx_text_width(value: str, size: float) -> float:
     return wide * size + (len(value) - wide) * size * 0.62
 
 
-# ── 1. rail：无序号 / caption 完整 / 行高 ───────────────────────────
-def test_rail_has_no_number_column_and_full_captions():
+# ── 1. 页内 chip：无序号 / 完整标题 / 28 高 ─────────────────────────
+def test_nav_chips_have_no_number_column_and_full_titles():
     page = _issue_page()
     t = page.t
     for view in page.VIEWS:
         assert "range" not in view, "ISSUE_VIEWS 不再保留没人读的 range 字段"
-        row = page._rail_row(view)
-        texts = _texts(row)
+        chip = page._nav_chip(view, False)
+        texts = _texts(chip)
+        assert texts == [view["title"]], "chip 只显示完整标题（无序号、无 caption）"
         assert not any(re.fullmatch(r"\d{2}(–\d{2})?", value) for value in texts), \
-            f"{view['key']} 行里仍有序号文本"
-        # 行 = 标题/说明列 + 选中竖条；序号列及其 Container 已删除。
-        assert len(row.content.controls) == 2, "rail 行不再有独立的序号列"
-        col = row.content.controls[0]
-        assert isinstance(col, ft.Column) and col.expand is True
-        caption = col.controls[1]
-        assert caption.value == view["caption"]
-        assert caption.max_lines is None, "不设 max_lines：宁可换行也不截断"
-        assert caption.overflow == ft.TextOverflow.VISIBLE, "caption 不得用省略号"
-        # 216 - padding(10+8) - accent 竖条 2 - Row spacing 16 = 180px。
-        available = t.px(216) - t.px(10) - t.px(8) - t.px(2) - t.sp("2")
-        need = _approx_text_width(caption.value, caption.size)
-        assert need <= available, (
-            f"{view['key']} caption {caption.value!r} 估算 {need:.1f}px > {available}px")
+            f"{view['key']} chip 里仍有序号文本"
+        assert chip.height == t.px(28), "chip 28 高（与引用库一致）"
+        title, dot = chip.content.controls
+        assert isinstance(title, ft.Text) and isinstance(dot, ft.Container)
+        assert title.max_lines is None, "标题不截断"
+        assert chip.tooltip.startswith(view["title"] + "："), "状态词进 chip tooltip"
 
 
-def test_rail_caption_not_repeating_title_or_number():
+def test_nav_chips_not_numbered_and_no_caption():
     page = _issue_page()
     for view in page.VIEWS:
-        row = page._rail_row(view)
-        col = row.content.controls[0]
-        title_row = col.controls[0]
-        caption = col.controls[1]
-        assert caption.value == view["caption"]
-        assert not caption.value.startswith(("01", "02", "03", "04", "05", "06"))
-        assert caption.value != view["title"]
-        assert len(caption.value) <= 16, "216 栏里 caption 必须短"
-        assert len(title_row.controls) == 2, "标题行 = 标题 + 状态点（文案进 tooltip）"
+        chip = page._nav_chip(view, False)
+        texts = _texts(chip)
+        assert texts == [view["title"]]
+        assert not texts[0].startswith(("01", "02", "03", "04", "05", "06"))
+        assert texts[0] != view["caption"]
+        assert len(chip.content.controls) == 2, "chip = 标题 + 状态点（文案进 tooltip）"
 
 
-def test_rail_rows_uniform_height_and_status_inline():
+def test_nav_chips_uniform_height_and_status_inline():
     page = _issue_page()
+    page.selected = ""
     t = page.t
-    rows = [page._rail_row(view) for view in page.VIEWS]
-    assert {row.height for row in rows} == {t.px(64)}, "四行必须同高（原来 76/更矮混排）"
-    for row in rows:
-        title_row = row.content.controls[0].controls[0]
-        assert isinstance(title_row, ft.Row)
-        title, dot = title_row.controls
-        assert isinstance(title, ft.Container) and title.expand is True, "标题吃剩余宽度"
-        assert isinstance(title.content, ft.Text) and title.content.max_lines == 1
-        assert isinstance(dot, ft.Container) and dot.tooltip, "状态文案进 tooltip"
-        assert dot.content.width == dot.content.height, "状态点是圆点"
-    active = rows[0]
-    assert active.bgcolor is None, "未选中不染色"
+    chips = [page._nav_chip(view, False) for view in page.VIEWS]
+    assert {chip.height for chip in chips} == {t.px(28)}, "四个 chip 必须同高"
+    for chip in chips:
+        title, dot = chip.content.controls
+        assert isinstance(title, ft.Text)
+        assert isinstance(dot, ft.Container), "右侧状态点"
+        assert dot.width == dot.height, "状态点是圆点"
+        assert chip.tooltip, "状态文案进 chip tooltip"
+    assert all(chip.bgcolor is None for chip in chips), "未选中不染色"
 
 
-def test_rail_selected_tint_and_accent_bar_unchanged():
+def test_nav_selected_tint_and_hover_surface():
     page = _issue_page()
     page.activate("toc")
-    catalog = page._rail_row(page.VIEWS[0])
-    assert catalog.bgcolor == page.t.palette.sel_tint
-    accent = catalog.content.controls[-1]
-    assert isinstance(accent, ft.Container)
-    assert accent.bgcolor == page.t.palette.accent
-    assert accent.width == page.t.px(2) and accent.height == page.t.px(34)
-    produce = page._rail_row(page.VIEWS[1])
+    catalog = page._nav_chip(page.VIEWS[0], True)
+    assert catalog.bgcolor == page.t.palette.nav_sel
+    produce = page._nav_chip(page.VIEWS[1], False)
     assert produce.bgcolor is None
-    assert produce.content.controls[-1].bgcolor is None
+    page._nav_hover(SimpleNamespace(data="true"), produce, False)
+    assert produce.bgcolor == page.t.palette.surface_2, "hover 用 surface_2"
+    page._nav_hover(SimpleNamespace(data="false"), produce, False)
+    assert produce.bgcolor is None
 
 
 # ── 2. 手风琴：默认 / 切换 / 按钮不切换 ──────────────────────────────
@@ -237,26 +224,22 @@ def test_compile_success_remembered_even_when_other_view_active():
     assert page.selected == "merge", "下次进「编译并合并」直接见 04"
 
 
-# ── 5. 窄窗 54 横条：4 段短标题 ──────────────────────────────────────
-def test_narrow_band_four_short_titles_fit():
+# ── 5. 窄窗：导航折两行，仍是 4 个完整标题 ───────────────────────────
+def test_narrow_nav_two_rows_full_titles():
     page = _issue_page()
-    page.app._design_width = lambda: 1000  # 内容 780 < 880 → 横条
+    page.app._design_width = lambda: 1000  # <1100 → 两行
     page._refresh_layout()
-    band = page._progress_band()
-    assert band.height == page.t.px(54)
-    segs = band.content.controls
-    assert len(segs) == 4
-    labels = _texts(band)
-    assert labels == [view["short"] for view in page.VIEWS], \
-        "54 横条只显示 4 个短标题（无序号、无长标题）"
+    assert page._nav_box.content.height == page.t.px(72)
+    labels = _texts(page._nav_box)
+    assert labels == [view["title"] for view in page.VIEWS], \
+        "两行导航仍显示 4 个完整标题（无序号、不截断）"
     for view in page.VIEWS:
-        assert view["short"] in labels, f"窄窗要显示缩短标题：{view['short']}"
+        assert view["title"] in labels
     assert not any(re.fullmatch(r"\d{2}(–\d{2})?", value) for value in labels), \
-        "横条不画序号"
-    assert "清理临时文件" not in labels and "生成推送文案" not in labels
-    for seg in segs:
-        label = seg.content.controls[0].controls[1]
-        assert label.max_lines == 1 and label.overflow == ft.TextOverflow.ELLIPSIS
+        "导航不画序号"
+    for chip in page._nav_chips.values():
+        label = chip.content.controls[0]
+        assert label.max_lines is None, "标题不截断"
 
 
 def test_rail_does_not_regress_routes_or_tree():

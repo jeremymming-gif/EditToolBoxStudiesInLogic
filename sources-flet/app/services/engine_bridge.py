@@ -593,6 +593,8 @@ def infocheck_call(*, folder: str, preview: bool = False) -> EngineCall:
 
 def toc_call(*, report: str, template: str = "", text_only: bool = False,
              result_json: str = "", preview: bool = False, settings: str = "") -> EngineCall:
+    # B-117：调用方传什么值都按布尔语义走，避免字符串 "false" 被当成真值。
+    text_only = bool(text_only)
     args = ["--report", report]
     _append_opt(args, "--template", template)
     _append_opt(args, "--settings", settings)
@@ -668,14 +670,18 @@ def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
                    restore: str = "") -> EngineCall:
     # S2/D-49：aux 档固定 --trash（移入 <期目录>/.toolbox-trash，可 --restore 恢复）；
     # delivery/workspace 引擎自身即移入回收站。外壳不暴露 --delete / --empty-trash。
+    # B-117：一律带 `--json`——预览/撤销要 read_json_command 解析结果；真实清理同样带，
+    # 引擎把人类日志改走 stderr（run_call 仍合并进日志），stdout 只留一个 JSON。
     if restore:
-        return _call("cleantemp.py", ["--folder", folder, "--restore", restore], "撤销清理")
+        return _call("cleantemp.py",
+                     ["--folder", folder, "--restore", restore, "--json"], "撤销清理")
     args = ["--folder", folder]
     if mode and mode != "aux":
         args.extend(["--mode", mode])
     _append_flag(args, "--dry-run", dry_run)
     if not mode or mode == "aux":
         args.append("--trash")
+    args.append("--json")
     return _call("cleantemp.py", args, "删除临时文件")
 
 

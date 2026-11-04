@@ -77,11 +77,11 @@ def test_s2_cleantemp_fixed_trash_no_permanent_delete(engine):
         EB.cleantemp_call(folder="f", mode="workspace", dry_run=True),
         EB.cleantemp_call(folder="f", restore="t"),
     ]
-    assert args_of(calls[0]) == ["--folder", "f", "--trash"]
-    assert args_of(calls[1]) == ["--folder", "f", "--dry-run", "--trash"]
-    assert args_of(calls[3]) == ["--folder", "f", "--mode", "delivery"]
-    assert args_of(calls[4]) == ["--folder", "f", "--mode", "workspace", "--dry-run"]
-    assert args_of(calls[5]) == ["--folder", "f", "--restore", "t"]
+    assert args_of(calls[0]) == ["--folder", "f", "--trash", "--json"]
+    assert args_of(calls[1]) == ["--folder", "f", "--dry-run", "--trash", "--json"]
+    assert args_of(calls[3]) == ["--folder", "f", "--mode", "delivery", "--json"]
+    assert args_of(calls[4]) == ["--folder", "f", "--mode", "workspace", "--dry-run", "--json"]
+    assert args_of(calls[5]) == ["--folder", "f", "--restore", "t", "--json"]
     for call in calls:
         assert "--delete" not in call.argv and "--empty-trash" not in call.argv
 

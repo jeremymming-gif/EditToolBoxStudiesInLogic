@@ -246,13 +246,17 @@ def test_dirpush_annual_disables_english_switch():
 
 
 # ── toc：仅生成 tex 默认 false + 收起的旧双主按钮 ─────────────────
-def test_toc_text_only_default_false_and_migration():
+def test_toc_text_only_default_false_without_store_write():
     app = _FakeApp()
     page = P.IssuePage(app)
     page.build()
     assert ASM._toc_text_only(page) is False
-    assert app.store.get("options.toc_text_only_migrated") is True
-    assert app.store.get("options.toc_text_only") is False
+    # 批 117：读取开关不再写 store / 迁移标记（不许静默改用户值）。
+    assert app.store.get("options.toc_text_only") is None
+    assert app.store.get("options.toc_text_only_migrated") is None
+    app.store.set("options.toc_text_only", True)
+    assert ASM._toc_text_only(page) is True
+    assert app.store.get("options.toc_text_only") is True
 
 
 def test_toc_params_no_primary_button_and_text_actions():

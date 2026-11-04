@@ -41,21 +41,21 @@ def test_issue_content_breakpoint_is_880():
     assert page._narrow() is True
 
 
-def test_issue_rail_visible_at_1160_with_group_headers():
+def test_issue_nav_chips_at_1160_without_group_headers():
     page, _root = _build_issue()
     page.app._design_width = lambda: 1160
     page._refresh_layout()
-    row = page._shell.controls[0]
-    assert isinstance(row, ft.Row)
-    rail_texts = _texts(page._rail_box)
-    # 批 116 决策（I-2 E′）：宽栏分组标题「正文流水线」。
-    assert "正文流水线" in rail_texts
-    assert "收尾（可选）" in rail_texts
+    nav_texts = _texts(page._nav_box)
+    # 批 117：216 左栏与分组标题删除，改成页内 4 chip（1160 单行 / 1000 两行）。
+    assert "正文流水线" not in nav_texts
+    assert "收尾（可选）" not in nav_texts
+    assert all(view["title"] in nav_texts for view in page.VIEWS)
+    assert page._nav_box.content.height == page.t.px(36)
 
     page.app._design_width = lambda: 1000
     page._refresh_layout()
-    assert page._shell.controls == [page._detail_box]
-    assert page._progress_band().height == page.t.px(54)
+    assert page._shell.controls == [page._nav_box, page._content_box]
+    assert page._nav_box.content.height == page.t.px(72)
 
 
 # ── 2. 日志 dock 避让：两档 + 拖拽跟随 ────────────────────────────────

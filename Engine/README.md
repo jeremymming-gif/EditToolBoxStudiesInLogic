@@ -130,10 +130,10 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**143 套件 / 6459 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**143 套件 / 6476 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
-`test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 14 ｜ `test_b116_bib_review_sha` 7
+`test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
 `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48 ｜ `test_b204_health_ignore` 40
 `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 89 ｜ `test_b268_conflict` 15 ｜ `test_b268_frontmatter` 17
 `test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b270_url_note` 27 ｜ `test_b285_contract` 48

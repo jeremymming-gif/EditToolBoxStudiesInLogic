@@ -104,12 +104,15 @@ def _read(rel: str) -> str:
     return (APP_DIR / rel).read_text(encoding="utf-8")
 
 
-def test_step_rows_use_role_not_w600() -> None:
-    # 批 114：步骤卡列表删除（改导航子页）；概览行/进度带仍走角色表而非裸字重。
+def test_issue_empty_state_uses_roles_not_w600() -> None:
+    # 批 117：旧概览行删除；空态文案仍走角色表，不裸写字重。
     source = _read("ui/pages.py")
     assert 'role="step-selected"' not in source
-    assert 'C.text(str(step["title"]), t, role="body"' in source
-    assert 'weight="semibold"' not in source.split("def _overview_step_row")[1].split("def ")[0]
+    assert "_overview_step_row" not in source
+    assert "def _build_empty_detail" in source
+    empty_src = source.split("def _build_empty_detail")[1].split("def ")[0]
+    assert 'weight="semibold"' not in empty_src
+    assert "还没有选择期目录" in empty_src
 
 
 def test_tab_bar_uses_role() -> None:

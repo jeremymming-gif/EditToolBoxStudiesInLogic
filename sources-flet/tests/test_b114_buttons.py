@@ -25,25 +25,27 @@ def _of(root, kind):
     return [ctl for ctl in _walk(root) if isinstance(ctl, kind)]
 
 
-# ── 1. 步骤卡「运行」：描边按钮 + 图标 + 等高 + 明确 disabled 态 ───────────
-def test_issue_step_run_buttons_are_secondary_play_buttons():
-    page, _root = _build_issue()
-    t = page.t
-    keys = {step["key"] for step in page.STEPS}
-    assert set(page._step_run_btns) == keys, "6 个步骤都要有自己的运行按钮"
-    for btn in page._step_run_btns.values():
-        assert isinstance(btn, ft.OutlinedButton), "次操作应是描边按钮，不是文字链"
-        assert str(btn.content) == "运行"
-        assert btn.icon == C.ic("PLAY_ARROW"), "动作按钮应带播放图标"
-        assert btn.height == t.control_h(), "按钮高度跟统一控制高一致"
-        assert btn.disabled is False and btn.tooltip is None
+# ── 1. 无期目录空态：没有旧的 6 行「运行」，只留选目录 CTA ─────────────────
+def test_issue_empty_state_has_no_step_run_rows():
+    # 批 117：旧总览删除后，无期目录不构建步骤区块，也不该有 6 个「运行」。
+    page, root = _build_issue()
+    assert page._step_run_btns == {}
+    assert page._step_run_primary is None
+    runs = [ctl for ctl in _of(root, ft.OutlinedButton) if str(ctl.content) == "运行"]
+    assert runs == []
+    cta = [ctl for ctl in _of(root, ft.FilledButton) if str(ctl.content) == "选择期目录"]
+    assert len(cta) == 1
 
 
 def test_issue_step_run_buttons_disabled_with_reason():
     app = _FakeApp()
-    app.engine_status.ok = False
     page = P.IssuePage(app)
     page.build()
+    page.set_field("issue_dir", "/tmp/期目录")
+    page.activate("infocheck")
+    assert set(page._step_run_btns) == {"infocheck", "toc"}
+    app.engine_status.ok = False
+    page.refresh_running()
     for btn in page._step_run_btns.values():
         assert btn.disabled is True, "引擎未就绪时步骤运行必须禁用"
         assert "引擎未就绪" in (btn.tooltip or ""), "禁用必须说明原因"
@@ -51,11 +53,22 @@ def test_issue_step_run_buttons_disabled_with_reason():
     app.engine_status.ok = True
     app.running = True
     page.refresh_running()
-    for btn in page._step_run_btns.values():
-        assert btn.disabled is True, "运行中不能重复点步骤运行"
-        assert "运行中" in (btn.tooltip or "")
+    for key, btn in page._step_run_btns.items():
+        if key == "infocheck":
+            # 运行中的 01 主按钮是停止入口，必须保持可点（标签随状态变「取消」）。
+            assert btn.disabled is False
+        else:
+            assert btn.disabled is True, "运行中不能重复点其他步骤"
+            assert "运行中" in (btn.tooltip or "")
 
     app.running = False
+    page.refresh_running()
+    # 批 117：目录页缺信息检查报告时主按钮禁用并说明补法（不再只弹 toast）；
+    # 手选一份报告后即恢复可点。
+    assert page._step_run_btns["infocheck"].disabled is False
+    assert page._step_run_btns["toc"].disabled is True
+    assert "信息检查报告" in (page._step_run_btns["toc"].tooltip or "")
+    page.set_field("toc_report", __file__)
     page.refresh_running()
     for btn in page._step_run_btns.values():
         assert btn.disabled is False and btn.tooltip is None
@@ -64,21 +77,18 @@ def test_issue_step_run_buttons_disabled_with_reason():
 # ── 2. 主操作唯一性：整期页只有页面级「运行整期流水线」是主色实心按钮 ───────
 def test_issue_primary_actions_follow_subpage():
     page, root = _build_issue()
-    # 批 115（D1-115-26/29，覆盖旧 m03093）：整期页保留唯一页面级主色
-    # 「运行整期…」；进入某一步后，该步唯一主按钮落在详情头（不再挤进页头），
-    # 页头主色只有整期运行，步骤概览行仍是描边「运行」。
-    filled = _of(root, ft.FilledButton)
-    contents = [str(ctl.content) for ctl in filled]
-    assert contents == ["运行整期…"], f"总览主操作必须唯一：{contents}"
-    assert filled[0] is page._run_all_btn
-    assert page._step_run_primary not in filled
-    overview_runs = [ctl for ctl in _of(root, ft.OutlinedButton)
-                     if str(ctl.content) == "运行"]
-    assert len(overview_runs) == len(page.STEPS), "6 步概览行都要能直接运行"
-    assert all(ctl.icon == C.ic("PLAY_ARROW") for ctl in overview_runs)
+    # 批 117：无期目录时页头仍只有「运行整期…」，详情是选目录空态（CTA 也在 root 里）。
+    header_filled = _of(page._header_actions, ft.FilledButton)
+    contents = [str(ctl.content) for ctl in header_filled]
+    assert contents == ["运行整期…"], f"页头主操作必须唯一：{contents}"
+    assert header_filled[0] is page._run_all_btn
+    assert page._step_run_primary is None
+    cta = [ctl for ctl in _of(root, ft.FilledButton) if str(ctl.content) == "选择期目录"]
+    assert len(cta) == 1 and cta[0] is not page._run_all_btn
     assert isinstance(page._run_all_secondary, ft.OutlinedButton)
     assert str(page._run_all_secondary.content) == "从失败处继续…"
 
+    page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
     header_filled = _of(page._header_actions, ft.FilledButton)
     assert [str(ctl.content) for ctl in header_filled] == ["运行整期…"]
@@ -91,8 +101,7 @@ def test_issue_primary_actions_follow_subpage():
         "每个区块的详情头必须有且只有一个主按钮"
     toc_btn = next(ctl for ctl in detail_filled if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
-    # 步骤概览行的「运行」仍不是主色；参数区不再保留旧描边「运行这一步」副本。
-    assert not _of([*page._step_run_btns.values()], ft.FilledButton)
+    assert set(page._step_run_btns) == {"infocheck", "toc"}
     step_page = page._build_step_page("toc")
     legacy = [ctl for ctl in _of(step_page, ft.OutlinedButton)
               if str(ctl.content) == "运行这一步"]

@@ -82,6 +82,38 @@ def result_lines(payload: dict) -> list[str]:
     return lines
 
 
+def result_outputs(payload: dict, issue: str = "") -> list[tuple[str, str, bool]]:
+    """目录 tex 产物：P1 JSON `outputs.zhTex/enTex` 优先。
+
+    旧结果只写 `placed`（仅落位时非空）；text-only 的旧结果两者都没有，此时才回退
+    到 000 目录 glob，并用第三个返回值标明「推断」，界面上如实标注。
+    """
+    payload = payload or {}
+    outputs = payload.get("outputs") or {}
+    pairs: list[tuple[str, str, bool]] = []
+    for key, label in (("zhTex", "中文目录 tex"), ("enTex", "英文目录 tex")):
+        path = str(outputs.get(key) or "") if isinstance(outputs, dict) else ""
+        if path and os.path.isfile(path):
+            pairs.append((label, path, False))
+    if pairs:
+        return pairs
+    for label, path in result_paths(payload):
+        if label.endswith("tex") and path:
+            pairs.append((label, path, False))
+    if pairs or not issue:
+        return pairs
+    folder = os.path.join(issue, "000")
+    for pattern, label in (("Chinese Content_*.tex", "中文目录 tex"),
+                           ("contents_*.tex", "英文目录 tex")):
+        try:
+            found = sorted(Path(folder).glob(pattern))
+        except OSError:
+            found = []
+        if found:
+            pairs.append((label, str(found[-1]), True))
+    return pairs
+
+
 def first_line(text: str) -> str:
     for line in str(text or "").splitlines():
         if line.strip():
@@ -158,13 +190,21 @@ class TocPanel:
                    ]),
             C.option_row("仅生成 tex（不落位、不编译）", TEXT_ONLY_HINT, self.t,
                          icon="DESCRIPTION_OUTLINED",
-                         checked=bool(options.get("toc_text_only", False)),
+                         checked=self._text_only(),
                          on_change=lambda e: self.app.set_option("toc_text_only",
                                                                  e.control.value)),
             self.info,
             self.editor_box,
             self.feedback,
         ]
+
+    def _text_only(self) -> bool:
+        """与运行入口同一口径（批 117）：读 assembly 的开关，不另存一份。"""
+        try:
+            from ui import assembly as ASM
+            return bool(ASM._toc_text_only(self.page))
+        except Exception:  # noqa: BLE001
+            return bool((self.app.store.get("options", {}) or {}).get("toc_text_only", False))
 
     def _set_value(self, key: str, value) -> None:
         self.values[key] = str(value or "").strip()
@@ -374,11 +414,13 @@ class TocPanel:
             self.page.mark("validation_error", step="toc", reason="missing report")
             return
         result_path = os.path.join(os.path.dirname(report), "目录结果.json")
+        text_only = self._text_only()
         call = EB.toc_call(report=report, template=self.page.field("toc_template"),
-                           settings=self.page.field("toc_settings"), text_only=False,
+                           settings=self.page.field("toc_settings"), text_only=text_only,
                            result_json=result_path)
-        self.feedback.content = C.text("生成并编译中…（首次编译约 1–3 分钟）", self.t, "small",
-                                       self.t.palette.text_muted)
+        hint = ("生成 tex 中…（仅生成 tex，不落位、不编译）" if text_only
+                else "生成并编译中…（首次编译约 1–3 分钟）")
+        self.feedback.content = C.text(hint, self.t, "small", self.t.palette.text_muted)
         self._safe_update(self.feedback)
         try:
             result = await asyncio.to_thread(EB.read_json_command, call, timeout=900,
@@ -392,10 +434,17 @@ class TocPanel:
         if not ok:
             rows.append(C.notice_bar(f"生成失败：{first_line(result.get('error')) or '没有结果 JSON'}",
                                      self.t, "error"))
-        for label, path in result_paths(payload):
+        if ok and text_only:
+            rows.append(C.notice_bar("仅生成 tex，未落位 000。", self.t, "info"))
+        shown = {str(path) for _label, path in result_paths(payload)}
+        for label, path, inferred in result_outputs(payload, self.page.field("issue_dir")):
+            if path in shown:
+                continue
+            shown.add(path)
             rows.append(ft.Row(spacing=self.t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                controls=[
-                C.text(label, self.t, "small", self.t.palette.text_muted),
+                C.text(label + ("（推断）" if inferred else ""), self.t, "small",
+                       self.t.palette.text_muted),
                 C.text(path, self.t, "caption", self.t.palette.text_faint),
                 ft.Container(expand=True),
                 C.text_button("打开", lambda e, p=path: self.app.open_path(p), self.t),
@@ -409,7 +458,7 @@ class TocPanel:
         self._safe_update(self.feedback)
         if ok:
             self.app.store.set_recent("toc_report", report)
-        self.page.mark("toc_generated", ok=ok, result=result_path,
+        self.page.mark("toc_generated", ok=ok, result=result_path, text_only=text_only,
                        warnings=len(warnings),
                        zh_pdf=bool((payload.get("placed") or {}).get("zhPdf")),
                        error=str(result.get("error") or ""))

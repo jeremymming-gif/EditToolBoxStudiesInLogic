@@ -1321,10 +1321,11 @@ class App:
         return leaf
 
     def _issue_progress(self) -> tuple[int, int] | None:
-        """整期装配的「完成/6」进度；无当期目录或无状态记录时返回 None。
+        """整期装配的「完成/4」进度；无当期目录或无状态记录时返回 None。
 
-        批 116 NAV-B+：只在侧栏整期行右侧显示，不新增控制区。完成 = 该步
-        done/warn（与 IssuePage 的「成功/有警告」一致），running/idle 不计。
+        批 116 NAV-B+ / 批 117：只在侧栏整期行右侧显示，不新增控制区。
+        完成 = 该功能页内所有底层操作 done/warn（与 IssuePage 的「成功/有警告」
+        一致）；running/idle 不计。四个功能页相互独立，各自完成各计 1。
         """
         store = getattr(self, "store", None)
         if store is None:
@@ -1347,15 +1348,18 @@ class App:
             return None
         statuses = record.get("statuses")
         if not isinstance(statuses, dict):
-            return None  # 有目录但还没跑过任何一步：无状态，不显示 0/6
-        steps = IA.issue_step_keys()
-        done = 0
-        for key in steps:
+            return None  # 有目录但还没跑过任何一步：无状态，不显示 0/4
+        def _state(key: str) -> str:
             item = statuses.get(key)
-            state = item.get("state") if isinstance(item, dict) else item
-            if str(state or "") in ("done", "warn"):
+            return str((item.get("state") if isinstance(item, dict) else item) or "")
+
+        views = IA.ISSUE_VIEWS
+        done = 0
+        for view in views:
+            keys = list(view.get("steps") or [])
+            if keys and all(_state(key) in ("done", "warn") for key in keys):
                 done += 1
-        return done, len(steps)
+        return done, len(views)
 
     def _sidebar_content(self) -> ft.Control:
         t = self.t
@@ -1393,7 +1397,7 @@ class App:
                     continue
                 # 批 116 NAV-B（方案 B）：侧栏只放目的地，工作区/系统一律叶子，
                 # 无 chevron、无子行。单篇的 convert/proofcheck 改页内 chip，
-                # 整期的 6 步仍在页内 rail；点击单篇沿用上次视图。
+                # 整期的 4 个功能页在页内 chip；点击单篇沿用上次视图。
                 leaf = C.nav_parent(
                     str(entry["icon"]), str(entry["label"]), t, active=active,
                     expanded=False, has_children=False,
