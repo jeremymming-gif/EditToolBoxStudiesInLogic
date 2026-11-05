@@ -784,7 +784,10 @@ async def after_issue_step(page, key: str, call, code: int, cancelled: bool,
 
 # ── 批 115：整期装配「检查 tex 信息」详情页的 5 列表格 ─────────────────────
 INFO5_COLUMNS = ("篇目", "卷期年", "起–止", "页数", "字号/行距")
-INFO5_WEIGHTS = (5, 2, 1.6, 1.6, 2)
+INFO5_WEIGHTS = (50, 20, 16, 16, 20)
+# Flet 1.0.5：Container/Row/Column 的 expand 只收 bool|int；上面是 5:2:1.6:1.6:2
+# 的整数化（批 124 修：曾用浮点 1.6，页面更新时 Flet 校验抛
+# ValueError: expand must be of type bool or int，导致整页 patch 失败、视图不刷新。）
 INFO_FILTERS = (("all", "全部"), ("issues", "需核对"), ("missing", "缺 PDF"))
 
 
