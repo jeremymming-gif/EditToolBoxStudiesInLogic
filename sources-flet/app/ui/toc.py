@@ -87,11 +87,47 @@ def article_rows(payload: dict) -> list[dict]:
         if not isinstance(raw, dict):
             continue
         name = str(raw.get("folderName") or raw.get("folder") or "").strip()
+        folder = str(raw.get("folder") or name).strip()
         title = str(raw.get("chineseTitle") or raw.get("englishTitle") or "").strip()
         title = " ".join(title.split())
         if name:
-            rows.append({"name": name, "title": title})
+            rows.append({"name": name, "folder": folder, "title": title})
     return rows
+
+
+def articles_from_report(report: str) -> list[dict]:
+    """从《信息检查》报告旁边的 JSON 同步读篇目（用户 m02698：勾选专栏篇目）。
+
+    信息检查同时写 `.txt` 与 `.json`；报告字段选的是 `.txt`，这里找同名 `.json`。
+    读不到时返回空列表，由异步回退（引擎 infocheck --preview）兜底。
+    """
+    path = str(report or "").strip()
+    if not path:
+        return []
+    candidate = Path(path)
+    if candidate.suffix.lower() == ".json":
+        candidates = [candidate]
+    else:
+        candidates = [candidate.with_suffix(".json")]
+        try:
+            candidates += sorted(
+                candidate.parent.glob(f"{candidate.stem}*.json"),
+                key=lambda p: p.stat().st_mtime, reverse=True)[:1]
+        except OSError:
+            pass
+    for json_path in candidates:
+        try:
+            if not json_path.is_file():
+                continue
+            import json
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        rows = article_rows(data if isinstance(data, dict) else {"articles": data})
+        if rows:
+            return rows
+    return []
+
 
 
 def preview_lines(payload: dict) -> list[str]:
@@ -196,21 +232,23 @@ class TocPanel:
             options=[(key, TS.KIND_LABELS[key]) for key in TS.COLUMN_KINDS],
             on_select=self._on_kind_select, expand=True,
         )
-        # 可加入的篇目：expand 占满表单行，避免固定 300 宽在窄面板里把「加入」挤出画面。
-        self.add_box = C.select(self.t, value="", label="可加入的篇目",
-                                options=[], expand=True)
+        # 批 123：篇目改为勾选清单（_article_checklist），不再需要「可加入的篇目」下拉。
         # 批 121 A1/A2：自动读入/自动保存的状态。
         # `_loaded_path` = 已自动读过的设置文件；`_saved_snapshot` = 上次读/写的内容快照；
         # `_dirty` = 用户是否在面板里改过（只有改过才自动写文件，避免空跑覆盖手改文件）。
         self._loaded_path = ""
         self._saved_snapshot = self._snapshot()
         self._dirty = False
+        # 批 123（用户 m02698）：专栏篇目勾选清单 = 当前报告已加载到哪个报告 + 是否在异步加载。
+        self._articles_for = ""
+        self._articles_loading = False
 
     # ── 参数区 ─────────────────────────────────────────────────────────
     def params(self) -> list:
         options = self.app.store.get("options", {}) or {}
         report = self._report()
         self._auto_load_settings(report)
+        self._ensure_articles(report)
         self.editor_box.controls = self._editor_controls()
         if report:
             try:
@@ -364,6 +402,128 @@ class TocPanel:
                            "勾选不会生效。")
         return False, ""
 
+    # ── 批 123（用户 m02698）：专栏篇目勾选 ──────────────────────────────
+    def _normalize_selected(self) -> None:
+        """把历史设置里的「全名/folder」规范成当前报告的 folderName，勾选态才对得上。"""
+        names = [row["name"] for row in self.available]
+        if not names:
+            return
+        by_tail = {name.split()[-1]: name for name in names}
+        fixed: list[str] = []
+        for stored in self.selected:
+            name = str(stored or "").strip()
+            if not name:
+                continue
+            if name in names:
+                fixed.append(name)
+            elif name.split()[-1] in by_tail:
+                fixed.append(by_tail[name.split()[-1]])
+        if fixed != self.selected:
+            self.selected = fixed
+            self._mark_dirty()
+
+    def _is_article_selected(self, name: str) -> bool:
+        tail = name.split()[-1]
+        return any(stored == name or stored.split()[-1] == tail for stored in self.selected)
+
+    def _toggle_article(self, name: str, checked: bool) -> None:
+        tail = name.split()[-1]
+        kept = [stored for stored in self.selected
+                if not (stored == name or stored.split()[-1] == tail)]
+        if checked:
+            kept.append(name)
+        self.selected = kept
+        self._mark_dirty()
+        self._render_editor()
+
+    def _select_all_articles(self) -> None:
+        self.selected = [row["name"] for row in self.available]
+        self._mark_dirty()
+        self._render_editor()
+
+    def _clear_articles(self) -> None:
+        self.selected = []
+        self._mark_dirty()
+        self._render_editor()
+
+    def _ensure_articles(self, report: str) -> None:
+        """真实生成路径也把篇目清单载入面板（此前只死在 _preview_task 里）。
+
+        先同步读《信息检查》旁边的 JSON（无需跑引擎）；读不到再异步回退旧预览接口。
+        """
+        report = str(report or "")
+        if report and report == getattr(self, "_articles_for", "") and self.available:
+            if self._apply_album_default():
+                self._mark_dirty()
+            return
+        self._articles_for = report
+        rows = articles_from_report(report)
+        if rows:
+            self.available = rows
+            self._normalize_selected()
+            if self._apply_album_default():
+                self._mark_dirty()
+            self.page.mark("toc_articles_loaded", report=report, count=len(rows))
+            return
+        self.available = []
+        runner = getattr(getattr(self, "page", None), "page", None)
+        run_task = getattr(runner, "run_task", None)
+        if report and run_task is not None and not getattr(self, "_articles_loading", False):
+            self._articles_loading = True
+            try:
+                run_task(self._load_articles_and_render)
+            except Exception:  # noqa: BLE001 - 老页面/测试桩无 run_task 语义
+                self._articles_loading = False
+
+    async def _load_articles_and_render(self) -> None:
+        try:
+            await self._load_articles()
+        finally:
+            self._articles_loading = False
+        if self.available:
+            if self._apply_album_default():
+                self._mark_dirty()
+            self._render_editor()
+
+    def _article_checklist(self) -> ft.Control:
+        """勾选清单：勾上的篇目写进 columnArticles（顺序不影响渲染）。"""
+        t = self.t
+        chosen = sum(1 for row in self.available if self._is_article_selected(row["name"]))
+        header = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+            C.text(f"专栏篇目（勾选 {chosen} / {len(self.available)} 篇）", t, "small",
+                   weight="semibold"),
+            ft.Container(expand=True),
+            C.text_button("全选", lambda e: self._select_all_articles(), t),
+            C.text_button("清空", lambda e: self._clear_articles(), t),
+        ])
+        lines: list[ft.Control] = [header]
+        if not str(self.values.get("columnKind") or "").strip():
+            lines.append(C.text("勾选栏目类型并填写栏目名称后，下面的勾选才写入目录。",
+                                t, "caption", t.palette.text_faint))
+        for row in self.available:
+            name = row["name"]
+            title = row.get("title") or ""
+            controls: list[ft.Control] = [
+                ft.Checkbox(
+                    label=name, value=self._is_article_selected(name),
+                    label_style=ft.TextStyle(size=t.font("small"), color=t.palette.text),
+                    on_change=lambda e, n=name: self._toggle_article(
+                        n, bool(e.control.value)),
+                ),
+            ]
+            if title:
+                controls.append(ft.Container(
+                    expand=True,
+                    content=C.text(title, t, "caption", t.palette.text_faint,
+                                   max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                                   tooltip=title),
+                ))
+            lines.append(ft.Row(controls, spacing=t.sp("1"),
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER))
+        return ft.Column(spacing=t.sp("half"), controls=lines)
+
+
     # ── 栏目表 ─────────────────────────────────────────────────────────
     def _load_settings(self) -> None:
         path = self._settings_path()
@@ -419,37 +579,41 @@ class TocPanel:
                 C.form_field(t, "主持人（可空）", host),
             ]),
         ]
-        if not self.selected:
-            rows.append(C.text("栏目篇目：尚未选择。从下方「可加入的篇目」加入，或读取已有栏目表。",
-                               t, "caption", t.palette.text_faint))
-        for index, article in enumerate(self.selected):
-            # 用户 m03037：篇目名占满剩余宽度并单行省略——超长篇名不会把 ↑↓/删除 挤出面板。
-            rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                               controls=[
-                ft.Container(
-                    expand=True,
-                    content=C.text(article, t, "small", weight="medium", max_lines=1,
-                                   overflow=ft.TextOverflow.ELLIPSIS, tooltip=article),
-                ),
-                C.text_button("↑", lambda e, i=index: self._move(i, -1), t),
-                C.text_button("↓", lambda e, i=index: self._move(i, 1), t),
-                # 用户 m02990：移除篇目是破坏性动作 → danger 按钮；↑↓ 属列表内微调保留文字链。
-                C.danger_button("删除", lambda e, i=index: self._remove(i), t,
-                                icon="DELETE_OUTLINE"),
-            ]))
-        remaining = [row["name"] for row in self.available if row["name"] not in self.selected]
-        self.add_box.options = [(name, name) for name in remaining]
-        self.add_box.value = remaining[0] if remaining else ""
-        if remaining:
-            # 标签上置的下拉 → 按钮与下拉控制行底边齐平（用户 m02816/m03037）；
-            # form_field + add_box 都 expand，行宽随面板收缩，不再固定 300 宽溢出。
-            rows.append(C.field_row(
-                C.form_field(t, "可加入的篇目", self.add_box, expand=True),
-                C.secondary_button("加入栏目", lambda e: self._add(), t), t))
+        if self.available:
+            # 批 123（用户 m02698）：直接勾选专栏篇目，不再依赖「逐篇加入」。
+            rows.append(self._article_checklist())
         else:
-            rows.append(C.text("没有可加入的篇目：先生成第 1 步「检查 tex 信息」报告，篇目会自动取最新报告。", t, "caption",
-                               t.palette.text_faint))
+            if not self.selected:
+                rows.append(C.text("栏目篇目：尚未选择。先运行第 1 步「检查 tex 信息」，篇目清单会自动载入。",
+                                   t, "caption", t.palette.text_faint))
+            for index, article in enumerate(self.selected):
+                # 用户 m03037：篇目名占满剩余宽度并单行省略——超长篇名不会把 ↑↓/删除 挤出面板。
+                rows.append(ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                   controls=[
+                    ft.Container(
+                        expand=True,
+                        content=C.text(article, t, "small", weight="medium", max_lines=1,
+                                       overflow=ft.TextOverflow.ELLIPSIS, tooltip=article),
+                    ),
+                    C.text_button("↑", lambda e, i=index: self._move(i, -1), t),
+                    C.text_button("↓", lambda e, i=index: self._move(i, 1), t),
+                    # 用户 m02990：移除篇目是破坏性动作 → danger 按钮；↑↓ 属列表内微调保留文字链。
+                    C.danger_button("删除", lambda e, i=index: self._remove(i), t,
+                                    icon="DELETE_OUTLINE"),
+                ]))
+            if not self.selected:
+                rows.append(C.text("还没有篇目清单：先运行第 1 步「检查 tex 信息」生成报告，篇目会自动载入。",
+                                   t, "caption", t.palette.text_faint))
         return rows
+
+    def _apply_album_default(self) -> bool:
+        """用户 m02929：勾选「专辑」时默认整期都是专辑稿件（全部勾上，可再手动取消）。"""
+        if str(self.values.get("columnKind") or "").strip() != "专辑":
+            return False
+        if not self.available or self.selected:
+            return False
+        self.selected = [row["name"] for row in self.available]
+        return True
 
     def _on_kind_select(self, key: str, label: str) -> None:
         """栏目类型选择：写入设置值并原地更新浮动下拉的显示文案（用户 m03037）。"""
@@ -461,6 +625,9 @@ class TocPanel:
                 box._value_text.update()
             except Exception:  # noqa: BLE001 - 未挂载时仅更新数据
                 pass
+        if self._apply_album_default():
+            self._mark_dirty()
+            self._render_editor()
 
     def _field(self, key: str, label: str) -> ft.TextField:
         """栏目编辑区输入框：expand 填满网格格，标签由 form_field 浮动显示。"""
@@ -479,13 +646,6 @@ class TocPanel:
     def _remove(self, index: int) -> None:
         if 0 <= index < len(self.selected):
             self.selected.pop(index)
-            self._mark_dirty()
-            self._render_editor()
-
-    def _add(self) -> None:
-        name = self.add_box.value or ""
-        if name and name not in self.selected:
-            self.selected.append(name)
             self._mark_dirty()
             self._render_editor()
 
@@ -553,6 +713,9 @@ class TocPanel:
         except Exception:  # noqa: BLE001
             return
         self.available = article_rows(result.get("json") or {})
+        if self.available:
+            self._articles_for = self._report()
+            self._normalize_selected()
         if not self.available:
             self._notice("篇目清单为空：先运行「检查 tex 信息」生成报告", "warn")
 

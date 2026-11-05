@@ -120,26 +120,26 @@ def test_kind_display_follows_current_value_and_selection():
     assert kind._value_text.value == "乙类"
 
 
-def test_add_article_row_uses_field_row_with_equal_height():
+def test_article_checklist_replaces_add_row_when_report_loaded():
+    """批 123（用户 m02698）：报告载入篇目后，编辑区直接给勾选清单，不再需要逐篇加入。"""
     t = _t()
-    panel = _panel(t, available=[{"name": "甲篇"}, {"name": "乙篇"}])
+    panel = _panel(t, available=[
+        {"name": "甲篇", "title": "甲的标题"},
+        {"name": "乙篇", "title": ""},
+    ])
     _, rows = _grid(panel)
-    row = rows[-1]
-    assert isinstance(row, ft.Row), f"可加入篇目行应为表单行，实际 {type(row).__name__}"
-    assert row.vertical_alignment == ft.CrossAxisAlignment.END
-    field_col, button = row.controls
-    # 标签上置的复合列：下拉 28 高、按钮 28 高，底边齐平（field_row 默认语义）。
-    select = field_col.controls[1]
-    assert isinstance(select, C.Select)
-    assert select.height == t.control_h()
-    assert isinstance(button, ft.OutlinedButton)
-    assert button.height == t.control_h()
-    # 不再固定 300 宽；下拉与表单列都 expand 随面板收缩。
-    assert select.width is None and select.expand is True
-    assert field_col.expand is True
-    # 选项与默认值同步。
-    assert [option.key for option in panel.add_box.options] == ["甲篇", "乙篇"]
-    assert panel.add_box.value == "甲篇"
+    checklist = rows[-1]
+    assert isinstance(checklist, ft.Column), f"篇目区应是勾选清单，实际 {type(checklist).__name__}"
+    header, *items = checklist.controls
+    assert isinstance(header, ft.Row)
+    texts = [c.value for c in header.controls if isinstance(c, ft.Text)]
+    assert any("勾选 0 / 2 篇" in value for value in texts), texts
+    buttons = [c for c in header.controls if isinstance(c, ft.TextButton)]
+    assert [button.content for button in buttons] == ["全选", "清空"]
+    checks = [c for item in items if isinstance(item, ft.Row)
+              for c in item.controls if isinstance(c, ft.Checkbox)]
+    assert [checkbox.label for checkbox in checks] == ["甲篇", "乙篇"]
+    assert all(checkbox.value is False for checkbox in checks)
 
 
 def test_params_button_row_wraps_in_narrow_panel():
