@@ -239,6 +239,13 @@ class TocPanel:
         self._loaded_path = ""
         self._saved_snapshot = self._snapshot()
         self._dirty = False
+        # B-373：草稿归属的报告——切换报告时草稿只写回它当时所在的那份设置文件。
+        self._loaded_report = ""
+        # B-374：当前篇目勾选是否已由设置文件或用户明确给出（显式空集不得被默认全选覆盖）。
+        self._sel_explicit = False
+        # B-373 返工：目标设置读入失败的状态（非空即阻断 sync/预览/生成/装配，直到修复或重载）。
+        self._load_error = ""
+        self._load_error_path = ""
         # 批 123（用户 m02698）：专栏篇目勾选清单 = 当前报告已加载到哪个报告 + 是否在异步加载。
         self._articles_for = ""
         self._articles_loading = False
@@ -339,41 +346,82 @@ class TocPanel:
     def _auto_load_settings(self, report: str) -> None:
         """A1：选定报告后自动读默认 目录设置.json，回填栏目表。
 
-        只在「生效路径」变化时读一次；用户已改过（`_dirty`）则先自动保存再切换，
-        避免预览/生成/切报告把刚编辑的栏目表冲掉。
+        只在「生效路径」变化时读一次；用户已改过（`_dirty`）则先写回**草稿原本所属**
+        的那份设置文件再切换（B-373：不能把上一份报告的草稿写进新报告的设置）。
+        原归属路径写失败时保持草稿与 `_dirty`、显示错误并原地停住，等用户处理。
         """
         path = self._settings_path()
-        if not path or path == self._loaded_path:
+        if not path:
             return
-        if self._dirty:
-            self.sync_settings()
+        load_error_path = str(getattr(self, "_load_error_path", "") or "")
+        if path == self._loaded_path and load_error_path != path:
+            # 当前归属就是它；若刚才是别的目标读失败，回到归属即视为恢复（R2 返工）。
+            self._load_error = ""
+            self._load_error_path = ""
+            return
+        report_key = str(report or "") or self._report()
+        previous_path = str(getattr(self, "_loaded_path", "") or "")
+        previous_report = str(getattr(self, "_loaded_report", "") or "")
+        if self._dirty and previous_path:
+            saved_path, error = self._write_settings(previous_path)
+            if error:
+                self._notice(f"上一份报告的栏目表保存失败：{error}", "error")
+                self.page.mark("toc_settings_error", path=saved_path, error=error,
+                               report=previous_report, auto=True)
+                self.page.mark("toc_settings_switch_blocked",
+                               path=previous_path, target=path)
+                # 不推进 `_loaded_path`：草稿仍属旧报告，sync_settings 也会拦住生成。
+                return
         data, error = TS.read(path)
-        self._loaded_path = path
         if error:
+            # R2 返工：读失败保持可识别错误态，不推进归属（面板值仍属上一份设置），
+            # 由 sync_settings 阻断预览/生成/整期装配；修好 JSON 或「读取栏目表」后恢复。
+            self._load_error = str(error)
+            self._load_error_path = path
             self._notice(error, "error")
             self.page.mark("toc_settings_error", path=path, error=error)
-            self._saved_snapshot = self._snapshot()
             return
+        self._loaded_path = path
+        self._loaded_report = report_key
+        self._load_error = ""
+        self._load_error_path = ""
         if not os.path.isfile(path):
+            if previous_path and previous_report and previous_report != report_key:
+                # 换报告且新报告还没有设置文件：用新报告的默认值（不继承上一份报告）。
+                self.values = TS.defaults()
+                self.selected = []
+                self._saved_snapshot = self._snapshot()
+                self._dirty = False
+                self._sel_explicit = False
+                self.page.mark("toc_settings_defaulted", path=path)
+                return
             # 文件还不存在：保留面板里的值，等用户改动后再自动写（不凭空建空文件）。
             self._saved_snapshot = self._snapshot()
             return
         self.values = data
         self.selected = list(data.get("columnArticles") or [])
+        self._sel_explicit = self._has_explicit_selection()
         self._saved_snapshot = self._snapshot()
         self._dirty = False
         self.page.mark("toc_settings_loaded", path=path, articles=len(self.selected),
                        auto=True)
 
-    def sync_settings(self, force: bool = False) -> tuple[str, str]:
-        """A2/A6：把面板的 `values` + `selected` 合并写回生效路径。
+    def _has_explicit_selection(self) -> bool:
+        """R1 返工：区分「专辑里的明确空集」与「别的栏目类型下的空列表」。
 
-        返回 `(path, error)`；`error` 非空表示写失败（调用方必须显式报错并中止）。
-        - 生效路径：显式「目录设置 JSON」优先，否则报告同目录（与引擎默认一致）；
-        - 无改动且文件已存在时不重写，避免每次运行都产生一份 .bak；
-        - 用户没改过且文件不存在时不创建空文件（等首次编辑）。
+        非空勾选、或已保存的栏目类型就是「专辑」时才算明确选择；无栏目/专栏设置里的
+        空列表只是「还没勾过」，首次切到专辑仍要默认全选（B-374 原契约不变）。
         """
-        path = self._settings_path()
+        if self.selected:
+            return True
+        return str(self.values.get("columnKind") or "").strip() == "专辑"
+
+    def _write_settings(self, path: str, force: bool = False) -> tuple[str, str]:
+        """把面板 `values` + `selected` 写回指定路径；返回 `(path, error)`。
+
+        私有 helper（B-373）：切换报告时草稿必须写回它原本所在的设置文件。
+        """
+        path = str(path or "")
         if not path:
             return "", "没有保存位置：先选信息检查报告或目录设置 JSON"
         data = dict(self.values)
@@ -381,7 +429,10 @@ class TocPanel:
         snapshot = TS.normalize(data)
         if not force and snapshot == self._saved_snapshot:
             return path, ""
-        ok, message = TS.save(path, data)
+        try:
+            ok, message = TS.save(path, data)
+        except OSError as exc:  # 备份/写入/os.replace 的真实异常（R3 返工）
+            return path, f"写入失败：{exc}"
         if not ok:
             return path, message
         self._saved_snapshot = snapshot
@@ -389,6 +440,28 @@ class TocPanel:
         self.page.mark("toc_settings_saved", path=message, articles=len(self.selected),
                        kind=str(data.get("columnKind") or ""), auto=not force)
         return path, ""
+
+    def sync_settings(self, force: bool = False) -> tuple[str, str]:
+        """A2/A6：把面板的 `values` + `selected` 合并写回生效路径。
+
+        返回 `(path, error)`；`error` 非空表示写失败（调用方必须显式报错并中止）。
+        - 生效路径：显式「目录设置 JSON」优先，否则报告同目录（与引擎默认一致）；
+        - 无改动且文件已存在时不重写，避免每次运行都产生一份 .bak；
+        - 用户没改过且文件不存在时不创建空文件（等首次编辑）；
+        - 草稿属于别的报告（切换报告时原路径没保存成功）→ 一律不写新路径（B-373）。
+        """
+        path = self._settings_path()
+        if not path:
+            return "", "没有保存位置：先选信息检查报告或目录设置 JSON"
+        load_error = str(getattr(self, "_load_error", "") or "")
+        if load_error:
+            return path, (f"设置文件读取失败（{load_error}）："
+                          "修好该 JSON 或点「读取栏目表」重新读入后再运行。")
+        owner = str(getattr(self, "_loaded_path", "") or "")
+        if self._dirty and owner and owner != path:
+            return path, (f"栏目表草稿属于上一份报告的设置（{owner}），不能写进当前报告："
+                          f"请切回该报告先保存，或点「读取栏目表」重新读入。")
+        return self._write_settings(path, force=force)
 
     def column_issue(self) -> tuple[bool, str]:
         """A4 负向校验：返回 `(是否阻止运行, 提示文案)`。"""
@@ -433,16 +506,19 @@ class TocPanel:
         if checked:
             kept.append(name)
         self.selected = kept
+        self._sel_explicit = True
         self._mark_dirty()
         self._render_editor()
 
     def _select_all_articles(self) -> None:
         self.selected = [row["name"] for row in self.available]
+        self._sel_explicit = True
         self._mark_dirty()
         self._render_editor()
 
     def _clear_articles(self) -> None:
         self.selected = []
+        self._sel_explicit = True
         self._mark_dirty()
         self._render_editor()
 
@@ -531,13 +607,19 @@ class TocPanel:
             self._notice("请先选信息检查报告或目录设置文件", "warn")
             return
         data, error = TS.read(path)
-        self._loaded_path = path
         if error:
+            self._load_error = str(error)
+            self._load_error_path = path
             self._notice(error, "error")
             self.page.mark("toc_settings_error", path=path, error=error)
             return
+        self._loaded_path = path
+        self._loaded_report = self._report()
+        self._load_error = ""
+        self._load_error_path = ""
         self.values = data
         self.selected = list(data.get("columnArticles") or [])
+        self._sel_explicit = self._has_explicit_selection()
         self._saved_snapshot = self._snapshot()
         self._dirty = False
         self.editor_box.controls = self._editor_controls()
@@ -607,10 +689,16 @@ class TocPanel:
         return rows
 
     def _apply_album_default(self) -> bool:
-        """用户 m02929：勾选「专辑」时默认整期都是专辑稿件（全部勾上，可再手动取消）。"""
+        """用户 m02929：勾选「专辑」时默认整期都是专辑稿件（全部勾上，可再手动取消）。
+
+        B-374：只在「还没形成明确勾选」时补默认值。设置文件里的 `columnArticles`
+        （含空列表）与用户清空/取消都属于明确选择，切页重建不得再覆盖成全选。
+        """
         if str(self.values.get("columnKind") or "").strip() != "专辑":
             return False
         if not self.available or self.selected:
+            return False
+        if getattr(self, "_sel_explicit", False):
             return False
         self.selected = [row["name"] for row in self.available]
         return True
@@ -646,6 +734,7 @@ class TocPanel:
     def _remove(self, index: int) -> None:
         if 0 <= index < len(self.selected):
             self.selected.pop(index)
+            self._sel_explicit = True
             self._mark_dirty()
             self._render_editor()
 

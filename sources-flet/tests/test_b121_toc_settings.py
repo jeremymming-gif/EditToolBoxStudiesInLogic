@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,6 +83,11 @@ def _make_panel(tmp_path: Path, *, settings: dict | None = None,
     panel.add_box = C.select(panel.t, value="", label="可加入的篇目", options=[], expand=True)
     panel.kind = None
     panel._loaded_path = ""
+    # B-373/B-374 新增私有状态：旧页面/旧 helper 没有时实现侧用 getattr 兜底。
+    panel._loaded_report = ""
+    panel._sel_explicit = False
+    panel._load_error = ""
+    panel._load_error_path = ""
     if settings:
         panel.values.update(settings)
     panel._saved_snapshot = panel._snapshot()
@@ -332,3 +338,380 @@ def test_cleantemp_step_chains_tocwork_only_when_enabled_and_real_run(tmp_path):
     store.set("options.cleantemp_tocwork", True)
     store.set("options.cleantemp_dry_run", True)
     assert getattr(ASM.build_step_call(page, "cleantemp"), "_followup", None) is None
+
+
+# ── B-373（A-01）：切换报告不得把上一份报告的草稿写进新报告 ────────────────
+def _two_reports(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """A/B 两个期目录各一份报告 + 各一份栏目设置；返回 (报告A, 报告B, 设置A, 设置B)。"""
+    a_dir = tmp_path / "A期"
+    b_dir = tmp_path / "B期"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    report_a = a_dir / "信息检查-最新.txt"
+    report_a.write_text("A", encoding="utf-8")
+    report_b = b_dir / "信息检查-最新.txt"
+    report_b.write_text("B", encoding="utf-8")
+    settings_a = a_dir / TS.FILE_NAME
+    settings_b = b_dir / TS.FILE_NAME
+    _write_settings(settings_a, columnKind="专栏", columnName="A栏目")
+    _fix = json.dumps(TS.normalize({**TS.defaults(), "columnKind": "专栏",
+                                   "columnName": "B栏目"}), ensure_ascii=False)
+    settings_b.write_text(_fix, encoding="utf-8")  # 用户在编辑器里修好 JSON
+    return report_a, report_b, settings_a, settings_b
+
+
+def test_dirty_switch_saves_draft_to_old_path_and_keeps_target_bytes(tmp_path):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    before_a = settings_a.read_bytes()
+    before_b = settings_b.read_bytes()
+
+    # A 上未保存的编辑（真实路径：输入框 on_change → _set_value → 脏）。
+    panel.values["columnName"] = "A未保存编辑"
+    panel._mark_dirty()
+
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+
+    # 草稿写回 A 的原归属路径；面板改成显示 B 的值。
+    saved_a, error = TS.read(str(settings_a))
+    assert error == ""
+    assert saved_a["columnName"] == "A未保存编辑"
+    assert settings_a.read_bytes() != before_a
+    assert list(settings_a.parent.glob(TS.FILE_NAME + ".bak-*")), "写回 A 要沿用 TS.save 的备份"
+    assert panel.values["columnName"] == "B栏目"
+    assert panel.selected == []
+    assert panel._loaded_path == str(settings_b)
+    assert panel._dirty is False
+    assert settings_b.read_bytes() == before_b, "B 的设置文件一个字节都不能被 A 的草稿改动"
+    assert not list(settings_b.parent.glob(TS.FILE_NAME + ".bak-*")), "B 不该产生备份"
+
+
+def test_failed_old_path_save_keeps_draft_and_blocks_generation(tmp_path, monkeypatch):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    before_a = settings_a.read_bytes()
+    before_b = settings_b.read_bytes()
+    real_save = TS.save
+
+    def _fail_old_path(path, data):
+        if Path(path) == settings_a:
+            return False, "注入失败：原路径不可写"
+        return real_save(path, data)
+
+    monkeypatch.setattr(TS, "save", _fail_old_path)
+    panel.values["columnName"] = "A草稿"
+    panel._mark_dirty()
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+
+    # 保存失败：不推进到 B、不清脏、草稿与两处文件都不动。
+    assert panel._dirty is True
+    assert panel.values["columnName"] == "A草稿"
+    assert panel._loaded_path == str(settings_a)
+    assert settings_a.read_bytes() == before_a
+    assert settings_b.read_bytes() == before_b
+    events = [event for event, _fields in page.marks]
+    assert "toc_settings_error" in events
+    assert "toc_settings_switch_blocked" in events
+
+    # 生成前同样阻断：不能拿 A 的草稿去配 B 的报告。
+    def _boom(*args, **kwargs):
+        raise AssertionError("栏目表保存失败时不得调用引擎")
+
+    monkeypatch.setattr(TOC.EB, "read_json_command", _boom)
+    asyncio.run(panel._generate_task())
+
+    events = [event for event, _fields in page.marks]
+    assert "toc_settings_error" in events
+    assert "toc_generated" not in events, "保存失败必须中止生成"
+    assert settings_a.read_bytes() == before_a
+    assert settings_b.read_bytes() == before_b
+    assert not (report_b.parent / TOC.TMP_DIR).exists(), "中止时不应创建结果目录"
+
+
+def test_clean_switch_writes_nothing(tmp_path):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    before_a = settings_a.read_bytes()
+    before_b = settings_b.read_bytes()
+
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+
+    assert panel.values["columnName"] == "B栏目"
+    assert settings_a.read_bytes() == before_a
+    assert settings_b.read_bytes() == before_b
+    assert not list(settings_a.parent.glob(TS.FILE_NAME + ".bak-*"))
+
+
+def test_dirty_same_path_reentry_does_not_save(tmp_path):
+    folder = tmp_path / "期"
+    folder.mkdir()
+    panel, report, _page = _make_panel(folder)
+    target = folder / TS.FILE_NAME
+    _write_settings(target, columnKind="专栏", columnName="逻辑与概率")
+    panel._auto_load_settings(str(report))
+    before = target.read_bytes()
+
+    panel.values["columnName"] = "改一半"
+    panel._mark_dirty()
+    panel._auto_load_settings(str(report))  # 同路径重入必须直接返回
+
+    assert target.read_bytes() == before
+    assert not list(folder.glob(TS.FILE_NAME + ".bak-*"))
+    assert panel._dirty is True
+    assert panel.values["columnName"] == "改一半"
+
+
+def test_explicit_settings_path_still_wins_over_report_dir(tmp_path):
+    folder = tmp_path / "期"
+    folder.mkdir()
+    panel, report, page = _make_panel(folder)
+    _write_settings(folder / TS.FILE_NAME, columnKind="专栏", columnName="报告目录栏目")
+    explicit = tmp_path / "显式设置.json"
+    _write_settings(explicit, columnKind="专辑", columnName="显式栏目")
+    page.set_field("toc_settings", str(explicit))
+    page.set_field("toc_report", str(report))
+
+    panel._auto_load_settings(str(report))
+
+    assert panel._settings_path() == str(explicit)
+    assert panel._loaded_path == str(explicit)
+    assert panel.values["columnName"] == "显式栏目"
+
+
+def test_switch_to_report_without_settings_uses_defaults(tmp_path):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    settings_b.unlink()  # B 这份报告还没有栏目设置文件
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    assert panel.values["columnName"] == "A栏目"
+
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+
+    assert panel.values == TS.defaults(), "B 没有设置文件时用 B 的默认值，不继承 A"
+    assert panel.selected == []
+    assert panel._loaded_path == str(settings_b)
+    assert panel._dirty is False
+    assert not settings_b.exists(), "只在读入时不得凭空创建空设置文件"
+
+
+def test_invalid_target_json_is_not_overwritten(tmp_path):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    settings_b.write_text("{ 这不是合法 JSON", encoding="utf-8")
+    broken = settings_b.read_bytes()
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    panel.values["columnName"] = "A草稿"
+    panel._mark_dirty()
+
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+
+    events = [event for event, _fields in page.marks]
+    assert "toc_settings_error" in events
+    assert settings_b.read_bytes() == broken, "非法 JSON 的目标文件不得被覆盖"
+    assert not list(settings_b.parent.glob(TS.FILE_NAME + ".bak-*"))
+    saved_a, _error = TS.read(str(settings_a))
+    assert saved_a["columnName"] == "A草稿", "草稿仍要写回原报告目录"
+
+
+def test_assembly_toc_call_blocked_after_failed_old_path_save(tmp_path, monkeypatch):
+    """整期装配同样不能拿 A 的草稿去配 B 的报告（B-373 的第二个入口）。"""
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("issue_dir", str(tmp_path))
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    real_save = TS.save
+
+    def _fail_old_path(path, data):
+        if Path(path) == settings_a:
+            return False, "注入失败：原路径不可写"
+        return real_save(path, data)
+
+    monkeypatch.setattr(TS, "save", _fail_old_path)
+    panel.values["columnName"] = "A草稿"
+    panel._mark_dirty()
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+    page._toc_panel = panel
+    before_b = settings_b.read_bytes()
+
+    try:
+        ASM.build_step_call(page, "toc")
+    except ValueError as exc:
+        assert "栏目表" in str(exc), str(exc)
+    else:  # pragma: no cover - 必须显式中止
+        raise AssertionError("草稿归属不一致时必须阻止整期运行")
+    assert settings_b.read_bytes() == before_b
+
+
+# ── 返工 R2（Codex 独立验收）：目标设置读失败不能被当作成功载入 ─────────────
+def test_invalid_target_read_blocks_sync_and_generation_then_recovers(tmp_path, monkeypatch):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    panel.values["columnName"] = "A未保存"
+    panel._mark_dirty()
+    broken = '{ broken JSON'
+    settings_b.write_text(broken, encoding="utf-8")
+
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+
+    # A 草稿已回写 A；B 原字节不动；面板保持 A 值但状态是「读入失败」。
+    saved_a, _ = TS.read(str(settings_a))
+    assert saved_a["columnName"] == "A未保存"
+    assert settings_b.read_text(encoding="utf-8") == broken
+    assert panel.values["columnName"] == "A未保存"
+    assert any(event == "toc_settings_error" for event, _ in page.marks)
+    _path, error = panel.sync_settings()
+    assert error, "目标读取失败必须阻断生成前 sync，不能返回成功"
+
+    # 预览/生成/整期装配三个入口都不得调用引擎。
+    def _boom(*args, **kwargs):
+        raise AssertionError("设置读入失败时不得调用引擎")
+
+    monkeypatch.setattr(TOC.EB, "read_json_command", _boom)
+    asyncio.run(panel._generate_task())
+    asyncio.run(panel._preview_task())
+    assert "toc_generated" not in [event for event, _ in page.marks]
+    assert "toc_preview" not in [event for event, _ in page.marks]
+    page._toc_panel = panel
+    page.set_field("issue_dir", str(tmp_path))
+    try:
+        ASM.build_step_call(page, "toc")
+    except ValueError as exc:
+        assert "栏目表" in str(exc), str(exc)
+    else:  # pragma: no cover - 必须显式中止
+        raise AssertionError("设置读入失败时必须阻止整期运行")
+    assert settings_b.read_text(encoding="utf-8") == broken
+
+    # 修好 B 的 JSON 后重新自动读入即恢复：错误清除、面板换成 B 的值、sync 通过。
+    _fix = json.dumps(TS.normalize({**TS.defaults(), "columnKind": "专栏",
+                                   "columnName": "B栏目"}), ensure_ascii=False)
+    settings_b.write_text(_fix, encoding="utf-8")  # 用户在编辑器里修好 JSON
+    panel._auto_load_settings(str(report_b))
+    assert panel.values["columnName"] == "B栏目"
+    assert panel._loaded_path == str(settings_b)
+    assert panel.sync_settings() == (str(settings_b), "")
+
+
+def test_switch_back_to_owner_after_target_read_error_clears_error(tmp_path):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    panel.values["columnName"] = "A未保存"
+    panel._mark_dirty()
+    settings_b.write_text("{ broken JSON", encoding="utf-8")
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+    assert panel.sync_settings()[1], "先确认处于读失败阻断态"
+
+    # 切回草稿归属的报告（A）：读失败状态必须解除，可正常继续。
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    assert panel.values["columnName"] == "A未保存"
+    assert panel.sync_settings() == (str(settings_a), "")
+
+
+def test_explicit_reload_recovers_after_target_read_error(tmp_path):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    settings_b.write_text("{ broken JSON", encoding="utf-8")
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))
+    assert panel.sync_settings()[1]
+
+    _fix = json.dumps(TS.normalize({**TS.defaults(), "columnKind": "专栏",
+                                   "columnName": "B栏目"}), ensure_ascii=False)
+    settings_b.write_text(_fix, encoding="utf-8")  # 用户在编辑器里修好 JSON
+    panel._load_settings()  # 「读取栏目表」显式重载
+
+    assert panel.values["columnName"] == "B栏目"
+    assert panel._loaded_path == str(settings_b)
+    assert panel.sync_settings() == (str(settings_b), "")
+
+
+# ── 返工 R3（Codex 独立验收）：真实写盘 OSError 必须转成可见错误并留草稿 ────
+def test_real_save_oserror_is_reported_and_keeps_draft(tmp_path, monkeypatch):
+    report_a, report_b, settings_a, settings_b = _two_reports(tmp_path)
+    panel, _report, page = _make_panel(tmp_path)
+    page.set_field("toc_report", str(report_a))
+    panel._auto_load_settings(str(report_a))
+    before_a = settings_a.read_bytes()
+    before_b = settings_b.read_bytes()
+    panel.values["columnName"] = "A草稿"
+    panel._mark_dirty()
+    real_backup = TS.backup
+
+    def _denied(path):
+        raise PermissionError("注入：备份目录只读")
+
+    monkeypatch.setattr(TS, "backup", _denied)
+    page.set_field("toc_report", str(report_b))
+    panel._auto_load_settings(str(report_b))  # 真实 TS.save 在 backup 阶段抛 OSError
+
+    assert panel._dirty is True
+    assert panel.values["columnName"] == "A草稿"
+    assert panel._loaded_path == str(settings_a), "写失败不得推进草稿归属"
+    assert settings_a.read_bytes() == before_a
+    assert settings_b.read_bytes() == before_b
+    assert any(event == "toc_settings_error" for event, _ in page.marks)
+    _path, error = panel.sync_settings()
+    assert error, "真实写盘异常后必须阻断后续执行"
+
+    # 恢复可写后再次切换：草稿写回 A，B 正常读入。
+    monkeypatch.setattr(TS, "backup", real_backup)
+    panel._auto_load_settings(str(report_b))
+    saved_a, _ = TS.read(str(settings_a))
+    assert saved_a["columnName"] == "A草稿"
+    assert panel.values["columnName"] == "B栏目"
+    assert panel._dirty is False
+
+
+def test_write_oserror_returns_error_contract_and_blocks_generation(tmp_path, monkeypatch):
+    folder = tmp_path / "期"
+    folder.mkdir()
+    panel, report, _page = _make_panel(folder)
+    target = folder / TS.FILE_NAME
+    _write_settings(target, columnKind="专栏", columnName="原栏目")
+    panel._auto_load_settings(str(report))
+    before = target.read_bytes()
+    panel.values["columnName"] = "改后"
+    panel._mark_dirty()
+
+    def _raise(path, data):
+        raise OSError("注入：os.replace 失败")
+
+    monkeypatch.setattr(TS, "save", _raise)
+    path, error = panel.sync_settings(force=True)
+
+    assert path == str(target)
+    assert error and "os.replace" in error
+    assert panel._dirty is True and panel.values["columnName"] == "改后"
+    assert target.read_bytes() == before
+    assert not list(folder.glob(TS.FILE_NAME + ".bak-*"))
+
+    # 生成前同样阻断，不调用引擎。
+    def _boom(*args, **kwargs):
+        raise AssertionError("写盘失败时不得调用引擎")
+
+    monkeypatch.setattr(TOC.EB, "read_json_command", _boom)
+    asyncio.run(panel._generate_task())
+    assert "toc_generated" not in [event for event, _ in _page.marks]
