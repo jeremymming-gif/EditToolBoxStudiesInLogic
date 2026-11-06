@@ -247,12 +247,13 @@ check("(b) 报告里标题是「None」→ 日志提醒回「检查tex信息」�
 
 # 栏目：勾选的文章带缩进前缀
 settings2 = TOC.TocSettings(columnKind="专栏", columnName="认知悖论研究",
+                            columnNameEN="Cognitive Paradox Studies",
                             columnHost="郑建国", columnArticles=["01 Ning_Wang"])
 check("(a) TocSettings.contains：带序号的设置也能匹配报告的短名",
       settings2.contains("Ning_Wang") and not settings2.contains("别人"))
-check("(a) 栏目名：中文「专栏：X」、英文「Column: X」",
+check("(a) 栏目名：中文「专栏：X」、英文「Column: <columnNameEN>」（B-375：只用英文名）",
       settings2.chinese_column_title == "专栏：认知悖论研究"
-      and settings2.english_column_title == "Column: 认知悖论研究")
+      and settings2.english_column_title == "Column: Cognitive Paradox Studies")
 check("(a) make_column_block：沿用上一期形态并替换名称与主持人",
       TT.make_column_block(settings2, ["{\\large \\bf{专栏：旧名}}",
                                        "&&\\textit{\\large 主持人：旧主持}",
@@ -1036,43 +1037,44 @@ check("(k4) 本期已有成品 + 显式 --template：仍用本期成品（优先
       f"rc={r_k3.returncode} src={_k3.get('templateSource')}")
 
 
-print("\n── (l) 英文栏目表头数据驱动（columnNameEN 空 ⇒ 不生成 Column 行；用户 2026-10-25 口径）──")
+print("\n── (l) 英文栏目表头（B-375：专栏 Column / 专辑 Special Issue，只用 columnNameEN 不回退中文）──")
 _a_zh_shape = ["{\\large \\bf{专辑：旧名}}", "&&\\textit{\\large 主持人：旧主持}", "\\\\[3.2 ex]"]
 _en_shape = ["\\large  \\bf{Special Issue: Old}", "\\\\[6.2mm]"]
+# 专辑缺英文名 = 不完整设置：四项（种类/中文名/英文名/主持人）齐全才算启用
 _s_en_empty = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnHost="某人",
                               columnArticles=["Ning_Wang"])
 _s_en_full = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑", columnNameEN="Preference Logic",
                              columnHost="某人", columnArticles=["Ning_Wang"])
-check("(l1) 英文名空 ⇒ 回退中文栏目名生成 `Column: 偏好逻辑`（B-121 口径）",
-      TT.make_column_block(_s_en_empty, _en_shape, False)
-      == ["\\large  \\bf{Column: 偏好逻辑} ", "\\\\[6.2mm]"]
-      and TT.make_column_block(_s_en_empty, [], False)
-      == ["\\large  \\bf{Column: 偏好逻辑} ", "\\\\[3mm]"])
-check("(l2) 英文名非空 ⇒ 生成 `Column: <EN>` + 沿用模板间距",
+check("(l1) 专辑缺英文名 ⇒ 不启用（有校验错误、中文英文都不发栏目块）",
+      not _s_en_empty.is_column_enabled and bool(_s_en_empty.column_validation_error())
+      and TT.make_column_block(_s_en_empty, _en_shape, False) == []
+      and TT.make_column_block(_s_en_empty, _a_zh_shape, True) == [])
+check("(l2) 专辑四项齐全 ⇒ 英文表头 Special Issue: <EN>，沿用模板间距",
       TT.make_column_block(_s_en_full, _en_shape, False)
-      == ["\\large  \\bf{Column: Preference Logic} ", "\\\\[6.2mm]"])
-check("(l3) 反例：英文名非空但模板无栏目块 ⇒ 用默认间距 3mm",
+      == ["\\large  \\bf{Special Issue: Preference Logic} ", "\\\\[6.2mm]"])
+check("(l3) 反例：模板无栏目块 ⇒ 用默认间距 3mm",
       TT.make_column_block(_s_en_full, [], False)
-      == ["\\large  \\bf{Column: Preference Logic} ", "\\\\[3mm]"])
-check("(l4) 中文栏目块不受英文名缺失影响（仍按上一期形态替换名称/主持人）",
-      TT.make_column_block(_s_en_empty, _a_zh_shape, True)
+      == ["\\large  \\bf{Special Issue: Preference Logic} ", "\\\\[3mm]"])
+check("(l4) 中文栏目块：缺项设置不启用（不发），齐全时按上一期形态替换名称/主持人",
+      TT.make_column_block(_s_en_full, _a_zh_shape, True)
       == ["{\\large \\bf{专辑：偏好逻辑}}", "&\\textit{\\large 主持人：某人}", "\\\\[3.2 ex]"])
-# 端到端：EN 名空时 Column 行用中文栏目名回退，栏目条目仍带 `~~~~`
+# 端到端：不完整设置一律拒绝生成（不建工作目录、不写 .tex），四项齐全才出双目录
 _l_root = tempfile.mkdtemp(prefix="slcn_col_en_")
 make_issue(_l_root)
 _l_report = make_report(_l_root)
-_l_outs = TOC.run(_l_report, _s_en_empty, log=lambda _s: None, stamp="COL")
-_l_en = open(_l_outs[0], encoding="utf-8").read()
-_l_zh = open(_l_outs[1], encoding="utf-8").read()
-check("(l5) 端到端：英文名空 ⇒ 英文 tex 生成 `Column: 偏好逻辑`（中文名回退），条目仍带 `~~~~`",
-      "Column: 偏好逻辑" in _l_en and "~~~~ " in _l_en,
-      repr([ln for ln in _l_en.split("\n") if "~~~~" in ln][:1]))
-check("(l6) 端到端反例：中文 tex 仍生成「专辑：偏好逻辑」表头",
-      "专辑：偏好逻辑" in _l_zh)
+_l_logs: list[str] = []
+_l_outs = TOC.run(_l_report, _s_en_empty, log=_l_logs.append, stamp="COL")
+check("(l5) 端到端：缺英文名 ⇒ 两份都拒绝生成、无 .toolbox-tmp、日志明确报缺项",
+      _l_outs == [] and not (pathlib.Path(_l_root) / ".toolbox-tmp").exists()
+      and any("信息不完整" in s for s in _l_logs), repr(_l_logs[-3:]))
 _l_outs2 = TOC.run(_l_report, _s_en_full, log=lambda _s: None, stamp="COL2")
-_l_en2 = open(_l_outs2[0], encoding="utf-8").read()
-check("(l7) 端到端反例：英文名非空 ⇒ 英文 tex 生成 `Column: Preference Logic`",
-      "Column: Preference Logic" in _l_en2)
+_l_en = open(_l_outs2[0], encoding="utf-8").read() if len(_l_outs2) == 2 else ""
+_l_zh = open(_l_outs2[1], encoding="utf-8").read() if len(_l_outs2) == 2 else ""
+check("(l6) 端到端：四项齐全 ⇒ 英文 Special Issue、中文专辑表头、栏目条目带 ~~~~",
+      len(_l_outs2) == 2 and "Special Issue: Preference Logic" in _l_en
+      and "专辑：偏好逻辑" in _l_zh and "~~~~ " in _l_en)
+check("(l7) 反例：英文表头只用 columnNameEN，不含「Special Issue: 偏好逻辑」",
+      "Special Issue: 偏好逻辑" not in _l_en)
 
 print("\n── (n) 双源守卫：内置模板 JSON 夹具 ↔ slcn/content_templates.py ──")
 # 为什么常驻：`content_templates.py` 是生成物，手改它、或改夹具却不重生成，都会让

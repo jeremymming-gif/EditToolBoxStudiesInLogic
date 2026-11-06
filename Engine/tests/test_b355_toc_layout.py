@@ -250,13 +250,19 @@ def test_generate_column() -> None:
     )
     report = _issue(tmp, zh=template_zh(HEAD_90, column_lines))
     settings = toc.TocSettings(
-        columnKind="专辑", columnName="偏好逻辑", columnHost="刘奋荣",
-        columnArticles=["Jingru_Kou", "Liang_Zhang"])
+        columnKind="专辑", columnName="偏好逻辑", columnNameEN="Preference Logic",
+        columnHost="刘奋荣", columnArticles=["Jingru_Kou", "Liang_Zhang"])
     logs: list[str] = []
     out = toc.generate_tex(str(report), "ch", settings, log=logs.append, stamp="TEST")
     text = _read(out)
     check("(c) 产物用 CANONICAL_ZH_COLUMN", tt.CANONICAL_ZH_COLUMN in text, text[-400:])
-    check("(c) 栏目条目带 ~~~~ 前缀", text.count("{\\large ~~~~") >= 2, text[-600:])
+    # B-375（2026-11-06 用户拍板）：专辑 = 当前报告全部稿件都带栏目标记；设置里
+    # columnArticles 只存两篇也不删未存的那篇 —— 三篇全部列出、三篇都带 ~~~~。
+    check("(c) 专辑：三篇全部列出且都带 ~~~~ 前缀",
+          sum(1 for _ln in text.split("\n")
+              if _ln.startswith("{\\large ~~~~")) == 3, text[-600:])
+    check("(c) 专辑：旧 columnArticles 子集不删条目（未存的 Hao_Wu 也在）",
+          "结构性规范" in text, text[-600:])
     check("(c) 栏目块名称/主持人替换",
           "专辑：偏好逻辑" in text and "主持人：刘奋荣" in text, text[:1200])
     check("(f) 栏目期断行上限收窄告警", any("标题断行上限" in s for s in logs), str(logs))

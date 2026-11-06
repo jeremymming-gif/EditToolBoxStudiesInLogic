@@ -5,9 +5,11 @@ r"""批 121 车道 E / B-357 回归：生成目录中间件落点 + 清理类目
   (a) B1：时间戳中间 tex 落在 `<期目录>/.toolbox-tmp/`，期目录根不再出现
       `Chinese Content_<stamp>.tex` / `contents_<stamp>.tex`；结果 JSON 的 outputs
       仍是**真实存在的绝对路径**；`--place` 交付固定名不受影响。
-  (b) B-121 英文追加：`is_column_enabled` 时英文目录生成 `Column: <columnNameEN/columnName>`
-      （EN 名空回退中文名）；勾选篇目首位英文作者带 ` ~~~~ ` 前缀；继承模板没有栏目块时
-      按内置形态生成并用默认间距 3mm（留日志）。
+  (b) B-375 英文栏目：四项齐全（种类/中文名/英文名/主持人）时英文目录生成
+      Special Issue: <columnNameEN>（专辑）/ Column: <columnNameEN>（专栏），
+      只用英文名、绝不回退中文名；缺项一律拒绝生成。目录永远列出当前报告全部篇目
+      （勾选/专辑只决定栏目标记，不删条目）：带栏目标记的篇目首位英文作者带 ~~~~ 前缀；
+      继承模板没有栏目块时按内置形态生成并用默认间距 3mm（留日志）。
   (c) B2/B3：`cleantemp.py --mode tocwork` 默认移入 `.toolbox-trash`（可 restore），
       清理 `.toolbox-tmp/`、根时间戳 tex、`目录结果.json`、旧 `信息检查*`；默认保留
       最新一组报告，`--all-reports` 才全清；最终交付文件与 `目录设置.json` 永不删。
@@ -125,24 +127,29 @@ check("(a9) placed 指向 000 固定名",
       and str(_placed.get("enTex", "")).endswith("contents.tex"), repr(_placed))
 
 # ── (b) 英文栏目：EN 名空回退中文名 + ~~~~ + 无栏目块告警 ────────────────
-print("\n── (b) B-121 英文追加：Column 行回退 / ~~~~ / 无 columnBlock 告警 ──")
+print("\n── (b) B-375 英文栏目：Special Issue 行 / ~~~~ / 无 columnBlock 告警 ──")
 _issue2, _report2 = make_issue("slcn_b121_en_")
 _work2 = _issue2 / ".toolbox-tmp"
 _logs: list[str] = []
 _settings = TOC.TocSettings(columnKind="专辑", columnName="偏好逻辑",
+                            columnNameEN="Preference Logic",
                             columnHost="刘奋荣", columnArticles=["Qiu_Dejun"])
 _out = TOC.generate_tex(str(_report2), "en", _settings, log=_logs.append, stamp="B121E")
 check("(b1) 英文中间 tex rc/存在", bool(_out) and Path(_out).is_file(), str(_out))
 check("(b2) 英文中间 tex 在 .toolbox-tmp", Path(_out or "").parent == _work2, str(_out))
 _en = Path(_out or "").read_text(encoding="utf-8") if _out else ""
-check("(b3) EN 名空 ⇒ 回退中文名生成 Column 行",
-      "Column: 偏好逻辑" in _en and "Column: " in _en, _en[:200])
-check("(b4) 勾选篇目首位英文作者带 ~~~~ 前缀",
-      "~~~~ Qiu Dejun" in _en, repr([ln for ln in _en.split("\n") if "~~~~" in ln][:2]))
+check("(b3) 专辑英文表头 ⇒ Special Issue: <columnNameEN>（英文名必填、不回退中文名）",
+      "Special Issue: Preference Logic" in _en and "偏好逻辑" not in _en, _en[:200])
+# B-375：专辑 = 全部当前报告稿件都带栏目标记；columnArticles 只存了 Qiu_Dejun 也不删
+# Wu_Hao —— 目录仍列出两篇、两篇首位英文作者都带 ~~~
+check("(b4) 专辑：两篇都在目录里、首位英文作者都带 ~~~~ 前缀",
+      "~~~~ Qiu Dejun" in _en and "~~~~ Wu Hao" in _en
+      and "Knowability" in _en and "On the Yablo Paradox" in _en,
+      repr([ln for ln in _en.split("\n") if "~~~~" in ln][:3]))
 check("(b5) 英文列定义仍是 CANONICAL_EN",
       "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}r@{}}" in _en, _en.split("\n")[0:6])
-check("(b6) 日志记录中文名回退", any("回退" in ln and "英文名" in ln for ln in _logs),
-      repr(_logs))
+check("(b6) 不再有英文名回退日志（B-375：缺项直接拒绝生成）",
+      not any("回退" in ln and "英文名" in ln for ln in _logs), repr(_logs))
 check("(b7) 内置模板无栏目块告警路径可复现（见 b8/b9）", True)
 
 # 继承模板「有 head 但无栏目块」：应告警并按内置形态补 Column 行
@@ -162,8 +169,8 @@ _toc_dir3.joinpath("contents.tex").write_text(
 _logs2: list[str] = []
 _out2 = TOC.generate_tex(str(_report3), "en", _settings, log=_logs2.append, stamp="B121E2")
 _en2 = Path(_out2 or "").read_text(encoding="utf-8") if _out2 else ""
-check("(b8) 继承模板无栏目块 ⇒ 仍生成 Column 行",
-      "Column: 偏好逻辑" in _en2, repr(_en2[:200]))
+check("(b8) 继承模板无栏目块 ⇒ 仍生成 Special Issue 行",
+      "Special Issue: Preference Logic" in _en2, repr(_en2[:200]))
 check("(b9) 继承模板无栏目块 ⇒ 明确告警/说明",
       any("没有栏目块" in ln for ln in _logs2), repr(_logs2))
 _en2_lines = _en2.split("\n")

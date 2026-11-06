@@ -62,6 +62,18 @@ def ensure_result_dir(report: str) -> str:
     return path
 
 
+def existing_settings_path(path: str) -> str:
+    """B-375 Lead m00904：只返回真实存在的设置文件路径，否则返回空串。
+
+    引擎对显式 `--settings` 指向不存在的文件会直接拒绝（「找不到设置文件」）。
+    首次进入还没有 `目录设置.json` 时，sync_settings() 会保留「路径已确定但文件
+    不存在」的状态（保护：不为显示控件提前建文件），此时必须省略该参数让引擎用
+    内置默认——预览和生成共用这套「只传已存在的设置文件」解析。
+    """
+    path = str(path or "")
+    return path if path and os.path.isfile(path) else ""
+
+
 def read_result(report: str) -> dict:
     """读结果 JSON：新路径优先，旧路径兜底（返回 {} 表示都没有/读不了）。"""
     for path in (result_json_path(report), legacy_result_json_path(report)):
@@ -130,12 +142,31 @@ def articles_from_report(report: str) -> list[dict]:
 
 
 
-def preview_lines(payload: dict) -> list[str]:
+def preview_lines(payload: dict, *, column_kind: str = "",
+                  report_articles: int | None = None) -> list[str]:
     payload = payload or {}
-    lines = [f"模板来源：{payload.get('templateSource') or '（未知）'}"]
+    source = str(payload.get("templateSource") or "").strip()
     note = str(payload.get("templateNote") or "").strip()
-    if note:
-        lines.append(note)
+    if source:
+        lines = [f"模板来源：{source}"]
+        if note:
+            lines.append(note)
+    elif note:
+        # 引擎 preview JSON 目前只回 templateNote（templateSource 只在正式结果 JSON 里）；
+        # note 已写明「内置模板/上一期/本期成品」等口径，直接给用户看，别显示「（未知）」。
+        # Lead m00904：首次进入（无设置文件）预览信息卡应显示内置模板来源。
+        lines = [f"模板来源：{note}"]
+    else:
+        lines = ["模板来源：（未知）"]
+    if str(column_kind or "").strip() == "专辑":
+        # 2026-11-06 用户决定(c) + 独立验收 task-6(1)：专辑的有效集合 = 当前报告全部
+        # 篇目，settings.columnArticles（通常是空/旧子集）不是专辑的生效集合，预览卡
+        # 不能显示「已选 0 篇」。N 取当前报告篇目数（已载入 available，缺省用引擎
+        # preview 回传的 articles），且只用于显示，不写回 columnArticles。
+        count = report_articles if report_articles is not None \
+            else len(payload.get("articles") or [])
+        lines.append(f"栏目：本期全部 {max(0, int(count))} 篇自动收入（无需勾选）")
+        return lines
     articles = payload.get("columnArticles") or []
     lines.append(f"栏目：{'已启用' if payload.get('columnEnabled') else '本期无栏目'}"
                  f" · 已选 {len(articles)} 篇")
@@ -208,6 +239,37 @@ def first_line(text: str) -> str:
         if line.strip():
             return line.strip()
     return ""
+
+
+# 2026-11-06 用户决定(b)(c)：启用栏目（专栏/专辑）四项必填，缺项一次列全；
+# 栏目类型为空 = 本期无栏目，永远不因字段缺失阻断。
+COLUMN_FIELDS = (
+    ("columnName", "栏目名称（中文）"),
+    ("columnNameEN", "栏目英文名"),
+    ("columnHost", "主持人"),
+)
+ENABLED_COLUMN_KINDS = ("专栏", "专辑")
+
+
+def column_issue(values) -> tuple[bool, str]:
+    """页面级唯一栏目有效性判断（TocPanel / pages / assembly 共用）。
+
+    返回 `(是否阻止生成, 说明文案)`。纯空格按空处理；专栏/专辑缺任意一项即阻断，
+    并在提示里一次列出全部缺项（用户决定(b)：disabled everywhere with missing-item explanation）。
+    """
+    data = values or {}
+    kind = str(data.get("columnKind") or "").strip()
+    if not kind:
+        return False, ""
+    if kind not in ENABLED_COLUMN_KINDS:
+        return True, (f"栏目类型「{kind}」无法识别：请在栏目类型里选「本期无栏目」、"
+                      "「专栏」或「专辑」。")
+    missing = [label for key, label in COLUMN_FIELDS
+               if not str(data.get(key) or "").strip()]
+    if not missing:
+        return False, ""
+    return True, (f"已启用「{kind}」，但还缺：{'、'.join(missing)}。"
+                  "四项都填好才能生成目录；不想启用栏目请把类型改成「本期无栏目」。")
 
 
 class TocPanel:
@@ -293,6 +355,14 @@ class TocPanel:
                                           lambda e: self.app.open_path(self._toc_result_path()),
                                           self.t, height=self.t.px(28)),
                    ]),
+            # frozen #2 返工：预览入口此前只有实现没有调用者，用户找不到。
+            # 单独一行（不动上面 pinned 的 4 按钮 Row），在「仅生成 tex」之前；
+            # 预览只读模板/篇目，不写产物、不解锁生成，四项缺项时只 warn。
+            ft.Row(spacing=self.t.sp("1"), wrap=True,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                       C.secondary_button("预览模板/篇目", lambda e: self._request_preview(),
+                                          self.t, height=self.t.px(28)),
+                   ]),
             C.option_row("仅生成 tex（不写入、不编译）", TEXT_ONLY_HINT, self.t,
                          icon="DESCRIPTION_OUTLINED",
                          checked=self._text_only(),
@@ -311,9 +381,37 @@ class TocPanel:
         except Exception:  # noqa: BLE001
             return bool((self.app.store.get("options", {}) or {}).get("toc_text_only", False))
 
+    def _request_preview(self) -> None:
+        """frozen #2 返工：可见「预览模板/篇目」入口。
+
+        只在界面里调度既有 `_preview_task`（不写产物、不解锁生成；缺项只 warn）。
+        无 run_task 的页面桩（离线测试/旧壳）退化为事件循环里直接起协程。
+        """
+        hook = getattr(getattr(self, "page", None), "mark", None)
+        if callable(hook):
+            try:
+                hook("toc_preview_requested")
+            except Exception:  # noqa: BLE001 - 页面桩/未挂载
+                pass
+        runner = getattr(getattr(self, "page", None), "page", None)
+        run_task = getattr(runner, "run_task", None)
+        if callable(run_task):
+            try:
+                run_task(self._preview_task)
+                return
+            except Exception:  # noqa: BLE001 - 老页面/测试桩无 run_task 语义
+                pass
+        try:
+            asyncio.get_running_loop().create_task(self._preview_task())
+        except RuntimeError:
+            pass  # 没有事件循环：离线测试直接 await _preview_task 即可
+
     def _set_value(self, key: str, value) -> None:
         self.values[key] = str(value or "").strip()
         self._mark_dirty()
+        # 原生冒烟 frozen #1：缺项不能只写在按钮 tooltip 里——输入时同步刷新编辑区
+        # 的可见提示（只换 content，不重建输入框，避免丢焦点）。
+        self._refresh_gate_hint()
 
     def _report(self) -> str:
         report = self.page.field("toc_report")
@@ -342,6 +440,17 @@ class TocPanel:
 
     def _mark_dirty(self) -> None:
         self._dirty = True
+        self._notify_page()
+
+    def _notify_page(self) -> None:
+        """B-375 共享门：栏目表/勾选/设置状态变化后让页面重算生成入口可用性。"""
+        page = getattr(self, "page", None)
+        hook = getattr(page, "on_toc_state_changed", None)
+        if callable(hook):
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 - 页面桩/未挂载
+                pass
 
     def _auto_load_settings(self, report: str) -> None:
         """A1：选定报告后自动读默认 目录设置.json，回填栏目表。
@@ -380,6 +489,7 @@ class TocPanel:
             self._load_error_path = path
             self._notice(error, "error")
             self.page.mark("toc_settings_error", path=path, error=error)
+            self._notify_page()
             return
         self._loaded_path = path
         self._loaded_report = report_key
@@ -394,9 +504,11 @@ class TocPanel:
                 self._dirty = False
                 self._sel_explicit = False
                 self.page.mark("toc_settings_defaulted", path=path)
+                self._notify_page()
                 return
             # 文件还不存在：保留面板里的值，等用户改动后再自动写（不凭空建空文件）。
             self._saved_snapshot = self._snapshot()
+            self._notify_page()
             return
         self.values = data
         self.selected = list(data.get("columnArticles") or [])
@@ -405,6 +517,7 @@ class TocPanel:
         self._dirty = False
         self.page.mark("toc_settings_loaded", path=path, articles=len(self.selected),
                        auto=True)
+        self._notify_page()
 
     def _has_explicit_selection(self) -> bool:
         """R1 返工：区分「专辑里的明确空集」与「别的栏目类型下的空列表」。
@@ -464,16 +577,12 @@ class TocPanel:
         return self._write_settings(path, force=force)
 
     def column_issue(self) -> tuple[bool, str]:
-        """A4 负向校验：返回 `(是否阻止运行, 提示文案)`。"""
-        kind = str(self.values.get("columnKind") or "").strip()
-        name = str(self.values.get("columnName") or "").strip()
-        if kind and not name:
-            return True, (f"已选栏目类型「{kind}」但栏目名称为空：请填写栏目名称，"
-                          "或把类型改成「本期无栏目」。")
-        if not kind and self.selected:
-            return False, ("栏目类型为空，但已勾选篇目：本次按「本期无栏目」生成，"
-                           "勾选不会生效。")
-        return False, ""
+        """A4 负向校验（2026-11-06 用户决定 b/c）：返回 `(是否阻止运行, 提示文案)`。
+
+        模块级 `column_issue(values)` 是唯一判断源；这里只委托面板当前 values，
+        保证面板、页面按钮、整期串行用的都是同一套四项必填规则。
+        """
+        return column_issue(self.values)
 
     # ── 批 123（用户 m02698）：专栏篇目勾选 ──────────────────────────────
     def _normalize_selected(self) -> None:
@@ -495,11 +604,21 @@ class TocPanel:
             self.selected = fixed
             self._mark_dirty()
 
+    def _album_mode(self) -> bool:
+        """2026-11-06 用户决定(c)：专辑 = 当前报告全部篇目自动收入。"""
+        return str(self.values.get("columnKind") or "").strip() == "专辑"
+
     def _is_article_selected(self, name: str) -> bool:
+        # 2026-11-06 用户决定(c)：专辑的有效选择永远是「当前报告全部篇目」；
+        # 只影响展示/生成口径，不写回 selected（columnArticles 仍保存专栏历史）。
+        if self._album_mode():
+            return True
         tail = name.split()[-1]
         return any(stored == name or stored.split()[-1] == tail for stored in self.selected)
 
     def _toggle_article(self, name: str, checked: bool) -> None:
+        if self._album_mode():
+            return  # 决定(c)：专辑无逐篇勾选，也不得改动 columnArticles
         tail = name.split()[-1]
         kept = [stored for stored in self.selected
                 if not (stored == name or stored.split()[-1] == tail)]
@@ -511,12 +630,16 @@ class TocPanel:
         self._render_editor()
 
     def _select_all_articles(self) -> None:
+        if self._album_mode():
+            return  # 决定(c)：专辑自动收入全部，不把「全选」写成 columnArticles
         self.selected = [row["name"] for row in self.available]
         self._sel_explicit = True
         self._mark_dirty()
         self._render_editor()
 
     def _clear_articles(self) -> None:
+        if self._album_mode():
+            return  # 决定(c)：专辑不提供手动清空，也不得清掉专栏历史
         self.selected = []
         self._sel_explicit = True
         self._mark_dirty()
@@ -574,9 +697,6 @@ class TocPanel:
             C.text_button("清空", lambda e: self._clear_articles(), t),
         ])
         lines: list[ft.Control] = [header]
-        if not str(self.values.get("columnKind") or "").strip():
-            lines.append(C.text("勾选栏目类型并填写栏目名称后，下面的勾选才写入目录。",
-                                t, "caption", t.palette.text_faint))
         for row in self.available:
             name = row["name"]
             title = row.get("title") or ""
@@ -601,17 +721,71 @@ class TocPanel:
 
 
     # ── 栏目表 ─────────────────────────────────────────────────────────
+    def _dialog_page(self):
+        """flet Page：面板挂在 IssuePage 下（旧测试桩可能没有 .page）。"""
+        return getattr(self.page, "page", self.page)
+
     def _load_settings(self) -> None:
         path = self._settings_path()
         if not path:
             self._notice("请先选信息检查报告或目录设置文件", "warn")
             return
+        if self._dirty:
+            # OBS-A（2026-11-06 用户决定(f)）：读取会覆盖未保存草稿，必须先问。
+            self._confirm_load_settings(path)
+            return
+        self._apply_load_settings(path)
+
+    def _confirm_load_settings(self, path: str) -> None:
+        """读取栏目表三向确认：保存草稿并读取 / 放弃草稿并读取 / 取消。
+
+        C.confirm 只有两个按钮，这里沿用 pages._confirm_overwrite 的 ft.AlertDialog 模式；
+        保存失败时保持草稿与归属、不推进读取路径（用户决定(f)）。
+        """
+        t = self.t
+
+        def _cancel(_event=None) -> None:
+            C.dismiss_top_dialog(self._dialog_page())
+
+        def _discard(_event=None) -> None:
+            C.dismiss_top_dialog(self._dialog_page())
+            self._apply_load_settings(path)
+
+        def _save_then_load(_event=None) -> None:
+            C.dismiss_top_dialog(self._dialog_page())
+            draft_path = str(getattr(self, "_loaded_path", "") or "") or self._settings_path()
+            _saved, error = self._write_settings(draft_path, force=True)
+            if error:
+                # 保存失败：保持当前草稿与归属，绝不推进读取路径/文件。
+                self._notice(f"草稿保存失败：{error}", "error")
+                self.page.mark("toc_settings_error", path=draft_path, error=error)
+                return
+            self._apply_load_settings(path)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=C.text("读取栏目表会覆盖草稿", t, "h2"),
+            content=ft.Container(width=t.px(460), content=ft.Column([
+                C.text("栏目表里有还没保存的修改：直接读取会丢掉它们。", t, "small"),
+                C.text(f"要读取：{path}", t, "caption", t.palette.text_muted, max_lines=2),
+            ], spacing=t.sp("1"), tight=True)),
+            actions=[
+                C.text_button("取消", _cancel, t),
+                C.text_button("放弃草稿并读取", _discard, t),
+                C.primary_button("保存草稿并读取", _save_then_load, t),
+            ],
+        )
+        C.show_dialog(self._dialog_page(), dialog)
+
+    def _apply_load_settings(self, path: str) -> None:
+        """真正读入；读失败保持旧状态（values/selected/_loaded_path 一概不动）。"""
         data, error = TS.read(path)
         if error:
             self._load_error = str(error)
             self._load_error_path = path
             self._notice(error, "error")
             self.page.mark("toc_settings_error", path=path, error=error)
+            self._notify_page()
             return
         self._loaded_path = path
         self._loaded_report = self._report()
@@ -626,6 +800,7 @@ class TocPanel:
         self._notice(f"已读入：{path}", "info")
         self.page.mark("toc_settings_loaded", path=path, articles=len(self.selected))
         self._safe_update(self.editor_box)
+        self._notify_page()
 
     def _save_settings(self) -> None:
         path, error = self.sync_settings(force=True)
@@ -651,20 +826,26 @@ class TocPanel:
             options=kind_options, on_select=self._on_kind_select, expand=True,
         )
         name = self._field("columnName", "栏目名称（中文）")
-        name_en = self._field("columnNameEN", "栏目英文名（可空）")
-        host = self._field("columnHost", "主持人（可空）")
+        name_en = self._field("columnNameEN", "栏目英文名")
+        host = self._field("columnHost", "主持人")
+        # 2026-11-06 用户决定(b)/(c)：四项语义必填（栏目类型为空时不影响生成，也不显示勾选）。
         rows: list = [
             C.form_grid(t, [
                 self.kind,
                 C.form_field(t, "栏目名称（中文）", name),
-                C.form_field(t, "栏目英文名（可空）", name_en),
-                C.form_field(t, "主持人（可空）", host),
+                C.form_field(t, "栏目英文名", name_en),
+                C.form_field(t, "主持人", host),
             ]),
         ]
-        if self.available:
-            # 批 123（用户 m02698）：直接勾选专栏篇目，不再依赖「逐篇加入」。
+        # 2026-11-06 用户决定(b)：四项不完整时紧贴四项字段给可见提示（与 header 按钮
+        # tooltip、页面门用的是同一句 column_issue 文案）；补齐或切回无栏目后消失。
+        rows.append(self._gate_hint_control())
+        kind = str(self.values.get("columnKind") or "").strip()
+        if kind == "专栏" and self.available:
+            # 批 123（用户 m02698）：专栏直接勾选篇目，不再依赖「逐篇加入」。
             rows.append(self._article_checklist())
-        else:
+        elif kind == "专栏":
+            # 专栏但篇目还没载入：保留历史勾选的手动增删（专栏专属，见用户决定(b)）。
             if not self.selected:
                 rows.append(C.text("栏目篇目：尚未选择。先运行第 1 步「检查 tex 信息」，篇目清单会自动载入。",
                                    t, "caption", t.palette.text_faint))
@@ -686,25 +867,50 @@ class TocPanel:
             if not self.selected:
                 rows.append(C.text("还没有篇目清单：先运行第 1 步「检查 tex 信息」生成报告，篇目会自动载入。",
                                    t, "caption", t.palette.text_faint))
+        elif kind == "专辑":
+            # 2026-11-06 用户决定(c)：专辑 = 当期全部篇目自动收入；不显示逐篇勾选/手动增删。
+            count = len(self.available)
+            note = (f"本期全部 {count} 篇自动收入（自动，无需勾选）。" if count
+                    else "本期全部篇目自动收入；运行第 1 步载入篇目后这里显示数量。")
+            rows.append(C.text(note, t, "caption", t.palette.text_muted))
+        else:
+            # 2026-11-06 用户决定(a)：本期无栏目 → 目录不带栏目信息，勾选/手动增删全部隐藏。
+            rows.append(C.text("本期无栏目：目录不带栏目信息，无需勾选篇目。",
+                               t, "caption", t.palette.text_faint))
         return rows
 
-    def _apply_album_default(self) -> bool:
-        """用户 m02929：勾选「专辑」时默认整期都是专辑稿件（全部勾上，可再手动取消）。
+    def _gate_hint_control(self) -> ft.Control:
+        """编辑区可见的「缺项」提示容器（module 级 column_issue 是唯一判断源）。"""
+        box = getattr(self, "gate_hint", None)
+        if box is None:
+            box = ft.Container()
+            self.gate_hint = box
+        blocked, hint = column_issue(self.values)
+        box.content = C.notice_bar(hint, self.t, "warn") if blocked else None
+        return box
 
-        B-374：只在「还没形成明确勾选」时补默认值。设置文件里的 `columnArticles`
-        （含空列表）与用户清空/取消都属于明确选择，切页重建不得再覆盖成全选。
+    def _refresh_gate_hint(self) -> None:
+        box = self._gate_hint_control()
+        try:
+            box.update()
+        except Exception:  # noqa: BLE001 - 未挂载（测试桩/首次构建前）
+            pass
+
+    def _apply_album_default(self) -> bool:
+        """B-375（2026-11-06 用户决定(c)）：不再把「专辑=全选」写进 selected。
+
+        专辑的「全部篇目」是展示与生成时的有效状态（由 `_is_article_selected`
+        统一回答），不能覆盖 selected——否则会把专栏历史勾选写坏。
+        保留该方法仅为旧调用点/旧测试兼容，永远返回 False（无副作用）。
         """
-        if str(self.values.get("columnKind") or "").strip() != "专辑":
-            return False
-        if not self.available or self.selected:
-            return False
-        if getattr(self, "_sel_explicit", False):
-            return False
-        self.selected = [row["name"] for row in self.available]
-        return True
+        return False
 
     def _on_kind_select(self, key: str, label: str) -> None:
-        """栏目类型选择：写入设置值并原地更新浮动下拉的显示文案（用户 m03037）。"""
+        """栏目类型选择：写入设置值并原地更新浮动下拉的显示文案（用户 m03037）。
+
+        2026-11-06 用户决定(a)/(b)/(c)：切到专辑显示「全部自动收入」、切回专栏恢复
+        selected 里的专栏历史、无栏目隐藏勾选；三者都不写 columnArticles。
+        """
         self._set_value("columnKind", key)
         box = getattr(self, "kind", None)
         if box is not None and getattr(box, "_value_text", None) is not None:
@@ -713,9 +919,7 @@ class TocPanel:
                 box._value_text.update()
             except Exception:  # noqa: BLE001 - 未挂载时仅更新数据
                 pass
-        if self._apply_album_default():
-            self._mark_dirty()
-            self._render_editor()
+        self._render_editor()
 
     def _field(self, key: str, label: str) -> ft.TextField:
         """栏目编辑区输入框：expand 填满网格格，标签由 form_field 浮动显示。"""
@@ -741,7 +945,13 @@ class TocPanel:
     def _render_editor(self) -> None:
         self.editor_box.controls = self._editor_controls()
         self._safe_update(self.editor_box)
-        self.page.mark("toc_editor", articles=len(self.selected))
+        page = getattr(self, "page", None)
+        hook = getattr(page, "mark", None)
+        if callable(hook):
+            try:
+                hook("toc_editor", articles=len(self.selected))
+            except Exception:  # noqa: BLE001 - 页面桩/未挂载
+                pass
 
     # ── 预览 / 生成 ────────────────────────────────────────────────────
     async def _preview_task(self) -> None:
@@ -752,19 +962,30 @@ class TocPanel:
             return
         blocked, hint = self.column_issue()
         if blocked:
-            self._notice(hint, "warn")
+            # B-375 Lead 返工（m00363 A，spec line 28）：辅助预览不锁死——只要选了报告
+            # 就继续预览，缺项只做警示；引擎 preview 会回 columnValidationError，
+            # 由下面的信息卡展示。生成入口（按钮/重新生成/仅TeX/整期串行）仍然阻断。
+            self._notice(hint + "（预览仍会继续；补齐前不能生成目录。）", "warn")
             self.page.mark("toc_column_invalid", reason=hint, blocked=True)
-            return
-        if hint:
+        elif hint:
             self._notice(hint, "warn")
         settings_path, save_error = self.sync_settings()
         if save_error:
             self._notice(f"栏目表保存失败：{save_error}", "error")
             self.page.mark("toc_settings_error", path=settings_path, error=save_error)
             return
+        # B-375 Lead m00904：与生成侧 build_step_call 同一套「只传已存在的设置文件」
+        # 解析。sync_settings 在「路径已确定但文件还不存在且无改动」时不写文件；
+        # 此时把不存在的路径传给引擎会被拒绝（原生 smoke：首次进入预览失败）。
+        # 因此这里 isfile 才传，否则回退到报告同目录已存在的设置，再没有就省略
+        # --settings 让引擎用内置默认（不创建任何设置文件）。
+        settings = existing_settings_path(settings_path)
+        if not settings:
+            saved = TS.path_for(os.path.dirname(report))
+            settings = existing_settings_path(saved)
         self.info.content = C.text("预览中…", self.t, "small", self.t.palette.text_muted)
         call = EB.toc_call(report=report, template=self.page.field("toc_template"),
-                           settings=settings_path, preview=True)
+                           settings=settings, preview=True)
         try:
             result = await asyncio.to_thread(EB.read_json_command, call, timeout=180,
                                              notes=self.app.notes_repo)
@@ -772,8 +993,12 @@ class TocPanel:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "json": {}}
         payload = result.get("json") or {}
         if not result.get("ok") or not payload:
-            self._notice(f"预览失败：{first_line(result.get('error')) or '引擎没有返回 JSON'}",
-                         "error")
+            error_text = first_line(result.get("error")) or "引擎没有返回 JSON"
+            self._notice(f"预览失败：{error_text}", "error")
+            # Lead m00984(2)：预览失败/异常后信息卡不能一直停留在「预览中…」；
+            # 换成失败说明（feedback 里另有错误行），避免看起来像卡住。
+            self.info.content = C.notice_bar(f"预览失败：{error_text}", self.t, "error")
+            self._safe_update(self.info)
             self.page.mark("toc_preview", ok=False, error=str(result.get("error") or ""))
             return
         self.payload = payload
@@ -782,9 +1007,22 @@ class TocPanel:
             self.selected = list(self.values["columnArticles"])
         if not self.available:
             await self._load_articles()
-        self.info.content = C.card(ft.Column(spacing=self.t.sp("half"), controls=[
-            C.text(line, self.t, "small") for line in preview_lines(payload)
-        ]), self.t)
+        warning = str(payload.get("columnValidationError") or "").strip()
+        # task-6(1)：专辑行显示「本期全部 N 篇自动收入」；N 优先用面板已载入的当前
+        # 报告篇目数，载入失败/为空时用引擎 preview 回传的 articles 数（只显示，不写回）。
+        card_lines: list = [
+            C.text(line, self.t, "small")
+            for line in preview_lines(
+                payload,
+                column_kind=str(self.values.get("columnKind") or ""),
+                report_articles=len(self.available) or None,
+            )
+        ]
+        if warning:
+            # B-375：引擎 preview 仍退出 0，但把「四项不齐/种类无法识别」交回外壳显示。
+            card_lines.append(C.notice_bar(f"引擎：{warning}", self.t, "warn"))
+        self.info.content = C.card(ft.Column(spacing=self.t.sp("half"), controls=card_lines),
+                                   self.t)
         self._render_editor()
         self._safe_update(self.info)
         self.page.mark("toc_preview", ok=True,
@@ -885,6 +1123,56 @@ class TocPanel:
                        warnings=len(warnings),
                        zh_pdf=bool((payload.get("placed") or {}).get("zhPdf")),
                        error=str(result.get("error") or ""))
+
+    def refresh_result(self, report: str = "", code=None, failed: bool = False,
+                       cancelled: bool = False) -> None:
+        """OBS-2：toc 步骤在页外（整期串行/其他视图）跑完后刷新面板反馈区。
+
+        面板可能不在 DOM（其他视图/串行运行），所有 update 都走 _safe_update。
+        本轮失败/取消时只写明确结论；旧结果仅以「上次结果（非本轮）」文字列出，
+        不提供产物打开按钮，绝不把上一次的成品冒充成本轮产物（Lead m00363 B/D）。
+        """
+        t = self.t
+        report = str(report or self._report() or "")
+        payload = read_result(report) if report else {}
+        rows: list = []
+        stale = bool(failed or cancelled)
+        if cancelled:
+            rows.append(C.notice_bar("本次已停止，未产生新结果。", t, "warn"))
+        elif failed:
+            rows.append(C.notice_bar(
+                f"本次生成未成功（退出码 {code}）：原因见整期日志；修好后点「重新生成目录」。",
+                t, "error"))
+        elif payload:
+            rows.append(C.notice_bar("本次生成完成。", t, "success"))
+        else:
+            rows.append(C.notice_bar("本次没有生成结果 JSON：原因见整期日志。", t, "warn"))
+        if payload and stale:
+            rows.append(C.text("上次结果（非本轮，仅供参考）：", t, "caption",
+                               t.palette.text_muted))
+            rows += [C.text(line, t, "caption", t.palette.text_faint)
+                     for line in result_lines(payload)]
+        elif payload:
+            rows += [C.text(line, t, "small") for line in result_lines(payload)]
+            for label, path, inferred in result_outputs(payload, self.page.field("issue_dir")):
+                rows.append(ft.Row(spacing=t.sp("2"),
+                                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                   controls=[
+                    C.text(label + ("（推断）" if inferred else ""), t, "small",
+                           t.palette.text_muted),
+                    C.text(path, t, "caption", t.palette.text_faint),
+                    ft.Container(expand=True),
+                    C.text_button("打开", lambda e, p=path: self.app.open_path(p), t),
+                ]))
+            if report:
+                rows.append(ft.Row(spacing=t.sp("2"), controls=[
+                    C.text("结果 JSON", t, "small", t.palette.text_muted),
+                    ft.Container(expand=True),
+                    C.text_button("打开", lambda e, p=existing_result_json_path(report):
+                                  self.app.open_path(p), t),
+                ]))
+        self.feedback.content = C.card(ft.Column(spacing=t.sp("1"), controls=rows), t)
+        self._safe_update(self.feedback)
 
     # ── 小工具 ─────────────────────────────────────────────────────────
     def _notice(self, message: str, tone: str = "info") -> None:

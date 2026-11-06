@@ -50,6 +50,18 @@ _SPACING_PT_EN = 2 * 10.95
 _PREFIX_PT = 19.56001
 _COLUMN_AUTHOR_PT = 0.26 * _TEXTWIDTH_PT
 
+#: 栏目种类（目录设置.json 的 columnKind 只认这两个值；空串 = 本期无栏目）。
+COLUMN_KIND_COLUMN = "专栏"
+COLUMN_KIND_ALBUM = "专辑"
+COLUMN_KINDS = (COLUMN_KIND_COLUMN, COLUMN_KIND_ALBUM)
+
+#: 两行中文标题第二行的行首缩进（B-363）。\newline 之后行首的胶（~~~~ 是一串空盒子）
+#: 会被 TeX 丢掉，续行就顶格了。续行缩进必须**在 TeX 渲染时量出真实前缀宽**：
+#: 从前写死 \hspace*{19.56001pt}，但 xelatex 实际排出来的 "~~~~ " 只有 14.944pt，
+#: 续行会多缩约 4.5pt。\phantom 是行首不被丢弃的 hbox，内容与首行前缀逐字相同，
+#: 宽度由 TeX 现场排版决定，因此与首行正文左缘对齐。
+_CELL_INDENT = "\\phantom{~~~~ }"
+
 #: 生成目录的中间件目录（B-121 B1）：时间戳中间 tex 一律落在期目录下这个隐藏目录，
 #: 不再散落到期目录根（用户实测「清理临时文件」清不掉根下时间戳文件）。
 TOC_WORK_DIR = ".toolbox-tmp"
@@ -136,6 +148,102 @@ def split_articles(lines: list[str]) -> list[tuple[str, list[str]]]:
         folder = lines[start - 2].strip() if start - 2 >= 0 else ""
         result.append((folder, lines[block_start:block_end]))
     return result
+
+
+# ── 《信息检查》报告合法性校验（B-375 D3）──────────────────────────────
+#: 报告里每篇的字段行（行首标签 + 冒号）。用来识别「真报告」：喂错文件（例如把某篇
+#: .tex 当报告）时 split_articles 靠「起始页码」也能切出假条目 —— 假条目的篇名是
+#: TeX 命令、块里只有 \newcommand 注释，必须明确拒绝而不是生成一份残目录。
+_REPORT_TITLE_RE = re.compile(r"^\s*(?:中文标题|英文标题)\s*[:：]")
+_REPORT_AUTHOR_RE = re.compile(r"^\s*第一作者(?:中文|英文)?\s*[:：]")
+#: 稿件文件夹名里不应出现的 TeX 特殊字符（真报告的篇名就是磁盘上的目录名）。
+_REPORT_FOLDER_BAD = "\\{}%"
+_REPORT_INDEX_RE = re.compile(r"^\s*\d+\s+(.+?)\s*$")
+
+
+def _valid_report_folder(folder: str) -> bool:
+    name = (folder or "").strip()
+    if not name or len(name) > 200:
+        return False
+    if any(ch in name for ch in _REPORT_FOLDER_BAD):
+        return False
+    return not any(ch in name for ch in "\r\n\t")
+
+
+def _valid_report_block(block: list[str]) -> bool:
+    has_title = any(_REPORT_TITLE_RE.match(ln) for ln in block)
+    has_author = any(_REPORT_AUTHOR_RE.match(ln) for ln in block)
+    return has_title and has_author
+
+
+def _article_dir_key(name: str) -> str:
+    """稿件目录名归一：去掉磁盘/界面上的序号前缀（01 Jingru_Kou → Jingru_Kou）。"""
+    match = _REPORT_INDEX_RE.match((name or "").strip())
+    return (match.group(1) if match else (name or "")).strip()
+
+
+def _article_subdirs(report_dir: str) -> list[str]:
+    """报告所在期目录下看起来像稿件文件夹的直接子目录（含 .tex 文件）。"""
+    try:
+        names = sorted(os.listdir(report_dir))
+    except OSError:
+        return []
+    found: list[str] = []
+    for name in names:
+        # 生成中间件目录里也有 .tex；它不是稿件文件夹，不能参与「报告↔期目录」比对。
+        if name.startswith("000") or name.startswith(".") or name == TOC_WORK_DIR:
+            continue
+        path = os.path.join(report_dir, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            entries = os.listdir(path)
+        except OSError:
+            continue
+        if any(entry.endswith(".tex") for entry in entries):
+            found.append(name)
+    return found
+
+
+def _report_entries_validation_error(report_dir: str,
+                                     articles: list[tuple[str, list[str]]]) -> str:
+    """非空报告条目的合法性；返回空串表示通过（0 篇由调用方单独报错）。"""
+    for folder, block in articles:
+        # split_articles 按「起始页码」前 2 行取目录名；报告里目录名与「起始页码」
+        # 之间隔了空行时会取到 ""（老测试夹具就是这种写法）。只要字段齐全，
+        # 空目录名按「报告没写目录名」放行，不据此拒绝整份报告。
+        if (not folder.strip() or _valid_report_folder(folder)) and _valid_report_block(block):
+            continue
+        return (f"这不是一份能用的《信息检查》报告：解析出的篇目「{folder}」不像报告条目"
+                "（篇名带 TeX 命令，或缺标题/第一作者字段）。"
+                '请用 infocheck.py --folder "<期目录>" 生成的那种 .txt；'
+                "本次没有生成任何文件。")
+    subdirs = _article_subdirs(report_dir)
+    if subdirs:
+        keys = {_article_dir_key(name) for name in subdirs}
+        if not any(_article_dir_key(folder) in keys for folder, _block in articles):
+            sample = articles[0][0]
+            return (f"这不是一份能用的《信息检查》报告：报告里的稿件「{sample}」在期目录里"
+                    f"找不到对应的稿件文件夹（{report_dir}）。请确认报告与期目录配套，"
+                    '或重新用 infocheck.py --folder "<期目录>" 生成；本次没有生成任何文件。')
+    return ""
+
+
+def report_validation_error(report_path: str) -> str:
+    """CLI 用：读报告并做结构校验；返回人话错误（空串 = 通过）。
+
+    解析出 0 篇时返回空串 —— 调用方已有专门的「这不是报告」提示，避免两套文案。
+    """
+    try:
+        with open(report_path, encoding="utf-8", errors="replace") as fh:
+            lines = python_readlines(fh.read())
+    except OSError as e:
+        return f"读不了检查报告：{e}"
+    articles = split_articles(lines)
+    if not articles:
+        return ""
+    return _report_entries_validation_error(
+        os.path.dirname(os.path.abspath(report_path)), articles)
 
 
 #: 「文本类」命令：清洗标题时**保留花括号里的内容**（不是整段删掉）。
@@ -366,8 +474,17 @@ def _zh_title_lines(e: TocEntry, wrap_limit: float, in_column: bool) -> list[str
 
 
 def chinese_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
-    """中文目录的一条。"""
+    r"""中文目录的一条。
+
+    B-363：两行标题的第二行在 \newline 之后，行首的 ~~~~ 前缀（一串空盒子）会被
+    TeX 当作行首胶丢掉，续行顶格；第二行改用 \phantom{~~~~ }：它是行首不被丢弃的
+    hbox，内容与首行前缀逐字相同，宽度由 TeX 现场排版决定（从前写死的
+    \hspace*{19.56001pt} 比真实前缀 14.944pt 宽，续行会右偏约 4.5pt）。
+    非栏目条目第二行没有前缀，保持原样。
+    """
     prefix = "~~~~ " if in_column else ""
+    # 续行缩进：栏目内用与首行 ~~~~ 同内容的 phantom（行首保留、宽度渲染期量出）
+    cont_prefix = _CELL_INDENT if in_column else ""
     title_lines = _zh_title_lines(e, wrap_limit, in_column)
 
     authors = "&\\textit{\\large " + prefix + "，".join(e.chineseAuthors) + "}"
@@ -375,7 +492,7 @@ def chinese_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
     if len(title_lines) == 2:
         # 第二行是同一单元格内的软换行（`\newline`，B-355 D1），不是表格新行
         return ("{\\large " + prefix + title_lines[0] + "}\n"
-                + _CELL_LINEBREAK + "{\\large " + prefix + title_lines[1] + "}\n"
+                + _CELL_LINEBREAK + "{\\large " + cont_prefix + title_lines[1] + "}\n"
                 + authors + "\n& " + e.page + _LINEBREAK)
     return ("{\\large " + prefix + title_lines[0] + "}\n"
             + authors + "\n& " + e.page + _LINEBREAK)
@@ -444,14 +561,18 @@ def _issue_layout(entries: list[tuple[str, TocEntry]], settings: "TocSettings",
 def _log_layout_guard(head: str, entries: list[tuple[str, TocEntry]],
                       settings: "TocSettings", is_chinese: bool,
                       column_layout: bool, wrap_limit: float,
-                      log=lambda _s: None) -> None:
-    r"""D4 宽度守卫：负间距指纹 + 逐条估算宽度越界告警（只告警，不改版式）。"""
+                      log=lambda _s: None,
+                      all_report_articles: list[str] | tuple[str, ...] | None = None) -> None:
+    r"""D4 宽度守卫：负间距指纹 + 逐条估算宽度越界告警（只告警，不改版式）。
+
+    all_report_articles 是当前报告的篇名清单（专辑「全收」的判定依据）。
+    """
     if "\\hspace{-" in head:
         log("⚠️ 模板里仍含负间距（\\hspace{-…}），作者/页码可能压到标题列：请人工核对")
 
     widths: list[float] = []
     for folder_name, e in entries:
-        in_column = settings.contains(folder_name)
+        in_column = column_layout and settings.in_toc(folder_name, all_report_articles)
         page_pt = max(1, len(e.page)) * _PAGE_DIGIT_PT
         prefix_pt = _PREFIX_PT if in_column else 0.0
         if is_chinese:
@@ -482,6 +603,22 @@ def _log_layout_guard(head: str, entries: list[tuple[str, TocEntry]],
 
 # ── 本期设置（目录设置.json）─────────────────────────────────────────────
 
+def _article_name_matches(report_article_name: str, stored_name: str) -> bool:
+    """报告里的 folder_name 与设置里存的名字是否指同一篇。
+
+    报告里是 Meimei_Han；界面（或旧设置文件）里可能存带序号的 01 Meimei_Han，
+    所以两种写法都认。
+    """
+    target = (report_article_name or "").strip()
+    stored = (stored_name or "").strip()
+    if not target or not stored:
+        return False
+    if stored == target:
+        return True
+    parts = stored.split()
+    return bool(parts) and parts[-1] == target
+
+
 @dataclass
 class TocSettings:
     """「生成目录」的本期设置，保存在期目录下的 `目录设置.json`。
@@ -506,40 +643,105 @@ class TocSettings:
     fileName = "目录设置.json"
 
     @property
-    def is_column_enabled(self) -> bool:
-        return bool(self.columnKind) and bool(self.columnName)
+    def column_kind(self) -> str:
+        """规范化后的栏目种类（专栏 / 专辑；空串 = 本期无栏目）。"""
+        return (self.columnKind or "").strip()
+
+    @property
+    def is_album(self) -> bool:
+        return self.column_kind == COLUMN_KIND_ALBUM
 
     @property
     def column_editing(self) -> bool:
-        """界面是否展示栏目控件（不能用 is_column_enabled：那要求名称非空，
+        """界面是否展示栏目控件（不能用 is_column_enabled：那要求四项齐全，
         会导致「选了专栏但还没填名称时输入框被隐藏」，从而永远填不上名称）。"""
-        return bool(self.columnKind)
+        return bool(self.column_kind)
 
-    def contains(self, report_article_name: str) -> bool:
-        """某篇文章是否属于栏目。报告里的名字是 `folder_name`（如 `Meimei_Han`），
-        设置里可能存带序号的（如 `01 Meimei_Han`），所以两边都兼容。"""
+    def column_kind_note(self) -> str:
+        """B-375 D4：columnKind 只有空白时按「本期无栏目」处理，返回一行明确提示。
+
+        GUI 的 normalize 会 strip；CLI 直接读 json 时也可能遇到 "   "。行为与空串
+        完全一致（不启用、忽略其余栏目字段），但不能静默归一，必须让用户看见。
+        """
+        raw = self.columnKind
+        if not raw or str(raw).strip():
+            return ""
+        return "提示：栏目类型为空或只有空格，按「本期无栏目」处理（全部稿件按普通条目排版）。"
+
+    def missing_column_fields(self) -> list[str]:
+        """栏目已选但没填全时，返回缺项的人话名称；填齐/无栏目返回空列表。"""
+        if not self.column_editing:
+            return []
+        fields = (
+            ("栏目名称", self.columnName),
+            ("英文名称", self.columnNameEN),
+            ("主持人", self.columnHost),
+        )
+        return [label for label, value in fields if not (value or "").strip()]
+
+    def column_validation_error(self) -> str:
+        """栏目设置不完整的人类可读错误；返回空串表示可以生成。
+
+        B-375 用户拍板：选了栏目（种类非空）就必须填全 种类/中文名/英文名/主持人
+        四项（纯空格算缺）；不完整的「启用」一律拒绝生成，不许静默产出
+        没有栏目标签或标签回退中文的目录。无栏目时四个栏目字段一律忽略。
+        """
+        if not self.column_editing:
+            return ""
+        if self.column_kind not in COLUMN_KINDS:
+            return (f"栏目种类「{self.column_kind}」无法识别：只能是「专栏」或「专辑」。"
+                    "请重新选择（本次没有生成任何文件）。")
+        missing = self.missing_column_fields()
+        if not missing:
+            return ""
+        return (f"本期栏目「{self.column_kind}」信息不完整：缺{'、'.join(missing)}。"
+                "请补齐后重新生成（本次没有生成任何文件）。")
+
+    @property
+    def is_column_enabled(self) -> bool:
+        """本期是否按栏目排版（专栏/专辑）。四项齐全才算启用（见 column_validation_error）。"""
+        return self.column_kind in COLUMN_KINDS and not self.missing_column_fields()
+
+    def in_toc(self, report_article_name: str,
+               all_report_articles: list[str] | tuple[str, ...] | None = None) -> bool:
+        r"""某篇是否属于本期栏目（是否带 ~~~~ 栏目标记）。
+
+        B-375 口径：目录永远列出当前报告全部篇目，本方法**不决定条目去留**，只回答
+        「是否属于本期栏目」——调用方还要叠加「本期是否有栏目」再决定要不要标记。
+        · 无栏目：恒 True（没有栏目标记，全部按普通目录条目排版）；
+        · 专辑：当前报告全部稿件都算（设置里存的 columnArticles 空/半截/旧子集一律忽略，
+          重启后读到旧的空列表也不会少收稿件）；
+        · 专栏：只有 columnArticles 里勾选到的算（允许一篇都没有，没有「至少一篇」规则）。
+        all_report_articles 传当前报告的篇名清单；不传时视为就是当前报告里的名字。
+        """
         if not self.is_column_enabled:
-            return False
-        target = report_article_name.strip()
+            return True
+        target = (report_article_name or "").strip()
         if not target:
             return False
-        for stored in self.columnArticles:
-            s = stored.strip()
-            if s == target:
+        if self.is_album:
+            if all_report_articles is None:
                 return True
-            tail = s.split()[-1] if s.split() else s
-            if tail == target:
-                return True
-        return False
+            return any((name or "").strip() == target for name in all_report_articles)
+        return any(_article_name_matches(target, stored) for stored in self.columnArticles)
+
+    def contains(self, report_article_name: str,
+                 all_report_articles: list[str] | tuple[str, ...] | None = None) -> bool:
+        """in_toc 的旧名别名（B-121 起的调用点与外壳沿用），语义完全一致。"""
+        return self.in_toc(report_article_name, all_report_articles)
 
     @property
     def chinese_column_title(self) -> str:
-        return f"{self.columnKind}：{self.columnName}"
+        return f"{self.column_kind}：{(self.columnName or '').strip()}"
 
     @property
     def english_column_title(self) -> str:
-        name = self.columnNameEN or self.columnName
-        return f"Column: {name}"
+        r"""英文目录的栏目标签（B-364 用户拍板）：专栏 → Column: <EN>，
+        专辑 → Special Issue: <EN>。只用 columnNameEN，绝不回退中文名 ——
+        已启用的栏目在生成前已校验英文名非空；空英文名是配置错误，由
+        column_validation_error() 报出并阻止生成。"""
+        label = "Special Issue" if self.is_album else "Column"
+        return f"{label}: {(self.columnNameEN or '').strip()}"
 
     @classmethod
     def load(cls, folder: str) -> "TocSettings":
@@ -651,6 +853,14 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     report_dir = os.path.dirname(os.path.abspath(report_path))
     log(f"开始生成{label}目录")
 
+    # B-375：栏目设置不完整（选了专栏/专辑但四项没填全）必须明确拒绝。
+    # 从前不完整也算「启用」，英文名空就回退中文名 —— 静默生成一份口径错误的目录。
+    settings_error = settings.column_validation_error()
+    if settings_error:
+        log(f"❌ {settings_error}")
+        log(f"{label}目录TeX文件生成失败")
+        return None
+
     try:
         with open(report_path, encoding="utf-8", errors="replace") as fh:
             lines = python_readlines(fh.read())
@@ -660,6 +870,21 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
         return None
 
     articles = split_articles(lines)
+    # B-375：报告里一篇稿件条目都解析不到（例如误把某篇 .tex / 别的 txt 当报告）时，
+    # 绝不能静默产出空目录、更不能覆盖 000 里的成品 —— 明确报错、不写任何文件。
+    if not articles:
+        log("❌ 这份报告里没有找到任何稿件条目，未生成目录")
+        log(f"{label}目录TeX文件生成失败")
+        return None
+    # B-375 D3：非报告文件也可能靠「起始页码」切出 1 条假条目（例如把某篇 .tex
+    # 当报告）。篇名/字段不像报告，或与期目录里的稿件文件夹对不上，一律明确拒绝。
+    report_error = _report_entries_validation_error(report_dir, articles)
+    if report_error:
+        log(f"❌ {report_error}")
+        log(f"{label}目录TeX文件生成失败")
+        return None
+    # 当前报告的全部篇名（专辑「全收」/结果 JSON 的 inToc 判定都以此为准）
+    report_names = [name for name, _block in articles]
     volume, issue, year = parse_issue_info(lines)
     total_issue = _tt.total_issue_number(report_dir) or ""
     # 双月刊：第 N 期 → 2N 月出版（2、4、6、8、10、12 月）
@@ -675,7 +900,13 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # ---- 头部：填入本期卷期信息，并统一使用 Windows 字体 + 规范列格式 ----
     # B-355 D2/D3：继承模板的列定义是逐期手调负胶，普通期会把作者/页码拉进标题，
     # 且无 X 列时右侧留白；生成前统一改写为规范形，识别不了就告警回退内置模板。
-    column_layout = settings.is_column_enabled and bool(settings.columnArticles)
+    # 栏目正文版式（与历史成品一致）：只有「当前报告里真的会有条目带栏目标记」时才按
+    # 栏目版式排版（窄栏宽 / 断行上限）。专辑全收 ⇒ 恒有标记；专栏看有效命中 ——
+    # columnArticles 里全是别的报告的 stale 篇名（有效标记数 0）时正文按普通版式排版，
+    # 栏目行仍照旧打印。report_names 与后面构造的 parsed 一一对应（同源于 articles）。
+    column_layout = settings.is_column_enabled and (
+        settings.is_album
+        or any(settings.in_toc(name, report_names) for name in report_names))
     head = _tt.ensure_windows_fontset(_tt.patch_header(
         parts.head,
         volume=volume or "?", issue=issue or "?", year=year or "?",
@@ -699,17 +930,18 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # ---- 栏目块 ----
     column_block = _tt.make_column_block(settings, parts.columnBlock, is_chinese)
     if settings.is_column_enabled:
-        count = len(settings.columnArticles)
+        # B-375：日志报「带栏目标记」的篇数：专辑 = 全部当前报告；专栏 = 勾选生效数（可 0）
+        if settings.is_album:
+            count = len(report_names)
+        else:
+            count = sum(1 for name in report_names
+                        if settings.in_toc(name, report_names))
         if is_chinese:
             log(f"本期栏目：{settings.chinese_column_title}（{count} 篇）")
         else:
-            # B-121（用户 2026-11-04 追加）：英文表头 `Column: <columnNameEN/columnName>`；
-            # 没填英文名时回退中文栏目名，不再像旧口径那样静默丢掉整行。
-            if not (settings.columnNameEN or "").strip():
-                log("本期栏目：英文名未填，Column 行回退用中文栏目名")
             log(f"本期栏目：{settings.english_column_title}（{count} 篇）")
             if not parts.columnBlock:
-                log("⚠️ 继承模板没有栏目块：已按内置形态生成 Column 行（默认间距 3mm）")
+                log("⚠️ 继承模板没有栏目块：已按内置形态生成栏目行（默认间距 3mm）")
 
     # ---- 正文条目 ----
     parsed: list[tuple[str, TocEntry]] = []
@@ -722,12 +954,17 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
 
     # B-355 D4：断行上限按版心/列宽反推（P1：超预算只告警 + 取较小的值），
     # 再跑一遍宽度守卫（负间距指纹、超版心/右侧留白）。
-    wrap_limit = _issue_layout(parsed, settings, is_chinese, column_layout, log=log)
-    _log_layout_guard(head, parsed, settings, is_chinese, column_layout, wrap_limit, log=log)
+    # B-375：目录永远列出当前报告全部篇目；勾选只决定「是否带栏目标记」
+    # （中文 ~~~~ 缩进 / 英文首位作者前 ~~~~ / 栏目版式），不删条目。
+    toc_entries = parsed
+    wrap_limit = _issue_layout(toc_entries, settings, is_chinese, column_layout, log=log)
+    _log_layout_guard(head, toc_entries, settings, is_chinese, column_layout, wrap_limit,
+                      log=log, all_report_articles=report_names)
 
     entries: list[str] = []
-    for folder_name, entry in parsed:
-        in_column = settings.contains(folder_name)
+    for folder_name, entry in toc_entries:
+        # 逐条判定栏目成员：无栏目/专栏未勾选 → 普通条目；专辑/勾选 → 栏目标记
+        in_column = settings.is_column_enabled and settings.in_toc(folder_name, report_names)
         entries.append(chinese_entry(entry, in_column, wrap_limit) if is_chinese
                        else english_entry(entry, in_column, wrap_limit))
     body = "\n\n\\vdistance\n\n".join(entries)

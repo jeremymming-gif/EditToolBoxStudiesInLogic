@@ -12,7 +12,7 @@ r"""生成中英文目录（对应 mac 版的「生成目录」，第 94 条搬�
 模板来源优先级：本期 `000 Table of Contents` 里已有的成品 →（`--template` 显式指定）→
 上一期 → 内置模板（继承上一期是为了延续同事手工调过的版式，不再依赖旧版写死模板；内置模板已是 2026 年第 3 期(88) 版式）。
 
-本期设置（栏目、主持人、标题断行上限）读报告同目录的 `目录设置.json`；不存在则按默认值。
+本期设置（栏目、主持人、标题断行上限）读报告同目录的 `目录设置.json`；不存在则按默认值。选了专栏/专辑时必须四项齐全（种类/中文名/英文名/主持人），专辑自动收录当前报告全部稿件；不完整的栏目设置一律拒绝生成（退出 2，不写任何文件）。
 
 **B-226 起「一键最终交付」**（`--place` / `--compile`）：
 
@@ -26,7 +26,7 @@ r"""生成中英文目录（对应 mac 版的「生成目录」，第 94 条搬�
 
 退出码：`0` 两份都生成（且已请求的落位/编译都成功）；
 `1` 两份已生成但**有需人工核对项**（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；
-`2` 用法/文件错误，或落位/编译/单页适配失败（原因在 stderr）。
+`2` 用法/文件错误，或落位/编译/单页适配失败（原因在 stderr）；栏目设置不完整（选了专栏/专辑但四项未填全）同样退出 2 且不生成任何文件。
 """
 
 from __future__ import annotations
@@ -86,6 +86,7 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
                 out_paths["enTex"] = os.path.abspath(path)
     # 批 115 / D1-115-29：给工作台详情页的篇目计数（additive；旧字段一个不动）。
     articles = _toc.list_articles(report)
+    # B-375：目录永远列出全部篇目（专栏勾选只改栏目标记、不删条目），inToc = total
     return {
         "articles": {"total": len(articles), "inToc": len(articles)},
         "templateSource": source,
@@ -167,6 +168,13 @@ def main(argv: list[str] | None = None) -> int:
               f"本次**没有生成任何文件**。\n", file=sys.stderr)
         return 2
 
+    # B-375 D3：非报告也可能切出 1 条假条目（篇名是 TeX 命令 / 缺字段 / 与期目录
+    # 稿件文件夹对不上）。同样明确拒绝：rc2、不生成、不写结果 JSON。
+    report_error = _toc.report_validation_error(report)
+    if report_error:
+        print(f"❌ {report_error}", file=sys.stderr)
+        return 2
+
     settings_path = (os.path.abspath(os.path.expanduser(args.settings)) if args.settings
                      else os.path.join(report_dir, _toc.TocSettings.fileName))
     if args.settings and not os.path.isfile(settings_path):
@@ -188,9 +196,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.template:
         settings.templateFolder = args.template
 
+    # B-375 D4：columnKind 只有空白（strip 后为空）按「本期无栏目」处理 —— 行为
+    # 与空串一致，但不能静默归一：预览把提示带给外壳，正式生成打印一行。
+    kind_note = settings.column_kind_note()
+
     # 批 115：`--preview` 与正式生成共用「模板来源」口径；此值必须在预览分支前算好
     # （从前只在下面正式生成前赋值，预览读到未绑定变量直接 UnboundLocalError，GUI 必挂）。
     note = _toc.template_source_note(report, settings)
+    # B-375 D5：预览也带 templateSource（与正式生成同一解析口径，供信息卡显示模板来源）。
+    template_source, template_note = _toc.template_source(report, settings)
+
+    # B-375：栏目设置不完整（选了专栏/专辑但四项没填全）时，所有生成入口都必须
+    # 明确报错并拒绝生成；preview 也把错误带给外壳，让主按钮/重新生成/仅TeX
+    # 共用同一套判据（engine 是唯一判据来源，外壳不自己拼）。
+    settings_error = settings.column_validation_error()
 
     if args.preview:
         # 给界面用的预览：篇目清单 + 模板来源 + 生效的设置。
@@ -199,11 +218,22 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "articles": [{"name": n, "title": ti} for n, ti in articles],
             "templateNote": note,
+            "templateSource": template_source,
             "columnArticles": settings.columnArticles,
             "columnEnabled": settings.is_column_enabled,
+            "columnValidationError": settings_error,
         }
+        if kind_note:
+            payload["columnKindNote"] = kind_note
         print(json.dumps(payload, ensure_ascii=False))
         return 0
+
+    if kind_note:
+        print(kind_note)
+
+    if settings_error:
+        print(f"\n❌ {settings_error}\n", file=sys.stderr)
+        return 2
 
     print("运行生成目录的函数\n")
     print(f"报告：{report}")
@@ -215,8 +245,7 @@ def main(argv: list[str] | None = None) -> int:
     # 界面会显示橙色警告而不是绿色完成。
     total_issue_known = _tt.total_issue_number(report_dir) is not None
 
-    # 模板来源快照：**必须在生成/落位之前**取（`--place` 会写 000，事后再解析就不是生成时的口径了）
-    template_source, template_note = _toc.template_source(report, settings)
+    # 模板来源快照已在预览分支前取好（同上）；`--place` 后再解析会变成「本期成品」。
 
     outputs = _toc.run(report, settings, log=lambda s: print(s))
 

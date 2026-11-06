@@ -234,13 +234,23 @@ def test_assembly_toc_uses_latest_report_and_result_json(tmp_path, engine):
     page = _Page()
     page.set_field("issue_dir", str(tmp_path))
     page.app.store.update_options(toc_text_only=False)
-    page.app.store.set("recent.toc_settings", str(tmp_path / "目录设置.json"))
+    # 2026-11-06 Lead m00984(3)：只传真实存在的设置文件，不把已删除/搬走的
+    # recent 旧路径塞给引擎（引擎会「❌ 找不到设置文件」直接拒绝）。
+    stale = tmp_path / "旧目录" / TS.FILE_NAME
+    page.app.store.set("recent.toc_settings", str(stale))
     call = ASM.build_step_call(page, "toc")
     assert page.field("toc_report") == str(report)
     args = args_of(call)
     assert "--place" in args and "--compile" in args
     assert args[args.index("--result-json") + 1].endswith("目录结果.json")
-    assert args[args.index("--settings") + 1].endswith("目录设置.json")
+    assert "--settings" not in args, args
+
+    # recent 指向真实存在的 目录设置.json 时仍作为兜底传给引擎。
+    stale.parent.mkdir()
+    stale.write_text(json.dumps(TS.defaults(), ensure_ascii=False), encoding="utf-8")
+    call = ASM.build_step_call(page, "toc")
+    args = args_of(call)
+    assert args[args.index("--settings") + 1] == str(stale)
 
 
 def test_assembly_dirpush_annual_mode(tmp_path, engine):

@@ -6,7 +6,9 @@
    （含 columnNameEN），显式「目录设置 JSON」优先。
 2. A2 自动保存：预览/生成/整期运行前把面板 values+selected 写入生效路径，
    不需要用户先点「保存栏目表」；无改动不重写；写失败显式报错。
-3. A4 负向校验：栏目类型已选但名称为空 → 明确提示并阻止调用；类型为空但有勾选 → 提示。
+3. A4 负向校验（2026-11-06 用户决定(b)，B-375 收敛）：启用专栏/专辑时四项
+   （类型/中文名/英文名/主持人）全部非空才可生成，缺项一次列全；辅助预览不锁死
+   （Lead m00363 A），生成入口仍阻断；无栏目不受字段阻断。
 4. A6/结果路径：整期装配 `build_step_call("toc")` 复用同一份自动保存后的设置；
    结果 JSON 走 `<报告目录>/.toolbox-tmp/目录结果.json`（旧路径可读兼容）。
 
@@ -95,6 +97,24 @@ def _make_panel(tmp_path: Path, *, settings: dict | None = None,
     return panel, report, page
 
 
+def _texts(control) -> list[str]:
+    """递归收集控件树里的文本（断言提示/信息卡文案用）。"""
+    out: list[str] = []
+    stack = [control]
+    while stack:
+        node = stack.pop()
+        if node is None:
+            continue
+        for attr in ("text", "value"):
+            value = getattr(node, attr, None)
+            if isinstance(value, str):
+                out.append(value)
+        content = getattr(node, "content", None)
+        if content is not None:
+            stack.append(content)
+        stack.extend(getattr(node, "controls", None) or [])
+    return out
+
 def _write_settings(path: Path, **overrides) -> dict:
     data = TS.normalize({**TS.defaults(), **overrides})
     ok, saved = TS.save(str(path), data)
@@ -179,36 +199,86 @@ def test_sync_settings_skips_rewrite_when_nothing_changed(tmp_path):
 
 
 # ── A4：负向校验 ─────────────────────────────────────────────────────────
-def test_column_issue_blocks_kind_without_name():
+def test_column_issue_requires_all_four_fields_when_column_enabled():
+    """2026-11-06 用户决定(b)：专栏/专辑四项（类型/中文名/英文名/主持人）全部非空才可生成。
+
+    旧行为只检查「类型已选但中文名为空」，且「无栏目 + 有勾选」会给一条提示；
+    新规则下无栏目永不被字段阻断，旧提示（勾选不生效）已删除。
+    """
     panel, _report, _ = _make_panel(Path("/tmp"))
-    panel.values["columnKind"] = "专栏"
-    panel.values["columnName"] = ""
-    blocked, hint = panel.column_issue()
-    assert blocked is True and "栏目名称" in hint
+    panel.values.update({"columnKind": "专栏", "columnName": "",
+                         "columnNameEN": "", "columnHost": ""})
 
-    panel.values["columnKind"] = ""
-    panel.selected = ["A"]
     blocked, hint = panel.column_issue()
-    assert blocked is False and hint
 
-    panel.selected = []
+    assert blocked is True
+    for label in ("栏目名称（中文）", "栏目英文名", "主持人"):
+        assert label in hint, f"缺项说明要列出全部缺项：{hint}"
+
+    # 纯空格不算填写。
+    panel.values.update({"columnName": "   ", "columnNameEN": "Logic", "columnHost": "张三"})
+    blocked, hint = panel.column_issue()
+    assert blocked is True and "栏目名称（中文）" in hint
+
+    # 四项补齐 → 放行。
+    panel.values["columnName"] = "逻辑与概率"
     assert panel.column_issue() == (False, "")
 
+    # 无栏目：不受四项字段阻断；旧勾选不影响判定。
+    panel.values.update({"columnKind": "", "columnName": "", "columnNameEN": "",
+                         "columnHost": ""})
+    panel.selected = ["A"]
+    assert panel.column_issue() == (False, "")
 
-def test_preview_task_refuses_invalid_column_without_calling_engine(tmp_path, monkeypatch):
+    # 专辑同样四项必填。
+    panel.values.update({"columnKind": "专辑", "columnName": "专题", "columnNameEN": "",
+                         "columnHost": ""})
+    blocked, hint = panel.column_issue()
+    assert blocked is True and "栏目英文名" in hint
+
+
+def test_preview_task_warns_incomplete_column_but_still_previews(tmp_path, monkeypatch):
+    """2026-11-06 用户决定(a)(b) + Lead m00363 A：四项不齐只警示，预览不锁死。
+
+    旧行为：栏目不完整时 preview 直接拒绝调用引擎（并断言不写设置文件）；
+    新行为：有报告就继续预览（A2 仍自动保存草稿），引擎 preview 退回的
+    columnValidationError 要在信息卡里显示；生成入口（_generate_task）仍然阻断。
+    """
     panel, _report, page = _make_panel(tmp_path)
     panel.values["columnKind"] = "专栏"
     panel.values["columnName"] = ""
 
-    def _boom(*args, **kwargs):
-        raise AssertionError("A4 阻止时不得调用引擎")
+    seen: dict = {}
 
-    monkeypatch.setattr(TOC.EB, "read_json_command", _boom)
+    def _fake_preview(call, **kwargs):
+        seen["argv"] = list(call.argv)
+        return {"ok": True, "code": 0, "json": {
+            "columnEnabled": False,
+            "columnValidationError": "本期栏目「专栏」信息不完整：缺栏目名称。",
+            "templateSource": "默认",
+        }, "lines": [], "error": ""}
+
+    monkeypatch.setattr(TOC.EB, "read_json_command", _fake_preview)
     asyncio.run(panel._preview_task())
 
     events = [event for event, _fields in page.marks]
     assert "toc_column_invalid" in events
-    assert not (tmp_path / TS.FILE_NAME).exists(), "阻止时不应写设置文件"
+    assert "toc_preview" in events
+    assert "--preview" in seen["argv"], "有报告时预览必须继续调用引擎"
+    texts = _texts(panel.info) + _texts(panel.feedback)
+    assert any("信息不完整" in text for text in texts), f"缺项/引擎警示要显示：{texts}"
+
+    # 生成入口仍然阻断：不调用引擎（也就不会写任何产物）。
+    calls = {"n": 0}
+
+    def _no_engine(*args, **kwargs):
+        calls["n"] += 1
+        raise AssertionError("栏目不完整时生成入口不得调用引擎")
+
+    monkeypatch.setattr(TOC.EB, "read_json_command", _no_engine)
+    asyncio.run(panel._generate_task())
+    assert calls["n"] == 0
+    assert page.marks[-1][0] == "toc_column_invalid"
 
 
 # ── B1：结果 JSON 新路径 + 旧路径兼容 ────────────────────────────────────
@@ -272,17 +342,30 @@ def test_build_step_call_falls_back_to_saved_default_and_recent(tmp_path):
     page, report = _step_page(tmp_path)
     # 无面板：优先报告同目录已保存文件。
     saved = tmp_path / TS.FILE_NAME
-    _write_settings(saved, columnKind="专栏", columnName="已保存")
+    # 2026-11-06 用户决定(b)：启用栏目四项必填，否则共享门会先阻断。
+    _write_settings(saved, columnKind="专栏", columnName="已保存",
+                    columnNameEN="Saved", columnHost="张三")
     call = ASM.build_step_call(page, "toc")
     args = _args_of(call)
     assert args[args.index("--settings") + 1] == str(saved)
 
-    # 已保存文件不存在时回退 recent（与旧行为一致）。
+    # Lead m00984(3)：recent 兜底可能指向已删除/搬走的旧路径。旧行为把不存在的
+    # 路径直接传给引擎（引擎会「❌ 找不到设置文件」），现与预览一致：只传真实
+    # 存在的文件，否则省略 --settings 让引擎用默认。
     saved.unlink()
-    page.app.store.set("recent.toc_settings", str(tmp_path / "显式.json"))
+    stale = tmp_path / "显式.json"
+    page.app.store.set("recent.toc_settings", str(stale))
     call = ASM.build_step_call(page, "toc")
     args = _args_of(call)
-    assert args[args.index("--settings") + 1] == str(tmp_path / "显式.json")
+    assert "--settings" not in args, args
+    assert not any(str(stale) in arg for arg in args), args
+
+    # 存在的 recent 设置文件仍然作为兜底传下去。
+    _write_settings(stale, columnKind="专辑", columnName="专辑名",
+                    columnNameEN="Issue Name", columnHost="主编")
+    call = ASM.build_step_call(page, "toc")
+    args = _args_of(call)
+    assert args[args.index("--settings") + 1] == str(stale)
 
 
 def test_build_step_call_refuses_invalid_column_from_panel(tmp_path):
@@ -353,9 +436,14 @@ def _two_reports(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     report_b.write_text("B", encoding="utf-8")
     settings_a = a_dir / TS.FILE_NAME
     settings_b = b_dir / TS.FILE_NAME
-    _write_settings(settings_a, columnKind="专栏", columnName="A栏目")
+    # 2026-11-06 用户决定(b)：启用栏目四项必填；只填名称的旧夹具会让共享门先拦下，
+    # 因此这里补齐 EN/主持人，保留本测试原本要验的「草稿归属」语义。
+    _write_settings(settings_a, columnKind="专栏", columnName="A栏目",
+                    columnNameEN="Column A", columnHost="张三")
     _fix = json.dumps(TS.normalize({**TS.defaults(), "columnKind": "专栏",
-                                   "columnName": "B栏目"}), ensure_ascii=False)
+                                   "columnName": "B栏目",
+                                   "columnNameEN": "Column B", "columnHost": "李四"}),
+                      ensure_ascii=False)
     settings_b.write_text(_fix, encoding="utf-8")  # 用户在编辑器里修好 JSON
     return report_a, report_b, settings_a, settings_b
 

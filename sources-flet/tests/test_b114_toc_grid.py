@@ -66,7 +66,9 @@ def test_editor_grid_is_two_by_two_with_kind_first():
         assert cell.col == {"xs": 12, "sm": 6}, cell.col
         content = cell.content
         labels.append(getattr(content, "_form_label", None))
-    assert labels == ["栏目类型", "栏目名称（中文）", "栏目英文名（可空）", "主持人（可空）"]
+    # 2026-11-06 用户决定(b)：启用栏目四项必填，标签不再标「（可空）」；
+    # 旧行为是「栏目英文名（可空）」「主持人（可空）」。
+    assert labels == ["栏目类型", "栏目名称（中文）", "栏目英文名", "主持人"]
     # 窄面板降单列：xs 栅格必须是整行。
     assert all(cell.col["xs"] == 12 for cell in grid.controls)
     # 断点：两格放不下（< 2*min_cell 实际 px）时降单列。
@@ -123,7 +125,10 @@ def test_kind_display_follows_current_value_and_selection():
 def test_article_checklist_replaces_add_row_when_report_loaded():
     """批 123（用户 m02698）：报告载入篇目后，编辑区直接给勾选清单，不再需要逐篇加入。"""
     t = _t()
-    panel = _panel(t, available=[
+    # 2026-11-06 用户决定(a)/(b)：勾选清单只在「专栏」显示；旧行为是无栏目也显示。
+    panel = _panel(t, values={"columnKind": "专栏", "columnName": "逻辑与概率",
+                              "columnNameEN": "Logic", "columnHost": "张三"},
+                   available=[
         {"name": "甲篇", "title": "甲的标题"},
         {"name": "乙篇", "title": ""},
     ])
@@ -193,7 +198,8 @@ def test_article_name_truncates_before_pushing_buttons_out():
     """超长篇目名单行省略 + tooltip，不再用 intrinsic 宽度把 ↑↓/删除 挤出面板。"""
     t = _t()
     long_name = "很长的篇目名" * 12
-    panel = _panel(t, selected=[long_name])
+    # 2026-11-06 用户决定(a)：本期无栏目不再显示篇目行；这里验专栏模式的截断。
+    panel = _panel(t, values={"columnKind": "专栏"}, selected=[long_name])
     _, rows = _grid(panel)
     article_rows = [r for r in rows
                     if isinstance(r, ft.Row) and len(r.controls) == 4]

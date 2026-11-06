@@ -423,7 +423,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（29 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改**：报告只列需人工判断的命中，可自动改项由初排通道默认处理（`--fix` 可补写新文件） | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `templatecheck.py` | **模板合规校验（report-only MVP，B-002）**：核查产品目录或初排稿的 8 条模板/初排规范（T1–T8，见 `docs/TEMPLATE_RULES.md`）；**只报不改，无 `--fix`**；不注册 App/GUI/打包入口（`--self-test` 走内建夹具） | `0` 无 FAIL；`1` ≥1 FAIL；`2` 用法/输入/写报告错误 | `完成。模板合规：PASS p / FAIL f / SKIP s（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
-| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。**B-226 起支持一键最终交付**（默认仍只生成 tex，向后兼容）：`--place` 生成后**落位固定名**（缺 `000*` 时**自动创建** `000 Table of Contents`）→ `000*/Chinese Content.tex`／`contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留供下一期继承）；`--compile` 落位后先做 **Windows 字体前置检查**（SimSun/SimHei/KaiTi，缺字体 **rc=2**、**绝不静默换字体**）→ `xelatex ×2` → 页数 > 1 时**一次性压缩行距**做单页适配（`\vdistance` 中英同一机制；本期成品小行距按 40pt 压、继承模板的大行距按「压到人工量级」估算；总压缩上限 320pt；压到上限仍 > 1 页 ⇒ rc=2 + 原因；`--compile` 隐含 `--place`）；`--result-json <路径>` 写 GUI 用的结构化结果：`templateSource`（`本期成品`/`上一期`/`内置模板`/`显式指定`）、`templateNote`、`tocDir`、`placed{zhTex,zhPdf,enTex,enPdf}`、`compiled`、`pages{zh,en}`、`column{enabled,title}`、`manualEdits[{kind,article,note}]`、`warnings`；**批 115 起 additive 增 `articles{total,inToc}`**（篇目计数，旧字段一个不动）。落位/编译/单页适配/字体检查的唯一实现在 `slcn/tocdelivery.py`（`publish.py` 第 ④ 步共用同一份，禁止第二份实现）。模板优先级：本期成品 → 显式 `--template` → 上一期 → 内置。内置模板来源与升级：源头是 `Engine/tests/fixtures/content_templates.json`（旧 Swift 源已删，历史），由 `Engine/tools/gen_content_templates.py` 生成 `Engine/slcn/content_templates.py`（生成物禁手改）；**2026-10-27 起内置中文模板 = 2026 年第 3 期(88) 版式**（B-231 ③-A，用户批准）；**B-243 起内置英文模板 = 同期(88) 英文版式**（用户 2026-10-27 定序），仍是最后兜底、每期按需人工微调，**不是版式标准**；`Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻校验 JSON 夹具↔py 逐字节一致（要改模板只改夹具再重生成）。**显式不做**（B-231 ③-B，用户 2026-10-27 **不批**）：回退到内置模板时不改 `rc`（仍 0）、不 fail-hard、不报错，唯一后续待定项是用 `--check` 在报告期做显式告警。决策见 notes 仓 `drafts/b231-card.md` 与 `drafts/specs/b231-template-hardening.md` §2③。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、或报告不可用 | `完成。生成目录 N 份（<目录>）` |
+| `toc.py` | **生成目录**：读 `infocheck` 的报告产出中英文目录 .tex（模板继承上一期成品）；`--preview` 只输出篇目清单与模板来源的 JSON（给界面用，不写文件）。**B-226 起支持一键最终交付**（默认仍只生成 tex，向后兼容）：`--place` 生成后**落位固定名**（缺 `000*` 时**自动创建** `000 Table of Contents`）→ `000*/Chinese Content.tex`／`contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留供下一期继承）；`--compile` 落位后先做 **Windows 字体前置检查**（SimSun/SimHei/KaiTi，缺字体 **rc=2**、**绝不静默换字体**）→ `xelatex ×2` → 页数 > 1 时**一次性压缩行距**做单页适配（`\vdistance` 中英同一机制；本期成品小行距按 40pt 压、继承模板的大行距按「压到人工量级」估算；总压缩上限 320pt；压到上限仍 > 1 页 ⇒ rc=2 + 原因；`--compile` 隐含 `--place`）；`--result-json <路径>` 写 GUI 用的结构化结果：`templateSource`（`本期成品`/`上一期`/`内置模板`/`显式指定`）、`templateNote`、`tocDir`、`placed{zhTex,zhPdf,enTex,enPdf}`、`compiled`、`pages{zh,en}`、`column{enabled,title}`、`manualEdits[{kind,article,note}]`、`warnings`；**批 115 起 additive 增 `articles{total,inToc}`**（篇目计数，旧字段一个不动）；**B-375 起 `inToc` = 目录实际列出的篇数（恒等于 `total`：专栏勾选只改 ~~~~ 栏目标记、不删条目）**，`--preview` 另增 `columnValidationError`（人话缺项，空串 = 可生成）与 `templateSource`（模板来源口径，与正式生成一致；均 B-375）。落位/编译/单页适配/字体检查的唯一实现在 `slcn/tocdelivery.py`（`publish.py` 第 ④ 步共用同一份，禁止第二份实现）。**失败回滚（B-375）**：落位前把 `000*` 整棵快照到 `<期目录>/.toolbox-tmp/toc-backup-*`；本次落位/编译/EN 阶段任何失败（含未预期异常）都按快照恢复 —— rc2 后 `000*` 的文件集合与每个文件内容 SHA 与本轮开始前完全一致（不会出现「新 tex + 旧 pdf」的半成品），成功路径删除备份、不留残留。模板优先级：本期成品 → 显式 `--template` → 上一期 → 内置。内置模板来源与升级：源头是 `Engine/tests/fixtures/content_templates.json`（旧 Swift 源已删，历史），由 `Engine/tools/gen_content_templates.py` 生成 `Engine/slcn/content_templates.py`（生成物禁手改）；**2026-10-27 起内置中文模板 = 2026 年第 3 期(88) 版式**（B-231 ③-A，用户批准）；**B-243 起内置英文模板 = 同期(88) 英文版式**（用户 2026-10-27 定序），仍是最后兜底、每期按需人工微调，**不是版式标准**；`Engine/tests/test_infocheck_toc.py` 的 `(n1)(n2)` 常驻校验 JSON 夹具↔py 逐字节一致（要改模板只改夹具再重生成）。**显式不做**（B-231 ③-B，用户 2026-10-27 **不批**）：回退到内置模板时不改 `rc`（仍 0）、不 fail-hard、不报错，唯一后续待定项是用 `--check` 在报告期做显式告警。决策见 notes 仓 `drafts/b231-card.md` 与 `drafts/specs/b231-template-hardening.md` §2③。⚠️ **先校验"这确实是一份检查报告"**：解析出 0 篇、或解析出的篇目对不上期目录里的真实稿件子目录（如把某篇 \`.tex\` 复制成 \`.txt\` 当报告）就退出 2、**一个文件都不写** —— 从前喂错文件（如某篇 `.tex`）会静默产出两份「第 ? 卷，第 ? 期」的空目录并退出 0，而产物落在**报告所在目录**（真跑时就是作者目录） | `0` 两份都生成（或 preview 成功）；`1` 两份已生成但有需人工核对项（只生成了一份 / 报告不在期目录里导致「总第 ? 期」无法确定）；`2` 用法/文件错误、报告不可用、或**栏目设置不完整**（选了专栏/专辑但四项未填全；不写任何文件、不写结果 JSON；B-375） | `完成。生成目录 N 份（<目录>）` |
 > **批 117（additive）**：`toc.py --result-json` 增 `outputs{zhTex,enTex,zhPdf,enPdf}`——`--place` 时指 `000 Table of Contents` 下固定名，text-only 时指期目录根下实际生成的时间戳文件（PDF 未编译为空串）；卷/期解析不到时 `warnings` 增一条「卷/期无法确定…」（退出码不变）。
 | `bibdb.py` | **编辑部引用库**（第 132 条；两个平台的「引用库」5 页全调它）：`init` 建库；`import-bib` / `import-dir` 导入 `.bib` 或整期成品；`query` 查库（`--json` 给界面）；**B-259 增补** `query-advanced` 高级检索（11 字段 × contains/prefix/exact/fuzzy、年份表达式、排序/分页/why-hit；**只读**，旧三模式零改动）；`stats` 概况；`lint` 体检；`rehash` 规范化规则升级后重算 `content_sha256`（B-126；默认 dry-run、`--apply` 才写）；`conflicts` 列冲突条目（B-127；只读，GUI 待裁决页数据源）；`resolve` 记录冲突裁决（keep / defer / adopt / **replace**；写前可选 `--expect-db-sha256` + `--backup DIR`；`--adopt-all-pending` 一键全部采用）；`restore --backup` 从备份整库恢复（不 reopen；**CLI 保留向后兼容，B-190 起 GUI 不再调用/不再有备份入口**）；`normalize` / `normalize-authors` / `normalize-editors` 是 B1/B2/B3 规范化（**默认 dry-run，`--apply` 才写库**，写库前须 `--backup`）；**B-188 增补**：`edit`（通用条目编辑，可 `--new-key`，旧 key 自动进 aliases）、`merge-records`（合并 2+ 条重复记录）、`suggest-field-fixes`（只读：缺字段归位候选）；**B-190 起 `edit`/`merge-records` 的 `--backup` 改可选**（不传 = 不写备份文件；GUI 改用 git 版本层，最后写库仍是同一套 sha 闸 + 原子写 + 写后复核）；`lint --with-records` 给全量受影响 key。库默认在私有笔记仓 `bib_db/bibliography.jsonl`，找不到笔记仓直接退出 2、绝不悄悄写到别处；`--db` 可显式指定。**新子命令/新参数全部是加法：不传时老行为与老 `--json` 键不变** | `0` 成功；`1` 有需人工处理项（如 `lint` 有问题、`resolve` 留下 defer）；`2` 用法/库错误、或找不到笔记仓 | 人读子命令打印小结；`--json` 时 **stdout 是 JSON**（外壳读 JSON、不解析文本） |
 
@@ -443,8 +443,20 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 - `infocheck`：期目录根下写 `信息检查<时间戳>.txt`（**CRLF**，与原版/mac 版逐字节一致）
   与 `.json`（结构化，供 toc 与界面用）；可用 `--out-dir` 挪走。
 - `toc`：报告同目录写 `Chinese Content_<时间戳>.tex` 与 `contents_<时间戳>.tex`
-  （**先英文后中文**，与原版 `run_tab5` 一致）。
-  本期设置（栏目/主持人/标题断行上限）读同目录的 `目录设置.json`，缺失字段逐项回落默认值（中文断行 20 / 英文断行 30 —— 英文值 2026-10-17 按期 90 成品校准，见案例第 110 条）。
+  （**先英文后中文**，与原版 `run_tab5` 一致）。报告里解析不到任何稿件条目（喂错文件）⇒
+  引擎返回失败、CLI rc2、**一个文件都不写**（不静默产出空目录；`--preview` 同样 rc2、不输出假 JSON）。
+  B-375 起还校验解析出的条目对得上报告所在期目录里的真实稿件子目录（假报告同样 rc2 零写入；合法报告
+  被复制到期目录外时不做这条比对，仍按「总第 ? 期」rc1 警告）。
+  本期设置读同目录的 `目录设置.json`（字段：`columnKind`/`columnName`/`columnNameEN`/`columnHost`/`columnArticles`/`templateFolder`/`titleWrapLimit`/`titleWrapLimitEN`；缺失字段逐项回落默认值 —— 中文断行 20 / 英文断行 30，英文值 2026-10-17 按期 90 成品校准，见案例第 110 条）。
+  **B-375 栏目判据（唯一实现在引擎）**：`columnKind` 只能是「专栏」或「专辑」，选了栏目就要求
+  `columnName`/`columnNameEN`/`columnHost` strip 后都非空（纯空格算缺），否则**拒绝生成**（rc2、零写入）；
+  `columnKind` 为空 = 本期无栏目，四个栏目字段一律忽略；`columnKind` 只有空白也按无栏目处理，
+  但 CLI 打印一行「栏目类型为空或只有空格，按「本期无栏目」处理」、`--preview` 在 `columnKindNote` 带出
+  （不静默归一）。目录**永远列出当前报告全部篇目**；
+  专栏的 `columnArticles` 只给勾选篇目加 ~~~~ 栏目标记（可 0 篇，未勾选仍按普通条目列出）；
+  专辑 = 全部篇目都带栏目标记，忽略 `columnArticles`（空/半截/旧子集）。结果 JSON 的
+  `articles.inToc` 恒等于 `articles.total`（都 = 目录列出的篇数；日志里的「（N 篇）」才是带标记篇数）。
+  英文栏目标签只用 `columnNameEN`：专栏 `Column: <EN>`、专辑 `Special Issue: <EN>`，绝不回退中文名。
 - `publish`：按 ①→⑤ 顺序在期目录里落产物：①《信息检查<时间戳>.txt/.json》；② 两份带时间戳的目录 `.tex`；
   ③ 各篇 `.pdf`（重编译）；④ **覆盖写入** `000*/Chinese Content.tex/.pdf`、`000*/contents.tex/.pdf`
   （目录 `.tex` 由第②步产物复制而来，供下一期继承；**这是合并的输入**，所以④必须排在⑤之前）；
@@ -456,6 +468,11 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 `proofcheck` 的 `1` 表示「有命中」而不是失败，外壳不要把它显示成错误；
 `toc` 的篇目预览必须调 `--preview`（**别在界面里自己解析报告**），否则会出现
 「清单里勾了 3 篇、生成时只认 2 篇」这种对不上的情况。
+**B-375**：`--preview` 的 `columnValidationError` 非空（同时 `columnEnabled=false`）表示栏目设置不完整；
+外壳据此**禁用所有生成入口**（主按钮 / 重新生成 / 仅 TeX / 整期串行的 toc 步骤）并说明缺项，
+**不要在界面里自己拼这份判据**。正式生成（含 `publish.py` 的 toc 步骤）遇到不完整设置一律 rc2。
+`columnKindNote` 非空表示 `columnKind` 只有空白、已按无栏目处理：外壳原样显示即可，**不是禁用条件**。
+`--preview` 的 `templateSource` 取 `本期成品`/`显式指定`/`上一期`/`内置模板` 之一，与正式生成同一解析口径，供预览信息卡直接显示。
 
 ### `bibdb.py` 子命令与 `--json` 契约（第 132 条；B-126 / B-127 批73 增补标 ★）
 

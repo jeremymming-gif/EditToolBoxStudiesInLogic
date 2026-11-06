@@ -75,6 +75,36 @@ def _toc_text_only(page) -> bool:
     return bool(value)
 
 
+def toc_column_gate(page) -> tuple[bool, str]:
+    """B-375 共享门：所有「生成目录」入口共用的栏目有效性判断。
+
+    返回 `(是否阻断, 原因)`。面板在场就用面板当前值与读取错误；面板还没建
+    （例如整期串行、还没打开目录页）则读已保存的 `目录设置.json` 校验，
+    read 失败同样阻断——不能因为没打开面板就绕过栏目的四项必填。
+    """
+    panel = getattr(page, "_toc_panel", None)
+    if panel is not None:
+        load_error = str(getattr(panel, "_load_error", "") or "")
+        if load_error:
+            return True, (f"栏目表设置读取失败（{load_error}）："
+                          "修好该 JSON 或点「读取栏目表」重新读入后再生成。")
+        return panel.column_issue()
+    report = page.field("toc_report") or ""
+    if not report:
+        issue = page.field("issue_dir")
+        if issue:
+            report = TOC.latest_report(issue)
+    explicit = page.field("toc_settings")
+    path = explicit or (TS.path_for(os.path.dirname(report)) if report else "")
+    if not path or not os.path.isfile(path):
+        return False, ""
+    data, error = TS.read(path)
+    if error:
+        return True, (f"栏目表设置读取失败（{error}）："
+                      "修好该 JSON 或点「读取栏目表」重新读入后再生成。")
+    return TOC.column_issue(data)
+
+
 CLEANTEMP_MODES = {
     "aux": {
         "title": "辅助文件", "tone": "success", "badge": "推荐",
@@ -399,10 +429,11 @@ def build_step_call(page, key: str) -> EB.EngineCall:
         # 面板在场 → 校验 + 自动保存（失败显式中止）；否则按「已保存默认文件 → recent」回退。
         settings = ""
         panel = getattr(page, "_toc_panel", None)
+        # B-375：面板/已保存设置的栏目有效性走同一个共享门（与页面按钮一致）。
+        blocked, hint = toc_column_gate(page)
+        if blocked:
+            raise ValueError(hint)
         if panel is not None:
-            blocked, hint = panel.column_issue()
-            if blocked:
-                raise ValueError(hint)
             path, error = panel.sync_settings()
             if error:
                 raise ValueError(f"栏目表保存失败：{error}")
@@ -410,10 +441,12 @@ def build_step_call(page, key: str) -> EB.EngineCall:
                 settings = path
         if not settings:
             saved = TS.path_for(os.path.dirname(report))
-            if os.path.isfile(saved):
-                settings = saved
+            settings = TOC.existing_settings_path(saved)
         if not settings:
-            settings = _recent(page, "toc_settings")
+            # Lead m00984(3)：recent 可能是已删除/搬走的旧路径；引擎对显式不存在的
+            # --settings 会直接拒绝（「找不到设置文件」）。与预览同一套解析：只传
+            # 真实存在的文件，否则省略 --settings 让引擎用默认，避免生成前才炸。
+            settings = TOC.existing_settings_path(_recent(page, "toc_settings"))
         # 批 121 B-355 接口：结果 JSON 落期目录 `.toolbox-tmp/`；建目录失败回退旧路径。
         try:
             result_json = TOC.ensure_result_dir(report)
@@ -709,7 +742,11 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         results.append(_record(key, status))
         try:  # 后处理（信息卡/目录结果）失败不应打断运行状态收尾
             await CK.after_issue_step(page, key, call, code, cancelled, artifact)
-            after_step(page, key, call, code, cancelled, artifact)
+            # 「last」= 此后不会再有步骤真正运行：成功/告警且后面还有步骤时不算收尾，
+            # 失败/取消会在本步后 break，同样按收尾处理（日志 dock 收回，参数区可见）。
+            after_step(page, key, call, code, cancelled, artifact,
+                       cancelled or code >= 2 or code < 0
+                       or position == len(keys) - 1)
         except Exception as exc:  # noqa: BLE001
             _log_line(page, f"步骤后处理失败：{type(exc).__name__}: {exc}", "warn")
         if cancelled:
@@ -827,6 +864,13 @@ def run_all(page, keys: list[str] | None = None) -> None:
             page.app.toast("输出根在代码仓内，整期运行已停止；请改输出根或勾选只预演")
             page.mark("validation_error", step="all", reason="repo out root")
             return
+    # B-375：含 toc 时在派发前就用共享门拦住无效栏目，避免跑到一半才失败。
+    if "toc" in selected:
+        blocked, hint = toc_column_gate(page)
+        if blocked:
+            page.app.toast(hint)
+            page.mark("validation_error", step="all", reason=hint)
+            return
     # 参数在轮到该步时才构建（infocheck 新产出的报告要让 toc 自动发现）。
     page.mark("run_all_submit", steps=list(selected))
     page._run_results = []
@@ -834,10 +878,29 @@ def run_all(page, keys: list[str] | None = None) -> None:
 
 
 def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
-               artifact: str) -> None:
-    """每一步结束后补记结构化结果（显示与状态收尾由 _run_sequence 负责）。"""
+               artifact: str, last: bool = True) -> None:
+    """每一步结束后补记结构化结果（显示与状态收尾由 _run_sequence 负责）。
+
+    last 表示这是本次运行的最后一步：toc 结束（成功/失败/取消）时页面据此
+    决定是否收起已自动展开的日志 dock（整期串行中间步保持展开）。
+    """
     if cancelled:
+        # OBS-2/D（B-375）：toc 被停止时也要刷新结果区，显式标「本次已停止」，
+        # 不能停留在上一轮结果上让用户误以为本轮成功。
+        if key == "toc":
+            cancel_hook = getattr(page, "on_step_cancelled", None)
+            if callable(cancel_hook):
+                try:
+                    cancel_hook(key)
+                except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+                    pass
         return
+    # B-375：整期串行时 toc 可能不是当前视图，由页面决定是否已收尾到可操作状态。
+    if key == "toc":
+        try:
+            page._toc_run_last = bool(last)
+        except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+            pass
     # 批 116：03 编译成功后由页面决定是否把详情滚到 04（不自动运行 04）。
     hook = getattr(page, "on_step_finished", None)
     if callable(hook):

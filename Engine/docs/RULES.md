@@ -37,7 +37,7 @@
 | 引用/脚注排版规范（《排校手册》） | `编辑笔记/排版手册/排校手册.pdf`、`编辑笔记/排版手册/排版手册源码/edit_handbook.tex`；宏在 `编辑笔记/模板文件/SLCN-MIX.sty` | 本文 §四.5 | 第 33/34 条 |
 | 模板选择与 `\usepackage` 同步 | `slcn/templates.py`（`resolve()` / `sync_package_line()` / `_find_repo_dir()`） | `docs/GUIDE.md`「二、模板选择」 | — |
 | 输出目录命名 / 覆盖判定 / 清理 | `slcn/naming.py`、`convert.py: is_own_product()`、`slcn/clean.py` | `docs/GUIDE.md`「3.1 / 3.2」 | — |
-
+| **生成目录（栏目启用/专辑全收/英文栏目标签/两行缩进）** | `slcn/toc.py`（`TocSettings.column_validation_error()` / `is_column_enabled` / `in_toc` / `english_column_title` / `chinese_entry()` / `_log_layout_guard()`）、`slcn/toctemplate.py`（`make_column_block()`）、`toc.py`（CLI 退出码） | 本文 §十二；`docs/ENGINE_API.md` §五 `toc.py` | B-363 / B-364（本节按 2026-11-06 用户拍板） |
 ---
 
 ## 二、体例签名表（普查怎么给一篇稿子「定体例」）
@@ -961,3 +961,51 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 - **验收口径**：41 篇允许变化 = `\parencite` 增加 + bib 条目增加；正文文字、页数、其它
   finding 码不变（偏差逐条记报告）。新测试 ≥8 断言，必须含负例（古典/引者注/无题名/
   多候选/无容器证据不提升）。
+## 十二、生成目录判据（B-375，2026-11-06 用户拍板）
+
+> 权威实现：`slcn/toc.py`（`TocSettings` / `chinese_entry()` / `_issue_layout()` / `_log_layout_guard()`）、
+> `slcn/toctemplate.py: make_column_block()`、`toc.py`（CLI）。回归：`tests/test_b375_toc_column.py`
+> + `tests/test_b121_toc_workdir.py` / `tests/test_b355_toc_layout.py` / `tests/test_infocheck_toc.py`。
+> `目录设置.json` 的字段与错误语义见 `docs/ENGINE_API.md` §五 `toc.py`；这里只写判据。
+
+- **本期无栏目**：`columnKind` strip 后为空 → 四个栏目字段（种类/中文名/英文名/主持人）**一律忽略**，
+  不校验、不提示缺项；前置条件满足即可生成，全部稿件进目录。`columnKind` 只含空白（如 `"   "`）
+  同样按「本期无栏目」处理，但**不静默**：CLI 打印一行「栏目类型为空或只有空格，按「本期无栏目」处理」，
+  `--preview` 在 additive 字段 `columnKindNote` 里带同一条提示，供外壳原样显示。
+- **专栏 / 专辑的启用四条**：`columnKind` ∈ {`专栏`, `专辑`}，且 `columnName`、`columnNameEN`、
+  `columnHost` **strip 后都非空**（纯空格算缺）。四项缺任何一项、或种类无法识别 ⇒ 不启用；
+  所有生成入口拒绝生成（`generate_tex` 返回失败；CLI 退出 2，**不写任何文件**，结果 JSON 也不写），
+  错误消息逐项列出缺项（栏目名称 / 英文名称 / 主持人）。`column_editing`（界面是否显示栏目控件）
+  只要求种类非空 —— 否则「选了专栏还没填名称」时输入框会被隐藏，永远填不上。
+- **收录口径**：目录**永远列出当前报告全部篇目** —— `columnArticles` 只决定「是否带栏目标记」
+  （中文 `~~~~ ` 缩进、英文首位作者前 `~~~~`、栏目版式），**不删条目**。专栏 = 只有勾选篇目带标记，
+  **允许 0 篇勾选**（没有「至少一篇」规则，照常出两份目录，正文全部按普通条目排版）；专辑 =
+  当前报告全部篇目都带标记，设置里存的 `columnArticles`（空列表 / 半截 / 上一版子集）一律忽略 ——
+  重启后读到旧的空列表也不会少收稿件。无栏目 = 无标记、全部按普通条目排版。勾选名两种写法都认：
+  报告里的 `Meimei_Han` 与带序号的 `01 Meimei_Han`。结果 JSON 的 `articles.inToc` 恒等于
+  `articles.total`（都是目录实际列出的篇数）；日志里的「（N 篇）」才表示带栏目标记的篇数
+  （专辑 = 全部篇目，专栏 = 勾选数，可 0）。**栏目正文版式按当前报告实际带标记的条目数判断**：
+  专栏的 `columnArticles` 若全是别的报告/上一期的 stale 篇名（有效标记数 = 0），正文按普通版式
+  排版（栏目行照旧打印、不加 `~~~~`、不缩窄栏宽）；专辑恒有标记 ⇒ 恒按栏目版式。
+- **英文栏目标签（B-364）**：专栏 → `Column: <columnNameEN>`，专辑 → `Special Issue: <columnNameEN>`
+  （单点在 `TocSettings.english_column_title`，`make_column_block` 只调它）。**只用英文名，
+  绝不回退中文名**；英文名为空属配置错误（生成前已被拒绝）。中文块保持
+  `专栏：X` / `专辑：X` 与 `主持人：columnHost`。
+- **中文两行标题缩进（B-363）**：栏目内中文条目第二行以 `\newline` 换行后，续行缩进
+  **在渲染期复制首行前缀**：`\newline{\large \phantom{~~~~ }line2}`（`_CELL_INDENT`）。
+  `\phantom` 是行首不被丢弃的盒子，宽度由 TeX 按当前字号现场量出，恒等于首行 `~~~~ ` 前缀；
+  **不要写死 pt 数值**（按 10.5t 反推的字面宽度比实际渲染前缀宽，续行会右偏）。首行与非栏目条目不变
+  （非栏目续行无 `\phantom` / `\hspace*`）；宽度守卫按同一断行结果测量（前缀已计入），
+  负间距 / 超版心 / 右侧留白告警口径不变。
+- **CLI 语义**：`toc.py` 的所有生成入口共用 `column_validation_error()`；不完整设置 ⇒ stderr
+  报缺项 + 退出 2，不建 `.toolbox-tmp`、不写 `.tex`、不写结果 JSON。`--preview` 仍退出 0，
+  但把 `columnEnabled`（false）与 `columnValidationError`（人话缺项）交给外壳 ——
+  主按钮 / 重新生成 / 仅 TeX / 整期串行的 toc 步骤都按这一字段禁用派发。
+- **喂错文件 / 假报告**：报告里一条稿件条目都没有 ⇒ `generate_tex` 打印
+  `❌ 这份报告里没有找到任何稿件条目，未生成目录` 并返回 None；CLI 退出 2（`--preview` 也退出 2、
+  不输出假 JSON），**不建工作目录、不写任何 `.tex` / 结果 JSON**。解析出条目但**对不上报告所在
+  期目录里的真实稿件子目录**（如把某篇 `.tex` 复制成 `.txt` 当报告）同样按假报告处理：
+  `report_validation_error()` 逐条判「篇名不像目录名 / 缺标题或第一作者字段 / 找不到对应稿件文件夹」，
+  `generate_tex` 返回 None、CLI rc2、零写入。报告所在目录本身没有稿件子目录时（如把合法报告复制到
+  期目录外）不做「对得上文件夹」这一条，仍按「总第 ? 期」rc1 警告处理。绝不静默产出空目录、
+  更不能覆盖 000 里的成品。

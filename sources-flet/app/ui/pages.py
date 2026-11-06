@@ -1290,6 +1290,12 @@ class IssuePage(BasePage):
         self._compile_plan: list = []
         self._merge_info: dict = {}
         self._toc_payload: dict = {}
+        # B-375 OBS-2：结果所属报告、本轮失败态、结果区容器（构建期缓存、步骤结束后重建）。
+        self._toc_payload_report = ""
+        self._toc_run_failed = False
+        self._toc_run_cancelled = False
+        self._toc_run_code = None
+        self._toc_box = None
         self._ct_preview: dict = {}
         self._detail_status = None
         self._detail_primary = None
@@ -1848,6 +1854,17 @@ class IssuePage(BasePage):
         flet 1.0.5 桌面 scroll_to（key/offset/page）实测静默无效，
         「首屏见 04」改由展开状态表达（截图为证，见批 116 issue4b 证据目录）。
         """
+        if key == "toc":
+            # OBS-2（B-375）：无论当前看的是哪一步（含整期串行），toc 结束都立即刷新
+            # 步骤结果区；rc 0/1 算本轮成功（1 仅表示需人工核对），>=2/<0 才算失败。
+            failed = code not in (0, 1)
+            self._sync_toc_payload(code=code, failed=failed)
+            self._sync_toc_panel_result()
+            # OBS-UI-2：单步「生成目录」跑完后收起日志 dock，让参数区回到视野；
+            # 整期串行里 toc 不是最后一步时保持日志展开（后续步骤还要看进度）。
+            if bool(getattr(self, "_toc_run_last", True)):
+                self._collapse_log()
+            return
         if key == "infocheck" and code == 0:
             # 批 117：页内「先生成检查报告」成功后，最新报告回填目录参数，
             # 目录主按钮随之启用（不强制用户先跑整期 01）。
@@ -1861,6 +1878,15 @@ class IssuePage(BasePage):
         if self._view_of_step(self.selected) == "produce":
             self.selected = "merge"
             self._rebuild_detail()
+
+    def on_step_cancelled(self, key: str) -> None:
+        """B-375 Lead 返工 D：toc 被用户停止时结果区显式标「已停止，未产生新结果」。"""
+        if key != "toc":
+            return
+        self._sync_toc_payload(cancelled=True)
+        self._sync_toc_panel_result()
+        # 运行已结束，收起日志 dock 让参数区可用（日志仍可再展开查看）。
+        self._collapse_log()
 
     def _primary_button(self, key: str) -> ft.Control:
         t = self.t
@@ -1897,8 +1923,13 @@ class IssuePage(BasePage):
             return True
         if not self.field("issue_dir"):
             return True
-        if key == "toc" and not self._toc_report_ready():
-            return True
+        if key == "toc":
+            if not self._toc_report_ready():
+                return True
+            # B-375 共享门：启用栏目四项必填 + 设置读取失败都要真正禁用（不只是视觉）。
+            blocked, _hint = ASM.toc_column_gate(self)
+            if blocked:
+                return True
         if self.app.running:
             return not (key == self.selected and key in ("compileall", "infocheck"))
         if key == "dirpush" and DIRPUSH.validation_error(self):
@@ -1912,9 +1943,13 @@ class IssuePage(BasePage):
             return "引擎未就绪：先到「设置 → 引擎」检查"
         if self.app.running:
             return "运行中：等当前步骤结束"
-        if key == "toc" and not self._toc_report_ready():
-            return ("还缺信息检查报告：点区块内「先生成检查报告」，"
-                    "或在参数里手选一份报告")
+        if key == "toc":
+            if not self._toc_report_ready():
+                return ("还缺信息检查报告：点区块内「先生成检查报告」，"
+                        "或在参数里手选一份报告")
+            blocked, hint = ASM.toc_column_gate(self)
+            if blocked:
+                return hint
         if key == "dirpush":
             err = DIRPUSH.validation_error(self)
             if err:
@@ -1933,6 +1968,13 @@ class IssuePage(BasePage):
         if not self.field("issue_dir"):
             self.app.toast("先选择期目录")
             return
+        if key == "toc":
+            # B-375：栏目无效/设置读错时绝不弹「重新生成目录？」确认框，也不派发。
+            blocked, hint = ASM.toc_column_gate(self)
+            if blocked:
+                self.app.toast(hint)
+                self.mark("toc_column_invalid", reason=hint, blocked=True)
+                return
         if key == "dirpush":
             err = DIRPUSH.validation_error(self)
             if err:
@@ -2060,6 +2102,24 @@ class IssuePage(BasePage):
             self._log.set_expanded(True)
         self._sync_log_reserve()
 
+    def _collapse_log(self) -> None:
+        """OBS-UI-2（B-375）：收起日志 dock（不删除日志内容，仍可再展开）。
+
+        真实缺陷不是参数控件丢了，而是运行开始时展开的日志浮层盖住页面下部：
+        目录参数区最长，跑完停在滚动顶端就看只剩前几个控件。步骤结束收起浮层，
+        结果区和参数区立刻回到视野；整期日志保留，点「整期日志」仍可展开看本轮输出。
+        """
+        if not getattr(self, "_log_expanded", False):
+            return
+        self._log_expanded = False
+        log = getattr(self, "_log", None)
+        if log is not None and hasattr(log, "set_expanded"):
+            try:
+                log.set_expanded(False)
+            except Exception:  # noqa: BLE001 - 测试桩/未挂载
+                pass
+        self._sync_log_reserve()
+
     # ── 参数 / 结果 ────────────────────────────────────────────────────
     def _build_params(self, key: str) -> ft.Control:
         self.fields = {k: v for k, v in self.fields.items()
@@ -2095,7 +2155,7 @@ class IssuePage(BasePage):
         if key == "infocheck":
             parts.append(self._info_result())
         elif key == "toc":
-            parts.append(self._toc_result())
+            parts.append(self._toc_result_box())
         elif key == "compileall":
             parts.append(self._compile_result())
         elif key == "merge":
@@ -2158,27 +2218,111 @@ class IssuePage(BasePage):
                    t.palette.text_faint, max_lines=2),
         ])
 
-    def _toc_result(self) -> ft.Control:
+    def _toc_effective_payload(self) -> dict:
+        """只认当前报告名下的结果：换报告后不沿用上一份的目录结果（OBS-2 / Lead C）。"""
+        payload = self._toc_payload
+        report = self.field("toc_report")
+        owner = str(getattr(self, "_toc_payload_report", "") or "")
+        if payload and report and owner and owner != report:
+            self._toc_payload = {}
+            self._toc_payload_report = ""
+            self._toc_run_failed = False
+            self._toc_run_cancelled = False
+            self._toc_run_code = None
+            return {}
+        return payload
+
+    def _toc_result_box(self) -> ft.Control:
+        """结果区容器：_sync_toc_payload 原地重建它（与 _info_box 同思路）。"""
+        box = getattr(self, "_toc_box", None)
+        if box is None:
+            box = ft.Column(spacing=self.t.sp("2"), controls=[])
+            self._toc_box = box
+        box.controls = [self._toc_result()]
+        return box
+
+    def _toc_failure_note(self) -> ft.Control:
         t = self.t
-        if not self._toc_payload:
+        code = getattr(self, "_toc_run_code", None)
+        return C.notice_bar(
+            f"本次生成未成功（退出码 {code}）：原因见整期日志；修好后点「重新生成目录」。",
+            t, "error")
+
+    def _toc_cancel_note(self) -> ft.Control:
+        return C.notice_bar("本次已停止，未产生新结果。参数区保持可用，可重新运行。",
+                            self.t, "warn")
+
+    def _toc_summary_lines(self, payload: dict) -> list[str]:
+        placed = payload.get("placed") or {}
+        outputs = payload.get("outputs") or {}
+        column = payload.get("column") or {}
+        shown = (placed.get("zhPdf") or placed.get("zhTex")
+                 or outputs.get("zhTex") or outputs.get("enTex") or "—")
+        # frozen #1 冒烟：无栏目时旧文案会印成「栏目：False（）」，改为读得懂的两态；
+        # 启用栏目仍显示引擎给出的栏目名（不回落中文）。
+        if column.get("enabled"):
+            column_line = f"栏目：{column.get('title') or '—'}"
+        else:
+            column_line = "栏目：无"
+        lines = [
+            f"输出：{shown}",
+            f"篇目：{(payload.get('articles') or {}).get('inToc', '—')} 篇",
+            column_line,
+            # frozen #1 冒烟：仅 tex 结论只出一行（旧版重复印了两次）。
+            ("已编译 / 已写入" if payload.get("compiled")
+             else "仅 tex · 未写入、未编译；合并需要 000 目录 PDF"),
+        ]
+        return lines
+
+    def _toc_result(self) -> ft.Control:
+        """生成结果区（OBS-2）：只认当前报告 + 本轮的退出状态。
+
+        本轮失败/取消时不渲染旧产物的打开按钮，旧结果只作「上次结果（非本轮）」
+        文字参考（Lead m00363 B/D）；成功时只提供本次结果 JSON 里记录的产物。
+        """
+        t = self.t
+        failed = bool(getattr(self, "_toc_run_failed", False))
+        cancelled = bool(getattr(self, "_toc_run_cancelled", False))
+        payload = self._toc_effective_payload()
+        if not payload and not failed and not cancelled:
             return self._empty_result("还没有生成目录",
                                       "点右上「生成目录」；默认取最新信息检查报告。")
-        payload = self._toc_payload
+        head: list = [C.section_label("生成结果", t), C.hairline(t)]
+        if failed or cancelled:
+            head.append(self._toc_cancel_note() if cancelled else self._toc_failure_note())
+            if not payload:
+                return ft.Column(spacing=t.sp("1"), controls=head)
+            head.append(C.text("上次结果（非本轮，仅供参考）：", t, "caption",
+                               t.palette.text_muted))
+            return ft.Column(spacing=t.sp("1"), controls=[
+                *head,
+                *[C.text(line, t, "caption", t.palette.text_faint)
+                  for line in self._toc_summary_lines(payload)],
+            ])
         placed = payload.get("placed") or {}
-        column = payload.get("column") or {}
-        lines = [
-            f"输出：{placed.get('zhPdf') or placed.get('zhTex') or '—'}",
-            f"篇目：{(payload.get('articles') or {}).get('inToc', '—')} 篇",
-            f"栏目：{column.get('enabled', '—')} 个（{column.get('title', '—')}）",
-            "已编译 / 已写入" if payload.get("compiled") else "仅 tex · 未写入、未编译",
-        ]
-        actions = []
+        outputs = payload.get("outputs") or {}
+        lines = self._toc_summary_lines(payload)
+        actions: list = []
+        copy_path = ""
         zh_pdf = str(placed.get("zhPdf") or "")
-        zh_tex = str(placed.get("zhTex") or "")
         if zh_pdf:
             actions.append(C.text_button("打开 PDF", lambda e: self.app.open_path(zh_pdf), t))
-        elif zh_tex:
-            actions.append(C.text_button("打开 tex", lambda e: self.app.open_path(zh_tex), t))
+            copy_path = zh_pdf
+        en_pdf = str(placed.get("enPdf") or "")
+        if en_pdf:
+            # 独立验收 task-6(2)：英文 PDF 与中文 PDF 同规格提供打开入口；仅 tex/
+            # 失败/取消状态不会走到这里（placed 为空或前面已提前 return）。
+            actions.append(C.text_button("打开英文 PDF",
+                                         lambda e: self.app.open_path(en_pdf), t))
+            copy_path = copy_path or en_pdf
+        shown: set[str] = set()
+        for key, label in (("zhTex", "打开中文 tex"), ("enTex", "打开英文 tex")):
+            path = str(placed.get(key) or outputs.get(key) or "")
+            if not path or path in shown:
+                continue
+            shown.add(path)
+            copy_path = copy_path or path
+            actions.append(C.text_button(label, lambda e, p=path: self.app.open_path(p), t))
         if report := self._latest_report():
             from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
             result_json = TOC.existing_result_json_path(report)
@@ -2187,13 +2331,11 @@ class IssuePage(BasePage):
                                              lambda e: self.app.open_path(result_json), t))
             else:  # B-121 B-357：可能已被「清理临时文件」移入回收目录
                 lines.append("结果 JSON 不在期目录（可能随临时文件清入回收站）；需要时重新生成。")
-            actions.append(C.text_button("复制结果路径",
-                                         lambda e: self.app.copy_text(str(placed.get("zhPdf") or placed.get("zhTex") or "")),
-                                         t))
-        if payload.get("textOnly"):
-            lines.append("仅 tex · 未写入、未编译；合并需要 000 目录 PDF")
+            if copy_path:
+                actions.append(C.text_button("复制结果路径",
+                                             lambda e: self.app.copy_text(copy_path), t))
         return ft.Column(spacing=t.sp("1"), controls=[
-            C.section_label("生成结果", t), C.hairline(t),
+            *head,
             *[C.text(line, t, "caption", t.palette.text_muted) for line in lines],
             ft.Row(spacing=t.sp("1"), wrap=True, controls=actions) if actions else ft.Container(),
         ])
@@ -2617,6 +2759,11 @@ class IssuePage(BasePage):
         self._compile_plan = []
         self._merge_info = {}
         self._toc_payload = {}
+        self._toc_payload_report = ""
+        self._toc_run_failed = False
+        self._toc_run_cancelled = False
+        self._toc_run_code = None
+        self._toc_box = None
         self._ct_preview = {}
         self._prep_pages = None
         self._prep_box = None
@@ -2873,14 +3020,75 @@ class IssuePage(BasePage):
         if box is not None:
             box.controls = [self._info_result()]
 
-    def _sync_toc_payload(self) -> None:
-        report = self.field("toc_report")
-        if not report:
-            return
+    def _sync_toc_payload(self, *, code=None, failed: bool = False,
+                          cancelled: bool = False) -> None:
+        """OBS-2：重建目录结果区；toc 步结束（含整期串行）时带上本轮退出码。
+
+        - 换报告/清空报告 → 清旧结果与本轮 run 标记，绝不跨报告显示上一份的产物/结论；
+        - 读到 payload → 记下它属于哪个报告；
+        - code 给出时记录本轮成功/失败；cancelled 记录「已停止」；运行中清掉旧标记。
+        """
         from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
-        payload = TOC.read_result(report)
-        if payload:
-            self._toc_payload = payload
+        report = self.field("toc_report")
+        reset_run = False
+        if not report:
+            self._toc_payload = {}
+            self._toc_payload_report = ""
+            reset_run = True
+        else:
+            owner = str(getattr(self, "_toc_payload_report", "") or "")
+            if report != owner:
+                self._toc_payload = {}
+                reset_run = True
+            payload = TOC.read_result(report)
+            if payload:
+                self._toc_payload = payload
+                self._toc_payload_report = report
+        if reset_run:
+            # Lead C：换报告后不能带着上一轮的失败/完成标记渲染新报告的结果区。
+            self._toc_run_failed = False
+            self._toc_run_cancelled = False
+            self._toc_run_code = None
+        if cancelled:
+            self._toc_run_cancelled = True
+            self._toc_run_failed = False
+            self._toc_run_code = None
+        elif code is not None:
+            self._toc_run_code = code
+            self._toc_run_failed = bool(failed)
+            self._toc_run_cancelled = False
+        elif self._state_of("toc") == "running":
+            self._toc_run_failed = False
+            self._toc_run_cancelled = False
+            self._toc_run_code = None
+        box = getattr(self, "_toc_box", None)
+        if box is not None:
+            box.controls = [self._toc_result()]
+            self._safe_update(box)
+
+    def _sync_toc_panel_result(self) -> None:
+        """若目录参数面板已建，刷新它的反馈区（串行时可能不在 DOM，面板内安全更新）。"""
+        panel = getattr(self, "_toc_panel", None)
+        refresh = getattr(panel, "refresh_result", None)
+        if not callable(refresh):
+            return
+        try:
+            refresh(self.field("toc_report"),
+                    getattr(self, "_toc_run_code", None),
+                    bool(getattr(self, "_toc_run_failed", False)),
+                    bool(getattr(self, "_toc_run_cancelled", False)))
+        except Exception:  # noqa: BLE001 - 页面桩/未挂载
+            pass
+
+    def on_toc_state_changed(self) -> None:
+        """B-375 共享门：栏目表/勾选/设置状态变化 → 立即刷新「生成目录」入口可用性。
+
+        面板每次改值都会回调（TocPanel._notify_page）；未构建/未挂载时静默跳过。
+        """
+        try:
+            self._sync_detail_status()
+        except Exception:  # noqa: BLE001 - 页面构建期
+            pass
 
     def refresh_running(self) -> None:
         self._sync_stop_action()

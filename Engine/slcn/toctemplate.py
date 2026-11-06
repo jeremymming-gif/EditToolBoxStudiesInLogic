@@ -427,24 +427,22 @@ def canonicalize_head(head: str, file_name: str, *, is_column: bool = False) -> 
 def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]:
     r"""生成本期栏目块：中文沿用上一期形态（含间距/主持人），只替换名称与主持人。
 
-    英文表头**数据驱动**（B-121，用户 2026-11-04 追加口径）：
-      · 填了 `columnNameEN` ⇒ 生成 `Column: <英文名>`（间距沿用模板里的 `\\[..]`，没有则 3mm）；
-      · `columnNameEN` 为空 ⇒ 回退中文栏目名生成 `Column: <columnName>`（不再整行丢弃），
-        条目仍按 `columnArticles` 带 `~~~~` 前缀。
-    为什么不做逐期特例：人工 89 期英文写的是一行 `Special Issue: Preference Logic`（不是 `Column:`），
-    这是同事的手工改法，进 P2「允许清单」逐条确认，不在代码里复刻（架构护栏 2：「禁止按期硬编码」）。
+    英文表头单点在 TocSettings.english_column_title（B-375 用户拍板）：
+      · 专栏 → Column: <columnNameEN>；专辑 → Special Issue: <columnNameEN>；
+      · 只用英文名，绝不回退中文栏目名 —— 已启用的栏目在生成前已校验英文名非空，
+        空英文名属于不完整设置（column_validation_error 会拒绝生成），这里不产出残行；
+      · 间距沿用模板里的间距行（[..]），没有则 3mm。
     """
     if not settings.is_column_enabled:
         return []
 
     if not is_chinese:
-        # B-121：英文名没填时回退中文栏目名（`Column: <columnNameEN/columnName>`）
-        name_en = ((settings.columnNameEN or "").strip()
-                   or (settings.columnName or "").strip())
-        if not name_en:
+        if not (settings.columnNameEN or "").strip():
+            # 不完整设置本应在 generate_tex 入口被拒绝；真走到这里也不许拼出中文回退行
             return []
         spacing = next((ln for ln in shape if _SPACING_RE.match(ln)), None) if shape else None
-        return ["\\large  \\bf{Column: " + name_en + "} ", spacing or "\\\\[3mm]"]
+        return ["\\large  \\bf{" + settings.english_column_title + "} ",
+                spacing or "\\\\[3mm]"]
 
     # 中文：沿用上一期的形态（含间距），只替换名称与主持人
     title = settings.chinese_column_title

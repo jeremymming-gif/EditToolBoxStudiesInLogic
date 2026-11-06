@@ -33,6 +33,7 @@ import glob
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -417,18 +418,139 @@ def fit_single_page(toc_dir: str, stems: list[tuple[str, str]] | tuple[tuple[str
     return counts_after, ""
 
 
+
+# ── 失败回滚（B-375 freeze-3 修复）────────────────────────────────────────
+#
+# 独立验收复现：--place 直接覆盖 000 里既有的两份 tex；若随后编译/EN 阶段失败
+# （如 000 目录只读时 xelatex 写不了 .aux/.log），rc2 但 000 里已是「新 tex + 旧 pdf」
+# 的混合半成品。修复：落位前把整个 000 快照到 <期目录>/.toolbox-tmp/toc-backup-*，
+# 任何失败（含未预期异常）都按快照恢复文件集合与内容；成功/失败都清理备份。
+
+#: 000 快照备份目录名前缀（放在期目录 .toolbox-tmp/ 下，不进入 000）
+_BACKUP_PREFIX = "toc-backup-"
+
+
+@dataclass
+class _TocDirBackup:
+    """落位前对 000 目录做的一次快照（失败时原样恢复）。"""
+
+    path: str = ""            # 备份根目录；空串 = 无需备份（000 原本不存在）
+    existed: bool = False     # 本轮开始前 000 是否存在
+    mode: int = 0             # 000 顶层目录权限（恢复时还原）
+    parent: str = ""          # 备份所在父目录（.toolbox-tmp）
+    parent_created: bool = False  # 父目录是否本轮新建（清理时顺手删掉空目录）
+
+
+def _backup_toc_dir(root: str, toc_dir: str) -> _TocDirBackup:
+    """把 000 目录整棵快照到 <期目录>/.toolbox-tmp/toc-backup-*。
+
+    为什么必须在落位前做：place_tex 会覆盖 000 里既有的两份 tex；之后任何
+    失败都必须让 000 回到本轮开始前的状态，否则 PDF/结果 JSON 旧、tex 新。
+    """
+    info = _TocDirBackup()
+    if not toc_dir or not os.path.isdir(toc_dir):
+        return info
+    try:
+        info.mode = stat.S_IMODE(os.stat(toc_dir).st_mode)
+    except OSError as e:
+        raise DeliveryError(f"读 000 目录权限失败：{e}") from e
+    parent = os.path.join(root, _TOC_WORK_DIR)
+    try:
+        if not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+            info.parent_created = True
+        info.path = tempfile.mkdtemp(prefix=_BACKUP_PREFIX, dir=parent)
+    except OSError as e:
+        raise DeliveryError(f"创建 000 备份目录失败：{e}") from e
+    try:
+        shutil.copytree(toc_dir, os.path.join(info.path, "snapshot"), symlinks=True)
+    except OSError as e:
+        try:
+            _force_rmtree(info.path)
+        except OSError:
+            pass
+        raise DeliveryError(f"备份 000 目录失败：{e}") from e
+    info.existed = True
+    info.parent = parent if not info.parent_created else ""
+    return info
+
+
+def _force_rmtree(path: str) -> None:
+    """删除目录树；先给目录补写权限（000 可能是只读的，直接 rmtree 会失败）。"""
+    if not os.path.isdir(path) or os.path.islink(path):
+        return
+    for dirpath, _dirnames, filenames in os.walk(path):
+        try:
+            os.chmod(dirpath, 0o700)
+        except OSError:
+            pass
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            if os.path.islink(full):
+                continue
+            try:
+                os.chmod(full, 0o600)
+            except OSError:
+                pass
+    shutil.rmtree(path)
+
+
+def _restore_toc_dir(toc_dir: str, info: _TocDirBackup) -> str:
+    """把 000 恢复成快照状态；返回空串表示成功，否则返回失败原因。"""
+    try:
+        if toc_dir and os.path.isdir(toc_dir):
+            _force_rmtree(toc_dir)
+        if info.existed:
+            shutil.copytree(os.path.join(info.path, "snapshot"), toc_dir, symlinks=True)
+            try:
+                os.chmod(toc_dir, info.mode)
+            except OSError:
+                pass
+        return ""
+    except OSError as e:
+        return str(e)
+
+
+def _discard_backup(info: _TocDirBackup) -> None:
+    """删除 000 快照（成功路径也调用：不得残留备份）。
+
+    快照里 000 的目录权限是原样复制的（可能是只读 0555），所以不能直接
+    rmtree（删不动子项会静默失败）；用 _force_rmtree 先补写权限。
+    """
+    if info.path:
+        try:
+            _force_rmtree(info.path)
+        except OSError:
+            pass
+    if info.parent_created and info.parent:
+        try:
+            os.rmdir(info.parent)
+        except OSError:
+            pass
+
+
 # ── 交付编排（toc.py 与 publish.py 第 ④ 步共用的唯一入口）────────────────
 
 def deliver(root: str, *, do_compile: bool = True,
             compile_func=None, log=lambda _s: None) -> DeliveryResult:
-    """从「期目录根下最新的时间戳目录 tex」一路交付到 `000*/` 里的成品 tex+pdf。
+    """从「期目录根下最新的时间戳目录 tex」一路交付到 000*/ 里的成品 tex+pdf。
 
-    缺 `000*` 会自动创建；`do_compile=False` 时只落位不编译。
-    任何一步失败都把可操作原因放进 `DeliveryResult.error`（不抛异常）。
+    缺 000* 会自动创建；do_compile=False 时只落位不编译。
+    任何一步失败都把可操作原因放进 DeliveryResult.error（不抛异常），并且把 000
+    目录恢复成本轮开始前的文件集合与内容（B-375 freeze-3：落位会覆盖既有 tex，
+    不能留下「新 tex + 旧 pdf」的混合半成品）。
     """
     res = DeliveryResult()
+    backup = _TocDirBackup()
+    toc_dir = ""
     try:
         toc_dir = find_toc_dir(root)
+        backup = _backup_toc_dir(root, toc_dir)
+    except DeliveryError as e:
+        res.error = str(e)
+        return res
+
+    try:
         if not toc_dir:
             toc_dir = ensure_toc_dir(root)
             log(f"没有 000 开头的目录，已自动创建：{_tt.TOC_DIR}")
@@ -437,38 +559,43 @@ def deliver(root: str, *, do_compile: bool = True,
         for key, stem in TEX_STEMS:
             log(f"   {os.path.basename(res.placed[key])} → "
                 f"{_paths.rel(res.placed[key], root)}")
+        if do_compile:
+            ok, reason = check_windows_fonts()
+            if not ok:
+                raise DeliveryError(reason)
+            # compile_func 的签名与 compile_pdfs 一致：(toc_dir, stems) → {语言键: (成功, PDF/错误)}；
+            # 测试注入假实现时也不必真跑 TeX。
+            compile_all = compile_func or compile_pdfs
+            results = compile_all(toc_dir, TEX_STEMS)
+            for key, stem in TEX_STEMS:
+                good, msg = results[key]
+                if not good:
+                    raise DeliveryError(
+                        f"目录 PDF 编译失败（{stem}.tex）：{msg}；未生成新的目录 PDF，"
+                        f"不会拿旧 PDF 继续合并")
+            res.compiled = True
+            res.pdfs = {key: results[key][1] for key, _stem in TEX_STEMS}
+
+            def compile_one(folder: str, stem: str) -> tuple[bool, str]:
+                key = next(k for k, s in TEX_STEMS if s == stem)
+                return compile_all(folder, ((key, stem),))[key]
+
+            counts, err = fit_single_page(toc_dir, TEX_STEMS, compile_one, log=log)
+            res.pages = {key: (counts.get(key) or 0) for key, _stem in TEX_STEMS}
+            if err:
+                raise DeliveryError(err)
     except DeliveryError as e:
-        res.error = str(e)
+        restore_error = _restore_toc_dir(toc_dir, backup)
+        res.error = str(e) + (f"（另：恢复 000 目录失败：{restore_error}）"
+                              if restore_error else "")
+        _discard_backup(backup)
         return res
-
-    if not do_compile:
+    except Exception as e:  # noqa: BLE001 - 交付链任何未预期异常也要先恢复 000
+        restore_error = _restore_toc_dir(toc_dir, backup)
+        detail = str(e) + (f"（另：恢复 000 目录失败：{restore_error}）"
+                           if restore_error else "")
+        res.error = f"目录交付过程中出错：{detail}"
+        _discard_backup(backup)
         return res
-
-    ok, reason = check_windows_fonts()
-    if not ok:
-        res.error = reason
-        return res
-
-    # `compile_func` 的签名与 compile_pdfs 一致：(toc_dir, stems) → {语言键: (成功, PDF/错误)}；
-    # 测试注入假实现时也不必真跑 TeX。
-    compile_all = compile_func or compile_pdfs
-    results = compile_all(toc_dir, TEX_STEMS)
-    for key, stem in TEX_STEMS:
-        good, msg = results[key]
-        if not good:
-            res.error = (f"目录 PDF 编译失败（{stem}.tex）：{msg}；未生成新的目录 PDF，"
-                         f"不会拿旧 PDF 继续合并")
-            return res
-    res.compiled = True
-    res.pdfs = {key: results[key][1] for key, _stem in TEX_STEMS}
-
-    def compile_one(folder: str, stem: str) -> tuple[bool, str]:
-        key = next(k for k, s in TEX_STEMS if s == stem)
-        return compile_all(folder, ((key, stem),))[key]
-
-    counts, err = fit_single_page(toc_dir, TEX_STEMS, compile_one, log=log)
-    res.pages = {key: (counts.get(key) or 0) for key, _stem in TEX_STEMS}
-    if err:
-        res.error = err
-        return res
+    _discard_backup(backup)
     return res
