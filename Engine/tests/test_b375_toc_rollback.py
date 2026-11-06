@@ -284,11 +284,21 @@ def case_cli_readonly_000(root: Path) -> None:
 def main() -> int:
     print("B-375 失败回滚：--place 失败时 000 不得留下混合半成品")
     root = Path(tempfile.mkdtemp(prefix="slcn_b375_rollback_"))
+    # CI/Linux 没有 xelatex：deliver() 的真实字体检查会在编译前就失败，注入的
+    # compile_func 根本不会被执行，导致本文件 (a)-(d) 全是假红。这四个 in-process
+    # case 只验证「回滚协议」，结果完全由注入的 compile_func 决定，因此这里把字体
+    # 检查替换为通过；字体检查本身由 test_b285_* 专门套件覆盖。(e) 是真实 CLI
+    # 子进程，不替换，保留真实的无 TeX / 只读 000 语义。
+    original_font_check = _td.check_windows_fonts
+    _td.check_windows_fonts = lambda: (True, "")
     try:
-        case_fail_restore(root / "a")
-        case_exception_restore(root / "b")
-        case_en_stage_fail(root / "c")
-        case_success(root / "d")
+        try:
+            case_fail_restore(root / "a")
+            case_exception_restore(root / "b")
+            case_en_stage_fail(root / "c")
+            case_success(root / "d")
+        finally:
+            _td.check_windows_fonts = original_font_check
         case_cli_readonly_000(root / "e")
     finally:
         force_rmtree(root)
