@@ -1236,7 +1236,11 @@ class TocPanel:
         rows: list = []
         stale = bool(failed or cancelled)
         if cancelled:
-            rows.append(C.notice_bar("本次已停止，未产生新结果。", t, "warn"))
+            # Lead task-22（原生取消观察）：Engine 取消不回滚，CN 落位/拟合后取消时
+            # 000 目录可能已有本轮部分 tex/pdf；不能再断言「未产生新结果」。
+            rows.append(C.notice_bar(
+                "本次已停止，未生成结果摘要；000 目录可能已部分更新，请重新生成后再使用。",
+                t, "warn"))
         elif failed:
             rows.append(C.notice_bar(
                 f"本次生成未成功（退出码 {code}）：原因见整期日志；修好后点「重新生成目录」。",

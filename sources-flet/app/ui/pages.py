@@ -1292,6 +1292,10 @@ class IssuePage(BasePage):
         self._toc_payload: dict = {}
         # B-375 OBS-2：结果所属报告、本轮失败态、结果区容器（构建期缓存、步骤结束后重建）。
         self._toc_payload_report = ""
+        # Lead round3 task-19：结束态（成功/失败/取消）的独立归属。结果 JSON 的归属
+        # _toc_payload_report 只在读到 payload 后才设置，没有旧结果 JSON 时恒为空，
+        # 不能拿它判断「是否换报告」——否则普通刷新会清掉本轮 failed/cancelled/code。
+        self._toc_state_report = ""
         self._toc_run_failed = False
         self._toc_run_cancelled = False
         self._toc_run_code = None
@@ -1862,8 +1866,11 @@ class IssuePage(BasePage):
             # OBS-2（B-375）：无论当前看的是哪一步（含整期串行），toc 结束都立即刷新
             # 步骤结果区；rc 0/1 算本轮成功（1 仅表示需人工核对），>=2/<0 才算失败。
             failed = code not in (0, 1)
+            # Lead round3 task-19：结束态归属单独记（与结果 JSON 归属分离）；
+            # 记到与结果区同一口径解析的当前报告。
+            self._toc_state_report = self._toc_report_path()
             # Lead round2 C1：记下这次运行属于哪份报告；只有它才配称「本次」。
-            self._toc_run_report = self.field("toc_report")
+            self._toc_run_report = self._toc_report_path()
             self._sync_toc_payload(code=code, failed=failed)
             # OBS-UI-2：单步「生成目录」跑完后收起日志 dock，让参数区回到视野；
             # 整期串行里 toc 不是最后一步时保持日志展开（后续步骤还要看进度）。
@@ -1888,9 +1895,16 @@ class IssuePage(BasePage):
             self._rebuild_detail()
 
     def on_step_cancelled(self, key: str) -> None:
-        """B-375 Lead 返工 D：toc 被用户停止时结果区显式标「已停止，未产生新结果」。"""
+        """B-375 Lead 返工 D：toc 被用户停止时结果区显式标「已停止，未生成结果摘要」。
+
+        Lead task-22：取消不回滚，000 目录可能已部分更新（原生观察），文案不写
+        「未产生新结果」。
+        """
         if key != "toc":
             return
+        # Lead round3 task-19：取消同样把结束态归属记到当时解析出的当前报告，
+        # 否则没有结果 JSON 时普通刷新会把「已停止」清掉。
+        self._toc_state_report = self._toc_report_path()
         self._sync_toc_payload(cancelled=True)
         # 运行已结束，收起日志 dock 让参数区可用（日志仍可再展开查看）。
         self._collapse_log()
@@ -2234,6 +2248,7 @@ class IssuePage(BasePage):
         if payload and report and owner and owner != report:
             self._toc_payload = {}
             self._toc_payload_report = ""
+            self._toc_state_report = ""
             self._toc_run_failed = False
             self._toc_run_cancelled = False
             self._toc_run_code = None
@@ -2259,8 +2274,12 @@ class IssuePage(BasePage):
             t, "error")
 
     def _toc_cancel_note(self) -> ft.Control:
-        return C.notice_bar("本次已停止，未产生新结果。参数区保持可用，可重新运行。",
-                            self.t, "warn")
+        # Lead task-22（原生取消观察）：取消不回滚，000 目录可能已有本轮部分产物；
+        # 结果区与参数区反馈统一改为「未生成结果摘要」的准确表述。
+        return C.notice_bar(
+            "本次已停止，未生成结果摘要；000 目录可能已部分更新，请重新生成后再使用。"
+            "参数区保持可用，可重新运行。",
+            self.t, "warn")
 
     def _toc_summary_lines(self, payload: dict) -> list[str]:
         placed = payload.get("placed") or {}
@@ -2781,6 +2800,7 @@ class IssuePage(BasePage):
         self._merge_info = {}
         self._toc_payload = {}
         self._toc_payload_report = ""
+        self._toc_state_report = ""
         self._toc_run_failed = False
         self._toc_run_cancelled = False
         self._toc_run_code = None
@@ -3049,35 +3069,43 @@ class IssuePage(BasePage):
 
         - 换报告/清空报告 → 清旧结果与本轮 run 标记，绝不跨报告显示上一份的产物/结论；
         - 读到 payload → 记下它属于哪个报告；
-        - code 给出时记录本轮成功/失败；cancelled 记录「已停止」；运行中清掉旧标记。
+        - code 给出时记录本轮成功/失败；cancelled 记录「已停止」；运行中清掉旧标记；
+        - Lead round3 task-19：结束态（code/failed/cancelled）单独归属到
+          `_toc_state_report`。`_toc_payload_report` 只在读到结果 JSON 后才设置，
+          报告有效但没有旧结果 JSON 时恒为空——不能拿它判断「是否换报告」，否则
+          同一报告的普通刷新会把「本次已停止/本次生成未成功」清掉。
         """
         from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
         # Lead task-17：与渲染同一口径（字段优先；字段空时 latest 仅供展示/打开）。
         report = self._toc_report_path()
-        reset_run = False
         if not report:
             self._toc_payload = {}
             self._toc_payload_report = ""
-            reset_run = True
         else:
             owner = str(getattr(self, "_toc_payload_report", "") or "")
             if report != owner:
                 self._toc_payload = {}
-                reset_run = True
             payload = TOC.read_result(report)
             if payload:
                 self._toc_payload = payload
                 self._toc_payload_report = report
-        if reset_run:
-            # Lead C：换报告后不能带着上一轮的失败/完成标记渲染新报告的结果区。
-            self._toc_run_failed = False
-            self._toc_run_cancelled = False
-            self._toc_run_code = None
-            # Lead round2 C1：换报告后连「本轮属于谁」也清掉——A→B→A 时 A 的旧运行
-            # 不能重新冒充「本次」（磁盘结果只能算上次）。但「跑完刚好回调」时
-            # on_step_finished 已先记下本轮报告，不能在这里误清（首次运行无 payload
-            # owner 也走 reset_run 分支）；有 code/cancelled 的事件由调用方负责归属。
-            if code is None and not cancelled:
+        # Lead round3 task-19：普通刷新（无 code/cancel 事件）只按「结束态归属」
+        # 清理本节结束态；同一报告——尤其报告有效但该期没有旧结果 JSON 时——必须
+        # 保留 cancelled/failed/code（Codex 终审两例）。换报告/报告为空/新一轮运行
+        # 开始才失效（换期末页实例重建由 _reset_issue_runtime 负责）。
+        running = self._state_of("toc") == "running"
+        if code is None and not cancelled:
+            state_report = str(getattr(self, "_toc_state_report", "") or "")
+            stale_state = (not report) or (state_report != report)
+            if stale_state or running:
+                # Lead C：换报告后不能带着上一轮的失败/完成标记渲染新报告的结果区。
+                self._toc_run_failed = False
+                self._toc_run_cancelled = False
+                self._toc_run_code = None
+                if stale_state:
+                    self._toc_state_report = ""
+                # Lead round2 C1：换报告/新一轮运行后连「本轮属于谁」也清掉——
+                # A→B→A 时 A 的旧运行不能重新冒充「本次」。
                 self._toc_run_report = ""
         if cancelled:
             self._toc_run_cancelled = True
@@ -3087,10 +3115,10 @@ class IssuePage(BasePage):
             self._toc_run_code = code
             self._toc_run_failed = bool(failed)
             self._toc_run_cancelled = False
-        elif self._state_of("toc") == "running":
-            self._toc_run_failed = False
-            self._toc_run_cancelled = False
-            self._toc_run_code = None
+        if cancelled or code is not None:
+            # 结束态归属到当前报告。调用方（on_step_finished/on_step_cancelled）
+            # 已先记一次；这里兜底直接 _sync_toc_payload(code=…) 的调用路径。
+            self._toc_state_report = report
         # Lead round2 C1（结果归属）：磁盘结果 JSON 无报告身份、生成是本期级的，
         # 「本次」必须同时满足：本会话内为当前报告真跑过、rc 0/1、非失败/取消。
         # 重启（_toc_run_report 为空）/初次加载/换报告后读到本期最近结果都只算上次。
@@ -3144,6 +3172,7 @@ class IssuePage(BasePage):
         current = str(current or "").strip()
         self._toc_payload = {}
         self._toc_payload_report = ""
+        self._toc_state_report = ""
         self._toc_run_report = ""
         self._toc_run_code = None
         self._toc_run_failed = False

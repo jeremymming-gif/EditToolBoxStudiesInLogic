@@ -315,7 +315,9 @@ def test_toc_cancel_marks_result_zone_and_keeps_params(tmp_path):
 
     box = page._toc_box
     texts = _texts(box)
-    assert any("本次已停止，未产生新结果" in text for text in texts), texts
+    # Lead task-22：取消无回滚，000 目录可能已部分更新（原生观察），旧文案「未产生
+    # 新结果」不准确；反例语义不变——仍不得把旧产物当本轮结果、不得提供打开按钮。
+    assert any("本次已停止，未生成结果摘要" in text for text in texts), texts
     assert _button_labels(box) == [], "取消不得把旧产物当本轮结果"
     assert page._toc_run_cancelled is True and page._toc_run_failed is False
 
@@ -598,7 +600,8 @@ def test_toc_panel_feedback_marks_failed_and_cancelled_runs(tmp_path):
 
     page.on_step_cancelled("toc")
     panel_texts = _panel_texts(page)
-    assert any("本次已停止，未产生新结果" in text for text in panel_texts), panel_texts
+    # Lead task-22：取消文案改口径（000 目录可能已部分更新，原生观察）。
+    assert any("本次已停止，未生成结果摘要" in text for text in panel_texts), panel_texts
     assert any("上次结果（非本轮" in text for text in panel_texts), panel_texts
 
 # ── 7. task-17：归属跟随报告字段；渲染结果区不得写字段（Lead m01217）─────
@@ -715,3 +718,113 @@ def test_toc_result_uses_latest_report_for_display_without_writing_field(tmp_pat
     assert "打开结果 JSON" in labels, labels
     assert page.field("toc_report") == "", "展示 latest 不得回写字段"
     assert page._toc_payload_this_run is False
+
+# ── 8. task-19：无结果 JSON 时的结束态归属（Lead round3）──────────────────
+def test_cancelled_state_survives_ordinary_refresh_without_result_json(tmp_path):
+    """Lead task-19：报告有效但该期没有旧结果 JSON 时，普通刷新不得清掉「已停止」。
+
+    旧 _sync_toc_payload 用 _toc_payload_report 判断是否换报告；没有结果 JSON 时
+    owner 恒为空，每一次 _refresh_steps 都被误判成换报告，cancelled/failed/code 被清，
+    结果区退回「还没有生成目录」。结束态应独立归属（_toc_state_report）。
+    """
+    page, _issue, _report = _build_page(tmp_path, settings=COLUMN)
+    page.on_step_cancelled("toc")
+    assert page._toc_run_cancelled is True
+    # Lead task-22：取消无回滚，000 目录可能已部分更新（原生观察），文案改为「未生成
+    # 结果摘要」；本测试语义不变——结束态不得被同报告普通刷新清掉。
+    assert any("本次已停止，未生成结果摘要" in text for text in _texts(page._toc_box))
+
+    page._refresh_steps()
+    texts = _texts(page._toc_box)
+    assert any("本次已停止，未生成结果摘要" in text for text in texts), texts
+    assert page._toc_run_cancelled is True
+    assert page._toc_run_failed is False and page._toc_run_code is None
+
+    page._refresh_steps()  # 再次普通刷新仍保持（同一报告、未重新运行）
+    assert any("本次已停止，未生成结果摘要" in text for text in _texts(page._toc_box))
+    assert page._toc_run_cancelled is True
+
+
+def test_failed_state_survives_ordinary_refresh_without_result_json(tmp_path):
+    """Lead task-19：无旧结果 JSON 时，失败结束态（code/failed）经刷新仍保持。"""
+    page, _issue, _report = _build_page(tmp_path, settings=COLUMN)
+    page.on_step_finished("toc", 2)
+    assert page._toc_run_failed is True and page._toc_run_code == 2
+
+    page._refresh_steps()
+    texts = _texts(page._toc_box)
+    assert any("本次生成未成功（退出码 2）" in text for text in texts), texts
+    assert page._toc_run_failed is True and page._toc_run_code == 2
+    # 参数区反馈同步保持同一轮结论，不能只在结果区留着。
+    panel_texts = _panel_texts(page)
+    assert any("本次生成未成功（退出码 2）" in text for text in panel_texts), panel_texts
+
+    page._refresh_steps()
+    assert page._toc_run_failed is True and page._toc_run_code == 2
+    assert page._toc_run_cancelled is False
+
+
+def test_end_state_is_not_leaked_to_another_report(tmp_path):
+    """反例（C1 语义保持）：A 的失败/取消不得在切到 B 后继续显示，切回 A 也不复活。"""
+    page, _issue, report = _build_page(tmp_path, settings=COLUMN)
+    page.on_step_finished("toc", 2)  # A 无结果 JSON 的失败
+    assert page._toc_run_failed is True
+
+    report_b = Path(report).parent / "信息检查乙.txt"
+    report_b.write_text("report b", encoding="utf-8")
+    field = page.fields["toc_report"][0]
+    field.value = str(report_b)
+    field.on_change(SimpleNamespace(control=field))  # 真实 picker on_change
+
+    # Lead task-22：取消文案改为「未生成结果摘要…」（000 目录可能已部分更新，原生
+    # 观察）；反例语义不变——切到 B 不得显示 A 的取消文字。
+    texts = _texts(page._toc_box)
+    assert not any("本次生成未成功" in text for text in texts), texts
+    assert not any("本次已停止，未生成结果摘要" in text for text in texts), texts
+    assert page._toc_run_failed is False and page._toc_run_code is None
+    assert page._toc_run_cancelled is False
+
+    # 再切回 A：A 没有结果 JSON，只能回到空态，不得把 A 的失败重新冒充为「本次」。
+    field.value = str(report)
+    field.on_change(SimpleNamespace(control=field))
+    texts = _texts(page._toc_box)
+    assert not any("本次生成未成功" in text for text in texts), texts
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert page._toc_run_failed is False and page._toc_run_report == ""
+
+
+def test_new_success_with_json_clears_old_failed_state(tmp_path):
+    """新运行成功（有结果 JSON）后旧失败结束态消失，并恢复「本次」归属。"""
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    page.on_step_finished("toc", 2)  # 先制造无 JSON 的失败结束态
+    assert page._toc_run_failed is True
+
+    _write_result(report, _result_payload(issue))
+    page.on_step_finished("toc", 0)
+    texts = _texts(page._toc_box)
+    assert any("本次生成完成" in text for text in texts), texts
+    assert not any("本次生成未成功" in text for text in texts), texts
+    assert page._toc_run_failed is False
+    assert page._toc_payload_this_run is True
+
+    page._refresh_steps()  # 普通刷新不得丢掉刚完成的「本次」
+    assert page._toc_payload_this_run is True
+    assert any("本次生成完成" in text for text in _texts(page._toc_box))
+
+
+def test_fresh_page_has_no_previous_end_state(tmp_path):
+    """重启等价：新页面实例/初始未运行仍是合理空态，不继承上一页的结束态。"""
+    page, _issue, _report = _build_page(tmp_path, settings=COLUMN)
+    texts = _texts(page._toc_box)
+    assert any("还没有生成目录" in text for text in texts), texts
+    assert page._toc_run_failed is False and page._toc_run_cancelled is False
+    assert page._toc_run_code is None
+
+    page.on_step_finished("toc", 2)
+    assert page._toc_run_failed is True
+
+    sub = tmp_path / "second"
+    sub.mkdir()
+    page2, _issue2, _report2 = _build_page(sub, settings=COLUMN)
+    assert page2._toc_run_failed is False and page2._toc_run_cancelled is False
+    assert any("还没有生成目录" in text for text in _texts(page2._toc_box))
