@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -225,7 +226,14 @@ def test_first_save_backs_up_old_bytes_and_keeps_mode(tmp_path):
     backups = list(tmp_path.glob("settings.json.bak-*"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == before
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    if sys.platform == "win32":
+        # Windows 的 os.chmod 只映射文件只读属性，POSIX 权限位不可表达
+        # （chmod(0o640) 后 S_IMODE 仍为 0o666），因此这里不声称验证权限位；
+        # 只验证原子替换后文件仍存在，字节/版本/内容断言见下。macOS/Linux
+        # 继续在 else 分支断言 0o640 保留（不弱化原覆盖）。
+        assert path.exists()
+    else:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["flet"]["version"] == 2
     assert payload["flet"]["zoom"] == pytest.approx(1.25)
@@ -319,3 +327,37 @@ def test_copy_diagnosis_copies_minimal_text(tmp_path):
         assert marker not in text
     assert "sk-abcdef123456" not in text
     assert len(_marks(app, "diagnosis_copied")) == 1
+
+
+# ── R07：Tk 旧顶层 api 段（Key/地址/模型）升级后仍可用 ─────────────────
+def test_legacy_tk_api_section_migrates_to_ai(tmp_path):
+    path = tmp_path / "settings.json"
+    _write(path, {
+        "api": {"base": "https://legacy.invalid/v1", "key": "SECRET-LEGACY-KEY",
+                "model": "legacy-model"},
+        "engineDir": "/opt/legacy-engine",
+    })
+    store = SS.SettingsStore(path=path)
+    store.load()
+    assert store.get("ai.key") == "SECRET-LEGACY-KEY"
+    assert store.get("ai.base") == "https://legacy.invalid/v1"
+    assert store.get("ai.model") == "legacy-model"
+    assert store.raw["api"]["key"] == "SECRET-LEGACY-KEY"  # 原键保留，不丢数据
+    assert store.save() is True
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["flet"]["ai"]["key"] == "SECRET-LEGACY-KEY"
+    assert payload["api"]["key"] == "SECRET-LEGACY-KEY"
+
+
+# ── R05：勾选日志尾部时，常见 Key 形状也要打码 ─────────────────────────
+def test_log_tail_scrubs_common_key_shapes(tmp_path):
+    app, _store_obj = _diagnosis_app(tmp_path)
+    logs = ("api_key=ZXCVBNM-1234-SECRET\n"
+            "Authorization: Bearer ABCDEF-9999-TOKEN\n"
+            "token: plainsecretvalue99\n"
+            "ok line\n")
+    text = SHELL.build_diagnosis(app, {}, logs, log_tail=True)
+    for leaked in ("ZXCVBNM-1234-SECRET", "ABCDEF-9999-TOKEN", "plainsecretvalue99"):
+        assert leaked not in text
+    assert "（已隐藏）" in text
+    assert "ok line" in text

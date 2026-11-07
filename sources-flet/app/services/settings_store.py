@@ -309,6 +309,17 @@ class SettingsStore:
         mapped_bibdb = _legacy_bibdb(self.raw.get("bibdb"))
         if mapped_bibdb:
             legacy["bibdb"] = mapped_bibdb
+        # Tk 版把 AI 连接信息放在顶层 api 段；升级后映射到新壳 ai 段（不删原键，R07）。
+        api = self.raw.get("api")
+        if isinstance(api, dict):
+            ai: dict = {}
+            for src, dst in (("base", "base"), ("key", "key"),
+                             ("model", "model"), ("protocol", "protocol")):
+                value = api.get(src)
+                if isinstance(value, str) and value.strip():
+                    ai[dst] = value.strip()
+            if ai:
+                legacy["ai"] = ai
         return legacy
 
     # ── 写入 ────────────────────────────────────────────────────────────

@@ -326,6 +326,10 @@ def first_run_needed(store) -> bool:
 # 尾部）必须本次显式勾选，导出前先看预览；写入文件的就是预览里的那段文本。
 LOG_TAIL_LINES = 200
 _KEY_LIKE = re.compile(r"sk-[A-Za-z0-9_\-]{6,}")
+_BEARER_LIKE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{8,}")
+_ASSIGNED_SECRET = re.compile(
+    r"(?i)\b(api[_-]?key|apikey|access[_-]?key|secret|token|password|passwd)"
+    r"(\s*[=:]\s*)(\"[^\"]{4,}\"|'[^']{4,}'|[^\s,;\"']{4,})")
 
 
 def _store_of(app):
@@ -406,7 +410,10 @@ def _scrub_secrets(text: str, store) -> str:
     secret = str(ai.get("key") or "").strip()
     if secret:
         out = out.replace(secret, "（已隐藏）")
-    return _KEY_LIKE.sub("（已隐藏）", out)
+    out = _KEY_LIKE.sub("（已隐藏）", out)
+    out = _BEARER_LIKE.sub("Bearer （已隐藏）", out)
+    out = _ASSIGNED_SECRET.sub(r"\1\2（已隐藏）", out)
+    return out
 
 
 def build_diagnosis(app, envcheck: dict | None = None, logs: str = "",
@@ -517,7 +524,7 @@ def _export(page) -> None:
         label="包含设置白名单摘要（不含 Key、路径、最近记录）",
         value=False, on_change=_refresh)
     logs_box = ft.Checkbox(
-        label=f"包含最近日志（最多 {LOG_TAIL_LINES} 行；可能含文件路径）",
+        label=f"包含最近日志（最多 {LOG_TAIL_LINES} 行；可能含文件路径，密钥形状先打码）",
         value=False, on_change=_refresh)
 
     def _close() -> None:
