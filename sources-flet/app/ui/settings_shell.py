@@ -1,12 +1,14 @@
 """设置外壳：环境检查、诊断包、全局日志、快捷键与设置页的补充卡片。
 
-只做展示与取值；密钥、运行日志等敏感内容不进诊断包（设置段统一脱敏）。
+只做展示与取值。诊断包默认只含版本、平台、状态与错误类别；设置内容、路径与
+日志正文不默认导出，附加内容必须本次显式勾选并先看预览（P01 R04/R05）。
 """
 from __future__ import annotations
 
 import json
 import os
 import platform
+import re
 import time
 import urllib.error
 import urllib.request
@@ -41,7 +43,6 @@ SHORTCUTS = [
     {"keys": "Ctrl+1…5", "action": "page", "label": "切换页面（第 1–5 页）"},
 ]
 PAGE_KEYS = ("home", "single", "issue", "bib", "settings", "help")
-SECRET_HINTS = ("key", "token", "secret", "password", "passwd", "auth")
 
 
 # ── 全局日志 ─────────────────────────────────────────────────────────────
@@ -320,26 +321,107 @@ def first_run_needed(store) -> bool:
 
 
 # ── 诊断包 ───────────────────────────────────────────────────────────────
-def redact(value, depth: int = 0):
-    if depth > 6:
-        return "…"
-    if isinstance(value, dict):
-        out = {}
-        for key, item in value.items():
-            if any(hint in str(key).lower() for hint in SECRET_HINTS):
-                out[key] = "（已隐藏）"
-            else:
-                out[key] = redact(item, depth + 1)
-        return out
-    if isinstance(value, list):
-        return [redact(item, depth + 1) for item in value]
-    return value
+# P01 R04/R05：默认包只输出「非内容」信息——版本、平台、状态与错误类别；设置
+# 值、路径、最近记录与日志正文一律不默认导出。附加内容（设置白名单摘要 / 日志
+# 尾部）必须本次显式勾选，导出前先看预览；写入文件的就是预览里的那段文本。
+LOG_TAIL_LINES = 200
+_KEY_LIKE = re.compile(r"sk-[A-Za-z0-9_\-]{6,}")
 
 
-def build_diagnosis(app, envcheck: dict | None = None, logs: str = "") -> str:
+def _store_of(app):
+    return getattr(app, "store", None)
+
+
+def _log_counts(logs: str) -> dict:
+    counts = {"error": 0, "warn": 0, "summary": 0, "all": 0}
+    for line in str(logs or "").splitlines():
+        if not line.strip():
+            continue
+        counts["all"] += 1
+        level = classify(line)
+        if level in counts:
+            counts[level] += 1
+    return counts
+
+
+def _settings_state_lines(app) -> list[str]:
+    """设置状态（存在/版本/未保存），不输出任何设置值。"""
+    store = _store_of(app)
+    lines = ["设置内容: （已隐藏）默认诊断不导出设置值、路径与日志正文"]
+    if store is None:
+        return lines + ["设置文件: （不可用）"]
+    path = Path(str(getattr(store, "path", "")))
+    lines.append("设置文件: " + ("存在" if path.exists() else "尚未创建"))
+    status = str(getattr(store, "version_status", "") or "")
+    version = getattr(store, "file_version", None)
+    lines.append(f"设置版本: {status or '未知'}" + (f"（文件 v{version}）" if version else ""))
+    lines.append("未保存改动: " + ("有" if getattr(store, "dirty", False) else "无"))
+    if getattr(store, "unsupported_version", None):
+        lines.append(f"警告: 设置文件版本 {store.unsupported_version} 高于本版支持，已拒绝改写")
+    return lines
+
+
+def _settings_summary(store) -> str:
+    """附加诊断里的设置白名单摘要：不含 Key、路径、最近记录、表单与问题单状态。"""
+    data = getattr(store, "data", {}) if store is not None else {}
+    if not isinstance(data, dict):
+        data = {}
+    ai = data.get("ai") if isinstance(data.get("ai"), dict) else {}
+    options = data.get("options") if isinstance(data.get("options"), dict) else {}
+    bibdb = data.get("bibdb") if isinstance(data.get("bibdb"), dict) else {}
+    summary = {
+        "theme": data.get("theme"),
+        "zoom": data.get("zoom"),
+        "last_page": data.get("last_page"),
+        "last_route": data.get("last_route"),
+        "button_palette": data.get("button_palette"),
+        "tray_enabled": bool(data.get("tray_enabled")),
+        "log_show_raw": bool(data.get("log_show_raw")),
+        "env_check_done": bool(data.get("env_check_done")),
+        "bib_view": data.get("bib_view"),
+        "options": {key: bool(value) for key, value in options.items()
+                    if isinstance(key, str) and isinstance(value, bool)},
+        "bibdb": {key: bibdb[key] for key in
+                  ("verify_max", "verify_plan", "verify_all_refs", "lookup_enabled")
+                  if key in bibdb},
+        "ai": {
+            "enabled": bool(ai.get("enabled")),
+            "key_set": bool(str(ai.get("key") or "").strip()),
+            "model": str(ai.get("model") or ""),
+            "protocol": str(ai.get("protocol") or ""),
+            "thinking": bool(ai.get("thinking")),
+            "article_budget_tokens": ai.get("article_budget_tokens"),
+            "batch_budget_tokens": ai.get("batch_budget_tokens"),
+            "verify_max": ai.get("verify_max"),
+        },
+    }
+    return json.dumps(summary, ensure_ascii=False, indent=2)
+
+
+def _scrub_secrets(text: str, store) -> str:
+    """日志尾部可能含用户贴入的 Key：输出前替换本机 Key 与常见 Key 形状。"""
+    out = str(text or "")
+    data = getattr(store, "data", {}) if store is not None else {}
+    ai = data.get("ai") if isinstance(data, dict) and isinstance(data.get("ai"), dict) else {}
+    secret = str(ai.get("key") or "").strip()
+    if secret:
+        out = out.replace(secret, "（已隐藏）")
+    return _KEY_LIKE.sub("（已隐藏）", out)
+
+
+def build_diagnosis(app, envcheck: dict | None = None, logs: str = "",
+                    *, settings_summary: bool = False, log_tail: bool = False) -> str:
+    """诊断文本：默认最小集；`settings_summary` / `log_tail` 只能由导出对话框显式勾选。"""
     engine = getattr(app, "engine_status", None)
     envcheck = envcheck or {}
     page = getattr(app, "page", None)
+    store = _store_of(app)
+    problems = getattr(engine, "problems", None) or []
+    engine_line = (f"引擎: {'就绪' if bool(getattr(engine, 'ok', False)) else '未就绪'}"
+                   f" · {getattr(engine, 'version', '') or '版本未知'}"
+                   f" · {getattr(engine, 'mode', '') or '未知模式'}")
+    if problems:
+        engine_line += f" · 问题 {len(problems)} 项"
     lines = [
         "=== 编辑部工具箱诊断 ===",
         f"生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -348,25 +430,29 @@ def build_diagnosis(app, envcheck: dict | None = None, logs: str = "") -> str:
         f"系统: {platform.platform()} · {platform.machine()}",
         f"平台: {getattr(page, 'platform', '?')} · {getattr(app, 'dpi', '?')} dpi"
         f" · 窗口 {getattr(app, 'window_w', '?')}×{getattr(app, 'window_h', '?')}",
-        f"引擎: {getattr(engine, 'describe', lambda: '?')()} · {getattr(engine, 'version', '?')}",
-        f"目录: {getattr(engine, 'engine_dir', '?')}",
-        f"设置文件: {getattr(getattr(app, 'store', None), 'path', '?')}",
-        "设置（脱敏）:",
-        json.dumps(redact(getattr(getattr(app, "store", None), "data", {})),
-                   ensure_ascii=False, indent=2)[:6000],
+        engine_line,
+        *_settings_state_lines(app),
         "环境检查:",
     ]
     rows = envcheck_rows(envcheck)
     if rows:
-        lines.append(f"  {envcheck.get('profile', '')} · {envcheck.get('platform', '')}")
         for row in rows:
-            lines.append(f"  [{row['status']}] {row['title']} {row['version']}".rstrip())
+            lines.append(f"  {row['title']}: {row['status']}")
     else:
         lines.append("  （未运行）")
-    lines.append("最近日志（内存，最多 4000 行）:") 
-    tail = "\n".join((logs or "").splitlines()[-400:])
-    lines.append(tail or "  （暂无日志）")
-    lines.append("=== 结束（本文件不含 API Key / Token）===")
+    counts = _log_counts(logs)
+    lines.append(f"日志: 共 {counts['all']} 行（错误 {counts['error']}"
+                 f" · 警告 {counts['warn']} · 摘要 {counts['summary']}）")
+    if settings_summary:
+        lines.append("")
+        lines.append("设置摘要（本机白名单；不含 Key、路径与最近记录）:")
+        lines.append(_settings_summary(store))
+    if log_tail:
+        lines.append("")
+        lines.append(f"最近日志（本次显式勾选，最多 {LOG_TAIL_LINES} 行）:")
+        tail = "\n".join(str(logs or "").splitlines()[-LOG_TAIL_LINES:])
+        lines.append(_scrub_secrets(tail, store) or "  （暂无日志）")
+    lines.append("=== 结束（默认不含设置内容、路径与日志正文；附加内容需本次显式勾选）===")
     return "\n".join(lines)
 
 
@@ -374,26 +460,80 @@ def diagnosis_dir(app) -> Path:
     return Path(app.store.path).parent / "diagnostics"
 
 
-def write_diagnosis(app, envcheck: dict | None = None, logs: str = "") -> str:
+def write_diagnosis(app, envcheck: dict | None = None, logs: str = "",
+                    *, text: str | None = None) -> str:
+    """写诊断文件。`text` 给定时逐字节写它（导出 = 预览）；失败抛 `OSError` 且不留文件。"""
+    body = text if isinstance(text, str) else build_diagnosis(app, envcheck, logs)
     folder = diagnosis_dir(app)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"诊断-{time.strftime('%Y%m%d-%H%M%S')}.txt"
-    path.write_text(build_diagnosis(app, envcheck, logs), encoding="utf-8")
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise
     app.mark("diagnosis_exported", path=str(path), bytes=path.stat().st_size)
     return str(path)
 
 
 def copy_diagnosis(page) -> None:
+    """复制默认诊断文本（不含设置内容、路径与日志正文）。"""
     page.app.copy_text(build_diagnosis(page.app, getattr(page, "envcheck_data", None),
                                        log_buffer(page.app).text()))
     page.mark("diagnosis_copied")
 
 
 def _export(page) -> None:
-    def _confirmed() -> None:
+    """导出对话框：默认最小集；附加内容勾选后即时刷新预览，导出写预览原文。"""
+    app = page.app
+    t = page.t
+    envcheck = getattr(page, "envcheck_data", None)
+    logs = log_buffer(app).text()
+
+    def _preview_text() -> str:
+        return build_diagnosis(app, envcheck, logs,
+                               settings_summary=bool(settings_box.value),
+                               log_tail=bool(logs_box.value))
+
+    preview = C.text_field(
+        t, value=build_diagnosis(app, envcheck, logs), multiline=True,
+        min_lines=10, max_lines=14, read_only=True, mono=True, clearable=False,
+        expand=True)
+
+    def _refresh(e=None) -> None:
         try:
-            path = write_diagnosis(page.app, getattr(page, "envcheck_data", None),
-                                   log_buffer(page.app).text())
+            preview.value = _preview_text()
+            preview.update()
+        except Exception:  # noqa: BLE001 预览刷新失败不拦导出
+            pass
+
+    settings_box = ft.Checkbox(
+        label="包含设置白名单摘要（不含 Key、路径、最近记录）",
+        value=False, on_change=_refresh)
+    logs_box = ft.Checkbox(
+        label=f"包含最近日志（最多 {LOG_TAIL_LINES} 行；可能含文件路径）",
+        value=False, on_change=_refresh)
+
+    def _close() -> None:
+        try:
+            page.page.pop_dialog()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _cancel(e=None) -> None:
+        _close()
+
+    def _confirmed(e=None) -> None:
+        text = preview.value or ""
+        _close()
+        try:
+            path = write_diagnosis(app, envcheck, logs, text=text)
         except OSError as exc:
             page.app.toast(f"诊断包写入失败：{exc}")
             page.mark("diagnosis_error", error=str(exc))
@@ -401,15 +541,30 @@ def _export(page) -> None:
         page.app.toast(f"诊断包已写入：{path}")
         page.app.open_path(str(Path(path).parent))
 
-    C.confirm(page.page, page.t, title="导出诊断包？",
-              message="写入设置目录，含版本、路径、已脱敏设置与日志，不含 API Key。",
-              confirm_label="导出", on_confirm=_confirmed)
+    dialog = ft.AlertDialog(
+        modal=True,
+        title=C.text("导出诊断包", t, role="dialog-title"),
+        content=ft.Container(
+            width=t.px(620),
+            content=ft.Column(spacing=t.sp("1"), tight=True, controls=[
+                C.text("默认只含版本、平台、状态与错误类别；附加内容请先勾选并核对下方预览，"
+                       "写入文件的内容与预览逐字相同。", t, "small", t.palette.text_muted),
+                settings_box,
+                logs_box,
+                preview,
+            ])),
+        actions=[
+            C.text_button("取消", _cancel, t),
+            C.primary_button("导出", _confirmed, t),
+        ],
+    )
+    page.page.show_dialog(dialog)
 
 
 def diagnostics_card(page) -> ft.Control:
     t = page.t
     rows: list = [
-        C.section_title("诊断包", t, note="确认后写文件并打开目录"),
+        C.section_title("诊断包", t, note="默认只含版本与状态；附加内容需勾选并预览"),
         _kv("设置文件", str(page.app.store.path), t),
         _kv("诊断目录", str(diagnosis_dir(page.app)), t),
         _kv("日志", f"内存最近 {log_buffer(page.app).count()} 行（上限 {LOG_LIMIT}）", t),
@@ -679,10 +834,15 @@ def advanced_card(page) -> ft.Control:
 
 def _reset(page) -> None:
     def _confirmed() -> None:
-        page.app.store.data = page.app.store.defaults_copy()
-        page.app.save_settings(toast=False)
+        store = page.app.store
+        store.data = store.defaults_copy()
+        store.mark_dirty()
         page.app.mark("settings_reset")
-        page.app.toast("已恢复默认设置")
+        saved = bool(page.app.save_settings(toast=False))
+        if saved:
+            page.app.toast("已恢复默认设置")
+        else:
+            page.app.toast("默认设置已恢复（仅内存），写入磁盘失败，请检查磁盘空间后再保存")
         page.app.rebuild_shell()
 
     C.confirm(page.page, page.t, title="恢复默认设置？",

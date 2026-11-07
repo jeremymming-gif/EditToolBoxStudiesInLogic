@@ -3427,13 +3427,23 @@ class SettingsPage(BasePage):
     def build(self) -> ft.Control:
         t = self.t
         engine = self.app.engine_status
+        store = self.app.store
         status_rows = [
             ("运行方式", engine.describe()),
             ("引擎目录", engine.engine_dir or "（未找到）"),
             ("引擎版本", engine.version),
             ("问题", "；".join(engine.problems) if engine.problems else "无"),
-            ("设置文件", str(self.app.store.path)),
+            ("设置文件", str(store.path)),
+            # P01 R01：有未写盘的改动时如实显示，不让内存状态冒充已持久化。
+            ("未保存改动", "有（保存后写入设置文件）"
+             if getattr(store, "dirty", False) else "无"),
         ]
+        # P01 R03/R07：高版本设置文件只读不改写，必须在页面上说清，不静默降级。
+        unsupported = getattr(store, "unsupported_version", None)
+        if unsupported:
+            status_rows.append(
+                ("设置版本", f"v{unsupported} 高于本版支持：本版不改写该文件，"
+                             "请升级程序，或改用旧版副本回退"))
         # 批 115 P3-C2：12 张 C.card 长滚 → 4 组发丝分区（引擎与环境 / 外观 /
         # 窗口与托盘 / 路径与关于）。组 = section_label + 1px 线，组内不再套卡片；
         # settings_shell / ai_panel 的卡片用 _flat 去壳（那两个文件不在写域）。
@@ -3597,7 +3607,19 @@ class SettingsPage(BasePage):
         def _browse(e) -> None:
             self.app.browse_field(ref, f"选择{label}", kind, key, store_prefix="paths")
 
-        control = C.path_picker(label, value, "", self.t, required=False,
+        def _typed(e) -> None:
+            """手输/粘贴/✕ 清空也写回 store（P01 R02：路径值必须参与保存）。
+
+            不逐键写盘：存内存并标 dirty，等「立即保存」或关窗时统一落盘。
+            """
+            text = str(getattr(e.control, "value", "") or "").strip()
+            self.app.store.set(f"paths.{key}", text)
+            if key == "engine_override":
+                # 旧键同步（启动读取 engine_override；浏览分支同样双写）。
+                self.app.store.set("engine_override", text)
+            self.app.mark("path_change", key=key, typed=True)
+
+        control = C.path_picker(label, value, "", self.t, required=False, on_change=_typed,
                                 on_browse=_browse, show_note=False, field_ref=ref)
         self.fields[key] = ref
         return control

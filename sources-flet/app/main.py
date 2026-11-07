@@ -38,7 +38,8 @@ from services import engine_bridge as EB
 from services import startup_log as SLOG
 from services import version_info as VERSION
 from services import winplat
-from services.settings_store import SettingsStore, normalize_button_palette
+from services.settings_store import (SettingsStore, SettingsVersionError,
+                                      normalize_button_palette)
 from ui import brand
 from ui import components as C
 from ui import pages as P
@@ -1552,8 +1553,8 @@ class App:
         self.mark("theme_changed", theme=theme, mode=mode, duration_ms=elapsed_ms,
                   retinted=retinted)
         self.apply_titlebar()
-        self.persist()
-        self.toast("已切换到" + ("深色" if theme == "dark" else "浅色") + "模式（已落盘）")
+        if self.persist():
+            self.toast("已切换到" + ("深色" if theme == "dark" else "浅色") + "模式（已落盘）")
 
     # ── 换肤不重建（批 112 S2 · GUI-03）────────────────────────────────
     def _retint_shell(self, old: Tokens) -> int:
@@ -1950,24 +1951,54 @@ class App:
         self.store.set("env_check_done", bool(value))
         self.persist()
 
-    def persist(self) -> None:
+    def persist(self) -> bool:
+        """写盘设置；True = 真的写成功。失败给出可见原因并返回 False（R01）。"""
         try:
             self.store.save()
+        except SettingsVersionError as exc:
+            # R03：高版本文件拒绝写入，原字节保留；提示说清「没写」与原因。
+            reason = exc.strerror or str(exc)
+            self.mark("settings_save_error", error=reason, version=exc.version)
+            self.toast(f"设置未保存：{reason}")
+            return False
         except OSError as exc:
             # 批 109 Wave 0 / S5：保存失败不再静默——给出可读原因（磁盘/权限），
             # 不弹栈、不影响后续操作（见任务书 §S5 与 b109-parity/report.md）。
             self.mark("settings_save_error", error=str(exc))
             reason = exc.strerror or str(exc) or "未知错误"
             self.toast(f"设置保存失败：{reason}（设置未写入，请检查磁盘空间）")
+            return False
+        return True
 
-    def save_settings(self, toast: bool = False) -> None:
+    def save_settings(self, toast: bool = False) -> bool:
+        """保存设置：只有持久化成功才记 `settings_saved` / 报「设置已保存」（R01）。"""
         self.store.set("last_page", self.current_page_key)
         self.store.set("last_route", self.current_route or self.current_page_key or "home")
         self.store.set("nav_open", dict(self.nav_open or {}))
-        self.persist()
-        self.mark("settings_saved", file=str(self.store.path), exists=self.store.path.exists())
+        if not self.persist():
+            return False
+        self._apply_engine_override()
+        self.mark("settings_saved", file=str(self.store.path), exists=self.store.path.exists(),
+                  dirty=self.store.dirty)
         if toast:
             self.toast("设置已保存")
+        return True
+
+    def _apply_engine_override(self) -> None:
+        """保存成功后让手输的引擎目录参与引擎解析（R02：路径值要参与校验）。
+
+        与「浏览…」原有的即时生效口径一致；值没变就不重复探测。
+        """
+        value = str(self.store.get("engine_override", "") or "").strip()
+        if not value or os.environ.get("P2_ENGINE") == value:
+            return
+        os.environ["P2_ENGINE"] = value
+        refresh = getattr(self, "refresh_engine_status", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception as exc:  # noqa: BLE001 探测失败不拦保存成功
+                self.mark("engine_refresh_error", error=f"{type(exc).__name__}: {exc}")
 
     def refresh_engine_status(self) -> None:
         self.engine_status = EB.engine_status()

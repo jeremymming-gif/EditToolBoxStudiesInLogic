@@ -8,16 +8,36 @@
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 from services import ai_prefs
+from services import settings_validation
 
 APP_NAME = "编辑部工具箱"
 SCHEMA_KEY = "flet"
 SCHEMA_VERSION = 2
+
+
+class SettingsVersionError(OSError):
+    """设置文件版本高于当前程序支持：拒绝写入，原文件字节保持不变。
+
+    继承 `OSError`，既有 `except OSError` 的调用点（persist / 迁移）都能接住，
+    并沿用「保存失败」的提示通道；不要把它降级成静默覆盖。
+    """
+
+    def __init__(self, version: int, supported: int) -> None:
+        self.version = int(version)
+        self.supported = int(supported)
+        super().__init__(
+            errno.EINVAL,
+            f"设置文件版本 {self.version} 高于本版支持的 {self.supported}，已拒绝写入；"
+            "原文件保持不变，请升级程序，或改用旧版副本回退",
+        )
 
 #: 旧壳 `settings.py` 的 `DEFAULT_VERIFY_MAX`（只给界面显示，不参与判据）
 DEFAULT_VERIFY_MAX = 120
@@ -155,17 +175,37 @@ class SettingsStore:
         self.raw: dict = {}
         self.data: dict = _defaults()
         self.exists = False
+        #: 有未写盘的改动（R01：内存状态不得冒充已持久化）。
+        self.dirty = False
+        #: 磁盘上 `flet.version` 的读数（None = 旧文件/缺键/坏文件）。
+        self.file_version: int | None = None
+        #: `current` / `legacy` / `older` / `future` / `missing` / `unreadable`。
+        self.version_status = "missing"
+        #: 高于本版支持的版本号（save() 时据此拒绝写入）。
+        self.unsupported_version: int | None = None
+        #: 首次写盘前需要备份旧文件（升级可回退；R07）。
+        self.needs_backup = False
+        self.last_save_error = ""
 
     # ── 读取 ────────────────────────────────────────────────────────────
     def load(self) -> tuple[dict, bool]:
         self.raw, self.exists = {}, self.path.exists()
+        self.dirty = False
+        self.file_version = None
+        self.unsupported_version = None
+        self.needs_backup = False
+        self.version_status = "missing"
+        unreadable = False
         if self.exists:
             try:
                 loaded = json.loads(self.path.read_text(encoding="utf-8"))
                 if isinstance(loaded, dict):
                     self.raw = loaded
+                else:
+                    unreadable = True
             except (OSError, ValueError):
                 self.raw = {}
+                unreadable = True
         section = self.raw.get(SCHEMA_KEY)
         self.data = _defaults()
         legacy = self._legacy_view()
@@ -175,10 +215,9 @@ class SettingsStore:
         if isinstance(section, dict):
             # 已保存过的 Flet 段拥有最终优先级（旧键只在首次迁移时生效）
             self.data = _deep_merge(self.data, section)
-        self.data["tray_enabled"] = normalize_tray_enabled(self.data.get("tray_enabled"))
-        # 旧 settings.json 没有该键 → _defaults 已补 "c"；坏值/大写也归一。
-        self.data["button_palette"] = normalize_button_palette(
-            self.data.get("button_palette"))
+        # P01 R03：已知字段有界归一；未知字段（含未来版本字段）原样保留。
+        self.data = settings_validation.normalize_settings(self.data, _defaults())
+        self._read_version(section, unreadable)
         # 批 114：没有 last_route 的旧配置（或手改成坏值）→ 由 last_page / single_flow /
         # bib_view 推导一次；之后按新键读写。坏 nav_open 也补成合法 dict。
         # 注意：_defaults 本身带 last_route="home"，所以「是否迁移」要看保存文件里
@@ -193,6 +232,32 @@ class SettingsStore:
         if not isinstance(open_state, dict):
             self.data["nav_open"] = {"page": "", "group": ""}
         return self.data, self.exists
+
+    def _read_version(self, section, unreadable: bool) -> None:
+        """判定磁盘设置文件的 schema 状态（不改文件、不做迁移写盘）。"""
+        if not self.exists:
+            self.version_status = "missing"
+            return
+        if unreadable or not isinstance(section, dict):
+            # 文件存在但读不出/没有 flet 段：视为旧配置；首次保存前先备份原字节。
+            self.version_status = "unreadable" if unreadable else "legacy"
+            self.needs_backup = True
+            return
+        raw_version = section.get("version")
+        if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+            self.version_status = "legacy"
+            self.needs_backup = True
+            return
+        self.file_version = raw_version
+        if raw_version > SCHEMA_VERSION:
+            self.version_status = "future"
+            self.unsupported_version = raw_version
+            self.needs_backup = False  # 高版本一律不改写，无需备份
+        elif raw_version < SCHEMA_VERSION:
+            self.version_status = "older"
+            self.needs_backup = True
+        else:
+            self.version_status = "current"
 
     def _migrate_route(self) -> None:
         """旧键 → last_route / nav_open（仅首次迁移或坏值时调用；不删旧键）。"""
@@ -247,15 +312,32 @@ class SettingsStore:
         return legacy
 
     # ── 写入 ────────────────────────────────────────────────────────────
-    def save(self) -> None:
+    def save(self) -> bool:
+        """原子写盘；失败抛 `OSError` 且原文件逐字节不变（R01/R07）。
+
+        高版本文件：抛 `SettingsVersionError`，绝不降级重写。
+        旧文件首次升级：先 `copy2` 备份（保字节与权限），再写新文件并沿用旧权限。
+        """
+        if self.unsupported_version is not None:
+            error = SettingsVersionError(self.unsupported_version, SCHEMA_VERSION)
+            self.last_save_error = str(error.strerror or error)
+            raise error
+        old_mode = self._current_mode()
+        if self.needs_backup and self.exists:
+            self._write_backup()
         payload = dict(self.raw)
-        payload[SCHEMA_KEY] = {"version": SCHEMA_VERSION, **self.data}
+        payload[SCHEMA_KEY] = {**self.data, "version": SCHEMA_VERSION}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(prefix="settings-", suffix=".json", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 json.dump(payload, fh, ensure_ascii=False, indent=2)
                 fh.write("\n")
+            if old_mode is not None:
+                try:
+                    os.chmod(tmp_name, old_mode)
+                except OSError:  # Windows 上权限位语义不同；失败不拦保存
+                    pass
             os.replace(tmp_name, self.path)
         finally:
             if os.path.exists(tmp_name):
@@ -264,6 +346,39 @@ class SettingsStore:
                 except OSError:
                     pass
         self.raw = payload
+        self.exists = True
+        self.dirty = False
+        self.last_save_error = ""
+        self.file_version = SCHEMA_VERSION
+        self.version_status = "current"
+        self.needs_backup = False
+        return True
+
+    def _current_mode(self) -> int | None:
+        """旧文件的权限位（POSIX）；文件不存在或读不到 → None。"""
+        if not self.exists:
+            return None
+        try:
+            return self.path.stat().st_mode & 0o777
+        except OSError:
+            return None
+
+    def _backup_path(self) -> Path:
+        label = self.version_status if self.version_status != "current" else "legacy"
+        if self.file_version is not None:
+            label = f"v{self.file_version}"
+        return self.path.with_name(f"{self.path.name}.bak-{label}")
+
+    def _write_backup(self) -> Path:
+        """升级写盘前备份旧文件；已存在同名备份则不覆盖（保留最早的原字节）。"""
+        target = self._backup_path()
+        if not target.exists():
+            # copy2 同时保留字节与权限位；失败直接抛 OSError（宁可不写也不丢原文件）。
+            shutil.copy2(self.path, target)
+        return target
+
+    def mark_dirty(self) -> None:
+        self.dirty = True
 
     def get(self, dotted: str, default=None):
         node = self.data
@@ -285,19 +400,28 @@ class SettingsStore:
             if not isinstance(node, dict):
                 return
         node[parts[-1]] = value
+        self.dirty = True
 
     def update_options(self, **kwargs) -> None:
         options = self.data.setdefault("options", {})
         options.update(kwargs)
+        self.dirty = True
 
     def defaults_copy(self) -> dict:
         """恢复默认：返回一份全新的默认设置（不共享嵌套）。"""
         return _defaults()
 
     def set_recent(self, key: str, value: str) -> None:
+        """最近路径：显式清空也要落成空串（R02：清掉的项不得复活）。
+
+        旧实现 `if value:` 会忽略空串，用户清空后重启又变回旧值。
+        """
         recent = self.data.setdefault("recent", {})
-        if value:
-            recent[key] = value
+        if not isinstance(recent, dict):
+            recent = {}
+            self.data["recent"] = recent
+        recent[str(key)] = "" if value is None else str(value)
+        self.dirty = True
 
 
 # ── 引用库核实段（R6）：纯函数，可直接单测；不碰 flet、不跑引擎 ────────────
