@@ -192,6 +192,17 @@ def make_batch(root: str, name: str, manifest: dict, files: dict | None = None) 
     return batch
 
 
+def batch_payload(batch: str) -> list:
+    """批次 payload（不含 manifest 自身），用于核对「磁盘事实 == 清单」。"""
+    out: list = []
+    for base, _dirs, files in os.walk(batch):
+        for name in files:
+            if name in ("manifest.json", "manifest.json.tmp"):
+                continue
+            out.append(os.path.relpath(os.path.join(base, name), batch))
+    return sorted(out)
+
+
 def cand_paths(scan: dict) -> list:
     return sorted(c["path"] for c in scan["candidates"])
 
@@ -750,18 +761,18 @@ def test_daily_partial_move_or_manifest_failure() -> None:
     w(root_b, "main.tex", b"\\documentclass{article}\n")
     w(root_b, "good.aux", b"GOOD\n")
     w(root_b, "bad.aux", b"BAD\n")
-    orig_move = cd.shutil.move
+    orig_move = cd._move_into_trash
 
     def move_bad(src, dst):
         if os.path.basename(str(src)) == "bad.aux":
             raise OSError(13, "Permission denied")
         return orig_move(src, dst)
 
-    cd.shutil.move = move_bad
+    cd._move_into_trash = move_bad
     try:
         res_b = cd.run_daily(root_b)
     finally:
-        cd.shutil.move = orig_move
+        cd._move_into_trash = orig_move
     failures_b = res_b.get("failures") or []
     check("partial.move_status_count",
           res_b.get("status") == "partial" and res_b.get("count") == 1,
@@ -808,6 +819,68 @@ def test_daily_partial_move_or_manifest_failure() -> None:
     check("partial.cli_restore_rc", rc == 0 and js.get("status") == "success", _bad(err + json.dumps(js)))
 
 
+# ── C08 部分失败：回收区不得留未记账副本 ────────────────────────────────
+
+
+@test
+def test_daily_partial_move_leaves_no_unaccounted_trash_copies() -> None:
+    """chmod 0555 源子目录 → rename 被拒、copy2 成功但 unlink 失败。
+
+    修复前 shutil.move 会把副本留在批次里（payload > entries）；
+    修复后失败项必须回滚干净：count==moved==payload，恢复后源树一致。
+    """
+    d = tmpdir("c08")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    w(root, "good.aux", b"GOOD\n")
+    w(root, "ro/a.aux", b"RO-A\n")
+    w(root, "ro/b.aux", b"RO-B\n")
+    ro = os.path.join(root, "ro")
+    before = snap(root)
+
+    os.chmod(ro, 0o555)
+    try:
+        if os.access(ro, os.W_OK):
+            print("SKIP  c08.chmod_ineffective（当前用户可忽略 0555 目录权限，无法构造回退搬移场景）")
+            return
+        rc, js, err = run_cli_json("--folder", root, "--mode", "daily")
+    finally:
+        os.chmod(ro, 0o755)
+
+    check("c08.rc_partial", rc == 2, _bad(str(rc) + " " + err))
+    check("c08.status_partial", js.get("status") == "partial" and js.get("ok") is False,
+          _bad(json.dumps(js)))
+    fail_paths = sorted(f.get("path", "") for f in (js.get("failures") or []))
+    check("c08.failures_named", fail_paths == ["ro/a.aux", "ro/b.aux"], _bad(repr(fail_paths)))
+    batch = js.get("trashDir") or ""
+    check("c08.batch_present", bool(batch) and os.path.isdir(batch), _bad(batch))
+    man = _manifest(batch) if batch else {}
+    moved = [e.get("path") for e in (man.get("entries") or []) if e.get("status") == "moved"]
+    payload = batch_payload(batch) if batch else []
+    check("c08.status_in_manifest", man.get("status") == "partial", _bad(json.dumps(man)))
+    check("c08.count_eq_moved_eq_entries",
+          js.get("count") == len(moved) == 1 and moved == ["good.aux"],
+          _bad("count=%r moved=%r" % (js.get("count"), moved)))
+    check("c08.payload_eq_moved", payload == moved, _bad(repr(payload)))
+    check("c08.failed_no_trash_copy",
+          all(p not in payload for p in ("ro/a.aux", "ro/b.aux")), _bad(repr(payload)))
+    check("c08.failed_left_in_place",
+          open(os.path.join(root, "ro", "a.aux"), "rb").read() == b"RO-A\n"
+          and open(os.path.join(root, "ro", "b.aux"), "rb").read() == b"RO-B\n"
+          and not os.path.exists(os.path.join(batch, "ro")), _bad(repr(payload)))
+
+    rc2, js2, err2 = run_cli_json("--folder", root, "--restore", batch)
+    check("c08.restore_rc", rc2 == 0 and js2.get("status") == "success",
+          _bad(err2 + json.dumps(js2)))
+    check("c08.restore_count", js2.get("count") == 1, _bad(json.dumps(js2)))
+    check("c08.restore_bytes",
+          open(os.path.join(root, "good.aux"), "rb").read() == b"GOOD\n")
+    check("c08.restore_tree_identical", snap(root) == before, _bad(repr(snap(root))))
+    check("c08.batch_no_payload_after_restore",
+          batch_payload(batch) == [], _bad(repr(batch_payload(batch))))
+
+
 # ── T2-5 中断（SIGTERM）可恢复 ──────────────────────────────────────────
 
 
@@ -821,7 +894,7 @@ def test_daily_interrupted_move_is_recoverable() -> None:
     w(root, "two.aux", b"TWO\n")
     obs: dict = {}
     default_handler = signal.getsignal(signal.SIGTERM)
-    orig_move = cd.shutil.move
+    orig_move = cd._move_into_trash
 
     def move_then_term(src, dst):
         if not obs:
@@ -843,11 +916,11 @@ def test_daily_interrupted_move_is_recoverable() -> None:
         else:
             raise AssertionError("取消后不应继续搬移第二个文件")
 
-    cd.shutil.move = move_then_term
+    cd._move_into_trash = move_then_term
     try:
         res = cd.run_daily(root)
     finally:
-        cd.shutil.move = orig_move
+        cd._move_into_trash = orig_move
 
     check("interrupt.manifest_persisted_before_move",
           bool(obs) and obs.get("status") == "planned"

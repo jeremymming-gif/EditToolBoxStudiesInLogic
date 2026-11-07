@@ -15,6 +15,7 @@ import pytest
 from services import engine_bridge as EB
 from ui import assembly as ASM
 from ui import cleanup as CLEANUP
+from ui import components as C
 from test_b112_post_b import _walk
 from test_b116_issue_run import _Page, make_page
 
@@ -88,7 +89,7 @@ def _texts(control) -> list[str]:
 
 def _undo_button(control):
     for ctl in _walk(control):
-        if isinstance(ctl, ft.OutlinedButton) and "撤销本次清理" in str(ctl.content or ""):
+        if isinstance(ctl, ft.OutlinedButton) and "撤销" in str(ctl.content or ""):
             return ctl
     return None
 
@@ -304,3 +305,256 @@ def test_cleanup_runall_is_opt_in_daily(tmp_path, engine, monkeypatch):
     assert rec["status"] == "success" and rec["operationId"] == OP and rec["count"] == 1
     assert page._status["cleantemp"] == "done"
     assert page._cleanup.phase == ""
+
+def test_cleanup_empty_keeps_previous_batch_undo(tmp_path, monkeypatch):
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    page = make_page(tmp_path / "期A")
+    batch = root + "/.toolbox-trash/期A-" + OP
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, count=1,
+                  entries=[{"path": "a.aux"}]), 0),
+        (_payload(root, count=1, entryCount=1, operationId=OP, trashDir=batch,
+                  entries=[{"path": "a.aux", "action": "move"}],
+                  status="success"), 0),
+        (_payload(root, dryRun=True, count=0, status="empty"), 0),
+        ({"ok": True, "command": "cleantemp", "mode": "restore", "dryRun": False,
+          "root": root, "count": 1, "entryCount": 1, "entries": [],
+          "trashDir": batch, "restoreDir": root, "failures": [], "warnings": [],
+          "error": "", "operationId": OP, "status": "success", "kept": []}, 0),
+    ])
+    panel = _panel(page)
+
+    panel.start()
+    assert panel.record()["status"] == "success"
+    panel.start()  # 空候选：不建批次，但上一批次必须仍可撤销
+
+    rec = panel.record()
+    assert (rec["status"], rec["count"], rec["entries"]) == ("empty", 0, [])
+    assert rec["lastTrashDir"] == batch and rec["lastOperationId"] == OP
+    assert rec["lastCount"] == 1
+    texts = _texts(panel.result())
+    assert any("没有可清理的临时文件（未创建新批次）；上次清理批次仍可撤销。" in text
+               for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and str(undo.content) == "撤销上次清理"
+    assert undo.disabled is False
+
+    shown: list = []
+    page.page.show_dialog = lambda dialog: shown.append(dialog)
+    page.page.pop_dialog = lambda: None
+    C._open_dialogs.clear()
+    panel.details_dialog()
+    details = [str(ctl.value) for ctl in _walk(shown[0].content) if isinstance(ctl, ft.Text)]
+    assert any("上次可撤销批次" in text for text in details), details
+    assert any(OP in text for text in details), details
+    assert any(batch in text for text in details), details
+    assert any("1 个文件" in text for text in details), details
+    C._open_dialogs.clear()
+
+    panel.restore_last()  # 必须精确用上一批次，而不是本次空结果
+    assert len(calls) == 4
+    assert _args(calls[3]) == ["--folder", root, "--restore", batch, "--json"]
+    rec = panel.record()
+    assert rec["restore"]["status"] == "success"
+    assert not rec.get("lastTrashDir")
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is True
+    assert "已撤销上次清理" in str(undo.content)
+    texts = _texts(panel.result())
+    assert any("已撤销上次清理：恢复 1 个文件。" in text for text in texts), texts
+    assert any("没有可清理的临时文件（未创建新批次）；上次清理已撤销。" in text
+               for text in texts), texts
+
+
+def test_cleanup_empty_without_previous_is_not_undoable(tmp_path, monkeypatch):
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    page = make_page(tmp_path / "期A")
+    calls = _install(monkeypatch, page, [(_payload(root, status="empty"), 0)])
+    panel = _panel(page)
+
+    panel.start()
+
+    rec = panel.record()
+    assert rec["status"] == "empty"
+    assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
+    texts = _texts(panel.result())
+    assert any("没有可清理的临时文件（未创建批次，也没有撤销）。" in text
+               for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and str(undo.content) == "撤销本次清理"
+    assert undo.disabled is True
+
+    panel.restore_last()  # 无上批：不发 restore 命令
+    assert len(calls) == 1
+    assert page.app.toasts[-1] == "本次没有可清理的临时文件，无需撤销"
+    assert panel.record() == rec
+
+
+def test_cleanup_new_success_replaces_last_batch(tmp_path, monkeypatch):
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    page = make_page(tmp_path / "期A")
+    op1 = OP
+    op2 = "2026_11_07_120000-bbbbbbbb"
+    batch1 = root + "/.toolbox-trash/期A-" + op1
+    batch2 = root + "/.toolbox-trash/期A-" + op2
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, count=1, entries=[{"path": "a.aux"}]), 0),
+        (_payload(root, count=1, operationId=op1, trashDir=batch1,
+                  entries=[{"path": "a.aux"}], status="success"), 0),
+        (_payload(root, status="empty"), 0),
+        (_payload(root, dryRun=True, count=1, entries=[{"path": "b.aux"}]), 0),
+        (_payload(root, count=1, operationId=op2, trashDir=batch2,
+                  entries=[{"path": "b.aux"}], status="success"), 0),
+        ({"ok": True, "command": "cleantemp", "mode": "restore", "dryRun": False,
+          "root": root, "count": 1, "entryCount": 1, "entries": [],
+          "trashDir": batch2, "restoreDir": root, "failures": [], "warnings": [],
+          "error": "", "operationId": op2, "status": "success", "kept": []}, 0),
+    ])
+    panel = _panel(page)
+
+    panel.start()
+    panel.start()  # empty：last 仍指 op1
+    assert panel.record()["lastTrashDir"] == batch1
+    panel.start()  # 新成功批次：last 改指 op2
+
+    rec = panel.record()
+    assert (rec["status"], rec["operationId"], rec["count"]) == ("success", op2, 1)
+    assert rec["lastTrashDir"] == batch2 and rec["lastOperationId"] == op2
+    assert "restore" not in rec, "新批次的记录不能带上一批的撤销结论"
+
+    panel.restore_last()
+    assert len(calls) == 6
+    assert _args(calls[5]) == ["--folder", root, "--restore", batch2, "--json"]
+    assert panel.record()["restore"]["status"] == "success"
+    assert _undo_button(panel.result()).disabled is True
+
+
+def _restore_payload(root, batch, operation_id=OP, **over):
+    data = {"ok": True, "command": "cleantemp", "mode": "restore", "dryRun": False,
+            "root": root, "count": 1, "entryCount": 1, "entries": [],
+            "trashDir": batch, "restoreDir": root, "failures": [], "warnings": [],
+            "error": "", "operationId": operation_id, "status": "success",
+            "kept": []}
+    data.update(over)
+    return data
+
+
+def test_cleanup_undo_then_empty_does_not_revive_undone_batch(tmp_path, monkeypatch):
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    page = make_page(tmp_path / "期A")
+    batch = root + "/.toolbox-trash/期A-" + OP
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, count=1, entries=[{"path": "a.aux"}]), 0),
+        (_payload(root, count=1, entryCount=1, operationId=OP, trashDir=batch,
+                  entries=[{"path": "a.aux", "action": "move"}], status="success"), 0),
+        (_restore_payload(root, batch), 0),
+        (_payload(root, dryRun=True, status="empty"), 0),
+    ])
+    panel = _panel(page)
+
+    panel.start()
+    panel.restore_last()  # 撤销成功：该批次用完
+    rec = panel.record()
+    assert rec["restore"]["status"] == "success"
+    assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
+    assert _undo_button(panel.result()).disabled is True
+
+    panel.start()  # 再清理得 empty：不得把刚撤销的批次当成「上次可撤销」
+
+    rec = panel.record()
+    assert (rec["status"], rec["count"]) == ("empty", 0)
+    assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
+    assert not rec.get("lastCount") and not rec.get("lastFinishedAt")
+    assert "restore" not in rec
+    texts = _texts(panel.result())
+    assert not any("仍可撤销" in text for text in texts), texts
+    assert any("没有可清理的临时文件（未创建批次，也没有撤销）。" in text
+               for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is True
+
+    panel.restore_last()  # 无目标：不得再向已撤销批次发 restore
+    assert len(calls) == 4
+    assert page.app.toasts[-1] == "本次没有可清理的临时文件，无需撤销"
+
+
+def test_cleanup_empty_undo_then_empty_keeps_undone_batch_dead(tmp_path, monkeypatch):
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    page = make_page(tmp_path / "期A")
+    batch = root + "/.toolbox-trash/期A-" + OP
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, count=1, entries=[{"path": "a.aux"}]), 0),
+        (_payload(root, count=1, entryCount=1, operationId=OP, trashDir=batch,
+                  entries=[{"path": "a.aux", "action": "move"}], status="success"), 0),
+        (_payload(root, dryRun=True, status="empty"), 0),
+        (_restore_payload(root, batch), 0),
+        (_payload(root, dryRun=True, status="empty"), 0),
+    ])
+    panel = _panel(page)
+
+    panel.start()
+    panel.start()  # empty：上一批次仍可撤销
+    assert panel.record()["lastTrashDir"] == batch
+    panel.restore_last()  # 撤销的是上次批次
+    rec = panel.record()
+    assert rec["restore"]["status"] == "success"
+    assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
+
+    panel.start()  # 再 empty：已撤销批次不得复活
+
+    rec = panel.record()
+    assert (rec["status"], rec["count"]) == ("empty", 0)
+    assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
+    assert "restore" not in rec
+    texts = _texts(panel.result())
+    assert not any("仍可撤销" in text for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is True
+    panel.restore_last()
+    assert len(calls) == 5
+    assert page.app.toasts[-1] == "本次没有可清理的临时文件，无需撤销"
+
+
+def test_cleanup_empty_does_not_inherit_undone_persisted_last(tmp_path, monkeypatch):
+    """持久化记录里 restore 成功与 last 并存（旧版/异常状态）时也不得复活。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    page = make_page(tmp_path / "期A")
+    batch = root + "/.toolbox-trash/期A-" + OP
+    page.app.store.set("issue_state", {root: {"cleanup": {
+        "schema": 1, "root": root, "operationId": "", "status": "empty",
+        "count": 0, "entryCount": 0, "entries": [], "kept": [],
+        "failures": [], "warnings": [], "error": "", "trashDir": "",
+        "startedAt": "2026-11-07 12:00:00", "finishedAt": "2026-11-07 12:00:01",
+        "lastOperationId": OP, "lastTrashDir": batch, "lastCount": 1,
+        "lastFinishedAt": "2026-11-07 11:00:02",
+        "restore": {"status": "success", "count": 1, "failures": [],
+                    "error": "", "at": "2026-11-07 12:00:02"},
+    }}})
+    calls = _install(monkeypatch, page, [
+        (_payload(root, dryRun=True, status="empty"), 0),
+    ])
+    panel = _panel(page)
+
+    panel.start()
+
+    rec = panel.record()
+    assert (rec["status"], rec["count"]) == ("empty", 0)
+    assert not rec.get("lastTrashDir") and not rec.get("lastOperationId")
+    assert not rec.get("lastCount") and not rec.get("lastFinishedAt")
+    texts = _texts(panel.result())
+    assert not any("仍可撤销" in text for text in texts), texts
+    assert any("没有可清理的临时文件（未创建批次，也没有撤销）。" in text
+               for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is True
+
+    panel.restore_last()
+    assert len(calls) == 1
+    assert page.app.toasts[-1] == "本次没有可清理的临时文件，无需撤销"
+

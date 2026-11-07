@@ -676,6 +676,77 @@ def _rmtree_quiet(path: str) -> None:
         pass
 
 
+def _ensure_trash_parent(path: str) -> list[str]:
+    """创建回收区目标父目录，返回本次新建的目录（由浅到深）。"""
+    missing: list[str] = []
+    cur = path
+    while cur and not os.path.isdir(cur):
+        missing.append(cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    created: list[str] = []
+    for d in reversed(missing):
+        try:
+            os.mkdir(d)
+        except FileExistsError:
+            continue
+        except OSError:
+            for made in reversed(created):
+                try:
+                    os.rmdir(made)
+                except OSError:
+                    pass
+            raise
+        created.append(d)
+    return created
+
+
+def _discard_trash_copy(dst: str, created: list[str], dst_existed: bool) -> None:
+    """失败回滚：删除刚复制进回收区的副本（及本次新建的空父目录）。"""
+    if not dst_existed and os.path.lexists(dst):
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+    for d in reversed(created):
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+
+
+def _move_into_trash(src: str, dst: str) -> None:
+    """把 src 搬进回收区 dst；任何失败都不在回收区留下未入账文件。
+
+    优先 os.rename（同盘、原子）。rename 不可用时回退 copy2 + unlink；
+    若 unlink 失败（如源目录只读不可写），先删除刚复制到 dst 的副本和本次
+    新建的空父目录再抛错 —— 保证失败项不会作为孤儿副本留在批次 payload 里。
+    """
+    parent = os.path.dirname(dst)
+    created = _ensure_trash_parent(parent) if parent else []
+    dst_existed = os.path.lexists(dst)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError:
+        pass  # 跨设备/rename 被拒：回退 copy + unlink
+    try:
+        shutil.copy2(src, dst)
+    except OSError:
+        _discard_trash_copy(dst, created, dst_existed)
+        raise
+    try:
+        os.unlink(src)
+    except OSError as exc:
+        _discard_trash_copy(dst, created, dst_existed)
+        code = exc.errno if exc.errno is not None else 0
+        raise OSError(
+            code, f"已复制到回收区但无法删除源文件（已回滚副本）：{exc}"
+        ) from exc
+
+
 def _new_operation_id() -> str:
     stamp = _dt.datetime.now().strftime("%Y_%m_%d_%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
@@ -854,8 +925,7 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
                 raise
             dst = os.path.join(trash_root, rel)
             try:
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.move(full, dst)
+                _move_into_trash(full, dst)
             except OSError as exc:
                 entry["status"] = "failed"
                 failures.append({"path": rel, "error": str(exc)})

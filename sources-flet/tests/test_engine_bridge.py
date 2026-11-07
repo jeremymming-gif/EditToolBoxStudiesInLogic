@@ -1,7 +1,9 @@
 """engine_bridge 单元测试：argv 语义 / 摘要判定 / 产出路径 / 环境准备。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -156,3 +158,54 @@ def test_engine_call_to_dict(engine):
     assert payload["entry"] == "checkbib.py"
     assert payload["label"]
     assert json.dumps(payload, ensure_ascii=False)
+
+
+# ── run_call 读取超长单行（大期 --json 实测 ~255KB > asyncio 默认 64KiB） ──
+
+def _py_call(script: str) -> EB.EngineCall:
+    """用当前解释器当子进程，直接执行一段 Python，避免依赖 Engine 桩。"""
+    return EB.EngineCall(entry="stub.py", argv=[sys.executable, "-c", script],
+                         label="stub")
+
+
+def test_run_call_reads_single_line_over_64k():
+    """单行 >64KiB 的 JSON 必须完整读完：rc0、on_line 只收一行且可解析。"""
+    payload = {
+        "status": "success",
+        "operationId": "2026_11_07_120000-deadbeef",
+        "entries": [{"path": f"01 作者/文章{i}.aux", "action": "move"}
+                    for i in range(1200)],
+        "blob": "x" * 70000,
+    }
+    script = f"import json; print(json.dumps({payload!r}, ensure_ascii=False))"
+
+    lines: list[str] = []
+    code = asyncio.run(EB.run_call(_py_call(script), on_line=lines.append))
+
+    assert code == 0
+    assert len(lines) == 1, f"长单行共收到 {len(lines)} 行"
+    assert len(lines[0].encode("utf-8")) > 64 * 1024
+    assert json.loads(lines[0]) == payload
+
+
+def test_run_call_reads_multiline_with_oversized_line():
+    """多行混合：普通行、超长 JSON 行、末尾无换行行都不能丢/不能串。"""
+    payload = {"status": "success", "count": 3, "blob": "y" * 90000}
+    script = (
+        "import json, sys\n"
+        "print('start')\n"
+        f"print(json.dumps({payload!r}, ensure_ascii=False))\n"
+        "print('done')\n"
+        "sys.stdout.write('tail-no-newline')"
+    )
+
+    lines: list[str] = []
+    code = asyncio.run(EB.run_call(_py_call(script), on_line=lines.append))
+
+    assert code == 0
+    assert len(lines) == 4, lines[0][:80] if lines else "无输出"
+    assert lines[0] == "start"
+    assert len(lines[1].encode("utf-8")) > 64 * 1024
+    assert json.loads(lines[1]) == payload
+    assert lines[2] == "done"
+    assert lines[3] == "tail-no-newline"

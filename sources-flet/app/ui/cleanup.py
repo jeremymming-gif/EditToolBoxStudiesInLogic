@@ -10,6 +10,11 @@ cleantemp.py --restore TRASH --json），不重新扫描/解析 TeX，也不从 
 人类日志推断数量。结果绑 root + operationId（撤销回传本批次 trashDir），
 持久化在 app.store["issue_state"][root]["cleanup"]，刷新/离页/重启后仍能显示
 与撤销；晚到的回调只写它自己那一期的记录，不会把旧期结果显示到新一期。
+
+空候选（empty）/预检失败（preflight_failed）本身没有本次批次，但记录里用
+lastOperationId/lastTrashDir/lastCount/lastFinishedAt 保留上一可撤销批次：
+当前 status/count/entries 仍真实显示本次空结果，撤销按钮改指「上次清理」；
+只有 success/partial/cancelled 带本次 trashDir 时才把 last 指向本次批次。
 """
 from __future__ import annotations
 
@@ -154,6 +159,70 @@ class CleanupPanel:
             except TypeError:
                 save()
 
+    @staticmethod
+    def _restore_of(rec: dict) -> dict:
+        restore = rec.get("restore") if isinstance(rec, dict) else None
+        return dict(restore) if isinstance(restore, dict) else {}
+
+    @staticmethod
+    def _restorable(rec: dict) -> bool:
+        return (str(rec.get("status") or "") in ("success", "partial", "cancelled")
+                and bool(str(rec.get("trashDir") or "")))
+
+    @staticmethod
+    def _last_batch(rec: dict) -> tuple:
+        """(lastTrashDir, lastOperationId, lastCount, lastFinishedAt)。"""
+        return (str(rec.get("lastTrashDir") or ""),
+                str(rec.get("lastOperationId") or ""),
+                int(rec.get("lastCount") or 0),
+                str(rec.get("lastFinishedAt") or ""))
+
+    def _undo_target(self, rec: dict) -> tuple:
+        """撤销目标：(trashDir, operationId, 是否上次批次)；无目标返回空串。"""
+        if str(self._restore_of(rec).get("status") or "") == "success":
+            return ("", "", False)
+        if self._restorable(rec):
+            return (str(rec.get("trashDir") or ""),
+                    str(rec.get("operationId") or ""), False)
+        last_trash, last_op, _count, _fin = self._last_batch(rec)
+        if last_trash and last_trash != str(rec.get("trashDir") or ""):
+            return (last_trash, last_op, True)
+        return ("", "", False)
+
+    def _stamp_last(self, rec: dict, root: str) -> dict:
+        """维护「上一可撤销批次」：本次有批次→last 指本次；本次空→沿用上批。"""
+        if self._restorable(rec):
+            rec["lastOperationId"] = str(rec.get("operationId") or "")
+            rec["lastTrashDir"] = str(rec.get("trashDir") or "")
+            rec["lastCount"] = int(rec.get("count") or 0)
+            rec["lastFinishedAt"] = str(rec.get("finishedAt") or "")
+            rec.pop("restore", None)
+            return rec
+        prev = self.record(root)
+        prev_restore = self._restore_of(prev)
+        last_trash, last_op, last_count, last_fin = self._last_batch(prev)
+        if not last_trash and self._restorable(prev) \
+                and str(prev_restore.get("status") or "") != "success":
+            last_trash = str(prev.get("trashDir") or "")
+            last_op = str(prev.get("operationId") or "")
+            last_count = int(prev.get("count") or 0)
+            last_fin = str(prev.get("finishedAt") or "")
+        if not last_trash:
+            return rec
+        if str(prev_restore.get("status") or "") == "success":
+            # 已撤销的批次不得在后续 empty 结果里复活：restore 成功只会针对
+            # prev 的本次批次（trashDir）或上次批次（lastTrashDir）。
+            restored = str(prev.get("trashDir") or "") or str(prev.get("lastTrashDir") or "")
+            if not restored or last_trash == restored:
+                return rec
+        rec["lastOperationId"] = last_op
+        rec["lastTrashDir"] = last_trash
+        rec["lastCount"] = last_count
+        rec["lastFinishedAt"] = last_fin
+        if prev_restore and str(prev_restore.get("status") or "") != "success":
+            rec["restore"] = dict(prev_restore)
+        return rec
+
     def _mark(self, event: str, **fields) -> None:
         mark = getattr(self.page, "mark", None)
         if callable(mark):
@@ -271,8 +340,16 @@ class CleanupPanel:
             rows.append(C.inline_note(f"实际回收 {count} 个文件（移入回收区，可撤销）。",
                                       t, "ok"))
         elif status == "empty":
-            rows.append(C.inline_note("没有可清理的临时文件（未创建批次，也没有撤销）。",
-                                      t, "info"))
+            if self._last_batch(rec)[0]:
+                rows.append(C.inline_note(
+                    "没有可清理的临时文件（未创建新批次）；上次清理批次仍可撤销。",
+                    t, "info"))
+            elif str(self._restore_of(rec).get("status") or "") == "success":
+                rows.append(C.inline_note(
+                    "没有可清理的临时文件（未创建新批次）；上次清理已撤销。", t, "info"))
+            else:
+                rows.append(C.inline_note(
+                    "没有可清理的临时文件（未创建批次，也没有撤销）。", t, "info"))
         elif status == "partial":
             rows.append(C.inline_note(
                 f"实际回收 {count} 个文件，{len(failures)} 项失败；已回收的条目仍可撤销。",
@@ -338,7 +415,8 @@ class CleanupPanel:
         count = int(restore.get("count") or 0)
         failures = _norm_failures(restore.get("failures"))
         if status == "success":
-            return [C.inline_note(f"已撤销本次清理：恢复 {count} 个文件。", t, "ok")]
+            scope = "本次清理" if self._restorable(rec) else "上次清理"
+            return [C.inline_note(f"已撤销{scope}：恢复 {count} 个文件。", t, "ok")]
         if status == "empty":
             return [C.text("该批次没有可恢复的条目（可能已撤销过）。", t, "caption",
                            t.palette.text_faint)]
@@ -355,19 +433,20 @@ class CleanupPanel:
                               t, "error")]
 
     def _undo_enabled(self, rec: dict) -> bool:
-        status = str(rec.get("status") or "")
-        trash = str(rec.get("trashDir") or "")
-        if status not in ("success", "partial", "cancelled") or not trash:
-            return False
-        restore = rec.get("restore") if isinstance(rec.get("restore"), dict) else {}
-        return str(restore.get("status") or "") != "success"
+        return bool(self._undo_target(rec)[0])
 
     def _action_rows(self, rec: dict) -> list:
         t = self.page.t
-        restore = rec.get("restore") if isinstance(rec.get("restore"), dict) else {}
-        restored = str(restore.get("status") or "") == "success"
+        restored = str(self._restore_of(rec).get("status") or "") == "success"
+        _trash, _op, is_last = self._undo_target(rec)
+        if restored:
+            label = "已撤销本次清理" if self._restorable(rec) else "已撤销上次清理"
+        elif is_last:
+            label = "撤销上次清理"
+        else:
+            label = "撤销本次清理"
         undo = C.secondary_button(
-            "已撤销本次清理" if restored else "撤销本次清理",
+            label,
             lambda e: self.restore_last(), t,
             icon="RESTORE", disabled=not self._undo_enabled(rec),
             height=t.px(28))
@@ -590,7 +669,7 @@ class CleanupPanel:
             rec["error"] = str(lines[-1])
         if status == "failed" and not rec["trashDir"]:
             rec["count"] = 0
-        return rec
+        return self._stamp_last(rec, root)
 
     def _newest_batch(self, root: str, started: float):
         try:
@@ -627,10 +706,12 @@ class CleanupPanel:
         if not rec or rec.get("root") != root:
             self._toast("当前期目录没有清理结果")
             return
-        trash = str(rec.get("trashDir") or "")
-        if not self._undo_enabled(rec):
+        trash, operation_id, is_last = self._undo_target(rec)
+        if not trash:
             if str(rec.get("status") or "") == "empty":
                 self._toast("本次没有可清理的临时文件，无需撤销")
+            elif str(self._restore_of(rec).get("status") or "") == "success":
+                self._toast("已撤销，无需再撤销")
             else:
                 self._toast("本次没有可撤销的批次")
             return
@@ -643,11 +724,10 @@ class CleanupPanel:
         self._lines = []
         self._mark_running()
         self._mark("cleanup_restore_start", root=root, trashDir=trash,
-                   operationId=rec.get("operationId"))
+                   operationId=operation_id, last=bool(is_last))
         runner = getattr(getattr(self.page, "page", None), "run_task", None)
         if callable(runner):
-            runner(self._restore_execute, token, root, trash,
-                   rec.get("operationId") or "")
+            runner(self._restore_execute, token, root, trash, operation_id or "")
 
     async def _restore_execute(self, token, root, trash, operation_id) -> None:
         started = time.time()
@@ -675,11 +755,11 @@ class CleanupPanel:
         if status not in _RESTORE_STATUSES:
             status = "success" if (code == 0 and payload.get("ok")) else "failed"
         rec = self.record(root)
-        if not rec or str(rec.get("trashDir") or "") != trash:
-            rec = rec or {"schema": 1, "root": root, "operationId": operation_id,
-                          "status": "success", "count": 0, "entries": [],
-                          "kept": [], "failures": [], "error": "",
-                          "trashDir": trash}
+        if not rec:
+            rec = {"schema": 1, "root": root, "operationId": operation_id,
+                   "status": "success", "count": 0, "entries": [],
+                   "kept": [], "failures": [], "error": "",
+                   "trashDir": trash}
         restore = {
             "status": status,
             "count": int(payload.get("count") or 0),
@@ -689,6 +769,10 @@ class CleanupPanel:
         }
         rec = dict(rec)
         rec["restore"] = restore
+        if status == "success":
+            # 撤销成功即用完该批次：清掉 last，按钮置灰，不再允许重复恢复。
+            for key in ("lastOperationId", "lastTrashDir", "lastCount", "lastFinishedAt"):
+                rec.pop(key, None)
         self._save(rec, root)
         self._drop_phase(token)
         current = token == self._token and self.root == root
@@ -729,6 +813,14 @@ class CleanupPanel:
         trash = str(rec.get("trashDir") or "")
         rows.append(C.kv_row(t, "回收区", trash or "—", mono=True))
         rows.append(C.kv_row(t, "实际回收", f"{int(rec.get('count') or 0)} 个文件"))
+        last_trash, last_op, last_count, last_fin = self._last_batch(rec)
+        if last_trash and last_trash != trash:
+            rows.append(C.section_label("上次可撤销批次", t))
+            rows.append(C.kv_row(t, "批次号", last_op or "—", mono=True))
+            rows.append(C.kv_row(t, "回收区", last_trash, mono=True))
+            rows.append(C.kv_row(t, "实际回收", f"{last_count} 个文件"))
+            if last_fin:
+                rows.append(C.kv_row(t, "完成于", last_fin))
         entries = _norm_entries(rec.get("entries"))
         if entries:
             rows.append(C.section_label(f"已回收条目（{len(entries)}）", t))
@@ -797,6 +889,7 @@ class CleanupPanel:
             stage="runall", lines=[str(x) for x in (lines or [])])
         if not rec.get("trashDir") and artifact:
             rec["trashDir"] = str(artifact)
+            self._stamp_last(rec, root)
         self._save(rec, root)
         # 整期串行里 cleantemp 没有走 _finish；这里补真实结束态，避免状态条停在 running。
         try:

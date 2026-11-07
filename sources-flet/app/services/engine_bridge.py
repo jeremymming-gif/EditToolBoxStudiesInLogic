@@ -25,6 +25,11 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+# 引擎 --json 结果可能是一行超大 JSON（大期实测 ~255KB）。asyncio 的
+# StreamReader 默认单行上限 64KiB，超过会抛 ValueError 并让 GUI 误判 failed。
+# 统一放大到 16MiB；实际读取再用 read(64KiB) 分块兜底，见 run_call。
+STREAM_LIMIT = 16 * 1024 * 1024
+
 _MAC_TOOL_DIRS = (
     "/Library/TeX/texbin",
     "/opt/homebrew/bin",
@@ -1352,6 +1357,7 @@ async def run_call(
                else asyncio.subprocess.DEVNULL),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        limit=STREAM_LIMIT,
         **kwargs,
     )
     if on_proc is not None:
@@ -1365,11 +1371,22 @@ async def run_call(
             pass
     try:
         assert proc.stdout is not None
+        # 不用 readline()：它受 StreamReader 的 limit 约束（默认 64KiB），
+        # 引擎 --json 的超长单行会直接抛 ValueError。按块读取后自行切行，
+        # 既没有单行上限，也保证 on_line 每次收到的是完整一行。
+        buffer = b""
         while True:
-            raw = await proc.stdout.readline()
-            if not raw:
+            chunk = await proc.stdout.read(64 * 1024)
+            if not chunk:
                 break
-            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            buffer += chunk
+            while b"\n" in buffer:
+                raw, buffer = buffer.split(b"\n", 1)
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if on_line is not None:
+                    on_line(line)
+        if buffer:
+            line = buffer.decode("utf-8", errors="replace").rstrip("\r\n")
             if on_line is not None:
                 on_line(line)
         return await proc.wait()
