@@ -690,6 +690,21 @@ def cleantemp_call(*, folder: str, mode: str = "aux", dry_run: bool = False,
     return _call("cleantemp.py", args, label)
 
 
+def cleantemp_daily_call(*, folder: str, dry_run: bool = False) -> EngineCall:
+    """清理页唯一日常入口（INTERFACE-DAILY §1/§8）：`--mode daily --json`。
+
+    daily 只回收（移入 `<期目录>/.toolbox-trash/<批次>/`，可撤销），
+    不接受永久删除/清空回收站/全部报告等参数；不再受旧 mode / dry_run /
+    tocwork / all_reports 设置影响。`dry_run=True` 只扫描（零写入），用于点击后的
+    自动校验：空候选/预检失败都不进入真跑，也就不会建批次。
+    旧 `cleantemp_call` 保留给旧批次撤销（`--restore`）与兼容测试。
+    """
+    args = ["--folder", folder, "--mode", "daily"]
+    _append_flag(args, "--dry-run", dry_run)
+    args.append("--json")
+    return _call("cleantemp.py", args, "扫描临时文件" if dry_run else "清理临时文件")
+
+
 def dirpush_call(
     *, issue: str, out_root: str = "", with_en_toc: bool = False,
     annual: bool = False, year: str = "", include_issues: str = "", dry_run: bool = False,

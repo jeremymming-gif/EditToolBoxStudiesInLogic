@@ -29,6 +29,7 @@ from ui import bib_ops_health as BOH
 from ui import bib_settings as BS
 from ui import bib_write as BW
 from ui import checks as CK
+from ui import cleanup as CLEANUP
 from ui import components as C
 from ui import dirpush as DIRPUSH
 from ui import metadata_form as MF
@@ -1240,8 +1241,8 @@ class IssuePage(BasePage):
          "desc": "逐篇 xelatex ×3（含 biber）；跳过 000；同名 PDF 覆盖。"},
         {"key": "merge", "title": "合并 PDF", "icon": "PICTURE_AS_PDF",
          "desc": "按篇序合并整期 PDF；可插编委页 / 封底 / 书签。"},
-        {"key": "cleantemp", "title": "删除临时文件", "icon": "DELETE_SWEEP_OUTLINED",
-         "desc": "把 aux / 日志 / 时间戳 tex / 目录结果 / 旧信息检查移入期目录/.toolbox-trash；可恢复，不永久删除。"},
+        {"key": "cleantemp", "title": "清理临时文件", "icon": "DELETE_SWEEP_OUTLINED",
+         "desc": "一次点击自动校验并回收 aux / 日志 / 中间件 / 时间戳 tex / 目录结果 / 旧信息检查；移入回收区，可撤销。"},
         {"key": "dirpush", "title": "推送目录摘要", "icon": "IOS_SHARE",
          "desc": "生成《目录摘要》docx 并写入推送根；只预演时不动文件。"},
     ]
@@ -1250,7 +1251,7 @@ class IssuePage(BasePage):
         "toc": ("生成目录", "重新生成"),
         "compileall": ("开始编译", "重新编译"),
         "merge": ("合并 PDF", "重新合并"),
-        "cleantemp": ("预览清理", "开始清理…"),
+        "cleantemp": ("清理临时文件", "重新清理"),
         "dirpush": ("生成摘要", "重新推送"),
     }
     #: 批 116：4 个页内视图（顺序即栏内顺序；`steps` 顺序即详情区块顺序）。
@@ -1305,6 +1306,8 @@ class IssuePage(BasePage):
         self._toc_payload_this_run = False
         self._toc_box = None
         self._ct_preview: dict = {}
+        # T3：清理页单一入口（扫描→清理→结果/撤销/明细）；旧 _ct_preview 仅兼容。
+        self._cleanup = CLEANUP.CleanupPanel(self)
         self._detail_status = None
         self._detail_primary = None
         self._shell = None
@@ -1925,11 +1928,8 @@ class IssuePage(BasePage):
         state = self._state_of(key)
         running = self.app.running and self._state_of(key) == "running"
         if key == "cleantemp":
-            if running:
-                return "运行中…" if self._preview_valid() else "取消预演"
-            if ASM.cleantemp_dry_run(self):
-                return "预览清理"
-            return "开始清理"
+            # T3 单入口：文案只反映真实阶段（扫描/清理/撤销），没有三档/预演态。
+            return self._cleanup.phase_label()
         if key == "compileall" and running:
             return "停止"
         if key == "infocheck" and running:
@@ -1984,7 +1984,8 @@ class IssuePage(BasePage):
             elif key == "infocheck":
                 self._confirm_stop("停止检查？已扫描的部分不会写入报告。")
             else:
-                self.app.toast("运行中，完成后才能切换")
+                self.app.toast("正在运行；点页头「停止」可中断" if key == "cleantemp"
+                               else "运行中，完成后才能切换")
             return
         if not self.field("issue_dir"):
             self.app.toast("先选择期目录")
@@ -2002,7 +2003,7 @@ class IssuePage(BasePage):
                 self.app.toast(err)
                 return
         if key == "cleantemp":
-            self._cleantemp_primary()
+            self._cleanup.start()
             return
         if (key == "toc" and not ASM._toc_text_only(self)
                 and not getattr(self.app, "auto_confirm", False)):
@@ -2069,8 +2070,8 @@ class IssuePage(BasePage):
         skip = {"done": True}
         rows: list = []
         danger = C.notice_bar(
-            "「清理临时文件」会真实删除（移入回收站，可恢复）；未勾选「只预演」时不再确认。",
-            t, "error")
+            "勾选「清理临时文件」= 自动校验并回收（移入回收区，可撤销）；"
+            "默认不勾选，整期串行不会清理。", t, "warn")
         danger.visible = bool(chosen.get("cleantemp"))
         self._runall_danger = danger
         for index, step in enumerate(self.STEPS):
@@ -2080,7 +2081,7 @@ class IssuePage(BasePage):
                 rows.append(danger)
             rows.append(C.option_row(
                 step["title"],
-                "默认不跑 · 会删文件" if index >= 4 else "整期装配",
+                "默认不跑 · 显式勾选才执行" if index >= 4 else "整期装配",
                 t, checked=chosen[step["key"]],
                 on_change=lambda e, k=step["key"]: (
                     chosen.__setitem__(k, bool(e.control.value)),
@@ -2182,7 +2183,7 @@ class IssuePage(BasePage):
         elif key == "merge":
             parts.append(self._merge_result())
         elif key == "cleantemp":
-            parts.append(self._cleantemp_result())
+            parts.append(self._cleanup.result())
         elif key == "dirpush":
             parts.append(self._dirpush_result())
         return ft.Column(spacing=t.sp("2"), controls=parts)
@@ -2623,45 +2624,8 @@ class IssuePage(BasePage):
         return [str(line) for line in lines[-n:]]
 
     def _cleantemp_result(self) -> ft.Control:
-        t = self.t
-        preview = self._ct_preview or {}
-        if not preview:
-            return self._empty_result("尚未预演", "先点「预览清理」看数量；预演不动磁盘。")
-        if preview.get("ok"):
-            rows = [C.section_label("清理结果", t), C.hairline(t),
-                    C.text(f"预演：{preview.get('count', 0)} 项待清理 · "
-                           f"{str(preview.get('ts', ''))[11:16]}", t, "caption",
-                           t.palette.text_muted),
-                    C.text("范围：aux/日志 / .toolbox-tmp 中间件 / 时间戳中英 tex / "
-                           "目录结果 JSON / 旧《信息检查》报告（默认保留最新一组）；"
-                           "可恢复，最终 tex/pdf 与 目录设置.json 不动。", t, "caption",
-                           t.palette.text_faint, max_lines=3)]
-            items = [str(x) for x in (preview.get("items") or []) if str(x).strip()]
-            if not items:
-                lines = [str(x) for x in (preview.get("lines") or []) if str(x).strip()]
-                items = [line for line in lines
-                         if "Will move" in line or "将移入" in line][:8]
-            for item in items[:8]:
-                rows.append(C.text(f"· {os.path.basename(item) or item}", t, "caption",
-                                   t.palette.text_faint, max_lines=1,
-                                   overflow=ft.TextOverflow.ELLIPSIS))
-            if items:
-                rows.append(C.text(f"清单 {len(items)} 项（完整清单在日志）", t, "caption",
-                                   t.palette.text_faint))
-            if preview.get("trash"):
-                rows.append(C.text(f"目标：{preview.get('trash')}", t, "caption",
-                                   t.palette.text_faint))
-            return ft.Column(spacing=t.sp("1"), controls=rows)
-        tail = self._tail_lines("cleantemp", 3)
-        rows = [C.section_label("清理结果", t), C.hairline(t),
-                C.inline_note(f"上次预演失败（退出码 {preview.get('code')}）："
-                              f"{preview.get('error') or '看日志'}", t, "error")]
-        if tail:
-            rows.append(C.text("末 3 行：", t, "caption", t.palette.text_faint))
-            rows += [C.text(line, t, "mono", t.palette.error, max_lines=1,
-                            overflow=ft.TextOverflow.ELLIPSIS) for line in tail]
-        rows.append(C.text_button("展开日志看全文", lambda e: self._expand_log(), t))
-        return ft.Column(spacing=t.sp("1"), controls=rows)
+        """兼容旧调用：结果区已由 CleanupPanel 自更新（绑 root+operationId）。"""
+        return self._cleanup.result()
 
     # ── infocheck 交互 ─────────────────────────────────────────────────
     def _set_log_filter(self, key: str) -> None:
@@ -2734,7 +2698,10 @@ class IssuePage(BasePage):
         if not issue:
             return
         data = dict(self.app.store.get("issue_state", {}) or {})
-        data[issue] = {
+        # T3：cleanup（结果/撤销）由 CleanupPanel 独立维护，这里只更新状态字段，
+        # 不能整条覆盖，否则刷新/重启后丢掉本项目的结果与可撤销批次。
+        entry = dict(data.get(issue) or {})
+        entry.update({
             "schema": 1,
             "last_step": self.selected,
             "statuses": {
@@ -2742,7 +2709,8 @@ class IssuePage(BasePage):
                       else {"state": str(value)})
                 for key, value in self._status.items()
             },
-        }
+        })
+        data[issue] = entry
         self.app.store.set("issue_state", data)
         save = getattr(self.app, "save_settings", None)
         if callable(save):
@@ -2808,6 +2776,9 @@ class IssuePage(BasePage):
         self._toc_payload_this_run = False
         self._toc_box = None
         self._ct_preview = {}
+        panel = getattr(self, "_cleanup", None)
+        if panel is not None:
+            panel.reset()
         self._prep_pages = None
         self._prep_box = None
         self._step_tail = {}
@@ -3242,77 +3213,8 @@ class IssuePage(BasePage):
         return ASM.cleantemp_preview_ok(self)
 
     def _cleantemp_primary(self) -> None:
-        if ASM.cleantemp_dry_run(self):
-            self._expand_log()
-            self.page.run_task(ASM._preview_task, self)
-            return
-        if not self._preview_valid():
-            # P0（B 包）：预演失败时「开始清理」曾被永久拦死。预演只是数量提示，
-            # 真正的安全闸是下面的危险确认框（档位 + 目标 + 输入「清理」）。
-            self._open_clean_confirm()
-            return
-        self._open_clean_confirm()
-
-    def _open_clean_confirm(self) -> None:
-        t = self.t
-        preview = self._ct_preview or {}
-        issue = self.field("issue_dir")
-        mode = ASM.cleantemp_mode(self)
-        label = ASM.CLEANTEMP_MODES.get(mode, {}).get("title", mode)
-        confirm_word = {"input": ""}
-        can_go = {"ok": mode != "workspace"}
-        def _on_confirm_word(e) -> None:
-            value = e.control.value or ""
-            confirm_word["input"] = value
-            can_go["ok"] = value.strip() == "清理"
-            btn.disabled = not can_go["ok"]
-            try:
-                btn.update()
-            except Exception:  # noqa: BLE001 —— 构建期/未挂载
-                pass
-
-        field = C.text_field(t, hint_text="输入「清理」以继续", width=t.px(200),
-                             on_change=_on_confirm_word)
-        btn = C.danger_button("移入回收目录", lambda e: self._clean_now(), t,
-                              disabled=not can_go["ok"])
-        target = f"{issue}/.toolbox-trash/（新建目录）"
-        target_box = ft.SelectionArea(content=ft.Container(
-            padding=C._pad(t, 8, 6, 8, 6), bgcolor=t.palette.surface_2,
-            border_radius=t.radius("sm"),
-            content=C.text(target, t, "mono", t.palette.text, max_lines=None)))
-        rows = [
-            C.kv_row(t, "档位", f"{label} · {preview.get('count', 0)} 项"),
-            ft.Column(spacing=t.px(2), controls=[
-                C.text("目标", t, "caption", t.palette.text_faint),
-                target_box,
-            ]),
-            C.text("数量来自刚才的预演，实际以运行时文件系统为准。", t, "caption",
-                   t.palette.text_muted),
-        ]
-        if mode == "workspace":
-            rows.append(field)
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Row(
-                spacing=0,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    C.text("开始清理？", t, "h2"),
-                    ft.Container(expand=True),
-                    C.icon_button("CLOSE", "关闭", lambda e: C.dismiss_top_dialog(self.page), t),
-                ]),
-            content=ft.Container(width=t.px(520),
-                                 content=ft.Column(rows, spacing=t.sp("1"),
-                                                   scroll=C.scrollbar(t))),
-            actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(self.page), t),
-                     btn],
-        )
-        C.show_dialog(self.page, dialog)
-
-    def _clean_now(self) -> None:
-        C.dismiss_top_dialog(self.page)
-        self._ct_preview = {}
-        ASM.run_cleantemp_confirmed(self)
+        """T3 单入口：点击即自动扫描校验 + 清理（不再有预演闸/三档/确认词）。"""
+        self._cleanup.start()
 
     # ── 兼容旧测试/旧入口 ──────────────────────────────────────────────
     def prefill(self, issue_dir: str = "", toc_report: str = "") -> None:

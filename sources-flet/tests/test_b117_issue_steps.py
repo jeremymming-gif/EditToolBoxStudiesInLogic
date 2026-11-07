@@ -185,24 +185,27 @@ def test_merge_zero_pages_is_warning_not_success():
 
 
 # ── 10. 清理预演失败：不再拦死清理；失败原因内联末 3 行 ────────────────
-def test_cleantemp_failure_is_inline_and_does_not_block_clean():
+def test_cleantemp_result_is_persisted_and_start_skips_preview():
     page = _issue_page()
-    page._ct_preview = {"ok": False, "code": 2, "error": "引擎没有返回 JSON",
-                        "lines": ["x"]}
-    page._status["cleantemp"] = ASM.StepStatus("error", exit_code=2)
-    page._step_tail["cleantemp"] = ["第一行", "第二行", "末行原因"]
+    root = "/tmp/期目录"
+    page.set_field("issue_dir", root)
+    page.app.store.set("issue_state", {root: {"cleanup": {
+        "schema": 1, "root": root, "operationId": "OP-1", "status": "failed",
+        "count": 0, "entries": [], "kept": [], "failures": [],
+        "warnings": [], "error": "引擎没有返回 JSON", "trashDir": "",
+        "startedAt": "2026-11-07 11:00:00",
+        "finishedAt": "2026-11-07 11:00:01"}}})
     labels = _texts(page._cleantemp_result())
-    assert any("引擎没有返回 JSON" in value for value in labels)
-    assert "末 3 行：" in labels and "末行原因" in labels
-    assert any(isinstance(ctl, ft.TextButton)
-               and str(ctl.content) == "展开日志看全文"
+    assert any("引擎没有返回 JSON" in value for value in labels), labels
+    assert any(isinstance(ctl, ft.TextButton) and str(ctl.content) == "查看明细"
                for ctl in _walk(page._cleantemp_result()))
 
-    page.app.store.set("options.cleantemp_dry_run", False)
-    opened: list[bool] = []
-    page._open_clean_confirm = lambda: opened.append(True)
+    page._ct_preview = {"ok": False, "code": 2, "error": "引擎没有返回 JSON",
+                        "lines": ["x"]}
+    started: list[bool] = []
+    page._cleanup.start = lambda: started.append(True)
     page._cleantemp_primary()
-    assert opened == [True], "预演失败/未预演也能打开危险确认框开始清理"
+    assert started == [True], "T3 单入口不看旧预演结果，点击即自动扫描+清理"
 
 
 # ── 11. 仅生成 tex：生成任务透传 assembly 开关，并提示未落位 ───────────

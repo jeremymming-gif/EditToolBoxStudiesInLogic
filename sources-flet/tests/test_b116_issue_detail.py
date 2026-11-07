@@ -167,7 +167,7 @@ def test_cleantemp_preview_validity_by_issue_and_mode():
     assert ASM.cleantemp_preview_ok(page) is False
 
 
-def test_cleantemp_confirm_dialog_520_and_danger_button():
+def test_cleantemp_single_entry_has_no_confirm_dialog():
     app = _FakeApp()
     page = P.IssuePage(app)
     page.build()
@@ -177,14 +177,12 @@ def test_cleantemp_confirm_dialog_520_and_danger_button():
                         "count": 18, "ts": "2026-11-04 11:04:00"}
     shown: list = []
     app.page.show_dialog = lambda d: shown.append(d)
-    page._open_clean_confirm()
-    assert shown and shown[0].content.width == page.t.px(520)
-    labels = _labels(shown[0])
-    assert any("移入回收目录" in x for x in labels), labels
-    assert any("取消" in x for x in labels), labels
+    assert page._primary_label("cleantemp") == "清理临时文件"
+    page._primary_action("cleantemp")
+    assert shown == [], "T3 单入口点击即自动校验+清理，不再弹危险确认框"
+    assert page._cleanup.phase == "scanning"
 
 
-# ── merge：覆盖确认两出口 ──────────────────────────────────────────
 def test_merge_overwrite_dialog_two_exits(tmp_path):
     app = _FakeApp()
     page = P.IssuePage(app)

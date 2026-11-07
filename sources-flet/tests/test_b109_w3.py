@@ -216,11 +216,13 @@ def test_assembly_step_calls_and_guards(tmp_path, engine):
         ASM.build_step_call(page, "cleantemp")
 
     page.set_field("issue_dir", str(tmp_path))
+    # T3（C13）：旧 mode / dry_run 设置只读兼容，不改变新入口 argv / 范围。
     page.app.store.set("form.cleantemp_mode", "delivery")
     page.app.store.update_options(cleantemp_dry_run=True)
     clean = ASM.build_step_call(page, "cleantemp")
-    assert "--mode" in clean.argv and "delivery" in clean.argv
-    assert "--dry-run" in clean.argv and "--trash" not in clean.argv
+    assert args_of(clean) == ["--folder", str(tmp_path), "--mode", "daily", "--json"]
+    assert "--dry-run" not in clean.argv and "--trash" not in clean.argv
+    assert getattr(clean, "_followup", None) is None, "单入口不再串 tocwork"
     assert ASM.cleantemp_mode(page) == "delivery"
     assert ASM.cleantemp_dry_run(page) is True
 

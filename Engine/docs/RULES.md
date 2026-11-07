@@ -37,6 +37,7 @@
 | 引用/脚注排版规范（《排校手册》） | `编辑笔记/排版手册/排校手册.pdf`、`编辑笔记/排版手册/排版手册源码/edit_handbook.tex`；宏在 `编辑笔记/模板文件/SLCN-MIX.sty` | 本文 §四.5 | 第 33/34 条 |
 | 模板选择与 `\usepackage` 同步 | `slcn/templates.py`（`resolve()` / `sync_package_line()` / `_find_repo_dir()`） | `docs/GUIDE.md`「二、模板选择」 | — |
 | 输出目录命名 / 覆盖判定 / 清理 | `slcn/naming.py`、`convert.py: is_own_product()`、`slcn/clean.py` | `docs/GUIDE.md`「3.1 / 3.2」 | — |
+| **日常清理（daily）：可再生性判据 / 保护面 / 可恢复批次**（B-3xx） | `slcn/clean_daily.py`（`scan_daily()` / `run_daily()` / `restore_daily()`；唯一候选器）、`cleantemp.py --mode daily` | 本文 §十三；`docs/GUIDE.md` §3.12；`docs/ENGINE_API.md` §五 | `tests/test_clean_daily.py`（T1/T2 10 组） |
 | **生成目录（栏目启用/专辑全收/英文栏目标签/两行缩进）** | `slcn/toc.py`（`TocSettings.column_validation_error()` / `is_column_enabled` / `in_toc` / `english_column_title` / `chinese_entry()` / `_log_layout_guard()`）、`slcn/toctemplate.py`（`make_column_block()`）、`toc.py`（CLI 退出码） | 本文 §十二；`docs/ENGINE_API.md` §五 `toc.py` | B-363 / B-364（本节按 2026-11-06 用户拍板） |
 ---
 
@@ -1027,3 +1028,31 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
   下限：中文 −3pt、英文 −6pt（`slcn/tocdelivery.py` 常量）。结果 JSON `singlePageFit` 记
   每份目录的原宏 / 新宏 / 页数 / 总压缩 / 每间距 / 尝试次数；纯 tex 与 `--preview`
   不编译、不出现该字段。重复运行不累计（从原始 tex 重写）。
+
+## 十三、日常清理判据（daily，B-3xx，2026-11-07 清理页）
+
+> 权威实现：`slcn/clean_daily.py`（`scan_daily()` 是候选范围的**唯一**定义；`run_daily()` / `restore_daily()`），
+> `cleantemp.py --mode daily` 只是 CLI 分发。回归：`tests/test_clean_daily.py`（T1/T2 10 组）
+> + 旧 `tests/test_b211_cleanup.py`、`tests/test_b121_toc_workdir.py`。
+> 接口契约（JSON 字段 / status / rc / manifest）见 `docs/ENGINE_API.md` §五；用法见 `docs/GUIDE.md` §3.12。
+
+- **总原则：无法证明可再生，一律保留。** 清理页只有一个日常入口（不再让用户选 aux/delivery/workspace/tocwork 档位）；
+  候选必须是「可识别 + 有再生来源」的文件，拿不准就进 `kept` 并在 JSON 里给出理由。
+  扫描（`scan_daily`）**只读**：不建目录、不写 manifest、不改任何文件。
+- **回收（可再生 / 可识别）**：编译辅助 `.aux .bcf .blg .run.xml .synctex.gz .fls .fdb_latexmk .toc .lof .lot .nav .snm .vrb .bbl-save-error .ds_store`；
+  编译 `.log`（要求有 TeX 引擎 banner，且同目录有同名 `.tex`）；`.bbl`（同目录有 `.bib`，或同目录 `.tex` 声明了 `\addbibresource` / `\bibliography`）；
+  `.out`（有同名 `.tex`）；`.toolbox-tmp/` 下全部文件；期目录根的时间戳 tex `(Chinese Content|contents)_YYYY-MM-DD_HH-MM-SS.tex`；
+  根级 `目录结果.json`；旧信息检查报告组（按 `信息检查YYYY_MM_DD_HHMMSS` 的 stamp 分组，**保留最新一组** `txt`/`json`/`_摘要` 三件组，只回收更旧的组）。
+- **保护（保留）**：最终 `.tex/.pdf`、图、样式、文献、设置；引用闭包（`\input/\include` 递归、`\includegraphics`、`\addbibresource/\bibliography`，
+  含 `\graphicspath` 与间接引用；缺失/动态路径/绝对路径/越界一律报错）；`original/origin/原稿/源稿/原始稿` 系目录（**不进入、不遍历**）；
+  备份/历史/待核目录与备份文件名；未知 `.log`；自定义 `.out`（无同名 tex）；无来源 `.bbl`；非标准命名的信息检查文件；
+  `.tex.bak`；符号链接（**不跟随**）；普通目录；最新一组信息检查报告；`.toolbox-trash` 与 SKIP 目录内的一切；期目录之外的路径（不跟随、不越界）。
+- **引用闭包优先**：即便后缀属可回收，只要被任意 tex 直接/间接引用（含显式 `\input{foo.bbl}`、`\input{foo.out}`），
+  一律转 `kept`（`kind=referenced`），理由保留原判据文字。
+- **预检失败 = 零写入**：引用缺失/越界/绝对路径/动态路径、目录不可读、tex 不可读 → `errors` 非空，`status=preflight_failed`、`rc=2`，
+  不建批次、不搬任何文件。
+- **可恢复批次与停止**：一个 `operationId` = 一个批次 `<期目录>/.toolbox-trash/<目录名>-<operationId>/`；**先把清单/意图持久化再搬移**，
+  manifest `schema=2` + `kind="daily"`，每项 `planned → moving → moved|failed` 逐项落盘；`SIGTERM/SIGINT` 只置停止标志：
+  扫描期零写入，搬移中断 `status=cancelled`（`count` 只算已搬成功数）且已搬文件可由 `--restore` 恢复。
+- **恢复**：校验 manifest 的 root / 批次必须位于 `<root>/.toolbox-trash/` 下 / 拒绝路径穿越与绝对路径 / 目标已存在不覆盖（保留可重试）；
+  兼容旧 v1（`files`）与 v2（`entries`）manifest；dry-run 只报「将恢复」，不写盘。

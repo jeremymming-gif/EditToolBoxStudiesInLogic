@@ -4,6 +4,7 @@
     python3 cleantemp.py --folder "<期目录或任意目录>" [--dry-run] [--trash] [--json] [--version]
     python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/时间戳 目录>"
     python3 cleantemp.py --folder "<目录>" --mode {delivery,workspace,tocwork} [--dry-run] [--delete]
+    python3 cleantemp.py --folder "<期目录>" --mode daily [--dry-run] [--json]   # 清理页日常入口
     python3 cleantemp.py --folder "<期目录>" --empty-trash
 
 两种"真动手"的方式（aux 模式，旧行为）：
@@ -37,6 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from slcn import clean as _clean  # noqa: E402
+from slcn import clean_daily as _clean_daily  # noqa: E402
 from slcn import platform as _plat  # noqa: E402
 
 
@@ -83,11 +85,12 @@ def main(argv: list[str] | None = None) -> int:
                          "可用 --restore 撤销")
     ap.add_argument("--restore", metavar="回收目录", default="",
                     help="把某个回收目录里的文件搬回原处（不覆盖已存在的文件；兼容旧 manifest）")
-    ap.add_argument("--mode", choices=("aux", "delivery", "workspace", "tocwork"),
+    ap.add_argument("--mode", choices=("aux", "delivery", "workspace", "tocwork", "daily"),
                     default="aux",
                     help="aux=编译中间文件（默认，旧行为）；delivery=交付目录收尾；"
                          "workspace=工作区旧件（合并 PDF 只留最新）；"
-                         "tocwork=生成中间件与旧检查报告（默认保留最新一组报告）")
+                         "tocwork=生成中间件与旧检查报告（默认保留最新一组报告）；"
+                         "daily=清理页日常入口（唯一候选器，默认移入回收站，可 --restore 撤销）")
     ap.add_argument("--delete", action="store_true",
                     help="delivery/workspace/tocwork 模式：永久删除（默认移入回收站）")
     ap.add_argument("--all-reports", action="store_true",
@@ -119,31 +122,44 @@ def main(argv: list[str] | None = None) -> int:
 
     def finish(*, mode: str, count: int, ok: bool = True, trash: str = "",
                restore: str = "", error: str = "",
-               failures: list[tuple[str, str]] | None = None) -> None:
+               failures: list[tuple[str, str]] | None = None,
+               entries: list[dict] | None = None, status: str = "",
+               operation_id: str = "", kept: list[dict] | None = None,
+               warnings: list[str] | None = None) -> None:
         if not json_mode:
             return
-        entries = _collect_entries(logged)
-        print(json.dumps({
+        items = entries if entries is not None else _collect_entries(logged)
+        data = {
             "ok": ok,
             "command": "cleantemp",
             "mode": mode,
             "dryRun": bool(args.dry_run),
             "root": root,
             "count": count,
-            "entryCount": len(entries),
-            "entries": entries,
+            "entryCount": len(items),
+            "entries": items,
             "trashDir": trash,
             "restoreDir": restore,
             "failures": [{"path": p, "error": e} for p, e in (failures or [])],
-            "warnings": [],
+            "warnings": list(warnings) if warnings is not None else [],
             "error": error,
-        }, ensure_ascii=False), file=sys.stdout)
+        }
+        # daily 新字段：旧 mode 不传 status，输出与旧版逐字节一致。
+        if status:
+            data["operationId"] = operation_id
+            data["status"] = status
+            data["kept"] = kept or []
+        print(json.dumps(data, ensure_ascii=False), file=sys.stdout)
 
     if args.restore:
         trash_root = os.path.abspath(os.path.expanduser(args.restore))
         if not os.path.isdir(trash_root):
             print(f"\n❌ 回收目录不存在：{trash_root}\n", file=sys.stderr)
             return 2
+        # daily 批次（manifest 带 kind/operationId）走安全恢复；旧批次仍走旧 restore（输出不变）。
+        _info = _clean_daily.read_manifest(trash_root)
+        if _info is not None and (_info.get("kind") == "daily" or _info.get("operationId")):
+            return _run_restore_daily(root, trash_root, args, say=say, log=log, finish=finish)
         say("撤销清理（从回收目录搬回）\n")
         say(f"路径：{root}\n")
         n, _files = _clean.restore(root, trash_root, log=log, dry_run=args.dry_run)
@@ -152,6 +168,16 @@ def main(argv: list[str] | None = None) -> int:
         say(f"完成。{verb} {n} 个文件（目录：{root}）")
         finish(mode="restore", count=n, restore=trash_root)
         return 0
+
+    if args.mode == "daily":
+        if args.trash:
+            return _die("--mode daily 只回收，不接受 --trash（daily 默认移入回收站，可用 --restore 撤销）")
+        if args.delete:
+            return _die("--mode daily 只回收，不接受 --delete（daily 默认移入回收站，可撤销；不提供永久删除）")
+        if args.empty_trash:
+            return _die("--empty-trash 不能与 --mode daily 同时用（会绕过日常清理的撤销批次）")
+        if args.all_reports:
+            return _die("--all-reports 只用于 tocwork 模式（daily 固定保留最新一组检查报告）")
 
     if args.mode != "aux" and args.trash:
         return _die("--trash 只用于 aux 模式；delivery/workspace/tocwork 默认就移入回收站"
@@ -171,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
         finish(mode="empty-trash", count=n,
                trash=os.path.join(root, _clean.TRASH_DIR))
         return 0
+
+    if args.mode == "daily":
+        return _run_daily_cli(root, args, say=say, log=log, finish=finish)
 
     if args.mode == "aux":
         return _run_aux(root, args, say=say, log=log, finish=finish)
@@ -247,6 +276,134 @@ def main(argv: list[str] | None = None) -> int:
         where = trash_root or "（无可清理文件）"
         say(f"完成。{verb} {n} 项（回收目录：{where}）")
         finish(mode=args.mode, count=n, trash=trash_root)
+    return 0
+
+
+def _run_daily_cli(root: str, args: argparse.Namespace, *, say, log, finish) -> int:
+    """daily 模式：清理页日常入口（候选由 slcn/clean_daily.py 唯一定义）。
+
+    与旧 mode 的差别：候选集合更保守（引用闭包/最新报告组/不可再生一律保留），
+    执行前用冻结的扫描指纹复核，先落盘可恢复清单再搬移；--dry-run 只诊断。
+    """
+    say("清理临时文件（日常规则）\n")
+    say(f"路径：{root}\n")
+    res = _clean_daily.run_daily(root, dry_run=args.dry_run, log=log)
+    status = res.get("status") or ""
+    operation_id = res.get("operationId") or ""
+    kept = res.get("kept") or []
+    warnings = res.get("warnings") or []
+    failures = [(str(f.get("path") or ""), str(f.get("error") or ""))
+                for f in (res.get("failures") or [])]
+    entries = [{"path": e["path"], "action": e.get("action", "move")}
+               for e in (res.get("entries") or [])]
+    n = int(res.get("count") or 0)
+    error = res.get("error") or ""
+
+    if status == "preflight_failed":
+        # 预检失败：零写入，逐条给原因（外壳据此显示「未改动任何文件」）。
+        print(f"\n❌ {error or '预检未通过（未写入任何文件）'}", file=sys.stderr)
+        for path, err in failures[:30]:
+            print(f"  - {path}：{err}", file=sys.stderr)
+        if len(failures) > 30:
+            print(f"  … 还有 {len(failures) - 30} 项", file=sys.stderr)
+        print("", file=sys.stderr)
+        finish(mode="daily", count=0, ok=False, error=error, failures=failures,
+               entries=[], status=status, operation_id=operation_id,
+               kept=kept, warnings=warnings)
+        return 2
+
+    if status == "cancelled":
+        # 用户点了全局「停止」（SIGTERM）：已搬的部分在回收批次里，可 --restore 撤销。
+        print(f"\n❌ {error or '已停止'}", file=sys.stderr)
+        finish(mode="daily", count=n, ok=False, trash=res.get("trashDir") or "",
+               error=error, failures=failures, entries=entries, status=status,
+               operation_id=operation_id, kept=kept, warnings=warnings)
+        return 2
+
+    if status == "partial":
+        print(f"\n❌ 清理未完成：成功 {n} 项，失败 {len(failures)} 项（失败项见上方）",
+              file=sys.stderr)
+        finish(mode="daily", count=n, ok=False, trash=res.get("trashDir") or "",
+               error=error, failures=failures, entries=entries, status=status,
+               operation_id=operation_id, kept=kept, warnings=warnings)
+        return 2
+
+    say()
+    if kept:
+        say(f"保留 {len(kept)} 项（按判据未回收）")
+    if status == "empty":
+        say(f"完成。没有可清理的临时文件（目录：{root}）")
+        finish(mode="daily", count=0, ok=True, entries=[], status=status,
+               operation_id=operation_id, kept=kept, warnings=warnings)
+        return 0
+
+    trash = res.get("trashDir") or ""
+    if args.dry_run:
+        say(f"完成。将回收 {n} 项（预演，未写入磁盘）")
+    else:
+        say(f"完成。已回收 {n} 项（回收目录：{trash}）")
+    finish(mode="daily", count=n, ok=True, trash=trash, entries=entries,
+           status=status, operation_id=operation_id, kept=kept, warnings=warnings)
+    return 0
+
+
+def _run_restore_daily(root: str, trash_root: str, args: argparse.Namespace,
+                       *, say, log, finish) -> int:
+    """daily 批次的安全撤销：校验批次归属/条目边界，不覆盖，冲突可重试。"""
+    say("撤销清理（从回收目录搬回）\n")
+    say(f"路径：{root}\n")
+    res = _clean_daily.restore_daily(root, trash_root, dry_run=args.dry_run, log=log)
+    status = res.get("status") or ""
+    operation_id = res.get("operationId") or ""
+    warnings = res.get("warnings") or []
+    failures = [(str(f.get("path") or ""), str(f.get("error") or ""))
+                for f in (res.get("failures") or [])]
+    entries = [{"path": e["path"], "action": "restore"}
+               for e in (res.get("entries") or [])]
+    n = int(res.get("count") or 0)
+    error = res.get("error") or ""
+    verb = "将恢复" if args.dry_run else "已恢复"
+
+    if status == "preflight_failed":
+        print(f"\n❌ {error or '撤销预检未通过（未写入任何文件）'}", file=sys.stderr)
+        for path, err in failures[:30]:
+            print(f"  - {path}：{err}", file=sys.stderr)
+        if len(failures) > 30:
+            print(f"  … 还有 {len(failures) - 30} 项", file=sys.stderr)
+        print("", file=sys.stderr)
+        finish(mode="restore", count=0, ok=False, restore=trash_root,
+               error=error, failures=failures, entries=[], status=status,
+               operation_id=operation_id, kept=[], warnings=warnings)
+        return 2
+
+    if status == "cancelled":
+        print(f"\n❌ {error or '已停止'}", file=sys.stderr)
+        say(f"完成。{verb} {n} 个文件（目录：{root}）")
+        finish(mode="restore", count=n, ok=False, restore=trash_root,
+               error=error, failures=failures, entries=entries, status=status,
+               operation_id=operation_id, kept=[], warnings=warnings)
+        return 2
+
+    say()
+    if status == "partial":
+        unsaved = len(warnings) + len(failures)
+        print(f"\n❌ {error or '撤销未完成'}", file=sys.stderr)
+        say(f"完成。{verb} {n} 个文件，{unsaved} 项未恢复（目录：{root}）")
+        finish(mode="restore", count=n, ok=False, restore=trash_root,
+               error=error, failures=failures, entries=entries, status=status,
+               operation_id=operation_id, kept=[], warnings=warnings)
+        return 2
+
+    if status == "empty":
+        say(f"完成。没有可恢复的文件（目录：{root}）")
+        finish(mode="restore", count=0, ok=True, restore=trash_root,
+               entries=[], status=status, operation_id=operation_id,
+               kept=[], warnings=warnings)
+        return 0
+
+    say(f"完成。{verb} {n} 个文件（目录：{root}）")
+    finish(mode="restore", count=n, ok=True, restore=trash_root, entries=entries,
+           status=status, operation_id=operation_id, kept=[], warnings=warnings)
     return 0
 
 

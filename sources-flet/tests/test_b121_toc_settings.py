@@ -398,7 +398,7 @@ def test_cleantemp_call_tocwork_mode_and_all_reports():
     assert "--trash" not in args
 
 
-def test_cleantemp_step_chains_tocwork_only_when_enabled_and_real_run(tmp_path):
+def test_cleantemp_step_is_single_daily_call(tmp_path):
     store = _Store()
     page = SimpleNamespace(
         app=SimpleNamespace(store=store, notes_repo=None),
@@ -406,21 +406,18 @@ def test_cleantemp_step_chains_tocwork_only_when_enabled_and_real_run(tmp_path):
         set_field=lambda *args, **kwargs: None,
         mark=lambda *args, **kwargs: None,
     )
+    store.set("options.cleantemp_tocwork", True)
     store.set("options.cleantemp_dry_run", False)
 
     call = ASM.build_step_call(page, "cleantemp")
-    followup = getattr(call, "_followup", None)
-    assert followup is not None, "默认勾选时必须追加 tocwork 清理"
-    follow_args = _args_of(followup)
-    assert "--mode" in follow_args and "tocwork" in follow_args
-    assert "--dry-run" not in follow_args
+    assert getattr(call, "_followup", None) is None, "T3 不再串 tocwork"
+    assert _args_of(call) == ["--folder", str(tmp_path), "--mode", "daily", "--json"]
 
-    store.set("options.cleantemp_tocwork", False)
-    assert getattr(ASM.build_step_call(page, "cleantemp"), "_followup", None) is None
-
-    store.set("options.cleantemp_tocwork", True)
+    # 旧档位 / 预演开关只读兼容，不改变新入口。
+    store.set("form.cleantemp_mode", "workspace")
     store.set("options.cleantemp_dry_run", True)
-    assert getattr(ASM.build_step_call(page, "cleantemp"), "_followup", None) is None
+    store.set("options.cleantemp_all_reports", True)
+    assert _args_of(ASM.build_step_call(page, "cleantemp")) == _args_of(call)
 
 
 # ── B-373（A-01）：切换报告不得把上一份报告的草稿写进新报告 ────────────────

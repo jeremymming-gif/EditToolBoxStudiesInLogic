@@ -13,6 +13,7 @@ import pytest
 
 from services import engine_bridge as EB
 from ui import assembly as ASM
+from ui import cleanup as CLEANUP
 from ui.tokens import Tokens
 
 STEP_KEYS = ("infocheck", "toc", "compileall", "merge", "cleantemp", "dirpush")
@@ -211,22 +212,20 @@ def test_run_all_default_is_first_four_steps(tmp_path, engine, monkeypatch):
 
 def test_run_all_explicit_keys_keep_normal_step_semantics(tmp_path, engine, monkeypatch):
     page = make_page(tmp_path, report=False)
+    page._cleanup = CLEANUP.CleanupPanel(page)
     page.set_field("dirpush_out", str(tmp_path / "out"))
     page.app.store.set("form.cleantemp_mode", "delivery")
     page.app.store.update_options(cleantemp_dry_run=False, dirpush_dry_run=True)
-    calls = install_run(monkeypatch, page, [0, 0, 0])
+    calls = install_run(monkeypatch, page, [0, 0])
 
     ASM.run_all(page, ["cleantemp", "dirpush"])
 
-    # B-121 B-357：清理默认在同一确认里串行追加一次 tocwork（同 trash 可 restore）。
-    assert [call.entry for call in calls] == [
-        "cleantemp.py", "cleantemp.py", "dirpush.py",
-    ]
+    # T3/C14：显式勾选 cleantemp 也只走一次 --mode daily；不再串 tocwork、
+    # 不带旧档位，也不被旧 dry_run 设置改成只预演。
+    assert [call.entry for call in calls] == ["cleantemp.py", "dirpush.py"]
     clean = calls[0].argv
-    assert "--mode" in clean and "delivery" in clean
-    assert "--dry-run" not in clean  # 不再被 run_all 强制只预演
-    followup = calls[1].argv
-    assert "--mode" in followup and "tocwork" in followup
+    assert "--mode" in clean and "daily" in clean
+    assert "--dry-run" not in clean and "--trash" not in clean
     assert page._status["cleantemp"] == "done"
     assert page._status["dirpush"] == "done"
 
@@ -296,9 +295,9 @@ def test_status_metadata_and_hooks_written_back(tmp_path, engine, monkeypatch):
     seen: list[str] = []
     original = ASM.after_step
 
-    def spy(page_, key, *args):
+    def spy(page_, key, *args, **kwargs):
         seen.append(key)
-        return original(page_, key, *args)
+        return original(page_, key, *args, **kwargs)
 
     monkeypatch.setattr(ASM, "after_step", spy)
 

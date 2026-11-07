@@ -75,18 +75,49 @@ def test_dismiss_unregistered_dialog_still_pops():
     assert page.pops == 2
 
 
-# ── 2. 清理确认框：右上 X + 取消 + 确认后自动关闭 ─────────────────────
-def test_clean_confirm_has_close_button_and_dismisses():
+# ── 2. T3 清理页：没有确认框；明细框仍然入栈 / 可关闭 ─────────────────
+def _seed_cleanup(page, root: str) -> None:
+    batch = root + "/.toolbox-trash/期-2026_11_07_110000-abcd1234"
+    page.app.store.set("issue_state", {root: {"cleanup": {
+        "schema": 1, "root": root, "operationId": "2026_11_07_110000-abcd1234",
+        "status": "success", "count": 2,
+        "entries": [{"path": "a.aux", "action": "move"},
+                    {"path": "b.log", "action": "move"}],
+        "kept": [], "failures": [], "warnings": [], "error": "",
+        "trashDir": batch,
+        "startedAt": "2026-11-07 11:00:00",
+        "finishedAt": "2026-11-07 11:00:02"}}})
+
+
+def test_cleanup_start_has_no_confirm_dialog():
     _fresh_stack()
     page, _root = _build_issue()
     page.set_field("issue_dir", "/tmp/期目录")
     shown, popped = _patch_page(page)
 
-    page._open_clean_confirm()
+    page._cleanup.start()
+
+    assert shown == [] and popped == [], "T3 单入口点击即清理，不再弹危险确认框"
+    assert C._open_dialogs == []
+    assert page._cleanup.phase == "scanning"
+
+
+def test_cleanup_details_dialog_registers_and_dismisses():
+    _fresh_stack()
+    page, _root = _build_issue()
+    root = "/tmp/期目录"
+    page.set_field("issue_dir", root)
+    _seed_cleanup(page, root)
+    shown, popped = _patch_page(page)
+
+    page._cleanup.details_dialog()
     assert len(shown) == 1
     dialog = shown[0]
     assert dialog.modal is True
     assert C._open_dialogs[-1] is dialog
+    texts = [str(ctl.value) for ctl in _walk(dialog.content) if isinstance(ctl, ft.Text)]
+    assert any("2026_11_07_110000-abcd1234" in value for value in texts), texts
+    assert any("a.aux" in value for value in texts), texts
 
     icons = [ctl for ctl in _walk(dialog.title) if isinstance(ctl, ft.IconButton)]
     assert len(icons) == 1 and icons[0].tooltip == "关闭"
@@ -94,34 +125,16 @@ def test_clean_confirm_has_close_button_and_dismisses():
     assert C._open_dialogs == [] and len(popped) == 1
 
 
-def test_clean_confirm_action_closes_then_starts_cleanup(monkeypatch):
+def test_cleanup_details_close_button_dismisses():
     _fresh_stack()
     page, _root = _build_issue()
-    page.set_field("issue_dir", "/tmp/期目录")
-    shown, popped = _patch_page(page)
-    called: list = []
-    monkeypatch.setattr(ASM, "run_cleantemp_confirmed", lambda p: called.append(p))
-
-    page._open_clean_confirm()
-    dialog = shown[0]
-    confirm = dialog.actions[-1]
-    assert confirm.disabled is False, "非 workspace 档默认允许清理"
-    confirm.on_click(None)
-
-    assert len(popped) == 1, "确认后必须先关闭对话框"
-    assert C._open_dialogs == []
-    assert called == [page], "关闭后再启动清理"
-
-
-def test_clean_cancel_closes_dialog():
-    _fresh_stack()
-    page, _root = _build_issue()
-    page.set_field("issue_dir", "/tmp/期目录")
+    root = "/tmp/期目录"
+    page.set_field("issue_dir", root)
+    _seed_cleanup(page, root)
     shown, popped = _patch_page(page)
 
-    page._open_clean_confirm()
-    cancel = shown[0].actions[0]
-    cancel.on_click(None)
+    page._cleanup.details_dialog()
+    shown[0].actions[0].on_click(None)
     assert len(popped) == 1 and C._open_dialogs == []
 
 

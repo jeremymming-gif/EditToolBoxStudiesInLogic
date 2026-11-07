@@ -74,7 +74,7 @@ def test_issue_log_reserve_follows_dock_and_drag():
 
 
 # ── 3. 清理确认：完整路径 + 灰底灰字禁用 + 520 宽 ─────────────────────
-def test_clean_confirm_full_path_and_disabled_danger_button():
+def test_cleanup_single_entry_has_no_confirm_ui():
     app = _FakeApp()
     page = P.IssuePage(app)
     page.build()
@@ -84,29 +84,22 @@ def test_clean_confirm_full_path_and_disabled_danger_button():
                         "count": 18, "ts": "2026-11-04 11:04:00"}
     shown: list = []
     app.page.show_dialog = lambda d: shown.append(d)
-    page._open_clean_confirm()
-    assert shown and shown[0].content.width == page.t.px(520)
+    assert page._primary_label("cleantemp") == "清理临时文件"
+    page._primary_action("cleantemp")
+    assert shown == [], "不再有 520 危险确认框/输入「清理」"
+    assert page._cleanup.phase == "scanning"
 
-    controls = _dialog_controls(shown[0])
-    texts = [str(c.value) for ctl in controls for c in _walk(ctl)
-             if isinstance(c, ft.Text)]
-    assert "/tmp/期目录/.toolbox-trash/（新建目录）" in texts
-    assert not any("…" in value for value in texts)
-    assert [c for ctl in controls for c in _walk(ctl)
-            if isinstance(c, ft.SelectionArea)], "目标路径应可选中复制"
+    def _all_texts(controls):
+        out: list[str] = []
+        for item in controls:
+            for ctl in [item, *_walk(item)]:
+                if isinstance(ctl, ft.Text):
+                    out.append(str(ctl.value))
+        return out
 
-    btn = [c for ctl in controls for c in _walk(ctl)
-           if isinstance(c, ft.TextButton) and "移入回收目录" in _text(c)][0]
-    assert btn.disabled is True, "未输入「清理」前危险按钮必须真正禁用"
-    assert btn.style.color[ft.ControlState.DISABLED] == page.t.buttons.off_fg
-    assert btn.style.bgcolor[ft.ControlState.DISABLED] == page.t.buttons.off_bg
-
-    field = [c for ctl in controls for c in _walk(ctl)
-             if isinstance(c, ft.TextField)][0]
-    btn.update = lambda: None
-    field.value = "清理"
-    field.on_change(SimpleNamespace(control=field))
-    assert btn.disabled is False
+    texts = _all_texts(page._cleanup.params())
+    assert any("自动校验 + 回收" in value for value in texts), texts
+    assert any("不再影响本入口" in value for value in texts), texts
 
 
 def test_danger_button_disabled_style_is_gray_not_red():

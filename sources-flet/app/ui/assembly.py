@@ -1,7 +1,8 @@
-"""整期装配：合并/编译/三档清理与撤销/目录/推送的取值与编排。
+"""整期装配：合并/编译/清理临时文件（单入口）/目录/推送的取值与编排。
 
-文档逻辑全在 `Engine/`；本模块只拼 `EngineCall`、确认危险操作、显示结果。
-清理只暴露 `--trash`（可恢复）与 `--restore`（撤销），不提供永久删除参数。
+文档逻辑全在 `Engine/`；本模块只拼 `EngineCall`、编排步骤、显示结果。
+清理走 `--mode daily`（自动校验 + 回收，可撤销），撤销走 `--restore`；
+本模块不提供三档选择、手动预演闸或永久删除参数。
 """
 from __future__ import annotations
 
@@ -185,7 +186,7 @@ def build_params(page, key: str) -> ft.Control:
             ]),
         ]
     elif key == "cleantemp":
-        rows += _cleantemp_params(page)
+        rows += page._cleanup.params()
     elif key == "dirpush":
         rows += dirpush_panel(page).params()
     engine_note = C.text(f"引擎：{page.app.engine_status.describe()}", t, "caption",
@@ -224,191 +225,6 @@ def cleantemp_preview_ok(page, mode: str | None = None) -> bool:
     return preview.get("mode") == (mode if mode is not None else cleantemp_mode(page))
 
 
-def _ct_choice_row(page, key: str) -> ft.Control:
-    t = page.t
-    info = CLEANTEMP_MODES[key]
-    selected = cleantemp_mode(page) == key
-    danger = key == "workspace"
-    accent = t.palette.danger if danger else t.palette.accent
-    border = (ft.Border.all(1.5, accent) if selected
-              else ft.Border.all(1, t.palette.border))
-    dot = ft.Container(
-        width=t.px(16), height=t.px(16), border_radius=t.px(8),
-        border=ft.Border.all(1.5, accent if selected else t.palette.border_strong),
-        alignment=ft.Alignment.CENTER,
-        content=(ft.Container(width=t.px(8), height=t.px(8), border_radius=t.px(4),
-                              bgcolor=accent) if selected else None),
-    )
-    preview = _ct_preview(page)
-    count = None
-    if preview.get("ok") and preview.get("mode") == key:
-        count = C.text(f"{preview.get('count', 0)} 项", t, "caption", t.palette.text_muted)
-    head_controls = [C.text(info["title"], t, "body", weight="medium"),
-                     C.badge(info["badge"], t, info["tone"]),
-                     ft.Container(expand=True)]
-    if count is not None:      # None 不能进 Row.controls：flet 1.0.5 会整块渲染成灰块
-        head_controls.append(count)
-    head = ft.Row(spacing=t.sp("1"),
-                  vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                  controls=head_controls)
-    # 用「Column 竖排」结构（同 C.option_tile 的已验证布局）；Row 直接套在定高
-    # Container 里在 flet 1.0.5 会触发 Flex 约束错误（截图呈灰块），见 notes 遗留。
-    return ft.Container(
-        height=t.px(72), border=border, border_radius=t.radius("md"),
-        bgcolor=t.palette.surface_2 if selected else t.palette.surface,
-        padding=C._pad(t, 12, 6, 12, 6),
-        on_click=lambda e, k=key: _set_mode(page, k),
-        content=ft.Column(spacing=t.px(2),
-                          controls=[
-            head,
-            C.text(info["desc"], t, "caption", t.palette.text_muted, max_lines=1,
-                   overflow=ft.TextOverflow.ELLIPSIS),
-            C.text(info["keep"], t, "caption", t.palette.text_faint, max_lines=1,
-                   overflow=ft.TextOverflow.ELLIPSIS),
-        ]),
-    )
-
-
-def _cleantemp_params(page) -> list:
-    t = page.t
-    mode = cleantemp_mode(page)
-    rows: list = [
-        C.notice_bar("三档都移入 `<期目录>/.toolbox-trash/<目录名>-<时间戳>/`，可恢复、不永久删除；"
-                     "最终 tex/pdf 与 目录设置.json 不动。", t, "info"),
-        ft.Column(spacing=t.sp("1"), horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-                  controls=[_ct_choice_row(page, key) for key in MODE_KEYS]),
-        _ct_preview_note(page),
-        C.option_row("含生成中间件与旧检查报告",
-                     "追加一次 tocwork 清理：.toolbox-tmp/、时间戳中英 tex、目录结果 JSON、"
-                     "旧《信息检查》报告（默认保留最新一组）；移入回收站可恢复", t,
-                     icon="DELETE_SWEEP_OUTLINED", checked=cleantemp_include_tocwork(page),
-                     on_change=lambda e: _set_tocwork(page, e.control.value)),
-        C.option_row("只预演（不写入）", "默认开；列出将清理的文件与数量，不动磁盘", t,
-                     icon="SCIENCE_OUTLINED", checked=cleantemp_dry_run(page),
-                     on_change=lambda e: _set_dry(page, e.control.value)),
-        _restore_row(page),
-    ]
-    return rows
-
-
-def _set_tocwork(page, value) -> None:
-    page.app.store.set("options.cleantemp_tocwork", bool(value))
-    save = getattr(page.app, "save_settings", None)
-    if callable(save):
-        try:
-            save(toast=False)
-        except TypeError:
-            save()
-    page.mark("cleantemp_tocwork", value=bool(value))
-    page._refresh_steps()
-
-
-def _set_dry(page, value) -> None:
-    page.app.store.set("options.cleantemp_dry_run", bool(value))
-    save = getattr(page.app, "save_settings", None)
-    if callable(save):
-        try:
-            save(toast=False)
-        except TypeError:
-            save()
-    page.mark("cleantemp_dry_run", value=bool(value))
-    page._refresh_steps()
-
-
-def _ct_preview_note(page) -> ft.Control:
-    t = page.t
-    mode = cleantemp_mode(page)
-    preview = _ct_preview(page)
-    if cleantemp_preview_ok(page):
-        when = str(preview.get("ts") or "")[11:16]
-        return C.text(f"预演：{preview.get('count', 0)} 项 · {when} · 移入 .toolbox-trash",
-                      t, "caption", t.palette.text_muted)
-    if preview and preview.get("mode") == mode and preview.get("issue") == page.field("issue_dir"):
-        return C.text(f"上次预演失败（退出码 {preview.get('code')}）：{preview.get('error') or '看日志'}",
-                      t, "caption", t.palette.error, max_lines=2)
-    return C.text("尚未预演：先点右上「预览清理」看数量；预演不动磁盘。", t, "caption",
-                  t.palette.text_faint)
-
-
-def _set_mode(page, value) -> None:
-    mode = str(value or "aux")
-    if mode not in MODE_KEYS:
-        mode = "aux"
-    page.app.store.set("form.cleantemp_mode", mode)
-    page.app.store.set("form.cleantemp_restore", "")
-    page.mark("cleantemp_mode", mode=mode)
-    page._refresh_steps()
-
-
-def _restore_row(page) -> ft.Control:
-    t = page.t
-    issue = page.field("issue_dir")
-    choices = trash_dirs(issue) if issue else []
-    if not choices:
-        return C.text("暂无回收目录（清理后出现在 .toolbox-trash/）", t, "caption",
-                      t.palette.text_faint)
-    return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                  controls=[
-        C.text_button(f"恢复清理（{len(choices)} 个目录）",
-                      lambda e: restore_dialog(page), t, icon="RESTORE"),
-    ])
-
-
-def restore_dialog(page) -> None:
-    """恢复入口（只读列出最近 6 个回收目录；真正恢复走 cleantemp --restore）。"""
-    t = page.t
-    issue = page.field("issue_dir")
-    choices = trash_dirs(issue)[:6]
-    if not choices:
-        page.app.toast("暂无回收目录")
-        return
-    rows: list = []
-    selected = {"path": str(choices[0])}
-    for path in choices:
-        info = EB.trash_info(str(path))
-        caption = (f"{info.get('count', 0)} 项 · {info.get('createdAt', '')[:16]}"
-                   if info.get("ok") else "manifest 读不回（仍可整目录搬回）")
-        mode = info.get("mode") or ""
-        label = ft.Row(spacing=t.sp("1"), controls=[
-            C.text(path.name, t, "mono", t.palette.text, max_lines=1,
-                   overflow=ft.TextOverflow.ELLIPSIS),
-            C.badge(mode or "未知档", t, "accent"),
-            C.text(caption, t, "caption", t.palette.text_muted),
-        ])
-        box = ft.Container(
-            height=t.px(44), border_radius=t.radius("sm"),
-            bgcolor=(t.palette.accent_soft if str(path) == selected["path"]
-                     else t.palette.surface_2),
-            content=ft.Row(controls=[ft.Container(width=t.px(16), height=t.px(16),
-                                                 border_radius=t.radius("pill"),
-                                                 border=ft.Border.all(1.5, t.palette.accent)),
-                                     ft.Column([label], expand=True)]),
-        )
-        box.on_click = (lambda e, p=str(path), target=box: (
-            selected.update(path=p),
-            [item.__setattr__("bgcolor", t.palette.surface_2) for item in rows],
-            target.__setattr__("bgcolor", t.palette.accent_soft)))
-        rows.append(box)
-    # 单选：点行即选中（默认第一行）；列表信息已足以确认。
-    def _go(e) -> None:
-        C.dismiss_top_dialog(page.page)
-        page.page.run_task(_restore_task, page, issue, selected["path"])
-
-    dialog = ft.AlertDialog(
-        modal=True,
-        title=C.text("恢复清理", t, "dialog-title"),
-        content=ft.Container(width=t.px(560), content=ft.Column([
-            C.text("按 manifest 搬回原路径；同名文件/目录跳过不覆盖；回收目录本身保留。",
-                   t, "caption", t.palette.text_muted),
-            ft.Column(rows, spacing=t.sp("1")),
-        ], spacing=t.sp("1"), tight=True)),
-        actions=[C.text_button("取消", lambda e: C.dismiss_top_dialog(page.page), t),
-                 C.primary_button("恢复", _go, t)],
-    )
-    C.show_dialog(page.page, dialog)
-
-
-# ── 调用构建 ─────────────────────────────────────────────────────────────
 def build_step_call(page, key: str) -> EB.EngineCall:
     issue = page.field("issue_dir")
     if not issue:
@@ -467,15 +283,9 @@ def build_step_call(page, key: str) -> EB.EngineCall:
             back_cover=bool(options.get("merge_back_cover", False)),
         )
     if key == "cleantemp":
-        mode = cleantemp_mode(page)
-        dry = cleantemp_dry_run(page)
-        call = EB.cleantemp_call(folder=issue, mode=mode, dry_run=dry)
-        if cleantemp_include_tocwork(page) and not dry and mode != "tocwork":
-            # B-121 B-357：同一次确认里串行追加一次 tocwork（同一 .toolbox-trash 可 restore）。
-            call._followup = EB.cleantemp_call(
-                folder=issue, mode="tocwork", dry_run=False,
-                all_reports=cleantemp_all_reports(page))
-        return call
+        # T3：单一日常入口（INTERFACE-DAILY）；旧 mode/dry_run/tocwork/all_reports
+        # 设置不再参与构建。旧三档 --trash 仍由 EB.cleantemp_call 保留给旧调用方。
+        return EB.cleantemp_daily_call(folder=issue)
     if key == "dirpush":
         return DIRPUSH.build_call(
             issue=issue, out_root=page.field("dirpush_out"),
@@ -657,6 +467,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             _mark_pending(page, results, keys[position:], "cancelled")
             break
         started_at = _now()
+        wall_started = time.time()
+        lines: list[str] = []
         page._status[key] = StepStatus("running", started_at=started_at)
         page._refresh_steps()
         _log_line(page, _section_start(page, key, started_at), "dim")
@@ -685,7 +497,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         page.app.begin_run(call)
         try:
             code = await EB.run_call(
-                call, on_line=lambda line: _on_line(page, line),
+                call, on_line=lambda line: (lines.append(str(line)),
+                                            _on_line(page, line)),
                 on_proc=page.app.track_proc, notes=page.app.notes_repo,
             )
         except Exception as exc:  # noqa: BLE001 — 引擎启动失败也要落状态
@@ -715,7 +528,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             page.app.begin_run(followup)
             try:
                 code = await EB.run_call(
-                    followup, on_line=lambda line: _on_line(page, line),
+                    followup, on_line=lambda line: (lines.append(str(line)),
+                                                   _on_line(page, line)),
                     on_proc=page.app.track_proc, notes=page.app.notes_repo,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -746,7 +560,8 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             # 失败/取消会在本步后 break，同样按收尾处理（日志 dock 收回，参数区可见）。
             after_step(page, key, call, code, cancelled, artifact,
                        cancelled or code >= 2 or code < 0
-                       or position == len(keys) - 1)
+                       or position == len(keys) - 1,
+                       lines=lines, started=wall_started)
         except Exception as exc:  # noqa: BLE001
             _log_line(page, f"步骤后处理失败：{type(exc).__name__}: {exc}", "warn")
         if cancelled:
@@ -792,15 +607,6 @@ def run_step(page, key: str) -> None:
         page.app.toast(str(exc))
         page.mark("validation_error", step=key, reason=str(exc))
         return
-    if key == "cleantemp" and not cleantemp_dry_run(page) and not page.app.auto_confirm:
-        def _confirmed() -> None:
-            page.mark("confirm_clean", step=key)
-            _start(page, key, call)
-
-        C.confirm(page.page, page.t, title="确认清理临时文件？",
-                  message="临时文件会移入期目录的 .toolbox-trash（可恢复）；本页不做永久删除。",
-                  confirm_label="开始清理", on_confirm=_confirmed)
-        return
     if key == "dirpush":
         warning = DIRPUSH.repo_warning(page.field("dirpush_out"))
         if warning and not _dirpush_dry(page) and not page.app.auto_confirm:
@@ -838,9 +644,9 @@ def _start(page, key: str, call: EB.EngineCall) -> None:
 def run_all(page, keys: list[str] | None = None) -> None:
     """整期装配一键运行。
 
-    默认只跑 1–4 步（``DEFAULT_RUN_ALL_KEYS``）；调用方（确认框）可显式传入
-    含 ``cleantemp``/``dirpush`` 的 keys，此时按页面当前 mode/dry_run 正常构建、
-    不再强制清理只预演——**确认由 pages.py 在调用前负责**，本函数不重复弹窗。
+    默认只跑 1–4 步（DEFAULT_RUN_ALL_KEYS，不含清理/推送）。调用方（确认框）
+    可显式勾选 cleantemp/dirpush：清理此时也走 --mode daily 单入口，
+    **一次勾选即视为明确选择**（C14：串行默认不清理，显式选择才 daily）。
     """
     if page.app.running:
         return
@@ -878,12 +684,26 @@ def run_all(page, keys: list[str] | None = None) -> None:
 
 
 def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
-               artifact: str, last: bool = True) -> None:
+               artifact: str, last: bool = True, lines: list | None = None,
+               started: float | None = None) -> None:
     """每一步结束后补记结构化结果（显示与状态收尾由 _run_sequence 负责）。
 
     last 表示这是本次运行的最后一步：toc 结束（成功/失败/取消）时页面据此
     决定是否收起已自动展开的日志 dock（整期串行中间步保持展开）。
     """
+    if key == "cleantemp":
+        # T3：整期串行里显式勾选清理时，同一份 JSON 也落成正式结果（绑 root+
+        # operationId），cancelled/partial 同样刷新真实结果态，不能只看 rc0。
+        panel = getattr(page, "_cleanup", None)
+        absorb = getattr(panel, "absorb_result", None)
+        if callable(absorb) and not getattr(panel, "phase", ""):
+            try:
+                absorb(lines or [], code=code, cancelled=cancelled,
+                       artifact=artifact, started=started)
+            except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+                pass
+        page.mark("cleantemp_done", code=code, artifact=artifact)
+        return
     if cancelled:
         # OBS-2/D（B-375）：toc 被停止时也要刷新结果区，显式标「本次已停止」，
         # 不能停留在上一轮结果上让用户误以为本轮成功。
@@ -913,9 +733,6 @@ def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
         payload = TOC.read_result(report) if report else {}
         page.mark("toc_result", ok=bool(payload), pages=(payload.get("pages") or {}),
                   warnings=len(payload.get("warnings") or []))
-    elif key == "cleantemp":
-        page.mark("cleantemp_done", code=code, artifact=artifact,
-                  tocwork=bool(getattr(call, "_followup", None)))
     elif key == "dirpush":
         page.mark("dirpush_done", code=code, artifact=artifact)
 
@@ -1091,119 +908,3 @@ def run_detect(page) -> None:
         page.app.toast("请先选择期目录")
         return
     page.page.run_task(_detect_task, page, EB.merge_call(folder=issue, detect=True))
-
-
-async def _preview_task(page) -> None:
-    issue = page.field("issue_dir")
-    if not issue:
-        page.app.toast("请先选择期目录")
-        page.mark("validation_error", step="cleantemp", reason="missing issue dir")
-        return
-    mode = cleantemp_mode(page)
-    calls: list[tuple[str, EB.EngineCall]] = [
-        (mode, EB.cleantemp_call(folder=issue, mode=mode, dry_run=True))]
-    if cleantemp_include_tocwork(page) and mode != "tocwork":
-        calls.append(("tocwork", EB.cleantemp_call(
-            folder=issue, mode="tocwork", dry_run=True,
-            all_reports=cleantemp_all_reports(page))))
-    lines: list = []
-    ok = True
-    error = ""
-    texts: list = []
-    for call_mode, call in calls:
-        try:
-            result = await asyncio.to_thread(EB.read_json_command, call, timeout=300,
-                                             notes=page.app.notes_repo)
-            part_lines = result.get("lines") or []
-        except Exception as exc:  # noqa: BLE001
-            part_lines, result = [], {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        lines.extend(part_lines)
-        if not result.get("ok"):
-            ok = False
-            error = error or str(result.get("error") or "")
-            continue
-        texts.append(preview_summary(part_lines, call_mode))
-    if ok:
-        text = "\n".join(texts) or preview_summary(lines, mode)
-        level = "info"
-    else:
-        text, level = f"预览失败：{error or '看日志'}（检查引擎与期目录）", "error"
-    trash = Path(issue) / ".toolbox-trash"
-    mode = cleantemp_mode(page)
-    count = parse_count(lines)
-    page._ct_preview = {
-        "ok": ok, "issue": issue, "mode": mode, "count": count, "code": 0,
-        "lines": list(lines), "error": error,
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    page._result.show(text, level=level, artifact=str(trash) if trash.is_dir() else "")
-    try:
-        page.page.update()
-    except Exception:  # noqa: BLE001
-        pass
-    page.mark("cleantemp_preview", ok=ok, files=count, mode=mode, error=error)
-    refresh = getattr(page, "_refresh_steps", None)
-    if callable(refresh):
-        refresh()
-
-
-def cleantemp_preview_lines(page) -> list[str]:
-    """「查看清单」对话框用：预演记录里的 Will move 行（≤200）。"""
-    lines = [str(x) for x in (_ct_preview(page).get("lines") or [])]
-    return [x for x in lines if x][:200]
-
-
-def run_cleantemp_confirmed(page) -> None:
-    """确认框之后真正开始清理（跳过 run_step 内部的第二张确认框）。"""
-    if page.app.running:
-        return
-    try:
-        call = build_step_call(page, "cleantemp")
-    except (ValueError, RuntimeError) as exc:
-        page.app.toast(str(exc))
-        return
-    page._ct_preview = {}
-    page.mark("confirm_clean", step="cleantemp")
-    _start(page, "cleantemp", call)
-
-
-def restore(page, path: str = "") -> None:
-    issue = page.field("issue_dir")
-    target = str(path or page.app.store.get("form.cleantemp_restore", "") or "")
-    if not issue:
-        page.app.toast("请先选择期目录")
-        return
-    if not target:
-        page.app.toast("请选择要恢复的回收目录")
-        page.mark("validation_error", step="cleantemp", reason="missing trash dir")
-        return
-    page.page.run_task(_restore_task, page, issue, target)
-
-
-async def _restore_task(page, issue: str, target: str) -> None:
-    call = EB.cleantemp_call(folder=issue, restore=target)
-    try:
-        result = await asyncio.to_thread(EB.read_json_command, call, timeout=300,
-                                         notes=page.app.notes_repo)
-        lines = result.get("lines") or []
-        ok = bool(result.get("ok"))
-        error = str(result.get("error") or "")
-    except Exception as exc:  # noqa: BLE001
-        lines, ok, error = [], False, f"{type(exc).__name__}: {exc}"
-    count = parse_count(lines)
-    if ok:
-        page.app.toast(f"已恢复 {count} 个文件" if count else "已恢复所选目录")
-        page._result.show(f"撤销清理完成：搬回 {count or '若干'} 个文件", level="success")
-        page.app.store.set("form.cleantemp_restore", "")
-    else:
-        reason = error or next((str(x) for x in reversed(lines) if str(x).strip()), "看日志")
-        page.app.toast(f"撤销失败：{reason}")
-        page._result.show(f"撤销清理失败：{reason}（同名文件不会被覆盖）", level="error")
-    page.mark("cleantemp_restore", ok=ok, files=count, path=target, error=error)
-    try:
-        page.page.update()
-    except Exception:  # noqa: BLE001
-        pass
-    if ok:
-        page._params_box.controls = [build_params(page, "cleantemp")]
-        page._safe_update(page._params_box)
