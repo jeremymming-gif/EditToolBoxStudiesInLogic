@@ -330,3 +330,34 @@ def test_help_text_describes_four_views_not_six_steps():
     assert "六步按序跑" not in text
     for title in ("生成目录", "编译并合并", "清理临时文件", "生成推送文案"):
         assert title in text
+
+
+# ── 8. C14：运行整期「开始运行」提交同步入口，不把同步函数交给 run_task ──
+def test_runall_start_click_calls_sync_entry_not_run_task():
+    """真机 C14：旧代码 `page.run_task(ASM.run_all, ...)` 抛 TypeError:
+    handler must be a coroutine function，步骤不启动。此处用严格 run_task 桩
+    复现 Flet 校验：同步 handler 立即失败；只有 async _run_sequence 可调度。"""
+    import inspect
+
+    page = _issue_page()
+    shown: list = []
+    page.app.page.show_dialog = lambda dialog: shown.append(dialog)
+    scheduled: list = []
+
+    def _strict_run_task(handler, *args, **kwargs):
+        assert inspect.iscoroutinefunction(handler), (
+            "run_task 只接受 coroutine function，收到 %r" % (handler,))
+        scheduled.append((handler, args, kwargs))
+
+    page.app.page.run_task = _strict_run_task
+    page._open_runall()
+    start = shown[0].actions[1]
+    assert "开始运行" in _texts(start) or getattr(start, "content", "") == "开始运行"
+    start.on_click(SimpleNamespace())  # 修复前：TypeError，后续断言都到不了
+    assert len(scheduled) == 1, "ASM.run_all 内部应调度一次整期异步序列"
+    handler, args, _kwargs = scheduled[0]
+    assert getattr(handler, "__name__", "") == "_run_sequence"
+    assert args[0] is page
+    assert list(args[1]) == ["infocheck", "toc", "compileall", "merge"]
+    subjects = [fields for event, fields in page.app.marked if event == "run_all_submit"]
+    assert subjects and subjects[-1]["steps"] == ["infocheck", "toc", "compileall", "merge"]

@@ -2102,7 +2102,9 @@ class IssuePage(BasePage):
                 self.app.toast("没有要运行的步骤")
                 return
             self._expand_log()
-            self.page.run_task(ASM.run_all, self, keys)
+            # C14：run_all 是同步入口（内部再 run_task 调度异步序列），
+            # 不能交给 Flet 的 run_task（要求 coroutine function）。
+            ASM.run_all(self, keys)
 
         dialog = ft.AlertDialog(
             modal=True,
