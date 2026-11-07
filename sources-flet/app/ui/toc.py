@@ -330,8 +330,7 @@ class TocPanel:
             hint = "还没有信息检查报告；先生成第 1 步报告，这里会自动取最新"
         return [
             C.notice_bar(PREVIEW_HINT, self.t, "info"),
-            self.page.add_picker("信息检查报告", "toc_report", "期目录下的 信息检查*.txt",
-                                 kind="file"),
+            self._report_picker_row(),
             C.text(hint, self.t, "caption", self.t.palette.text_muted),
             self.page.add_picker("目录模板（可空）", "toc_template",
                                  "指定模板期目录；空 = 本期成品 → 上一期 → 内置",
@@ -414,12 +413,111 @@ class TocPanel:
         self._refresh_gate_hint()
 
     def _report(self) -> str:
+        """非副作用解析当前报告：字段优先，空才回退磁盘最新（绝不写字段）。
+
+        Lead task-17：渲染结果区/打开结果 JSON/生成参数解析都会调这里；旧的
+        set_field("toc_report") 让每次渲染都可能把字段改回最新报告，B 的
+        「本次生成完成」就这样串到了 A。回填只允许页面显式动作做。
+        """
         report = self.page.field("toc_report")
-        if not report:
-            report = latest_report(self.page.field("issue_dir"))
-            if report:
-                self.page.set_field("toc_report", report)
-        return report
+        if report:
+            return report
+        return latest_report(self.page.field("issue_dir"))
+
+    # ── 报告选择行（Lead task-17(c)：字段一改就重算结果区归属）────────────
+    def _report_picker_row(self) -> ft.Control:
+        """自建「信息检查报告」行：add_picker 的浏览回填不触发 on_change。
+
+        base_page.add_picker 的浏览走 app.browse_field，只写控件值/store，不回调；
+        旧代码因此手动切报告后结果区不重算。这里复用 C.path_picker（同一外观），
+        浏览后启动轮询 watcher（同 pages._watch_issue_pick）补一次归属重算。
+        """
+        t = self.t
+        value = self._report()
+        ref: list = []
+
+        def _changed(e) -> None:
+            self._on_report_changed()
+
+        def _browse(e) -> None:
+            before = str((ref[0].value if ref else "") or "").strip()
+            browse = getattr(getattr(self.page, "app", None), "browse_field", None)
+            if callable(browse):
+                try:
+                    browse(ref, "选择信息检查报告", "file", "toc_report")
+                except Exception:  # noqa: BLE001 - 页面桩/未挂载
+                    return
+            self._schedule_coro(self._watch_report_pick(ref, before))
+
+        control = C.path_picker(
+            "信息检查报告", value, "期目录下的 信息检查*.txt", t,
+            on_change=_changed, on_browse=_browse, required=True, field_ref=ref,
+        )
+        fields = getattr(self.page, "fields", None)
+        if isinstance(fields, dict):
+            fields["toc_report"] = ref
+        return control
+
+    def _on_report_changed(self, value: str | None = None) -> None:
+        """报告字段变化（键入/粘贴/清空/浏览回填）：同步最近值并触发归属重算。"""
+        current = value if value is not None else self.page.field("toc_report")
+        current = str(current or "").strip()
+        store = getattr(getattr(self.page, "app", None), "store", None)
+        set_recent = getattr(store, "set_recent", None)
+        if callable(set_recent):
+            try:
+                set_recent("toc_report", current)
+            except Exception:  # noqa: BLE001 - 页面桩
+                pass
+        mark = getattr(self.page, "mark", None)
+        if callable(mark):
+            try:
+                mark("path_change", field="toc_report", value=current)
+            except Exception:  # noqa: BLE001
+                pass
+        hook = getattr(self.page, "on_toc_report_changed", None)
+        if callable(hook):
+            try:
+                hook(current)
+            except Exception:  # noqa: BLE001 - 页面桩/未挂载
+                pass
+
+    def _schedule_coro(self, coro) -> None:
+        """调度后台协程：优先页面 run_task，否则当前事件循环（离线测试可直接 await）。"""
+        runner = getattr(getattr(self, "page", None), "page", None)
+        run_task = getattr(runner, "run_task", None)
+        if callable(run_task):
+            try:
+                run_task(coro)
+                return
+            except Exception:  # noqa: BLE001 - 老页面/测试桩无 run_task 语义
+                pass
+        try:
+            asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            try:
+                coro.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def _watch_report_pick(self, ref: list, before: str) -> None:
+        """浏览回填只写控件值、不触发 on_change：轮询等值变化后补一次归属重算。
+
+        240×0.25s（60s，与 pages._watch_issue_pick 同量级）；取消选择则自然退出。
+        """
+        for _ in range(240):
+            await asyncio.sleep(0.25)
+            try:
+                value = str((ref[0].value if ref else "") or "").strip()
+            except Exception:  # noqa: BLE001
+                return
+            if value != before:
+                self._on_report_changed(value)
+                try:
+                    ref[0].update()
+                except Exception:  # noqa: BLE001
+                    pass
+                return
 
     def _toc_result_path(self) -> str:
         """「打开结果 JSON」：新路径（.toolbox-tmp）优先，旧路径兜底。"""
@@ -1125,7 +1223,7 @@ class TocPanel:
                        error=str(result.get("error") or ""))
 
     def refresh_result(self, report: str = "", code=None, failed: bool = False,
-                       cancelled: bool = False) -> None:
+                       cancelled: bool = False, *, this_run: bool = False) -> None:
         """OBS-2：toc 步骤在页外（整期串行/其他视图）跑完后刷新面板反馈区。
 
         面板可能不在 DOM（其他视图/串行运行），所有 update 都走 _safe_update。
@@ -1143,10 +1241,18 @@ class TocPanel:
             rows.append(C.notice_bar(
                 f"本次生成未成功（退出码 {code}）：原因见整期日志；修好后点「重新生成目录」。",
                 t, "error"))
-        elif payload:
+        elif payload and this_run:
             rows.append(C.notice_bar("本次生成完成。", t, "success"))
-        else:
+        elif payload:
+            # Lead round2 C1（结果归属）：结果 JSON 是本期最近一次生成的产物，本身没有
+            # 报告身份；重启/初次加载/切到别的报告后读到它不能声称「本次」，只能作参考。
+            rows.append(C.text("上次生成结果（非本轮，可能由其他检查报告触发），仅作参考。",
+                               t, "caption", t.palette.text_muted))
+        elif this_run:
             rows.append(C.notice_bar("本次没有生成结果 JSON：原因见整期日志。", t, "warn"))
+        else:
+            rows.append(C.text("还没有读到目录结果 JSON；运行「生成目录」后这里显示结果。",
+                               t, "caption", t.palette.text_faint))
         if payload and stale:
             rows.append(C.text("上次结果（非本轮，仅供参考）：", t, "caption",
                                t.palette.text_muted))

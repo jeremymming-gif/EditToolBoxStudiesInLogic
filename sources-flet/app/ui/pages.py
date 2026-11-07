@@ -1295,6 +1295,10 @@ class IssuePage(BasePage):
         self._toc_run_failed = False
         self._toc_run_cancelled = False
         self._toc_run_code = None
+        # Lead round2 C1（结果归属）：本会话内最近一次 toc 运行属于哪份报告；只有
+        # _toc_run_report == 当前报告且 rc 0/1 真跑完时才能说「本次」。
+        self._toc_run_report = ""
+        self._toc_payload_this_run = False
         self._toc_box = None
         self._ct_preview: dict = {}
         self._detail_status = None
@@ -1858,8 +1862,9 @@ class IssuePage(BasePage):
             # OBS-2（B-375）：无论当前看的是哪一步（含整期串行），toc 结束都立即刷新
             # 步骤结果区；rc 0/1 算本轮成功（1 仅表示需人工核对），>=2/<0 才算失败。
             failed = code not in (0, 1)
+            # Lead round2 C1：记下这次运行属于哪份报告；只有它才配称「本次」。
+            self._toc_run_report = self.field("toc_report")
             self._sync_toc_payload(code=code, failed=failed)
-            self._sync_toc_panel_result()
             # OBS-UI-2：单步「生成目录」跑完后收起日志 dock，让参数区回到视野；
             # 整期串行里 toc 不是最后一步时保持日志展开（后续步骤还要看进度）。
             if bool(getattr(self, "_toc_run_last", True)):
@@ -1868,7 +1873,10 @@ class IssuePage(BasePage):
         if key == "infocheck" and code == 0:
             # 批 117：页内「先生成检查报告」成功后，最新报告回填目录参数，
             # 目录主按钮随之启用（不强制用户先跑整期 01）。
-            self._latest_report()
+            # Lead task-17(a)：回填是显式动作（apply=True）；随后按新报告重算结果区
+            # 归属，避免把上一份报告的「本次生成完成」带进这份报告。
+            self._latest_report(apply=True)
+            self._sync_toc_payload()
             self._rebuild_detail()
             self._sync_nav()
             return
@@ -1884,7 +1892,6 @@ class IssuePage(BasePage):
         if key != "toc":
             return
         self._sync_toc_payload(cancelled=True)
-        self._sync_toc_panel_result()
         # 运行已结束，收起日志 dock 让参数区可用（日志仍可再展开查看）。
         self._collapse_log()
 
@@ -2221,7 +2228,8 @@ class IssuePage(BasePage):
     def _toc_effective_payload(self) -> dict:
         """只认当前报告名下的结果：换报告后不沿用上一份的目录结果（OBS-2 / Lead C）。"""
         payload = self._toc_payload
-        report = self.field("toc_report")
+        # Lead task-17(b)：与 _sync_toc_payload 同一口径解析（字段空时回退 latest 展示）。
+        report = self._toc_report_path()
         owner = str(getattr(self, "_toc_payload_report", "") or "")
         if payload and report and owner and owner != report:
             self._toc_payload = {}
@@ -2229,6 +2237,8 @@ class IssuePage(BasePage):
             self._toc_run_failed = False
             self._toc_run_cancelled = False
             self._toc_run_code = None
+            self._toc_run_report = ""
+            self._toc_payload_this_run = False
             return {}
         return payload
 
@@ -2288,6 +2298,15 @@ class IssuePage(BasePage):
             return self._empty_result("还没有生成目录",
                                       "点右上「生成目录」；默认取最新信息检查报告。")
         head: list = [C.section_label("生成结果", t), C.hairline(t)]
+        if not failed and not cancelled:
+            # Lead round2 C1：只有本会话内、当前报告、rc 0/1 真跑完的那次才叫「本次」；
+            # 重启/初次加载/换报告后读到的本期最近结果只能标「上次」（产物/按钮保留）。
+            if bool(getattr(self, "_toc_payload_this_run", False)):
+                head.append(C.notice_bar("本次生成完成。", t, "success"))
+            else:
+                head.append(C.text(
+                    "上次生成结果（非本轮，可能由其他检查报告触发），仅作参考。",
+                    t, "caption", t.palette.text_muted))
         if failed or cancelled:
             head.append(self._toc_cancel_note() if cancelled else self._toc_failure_note())
             if not payload:
@@ -2323,7 +2342,9 @@ class IssuePage(BasePage):
             shown.add(path)
             copy_path = copy_path or path
             actions.append(C.text_button(label, lambda e, p=path: self.app.open_path(p), t))
-        if report := self._latest_report():
+        # Lead task-17(b)：渲染路径用非副作用解析（字段空时 latest 仅用于展示/打开），
+        # 绝不能在一次渲染里把 toc_report 字段改回最新报告。
+        if report := self._toc_report_path():
             from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
             result_json = TOC.existing_result_json_path(report)
             if os.path.exists(result_json):
@@ -2763,6 +2784,8 @@ class IssuePage(BasePage):
         self._toc_run_failed = False
         self._toc_run_cancelled = False
         self._toc_run_code = None
+        self._toc_run_report = ""
+        self._toc_payload_this_run = False
         self._toc_box = None
         self._ct_preview = {}
         self._prep_pages = None
@@ -3029,7 +3052,8 @@ class IssuePage(BasePage):
         - code 给出时记录本轮成功/失败；cancelled 记录「已停止」；运行中清掉旧标记。
         """
         from ui import toc as TOC  # 延后导入，避免 ui 模块循环依赖
-        report = self.field("toc_report")
+        # Lead task-17：与渲染同一口径（字段优先；字段空时 latest 仅供展示/打开）。
+        report = self._toc_report_path()
         reset_run = False
         if not report:
             self._toc_payload = {}
@@ -3049,6 +3073,12 @@ class IssuePage(BasePage):
             self._toc_run_failed = False
             self._toc_run_cancelled = False
             self._toc_run_code = None
+            # Lead round2 C1：换报告后连「本轮属于谁」也清掉——A→B→A 时 A 的旧运行
+            # 不能重新冒充「本次」（磁盘结果只能算上次）。但「跑完刚好回调」时
+            # on_step_finished 已先记下本轮报告，不能在这里误清（首次运行无 payload
+            # owner 也走 reset_run 分支）；有 code/cancelled 的事件由调用方负责归属。
+            if code is None and not cancelled:
+                self._toc_run_report = ""
         if cancelled:
             self._toc_run_cancelled = True
             self._toc_run_failed = False
@@ -3061,10 +3091,22 @@ class IssuePage(BasePage):
             self._toc_run_failed = False
             self._toc_run_cancelled = False
             self._toc_run_code = None
+        # Lead round2 C1（结果归属）：磁盘结果 JSON 无报告身份、生成是本期级的，
+        # 「本次」必须同时满足：本会话内为当前报告真跑过、rc 0/1、非失败/取消。
+        # 重启（_toc_run_report 为空）/初次加载/换报告后读到本期最近结果都只算上次。
+        self._toc_payload_this_run = bool(
+            self._toc_payload
+            and str(getattr(self, "_toc_run_report", "") or "") == str(report or "")
+            and self._toc_run_code in (0, 1)
+            and not self._toc_run_failed
+            and not self._toc_run_cancelled)
         box = getattr(self, "_toc_box", None)
         if box is not None:
             box.controls = [self._toc_result()]
             self._safe_update(box)
+        # 参数区反馈卡同样会写「本次生成完成」，必须跟着归属一起刷新（换报告/
+        # 重启/初次加载时变成「上次结果」）。
+        self._sync_toc_panel_result()
 
     def _sync_toc_panel_result(self) -> None:
         """若目录参数面板已建，刷新它的反馈区（串行时可能不在 DOM，面板内安全更新）。"""
@@ -3076,7 +3118,8 @@ class IssuePage(BasePage):
             refresh(self.field("toc_report"),
                     getattr(self, "_toc_run_code", None),
                     bool(getattr(self, "_toc_run_failed", False)),
-                    bool(getattr(self, "_toc_run_cancelled", False)))
+                    bool(getattr(self, "_toc_run_cancelled", False)),
+                    this_run=bool(getattr(self, "_toc_payload_this_run", False)))
         except Exception:  # noqa: BLE001 - 页面桩/未挂载
             pass
 
@@ -3089,6 +3132,29 @@ class IssuePage(BasePage):
             self._sync_detail_status()
         except Exception:  # noqa: BLE001 - 页面构建期
             pass
+
+    def on_toc_report_changed(self, report: str | None = None) -> None:
+        """Lead task-17(c)：用户改「信息检查报告」后立即重算结果区归属。
+
+        旧版只在 toc 运行完成/取消时重算；手动切换报告（键入/粘贴/清空/浏览回填）
+        不触发重算，B 跑完后再切回 A 仍显示 B 的「本次生成完成」+B 产物。
+        这里让每一轮运行归属失效，再按新报告重读磁盘结果——它只能算「上次」。
+        """
+        current = self.field("toc_report") if report is None else str(report or "")
+        current = str(current or "").strip()
+        self._toc_payload = {}
+        self._toc_payload_report = ""
+        self._toc_run_report = ""
+        self._toc_run_code = None
+        self._toc_run_failed = False
+        self._toc_run_cancelled = False
+        self._toc_payload_this_run = False
+        self._sync_toc_payload()
+        try:
+            self.refresh_running()
+        except Exception:  # noqa: BLE001 - 页面构建期/未挂载
+            pass
+        self.mark("toc_report_changed", report=current)
 
     def refresh_running(self) -> None:
         self._sync_stop_action()
@@ -3300,13 +3366,35 @@ class IssuePage(BasePage):
             raise ValueError("请先选择期目录")
         return ASM.build_step_call(self, key)
 
-    def _latest_report(self) -> str:
+    def _toc_report_path(self) -> str:
+        """非副作用解析「当前报告」：字段优先，空才回退磁盘最新报告。
+
+        Lead task-17：渲染结果区/打开结果 JSON 不能顺手写字段——旧 _latest_report
+        每次渲染都可能把 toc_report 改回最新报告，导致 B 的「本次」结果串到 A。
+        回退值只用于展示/打开结果 JSON，绝不 set_field。
+        """
+        report = self.field("toc_report")
+        if report:
+            return report
         import ui.toc as TOC
 
-        report = TOC.latest_report(self._issue_dir())
-        if report:
-            self.set_field("toc_report", report)
-        return report
+        return TOC.latest_report(self._issue_dir())
+
+    def _latest_report(self, *, apply: bool = False) -> str:
+        """最新信息检查报告；默认不产生副作用（Lead task-17(a)）。
+
+        默认：字段有值就用字段，空才回退磁盘最新报告，且不写字段（渲染路径专用）。
+        apply=True：只给「刚跑完检查、明确回填最新报告」的动作用——重新取磁盘最新
+        报告并写回字段；没有最新报告时退回正常的非副作用解析。
+        """
+        if apply:
+            import ui.toc as TOC
+
+            report = TOC.latest_report(self._issue_dir())
+            if report:
+                self.set_field("toc_report", report)
+                return report
+        return self._toc_report_path()
 
     def _step_title(self, key: str) -> str:
         step = self._step_by_key(key)

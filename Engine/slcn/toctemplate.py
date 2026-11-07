@@ -424,8 +424,84 @@ def canonicalize_head(head: str, file_name: str, *, is_column: bool = False) -> 
     return "\n".join(lines)
 
 
+# ── 主持人行防孤字（OBS-HOST-2，B-375 round2）────────────────────────────
+#
+# 主持人行落在第 2 列：栏目版式是作者列 `p{0.26\textwidth}`（见 CANONICAL_ZH_COLUMN），
+# 正常版式（专栏勾选 0 篇时正文按普通条目排版）是 `r` 右对齐列。130mm 版心下
+# 列宽约 96.2pt；`\large` 约 12pt 下「主持人：」占 4 个汉字宽 ≈48pt，再写
+# 「本刊编辑部」(5 字 60pt) 就超过列宽，p 列里 CJK 任意断行只剩孤字「部」/被裁掉，
+# r 列里则一路向左撑、可能压到栏目名。用户拍板：保持版心与字号不变 —— 估算
+# label+host 显示宽超过列宽 90% 时格内分两行，短主持人保持单行。
+
+#: 栏目中文作者列宽（0.26\textwidth，130mm 版心）换算成 pt。
+_HOST_COLUMN_WIDTH_PT = 0.26 * (130 / 25.4) * 72.27
+#: 超过列宽的 90% 就换行（留出标点/边框余量；5 字 host=108pt 触发，3 字 84pt 不触发）。
+_HOST_LINE_BREAK_THRESHOLD_PT = _HOST_COLUMN_WIDTH_PT * 0.9
+#: 估算用字号：栏目行 `\large` 在 10.5pt 正文下约 12pt。
+_HOST_EM_PT = 12.0
+
+
+def _display_width_units(s: str) -> float:
+    """显示宽估算（与 `slcn/toc.display_width` 同一规则：汉字/全角 1、空格 0.25、其他 0.5）。"""
+    width = 0.0
+    for ch in s:
+        cp = ord(ch)
+        if 0x4E00 <= cp <= 0x9FFF or 0x3000 <= cp <= 0x303F or 0xFF00 <= cp <= 0xFFEF:
+            width += 1.0
+        elif cp == 0x20:
+            width += 0.25
+        else:
+            width += 0.5
+    return width
+
+
+def _host_needs_line_break(host: str) -> bool:
+    """「主持人：<host>」估算宽超过作者列 90% 时返回 True（格内分两行防孤字/裁切）。"""
+    width_pt = _display_width_units("主持人：" + (host or "")) * _HOST_EM_PT
+    return width_pt > _HOST_LINE_BREAK_THRESHOLD_PT
+
+
+def _host_cell_content(host: str) -> str:
+    r"""主持人单元格内容（不含外层 `&\textit{\large …}`）。
+
+    OBS-HOST-2：过长时用嵌套 `tabular[t]` 在格内换两行 —— `\newline` 只在 p 列
+    （段落模式）生效，正常版式的作者列是 `r` 列（LR 模式）时形同无效；嵌套 tabular
+    的 `\\` 在 r / p 两种列型都是真正的换行。[t] 让「主持人：」与栏目名同基线、
+    主持人在下一行，读起来是「主持人：→ 换行 → 名称」。
+    """
+    host = host or ""
+    label = "主持人："
+    if not _host_needs_line_break(host):
+        return label + host
+    return ("\\begin{tabular}[t]{@{}l@{}}" + label + "\\\\" + host
+            + "\\end{tabular}")
+
+
+#: 整格匹配：作者格里从 \textit{\large 到行尾结束 } 的全部内容。旧格可能是纯文本，
+#: 也可能是上一期沿用下来的嵌套 tabular —— 后者自身带花括号，不能再用「到第一个 } 为止」的
+#: 正则，否则会在 {@{}} 的 } 处截断、把行写坏。
+_HOST_CELL_RE = re.compile(r"(\\textit\{\\large\s+).*(\}\s*)$")
+
+
+def _replace_host_with_optional_break(line: str, host: str) -> str:
+    """把栏目行的旧主持人替换成本期主持人；过长时格内分两行（防孤字/裁切）。"""
+    replacement = _host_cell_content(host)
+    # 必须函数式替换：字符串 replacement 会被 re.sub 当转义模板 ——
+    # "\newline" 变「真换行 + ewline」（Lead 实测 bug），嵌套 tabular 里的 "\\"
+    # 也会被折叠成单个反斜杠。lambda 原样返回，不经过转义。
+    # 先整格替换（兼容「本期成品」里带嵌套 tabular 的旧格），未命中再退回按主持人文本替换。
+    new_line, matched = _HOST_CELL_RE.subn(
+        lambda m: m.group(1) + replacement + m.group(2), line)
+    if matched:
+        return new_line
+    return re.sub(r"主持人[：:][^}]*", lambda _m: replacement, line)
+
+
 def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]:
     r"""生成本期栏目块：中文沿用上一期形态（含间距/主持人），只替换名称与主持人。
+
+    OBS-HOST-2：主持人过长（「主持人：<host>」估算宽 > 作者列宽 90%）时格内
+    分两行（嵌套 `tabular[t]`，r 列 / p 列都有效），避免孤字或被裁切；版心/字号不变。
 
     英文表头单点在 TocSettings.english_column_title（B-375 用户拍板）：
       · 专栏 → Column: <columnNameEN>；专辑 → Special Issue: <columnNameEN>；
@@ -451,7 +527,7 @@ def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]
         for line in shape:
             new_line = line
             if "主持人" in new_line:
-                new_line = re.sub(r"主持人[：:][^}]*", f"主持人：{settings.columnHost}", new_line)
+                new_line = _replace_host_with_optional_break(new_line, settings.columnHost)
                 # 旧模板的 `&&` 把主持人放进页码列；新 canonical 三列表里主持人属于作者列（第 2 列），
                 # 否则页码列被撑到 84pt、X 列只剩 151pt（B-355 实测）。
                 new_line = re.sub(r"^(\s*)&&(\s*)\\textit", r"\1&\2\\textit", new_line)
@@ -460,9 +536,10 @@ def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]
             out.append(new_line)
         return out
 
-    # 上一期没有栏目块时的兜底形态（中文）
+    # 上一期没有栏目块时的兜底形态（中文）；主持人过长同样格内分两行（OBS-HOST-2）
+    host_cell = _host_cell_content(settings.columnHost)
     return [
         "{\\large \\bf{" + title + "}}",
-        "&\\textit{\\large 主持人：" + settings.columnHost + "}",
+        "&\\textit{\\large " + host_cell + "}",
         "\\\\[3.2 ex]",
     ]

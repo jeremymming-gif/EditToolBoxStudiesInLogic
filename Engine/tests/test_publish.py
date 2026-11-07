@@ -308,8 +308,9 @@ def install_fake_delivery(*, font_fail: bool = False, compile_fail_stem: str = "
                 out[key] = (False, "xelatex 第 1/2 次失败（退出码 1）：! Fake error")
         return out
 
+    # B-375 round2：fit_single_page 现在返回 (页数, 错误原因, 单页适配明细) 三元组。
     def fake_fit(folder, stems, compile_func, log=lambda _s: None):
-        return dict(page_map), ""
+        return dict(page_map), "", {}
 
     TD.check_windows_fonts, TD.compile_pdfs, TD.fit_single_page = fake_fonts, fake_compile, fake_fit
 

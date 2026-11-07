@@ -13,8 +13,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import flet as ft
 import pytest
@@ -478,3 +481,237 @@ def test_after_step_passes_last_flag_and_cancel_hook():
     ASM.after_step(page, "toc", object(), -1, True, "")
     assert ("cancelled", "toc") in page.events
     assert not any(event[0] == "finished" for event in page.events), "取消不得走完成钩子"
+
+# ── 6. 结果归属（Lead m01131 round2 C1）：只有本会话真的跑成功才叫「本次」──
+def _panel_texts(page) -> list[str]:
+    panel = getattr(page, "_toc_panel", None)
+    return _texts(panel.feedback) if panel is not None else []
+
+
+def test_toc_result_says_last_result_until_this_session_run(tmp_path):
+    """磁盘结果 JSON 无报告身份：初次加载/重启读到它只能算「上次」，不是「本次」。
+
+    变更依据（Lead m01131，round2 C1）：.toolbox-tmp/目录结果.json 是本期最近一次
+    生成的产物，切报告/重启后读到它不得声称「本次生成完成」；只有本会话内当前报告
+    真的跑完且成功（rc 0/1）才显示「本次」。
+    """
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue, in_toc=3))
+
+    # 模拟页面初次加载：磁盘已有本期最近结果，本会话没有任何运行记录。
+    page._sync_toc_payload()
+
+    texts = _texts(page._toc_box)
+    panel_texts = _panel_texts(page)
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert any("上次生成结果（非本轮" in text for text in panel_texts), panel_texts
+    assert not any("本次生成完成" in text for text in panel_texts), panel_texts
+
+    # 本会话真跑完一次成功后，才升格为「本次」。
+    page.on_step_finished("toc", 0)
+
+    texts = _texts(page._toc_box)
+    panel_texts = _panel_texts(page)
+    assert any("本次生成完成" in text for text in texts), texts
+    assert not any("上次生成结果（非本轮" in text for text in texts), texts
+    assert any("本次生成完成" in text for text in panel_texts), panel_texts
+    assert "打开 PDF" in _button_labels(page._toc_box)
+
+
+def test_toc_report_switch_a_b_a_shows_last_result_not_this_run(tmp_path):
+    """A 成功后切 B、再切回 A：磁盘最近结果只标「上次」，不得冒充 A 本轮结果。
+
+    变更依据（Lead m01131 round2 C1，acceptor 原生 C1）：B 的仅 tex 运行写的是
+    本期级结果 JSON（无报告字段），切回 A 不能显示成 A 的「本次生成完成」。
+    """
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue))
+    page.on_step_finished("toc", 0)
+    assert any("本次生成完成" in text for text in _texts(page._toc_box))
+
+    report_b = Path(report).parent / "信息检查乙.txt"
+    report_b.write_text("report b", encoding="utf-8")
+
+    page.set_field("toc_report", str(report_b))
+    page._sync_toc_payload()
+
+    texts = _texts(page._toc_box)
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert any("上次生成结果（非本轮" in text for text in _panel_texts(page)), \
+        _panel_texts(page)
+
+    # A → B → A：A 本会话跑过一次，但上一轮刚从 B 切回，仍只能是「上次」。
+    page.set_field("toc_report", str(report))
+    page._sync_toc_payload()
+
+    texts = _texts(page._toc_box)
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+    assert not any("本次生成完成" in text for text in texts), texts
+
+    # 再对 A 真跑一次才恢复「本次」。
+    page.on_step_finished("toc", 0)
+    texts = _texts(page._toc_box)
+    assert any("本次生成完成" in text for text in texts), texts
+    assert not any("上次生成结果（非本轮" in text for text in texts), texts
+
+
+def test_toc_result_after_restart_is_last_result_not_this_run(tmp_path):
+    """重启等价路径：新页面加载磁盘结果，_toc_run_report 为空 → 「上次」。"""
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue))
+    page.on_step_finished("toc", 0)
+    assert any("本次生成完成" in text for text in _texts(page._toc_box))
+
+    # 等价于新 IssuePage 从磁盘加载：运行归属与计数器全部复位。
+    page._toc_payload = {}
+    page._toc_payload_report = ""
+    page._toc_run_report = ""
+    page._toc_run_code = None
+    page._toc_run_failed = False
+    page._toc_run_cancelled = False
+    page._toc_payload_this_run = False
+    page._sync_toc_payload()
+
+    texts = _texts(page._toc_box)
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert page._toc_payload_this_run is False
+
+
+def test_toc_panel_feedback_marks_failed_and_cancelled_runs(tmp_path):
+    """失败/取消优先显示本轮结论，旧结果仍标「上次」且不提供按钮。"""
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue))
+
+    page.on_step_finished("toc", 2)
+    panel_texts = _panel_texts(page)
+    assert any("本次生成未成功（退出码 2）" in text for text in panel_texts), panel_texts
+    assert any("上次结果（非本轮" in text for text in panel_texts), panel_texts
+    assert any("本次生成未成功（退出码 2）" in text for text in _texts(page._toc_box))
+
+    page.on_step_finished("toc", 0)
+    panel_texts = _panel_texts(page)
+    assert any("本次生成完成" in text for text in panel_texts), panel_texts
+    assert not any("本次生成未成功" in text for text in panel_texts), panel_texts
+
+    page.on_step_cancelled("toc")
+    panel_texts = _panel_texts(page)
+    assert any("本次已停止，未产生新结果" in text for text in panel_texts), panel_texts
+    assert any("上次结果（非本轮" in text for text in panel_texts), panel_texts
+
+# ── 7. task-17：归属跟随报告字段；渲染结果区不得写字段（Lead m01217）─────
+def test_toc_result_render_never_rewrites_report_field(tmp_path):
+    """Lead task-17(a)(b)：渲染结果区/解析结果 JSON 不得回写 toc_report 字段。
+
+    旧 _latest_report() 在渲染期 set_field(最新报告)：字段选的是 A、磁盘最新是 B，
+    渲染一次结果区就把字段改回 B —— B 的产物被当成 A 的「本次」串显（acceptor f8_c1）。
+    """
+    page, issue, report_a = _build_page(tmp_path, settings=COLUMN)
+    page.set_field("toc_report", str(report_a))
+    report_b = Path(report_a).parent / "信息检查乙.txt"
+    report_b.write_text("report b", encoding="utf-8")
+    os.utime(report_a, (1_000_000, 1_000_000))  # 让 B 成为磁盘最新报告
+    _write_result(report_a, _result_payload(issue))
+
+    page._sync_toc_payload()
+    page._toc_result()
+    page._sync_toc_payload()
+
+    assert page.field("toc_report") == str(report_a), "渲染不得把字段改成最新报告 B"
+    assert page._toc_report_path() == str(report_a)
+    assert page._toc_payload_report == str(report_a)
+
+
+def test_report_field_edit_recomputes_attribution_immediately(tmp_path):
+    """Lead task-17(c)：手动改报告字段（键入/粘贴/清空）立即重算「本次/上次」。
+
+    acceptor 复现链：A 真跑成功 → 切 B → 切回 A。旧代码只在运行完成时记归属，
+    手动改字段不重算，结果区一直写「本次生成完成」+ B 的产物。
+    """
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue))
+    page.on_step_finished("toc", 0)
+    assert any("本次生成完成" in text for text in _texts(page._toc_box))
+    assert page._toc_run_report == str(report)
+
+    report_b = Path(report).parent / "信息检查乙.txt"
+    report_b.write_text("report b", encoding="utf-8")
+    field = page.fields["toc_report"][0]
+    field.value = str(report_b)
+    field.on_change(SimpleNamespace(control=field))  # 真实 on_change（含 clearable 包装）
+
+    assert page.field("toc_report") == str(report_b)
+    assert _marked(page.app, "toc_report_changed"), "报告字段变化必须触发归属重算"
+    assert page._toc_run_report == ""
+    texts = _texts(page._toc_box)
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+
+    # 手动切回 A：A 本会话跑过，但切换动作已清掉本轮归属 → 仍是「上次」。
+    field.value = str(report)
+    field.on_change(SimpleNamespace(control=field))
+    texts = _texts(page._toc_box)
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+
+
+def test_report_browse_watcher_recomputes_attribution(tmp_path, monkeypatch):
+    """Lead task-17(c)：浏览…回填不走 on_change，watcher 必须补一次归属重算。
+
+    main.browse_field 只写控件值 + store（不触发 on_change），所以「浏览…」选报告后
+    结果区若不重算，就会继续显示上一份报告的「本次」。watcher 轮询控件值变化后
+    调用页面 on_toc_report_changed。
+    """
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue))
+    page.on_step_finished("toc", 0)
+    assert any("本次生成完成" in text for text in _texts(page._toc_box))
+
+    report_b = Path(report).parent / "信息检查乙.txt"
+    report_b.write_text("report b", encoding="utf-8")
+    panel = ASM.toc_panel(page)
+    captured = []
+    panel._schedule_coro = captured.append  # 测试里直接 await，不真起后台任务
+
+    def _fake_browse(ref, *_args, **_kwargs):
+        # 等价 main.browse_field：只写控件值，不触发 on_change。
+        ref[0].value = str(report_b)
+
+    page.app.browse_field = _fake_browse
+    row = panel._report_picker_row()
+    browse_btn = next(node for node in _walk(row)
+                      if isinstance(node, ft.OutlinedButton)
+                      and getattr(node, "content", "") == "浏览…")
+    browse_btn.on_click(None)
+    assert captured, "浏览后应调度报告字段 watcher"
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(TOC.asyncio, "sleep", _no_sleep)
+    asyncio.run(captured[0])
+
+    assert page.field("toc_report") == str(report_b)
+    assert page.app.store.recent.get("toc_report") == str(report_b)
+    assert _marked(page.app, "toc_report_changed"), "watcher 必须触发归属重算"
+    texts = _texts(page._toc_box)
+    assert not any("本次生成完成" in text for text in texts), texts
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+
+
+def test_toc_result_uses_latest_report_for_display_without_writing_field(tmp_path):
+    """Lead task-17(b)：字段为空时 latest 只用于展示/打开结果 JSON，不写字段。"""
+    page, issue, report = _build_page(tmp_path, settings=COLUMN)
+    _write_result(report, _result_payload(issue))
+    page.set_field("toc_report", "")
+    assert page.field("toc_report") == ""
+
+    page._sync_toc_payload()
+    texts = _texts(page._toc_box)
+    labels = _button_labels(page._toc_box)
+    assert any("上次生成结果（非本轮" in text for text in texts), texts
+    assert "打开结果 JSON" in labels, labels
+    assert page.field("toc_report") == "", "展示 latest 不得回写字段"
+    assert page._toc_payload_this_run is False

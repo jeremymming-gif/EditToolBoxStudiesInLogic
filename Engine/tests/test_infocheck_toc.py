@@ -824,58 +824,94 @@ def _fit_compile_ok(folder: str, stem: str):
     return True, os.path.join(folder, f"{stem}.pdf")
 
 
+# 用例口径（B-375 round2，依据用户 2026-11-06 反馈：90 期英文目录 2 页、手改 vdistance 后
+# 才 1 页 ⇒ 需要真实的自动单页适配）。与旧断言相比的三处变化：
+#   · 返回三元组 (页数, 错误原因, 单页适配明细)，不再只回 2 元组；
+#   · 旧的「一次性压 40pt / 320pt 封顶」估算作废，改为逐份有界搜索最小压缩量；
+#   · 压到下限仍多页 ⇒ 明确失败并恢复原文，绝不静默交付 2 页。
 _d_fit = _mk_fit_dir(2, 1)
 _fit_before_en = open(os.path.join(_d_fit, "contents.tex"), encoding="utf-8").read()
 _fit_logs: list[str] = []
-_fit_counts, _fit_err = TD.fit_single_page(_d_fit, TD.TEX_STEMS, _fit_compile_ok,
-                                           log=_fit_logs.append)
+_fit_counts, _fit_err, _fit_detail = TD.fit_single_page(
+    _d_fit, TD.TEX_STEMS, _fit_compile_ok, log=_fit_logs.append)
 _fit_zh = open(os.path.join(_d_fit, "Chinese Content.tex"), encoding="utf-8").read()
-check("(j8) 单页适配：页数>1 的那份改写成 `\\dimexpr 原值 - Npt`、重编译后返回 1 页",
+check(r"(j8) 单页适配：页数>1 那份改写成单一 \dimexpr 原值 - Npt、重编译复核 1 页 + 明细",
       _fit_err == "" and _fit_counts == {"zh": 1, "en": 1}
       and "\\dimexpr 4.8ex - " in _fit_zh and _fit_zh.endswith("\\end{document}\n")
-      and _fit_calls == ["Chinese Content"], f"err={_fit_err} calls={_fit_calls}")
-check("(j9) 单页适配反例：页数=1 的那份**不动**（不破坏与人工成品的位置对齐）",
+      and _fit_zh.count("\\dimexpr") == 1
+      and _fit_calls and set(_fit_calls) == {"Chinese Content"} and len(_fit_calls) <= 8
+      and _fit_detail.get("Chinese Content", {}).get("pagesBefore") == 2
+      and _fit_detail.get("Chinese Content", {}).get("pagesAfter") == 1,
+      f"err={_fit_err} calls={_fit_calls} detail={_fit_detail}")
+check("(j9) 单页适配反例：页数=1 的那份不动（不破坏与人工成品的位置对齐）",
       open(os.path.join(_d_fit, "contents.tex"), encoding="utf-8").read() == _fit_before_en)
-check("(j10) 单页适配写日志：旧值→新值、页数前→后",
+check("(j10) 单页适配写日志：旧值→新值、页数前→后、尝试次数",
       any("\\vdistance 4.8ex →" in s for s in _fit_logs)
-      and any("2 页 → 1 页" in s for s in _fit_logs), f"{_fit_logs}")
+      and any("2 页 → 1 页" in s for s in _fit_logs)
+      and _fit_detail["Chinese Content"]["attempts"] >= 1, f"{_fit_logs}")
+
+# (j10b) 重复运行不累计：第二次已是 1 页 → 不重编、tex 逐字节不变、明细为空。
+_fit_zh_after = _fit_zh
+_fit_calls.clear()
+_fit_logs.clear()
+_fit_counts_b, _fit_err_b, _fit_detail_b = TD.fit_single_page(
+    _d_fit, TD.TEX_STEMS, _fit_compile_ok, log=_fit_logs.append)
+check("(j10b) 重复运行不累计：已是 1 页 → 不重编、tex 不动、明细为空",
+      _fit_err_b == "" and _fit_counts_b == {"zh": 1, "en": 1}
+      and _fit_calls == [] and _fit_detail_b == {}
+      and open(os.path.join(_d_fit, "Chinese Content.tex"),
+               encoding="utf-8").read() == _fit_zh_after
+      and any("无需单页适配" in s for s in _fit_logs), f"calls={_fit_calls} logs={_fit_logs}")
 _fit_calls.clear()
 
 
 def _fit_compile_still2(folder: str, stem: str):
+    """假编译：始终写成 2 页 log（模拟压到下限也回不到 1 页）。"""
     _fit_calls.append(stem)
+    with open(os.path.join(folder, f"{stem}.log"), "w", encoding="utf-8") as fh:
+        fh.write(f"Output written on {stem}.pdf (2 pages).\n")
     return True, os.path.join(folder, f"{stem}.pdf")
 
 
 _d_fit2 = _mk_fit_dir(2, 2)
-_counts2, _err2 = TD.fit_single_page(_d_fit2, TD.TEX_STEMS, _fit_compile_still2)
-check("(j11) 反例：压到上限仍 >1 页 → 返回可操作失败原因（不静默成功）",
-      "仍是 2 页" in _err2 and "自动单页适配失败" in _err2, _err2)
-_fit_base = _mk_fit_dir(2, 1)
-_shrink_small = TD._shrink_pt(_fit_base, "Chinese Content", 2, "zh", "0.4ex")
-_shrink_inherit = TD._shrink_pt(_fit_base, "Chinese Content", 2, "zh", "4.8ex")
-_shrink_cap_dir = _mk_fit_dir(2, 1)
-with open(os.path.join(_shrink_cap_dir, "Chinese Content.log"), "w", encoding="utf-8") as fh:
-    fh.write("Overfull \\vbox (9999.0pt too high) has occurred while \\output is active\n")
-check("(j12) 压缩量：本期成品小行距=40pt 基准；3 页再加 40pt；继承大行距按「压到人工量级」估算",
-      TD._BASE_SHRINK_PT == 40.0 and _shrink_small == 40.0
-      and TD._shrink_pt(_fit_base, "Chinese Content", 3, "zh", "0.4ex") == 80.0
-      and _shrink_inherit > 100.0, f"small={_shrink_small} inherit={_shrink_inherit}")
-check("(j12b) 总压缩量有上限 320pt（实测 85→86 缺 000 路径需 280pt，上限留余量）",
-      TD._MAX_TOTAL_SHRINK_PT == 320.0
-      and TD._shrink_pt(_shrink_cap_dir, "Chinese Content", 2, "zh", "0.4ex") == 320.0)
+_d_fit2_zh_before = open(os.path.join(_d_fit2, "Chinese Content.tex"), encoding="utf-8").read()
+_counts2, _err2, _detail2 = TD.fit_single_page(_d_fit2, TD.TEX_STEMS, _fit_compile_still2)
+check("(j11) 反例：压到下限仍 >1 页 → 返回可操作失败原因（不静默成功）",
+      "仍是 2 页" in _err2 and "自动单页适配失败" in _err2
+      and "下限" in _err2 and "人工" in _err2, _err2)
+check("(j11b) 失败路径恢复原文：tex 与尝试前逐字节相同、不写成功明细",
+      open(os.path.join(_d_fit2, "Chinese Content.tex"),
+           encoding="utf-8").read() == _d_fit2_zh_before and _detail2 == {}, _err2)
+
+# 阈值/常量（用 Lead 2026-11-06 实测数据钉住：EN base 4mm=11.36pt、floor -6pt ⇒ 总上限
+# 138.9pt；CN base 4.8ex≈23.52pt、floor -3pt ⇒ 212.2pt；9 篇 EN 实测最少约 126–130pt）。
+check("(j12) 单页适配参数：中文每处下限 -3pt、英文 -6pt；收敛 3pt、≤6 次二分、总编译 ≤8",
+      TD._SINGLE_PAGE_FLOOR_PT == {"zh": -3.0, "en": -6.0}
+      and TD._FIT_TOLERANCE_PT == 3.0 and TD._FIT_MAX_BISECT == 6
+      and TD._FIT_MAX_ATTEMPTS == 8)
+check(r"(j12b) 宏解析：纯长度/旧 \dimexpr 只取基准（不累计）、未知单位返回 None",
+      TD._parse_vdistance_base("4.8ex") == ("4.8ex", 23.52)
+      and TD._parse_vdistance_base("\\dimexpr 4.8ex - 2.00pt\\relax")[0] == "4.8ex"
+      and TD._parse_vdistance_base("\\dimexpr 4mm - 15.80pt\\relax")[0] == "4mm"
+      and TD._parse_vdistance_base("bogus") is None
+      and TD._parse_vdistance_base("\\dimexpr 4.8ex\\relax") is None)
 check("(j12c) 长度估算：4.8ex≈23.5pt、-3.05mm≈-8.7pt（只用于估算压缩量）",
       abs(TD.length_to_pt("4.8ex") - 23.52) < 0.01
       and abs(TD.length_to_pt("-3.05mm") + 8.677) < 0.01
       and TD.length_to_pt("bogus") is None)
+check(r"(j12d) 文本改写：只保留一层 \dimexpr、不重复嵌套；无宏返回 None",
+      TD._rewrite_vdistance_text("\\newcommand{\\vdistance}{\\\\[4.8ex]}", "4.8ex", 1.25)
+      == "\\newcommand{\\vdistance}{\\\\[\\dimexpr 4.8ex - 1.25pt\\relax]}"
+      and TD._rewrite_vdistance_text("no macro", "4.8ex", 1.0) is None)
 _d_novd = tempfile.mkdtemp(prefix="slcn_fit_novd_")
 with open(os.path.join(_d_novd, "Chinese Content.tex"), "w", encoding="utf-8") as fh:
     fh.write("no macro\n")
 with open(os.path.join(_d_novd, "Chinese Content.log"), "w", encoding="utf-8") as fh:
     fh.write("Output written on x.pdf (2 pages).\n")
-_c_novd, _err_novd = TD.fit_single_page(_d_novd, (("zh", "Chinese Content"),), _fit_compile_ok)
+_c_novd, _err_novd, _detail_novd = TD.fit_single_page(
+    _d_novd, (("zh", "Chinese Content"),), _fit_compile_ok)
 check("(j13) 反例：模板里没有 \\vdistance 宏 → 返回失败原因（不改坏模板）",
-      "\\vdistance" in _err_novd, _err_novd)
+      "\\vdistance" in _err_novd and _detail_novd == {}, _err_novd)
 
 with _patched(TD, "_FONT_CHECK_CACHE", None), _patched(TD.shutil, "which", lambda _n: None):
     _font_ok, _font_msg = TD.check_windows_fonts()

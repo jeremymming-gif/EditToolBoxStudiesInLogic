@@ -19,7 +19,9 @@ r"""生成中英文目录（对应 mac 版的「生成目录」，第 94 条搬�
   · `--place`：缺 `000*` 则自动创建 `000 Table of Contents`，生成后落位固定名
     `000*/Chinese Content.tex`、`000*/contents.tex`（覆盖旧成品；根下带时间戳的 tex 保留给下一期继承）；
   · `--compile`：落位后先做 Windows 字体前置检查（SimSun/SimHei/KaiTi，缺字体明确报错、绝不静默换字体），
-    再 `xelatex ×2`；页数 > 1 时一次性压缩 `\vdistance` 行距做单页适配（中英同一机制）；
+    再 `xelatex ×2`；页数 > 1 的目录自动单页适配（逐份有界搜索最小压缩量，中文每处下限
+    -3pt、英文 -6pt；压到下限仍多页 ⇒ 退出 2 并按快照回滚，绝不交付多页；已是 1 页的
+    份不重编、不改宏）；
   · 两者可分别使用；`--compile` 隐含需要落位。
   · 落位/编译/单页适配的唯一实现在 `slcn/tocdelivery.py`（`publish.py` 第 ④ 步共用，禁止第二份）。
   · `--result-json`：给外壳读的结构化结果（schema 见 `docs/ENGINE_API.md` §五）；默认仍是只生成 tex。
@@ -87,7 +89,7 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
     # 批 115 / D1-115-29：给工作台详情页的篇目计数（additive；旧字段一个不动）。
     articles = _toc.list_articles(report)
     # B-375：目录永远列出全部篇目（专栏勾选只改栏目标记、不删条目），inToc = total
-    return {
+    payload = {
         "articles": {"total": len(articles), "inToc": len(articles)},
         "templateSource": source,
         "templateNote": note,
@@ -103,6 +105,11 @@ def _result_json(report: str, report_dir: str, settings: "_toc.TocSettings",
         "manualEdits": _toc.manual_edits(report, settings),
         "warnings": list(extra_warnings),
     }
+    # B-375 round2：单页适配明细只在真的编译过（--compile/交付链）时 additive 返回；
+    # --place/--preview 不编译，不出现该字段（旧 schema 不变）。
+    if delivery is not None and delivery.compiled:
+        payload["singlePageFit"] = dict(delivery.single_page_fit or {})
+    return payload
 
 
 def _issue_info_warning(report: str) -> str:

@@ -19,17 +19,21 @@ r"""目录交付：**落位 + 编译 + 单页适配 + 字体前置检查**的唯
   ③ `check_windows_fonts`：编译前用最小 ctexart + `fontset=windows` 探针检查 SimSun/SimHei/KaiTi
      可用（**绝不静默换字体**；结果在进程内缓存，一次交付只探一次）；
   ④ `compile_pdfs`：`xelatex ×2`（复用 `compileall.compile_tex_xelatex`，延迟 import）；
-  ⑤ `fit_single_page`：页数 > 1 时**一次性**压缩 `\vdistance` 行距（中英同一机制），
-     最多再编译 1 轮；仍 > 1 页 → 返回失败原因。
+  ⑤ fit_single_page：页数 > 1 的目录自动单页适配（中英同一机制）—— 逐份解析当前
+     \vdistance 行距，从原始 tex 文本重写、有界搜索「回到 1 页所需的最小压缩量」
+     （中文每处下限 -3pt、英文 -6pt；最多 6 次二分、总编译 ≤ 8）；压到下限仍多页 →
+     返回可操作失败原因（rc=2，000 按快照回滚）。页数已是 1 的份不重编、不改宏。
 
-字体检查的探针与「行距压缩」的实测常量见各自函数的文档；`\vdistance` 的改写形式是
-`\\[\dimexpr <原值> - <每行压缩量>pt\relax]` —— 用 `\dimexpr` 就不必在 Python 里猜
-`ex/mm/pt` 的换算（`ex` 到底多高取决于当前字体，猜错就会压缩不足或压过头）。
+字体检查的探针见 check_windows_fonts 的文档。行距改写形式是
+\\[\dimexpr <原值> - <每处压缩量>pt\relax]（每次尝试都从原始文本重写，重复运行不累计）；
+用 \dimexpr 就不必在 Python 里猜 ex/mm/pt 的换算（ex 到底多高取决于当前字体，
+猜错就会压缩不足或压过头），压缩量由「编译一次、读页数」实测决定。
 """
 
 from __future__ import annotations
 
 import glob
+import math
 import os
 import re
 import shutil
@@ -57,33 +61,26 @@ _PAGES_RE = re.compile(r"Output written on .*?\((\d+)\s+pages?\)")
 _VDISTANCE_RE = re.compile(
     r"(\\newcommand\{\\vdistance\}\{\\\\\[)([^\]]*?)(\s*\]\})")
 
-_OVERFULL_RE = re.compile(r"Overfull \\vbox \(([\d.]+)pt too high\)")
+# ── 单页适配常量（B-375 round2 重做；用户拍板见 docs/RULES.md 十二）────────
+# 2026-11-06 用户在 9 篇双行长英题合成夹具上实测（closeout fixtures）：
+#   · 英文目录 base 4mm=11.36pt、8 处间距：总压缩 125pt 仍 2 页，130pt 才 1 页
+#     （每处约 15.8–16.3pt）；每处下限 -6pt 时总上限 138.9pt，仍可容纳；
+#   · 中文目录 base 4.8ex≈23.52pt、8 处间距：80pt 总压缩已回 1 页，下限 -3pt 时上限 212.2pt；
+#   · 20 篇双行长英题夹具总上限 330pt，但 320pt 仍 2 页 —— 必须走「先试上限仍多页
+#     ⇒ 明确失败」路径，绝不无声交付 2 页。
+# 因此不再用「一次性估一个压缩量 + 320pt 封顶」的老办法，而是逐份有界搜索：
+#   总压缩上限 = (当前行距 pt − 每处下限) × 间距数；先试上限判可行性，可行则二分
+#   最小通过值（收敛 3pt、≤6 次二分、总编译 ≤8）；每次尝试从原始 tex 文本重写，
+#   最终只写「最小通过值」的每处压缩量，重复运行不累计。
+_SINGLE_PAGE_FLOOR_PT = {"zh": -3.0, "en": -6.0}
+_FIT_MAX_BISECT = 6
+_FIT_TOLERANCE_PT = 3.0
+_FIT_MAX_ATTEMPTS = 8
 
-# ── 单页适配的实测常量（B-226 P1；证据 /tmp/b226/engine-owner/calib、sweep、deep）──
-# 实测（2026-10-25，5 期 × 本期/上期/内置三类模板，逐个搜索「总压缩多少 pt 回到 1 页」）：
-#   · 「本期成品」模板（同事已手调过 vdistance）：2 页时所需总压缩量只有 5~40pt
-#     （90 本期英文实测 ~17pt），取 **40pt**（≈14mm）即够，且每间距只压 4.4pt，肉眼几乎看不出；
-#   · 「上一期/内置」模板：同事上期手调的行距与本期版式不一定匹配——85→86 期实测需 **280pt**
-#     （4.8ex 的继承行距 + 旧版头距），所以对**继承来的大行距**按「压到人工量级」估算：
-#       (旧 vdistance − 目标值) × 条目间距数 + 版面余量
-#     目标值取中英人工成品里常见的量级（中文 ~−3pt；英文 ~−6pt），版面余量 60pt；
-#   · 日志里的 `Overfull \vbox (Xpt too high)` 不是可直接用的真实溢出（xelatex 会把页面撑高，
-#     实测 130pt 的期只需 30pt），只作为「大溢出」放大项 X/4；
-#   · 总压缩上限 **320pt**（≈113mm）：实测最坏验收路径（85→86 缺 000 场景）280pt 可达 1 页，
-#     上限再留 ~40pt 余量；超过上限就不压了 —— 宁可按失败返回（rc=2）也不把目录压成重叠。
-_BASE_SHRINK_PT = 40.0
-_MAX_TOTAL_SHRINK_PT = 320.0
-#: 继承模板的 vdistance 超过这个值（pt）才按「压到人工量级」估算；本期成品的小/负行距不触发。
-_INHERITED_VDUSTANCE_PT = 6.0
-#: 「压到人工量级」的目标值与版面余量（见上）。
-_TARGET_VDUSTANCE_PT = {"zh": -3.0, "en": -6.0}
-_INHERIT_HEADROOM_PT = 60.0
-
-#: 常见长度单位 → pt（只用于**估算**压缩量：ex 取 4.9pt/个，误差由 60pt 余量吸收）。
+#: 常见长度单位 → pt（估算行距用；ex 取 4.9pt/个，与历史口径一致）。
 _LENGTH_UNIT_PT = {"pt": 1.0, "bp": 1.00375, "mm": 2.845, "cm": 28.45, "in": 72.27,
                    "ex": 4.9, "em": 11.0}
 _LENGTH_RE = re.compile(r"^\s*([+-]?[\d.]+)\s*(pt|bp|mm|cm|in|ex|em)\s*$")
-
 
 class DeliveryError(Exception):
     """交付链的**可操作**失败原因（上游转成 rc=2 + stderr 原文）。"""
@@ -99,6 +96,8 @@ class DeliveryResult:
     compiled: bool = False
     pages: dict[str, int] = field(default_factory=dict)       # 语言键 → 页数
     warnings: list[str] = field(default_factory=list)
+    #: B-375 round2：单页适配明细（仅 compiled 时由 deliver 填入；见 fit_single_page）
+    single_page_fit: dict = field(default_factory=dict)
     error: str = ""                                           # 非空 = 失败原因（rc=2）
 
 
@@ -304,35 +303,8 @@ def length_to_pt(value: str) -> float | None:
     return float(m.group(1)) * _LENGTH_UNIT_PT[m.group(2)]
 
 
-def _shrink_pt(toc_dir: str, stem: str, pages: int, lang: str,
-               old_value: str = "") -> float:
-    """算一份目录的总压缩量（pt）。规则见文件顶部常量注释：
-
-      · 继承模板的大行距（> `_INHERITED_VDUSTANCE_PT`）：按「压到人工量级」估算；
-      · 其余：2 页基准 40pt（本期成品模板实测足够）；
-      · 日志 Overfull 大时按 X/4 放大；3 页以上每多一页再加一个基准量；封顶 320pt。
-    """
-    shrink = _BASE_SHRINK_PT
-    old_pt = length_to_pt(old_value)
-    gaps = max(1, count_vdistance_gaps(os.path.join(toc_dir, f"{stem}.tex")))
-    if old_pt is not None and old_pt > _INHERITED_VDUSTANCE_PT:
-        target = _TARGET_VDUSTANCE_PT.get(lang, _TARGET_VDUSTANCE_PT["zh"])
-        shrink = max(shrink, (old_pt - target) * gaps + _INHERIT_HEADROOM_PT)
-    log_path = os.path.join(toc_dir, f"{stem}.log")
-    overfull = 0.0
-    try:
-        with open(log_path, encoding="utf-8", errors="replace") as fh:
-            log = fh.read()
-        overfull = max((float(x) for x in _OVERFULL_RE.findall(log)), default=0.0)
-    except OSError:
-        pass
-    shrink = max(shrink, overfull / 4.0)
-    shrink += _BASE_SHRINK_PT * max(0, pages - 2)     # 3 页以上：每多一页再加一个基准量
-    return min(shrink, _MAX_TOTAL_SHRINK_PT)
-
-
 def read_vdistance(tex_path: str) -> str | None:
-    """读模板里 `\\vdistance` 的当前值（如 `4.8ex`）；没有这个宏返回 None。"""
+    """读模板里 \vdistance 的当前值（如 4.8ex）；没有这个宏返回 None。"""
     try:
         with open(tex_path, encoding="utf-8") as fh:
             text = fh.read()
@@ -342,81 +314,215 @@ def read_vdistance(tex_path: str) -> str | None:
     return m.group(2).strip() if m else None
 
 
-def _rewrite_vdistance(tex_path: str, shrink_pt: float) -> tuple[str, str, int] | None:
-    """把 `\\newcommand{\\vdistance}{\\[...]}` 改写为 `\\dimexpr 原值 - 每间距量pt`。
+def _read_text(tex_path: str) -> str:
+    """读 tex 原文（保持原始换行，不做 newline 转换）。"""
+    with open(tex_path, encoding="utf-8") as fh:
+        return fh.read()
 
-    返回 `(旧值, 新值, 间距数)`；模板里没有这个宏则返回 None（不改、由调用方记失败原因）。
-    """
+
+def _write_text(tex_path: str, text: str) -> None:
+    """写回 tex；newline="" 不做换行转换，保证与模板逐字节可比。"""
+    with open(tex_path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+
+
+def _restore_text(tex_path: str, text: str) -> None:
+    """把 tex 恢复成尝试前的原文（失败路径不留半截压缩）。"""
     try:
-        with open(tex_path, encoding="utf-8") as fh:
-            text = fh.read()
+        _write_text(tex_path, text)
     except OSError:
+        pass
+
+
+def _parse_vdistance_base(value: str) -> tuple[str, float] | None:
+    r"""解析 \vdistance 当前值，返回 (基准长度文本, 基准 pt)。
+
+    · 纯长度（4.8ex / -3.05mm / 12pt）→ 原文本 + pt 估算；
+    · 旧版改写结果 \dimexpr <基准> - <n>pt\relax → 只取 <基准>（绝不把已有压缩量再累计，
+      否则重复运行会把行距越压越小）；
+    · 其它（未知单位 / 解包超过 5 层 / 没有减法形式）→ None（调用方明确失败）。
+    """
+    inner = (value or "").strip()
+    if not inner:
         return None
+    for _ in range(5):
+        if not inner.startswith("\\dimexpr"):
+            break
+        inner = inner[len("\\dimexpr"):].strip()
+        if inner.endswith("\\relax"):
+            inner = inner[: -len("\\relax")].strip()
+        m = re.match(r"^(?P<base>.*?)\s*-\s*[+-]?[\d.]+\s*pt\s*$", inner, re.S)
+        if not m:
+            return None
+        inner = m.group("base").strip()
+        if not inner:
+            return None
+    base_pt = length_to_pt(inner)
+    if base_pt is None:
+        return None
+    return inner, base_pt
+
+
+def _rewrite_vdistance_text(text: str, base: str, per_gap_pt: float) -> str | None:
+    r"""把文本里的 \vdistance 改写成 \dimexpr <base> - <每处压缩量>pt\relax（不写盘）。"""
     m = _VDISTANCE_RE.search(text)
     if not m:
         return None
-    gaps = max(1, count_vdistance_gaps(tex_path))
-    per_gap = shrink_pt / gaps
-    old = m.group(2).strip()
-    new = f"\\dimexpr {old} - {per_gap:.2f}pt\\relax"
-    text = text[:m.start(2)] + new + text[m.end(2):]
-    try:
-        with open(tex_path, "w", encoding="utf-8", newline="") as fh:
-            fh.write(text)
-    except OSError:
-        return None
-    return old, new, gaps
+    new = f"\\dimexpr {base} - {per_gap_pt:.2f}pt\\relax"
+    return text[: m.start(2)] + new + text[m.end(2):]
 
 
 def fit_single_page(toc_dir: str, stems: list[tuple[str, str]] | tuple[tuple[str, str], ...],
-                    compile_func, log=lambda _s: None) -> tuple[dict[str, int | None], str]:
-    """页数 > 1 时**一次性**压缩行距（`\\vdistance`），最多再编译 1 轮。
+                    compile_func, log=lambda _s: None
+                    ) -> tuple[dict[str, int | None], str, dict[str, dict]]:
+    """把页数 > 1 的目录自动压到 1 页（B-375 round2：逐份有界搜索最小压缩量）。
 
-    `stems` 里只处理页数 > 1 的那几份（页数=1 的不动 —— 动了会破坏与人工成品的位置对齐）；
-    `compile_func(toc_dir, stem) -> (成功, PDF/错误)` 可被测试替换成假实现。
-    返回 `(各份最终页数, 失败原因)`：失败原因为空串表示成功。
+    返回 (各份最终页数, 失败原因, 单页适配明细)；失败原因为空串表示成功。
+    compile_func(toc_dir, stem) -> (成功, PDF/错误) 可被测试替换成假实现。
+    页数已是 1 的份不重编、不改宏；页数 > 1 的份先试「压到每处下限」判可行性，
+    可行后用二分法找最小通过量（≤ _FIT_MAX_BISECT 次二分、总编译 ≤ _FIT_MAX_ATTEMPTS）。
     """
     counts = read_page_counts(toc_dir, tuple(stems))
     over = [(key, stem) for key, stem in stems if (counts.get(key) or 0) > 1]
     if not over:
-        return counts, ""
+        log("目录均为 1 页，无需单页适配（不重编、不改行距）")
+        return counts, "", {}
 
-    log(f"目录页数超过 1 页："
+    log("目录页数超过 1 页："
         + "、".join(f"{stem}.pdf {counts.get(key)} 页" for key, stem in over)
-        + "；开始一次性压缩行距")
+        + "；开始自动单页适配（逐份搜索最小压缩量）")
+    fit: dict[str, dict] = {}
     for key, stem in over:
         pages_before = counts.get(key) or 0
         tex_path = os.path.join(toc_dir, f"{stem}.tex")
-        old_value = read_vdistance(tex_path)
-        if old_value is None:
+        try:
+            original_text = _read_text(tex_path)
+        except OSError as e:
+            return counts, f"读取 {stem}.tex 失败：{e}", fit
+        m = _VDISTANCE_RE.search(original_text)
+        if not m:
             return counts, (f"{stem}.tex 里没有可改写的 \\vdistance 行距宏，"
-                            f"无法做单页适配（目录仍 {pages_before} 页）")
-        shrink = _shrink_pt(toc_dir, stem, pages_before, key, old_value)
-        rewritten = _rewrite_vdistance(tex_path, shrink)
-        if rewritten is None:
-            return counts, (f"{stem}.tex 里没有可改写的 \\vdistance 行距宏，"
-                            f"无法做单页适配（目录仍 {pages_before} 页）")
-        _old, new, gaps = rewritten
-        log(f"   {stem}.tex：\\vdistance {old_value} → {new}"
-            f"（共压缩 {shrink:.1f}pt，{gaps} 处间距）")
+                            f"无法做单页适配（目录仍 {pages_before} 页）"), fit
+        old_value = m.group(2).strip()
+        parsed = _parse_vdistance_base(old_value)
+        if parsed is None:
+            return counts, (
+                f"{stem}.tex 的 \\vdistance 当前值「{old_value}」无法解析"
+                f"（只支持纯长度 mm/cm/pt/in/em/ex 或 \\dimexpr <长度> - <n>pt\\relax），"
+                f"无法做单页适配"), fit
+        base, base_pt = parsed
+        gaps = max(1, count_vdistance_gaps(tex_path))
+        floor = _SINGLE_PAGE_FLOOR_PT.get(key, _SINGLE_PAGE_FLOOR_PT["zh"])
+        max_total = (base_pt - floor) * gaps
+        if max_total <= 0:
+            return counts, (
+                f"{stem}.tex 当前行距 {old_value}（每处约 {base_pt:.2f}pt）"
+                f"已不低于自动适配下限（每处 {floor:.1f}pt），无法再压缩 —— "
+                f"请人工调整该份目录的行距/断行"), fit
 
-    # 只重编译被压缩的那几份；页数=1 的 PDF 保持初次编译的产物（位置不动）
-    for key, stem in over:
+        attempts = 0
+
+        def attempt(total_pt: float) -> tuple[str, int | None]:
+            """写一次压缩量并重编译；返回 (错误原因, 页数)，错误原因为空串表示成功。"""
+            nonlocal attempts
+            per_gap = math.ceil(total_pt / gaps * 100) / 100
+            new_text = _rewrite_vdistance_text(original_text, base, per_gap)
+            if new_text is None:  # 调用前已确认宏存在，理论上不可达
+                return "改写 \\vdistance 失败", None
+            try:
+                _write_text(tex_path, new_text)
+            except OSError as e:
+                return f"写 {stem}.tex 失败：{e}", None
+            attempts += 1
+            ok, msg = compile_func(toc_dir, stem)
+            if not ok:
+                _restore_text(tex_path, original_text)
+                return f"压缩行距后重新编译 {stem}.tex 失败：{msg}", None
+            page = page_count_from_log(toc_dir, stem)
+            log(f"   尝试压缩 {per_gap * gaps:.2f}pt（每处 {per_gap:.2f}pt）"
+                f"→ {page if page is not None else '?'} 页")
+            if page is None:
+                _restore_text(tex_path, original_text)
+                return (f"压缩后读不到 {stem}.tex 的编译页数"
+                        f"（{stem}.log 里没有 Output written on …）"), None
+            return "", page
+
+        err, page = attempt(max_total)
+        if err:
+            return counts, err, fit
+        if page is not None and page > 1:
+            _restore_text(tex_path, original_text)
+            return counts, (
+                f"{stem}.pdf 压缩到自动适配下限（每处 {floor:.1f}pt、共约 {max_total:.0f}pt）"
+                f"后仍是 {page} 页 —— 自动单页适配失败，请人工调整该份目录的行距/断行"), fit
+
+        lo, hi = 0.0, max_total
+        bisects = 0
+        while (hi - lo > _FIT_TOLERANCE_PT and bisects < _FIT_MAX_BISECT
+               and attempts < _FIT_MAX_ATTEMPTS):
+            mid = (lo + hi) / 2.0
+            err, page = attempt(mid)
+            if err:
+                return counts, err, fit
+            if page is not None and page <= 1:
+                hi = mid
+            else:
+                lo = mid
+            bisects += 1
+
+        applied_per_gap = math.ceil(hi / gaps * 100) / 100
+        # 四舍五入到 0.01pt 后不得超过每处下限；超过时钳到下限（差 <0.01pt/处，不影响单页
+        # 判定：hi 是实测通过值、搜索容差 3pt）。
+        if applied_per_gap > base_pt - floor:
+            applied_per_gap = round(base_pt - floor, 2)
+        final_text = _rewrite_vdistance_text(original_text, base, applied_per_gap)
+        if final_text is None:
+            return counts, f"改写 {stem}.tex 的 \\vdistance 失败", fit
+        try:
+            _write_text(tex_path, final_text)
+        except OSError as e:
+            _restore_text(tex_path, original_text)
+            return counts, f"写 {stem}.tex 失败：{e}", fit
+        # Lead review（2026-11-07）：二分最后一次 attempt 可能是「仍 2 页」的失败尝试，
+        # 000 里的 PDF 未必对应最终写下的最小压缩量；因此最终写盘后必须再编译一次并
+        # 确认确实是 1 页，否则不能报成功。预算：上限试探 1 + 二分 ≤6 + 最终复核 1 = 8。
+        attempts += 1
         ok, msg = compile_func(toc_dir, stem)
         if not ok:
-            return counts, f"压缩行距后重新编译 {stem}.tex 失败：{msg}"
-    counts_after = read_page_counts(toc_dir, tuple(stems))
-    for key, stem in over:
-        before = counts.get(key)
-        after = counts_after.get(key)
-        log(f"   {stem}.pdf：{before} 页 → {after} 页")
-        if (after or 0) > 1:
-            shrink = _shrink_pt(toc_dir, stem, before or 2, key, old_value)
-            return counts_after, (
-                f"{stem}.pdf 压缩行距（{shrink:.0f}pt，上限 {_MAX_TOTAL_SHRINK_PT:.0f}pt）后仍是 "
-                f"{after} 页 —— 自动单页适配失败，请人工调整该份目录的行距/断行")
-    return counts_after, ""
-
+            _restore_text(tex_path, original_text)
+            return counts, f"压缩行距后重新编译 {stem}.tex 失败：{msg}", fit
+        page = page_count_from_log(toc_dir, stem)
+        log(f"   最终复核：压缩 {applied_per_gap * gaps:.2f}pt（每处 {applied_per_gap:.2f}pt）"
+            f"→ {page if page is not None else '?'} 页")
+        if page is None:
+            _restore_text(tex_path, original_text)
+            return counts, (f"最终复核读不到 {stem}.tex 的编译页数"
+                            f"（{stem}.log 里没有 Output written on …）"), fit
+        if page > 1:
+            _restore_text(tex_path, original_text)
+            return counts, (
+                f"{stem}.pdf 按最小压缩量（每处 {applied_per_gap:.2f}pt、"
+                f"共 {applied_per_gap * gaps:.2f}pt）写回后复核仍是 {page} 页 —— "
+                f"自动单页适配失败，请人工调整该份目录的行距/断行"), fit
+        new_macro = f"\\dimexpr {base} - {applied_per_gap:.2f}pt\\relax"
+        total_shrink = round(applied_per_gap * gaps, 2)
+        counts[key] = 1
+        log(f"   {stem}.tex：\\vdistance {old_value} → {new_macro}")
+        log(f"   共压缩 {total_shrink:.2f}pt（{gaps} 处间距，每处 {applied_per_gap:.2f}pt，"
+            f"下限 {floor:.1f}pt/处），尝试 {attempts} 次")
+        log(f"   {stem}.pdf：{pages_before} 页 → 1 页")
+        fit[stem] = {
+            "pagesBefore": pages_before,
+            "pagesAfter": 1,
+            "gaps": gaps,
+            "oldMacro": old_value,
+            "newMacro": new_macro,
+            "applied": True,
+            "attempts": attempts,
+            "totalShrinkPt": total_shrink,
+            "perGapShrinkPt": applied_per_gap,
+        }
+    return counts, "", fit
 
 
 # ── 失败回滚（B-375 freeze-3 修复）────────────────────────────────────────
@@ -580,8 +686,10 @@ def deliver(root: str, *, do_compile: bool = True,
                 key = next(k for k, s in TEX_STEMS if s == stem)
                 return compile_all(folder, ((key, stem),))[key]
 
-            counts, err = fit_single_page(toc_dir, TEX_STEMS, compile_one, log=log)
+            counts, err, single_page_fit = fit_single_page(
+                toc_dir, TEX_STEMS, compile_one, log=log)
             res.pages = {key: (counts.get(key) or 0) for key, _stem in TEX_STEMS}
+            res.single_page_fit = single_page_fit
             if err:
                 raise DeliveryError(err)
     except DeliveryError as e:
