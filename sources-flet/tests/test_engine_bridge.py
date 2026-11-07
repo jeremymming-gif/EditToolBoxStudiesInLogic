@@ -162,13 +162,18 @@ def test_engine_call_to_dict(engine):
 
 # ── run_call 读取超长单行（大期 --json 实测 ~255KB > asyncio 默认 64KiB） ──
 
-def _py_call(script: str) -> EB.EngineCall:
-    """用当前解释器当子进程，直接执行一段 Python，避免依赖 Engine 桩。"""
-    return EB.EngineCall(entry="stub.py", argv=[sys.executable, "-c", script],
-                         label="stub")
+def _py_file_call(tmp_path, script: str) -> EB.EngineCall:
+    """用当前解释器执行 tmp_path 下的脚本文件，避免 Windows argv 超长（206）。"""
+    script_path = tmp_path / "stub_long_line.py"
+    script_path.write_text(script, encoding="utf-8")
+    argv = [sys.executable, str(script_path)]
+    # 回归闸：大脚本必须走文件，argv 保持很短；不再出现 python -c <136KB>。
+    assert sum(len(part) for part in argv) < 4096, "argv 过长：脚本应写入文件"
+    assert "-c" not in argv
+    return EB.EngineCall(entry="stub.py", argv=argv, label="stub")
 
 
-def test_run_call_reads_single_line_over_64k():
+def test_run_call_reads_single_line_over_64k(tmp_path):
     """单行 >64KiB 的 JSON 必须完整读完：rc0、on_line 只收一行且可解析。"""
     payload = {
         "status": "success",
@@ -177,10 +182,18 @@ def test_run_call_reads_single_line_over_64k():
                     for i in range(1200)],
         "blob": "x" * 70000,
     }
-    script = f"import json; print(json.dumps({payload!r}, ensure_ascii=False))"
+    script = (
+        "import json\n"
+        f"payload = {payload!r}\n"
+        "print(json.dumps(payload, ensure_ascii=False))\n"
+    )
+
+    call = _py_file_call(tmp_path, script)
+    assert call.argv[0] == sys.executable
+    assert call.argv[1].endswith(".py")
 
     lines: list[str] = []
-    code = asyncio.run(EB.run_call(_py_call(script), on_line=lines.append))
+    code = asyncio.run(EB.run_call(call, on_line=lines.append))
 
     assert code == 0
     assert len(lines) == 1, f"长单行共收到 {len(lines)} 行"
@@ -188,7 +201,7 @@ def test_run_call_reads_single_line_over_64k():
     assert json.loads(lines[0]) == payload
 
 
-def test_run_call_reads_multiline_with_oversized_line():
+def test_run_call_reads_multiline_with_oversized_line(tmp_path):
     """多行混合：普通行、超长 JSON 行、末尾无换行行都不能丢/不能串。"""
     payload = {"status": "success", "count": 3, "blob": "y" * 90000}
     script = (
@@ -199,8 +212,12 @@ def test_run_call_reads_multiline_with_oversized_line():
         "sys.stdout.write('tail-no-newline')"
     )
 
+    call = _py_file_call(tmp_path, script)
+    assert call.argv[0] == sys.executable
+    assert call.argv[1].endswith(".py")
+
     lines: list[str] = []
-    code = asyncio.run(EB.run_call(_py_call(script), on_line=lines.append))
+    code = asyncio.run(EB.run_call(call, on_line=lines.append))
 
     assert code == 0
     assert len(lines) == 4, lines[0][:80] if lines else "无输出"
@@ -209,3 +226,4 @@ def test_run_call_reads_multiline_with_oversized_line():
     assert json.loads(lines[1]) == payload
     assert lines[2] == "done"
     assert lines[3] == "tail-no-newline"
+
