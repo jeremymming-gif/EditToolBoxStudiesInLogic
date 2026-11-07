@@ -1290,6 +1290,9 @@ def _validate_entry_rel(rel: str, root_real: str, trash_real: str) -> str:
         return "绝对路径"
     if rel.startswith("\\") or re.match(r"^[A-Za-z]:", rel):
         return "绝对路径"
+    # 中段 .. 必须在归一化之前拒绝：normpath 会抹掉 symlink 敏感段，而实际 IO 用原始 rel。
+    if ".." in rel.replace("\\", "/").split("/"):
+        return "路径穿越"
     norm = os.path.normpath(rel)
     if norm in (".", "..") or norm.startswith(".." + os.sep) or norm.startswith("../"):
         return "路径穿越"

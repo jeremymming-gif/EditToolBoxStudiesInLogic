@@ -1114,6 +1114,107 @@ def test_rework_r01_trash_symlink_and_batch_boundary() -> None:
 
 
 @test
+def test_rework_r01_mid_dotdot_symlink_src_preflight() -> None:
+    """中段 .. + 批次内 symlink 指向根外：预检必须在归一化前拒绝，零写入。"""
+    d = tmpdir("rework_mid_src")
+    root = os.path.join(d, "root")
+    os.makedirs(os.path.join(root, "sub"))
+    outside = os.path.join(d, "outside")
+    os.makedirs(outside)
+    victim = os.path.join(d, "victim.aux")
+    with open(victim, "wb") as fh:
+        fh.write(b"VICTIM\n")
+    victim_sha = sha(victim)
+    batch = make_batch(root, "op-mid-src", {
+        "schema": 2, "root": root, "createdAt": "x", "mode": "aux",
+        "entries": [{"path": "sub/../victim.aux", "type": "file", "status": "moved"}],
+    })
+    os.symlink(outside, os.path.join(batch, "sub"))
+    before = snap(root)
+
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r01mid.src_cli_preflight",
+          rc == 2 and js.get("status") == "preflight_failed"
+          and js.get("ok") is False and js.get("count") == 0
+          and "路径穿越" in (js.get("error") or ""), _bad(err + json.dumps(js)))
+    check("r01mid.src_outside_intact",
+          sha(victim) == victim_sha
+          and not os.path.exists(os.path.join(root, "victim.aux")))
+    check("r01mid.src_zero_write",
+          snap(root) == before and os.listdir(outside) == [])
+    check("r01mid.src_batch_kept",
+          os.path.isdir(batch) and os.path.islink(os.path.join(batch, "sub"))
+          and _manifest(batch).get("entries")
+          == [{"path": "sub/../victim.aux", "type": "file", "status": "moved"}])
+
+
+@test
+def test_rework_r01_mid_dotdot_symlink_dst_preflight() -> None:
+    """中段 .. + 根内 symlink：目标不得写到根外，预检零写入。"""
+    d = tmpdir("rework_mid_dst")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    outside = os.path.join(d, "outside")
+    os.makedirs(outside)
+    os.symlink(outside, os.path.join(root, "sub2"))
+    batch = make_batch(root, "op-mid-dst", {
+        "schema": 2, "root": root, "createdAt": "x", "mode": "aux",
+        "entries": [{"path": "sub2/../leak.aux", "type": "file", "status": "moved"}],
+    }, {"leak.aux": b"LEAK\n"})
+    mkdirs(batch, "sub2")
+    before = snap(root)
+
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r01mid.dst_cli_preflight",
+          rc == 2 and js.get("status") == "preflight_failed"
+          and js.get("ok") is False and js.get("count") == 0
+          and "路径穿越" in (js.get("error") or ""), _bad(err + json.dumps(js)))
+    check("r01mid.dst_no_escape",
+          os.listdir(outside) == []
+          and not os.path.exists(os.path.join(root, "leak.aux"))
+          and not os.path.exists(os.path.join(d, "leak.aux")))
+    check("r01mid.dst_zero_write", snap(root) == before)
+    check("r01mid.dst_batch_kept",
+          os.path.isdir(batch) and os.path.exists(os.path.join(batch, "leak.aux"))
+          and _manifest(batch).get("entries")
+          == [{"path": "sub2/../leak.aux", "type": "file", "status": "moved"}])
+
+
+@test
+def test_rework_r01_mid_dotdot_component_rejected() -> None:
+    """无 symlink 的中段 .. 同样拒绝；合法 . 分量/双斜杠保持兼容。"""
+    d = tmpdir("rework_mid_plain")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    batch = make_batch(root, "op-mid-plain", {
+        "schema": 2, "root": root, "createdAt": "x", "mode": "aux",
+        "entries": [{"path": "x/../b.aux", "type": "file", "status": "moved"}],
+    }, {"b.aux": b"B\n"})
+    mkdirs(batch, "x")
+
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r01mid.plain_cli_preflight",
+          rc == 2 and js.get("status") == "preflight_failed"
+          and js.get("ok") is False and js.get("count") == 0
+          and "路径穿越" in (js.get("error") or ""), _bad(err + json.dumps(js)))
+    check("r01mid.plain_zero_write",
+          not os.path.exists(os.path.join(root, "b.aux"))
+          and os.path.exists(os.path.join(batch, "b.aux"))
+          and os.path.isdir(batch))
+
+    root_real = os.path.realpath(root)
+    trash_real = os.path.realpath(batch)
+    bad_paths = ("sub/../victim.aux", "a\\..\\b.aux", "..\\evil.aux", "../evil.aux")
+    check("r01mid.unit_rejects_dotdot",
+          all(cd._validate_entry_rel(p, root_real, trash_real) == "路径穿越" for p in bad_paths),
+          _bad(str([(p, cd._validate_entry_rel(p, root_real, trash_real)) for p in bad_paths])))
+    check("r01mid.unit_allows_dot_and_double_slash",
+          cd._validate_entry_rel("./b.aux", root_real, trash_real) == ""
+          and cd._validate_entry_rel("x//b.aux", root_real, trash_real) == "")
+
+
+@test
 def test_rework_r02_unbraced_input_is_protected() -> None:
     d = tmpdir("rework_r02")
     root = os.path.join(d, "root")
