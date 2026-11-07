@@ -91,7 +91,7 @@ _TEX_LOG_BANNERS = (b"This is XeTeX", b"This is pdfTeX", b"This is LuaTeX", b"Th
 CLOSURE_MAX_DEPTH = 20
 _GRAPHICS_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".eps")
 
-_TEX_INPUT_RE = re.compile(r"\\(?:input|include)(?![A-Za-z])\s*\{([^{}]*)\}")
+_TEX_INPUT_RE = re.compile(r"\\(?:input|include)(?![A-Za-z])\s*(?:\{([^{}]*)\}|\"([^\"]*)\"|([^\s{}%\\]+))")
 _TEX_GRAPHICS_RE = re.compile(r"\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}")
 _TEX_ADDBIB_RE = re.compile(r"\\addbibresource\s*(?:\[[^\]]*\])?\s*\{([^{}]*)\}")
 _TEX_BIBLIO_RE = re.compile(r"\\bibliography\s*\{([^{}]*)\}")
@@ -256,32 +256,50 @@ class _RefScanner:
                 out.append(b)
         return out
 
-    def resolve(self, raw: str, bases: list[str], exts: tuple[str, ...]) -> str:
-        """成功 → 相对 POSIX 路径；失败 → 记 error 并返回 ""。"""
+    def resolve(self, raw: str, bases: list[str], exts: tuple[str, ...]) -> list[str]:
+        """成功 → 相对 POSIX 路径列表（同名多来源全部保护）；失败 → 记 error 并返回 []。"""
         p = raw.strip().strip('"')
         if not p:
-            return ""
+            return []
         if any(ch in p for ch in ("\\", "{", "}", "#", "$")):
             self._error(p, f"无法解析的引用（动态路径）：{p}")
-            return ""
+            return []
         if os.path.isabs(p) or re.match(r"^[A-Za-z]:[\\/]", p):
             self._error(p, f"绝对路径引用（不安全）：{p}")
-            return ""
+            return []
         cands = [p] if os.path.splitext(p)[1] else [p + e for e in exts]
+        found: list[str] = []
         escaped = False
         for base in self._split_bases(bases):
             for c in cands:
                 full = os.path.normpath(os.path.join(base, c))
-                if not _inside(self.root_real, os.path.realpath(full)):
-                    escaped = True
+                real = os.path.realpath(full)
+                if not _inside(self.root_real, real):
+                    # R04：根内别名指向根外——只保护别名本身，不跟随、不递归。
+                    root_abs = os.path.abspath(self.root)
+                    full_abs = os.path.abspath(full)
+                    if _inside(root_abs, full_abs) and os.path.lexists(full_abs):
+                        rel = P.rel(full_abs, root_abs).replace(os.sep, "/")
+                        if rel not in found:
+                            found.append(rel)
+                    else:
+                        escaped = True
                     continue
-                if os.path.isfile(full):
-                    return _rel(self.root, full)
+                if not os.path.isfile(real) and not os.path.isfile(full):
+                    continue
+                for target in (full, real):
+                    rel = P.rel(target, self.root_real).replace(os.sep, "/")
+                    if rel.startswith("../"):
+                        continue
+                    if rel not in found:
+                        found.append(rel)
+        if found:
+            return found
         if escaped:
             self._error(p, f"引用越界（不在期目录内）：{p}")
         else:
             self._error(p, f"引用缺失：{p}")
-        return ""
+        return []
 
     # -- 递归解析一个 tex ----------------------------------------------
     def scan_tex(self, info: dict, depth: int = 0) -> None:
@@ -294,7 +312,8 @@ class _RefScanner:
             self._error(rel, "无法读取 .tex（引用闭包无法安全判定）")
             return
         tex_dir = os.path.dirname(os.path.abspath(info["full"]))
-        bases = [self.root, tex_dir]
+        # R03：按真实编译 cwd 解析（文章目录优先）；同名多来源全部保护，不猜错后删除。
+        bases = [tex_dir, self.root]
         gbases = list(bases)
         for m in _TEX_GRAPHICSPATH_RE.finditer(text):
             for pm in _TEX_PATH_ITEM_RE.finditer(m.group(1)):
@@ -306,33 +325,32 @@ class _RefScanner:
                     if os.path.isdir(full):
                         gbases.append(full)
         for m in _TEX_GRAPHICS_RE.finditer(text):
-            got = self.resolve(m.group(1), gbases, _GRAPHICS_EXTS)
-            if got:
+            for got in self.resolve(m.group(1), gbases, _GRAPHICS_EXTS):
                 self.refs.add(got)
         for m in _TEX_INPUT_RE.finditer(text):
-            got = self.resolve(m.group(1), bases, (".tex",))
-            if not got:
-                continue
-            self.refs.add(got)
-            if not got.lower().endswith(".tex"):
-                continue  # 显式 input 一个 .bbl/.out：保护即可，不递归
-            if depth + 1 >= CLOSURE_MAX_DEPTH:
-                self._error(got, "引用嵌套过深（无法安全判定）")
-                continue
-            self.scan_tex(
-                {"rel": got, "full": _abs(self.root, got), "name": os.path.basename(got)},
-                depth + 1,
-            )
+            # R02：同时接受 \input{file}、\input "file" 与合法的 \input file。
+            raw = next((g for g in m.groups() if g is not None), "")
+            for got in self.resolve(raw, bases, (".tex",)):
+                self.refs.add(got)
+                if not got.lower().endswith(".tex"):
+                    continue  # 显式 input 一个 .bbl/.out：保护即可，不递归
+                if not _inside(self.root_real, os.path.realpath(_abs(self.root, got))):
+                    continue  # 别名指向根外（外链）：保护别名，不读目标、不递归
+                if depth + 1 >= CLOSURE_MAX_DEPTH:
+                    self._error(got, "引用嵌套过深（无法安全判定）")
+                    continue
+                self.scan_tex(
+                    {"rel": got, "full": _abs(self.root, got), "name": os.path.basename(got)},
+                    depth + 1,
+                )
         for m in _TEX_ADDBIB_RE.finditer(text):
-            got = self.resolve(m.group(1), bases, (".bib",))
-            if got:
+            for got in self.resolve(m.group(1), bases, (".bib",)):
                 self.refs.add(got)
         for m in _TEX_BIBLIO_RE.finditer(text):
             for part in m.group(1).split(","):
                 if not part.strip():
                     continue
-                got = self.resolve(part, bases, (".bib",))
-                if got:
+                for got in self.resolve(part, bases, (".bib",)):
                     self.refs.add(got)
 
 
@@ -444,11 +462,12 @@ def _scan(root: str, stop_check: Callable[[], None] | None = None) -> dict:
         name = info["name"]
         rel = info["rel"]
         low = name.lower()
-        if info["in_tmp"]:
-            cands[rel] = {"path": rel, "kind": "tmp", "reason": "工具临时工作目录残留"}
-            continue
+        # R05：备份/历史判据优先于 .toolbox-tmp —— tmp 里的 .bak 同样是不可证明可再生的备份。
         if _looks_backup_file(name):
             add_kept(rel, "backup", "备份/历史稿命名（保留）")
+            continue
+        if info["in_tmp"]:
+            cands[rel] = {"path": rel, "kind": "tmp", "reason": "工具临时工作目录残留"}
             continue
         if info["rel_dir"] == "" and name in TOC_RESULT_NAMES:
             cands[rel] = {"path": rel, "kind": "toc-result", "reason": "目录生成结果（可重新生成）"}
@@ -614,17 +633,25 @@ def _mk_result(
     warnings: list[str] | None = None,
     error: str = "",
     kept: list[dict] | None = None,
+    entries: list[dict] | None = None,
+    already_restored: int = 0,
+    skipped: list[dict] | None = None,
+    summary: dict | None = None,
 ) -> dict:
     paths = paths or []
-    return {
+    if entries is None:
+        items = [{"path": p, "action": action} for p in paths]
+    else:
+        items = [dict(e) for e in entries]
+    result = {
         "ok": status in _STATUS_OK,
         "command": "cleantemp",
         "mode": "daily" if action == "move" else "restore",
         "dryRun": bool(dry_run),
         "root": root,
         "count": count,
-        "entryCount": len(paths),
-        "entries": [{"path": p, "action": action} for p in paths],
+        "entryCount": len(items),
+        "entries": items,
         "trashDir": trash,
         "restoreDir": restore,
         "failures": failures or [],
@@ -634,6 +661,17 @@ def _mk_result(
         "status": status,
         "kept": kept or [],
     }
+    if action == "restore":
+        # R08：撤销账本对外字段（INTERFACE-REWORK 冻结）。
+        result["alreadyRestored"] = already_restored
+        result["skipped"] = skipped or []
+        result["summary"] = summary or {
+            "restored": count,
+            "alreadyRestored": already_restored,
+            "skipped": len(skipped or []),
+            "failed": len(failures or []),
+        }
+    return result
 
 
 def _failures_from_errors(errors: list[dict]) -> list[dict]:
@@ -747,6 +785,52 @@ def _move_into_trash(src: str, dst: str) -> None:
         ) from exc
 
 
+def _same_root(a: str, b: str) -> bool:
+    """root 比较用真实路径：同一目录经符号链接/相对路径传入时不误判为「不属于」。"""
+    try:
+        ra = os.path.realpath(os.path.abspath(os.path.expanduser(a)))
+        rb = os.path.realpath(os.path.abspath(os.path.expanduser(b)))
+    except OSError:
+        return False
+    return ra == rb
+
+
+def _trash_parent_problem(root: str) -> str:
+    """R01：清理执行前校验 <root>/.toolbox-trash 本身可信（拒绝符号链接/越界）。"""
+    parent = os.path.join(root, TRASH_DIR)
+    if not os.path.lexists(parent):
+        return ""
+    if os.path.islink(parent):
+        return f"回收目录 {TRASH_DIR} 是符号链接（拒绝跟随）"
+    if not os.path.isdir(parent):
+        return f"回收目录 {TRASH_DIR} 不是文件夹（拒绝使用）"
+    if not _inside(os.path.realpath(root), os.path.realpath(parent)):
+        return f"回收目录 {TRASH_DIR} 的真实路径不在期目录内（拒绝使用）"
+    return ""
+
+
+def _batch_problem(root: str, trash_root: str) -> str:
+    """R01/R06/R07：恢复前校验批次归属与边界；返回空串=通过。"""
+    if os.path.islink(trash_root):
+        return "回收批次是符号链接（拒绝跟随）"
+    if not os.path.isdir(trash_root):
+        return f"回收目录不存在：{trash_root}"
+    parent = os.path.dirname(os.path.normpath(trash_root))
+    expected = os.path.normpath(os.path.join(root, TRASH_DIR))
+    if parent != expected:
+        return f"回收批次不在 {os.path.join(root, TRASH_DIR)} 下（拒绝恢复）"
+    if os.path.islink(parent):
+        return f"回收目录 {TRASH_DIR} 是符号链接（拒绝恢复）"
+    root_real = os.path.realpath(root)
+    parent_real = os.path.realpath(parent)
+    if not _inside(root_real, parent_real):
+        return f"回收目录 {TRASH_DIR} 的真实路径不在期目录内（拒绝恢复）"
+    trash_real = os.path.realpath(trash_root)
+    if trash_real == parent_real or not _inside(parent_real, trash_real):
+        return f"回收批次的真实路径不在 {TRASH_DIR} 内（拒绝恢复）"
+    return ""
+
+
 def _new_operation_id() -> str:
     stamp = _dt.datetime.now().strftime("%Y_%m_%d_%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
@@ -755,6 +839,8 @@ def _new_operation_id() -> str:
 def _new_batch_dir(root: str, operation_id: str) -> str:
     parent = os.path.join(root, TRASH_DIR)
     os.makedirs(parent, exist_ok=True)
+    if not _inside(os.path.realpath(root), os.path.realpath(parent)):
+        raise OSError(f"回收目录 {TRASH_DIR} 的真实路径不在期目录内")
     base = os.path.basename(os.path.abspath(root)) or "root"
     cand = os.path.join(parent, f"{base}-{operation_id}")
     n = 1
@@ -793,6 +879,16 @@ def run_daily(
 
 
 def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -> dict:
+    # R01：先验证回收区自身可信；不通过则零写入。
+    problem = _trash_parent_problem(root)
+    if problem:
+        return _mk_result(
+            root,
+            status="preflight_failed",
+            dry_run=dry_run,
+            failures=[{"path": os.path.join(root, TRASH_DIR), "error": problem}],
+            error=f"预检未通过（未写入任何文件）：{problem}",
+        )
     try:
         scanned = _scan(root, stop_check=_check_stop)
     except _Cancelled:
@@ -868,6 +964,12 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
     try:
         trash_root = _new_batch_dir(root, operation_id)
         os.makedirs(trash_root, exist_ok=True)
+        if not _inside(os.path.realpath(root), os.path.realpath(trash_root)):
+            try:
+                os.rmdir(trash_root)  # 刚建的空目录才删；绝不递归删链接目标
+            except OSError:
+                pass
+            raise OSError("回收批次真实路径不在期目录内")
     except OSError as exc:
         failures = [{"path": os.path.join(root, TRASH_DIR), "error": f"无法创建回收批次：{exc}"}]
         msg = "预检未通过（未写入任何文件）：无法创建回收批次"
@@ -1018,32 +1120,35 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
 
     if not os.path.isdir(root):
         return preflight(f"路径不是文件夹：{root}", root)
-    if not os.path.isdir(trash_root):
-        return preflight(f"回收目录不存在：{trash_root}", trash_root)
+    root_real = os.path.realpath(root)
+    # R01/R06/R07：批次归属、父目录、链接与边界校验 —— 全部先于任何写入。
+    problem = _batch_problem(root, trash_root)
+    if problem:
+        return preflight(problem, trash_root)
     data = read_manifest(trash_root)
     if data is None:
-        return preflight("回收清单缺失或不是合法 JSON（无法验证批次）", trash_root)
+        return preflight("回收清单缺失或不是合法 JSON（无法验证批次；批次保留可重试）", trash_root)
 
-    entries = data.get("entries")
-    if isinstance(entries, list):
-        raw_items = entries
-    elif isinstance(data.get("files"), list):  # 旧 v1
-        raw_items = [{"path": str(x), "type": "file"} for x in data["files"]]
+    raw_entries = data.get("entries")
+    v1 = False
+    if isinstance(raw_entries, list):
+        raw_items = raw_entries
+    elif isinstance(data.get("files"), list):  # 旧 v1：升级为带 status 的 entries
+        v1 = True
+        raw_items = [
+            {"path": str(x), "type": "file", "status": "moved"} for x in data["files"]
+        ]
     else:
         return preflight("不认识的回收清单（既无 entries 也无 files）", trash_root)
 
     manifest_root = data.get("root")
-    if manifest_root and os.path.abspath(os.path.expanduser(str(manifest_root))) != root:
+    if manifest_root and not _same_root(str(manifest_root), root):
         return preflight(
             f"回收批次不属于该目录：清单 root={manifest_root}，本次 root={root}", trash_root
         )
-    expected_parent = os.path.realpath(os.path.join(root, TRASH_DIR))
-    if os.path.realpath(os.path.dirname(trash_root)) != expected_parent:
-        return preflight(f"回收批次不在 {os.path.join(root, TRASH_DIR)} 下", trash_root)
 
-    root_real = os.path.realpath(root)
     trash_real = os.path.realpath(trash_root)
-    items: list[tuple[str, str, object]] = []
+    items: list[dict] = []
     for raw in raw_items:
         if not isinstance(raw, dict):
             return preflight(f"清单条目不是对象：{raw!r}", trash_root)
@@ -1053,46 +1158,74 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
         bad = _validate_entry_rel(rel, root_real, trash_real)
         if bad:
             return preflight(f"清单条目不安全（{bad}）：{rel or '（空路径）'}", rel)
-        items.append((rel, typ, status))
+        items.append({"raw": raw, "path": rel, "type": typ, "status": status})
 
     done: list[str] = []
     failures: list[dict] = []
     warnings: list[str] = []
-    conflicts = 0
-    missing = 0
+    skipped: list[dict] = []
+    already = 0
+
+    def add_skip(rel: str, reason: str) -> None:
+        skipped.append({"path": rel, "reason": reason})
+
+    def persist() -> None:
+        # R08：每条成功搬回后把该条 status 原子持久为 restored（v1 也升级为 entries，
+        # files 字段保留以继续兼容旧读取方）。
+        data["entries"] = raw_items
+        try:
+            _save_manifest(trash_root, data)
+        except OSError as exc:
+            warnings.append(f"恢复清单状态写入失败（仍可重试）：{exc}")
+
+    def stopped() -> dict:
+        msg = f"已停止：恢复 {len(done)} 项（可重试）"
+        return _mk_result(
+            root, status="cancelled", count=len(done), paths=done,
+            action="restore", dry_run=dry_run, trash=trash_root,
+            restore=trash_root, operation_id=str(data.get("operationId") or ""),
+            failures=failures, warnings=warnings, error=msg,
+            entries=[{"path": p, "action": "restore", "status": "restored"} for p in done],
+            already_restored=already, skipped=skipped,
+            summary={"restored": len(done), "alreadyRestored": already,
+                     "skipped": len(skipped), "failed": len(failures)},
+        )
+
     try:
-        for rel, typ, status in items:
+        for item in items:
             _check_stop()
-            if status not in (None, "", "moved", "moving"):
-                continue  # planned/failed：没搬过，不恢复、不算失败
+            rel = item["path"]
+            typ = item["type"]
+            state = item["status"]
+            raw = item["raw"]
             src = os.path.join(trash_root, rel)
             dst = os.path.join(root, rel)
-            if typ == "dir":
-                if not os.path.isdir(src):
-                    missing += 1
-                    msg = f"Missing in trash: {rel}"
-                    warnings.append(msg)
-                    emit(msg)
-                    continue
+
+            if state == "restored":
                 if os.path.lexists(dst):
-                    conflicts += 1
-                    msg = f"Skip (已经存在，不覆盖): {rel}"
-                    warnings.append(msg)
-                    emit(msg)
+                    already += 1
+                    emit(f"Already restored: {rel}")
                     continue
-            else:
-                if not os.path.exists(src):
-                    missing += 1
-                    msg = f"Missing in trash: {rel}"
-                    warnings.append(msg)
-                    emit(msg)
+                if not os.path.lexists(src):
+                    add_skip(rel, "清单记为已恢复，但目标与回收区均缺失")
+                    warnings.append(f"Missing: {rel}")
+                    emit(f"Missing: {rel}")
                     continue
-                if os.path.lexists(dst):
-                    conflicts += 1
-                    msg = f"Skip (已经存在，不覆盖): {rel}"
-                    warnings.append(msg)
-                    emit(msg)
-                    continue
+                # 账本过期（目标又被删除）：按普通恢复继续，避免永久卡住。
+            elif state not in (None, "", "moved", "moving"):
+                continue  # planned/failed：从未搬过，不恢复也不计失败
+
+            src_ok = os.path.isdir(src) if typ == "dir" else os.path.exists(src)
+            if not src_ok:
+                add_skip(rel, "回收区缺失该条目")
+                warnings.append(f"Missing in trash: {rel}")
+                emit(f"Missing in trash: {rel}")
+                continue
+            if os.path.lexists(dst):
+                add_skip(rel, "目标已存在（不覆盖）")
+                warnings.append(f"Skip (已经存在，不覆盖): {rel}")
+                emit(f"Skip (已经存在，不覆盖): {rel}")
+                continue
             if dry_run:
                 emit(f"Will restore: {rel}")
                 done.append(rel)
@@ -1106,23 +1239,23 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
                 continue
             emit(f"Restored: {rel}")
             done.append(rel)
+            if isinstance(raw, dict):
+                raw["status"] = "restored"
+                persist()
     except _Cancelled:
-        msg = f"已停止：恢复 {len(done)} 项（可重试）"
-        return _mk_result(root, status="cancelled", count=len(done), paths=done,
-                          action="restore", dry_run=dry_run, trash=trash_root,
-                          restore=trash_root, operation_id=str(data.get("operationId") or ""),
-                          failures=failures, warnings=warnings, error=msg)
+        return stopped()
     except KeyboardInterrupt:
-        msg = f"已停止：恢复 {len(done)} 项（可重试）"
-        return _mk_result(root, status="cancelled", count=len(done), paths=done,
-                          action="restore", dry_run=dry_run, trash=trash_root,
-                          restore=trash_root, operation_id=str(data.get("operationId") or ""),
-                          failures=failures, warnings=warnings, error=msg)
+        return stopped()
 
-    skipped = conflicts + missing + len(failures)
-    if skipped:
+    summary = {"restored": len(done), "alreadyRestored": already,
+               "skipped": len(skipped), "failed": len(failures)}
+    entries_out = [{"path": p, "action": "restore", "status": "restored"} for p in done]
+    # C13：旧 v1/v2 批次保留旧 CLI 语义（冲突/缺失 → 警告，退出 0）；
+    # daily 批次按 INTERFACE-REWORK 报 partial（ok=false、rc2），GUI 据此提示重试。
+    strict = data.get("mode") == "daily" or data.get("kind") == "daily"
+    if failures or (strict and skipped):
         status = "partial"
-        error = f"撤销未完成：恢复 {len(done)} 项，跳过/失败 {skipped} 项"
+        error = f"撤销未完成：恢复 {len(done)} 项，跳过/失败 {len(skipped) + len(failures)} 项"
     elif done:
         status = "success"
         error = ""
@@ -1142,6 +1275,10 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
         failures=failures,
         warnings=warnings,
         error=error,
+        entries=entries_out,
+        already_restored=already,
+        skipped=skipped,
+        summary=summary,
     )
 
 

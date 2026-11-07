@@ -19,8 +19,9 @@ lastOperationId/lastTrashDir/lastCount/lastFinishedAt 保留上一可撤销批�
 from __future__ import annotations
 
 import datetime as _dt
+import os
+import re
 import time
-from pathlib import Path
 
 import flet as ft
 
@@ -101,6 +102,79 @@ def _norm_failures(value) -> list:
     return rows
 
 
+
+
+
+
+def _norm_skipped(value) -> list:
+    """恢复时未搬回项：[{path, reason}]（R09 skipped；兼容字符串/旧字段）。"""
+    rows: list = []
+    for item in value or []:
+        if isinstance(item, dict):
+            path = str(item.get("path") or "").strip()
+            reason = str(item.get("reason") or item.get("error")
+                         or item.get("message") or "").strip()
+        else:
+            path, reason = str(item or "").strip(), ""
+        if path or reason:
+            rows.append({"path": path, "reason": reason})
+    return rows
+
+
+_SKIP_CONFLICT = re.compile(r"^Skip(?:\s*\(([^)]*)\))?\s*:\s*(.+)$")
+_SKIP_MISSING = re.compile(r"^Missing in trash\s*:\s*(.+)$")
+
+
+def _skipped_from_warnings(warnings) -> list:
+    """Engine 新字段缺省时从 warnings 人类文本推导（R09 兼容旧引擎）。"""
+    rows: list = []
+    for raw in warnings or []:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        hit = _SKIP_CONFLICT.match(line)
+        if hit:
+            reason = (hit.group(1) or "同名冲突，不覆盖").strip()
+            rows.append({"path": hit.group(2).strip(), "reason": reason})
+            continue
+        hit = _SKIP_MISSING.match(line)
+        if hit:
+            rows.append({"path": hit.group(1).strip(), "reason": "回收区缺失"})
+    return rows
+
+
+def _merge_unrestored(skipped, failures) -> list:
+    """把 skipped 与 failures 合并成未恢复清单（按 path 去重，保留先出现的 reason）。"""
+    rows: list = []
+    seen: set = set()
+    for item in skipped or []:
+        path = str(item.get("path") or "").strip()
+        if path and path not in seen:
+            seen.add(path)
+            rows.append({"path": path,
+                         "reason": str(item.get("reason") or "").strip()})
+    for item in failures or []:
+        path = str(item.get("path") or "").strip()
+        if path and path not in seen:
+            seen.add(path)
+            rows.append({"path": path,
+                         "reason": str(item.get("error") or "未恢复").strip()})
+    return rows
+
+
+def _same_root(left: str, right: str) -> bool:
+    """同一期目录（兼容符号链接/尾斜杠）；空串不算同一。"""
+    a, b = str(left or "").strip(), str(right or "").strip()
+    if not a or not b:
+        return False
+    if os.path.normpath(a) == os.path.normpath(b):
+        return True
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except OSError:
+        return False
+
+
 class CleanupPanel:
     """清理页的取值/执行/结果/撤销。由 IssuePage._cleanup 持有。
 
@@ -179,7 +253,7 @@ class CleanupPanel:
 
     def _undo_target(self, rec: dict) -> tuple:
         """撤销目标：(trashDir, operationId, 是否上次批次)；无目标返回空串。"""
-        if str(self._restore_of(rec).get("status") or "") == "success":
+        if str(self._restore_of(rec).get("status") or "") in ("success", "empty"):
             return ("", "", False)
         if self._restorable(rec):
             return (str(rec.get("trashDir") or ""),
@@ -202,16 +276,16 @@ class CleanupPanel:
         prev_restore = self._restore_of(prev)
         last_trash, last_op, last_count, last_fin = self._last_batch(prev)
         if not last_trash and self._restorable(prev) \
-                and str(prev_restore.get("status") or "") != "success":
+                and str(prev_restore.get("status") or "") not in ("success", "empty"):
             last_trash = str(prev.get("trashDir") or "")
             last_op = str(prev.get("operationId") or "")
             last_count = int(prev.get("count") or 0)
             last_fin = str(prev.get("finishedAt") or "")
         if not last_trash:
             return rec
-        if str(prev_restore.get("status") or "") == "success":
-            # 已撤销的批次不得在后续 empty 结果里复活：restore 成功只会针对
-            # prev 的本次批次（trashDir）或上次批次（lastTrashDir）。
+        if str(prev_restore.get("status") or "") in ("success", "empty"):
+            # 已撤销/无可恢复条目的批次不得在后续 empty 结果里复活：restore 终态
+            # 只会针对 prev 的本次批次（trashDir）或上次批次（lastTrashDir）。
             restored = str(prev.get("trashDir") or "") or str(prev.get("lastTrashDir") or "")
             if not restored or last_trash == restored:
                 return rec
@@ -219,7 +293,7 @@ class CleanupPanel:
         rec["lastTrashDir"] = last_trash
         rec["lastCount"] = last_count
         rec["lastFinishedAt"] = last_fin
-        if prev_restore and str(prev_restore.get("status") or "") != "success":
+        if prev_restore and str(prev_restore.get("status") or "") not in ("success", "empty"):
             rec["restore"] = dict(prev_restore)
         return rec
 
@@ -365,7 +439,10 @@ class CleanupPanel:
             elif str(rec.get("trashDir") or ""):
                 rows.append(C.inline_note("已停止：本批次没有成功回收的文件。", t, "warn"))
             else:
-                rows.append(C.inline_note("已停止：扫描阶段未写入，未回收任何文件。", t, "warn"))
+                note = "已停止：扫描阶段未写入，未回收任何文件。"
+                if self._last_batch(rec)[0]:
+                    note += "（上次清理批次仍可撤销）"
+                rows.append(C.inline_note(note, t, "warn"))
         else:
             rows.append(C.inline_note(f"清理未完成：{error or '见下方明细'}", t, "error"))
         trash = str(rec.get("trashDir") or "")
@@ -413,38 +490,64 @@ class CleanupPanel:
             return []
         status = str(restore.get("status") or "")
         count = int(restore.get("count") or 0)
+        already = int(restore.get("alreadyRestored") or 0)
+        skipped = _norm_skipped(restore.get("skipped"))
         failures = _norm_failures(restore.get("failures"))
+        unrestored = _merge_unrestored(skipped, failures)
+        error = str(restore.get("error") or "").strip()
+        rows: list = []
         if status == "success":
             scope = "本次清理" if self._restorable(rec) else "上次清理"
-            return [C.inline_note(f"已撤销{scope}：恢复 {count} 个文件。", t, "ok")]
+            extra = f"（另有 {already} 项此前已恢复）" if already else ""
+            return [C.inline_note(f"已撤销{scope}：恢复 {count} 个文件。{extra}",
+                                  t, "ok")]
         if status == "empty":
-            return [C.text("该批次没有可恢复的条目（可能已撤销过）。", t, "caption",
-                           t.palette.text_faint)]
+            extra = f"（另有 {already} 项此前已恢复）" if already else ""
+            return [C.text(f"该批次没有可恢复的条目（可能已撤销过）。{extra}",
+                           t, "caption", t.palette.text_faint)]
         if status == "partial":
-            return [C.inline_note(
-                f"已恢复 {count} 项；{len(failures)} 项未恢复（同名冲突不覆盖/缺失，"
-                "处理后可重试）。", t, "warn")]
-        if status == "preflight_failed":
-            return [C.inline_note(
-                f"撤销未执行：{restore.get('error') or '批次清单校验失败'}", t, "error")]
-        if status == "cancelled":
-            return [C.inline_note(f"撤销已停止：本次恢复 {count} 项。", t, "warn")]
-        return [C.inline_note(f"撤销未完成：{restore.get('error') or '见日志'}",
-                              t, "error")]
+            rows.append(C.inline_note(
+                f"已恢复 {count} 项；{len(unrestored)} 项未恢复（同名冲突不覆盖/回收区缺失，"
+                "处理后可重试）。", t, "warn"))
+        elif status == "preflight_failed":
+            rows.append(C.inline_note(
+                f"撤销未执行：{error or '批次清单校验失败'}（批次未消耗，可修复后重试）。",
+                t, "error"))
+        elif status == "cancelled":
+            rows.append(C.inline_note(
+                f"撤销已停止：本次恢复 {count} 项；{len(unrestored)} 项未恢复，可重试。",
+                t, "warn"))
+        else:
+            rows.append(C.inline_note(
+                f"撤销未完成：{error or '未收到有效的撤销结果'}（未标记为已撤销，可重试）。",
+                t, "error"))
+        if unrestored:
+            rows.append(C.text(f"未恢复 {len(unrestored)} 项：", t, "caption",
+                               t.palette.text_muted))
+            for item in unrestored[:5]:
+                text = f"· {item['path']}" + (f" — {item['reason']}" if item["reason"] else "")
+                rows.append(C.text(text, t, "caption", t.palette.text_faint,
+                                   max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+            if len(unrestored) > 5:
+                rows.append(C.text(f"…其余 {len(unrestored) - 5} 项在「查看明细」",
+                                   t, "caption", t.palette.text_faint))
+        return rows
 
     def _undo_enabled(self, rec: dict) -> bool:
         return bool(self._undo_target(rec)[0])
 
     def _action_rows(self, rec: dict) -> list:
         t = self.page.t
-        restored = str(self._restore_of(rec).get("status") or "") == "success"
+        restore_status = str(self._restore_of(rec).get("status") or "")
         _trash, _op, is_last = self._undo_target(rec)
-        if restored:
+        if restore_status == "success":
             label = "已撤销本次清理" if self._restorable(rec) else "已撤销上次清理"
+        elif restore_status == "empty":
+            label = "无可撤销条目"
         elif is_last:
-            label = "撤销上次清理"
+            label = "重试撤销上次清理" if restore_status else "撤销上次清理"
         else:
-            label = "撤销本次清理"
+            label = "重试撤销" if restore_status else "撤销本次清理"
         undo = C.secondary_button(
             label,
             lambda e: self.restore_last(), t,
@@ -587,8 +690,63 @@ class CleanupPanel:
             return None
         return payload if isinstance(payload, dict) else None
 
+    @staticmethod
+    def _payload_root_mismatch(root: str, payload) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        given = str(payload.get("root") or "").strip()
+        return bool(given) and not _same_root(given, root)
+
+    def _reject_mismatch(self, root: str, payload) -> bool:
+        if not self._payload_root_mismatch(root, payload):
+            return False
+        self._mark("cleanup_rejected", root=root,
+                   payloadRoot=str((payload or {}).get("root") or ""))
+        return True
+
+    @staticmethod
+    def _artifact_root(path: str) -> str:
+        """从回收区批次路径反推期目录根；不是批次路径则返回空串。"""
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        norm = os.path.normpath(text)
+        parts = norm.split(os.sep)
+        try:
+            index = parts.index(".toolbox-trash")
+        except ValueError:
+            return ""
+        if index <= 0:
+            return ""
+        root = os.sep.join(parts[:index])
+        return root if os.path.isabs(root) else ""
+
+    @staticmethod
+    def _artifact_batch(path: str) -> str:
+        """仅当路径确实位于 .toolbox-trash 下时才作为批次使用。"""
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        norm = os.path.normpath(text)
+        return norm if ".toolbox-trash" in norm.split(os.sep) else ""
+
+    def _absorb_root(self, payload, artifact: str) -> str:
+        """R12：串行结果只能写入它自己的期目录，不能按当前页猜。"""
+        payload_root = str(payload.get("root") or "").strip() \
+            if isinstance(payload, dict) else ""
+        artifact_root = self._artifact_root(artifact)
+        if payload_root and artifact_root \
+                and not _same_root(payload_root, artifact_root):
+            self._mark("cleanup_rejected", root=payload_root,
+                       artifactRoot=artifact_root, reason="root mismatch")
+            return ""
+        return payload_root or artifact_root
+
     def _finish(self, root: str, payload, *, code, cancelled, started, stage,
                 lines) -> None:
+        if self._reject_mismatch(root, payload):
+            self._drop_phase(self._phase_token)
+            return
         rec = self._record_payload(root, payload, code=code, cancelled=cancelled,
                                    started=started, stage=stage, lines=lines)
         self._phase = ""
@@ -602,7 +760,7 @@ class CleanupPanel:
             finished_at=str(rec.get("finishedAt") or ""),
             artifact=str(rec.get("trashDir") or ""),
             error=str(rec.get("error") or ""))
-        if self.root == root:
+        if _same_root(self.root, root):
             self._sync_buttons()
             self._refresh_steps()
             self._refresh_result()
@@ -612,6 +770,8 @@ class CleanupPanel:
 
     def _persist_payload(self, root, payload, *, code, cancelled, started, stage,
                          lines) -> None:
+        if self._reject_mismatch(root, payload):
+            return
         rec = self._record_payload(root, payload, code=code, cancelled=cancelled,
                                    started=started, stage=stage, lines=lines)
         self._save(rec, root)
@@ -652,17 +812,12 @@ class CleanupPanel:
             "stage": stage,
         }
         if status == "cancelled" and not rec["trashDir"]:
-            # 没有完整 JSON（如 SIGKILL）：按回收区里本时段新建的批次做真实兜底；
-            # 扫描阶段没有目录 → 零写入。绝不把旧批次当本次结果。
-            fallback = self._newest_batch(root, started)
-            if fallback:
-                rec["trashDir"] = str(fallback)
-                info = EB.trash_info(str(fallback)) or {}
-                if info.get("ok"):
-                    rec["count"] = int(info.get("count")
-                                       or len(info.get("entries") or []))
-                    rec["entries"] = _norm_entries(info.get("entries"))
-                rec["error"] = "进程未输出完整结果；已从本批次清单读取实际回收数。"
+            # R11：没有本次响应就不知道 operationId/批次；绝不按 mtime 认领回收区里的
+            # 任何旧批次（扫描期取消尤其必须是零写入）。上次批次仍由 last* 单独呈现。
+            rec["count"] = 0
+            rec["entries"] = []
+            rec["entryCount"] = 0
+            rec["error"] = "已停止：未收到本次清理结果，无法确认回收数量；回收区里如有批次，只可能属于更早的清理。"
         if status == "cancelled" and rec["trashDir"] and rec["count"]:
             rec["warnings"] = list(rec["warnings"]) + ["已停止，部分文件已回收"]
         if status in ("failed", "preflight_failed") and not rec["error"] and lines:
@@ -670,27 +825,6 @@ class CleanupPanel:
         if status == "failed" and not rec["trashDir"]:
             rec["count"] = 0
         return self._stamp_last(rec, root)
-
-    def _newest_batch(self, root: str, started: float):
-        try:
-            base = Path(root) / ".toolbox-trash"
-            if not base.is_dir():
-                return None
-            best = None
-            for item in base.iterdir():
-                if not item.is_dir():
-                    continue
-                try:
-                    mtime = item.stat().st_mtime
-                except OSError:
-                    continue
-                if mtime + 2.0 < started:
-                    continue
-                if best is None or mtime > best[0]:
-                    best = (mtime, item)
-            return best[1] if best else None
-        except OSError:
-            return None
 
     # ── 撤销本批次 ──────────────────────────────────────────────────────
     def restore_last(self) -> None:
@@ -729,6 +863,66 @@ class CleanupPanel:
         if callable(runner):
             runner(self._restore_execute, token, root, trash, operation_id or "")
 
+    @staticmethod
+    def _restore_status(payload: dict, *, code, cancelled, lines) -> tuple:
+        """R07：只有 rc=0 + ok=true + status=success|empty 才算撤销完成。
+
+        返回 (status, error)。rc/ok/status 任一不成立都落到 failed，绝不把
+        「恢复 0 个文件」显示成「已撤销」；分批/停止/预检失败保留可重试。
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        raw = str(payload.get("status") or "")
+        ok = payload.get("ok") is True
+        done_ok = code == 0 and ok and raw in ("success", "empty")
+        if done_ok:
+            status = raw
+        elif raw in ("partial", "preflight_failed"):
+            status = raw
+        elif raw == "cancelled" or cancelled:
+            status = "cancelled"
+        else:
+            status = "failed"
+        error = str(payload.get("error") or "").strip()
+        if not error:
+            if not payload:
+                error = f"未收到本次撤销结果（rc={code}），无法确认是否已恢复。"
+            elif status == "failed":
+                error = (f"撤销结果不可确认（status={raw or '缺失'}，rc={code}，"
+                         f"ok={payload.get('ok')!r}）；未显示为已撤销，可重试。")
+            elif status == "cancelled":
+                error = "撤销已停止，可重试。"
+            elif status == "partial":
+                error = "部分条目未恢复（同名冲突不覆盖/回收区缺失），处理后可重试。"
+            elif status == "preflight_failed":
+                error = "批次清单校验未通过，撤销未执行。"
+        if status == "failed" and lines and not payload:
+            error = str(lines[-1])
+        return status, error
+
+    @staticmethod
+    def _restore_skipped(payload: dict, warnings: list, failures: list) -> list:
+        """R09：优先 skipped；缺字段时由 warnings/entries/失败项保守推导。"""
+        skipped = _norm_skipped(payload.get("skipped"))
+        if skipped:
+            return skipped
+        skipped = _skipped_from_warnings(warnings)
+        if skipped:
+            return skipped
+        rows: list = []
+        for item in payload.get("entries") or []:
+            if not isinstance(item, dict):
+                continue
+            state = str(item.get("status") or "").lower()
+            if state in ("skipped", "failed", "missing", "conflict"):
+                rows.append({"path": str(item.get("path") or ""),
+                             "reason": str(item.get("reason") or state)})
+        if rows:
+            return rows
+        # 旧引擎把同名冲突放 failures（warnings 也常有）：仅在没有更精确来源时
+        # 用它兜底，避免 failures=[] 就报「0 项未恢复」。
+        return [{"path": item["path"],
+                 "reason": item["error"] or "未恢复"} for item in failures]
+
     async def _restore_execute(self, token, root, trash, operation_id) -> None:
         started = time.time()
         app = self.page.app
@@ -748,34 +942,44 @@ class CleanupPanel:
         cancelled = bool(getattr(app, "cancel_requested", False))
         if callable(finish):
             finish(call, code)
-        payload = self._payload() or {}
-        status = str(payload.get("status") or "")
-        if cancelled:
-            status = "cancelled"
-        if status not in _RESTORE_STATUSES:
-            status = "success" if (code == 0 and payload.get("ok")) else "failed"
+        payload = self._payload()
+        if not isinstance(payload, dict):
+            payload = {}
+        status, error = self._restore_status(
+            payload, code=code, cancelled=cancelled, lines=self._lines)
+        failures = _norm_failures(payload.get("failures"))
+        warnings = [str(x) for x in (payload.get("warnings") or []) if str(x).strip()]
+        skipped = self._restore_skipped(payload, warnings, failures)
+        unrestored = _merge_unrestored(skipped, failures)
+        count = int(payload.get("count") or 0)
         rec = self.record(root)
         if not rec:
             rec = {"schema": 1, "root": root, "operationId": operation_id,
-                   "status": "success", "count": 0, "entries": [],
+                   "status": "empty", "count": 0, "entries": [],
                    "kept": [], "failures": [], "error": "",
                    "trashDir": trash}
         restore = {
             "status": status,
-            "count": int(payload.get("count") or 0),
-            "failures": _norm_failures(payload.get("failures")),
-            "error": str(payload.get("error") or ""),
+            "count": count,
+            "alreadyRestored": int(payload.get("alreadyRestored") or 0),
+            "skipped": skipped,
+            "unrestored": unrestored,
+            "warnings": warnings,
+            "failures": failures,
+            "error": error,
             "at": _now_iso(),
+            "trashDir": trash,
+            "operationId": str(payload.get("operationId") or operation_id or ""),
         }
         rec = dict(rec)
         rec["restore"] = restore
-        if status == "success":
-            # 撤销成功即用完该批次：清掉 last，按钮置灰，不再允许重复恢复。
+        if status in ("success", "empty"):
+            # 撤销终态（成功/无可恢复条目）即用完该批次：清掉 last，按钮置灰。
             for key in ("lastOperationId", "lastTrashDir", "lastCount", "lastFinishedAt"):
                 rec.pop(key, None)
         self._save(rec, root)
         self._drop_phase(token)
-        current = token == self._token and self.root == root
+        current = token == self._token and _same_root(self.root, root)
         if current:
             state = {"success": "done", "empty": "done", "partial": "warn",
                      "preflight_failed": "error", "cancelled": "cancelled"}.get(
@@ -785,20 +989,64 @@ class CleanupPanel:
                 duration_ms=int((time.time() - started) * 1000),
                 started_at=str(rec.get("startedAt") or ""),
                 finished_at=_now_iso(),
-                artifact=trash, error=restore["error"])
+                artifact=trash, error=error)
             self._sync_buttons()
             self._refresh_steps()
             self._refresh_result()
             if status == "success":
-                self._toast(f"已恢复 {restore['count']} 个文件")
-            elif status == "partial":
-                self._toast("部分文件未恢复（同名冲突不覆盖）")
-            elif status == "preflight_failed":
-                self._toast("撤销未执行：批次清单校验失败")
+                self._toast(f"已恢复 {count} 个文件")
+            elif status == "empty":
+                self._toast("该批次没有可恢复的条目")
+            elif status in ("partial", "cancelled"):
+                self._toast(f"撤销未完成：恢复 {count} 项，{len(unrestored)} 项未恢复，可重试")
+            else:
+                self._toast(f"撤销未完成：{error}")
         self._mark("cleanup_restore", root=root, status=status,
-                   count=restore["count"], trashDir=trash, operationId=operation_id)
+                   count=count, skipped=len(unrestored), trashDir=trash,
+                   operationId=operation_id)
 
     # ── 明细 ────────────────────────────────────────────────────────────
+    def _copy(self, text: str, what: str) -> None:
+        """复制全部：优先壳的 copy_text，其次 Flet 剪贴板；失败如实提示。"""
+        if not text.strip():
+            self._toast(f"{what}为空，没有可复制的内容")
+            return
+        copied = False
+        app = self.page.app
+        fn = getattr(app, "copy_text", None)
+        if callable(fn):
+            try:
+                fn(text)
+                copied = True
+            except Exception:  # noqa: BLE001
+                copied = False
+        flet_page = getattr(self.page, "page", None)
+        setter = getattr(flet_page, "set_clipboard", None)
+        if not copied and callable(setter):
+            async def _write():
+                result = setter(text)
+                if hasattr(result, "__await__"):
+                    await result
+
+            runner = getattr(flet_page, "run_task", None)
+            try:
+                if callable(runner):
+                    runner(_write)
+                else:
+                    result = setter(text)
+                    if hasattr(result, "__await__"):
+                        result.close()
+                copied = True
+            except Exception:  # noqa: BLE001
+                copied = False
+        self._toast(f"已复制{what}" if copied else f"复制失败：剪贴板不可用（{what}）")
+
+    def _detail_rows(self, items: list, formatter) -> list:
+        t = self.page.t
+        return [C.text(formatter(item), t, "caption", t.palette.text_muted,
+                       max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
+                for item in items]
+
     def details_dialog(self) -> None:
         t = self.page.t
         root = self.root
@@ -821,39 +1069,88 @@ class CleanupPanel:
             rows.append(C.kv_row(t, "实际回收", f"{last_count} 个文件"))
             if last_fin:
                 rows.append(C.kv_row(t, "完成于", last_fin))
+        restore = self._restore_of(rec)
+        restore_skipped = _norm_skipped(restore.get("skipped"))
+        restore_failed = _norm_failures(restore.get("failures"))
+        restore_unrestored = _merge_unrestored(restore_skipped, restore_failed)
+        restore_warnings = [str(x) for x in (restore.get("warnings") or [])
+                            if str(x).strip()]
+        if restore:
+            rows.append(C.section_label("撤销本次清理", t,
+                                        note=_STATUS_LABEL.get(
+                                            str(restore.get("status") or ""), "—")))
+            rows.append(C.kv_row(t, "恢复", f"{int(restore.get('count') or 0)} 项"))
+            rows.append(C.kv_row(t, "此前已恢复",
+                                 f"{int(restore.get('alreadyRestored') or 0)} 项"))
+            rows.append(C.kv_row(t, "未恢复", f"{len(restore_unrestored)} 项"))
+            if restore.get("trashDir"):
+                rows.append(C.kv_row(t, "批次", str(restore.get("trashDir")),
+                                     mono=True))
+            if restore.get("error"):
+                rows.insert(0, C.inline_note(str(restore["error"]), t, "error"))
         entries = _norm_entries(rec.get("entries"))
         if entries:
-            rows.append(C.section_label(f"已回收条目（{len(entries)}）", t))
-            for item in entries[:300]:
-                rows.append(C.text(f"· {item['path']}", t, "caption",
-                                   t.palette.text_muted, max_lines=1,
-                                   overflow=ft.TextOverflow.ELLIPSIS))
-            if len(entries) > 300:
-                rows.append(C.text(f"…其余 {len(entries) - 300} 项未显示", t, "caption",
-                                   t.palette.text_faint))
+            body = [f"· {item['path']}" for item in entries]
+            rows.append(C.section_label(
+                f"已回收条目（{len(entries)}）", t,
+                trailing=C.text_button("复制全部", lambda e, b=body: self._copy(
+                    "\n".join(b), "回收条目"), t, height=t.px(24))))
+            rows += self._detail_rows(entries, lambda item: f"· {item['path']}")
         kept = _norm_kept(rec.get("kept"))
         if kept:
-            rows.append(C.section_label(f"保留（{len(kept)}）", t))
-            for item in kept[:100]:
-                reason = item.get("reason") or item.get("kind") or "受保护"
-                rows.append(C.text(f"· {item['path']} — {reason}", t, "caption",
-                                   t.palette.text_faint, max_lines=1,
-                                   overflow=ft.TextOverflow.ELLIPSIS))
+            body = [f"· {item['path']} — {item.get('reason') or item.get('kind') or '受保护'}"
+                    for item in kept]
+            rows.append(C.section_label(
+                f"保留（{len(kept)}）", t,
+                trailing=C.text_button("复制全部", lambda e, b=body: self._copy(
+                    "\n".join(b), "保留项"), t, height=t.px(24))))
+            rows += self._detail_rows(
+                kept, lambda item: f"· {item['path']} — "
+                                   f"{item.get('reason') or item.get('kind') or '受保护'}")
         failures = _norm_failures(rec.get("failures"))
         if failures:
-            rows.append(C.section_label(f"失败（{len(failures)}）", t))
-            for item in failures[:100]:
-                detail = item["path"] + (f" — {item['error']}" if item["error"] else "")
-                rows.append(C.text(f"· {detail}", t, "caption", t.palette.error,
-                                   max_lines=2, overflow=ft.TextOverflow.ELLIPSIS))
+            body = [f"· {item['path']}" + (f" — {item['error']}" if item["error"] else "")
+                    for item in failures]
+            rows.append(C.section_label(
+                f"失败（{len(failures)}）", t,
+                trailing=C.text_button("复制全部", lambda e, b=body: self._copy(
+                    "\n".join(b), "失败项"), t, height=t.px(24))))
+            rows += self._detail_rows(
+                failures, lambda item: f"· {item['path']}"
+                                       + (f" — {item['error']}" if item["error"] else ""))
+        if restore_unrestored:
+            body = [f"· {item['path']}" + (f" — {item['reason']}" if item["reason"] else "")
+                    for item in restore_unrestored]
+            rows.append(C.section_label(
+                f"撤销未恢复（{len(restore_unrestored)}）", t,
+                trailing=C.text_button("复制全部", lambda e, b=body: self._copy(
+                    "\n".join(b), "未恢复项"), t, height=t.px(24))))
+            rows += self._detail_rows(
+                restore_unrestored, lambda item: f"· {item['path']}"
+                                                 + (f" — {item['reason']}" if item["reason"] else ""))
         warnings = [str(x) for x in (rec.get("warnings") or []) if str(x).strip()]
+        warnings += [f"撤销提示：{x}" for x in restore_warnings]
         if warnings:
-            rows.append(C.section_label("提示", t))
+            rows.append(C.section_label(f"提示（{len(warnings)}）", t))
             rows += [C.text(f"· {item}", t, "caption", t.palette.text_muted,
-                            max_lines=2) for item in warnings[:20]]
+                            max_lines=2) for item in warnings]
         error = str(rec.get("error") or "").strip()
         if error:
             rows.insert(0, C.inline_note(error, t, "error"))
+
+        all_lines = [f"期目录：{root}", f"状态：{_STATUS_LABEL.get(str(rec.get('status')), '—')}",
+                     f"批次号：{rec.get('operationId') or '—'}",
+                     f"回收区：{trash or '—'}",
+                     f"实际回收：{int(rec.get('count') or 0)} 个文件"]
+        all_lines += [f"回收：{item['path']}" for item in entries]
+        all_lines += [f"保留：{item['path']} — {item.get('reason') or item.get('kind') or '受保护'}"
+                      for item in kept]
+        all_lines += [f"失败：{item['path']}"
+                      + (f" — {item['error']}" if item["error"] else "")
+                      for item in failures]
+        all_lines += [f"未恢复：{item['path']}"
+                      + (f" — {item['reason']}" if item["reason"] else "")
+                      for item in restore_unrestored]
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Row(spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -866,45 +1163,62 @@ class CleanupPanel:
             content=ft.Container(
                 width=t.px(560), height=t.px(380),
                 content=ft.Column(rows, spacing=t.sp("1"), scroll=C.scrollbar(t))),
-            actions=[C.text_button("关闭",
-                                   lambda e: C.dismiss_top_dialog(self.page.page), t)],
+            actions=[
+                C.text_button("关闭",
+                              lambda e: C.dismiss_top_dialog(self.page.page), t),
+                C.text_button("复制全部明细",
+                              lambda e: self._copy("\n".join(all_lines), "全部明细"), t),
+            ],
         )
         C.show_dialog(self.page.page, dialog)
 
     # ── 整期串行复用（runall 显式勾选 cleantemp 时）─────────────────────
     def absorb_result(self, lines, *, code: int, cancelled: bool,
                       artifact: str = "", started=None) -> None:
-        """整期串行执行完 cleantemp 后，把同一份 JSON 落成正式结果记录。"""
-        root = self.root
-        if not root:
-            return
+        """整期串行执行完 cleantemp 后，把同一份 JSON 落成正式结果记录。
+
+        R12：整期串行可能在跑完后切了期；必须用本次 JSON 的 root（或批次
+        路径反推的 root）落盘，不能写到当前页面所在的期，否则 A 期的
+        operationId/批次会污染 B 期。payload 与批次路径互相矛盾时拒绝写入。
+        """
         text = "\n".join(str(x) for x in (lines or []) if str(x).strip())
         try:
             payload = EB.parse_json_document(text) if text else None
         except Exception:  # noqa: BLE001
             payload = None
+        if not isinstance(payload, dict):
+            payload = {}
+        root = self._absorb_root(payload, artifact)
+        if not root:
+            self._mark("cleanup_rejected", reason="missing or mismatched root",
+                       artifact=str(artifact or ""))
+            return
         rec = self._record_payload(
             root, payload, code=code, cancelled=cancelled,
             started=started if started is not None else time.time(),
             stage="runall", lines=[str(x) for x in (lines or [])])
-        if not rec.get("trashDir") and artifact:
-            rec["trashDir"] = str(artifact)
+        batch = self._artifact_batch(artifact)
+        if not rec.get("trashDir") and batch:
+            rec["trashDir"] = batch
             self._stamp_last(rec, root)
         self._save(rec, root)
-        # 整期串行里 cleantemp 没有走 _finish；这里补真实结束态，避免状态条停在 running。
-        try:
-            self.page._status["cleantemp"] = ASM.StepStatus(
-                _STATE_OF.get(str(rec.get("status")), "error"), exit_code=code,
-                duration_ms=int((time.time() - (started if started is not None
-                                                       else time.time())) * 1000),
-                started_at=str(rec.get("startedAt") or ""),
-                finished_at=str(rec.get("finishedAt") or ""),
-                artifact=str(rec.get("trashDir") or ""),
-                error=str(rec.get("error") or ""))
-            self._refresh_steps()
-        except Exception:  # noqa: BLE001 —— 极简测试桩
-            pass
-        self._refresh_result()
+        current = _same_root(self.root, root)
+        if current:
+            # 整期串行里 cleantemp 没有走 _finish；这里补真实结束态，避免状态条停在 running。
+            try:
+                self.page._status["cleantemp"] = ASM.StepStatus(
+                    _STATE_OF.get(str(rec.get("status")), "error"), exit_code=code,
+                    duration_ms=int((time.time() - (started if started is not None
+                                                           else time.time())) * 1000),
+                    started_at=str(rec.get("startedAt") or ""),
+                    finished_at=str(rec.get("finishedAt") or ""),
+                    artifact=str(rec.get("trashDir") or ""),
+                    error=str(rec.get("error") or ""))
+                self._refresh_steps()
+                self._refresh_result()
+            except Exception:  # noqa: BLE001 —— 极简测试桩
+                pass
         self._mark("cleanup_done", root=root, status=rec.get("status"),
                    operationId=rec.get("operationId"), count=rec.get("count"),
-                   trashDir=rec.get("trashDir"), runall=True)
+                   trashDir=rec.get("trashDir"), runall=True,
+                   writesCurrent=current)

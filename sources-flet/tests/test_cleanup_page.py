@@ -266,7 +266,8 @@ def test_cleanup_restore_uses_exact_batch_and_handles_conflicts(tmp_path, monkey
     assert any("已恢复 1 项" in text and "同名冲突" in text for text in texts), texts
     undo = _undo_button(panel.result())
     assert undo is not None and undo.disabled is False  # 冲突可重试
-    assert any("部分文件未恢复" in toast for toast in page.app.toasts)
+    assert any("撤销未完成" in toast and "1 项未恢复" in toast
+               and "可重试" in toast for toast in page.app.toasts), page.app.toasts
 
 
 def test_cleanup_runall_is_opt_in_daily(tmp_path, engine, monkeypatch):
@@ -557,4 +558,266 @@ def test_cleanup_empty_does_not_inherit_undone_persisted_last(tmp_path, monkeypa
     panel.restore_last()
     assert len(calls) == 1
     assert page.app.toasts[-1] == "本次没有可清理的临时文件，无需撤销"
+
+
+def _seed_success(page, root, batch, *, count=2, op=OP):
+    page.app.store.set("issue_state", {root: {"cleanup": {
+        "schema": 1, "root": root, "operationId": op, "status": "success",
+        "count": count, "entryCount": count,
+        "entries": [{"path": f"a{i}.aux", "action": "move"} for i in range(count)],
+        "kept": [], "failures": [], "warnings": [], "error": "",
+        "trashDir": batch,
+        "startedAt": "2026-11-07 11:00:00", "finishedAt": "2026-11-07 11:00:02",
+    }}})
+
+
+def test_cleanup_restore_bad_result_is_not_marked_undone(tmp_path, monkeypatch):
+    """R07：rc!=0 / ok!=true 时不得显示已撤销，也不得消耗批次或禁用按钮。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    batch = root + "/.toolbox-trash/期A-" + OP
+    page = make_page(tmp_path / "期A")
+    _seed_success(page, root, batch)
+    calls = _install(monkeypatch, page, [
+        (_restore_payload(root, batch, ok=False, status="success", count=0,
+                          entries=[], failures=[{"path": "a.aux", "error": "manifest 坏了"}],
+                          warnings=[], error="回收清单损坏"), 2),
+        (_restore_payload(root, batch, count=2,
+                          entries=[{"path": "a.aux", "action": "restore"}]), 0),
+    ])
+    panel = _panel(page)
+
+    panel.restore_last()
+
+    rec = panel.record()
+    assert rec["restore"]["status"] == "failed"
+    assert rec["status"] == "success" and rec["trashDir"] == batch
+    texts = _texts(panel.result())
+    assert any("撤销未完成" in text and "回收清单损坏" in text for text in texts), texts
+    assert not any(text.startswith(("已撤销本次清理：", "已撤销上次清理：")) for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is False  # 旧批次仍保留，可重试
+
+    panel.restore_last()  # 修好之后重试必须仍指向原批次并成功
+    assert len(calls) == 2
+    assert _args(calls[1]) == ["--folder", root, "--restore", batch, "--json"]
+    assert panel.record()["restore"]["status"] == "success"
+    assert _undo_button(panel.result()).disabled is True
+
+
+def test_cleanup_restore_preflight_failure_keeps_batch_retryable(tmp_path, monkeypatch):
+    """R07：坏 manifest 的 preflight_failed 只报未执行，不能冒充已撤销。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    batch = root + "/.toolbox-trash/期A-" + OP
+    page = make_page(tmp_path / "期A")
+    _seed_success(page, root, batch)
+    _install(monkeypatch, page, [
+        (_restore_payload(root, batch, ok=False, status="preflight_failed", count=0,
+                          entries=[], failures=[{"path": batch,
+                                                 "error": "回收清单缺失或不是合法 JSON"}],
+                          warnings=[], error="回收清单缺失或不是合法 JSON"), 2),
+    ])
+    panel = _panel(page)
+
+    panel.restore_last()
+
+    rec = panel.record()
+    assert rec["restore"]["status"] == "preflight_failed"
+    assert rec["restore"]["count"] == 0
+    assert rec["restore"]["error"] == "回收清单缺失或不是合法 JSON"
+    texts = _texts(panel.result())
+    assert any("撤销未执行" in text and "批次未消耗" in text for text in texts), texts
+    assert not any("已撤销本次清理" in text for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is False
+
+
+def test_cleanup_restore_reports_skipped_paths_and_persists(tmp_path, monkeypatch):
+    """R09：partial 必须显示 X 恢复/Y 未恢复和每条路径/原因，并持久化可重试。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    batch = root + "/.toolbox-trash/期A-" + OP
+    page = make_page(tmp_path / "期A")
+    _seed_success(page, root, batch)
+    calls = _install(monkeypatch, page, [
+        (_restore_payload(root, batch, ok=False, status="partial", count=1,
+                          entries=[{"path": "a.aux", "action": "restore"}],
+                          failures=[],
+                          warnings=["Skip (已经存在，不覆盖): b.aux"],
+                          skipped=[{"path": "b.aux", "reason": "目标已存在（不覆盖）"}]),
+         2),
+        (_restore_payload(root, batch, count=1, alreadyRestored=1,
+                          entries=[{"path": "a.aux", "action": "restore"}]), 0),
+    ])
+    panel = _panel(page)
+
+    panel.restore_last()
+
+    rec = panel.record()
+    assert rec["restore"]["status"] == "partial"
+    assert rec["restore"]["count"] == 1
+    assert rec["restore"]["skipped"] == [{"path": "b.aux", "reason": "目标已存在（不覆盖）"}]
+    fresh = _panel(page)
+    assert fresh.record()["restore"]["skipped"][0]["path"] == "b.aux"
+    texts = _texts(panel.result())
+    assert any("已恢复 1 项；1 项未恢复" in text for text in texts), texts
+    assert any("b.aux" in text and "目标已存在" in text for text in texts), texts
+    assert _undo_button(panel.result()).disabled is False
+
+    panel.restore_last()  # 处理后重试：已恢复项 + 之前冲突项都收口
+    assert len(calls) == 2
+    assert panel.record()["restore"]["status"] == "success"
+    assert any("此前已恢复" in text for text in _texts(panel.result()))
+
+
+def test_cleanup_restore_counts_skipped_and_failures_together(tmp_path, monkeypatch):
+    """R09：skipped 与 failures 同时存在时，未恢复总数不能只算 skipped。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    batch = root + "/.toolbox-trash/期A-" + OP
+    page = make_page(tmp_path / "期A")
+    _seed_success(page, root, batch)
+    _install(monkeypatch, page, [
+        (_restore_payload(root, batch, ok=False, status="partial", count=2,
+                          entries=[{"path": "a.aux", "action": "restore"},
+                                   {"path": "d.aux", "action": "restore"}],
+                          skipped=[{"path": "b.aux", "reason": "目标已存在（不覆盖）"}],
+                          failures=[{"path": "c.aux", "error": "Permission denied"}]),
+         2),
+    ])
+    panel = _panel(page)
+
+    panel.restore_last()
+
+    rec = panel.record()
+    assert len(rec["restore"]["unrestored"]) == 2
+    texts = _texts(panel.result())
+    assert any("已恢复 2 项；2 项未恢复" in text for text in texts), texts
+    assert any("b.aux" in text for text in texts), texts
+    assert any("c.aux" in text for text in texts), texts
+    assert any("2 项未恢复" in toast for toast in page.app.toasts), page.app.toasts
+
+
+def test_cleanup_details_show_all_rows_and_copy_all(tmp_path, monkeypatch):
+    """R10：明细不截断末项，复制按钮能拿到全部回收/保留/失败条目。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    batch = root + "/.toolbox-trash/期A-" + OP
+    page = make_page(tmp_path / "期A")
+    panel = _panel(page)
+    rec = {
+        "schema": 1, "root": root, "operationId": OP, "status": "success",
+        "count": 301, "entryCount": 301,
+        "entries": [{"path": f"file-{i:03}.aux", "action": "move"} for i in range(301)],
+        "kept": [{"path": f"keep-{i:03}.out", "reason": "custom"} for i in range(101)],
+        "failures": [{"path": f"fail-{i:03}.aux", "error": "I/O"} for i in range(101)],
+        "warnings": [], "error": "", "trashDir": batch,
+        "startedAt": "2026-11-07 11:00:00", "finishedAt": "2026-11-07 11:00:02",
+    }
+    panel._save(rec, root)
+    shown: list = []
+    page.page.show_dialog = lambda dialog: shown.append(dialog)
+    page.page.pop_dialog = lambda: None
+    C._open_dialogs.clear()
+
+    panel.details_dialog()
+
+    dialog = shown[0]
+    texts = [str(ctl.value or "") for ctl in _walk(dialog.content)
+             if isinstance(ctl, ft.Text)]
+    assert any("file-300.aux" in text for text in texts), "301 条回收的最后一条必须可达"
+    assert any("keep-100.out" in text for text in texts), "101 条保留的最后一条必须可达"
+    assert any("fail-100.aux" in text for text in texts), "101 条失败的最后一条必须可达"
+    assert not any("未显示" in text for text in texts)
+
+    copied: list[str] = []
+    page.app.copy_text = copied.append
+    copy_all = [action for action in dialog.actions
+                if isinstance(action, ft.TextButton) and "复制全部明细" in str(action.content)]
+    assert copy_all, [str(action.content) for action in dialog.actions]
+    copy_all[0].on_click(None)
+    assert copied and "file-300.aux" in copied[0]
+    assert "keep-100.out" in copied[0] and "fail-100.aux" in copied[0]
+    C._open_dialogs.clear()
+
+
+def test_cleanup_cancel_without_json_never_claims_old_batch(tmp_path, monkeypatch):
+    """R11：扫描期取消且无本次 JSON 时，不能按 mtime 认领回收区里的旧批次。"""
+    root = str(tmp_path / "期A")
+    (tmp_path / "期A").mkdir()
+    batch = root + "/.toolbox-trash/期A-" + OP
+    (tmp_path / "期A" / ".toolbox-trash" / ("期A-" + OP)).mkdir(parents=True)
+    page = make_page(tmp_path / "期A")
+    _seed_success(page, root, batch)
+    calls = _install(monkeypatch, page, [(None, "cancel")])
+    panel = _panel(page)
+
+    panel.start()
+
+    assert len(calls) == 1
+    rec = panel.record()
+    assert (rec["status"], rec["count"], rec["trashDir"], rec["operationId"]) == (
+        "cancelled", 0, "", "")
+    assert rec["entries"] == [] and rec["entryCount"] == 0
+    assert rec["lastTrashDir"] == batch and rec["lastOperationId"] == OP
+    texts = _texts(panel.result())
+    assert any("已停止：扫描阶段未写入，未回收任何文件" in text for text in texts), texts
+    assert any("上次清理批次仍可撤销" in text for text in texts), texts
+    undo = _undo_button(panel.result())
+    assert undo is not None and undo.disabled is False
+    assert "上次" in str(undo.content)
+
+
+def test_cleanup_runall_late_result_writes_original_root_only(tmp_path, monkeypatch):
+    """R12：整期串行跑完后切期，A 期结果只能写 A，不能污染 B。"""
+    root_a = tmp_path / "期A"
+    root_b = tmp_path / "期B"
+    root_a.mkdir(); root_b.mkdir()
+    page = make_page(root_a, report=False)
+    panel = _panel(page)
+    batch = str(root_a / ".toolbox-trash" / ("期A-" + OP))
+
+    async def fake_run_call(call, *, on_line=None, on_proc=None, notes="", **kwargs):
+        argv = call.argv
+        called = argv[argv.index("--folder") + 1]
+        # 受控晚回调：子进程返回前页面已经切到 B 并 reset。
+        page.set_field("issue_dir", str(root_b))
+        panel.reset()
+        if on_line is not None:
+            on_line(json.dumps(_payload(
+                called, status="success", count=1, entryCount=1,
+                operationId="actual-A", trashDir=batch,
+                entries=[{"path": "a.aux", "action": "move"}]),
+                ensure_ascii=False))
+        return 0
+
+    monkeypatch.setattr(EB, "run_call", fake_run_call)
+
+    ASM.run_all(page, ["cleantemp"])
+
+    assert panel.record(str(root_a))["operationId"] == "actual-A"
+    assert panel.record(str(root_a))["root"] == str(root_a)
+    assert panel.record(str(root_b)) == {}
+    assert panel.record() == {}
+    assert set(page.app.store.get("issue_state", {})) == {str(root_a)}
+
+
+def test_cleanup_runall_rejects_mismatched_artifact_root(tmp_path):
+    """R12：payload root 与批次路径反推的 root 矛盾时拒绝写入。"""
+    root_a = tmp_path / "期A"
+    root_b = tmp_path / "期B"
+    root_a.mkdir(); root_b.mkdir()
+    page = make_page(root_a, report=False)
+    panel = _panel(page)
+    batch = str(root_a / ".toolbox-trash" / ("期A-" + OP))
+
+    panel.absorb_result([json.dumps(_payload(str(root_b), status="success",
+                                              operationId="from-B", count=1,
+                                              trashDir=batch))],
+                        code=0, cancelled=False, artifact=batch)
+
+    assert panel.record(str(root_a)) == {}
+    assert panel.record(str(root_b)) == {}
+    assert any(event == "cleanup_rejected" for event, _fields in page.app.marks)
 

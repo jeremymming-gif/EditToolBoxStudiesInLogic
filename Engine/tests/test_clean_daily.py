@@ -1058,6 +1058,321 @@ def test_daily_restore_conflict_retry_and_manifest_boundary() -> None:
           _bad(json.dumps(res)))
 
 
+# ── R01–R08 返工反例（冻结基线 a6b0390）──────────────────────────────
+
+
+@test
+def test_rework_r01_trash_symlink_and_batch_boundary() -> None:
+    d = tmpdir("rework_r01")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    w(root, "a.aux", b"A\n")
+    outside = os.path.join(d, "outside")
+    os.makedirs(outside)
+    os.symlink(outside, trash_path(root))
+    before = snap(root)
+
+    res = cd.run_daily(root)
+    check("r01.run_preflight_failed",
+          res.get("status") == "preflight_failed" and res.get("count") == 0
+          and res.get("ok") is False, _bad(json.dumps(res)))
+    check("r01.run_zero_write_and_no_escape",
+          os.path.exists(os.path.join(root, "a.aux")) and not os.listdir(outside)
+          and snap(root) == before, _bad(json.dumps(res)))
+
+    rc, js, err = run_cli_json("--folder", root, "--mode", "daily")
+    check("r01.cli_preflight",
+          rc == 2 and js.get("ok") is False and js.get("status") == "preflight_failed"
+          and js.get("count") == 0, _bad(err + json.dumps(js)))
+    check("r01.cli_zero_write_and_no_escape",
+          os.path.exists(os.path.join(root, "a.aux")) and not os.listdir(outside)
+          and snap(root) == before)
+
+    # 批次父目录是符号链接：恢复同样必须在写入前拒绝（R01/R06）。
+    batch = make_batch(root, "op-r01", {
+        "schema": 2, "root": root, "createdAt": "x", "mode": "daily",
+        "kind": "daily", "operationId": "op-r01", "status": "success",
+        "entries": [{"path": "x.aux", "type": "file", "status": "moved"}],
+    }, {"x.aux": b"X\n"})
+    check("r01.batch_created_through_link", os.path.exists(os.path.join(batch, "x.aux")))
+    res = cd.restore_daily(root, batch)
+    check("r01.restore_rejects_linked_parent",
+          res.get("status") == "preflight_failed"
+          and "符号链接" in (res.get("error") or ""), _bad(json.dumps(res)))
+    check("r01.restore_zero_write",
+          not os.path.exists(os.path.join(root, "x.aux"))
+          and os.path.exists(os.path.join(batch, "x.aux"))
+          and snap(root) == before)
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r01.restore_cli_preflight",
+          rc == 2 and js.get("ok") is False and js.get("status") == "preflight_failed"
+          and js.get("count") == 0, _bad(err + json.dumps(js)))
+    check("r01.restore_cli_zero_write",
+          not os.path.exists(os.path.join(root, "x.aux"))
+          and os.path.exists(os.path.join(batch, "x.aux")))
+
+
+@test
+def test_rework_r02_unbraced_input_is_protected() -> None:
+    d = tmpdir("rework_r02")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    ts = "contents_2026-01-01_00-00-00.tex"
+    w(root, "main.tex",
+      b"\\documentclass{article}\n\\input contents_2026-01-01_00-00-00.tex\n")
+    w(root, ts, b"\\section{x}\n")
+    scan = cd.scan_daily(root)
+    check("r02.scan_ok", scan.get("ok") is True, _bad(json.dumps(scan)))
+    check("r02.no_candidate", ts not in cand_paths(scan), _bad(str(cand_paths(scan))))
+    check("r02.referenced_kept", kept_kind(scan).get(ts) == "referenced",
+          _bad(json.dumps(kept_kind(scan))))
+    res = cd.run_daily(root)
+    check("r02.run_empty_and_file_kept",
+          res.get("status") == "empty" and res.get("count") == 0
+          and os.path.exists(os.path.join(root, ts)), _bad(json.dumps(res)))
+    rc, js, err = run_cli_json("--folder", root, "--mode", "daily")
+    check("r02.cli_empty", rc == 0 and js.get("status") == "empty"
+          and js.get("count") == 0, _bad(err + json.dumps(js)))
+    check("r02.cli_file_kept", os.path.exists(os.path.join(root, ts)))
+
+
+@test
+def test_rework_r03_r04_reference_bases_and_aliases() -> None:
+    d = tmpdir("rework_r03")
+    # R03：文章目录优先，但同名多来源全部保护（不猜错后删除）。
+    root = os.path.join(d, "r03")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n\\input{article/main}\n")
+    w(root, "piece.aux", b"ROOT\n")
+    w(root, "article/main.tex", b"\\documentclass{article}\n\\input{piece.aux}\n")
+    w(root, "article/piece.aux", b"ART\n")
+    scan = cd.scan_daily(root)
+    kinds = kept_kind(scan)
+    check("r03.multi_source_no_candidate", cand_paths(scan) == [],
+          _bad(str(cand_paths(scan))))
+    check("r03.article_dir_source_kept", kinds.get("article/piece.aux") == "referenced",
+          _bad(json.dumps(kinds)))
+    check("r03.root_source_kept", kinds.get("piece.aux") == "referenced",
+          _bad(json.dumps(kinds)))
+    res = cd.run_daily(root)
+    check("r03.run_empty_both_kept",
+          res.get("status") == "empty"
+          and os.path.exists(os.path.join(root, "article/piece.aux"))
+          and os.path.exists(os.path.join(root, "piece.aux")), _bad(json.dumps(res)))
+
+    # R04：别名指向根内目标 → 保护别名与真实目标；指向根外 → 只保护别名，不跟随。
+    root2 = os.path.join(d, "r04")
+    os.makedirs(root2)
+    w(root2, "used.aux", b"USED\n")
+    os.symlink("used.aux", os.path.join(root2, "alias.aux"))
+    outside = os.path.join(d, "outside")
+    os.makedirs(outside)
+    w(d, "ext.aux", b"EXT\n")
+    os.symlink(os.path.join(d, "ext.aux"), os.path.join(root2, "extlink.aux"))
+    w(root2, "main.tex",
+      b"\\documentclass{article}\n\\input{alias.aux}\n\\input{extlink.aux}\n")
+    scan = cd.scan_daily(root2)
+    kinds = kept_kind(scan)
+    check("r04.scan_ok", scan.get("ok") is True, _bad(json.dumps(scan)))
+    check("r04.candidate_empty", cand_paths(scan) == [], _bad(str(cand_paths(scan))))
+    check("r04.alias_target_kept", kinds.get("used.aux") == "referenced",
+          _bad(json.dumps(kinds)))
+    check("r04.alias_kept", kinds.get("alias.aux") == "symlink", _bad(json.dumps(kinds)))
+    check("r04.external_alias_kept", kinds.get("extlink.aux") == "symlink",
+          _bad(json.dumps(kinds)))
+    res = cd.run_daily(root2)
+    check("r04.run_empty_no_move",
+          res.get("status") == "empty"
+          and open(os.path.join(root2, "used.aux"), "rb").read() == b"USED\n"
+          and os.path.exists(os.path.join(d, "ext.aux")), _bad(json.dumps(res)))
+
+
+@test
+def test_rework_r05_tmp_backup_priority() -> None:
+    d = tmpdir("rework_r05")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    w(root, ".toolbox-tmp/final.tex.bak", b"BACKUP\n")
+    w(root, ".toolbox-tmp/scratch.aux", b"SCRATCH\n")
+    scan = cd.scan_daily(root)
+    kinds = kept_kind(scan)
+    check("r05.tmp_bak_kept", kinds.get(".toolbox-tmp/final.tex.bak") == "backup",
+          _bad(json.dumps(kinds)))
+    check("r05.tmp_scratch_candidate", ".toolbox-tmp/scratch.aux" in cand_paths(scan),
+          _bad(str(cand_paths(scan))))
+    res = cd.run_daily(root)
+    check("r05.run_moves_scratch_keeps_bak",
+          res.get("status") == "success" and res.get("count") == 1
+          and os.path.exists(os.path.join(root, ".toolbox-tmp/final.tex.bak"))
+          and not os.path.exists(os.path.join(root, ".toolbox-tmp/scratch.aux")),
+          _bad(json.dumps(res)))
+
+
+@test
+def test_rework_r06_legacy_restore_validation_cli() -> None:
+    d = tmpdir("rework_r06")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    w(d, "evil.aux", b"EVIL\n")
+
+    # v1 路径穿越：统一 preflight 拒绝、零写入、批次保留。
+    v1_bad = make_batch(root, "op-v1-bad", {"files": ["../evil.aux"]})
+    before = snap(root)
+    rc, js, err = run_cli_json("--folder", root, "--restore", v1_bad)
+    check("r06.v1_traversal_rejected",
+          rc == 2 and js.get("ok") is False and js.get("status") == "preflight_failed"
+          and js.get("count") == 0 and "穿越" in (js.get("error") or ""),
+          _bad(err + json.dumps(js)))
+    check("r06.v1_traversal_zero_write",
+          not os.path.exists(os.path.join(root, "evil.aux")) and snap(root) == before
+          and os.path.isdir(v1_bad))
+
+    # v1 绝对路径：同样拒绝。
+    abs_bad = make_batch(root, "op-v1-abs", {"files": [os.path.join(d, "evil.aux")]})
+    rc, js, err = run_cli_json("--folder", root, "--restore", abs_bad)
+    check("r06.v1_absolute_rejected",
+          rc == 2 and js.get("status") == "preflight_failed"
+          and "绝对路径" in (js.get("error") or ""), _bad(err + json.dumps(js)))
+
+    # v1 来源越界（批次内符号链接指向根外）：不跟随、拒绝。
+    link_bad = make_batch(root, "op-v1-link", {"files": ["leak.aux"]})
+    os.symlink(os.path.join(d, "evil.aux"), os.path.join(link_bad, "leak.aux"))
+    rc, js, err = run_cli_json("--folder", root, "--restore", link_bad)
+    check("r06.v1_source_escape_rejected",
+          rc == 2 and js.get("status") == "preflight_failed"
+          and "来源越界" in (js.get("error") or ""), _bad(err + json.dumps(js)))
+    check("r06.v1_source_escape_zero_write",
+          not os.path.exists(os.path.join(root, "leak.aux")))
+
+    # 有效 v1 / v2 批次：全部 restore 入口仍兼容。
+    v1 = make_batch(root, "op-v1", {"files": ["v1.aux"]}, {"v1.aux": b"V1\n"})
+    rc, js, err = run_cli_json("--folder", root, "--restore", v1)
+    check("r06.v1_valid_restored",
+          rc == 0 and js.get("ok") is True and js.get("status") == "success"
+          and js.get("count") == 1
+          and open(os.path.join(root, "v1.aux"), "rb").read() == b"V1\n",
+          _bad(err + json.dumps(js)))
+    v2 = make_batch(root, "op-v2", {
+        "schema": 2, "root": root, "createdAt": "x", "mode": "aux",
+        "entries": [{"path": "v2.aux", "type": "file"}],
+    }, {"v2.aux": b"V2\n"})
+    rc, js, err = run_cli_json("--folder", root, "--restore", v2)
+    check("r06.v2_valid_restored",
+          rc == 0 and js.get("status") == "success" and js.get("count") == 1
+          and open(os.path.join(root, "v2.aux"), "rb").read() == b"V2\n",
+          _bad(err + json.dumps(js)))
+
+
+@test
+def test_rework_r07_broken_manifest_preflight_retry() -> None:
+    d = tmpdir("rework_r07")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    batch = os.path.join(trash_path(root), "op-bad")
+    os.makedirs(batch)
+    w(batch, "x.aux", b"X\n")
+    with open(os.path.join(batch, "manifest.json"), "wb") as fh:
+        fh.write(b"{not json")
+    before = snap(root)
+
+    res = cd.restore_daily(root, batch)
+    check("r07.direct_corrupt_preflight",
+          res.get("status") == "preflight_failed" and res.get("count") == 0
+          and res.get("ok") is False and "清单" in (res.get("error") or ""),
+          _bad(json.dumps(res)))
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r07.cli_corrupt_preflight",
+          rc == 2 and js.get("ok") is False and js.get("status") == "preflight_failed"
+          and js.get("count") == 0, _bad(err + json.dumps(js)))
+    check("r07.corrupt_batch_preserved",
+          batch_payload(batch) == ["x.aux"] and not os.path.exists(os.path.join(root, "x.aux"))
+          and snap(root) == before)
+
+    missing = os.path.join(trash_path(root), "op-missing")
+    os.makedirs(missing)
+    w(missing, "y.aux", b"Y\n")
+    rc, js, err = run_cli_json("--folder", root, "--restore", missing)
+    check("r07.missing_manifest_preflight",
+          rc == 2 and js.get("status") == "preflight_failed"
+          and js.get("count") == 0, _bad(err + json.dumps(js)))
+    check("r07.missing_batch_preserved",
+          batch_payload(missing) == ["y.aux"] and not os.path.exists(os.path.join(root, "y.aux")))
+
+    # 修复清单后同一批次仍可恢复（预检失败不消耗批次）。
+    with open(os.path.join(batch, "manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump({
+            "schema": 2, "root": root, "createdAt": "x", "mode": "daily",
+            "kind": "daily", "operationId": "op-bad", "status": "success",
+            "entries": [{"path": "x.aux", "type": "file", "status": "moved"}],
+        }, fh, ensure_ascii=False)
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r07.retry_after_repair_success",
+          rc == 0 and js.get("status") == "success" and js.get("count") == 1
+          and open(os.path.join(root, "x.aux"), "rb").read() == b"X\n",
+          _bad(err + json.dumps(js)))
+
+
+@test
+def test_rework_r08_restore_ledger_and_retry() -> None:
+    d = tmpdir("rework_r08")
+    root = os.path.join(d, "root")
+    os.makedirs(root)
+    w(root, "main.tex", b"\\documentclass{article}\n")
+    w(root, "a.aux", b"AAA\n")
+    w(root, "b.aux", b"BBB\n")
+    rc, js, err = run_cli_json("--folder", root, "--mode", "daily")
+    check("r08.clean_rc", rc == 0 and js.get("count") == 2, _bad(err + json.dumps(js)))
+    batch = js.get("trashDir") or ""
+
+    w(root, "b.aux", b"NEW\n")
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r08.first_conflict_partial",
+          rc == 2 and js.get("status") == "partial" and js.get("ok") is False
+          and js.get("count") == 1 and js.get("alreadyRestored") == 0,
+          _bad(err + json.dumps(js)))
+    check("r08.first_conflict_skipped",
+          [s.get("path") for s in (js.get("skipped") or [])] == ["b.aux"]
+          and "不覆盖" in json.dumps(js, ensure_ascii=False), _bad(json.dumps(js)))
+    man = _manifest(batch)
+    states = {e.get("path"): e.get("status") for e in man.get("entries") or []}
+    check("r08.first_ledger_persisted",
+          states.get("a.aux") == "restored" and states.get("b.aux") == "moved",
+          _bad(json.dumps(man, ensure_ascii=False)))
+    check("r08.first_no_overwrite",
+          open(os.path.join(root, "a.aux"), "rb").read() == b"AAA\n"
+          and open(os.path.join(root, "b.aux"), "rb").read() == b"NEW\n")
+
+    os.remove(os.path.join(root, "b.aux"))
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r08.retry_success",
+          rc == 0 and js.get("status") == "success" and js.get("count") == 1
+          and js.get("alreadyRestored") == 1 and js.get("skipped") == [],
+          _bad(err + json.dumps(js)))
+    check("r08.retry_no_missing_warning",
+          "Missing" not in json.dumps(js, ensure_ascii=False)
+          and open(os.path.join(root, "b.aux"), "rb").read() == b"BBB\n",
+          _bad(json.dumps(js)))
+    check("r08.retry_summary",
+          (js.get("summary") or {}).get("restored") == 1
+          and (js.get("summary") or {}).get("alreadyRestored") == 1
+          and (js.get("summary") or {}).get("skipped") == 0, _bad(json.dumps(js)))
+
+    rc, js, err = run_cli_json("--folder", root, "--restore", batch)
+    check("r08.third_empty_already_all",
+          rc == 0 and js.get("status") == "empty" and js.get("count") == 0
+          and js.get("alreadyRestored") == 2 and js.get("skipped") == [],
+          _bad(err + json.dumps(js)))
+    man = _manifest(batch)
+    check("r08.all_entries_restored_in_manifest",
+          all(e.get("status") == "restored" for e in man.get("entries") or [])
+          and "Missing" not in json.dumps(js, ensure_ascii=False),
+          _bad(json.dumps(man, ensure_ascii=False)))
+
+
 def main() -> int:
     print("清理页 daily 测试（T1+T2）：真实临时目录 + 真 CLI")
     for fn in TESTS:

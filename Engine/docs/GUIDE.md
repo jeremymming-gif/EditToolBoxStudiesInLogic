@@ -1385,7 +1385,7 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
 ```
 
 - **收什么**：编译辅助（`.aux/.bcf/.blg/.run.xml/.synctex.gz/.fls/.fdb_latexmk/.toc/.lof/.lot/.nav/.snm/.vrb` 等）、
-  编译 `.log`（有 TeX banner 且同名 `.tex`）、有来源的 `.bbl`、有同名 tex 的 `.out`、`.toolbox-tmp/` 全部、
+  编译 `.log`（有 TeX banner 且同名 `.tex`）、有来源的 `.bbl`、有同名 tex 的 `.out`、`.toolbox-tmp/` 下非备份文件、
   根时间戳 tex（`Chinese Content_/contents_YYYY-MM-DD_HH-MM-SS.tex`）、根级 `目录结果.json`、**旧**信息检查报告组。
 - **留什么**：最终 tex/pdf/图/样式/文献/设置、引用闭包（含间接）、`original/` 系原稿目录、备份/历史/待核、
   未知 `.log`、自定义 `.out`、无来源 `.bbl`、符号链接、最新一组信息检查报告、拿不准的一切（JSON `kept` 有理由）。
@@ -1395,6 +1395,12 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
   `2` = `preflight_failed`（引用缺失/越界等，零写入）、`partial`（部分失败，非 0 且 `ok=false`）、`cancelled`（被停止）。
 - **停止**：GUI 的「停止」对进程组发 `SIGTERM`；`daily` 自己接管该信号——扫描期零写入；搬移中停止会标记 `cancelled`，
   已搬文件保留在批次里、`--restore` 可完整撤销，`count` 只算已搬成功数。
+- **撤销/重试**：所有 `--restore`（daily 与旧 v1/v2 批次）先做同一套预检——清单 root 必须匹配、
+  批次必须在 `<root>/.toolbox-trash/` 下、回收目录/批次/条目不得是符号链接或越界；坏清单/越界 → `preflight_failed`、rc2、零写入，
+  批次保留，修好后再点撤销即可。目标已存在不覆盖、进 `skipped`，解除冲突后重试成功；已恢复条目重试计 `alreadyRestored`，不报 Missing。
+- **引用保护细则**：`\input` 支持花括号/引号/无花括号三种写法；引用按真实编译 cwd（文章目录优先）解析，
+  同名多来源全部保护；符号链接别名保护其目标，指向根外只保护别名、不跟随。
+- **备份优先**：`.toolbox-tmp/` 内的 `.bak/.backup/.orig` 等备份文件也按备份保留（不会因为位于 tmp 就被回收）。
 - **`--json`**：stdout 最后一行 JSON，保留旧字段（`ok/command/mode/dryRun/root/count/entryCount/entries/trashDir/restoreDir/failures/warnings/error`），
   新增 `operationId/status/kept`；字段语义见 `docs/ENGINE_API.md` §五。
 

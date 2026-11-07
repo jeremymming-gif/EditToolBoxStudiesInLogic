@@ -1041,18 +1041,24 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
   扫描（`scan_daily`）**只读**：不建目录、不写 manifest、不改任何文件。
 - **回收（可再生 / 可识别）**：编译辅助 `.aux .bcf .blg .run.xml .synctex.gz .fls .fdb_latexmk .toc .lof .lot .nav .snm .vrb .bbl-save-error .ds_store`；
   编译 `.log`（要求有 TeX 引擎 banner，且同目录有同名 `.tex`）；`.bbl`（同目录有 `.bib`，或同目录 `.tex` 声明了 `\addbibresource` / `\bibliography`）；
-  `.out`（有同名 `.tex`）；`.toolbox-tmp/` 下全部文件；期目录根的时间戳 tex `(Chinese Content|contents)_YYYY-MM-DD_HH-MM-SS.tex`；
+  `.out`（有同名 `.tex`）；`.toolbox-tmp/` 下除备份文件名（`.bak/.backup/.orig` 等）外的全部文件（**备份判据优先于 tmp**）；期目录根的时间戳 tex `(Chinese Content|contents)_YYYY-MM-DD_HH-MM-SS.tex`；
   根级 `目录结果.json`；旧信息检查报告组（按 `信息检查YYYY_MM_DD_HHMMSS` 的 stamp 分组，**保留最新一组** `txt`/`json`/`_摘要` 三件组，只回收更旧的组）。
 - **保护（保留）**：最终 `.tex/.pdf`、图、样式、文献、设置；引用闭包（`\input/\include` 递归、`\includegraphics`、`\addbibresource/\bibliography`，
-  含 `\graphicspath` 与间接引用；缺失/动态路径/绝对路径/越界一律报错）；`original/origin/原稿/源稿/原始稿` 系目录（**不进入、不遍历**）；
+  含 `\graphicspath` 与间接引用；`\input` 支持花括号/引号/无花括号三种写法；按真实编译 cwd（文章目录优先）解析，
+  同名多来源**全部保护**；符号链接别名保护其可解析的 realpath 目标，指向根外只保护别名、不读目标不递归；缺失/动态路径/绝对路径/越界一律报错）；
+  `original/origin/原稿/源稿/原始稿` 系目录（**不进入、不遍历**）；
   备份/历史/待核目录与备份文件名；未知 `.log`；自定义 `.out`（无同名 tex）；无来源 `.bbl`；非标准命名的信息检查文件；
   `.tex.bak`；符号链接（**不跟随**）；普通目录；最新一组信息检查报告；`.toolbox-trash` 与 SKIP 目录内的一切；期目录之外的路径（不跟随、不越界）。
 - **引用闭包优先**：即便后缀属可回收，只要被任意 tex 直接/间接引用（含显式 `\input{foo.bbl}`、`\input{foo.out}`），
   一律转 `kept`（`kind=referenced`），理由保留原判据文字。
-- **预检失败 = 零写入**：引用缺失/越界/绝对路径/动态路径、目录不可读、tex 不可读 → `errors` 非空，`status=preflight_failed`、`rc=2`，
-  不建批次、不搬任何文件。
+- **预检失败 = 零写入**：引用缺失/越界/绝对路径/动态路径、目录不可读、tex 不可读、回收目录/批次是符号链接或真实路径越界
+  → `errors` 非空，`status=preflight_failed`、`rc=2`，不建批次、不搬任何文件。
 - **可恢复批次与停止**：一个 `operationId` = 一个批次 `<期目录>/.toolbox-trash/<目录名>-<operationId>/`；**先把清单/意图持久化再搬移**，
   manifest `schema=2` + `kind="daily"`，每项 `planned → moving → moved|failed` 逐项落盘；`SIGTERM/SIGINT` 只置停止标志：
   扫描期零写入，搬移中断 `status=cancelled`（`count` 只算已搬成功数）且已搬文件可由 `--restore` 恢复。
-- **恢复**：校验 manifest 的 root / 批次必须位于 `<root>/.toolbox-trash/` 下 / 拒绝路径穿越与绝对路径 / 目标已存在不覆盖（保留可重试）；
-  兼容旧 v1（`files`）与 v2（`entries`）manifest；dry-run 只报「将恢复」，不写盘。
+- **恢复（所有入口同一套预检）**：校验 manifest 的 root（realpath 容错）/ 批次必须位于 `<root>/.toolbox-trash/` 下 /
+  回收目录、批次、父目录与条目不得经符号链接越界 / 拒绝路径穿越与绝对路径 / 目标已存在不覆盖（保留可重试）；
+  manifest 缺失、坏 JSON、条目非法 → `preflight_failed`、`rc=2`、`ok=false`、**零写入**，批次保留可重试（修清单后直接重试）。
+- **恢复账本**：每条成功搬回后 manifest 该条 `status` 原子置 `"restored"`；重试时已恢复条目计 `alreadyRestored`
+  （目标仍在），**不再报 "Missing in trash"**；冲突/缺失进 `skipped`，全部恢复完 → `success`，本次无新恢复 → `empty`。
+  daily 批次冲突/缺失 → `partial`（rc2、`ok=false`）；旧 v1/v2 批次保留旧语义（只 warning、rc0）。

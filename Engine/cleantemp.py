@@ -125,7 +125,10 @@ def main(argv: list[str] | None = None) -> int:
                failures: list[tuple[str, str]] | None = None,
                entries: list[dict] | None = None, status: str = "",
                operation_id: str = "", kept: list[dict] | None = None,
-               warnings: list[str] | None = None) -> None:
+               warnings: list[str] | None = None,
+               already_restored: int = 0,
+               skipped: list[dict] | None = None,
+               summary: dict | None = None) -> None:
         if not json_mode:
             return
         items = entries if entries is not None else _collect_entries(logged)
@@ -149,6 +152,16 @@ def main(argv: list[str] | None = None) -> int:
             data["operationId"] = operation_id
             data["status"] = status
             data["kept"] = kept or []
+            if mode == "restore":
+                # R08：撤销账本（INTERFACE-REWORK 冻结字段）。
+                data["alreadyRestored"] = int(already_restored or 0)
+                data["skipped"] = list(skipped or [])
+                data["summary"] = summary or {
+                    "restored": count,
+                    "alreadyRestored": int(already_restored or 0),
+                    "skipped": len(skipped or []),
+                    "failed": len(failures or []),
+                }
         print(json.dumps(data, ensure_ascii=False), file=sys.stdout)
 
     if args.restore:
@@ -156,18 +169,9 @@ def main(argv: list[str] | None = None) -> int:
         if not os.path.isdir(trash_root):
             print(f"\n❌ 回收目录不存在：{trash_root}\n", file=sys.stderr)
             return 2
-        # daily 批次（manifest 带 kind/operationId）走安全恢复；旧批次仍走旧 restore（输出不变）。
-        _info = _clean_daily.read_manifest(trash_root)
-        if _info is not None and (_info.get("kind") == "daily" or _info.get("operationId")):
-            return _run_restore_daily(root, trash_root, args, say=say, log=log, finish=finish)
-        say("撤销清理（从回收目录搬回）\n")
-        say(f"路径：{root}\n")
-        n, _files = _clean.restore(root, trash_root, log=log, dry_run=args.dry_run)
-        say()
-        verb = "将恢复" if args.dry_run else "已恢复"
-        say(f"完成。{verb} {n} 个文件（目录：{root}）")
-        finish(mode="restore", count=n, restore=trash_root)
-        return 0
+        # R06：所有 --restore（daily / v2 / v1）统一走同一套安全校验与恢复账本；
+        # 不再对「读不到 manifest」回退旧 _clean.restore（那会绕过边界校验）。
+        return _run_restore_daily(root, trash_root, args, say=say, log=log, finish=finish)
 
     if args.mode == "daily":
         if args.trash:
@@ -358,11 +362,26 @@ def _run_restore_daily(root: str, trash_root: str, args: argparse.Namespace,
     warnings = res.get("warnings") or []
     failures = [(str(f.get("path") or ""), str(f.get("error") or ""))
                 for f in (res.get("failures") or [])]
-    entries = [{"path": e["path"], "action": "restore"}
-               for e in (res.get("entries") or [])]
+    skipped = [{"path": str(s.get("path") or ""), "reason": str(s.get("reason") or "")}
+               for s in (res.get("skipped") or [])]
+    already = int(res.get("alreadyRestored") or 0)
     n = int(res.get("count") or 0)
+    summary = res.get("summary") or {
+        "restored": n, "alreadyRestored": already,
+        "skipped": len(skipped), "failed": len(failures),
+    }
+    entries = [{"path": e["path"], "action": "restore",
+                "status": e.get("status", "restored")}
+               for e in (res.get("entries") or [])]
     error = res.get("error") or ""
     verb = "将恢复" if args.dry_run else "已恢复"
+
+    def done(*, ok: bool, count: int, with_entries: bool = True) -> None:
+        finish(mode="restore", count=count, ok=ok, restore=trash_root,
+               error=error, failures=failures,
+               entries=entries if with_entries else [], status=status,
+               operation_id=operation_id, kept=[], warnings=warnings,
+               already_restored=already, skipped=skipped, summary=summary)
 
     if status == "preflight_failed":
         print(f"\n❌ {error or '撤销预检未通过（未写入任何文件）'}", file=sys.stderr)
@@ -371,39 +390,30 @@ def _run_restore_daily(root: str, trash_root: str, args: argparse.Namespace,
         if len(failures) > 30:
             print(f"  … 还有 {len(failures) - 30} 项", file=sys.stderr)
         print("", file=sys.stderr)
-        finish(mode="restore", count=0, ok=False, restore=trash_root,
-               error=error, failures=failures, entries=[], status=status,
-               operation_id=operation_id, kept=[], warnings=warnings)
+        done(ok=False, count=0, with_entries=False)
         return 2
 
     if status == "cancelled":
         print(f"\n❌ {error or '已停止'}", file=sys.stderr)
         say(f"完成。{verb} {n} 个文件（目录：{root}）")
-        finish(mode="restore", count=n, ok=False, restore=trash_root,
-               error=error, failures=failures, entries=entries, status=status,
-               operation_id=operation_id, kept=[], warnings=warnings)
+        done(ok=False, count=n)
         return 2
 
     say()
     if status == "partial":
-        unsaved = len(warnings) + len(failures)
+        unsaved = len(skipped) + len(failures)
         print(f"\n❌ {error or '撤销未完成'}", file=sys.stderr)
         say(f"完成。{verb} {n} 个文件，{unsaved} 项未恢复（目录：{root}）")
-        finish(mode="restore", count=n, ok=False, restore=trash_root,
-               error=error, failures=failures, entries=entries, status=status,
-               operation_id=operation_id, kept=[], warnings=warnings)
+        done(ok=False, count=n)
         return 2
 
     if status == "empty":
         say(f"完成。没有可恢复的文件（目录：{root}）")
-        finish(mode="restore", count=0, ok=True, restore=trash_root,
-               entries=[], status=status, operation_id=operation_id,
-               kept=[], warnings=warnings)
+        done(ok=True, count=0, with_entries=False)
         return 0
 
     say(f"完成。{verb} {n} 个文件（目录：{root}）")
-    finish(mode="restore", count=n, ok=True, restore=trash_root, entries=entries,
-           status=status, operation_id=operation_id, kept=[], warnings=warnings)
+    done(ok=True, count=n)
     return 0
 
 
