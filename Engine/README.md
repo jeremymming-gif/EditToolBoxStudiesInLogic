@@ -130,7 +130,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**151 套件 / 6951 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python` + `PYTHONPATH=Engine/vendor`）：**153 套件 / 7152 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
@@ -164,12 +164,13 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
 `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18
 `test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19
-`test_pdfmerge` 36 ｜ `test_platform` 82 ｜ `test_proofcheck` 293 ｜ `test_publish` 58
-`test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29
-`test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20
-`test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
-`test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70
-`test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
+`test_pdfmerge` 36 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p06_query_paging` 106 ｜ `test_platform` 82
+`test_proofcheck` 293 ｜ `test_publish` 58 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
+`test_refs_apa_struct` 68 ｜ `test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30
+`test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20 ｜ `test_run_record` 36 ｜ `test_search_refs` 54
+`test_selfcheck` 24 ｜ `test_sep_style` 25 ｜ `test_table_images` 14 ｜ `test_tail_block` 58
+`test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4
+`test_xref_autoref` 14
 
 **普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，132 份源稿；成功解析 **132** 份 / 解析失败 **0** 份；三态互斥、相加 = 篇数）：
 
