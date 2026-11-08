@@ -104,7 +104,7 @@ export default defineConfig({
     },
     lastUpdated: { text: '最后更新于' },
     footer: {
-      message: 'MIT License · 仅用于《逻辑学研究》编辑部内部流程',
+      message: 'MIT License · 为《逻辑学研究》编辑部工作流而建',
       copyright: '编辑部工具箱'
     }
   }

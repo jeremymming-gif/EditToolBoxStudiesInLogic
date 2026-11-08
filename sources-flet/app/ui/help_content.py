@@ -69,6 +69,6 @@ BOUNDARY = (
     "引擎全程本地运行；只有显式开启的 AI 任务书会把正文发给配置的模型。",
 )
 
-LICENSE = ("专有软件 · Copyright © 2026 Jeremymming. All rights reserved."
-           "（v1.0.0–v1.5.0 为 MIT）")
+LICENSE = ("MIT License · Copyright © 2026 Jeremymming"
+           "（v1.0.0–v1.5.0 亦为 MIT）")
 THIRD_PARTY = "Flet (Apache-2.0) · Python (PSF) · pystray (LGPL) · Pillow (HPND)"

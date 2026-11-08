@@ -142,7 +142,7 @@ py -3.14 -m pytest ..\sources-flet\tests -q    # Flet 壳测试（期望 538 pas
 
 ## 许可与注意
 
-专有（All rights reserved），见 [`LICENSE`](LICENSE)；历史版本 v1.0.0–v1.5.0 仍按 MIT 发布（不可撤回）。
+本仓库自有代码与文档按 MIT License 发布，见 [`LICENSE`](LICENSE)；授权范围与例外见 [`LICENSE-SCOPE.md`](LICENSE-SCOPE.md)。历史版本 v1.0.0–v1.5.0 仍按 MIT 发布（不可撤回）。
 第三方组件与许可见 [`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
 1. 本仓是公开代码与模板，不含真实期刊数据；稿件与编辑部数据保存在内部仓库。

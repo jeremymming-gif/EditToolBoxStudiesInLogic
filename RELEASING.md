@@ -197,8 +197,8 @@ git tag "$V" && git push origin "$V"
 
 ## 6. 公开前必须拍板的两件事
 
-1. **许可证**：本仓 `LICENSE` 为**专有（All rights reserved，C1）**——2026-11-01 起仅覆盖未来版本；
-   v1.0.0–v1.5.0 历史版本当初按 **MIT** 发布，该授权不可撤回。旧 Editorialbox 归属见
+1. **许可证**：本仓 `LICENSE` 为 **MIT**（授权范围见 `LICENSE-SCOPE.md`）；
+   v1.0.0–v1.5.0 历史版本当初亦按 **MIT** 发布，该授权不可撤回。旧 Editorialbox 归属见
    [`THIRD_PARTY.md`](THIRD_PARTY.md) §4（历史），第三方依赖的 BSD-3/MIT 许可仍各自保留。
 2. **模板可以公开**（2026-10-15 编辑部决定）：`编辑笔记/模板文件/` 随公开仓发布 ——
    它是**运行时必需**的（`Engine/slcn/templates.py` 靠它生成初排稿的 `.sty` 与骨架），

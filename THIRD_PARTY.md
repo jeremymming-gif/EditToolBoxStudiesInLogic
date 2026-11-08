@@ -1,7 +1,7 @@
 # 第三方组件与归属声明
 
 本工具箱包含或复用了下列第三方作品。**发布（公开仓库 / Release）前请先读第 5 节**。
-本仓库自 2026-11-01（批 108）起按专有软件发布（见 [`LICENSE`](LICENSE)）；
+本仓库自有代码与文档按 MIT License 发布（见 [`LICENSE`](LICENSE)，范围见 [`LICENSE-SCOPE.md`](LICENSE-SCOPE.md)）；
 第三方组件各自的许可证不受影响。
 
 ---
@@ -56,8 +56,8 @@ PyInstaller 的许可信息。
 
 ## 5. 公开前的三件事
 
-1. **许可证**：仓库根 [`LICENSE`](LICENSE) 为**专有（All rights reserved，仅覆盖未来版本）**；
-   v1.0.0–v1.5.0 仍为 MIT，见第 4 节。
+1. **许可证**：仓库根 [`LICENSE`](LICENSE) 为 **MIT**（授权范围见 [`LICENSE-SCOPE.md`](LICENSE-SCOPE.md)）；
+   v1.0.0–v1.5.0 亦为 MIT，见第 4 节。
 2. **稿件仓必须与工具仓分开**：稿件（未发表的作者来稿）只存在于私有稿件仓，
    **绝不能**为了发 Release 而把稿件仓公开。拆仓方案见 `Engine/docs/ENGINE_API.md` §八。
 3. **署名**：公开仓库 README 的「许可与归属」一节指向第 4 节的历史 MIT 声明与上游链接。
