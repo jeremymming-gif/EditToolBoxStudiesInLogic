@@ -86,7 +86,7 @@ npm run docs:build     # 构建产物在 docs/.vitepress/ 下的 dist（构建�
 ## 5. 故障速查
 
 环境检查不过、引擎找不到、编译失败、文档站构建失败、看门狗变红：见[故障速查](/maintain/troubleshooting)。
-八项环境检查说明见[环境检查与诊断](/reference/environment-check)。
+九项环境检查说明见[环境检查与诊断](/reference/environment-check)。
 
 ## 6. 指针
 

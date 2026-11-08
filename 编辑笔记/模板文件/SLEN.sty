@@ -131,7 +131,9 @@
 %-------------------------------------------------------------------------%
 %    5.1 全局处理
 %-------------------------------------------------------------------------%
-\usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,sorting=nyt, sortcites=true]{biblatex}	
+% sortlocale=zh__pinyin：与中文模板同口径，参考文献按作者姓名的汉语拼音排序（须用 biber 编译）。
+% 英文条目按拉丁字母正常排序；含中文条目的英文稿也按拼音序，与历期成品一致。
+\usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,sorting=nyt, sortcites=true, sortlocale=zh__pinyin]{biblatex}	
 % 参考文献页码用一字线 \cndash（与中文模板同口径；\bibrangedash 在 \DefineBibliographyExtras 里改写）
 \DefineBibliographyExtras{english}{%
 	\renewcommand*{\bibrangedash}{\cndash}%

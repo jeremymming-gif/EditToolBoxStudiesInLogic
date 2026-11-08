@@ -548,7 +548,7 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
 | `--name` | 直接指定输出名，跳过姓名推导 |
 | `--lang` | `zh` / `en`；默认**按题名**自动判断 |
 | `--sty` / `--skeleton` | 覆盖模板（见第二节） |
-| `--compile` | 生成后立即 xelatex → biber → xelatex×2 |
+| `--compile` | 生成后立即 `xelatex → biber -l=zh_pinyin → xelatex ×2`；**B-377 起 biber 的 CLDR 中文排序 locale 未生效 = 编译失败**（退出码 2 并删掉本次 PDF，见 [`ENGINE_API.md`](ENGINE_API.md)「biber 排序 locale 守卫」） |
 | `--dry-run` | 只打印计划，不写文件 |
 | `--verify-refs` | 生成《参考文献核实任务书》markdown（交给编辑各自的 AI 核实）。**配了 LLM 时**还会自动预跑一遍，并把通过安全校验的条目**并入 `reference.bib`**（见 §3.5）。**第 62 批起 GUI 普通初排默认不传**（任务书由两段式第一段产出）；勾「用 AI 处理参考文献」时内部自动带本旗标；CLI 行为不变 |
 | `--no-ai-merge` | 只出任务书，**不**把 AI 结果并入 `reference.bib`（旧行为，逐字节相同）。GUI 里对应「保留原 reference.bib（不并入 AI 结果）」（只在勾了 AI 时显示） |

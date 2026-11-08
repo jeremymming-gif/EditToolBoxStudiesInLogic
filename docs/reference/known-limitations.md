@@ -40,6 +40,10 @@ description: v1.7.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 | LibreOffice 条件必需 | 未安装时合并 PDF / 导出原稿 PDF 降级并给出 warning | 仅这两个功能；初排转换不受影响 | 安装 LibreOffice，或按提示路径处理 | 无（已文档化） |
 | 模板/连接号默认行为变化 | 与 1.4.0 产物不同（ZH-08 默认启用、模板 88 版式） | 交付稿版式变化 | 如需 1.4.0 旧行为，可用既有开关回退 | 无（预期行为） |
 | 目录生成字体检查 | `fontset=windows` 前置检查会因缺字体中止（设计如此） | 无字体环境不能生成目录 | 安装字体，或按提示处理 | 无 |
+| 参考文献排序 locale（biber/CLDR） | 本机 biber 的 CLDR 数据缺中文拼音 tailoring 时，biber 仍退出 0、`.bbl` 也非空，只在 `.blg` 写 `No sort tailoring available for locale '…'`，中文条目按西文默认顺序排 | 排序是错的、PDF 看起来却「编译成功」；`--compile`（含「编译全部」）会判**硬失败**并删掉本次 PDF，环境检查的 biber 项也会红（退出码 2） | 装带完整 CLDR 的 TeX 发行版或升级 biber（2.21 实测 `biber -l=zh_pinyin` 打印单下划线，`.bcf` 的双下划线 `zh__pinyin` 两种都认）；先在「设置 → 环境检查」确认 biber 项为绿 | 无（引擎已改为硬失败，不再出假 PDF） |
+| 旧版内容模板（缺 `sortlocale=zh__pinyin` 标记） | 目录/篇目模板是旧版（`SLCN-MIX.sty` 没有该标记）时，中文目录排序仍按西文 | 只影响目录拼音排序 | 环境检查 `template_bundle` 只 **warn**（退出码停在 1，不阻断）；按模板页说明换新版 `SLCN-MIX.sty`/`SLEN.sty` 后重新生成目录 | 无（保留向后兼容，不强制） |
+| `sortname` 与内容身份（引用库） | B-377 起 `sortname` 是**纯排序层覆盖字段**，不计入 `content_sha256`：改它不再触发 rehash | 旧库里显式含 `sortname` 的记录摘要与新算法不一致（纯排序字段，不影响条目内容） | 一次性迁移 `Engine/tools/migrate_sortname_identity.py --db <库> --dry-run`（看 CSV/summary），确认后 `--apply` 重算 sha；真实笔记库只在 3.B377 关闭 App 后执行 | 一次性（当前真实库 0 条显式 `sortname`，`changed` 预期 0） |
+| 本机未装 `caspervector.sty`（R08 口径修正） | `kpsewhich caspervector.sty` 为空；负对照 `\usepackage{caspervector}` 会报 `.sty not found` | **不影响**交付编译：模板用的是 biblatex 样式名 `style=caspervector`，由 `biblatex-caspervector`（v0.3.7 起提供 `.bbx`/`.cbx`）解析；骨架 `xelatex → biber → xelatex ×2` 实测 rc=0、PDF 正常出 | 装 `biblatex-caspervector`（TeX Live 用 `tlmgr install biblatex-caspervector`）即可；自检请用 `style=caspervector` 的真实骨架，别拿 `\usepackage{caspervector}` 当判据 | 无（口径修正） |
 | 大期合并内存 | 整期合并 PDF 大文件时内存占用高（历史观察） | 极端期可能较慢 | 分批合并，或加大内存 | 待观察 |
 
 ## 反馈与更新
@@ -51,7 +55,8 @@ description: v1.7.0（Flet 单壳）当前仍存在的限制与可操作的绕�
 
 - Flet 单壳的失败信息分三层：**结果横幅**（可读原因 + 产物路径）、**日志区摘要层**（可切「只看摘要」）、
   **原始输出**（引擎末行契约与退出码）；复现问题用「设置 → 诊断包」导出或复制诊断信息（已脱敏，不含 API Key/正文）。
-- **设置 → 环境检查**只调用 `Engine/envcheck.py --json`（只读）：TeX / biber / LibreOffice / 字体 / 磁盘；
+- **设置 → 环境检查**只调用 `Engine/envcheck.py --json`（只读，B-377 起九项）：引擎运行时 / TeX / biber
+  （含 CLDR 中文排序 locale）/ LibreOffice / git / 磁盘 / 输出目录 / 模板 / Windows 字体；
   不改系统、不上传。
 - 引擎退出码语义不变：`proofcheck` / `checkbib` 的 1 = **有命中项，不是失败**；`toc` 的 1 = 已完成但需人工核对。
 - 缺 `xelatex`/`biber` 等属工具缺失，按提示补装后重跑；诊断信息只在本机生成。

@@ -178,8 +178,9 @@ _DROP_FIELDS = frozenset(bibnorm.DROP_FIELDS) | frozenset({
     "bdsk-url-1", "bdsk-file-1", "bdsk-url-2", "bdsk-file-2",
 })
 
-#: 计算 content_sha256 时忽略的字段：同一作品在不同期的排版层差异（标点偏好、访问日期）
-_IDENTITY_IGNORE = frozenset({"userf", "urldate"})
+#: 计算 content_sha256 时忽略的字段：同一作品在不同期的排序/排版层差异
+#: （标点偏好、访问日期、B-377 的排序覆盖字段 sortname）
+_IDENTITY_IGNORE = frozenset({"userf", "urldate", "sortname"})
 
 #: lint 用的「已知 BibTeX 类型」（含编辑部往期写法的几种）；其它类型只警告不阻断
 KNOWN_ENTRY_TYPES = frozenset(bibcheck.REQUIRED) | frozenset({

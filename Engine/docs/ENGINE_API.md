@@ -199,6 +199,38 @@ CLI 全兼容；「文献回读校验」页（第 62 批页顶标题「回读/�
 （案例第 107 条）。**B-290 起 biber 步（第 2 步）不再无条件容忍**：有 `.bcf` 时要求 `.bbl`
 非空且 `.blg` 无 ERROR，否则按「编译未通过」exit 2（stderr 带 `.blg` 的 ERROR 行）；
 无 cite（无 `.bcf`）稿仍容忍非零退出码，照旧出稿（不误伤无参考文献稿）。
+
+**biber 排序 locale 守卫（B-377 R02，判据在 `slcn/sortlocale.py`）**：`--compile` 的第 2 步仍是
+`biber -l=zh_pinyin`（`compileall.py` 共用同一个 `compile_pdf`）。判定逻辑外提为独立模块
+`slcn/sortlocale.py`（`blg_locale_verdict()` 五态判定 + `guard_after_biber()` 删 PDF/返回错误文案；
+外提口径同 B-222/B-229 先例，判据模块不占 `convert.py` 族行数），`slcn/convert_compile.py` 只在
+biber 步后留一行集成：`if i == 2 and (err := _sort.guard_after_biber(out_dir, stem)): return False, err`。
+biber 2.21 实测：`-l=zh_pinyin`
+在 `.blg` 里打印**单下划线** `locale 'zh_pinyin'`，而模板 `.bcf` 里的 `sortlocale=zh__pinyin` 是
+**双下划线**——判定正则接受 `zh_{1,2}pinyin`，两种写法都算生效证据。**biber 退出码 0、`.bbl` 非空
+都不代表排序对**：本机 CLDR 数据缺中文拼音 tailoring 时，biber 会打
+`No sort tailoring available for locale '…'` 并**静默退回西文默认顺序**。因此有 `.bcf` 时按
+`<stem>.blg` 做五态判定（「条目含中文」= 产物目录顶层 `*.bib` 里有汉字或日文假名，
+`bib_has_cjk()`；读不出按无中文处理；「有没有可排序条目」= `<stem>.bbl` 里有没有 biblatex
+的 `\entry{` 标记，`bbl_has_entries()`，读不出按无条目处理）：
+
+| `.blg` 状态 | 判定依据 | 条目含中文 | 条目不含中文 |
+|---|---|---|---|
+| `effective` | 有 `with template '…' and locale 'zh__pinyin'`（或 `zh_pinyin`）排序生效行 | 放行 | 放行 |
+| `degraded` | 有 `No sort tailoring available for locale '…'`；**退化优先于生效**——同一份 `.blg` 里两种行都有也判退化 | **硬失败** | **硬失败** |
+| `no_evidence` | `.blg` 存在但两种行都没有（没有排序生效证据） | **硬失败** | 放行（中文空/合成稿） |
+| `no_blg` | `<stem>.blg` 不存在或为空 | **硬失败** | 放行 |
+| `no_entries` | `<stem>.bbl` 里没有 `\entry{`（0 个 `\cite` 的合法稿，如稿件仓 `EN_template.tex`：有 `reference.bib` 但没有引用）→ **优先级最高**，有中文也无所谓——没有可排序条目，locale 与成品无关 | 放行 | 放行 |
+
+**硬失败 = `--compile` exit 2**：stderr 给判定 detail（如
+`排序 locale 未生效（No sort tailoring available for locale 'xx__yy'）（见 <stem>.blg）`），
+并**删除本次（或上一轮残留）的 `<stem>.pdf`**——排序 locale 未生效的 PDF 是「静默排错序」的
+假成品，不能留给用户（D4：宁可无 PDF）。`no_entries` 优先级最高：`.bbl` 没有条目（0 citekeys）时
+不管 `.blg`/`.bib` 是什么都放行，避免把「有 bib、无引用」的稿子从可编译打成失败（B-377 停止条件
+「有 bib 的稿子编译失败面扩大」的回归守卫）。无 `.bcf`（无参考文献）的稿子不跑这项判定，biber 非零
+退出码仍照旧放行。`compileall.py` 走同一份 `compile_pdf`，所以「编译全部」里某一篇也会按此规则
+失败（只停那一篇，`.log` 回显口径不变）。
+
 ⚠️ 具体到 `--verify-refs`（第 128 条）：本次核实条数超过 `--verify-max` 且未加
 `--verify-all-refs` → **退出码 2**（闸门在生成任务书 / 检索 / 调 AI **之前**；stderr 给出
 「调上限 / 显式全量 / 先看账」三条路，stdout 已有跑前量化行）。**这不是 `--compile` 那种
@@ -444,7 +476,7 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 | `publish.py` | **本期出刊向导（CLI-only；GUI 已删「本期出刊」页、合并能力只保留 GUI「合并文件」页）**（一步跑完一期；2026-10-21 第 71 批 B-116 起 **5 步**）：按序跑 ① **检查tex信息**（`infocheck.py`）→ ② **生成目录**（`toc.py`，读①最新的报告；**不再硬传 `--template <本期>`** —— 模板解析与「生成目录」页同一套「本期成品→显式指定→上一期→内置」，需要时用 `--template <期目录>` 显式指定）→ ③ **编译全部**（`compileall.py`，只编论文、跳过 `000` 目录）→ ④ **目录 PDF 落位**（调 `slcn/tocdelivery.py`，与 `toc.py --place --compile` **同一份实现**：取期目录根最新 `Chinese Content_<ts>.tex` / `contents_<ts>.tex` → 复制为 `000*/Chinese Content.tex` / `contents.tex`（覆盖旧的；根下带时间戳的 `.tex` 保留，供下一期继承）→ Windows 字体前置检查 → 在 `000*` 内 `xelatex ×2` 出同名 `.pdf` → 页数 > 1 的目录逐份有界搜索最小行距压缩量做单页适配（中文下限 −3pt / 英文 −6pt；压到下限仍 > 1 页 ⇒ rc2 并回滚 `000*`）；该期**缺 `000*` 目录时自动创建** `000 Table of Contents`，不再 rc2）→ ⑤ **合并整期 PDF**（`mergepdf.py`，输出 `<期目录>/合并.pdf`）。**编排只在引擎里**（外壳不许多写一份流程；项目红线「一个引擎，两个外壳」）。失败语义（用户 2026-10-17 拍板，INVARIANTS 三.2）：某步退出码 **2 ⇒ 中止**（前 N−1 步产物保留，末行写明卡在第几步）；某步退出码 **1 ⇒ 橙色警告、继续**（"有结果"）；`0` 继续。`--only N` / `--from N` 对 **1–5** 都生效（单步重跑/续跑）；①的报告缺失 ⇒ ② **退出码 2 中止**（不静默跳过）。**⑤ 显式传 `--nest-outlines --editors-page --back-cover`**（默认开，与 GUI「合并文件」页三开关默认一致；`mergepdf.py` 自身默认值**不变，仍是全关**），`--no-nest-outlines` / `--no-editors-page` / `--no-back-cover` 逐个关闭。④：目录 `.tex` 编译失败 / 字体检查失败 / 单页适配失败 ⇒ 退出码 2（**绝不拿旧 PDF 静默合并**）；该期没有 `000` 开头的目录 ⇒ **自动创建** `000 Table of Contents` 后照常落位（B-226；`--skip-toc-pdf` 时仍整步跳过、不创建）；`--skip-toc-pdf` 跳过④并对 `000` 里缺失的目录 PDF **明确告警**（计入 rc1 警告） | `0` 全部完成；`1` 完成但有警告项；`2` 中止/用法错误 | `完成。出刊：N 步都跑完[，警告 N 项]（目录：…）`／`--only` 时 `完成。出刊：只跑了第 N 步（<步骤名>）（目录：…）`／中止时 `完成。出刊：卡在第 N 步（<步骤名>）；前 N−1 步产物有效（目录：…）`。**契约行永远是 stdout 最后一行**（警告行在其前） |
 | `cleantemp.py` | 递归处理 LaTeX 编译中间文件（`.aux .bbl .bcf .blg .out .run.xml .synctex.gz` + `.DS_Store`）；**不删** `.tex/.pdf/.sty/.bib/.log`；**且永不进入 `original/`**（作者来稿目录，红线只读）。aux 模式：**默认直接删**（老行为，mac 外壳走这条）；`--trash` 移入 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`；`--restore <回收目录>` 搬回（**原位置已有同名文件则跳过、不覆盖**；**旧 v1/v2 manifest 兼容；所有 `--restore` 入口（含旧清单）统一安全预检，坏清单/越界/链接 → rc2 零写入**）。**B-211 起**另有 `--mode delivery`（交付收尾：先预检 `\includegraphics/\input/\include/\addbibresource/\bibliography` 引用闭包，缺失 → **整体拒绝、零写入**；白名单 `*.tex/*.pdf/*.bib/*.sty/*.cls`、闭包文件与目录、`original/` 系、`*交付清单*.md`；清 aux 全套/`.ai前/.log/*.bak/*_AI*/_文献核实/_回读校验报告/_参考文献核对/_一校核查/_原稿.pdf/_待核/`；未识别保留 + warning）与 `--mode workspace`（每期顶层 `合并*.pdf` 只留最新、固定名 `合并.pdf` 不删、解析不出时间保守保留；递归清 `信息检查*/ *.bak/*.coop-bak-*/ *_待核/ .DS_Store`；`000*/contents.*/Chinese Content.*/扉页*/编委*/封底*` 永不删）；两模式默认移入回收站（manifest schema=2，文件+目录条目），`--delete` 永久删；`--empty-trash` 清空回收站（B-281 起：清空后若 `.toolbox-trash/` 已空，该目录本身也一并删除；目录非空/权限失败时静默保留；dry-run 不删目录。契约行**逐字不变**，删目录的提示行 `已删除空的回收站目录：.toolbox-trash` 只会出现在契约行之前的 stdout） | `0` 成功；`2` 目录/预检错误（错误在 stderr，预检失败零写入） | aux：`完成。已删除 N 个临时文件（目录：…）`／`完成。已移入回收目录 N 个临时文件（回收目录：…）`／`完成。已恢复 N 个文件（目录：…）`；delivery/workspace：`完成。已移入回收目录 N 项（回收目录：…）`（dry-run「将移入」）／`--delete`：`完成。已删除 N 项（目录：…）`；empty-trash：`完成。已清空回收站 N 个回收目录（目录：…）` |
 | `cleantemp.py --mode daily` | **清理页/日常清理的唯一入口**（B-3xx）：`scan_daily()` 统一候选（编译辅助 / 编译 log / 有来源 bbl / 有同名 tex 的 out / `.toolbox-tmp/` / 根时间戳 tex / `目录结果.json` / 旧信息检查报告组），**引用闭包优先保护、无法证明可再生一律保留**；扫描只读；默认移入 `.toolbox-trash/<目录名>-<operationId>/`（manifest schema=2、`kind="daily"`、逐项 `planned/moving/moved`），`--restore` 撤销；拒绝 `--trash/--delete/--empty-trash/--all-reports`；`SIGTERM` 中断可恢复；所有 `--restore`（daily 与旧 v1/v2 批次）统一预检与恢复账本，坏清单/越界/链接 → `preflight_failed` rc2 零写入，重试计 `alreadyRestored`。判据见 `docs/RULES.md` §十三，用法见 `docs/GUIDE.md` §3.12 | `0` = `status=success` 或 `empty`；`2` = `preflight_failed` / `partial` / `cancelled`（均 `ok=false`；预检失败零写入） | `--json` 时 stdout 最后一行 JSON（旧字段 + `operationId/status/kept`，见下节契约）；人读契约行：`完成。已回收 N 项（回收目录：…）` / `完成。没有可清理的临时文件（目录：…）` / 恢复 `完成。已恢复 N 个文件（目录：…）`（dry-run 用「将回收 / 将恢复」） |
-| `compileall.py` | 对每个 `NN 作者/` 子目录跑 `xelatex → biber -l=zh_pinyin → xelatex → xelatex`；跳过 `000 目录`；某篇失败**只停那一篇**并回显 `.log` 里的 `!` 摘要 | `0` 全成功；`1` 有失败；`2` 用法/目录错误 | `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）` |
+| `compileall.py` | 对每个 `NN 作者/` 子目录跑 `xelatex → biber -l=zh_pinyin → xelatex → xelatex`；跳过 `000 目录`；某篇失败**只停那一篇**并回显 `.log` 里的 `!` 摘要；**B-377 起排序 locale 未生效也按该篇失败**（共用 `convert_compile.compile_pdf` 的 `.blg` 四态守卫，判据在 `slcn/sortlocale.py`，见 §二「biber 排序 locale 守卫」） | `0` 全成功；`1` 有失败；`2` 用法/目录错误 | `完成。编译 N 篇（成功 X / 失败 Y）（目录：…）` |
 | `proofcheck.py` | **一校核查**：按《排校手册》《流程化经验书》逐条核查初排稿（29 条规则，见 `docs/PROOF_RULES.md`）；**默认只报不改**：报告只列需人工判断的命中，可自动改项由初排通道默认处理（`--fix` 可补写新文件） | `0` 无命中；`1` 有命中（正常）；`2` 用法/文件错误 | `完成。一校核查：命中 N 处（可自动改 M 处）（报告：…）` |
 | `templatecheck.py` | **模板合规校验（report-only MVP，B-002）**：核查产品目录或初排稿的 8 条模板/初排规范（T1–T8，见 `docs/TEMPLATE_RULES.md`）；**只报不改，无 `--fix`**；不注册 App/GUI/打包入口（`--self-test` 走内建夹具） | `0` 无 FAIL；`1` ≥1 FAIL；`2` 用法/输入/写报告错误 | `完成。模板合规：PASS p / FAIL f / SKIP s（报告：…）` |
 | `infocheck.py` | **检查tex信息**：汇总各篇 tex 里的卷期年/页码/题目/作者/字号/行距 + PDF 实际页数；`--preview` 只输出检查结果 JSON（篇目 + `inconsistencies`），**不落任何文件** | `0` 成功（或 preview 成功）；`2` 用法/目录错误 | `完成。检查 N 篇（有 tex X / 有 pdf Y；不一致 Z 项）（报告：…）` |
@@ -641,6 +673,33 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 查全率 / 查准率）、`run_poc.py`（端到端 PoC 驱动 + 打分报告）、`refaudit.py`（全库参考文献质量普查，纯离线）。
 这些只在开发机跑，**不要**打进 Release 资产。
 
+### `tools/migrate_sortname_identity.py`（B-377 一次性迁移）
+
+`sortname` 从内容身份（`content_sha256`）里退出后，历史上**显式含 `sortname`** 的库记录摘要不再
+匹配现行算法；本脚本按现行规则重算一次（**不改规则**，只做一次性对齐；真实库当前 0 条显式
+`sortname`，所以 `changed` 预期 = 0）：
+
+```bash
+cd Engine
+export PYTHONPATH="$PWD:$PWD/vendor"
+/opt/homebrew/bin/python3.14 tools/migrate_sortname_identity.py \
+    --db /path/to/bibliography.jsonl --dry-run --out /tmp/b377-migrate
+/opt/homebrew/bin/python3.14 tools/migrate_sortname_identity.py \
+    --db /path/to/bibliography.jsonl --apply
+```
+
+- `--db` **必填、不设默认值**（防呆：绝不猜真实库路径）；`--dry-run` / `--apply` **必须显式二选一**
+  （互斥；缺任一 → 退出码 2）——**只有 `--apply` 写库**，dry-run 绝不写。`--out` 缺省当前目录。
+- dry-run 产出 `sortname_identity_dryrun.csv`（`key,entry_type,old_sha256,new_sha256,changed`）与
+  `summary.json`；apply 产出 `sortname_identity_apply.csv` + `summary.json`。
+- 只重算 `content_sha256`；**仅当摘要真变化**才把 `updated_at` 置当前时刻；`fields` 及其它字段
+  逐字节不动、行序保持原序，写回走 `fsutil.atomic_write()`。写回前自检：除
+  `content_sha256`/`updated_at` 外任何键值有差异 → 拒绝写（rc2）。幂等：第二次 `--apply`
+  `changed==0` 且不重写文件。
+- 退出码：`0` = 成功（dry-run 发现变化也是 0，变化是给人看的报告）；`2` = 用法/IO/结构错误
+  （含库里有与 `content_sha256` 无关的结构问题 → 先跑 `bibdb.py lint` 修，否则拒绝写回防丢行）。
+- **真实笔记库的 `--apply` 只属 3.B377 执行**（在关闭 App 后再跑）；本包（B-377）只做 dry-run 验证。
+
 ## 七、平台矩阵（第 86 条：引擎平台中立化的口径）
 
 | 需要什么 | macOS | Windows | Linux |
@@ -688,6 +747,14 @@ python3 bibdb.py       <子命令> [参数…]   # 编辑部引用库（子命�
 6. **退出码只看 0 / 非 0**；错误消息在 stderr，要一起显示。
 7. **绝对路径**：源文件、输出目录、`--returned` 等一律传绝对路径；不依赖 CWD。
 8. **别改产物**：产物目录里的文件由引擎负责，外壳只读、只打开（唯一例外是用户显式点的「删除临时文件」）。
+9. **「设置 → 环境检查」只调 `envcheck.py --json`**（只读、不联网、不装东西）：B-377 起是**九项**，
+   `CHECK_IDS` 固定顺序 `engine_bundle → xelatex → biber → libreoffice → git → disk_space →
+   output_writable → template_bundle → windows_fonts`；退出码语义不变（`0` = 必需项齐 / `1` = 必需齐、
+   可选项缺 / `2` = 必需项缺）。与排序有关的三处：`biber` 要验证 CLDR 排序 locale `zh__pinyin`
+   能生效（degraded/探针无证据 = 必需失败，detail 写作「biber 的 CLDR 排序 locale zh__pinyin
+   未生效」，见 §二「biber 排序 locale 守卫」）；`template_bundle` 对旧版模板只 `warn`（退出码停在
+   `1`，不阻断）；`windows_fonts`（SimSun/SimHei/KaiTi/FangSong）恒为**可选**，缺字体只 `warn`。
+   逐项说明与 `--json` 字段见 `docs/reference/environment-check.md`。
 
 ## 九、版本、打包与升级
 

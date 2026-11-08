@@ -430,8 +430,8 @@
 \newcommand{\printauthors}%
 {%
 	\textbf{作者信息：}\\[-1em]
-　　　　　%若干个全角空格
-　　\begin{minipage}{50em}
+\hspace*{7\ccwd}%相当于若干个全角空格
+\begin{minipage}{\dimexpr\hsize-7\ccwd\relax}
 		\ifthenelse{\equal{\mysecondauthor}{null}}{\printoneauthors}%仅有一个作者的情况
 		{%           % 
 			\ifthenelse{\equal{\mythirdauthor}{null}}{\printtwoauthors}%有两个作者的情况
@@ -678,7 +678,9 @@
 %-------------------------------------------------------------------------%
 %    9.1 全局处理
 %-------------------------------------------------------------------------%
-\usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,backend = biber, style=caspervector,utf8, sorting=nyt]{biblatex}
+% sortlocale=zh__pinyin：参考文献按作者姓名的汉语拼音排序（须用 biber 编译）。
+% 不写这一项时 biber 退化为 en-US 排序，中文参考文献会按 Unicode 码位排，与历期成品的拼音序不一致。
+\usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,backend = biber, style=caspervector,utf8, sorting=nyt, sortlocale=zh__pinyin]{biblatex}
 % 参考文献页码用一字线 \cndash（排校手册口径；\bibrangedash 在 \DefineBibliographyExtras 里改写）
 \DefineBibliographyExtras{english}{%
 	\renewcommand*{\bibrangedash}{\cndash}%

@@ -1,12 +1,12 @@
 ---
 title: 环境检查
-description: 自检检查哪八项、缺依赖怎么装、结果怎么看。
+description: 自检检查哪九项、缺依赖怎么装、结果怎么看。
 ---
 
 # 环境检查
 
 工具箱跑的是**本机**的 TeX 与 LibreOffice。以前「能不能用」要等第一次转换失败才知道；
-现在 Flet 单壳（v1.5.0 起）在「设置」页点「运行环境检查」即可看到八项结论与安装命令，
+现在 Flet 单壳（v1.5.0 起）在「设置」页点「运行环境检查」即可看到九项结论与安装命令，
 缺什么、怎么装、缺了会影响哪一功能一次讲清。
 
 - **Windows / macOS**：都在「设置 → 环境检查」点「运行环境检查」；结果直接显示在页面里。
@@ -18,18 +18,32 @@ description: 自检检查哪八项、缺依赖怎么装、结果怎么看。
 它只在你点开时给结论。检查**不联网、不自动安装、不改任何文件**（`--out-dir` 那一项会写一个探针文件，
 写完立即删掉）。
 
-## 八项检查
+## 九项检查
 
 | id | 检查 | 必需 / 可选 | 缺了会怎样 |
 |---|---|---|---|
 | `engine_bundle` | 引擎运行时（发布包内置 Python，或源码模式的 Python 3.14 + 依赖） | 必需 | 任何功能都起不来 |
 | `xelatex` | XeLaTeX | 必需 | LaTeX 稿的初排稿编译不出 PDF |
-| `biber` | BibTeX 后端 biber | 必需 | 参考文献（biblatex）不能排序与回读 |
+| `biber` | BibTeX 后端 biber（含 CLDR 中文排序 locale `zh__pinyin` 是否生效） | 必需 | 参考文献（biblatex）不能排序与回读；locale 未生效时中文条目会按西文默认顺序排，等于排序不可信 |
 | `libreoffice` | LibreOffice（`soffice`） | 可选 | 只影响含 OLE 对象 / MathType 公式的 Word 稿；纯 LaTeX 稿不受影响 |
 | `git` | git | 可选 | 只影响笔记仓 / 引用库的版本与同步操作 |
 | `disk_space` | 磁盘空间 ≥ 2 GB | 必需 | 编译与合并中途写不下 |
 | `output_writable` | 输出目录可写（只在给了 `--out-dir` 时查） | 必需 | 产物/报告落不了盘 |
-| `template_bundle` | 排版模板（`编辑笔记/模板文件`） | 必需 | 初排稿套不上本刊版式 |
+| `template_bundle` | 排版模板（`编辑笔记/模板文件`，需带 `sortlocale=zh__pinyin`） | 必需（旧版模板只警告） | 初排稿套不上本刊版式；旧模板缺 `sortlocale=zh__pinyin` 时只警告不阻断，但中文条目会按西文默认顺序排 |
+| `windows_fonts` | Windows 字体（SimSun/SimHei/KaiTi/FangSong） | 可选 | 缺了含 Windows 字体的目录排版编译会失败；不阻断自检 |
+
+> **两层排序口径都要对**：`biber` 项的 locale 探针（`biber --tool -l zh__pinyin`）验证
+> **排序数据真的可用**；`template_bundle` 项的标记检查验证**模板确实要求了**中文排序。
+> 两者任一为「必需项失败」都不能靠「编译成功」蒙混过关——locale 未生效时 biber 仍可能
+> 退出 0、`.bbl` 也非空，只是中文条目静默按西文默认顺序排列（见
+> [已知限制与绕行](known-limitations.md)）。
+
+- **`biber` 的 locale 判定**：.blg/探针里出现 `No sort tailoring available for locale '…'` 即
+  **必需项失败**，退出码 `2`；自检 detail 写作「biber 的 CLDR 排序 locale zh__pinyin 未生效」。
+  旧版 biber 或裁剪过 CLDR 数据的 TeX 发行版会中招。
+- **`template_bundle` 的三种情形**（级别随情形变化，退出码语义不变）：目录与两个 `.sty`
+  齐全且带 `sortlocale=zh__pinyin` → 必需/`ok`；模板在但缺该标记（旧版模板）→
+  可选/`warn`（退出码停在 `1`，不阻断）；找不到模板目录 → 必需/`fail`（退出码 `2`）。
 
 `engine_bundle` 的两种形态：
 
@@ -94,7 +108,7 @@ python3 envcheck.py --out-dir /tmp/envcheck   # 顺带检查该目录可写 + �
       "hint": "", "install": {"mac": "…", "windows": "…"}
     }
   ],
-  "summary": {"ok": 8, "warn": 0, "fail": 0}
+  "summary": {"ok": 9, "warn": 0, "fail": 0}
 }
 ```
 
@@ -102,7 +116,7 @@ python3 envcheck.py --out-dir /tmp/envcheck   # 顺带检查该目录可写 + �
 
 Flet 单壳（v1.5.0 起）没有 zip 诊断包；需要时复制两样即可：
 
-1. 「设置 → 环境检查」结果（页面内八项结论与安装提示）；
+1. 「设置 → 环境检查」结果（页面内九项结论与安装提示）；
 2. 「设置 → 关于与诊断」里的版本 / 引擎形态 / 平台信息（可一键复制）。
 
 这些信息**只含**依赖结论与版本，不含稿件内容、不含作者信息、不含 API Key（密钥只在本机配置文件里，

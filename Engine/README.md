@@ -130,7 +130,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python` + `PYTHONPATH=Engine/vendor`）：**153 套件 / 7152 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**155 套件 / 7300 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
@@ -158,19 +158,19 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_cn_author_split` 28 ｜ `test_cn_dot_heading` 39 ｜ `test_cn_journal_numbered` 35 ｜ `test_coauthor_en` 19
 `test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 74 ｜ `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45
 `test_docx_quote_footnote` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 66
-`test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_envcheck` 46 ｜ `test_evidence_injection` 27
+`test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_envcheck` 68 ｜ `test_evidence_injection` 27
 `test_footnote_id0` 12 ｜ `test_incollection_fields` 41 ｜ `test_infocheck_toc` 138 ｜ `test_issue_tools` 69
 `test_latex_appendix` 20 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
 `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
 `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18
 `test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19
-`test_pdfmerge` 36 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p06_query_paging` 106 ｜ `test_platform` 82
-`test_proofcheck` 293 ｜ `test_publish` 58 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29
-`test_refs_apa_struct` 68 ｜ `test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30
-`test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20 ｜ `test_run_record` 36 ｜ `test_search_refs` 54
-`test_selfcheck` 24 ｜ `test_sep_style` 25 ｜ `test_table_images` 14 ｜ `test_tail_block` 58
-`test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4
-`test_xref_autoref` 14
+`test_pdfmerge` 36 ｜ `test_pkg_b377_sortlocale_sortname` 77 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p06_query_paging` 106
+`test_pkg_p07_bib_asset` 49 ｜ `test_platform` 82 ｜ `test_proofcheck` 293 ｜ `test_publish` 58
+`test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29
+`test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20
+`test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
+`test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70
+`test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
 
 **普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，132 份源稿；成功解析 **132** 份 / 解析失败 **0** 份；三态互斥、相加 = 篇数）：
 

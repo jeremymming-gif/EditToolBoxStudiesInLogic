@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """首次运行环境自检（B-283）：`Engine/envcheck.py` 的判据与退出码。
 
-这一套钉住八件事，全部**真跑子进程**（不是「代码看起来对」）：
+这一套钉住九件事，全部**真跑子进程**（不是「代码看起来对」）：
 
   (a) 契约底座：`CHECK_IDS` 固定顺序、`detect_form()` 的 auto/exe/source；
-  (b) **C1** `--json` 是合法 `envcheck.v1`：字段齐全、8 项、summary 与 checks 对得上；
+  (b) **C1** `--json` 是合法 `envcheck.v1`：字段齐全、9 项、summary 与 checks 对得上；
   (c) **C2** 假 PATH 里什么都没有 → 人类输出列出缺失 + **当前平台**安装命令，退出 2；
   (d) **C3** 只有可选项缺失（无 git；`SLCN_SOFFICE` 指错）→ 必需项全 ok，退出 1；
   (e) **C4** 同一套假 PATH（有 TeX、有 soffice、无 python3.14）：source 判 fail 退出 2，exe 退出 0；
-  (f) 单元级失败路径（注入探测）：soffice 真缺失 / 模板缺失 / 磁盘不足 / 输出目录不可写；
+  (f) 单元级失败路径（注入探测）：soffice 真缺失 / 模板缺失或旧版 / 磁盘不足 / 输出目录不可写 /
+      biber locale 未生效 / 缺 Windows 字体（B-377）；
   (g) `--out-dir`：可写时落 `envcheck.json`；只读时判 fail 且**不**炸在半路；
   (h) dispatcher：`engine_main.ENTRIES` 原十项顺序不变、第 11 项是 envcheck，且真能跑通（PATH 同样备齐 soffice，理由见下）。
 
@@ -19,6 +20,10 @@
 退出码从 0 降到 1（不是失败）。本机 macOS 靠 `slcn.platform.find_soffice()` 的
 `/Applications/LibreOffice.app/...` 兜底才碰巧找到；Linux CI 没有这条兜底，不造 stub 时
 `--profile exe` 的 rc 会变成 1，C4/C8 的两条「退出 0」断言就会**随机器变红**。
+
+B-377 起第 9 项 `windows_fonts`（可选）包装 `slcn.tocdelivery.check_windows_fonts()`，
+biber 还要用 `biber --tool` 探针验证 `sortlocale=zh__pinyin` 真生效——本套件的假 biber
+因此在 `--tool` 分支写出与真 biber 同形的 `<datasource>.blg` 排序行（见 `_make_biber_stub`）。
 
 `sources-win/tests/test_bridge.py` 的 (l) 组还从外壳侧断言同一份 argv 口径。
 """
@@ -74,6 +79,9 @@ def make_bin(tmp: pathlib.Path, names: tuple[str, ...]) -> pathlib.Path:
     bin_dir = tmp / "bin"
     bin_dir.mkdir()
     for name in names:
+        if name == "biber":
+            _make_biber_stub(bin_dir)
+            continue
         line = STUBS[name]
         if os.name == "nt":
             (bin_dir / (name + ".CMD")).write_text(
@@ -83,6 +91,34 @@ def make_bin(tmp: pathlib.Path, names: tuple[str, ...]) -> pathlib.Path:
             path.write_text('#!/bin/sh\necho "' + line + '"\n', encoding="utf-8")
             os.chmod(path, 0o755)
     return bin_dir
+
+
+def _make_biber_stub(bin_dir: pathlib.Path) -> None:
+    """假 biber：`--version` 打印版本；`--tool …` 在 cwd 写 `<datasource>.blg` 排序行。
+
+    B-377 的 envcheck 用 `biber --tool -l zh__pinyin` 离线验证 CLDR 排序 locale；
+    假工具必须照真 biber 的行为把日志写进 cwd 的 `<datasource>.blg`，否则探针会判
+    no_evidence。（Windows 上 shutil.which 只认 PATHEXT，故用 .CMD 包一层。）
+    """
+    stub = bin_dir / "_biber_stub.py"
+    stub.write_text(
+        "import pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args and args[0] == '--tool':\n"
+        "    pathlib.Path(args[-1] + '.blg').write_text(\n"
+        "        \"INFO - Sorting list 'tool/global//global/global/global' of \"\n"
+        "        \"type 'entry' with template 'tool' and locale 'zh__pinyin'\\n\",\n"
+        "        encoding='utf-8')\n"
+        "    raise SystemExit(0)\n"
+        "print('biber version: 2.19')\n",
+        encoding="utf-8")
+    if os.name == "nt":
+        (bin_dir / "biber.CMD").write_text(
+            f'@"{PY}" "{stub}" %*\r\n', encoding="utf-8")
+    else:
+        path = bin_dir / "biber"
+        path.write_text(f'#!/bin/sh\nexec "{PY}" "{stub}" "$@"\n', encoding="utf-8")
+        os.chmod(path, 0o755)
 
 
 def child_env(bin_dir: pathlib.Path, extra: dict | None = None) -> dict:
@@ -111,9 +147,10 @@ def by_id(report: dict) -> dict[str, dict]:
 # ─────────────────────────────────────────────────────────────────────────
 print("── (a) 契约底座：固定顺序 + 形态判定 ──")
 
-check("(a) CHECK_IDS 是 spec 的八项、顺序固定",
+check("(a) CHECK_IDS 是 spec 的九项、顺序固定",
       E.CHECK_IDS == ("engine_bundle", "xelatex", "biber", "libreoffice", "git",
-                      "disk_space", "output_writable", "template_bundle"),
+                      "disk_space", "output_writable", "template_bundle",
+                      "windows_fonts"),
       repr(E.CHECK_IDS))
 check("(a) detect_form：显式 profile 原样返回（这是 C4 的开关）",
       E.detect_form("exe") == "exe" and E.detect_form("source") == "source")
@@ -144,7 +181,7 @@ with tempfile.TemporaryDirectory() as td:
           report.get("schema") == "envcheck.v1" and report.get("profile") == "exe"
           and bool(report.get("platform")))
     checks = report.get("checks") or []
-    check("(b) 恰好八项，顺序与 CHECK_IDS 一致",
+    check("(b) 恰好九项，顺序与 CHECK_IDS 一致",
           [c.get("id") for c in checks] == list(E.CHECK_IDS),
           repr([c.get("id") for c in checks]))
     fields_ok = all(
@@ -167,6 +204,18 @@ with tempfile.TemporaryDirectory() as td:
           bundle.get("detail", "")[:80])
     check("(b) 必需项全部 ok（磁盘/模板/TeX/biber/引擎）",
           all(c["status"] == "ok" for c in checks if c["level"] == "required"))
+    items_b = by_id(report)
+    check("(b) biber 项带 locale 生效证据（B-377 探针）",
+          "zh__pinyin" in items_b.get("biber", {}).get("detail", ""),
+          items_b.get("biber", {}).get("detail", ""))
+    check("(b) template_bundle 认出 sortlocale=zh__pinyin 标记",
+          items_b.get("template_bundle", {}).get("status") == "ok"
+          and "zh__pinyin" in items_b.get("template_bundle", {}).get("detail", ""),
+          items_b.get("template_bundle", {}).get("detail", "")[:110])
+    check("(b) 第 9 项 windows_fonts 是 optional（ok/warn 都不阻断）",
+          items_b.get("windows_fonts", {}).get("level") == "optional"
+          and items_b.get("windows_fonts", {}).get("status") in ("ok", "warn"),
+          repr(items_b.get("windows_fonts", {}).get("status")))
     check("(b) 报告同时落盘 <out-dir>/envcheck.json，内容与 stdout 一致",
           (out_dir / "envcheck.json").is_file()
           and json.loads((out_dir / "envcheck.json").read_text(encoding="utf-8")) == report)
@@ -221,9 +270,13 @@ with tempfile.TemporaryDirectory() as td:
     check("(d) git 的 hint 说明影响面（同步）",
           "同步" in items.get("git", {}).get("hint", ""))
     check("(d) 退出 1（可选项缺失 ≠ 不能用）", r.returncode == 1, f"rc={r.returncode}")
-    check("(d) summary 里 warn=2、fail=0",
-          report.get("summary") == {"ok": 6, "warn": 2, "fail": 0},
+    # B-377：第 9 项 windows_fonts 在假 PATH 下由 xelatex stub 判 ok → ok 从 6 变 7。
+    check("(d) summary 里 ok=7、warn=2、fail=0",
+          report.get("summary") == {"ok": 7, "warn": 2, "fail": 0},
           repr(report.get("summary")))
+    check("(d) windows_fonts 在假 PATH 下不阻断（ok 或 warn，level=optional）",
+          items.get("windows_fonts", {}).get("level") == "optional",
+          repr(items.get("windows_fonts")))
 
 # ─────────────────────────────────────────────────────────────────────────
 print("── (e) C4：同一 PATH（有 TeX、无 python3.14）source 失败 / exe 通过 ──")
@@ -277,6 +330,145 @@ finally:
 
 check("(f) 不给 --out-dir → output_writable 是 info（不参与结论）",
       E.check_output_writable("")["level"] == "info")
+
+# ── (f2) B-377：模板旧版 = warn（optional，不阻断）、带标记 = ok ──────────────
+with tempfile.TemporaryDirectory() as td:
+    tmp_f = pathlib.Path(td)
+    old_dir = tmp_f / "old-tpl"
+    old_dir.mkdir()
+    (old_dir / "SLCN-MIX.sty").write_text("% legacy template\n", encoding="utf-8")
+    new_dir = tmp_f / "new-tpl"
+    new_dir.mkdir()
+    (new_dir / "SLCN-MIX.sty").write_text(
+        "% sortlocale=zh__pinyin\n", encoding="utf-8")
+    _orig_tpl2 = E._template_candidates
+    try:
+        E._template_candidates = lambda: [str(old_dir)]
+        item = E.check_template_bundle()
+        check("(f2) 模板在但缺 sortlocale=zh__pinyin → optional/warn（不阻断）",
+              item["status"] == "warn" and item["level"] == "optional"
+              and "旧版模板" in item["detail"], item["detail"][:100])
+        check("(f2) 且 hint 提示同步 2026-11-08 版模板",
+              "2026-11-08" in item["hint"] and "sortlocale=zh__pinyin" in item["hint"])
+        E._template_candidates = lambda: [str(old_dir), str(new_dir)]
+        item = E.check_template_bundle()
+        check("(f2) 旧+新候选并存 → 取新模板 required/ok（不误报旧版）",
+              item["status"] == "ok" and item["level"] == "required"
+              and "zh__pinyin" in item["detail"], item["detail"][:100])
+        E._template_candidates = lambda: [str(new_dir)]
+        item = E.check_template_bundle()
+        check("(f2) 模板含 sortlocale=zh__pinyin → required/ok",
+              item["status"] == "ok" and item["detail"].endswith("已固定）"))
+        E._template_candidates = lambda: [str(tmp_f / "no-such-dir")]
+        item = E.check_template_bundle()
+        check("(f2) 候选目录全不存在 → 仍是原 required/fail",
+              item["status"] == "fail" and "编辑笔记/模板文件" in item["hint"])
+    finally:
+        E._template_candidates = _orig_tpl2
+
+# ── (f3) B-377：biber locale 探针（可注入）+ 失败即 required fail ────────────
+import slcn.tocdelivery as _toc  # noqa: E402
+
+_orig_fonts = _toc.check_windows_fonts
+_orig_which = E.shutil.which
+_orig_probe = E._probe_biber_locale
+try:
+    _toc.check_windows_fonts = lambda: (
+        False, "缺少 Windows 字体（SimSun），ctex 的 fontset=windows 无法编译"
+               " —— 请安装这些字体后再试（引擎不会静默改用其它字体）")
+    item = E.check_windows_fonts()
+    check("(f3) 缺 Windows 字体（注入）→ optional/warn，detail 保留原因",
+          item["status"] == "warn" and item["level"] == "optional"
+          and "缺少 Windows 字体" in item["detail"], item["detail"][:100])
+    check("(f3) 字体缺失的 hint 给修复方向", "安装" in item["hint"])
+
+    def _boom() -> tuple[bool, str]:
+        raise RuntimeError("font-probe-boom")
+    _toc.check_windows_fonts = _boom
+    item = E.check_windows_fonts()
+    check("(f3) 字体探针抛异常 → warn 且 detail 含异常类型（自检不崩）",
+          item["status"] == "warn" and "RuntimeError" in item["detail"],
+          item["detail"][:100])
+
+    _toc.check_windows_fonts = lambda: (True, "")
+    item = E.check_windows_fonts()
+    check("(f3) 字体齐全（注入）→ optional/ok", item["status"] == "ok")
+
+    # _probe_biber_locale：用假 subprocess.run 喂 .blg 文本，覆盖四态
+    class _ProbeProc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    holder = {"text": "", "write": True}
+
+    def _fake_probe_run(cmd, cwd=None, **kwargs):
+        if holder["write"] and cwd:
+            name = pathlib.Path(cmd[-1]).name + ".blg"
+            pathlib.Path(cwd, name).write_text(holder["text"], encoding="utf-8")
+        return _ProbeProc()
+
+    _orig_run = E.subprocess.run
+    try:
+        E.subprocess.run = _fake_probe_run
+        holder["text"] = ("INFO - Sorting list 'x' of type 'entry' with template "
+                          "'tool' and locale 'zh__pinyin'\n")
+        v = E._probe_biber_locale("/fake/biber")
+        check("(f3) 探针：双下划线 zh__pinyin 排序行 → effective/ok",
+              v["ok"] and v["state"] == "effective" and v["locale"] == "zh__pinyin", v)
+        holder["text"] = ("INFO - Sorting list 'x' of type 'entry' with template "
+                          "'tool' and locale 'zh_pinyin'\n")
+        v = E._probe_biber_locale("/fake/biber")
+        check("(f3) 探针：单下划线 zh_pinyin 也算生效（D2 口径）",
+              v["ok"] and v["locale"] == "zh_pinyin", v)
+        holder["text"] = ("INFO - Sorting list 'x' of type 'entry' with template "
+                          "'tool' and locale 'zh__pinyin'\n"
+                          "INFO - No sort tailoring available for locale 'xx__yy'\n")
+        v = E._probe_biber_locale("/fake/biber")
+        check("(f3) 探针：degraded 优先于 effective（rc=0 也算未生效）",
+              not v["ok"] and v["state"] == "degraded"
+              and "No sort tailoring" in v["detail"], v)
+        holder["text"] = "INFO - some unrelated line\n"
+        v = E._probe_biber_locale("/fake/biber")
+        check("(f3) 探针：无排序证据 → no_evidence/fail",
+              not v["ok"] and v["state"] == "no_evidence", v)
+        holder["write"] = False
+        v = E._probe_biber_locale("/fake/biber")
+        check("(f3) 探针：.blg 没写出来 → no_evidence（不抛）",
+              not v["ok"] and v["state"] == "no_evidence", v)
+
+        def _timeout_run(cmd, cwd=None, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, 5.0)
+        E.subprocess.run = _timeout_run
+        v = E._probe_biber_locale("/fake/biber")
+        check("(f3) 探针：超时 → probe_error/fail（不抛）",
+              not v["ok"] and v["state"] == "probe_error"
+              and "TimeoutExpired" in v["detail"], v)
+    finally:
+        E.subprocess.run = _orig_run
+
+    E.shutil.which = lambda name: "/fake/biber" if name == "biber" else None
+    E._probe_biber_locale = lambda exe: {
+        "ok": False, "state": "degraded", "locale": "xx__yy",
+        "detail": "biber 的 CLDR 排序 locale zh__pinyin 未生效"
+                  "（No sort tailoring available for locale 'xx__yy'）",
+        "evidence": ""}
+    item = E.check_biber()
+    check("(f3) biber locale 未生效（注入）→ required/fail，文案点名 CLDR locale",
+          item["status"] == "fail" and item["level"] == "required"
+          and "CLDR 排序 locale zh__pinyin" in item["detail"], item["detail"][:120])
+    check("(f3) 且 hint 指向升级/重装 biber", "biber" in item["hint"]
+          and "CLDR" in item["hint"])
+    E._probe_biber_locale = lambda exe: {
+        "ok": True, "state": "effective", "locale": "zh__pinyin",
+        "detail": "排序 locale zh__pinyin 生效", "evidence": ""}
+    item = E.check_biber()
+    check("(f3) biber locale 生效（注入）→ required/ok，detail 带 locale",
+          item["status"] == "ok" and "zh__pinyin" in item["detail"], item["detail"])
+finally:
+    _toc.check_windows_fonts = _orig_fonts
+    E.shutil.which = _orig_which
+    E._probe_biber_locale = _orig_probe
 
 with tempfile.TemporaryDirectory() as td:
     tmp = pathlib.Path(td)
@@ -356,14 +548,14 @@ with tempfile.TemporaryDirectory() as td:
           f"rc={r.returncode} {r.stdout[:120]!r} {r.stderr[-120:]!r}")
 
 # ─────────────────────────────────────────────────────────────────────────
-print("── (i) 文档对账：reference 页存在且逐项覆盖八个 id ──")
+print("── (i) 文档对账：reference 页存在且逐项覆盖九个 id ──")
 
 doc = ENGINE.parent / "docs" / "reference" / "environment-check.md"
 check("(i) docs/reference/environment-check.md 存在", doc.is_file(), str(doc))
 if doc.is_file():
     text = doc.read_text(encoding="utf-8")
     missing = [i for i in E.CHECK_IDS if i not in text]
-    check("(i) reference 页逐项覆盖八个检查 id", not missing, repr(missing))
+    check("(i) reference 页逐项覆盖九个检查 id", not missing, repr(missing))
     check("(i) 页里写明三种退出码", all(s in text for s in ("退出码", "0", "1", "2")))
 
 # ─────────────────────────────────────────────────────────────────────────

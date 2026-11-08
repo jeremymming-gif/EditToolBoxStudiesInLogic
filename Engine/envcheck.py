@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""首次运行环境自检（B-283）：八项检查 + 安装引导 + `--json`。
+"""首次运行环境自检（B-283）：九项检查 + 安装引导 + `--json`。
 
 为什么在引擎里、不写进两个外壳：**判据只能有一份**。mac 的 SwiftUI 与 Windows 的
 Tkinter 都要回答同一串问题（TeX 在不在？biber 在不在？LibreOffice 在不在？磁盘够不够？
@@ -8,13 +8,17 @@ Tkinter 都要回答同一串问题（TeX 在不在？biber 在不在？LibreOff
 
 三种退出码（`Engine/docs/INVARIANTS.md` 三.2 的口径：退出码 1 不是程序出错）：
   0 = 必需项全部就绪（可选项可以有缺失）
-  1 = 必需项就绪，但**可选项**缺失（LibreOffice / git；功能受限，仍可用）
+  1 = 必需项就绪，但**可选项**缺失（LibreOffice / git / Windows 字体；功能受限，仍可用）
   2 = **必需项**缺失（TeX、biber、引擎运行时、磁盘、模板、输出目录）
 
 形态（`--profile`）：
   auto（默认）= 冻结壳（`sys.frozen` 或可执行文件同目录有 SLCNEngine）判 exe，否则 source；
   exe    = 发布包形态：Python 运行时随包内置，**不要求**本机 PATH 里有 python3.14；
   source = 源码形态：要求 PATH（或 `SLCN_PYTHON`）上有 Python 3.14 + 引擎依赖可导入。
+
+B-377 起：`biber` 还要验证 CLDR 排序 locale `zh__pinyin` 真能生效（`biber --tool` 离线探针，
+degraded 即必需项失败——中文条目会按西文默认顺序排）；模板要带 `sortlocale=zh__pinyin`
+（旧模板只警告不阻断）；新增第 9 项 Windows 字体（可选：缺了含 Windows 字体的目录编译会失败）。
 
 `--out-dir` 给了才检查「输出目录可写」，并把这份报告写成 `<out-dir>/envcheck.json`
 （诊断包外壳拿它当素材，见 `docs/reference/environment-check.md`）。
@@ -51,6 +55,7 @@ CHECK_IDS = (
     "disk_space",
     "output_writable",
     "template_bundle",
+    "windows_fonts",
 )
 
 #: 安装命令只用于**提示**：本工具绝不联网、绝不自动装东西（红线段）。
@@ -122,6 +127,86 @@ def _grep_version(text: str, pattern: str) -> str:
 
 def _tool_version(exe: str, pattern: str) -> str:
     return _grep_version(_run_version(exe), pattern)
+
+# ── biber 的 CLDR 排序 locale 探针（B-377） ────────────────────────────────
+#
+# 为什么需要：biber 2.21 的 .bcf 里 `sortlocale=zh__pinyin` 若不生效，编译**成功**
+# （rc=0、.bbl 非空），.blg 只会多一行 `INFO - No sort tailoring available for
+# locale 'xx__yy'`——中文条目会静默按西文默认顺序排。所以「能跑」不等于「排序对」。
+#
+# 做法：`biber --tool -l zh__pinyin` 在临时目录跑最小 .bib（tool 模式不需要 LaTeX /
+# .bcf / 中文条目），解析它写出的 `<datasource>.blg`；0.6s 左右、纯离线。
+# 判定正则与 `slcn.sortlocale` 共用同一份（degraded 优先于 effective；D16 后单一判据源）。
+_BIBER_PROBE_LOCALE = "zh__pinyin"
+_BIBER_PROBE_STEM = "locale_probe"
+_BIBER_PROBE_TIMEOUT = 5.0
+_BIBER_PROBE_BIB = (
+    "@book{probe, title = {Probe}, author = {Probe, A}, year = {2026}}\n"
+)
+#: slcn.sortlocale 导入失败时的兜底（与冻结接口 §I1 逐字一致；单一判据源在 sortlocale）。
+_LOCALE_EFFECTIVE_FALLBACK = re.compile(
+    r"with\s+template\s+'[^']*'\s+and\s+locale\s+'(?P<locale>zh_{1,2}pinyin)'")
+_LOCALE_DEGRADED_FALLBACK = re.compile(
+    r"No sort tailoring available for locale\s+'(?P<locale>[^']*)'")
+
+
+def _locale_patterns() -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """复用 §I1 的两条正则（判据只应有一份）；导入失败才用本文件的兜底副本。"""
+    try:
+        from slcn import sortlocale as _sort  # noqa: PLC0415
+        return _sort._LOCALE_EFFECTIVE_RE, _sort._LOCALE_DEGRADED_RE
+    except Exception:                                        # noqa: BLE001
+        return _LOCALE_EFFECTIVE_FALLBACK, _LOCALE_DEGRADED_FALLBACK
+
+
+def _probe_biber_locale(exe: str) -> dict:
+    """离线探针：`biber --tool -l zh__pinyin <tmp>/locale_probe.bib`。
+
+    返回 `{"ok", "state", "locale", "detail", "evidence"}`；state 取
+    effective / degraded / no_evidence / probe_error。**测试可 monkeypatch 本函数**。
+    """
+    eff_re, deg_re = _locale_patterns()
+    work = tempfile.mkdtemp(prefix="envcheck-biber-")
+    try:
+        bib = _BIBER_PROBE_STEM + ".bib"
+        with open(os.path.join(work, bib), "w", encoding="utf-8") as fh:
+            fh.write(_BIBER_PROBE_BIB)
+        try:
+            proc = subprocess.run(
+                [exe, "--tool", "-l", _BIBER_PROBE_LOCALE, bib],
+                cwd=work, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=_BIBER_PROBE_TIMEOUT, **_NO_WINDOW_KW,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"ok": False, "state": "probe_error", "locale": "",
+                    "detail": f"排序 locale 探针执行失败（{type(e).__name__}：{e}）",
+                    "evidence": ""}
+        text = ""
+        try:
+            with open(os.path.join(work, bib + ".blg"), encoding="utf-8",
+                      errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        degraded = deg_re.search(text)
+        if degraded:
+            loc = degraded.group("locale")
+            return {"ok": False, "state": "degraded", "locale": loc,
+                    "detail": f"biber 的 CLDR 排序 locale {_BIBER_PROBE_LOCALE} 未生效"
+                              f"（No sort tailoring available for locale '{loc}'）",
+                    "evidence": degraded.group(0).strip()}
+        effective = eff_re.search(text)
+        if effective:
+            return {"ok": True, "state": "effective",
+                    "locale": effective.group("locale"),
+                    "detail": f"排序 locale {effective.group('locale')} 生效",
+                    "evidence": effective.group(0).strip()}
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return {"ok": False, "state": "no_evidence", "locale": "",
+                "detail": f"探针没有返回排序生效证据（biber rc={proc.returncode}）",
+                "evidence": lines[-1] if lines else ""}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # ── Python 解释器（仅源码形态需要） ────────────────────────────────────────
@@ -203,7 +288,7 @@ def _item(check_id: str, title: str, level: str, status: str, *,
     }
 
 
-# ── 八项检查 ──────────────────────────────────────────────────────────────
+# ── 九项检查 ──────────────────────────────────────────────────────────────
 
 def check_engine_bundle(form: str) -> dict:
     title = "引擎运行时"
@@ -266,8 +351,21 @@ def check_biber() -> dict:
             install=_install("biber"),
         )
     ver = _tool_version(exe, r"biber version:?\s*([\d.]+)")
+    probe = _probe_biber_locale(exe)
+    if not probe.get("ok"):
+        return _item(
+            "biber", title, "required", "fail", version=ver,
+            detail=f"已找到：{exe}；但{probe.get('detail') or '排序 locale 未生效'}。",
+            hint=("中文参考文献排序依赖 biber 自带的 CLDR 排序数据（zh__pinyin）。"
+                  "请升级 / 重装官方 biber（brew install biber；Windows 随 MiKTeX 或 "
+                  "TeX Live 安装），或把 TeX Live 升到带 CLDR 数据的版本；否则中文条目会"
+                  "静默按西文默认顺序排列。"),
+            install=_install("biber"),
+        )
     return _item("biber", title, "required", "ok", version=ver,
-                 detail=f"已找到：{exe}", install=_install("biber"))
+                 detail=f"已找到：{exe}（排序 locale {probe.get('locale') or 'zh__pinyin'}"
+                        " 生效）",
+                 install=_install("biber"))
 
 
 def _soffice_probe() -> tuple[str, str]:
@@ -377,23 +475,79 @@ def _template_candidates() -> list[str]:
     return dirs
 
 
+#: B-377 起模板必须固定中文排序 locale；这两个 .sty 是承载它的文件。
+_LOCALE_STY_FILES = ("SLCN-MIX.sty", "SLEN.sty")
+_SORTLOCALE_RE = re.compile(r"sortlocale\s*=\s*zh__pinyin")
+
+
+def _sty_has_locale_marker(directory: str, name: str) -> bool:
+    try:
+        with open(os.path.join(directory, name), encoding="utf-8",
+                  errors="replace") as fh:
+            return bool(_SORTLOCALE_RE.search(fh.read()))
+    except OSError:
+        return False
+
+
 def check_template_bundle() -> dict:
     title = "排版模板"
+    old_item: dict | None = None
     for d in _template_candidates():
         try:
             names = sorted(os.listdir(d))
         except OSError:
             continue
         stys = [n for n in names if not n.startswith(".")]
-        if stys:
+        if not stys:
+            continue
+        present = [n for n in _LOCALE_STY_FILES if n in stys]
+        if present and any(_sty_has_locale_marker(d, n) for n in present):
             return _item("template_bundle", title, "required", "ok",
                          version=f"{len(stys)} 个文件",
-                         detail=f"模板随包就位：{d}")
+                         detail=f"模板随包就位：{d}（sortlocale=zh__pinyin 已固定）")
+        if old_item is None:
+            why = ("模板里没有 sortlocale=zh__pinyin 标记" if present
+                   else "模板目录里没有 SLCN-MIX.sty / SLEN.sty")
+            # 旧模板只**警告不阻断**：用 optional 让 exit_code 停在 1（I6/D5 口径）。
+            old_item = _item(
+                "template_bundle", title, "optional", "warn",
+                version=f"{len(stys)} 个文件",
+                detail=f"{why}，是旧版模板：{d}。",
+                hint=("请同步 2026-11-08 版模板（含 sortlocale=zh__pinyin），或重新安装"
+                      "随包模板；旧模板会让中文条目按西文默认顺序排序（不阻断编译）。"),
+            )
+    if old_item is not None:
+        return old_item
     return _item(
         "template_bundle", title, "required", "fail",
         detail="找不到排版模板目录（「编辑笔记/模板文件」）。",
         hint="发布包会自带模板；源码模式下确认仓库根有「编辑笔记/模板文件」后重跑。",
     )
+
+
+def check_windows_fonts() -> dict:
+    """第 9 项（B-377）：Windows 字体是否可用——**可选**，缺了只警告不阻断。
+
+    判据直接复用 `slcn.tocdelivery.check_windows_fonts()`（与目录交付同一套 fail-closed
+    探针：真起一次 xelatex 编译 `fontset=windows` 的最小文档）。这里只把它包装成
+    自检项；**不改**那个函数的 fail-closed 语义，也不在缺字体时静默换字体。
+    """
+    title = "Windows 字体（SimSun/SimHei/KaiTi/FangSong）"
+    hint = ("安装缺失字体后重跑自检（macOS 可把字体装到 ~/Library/Fonts），或改用其它 "
+            "fontset；引擎不会静默改用其它字体。")
+    try:
+        from slcn import tocdelivery as _toc  # noqa: PLC0415
+        ok, reason = _toc.check_windows_fonts()
+    except Exception as exc:                                 # noqa: BLE001
+        return _item(
+            "windows_fonts", title, "optional", "warn",
+            detail=f"字体探针执行失败（{type(exc).__name__}：{exc}）。", hint=hint)
+    if ok:
+        return _item("windows_fonts", title, "optional", "ok",
+                     detail="SimSun/SimHei/KaiTi/FangSong 可用"
+                            "（ctex fontset=windows 可编译）。")
+    return _item("windows_fonts", title, "optional", "warn",
+                 detail=reason or "Windows 字体不可用。", hint=hint)
 
 
 # ── 汇总 / 渲染 ───────────────────────────────────────────────────────────
@@ -420,6 +574,7 @@ def run_checks(form: str, out_dir: str = "") -> list[dict]:
         check_disk_space(disk_base),
         check_output_writable(out_dir),
         check_template_bundle(),
+        check_windows_fonts(),
     ]
 
 
@@ -488,7 +643,8 @@ def main(argv: list[str] | None = None) -> int:
     _plat.utf8_stdio()
     ap = argparse.ArgumentParser(
         prog="envcheck.py",
-        description="首次运行环境自检：TeX / biber / LibreOffice / git / 磁盘 / 输出目录 / 模板",
+        description=("首次运行环境自检：TeX / biber（含 locale 排序）/ LibreOffice / git / "
+                     "磁盘 / 输出目录 / 模板 / Windows 字体"),
     )
     ap.add_argument("--json", action="store_true", help="只输出 JSON（供外壳读）")
     ap.add_argument("--profile", choices=("auto", "exe", "source"), default="auto",

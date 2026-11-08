@@ -344,6 +344,11 @@ POLICY_FIELDS: tuple[str, ...] = ("doi", "url")
 #: eprint 三件套：只在在线资源类型应用（misc/unpublished/online）。
 EPRINT_FIELDS: tuple[str, ...] = ("eprint", "archiveprefix", "primaryclass")
 
+#: B-377 R04：条件写回字段（Q5 口径）——**仅当库记录显式含该字段**时才写进产物，
+#: 库没登记就绝不写、也绝不删产物里已有的值（排序覆盖是编辑给个别条目开的例外，
+#: 不是「缺失即清空」的常规字段）。因此不并入 `APPLY_FIELDS`（28 元组语义不变）。
+_CONDITIONAL_APPLY_FIELDS: tuple[str, ...] = ("sortname",)
+
 #: B-268 S3：核对单里「覆盖库值」的样本条数上限（其余按条目见逐条行）。
 _CONFLICT_SAMPLES = 5
 
@@ -440,6 +445,8 @@ def _render_library_candidates(etype: str,
     names = list(APPLY_FIELDS) + list(POLICY_FIELDS)
     if str(etype or "").strip().lower() in ONLINE_TYPES:
         names += list(EPRINT_FIELDS)
+    # B-377 R04：条件字段放最后（仅当库记录显式有值时才进候选，见常量注释）
+    names += list(_CONDITIONAL_APPLY_FIELDS)
     out: list[tuple[str, str]] = []
     for name in names:
         if name in _LIB_IMPORT_RESIDUE:
