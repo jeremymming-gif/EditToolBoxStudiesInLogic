@@ -1,8 +1,10 @@
-"""引用库 · 查库（批 115 夜间重设计 BPAGES-A，VIEW_KEY="query"）。
+"""引用库 · 查库（批 115 夜间重设计 BPAGES-A，VIEW_KEY="query"；P06 加分页）。
 
-只读检索页：key / DOI / 题名三种方式，首查 100 条、载入更多到引擎单次上限
-200 条；命中总数一律用引擎的 ``total_matched``（不是 ``len(hits)``）。
-右侧 360 详情在 <1100 时折成表格下方的展开面板（不横向滚动）。
+只读检索页：key / DOI / 题名三种方式，首查 100 条；列表型查询（题名 / 高级检索）
+按引擎 ``page`` 六字段（offset/limit/total_matched/has_more/next_offset/db_sha256）
+续页，单次 ``--limit`` 仍是 1–200，绝不靠放宽 limit 伪装「载入更多」。命中总数一律
+用引擎的 ``total_matched``（不是 ``len(hits)``）；库在分页之间变化时拒绝合并并提示
+按当前库重查。右侧 360 详情在 <1100 时折成表格下方的展开面板（不横向滚动）。
 
 所有引擎调用走 ``EB.bibdb_query_basic_call`` / ``EB.bibdb_query_advanced_call``，
 通过 ``EB.read_json_command`` 执行；测试 monkeypatch 该函数或直接检查 argv。
@@ -11,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 
 import flet as ft
@@ -37,6 +40,9 @@ NO_RESULT = "没有匹配的记录"
 NO_RESULT_HINT = "试试放宽年份，或只按题名检索。"
 QV_NO_RESULT_HINT = NO_RESULT_HINT
 ENGINE_CAP = 200
+PAGE_SIZE = 100
+DB_CHANGED_MSG = "引用库已变化，请刷新后重新查询（未合并新页）"
+PAGE_MISMATCH_MSG = "分页位置不一致，已丢弃本页；请刷新后重新查询（未合并新页）"
 DETAIL_W = 360
 
 
@@ -108,6 +114,18 @@ class QueryView:
         self.sort_desc = False
         self._task_running = False
         self._build_width = 0.0
+        # ── P06 分页与复用状态（CONTRACT §5）：page 字段只消费、不重算 ──
+        self.query_advanced = False
+        self.adv_values: dict[str, str] = {}
+        self.adv_strict = False
+        self._gen = 0
+        self._loaded = 0
+        self._total: int | None = None
+        self._has_more = False
+        self._db_sha = ""
+        self._cond: dict | None = None
+        self._items: list[dict] = []
+        self._page_error = ""
 
     # ── 基础 ────────────────────────────────────────────────────────────
     @property
@@ -155,6 +173,18 @@ class QueryView:
         else:
             asyncio.run(fn())
 
+    def _schedule_async(self, fn, *args) -> None:
+        """把「只读取数」协程交给页面事件循环（flet 只收 coroutine function）。"""
+        if self._task_running:
+            return
+        self._task_running = True
+        run = getattr(self.page.page, "run_task", None)
+        handler = functools.partial(fn, *args)
+        if callable(run):
+            run(handler)
+        else:
+            asyncio.run(handler())
+
     # ── 生命周期 ────────────────────────────────────────────────────────
     def activate(self) -> None:
         # 查库不自动跑查询（没有条件时不猜），首屏保留「还没有查询」。
@@ -172,17 +202,39 @@ class QueryView:
         return key if key in dict(MODES) else "key"
 
     def _on_mode(self, e) -> None:
-        self.mode = self._mode_of(e)
+        mode = self._mode_of(e)
+        if mode == self.mode and not self.query_advanced:
+            self._set_store("bib_query_mode", self.mode)
+            self._refresh()
+            return
+        self.mode = mode
+        self.query_advanced = False
+        had = self.loaded and bool(str(self.text or "").strip())
         self._set_store("bib_query_mode", self.mode)
-        # 换方式只换提示，不清结果（设计稿 §3.2）
-        self._refresh()
+        # 条件变化（契约 §5）：重置分页状态与选择，再走首查。
+        self._reset_paging()
+        if had:
+            self.error = ""
+            self.cancelled = False
+            self._schedule()
+        else:
+            self._refresh()
 
     def _on_text(self, e) -> None:
-        self.text = str(getattr(e, "control", e).value if hasattr(
-            getattr(e, "control", e), "value") else getattr(e, "data", "") or "")
+        control = getattr(e, "control", e)
+        value = str(getattr(control, "value", None)
+                    if hasattr(control, "value") else getattr(e, "data", "") or "")
+        if value == self.text and not self.input_error:
+            return
+        had_error = bool(self.input_error)
+        self.text = value
         self._set_store("bib_query_text", self.text)
-        if self.input_error:
-            self.input_error = ""
+        self.input_error = ""
+        self.query_advanced = False
+        # 条件变化（契约 §5）：作废旧分页/在途结果与选择。输入中不整页重建，
+        # 免得重建 TextField 丢焦点；真正的首查在回车/「查询」时发起。
+        self._reset_paging()
+        if had_error:
             self._refresh()
 
     def _on_submit(self, e=None) -> None:
@@ -201,6 +253,8 @@ class QueryView:
         self.error = ""
         self.cancelled = False
         self.query_advanced = False
+        # 新首查（契约 §5）：先清空旧分页/选择，再显式 offset=0 拉第一页。
+        self._reset_paging()
         self._schedule()
 
     def _focus_search(self) -> None:
@@ -219,13 +273,68 @@ class QueryView:
         if not self.running:
             return
         self.cancel_requested = True
+        # 取消 = 让在途结果世代过期（契约 §5）：迟到结果丢弃，可重跑不串结果。
+        self._gen += 1
+        self.cancelled = True
         self._refresh()
 
     def _cancel_clicked(self, e=None) -> None:
         self.cancel()
 
+    # ── 分页状态（CONTRACT §5：page 字段只消费不重算）───────────────────
+    def _is_list_query(self) -> bool:
+        """只有列表型查询（题名 / 高级检索）返回 page，可翻页；key/doi 是单条定位。"""
+        return bool(getattr(self, "query_advanced", False)) or self.mode == "title"
+
+    def _has_condition(self) -> bool:
+        if getattr(self, "query_advanced", False):
+            return any(str(value or "").strip()
+                       for value in (getattr(self, "adv_values", {}) or {}).values())
+        return bool(str(self.text or "").strip())
+
+    def _cond_snapshot(self) -> dict:
+        """首查条件快照；载入更多必须与它逐字段一致（同条件才允许续页）。"""
+        return {
+            "advanced": bool(getattr(self, "query_advanced", False)),
+            "mode": self.mode,
+            "text": str(self.text or "").strip(),
+            "sort": self.sort_key,
+            "strict": bool(getattr(self, "adv_strict", False)),
+            "terms": {str(field): str(value or "").strip()
+                      for field, value in (getattr(self, "adv_values", {}) or {}).items()},
+        }
+
+    def _reset_paging(self) -> None:
+        """条件变化 / 新首查：清已载入、分页元数据与选择；在途结果靠世代过期丢弃。"""
+        self._gen += 1
+        if self.running:
+            self.cancelled = True
+        self._items = []
+        self.hits = self._items
+        self.rows = []
+        self._loaded = 0
+        self._total = None
+        self._has_more = False
+        self._db_sha = ""
+        self._cond = None
+        self._page_error = ""
+        self.count = 0
+        self.total_matched = None
+        self.truncated = False
+        self.loaded = False
+        self.selected_key = None
+
+    def _restart_query(self) -> None:
+        """库变化后的刷新入口：按当前条件/当前库重新走一次首查（offset=0）。"""
+        if not self._has_condition():
+            return
+        self.error = ""
+        self.cancelled = False
+        self._reset_paging()
+        self._schedule()
+
     # ── 执行 ────────────────────────────────────────────────────────────
-    def _call(self):
+    def _call(self, offset: int | None = None):
         text = str(self.text or "").strip()
         if getattr(self, "query_advanced", False):
             terms = []
@@ -235,21 +344,106 @@ class QueryView:
                 if value:
                     terms.append((field, value, mode))
             return EB.bibdb_query_advanced_call(
-                terms=terms, sort=self.sort_key, limit=self.limit,
+                terms=terms, sort=self.sort_key, limit=self.limit, offset=offset,
                 strict=bool(self.adv_strict), bibtex=True, db=self._db())
         return EB.bibdb_query_basic_call(
-            self.mode, text, limit=self.limit, bibtex=True, db=self._db())
+            self.mode, text, limit=self.limit, offset=offset, bibtex=True,
+            db=self._db())
 
-    async def _run(self) -> None:
+    def _adopt_first(self, data: dict) -> None:
+        """首查采纳：列表型用 page 六字段；无 page（旧引擎 / key/doi）退回旧字段。"""
+        hits = list(data.get("hits") or [])
+        page = data.get("page") if isinstance(data.get("page"), dict) else None
+        self._items = list(hits)
+        self.hits = self._items
+        self.rows = [hit_row(hit) for hit in hits]
+        self._loaded = len(hits)
+        self.count = len(hits)
+        self.selected_key = None
+        self.loaded = True
+        if page is not None:
+            self._total = int(page.get("total_matched") or 0)
+            self._db_sha = str(page.get("db_sha256") or "")
+            self._has_more = bool(page.get("has_more"))
+        elif self._is_list_query():
+            # 旧引擎/旧假数据没有 page：只能如实显示，不能假装可续页。
+            self._total = int(data.get("total_matched") or 0)
+            self._db_sha = ""
+            self._has_more = False
+        else:
+            # key/doi：单条定位，total = 命中条数，不翻页。
+            self._total = int(data.get("total_matched") or len(hits))
+            self._db_sha = ""
+            self._has_more = False
+        self.total_matched = self._total
+        self.truncated = self._has_more
+        self.success = (f"找到 {self.total_matched:,} 条"
+                        if self.total_matched else "0 条 · 没有匹配")
+        self._mark("bib_query_run", mode=self.mode, limit=self.limit,
+                   count=self.count, total=self.total_matched)
+
+    def _adopt_more(self, data: dict) -> None:
+        """载入更多采纳：sha / offset 任一不符即拒绝合并（契约 §5）。"""
+        page = data.get("page") if isinstance(data.get("page"), dict) else None
+        if page is None:
+            self._page_error = DB_CHANGED_MSG
+            self._has_more = False
+            self.truncated = False
+            return
+        sha = str(page.get("db_sha256") or "")
+        try:
+            offset = int(page.get("offset"))
+        except (TypeError, ValueError):
+            offset = -1
+        if sha != self._db_sha:
+            # 库在分页之间变了：不合并、保留已载入、给刷新入口。
+            self._page_error = DB_CHANGED_MSG
+            self._has_more = False
+            self.truncated = False
+            return
+        if offset != self._loaded:
+            # 位置错位：绝不拼接，提示按当前库重查。
+            self._page_error = PAGE_MISMATCH_MSG
+            self._has_more = False
+            self.truncated = False
+            return
+        hits = list(data.get("hits") or [])
+        self._items = self._items + hits
+        self.hits = self._items
+        self.rows = [hit_row(hit) for hit in self._items]
+        self._loaded = offset + len(hits)
+        self.count = self._loaded
+        if page.get("total_matched") is not None:
+            self._total = int(page.get("total_matched") or 0)
+        self.total_matched = self._total if self._total is not None else self._loaded
+        self._has_more = bool(page.get("has_more")) and bool(hits)
+        self.truncated = self._has_more
+        self.success = (f"找到 {self.total_matched:,} 条"
+                        if self.total_matched else "0 条 · 没有匹配")
+        self._mark("bib_query_more", mode=self.mode, limit=self.limit,
+                   count=self.count, total=self.total_matched)
+
+    async def _run(self, *, more: bool = False) -> None:
         if self.running:
             return
+        if more:
+            gen = self._gen
+        else:
+            # 首查：新世代 + 条件快照（契约 §5）。
+            gen = self._gen + 1
+            self._gen = gen
+            self._cond = self._cond_snapshot()
         self.running = True
         self.cancel_requested = False
         self.success = ""
         self.error = ""
+        if not more:
+            self.cancelled = False
+            self._page_error = ""
         started = time.monotonic()
         try:
-            call = self._call()
+            offset = self._loaded if more else (0 if self._is_list_query() else None)
+            call = self._call(offset=offset)
         except Exception as exc:  # noqa: BLE001 —— 参数问题按失败展示
             self.running = False
             self._task_running = False
@@ -265,6 +459,10 @@ class QueryView:
         self.elapsed = time.monotonic() - started
         self.running = False
         self._task_running = False
+        if gen != self._gen:
+            # 迟到结果 / 取消 / 条件变化：世代不符，一律丢弃，不串结果。
+            self._refresh()
+            return
         if self.cancel_requested:
             self.cancelled = True
             self.success = ""
@@ -275,29 +473,30 @@ class QueryView:
             self._refresh()
             return
         data = result.get("json") or {}
-        hits = list(data.get("hits") or [])
-        self.hits = hits
-        self.rows = [hit_row(hit) for hit in hits]
-        self.total_matched = int(data.get("total_matched") or 0)
-        self.truncated = bool(data.get("truncated"))
-        self.count = len(hits)
-        self.selected_key = None
-        self.loaded = True
-        self.success = (f"找到 {self.total_matched:,} 条"
-                        if self.total_matched else "0 条 · 没有匹配")
-        self._mark("bib_query_run", mode=self.mode, limit=self.limit,
-                   count=self.count, total=self.total_matched)
+        if more:
+            self._adopt_more(data)
+        else:
+            self._adopt_first(data)
         self._refresh()
 
+    async def _run_more(self) -> None:
+        await self._run(more=True)
+
     def load_more(self) -> None:
-        if self.limit >= ENGINE_CAP or self.running:
+        """载入更多：同一条件快照 + offset=_loaded，固定 PAGE_SIZE，绝不放宽 limit。"""
+        if self.running or not self._has_more:
             return
-        self.limit = ENGINE_CAP
-        if self.hits:
-            # 已有结果：按 200 重跑，保持同一条件与排序
-            self._schedule()
-        else:
-            self._refresh()
+        if self.limit >= ENGINE_CAP:
+            return
+        if not self._is_list_query():
+            return
+        if not self._db_sha:
+            # 没有 page 元数据（旧引擎/旧数据）无法安全续页。
+            return
+        if self._cond is None or self._cond != self._cond_snapshot():
+            # 条件已变但还没重查：旧页不再属于当前条件。
+            return
+        self._schedule(self._run_more)
 
     # ── 排序 ────────────────────────────────────────────────────────────
     def _on_sort(self, key: str, desc: bool) -> None:
@@ -306,9 +505,14 @@ class QueryView:
         if key not in mapping:
             return
         engine_sort, engine_desc = mapping[key]
+        had = bool(self.loaded and self._has_condition())
         self.sort_key = engine_sort
         self.sort_desc = engine_desc
-        if self.loaded and self.text.strip():
+        # 排序是查询条件的一部分：先重置分页与选择，再按新排序走首查。
+        self.error = ""
+        self.cancelled = False
+        self._reset_paging()
+        if had:
             self._schedule()
         else:
             self._refresh()
@@ -343,6 +547,8 @@ class QueryView:
             self.error = ""
             self.cancelled = False
             self.limit = 100
+            # 高级检索提交 = 条件变化（契约 §5）：清分页/选择，再首查。
+            self._reset_paging()
             self._schedule()
 
         dialog = ft.AlertDialog(
@@ -413,9 +619,9 @@ class QueryView:
         if self.cancelled:
             return C.text("已取消，可重跑。", t, "caption", t.palette.text_muted)
         if self.loaded:
-            total = self.total_matched or 0
-            shown = min(self.count, total)
-            tail = " · 已截断" if self.truncated else ""
+            total = self._total if self._total is not None else (self.total_matched or 0)
+            shown = self._loaded or min(self.count, total)
+            tail = " · 已截断" if (self.truncated and not self._has_more) else ""
             return C.text(f"1–{shown} / {total:,} · {_clock(self.elapsed)}{tail}",
                           t, "caption", t.palette.text_faint)
         return C.text("", t, "caption", t.palette.text_faint)
@@ -456,7 +662,8 @@ class QueryView:
                 BT.BibColumn("source", "来源", flex=1.6, sortable=False),
             ]
         table = BT.BibTable(
-            t, columns, self.rows, limit=ENGINE_CAP, page_size=100,
+            t, columns, self.rows, limit=max(PAGE_SIZE, len(self.rows)),
+            page_size=PAGE_SIZE,
             empty_message=(NO_RESULT if self.loaded else "还没有查询"),
             empty_action=None, on_row_click=self._row_clicked,
             on_sort=self._on_sort, row_key="key", first_col_width=160,
@@ -475,15 +682,12 @@ class QueryView:
 
     def _clear(self) -> None:
         self.text = ""
-        self.rows = []
-        self.hits = []
-        self.loaded = False
-        self.selected_key = None
-        self.total_matched = None
         self.error = ""
         self.input_error = ""
         self.success = ""
         self.limit = 100
+        self.query_advanced = False
+        self._reset_paging()
         self._set_store("bib_query_text", "")
         self._refresh()
 
@@ -539,8 +743,37 @@ class QueryView:
             setter("edit")
 
     def _copy_bibtex(self, hit: dict) -> None:
-        text = str(hit.get("bibtex") or "").strip() or str(hit.get("key") or "")
-        self._copy(text)
+        """复制引擎给的 BibTeX；命中没带时按 key 向引擎再取（绝不自己拼）。"""
+        text = str(hit.get("bibtex") or "").strip()
+        if text:
+            self._copy(text)
+            return
+        key = str(hit.get("key") or (hit.get("record") or {}).get("key") or "")
+        if not key:
+            return
+        self._schedule_async(self._copy_bibtex_fetch, key)
+
+    async def _copy_bibtex_fetch(self, key: str) -> None:
+        text = ""
+        try:
+            call = EB.bibdb_query_basic_call(
+                "key", key, limit=1, bibtex=True, db=self._db())
+            result = await asyncio.to_thread(
+                EB.read_json_command, call, timeout=30.0, notes=self._notes())
+            data = (result or {}).get("json") or {}
+            for hit in list(data.get("hits") or []):
+                if str(hit.get("key") or "") == key:
+                    text = str(hit.get("bibtex") or "").strip()
+                    break
+        except Exception:  # noqa: BLE001 —— 取不到就提示，不伪造
+            text = ""
+        finally:
+            self._task_running = False
+        if text:
+            self._copy(text)
+            return
+        self.error = f"没有取到 {key} 的 BibTeX；可打开详情核对记录。"
+        self._refresh()
 
     def _open_log(self, key: str) -> None:
         opener = getattr(getattr(self.page, "app", None), "open_path", None)
@@ -584,14 +817,24 @@ class QueryView:
     def _footer(self) -> ft.Control:
         t = self.t
         parts: list = []
+        cap_legacy = self.limit >= ENGINE_CAP
         if self.loaded and self.count:
-            parts.append(C.text(f"已载入 {min(self.count, self.limit)} / "
-                                f"{(self.total_matched or 0):,}",
-                                t, "caption", t.palette.text_faint))
-        if self.limit >= ENGINE_CAP:
+            if cap_legacy:
+                parts.append(C.text(f"已载入 {min(self.count, self.limit)} / "
+                                    f"{(self.total_matched or 0):,}",
+                                    t, "caption", t.palette.text_faint))
+            elif self._has_more or self._page_error:
+                # 分页中 / 库变化拒绝合并：如实显示已载入与总数，不冒充「全部载入」。
+                parts.append(C.text(f"已载入 {self._loaded or self.count} / 共 "
+                                    f"{self._total or 0} 条",
+                                    t, "caption", t.palette.text_faint))
+            else:
+                parts.append(C.text(f"已全部载入（共 {self._total or self.count} 条）",
+                                    t, "caption", t.palette.text_faint))
+        if cap_legacy:
             parts.append(C.text("最多 200 条；请加条件", t, "caption",
                                 t.palette.text_faint))
-        elif self.loaded and (self.total_matched or 0) > self.count:
+        elif self._has_more and self._db_sha:
             parts.append(C.text_button("载入更多", lambda e: self.load_more(), t, height=28))
         if not parts:
             return ft.Container(height=t.px(28))
@@ -623,6 +866,14 @@ class QueryView:
                 t, "failure", message=self.error,
                 next_label="复制错误", on_next=lambda e: self._copy(self.error),
                 page=self.page.page))
+        if self._page_error:
+            # 库在分页之间变化 / 位置错位：不合并、保留已载入，给「按当前库重查」入口。
+            parts.append(S.state_banner(
+                t, "cancelled", message=self._page_error,
+                detail="已载入的结果保留；按当前库重新查询会从第一页开始。",
+                action=C.text_button("刷新后重查", lambda e: self._restart_query(),
+                                     t, height=28),
+                page=self.page.page))
         banner = self._initial_banner()
         if banner is not None:
             parts.append(banner)
@@ -644,7 +895,7 @@ class QueryView:
 
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
-        meta = "只读 · 最多 200 条"
+        meta = f"只读 · 每页 {PAGE_SIZE} 条"
         total = (getattr(self.page, "stats_data", None) or {}).get("records")
         if isinstance(total, int):
             meta = f"库 {total:,} 条 · {meta}"

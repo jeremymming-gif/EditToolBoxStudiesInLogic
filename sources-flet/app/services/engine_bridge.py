@@ -807,19 +807,34 @@ def _limit_value(raw, *, default: int = 20) -> int:
     return number
 
 
+def _append_offset(args: list[str], offset: int | None) -> None:
+    """分页偏移（P06）：`--offset` 紧跟 `--limit`；None = 旧调用，argv 逐字不变。"""
+    if offset is None:
+        return
+    try:
+        number = int(offset)
+    except (TypeError, ValueError):
+        raise ValueError(f"offset 必须是非负整数：{offset!r}") from None
+    if number < 0:
+        raise ValueError(f"offset 必须是非负整数：{offset!r}")
+    args += ["--offset", str(number)]
+
+
 def bibdb_query_basic_call(
     mode: str,
     value: str,
     *,
     limit: int | str = 10,
+    offset: int | None = None,
     bibtex: bool = True,
     db: str = "",
 ) -> EngineCall:
-    """基本检索（只读）：query --key|--doi|--title --json [--bibtex]。
+    """基本检索（只读）：query --key|--doi|--title --json [--offset N] [--bibtex]。
 
     与旧壳 `engine.py` 的 bibdb_query 同口径：方式三选一、`--bibtex` 让每条命中带
     可直接粘贴的 BibTeX；`--limit` 只在题名（模糊匹配）时对旧壳有意义，这里统一给
-    引擎（默认 10，与引擎一致）。
+    引擎（默认 10，与引擎一致）。`offset` 是 P06 分页偏移（0 基、跳过命中记录数）；
+    省略或 None 时 argv 与旧版逐字一致，不给引擎加兼容面。
     """
     mode = (mode or "key").strip()
     if mode not in QUERY_MODES:
@@ -828,6 +843,7 @@ def bibdb_query_basic_call(
     args = ["query", "--json"]
     args += [f"--{mode}", text]
     args += ["--limit", str(_limit_value(limit, default=10))]
+    _append_offset(args, offset)
     _append_flag(args, "--bibtex", bibtex)
     _append_opt(args, "--db", db)
     return _call("bibdb.py", args, f"引用库 · 查库（{QUERY_MODE_LABELS[mode]}）")
@@ -838,6 +854,7 @@ def bibdb_query_advanced_call(
     terms: list[tuple[str, str, str]] | list[dict],
     sort: str = "relevance",
     limit: int | str = 20,
+    offset: int | None = None,
     strict: bool = False,
     bibtex: bool = True,
     db: str = "",
@@ -846,7 +863,8 @@ def bibdb_query_advanced_call(
 
     `terms` 每项 `(field, value, mode)`（也接受同名字典）。口径对齐旧壳：空值行跳过；
     字段 10 项、模式 4 项、排序 3 项；每行都显式带 `--mode field=mode`；`--strict`
-    （模糊门槛 0.90）与 `--min-score=0.75`（引擎默认）二选一，不叠加。
+    （模糊门槛 0.90）与 `--min-score=0.75`（引擎默认）二选一，不叠加。`offset` 是
+    P06 分页偏移（0 基、跳过命中记录数）；省略或 None 时 argv 与旧版逐字一致。
     """
     rows: list[tuple[str, str, str]] = []
     for term in terms or []:
@@ -870,6 +888,7 @@ def bibdb_query_advanced_call(
             raise ValueError(f"未知的匹配方式：{mode}（只认 contains/prefix/exact/fuzzy）")
         args += [f"--{field}", value, "--mode", f"{field}={mode}"]
     args += ["--sort", sort, "--limit", str(_limit_value(limit, default=20))]
+    _append_offset(args, offset)
     args.append("--strict" if strict else "--min-score=0.75")
     _append_flag(args, "--bibtex", bibtex)
     args.append("--json")

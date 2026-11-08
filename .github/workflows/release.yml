@@ -119,7 +119,11 @@ jobs:
       - name: flet pack（onefile .app，未签名）
         run: |
           set -euo pipefail
-          ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 --icon ../sources-flet/packaging/assets/logo.icns --distpath dist --yes )
+          # 引用库 10 个视图由 ui/bib_host.py 的 VIEW_SPECS 懒加载（importlib），PyInstaller 静态分析收集不到，必须显式 --hidden-import（与 VIEW_SPECS 同步）
+          ( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 \
+              --icon ../sources-flet/packaging/assets/logo.icns --distpath dist --yes \
+              --hidden-import ui.bib_overview ui.bib_query ui.bib_normalize ui.bib_import ui.bib_review \
+              --hidden-import ui.bib_edit ui.bib_dupes ui.bib_fieldfix ui.bib_health ui.bib_prefs )
           ls -la build-flet/dist
 
       - name: sidecar 定位自检（engine_bridge，不经 GUI；传目录形态，验证 --onedir 解析）
@@ -269,6 +273,8 @@ jobs:
               --product-name "编辑部工具箱" --product-version "$V" --file-version "$V.0" `
               --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" `
               --icon ..\sources-flet\packaging\assets\logo.ico `
+              --hidden-import ui.bib_overview ui.bib_query ui.bib_normalize ui.bib_import ui.bib_review `
+              --hidden-import ui.bib_edit ui.bib_dupes ui.bib_fieldfix ui.bib_health ui.bib_prefs `
               --distpath dist --yes
             if ($LASTEXITCODE -ne 0) { throw "flet pack 失败（rc=$LASTEXITCODE）" }
           } finally {

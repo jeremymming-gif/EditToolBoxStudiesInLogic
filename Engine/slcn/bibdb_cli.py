@@ -34,6 +34,7 @@ from slcn.bibdb_reports import (
 from slcn.bibdb_import import (
     cmd_import_bib, cmd_import_dir, cmd_init, cmd_rehash,
 )  # noqa: F401
+from slcn.bibdb_query_page import build_page
 
 def render_bibtex(record: dict) -> str:
     """一条库记录 → 一段 BibTeX（GUI「复制 BibTeX」按钮的唯一实现）。
@@ -102,6 +103,18 @@ def collect_duplicate_rows(store: "bibdb.Store") -> list[dict]:
 
 
 def cmd_query(args) -> int:
+    # P06 分页：offset 校验必须在打开库/查询前（用法错零写入）。
+    offset = args.offset
+    if offset is not None and offset < 0:
+        print(f"✗ offset 不能为负：{offset}", file=sys.stderr)
+        return 2
+    list_query = args.key is None and args.doi is None
+    if offset is not None and not list_query and offset != 0:
+        print("✗ --offset 仅用于列表检索（题名/高级）；key/DOI 定位为单条查询",
+              file=sys.stderr)
+        return 2
+    # key/doi + `--offset 0` 等同省略：不产生 page，输出与旧版一致。
+    page_offset = offset if list_query else None
     try:
         path, store = _open_store(args)
     except bibdb.BibDBError as exc:
@@ -113,13 +126,34 @@ def cmd_query(args) -> int:
     elif args.doi is not None:
         result = store.query_doi(args.doi)
         kind = "doi"
-    else:
+    elif offset is None:
+        # 省略 --offset：逐字保持旧行为（旧签名/旧输出键）。
         result = store.query_title(args.title, author=args.author or "",
                                    year=args.year or "", limit=args.limit,
                                    threshold=args.threshold,
                                    min_score=args.min_score)
         kind = "title"
-    payload = {"db": path, "kind": kind, **result}
+    else:
+        # 显式 --offset（含 0）：走 P06 分页入口（旧 query_title 签名不变）。
+        result = store.query_title_page(args.title, author=args.author or "",
+                                        year=args.year or "", offset=offset,
+                                        limit=args.limit,
+                                        threshold=args.threshold,
+                                        min_score=args.min_score)
+        kind = "title"
+    # 显式分页时 engine 结果里的 offset/total_matched 只用于构造 page（CONTRACT §4），
+    # 不得出现在 payload 顶层；省略 --offset 时键集逐字保持旧样。
+    if page_offset is not None:
+        payload = {"db": path, "kind": kind,
+                   **{k: v for k, v in result.items()
+                      if k not in ("offset", "total_matched")}}
+        payload["page"] = build_page(
+            offset=page_offset, limit=args.limit,
+            total_matched=result["total_matched"],
+            count=len(result["hits"]),
+            db_sha256=bibdb.db_sha256(path))
+    else:
+        payload = {"db": path, "kind": kind, **result}
     if args.bibtex:
         # 界面「查库」页的「复制 BibTeX」直接拿这段文本（不在 Swift 里再拼一遍格式）。
         for hit in payload["hits"]:
@@ -129,17 +163,29 @@ def cmd_query(args) -> int:
         return 0
     print(f"库：{path}")
     hits = result["hits"]
-    if not hits:
+    page = payload.get("page")
+    if page is not None:
+        if hits:
+            print(f"题名检索命中 {len(hits)} 条"
+                  f"（第 {page['offset'] + 1}–{page['offset'] + len(hits)} 条"
+                  f" / 共 {page['total_matched']} 条）"
+                  + (f"；下一页 --offset {page['next_offset']}"
+                     if page["has_more"] else ""))
+        else:
+            print(f"题名检索命中 0 条"
+                  f"（offset={page['offset']} 超出共 {page['total_matched']} 条）")
+    elif not hits:
         query = result.get("query") or {}
         subject = query.get("title") or query.get("doi") or query.get("key") or ""
         print(f"{kind} 查询无命中：{_clip(subject)}")
         if result.get("error"):
             print(f"（{result['error']}）")
         return 0
-    high = result.get("high")
-    print(f"{kind} 查询命中 {len(hits)} 条"
-          + (f"（高置信 {high}）" if high is not None else "")
-          + ("（⚠️ 多条同 key/alias，需人工确认）" if result.get("ambiguous") else ""))
+    else:
+        high = result.get("high")
+        print(f"{kind} 查询命中 {len(hits)} 条"
+              + (f"（高置信 {high}）" if high is not None else "")
+              + ("（⚠️ 多条同 key/alias，需人工确认）" if result.get("ambiguous") else ""))
     for index, hit in enumerate(hits, start=1):
         record = hit["record"]
         fields = record.get("fields") or {}
@@ -186,6 +232,11 @@ _ADVANCED_DEFAULT_EXACT = frozenset({"doi", "key", "alias"})
 
 def cmd_query_advanced(args) -> int:
     """高级检索（B-259 P2）：多字段 AND + 4 模式 + 年份表达式 + 排序/分页/why-hit。"""
+    # P06 分页：offset 校验必须在打开库/查询前（用法错零写入）。
+    offset = args.offset
+    if offset is not None and offset < 0:
+        print(f"✗ offset 不能为负：{offset}", file=sys.stderr)
+        return 2
     modes: dict[str, str] = {}
     for raw in args.mode or []:
         text = str(raw or "")
@@ -222,7 +273,8 @@ def cmd_query_advanced(args) -> int:
                      else bibdb.SEARCH_MIN_SCORE_DEFAULT if args.min_score is None
                      else args.min_score)
         spec = bibdb.SearchSpec(tuple(terms), sort=args.sort, limit=args.limit,
-                                min_score=min_score)
+                                min_score=min_score,
+                                offset=0 if offset is None else offset)
     except bibdb.BibDBError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
@@ -233,6 +285,14 @@ def cmd_query_advanced(args) -> int:
         print(f"✗ {exc}", file=sys.stderr)
         return 2
     payload = {"db": path, "kind": "advanced", **result}
+    if offset is not None:
+        # 显式分页时 engine 的 offset（offset>0 才有）只用于构造 page，不进 payload 顶层。
+        payload.pop("offset", None)
+        payload["page"] = build_page(
+            offset=offset, limit=args.limit,
+            total_matched=result["total_matched"],
+            count=len(result["hits"]),
+            db_sha256=bibdb.db_sha256(path))
     if args.bibtex:
         for hit in payload["hits"]:
             hit["bibtex"] = render_bibtex(hit["record"])
@@ -248,9 +308,17 @@ def cmd_query_advanced(args) -> int:
         print("提示：放宽字段或模式（文本默认 contains；fuzzy 需相似度 ≥ "
               f"{spec.min_score:.2f}），或去掉 --strict")
         return 0
-    print(f"高级检索命中 {len(hits)} 条"
-          + (f"（共 {result['total_matched']} 条，已截断）"
-             if result["truncated"] else ""))
+    page = payload.get("page")
+    if page is not None:
+        print(f"高级检索命中 {len(hits)} 条"
+              f"（第 {page['offset'] + 1}–{page['offset'] + len(hits)} 条"
+              f" / 共 {page['total_matched']} 条）"
+              + (f"；下一页 --offset {page['next_offset']}"
+                 if page["has_more"] else ""))
+    else:
+        print(f"高级检索命中 {len(hits)} 条"
+              + (f"（共 {result['total_matched']} 条，已截断）"
+                 if result["truncated"] else ""))
     for index, hit in enumerate(hits, start=1):
         marks = ["已核实" if hit["verified"] else "未核实"]
         print(f"  {index}. [{'／'.join(marks)}] {hit['key']}  score={hit['score']:.4f}")
@@ -2785,6 +2853,9 @@ def build_parser() -> argparse.ArgumentParser:
     qry.add_argument("--author", default="", help="第一作者姓（配合 --title）")
     qry.add_argument("--year", default="", help="年份（配合 --title）")
     qry.add_argument("--limit", type=int, default=10, help="最多返回几条（默认 10）")
+    qry.add_argument("--offset", type=int, default=None, metavar="N",
+                     help="0 基偏移：跳过多少条命中（仅题名列表检索；"
+                          "省略＝旧输出，给 0 也进入分页模式；key/DOI 只接受 0）")
     qry.add_argument("--threshold", type=float, default=bibdb.FUZZY_TITLE_THRESHOLD,
                      help=f"高置信题名阈值（默认 {bibdb.FUZZY_TITLE_THRESHOLD}）")
     qry.add_argument("--min-score", type=float, default=bibdb.FUZZY_MIN_SCORE,
@@ -2828,6 +2899,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="排序：relevance（默认）/ year / author")
     qadv.add_argument("--limit", type=int, default=20,
                       help="最多返回几条（默认 20，范围 1–200）")
+    qadv.add_argument("--offset", type=int, default=None, metavar="N",
+                      help="0 基偏移：跳过多少条命中（省略＝旧输出，给 0 也进入分页模式）")
     qadv.add_argument("--min-score", type=float, default=None,
                       help=f"fuzzy 相似度下限（默认 {bibdb.SEARCH_MIN_SCORE_DEFAULT}；"
                            "与 --strict 互斥）")

@@ -108,6 +108,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from . import bibcheck, bibnorm, bibparse, fsutil, paths
+from .bibdb_query_page import offset_error
 
 #: 记录 schema 版本（改动字段语义/新增必填字段时 +1，README 里写迁移约定）
 SCHEMA_VERSION = 1
@@ -1450,12 +1451,15 @@ class SearchSpec:
 
     `min_score` 只作用于 fuzzy 条件（相似度下限；默认 0.75，`--strict` 用 0.90）；
     非 fuzzy 条件命中即 1.0，不受它影响。构造即校验，非法抛 `BibDBError`。
+
+    `offset`（P06 分页）：0 基，跳过多少条**命中记录**；默认 0 = 旧行为（首 N 条）。
     """
 
     terms: tuple[SearchTerm, ...]
     sort: str = "relevance"
     limit: int = 20
     min_score: float = SEARCH_MIN_SCORE_DEFAULT
+    offset: int = 0
 
     def __post_init__(self) -> None:
         terms = tuple(self.terms)
@@ -1477,6 +1481,9 @@ class SearchSpec:
             raise BibDBError(f"min_score 必须是 0–1 的数：{self.min_score!r}") from None
         if not 0.0 <= min_score <= 1.0:
             raise BibDBError(f"min_score 超出范围：{self.min_score}（0–1）")
+        error = offset_error(self.offset)
+        if error is not None:
+            raise BibDBError(error)
         object.__setattr__(self, "terms", terms)
         object.__setattr__(self, "sort", sort)
         object.__setattr__(self, "min_score", min_score)
@@ -2904,21 +2911,21 @@ class Store:
 
         return out
 
-    def query_title(self, title: str, *, author: str = "", year: str = "",
-                    limit: int = 10, threshold: float = FUZZY_TITLE_THRESHOLD,
-                    min_score: float = FUZZY_MIN_SCORE) -> dict:
-        """题名（+第一作者姓+年份）模糊查询：返回带 `score`/`confidence` 的候选。
+    def _title_ranked(self, title: str, *, author: str, year: str,
+                      threshold: float, min_score: float
+                      ) -> tuple[dict, list[tuple[float, float, dict]]]:
+        """题名检索的公共排序（`query_title` / `query_title_page` 唯一口径）。
 
-        `confidence="high"` 的充要条件：题名相似度 ≥ `threshold`（默认 0.90），
-        且没提供的约束不算违背。低置信度**照实返回**（编辑自己判断），绝不冒充命中。
+        P06：两个入口共用这一份 `(-score, not verified, key)` 排序，避免分页版
+        与旧版排序逻辑漂移。返回 (query 描述, 全量 weighted 列表)。
         """
         wanted_title = _squash(title)
         query = {"title": wanted_title, "author": _squash(author),
                  "year": entry_year({"year": year}) or _squash(year),
                  "threshold": threshold, "min_score": min_score}
         if not wanted_title:
-            return {"query": query, "hits": [], "count": 0, "ambiguous": False,
-                    "error": "题名为空"}
+            # 空题名：不扫库（与旧 query_title 的早退一致），调用方给 error。
+            return query, []
         surname = first_author_surname(author)
         wanted_year = entry_year({"year": year}) or ""
         weighted: list[tuple[float, float, dict]] = []
@@ -2928,6 +2935,25 @@ class Store:
             if hit is not None:
                 weighted.append((hit["score"], hit["title_similarity"], hit))
         weighted.sort(key=lambda item: (-item[0], not item[2]["verified"], item[2]["key"]))
+        return query, weighted
+
+    def query_title(self, title: str, *, author: str = "", year: str = "",
+                    limit: int = 10, threshold: float = FUZZY_TITLE_THRESHOLD,
+                    min_score: float = FUZZY_MIN_SCORE) -> dict:
+        """题名（+第一作者姓+年份）模糊查询：返回带 `score`/`confidence` 的候选。
+
+        `confidence="high"` 的充要条件：题名相似度 ≥ `threshold`（默认 0.90），
+        且没提供的约束不算违背。低置信度**照实返回**（编辑自己判断），绝不冒充命中。
+
+        P06：签名与返回键（`query/hits/count/high/ambiguous`）逐字保持不变；
+        需要分页请用 `query_title_page`。
+        """
+        query, weighted = self._title_ranked(
+            title, author=author, year=year, threshold=threshold,
+            min_score=min_score)
+        if not _squash(title):
+            return {"query": query, "hits": [], "count": 0, "ambiguous": False,
+                    "error": "题名为空"}
         hits = [item[2] for item in weighted[:max(0, int(limit))]]
         return {
             "query": query,
@@ -2937,12 +2963,57 @@ class Store:
             "ambiguous": len(hits) > 1,
         }
 
+    def query_title_page(self, title: str, *, author: str = "", year: str = "",
+                         offset: int = 0, limit: int = 10,
+                         threshold: float = FUZZY_TITLE_THRESHOLD,
+                         min_score: float = FUZZY_MIN_SCORE) -> dict:
+        """题名模糊检索的**分页**入口（P06；纯读，不改库/不建索引）。
+
+        与 `query_title` 同参数、同排序（`_title_ranked`），区别只在切片与元数据：
+        - `offset` 0 基，必须是 int（非 bool）且 ≥ 0，否则抛 `BibDBError`
+          （文案来自 `offset_error`）；
+        - `limit` 必须是 int 且 1–200，否则抛
+          `BibDBError(f"limit 超出范围：{limit}（1–200）")`（仅本新方法加严，
+          旧 `query_title` 保持原样）；
+        - `hits` = 全量排序后的 `[offset, offset+limit)`；
+        - 返回 legacy 的 `query/hits/count/high/ambiguous`，另加 `offset` 与
+          `total_matched`（全量命中数，切片前）；`high` 按**全量**统计，
+          `ambiguous` 按**本页** `len(hits) > 1`。
+        空题名：仍返回 `error="题名为空"`，并带 `high=0`、`offset`、`total_matched`
+        （=0），保证调用方总能构造分页元数据。
+        """
+        error = offset_error(offset)
+        if error is not None:
+            raise BibDBError(error)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise BibDBError(f"limit 超出范围：{limit}（1–200）")
+        query, weighted = self._title_ranked(
+            title, author=author, year=year, threshold=threshold,
+            min_score=min_score)
+        if not _squash(title):
+            return {"query": query, "hits": [], "count": 0, "high": 0,
+                    "ambiguous": False, "error": "题名为空",
+                    "offset": offset, "total_matched": 0}
+        hits = [item[2] for item in weighted[offset:offset + limit]]
+        return {
+            "query": query,
+            "hits": hits,
+            "count": len(hits),
+            "high": sum(1 for item in weighted
+                        if item[2]["confidence"] == "high"),
+            "ambiguous": len(hits) > 1,
+            "offset": offset,
+            "total_matched": len(weighted),
+        }
+
     def query_advanced(self, spec: "SearchSpec") -> dict:
         """高级检索（B-259 P1；**纯读**，不改库/不建索引）。
 
         多条 `SearchTerm` 之间 AND；`any` 内部对五个文本字段取最佳命中（OR）。
         fuzzy 条件按 `spec.min_score` 过滤；总分 = 各 term 分的均分（4 位小数）。
-        返回 `query/hits/count/total_matched/truncated`（键见 spec §2.8）。
+        返回 `query/hits/count/total_matched/truncated`（键见 spec §2.8）；
+        `spec.offset != 0` 时另带 `offset`（P06 分页；`total_matched` = 全量，
+        `truncated = total_matched > offset + count`）。
         """
         if not isinstance(spec, SearchSpec):
             raise BibDBError(f"query_advanced 需要 SearchSpec：{spec!r}")
@@ -2981,8 +3052,9 @@ class Store:
                 total += 1
                 hits.append(_search_hit(record, sum(scores) / len(scores), matched))
         hits.sort(key=lambda hit: _search_sort_key(hit, spec.sort, strictness))
-        page = hits[:spec.limit]
-        return {
+        page = hits[spec.offset:spec.offset + spec.limit]
+        count = len(page)
+        result = {
             "query": {
                 "terms": [{"field": term.field, "value": term.value, "mode": term.mode}
                           for term in spec.terms],
@@ -2991,10 +3063,13 @@ class Store:
                 "min_score": spec.min_score,
             },
             "hits": page,
-            "count": len(page),
+            "count": count,
             "total_matched": total,
-            "truncated": total > len(page),
+            "truncated": total > spec.offset + count,
         }
+        if spec.offset != 0:
+            result["offset"] = spec.offset
+        return result
 
     # -- 统计 / lint --------------------------------------------------------
 
