@@ -14,6 +14,7 @@ import asyncio
 
 import flet as ft
 
+from services import bib_git as GIT
 from services import engine_bridge as EB
 from ui import bib_shell as S
 from ui import components as C
@@ -338,13 +339,14 @@ class ReviewView:
         if row is None:
             return
         diff = row["item"].get("diff") or {}
-        adopted = [field for field in diff if self.adopt.get(field)]
-        if not adopted:
+        if not diff:
             return
-        if adopt_all:
-            adopted = list(diff)
+        # G-1：引擎 resolve 的 adopt 只接受 --incoming-sha256，语义就是「采用该条
+        # 冲突 field_diff 的全部字段」；没有逐字段采用的引擎参数。界面上不再让
+        # 用户勾字段（勾选只会被显示成假承诺），一律按整条冲突的 diff 暂存。
+        del adopt_all
         self.staged = {"kind": "detail", "no": row["no"], "row": row,
-                       "fields": adopted, "note": self.note}
+                       "fields": list(diff), "note": self.note}
         self.selected.clear()
         self._refresh()
 
@@ -388,54 +390,128 @@ class ReviewView:
         self.running = True
         self.error = ""
         self.success = ""
+        self.commit = None
         self._refresh()
         plans = []
         if staged["kind"] == "batch":
-            plans = [{"row": row, "action": "adopt", "fields": []}
-                     for row in staged["rows"]]
+            plans = [{"row": row, "action": "adopt"} for row in staged["rows"]]
         elif staged["kind"] == "keep":
-            plans = [{"row": staged["row"], "action": "keep", "fields": []}]
+            plans = [{"row": staged["row"], "action": "keep"}]
         else:
-            plans = [{"row": staged["row"], "action": "adopt",
-                      "fields": staged.get("fields") or []}]
+            plans = [{"row": staged["row"], "action": "adopt"}]
         written = 0
+        nochange = 0
         fields_written = 0
+        written_keys: set[str] = set()
+        before_sha = self.db_sha
+        expect_sha = self.db_sha
+        index = 0
         try:
-            for plan in plans:
-                item = plan["row"]["item"]
-                sha = str(item.get("incoming_sha256") or "")
+            for index, plan in enumerate(plans, start=1):
+                row = plan["row"]
+                item = row["item"]
+                incoming = str(item.get("incoming_sha256") or "")
+                diff_fields = list((item.get("diff") or {}).keys())
                 for dry in (True, False):
-                    call = EB.bibdb_resolve_call(
-                        key=str(plan["row"]["key"]), action=plan["action"],
-                        fields=",".join(plan["fields"]), incoming_sha256=sha,
-                        note=staged.get("note") or "", dry_run=dry,
-                        expect_db_sha256=self.db_sha, db=self._db())
+                    # G-1：adopt 只走 --incoming-sha256（冲突指纹）；引擎按该条冲突
+                    # field_diff 的全部字段采用，没有逐字段参数。
+                    call = EB.bibdb_conflicts_resolve_call(
+                        key=str(row["key"]), action=plan["action"],
+                        incoming_sha256=incoming, note=staged.get("note") or "",
+                        dry_run=dry, expect_db_sha256=expect_sha, db=self._db())
                     result = await asyncio.to_thread(
                         EB.read_json_command, call, timeout=60.0, notes=self._notes())
                     if not result.get("ok"):
-                        self.error = (f"写入失败：{_first_line(result.get('error'))}"
-                                      if not dry else
-                                      f"预览失败：{_first_line(result.get('error'))}")
+                        # P07V-13：--json 失败时引擎把原因写在 json.error（rc=2），
+                        # read_json_command 不会设 result["error"]；按真实来源取原文。
+                        detail = result.get("json")
+                        reason = _first_line(
+                            detail.get("error") if isinstance(detail, dict) else "",
+                            default="")
+                        reason = reason or _first_line(
+                            result.get("error") or "", default="")
+                        reason = reason or _first_line(
+                            result.get("stderr") or "", default="")
+                        reason = reason or f"退出码 {result.get('code')}"
+                        stage = "预览" if dry else "写入"
+                        # G-4/R2b-2：总账在末尾统一拼「已写入 N 条（提交状态）」。
+                        self.error = f"第 {index} 条{stage}失败：{reason}"
                         break
                     if not dry:
-                        written += 1
-                        fields_written += len(plan["fields"])
+                        payload = result.get("json") or {}
+                        # G-4：每条写成功后用引擎返回的新库 sha 更新下一次 CAS。
+                        expect_sha = str(payload.get("db_sha256_after") or expect_sha)
+                        # R2b-1：引擎 written 是布尔，只有真的写了库才算写入；
+                        # 「此前已裁决过」（already=True, written=False）单独记无变化。
+                        if payload.get("written") is True:
+                            written += 1
+                            # keep/defer 只改裁决状态，不写字段值；字段数只在 adopt 计。
+                            if plan["action"] == "adopt":
+                                fields_written += len(diff_fields)
+                            written_keys.add(str(row["key"]))
+                        elif payload.get("already"):
+                            nochange += 1
                 if self.error:
                     break
         except Exception as exc:  # noqa: BLE001
-            self.error = f"写入失败：{_first_line(str(exc))}"
+            reason = _first_line(str(exc))
+            self.error = (f"第 {index + 1} 条写入失败：{reason}"
+                          if written else f"写入失败：{reason}")
+        # R2b-2：只要库确实写过就更新页面 sha（即使后续失败），否则后续预览会
+        # 拿旧 sha 误报过期。
+        if written:
+            self.db_sha = expect_sha
         self.running = False
         self._task_running = False
-        if not self.error:
-            self.staged = None
-            self.selected.clear()
+        committed = False
+        # R2b-2：部分失败也要尝试提交已写入的部分，不能把它留在「已写未提交」。
+        if written and self._db() and before_sha and expect_sha != before_sha:
+            label = ("批量裁决" if staged["kind"] == "batch" else
+                     ("保留旧值" if staged["kind"] == "keep" else "采用新稿值"))
+            message = GIT.commit_message(label, len(written_keys),
+                                         before_sha, expect_sha)
+            try:
+                commit = await asyncio.to_thread(GIT.commit_db, self._db(), message)
+            except Exception as exc:  # noqa: BLE001
+                commit = {"ok": False, "committed": False, "soft": True,
+                          "error": f"{type(exc).__name__}: {exc}"}
+            self.commit = commit
+            committed = bool(commit.get("committed") and commit.get("sha"))
+        if self.error:
             if written:
-                self.success = (f"已完成 · {written} 条记录 · {fields_written} 个字段"
-                                " · 未推送")
+                if committed:
+                    status = f"已提交 {str(self.commit.get('sha') or '')[:8]}"
+                elif self.commit:
+                    why = str(self.commit.get("error")
+                              or self.commit.get("reason")
+                              or "未生成提交").strip()
+                    status = f"未生成提交：{why}"
+                else:
+                    status = "未生成提交：库文件没有变化"
+                self.error = f"已写入 {written} 条（{status}）；{self.error}"
+        else:
+            detail = f"{written} 条记录 · {fields_written} 个字段"
+            if committed:
+                sha8 = str(self.commit.get("sha") or "")[:8]
+                self.success = f"已完成 · {detail} · 已提交 {sha8} · 未推送"
+            elif written:
+                # G-3：库已写但没有版本提交必须显式说清楚，不能报「已完成·未推送」。
+                why = str((self.commit or {}).get("error")
+                          or (self.commit or {}).get("reason")
+                          or "未生成提交").strip()
+                self.success = (f"库已写入 {detail}；但没有生成版本提交：{why}"
+                                "（数据不回滚）")
+            elif nochange:
+                # R2b-1：此前已裁决过 ≠ 本次写入，不能报「库已写入」。
+                self.success = f"没有需要写入的内容（{nochange} 条冲突此前已裁决过）。"
             else:
                 self.success = "没有需要写入的内容。"
-            self._mark("bib_review_write", records=written)
+            self.staged = None
+            self.selected.clear()
+            self._mark("bib_review_write", records=len(written_keys),
+                       committed=committed)
             # 写后重读队列与计数
+            self._task_running = False
             self._schedule(self._load)
         self._refresh()
 
@@ -533,11 +609,6 @@ class ReviewView:
                 height=t.px(44), border=ft.Border(bottom=ft.BorderSide(0.6, t.palette.border)),
                 content=ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                controls=[
-                                   ft.Container(width=t.px(20), content=ft.Checkbox(
-                                       value=bool(self.adopt.get(field, True)),
-                                       on_change=lambda e, f=field: self.adopt.__setitem__(
-                                           f, bool(e.control.value)),
-                                       visual_density=ft.VisualDensity.COMPACT, splash_radius=0)),
                                    C.text(field, t, "caption", t.palette.text_faint,
                                           font_family=t.mono_family, width=86),
                                    C.text(old, t, "caption", t.palette.text_muted,
@@ -548,16 +619,11 @@ class ReviewView:
                                           max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
                                           tooltip=new),
                                ])))
-        adopted = sum(1 for field in diff if self.adopt.get(field, True))
         actions = [
-            C.secondary_button(f"逐字段合并（{adopted}）",
-                               lambda e: self._stage_detail(False), t, height=28),
-            C.secondary_button("采用全部字段", lambda e: self._stage_detail(True),
-                               t, height=28),
+            C.secondary_button(f"采用该条冲突的全部 {len(diff)} 个字段差异",
+                               lambda e: self._stage_detail(True), t, height=28),
             C.secondary_button("保留当前", lambda e: self._stage_keep(), t, height=28),
         ]
-        if adopted == 0:
-            actions[0].disabled = True
         note = C.text_field(t, value=self.note, hint_text="备注（可选）",
                             on_change=lambda e: setattr(self, "note",
                                                         str(e.control.value or "")),
@@ -568,7 +634,8 @@ class ReviewView:
             ft.Container(height=t.sp("half")),
             *field_rows,
             note,
-            C.text(f"已选 {adopted} / {len(diff)}", t, "caption", t.palette.text_faint),
+            C.text(f"采用时写入本条冲突全部 {len(diff)} 个字段差异（引擎按整条冲突采用，"
+                   f"不按勾选裁剪）", t, "caption", t.palette.text_faint),
         ])
         return S.detail_panel(t, title="冲突详情", body=body, actions=actions,
                               meta=f"{item.get('issue') or ''}/{item.get('slug') or ''}".strip("/")
@@ -602,7 +669,8 @@ class ReviewView:
             consequence = "保留当前值，标记这条冲突为已裁决"
             detail = f"{staged['row']['no']} · {staged['row']['key']}"
         else:
-            consequence = f"采用 {len(staged.get('fields') or [])} 个字段的来稿值"
+            consequence = (f"采用该条冲突的全部 "
+                           f"{len(staged.get('fields') or [])} 个字段差异")
             detail = f"{staged['no']} · {staged['row']['key']}"
         bar = S.confirm_bar(
             t, consequence=consequence, detail=detail, sha=_short_sha(self.db_sha),
@@ -703,8 +771,8 @@ class ReviewView:
             setter(view)
 
 
-def _first_line(text) -> str:
+def _first_line(text, default: str = "引擎没有返回说明") -> str:
     for line in str(text or "").splitlines():
         if line.strip():
             return line.strip()
-    return "引擎没有返回说明"
+    return default

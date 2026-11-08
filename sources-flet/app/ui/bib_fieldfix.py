@@ -53,6 +53,15 @@ def _sha8(sha: str) -> str:
     return (sha or "")[:8]
 
 
+def _commit_notice(base: str, commit: dict) -> str:
+    """写库成功的提示：只有真的生成了提交才说「已提交」，否则显式报版本层原因。"""
+    commit = commit or {}
+    if commit.get("committed") and commit.get("sha"):
+        return f"{base}（已提交 {_sha8(str(commit['sha']))} · 未推送）"
+    reason = str(commit.get("error") or commit.get("reason") or "未生成提交").strip()
+    return f"{base}；版本层提示：{reason}"
+
+
 def _text(value) -> str:
     if value is None:
         return ""
@@ -529,17 +538,39 @@ class BibFieldFixView:
             self.state = "ready"
             self._notify("预览已作废，请重新预览")
 
-    def _build_preview_call(self, row: dict, expect_sha: str) -> EB.EngineCall:
+    async def _record_fields(self, key: str) -> dict | None:
+        """取该记录当前完整字段。
+
+        G-2：引擎 edit 的 ``--json-fields`` 是**整份字段字典替换**（不是 patch），
+        只传 ``{field: value}`` 会把 author/journal/year 等未传字段删掉；所以写前
+        必须先读出完整 fields，再合并目标字段。
+        """
+        res = await self._call(EB.bibdb_query_basic_call(
+            "key", key, bibtex=False, db=self._db()))
+        if not res.get("ok"):
+            return None
+        hits = (res.get("json") or {}).get("hits") or []
+        for hit in hits:
+            record = hit.get("record") or {}
+            if str(record.get("key") or hit.get("key") or "") == key:
+                fields = record.get("fields")
+                return dict(fields) if isinstance(fields, dict) else {}
+        return None
+
+    def _build_preview_call(self, row: dict, expect_sha: str,
+                            record_fields: dict | None = None) -> EB.EngineCall:
         value = self._value_for(row)
         if row["field"] == "key":
             return EB.bibdb_edit_call(
                 key=row["key"], new_key=value,
                 entry_type=row.get("entry_type", ""),
                 dry_run=True, expect_db_sha256=expect_sha, db=self._db())
-        fields = {row["field"]: value} if row["field"] != "entry_type" else None
+        merged = dict(record_fields or {})
+        if row["field"] != "entry_type":
+            merged[row["field"]] = value
         entry_type = value if row["field"] == "entry_type" else row.get("entry_type", "")
         return EB.bibdb_edit_call(
-            key=row["key"], fields=fields, entry_type=entry_type,
+            key=row["key"], fields=merged, entry_type=entry_type,
             dry_run=True, expect_db_sha256=expect_sha, db=self._db())
 
     async def _preview(self) -> None:
@@ -558,6 +589,7 @@ class BibFieldFixView:
         self.payloads = {}
         self._render()
         sha = self.expect_sha
+        records: dict[str, dict] = {}
         try:
             for index, row in enumerate(rows, start=1):
                 if not self.busy:  # 取消
@@ -565,7 +597,20 @@ class BibFieldFixView:
                 self.stage = f"预览 {index}/{len(rows)}"
                 self.progress = (index, len(rows))
                 self._render()
-                res = await self._call(self._build_preview_call(row, sha))
+                if row["key"] not in records:
+                    fetched = await self._record_fields(row["key"])
+                    if fetched is None:
+                        self.state = "failure"
+                        self.error = (f"第 {index} 条预览失败：读取记录 {row['key']} "
+                                      "的完整字段失败，未写库")
+                        self.busy = False
+                        self._mark("bib_fieldfix_preview", ok=False, index=index,
+                                   code=None)
+                        self._render()
+                        return
+                    records[row["key"]] = fetched
+                res = await self._call(self._build_preview_call(
+                    row, sha, records[row["key"]]))
                 if not res.get("ok"):
                     self.state = "failure"
                     self.error = f"第 {index} 条预览失败：{self._error_text(res)}"
@@ -637,7 +682,21 @@ class BibFieldFixView:
         sha = self.expect_sha
         db = self._db()
         backup = str(Path(tempfile.mkdtemp(prefix="bib-fieldfix-backup-")))
+        records: dict[str, dict] = {}
         for index, row in enumerate(rows, start=1):
+            if row["key"] not in records:
+                fetched = await self._record_fields(row["key"])
+                if fetched is None:
+                    self.busy = False
+                    self.state = "failure"
+                    self.failed_at = index
+                    self.error = (f"第 {index} 条失败 · 已写 {self.written} 条未提交"
+                                  f"：读取记录 {row['key']} 的完整字段失败，未写库")
+                    self._mark("bib_fieldfix_write", ok=False, index=index,
+                               written=self.written)
+                    self._render()
+                    return
+                records[row["key"]] = fetched
             value = self._value_for(row)
             if row["field"] == "key":
                 call = EB.bibdb_edit_call(
@@ -645,12 +704,13 @@ class BibFieldFixView:
                     entry_type=row.get("entry_type", ""),
                     dry_run=False, expect_db_sha256=sha, backup=backup, db=db)
             else:
-                fields = ({row["field"]: value} if row["field"] != "entry_type"
-                          else None)
+                merged = dict(records[row["key"]])
+                if row["field"] != "entry_type":
+                    merged[row["field"]] = value
                 entry_type = (value if row["field"] == "entry_type"
                               else row.get("entry_type", ""))
                 call = EB.bibdb_edit_call(
-                    key=row["key"], fields=fields, entry_type=entry_type,
+                    key=row["key"], fields=merged, entry_type=entry_type,
                     dry_run=False, expect_db_sha256=sha, backup=backup, db=db)
             self.stage = f"写入 {index}/{len(rows)}"
             self._render()
@@ -682,7 +742,7 @@ class BibFieldFixView:
         self.commit = commit if isinstance(commit, dict) else {}
         self._mark("bib_fieldfix_write", ok=True, rows=self.written,
                    commit=_sha8(_text((self.commit or {}).get("sha"))))
-        self._notify(f"已归位 {self.written} 条（1 次提交，未推送）")
+        self._notify(_commit_notice(f"已归位 {self.written} 条", self.commit))
         self._render()
 
     def _sha_mismatch(self, res: dict) -> bool:
@@ -697,8 +757,9 @@ class BibFieldFixView:
         return "引擎没有返回原因。"
 
     def _revert(self, e=None) -> None:
-        if not (self.commit or {}).get("ok"):
-            self._notify("没有可回退的本次提交")
+        commit = self.commit or {}
+        if not (commit.get("ok") and commit.get("committed")):
+            self._notify("没有可回退的已提交写入")
             return
         dialog = S.danger_confirm(
             self._flet(), self.t, title="回退这次字段归位？",
@@ -714,7 +775,7 @@ class BibFieldFixView:
             result = await asyncio.to_thread(GIT.rollback, db) if db else {"ok": False}
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        if isinstance(result, dict) and result.get("ok"):
+        if isinstance(result, dict) and result.get("ok") and result.get("committed"):
             self.state = "ready"
             self.commit = None
             self.previewed = []
@@ -974,13 +1035,15 @@ class BibFieldFixView:
             fields = len({row["field"] for row in self.previewed}) or self.written
             return S.result_banner(
                 t, title=f"已归位 {self.written} 条 · {fields} 个字段",
-                detail=f"已提交 {sha} · 1 条提交 · 未推送" if sha else "已归位；未生成提交",
+                detail=(f"已提交 {sha} · 1 条提交 · 未推送"
+                        if commit.get("committed") and sha else "已归位；未生成版本提交"),
                 on_review=lambda e: self._goto("review"),
-                on_revert=self._revert if commit.get("ok") else None)
+                on_revert=self._revert if commit.get("committed") else None)
         if self.state == "failure" and self.written:
             return S.stale_notice(
                 t, title="部分写入，未提交",
-                detail=f"{self.error} · 已写 {self.written} 条可用「回退已写」撤销",
+                detail=(f"{self.error} · 已写 {self.written} 条未提交；"
+                        "先提交或丢弃这些改动后再回退"),
                 on_repreview=lambda e: self._task(self._preview))
         if self.state == "previewed" and self.previewed:
             stale = bool(self.dirty_reason)

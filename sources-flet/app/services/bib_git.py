@@ -12,8 +12,9 @@
   库没变就不空提交；冲突 / merge / rebase 进行中一律拒绝提交。
 * `push()` —— **只**推「连续 bib-only 前缀」（B-203）：最旧未推送提交就不是 bib_db/
   → 整次拒绝；否则 push 到该前缀的 tip，绝不 `--force`，`notes` 的其它提交不推。
-* `rollback()` —— `git checkout HEAD~1 -- 库文件` + 一次新 commit（不 hard reset、
-  不 push），回退前要求库文件至少 2 次提交。
+* `rollback()` —— 按库文件内容历史取「上一个版本」`git checkout <该版本提交> --
+  库文件` + 一次新 commit（不 hard reset、不 push）；库文件 dirty / merge /
+  rebase / 冲突时拒绝且零写，回退没产生新提交时 `ok=False`、不伪造成功。
 
 硬约束：argv 一律列表、`shell=False`；`GIT_TERMINAL_PROMPT=0` 防卡在凭据输入；
 只 `add`/`commit`/`push`（仅显式点推送）库文件，**绝不** `pull`/`fetch`/`checkout`
@@ -231,10 +232,13 @@ def _probe(loc: dict) -> dict:
                     pass
     if not result["upstream"]:
         result["warnings"].append("当前分支没有 upstream：只提交本地，不推送。")
-    code, out, _err = _run(git, ["status", "--porcelain", "--", rel], cwd=root)
+    # `--no-optional-locks`：内容没变只 stale mtime 时，普通 `git status` 会刷新并
+    # 改写 .git/index；status()/preflight() 承诺只读，所以禁止这类可选写。
+    code, out, _err = _run(git, ["--no-optional-locks", "status", "--porcelain",
+                                 "--", rel], cwd=root)
     if code == 0:
         result["dirty_db"] = bool(out.strip())
-    code, out, _err = _run(git, ["status", "--porcelain"], cwd=root)
+    code, out, _err = _run(git, ["--no-optional-locks", "status", "--porcelain"], cwd=root)
     if code == 0:
         # git porcelain 路径一律用 `/`；Windows 下 os.sep 是 `\`，两边归一化再比。
         rel_norm = os.path.normcase(rel.replace("\\", "/"))
@@ -574,39 +578,93 @@ def push(db: str = "", *, notes_repo: str = "") -> dict:
 # ── 回退（B-190）：checkout 上一个提交 + 新 commit，不 hard reset ────────
 
 def rollback(db: str = "", *, notes_repo: str = "") -> dict:
-    """把库文件退回到上一个提交并生成一次新 commit（**不** hard reset、**不** push）。
+    """把库文件退回到**上一个版本**并生成一次新 commit。
 
-    返回 `{ok, reverted, message, db_sha256, error, soft}`；库文件提交数 < 2 时拒绝。
+    「上一个版本」按库文件内容的历史取：先找到当前内容最早出现的那个库提交，
+    再取它更旧一个改过库文件的提交（所以内容未变的回退提交会被跳过，连续回退
+    会一路向更早版本走，而不是在最近两个内容之间来回切换）。只做 checkout +
+    新 commit（**不** hard reset、**不** push）；库文件 dirty、仓库
+    merge/rebase/冲突进行中一律拒绝且零写；没有更早版本、或 checkout 后内容
+    没变时返回 ok=False / reverted=False，不伪造成功。返回
+    `{ok, reverted, message, db_sha256, error, soft}`。
     """
     loc = locate_repo(db or default_db(notes_repo))
     if not loc.get("ok"):
         return {"ok": False, "reverted": False, "soft": True,
                 "error": loc.get("error", "无法定位 git 仓库。")}
     git, root, rel = loc["git"], loc["repo_root"], loc["db_rel"]
-    code, out, err = _run(git, ["rev-list", "--count", "HEAD", "--", rel], cwd=root)
+    probe = _probe(loc)
+    if probe.get("conflict") or probe.get("merge") or probe.get("rebase"):
+        return {"ok": False, "reverted": False, "soft": True,
+                "error": "仓库有未解决的合并冲突或正在 merge/rebase："
+                         "先处理再回退。"}
+    if probe.get("dirty_db"):
+        return {"ok": False, "reverted": False, "soft": True,
+                "error": "库文件有未提交改动：回退会覆盖这些改动，"
+                         "请先提交或丢弃后再回退。"}
+    code, out, err = _run(git, ["rev-list", "HEAD", "--", rel], cwd=root)
     if code != 0:
         return {"ok": False, "reverted": False, "soft": False,
                 "error": "读取库提交历史失败：" + _error_of(out, err, "未知错误")}
-    try:
-        commits = int(out.strip() or "0")
-    except ValueError:
-        commits = 0
-    if commits < 2:
+    history = [line.strip() for line in (out or "").splitlines() if line.strip()]
+    if len(history) < 2:
         return {"ok": False, "reverted": False, "soft": True,
-                "error": f"库文件只有 {commits} 次提交，没有可回退的上一个版本。"}
-    sha_before = file_sha256(loc["db_abs"])
-    code, out, err = _run(git, ["checkout", "HEAD~1", "--", rel], cwd=root,
-                          timeout=WRITE_TIMEOUT)
+                "error": f"库文件只有 {len(history)} 次提交，"
+                         "没有可回退的上一个版本。"}
+    blobs: list[str] = []
+    for sha in history:
+        code, blob, blob_err = _run(git, ["rev-parse", f"{sha}:{rel}"], cwd=root)
+        if code != 0:
+            return {"ok": False, "reverted": False, "soft": False,
+                    "error": "读取库文件历史内容失败："
+                             + _error_of(blob, blob_err, "未知错误")}
+        blobs.append(blob.strip())
+    code, head_blob, head_err = _run(git, ["rev-parse", f"HEAD:{rel}"], cwd=root)
     if code != 0:
         return {"ok": False, "reverted": False, "soft": False,
-                "error": "git checkout 失败（库未改动）：" + _error_of(out, err, "未知错误")}
+                "error": "读取库文件当前内容失败："
+                         + _error_of(head_blob, head_err, "未知错误")}
+    current = head_blob.strip()
+    older = [i for i, blob in enumerate(blobs) if blob == current]
+    if not older:
+        return {"ok": False, "reverted": False, "soft": True,
+                "error": "当前库内容不在库提交历史里：没有可回退的上一个版本。"}
+    # history 新→旧；当前内容「最早出现」的提交是最靠后的同 blob 项，
+    # 再往后（更旧）的第一个库提交就是上一个版本。
+    target_index = older[-1] + 1
+    if target_index >= len(history):
+        return {"ok": False, "reverted": False, "soft": True,
+                "error": "库内容已是最早可回退的版本，未生成回退提交。"}
+    target = history[target_index]
+    sha_before = file_sha256(loc["db_abs"])
+    code, out, err = _run(git, ["checkout", target, "--", rel], cwd=root,
+                          timeout=WRITE_TIMEOUT)
+    if code != 0:
+        # checkout 失败：索引/工作区退回 HEAD，保证零净写入。
+        _run(git, ["checkout", "HEAD", "--", rel], cwd=root, timeout=WRITE_TIMEOUT)
+        return {"ok": False, "reverted": False, "soft": False,
+                "error": "git checkout 失败（库未改动）："
+                         + _error_of(out, err, "未知错误")}
     sha_after = file_sha256(loc["db_abs"])
+    if sha_after == sha_before:
+        _run(git, ["checkout", "HEAD", "--", rel], cwd=root, timeout=WRITE_TIMEOUT)
+        return {"ok": False, "reverted": False, "soft": True,
+                "db_sha256": sha_after,
+                "error": "库内容没有变化（已是最早可回退的版本），"
+                         "未生成回退提交。"}
     message = revert_message(sha_before, sha_after)
     commit = commit_db(loc["db_abs"], message)
-    if not commit.get("ok"):
-        return {"ok": False, "reverted": True, "message": message,
-                "db_sha256": sha_after, "soft": bool(commit.get("soft", True)),
-                "error": ("库文件已退回上一个提交，但未生成新提交："
-                          + str(commit.get("error") or "未知错误"))}
+    if not commit.get("ok") or not commit.get("committed"):
+        # 提交没生成：索引/工作区退回 HEAD，不留「已 checkout 未提交」的半写状态；
+        # 库字节因此与回退前一致（零净变化）。
+        restored = (_run(git, ["checkout", "HEAD", "--", rel], cwd=root,
+                         timeout=WRITE_TIMEOUT)[0] == 0)
+        detail = str(commit.get("error") or commit.get("reason") or "未知错误")
+        error = "库文件已退回上一个版本，但未生成新提交：" + detail
+        if restored:
+            error += "（已恢复回退前的库内容，没有留下未提交的半写状态）"
+        return {"ok": False, "reverted": False, "message": message,
+                "db_sha256": file_sha256(loc["db_abs"]),
+                "soft": bool(commit.get("soft", True)), "error": error}
     return {"ok": True, "reverted": True, "message": message, "db_sha256": sha_after,
-            "sha": commit.get("sha"), "committed": bool(commit.get("committed"))}
+            "sha": commit.get("sha"), "committed": True}

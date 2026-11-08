@@ -41,6 +41,15 @@ def _sha8(sha: str) -> str:
     return (sha or "")[:8]
 
 
+def _commit_notice(base: str, commit: dict) -> str:
+    """写库成功的提示：只有真的生成了提交才说「已提交」，否则显式报版本层原因。"""
+    commit = commit or {}
+    if commit.get("committed") and commit.get("sha"):
+        return f"{base}（已提交 {_sha8(str(commit['sha']))} · 未推送）"
+    reason = str(commit.get("error") or commit.get("reason") or "未生成提交").strip()
+    return f"{base}；版本层提示：{reason}"
+
+
 def _num(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -556,7 +565,7 @@ class BibDupesView:
         self.commit = commit if isinstance(commit, dict) else {}
         self._mark("bib_dupes_write", ok=True,
                    commit=_sha8(str((self.commit or {}).get("sha") or "")))
-        self._notify("已合并 2 条 → 1 条（已提交，未推送）")
+        self._notify(_commit_notice("已合并 2 条 → 1 条", self.commit))
         await self._after_write_refresh()
 
     async def _after_write_refresh(self) -> None:
@@ -636,8 +645,9 @@ class BibDupesView:
             self._render()
 
     def _revert_confirm(self, e=None) -> None:
-        if not (self.commit or {}).get("ok"):
-            self._notify("没有可回退的本次提交")
+        commit = self.commit or {}
+        if not (commit.get("ok") and commit.get("committed")):
+            self._notify("没有可回退的已提交合并")
             return
         dialog = S.danger_confirm(
             self._flet(), self.t, title="回退这次合并？",
@@ -653,7 +663,7 @@ class BibDupesView:
             result = await asyncio.to_thread(GIT.rollback, db) if db else {"ok": False}
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        if isinstance(result, dict) and result.get("ok"):
+        if isinstance(result, dict) and result.get("ok") and result.get("committed"):
             self.state = "ready"
             self.payload = None
             self.commit = None
@@ -661,6 +671,8 @@ class BibDupesView:
             self._task(self._scan)
         else:
             error = (result or {}).get("error") if isinstance(result, dict) else ""
+            if isinstance(result, dict) and result.get("ok"):
+                error = error or "未生成回退提交"
             self._notify(f"回退失败：{error or '未知错误'}")
         self._render()
 
@@ -950,9 +962,10 @@ class BibDupesView:
             label = self.merged_key or (pair.get("a") if pair else "")
             return S.result_banner(
                 t, title=f"已合并 2 条 → 1 条（{label}）",
-                detail=f"已提交 {sha} · 未推送" if sha else "已合并；未生成提交",
+                detail=(f"已提交 {sha} · 未推送" if commit.get("committed") and sha
+                        else "已合并；未生成版本提交"),
                 on_review=lambda e: self._goto("health"),
-                on_revert=self._revert_confirm if commit.get("ok") else None)
+                on_revert=self._revert_confirm if commit.get("committed") else None)
         stale = self._is_stale() or self.state == "stale"
         pair = self._current()
         consequence = (f"将合并 {pair['a']} + {pair['b']} → {self.merged_key}"

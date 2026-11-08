@@ -193,8 +193,11 @@ description: 把已核实的参考文献沉淀成编辑部资产，核实前先�
 Flet 的「设置」页把库文件统计与版本层集中在一起（「待处理」页仍保留状态区）；状态显示当前
 分支 / 库文件脏否 / 未推送提交数 / 最近 3 条库提交，并提供三个都要二次确认的按钮：
 「提交…」（手动补提交）、「推送…」（**唯一**推送入口，失败显示 git stderr 摘要，不做 force）、
-「回退到上一个提交…」（`git checkout HEAD~1 -- bib_db/bibliography.jsonl` + 新 commit，
-**不 hard reset、不推送**）。git 不可用/非 repo/身份未配置 → **黄字 fail-soft**：写库照旧成功、
+「回退到上一个提交…」（回退目标 = **上一次触及 `bib_db/bibliography.jsonl` 的提交**：按
+`git rev-list HEAD -- bib_db/bibliography.jsonl` 取历史，checkout 其中上一个版本再生成新 commit；
+**不是整体上一提交（HEAD 的父提交）**；**不 hard reset、不推送**）。库文件有未提交改动（`dirty_db`）时
+**拒绝回退（零写）**；已到最早可回退版本、或回退后内容没有变化 → 明确返回 `ok=False`，
+不伪造成功。git 不可用/非 repo/身份未配置 → **黄字 fail-soft**：写库照旧成功、
 数据不回滚，只是没有版本提交。
 
 **安全校验**：所有写操作串行（运行中按钮置灰）；先预览后确认；写前 `--expect-db-sha256`
@@ -250,9 +253,13 @@ python3 Engine/bibdb.py ack-duplicates --code near_duplicates --keys A,B --reaso
 # 重新生成待裁决清单
 python3 Engine/bibdb.py report --out ../EditToolBox-notes/bib_db
 
-# 整库回退（Flet 在「引用库 → 设置」页点「回退到上一个提交…」，等价于）：
-git -C ../EditToolBox-notes checkout HEAD~1 -- bib_db/bibliography.jsonl
+# 回退一个库版本（Flet 在「引用库 → 设置」页点「回退到上一个提交…」，等价于）：
+# 回退目标 = 上一次触及库文件的提交：取 rev-list 历史的第 2 条（history[1]），不是整体上一提交
+git -C ../EditToolBox-notes rev-list HEAD -- bib_db/bibliography.jsonl   # 第 2 条即 history[1]
+git -C ../EditToolBox-notes checkout <history[1] 的 sha> -- bib_db/bibliography.jsonl
 git -C ../EditToolBox-notes commit -m "引用库：回退到上一个提交" -- bib_db/bibliography.jsonl
+# 库文件有未提交改动（dirty_db）时拒绝回退、零写；已到最早可回退版本时明确失败（ok=False），不伪造成功；
+# 不 hard reset、不 force、不 push。
 # 兼容：引擎 CLI 仍保留 `restore --backup PATH`（GUI 不调用）
 ```
 

@@ -146,12 +146,24 @@ def test_review_queue_geometry_and_rows(monkeypatch):
 def test_review_stage_detail_then_dry_run_then_apply(monkeypatch):
     host, view = _loaded(monkeypatch)
     calls = []
+    commits = []
+    old_sha = CONFLICTS["db_sha256"]
+    new_sha = "b" * 64
 
     def fake_read(call, **kw):
         calls.append(call)
-        return {"ok": True, "json": {}, "code": 0, "lines": [], "argv": call.argv}
+        dry = "--dry-run" in call.argv
+        return {"ok": True, "code": 0, "lines": [], "argv": call.argv,
+                "json": {"written": not dry,
+                         "db_sha256_before": old_sha if dry else old_sha,
+                         "db_sha256_after": old_sha if dry else new_sha,
+                         "dry_run": dry}}
 
     monkeypatch.setattr(EB, "read_json_command", fake_read)
+    monkeypatch.setattr(RV.GIT, "commit_db",
+                        lambda db, message: commits.append(message) or {
+                            "ok": True, "committed": True, "sha": "c" * 40,
+                            "message": message})
     view.selected_key = "C001"
     view.adopt = {"title": True}
     view._stage_detail(False)
@@ -161,18 +173,34 @@ def test_review_stage_detail_then_dry_run_then_apply(monkeypatch):
     assert len(calls) == 2
     assert "--dry-run" in calls[0].argv
     assert "--dry-run" not in calls[1].argv
+    assert len(commits) == 1, "引擎确认 written=True 后必须提交"
     assert "已完成 · 1 条记录 · 1 个字段" in view.success
+    assert "已提交 cccccccc" in view.success
 
 
 def test_review_keep_action(monkeypatch):
     host, view = _loaded(monkeypatch)
-    monkeypatch.setattr(EB, "read_json_command",
-                        lambda call, **kw: {"ok": True, "json": {}, "code": 0,
-                                            "lines": [], "argv": call.argv})
+    old_sha = CONFLICTS["db_sha256"]
+    commits = []
+
+    def fake_read(call, **kw):
+        dry = "--dry-run" in call.argv
+        return {"ok": True, "code": 0, "lines": [], "argv": call.argv,
+                "json": {"written": not dry,
+                         "db_sha256_before": old_sha,
+                         "db_sha256_after": old_sha if dry else "b" * 64,
+                         "dry_run": dry}}
+
+    monkeypatch.setattr(EB, "read_json_command", fake_read)
+    monkeypatch.setattr(RV.GIT, "commit_db",
+                        lambda db, message: commits.append(message) or {
+                            "ok": True, "committed": True, "sha": "c" * 40,
+                            "message": message})
     view.selected_key = "C002"
     view._stage_keep()
     assert view.staged["kind"] == "keep"
     asyncio.run(view._write())
+    assert len(commits) == 1, "裁决写入后必须提交"
     assert "1 条记录 · 0 个字段" in view.success
 
 

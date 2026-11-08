@@ -18,6 +18,7 @@ import flet as ft
 
 from services import bib_git as GIT
 from services import engine_bridge as EB
+from ui.bib_write import _summary_of
 from ui import bib_shell as S
 from ui import components as C
 
@@ -42,6 +43,15 @@ _STATUS_LABEL = {"new": ("新增", "success"), "add": ("新增", "success"),
 
 def _sha8(sha: str) -> str:
     return (sha or "")[:8]
+
+
+def _commit_notice(base: str, commit: dict) -> str:
+    """写库成功的提示：只有真的生成了提交才说「已提交」，否则显式报版本层原因。"""
+    commit = commit or {}
+    if commit.get("committed") and commit.get("sha"):
+        return f"{base}（已提交 {_sha8(str(commit['sha']))} · 未推送）"
+    reason = str(commit.get("error") or commit.get("reason") or "未生成提交").strip()
+    return f"{base}；版本层提示：{reason}"
 
 
 def _int(value) -> int:
@@ -78,6 +88,7 @@ class BibImportView:
         self.elapsed = 0.0
         self.result: dict | None = None
         self.commit: dict | None = None
+        self.no_write_note = ""
         self.confirm_layer = False
         self.busy = False
         self.dirty_reason = ""
@@ -210,7 +221,7 @@ class BibImportView:
     def _can_confirm(self) -> bool:
         return bool(self.payload) and bool(self.expect_sha) and not self._is_stale() \
             and not self.busy and self.state not in ("loading", "running", "failure",
-                                                     "stale", "success")
+                                                     "stale", "success", "nothing")
 
     def _invalidate(self, reason: str) -> None:
         if self.payload is not None and not self.dirty_reason:
@@ -367,9 +378,37 @@ class BibImportView:
             return
         payload = res.get("json") or {}
         self.result = payload
-        added = _int(payload.get("new") or payload.get("added") or payload.get("imported"))
-        updated = _int(payload.get("updated") or payload.get("merged"))
+        self.payload = payload
+        # 兼容旧 payload（顶层 new/updated 的夹具/旧引擎输出）：嵌套层为空时退回顶层。
+        summary = _summary_of(payload) or payload
+        added = _int(summary.get("new"))
+        updated = _int(summary.get("updated")) or _int(summary.get("merged"))
+        raw_skipped = summary.get("skipped")
+        skipped = (sum(_int(value) for value in raw_skipped.values())
+                   if isinstance(raw_skipped, dict) else _int(raw_skipped))
         db = str(payload.get("db") or self._db())
+        self.expect_sha = str(payload.get("db_sha256_after")
+                               or payload.get("db_sha256_before")
+                               or self.expect_sha)
+        # G-6：引擎 `written=false` = 幂等跳过（来源已入藏过/内容相同），实际没有
+        # 写库。这时不能进 success 样式，也不能说「已写入 0 条新增」。
+        if payload.get("written") is False:
+            detail_bits = []
+            if skipped:
+                detail_bits.append(f"跳过 {skipped} 条")
+            if updated:
+                detail_bits.append(f"已是库内内容 {updated} 条")
+            suffix = f"（{' · '.join(detail_bits)}）" if detail_bits else ""
+            self.no_write_note = ("没有需要写入的内容：该来源条目已入藏过或内容相同"
+                                  f"{suffix}，库文件未改动")
+            self.commit = {}
+            self.state = "nothing"
+            self.busy = False
+            self._mark("bib_import_write", ok=True, code=code, added=0,
+                       updated=0, written=False, skipped=skipped)
+            self._notify(self.no_write_note)
+            self._render()
+            return
         message = f"引用库：入藏 {added} 条新增 · {updated} 条更新"
         commit: dict = {}
         if db:
@@ -380,10 +419,11 @@ class BibImportView:
         self.commit = commit if isinstance(commit, dict) else {}
         self.state = "success"
         self.busy = False
-        self.expect_sha = str(payload.get("db_sha256_after") or "")
         self._mark("bib_import_write", ok=True, code=code, added=added,
-                   updated=updated, commit=_sha8(str((self.commit or {}).get("sha") or "")))
-        self._notify(f"已写入 {added} 条新增 · {updated} 条更新（未推送）")
+                   updated=updated, written=True,
+                   commit=_sha8(str((self.commit or {}).get("sha") or "")))
+        self._notify(_commit_notice(f"已写入 {added} 条新增 · {updated} 条更新",
+                                    self.commit))
         self._render()
 
     def _sha_mismatch(self, res: dict) -> bool:
@@ -392,8 +432,8 @@ class BibImportView:
 
     def _revert_confirm(self, e=None) -> None:
         commit = self.commit or {}
-        if not commit.get("ok"):
-            self._notify("没有可回退的本次提交")
+        if not (commit.get("ok") and commit.get("committed")):
+            self._notify("没有可回退的已提交入藏")
             return
         impact = "影响 1 个文件（bib_db/bibliography.jsonl）· 1 条回退提交"
         dialog = S.danger_confirm(
@@ -415,7 +455,7 @@ class BibImportView:
             result = await asyncio.to_thread(GIT.rollback, db)
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        if isinstance(result, dict) and result.get("ok"):
+        if isinstance(result, dict) and result.get("ok") and result.get("committed"):
             self.state = "empty"
             self.payload = None
             self.expect_sha = ""
@@ -423,6 +463,8 @@ class BibImportView:
             self._notify("已回退本次写入（生成了一条新提交，未推送）")
         else:
             error = (result or {}).get("error") if isinstance(result, dict) else ""
+            if isinstance(result, dict) and result.get("ok"):
+                error = error or "未生成回退提交"
             self._notify(f"回退失败：{error or '未知错误'}")
         self._render()
 
@@ -452,12 +494,18 @@ class BibImportView:
         return out
 
     def _counts(self) -> dict:
+        # G-5：两种 payload 的计数都在嵌套层（import-bib 在 report，import-dir 在
+        # result.total），读顶层会永远显示 0 新增 0 更新。口径复用 bib_write 的
+        # _summary_of，保证预览、确认条、成功横幅三处一致。
         payload = self.payload or {}
+        summary = _summary_of(payload) or payload
         changes = self._changes()
-        new = _int(payload.get("new") or payload.get("added"))
-        updated = _int(payload.get("updated") or payload.get("merged"))
-        conflicts = _int(payload.get("conflicts"))
-        skipped = _int(payload.get("skipped"))
+        new = _int(summary.get("new"))
+        updated = _int(summary.get("updated")) or _int(summary.get("merged"))
+        conflicts = _int(summary.get("conflicts"))
+        raw_skipped = summary.get("skipped")
+        skipped = (sum(_int(value) for value in raw_skipped.values())
+                   if isinstance(raw_skipped, dict) else _int(raw_skipped))
         if not (new or updated or conflicts or skipped) and changes:
             for row in changes:
                 label, _tone = _STATUS_LABEL.get(row["status"], ("", "muted"))
@@ -469,7 +517,7 @@ class BibImportView:
                     conflicts += 1
                 elif label == "跳过":
                     skipped += 1
-        return {"entries": _int(payload.get("entries")) or len(changes),
+        return {"entries": _int(summary.get("entries")) or len(changes),
                 "new": new, "updated": updated, "conflicts": conflicts,
                 "skipped": skipped}
 
@@ -669,6 +717,11 @@ class BibImportView:
             controls.append(self._success_banner())
             controls.append(ft.Container(height=t.px(8)))
             controls.append(self._payload_block(dim=True))
+        elif self.state == "nothing":
+            controls.append(S.state_banner(
+                t, "empty", message=self.no_write_note or "没有需要写入的内容"))
+            controls.append(ft.Container(height=t.px(8)))
+            controls.append(self._payload_block(dim=True))
         elif self.state in ("loading",):
             controls.append(S.state_banner(t, "loading", message="运行中"))
         elif self.state == "failure":
@@ -795,15 +848,17 @@ class BibImportView:
 
     def _success_banner(self) -> ft.Control:
         t = self.t
-        payload = self.result or {}
-        added = _int(payload.get("new") or payload.get("added") or payload.get("imported"))
-        updated = _int(payload.get("updated") or payload.get("merged"))
-        sha = _sha8(str((self.commit or {}).get("sha") or ""))
-        detail = f"已提交 {sha} · 未推送" if sha else "已写入；未生成提交"
+        summary = _summary_of(self.result or {}) or (self.result or {})
+        added = _int(summary.get("new"))
+        updated = _int(summary.get("updated")) or _int(summary.get("merged"))
+        commit = self.commit or {}
+        sha = _sha8(str(commit.get("sha") or ""))
+        detail = (f"已提交 {sha} · 未推送" if commit.get("committed") and sha
+                  else "已写入；未生成版本提交")
         return S.result_banner(
             t, title=f"已写入 {added} 新增 · {updated} 更新", detail=detail,
             on_review=lambda e: self._goto_pending(),
-            on_revert=self._revert_confirm if (self.commit or {}).get("ok") else None)
+            on_revert=self._revert_confirm if commit.get("committed") else None)
 
     def _goto_pending(self) -> None:
         nav = getattr(self.page, "goto", None)
@@ -820,7 +875,7 @@ class BibImportView:
 
     def _bottom(self) -> ft.Control:
         t = self.t
-        if self.state == "success":
+        if self.state in ("success", "nothing"):
             return ft.Container(height=S.BANNER_H)
         has_preview = self.payload is not None
         stale = has_preview and (self._is_stale() or self.state == "stale")

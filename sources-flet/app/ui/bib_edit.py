@@ -47,6 +47,15 @@ def _sha8(sha: str) -> str:
     return (sha or "")[:8]
 
 
+def _commit_notice(base: str, commit: dict) -> str:
+    """写库成功的提示：只有真的生成了提交才说「已提交」，否则显式报版本层原因。"""
+    commit = commit or {}
+    if commit.get("committed") and commit.get("sha"):
+        return f"{base}（已提交 {_sha8(str(commit['sha']))} · 未推送）"
+    reason = str(commit.get("error") or commit.get("reason") or "未生成提交").strip()
+    return f"{base}；版本层提示：{reason}"
+
+
 def _s(value) -> str:
     if value is None:
         return ""
@@ -507,7 +516,7 @@ class BibEditView:
         self.original = dict(self.values)
         self._mark("bib_edit_write", ok=True, changed=changed,
                    commit=_sha8(str((self.commit or {}).get("sha") or "")))
-        self._notify(f"已写入 {changed} 个字段（未推送）")
+        self._notify(_commit_notice(f"已写入 {changed} 个字段", self.commit))
         self._render()
 
     def _sha_mismatch(self, res: dict) -> bool:
@@ -515,8 +524,9 @@ class BibEditView:
         return res.get("code") == 2 or "sha256" in text
 
     def _revert_confirm(self, e=None) -> None:
-        if not (self.commit or {}).get("ok"):
-            self._notify("没有可回退的本次提交")
+        commit = self.commit or {}
+        if not (commit.get("ok") and commit.get("committed")):
+            self._notify("没有可回退的已提交写入")
             return
         dialog = S.danger_confirm(
             self._flet(), self.t, title="回退这次编辑？",
@@ -532,7 +542,7 @@ class BibEditView:
             result = await asyncio.to_thread(GIT.rollback, db) if db else {"ok": False}
         except Exception as exc:  # noqa: BLE001
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        if isinstance(result, dict) and result.get("ok"):
+        if isinstance(result, dict) and result.get("ok") and result.get("committed"):
             self.state = "ready"
             self.payload = None
             self.expect_sha = ""
@@ -540,6 +550,8 @@ class BibEditView:
             self._notify("已回退本次写入（生成了一条新提交，未推送）")
         else:
             error = (result or {}).get("error") if isinstance(result, dict) else ""
+            if isinstance(result, dict) and result.get("ok"):
+                error = error or "未生成回退提交"
             self._notify(f"回退失败：{error or '未知错误'}")
         self._render()
 
@@ -763,12 +775,14 @@ class BibEditView:
         if self.state == "success":
             commit = self.commit or {}
             sha = _sha8(str(commit.get("sha") or ""))
+            committed = bool(commit.get("committed"))
             changed = len(diff_rows(self.payload)) or len(self._changed_fields())
             return S.result_banner(
                 t, title=f"已写入 {changed} 个字段",
-                detail=f"已提交 {sha} · 未推送" if sha else "已写入；未生成提交",
+                detail=(f"已提交 {sha} · 未推送" if committed and sha
+                        else "已写入；未生成版本提交"),
                 on_review=lambda e: self._goto("review"),
-                on_revert=self._revert_confirm if commit.get("ok") else None)
+                on_revert=self._revert_confirm if committed else None)
         stale = self._is_stale() or self.state == "stale"
         changed = len(self._changed_fields())
         consequence = (f"将写入 {changed} 个字段（整份替换）" if self.loaded_key

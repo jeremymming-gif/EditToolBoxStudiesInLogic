@@ -117,6 +117,16 @@ SUGGEST = {
 }
 
 
+FULL_FIELDS = {
+    "li_2021": {"author": "李", "journal": "古籍", "title": "庄子注疏",
+                "year": "1920"},
+    "wang_2020": {"author": "王", "journal": "逻辑", "title": "逻辑研究",
+                  "year": "2020"},
+    "zhao_2019": {"author": "赵", "journal": "名理", "title": "名理",
+                  "year": "2019", "publisher": "旧社"},
+}
+
+
 def _install(monkeypatch, *, calls=None, write_fail_at=None, commit=None):
     calls = calls if calls is not None else []
     committed = commit if commit is not None else []
@@ -125,6 +135,13 @@ def _install(monkeypatch, *, calls=None, write_fail_at=None, commit=None):
     def fake_read(call, *, notes="", **kwargs):
         argv = args_of(call)
         calls.append(argv)
+        if "query" in argv:
+            key = argv[argv.index("--key") + 1]
+            return {"ok": True, "code": 0, "stderr": "",
+                    "json": {"count": 1, "ambiguous": False,
+                             "hits": [{"key": key,
+                                       "record": {"key": key,
+                                                  "fields": dict(FULL_FIELDS[key])}}]}}
         if "suggest-field-fixes" in argv:
             return {"ok": True, "json": SUGGEST, "code": 0, "stderr": ""}
         if "edit" in argv:
@@ -289,10 +306,14 @@ def test_expanded_row_has_manual_48_and_radio(tmp_path, monkeypatch):
 
 def test_manual_override_invalidates_preview(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
-    _install(monkeypatch)
+    calls: list[list[str]] = []
+    _install(monkeypatch, calls=calls)
     asyncio.run(view._scan())
     view.checked = {view.rows[0]["id"]}
     asyncio.run(view._preview())
+    queries = [argv for argv in calls if "query" in argv]
+    assert len(queries) == 1, "预览前必须按 key 读取一次完整字段"
+    assert queries[0][queries[0].index("--key") + 1] == "li_2021"
     assert view.state == "previewed"
     view._set_candidate(view.rows[0]["id"], "1922")
     assert view.dirty_reason
@@ -307,14 +328,19 @@ def test_preview_chains_sha_and_passes_dry_run(tmp_path, monkeypatch):
     asyncio.run(view._scan())
     view.checked = {row["id"] for row in view.rows}
     asyncio.run(view._preview())
+    queries = [argv for argv in calls if "query" in argv]
+    assert [argv[argv.index("--key") + 1] for argv in queries] == [
+        "li_2021", "wang_2020", "zhao_2019"]
     edits = [argv for argv in calls if "edit" in argv]
     assert len(edits) == 3
     assert all("--dry-run" in argv for argv in edits)
     assert edits[0][edits[0].index("--key") + 1] == "li_2021"
     assert json.loads(edits[0][edits[0].index("--json-fields") + 1]) == {
-        "year": "1921"}
-    # 未知类型行写 entry_type
+        **FULL_FIELDS["li_2021"], "year": "1921"}
+    # 未知类型行写 entry_type，字段仍传整份原值
     assert edits[1][edits[1].index("--entry-type") + 1] == "article"
+    assert json.loads(edits[1][edits[1].index("--json-fields") + 1]) == \
+        FULL_FIELDS["wang_2020"]
     assert view.state == "previewed"
     assert view.expect_sha
     bar = view._bottom()
@@ -334,8 +360,14 @@ def test_write_applies_with_sha_chain_and_commits_once(tmp_path, monkeypatch):
     writes = [argv for argv in calls if "edit" in argv and "--apply" in argv]
     assert len(writes) == 2
     assert writes[0][writes[0].index("--backup") + 1]
+    assert writes[0][writes[0].index("--expect-db-sha256") + 1] == \
+        f"{2:064x}", "第二条预览后的 sha 应成为首次写入的 CAS 基准"
     assert writes[1][writes[1].index("--expect-db-sha256") + 1] == \
-        writes[0][writes[0].index("--expect-db-sha256") + 1] or True
+        f"{3:064x}", "首次写入返回的 db_sha256_after 应成为第二次写入的 CAS 基准"
+    assert json.loads(writes[0][writes[0].index("--json-fields") + 1]) == {
+        **FULL_FIELDS["li_2021"], "year": "1921"}
+    assert json.loads(writes[1][writes[1].index("--json-fields") + 1]) == {
+        **FULL_FIELDS["zhao_2019"], "publisher": "商务印书馆"}
     assert len(commits) == 1
     assert "字段归位 2 条" == commits[0][1]
     assert view.state == "success"
@@ -346,11 +378,16 @@ def test_partial_write_failure_keeps_written_count(tmp_path, monkeypatch):
     view, host = _view(tmp_path)
     _db(tmp_path)
     commits: list[tuple] = []
-    _install(monkeypatch, write_fail_at=2, commit=commits)
+    calls: list[list[str]] = []
+    _install(monkeypatch, calls=calls, write_fail_at=2, commit=commits)
     asyncio.run(view._scan())
     view.checked = {row["id"] for row in view.rows}
     asyncio.run(view._preview())
     asyncio.run(view._write())
+    queries = [argv for argv in calls if "query" in argv]
+    assert [argv[argv.index("--key") + 1] for argv in queries] == [
+        "li_2021", "wang_2020", "zhao_2019",
+        "li_2021", "wang_2020"], "预览各一次；写入按到达顺序读到失败行为止"
     assert view.state == "failure"
     assert view.written == 1
     assert commits == []

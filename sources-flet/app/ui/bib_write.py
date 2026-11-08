@@ -821,9 +821,11 @@ class BibReviewView:
         self._confirm(
             title="回退库文件到上一个提交？",
             message=(f"分支 {probe.get('branch') or '（未知）'}。\n"
-                     "回退 = `git checkout HEAD~1 -- bib_db/bibliography.jsonl` 再生成一次新"
-                     "提交（不 hard reset、不推送、不改其它文件）。库内容会回到上一个版本，"
-                     "已写库的本次改动将不可从工作区恢复（历史仍在 git 里）。"),
+                     "回退 = 把库文件恢复到**上一次触及库文件的提交**再生成一次新提交"
+                     "（不 hard reset、不推送、不改其它文件；不是整体 HEAD~1，"
+                     "HEAD 被 notes 提交占住时也一样会回退上一次库改动）。"
+                     "库内容会回到上一个版本，已写库的本次改动将不可从工作区恢复"
+                     "（历史仍在 git 里）。"),
             confirm_label="回退",
             on_yes=lambda e: self.page.page.run_task(self._rollback_async))
 
@@ -834,8 +836,15 @@ class BibReviewView:
         self.busy = False
         self.page.mark("bib_git_rollback", **{k: v for k, v in (result or {}).items()
                                               if k in ("ok", "reverted", "sha", "error")})
-        if result.get("ok"):
+        if result.get("ok") and result.get("committed"):
             self.page.app.toast("已回退到上一个提交并生成新提交")
+            self.page.stats_data = None
+            self.loaded = False
+            await self._load()
+        elif result.get("ok"):
+            # 防御：ok 但没有生成新提交时，不得显示「已生成新提交」。
+            detail = str(result.get("error") or result.get("reason") or "未生成回退提交")
+            self.page.app.toast("库内容已回退，但没有生成新提交：" + detail)
             self.page.stats_data = None
             self.loaded = False
             await self._load()

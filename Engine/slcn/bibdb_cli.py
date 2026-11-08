@@ -2464,6 +2464,23 @@ def _apply_merge_plan(store, *, keys: list[str], new_key: str, entry_type: str,
             seen.add(identity)
             sources.append(source)
     survivor["sources"] = sources
+    # 冲突历史（含已裁决的 conflicts）也随记录并入幸存者，不静默丢
+    # （CONTRACT §4：升级/维护不得丢 aliases/sources/conflicts）；按内容指纹去重。
+    conflicts: list[dict] = [item for item in (survivor.get("conflicts") or [])
+                             if isinstance(item, dict)]
+    seen_conflicts = {json.dumps(item, ensure_ascii=False, sort_keys=True)
+                      for item in conflicts}
+    for record in records[1:]:
+        for item in record.get("conflicts") or []:
+            if not isinstance(item, dict):
+                continue
+            fingerprint = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if fingerprint in seen_conflicts:
+                continue
+            seen_conflicts.add(fingerprint)
+            conflicts.append(item)
+    if conflicts or "conflicts" in survivor:
+        survivor["conflicts"] = conflicts
     survivor["aliases"] = sorted(aliases)
     survivor["entry_type"] = entry_type
     survivor["fields"] = merged_fields

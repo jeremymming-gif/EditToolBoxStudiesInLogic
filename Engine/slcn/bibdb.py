@@ -1062,6 +1062,12 @@ def validate_record(record: object) -> list[str]:
     version = record.get("version")
     if not isinstance(version, int) or version < 1:
         problems.append("缺少合法的 version")
+    elif version > SCHEMA_VERSION:
+        # 未来格式：本引擎不认识 version>1 的字段语义，按旧规则回写会静默丢/改字段
+        # （CONTRACT §4：不支持/需迁移格式拒绝破坏性写入，退出非 0 + 明确提示）。
+        problems.append(
+            f"记录 version 为 {version}，高于本引擎支持的 {SCHEMA_VERSION}"
+            "（未来格式，需升级/迁移；本版本拒绝按旧规则改写）")
     if not isinstance(record.get("entry_type"), str):
         problems.append("entry_type 不是字符串")
     if not isinstance(record.get("fields"), dict):
@@ -1668,9 +1674,23 @@ class Store:
             preview = "；".join(store.problems[:3])
             more = (f"……另有 {len(store.problems) - 3} 处"
                     if len(store.problems) > 3 else "")
+            # 提示必须可执行（CONTRACT §4）：旧格式给迁移命令，未来格式给升级指路，
+            # 其余旧库明确「本版本拒绝破坏性写入、按迁移约定人工处理」。
+            hints: list[str] = []
+            if any("content_sha256" in problem for problem in store.problems):
+                hints.append("缺 content_sha256/摘要过期（旧库）：若没有其它结构问题，"
+                             "先跑 `bibdb.py rehash --apply` 按现行规则重算"
+                             "（只改 content_sha256+updated_at）")
+            if any("高于本引擎支持" in problem for problem in store.problems):
+                hints.append("记录 version 高于本引擎支持（未来格式）：请先升级引擎再迁移；"
+                             "本版本拒绝按旧规则改写")
+            if not hints:
+                hints.append("旧格式/需迁移的库：按 Engine 内 bibdb 模块说明的迁移约定处理；"
+                             "本版本拒绝破坏性写入")
             raise BibDBError(
                 f"引用库有 {len(store.problems)} 处结构问题（{preview}{more}）。"
-                "先跑 `bibdb.py lint` 看全部。"
+                "先跑 `bibdb.py lint` 看全部，再按下列提示处理："
+                + "".join(f"\n  · {hint}" for hint in hints)
             )
         return store
 
