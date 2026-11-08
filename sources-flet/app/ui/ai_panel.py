@@ -30,7 +30,10 @@ class AiPanel:
         self._fulltext = False
         self._scope = AI.FULLTEXT_CONTEXT
         self._apply = False
-        self._no_ai_merge = True
+        self._no_ai_merge = True          # 直连区：「不自动并回产物」，默认开
+        # 协同区：文献核实结果**默认并回** reference.bib（引擎默认）；勾了才
+        # 追加 --no-ai-merge。与直连的 _no_ai_merge 是两个入口各自的开关。
+        self._coop_no_ai_merge = False
         self._stage_field: ft.TextField | None = None
         self._stage_user = False
         self._reply_fields: list[ft.TextField] = []
@@ -123,8 +126,11 @@ class AiPanel:
         self._buttons.extend([add, discover, browse_stage])
         apply_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
             ft.Checkbox(value=self._apply, on_change=self._on_apply),
-            C.text("第二段直接改产物", t, "small"),
-            C.text("不勾 = 只记录建议，产物不动", t, "caption", t.palette.text_faint),
+            C.text("应用低置信建议（--coop-apply）", t, "small"),
+        ])
+        merge_row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+            ft.Checkbox(value=self._coop_no_ai_merge, on_change=self._on_coop_merge),
+            C.text("不并回文献（--no-ai-merge）", t, "small"),
         ])
         return [
             C.text("第一段不交付、不联网；第二段只读本地回填文件。", t, "caption", t.palette.text_faint),
@@ -137,7 +143,12 @@ class AiPanel:
             C.text("回填文件（一份回复一个文件；路径可粘贴）", t, "small", t.palette.text_muted),
             self._reply_box,
             add,
+            merge_row,
+            C.text("勾选 = 文献核实结果只记录，不改 reference.bib（默认安全并回，改前备份 "
+                   "reference.bib.ai前）", t, "caption", t.palette.text_faint),
             apply_row,
+            C.text("勾选 = 低置信 BIB/META/FN 建议写进产物（改前自动备份）；不勾 = 低置信只写建议清单。"
+                   "文献核实结果的并回见上一行。", t, "caption", t.palette.text_faint),
         ]
 
     def _direct_controls(self) -> list[ft.Control]:
@@ -182,12 +193,12 @@ class AiPanel:
         t = self.t
         return [
             C.text("范围", t, "small", t.palette.text_muted),
-            C.chip(AI.FULLTEXT_CONTEXT, t, active=self._scope == AI.FULLTEXT_CONTEXT,
+            C.chip("context（引用句窗口）", t, active=self._scope == AI.FULLTEXT_CONTEXT,
                    on_click=lambda e: self._set_scope(AI.FULLTEXT_CONTEXT)),
-            C.chip(AI.FULLTEXT_FULL, t, active=self._scope == AI.FULLTEXT_FULL,
+            C.chip("full（整篇正文）", t, active=self._scope == AI.FULLTEXT_FULL,
                    on_click=lambda e: self._set_scope(AI.FULLTEXT_FULL)),
-            C.text("任务书会带正文；发给外部模型前请确认未刊稿许可", t, "caption",
-                   t.palette.text_faint),
+            C.text("任务书会带正文；发给外部模型前请确认未刊稿许可。无引用/脚注锚点的稿件 "
+                   "context 会退回整篇正文。", t, "caption", t.palette.text_faint),
         ]
 
     # ── 事件 ───────────────────────────────────────────────────────────
@@ -227,6 +238,9 @@ class AiPanel:
 
     def _on_merge(self, e) -> None:
         self._no_ai_merge = bool(e.control.value)
+
+    def _on_coop_merge(self, e) -> None:
+        self._coop_no_ai_merge = bool(e.control.value)
 
     def _on_stage_input(self, e) -> None:
         self._stage_user = True
@@ -324,7 +338,9 @@ class AiPanel:
                 AI.MODE_PLAIN: "本次运行：普通初排（不碰 AI）",
                 AI.MODE_PH1: "本次运行：协同第一段（出任务书 · 尚未交付 · 零上传）",
                 AI.MODE_PH2: "本次运行：协同第二段（导入回填 · "
-                             + ("应用并在产物里生效" if self._apply else "仅记录建议") + "）",
+                             + ("应用低置信建议" if self._apply else "低置信建议只记录")
+                             + (" · 文献不并回" if self._coop_no_ai_merge else " · 文献默认并回")
+                             + "）",
                 AI.MODE_DIRECT: "本次运行：AI 核实（直连 API · 会产生费用）",
             }[mode]
         except ValueError as exc:
@@ -362,7 +378,9 @@ class AiPanel:
                                     stage=stage_arg, **convert_kwargs)
         if mode == AI.MODE_PH2:
             return EB.coop_ph2_call(source=source, out=out, replies=replies,
-                                    stage=stage, apply=self._apply, **convert_kwargs)
+                                    stage=stage, apply=self._apply,
+                                    no_ai_merge=self._coop_no_ai_merge,
+                                    **convert_kwargs)
         if not channel["direct"]:
             raise ValueError("直连核实未配置 API Key：请先到「设置 → AI」填好")
         return EB.ai_verify_call(source=source, out=out, ai=ai,
@@ -390,23 +408,39 @@ class AiPanel:
         mode = self._last_mode
         out = self.page.field("single_out")
         source = self.page.field("single_source")
-        if mode == AI.MODE_PH1 and code == 0:
+        if mode == AI.MODE_PH1:
             stage = AI.resolve_stage("", out_root=out, source=source)
-            if stage is not None:
-                self._fill_stage(stage, user=False)
-                self._show_stage(stage)
-                self._set_summary("第一段完成（未交付）：把任务书交给 chat 模型核实，回填后跑第二段。",
-                                  "warn")
+            if code == 0:
+                if stage is not None:
+                    self._fill_stage(stage, user=False)
+                    self._show_stage(stage)
+                    text = ("第一段完成（未交付）：把任务书交给 chat 模型核实，回填后跑第二段。")
+                    if stage.fulltext_text:
+                        text += " " + stage.fulltext_text
+                    self._set_summary(text, "warn")
+                else:
+                    self._set_summary("第一段结束，但没找到暂存目录：看日志「暂存目录」。", "warn")
             else:
-                self._set_summary("第一段结束，但没找到暂存目录：看日志「暂存目录」。", "warn")
-        elif mode == AI.MODE_PH2 and code in (0, 2):
+                reason = "已取消" if code < 0 else f"退出码 {code}"
+                self._set_summary(
+                    f"第一段未完成（{reason}）：暂存目录里的中间产物不会进最终目录；"
+                    "看日志，修正后重跑第一段。", "error")
+        elif mode == AI.MODE_PH2:
             stage = AI.resolve_stage(self._stage_text(), out_root=out, source=source)
             if stage is not None:
                 self._show_stage(stage)
-                summary = stage.summary
-                self._set_summary("第二段结束：" + summary["text"], "ok" if code == 0 else "warn")
+            if code == 0:
+                text = "第二段结束："
+                if stage is not None:
+                    text += stage.summary["text"] + " · "
+                text += "技术交付完成；业务成品（题名/版式/页数/公式）请打开 PDF 人工核对。"
+                self._set_summary(text, "ok")
             else:
-                self._set_summary("第二段结束了，但读不到暂存目录的状态文件。", "warn")
+                reason = "已取消" if code < 0 else f"退出码 {code}"
+                where = f"（{stage.stage_dir}）" if stage is not None else ""
+                self._set_summary(
+                    f"第二段未完成（{reason}）：最终交付目录未写；暂存目录与备份已保留{where}，"
+                    "修好回填后可重跑第二段。", "error")
         elif mode == AI.MODE_DIRECT:
             notice = self.budget_notice()
             if notice:

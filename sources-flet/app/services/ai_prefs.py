@@ -32,7 +32,7 @@ FULLTEXT_CONTEXT = "context"
 FULLTEXT_FULL = "full"
 FULLTEXT_MODES = (FULLTEXT_CONTEXT, FULLTEXT_FULL)
 FULLTEXT_LABELS = {
-    FULLTEXT_CONTEXT: "context（上下文摘要）",
+    FULLTEXT_CONTEXT: "context（引用句前后窗口；无锚点时退回整篇）",
     FULLTEXT_FULL: "full（整篇正文）",
 }
 STATUS_PH1 = "待人工核实（未交付）"
@@ -297,6 +297,22 @@ def stats_summary(state: dict | None) -> dict:
     }
 
 
+def fulltext_summary(state: dict | None) -> str:
+    """附三正文体量（引擎写进状态 JSON 的 `fulltext`）。
+
+    引擎只给「约 N tokens」的保守估算（约 3 字符 1 token），不是计费数字；
+    界面一律标注「估算」，也不换算成费用。没有附三时返回空串。
+    """
+    info = (state or {}).get("fulltext")
+    if not isinstance(info, dict) or not info:
+        return ""
+    mode = str(info.get("mode") or "")
+    chars = _int_or(info.get("chars"), 0)
+    tokens = _int_or(info.get("tokens_est"), 0)
+    label = FULLTEXT_LABELS.get(mode, mode or "（未知）")
+    return f"附三正文：{label}，{chars} 字（约 {tokens} tokens，估算）"
+
+
 class CoopStage:
     """一个暂存目录的只读视图（状态 JSON 缺失时 `found` 为 False）。"""
 
@@ -354,6 +370,16 @@ class CoopStage:
     @property
     def summary(self) -> dict:
         return stats_summary(self.state)
+
+    @property
+    def fulltext(self) -> dict:
+        info = self.state.get("fulltext")
+        return info if isinstance(info, dict) else {}
+
+    @property
+    def fulltext_text(self) -> str:
+        """附三体量提示（含「估算」字样）；没有附三返回空串。"""
+        return fulltext_summary(self.state)
 
 
 def stage_dirs(out_root: str) -> list[str]:

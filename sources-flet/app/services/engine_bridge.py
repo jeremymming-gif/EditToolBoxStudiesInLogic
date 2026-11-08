@@ -501,7 +501,14 @@ def _budget_arg(value):
 
 def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
                   **convert_kwargs) -> EngineCall:
-    """第一段：出核实任务书（尚未交付、零上传）。"""
+    """第一段：出核实任务书（尚未交付、零上传）。
+
+    两段式第一段**恒走引用核实**（`--verify-refs`）：引用库设置的「只算账
+    （verify_plan）」只属于直连核实入口，不得穿透到这里——否则引擎会在
+    `run_verify_refs` 打印核实计划后提前 return，任务书与 `_AI协同状态.json`
+    都不生成，第二段将无状态可续。
+    """
+    convert_kwargs.pop("verify_plan", None)
     call = convert_call(source=source, out=out, verify_refs=True, **convert_kwargs)
     extra = ["--coop-taskbook-only", "--no-ai-merge"]
     if fulltext in ("context", "full"):
@@ -512,8 +519,16 @@ def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
 
 
 def coop_ph2_call(*, source: str, out: str, replies, stage: str = "",
-                  apply: bool = False, **convert_kwargs) -> EngineCall:
-    """第二段：导入回填（`--coop-apply` 才改产物，否则只记录）。"""
+                  apply: bool = False, no_ai_merge: bool = False,
+                  **convert_kwargs) -> EngineCall:
+    """第二段：导入回填。
+
+    引擎契约（Engine/slcn/convert_stage.py）：文献核实结果**默认并入**
+    `reference.bib`（改前备份 `reference.bib.ai前`），只有传 `--no-ai-merge`
+    才关闭；`--coop-apply` 只控制低置信 BIB/META/FN 建议是否写进产物。
+    引用库设置的「只算账（verify_plan）」不作用于两段式（第二段本就不重新核实）。
+    """
+    convert_kwargs.pop("verify_plan", None)
     paths = [str(path).strip() for path in (replies or []) if str(path or "").strip()]
     if not paths:
         raise ValueError("先选至少一个回填文件")
@@ -524,8 +539,10 @@ def coop_ph2_call(*, source: str, out: str, replies, stage: str = "",
     _append_opt(extra, "--coop-stage", stage)
     if apply:
         extra.append("--coop-apply")
+    if no_ai_merge:
+        extra.append("--no-ai-merge")
     return EngineCall(entry=call.entry, argv=list(call.argv) + extra,
-                      label="协同初排 · 第二段（" + ("应用回填" if apply else "仅记录") + "）")
+                      label="协同初排 · 第二段（导入回填 · 文献默认并回）")
 
 
 def ai_verify_call(*, source: str, out: str, ai: dict, no_ai_merge: bool = True,

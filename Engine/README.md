@@ -130,7 +130,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**155 套件 / 7300 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**156 套件 / 7376 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
@@ -164,13 +164,13 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
 `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18
 `test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19
-`test_pdfmerge` 36 ｜ `test_pkg_b377_sortlocale_sortname` 77 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p06_query_paging` 106
-`test_pkg_p07_bib_asset` 49 ｜ `test_platform` 82 ｜ `test_proofcheck` 293 ｜ `test_publish` 58
-`test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29
-`test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20
-`test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25
-`test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70
-`test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
+`test_pdfmerge` 36 ｜ `test_pkg_b377_sortlocale_sortname` 77 ｜ `test_pkg_p02_delivery` 76 ｜ `test_pkg_p04_atomic_merge` 95
+`test_pkg_p06_query_paging` 106 ｜ `test_pkg_p07_bib_asset` 49 ｜ `test_platform` 82 ｜ `test_proofcheck` 293
+`test_publish` 58 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68
+`test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89
+`test_ruleset` 20 ｜ `test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24
+`test_sep_style` 25 ｜ `test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0
+`test_unmatched_in_report` 70 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
 
 **普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，132 份源稿；成功解析 **132** 份 / 解析失败 **0** 份；三态互斥、相加 = 篇数）：
 
@@ -189,7 +189,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 - `n_headings` 合计 **611**；`n_bib` 合计 **2233**
 - sha256[:12]：`baselines/docx_audit.csv` = `95d97871fafa`，`baselines/docx_audit.txt` = `ba87c1c57fc5`（来源：笔记仓冻结基线；与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.49%**、Word **89.43%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.49%**、Word **89.42%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
 **占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**228 处 / 52 篇**
 

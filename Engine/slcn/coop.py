@@ -580,19 +580,62 @@ def check_slice_set(slices: list[dict], taskbook_task_id: str = "") -> list[str]
     return warns
 
 
+#: 回复正文自己写的整份身份行（任务卡同款 `**TASK-ID**：…`；模型常漏反引号，两种都认）。
+_REPLY_TASK_ID_RE = re.compile(r"\*\*TASK-ID\*\*[：:]\s*`?([^`\s·]+)`?")
+
+
+def extract_reply_task_id(text: str) -> str:
+    """读回复自带的 TASK-ID：先看 B311 片标记，再看任务卡同款身份行；无 → 空串。"""
+    mk = parse_slice_marker(text)
+    if mk and mk.get("task_id"):
+        return str(mk["task_id"]).strip()
+    m = _REPLY_TASK_ID_RE.search(str(text or ""))
+    return m.group(1).strip() if m else ""
+
+
+def filter_task_id_replies(
+        texts: Iterable[tuple[str, str]], taskbook_task_id: str = "") -> tuple[
+            list[tuple[str, str]], list[tuple[str, str]]]:
+    """第二段：回复自带 TASK-ID 但与本次任务书不符 → 整份按串稿拒收。
+
+    expected 为空（旧 state 没有 v2 任务书）→ 原样返回、零日志；没有身份行的旧回复
+    仍保留（旧格式兼容边界不收紧：不宣称同稿，只按 state.keys.bib 的键匹配）。
+    """
+    expected = str(taskbook_task_id or "").strip()
+    if not expected:
+        return list(texts), []
+    kept: list[tuple[str, str]] = []
+    rejected: list[tuple[str, str]] = []
+    for name, text in texts:
+        tid = extract_reply_task_id(text)
+        if tid and tid != expected:
+            # 片标记自带 TASK-ID 的错片场景沿用 B-311 旧文案（「分片拒收」测试钉住）；
+            # 没有片标记、只有整份身份行的才用「回填拒收」文案（R04/P02E-7）。
+            _why = (f"分片标记的 TASK-ID 是 {tid}，本次任务书是 {expected}（按串稿拒收）"
+                    if parse_slice_marker(text) is not None else
+                    f"串稿：TASK-ID {tid} ≠ 本次 {expected}"
+                    "（回复可能来自别的稿件/任务书）")
+            rejected.append((str(name), _why))
+            continue
+        kept.append((name, text))
+    return kept, rejected
+
+
 def filter_slice_state_replies(
         texts: list[tuple[str, str]], state: dict | None) -> tuple[
             list[tuple[str, str]], list[tuple[str, str]], bool]:
-    """第二段：按 `state.taskbook_slices` 过滤回复。返回 `(kept, rejected, 全军覆没)`。
+    """第二段：先按回复自带的 TASK-ID 拒收串稿，再按 `state.taskbook_slices` 拒收错片。
 
-    旧状态没有分片键 → 原样返回且 `rejected=[]`（调用方连一行日志都不打印）。
+    返回 `(kept, rejected, 全军覆没)`，两批拒收合并。两样身份信息都没有的旧状态 →
+    原样返回且 `rejected=[]`（调用方连一行日志都不打印，行为与修复前逐字节一致）。
     """
+    expected = str((state or {}).get("taskbook_task_id") or "")
+    kept, rejected = filter_task_id_replies(texts, taskbook_task_id=expected)
     slices = state_slices(state)
-    if not slices:
-        return list(texts), [], False
-    kept, rejected = filter_slice_replies(
-        texts, taskbook_task_id=str((state or {}).get("taskbook_task_id") or ""),
-        slices=slices)
+    if slices:
+        kept, slice_rejected = filter_slice_replies(
+            kept, taskbook_task_id=expected, slices=slices)
+        rejected = rejected + slice_rejected
     return kept, rejected, not kept
 
 
@@ -1230,7 +1273,9 @@ def extract_fulltext(body_text: str, mode: str = "context") -> dict:
     · **批63（用户 2026-10-20 拍板）起不截断**：整篇交给外部 chat，只保留体积估算与
       「超长提示」；`truncated` 键保留（恒 False）以免破坏 state schema。
     整行 `%` 注释先剥掉；围栏 ``` 做替换，防止破坏任务书的 ```text 代码块。
-    返回 `{mode, text, chars, truncated, tokens_est, orig_chars, windows, over_limit}`。
+    返回 `{mode, text, chars, truncated, tokens_est, orig_chars, windows, over_limit,
+    fallback}`。`fallback` = context 档正文非空但**一个引用/脚注锚点都没有**、
+    已退回全文（`windows` 仍为 0；调用方据此如实披露「整篇」而不是「0 段节选」）。
     """
     if mode not in FULLTEXT_MODES:
         raise ValueError(f"未知全文模式：{mode!r}（只支持 {'/'.join(FULLTEXT_MODES)}）")
@@ -1238,6 +1283,7 @@ def extract_fulltext(body_text: str, mode: str = "context") -> dict:
     body = body.replace("```", "ˋˋˋ")
     over_at = FULLTEXT_LIMITS[mode]        # 批63：只用于「超长提示」，不再截断
     windows = 0
+    fallback = False
     if mode == "full" or not body:
         text = body
         windows = 1 if body else 0
@@ -1257,15 +1303,18 @@ def extract_fulltext(body_text: str, mode: str = "context") -> dict:
             # 窗口之间用「…」标记断开（提示这是节选，不是连续正文）。
             text = "\n\n…\n\n".join(body[a:b] for a, b in merged)
         else:
-            # 正文里没有任何引用/脚注锚点：退回全文（仍受上限约束），不产出空附三。
+            # 正文里没有任何引用/脚注锚点：退回全文（仍不截断），不产出空附三。
+            # `fallback=True` 只用于**如实披露**：这是整篇正文，不是「0 段节选」。
             text = body
+            fallback = True
     orig = len(text)
     # 批63（用户 2026-10-20 拍板）：chat 通道**不设字符上限**——整篇交给外部 chat。
     # `truncated` 恒 False（键保留：state schema 不破坏）；超过阈值只给体积估算/超长提示。
     over_limit = orig > over_at
     return {"mode": mode, "text": text, "chars": len(text),
             "truncated": False, "tokens_est": estimate_tokens(text),
-            "orig_chars": orig, "windows": windows, "over_limit": over_limit}
+            "orig_chars": orig, "windows": windows, "over_limit": over_limit,
+            "fallback": fallback}
 
 
 def render_fulltext_section(info: dict) -> str:
@@ -1276,6 +1325,12 @@ def render_fulltext_section(info: dict) -> str:
     tokens = int(info.get("tokens_est") or 0)
     if mode == "full":
         mode_note = "正文全文"
+    elif info.get("fallback"):
+        # 第 2.2-E 批（R09）：context 档无锚点时会退回整篇正文。这里必须如实披露，
+        # 否则任务书写「节选…共 0 段」却贴整篇正文，等于静默把全文当节选发出去。
+        # `windows` 仍为 0（既有测试钉住），只改披露文案。
+        mode_note = ("正文**整篇**：context 档未找到引用/脚注锚点，"
+                     "已退回全文（未截断）")
     else:
         mode_note = ("正文节选：引用/脚注锚点前后各 %d 字窗口合并（共 %d 段）"
                      % (FULLTEXT_WINDOW, int(info.get("windows") or 0)))
@@ -1287,7 +1342,8 @@ def render_fulltext_section(info: dict) -> str:
                         FULLTEXT_LIMITS.get(mode, chars)))
     return "\n".join([
         "", "---", "", FULLTEXT_TITLE, "",
-        "> 下面是本次稿件正文（" + mode_note + f"；{chars} 字，约 {tokens} tokens）。",
+        "> 下面是本次稿件正文（" + mode_note
+        + f"；{chars} 字，约 {tokens} tokens（估算，非实际计费））。",
         "> 用途：核对「附一、初排低置信项」里的引用/脚注/元数据时提供上下文。",
         "> **请只按附一规定的 JSON 格式回复**（文献条目仍按第三节 BibTeX 格式）；",
         "> **不要改写、复述或补写正文**，也不要把正文内容当成修改建议。",

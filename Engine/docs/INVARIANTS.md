@@ -55,12 +55,14 @@
 6. **引用库只读比对只增日志**（第 58 批）：初排默认（未执行核实）在默认库存在时多打一行
    `引用库比对：命中 X / 候选 Y / 未命中 Z（只读，不改产物）`；不改 `.tex`/`reference.bib`/任务书/状态/argv，无库静默，`--no-bibdb-verify` / `--no-bibdb` 关闭。
    位置：`Engine/convert.py` 的 `bibdb_readonly_scan()`；`Engine/tests/test_batch58_bibdb_auto.py`。
-7. **全文附三是可选通道、默认关**（第 59 批）：`--coop-fulltext {context,full}` 只配合 `--coop-taskbook-only`，只把正文/引用上下文写进任务书「附三」（context 4 万字符 / full 8 万字符上限，超限显式截断）；默认不带 flag 时任务书/产物/stdout 与批 58 逐字节相同。
+7. **全文附三是可选通道、默认关**（第 59 批）：`--coop-fulltext {context,full}` 只配合 `--coop-taskbook-only`，只把正文/引用上下文写进任务书「附三」（context 4 万 / full 8 万字符只是**超长提示阈值**；批63 起**不截断**、整篇发送，日志/任务书如实提示）；默认不带 flag 时任务书/产物/stdout 与批 58 逐字节相同。
    state schema 仍 1、`fulltext` 仅启用时写且**不入 fingerprint**，协同记录只记 mode/字数/截断/估算、**不落正文**。
    位置：`Engine/convert.py` 的 `--coop-fulltext`、`Engine/slcn/coop.py` 的 `extract_fulltext()`；`Engine/tests/test_batch59_coop_fulltext.py`。
 8. **直连 API 全文核查是 report-only 的可选通道**（第 60 批）：`--llm-fulltext` 默认关、只配合 `--verify-refs`
    的 ⑪ 直连路径（未配置端点 / 与 `--verify-plan` / 两段式同用 → exit 2 且零请求）；只生成
-   `<名>_AI全文复核.md`（逐条建议/分片，**不落正文全文**），**不修改 `reference.bib`/`.tex`**，自动应用未实现；
+   `<名>_AI全文复核.md`（逐条建议/分片，**不落正文全文**）；**批63 起默认把通过批57安全闸的 BIB/META/FN 建议
+   自动应用到产物**（改前备份 `.ai前`、`.ai前` 已存在不覆盖、0 条不写、冲突/漂移拒绝、逐条记录），
+   `--no-llm-fulltext-apply` / `--no-ai-merge` 回 report-only（report-only 时零写产物）；
    单片失败 fail-soft（标「AI 建议不可用」，退出码 0）；预算闸超限 exit 2 零请求。
    位置：`Engine/convert.py` 的 `--llm-fulltext` / `render_llm_fulltext_report()`；`Engine/tests/test_batch60_llm_fulltext.py`。
 

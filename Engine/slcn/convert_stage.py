@@ -390,14 +390,14 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         die(f"回填路径里没有可读文本：{coop.format_reply_paths(args.coop_replies)}"
             "（支持 .md/.txt/.bib/.json 等）")
 
-    # B-311（B-006）：片标记与本次 TASK-ID/片号不符 → 按串稿拒收该文件；
-    # 其余原样交给 parse_replies（旧状态没有 taskbook_slices → 原样返回、零日志）。
+    # B-311（B-006）：回复自带的 TASK-ID/片标记与本次任务书不符 → 整份按串稿拒收；
+    # 其余原样交给 parse_replies（旧回复没有身份行 → 原样返回、零日志）。
     texts, _slice_rejected, _slice_all_rejected = _coop.filter_slice_state_replies(
         texts, state)
     for _nm, _why in _slice_rejected:
-        print(f"   ⚠ 分片拒收：{_nm}（{_why}）")
+        print(f"   ⚠ {'回填拒收' if _why.startswith('串稿：TASK-ID') else '分片拒收'}：{_nm}（{_why}）")
     if _slice_all_rejected:
-        die("回填文本都因分片标记被拒收（可能拿错了任务书）；未改任何产物。")
+        die("回填文本都因身份标记（TASK-ID/分片）被拒收（可能拿错了任务书）；未改任何产物。" if any(_w.startswith("串稿：TASK-ID") for _n, _w in _slice_rejected) else "回填文本都因分片标记被拒收（可能拿错了任务书）；未改任何产物。")
 
     # 批74（B-133）：附四「初排分析」——只在 ph1 启用 --coop-fulltext 时解析
     # （state.analysis）；旧 state 无该键 → 按未启用处理（行为与旧版逐字节相同）。
@@ -528,7 +528,7 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
             if not bib_path:
                 print("   ⚠ --coop-apply：暂存目录里没有 reference.bib，文献字段建议只记录")
             elif _bib_sugs:
-                _bib_apply = coop.apply_bib_suggestions(bib_path, _bib_sugs, low_items)
+                _bib_apply = coop.apply_bib_suggestions(bib_path, _bib_sugs, low_items, preserve_existing_backup=True)  # 2.2-E：保留既有 .ai前 回滚点
                 _apply_parts.append(_bib_apply)
                 if _bib_apply.get("n_applied"):
                     print(f"   ✅ --coop-apply：已应用 {_bib_apply['n_applied']} 条文献字段建议"
@@ -541,7 +541,7 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
             else:
                 _tex_apply = coop.apply_tex_suggestions(
                     _tex_path, low_report.suggestions, low_items,
-                    taskbook_keys=keys, bib_path=bib_path)
+                    taskbook_keys=keys, bib_path=bib_path, preserve_existing_backup=True)
                 _apply_parts.append(_tex_apply)
                 if _tex_apply.get("n_applied"):
                     print(f"   ✅ --coop-apply：已应用到 .tex {_tex_apply['n_applied']} 条"
@@ -1354,9 +1354,9 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
             _ft_sec = _coop.render_fulltext_section(_ft)
             coop_fulltext_info = {k: _ft[k] for k in
                                   ("mode", "chars", "truncated", "tokens_est")}
-            _ft_note = ("超长（未截断，整篇发送）" if _ft.get("over_limit")
-                        else (f"{_ft.get('windows', 0)} 段窗口"
-                              if args.coop_fulltext == "context" else "全文"))
+            _ft_note = ("整篇（context 档无锚点退回）" if _ft.get("fallback")
+                        else "超长（未截断，整篇发送）" if _ft.get("over_limit")
+                        else (f"{_ft.get('windows', 0)} 段窗口" if args.coop_fulltext == "context" else "全文"))
             print(f"   任务书附三：正文{_ft_note}，{_ft['chars']} 字"
                   f"（约 {_ft['tokens_est']} tokens）")
         else:
