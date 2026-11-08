@@ -382,6 +382,21 @@ def _log_line(page, message: str, level: str = "info") -> None:
         add(message)
 
 
+def _step_started(page, key: str) -> None:
+    """P04 R05-1/R05-3：通知页面某一步真正开始（合并清上一轮结果缓存）。
+
+    B-116/B-117 的页面桩没有这个钩子，用 getattr + try/except 兼容；
+    钩子失败只记一行警告，不打断运行。
+    """
+    hook = getattr(page, "on_step_started", None)
+    if not callable(hook):
+        return
+    try:
+        hook(key)
+    except Exception as exc:  # noqa: BLE001 —— 页面钩子失败不应打断运行
+        _log_line(page, f"步骤启动钩子失败：{type(exc).__name__}: {exc}", "warn")
+
+
 def _section_start(page, key: str, started_at: str) -> str:
     index = _step_index(page, key)
     total = len(_steps(page)) or index
@@ -471,6 +486,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         lines: list[str] = []
         page._status[key] = StepStatus("running", started_at=started_at)
         page._refresh_steps()
+        _step_started(page, key)
         _log_line(page, _section_start(page, key, started_at), "dim")
         started = time.monotonic()
         try:
@@ -565,7 +581,17 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
         except Exception as exc:  # noqa: BLE001
             _log_line(page, f"步骤后处理失败：{type(exc).__name__}: {exc}", "warn")
         if cancelled:
-            _result_show(page, "已取消当前步骤（后续步骤未启动）", "warn", artifact)
+            # P04 R05-2：取消的合并没有「本次产物」，不得把旧/半成品 PDF 作为
+            # 本轮产物提供「打开文件」。
+            sanitize = getattr(page, "sanitize_cancelled_artifact", None)
+            if callable(sanitize):
+                try:
+                    artifact = sanitize(key, artifact) or ""
+                except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+                    artifact = ""
+            text = ("本次已取消/未完成：没有生成本次合并产物"
+                    if key == "merge" else "已取消当前步骤（后续步骤未启动）")
+            _result_show(page, text, "warn", artifact)
         else:
             _result_show(page, EB.result_text(call.entry, code),
                          EB.result_level(call.entry, code), artifact)
@@ -705,15 +731,14 @@ def after_step(page, key: str, call: EB.EngineCall, code: int, cancelled: bool,
         page.mark("cleantemp_done", code=code, artifact=artifact)
         return
     if cancelled:
-        # OBS-2/D（B-375）：toc 被停止时也要刷新结果区，显式标「本次已停止」，
-        # 不能停留在上一轮结果上让用户误以为本轮成功。
-        if key == "toc":
-            cancel_hook = getattr(page, "on_step_cancelled", None)
-            if callable(cancel_hook):
-                try:
-                    cancel_hook(key)
-                except Exception:  # noqa: BLE001 页面桩/旧测试兼容
-                    pass
+        # OBS-2/D（B-375）/ P04 R05-2：任何步骤被停止都刷新自己的结果区，显式标
+        # 「本次已停止/取消」，不能停留在上一轮结果上让用户误以为本轮成功。
+        cancel_hook = getattr(page, "on_step_cancelled", None)
+        if callable(cancel_hook):
+            try:
+                cancel_hook(key)
+            except Exception:  # noqa: BLE001 页面桩/旧测试兼容
+                pass
         return
     # B-375：整期串行时 toc 可能不是当前视图，由页面决定是否已收尾到可操作状态。
     if key == "toc":

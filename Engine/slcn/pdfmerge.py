@@ -47,6 +47,20 @@ COVER_NAME = "扉页.pdf"
 #: 编委页新约定名（`EditorsPageDetector.preferredName`）
 EDITORS_NAME = "编委页.pdf"
 
+#: 写出用的同目录临时文件**固定后缀**（P04-R01）。
+#: 固定名而不是 pid/uuid：进程崩溃后目标旁**最多只剩一份**前缀可辨认的残留，
+#: 下次写同一个目标时会先清掉它再复用；它不以 `.pdf` 结尾，所以扫描
+#: `合并*.pdf` 的清理/识别逻辑（GUI「清理临时文件」）不会把它当成品。
+_TMP_SUFFIX = ".tmp-merge"
+
+
+class OutputIsInputError(ValueError):
+    """输出路径与本次读入的输入 PDF 是同一个文件（P04-R02）。
+
+    合并的语义是「读若干输入 → 写一个输出」；当输出就落在某个输入上时，
+    任何写出都先截断原稿 —— 用户既拿不到合并件，又丢了原稿。所以**零写入拒绝**。
+    """
+
 
 # ── 路径小工具（对应 mac 外壳的 `PathKit`）────────────────────────────────
 
@@ -278,14 +292,53 @@ class Merger:
         self.nest_outlines = nest_outlines
         self._top: list[_TopItem] = []
         self._source_nodes: list[OutlineNode] = []
+        #: 本次**真正读入**的输入 PDF 绝对路径（P04-R02：写出前拿输出路径和它们比）
+        self._inputs: list[str] = []
 
     @property
     def page_count(self) -> int:
         return len(self.writer.pages)
 
+    def _remember_input(self, path: str) -> None:
+        """登记本次要读入的输入 PDF（P04-R02 的底账）。
+
+        ⚠️ 必须在**打开之前**登记：损坏/打不开的输入也是「本次要读的文件」，
+        若等 `PdfReader` 成功才登记，`--out` 指向损坏原稿时仍会把它覆盖掉。
+        """
+        abspath = os.path.abspath(os.path.expanduser(path))
+        if abspath not in self._inputs:
+            self._inputs.append(abspath)
+
+    @staticmethod
+    def _same_file(a: str, b: str) -> bool:
+        """两个路径是否指向同一个文件；目标可能还不存在，所以 realpath 兜底。
+
+        相对路径、中文/空格、符号链接都不能绕过：`os.path.samefile` 认硬链接与
+        符号链接，`realpath` 认「目标不存在但解析后同名」的情况。
+        """
+        try:
+            if os.path.samefile(a, b):
+                return True
+        except OSError:
+            pass                              # 目标不存在等：交给 realpath 判
+        try:
+            return os.path.realpath(a) == os.path.realpath(b)
+        except OSError:
+            return False
+
+    def _reject_output_as_input(self, target: str) -> None:
+        """输出若就是某个输入 PDF，抛中文原因（含文件名），且不做任何写入。"""
+        for src in self._inputs:
+            if self._same_file(target, src):
+                raise OutputIsInputError(
+                    f"输出路径与本次合并要读入的输入 PDF 是同一个文件："
+                    f"{os.path.basename(src)}（{src}）。"
+                    f"继续写会覆盖原稿，已拒绝；请换一个输出路径。")
+
     def _append_pages(self, path: str) -> tuple[int, list[OutlineNode]]:
         """追加一个 PDF 的全部页面，返回 (起始页码, 它自带的大纲)。"""
         from pypdf import PdfReader           # noqa: PLC0415  延迟导入（见文件抬头）
+        self._remember_input(path)            # P04-R02：先登记再读（坏文件也要保护）
         reader = PdfReader(path)
         start = self.page_count
         nodes = _collect_outline(reader, start)
@@ -309,6 +362,7 @@ class Merger:
     def append_ignoring_outline(self, path: str, title: str) -> int:
         """追加页面并登记书签，但**不导入该文件自带的大纲**（编委页 / 封底）。"""
         from pypdf import PdfReader           # noqa: PLC0415  延迟导入（见文件抬头）
+        self._remember_input(path)            # P04-R02：先登记再读（坏文件也要保护）
         reader = PdfReader(path)
         start = self.page_count
         for page in reader.pages:
@@ -347,10 +401,42 @@ class Merger:
                 self._add_node(node)
 
     def write(self, path: str) -> None:
+        """把合并结果写成 PDF（P04-R01：同目录临时文件 + fsync + 原子替换）。
+
+        **绝不直接 `open(target, "wb")`**：那样写盘中途失败会把旧成品截断、
+        目标原本不存在时留下半成品。这里的顺序是：
+
+          1. 先查「输出是不是本次读入的输入」（P04-R02，命中则零写入直接抛错）；
+          2. 写同目录固定名临时文件 `<target>.tmp-merge`，完整写 + flush + fsync；
+          3. `close` 之后才 `os.replace(tmp, target)`（同目录 rename，原子）。
+
+        任一步失败都删临时文件：旧目标逐字节不变，新目标仍不存在。
+        """
+        target = os.path.abspath(os.path.expanduser(path))
+        self._reject_output_as_input(target)  # 在任何写入之前
         self.build_outline()
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "wb") as fh:
-            self.writer.write(fh)
+        folder = os.path.dirname(target)
+        os.makedirs(folder, exist_ok=True)
+        tmp = target + _TMP_SUFFIX
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)                # 上次崩溃的残留：先清掉，保证最多一份
+        except OSError:
+            pass                              # 清不掉就让下面的 open 报错（不吞失败）
+        try:
+            with open(tmp, "wb") as fh:
+                self.writer.write(fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            # `with` 退出 = close 已完成；之后才是原子替换
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass                          # 清理尽力而为，真正的异常照原样抛
+            raise
 
 
 # ── 一期的编辑规则（对应 `MergeFeature.run`）──────────────────────────────
@@ -379,6 +465,10 @@ def merge_issue(folder: str,
     """合并一期的 PDF：扉页 → 目录（中文/英文）→ 各篇文章（按序号）→ 封底。
 
     `log` 逐行收日志（外壳直接显示；默认打到 stdout）。
+
+    写出安全（P04-R01/R02）：产物先写同目录临时文件再原子替换目标；若 `out`
+    指向本次**实际读入**的某个输入 PDF（含 `--editors-page`/`--back-cover` 检测
+    挑选过的候选文件），抛 `OutputIsInputError`，一个字节都不写。
     """
     folder = os.path.abspath(os.path.expanduser(folder))
     if not os.path.isdir(folder):
@@ -400,7 +490,7 @@ def merge_issue(folder: str,
             merger.append_without_title(cover)
             cover_pages = merger.page_count
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"处理扉页时出错：{e}")
+            warnings.append(f"处理扉页时出错（{COVER_NAME}）：{e}")
             log(f"处理扉页时出错啦：{e}\n")
     else:
         missing.append(COVER_NAME)
@@ -410,6 +500,12 @@ def merge_issue(folder: str,
     # ---------- 编委信息页（可选，插在扉页之后）----------
     if editors_page:
         chosen, others = detect_editors_page(folder)
+        # P04-R02：--editors-page 时 detect 会挑选候选文件（chosen 实际被打开算过
+        # 页数）；即便本次没选中，把合并产物写到候选原稿上同样是破坏性操作——零成本
+        # 一并纳入保护集，由 write() 统一拒绝。
+        candidates = ([chosen.file_name] if chosen else []) + list(others)
+        for name in candidates:
+            merger._remember_input(os.path.join(folder, name))  # noqa: SLF001
         if chosen:
             path = os.path.join(folder, chosen.file_name)
             log(f"找编委信息页：{path}\n")
@@ -417,7 +513,7 @@ def merge_issue(folder: str,
                 merger.append_ignoring_outline(path, "编委页")
                 log(f"已加入编委信息页：{chosen.describe()}\n")
             except Exception as e:  # noqa: BLE001
-                warnings.append(f"处理编委信息页时出错：{e}")
+                warnings.append(f"处理编委信息页时出错（{chosen.file_name}）：{e}")
                 log(f"处理编委信息页时出错啦：{e}\n")
             if others:
                 log(f"⚠️ 另有 {len(others)} 个文件也像编委页，已忽略：{'、'.join(others)}\n")
@@ -461,26 +557,31 @@ def merge_issue(folder: str,
         try:
             merger.append(path, art)
         except Exception as e:  # noqa: BLE001
-            warnings.append(f"处理 {art} 时出错：{e}")
+            warnings.append(f"处理 {art} 时出错（{actual}）：{e}")
             log(f"处理{art}时出错啦：{e}\n")
 
     # ---------- 封底附加页（可选，放最后）----------
     if back_cover:
         back = detect_back_cover(folder)
+        # P04-R02：detect 选封底时会打开候选文件，同样纳入保护集（理由同上）。
         if back:
+            merger._remember_input(os.path.join(folder, back.file_name))  # noqa: SLF001
             path = os.path.join(folder, back.file_name)
             log(f"找封底页：{path}\n")
             try:
                 merger.append_ignoring_outline(path, "封底")
                 log(f"已在末尾加入封底页：{back.describe()}\n")
             except Exception as e:  # noqa: BLE001
-                warnings.append(f"处理封底页时出错：{e}")
+                warnings.append(f"处理封底页时出错（{back.file_name}）：{e}")
                 log(f"处理封底页时出错啦：{e}\n")
         else:
             log("未找到封底页文件，已跳过。\n")
 
     # ---------- 写出 ----------
-    output = out or os.path.join(folder, f"合并{stamp()}.pdf")
+    # 统一成绝对路径：CLI 已经把 `--out` 转绝对，库调用（外壳/测试）传相对路径时
+    # 也保证 `MergeResult.output`/契约行是绝对路径（P04-R01 验收要求）。
+    output = (os.path.abspath(os.path.expanduser(out)) if out
+              else os.path.join(folder, f"合并{stamp()}.pdf"))
     merger.write(output)
     log(f"已生成合并文件（共 {merger.page_count} 页）：{output}\n")
     log("运行结束，请确认上方是否有错。\n")

@@ -95,6 +95,18 @@ def _valid_date(value: str) -> str | None:
 
 _SECTION_RE = _re.compile(r"▶\s*\d{2}/06\s+[^·]+·\s*([a-z]+)\s*·")
 
+# P04 R04：合并契约行与告警行（引擎 mergepdf.py 的输出格式，见 CONTRACT.md §1）。
+# 这些是合并专属标记，用来把「运行中切到别的步骤」时的 merge 结果仍归到合并页。
+_MERGE_DONE_RE = _re.compile(r"完成。合并文件：(.+?)（共\s*(\d+)\s*页）")
+_MERGE_MISSING_RE = _re.compile(r"⚠\s*有\s*(\d+)\s*个预期文件没找到：(.+)")
+_MERGE_WARN_HEAD_RE = _re.compile(r"⚠\s*注意事项\s*[：:]?\s*$")
+_MERGE_WARN_ITEM_RE = _re.compile(r"^\s*[·•]\s*(.+)$")
+_MERGE_FAIL_RE = _re.compile(r"❌\s*合并失败\s*[：:]\s*(.+)")
+_MERGE_ANY_WARN_RE = _re.compile(r"^\s*⚠\s*(.+)$")
+# 只收「合并专属」标记；「⚠ 注意事项」编译步骤也会打，不能作为归属依据。
+_MERGE_MARKER_RE = _re.compile(
+    r"完成。合并文件：|⚠\s*有\s*\d+\s*个预期文件没找到：|❌\s*合并失败")
+
 
 def _level_of_line(text: str) -> str:
     line = text or ""
@@ -1290,6 +1302,15 @@ class IssuePage(BasePage):
         self._compile_summary = ""
         self._compile_plan: list = []
         self._merge_info: dict = {}
+        # P04 R05：本轮合并的运行归属（state/code/artifact）。_merge_info 只放本次
+        # 契约行解析出的产物信息；_merge_run 记录本次结果归属，取消/失败时绝不拿
+        # 上一轮成功卡冒充本轮。空 dict = 没有本次运行（旧数据/换期后），走兼容渲染。
+        self._merge_run: dict = {}
+        self._merge_warn_capture = False
+        self._merge_box = None
+        # P04 R05-3：当前真正在跑的步骤（装配层在启动/结束时维护）。引擎输出行没有
+        # 段头时用它归属日志，避免「运行中切到别的步骤」把 merge 结果串到别处。
+        self._active_step = ""
         self._toc_payload: dict = {}
         # B-375 OBS-2：结果所属报告、本轮失败态、结果区容器（构建期缓存、步骤结束后重建）。
         self._toc_payload_report = ""
@@ -1865,6 +1886,8 @@ class IssuePage(BasePage):
         flet 1.0.5 桌面 scroll_to（key/offset/page）实测静默无效，
         「首屏见 04」改由展开状态表达（截图为证，见批 116 issue4b 证据目录）。
         """
+        if key == self._active_step:
+            self._active_step = ""
         if key == "toc":
             # OBS-2（B-375）：无论当前看的是哪一步（含整期串行），toc 结束都立即刷新
             # 步骤结果区；rc 0/1 算本轮成功（1 仅表示需人工核对），>=2/<0 才算失败。
@@ -1890,6 +1913,11 @@ class IssuePage(BasePage):
             self._rebuild_detail()
             self._sync_nav()
             return
+        if key == "merge":
+            # P04 R05：合并结束按本次 rc 归属结果卡（0=完成，1=需人工核对，
+            # 其它=失败）；结果卡刷新失败不影响步骤状态。
+            self._merge_finish(int(code))
+            return
         if key != "compileall" or code != 0:
             return
         self._set_expanded("merge")
@@ -1902,7 +1930,13 @@ class IssuePage(BasePage):
 
         Lead task-22：取消不回滚，000 目录可能已部分更新（原生观察），文案不写
         「未产生新结果」。
+        P04 R05-2：合并被停止时结果卡改为「本次已取消/未完成」，不复用上一轮成功。
         """
+        if key == self._active_step:
+            self._active_step = ""
+        if key == "merge":
+            self._merge_finish(-1, cancelled=True)
+            return
         if key != "toc":
             return
         # Lead round3 task-19：取消同样把结束态归属记到当时解析出的当前报告，
@@ -1911,6 +1945,64 @@ class IssuePage(BasePage):
         self._sync_toc_payload(cancelled=True)
         # 运行已结束，收起日志 dock 让参数区可用（日志仍可再展开查看）。
         self._collapse_log()
+
+    # ── P04 R04/R05：合并运行归属与结果卡刷新 ──────────────────────────
+    def on_step_started(self, key: str) -> None:
+        """P04 R05-1：合并一开始就清掉上一轮结果缓存。
+
+        装配层（assembly._run_sequence / pages._run_calls）在每步启动时调用。
+        只对合并生效；清空后结果卡显示「本次合并正在运行…」，避免上一轮成功卡
+        （旧路径 + 旧「打开文件」按钮）冒充本轮。
+        """
+        self._active_step = key
+        if key != "merge":
+            return
+        self._merge_info = {}
+        self._merge_warn_capture = False
+        self._merge_run = {"state": "running", "code": None, "artifact": ""}
+        self._refresh_merge_result()
+
+    def _refresh_merge_result(self) -> None:
+        """原地刷新合并结果卡（不在合并页时安全跳过；下次进页面会重建）。"""
+        box = getattr(self, "_merge_box", None)
+        if box is None:
+            return
+        try:
+            box.content = self._merge_result()
+        except Exception:  # noqa: BLE001 —— 结果卡刷新失败不拖垮正在跑的步骤
+            return
+        self._safe_update(box)
+
+    def _merge_finish(self, code: int, cancelled: bool = False) -> None:
+        """P04 R05：把合并结束归属到本次运行并刷新结果卡。"""
+        if cancelled:
+            state = "cancelled"
+        elif code == 0:
+            state = "done"
+        elif code == 1:
+            state = "warn"
+        else:
+            state = "error"
+        status = self._status.get("merge")
+        artifact = str(getattr(status, "artifact", "") or "")
+        if not artifact:
+            artifact = str((self._merge_info or {}).get("path") or "")
+        if state == "done":
+            try:
+                if int((self._merge_info or {}).get("pages") or 0) <= 0:
+                    state = "warn"
+            except (TypeError, ValueError):
+                state = "warn"
+        self._merge_run = {"state": state,
+                           "code": None if cancelled else int(code),
+                           "artifact": artifact}
+        self._refresh_merge_result()
+
+    def sanitize_cancelled_artifact(self, key: str, artifact: str) -> str:
+        """P04 R05-2：取消的合并不把旧/半成品 PDF 当作本次产物提供打开。"""
+        if key == "merge":
+            return ""
+        return artifact or ""
 
     def _primary_button(self, key: str) -> ft.Control:
         t = self.t
@@ -2101,6 +2193,7 @@ class IssuePage(BasePage):
             if not keys:
                 self.app.toast("没有要运行的步骤")
                 return
+            self._clear_stale_cancel()
             self._expand_log()
             # C14：run_all 是同步入口（内部再 run_task 调度异步序列），
             # 不能交给 Flet 的 run_task（要求 coroutine function）。
@@ -2183,7 +2276,10 @@ class IssuePage(BasePage):
         elif key == "compileall":
             parts.append(self._compile_result())
         elif key == "merge":
-            parts.append(self._merge_result())
+            # P04 R05：结果卡原地刷新（on_step_started/_feed_merge/_merge_finish
+            # 都通过 _merge_box 更新），不必等整页重建。
+            self._merge_box = ft.Container(content=self._merge_result())
+            parts.append(self._merge_box)
         elif key == "cleantemp":
             parts.append(self._cleanup.result())
         elif key == "dirpush":
@@ -2499,45 +2595,151 @@ class IssuePage(BasePage):
         self._set_compile_only(prefixes)
         self._run_step("compileall")
 
+    # ── P04：合并结果卡（R04 完整反馈 / R05 取消与重跑 / R06 旧产物） ──
+    def _merge_shell(self, rows: list, *, path: str = "",
+                     actions: list | None = None) -> ft.Control:
+        """合并结果卡骨架：标题 + 分隔线 + 文案行 + 产物路径 + 打开动作。"""
+        t = self.t
+        controls: list = [C.section_label("合并结果", t), C.hairline(t)]
+        controls.extend(rows)
+        if path:
+            controls.append(C.text(path, t, "mono", t.palette.text_faint,
+                                   max_lines=1, overflow=ft.TextOverflow.ELLIPSIS))
+        if actions:
+            controls.append(ft.Row(spacing=t.sp("1"), wrap=True, controls=actions))
+        return ft.Column(spacing=t.sp("1"), controls=controls)
+
+    def _merge_line(self, text: str, tone: str = "") -> ft.Control:
+        t = self.t
+        color = {"warn": t.palette.warn, "error": t.palette.error}.get(
+            tone, t.palette.text_muted)
+        return C.text(text, t, "caption", color)
+
+    def _merge_rows(self, rows: list) -> list:
+        return [self._merge_line(text, tone) for text, tone in rows]
+
+    @staticmethod
+    def _merge_product_ok(path: str) -> bool:
+        """R06：产物是否仍在原位且可识别（存在 + 可读 + PDF 头）。
+
+        只做读取判断，不移动/改名/扫描历史合并文件；读不了就当「无法识别」。
+        """
+        if not path:
+            return False
+        try:
+            target = Path(path)
+            if not target.is_file():
+                return False
+            with open(target, "rb") as fh:
+                return fh.read(5) == b"%PDF-"
+        except OSError:
+            return False
+
+    def _merge_actions(self, path: str) -> list:
+        return [
+            C.text_button("打开文件", lambda e: self.app.open_path(path), self.t),
+            C.text_button("打开所在目录",
+                          lambda e: self.app.open_path(os.path.dirname(path)),
+                          self.t),
+            C.text_button("复制路径", lambda e: self.app.copy_text(path), self.t),
+        ]
+
     def _merge_result(self) -> ft.Control:
         t = self.t
-        if not self._merge_info:
-            return self._empty_result("还没有运行记录。",
-                                      "第 3 步还没跑 —— 先编译，合并才不会缺篇。")
-        info = self._merge_info
+        info = dict(self._merge_info or {})
+        run = dict(getattr(self, "_merge_run", None) or {})
+        state = str(run.get("state") or "")
+        # R05-1/R05-2：本次运行进行中/被取消/失败时，结果卡只描述本次，绝不回落到
+        # 上一轮成功结果（旧 _merge_info 已在 on_step_started 清空）。
+        if state == "running":
+            return self._merge_shell(self._merge_rows([
+                ("本次合并正在运行…", ""),
+                ("跑完前不显示上一轮结果；要中止点右上「停止」。", ""),
+            ]))
+        if state == "cancelled":
+            return self._merge_cancelled_card(info)
+        if state == "error":
+            return self._merge_failed_card(info)
+        if not info:
+            return self._merge_previous_card(run)
         try:
             pages = int(info.get("pages") or 0)
         except (TypeError, ValueError):
             pages = 0
+        path = str(info.get("path") or "")
         if pages <= 0:
-            path = str(info.get("path") or "")
-            return ft.Column(spacing=t.sp("1"), controls=[
-                C.section_label("合并结果", t), C.hairline(t),
+            return self._merge_shell([
                 C.inline_note("没有可合并的 PDF：先完成编译，或用「先检查」"
                               "确认期目录里的 PDF 是否可读。", t, "warn"),
-                C.text(path, t, "mono", t.palette.text_faint, max_lines=1,
-                       overflow=ft.TextOverflow.ELLIPSIS) if path else ft.Container(),
-            ])
-        lines = [f"合并完成 · {pages} 页"]
-        if info.get("missing"):
-            lines.append(f"合并完成，缺 {info.get('missing')} 篇：{info.get('names', '')}")
-        path = str(info.get("path") or "")
-        actions: list = []
-        if path:
-            actions = [
-                C.text_button("打开文件", lambda e: self.app.open_path(path), t),
-                C.text_button("打开所在目录",
-                              lambda e: self.app.open_path(os.path.dirname(path)), t),
-                C.text_button("复制路径", lambda e: self.app.copy_text(path), t),
-            ]
-        return ft.Column(spacing=t.sp("1"), controls=[
-            C.section_label("合并结果", t), C.hairline(t),
-            *[C.text(line, t, "caption", t.palette.warn if "缺 " in line
-                     else t.palette.text_muted) for line in lines],
-            C.text(path, t, "mono", t.palette.text_faint, max_lines=1,
-                   overflow=ft.TextOverflow.ELLIPSIS) if path else ft.Container(),
-            ft.Row(spacing=t.sp("1"), wrap=True, controls=actions) if actions else ft.Container(),
-        ])
+            ], path=path)
+        # R04：只有 rc=0 才能说「合并完成」；rc=1 显示「需人工核对」。
+        rows: list = []
+        if run.get("code") == 1:
+            rows.append((f"需人工核对 · {pages} 页", "warn"))
+        else:
+            rows.append((f"合并完成 · {pages} 页", ""))
+        try:
+            missing = int(info.get("missing") or 0)
+        except (TypeError, ValueError):
+            missing = 0
+        if missing:
+            rows.append((f"缺 {missing} 篇：{info.get('names', '')}", "warn"))
+        warnings = [str(w) for w in (info.get("warnings") or [])]
+        if warnings:
+            rows.append((f"warning {len(warnings)} 条", "warn"))
+            rows.extend((f"· {w}", "warn") for w in warnings[:5])
+            if len(warnings) > 5:
+                rows.append((f"……另有 {len(warnings) - 5} 条，见日志", "warn"))
+        # R06：只有本次运行（有归属）才校验产物；旧格式（无 run）保持原样兼容。
+        ok = self._merge_product_ok(path) if state else bool(path)
+        if state and path and not ok:
+            rows.append((f"产物不在原位/无法识别：{path}", "warn"))
+        actions = self._merge_actions(path) if (path and ok) else []
+        return self._merge_shell(self._merge_rows(rows), path=path, actions=actions)
+
+    def _merge_cancelled_card(self, info: dict) -> ft.Control:
+        t = self.t
+        rows: list = [("本次已取消/未完成：没有生成本次合并产物。", "warn")]
+        target = str(self.field("merge_out") or "")
+        # R05-2：原目标（上一次的产物）仍在时，只能明确标注「原有目标未改动」，
+        # 不把它当成本次产物、不自动打开。
+        if target and self._merge_product_ok(target):
+            rows.append((f"原有目标未改动（上次结果在 {target}）", ""))
+        elif target:
+            rows.append((f"输出路径未改变：{target}（本次没有写出文件）", ""))
+        else:
+            rows.append(("输出路径未改变（本次没有写出文件）。", ""))
+        return self._merge_shell(self._merge_rows(rows))
+
+    def _merge_failed_card(self, info: dict) -> ft.Control:
+        rows: list = [("本次合并失败：没有生成本次产物。", "error")]
+        reason = str(info.get("error") or "").strip()
+        if reason:
+            rows.append((reason, "error"))
+        tail = [ln for ln in (self._step_tail.get("merge") or [])
+                if ln and not ln.startswith(("▶", "■"))]
+        for line in tail[-2:]:
+            rows.append((line, ""))
+        return self._merge_shell(self._merge_rows(rows))
+
+    def _merge_previous_card(self, run: dict) -> ft.Control:
+        """没有本次运行记录时的结果卡（R06：上次产物需明确标注，不可静默冒充）。"""
+        status = self._status.get("merge")
+        artifact = str(getattr(status, "artifact", "") or "")
+        state = str(getattr(status, "state", "") or "")
+        if artifact and state in ("done", "warn"):
+            if self._merge_product_ok(artifact):
+                return self._merge_shell(self._merge_rows([
+                    ("上次合并结果（本次没有重新合并）", ""),
+                    ("上次产物仍在原位；重新合并后以本次结果为准。", ""),
+                ]), path=artifact, actions=self._merge_actions(artifact))
+            return self._merge_shell(self._merge_rows([
+                ("上次产物不在原位/无法识别：", "warn"),
+                (artifact, "warn"),
+                ("本次没有重新合并；旧路径没有改写。", ""),
+            ]))
+        return self._empty_result("还没有运行记录。",
+                                  "第 3 步还没跑 —— 先编译，合并才不会缺篇。")
 
     # ── 批 116：04 合并区块的只读「前置页」卡 ────────────────────────────
     def _prep_card(self) -> ft.Control:
@@ -2768,6 +2970,11 @@ class IssuePage(BasePage):
         self._compile_summary = ""
         self._compile_plan = []
         self._merge_info = {}
+        # P04 R05-3：换期/换报告清掉本次合并归属，避免上一期的结果卡串到新一期。
+        self._merge_run = {}
+        self._merge_warn_capture = False
+        self._merge_box = None
+        self._active_step = ""
         self._toc_payload = {}
         self._toc_payload_report = ""
         self._toc_state_report = ""
@@ -2853,12 +3060,28 @@ class IssuePage(BasePage):
         self.mark("issue_changed", issue=issue)
 
     # ── 运行入口 ───────────────────────────────────────────────────────
+    def _clear_stale_cancel(self) -> None:
+        """P04 R05-4：用户重新点运行 = 新的一次运行，清掉上一次取消留下的陈旧标记。
+
+        只清「当前没有运行任务」时的标记；运行中的真停止请求由 app.stop_run 打在
+        running=True 期间，不会被这里清掉。装配层仍保留「启动前
+        cancel_requested 已置位 = 本次中止」的语义（见
+        test_b116_issue_run::test_cancel_before_start_launches_nothing）。
+        """
+        if getattr(self.app, "running", False):
+            return
+        try:
+            self.app.cancel_requested = False
+        except AttributeError:  # 页面桩没有该属性时忽略
+            pass
+
     def _run_step(self, key: str) -> None:
         # 统一入口：唯一主按钮与旧测试都走 ASM.run_step(self, key)；
         # 这里只负责日志展开与守卫，参数/确认逻辑见 _primary_action。
         if not self._issue_dir():
             self.app.toast("先选择期目录")
             return
+        self._clear_stale_cancel()
         self._expand_log()
         ASM.run_step(self, key)
 
@@ -2903,6 +3126,12 @@ class IssuePage(BasePage):
         self._status[key] = ASM.StepStatus(
             state, exit_code=code, duration_ms=duration,
             started_at=ASM._now(), finished_at=ASM._now(), artifact=artifact or "")
+        if key == "merge":
+            # P04 R05：直接调用本方法（测试/旧路径）时也把结束态记到合并归属。
+            self._merge_run = {"state": state,
+                               "code": None if cancelled else int(code),
+                               "artifact": str(artifact or "")}
+            self._refresh_merge_result()
         refresh = getattr(self, "_refresh_steps", None)
         if callable(refresh):
             refresh()
@@ -2913,6 +3142,7 @@ class IssuePage(BasePage):
             started = time.monotonic()
             self._status[key] = ASM.StepStatus("running", started_at=ASM._now())
             self._refresh_steps()
+            self.on_step_started(key)
             CK.before_issue_step(self, key)
             self.app.begin_run(call)
             try:
@@ -2947,7 +3177,7 @@ class IssuePage(BasePage):
         stamped = _SECTION_RE.match(text)
         if stamped:
             self._log_step_key = stamped.group(1)
-        step_key = self._log_step_key or self.selected
+        step_key = self._log_step_key or self._active_step or self.selected
         tail = self._step_tail.setdefault(step_key, [])
         if text.strip():
             tail.append(text.strip())
@@ -2965,7 +3195,10 @@ class IssuePage(BasePage):
         self._log_lines += 1
         if self.selected == "compileall":
             self._feed_compile(text)
-        if self.selected == "merge":
+        # P04 R05-3：merge 结果按「这条日志属于哪一步」归属，而不是按用户此刻看的
+        # 页面。运行中切到别的步骤时契约行/missing/warning 仍进本次合并结果；
+        # 合并专属标记兜底（step_key 覆盖不到时也不会漏掉契约行）。
+        if step_key == "merge" or _MERGE_MARKER_RE.search(text):
             self._feed_merge(text)
         if self.selected == "infocheck" and "正在扫描" in text:
             self._detail_status.value = "运行中"
@@ -2998,14 +3231,61 @@ class IssuePage(BasePage):
             self._detail_status.value = f"运行中 · {len(self._compile_rows)} 篇已开始"
 
     def _feed_merge(self, text: str) -> None:
-        match = _re.search(r"完成。合并文件：(.+?)（共 (\d+) 页）", text)
-        if match:
-            self._merge_info = {"path": match.group(1), "pages": int(match.group(2))}
-        match = _re.search(r"⚠ 有 (\d+) 个预期文件没找到：(.+)", text)
-        if match:
+        """P04 R04/R05：解析 mergepdf 契约行/缺件/warning/失败（与所选步骤解耦）。"""
+        stripped = (text or "").strip()
+        fail = _MERGE_FAIL_RE.search(text)
+        if fail:
             info = dict(self._merge_info or {})
-            info.update({"missing": int(match.group(1)), "names": match.group(2)})
+            info.pop("path", None)
+            info.pop("pages", None)
+            info["error"] = fail.group(1).strip()
             self._merge_info = info
+            self._merge_warn_capture = False
+            self._refresh_merge_result()
+            return
+        done = _MERGE_DONE_RE.search(text)
+        if done:
+            info = dict(self._merge_info or {})
+            info.update({"path": done.group(1).strip(),
+                         "pages": int(done.group(2))})
+            self._merge_info = info
+            self._merge_warn_capture = False
+            self._refresh_merge_result()
+            return
+        missing = _MERGE_MISSING_RE.search(text)
+        if missing:
+            info = dict(self._merge_info or {})
+            info.update({"missing": int(missing.group(1)),
+                         "names": missing.group(2).strip()})
+            self._merge_info = info
+            self._merge_warn_capture = False
+            self._refresh_merge_result()
+            return
+        if _MERGE_WARN_HEAD_RE.search(stripped):
+            # 引擎先打「⚠ 注意事项：」，随后每条 `· 明细`；下一条明细才入账。
+            self._merge_warn_capture = True
+            return
+        item = _MERGE_WARN_ITEM_RE.match(stripped)
+        if item and self._merge_warn_capture:
+            self._append_merge_warning(item.group(1))
+            return
+        generic = _MERGE_ANY_WARN_RE.match(stripped)
+        if generic:
+            self._append_merge_warning(generic.group(1))
+            return
+        self._merge_warn_capture = False
+
+    def _append_merge_warning(self, text: str) -> None:
+        note = (text or "").strip()
+        if not note:
+            return
+        info = dict(self._merge_info or {})
+        warnings = list(info.get("warnings") or [])
+        if note not in warnings:
+            warnings.append(note)
+        info["warnings"] = warnings[-20:]
+        self._merge_info = info
+        self._refresh_merge_result()
 
     def _refresh_steps(self) -> None:
         if self._log is not None:
