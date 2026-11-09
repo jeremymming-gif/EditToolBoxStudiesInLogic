@@ -32,6 +32,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
@@ -3093,6 +3095,145 @@ def replies_digest(texts: Iterable[tuple[str, str]]) -> str:
 
 # ── 原子 promote ─────────────────────────────────────────────────────────
 
+_PROMOTE_JOURNAL_SCHEMA = "slcn.coop.promote-journal/1"
+_PROMOTE_BLOCKED_SIGNALS = tuple(
+    sig for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None))
+    if sig is not None
+)
+
+
+def _promote_journal_path(final: str) -> str:
+    """交付根下的 promote 日志路径（隐藏文件，不命中 B-303 回收站的 `.coop-bak-` 扫描）。"""
+    return os.path.join(os.path.dirname(final) or ".",
+                        f".{os.path.basename(final)}.coop-promote-journal.json")
+
+
+def _promote_mask_signals() -> set[int] | None:
+    """主线程上暂时屏蔽 SIGTERM/SIGINT，返回旧掩码；平台不支持或非主线程返回 None。
+
+    返回 None 表示本次两步换名只能靠 journal 兜底（与 SIGKILL 同一套恢复），
+    调用方据此如实降级——不假装已经安全。
+    """
+    if not _PROMOTE_BLOCKED_SIGNALS or not hasattr(signal, "pthread_sigmask"):
+        return None
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    try:
+        return set(signal.pthread_sigmask(signal.SIG_BLOCK, set(_PROMOTE_BLOCKED_SIGNALS)))
+    except (OSError, ValueError):
+        return None
+
+
+def _promote_restore_signals(old_mask: set[int] | None) -> None:
+    if old_mask is None:
+        return
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+    except (OSError, ValueError):
+        pass
+
+
+def _promote_journal_write(final: str, backup: str, tmp: str) -> bool:
+    """先落盘 promote journal（fsync）再动交付；写失败返回 False（降级为纯信号屏蔽）。
+
+    journal 只用于**两步换名之间被硬中断**后的恢复；正常路径成功/失败都会删掉它。
+    """
+    path = _promote_journal_path(final)
+    payload = {
+        "schema": _PROMOTE_JOURNAL_SCHEMA,
+        "pid": os.getpid(),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "phase": "swapping",
+        "final": final,
+        "backup": backup,
+        "tmp": tmp,
+    }
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+    try:  # 目录项也 fsync（尽力而为；文件系统不支持就算了）
+        dir_fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+    return True
+
+
+def _promote_journal_remove(final: str) -> None:
+    try:
+        os.remove(_promote_journal_path(final))
+    except OSError:
+        pass
+
+
+def _promote_journal_load(final: str) -> dict | None:
+    """读 journal；不可读/非法/不属于本次 final → None（**不动任何东西**）。"""
+    path = _promote_journal_path(final)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != _PROMOTE_JOURNAL_SCHEMA:
+        return None
+    if not isinstance(data.get("final"), str) or os.path.abspath(data["final"]) != final:
+        return None
+    backup, tmp = data.get("backup"), data.get("tmp")
+    if not isinstance(backup, str) or not isinstance(tmp, str):
+        return None
+    parent = os.path.dirname(final) or "."
+    base = os.path.basename(final)
+    if (os.path.dirname(os.path.abspath(tmp)) != parent
+            or not os.path.basename(tmp).startswith(f".{base}.coop-tmp-")):
+        return None
+    if (os.path.dirname(os.path.abspath(backup)) != parent
+            or not os.path.basename(backup).startswith(f"{base}.coop-bak-")):
+        return None
+    return {"backup": os.path.abspath(backup), "tmp": os.path.abspath(tmp)}
+
+
+def _recover_promote_journal(final: str) -> dict:
+    """入口恢复：上次两步换名被 SIGKILL 等硬中断时，把交付恢复成**完整旧交付**。
+
+    恢复纪律：
+      · 只动 journal 里记录的 tmp/backup 两个路径，无关 `.coop-bak-*` 一律不碰；
+      · final 还在 → 换名已完成（或还没开始），只清 tmp/journal；
+      · final 不在、记录的 backup 在 → 把 backup 原样 rename 回 final；
+      · 其余（备份也丢）→ 只清 tmp/journal，不猜、不删别的目录；
+      · best-effort：任何意外都不抛，留给上层照旧报错。
+    """
+    info = _promote_journal_load(final)
+    if info is None:
+        return {"recovered": False, "action": "none"}
+    backup, tmp = info["backup"], info["tmp"]
+    try:
+        if not os.path.exists(final) and os.path.isdir(backup):
+            os.replace(backup, final)   # 完整旧交付换回来
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            action = "restore_backup"
+        else:
+            if os.path.isdir(tmp):
+                shutil.rmtree(tmp, ignore_errors=True)
+            action = "clean_tmp"
+    except OSError:
+        return {"recovered": False, "action": "error"}
+    _promote_journal_remove(final)
+    return {"recovered": action == "restore_backup", "action": action}
+
 
 def promote_stage(stage_dir: str, final_dir: str, *,
                   exclude: Iterable[str] = (STATE_NAME,),
@@ -3103,10 +3244,20 @@ def promote_stage(stage_dir: str, final_dir: str, *,
       · 最终目录已存在 → 先 rename 成 `<final>.coop-bak-<时间>`，再换上新目录；
         换新失败就把旧目录 rename 回去，**旧交付目录一个字节不动**；
       · 最终目录本来不存在 → 直接 rename 临时目录；失败只清理临时目录。
+
+    覆盖写入（两步 rename）另有一条中断纪律（SUPPLEMENT-SIGTERM-01）：
+      · 换名前先落盘 `.…coop-promote-journal.json`（fsync），两步之间临时屏蔽
+        SIGTERM/SIGINT，避免进程在「旧已搬走、新未换上」的窗口里被杀；
+      · SIGKILL 等不可捕获中断后，下一次 promote_stage 入口会按 journal 自动恢复：
+        final 缺失且 backup 在 → 把**完整旧交付**换回来；final 在 → 只清 tmp/journal；
+      · 恢复只碰 journal 记录的两个路径，无关 `.coop-bak-*` 一律不动；
+      · 平台不支持信号屏蔽（或不在主线程）时退化为 journal 恢复，并在报告里如实降级。
+
     返回 `{final, backup, excluded}`；抛异常时调用方负责收口（最终目录已恢复）。
     """
     stage = os.path.abspath(stage_dir)
     final = os.path.abspath(final_dir)
+    _recover_promote_journal(final)   # 先收上次硬中断的残局（入口恢复，不需要任何新参数）
     if not os.path.isdir(stage):
         raise FileNotFoundError(f"暂存目录不存在：{stage}")
     parent = os.path.dirname(final) or "."
@@ -3122,22 +3273,41 @@ def promote_stage(stage_dir: str, final_dir: str, *,
 
     shutil.copytree(stage, tmp, ignore=_ignore)
     backup = ""
-    if os.path.exists(final):
-        backup = f"{final}.coop-bak-{stamp}"
-        n = 1
-        while os.path.exists(backup):
-            n += 1
-            backup = f"{final}.coop-bak-{stamp}-{n}"
-        rename(final, backup)
+    if not os.path.exists(final):
         try:
             rename(tmp, final)
         except Exception:
-            # 新目录没换成功：把旧目录原样换回去，再清理临时目录。
-            rename(backup, final)
-            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(tmp, ignore_errors=True)   # 首次交付失败：final 未成，只清 tmp
             raise
-    else:
-        rename(tmp, final)
+        return {"final": final, "backup": "", "excluded": sorted(exclude)}
+
+    backup = f"{final}.coop-bak-{stamp}"
+    n = 1
+    while os.path.exists(backup):
+        n += 1
+        backup = f"{final}.coop-bak-{stamp}-{n}"
+    journal_written = False
+    rollback_failed = False
+    old_mask = _promote_mask_signals()   # 先屏蔽：journal 落盘前后都不给 SIGTERM/SIGINT 机会
+    try:
+        journal_written = _promote_journal_write(final, backup, tmp)
+        try:
+            rename(final, backup)
+            rename(tmp, final)
+        except Exception:
+            # 任何一步失败：旧目录若已搬走就原样换回来，再清 tmp；原异常照抛。
+            if not os.path.exists(final) and os.path.isdir(backup):
+                try:
+                    rename(backup, final)
+                except Exception:
+                    rollback_failed = True   # 换回也失败：保留 journal 交给入口恢复
+            if not rollback_failed:
+                shutil.rmtree(tmp, ignore_errors=True)
+            raise
+    finally:
+        if journal_written and not rollback_failed:
+            _promote_journal_remove(final)   # 先撤 journal，再解除屏蔽（pending 信号随后才生效）
+        _promote_restore_signals(old_mask)
     return {"final": final, "backup": backup,
             "excluded": sorted(exclude)}
 

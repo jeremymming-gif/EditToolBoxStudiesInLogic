@@ -455,7 +455,7 @@ $PY convert.py --source "<源稿.docx>" --out "<期目录>" \
   `<名>_AI建议.md/.jsonl`（第 57 批起 accepted 行带 `target`）；`--coop-apply` 时才再应用
   META/FN 建议到输出 `.tex`（见下条）；编译在 promote 之前（需 `--compile`）；**原子交付**（旧目录先备份、
   失败不破坏既有产物；**B-303 起交付成功后旧目录自动移入交付根 `.toolbox-trash/` 回收站、同一交付只留
-  最近 1 份**，回收失败只 warning、不影响交付）；成功后写 `_AI协同记录.md`（回填/并入/拒绝/待人工计数）。
+  最近 1 份**，回收失败只 warning、不影响交付）；**SUPPLEMENT-SIGTERM-01 起**：覆盖式交付的两步换名（旧移走→新换上）窗口内先落盘 promote journal；**仅当 POSIX 主线程且平台支持 `pthread_sigmask` 时**才屏蔽 SIGTERM/SIGINT——此时窗口内这两个信号被推迟到交付完成，最终目录立刻是完整旧交付或完整新交付（不会半成品）；**Windows 等无屏蔽能力的平台、以及非主线程调用均为 journal-only 降级**：窗口内被终止时 final 可能暂缺，靠下一次交付入口按 journal 收口；**journal 收口规则（SIGKILL 等不可捕获中断与降级终止共用）**：final 已是完整新交付则保留 NEW；final 缺失且 journal 记录的旧备份完整则恢复完整旧交付；**journal 缺失（落盘失败/从未写入）时无自动恢复保证**（journal 落盘失败 = mask-only 降级，SIGKILL 后不保证恢复）；若此后**永不再次进入交付入口**，final 可能保持缺失、需人工恢复；恢复只动 journal 记录的 tmp/备份路径；成功后写 `_AI协同记录.md`（回填/并入/拒绝/待人工计数）。
   **第 75 批（B-132）起**：记录在有 C 类未匹配脚注项（`FN-*` 的 `mixed_manual`/`citation_unmatched`，
   即「脚注引用了某文献、文末清单里没有这一条」）时新增可见「**清单缺条**」节（列出 fid / 原文摘要 /
   回填说明；**只报告、不补条目**；无该类项时记录逐字节不变），note-only 的 note 也在建议清单
