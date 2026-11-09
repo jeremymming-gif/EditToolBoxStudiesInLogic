@@ -15,6 +15,7 @@ import flet as ft
 
 from services import ai_prefs as AI
 from services import engine_bridge as EB
+from ui import ai_workflow_summary as W
 from ui import components as C
 
 
@@ -34,6 +35,13 @@ class AiPanel:
         # 协同区：文献核实结果**默认并回** reference.bib（引擎默认）；勾了才
         # 追加 --no-ai-merge。与直连的 _no_ai_merge 是两个入口各自的开关。
         self._coop_no_ai_merge = False
+        # P03：任务书形态（**只影响第一段**）。默认关/空 = 不拼任何新参数，
+        # 第一段 argv 与旧版逐字节相同（CONTRACT-P03 §1/§3）。
+        self._split = False
+        self._slice_text = ""
+        self._split_chk: ft.Checkbox | None = None
+        self._slice_field: ft.TextField | None = None
+        self._slice_hint: ft.Text | None = None
         self._stage_field: ft.TextField | None = None
         self._stage_user = False
         self._reply_fields: list[ft.TextField] = []
@@ -66,13 +74,16 @@ class AiPanel:
         self._coop_box = ft.Column(spacing=t.sp("1"), visible=False, controls=self._coop_controls())
         self._direct_box = ft.Column(spacing=t.sp("1"), visible=False, controls=self._direct_controls())
         self._mode_ctl = C.text("本次运行：普通初排（不碰 AI）", t, "small", p.accent, "medium")
-        self._status_ctl = C.text("", t, "caption", p.text_muted, max_lines=12,
+        # P03：状态区要放「身份/任务书/回填检查/下一步/采用范围」，行数比旧版多
+        # （旧的 12 行会把引擎告警截断）；仍由 visible 控制空态不占高。
+        self._status_ctl = C.text("", t, "caption", p.text_muted, max_lines=60,
                                   selectable=True, visible=False)
         self._summary_ctl = C.text("", t, "small", p.text_muted, max_lines=8,
                                    selectable=True, visible=False)
-        # 状态/摘要合在一段里：两行都空时整段 visible=False，不占高也不留空行。
+        # 状态/摘要/分片数非法提示合在一段里：都空时整段 visible=False，不占高。
         self._feedback = ft.Column(spacing=t.sp("1"), visible=False,
-                                   controls=[self._status_ctl, self._summary_ctl])
+                                   controls=[self._status_ctl, self._summary_ctl,
+                                             self._slice_hint])
         open_settings = C.text_button("打开 AI 设置", lambda e: self.app.goto("settings"), t)
         self._buttons.append(open_settings)
         card = C.card(ft.Column(spacing=t.sp("2"), controls=[
@@ -104,6 +115,31 @@ class AiPanel:
                                     ])
         self._scope_row = ft.Row(spacing=t.sp("1"), visible=self._fulltext,
                                  controls=self._scope_controls())
+        # P03：任务书形态（**只影响第一段**）。不勾/留空 → 不拼 --coop-split /
+        # --coop-slice，第一段 argv 与旧版逐字节相同。
+        self._split_chk = ft.Checkbox(value=self._split, on_change=self._on_split)
+        split_row = ft.Row(spacing=t.sp("1"),
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                           controls=[self._split_chk,
+                                     C.text("分三卷（卷A/B/C 单文件）", t, "small")])
+        self._slice_field = C.floating_field(
+            t, "分片条数（卷A每片文献条数，留空=不分片）",
+            value=self._slice_text, expand=True,
+            hint="留空 = 不分片；N = 卷A 每 N 条文献一片（只作用于第一段）",
+            on_change=self._on_slice_input,
+        )
+        self._slice_hint = C.text("", t, "caption", t.palette.error, visible=False)
+        open_row = ft.Row(spacing=t.sp("1"), controls=[
+            C.text_button("打开任务书", lambda e: self._open_stage_path("taskbook"), t,
+                          icon="DESCRIPTION_OUTLINED"),
+            C.text_button("打开暂存目录", lambda e: self._open_stage_path("stage"), t,
+                          icon="FOLDER_OPEN"),
+            C.text_button("打开最终目录", lambda e: self._open_stage_path("final"), t,
+                          icon="OUTPUT"),
+            C.text_button("打开回填文件", lambda e: self._open_stage_path("reply"), t,
+                          icon="ATTACH_FILE"),
+        ])
+        self._buttons.extend(open_row.controls)
         # 暂存目录：描边浮动标签 + 浏览目录 + 自动发现（m02696 去灰底；flet 1.0.5
         # 无系统级文件拖放 API，输入方式统一为「粘贴路径或点浏览」）。
         self._stage_field = C.floating_field(
@@ -136,6 +172,17 @@ class AiPanel:
             C.text("第一段不交付、不联网；第二段只读本地回填文件。", t, "caption", t.palette.text_faint),
             self._fulltext_row,
             self._scope_row,
+            C.text("任务书形态（只影响第一段；第二段只导入回填，不再分卷/分片）",
+                   t, "small", t.palette.text_muted),
+            split_row,
+            C.text("勾选 = 第一段额外写卷A/卷B/卷C 三份任务书单文件（默认单文件、三卷合订）。",
+                   t, "caption", t.palette.text_faint),
+            self._slice_field,
+            C.text("留空/0 = 不分片；N>0 = 卷A 每 N 条文献一个分片文件（片号/TASK-ID 由引擎写）。"
+                   "缺片/串稿由引擎在第二段日志原文告警。",
+                   t, "caption", t.palette.text_faint),
+            open_row,
+            C.text(W.COPY_PATH_NOTICE, t, "caption", t.palette.text_faint),
             # 浮动字段 48 → 两个按钮跟随 48（用户 m02816：同一行不许高矮不齐）。
             C.field_row(self._stage_field, [browse_stage, discover], t),
             C.text("可直接粘贴路径（⌘V），或点「浏览…」；「自动发现」按输出根与源稿回推。",
@@ -246,6 +293,76 @@ class AiPanel:
         self._stage_user = True
         self._refresh_mode()
 
+    # ── P03：任务书形态（三卷 / 条目数分片，只影响第一段） ───────────────
+    def _on_split(self, e) -> None:
+        self._split = bool(getattr(e.control, "value", False))
+        self._refresh_mode()
+
+    def _on_slice_input(self, e) -> None:
+        control = getattr(e, "control", None)
+        if control is not None:
+            self._slice_text = str(getattr(control, "value", "") or "")
+        self._validate_slice()
+        self._refresh_mode()
+
+    def _slice_value(self) -> str:
+        if self._slice_field is not None:
+            return str(getattr(self._slice_field, "value", "") or "")
+        return str(self._slice_text or "")
+
+    def _validate_slice(self, *, raise_error: bool = False) -> int:
+        """分片条数：非法就在面板内提示（不启动引擎、不清日志）；返回 0 = 不分片。"""
+        try:
+            size = AI.parse_slice_size(self._slice_value())
+        except ValueError as exc:
+            self._show_slice_error(str(exc))
+            if raise_error:
+                raise
+            return 0
+        self._show_slice_error("")
+        return size
+
+    def _show_slice_error(self, message: str) -> None:
+        if self._slice_field is not None:
+            self._slice_field.error = message or None
+            self._safe_update(self._slice_field)
+        if self._slice_hint is not None:
+            self._slice_hint.value = message
+            self._slice_hint.visible = bool(message)
+        self._sync_feedback()
+        self._safe_update(self._slice_hint)
+
+    def _coop_stage(self):
+        """当前可解析到的暂存目录（手填优先，其次按输出根/源稿自动发现）。"""
+        stage_dir = self._stage_text()
+        try:
+            out = self.page.field("single_out")
+            source = self.page.field("single_source")
+        except (AttributeError, IndexError):
+            return AI.resolve_stage(stage_dir) if stage_dir else None
+        return AI.resolve_stage(stage_dir, out_root=out, source=source)
+
+    def _open_stage_path(self, kind: str) -> None:
+        """用既有 open_path 打开任务书/暂存/最终目录/第一个回填文件（只给路径）。"""
+        path = ""
+        stage = self._coop_stage()
+        if kind == "reply":
+            replies = self._reply_values()
+            path = replies[0] if replies else ""
+        elif stage is None:
+            self.app.toast("路径还没确定：先运行第一段，或填写暂存目录")
+            return
+        elif kind == "taskbook":
+            path = stage.taskbook
+        elif kind == "stage":
+            path = stage.stage_dir
+        elif kind == "final":
+            path = stage.final_dir
+        if not path:
+            self.app.toast("路径还没确定：先运行第一段，或填写暂存目录")
+            return
+        self.app.open_path(path)
+
     def _reply_row(self, value: str = "") -> ft.Row:
         t = self.t
         # 回填文件：描边浮动标签（不要灰底块）+ 扁平「选择…/删除」。
@@ -343,6 +460,8 @@ class AiPanel:
                              + "）",
                 AI.MODE_DIRECT: "本次运行：AI 核实（直连 API · 会产生费用）",
             }[mode]
+            if mode == AI.MODE_PH2 and (self._split or self._slice_value().strip()):
+                text += "（三卷/分片只作用于第一段：第二段不生效）"
         except ValueError as exc:
             mode = AI.MODE_PLAIN
             text = "失败 · " + str(exc)
@@ -362,6 +481,12 @@ class AiPanel:
         replies = self._reply_values()
         stage = self._stage_text()
         mode = AI.plan_mode(direct=self._direct, coop=self._coop, replies=replies, stage=stage)
+        # P03：分片条数只作用于第一段；非法值就地中文提示并抛错——pages 的
+        # _on_run 捕获 ValueError → toast，引擎不启动；此处早于 _lines=[]，
+        # 因此上一轮日志不会被清（CONTRACT-P03 §4/§6）。
+        slice_size = 0
+        if mode == AI.MODE_PH1:
+            slice_size = self._validate_slice(raise_error=True)
         self._last_mode = mode
         self._lines = []
         if mode == AI.MODE_PLAIN:
@@ -375,7 +500,8 @@ class AiPanel:
             fulltext = AI.fulltext_mode(self._fulltext, self._scope)
             stage_arg = stage if self._stage_user else ""
             return EB.coop_ph1_call(source=source, out=out, fulltext=fulltext,
-                                    stage=stage_arg, **convert_kwargs)
+                                    stage=stage_arg, split=self._split,
+                                    slice_size=slice_size, **convert_kwargs)
         if mode == AI.MODE_PH2:
             return EB.coop_ph2_call(source=source, out=out, replies=replies,
                                     stage=stage, apply=self._apply,
@@ -430,6 +556,10 @@ class AiPanel:
             if stage is not None:
                 self._show_stage(stage)
             if code == 0:
+                if stage is None:
+                    # 第二段成功交付后引擎会清理暂存目录，state 随之消失；
+                    # 身份不可得时只原文展示本次日志的交付收尾行（不解析自然语言）。
+                    self._show_no_stage()
                 text = "第二段结束："
                 if stage is not None:
                     text += stage.summary["text"] + " · "
@@ -459,7 +589,10 @@ class AiPanel:
             return
         status = self._status_ctl.value if self._status_ctl is not None else ""
         summary = self._summary_ctl.value if self._summary_ctl is not None else ""
-        self._feedback.visible = bool(str(status or "").strip() or str(summary or "").strip())
+        hint = self._slice_hint.value if self._slice_hint is not None else ""
+        self._feedback.visible = bool(str(status or "").strip()
+                                      or str(summary or "").strip()
+                                      or str(hint or "").strip())
         self._safe_update(self._feedback, *controls)
 
     def _set_status(self, text: str) -> None:
@@ -485,15 +618,25 @@ class AiPanel:
         self._sync_feedback(self._summary_ctl)
 
     def _show_stage(self, stage) -> None:
-        summary = stage.summary
-        lines = [f"暂存目录：{stage.stage_dir}",
-                 f"阶段：{stage.phase or '（无）'} · 状态：{stage.status_text}"]
-        if stage.taskbook:
-            lines.append(f"任务书：{stage.taskbook}")
-        if stage.final_dir:
-            lines.append(f"最终目录：{stage.final_dir}")
-        lines.append(summary["text"])
+        """协同状态区：身份 / 任务书 / 回填检查 / 下一步 / 采用范围（只做展示）。
+
+        全部内容来自引擎状态与本次运行日志；面板不判断回填有效性、不猜身份。
+        """
+        mode = self._last_mode
+        replies = self._reply_values()
+        lines = [
+            "【当前阶段与身份】", *W.identity_lines(stage),
+            "", "【任务书】", *W.taskbook_lines(stage),
+            "", "【回填检查】", *W.reply_check_lines(stage, replies, self._lines),
+            "", "【下一步】", *W.next_step_lines(stage, mode, replies),
+            "", "【采用范围（三分开）】", *W.adoption_lines(stage),
+            "", W.COPY_PATH_NOTICE, W.CHARS_NOTICE, W.LIMITS_NOTICE,
+        ]
         self._set_status("\n".join(lines))
+
+    def _show_no_stage(self) -> None:
+        """暂存状态缺失（多为第二段成功交付后引擎清理）：原文保留交付收尾日志。"""
+        self._set_status("\n".join(W.missing_stage_lines(self._lines)))
 
     def _safe_update(self, *controls) -> None:
         for control in controls:

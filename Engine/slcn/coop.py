@@ -26,6 +26,7 @@ r"""第五十四批：AI 协同初排（两段式）的纯逻辑。
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -372,7 +373,7 @@ def normalize_slice_size(value: Any) -> int:
     """`--coop-slice` 的口径：None/0 = 不分片；负数 → ValueError。
 
     B-311 任务书的硬口径是「缺省/0=关」（Stage A 草稿写的是 0 退出 2；以任务书为准，
-    偏差记在 impl.md）。非整数由 argparse 的 `type=int` 先拦，这里只兜负数。
+    偏差记在 impl.md）。非整数由 argparse 的 `type` 先拦，这里只兜负数。
     """
     if value is None:
         return 0
@@ -385,6 +386,28 @@ def normalize_slice_size(value: Any) -> int:
     if n < 0:
         raise ValueError(f"--coop-slice 不能为负（0=不分片）：{n}")
     return n
+
+
+def slice_size_arg(text: str) -> int:
+    """`--coop-slice` 的 argparse `type`：CLI 层早退（argparse type），供 convert_stage 使用。
+
+    CONTRACT-P03 §2 要求「负数/非法 → 退出 2 且零写」；`convert_stage.build_arg_parser`
+    用本函数做 `type`，校验发生在任何产物目录/暂存写入之前（不能等
+    `run_coop_taskbook`，否则会先跑完一整轮初排并写出暂存转换产物）。负数抛
+    `argparse.ArgumentTypeError`（`convert.py: error: argument --coop-slice:
+    --coop-slice 不能为负（0=不分片）：N`）；非整数同样抛
+    `ArgumentTypeError`，文案保持 argparse 原生 `type=int` 的
+    `invalid int value: 'abc'`（P03-ISS-E3：不让自定义 type 改变基线可观察文案）。
+    库调用方仍用 `normalize_slice_size`（负数 ValueError，纵深防御）。
+    """
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid int value: {text!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(
+            f"--coop-slice 不能为负（0=不分片）：{value}")
+    return value
 
 
 def taskbook_volume_a(text: str, lang: str = "zh") -> str:

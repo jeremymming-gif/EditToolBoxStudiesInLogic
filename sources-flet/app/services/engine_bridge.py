@@ -500,6 +500,7 @@ def _budget_arg(value):
 
 
 def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
+                  split: bool = False, slice_size: int = 0,
                   **convert_kwargs) -> EngineCall:
     """第一段：出核实任务书（尚未交付、零上传）。
 
@@ -507,6 +508,11 @@ def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
     （verify_plan）」只属于直连核实入口，不得穿透到这里——否则引擎会在
     `run_verify_refs` 打印核实计划后提前 return，任务书与 `_AI协同状态.json`
     都不生成，第二段将无状态可续。
+
+    P03 新增两个**显式**可选项（默认零新增参数，argv 与旧版逐字节相同）：
+    `split=True` → `--coop-split`（任务书转卷A/B/C 三份单文件）；
+    `slice_size=N>0` → `--coop-slice N`（卷A 每片 N 条文献，再切分片文件）。
+    引擎侧语义与校验仍在 `Engine/slcn/convert_stage.py`，外壳只透传。
     """
     convert_kwargs.pop("verify_plan", None)
     call = convert_call(source=source, out=out, verify_refs=True, **convert_kwargs)
@@ -514,6 +520,11 @@ def coop_ph1_call(*, source: str, out: str, fulltext: str = "", stage: str = "",
     if fulltext in ("context", "full"):
         extra.extend(["--coop-fulltext", fulltext])
     _append_opt(extra, "--coop-stage", stage)
+    if split:
+        extra.append("--coop-split")
+    size = int(slice_size or 0)
+    if size > 0:
+        extra.extend(["--coop-slice", str(size)])
     return EngineCall(entry=call.entry, argv=list(call.argv) + extra,
                       label="协同初排 · 第一段（出任务书）")
 

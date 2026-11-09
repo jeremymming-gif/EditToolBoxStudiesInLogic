@@ -1138,11 +1138,11 @@ def build_arg_parser():
                          "卷 C 元数据与脚注），并把路径写进 `_AI协同状态.json` 的 "
                          "`taskbook_volumes`。默认关：单文件三卷不变。"
                          "仅配合 --coop-taskbook-only 有意义。")
-    ap.add_argument("--coop-slice", type=int, default=None, metavar="N",
+    ap.add_argument("--coop-slice", type=_coop.slice_size_arg, default=None, metavar="N",
                     help="（B-311/B-006）把卷 A 的「逐条清单」按每片 N 条切成多份任务书 "
                          "`<stem>_文献核实_分片{k}-{n}.md`，片头带 B311-SLICE 标记，"
                          "路径写进 `_AI协同状态.json` 的 `taskbook_slices`。"
-                         "默认/0=不分片（任务书与状态逐字节不变）；负数退出 2。"
+                         "默认/0=不分片（任务书与状态逐字节不变）；负数/非法由 argparse 在转换前退出 2（零写）。"
                          "第二段仍用 --coop-replies：缺片只提示，片标记与本次 TASK-ID "
                          "不符的回复按串稿拒收。仅配合 --coop-taskbook-only。")
     ap.add_argument("--coop-stage", default=None, metavar="DIR",

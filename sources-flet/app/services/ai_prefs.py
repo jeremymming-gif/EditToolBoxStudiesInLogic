@@ -313,6 +313,22 @@ def fulltext_summary(state: dict | None) -> str:
     return f"附三正文：{label}，{chars} 字（约 {tokens} tokens，估算）"
 
 
+def parse_slice_size(text) -> int:
+    """分片条数输入 → 整数（卷A每片文献条数；0 = 不分片）。
+
+    只接受空白或正整数（十进制、不含符号/小数/全角数字）；其他一律当场报错，
+    绝不静默变成「不分片」——否则用户以为分了片，实际没分。
+    """
+    raw = str(text if text is not None else "").strip()
+    if not raw:
+        return 0
+    # 只认 ASCII 十进制数字：int() 会接受 "+2"/" 3 "/全角数字等写法，
+    # 这里先按字符过滤，负数/小数/符号/全角一律报错。
+    if not (raw.isascii() and raw.isdigit()):
+        raise ValueError("分片条数要填正整数（留空=不分片）")
+    return int(raw, 10)
+
+
 class CoopStage:
     """一个暂存目录的只读视图（状态 JSON 缺失时 `found` 为 False）。"""
 
@@ -380,6 +396,77 @@ class CoopStage:
     def fulltext_text(self) -> str:
         """附三体量提示（含「估算」字样）；没有附三返回空串。"""
         return fulltext_summary(self.state)
+
+    # ── P03：三卷 / 分片 / 第二段回填统计（旧状态缺键一律降级，不抛） ──
+    @property
+    def out_dir(self) -> str:
+        """本次运行的输出根目录（state.params.out_root；旧状态可能为空）。"""
+        return str(self.params.get("out_root") or "")
+
+    @property
+    def source_path(self) -> str:
+        source = self.state.get("source")
+        return str((source or {}).get("path") or "") if isinstance(source, dict) else ""
+
+    @property
+    def fingerprint(self) -> str:
+        return str(self.state.get("fingerprint") or "")
+
+    @property
+    def taskbook_version(self) -> int | None:
+        value = self.state.get("taskbook_version")
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            return int(str(value).strip(), 10)
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def taskbook_task_id(self) -> str:
+        return str(self.state.get("taskbook_task_id") or "")
+
+    @property
+    def volumes(self) -> list[str]:
+        """分三卷时引擎写进状态的三卷绝对路径；未分卷/旧状态为空列表。"""
+        value = self.state.get("taskbook_volumes")
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [str(item) for item in value if isinstance(item, str) and item.strip()]
+
+    @property
+    def slices(self) -> list[dict]:
+        """按条目数分片时引擎写进状态的切片清单；未分片/旧状态为空列表。"""
+        value = self.state.get("taskbook_slices")
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    @property
+    def stats(self) -> dict | None:
+        value = self.state.get("stats")
+        return value if isinstance(value, dict) else None
+
+    @property
+    def replied(self) -> list[str]:
+        value = self.state.get("replied")
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [str(item) for item in value if isinstance(item, str) and item.strip()]
+
+    @property
+    def pending(self) -> list[str]:
+        value = self.state.get("pending")
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [str(item) for item in value if isinstance(item, str) and item.strip()]
+
+    @property
+    def delivery(self) -> dict | None:
+        value = self.state.get("delivery")
+        return value if isinstance(value, dict) else None
 
 
 def stage_dirs(out_root: str) -> list[str]:

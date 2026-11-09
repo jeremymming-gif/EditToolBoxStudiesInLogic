@@ -63,6 +63,7 @@ python3 convert.py --source <稿件.docx|.tex> --out <输出根目录> [--compil
 | `--llm-fulltext-apply` / `--no-llm-fulltext-apply` | **第 63 批**：全文核查结果是否自动应用。默认**开**（仅 BIB/META/FN、全走批57安全闸）；`--no-llm-fulltext-apply` = 只看报告、不改产物（第 60 批 report-only 行为；报告与批60 逐字节相同）；**`--no-ai-merge` 会强制 report-only**（即使默认开）；单独给本开关而无 `--llm-fulltext` → 忽略 + stderr 提示；`.ai前` 已存在时**不覆盖**（回滚点为更早那份，报告注明）；自动应用记录写进报告「四、自动应用记录」（标题「…自动应用」） |
 | `--llm-fulltext-max-chars N` | **第 63 批**：直连 API 全文核查**单篇发送字符上限**，**默认 40000**；超限**显式截断 + 醒目警告**（不退出，照常出报告/自动应用；分片大小取 min(30000, N)）；**`0` = 不限**（整篇发送，费用只受 token 预算闸约束，**风险自担**）；负值 → 退出 2。GUI「设置」页「API 核查字符上限」对应本参数 |
 | `--coop-fulltext {context,full}` | 第 59 批，可选、**默认关**；第 63 批起**取消 4 万/8 万字符截断**。只配合 `--coop-taskbook-only`：第一段任务书在「附二」后追加「附三、正文全文/引用上下文」；`context` = 引用/脚注锚点前后各 300 字窗口合并、`full` = 正文全文，**整篇写入、不再截断**（保留体积估算/超长提示）。只写本机任务书（软件零上传），不新增改正文类建议。**第 74 批（B-133）起附三之后再追加「附四、初排分析（只报告、不改写正文）」**：`slcn.fulltext.v1` schema + 七项指令 + 硬约束；第二段解析后只落 `<名>_AI全文分析.md/.jsonl`（四节）+ 协同记录「六、全文分析」计数，**严格 report-only（不写 `reference.bib`/`.tex`、不接 `--coop-apply`）**。**第 75 批（B-139/B-140①）**：附三之后/附四之前再补「脚注清单（fid+文本摘要）」「占位符清单（类型+位置）」两块输入（只在有数据时出现；任务书增量按字符数记日志）；附四 `evidence` 基准收紧为**任务书里附四之前的内容**（附三正文 + 附一原文 + 附二/附三说明，抄附四 schema 示例/指令 → 整条拒绝）。其他组合退出 2。见下方「两段式协同 argv 契约」 |
+| `--coop-split` / `--coop-slice N` | **B-288 / B-311；第 2.3-E 批（P03 R01/R03）补接口口径**。`--coop-split`（默认关，只第一段有意义）= 任务书**另存**为 `<名>_文献核实_卷A/B/C.md` 并把 3 个绝对路径写进 state 的 `taskbook_volumes`；`--coop-slice N`（缺省/`0`=不分片，正整数；只第一段有意义）= 把**卷 A** 的逐条清单按每片 N 条切成 `<名>_文献核实_分片{k}-{n}.md` 并写 state 的 `taskbook_slices`；两参数可同用。**负数/非法文本由 argparse 在转换开始前退出 2 且不创建输出目录（零写）**；`normalize_slice_size` 仍对库调用方拒绝负数。不传/`0` 时任务书、`_AI协同状态.json`、argv 与 P02 逐字节兼容，且不产生卷/分片文件。state 字段与第二段回填检查输出见下「第 2.3-E 批（P03 R01/R03）…」 |
 | `--version` | 打印 `SLCN 引擎 <版本> ｜ <系统>，Python <版本>`（外壳的「关于」直接用） |
 
 **元数据文件（`--metadata`）契约（第 63 批 E2；第 63b 批降级为高级兜底）**：
@@ -339,7 +340,7 @@ sha256 / 引擎版本 / 规则集 / 附一 schema / kind / 语种 / 核实范围
 输出与 v1 **逐字节相同**；`SPEC_MD` / `SOURCES_MD` / `FORMAT_MD` / `_ITEM10_COOP` 未改（直连 API
 prompt 复用它们，仍不含任务卡）。附一 JSON schema、`--coop-replies` 契约与其余产物名不变。
 
-**第 311 批（B-311/B-006，默认关）**：`--coop-slice N`（缺省/`0`=不分片，负数退出 2；仅配合 `--coop-taskbook-only`）把卷 A 逐条清单按每片 N 条切成 `<名>_文献核实_分片{k}-{n}.md`（片头 `<!-- B311-SLICE k/n · TASK-ID … -->`、结尾 `B311-SLICE-END`），只在分片时给 `_AI协同状态.json` 增 `taskbook_slices`（`[{index,total,volume,path,first,last,keys}]`，唯一新增键、schema 仍 1；旧状态照常读）。
+**第 311 批（B-311/B-006，默认关）**：`--coop-slice N`（缺省/`0`=不分片；仅配合 `--coop-taskbook-only`）把卷 A 逐条清单按每片 N 条切成 `<名>_文献核实_分片{k}-{n}.md`（片头 `<!-- B311-SLICE k/n · TASK-ID … -->`、结尾 `B311-SLICE-END`），只在分片时给 `_AI协同状态.json` 增 `taskbook_slices`（`[{index,total,volume,path,first,last,keys}]`，唯一新增键、schema 仍 1；旧状态照常读）。**负数/非法文本由 argparse 在转换开始前退出 2，不创建输出目录（零写，第 2.3-E 批 P03-ISS-E1 修复后钉住；库调用方 `coop.normalize_slice_size` 仍对负数抛 ValueError）**。
 第二段仍用 `--coop-replies`：缺片只提示（回填/并入口径不变）；片标记 TASK-ID/片号与本次不符的文件按串稿拒收，`parse_replies` 既有拒绝文案与语义不变。
 默认路径零变化：不分片时任务书/状态/CLI 默认/argv 逐字节不变（两壳开关默认关）。
 
@@ -354,6 +355,41 @@ prompt 复用它们，仍不含任务卡）。附一 JSON schema、`--coop-repli
 `coop.restore_bib_backup()` / `restore_tex_backup()` 复原到并回/应用**之前**的原件。
 指纹不符、人工元数据 sha256 不符、已交付后重跑 → **exit 2**；第二段失败保留任务书/回填/状态/暂存产物，
 绝不覆盖暂存目录或交付产物。
+
+**第 2.3-E 批（P03 R01/R03）给外壳的接口：三卷/分片 CLI 与第二段回填检查输出（接口口径，不写实现）**：
+
+- **CLI（只第一段有意义；默认零新 flag）**：`--coop-split`（默认关）把任务书另存为
+  `<名>_文献核实_卷A/B/C.md`；`--coop-slice N`（缺省/`0`=不分片；正整数）把**卷 A** 的逐条清单按每片 N 条切成
+  `<名>_文献核实_分片{k}-{n}.md`；两者可同用。**负数/非法文本由 argparse 在转换开始前退出 2，不创建输出目录
+  （零写）**：`--coop-slice -1` → stderr `convert.py: error: argument --coop-slice: --coop-slice 不能为负（0=不分片）：-1`
+  （退出码 2；`out` 目录不存在或为空）。不传/`0` 时任务书、`_AI协同状态.json`、argv 与 P02 逐字节兼容，且
+  产出目录里**不出现**`_文献核实_卷*.md` / `_文献核实_分片*.md`；第一段 stdout 也不出现「任务书分片」。
+- **state 字段（schema 仍 1；只在真值时出现，旧状态缺键照旧读）**：`taskbook_version`（int）、
+  `taskbook_task_id`（str）、`taskbook_volumes`（卷 A/B/C 的 **3 个绝对路径**）、
+  `taskbook_slices`（`[{index,total,volume,path,first,last,keys}]`；`volume` 恒为 `"A"`，`path` 绝对，
+  `first`/`last`/`keys` 为该片在卷 A 逐条清单里的区间与键）。外壳对缺失键显示
+  「旧状态未记录（按旧行为处理）」，不报错、不猜、不写回。
+- **第一段 stdout 契约行（外壳原样展示，不得改写）**：`⑬ AI 协同初排·第一段（已暂停，等待回填）`、
+  `   暂存目录：<abs>`、`   核实任务书：<文件名>（含「初排低置信项」N 项）`、`   状态文件：_AI协同状态.json`、
+  `   最终交付目录本次**未写**；把任务书交给任意 chat 模型，回填后运行 --coop-replies <文件或目录> 继续。`；
+  分片时 **⑪ 段末**（`核实任务书` 行之后、`⑬` 之前）额外一行 `   任务书分片：每片 ≤ N 条，共 n 片（<首片文件名> 起）`；
+  `--coop-split` 本身**不新增 stdout 行**（卷文件在暂存目录，路径只进 `state.taskbook_volumes`）。分片自检异常时打
+  `   ⚠ 分片自检：<原因>`（缺文件/编号不连续/片标记与文件名不符等，**只提示不阻断**）。最后一行恒为
+  `暂存目录：<abs>`。
+- **第二段 stdout 契约行（回填检查；外壳原样交给用户）**：`   回填来源：n 个文本 / m 个路径（多路径按命令行顺序；
+  目录内按文件名排序；同一路径去重）`；`   文献字段：解析到 N 条，拒绝 M 条，未回填 K 条`；`   低置信项：…`；
+  分片缺片 `   ⚠ 分片：第 k/n 片未收到任何回填（本片 c 条）`（多片缺用「；」连接，**只提示，照常交付**）；
+  串错片 `   ⚠ 分片：<文件> 标为第 k 片，但含第 j 片的键：…`（**只提示不拒收**）；
+  `   ⚠ 回填拒收：<文件>（<原因>）`（整份回复 TASK-ID 与本次不符）；
+  `   ⚠ 分片拒收：<文件>（<原因>）`（片标记 TASK-ID/片号与本次分片清单不符）。全部回复被拒 → **退出 2**
+  （stderr `❌ 回填文本都因分片标记被拒收（可能拿错了任务书）；未改任何产物。`，state/暂存/交付零变化）。
+- **成功交付与清理**：交付成功 stdout 打 `  暂存目录已清理：<abs>`，随后 `完成。产物目录：<最终目录>`；
+  **此时暂存目录与 `_AI协同状态.json` 已消失**（外壳应显示「已交付」，不得再读 state 推断阶段）。
+  清理失败只打 `  ⚠ 暂存目录未清理（保留）：<abs>`，**交付仍成功**。
+- **兼容**：旧 state（无 `taskbook_task_id` / `taskbook_slices`）第二段行为与接入前一致（只按
+  `state.keys.bib` 白名单匹配、无分片告警）；`--coop-split` / `--coop-slice` 不改变默认单文件任务书路径、
+  既有交付产物名与 P02 默认输出。回归钉在 `tests/test_pkg_p03_taskbook_modes.py`（新）与
+  `tests/test_b311_slices.py` / `tests/test_b288_taskcard.py`。
 
 **核实范围（第 128 条，2026-10-18）**：`--verify-refs` 的默认口径是「**只核正文引用到的
 条目**」——⑪ 跑前会在 stdout 打一行
