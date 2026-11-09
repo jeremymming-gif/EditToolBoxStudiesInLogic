@@ -554,16 +554,21 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             page.app.finish_run(followup, code)
         duration = round((time.monotonic() - started) * 1000, 1)
         cancelled = bool(getattr(page.app, "cancel_requested", False))
-        if cancelled:
-            state = "cancelled"
-        elif code == 0:
-            state = "done"
-        elif code == 1:
-            state = "warn"
+        if key == "dirpush":
+            # BUG-07：rc≠0 / JSON ok=false（含同名覆盖失败）都算失败；产物只认
+            # 本次引擎 JSON outputs[] 里真实存在的文件，不再拿日志行末尾猜路径。
+            state, artifact = DIRPUSH.absorb(page, lines, code, cancelled)
         else:
-            state = "error"
-        # app.last_line 由 app 的 on_line 回调更新（见 main.begin_run/_on_line）。
-        artifact = EB.artifact_path(getattr(page.app, "last_line", "") or "")
+            if cancelled:
+                state = "cancelled"
+            elif code == 0:
+                state = "done"
+            elif code == 1:
+                state = "warn"
+            else:
+                state = "error"
+            # app.last_line 由 app 的 on_line 回调更新（见 main.begin_run/_on_line）。
+            artifact = EB.artifact_path(getattr(page.app, "last_line", "") or "")
         status = StepStatus(state, exit_code=code, duration_ms=duration,
                             started_at=started_at, finished_at=_now(),
                             artifact=artifact)
@@ -593,8 +598,14 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
                     if key == "merge" else "已取消当前步骤（后续步骤未启动）")
             _result_show(page, text, "warn", artifact)
         else:
-            _result_show(page, EB.result_text(call.entry, code),
-                         EB.result_level(call.entry, code), artifact)
+            text = EB.result_text(call.entry, code)
+            level = EB.result_level(call.entry, code)
+            if key == "dirpush":
+                level = _STATE_LEVELS[state]
+                if state == "error" and code == 0:
+                    # 引擎 rc=0 但 JSON ok=false（如覆盖失败）：不得显示「完成」。
+                    text = "失败 · 引擎报告本次没有生成（详见日志）"
+            _result_show(page, text, level, artifact)
             if artifact:
                 page.app.store.set_recent("issue_dir", page.field("issue_dir"))
         _log_line(page, _section_end(page, key, status), _STATE_LEVELS[state])

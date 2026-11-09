@@ -964,10 +964,18 @@ python3 Engine/diagnose.py --entry compileall.py --exit-code 1 --log "…" --jso
 python3 Engine/dirpush.py --issue <期目录> [--out <输出根>] [--with-en-toc] [--json] [--dry-run]
 python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] [--include-issues 1,2,3] \
     [--out <根>] [--json] [--dry-run]
+python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
 ```
 
 - `--issue` 必填：当期=具体期目录；年度=该年任一期目录（扫其父目录 `YYYY年第N期*`）。
+  （`--check-out-root` 只读预检模式除外：它不要求 `--issue`。）
 - `--out` 缺省 `~/Documents/sysu/编辑部/目录摘要推送/`（不写稿件仓）。
+- **输出根保护**：`--out` 落在输入期目录内（当期=该期目录；年度=`--issue` 目录或任何被扫描/读取的期目录）
+  → **rc=2、零写**，stderr 中文原因「输出根不能放在期目录内（作者来稿只读）」，与 GUI 校验同语义；
+  `--dry-run` 同样拒绝（预览=生成）。
+- **`--check-out-root <path>`（只读预检/供 GUI 复用）**：不要求 `--issue`、不扫描/读取稿件、**零写**、rc=0；
+  `--json` 时 stdout 给 `{"schema":1,"ok":true,"warnings":[...]}`（`warnings` 与生成时三仓判据同源），
+  非 JSON 模式把 warning 行打印到 stderr。供 GUI 用同一判据提示「输出根落在代码仓内」。
 - 输出（契约冻结）：当期 `<out>/<YYYY> 年第 <N> 期/逻辑学研究<YYYY>年第<N>期目录摘要.docx`；
   年度 `<out>/<YYYY> 年/逻辑学研究<YYYY>年总目录.docx`；同名**直接覆盖、不留 .bak**；不产 PDF。
 - 每期生成成功后写 `<该期输出目录>/目录摘要设置.json`：`{"schema":1,"year":<y>,"issue":<n>,"with_en_toc":<bool>}`
@@ -984,6 +992,9 @@ python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] [--
 - 计数口径：`abstracts_ok` = 有可用**中文**摘要的篇数；`abstracts_missing` = 跳过篇数
   （中文摘要为模板占位符时按缺失处理，不回落英文摘要；年度模式两项均为 0）。
 - 只读保证：跑前跑后输入期目录 sha256 清单一致；同输入两遍 docx 逐字节相同（固定 zip 时间戳/docProps）。
+- 年度扫描诚实提示：父目录下**形似期目录但期号无法识别**（如 `2022年第6A期(67A)`）的目录不收录，
+  在 `warnings[]` 与 stderr 提示「发现期目录 <名> 无法识别期号，未纳入年度（需人工处理）」；
+  当期模式直接读该期仍按期头解析失败处理（rc=2），属既有行为。
 
 ### GUI 契约（B-289；macOS / Windows 同一套）
 

@@ -108,7 +108,10 @@ class IssueData:
 
     @property
     def abstracts_ok(self) -> int:
-        return sum(1 for a in self.articles if a.abstract.strip())
+        # 契约 §十五：只计**中文来源**的可用摘要；英文回落（abstract_is_cn=False）
+        # 不计入 abstracts_ok（否则中文推送的“摘要取到率”虚高）。
+        return sum(1 for a in self.articles
+                   if a.abstract.strip() and a.abstract_is_cn)
 
 
 # ── 通用 LaTeX 小工具（判据单点；渲染层不重复实现）────────────────────────
@@ -933,6 +936,31 @@ def scan_year_issues(parent: str, year: int) -> list[tuple[int, str]]:
     return sorted(found.items())
 
 
+#: “看起来是期目录”的宽松判据：只用于**诚实提示**，不用于收录（6A 等未授权业务）。
+_ISSUE_LIKE_RE = re.compile(r"^(\d{4})年第\s*[^期/\\]*期")
+
+
+def unrecognized_issue_dirs(parent: str, year: int) -> list[str]:
+    """父目录下同年的“形似期目录但期号无法识别”的目录名（如 `2022年第6A期(67A)`）。
+
+    只做提示用：不改变 `scan_year_issues()` 的收录语义（未授权不收 6A 等）。
+    """
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return []
+    out: list[str] = []
+    for name in names:
+        if ISSUE_DIR_RE.match(name):
+            continue
+        m = _ISSUE_LIKE_RE.match(name)
+        if not m or int(m.group(1)) != year:
+            continue
+        if os.path.isdir(os.path.join(parent, name)):
+            out.append(name)
+    return out
+
+
 # ── 主采集入口 ─────────────────────────────────────────────────────────
 
 
@@ -1103,6 +1131,8 @@ class AnnualPlan:
     missing_issues: list[int] = field(default_factory=list)
     issues: list[dict] = field(default_factory=list)   # {number, with_en_toc, status}
     data: list[IssueData] = field(default_factory=list)
+    #: 年度扫描的诚实提示（如无法识别期号的期目录被跳过）；不改变收录语义
+    warnings: list[str] = field(default_factory=list)
 
 
 def collect_annual(issue_dir: str, *, year: int | None = None,
@@ -1127,6 +1157,11 @@ def collect_annual(issue_dir: str, *, year: int | None = None,
     selected = set(include_issues) if include_issues else set(found_nums)
     unknown = sorted(selected - set(found_nums))
     plan = AnnualPlan(year=year)
+    # 诚实提示：形似期目录、但期号无法识别（如 2022年第6A期(67A)）→ 不静默丢弃。
+    # 不收录（未授权实现 6A 业务），只在 warnings[]/stderr 说明。
+    for name in unrecognized_issue_dirs(parent, year):
+        plan.warnings.append(
+            f"发现期目录 {name} 无法识别期号，未纳入年度（需人工处理）")
     plan.missing_issues = [n for n in range(1, 7) if n not in found_nums]
     for n, d in found:
         zh_tex, _ = toc_files(d)

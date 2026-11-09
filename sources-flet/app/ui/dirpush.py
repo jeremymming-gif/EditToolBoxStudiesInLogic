@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from pathlib import Path
@@ -28,21 +29,33 @@ def build_call(*, issue: str, out_root: str = "", annual: bool = False,
 
 
 def repo_warning(out_root: str, repo=None) -> str:
-    """输出根落在代码仓内时返回中文警告；空输出根 / 仓外返回空串。"""
+    """输出根落在代码仓内时返回中文警告；空输出根 / 仓外返回空串。
+
+    仓内判定以引擎只读命令 `dirpush.py --check-out-root` 为准（公开仓/笔记仓/
+    稿件仓三仓同一判据，GUI 不复制这套规则）。显式传 `repo` 时只按该仓根做
+    本地轻量判断（兼容旧调用与预览）。引擎校验失败时返回「无法确认…」警告，
+    把问题明确摆给用户，绝不静默放行。
+    """
     text = str(out_root or "").strip()
     if not text:
         return ""
-    try:
-        root = Path(repo).resolve() if repo else EB.repo_root().resolve()
-        target = Path(text).expanduser().resolve()
-    except (OSError, RuntimeError):
+    if repo is not None:
+        try:
+            root = Path(repo).resolve()
+            target = Path(text).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return ""
+        try:
+            if target == root or root in target.parents:
+                return f"输出根在代码仓内：{target}；会留下未跟踪文件，污染工作树。"
+        except OSError:
+            return ""
         return ""
     try:
-        if target == root or root in target.parents:
-            return f"输出根在代码仓内：{target}；会留下未跟踪文件，污染工作树。"
-    except OSError:
-        return ""
-    return ""
+        warnings = EB.dirpush_out_root_warnings(text)
+    except RuntimeError as exc:
+        return f"无法确认输出根是否在代码仓内：{exc}"
+    return "；".join(warnings)
 
 
 def _resolve(path: str) -> Path:
@@ -79,37 +92,66 @@ def validate_out_root(out_root: str, issue: str) -> tuple[str, str]:
 
 
 _ISSUE_TOKEN = r"(?:\d+|[一二三四五六七八九十百]+|[?？])"
-_VOLUME_RE = re.compile(rf"第\s*{_ISSUE_TOKEN}\s*卷")
-_ISSUE_NO_RE = re.compile(rf"第\s*{_ISSUE_TOKEN}\s*期")
+# 引擎 patch_header 在卷期未解析时会写 `第\ ? 卷`（反斜杠+空格都保留，见
+# Engine/slcn/toctemplate.py patch_header）；`\s` 跨不过 `\ `，所以空白处要同时容忍
+# 「纯空白」与「反斜杠+空白」，否则真实形状的 ? 期头漏拦。
+_TEX_GAP = r"(?:\s|\\\s)*"
+_VOLUME_RE = re.compile(rf"第{_TEX_GAP}{_ISSUE_TOKEN}{_TEX_GAP}卷")
+_ISSUE_NO_RE = re.compile(rf"第{_TEX_GAP}{_ISSUE_TOKEN}{_TEX_GAP}期")
+
+# 真实目录名是 `000 Table of Contents`；旧夹具（tests/test_b117）用 `000`，两处都扫。
+_TOC_DIR_NAMES = ("000 Table of Contents", "000")
+
+
+def _strip_tex_comments(text: str) -> str:
+    """去掉 LaTeX 注释（行内第一个未转义 `%` 起），与引擎 `_strip_comments` 等价。"""
+    out: list[str] = []
+    for line in str(text or "").splitlines():
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if char == "\\":
+                index += 2
+                continue
+            if char == "%":
+                line = line[:index]
+                break
+            index += 1
+        out.append(line)
+    return "\n".join(out)
 
 
 def header_parse_error(issue: str) -> str:
     """期头预检（批 117 P1）：000 下的目录 tex 是否还留着「第 ? 卷 / 第 ? 期」。
 
     引擎在报告缺卷期时会静默写 `?` 占位并 EXIT 0（B 包实测），直到推送才报错。
-    这里只读已落位的 000 tex；还没生成目录（000 不存在/无 tex）时不拦——那不是
-    本期要在这里解决的问题。发现 `?` 就禁用推送按钮并给可执行原因。
+    这里只读已落位的 000 目录 tex（真实 `000 Table of Contents` + 旧夹具 `000`）；
+    匹配前先剥 tex 注释，注释里的 `?` 不算未解析期头。还没生成目录时不拦——
+    那不是本期要在这里解决的问题。发现 `?` 就禁用推送按钮并给可执行原因。
     """
     if not str(issue or "").strip():
         return ""
     try:
-        folder = _resolve(issue) / "000"
+        base = _resolve(issue)
     except OSError:
-        return ""
-    if not folder.is_dir():
         return ""
     blob = ""
-    try:
-        for path in sorted(folder.glob("*.tex")):
-            try:
-                blob += path.read_text(encoding="utf-8", errors="ignore")
-            except OSError:
-                continue
-    except OSError:
+    for dirname in _TOC_DIR_NAMES:
+        folder = base / dirname
+        if not folder.is_dir():
+            continue
+        try:
+            for path in sorted(folder.rglob("*.tex")):
+                try:
+                    blob += path.read_text(encoding="utf-8", errors="ignore") + "\n"
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    if not blob.strip():
         return ""
-    if not blob:
-        return ""
-    marks = _VOLUME_RE.findall(blob) + _ISSUE_NO_RE.findall(blob)
+    text = _strip_tex_comments(blob)
+    marks = _VOLUME_RE.findall(text) + _ISSUE_NO_RE.findall(text)
     if marks and any("?" in mark or "？" in mark for mark in marks):
         return ("000 期头还没解析出卷期：先在「检查 tex 信息」核对，"
                 "或修正 000 目录期头后再推送")
@@ -126,20 +168,12 @@ def year_error(text: str) -> str:
 
 
 def normalize_issues(text: str) -> tuple[list[int], list[str]]:
-    """年度「只含这些期号」：接受 , ， 、 空格；非法片段原样列出，不静默丢弃。"""
-    raw = str(text or "").strip()
-    if not raw:
-        return [], []
-    good: list[int] = []
-    bad: list[str] = []
-    for part in re.split(r"[,，、\s]+", raw):
-        if not part:
-            continue
-        if part.isdigit() and int(part) > 0:
-            good.append(int(part))
-        else:
-            bad.append(part)
-    return good, bad
+    """年度「只含这些期号」：接受 , ， 、 空格；非法片段原样列出，不静默丢弃。
+
+    直接复用 `EB.dirpush_split_issues`，与 argv（`--include-issues`）同一判据，
+    保证界面「将纳入…」的预览和实际参数永远一致。
+    """
+    return EB.dirpush_split_issues(text)
 
 
 def issues_caption(text: str) -> str:
@@ -217,20 +251,75 @@ def summary_lines(payload: dict) -> list[str]:
         if annual.get("missing_issues"):
             lines.append("缺期：" + "、".join(str(n) for n in annual.get("missing_issues") or []))
     counts = payload.get("counts") or {}
+    ok = payload.get("ok", True)
     if counts:
+        articles = counts.get("articles", 0)
         lines.append(f"目录条目：中文 {counts.get('zh_entries', 0)} / "
                      f"英文 {counts.get('en_entries', 0)}；"
-                     f"文章 {counts.get('articles', 0)} 篇")
-    for item in output_files(payload):
-        lines.append(f"{'计划输出' if payload.get('dry_run') else '输出'}："
-                     f"{item['path']}（{size_text(item['size'])}）")
-    if payload.get("dry_run"):
-        lines.append("预览：未写任何文件。")
-    if not payload.get("ok", True):
+                     f"文章 {articles} 篇")
+        # ENGINE_API §十五：摘要取到率 = abstracts_ok / articles（0 篇记 0/0）。
+        lines.append(f"摘要取到 {counts.get('abstracts_ok', 0)}/{articles} 篇")
+    if ok:
+        for item in output_files(payload):
+            lines.append(f"{'计划输出' if payload.get('dry_run') else '输出'}："
+                         f"{item['path']}（{size_text(item['size'])}）")
+        if payload.get("dry_run"):
+            lines.append("预览：未写任何文件。")
+    else:
         lines.append("引擎报告：本次没有生成（详见日志与下面的提示）。")
     for text in payload.get("warnings") or []:
         lines.append(f"注意 · {text}")
     return lines
+
+
+def result_payload(lines) -> dict | None:
+    """从本次运行的日志行里找回引擎最后一个 JSON 结果对象（契约：stdout 只一个对象）。
+
+    只认行首 `{` 起、可整体 json.loads、是 dict 且含 `ok` 的候选；找不回返回
+    None —— 不做猜测、不拿旧结果兜底。
+    """
+    items = [str(line or "") for line in (lines or [])]
+    for index in range(len(items) - 1, -1, -1):
+        if not items[index].lstrip().startswith("{"):
+            continue
+        try:
+            value = json.loads("\n".join(items[index:]))
+        except ValueError:
+            continue
+        if isinstance(value, dict) and "ok" in value:
+            return value
+    return None
+
+
+def run_state(code, cancelled: bool, payload: dict | None) -> str:
+    """运行结论：取消 / 非 0 退出 / JSON ok=false 都是失败，只有明确成功才算 done。"""
+    if cancelled:
+        return "cancelled"
+    if int(code or 0) != 0:
+        return "error"
+    if payload is not None and not payload.get("ok", False):
+        return "error"
+    return "done"
+
+
+def result_artifact(payload: dict | None, *, cancelled: bool = False) -> str:
+    """本次运行的产物：只认引擎 JSON outputs[] 中真实存在的文件；取消/失败/预演为空。"""
+    if cancelled or not payload or not payload.get("ok", False) or payload.get("dry_run"):
+        return ""
+    for raw in payload.get("outputs") or []:
+        path = str(raw or "").strip()
+        if path and os.path.isfile(path):
+            return path
+    return ""
+
+
+def absorb(page, lines, code, cancelled: bool) -> tuple[str, str]:
+    """把一次 dirpush 运行的日志判成 (state, artifact)，并把 JSON 记到页面上。"""
+    payload = result_payload(lines)
+    state = run_state(code, cancelled, payload)
+    artifact = result_artifact(payload, cancelled=cancelled)
+    page._dirpush_payload = payload
+    return state, artifact
 
 
 class DirPushPanel:

@@ -6,9 +6,13 @@ r"""目录摘要推送（B-225）：期目录 → 公众号推送文案 docx。
     python3 Engine/dirpush.py --issue <期目录> [--out <输出根>] [--with-en-toc] [--json] [--dry-run]
     python3 Engine/dirpush.py --issue <任一期目录> --annual [--year <yyyy>] \
         [--include-issues 1,2,3] [--out <根>] [--json] [--dry-run]
+    python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
 
   · `--issue` 必填：当期模式 = 具体期目录；年度模式 = 该年**任一期**目录（扫其父目录）
-  · `--out` 省略 = 本机默认 `~/Documents/sysu/编辑部/目录摘要推送`
+  · `--check-out-root` 只读预检（供 GUI 复用三仓判据）：不要求 `--issue`、不扫稿件、零写、rc=0；
+    `--json` 时 stdout 给 `{"schema":1,"ok":true,"warnings":[...]}`，否则 warning 走 stderr
+  · `--out` 省略 = 本机默认 `~/Documents/sysu/编辑部/目录摘要推送`；
+    输出根落在输入期目录内（作者来稿只读）→ rc=2、零写（`--dry-run` 也拒绝）
   · `--dry-run` 只采集+校验，**不写任何文件**，stdout 给 JSON 预览（GUI 用）
   · `--json`  stdout **只有一个 JSON 对象**，人类日志全走 stderr
   · 退出码：0 成功（含 warning）/ 2 输入或用法错误 / 1 内部异常
@@ -78,6 +82,55 @@ def _check_out_root(out_root: str) -> list[str]:
     return warnings
 
 
+def _guard_out_root_not_issue(out_root: str, issue_dirs: list[str]) -> None:
+    """输出根不得落在输入期目录内（作者来稿只读；与 GUI 同语义，前置拒绝）。
+
+    单期/年度模式都在采集与写盘**之前**调用；dry-run 同样拒绝（预览=生成）。
+    """
+    for issue_dir in issue_dirs:
+        if _inside(out_root, issue_dir):
+            raise _collect.CollectError(
+                f"输出根不能放在期目录内（作者来稿只读）：{out_root}")
+
+
+def _annual_input_issue_dirs(issue_dir: str, year: int | None) -> list[str]:
+    """年度模式会扫描/读取的期目录：`--issue` 目录 + 父目录下同年可识别期目录。"""
+    dirs = [issue_dir]
+    parent = os.path.dirname(issue_dir)
+    if year is None:
+        parts = _collect.issue_name_parts(issue_dir)
+        if parts is None:
+            return dirs
+        year = parts[0]
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return dirs
+    for name in names:
+        full = os.path.join(parent, name)
+        if full in dirs or not os.path.isdir(full):
+            continue
+        m = _collect.ISSUE_DIR_RE.match(name)
+        if m and int(m.group(1)) == year:
+            dirs.append(full)
+    return dirs
+
+
+def _run_check_out_root(path: str, as_json: bool) -> int:
+    """只读预检：输出根是否会落进受保护仓库（零写、不扫稿件、rc=0）。"""
+    out_root = os.path.abspath(os.path.expanduser(path))
+    warnings = _check_out_root(out_root)
+    if as_json:
+        sys.stdout.write(json.dumps(
+            {"schema": JSON_SCHEMA, "ok": True, "warnings": warnings},
+            ensure_ascii=False, indent=2) + "\n")
+        sys.stdout.flush()
+    else:
+        for line in warnings:
+            print(f"WARNING: {line}", file=sys.stderr)
+    return 0
+
+
 def _issue_json(issue: _collect.IssueData) -> dict:
     return {
         "year": issue.year,
@@ -137,6 +190,10 @@ def _empty_result(mode: str, dry_run: bool, message: str) -> dict:
 
 def _emit(obj: dict, as_json: bool) -> None:
     if as_json:
+        # 契约：stdout 恰好一个 JSON 对象（日志全走 stderr）；warnings 同时落 stderr，
+        # 保证不解析 JSON 的日志/人工排查也能看到诚实提示。
+        for line in obj.get("warnings") or []:
+            print(f"WARNING: {line}", file=sys.stderr)
         sys.stdout.write(json.dumps(obj, ensure_ascii=False, indent=2) + "\n")
         sys.stdout.flush()
         return
@@ -190,6 +247,7 @@ def _settings_write(path: str, year: int, number: int, with_en_toc: bool) -> Non
 
 def _run_issue(args, out_root: str, as_json: bool) -> int:
     issue_dir = os.path.abspath(os.path.expanduser(args.issue))
+    _guard_out_root_not_issue(out_root, [issue_dir])   # 采集/写盘前拒绝
     with_en = True if args.with_en_toc else None
     issue = _collect.collect_issue(issue_dir, with_en_toc=with_en, out_root=out_root)
     out_dir, docx_path, settings_path = _collect.issue_output_paths(
@@ -202,7 +260,10 @@ def _run_issue(args, out_root: str, as_json: bool) -> int:
         "outputs": [docx_path],
         "issue": _issue_json(issue),
         "counts": _counts([issue]),
-        "warnings": _check_out_root(out_root) + list(issue.warnings),
+        # 篇级 warning（如「模板无中文字段，中文信息回落英文/通用字段」）也要进
+        # 顶层 warnings[]：GUI/人只消费这一层，否则英文回落会被静默降级。
+        "warnings": (_check_out_root(out_root) + list(issue.warnings)
+                     + [w for art in issue.articles for w in art.warnings]),
         "missing": list(issue.missing),
         "annual": None,
     }
@@ -247,11 +308,13 @@ def _run_annual(args, out_root: str, as_json: bool) -> int:
         except ValueError:
             raise _collect.CollectError(
                 f"--include-issues 只接受逗号分隔的期号：{args.include_issues}") from None
+    _guard_out_root_not_issue(   # 采集/写盘前拒绝：--issue 及任何被扫描/读取的期目录
+        out_root, _annual_input_issue_dirs(issue_dir, args.year))
     plan = _collect.collect_annual(issue_dir, year=year, include_issues=include,
                                    out_root=out_root)
     year = plan.year
     docx_path = _collect.annual_output_path(out_root, year)
-    warnings: list[str] = _check_out_root(out_root)
+    warnings: list[str] = _check_out_root(out_root) + list(plan.warnings)
     for data in plan.data:
         warnings.extend(f"{data.number} 期：{w}" for w in data.warnings)
     if include is not None:
@@ -301,7 +364,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="dirpush.py",
         description="目录摘要推送：期目录 → 公众号推送文案 docx（只读输入；不产 PDF）")
-    parser.add_argument("--issue", required=True, help="期目录（当期）；年度模式给该年任一期目录")
+    parser.add_argument("--issue", default=None, help="期目录（当期）；年度模式给该年任一期目录")
+    parser.add_argument("--check-out-root", default=None, metavar="PATH",
+                        help="只读预检：输出根是否落在受保护仓库内（零写、rc=0；供 GUI 复用）")
     parser.add_argument("--out", default=None, help="输出根（缺省 ~/Documents/sysu/编辑部/目录摘要推送）")
     parser.add_argument("--with-en-toc", action="store_true", help="当期模式：生成中英文对照目录")
     parser.add_argument("--annual", action="store_true", help="年度模式：逐期拼接目录")
@@ -317,8 +382,13 @@ def main(argv: list[str] | None = None) -> int:
         raise
 
     mode = "annual" if args.annual else "issue"
-    out_root = _out_root(args)
     try:
+        # 只读预检：不要求 --issue、不扫稿件、零写；判据与 _check_out_root() 同源。
+        if args.check_out_root is not None:
+            return _run_check_out_root(args.check_out_root, args.json)
+        if not args.issue:
+            raise _collect.CollectError("缺少 --issue（期目录）")
+        out_root = _out_root(args)
         if args.annual:
             if args.with_en_toc:
                 raise _collect.CollectError("参数冲突：--with-en-toc 仅用于当期模式，年度体例按期还原")

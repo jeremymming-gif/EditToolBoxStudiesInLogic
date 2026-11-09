@@ -1277,6 +1277,7 @@ class IssuePage(BasePage):
         self.selected = ""
         self._status: dict = {step["key"]: "idle" for step in self.STEPS}
         self._run_results: list = []
+        self._dirpush_payload = None
         self._content_box = ft.Column(spacing=10)
         self._params_box = ft.Column(spacing=10)
         self._step_pages: list = []
@@ -2484,12 +2485,21 @@ class IssuePage(BasePage):
         status = self._status.get("dirpush")
         artifact = str(getattr(status, "artifact", "") or "")
         state = self._state_of("dirpush")
-        if not artifact and state != "error":
+        payload = getattr(self, "_dirpush_payload", None)
+        if not artifact and state != "error" and not payload:
             return self._empty_result("还没有推送记录",
                                       "在上方选好输出根与范围，点右上「生成摘要」。")
         rows = [C.section_label("推送结果", t), C.hairline(t)]
         if artifact:
             rows.append(C.text(os.path.basename(artifact), t, "small", t.palette.text))
+        if payload:
+            # BUG-07：结果卡只渲染本次引擎 JSON；ok=false 明确说没生成，绝不显示成功卡。
+            if not payload.get("ok", False):
+                rows.append(C.inline_note("推送失败：引擎报告本次没有生成。", t, "error"))
+            rows += [C.text(line, t, "caption", t.palette.text_muted)
+                     for line in DIRPUSH.summary_lines(payload)]
+        if state == "cancelled":
+            rows.append(C.inline_note("已取消当前步骤：本次没有生成推送产物。", t, "warn"))
         if state == "error":
             # 失败通常没有产物；先渲染原因，不能因为 artifact 为空退回空态（B P2-1）。
             tail = self._tail_lines("dirpush", 3)
@@ -2992,6 +3002,8 @@ class IssuePage(BasePage):
         self._prep_box = None
         self._step_tail = {}
         self._status = {step["key"]: "idle" for step in self.STEPS}
+        # BUG-07：换期清掉上一期的推送结果，避免旧 JSON 串到新一期。
+        self._dirpush_payload = None
         # 目录面板缓存里有上一期的栏目表/预览；重建，避免带进新一期。
         self._toc_panel = None
         self._info = CK.issue_card(self)
@@ -3108,8 +3120,15 @@ class IssuePage(BasePage):
         self.activate(key, source="page")
 
     def _apply_status(self, key: str, code: int, cancelled: bool,
-                      duration: float = 0.0, artifact: str = "") -> None:
-        if cancelled:
+                      duration: float = 0.0, artifact: str = "",
+                      payload: dict | None = None) -> None:
+        if key == "dirpush":
+            # BUG-07：rc≠0 或 JSON ok=false（含同名覆盖失败）都算失败；
+            # 产物只认本次引擎 JSON 里真实存在的 outputs[]，不靠日志行猜路径。
+            state = DIRPUSH.run_state(code, cancelled, payload)
+            artifact = DIRPUSH.result_artifact(payload, cancelled=cancelled)
+            self._dirpush_payload = payload
+        elif cancelled:
             state = "cancelled"
         elif code == 0:
             state = "done"
@@ -3145,8 +3164,14 @@ class IssuePage(BasePage):
             self.on_step_started(key)
             CK.before_issue_step(self, key)
             self.app.begin_run(call)
+            lines: list[str] = []
+
+            def _on_line(line: str) -> None:
+                lines.append(str(line))
+                self._on_line(line)
+
             try:
-                code = await EB.run_call(call, on_line=self._on_line,
+                code = await EB.run_call(call, on_line=_on_line,
                                          on_proc=getattr(self.app, "track_proc", None),
                                          notes=self.app.notes_repo)
             except Exception as exc:  # noqa: BLE001
@@ -3156,7 +3181,9 @@ class IssuePage(BasePage):
             cancelled = bool(getattr(self.app, "cancel_requested", False))
             duration = (time.monotonic() - started) * 1000
             artifact = EB.artifact_path(str(getattr(self.app, "last_line", "") or ""))
-            self._apply_status(key, code, cancelled, duration, artifact=artifact)
+            payload = DIRPUSH.result_payload(lines) if key == "dirpush" else None
+            self._apply_status(key, code, cancelled, duration, artifact=artifact,
+                               payload=payload)
             try:
                 await CK.after_issue_step(self, key, call, code, cancelled, artifact)
             except Exception:  # noqa: BLE001

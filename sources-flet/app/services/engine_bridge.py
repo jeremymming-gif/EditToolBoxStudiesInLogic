@@ -759,16 +759,75 @@ def dirpush_call(
     return _call("dirpush.py", args, "目录摘要推送")
 
 
-def dirpush_issues_csv(value: str) -> str:
-    seen: list[int] = []
-    for chunk in (value or "").replace("，", ",").split(","):
-        chunk = chunk.strip()
-        if not chunk.isdigit():
+# 年度「只含这些期号」的唯一分隔符判据：英文/中文逗号、顿号、任意空白（含全角）。
+# GUI 预览（ui/dirpush.issues_caption）与 argv 都从这里取，禁止各自再写一套。
+_ISSUE_SEPARATORS = re.compile(r"[,，、\s]+")
+_ISSUE_INVALID_HINT = "只填期号，用逗号分隔，如 1,2,3"
+
+
+def dirpush_split_issues(value: str) -> tuple[list[int], list[str]]:
+    """拆期号：返回 (升序去重后的合法期号, 非法片段原文)。
+
+    非法片段**不静默丢弃**（调用方必须整体拒绝，否则「1 2 x」会被悄悄写成 1,2）。
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return [], []
+    good: list[int] = []
+    bad: list[str] = []
+    for part in _ISSUE_SEPARATORS.split(raw):
+        if not part:
             continue
-        number = int(chunk)
-        if number > 0 and number not in seen:
-            seen.append(number)
-    return ",".join(str(n) for n in sorted(seen))
+        if part.isdigit() and int(part) > 0:
+            number = int(part)
+            if number not in good:
+                good.append(number)
+        else:
+            bad.append(part)
+    return sorted(good), bad
+
+
+def dirpush_issues_csv(value: str) -> str:
+    """年度 --include-issues 的 argv 值；空列表返回空串（调用方不传该参数）。
+
+    与 GUI 同判据；任何非法片段整体拒绝（ValueError），不部分生成。
+    """
+    good, bad = dirpush_split_issues(value)
+    if bad:
+        raise ValueError(_ISSUE_INVALID_HINT)
+    return ",".join(str(n) for n in good)
+
+
+_DIRPUSH_OUT_ROOT_CACHE: dict[str, list[str]] = {}
+
+
+def clear_dirpush_out_root_cache() -> None:
+    """清空输出根校验缓存（测试/引擎目录切换后调用）。"""
+    _DIRPUSH_OUT_ROOT_CACHE.clear()
+
+
+def dirpush_out_root_warnings(out_root: str, *, notes: str = "") -> list[str]:
+    """只读校验输出根是否落在代码仓内：调用引擎 `dirpush.py --check-out-root --json`。
+
+    成功（rc=0 且 JSON ok=true）时缓存同一 out_root 的结果（含空列表），避免每次
+    重建页面/校验都起进程。调用失败抛 RuntimeError（GUI 显示明确错误，不静默放行）。
+    """
+    text = str(out_root or "").strip()
+    if not text:
+        return []
+    if text in _DIRPUSH_OUT_ROOT_CACHE:
+        return list(_DIRPUSH_OUT_ROOT_CACHE[text])
+    call = _call("dirpush.py", ["--check-out-root", text, "--json"], "输出根仓库校验")
+    result = read_json_command(call, timeout=30.0, notes=notes)
+    payload = result.get("json") if isinstance(result.get("json"), dict) else {}
+    if not result.get("ok") or not payload.get("ok", False):
+        detail = str(result.get("error") or result.get("stderr") or "").strip()
+        raise RuntimeError("无法校验输出根是否在代码仓内（引擎检查失败）："
+                           + (detail or f"退出码 {result.get('code')}"))
+    warnings = [str(item).strip() for item in (payload.get("warnings") or [])
+                if str(item or "").strip()]
+    _DIRPUSH_OUT_ROOT_CACHE[text] = list(warnings)
+    return warnings
 
 
 # ── 只读读库 / 环境检查（P3：引用库视图与设置页，不写库）────────────────
