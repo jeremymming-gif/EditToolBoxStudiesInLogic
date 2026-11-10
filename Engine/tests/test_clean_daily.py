@@ -306,10 +306,25 @@ def test_daily_scope_and_latest_report_group() -> None:
     batch = js.get("trashDir") or ""
     check("scope.batch_created", bool(batch) and os.path.isdir(batch), _bad(batch))
     man = _manifest(batch) if batch else {}
+    sha_ok = True
+    for ent in man.get("entries") or []:
+        if ent.get("type") != "file":
+            continue
+        val = ent.get("sha256")
+        if not (isinstance(val, str) and len(val) == 64
+                and all(ch in "0123456789abcdef" for ch in val)):
+            sha_ok = False
+            break
+        full = os.path.join(batch, *ent["path"].split("/"))
+        if not os.path.exists(full) or sha(full) != val:
+            sha_ok = False
+            break
     check("scope.manifest_daily",
-          man.get("schema") == 2 and man.get("kind") == "daily"
+          # CLEANUP-R07：daily 新写批次 schema=3；file 条目带搬移前内容 sha256（见 C1.1/C1.2）。
+          man.get("schema") == 3 and man.get("kind") == "daily"
           and man.get("status") == "success"
-          and sorted(e["path"] for e in man.get("entries") or []) == expected,
+          and sorted(e["path"] for e in man.get("entries") or []) == expected
+          and sha_ok,
           _bad(json.dumps(man)))
     after = snap(root)
     protected_ok = True
@@ -667,8 +682,9 @@ def test_daily_empty_repeat_and_same_second_batches() -> None:
     m1 = _manifest(b1)
     m2 = _manifest(b2)
     check("same_second.manifests_complete",
-          m1.get("schema") == 2 and m1.get("kind") == "daily"
-          and m2.get("schema") == 2 and m2.get("kind") == "daily"
+          # CLEANUP-R07：新写批次 schema=3（C1.1）；其余语义（kind/paths/operationId）不变。
+          m1.get("schema") == 3 and m1.get("kind") == "daily"
+          and m2.get("schema") == 3 and m2.get("kind") == "daily"
           and sorted(e["path"] for e in m1.get("entries") or []) == ["a.aux", "b.aux"]
           and sorted(e["path"] for e in m2.get("entries") or []) == ["c.aux", "d.aux"],
           _bad(json.dumps(m1) + json.dumps(m2)))

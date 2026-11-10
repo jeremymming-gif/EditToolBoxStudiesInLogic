@@ -17,7 +17,9 @@
     `moving` 落盘，搬完置 `moved`；清单写入失败就不搬（启动时）或立即中止（中途）；
   · 中断（SIGTERM / KeyboardInterrupt）时：扫描期零写入；搬移期已搬条目仍有清单，可撤销。
   · `restore_daily()` 校验 root 与批次归属、逐条拒绝绝对路径/`..`/越界链接，目标已存在**不覆盖**；
-    兼容旧 v1/v2 manifest（逐条做同样的边界校验）。
+    恢复前**整批只读预检**：版本闸（不认识的 schema 整批拒绝）→ 路径边界 → 内容摘要闸
+    （schema=3 逐文件核对 sha256，不符零搬运）；旧 v1/v2 允许恢复但打 RESTORE_UNVERIFIED
+    告警（无内容摘要可校验）；`--dry-run` 同样完整预检。
 
 对外接口（GUI 依赖，冻结版见运行期 EVID/INTERFACE-DAILY.md）：
   · `scan_daily(root)`          只读候选器 → {root, candidates, kept, errors, ok}
@@ -979,7 +981,7 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
     # 意图清单（**先落盘再搬第一个文件**）
     intent: list[dict] = [{"path": c["path"], "type": "file", "status": "planned"} for c in ready]
     manifest: dict = {
-        "schema": 2,
+        "schema": 3,
         "root": root,
         "createdAt": operation_id.rsplit("-", 1)[0],
         "mode": "daily",
@@ -1018,6 +1020,14 @@ def _run_daily_inner(root: str, *, dry_run: bool, emit: Callable[[str], None]) -
             if not _stat.S_ISREG(st.st_mode) or os.path.islink(full):
                 entry["status"] = "failed"
                 failures.append({"path": rel, "error": "搬移前复核：已不是普通文件"})
+                continue
+            try:
+                # C1.2：搬移前先算内容 sha256，随 moving 状态一起原子落盘，再 move。
+                entry["sha256"] = _clean._sha256_file(full)
+            except OSError as exc:
+                entry["status"] = "failed"
+                failures.append({"path": rel, "error": f"搬移前计算内容摘要失败：{exc}"})
+                emit(f"Error moving {rel}: {exc}")
                 continue
             entry["status"] = "moving"
             try:
@@ -1103,7 +1113,11 @@ def restore_daily(
     dry_run: bool = False,
     log: Callable[[str], None] | None = None,
 ) -> dict:
-    """按清单把 daily 批次搬回 root；校验归属/边界，同名不覆盖，可重试。"""
+    """按清单把 daily 批次搬回 root；校验归属/边界/版本/内容摘要，同名不覆盖，可重试。
+
+    恢复 = 两遍：pass1 全只读预检（归属/结构/版本/逐条边界/v3 摘要），任一失败整批拒绝、
+    零搬运；pass2 逐条搬回并持久账本。`--dry-run` 只走 pass1（仍然完整校验）。
+    """
     emit = log or (lambda _s: None)
     root = os.path.abspath(os.path.expanduser(root))
     trash_root = os.path.abspath(os.path.expanduser(trash_root))
@@ -1129,17 +1143,11 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
     if data is None:
         return preflight("回收清单缺失或不是合法 JSON（无法验证批次；批次保留可重试）", trash_root)
 
-    raw_entries = data.get("entries")
-    v1 = False
-    if isinstance(raw_entries, list):
-        raw_items = raw_entries
-    elif isinstance(data.get("files"), list):  # 旧 v1：升级为带 status 的 entries
-        v1 = True
-        raw_items = [
-            {"path": str(x), "type": "file", "status": "moved"} for x in data["files"]
-        ]
-    else:
-        return preflight("不认识的回收清单（既无 entries 也无 files）", trash_root)
+    # 结构存在性 → 版本闸（C2）：不认识的 schema 整批拒绝，先于任何写入/搬移。
+    try:
+        label, plan_items = _clean._manifest_plan(data)
+    except _clean._ManifestProblem as exc:
+        return preflight(str(exc), trash_root)
 
     manifest_root = data.get("root")
     if manifest_root and not _same_root(str(manifest_root), root):
@@ -1149,20 +1157,33 @@ def _restore_inner(root: str, trash_root: str, *, dry_run: bool, emit: Callable[
 
     trash_real = os.path.realpath(trash_root)
     items: list[dict] = []
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            return preflight(f"清单条目不是对象：{raw!r}", trash_root)
-        rel = str(raw.get("path") or "")
-        typ = str(raw.get("type") or "file")
-        status = raw.get("status")
+    for plan_item in plan_items:
+        rel = plan_item["path"]
         bad = _validate_entry_rel(rel, root_real, trash_real)
         if bad:
             return preflight(f"清单条目不安全（{bad}）：{rel or '（空路径）'}", rel)
-        items.append({"raw": raw, "path": rel, "type": typ, "status": status})
+        items.append(plan_item)
+
+    # 内容摘要闸（C1.2/C3.2/C3.8）：版本判定后、任何写入（含台账持久化）前，整批只读预检。
+    digest_failures = _clean._verify_entries_digests(items, root, trash_root, label)
+    if digest_failures:
+        return _mk_result(root, status="preflight_failed", action="restore", dry_run=dry_run,
+                          trash=trash_root, restore=trash_root,
+                          failures=digest_failures, error=str(digest_failures[0]["error"]))
+
+    legacy_warnings: list[str] = []
+    if label != "3":
+        # 旧 v1/v2：允许恢复但显式告警「无内容摘要，无法校验是否被篡改」。
+        n_legacy = _clean._restorable_count(items, root, trash_root)
+        if n_legacy:
+            legacy_warnings.append(_clean._legacy_restore_warning(label, n_legacy))
+            emit(legacy_warnings[-1])
+
+    raw_items = [item["raw"] for item in items]
 
     done: list[str] = []
     failures: list[dict] = []
-    warnings: list[str] = []
+    warnings: list[str] = list(legacy_warnings)
     skipped: list[dict] = []
     already = 0
 

@@ -48,7 +48,7 @@
 | 检查 tex 信息 | 查 tex 里编辑关心的字段是否齐（并核对 PDF 实际页数） |  |
 | 编译全部 | 对一期所有稿子跑 xelatex（进度 + 失败清单） |  |
 | 生成目录 | 选检查报告 → **一键最终交付**：生成中英文目录 → 缺 `000 Table of Contents` 自动创建 → 落位固定名（`Chinese Content.tex/.pdf`、`contents.tex/.pdf`）→ XeLaTeX ×2 编译；结果区列出 4 个固定名路径/模板来源/页数；高级开关「仅生成 tex（不落位）」默认关（旧行为）。模板继承、条目断行/栏目行与单页适配都在引擎侧 | `Engine/toc.py`、`Engine/slcn/toc.py`、`Engine/slcn/toctemplate.py` |
-| 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest v2，`--restore` 撤销、`--empty-trash` 清空） | `Engine/cleantemp.py`、`Engine/slcn/clean.py` |
+| 删除临时文件 | 清编译中间文件（默认，与 `slcn/clean.py` 逐项一致）；**B-211 起**另有「交付收尾」「工作区旧件」两种可撤销模式：引用闭包预检/白名单、`合并*.pdf` 只留最新、固定交付物保护；回收站 `<目录>/.toolbox-trash/<目录名>-<时间戳>/`（manifest schema=3：文件条目带内容 sha256；`--restore` 撤销前校验版本与内容摘要、旧批次告警不可校验；`--empty-trash` 清空） | `Engine/cleantemp.py`、`Engine/slcn/clean.py` |
 | 日常清理（清理页） | **清理页的唯一入口**（`--mode daily`）：一个日常范围自动决定收哪些（编译辅助 / 编译 log / 有来源 bbl / 有同名 tex 的 out / `.toolbox-tmp/` / 根时间戳 tex / `目录结果.json` / 旧信息检查报告组），**引用闭包优先保护、无法证明可再生一律保留**；默认移入回收站，一个 `operationId` 一个可恢复批次（先落清单再搬移），`--restore` 撤销；拒绝 `--delete/--empty-trash/--trash/--all-reports`；扫描只读、预检失败零写入 | `Engine/cleantemp.py`、`Engine/slcn/clean_daily.py`；用法 §3.12 |
 | 库概况（引用库） | 引用库体检：条目数 / 已核实占比 / 重复 key / 字段冲突 / 缺来源 / 清单文件状态；数字来自 `bibdb.py stats` 的 JSON，界面不自己算 | `Engine/bibdb.py`，第 132 条 |
 | 查库（引用库） | 按 key / DOI / 题名 / 作者+年 查已沉淀的已核实条目（命中即跳过重复检索的判据就在这里）；结果只读，不改库 | `Engine/bibdb.py`，第 132 条 |
@@ -1409,6 +1409,8 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
 - **撤销/重试**：所有 `--restore`（daily 与旧 v1/v2 批次）先做同一套预检——清单 root 必须匹配、
   批次必须在 `<root>/.toolbox-trash/` 下、回收目录/批次/条目不得是符号链接或越界；坏清单/越界 → `preflight_failed`、rc2、零写入，
   批次保留，修好后再点撤销即可。目标已存在不覆盖、进 `skipped`，解除冲突后重试成功；已恢复条目重试计 `alreadyRestored`，不报 Missing。
+  **CLEANUP-R07 起**预检还含**版本闸**与**内容摘要闸**：清单 `schema` 值不认识 → 整批拒绝（rc2、零搬运）；`schema=3` 批次逐文件核对内容 sha256，
+  不符/缺字段 → 整批拒绝；旧 v1/v2 批次允许恢复但会明确告警「无内容摘要、无法校验是否被篡改」（`RESTORE_UNVERIFIED`）。
 - **引用保护细则**：`\input` 支持花括号/引号/无花括号三种写法；引用按真实编译 cwd（文章目录优先）解析，
   同名多来源全部保护；符号链接别名保护其目标，指向根外只保护别名、不跟随。
 - **备份优先**：`.toolbox-tmp/` 内的 `.bak/.backup/.orig` 等备份文件也按备份保留（不会因为位于 tmp 就被回收）。

@@ -6,7 +6,7 @@
   (a) 首交付：没有旧目录 → 不产生回收站、不产生 `.coop-bak-*`；
   (b) 覆盖交付：旧目录进 `<交付根>/.toolbox-trash/<根名>-<stamp>/<名>.coop-bak-*`，
       工作区不再有同级 `.coop-bak-*`，新交付内容正确；
-  (c) manifest：schema=2 / `mode="coop-bak"` / 条目 `type="dir"`，`restore()` 整棵搬回；
+  (c) manifest：schema=3 / `mode="coop-bak"` / 条目 `type="dir"`，`restore()` 整棵搬回；
   (d) 二次覆盖：同一交付只留**最近 1 份**（旧条目连 manifest 一起清、删空的回收目录收掉），
       回收站里**别的**内容一个不动；
   (e) promote 换新失败：旧交付逐字节回滚、不产生回收站、不留 `.coop-tmp-*`；
@@ -130,8 +130,8 @@ def test_cover_then_restore(tmp: str) -> None:
           str(siblings(root, "*.coop-bak-*")))
 
     man = read_manifest(trash_root)
-    check("(c)-1 manifest schema=2 / mode=coop-bak / root 为交付根",
-          man.get("schema") == 2 and man.get("mode") == "coop-bak"
+    check("(c)-1 manifest schema=3 / mode=coop-bak / root 为交付根",
+          man.get("schema") == 3 and man.get("mode") == "coop-bak"
           and man.get("root") == os.path.abspath(root), json.dumps(man, ensure_ascii=False))
     check("(c)-2 条目 type=dir、path=旧目录名",
           [(e.get("path"), e.get("type")) for e in man.get("entries") or []]

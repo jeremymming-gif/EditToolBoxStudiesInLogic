@@ -23,13 +23,15 @@ EditToolBox 时两边不会打架。对齐的细节包括：
     `Chinese Content.*`、`扉页*`、`编委*`、`封底*`）永不删。
 
 两套模式**默认移入回收站**（`--delete` 才永久删）；回收站统一为
-`<root>/.toolbox-trash/<basename(root)>-<YYYY_MM_DD_HHMMSS>/`，manifest schema=2
-（文件 + 目录条目），`restore()` 兼容旧 v1 manifest（`files` 列表）。
+`<root>/.toolbox-trash/<basename(root)>-<YYYY_MM_DD_HHMMSS>/`，manifest schema=3
+（文件 + 目录条目；文件条目带内容 sha256），`restore()` 恢复前校验版本与内容摘要，
+兼容旧 v1/v2 清单（`files` 列表或 schema=1/2），不认识的版本整批拒绝。
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
@@ -92,6 +94,168 @@ SKIP_DIRS = ("original", "origin", "原稿", "源稿", "原始稿")
 #: 本工具自建的回收目录名（放在被清理目录的根下）。遍历时必须一起跳过 ——
 #: 否则「移入回收 → 再清理」会把回收目录里的东西当中间文件再搬一次（嵌套回收）。
 TRASH_DIR = ".toolbox-trash"
+
+#: 回收清单允许的 schema 值。键缺失 = 旧 v1；其余任何值一律整批拒绝（版本闸）。
+ALLOWED_SCHEMAS = (1, 2, 3)
+
+#: 「可能恢复」的条目状态：planned/failed 从未搬出，永不恢复（SIGKILL 意图条目）。
+RESTORABLE_STATES = (None, "", "moved", "moving", "restored")
+
+#: manifest 里文件条目的内容摘要（小写 64 位十六进制）。
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class _ManifestProblem(Exception):
+    """清单结构/版本不合法：调用方据此整批拒绝（预检失败、零搬运）。"""
+
+
+def _json_repr(value: object) -> str:
+    """把任意清单值渲染成紧凑 JSON（未知版本/schema 告警用）。"""
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _sha256_file(path: str) -> str:
+    """流式计算文件内容 SHA-256（小写十六进制）。"""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _manifest_version_label(data: dict) -> str:
+    """返回清单版本标签：``"v1"``（无 schema 键）/``"1"``/``"2"``/``"3"``。
+
+    schema 键存在但值不是 1/2/3（或不是 int，如 True/"3"/null/3.0）→ 抛
+    ``_ManifestProblem``（未知清单版本：整批拒绝）。
+    """
+    if "schema" not in data:
+        return "v1"
+    value = data["schema"]
+    if isinstance(value, bool) or not isinstance(value, int) or value not in ALLOWED_SCHEMAS:
+        raise _ManifestProblem(
+            f"不认识的回收清单版本（schema={_json_repr(value)}；支持 1/2/3；"
+            "批次保留、未搬运任何文件）"
+        )
+    return str(value)
+
+
+def _manifest_plan(data: dict) -> tuple[str, list[dict]]:
+    """结构存在性校验 + 版本判定，返回 ``(版本标签, 归一化条目)``。
+
+    顺序固定（契约 C2/C3.1）：先看 ``entries``/``files`` 存在性，再看 schema 版本。
+    ``files`` 元素可为字符串路径或 ``{"path": ...}`` 对象（旧 v1 两种写法都兼容）。
+    """
+    entries = data.get("entries")
+    files = data.get("files")
+    if isinstance(entries, list):
+        label = _manifest_version_label(data)
+        items: list[dict] = []
+        for raw in entries:
+            if not isinstance(raw, dict):
+                raise _ManifestProblem(f"清单条目不是对象：{raw!r}")
+            items.append({
+                "raw": raw,
+                "path": str(raw.get("path") or ""),
+                "type": str(raw.get("type") or "file"),
+                "status": raw.get("status"),
+                "sha256": raw.get("sha256"),
+            })
+        return label, items
+    if isinstance(files, list):
+        label = _manifest_version_label(data)
+        items = []
+        for raw in files:
+            rel = str(raw.get("path") or "") if isinstance(raw, dict) else str(raw)
+            upgraded = {"path": rel, "type": "file", "status": "moved"}
+            items.append({
+                "raw": upgraded,
+                "path": rel,
+                "type": "file",
+                "status": "moved",
+                "sha256": None,
+            })
+        return label, items
+    raise _ManifestProblem("不认识的回收清单（既无 entries 也无 files）")
+
+
+def _is_file_entry(item: dict) -> bool:
+    return str(item.get("type") or "file") != "dir"
+
+
+def _restorable_count(items: list[dict], root: str, batch_dir: str) -> int:
+    """本次可恢复的 file 条目数（旧批告警里的 N；只看真正会搬回的文件）。"""
+    n = 0
+    for item in items:
+        if not _is_file_entry(item) or item.get("status") not in RESTORABLE_STATES:
+            continue
+        rel = item["path"]
+        src = os.path.join(batch_dir, rel)
+        dst = os.path.join(root, rel)
+        if os.path.exists(src) and not os.path.lexists(dst):
+            n += 1
+    return n
+
+
+def _verify_entries_digests(items: list[dict], root: str, batch_dir: str,
+                            label: str) -> list[dict]:
+    """恢复前的整批内容摘要预检（契约 C3.2/C3.8），返回失败项（空 = 通过）。
+
+    · 只校验「可能恢复」且本次真会搬回的 file 条目（src 存在、dst 不存在）；
+      ``planned``/``failed``、src 缺失、dst 已存在一律不校验；
+    · schema=3 的 file 条目必须先有合法 sha256（缺失/非字符串/格式不符 → 整批拒绝）；
+    · 摘要不符 → 逐条给出 rel、清单 sha256、实算 sha256。
+    """
+    failures: list[dict] = []
+    if label != "3":
+        return failures
+    # 摘要字段完整性：与 src/dst 状态无关，覆盖所有可能恢复的 file 条目。
+    for item in items:
+        if not _is_file_entry(item) or item.get("status") not in RESTORABLE_STATES:
+            continue
+        expected = item.get("sha256")
+        if not isinstance(expected, str) or not _SHA256_RE.match(expected):
+            failures.append({
+                "path": item["path"],
+                "error": f"回收清单条目缺少有效 sha256（{item['path']}；"
+                         "批次保留、未搬运任何文件）",
+            })
+    if failures:
+        return failures
+    for item in items:
+        if not _is_file_entry(item) or item.get("status") not in RESTORABLE_STATES:
+            continue
+        rel = item["path"]
+        src = os.path.join(batch_dir, rel)
+        dst = os.path.join(root, rel)
+        if not os.path.exists(src) or os.path.lexists(dst):
+            continue
+        expected = str(item.get("sha256") or "")
+        try:
+            actual = _sha256_file(src)
+        except OSError as exc:
+            failures.append({
+                "path": rel,
+                "error": f"回收清单内容摘要不符（{rel}：清单 sha256={expected}，"
+                         f"实算=读取失败（{exc}）；批次保留、未搬运任何文件）",
+            })
+            continue
+        if actual != expected:
+            failures.append({
+                "path": rel,
+                "error": f"回收清单内容摘要不符（{rel}：清单 sha256={expected}，"
+                         f"实算={actual}；批次保留、未搬运任何文件）",
+            })
+    return failures
+
+
+def _legacy_restore_warning(label: str, count: int) -> str:
+    """旧 v1/v2 批次的可预期告警（进 warnings 数组 + 人读行）。"""
+    return (f"RESTORE_UNVERIFIED: 清单为旧版本（schema={label}），{count} 个文件"
+            "无内容摘要，无法校验是否被篡改；批次保留")
 
 
 def clean(
@@ -172,14 +336,25 @@ def trash_dir(root: str, stamp: str | None = None) -> str:
 
 def _write_manifest(trash_root: str, root: str, stamp: str, mode: str,
                     entries: list[tuple[str, str]]) -> None:
-    """写 manifest schema=2（文件 + 目录条目；`restore()` 按 entries 搬回）。"""
+    """写 manifest schema=3（目录条目无摘要；文件条目带内容 sha256，撤销时校验）。"""
     os.makedirs(trash_root, exist_ok=True)
+    manifest_entries: list[dict] = []
+    for rel, typ in entries:
+        item: dict = {"path": rel, "type": typ}
+        if typ != "dir":
+            try:
+                # 搬移后从批次内文件算；内容即搬移前内容（同一文件只算一次）。
+                item["sha256"] = _sha256_file(os.path.join(trash_root, rel))
+            except OSError:
+                # 极端情况（并发删除等）：条目照写；恢复时摘要闸会整批拒绝该批次。
+                pass
+        manifest_entries.append(item)
     data = {
-        "schema": 2,
+        "schema": 3,
         "root": os.path.abspath(root),
         "createdAt": stamp,
         "mode": mode,
-        "entries": [{"path": rel, "type": typ} for rel, typ in entries],
+        "entries": manifest_entries,
     }
     with open(os.path.join(trash_root, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=2)
@@ -192,7 +367,7 @@ def trash(
 ) -> tuple[int, str]:
     """把中间文件**移入** `<root>/.toolbox-trash/<basename(root)>-<时间戳>/`（保留相对目录结构）。
 
-    返回 (文件数, 回收目录)。回收目录里另写 `manifest.json`（schema=2，文件条目），供 `restore()`。
+    返回 (文件数, 回收目录)。回收目录里另写 `manifest.json`（schema=3，文件条目带内容 sha256），供 `restore()` 校验撤销。
 
     与 `clean()` 的三点不同：① 不 `os.remove`，而是 `shutil.move`；② 建回收目录；
     ③ 目录结构保留（`01 A/xx.aux` → `.toolbox-trash/<名>-<ts>/01 A/xx.aux`），还原时不用猜。
@@ -239,6 +414,22 @@ def trash(
     return len(moved), trash_root if moved else ""
 
 
+def _validate_manifest_rel(rel: str) -> str:
+    """恢复前路径安全校验：返回空串=安全，否则原因（与 clean_daily 文案一致）。"""
+    if not rel or not rel.strip():
+        return "空路径"
+    if os.path.isabs(rel) or rel.startswith("/"):
+        return "绝对路径"
+    if rel.startswith("\\") or re.match(r"^[A-Za-z]:", rel):
+        return "绝对路径"
+    if ".." in rel.replace("\\", "/").split("/"):
+        return "路径穿越"
+    norm = os.path.normpath(rel)
+    if norm in (".", "..") or norm.startswith(".." + os.sep) or norm.startswith("../"):
+        return "路径穿越"
+    return ""
+
+
 def restore(
     root: str,
     trash_root: str,
@@ -247,8 +438,11 @@ def restore(
 ) -> tuple[int, list[str]]:
     """按 `manifest.json` 把回收目录里的文件/目录搬回 `<root>`；返回 (恢复数, 相对路径)。
 
-    · schema=2：按 `entries` 搬（`dir` 条目整棵 move 回）；
-    · 旧 v1：按 `files` 列表搬（只有文件；旧回收目录照样能撤销）。
+    · 版本闸：schema=3 逐文件核对内容 sha256；schema=1/2 或旧 v1（无 schema）允许恢复
+      并打 RESTORE_UNVERIFIED 告警；不认识的版本整批拒绝、零搬运（与 cleantemp
+      --restore 同一套判定，不留旧行为旁路）。
+    · 搬移任何条目前先做全量只读预检（结构/版本/路径边界/内容摘要），失败 → (0, [])。
+    · schema=3 的 `dir` 条目无摘要（整棵搬回，不校验内容——已知限制，文档写明）。
     ⚠️ 原位置**已经有同名文件/目录时不覆盖**（跳过并记一条）—— 还原不能变成第二次破坏。
     """
     emit = log or (lambda _s: None)
@@ -259,16 +453,32 @@ def restore(
     except (OSError, ValueError) as e:
         emit(f"读不到回收清单：{e}")
         return 0, []
-    entries = data.get("entries")
-    if isinstance(entries, list):
-        items: list[tuple[str, str]] = []
-        for e in entries:
-            if isinstance(e, dict) and str(e.get("path", "")):
-                items.append((str(e["path"]), str(e.get("type") or "file")))
-    else:  # v1 兼容：{"files": [...]}
-        items = [(str(x), "file") for x in data.get("files", [])]
+    try:
+        label, items = _manifest_plan(data)
+    except _ManifestProblem as exc:
+        emit(str(exc))
+        return 0, []
+    for item in items:
+        bad = _validate_manifest_rel(item["path"])
+        if bad:
+            emit(f"清单条目不安全（{bad}）：{item['path'] or '（空路径）'}")
+            return 0, []
+    digest_failures = _verify_entries_digests(items, root, trash_root, label)
+    if digest_failures:
+        for failure in digest_failures:
+            emit(str(failure["error"]))
+        return 0, []
+    if label != "3":
+        n_legacy = _restorable_count(items, root, trash_root)
+        if n_legacy:
+            emit(_legacy_restore_warning(label, n_legacy))
     done: list[str] = []
-    for rel, typ in items:
+    for item in items:
+        status = item.get("status")
+        if status not in RESTORABLE_STATES:
+            continue  # planned/failed：从未搬出，不恢复
+        rel = item["path"]
+        typ = item["type"]
         src = os.path.join(trash_root, rel)
         dst = os.path.join(root, rel)
         if typ == "dir" and not os.path.isdir(src):
@@ -402,7 +612,7 @@ def retire_coop_bak(final_dir: str, backup_dir: str, *,
     """B-303：把 promote 留下的旧交付目录移入回收站，同一交付只留最近 1 份。
 
     · 落点：`<root>/.toolbox-trash/<basename(root)>-<stamp>/<basename(backup_dir)>`
-      （`root` = 交付目录的父目录；manifest schema=2、条目 `type="dir"`，`restore()` 可整棵搬回）；
+      （`root` = 交付目录的父目录；manifest schema=3、条目 `type="dir"`（目录无摘要），`restore()` 可整棵搬回）；
     · 剪枝：回收站里其他 `'<交付名>.coop-bak-'` 目录条目一并清掉并同步各自 manifest
       （**不碰**回收站里别的文件/目录；删空的回收目录连清单一起收掉）；
     · 移动失败照常抛（`FileNotFoundError`/`OSError`）——调用方降级成 warning：
@@ -801,18 +1011,40 @@ def workspace_clean(
     return sink.count, sink.commit()
 
 
+def _trash_manifest_unknown_schema(trash_root: str) -> tuple[bool, object]:
+    """回收目录的 manifest 是否带未知 schema。返回 (是否未知, schema 值)。"""
+    try:
+        with open(os.path.join(trash_root, "manifest.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False, None
+    if not isinstance(data, dict) or "schema" not in data:
+        return False, None
+    value = data["schema"]
+    if isinstance(value, bool) or not isinstance(value, int) or value not in ALLOWED_SCHEMAS:
+        return True, value
+    return False, None
+
+
 def empty_trash(
     root: str,
     log: Callable[[str], None] | None = None,
     dry_run: bool = False,
+    *,
+    warnings: list[str] | None = None,
 ) -> int:
     """清空 `<root>/.toolbox-trash/` 下所有回收目录，返回清掉的个数（不存在 → 0）。
 
     B-281：真跑清空后若回收站目录**已空**，把它本身也删掉（否则每清一次都会在期目录
     里留一个空的 `.toolbox-trash/`，Windows 资源管理器里看着像没清干净）。目录里还剩
-    东西（某个回收目录删失败）或权限不允许时**静默保留**，行为与从前一致。
-    预演（`dry_run`）不删目录。给外壳的契约行完全不变；「已删除空的回收站目录」这行
-    提示只打在契约行**之前**（`cleantemp.py` 在 `empty_trash` 返回后才打印契约行）。
+    东西（某个回收目录删失败，或**清单版本不认识而被保守保留**）或权限不允许时**静默
+    保留**。预演（`dry_run`）不删目录。给外壳的契约行完全不变；「已删除空的回收站目录」
+    这行提示只打在契约行**之前**（`cleantemp.py` 在 `empty_trash` 返回后才打印契约行）。
+
+    · 未知清单版本（schema 键存在且值不是 1/2/3）：**保留**该回收目录、追加告警、
+      不计入 n（避免把新版引擎写的批次当垃圾删掉）；
+    · 清单缺失/坏 JSON/既无 entries 也无 files（历史残留）：保持既有行为**照删**；
+    · 告警经 `warnings`（可选输出参数）与 `log` 输出；返回值/CLI 计数语义不变。
     """
     emit = log or (lambda _s: None)
     trash_root = os.path.join(root, TRASH_DIR)
@@ -821,12 +1053,20 @@ def empty_trash(
     n = 0
     for name in sorted(os.listdir(trash_root)):
         full = os.path.join(trash_root, name)
+        is_dir = os.path.isdir(full) and not os.path.islink(full)
+        unknown, value = _trash_manifest_unknown_schema(full) if is_dir else (False, None)
+        if unknown:
+            msg = f"保留未知版本的回收目录：{name}（schema={_json_repr(value)}）"
+            emit(msg)
+            if warnings is not None:
+                warnings.append(msg)
+            continue
         if dry_run:
             emit(f"Will delete: {name}")
             n += 1
             continue
         try:
-            if os.path.isdir(full) and not os.path.islink(full):
+            if is_dir:
                 shutil.rmtree(full)
             else:
                 os.remove(full)
@@ -918,8 +1158,8 @@ def toc_work_clean(
 ) -> tuple[int, str]:
     """B-121：清理生成中间件与旧检查报告，返回 `(清理数, 回收目录)`。
 
-    默认**移入** `<root>/.toolbox-trash/<basename>-<stamp>/`（manifest schema=2，
-    可 `restore()` 撤销）；`delete=True` 才永久删。绝不触碰 `000*` 成品、最终
+    默认**移入** `<root>/.toolbox-trash/<basename>-<stamp>/`（manifest schema=3，
+    文件条目带内容 sha256，可 `restore()` 校验撤销）；`delete=True` 才永久删。绝不触碰 `000*` 成品、最终
     `.tex/.pdf/.sty/.bib` 与 `目录设置.json`（候选表只认白名单模式）。
     """
     emit = log or (lambda _s: None)

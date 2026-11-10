@@ -1054,11 +1054,13 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 - **预检失败 = 零写入**：引用缺失/越界/绝对路径/动态路径、目录不可读、tex 不可读、回收目录/批次是符号链接或真实路径越界
   → `errors` 非空，`status=preflight_failed`、`rc=2`，不建批次、不搬任何文件。
 - **可恢复批次与停止**：一个 `operationId` = 一个批次 `<期目录>/.toolbox-trash/<目录名>-<operationId>/`；**先把清单/意图持久化再搬移**，
-  manifest `schema=2` + `kind="daily"`，每项 `planned → moving → moved|failed` 逐项落盘；`SIGTERM/SIGINT` 只置停止标志：
+  manifest `schema=3` + `kind="daily"`，每项 `planned → moving → moved|failed` 逐项落盘（`file` 条目在搬移前流式写入内容 `sha256`，随 `moving` 先落盘再搬移）；`SIGTERM/SIGINT` 只置停止标志：
   扫描期零写入，搬移中断 `status=cancelled`（`count` 只算已搬成功数）且已搬文件可由 `--restore` 恢复。
 - **恢复（所有入口同一套预检）**：校验 manifest 的 root（realpath 容错）/ 批次必须位于 `<root>/.toolbox-trash/` 下 /
   回收目录、批次、父目录与条目不得经符号链接越界 / 拒绝路径穿越与绝对路径 / 目标已存在不覆盖（保留可重试）；
   manifest 缺失、坏 JSON、条目非法 → `preflight_failed`、`rc=2`、`ok=false`、**零写入**，批次保留可重试（修清单后直接重试）。
+  **CLEANUP-R07 起**这套预检还含**版本闸**（`schema` 值不认识 → 整批拒绝 `preflight_failed`、rc2 零搬运）与**内容摘要闸**
+  （`schema=3` 逐文件核对内容 sha256，不符/缺字段 → 整批拒绝零搬运）；旧 v1/v2 允许恢复但告警 `RESTORE_UNVERIFIED`（无内容摘要、无法校验篡改）。
 - **恢复账本**：每条成功搬回后 manifest 该条 `status` 原子置 `"restored"`；重试时已恢复条目计 `alreadyRestored`
   （目标仍在），**不再报 "Missing in trash"**；冲突/缺失进 `skipped`，全部恢复完 → `success`，本次无新恢复 → `empty`。
   daily 批次冲突/缺失 → `partial`（rc2、`ok=false`）；旧 v1/v2 批次保留旧语义（只 warning、rc0）。

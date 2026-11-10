@@ -145,10 +145,14 @@ pat = re.compile(rf"^{re.escape(base)}-\d{{4}}_\d{{2}}_\d{{2}}_\d{{6}}$")
 check("(b) 回收目录名 = <目录名>-<YYYY_MM_DD_HHMMSS>（无嵌套旧式纯时间戳）",
       len(td) == 1 and bool(pat.match(os.path.basename(td[0]))), td)
 man = json.load(open(os.path.join(td[0], "manifest.json"), encoding="utf-8"))
-check("(b) manifest schema=2 / mode=aux / root=绝对路径",
-      man.get("schema") == 2 and man.get("mode") == "aux" and man.get("root") == root2, man.get("schema"))
-check("(b) manifest entries=3 条且 type=file",
-      len(man.get("entries", [])) == 3 and all(e["type"] == "file" for e in man["entries"]))
+check("(b) manifest schema=3 / mode=aux / root=绝对路径",
+      man.get("schema") == 3 and man.get("mode") == "aux" and man.get("root") == root2, man.get("schema"))
+check("(b) manifest entries=3 条 type=file 且 sha256 与批次内容一致",
+      len(man.get("entries", [])) == 3 and all(e["type"] == "file" for e in man["entries"])
+      and all(re.fullmatch(r"[0-9a-f]{64}", e.get("sha256") or "")
+              and e["sha256"] == sha(os.path.join(td[0], *e["path"].split("/")))
+              for e in man["entries"]),
+      [e.get("sha256") for e in man.get("entries", [])])
 check("(b) 移入后原处只剩 .tex 与 original/",
       not os.path.exists(os.path.join(root2, "01 A", "t.aux"))
       and os.path.exists(os.path.join(root2, "01 A", "A.tex"))
@@ -272,10 +276,14 @@ check("(d) delivery：退出码 0、契约行格式正确",
 n_cli = int(re.search(r"已移入回收目录 (\d+) 项", r.stdout).group(1))
 td_d = trash_dirs(D)
 man_d = json.load(open(os.path.join(td_d[0], "manifest.json"), encoding="utf-8"))
-check("(d) 回收目录根下、manifest schema=2/mode=delivery",
-      len(td_d) == 1 and man_d["schema"] == 2 and man_d["mode"] == "delivery")
+check("(d) 回收目录根下、manifest schema=3/mode=delivery",
+      len(td_d) == 1 and man_d["schema"] == 3 and man_d["mode"] == "delivery")
 check("(d) CLI 数 = manifest 条目数 = 29 文件 + 1 目录",
       n_cli == len(man_d["entries"]) == 30, f"cli={n_cli} entries={len(man_d['entries'])}")
+check("(d) file 条目 sha256 与批次内容一致（dir 条目无 sha）",
+      all(re.fullmatch(r"[0-9a-f]{64}", e.get("sha256") or "")
+          and e["sha256"] == sha(os.path.join(td_d[0], *e["path"].split("/")))
+          for e in man_d["entries"] if e["type"] != "dir"))
 check("(d) 目录条目 type=dir（`_待核` 整棵）",
       any(e["path"] == "old_待核" and e["type"] == "dir" for e in man_d["entries"]))
 check("(d) aux 全套 junk 已移走", not os.path.exists(os.path.join(D, "junk", "x.aux")))
@@ -444,8 +452,8 @@ check("(e) 固定交付物整棵保护：000*/contents/Chinese Content/扉页/�
            "扉页/x.bak", "编委/x.aux", "封底/x.aux")))
 td_w = trash_dirs(W)
 man_w = json.load(open(os.path.join(td_w[0], "manifest.json"), encoding="utf-8"))
-check("(e) workspace manifest=2、含 dir 条目（coop-bak / _待核）",
-      man_w["schema"] == 2 and man_w["mode"] == "workspace"
+check("(e) workspace manifest=3、含 dir 条目（coop-bak / _待核）",
+      man_w["schema"] == 3 and man_w["mode"] == "workspace"
       and sum(1 for e in man_w["entries"] if e["type"] == "dir") == 2, man_w["mode"])
 r = run("cleantemp.py", "--folder", W, "--restore", td_w[0])
 check("(e) workspace 撤销逐字节（内容 sha + 相对路径 + 目录结构）",

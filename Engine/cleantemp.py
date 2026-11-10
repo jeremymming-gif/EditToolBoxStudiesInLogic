@@ -194,11 +194,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.empty_trash:
         say("清空回收站\n")
         say(f"路径：{root}\n")
-        n = _clean.empty_trash(root, log=log, dry_run=args.dry_run)
+        # C5.3：未知清单版本的回收目录会被保守保留，告警经 warnings 进 --json 结果数组。
+        warnings: list[str] = []
+        n = _clean.empty_trash(root, log=log, dry_run=args.dry_run, warnings=warnings)
         say()
         verb = "将清空" if args.dry_run else "已清空"
         say(f"完成。{verb}回收站 {n} 个回收目录（目录：{root}）")
-        finish(mode="empty-trash", count=n,
+        finish(mode="empty-trash", count=n, warnings=warnings,
                trash=os.path.join(root, _clean.TRASH_DIR))
         return 0
 
