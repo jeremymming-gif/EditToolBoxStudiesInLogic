@@ -35,6 +35,7 @@ from ui import dirpush as DIRPUSH
 from ui import metadata_form as MF
 from ui import normalize as NR
 from ui import settings_shell as SHELL
+from ui import task_feedback as TF
 from ui.base_page import BasePage
 from ui.tokens import BREAK, SIDEBAR_W, ZOOM_MIN
 from ui.help_page import HelpPage
@@ -119,6 +120,26 @@ def _level_of_line(text: str) -> str:
     if EB.is_summary_line(line):
         return "info"
     return "dim"
+
+
+def _reject_when_running(page, entry: str, action: str = "开始新的运行") -> bool:
+    """运行中拒绝新的运行入口：可见 toast + 遥测，不排队、不并发（P08 I-5 / R02）。
+
+    静默 `return` 会让用户以为点击没生效（或者以为已经在跑），所以统一走这里。
+    返回 True 表示已经拒绝，调用方应直接返回。
+    """
+    app = page.app
+    if not getattr(app, "running", False):
+        return False
+    try:
+        app.toast(f"运行中不能{action}：等当前任务结束，或先点「停止」")
+    except Exception:  # noqa: BLE001 页面桩/证据脚本
+        pass
+    try:
+        app.mark("run_rejected", entry=entry, reason="running")
+    except Exception:  # noqa: BLE001
+        pass
+    return True
 
 
 def _basename(path: str) -> str:
@@ -996,7 +1017,7 @@ class SinglePage(BasePage):
 
     # ── 运行 ───────────────────────────────────────────────────────────
     def _on_run(self, e=None) -> None:
-        if self.app.running:
+        if _reject_when_running(self, "single_run"):
             return
         try:
             call = self._build_call()
@@ -1019,7 +1040,7 @@ class SinglePage(BasePage):
 
     def _on_metadata_preview(self, e=None) -> None:
         """CV-002/003：跑与「开始转换」同一 argv，只多 --metadata-preview-out（只读）。"""
-        if self.app.running:
+        if _reject_when_running(self, "metadata_preview", "预览元数据"):
             return
         preview_path = os.path.join(tempfile.gettempdir(),
                                     f"slcn_metadata_preview_{os.getpid()}.json")
@@ -1086,7 +1107,9 @@ class SinglePage(BasePage):
         # 批 116 SINGLE-FN：预演标记取自已拼好的 argv（tile → _build_call → --dry-run）。
         dry_run = self.flow_key == "convert" and "--dry-run" in call.argv
         self._sync_artifact_actions("")
-        self.app.begin_run(call)
+        if self.app.begin_run(call) is False:
+            self.mark("run_rejected", entry="single_run", reason="running")
+            return
         self._result.reset()
         self._log.clear()
         self._log.expand()      # 运行即展开底部日志浮层（VSCode 输出面板式）
@@ -1444,6 +1467,8 @@ class IssuePage(BasePage):
         browse_btn = C.secondary_button("更换…", _browse, t, icon="FOLDER_OPEN")
         browse_btn.width = t.px(112)
         clear_btn = C.text_button("✕", lambda e: self._clear_issue(), t)
+        # R03：纯符号按钮没有可读名称，悬停/屏幕阅读器都无从理解（GB 审计唯一缺口）。
+        clear_btn.tooltip = "清空期目录"
         return ft.Container(
             key="issue-dir-row", padding=C._pad(t, 0, 0, 0, 2),
             content=C.field_row(field, [browse_btn, clear_btn], t, height=t.px(48)))
@@ -2694,7 +2719,8 @@ class IssuePage(BasePage):
             missing = 0
         if missing:
             rows.append((f"缺 {missing} 篇：{info.get('names', '')}", "warn"))
-        warnings = [str(w) for w in (info.get("warnings") or [])]
+        # P04-O2：引擎的 ⚠️ 会在文本开头留下 U+FE0F，渲染前统一清掉。
+        warnings = TF.clean_warnings(info.get("warnings") or [])
         if warnings:
             rows.append((f"warning {len(warnings)} 条", "warn"))
             rows.extend((f"· {w}", "warn") for w in warnings[:5])
@@ -3090,6 +3116,9 @@ class IssuePage(BasePage):
     def _run_step(self, key: str) -> None:
         # 统一入口：唯一主按钮与旧测试都走 ASM.run_step(self, key)；
         # 这里只负责日志展开与守卫，参数/确认逻辑见 _primary_action。
+        # R02：运行中再点步骤（含 F9 热键）必须可见拒绝，ASM.run_step 的静默 return 不能当门。
+        if _reject_when_running(self, f"issue_step:{key}", "运行步骤"):
+            return
         if not self._issue_dir():
             self.app.toast("先选择期目录")
             return
@@ -3157,13 +3186,19 @@ class IssuePage(BasePage):
 
     async def _run_calls(self, calls: list, sequential: bool = True) -> None:
         """逐条执行（测试/旧路径）；与 ASM._run_sequence 同样写状态、不清日志。"""
+        if _reject_when_running(self, "issue_run_calls", "运行步骤"):
+            return
         for key, call in calls:
             started = time.monotonic()
             self._status[key] = ASM.StepStatus("running", started_at=ASM._now())
             self._refresh_steps()
             self.on_step_started(key)
             CK.before_issue_step(self, key)
-            self.app.begin_run(call)
+            # P08 I-5：begin_run 返回 False = 已有任务在跑，绝不并发（也不写状态）。
+            if self.app.begin_run(call) is False:
+                self._status[key] = ASM.StepStatus("cancelled", started_at=started)
+                self._refresh_steps()
+                break
             lines: list[str] = []
 
             def _on_line(line: str) -> None:
@@ -3303,7 +3338,8 @@ class IssuePage(BasePage):
         self._merge_warn_capture = False
 
     def _append_merge_warning(self, text: str) -> None:
-        note = (text or "").strip()
+        # P04-O2：`⚠️` 的变体选择符会跟着捕获组进 warning，先清掉再入账。
+        note = TF.strip_format_chars(text)
         if not note:
             return
         info = dict(self._merge_info or {})
@@ -3730,27 +3766,80 @@ class SettingsPage(BasePage):
         self.envcheck_error = ""
         self.envcheck_slot = ft.Container()
         self.connection_slot = ft.Container()
+        # P08 I-2：状态行 value 控件的引用（label → Text），供 refresh_status_rows 原地刷新。
+        self._status_value_ctls: dict[str, ft.Text] = {}
 
-    def build(self) -> ft.Control:
-        t = self.t
+    def _status_rows(self) -> list[tuple[str, str, bool]]:
+        """设置页顶部状态行（P08 I-2）：每次调用都从 store/engine 现取，不做构建期快照。
+
+        构建期快照会让「未保存改动」「设置文件」停在旧值：环境检查/保存后
+        `store.dirty` 已经变了，界面却还写着「有」（P01-4.1-④）。
+        """
         engine = self.app.engine_status
         store = self.app.store
-        status_rows = [
-            ("运行方式", engine.describe()),
-            ("引擎目录", engine.engine_dir or "（未找到）"),
-            ("引擎版本", engine.version),
-            ("问题", "；".join(engine.problems) if engine.problems else "无"),
-            ("设置文件", str(store.path)),
+        rows = [
+            ("运行方式", engine.describe(), False),
+            ("引擎目录", engine.engine_dir or "（未找到）", True),
+            ("引擎版本", engine.version, False),
+            ("问题", "；".join(engine.problems) if engine.problems else "无", False),
+            ("设置文件", str(store.path), True),
             # P01 R01：有未写盘的改动时如实显示，不让内存状态冒充已持久化。
             ("未保存改动", "有（保存后写入设置文件）"
-             if getattr(store, "dirty", False) else "无"),
+             if getattr(store, "dirty", False) else "无", False),
         ]
         # P01 R03/R07：高版本设置文件只读不改写，必须在页面上说清，不静默降级。
         unsupported = getattr(store, "unsupported_version", None)
         if unsupported:
-            status_rows.append(
+            rows.append(
                 ("设置版本", f"v{unsupported} 高于本版支持：本版不改写该文件，"
-                             "请升级程序，或改用旧版副本回退"))
+                             "请升级程序，或改用旧版副本回退", False))
+        return rows
+
+    def refresh_status_rows(self) -> None:
+        """P08 I-2：按 store 现值原地刷新状态行（环境检查/保存后），不重建整页。
+
+        未挂载（证据脚本 / 页面尚未构建）时静默跳过：`update()` 失败不影响业务。
+        """
+        ctls = getattr(self, "_status_value_ctls", None) or {}
+        if not ctls:
+            return
+        for label, value, _mono in self._status_rows():
+            ctl = ctls.get(label)
+            if ctl is None:
+                continue
+            text = "" if value is None else str(value)
+            if str(ctl.value or "") == text:
+                continue
+            ctl.value = text
+            try:
+                ctl.tooltip = text or None
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ctl.update()
+            except Exception:  # noqa: BLE001 未挂载/证据脚本：吞掉
+                pass
+
+    def on_show(self) -> None:
+        """每次导航回设置页都重取状态（I-2）。"""
+        self.refresh_status_rows()
+
+    def _save_settings(self) -> None:
+        """「立即保存」：保存成功才刷新状态行（I-2）。"""
+        if self.app.save_settings(toast=True):
+            self.refresh_status_rows()
+
+    def build(self) -> ft.Control:
+        t = self.t
+        engine = self.app.engine_status
+        self._status_value_ctls = {}
+        engine_row_controls: list = []
+        for label, value, mono in self._status_rows():
+            row = C.kv_row(t, label, value, mono=mono)
+            ctl = getattr(row, "value_ctl", None)
+            if ctl is not None:
+                self._status_value_ctls[label] = ctl
+            engine_row_controls.append(row)
         # 批 115 P3-C2：12 张 C.card 长滚 → 4 组发丝分区（引擎与环境 / 外观 /
         # 窗口与托盘 / 路径与关于）。组 = section_label + 1px 线，组内不再套卡片；
         # settings_shell / ai_panel 的卡片用 _flat 去壳（那两个文件不在写域）。
@@ -3758,8 +3847,7 @@ class SettingsPage(BasePage):
             f"引擎{'就绪' if engine.ok else '未就绪'} · {engine.version or '版本未知'}",
             t, "ok" if engine.ok else "warn")
         engine_rows = C.block(
-            *[C.kv_row(t, label, value, mono=label in ("引擎目录", "设置文件"))
-              for label, value in status_rows],
+            *engine_row_controls,
             ft.Row(spacing=t.sp("1"), controls=[
                 C.secondary_button("重新检测", lambda e: self._rescan(), t, icon="REFRESH"),
                 C.secondary_button("引擎目录…", lambda e: self._browse_engine(), t, icon="FOLDER_OPEN_OUTLINED"),
@@ -3822,7 +3910,7 @@ class SettingsPage(BasePage):
 
         header = C.page_header(
             "设置", "外观、引擎、环境检查与诊断。", t,
-            actions=[C.primary_button("立即保存", lambda e: self.app.save_settings(toast=True), t,
+            actions=[C.primary_button("立即保存", lambda e: self._save_settings(), t,
                                       icon="SAVE_OUTLINED")],
         )
         # 批 112 A-06 的「环境检查首屏可见」保留：并入「引擎与环境」组首（inline_note
@@ -3976,14 +4064,21 @@ class SettingsPage(BasePage):
         self.envcheck_data = payload if payload else None
         self.envcheck_error = "" if result.get("ok") else str(result.get("error") or "环境检查失败")
         checks = payload.get("checks") or []
-        ok_count = sum(1 for c in checks if self._check_ok(c))
-        failed = [c for c in checks if not self._check_ok(c)]
+        # P08 I-1：跳过态（level=info / status=skip / detail 含「跳过」）不算成功，
+        # 也不该混进 failed 清单——它压根没参与结论。
+        rows = SHELL.envcheck_rows(payload)
+        ok_count = sum(1 for row in rows if row["ok"])
+        skipped = [row["title"] for row in rows if row["skipped"]]
         self.app.mark("envcheck", ok=bool(result.get("ok")), code=result.get("code"),
                       checks=len(checks), ok_count=ok_count,
-                      failed=[str(c.get("id")) for c in failed][:20],
+                      skipped=skipped[:20],
+                      failed=[str(c.get("id")) for c in checks
+                              if SHELL.envcheck_verdict(c) == "fail"][:20],
                       profile=payload.get("profile"), platform=payload.get("platform"))
         if result.get("ok"):
             self.app.set_check_done(True)
+        # P08 I-2 / P01-4.1-④：env_check_done 已写盘（dirty=False），状态行必须跟着变。
+        self.refresh_status_rows()
         self._render_envcheck()
 
     @staticmethod

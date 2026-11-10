@@ -292,6 +292,19 @@ def _retint_input_border(border, mapping: dict[str, str]):
             kwargs[attr] = value
     return type(border)(**kwargs)
 
+def _picker_label(dialog_title: str) -> str:
+    """从对话框标题抽出「受影响的输入名」：「选择引擎目录」→「引擎目录」（R01）。
+
+    失败提示要说清是哪个输入受影响，所以标签从标题来、不在每个调用点手写。
+    """
+    title = str(dialog_title or "").strip()
+    for prefix in ("选择", "打开"):
+        if title.startswith(prefix):
+            title = title[len(prefix):].strip()
+            break
+    return title
+
+
 class App:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
@@ -1479,10 +1492,37 @@ class App:
             except Exception as exc:  # noqa: BLE001
                 self.mark("on_show_error", page=page_key,
                           error=f"{type(exc).__name__}: {exc}")
+        # P08 R03：导航落定（content 换完、on_show 跑完）后把焦点交给目标页声明的控件。
+        # 同页切二级视图（same_page）同样需要，否则键盘用户停在旧视图的控件上。
+        self._focus_after_nav(page)
         self.mark("nav_change", route=route_str, page=page_key, view=view_key,
                   source=source, switch_ms=elapsed_ms,
                   switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1)
                   if self.page_switches else None)
+
+    def _focus_after_nav(self, page) -> None:
+        """R03：`BasePage.focus_after_nav()` 返回控件时在导航后聚焦它。
+
+        Flet 1.0.5 的 `Control.focus()` 是 async，必须经 `page.run_task` 调度；
+        返回 None（默认实现）表示该页不需要改焦点，直接不动。
+        """
+        hook = getattr(page, "focus_after_nav", None)
+        if not callable(hook):
+            return
+        try:
+            target = hook()
+        except Exception as exc:  # noqa: BLE001 页面自己的聚焦策略失败不得炸导航
+            self.mark("focus_after_nav_error", page=getattr(page, "key", ""),
+                      error=f"{type(exc).__name__}: {exc}")
+            return
+        if target is None:
+            return
+        try:
+            self.page.run_task(target.focus)
+            self.mark("nav_focus", page=getattr(page, "key", ""))
+        except Exception as exc:  # noqa: BLE001 未挂载/已销毁控件
+            self.mark("focus_error", page=getattr(page, "key", ""),
+                      error=f"{type(exc).__name__}: {exc}")
 
     def goto(self, key: str) -> None:
         """兼容旧调用：`goto("bib")` = 去该页默认路由；带冒号时等价 navigate。"""
@@ -2009,7 +2049,17 @@ class App:
         self.mark("app_version", version=self.app_version, source=self._version_info["source"])
 
     # ── 运行编排 ────────────────────────────────────────────────────────
-    def begin_run(self, call: EB.EngineCall) -> None:
+    def begin_run(self, call: EB.EngineCall) -> bool:
+        """开始一轮运行；运行中直接拒绝并返回 False（P08 I-5 / R02）。
+
+        入口层的可见拒绝在各页面（SinglePage._on_run / IssuePage._run_step …）；
+        这里是最后一道网：绝不让两轮运行共用 proc / cancel 标记 / 状态栏。
+        """
+        if self.running:
+            self.toast("运行中不能开始新任务：等当前任务结束，或先点「停止」")
+            self.mark("run_rejected", entry=str(getattr(call, "entry", "") or ""),
+                      reason="running")
+            return False
         self.running = True
         self.run_seen = True
         self.cancel_requested = False
@@ -2027,6 +2077,7 @@ class App:
             except Exception:  # noqa: BLE001
                 pass
         self.mark("run_start", entry=call.entry, label=label, argv=call.argv)
+        return True
 
     def track_proc(self, proc) -> None:
         self.proc = proc
@@ -2087,18 +2138,24 @@ class App:
         if ref is None:
             return
         if self.running:
-            self.toast("运行中不能打开文件对话框")
+            self.toast("运行中不能打开文件对话框：等当前任务结束，或先点「停止」")
             return
-        self.mark("picker_open_begin", kind=kind, key=key)
+        # R01：失败提示要说清是哪个输入受影响（引擎目录 / 期目录 / 源稿件…）。
+        self._picker_label_text = _picker_label(dialog_title)
+        self.mark("picker_open_begin", kind=kind, key=key,
+                  label=self._picker_label_text)
         try:
             self.page.run_task(self._browse_task, ref, dialog_title, kind, key, store_prefix)
         except Exception as exc:  # noqa: BLE001  调度失败也落到中文提示（GUI-04 加固）
             self._picker_error(f"run_task: {type(exc).__name__}: {exc}")
 
     async def _browse_task(self, ref, dialog_title: str, kind: str, key: str, store_prefix: str) -> None:
+        label = _picker_label(dialog_title)
+        if label:
+            self._picker_label_text = label  # 供 _picker_error 兜底取用
         try:
             if self._picker is None:
-                self._picker_error("file picker 未初始化")
+                self._picker_error("file picker 未初始化", label=label)
                 return
             if kind == "dir":
                 value = await self._picker.get_directory_path(dialog_title=dialog_title)
@@ -2127,19 +2184,38 @@ class App:
         except Exception as exc:  # noqa: BLE001
             self._picker_error(f"{type(exc).__name__}: {exc}")
 
-    def _picker_error(self, error: str, *, cancel: bool = False) -> None:
-        """文件选择失败/取消都要有中文提示（B4）；失败不弹系统错误，可改手输。"""
+    def _picker_error(self, error: str, *, cancel: bool = False, label: str = "") -> None:
+        """文件选择失败/取消都要有中文提示（B4/R01）；失败不弹系统错误，可改手输。
+
+        - 取消：保留输入框旧值，只报「已取消选择」，不显示错误态；
+        - 失败：说清受影响的输入名（引擎目录 / 期目录…）与下一步（粘贴路径或重试）。
+        """
         if cancel:
             self.mark("picker_cancel")
             self.toast("已取消选择")
             return
-        self.mark("picker_error", error=error)
-        self.toast("打不开文件选择器：可粘贴路径，或重试「浏览…」。")
+        name = label or getattr(self, "_picker_label_text", "")
+        self.mark("picker_error", error=error, label=name)
+        if name:
+            self.toast(f"打不开文件选择器（{name}）：可直接粘贴路径，或重试「浏览…」。")
+        else:
+            self.toast("打不开文件选择器：可直接粘贴路径，或重试「浏览…」。")
 
     def open_path(self, value: str) -> None:
+        """只打开本轮真实存在过的产物（R02/R04）；打不开时说清原因与下一步。"""
         path = (value or "").strip()
-        if not path or not Path(path).exists():
-            self.toast("没有可打开的产物")
+        if not path:
+            self.toast("没有可打开的产物：先运行一次，成功后再打开")
+            self.mark("open_artifact_missing", reason="empty")
+            return
+        try:
+            exists = Path(path).exists()
+        except OSError:
+            exists = False
+        if not exists:
+            self.toast(f"打不开「{Path(path).name}」：文件不在原位（可能已被移动或删除），"
+                       "重新运行后再试")
+            self.mark("open_artifact_missing", reason="missing", name=Path(path).name)
             return
         try:
             if os.name == "nt":

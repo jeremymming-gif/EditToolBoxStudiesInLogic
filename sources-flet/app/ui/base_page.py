@@ -103,3 +103,28 @@ class BasePage:
 
     def on_show(self) -> None:
         pass
+
+    def focus_after_nav(self):
+        """导航落地后要接收焦点的控件（R03）；默认 = 本页第一个已挂载的输入框。
+
+        只有输入页才自动聚焦：按 `self.fields` 插入序取第一个已注册字段的控件，
+        要求它已挂载（`page is not None`）且 `focus` 可调用；找不到就返回 None
+        （纯展示页不抢焦点）。返回控件时由调用方 `page.run_task(ctrl.focus)`
+        （Flet 1.0.5 的 `focus` 是 async，不能直接调）。同一页面内切视图（same_page）
+        是否重复聚焦由调用方语义负责——基类只给「落点」，不判断来源。
+        """
+        try:
+            for ref in self.fields.values():
+                control = ref[0] if ref else None
+                if control is None:
+                    continue
+                try:
+                    # 未挂载的 Flet 控件读 `.page` 会抛 RuntimeError（不是返回 None）
+                    mounted = getattr(control, "page", None) is not None
+                except Exception:  # noqa: BLE001 未挂载/已销毁控件 = 不是落点
+                    mounted = False
+                if mounted and callable(getattr(control, "focus", None)):
+                    return control
+        except Exception:  # noqa: BLE001 字段残缺不得炸导航
+            return None
+        return None

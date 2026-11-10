@@ -119,6 +119,24 @@ def test_artifact_path(tmp_path):
     assert EB.artifact_path("没有路径的一行") == ""
 
 
+def test_artifact_path_ignores_directories_and_missing_files(tmp_path):
+    """P08 D1：产物按「行内完整收尾」判定，目录/半截前缀不算产物。
+
+    回归样本：引擎报告一个不存在的文件时，逐字符截短会退到已存在的父目录
+    （V 实测 `/tmp/`），GUI 就会渲染一个打不开的「打开」。
+    """
+    folder = tmp_path / "out"
+    folder.mkdir()
+    # 目录存在、里面的文件不存在（含空格/中文名，贴近引擎末行）：不能退到父目录。
+    missing = folder / "p08 不存在 的产物.pdf"
+    assert EB.artifact_path(f"完成。生成文件：{missing}（共 3 页）") == ""
+    # V 实测复现行原样：/tmp 存在，但 /tmp/p08 … 不存在。
+    assert EB.artifact_path("完成。生成文件：/tmp/p08 不存在 的产物.pdf（共 3 页）") == ""
+    # 纯根 / 盘符根不是产物
+    assert EB.artifact_path("/") == ""
+    assert EB.artifact_path("完成。报告：/") == ""
+
+
 def test_env_for_run(tmp_path, monkeypatch):
     monkeypatch.setenv("P2_ENGINE", str(tmp_path))
     env = EB.env_for_run(notes=str(tmp_path))

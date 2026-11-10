@@ -108,6 +108,9 @@ _RESULT_1 = {
 }
 _ARTIFACT_START = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
 _ARTIFACT_TRAIL = "。.…，,；;：: \t\n\r\"'）)」』】]}>"
+# P08 D1：路径「完整收尾」的右边界 = 尾部可剥字符 + 左开括号/引号。
+# 例：`完成。合并文件：/x/a.pdf（共 3 页）` 里 `/x/a.pdf` 后面紧跟「（」。
+_ARTIFACT_BOUNDARY = _ARTIFACT_TRAIL + "（([{【「『<"
 
 
 # ── 纯函数（可单测） ────────────────────────────────────────────────────
@@ -139,15 +142,27 @@ def result_level(entry: str, code: int) -> str:
 
 
 def artifact_path(last_line: str) -> str:
-    """从契约行里抠出真实存在的产物绝对路径；抠不到返回空串（不猜）。
+    """从契约行里抠出真实存在的产物路径；抠不到返回空串（不猜）。
 
-    做法：从每个盘符/路径起点开始，按「最长优先」逐字符截短，取第一个磁盘上
-    真实存在的前缀；尾部的中文标点/右括号先剥掉再试。路径里允许中文、空格、点。
+    P08 D1：产物必须是**契约行里完整收尾的路径**——候选路径在行内的下一个字符
+    得是标点/空白/行尾，否则它只是「逐字符截短」得到的半截路径。这样当引擎报告
+    一个不存在的文件时（如 `/tmp/p08 不存在 的产物.pdf`），不会把它的已存在父目录
+    `/tmp/` 当成产物，GUI 也就不会给一个打不开的「打开」按钮。
+
+    产物可以是单个文件（合并/报告 PDF 等，`is_file()`），也可以是目录
+    （`convert.py` 末行 `完成。产物目录：{out_dir}`，`is_dir()`；GUI 的「打开产物
+    目录」再取 dirname）。按「文件/目录」口径之外还要判完整收尾，是因为目录类型
+    无法区分「真产物目录」与「不存在路径的已存在父目录」。
+
+    做法：从每个盘符/路径起点开始，按「最长优先」逐字符截短，取第一个完整收尾
+    且磁盘上真实存在的路径；尾部的中文标点/右括号先剥掉再试。路径里允许中文、
+    空格、点。
     """
     text = last_line or ""
+    size = len(text)
     for match in _ARTIFACT_START.finditer(text):
         start = match.start()
-        for end in range(len(text), start + 1, -1):
+        for end in range(size, start + 1, -1):
             candidate = text[start:end]
             for probe in (candidate, candidate.rstrip(_ARTIFACT_TRAIL)):
                 if not probe:
@@ -159,8 +174,13 @@ def artifact_path(last_line: str) -> str:
                     len(bare) == 3 and bare[1] == ":" and bare[2] in "\\/"
                 ):
                     continue
+                # P08 D1：必须是行内完整收尾的路径；截短的半截路径（其下一个字符
+                # 还是路径字符）一律不算，避免把不存在的文件的父目录当成产物。
+                cut = start + len(probe)
+                if cut < size and text[cut] not in _ARTIFACT_BOUNDARY:
+                    continue
                 try:
-                    if Path(probe).exists():
+                    if Path(probe).is_file() or Path(probe).is_dir():
                         return probe
                 except OSError:
                     continue

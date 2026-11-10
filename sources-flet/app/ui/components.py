@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 from types import SimpleNamespace
 
@@ -59,8 +60,26 @@ def _clear_suffix_button(t: Tokens) -> ft.IconButton:
     )
 
 
+def _full_value_tooltip(value) -> str | None:
+    """长值的悬停全文（R01）：空值不给 tooltip，避免空气泡。"""
+    raw = "" if value is None else str(value).strip()
+    return raw or None
+
+
 def sync_clearable(field: ft.TextField) -> None:
-    """按当前值切换 ✕ 的显隐（程序化赋值后调用；不触发 on_change）。"""
+    """按当前值切换 ✕ 的显隐（程序化赋值后调用；不触发 on_change）。
+
+    R01：带 `_value_tooltip` 标记的字段（`path_picker` 挂的）同时把当前值全文同步到
+    `tooltip`——被截断的长路径仍可悬停看全。值没变就不发 update，不增加噪声。
+    """
+    if getattr(field, "_value_tooltip", False):
+        wanted = _full_value_tooltip(getattr(field, "value", ""))
+        if getattr(field, "tooltip", None) != wanted:
+            field.tooltip = wanted
+            try:
+                field.update()          # 输入中/回填后立刻生效；未挂载时吞掉
+            except Exception:  # noqa: BLE001
+                pass
     button = getattr(field, "_clear_button", None)
     if button is None:
         return
@@ -312,9 +331,18 @@ def section_label(title: str, t: Tokens, *, trailing=None, note: str | None = No
 
 
 def status_dot(tone: str, t: Tokens, size: float = 6) -> ft.Container:
+    """状态圆点；未知 tone 一律退成 idle 灰点（不抛错、不冒充成功）。
+
+    映射（P08 I-1：`envcheck_rows` 的 `tone` 直接喂这里）：
+    `ok`/`done`/`success` → 成功绿；`warn` → 警告黄；`error` → 错误红；
+    `run` → accent（运行中）；`idle` → 最淡灰（未开始/停用）；
+    `info`/`neutral` → 中性灰（「跳过 / 未参与结论」，**不是**绿色）。
+    """
     p = t.palette
-    color = {"ok": p.success, "done": p.success, "warn": p.warn,
-             "error": p.error, "run": p.accent, "idle": p.text_faint}.get(tone, p.text_faint)
+    color = {"ok": p.success, "done": p.success, "success": p.success,
+             "warn": p.warn, "error": p.error, "run": p.accent,
+             "idle": p.text_faint,
+             "info": p.text_muted, "neutral": p.text_muted}.get(tone, p.text_faint)
     return ft.Container(width=t.px(size), height=t.px(size), bgcolor=color,
                         border_radius=t.radius("pill"))
 
@@ -370,6 +398,12 @@ def kv_row(t: Tokens, label: str, value, mono: bool = False) -> ft.Container:
 
     替代 Settings / Help 各自手写的 `_kv`（Bib 本批不动）。`mono=True` 走等宽角色
     （版本号 / 路径 / ID）；超长值不换行，`tooltip` 给全文。
+
+    P08 I-2：返回的行容器同时挂 `.value_ctl`（value 那个 `ft.Text`），页面存住它就能
+    原地刷新状态行（设置页「未保存改动」「设置文件」）：改 `value_ctl.value` +
+    `value_ctl.tooltip` 后 `value_ctl.update()`，不必重建整页。走属性而**不是**新形参，
+    是因为 `tests/test_b115_shared.py` 冻结了本函数的参数列表（`["t","label","value","mono"]`），
+    既有调用与结构都不受影响。
     """
     raw = "" if value is None else str(value)
     label_ctl = text(label, t, "small", t.palette.text_muted,
@@ -377,7 +411,7 @@ def kv_row(t: Tokens, label: str, value, mono: bool = False) -> ft.Container:
     value_ctl = text(raw, t, role="mono" if mono else "small", color=t.palette.text,
                      max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                      tooltip=raw or None)
-    return ft.Container(
+    row = ft.Container(
         height=t.row_h("table"),
         content=ft.Row(
             spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -389,6 +423,8 @@ def kv_row(t: Tokens, label: str, value, mono: bool = False) -> ft.Container:
             ],
         ),
     )
+    row.value_ctl = value_ctl       # P08 I-2：页面原地刷新状态行的句柄
+    return row
 
 
 # ── 表格：固定表头 + 内滚（不再依赖 page_body 的 Column 滚动）────────────────
@@ -1403,6 +1439,10 @@ def path_picker(label: str, value: str, hint: str, t: Tokens, *, on_change=None,
     field = _apply_floating(
         field, t, label + suffix,
         hint=hint or "路径", expand=True)
+    # R01：长路径在窄窗里会被截断，悬停要能看全；`sync_clearable` 在用户输入与程序化
+    # 回填（浏览…/set_field）两条链路都会跑，所以只打标记 + 给初值，不另包 on_change。
+    field._value_tooltip = True
+    field.tooltip = _full_value_tooltip(field.value)
     browse = secondary_button("浏览…", on_browse, t, icon="FOLDER_OPEN")
     controls: list[ft.Control] = [
         # 输入框 48（浮动标签）→ 浏览按钮跟随 48（用户 m02816：不能高矮不齐）。
@@ -1809,6 +1849,8 @@ class LogConsole:
         self._log_height = self._base_height
         self._resize_handle = ft.GestureDetector(
             mouse_cursor=ft.MouseCursor.RESIZE_UP_DOWN,
+            # R03：拖拽把手没有文字/图标，只有悬停提示能说明它是干什么的。
+            tooltip="拖拽调整日志高度（双击复位）",
             on_vertical_drag_update=self._on_resize_update,
             on_double_tap=self._on_resize_reset,
             content=ft.Container(
@@ -2079,11 +2121,26 @@ class StatusBar:
 
     def set_status(self, value: str, progress: float | None = None) -> None:
         self.text.value = value
-        tone = "error" if ("错误" in value or "失败" in value) else (
-            "run" if "运行" in value else "ok")
+        # D3（R04）：不能只看「错误/失败/运行」三词——`结束（退出码 2）` 这类
+        # 失败结束、`退出码 1` / `已取消` 这类非成功非失败态都要有自己的颜色。
+        # 判定优先级：显式失败 > 退出码 > 取消/停止请求 > 运行中 > 其余视为就绪。
+        tone = "ok"
+        if any(word in value for word in ("启动失败", "失败", "错误")):
+            tone = "error"
+        else:
+            match = re.search(r"退出码\s*(-?\d+)", value)
+            code = int(match.group(1)) if match else None
+            if code is not None and (code >= 2 or code < 0):
+                tone = "error"
+            elif code == 1:
+                tone = "warn"
+            elif any(word in value for word in ("已取消", "停止请求")):
+                tone = "warn"
+            elif "运行" in value:
+                tone = "run"
         self.dot.bgcolor = {
             "ok": self.t.palette.success, "run": self.t.palette.accent,
-            "error": self.t.palette.error,
+            "warn": self.t.palette.warn, "error": self.t.palette.error,
         }[tone]
         if progress is None:
             self.progress.visible = False

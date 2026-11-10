@@ -187,9 +187,36 @@ def shortcut_rows(t) -> list:
 
 
 # ── 环境检查 ─────────────────────────────────────────────────────────────
+# P08 I-1：这三种 status 在引擎里表示「未参与结论」，不是成功。
+SKIP_STATUSES = frozenset({"info", "skip", "skipped", "n/a", "not_applicable"})
+
+
 def check_ok(check: dict) -> bool:
-    return (str(check.get("status") or "")).lower() in ("ok", "ok-ish", "pass", "pass-ish",
-                                                        "success")
+    """只有真正的成功才算 ok；跳过/未参与结论的条目不算（P08 I-1）。"""
+    return envcheck_verdict(check) == "success"
+
+
+def envcheck_skipped(check: dict) -> bool:
+    """条目是否是「跳过 / 未参与结论」态。
+
+    引擎 `envcheck.py` 的 `_item()` 用 `level`（required/optional/info）表达是否参与
+    结论，`status` 只表达结果；`output_writable` 就是 `level="info"` + `status="ok"`
+    + detail 含「跳过」——旧实现只看 status，于是把跳过画成绿色 ok（P01-4.1-③）。
+    """
+    status = str(check.get("status") or "").strip().lower()
+    severity = str(check.get("severity") or check.get("level") or "").strip().lower()
+    detail = str(check.get("detail") or "")
+    return severity == "info" or status in SKIP_STATUSES or "跳过" in detail
+
+
+def envcheck_verdict(check: dict) -> str:
+    """一条检查的结论：success / warn / fail / skipped（skip 不算成功）。"""
+    if envcheck_skipped(check):
+        return "skipped"
+    status = str(check.get("status") or "").strip().lower()
+    if status in ("ok", "ok-ish", "pass", "pass-ish", "success"):
+        return "success"
+    return "warn" if status.startswith("warn") else "fail"
 
 
 def _fix_hint(check: dict) -> str:
@@ -201,21 +228,54 @@ def _fix_hint(check: dict) -> str:
 
 
 def envcheck_rows(payload: dict) -> list[dict]:
+    """把 envcheck JSON 的 checks 转成行；detail/severity/skipped 全部保真（P08 I-1）。"""
     rows: list[dict] = []
     for check in (payload or {}).get("checks") or []:
         if not isinstance(check, dict):
             continue
-        ok = check_ok(check)
+        verdict = envcheck_verdict(check)
         status = str(check.get("status") or "?")
+        detail = str(check.get("detail") or "")
+        severity = str(check.get("severity") or check.get("level") or "")
+        skipped = verdict == "skipped"
         rows.append({
-            "ok": ok,
+            "ok": verdict == "success",
+            "verdict": verdict,
+            "skipped": skipped,
             "title": str(check.get("title") or check.get("id") or ""),
             "version": str(check.get("version") or ""),
             "status": status,
-            "tone": "success" if ok else ("warn" if status.lower().startswith("warn") else "error"),
-            "fix": "" if ok else _fix_hint(check),
+            "badge": "跳过" if skipped else (status or "?"),
+            "tone": {"success": "success", "warn": "warn",
+                     "fail": "error", "skipped": "idle"}[verdict],
+            "detail": detail,
+            "severity": severity,
+            # 跳过的行不给修复建议（未参与结论，不该催用户去修）。
+            "fix": "" if verdict in ("success", "skipped")
+                   else str(check.get("hint") or _fix_hint(check)),
         })
     return rows
+
+
+def _envcheck_row_detail(row: dict) -> tuple[str, str]:
+    """行下说明的 (文本, 语气)。返回空文本表示不显示。"""
+    if row["skipped"]:
+        detail = row["detail"] or "本条未参与结论"
+        if "未参与" not in detail:
+            detail = f"{detail}（未参与结论）"
+        return detail, "info"
+    if row["verdict"] in ("fail", "warn"):
+        parts = []
+        if row["detail"]:
+            parts.append(f"原因：{row['detail']}")
+        if row["fix"]:
+            parts.append(f"修复：{row['fix']}")
+        return "；".join(parts), "warn" if row["verdict"] == "warn" else "error"
+    return "", ""
+
+
+_BADGE_TONE = {"success": "success", "warn": "warn", "error": "error", "idle": "neutral"}
+_DETAIL_COLOR = {"info": "text_muted", "warn": "warn", "error": "error"}
 
 
 def render_envcheck(page) -> None:
@@ -235,18 +295,18 @@ def render_envcheck(page) -> None:
         rows: list = [C.text(f"{payload.get('profile', '')} · {payload.get('platform', '')}",
                              t, "caption", t.palette.text_faint)]
         for row in envcheck_rows(payload):
-            color = {"success": t.palette.success, "warn": t.palette.warn,
-                     "error": t.palette.error}[row["tone"]]
             rows.append(ft.Row(spacing=t.sp("1"),
                                vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                ft.Container(width=t.px(8), height=t.px(8), border_radius=99, bgcolor=color),
+                C.status_dot(row["tone"], t, 8),
                 C.text(row["title"], t, "small", weight="medium"),
                 C.text(row["version"], t, "small", t.palette.text_muted),
                 ft.Container(expand=True),
-                C.badge(row["status"] or "?", t, row["tone"]),
+                C.badge(row["badge"] or "?", t, _BADGE_TONE.get(row["tone"], "neutral")),
             ]))
-            if row["fix"]:
-                rows.append(C.text(f"  修复：{row['fix']}", t, "caption", t.palette.text_faint))
+            detail, tone = _envcheck_row_detail(row)
+            if detail:
+                rows.append(C.text(f"  {detail}", t, "caption",
+                                   getattr(t.palette, _DETAIL_COLOR[tone])))
         slot.content = ft.Column(spacing=t.sp("1"), controls=rows)
     try:
         slot.update()
@@ -444,7 +504,11 @@ def build_diagnosis(app, envcheck: dict | None = None, logs: str = "",
     rows = envcheck_rows(envcheck)
     if rows:
         for row in rows:
-            lines.append(f"  {row['title']}: {row['status']}")
+            if row["skipped"]:
+                # P01-4.1-③：跳过项在诊断文本里也不能写成 ok。
+                lines.append(f"  {row['title']}: 跳过（{row['detail'] or '未参与结论'}）")
+            else:
+                lines.append(f"  {row['title']}: {row['status']}")
     else:
         lines.append("  （未运行）")
     counts = _log_counts(logs)
