@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import sys
 from pathlib import Path
 
@@ -247,6 +248,9 @@ def test_run_call_reads_multiline_with_oversized_line(tmp_path):
 
 
 
+# 真实平台守卫：frozen .app 布局仅 macOS 可验；用真实 platform.system()，不受测试内 monkeypatch sys.platform 影响。
+_DARWIN = platform.system() == "Darwin"
+
 # ── P09 R04（PRE-012）：frozen 形态 sidecar 缺失/不可执行/执行失败 → ok=False ──
 
 def _frozen_layout(tmp_path, monkeypatch, *, sidecar_body: str | None, executable: bool = True):
@@ -288,6 +292,7 @@ def test_engine_status_frozen_without_sidecar_not_ok(tmp_path, monkeypatch):
     assert status.to_dict()["ok"] is False
 
 
+@pytest.mark.skipif(not _DARWIN, reason="frozen .app 布局仅 macOS：Windows 无 exec 位且无法执行 sh sidecar")
 def test_engine_status_frozen_sidecar_not_executable(tmp_path, monkeypatch):
     """frozen + sidecar 存在但不可执行：ok=False、problems 含「不可执行」。"""
     _app, sc = _frozen_layout(tmp_path, monkeypatch, sidecar_body="#!/bin/sh\nexit 0\n", executable=False)
@@ -298,6 +303,7 @@ def test_engine_status_frozen_sidecar_not_executable(tmp_path, monkeypatch):
     assert any("不可执行" in p for p in status.problems), status.problems
 
 
+@pytest.mark.skipif(not _DARWIN, reason="frozen .app 布局仅 macOS：Windows 无 exec 位且无法执行 sh sidecar")
 def test_engine_status_frozen_sidecar_version_fails(tmp_path, monkeypatch):
     """frozen + 可执行但 --version 失败（exit 3）：ok=False、problems 含 rc=3。"""
     _app, sc = _frozen_layout(tmp_path, monkeypatch, sidecar_body="#!/bin/sh\necho boom >&2\nexit 3\n")
