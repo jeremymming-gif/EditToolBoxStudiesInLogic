@@ -398,7 +398,7 @@ def test_health_view_degrades_when_no_pending():
 
 
 def test_real_db_untouched_after_ops_tests():
-    """真实库只读：若本机有引用库，sha256 必须与批 109 记录的锚点一致（否则报警）。"""
+    """真实库只读：2026-11-08 BIB-MIGRATION 后锚点（3,875 条／3,664,354 B；2026-11-10 更新）；若本机有引用库，sha256 必须一致（否则报警）。"""
     import os
     from pathlib import Path
 
@@ -407,5 +407,6 @@ def test_real_db_untouched_after_ops_tests():
     db = Path(notes) / "bib_db" / "bibliography.jsonl"
     if not db.exists():
         pytest.skip("本机没有引用库（CI / 独立检出）：真实库零写入由 stub 测试保证")
+    # 依据：2026-11-10 实测真库 sha（3,875 条／3,664,354 B；notes bb1a041 BIB-MIGRATION-20261108 后）
     assert GIT.file_sha256(str(db)) == \
-        "0a8b66c4a8acc2471eafe81f40eefbd136a15a9a533baea629406108dd5911bb"
+        "bae9b714f0268d3f979d1842ba0f4c72d1a1e9dc8d150e14e5821cda755b49ce"
