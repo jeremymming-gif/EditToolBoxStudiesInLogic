@@ -11,6 +11,12 @@
   SLCN_STARTUP_LOG=<path>   写到指定文件（测试用）
   SLCN_STARTUP_LOG=off      关闭（默认开启）
 
+打包形态（sys.frozen）下，本模块在 `launch_begin` 之后自动追加一行
+`package_identity`：可执行文件真实路径、.app 包路径、CFBundleIdentifier、
+CFBundleShortVersionString、解析到的 sidecar 路径、随包 flet-client 路径。
+它只读包自身元数据，不读稿件/用户数据；不进 LIFECYCLE_EVENTS（该集合只用于
+main.mark() 转发，本事件由本模块直接写）；失败静默。
+
 约束：本模块任何失败都必须静默——诊断日志不能反过来影响启动。
 """
 from __future__ import annotations
@@ -77,6 +83,49 @@ def _rotate(path: Path) -> None:
         pass
 
 
+def package_identity() -> dict:
+    """返回打包形态的包身份字段（R02/P09）。
+
+    只读包自身元数据（可执行文件路径、.app/Info.plist、随包 sidecar 与
+    flet-client 路径），不读稿件/用户数据。非打包形态或读取失败时返回空 dict。
+    """
+    fields: dict = {}
+    try:
+        executable = Path(sys.executable).resolve()
+    except OSError:
+        return fields
+    fields["executable"] = str(executable)
+    bundle: Path | None = None
+    for parent in executable.parents:
+        if parent.suffix == ".app":
+            bundle = parent
+            break
+    if bundle is not None:
+        fields["bundle"] = str(bundle)
+        try:
+            import plistlib
+            with (bundle / "Contents" / "Info.plist").open("rb") as fh:
+                plist = plistlib.load(fh)
+            for key, name in (("CFBundleIdentifier", "bundle_id"),
+                              ("CFBundleShortVersionString", "bundle_version")):
+                value = plist.get(key)
+                if isinstance(value, str) and value:
+                    fields[name] = value
+        except (OSError, ValueError):
+            pass
+        client = bundle / "Contents" / "Resources" / "flet-client" / "Flet.app"
+        if client.is_dir():
+            fields["flet_client"] = str(client)
+    try:
+        from . import engine_bridge  # noqa: PLC0415 - 延迟导入，避免模块循环
+        sidecar = engine_bridge.find_engine_exe()
+    except Exception:  # noqa: BLE001 - 诊断字段读不到就省略，绝不影响启动
+        sidecar = None
+    if sidecar:
+        fields["sidecar"] = str(sidecar)
+    return fields
+
+
 def log(event: str, **fields) -> None:
     """写一行 JSONL；任何异常都吞掉（诊断日志不得影响主流程）。"""
     path = log_path()
@@ -103,7 +152,15 @@ def log(event: str, **fields) -> None:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except OSError:
-        pass
+        return
+    # 打包形态：launch_begin 之后追加一行包身份（R02：PID/包身份/版本/入口可核）。
+    if event == "launch_begin" and getattr(sys, "frozen", False):
+        try:
+            ident = package_identity()
+        except Exception:  # noqa: BLE001 - 诊断字段失败绝不影响启动
+            ident = {}
+        if ident:
+            log("package_identity", **ident)
 
 
 def log_exception(exc_type, exc, tb, *, where: str = "uncaught") -> None:

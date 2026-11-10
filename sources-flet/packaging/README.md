@@ -16,23 +16,76 @@ sha256.txt
 → EditToolBox-<Engine版本>-Windows-x64.zip
 ```
 
-macOS（`.app` + 包内 sidecar）：
+macOS（`.app` + 包内目录化 sidecar + 随包 Flet 客户端）：
 
 ```
 编辑部工具箱.app/
-  Contents/MacOS/编辑部工具箱      # flet pack 产物
-  Contents/MacOS/SLCNEngine         # PyInstaller onefile 引擎（必须同目录，bridge 才能找到）
+  Contents/MacOS/编辑部工具箱               # flet pack 产物
+  Contents/MacOS/SLCNEngine                 # sh launcher（转调 Resources 里的真身，旧路径命令照旧）
+  Contents/Resources/SLCNEngine/            # PyInstaller --onedir 引擎（目录形态）
+    SLCNEngine
+    _internal/
+    sha256.txt
+  Contents/Resources/flet-client/Flet.app   # 官方 Flet 桌面客户端（运行期 FLET_VIEW_PATH 指过去）
+  Contents/Resources/LICENSE                # 随包许可（M07；与构建提交仓库根逐字节一致）
+  Contents/Resources/THIRD_PARTY.md         # 第三方组件与来源许可（M07）
+  Contents/Resources/LICENSE-SCOPE.md       # 许可适用范围说明（M07）
+编辑部工具箱                                # flet pack dist 原样带入的散装可执行文件（zip 根，与 .app 内主程序并存；workflow 既有形状，r1=76,228,160B）
 FIRST-OPEN-macOS.txt
-sha256.txt
+LICENSE                                     # 随包许可（M07；zip 根同样各一份）
+THIRD_PARTY.md
+LICENSE-SCOPE.md
 → EditToolBox-<Engine版本>-macOS-arm64.zip
 ```
 
-`engine_bridge.find_engine_exe()` 的顺序：`P2_ENGINE_EXE/SLCN_ENGINE_EXE` → 可执行文件同目录
-`SLCNEngine.exe|SLCNEngine` → 仓库根。macOS 放 `.app` 外层是找不到的，必须 `Contents/MacOS/`。
+`engine_bridge.find_engine_exe()` 的顺序：`P2_ENGINE_EXE/SLCN_ENGINE_EXE` → frozen 时先看
+可执行文件同目录、再看 macOS 的 `Contents/Resources/`（onedir 形态 `SLCNEngine/SLCNEngine`）
+→ 仓库根。所以 macOS 的 sidecar 必须放 `Contents/Resources/SLCNEngine/`（`Contents/MacOS/SLCNEngine`
+只是 launcher；`.app` 外层则找不到）。
+
+> 随包客户端是**官方缓存里未改动的 Flet.app**：flet pack 在 macOS 构建时会把内嵌 shell
+> 用 `codesign --deep` 重签且不带 entitlements，会剥掉 file picker 需要的
+> `com.apple.security.files.user-selected.read-write`，运行期报 `ENTITLEMENT_NOT_FOUND`。
+> 因此构建后必须把 `flet_desktop.ensure_client_cached()` 的 `*.app` 用 `ditto` 复制到
+> `Contents/Resources/flet-client/Flet.app`，运行期由 `main.py:_launch()` 设 `FLET_VIEW_PATH`
+> 使用这份官方签名客户端（首启也不再下载/解压 ~135MB）。
+
+### 签名与封条（R08）
+
+macOS 产物是 **ad-hoc 签名**（`codesign -s -`，无 Team ID、未公证）。组装末尾必须补两步
+重签，否则 `codesign --verify --deep --strict` 会报 `invalid Info.plist (plist or signature
+have been modified)`（PlistBuddy 改 Info.plist 已使 PyInstaller 的 ad-hoc 封条失效）：
+
+```bash
+# launcher 是 Contents/MacOS 下的嵌套代码，先自签（否则外层报 code object is not signed at all）
+codesign --force --sign - "编辑部工具箱.app/Contents/MacOS/SLCNEngine"
+# PlistBuddy 改过 Info.plist：只重签外层（**绝不加 --deep**，否则会再次剥掉内嵌
+# flet-client/Flet.app 的 entitlements，文件选择器会退回 ENTITLEMENT_NOT_FOUND）
+codesign --force --sign - "编辑部工具箱.app"
+# 自检必须 rc0（无输出）
+codesign --verify --deep --strict "编辑部工具箱.app"
+```
+
+说明：ad-hoc 重签不等于发行签名——Gatekeeper 首次打开仍需右键「打开」（见
+`FIRST-OPEN-macOS.txt`）；它只保证包内封条自洽、可被 `codesign --verify` 校验。
+
+### 随包许可（M07）
+
+仓库根 `LICENSE`、`THIRD_PARTY.md`、`LICENSE-SCOPE.md` 三件必须**随包**：在「组装 pkg-mac」
+段（复制 `FIRST-OPEN-macOS.txt` 之后，随包 Flet 客户端 / Info.plist 收口 / 重签**之前**）
+复制到两处各一份：
+
+- `编辑部工具箱.app/Contents/Resources/`（应用内可见）
+- `pkg-mac/`（zip 根，解包即读）
+
+并用 `test -f` + `cmp` 断言两处都存在且与**构建提交里的仓库根文件**逐字节一致（断言失败即
+构建失败）。构建树由 `git archive <BUILD_COMMIT>` 导出，因此仓库根文件就是该提交的版本；
+复核同一口径可用 `git show <BUILD_COMMIT>:<文件名>` 与包内文件 `cmp`。三件内容由发版/法务
+维护，打包链**不得修改**其内容（不得追加/裁剪/换行归一）。
 
 ## CI 行为
 
-- 触发：`workflow_dispatch` 手动 + `push`（paths：`sources-flet/**`、本 workflow、`编辑笔记/模板文件/**`）。
+- 触发：**仅 `workflow_dispatch` 手动**（发版前验证用，2026-11-01 去冗余后不再随 push 打包；日常 push 的 Windows 验证由 `ci.yml` 承担）。
 - matrix：`windows-latest` + `macos-latest`，`fail-fast: false`；Python 3.14。
 - 版本号唯一出处：`Engine/slcn/__init__.py` 的 `__version__`（zip 名与 Windows exe 元数据同源）。
 - artifact：`actions/upload-artifact@v4`，name `flet-<os>-<版本>`；zip 的 sha256 打印在运行摘要里。
@@ -75,24 +128,53 @@ flet pack ..\sources-flet\app\main.py --name 编辑部工具箱 `
   --company-name "SLCN Toolbox" --copyright "SLCN Toolbox" --distpath dist --yes `
   --icon ..\sources-flet\packaging\assets\logo.ico
 Pop-Location
-# 3) 组装：把 sidecar 输出目录里的 SLCNEngine.exe 复制到 build-flet\dist\ 再试运行
+# 3) 组装：workflow 用 `dist/win-sidecar/dist/SLCNEngine.exe`（build_win_sidecar.ps1 产物）复制到 build-flet\dist\ 再试运行
 ```
 
-macOS 引擎 sidecar 等价命令（CI 里就是这么做的）：
+macOS 本地复刻（CI 里就是这么做的；产物布局见上，步骤与 `.github/workflows/build-flet.yml`
+的 macOS 段逐条一致，**不要改回 onefile**）：
 
 ```bash
+# 1) 引擎 sidecar（目录形态）
 cd Engine
-python -m PyInstaller --noconfirm --clean --onefile --console --name SLCNEngine \
+python -m PyInstaller --noconfirm --clean --onedir --console --name SLCNEngine \
   --distpath ../build-flet/dist-engine --workpath ../build-flet/work-engine --specpath ../build-flet \
   --hidden-import convert --hidden-import checkbib --hidden-import mergepdf \
   --hidden-import cleantemp --hidden-import compileall --hidden-import proofcheck \
   --hidden-import infocheck --hidden-import toc --hidden-import publish \
   --hidden-import bibdb --hidden-import envcheck --hidden-import diagnose --hidden-import dirpush \
-  --add-data "$GITHUB_WORKSPACE/编辑笔记/模板文件:编辑笔记/模板文件" \
+  --add-data "../编辑笔记/模板文件:编辑笔记/模板文件" \
   engine_main.py
+cd ..
+rm -rf build-flet/SLCNEngine
+cp -R build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
+chmod +x build-flet/SLCNEngine/SLCNEngine
+./build-flet/SLCNEngine/SLCNEngine --version
+
+# 2) Flet 应用（.app；版本/包标识等第 3 步用 PlistBuddy 收口，不用 flet pack 参数）
+( cd build-flet && flet pack ../sources-flet/app/main.py --name 编辑部工具箱 \
+    --icon ../sources-flet/packaging/assets/logo.icns --distpath dist --yes \
+    --hidden-import ui.bib_overview ui.bib_query ui.bib_normalize ui.bib_import ui.bib_review \
+    --hidden-import ui.bib_edit ui.bib_dupes ui.bib_fieldfix ui.bib_health ui.bib_prefs )
+
+# 3) 组装（照抄 workflow 的 macOS 段）：
+#    ditto dist → pkg-mac；sidecar 目录 → Contents/Resources/SLCNEngine/；
+#    Contents/MacOS/SLCNEngine 写 sh launcher；FIRST-OPEN-macOS.txt → pkg-mac/；
+#    仓库根 LICENSE / THIRD_PARTY.md / LICENSE-SCOPE.md → pkg-mac/ 与
+#      Contents/Resources/ 各一份，并 cmp 断言与构建树逐字节一致（M07）；
+#    官方缓存客户端 → Contents/Resources/flet-client/Flet.app（运行期 FLET_VIEW_PATH 用）；
+#    PlistBuddy 写 LSMultipleInstancesProhibited + CFBundleVersion/CFBundleShortVersionString=引擎版本；
+#    launcher + 外层 ad-hoc 重签（codesign --force --sign - …；不要 --deep）；
+#    codesign --verify --deep --strict 应 rc0；
+#    zip = EditToolBox-<引擎版本>-macOS-arm64.zip。
 ```
 
-注：入口表必须与 `Engine/engine_main.py: ENTRIES` 逐项一致（Windows 侧由 `build-win.ps1` 维护，
+> 注意：`flet pack` 构建时会重签内嵌 Flet shell 且不带 entitlements。包内必须另带
+> `flet_desktop.ensure_client_cached()` 的官方 Flet.app 并由运行期 `FLET_VIEW_PATH` 使用
+> （见上「产物布局」），否则文件选择器报 `ENTITLEMENT_NOT_FOUND`；`flet pack` 不要加
+> `--codesign-identity`（本流水线不签名）。
+
+注：入口表必须与 `Engine/engine_main.py: ENTRIES` 逐项一致（Windows 侧由 `Engine/tools/build_win_sidecar.ps1` 维护，
 两边同表）；模板目录 `编辑笔记/模板文件` 必须打进包，否则 convert 生成不了初排稿。
 
 > 图标路径说明：传 `--pyinstaller-build-args=--workpath/--specpath` 时，PyInstaller 按 spec 文件目录解析 `--icon`，请给**绝对路径**；直接 `flet pack`（默认 specpath=当前目录）时相对路径即可。

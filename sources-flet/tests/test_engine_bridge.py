@@ -245,3 +245,64 @@ def test_run_call_reads_multiline_with_oversized_line(tmp_path):
     assert lines[2] == "done"
     assert lines[3] == "tail-no-newline"
 
+
+
+# ── P09 R04（PRE-012）：frozen 形态 sidecar 缺失/不可执行/执行失败 → ok=False ──
+
+def _frozen_layout(tmp_path, monkeypatch, *, sidecar_body: str | None, executable: bool = True):
+    """搭 frozen .app 目录形态（MacOS/<exe> + Resources/SLCNEngine/SLCNEngine），返回 sidecar 路径。
+
+    monkeypatch sys.frozen/sys.executable/sys.platform 与 repo_root（去掉外部 Engine 源码候选），
+    并清掉所有引擎覆盖 env —— 与打包运行期一致，只走包内 sidecar。
+    """
+    app = tmp_path / "编辑部工具箱.app"
+    macos = app / "Contents" / "MacOS"
+    macos.mkdir(parents=True)
+    exe = macos / "编辑部工具箱"
+    exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(EB, "repo_root", lambda: tmp_path)  # 无外部 Engine 源码 / 无仓库根 sidecar
+    for name in ("P2_ENGINE", "SLCN_ENGINE", "P2_ENGINE_EXE", "SLCN_ENGINE_EXE",
+                 "P2_ENGINE_PYTHON", "SLCN_PYTHON"):
+        monkeypatch.delenv(name, raising=False)
+    EB.clear_engine_version_cache()
+    if sidecar_body is None:
+        return app, None
+    sc = app / "Contents" / "Resources" / "SLCNEngine" / "SLCNEngine"
+    sc.parent.mkdir(parents=True)
+    sc.write_text(sidecar_body, encoding="utf-8")
+    sc.chmod(0o755 if executable else 0o644)
+    return app, sc
+
+
+def test_engine_status_frozen_without_sidecar_not_ok(tmp_path, monkeypatch):
+    """frozen 且包内没有 sidecar：ok=False、problems 非空（不得误报「就绪」）。"""
+    _frozen_layout(tmp_path, monkeypatch, sidecar_body=None)
+    status = EB.engine_status()
+    assert status.frozen_exe == ""
+    assert status.ok is False
+    assert status.problems, "缺 sidecar 必须给出 problems"
+    assert status.to_dict()["ok"] is False
+
+
+def test_engine_status_frozen_sidecar_not_executable(tmp_path, monkeypatch):
+    """frozen + sidecar 存在但不可执行：ok=False、problems 含「不可执行」。"""
+    _app, sc = _frozen_layout(tmp_path, monkeypatch, sidecar_body="#!/bin/sh\nexit 0\n", executable=False)
+    status = EB.engine_status()
+    assert status.frozen_exe == str(sc)
+    assert status.executable is False
+    assert status.ok is False
+    assert any("不可执行" in p for p in status.problems), status.problems
+
+
+def test_engine_status_frozen_sidecar_version_fails(tmp_path, monkeypatch):
+    """frozen + 可执行但 --version 失败（exit 3）：ok=False、problems 含 rc=3。"""
+    _app, sc = _frozen_layout(tmp_path, monkeypatch, sidecar_body="#!/bin/sh\necho boom >&2\nexit 3\n")
+    status = EB.engine_status()
+    assert status.frozen_exe == str(sc)
+    assert status.executable is True
+    assert status.ok is False
+    assert any("rc=3" in p for p in status.problems), status.problems

@@ -2,10 +2,24 @@ name: Build Flet Shell
 
 # B-246c P4：Flet 单壳双平台打包（Windows / macOS）。
 #   · 引擎 sidecar：Windows 用 Engine/tools/build_win_sidecar.ps1（旧 build-win.ps1 的引擎段）；
-#     macOS 用等价的 PyInstaller onefile。
-#   · 应用：flet pack（onefile；macOS 出 .app），sidecar 放到可执行文件同目录。
+#     macOS 用等价的 PyInstaller --onedir（目录形态，与 release.yml 同口径）。
+#   · 应用：flet pack（onefile；macOS 出 .app）。
+#     sidecar 落点：macOS = .app/Contents/Resources/SLCNEngine/（Contents/MacOS 留同名 launcher）；
+#     Windows = exe 同目录。
+#   · Flet 桌面客户端随包（macOS）：.app/Contents/Resources/flet-client/Flet.app，运行期由
+#     main.py 用 FLET_VIEW_PATH 指过去；必须用官方缓存客户端（保持签名与 entitlements）——
+#     flet pack 会重签内嵌 shell 且不带 entitlements，剥掉 file picker 需要的
+#     com.apple.security.files.user-selected.read-write 就会报 ENTITLEMENT_NOT_FOUND。
 #   · 产物：EditToolBox-<Engine版本>-<平台>.zip（内含 FIRST-OPEN 说明与 sha256.txt）。
-#   · 只产 artifact，**不做** tag / Release / 签名（发版留人工按 release.yml）。
+#   · 随包许可（M07）：仓库根 LICENSE / THIRD_PARTY.md / LICENSE-SCOPE.md 复制进
+#     .app/Contents/Resources/ 与 zip 根（pkg-mac/）各一份，并用 cmp 断言与构建树的
+#     仓库根文件逐字节一致（失败即构建失败；三件内容由发版/法务维护，打包链不改）。
+#   · 封条（macOS）：组装末尾对 Contents/MacOS/SLCNEngine（launcher）+ 外层 .app 重新
+#     ad-hoc 签名（**不带 --deep**，否则会再次剥掉随包 flet-client 的 entitlements），
+#     再用 `codesign --verify --deep --strict` 自检 rc0。PyInstaller 的原签名在
+#     PlistBuddy 改 Info.plist 后已失效，不重签会被判「封条破损」。
+#   · 只产 artifact，**不做** tag / Release / 发行签名（ad-hoc 重签 ≠ 开发者签名；
+#     发版留人工按 release.yml）。
 #   · 触发：仅 workflow_dispatch（手动，发版前验证用）；日常 push 不再打包。
 # 2026-11-01 CI 去冗余（用户拍板）：打包只在**手动触发**（发版前验证）时运行，不再随 push 跑；
 # 发布时的产物由 release.yml 在 tag 上独立构建。日常 push 的验证由 ci.yml 的 windows job 承担。
@@ -75,12 +89,12 @@ jobs:
           & build-flet/SLCNEngine.exe --version | Out-Host
           if ($LASTEXITCODE -ne 0) { throw "sidecar 自检失败（SLCNEngine.exe --version）" }
 
-      - name: 引擎 sidecar（macOS：PyInstaller onefile，等价入口表）
+      - name: 引擎 sidecar（macOS：PyInstaller --onedir，等价入口表）
         if: matrix.platform == 'macos'
         run: |
           set -euo pipefail
           mkdir -p build-flet
-          ( cd Engine && python -m PyInstaller --noconfirm --clean --onefile --console \
+          ( cd Engine && python -m PyInstaller --noconfirm --clean --onedir --console \
               --name SLCNEngine \
               --distpath ../build-flet/dist-engine \
               --workpath ../build-flet/work-engine \
@@ -92,9 +106,12 @@ jobs:
               --hidden-import dirpush \
               --add-data "$GITHUB_WORKSPACE/编辑笔记/模板文件:编辑笔记/模板文件" \
               engine_main.py )
-          cp build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
-          chmod +x build-flet/SLCNEngine
-          ./build-flet/SLCNEngine --version
+          # --onedir 产出的是**目录**：dist-engine/SLCNEngine/{SLCNEngine,_internal/}
+          rm -rf build-flet/SLCNEngine
+          cp -R build-flet/dist-engine/SLCNEngine build-flet/SLCNEngine
+          chmod +x build-flet/SLCNEngine/SLCNEngine
+          ls -la build-flet/SLCNEngine
+          ./build-flet/SLCNEngine/SLCNEngine --version
 
       # ── Flet 应用 ───────────────────────────────────────────────────
       - name: flet pack（Windows：onefile + 版本资源）
@@ -131,7 +148,7 @@ jobs:
           ls -la build-flet/dist
 
       # ── sidecar 定位自检（engine_bridge，不经 GUI） ────────────────
-      - name: sidecar 定位自检
+      - name: sidecar 定位自检（macOS 传目录形态，验证 --onedir 解析）
         run: |
           if [ "${{ matrix.platform }}" = "windows" ]; then
             python sources-flet/packaging/sidecar_check.py build-flet/SLCNEngine.exe --run-help
@@ -174,7 +191,8 @@ jobs:
           echo "== build-flet/dist =="
           ls -la build-flet/dist
           test -d build-flet/dist
-          test -f build-flet/SLCNEngine
+          test -x build-flet/SLCNEngine/SLCNEngine
+          test -d build-flet/SLCNEngine/_internal
 
       - name: macOS 组装 pkg-mac
         if: matrix.platform == 'macos'
@@ -186,18 +204,104 @@ jobs:
           ditto build-flet/dist pkg-mac
           APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
           if [ -n "$APPDIR" ]; then
-            # sidecar 必须与 .app 主可执行同目录，engine_bridge 才找得到
-            cp build-flet/SLCNEngine "$APPDIR/Contents/MacOS/SLCNEngine"
+            # --onedir sidecar 是**目录**（SLCNEngine + _internal/）：整体放 Resources，
+            # 不占 Contents/MacOS（那里是 .app 的可执行区，只留一个同名 launcher）。
+            rm -rf "$APPDIR/Contents/Resources/SLCNEngine"
+            cp -R build-flet/SLCNEngine "$APPDIR/Contents/Resources/SLCNEngine"
+            chmod +x "$APPDIR/Contents/Resources/SLCNEngine/SLCNEngine"
+            # Contents/MacOS/SLCNEngine 仍是可执行入口（launcher，转调 Resources 里的真身），
+            # 所以 FIRST-OPEN 文档里的 `.../Contents/MacOS/SLCNEngine --version` 照旧可用。
+            printf '%s\n' '#!/bin/sh' \
+              'here=$(cd "$(dirname "$0")" && pwd)' \
+              'exec "$here/../Resources/SLCNEngine/SLCNEngine" "$@"' \
+              > "$APPDIR/Contents/MacOS/SLCNEngine"
             chmod +x "$APPDIR/Contents/MacOS/SLCNEngine"
-            ( cd "$APPDIR/Contents/MacOS" && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+            ( cd "$APPDIR/Contents/Resources/SLCNEngine" && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
           else
-            cp build-flet/SLCNEngine pkg-mac/SLCNEngine
-            chmod +x pkg-mac/SLCNEngine
-            ( cd pkg-mac && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
+            rm -rf pkg-mac/SLCNEngine
+            cp -R build-flet/SLCNEngine pkg-mac/SLCNEngine
+            chmod +x pkg-mac/SLCNEngine/SLCNEngine
+            ( cd pkg-mac/SLCNEngine && shasum -a 256 SLCNEngine > sha256.txt && cat sha256.txt )
           fi
           cp sources-flet/packaging/FIRST-OPEN-macOS.txt pkg-mac/
+          # M07（随包许可）：仓库根三件 → zip 根与 app/Contents/Resources/ 各一份。
+          # 构建树来自 git archive <BUILD_COMMIT>（CI 为 actions/checkout 的提交），
+          # 所以这里的源文件就是构建提交版本；cmp 通过即「包内许可 == 构建提交许可」。
+          for f in LICENSE THIRD_PARTY.md LICENSE-SCOPE.md; do
+            test -f "$f" || { echo "缺少仓库根许可文件：$f"; exit 1; }
+            cp "$f" "pkg-mac/$f"
+            cmp "$f" "pkg-mac/$f"
+            if [ -n "$APPDIR" ]; then
+              cp "$f" "$APPDIR/Contents/Resources/$f"
+              cmp "$f" "$APPDIR/Contents/Resources/$f"
+            fi
+          done
+          ls -la pkg-mac/LICENSE pkg-mac/THIRD_PARTY.md pkg-mac/LICENSE-SCOPE.md
+          if [ -n "$APPDIR" ]; then
+            ls -la "$APPDIR/Contents/Resources/LICENSE" \
+                   "$APPDIR/Contents/Resources/THIRD_PARTY.md" \
+                   "$APPDIR/Contents/Resources/LICENSE-SCOPE.md"
+          fi
+          echo "M07_LICENSE_BUNDLED_OK"
           ls -la pkg-mac
           ls -la pkg-mac/*/Contents/MacOS 2>/dev/null || true
+          ls -la pkg-mac/*/Contents/Resources/SLCNEngine 2>/dev/null | head -20 || true
+
+      - name: 随包 Flet 桌面客户端（macOS：FLET_VIEW_PATH，保持官方签名/entitlements）
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR" || { echo "没有 .app 可装配随包客户端"; exit 1; }
+          # 官方缓存客户端（未改动、保留 entitlement）：flet pack 内嵌的 shell 被它用
+          # codesign --deep 重签且不带 entitlements，运行期必须改走这里，否则文件选择器
+          # 报 ENTITLEMENT_NOT_FOUND（file_picker 的 SecTaskCopyValueForEntitlement 检查）。
+          CLIENT=$(python -c 'import flet_desktop; print(flet_desktop.ensure_client_cached())')
+          SRC=$(ls -d "$CLIENT"/*.app 2>/dev/null | head -1 || true)
+          test -n "$SRC" || { echo "客户端目录里没有 .app：$CLIENT"; exit 1; }
+          mkdir -p "$APPDIR/Contents/Resources/flet-client"
+          rm -rf "$APPDIR/Contents/Resources/flet-client/Flet.app"
+          ditto "$SRC" "$APPDIR/Contents/Resources/flet-client/Flet.app"
+          du -sh "$APPDIR/Contents/Resources/flet-client/Flet.app"
+          # 断言：随包客户端仍带 file picker 需要的 entitlement（缺失则构建直接失败）
+          codesign -d --entitlements - "$APPDIR/Contents/Resources/flet-client/Flet.app" 2>/dev/null \
+            | grep -q 'com.apple.security.files.user-selected.read-write' \
+            || { echo "随包 Flet.app 缺少 user-selected.read-write entitlement"; exit 1; }
+
+      - name: Info.plist 收口（macOS：禁多实例 + 版本号与引擎同源）
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.value }}"
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR"
+          PLIST="$APPDIR/Contents/Info.plist"
+          PB=/usr/libexec/PlistBuddy
+          # 重复双击不要开出第二个实例
+          $PB -c "Add :LSMultipleInstancesProhibited bool true" "$PLIST" 2>/dev/null \
+            || $PB -c "Set :LSMultipleInstancesProhibited true" "$PLIST"
+          # 版本号与引擎同一出处（Engine/slcn/__init__.py）；键缺失时 Add
+          for key in CFBundleVersion CFBundleShortVersionString; do
+            $PB -c "Set :$key $V" "$PLIST" 2>/dev/null \
+              || $PB -c "Add :$key string $V" "$PLIST"
+          done
+          plutil -p "$PLIST" | grep -E 'LSMultipleInstancesProhibited|CFBundleVersion|CFBundleShortVersionString'
+
+      - name: macOS 重签封条（launcher + 外层 ad-hoc，不 --deep）
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          APPDIR=$(ls -d pkg-mac/*.app 2>/dev/null | head -1 || true)
+          test -n "$APPDIR"
+          # Contents/MacOS 下的 launcher 脚本属嵌套代码，需先自签，否则外层签名报
+          # "code object is not signed at all ... In subcomponent: .../MacOS/SLCNEngine"。
+          codesign --force --sign - "$APPDIR/Contents/MacOS/SLCNEngine"
+          # PlistBuddy 改过 Info.plist 后 PyInstaller 的 ad-hoc 封条已失效：只重签外层。
+          # 绝不能加 --deep（会重新签内嵌 flet-client 并剥掉 file picker 需要的 entitlements）。
+          codesign --force --sign - "$APPDIR"
+          # 自检：deep+strict 必须 rc0（P09-PRE-005：封条破损 = 构建缺陷）
+          codesign --verify --deep --strict "$APPDIR"
+          codesign -dv "$APPDIR" 2>&1 | grep -E 'Signature|Identifier|TeamIdentifier' || true
 
       - name: macOS 生成 zip
         if: matrix.platform == 'macos'

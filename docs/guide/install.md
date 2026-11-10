@@ -40,7 +40,7 @@ macOS 版目前只提供 Apple 芯片（arm64）包。
 1. 下载 `EditToolBox-<版本>-macOS-arm64.zip`，解压得到 `编辑部工具箱.app`，拖进「应用程序」；
 2. 首次打开若提示「无法验证开发者」或「已损坏」：在访达里 **右键点 App → 打开 → 仍要打开**（只需一次），
    或终端执行 `xattr -dr com.apple.quarantine "/Applications/编辑部工具箱.app"`；
-3. **不需要另装 Python**：引擎 sidecar 已打进 App（`Contents/MacOS/SLCNEngine`），Flet 运行时随包分发。
+3. **不需要另装 Python**：引擎 sidecar 已打进 App——真身在 `Contents/Resources/SLCNEngine/`（目录，含 `SLCNEngine`、`_internal/`、`sha256.txt`），`Contents/MacOS/SLCNEngine` 只是转调它的 sh launcher；Flet 运行时随包分发。
 
 > 编译 LaTeX 需要本机安装 **TeX Live / MacTeX**（自带 `xelatex`、`biber`）；只做转换不编译则不需要。
 >
@@ -50,7 +50,7 @@ macOS 版目前只提供 Apple 芯片（arm64）包。
 ## 版本与更新
 
 - 版本号唯一出处是仓库里的 `Engine/slcn/__init__.py`；Releases 页面同时维护 `latest.json`；
-- 更新时下载新包覆盖旧目录即可，个人设置保存在系统配置目录（macOS 应用支持目录 / Windows `%APPDATA%`），不会被覆盖。
+- 更新时下载新包覆盖旧目录即可，个人设置默认保存在 `~/.editorial-toolbox/settings.json`（macOS；可用环境变量 `P2_SETTINGS` 覆盖）/ Windows `%APPDATA%\EditToolBox\settings.json`，不会被覆盖。
 
 ## 常见安装问题
 
@@ -59,9 +59,9 @@ macOS 版目前只提供 Apple 芯片（arm64）包。
 | Windows 提示缺少 DLL / 打不开 | 确认解压完整（不要在压缩包里直接运行），`编辑部工具箱.exe` 与 `SLCNEngine.exe` 放在同一个文件夹 |
 | Windows 首次运行被 SmartScreen 拦截 | 「更多信息」→「仍要运行」；确认文件是从 Releases 解压出来的完整包 |
 | macOS 提示「已损坏，无法打开」 | 右键 → 打开；或系统设置 → 隐私与安全性 → 仍要打开；或 `xattr -dr com.apple.quarantine <App>` |
-| 首页显示「引擎缺失」 | 确认 `SLCNEngine.exe` 与 `编辑部工具箱.exe` 在同一目录；或在「设置 → 路径 → 引擎目录」手动指定 |
+| 首页显示「引擎缺失」 | 确认 `SLCNEngine.exe` 与 `编辑部工具箱.exe` 在同一目录；或在「设置 → 路径」里手动指定引擎目录 |
 | 拖文件到窗口没有反应 | Flet/Flutter 桌面窗口不接收系统拖放（已实测）；点「浏览…」用原生文件对话框，或把路径粘贴进输入框 |
-| 首次启动明显偏慢（约 4–5 秒） | onefile 包要解压运行时，属已知现象；第二次启动通常约 2 秒 |
+| 首次启动明显偏慢（约 4–5 秒） | macOS 主程序仍按 onefile 解压运行时（Flet 客户端已随包、不再解压）；Windows 仍需解压 Flet 客户端；第二次启动通常约 2 秒 |
 | 中文输入正常但候选窗位置不理想 | IME 候选窗未做自动化验证，属已知限制；可先确认系统输入法状态，仍异常请附截图反馈 |
 | 转换成功但编译失败 | 检查是否安装 TeX 发行版（TeX Live / MiKTeX / MacTex）、`xelatex` 是否在 PATH；「设置 → 环境检查」可一键只读诊断 |
 | Word 稿转换后公式位置是「公式图缺失」占位 | 作者用了 MathType/OLE 公式，本机未装或未找到 LibreOffice；装好后**重跑一次初排转换** |

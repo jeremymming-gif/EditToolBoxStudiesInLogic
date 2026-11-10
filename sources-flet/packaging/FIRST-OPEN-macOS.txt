@@ -2,7 +2,7 @@
 ================================================
 
 1) 解压得到 编辑部工具箱.app（应用内已带引擎 SLCNEngine，请勿单独拆开或移动）。
-   如果压缩包内还有 SLCNEngine 文件，它已放在 .app 的 Contents/MacOS/ 里，无需手动处理。
+   引擎真身在 .app 的 Contents/Resources/SLCNEngine/（目录形态）；Contents/MacOS/SLCNEngine 是一个转调它的启动脚本，两条路径都不用手动处理。
 
 2) 首次打开：不要双击（Gatekeeper 会拦未签名应用）。请
    - 方式 A：在 Finder 里右键（或 Control+单击）编辑部工具箱.app →「打开」→ 再点「打开」；
@@ -15,12 +15,22 @@
 4) 打开后看首页「引擎状态」卡：应显示「冻结引擎 · .../SLCNEngine」与版本号。
    自检：终端执行  ./编辑部工具箱.app/Contents/MacOS/SLCNEngine --version  应打印版本号。
 
-5) 数据只写本机（设置文件 ~/Library/Application Support/EditToolBox/settings.json），
-   不联网、不上传。日志在应用内「运行日志」区。
+5) 数据只写本机（设置文件默认 ~/.editorial-toolbox/settings.json，可用环境变量 P2_SETTINGS 指定）。
+   默认不联网、不上传；仅当你主动使用 AI 辅助或引用库 Git 同步并自行配置服务时才会访问相应服务；
+   本工具无遥测、不向默认服务器上传稿件。日志在应用内「运行日志」区；启动诊断日志在
+   ~/Library/Logs/编辑部工具箱/startup.log（不记录稿件内容）。
 
 6) 完整性校验（可选）：
-   shasum -a 256 编辑部工具箱.app/Contents/MacOS/编辑部工具箱
-   与压缩包内 sha256.txt 对照；zip 的 sha256 见 CI 运行摘要。
+   包内 sha256.txt 实际位于 编辑部工具箱.app/Contents/Resources/SLCNEngine/sha256.txt，
+   它记录的是 sidecar 引擎 SLCNEngine 的 sha256，不含主程序「编辑部工具箱」的摘要：
+     cd 编辑部工具箱.app/Contents/Resources/SLCNEngine && shasum -a 256 -c sha256.txt
+   主程序摘要需单独计算，与上面的 sha256.txt 不是同一文件，勿互相核对：
+     shasum -a 256 编辑部工具箱.app/Contents/MacOS/编辑部工具箱
+   zip 的 sha256 见 CI 运行摘要。
+   签名自检（可选；应无输出、退出码 0）：
+   codesign --verify --deep --strict 编辑部工具箱.app
+   说明：本包是 ad-hoc 签名（无 Team ID、未公证），这一步只验证包内封条自洽；
+   首次打开仍按第 2) 条处理。
 
 已知限制：未签名/未公证；arm64（Apple Silicon）构建，Intel Mac 不保证；
 文件拖放走「浏览...」原生对话框；macOS 版本不提供托盘（托盘是 Windows 功能），关闭窗口即退出。

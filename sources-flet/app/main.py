@@ -714,7 +714,7 @@ class App:
                 self.mark("toolbar_meta_error", page=self.current_page_key,
                           error=f"{type(exc).__name__}: {exc}")
         if not meta:
-            meta = "引擎就绪 · 本地只读" if self.engine_status.ok else "引擎缺失 · 只读"
+            meta = "引擎就绪 · 本地只读" if self.engine_status.ok else "引擎不可用 · 只读"
         action = None
         reader = getattr(page, "toolbar_action", None)
         if callable(reader):
@@ -1419,7 +1419,7 @@ class App:
                 content=ft.Column(spacing=t.sp("xs"), controls=[
                     ft.Row(spacing=t.sp("half"), controls=[
                         C.status_dot("ok" if engine_ok else "error", t),
-                        C.text(f"引擎 {engine_version} · " + ("就绪" if engine_ok else "缺失"),
+                        C.text(f"引擎 {engine_version} · " + ("就绪" if engine_ok else "不可用"),
                                t, "caption", t.palette.text_muted),
                     ]),
                     C.text(f"本地运行 · {self.app_version}", t, "caption", t.palette.text_faint),

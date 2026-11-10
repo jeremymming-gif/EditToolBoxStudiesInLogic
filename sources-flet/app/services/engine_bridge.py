@@ -202,13 +202,19 @@ class EngineStatus:
     frozen_exe: str = ""
     version: str = "未知"
     mode: str = "dev"
+    executable: bool = True
     problems: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        # P4：打包模式（flet pack + 同目录 SLCNEngine sidecar）下没有 Engine 源码目录，
-        # 此时只要冻结 sidecar 在就算可用；源码模式（dev）仍要求 Engine 目录 + 解释器。
-        return bool(self.frozen_exe or (self.engine_dir and self.python))
+        # P4：打包模式（flet pack + 随包 SLCNEngine sidecar）下没有 Engine 源码目录，
+        # 此时要求 sidecar 可执行且 --version 能读出版本；源码模式（dev）仍要求
+        # Engine 目录 + 解释器。
+        # P09 R04（PRE-012）：缺 sidecar / 不可执行 / 版本读不出都必须是 ok=False，
+        # 不允许把「引擎缺失」误报成「就绪」。
+        if self.frozen_exe:
+            return bool(self.executable and self.version not in ("", "未知"))
+        return bool(self.engine_dir and self.python)
 
     def describe(self) -> str:
         if self.frozen_exe:
@@ -224,6 +230,7 @@ class EngineStatus:
             "frozen_exe": self.frozen_exe,
             "version": self.version,
             "mode": self.mode,
+            "executable": self.executable,
             "ok": self.ok,
             "describe": self.describe(),
             "problems": list(self.problems),
@@ -328,8 +335,12 @@ def engine_version() -> str:
 
 
 def clear_engine_version_cache() -> None:
-    """测试/刷新用：清掉版本缓存。"""
+    """测试/刷新用：清掉版本与失败原因缓存。"""
     _ENGINE_VERSION_CACHE.clear()
+    _PROBE_FAILURE_CACHE.clear()
+
+
+_PROBE_FAILURE_CACHE: dict[str, str] = {}
 
 
 def _read_engine_version(engine_dir: str | None, exe: str | None) -> str:
@@ -357,6 +368,39 @@ def _read_engine_version(engine_dir: str | None, exe: str | None) -> str:
     return "未知"
 
 
+def _probe_failure_detail(exe: str) -> str:
+    """`sidecar --version` 的执行失败原因（rc / 超时 / OSError），按 exe 进程内缓存。
+
+    仅在版本读不出时调用：把「引擎不可用」的具体原因写进 problems / 界面，
+    让缺 sidecar、不可执行、解释器库损坏等故障可诊断（P09 R04 / PRE-012）。
+    """
+    cached = _PROBE_FAILURE_CACHE.get(exe)
+    if cached is not None:
+        return cached
+    detail: str
+    try:
+        proc = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+            env=_child_env(),
+        )
+        if proc.returncode != 0:
+            tail = ((proc.stderr or "") or (proc.stdout or "")).strip()
+            last = tail.splitlines()[-1] if tail else ""
+            detail = f"（rc={proc.returncode}" + (f"：{last}" if last else "") + "）"
+        else:
+            detail = "（--version 输出无法解析）"
+    except subprocess.TimeoutExpired:
+        detail = "（--version 超时）"
+    except OSError as exc:
+        detail = f"（{type(exc).__name__}: {exc}）"
+    except subprocess.SubprocessError as exc:
+        detail = f"（{type(exc).__name__}: {exc}）"
+    _PROBE_FAILURE_CACHE[exe] = detail
+    return detail
+
+
 def engine_status() -> EngineStatus:
     status = EngineStatus()
     status.engine_dir = find_engine_dir()
@@ -373,6 +417,16 @@ def engine_status() -> EngineStatus:
         status.problems.append("找不到引擎目录：在设置里指定「引擎目录」，或设 SLCN_ENGINE。")
     if not status.frozen_exe and not status.python:
         status.problems.append("找不到可用的 Python 解释器")
+    # P09 R04（PRE-012）：frozen 形态下 sidecar 必需可执行且 --version 能读出版本；
+    # 否则 ok=False 并把可诊断原因写进 problems（UI 显示「引擎不可用」而非「就绪」）。
+    if status.frozen_exe:
+        if not os.access(status.frozen_exe, os.X_OK):
+            status.executable = False
+            status.problems.append(f"引擎不可执行：{status.frozen_exe}")
+        elif status.version in ("", "未知"):
+            status.problems.append(
+                "引擎不可用：sidecar --version 执行失败" + _probe_failure_detail(status.frozen_exe)
+            )
     return status
 
 

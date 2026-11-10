@@ -12,7 +12,13 @@
   1. sidecar 文件存在且可执行；
   2. 设 P2_ENGINE_EXE 后 base_cmd('convert.py') == [sidecar, 'convert.py']；
   3. engine_status()：mode=frozen、ok=True、frozen_exe=sidecar、version≠未知；
-  4. --run-help：真实执行 `SLCNEngine convert.py --help`，rc==0（证明包内入口可用）。
+  4. --run-help：真实执行 `SLCNEngine convert.py --help`，rc==0（证明包内入口可用）；
+  5. binary：**不经 engine_bridge、不依赖任何 override env**，直接执行
+     `<sidecar> --version`，记录 {exists, executable_bit, version_rc, version_tail}。
+
+证据口径（P09 PRE-013）：G8/ACCEPT 的包内身份证据 = 包内 sidecar `--version` 输出 +
+包内文件 SHA256 + manifest；`checks.status` 只是结构检查（会把 P2_ENGINE_EXE 设成
+包内 sidecar 来模拟打包布局），其 `source` 字段标注了来源，不能单独当「包内二进制」证据。
 
 退出码：0 通过 / 1 失败 / 2 用法错误。stdout 输出 JSON（便于 CI 与证据落盘）。
 """
@@ -55,6 +61,33 @@ def resolve_sidecar(path: Path) -> Path:
     return path.resolve()
 
 
+def run_binary_version(exe: Path) -> dict:
+    """直接执行 `<sidecar> --version`：包内二进制的直接证据（不依赖 env/源码树）。"""
+    info = {
+        "exists": exe.is_file(),
+        "executable_bit": os.access(exe, os.X_OK),
+        "version_rc": None,
+        "version_tail": "",
+        "error": "",
+    }
+    try:
+        proc = subprocess.run(
+            [str(exe), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        info["version_rc"] = proc.returncode
+        info["version_tail"] = out.splitlines()[-1] if out else ""
+    except (OSError, subprocess.SubprocessError) as exc:
+        info["error"] = f"{type(exc).__name__}: {exc}"
+    return info
+
+
 def main() -> int:
     _utf8_stdio()
     argv = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -75,6 +108,8 @@ def main() -> int:
         "exists": sidecar.is_file(),
         "run_help": bool(run_help),
         "checks": {},
+        # 显式记录本检查器为了「模拟打包布局」而设置的 env；status 结果因此只算结构检查。
+        "env_overrides_used": ["P2_ENGINE_EXE"],
         "ok": False,
     }
 
@@ -82,6 +117,9 @@ def main() -> int:
         result["error"] = "sidecar 不存在（传目录时，目录里也没有 SLCNEngine/SLCNEngine.exe）"
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1
+
+    # 包内二进制身份的直接证据：真实执行包内 sidecar 的 --version（先于任何 env 模拟）。
+    result["checks"]["binary"] = run_binary_version(sidecar)
 
     # 模拟打包布局：强制走同目录 sidecar（清掉别的覆盖变量）
     os.environ["P2_ENGINE_EXE"] = str(sidecar)
@@ -96,10 +134,14 @@ def main() -> int:
     checks = result["checks"]
     checks["base_cmd"] = {"argv": cmd, "ok": len(cmd) == 2 and cmd[1:] == ["convert.py"] and Path(cmd[0]) == sidecar}
     checks["status"] = {
+        # PRE-013：status 走 engine_bridge（本检查器把 P2_ENGINE_EXE 设成包内 sidecar
+        # 来模拟打包布局），只能当结构检查；包内身份以 checks.binary + SHA + manifest 为准。
+        "source": "engine_bridge(env-simulated: P2_ENGINE_EXE set by checker)",
         "mode": status.mode,
         "ok": status.ok,
         "frozen_exe": status.frozen_exe,
         "version": status.version,
+        "executable": status.executable,
         "problems": status.problems,
         "describe": status.describe(),
     }
@@ -130,6 +172,8 @@ def main() -> int:
         and checks["status"]["mode"] == "frozen"
         and Path(checks["status"]["frozen_exe"] or "").resolve() == sidecar
         and checks["status"]["version"] not in ("", "未知")
+        and checks["binary"]["version_rc"] == 0
+        and checks["binary"]["executable_bit"]
         and (not run_help or checks.get("run_help", {}).get("ok"))
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
