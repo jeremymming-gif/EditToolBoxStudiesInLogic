@@ -2091,7 +2091,7 @@ class App:
             page = self.pages.get("settings")
             if page is not None and getattr(page, "log_list", None) is not None:
                 try:
-                    SHELL.render_logs(page)
+                    SHELL.render_logs_throttled(page)
                 except Exception:  # noqa: BLE001
                     pass
         if self.first_line_ms is None and self.run_start_mono:
@@ -2112,6 +2112,12 @@ class App:
                 page.refresh_running()
             except Exception:  # noqa: BLE001
                 pass
+        try:
+            settings_page = self.pages.get("settings")
+            if settings_page is not None:
+                SHELL.flush_logs(settings_page)
+        except Exception:  # noqa: BLE001
+            pass
         self.mark("run_done", entry=call.entry, label=label, code=code, lines=self.line_count,
                   duration_s=duration, first_line_ms=self.first_line_ms, cancelled=cancelled,
                   last_line=self.last_line[-200:])

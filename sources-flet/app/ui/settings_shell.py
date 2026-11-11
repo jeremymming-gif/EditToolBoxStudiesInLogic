@@ -742,6 +742,30 @@ def render_logs(page) -> None:
             pass
 
 
+def render_logs_throttled(page, *, now: float | None = None,
+                          min_interval_s: float = 0.15) -> bool:
+    """合并窗口内的日志渲染请求；窗口外立即渲染。返回本次是否真的渲染。"""
+    now = time.monotonic() if now is None else float(now)
+    last = getattr(page, "_logs_render_last_mono", None)
+    if last is not None and (now - last) < min_interval_s:
+        page._logs_render_pending = True
+        return False
+    page._logs_render_last_mono = now
+    page._logs_render_pending = False
+    render_logs(page)
+    return True
+
+
+def flush_logs(page) -> bool:
+    """运行结束时补一次渲染，保证尾部日志可见；无待渲染则不动。"""
+    if not getattr(page, "_logs_render_pending", False):
+        return False
+    page._logs_render_last_mono = time.monotonic()
+    page._logs_render_pending = False
+    render_logs(page)
+    return True
+
+
 # ── 网络 / 代理 / 测试连接 ───────────────────────────────────────────────
 def mask_proxy(url: str) -> str:
     text = str(url or "")
