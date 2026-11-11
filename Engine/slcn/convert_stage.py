@@ -6,7 +6,7 @@ import argparse, inspect, os, re, shutil
 from slcn import __version__ as ENGINE_VERSION, clean as _clean, paths as _paths
 from slcn import coop as _coop, platform as _plat, refmark as _refmark
 from slcn import taskcard as _taskcard
-from slcn.build import build_docx, build_latex  # 门面 main 直接调用（契约 i2：门面只 import 4 模块）
+from slcn.build import build_docx, build_latex, StalePdfError  # 门面 main 直接调用（契约 i2：门面只 import 4 模块）
 from slcn.convert_compile import compile_pdf
 from slcn.convert_metadata import _OVERRIDE_FIELDS, die, is_own_product, resolve_c_class_union
 

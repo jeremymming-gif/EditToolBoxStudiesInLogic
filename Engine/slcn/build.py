@@ -27,6 +27,53 @@ from .sources import extract_bibkeys_from_body, extract_body_text
 
 HYPERREF_ANCHOR = r"\usepackage[pdfborder=0,CJKbookmarks=true]{hyperref}"
 
+# ── P02R｜R01/R02（2026-11-11，D-P13-02/D-P13-03）：产物自洽的两道写前闸门 ──
+# ① 模板里硬编码着 `\addbibresource{reference.bib}`；源稿一条参考文献都没有时
+#    产物目录里不会生成 reference.bib，这条声明就悬空 → `cleantemp --mode daily`
+#    预检直接 rc2「引用缺失」，整条清理链被一篇文章卡死（D-P13-02）。
+#    所以：生成时没有 bib 就把这一行声明去掉（只删指向 reference.bib 的那一行）。
+# ② 同一 stem 重跑、tex 已换但没带 --compile：上一轮编译的旧 PDF 会冒充新稿
+#    交付（rc0 且最后一行仍是「完成。产物目录：…」，D-P13-03）。
+#    所以：写盘前发现「新 tex 与旧 tex 不同 + 旧 PDF 还在 + 未请求编译」就报错，
+#    让用户补 --compile；报错发生在任何写入之前，产物目录零改动。
+class StalePdfError(RuntimeError):
+    """tex 已更新但旧 PDF 还在、且本次没有请求 --compile（D-P13-03）。"""
+
+
+_REFERENCE_BIB_DECL_RE = re.compile(
+    r"(?m)^[ \t]*\\addbibresource(?:\[[^\]]*\])?\{reference\.bib\}[ \t]*(?:\r?\n)?")
+
+
+def drop_dangling_reference_bib_decl(tex_text: str) -> tuple[str, int]:
+    """删掉指向 `reference.bib` 的 `\\addbibresource` 声明行（只删这一行，别的声明不动）。"""
+    return _REFERENCE_BIB_DECL_RE.subn("", tex_text)
+
+
+def guard_stale_pdf(tex_text: str, out_dir: str, basename: str,
+                    compile_requested: bool) -> None:
+    """写 tex 前拦住「新 tex + 旧 PDF + 未请求编译」的假成功组合（D-P13-03）。"""
+    if compile_requested:
+        return
+    tex_path = os.path.join(out_dir, f"{basename}.tex")
+    pdf_path = os.path.join(out_dir, f"{basename}.pdf")
+    if not (os.path.exists(tex_path) and os.path.exists(pdf_path)):
+        return
+    try:
+        with open(tex_path, encoding="utf-8", errors="replace") as fh:
+            old_tex = fh.read()
+    except OSError:
+        return
+    if old_tex == tex_text:
+        return
+    raise StalePdfError(
+        f"tex 已更新但 PDF 未更新，请用 --compile 重新编译：{out_dir}\n"
+        f"  产物目录里已有上一轮编译的 {basename}.pdf，本次生成的 {basename}.tex "
+        "与它不同源（上一版 .tex 内容已改变），但本次没有请求 --compile。\n"
+        "  为免把旧 PDF 当成新稿交付，本次转换在写盘前停止（产物目录未改动）。\n"
+        "  请加 --compile 重新转换并编译；如确实只要 .tex，可先手动移走旧 PDF。"
+    )
+
+
 # 字段值的清理规则（来自对人工成品的实测）
 # (适用字段或 None 表示全部, 正则, 替换, 说明)
 FIELD_CLEANUPS: list[tuple[tuple[str, ...] | None, str, str, str]] = [
@@ -980,6 +1027,8 @@ def build_latex(
     breakable_algorithm: bool = False,
     structured: dict | None = None,
     proof_autofix: bool = True,
+    # P02R R02：同 build_docx 的 compile_requested（默认 True = 不做旧 PDF 闸门）。
+    compile_requested: bool = True,
 ) -> BuildResult:
     """LaTeX 通道：多源合并成初排稿。
 
@@ -1421,6 +1470,21 @@ def build_latex(
 
     audit = R.audit(tpl, lang=lang)
 
+    # P02R R01/R02（LaTeX 通道）：最终不会产出 reference.bib 时才删悬空声明；
+    # 新 tex + 旧 PDF + 未请求编译 → 写盘前报错（判据与 Word 通道一致）。
+    # ⚠️ 判据必须是「最终是否写 reference.bib」：无 .bib 但源稿有手写 \bibitem 时，
+    #    下面 B-233 分支会自动生成 reference.bib，此时声明必须保留（否则 PDF 丢书目）。
+    _bi = None
+    if not bib_path and bibitem_convert.enabled() and bibitem_convert.looks_like_bibitems(raw_body):
+        _bi = bibitem_convert.convert(raw_body)
+    _bib_will_exist = bool(bib_path) or (_bi is not None and bool(_bi.entries))
+    if not _bib_will_exist:
+        tpl, _bib_decl_dropped = drop_dangling_reference_bib_decl(tpl)
+        if _bib_decl_dropped:
+            say("   未找到参考文献库：已移除 tex 中指向不存在的 reference.bib 的 "
+                "\\addbibresource 声明（避免清理预检报「引用缺失」）")
+    guard_stale_pdf(tpl, out_dir, basename, compile_requested)
+
     say("⑦ 写出文件")
     os.makedirs(out_dir, exist_ok=True)
     # 第 121 条：正文 `\includegraphics` 引用的图片从源目录复制进产物目录，
@@ -1456,9 +1520,7 @@ def build_latex(
         # B-233：源目录没有可用 .bib，但源稿（剥注释后）有手写 \bibitem →
         # 自动转成 reference.bib（仍走上面唯一写点 `out_dir/reference.bib`）。
         # 触发不限于正文有引用键；有 .bib 的默认路径在上面，一个字节不变。
-        _bi = None
-        if bibitem_convert.enabled() and bibitem_convert.looks_like_bibitems(raw_body):
-            _bi = bibitem_convert.convert(raw_body)
+        # _bi 在写 tex 前已算好（R01 判据需要知道这次会不会产出 reference.bib）。
         if _bi is not None and _bi.entries:
             from .bibnorm import normalize_bib
 
@@ -2199,6 +2261,9 @@ def build_docx(
     bibdb_store: object | None = None,
     handoff: bool = True,
     supplements: list[str] | None = None,
+    # P02R R02：是否随本次转换请求了 --compile。默认 True = 不做旧 PDF 闸门
+    # （直接调用本函数的旧代码/测试逐字节不变）；convert.py 传真实 args.compile。
+    compile_requested: bool = True,
 ) -> BuildResult:
     """Word 通道：.docx → 初排稿。模板选择规则同 build_latex。
 
@@ -2676,6 +2741,15 @@ def build_docx(
             warnings.append(f"ZH-08 连接号提示未执行（不影响出稿）：{type(e).__name__}: {e}")
 
     audit = R.audit(tpl, lang=lang)
+
+    # P02R R01：没有参考文献就不声明 reference.bib（否则声明悬空，清理预检 rc2）。
+    if not (doc.refs or doc.bib_entries):
+        tpl, _bib_decl_dropped = drop_dangling_reference_bib_decl(tpl)
+        if _bib_decl_dropped:
+            say("   未解析出参考文献：已移除 tex 中指向不存在的 reference.bib 的 "
+                "\\addbibresource 声明（避免清理预检报「引用缺失」）")
+    # P02R R02：新 tex + 旧 PDF + 没请求编译 → 写盘前明确报错（D-P13-03）。
+    guard_stale_pdf(tpl, out_dir, basename, compile_requested)
 
     say("⑥ 写出文件")
     os.makedirs(out_dir, exist_ok=True)

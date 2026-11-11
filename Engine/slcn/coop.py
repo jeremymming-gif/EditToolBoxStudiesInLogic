@@ -3673,3 +3673,124 @@ def write_record(stage_dir: str, **kwargs) -> str:
     p = os.path.join(stage_dir, RECORD_NAME)
     atomic_write_text(p, render_record(**kwargs))
     return p
+
+
+# ── P02R｜R03（2026-11-11，D-P13-05）：同输出名换源不得静默覆盖 ──────────────
+# 实测缺陷：同一作者同一输出名（stem）第二次转换换了一篇稿子，旧交付目录被直接
+# 覆盖（rc0、无提示），旧稿源文件还留在 original/ 里和本次混在一起。
+# 做法：交付成功后在产物目录记一份**输入源指纹**（源稿/显式 --bib 的 sha256）；
+# 下次同目录转换前比对，不同源就 rc2 + 中文提示（换 --name 或加 --force 明确确认）。
+# 兼容：旧交付目录没有指纹 → 只警告不阻断（旧流程照常），成功后补记指纹。
+def _die(msg: str) -> None:  # 与 convert_metadata.die 同语义（本地实现，避免 import 环）
+    import sys as _sys
+    print(f"\n❌ {msg}\n", file=_sys.stderr)
+    raise SystemExit(2)
+SOURCE_FP_NAME = ".slcn-源指纹.json"
+SOURCE_FP_SCHEMA = 1
+
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _input_fingerprint(source: str, bib: str | None) -> dict:
+    """本次转换的输入指纹（源稿必记；显式 --bib 存在时一并记 sha256）。"""
+    fp = {
+        "source": {
+            "name": os.path.basename(source),
+            "size": os.path.getsize(source),
+            "sha256": _sha256_file(source),
+        },
+        "bib": None,
+    }
+    if bib and os.path.isfile(bib):
+        fp["bib"] = {
+            "name": os.path.basename(bib),
+            "size": os.path.getsize(bib),
+            "sha256": _sha256_file(bib),
+        }
+    return fp
+
+
+def _load_source_fingerprint(out_dir: str) -> dict | None:
+    try:
+        with open(os.path.join(out_dir, SOURCE_FP_NAME), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != SOURCE_FP_SCHEMA:
+        return None
+    return data
+
+
+def source_fingerprint_guard(out_dir: str, stem: str, source: str, args) -> None:
+    """R03：同 stem 换源 → rc2 + 中文提示（写盘前，产物目录零改动）。"""
+    if getattr(args, "force", False) or not os.path.isdir(out_dir):
+        return
+    if getattr(args, "coop_taskbook_only", False) or getattr(args, "coop_replies", False):
+        return  # 协同两段式有暂存目录/状态/指纹自检，交付走 promote，不在此口径内
+    prev = _load_source_fingerprint(out_dir)
+    if prev is None:
+        if os.listdir(out_dir):
+            print("   ⚠ 既有交付目录没有源指纹记录（旧版本产物），无法核对本次源稿是否"
+                  "相同；按兼容策略继续，成功后补记指纹。")
+        return
+    try:
+        cur = _input_fingerprint(source, getattr(args, "bib", "") or None)
+    except OSError as e:  # noqa: BLE001  读不到源文件就交回主流程报错，别在这里挡
+        print(f"   ⚠ 源指纹核对跳过（读源文件失败）：{type(e).__name__}: {e}")
+        return
+    diffs: list[str] = []
+    _prev_src = prev.get("source") or {}
+    _cur_src = cur["source"]
+    if _prev_src.get("sha256") and _prev_src["sha256"] != _cur_src["sha256"]:
+        diffs.append(f"源稿：{_prev_src.get('name', '?')} sha256 "
+                     f"{_prev_src['sha256'][:16]}… → {_cur_src['name']} sha256 "
+                     f"{_cur_src['sha256'][:16]}…")
+    _prev_bib = prev.get("bib") or {}
+    _cur_bib = cur.get("bib") or {}
+    if _prev_bib.get("sha256") != _cur_bib.get("sha256"):
+        diffs.append(f"参考文献库：{_prev_bib.get('name') or '（无）'} "
+                     f"{(_prev_bib.get('sha256') or '')[:16]}… → "
+                     f"{_cur_bib.get('name') or '（无）'} "
+                     f"{(_cur_bib.get('sha256') or '')[:16]}…")
+    if not diffs:
+        return
+    _die(
+        f"目标文件夹已存在，且本次输入与上次交付不同源，拒绝覆盖：{out_dir}\n"
+        f"  {'；'.join(diffs)}\n"
+        f"  同一输出名（{stem}）换稿会覆盖既有交付，旧稿源文件还会和本次混在 "
+        "original/ 里。\n"
+        "  如这是新稿，请用 --name 指定别的输出名重新转换；\n"
+        "  如确认要用本次输入覆盖既有交付，请加 --force。"
+    )
+
+
+def remember_source_fingerprint(out_dir: str, stem: str, source: str, args) -> None:
+    """交付成功后记录输入指纹（协同两段式不在此口径；失败不影响交付）。
+
+    内容只由输入决定（不含生成时间等易变值）：同输入的两次转换产物逐字节相同，
+    既有「产物与 HEAD/前后两次转换逐字节一致」类测试不受影响。
+    """
+    if getattr(args, "coop_taskbook_only", False) or getattr(args, "coop_replies", False):
+        return
+    try:
+        fp = _input_fingerprint(source, getattr(args, "bib", "") or None)
+        data = {
+            "schema": SOURCE_FP_SCHEMA,
+            "stem": stem,
+            "source": fp["source"],
+            "bib": fp["bib"],
+        }
+        path = os.path.join(out_dir, SOURCE_FP_NAME)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except Exception as e:  # noqa: BLE001  附加记录，绝不影响交付
+        print(f"   ⚠ 源指纹记录失败（不影响交付）：{type(e).__name__}: {e}")

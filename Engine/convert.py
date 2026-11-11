@@ -64,14 +64,12 @@ from slcn.convert_compile import (  # noqa: E402
 from slcn.convert_stage import (  # noqa: E402
     _FINISH_WHY, channel_provenance, stage_original, collect_overrides, supports_overrides, overrides_kwargs, apply_ai_merge, _coop_find_bib, _coop_find_tex, _coop_locate_state, run_coop_replies, LLM_FULLTEXT_CHUNK_CHARS, LLM_FULLTEXT_REPORT_SUFFIX,
     LLM_FULLTEXT_RUBRIC, split_fulltext_chunks, _fulltext_chunk_items, _llm_fulltext_system, _llm_fulltext_user, _llm_fulltext_review, render_llm_fulltext_report, _add_handoff_args, _handoff_enabled, _add_c_class_union_args, build_arg_parser,
-    run_coop_taskbook, build_docx, build_latex,
+    run_coop_taskbook, build_docx, build_latex, StalePdfError,
 )
 from slcn.convert_bib import (  # noqa: E402
     _NORM_RE, _ref_fingerprint, _bib_fingerprints, _bib_candidates, _pick_bib, bib_search_dirs, find_bib_ex, find_bib, bib_origin, _DECL_BIBADD_RE, _DECL_BIBLIO_RE, declared_bib_path, real_bib_path, bib_entry_structurally_safe, bib_attachment_entries,
     merge_bib_attachment, resolve_bibdb, classify_bibdb, bibdb_log_line, _bibdb_scan_stem, bibdb_readonly_scan, _bibdb_apply_backfill, bibdb_taskbook_hits, resolve_bibdb_apply_store, run_refs_attach, run_verify_refs,
 )
-
-
 def main() -> int:
     # 第 86 条：Windows 的 stdout 默认是控制台代码页（cp936），中文日志会被管道接走后
     # 乱码甚至 UnicodeEncodeError 崩在半路。这里**第一步**就切到 UTF-8（mac 上是空操作）。
@@ -84,7 +82,6 @@ def main() -> int:
         for name, n in list_editors(args.source):
             print(f"{name}\t{n}")
         return 0
-
     # ── 第五十四批：AI 协同初排的参数组合（先校验，别让半截运行改产物）────────
     # 用户口径（2026-10-19）：默认不改产物；`--coop-apply` 是显式的「一键修改产物」。
     if args.coop_taskbook_only and args.coop_replies:
@@ -105,7 +102,6 @@ def main() -> int:
             ap.error("--llm-fulltext 只配合 --verify-refs（直连 AI 的 ⑪ 核实路径；"
                      "单独给本开关不会触发任何核查）")
         from slcn import llm as _llm_chk
-
         _cfg_chk = _llm_chk.config_from_env(
             args.llm_base, args.llm_key, args.llm_model,
             protocol=args.llm_protocol,
@@ -137,7 +133,6 @@ def main() -> int:
     if args.coop_taskbook_only:
         # 外部 chat 通道：**绝不**自动预跑 API（用户明确要的「暂停」语义）。
         args.no_ai_merge = True
-
     # ── 第五十四批：第二段先定位暂存状态，再把 ph1 的关键参数继承下来 ──────────
     # 为什么必须在这里做：主流程会重新推导输出名/语种/模板，ph2 的命令行通常只给
     # `--source/--out/--coop-replies`。若拿重新推导的值去对指纹，正常的续跑会被误拒；
@@ -161,12 +156,10 @@ def main() -> int:
             args.sty = _sp["sty"]
         if args.skeleton is None and _sp.get("skeleton"):
             args.skeleton = _sp["skeleton"]
-
     if args.search_refs and not (args.verify_refs or args.verify_plan):
         # 显式提示、继续跑：`--search-refs` 只在生成任务书时有落点（逐条清单）。
         print("⚠ --search-refs 只配合 --verify-refs（没有任务书就没有逐条清单可挂证据）；"
               "本次忽略检索，转换照常进行。", file=sys.stderr, flush=True)
-
     # 第 128 条：成本闸门的参数校验/提示。默认值（None）= 120，显式传 -1 是用法错误。
     if args.verify_max is not None and args.verify_max < 0:
         ap.error("--verify-max 必须 ≥ 0（0 = 不限）")
@@ -513,6 +506,8 @@ def main() -> int:
         print("\n（--dry-run：以上为将要执行的操作，未写入任何文件）")
         return 0
 
+    _coop.source_fingerprint_guard(out_dir, stem, source, args)  # P02R R03：写盘前拒绝换源覆盖
+
     # ⑤ 生成
     print()
     meta = {
@@ -546,6 +541,7 @@ def main() -> int:
                 bibdb_store=_bibdb_store,
                 # B-221 C1：初排交接单默认生成；--no-handoff 关闭（目录逐字节回旧）
                 handoff=_handoff_enabled(args),
+                compile_requested=bool(args.compile),  # P02R R02：旧 PDF 未请求 --compile
             )
         else:
             _bib_path = find_bib(source, args.bib)
@@ -560,7 +556,10 @@ def main() -> int:
                 sty=sel.sty, skeleton=sel.skeleton, verbose=True, meta=meta,
                 **overrides_kwargs(build_latex, overrides),
                 **structured_kwargs(build_latex, structured_meta),
+                compile_requested=bool(args.compile),  # P02R R02：LaTeX 通道同一判据
             )
+    except StalePdfError as e:  # P02R R02：写盘前闸门，产物目录零改动
+        die(str(e))
     except Exception as e:  # noqa: BLE001
         die(f"生成失败：{type(e).__name__}: {e}")
     # B-220 N6：让 ⑦ 的引用库比对复用同一份只读 Store（避免二次加载 7043 条）。
@@ -716,6 +715,8 @@ def main() -> int:
         if n == 0:
             print("   （没有需要清理的文件）")
 
+    _coop.remember_source_fingerprint(out_dir, stem, source, args)  # P02R R03：成功后记指纹
+
     # ── 第五十四批：第一段收口——**不打印交付成功**，最后一行指向暂存目录 ──────
     if args.coop_taskbook_only:
         print()
@@ -749,7 +750,6 @@ def main() -> int:
         print(f"\n❌ 转换已完成，但 ⑨ 编译未通过（退出码 2）：{compile_failed}", file=sys.stderr)
         return 2
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
