@@ -254,7 +254,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # 模板来源快照已在预览分支前取好（同上）；`--place` 后再解析会变成「本期成品」。
 
-    outputs = _toc.run(report, settings, log=lambda s: print(s))
+    try:
+        outputs = _toc.run(report, settings, log=lambda s: print(s))
+    except _toc.TocWriteError as exc:
+        # B-375R D-P13-04：期目录/000 不可写等写入失败 → rc2 + 中文原因（不甩 traceback）
+        print(f"\n❌ 目录生成失败：{exc}\n", file=sys.stderr)
+        return 2
 
     print()
     for p in outputs:

@@ -18,6 +18,7 @@ r"""「生成目录」：从中英文检查报告生成中英文目录 .tex（�
 from __future__ import annotations
 
 import datetime as _dt
+import errno
 import json
 import os
 import re
@@ -70,6 +71,24 @@ TOC_WORK_DIR = ".toolbox-tmp"
 def toc_work_dir(report_dir: str) -> str:
     """返回期目录下的生成中间件目录（绝对路径；**不创建**）。"""
     return os.path.join(os.path.abspath(report_dir), TOC_WORK_DIR)
+
+
+class TocWriteError(RuntimeError):
+    r"""目录产物写不进去（期目录/000 不可写、只读盘、无空间等）。
+
+    契约（B-375R D-P13-04）：CLI 捕获后以 rc=2 + 中文原因退出，不得甩 traceback；
+    抛错前不写任何文件（`_fsutil.atomic_write` 保证失败不落半成品）。
+    """
+
+
+def _write_error_text(path: str, exc: OSError) -> str:
+    """把写入失败的 OSError 翻成可操作的中文原因（不含 traceback）。"""
+    reason = getattr(exc, "strerror", "") or str(exc)
+    permission = (isinstance(exc, PermissionError)
+                  or getattr(exc, "errno", None) in (errno.EPERM, errno.EACCES, errno.EROFS))
+    hint = ("权限不足，请修改期目录或 000 目录的写权限后重试"
+            if permission else "请检查路径是否存在、磁盘空间是否充足后重试")
+    return f"无法写入目录输出目录 {path}：{reason}（{hint}）"
 
 
 @dataclass
@@ -354,8 +373,13 @@ def parse_entry(folder_name: str, block: list[str]) -> TocEntry:
                 if raw_author:
                     slot[_AUTHOR_ROLE_INDEX[m.group(1)]] = raw_author
 
-    entry.chineseTitle = clean_title(entry.chineseTitle, keep_braces=False)
-    entry.englishTitle = clean_title(entry.englishTitle, keep_braces=True)
+    # B-375R D-P13-01：题名进入目录链前先把会破坏 TeX 结构的字面量转义
+    # （`%` 会把整行注释掉、`&` 会把目录行拆成两列、`#`/`_` 在正文里是非法字符）。
+    # 控制序列（`\edash`、`\textit{…}`）原样保留。
+    entry.chineseTitle = _tex_escape_literals(
+        clean_title(entry.chineseTitle, keep_braces=False))
+    entry.englishTitle = _tex_escape_literals(
+        clean_title(entry.englishTitle, keep_braces=True))
     entry.chineseAuthors = [a for a in (clean_name(x) for x in zh if x) if a]
     entry.englishAuthors = [a for a in (clean_author_en(x) for x in en if x) if a]
     return entry
@@ -375,6 +399,154 @@ def display_width(s: str) -> float:
         else:
             width += 0.5
     return width
+
+
+# ── TeX 原子切分（B-375R D-P13-01：折行不得劈开控制序列/参数组）──────────
+#
+# 3.13 退回结论：convert 按 ZH-08 契约把题名里的 ASCII 连接号规范成 `\edash`，
+# 目录链却按**字符**加权宽度折行，正好在 `\edash` 中间插 `\newline`，产物变成
+# `{\large …\}` + `\newline{\large edash 16模型…}`，xelatex 报
+# `! File ended while scanning use of \TX@get@body.`。修复不是「禁止折行」，
+# 而是把标题切成 TeX 上不可分的原子，只在原子边界断。
+
+#: 标题里未转义时会把整行注释/串列的 TeX 字面量字符 → 转义写法。
+_TEX_LITERAL_ESCAPES = {"%": r"\%", "&": r"\&", "#": r"\#", "_": r"\_"}
+
+
+def _tex_escape_literals(text: str) -> str:
+    r"""把标题里未转义的 `% & # _` 转成 TeX 字面量（`\%` 等）。
+
+    控制序列（`\edash`、`\textit` 等）原样保留：只转义普通文本位置的字符，
+    避免整行被 `%` 注释掉、`&` 把目录行拆成两列。
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            out.append(ch)
+            i += 1
+            if i < n and (text[i].isascii() and (text[i].isalpha() or text[i] == "@")):
+                while i < n and text[i].isascii() and (text[i].isalpha() or text[i] == "@"):
+                    out.append(text[i])
+                    i += 1
+                # TeX 的控制词只由 ASCII 字母组成；若后面紧跟汉字（ctex 下 catcode=11），
+                # `\edash以` 会被读成一个未定义控制序列。插 `{}` 终止控制词。
+                if i < n and not text[i].isascii() and text[i].isalpha():
+                    out.append("{}")
+            elif i < n:
+                out.append(text[i])
+                i += 1
+            continue
+        out.append(_TEX_LITERAL_ESCAPES.get(ch, ch))
+        i += 1
+    return "".join(out)
+
+
+def _skip_tex_group(text: str, start: int) -> int | None:
+    """返回从 `text[start] == '{'` 开始的花括号组下标（闭括号之后）；不配对返回 None。"""
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _skip_bracket_group(text: str, start: int) -> int | None:
+    """返回从 `text[start] == '['` 开始的可选参数组下标（`]` 之后）；不配对返回 None。"""
+    if start >= len(text) or text[start] != "[":
+        return None
+    i = start + 1
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "]":
+            return i + 1
+        i += 1
+    return None
+
+
+def _tex_atom_spans(title: str) -> list[tuple[int, int]]:
+    r"""把标题切成 TeX 上不可再分的原子，返回 `[(start, end), ...]`（覆盖全文）。
+
+    原子：控制词（`\edash`）、控制词 + 紧跟的参数组（`\textit{文字}`，组内绝不断）、
+    控制符（`\%`、`\\`、`\ `）、平衡花括号组、连接号（`--`/`——` 整串）、
+    ASCII 词串、单个汉字/标点。折行只能在原子边界发生。
+    """
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(title)
+    while i < n:
+        start = i
+        ch = title[i]
+        if ch == "\\":
+            i += 1
+            if i < n and title[i].isascii() and (title[i].isalpha() or title[i] == "@"):
+                while i < n and title[i].isascii() and (title[i].isalpha() or title[i] == "@"):
+                    i += 1
+                if i < n and title[i] == "*":
+                    i += 1
+                # 控制词后跟的可选/必选参数组（允许中间空格）并进同一原子
+                while True:
+                    j = i
+                    while j < n and title[j] in " \t":
+                        j += 1
+                    if j >= n or title[j] not in "[{":
+                        break
+                    end = (_skip_tex_group(title, j) if title[j] == "{"
+                           else _skip_bracket_group(title, j))
+                    if end is None:
+                        i = n
+                        break
+                    i = end
+            elif i < n:
+                i += 1          # 控制符：`\\`、`\%`、`\ `（含被吃掉的那个空格）
+        elif ch == "{":
+            end = _skip_tex_group(title, i)
+            i = n if end is None else end
+        elif ch in "—-" and i + 1 < n and title[i + 1] == ch:
+            while i < n and title[i] == ch:
+                i += 1          # `--` / `——` 连接号整体不可分
+        elif ch in " \t":
+            while i < n and title[i] in " \t":
+                i += 1
+        elif ch.isascii() and (ch.isalnum() or ch in ".,;:!?'\"()[]+-"):
+            while i < n and title[i].isascii() and (
+                    title[i].isalnum() or title[i] in ".,;:!?'\"()[]+-"):
+                i += 1
+        else:
+            i += 1
+        spans.append((start, i))
+    return spans
+
+
+def _tex_atom_starts(title: str) -> set[int]:
+    """原子起始下标集合 = 允许折行的位置（0 与 len 天然在其中）。"""
+    return {start for start, _end in _tex_atom_spans(title)}
+
+
+def _nearest_atom_start(starts: set[int], target: int) -> int | None:
+    """离 `target` 最近的原子起始下标（居中兜底用；找不到返回 None）。"""
+    best: int | None = None
+    for start in starts:
+        if best is None or abs(start - target) < abs(best - target):
+            best = start
+    return best
 
 
 # 中文断行的「次优断点」：在常见**虚词/连词**之后断（第一行以它们结尾），
@@ -398,6 +570,9 @@ def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | 
     为什么加第 ② 步：期 90 有一篇标题被 0.35/0.65 的居中兜底劈成「真理 / 论」这一类
     （切词）；成品在同一位置断在「的」后。引入 ② 之后，这类标题的断点与成品一致。
     两侧各至少留 3 个字，避免孤字行。
+
+    B-375R：断点还必须落在 TeX 原子边界上（见 `_tex_atom_spans`）——`\edash`、
+    `\textit{…}` 这类控制序列与参数组内部绝不下刀；宁可整条不断，也不劈宏。
     """
     if limit <= 0 or display_width(title) <= limit:
         return None
@@ -405,29 +580,31 @@ def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | 
     if len(chars) < 8:
         return None
 
+    starts = _tex_atom_starts(title)
     min_side = 3
     min_first = len(chars) * 0.4      # 第一行至少占 40%（标点/虚词断点用）
     best: int | None = None
 
     def fits(i: int) -> bool:
-        return (min_side <= i <= len(chars) - min_side
+        return (i in starts
+                and min_side <= i <= len(chars) - min_side
                 and display_width("".join(chars[:i])) <= limit)
 
     if is_english:
         for i in range(len(chars) - min_side, min_side - 1, -1):
-            if chars[i] == " " and display_width("".join(chars[:i])) <= limit:
+            if i in starts and chars[i] == " " and display_width("".join(chars[:i])) <= limit:
                 best = i
                 break
     else:
         # ① 标点后（上限内取最靠右；太靠前会造成「第一行很短、第二行很长」的难看版式）
         for i in range(len(chars) - min_side, min_side - 1, -1):
-            if chars[i - 1] in "：，、；。！？…—" and i >= min_first and fits(i):
+            if i in starts and chars[i - 1] in "：，、；。！？…—" and i >= min_first and fits(i):
                 best = i
                 break
         # ② 虚词/连词后（同类里取最靠右；同样不许第一行太短）
         if best is None:
             for i in range(len(chars) - min_side, min_side - 1, -1):
-                if chars[i - 1] in _WEAK_BREAK_AFTER and i >= min_first and fits(i):
+                if i in starts and chars[i - 1] in _WEAK_BREAK_AFTER and i >= min_first and fits(i):
                     best = i
                     break
         # ③ 兜底：上限内最靠右；两侧失衡时退回居中（保留原行为，避免孤字行）
@@ -440,8 +617,10 @@ def wrap_title(title: str, limit: float, is_english: bool) -> tuple[str, str] | 
                 first_ratio = best / len(chars)
                 if first_ratio < 0.35 or first_ratio > 0.65:
                     middle = len(chars) // 2
-                    if middle >= min_side and len(chars) - middle >= min_side:
-                        best = middle
+                    candidate = _nearest_atom_start(starts, middle)
+                    if (candidate is not None and candidate >= min_side
+                            and len(chars) - candidate >= min_side):
+                        best = candidate
 
     if best is None or best < min_side or len(chars) - best < min_side:
         return None
@@ -927,6 +1106,7 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
         except _tt.TemplateLayoutError as exc2:
             log(f"⚠️ 内置模板列定义异常（{exc2}）：保持原样生成，请人工核对")
 
+
     # ---- 栏目块 ----
     column_block = _tt.make_column_block(settings, parts.columnBlock, is_chinese)
     if settings.is_column_enabled:
@@ -957,6 +1137,20 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # B-375：目录永远列出当前报告全部篇目；勾选只决定「是否带栏目标记」
     # （中文 ~~~~ 缩进 / 英文首位作者前 ~~~~ / 栏目版式），不删条目。
     toc_entries = parsed
+
+    # B-375R D-P13-01 形态②：真实旧 000 模板可能没有 `\edash`/`\cndash` 定义，
+    # 而 convert 会按契约把 ASCII 连接号规范成 `\edash`。只在标题**实际用到**这类
+    # 控制序列时才补 `\providecommand` 兜底：不改模板文件，模板已定义则不覆盖，
+    # 也不给不涉及的期目录塞无用宏（既有成品快照逐字节不变）。
+    needed_macros = {
+        name
+        for _folder, entry in toc_entries
+        for title in (entry.chineseTitle, entry.englishTitle)
+        for name in ("edash", "cndash")
+        if f"\\{name}" in title
+    }
+    if needed_macros:
+        head = _tt.ensure_toc_macros(head, needed_macros)
     wrap_limit = _issue_layout(toc_entries, settings, is_chinese, column_layout, log=log)
     _log_layout_guard(head, toc_entries, settings, is_chinese, column_layout, wrap_limit,
                       log=log, all_report_articles=report_names)
@@ -978,12 +1172,20 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     result += body + "\n\n" + parts.tail
 
     # B-121 B1：时间戳中间 tex 落在期目录隐藏工作目录，不再散乱到期目录根
+    # B-375R D-P13-04：期目录/000 不可写时不再是 traceback + rc1，而是
+    # TocWriteError → CLI rc2 + 中文原因（零写：失败前不落半成品）。
     work_dir = toc_work_dir(report_dir)
-    os.makedirs(work_dir, exist_ok=True)
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+    except OSError as exc:
+        raise TocWriteError(_write_error_text(work_dir, exc)) from exc
     out_path = os.path.join(work_dir, f"{base_name}_{date_str}.tex")
     # 原子写 + 旧版备份（UI 方案第 4 件）：目录 .tex 每期都会覆盖上一版，
     # 同事手工调过的版式万一被盖掉，还能从同目录的 `.bak` 捞回来。
-    _fsutil.atomic_write(out_path, result, newline="", log=log)
+    try:
+        _fsutil.atomic_write(out_path, result, newline="", log=log)
+    except OSError as exc:
+        raise TocWriteError(_write_error_text(work_dir, exc)) from exc
 
     log(f"{label}目录TeX文件已生成")
     log(f"中间文件：{_paths.rel(out_path, report_dir)}"

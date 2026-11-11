@@ -208,6 +208,63 @@ def ensure_windows_fontset(head: str) -> str:
     return head[:m.start()] + new_line + head[m.end():]
 
 
+# ── 目录链兜底宏（B-375R D-P13-01 形态②）────────────────────────────────
+#
+# convert 按 ZH-08 契约把题名里的 ASCII 连接号规范成 `\edash`（既定契约，不动）；
+# 但真实旧 000 模板（如 90 期 `Chinese Content.tex`）全文只有 `\cndash`、没有
+# `\edash` 定义，xelatex 直接 `! Undefined control sequence.`。这里在生成前注入
+# `\providecommand` 兜底：模板自己定义过就不覆盖，也不需要改模板文件。
+
+#: `(宏名, 兜底定义)`；写法与仓库 sty 里的定义一致（`SLCN-MIX.sty:38`/`SLEN.sty:34`）。
+_TOC_FALLBACK_MACROS: tuple[tuple[str, str], ...] = (
+    ("edash", r"\providecommand{\edash}{\mbox{\raise0.1em\hbox{-}}}"),
+    ("cndash", r"\providecommand{\cndash}{\mbox{\raise0.1em\hbox{--}}}"),
+)
+
+#: 模板里若已有 `\newcommand{\edash}` / `\providecommand{\edash}` / `\def\edash`，视为已定义。
+_MACRO_DEFINED_RE_TMPL = r"\\(?:newcommand|providecommand|def)\s*\{?\\{name}(?![A-Za-z])"
+
+
+def ensure_toc_macros(head: str, names: set[str] | None = None) -> str:
+    r"""在 `\begin{document}` 前补齐目录链需要的兜底宏（不改模板文件）。
+
+    插入点必须在所有 `\usepackage` 之后（即紧邻 `\begin{document}` 之前），
+    否则宏可能被后载入的宏包/模板定义覆盖或在使用时尚未定义。
+    找不到 `\begin{document}`（模板被截断）时原样返回，交给上层的模板校验。
+
+    `names` 为空/None 表示补齐全部兜底宏；传入集合时只补其中实际被标题用到、
+    且模板没定义的宏——不用的宏不进产物，既有成品快照才不会因为空注入而变红。
+    """
+    wanted = set(names) if names is not None else {n for n, _d in _TOC_FALLBACK_MACROS}
+    if not wanted:
+        return head
+    lines = head.split("\n")
+    insert_at: int | None = None
+    for idx, line in enumerate(lines):
+        if is_comment_line(line):
+            continue
+        if "\\begin{document}" in line:
+            insert_at = idx
+            break
+    if insert_at is None:
+        return head
+
+    missing: list[str] = []
+    for name, definition in _TOC_FALLBACK_MACROS:
+        if name not in wanted:
+            continue
+        pattern = re.compile(_MACRO_DEFINED_RE_TMPL.replace("{name}", re.escape(name)))
+        if not pattern.search(head):
+            missing.append(definition)
+    if not missing:
+        return head
+
+    insert = ["% B-375R：目录链兜底宏（真实旧 000 模板可能没有定义）", *missing]
+    new_lines = lines[:insert_at] + insert + [""] + lines[insert_at:]
+    return "\n".join(new_lines)
+
+
+
 def english_month_name(month: int) -> str:
     names = ["", "January", "February", "March", "April", "May", "June",
              "July", "August", "September", "October", "November", "December"]
