@@ -17,6 +17,7 @@ from .latex import (
     collect_custom_macros,
     copy_referenced_graphics,
     count_active_inputs,
+    escape_metadata_value,
     expand_inputs,
     find_all_macros,
     insert_body,
@@ -607,8 +608,14 @@ def _meta_affils(value) -> list[str]:
     return [t for t in (_meta_clean(v) for v in value) if t]
 
 
-def _join_affiliations(units) -> str:
-    """单位数组 → 模板字段值：逐项转义后按 `\\` 连接（首尾不留 `\\`）。"""
+def _join_affiliations(units, *, escape: bool = True) -> str:
+    """单位数组 → 模板字段值：逐项转义后按 `\\` 连接（首尾不留 `\\`）。
+
+    ``escape=False`` 时只清洗、留给 set_field 前的 ``escape_metadata_value``
+    统一出口（P02H-R06：--metadata-json 也必须保留作者内联命令）。
+    """
+    if not escape:
+        return _JSON_TEX_BREAK.join(_meta_affils(units))
     return _JSON_TEX_BREAK.join(_meta_esc(u) for u in _meta_affils(units))
 
 
@@ -650,6 +657,7 @@ def structured_meta_authors(structured: dict | None) -> list[dict]:
 
 def structured_fields(
     structured: dict | None, is_en: bool, tpl_fields,
+    *, escape: bool = True,
 ) -> tuple[dict[str, str], tuple[tuple[str, str], ...], list[str], int]:
     """结构化人工元数据 → (模板字段, 补充占位符, 警告, 作者数)。
 
@@ -675,6 +683,11 @@ def structured_fields(
     if not structured:
         return fields, (), warnings, 0
 
+    # R06：escape=True 保持既有「本函数自己转义」的直调契约（单测 ①-6）；
+    # build 的两条真实路径传 escape=False，清洗后交给 set_field 前的
+    # escape_metadata_value 统一出口，从而保留 `\textit{…}`/`{\kaishu …}` 等内联命令。
+    _esc = _meta_esc if escape else _meta_clean
+
     def put(name: str, value: str) -> None:
         if value and name in tpl_fields:
             fields[name] = value
@@ -684,10 +697,10 @@ def structured_fields(
             pairs.append((name, label))
 
     # ── 文章级：标题/摘要/页眉标题/关键词 ──
-    title_cn = _meta_esc(structured.get("title_cn"))
-    title_en = _meta_esc(structured.get("title_en"))
-    abs_cn = _meta_esc(structured.get("abstract_cn"))
-    abs_en = _meta_esc(structured.get("abstract_en"))
+    title_cn = _esc(structured.get("title_cn"))
+    title_en = _esc(structured.get("title_en"))
+    abs_cn = _esc(structured.get("abstract_cn"))
+    abs_en = _esc(structured.get("abstract_en"))
     if is_en:
         put("mytitle", title_en)
         put("mytitleCN", title_cn)
@@ -699,13 +712,13 @@ def structured_fields(
         put("myabstract", abs_cn)
         put("myabstractEN", abs_en)
     # 页眉标题：显式给优先，否则取主语言标题（GUI v1 不暴露该字段）。
-    run_cn = _meta_esc(structured.get("running_title_cn"))
-    run_en = _meta_esc(structured.get("running_title_en"))
+    run_cn = _esc(structured.get("running_title_cn"))
+    run_en = _esc(structured.get("running_title_en"))
     running = (run_en if is_en else run_cn) or (title_en if is_en else title_cn)
     if running:
         put("myrunningtitle", running)
-    kw_cn = _meta_esc(structured.get("keywords_cn"))
-    kw_en = _meta_esc(structured.get("keywords_en"))
+    kw_cn = _esc(structured.get("keywords_cn"))
+    kw_en = _esc(structured.get("keywords_en"))
     if is_en:
         if kw_cn or kw_en:
             warnings.append(
@@ -737,26 +750,26 @@ def structured_fields(
         email_slot = _slot("email", word)
         if main_name:
             # CN 模板主语言名与人工成品一致带 `\kaishu`（页眉/标题页同款）。
-            put(main_slot, _meta_esc(main_name) if is_en
-                else f"\\kaishu {_meta_esc(main_name)}")
+            put(main_slot, _esc(main_name) if is_en
+                else f"\\kaishu {_esc(main_name)}")
         else:
             miss(main_slot, label)
         if other_name:
-            put(other_slot, _meta_esc(other_name))
+            put(other_slot, _esc(other_name))
         else:
             # zh 模板第一作者的英文槽位由 REQUIRED_FIELDS 兜；EN 模板的 CN 槽位
             # 不在 REQUIRED_FIELDS 里（既有口径，默认路径不动）→ 这里补占位。
             miss(other_slot, label + ("中文姓名" if is_en else "英文姓名"))
         if main_affs:
-            put(main_aff_slot, _join_affiliations(main_affs))
+            put(main_aff_slot, _join_affiliations(main_affs, escape=escape))
         else:
             miss(main_aff_slot, label + "单位")
         if other_affs:
-            put(other_aff_slot, _join_affiliations(other_affs))
+            put(other_aff_slot, _join_affiliations(other_affs, escape=escape))
         else:
             miss(other_aff_slot, label + ("中文单位" if is_en else "英文单位"))
         if a["email"]:
-            put(email_slot, _meta_esc(a["email"]))
+            put(email_slot, _esc(a["email"]))
         else:
             miss(email_slot, label + "邮箱")
     return fields, tuple(pairs), warnings, len(authors)
@@ -1206,7 +1219,7 @@ def build_latex(
                 say(f"   · {n}")
             if val.strip() in ("", "null"):
                 continue
-            tpl = set_field(tpl, name, val)
+            tpl = set_field(tpl, name, escape_metadata_value(val))
             moved_vals[name] = val
             moved += 1
         say(f"   搬入 {moved} 个字段")
@@ -1219,7 +1232,7 @@ def build_latex(
     ed = editorial_fields(meta)
     for k, v in ed.items():
         if k in tpl_fields:
-            tpl = set_field(tpl, k, v)
+            tpl = set_field(tpl, k, escape_metadata_value(v))
     missing = [f for f in missing if f not in ed]
     if ed:
         say(f"   填入出版信息 {len(ed)} 项：{'、'.join(ed)}")
@@ -1245,7 +1258,7 @@ def build_latex(
             for _name, _val in _front.template_values().items():
                 if _name not in tpl_fields or _val.strip() in ("", "null"):
                     continue
-                tpl = set_field(tpl, _name, _val)
+                tpl = set_field(tpl, _name, escape_metadata_value(_val))
                 moved_vals[_name] = _val
                 _tex_fields.append(_name)
             if _tex_fields:
@@ -1262,7 +1275,7 @@ def build_latex(
         warnings.append("手工覆盖对应的模板字段不存在，本次忽略：" + "、".join(dropped))
     ov = {k: v for k, v in ov.items() if k in tpl_fields}
     for k, v in ov.items():
-        tpl = set_field(tpl, k, v)
+        tpl = set_field(tpl, k, escape_metadata_value(v))
         moved_vals[k] = v
     if ov:
         say(f"   手工覆盖 {len(ov)} 个字段：{'、'.join(ov)}")
@@ -1274,14 +1287,14 @@ def build_latex(
     structured_pairs: tuple[tuple[str, str], ...] = ()
     if structured:
         _sf, structured_pairs, _sw, _n_sa = structured_fields(
-            structured, is_en, tpl_fields)
+            structured, is_en, tpl_fields, escape=False)
         clash = sorted(set(ov) & set(_sf))
         if clash:
             warnings.append(
                 "同时给出 --title-cn 等手工覆盖与 --metadata-json：以下字段以 "
                 "--metadata-json 为准：" + "、".join(clash))
         for k, v in _sf.items():
-            tpl = set_field(tpl, k, v)
+            tpl = set_field(tpl, k, escape_metadata_value(v))
             moved_vals[k] = v
         structured_keys = set(_sf)
         if _sf:
@@ -2595,7 +2608,7 @@ def build_docx(
     _has_structured = bool(structured)
     if structured:
         _sf, structured_pairs, _sw, _n_sa = structured_fields(
-            structured, is_en, tpl_fields)
+            structured, is_en, tpl_fields, escape=False)
         clash = sorted(set(ov) & set(_sf))
         if clash:
             warnings.append(
@@ -2662,7 +2675,7 @@ def build_docx(
         if not v or v == "null" or k not in tpl_fields:
             continue
         try:
-            tpl = set_field(tpl, k, v)
+            tpl = set_field(tpl, k, escape_metadata_value(v))
             filled += 1
         except KeyError:
             pass
@@ -2683,7 +2696,7 @@ def build_docx(
     ed = editorial_fields(_meta_src)
     for k, v in ed.items():
         if k in tpl_fields:
-            tpl = set_field(tpl, k, v)
+            tpl = set_field(tpl, k, escape_metadata_value(v))
     if ed:
         say(f"   填入出版信息 {len(ed)} 项：{'、'.join(ed)}")
     else:

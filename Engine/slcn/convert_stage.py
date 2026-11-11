@@ -357,7 +357,7 @@ def run_coop_replies(args, *, source: str, metadata: str, out_root: str,
         structured_sha256=(coop.structured_metadata_sha256(structured)
                           if structured else ""),
     )
-    ok, why = coop.check_ph2(state, params)
+    ok, why = coop.check_ph2(state, params, final_dir=final_dir, force=bool(args.force))
     if not ok:
         die(why)
     # B-287：第二段不能改人工元数据。显式给了 JSON 时与初排记录比 sha256；
@@ -1439,7 +1439,7 @@ def run_coop_taskbook(args, res, *, source, metadata, out_root, out_dir, final_d
         # B-288：只增键，不 bump SCHEMA_VERSION；旧状态缺这三键照常工作。
         taskbook_version=(_taskcard.TASKBOOK_VERSION if _tb_id else None),
         taskbook_task_id=_tb_id,
-        taskbook_volumes=_tb_split,
+        taskbook_volumes=_tb_split, input_fingerprint=_coop.input_fingerprint(source, args),
     )
     # B-311（B-006）：只增键、不 bump SCHEMA_VERSION；没分片时一个键都不加
     # （默认状态与旧版逐字节相同）。写完立刻自检一遍（编号/标记/文件名）。

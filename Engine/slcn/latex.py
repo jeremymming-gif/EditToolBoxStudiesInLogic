@@ -189,6 +189,209 @@ def _strip_leading_comments(value: str) -> str:
     return "\n".join(lines[i:])
 
 
+# ── 元数据槽位的 TeX 文本模式转义（P02H-R06 / OBS-INC-01）───────────────
+# 模板把作者稿的题名/摘要/作者/单位/基金等直接写进 \mytitle{} 之类的槽位。
+# 值里的裸 % & # _ 会分别被当成注释符、对齐符、宏参数符、下标符，xelatex
+# 直接编译失败（``Illegal parameter number in definition of \mytitle`` 等）。
+# 这里只补「文本模式字面量转义」，不碰作者刻意写的命令与数学：
+#   · 控制序列（\textit、\kaishu…）与其参数组保留；
+#   · 数学 $…$ / $$…$$ / \[…\] / \(…\) 原样；
+#   · 已转义的 \% \& \# \_ 原样（幂等）；
+#   · 无特殊字符时逐字节原样返回（既有产物字节不变）。
+_META_LITERAL_ESCAPES = {"%": "\\%", "&": "\\&", "#": "\\#", "_": "\\_"}
+# 这些命令的参数是「原样文本」：URL 里的 % _ & 不能转义，否则链接坏掉；
+# 引用/交叉引用的键与文件名同理（`fig\_1` 会与 `\label{fig_1}` 对不上）。
+_META_VERBATIM_ARGS = {
+    "url", "nolinkurl", "verb", "lstinline", "path",
+    "cite", "citep", "citet", "citealp", "citealt", "citeauthor", "citeyear",
+    "ref", "eqref", "pageref", "autoref", "nameref", "label",
+    "input", "include", "includegraphics", "bibliography", "bibliographystyle",
+    "addbibresource", "graphicspath",
+}
+_META_MATH_BRACKETS = {"\\[": "\\]", "\\(": "\\)"}
+
+
+def _find_unescaped(text: str, token: str, start: int) -> int:
+    """从 start 起找 token，跳过被反斜杠转义的出现（``\\$`` 不算 ``$``）。"""
+    i = start
+    while True:
+        j = text.find(token, i)
+        if j < 0:
+            return -1
+        k = j - 1
+        n_back = 0
+        while k >= 0 and text[k] == "\\":
+            n_back += 1
+            k -= 1
+        if n_back % 2 == 0:
+            return j
+        i = j + 1
+
+
+def _match_group(text: str, start: int) -> int:
+    """返回与 ``text[start] == '{'`` 配对的 ``'}'`` 下标；不配平返回 -1。"""
+    depth = 0
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _match_bracket(text: str, start: int) -> int:
+    """返回与 ``text[start] == '['`` 配对的 ``']'`` 下标（内部花括号整体跳过）。"""
+    i = start + 1
+    n = len(text)
+    depth = 1
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            end = _match_group(text, i)
+            if end < 0:
+                return -1
+            i = end + 1
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _at_line_start(text: str, i: int) -> bool:
+    """text[i] 是否是本行第一个非空白字符（用于区分 LaTeX 注释与字面 %）。"""
+    ls = text.rfind("\n", 0, i)
+    return text[ls + 1 : i].strip(" \t") == ""
+
+
+def _escape_meta_scan(text: str) -> str:
+    """``escape_metadata_value`` 的扫描主体（规则见其 docstring）。"""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            pair = text[i : i + 2]
+            if pair in _META_MATH_BRACKETS:
+                close = _META_MATH_BRACKETS[pair]
+                j = _find_unescaped(text, close, i + 2)
+                if j < 0:
+                    out.append(text[i:])
+                    break
+                out.append(text[i : j + 2])
+                i = j + 2
+                continue
+            if i + 1 >= n:
+                out.append(ch)
+                i += 1
+                continue
+            if not (text[i + 1].isalpha() or text[i + 1] == "@"):
+                # 控制符号（\\、\%、\&、\{ …）原样搬运 → 已转义写法幂等
+                out.append(pair)
+                i += 2
+                continue
+            j = i + 1
+            while j < n and (text[j].isalpha() or text[j] == "@"):
+                j += 1
+            name = text[i + 1 : j]
+            out.append(text[i:j])
+            i = j
+            arg = 0
+            while i < n:  # 命令后紧跟的参数组：组内文本照常转义，命令本身不拆
+                k = i
+                while k < n and text[k] in " \t":
+                    k += 1
+                if k >= n or text[k] not in "{[":
+                    break
+                end = _match_group(text, k) if text[k] == "{" else _match_bracket(text, k)
+                if end < 0:
+                    break
+                inner = text[k + 1 : end]
+                verbatim = name in _META_VERBATIM_ARGS or (name == "href" and arg == 0)
+                out.append(text[i : k + 1])  # 命令与括号间的空白 + 开括号
+                out.append(inner if verbatim else _escape_meta_scan(inner))
+                out.append(text[end])
+                i = end + 1
+                arg += 1
+            continue
+        if ch == "$":
+            if text[i : i + 2] == "$$":
+                j = _find_unescaped(text, "$$", i + 2)
+                if j < 0:
+                    out.append(text[i:])
+                    break
+                out.append(text[i : j + 2])
+                i = j + 2
+            else:
+                j = _find_unescaped(text, "$", i + 1)
+                if j < 0:
+                    out.append(text[i:])
+                    break
+                out.append(text[i : j + 1])
+                i = j + 1
+            continue
+        if ch == "{":
+            end = _match_group(text, i)
+            if end < 0:
+                out.append(ch)
+                i += 1
+                continue
+            out.append("{" + _escape_meta_scan(text[i + 1 : end]) + "}")
+            i = end + 1
+            continue
+        if ch in _META_LITERAL_ESCAPES:
+            if ch == "%" and _at_line_start(text, i):
+                # 行首 % 是 LaTeX 注释（旧稿搬来的填写说明），连同本行原样保留
+                j = text.find("\n", i)
+                if j < 0:
+                    out.append(text[i:])
+                    break
+                out.append(text[i:j])
+                i = j
+                continue
+            out.append(_META_LITERAL_ESCAPES[ch])
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def escape_metadata_value(value: str) -> str:
+    r"""把元数据值转成「写进模板槽位后能通过 xelatex」的 TeX 文本模式写法。
+
+    只做加法，不改 ``set_field`` 的既有语义（P02H-R06）：
+
+    1. 裸 ``% & # _`` → ``\% \& \# \_``；已转义写法原样（幂等）。
+    2. 控制序列（``\textit``、``\textbf``、``\kaishu`` …）保留；紧跟的参数组
+       递归转义（``\textit{ABC}`` 不变，``\textit{A_B}`` → ``\textit{A\_B}``）。
+       ``\url``/``\nolinkurl``/``\verb``/``\lstinline``/``\path`` 的参数整组原样，
+       ``\href`` 只保留第 1 组（URL），链接文字照常转义。
+    3. 数学模式 ``$…$``、``$$…$$``、``\[…\]``、``\(…\)`` 原样。
+    4. 无特殊字符时输出与输入逐字节相同。
+    """
+    if not value:
+        return value
+    return _escape_meta_scan(value)
+
+
 def set_field(text: str, name: str, value: str) -> str:
     """按 SLCN 模板的惯例写入一个 \\my* 字段值。
 

@@ -305,7 +305,7 @@ def test_r03_same_stem(tmp: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     check("R03-3 指纹 schema/源稿 sha256 正确",
-          fp.get("schema") == 1
+          fp.get("schema") == 2  # P02H R01 契约同步：指纹 schema 1 → 2
           and (fp.get("source") or {}).get("sha256") == _sha256(src_a)
           and fp.get("stem") == "San_Zhang", str(fp)[:300])
 

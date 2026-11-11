@@ -2926,7 +2926,8 @@ def build_state(*, params: dict, taskbook_path: str, stage_dir: str, final_dir: 
                 structured_metadata: dict | None = None,
                 taskbook_version: int | None = None,
                 taskbook_task_id: str = "",
-                taskbook_volumes: Iterable[str] | None = None) -> dict:
+                taskbook_volumes: Iterable[str] | None = None,
+                input_fingerprint: dict | None = None) -> dict:
     low_items = list(low_items)
     keys = list(dict.fromkeys(str(k) for k in bib_keys))
     low_ids = [str(it["id"]) for it in low_items]
@@ -2962,6 +2963,9 @@ def build_state(*, params: dict, taskbook_path: str, stage_dir: str, final_dir: 
         state["taskbook_task_id"] = str(taskbook_task_id)
     if taskbook_volumes:
         state["taskbook_volumes"] = [os.path.abspath(p) for p in taskbook_volumes]
+    # P02H R03：只增键、不 bump SCHEMA_VERSION；旧状态没这键 → ph2 退化为 source-only 核对。
+    if input_fingerprint:
+        state["input_fingerprint"] = input_fingerprint
     return state
 
 
@@ -2983,8 +2987,13 @@ def load_state(stage_dir: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def check_ph2(state: dict | None, current_params: dict) -> tuple[bool, str]:
-    """ph2 的指纹校验：源稿/元数据/输出名/模板/核实开关任何一项变了都拒绝续跑。"""
+def check_ph2(state: dict | None, current_params: dict, *,
+              final_dir: str = "", force: bool = False) -> tuple[bool, str]:
+    """ph2 的指纹校验：源稿/元数据/输出名/模板/核实开关任何一项变了都拒绝续跑。
+
+    P02H R03：传 `final_dir` 时，在**任何 compile/状态写入/promote 之前**再用最终交付
+    目录的既有输入指纹核对本次输入（rc2 时 final/暂存/状态零改动；`--force` 放行）。
+    """
     if not state:
         return False, "暂存目录里没有可读的 `_AI协同状态.json`"
     if int(state.get("schema") or 0) != SCHEMA_VERSION:
@@ -3020,6 +3029,13 @@ def check_ph2(state: dict | None, current_params: dict) -> tuple[bool, str]:
         return False, ("关键参数与初排时不一致：" + "；".join(bad)
                        + "。源稿/参数变了就必须重新初排（--coop-taskbook-only），"
                        "不能在旧暂存上续跑。")
+    if final_dir:
+        why_fp = final_delivery_check(
+            final_dir, str(cur.get("source") or ""), force=force,
+            incoming=state.get("input_fingerprint"),
+            source_sha256=str(cur.get("source_sha256") or ""))
+        if why_fp:
+            return False, why_fp
     return True, ""
 
 
@@ -3258,6 +3274,7 @@ def promote_stage(stage_dir: str, final_dir: str, *,
     stage = os.path.abspath(stage_dir)
     final = os.path.abspath(final_dir)
     _recover_promote_journal(final)   # 先收上次硬中断的残局（入口恢复，不需要任何新参数）
+    _old_fp = _snapshot_source_fingerprint(final)   # R04：旧状态无输入指纹时保留原记录
     if not os.path.isdir(stage):
         raise FileNotFoundError(f"暂存目录不存在：{stage}")
     parent = os.path.dirname(final) or "."
@@ -3279,7 +3296,7 @@ def promote_stage(stage_dir: str, final_dir: str, *,
         except Exception:
             shutil.rmtree(tmp, ignore_errors=True)   # 首次交付失败：final 未成，只清 tmp
             raise
-        return {"final": final, "backup": "", "excluded": sorted(exclude)}
+        return _promote_done(stage, final, "", exclude, _old_fp)
 
     backup = f"{final}.coop-bak-{stamp}"
     n = 1
@@ -3308,8 +3325,7 @@ def promote_stage(stage_dir: str, final_dir: str, *,
         if journal_written and not rollback_failed:
             _promote_journal_remove(final)   # 先撤 journal，再解除屏蔽（pending 信号随后才生效）
         _promote_restore_signals(old_mask)
-    return {"final": final, "backup": backup,
-            "excluded": sorted(exclude)}
+    return _promote_done(stage, final, backup, exclude, _old_fp)
 
 
 def cleanup_stage(stage_dir: str) -> bool:
@@ -3675,18 +3691,37 @@ def write_record(stage_dir: str, **kwargs) -> str:
     return p
 
 
-# ── P02R｜R03（2026-11-11，D-P13-05）：同输出名换源不得静默覆盖 ──────────────
-# 实测缺陷：同一作者同一输出名（stem）第二次转换换了一篇稿子，旧交付目录被直接
+# ── P02R｜R03 + P02H｜R01–R04：同输出名换输入不得静默覆盖 ─────────────────
+# P02R 实测缺陷：同一作者同一输出名（stem）第二次转换换了一篇稿子，旧交付目录被直接
 # 覆盖（rc0、无提示），旧稿源文件还留在 original/ 里和本次混在一起。
-# 做法：交付成功后在产物目录记一份**输入源指纹**（源稿/显式 --bib 的 sha256）；
-# 下次同目录转换前比对，不同源就 rc2 + 中文提示（换 --name 或加 --force 明确确认）。
+# 做法：交付成功后在产物目录记一份**输入指纹**；下次同目录转换前比对，不同源就
+# rc2 + 中文提示（换 --name 或加 --force 明确确认）。
 # 兼容：旧交付目录没有指纹 → 只警告不阻断（旧流程照常），成功后补记指纹。
+#
+# P02H 加固（2026-11-11，OBS-01/OBS-02）：
+#   * 指纹升 schema 2：记**全部实际被消费**的输入（源稿 + 各来源 .bib），
+#     不再只记显式 --bib；同 `--name` 重跑只改自动发现的 .bib / 自动采纳的附件
+#     也会被拦下（OBS-01）。
+#   * coop 两段式（--coop-taskbook-only → --coop-replies）ph1 把本次输入指纹存进
+#     暂存目录状态文件；ph2 在 promote/任何写盘之前用**最终交付目录**的既有指纹
+#     做同一守卫，换输入 → rc2、final/暂存/状态零改动（OBS-02）；promote 成功后
+#     把本次指纹写进最终交付目录。
+# 指纹内容只由输入决定（不含时间戳/绝对路径）：同输入两次转换写入的指纹逐字节相同。
 def _die(msg: str) -> None:  # 与 convert_metadata.die 同语义（本地实现，避免 import 环）
     import sys as _sys
     print(f"\n❌ {msg}\n", file=_sys.stderr)
     raise SystemExit(2)
+
+
 SOURCE_FP_NAME = ".slcn-源指纹.json"
-SOURCE_FP_SCHEMA = 1
+#: 指纹 schema 2（P02H R01）：{"schema":2,"stem":…,"source":{…},"bibs":[{role,name,size,sha256}]}
+SOURCE_FP_SCHEMA = 2
+#: 兼容旧版 schema 1（只记源稿 + 显式 --bib）：读入时归一成「单 bib」的 schema 2 视图。
+SOURCE_FP_LEGACY_SCHEMAS = (1,)
+#: bib 角色固定顺序（保证指纹内容与差异行的确定性）。
+_BIB_ROLE_ORDER = {"explicit": 0, "auto-dir": 1, "refs": 2}
+#: 差异逐项列出，最多 3 行（卡 §6）。
+_FP_DIFF_MAX = 3
 
 
 def _sha256_file(path: str) -> str:
@@ -3697,67 +3732,242 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def _input_fingerprint(source: str, bib: str | None) -> dict:
-    """本次转换的输入指纹（源稿必记；显式 --bib 存在时一并记 sha256）。"""
-    fp = {
-        "source": {
-            "name": os.path.basename(source),
-            "size": os.path.getsize(source),
-            "sha256": _sha256_file(source),
-        },
-        "bib": None,
+def _file_entry(path: str) -> dict:
+    """单个输入文件的指纹条目（只含名字/大小/sha256，无绝对路径/时间戳）。"""
+    return {
+        "name": os.path.basename(path),
+        "size": os.path.getsize(path),
+        "sha256": _sha256_file(path),
     }
-    if bib and os.path.isfile(bib):
-        fp["bib"] = {
-            "name": os.path.basename(bib),
-            "size": os.path.getsize(bib),
-            "sha256": _sha256_file(bib),
-        }
-    return fp
+
+
+def _auto_bib_paths(source: str) -> list[str]:
+    """按 LaTeX 通道的**实际消费**口径取自动发现的 .bib（P02H R01）。
+
+    只认 `find_bib(source, None)`：`convert.py` 在 LaTeX 分支正是用它取
+    `_bib_path` 交给 `build_latex()` 读入并复制成 `reference.bib` 的那一份
+    （`find_bib` 的搜索链：源稿同目录 → 父目录，且 `reference.bib` 优先）。
+
+    为什么**不**把 `real_bib_path()`（源内声明 / 同目录发现）也记进来：它只用于
+    决定「参考文献附件要不要自动合并」（真 .bib 存在就不并），并不被 `build_latex`
+    读入。在 LaTeX 通道里两者真值恒等（搜索目录相同：任一 `.bib` 存在 ⇒ 两者都非
+    None），所以「有没有真 bib」这一决策已由 find_bib 命中与否间接进指纹；而「声明
+    了但没被消费的那份」内容变了不会改产物，记进来反而会误拦。Word 通道没有
+    bib_path（build_docx 不读 .bib），故只对 .tex 采集。
+    """
+    if os.path.splitext(source)[1].lower() != ".tex":
+        return []
+    try:  # 惰性导入：本模块是纯逻辑层，避免顶层依赖拖慢/成环
+        from slcn.bibpipeline import find_bib
+    except Exception:  # noqa: BLE001  纯记录用途，导入失败不影响交付
+        return []
+    try:
+        p = find_bib(source, None)
+    except Exception:  # noqa: BLE001  解析失败按「没有自动 bib」处理
+        return []
+    if p and os.path.isfile(p):
+        return [p]
+    return []
+
+
+def _input_bibs(source: str, args) -> list[dict]:
+    """本次转换**实际被消费**的 .bib/参考文献附件（不存在的路径不记）。"""
+    entries: list[dict] = []
+    explicit = str(getattr(args, "bib", "") or "").strip()
+    if explicit:
+        # 显式 --bib：用户指定的输入（Word 通道也照记，既有 P02R 契约如此）。
+        if os.path.isfile(explicit):
+            entries.append({"role": "explicit", **_file_entry(explicit)})
+    else:
+        # 自动发现：与 find_bib() 同口径（源稿同目录 → 父目录；含源内声明）。
+        for p in _auto_bib_paths(source):
+            entries.append({"role": "auto-dir", **_file_entry(p)})
+    refs = str(getattr(args, "refs", "") or "").strip()
+    # 自动采纳/显式 --refs 的附件：convert.py 在守卫之前就把自动采纳结果写回
+    # args.refs，且只有真存在才会被 run_refs_attach 消费。
+    if refs and os.path.isfile(refs):
+        entries.append({"role": "refs", **_file_entry(refs)})
+    # 去重 + 确定性排序：集合口径（与输入先后/重复无关）。
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for e in sorted(entries,
+                    key=lambda x: (_BIB_ROLE_ORDER.get(x["role"], 9),
+                                   x["name"], x["sha256"])):
+        key = (e["role"], e["name"], e["sha256"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
+def input_fingerprint(source: str, args) -> dict:
+    """本次转换的输入指纹（schema 2 内容）：源稿必记 + 全部实际被消费的 bib。"""
+    return {
+        "source": _file_entry(source),
+        "bibs": _input_bibs(source, args),
+    }
+
+
+# 旧内部名（本批之前只有本模块调用；保留别名不破坏任何潜在引用）。
+_input_fingerprint = input_fingerprint
 
 
 def _load_source_fingerprint(out_dir: str) -> dict | None:
+    """读既有交付的输入指纹，归一成 schema 2 视图（schema 1 视为单 bib）。"""
     try:
         with open(os.path.join(out_dir, SOURCE_FP_NAME), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("schema") != SOURCE_FP_SCHEMA:
+    if not isinstance(data, dict):
         return None
-    return data
+    if not isinstance(data.get("source"), dict):
+        return None
+    schema = data.get("schema")
+    if schema == SOURCE_FP_SCHEMA:
+        raw = data.get("bibs")
+        bibs = [b for b in raw if isinstance(b, dict)] if isinstance(raw, list) else []
+        return {"schema": SOURCE_FP_SCHEMA, "stem": str(data.get("stem") or ""),
+                "source": data["source"], "bibs": bibs}
+    if schema in SOURCE_FP_LEGACY_SCHEMAS:
+        # schema 1：{"source":…,"bib":{…}|null} —— 旧版只记显式 --bib，视为单 bib。
+        bibs: list[dict] = []
+        old = data.get("bib")
+        if isinstance(old, dict) and old.get("sha256"):
+            bibs.append({"role": "explicit",
+                         "name": old.get("name"),
+                         "size": old.get("size"),
+                         "sha256": old.get("sha256")})
+        return {"schema": SOURCE_FP_SCHEMA, "stem": str(data.get("stem") or ""),
+                "source": data["source"], "bibs": bibs}
+    return None
+
+
+_ROLE_LABEL = {
+    "explicit": "参考文献库（显式 --bib）",
+    "auto-dir": "参考文献库（源稿同目录自动发现）",
+    "refs": "参考文献附件（--refs / 自动采纳）",
+}
+
+
+def _bib_by_role(bibs) -> dict[str, list[tuple]]:
+    grouped: dict[str, list[tuple]] = {}
+    for b in bibs or []:
+        if not isinstance(b, dict):
+            continue
+        role = str(b.get("role") or "explicit")
+        grouped.setdefault(role, []).append(
+            (str(b.get("name") or ""), str(b.get("sha256") or ""), b.get("size")))
+    for v in grouped.values():
+        v.sort()
+    return grouped
+
+
+def _fmt_bib_items(items: list[tuple]) -> str:
+    if not items:
+        return "（无）"
+    return "、".join(f"{n or '?'} {(s or '')[:16]}…" for n, s, _sz in items)
+
+
+def _compare_fingerprints(prev: dict, cur: dict) -> list[str]:
+    """逐项中文差异（源稿 + 每个 bib 角色一行；最多 _FP_DIFF_MAX 行）。"""
+    diffs: list[str] = []
+    ps = prev.get("source") or {}
+    cs = cur.get("source") or {}
+    if ps.get("sha256") and ps["sha256"] != cs.get("sha256"):
+        diffs.append(f"源稿：{ps.get('name') or '?'} sha256 "
+                     f"{(ps.get('sha256') or '')[:16]}… → "
+                     f"{cs.get('name') or '?'} sha256 "
+                     f"{(cs.get('sha256') or '')[:16]}…")
+    pb = _bib_by_role(prev.get("bibs"))
+    cb = _bib_by_role(cur.get("bibs"))
+    for role in sorted(set(pb) | set(cb), key=lambda r: _BIB_ROLE_ORDER.get(r, 9)):
+        if pb.get(role, []) == cb.get(role, []):
+            continue
+        label = _ROLE_LABEL.get(role, f"参考文献库（{role}）")
+        diffs.append(f"{label}：{_fmt_bib_items(pb.get(role, []))} → "
+                     f"{_fmt_bib_items(cb.get(role, []))}")
+        if len(diffs) >= _FP_DIFF_MAX:
+            break
+    return diffs[:_FP_DIFF_MAX]
+
+
+def _write_source_fingerprint(out_dir: str, stem: str, fp: dict) -> None:
+    """原子写指纹文件（schema 2）；内容只由输入决定。"""
+    data = {
+        "schema": SOURCE_FP_SCHEMA,
+        "stem": stem,
+        "source": fp.get("source") or {},
+        "bibs": [b for b in (fp.get("bibs") or []) if isinstance(b, dict)],
+    }
+    path = os.path.join(out_dir, SOURCE_FP_NAME)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):  # 失败时别留垃圾
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def _snapshot_source_fingerprint(out_dir: str) -> bytes | None:
+    """读既有指纹文件原始字节（promote 覆盖前快照；没有/不可读 → None）。"""
+    try:
+        with open(os.path.join(out_dir, SOURCE_FP_NAME), "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _restore_source_fingerprint(out_dir: str, data: bytes | None) -> None:
+    """把快照的指纹文件原样写回（原子；内容逐字节不变）。"""
+    if not data:
+        return
+    path = os.path.join(out_dir, SOURCE_FP_NAME)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+_NO_FP_NOTE = ("   ⚠ 既有交付目录没有源指纹记录（旧版本产物），无法核对本次输入是否"
+               "相同；按兼容策略继续，成功后补记指纹。")
 
 
 def source_fingerprint_guard(out_dir: str, stem: str, source: str, args) -> None:
-    """R03：同 stem 换源 → rc2 + 中文提示（写盘前，产物目录零改动）。"""
+    """P02R R03 + P02H R01：同 stem 换输入 → rc2 + 中文提示（写盘前，目录零改动）。
+
+    `out_dir` 是本次要写的交付目录；`--force` 视为显式确认（跳过守卫并覆盖）。
+    coop 两段式的 ph1 写暂存目录，ph2 的守卫见 `final_delivery_guard()`。
+    """
     if getattr(args, "force", False) or not os.path.isdir(out_dir):
         return
     if getattr(args, "coop_taskbook_only", False) or getattr(args, "coop_replies", False):
-        return  # 协同两段式有暂存目录/状态/指纹自检，交付走 promote，不在此口径内
+        return
     prev = _load_source_fingerprint(out_dir)
     if prev is None:
         if os.listdir(out_dir):
-            print("   ⚠ 既有交付目录没有源指纹记录（旧版本产物），无法核对本次源稿是否"
-                  "相同；按兼容策略继续，成功后补记指纹。")
+            print(_NO_FP_NOTE)
         return
     try:
-        cur = _input_fingerprint(source, getattr(args, "bib", "") or None)
+        cur = _input_fingerprint(source, args)
     except OSError as e:  # noqa: BLE001  读不到源文件就交回主流程报错，别在这里挡
         print(f"   ⚠ 源指纹核对跳过（读源文件失败）：{type(e).__name__}: {e}")
         return
-    diffs: list[str] = []
-    _prev_src = prev.get("source") or {}
-    _cur_src = cur["source"]
-    if _prev_src.get("sha256") and _prev_src["sha256"] != _cur_src["sha256"]:
-        diffs.append(f"源稿：{_prev_src.get('name', '?')} sha256 "
-                     f"{_prev_src['sha256'][:16]}… → {_cur_src['name']} sha256 "
-                     f"{_cur_src['sha256'][:16]}…")
-    _prev_bib = prev.get("bib") or {}
-    _cur_bib = cur.get("bib") or {}
-    if _prev_bib.get("sha256") != _cur_bib.get("sha256"):
-        diffs.append(f"参考文献库：{_prev_bib.get('name') or '（无）'} "
-                     f"{(_prev_bib.get('sha256') or '')[:16]}… → "
-                     f"{_cur_bib.get('name') or '（无）'} "
-                     f"{(_cur_bib.get('sha256') or '')[:16]}…")
+    diffs = _compare_fingerprints(prev, cur)
     if not diffs:
         return
     _die(
@@ -3770,8 +3980,80 @@ def source_fingerprint_guard(out_dir: str, stem: str, source: str, args) -> None
     )
 
 
+def final_delivery_check(final_dir: str, source: str, *, force: bool = False,
+                         incoming: dict | None = None,
+                         source_sha256: str = "") -> str:
+    """P02H R03：ph2 交付前的输入核对；返回空串 = 通过，否则返回中文拒绝对话。
+
+    用 `final_dir` 的既有指纹核对本次输入（= ph1 记进状态的 `input_fingerprint`，
+    schema 2 内容）。**必须在任何 compile/状态写入/promote 之前**调用：不通过时
+    final_dir、协同状态文件、暂存目录均零改动。旧状态缺该键 → 只按源稿 sha256
+    回退核对（不核对 bib 内容），并在 stdout 如实披露。ph1（`--coop-taskbook-only`）
+    不写 final_dir，也不经过这里。
+    """
+    if force or not os.path.isdir(final_dir):
+        return ""
+    prev = _load_source_fingerprint(final_dir)
+    if prev is None:
+        if os.listdir(final_dir):
+            print(_NO_FP_NOTE)
+        return ""
+    _has_incoming = (isinstance(incoming, dict)
+                     and isinstance(incoming.get("source"), dict)
+                     and bool(incoming["source"].get("sha256")))
+    if _has_incoming:
+        cur = {"source": incoming["source"],
+               "bibs": [b for b in (incoming.get("bibs") or [])
+                        if isinstance(b, dict)]}
+        diffs = _compare_fingerprints(prev, cur)
+    else:
+        print("   ⚠ 协同状态里没有输入指纹记录（旧版本暂存目录），本次只核对源稿 "
+              "sha256，不核对参考文献库内容。")
+        cur_sha = source_sha256
+        if not cur_sha and source and os.path.isfile(source):
+            try:
+                cur_sha = _sha256_file(source)
+            except OSError:
+                cur_sha = ""
+        ps = prev.get("source") or {}
+        diffs = []
+        if ps.get("sha256") and cur_sha and ps["sha256"] != cur_sha:
+            diffs.append(f"源稿：{ps.get('name') or '?'} sha256 "
+                         f"{(ps.get('sha256') or '')[:16]}… → "
+                         f"{os.path.basename(source) or '?'} sha256 {cur_sha[:16]}…")
+    if not diffs:
+        return ""
+    return (f"目标文件夹已存在，且本次输入与上次交付不同源，拒绝覆盖：{final_dir}\n"
+            f"  {'；'.join(diffs)}\n"
+            "  本次协同初排用的是另一版输入（换稿/换参考文献库），直接交付会把既有交付"
+            "整体覆盖。\n"
+            "  最终交付目录、协同状态与暂存目录均未改动。\n"
+            "  如确认要用本次输入覆盖既有交付，请加 --force。")
+
+
+def _promote_done(stage_dir: str, final: str, backup: str, exclude,
+                  old_fp: bytes | None = None) -> dict:
+    """P02H R04：promote 成功后把本次输入指纹（schema 2）写进最终交付目录。
+
+    旧状态没有 `input_fingerprint` 键（旧版本暂存目录）→ 保留最终交付目录里原有的
+    指纹记录（本次只按源稿 sha256 核对过），不让交付过一道就丢掉防腐记录；
+    任何失败只 warn，不影响交付结果。
+    """
+    try:
+        state = load_state(stage_dir) or {}
+        fp = state.get("input_fingerprint")
+        if isinstance(fp, dict) and isinstance(fp.get("source"), dict):
+            stem = str((state.get("params") or {}).get("stem") or "")
+            _write_source_fingerprint(final, stem, fp)
+        elif old_fp:
+            _restore_source_fingerprint(final, old_fp)
+    except Exception as e:  # noqa: BLE001  指纹只是防腐记录，任何失败都不该让交付变红
+        print(f"   ⚠ 源指纹记录失败（不影响交付）：{type(e).__name__}: {e}")
+    return {"final": final, "backup": backup, "excluded": sorted(exclude)}
+
+
 def remember_source_fingerprint(out_dir: str, stem: str, source: str, args) -> None:
-    """交付成功后记录输入指纹（协同两段式不在此口径；失败不影响交付）。
+    """交付成功后记录输入指纹（schema 2；协同两步走各自路径，失败不影响交付）。
 
     内容只由输入决定（不含生成时间等易变值）：同输入的两次转换产物逐字节相同，
     既有「产物与 HEAD/前后两次转换逐字节一致」类测试不受影响。
@@ -3779,18 +4061,6 @@ def remember_source_fingerprint(out_dir: str, stem: str, source: str, args) -> N
     if getattr(args, "coop_taskbook_only", False) or getattr(args, "coop_replies", False):
         return
     try:
-        fp = _input_fingerprint(source, getattr(args, "bib", "") or None)
-        data = {
-            "schema": SOURCE_FP_SCHEMA,
-            "stem": stem,
-            "source": fp["source"],
-            "bib": fp["bib"],
-        }
-        path = os.path.join(out_dir, SOURCE_FP_NAME)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-        os.replace(tmp, path)
+        _write_source_fingerprint(out_dir, stem, _input_fingerprint(source, args))
     except Exception as e:  # noqa: BLE001  附加记录，绝不影响交付
         print(f"   ⚠ 源指纹记录失败（不影响交付）：{type(e).__name__}: {e}")
