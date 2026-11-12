@@ -66,31 +66,43 @@ def _full_value_tooltip(value) -> str | None:
     return raw or None
 
 
-def sync_clearable(field: ft.TextField) -> None:
+def sync_clearable(field: ft.TextField, *, update: bool = True) -> None:
     """按当前值切换 ✕ 的显隐（程序化赋值后调用；不触发 on_change）。
+
+    Q2（FIX-20261112）：用户连续输入时不能对聚焦中的 TextField 发 update——flet 1.0.5
+    里翻转 suffix 内 ✕ 的 `visible` 再 update 会让客户端重建整框（flet #6901 同类），
+    输入首字母因此丢焦点。`_wrapped` 走 `update=False`：只同步属性（suffix/tooltip），
+    变化记为 `_clearable_dirty`，等失焦（on_blur）或程序化回填时统一 flush 一次。
 
     R01：带 `_value_tooltip` 标记的字段（`path_picker` 挂的）同时把当前值全文同步到
     `tooltip`——被截断的长路径仍可悬停看全。值没变就不发 update，不增加噪声。
     """
+    changed = False
     if getattr(field, "_value_tooltip", False):
         wanted = _full_value_tooltip(getattr(field, "value", ""))
         if getattr(field, "tooltip", None) != wanted:
             field.tooltip = wanted
-            try:
-                field.update()          # 输入中/回填后立刻生效；未挂载时吞掉
-            except Exception:  # noqa: BLE001
-                pass
+            changed = True
     button = getattr(field, "_clear_button", None)
-    if button is None:
+    if button is not None:
+        visible = bool(str(getattr(field, "value", "") or "").strip())
+        if button.visible != visible:
+            button.visible = visible
+            changed = True
+    if not update:
+        if changed:
+            field._clearable_dirty = True
         return
-    visible = bool(str(getattr(field, "value", "") or "").strip())
-    if button.visible == visible:
+    if not changed and not getattr(field, "_clearable_dirty", False):
         return
-    button.visible = visible
-    try:
-        button.update()
-    except Exception:  # noqa: BLE001 构建期控件可能未挂载
-        pass
+    field._clearable_dirty = False
+    for ctl in (field, button):
+        if ctl is None:
+            continue
+        try:
+            ctl.update()
+        except Exception:  # noqa: BLE001 构建期控件可能未挂载
+            pass
 
 
 def make_clearable(field: ft.TextField, t: Tokens, *, on_clear=None) -> ft.TextField:
@@ -127,6 +139,15 @@ def make_clearable(field: ft.TextField, t: Tokens, *, on_clear=None) -> ft.TextF
     def _wrapped(e):
         if user_on_change is not None:
             user_on_change(e)
+        # Q2：输入过程中只同步属性、不发 patch —— 否则翻转 ✕ 的 visible 会重建整框丢焦点。
+        sync_clearable(field, update=False)
+
+    user_on_blur = getattr(field, "on_blur", None)
+
+    def _on_blur(e):
+        if callable(user_on_blur):
+            user_on_blur(e)
+        # 失焦时把输入期间积攒的 suffix/tooltip 变化一次发出去（此时不抢焦点）。
         sync_clearable(field)
 
     button.on_click = _clear
@@ -143,6 +164,7 @@ def make_clearable(field: ft.TextField, t: Tokens, *, on_clear=None) -> ft.TextF
     else:
         field.suffix = button
     field.on_change = _wrapped
+    field.on_blur = _on_blur
     field._user_on_change = user_on_change
     field._clear_button = button
     field._clearable = True
@@ -739,6 +761,128 @@ def search_field(t: Tokens, *, value: str = "", hint_text: str = "搜索页面�
     field.bgcolor = t.palette.surface
     field._search_chrome = True
     return field
+
+
+# ── 剪贴板粘贴按钮（FIX-20261112 Q11）───────────────────────────────────────
+# 背景：上游 Flutter #178609（罗技/宏注入 Cmd+V 丢修饰键）不改键位语义，只给
+# 显式按钮兜底。硬约束：按钮固定存在，**不嵌 TextField.suffix、不做 visible
+# 翻转**（与 Q2 同源：翻转 suffix/visible 再 update 会重建 TextField、丢焦点）。
+PASTE_EMPTY_HINT = "剪贴板里没有可粘贴的文本"
+PASTE_UNAVAILABLE_HINT = "当前外壳不支持读剪贴板：请把文本手动粘贴到输入框。"
+
+
+def _paste_flet_page(page):
+    """从页面对象取 flet Page：页面 / 宿主 / 视图三种形态都兼容，取不到返回 None。"""
+    for candidate in (page, getattr(page, "page", None),
+                      getattr(page, "host", None)):
+        if candidate is not None and callable(getattr(candidate, "run_task", None)):
+            return candidate
+    return None
+
+
+def _paste_service(flet_page):
+    """取/挂 `ft.Clipboard` service；无 GUI（单测假 page 无 services）返回 None。"""
+    services = getattr(flet_page, "services", None) if flet_page is not None else None
+    if services is None:
+        return None
+    try:
+        for service in list(services):
+            if isinstance(service, ft.Clipboard):
+                return service
+        clipboard = ft.Clipboard()
+        services.append(clipboard)
+        return clipboard
+    except Exception:  # noqa: BLE001 假 page/未连接会话：退化为手动粘贴
+        return None
+
+
+def _paste_toast(page, message: str) -> None:
+    """提示条出口容错：页面对象 / app / 裸 flet Page 依次尝试；失败不抛、不记日志。"""
+    seen: list[int] = []
+    for holder in (page, getattr(page, "app", None), getattr(page, "page", None)):
+        if holder is None or id(holder) in seen:
+            continue
+        seen.append(id(holder))
+        toast = getattr(holder, "toast", None)
+        if callable(toast):
+            try:
+                toast(message)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
+
+def _paste_apply(page, field, text: str, on_pasted, on_change) -> None:
+    """把剪贴板文本写回字段，再触发与手动输入等价的 on_change（带 control=field）。"""
+    field.value = text
+    handler = on_change if callable(on_change) else getattr(field, "on_change", None)
+    if callable(handler):
+        try:
+            handler(SimpleNamespace(control=field))
+        except Exception:  # noqa: BLE001 页面 handler 的渲染失败不应阻断粘贴本身
+            pass
+    # 程序化回填后同步框内 ✕（Q2：只同步属性，随下面的一次 update 一起发；
+    # 这里不是输入过程中，故可以发 update，也不会重建 TextField）。
+    sync_clearable(field, update=False)
+    try:
+        field.update()
+        field._clearable_dirty = False
+    except Exception:  # noqa: BLE001 构建期/假 page：值已写好即可
+        pass
+    if callable(on_pasted):
+        try:
+            on_pasted(field)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _paste_click(page, field, on_pasted, on_change) -> None:
+    flet_page = _paste_flet_page(page)
+    service = _paste_service(flet_page)
+    if flet_page is None or service is None:
+        _paste_toast(page, PASTE_UNAVAILABLE_HINT)
+        return
+
+    async def _read() -> None:
+        try:
+            text = await service.get()
+        except Exception:  # noqa: BLE001 客户端不支持剪贴板：退化为手动粘贴
+            _paste_toast(page, PASTE_UNAVAILABLE_HINT)
+            return
+        if not isinstance(text, str) or not text.strip():
+            _paste_toast(page, PASTE_EMPTY_HINT)
+            return
+        _paste_apply(page, field, text, on_pasted, on_change)
+
+    try:
+        flet_page.run_task(_read)
+    except Exception:  # noqa: BLE001 无事件循环/未连接会话
+        _paste_toast(page, PASTE_UNAVAILABLE_HINT)
+
+
+def paste_button(t: Tokens, page, field: ft.TextField, *, on_pasted=None,
+                 on_change=None, height: float | None = None,
+                 label: str = "粘贴", tooltip: str | None = None) -> ft.OutlinedButton:
+    """固定存在的「粘贴」按钮：点一下异步读剪贴板 → 写入 `field` → 触发原 on_change。
+
+    `page` 兼容三种形态：页面/宿主对象（有 `.page` 或 `.host` 指向 flet Page）、
+    flet Page 本身、单测假 page（`run_task` + `services` 可缺）。
+
+    - 非空文本：`field.value = text`，用 `SimpleNamespace(control=field)` 触发
+      等价 on_change（显式 `on_change` 优先，否则用 `field.on_change`），随后
+      `field.update()`；`on_pasted(field)` 作为非标准 handler 的扩展入口。
+    - 空/非文本剪贴板：toast「剪贴板里没有可粘贴的文本」。
+    - 无 Clipboard 服务 / 无 GUI（假 page）：toast 提示手动粘贴，不抛异常、不写日志噪声。
+
+    不嵌 suffix、不翻转 visible、不改字段几何/清空 ✕/焦点行为。
+    """
+    button = secondary_button(
+        label, lambda e: _paste_click(page, field, on_pasted, on_change), t,
+        icon="CONTENT_PASTE", height=height)
+    button.tooltip = tooltip or "从剪贴板粘贴（⌘V 失效时的备用入口）"
+    button._paste_field = field
+    button._paste_page = page
+    return button
 
 
 class Select(ft.PopupMenuButton):

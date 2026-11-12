@@ -619,6 +619,7 @@ class BibEditView:
             spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 field,
+                C.paste_button(t, self.page, field, height=t.px(48)),
                 C.secondary_button("运行中" if self.state == "loading" else "载入",
                                    self._load_click, t, height=t.px(48),
                                    disabled=self.busy),
@@ -639,6 +640,8 @@ class BibEditView:
         return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                       controls=[
                           type_select, new_key,
+                          C.paste_button(t, self.page, new_key,
+                                         height=t.control_h()),
                           ft.Container(expand=True),
                           C.text(status, t, "caption",
                                  t.palette.warn if self.conflicts else t.palette.text_faint),

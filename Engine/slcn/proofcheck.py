@@ -793,11 +793,13 @@ RULES: list[Rule] = [
          "", "改用 \\footnotemark{} + 环境后的 \\footnotetext{}", langs=("zh", "en"),
          scope="raw"),
     # ZH-23 用专用扫描（pattern 留空）：要按括号配对、按句聚合，见 `_zh23_hits()`。
-    # B-280 起降为**只报**（守卫 A+B 观察期；是否放回自动修留待后续批次/用户决定）。
+    # Q4（FIX-20261112）v2：由 B-280 的**只报**升级为**初排自动改**（守卫 A/B 原样保留：
+    # 见/参见/详见/例如/譬如/诸如/即 前置跳过、`；` 收尾跳过、同句两组整句跳过、
+    # 组内已有句末句读不动、冒号不作句末标点）。替换 = 句末标点搬到整组括号之前。
     Rule("ZH-23", "带括号引用组的句末标点在括号之后",
          "手册 §校对规范·常规 4.1/5.1–5.2（脚注与文献引用都放在逗号前、句号后）",
          "", "把句末标点移到括号之前：文本。（\\parencite{…}）", langs=("zh",),
-         scope="raw", fixable=False),
+         scope="raw", fixable=True),
 
     # ── 英文稿件（手册 §英文文章的特殊规范；经验书 预校正·英文）──────────
     Rule("EN-01", "年份前的半角括号缺空格", "经验书 预校正·英文（检索 [a-zA-Z]\\(\\d）",
@@ -815,7 +817,8 @@ RULES: list[Rule] = [
          r"\b(pp?\.)[ \t]+(\d)", "缩小间隔：\\1\\,\\2", langs=("en",)),
     Rule("EN-06", "章节标题大小写待核",
          "手册 §英文文章 3（Section 实词大写；subsection 及以下仅句首大写）",
-         r"\\(?:section|subsection|subsubsection)\{", "逐条核对标题大小写", langs=("en",), scope="raw"),
+         "", "逐条核对标题大小写（section 实词大写；subsection 走句首式 fixer）",
+         langs=("en",), scope="raw"),
 
     # ── 通用 ───────────────────────────────────────────────────────────
     Rule("ALL-01", "位图插图（非矢量）", "手册 §插入图片（核心思想是插入矢量图 pdf）",
@@ -828,10 +831,10 @@ RULES: list[Rule] = [
 #: 汉字-汉字、小写英文邻、数学/命令参数/URL 等仍在 ZH-08 内部静默，不会改产物。
 #: 2026-10-30（B-272）ZH-12 句末脚注后补 `\,` 也进入默认白名单（判据见 `_zh12_hits()`）。
 #: 2026-10-30（B-280）ZH-23 在守卫 A+B 观察期降为**只报**，从本白名单移除（15→14）；
-#: 是否放回自动修留待后续批次/用户决定（见 `Engine/docs/PROOF_RULES.md` ZH-23 条）。
+#: Q4（FIX-20261112）v2 起 ZH-23 守卫判据复核通过，**放回**初排自动改（14→15）。
 INITIAL_LAYOUT_FIXABLE: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08",
-    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "EN-01", "EN-02", "EN-03",
+    "ZH-09", "ZH-12", "ZH-14", "ZH-21", "ZH-23", "EN-01", "EN-02", "EN-03",
 )
 
 #: 只在人工「一校核查 --fix」时才该自动改的规则（默认初排**不**启用）。
@@ -1138,7 +1141,7 @@ def check(tex: str, lang: str = "zh") -> Report:
                 basis="手册 §校对规范·常规 4.1/5.1–5.2（引用与脚注都放在句号后、逗号前）",
                 line=line, col=col, start=start, end=end,
                 text=seg.replace("\n", "⏎"),
-                advice="把句末标点移到括号之前", fixable=False,
+                advice="把句末标点移到括号之前", fixable=True,
                 replacement=seg[-1] + seg[:-1],
             ))
 
@@ -1173,6 +1176,13 @@ def check(tex: str, lang: str = "zh") -> Report:
                     start=a + m.start(), end=a + m.end(), text=raw,
                     advice="用 \\textup{} 包住（\\ct 等命令自带）", fixable=False,
                 ))
+    # Q8（FIX-20261112 EN-06）：标题大小写专用扫描（pattern 留空）。
+    # 命中文本 = 整条命令（`\section{…}` / `\subsection{…}`），section 与 subsection
+    # 分开报；合规 section 不报。`\subsection` 的实际改动由
+    # `apply_en_subsection_case()`（初排 / `--fix`）完成，不依赖这条规则的 fixable。
+    if lang == "en":
+        rep.hits.extend(_en06_hits(tex))
+
     rep.hits.sort(key=lambda h: (h.start, h.rule_id))
     return rep
 
@@ -1404,7 +1414,12 @@ def en_move_marks(tex: str) -> tuple[str, int]:
         left = tex[:gs].rstrip(" \t")
         gap = tex[len(left):gs] or " "
         mark = tex[gs:ge]
-        out = out[:len(left)] + "." + gap + mark + tex[po + 1:]
+        # Q4（FIX-20261112 EN11-MOVER-01）：这里必须接 `out` 的尾巴，不能接原始 `tex`。
+        # 本函数从右往左处理命中，前面的每一次修改都落在**当前命中右侧**（起点 ≥ ge），
+        # 所以 `out[0:po+1]` 与 `tex[0:po+1]` 逐字相同，`out[po+1:]` 才保留那些修改；
+        # 用 `tex[po+1:]` 会把右侧所有已改内容整段回滚 → 每次调用只剩最左一处生效
+        # （Su_Wu 实测 43 处只落 12 处，自报计数却按 450 累加）。
+        out = out[:len(left)] + "." + gap + mark + out[po + 1:]
         n += 1
     return out, n
 
@@ -1426,3 +1441,306 @@ def fix_en_marks(tex: str) -> tuple[str, dict[str, int]]:
             break
         out = new
     return out, {k: v for k, v in hits.items() if v}
+
+
+# ── Q8（FIX-20261112 EN-06）：`\subsection` 句首式大小写 fixer ────────────────
+#
+# 依据：手册 §英文文章 3（Section 标题实词大写；subsection 及以下仅句首大写）。
+#
+# 只改 `\subsection` 的**纯文本词**：命令（`\emph{}`/`\cite{}`/`\ref{}`…）、`$…$`、
+# ``…'' 与 `…' 引号内的内容全部原样保留。冒号以后也原样（副题首字母不动，避免把
+# 「Argumentation: Cultural Accumulation…」的副题句首改成小写）。
+#
+# 保护（保留原样，并进「待人工」清单）：
+#   ① 全大写缩写（AI / U.S. / II…）；② 含内部大写的混合词（McDowell / U.S.-China）；
+#   ③ 本文**正文里以大写出现过**的词（论文自用术语：Generalized Argumentation Theory）；
+#   ④ 内置常见专名表（English / Chinese / LaTeX / Oxford…）。
+# 连字符复合词按句首式处理（Dual-Level → Dual-level / Second-Personal → Second-personal），
+# 但其中任一段含内部大写则整词保护。
+#
+# 幂等：只把非首词小写化、首词首字母大写；第二遍 no-op。`mode`：
+#   auto   —— 真改并返回改动表；report —— 只返回候选（不动文本）；off —— 不做。
+_EN06_TITLE_RE = re.compile(
+    r"\\(?P<cmd>section|subsection)\*?(?:\s*\[[^\]]*\])?\s*\{")
+_EN06_PROTECT_RE = re.compile(
+    r"\\(?:[A-Za-z]+)\*?(?:\s*\[[^\]]*\])?"
+    r"(?:\s*\{(?:[^{}]|\{[^{}]*\})*\})*"
+    r"|\$[^$]*\$"
+    r"|``.*?''"
+    r"|`[^`]*'"
+)
+_EN06_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'’.\-]*")
+_EN06_MINOR = frozenset((
+    "a", "an", "the", "and", "but", "or", "nor", "for", "so", "yet",
+    "of", "in", "on", "at", "to", "by", "with", "from", "as", "into", "onto",
+    "over", "under", "between", "within", "through", "via", "per", "than",
+    "that", "which", "whose", "when", "where", "while", "if", "then", "vs",
+    "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "has", "have", "had", "not",
+))
+_EN06_PROPER = frozenset((
+    "English", "Chinese", "French", "German", "Greek", "Latin", "Japanese",
+    "LaTeX", "TeX", "BibTeX", "Word", "Microsoft", "Apple", "Google",
+    "Oxford", "Cambridge", "Harvard", "Chicago", "Princeton", "Routledge",
+    "Springer", "Wiley", "Blackwell", "APA", "MLA", "Chicago", "PDF", "HTML",
+    "URL", "DOI", "ISBN", "ISSN", "Internet", "World", "War", "God",
+    # 哲学/论证理论常见专名（启发式；漏保护的仍进「待人工」清单兜底）
+    "Plato", "Aristotle", "Socrates", "Kant", "Hegel", "Marx", "Nietzsche",
+    "Wittgenstein", "Heidegger", "Husserl", "Gadamer", "Habermas", "Rawls",
+    "Nozick", "Dennett", "Davidson", "Brandom", "McDowell", "Sellars",
+    "Quine", "Putnam", "Kripke", "Frege", "Russell", "Carnap", "Austin",
+    "Searle", "Grice", "Mill", "Hume", "Locke", "Hobbes", "Rousseau",
+    "Descartes", "Leibniz", "Spinoza", "Aquinas", "Augustine", "Confucius",
+    "Mencius", "Zhuangzi", "Laozi", "Xunzi", "Mozi", "Dewey", "James",
+    "Peirce", "Mead", "Goffman", "Rorty", "Derrida", "Foucault", "Bourdieu",
+    "Luhmann", "Toulmin", "Perelman", "Kantian", "Hegelian", "Marxist",
+    "Rawlsian", "Habermasian", "Wittgensteinian", "Aristotelian",
+    "Confucian", "China", "Europe", "America", "Asian", "Western", "Eastern",
+))
+
+
+def _en06_tokens(text: str) -> list[tuple[str, str, int, int]]:
+    """把标题切成 (kind, text, start, end)；kind ∈ {prot, word, char}。"""
+    toks: list[tuple[str, str, int, int]] = []
+    i = 0
+    while i < len(text):
+        m = _EN06_PROTECT_RE.match(text, i)
+        if m and m.end() > i:
+            toks.append(("prot", m.group(0), i, m.end()))
+            i = m.end()
+            continue
+        m = _EN06_WORD_RE.match(text, i)
+        if m and m.end() > i:
+            toks.append(("word", m.group(0), i, m.end()))
+            i = m.end()
+            continue
+        toks.append(("char", text[i], i, i + 1))
+        i += 1
+    return toks
+
+
+def _en06_classify(word: str) -> str:
+    """词形：abbr（全大写缩写）/ mixed（内部大写）/ hyphen（连字符复合）/ plain / other。"""
+    letters = [c for c in word if c.isalpha()]
+    if not letters:
+        return "other"
+    if word.isupper() and len(letters) >= 2:
+        return "abbr"
+    if "-" in word:
+        segs = [s for s in word.split("-") if s]
+        if all(not re.search(r"[A-Z]", s[1:]) for s in segs):
+            return "hyphen"
+        return "mixed"
+    if re.search(r"[A-Z]", word[1:]):
+        return "mixed"
+    return "plain"
+
+
+def _en06_scan(tex: str) -> list[dict]:
+    r"""所有 `\section` / `\subsection` 标题：cmd / start / end / brace / title。"""
+    out: list[dict] = []
+    for m in _EN06_TITLE_RE.finditer(tex):
+        brace = m.end() - 1
+        end = _match_brace(tex, brace)
+        if end < 0:
+            continue
+        out.append({"cmd": m.group("cmd"), "start": m.start(), "end": end,
+                    "brace": brace, "title": tex[brace + 1:end - 1]})
+    return out
+
+
+_EN06_TITLE_MACRO_RE = re.compile(
+    r"\\(?:mytitle|myrunningtitle|mytitleCN|mytitleEN|title)(?![a-zA-Z])\s*\{")
+
+
+def _en06_body_words(tex: str) -> set[str]:
+    """正文里（非句首位置）以大写出现过的词：本文术语不降到小写。
+
+    排除三类会污染保护集的来源：
+    ① `\\section`/`\\subsection` 标题本身；
+    ② 模板宏里的**题名**（`\\mytitle` 等按 Title Case 书写，不是正文术语）；
+    ③ 段首/句首大写（`。`/`.`/`\n` 之后）——那是句法大写，不是术语大写。
+    """
+    chars = list(tex)
+    for t in _en06_scan(tex):
+        for p in range(t["start"], t["end"]):
+            if chars[p] != "\n":
+                chars[p] = " "
+    for m in _EN06_TITLE_MACRO_RE.finditer(tex):
+        end = _match_brace(tex, m.end() - 1)
+        if end < 0:
+            continue
+        for p in range(m.start(), end):
+            if chars[p] != "\n":
+                chars[p] = " "
+    body = "".join(chars)
+    words: set[str] = set()
+    for m in re.finditer(r"[A-Za-z][A-Za-z'’.\-]*", body):
+        if not m.group(0)[:1].isupper():
+            continue
+        j = m.start() - 1
+        while j >= 0 and body[j] in " \t":
+            j -= 1
+        if j >= 0 and body[j] in ".!?:;\n":
+            continue                      # 句首/段首大写不算「术语大写」
+        words.add(m.group(0))
+    return words
+
+
+def _en06_possessive_stem(word: str) -> str:
+    r"""英语所有格 token 的词干；非所有格返回空串。
+
+    覆盖 `X's` / `X’s` / `Xs'` / `X’`（弯直引号都算）：剥掉所有格后缀后返回词干，
+    如 `Quine's` → `Quine`、`Kant’s` → `Kant`、`Jones'` → `Jones`。
+    """
+    if word.endswith(("'s", "’s")):
+        stem = word[:-2]
+    elif word.endswith(("'", "’")):
+        stem = word[:-1]
+    else:
+        return ""
+    return stem if stem and stem[-1].isalpha() else ""
+
+
+def _en06_sentence_case(title: str, body_words: set[str]
+                        ) -> tuple[str, list[tuple[str, str]]]:
+    """把标题改成句首式；返回 (新标题, [(保留词, 建议小写形式)])。
+
+    冒号处只**保留下一词的首字母原样**（副题句首的 S/A… 不动），其后各词仍按句首式
+    处理——手册要求 subsection 句首式，不是「副题整段保持 Title Case」。
+    """
+    out: list[str] = []
+    manual: list[tuple[str, str]] = []
+    start = True          # 标题第一个词
+    cap_next = False      # 紧跟冒号的词：保留首字母大小写
+    for kind, t, _s, _e in _en06_tokens(title):
+        if kind != "word":
+            out.append(t)
+            if kind == "char" and t == ":":
+                start = False
+                cap_next = True
+            continue
+        keep = (_en06_classify(t) in ("abbr", "mixed")
+                or t in _EN06_PROPER or t in body_words)
+        # 所有格专名保护回落到词干（V OBS-1）：`Quine's`/`Kant’s` 整体不在专名表，
+        # 但词干是内置专名或正文大写词，故不能被当普通词降成 `quine's`。
+        # 卡 Q8 的保护范围＝「内置常见专名表 / 正文大写词」；首词的所有格仍走
+        # start 分支还原首字母大写（`quine's` → `Quine's`），语义不变。
+        if not keep:
+            _stem = _en06_possessive_stem(t)
+            if _stem and (_stem in _EN06_PROPER or _stem in body_words):
+                keep = True
+        # 英文代词 I（也是罗马数字 I）永远保持大写，且不算「保留待人工」噪声。
+        if t == "I":
+            out.append(t)
+            start = False
+            cap_next = False
+            continue
+        if keep:
+            out.append(t)
+            if not start:
+                low = t.lower()
+                if low != t:
+                    manual.append((t, low))
+            start = False
+            cap_next = False
+            continue
+        if start:
+            out.append(t[:1].upper() + t[1:].lower())
+            start = False
+        elif cap_next:
+            out.append(t[0] + t[1:].lower())
+            cap_next = False
+        else:
+            out.append(t.lower())
+    return "".join(out), manual
+
+
+def _en06_section_case_ok(title: str) -> bool:
+    """Section 标题是否已符合「实词大写」；合规的 section 不进 EN-06 报告。"""
+    words = [t for kind, t, _s, _e in _en06_tokens(title) if kind == "word"]
+    for idx, w in enumerate(words):
+        if _en06_classify(w) in ("abbr", "mixed") or w in _EN06_PROPER:
+            continue
+        if idx == 0:
+            if not w[:1].isupper():
+                return False
+            continue
+        if w.lower() in _EN06_MINOR:
+            continue
+        if not w[:1].isupper():
+            return False
+    return True
+
+
+def _en06_hits(tex: str) -> list[Hit]:
+    r"""EN-06 专用扫描：命中文本 = **整条命令**（`\section{…}` / `\subsection{…}`）。
+
+    只报「真有大小写问题」的标题：合规 section 不报；subsection 报「会改 / 有待人工词」。
+    section 与 subsection 在报告里分开列（不混排）。
+    """
+    body_words = _en06_body_words(tex)
+    hits: list[Hit] = []
+    for t in _en06_scan(tex):
+        title = t["title"]
+        if t["cmd"] == "section":
+            if _en06_section_case_ok(title):
+                continue
+            advice = "Section 标题实词应大写：逐条核对（只报不改）"
+        else:
+            new, manual = _en06_sentence_case(title, body_words)
+            if new == title and not manual:
+                continue
+            if new != title:
+                advice = f"可自动改（初排默认/--fix）：`{new}`"
+            else:
+                advice = "专名/缩写已保留，人工核对是否仍需改"
+        line, col = _line_col(tex, t["start"])
+        hits.append(Hit(
+            rule_id="EN-06", title="章节标题大小写待核",
+            basis="手册 §英文文章 3（Section 实词大写；subsection 及以下仅句首大写）",
+            line=line, col=col, start=t["start"], end=t["end"],
+            text=tex[t["start"]:t["end"]].replace("\n", "⏎"),
+            advice=advice, fixable=False,
+        ))
+    return hits
+
+
+def apply_en_subsection_case(tex: str, mode: str = "auto",
+                             body_words: set[str] | None = None
+                             ) -> tuple[str, dict]:
+    r"""Q8 入口：英文稿 `\subsection` 句首式大小写。
+
+    返回 `(新文本, info)`；`info` = `{"fixed":[{line,old,new}], "candidates":[...], "manual":[{old,new}]}`。
+    `mode="auto"` 真改（幂等）；`"report"` 只算候选；`"off"` 原样返回。
+    """
+    info: dict = {"fixed": [], "candidates": [], "manual": []}
+    if mode not in ("auto", "report"):
+        return tex, info
+    bw = body_words if body_words is not None else _en06_body_words(tex)
+    edits: list[tuple[dict, str, str]] = []
+    manual: list[dict] = []
+    seen: set[str] = set()
+    for t in _en06_scan(tex):
+        if t["cmd"] != "subsection":
+            continue
+        old = t["title"]
+        new, m = _en06_sentence_case(old, bw)
+        for a, b in m:
+            if a in seen:
+                continue
+            seen.add(a)
+            manual.append({"old": a, "new": b})
+        if new != old:
+            edits.append((t, old, new))
+    info["manual"] = manual
+    if mode == "report":
+        info["candidates"] = [{"line": _line_col(tex, t["start"])[0],
+                               "old": old, "new": new} for t, old, new in edits]
+        return tex, info
+    out = tex
+    for t, _old, new in reversed(edits):
+        out = out[:t["brace"] + 1] + new + out[t["end"] - 1:]
+    info["fixed"] = [{"line": _line_col(tex, t["start"])[0],
+                      "old": old, "new": new} for t, old, new in edits]
+    return out, info

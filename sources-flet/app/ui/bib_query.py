@@ -638,7 +638,9 @@ class QueryView:
             on_select=self._on_mode, width=88, hint="方式")
         return S.filter_row(
             t, search=self._field, on_search=self._on_text, on_submit=self._on_submit,
-            controls=[mode, self._query_button()],
+            controls=[mode,
+                      C.paste_button(t, self.page, self._field, height=28),
+                      self._query_button()],
             count=self._count_control(), on_advanced=self.open_advanced,
             page=self.page.page if hasattr(self.page, "page") else None,
             search_width=352)

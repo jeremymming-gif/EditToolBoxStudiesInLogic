@@ -49,9 +49,60 @@ def _guess_lang(tex: str, tex_path: str, given: str) -> str:
     return "zh" if cjk > 200 else "en"
 
 
+def _hits_table(caption: str, hits: list[_pc.Hit]) -> list[str]:
+    """逐条命中的表格（section / subsection 分开用，不混排）。"""
+    out = [f"**{caption}**", ""]
+    if not hits:
+        return out + ["（0 处）", ""]
+    out += ["| 行 | 列 | 原文 |", "|---|---|---|"]
+    for h in hits[:200]:
+        txt = h.text if len(h.text) <= 80 else h.text[:77] + "…"
+        out.append(f"| {h.line} | {h.col} | `{txt}` |")
+    if len(hits) > 200:
+        out.append(f"| … | | 另有 {len(hits) - 200} 处未列出 |")
+    out.append("")
+    return out
+
+
+def _en06_report_section(en_case: dict) -> list[str]:
+    r"""Q8（FIX-20261112 EN-06）：`\subsection` 句首式大小写报告段（0 处也给表）。
+
+    固定可机读行：`自动改 N 处／待人工 M 词`（初排交接单也用同一口径）。
+    """
+    fixed = en_case.get("fixed") or []
+    cands = en_case.get("candidates") or []
+    manual = en_case.get("manual") or []
+    out = ["## EN-06 标题大小写（`\\subsection` 句首式）", "",
+           f"自动改 {len(fixed)} 处／待人工 {len(manual)} 词", ""]
+    if fixed:
+        out += ["已自动改（`--fix` 已写入；初排转换也默认处理）：", "",
+                "| 行 | 原文 | 改成 |", "|---|---|---|"]
+        for it in fixed:
+            out.append(f"| {it['line']} | `{it['old']}` | `{it['new']}` |")
+        out.append("")
+    elif cands:
+        out += [f"可自动改候选 {len(cands)} 处（未写入；初排转换默认处理，或加 `--fix`）：",
+                "", "| 行 | 原 | 建议 |", "|---|---|---|"]
+        for it in cands:
+            out.append(f"| {it['line']} | `{it['old']}` | `{it['new']}` |")
+        out.append("")
+    if manual:
+        out += ["专名/缩写/本文术语保留，人工核对（原→建议小写）：", "",
+                "| 原 | 建议 |", "|---|---|"]
+        for it in manual:
+            out.append(f"| `{it['old']}` | `{it['new']}` |")
+        out.append("")
+    if not fixed and not cands and not manual:
+        out += ["没有需要处理的 `\\subsection` 标题大小写（0 处）。", ""]
+    return out
+
+
 def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
-               moves: list[str], fixed_path: str | None) -> str:
+               moves: list[str], fixed_path: str | None, *,
+               fix_requested: bool = False, en_case: dict | None = None) -> str:
+    """`fix_requested` 区分「没加 --fix」与「加了 --fix 但 0 改」（Q9 报告行）。"""
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    n_auto = len(fixed) + (len(en_case.get("fixed") or []) if en_case else 0)
     by = rep.by_rule()
     # B-278：初排转换已默认自动修 fixable 子集，一校页只报**需要人工判断**的条目；
     # 可自动改的按规则计数静默（`--fix` 仍会把它们补改并列出）。
@@ -101,9 +152,18 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
             for m in moves:
                 out.append(f"- {m}")
         out.append("")
-        if fixed_path:
-            out.append(f"改后的文件：`{fixed_path}`（输入文件未改动）")
-        out.append("")
+
+    # Q9（FIX-20261112）：`--fix` 写副本只在**实有改动**时发生（0 处不写、不覆盖
+    # 既有产物）。下面两行是固定可机读格式（UI 依赖，逐字）。
+    if fix_requested:
+        if fixed_path and n_auto + len(moves) > 0:
+            out += [f"修正稿：已另写 `{fixed_path}`（自动改 {n_auto} 处＋位序调整 "
+                    f"{len(moves)} 处；输入文件未动）", ""]
+        else:
+            out += ["修正稿：未另写（未发现可自动修改项；输入文件未动）", ""]
+
+    if en_case is not None:
+        out += _en06_report_section(en_case)
 
     out += ["## 逐条", ""]
     if not manual:
@@ -113,6 +173,16 @@ def _report_md(stem: str, tex_path: str, rep: _pc.Report, fixed: list[_pc.Hit],
         if not hits:
             continue
         head = hits[0]
+        if rid == "EN-06" and head.text.startswith(("\\section", "\\subsection")):
+            # Q8：命中文本是整条命令；section（实词大写，只报）与 subsection
+            # （句首式，自动改/候选见上节）**分表**，不混排。
+            _sec = [h for h in hits if h.text.startswith("\\section")]
+            _sub = [h for h in hits if h.text.startswith("\\subsection")]
+            out += [f"### `EN-06` {head.title} —— section {len(_sec)} 处 / "
+                    f"subsection {len(_sub)} 处", "", f"依据：{head.basis}", ""]
+            out += _hits_table("section（实词大写；只报不改）", _sec)
+            out += _hits_table("subsection（句首式；自动改/候选见上节）", _sub)
+            continue
         out += [f"### `{rid}` {head.title} —— {len(hits)} 处", "",
                 f"依据：{head.basis}", "",
                 f"建议：{head.advice}", "",
@@ -155,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="报告写到这个文件（默认 <同目录>/<文件名>_一校核查.md）")
     ap.add_argument("--fix", action="store_true",
                     help="把**可自动改**的规则写到一个新文件（输入文件不动）")
+    ap.add_argument("--en-subsection-case", choices=["auto", "report", "off"],
+                    default=None,
+                    help="EN-06 标题大小写：auto（英文默认，改可改项）/ report（只报）/ "
+                         "off（关闭）")
     args = ap.parse_args(argv)
 
     tex_path = os.path.abspath(os.path.expanduser(args.tex))
@@ -192,6 +266,14 @@ def main(argv: list[str] | None = None) -> int:
     fixed: list[_pc.Hit] = []
     fixed_path = None
     moves: list[str] = []
+    en_case: dict | None = None
+    # Q8（FIX-20261112 EN-06）：英文稿默认 auto；--en-subsection-case 可显式
+    # report/off（必须可 off；中文稿恒 off）。
+    case_mode = args.en_subsection_case or ("auto" if lang == "en" else "off")
+    if not args.fix and lang == "en" and case_mode != "off":
+        # 非 --fix：只算候选/待人工（报告也要给表；0 处也给）
+        _same, en_case = _pc.apply_en_subsection_case(tex, "report")
+
     if args.fix:
         # 位序类先搬（只搬报出来的命中 span），再按重查结果做替换（坐标才对得上）
         rep_now = rep
@@ -203,16 +285,32 @@ def main(argv: list[str] | None = None) -> int:
         else:
             new_tex = tex
         new_tex, fixed = _pc.apply_fixes(new_tex, rep_now)
-        fixed_path = os.path.join(out_dir, f"{stem}_一校核查后.tex")
-        # 原子写 + 旧版备份（UI 方案第 4 件）：这份是"改后稿"，可能被反复生成
-        _fsutil.atomic_write(fixed_path, new_tex, newline="", log=print)
-        print(f"\n  已写出改后的文件：{fixed_path}"
-              f"（自动改 {len(fixed)} 处 + 位置调整 {len(moves)} 处；输入文件未动）")
+        if lang == "en" and case_mode != "off":
+            new_tex, en_case = _pc.apply_en_subsection_case(
+                new_tex, "auto" if case_mode == "auto" else "report")
+        n_auto = len(fixed) + (len(en_case.get("fixed") or []) if en_case else 0)
+        # Q9（FIX-20261112）：**只在真有改动时**写副本；0 处不写、不覆盖既有产物。
+        if n_auto + len(moves) > 0:
+            fixed_path = os.path.join(out_dir, f"{stem}_一校核查后.tex")
+            # 原子写 + 旧版备份（UI 方案第 4 件）：这份是"改后稿"，可能被反复生成
+            _fsutil.atomic_write(fixed_path, new_tex, newline="", log=print)
+            print(f"\n  已写出改后的文件：{fixed_path}"
+                  f"（自动改 {n_auto} 处 + 位置调整 {len(moves)} 处；输入文件未动）")
+        else:
+            print("\n  未发现可自动修改项，未另写文件（输入文件未动）。")
+
+    if en_case is not None:
+        _fx = len(en_case.get("fixed") or [])
+        _cd = len(en_case.get("candidates") or [])
+        _mn = len(en_case.get("manual") or [])
+        print(f"  EN-06 标题大小写：自动改 {_fx} 处／待人工 {_mn} 词"
+              + (f"（另有可自动改候选 {_cd} 处）" if _cd else ""))
 
     out_path = os.path.abspath(os.path.expanduser(args.out)) if args.out \
         else os.path.join(out_dir, f"{stem}_一校核查.md")
     _fsutil.atomic_write(out_path,
-                         _report_md(stem, tex_path, rep, fixed, moves, fixed_path),
+                         _report_md(stem, tex_path, rep, fixed, moves, fixed_path,
+                                    fix_requested=args.fix, en_case=en_case),
                          newline="", log=print)
 
     print()

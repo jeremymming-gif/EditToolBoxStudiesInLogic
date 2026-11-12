@@ -356,12 +356,20 @@ class BibImportView:
                 on_browse=lambda e: self.page.app.browse_field(
                     self._dir_ref, "选择整期目录", "dir", "bib_import_dir"),
                 required=True, field_ref=self._dir_ref)
-        return C.form_field(t, "粘贴 bib 文本", C.text_field(
+        paste_field = C.text_field(
             t, value=self.text_value, multiline=True, min_lines=6, max_lines=14,
             expand=True,
             hint_text="把 bib 条目粘贴到这里；预览/写入时写成临时文件，不改动任何源文件",
             on_change=self._on_text_change,
-        ), expand=True)
+        )
+        # Q11：按钮在多行框右侧顶部；form_field 的「标签上置 + ✕ 清空」语义不变
+        # （✕ 已由 text_field/make_clearable 挂在框内，这里 clearable=False 防重挂）。
+        body = ft.Row(
+            spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.START,
+            controls=[paste_field,
+                      C.paste_button(t, self.page, paste_field,
+                                     height=t.control_h())])
+        return C.form_field(t, "粘贴 bib 文本", body, expand=True, clearable=False)
 
     # 预览 / 写库 ─────────────────────────────────────────────────────
     def _source_args(self) -> tuple[dict, str, str]:

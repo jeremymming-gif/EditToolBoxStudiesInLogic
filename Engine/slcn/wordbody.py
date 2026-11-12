@@ -12,7 +12,7 @@ from .wordcite import CUE_LEAD_FAR_RE as _FN_LEAD_FAR_RE
 from .wordcite import CUE_LEAD_NEAR_RE as _FN_LEAD_NEAR_RE
 from .wordcite import fn_in_math as _fn_in_math
 from .wordcite import fn_in_paren_depths as _fn_in_paren_depths
-from .wordcore import (DocxDoc, _footnote_latex, _has_cjk, escape_latex)
+from .wordcore import (DocxDoc, _drop_text_prefix, _EN_HEAD_LATIN, _footnote_latex, _has_cjk, _is_latin_numbered_heading, _next_plain_after, escape_latex)
 from .wordentry import (_NUMBERED_PREFIX_RE, _citation_title_year, _dedupe_keys,
                         _entry_is_note_only, _looks_short_bibliographic_note, _numbered_refs,
                         _src_line_key, _src_line_keys_for_works, parse_reference_line)
@@ -22,7 +22,7 @@ from .wordmeta import (AFFIL_EN_JOIN, META_SCAN, _ABS_RE, _HEAD1, _HEAD2, _HEAD_
                        _HEAD_CN_ART_RE, _HEAD_EN3, _KW_RE, _REF_HEADS, _abs_body_cn, _is_clc_meta_only,
                        _cn_arabic_run_ids, _is_cn_dot_heading, _is_cn_numbered_heading, _is_subtitle,
                        _is_title_candidate, _known_cn_authors, _known_en_authors,
-                       _label_body, _tail_abstract_cn, collect_affiliations, collect_emails, _looks_like_placeholder_author,
+                       _label_body, _tail_abstract_cn, _tail_cn_block, collect_affiliations, collect_emails, _looks_like_placeholder_author,
                        head_author_after, head_title_index, locate_tail_block, parse_tail_metadata)
 from .wordrender import (_looks_plain_en_title, classify_en_heading, find_char_diagrams,
                          render_para, table_env)
@@ -347,26 +347,6 @@ _REMARK_HEAD_RE = re.compile(r"注\s*" + _NUM_CHARS + r"?\s*(?:[：:．.、]|\s+
 
 #: B-219②：正文里的「式（N）/公式（N）」引用（全/半角括号；「（式（N））」也命中内层）
 _EQ_REF_RE = re.compile(r"(?:式|公式)\s*[（(]\s*(\d{1,3})\s*[）)]")
-
-
-def _drop_text_prefix(para, n_chars: int):
-    """返回「去掉前 n 个纯文字字符」的 Para 副本（跨 run 也成立；不改原对象）。"""
-    from .docxxml import Para, Seg
-
-    segs = []
-    left = n_chars
-    for sg in para.segs:
-        if left > 0 and sg.kind == "text":
-            if len(sg.text) <= left:
-                left -= len(sg.text)
-                continue
-            segs.append(Seg(sg.kind, sg.text[left:], italic=sg.italic,
-                            bold=sg.bold, fid=sg.fid, rid=sg.rid,
-                            display=sg.display, w_pt=sg.w_pt, h_pt=sg.h_pt))
-            left = 0
-        else:
-            segs.append(sg)
-    return Para(segs=segs, style=para.style)
 
 
 def _theorem_env_of(para):
@@ -703,6 +683,17 @@ def parse_docx(path: str, quote_threshold: int = 105,
             doc.subtitle_en = tail.get("subtitle_en", "")
         doc.author_en = tail.get("author_en", "") or doc.author_en  # S1：空值不覆盖
         doc.email = tail.get("email", "")
+
+    # ③.5b 文末**中文**元数据块（Q6 / CN-TAIL-01）：英文正文 + 文末中文题名/作者/
+    #      `摘 要：`/`关键词：` 的稿子。`parse_tail_metadata` 只认非中文标签、
+    #      `_tail_abstract_cn` 只救摘要，题名/作者/关键词一直空 → 模板印占位符。
+    #      只填空、绝不覆盖：开头那套或 tail 英文块已有的一律不动。
+    _cn_tail = _tail_cn_block(plains, ref_start)
+    if _cn_tail:
+        doc.title_cn = doc.title_cn or _cn_tail.get("title_cn", "")
+        doc.author_cn = doc.author_cn or _cn_tail.get("author_cn", "")
+        doc.abstract_cn = doc.abstract_cn or _cn_tail.get("abstract_cn", "")
+        doc.keywords_cn = doc.keywords_cn or _cn_tail.get("keywords_cn", "")
 
     # ③.6 单位：不再只认文末块里的「单位：」标签（旧实现全库只拿到 1/132）。
     #     开头元数据区、文末块、脚注里的作者信息都要看；判据见 collect_affiliations
@@ -1463,6 +1454,12 @@ def parse_docx(path: str, quote_threshold: int = 105,
             h = _HEAD2.sub("", plain).strip()
             doc.headings.append((2, h))
             out.append(f"\n\\subsection{{{h}}}\n")
+        elif _is_latin_numbered_heading(plain, _next_plain_after(seq_blocks, idx), _REF_HEADS):
+            # Q5（FIX-20261112 EN-HEADING-01）：英文 `1 Introduction`（无点）→ \section。
+            # 必须排在 `_HEAD_CN_ARABIC` 之前：后者会先接住英文编号行再按中文判据筛掉。
+            h = _EN_HEAD_LATIN.match(plain).group("t").strip()
+            doc.headings.append((1, h))
+            out.append(f"\n\\section{{{h}}}\n")
         elif (m_cn := _HEAD_CN_ARABIC.match(plain)) and _is_cn_numbered_heading(m_cn.group("t")) \
                 and not (id(para) in cn_arabic_run_ids and _HEAD_CN_ART_RE.match(plain)):
             # 新式中文标题 `1 引言`：编号要去掉（人工成品就是 `\section{引言}`）

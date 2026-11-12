@@ -161,6 +161,9 @@ class DocxDoc:
     subtitle_en: str = ""
     # 文末中英元数据块里的其余内容（作者英文名、单位、邮箱）
     author_en: str = ""
+    # 中文作者名（Q6 / CN-TAIL-01：英文正文 + 文末中文块的稿子）；只由
+    # `wordmeta._tail_cn_block` 补空，绝不覆盖开头已识别的 `author`。
+    author_cn: str = ""
     affiliation_cn: str = ""
     affiliation_en: str = ""
     email: str = ""
@@ -223,3 +226,85 @@ class DocxDoc:
 
 def _has_cjk(t: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in t)
+
+
+# ── Q5（FIX-20261112 EN-HEADING-01）：英文「N Title」无点式章节标题 ────────────
+#
+# 判据从 wordbody 下沉到本模块（纯判据、无 wordmeta 依赖；`_REF_HEADS` 由调用方传入）。
+# 根因：wordbody 分派链里 `_HEAD_CN_ARABIC`（`^\d{1,2}(?:\s+|…)`）先接住英文
+# `1 Introduction`，随后 `_is_cn_numbered_heading` 按中文判据（2–40 字、禁
+# `_CN_HEAD_PUNCT`、禁点）筛掉；`classify_en_heading` 只认带点的 `N)`/`N.M`。
+# 修法：分派前加 Latin-only 分支，判据从严，避免把编号列表当标题：
+#   · `^\d{1,2}\s+[A-Z]`，整行 <130 字、无汉字、无句点、结尾不是句末标点；
+#   · Title Case：除虚词外每个词首字母大写（编号列表 `1 This is a claim about X`
+#     的 `about` 小写 → 被挡）；
+#   · 下一段是非空长正文（>50 字）——标题后面一定跟着正文段。
+_EN_HEAD_LATIN = re.compile(r"^\d{1,2}\s+(?P<t>[A-Z].*)$")
+_EN_HEAD_MINOR = frozenset((
+    "a", "an", "the", "and", "but", "or", "nor", "for", "so", "yet",
+    "of", "in", "on", "at", "to", "by", "with", "from", "as", "into", "onto",
+    "over", "under", "between", "within", "through", "via", "per", "than",
+    "that", "which", "whose", "when", "where", "while", "if", "then", "vs",
+))
+_EN_HEAD_END_PUNCT = ("。", "．", ".", "，", ",", "；", ";", "：", ":", "！", "!", "？", "?")
+
+
+def _is_latin_numbered_heading(plain: str, next_plain: str, ref_heads) -> bool:
+    """英文「N Title」（无点）是否算一级标题；`ref_heads` = 参考文献标题集合。"""
+    m = _EN_HEAD_LATIN.match(plain)
+    if not m:
+        return False
+    title = m.group("t").strip()
+    if not title or len(plain) >= 130:
+        return False
+    if _has_cjk(plain) or "." in title:
+        return False
+    if title.endswith(_EN_HEAD_END_PUNCT):
+        return False
+    if title.strip().lower().rstrip(":：") in ref_heads:
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z'’\-]*", title)
+    if not words or len(words) > 16:
+        return False
+    if not words[0][:1].isupper():
+        return False
+    # Title Case：除虚词外每个词首字母大写（`This is a claim about X` → about 落选）
+    for w in words[1:]:
+        if w.lower() in _EN_HEAD_MINOR:
+            continue
+        if not w[:1].isupper():
+            return False
+    return len(next_plain.strip()) > 50
+
+
+def _next_plain_after(blocks: list, idx: int, limit: int = 3) -> str:
+    """`seq_blocks[idx]` 之后第一段非空正文的 plain（Table 等无 `.plain` 的块跳过）。"""
+    for p in blocks[idx + 1: idx + 1 + limit]:
+        t = getattr(p, "plain", None)
+        if t and t.strip():
+            return t
+    return ""
+
+
+def _drop_text_prefix(para, n_chars: int):
+    """返回「去掉前 n 个纯文字字符」的 Para 副本（跨 run 也成立；不改原对象）。
+
+    FIX-20261112：从 wordbody 下沉到本模块（纯 Para 原语；h3 行数上限约束下
+    wordbody 只保留调用点）。
+    """
+    from .docxxml import Para, Seg
+
+    segs = []
+    left = n_chars
+    for sg in para.segs:
+        if left > 0 and sg.kind == "text":
+            if len(sg.text) <= left:
+                left -= len(sg.text)
+                continue
+            segs.append(Seg(sg.kind, sg.text[left:], italic=sg.italic,
+                            bold=sg.bold, fid=sg.fid, rid=sg.rid,
+                            display=sg.display, w_pt=sg.w_pt, h_pt=sg.h_pt))
+            left = 0
+        else:
+            segs.append(sg)
+    return Para(segs=segs, style=para.style)

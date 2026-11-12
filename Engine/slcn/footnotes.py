@@ -2400,6 +2400,35 @@ def normalize_authors(a: str) -> str:
     return " and ".join(out) if out else s
 
 
+# ── Q7（FIX-20261112 BIB-QUOTE-01）：.bib 字段里的弯引号归一 ────────────────
+#
+# 背景：源稿 .docx 里的 author/title 常带中文/西文弯引号（U+2019 等），旧实现只在
+# 拼好的字段值上做 `_bib_escape`（只转义 &%$#_），弯引号原样进 .bib；biber/PDF
+# 里排成 `’`（作者名 ``O’Brien`` 尤其明显），人工成品一律是 ASCII。
+#
+# 判据（卡 §5 Q7）：
+#   · author / editor：’ ‘ “ ” 一律 → ASCII `'`（姓名里不允许引号样式差异）；
+#   · title / journal / note：与 EN-03 **同源**映射（proofcheck.EN_TYPO_MAP：
+#     ’→'、‘→`、”→``、”→''）；**不**映射 — / …（§6 契约：不改破折号/省略号）；
+#   · misc 分支在循环前 return（author=源稿逐字原文），**逐字不动**；
+#   · 幂等：只映射非 ASCII 字符，第二遍逐字节相同。
+_BIB_AUTHOR_PUNCT = {"’": "'", "‘": "'", "“": "'", "”": "'"}
+_BIB_TITLE_QUOTE_CHARS = "’‘“”"
+
+
+def _bib_map_quotes(s: str, mapping: dict) -> str:
+    """按字符表替换弯引号；表里没有的字符（含 ASCII）逐字保留。"""
+    return "".join(mapping.get(ch, ch) for ch in s)
+
+
+def _bib_title_punct(s: str) -> str:
+    """title/journal/note 用 EN-03 同源映射；只取引号，破折号/省略号不动。"""
+    from .proofcheck import EN_TYPO_MAP
+
+    return "".join(EN_TYPO_MAP.get(ch, ch) if ch in _BIB_TITLE_QUOTE_CHARS else ch
+                   for ch in s)
+
+
 def entry_to_bib(key: str, entry: dict, raw: str = "") -> str:
     """把解析出的字段写成 .bib 条目。
 
@@ -2447,9 +2476,14 @@ def entry_to_bib(key: str, entry: dict, raw: str = "") -> str:
             from .bibnorm import normalize_author_field
 
             v = normalize_author_field(normalize_authors(str(v)))
+            # Q7：归一后再收弯引号（bibnorm 对含 `,` 的输入会 early-return，弯引号可能残留）
+            v = _bib_map_quotes(str(v), _BIB_AUTHOR_PUNCT)
         elif k == "editor":
             # 本卡只改 author；editor 归 B3 批处理（此处保持旧行为：只规范 and 分隔）
-            v = normalize_authors(str(v))
+            v = _bib_map_quotes(normalize_authors(str(v)), _BIB_AUTHOR_PUNCT)
+        elif k in ("title", "journal", "note"):
+            # Q7：与 EN-03 同源映射（只引号；破折号/省略号不动）
+            v = _bib_title_punct(str(v))
         lines.append(f"  {k.ljust(width)} = {{{_bib_escape(str(v))}}},")
         wrote = True
     if not wrote and raw:

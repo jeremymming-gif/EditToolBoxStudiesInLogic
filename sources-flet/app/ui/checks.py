@@ -162,6 +162,13 @@ class ProofReport:
     rules: tuple[ProofRule, ...] = field(default_factory=tuple)
     conclusion: str = ""
     ok: bool = False
+    # FIX-20261112 Q9：报告末尾的固定行「修正稿：已另写 `…`/未另写（…）」。
+    # fix_known 区分「报告明确说了」与「旧报告/报告缺失（不知道）」——
+    # 只有 fix_known 且 fix_written 才能对用户说「已另写」。
+    fix_written: bool = False
+    fix_path: str = ""
+    fix_note: str = ""
+    fix_known: bool = False
 
     def top_rules(self, limit: int = 5) -> list[ProofRule]:
         return sorted(self.rules, key=lambda r: (-r.count, r.rid))[:limit]
@@ -181,6 +188,30 @@ _HEADLINE = re.compile(r"^\*\*摘要\*\*：(.+)$", re.MULTILINE)
 # 规则表只在 `## 摘要` 段扫：`## 已自动改的部分（--fix）` 是「规则|行|原文|改成」，
 # 若全文扫会把行号当条数。找不到该标题（旧报告）才退回全文。
 _SUMMARY_SECTION = re.compile(r"(?ms)^##\s*摘要\s*$.*?(?=^## |\Z)")
+# FIX-20261112 Q9：引擎报告末尾的固定行（Markdown 加粗可选，路径用反引号）。
+# 「有改」应为：修正稿：已另写 `<绝对路径>`（自动改 N 处＋位序调整 M 处；输入文件未动）
+# 「0 改」应为：修正稿：未另写（未发现可自动修改项；输入文件未动）
+_FIX_LINE = re.compile(r"^\s*(?:\*\*)?修正稿(?:\*\*)?：\s*(?P<body>.+?)\s*$", re.MULTILINE)
+_FIX_WRITTEN = re.compile(r"^已另写\s*`(?P<path>[^`]+)`\s*(?P<note>（.*）)?")
+_FIX_NOT_WRITTEN = re.compile(r"^未另写\s*(?P<note>（.*）)?")
+
+
+def _parse_fix_line(text: str) -> dict:
+    """解析「修正稿：」固定行；没有该行时 fix_known=False（不冒充「已另写」）。"""
+    match = _FIX_LINE.search(text or "")
+    if not match:
+        return {}
+    body = match.group("body").strip()
+    written = _FIX_WRITTEN.match(body)
+    if written:
+        return {"fix_known": True, "fix_written": True,
+                "fix_path": written.group("path").strip(),
+                "fix_note": (written.group("note") or "").strip()}
+    not_written = _FIX_NOT_WRITTEN.match(body)
+    if not_written:
+        return {"fix_known": True, "fix_written": False,
+                "fix_note": (not_written.group("note") or "").strip()}
+    return {}
 
 
 def parse_proof_report(text: str) -> ProofReport:
@@ -214,6 +245,7 @@ def parse_proof_report(text: str) -> ProofReport:
         rules=tuple(rules),
         conclusion=_clean(headline.group(1)) if headline else "",
         ok=bool(header or total or rules),
+        **_parse_fix_line(text),
     )
 
 
@@ -265,8 +297,14 @@ def proof_header_lines(tex: str, lang: str, fix: bool) -> list[str]:
     ]
 
 
-def proof_result_text(code: int, *, tex: str = "", fix: bool = False) -> str:
-    """PC-011 / 041–045：完成与失败的文案（1 = 有命中，不是失败）。"""
+def proof_result_text(code: int, *, tex: str = "", fix: bool = False,
+                      report: "ProofReport | None" = None) -> str:
+    """PC-011 / 041–045：完成与失败的文案（1 = 有命中，不是失败）。
+
+    Q9：加 `--fix` 时是否真的另写了副本只能由引擎报告说了算。报告明确「已另写」
+    才报路径；明确「未另写」（0 处可自动改）照实说；旧报告/报告缺失则说「未确认」，
+    绝不冒充已另写。
+    """
     if code == 0:
         text = "成功 · 没有命中任何规则。"
     elif code == 1:
@@ -276,7 +314,14 @@ def proof_result_text(code: int, *, tex: str = "", fix: bool = False) -> str:
     else:
         return f"失败 · 核查未完成（退出码 {code}）。{FAIL_HINT}"
     if fix:
-        text += f"已另写修正稿：{proof_fix_name(tex)}（输入文件未改动）。"
+        if report is not None and report.fix_written and report.fix_path:
+            note = report.fix_note or "（输入文件未动）"
+            text += f"修正稿：已另写 `{report.fix_path}`{note}。"
+        elif report is not None and report.fix_known:
+            note = report.fix_note or "（未发现可自动修改项；输入文件未动）"
+            text += f"修正稿：未另写{note}。"
+        else:
+            text += "修正稿：未确认（报告未写明是否另写）。"
     return text
 
 
@@ -671,6 +716,7 @@ def after_proof_run(page, call, code: int, artifact: str, text: str,
     tex = page.field("proof_tex")
     options = page.app.store.get("options", {}) or {}
     fix = bool(options.get("proofcheck_fix", False))
+    report: ProofReport | None = None
     if code in (0, 1):
         report = read_proof_report(artifact)
         if card is not None:
@@ -682,7 +728,7 @@ def after_proof_run(page, call, code: int, artifact: str, text: str,
             card.conclusion.value = f"失败 · 核查未完成（退出码 {code}）"
             card.conclusion.color = page.t.palette.error
             card._update()
-    return proof_result_text(code, tex=tex, fix=fix), level
+    return proof_result_text(code, tex=tex, fix=fix, report=report), level
 
 
 def proofcheck_section(page) -> ft.Control:
@@ -706,8 +752,8 @@ def proofcheck_section(page) -> ft.Control:
     help_lines = [
         "输入初排后的 tex；报告默认写到同目录 `<名字>_一校核查.md`，**不覆盖稿件**。",
         "语种默认「自动」由引擎按正文判断；中英混排识别不稳时再手动选中文 / 英文。",
-        "默认只出报告；勾「顺手把无歧义的改掉」才另写 `<名字>_一校核查后.tex`，输入文件不动。",
-        "可自动改项在初排已默认处理，本报告只列需要人工判断的条目（每条给依据与建议）。",
+        "默认只出报告；勾「顺手把无歧义的改掉」后，有可无歧义修改时才另写 `<名字>_一校核查后.tex` 副本，输入文件不动。",
+        "可自动改项在初排已默认处理；若没有可无歧义修改项，则只出报告、不另写副本，本报告只列需要人工判断的条目（每条给依据与建议）。",
     ]
     # 批 115：输入控件直接落在白面板上；页面级 C.card 全部去掉。
     input_area = ft.Column(spacing=t.sp("2"), controls=[
@@ -719,7 +765,7 @@ def proofcheck_section(page) -> ft.Control:
         ]),
         C.option_row(
             "顺手把无歧义的改掉（另存新文件）",
-            "另写一份「一校核查后」副本；输入文件不改",
+            "有可无歧义修改时才另写一份「一校核查后」副本；输入文件不改",
             t, icon="AUTO_FIX_HIGH",
             checked=bool(options.get("proofcheck_fix", False)),
             on_change=lambda e: page.app.set_option("proofcheck_fix", e.control.value),

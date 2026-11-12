@@ -852,7 +852,8 @@ class BibFieldFixView:
                                 on_submit=self._apply_search, width=t.px(236))
         return S.filter_row(
             t, search=search, on_search=self._apply_search, count="上限 50 条",
-            controls=[ft.Container(width=t.px(184), content=seg),
+            controls=[C.paste_button(t, self.page, search, height=t.control_h()),
+                      ft.Container(width=t.px(184), content=seg),
                       field_chip, conf_chip], page=self._flet())
 
     def _scope_chip(self, key: str, label: str, width: int) -> ft.Control:

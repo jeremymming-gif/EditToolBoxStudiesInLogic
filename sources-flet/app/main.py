@@ -247,6 +247,16 @@ _RETINT_FG_ATTRS = ("color",)
 _RETINT_CHILD_ATTRS = ("content", "controls", "actions", "title", "subtitle", "leading",
                        "trailing", "children", "label", "rows", "columns", "cells")
 _RETINT_BORDER_SIDES = ("top", "right", "bottom", "left")
+#: 批 FIX-20261112 Q1：输入类控件的文字样式颜色藏在 `TextStyle` 里（不是控件属性），
+#: 换肤只重染 `color` 会让输入文字停在旧皮肤 —— 深色主题下近黑字压在深底上不可读。
+#: 这些属性按「前景」语义统一重染（TextField/Select/Switch/TextField 派生控件都带）。
+_RETINT_TEXT_STYLE_ATTRS = ("text_style", "hint_style", "label_style", "error_style",
+                            "helper_style", "counter_style", "prefix_style",
+                            "suffix_style", "label_text_style")
+#: 批 FIX-20261112 Q3：整页 `page.update()` 的合并窗口（秒）。E7 实测：快速切页/切主题
+#: 时每次同步整页 patch（480+ 控件）会让桌面客户端排队重连（157 次×30–45ms、白屏）。
+#: 窗口内只发一次，状态变更本身仍同步完成，用户感知不到额外延迟。
+_PAGE_UPDATE_COALESCE_S = 0.18
 
 
 def _retint_attr(obj, name: str):
@@ -291,6 +301,22 @@ def _retint_input_border(border, mapping: dict[str, str]):
         if value is not None:
             kwargs[attr] = value
     return type(border)(**kwargs)
+
+def _retint_text_style(style, mapping: dict[str, str]) -> int:
+    """`TextStyle.color` → 目标主题色（原地改样式对象，不重建控件）。
+
+    Q1 根因：`_retint_node` 只认控件上的 `color`/`bgcolor` 等属性，而 TextField 的
+    正文/提示/标签/错误色都在 `TextStyle` 里；换肤后输入文字仍是旧皮肤色（深色主题
+    下近黑，几乎不可读）。返回改写个数（0/1）。
+    """
+    if not isinstance(style, ft.TextStyle) or not mapping:
+        return 0
+    color = getattr(style, "color", None)
+    if not isinstance(color, str) or color not in mapping:
+        return 0
+    style.color = mapping[color]
+    return 1
+
 
 def _picker_label(dialog_title: str) -> str:
     """从对话框标题抽出「受影响的输入名」：「选择引擎目录」→「引擎目录」（R01）。
@@ -380,6 +406,9 @@ class App:
         self.titlebar_info: dict = {}
         self.geometry: dict = {}
         self.page_switches: list[float] = []
+        # FIX-20261112 Q3：整页 update 合并状态（见 _coalesced_update）。
+        self._update_scheduled = False
+        self._update_after = None
         self._configure_window()
 
     # ── 窗口 / 规模 ────────────────────────────────────────────────────
@@ -1443,6 +1472,51 @@ class App:
         self._sync_toolbar()
         self.page.update()
 
+    # ── 整页更新合并（FIX-20261112 Q3）──────────────────────────────────
+    def _coalesced_update(self, *, after=None) -> None:
+        """把整页 `page.update()` 合并到 `_PAGE_UPDATE_COALESCE_S` 窗口内发一次。
+
+        E7 复现：快速切页/切主题时每次同步整页 patch（480+ 控件）会让客户端排队
+        重连、白屏后不恢复。状态变更（navigate/换肤）仍同步完成；这里只合并「发送」
+        这一步。`after` 是必须排在 patch 之后的动作（如导航后聚焦），多次排队时
+        以最后一次为准，避免焦点停在已被替换掉的视图控件上。
+
+        没有 `run_task` 的假 page（单测/未挂载）退回同步 update，行为与旧版一致。
+        """
+        if after is not None:
+            self._update_after = after
+        if getattr(self, "_update_scheduled", False):
+            return
+        self._update_scheduled = True
+        runner = getattr(self.page, "run_task", None)
+        if not callable(runner):
+            self._flush_page_update()
+            return
+        try:
+            runner(self._flush_page_update_async)
+        except Exception as exc:  # noqa: BLE001 未启动/假壳：退回同步发送
+            self.mark("page_update_schedule_error",
+                      error=f"{type(exc).__name__}: {exc}")
+            self._flush_page_update()
+
+    async def _flush_page_update_async(self) -> None:
+        await asyncio.sleep(_PAGE_UPDATE_COALESCE_S)
+        self._flush_page_update()
+
+    def _flush_page_update(self) -> None:
+        self._update_scheduled = False
+        after, self._update_after = getattr(self, "_update_after", None), None
+        try:
+            self.page.update()
+        except Exception as exc:  # noqa: BLE001 窗口已销毁/控件未挂载
+            self.mark("page_update_error", error=f"{type(exc).__name__}: {exc}")
+        if after is not None:
+            try:
+                after()
+            except Exception as exc:  # noqa: BLE001 聚焦等后置动作失败不得炸壳
+                self.mark("page_update_after_error",
+                          error=f"{type(exc).__name__}: {exc}")
+
     def navigate(self, route: str, *, source: str = "nav") -> None:
         """唯一路由入口：`single:proofcheck` / `issue:toc` / `bib:edit`（用户 m03256）。
 
@@ -1483,7 +1557,9 @@ class App:
         if sidebar is not None:
             sidebar.content = self._sidebar_content()
         self._sync_toolbar()
-        self.page.update()
+        # P08 R03：焦点必须排在 content 换完的 patch 之后；Q3 把整页 patch 合并后，
+        # 焦点回调跟着同一窗口发送（最后一次导航的目标页生效）。
+        self._coalesced_update(after=lambda: self._focus_after_nav(page))
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
         if not same_page:
             self.page_switches.append(elapsed_ms)
@@ -1492,9 +1568,6 @@ class App:
             except Exception as exc:  # noqa: BLE001
                 self.mark("on_show_error", page=page_key,
                           error=f"{type(exc).__name__}: {exc}")
-        # P08 R03：导航落定（content 换完、on_show 跑完）后把焦点交给目标页声明的控件。
-        # 同页切二级视图（same_page）同样需要，否则键盘用户停在旧视图的控件上。
-        self._focus_after_nav(page)
         self.mark("nav_change", route=route_str, page=page_key, view=view_key,
                   source=source, switch_ms=elapsed_ms,
                   switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1)
@@ -1588,7 +1661,7 @@ class App:
         self._apply_page_theme()
         self.page.bgcolor = self.t.palette.bg
         self.status_bar.set_meta(self._status_meta())
-        self.page.update()
+        self._coalesced_update()
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         self.mark("theme_changed", theme=theme, mode=mode, duration_ms=elapsed_ms,
                   retinted=retinted)
@@ -1778,6 +1851,9 @@ class App:
             if isinstance(value, str) and value in fg_map:
                 setattr(node, attr, fg_map[value])
                 changed += 1
+        # Q1：输入控件文字样式（正文/提示/标签/错误/光标文字等）也要按前景语义换肤。
+        for attr in _RETINT_TEXT_STYLE_ATTRS:
+            changed += _retint_text_style(_retint_attr(node, attr), fg_map)
         border = _retint_attr(node, "border")
         if isinstance(border, dict):
             # 批 113 E：border=ControlStateValue[InputBorder]（DEFAULT/FOCUSED…）

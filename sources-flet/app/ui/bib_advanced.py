@@ -345,6 +345,8 @@ class BibQueryView:
         toggle_label = "基本检索" if self.tab_index else "高级检索"
         bar = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                      controls=[mode_box, field,
+                               C.paste_button(t, self.page, field,
+                                              height=t.control_h()),
                                C.primary_button("查询", lambda e: self._run(self._run_basic()), t,
                                                 disabled=self.busy),
                                C.text_button(toggle_label,
@@ -410,7 +412,10 @@ class BibQueryView:
         delete = C.secondary_button("删除", lambda e, i=index: self._remove_row(i), t,
                                     disabled=len(self.rows) <= 1)
         return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                      controls=[field_box, mode_box, value, delete])
+                      controls=[field_box, mode_box, value,
+                                C.paste_button(t, self.page, value,
+                                               height=t.control_h()),
+                                delete])
 
     def _columns(self) -> list[tuple[str, float, bool]]:
         """断点列集：窄窗先收「来源/状态/作者」，不做横向滚动。"""

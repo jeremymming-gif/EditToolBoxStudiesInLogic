@@ -935,6 +935,8 @@ class BibDupesView:
                                disabled=not pair)
         mark_btn = C.text_button("标记非重复…", self._mark_pair, t)
         mark_btn.disabled = not pair
+        paste_btn = C.paste_button(t, self.page, key_field, height=t.control_h())
+        paste_btn.disabled = not pair  # 未选对时字段本身禁用，粘贴入口同步禁用
         return ft.Container(
             height=t.px(58), bgcolor=p.surface_2,
             border=ft.Border(top=ft.BorderSide(0.6, p.border),
@@ -944,7 +946,7 @@ class BibDupesView:
                 ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                        controls=[
                            C.text("合并后", t, "caption", p.text_faint),
-                           key_field, type_select,
+                           key_field, paste_btn, type_select,
                            ft.Container(expand=True),
                            C.text(impact, t, "small", p.text_muted),
                            mark_btn,

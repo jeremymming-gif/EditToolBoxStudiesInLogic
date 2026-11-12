@@ -108,9 +108,17 @@ else:
     check("真实稿：abstract_en 是真摘要（不再是 '. '）",
           d.abstract_en.startswith("Sleep has become a prime example of medicalization"),
           repr(d.abstract_en[:60]))
-    check("真实稿：英文子节标题仍照旧（`1 Introduction` + `3.1 …`）",
-          d.headings[:2] == [(1, "Introduction"), (2, "The Current Situation of Sleep Problems")],
-          repr(d.headings[:2]))
+    # FIX-20261112 / Q5：无点 `N Title`（如 `1 Introduction`）也应认成 \section；
+    # 带点 `N.M …` 仍走既有 subsection 分支。旧断言固化的是 Q5 缺陷行为。
+    check("真实稿：无点 `N Title` 认成 \section、`N.M …` 仍是 subsection（Q5）",
+          d.headings[:3] == [
+              (1, "Introduction"),
+              (1, "Theoretical Review and Reflection on the Medicalization of Sleep"),
+              (2, "The Current Situation of Sleep Problems"),
+          ]
+          and sum(1 for lv, _ in d.headings if lv == 1) == 4
+          and sum(1 for lv, _ in d.headings if lv == 2) == 5,
+          repr(d.headings[:3]))
 
 print("\n" + "=" * 66)
 if FAILS:

@@ -1893,12 +1893,14 @@ def _merge_en_metadata_source(
 # fixable=False，由 mover 按命中 span 搬位（不再全文乱搬）。
 # 2026-10-30（B-280 / spec b280-zh23-guards-a-b）：ZH-23 在守卫 A+B 观察期降为**只报**，
 # 移出窄集（17→16）；初排两通道都不再自动改它，一校核查仍把它列入报告。
+# Q4（FIX-20261112）v2：ZH-23 守卫复核通过，放回初排自动改（16→17）。
 #
 # 实现刻意只用 `proofcheck` 的**稳定两参数 API**（`check()` → 过滤 `Report` →
 # `apply_fixes(tex, sub)`），不传 rules-docs 新增的 `rule_ids` 参数 → 回滚免疫。
 _PROOF_AUTOFIX_IDS: tuple[str, ...] = (
     "ZH-01", "ZH-02", "ZH-03", "ZH-04", "ZH-05", "ZH-06", "ZH-08", "ZH-09",
-    "ZH-10", "ZH-11", "ZH-12", "ZH-14", "ZH-21", "EN-01", "EN-02", "EN-03",
+    "ZH-10", "ZH-11", "ZH-12", "ZH-14", "ZH-21", "ZH-23",
+    "EN-01", "EN-02", "EN-03",
 )
 
 
@@ -2178,6 +2180,26 @@ def apply_proof_autofix(tex: str, lang: str) -> tuple[str, dict[str, int]]:
 
 #: 旧名兼容（B-272 及更早的测试/调用方用 `_autofix_proof`）。
 _autofix_proof = apply_proof_autofix
+
+
+def en_subsection_case_pass(tex: str, lang: str) -> tuple[str, dict]:
+    r"""Q8（FIX-20261112 EN-06）：Word 通道英文稿 `\subsection` 句首式大小写。
+
+    只在**英文稿**、Word 通道启用（§6：不改中文稿与 LaTeX 源稿行为）；默认 auto，
+    环境变量 `SLCN_EN_SUBSECTION_CASE=report|off|auto` 可关/只报（必须可 off）。
+    返回 `(新 tex, info)`，info 同 `proofcheck.apply_en_subsection_case`。
+    异常由调用方兜住（出稿优先，与 ⑤′ 自动改同一纪律）。
+    """
+    import os
+
+    from . import proofcheck as _pc
+
+    if lang != "en":
+        return tex, {"fixed": [], "candidates": [], "manual": []}
+    mode = os.environ.get("SLCN_EN_SUBSECTION_CASE", "auto").strip().lower()
+    if mode not in ("auto", "report", "off"):
+        mode = "auto"
+    return _pc.apply_en_subsection_case(tex, mode)
 
 
 # ── 图表交叉引用接进初排（期 87 P2-2）──────────────────────────────────────
@@ -2564,6 +2586,10 @@ def build_docx(
             "myrunningtitle": doc.title_en or doc.title or doc.title_cn,
             "myabstract": doc.abstract_en or doc.abstract_cn,
             "myabstractCN": doc.abstract_cn,
+            # Q6（FIX-20261112 CN-TAIL-01）：英文正文 + 文末中文块的稿子，中文
+            # 作者名只来自 `_tail_cn_block`（`\printtitlepageCN` 用 \myfirstauthorCN）；
+            # 模板没有该槽位时下面 fill 循环会跳过，安全。
+            "myfirstauthorCN": doc.author_cn,
         }
     else:
         fields = {
@@ -2738,6 +2764,25 @@ def build_docx(
                 say(f"   一校可自动改子集补齐 {sum(_pf.values())} 处")
                 for rid, n in sorted(_pf.items(), key=lambda x: -x[1]):
                     say(f"   · {rid:24s} ×{n}")
+
+    # ⑤‴ EN-06 标题大小写（Q8 / FIX-20261112）：英文稿默认把 `\subsection` 改句首式；
+    #     只改纯文本词（命令/数学/引号/冒号后首字母原样），专名/缩写保留并进「待人工」。
+    #     计数行进 warnings → 初排交接单（handoff.py ④ 原样打印）与日志；失败不阻断。
+    if lang == "en":
+        try:
+            tpl, _en_case = en_subsection_case_pass(tpl, lang)
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"EN-06 标题大小写未执行（不影响出稿）：{type(e).__name__}: {e}")
+        else:
+            _fx = _en_case.get("fixed") or []
+            _man = _en_case.get("manual") or []
+            _cand = _en_case.get("candidates") or []
+            _pairs = "、".join(f"{it['old']}→{it['new']}" for it in _fx[:5])
+            _line = (f"EN-06 标题大小写：自动改 {len(_fx)} 处／待人工 {len(_man)} 词"
+                     + (f"（原→改：{_pairs}）" if _pairs else "")
+                     + (f"（另有可自动改候选 {len(_cand)} 处未写入）" if _cand else ""))
+            say(f"   {_line}")
+            warnings.append(_line)
 
     # ⑤″ 图表交叉引用（期 87 P2-2）：正文「表N/图N」→「表~\ref{tab:N}」。
     #     只在存在对应 \label 时替换（无 label 稿逐字节不变；图 label 由 P2-0 保证全局唯一）。

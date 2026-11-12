@@ -695,7 +695,9 @@ class ReviewView:
             options=[("", "全部严重度"), ("高", "高"), ("中", "中"), ("低", "低")],
             on_select=self._on_severity, width=100)
         return S.filter_row(t, search=field, on_search=self._on_text,
-                            controls=[field_select, severity],
+                            controls=[C.paste_button(t, self.page, field,
+                                                     height=t.control_h()),
+                                      field_select, severity],
                             count=C.text(self._pending_line(), t, "caption",
                                          t.palette.text_faint),
                             page=self.page.page, search_width=220)

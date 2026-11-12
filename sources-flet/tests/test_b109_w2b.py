@@ -229,7 +229,16 @@ def test_proof_report_and_lang_texts():
     assert CK.proof_result_text(0) == "成功 · 没有命中任何规则。"
     assert CK.proof_result_text(1, tex="a.tex") == \
         "成功 · 有命中，报告已写入稿件同目录的 a_一校核查.md。"
-    assert "修正稿：a_一校核查后.tex" in CK.proof_result_text(1, tex="a.tex", fix=True)
+    # Q9（FIX-20261112）：--fix 是否真的另写副本由报告固定行决定，0 改/未知不冒充已另写。
+    written = CK.parse_proof_report(
+        "修正稿：已另写 `/tmp/稿/a_一校核查后.tex`（自动改 2 处＋位序调整 1 处；输入文件未动）")
+    assert written.fix_written and written.fix_path == "/tmp/稿/a_一校核查后.tex"
+    assert "修正稿：已另写 `/tmp/稿/a_一校核查后.tex`" in CK.proof_result_text(
+        1, tex="a.tex", fix=True, report=written)
+    zero = CK.parse_proof_report("修正稿：未另写（未发现可自动修改项；输入文件未动）")
+    assert "已另写" not in CK.proof_result_text(1, tex="a.tex", fix=True, report=zero)
+    assert "未另写" in CK.proof_result_text(1, tex="a.tex", fix=True, report=zero)
+    assert "已另写" not in CK.proof_result_text(1, tex="a.tex", fix=True)  # 未知不冒充
     assert CK.proof_result_text(2).startswith("失败 · 核查未完成（退出码 2）")
     assert CK.proof_result_text(-1) == "失败 · 无法启动。"
     lines = CK.proof_header_lines("a.tex", "zh", True)

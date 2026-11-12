@@ -455,6 +455,9 @@ class MetadataPanel:
                       ])]
         for lang, label in (("cn", "单位（中文）"), ("en", "单位（英文）")):
             lines = author.affil(lang)
+            # FIX-20261112 Q10 AFF-LABEL-01：两语言区块的按钮与计数各自带语言标识，
+            # 否则 3 态（0/1/3 行）下两个「添加单位」和两个「n/3」无法区分是哪一种单位。
+            lang_short = "中文" if lang == "cn" else "英文"
             affil_rows = [
                 # 输入框 48（浮动标签）→「删」按钮底边与控制行齐平（用户 m02816）。
                 C.field_row(
@@ -469,8 +472,9 @@ class MetadataPanel:
             ]
             limit = self.form.affiliation_limit_hint(index, lang)
             affil_rows.append(ft.Row(spacing=t.sp("1"), controls=[
-                C.text(f"{len(lines)}/{MAX_AFFILIATIONS}", t, "caption", t.palette.text_faint),
-                self._small_button("添加单位", lambda e, i=index, lg=lang:
+                C.text(f"{len(lines)}/{MAX_AFFILIATIONS} {lang_short}单位", t, "caption",
+                       t.palette.text_faint),
+                self._small_button(f"添加{lang_short}单位", lambda e, i=index, lg=lang:
                                    self._on_add_affiliation(i, lg),
                                    disabled=len(lines) >= MAX_AFFILIATIONS),
             ]))

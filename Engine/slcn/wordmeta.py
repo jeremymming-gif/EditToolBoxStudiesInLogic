@@ -1266,6 +1266,102 @@ def _tail_abstract_cn(lines: list[str], ref_start: int) -> str:
     return ""
 
 
+_CN_AUTHOR_BAD_WORDS = (
+    "大学", "学院", "研究所", "研究院", "中心", "教授", "副教授", "讲师",
+    "博士", "硕士", "主编", "编辑", "单位", "通讯作者", "通信作者", "作者简介",
+)
+
+
+def _looks_like_cn_author(t: str) -> bool:
+    """中文作者行：短、纯中文（含间隔号）、无数字/句读/机构头衔词。"""
+    s = (t or "").strip()
+    if not s or len(s) > 40 or not _has_cjk(s):
+        return False
+    if re.search(r"[0-9A-Za-z]", s):
+        return False
+    if re.search(r"[。，,；;：:！？!?、（）()\[\]【】]", s):
+        return False
+    if any(w in s for w in _CN_AUTHOR_BAD_WORDS):
+        return False
+    return 2 <= len(re.sub(r"\s", "", s)) <= 20
+
+
+def _tail_cn_block(lines: list[str], ref_start: int) -> dict:
+    """**参考文献区之后**的中文元数据块（题名/作者/摘要/关键词），Q6（FIX-20261112）。
+
+    背景（CN-TAIL-01）：英文正文 + 文末中文块（题名、作者、`摘 要：`、`关键词：`）
+    的稿子，`parse_tail_metadata` 只认**非中文**标签，`_tail_abstract_cn` 只救摘要，
+    于是 `title_cn` / `author_cn` / `keywords_cn` 一直空，模板 `\\mytitleCN` /
+    `\\myfirstauthorCN` / `\\myabstractCN` 印占位符。
+
+    判据不新造：摘要行仍用 `_ABS_RE` + `_abs_body_cn`（正文必须含汉字）；摘要前的
+    题名/作者行沿用 wordbody 里 `_tail_cut` 的那套形态（≤80 字、含汉字、不是年份、
+    不是「卷(期)」行）。回溯只到块内，遇非中文（英文文献条目）、空段过多、超长行即停。
+    只返回**非空**字段，调用方用 `or` 填——只补空、绝不覆盖已有取值。
+    """
+    out: dict[str, str] = {}
+    lo = ref_start + 1 if ref_start >= 0 else max(0, len(lines) - _TAIL_BLOCK_SCAN)
+    abs_idx = -1
+    for i in range(lo, len(lines)):
+        if not _ABS_RE.match(lines[i]):
+            continue
+        body = _abs_body_cn(lines, i)
+        if body and _has_cjk(body):
+            abs_idx = i
+            out["abstract_cn"] = body
+            break
+    if abs_idx < 0:
+        return out
+
+    rows: list[str] = []
+    j = abs_idx - 1
+    blanks = 0
+    floor = lo - 1 if ref_start >= 0 else -1
+    while j > floor:
+        t = lines[j].strip()
+        if not t:
+            blanks += 1
+            if blanks > 2:
+                break
+            j -= 1
+            continue
+        blanks = 0
+        if len(t) > 80 or not _has_cjk(t):
+            break
+        if re.search(r"(?:19|20)\d{2}", t):
+            break
+        if re.search(r"\d+\s*[（(]\d", t):
+            break
+        rows.append(t)
+        j -= 1
+    rows.reverse()
+
+    if rows:
+        if len(rows) >= 2 and _looks_like_cn_author(rows[-1]):
+            out["author_cn"] = rows[-1]
+            title_rows = rows[:-1]
+        else:
+            title_rows = rows
+        title = "".join(r.strip() for r in title_rows).strip()
+        if title:
+            out["title_cn"] = title
+
+    for j in range(abs_idx + 1, min(len(lines), abs_idx + 12)):
+        t = lines[j].strip()
+        if not t:
+            continue
+        if _ABS_RE.match(t):
+            break
+        if _KW_RE.match(t):
+            body = _label_body(lines, j, _KW_RE)
+            if body and _has_cjk(body):
+                out["keywords_cn"] = body.lstrip("\ufeff")
+            break
+        if not _has_cjk(t) and len(t) > 40:
+            break
+    return out
+
+
 def parse_tail_metadata(lines: list[str], start: int) -> dict:
     """解析文末的中英元数据块（英文题名/摘要/关键词、作者、单位、邮箱）。
 

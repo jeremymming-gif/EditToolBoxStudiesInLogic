@@ -229,8 +229,8 @@ check("(a) ZH-21 分号 --fix 与幂等",
                if h.rule_id == "ZH-21"])
 
 # B-278 新增 ZH-23：带括号引用组的句末标点在括号后（正文/脚注同判）；
-# B-280 起 ZH-23 降为只报（守卫 A：见/参见/详见/例如/譬如/诸如/即 前置跳过；
-# 守卫 B：`；` 收尾跳过），命中仍列出但 fixable=False。
+# B-280 曾降为只报；FIX-20261112 / Q4 v2 起恢复「初排自动改」（fixable=True），
+# 守卫 A（见/参见/详见/例如/譬如/诸如/即 前置跳过）与守卫 B（`；` 收尾跳过）保留。
 _zh23_cases = (
     ("甲说（\\parencite{k}）。\n", "。（\\parencite{k}）", "\\parencite 组（正文）"),
     ("甲说\\footnote{文本（\\parencite{k}）。}随后。\n", "。（\\parencite{k}）", "脚注内同判"),
@@ -240,7 +240,7 @@ _zh23_cases = (
 )
 for _tex, _repl, _why in _zh23_cases:
     _hs = hits_of(_tex, "ZH-23")
-    check(f"(a) ZH-23 正例：{_why}", len(_hs) == 1 and not _hs[0].fixable
+    check(f"(a) ZH-23 正例：{_why}", len(_hs) == 1 and _hs[0].fixable
           and _hs[0].replacement == _repl,
           repr([(h.text, h.replacement, h.fixable) for h in _hs]))
 for _tex, _why in (
@@ -262,16 +262,16 @@ for _tex, _why in (
     ("甲说（\\parencite{k}）；乙说。\n", "守卫 B：； 收尾"),
 ):
     check(f"(a) ZH-23 反例不报：{_why}", not hits_of(_tex, "ZH-23"), _tex)
-check("(a) ZH-23 Rule.fixable is False（B-280 过渡态：只报不改）",
-      next(r for r in P.RULES if r.id == "ZH-23").fixable is False)
-check("(a) ZH-23 不在初排自动修白名单（INITIAL_LAYOUT_FIXABLE，15→14）",
-      "ZH-23" not in P.INITIAL_LAYOUT_FIXABLE
-      and len(P.INITIAL_LAYOUT_FIXABLE) == 14,
+check("(a) ZH-23 Rule.fixable is True（FIX-20261112 / Q4 v2 恢复初排自动改）",
+      next(r for r in P.RULES if r.id == "ZH-23").fixable is True)
+check("(a) ZH-23 回到初排自动修白名单（INITIAL_LAYOUT_FIXABLE，14→15）",
+      "ZH-23" in P.INITIAL_LAYOUT_FIXABLE
+      and len(P.INITIAL_LAYOUT_FIXABLE) == 15,
       repr(P.INITIAL_LAYOUT_FIXABLE))
-check("(a) ZH-23 只报：apply_fixes 不动文本",
+check("(a) ZH-23 自动改：apply_fixes 把句号搬到括号组之前",
       P.apply_fixes("甲说（\\parencite{k}）。\n",
                     P.check("甲说（\\parencite{k}）。\n", lang="zh"))[0]
-      == "甲说（\\parencite{k}）。\n")
+      == "甲说。（\\parencite{k}）\n")
 
 # 数学环境（手册 §数学环境）
 check("(a) ZH-13 数学里的三个点 → 报", len(hits_of("$a_1,...,a_n$\n", "ZH-13")) == 1)
@@ -568,9 +568,11 @@ with open(_t3_path, "w", encoding="utf-8") as fh:
     fh.write(_t3_tex)
 _rt3 = run("--tex", _t3_path, "--fix")
 _t3_out_path = os.path.join(tmp, "Tier3_一校核查后.tex")
-check("(d) 档 3（ZH-22 只报不改）--fix 不写盘改坏：产物与源逐字节相同",
-      os.path.exists(_t3_out_path)
-      and open(_t3_out_path, encoding="utf-8").read() == _t3_tex, _t3_out_path)
+check("(d) 档 3（ZH-22 只报不改）--fix 0 改：不另写副本（FIX-20261112 / Q9）",
+      not os.path.exists(_t3_out_path), _t3_out_path)
+_t3_md = open(os.path.join(tmp, "Tier3_一校核查.md"), encoding="utf-8").read()
+check("(d) 档 3 --fix 0 改：报告固定行「修正稿：未另写」",
+      "修正稿：未另写（未发现可自动修改项；输入文件未动）" in _t3_md, _t3_md[-200:])
 check("(d) 档 3 仍进报告（ZH-22 出现在摘要）",
       "ZH-22" in open(os.path.join(tmp, "Tier3_一校核查.md"), encoding="utf-8").read())
 

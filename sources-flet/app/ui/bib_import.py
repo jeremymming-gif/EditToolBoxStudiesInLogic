@@ -591,10 +591,16 @@ class BibImportView:
                 ]))
         controls: list[ft.Control] = [self._segment()]
         if self.mode == "paste":
-            controls.append(C.floating_field(
+            paste_field = C.floating_field(
                 t, "粘贴 .bib 文本 *", value=self.paste_text, hint="整段 BibTeX 条目",
                 multiline=True, min_lines=6, max_lines=10, on_change=self._on_paste,
-                expand=True))
+                expand=True)
+            # Q11：按钮固定在多行框右侧（顶部对齐），不嵌 suffix、不改多行框几何。
+            controls.append(ft.Row(
+                spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[paste_field,
+                          C.paste_button(t, self.page, paste_field,
+                                         height=t.control_h())]))
         else:
             field = C.floating_field(
                 t, "来源 *" if self.mode == "bib" else "整期目录 *",
