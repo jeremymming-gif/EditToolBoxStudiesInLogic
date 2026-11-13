@@ -1406,6 +1406,8 @@ class IssuePage(BasePage):
         self._nav_chips: dict = {}
         self._last_issue = ""
         self._step_tail: dict = {}
+        # 正文产物 Open 的归属代次：整期身份每变一次 +1（C-1）。
+        self._issue_generation = 0
 
     # ── 页面骨架 ───────────────────────────────────────────────────────
     def build(self) -> ft.Control:
@@ -2548,14 +2550,14 @@ class IssuePage(BasePage):
         copy_path = ""
         zh_pdf = str(placed.get("zhPdf") or "")
         if zh_pdf:
-            actions.append(C.text_button("打开 PDF", lambda e: self.app.open_path(zh_pdf), t))
+            actions.append(C.text_button("打开 PDF", self._artifact_open_action(zh_pdf), t))
             copy_path = zh_pdf
         en_pdf = str(placed.get("enPdf") or "")
         if en_pdf:
             # 独立验收 task-6(2)：英文 PDF 与中文 PDF 同规格提供打开入口；仅 tex/
             # 失败/取消状态不会走到这里（placed 为空或前面已提前 return）。
             actions.append(C.text_button("打开英文 PDF",
-                                         lambda e: self.app.open_path(en_pdf), t))
+                                         self._artifact_open_action(en_pdf), t))
             copy_path = copy_path or en_pdf
         shown: set[str] = set()
         for key, label in (("zhTex", "打开中文 tex"), ("enTex", "打开英文 tex")):
@@ -2564,7 +2566,7 @@ class IssuePage(BasePage):
                 continue
             shown.add(path)
             copy_path = copy_path or path
-            actions.append(C.text_button(label, lambda e, p=path: self.app.open_path(p), t))
+            actions.append(C.text_button(label, self._artifact_open_action(path), t))
         # Lead task-17(b)：渲染路径用非副作用解析（字段空时 latest 仅用于展示/打开），
         # 绝不能在一次渲染里把 toc_report 字段改回最新报告。
         if report := self._toc_report_path():
@@ -2572,7 +2574,7 @@ class IssuePage(BasePage):
             result_json = TOC.existing_result_json_path(report)
             if os.path.exists(result_json):
                 actions.append(C.text_button("打开结果 JSON",
-                                             lambda e: self.app.open_path(result_json), t))
+                                             self._artifact_open_action(result_json), t))
             else:  # B-121 B-357：可能已被「清理临时文件」移入回收目录
                 lines.append("结果 JSON 不在期目录（可能随临时文件清入回收站）；需要时重新生成。")
             if copy_path:
@@ -3212,6 +3214,10 @@ class IssuePage(BasePage):
         if previous:
             self._persist_issue_state(previous)
         self._last_issue = issue
+        # C-1：旧正文控件还在 350ms 刷新窗口里挂着，先让它们手里的代次失效。
+        self._issue_generation = self.current_artifact_binding() + 1
+        # C-2：报告/设置引用属于上一期时立即丢掉，绝不带进新一期。
+        self._reset_issue_bound_fields(issue)
         # 进入空期时正文会换成空态卡；旧区块引用必须同时丢掉，否则从空期
         # 再建区时原地刷新会更新脱离页面树的控件（F1）。
         self._reset_issue_runtime(clear_sections=not issue)
@@ -3222,6 +3228,64 @@ class IssuePage(BasePage):
         self._set_expanded(self.selected)
         self._persist_issue_state()
         return True
+
+    def current_artifact_binding(self) -> int:
+        """正文产物 Open 的归属代次：整期身份每提交一次就 +1。"""
+        return int(getattr(self, "_issue_generation", 0))
+
+    def open_artifact(self, path: str, *, binding: int | None = None) -> None:
+        """正文产物入口的统一打开点：代次过期的控件一律拒绝并可见提示。
+
+        MC-01 的失焦提交与正文刷新之间有 COMMIT_REFRESH_DELAY 的窗口，旧正文
+        仍挂在页面上；它的 Open 闭包指向上一期产物，不能悄悄打开（C-1）。
+        路径本身原样透传，缺失文件仍按原路径诚实交给系统打开。
+        """
+        if binding is not None and binding != self.current_artifact_binding():
+            self.mark("artifact_open_stale", path=str(path or ""),
+                      binding=binding, current=self.current_artifact_binding())
+            self.app.toast("期目录已切换，正文正在刷新：请确认当前期的产物再打开")
+            return
+        self.app.open_path(path)
+
+    def _artifact_open_action(self, path: str):
+        """构建正文 Open 回调：把构建时的期代次带进点击，换期后即失效。"""
+        binding = self.current_artifact_binding()
+        return lambda e: self.open_artifact(path, binding=binding)
+
+    @staticmethod
+    def _path_within(path: str, root: str) -> bool:
+        """路径是否落在 root 之下（normpath 与 realpath 双判定，兼容 macOS /tmp）。"""
+        if not path or not root:
+            return False
+        for convert in (os.path.normpath, os.path.realpath):
+            try:
+                base = convert(os.path.expanduser(str(root)))
+                target = convert(os.path.expanduser(str(path)))
+                if os.path.commonpath([target, base]) == base:
+                    return True
+            except ValueError:  # 相对/绝对混用或不同盘符
+                continue
+        return False
+
+    def _reset_issue_bound_fields(self, issue: str) -> None:
+        """换期丢掉不属于新期的报告/设置引用（C-2），绝不沿用上一期。
+
+        只清「不在新期目录下」的值：同一期内用户显式选的（含跨目录外部报告）
+        保持不动；提交为空期则一律清空。设置键同时清 recent，避免面板重建后
+        从 recent 兜底又读回上一期。
+        """
+        if not getattr(self, "fields", None):
+            return
+        for key in ("toc_report", "toc_settings"):
+            current = self.field(key)
+            stored = str(self.app.store.get(f"recent.{key}", "") or "").strip()
+            value = current or stored
+            if not value or (issue and self._path_within(value, issue)):
+                continue
+            if key in self.fields:
+                self.set_field(key, "")
+            self.app.store.set_recent(key, "")
+            self.mark("issue_field_dropped", field=key, value=value, issue=issue)
 
     def _ensure_issue_identity(self) -> None:
         """运行/切页前补提交：键入后直接按 Enter 或点运行，结果仍记到完整路径。"""

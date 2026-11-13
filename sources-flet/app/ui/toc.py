@@ -348,10 +348,10 @@ class TocPanel:
                        C.secondary_button("保存栏目表", lambda e: self._save_settings(),
                                           self.t, height=self.t.px(28)),
                        C.secondary_button("打开目录设置",
-                                          lambda e: self.app.open_path(self._settings_path()),
+                                          self._open_action(self._settings_path),
                                           self.t, height=self.t.px(28)),
                        C.secondary_button("打开结果 JSON",
-                                          lambda e: self.app.open_path(self._toc_result_path()),
+                                          self._open_action(self._toc_result_path),
                                           self.t, height=self.t.px(28)),
                    ]),
             # frozen #2 返工：预览入口此前只有实现没有调用者，用户找不到。
@@ -529,6 +529,23 @@ class TocPanel:
             return explicit
         report = self._report()
         return TS.path_for(os.path.dirname(report)) if report else ""
+
+    def _open_action(self, path):
+        """正文 Open 回调：带上面板构建时的期代次，换期后旧代次一律拒绝（C-1）。
+
+        `path` 可传字符串或零参函数：参数区的「打开目录设置/结果 JSON」需要
+        点击时再解析（同面板内换报告后仍取最新路径），但代次必须是构建时的。
+        """
+        opener = getattr(self.page, "open_artifact", None)
+        binding_of = getattr(self.page, "current_artifact_binding", None)
+        if not callable(opener):
+            return lambda e: self.app.open_path(path() if callable(path) else path)
+        binding = binding_of() if callable(binding_of) else None
+
+        def _click(e) -> None:
+            opener(path() if callable(path) else path, binding=binding)
+
+        return _click
 
     # ── 批 121 A1/A2/A4：自动读入、自动保存、负向校验 ───────────────────
     def _snapshot(self) -> dict:
@@ -1205,12 +1222,12 @@ class TocPanel:
                        self.t.palette.text_muted),
                 C.text(path, self.t, "caption", self.t.palette.text_faint),
                 ft.Container(expand=True),
-                C.text_button("打开", lambda e, p=path: self.app.open_path(p), self.t),
+                C.text_button("打开", self._open_action(path), self.t),
             ]))
         rows.append(ft.Row(spacing=self.t.sp("2"), controls=[
             C.text("结果 JSON", self.t, "small", self.t.palette.text_muted),
             ft.Container(expand=True),
-            C.text_button("打开", lambda e: self.app.open_path(result_path), self.t),
+            C.text_button("打开", self._open_action(result_path), self.t),
         ]))
         self.feedback.content = C.card(ft.Column(spacing=self.t.sp("1"), controls=rows), self.t)
         self._safe_update(self.feedback)
@@ -1272,14 +1289,14 @@ class TocPanel:
                            t.palette.text_muted),
                     C.text(path, t, "caption", t.palette.text_faint),
                     ft.Container(expand=True),
-                    C.text_button("打开", lambda e, p=path: self.app.open_path(p), t),
+                    C.text_button("打开", self._open_action(path), t),
                 ]))
             if report:
                 rows.append(ft.Row(spacing=t.sp("2"), controls=[
                     C.text("结果 JSON", t, "small", t.palette.text_muted),
                     ft.Container(expand=True),
-                    C.text_button("打开", lambda e, p=existing_result_json_path(report):
-                                  self.app.open_path(p), t),
+                    C.text_button("打开", self._open_action(
+                        existing_result_json_path(report)), t),
                 ]))
         self.feedback.content = C.card(ft.Column(spacing=t.sp("1"), controls=rows), t)
         self._safe_update(self.feedback)
