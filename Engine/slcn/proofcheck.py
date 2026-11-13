@@ -1454,9 +1454,15 @@ def fix_en_marks(tex: str) -> tuple[str, dict[str, int]]:
 # 保护（保留原样，并进「待人工」清单）：
 #   ① 全大写缩写（AI / U.S. / II…）；② 含内部大写的混合词（McDowell / U.S.-China）；
 #   ③ 本文**正文里以大写出现过**的词（论文自用术语：Generalized Argumentation Theory）；
-#   ④ 内置常见专名表（English / Chinese / LaTeX / Oxford…）。
-# 连字符复合词按句首式处理（Dual-Level → Dual-level / Second-Personal → Second-personal），
-# 但其中任一段含内部大写则整词保护。
+#   ④ 内置常见专名表（English / Chinese / LaTeX / Oxford…）；
+#   ⑤ 所有格词干是上述专名/正文术语（Zermelo's / Kant’s / Jones'）。
+# 普通词（可降级）的判据只有三条，缺一即按「未知」保守保留并进待人工清单：
+#   a) 正文里以**小写**出现过（Case → case）；b) 在 `_EN06_MINOR` 功能词表；
+#   c) 在 `_EN06_COMMON` 常用词表（离线自带、只收普通词，不收专名）。
+# 不能只靠「正文句首大写」反推专名：`Zermelo argues…` 的 Zermelo 在句首，
+# 旧实现把它排除出 body_words 后又在标题里静默 lower() —— 这是 MC-02 的根因。
+# 连字符复合词：所有段都是普通词才整体句首式（Dual-Level → Dual-level）；
+# 任一段是专名/缩写/未知词则整词保留（Neo-Kantian、Zermelo-based 不被拆坏）。
 #
 # 幂等：只把非首词小写化、首词首字母大写；第二遍 no-op。`mode`：
 #   auto   —— 真改并返回改动表；report —— 只返回候选（不动文本）；off —— 不做。
@@ -1497,6 +1503,90 @@ _EN06_PROPER = frozenset((
     "Rawlsian", "Habermasian", "Wittgensteinian", "Aristotelian",
     "Confucian", "China", "Europe", "America", "Asian", "Western", "Eastern",
 ))
+
+# MC-02：常用**普通词**词表（只收普通词，不收专名；离线自带，随本文件 MIT 许可）。
+# 用途只有一个：判断标题里被 Title Case 大写的 plain 词能否安全降为小写。
+# 词表外、且正文没有小写出现、也不是功能词/专名/缩写 → 一律按「未知」保留并进
+# 待人工清单（宁可不改，也不静默 lower() 未知专名）。复数按 -s/-es/-ies 回退查表。
+_EN06_COMMON = frozenset("""
+able about above absence absolute abstract accept accessible account accurate achieve
+acknowledge across act action active activity actual add address adequate admit adopt
+advance advantage affect affirm after against age agent agree air all allow almost alone
+along already also alter alternative although always among amount analysis analyze ancient
+animal another answer any anyone anything appear application apply approach appropriate
+argue argument argumentation argumentative arise around article ask aspect assume assumption
+attempt attention attitude author authority available avoid aware away
+bad balance base based basic basis bear because become before begin beginning behalf being
+belief believe below beneath benefit beside best better between beyond big body book both
+bound bring broad build business
+call can cannot capacity case cause central certain certainly change chapter character choice
+choose claim class clear clearly close cognition cognitive coherence coherent come common
+community compare comparison complete complex concept conception conceptual concern conclude
+conclusion condition conduct consider consideration consist consistent constitute constraint
+construct construction contain content context continue contrast contribute contribution
+control convention conversational coordinate coordination correct correspond could course
+cover create criterion critical criticism cultural culture current
+data day deal debate decide decision deep define definition degree demonstrate depend derive
+describe description detail determine develop development differ difference different
+difficult direct direction disagree discourse discover discuss discussion distinct distinction
+distinguish distribute domain done down draw drive dual due during
+each early easily easy economic effect either element else empirical employ empty end enough
+entail entire equal especially essential establish ethical ethics evaluate evaluative even
+event ever every everyone everything evidence exact examine example except existence exist
+expand experience explain explanation explicit express expression extend external extra
+fact factor fail false familiar family far feature few field final finally find fine first fit
+focus follow following form formal formulate force framework free from full function
+fundamental further future
+general generally generate generalized get give given go goal good govern great group grow
+guarantee
+half hand happen hard have hear help her here herself high him himself his historical history
+hold how however human
+idea ideal identify ignore illustrate immediate imply importance important impose impossible
+improve include including increase indeed independent indicate individual induction inference
+influence inform information initial inquiry inside insist instance instead institution
+intellectual intend intention intentional intentionality interest internal interpret
+interpretation introduce introduction intuition involve issue itself
+joint judge judgment just justify
+keep kind know knowledge known
+lack language large last late later lead learn least leave left legal less let level life like
+likely line linguistic list little live local logic logical long look lose lot low
+made main maintain major make man manner many mark math mathematics matter may maybe mean
+meaning means measure mental mention mere merely meta method methodological middle might mind
+minor model modern moment moral more moreover most move much must myself
+name natural naturalism nature near necessary need negative neither never new next none norm
+normative note nothing notion now number
+object objective observe obvious occasion off offer often old once one only open operate
+opinion order ordinary organization origin other others otherwise ought our ourselves out
+outcome outside over own
+paper paradigm part particular particularly pass past pattern people perceive perception
+perhaps period person personal perspective philosophical philosophy physical place plain play
+point political position positive possible practical practice pragmatics precede precise
+predict present preserve previous principle prior probably problem procedure process produce
+product professional program progress project proper property proposal propose prove provide
+public purpose put
+question quite
+raise range rather reach real reality realize reason reasonable recall receive recent
+recognize reference refer reflect regard relation relationship relative relevance relevant
+remain remember represent representation require research respect respond response result
+return reveal right role rule run
+same say scene science scientific scientist scope second see seek seem select self semantic
+sense sentence separate series serious serve set several share shared show side similar
+simple since single situation small social society some someone something sometimes soon
+sort sound source space speak special specific speech stand standard start state statement
+still strategic strategy strong structure study subject subjective subsequent substance
+success such sufficient suggest support suppose sure system
+take talk task tell term test testing text than their theme themes them themselves then
+theoretic theoretical
+theorem theory there therefore these they thing think third this those though thought three
+through throughout thus time title today together too topic total toward towards tradition
+traditional treat true truth try turn two type
+under understand understanding unambiguous uncertainty universal unless until upon use used
+usual usually
+valid validity value various very view virtue visible vital
+want war way we well were what when where whether which while who whole whom whose why will
+with within without woman word work world would write writer wrong
+year yet you young your
+""".split())
 
 
 def _en06_tokens(text: str) -> list[tuple[str, str, int, int]]:
@@ -1553,14 +1643,8 @@ _EN06_TITLE_MACRO_RE = re.compile(
     r"\\(?:mytitle|myrunningtitle|mytitleCN|mytitleEN|title)(?![a-zA-Z])\s*\{")
 
 
-def _en06_body_words(tex: str) -> set[str]:
-    """正文里（非句首位置）以大写出现过的词：本文术语不降到小写。
-
-    排除三类会污染保护集的来源：
-    ① `\\section`/`\\subsection` 标题本身；
-    ② 模板宏里的**题名**（`\\mytitle` 等按 Title Case 书写，不是正文术语）；
-    ③ 段首/句首大写（`。`/`.`/`\n` 之后）——那是句法大写，不是术语大写。
-    """
+def _en06_body_text(tex: str) -> str:
+    """抹掉标题与模板题名宏后的正文（字符位置不变，便于两套词集共用）。"""
     chars = list(tex)
     for t in _en06_scan(tex):
         for p in range(t["start"], t["end"]):
@@ -1573,7 +1657,18 @@ def _en06_body_words(tex: str) -> set[str]:
         for p in range(m.start(), end):
             if chars[p] != "\n":
                 chars[p] = " "
-    body = "".join(chars)
+    return "".join(chars)
+
+
+def _en06_body_words(tex: str) -> set[str]:
+    """正文里（非句首位置）以大写出现过的词：本文术语不降到小写。
+
+    排除三类会污染保护集的来源：
+    ① `\\section`/`\\subsection` 标题本身；
+    ② 模板宏里的**题名**（`\\mytitle` 等按 Title Case 书写，不是正文术语）；
+    ③ 段首/句首大写（`。`/`.`/`\n` 之后）——那是句法大写，不是术语大写。
+    """
+    body = _en06_body_text(tex)
     words: set[str] = set()
     for m in re.finditer(r"[A-Za-z][A-Za-z'’.\-]*", body):
         if not m.group(0)[:1].isupper():
@@ -1585,6 +1680,55 @@ def _en06_body_words(tex: str) -> set[str]:
             continue                      # 句首/段首大写不算「术语大写」
         words.add(m.group(0))
     return words
+
+
+def _en06_body_lower_words(tex: str) -> set[str]:
+    """正文里以**小写**出现过的词（MC-02）：普通词可安全降级的正面证据。
+
+    与 `_en06_body_words` 同一套正文剥离；只收首字母小写的 token，因此
+    「Zermelo argues…」只贡献 argues，不会把句首大写的 Zermelo 误当普通词。
+    """
+    words: set[str] = set()
+    for m in _EN06_WORD_RE.finditer(_en06_body_text(tex)):
+        if m.group(0)[:1].islower():
+            words.add(m.group(0).lower())
+    return words
+
+
+def _en06_plural_stem(word: str) -> str:
+    """常见复数回退（-s/-es/-ies）；不是复数返回空串。仅用于查普通词表。"""
+    low = word.lower()
+    if low.endswith("ies") and len(low) > 4:
+        return low[:-3] + "y"
+    if low.endswith(("ses", "xes", "zes", "ches", "shes")):
+        return low[:-2]
+    if low.endswith("s") and not low.endswith(("ss", "us", "is")):
+        return low[:-1]
+    return ""
+
+
+def _en06_is_common_word(word: str, body_lower: set[str]) -> bool:
+    """普通词判据：功能词 / 正文小写出现 / 自带常用词表（含常见复数）。"""
+    cands = {word.lower()}
+    stem = _en06_plural_stem(word)
+    if stem:
+        cands.add(stem)
+    return any(c in _EN06_MINOR or c in _EN06_COMMON or c in body_lower for c in cands)
+
+
+def _en06_hyphen_all_common(word: str, body_lower: set[str]) -> bool:
+    """连字符复合词的每一段都是普通词，才允许整词降为句首式。"""
+    segs = [s for s in word.split("-") if s]
+    if len(segs) < 2:
+        return False
+    for seg in segs:
+        if _en06_classify(seg) in ("abbr", "mixed"):
+            return False
+        if seg in _EN06_PROPER or _en06_possessive_stem(seg):
+            return False
+        if not _en06_is_common_word(seg, body_lower):
+            return False
+    return True
 
 
 def _en06_possessive_stem(word: str) -> str:
@@ -1602,17 +1746,33 @@ def _en06_possessive_stem(word: str) -> str:
     return stem if stem and stem[-1].isalpha() else ""
 
 
-def _en06_sentence_case(title: str, body_words: set[str]
+def _en06_sentence_case(title: str, body_words: set[str],
+                        body_lower_words: set[str] | None = None
                         ) -> tuple[str, list[tuple[str, str]]]:
     """把标题改成句首式；返回 (新标题, [(保留词, 建议小写形式)])。
 
     冒号处只**保留下一词的首字母原样**（副题句首的 S/A… 不动），其后各词仍按句首式
     处理——手册要求 subsection 句首式，不是「副题整段保持 Title Case」。
+
+    只有普通词才降级（功能词 / 正文小写出现 / `_EN06_COMMON`）；其余大写词一律
+    保留原样并进待人工清单——包括「只在正文句首出现过」和「只在标题出现」的
+    未知专名（MC-02 的根因就是旧实现把前者静默 lower()）。
     """
     out: list[str] = []
     manual: list[tuple[str, str]] = []
+    body_lower = body_lower_words if body_lower_words is not None else set()
     start = True          # 标题第一个词
     cap_next = False      # 紧跟冒号的词：保留首字母大小写
+
+    def _keep(tok: str) -> None:
+        nonlocal start, cap_next
+        out.append(tok)
+        low = tok.lower()
+        if low != tok:
+            manual.append((tok, low))
+        start = False
+        cap_next = False
+
     for kind, t, _s, _e in _en06_tokens(title):
         if kind != "word":
             out.append(t)
@@ -1620,39 +1780,75 @@ def _en06_sentence_case(title: str, body_words: set[str]
                 start = False
                 cap_next = True
             continue
-        keep = (_en06_classify(t) in ("abbr", "mixed")
-                or t in _EN06_PROPER or t in body_words)
-        # 所有格专名保护回落到词干（V OBS-1）：`Quine's`/`Kant’s` 整体不在专名表，
-        # 但词干是内置专名或正文大写词，故不能被当普通词降成 `quine's`。
-        # 卡 Q8 的保护范围＝「内置常见专名表 / 正文大写词」；首词的所有格仍走
-        # start 分支还原首字母大写（`quine's` → `Quine's`），语义不变。
-        if not keep:
-            _stem = _en06_possessive_stem(t)
-            if _stem and (_stem in _EN06_PROPER or _stem in body_words):
-                keep = True
         # 英文代词 I（也是罗马数字 I）永远保持大写，且不算「保留待人工」噪声。
         if t == "I":
             out.append(t)
             start = False
             cap_next = False
             continue
+        cls = _en06_classify(t)
+        keep = cls in ("abbr", "mixed") or t in _EN06_PROPER or t in body_words
+        # 所有格：词干是专名/正文术语 → 整词保留；首词仍规范首字母（quine's → Quine's）；
+        # 普通词词干（author's）照常降级；未知词干保守保留（Zermelo's / Jones'）。
+        if not keep:
+            stem = _en06_possessive_stem(t)
+            if stem:
+                if stem in _EN06_PROPER or stem in body_words:
+                    keep = True
+                elif start:
+                    out.append(t[:1].upper() + t[1:].lower())
+                    if not _en06_is_common_word(stem, body_lower):
+                        low = t.lower()
+                        if low != t:
+                            manual.append((t, low))
+                    start = False
+                    continue
+                elif _en06_is_common_word(stem, body_lower):
+                    out.append(t.lower())
+                    start = False
+                    continue
+                else:
+                    keep = True
         if keep:
-            out.append(t)
-            if not start:
-                low = t.lower()
-                if low != t:
-                    manual.append((t, low))
+            _keep(t)
+            continue
+        # 连字符复合词：所有段都是普通词 → 按句首式整体降级（Dual-Level → Dual-level）；
+        # 任一段是专名/缩写/未知词 → 不拆词、不静默 lower()。
+        if cls == "hyphen" and _en06_hyphen_all_common(t, body_lower):
+            if start:
+                out.append(t[:1].upper() + t[1:].lower())
+                start = False
+            elif cap_next:
+                out.append(t[0] + t[1:].lower())
+                cap_next = False
+            else:
+                out.append(t.lower())
+            continue
+        if cls == "hyphen" and not _en06_hyphen_all_common(t, body_lower):
+            out.append(t[:1].upper() + t[1:] if start else t)
+            low = t.lower()
+            if low != t:
+                manual.append((t, low))
             start = False
             cap_next = False
             continue
         if start:
             out.append(t[:1].upper() + t[1:].lower())
+            if cls != "hyphen":
+                low = t.lower()
+                if low != t and not _en06_is_common_word(t, body_lower):
+                    manual.append((t, low))
             start = False
         elif cap_next:
             out.append(t[0] + t[1:].lower())
             cap_next = False
-        else:
+        elif _en06_is_common_word(t, body_lower):
             out.append(t.lower())
+        else:
+            out.append(t)
+            low = t.lower()
+            if low != t:
+                manual.append((t, low))
     return "".join(out), manual
 
 
@@ -1680,6 +1876,7 @@ def _en06_hits(tex: str) -> list[Hit]:
     section 与 subsection 在报告里分开列（不混排）。
     """
     body_words = _en06_body_words(tex)
+    body_lower = _en06_body_lower_words(tex)
     hits: list[Hit] = []
     for t in _en06_scan(tex):
         title = t["title"]
@@ -1688,7 +1885,7 @@ def _en06_hits(tex: str) -> list[Hit]:
                 continue
             advice = "Section 标题实词应大写：逐条核对（只报不改）"
         else:
-            new, manual = _en06_sentence_case(title, body_words)
+            new, manual = _en06_sentence_case(title, body_words, body_lower)
             if new == title and not manual:
                 continue
             if new != title:
@@ -1718,6 +1915,7 @@ def apply_en_subsection_case(tex: str, mode: str = "auto",
     if mode not in ("auto", "report"):
         return tex, info
     bw = body_words if body_words is not None else _en06_body_words(tex)
+    bl = _en06_body_lower_words(tex)
     edits: list[tuple[dict, str, str]] = []
     manual: list[dict] = []
     seen: set[str] = set()
@@ -1725,7 +1923,7 @@ def apply_en_subsection_case(tex: str, mode: str = "auto",
         if t["cmd"] != "subsection":
             continue
         old = t["title"]
-        new, m = _en06_sentence_case(old, bw)
+        new, m = _en06_sentence_case(old, bw, bl)
         for a, b in m:
             if a in seen:
                 continue
