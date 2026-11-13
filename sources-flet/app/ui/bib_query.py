@@ -4,7 +4,8 @@
 按引擎 ``page`` 六字段（offset/limit/total_matched/has_more/next_offset/db_sha256）
 续页，单次 ``--limit`` 仍是 1–200，绝不靠放宽 limit 伪装「载入更多」。命中总数一律
 用引擎的 ``total_matched``（不是 ``len(hits)``）；库在分页之间变化时拒绝合并并提示
-按当前库重查。右侧 360 详情在 <1100 时折成表格下方的展开面板（不横向滚动）。
+按当前库重查。右侧 360 详情在 <1100 时折成表格下方的展开面板（面板占满剩余高度、正文内部
+滚动、动作行钉在底部；不横向滚动）；筛选行在 <820 时改折行排布，360 宽不裁切。
 
 所有引擎调用走 ``EB.bibdb_query_basic_call`` / ``EB.bibdb_query_advanced_call``，
 通过 ``EB.read_json_command`` 执行；测试 monkeypatch 该函数或直接检查 argv。
@@ -14,10 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
+import json
 import time
 
 import flet as ft
 
+from services import bib_git as GIT
 from services import engine_bridge as EB
 from ui import bib_shell as S
 from ui import bib_table as BT
@@ -45,6 +49,42 @@ DB_CHANGED_MSG = "引用库已变化，请刷新后重新查询（未合并新�
 PAGE_MISMATCH_MSG = "分页位置不一致，已丢弃本页；请刷新后重新查询（未合并新页）"
 DETAIL_W = 360
 
+# R2-3：筛选行固定 352 搜索框 + 三按钮在 820 以下挤不进一行，改折行排布。
+FILTER_WRAP_W = 820
+
+# R-05（DEF-02 360×800）：窄窗详情面板不能用「设计宽 × t.px」定宽 —— 父级还有侧栏
+# 与内外边距，定宽会超出真实内容区，动作行右端被裁剪、点不到。窄窗改为柔性布局：
+# 面板 width=None 由父级拉伸决定，动作行换成 wrap Row 自动折行（见 _fluid_detail）。
+
+# P1-1 详情字段中文注：只影响标签显示；键名与取值仍逐字符来自引擎记录。
+FIELD_LABELS = {
+    "address": "地址", "annote": "批注", "author": "作者", "booktitle": "书名",
+    "chapter": "章节", "crossref": "交叉引用", "date": "日期", "doi": "DOI",
+    "edition": "版次", "editor": "编者", "eprint": "预印本号",
+    "howpublished": "出版方式", "institution": "机构", "isbn": "ISBN",
+    "issn": "ISSN", "journal": "期刊", "key": "键", "language": "语言",
+    "month": "月", "note": "附注", "number": "期号", "organization": "组织",
+    "pages": "页码", "publisher": "出版社", "school": "学校", "series": "丛书",
+    "title": "题名", "type": "类型", "translator": "译者", "url": "URL",
+    "volume": "卷", "year": "年份",
+}
+FIELD_EMPTY = "—"
+NO_SOURCES = "无来源记录"
+NO_VALUE = "无"
+CONFLICT_HINT = "{n} 条 · 去「审核」视图逐字段核对"
+
+# P1-2「原始记录」：只读定位库物理行；正文/复制/校验和全部由同一份 pretty 派生。
+RAW_BUTTON = "原始记录"
+RAW_TITLE = "原始记录 · {key}"
+RAW_DIALOG_W = 720
+RAW_MIN_LINES, RAW_MAX_LINES = 12, 16
+RAW_NOT_FOUND = "未在当前库中找到该 key"
+RAW_NO_RECORD = "无原始记录"
+RAW_NO_DB = "未配置引用库路径"
+RAW_READ_FAILED = ("读取失败：{kind}；库文件可能被占用或已损坏。"
+                   "可关闭后重新查询，或打开库文件核对。")
+RAW_NEXT_HINT = "下一步：关闭后重查该 key，或点「打开库文件」核对原始库。"
+
 
 def _clock(seconds: float) -> str:
     return f"{seconds:.2f} s"
@@ -70,6 +110,87 @@ def _source_of(hit: dict) -> str:
     first = sources[0] or {}
     issue, slug = str(first.get("issue") or ""), str(first.get("slug") or "")
     return " · ".join(x for x in (issue, slug) if x) or "—"
+
+def _field_label(name) -> str:
+    """字段名 → 显示标签：已知字段附中文注（如 pages（页码）），未知字段原样。"""
+    raw = str(name)
+    note = FIELD_LABELS.get(raw, "")
+    return f"{raw}（{note}）" if note else raw
+
+
+def _field_text(value) -> str:
+    """字段值 → 显示文本：空字符串/None 用 —，其余保持值的逐字符表示。"""
+    if value is None:
+        return FIELD_EMPTY
+    if isinstance(value, str):
+        return value if value.strip() else FIELD_EMPTY
+    if isinstance(value, bool):      # bool 是 int 子类，先判：JSON 里是 true/false
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _source_items(record: dict) -> list[str]:
+    """来源逐条：序号 + 期号 + slug + file + kind；缺的字段留 —（不省列）。"""
+    items = []
+    for index, source in enumerate(record.get("sources") or [], 1):
+        if not isinstance(source, dict):
+            items.append(f"{index}. {_field_text(source)}")
+            continue
+        parts = [str(source.get(name) or "").strip() or FIELD_EMPTY
+                 for name in ("issue", "slug", "file", "kind")]
+        items.append(f"{index}. " + " · ".join(parts))
+    return items
+
+
+def _alias_items(record: dict) -> list[str]:
+    return [_field_text(alias) for alias in (record.get("aliases") or [])]
+
+
+def _pretty_record_text(raw_line: str) -> str:
+    """库物理行 → pretty JSON：记录 SHA256 与「复制 JSON」的唯一来源（逐字符）。"""
+    return json.dumps(json.loads(raw_line), ensure_ascii=False, indent=2)
+
+
+def _record_sha256(pretty_text: str) -> str:
+    return hashlib.sha256(pretty_text.encode("utf-8")).hexdigest()
+
+
+def _locate_record(db_path: str, key: str) -> dict:
+    """只读逐行定位 key 的物理行：命中即停、坏行跳过、不缓存、不写库。"""
+    if not db_path:
+        return {"status": "no_db"}
+    target = str(key or "")
+    if not target:
+        return {"status": "no_record"}
+    line_no = 0
+    try:
+        with open(db_path, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                line_no += 1
+                text = raw.rstrip("\r\n")
+                if not text.strip():
+                    continue
+                try:
+                    record = json.loads(text)
+                except (TypeError, ValueError):
+                    continue  # 坏行跳过：库可能正被写入，别因一行解析失败整只失败
+                if not isinstance(record, dict) or str(record.get("key") or "") != target:
+                    continue
+                total = line_no
+                for _rest in handle:   # 只为「总行数」继续数行，不解析、不缓存
+                    total += 1
+                pretty = _pretty_record_text(text)
+                return {"status": "ok", "line": line_no, "total": total,
+                        "raw": text, "pretty": pretty,
+                        "sha256": _record_sha256(pretty)}
+    except OSError as exc:
+        return {"status": "read_failed", "kind": type(exc).__name__}
+    return {"status": "not_found"}
 
 
 def hit_row(hit: dict) -> dict:
@@ -136,7 +257,25 @@ class QueryView:
         return str(getattr(getattr(self.page, "app", None), "notes_repo", "") or "")
 
     def _db(self) -> str:
-        return str((getattr(self.page, "stats_data", None) or {}).get("db") or "")
+        """引用库物理路径：stats_data["db"] → stats_data["path"] → GIT.default_db。
+
+        R2-1（DEF-01）：真实引擎 ``cmd_stats`` 输出的是 ``store.stats()``（只有
+        ``path``/``bytes``/``sha256``/``records`` 等，没有 ``db`` 键），
+        ``bib_host._load_stats`` 又原样存进 ``stats_data``，所以只读 ``["db"]``
+        在真实装配里恒为空。第二级读 ``path``；第三级回退到用户设置里的默认库，
+        与 bib_edit / bib_dupes / bib_fieldfix / bib_import 兄弟页同款，
+        这样「原始记录」和「打开库文件」在真实 GUI 里共享同一条路径。
+        """
+        stats = getattr(self.page, "stats_data", None) or {}
+        path = ""
+        if isinstance(stats, dict):
+            path = str(stats.get("db") or stats.get("path") or "")
+        if path:
+            return path
+        try:
+            return str(GIT.default_db(self._notes()) or "")
+        except Exception:  # noqa: BLE001 —— 设置读不到时由调用方按「未配置路径」提示
+            return ""
 
     def _store(self):
         return getattr(getattr(self.page, "app", None), "store", None)
@@ -628,14 +767,17 @@ class QueryView:
 
     def _filter(self) -> ft.Control:
         t = self.t
+        wrap = self._design_width() < FILTER_WRAP_W
         self._field = C.text_field(
             t, value=self.text, hint_text=HINTS.get(self.mode, HINTS["key"]),
-            on_change=self._on_text, on_submit=self._on_submit, width=352,
-            field_ref=None)
+            on_change=self._on_text, on_submit=self._on_submit,
+            width=None if wrap else 352, expand=wrap, field_ref=None)
         self._field._bib_search_field = True
         mode = C.select(
             t, value=self.mode, options=[(key, label) for key, label in MODES],
             on_select=self._on_mode, width=88, hint="方式")
+        if wrap:
+            return self._filter_wrapped(mode)
         return S.filter_row(
             t, search=self._field, on_search=self._on_text, on_submit=self._on_submit,
             controls=[mode,
@@ -644,6 +786,38 @@ class QueryView:
             count=self._count_control(), on_advanced=self.open_advanced,
             page=self.page.page if hasattr(self.page, "page") else None,
             search_width=352)
+
+    def _filter_wrapped(self, mode: ft.Control) -> ft.Control:
+        """R2-3（DEF-02）：窄于 FILTER_WRAP_W 时筛选行折三行，360 宽不横向裁切。
+
+        宽布局仍走 ``S.filter_row``（行高/几何由骨架统一）；这里只把同样的控件重排：
+        搜索框（expand）+ 查询按钮 / 方式 + 粘贴 + 高级检索 / 计数。照骨架约定登记
+        ``_bib_filter_row`` / ``_bib_filter_field``，⌘F 仍绑到搜索框。
+        """
+        t = self.t
+        page = self.page.page if hasattr(self.page, "page") else None
+        row1 = ft.Row(spacing=t.sp("1"),
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[self._field, self._query_button()])
+        row2 = ft.Row(spacing=t.sp("1"),
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[mode,
+                                C.paste_button(t, self.page, self._field, height=28),
+                                C.text_button("高级检索", self.open_advanced,
+                                              t, height=28),
+                                ft.Container(expand=True)])
+        row3 = ft.Row(spacing=t.sp("1"),
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[self._count_control()])
+        box = ft.Container(
+            padding=ft.Padding(left=t.px(0), top=t.px(8),
+                               right=t.px(0), bottom=t.px(8)),
+            content=ft.Column(spacing=t.sp("1"), controls=[row1, row2, row3]))
+        box._bib_filter_row = True
+        box._bib_filter_field = self._field
+        if page is not None:
+            S.bind_filter_shortcut(page, self._field)
+        return box
 
     def _table(self) -> ft.Control:
         t = self.t
@@ -699,6 +873,20 @@ class QueryView:
                 return hit
         return None
 
+    def _detail_row(self, label: str, value) -> ft.Control:
+        """详情一行：小灰标签 + 可选中值；视觉最多 2 行，全文进 tooltip（P1-1）。"""
+        t = self.t
+        text = str(value)
+        return ft.Column(spacing=0, controls=[
+            C.text(label, t, "caption", t.palette.text_faint),
+            C.text(text, t, "caption", t.palette.text, selectable=True,
+                   max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, tooltip=text),
+        ])
+
+    def _detail_heading(self, label: str) -> ft.Control:
+        t = self.t
+        return C.text(label, t, "caption", t.palette.text_faint)
+
     def _detail_body(self) -> ft.Control:
         t = self.t
         hit = self._selected_hit()
@@ -716,13 +904,42 @@ class QueryView:
             ("来源", _source_of(hit)),
             ("核实", "已核实" if (hit.get("verified") or record.get("verified")) else "未核实"),
         ]
-        body = []
-        for label, value in rows:
-            body.append(ft.Column(spacing=0, controls=[
-                C.text(label, t, "caption", t.palette.text_faint),
-                C.text(str(value), t, "caption", t.palette.text,
-                       max_lines=2, overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(value)),
-            ]))
+        body: list = [self._detail_row(label, value) for label, value in rows]
+        # P1-1：record.fields 所有键逐行（含未知键）；空值 —，长值 2 行 + tooltip 全文。
+        body.append(self._detail_heading(f"字段（{len(fields)}）"))
+        if fields:
+            body.extend(self._detail_row(_field_label(name), _field_text(value))
+                        for name, value in fields.items())
+        else:
+            body.append(C.text(NO_VALUE, t, "caption", t.palette.text))
+        sources = _source_items(record)
+        body.append(self._detail_heading(f"来源（{len(sources)}）"))
+        if sources:
+            for item in sources:
+                body.append(C.text(item, t, "caption", t.palette.text, selectable=True,
+                                   max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
+                                   tooltip=item, font_family=t.mono_family))
+        else:
+            body.append(C.text(NO_SOURCES, t, "caption", t.palette.text))
+        aliases = _alias_items(record)
+        body.append(self._detail_heading(f"别名（{len(aliases)}）"))
+        if aliases:
+            joined = "、".join(aliases)
+            body.append(C.text(joined, t, "caption", t.palette.text, selectable=True,
+                               tooltip=joined))
+        else:
+            body.append(C.text(NO_VALUE, t, "caption", t.palette.text))
+        # 冲突只给计数与去处：逐字段对照属「审核」视图，只读详情不展开。
+        try:
+            conflict_count = len(record.get("conflicts") or [])
+        except TypeError:
+            conflict_count = 1
+        body.append(self._detail_heading(f"冲突（{conflict_count}）"))
+        if conflict_count:
+            body.append(C.text(CONFLICT_HINT.format(n=conflict_count), t, "caption",
+                               t.palette.warn, selectable=True))
+        else:
+            body.append(C.text(NO_VALUE, t, "caption", t.palette.text))
         return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), controls=body)
 
     def _detail_actions(self) -> list:
@@ -734,8 +951,104 @@ class QueryView:
         return [
             C.secondary_button("去编辑", lambda e: self._edit(key), t, height=28),
             C.secondary_button("复制 BibTeX", lambda e: self._copy_bibtex(hit), t, height=28),
+            # P1-2：选中即有入口；对话框走 C.show_dialog 登记，Esc 才能关。
+            C.text_button(RAW_BUTTON, lambda e: self._raw_record_open(), t, height=28),
             C.text_button("打开库文件", lambda e: self._open_log(key), t, height=28),
         ]
+
+    # ── P1-2 原始记录：只读定位库物理行 + pretty JSON 对话框 ─────────────
+    def _dialog_host(self):
+        """对话框宿主：真实壳里是 ft.Page（self.page.page）；测试假 page 退回自身。"""
+        host = getattr(self.page, "page", None)
+        return host if host is not None else self.page
+
+    def _raw_record_open(self) -> None:
+        """详情「原始记录」：后台流式定位物理行，UI 线程不做同步读库。"""
+        hit = self._selected_hit()
+        if hit is None:
+            return
+        record = hit.get("record") or {}
+        key = str(hit.get("key") or record.get("key") or "")
+        if not record:
+            self._raw_record_failed(key, RAW_NO_RECORD)
+            return
+        if self._task_running:
+            return
+        self._schedule_async(self._raw_record_load, key)
+
+    async def _raw_record_load(self, key: str) -> None:
+        result = {"status": "read_failed", "kind": "Exception"}
+        try:
+            result = await asyncio.to_thread(_locate_record, self._db(), key)
+        except Exception as exc:  # noqa: BLE001 —— 只读定位异常也必须给中文提示
+            result = {"status": "read_failed", "kind": type(exc).__name__}
+        finally:
+            self._task_running = False
+        status = str(result.get("status") or "")
+        if status == "ok":
+            self._raw_record_dialog(key, result)
+            return
+        if status == "no_db":
+            self._raw_record_failed(key, RAW_NO_DB)
+        elif status == "no_record":
+            self._raw_record_failed(key, RAW_NO_RECORD)
+        elif status == "not_found":
+            self._raw_record_failed(key, RAW_NOT_FOUND)
+        else:
+            self._raw_record_failed(
+                key, RAW_READ_FAILED.format(kind=str(result.get("kind") or "Error")))
+
+    def _raw_record_dialog(self, key: str, result: dict) -> None:
+        t = self.t
+        line = int(result.get("line") or 0)
+        total = int(result.get("total") or 0)
+        sha = str(result.get("sha256") or "")
+        pretty = str(result.get("pretty") or "")
+        raw = str(result.get("raw") or "")
+        header = ft.Column(spacing=0, controls=[
+            C.text(f"行号 {line} / {total} · 记录 SHA256", t, "caption",
+                   t.palette.text_faint, selectable=True),
+            C.text(sha, t, "caption", t.palette.text, selectable=True,
+                   font_family=t.mono_family),
+        ])
+        view = C.text_field(t, value=pretty, read_only=True, multiline=True,
+                            min_lines=RAW_MIN_LINES, max_lines=RAW_MAX_LINES,
+                            mono=True, clearable=False)
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=C.text(RAW_TITLE.format(key=key), t, role="dialog-title"),
+            content=ft.Container(width=t.px(RAW_DIALOG_W), content=ft.Column(
+                spacing=t.sp("1"), controls=[header, view])),
+            actions=[
+                C.secondary_button("复制 JSON", lambda e: self._copy(pretty), t),
+                C.secondary_button("复制原文行", lambda e: self._copy(raw), t),
+                C.primary_button("关闭", lambda e: self._raw_record_close(), t),
+            ],
+        )
+        C.show_dialog(self._dialog_host(), dialog)
+        self._mark("bib_raw_record_opened", key=key, line=line, total=total)
+
+    def _raw_record_failed(self, key: str, message: str) -> None:
+        t = self.t
+        title = RAW_TITLE.format(key=key) if key else RAW_BUTTON
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=C.text(title, t, role="dialog-title"),
+            content=ft.Container(width=t.px(420), content=ft.Column(
+                spacing=t.sp("1"), controls=[
+                    C.text(message, t, "body", t.palette.error, selectable=True),
+                    C.text(RAW_NEXT_HINT, t, "caption", t.palette.text_muted),
+                ])),
+            actions=[
+                C.text_button("打开库文件", lambda e: self._open_log(key), t),
+                C.primary_button("关闭", lambda e: self._raw_record_close(), t),
+            ],
+        )
+        C.show_dialog(self._dialog_host(), dialog)
+        self._mark("bib_raw_record_failed", key=key, message=message)
+
+    def _raw_record_close(self) -> None:
+        C.dismiss_top_dialog(self._dialog_host())
 
     def _edit(self, key: str) -> None:
         self._set_store("bib_focus_key", key)
@@ -809,6 +1122,35 @@ class QueryView:
             t, body=self._detail_body(), title=title,
             meta=(f"{hit.get('key')} · 单条记录" if hit else "选一行看字段，或按 key 精确定位。"),
             actions=self._detail_actions() or None)
+
+    def _fluid_detail(self, panel: ft.Control, *, wrap_actions: bool) -> ft.Control:
+        """把固定宽详情面板变成「吃满父级宽」的柔性面板（R-05）。
+
+        bib_shell.detail_panel 的 width 是设计定宽（宽窗右栏 360 用）；窄窗里父级
+        还有 rail/内外边距，定宽会超出实际内容区，动作行被 clip。这里：
+        1) 面板容器 width 置 None —— 由外层常宽容器拉伸决定实际宽度；
+        2) 动作行（面板 Column 最后一个 Row）换成 wrap Row —— 面板 Column 是
+           STRETCH，wrap Row 拿到的是父级紧宽，放不下就折行，不会越界；
+        3) 外层 Column(expand) -> Row(STRETCH) -> Container(expand) 提供有界
+           高宽，面板内部 Column(expand=True) 的正文滚动与底部动作都成立。
+        """
+        t = self.t
+        column = getattr(panel, "content", None)
+        if wrap_actions and isinstance(column, ft.Column) and column.controls:
+            last = column.controls[-1]
+            if isinstance(last, ft.Row):
+                column.controls[-1] = ft.Row(
+                    spacing=t.sp("1"), run_spacing=t.sp("1"), wrap=True,
+                    alignment=ft.MainAxisAlignment.END,
+                    controls=self._detail_actions())
+        panel.width = None
+        return ft.Container(
+            expand=True,
+            content=ft.Row(
+                spacing=0, vertical_alignment=ft.CrossAxisAlignment.STRETCH,
+                controls=[ft.Container(expand=True, content=panel)],
+            ),
+        )
 
     def _placeholder(self) -> ft.Control:
         t = self.t
@@ -885,8 +1227,18 @@ class QueryView:
         table = self._table()
         footer = self._footer()
         if narrow:
-            parts.extend([table, footer, self._placeholder() if not self.selected_key
-                          else self._detail_panel()])
+            # R-05：窄窗详情不再按「页面设计宽 × t.px」定宽（父级还有侧栏/内外边距，
+            # 定宽会超出实际内容区，动作行右端被父级裁剪、点不到）。改成柔性铺满：
+            # 外层 Row+STRETCH 给详情一个有界高宽，面板 width=None 由父级拉伸决定，
+            # 动作行换成 wrap Row（Column STRETCH 已给它紧宽），360 自动折行不越界。
+            parts.append(table)
+            parts.append(footer)
+            if self.selected_key:
+                parts.append(self._fluid_detail(self._detail_panel(),
+                                                wrap_actions=True))
+            else:
+                parts.append(self._fluid_detail(self._placeholder(),
+                                                wrap_actions=False))
         else:
             parts.append(ft.Row(
                 expand=True, spacing=0, vertical_alignment=ft.CrossAxisAlignment.START,
