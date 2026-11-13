@@ -154,8 +154,10 @@ def _match_brace(s: str, start: int) -> tuple[str, int]:
     return s[start + 1:], len(s) - 1
 
 
-_UNESCAPE = {"\\{": "\x00", "\\}": "\x01", "\\%": "\x02", "\\&": "\x03"}
-_ESCAPE_BACK = {"\x00": "{", "\x01": "}", "\x02": "%", "\x03": "&"}
+_UNESCAPE = {"\\{": "\x00", "\\}": "\x01", "\\%": "\x02", "\\&": "\x03",
+             "\\#": "\x04", "\\_": "\x05"}
+_ESCAPE_BACK = {"\x00": "{", "\x01": "}", "\x02": "%", "\x03": "&",
+                "\x04": "#", "\x05": "_"}
 
 
 def _protect(s: str) -> str:
@@ -186,8 +188,17 @@ _FORMAT_RE = re.compile(r"\\(" + "|".join(_FORMAT_CMDS) + r")(?![A-Za-z])")
 #: 带参数但**整段丢弃**的命令（`\hspace{1em}` 只影响间距，留下参数会污染文本）
 _ARG_DROP_RE = re.compile(r"\\(?:hspace|vspace|phantom|hphantom|vphantom|protect)\*?\s*\{[^{}]*\}")
 
-#: 成品里已展开成 Unicode 的本地命令（目录 tex 的 `\cndash` 等；不在 UNICODE_MATH 里）
-_LOCAL_ALIASES = {"cndash": "-", "naraba": "→", "to": "→"}
+#: 成品里已展开成符号的本地命令（不在 UNICODE_MATH 里）。
+#: `\edash` 在 SLEN.sty:34 / SLCN.sty:37 定义为 `\raise0.1em\hbox{-}` —— 短横，不是 en dash。
+_LOCAL_ALIASES = {"cndash": "-", "naraba": "→", "to": "→", "edash": "-"}
+
+
+def _replace_local_aliases(s: str) -> str:
+    # 只认完整命令名：避免 `\top` / `\edashword` 被截成“别名 + 残字”
+    for cmd, sym in _LOCAL_ALIASES.items():
+        s = re.sub(r"\\" + re.escape(cmd) + r"(?![A-Za-z])",
+                   lambda _m, _sym=sym: _sym, s)
+    return s
 
 
 def _smart_quotes(s: str) -> str:
@@ -232,8 +243,7 @@ def _clean_inline(s: str, warnings: list[str] | None = None) -> str:
     for ch in ("\u00ad", "\u200b", "\u200c", "\u200d", "\ufeff"):
         s = s.replace(ch, "")
     # 目录/摘要里常见的本地命令别名（实例成品里已展开成符号）
-    for _cmd, _sym in _LOCAL_ALIASES.items():
-        s = s.replace("\\" + _cmd, _sym)
+    s = _replace_local_aliases(s)
     s = _ARG_DROP_RE.sub("", s)
     # `$...$` 数学段文本化
     out: list[str] = []
@@ -825,8 +835,7 @@ def _clean_abstract(raw: str, folder: str, warnings: list[str], missing: list[st
     """摘要 LaTeX → 纯文本（契约 §2.6 的口径；`摘要：` 前缀由渲染层加）。"""
     s = _strip_comments(raw)
     # 本地别名（实例成品里已展开成符号）
-    for _cmd, _sym in _LOCAL_ALIASES.items():
-        s = s.replace("\\" + _cmd, _sym)
+    s = _replace_local_aliases(s)
     if macros:
         for _ in range(3):
             before = s
