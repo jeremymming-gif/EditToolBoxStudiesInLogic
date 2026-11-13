@@ -1472,30 +1472,29 @@ class IssuePage(BasePage):
         ref: list = []
         self.fields["issue_dir"] = ref
 
-        # 一段编辑只重建一次正文（第一次按键），后续字符只记值；
-        # 失焦时重置，下一次编辑再重建。
-        pending = True
-
+        # MC-01：一段编辑只在**失焦**时提交整期身份。逐字输入只记值；
+        # 此前首字符就调 `_on_issue_changed`，`_last_issue` 停在 `/`，
+        # 状态/产物按错误键落库。
         def _changed(e) -> None:
-            nonlocal pending
             value = (e.control.value or "").strip()
             self.app.store.set_recent("issue_dir", value)
             self.mark("path_change", field="issue_dir", value=e.control.value)
             # FIX2R2-3 K7：只重建期目录行下面的 `_step_box`（兄弟节点），
             # 聚焦中的输入框不在 patch 范围内。
             C.mark_event_updated("issue_path_typing")
-            if pending:
-                pending = False
-                self._on_issue_changed(e)
 
         def _commit(e=None) -> None:
-            # blur 自身没有任何 update；不显式标记的话框架 after_event 会补一次
-            # 整页 patch。正文在第一次按键时已重建，blur 不再重建，
-            # 紧接着的点击（如「运行检查」）不会被换掉的控件吞掉。
-            nonlocal pending
-            pending = True
-            # 首字符重建正文时日志标题只拿到第一个字符；失焦补一次完整值。
-            self._update_log_title()
+            # MC-01：失焦是整期身份的提交点，一次完成
+            # 「旧期写回 → 新期恢复 → 正文原地刷新」；值没变则什么都不做。
+            # blur 自身不发送 update，显式标记避免框架 after_event 补整页 patch。
+            value = getattr(getattr(e, "control", None), "value", None)
+            if value is None:
+                value = ref[0].value if ref else ""
+            if self._commit_issue_identity(str(value or "")):
+                self._refresh_after_issue_commit()
+                self._clear_issue_log()
+                self._update_log_title()
+                self.mark("issue_changed", issue=getattr(self, "_last_issue", ""))
             C.mark_event_updated("issue_path_blur")
 
         field = C.floating_field(
@@ -1682,6 +1681,8 @@ class IssuePage(BasePage):
         step = self._step_by_key(view)
         if step is None:
             return
+        # MC-01：键入后直接切功能页（没有失焦事件）时补提交整期身份。
+        self._ensure_issue_identity()
         if self.app.running and view != getattr(self, "selected", ""):
             # 批 116：同一视图内切区块不打断长任务 UI；跨视图切换仍禁止。
             if self._view_of_step(str(step["key"])) != self._view_of_step(
@@ -1751,16 +1752,9 @@ class IssuePage(BasePage):
         return ft.Column(spacing=t.sp("2"),
                          controls=[self._build_issue_row(), self._step_box])
 
-    def _build_section(self, key: str) -> ft.Control:
-        """功能区块：区块头常显（标题 + 状态 + 本功能主按钮），内容手风琴展开。
-
-        同页两区块只展开一个（`expanded_step`），默认展开第一个；区块间用 1px
-        hairline 分隔，最后一个区块不再画底边。
-        """
+    def _section_body_controls(self, key: str) -> list:
+        """区块正文列的内容（说明 + 参数/结果区）：整页构建与换期原地刷新共用。"""
         t = self.t
-        steps = self._view_steps(self._view_of_step(key))
-        expanded = self.expanded_step(self._view_of_step(key)) == key
-        head = self._detail_header(key)
         body: list = [
             C.text(self._step_desc(key), t, "small", t.palette.text_muted),
             C.hairline(t),
@@ -1777,7 +1771,21 @@ class IssuePage(BasePage):
         if key == "merge":
             body.append(self._prep_card())
         body.append(self._result_zone(key, banner=False))
-        body_col = ft.Column(spacing=t.sp("2"), controls=body, visible=expanded)
+        return body
+
+    def _build_section(self, key: str) -> ft.Control:
+        """功能区块：区块头常显（标题 + 状态 + 本功能主按钮），内容手风琴展开。
+
+        同页两区块只展开一个（`expanded_step`），默认展开第一个；区块间用 1px
+        hairline 分隔，最后一个区块不再画底边。
+        """
+        t = self.t
+        steps = self._view_steps(self._view_of_step(key))
+        expanded = self.expanded_step(self._view_of_step(key)) == key
+        head = self._detail_header(key)
+        body_col = ft.Column(spacing=t.sp("2"),
+                             controls=self._section_body_controls(key),
+                             visible=expanded)
         self._section_bodies[key] = body_col
         last = bool(steps) and steps[-1] == key
         wrapper = ft.Container(
@@ -1789,6 +1797,30 @@ class IssuePage(BasePage):
         self._section_refs[key] = wrapper
         return wrapper
 
+    def _detail_head_content(self, key: str, *, expanded: bool,
+                             state: str) -> ft.Row:
+        """区块头左半（标题 + 状态点/状态词 + chevron），不含右侧主按钮。
+
+        MC-01：换期原地刷新只替换这段内容；`head` 容器与兄弟节点主按钮对象
+        都保留，失焦后紧接着的点击不会落在被换掉的控件上。
+        """
+        t = self.t
+        status = C.text(self._status_text(key), t, "caption", self._state_color(state))
+        self._detail_statuses[key] = status
+        chevron = C.text("▾" if expanded else "▸", t, "caption", t.palette.text_faint)
+        self._chevrons[key] = chevron
+        if key == self.selected:
+            # 旧契约：`_detail_status` 指向当前选中区块的状态词。
+            self._detail_status = status
+        return ft.Row(spacing=t.sp("1"),
+                      vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+            C.text(self._step_title(key), t, "section"),
+            C.status_dot(self._tone(state), t),
+            status,
+            ft.Container(expand=True),
+            chevron,
+        ])
+
     def _detail_header(self, key: str) -> ft.Control:
         """区块头（40 高）：15px 标题 + 状态点/状态词 + 右侧 Filled 主按钮 + chevron。
 
@@ -1798,27 +1830,15 @@ class IssuePage(BasePage):
         t = self.t
         expanded = self.expanded_step(self._view_of_step(key)) == key
         state = self._state_of(key)
-        status = C.text(self._status_text(key), t, "caption", self._state_color(state))
-        self._detail_statuses[key] = status
-        btn = self._primary_button(key)
-        chevron = C.text("▾" if expanded else "▸", t, "caption", t.palette.text_faint)
-        self._chevrons[key] = chevron
         head = ft.Container(
             key=f"issue-head-{key}", expand=True, height=t.px(40),
             alignment=ft.Alignment.CENTER_LEFT,
             on_click=lambda e, k=key: self._toggle_section(k),
-            content=ft.Row(spacing=t.sp("1"),
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.text(self._step_title(key), t, "section"),
-                C.status_dot(self._tone(state), t),
-                status,
-                ft.Container(expand=True),
-                chevron,
-            ]))
+            content=self._detail_head_content(key, expanded=expanded, state=state))
         self._section_heads[key] = head
+        btn = self._primary_button(key)
         if key == self.selected:
             # 旧契约（`_detail_status`/`_step_run_primary`）指向当前选中区块。
-            self._detail_status = status
             self._detail_primary = btn
             self._step_run_primary = btn
         return ft.Row(spacing=t.sp("1"),
@@ -2146,6 +2166,9 @@ class IssuePage(BasePage):
         return ""
 
     def _primary_action(self, key: str) -> None:
+        # MC-01：键入后没失焦就直接点运行（或按 Enter）时，先把完整路径提交为
+        # 整期身份，运行结果才不会记到上一期。
+        self._ensure_issue_identity()
         if self.app.running:
             if key == "compileall":
                 self._confirm_stop("停止编译？已完成篇目的 PDF 会保留；当前篇可能留下半成品，下次编译会覆盖。")
@@ -2983,7 +3006,7 @@ class IssuePage(BasePage):
     def _persist_issue_state(self, issue: str = "") -> None:
         if not getattr(self, "fields", None):
             return
-        issue = issue or self.field("issue_dir")
+        issue = issue or getattr(self, "_last_issue", "") or self.field("issue_dir")
         # 换期时由 `_on_issue_changed` 显式传旧路径；空值不落库。
         if not issue:
             return
@@ -3009,7 +3032,8 @@ class IssuePage(BasePage):
             except TypeError:
                 save()
 
-    def _restore_issue_state(self, *, keep_view: bool = False) -> None:
+    def _restore_issue_state(self, *, keep_view: bool = False,
+                             rebuild: bool = True) -> None:
         issue = self.field("issue_dir")
         if not issue:
             return
@@ -3038,6 +3062,9 @@ class IssuePage(BasePage):
             self.selected = last
         # 手风琴：恢复/当前步骤即该视图展开的区块（同视图另一块随之收起）。
         self._set_expanded(self.selected)
+        if not rebuild:
+            # MC-01：换期提交时由调用方做「原地刷新」，保留运行按钮对象。
+            return
         if getattr(self, "_step_box", None) is not None:
             self._step_box.controls = self._step_body(self.selected)
         elif self._content_box is not None:
@@ -3106,22 +3133,120 @@ class IssuePage(BasePage):
         except Exception:  # noqa: BLE001  未挂载/结构变化
             pass
 
-    def _on_issue_changed(self, event=None) -> None:
-        """换期（P0）：旧目录状态写回 issue_state，新目录清空运行态/结果/日志。
+    # ── MC-01：整期身份提交（逐字输入不提交，失焦/运行/切页时提交一次）──
+    def _commit_issue_identity(self, issue: str) -> bool:
+        """把输入框最终值提交为整期身份：旧期写回 → 重置 → 新期恢复 → 新期落库。
 
-        此前只清 4 个字段，`_status/_merge_info/_compile_rows` 等仍是上一期的
-        结果（B 包实测：C 目录显示 B 的「编译成功 · 21 秒」与 47 页合并卡）。
-        现在换期整页重置，但**保持当前功能页**；空目录显示统一空态。
+        返回 True 表示身份确实变了。运行中不改归属（否则长任务的完成态会记到
+        另一个期上）；值没变时保持幂等。
         """
-        issue = self.field("issue_dir")
+        issue = (issue or "").strip()
         previous = getattr(self, "_last_issue", "")
-        if previous and previous != issue:
+        if issue == previous or getattr(self.app, "running", False):
+            return False
+        if previous:
             self._persist_issue_state(previous)
         self._last_issue = issue
         self._reset_issue_runtime()
         if issue:
-            # 新目录有上次记录就恢复状态，但不改变当前功能页（换期不跳走）。
-            self._restore_issue_state(keep_view=True)
+            # 新期有上次记录就恢复状态，但不改变当前功能页（换期不跳走）；
+            # 正文由调用方原地刷新，避免换掉刚要点的运行按钮。
+            self._restore_issue_state(keep_view=True, rebuild=False)
+        self._set_expanded(self.selected)
+        self._persist_issue_state()
+        return True
+
+    def _ensure_issue_identity(self) -> None:
+        """运行/切页前补提交：键入后直接按 Enter 或点运行，结果仍记到完整路径。"""
+        if getattr(self.app, "running", False):
+            return
+        if not getattr(self, "fields", None):
+            # `object.__new__(IssuePage)` 的旧测试桩（不跑 __init__/build）。
+            return
+        issue = (self.field("issue_dir") or "").strip()
+        if issue == getattr(self, "_last_issue", ""):
+            return
+        if not self._commit_issue_identity(issue):
+            return
+        self._refresh_after_issue_commit()
+        self._clear_issue_log()
+        self._update_log_title()
+        self.mark("issue_changed", issue=issue)
+
+    def _clear_issue_log(self) -> None:
+        """换期清空整期日志 dock 与分段缓冲（原 `_on_issue_changed` 的语义）。"""
+        log = getattr(self, "_log", None)
+        if log is not None:
+            log.clear()
+        self._log_step_key = ""
+        self._log_buffer = []
+        self._log_lines = 0
+
+    def _refresh_after_issue_commit(self) -> None:
+        """换期后的正文刷新：优先原地换「区块头内容 + 正文列」，保留运行按钮。
+
+        blur 提交紧接着可能就是「运行」点击；整块重建会把按钮换成新控件，
+        抬起时的点击落到已卸载的控件上就丢了（K7 的点击时序）。只有空态/
+        首次从空目录建区（结构里没有需要保留的按钮）才退回整块重建。
+        """
+        box = getattr(self, "_step_box", None)
+        if box is None:
+            return
+        if self._refresh_issue_detail_in_place():
+            return
+        box.controls = self._step_body(self.selected)
+        self.refresh_running()
+        self._sync_header()
+        self._sync_stop_action()
+        self._sync_nav()
+        self._safe_update(self._nav_box, box)
+
+    def _refresh_issue_detail_in_place(self) -> bool:
+        """原地刷新换期后的区块头/正文，保留 `_section_heads` 与主按钮对象。
+
+        返回 False 表示结构不完整（空态、首次建区、测试桩），调用方整块重建。
+        """
+        box = getattr(self, "_step_box", None)
+        if box is None or not self.field("issue_dir"):
+            return False
+        view = self._view_of_step(self.selected)
+        steps = self._view_steps(view)
+        if not steps or any(key not in self._section_heads
+                            or key not in self._section_bodies for key in steps):
+            return False
+        for key in steps:
+            expanded = self.expanded_step(view) == key
+            head = self._section_heads[key]
+            body = self._section_bodies[key]
+            head.content = self._detail_head_content(
+                key, expanded=expanded, state=self._state_of(key))
+            body.controls = self._section_body_controls(key)
+            body.visible = expanded
+            self._safe_update(head, body)
+        self.refresh_running()
+        self._sync_header()
+        self._sync_stop_action()
+        self._sync_nav()
+        self._safe_update(box)
+        return True
+
+    def _on_issue_changed(self, event=None) -> None:
+        """换期（P0/MC-01）：旧目录状态写回 issue_state，新目录清空运行态/结果/日志。
+
+        此前只清 4 个字段，`_status/_merge_info/_compile_rows` 等仍是上一期的
+        结果（B 包实测：C 目录显示 B 的「编译成功 · 21 秒」与 47 页合并卡）。
+        现在换期整页重置，但**保持当前功能页**；空目录显示统一空态。
+
+        MC-01：本入口只服务显式换期（选择器回填 / ✕ 清空 / 测试注入），
+        手动键入的提交点在失焦（`_commit`），两者共用 `_commit_issue_identity`。
+        """
+        issue = self.field("issue_dir")
+        if not self._commit_issue_identity(issue):
+            # 值没变（或运行中不改归属）：显式入口保持幂等，不重建正文。
+            if issue != getattr(self, "_last_issue", ""):
+                self._update_log_title(issue)
+                self.mark("issue_changed", issue=issue)
+            return
         self._set_expanded(self.selected)
         if getattr(self, "_step_box", None) is not None:
             self._step_run_btns = {}
@@ -3141,11 +3266,7 @@ class IssuePage(BasePage):
             self._sync_nav()
             self._safe_update(self._nav_box, self._step_box)
             self._persist_issue_state()
-        if self._log is not None:
-            self._log.clear()
-        self._log_step_key = ""
-        self._log_buffer = []
-        self._log_lines = 0
+        self._clear_issue_log()
         self._update_log_title(issue)
         self.mark("issue_changed", issue=issue)
 
@@ -3171,6 +3292,8 @@ class IssuePage(BasePage):
         # R02：运行中再点步骤（含 F9 热键）必须可见拒绝，ASM.run_step 的静默 return 不能当门。
         if _reject_when_running(self, f"issue_step:{key}", "运行步骤"):
             return
+        # MC-01：运行归属完整路径（逐字输入期间身份尚未提交）。
+        self._ensure_issue_identity()
         if not self._issue_dir():
             self.app.toast("先选择期目录")
             return

@@ -133,7 +133,8 @@ def test_issue_page_methods_have_no_cards_titles_or_chips():
         assert "status_chip" not in calls, f"{func.__name__} 仍在用 C.status_chip"
     empty_calls = _calls(P.IssuePage._build_empty_detail)
     assert "primary_button" in empty_calls and "text" in empty_calls
-    assert "status_dot" in _calls(P.IssuePage._detail_header)
+    # MC-01：区块头内容拆到 `_detail_head_content`，状态点仍由它渲染。
+    assert "status_dot" in _calls(P.IssuePage._detail_head_content)
 
 
 def test_issue_empty_state_is_centered_card_with_picker_cta():
