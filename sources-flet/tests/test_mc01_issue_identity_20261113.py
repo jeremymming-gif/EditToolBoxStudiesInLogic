@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import main as M  # noqa: F401  （保证 app/ 在 sys.path，与其它壳测试一致）
@@ -56,6 +57,11 @@ def _blur(page) -> None:
     field.on_blur(SimpleNamespace(control=field))
 
 
+def _settle(page, issue: str = ISSUE_B) -> None:
+    """跑掉失焦后延后的正文刷新（生产里由 page.run_task 调度）。"""
+    asyncio.run(page._refresh_after_commit_later(issue, 0))
+
+
 def test_typing_keeps_old_identity_and_never_writes_prefix_keys():
     page = _page_with_issue(ISSUE_A, {ISSUE_B: _entry("B-only.pdf")})
     box, body = page._step_box, page._section_bodies["infocheck"]
@@ -76,24 +82,54 @@ def test_blur_commits_full_path_and_restores_state_artifact():
     assert page._last_issue == ISSUE_B
     assert page._state_of("infocheck") == "done"
     assert page._status["infocheck"].artifact == "B-only.pdf"
-    assert page._detail_statuses["infocheck"].value == "成功"
     assert set(_states(page)) == {ISSUE_A, ISSUE_B}
     assert page.app.store.recent["issue_dir"] == ISSUE_B
     assert any(e == "issue_changed" for e, _ in page.app.marked)
+    _settle(page)
+    assert page._detail_statuses["infocheck"].value == "成功"
 
 
-def test_blur_commit_keeps_run_button_objects_for_the_following_click():
+def test_blur_commit_defers_body_refresh_to_keep_the_following_tap():
     page = _page_with_issue(ISSUE_A, {ISSUE_B: _entry("B-only.pdf")})
     box, btn = page._step_box, page._primary_btns["infocheck"]
     head = page._section_heads["infocheck"]
+    calls: list = []
+    page.app.page.run_task = lambda *args, **kwargs: calls.append(args)
     _type(page, ISSUE_B)
     _blur(page)
-    # 正文与区块头可换内容，但主按钮/区块头容器对象保留——失焦后紧接的
-    # 「运行检查」点击仍落在原控件上（K7 的点击时序）。
+    # N6：blur 与点击是同一次按压。提交后必须先把正文刷新挂起，
+    # 否则按钮在抬起前被更新/替换，Flutter 会取消这次 tap。
+    assert calls and calls[0][0] == page._refresh_after_commit_later
+    assert calls[0][1] == ISSUE_B
     assert page._step_box is box
     assert page._primary_btns["infocheck"] is btn
     assert page._section_heads["infocheck"] is head
-    assert page._step_run_btns["infocheck"] is btn
+    _settle(page)
+    # 延后刷新仍保留同一个主按钮对象（原地刷新，不整块重建）。
+    assert page._primary_btns["infocheck"] is btn
+    assert page._section_heads["infocheck"] is head
+
+
+def test_deferred_commit_refresh_yields_to_a_started_run():
+    page = _page_with_issue(ISSUE_A, {ISSUE_B: _entry("B.pdf")})
+    _type(page, ISSUE_B)
+    _blur(page)
+    page.app.running = True
+    calls: list = []
+    page._refresh_after_issue_commit = lambda: calls.append("refresh")
+    asyncio.run(page._refresh_after_commit_later(ISSUE_B, 0))
+    assert calls == []
+
+
+def test_deferred_commit_refresh_is_dropped_after_another_commit():
+    page = _page_with_issue(ISSUE_A, {ISSUE_B: _entry("B.pdf")})
+    _type(page, ISSUE_B)
+    _blur(page)
+    page._last_issue = ISSUE_A
+    calls: list = []
+    page._refresh_after_issue_commit = lambda: calls.append("refresh")
+    asyncio.run(page._refresh_after_commit_later(ISSUE_B, 0))
+    assert calls == []
 
 
 def test_run_without_blur_commits_identity_before_dispatch(monkeypatch):

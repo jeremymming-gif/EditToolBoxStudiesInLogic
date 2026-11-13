@@ -1493,10 +1493,14 @@ class IssuePage(BasePage):
             if value is None:
                 value = ref[0].value if ref else ""
             if self._commit_issue_identity(str(value or "")):
-                self._refresh_after_issue_commit()
+                # MC-01：失焦提交后正文刷新要延后一拍。blur 与紧随的点击是
+                # 同一次按压：此刻立刻替换区块头/正文，抬起时的 tap 落到已
+                # 卸载的控件上就被取消（N6：点运行没有任何 click 事件）。
+                # 日志/标题可立即换；正文等点击窗口过去再刷新。
                 self._clear_issue_log()
                 self._update_log_title()
                 self.mark("issue_changed", issue=getattr(self, "_last_issue", ""))
+                self._defer_after_commit_refresh(getattr(self, "_last_issue", ""))
             C.mark_event_updated("issue_path_blur")
 
         field = C.floating_field(
@@ -3241,6 +3245,36 @@ class IssuePage(BasePage):
         self._sync_stop_action()
         self._sync_nav()
         self._safe_update(self._nav_box, box)
+
+    COMMIT_REFRESH_DELAY = 0.35
+
+    def _defer_after_commit_refresh(self, issue: str) -> None:
+        """MC-01 N6：失焦提交后的正文刷新延到点击按压结束之后。
+
+        blur 与点「运行」属于同一次按压；同步刷新会把按钮替换掉，抬起时
+        的 tap 被 Flutter 取消，运行永远不派发。这里只延后正文刷新，地址
+        身份与日志标题已经同步提交。
+        """
+        if not issue or not getattr(self, "_section_heads", None):
+            # 空态 → 有期：还没有可点的运行按钮，直接建区。
+            self._refresh_after_issue_commit()
+            return
+        try:
+            self.page.run_task(self._refresh_after_commit_later, issue,
+                               self.COMMIT_REFRESH_DELAY)
+        except Exception:  # noqa: BLE001 - 页面未挂载或测试桩
+            self._refresh_after_issue_commit()
+
+    async def _refresh_after_commit_later(self, issue: str, delay: float) -> None:
+        import asyncio
+        await asyncio.sleep(delay)
+        if getattr(self.app, "running", False):
+            # 点击已派发运行；完成态会自己刷新，别在跑的时候换正文。
+            return
+        if getattr(self, "_last_issue", "") != issue:
+            # 期间又换了期/清空了，交给新的那次提交。
+            return
+        self._refresh_after_issue_commit()
 
     def _refresh_issue_detail_in_place(self) -> bool:
         """原地刷新换期后的区块头/正文，保留 `_section_heads` 与主按钮对象。
