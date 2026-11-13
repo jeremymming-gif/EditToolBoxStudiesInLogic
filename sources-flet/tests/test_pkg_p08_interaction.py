@@ -778,3 +778,127 @@ def test_status_bar_dot_tone_matches_failure_and_cancel():
     for value, expected in cases.items():
         bar.set_status(value)
         assert bar.dot.bgcolor == expected, f"status={value}"
+
+
+# ── MC-03：缺失产物不得误认父目录（GUI 级，D1 口径延伸） ────────────────────
+def test_missing_hidden_artifact_line_never_offers_open(tmp_path, monkeypatch):
+    # [MC-03] 隐藏段 .hidden/ 存在、其中的文件不存在：结果卡「完成」，
+    # 但不得把已存在的 .hidden/（或任何祖先目录）当成产物给「打开」。
+    from test_b116_single_function import _App, _install_run, _make_page
+
+    (tmp_path / ".hidden").mkdir()
+    page, _root = _make_page(tmp_path, _App())
+    missing = tmp_path / ".hidden" / "missing.pdf"
+    _install_run(monkeypatch, page, 0, f"完成。生成文件：{missing}（共 3 页）")
+
+    asyncio.run(page._run(page._build_call()))
+
+    assert "完成" in str(page._result.title.value)
+    assert page._result.open_btn.visible is False
+    assert page._result.copy_btn.visible is False
+    assert page._result.detail.value == ""
+    assert page._artifact_row.visible is False
+
+
+def test_missing_artifact_under_paren_dir_never_offers_open(tmp_path, monkeypatch):
+    # [MC-03] 期号目录名含半角括号且真实存在、其中的文件缺失：
+    # 不得把期号目录误认成产物（半角括号是路径的一部分，不是收尾边界）。
+    from test_b116_single_function import _App, _install_run, _make_page
+
+    issue = tmp_path / "2026年第1期(总第100期)"
+    issue.mkdir()
+    page, _root = _make_page(tmp_path, _App())
+    missing = issue / "缺失.pdf"
+    _install_run(monkeypatch, page, 0, f"完成。生成文件：{missing}（共 3 页）")
+
+    asyncio.run(page._run(page._build_call()))
+
+    assert "完成" in str(page._result.title.value)
+    assert page._result.open_btn.visible is False
+    assert page._result.detail.value == ""
+    assert page._artifact_row.visible is False
+
+
+def test_existing_directory_artifact_line_offers_open(tmp_path, monkeypatch):
+    # [MC-03 正例] convert 末行契约「完成。产物目录：{out_dir}」：
+    # 显式交付目录是真实产物，detail 指向该目录且给「打开」，目录动作行显示。
+    from test_b116_single_function import _App, _install_run, _make_page
+
+    out = tmp_path / "out" / "作者名"
+    out.mkdir(parents=True)
+    page, _root = _make_page(tmp_path, _App())
+    _install_run(monkeypatch, page, 0, f"完成。产物目录：{out}")
+
+    asyncio.run(page._run(page._build_call()))
+
+    assert page._result.detail.value == str(out)
+    assert page._result.open_btn.visible is True
+    assert page._result.copy_btn.visible is True
+    assert page._artifact_row.visible is True
+
+
+# ── MC-03 返工：日志中其他现存目录不得当成声明产物（GUI 级） ────────────────
+def test_logdir_line_with_missing_report_never_offers_open(tmp_path, monkeypatch):
+    # [MC-03 返工 / ACCEPT H2+S4] 日志目录存在、声明报告缺失：结果卡「完成」，
+    # 但不得给出指向日志目录的「打开」。
+    from test_b116_single_function import _App, _install_run, _make_page
+
+    logdir = tmp_path / "日志 目录C"
+    logdir.mkdir()
+    report = tmp_path / "卷 四" / "缺失 报告.txt"
+    report.parent.mkdir(parents=True)
+    page, _root = _make_page(tmp_path, _App())
+    line = (f"完成。检查 12 篇（成功 11 / 失败 1；状态 0）"
+            f"（日志目录：{logdir}）（报告：{report}）")
+    _install_run(monkeypatch, page, 0, line)
+
+    asyncio.run(page._run(page._build_call()))
+
+    assert "完成" in str(page._result.title.value)
+    assert page._result.open_btn.visible is False
+    assert page._result.copy_btn.visible is False
+    assert page._result.detail.value == ""
+    assert page._artifact_row.visible is False
+
+
+def test_logdir_line_with_real_report_opens_declared_report(tmp_path, monkeypatch):
+    # [MC-03 返工 / ACCEPT H3+S4] 日志目录与声明报告都真实存在：detail/「打开」
+    # 必须指向声明报告，而不是靠前的日志目录。
+    from test_b116_single_function import _App, _install_run, _make_page
+
+    logdir = tmp_path / "日志 目录C"
+    logdir.mkdir()
+    report = tmp_path / "卷 四" / "合并 第8,9卷 v4.0(定).pdf"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"%PDF-1.4")
+    page, _root = _make_page(tmp_path, _App())
+    line = (f"完成。检查 12 篇（状态 0）"
+            f"（日志目录：{logdir}）（报告：{report}）")
+    _install_run(monkeypatch, page, 0, line)
+
+    asyncio.run(page._run(page._build_call()))
+
+    assert page._result.detail.value == str(report)
+    assert page._result.open_btn.visible is True
+    assert page._result.copy_btn.visible is True
+    assert page._artifact_row.visible is True
+
+
+# ── MC-03 返工第 3 轮：一行两个标签时「打开」必须指向声明报告（GUI 级） ──────
+def test_two_label_line_opens_declared_report_not_dir(tmp_path, monkeypatch):
+    # [MC-03 返工3 / wb02 B3 GUI] 报告标签 + 目录标签同行：detail/「打开」指向
+    # 声明报告，而不是目录标签的日志目录。
+    from test_b116_single_function import _App, _install_run, _make_page
+
+    report = tmp_path / "报告 终.pdf"
+    report.write_bytes(b"%PDF-1.4")
+    logdir = tmp_path / "日志 目录"
+    logdir.mkdir()
+    page, _root = _make_page(tmp_path, _App())
+    _install_run(monkeypatch, page, 0, f"完成。报告：{report}（目录：{logdir}）")
+
+    asyncio.run(page._run(page._build_call()))
+
+    assert page._result.detail.value == str(report)
+    assert page._result.open_btn.visible is True
+    assert page._result.copy_btn.visible is True

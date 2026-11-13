@@ -312,3 +312,235 @@ def test_engine_status_frozen_sidecar_version_fails(tmp_path, monkeypatch):
     assert status.executable is True
     assert status.ok is False
     assert any("rc=3" in p for p in status.problems), status.problems
+
+
+# ── MC-03：缺失产物不得误认父目录（结构性收尾） ─────────────────────────────
+# expected 一律来自业务要求：「打开产物」必须对应契约行声明的实际产物；
+# 声明的文件/目录不存在时返回空串，不得回退到任何已存在的祖先前缀。
+# 夹具均为 tmp_path 下合成（macOS）；Windows 盘符/UNC 只锁既有契约形态，
+# 不是 Windows 文件系统实测。
+
+
+def test_artifact_path_missing_hidden_segment_is_not_parent(tmp_path):
+    hidden = tmp_path / ".hidden"
+    hidden.mkdir()
+    # 声明的文件不存在：不得返回已存在的 .hidden/ 或更上层祖先目录。
+    assert EB.artifact_path(f"完成。生成文件：{hidden}/missing.pdf（共 3 页）") == ""
+    assert EB.artifact_path(f"完成。生成文件：{hidden}/missing.pdf") == ""
+    deeper = hidden / "sub"
+    deeper.mkdir()
+    assert EB.artifact_path(f"完成。生成文件：{deeper}/缺失.pdf（共 3 页）") == ""
+
+
+def test_artifact_path_real_file_inside_hidden_segment(tmp_path):
+    hidden = tmp_path / ".hidden"
+    hidden.mkdir()
+    real = hidden / "报告.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f"完成。合并文件：{real}（共 3 页）") == str(real)
+    assert EB.artifact_path(f"完成。产物文件：{real}") == str(real)
+
+
+def test_artifact_path_spaces_chinese_dots(tmp_path):
+    folder = tmp_path / "含 空格 目录.v2"
+    folder.mkdir()
+    real = folder / "合并 2026.终稿.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f"完成。合并文件：{real}（共 3 页）") == str(real)
+    # 目录存在（名含空格与点）、其中的文件缺失：不得退到该目录。
+    assert EB.artifact_path(f"完成。合并文件：{folder}/缺失 文件.pdf（共 3 页）") == ""
+
+
+def test_artifact_path_issue_dir_with_ascii_parens(tmp_path):
+    issue = tmp_path / "2026年第1期(总第100期)"
+    issue.mkdir()
+    # 显式交付目录（compileall 契约行）：半角括号是路径本身的一部分。
+    line = f"完成。编译 3 篇（成功 2 / 失败 1）（目录：{issue}）"
+    assert EB.artifact_path(line) == str(issue)
+    real = issue / "合并.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f"完成。合并文件：{real}（共 3 页）") == str(real)
+    # 文件缺失：不得把含半角括号的期号目录误认成产物。
+    assert EB.artifact_path(f"完成。生成文件：{issue}/缺失.pdf（共 3 页）") == ""
+
+
+def test_artifact_path_explicit_delivery_directory(tmp_path):
+    out = tmp_path / "out" / "作者名"
+    out.mkdir(parents=True)
+    # convert.py 末行契约：目录即产物，行尾完整收尾。
+    assert EB.artifact_path(f"完成。产物目录：{out}") == str(out)
+    assert EB.artifact_path(f"完成。产物目录：{out}。") == str(out)
+    spaced = tmp_path / "交付 目录.v1"
+    spaced.mkdir()
+    assert EB.artifact_path(f"完成。产物目录：{spaced}") == str(spaced)
+    # 声明的目录不存在：不得退到已存在的 tmp_path。
+    assert EB.artifact_path(f"完成。产物目录：{tmp_path}/不存在目录") == ""
+
+
+def test_artifact_path_report_wraps_and_status_tails(tmp_path):
+    report = tmp_path / "r.txt"
+    report.write_text("stub", encoding="utf-8")
+    info = f"完成。检查 2 篇（有 tex 2 / 有 pdf 1；不一致 0 项）（报告：{report}）"
+    assert EB.artifact_path(info) == str(report)
+    proof = f"完成。一校核查：命中 3 处（可自动改 1 处）（报告：{report}）"
+    assert EB.artifact_path(proof) == str(report)
+    assert EB.artifact_path(f"报告：{report}") == str(report)
+    assert EB.artifact_path(f"完成。报告：{report}。") == str(report)
+    missing = f"完成。检查 2 篇（有 tex 2 / 有 pdf 1；不一致 0 项）（报告：{tmp_path}/缺失.txt）"
+    assert EB.artifact_path(missing) == ""
+
+
+def test_artifact_path_trailing_quotes_and_punctuation(tmp_path):
+    real = tmp_path / "a.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f'完成。报告："{real}"') == str(real)
+    assert EB.artifact_path(f"完成。报告：{real}）") == str(real)
+
+
+def test_artifact_path_windows_drive_and_unc_contract_on_macos():
+    # 只锁 macOS 下的既有契约形态：盘符路径在本机不可能存在 → 空串；
+    # 盘符根永不是产物；UNC（纯反斜杠）不匹配路径起点正则（既有契约）。
+    # 这不是 Windows 文件系统实测，Windows 行为需 Windows 侧独立验证。
+    assert EB.artifact_path("完成。合并文件：D:\\out\\a.pdf（共 3 页）") == ""
+    assert EB.artifact_path("完成。产物目录：D:\\") == ""
+    assert EB.artifact_path("完成。报告：D:\\。") == ""
+    assert EB.artifact_path("完成。合并文件：\\\\server\\share\\a.pdf（共 3 页）") == ""
+
+
+# ── MC-03 返工：多路径起点不得遮蔽声明产物 / 中文标点不回退前缀 ─────────────
+# expected 来自验收卡第 7 项与业务契约：一行有多个路径起点时，日志中其他现存
+# 目录不得当成声明产物；中文标点是路径合法字符，声明文件缺失时不得回退到
+# 标点前已存在的前缀。夹具均为 tmp_path 下合成（macOS）。
+
+
+def test_artifact_path_logdir_does_not_shadow_missing_report(tmp_path):
+    # [MC-03 返工 / ACCEPT H2] 日志目录存在、声明报告缺失：返回空串，
+    # 不得把靠前的现存日志目录当成产物。
+    logdir = tmp_path / "运行 日志B"
+    logdir.mkdir()
+    report = tmp_path / "卷 三" / ".cache 归档" / "缺失 报告.txt"
+    report.parent.mkdir(parents=True)
+    line = (f"完成。检查 12 篇（成功 11 / 失败 1；状态 0）"
+            f"（日志目录：{logdir}）（报告：{report}）")
+    assert EB.artifact_path(line) == ""
+
+
+def test_artifact_path_logdir_does_not_shadow_real_report(tmp_path):
+    # [MC-03 返工 / ACCEPT H3] 日志目录与声明报告都真实存在：必须返回声明
+    # 报告，不得被靠前的日志目录遮蔽；日志目录在后也不得顶替。
+    logdir = tmp_path / "运行 日志B"
+    logdir.mkdir()
+    report = tmp_path / "卷 三" / ".cache 归档" / "合并 第6,7卷 v3.1(终).pdf"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"%PDF-1.4")
+    line = (f"完成。检查 12 篇（状态 0）"
+            f"（日志目录：{logdir}）（报告：{report}）")
+    assert EB.artifact_path(line) == str(report)
+    line2 = (f"完成。检查 12 篇（状态 0）"
+             f"（报告：{report}）（日志目录：{logdir}）")
+    assert EB.artifact_path(line2) == str(report)
+
+
+def test_artifact_path_fullwidth_comma_in_name(tmp_path):
+    # [MC-03 返工 / ACCEPT J/J2] 中文逗号是路径合法字符：真实文件完整返回；
+    # 声明文件缺失、逗号前的同名目录存在时不得退到该目录。
+    folder = tmp_path / "第 4 册.v1"
+    folder.mkdir()
+    real = folder / "报告，终稿.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f"完成。报告：{real}（共 3 页）") == str(real)
+    trap = folder / "校样"
+    trap.mkdir()
+    assert EB.artifact_path(f"完成。报告：{trap}，终稿.missing.pdf（共 3 页）") == ""
+
+
+def test_artifact_path_directory_label_no_prefix_fallback(tmp_path):
+    # [MC-03 返工] 目录契约 + 中文标点：声明目录缺失时不得退到标点前已存在前缀。
+    base = tmp_path / "交付"
+    base.mkdir()
+    assert EB.artifact_path(f"完成。产物目录：{base}，终稿目录") == ""
+
+
+def test_artifact_path_checkbib_report_label(tmp_path):
+    # [MC-03 返工] checkbib 末行契约：前导空白 + 长标签「合并后回读校验报告：」。
+    report = tmp_path / "回读 校验.txt"
+    report.write_text("stub", encoding="utf-8")
+    assert EB.artifact_path(f"   合并后回读校验报告：{report}") == str(report)
+    missing = tmp_path / "缺失 校验.txt"
+    assert EB.artifact_path(f"   合并后回读校验报告：{missing}") == ""
+
+
+def test_artifact_path_unlabeled_toc_directory(tmp_path):
+    # [MC-03 返工] toc 末行无标签：`完成。生成目录 N 份（{dir}）`，退回起点
+    # 扫描；目录即产物。声明目录缺失时不得退到已存在的父目录。
+    out = tmp_path / "目 录输出"
+    out.mkdir()
+    assert EB.artifact_path(f"完成。生成目录 2 份（{out}）") == str(out)
+    assert EB.artifact_path(f"完成。生成目录 2 份（{tmp_path}/不存在 目录）") == ""
+
+
+# ── MC-03 返工第 3 轮：wb02 边界形态 B1–B4 ─────────────────────────────────
+# expected 来自 wb02 §6 三方对照中 base 的正确行为与业务契约：声明产物必须
+# 完整返回；缺失即空串；其他现存目录/标签不得顶替。夹具均为 tmp_path 合成。
+
+
+def test_artifact_path_ascii_space_page_tail(tmp_path):
+    # [MC-03 返工3 / wb02 B1] ASCII 空格页数尾注（无全角括号）：真实文件必须
+    # 返回；文件缺失时空串，不得退到父目录。
+    real = tmp_path / "汇总 第1,2卷.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f"完成。报告：{real} 共 3 页") == str(real)
+    missing = tmp_path / "缺失 汇总.pdf"
+    assert EB.artifact_path(f"完成。报告：{missing} 共 3 页") == ""
+
+
+def test_artifact_path_fullwidth_parens_in_name(tmp_path):
+    # [MC-03 返工3 / wb02 B2] 路径名含全角括号：真实文件完整返回（最长优先），
+    # 带页数尾注时同样完整返回；文件缺失时不得退到括号前不存在的前缀。
+    folder = tmp_path / "全角（括号）目录"
+    folder.mkdir()
+    real = folder / "a 报告.pdf"
+    real.write_bytes(b"%PDF-1.4")
+    assert EB.artifact_path(f"完成。报告：{real}") == str(real)
+    assert EB.artifact_path(f"完成。报告：{real}（共 3 页）") == str(real)
+    missing = folder / "缺失（终）.pdf"
+    assert EB.artifact_path(f"完成。报告：{missing}") == ""
+
+
+def test_artifact_path_two_labels_report_wins(tmp_path):
+    # [MC-03 返工3 / wb02 B3] 一行两个标签：报告/文件类优先于目录类，与先后
+    # 顺序无关；声明报告缺失即空串，不得退到目录标签的现存目录。
+    report = tmp_path / "报告 终.pdf"
+    report.write_bytes(b"%PDF-1.4")
+    logdir = tmp_path / "日志 目录"
+    logdir.mkdir()
+    assert EB.artifact_path(f"完成。报告：{report}（目录：{logdir}）") == str(report)
+    assert EB.artifact_path(f"完成。检查 2 篇（目录：{logdir}）（报告：{report}）") == str(report)
+    missing = tmp_path / "报告 缺失.pdf"
+    assert EB.artifact_path(f"完成。报告：{missing}（目录：{logdir}）") == ""
+
+
+def test_artifact_path_unlabeled_two_paths_last_wins(tmp_path):
+    # [MC-03 返工3 / wb02 B4] 无标签行两个现存路径：toc 契约目录在行尾括号内，
+    # 取最后一组路径；末位目录缺失即空串，不得回退靠前的现存日志目录。
+    logdir = tmp_path / "日志 目录"
+    logdir.mkdir()
+    out = tmp_path / "输出 目录"
+    out.mkdir()
+    line = f"完成。生成目录 2 份（日志目录：{logdir}）（{out}）"
+    assert EB.artifact_path(line) == str(out)
+    missing = tmp_path / "输出 缺失"
+    line2 = f"完成。生成目录 2 份（日志目录：{logdir}）（{missing}）"
+    assert EB.artifact_path(line2) == ""
+
+
+def test_artifact_path_page_tail_rule_does_not_reopen_prefix_traps(tmp_path):
+    # [MC-03 返工3 守卫] 页数尾注规则不得重开空格/半角括号前缀陷阱：声明文件
+    # 缺失、截短前缀（空格/半角括号处）真实存在时仍返回空串。
+    folder = tmp_path / "丙 辑"
+    folder.mkdir()
+    (folder / "合并").mkdir()
+    (folder / "合并 第3,4卷 v2.0(终)").mkdir()
+    missing = folder / "合并 第3,4卷 v2.0(终).pdf"
+    assert EB.artifact_path(f"完成。合并文件：{missing}（共 3 页）") == ""
+    assert EB.artifact_path(f"完成。合并文件：{missing} 共 3 页") == ""

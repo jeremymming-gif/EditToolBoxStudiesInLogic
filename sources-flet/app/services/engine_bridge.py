@@ -108,9 +108,23 @@ _RESULT_1 = {
 }
 _ARTIFACT_START = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
 _ARTIFACT_TRAIL = "。.…，,；;：: \t\n\r\"'）)」』】]}>"
-# P08 D1：路径「完整收尾」的右边界 = 尾部可剥字符 + 左开括号/引号。
-# 例：`完成。合并文件：/x/a.pdf（共 3 页）` 里 `/x/a.pdf` 后面紧跟「（」。
-_ARTIFACT_BOUNDARY = _ARTIFACT_TRAIL + "（([{【「『<"
+# MC-03（返工第 3 轮）：产物标签分两类——文件/报告类优先于目录类，同类取第一个。
+# 左边界防止「日志目录：」这类非声明性标签被误匹配成「目录：」；一行有两个
+# 标签（报告+目录）时报告是声明产物，目录标签不得顶替它。
+_ARTIFACT_LABEL_FILE = re.compile(
+    r"(?:^|[。；，：）\s（(])(合并后回读校验报告|校验报告|报告|合并文件|产物文件|生成文件)：")
+_ARTIFACT_LABEL_DIR = re.compile(
+    r"(?:^|[。；，：）\s（(])(产物目录|目录)：")
+# MC-03（返工第 3 轮）：结构性收尾只认全角括号与空白/控制字符。中文标点（。…，；：）
+# 与 ASCII 点号/空格/半角括号都可以是路径本身的一部分（中文文件名、`.hidden`、
+# 含空格目录、期号目录 `20xx年第N期(总第N期)`、含全角括号的目录名），不能当收尾
+# 边界——否则声明文件缺失时会回退到标点前已存在的祖先/前缀。候选在结构性收尾处
+# 最长优先取（含全角括号的真实路径因此能完整命中）。尾部可剥标点仍用 _ARTIFACT_TRAIL。
+_ARTIFACT_STOP = "（）\t\n\r"
+# MC-03（返工第 3 轮，wb02 B1）：引擎页数尾注词表（mergepdf `（共 N 页）`），
+# 容忍无全角括号的形态（`…/a.pdf 共 3 页`）。仅在完整候选不存在时剥掉尾部
+# 「共 N 页」，不做其他猜测；真实引擎末行的页数尾注一律带全角括号。
+_ARTIFACT_PAGE_TAIL = re.compile(r"\s+共\s*[0-9]+\s*页\s*$")
 
 
 # ── 纯函数（可单测） ────────────────────────────────────────────────────
@@ -141,6 +155,47 @@ def result_level(entry: str, code: int) -> str:
     return "error"
 
 
+def _artifact_probe_ok(probe: str) -> bool:
+    """候选路径是否为真实存在的文件/目录；根目录/盘符根永不是产物。"""
+    if not probe:
+        return False
+    bare = probe.strip()
+    if bare in ("/", "\\") or (
+        len(bare) == 3 and bare[1] == ":" and bare[2] in "\\/"
+    ):
+        return False
+    try:
+        return Path(probe).is_file() or Path(probe).is_dir()
+    except OSError:
+        return False
+
+
+def _artifact_probes(candidate: str) -> list[str]:
+    """候选的探测序列（最长优先、去重）：原样 / 剥尾部标点 / 剥页数尾注。"""
+    probes: list[str] = []
+    for p in (candidate, candidate.rstrip(_ARTIFACT_TRAIL)):
+        if p and p not in probes:
+            probes.append(p)
+        m = _ARTIFACT_PAGE_TAIL.search(p)
+        if m:
+            q = p[:m.start()]
+            if q and q not in probes:
+                probes.append(q)
+    return probes
+
+
+def _artifact_cut_probe(text: str, start: int) -> str:
+    """从 start 起只在结构性收尾处取候选、最长优先探测；都不存在返回空串。"""
+    size = len(text)
+    cuts = [end for end in range(start + 1, size + 1)
+            if end == size or text[end] in _ARTIFACT_STOP]
+    for end in reversed(cuts):
+        for probe in _artifact_probes(text[start:end]):
+            if _artifact_probe_ok(probe):
+                return probe
+    return ""
+
+
 def artifact_path(last_line: str) -> str:
     """从契约行里抠出真实存在的产物路径；抠不到返回空串（不猜）。
 
@@ -154,36 +209,39 @@ def artifact_path(last_line: str) -> str:
     目录」再取 dirname）。按「文件/目录」口径之外还要判完整收尾，是因为目录类型
     无法区分「真产物目录」与「不存在路径的已存在父目录」。
 
-    做法：从每个盘符/路径起点开始，按「最长优先」逐字符截短，取第一个完整收尾
-    且磁盘上真实存在的路径；尾部的中文标点/右括号先剥掉再试。路径里允许中文、
-    空格、点。
+    MC-03（返工第 3 轮）：
+    1) 标签类优先：契约行用「产物目录：/合并文件：/产物文件：/生成文件：/报告：/
+       目录：/合并后回读校验报告：」声明产物。**文件/报告类标签优先于目录类**，
+       同类取第一个；左边界排除「日志目录：」这类非声明性标签。只试该标签声明
+       的路径：不存在即返回空串，不回退到其他标签或行内其他路径起点——日志中
+       其他现存目录不得当成/遮蔽声明产物。
+    2) 收尾只认结构性边界（全角括号/空白/控制字符/行尾，见 _ARTIFACT_STOP）：
+       中文标点与 ASCII 点号/空格/半角括号都可以是路径的一部分，不作截短边界，
+       缺失文件不会回退到任何已存在的祖先/前缀。候选在结构性收尾处**最长优先**
+       取（路径名含全角括号的真实文件因此能完整命中）；尾部标点用
+       _ARTIFACT_TRAIL 剥掉再试；完整候选不存在时再剥引擎页数尾注「共 N 页」
+       （见 _ARTIFACT_PAGE_TAIL，容忍无全角括号的形态）。
+    3) 无标签的行（如 toc `完成。生成目录 N 份（{dir}）`）按路径起点分组
+       （前导字符是结构性边界/冒号/引号/空白的起点才是新路径，路径内部的分隔符
+       不算），取**最后一组**（契约目录在行尾括号内），同样只在结构性收尾处
+       最长优先探测；不回退到行内靠前的其他现存路径。
     """
     text = last_line or ""
-    size = len(text)
+    label = _ARTIFACT_LABEL_FILE.search(text) or _ARTIFACT_LABEL_DIR.search(text)
+    if label:
+        rest = text[label.end():]
+        stripped = rest.lstrip(" \t\"'")
+        if stripped and _ARTIFACT_START.match(stripped):
+            start = label.end() + (len(rest) - len(stripped))
+            return _artifact_cut_probe(text, start)
+        return ""
+    groups = []
     for match in _ARTIFACT_START.finditer(text):
-        start = match.start()
-        for end in range(size, start + 1, -1):
-            candidate = text[start:end]
-            for probe in (candidate, candidate.rstrip(_ARTIFACT_TRAIL)):
-                if not probe:
-                    continue
-                # 契约行里的「有 tex 2 / 有 pdf 1」会被当成路径起点；
-                # 根目录/盘符根不是产物，跳过继续找后面的「报告：…」。
-                bare = probe.strip()
-                if bare in ("/", "\\") or (
-                    len(bare) == 3 and bare[1] == ":" and bare[2] in "\\/"
-                ):
-                    continue
-                # P08 D1：必须是行内完整收尾的路径；截短的半截路径（其下一个字符
-                # 还是路径字符）一律不算，避免把不存在的文件的父目录当成产物。
-                cut = start + len(probe)
-                if cut < size and text[cut] not in _ARTIFACT_BOUNDARY:
-                    continue
-                try:
-                    if Path(probe).is_file() or Path(probe).is_dir():
-                        return probe
-                except OSError:
-                    continue
+        s = match.start()
+        if s == 0 or text[s - 1] in _ARTIFACT_STOP or text[s - 1] in "：: \"'":
+            groups.append(s)
+    if groups:
+        return _artifact_cut_probe(text, groups[-1])
     return ""
 
 
