@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import functools
 import json
 import os
 import subprocess
@@ -331,7 +332,19 @@ def _picker_label(dialog_title: str) -> str:
     return title
 
 
+async def _run_focus_safely(app, target, page_key: str = "") -> None:
+    """执行一次 focus；控件已离树/会话已断开时只记 marker，不抛未处理异常。"""
+    try:
+        result = target.focus()
+        if hasattr(result, "__await__"):
+            await result
+    except Exception as exc:  # noqa: BLE001 控件已销毁/会话关闭均属可恢复
+        app.mark("nav_focus_error", page=page_key,
+                 error=f"{type(exc).__name__}: {exc}")
+
+
 class App:
+
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self.app_version = APP_VERSION
@@ -1194,7 +1207,10 @@ class App:
         self.page.window.min_width = min_w
         self.page.window.min_height = min_h
         self.status_bar.set_meta(self._status_meta())
-        self.page.update()
+        # Q3（FIX2R2-2）：set_theme 重建换肤时暂缓这次内联整页 patch，发送统一交给
+        # _coalesced_update（一次换肤 = 1 次 patch，连点仍在 180ms 内合并）。
+        if not getattr(self, "_shell_update_deferred", False):
+            self.page.update()
         self.mark("shell_built", page=key, route=self.current_route,
                   theme=self.theme, zoom=self.zoom, dpi=self.dpi, k=self.t.k,
                   zoom_migration=self.zoom_migration or None,
@@ -1483,6 +1499,12 @@ class App:
 
         没有 `run_task` 的假 page（单测/未挂载）退回同步 update，行为与旧版一致。
         """
+        # Q3（FIX-20261112）：发送只由 _flush_page_update() 负责。若不在本事件里
+        # 声明「已更新」，框架 after_event 会再从事件控件上溯到 Page 补一次整页
+        # patch —— 切页/换肤因此每次实发 2 次（第二次还可能撞上刚聚焦的输入框）。
+        if not C.mark_event_updated("coalesced_page_update"):
+            self.mark("page_update_suppress_error",
+                      error=str(C.AUTO_UPDATE_MARKS.get("last_error", "")))
         if after is not None:
             self._update_after = after
         if getattr(self, "_update_scheduled", False):
@@ -1499,6 +1521,28 @@ class App:
                       error=f"{type(exc).__name__}: {exc}")
             self._flush_page_update()
 
+    def _send_nav_update(self, *, after=None) -> None:
+        """导航发送：空闲时立刻发（缩短「切页后到焦点就位」的空窗），连击时才合并。
+
+        FIX2R2-3 K7：原来所有导航都等 180ms 合并窗口才发 patch，焦点又要等 patch
+        之后才设置，切页后马上键入的前 1–2 键会落在空窗里丢掉。这里空闲时立即发送；
+        距上次发送不足一个合并窗口（连击/快速切页）则并入 _coalesced_update，
+        既保证「单次切页 = 1 次整页 patch」，也保证「连点 3 次 ≤ 2 次」。
+        """
+        if getattr(self, "_update_scheduled", False):
+            self._coalesced_update(after=after)
+            return
+        last = getattr(self, "_page_update_sent_at", 0.0)
+        if last and (time.monotonic() - last) < _PAGE_UPDATE_COALESCE_S:
+            self._coalesced_update(after=after)
+            return
+        if after is not None:
+            self._update_after = after
+        if not C.mark_event_updated("nav_page_update"):
+            self.mark("page_update_suppress_error",
+                      error=str(C.AUTO_UPDATE_MARKS.get("last_error", "")))
+        self._flush_page_update()
+
     async def _flush_page_update_async(self) -> None:
         await asyncio.sleep(_PAGE_UPDATE_COALESCE_S)
         self._flush_page_update()
@@ -1506,6 +1550,7 @@ class App:
     def _flush_page_update(self) -> None:
         self._update_scheduled = False
         after, self._update_after = getattr(self, "_update_after", None), None
+        self._page_update_sent_at = time.monotonic()
         try:
             self.page.update()
         except Exception as exc:  # noqa: BLE001 窗口已销毁/控件未挂载
@@ -1559,7 +1604,11 @@ class App:
         self._sync_toolbar()
         # P08 R03：焦点必须排在 content 换完的 patch 之后；Q3 把整页 patch 合并后，
         # 焦点回调跟着同一窗口发送（最后一次导航的目标页生效）。
-        self._coalesced_update(after=lambda: self._focus_after_nav(page))
+        # FIX2R2-3 K7：先给落点字段打 autofocus，让客户端在重建这次 patch 时直接聚焦，
+        # 不必等 focus 往返；after 里再显式 focus 一次作为兜底。
+        focus_target = self._prepare_nav_focus(page)
+        self._send_nav_update(
+            after=lambda: self._focus_after_nav(page, target=focus_target))
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
         if not same_page:
             self.page_switches.append(elapsed_ms)
@@ -1573,29 +1622,94 @@ class App:
                   switch_avg_ms=round(sum(self.page_switches) / len(self.page_switches), 1)
                   if self.page_switches else None)
 
-    def _focus_after_nav(self, page) -> None:
+    def _prepare_nav_focus(self, page):
+        """导航 patch 之前确定聚焦落点并打 autofocus。
+
+        FIX2R2-3 K7：切页后立即键入的前 1–2 键原来会丢——立即发送的整页 patch 让客户端
+        重建输入框，而 focus 是一次额外往返，落在重建完成之前会被丢弃。给落点字段设置
+        autofocus 后，客户端在重建（挂载）该框时就聚焦，键入窗口从「往返之后」提前到
+        「重建完成即聚焦」。冷页面控件此刻还没挂载，`focus_after_nav()` 会返回 None，
+        这里退回到 `fields` 插入序取第一个可聚焦控件（与基类策略一致）。
+        """
+        target = None
+        # K7：页面可给出比 `fields` 插入序更合适的导航落点（如源稿件优先于「卷」）；
+        # 该方法允许返回尚未挂载的控件，供 autofocus 在本次整页 patch 中预聚焦。
+        nav_target = getattr(page, "nav_focus_target", None)
+        if callable(nav_target):
+            try:
+                target = nav_target()
+            except Exception as exc:  # noqa: BLE001
+                self.mark("nav_focus_target_error", page=getattr(page, "key", ""),
+                          error=f"{type(exc).__name__}: {exc}")
+        hook = getattr(page, "focus_after_nav", None)
+        if target is None and callable(hook):
+            try:
+                target = hook()
+            except Exception as exc:  # noqa: BLE001 页面自己的聚焦策略失败不得炸导航
+                self.mark("focus_after_nav_error", page=getattr(page, "key", ""),
+                          error=f"{type(exc).__name__}: {exc}")
+        if target is None:
+            fields = getattr(page, "fields", None) or {}
+            try:
+                for ref in fields.values():
+                    control = ref[0] if ref else None
+                    if control is not None and callable(getattr(control, "focus", None)):
+                        target = control
+                        break
+            except Exception:  # noqa: BLE001 字段残缺时退回「不预聚焦」
+                target = None
+        if target is None:
+            return None
+        try:
+            target.autofocus = True
+        except Exception as exc:  # noqa: BLE001 属性不可写时 only 走显式 focus
+            self.mark("nav_autofocus_error", page=getattr(page, "key", ""),
+                      error=f"{type(exc).__name__}: {exc}")
+        return target
+
+    async def _release_nav_autofocus(self, target) -> None:
+        """焦点落定后清掉 autofocus，避免后续整页重建再次抢焦点。"""
+        await asyncio.sleep(0.6)
+        try:
+            target.autofocus = False
+        except Exception:  # noqa: BLE001 控件已销毁时忽略
+            pass
+
+    def _focus_after_nav(self, page, *, target=None) -> None:
         """R03：`BasePage.focus_after_nav()` 返回控件时在导航后聚焦它。
 
         Flet 1.0.5 的 `Control.focus()` 是 async，必须经 `page.run_task` 调度；
         返回 None（默认实现）表示该页不需要改焦点，直接不动。
         """
-        hook = getattr(page, "focus_after_nav", None)
-        if not callable(hook):
-            return
-        try:
-            target = hook()
-        except Exception as exc:  # noqa: BLE001 页面自己的聚焦策略失败不得炸导航
-            self.mark("focus_after_nav_error", page=getattr(page, "key", ""),
-                      error=f"{type(exc).__name__}: {exc}")
-            return
+        if target is None:
+            hook = getattr(page, "focus_after_nav", None)
+            if not callable(hook):
+                return
+            try:
+                target = hook()
+            except Exception as exc:  # noqa: BLE001 页面自己的聚焦策略失败不得炸导航
+                self.mark("focus_after_nav_error", page=getattr(page, "key", ""),
+                          error=f"{type(exc).__name__}: {exc}")
+                return
         if target is None:
             return
+        page_key = getattr(page, "key", "")
         try:
-            self.page.run_task(target.focus)
-            self.mark("nav_focus", page=getattr(page, "key", ""))
+            # FIX2R2-4 F2-12：focus 协程里的异常不能只靠 Flet 的 future 回调打印；
+            # 统一在 _focus_target_safely 里捕获并落 marker，避免断线后仍留下未处理异常。
+            self.page.run_task(functools.partial(_run_focus_safely, self, target, page_key))
+            self.mark("nav_focus", page=page_key)
         except Exception as exc:  # noqa: BLE001 未挂载/已销毁控件
-            self.mark("focus_error", page=getattr(page, "key", ""),
+            self.mark("focus_error", page=page_key,
                       error=f"{type(exc).__name__}: {exc}")
+            return
+        try:
+            self.page.run_task(self._release_nav_autofocus, target)
+        except Exception:  # noqa: BLE001 释放失败不影响焦点已落下
+            pass
+
+    async def _focus_target_safely(self, target, page_key: str = "") -> None:
+        await _run_focus_safely(self, target, page_key)
 
     def goto(self, key: str) -> None:
         """兼容旧调用：`goto("bib")` = 去该页默认路由；带冒号时等价 navigate。"""
@@ -1645,22 +1759,29 @@ class App:
         self.t = Tokens(theme, self.zoom, self.dpi, getattr(self, "button_palette", "c"))
         self.page.theme_mode = ft.ThemeMode.DARK if theme == "dark" else ft.ThemeMode.LIGHT
         retinted = 0
+        rebuilt = False
         if built:
             try:
                 retinted = self._retint_shell(old)
             except Exception as exc:  # noqa: BLE001 - 换肤失败退回重建，不能停在半套皮肤
                 mode = "rebuild"
+                rebuilt = True
                 self.mark("theme_retint_fallback", theme=theme,
                           error=f"{type(exc).__name__}: {exc}")
-                self.rebuild_shell()
+                self._rebuild_shell_deferred()
         else:
-            self.rebuild_shell()
+            rebuilt = True
+            self._rebuild_shell_deferred()
         # 审计 §2.4 gap3：热切换走 retint、不重建控件，但 page.theme/dark_theme 还是
         # 上一个 Tokens 的投影。这里按当前色板重放一遍（幂等；rebuild 分支已跑过），
         # Switch/Slider/Radio 的控件主题才会随皮肤一起换。
         self._apply_page_theme()
         self.page.bgcolor = self.t.palette.bg
         self.status_bar.set_meta(self._status_meta())
+        if rebuilt:
+            # Q3（FIX2R2-2）：rebuild_shell 的内联发送已暂缓（_rebuild_shell_deferred），
+            # 下面这次合并发送就是本次换肤唯一的整页 patch（F2-9：换肤 = 1 次）。
+            self.mark("theme_rebuild_deferred", mode=mode)
         self._coalesced_update()
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         self.mark("theme_changed", theme=theme, mode=mode, duration_ms=elapsed_ms,
@@ -1668,6 +1789,14 @@ class App:
         self.apply_titlebar()
         if self.persist():
             self.toast("已切换到" + ("深色" if theme == "dark" else "浅色") + "模式（已落盘）")
+
+    def _rebuild_shell_deferred(self) -> None:
+        """Q3（FIX2R2-2）：重建外壳时暂缓内联整页 patch，统一交给合并发送器。"""
+        self._shell_update_deferred = True
+        try:
+            self.rebuild_shell()
+        finally:
+            self._shell_update_deferred = False
 
     # ── 换肤不重建（批 112 S2 · GUI-03）────────────────────────────────
     def _retint_shell(self, old: Tokens) -> int:

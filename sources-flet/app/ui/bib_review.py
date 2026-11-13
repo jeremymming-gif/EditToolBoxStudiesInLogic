@@ -117,6 +117,10 @@ class ReviewView:
         self.limit = 100
         self._task_running = False
         self._build_width = 0.0
+        # 输入筛选时只更新结果区：重建含输入框的过滤器会让客户端重建 TextField、丢焦点。
+        self._body_holder: ft.Container | None = None
+        self._count_text: ft.Text | None = None
+        self._dock_text: ft.Text | None = None
 
     # ── 基础 ────────────────────────────────────────────────────────────
     @property
@@ -263,7 +267,35 @@ class ReviewView:
     def _on_text(self, e) -> None:
         self.text = str(getattr(e.control, "value", "") or "")
         self._apply_filters()
-        self._refresh()
+        self._refresh_results()
+
+    def _refresh_results(self) -> None:
+        """只重建结果区（队列/详情/底部条），不动含输入框的过滤器。
+
+        真机复现（FIX2R2-3）：待处理搜索框键入首字母后，原来的 _refresh() 会让
+        宿主重建整个视图（含搜索框），客户端重建 TextField → 焦点被夺走，后续按键
+        变成纯键盘事件。这里改为定向刷新结果容器；输入框保持挂载，焦点不丢。
+        """
+        if self._body_holder is None:
+            self._refresh()          # 尚未 build（理论上不会走到）：退回旧路径
+            return
+        self._body_holder.content = self._body()
+        targets: list = [self._body_holder]
+        if self._count_text is not None:
+            self._count_text.value = self._pending_line()
+            targets.append(self._count_text)
+        if self._dock_text is not None:
+            self._dock_text.value = self._dock_line()
+            targets.append(self._dock_text)
+        failed = True
+        for control in targets:
+            try:
+                control.update()
+                failed = False
+            except Exception:  # noqa: BLE001 - 未挂载时退回旧路径
+                continue
+        if failed:
+            self._refresh()
 
     def _on_field(self, e) -> None:
         key = str(getattr(e, "data", "") or "")
@@ -694,12 +726,13 @@ class ReviewView:
             t, value=self.severity_filter or "全部",
             options=[("", "全部严重度"), ("高", "高"), ("中", "中"), ("低", "低")],
             on_select=self._on_severity, width=100)
+        self._count_text = C.text(self._pending_line(), t, "caption",
+                                  t.palette.text_faint)
         return S.filter_row(t, search=field, on_search=self._on_text,
                             controls=[C.paste_button(t, self.page, field,
                                                      height=t.control_h()),
                                       field_select, severity],
-                            count=C.text(self._pending_line(), t, "caption",
-                                         t.palette.text_faint),
+                            count=self._count_text,
                             page=self.page.page, search_width=220)
 
     def _body(self) -> ft.Control:
@@ -744,19 +777,23 @@ class ReviewView:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _dock(self) -> ft.Control:
-        t = self.t
+    def _dock_line(self) -> str:
         counts = self._counts()
         if counts["pending"] == 0:
-            text = f"待处理 0 条 · 累计 {counts['resolved']} 条已裁决"
-        elif counts["records"] > 0:
-            text = f"待处理 {counts['pending']} 条冲突 · 涉及 {counts['records']} 条记录"
-        else:
-            text = f"待处理 {counts['pending']} 条冲突"
-        return C.text(text, t, "caption", t.palette.text_faint)
+            return f"待处理 0 条 · 累计 {counts['resolved']} 条已裁决"
+        if counts["records"] > 0:
+            return f"待处理 {counts['pending']} 条冲突 · 涉及 {counts['records']} 条记录"
+        return f"待处理 {counts['pending']} 条冲突"
+
+    def _dock(self) -> ft.Control:
+        self._dock_text = C.text(self._dock_line(), self.t, "caption",
+                                 self.t.palette.text_faint)
+        return self._dock_text
 
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
+        filter_row = self._filter()
+        self._body_holder = ft.Container(content=self._body(), expand=True)
         return S.page_shell(
             self.t, title=TITLE,
             meta=(self._pending_line()
@@ -764,7 +801,7 @@ class ReviewView:
             role_chip="write", action=None,
             on_gear=lambda e: self._goto("settings"),
             body=ft.Column(spacing=0, expand=True, controls=[
-                self._filter(), self._body()]),
+                filter_row, self._body_holder]),
             dock=self._dock(), dock_height=S.DOCK_H)
 
     def _goto(self, view: str) -> None:

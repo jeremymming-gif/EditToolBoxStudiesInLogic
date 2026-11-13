@@ -379,9 +379,10 @@ def test_issue_page_builds_empty_state_or_step_subpage() -> None:
     assert "_build_step_page(landing)" in build_src
     assert "_content_box" in build_src
     step_src = inspect.getsource(P.IssuePage._build_step_page)
-    assert "_build_empty_detail()" in step_src
+    body_src = inspect.getsource(P.IssuePage._step_body)
+    assert "_build_empty_detail()" in body_src
     assert "_build_issue_row()" in step_src
-    assert "_run_step" not in step_src
+    assert "_run_step" not in step_src and "_run_step" not in body_src
     # 批 117：54 高横条/216 左栏删除，导航改为页内 4 chip。
     assert "_progress_band" not in step_src
     nav_src = inspect.getsource(P.IssuePage._nav_bar)

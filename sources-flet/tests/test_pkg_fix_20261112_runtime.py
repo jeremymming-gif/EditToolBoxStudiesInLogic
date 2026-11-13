@@ -5,8 +5,8 @@
 1. Q1 —— 换肤 retint 要把 TextField 的 `TextStyle.color`（正文/提示/标签/错误/光标文字）
    一起按前景语义重染；用 `LIGHT`/`DARK` token 对照断言，不硬编码颜色，并用相对亮度
    证明深色主题下正文与输入框底色对比度 ≥ 4.5（近黑字压在深底上就是 Q1 的症状）。
-2. Q2 —— 输入过程中 `✕` 只同步属性、不发 update（否则客户端重建整框、首字母丢焦点）；
-   失焦补发一次；「有内容显示 ✕ / 空不显示」的既有语义不变。
+2. Q2 —— 输入过程中只对 `✕` 做定向 update（首字符后立刻上屏，且不碰聚焦中的 TextField，
+   避免客户端重建整框丢焦点）；失焦补发一次；「有内容显示 ✕ / 空不显示」的语义不变。
 3. Q3 —— navigate / set_theme 的整页 `page.update()` 在 180ms 窗口内合并成 1 次；
    navigate 的路由状态、set_theme 的换肤效果仍然同步落地（不能为了合并而变慢/变卡）。
 4. Q9 —— 报告固定行解析出 `fix_written` / `fix_path`；`proof_result_text` 只有报告明确
@@ -104,7 +104,7 @@ def test_retint_shell_covers_mounted_text_styles():
     assert field.bgcolor == DARK.surface
 
 
-# ── Q2：清空按钮不再在输入中触发整框 update（不丢焦点）──────────────────────
+# ── Q2：输入中只定向 update ✕，聚焦框不进 patch（不丢焦点）──────────────────
 def _clearable_field() -> ft.TextField:
     field = C.text_field(Tokens("light"), value="", hint_text="路径")
     assert isinstance(field.suffix, ft.IconButton)
@@ -120,7 +120,7 @@ def _spy(field: ft.TextField) -> tuple[list[str], ft.IconButton]:
     return calls, button
 
 
-def test_typing_first_char_keeps_focus_contract_without_update():
+def test_typing_first_char_patches_only_clear_button():
     field = _clearable_field()
     calls, button = _spy(field)
 
@@ -128,11 +128,13 @@ def test_typing_first_char_keeps_focus_contract_without_update():
     field.on_change(SimpleNamespace(control=field))     # 用户敲入首字母
 
     assert button.visible is True                       # 属性照旧同步：有内容显示 ✕
-    assert calls == []                                  # 但不发 patch → 客户端不重建、不丢焦点
+    # FIX2R2-2 / F2-2 契约升级：✕ 必须首字符后立刻上屏，故对 ✕ 发一次定向 patch；
+    # 聚焦中的 TextField 仍然绝不进 patch（客户端不会重建输入框、不丢焦点）。
+    assert calls == ["button"]
     assert field._clearable_dirty is True
 
-    field.on_blur(SimpleNamespace(control=field))       # 失焦补发一次
-    assert calls == ["field", "button"]
+    field.on_blur(SimpleNamespace(control=field))       # 失焦补发一次（✕ 已在首字符时上屏过）
+    assert calls == ["button", "field", "button"]
     assert field._clearable_dirty is False
 
 
@@ -154,7 +156,8 @@ def test_clear_button_still_clears_and_toggles_visible():
     button.update = lambda: calls.append("button")
     field.value = "a"                                    # 清空后重输首字母
     field.on_change(SimpleNamespace(control=field))
-    assert button.visible is True and calls == []
+    # FIX2R2-2 / F2-2：✕ 立刻上屏（只 patch ✕，不 patch 聚焦框）
+    assert button.visible is True and calls == ["button"]
 
 
 def test_programmatic_sync_still_publishes_once():
@@ -226,14 +229,17 @@ def _nav_app() -> object:
     return app
 
 
-def test_navigate_coalesces_rapid_switches_to_one_update(monkeypatch):
-    monkeypatch.setattr(M, "_PAGE_UPDATE_COALESCE_S", 0.0)
+def test_navigate_sends_first_immediately_then_coalesces_burst():
+    # FIX2R2-3 K7：空闲时第一次切页立即发送（缩短焦点空窗）；连击才走合并。
     app = _nav_app()
 
-    for route in ("home", "bib:edit", "home", "bib:edit"):
+    M.App.navigate(app, "home")
+    assert app.page.updated == 1 and app.page.tasks == []   # 空闲首击立即 1 次
+
+    for route in ("bib:edit", "home", "bib:edit"):
         M.App.navigate(app, route)
 
-    assert app.page.updated == 0            # 窗口内不逐次发整页 patch
+    assert app.page.updated == 1            # 窗口内不逐次发整页 patch
     assert len(app.page.tasks) == 1         # 只排一次合并发送
     # 路由状态仍同步落地（最后一次导航生效），不因合并而变慢/丢状态
     assert app.current_page_key == "bib"
@@ -241,7 +247,18 @@ def test_navigate_coalesces_rapid_switches_to_one_update(monkeypatch):
     assert app.pages["bib"].activated[-1][0] == "edit"
 
     asyncio.run(app.page.tasks[0]())
-    assert app.page.updated == 1
+    assert app.page.updated == 2            # 连点 3 次 → 总计 2 次（满足 ≤2）
+
+
+def test_send_nav_update_immediate_when_idle(monkeypatch):
+    app = _nav_app()
+    app._page_update_sent_at = 0.0
+    after: list[int] = []
+
+    M.App._send_nav_update(app, after=lambda: after.append(1))
+
+    assert app.page.updated == 1 and after == [1]
+    assert app._page_update_sent_at > 0
 
 
 def _theme_app() -> object:

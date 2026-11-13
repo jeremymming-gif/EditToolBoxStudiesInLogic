@@ -605,6 +605,30 @@ class SinglePage(BasePage):
             return
         self.activate(key, source="page")
 
+    def nav_focus_target(self):
+        """导航落点：只取当前子步骤自己的输入框。
+
+        FIX2R2-3 K7：`fields` 按构建序登记，`_advanced_params()` 先于输入卡执行，
+        基类取第一个字段会落到只收数字的「卷」——切页后立即键入字母会被输入过滤
+        静默丢弃。这里按用户真正要填的输入顺序选：源稿件 → 输出根目录，其余交给
+        基类（已挂载的第一个字段）。
+
+        FIX2R2-4 F2-12：`fields` 是跨子步骤累积的；切到「一校核查」后旧「源稿件」
+        仍留在字典里，若继续把它当落点，会在该框已从控件树移除后发 focus 往返，
+        客户端收到失效控件的方法调用并断开 session（表现为整页重建循环）。因此
+        落点必须按 `flow_key` 限定在本步骤自己的字段里。
+        """
+        keys = {
+            "convert": ("single_source", "single_out"),
+            "proofcheck": ("proof_tex",),
+        }.get(getattr(self, "flow_key", ""), ())
+        for key in keys:
+            ref = self.fields.get(key) or []
+            control = ref[0] if ref else None
+            if control is not None and callable(getattr(control, "focus", None)):
+                return control
+        return None
+
     # ── 三个步骤的输入卡 ────────────────────────────────────────────────
     def _build_convert(self) -> ft.Control:
         t, p = self.t, self.t.palette
@@ -1378,6 +1402,7 @@ class IssuePage(BasePage):
         self._prep_box = None
         # 批 117：页内 4 功能子页导航 / 换期重置 / 失败日志摘要。
         self._nav_box = None
+        self._step_box = None
         self._nav_chips: dict = {}
         self._last_issue = ""
         self._step_tail: dict = {}
@@ -1393,8 +1418,8 @@ class IssuePage(BasePage):
         self._child_title = C.text("整期装配", t, role="page-title")
         self._flow_desc = C.text("一期稿件，从检查到合刊。", t, "small",
                                  color=t.palette.text_muted)
-        # 批 117：期目录输入内嵌进每个功能页（见 `_build_step_page`），
-        # 页面不再有期目录条、左侧导航栏或窄窗横条。
+        # FIX2R2-3 K7：期目录行仍在功能页顶部，但键入/换期只重建其下的
+        # `_step_box`（兄弟节点），聚焦中的期目录输入框不进 patch。
         #
         # 批 120 B-354：页头两个整期入口按钮已删除（入口只剩键盘与空态 CTA）；
         # 运行整期入口仍保留键盘与空态 CTA，页头只在运行中显示「停止」。
@@ -1447,16 +1472,36 @@ class IssuePage(BasePage):
         ref: list = []
         self.fields["issue_dir"] = ref
 
+        # 一段编辑只重建一次正文（第一次按键），后续字符只记值；
+        # 失焦时重置，下一次编辑再重建。
+        pending = True
+
         def _changed(e) -> None:
+            nonlocal pending
             value = (e.control.value or "").strip()
             self.app.store.set_recent("issue_dir", value)
             self.mark("path_change", field="issue_dir", value=e.control.value)
-            self._on_issue_changed(e)
+            # FIX2R2-3 K7：只重建期目录行下面的 `_step_box`（兄弟节点），
+            # 聚焦中的输入框不在 patch 范围内。
+            C.mark_event_updated("issue_path_typing")
+            if pending:
+                pending = False
+                self._on_issue_changed(e)
+
+        def _commit(e=None) -> None:
+            # blur 自身没有任何 update；不显式标记的话框架 after_event 会补一次
+            # 整页 patch。正文在第一次按键时已重建，blur 不再重建，
+            # 紧接着的点击（如「运行检查」）不会被换掉的控件吞掉。
+            nonlocal pending
+            pending = True
+            # 首字符重建正文时日志标题只拿到第一个字符；失焦补一次完整值。
+            self._update_log_title()
+            C.mark_event_updated("issue_path_blur")
 
         field = C.floating_field(
             t, "期目录", value=value,
             hint="一期稿件的根目录，含 000 / 01 作者…",
-            on_change=_changed, expand=True, clearable=False)
+            on_change=_changed, on_blur=_commit, expand=True, clearable=False)
         ref.append(field)
 
         def _browse(e) -> None:
@@ -1684,22 +1729,27 @@ class IssuePage(BasePage):
                                      icon="FOLDER_OPEN"),
                 ]))
 
-    def _build_step_page(self, key: str) -> ft.Control:
-        """功能页：最上方是内嵌的期目录行，其下是该功能自己的 1–2 个区块。
-
-        批 117：期目录输入从页面级 44 高横条挪进四个功能页（四页共用同一值）；
-        无期目录时仍显示输入行 + 统一空态，不再回落到旧总览树。
-        """
-        t = self.t
-        controls: list = [self._build_issue_row()]
+    def _step_body(self, key: str) -> list:
+        """功能页正文（不含期目录行）：空态卡，或结果条 + 1–2 个区块。"""
         if not self.field("issue_dir"):
-            controls.append(self._build_empty_detail())
-            return ft.Column(spacing=t.sp("2"), controls=controls)
+            return [self._build_empty_detail()]
+        controls: list = []
         if self._result is not None:
             controls.append(self._result.root)
         for step_key in self._view_steps(self._view_of_step(key)):
             controls.append(self._build_section(step_key))
-        return ft.Column(spacing=0, controls=controls)
+        return controls
+
+    def _build_step_page(self, key: str) -> ft.Control:
+        """功能页：最上方是内嵌的期目录行，其下是该功能自己的 1–2 个区块。
+
+        期目录行与正文分成两个兄弟节点：键入/换期只重建 `_step_box`，
+        聚焦中的期目录输入框不进任何 patch。
+        """
+        t = self.t
+        self._step_box = ft.Column(spacing=0, controls=self._step_body(key))
+        return ft.Column(spacing=t.sp("2"),
+                         controls=[self._build_issue_row(), self._step_box])
 
     def _build_section(self, key: str) -> ft.Control:
         """功能区块：区块头常显（标题 + 状态 + 本功能主按钮），内容手风琴展开。
@@ -2988,7 +3038,9 @@ class IssuePage(BasePage):
             self.selected = last
         # 手风琴：恢复/当前步骤即该视图展开的区块（同视图另一块随之收起）。
         self._set_expanded(self.selected)
-        if self._content_box is not None:
+        if getattr(self, "_step_box", None) is not None:
+            self._step_box.controls = self._step_body(self.selected)
+        elif self._content_box is not None:
             self._content_box.controls = [self._build_step_page(self.selected)]
 
     def _reset_issue_runtime(self) -> None:
@@ -3071,7 +3123,7 @@ class IssuePage(BasePage):
             # 新目录有上次记录就恢复状态，但不改变当前功能页（换期不跳走）。
             self._restore_issue_state(keep_view=True)
         self._set_expanded(self.selected)
-        if getattr(self, "_content_box", None) is not None:
+        if getattr(self, "_step_box", None) is not None:
             self._step_run_btns = {}
             self._primary_btns = {}
             self._detail_statuses = {}
@@ -3082,12 +3134,12 @@ class IssuePage(BasePage):
             self._detail_status = None
             self._detail_primary = None
             self._step_run_primary = None
-            self._content_box.controls = [self._build_step_page(self.selected)]
+            self._step_box.controls = self._step_body(self.selected)
             self.refresh_running()
-            self._sync_nav()
             self._sync_header()
             self._sync_stop_action()
-            self._safe_update(self._nav_box, self._content_box)
+            self._sync_nav()
+            self._safe_update(self._nav_box, self._step_box)
             self._persist_issue_state()
         if self._log is not None:
             self._log.clear()

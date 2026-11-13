@@ -66,18 +66,83 @@ def _full_value_tooltip(value) -> str | None:
     return raw or None
 
 
-def sync_clearable(field: ft.TextField, *, update: bool = True) -> None:
+#: 抑制框架「事后整页 patch」的次数与失败数（诊断 / 测试只读）。
+AUTO_UPDATE_MARKS = {"count": 0, "errors": 0, "last_error": ""}
+
+
+def mark_event_updated(reason: str = "") -> bool:
+    """声明「本事件已经自己发过 patch」，让 flet 跳过事后的自动整页 patch。
+
+    flet 1.0.5（messaging/session.py:565 after_event）在每个事件处理完后检查
+    `context.was_update_called()`：没调过 `update()` 就从事发控件沿 parent 上溯到
+    第一个 isolated 控件（产品里命中的是 Page）做一次整页 patch。整页 patch 里
+    只要含正在聚焦的 TextField，客户端就会重建该框 → 输入首字母后失焦
+    （FIX-20261112 根因，见 3.FIX 复盘）。键入路径只定向更新 ✕，所以必须显式
+    声明本事件已处理，否则框架仍会补一次整页 patch。
+
+    调用安全：没有 session 时 flet 退回进程级默认行为（flet/controls/context.py），
+    假 page / 单测环境同样可用；每个事件开始前框架会 reset，不会泄漏到下一事件。
+    失败只计数并写启动日志，返回 False 让调用方退回旧行为（多一次整页 patch），
+    绝不抛异常拖垮输入。
+    """
+    try:
+        ft.context.mark_update_called()
+        AUTO_UPDATE_MARKS["count"] += 1
+        return True
+    except Exception as exc:  # noqa: BLE001 抑制失败不得影响键入
+        AUTO_UPDATE_MARKS["errors"] += 1
+        AUTO_UPDATE_MARKS["last_error"] = f"{type(exc).__name__}: {exc}"
+        try:
+            from services import startup_log as _SLOG  # 延迟导入：组件库不依赖服务层
+            _SLOG.log("auto_update_mark_error", reason=str(reason or ""),
+                      error=f"{type(exc).__name__}: {exc}")
+        except Exception:  # noqa: BLE001 诊断通道自己失败也吞掉
+            pass
+        return False
+
+
+def _wrap_submit(handler):
+    """包一层提交事件：先跑业务 handler，再声明本事件已处理（FIX2R2-2）。
+
+    各提交 handler 都自己负责刷新（显式 update / _render() 合并 / 调度异步任务），
+    所以不必让框架再补一次整页 patch —— 整页 patch 会重建刚提交的输入框、让提交后
+    焦点丢失（真机 2026-11-12 复现）。handler 为 None 时原样返回，不影响无提交语义的框。
+    """
+    if handler is None:
+        return None
+
+    def _submit(event):
+        handler(event)
+        mark_event_updated("submit")
+
+    return _submit
+
+
+def _quiet_update(control) -> bool:
+    """只给单个控件定向 patch；未挂载 / 页面已销毁时静默失败。"""
+    if control is None:
+        return False
+    try:
+        control.update()
+        return True
+    except Exception:  # noqa: BLE001 构建期控件可能未挂载
+        return False
+
+
+def sync_clearable(field: ft.TextField, *, update: bool = True) -> bool:
     """按当前值切换 ✕ 的显隐（程序化赋值后调用；不触发 on_change）。
 
-    Q2（FIX-20261112）：用户连续输入时不能对聚焦中的 TextField 发 update——flet 1.0.5
-    里翻转 suffix 内 ✕ 的 `visible` 再 update 会让客户端重建整框（flet #6901 同类），
-    输入首字母因此丢焦点。`_wrapped` 走 `update=False`：只同步属性（suffix/tooltip），
-    变化记为 `_clearable_dirty`，等失焦（on_blur）或程序化回填时统一 flush 一次。
+    Q1（FIX-20261112）：用户连续输入时聚焦中的 TextField 一律不许进任何 patch——
+    flet 1.0.5 里整页 patch（含该框）会让客户端重建输入框，输入首字母后丢焦点。
+    `_wrapped` 走 `update=False`：显隐变化只对 ✕ 按钮自己做一次定向 patch（首字符
+    立刻上屏、清空时立刻消失），tooltip 与字段自身留给失焦时的一次 update=True
+    flush；同时声明本事件已处理，避免框架补一次整页 patch。
 
     R01：带 `_value_tooltip` 标记的字段（`path_picker` 挂的）同时把当前值全文同步到
     `tooltip`——被截断的长路径仍可悬停看全。值没变就不发 update，不增加噪声。
     """
     changed = False
+    visible_changed = False
     if getattr(field, "_value_tooltip", False):
         wanted = _full_value_tooltip(getattr(field, "value", ""))
         if getattr(field, "tooltip", None) != wanted:
@@ -89,20 +154,26 @@ def sync_clearable(field: ft.TextField, *, update: bool = True) -> None:
         if button.visible != visible:
             button.visible = visible
             changed = True
+            visible_changed = True
     if not update:
         if changed:
             field._clearable_dirty = True
-        return
+        # ✕ 是聚焦输入框的后代，单独 patch 它不会重建输入框；其余变化等失焦 flush。
+        if visible_changed:
+            _quiet_update(button)
+        mark_event_updated("clearable")
+        return True
     if not changed and not getattr(field, "_clearable_dirty", False):
-        return
+        # 失焦兜底（FIX2R2-2）：值、✕ 显隐、tooltip 都没变时本事件没有任何要发的东西，
+        # 但 flet 的 after_event 会补一次整页 patch（整页里含刚失焦/仍聚焦的输入框 → 重建）。
+        # 显式声明本事件已处理：把「失焦一次完整 flush」收缩成「只有真有变化才 flush」。
+        mark_event_updated("clearable_noop")
+        return False
     field._clearable_dirty = False
-    for ctl in (field, button):
-        if ctl is None:
-            continue
-        try:
-            ctl.update()
-        except Exception:  # noqa: BLE001 构建期控件可能未挂载
-            pass
+    _quiet_update(field)
+    _quiet_update(button)
+    mark_event_updated("clearable_flush")
+    return True
 
 
 def make_clearable(field: ft.TextField, t: Tokens, *, on_clear=None) -> ft.TextField:
@@ -734,7 +805,7 @@ def text_field(t: Tokens, *, value: str = "", hint_text: str | None = None,
         suffix_icon=ic(suffix_icon) if isinstance(suffix_icon, str) else suffix_icon,
         keyboard_type=keyboard_type,
         on_change=on_change,
-        on_submit=on_submit,
+        on_submit=_wrap_submit(on_submit),
         on_focus=on_focus,
         on_blur=on_blur,
         **kwargs,
@@ -1086,6 +1157,8 @@ def floating_field(t: Tokens, label: str, *, value: str = "", hint: str | None =
     批 114 用户 m03131：默认挂「一键清空」✕（有值才显示），清空时触发原 on_change。
     """
     p = t.palette
+    if kwargs.get("on_submit") is not None:
+        kwargs["on_submit"] = _wrap_submit(kwargs["on_submit"])
     field = ft.TextField(
         value=value,
         on_change=on_change,

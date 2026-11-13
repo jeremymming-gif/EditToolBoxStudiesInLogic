@@ -219,7 +219,8 @@ def test_issue_step_page_has_no_back_button_or_duplicate_title():
     toc_btn = next(ctl for ctl in detail_runs if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
     src = inspect.getsource(P.IssuePage._build_step_page)
-    assert "_build_empty_detail()" in src
+    body_src = inspect.getsource(P.IssuePage._step_body)
+    assert "_build_empty_detail()" in body_src
     assert "_build_issue_row()" in src and "_run_step" not in src
     assert "_progress_band" not in src
 

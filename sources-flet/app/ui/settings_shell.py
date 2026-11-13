@@ -115,12 +115,24 @@ def hotkey_action(key: str, ctrl: bool = False, shift: bool = False,
     return ""
 
 
+def _suppress_auto_page_update(app, event, reason: str) -> None:
+    """声明本按键事件不需要框架补整页 patch；抑制失败退回旧行为并记 marker。"""
+    if C.mark_event_updated(reason):
+        return
+    try:
+        app.mark("hotkey_autopatch_unsuppressed", reason=reason,
+                 key=str(getattr(event, "key", "")))
+    except Exception:  # noqa: BLE001 marker 通道失败也不得影响按键
+        pass
+
+
 def on_key(app, event) -> None:
     # 批 114：搜索框聚焦时 ↑↓/Escape 先交给搜索（Enter 走 TextField on_submit）。
     search_hook = getattr(app, "search_key_handle", None)
     if callable(search_hook):
         try:
             if search_hook(event):
+                _suppress_auto_page_update(app, event, "search_key")
                 return
         except Exception:  # noqa: BLE001 搜索键盘处理失败不能拖垮全局热键
             pass
@@ -128,6 +140,11 @@ def on_key(app, event) -> None:
                            bool(getattr(event, "shift", False)),
                            bool(getattr(event, "alt", False)))
     if not action:
+        # Q2（FIX-20261112）：未命中热键的按键（绝大多数普通输入）不能留给框架的
+        # 自动整页 patch —— page.on_keyboard_event 让每个按键都走这里，而整页 patch
+        # 会把正在输入的 TextField 重建掉（首字母后失焦、每键一次全量 patch）。
+        # 命中热键的分支行为不变：navigate/set_theme 走 _coalesced_update 各自负责发送。
+        _suppress_auto_page_update(app, event, "hotkey_miss")
         return
     app.mark("hotkey", action=action, key=str(getattr(event, "key", "")))
     if action.startswith("page:"):

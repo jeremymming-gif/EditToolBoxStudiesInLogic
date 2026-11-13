@@ -229,13 +229,19 @@ class BibEditView:
             self._diff_holder.content = self._diff_col_body()
         if self._bottom_holder is not None:
             self._bottom_holder.content = self._bottom()
-        page = self._flet()
-        update = getattr(page, "update", None)
-        if callable(update):
+        # FIX2R2-3：原来这里调用整页 page.update()，每敲一个字符就发一次整页 patch
+        # （真机 10 键 9 次 n=0）。改成只定向更新两个容器；聚焦中的字段不进 patch。
+        updated = False
+        for holder in (self._diff_holder, self._bottom_holder):
+            if holder is None:
+                continue
             try:
-                update()
+                holder.update()
+                updated = True
             except Exception:  # noqa: BLE001
-                pass
+                continue
+        if not updated:
+            C.mark_event_updated("bib_edit_touch")
 
     async def _call(self, call: EB.EngineCall) -> dict:
         try:
