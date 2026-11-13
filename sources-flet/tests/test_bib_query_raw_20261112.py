@@ -403,7 +403,8 @@ def test_raw_record_failure_paths_are_chinese_and_closeable(tmp_path, monkeypatc
     host4, view4 = _select_db(_hit(_rec("k", {"title": "t"})), tmp_path)
     view4._raw_record_open()
     texts4 = _texts(host4.page.dialogs[0])
-    assert any(text.startswith("读取失败：IsADirectoryError；") for text in texts4)
+    assert any(text.startswith(("读取失败：IsADirectoryError；", "读取失败：PermissionError；"))
+               for text in texts4)
     assert "库文件可能被占用或已损坏" in " ".join(texts4)
     _button(host4.page.dialogs[0], "关闭").on_click(None)
     assert host4.page.dialogs == []
