@@ -266,3 +266,27 @@ def test_build_restores_persisted_result_banner_for_recent_issue():
     assert page._result.title.value == "完成"
     assert page._result.detail.value == "/tmp/b-report.txt"
     assert page._result.open_btn.visible
+
+
+def test_empty_issue_then_new_issue_rebuilds_body_not_stale_sections():
+    """F1：先清空再输入新期，正文必须重建，不能复用已脱离页面树的旧区块。"""
+    page = _page_with_issue(ISSUE_A)
+    old_head = page._section_heads["infocheck"]
+    old_body = page._section_bodies["infocheck"]
+
+    # 先把字段清空并失焦：这是与 ✕ 并行的真实路径；若 ✕ 的清除
+    # 先被 blur 抢先提交，_on_issue_changed 会因值相同而幂等早退。
+    page.fields["issue_dir"][0].value = ""
+    _blur(page)
+    page._on_issue_changed(None)
+    assert page._last_issue == ""
+
+    _type(page, ISSUE_B)
+    _blur(page)
+    _settle(page, ISSUE_B)
+
+    # 正文回到有期结构，且不再引用空态前的旧区块。
+    assert page._step_box.controls[0] is page._result.root
+    assert page._section_heads["infocheck"] is not old_head
+    assert page._section_bodies["infocheck"] is not old_body
+    assert "infocheck" in page._primary_btns

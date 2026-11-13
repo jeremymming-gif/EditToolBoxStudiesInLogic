@@ -3110,8 +3110,26 @@ class IssuePage(BasePage):
         elif self._content_box is not None:
             self._content_box.controls = [self._build_step_page(self.selected)]
 
-    def _reset_issue_runtime(self) -> None:
-        """换期清空本页运行态与结果缓存（P0）。"""
+    def _clear_section_refs(self) -> None:
+        """丢掉当前正文的区块/按钮引用；整块重建或进入空态前必须调用。"""
+        self._step_run_btns = {}
+        self._primary_btns = {}
+        self._detail_statuses = {}
+        self._section_refs = {}
+        self._section_heads = {}
+        self._section_bodies = {}
+        self._chevrons = {}
+        self._detail_status = None
+        self._detail_primary = None
+        self._step_run_primary = None
+
+    def _reset_issue_runtime(self, *, clear_sections: bool = False) -> None:
+        """换期清空本页运行态与结果缓存（P0）。
+
+        clear_sections 只用于「提交为空期」：正文马上换成空态卡，旧区块引用
+        会脱离页面树；若不清掉，下一次从空期建区时 _refresh_issue_detail_in_place
+        会误判旧引用仍可原地刷新，正文停在空态（F1）。
+        """
         # 结果条也是本页运行态：换期先清空，新期有快照再由 _restore_issue_state 恢复。
         self._banner = None
         result = getattr(self, "_result", None)
@@ -3156,6 +3174,8 @@ class IssuePage(BasePage):
         self._dirpush_payload = None
         # 目录面板缓存里有上一期的栏目表/预览；重建，避免带进新一期。
         self._toc_panel = None
+        if clear_sections:
+            self._clear_section_refs()
         self._info = CK.issue_card(self)
 
     def _update_log_title(self, issue: str = "") -> None:
@@ -3192,7 +3212,9 @@ class IssuePage(BasePage):
         if previous:
             self._persist_issue_state(previous)
         self._last_issue = issue
-        self._reset_issue_runtime()
+        # 进入空期时正文会换成空态卡；旧区块引用必须同时丢掉，否则从空期
+        # 再建区时原地刷新会更新脱离页面树的控件（F1）。
+        self._reset_issue_runtime(clear_sections=not issue)
         if issue:
             # 新期有上次记录就恢复状态，但不改变当前功能页（换期不跳走）；
             # 正文由调用方原地刷新，避免换掉刚要点的运行按钮。
@@ -3324,16 +3346,7 @@ class IssuePage(BasePage):
             return
         self._set_expanded(self.selected)
         if getattr(self, "_step_box", None) is not None:
-            self._step_run_btns = {}
-            self._primary_btns = {}
-            self._detail_statuses = {}
-            self._section_refs = {}
-            self._section_heads = {}
-            self._section_bodies = {}
-            self._chevrons = {}
-            self._detail_status = None
-            self._detail_primary = None
-            self._step_run_primary = None
+            self._clear_section_refs()
             self._step_box.controls = self._step_body(self.selected)
             self.refresh_running()
             self._sync_header()
