@@ -13,6 +13,12 @@ C-2：A→B→A 后 `toc_report`/`toc_settings` 仍是 B 的，面板重建后�
 
 另含正向守卫：当前期正确 Open、B 已有结果仍打开 B、显式外部报告在同一期内可用、
 旧 issue_state schema 不被扩写。
+
+R7 收尾 a/c（同一批）：
+a. 运行中期身份一致性：键入/失焦/选择器/清空/深链恢复都必须把字段与持久
+   recent 锁在本轮身份，逐键不刷屏；运行结束立即恢复可编辑与正常提交。
+c. 同机制旧期正文 Open 一次补齐：信息检查 / 编译报告 / 合并 / 推送 / 前置页
+   的旧卡片在 350ms 刷新窗口内一律拒绝；当前期重建后仍正常打开。
 """
 from __future__ import annotations
 
@@ -22,6 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import flet as ft
+import pytest
 
 import main as M  # noqa: F401  （保证 app/ 在 sys.path，与其它壳测试一致）
 from services import toc_settings as TS
@@ -313,3 +320,234 @@ def test_c2_commit_does_not_extend_old_issue_state_schema(tmp_path):
     _switch(page, issue_b)
     assert set(_states(page)[str(issue_a)]) == {"schema", "last_step", "statuses"}
     assert set(_states(page)[str(issue_b)]) == {"schema", "last_step", "statuses"}
+
+
+# ── R7-a：运行中期身份一致性（键入/选择器/清空/恢复）────────────────────
+def _latched_page(issue: Path):
+    page, _root = _build_issue()
+    page.set_field("issue_dir", str(issue))
+    page._on_issue_changed(None)
+    return page
+
+
+def _begin_run(page) -> None:
+    page.app.marked.clear()
+    page.app.toasts.clear()
+    page.app.running = True
+    page.refresh_running()
+
+
+def _end_run(page) -> None:
+    page.app.running = False
+    page.refresh_running()
+
+
+def _log_title(page) -> str:
+    toolbar = page._log.root.content.controls[0]
+    for control in toolbar.controls:
+        if isinstance(control, ft.Text) and str(control.value).startswith("整期日志"):
+            return str(control.value)
+    return ""
+
+
+def _type_into(page, value: str):
+    field = page.fields["issue_dir"][0]
+    for i in range(1, len(value) + 1):
+        field.value = value[:i]
+        field.on_change(SimpleNamespace(control=field))
+    return field
+
+
+def test_a_running_typing_keeps_field_recent_title_and_identity_on_the_issue(tmp_path):
+    issue_a = tmp_path / "issue-A"
+    issue_a.mkdir()
+    issue_b = tmp_path / "issue-B"
+    issue_b.mkdir()
+    page = _latched_page(issue_a)
+    _begin_run(page)
+
+    field = _type_into(page, str(issue_b))
+    field.on_blur(SimpleNamespace(control=field))
+
+    # 运行中：输入框、持久 recent、日志标题、身份、结果归属必须同一期。
+    assert field.value == str(issue_a), "运行中键入不得把字段留在另一个期"
+    assert page.app.store.recent["issue_dir"] == str(issue_a)
+    assert page._last_issue == str(issue_a)
+    assert _log_title(page).endswith(issue_a.name)
+    assert not [e for e, _ in page.app.marked if e == "issue_changed"]
+    assert len(page.app.toasts) == 1, "逐键拒绝只提示一次"
+    # 输入框与更换/清空入口都锁住（可见拒绝，不靠日志标签掩盖）。
+    assert field.read_only is True
+    assert page._issue_browse_btn.disabled is True
+    assert page._issue_clear_btn.disabled is True
+
+
+def test_a_running_picker_and_clear_are_rejected_without_moving_recent(tmp_path, monkeypatch):
+    issue_a = tmp_path / "issue-A"
+    issue_a.mkdir()
+    issue_b = tmp_path / "issue-B"
+    issue_b.mkdir()
+    page = _latched_page(issue_a)
+    _begin_run(page)
+    field = page.fields["issue_dir"][0]
+
+    async def _no_sleep(_seconds):
+        return None
+
+    # 选择器：main.browse_field 直接写 value，_watch_issue_pick 补提交。
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    field.value = str(issue_b)
+    asyncio.run(page._watch_issue_pick(page.fields["issue_dir"], str(issue_a)))
+    assert field.value == str(issue_a)
+    assert page.app.store.recent["issue_dir"] == str(issue_a)
+    assert _log_title(page).endswith(issue_a.name)
+
+    # ✕ 清空：运行中同样保留本轮身份，不得把标题/日志改成未归属态。
+    page._clear_issue()
+    assert field.value == str(issue_a)
+    assert page.app.store.recent["issue_dir"] == str(issue_a)
+    assert page._last_issue == str(issue_a)
+    assert _log_title(page).endswith(issue_a.name)
+    assert len(page.app.toasts) == 1, "选择器与清空共用一次运行期提示"
+
+
+def test_a_run_end_restores_editing_and_normal_commit(tmp_path):
+    issue_a = tmp_path / "issue-A"
+    issue_a.mkdir()
+    issue_b = tmp_path / "issue-B"
+    issue_b.mkdir()
+    page = _latched_page(issue_a)
+    _begin_run(page)
+    _type_into(page, str(issue_b))
+    _end_run(page)
+
+    field = page.fields["issue_dir"][0]
+    assert field.read_only is False
+    assert page._issue_browse_btn.disabled is False
+    assert page._issue_clear_btn.disabled is False
+
+    # 结束后恢复正常编辑：完整输入仍可提交（不保留拒绝状态）。
+    _type_into(page, str(issue_b))
+    assert page.app.store.recent["issue_dir"] == str(issue_b)
+    field.on_blur(SimpleNamespace(control=field))
+    assert page._last_issue == str(issue_b)
+    assert _log_title(page).endswith(issue_b.name)
+    _settle(page, issue_b)
+
+
+def test_a_prefill_deep_link_does_not_move_issue_while_running(tmp_path):
+    issue_a = tmp_path / "issue-A"
+    issue_a.mkdir()
+    issue_b = tmp_path / "issue-B"
+    issue_b.mkdir()
+    page = _latched_page(issue_a)
+    _begin_run(page)
+
+    page.prefill(issue_dir=str(issue_b))
+
+    assert page.field("issue_dir") == str(issue_a)
+    assert page.app.store.recent["issue_dir"] == str(issue_a)
+    assert page._last_issue == str(issue_a)
+
+
+# ── R7-c：同机制旧期正文 Open（编译报告 / 合并 / 推送 / 前置页）──────────
+def _dirpush_card(page, issue: Path):
+    artifact = issue / "push" / "推送摘要.docx"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"docx")
+    page._status["dirpush"] = ASM.StepStatus("done", artifact=str(artifact))
+    page._dirpush_payload = {"ok": True}
+    return page._dirpush_result(), [str(artifact), str(artifact.parent)]
+
+
+def _compile_card(page, issue: Path):
+    report = issue / "编译报告.md"
+    report.write_text("report", encoding="utf-8")
+    page._compile_rows = {"01a": {"status": "done", "pdf": ""}}
+    page._compile_order = ["01a"]
+    return page._compile_result(), [str(report)]
+
+
+def _merge_card(page, issue: Path):
+    product = issue / "合并.pdf"
+    product.write_bytes(b"%PDF-1.4\n")
+    page._merge_info = {"pages": 1, "path": str(product), "warnings": [],
+                        "missing": 0, "names": ""}
+    page._merge_run = {"state": "done", "code": 0, "artifact": str(product)}
+    return page._merge_result(), [str(product), str(product.parent)]
+
+
+def _prep_card(page, issue: Path):
+    cover = issue / "扉页.pdf"
+    cover.write_bytes(b"%PDF-1.4\n")
+    page._prep_pages = {"coverPages": 1}
+    return page._prep_card(), [str(cover)]
+
+
+def _info_card(page, issue: Path):
+    report = issue / "信息检查.txt"
+    report.write_text("report", encoding="utf-8")
+    page._info.show({"articles": []}, report=str(report))
+    return page._info.root, [str(report)]
+
+
+C_CARDS = [_dirpush_card, _compile_card, _merge_card, _prep_card, _info_card]
+
+
+def _c_page_at(issue: Path, report: Path):
+    """在 build 之前装好 open 记录器：信息检查卡在构建时绑定 on_open。"""
+    from test_b112_post_b import _FakeApp
+    from ui import pages as P
+
+    opened: list[str] = []
+    app = _FakeApp()
+    app.open_path = lambda value: opened.append(str(value))
+    page = P.IssuePage(app)
+    page.build()
+    page.set_field("issue_dir", str(issue))
+    page._on_issue_changed(None)
+    page.activate("toc")
+    page.set_field("toc_report", str(report))
+    page.on_toc_report_changed(str(report))
+    return page, opened
+
+
+@pytest.mark.parametrize("builder", C_CARDS, ids=[b.__name__ for b in C_CARDS])
+def test_c_old_issue_body_open_is_refused_and_current_issue_still_opens(tmp_path, builder):
+    issue_a, report_a = _issue(tmp_path, "issue-A")
+    issue_b, _report_b = _issue(tmp_path, "issue-B")
+    page, opened = _c_page_at(issue_a, report_a)
+
+    old_card, _old_paths = builder(page, issue_a)
+    old_buttons = _open_buttons(old_card)
+    assert old_buttons, f"{builder.__name__} 应渲染可打开的入口"
+
+    _switch(page, issue_b)          # 已提交 B，正文尚未刷新（350ms 窗口内）
+    for _label, callback in old_buttons:
+        callback(None)
+    assert opened == [], f"换期后旧正文控件不得打开上一期产物：{opened}"
+    assert any(event == "artifact_open_stale" for event, _ in page.app.marked)
+
+    opened.clear()
+    fresh_card, fresh_paths = builder(page, issue_b)
+    for _label, callback in _open_buttons(fresh_card):
+        callback(None)
+    assert opened == fresh_paths, (opened, fresh_paths)
+
+
+def test_c_result_banner_cannot_open_previous_artifact_after_switch(tmp_path):
+    """结果条不靠代次守卫：提交时同步 reset 清空 detail，旧按钮只能透传空路径。"""
+    issue_a, report_a = _issue(tmp_path, "issue-A")
+    issue_b, _report_b = _issue(tmp_path, "issue-B")
+    page = _page_at(issue_a, report_a)
+    ASM._result_show(page, "完成", "ok", str(report_a))
+    old_open = page._result.open_btn.on_click
+
+    _switch(page, issue_b)
+
+    assert page._result.root.visible is False
+    assert page._result.detail.value == ""
+    opened: list[str] = []
+    page.app.open_path = lambda value: opened.append(str(value))
+    old_open(None)
+    assert str(report_a) not in opened, "旧结果条按钮不得再带出上一期产物"

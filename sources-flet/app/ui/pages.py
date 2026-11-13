@@ -1408,6 +1408,11 @@ class IssuePage(BasePage):
         self._step_tail: dict = {}
         # 正文产物 Open 的归属代次：整期身份每变一次 +1（C-1）。
         self._issue_generation = 0
+        # R7-a：运行中期身份锁定（字段/更换/清空回滚到本轮身份，只提示一次）。
+        self._issue_field = None
+        self._issue_browse_btn = None
+        self._issue_clear_btn = None
+        self._issue_lock_warned = False
 
     # ── 页面骨架 ───────────────────────────────────────────────────────
     def build(self) -> ft.Control:
@@ -1418,7 +1423,7 @@ class IssuePage(BasePage):
                                       on_copy=lambda path: self.app.copy_text(path))
         # 结果条快照：随 issue_state 一期一条落库，换期/重启时按原样恢复。
         self._banner = None
-        self._info = CK.issue_card(self)
+        self._info = self._new_info_card()
         self._child_title = C.text("整期装配", t, role="page-title")
         self._flow_desc = C.text("一期稿件，从检查到合刊。", t, "small",
                                  color=t.palette.text_muted)
@@ -1481,6 +1486,10 @@ class IssuePage(BasePage):
         # 状态/产物按错误键落库。
         def _changed(e) -> None:
             value = (e.control.value or "").strip()
+            # R7-a：运行中身份不能变，输入框/持久 recent 也不能先变成另一期。
+            if self._issue_change_locked():
+                self._reject_issue_change(e.control)
+                return
             self.app.store.set_recent("issue_dir", value)
             self.mark("path_change", field="issue_dir", value=e.control.value)
             # FIX2R2-3 K7：只重建期目录行下面的 `_step_box`（兄弟节点），
@@ -1494,6 +1503,11 @@ class IssuePage(BasePage):
             value = getattr(getattr(e, "control", None), "value", None)
             if value is None:
                 value = ref[0].value if ref else ""
+            if self._issue_change_locked() and str(value or "").strip() != getattr(
+                    self, "_last_issue", ""):
+                self._reject_issue_change(ref[0] if ref else None)
+                C.mark_event_updated("issue_path_blur")
+                return
             if self._commit_issue_identity(str(value or "")):
                 # MC-01：失焦提交后正文刷新要延后一拍。blur 与紧随的点击是
                 # 同一次按压：此刻立刻替换区块头/正文，抬起时的 tap 落到已
@@ -1510,8 +1524,11 @@ class IssuePage(BasePage):
             hint="一期稿件的根目录，含 000 / 01 作者…",
             on_change=_changed, on_blur=_commit, expand=True, clearable=False)
         ref.append(field)
+        self._issue_field = field
 
         def _browse(e) -> None:
+            if self._reject_issue_change_when_running():
+                return
             self.app.browse_field(ref, "选择期目录", "dir", "issue_dir")
             # 异步轮询必须显式调度：直接调用只会得到未 await 的协程（换期不重置 P0）。
             self.page.run_task(self._watch_issue_pick, ref, (ref[0].value or "").strip())
@@ -1521,6 +1538,8 @@ class IssuePage(BasePage):
         clear_btn = C.text_button("✕", lambda e: self._clear_issue(), t)
         # R03：纯符号按钮没有可读名称，悬停/屏幕阅读器都无从理解（GB 审计唯一缺口）。
         clear_btn.tooltip = "清空期目录"
+        self._issue_browse_btn = browse_btn
+        self._issue_clear_btn = clear_btn
         return ft.Container(
             key="issue-dir-row", padding=C._pad(t, 0, 0, 0, 2),
             content=C.field_row(field, [browse_btn, clear_btn], t, height=t.px(48)))
@@ -1535,12 +1554,18 @@ class IssuePage(BasePage):
             except Exception:  # noqa: BLE001
                 return
             if value != before:
+                # R7-a：选择器可能在开跑后才回填，运行中一律拒绝。
+                if self._issue_change_locked():
+                    self._reject_issue_change(ref[0] if ref else None)
+                    return
                 self.app.store.set_recent("issue_dir", value)
                 self._on_issue_changed(None)
                 return
 
     def _browse_issue(self, e=None) -> None:
         """无期目录空态的 CTA：直接唤起现有目录选择器。"""
+        if self._reject_issue_change_when_running():
+            return
         ref = self.fields.get("issue_dir") if getattr(self, "fields", None) else None
         if ref is None:
             ref = []
@@ -1550,6 +1575,8 @@ class IssuePage(BasePage):
         self.page.run_task(self._watch_issue_pick, ref, before)
 
     def _clear_issue(self) -> None:
+        if self._reject_issue_change_when_running():
+            return
         self.set_field("issue_dir", "")
         self.app.store.set_recent("issue_dir", "")
         self._on_issue_changed(None)
@@ -2302,6 +2329,8 @@ class IssuePage(BasePage):
                 return
             self._clear_stale_cancel()
             self._expand_log()
+            # R7-a：运行派发与当前提交一致（键入未失焦也先提交整期身份）。
+            self._ensure_issue_identity()
             # C14：run_all 是同步入口（内部再 run_task 调度异步序列），
             # 不能交给 Flet 的 run_task（要求 coroutine function）。
             ASM.run_all(self, keys)
@@ -2615,9 +2644,9 @@ class IssuePage(BasePage):
                             overflow=ft.TextOverflow.ELLIPSIS) for line in tail]
         if artifact:
             rows.append(ft.Row(spacing=t.sp("1"), wrap=True, controls=[
-                C.text_button("打开 docx", lambda e: self.app.open_path(artifact), t),
+                C.text_button("打开 docx", self._artifact_open_action(artifact), t),
                 C.text_button("打开所在目录",
-                              lambda e: self.app.open_path(os.path.dirname(artifact)), t),
+                              self._artifact_open_action(os.path.dirname(artifact)), t),
                 C.text_button("复制路径", lambda e: self.app.copy_text(artifact), t),
             ]))
         return ft.Column(spacing=t.sp("1"), controls=rows)
@@ -2670,7 +2699,7 @@ class IssuePage(BasePage):
         report = os.path.join(self.field("issue_dir") or "", "编译报告.md")
         if os.path.exists(report):
             actions.append(C.text_button("打开编译报告.md",
-                                         lambda e: self.app.open_path(report), t))
+                                         self._artifact_open_action(report), t))
         return ft.Column(spacing=0, controls=[
             C.section_label("编译结果", t), C.hairline(t),
             C.text(summary, t, "caption", t.palette.text_muted),
@@ -2753,9 +2782,9 @@ class IssuePage(BasePage):
 
     def _merge_actions(self, path: str) -> list:
         return [
-            C.text_button("打开文件", lambda e: self.app.open_path(path), self.t),
+            C.text_button("打开文件", self._artifact_open_action(path), self.t),
             C.text_button("打开所在目录",
-                          lambda e: self.app.open_path(os.path.dirname(path)),
+                          self._artifact_open_action(os.path.dirname(path)),
                           self.t),
             C.text_button("复制路径", lambda e: self.app.copy_text(path), self.t),
         ]
@@ -2924,7 +2953,7 @@ class IssuePage(BasePage):
         ]
         if path:
             controls.append(C.text_button(
-                "打开", lambda e, p=path: self.app.open_path(p), t))
+                "打开", self._artifact_open_action(path), t))
         return ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                       controls=controls)
 
@@ -3178,7 +3207,7 @@ class IssuePage(BasePage):
         self._toc_panel = None
         if clear_sections:
             self._clear_section_refs()
-        self._info = CK.issue_card(self)
+        self._info = self._new_info_card()
 
     def _update_log_title(self, issue: str = "") -> None:
         """日志 dock 标题带上当前期名；换期后不再显示旧路径（B 包 P2-4）。"""
@@ -3252,6 +3281,13 @@ class IssuePage(BasePage):
         binding = self.current_artifact_binding()
         return lambda e: self.open_artifact(path, binding=binding)
 
+    def _new_info_card(self):
+        """整期信息检查卡：打开报告的路径在点击时取，但代次取构建时（C-1 同机制）。"""
+        card = CK.issue_card(self)
+        binding = self.current_artifact_binding()
+        card.on_open = lambda path: self.open_artifact(path, binding=binding)
+        return card
+
     @staticmethod
     def _path_within(path: str, root: str) -> bool:
         """路径是否落在 root 之下（normpath 与 realpath 双判定，兼容 macOS /tmp）。"""
@@ -3286,6 +3322,36 @@ class IssuePage(BasePage):
                 self.set_field(key, "")
             self.app.store.set_recent(key, "")
             self.mark("issue_field_dropped", field=key, value=value, issue=issue)
+
+    def _issue_change_locked(self) -> bool:
+        """运行中身份不可变：字段/recent/日志/结果归属都锁在本轮身份。"""
+        return bool(getattr(self.app, "running", False))
+
+    def _reject_issue_change_when_running(self) -> bool:
+        """运行中拒绝换期入口；返回 True 表示调用方应停止后续动作。"""
+        if not self._issue_change_locked():
+            return False
+        self._reject_issue_change(getattr(self, "_issue_field", None))
+        return True
+
+    def _reject_issue_change(self, field=None) -> None:
+        """拒绝运行中的身份变更：把字段与持久 recent 拉回本轮身份。
+
+        R7-a：只拒绝提交而放任输入框/recent 停在新值，会让界面、持久化、
+        日志标题与结果归属互相矛盾。每次运行只在第一次拒绝时提示，逐字
+        输入不会刷屏。
+        """
+        issue = str(getattr(self, "_last_issue", "") or "")
+        field = field if field is not None else getattr(self, "_issue_field", None)
+        if field is not None and str(getattr(field, "value", "") or "").strip() != issue:
+            field.value = issue
+            self._safe_update(field)
+        if str(self.app.store.get("recent.issue_dir", "") or "").strip() != issue:
+            self.app.store.set_recent("issue_dir", issue)
+        self.mark("issue_change_rejected", issue=issue, reason="running")
+        if not getattr(self, "_issue_lock_warned", False):
+            self._issue_lock_warned = True
+            self.app.toast("运行中不能更换期目录：先停止当前任务，结束后再切换")
 
     def _ensure_issue_identity(self) -> None:
         """运行/切页前补提交：键入后直接按 Enter 或点运行，结果仍记到完整路径。"""
@@ -3403,10 +3469,10 @@ class IssuePage(BasePage):
         """
         issue = self.field("issue_dir")
         if not self._commit_issue_identity(issue):
-            # 值没变（或运行中不改归属）：显式入口保持幂等，不重建正文。
+            # 值没变保持幂等；运行中被拒绝时回滚字段/recent，
+            # 日志标题与结果归属仍留在本轮身份（R7-a，不靠改标签掩盖）。
             if issue != getattr(self, "_last_issue", ""):
-                self._update_log_title(issue)
-                self.mark("issue_changed", issue=issue)
+                self._reject_issue_change(getattr(self, "_issue_field", None))
             return
         self._set_expanded(self.selected)
         if getattr(self, "_step_box", None) is not None:
@@ -3830,7 +3896,23 @@ class IssuePage(BasePage):
             pass
         self.mark("toc_report_changed", report=current)
 
+    def _sync_issue_lock(self) -> None:
+        """运行中锁住期目录字段与更换/清空入口，结束立即恢复可编辑（R7-a）。"""
+        running = self._issue_change_locked()
+        field = getattr(self, "_issue_field", None)
+        if field is not None:
+            field.read_only = running
+            self._safe_update(field)
+        for name in ("_issue_browse_btn", "_issue_clear_btn"):
+            button = getattr(self, name, None)
+            if button is not None:
+                button.disabled = running
+                self._safe_update(button)
+        if not running:
+            self._issue_lock_warned = False
+
     def refresh_running(self) -> None:
+        self._sync_issue_lock()
         self._sync_stop_action()
         disabled, reason = self._step_run_state()
         for btn in self._step_run_btns.values():
@@ -3892,6 +3974,11 @@ class IssuePage(BasePage):
 
     # ── 兼容旧测试/旧入口 ──────────────────────────────────────────────
     def prefill(self, issue_dir: str = "", toc_report: str = "") -> None:
+        # R7-a：深链/外部入口也要遵守运行中身份不变。
+        if issue_dir and self._issue_change_locked() \
+                and issue_dir.strip() != getattr(self, "_last_issue", ""):
+            self._reject_issue_change(getattr(self, "_issue_field", None))
+            issue_dir = ""
         if issue_dir:
             self.set_field("issue_dir", issue_dir)
         if toc_report:
