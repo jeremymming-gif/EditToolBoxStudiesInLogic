@@ -17,7 +17,8 @@ from types import SimpleNamespace
 
 import main as M  # noqa: F401  （保证 app/ 在 sys.path，与其它壳测试一致）
 from ui import assembly as ASM
-from test_b112_post_b import _build_issue
+from ui import pages as P
+from test_b112_post_b import _FakeApp, _build_issue
 
 ISSUE_A = "/tmp/mc01-issue-A"
 ISSUE_B = "/tmp/mc01-issue-B"
@@ -162,3 +163,70 @@ def test_blur_without_change_is_idempotent():
     assert page._last_issue == ISSUE_A
     assert page._primary_btns["infocheck"] is btn
     assert "issue_changed" not in [e for e, _ in page.app.marked]
+
+
+# ── N5 补充：结果条属于每一期，换期不得沿用上一期的产物入口 ────────────
+def _run_like(page, text: str, level: str, artifact: str) -> None:
+    """走与 assembly 运行收尾同一条路径：显示结果条 + 记快照 + 落库。"""
+    ASM._result_show(page, text, level, artifact)
+    page._refresh_steps()
+
+
+def test_switch_to_unrun_issue_hides_previous_result_banner():
+    page = _page_with_issue(ISSUE_A, {ISSUE_B: _entry("B.pdf")})
+    _run_like(page, "完成", "ok", "/tmp/A-report.txt")
+    assert page._result.root.visible
+    assert page._result.open_btn.visible
+
+    _type(page, ISSUE_B)
+    _blur(page)
+    # B 从未运行过：不得继续显示 A 的结果条，更不得留着 A 的「打开产物」。
+    assert page._result.root.visible is False
+    assert page._result.title.value == "尚未运行"
+    assert page._result.detail.value == ""
+    assert "result" not in _states(page)[ISSUE_B]
+    # A 的结果条快照留在自己的记录里（切回来要能恢复）。
+    assert _states(page)[ISSUE_A]["result"]["artifact"] == "/tmp/A-report.txt"
+
+
+def test_round_trip_restores_each_issue_result_banner():
+    page, _root = _build_issue()
+    page.app.store.set("issue_state", {ISSUE_A: _entry("A.pdf"),
+                                       ISSUE_B: _entry("B.pdf")})
+    page.set_field("issue_dir", ISSUE_A)
+    page._on_issue_changed(None)
+    _run_like(page, "完成", "ok", "/tmp/a-report.txt")
+
+    _type(page, ISSUE_B)
+    _blur(page)
+    assert page._result.root.visible is False
+    _run_like(page, "完成，但有需处理的结果（退出码 1）", "warn",
+              "/tmp/b-report.txt")
+
+    _type(page, ISSUE_A)
+    _blur(page)
+    assert page._result.root.visible
+    assert page._result.title.value == "完成"
+    assert page._result.detail.value == "/tmp/a-report.txt"
+    assert page._result.open_btn.visible
+
+    _type(page, ISSUE_B)
+    _blur(page)
+    assert page._result.title.value == "完成，但有需处理的结果（退出码 1）"
+    assert page._result.detail.value == "/tmp/b-report.txt"
+    assert page._result.open_btn.visible
+
+
+def test_build_restores_persisted_result_banner_for_recent_issue():
+    app = _FakeApp()
+    app.store.set("recent.issue_dir", ISSUE_B)
+    entry = dict(_entry("B.pdf"),
+                 result={"text": "完成", "level": "ok",
+                         "artifact": "/tmp/b-report.txt"})
+    app.store.set("issue_state", {ISSUE_B: entry})
+    page = P.IssuePage(app)
+    page.build()
+    assert page._result.root.visible
+    assert page._result.title.value == "完成"
+    assert page._result.detail.value == "/tmp/b-report.txt"
+    assert page._result.open_btn.visible

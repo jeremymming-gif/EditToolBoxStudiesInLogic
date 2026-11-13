@@ -434,12 +434,18 @@ def _result_reset(page) -> None:
     result = getattr(page, "_result", None)
     if result is not None:
         result.reset()
+    remember = getattr(page, "_remember_result", None)
+    if callable(remember):
+        remember("")
 
 
 def _result_show(page, text: str, level: str = "info", artifact: str = "") -> None:
     result = getattr(page, "_result", None)
     if result is not None:
         result.show(text, level=level, artifact=artifact)
+    remember = getattr(page, "_remember_result", None)
+    if callable(remember):
+        remember(text, level, artifact)
 
 
 def _page_update(page) -> None:
@@ -529,7 +535,7 @@ async def _run_sequence(page, keys: list[str], calls: dict | None = None) -> lis
             page._refresh_steps()
             _log_line(page, _section_end(page, key, status), _STATE_LEVELS[state])
             if not cancelled:
-                page._result.show(f"失败 · 无法启动任务：{exc}", level="error")
+                _result_show(page, f"失败 · 无法启动任务：{exc}", "error")
                 page.app.toast(f"任务启动失败：{exc}")
                 page.app.mark("run_start_error", step=key, error=str(exc))
             results.append(_record(key, status))
@@ -664,7 +670,7 @@ def _dirpush_dry(page) -> bool:
 
 
 async def _show_repo_note(page, warning: str) -> None:
-    page._result.show(warning, level="warn")
+    _result_show(page, warning, "warn")
     try:
         page.page.update()
     except Exception:  # noqa: BLE001

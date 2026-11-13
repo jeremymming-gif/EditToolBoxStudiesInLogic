@@ -1414,6 +1414,8 @@ class IssuePage(BasePage):
                                  toast=self.app.toast, mark=self.mark)
         self._result = C.ResultBanner(t, on_open=self.app.open_path,
                                       on_copy=lambda path: self.app.copy_text(path))
+        # 结果条快照：随 issue_state 一期一条落库，换期/重启时按原样恢复。
+        self._banner = None
         self._info = CK.issue_card(self)
         self._child_title = C.text("整期装配", t, role="page-title")
         self._flow_desc = C.text("一期稿件，从检查到合刊。", t, "small",
@@ -3023,6 +3025,12 @@ class IssuePage(BasePage):
                 for key, value in self._status.items()
             },
         })
+        banner = getattr(self, "_banner", None)
+        if isinstance(banner, dict) and banner.get("text"):
+            entry["result"] = {"text": banner["text"], "level": banner["level"],
+                               "artifact": banner["artifact"]}
+        else:
+            entry.pop("result", None)
         data[issue] = entry
         self.app.store.set("issue_state", data)
         save = getattr(self.app, "save_settings", None)
@@ -3031,6 +3039,33 @@ class IssuePage(BasePage):
                 save(toast=False)
             except TypeError:
                 save()
+
+    def _remember_result(self, text: str = "", level: str = "info",
+                         artifact: str = "") -> None:
+        """记下本页结果条快照，随 issue_state 一期一条落库（空 text 表示清空）。
+
+        结果条属于某一期：换期时若不清空，页面会继续挂着上一期的产物入口，
+        点开就是别的期的报告（N5 产物隔离）。
+        """
+        if not text:
+            self._banner = None
+            return
+        self._banner = {"text": str(text), "level": str(level or "info"),
+                        "artifact": str(artifact or "")}
+
+    def _restore_result_banner(self, entry: dict) -> None:
+        """按该期落库的结果条快照恢复；没有快照就保持清空。"""
+        result = getattr(self, "_result", None)
+        snapshot = (entry or {}).get("result") if isinstance(entry, dict) else None
+        if result is None or not isinstance(snapshot, dict):
+            return
+        text = str(snapshot.get("text") or "")
+        if not text:
+            return
+        level = str(snapshot.get("level") or "info")
+        artifact = str(snapshot.get("artifact") or "")
+        result.show(text, level=level, artifact=artifact)
+        self._banner = {"text": text, "level": level, "artifact": artifact}
 
     def _restore_issue_state(self, *, keep_view: bool = False,
                              rebuild: bool = True) -> None:
@@ -3062,6 +3097,7 @@ class IssuePage(BasePage):
             self.selected = last
         # 手风琴：恢复/当前步骤即该视图展开的区块（同视图另一块随之收起）。
         self._set_expanded(self.selected)
+        self._restore_result_banner(entry)
         if not rebuild:
             # MC-01：换期提交时由调用方做「原地刷新」，保留运行按钮对象。
             return
@@ -3072,6 +3108,11 @@ class IssuePage(BasePage):
 
     def _reset_issue_runtime(self) -> None:
         """换期清空本页运行态与结果缓存（P0）。"""
+        # 结果条也是本页运行态：换期先清空，新期有快照再由 _restore_issue_state 恢复。
+        self._banner = None
+        result = getattr(self, "_result", None)
+        if result is not None:
+            result.reset()
         self._run_results = []
         self._info_payload = None
         self._info_articles = []
@@ -3386,7 +3427,9 @@ class IssuePage(BasePage):
                                          notes=self.app.notes_repo)
             except Exception as exc:  # noqa: BLE001
                 code = -1
-                self._result.show(f"失败 · 无法启动任务：{exc}", level="error")
+                text = f"失败 · 无法启动任务：{exc}"
+                self._result.show(text, level="error")
+                self._remember_result(text, "error")
             self.app.finish_run(call, code)
             cancelled = bool(getattr(self.app, "cancel_requested", False))
             duration = (time.monotonic() - started) * 1000
