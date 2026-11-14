@@ -1127,7 +1127,7 @@ def _resolve_with_en_toc(explicit: bool | None, language: str, has_en_tex: bool,
         warnings.append("按稿件语言判定为英文稿（标题均不含中文），默认生成中英文对照目录")
     else:
         warnings.append(
-            "无法按稿件语言判定（没有可用标题），沿用旧设置推断为"
+            "无法按稿件语言判定（没有可用标题），沿用设置推断为"
             + ("中英文对照" if inferred else "仅中文") + "体例")
 
     chosen = _language_default(language, has_en_tex)
