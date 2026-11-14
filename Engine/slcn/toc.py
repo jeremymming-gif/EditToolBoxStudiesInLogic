@@ -679,23 +679,95 @@ def chinese_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
             + authors + "\n& " + e.page + _LINEBREAK)
 
 
-def english_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
-    """英文目录的一条（成品里只有**第一位**作者带 ` ~~~~ ` 前缀）。
+def _en_wrap_lines(title: str, limit: float) -> list[str]:
+    r"""英文栏目标题按词边界折成多行；每行（除无法再断的单词）不超过 `limit`。
 
-    标题行不带 `~~~~ `：栏目标记只落在首位作者（见 RULES §十二 / 人工成品）。
-    标题前缀会占掉约 1.6 字宽，长标题第二行会被 X 列二次折断成第 3 行。
+    复用 `wrap_title` 的两行断点算法（最后一个空格、TeX 原子边界），再对尾行
+    递归，避免栏目前缀压缩后长标题在 X 列里被 TeX 二次折断成无缩进的第 3 行。
     """
-    authors = ", ".join(
-        "{" + (" ~~~~ " if (i == 0 and in_column) else "") + name + "}"
-        for i, name in enumerate(e.englishAuthors))
+    if limit <= 0 or display_width(title) <= limit:
+        return [title]
+    lines: list[str] = []
+    remaining = title.strip()
+    while display_width(remaining) > limit:
+        wrapped = wrap_title(remaining, limit, is_english=True)
+        if not wrapped:
+            break
+        lines.append(wrapped[0])
+        remaining = wrapped[1]
+    if remaining:
+        lines.append(remaining)
+    return lines or [title]
 
-    wrapped = wrap_title(e.englishTitle, limit=wrap_limit, is_english=True)
-    if wrapped:
-        return ("\\large " + wrapped[0] + _LINEBREAK + "\n"
-                + "\\large " + wrapped[1] + _LINEBREAK + "\n"
+
+def _en_title_lines(e: TocEntry, wrap_limit: float, in_column: bool) -> list[str]:
+    r"""英文条目的标题行；栏目内先扣掉 `~~~~ ` 前缀宽度再断行。
+
+    普通英文条目保持既有两行上限（不改变普通期版式）；栏目条目允许按词边界
+    折成多行，续行由 `english_entry` 用 `\phantom{~~~~ }` 对齐。
+    """
+    if not in_column:
+        wrapped = wrap_title(e.englishTitle, limit=wrap_limit, is_english=True)
+        return [wrapped[0], wrapped[1]] if wrapped else [e.englishTitle]
+    return _en_wrap_lines(e.englishTitle, wrap_limit - _PREFIX_PT / _CHAR_PT)
+
+
+def _en_author_lines(e: TocEntry, wrap_limit: float, in_column: bool) -> list[str]:
+    r"""英文作者行（按作者边界换行，不切姓名）；栏目内首行/续行由 entry 加缩进。"""
+    names = list(e.englishAuthors)
+    if not names:
+        return []
+    groups: list[list[str]] = []
+    if not in_column:
+        groups = [names]
+    else:
+        limit = wrap_limit - _PREFIX_PT / _CHAR_PT
+        current: list[str] = []
+        for name in names:
+            candidate = current + [name]
+            if current and display_width(", ".join(candidate)) > limit:
+                groups.append(current)
+                current = [name]
+            else:
+                current = candidate
+        if current:
+            groups.append(current)
+    return [", ".join(group) for group in groups]
+
+
+def english_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
+    r"""英文目录的一条（用户 2026-11-14 规范：栏目内标题和作者都缩进）。
+
+    栏目内标题首行、作者首行用 `~~~~ `；多行标题/作者续行用 `\phantom{~~~~ }`
+    复制同一栏目尺度，绝不能只给首位作者加前缀。普通英文条目标题和作者都不加
+    栏目缩进，保持既有版式。页码始终和最后一行作者同表格行。
+    """
+    title_lines = _en_title_lines(e, wrap_limit, in_column)
+    author_lines = _en_author_lines(e, wrap_limit, in_column)
+
+    if not in_column:
+        authors = ", ".join("{" + name + "}" for name in e.englishAuthors)
+        if len(title_lines) == 2:
+            return ("\\large " + title_lines[0] + _LINEBREAK + "\n"
+                    + "\\large " + title_lines[1] + _LINEBREAK + "\n"
+                    + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
+        return ("\\large " + e.englishTitle + _LINEBREAK + "\n"
                 + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
-    return ("\\large " + e.englishTitle + _LINEBREAK + "\n"
-            + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
+
+    prefix = "~~~~ "
+    rows: list[str] = []
+    for index, line in enumerate(title_lines):
+        lead = prefix if index == 0 else _CELL_INDENT
+        rows.append("{\\large " + lead + line + "}")
+    if author_lines:
+        for index, line in enumerate(author_lines):
+            lead = prefix if index == 0 else _CELL_INDENT
+            rows.append("\\textit{" + lead + line + "}")
+    else:
+        # 英文作者为空是合法路径：标题仍缩进，但不给空作者造姓名/空前缀。
+        rows.append("\\textit{}")
+    result = "\n".join(row + _LINEBREAK for row in rows[:-1])
+    return result + "\n" + rows[-1] + "\n& " + e.page + _LINEBREAK
 
 
 # ── 版心宽度守卫（B-355 D4）─────────────────────────────────────────────
@@ -724,13 +796,12 @@ def _issue_layout(entries: list[tuple[str, TocEntry]], settings: "TocSettings",
         requested = float(settings.titleWrapLimit)
     else:
         author_pt = 0.0
-        prefix_pt, prefix_w = 0.0, 0.0
         spacing_pt = _SPACING_PT_EN_COLUMN if column_layout else _SPACING_PT_EN
         requested = float(settings.titleWrapLimitEN)
 
     x_pt = _TEXTWIDTH_PT - author_pt - page_pt - spacing_pt
-    # wrap_limit 的语义是「标题字符数上限」：中文 entry 内部会再扣 `~~~~ ` 前缀宽度，
-    # 英文标题不带前缀（栏目标记只在首位作者），故这里只用列宽折算字符数。
+    # wrap_limit 的语义是「X 列字符数上限」：中文/英文栏目 entry 内部会再扣
+    # `~~~~ ` 前缀宽度；普通英文条目没有前缀，使用完整 X 列宽。
     derived = x_pt / _CHAR_PT
     applied = max(6.0, min(requested, derived))
     if applied + 1e-6 < requested:
@@ -763,9 +834,14 @@ def _log_layout_guard(head: str, entries: list[tuple[str, TocEntry]],
                          display_width("，".join(e.chineseAuthors)) * _CHAR_PT)
             widths.append(title_pt + author_pt + page_pt + _SPACING_PT)
         else:
-            lines = wrap_title(e.englishTitle, limit=wrap_limit, is_english=True)
-            title_pt = max([display_width(ln) for ln in (lines or (e.englishTitle,))]) * _CHAR_PT
-            author_pt = display_width(", ".join(e.englishAuthors)) * _CHAR_PT
+            lines = _en_title_lines(e, wrap_limit, in_column)
+            title_pt = max([display_width(ln) for ln in lines] + [0.0]) * _CHAR_PT
+            if in_column:
+                title_pt += _PREFIX_PT
+            author_lines = _en_author_lines(e, wrap_limit, in_column)
+            author_pt = max([display_width(ln) for ln in author_lines] + [0.0]) * _CHAR_PT
+            if in_column and author_lines:
+                author_pt += _PREFIX_PT
             widths.append(max(title_pt, author_pt) + page_pt
                           + (_SPACING_PT_EN_COLUMN if column_layout else _SPACING_PT_EN))
 
@@ -1140,7 +1216,7 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
     # B-355 D4：断行上限按版心/列宽反推（P1：超预算只告警 + 取较小的值），
     # 再跑一遍宽度守卫（负间距指纹、超版心/右侧留白）。
     # B-375：目录永远列出当前报告全部篇目；勾选只决定「是否带栏目标记」
-    # （中文 ~~~~ 缩进 / 英文首位作者前 ~~~~ / 栏目版式），不删条目。
+    # （中文 ~~~~ 缩进 / 英文标题和作者都带 ~~~~ / 栏目版式），不删条目。
     toc_entries = parsed
 
     # B-375R D-P13-01 形态②：真实旧 000 模板可能没有 `\edash`/`\cndash` 定义，

@@ -306,8 +306,8 @@ CANONICAL_ZH_COLUMN = ("{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}"
 CANONICAL_EN = "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}r@{}}"
 
 #: 英文栏目期列格式：列距 1em（人工成品同宽，见 2026 年第 5 期人工 contents.tex 的
-#: `l@{\hspace{1em}}r`）。栏目条目只由首位作者的 `~~~~ ` 标标记，标题行不带前缀；
-#: 1em 让最长标题行在 X 列内不再二次折断，同时保留弹性列的防溢出。
+#: `l@{\hspace{1em}}r`）。栏目条目标题和作者都带 `~~~~ ` 缩进（续行用 phantom 对齐）；
+#: 1em 列距保留弹性列的防溢出，缩进由条目内部处理，不改列定义。
 CANONICAL_EN_COLUMN = "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}"
 
 

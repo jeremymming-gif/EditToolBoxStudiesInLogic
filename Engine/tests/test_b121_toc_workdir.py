@@ -8,7 +8,8 @@ r"""批 121 车道 E / B-357 回归：生成目录中间件落点 + 清理类目
   (b) B-375 英文栏目：四项齐全（种类/中文名/英文名/主持人）时英文目录生成
       Special Issue: <columnNameEN>（专辑）/ Column: <columnNameEN>（专栏），
       只用英文名、绝不回退中文名；缺项一律拒绝生成。目录永远列出当前报告全部篇目
-      （勾选/专辑只决定栏目标记，不删条目）：带栏目标记的篇目首位英文作者带 ~~~~ 前缀；
+      （勾选/专辑只决定栏目标记，不删条目）：带栏目标记的篇目标题和作者都带 ~~~~ 前缀，
+      多行标题/作者续行保持同一栏目缩进；普通英文条目两者都不加栏目缩进；
       继承模板没有栏目块时按内置形态生成并用默认间距 3mm（留日志）。
   (c) B2/B3：`cleantemp.py --mode tocwork` 默认移入 `.toolbox-trash`（可 restore），
       清理 `.toolbox-tmp/`、根时间戳 tex、`目录结果.json`、旧 `信息检查*`；默认保留
@@ -141,14 +142,19 @@ _en = Path(_out or "").read_text(encoding="utf-8") if _out else ""
 check("(b3) 专辑英文表头 ⇒ Special Issue: <columnNameEN>（英文名必填、不回退中文名）",
       "Special Issue: Preference Logic" in _en and "偏好逻辑" not in _en, _en[:200])
 # B-375：专辑 = 全部当前报告稿件都带栏目标记；columnArticles 只存了 Qiu_Dejun 也不删
-# Wu_Hao —— 目录仍列出两篇、两篇首位英文作者都带 ~~~
-check("(b4) 专辑：两篇都在目录里、首位英文作者都带 ~~~~ 前缀",
-      "~~~~ Qiu Dejun" in _en and "~~~~ Wu Hao" in _en
+# Wu_Hao —— 目录仍列出两篇、两篇标题和作者都带 ~~~
+check("(b4) 专辑：两篇都在目录里、标题和作者都带 ~~~~ 前缀",
+      "{\\large ~~~~ Knowability" in _en
+      and "\\textit{~~~~ Qiu Dejun}" in _en
+      and "{\\large ~~~~ On the Yablo" in _en
+      and "\\textit{~~~~ Wu Hao}" in _en
       and "Knowability" in _en and "On the Yablo Paradox" in _en,
-      repr([ln for ln in _en.split("\n") if "~~~~" in ln][:3]))
-check("(b5) 英文栏目列定义是 CANONICAL_EN_COLUMN（1em 列距，标题不带 ~~~~）",
+      repr([ln for ln in _en.split("\n") if "~~~~" in ln][:4]))
+check("(b5) 英文栏目列定义是 CANONICAL_EN_COLUMN，且恰好两篇标题/两篇作者带 ~~~~",
       "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}" in _en
-      and "\\large ~~~~" not in _en, _en.split("\n")[0:6])
+      and sum(1 for ln in _en.split("\n") if ln.startswith("{\\large ~~~~ ")) == 2
+      and sum(1 for ln in _en.split("\n") if ln.startswith("\\textit{~~~~ ")) == 2,
+      _en.split("\n")[0:6])
 check("(b5a) 英文栏目表带 0.99 行高",
       "\\renewcommand{\\arraystretch}{0.99}" in _en, _en.split("\n")[0:8])
 check("(b6) 不再有英文名回退日志（B-375：缺项直接拒绝生成）",

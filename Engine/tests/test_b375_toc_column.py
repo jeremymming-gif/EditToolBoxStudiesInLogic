@@ -9,6 +9,8 @@ r"""B-375「生成目录」的栏目判据（Engine 单点，纯文本不编译�
   (b) 目录永远列出当前报告全部篇目，columnArticles 只决定是否带栏目标记（不删条目）：
       专栏 = 勾选篇目带 ~~~~、**允许 0 篇**（没有「至少一篇」规则）；专辑 = 全部稿件都带 ~~~~，
       设置里 stale/empty/subset 的 columnArticles 一律忽略。
+      英文栏目条目的**标题和作者**都带 ~~~~，多行标题/作者续行用 \phantom{~~~~ } 对齐；
+      普通英文条目两者都不带。旧「标题不缩进、只标首位作者」规范已撤回（用户 2026-11-14）。
   (c) 英文栏目标签只用 columnNameEN：专栏 Column: X / 专辑 Special Issue: X，绝不回退中文名。
   (d) B-363：栏目内中文两行标题的续行用 \phantom{~~~~ } 复制首行真实前缀
       （宽度由 TeX 渲染期量出，不写死数字）；非栏目续行保持原样、无缩进盒。
@@ -54,6 +56,60 @@ ARTICLES = [
      "Axiomatization of Structural Norms and Dynamic Preferences", "33", "吴浩", "Wu Hao"),
 ]
 LONG_ZH = "结构性规范与动态偏好的公理化研究及其元理论性质"
+
+# 混合 10 篇（前 4 篇勾选专栏、后 6 篇普通）—— 复现真实 90 期归属，不硬编码前 4。
+MIXED_ARTICLES = [
+    ("Alpha_One", "模型解、问题视角与贡献观察的认知悖论研究",
+     "Model Solution Question Perspective Contribution Observation Question", "1",
+     "陆甲", ["Alpha One", "Beta Two"]),
+    ("Beta_Two", "逻辑原则、逻辑视角与属性逻辑探究的谜题地位",
+     "Logic Principle Logic Perspective Property Logic Inquiry Puzzle Status", "11",
+     "王乙", ["Beta Two"]),
+    ("Gamma_Three", "方法论论证、认识批判论证与论证概括地位进路",
+     "Methodology Argument Epistemic Critical Argument Argument Generalization Status Approach Status", "21",
+     "张丙", ["Gamma Three"]),
+    ("Delta_Four", "解关系基础、命题期刊反思关系传统综观分析关系",
+     "Solution Relation Foundation Proposition Journal Reflection Relation Tradition Survey Analytical Relation", "31",
+     "李丁", ["Delta Four"]),
+    ("Epsilon_Five", "模型结构论证结构分析实践探究语言谜题考察理论地位形式",
+     "Model Structure Argument Structure Analysis Practical Inquiry Language Puzzle Examination Theoretical Status Formal", "41",
+     "赵戊", ["Epsilon Five"]),
+    ("Zeta_Six", "推理认识论证",
+     "Inference Epistemic Argument", "51", "周己", ["Zeta Six"]),
+    ("Eta_Seven", "方法分析方法论考察语义结构方法认识综合进路贡献实践",
+     "Method Analytical Methodology Examination Semantics Structure Method Epistemic Synthetic Approach Contribution Practice", "61",
+     "吴庚", ["Eta Seven"]),
+    ("Theta_Eight", "基础概括框架综观标准系统关系陈述理论研究",
+     "Foundation Generalization Framework Survey Criterion System Relation Statement Theory Relation Study", "71",
+     "郑辛", ["Theta Eight"]),
+    ("Iota_Nine", "真理推论观察比较属性基础历史探究批判地位陈述关系",
+     "Truth Inference Observation Comparison Property Foundation Historical Inquiry Critical Status Statement Relation", "81",
+     "孙壬", ["Iota Nine"]),
+    ("Kappa_Ten", "研究地位概念实践探究研究",
+     "Study Status Conceptual Practical Inquiry Study", "91", "钱癸", ["Kappa Ten"]),
+]
+
+
+def make_mixed_report(issue_dir: str) -> str:
+    path = os.path.join(issue_dir, "信息检查2026_01_01_00_00_00.txt")
+    chunks = []
+    for name, zh, en, page, a_zh, a_en in MIXED_ARTICLES:
+        authors = "".join(
+            f"{role}作者英文: {author}\r\n"
+            for role, author in zip(("第一", "第二", "第三"), a_en))
+        chunks.append(
+            f"{name}\r\n"
+            "卷号：19  期号：5  年份：2026\r\n"
+            f"起始页码：{page}  终止页码：{int(page) + 9}  页数：10\r\n"
+            "字号 10.5t\r\n"
+            f"中文标题: {zh}\r\n"
+            f"英文标题: {en}\r\n"
+            f"第一作者中文: {a_zh}\r\n"
+            + authors
+            + "\r\n")
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("".join(chunks))
+    return path
 
 
 def make_issue(root: str) -> str:
@@ -238,13 +294,54 @@ check("(d6) 副标题续行（——）同样用 \\phantom{~~~~ } 对齐；非�
       and "\\phantom" not in _sub_plain,
       _sub_col)
 
-# 英文条目结构不同：栏目内 ~~~~ 只在第一条作者前，标题行不带（避免二次折断）
+# 英文栏目：标题和作者都缩进，续行保持同尺度；普通英文两者都不缩进
+# （旧「标题不缩进、只标首位作者」规范已撤回 —— 用户 2026-11-14 纠正）
 _en_tex = TOC.english_entry(_e, True, 30)
-check("(d5) 英文条目不受影响：标题行无 ~~~~，作者前有 ~~~~ 前缀",
-      "\\large ~~~~" not in _en_tex
-      and any((" ~~~~ " + a) in _en_tex for a in _e.englishAuthors[:1])
-      and "\\hspace*" not in _en_tex
-      and "\\phantom" not in _en_tex, _en_tex)
+_en_plain = TOC.english_entry(_e, False, 30)
+check("(d5) 英文栏目条目：标题首行和作者行都带 ~~~~，标题续行用 phantom 对齐",
+      "{\\large ~~~~ " + TOC._en_title_lines(_e, 30, True)[0] + "}" in _en_tex
+      and "\\textit{~~~~ " in _en_tex
+      and (len(TOC._en_title_lines(_e, 30, True)) == 1
+           or "{\\large \\phantom{~~~~ }" in _en_tex)
+      and "\\hspace*" not in _en_tex, _en_tex)
+check("(d5a) 英文普通条目：标题和作者都不带 ~~~~ / phantom（不加栏目缩进）",
+      "~~~~" not in _en_plain and "\\phantom" not in _en_plain
+      and not _en_plain.startswith("{\\large ~~~~"), _en_plain)
+
+_en_multi = TOC.TocEntry(
+    folderName="X", page="9",
+    englishTitle="Method Analytical Methodology Examination Semantics Structure "
+                 "Method Epistemic Synthetic Approach Contribution Practice",
+    englishAuthors=["Alpha Beta", "Gamma Delta"])
+_en_multi_tex = TOC.english_entry(_en_multi, True, 12)
+_en_title_rows = [ln for ln in _en_multi_tex.split("\n") if ln.startswith("{\\large ")]
+_en_author_rows = [ln for ln in _en_multi_tex.split("\n") if ln.startswith("\\textit{")]
+check("(d5b) 英文长标题：首行 ~~~~，后续行全部 \\phantom{~~~~ }，且每行计入缩进后不超上限",
+      len(_en_title_rows) > 1
+      and _en_title_rows[0].startswith("{\\large ~~~~ ")
+      and all(ln.startswith("{\\large \\phantom{~~~~ }") for ln in _en_title_rows[1:])
+      and all(TOC.display_width(
+          ln.removeprefix("{\\large \\phantom{~~~~ }").rstrip("\\}")) <=
+              12 - TOC._PREFIX_PT / TOC._CHAR_PT for ln in _en_title_rows[1:]),
+      "\n".join(_en_title_rows))
+check("(d5c) 英文多作者换行：作者行同样首行 ~~~~、续行 phantom，页码在最后一行",
+      len(_en_author_rows) > 1
+      and _en_author_rows[0].startswith("\\textit{~~~~ ")
+      and all(ln.startswith("\\textit{\\phantom{~~~~ }") for ln in _en_author_rows[1:])
+      and _en_multi_tex.rstrip().endswith("& 9\\\\")
+      and "Alpha Beta" in _en_multi_tex and "Gamma Delta" in _en_multi_tex,
+      _en_multi_tex)
+
+_en_empty = TOC.TocEntry(folderName="X", page="3",
+                         englishTitle="Axiomatization of Structural Norms",
+                         englishAuthors=[])
+_en_empty_tex = TOC.english_entry(_en_empty, True, 30)
+check("(d5d) 英文作者为空：标题仍缩进，不造姓名/不回退，也不给空作者加 ~~~~",
+      any(ln.startswith("{\\large ~~~~ ") for ln in _en_empty_tex.split("\n"))
+      and "\\textit{~~~~" not in _en_empty_tex
+      and "\\textit{}" in _en_empty_tex
+      and "陆" not in _en_empty_tex and "王" not in _en_empty_tex,
+      _en_empty_tex)
 
 
 # ── (e) 端到端：专辑/专栏/无栏目/空勾选 ────────────────────────────────
@@ -278,10 +375,15 @@ check("(e1) 专辑：生成两目录、全部三篇进目录且都带 ~~~~（sta
       and all(f"& {p}" in _txt["ch"] for p in ("1", "17", "33"))
       and sum(1 for _ln in _txt["ch"].split("\n") if _ln.startswith("{\\large ~~~~")) == 3,
       _txt["ch"][-800:])
-check("(e2) 专辑：英文目录含 Special Issue 标签与全部三篇（每篇首位作者都带 ~~~~）",
+check("(e2) 专辑：英文目录含 Special Issue 标签与全部三篇（标题和作者都带 ~~~~）",
       "Special Issue: Preference Logic" in _txt["en"]
       and "Knowability" in _txt["en"] and "Axiomatization" in _txt["en"]
-      and all((" ~~~~ " + a) in _txt["en"] for a in ("Wang Ning", "Kou Jingru", "Wu Hao")),
+      and sum(1 for ln in _txt["en"].split("\n")
+              if ln.startswith("{\\large ~~~~ ")) == 3
+      and sum(1 for ln in _txt["en"].split("\n")
+              if ln.startswith("\\textit{~~~~ ")) == 3
+      and all(any(a in ln for ln in _txt["en"].split("\n"))
+              for a in ("Wang Ning", "Kou Jingru", "Wu Hao")),
       _txt["en"][-800:])
 check("(e3) 专辑：日志报「（3 篇）」且不报缺项",
       any("（3 篇）" in ln for ln in _st["logs"])
@@ -303,7 +405,7 @@ check("(e6) 专栏空勾选：日志报「（0 篇）」且栏目标签仍在",
       and "Column: Cognitive Paradox Studies" in _kong_txt["en"])
 
 _one_txt, _one_st = run_pair(_one, "ONE")
-check("(e7) 专栏勾选一篇：三篇都列进目录，只有勾选的 Ning_Wang 带 ~~~~（英文同样）",
+check("(e7) 专栏勾选一篇：三篇都列进目录，只有勾选的 Ning_Wang 标题和作者带 ~~~~",
       len(_one_st["outs"]) == 2
       and all(t in _one_txt["ch"] for t in ("论示例悖论", "可知性悖论", "结构性规范"))
       and sum(1 for _ln in _one_txt["ch"].split("\n") if _ln.startswith("{\\large ~~~~")) == 1
@@ -311,10 +413,16 @@ check("(e7) 专栏勾选一篇：三篇都列进目录，只有勾选的 Ning_Wa
       and "~~~~ 可知性悖论" not in _one_txt["ch"]
       and all(t in _one_txt["en"] for t in
               ("On the Example Paradox", "Knowability", "Axiomatization"))
-      and " ~~~~ Wang Ning" in _one_txt["en"]
-      and " ~~~~ Kou Jingru" not in _one_txt["en"]
-      and " ~~~~ Wu Hao" not in _one_txt["en"],
-      _one_txt["ch"][-800:])
+      and sum(1 for _ln in _one_txt["en"].split("\n")
+              if _ln.startswith("{\\large ~~~~ ")) == 1
+      and sum(1 for _ln in _one_txt["en"].split("\n")
+              if _ln.startswith("\\textit{~~~~ ")) == 1
+      and "{\\large ~~~~ On the Example Paradox}" in _one_txt["en"]
+      and "\\textit{~~~~ Wang Ning}" in _one_txt["en"]
+      and "{\\large ~~~~ Knowability" not in _one_txt["en"]
+      and "\\textit{~~~~ Kou Jingru}" not in _one_txt["en"]
+      and "\\textit{~~~~ Wu Hao}" not in _one_txt["en"],
+      _one_txt["en"][-800:])
 
 _no_txt, _no_st = run_pair(_no_col, "NONE")
 check("(e8) 无栏目：全部三篇进目录、无 ~~~~ 前缀、栏目字段被忽略",
@@ -357,6 +465,102 @@ check("(e9) 对照：专栏勾中 1 篇 ⇒ 该篇带 ~~~~ + 栏目版式（正�
       and "\\phantom{~~~~ }" in _one_txt["ch"]
       and _body(_one_txt["ch"]) != _body(_plain_txt["ch"]),
       "hit-one body unexpectedly same as plain")
+
+
+# ── (e10) 混合归属：10 篇只勾前 4 篇，英文/中文都只标记这 4 篇 ─────────────
+print("\n── (e10) 混合专栏 4+6：按勾选归属，英文标题/作者都缩进、普通 6 篇不缩进 ──")
+
+_mix_root = tempfile.mkdtemp(prefix="slcn_b375_mix_")
+_mix_issue = make_issue(_mix_root)
+_mix_report = make_mixed_report(_mix_issue)
+_mix_selected = [name for name, *_rest in MIXED_ARTICLES[:4]]
+_mix_logs: list[str] = []
+_mix_outs = TOC.run(
+    _mix_report,
+    TOC.TocSettings(columnKind="专栏", columnName="混合专栏",
+                    columnNameEN="Mixed Column", columnHost="匿名主持",
+                    columnArticles=_mix_selected),
+    log=_mix_logs.append, stamp="MIX")
+_mix_en = open(_mix_outs[0], encoding="utf-8").read() if len(_mix_outs) == 2 else ""
+_mix_zh = open(_mix_outs[1], encoding="utf-8").read() if len(_mix_outs) == 2 else ""
+
+
+def _blocks(text: str) -> list[str]:
+    body = _body(text)
+    return [b.strip() for b in body.split("\\vdistance") if b.strip()]
+
+
+_mix_en_blocks = _blocks(_mix_en)
+_mix_zh_blocks = _blocks(_mix_zh)
+check("(e10a) 混合 4+6：中英目录都保留 10 篇、顺序与页码完整",
+      len(_mix_outs) == 2 and len(_mix_en_blocks) == 10 and len(_mix_zh_blocks) == 10
+      and all(f"& {p}\\\\" in _mix_en_blocks[i]
+              for i, p in enumerate(("1", "11", "21", "31", "41", "51", "61", "71", "81", "91")))
+      and all(f"& {p}\\\\" in _mix_zh_blocks[i]
+              for i, p in enumerate(("1", "11", "21", "31", "41", "51", "61", "71", "81", "91"))),
+      f"en={len(_mix_en_blocks)} zh={len(_mix_zh_blocks)}")
+check("(e10b) 混合 4+6：英文仅前 4 篇标题/作者带 ~~~~，后 6 篇完全无栏目缩进",
+      all(any(ln.startswith("{\\large ~~~~ ") for ln in _mix_en_blocks[i].split("\n"))
+          and any(ln.startswith("\\textit{~~~~ ") for ln in _mix_en_blocks[i].split("\n"))
+          for i in range(4))
+      and all("~~~~" not in _mix_en_blocks[i] for i in range(4, 10))
+      and sum(1 for ln in _mix_en.split("\n")
+              if ln.startswith("{\\large ~~~~ ")) == 4
+      and sum(1 for ln in _mix_en.split("\n")
+              if ln.startswith("\\textit{~~~~ ")) == 4,
+      "\n---\n".join(_mix_en_blocks[-6:]))
+check("(e10c) 混合 4+6：英文长标题续行用 \\phantom{~~~~ }，普通条目无 phantom",
+      any(ln.startswith("{\\large \\phantom{~~~~ }") for ln in _mix_en_blocks[0].split("\n"))
+      and all("\\phantom" not in _mix_en_blocks[i] for i in range(4, 10)),
+      "\n".join(_mix_en_blocks[0].split("\n")[:4]))
+check("(e10d) 混合 4+6：中文同样只标记前 4 篇（归属来自勾选，不是硬编码）",
+      sum(1 for _ln in _mix_zh.split("\n")
+          if _ln.startswith("{\\large ~~~~")) == 4
+      and all(any(ln.startswith("{\\large ~~~~") for ln in _mix_zh_blocks[i].split("\n"))
+              for i in range(4))
+      and all("~~~~" not in _mix_zh_blocks[i] for i in range(4, 10))
+      and "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}" in _mix_en,
+      "\n---\n".join(_mix_zh_blocks[-6:]))
+
+
+# ── (e11) 继承旧版栏目 contents.tex 后重生成：缩进不累加 ─────────────────
+print("\n── (e11) 继承旧模板重生成：标题/作者缩进不累加 ──")
+
+_inh_root = tempfile.mkdtemp(prefix="slcn_b375_inherit_")
+_inh_issue = make_issue(_inh_root)
+_inh_report = make_report(_inh_issue)
+_inh_toc = os.path.join(_inh_issue, "000 Table of Contents")
+os.makedirs(_inh_toc, exist_ok=True)
+_inh_parts = TT.builtin("contents.tex")
+_inh_old_body = (
+    "\\large ~~~~ Old Title One\\\\\n"
+    "\\textit{{~~~~  Old Author}}\n& 1\\\\\n\\vdistance\n\n"
+    "\\large Old Title Two\\\\\n"
+    "\\textit{{Old Other}}\n& 17\\\\")
+with open(os.path.join(_inh_toc, "contents.tex"), "w", encoding="utf-8") as fh:
+    fh.write(_inh_parts.head + "\n\n%中间主体\n\n" + _inh_old_body
+             + "\n\n" + _inh_parts.tail)
+_inh_settings = TOC.TocSettings(**base_fields(columnKind="专辑", columnName="偏好逻辑",
+                                              columnNameEN="Preference Logic",
+                                              columnHost="刘奋荣"))
+_inh_out1 = TOC.generate_tex(_inh_report, "en", _inh_settings,
+                             log=lambda _s: None, stamp="INH1")
+_inh_out2 = TOC.generate_tex(_inh_report, "en", _inh_settings,
+                             log=lambda _s: None, stamp="INH2")
+_inh_en1 = open(_inh_out1, encoding="utf-8").read() if _inh_out1 else ""
+_inh_en2 = open(_inh_out2, encoding="utf-8").read() if _inh_out2 else ""
+check("(e11) 继承旧版栏目模板重生成：三篇各一次标题/作者缩进，无双重 ~~~~",
+      bool(_inh_en1) and bool(_inh_en2)
+      and sum(1 for ln in _inh_en1.split("\n")
+              if ln.startswith("{\\large ~~~~ ")) == 3
+      and sum(1 for ln in _inh_en1.split("\n")
+              if ln.startswith("\\textit{~~~~ ")) == 3
+      and "~~~~ ~~~~" not in _inh_en1
+      and "\\textit{ ~~~~" not in _inh_en1,
+      _inh_en1[-600:])
+check("(e11a) 连续重生成两版：缩进/行数完全一致（不累加）",
+      bool(_inh_en1) and _inh_en1 == _inh_en2,
+      "两版英文目录正文不一致")
 
 
 # ── (f) CLI：不完整设置 = 退出 2、不写结果 JSON；preview 带校验错误 ────

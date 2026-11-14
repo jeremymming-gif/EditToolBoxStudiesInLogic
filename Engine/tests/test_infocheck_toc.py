@@ -200,8 +200,13 @@ check("(a) 中文条目：栏目内文章带 `~~~~ ` 前缀、作者用「，」
       "~~~~ " in ce and "陆王，王二" in ce and ce.rstrip().endswith("& 1\\\\"), ce[-40:])
 ee = TOC.english_entry(TOC.TocEntry("X", page="7", englishTitle="T",
                                     englishAuthors=["A B", "C D"]), True, 35)
-check("(a) 英文条目：只有第一位作者带 ` ~~~~ ` 前缀（标题行不带）",
-      "{ ~~~~ A B}" in ee and "{C D}" in ee and "\\large ~~~~" not in ee, ee)
+check("(a) 英文条目：栏目内标题和作者都带 ~~~~（全部作者同列，不只首位）",
+      "{\\large ~~~~ T}" in ee
+      and "\\textit{~~~~ A B, C D}" in ee, ee)
+_ee_plain = TOC.english_entry(TOC.TocEntry("X", page="7", englishTitle="T",
+                                          englishAuthors=["A B", "C D"]), False, 35)
+check("(a) 英文普通条目：标题和作者都不带 ~~~~ 栏目缩进",
+      "~~~~" not in _ee_plain and "\\phantom" not in _ee_plain, _ee_plain)
 
 print("\n── (a) 生成目录：模板处理 ──")
 check("(a) total_issue_number：`2026年第5期(90)` → 90",
@@ -1113,26 +1118,30 @@ check("(l5) 端到端：缺英文名 ⇒ 两份都拒绝生成、无 .toolbox-tm
 _l_outs2 = TOC.run(_l_report, _s_en_full, log=lambda _s: None, stamp="COL2")
 _l_en = open(_l_outs2[0], encoding="utf-8").read() if len(_l_outs2) == 2 else ""
 _l_zh = open(_l_outs2[1], encoding="utf-8").read() if len(_l_outs2) == 2 else ""
-check("(l6) 端到端：四项齐全 ⇒ 英文 Special Issue、中文专辑表头、栏目条目带 ~~~~",
+check("(l6) 端到端：四项齐全 ⇒ 英文 Special Issue、中文专辑表头、标题和作者都带 ~~~~",
       len(_l_outs2) == 2 and "Special Issue: Preference Logic" in _l_en
-      and "专辑：偏好逻辑" in _l_zh and "~~~~ " in _l_en
-      and "Lu Wang" in _l_en and "Wang Er" in _l_en
+      and "专辑：偏好逻辑" in _l_zh
+      and any(ln.startswith("{\\large ~~~~ ") for ln in _l_en.split("\n"))
+      and any(ln.startswith("\\textit{~~~~ ") and "Lu Wang" in ln
+              for ln in _l_en.split("\n"))
+      and "Wang Er" in _l_en
       and "On the Example Paradox" in _l_en)
 check("(l7) 反例：英文表头只用 columnNameEN，不含「Special Issue: 偏好逻辑」",
       "Special Issue: 偏好逻辑" not in _l_en)
 # 英文作者为空是合法路径：不造名、不回退中文作者、不为缺字段新增退出码；
-# 英文条目仍生成，只是没有可标记的首位作者。
+# 英文条目标题仍带栏目缩进，只是没有可标记/可换行的作者。
 _l_noen_root = tempfile.mkdtemp(prefix="slcn_col_en_noauthor_")
 make_issue(_l_noen_root)
 _l_noen_report = make_report(_l_noen_root)
 _l_noen_outs = TOC.run(_l_noen_report, _s_en_full, log=lambda _s: None, stamp="COL3")
 _l_noen_en = open(_l_noen_outs[0], encoding="utf-8").read() if len(_l_noen_outs) == 2 else ""
 _l_noen_zh = open(_l_noen_outs[1], encoding="utf-8").read() if len(_l_noen_outs) == 2 else ""
-check("(l8) 缺英文作者边界：仍生成双目录；英文不伪造/不回退中文作者、不打印 ~~~~",
+check("(l8) 缺英文作者边界：标题仍缩进；不伪造/不回退中文作者、空作者无 ~~~~",
       len(_l_noen_outs) == 2
       and "Special Issue: Preference Logic" in _l_noen_en
       and "On the Example Paradox" in _l_noen_en
-      and "~~~~ " not in _l_noen_en
+      and any(ln.startswith("{\\large ~~~~ ") for ln in _l_noen_en.split("\n"))
+      and not any(ln.startswith("\\textit{~~~~") for ln in _l_noen_en.split("\n"))
       and "陆王" not in _l_noen_en and "王二" not in _l_noen_en
       and "专辑：偏好逻辑" in _l_noen_zh and "~~~~ " in _l_noen_zh)
 
