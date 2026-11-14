@@ -470,7 +470,8 @@ def _w(path: str, text: str) -> None:
 
 
 def make_pushcopy_issue(root: str, year: int, number: int, total: int,
-                        month: int, day: int, *, column: bool = True) -> str:
+                        month: int, day: int, *, column: bool = True,
+                        chinese: bool = False) -> str:
     """合成一期（假期号/假专栏/假作者/假摘要），落在 tempdir 里。"""
     d = os.path.join(root, f"{year}年第{number}期({total})")
     toc = os.path.join(d, "000 Table of Contents")
@@ -495,12 +496,13 @@ def make_pushcopy_issue(root: str, year: int, number: int, total: int,
     _w(os.path.join(toc, "contents.tex"), en)
     for i, (t, a, ab) in enumerate((("假标题一", "张三", "假摘要甲。"),
                                     ("假标题二", "王五", "假摘要乙。")), start=1):
+        main = t if chinese else f"Fake Title {i}"
         tex = ("\\documentclass{article}\n\\begin{document}\n"
                f"\\newcommand{{\\mytitleCN}}{{{t}}}\n"
                f"\\newcommand{{\\myfirstauthorCN}}{{{a}}}\n"
                f"\\newcommand{{\\myfirstaffiliationCN}}{{假单位}}\n"
                f"\\newcommand{{\\myabstractCN}}{{{ab}}}\n"
-               f"\\newcommand{{\\mytitle}}{{Fake Title {i}}}\n"
+               f"\\newcommand{{\\mytitle}}{{{main}}}\n"
                f"\\newcommand{{\\myfirstauthor}}{{Author {i}}}\n"
                f"\\newcommand{{\\myabstract}}{{Fake abstract {i}.}}\n"
                "\\end{document}\n")
@@ -586,7 +588,10 @@ try:
     #       专栏区域单元格内部边框取消（tcBorders=nil）——另生成一份**中文 only** 目录检查；
     #       双语模式的同类分组/末条分隔线由 tests/test_r3_docx_group_text.py 覆盖。
     _zh_only = os.path.join(_push_work, "out_zh_only")
-    r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
+    # f5d 要中文-only：主标题用中文，避免按 \mytitle 判成英文而默认双语。
+    d_zh = make_pushcopy_issue(os.path.join(_push_work, "zh"),
+                               2026, 3, 88, 6, 18, chinese=True)
+    r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d_zh,
                         "--out", _zh_only],
                        capture_output=True, text=True, encoding="utf-8",
                        errors="replace", env=_env)
