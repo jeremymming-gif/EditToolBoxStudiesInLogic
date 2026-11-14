@@ -130,7 +130,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**169 套件 / 8039 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**173 套件 / 8158 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
@@ -169,7 +169,8 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_pkg_fix_20261112_q789` 48 ｜ `test_pkg_p02_delivery` 76 ｜ `test_pkg_p02_promote_sigterm` 58 ｜ `test_pkg_p02h_guard_hardening` 74
 `test_pkg_p02r_convert_contract` 39 ｜ `test_pkg_p03_taskbook_modes` 95 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p05_pushcopy` 23
 `test_pkg_p06_query_paging` 106 ｜ `test_pkg_p07_bib_asset` 49 ｜ `test_platform` 82 ｜ `test_proofcheck` 294
-`test_publish` 58 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68
+`test_publish` 58 ｜ `test_r3_dirpush_default_000` 22 ｜ `test_r3_docx_group_text` 17 ｜ `test_r3_language_mode` 43
+`test_r3_toc_host` 37 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68
 `test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89
 `test_ruleset` 20 ｜ `test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24
 `test_sep_style` 25 ｜ `test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0
