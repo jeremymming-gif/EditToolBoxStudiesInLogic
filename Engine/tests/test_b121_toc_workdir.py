@@ -146,8 +146,11 @@ check("(b4) 专辑：两篇都在目录里、首位英文作者都带 ~~~~ 前�
       "~~~~ Qiu Dejun" in _en and "~~~~ Wu Hao" in _en
       and "Knowability" in _en and "On the Yablo Paradox" in _en,
       repr([ln for ln in _en.split("\n") if "~~~~" in ln][:3]))
-check("(b5) 英文列定义仍是 CANONICAL_EN",
-      "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}r@{}}" in _en, _en.split("\n")[0:6])
+check("(b5) 英文栏目列定义是 CANONICAL_EN_COLUMN（1em 列距，标题不带 ~~~~）",
+      "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}" in _en
+      and "\\large ~~~~" not in _en, _en.split("\n")[0:6])
+check("(b5a) 英文栏目表带 0.99 行高",
+      "\\renewcommand{\\arraystretch}{0.99}" in _en, _en.split("\n")[0:8])
 check("(b6) 不再有英文名回退日志（B-375：缺项直接拒绝生成）",
       not any("回退" in ln and "英文名" in ln for ln in _logs), repr(_logs))
 check("(b7) 内置模板无栏目块告警路径可复现（见 b8/b9）", True)

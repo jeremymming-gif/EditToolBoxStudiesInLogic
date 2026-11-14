@@ -195,8 +195,8 @@ check("(a) 中文条目：栏目内文章带 `~~~~ ` 前缀、作者用「，」
       "~~~~ " in ce and "陆王，王二" in ce and ce.rstrip().endswith("& 1\\\\"), ce[-40:])
 ee = TOC.english_entry(TOC.TocEntry("X", page="7", englishTitle="T",
                                     englishAuthors=["A B", "C D"]), True, 35)
-check("(a) 英文条目：只有第一位作者带 ` ~~~~ ` 前缀",
-      "{ ~~~~ A B}" in ee and "{C D}" in ee, ee)
+check("(a) 英文条目：只有第一位作者带 ` ~~~~ ` 前缀（标题行不带）",
+      "{ ~~~~ A B}" in ee and "{C D}" in ee and "\\large ~~~~" not in ee, ee)
 
 print("\n── (a) 生成目录：模板处理 ──")
 check("(a) total_issue_number：`2026年第5期(90)` → 90",

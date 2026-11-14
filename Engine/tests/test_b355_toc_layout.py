@@ -154,6 +154,52 @@ def test_canonicalize_en() -> None:
     check("(b) 旧列距 2.7em/4em 已删除",
           "2.7em" not in got and "4em" not in got, got[-200:])
 
+    # 栏目期：历史 l@1em 与上一版规范形 X@2em 都归一到 X@1em（人工成品同宽）
+    got_col = tt.canonicalize_head(HEAD_EN_89, "contents.tex", is_column=True)
+    check("(b) 英文栏目期换成 CANONICAL_EN_COLUMN",
+          tt.CANONICAL_EN_COLUMN in got_col, got_col[-200:])
+    legacy = ("\\begin{tabularx}{\\textwidth}{@{}>{\\raggedright\\arraybackslash}"
+              "X@{\\hspace{2em}}r@{}}")
+    got_legacy = tt.canonicalize_head(legacy, "contents.tex", is_column=True)
+    check("(b) 上一版 X@2em 栏目模板可升级为 X@1em",
+          tt.CANONICAL_EN_COLUMN in got_legacy
+          and "2em" not in got_legacy, got_legacy[-200:])
+    try:
+        tt.canonicalize_head(legacy.replace("r@{}", "r@{\\hspace{1em}}r@{}"),
+                             "contents.tex", is_column=True)
+        check("(b) 英文栏目期自定义 3 列 X 仍抛错", False, "未抛错")
+    except tt.TemplateLayoutError:
+        check("(b) 英文栏目期自定义 3 列 X 仍抛错", True)
+
+
+# ── (b2) 英文栏目表行高 ────────────────────────────────────────────────
+
+def test_column_row_stretch() -> None:
+    print("\n── (b2) 英文栏目表 0.99 行高：插入 / 幂等 / 不覆盖人工值 ──")
+    head = "\\begin{tabularx}{\\textwidth}{X r}\n"
+    got = tt.ensure_column_row_stretch(head)
+    check("(b2) 行高定义插在生效 tabularx 前",
+          got.startswith("\\renewcommand{\\arraystretch}{0.99}\n\\begin{tabularx}"),
+          got[:120])
+    check("(b2) 幂等", tt.ensure_column_row_stretch(got) == got, got[:120])
+    commented = "%\\begin{tabularx}{\\textwidth}{X r}\n" + head
+    got_commented = tt.ensure_column_row_stretch(commented)
+    check("(b2) 只看未注释的 tabularx",
+          got_commented.startswith("%\\begin{tabularx}")
+          and "\n\\renewcommand{\\arraystretch}{0.99}\n\\begin{tabularx}" in got_commented,
+          got_commented[:160])
+    custom = "\\renewcommand{\\arraystretch}{1.1}\n" + head
+    check("(b2) 人工模板已有行高时不覆盖",
+          tt.ensure_column_row_stretch(custom) == custom, custom[:120])
+    check("(b2) 非栏目时移除本工具插入的行",
+          tt.ensure_column_row_stretch(got, enabled=False) == head,
+          tt.ensure_column_row_stretch(got, enabled=False)[:120])
+    check("(b2) 非栏目时保留人工行高",
+          tt.ensure_column_row_stretch(custom, enabled=False) == custom, custom[:120])
+    check("(b2) 没有 tabularx 时原样返回",
+          tt.ensure_column_row_stretch("\\documentclass{ctexart}\n") ==
+          "\\documentclass{ctexart}\n")
+
 
 # ── (c) 栏目期 / 识别失败 ───────────────────────────────────────────────
 
@@ -223,6 +269,7 @@ def test_generate_normal() -> None:
     check("(e) 两行标题用 \\newline", "\\newline" in text, text[-400:])
     check("(f) 断行上限反推告警", any("标题断行上限" in s for s in logs), str(logs))
     check("(f) 模板来源日志", any("模板来源：" in s for s in logs), str(logs))
+    check("(e) 中文/普通目录不加英文栏目行高", "\\arraystretch" not in text, text[:300])
 
 
 def test_generate_fallback() -> None:
@@ -266,6 +313,7 @@ def test_generate_column() -> None:
     check("(c) 栏目块名称/主持人替换",
           "专辑：偏好逻辑" in text and "主持人：刘奋荣" in text, text[:1200])
     check("(f) 栏目期断行上限收窄告警", any("标题断行上限" in s for s in logs), str(logs))
+    check("(c) 中文目录不加英文栏目行高", "\\arraystretch" not in text, text[:300])
 
 
 def test_guards() -> None:
@@ -307,11 +355,44 @@ def test_generate_en() -> None:
     check("(g) 产物存在", bool(out) and Path(out).is_file(), str(out))
     check("(g) 产物列定义是 CANONICAL_EN", tt.CANONICAL_EN in text, text[-300:])
     check("(g) 英文断行上限反推告警", any("标题断行上限" in s for s in logs), str(logs))
+    check("(g) 无栏目英文不加行高", "\\arraystretch" not in text, text[:300])
+
+    # 普通英文继承上一期栏目源：移除本工具插入的 0.99 行高，保持既有版式
+    tmp2 = Path(tempfile.mkdtemp(prefix="b355_toc_en_legacy_"))
+    report2 = _issue(tmp2, en=template_en(
+        "\\renewcommand{\\arraystretch}{0.99}\n" + HEAD_EN_89))
+    out2 = toc.generate_tex(str(report2), "en", toc.TocSettings(),
+                            log=lambda _s: None, stamp="TEST")
+    text2 = _read(out2)
+    check("(g) 普通英文继承栏目源时移除工具行高",
+          "\\arraystretch" not in text2, text2[:400])
+
+
+def test_generate_en_column_stretch() -> None:
+    print("\n── (g2) 英文栏目：0.99 行高只加在栏目正文表 ──")
+    tmp = Path(tempfile.mkdtemp(prefix="b355_toc_en_col_"))
+    report = _issue(tmp, en=template_en(HEAD_EN_89))
+    settings = toc.TocSettings(
+        columnKind="专辑", columnName="偏好逻辑", columnNameEN="Preference Logic",
+        columnHost="刘奋荣")
+    logs: list[str] = []
+    out = toc.generate_tex(str(report), "en", settings,
+                           log=logs.append, stamp="TEST")
+    text = _read(out)
+    check("(g2) 英文栏目产物存在", bool(out) and Path(out).is_file(), str(out))
+    check("(g2) 英文栏目表带 0.99 行高",
+          "\\renewcommand{\\arraystretch}{0.99}\n\\begin{tabularx}" in text,
+          text[:500])
+    check("(g2) 列定义仍是 CANONICAL_EN_COLUMN",
+          tt.CANONICAL_EN_COLUMN in text, text[:500])
+    check("(g2) 栏目行仍在",
+          "Special Issue: Preference Logic" in text, text[:600])
 
 
 def main() -> int:
     test_canonicalize_zh()
     test_canonicalize_en()
+    test_column_row_stretch()
     test_column_and_errors()
     test_cell_newline()
     test_generate_normal()
@@ -319,6 +400,7 @@ def main() -> int:
     test_generate_column()
     test_guards()
     test_generate_en()
+    test_generate_en_column_stretch()
 
     print("\n" + "=" * 60)
     if _fails:

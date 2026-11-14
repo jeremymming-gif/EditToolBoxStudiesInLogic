@@ -305,13 +305,18 @@ CANONICAL_ZH_COLUMN = ("{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}"
 #: 英文目录列格式：标题弹性列 + 页码右对齐（作者与标题同一格；正胶 2em）。
 CANONICAL_EN = "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}r@{}}"
 
+#: 英文栏目期列格式：列距 1em（人工成品同宽，见 2026 年第 5 期人工 contents.tex 的
+#: `l@{\hspace{1em}}r`）。栏目条目只由首位作者的 `~~~~ ` 标标记，标题行不带前缀；
+#: 1em 让最长标题行在 X 列内不再二次折断，同时保留弹性列的防溢出。
+CANONICAL_EN_COLUMN = "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}"
+
 
 def canonical_column_spec(file_name: str, *, is_column: bool = False) -> str:
     """按语言/是否栏目期返回规范列格式（`toc.generate_tex` 与测试共用同一口径）。"""
     is_chinese = file_name.startswith("Chinese Content")
     if is_chinese:
         return CANONICAL_ZH_COLUMN if is_column else CANONICAL_ZH
-    return CANONICAL_EN
+    return CANONICAL_EN_COLUMN if is_column else CANONICAL_EN
 
 
 def _skip_group(text: str, start: int) -> int:
@@ -392,8 +397,15 @@ def _looks_like_commented_spec(line: str) -> bool:
 
 
 def _check_spec_recognizable(spec: str, target: str, expected: int) -> None:
-    """D2 识别判据：已是规范形 → 放行；已含自定义 X 列 → 不猜；列数不符 → 不猜。"""
+    """D2 识别判据：已是规范形 → 放行；已含自定义 X 列 → 不猜；列数不符 → 不猜。
+
+    例外：英文栏目期允许把**上一版规范形** CANONICAL_EN（X@2em）升级成
+    CANONICAL_EN_COLUMN（X@1em）。这不是自定义 X 模板，而是本工具自己的历史产物；
+    其它任何带 X 的继承列定义仍然拒绝，避免把编辑部手调列宽悄悄改掉。
+    """
     if spec.strip() == target:
+        return
+    if target == CANONICAL_EN_COLUMN and spec.strip() == CANONICAL_EN:
         return
     if "X" in spec:
         raise TemplateLayoutError(
@@ -402,6 +414,34 @@ def _check_spec_recognizable(spec: str, target: str, expected: int) -> None:
     if count != expected:
         raise TemplateLayoutError(
             f"列数 {count} 与预期 {expected} 不符（可能是 4 列/自定义模板）")
+
+
+#: 英文栏目表行高：18 行标题的整表比版心高约 15.6pt，既有 fit 预算 14.13pt 差约 1.5pt。
+#: 0.99 行高（约 0.14pt/行）把静态差额降到 fit 能覆盖的范围；fit 仍按最小必要量搜索，
+#: 不触 -10.24pt/处下限，也不改字号、列宽、显式换行或内容。
+EN_COLUMN_ARRAYSTRETCH = "0.99"
+_EN_COLUMN_ROW_STRETCH = ("\\renewcommand{\\arraystretch}{"
+                          + EN_COLUMN_ARRAYSTRETCH + "}")
+
+
+def ensure_column_row_stretch(head: str, *, enabled: bool = True) -> str:
+    r"""英文栏目表的 0.99 行高：`enabled` 时插入，非栏目时移除本工具插入的行。
+
+    只由 `toc.generate_tex` 在英文目录调用；普通英文 / 中文目录不经过。若 head 已有
+    生效的 `\arraystretch` 定义（人工模板），保持原样，不覆盖。关闭时只删与
+    `<ROW_STRETCH>` 完全一致的行 —— 人工模板的其它行高值不动。
+    """
+    lines = head.split("\n")
+    if not enabled:
+        return "\n".join(ln for ln in lines if ln.strip() != _EN_COLUMN_ROW_STRETCH)
+    if any("\\arraystretch" in ln and not is_comment_line(ln) for ln in lines):
+        return head
+    idx = next((i for i, ln in enumerate(lines)
+                if BEGIN_TABULARX in ln and not is_comment_line(ln)), None)
+    if idx is None:
+        return head
+    lines.insert(idx, _EN_COLUMN_ROW_STRETCH)
+    return "\n".join(lines)
 
 
 def canonicalize_head(head: str, file_name: str, *, is_column: bool = False) -> str:

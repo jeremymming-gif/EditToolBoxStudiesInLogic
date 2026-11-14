@@ -48,6 +48,8 @@ _CHAR_PT = 12.0
 _PAGE_DIGIT_PT = 5.88
 _SPACING_PT = 2 * 10.95 + 1.5 * 10.95
 _SPACING_PT_EN = 2 * 10.95
+#: 英文栏目期列距 1em（人工成品同宽；见 CANONICAL_EN_COLUMN）。
+_SPACING_PT_EN_COLUMN = 10.95
 _PREFIX_PT = 19.56001
 _COLUMN_AUTHOR_PT = 0.26 * _TEXTWIDTH_PT
 
@@ -678,20 +680,21 @@ def chinese_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
 
 
 def english_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
-    """英文目录的一条（成品里只有**第一位**作者带 ` ~~~~ ` 前缀）。"""
+    """英文目录的一条（成品里只有**第一位**作者带 ` ~~~~ ` 前缀）。
+
+    标题行不带 `~~~~ `：栏目标记只落在首位作者（见 RULES §十二 / 人工成品）。
+    标题前缀会占掉约 1.6 字宽，长标题第二行会被 X 列二次折断成第 3 行。
+    """
     authors = ", ".join(
         "{" + (" ~~~~ " if (i == 0 and in_column) else "") + name + "}"
         for i, name in enumerate(e.englishAuthors))
-    prefix = "~~~~ " if in_column else ""
 
-    wrapped = wrap_title(e.englishTitle,
-                         limit=wrap_limit - display_width(prefix),
-                         is_english=True)
+    wrapped = wrap_title(e.englishTitle, limit=wrap_limit, is_english=True)
     if wrapped:
-        return ("\\large " + prefix + wrapped[0] + _LINEBREAK + "\n"
-                + "\\large " + prefix + wrapped[1] + _LINEBREAK + "\n"
+        return ("\\large " + wrapped[0] + _LINEBREAK + "\n"
+                + "\\large " + wrapped[1] + _LINEBREAK + "\n"
                 + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
-    return ("\\large " + prefix + e.englishTitle + _LINEBREAK + "\n"
+    return ("\\large " + e.englishTitle + _LINEBREAK + "\n"
             + "\\textit{" + authors + "}\n& " + e.page + _LINEBREAK)
 
 
@@ -721,14 +724,13 @@ def _issue_layout(entries: list[tuple[str, TocEntry]], settings: "TocSettings",
         requested = float(settings.titleWrapLimit)
     else:
         author_pt = 0.0
-        prefix_pt, prefix_w = (_PREFIX_PT, display_width("~~~~ ")) if column_layout else (0.0, 0.0)
-        spacing_pt = _SPACING_PT_EN
+        prefix_pt, prefix_w = 0.0, 0.0
+        spacing_pt = _SPACING_PT_EN_COLUMN if column_layout else _SPACING_PT_EN
         requested = float(settings.titleWrapLimitEN)
 
     x_pt = _TEXTWIDTH_PT - author_pt - page_pt - spacing_pt
     # wrap_limit 的语义是「标题字符数上限」：中文 entry 内部会再扣 `~~~~ ` 前缀宽度，
-    # 英文 title 不带前缀，故这里只用列宽折算字符数；B-355 实测多加 prefix 会让
-    # 15 字 + 前缀溢出版心，LaTeX 二次折行成 3 行。
+    # 英文标题不带前缀（栏目标记只在首位作者），故这里只用列宽折算字符数。
     derived = x_pt / _CHAR_PT
     applied = max(6.0, min(requested, derived))
     if applied + 1e-6 < requested:
@@ -761,13 +763,11 @@ def _log_layout_guard(head: str, entries: list[tuple[str, TocEntry]],
                          display_width("，".join(e.chineseAuthors)) * _CHAR_PT)
             widths.append(title_pt + author_pt + page_pt + _SPACING_PT)
         else:
-            lines = wrap_title(
-                e.englishTitle,
-                limit=wrap_limit - display_width("~~~~ " if in_column else ""),
-                is_english=True)
+            lines = wrap_title(e.englishTitle, limit=wrap_limit, is_english=True)
             title_pt = max([display_width(ln) for ln in (lines or (e.englishTitle,))]) * _CHAR_PT
             author_pt = display_width(", ".join(e.englishAuthors)) * _CHAR_PT
-            widths.append(max(title_pt + prefix_pt, author_pt) + page_pt + _SPACING_PT_EN)
+            widths.append(max(title_pt, author_pt) + page_pt
+                          + (_SPACING_PT_EN_COLUMN if column_layout else _SPACING_PT_EN))
 
     if not widths:
         return
@@ -1106,6 +1106,11 @@ def generate_tex(report_path: str, flag: str, settings: TocSettings,
         except _tt.TemplateLayoutError as exc2:
             log(f"⚠️ 内置模板列定义异常（{exc2}）：保持原样生成，请人工核对")
 
+    # 英文栏目表 18 行标题比版心高约 15.6pt，既有 fit 上限 14.13pt 差约 1.5pt；
+    # 0.99 行高把静态差额收回 fit 预算内，仍由 fit 搜索最小压缩量。
+    # 普通英文若继承上一期栏目源，移除本工具插入的这行，保持既有行高。
+    if not is_chinese:
+        head = _tt.ensure_column_row_stretch(head, enabled=column_layout)
 
     # ---- 栏目块 ----
     column_block = _tt.make_column_block(settings, parts.columnBlock, is_chinese)

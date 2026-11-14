@@ -238,11 +238,13 @@ check("(d6) 副标题续行（——）同样用 \\phantom{~~~~ } 对齐；非�
       and "\\phantom" not in _sub_plain,
       _sub_col)
 
-# 英文条目结构不同：栏目内 ~~~~ 只在第一条作者前，不受 B-363 影响
+# 英文条目结构不同：栏目内 ~~~~ 只在第一条作者前，标题行不带（避免二次折断）
 _en_tex = TOC.english_entry(_e, True, 30)
-check("(d5) 英文条目不受影响：标题两行 + 作者前 ~~~~ 前缀",
-      "~~~~" in _en_tex and "\\hspace*" not in _en_tex
-      and "\\phantom" not in _en_tex)
+check("(d5) 英文条目不受影响：标题行无 ~~~~，作者前有 ~~~~ 前缀",
+      "\\large ~~~~" not in _en_tex
+      and any((" ~~~~ " + a) in _en_tex for a in _e.englishAuthors[:1])
+      and "\\hspace*" not in _en_tex
+      and "\\phantom" not in _en_tex, _en_tex)
 
 
 # ── (e) 端到端：专辑/专栏/无栏目/空勾选 ────────────────────────────────
