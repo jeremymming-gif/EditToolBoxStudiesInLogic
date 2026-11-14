@@ -62,6 +62,13 @@ def _resolve(path: str) -> Path:
     return Path(os.path.expanduser(str(path or "").strip())).resolve()
 
 
+def default_out_root(issue: str, *, annual: bool = False) -> str:
+    """留空时的可见默认值：单期随 issue 指向 000；年度保持旧静态根。"""
+    if annual:
+        return EB.dirpush_legacy_default_out_root()
+    return EB.dirpush_default_out_root(issue)
+
+
 def validate_out_root(out_root: str, issue: str) -> tuple[str, str]:
     """输出根校验（按 spec 顺序）；error 阻断，warn 只提示（仓内需二次确认）。"""
     text = str(out_root or "").strip()
@@ -75,7 +82,8 @@ def validate_out_root(out_root: str, issue: str) -> tuple[str, str]:
     try:
         issue_path = _resolve(issue)
         if target == issue_path or issue_path in target.parents:
-            return "error", "输出根不能放在期目录内（作者来稿只读）"
+            if target != issue_path / "000 Table of Contents":
+                return "error", "输出根不能放在期目录内（作者来稿只读）"
     except OSError:
         pass
     probe = target
@@ -387,17 +395,20 @@ class DirPushPanel:
         mode = self.mode.value or MODE_ISSUE
         annual = mode == MODE_ANNUAL
         self.annual_rows.visible = annual
+        issue = str(self.page.field("issue_dir") or "").strip()
         out_root = self.page.field("dirpush_out")
-        default_root = EB.dirpush_default_out_root()
-        target = out_root or default_root
-        level, message = validate_out_root(out_root, self.page.field("issue_dir"))
+        default_root = default_out_root(issue, annual=annual)
+        target = out_root or default_root or "先选择期目录"
+        default_hint = (f"留空 = 引擎默认：{default_root}" if default_root
+                        else "留空 = 选择期目录后写入该期 000 Table of Contents")
+        level, message = validate_out_root(out_root, issue)
         rows: list = [
             C.notice_bar("先预演（只预演开关）不写文件；输出根落在代码仓内会二次确认。",
                          t, "info"),
             self.page.add_picker("输出根", "dirpush_out",
-                                 f"目录摘要 docx 输出根；留空 = 引擎默认 {default_root}",
+                                 f"目录摘要 docx 输出根；{default_hint}",
                                  kind="dir", required=False),
-            C.text(f"留空 = 引擎默认：{default_root}", t, "caption",
+            C.text(default_hint, t, "caption",
                    t.palette.text_faint, max_lines=1,
                    overflow=ft.TextOverflow.ELLIPSIS),
             ft.Container(

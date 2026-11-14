@@ -795,9 +795,18 @@ def merge_call(
     return _call("mergepdf.py", args, "合并文件")
 
 
-def dirpush_default_out_root() -> str:
-    """输出根的可见默认值（批 115）：空输入时界面显示这个路径，引擎仍按自己的默认走。"""
+def dirpush_legacy_default_out_root() -> str:
+    """年度模式的旧默认输出根（单期已改为当期 000，年度保持不变）。"""
     return os.path.expanduser("~/Documents/sysu/编辑部/目录摘要推送")
+
+
+def dirpush_default_out_root(issue: str = "") -> str:
+    """单期留空时的可见默认值：当期目录下的 000 Table of Contents。"""
+    text = str(issue or "").strip()
+    if not text:
+        return ""
+    return os.path.join(os.path.abspath(os.path.expanduser(text)),
+                        "000 Table of Contents")
 
 
 def trash_info(trash_dir: str) -> dict:

@@ -214,10 +214,16 @@ def test_merge_call_detect_flag():
 def test_dirpush_out_root_validation(tmp_path):
     issue = tmp_path / "2026年第5期(90)"
     issue.mkdir()
+    toc = issue / "000 Table of Contents"
+    toc.mkdir()
     assert DP.validate_out_root("", str(issue))[0] == "ok"
     level, msg = DP.validate_out_root("相对/路径", str(issue))
     assert level == "error" and "绝对路径" in msg
     level, msg = DP.validate_out_root(str(issue / "输出"), str(issue))
+    assert level == "error" and "期目录内" in msg
+    # B 方案：当期 000 是唯一允许的期内输出根；其子目录仍拒绝。
+    assert DP.validate_out_root(str(toc), str(issue))[0] == "ok"
+    level, msg = DP.validate_out_root(str(toc / "输出"), str(issue))
     assert level == "error" and "期目录内" in msg
     level, msg = DP.validate_out_root(str(tmp_path / "推送"), str(issue))
     assert level == "ok", msg

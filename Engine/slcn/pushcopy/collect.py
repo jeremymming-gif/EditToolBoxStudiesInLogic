@@ -44,6 +44,9 @@ def annual_dir_name(year: int) -> str:
     return f"{year} 年"
 
 
+#: 每期目录 tex 与（单期留空输出根时）docx/设置的落位目录
+TOC_DIR_NAME = "000 Table of Contents"
+
 #: 每期生成成功后写出的体例设置（确定性：不含时间戳）
 SETTINGS_NAME = "目录摘要设置.json"
 SETTINGS_SCHEMA = 1
@@ -317,7 +320,7 @@ def _split_title_breaks(raw: str) -> list[str]:
 
 
 def toc_files(issue_dir: str) -> tuple[str, str]:
-    base = os.path.join(issue_dir, "000 Table of Contents")
+    base = os.path.join(issue_dir, TOC_DIR_NAME)
     return os.path.join(base, "Chinese Content.tex"), os.path.join(base, "contents.tex")
 
 
@@ -918,16 +921,44 @@ def _clean_abstract(raw: str, folder: str, warnings: list[str], missing: list[st
 
 
 def default_out_root() -> str:
-    """本机默认输出根（spec §2.5；mac 外壳同理）。"""
+    """旧默认输出根（年度模式仍用；单期留空改走 default_issue_out_root）。"""
     return os.path.join(os.path.expanduser("~"), "Documents", "sysu", "编辑部", "目录摘要推送")
 
 
-def issue_output_dir(out_root: str, year: int, number: int) -> str:
+def default_issue_out_root(issue_dir: str) -> str:
+    """单期留空输出根 = 当期目录下的 000 Table of Contents（B 方案）。"""
+    return os.path.join(os.path.abspath(os.path.expanduser(issue_dir)), TOC_DIR_NAME)
+
+
+def ensure_issue_out_root(issue_dir: str) -> str:
+    """确保单期默认输出根存在；期目录不可读/不可写时抛 CollectError。"""
+    issue = os.path.abspath(os.path.expanduser(issue_dir))
+    if not os.path.isdir(issue):
+        raise CollectError(f"期目录不存在：{issue}")
+    if not os.access(issue, os.R_OK | os.X_OK):
+        raise CollectError(f"期目录不可读：{issue}")
+    target = os.path.join(issue, TOC_DIR_NAME)
+    if os.path.exists(target) and not os.path.isdir(target):
+        raise CollectError(f"{TOC_DIR_NAME} 不是目录：{target}")
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as exc:
+        raise CollectError(f"无法创建输出目录 {target}：{exc}") from exc
+    if not os.access(target, os.W_OK | os.X_OK):
+        raise CollectError(f"输出目录不可写：{target}")
+    return target
+
+
+def issue_output_dir(out_root: str, year: int, number: int, *,
+                     direct: bool = False) -> str:
+    if direct:
+        return out_root
     return os.path.join(out_root, issue_dir_name(year, number))
 
 
-def issue_output_paths(out_root: str, year: int, number: int) -> tuple[str, str, str]:
-    d = issue_output_dir(out_root, year, number)
+def issue_output_paths(out_root: str, year: int, number: int, *,
+                       direct: bool = False) -> tuple[str, str, str]:
+    d = issue_output_dir(out_root, year, number, direct=direct)
     return (d,
             os.path.join(d, f"逻辑学研究{year}年第{number}期目录摘要.docx"),
             os.path.join(d, SETTINGS_NAME))
@@ -938,15 +969,32 @@ def annual_output_path(out_root: str, year: int) -> str:
                         f"逻辑学研究{year}年总目录.docx")
 
 
-def settings_paths(out_root: str, year: int, number: int, issue_dir: str) -> list[str]:
-    """体例设置候选路径（先输出目录，后期目录；契约 §3）。"""
-    return [os.path.join(issue_output_dir(out_root, year, number), SETTINGS_NAME),
-            os.path.join(issue_dir, SETTINGS_NAME)]
+def settings_paths(out_root: str, year: int, number: int, issue_dir: str, *,
+                   direct: bool = False) -> list[str]:
+    """体例设置候选路径（先输出目录，再当期 000，后期目录根；契约 §3）。
+
+    单期 B 方案把设置写到 `<期目录>/000 Table of Contents/`；年度只读还原
+    也要能找到它，否则用户生成过的双语期会被静默降级为仅中文。
+    """
+    candidates = [
+        os.path.join(issue_output_dir(out_root, year, number, direct=direct),
+                     SETTINGS_NAME),
+        os.path.join(issue_dir, TOC_DIR_NAME, SETTINGS_NAME),
+        os.path.join(issue_dir, SETTINGS_NAME),
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = os.path.abspath(path)
+        if key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
 
 
 def read_issue_settings(out_root: str, year: int, number: int,
-                        issue_dir: str) -> dict | None:
-    for p in settings_paths(out_root, year, number, issue_dir):
+                        issue_dir: str, *, direct: bool = False) -> dict | None:
+    for p in settings_paths(out_root, year, number, issue_dir, direct=direct):
         try:
             with open(p, encoding="utf-8") as fh:
                 data = json.load(fh)
@@ -957,8 +1005,9 @@ def read_issue_settings(out_root: str, year: int, number: int,
     return None
 
 
-def infer_with_en_toc(out_root: str, year: int, number: int, issue_dir: str) -> bool:
-    data = read_issue_settings(out_root, year, number, issue_dir)
+def infer_with_en_toc(out_root: str, year: int, number: int, issue_dir: str, *,
+                      direct: bool = False) -> bool:
+    data = read_issue_settings(out_root, year, number, issue_dir, direct=direct)
     return bool(data["with_en_toc"]) if data else False
 
 
@@ -1093,9 +1142,11 @@ def _resolve_with_en_toc(explicit: bool | None, language: str, has_en_tex: bool,
 
 
 def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
-                  out_root: str | None = None) -> IssueData:
+                  out_root: str | None = None, direct_out: bool = False) -> IssueData:
     """采集一期（只读）。`with_en_toc=None` 时按稿件标题语言选 zh/bi；
-    显式 True/False 覆盖语言结果，并在 warnings 记录「显式覆盖」。"""
+    显式 True/False 覆盖语言结果，并在 warnings 记录「显式覆盖」。
+
+    `direct_out=True`：单期留空输出根，设置文件直接读 000 根下的旧值。"""
     issue_dir = os.path.abspath(issue_dir)
     if not os.path.isdir(issue_dir):
         raise CollectError(f"期目录不存在：{issue_dir}")
@@ -1159,8 +1210,10 @@ def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
 
     # 语言判定（只看稿件标题）→ effective 体例；显式 with_en_toc 覆盖语言结果。
     language = detect_language(articles)
-    inferred = infer_with_en_toc(out_root or default_out_root(),
-                                 info["year"], info["number"], issue_dir)
+    settings_root = (out_root or default_issue_out_root(issue_dir)) if direct_out \
+        else (out_root or default_out_root())
+    inferred = infer_with_en_toc(settings_root, info["year"], info["number"], issue_dir,
+                                 direct=direct_out)
     with_en_toc = _resolve_with_en_toc(with_en_toc, language, os.path.isfile(en_tex),
                                        inferred, warnings)
 

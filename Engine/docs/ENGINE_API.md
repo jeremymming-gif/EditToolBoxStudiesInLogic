@@ -979,17 +979,31 @@ python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
 
 - `--issue` 必填：当期=具体期目录；年度=该年任一期目录（扫其父目录 `YYYY年第N期*`）。
   （`--check-out-root` 只读预检模式除外：它不要求 `--issue`。）
-- `--out` 缺省 `~/Documents/sysu/编辑部/目录摘要推送/`（不写稿件仓）。
+- `--out` 缺省（**单期 B 方案**）= 当期目录下的 `000 Table of Contents/`；docx 与
+  `目录摘要设置.json` **直接**落该目录，不再套 `<YYYY> 年第 <N> 期/`。
+  年度模式缺省仍为 `~/Documents/sysu/编辑部/目录摘要推送/`（年度路径未改）。
+  `000 Table of Contents` 不存在时：`issue_dir` 存在且可写 → 创建；`issue_dir` 不存在/不可读
+  → **rc=2、零写**，stderr 中文原因。
+- **显式 `--out`**：仍按 `--out=<用户路径>` 走，输出保持
+  `<out>/<YYYY> 年第 <N> 期/...`（显式路径契约不变）。
 - **输出根保护**：`--out` 落在输入期目录内（当期=该期目录；年度=`--issue` 目录或任何被扫描/读取的期目录）
   → **rc=2、零写**，stderr 中文原因「输出根不能放在期目录内（作者来稿只读）」，与 GUI 校验同语义；
   `--dry-run` 同样拒绝（预览=生成）。
+  **单期唯一例外**：输出根**恰好**是当期 `000 Table of Contents`（缺省值或用户显式填写）→ 允许；
+  该目录的子目录、当期其他子目录、其他期目录仍拒绝。
 - **`--check-out-root <path>`（只读预检/供 GUI 复用）**：不要求 `--issue`、不扫描/读取稿件、**零写**、rc=0；
   `--json` 时 stdout 给 `{"schema":1,"ok":true,"warnings":[...]}`（`warnings` 与生成时三仓判据同源），
   非 JSON 模式把 warning 行打印到 stderr。供 GUI 用同一判据提示「输出根落在代码仓内」。
-- 输出（契约冻结）：当期 `<out>/<YYYY> 年第 <N> 期/逻辑学研究<YYYY>年第<N>期目录摘要.docx`；
+  单期留空的 `000 Table of Contents` 默认位于稿件仓内，属 B 方案写域，**不**触发该 warning；
+  显式 `--out` 落在三仓内仍照常提示（与 GUI 空白/显式输入同语义）。
+- 输出（契约冻结）：单期留空 →
+  `<期目录>/000 Table of Contents/逻辑学研究<YYYY>年第<N>期目录摘要.docx`；
+  单期显式 `--out` → `<out>/<YYYY> 年第 <N> 期/逻辑学研究<YYYY>年第<N>期目录摘要.docx`；
   年度 `<out>/<YYYY> 年/逻辑学研究<YYYY>年总目录.docx`；同名**直接覆盖、不留 .bak**；不产 PDF。
 - 每期生成成功后写 `<该期输出目录>/目录摘要设置.json`：`{"schema":1,"year":<y>,"issue":<n>,"with_en_toc":<bool>}`
-  （无时间戳；年度模式**只读**它还原各期体例，从不写）。
+  （无时间戳；单期留空时该文件就在期目录的 `000 Table of Contents/` 根下；年度模式**只读**它还原各期体例，从不写）。
+  年度只读查找顺序：旧输出目录嵌套位 → `<期目录>/000 Table of Contents/` → `<期目录>/`，
+  因此单期留空生成的设置不会被年度静默降级为仅中文。
 - `--dry-run`：只采集+校验、**不写任何文件**；`outputs` 给计划路径（GUI 预览用）。
 - `--json`：stdout **恰好一个 JSON 对象**（日志全走 stderr），字段：
   `schema/ok/mode/dry_run/outputs[]/issue{year,number,vol,total,header_lines[],with_en_toc,column}/
@@ -1001,7 +1015,9 @@ python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
   1 内部异常（traceback 走 stderr）。
 - 计数口径：`abstracts_ok` = 有可用**中文**摘要的篇数；`abstracts_missing` = 跳过篇数
   （中文摘要为模板占位符时按缺失处理，不回落英文摘要；年度模式两项均为 0）。
-- 只读保证：跑前跑后输入期目录 sha256 清单一致；同输入两遍 docx 逐字节相同（固定 zip 时间戳/docProps）。
+- 只读保证：显式 `--out` 时跑前跑后输入期目录 sha256 清单一致；单期留空时唯一写入范围
+  是当期 `000 Table of Contents/`（docx/设置），期目录其他内容不变；同输入两遍 docx
+  逐字节相同（固定 zip 时间戳/docProps）。
 - 年度扫描诚实提示：父目录下**形似期目录但期号无法识别**（如 `2022年第6A期(67A)`）的目录不收录，
   在 `warnings[]` 与 stderr 提示「发现期目录 <名> 无法识别期号，未纳入年度（需人工处理）」；
   当期模式直接读该期仍按期头解析失败处理（rc=2），属既有行为。
@@ -1020,8 +1036,12 @@ python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
   `abstracts_ok/articles`（0 篇 → `0/0`，不除零）、`warnings[]`、输出路径；`ok:false` 红字。
   退出码 2/1 都展示 stderr/stdout 摘要（不清屏）；退出 1 的 traceback 也照原样留在日志里。
 - **结果路径只认 `outputs[]`**（界面不自己拼）；预览不出「打开文件」。
-- **输出根**：默认 `~/Documents/sysu/编辑部/目录摘要推送`（Windows 上 `~` = `%USERPROFILE%`）；
+- **输出根**：单期留空显示并写入所选期的 `.../000 Table of Contents`，随期目录变化刷新；
+  年度留空仍显示旧默认 `~/Documents/sysu/编辑部/目录摘要推送`（Windows 上 `~` = `%USERPROFILE%`）。
+  显式填写路径时仍按显式路径预览/校验；`validate_out_root` 放行当期 `000 Table of Contents`
+  本身，仍拒绝当期其他子目录与 000 的子目录。
   记忆键 mac `UserDefaults dirpush.outRoot` / Windows `settings.options.dirpushOutRoot`，
-  **只在生成成功后**记忆；输出根落在代码仓内 → 生成前二次确认（Windows 只认本项目三个仓名）。
+  **只在生成成功后**记忆；显式输出根落在代码仓内 → 生成前二次确认（Windows 只认本项目三个仓名）；
+  单期留空沿用 000 默认不触发该确认。
 - **形态差异**：mac 可勾「同时生成年度汇总」→ 顺序跑两趟（当期 → 年度，`--with-en-toc` 只作用于当期）；
   Windows 一次只跑一个模式（模式单选），不照搬两趟。
