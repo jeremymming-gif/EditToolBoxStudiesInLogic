@@ -213,7 +213,9 @@ try:
     check("(C1) 中文模板计数不变：abstracts_ok=2、abstracts_missing=0",
           rc == 0 and cnt.get("abstracts_ok") == 2 and cnt.get("abstracts_missing") == 0,
           f"counts={cnt}")
-    d_fb = issue_dir(c_root, 2026, 7, 92, cn=False, en=False)
+    # R3 缺陷 4：默认体例改由稿件语言决定（全英文 → 中英对照，需要 contents.tex）。
+    # 保留原意（英文回落模板的摘要计数/docx 事实），只为新默认补齐 contents.tex。
+    d_fb = issue_dir(c_root, 2026, 7, 92, cn=False)
     out_fb = os.path.join(work, "c", "out_fb")
     rc, obj, err = jrun("--issue", d_fb, "--out", out_fb, "--json", "--dry-run")
     cnt = (obj or {}).get("counts") or {}

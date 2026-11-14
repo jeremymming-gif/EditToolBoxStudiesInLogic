@@ -268,7 +268,9 @@ check("(a) make_column_block：沿用上一期形态并替换名称与主持人"
       TT.make_column_block(settings2, ["{\\large \\bf{专栏：旧名}}",
                                        "&&\\textit{\\large 主持人：旧主持}",
                                        "\\\\[3.2 ex]"], True)
-      == ["{\\large \\bf{专栏：认知悖论研究}}", "&\\textit{\\large 主持人：郑建国}", "\\\\[3.2 ex]"])
+      == ["{\\large \\bf{专栏：认知悖论研究}}",
+          "&\\multicolumn{2}{@{}r@{}}{\\textit{\\large 主持人：郑建国}}",
+          "\\\\[3.2 ex]"])
 check("(a) make_column_block：没开栏目 → 空",
       TT.make_column_block(TOC.TocSettings(), ["x"], True) == [])
 check("(a) TocSettings.load：文件不存在 → 默认值；字段缺失 → 逐字段回落（旧 json 不清空）",
@@ -581,8 +583,8 @@ try:
           bool(_root_tag) and _ign is not None and not _undeclared,
           "undeclared=%s" % _undeclared)
     # (f5d) 专栏文章区分（用户 2026-10-25 三轮要求，参考 2026 年第 5 期实例）：
-    #       专栏区域单元格内部边框取消（tcBorders=nil）——另生成一份**中文 only** 目录检查
-    #       （双语模式本轮不做边框区分，避免与实例体例冲突）。
+    #       专栏区域单元格内部边框取消（tcBorders=nil）——另生成一份**中文 only** 目录检查；
+    #       双语模式的同类分组/末条分隔线由 tests/test_r3_docx_group_text.py 覆盖。
     _zh_only = os.path.join(_push_work, "out_zh_only")
     r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
                         "--out", _zh_only],
@@ -1105,7 +1107,9 @@ check("(l3) 反例：模板无栏目块 ⇒ 用默认间距 3mm",
       == ["\\large  \\bf{Special Issue: Preference Logic} ", "\\\\[3mm]"])
 check("(l4) 中文栏目块：缺项设置不启用（不发），齐全时按上一期形态替换名称/主持人",
       TT.make_column_block(_s_en_full, _a_zh_shape, True)
-      == ["{\\large \\bf{专辑：偏好逻辑}}", "&\\textit{\\large 主持人：某人}", "\\\\[3.2 ex]"])
+      == ["{\\large \\bf{专辑：偏好逻辑}}",
+          "&\\multicolumn{2}{@{}r@{}}{\\textit{\\large 主持人：某人}}",
+          "\\\\[3.2 ex]"])
 # 端到端：不完整设置一律拒绝生成（不建工作目录、不写 .tex），四项齐全才出双目录
 _l_root = tempfile.mkdtemp(prefix="slcn_col_en_")
 make_issue(_l_root)

@@ -6,8 +6,9 @@ r"""B-375 round2 OBS-HOST-2：栏目主持人行防孤字/裁切（toctemplate.m
 「主持人：」+「本刊编辑部」估算 108pt 超过列宽：p 列里 CJK 任意断行只剩孤字「部」，
 r 列里一路向左撑可能压到栏目名。用户拍板：版心与字号不变，超列宽 90% 时格内分两行。
 
-实现形态：嵌套 tabular[t]（\newline 只在 p 列段落模式生效，r 列里无效）：
-    &\textit{\large \begin{tabular}[t]{@{}l@{}}主持人：\\本刊编辑部\end{tabular}}
+实现形态：嵌套 tabular[t]（\newline 只在 p 列段落模式生效，r 列里无效），
+并跨作者列+页码列右对齐（R3 缺陷 1：主持人右端与页码列右边界对齐）：
+    &\multicolumn{2}{@{}r@{}}{\textit{\large \begin{tabular}[t]{@{}l@{}}主持人：\\本刊编辑部\end{tabular}}}
 另防回归：re.sub 必须函数式 replacement —— 字符串模板会把 \\ 折叠成 \、把 \n 当
 真换行（Lead 实测 bug），这里断言字面双反斜杠与无真换行。
 
@@ -64,8 +65,9 @@ def long_cell(host: str = LONG) -> str:
     return OPEN + "主持人：" + DB + host + CLOSE
 
 
-LONG_LINE = "&" + BS + "textit{" + BS + "large " + long_cell() + "}"
-SHORT_LINE = "&" + BS + "textit{" + BS + "large 主持人：刘奋荣}"
+HOST_PREFIX = "&" + BS + "multicolumn{2}{@{}r@{}}{" + BS + "textit{" + BS + "large "
+LONG_LINE = HOST_PREFIX + long_cell() + "}}"
+SHORT_LINE = HOST_PREFIX + "主持人：刘奋荣}}"
 
 
 def host_line(lines: list[str]) -> str:
@@ -89,7 +91,8 @@ def main() -> None:
           f"{b_line!r}")
     check("(a6) 嵌套 tabular 的换行保留字面两个反斜杠", DB in b_line and b_line.count(DB) == 1,
           f"{b_line!r}")
-    check("(a7) 主持人行仍在作者列（以 & 开头）", b_line.startswith("&"), b_line)
+    check("(a7) 主持人行跨作者列+页码列（&\\multicolumn{2} 开头）",
+          b_line.startswith(HOST_PREFIX), b_line)
 
     print("\n── (b) 短主持人（刘奋荣）：保持单行 ──")
     short_settings = make_settings(host=SHORT)

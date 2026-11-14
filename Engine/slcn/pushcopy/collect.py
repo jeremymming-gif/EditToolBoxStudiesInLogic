@@ -85,6 +85,8 @@ class Article:
     warnings: list[str] = field(default_factory=list)
     #: 摘要原文是否来自 CN 字段（False = 回落英文/通用字段）
     abstract_is_cn: bool = True
+    #: `_cn_meta` 的模板变体：`cn` / `mix` / `fallback`（语言判定不看这个标签）
+    source: str = ""
 
 
 @dataclass
@@ -98,6 +100,8 @@ class IssueData:
     day: int
     header_lines: list[str]
     with_en_toc: bool
+    #: 按稿件标题语言判定的期次语言：`zh` / `en` / `mixed` / `unknown`
+    language: str = "unknown"
     column: Column | None = None
     en_column: Column | None = None
     zh_entries: list[TocEntry] = field(default_factory=list)
@@ -294,7 +298,19 @@ def _clean_author(s: str) -> str:
 
 def _clean_title(s: str) -> str:
     s = _clean_inline(s)
-    return s.strip()
+    # 残留的 LaTeX 换行（`\\`）只影响版式，绝不能当正文写进 docx
+    s = s.replace("\\\\", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _split_title_breaks(raw: str) -> list[str]:
+    r"""标题换行分段：**只有** `\\`/换行后紧跟 `——` 才是副标题分段。
+
+    冒号后的 `\\`（作者排版换行）若也分段，会把「标题：副题」拆成两段；
+    其余 `\\` 由 `_clean_title` 变空格，字不丢。
+    """
+    return re.split(r"(?:\\\\|\n)\s*(?=——)", raw)
 
 
 # ── 文件 / 期目录定位 ───────────────────────────────────────────────────
@@ -494,16 +510,18 @@ def _parse_zh_block(block: str) -> tuple[Column | None, list[TocEntry]]:
     for m in re.finditer(r"\\textit\s*\{", block):
         _content, end = _match_brace(block, m.end() - 1)
         author_spans.append((m.start(), end + 1))
-    titles: list[str] = []
+    title_lines: list[str] = []
     title_indented = False
     for raw in _braced_after_commands(block, ("\\large", "\\Large"),
                                       skip_spans=author_spans):
         if _is_indented(raw):
             title_indented = True
-        text = _clean_title(raw)
-        if not text or text.startswith("主持人") or re.match(r"^(专栏|专辑)\s*[：:]", text):
-            continue
-        titles.append(text)
+        # 先按「换行后紧跟 ——」分段，再清洗；冒号后的 `\\` 不分段（只变空格）。
+        for part in _split_title_breaks(raw):
+            text = _clean_title(part)
+            if not text or text.startswith("主持人") or re.match(r"^(专栏|专辑)\s*[：:]", text):
+                continue
+            title_lines.append(text)
     # 作者：`\textit{…}`（zh 模板里有时在 `&\textit{\large …}`）
     authors: list[str] = []
     author_indented = False
@@ -514,15 +532,8 @@ def _parse_zh_block(block: str) -> tuple[Column | None, list[TocEntry]]:
             name = _clean_author(frag)
             if name:
                 authors.append(name)
-    if not titles and not authors:
+    if not title_lines and not authors:
         return column, []
-    # 标题里 `\\` 分行（如 2026 年第 4 期“标题} \\ {——副题”）
-    title_lines: list[str] = []
-    for t in titles:
-        for part in re.split(r"\\\\|\n", t):
-            part = _clean_title(part)
-            if part:
-                title_lines.append(part)
     entry = TocEntry(title_lines=title_lines, authors=authors,
                      is_column=(title_indented or author_indented))
     return (column if column is not None else None), ([entry] if entry.title_lines else [])
@@ -550,6 +561,23 @@ def _braced_after_commands(block: str, commands: tuple[str, ...],
     return res
 
 
+def _outer_large_content(raw: str) -> str | None:
+    r"""`{\large ~~~~ 标题}\\` 的外层组内容；不是该形态返回 None。
+
+    2026-11-14 起的栏目英文条目用外层花括号包住 `\large`（续行是
+    `{\large \phantom{~~~~ }…}`），只认 `\large` 裸行会把花括号和行尾 `\\`
+    一起当正文。
+    """
+    if not raw.startswith("{"):
+        return None
+    if re.match(r"\{\s*\\(?:large|Large|LARGE)(?![A-Za-z])", raw) is None:
+        return None
+    content, end = _match_brace(raw, 0)
+    if raw[end + 1:].strip("\\ \t"):
+        return None
+    return content
+
+
 def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
     column: Column | None = None
     m = re.search(r"(?:Column|Special Issue)\s*[：:]\s*(.+)", block)
@@ -558,7 +586,7 @@ def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
         name = re.sub(r"\s+", " ", name).strip().rstrip("\\").strip()
         if name:
             column = Column(label="Column", name=name, host="")
-    titles: list[str] = []
+    title_frags: list[str] = []
     authors: list[str] = []
     indented = False
     for line in block.splitlines():
@@ -581,20 +609,29 @@ def _parse_en_block(block: str) -> tuple[Column | None, list[TocEntry]]:
                     if name:
                         authors.append(name)
             continue
+        content = _outer_large_content(raw)
+        if content is not None:
+            if _is_indented(content):
+                indented = True
+            text = _clean_title(content)
+            if text:
+                title_frags.append(text)
+            continue
         if raw.startswith("\\large") or raw.startswith("\\Large"):
             # 同一行可能塞了多个 `\large …` 段（2026 年第 4 期 contents.tex 实测）
             for seg in re.split(r"\\\\", raw):
                 if _is_indented(seg):
                     indented = True
-                seg = re.sub(r"\\Large?", "", seg)
                 text = _clean_title(seg)
                 if text:
-                    titles.append(text)
+                    title_frags.append(text)
             continue
         # 续行（不以 \large 开头的标题续行）
         text = _clean_title(raw)
         if text:
-            titles.append(text)
+            title_frags.append(text)
+    # 英文标题合并为连续整串（物理换行/续行不再各带一个 `\\`）
+    titles = [" ".join(title_frags)] if title_frags else []
     entry = TocEntry(title_lines=titles, authors=authors, is_column=indented) if titles else None
     return column, ([entry] if entry else [])
 
@@ -718,7 +755,7 @@ def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) ->
         else:
             missing.append(f"{folder}: {title_key}")
             tval = ""
-    for part in re.split(r"\\\\|\n", tval):
+    for part in _split_title_breaks(tval):
         part = _clean_title(part)
         if part:
             title_lines.append(part)
@@ -973,9 +1010,92 @@ def unrecognized_issue_dirs(parent: str, year: int) -> list[str]:
 # ── 主采集入口 ─────────────────────────────────────────────────────────
 
 
+def detect_language(articles: list[Article]) -> str:
+    """按**稿件标题**是否含 CJK 判定期次语言：zh / en / mixed / unknown。
+
+    只看标题文本（复用 `_has_cjk`），不看 `Article.source` 模板标签，
+    也不依赖期号/篇数。没有可用标题的稿件不参与判定。
+    """
+    has_cjk = False
+    has_non_cjk = False
+    for art in articles:
+        text = "".join(art.title_lines).strip()
+        if not text:
+            continue
+        if _has_cjk(text):
+            has_cjk = True
+        else:
+            has_non_cjk = True
+    if has_cjk and has_non_cjk:
+        return "mixed"
+    if has_cjk:
+        return "zh"
+    if has_non_cjk:
+        return "en"
+    return "unknown"
+
+
+def _language_default(language: str, has_en_tex: bool) -> bool | None:
+    """语言 → 默认体例；unknown 无语言默认（返回 None）。"""
+    if language == "zh":
+        return False
+    if language == "en":
+        return True
+    if language == "mixed":
+        return bool(has_en_tex)
+    return None
+
+
+def _resolve_with_en_toc(explicit: bool | None, language: str, has_en_tex: bool,
+                         inferred: bool, warnings: list[str]) -> bool:
+    """决定 effective 体例，并记录不静默的 warning。
+
+    · 显式参数优先；与语言判定冲突 → warning 记录「显式覆盖」。
+    · 默认：zh→中文；en→中英；mixed→有 contents.tex 则中英，否则降级中文（均 warning）；
+      unknown→沿用旧 settings 推断（warning）。
+    · 与旧 settings 推断不同 → 额外 warning（避免静默改变体例）。
+    """
+    if explicit is not None:
+        implied = _language_default(language, has_en_tex)
+        if implied is not None and bool(explicit) != implied:
+            warnings.append(
+                f"显式覆盖：显式指定的体例"
+                f"（{'中英文对照' if explicit else '仅中文'}，如 --with-en-toc/设置还原）"
+                f"与按稿件语言判定的体例（{'中英文对照' if implied else '仅中文'}）"
+                f"不同，已按显式参数生成")
+        return bool(explicit)
+
+    if language == "mixed":
+        if has_en_tex:
+            warnings.append(
+                "本期稿件中英文混合（标题中英文均有），按 contents.tex 生成中英文对照目录")
+        else:
+            warnings.append(
+                "本期稿件中英文混合（标题中英文均有），缺少 contents.tex，降级为仅中文目录")
+    elif language == "zh":
+        warnings.append("按稿件语言判定为中文稿（标题均含中文），默认仅生成中文目录")
+    elif language == "en":
+        warnings.append("按稿件语言判定为英文稿（标题均不含中文），默认生成中英文对照目录")
+    else:
+        warnings.append(
+            "无法按稿件语言判定（没有可用标题），沿用旧设置推断为"
+            + ("中英文对照" if inferred else "仅中文") + "体例")
+
+    chosen = _language_default(language, has_en_tex)
+    if chosen is None:
+        return inferred
+    if chosen != inferred:
+        warnings.append(
+            f"按稿件语言判定的体例（{'中英文对照' if chosen else '仅中文'}）"
+            f"与旧设置推断（{'中英文对照' if inferred else '仅中文'}）不同，"
+            f"已按稿件语言生成")
+    return chosen
+
+
 def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
                   out_root: str | None = None) -> IssueData:
-    """采集一期（只读）。`with_en_toc=None` 时按输出目录/期目录的 settings 推断。"""
+    """采集一期（只读）。`with_en_toc=None` 时按稿件标题语言选 zh/bi；
+    显式 True/False 覆盖语言结果，并在 warnings 记录「显式覆盖」。"""
     issue_dir = os.path.abspath(issue_dir)
     if not os.path.isdir(issue_dir):
         raise CollectError(f"期目录不存在：{issue_dir}")
@@ -999,35 +1119,11 @@ def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
             f"期目录名与期头不一致：目录={name_parts[0]}年第{name_parts[1]}期，"
             f"tex 期头={info['year']}年第{info['number']}期（以 tex 为准）")
 
-    if with_en_toc is None:
-        with_en_toc = infer_with_en_toc(out_root or default_out_root(),
-                                        info["year"], info["number"], issue_dir)
-
     # 中文目录（专栏 + 条目）
     zh_body = _tabularx_body(zh_text)
     if not zh_body:
         raise CollectError("Chinese Content.tex 缺少 tabularx 目录主体，无法解析目录条目")
     column, zh_entries = _parse_column_and_entries(zh_body, want_en=False)
-
-    # 英文目录（contents.tex；双语体例才有）
-    en_entries: list[TocEntry] = []
-    en_column: Column | None = None
-    if os.path.isfile(en_tex):
-        with open(en_tex, encoding="utf-8", errors="replace") as fh:
-            en_text = fh.read()
-        en_body = _tabularx_body(en_text)
-        if not en_body:
-            if with_en_toc:
-                raise CollectError("contents.tex 缺少 tabularx 目录主体，无法生成中英文对照目录")
-            warnings.append("contents.tex 缺少 tabularx 主体，英文目录为空")
-        else:
-            en_column, en_entries = _parse_column_and_entries(en_body, want_en=True)
-    elif with_en_toc:
-        raise CollectError(
-            "本期目录缺少 `000 Table of Contents/contents.tex`，无法生成中英文对照目录。"
-            "请先在本期目录生成中英文目录（000 Table of Contents）。")
-    else:
-        warnings.append("缺少 contents.tex，仅生成中文目录")
 
     # 文章清单（与「信息检查」同一口径；write=False 只算不写盘）
     try:
@@ -1058,7 +1154,35 @@ def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
         art.affiliations = meta["affiliations"]
         art.abstract = meta["abstract"]
         art.abstract_is_cn = meta["source"] != "fallback"
+        art.source = meta["source"]
         articles.append(art)
+
+    # 语言判定（只看稿件标题）→ effective 体例；显式 with_en_toc 覆盖语言结果。
+    language = detect_language(articles)
+    inferred = infer_with_en_toc(out_root or default_out_root(),
+                                 info["year"], info["number"], issue_dir)
+    with_en_toc = _resolve_with_en_toc(with_en_toc, language, os.path.isfile(en_tex),
+                                       inferred, warnings)
+
+    # 英文目录（contents.tex；双语体例才有）
+    en_entries: list[TocEntry] = []
+    en_column: Column | None = None
+    if os.path.isfile(en_tex):
+        with open(en_tex, encoding="utf-8", errors="replace") as fh:
+            en_text = fh.read()
+        en_body = _tabularx_body(en_text)
+        if not en_body:
+            if with_en_toc:
+                raise CollectError("contents.tex 缺少 tabularx 目录主体，无法生成中英文对照目录")
+            warnings.append("contents.tex 缺少 tabularx 主体，英文目录为空")
+        else:
+            en_column, en_entries = _parse_column_and_entries(en_body, want_en=True)
+    elif with_en_toc:
+        raise CollectError(
+            "本期目录缺少 `000 Table of Contents/contents.tex`，无法生成中英文对照目录。"
+            "请先在本期目录生成中英文目录（000 Table of Contents）。")
+    else:
+        warnings.append("缺少 contents.tex，仅生成中文目录")
 
     # 映射校验（不静默错配；只 warning，仍按顺序生成）
     if len(zh_entries) != len(articles):
@@ -1116,6 +1240,7 @@ def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
         month=info["month"], day=info["day"],
         header_lines=_header_lines(info),
         with_en_toc=bool(with_en_toc),
+        language=language,
         column=column,
         en_column=en_column,
         zh_entries=zh_entries,

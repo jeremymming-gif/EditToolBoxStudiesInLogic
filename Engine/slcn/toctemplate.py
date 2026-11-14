@@ -525,14 +525,13 @@ def canonicalize_head(head: str, file_name: str, *, is_column: bool = False) -> 
     return "\n".join(lines)
 
 
-# ── 主持人行防孤字（OBS-HOST-2，B-375 round2）────────────────────────────
+# ── 主持人行（跨列右对齐 + 防孤字；OBS-HOST-2，B-375 round2 / R3 缺陷 1）──────
 #
-# 主持人行落在第 2 列：栏目版式是作者列 `p{0.26\textwidth}`（见 CANONICAL_ZH_COLUMN），
-# 正常版式（专栏勾选 0 篇时正文按普通条目排版）是 `r` 右对齐列。130mm 版心下
-# 列宽约 96.2pt；`\large` 约 12pt 下「主持人：」占 4 个汉字宽 ≈48pt，再写
-# 「本刊编辑部」(5 字 60pt) 就超过列宽，p 列里 CJK 任意断行只剩孤字「部」/被裁掉，
-# r 列里则一路向左撑、可能压到栏目名。用户拍板：保持版心与字号不变 —— 估算
-# label+host 显示宽超过列宽 90% 时格内分两行，短主持人保持单行。
+# 主持人行在规范三列表里跨作者列+页码列、右对齐（`&\multicolumn{2}{@{}r@{}}{…}`），
+# 右端与页码列右边界对齐；不再只占作者列 `p{0.26\textwidth}`（约 96.2pt）。
+# 长主持人（`\large` 约 12pt 下「主持人：本刊编辑部」≈108pt）在跨列后仍可能
+# 超过作者列宽，按用户拍板保持字号不变 —— 超过作者列宽 90% 时格内分两行，
+# 短主持人保持单行。
 
 #: 栏目中文作者列宽（0.26\textwidth，130mm 版心）换算成 pt。
 _HOST_COLUMN_WIDTH_PT = 0.26 * (130 / 25.4) * 72.27
@@ -563,7 +562,7 @@ def _host_needs_line_break(host: str) -> bool:
 
 
 def _host_cell_content(host: str) -> str:
-    r"""主持人单元格内容（不含外层 `&\textit{\large …}`）。
+    r"""主持人单元格内容（不含外层 `&\multicolumn{2}{@{}r@{}}{\textit{\large …}}`）。
 
     OBS-HOST-2：过长时用嵌套 `tabular[t]` 在格内换两行 —— `\newline` 只在 p 列
     （段落模式）生效，正常版式的作者列是 `r` 列（LR 模式）时形同无效；嵌套 tabular
@@ -584,8 +583,36 @@ def _host_cell_content(host: str) -> str:
 _HOST_CELL_RE = re.compile(r"(\\textit\{\\large\s+).*(\}\s*)$")
 
 
+def _to_multicolumn_host_line(line: str) -> str:
+    r"""把主持人行规范成跨作者列+页码列、右对齐的 `&\multicolumn{2}{@{}r@{}}{…}`。
+
+    人工正确版里主持人右端与页码列右边界对齐；旧写法 `&\textit{\large …}`（或更早的
+    `&&\textit{\large …`）只进作者列，右侧还留 1.5em 列距与页码列。已是 multicolumn
+    的（继承本工具产物）原样返回，保证重复生成幂等。
+    """
+    if "\\multicolumn" in line:
+        return line
+    stripped = line.lstrip()
+    lead = line[:len(line) - len(stripped)]
+    if stripped.startswith("&&"):
+        body = stripped[2:].lstrip()
+    elif stripped.startswith("&"):
+        body = stripped[1:].lstrip()
+    else:
+        return line
+    if not body.startswith("\\textit{\\large"):
+        return line
+    body = body.rstrip()
+    if not body.endswith("}"):
+        return line
+    return lead + "&\\multicolumn{2}{@{}r@{}}{" + body + "}"
+
+
 def _replace_host_with_optional_break(line: str, host: str) -> str:
-    """把栏目行的旧主持人替换成本期主持人；过长时格内分两行（防孤字/裁切）。"""
+    """把栏目行的旧主持人替换成本期主持人；过长时格内分两行（防孤字/裁切）。
+
+    返回值同时规范成跨列右对齐形态（见 `_to_multicolumn_host_line`）。
+    """
     replacement = _host_cell_content(host)
     # 必须函数式替换：字符串 replacement 会被 re.sub 当转义模板 ——
     # "\newline" 变「真换行 + ewline」（Lead 实测 bug），嵌套 tabular 里的 "\\"
@@ -593,9 +620,9 @@ def _replace_host_with_optional_break(line: str, host: str) -> str:
     # 先整格替换（兼容「本期成品」里带嵌套 tabular 的旧格），未命中再退回按主持人文本替换。
     new_line, matched = _HOST_CELL_RE.subn(
         lambda m: m.group(1) + replacement + m.group(2), line)
-    if matched:
-        return new_line
-    return re.sub(r"主持人[：:][^}]*", lambda _m: replacement, line)
+    if not matched:
+        new_line = re.sub(r"主持人[：:][^}]*", lambda _m: replacement, line)
+    return _to_multicolumn_host_line(new_line)
 
 
 def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]:
@@ -628,19 +655,19 @@ def make_column_block(settings, shape: list[str], is_chinese: bool) -> list[str]
         for line in shape:
             new_line = line
             if "主持人" in new_line:
+                # 主持人跨作者列+页码列右对齐（旧模板 `&&` 与 `&` 两种都规范到同一形态）；
+                # 页码列不再被主持人挤占，X/作者列宽保持 CANONICAL_ZH_COLUMN 不变。
                 new_line = _replace_host_with_optional_break(new_line, settings.columnHost)
-                # 旧模板的 `&&` 把主持人放进页码列；新 canonical 三列表里主持人属于作者列（第 2 列），
-                # 否则页码列被撑到 84pt、X 列只剩 151pt（B-355 实测）。
-                new_line = re.sub(r"^(\s*)&&(\s*)\\textit", r"\1&\2\\textit", new_line)
             elif not _SPACING_RE.match(new_line):
                 new_line = re.sub(r"(专栏|专辑)[：:][^}]*", title, new_line)
             out.append(new_line)
         return out
 
-    # 上一期没有栏目块时的兜底形态（中文）；主持人过长同样格内分两行（OBS-HOST-2）
+    # 上一期没有栏目块时的兜底形态（中文）；主持人跨作者列+页码列右对齐，
+    # 过长同样格内分两行（OBS-HOST-2）
     host_cell = _host_cell_content(settings.columnHost)
     return [
         "{\\large \\bf{" + title + "}}",
-        "&\\textit{\\large " + host_cell + "}",
+        "&\\multicolumn{2}{@{}r@{}}{\\textit{\\large " + host_cell + "}}",
         "\\\\[3.2 ex]",
     ]

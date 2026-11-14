@@ -248,9 +248,11 @@ check("(c3) make_column_block 英文分支单点使用该标签（沿用模板�
 check("(c4) 英文分支缺模板栏目块 ⇒ 名称行 + 默认间距 3mm",
       TT.make_column_block(_alb, [], False)
       == ["\\large  \\bf{Special Issue: Preference Logic} ", "\\\\[3mm]"])
-check("(c5) 中文栏目块不受影响：专辑：X + 主持人：Y",
+check("(c5) 中文栏目块不受影响：专辑：X + 主持人：Y（跨列右对齐）",
       TT.make_column_block(_alb, ["{\\large \\bf{专辑：旧}}", "&\\textit{\\large 主持人：旧}", "\\\\[3.2 ex]"], True)
-      == ["{\\large \\bf{专辑：偏好逻辑}}", "&\\textit{\\large 主持人：刘奋荣}", "\\\\[3.2 ex]"])
+      == ["{\\large \\bf{专辑：偏好逻辑}}",
+          "&\\multicolumn{2}{@{}r@{}}{\\textit{\\large 主持人：刘奋荣}}",
+          "\\\\[3.2 ex]"])
 
 
 # ── (d) B-363：栏目内两行标题的续行缩进 ────────────────────────────────

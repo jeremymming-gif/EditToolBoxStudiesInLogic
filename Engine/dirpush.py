@@ -139,6 +139,7 @@ def _issue_json(issue: _collect.IssueData) -> dict:
         "total": issue.total,
         "header_lines": list(issue.header_lines),
         "with_en_toc": bool(issue.with_en_toc),
+        "language": issue.language,
         "column": None if issue.column is None else {
             "label": issue.column.label,
             "name": issue.column.name,
@@ -276,12 +277,14 @@ def _run_issue(args, out_root: str, as_json: bool) -> int:
     return 0
 
 
-def _annual_issue_json(args, out_root: str, year: int) -> dict:
+def _annual_issue_json(args, out_root: str, year: int, data: list | None = None) -> dict:
     """年度模式的 `issue` 字段：`--issue` 那一期（缺 TOC 时给能拿到的部分）。"""
     issue_dir = os.path.abspath(os.path.expanduser(args.issue))
     zh_tex = _collect.toc_files(issue_dir)[0]
     parts = _collect.issue_name_parts(issue_dir)
     number = parts[1] if parts else 0
+    language = next((d.language for d in data or []
+                     if os.path.abspath(d.dir) == issue_dir), "unknown")
     try:
         with open(zh_tex, encoding="utf-8", errors="replace") as fh:
             info = _collect.parse_issue_header(fh.read())
@@ -289,12 +292,13 @@ def _annual_issue_json(args, out_root: str, year: int) -> dict:
             "year": info["year"], "number": info["number"], "vol": info["vol"],
             "total": info["total"], "header_lines": _collect._header_lines(info),
             "with_en_toc": _collect.infer_with_en_toc(out_root, info["year"], info["number"], issue_dir),
+            "language": language,
             "column": None,
         }
     except (OSError, _collect.CollectError):
         return {
             "year": year, "number": number, "vol": 0, "total": 0,
-            "header_lines": [], "with_en_toc": False, "column": None,
+            "header_lines": [], "with_en_toc": False, "language": language, "column": None,
         }
 
 
@@ -334,7 +338,7 @@ def _run_annual(args, out_root: str, as_json: bool) -> int:
         "mode": "annual",
         "dry_run": bool(args.dry_run),
         "outputs": [docx_path],
-        "issue": _annual_issue_json(args, out_root, year),
+        "issue": _annual_issue_json(args, out_root, year, plan.data),
         "counts": _counts(plan.data),
         "warnings": warnings,
         "missing": [],
@@ -368,7 +372,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-out-root", default=None, metavar="PATH",
                         help="只读预检：输出根是否落在受保护仓库内（零写、rc=0；供 GUI 复用）")
     parser.add_argument("--out", default=None, help="输出根（缺省 ~/Documents/sysu/编辑部/目录摘要推送）")
-    parser.add_argument("--with-en-toc", action="store_true", help="当期模式：生成中英文对照目录")
+    parser.add_argument("--with-en-toc", action="store_true",
+                        help="当期模式：显式覆盖语言判定，生成中英文对照目录")
     parser.add_argument("--annual", action="store_true", help="年度模式：逐期拼接目录")
     parser.add_argument("--year", type=int, default=None, help="年度模式：年份")
     parser.add_argument("--include-issues", default=None, help="年度模式：只纳入这些期号，逗号分隔")

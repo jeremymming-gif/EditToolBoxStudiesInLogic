@@ -66,12 +66,15 @@ def _clone_par(xml: str, text: str) -> etree._Element:
 #: 参考实例正是这样区分专栏文章的（标题行 bottom=nil、right=single；专栏条目行
 #: 标题 cell top/bottom/right=nil、作者 cell top/bottom/left=nil/right=single；
 #: 最后一条专栏条目 bottom 留空 → 继承表格底边框，形成与普通文章之间的分隔线）。
+#: `bottom: None` = **删除**原型里已有的 bottom 元素（不是 bottom=nil）：
+#: 双语原型 en_entry/zh_entry 自带 bottom=nil，末条栏目行若只“不设置”仍会留下 nil，
+#: 无法继承表样式底边框；中文原型没有 bottom，删除是空操作。
 _BORDER_SPECS = {
     "host": {0: {"bottom": "nil", "right": "single"}},
     "col_0": {"top": "nil", "bottom": "nil", "right": "nil"},
     "col_1": {"top": "nil", "bottom": "nil", "left": "nil", "right": "single"},
-    "col_last_0": {"top": "nil", "right": "nil"},
-    "col_last_1": {"top": "nil", "left": "nil", "right": "single"},
+    "col_last_0": {"top": "nil", "right": "nil", "bottom": None},
+    "col_last_1": {"top": "nil", "left": "nil", "right": "single", "bottom": None},
 }
 
 
@@ -111,6 +114,10 @@ def _apply_cell_border(tc: etree._Element, ci: int, tag: str) -> None:
             continue
         val = spec[side]
         el = borders.find(q(side))
+        if val is None:
+            if el is not None:
+                borders.remove(el)
+            continue
         if el is None:
             el = etree.SubElement(borders, q(side))
         el.set(q("val"), val)
@@ -189,6 +196,16 @@ def _zh_host_text(issue: "_collect.IssueData") -> str:
     return label + (" " * pad if host else "") + host
 
 
+def _column_tags(entries: list, *, enabled: bool) -> list[str]:
+    """按 `TocEntry.is_column` 给条目排 col/col_last tag（末条栏目行去掉内部底边框）。"""
+    if not enabled:
+        return [""] * len(entries)
+    col_positions = [i for i, e in enumerate(entries) if e.is_column]
+    last_col = col_positions[-1] if col_positions else None
+    return [("col_last" if i == last_col else "col") if i in col_positions else ""
+            for i in range(len(entries))]
+
+
 def _issue_table_rows(issue: "_collect.IssueData", mode_name: str, *, annual: bool
                       ) -> list[tuple[str, list[list[str]]]]:
     bi = mode_name in ("bi", "annual_bi")
@@ -199,8 +216,9 @@ def _issue_table_rows(issue: "_collect.IssueData", mode_name: str, *, annual: bo
         if en_col is not None and en_col.name:
             label = en_col.label or "Column"
             rows.append(("en_column", [[f"{label}: {en_col.name}"]]))
-        for e in issue.en_entries:
-            rows.append(("en_entry", [[" ".join(e.title_lines)], [", ".join(e.authors)]]))
+        en_tags = _column_tags(issue.en_entries, enabled=not annual)
+        for e, tag in zip(issue.en_entries, en_tags):
+            rows.append(("en_entry", [[" ".join(e.title_lines)], [", ".join(e.authors)]], tag))
         rows.append(("zh_section", [["中文目录"]]))
         if issue.column is not None:
             if _has_row(issue, mode_name, "host2"):
@@ -208,9 +226,10 @@ def _issue_table_rows(issue: "_collect.IssueData", mode_name: str, *, annual: bo
                                        [f"主持人：{issue.column.host}" if issue.column.host else ""]]))
             elif _has_row(issue, mode_name, "host_merged"):
                 rows.append(("host_merged", [[_zh_host_text(issue)]]))
-        for e in issue.zh_entries:
+        zh_tags = _column_tags(issue.zh_entries, enabled=not annual)
+        for e, tag in zip(issue.zh_entries, zh_tags):
             title = list(e.title_lines) if not annual else (["".join(e.title_lines)] if e.title_lines else [""])
-            rows.append(("zh_entry", [title, ["，".join(e.authors)]]))
+            rows.append(("zh_entry", [title, ["，".join(e.authors)]], tag))
     else:
         if issue.column is not None:
             host_tag = "" if annual else "host"
