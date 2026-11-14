@@ -407,6 +407,10 @@ def _check_spec_recognizable(spec: str, target: str, expected: int) -> None:
         return
     if target == CANONICAL_EN_COLUMN and spec.strip() == CANONICAL_EN:
         return
+    if target == CANONICAL_EN and spec.strip() == CANONICAL_EN_COLUMN:
+        # 反向：上一期栏目源（X@1em）在本期无栏目时降回普通期 X@2em。
+        # 同样只认本工具自己的两种规范形，不猜其它自定义 X 列。
+        return
     if "X" in spec:
         raise TemplateLayoutError(
             "列定义已含自定义 X 列（非历史 l/r 模板），无法安全规范化")

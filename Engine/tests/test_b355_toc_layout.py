@@ -164,6 +164,12 @@ def test_canonicalize_en() -> None:
     check("(b) 上一版 X@2em 栏目模板可升级为 X@1em",
           tt.CANONICAL_EN_COLUMN in got_legacy
           and "2em" not in got_legacy, got_legacy[-200:])
+    col_src = ("\\begin{tabularx}{\\textwidth}"
+               + tt.CANONICAL_EN_COLUMN)
+    got_normal = tt.canonicalize_head(col_src, "contents.tex", is_column=False)
+    check("(b) 上一期栏目源 X@1em 在无栏目期降回 X@2em",
+          tt.CANONICAL_EN in got_normal and "1em" not in got_normal,
+          got_normal[-200:])
     try:
         tt.canonicalize_head(legacy.replace("r@{}", "r@{\\hspace{1em}}r@{}"),
                              "contents.tex", is_column=True)
@@ -357,15 +363,21 @@ def test_generate_en() -> None:
     check("(g) 英文断行上限反推告警", any("标题断行上限" in s for s in logs), str(logs))
     check("(g) 无栏目英文不加行高", "\\arraystretch" not in text, text[:300])
 
-    # 普通英文继承上一期栏目源：移除本工具插入的 0.99 行高，保持既有版式
+    # 普通英文继承上一期栏目源（X@1em + 0.99）：降回 X@2em 并移除工具行高
     tmp2 = Path(tempfile.mkdtemp(prefix="b355_toc_en_legacy_"))
+    col_head = "\\begin{tabularx}{\\textwidth}" + tt.CANONICAL_EN_COLUMN
     report2 = _issue(tmp2, en=template_en(
-        "\\renewcommand{\\arraystretch}{0.99}\n" + HEAD_EN_89))
+        "\\renewcommand{\\arraystretch}{0.99}\n" + col_head))
+    logs2: list[str] = []
     out2 = toc.generate_tex(str(report2), "en", toc.TocSettings(),
-                            log=lambda _s: None, stamp="TEST")
+                            log=logs2.append, stamp="TEST")
     text2 = _read(out2)
+    check("(g) 普通英文继承栏目源时降回 X@2em",
+          tt.CANONICAL_EN in text2 and "1em" not in text2, text2[:400])
     check("(g) 普通英文继承栏目源时移除工具行高",
           "\\arraystretch" not in text2, text2[:400])
+    check("(g) 普通英文继承栏目源不触发模板回退",
+          not any("回退内置模板" in s for s in logs2), str(logs2))
 
 
 def test_generate_en_column_stretch() -> None:
