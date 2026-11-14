@@ -612,17 +612,8 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 doc.ref_key_by_num = num2key
                 doc.ref_auto_materialized = _auto_materialized   # B-130 gate（同上报错口径）
                 doc.ref_raw_by_key.update(raw_by_key)
-
-    # ③ 元数据块：中英各一套
-    #
-    # ⚠️ 头部元数据只可能在正文之前。参考文献标题之后（或其后被 locate_tail_block
-    #    认定的文末块起点之后）的第二语种标签，即使落在 META_SCAN 窗口内也只是
-    #    **尾部**元数据：它们由 ③.2 / ③.5 / ③.5b 从文末取，不参与 meta_end。
-    #    否则短英文稿 + 文末中文块（14 段、尾块标签在第 13/14 段）会把正文起点顶到
-    #    文末，body 为空而 rc 仍为 0（D-1，2026-11-14）。
-    #    ⚠️ tail_start 只在参考文献标题存在、且文末块排在其后时才当锚：短稿里
-    #    locate_tail_block 的兜底可能把**开头**摘要误认成文末块（tail_start≈0），
-    #    拿它当上界会把头部摘要挤进正文（无尾块稿件的原行为会因此改变）。
+    # ③ 元数据块：中英各一套（头部标签仅在参考文献标题前；tail_start 仅在 ref_start
+    #    之前时作上界，避免短稿兜底把开头摘要误判成文末块）。
     _head_scan_end = min(len(plains), META_SCAN)
     for _anchor in (ref_start, tail_start if 0 <= ref_start < tail_start else -1):
         if 0 <= _anchor < _head_scan_end:
@@ -636,12 +627,10 @@ def parse_docx(path: str, quote_threshold: int = 105,
             abs_blocks.append((i, _has_cjk(t), _abs_body_cn(plains, i)))
         elif _KW_RE.match(t):
             kw_blocks.append((i, _has_cjk(t), _label_body(plains, i, _KW_RE)))
-
     doc.abstract_cn = next((t for _, cjk, t in abs_blocks if cjk), "")
     doc.abstract_en = next((t for _, cjk, t in abs_blocks if not cjk), "")
     doc.keywords_cn = next((t for _, cjk, t in kw_blocks if cjk), "")
     doc.keywords_en = next((t for _, cjk, t in kw_blocks if not cjk), "")
-
     # ③.2 中文摘要的第二处位置：正文全英文、中文题名+摘要另附在**参考文献之后**的稿子
     #      （实测 7 篇，见 _tail_abstract_cn）。只在开头那套空手时才跑；它**不写**
     #      abs_blocks，所以 meta_end / 正文起点一个字都不受影响。
