@@ -130,7 +130,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python` + `PYTHONPATH=Engine/vendor`）：**166 套件 / 7927 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**169 套件 / 8005 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
@@ -139,9 +139,9 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_b268_frontmatter` 17 ｜ `test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b270_url_note` 27
 `test_b285_contract` 48 ｜ `test_b285_diagnose` 179 ｜ `test_b285_report_header` 64 ｜ `test_b287_coop_metadata` 43
 `test_b288_taskcard` 52 ｜ `test_b290_bib_parse_fixes` 43 ｜ `test_b291_bibdb_institution_guard` 64 ｜ `test_b301_placeholder_author` 41
-`test_b303_coop_bak_recycle` 30 ｜ `test_b307_abs_label` 27 ｜ `test_b307_bib_syntax` 21 ｜ `test_b307_heading_no_sep` 36
+`test_b303_coop_bak_recycle` 30 ｜ `test_b307_abs_label` 25 ｜ `test_b307_bib_syntax` 21 ｜ `test_b307_heading_no_sep` 34
 `test_b309_gate_speedup` 31 ｜ `test_b311_slices` 53 ｜ `test_b312_footnote_container` 13 ｜ `test_b312_post_en_rules` 0
-`test_b355_toc_layout` 41 ｜ `test_b375_toc_column` 58 ｜ `test_b375_toc_fit` 46 ｜ `test_b375_toc_host` 33
+`test_b355_toc_layout` 41 ｜ `test_b375_toc_column` 58 ｜ `test_b375_toc_fit` 55 ｜ `test_b375_toc_host` 33
 `test_b375_toc_preview_source` 16 ｜ `test_b375_toc_rollback` 25 ｜ `test_b71_word_author_meta` 81 ｜ `test_b73_bibdb_adjudication` 84
 `test_b73_footnote_bare_cite` 45 ｜ `test_b74_fulltext_analysis` 99 ｜ `test_b74_gen_docs_write_once` 14 ｜ `test_b75_b137_cite_residual` 39
 `test_b75_coop_report_only` 63 ｜ `test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22 ｜ `test_b79_b131_delivery_record` 27
@@ -162,18 +162,19 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 41 ｜ `test_infocheck_toc` 138
 `test_issue_tools` 69 ｜ `test_latex_appendix` 20 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10
 `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62
-`test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36
-`test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28
-`test_paths` 19 ｜ `test_pdfmerge` 36 ｜ `test_pkg_b375r_toc_robustness` 106 ｜ `test_pkg_b377_sortlocale_sortname` 77
-`test_pkg_fix_20261112_q4` 34 ｜ `test_pkg_fix_20261112_q56` 28 ｜ `test_pkg_fix_20261112_q789` 48 ｜ `test_pkg_p02_delivery` 76
-`test_pkg_p02_promote_sigterm` 58 ｜ `test_pkg_p02h_guard_hardening` 74 ｜ `test_pkg_p02r_convert_contract` 39 ｜ `test_pkg_p03_taskbook_modes` 95
-`test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p05_pushcopy` 23 ｜ `test_pkg_p06_query_paging` 106 ｜ `test_pkg_p07_bib_asset` 49
-`test_platform` 82 ｜ `test_proofcheck` 294 ｜ `test_publish` 58 ｜ `test_ref_raw_lines` 34
-`test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29 ｜ `test_refs_batch45a2` 27
-`test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20 ｜ `test_run_record` 36
-`test_search_refs` 54 ｜ `test_selfcheck` 24 ｜ `test_sep_style` 25 ｜ `test_table_images` 14
-`test_tail_block` 58 ｜ `test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 70 ｜ `test_verify_scope` 75
-`test_vml_footnotes` 4 ｜ `test_xref_autoref` 14
+`test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_mc02_en_subsection_case_20261113` 12 ｜ `test_mc04_pushcopy_tex_macros_20261113` 6
+`test_merge_into` 52 ｜ `test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22
+`test_omml_stack` 17 ｜ `test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 36
+`test_pkg_b375r_toc_robustness` 106 ｜ `test_pkg_b377_sortlocale_sortname` 77 ｜ `test_pkg_fix_20261112_q4` 34 ｜ `test_pkg_fix_20261112_q56` 28
+`test_pkg_fix_20261112_q789` 48 ｜ `test_pkg_p02_delivery` 76 ｜ `test_pkg_p02_promote_sigterm` 58 ｜ `test_pkg_p02h_guard_hardening` 74
+`test_pkg_p02r_convert_contract` 39 ｜ `test_pkg_p03_taskbook_modes` 95 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p05_pushcopy` 23
+`test_pkg_p06_query_paging` 106 ｜ `test_pkg_p07_bib_asset` 49 ｜ `test_platform` 82 ｜ `test_proofcheck` 294
+`test_publish` 58 ｜ `test_ref_raw_lines` 34 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68
+`test_refs_attach` 29 ｜ `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89
+`test_ruleset` 20 ｜ `test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 24
+`test_sep_style` 25 ｜ `test_table_images` 14 ｜ `test_tail_block` 58 ｜ `test_tex_frontmatter` 0
+`test_unmatched_in_report` 70 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_word_tail_metadata_body` 55
+`test_xref_autoref` 14
 
 **普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，132 份源稿；成功解析 **132** 份 / 解析失败 **0** 份；三态互斥、相加 = 篇数）：
 
