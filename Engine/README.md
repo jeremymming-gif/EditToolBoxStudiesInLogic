@@ -130,7 +130,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**169 套件 / 8028 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**169 套件 / 8039 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
 套件明细：`test_abstract_label` 45 ｜ `test_affil_from_bio` 33 ｜ `test_aibib` 68 ｜ `test_author_plausible` 60
 `test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
@@ -141,7 +141,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_b288_taskcard` 52 ｜ `test_b290_bib_parse_fixes` 43 ｜ `test_b291_bibdb_institution_guard` 64 ｜ `test_b301_placeholder_author` 41
 `test_b303_coop_bak_recycle` 30 ｜ `test_b307_abs_label` 25 ｜ `test_b307_bib_syntax` 21 ｜ `test_b307_heading_no_sep` 34
 `test_b309_gate_speedup` 31 ｜ `test_b311_slices` 53 ｜ `test_b312_footnote_container` 13 ｜ `test_b312_post_en_rules` 0
-`test_b355_toc_layout` 62 ｜ `test_b375_toc_column` 58 ｜ `test_b375_toc_fit` 55 ｜ `test_b375_toc_host` 33
+`test_b355_toc_layout` 62 ｜ `test_b375_toc_column` 68 ｜ `test_b375_toc_fit` 55 ｜ `test_b375_toc_host` 33
 `test_b375_toc_preview_source` 16 ｜ `test_b375_toc_rollback` 25 ｜ `test_b71_word_author_meta` 81 ｜ `test_b73_bibdb_adjudication` 84
 `test_b73_footnote_bare_cite` 45 ｜ `test_b74_fulltext_analysis` 99 ｜ `test_b74_gen_docs_write_once` 14 ｜ `test_b75_b137_cite_residual` 39
 `test_b75_coop_report_only` 63 ｜ `test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22 ｜ `test_b79_b131_delivery_record` 27
@@ -159,7 +159,7 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 `test_coauthor_en` 19 ｜ `test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 74 ｜ `test_docx_labels` 41
 `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 16 ｜ `test_docxxml_deterministic` 14 ｜ `test_duplicates_merge_plan` 26
 `test_en_abstract_sibling` 66 ｜ `test_en_slot_placeholder` 9 ｜ `test_english_manuscripts` 28 ｜ `test_envcheck` 68
-`test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 41 ｜ `test_infocheck_toc` 139
+`test_evidence_injection` 27 ｜ `test_footnote_id0` 12 ｜ `test_incollection_fields` 41 ｜ `test_infocheck_toc` 140
 `test_issue_tools` 69 ｜ `test_latex_appendix` 20 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10
 `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 21 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62
 `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61 ｜ `test_mc02_en_subsection_case_20261113` 12 ｜ `test_mc04_pushcopy_tex_macros_20261113` 6
