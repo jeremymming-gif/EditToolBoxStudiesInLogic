@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,8 +30,26 @@ ENGINE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ENGINE))
 
 ISSUE_NAME = "2026年第5期(999)"
-GS = "/usr/local/bin/gs"
-TEXBIN = "/Library/TeX/texbin"
+
+
+def _find_tool(name: str, *fallbacks: str) -> str:
+    """优先 PATH；再试常见安装路径；都没有返回空串。"""
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in fallbacks:
+        path = Path(candidate)
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+    return ""
+
+
+XELATEX = _find_tool("xelatex", "/Library/TeX/texbin/xelatex")
+GS = (_find_tool("gs", "/usr/local/bin/gs", "/opt/homebrew/bin/gs")
+      or _find_tool("gswin64c") or _find_tool("gswin32c"))
+TEXBIN = str(Path(XELATEX).parent) if XELATEX else ""
+CAN_COMPILE = bool(XELATEX)
+CAN_COUNT_PAGES = bool(GS)
 
 #: 10 篇匿名稿件的检查报告（字段与真实报告同形，内容全部匿名合成）。
 REPORT = r"""L__Lambda_1
@@ -198,6 +217,7 @@ SETTINGS = {
 
 _passed = 0
 _fails: list[str] = []
+_skips: list[str] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -210,15 +230,23 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         print(f"FAIL  {name}  {detail}")
 
 
+def skip(name: str, why: str) -> None:
+    _skips.append(name)
+    print(f"SKIP  {name}  {why}")
+
+
 def env() -> dict[str, str]:
     e = dict(os.environ)
     e["PYTHONPATH"] = str(ENGINE / "vendor")
-    e["PATH"] = TEXBIN + os.pathsep + e.get("PATH", "")
+    if TEXBIN:
+        e["PATH"] = TEXBIN + os.pathsep + e.get("PATH", "")
     return e
 
 
 def pdf_pages(path: Path) -> int:
     """用 ghostscript 数 PDF 页数（xelatex 的对象流用正则数不准）。"""
+    if not GS:
+        return -1
     proc = subprocess.run(
         [GS, "-q", "-dNODISPLAY", "-dNOSAFER",
          "-c", f"({path}) (r) file runpdfbegin pdfpagecount = quit"],
@@ -255,11 +283,14 @@ def multicolumn_body(line: str) -> str | None:
 
 
 def run_toc(issue: Path, result_path: Path):
+    cmd = [sys.executable, str(ENGINE / "toc.py"),
+           "--report", str(issue / "信息检查_ANON.txt"),
+           "--place"]
+    if CAN_COMPILE:
+        cmd.append("--compile")
+    cmd.extend(["--result-json", str(result_path)])
     proc = subprocess.run(
-        [sys.executable, str(ENGINE / "toc.py"),
-         "--report", str(issue / "信息检查_ANON.txt"),
-         "--place", "--compile",
-         "--result-json", str(result_path)],
+        cmd,
         cwd=str(ENGINE), env=env(), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900)
     out = (proc.stdout or "") + (proc.stderr or "")
@@ -303,30 +334,48 @@ def make_issue(root: Path) -> Path:
 def main() -> None:
     from slcn import toctemplate as TT
 
+    print(f"工具发现：xelatex={XELATEX or '缺失'}；ghostscript={GS or '缺失'}")
+    compile_skip = "缺 xelatex，跳过真实编译/PDF 检查"
+    pages_skip = ("缺 xelatex，跳过真实编译/PDF 检查"
+                  if not CAN_COMPILE else "缺 ghostscript，跳过 PDF 页数检查")
+
     with tempfile.TemporaryDirectory(prefix="r3-toc-host-") as tmp:
         issue = make_issue(Path(tmp))
         result_path = Path(tmp) / "result.json"
         proc, out, result = run_toc(issue, result_path)
 
         print("── (a) rc=0、中英 PDF 各 1 页 ──")
-        check("(a1) toc.py 生成/编译 rc=0", proc.returncode == 0,
-              f"rc={proc.returncode}\n{out[-2000:]}")
+        if CAN_COMPILE:
+            check("(a1) toc.py 生成/编译 rc=0", proc.returncode == 0,
+                  f"rc={proc.returncode}\n{out[-2000:]}")
+        else:
+            skip("(a1) toc.py 生成/编译 rc=0", compile_skip)
         toc_dir = issue / "000 Table of Contents"
         zh_tex = toc_dir / "Chinese Content.tex"
         en_tex = toc_dir / "contents.tex"
         zh_pdf = toc_dir / "Chinese Content.pdf"
         en_pdf = toc_dir / "contents.pdf"
-        check("(a2) 中文/英文 tex 与 PDF 均已落位",
-              all(p.is_file() for p in (zh_tex, en_tex, zh_pdf, en_pdf)),
-              str([(p.name, p.exists()) for p in (zh_tex, en_tex, zh_pdf, en_pdf)]))
-        zh_pages = pdf_pages(zh_pdf)
-        en_pages = pdf_pages(en_pdf)
-        check("(a3) 中文 PDF 1 页", zh_pages == 1, f"pages={zh_pages}")
-        check("(a4) 英文 PDF 1 页", en_pages == 1, f"pages={en_pages}")
-        check("(a5) 结果 JSON pages.zh/en 均为 1",
-              (result.get("pages") or {}).get("zh") == 1
-              and (result.get("pages") or {}).get("en") == 1,
-              repr(result.get("pages")))
+        if CAN_COMPILE:
+            check("(a2) 中文/英文 tex 与 PDF 均已落位",
+                  all(p.is_file() for p in (zh_tex, en_tex, zh_pdf, en_pdf)),
+                  str([(p.name, p.exists()) for p in (zh_tex, en_tex, zh_pdf, en_pdf)]))
+        else:
+            skip("(a2) 中文/英文 tex 与 PDF 均已落位", compile_skip)
+        if CAN_COMPILE and CAN_COUNT_PAGES:
+            zh_pages = pdf_pages(zh_pdf)
+            en_pages = pdf_pages(en_pdf)
+            check("(a3) 中文 PDF 1 页", zh_pages == 1, f"pages={zh_pages}")
+            check("(a4) 英文 PDF 1 页", en_pages == 1, f"pages={en_pages}")
+        else:
+            skip("(a3) 中文 PDF 1 页", pages_skip)
+            skip("(a4) 英文 PDF 1 页", pages_skip)
+        if CAN_COMPILE:
+            check("(a5) 结果 JSON pages.zh/en 均为 1",
+                  (result.get("pages") or {}).get("zh") == 1
+                  and (result.get("pages") or {}).get("en") == 1,
+                  repr(result.get("pages")))
+        else:
+            skip("(a5) 结果 JSON pages.zh/en 均为 1", compile_skip)
 
         zh = zh_tex.read_text(encoding="utf-8") if zh_tex.is_file() else ""
         lines = zh.splitlines()
@@ -407,22 +456,31 @@ def main() -> None:
               repr(result.get("templateSource")))
         result2_path = Path(tmp) / "result2.json"
         proc2, out2, result2 = run_toc(issue, result2_path)
-        check("(f1) 第二次生成/编译 rc=0", proc2.returncode == 0,
-              f"rc={proc2.returncode}\n{out2[-2000:]}")
-        check(r"(f2) 第二次日志无 File ended while scanning use of \TX@get@body",
-              "File ended while scanning use of \\TX@get@body" not in out2,
-              out2[-2000:])
-        check("(f3) 第二次 result-json 落盘且 pages 1/1",
-              result2_path.is_file()
-              and (result2.get("pages") or {}).get("zh") == 1
-              and (result2.get("pages") or {}).get("en") == 1,
-              f"exists={result2_path.is_file()} pages={result2.get('pages')}")
+        if CAN_COMPILE:
+            check("(f1) 第二次生成/编译 rc=0", proc2.returncode == 0,
+                  f"rc={proc2.returncode}\n{out2[-2000:]}")
+            check(r"(f2) 第二次日志无 File ended while scanning use of \TX@get@body",
+                  "File ended while scanning use of \\TX@get@body" not in out2,
+                  out2[-2000:])
+            check("(f3) 第二次 result-json 落盘且 pages 1/1",
+                  result2_path.is_file()
+                  and (result2.get("pages") or {}).get("zh") == 1
+                  and (result2.get("pages") or {}).get("en") == 1,
+                  f"exists={result2_path.is_file()} pages={result2.get('pages')}")
+        else:
+            skip("(f1) 第二次生成/编译 rc=0", compile_skip)
+            skip(r"(f2) 第二次日志无 File ended while scanning use of \TX@get@body",
+                 compile_skip)
+            skip("(f3) 第二次 result-json 落盘且 pages 1/1", compile_skip)
         check("(f4) 第二次模板来源=本期成品（继承第一代产物）",
               result2.get("templateSource") == "本期成品",
               repr(result2.get("templateSource")))
-        check("(f5) 两次编译后中英 PDF 仍各 1 页",
-              pdf_pages(zh_pdf) == 1 and pdf_pages(en_pdf) == 1,
-              f"zh={pdf_pages(zh_pdf)} en={pdf_pages(en_pdf)}")
+        if CAN_COMPILE and CAN_COUNT_PAGES:
+            check("(f5) 两次编译后中英 PDF 仍各 1 页",
+                  pdf_pages(zh_pdf) == 1 and pdf_pages(en_pdf) == 1,
+                  f"zh={pdf_pages(zh_pdf)} en={pdf_pages(en_pdf)}")
+        else:
+            skip("(f5) 两次编译后中英 PDF 仍各 1 页", pages_skip)
         zh2 = zh_tex.read_text(encoding="utf-8") if zh_tex.is_file() else ""
         host2 = host_line_of(zh2)
         check("(f6) 第二代主持人行与第一代完全一致",
@@ -446,16 +504,22 @@ def main() -> None:
             encoding="utf-8")
         result3_path = Path(tmp) / "result3.json"
         proc3, out3, result3 = run_toc(issue, result3_path)
-        check("(g1) A→B 生成/编译 rc=0", proc3.returncode == 0,
-              f"rc={proc3.returncode}\n{out3[-2000:]}")
-        check(r"(g2) A→B 日志无 File ended while scanning use of \TX@get@body",
-              "File ended while scanning use of \\TX@get@body" not in out3,
-              out3[-2000:])
-        check("(g3) A→B 落盘且 pages 1/1",
-              result3_path.is_file()
-              and (result3.get("pages") or {}).get("zh") == 1
-              and (result3.get("pages") or {}).get("en") == 1,
-              f"exists={result3_path.is_file()} pages={result3.get('pages')}")
+        if CAN_COMPILE:
+            check("(g1) A→B 生成/编译 rc=0", proc3.returncode == 0,
+                  f"rc={proc3.returncode}\n{out3[-2000:]}")
+            check(r"(g2) A→B 日志无 File ended while scanning use of \TX@get@body",
+                  "File ended while scanning use of \\TX@get@body" not in out3,
+                  out3[-2000:])
+            check("(g3) A→B 落盘且 pages 1/1",
+                  result3_path.is_file()
+                  and (result3.get("pages") or {}).get("zh") == 1
+                  and (result3.get("pages") or {}).get("en") == 1,
+                  f"exists={result3_path.is_file()} pages={result3.get('pages')}")
+        else:
+            skip("(g1) A→B 生成/编译 rc=0", compile_skip)
+            skip(r"(g2) A→B 日志无 File ended while scanning use of \TX@get@body",
+                 compile_skip)
+            skip("(g3) A→B 落盘且 pages 1/1", compile_skip)
         check("(g4) A→B 仍继承本期成品",
               result3.get("templateSource") == "本期成品",
               repr(result3.get("templateSource")))
@@ -472,18 +536,26 @@ def main() -> None:
         proc4, out4, result4 = run_toc(issue, result4_path)
         zh4 = zh_tex.read_text(encoding="utf-8") if zh_tex.is_file() else ""
         host4 = host_line_of(zh4)
-        check("(g7) host B 再生成一次 rc=0 且无 \\TX@get@body",
-              proc4.returncode == 0
-              and "File ended while scanning use of \\TX@get@body" not in out4,
-              f"rc={proc4.returncode}\n{out4[-2000:]}")
+        if CAN_COMPILE:
+            check("(g7) host B 再生成一次 rc=0 且无 \\TX@get@body",
+                  proc4.returncode == 0
+                  and "File ended while scanning use of \\TX@get@body" not in out4,
+                  f"rc={proc4.returncode}\n{out4[-2000:]}")
+        else:
+            skip("(g7) host B 再生成一次 rc=0 且无 \\TX@get@body", compile_skip)
+        g8_ok = (host4 == host3 and "匿名第二主持" in host4
+                 and "匿名主持人" not in host4)
+        if not CAN_COMPILE:
+            g8_ok = g8_ok and proc4.returncode == 0
         check("(g8) host B 再生成一次主持人行不变（换 host 后仍幂等）",
-              host4 == host3 and "匿名第二主持" in host4
-              and "匿名主持人" not in host4, f"got={host4!r}")
+              g8_ok, f"rc={proc4.returncode} got={host4!r}")
 
     if _fails:
-        print(f"\n失败 {len(_fails)} 项：{_fails}")
+        print(f"\n失败 {len(_fails)} 项：{_fails}"
+              + (f"｜SKIP {len(_skips)} 项" if _skips else ""))
         sys.exit(1)
-    print(f"\n全部 {_passed} 项断言通过")
+    print(f"\n全部 {_passed} 项断言通过"
+          + (f"｜SKIP {len(_skips)} 项（缺编译工具）" if _skips else ""))
 
 
 if __name__ == "__main__":
