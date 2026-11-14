@@ -90,6 +90,8 @@ class Article:
     abstract_is_cn: bool = True
     #: `_cn_meta` 的模板变体：`cn` / `mix` / `fallback`（语言判定不看这个标签）
     source: str = ""
+    #: 稿件主标题 `\mytitle`（与 `title_lines` 的展示用中文译名分开；语言判定只看这里）
+    main_title_lines: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -827,8 +829,18 @@ def _cn_meta(text: str, folder: str, warnings: list[str], missing: list[str]) ->
             f"{folder}: 成品 tex 里仍是模板占位符（{'、'.join(uniq)}），按缺失处理")
     if source == "fallback":
         warnings.append(f"{folder}: 模板无中文字段，中文信息回落英文/通用字段")
+
+    # 主标题 `\mytitle` 与展示用 `title_lines`（source=cn 时是 `\mytitleCN`）分开保存：
+    # 真实英文模板常有中文译名 mytitleCN + 英文主标题 mytitle，语言判定必须看后者。
+    main_title_lines: list[str] = []
+    for part in _split_title_breaks(base_title):
+        cleaned = _clean_title(part)
+        if cleaned:
+            main_title_lines.append(cleaned)
+
     return {
         "title_lines": title_lines,
+        "main_title_lines": main_title_lines,
         "authors": authors,
         "affiliations": affiliations,
         "abstract": abstract,
@@ -1060,15 +1072,19 @@ def unrecognized_issue_dirs(parent: str, year: int) -> list[str]:
 
 
 def detect_language(articles: list[Article]) -> str:
-    """按**稿件标题**是否含 CJK 判定期次语言：zh / en / mixed / unknown。
+    """按**稿件主标题 `\\mytitle`** 是否含 CJK 判定期次语言：zh / en / mixed / unknown。
 
-    只看标题文本（复用 `_has_cjk`），不看 `Article.source` 模板标签，
-    也不依赖期号/篇数。没有可用标题的稿件不参与判定。
+    只看主标题文本（复用 `_has_cjk`）；`title_lines` 在 source=cn 时是中文译名
+    `\\mytitleCN`，不能代表主标题语言。`Article.source`、`\\mytitleEN` 与
+    `contents.tex` 是否存在都不参与判定。无 `\\mytitle` 的旧夹具回落到
+    `title_lines`，仅作兼容；也不依赖期号/篇数。
     """
     has_cjk = False
     has_non_cjk = False
     for art in articles:
-        text = "".join(art.title_lines).strip()
+        text = "".join(art.main_title_lines).strip()
+        if not text:
+            text = "".join(art.title_lines).strip()
         if not text:
             continue
         if _has_cjk(text):
@@ -1201,6 +1217,7 @@ def collect_issue(issue_dir: str, *, with_en_toc: bool | None = None,
             tex = fh.read()
         meta = _cn_meta(tex, folder, art.warnings, missing)
         art.title_lines = meta["title_lines"]
+        art.main_title_lines = meta["main_title_lines"]
         art.authors = meta["authors"]
         art.affiliations = meta["affiliations"]
         art.abstract = meta["abstract"]

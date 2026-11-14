@@ -8,12 +8,17 @@
   B 同一期不加 flag：docx 11 行，标题「目录」，无英文段/英文标题作者；
     JSON issue.language=="zh"、issue.with_en_toc==false；有「按稿件语言」类 warning；
     栏目分组正确、主持人行存在。
-  C 7 篇英文（\\mytitleCN 放英文，使 _cn_meta source=cn）、2 栏目+5 普通，不加 flag：
+  C 7 篇仅 \\mytitleCN 为英文（无 \\mytitle）、2 栏目+5 普通，不加 flag：
     docx 18 行，标题「中英文对照目录」，JSON language=="en"、with_en_toc==true；
-    所有 Article.source=="cn"；中英各 2 栏目+5 普通。
+    所有 Article.source=="cn"；中英各 2 栏目+5 普通。本用例保留为「无主标题 →
+    回落旧口径」的兼容守卫，不代表真实英文模板。
   D 混合语言（5 中 5 英）：必须出现「混合」warning；有 contents.tex 时按 bi；
     无 contents.tex 时可 zh，但必须 warning。
   E B 的纯中文 + --with-en-toc：JSON warnings 含「显式覆盖」，docx 24 行。
+  G 真实英文模板（source=cn 由 \\mytitleCN 触发；\\mytitleCN 中文、\\mytitle 英文）：
+    默认 language=="en"、with_en_toc==true、docx 18 行；中文译名不能把主标题语言带偏。
+  H 纯中文模板（\\mytitleCN 中文、\\mytitleEN 英文、无 \\mytitle）：默认 zh、docx 8 行，
+    有 contents.tex 和 \\mytitleEN 也不能把中文期判成英文。
 """
 from __future__ import annotations
 
@@ -77,6 +82,8 @@ EN7 = ["English Column One", "English Column Two",
        "English Paper Three", "English Paper Four", "English Paper Five",
        "English Paper Six", "English Paper Seven"]
 EN7_AUTHORS = [f"Eng Author {i}" for i in range(1, 8)]
+CN7 = ["中文主标题一", "中文主标题二", "中文主标题三", "中文主标题四",
+       "中文主标题五", "中文主标题六", "中文主标题七"]
 
 MIX_TITLES = (["混合中文标题一", "混合中文标题二", "混合中文标题三",
                "混合中文标题四", "混合中文标题五"]
@@ -120,9 +127,25 @@ def _en_toc(titles: list[str], n_column: int) -> str:
 
 
 def _article_tex(mode: str, i: int, zh_title: str, en_title: str) -> str:
-    if mode == "cn":      # 中文模版：\\mytitleCN 可放英文（source 仍是 cn）
+    if mode == "cn":      # 旧兼容形状：只有 \\mytitleCN（无 \\mytitle）
         return ("\\documentclass{article}\n\\begin{document}\n"
                 f"\\newcommand{{\\mytitleCN}}{{{en_title}}}\n"
+                f"\\newcommand{{\\myfirstauthorCN}}{{{ZH_AUTHORS[(i - 1) % len(ZH_AUTHORS)]}}}\n"
+                "\\newcommand{\\myfirstaffiliationCN}{Anon Aff}\n"
+                f"\\newcommand{{\\myabstractCN}}{{Anon abstract {i}.}}\n"
+                "\\end{document}\n")
+    if mode == "real_en":  # 真实英文模板：\\mytitle 英文主标题 + \\mytitleCN 中文译名
+        return ("\\documentclass{article}\n\\begin{document}\n"
+                f"\\newcommand{{\\mytitle}}{{{en_title}}}\n"
+                f"\\newcommand{{\\mytitleCN}}{{{zh_title}}}\n"
+                f"\\newcommand{{\\myfirstauthorCN}}{{{ZH_AUTHORS[(i - 1) % len(ZH_AUTHORS)]}}}\n"
+                "\\newcommand{\\myfirstaffiliationCN}{Anon Aff}\n"
+                f"\\newcommand{{\\myabstractCN}}{{Anon abstract {i}.}}\n"
+                "\\end{document}\n")
+    if mode == "cn_en":    # 纯中文模板：\\mytitleCN 中文 + \\mytitleEN 英文，无 \\mytitle
+        return ("\\documentclass{article}\n\\begin{document}\n"
+                f"\\newcommand{{\\mytitleCN}}{{{zh_title}}}\n"
+                f"\\newcommand{{\\mytitleEN}}{{{en_title}}}\n"
                 f"\\newcommand{{\\myfirstauthorCN}}{{{ZH_AUTHORS[(i - 1) % len(ZH_AUTHORS)]}}}\n"
                 "\\newcommand{\\myfirstaffiliationCN}{Anon Aff}\n"
                 f"\\newcommand{{\\myabstractCN}}{{Anon abstract {i}.}}\n"
@@ -329,6 +352,57 @@ try:
                   bool(tcs) and all(cell_borders(tc) is not None and not has_bottom(tc)
                                     for tc in tcs),
                   f"bottom={[has_bottom(tc) for tc in tcs]}")
+
+    # ── G. 真实英文模板：\mytitle 英文主标题 + \mytitleCN 中文译名 ──
+    src_g = make_issue(os.path.join(work, "g"), zh_titles=CN7, n_column=2,
+                       modes=["real_en"] * 7, en_titles=EN7)
+    out_g = os.path.join(work, "out_g")
+    iss_g = PC.collect_issue(src_g, out_root=out_g)
+    check(r"(G0) source=cn + \mytitleCN 中文 + \mytitle 英文；主标题仍是英文",
+          len(iss_g.articles) == 7
+          and all(a.source == "cn" for a in iss_g.articles)
+          and all("".join(getattr(a, "main_title_lines", [])) == EN7[i]
+                  for i, a in enumerate(iss_g.articles)),
+          f"src={[a.source for a in iss_g.articles]} "
+          f"main={[''.join(getattr(a, 'main_title_lines', [])) for a in iss_g.articles]}")
+    rc, obj, err = run(src_g, out_g)
+    check("(G1) 默认（真实英文）rc=0 且生成 docx",
+          rc == 0 and os.path.isfile(docx_path(out_g)), f"rc={rc} err={err[-300:]!r}")
+    if rc == 0 and os.path.isfile(docx_path(out_g)):
+        _root, body, trs = parse_docx(docx_path(out_g))
+        j_issue = issue_of(obj)
+        check("(G2) JSON language=='en' 且 with_en_toc==true",
+              j_issue.get("language") == "en" and j_issue.get("with_en_toc") is True,
+              f"issue={j_issue} warnings={warnings_of(obj)}")
+        check("(G3) docx 18 行（1+1+7+1+1+7）", len(trs) == 18, f"n={len(trs)}")
+        check("(G4) 标题「中英文对照目录」",
+              "中英文对照目录" in para_texts(body), "标题缺失")
+        en_trs, zh_trs = trs[2:9], trs[11:18]
+        check("(G5) 中英各 7 条（英文 EN7 / 中文 CN7）",
+              [tr_title(tr) for tr in en_trs] == EN7
+              and [tr_title(tr) for tr in zh_trs] == CN7,
+              f"en={[tr_title(tr) for tr in en_trs]} "
+              f"zh={[tr_title(tr) for tr in zh_trs]}")
+
+    # ── H. 纯中文模板：\mytitleCN 中文 + \mytitleEN 英文，无 \mytitle ──
+    src_h = make_issue(os.path.join(work, "h"), zh_titles=CN7, n_column=2,
+                       modes=["cn_en"] * 7, en_titles=EN7)
+    out_h = os.path.join(work, "out_h")
+    rc, obj, err = run(src_h, out_h)
+    check("(H1) 默认（纯中文）language=='zh' 且 with_en_toc==false",
+          rc == 0 and issue_of(obj).get("language") == "zh"
+          and issue_of(obj).get("with_en_toc") is False,
+          f"rc={rc} issue={issue_of(obj)} err={err[-200:]!r}")
+    if rc == 0 and os.path.isfile(docx_path(out_h)):
+        _root, body, trs = parse_docx(docx_path(out_h))
+        texts = para_texts(body)
+        all_text = "".join(texts)
+        check("(H2) docx 8 行（host + 7），不生成英文段", len(trs) == 8,
+              f"n={len(trs)}")
+        check(r"(H3) 有 contents.tex / \mytitleEN 也不判英文：无英文标题作者",
+              "中英文对照目录" not in all_text
+              and not any(t in all_text for t in EN7)
+              and not any(a in all_text for a in EN7_AUTHORS), "出现英文内容")
 
     # ── D. 混合语言（5 中 5 英）─────────────────────────────────────
     d_root = os.path.join(work, "d")
