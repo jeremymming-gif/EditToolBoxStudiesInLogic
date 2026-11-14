@@ -614,9 +614,22 @@ def parse_docx(path: str, quote_threshold: int = 105,
                 doc.ref_raw_by_key.update(raw_by_key)
 
     # ③ 元数据块：中英各一套
+    #
+    # ⚠️ 头部元数据只可能在正文之前。参考文献标题之后（或其后被 locate_tail_block
+    #    认定的文末块起点之后）的第二语种标签，即使落在 META_SCAN 窗口内也只是
+    #    **尾部**元数据：它们由 ③.2 / ③.5 / ③.5b 从文末取，不参与 meta_end。
+    #    否则短英文稿 + 文末中文块（14 段、尾块标签在第 13/14 段）会把正文起点顶到
+    #    文末，body 为空而 rc 仍为 0（D-1，2026-11-14）。
+    #    ⚠️ tail_start 只在参考文献标题存在、且文末块排在其后时才当锚：短稿里
+    #    locate_tail_block 的兜底可能把**开头**摘要误认成文末块（tail_start≈0），
+    #    拿它当上界会把头部摘要挤进正文（无尾块稿件的原行为会因此改变）。
+    _head_scan_end = min(len(plains), META_SCAN)
+    for _anchor in (ref_start, tail_start if 0 <= ref_start < tail_start else -1):
+        if 0 <= _anchor < _head_scan_end:
+            _head_scan_end = _anchor
     abs_blocks: list[tuple[int, bool, str]] = []
     kw_blocks: list[tuple[int, bool, str]] = []
-    for i, t in enumerate(plains[:META_SCAN]):
+    for i, t in enumerate(plains[:_head_scan_end]):
         if _ABS_RE.match(t):
             # 中文摘要走 _abs_body_cn（多一条「标签独占一段 → 向下取正文」的放宽，
             # 见 _ABS_LOOKAHEAD 处）；英文标签由它内部转交 _label_body，行为不变。
