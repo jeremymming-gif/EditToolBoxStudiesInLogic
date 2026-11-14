@@ -11,7 +11,10 @@ r"""R3 目录返修 / 缺陷 1：中文栏目「主持人」必须落在最右�
       host 文本在该 multicolumn 组内（长主持人仍保留格内换行）；
   (c) 普通条目行不变：仍 4 条中文 `~~~~`（columnArticles 前 4 篇），
       其余 6 条无 `~~~~`；作者列仍是普通 `&\textit{\large …}`；
-  (d) 规范三列列定义不变（X / p{0.26\textwidth} / r、2em / 1.5em）。
+  (d) 规范三列列定义不变（X / p{0.26\textwidth} / r、2em / 1.5em）；
+  (e) 英文专栏/专辑的标题首行、标题续行与作者全部行使用同一物理排版起点；
+      普通条目仍不缩进。用 pypdf 读编译后 PDF 的文本矩阵原点（不是墨迹边缘），
+      缺 xelatex/pypdf 时明确 SKIP；同时验证推送解析仍识别栏目归属与作者名。
 
 本文件是独立脚本（同 Engine/tests 其余套件风格），失败退出码非 0。
 """
@@ -28,6 +31,13 @@ from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ENGINE))
+
+try:
+    from pypdf import PdfReader
+    HAS_PYPDF = True
+except ImportError:
+    PdfReader = None
+    HAS_PYPDF = False
 
 ISSUE_NAME = "2026年第5期(999)"
 
@@ -171,6 +181,18 @@ D__Delta_10
 --------------------------实际pdf页数: 20
 """
 
+#: 对齐回归用 2 条栏目 + 2 条普通；第 3 篇加长作者名，强制作者换行。
+REPORT_INDENT = "\n\n".join(
+    REPORT.strip().split("\n\n")[index] for index in (0, 2, 4, 5)) + "\n"
+REPORT_INDENT = REPORT_INDENT.replace(
+    "第一作者英文: A. Alpha Beta\n",
+    "第一作者英文: A. Alpha Beta Maximus\n"
+    "第二作者英文: B. Gamma Maximilian\n"
+    "第三作者英文: C. Delta Bartholomew\n")
+
+#: 专辑回归只用前 3 篇：全部带栏目缩进后仍能单页（对齐检查不混入超页问题）。
+REPORT_ALBUM = "\n\n".join(REPORT_INDENT.strip().split("\n\n")[:3]) + "\n"
+
 #: 上一期的英文目录（匿名合成：10pt、-3.05mm 行距、规范 X@2em 两列）。
 EN_TEMPLATE = r"""\documentclass[b5paper,10pt,onecolumn,twoside,fontset=windows]{ctexart}
 \pagestyle{empty}%不显示页码
@@ -257,6 +279,129 @@ def pdf_pages(path: Path) -> int:
         return -1
 
 
+def overfull_warnings(log_path: Path) -> list[str]:
+    r"""xelatex 日志里的 Overfull \hbox/\vbox：真实横向/纵向溢出，不是 Underfull。"""
+    if not log_path.is_file():
+        return [f"缺少编译日志：{log_path.name}"]
+    return [ln.strip() for ln in log_path.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+            if re.match(r"^Overfull \\[hv]box\b", ln.strip())]
+
+
+def pdf_lines(path: Path) -> list[dict]:
+    r"""PDF 第一页的文本行：x 是文本矩阵原点（排版起点，不是墨迹外沿）。"""
+    if not HAS_PYPDF:
+        return []
+    page = PdfReader(str(path)).pages[0]
+    raw: list[tuple[float, float, float, str]] = []
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        text = " ".join((text or "").split())
+        if text:
+            raw.append((float(tm[4]), float(tm[5]), float(font_size or 0), text))
+
+    page.extract_text(visitor_text=visitor)
+    groups: list[dict] = []
+    for x, y, size, text in sorted(raw, key=lambda item: (-item[1], item[0])):
+        for group in groups:
+            if abs(group["y"] - y) <= 0.6:
+                group["items"].append((x, size, text))
+                break
+        else:
+            groups.append({"y": y, "items": [(x, size, text)]})
+    lines = []
+    for group in groups:
+        items = sorted(group["items"], key=lambda item: item[0])
+        x, size, _ = items[0]
+        lines.append({"x": x, "y": group["y"], "size": size,
+                      "text": " ".join(item[2] for item in items)})
+    return lines
+
+
+def document_title_rows(tex: str) -> list[tuple[bool, str]]:
+    r"""按文档顺序取全部条目首行标题（栏目 + 普通，不含续行/作者/栏目头）。"""
+    rows: list[tuple[bool, str]] = []
+    at_entry_start = True
+    for raw in tex.splitlines():
+        line = raw.strip()
+        if line.startswith("\\vdistance") or line.startswith("\\\\["):
+            at_entry_start = True
+            continue
+        body = None
+        in_column = True
+        column_prefix = "{\\large ~~~~ "
+        if line.startswith(column_prefix):
+            body = line[len(column_prefix):]
+            if body.endswith("}\\\\"):
+                body = body[:-3]
+        elif line.startswith("\\large ") and "\\bf" not in line and "~~~~" not in line:
+            in_column = False
+            body = line[len("\\large "):]
+            if body.endswith("\\\\"):
+                body = body[:-2]
+        if at_entry_start and body and body.strip():
+            rows.append((in_column, body.strip()))
+        if body is not None:
+            at_entry_start = False
+    return rows
+
+
+def first_title_rows(tex: str, in_column: bool) -> list[str]:
+    r"""从生成的目录 tex 取每条目首行标题（不含续行/作者/栏目头）。"""
+    return [text for kind, text in document_title_rows(tex) if kind == in_column]
+
+
+def indent_report(lines: list[dict], titles: list[str],
+                  order: list[str] | None = None) -> tuple[list[float], str]:
+    r"""每条目首行标题 vs 全部标题续行/作者行的排版起点差。
+
+    返回 (栏目/普通条目的首行起点列表, 错误说明)。容差 0.25pt 只用于吸收 PDF
+    坐标舍入；斜体字形外探不参与比较，因为量的是 tm[4] 而不是墨迹包围盒。
+    order 是文档顺序的全部条目首行标题，用于确定本条目的下边界（栏目条目后面
+    可能紧跟普通条目）。
+    """
+    order = order or titles
+    order_ys: list[float] = []
+    for title in order:
+        key = re.sub(r"\s+", "", title)
+        found = next((ln for ln in lines
+                      if re.sub(r"\s+", "", ln["text"]) == key), None)
+        if found is not None:
+            order_ys.append(found["y"])
+
+    anchors: list[float] = []
+    for title in titles:
+        key = re.sub(r"\s+", "", title)
+        match = next((ln for ln in lines
+                      if re.sub(r"\s+", "", ln["text"]) == key), None)
+        if match is None:
+            return [], f"PDF 里找不到标题首行：{title!r}"
+        below = [y for y in order_ys if y < match["y"] - 0.6]
+        next_y = max(below) if below else None
+        bottom = next_y if next_y is not None else min(ln["y"] for ln in lines) - 1
+        top = match["y"]
+        rows = [ln for ln in lines
+                if ln["size"] > 10.5 and top + 0.6 >= ln["y"] > bottom + 0.6]
+        authors = [ln for ln in lines
+                   if ln["size"] < 10.5 and top - 0.6 > ln["y"] > bottom + 0.6
+                   and ln["x"] < 200]
+        if not authors:
+            return [], f"PDF 里找不到作者行：{title!r}"
+        bad = [ln for ln in rows + authors if abs(ln["x"] - match["x"]) > 0.25]
+        if bad:
+            detail = [(round(ln["x"], 3), round(ln["y"], 3), ln["text"][:40])
+                      for ln in [match] + bad]
+            return [], f"起点不一致：{detail}"
+        anchors.append(match["x"])
+    return anchors, ""
+
+
+def push_entries(tex: str):
+    from slcn.pushcopy import collect as PC
+    body = PC._tabularx_body(tex)
+    return PC._parse_column_and_entries(body, True)[1]
+
+
 def multicolumn_body(line: str) -> str | None:
     r"""取 `\multicolumn{n}{spec}{body}` 的 body（花括号配对，body 可含嵌套组）。"""
     m = re.search(r"\\multicolumn\s*\{\s*2\s*\}\s*\{(?:[^{}]|\{[^{}]*\})*\}", line)
@@ -317,13 +462,15 @@ def newest_intermediate(issue: Path) -> Path | None:
     return files[-1] if files else None
 
 
-def make_issue(root: Path) -> Path:
+def make_issue(root: Path, *, column_kind: str = "专栏",
+               name: str = ISSUE_NAME, report: str = REPORT) -> Path:
     """在临时目录内合成匿名期目录（不读任何外部夹具）。"""
-    issue = root / "issue" / ISSUE_NAME
+    issue = root / "issue" / name
     toc_dir = issue / "000 Table of Contents"
     toc_dir.mkdir(parents=True)
-    (issue / "信息检查_ANON.txt").write_text(REPORT, encoding="utf-8")
+    (issue / "信息检查_ANON.txt").write_text(report, encoding="utf-8")
     settings = dict(SETTINGS)
+    settings["columnKind"] = column_kind
     settings["columnArticles"] = list(SETTINGS["columnArticles"][:4])
     (issue / "目录设置.json").write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -409,6 +556,101 @@ def main() -> None:
               all(f"&\\textit{{\\large {t}" in zh
                   for t in ("匿名戊", "匿名己", "匿名庚", "匿名辛", "匿名壬", "匿名癸")),
               "缺少普通作者行")
+
+        print("\n── (c-en) 英文栏目/普通条目：标题与作者共用物理缩进基准 ──")
+        indent_issue = make_issue(Path(tmp), name="2026年第5期(997)",
+                                  report=REPORT_INDENT)
+        indent_result_path = Path(tmp) / "indent.json"
+        indent_proc, indent_out, indent_result = run_toc(
+            indent_issue, indent_result_path)
+        indent_dir = indent_issue / "000 Table of Contents"
+        indent_tex = indent_dir / "contents.tex"
+        indent_pdf = indent_dir / "contents.pdf"
+        indent_text = (indent_tex.read_text(encoding="utf-8")
+                       if indent_tex.is_file() else "")
+        col_titles = first_title_rows(indent_text, True)
+        plain_titles = first_title_rows(indent_text, False)
+        if CAN_COMPILE:
+            indent_overfull = overfull_warnings(indent_dir / "contents.log")
+            check("(c-en1) 对齐夹具有真实编译：rc=0、2 栏目 + 2 普通、PDF 1 页、无溢出",
+                  indent_proc.returncode == 0 and len(col_titles) == 2
+                  and len(plain_titles) == 2
+                  and (indent_result.get("pages") or {}).get("en") == 1
+                  and not indent_overfull,
+                  f"rc={indent_proc.returncode} column={len(col_titles)} "
+                  f"plain={len(plain_titles)} pages={indent_result.get('pages')} "
+                  f"overfull={indent_overfull!r}\n{indent_out[-1000:]}")
+        else:
+            skip("(c-en1) 对齐夹具有真实编译：rc=0、2 栏目 + 2 普通、PDF 1 页、无溢出",
+                 "缺 xelatex，跳过真实编译/PDF 检查")
+        check("(c-en2) 夹具覆盖两行标题与多行作者",
+              "{\\large \\phantom{~~~~ }" in indent_text
+              and "\\textit{\\phantom{" in indent_text,
+              "缺少标题续行或作者续行")
+        if CAN_COMPILE and HAS_PYPDF and len(col_titles) == 2 and len(plain_titles) == 2:
+            indent_lines = pdf_lines(indent_pdf)
+            all_titles = [text for _, text in document_title_rows(indent_text)]
+            col_axes, col_err = indent_report(indent_lines, col_titles, all_titles)
+            plain_axes, plain_err = indent_report(indent_lines, plain_titles, all_titles)
+            check("(c-en3) 英文栏目：标题续行/作者全部行与标题首行同一排版起点",
+                  not col_err and len(col_axes) == 2, col_err or repr(col_axes))
+            check("(c-en4) 英文普通条目：标题/作者起点一致且不继承栏目缩进",
+                  not plain_err and len(plain_axes) == 2
+                  and max(plain_axes) - min(plain_axes) <= 0.25
+                  and (not col_axes or max(plain_axes) < min(col_axes) - 5),
+                  plain_err or f"plain={plain_axes!r} column={col_axes!r}")
+        else:
+            why = ("缺 xelatex，跳过真实编译/PDF 起点检查" if not CAN_COMPILE
+                   else "缺 pypdf，跳过 PDF 起点检查")
+            skip("(c-en3) 英文栏目：标题续行/作者全部行与标题首行同一排版起点", why)
+            skip("(c-en4) 英文普通条目：标题/作者起点一致且不继承栏目缩进", why)
+        indent_entries = push_entries(indent_text) if indent_text else []
+        check("(c-en5) 推送解析仍识别前 2 篇为栏目、后 2 篇为普通",
+              [entry.is_column for entry in indent_entries]
+              == [True, True, False, False],
+              repr([entry.is_column for entry in indent_entries]))
+        check("(c-en6) 新作者前缀不污染推送作者名",
+              len(indent_entries) == 4
+              and all("phantom" not in name.lower()
+                      for entry in indent_entries for name in entry.authors)
+              and "B. Gamma Maximilian" in " ".join(indent_entries[1].authors)
+              and "C. Delta Bartholomew" in " ".join(indent_entries[1].authors),
+              repr([entry.authors for entry in indent_entries[:2]]))
+
+        album_issue = make_issue(Path(tmp), column_kind="专辑",
+                                 name="2026年第5期(998)", report=REPORT_ALBUM)
+        album_result_path = Path(tmp) / "album.json"
+        album_proc, album_out, album_result = run_toc(album_issue, album_result_path)
+        album_dir = album_issue / "000 Table of Contents"
+        album_tex = album_dir / "contents.tex"
+        album_pdf = album_dir / "contents.pdf"
+        album_text = (album_tex.read_text(encoding="utf-8")
+                      if album_tex.is_file() else "")
+        album_titles = first_title_rows(album_text, True)
+        if CAN_COMPILE:
+            album_overfull = overfull_warnings(album_dir / "contents.log")
+            check("(c-en7) 英文专辑：真实编译 rc=0、3 篇全部栏目、PDF 1 页、无溢出",
+                  album_proc.returncode == 0 and len(album_titles) == 3
+                  and (album_result.get("pages") or {}).get("en") == 1
+                  and not album_overfull,
+                  f"rc={album_proc.returncode} titles={len(album_titles)} "
+                  f"pages={album_result.get('pages')} overfull={album_overfull!r}"
+                  f"\n{album_out[-1000:]}")
+        else:
+            skip("(c-en7) 英文专辑：真实编译 rc=0、3 篇全部栏目、PDF 1 页、无溢出",
+                 "缺 xelatex，跳过真实编译/PDF 检查")
+        if CAN_COMPILE and HAS_PYPDF and len(album_titles) == 3:
+            album_axes, album_err = indent_report(pdf_lines(album_pdf), album_titles)
+            check("(c-en8) 英文专辑：标题续行/作者全部行与标题首行同一排版起点",
+                  not album_err and len(album_axes) == 3,
+                  album_err or repr(album_axes))
+        else:
+            skip("(c-en8) 英文专辑：标题续行/作者全部行与标题首行同一排版起点",
+                 "缺 xelatex/pypdf 或专辑标题数不为 3")
+        album_entries = push_entries(album_text) if album_text else []
+        check("(c-en9) 专辑推送解析仍把 3 篇全部识别为栏目",
+              [entry.is_column for entry in album_entries] == [True] * 3,
+              repr([entry.is_column for entry in album_entries]))
 
         print("\n── (d) 规范三列列定义不变 ──")
         spec_line = next((ln for ln in lines if "p{0.26\\textwidth}" in ln), "")

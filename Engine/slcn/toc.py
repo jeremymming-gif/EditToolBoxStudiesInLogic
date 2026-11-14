@@ -65,6 +65,11 @@ COLUMN_KINDS = (COLUMN_KIND_COLUMN, COLUMN_KIND_ALBUM)
 #: 宽度由 TeX 现场排版决定，因此与首行正文左缘对齐。
 _CELL_INDENT = "\\phantom{~~~~ }"
 
+#: 英文栏目作者行：标题首行的 `~~~~ ` 在 `\large` 下排版约 14.944pt，作者 10pt
+#: 直接排同一串只有约 12.45pt。作者缩进用 `\phantom{\large ~~~~ }` 复制标题的
+#: 物理宽度，作者字号/斜体/内容不变；首行与续行共用同一基准。
+_EN_COLUMN_INDENT = "\\phantom{\\large ~~~~ }"
+
 #: 生成目录的中间件目录（B-121 B1）：时间戳中间 tex 一律落在期目录下这个隐藏目录，
 #: 不再散落到期目录根（用户实测「清理临时文件」清不掉根下时间戳文件）。
 TOC_WORK_DIR = ".toolbox-tmp"
@@ -738,9 +743,10 @@ def _en_author_lines(e: TocEntry, wrap_limit: float, in_column: bool) -> list[st
 def english_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
     r"""英文目录的一条（用户 2026-11-14 规范：栏目内标题和作者都缩进）。
 
-    栏目内标题首行、作者首行用 `~~~~ `；多行标题/作者续行用 `\phantom{~~~~ }`
-    复制同一栏目尺度，绝不能只给首位作者加前缀。普通英文条目标题和作者都不加
-    栏目缩进，保持既有版式。页码始终和最后一行作者同表格行。
+    栏目内标题首行用 `~~~~ `，标题续行在 `\large` 组内复制同一前缀；作者首行
+    与续行统一用 `\phantom{\large ~~~~ }`，让 10pt 斜体作者与 12pt 标题落在
+    同一物理起点，绝不只给首位作者加前缀。普通英文条目标题和作者都不加栏目
+    缩进，保持既有版式。页码始终和最后一行作者同表格行。
     """
     title_lines = _en_title_lines(e, wrap_limit, in_column)
     author_lines = _en_author_lines(e, wrap_limit, in_column)
@@ -760,9 +766,8 @@ def english_entry(e: TocEntry, in_column: bool, wrap_limit: float) -> str:
         lead = prefix if index == 0 else _CELL_INDENT
         rows.append("{\\large " + lead + line + "}")
     if author_lines:
-        for index, line in enumerate(author_lines):
-            lead = prefix if index == 0 else _CELL_INDENT
-            rows.append("\\textit{" + lead + line + "}")
+        for line in author_lines:
+            rows.append("\\textit{" + _EN_COLUMN_INDENT + line + "}")
     else:
         # 英文作者为空是合法路径：标题仍缩进，但不给空作者造姓名/空前缀。
         rows.append("\\textit{}")

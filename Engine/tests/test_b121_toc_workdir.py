@@ -143,17 +143,18 @@ check("(b3) 专辑英文表头 ⇒ Special Issue: <columnNameEN>（英文名必�
       "Special Issue: Preference Logic" in _en and "偏好逻辑" not in _en, _en[:200])
 # B-375：专辑 = 全部当前报告稿件都带栏目标记；columnArticles 只存了 Qiu_Dejun 也不删
 # Wu_Hao —— 目录仍列出两篇、两篇标题和作者都带 ~~~
-check("(b4) 专辑：两篇都在目录里、标题和作者都带 ~~~~ 前缀",
+check("(b4) 专辑：两篇都在目录里、标题和作者都带栏目缩进前缀",
       "{\\large ~~~~ Knowability" in _en
-      and "\\textit{~~~~ Qiu Dejun}" in _en
+      and "\\textit{\\phantom{\\large ~~~~ }Qiu Dejun}" in _en
       and "{\\large ~~~~ On the Yablo" in _en
-      and "\\textit{~~~~ Wu Hao}" in _en
+      and "\\textit{\\phantom{\\large ~~~~ }Wu Hao}" in _en
       and "Knowability" in _en and "On the Yablo Paradox" in _en,
       repr([ln for ln in _en.split("\n") if "~~~~" in ln][:4]))
-check("(b5) 英文栏目列定义是 CANONICAL_EN_COLUMN，且恰好两篇标题/两篇作者带 ~~~~",
+check("(b5) 英文栏目列定义是 CANONICAL_EN_COLUMN，且恰好两篇标题/两篇作者带同宽缩进",
       "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{1em}}r@{}}" in _en
       and sum(1 for ln in _en.split("\n") if ln.startswith("{\\large ~~~~ ")) == 2
-      and sum(1 for ln in _en.split("\n") if ln.startswith("\\textit{~~~~ ")) == 2,
+      and sum(1 for ln in _en.split("\n")
+              if ln.startswith("\\textit{\\phantom{\\large ~~~~ }")) == 2,
       _en.split("\n")[0:6])
 check("(b5a) 英文栏目表带 0.99 行高",
       "\\renewcommand{\\arraystretch}{0.99}" in _en, _en.split("\n")[0:8])
