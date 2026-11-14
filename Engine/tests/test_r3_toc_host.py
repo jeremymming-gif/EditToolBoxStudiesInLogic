@@ -369,15 +369,37 @@ def main() -> None:
                   ">{\\raggedleft\\arraybackslash}p{0.26\\textwidth}"
                   "@{\\hspace{1.5em}}r@{}}"), repr(spec_line))
 
-        print("\n── (e) 已是 multicolumn 的主持人行替换幂等 ──")
+        print("\n── (e) multicolumn 主持人行：同 host 幂等 / 换 host 替换 ──")
         new_form = "&\\multicolumn{2}{@{}r@{}}{\\textit{\\large 主持人：匿名主持人}}"
         once = TT._replace_host_with_optional_break(new_form, "匿名主持人")
         twice = TT._replace_host_with_optional_break(once, "匿名主持人")
-        check("(e1) 已是 multicolumn → 原样返回（不吞外层花括号）",
+        check("(e1) 同 host → 原样返回（不吞外层花括号）",
               once == new_form, repr(once))
         check("(e2) 连续替换两次 == 替换一次", twice == once,
               f"once={once!r} twice={twice!r}")
         check("(e3) 主持人行花括号配对", braces_balanced(once), repr(once))
+        changed = TT._replace_host_with_optional_break(new_form, "匿名第二主持")
+        check("(e4) 旧 host A → 新 host B：替换且保留外层 multicolumn",
+              "匿名第二主持" in changed and "匿名主持人" not in changed
+              and changed.startswith("&\\multicolumn{2}{@{}r@{}}{")
+              and changed.endswith("}}") and braces_balanced(changed),
+              repr(changed))
+        check("(e5) 新 host B 再替换一次 == 自身",
+              TT._replace_host_with_optional_break(changed, "匿名第二主持") == changed,
+              repr(changed))
+        long_body = TT._host_cell_content("匿名旧长主持人")
+        long_form = ("&\\multicolumn{2}{@{}r@{}}{\\textit{\\large "
+                     + long_body + "}}")
+        long_changed = TT._replace_host_with_optional_break(
+            long_form, "匿名新长主持人")
+        check("(e6) 长 host 嵌套 tabular 也能换 host，外层括号保留",
+              "\\begin{tabular}[t]{@{}l@{}}" in long_form
+              and "匿名新长主持人" in long_changed
+              and "匿名旧长主持人" not in long_changed
+              and "\\begin{tabular}[t]{@{}l@{}}" in long_changed
+              and long_changed.startswith("&\\multicolumn{2}{@{}r@{}}{")
+              and long_changed.endswith("}}") and braces_balanced(long_changed),
+              f"form={long_form!r} changed={long_changed!r}")
 
         print("\n── (f) 第二代：旧式→新式后再生成一次 ──")
         check("(f0) 第一代由内置模板生成（旧式主持人）",
@@ -414,6 +436,49 @@ def main() -> None:
         check("(f8) 第二代中间 tex 的主持人行花括号配对（失败根源不在落位成品）",
               bool(tmp_text) and braces_balanced(host_line_of(tmp_text)),
               f"file={tmp_tex} host={host_line_of(tmp_text)!r}")
+
+        print("\n── (g) 主持人 A→B：继承本期成品时必须替换旧 host ──")
+        settings_path = issue / "目录设置.json"
+        settings_data = json.loads(settings_path.read_text(encoding="utf-8"))
+        settings_data["columnHost"] = "匿名第二主持"
+        settings_path.write_text(
+            json.dumps(settings_data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+        result3_path = Path(tmp) / "result3.json"
+        proc3, out3, result3 = run_toc(issue, result3_path)
+        check("(g1) A→B 生成/编译 rc=0", proc3.returncode == 0,
+              f"rc={proc3.returncode}\n{out3[-2000:]}")
+        check(r"(g2) A→B 日志无 File ended while scanning use of \TX@get@body",
+              "File ended while scanning use of \\TX@get@body" not in out3,
+              out3[-2000:])
+        check("(g3) A→B 落盘且 pages 1/1",
+              result3_path.is_file()
+              and (result3.get("pages") or {}).get("zh") == 1
+              and (result3.get("pages") or {}).get("en") == 1,
+              f"exists={result3_path.is_file()} pages={result3.get('pages')}")
+        check("(g4) A→B 仍继承本期成品",
+              result3.get("templateSource") == "本期成品",
+              repr(result3.get("templateSource")))
+        zh3 = zh_tex.read_text(encoding="utf-8") if zh_tex.is_file() else ""
+        host3 = host_line_of(zh3)
+        check("(g5) Chinese Content.tex 含新 host B、不含旧 host A",
+              "匿名第二主持" in zh3 and "匿名主持人" not in zh3,
+              f"host={host3!r}")
+        check("(g6) A→B 主持人行仍是 multicolumn 且括号配对",
+              host3.startswith("&\\multicolumn{2}{@{}r@{}}{")
+              and braces_balanced(host3), repr(host3))
+
+        result4_path = Path(tmp) / "result4.json"
+        proc4, out4, result4 = run_toc(issue, result4_path)
+        zh4 = zh_tex.read_text(encoding="utf-8") if zh_tex.is_file() else ""
+        host4 = host_line_of(zh4)
+        check("(g7) host B 再生成一次 rc=0 且无 \\TX@get@body",
+              proc4.returncode == 0
+              and "File ended while scanning use of \\TX@get@body" not in out4,
+              f"rc={proc4.returncode}\n{out4[-2000:]}")
+        check("(g8) host B 再生成一次主持人行不变（换 host 后仍幂等）",
+              host4 == host3 and "匿名第二主持" in host4
+              and "匿名主持人" not in host4, f"got={host4!r}")
 
     if _fails:
         print(f"\n失败 {len(_fails)} 项：{_fails}")

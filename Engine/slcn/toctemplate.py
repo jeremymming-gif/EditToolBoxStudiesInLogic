@@ -608,17 +608,72 @@ def _to_multicolumn_host_line(line: str) -> str:
     return lead + "&\\multicolumn{2}{@{}r@{}}{" + body + "}"
 
 
+def _multicolumn_body_span(line: str) -> tuple[int, int] | None:
+    r"""定位 `\multicolumn{n}{spec}{body}` 的 body，返回 `[start, end)`。
+
+    用花括号配对而不是正则取末括号：body 里可能有嵌套 `tabular`，贪婪正则
+    会把外层 `}` 一起吃进去。参数不完整或花括号不配对时返回 None，调用方
+    保守地原样保留该行。
+    """
+    marker = "\\multicolumn"
+    pos = line.find(marker)
+    if pos < 0:
+        return None
+    i = pos + len(marker)
+    try:
+        for _ in range(2):
+            while i < len(line) and line[i].isspace():
+                i += 1
+            if i >= len(line) or line[i] != "{":
+                return None
+            i = _skip_group(line, i)
+        while i < len(line) and line[i].isspace():
+            i += 1
+        if i >= len(line) or line[i] != "{":
+            return None
+        return i + 1, _skip_group(line, i) - 1
+    except TemplateLayoutError:
+        return None
+
+
+def _host_body_is_current(body: str, host: str) -> bool:
+    r"""multicolumn body 里的主持人是否已经是本期 host（不比较排版形态）。"""
+    m = _HOST_CELL_RE.match(body)
+    if not m:
+        return False
+    inner = body[m.end(1):m.start(2)].strip()
+    inner = inner.replace("\\begin{tabular}[t]{@{}l@{}}", "")
+    inner = inner.replace("\\end{tabular}", "").strip()
+    inner = inner.replace("\\\\", "").strip()
+    return inner == "主持人：" + (host or "")
+
+
 def _replace_host_with_optional_break(line: str, host: str) -> str:
-    """把栏目行的旧主持人替换成本期主持人；过长时格内分两行（防孤字/裁切）。
+    r"""把栏目行的旧主持人替换成本期主持人；过长时格内分两行（防孤字/裁切）。
 
     返回值同时规范成跨列右对齐形态（见 `_to_multicolumn_host_line`）。
-    已是 multicolumn 的上一代产物必须原样返回：旧式整格正则只认一个收尾 `}`，
-    对 `…{\textit{\large …}}` 会多吃外层 `}`，留下悬空 `{`，二次编译报
-    `File ended while scanning use of \TX@get@body`。
+    已是 multicolumn 的上一代产物只替换其 `\textit{\large ...}` 内部内容：
+    同 host 原样返回（幂等），换 host 替换体内容，但保留 multicolumn 外层
+    花括号。旧式整格正则只认一个收尾 `}`，对 `…{\textit{\large …}}` 会多吃
+    外层 `}`，留下悬空 `{`，二次编译报 `File ended while scanning use of
+    \TX@get@body`，所以不能直接套用在整行上。
     """
-    if "\\multicolumn" in line:
-        return line
     replacement = _host_cell_content(host)
+    if "\\multicolumn" in line:
+        span = _multicolumn_body_span(line)
+        if span is None:
+            return line
+        body_start, body_end = span
+        body = line[body_start:body_end]
+        if _host_body_is_current(body, host):
+            return line
+        new_body, matched = _HOST_CELL_RE.subn(
+            lambda m: m.group(1) + replacement + m.group(2), body)
+        if not matched:
+            new_body = re.sub(r"主持人[：:][^}]*", lambda _m: replacement, body)
+        if new_body == body:
+            return line
+        return line[:body_start] + new_body + line[body_end:]
     # 必须函数式替换：字符串 replacement 会被 re.sub 当转义模板 ——
     # "\newline" 变「真换行 + ewline」（Lead 实测 bug），嵌套 tabular 里的 "\\"
     # 也会被折叠成单个反斜杠。lambda 原样返回，不经过转义。
