@@ -883,10 +883,10 @@ check("(j11b) 失败路径恢复原文：tex 与尝试前逐字节相同、不�
       open(os.path.join(_d_fit2, "Chinese Content.tex"),
            encoding="utf-8").read() == _d_fit2_zh_before and _detail2 == {}, _err2)
 
-# 阈值/常量（用 Lead 2026-11-06 实测数据钉住：EN base 4mm=11.36pt、floor -6pt ⇒ 总上限
-# 138.9pt；CN base 4.8ex≈23.52pt、floor -3pt ⇒ 212.2pt；9 篇 EN 实测最少约 126–130pt）。
-check("(j12) 单页适配参数：中文每处下限 -3pt、英文 -6pt；收敛 3pt、≤6 次二分、总编译 ≤8",
-      TD._SINGLE_PAGE_FLOOR_PT == {"zh": -3.0, "en": -6.0}
+# 阈值/常量（用 Lead 2026-11-06 实测数据钉住：EN base 4mm=11.36pt、floor -10.24pt
+# ⇒ 总上限 172.8pt；CN base 4.8ex≈23.52pt、floor -3pt ⇒ 212.2pt；9 篇 EN 实测最少约 126–130pt）。
+check("(j12) 单页适配参数：中文每处下限 -3pt、英文 -3.6mm（约 -10.24pt）；收敛 3pt、≤6 次二分、总编译 ≤8",
+      TD._SINGLE_PAGE_FLOOR_PT == {"zh": -3.0, "en": -10.24}
       and TD._FIT_TOLERANCE_PT == 3.0 and TD._FIT_MAX_BISECT == 6
       and TD._FIT_MAX_ATTEMPTS == 8)
 check(r"(j12b) 宏解析：纯长度/旧 \dimexpr 只取基准（不累计）、未知单位返回 None",

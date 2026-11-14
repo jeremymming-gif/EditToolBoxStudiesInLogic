@@ -193,6 +193,21 @@ def case_max_still_two_pages(root: Path) -> None:
     shutil.rmtree(d, ignore_errors=True)
 
 
+def case_en_over_dense(root: Path) -> None:
+    print("\n── (c2) 英文超密：新下限允许的最大压缩仍 2 页 → 失败并回滚 ──")
+    d = mk_dir(en_base="-3.05mm", zh_pages=1, en_pages=2)
+    before = tex_text(d, EN)
+    fake = FakeCompile({EN: 20.0}, gaps=8)
+    counts, err, fit = TD.fit_single_page(str(d), (("zh", ZH), ("en", EN)), fake)
+    check("(c2a) 失败原因含下限/仍 2 页/自动适配失败/人工",
+          all(s in err for s in ("压缩到自动适配下限", "仍是 2 页",
+                                 "自动单页适配失败", "人工")), err[:240])
+    check("(c2b) 明细为空、英文仍 2 页、tex 逐字节恢复",
+          fit == {} and counts.get("en") == 2 and tex_text(d, EN) == before, str(fit))
+    check("(c2c) 只尝试上限一次（不无限放宽）", len(fake.calls) == 1, str(fake.calls))
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def case_no_macro(root: Path) -> None:
     print("\n── (d) 没有 vdistance 宏：明确失败、不编译 ──")
     d = mk_dir(zh_pages=2, en_pages=1)
@@ -228,15 +243,36 @@ def case_below_floor(root: Path) -> None:
 
 
 def case_below_floor_r3_en(root: Path) -> None:
-    print("\n── (f2) R3 英文形态：继承 -3.05mm 已越过 -6pt 下限，拒绝且不编译 ──")
+    print("\n── (f2) R3 英文形态：-3.05mm 在新下限内 → 进入搜索并取最小压缩量到 1 页 ──")
     d = mk_dir(en_base="-3.05mm", zh_pages=1, en_pages=2)
-    before = tex_text(d, EN)
-    fake = FakeCompile({EN: 80.0}, gaps=8)
+    zh_before = tex_text(d, ZH)
+    fake = FakeCompile({EN: 8.0}, gaps=8)
     counts, err, fit = TD.fit_single_page(str(d), (("zh", ZH), ("en", EN)), fake)
-    check("(f2a) 原因方向正确：已越过/当前更紧/每处 -8.68pt/-6.0pt",
+    detail = fit.get(EN) or {}
+    check("(f2a) 不再拒绝：成功、英文 2→1 页、中文不动",
+          err == "" and counts.get("en") == 1 and counts.get("zh") == 1
+          and tex_text(d, ZH) == zh_before, f"err={err[:120]} counts={counts}")
+    check("(f2b) 实际进入编译搜索（非直接返回）",
+          len(fake.calls) >= 2, str(fake.calls))
+    check("(f2c) 取最小必要量 9.44pt/每处 1.18pt，不固定压到新下限 1.57pt",
+          detail.get("totalShrinkPt") == 9.44 and detail.get("perGapShrinkPt") == 1.18
+          and detail.get("perGapShrinkPt") < 1.57, str(detail)[:240])
+    check("(f2d) 最终宏基于 -3.05mm 且只一层 dimexpr",
+          "\\dimexpr -3.05mm - 1.18pt\\relax" in tex_text(d, EN)
+          and tex_text(d, EN).count(BS + "dimexpr") == 1, tex_text(d, EN)[:300])
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def case_below_new_floor_en(root: Path) -> None:
+    print("\n── (f3) 英文继承值真正越过新下限（-3.7mm）：拒绝且不编译/不改源 ──")
+    d = mk_dir(en_base="-3.7mm", zh_pages=1, en_pages=2)
+    before = tex_text(d, EN)
+    fake = FakeCompile({EN: 8.0}, gaps=8)
+    counts, err, fit = TD.fit_single_page(str(d), (("zh", ZH), ("en", EN)), fake)
+    check("(f3a) 原因含已越过自动适配下限/新下限 -10.2pt/当前更紧",
           "已越过自动适配下限" in err and "当前更紧" in err
-          and "-8.68pt" in err and "-6.0pt" in err, err[:220])
-    check("(f2b) 不编译、英文仍 2 页、原文逐字节不变、明细空",
+          and "-10.53pt" in err and "-10.2pt" in err, err[:220])
+    check("(f3b) 不编译、英文仍 2 页、原文逐字节不变、明细空",
           fake.calls == [] and counts.get("en") == 2 and tex_text(d, EN) == before
           and fit == {}, f"calls={fake.calls} counts={counts} fit={fit}")
     shutil.rmtree(d, ignore_errors=True)
@@ -393,10 +429,12 @@ def main() -> None:
         case_en_success(root)
         case_zh_success(root)
         case_max_still_two_pages(root)
+        case_en_over_dense(root)
         case_no_macro(root)
         case_unparsable(root)
         case_below_floor(root)
         case_below_floor_r3_en(root)
+        case_below_new_floor_en(root)
         case_rerun_no_accumulate(root)
         case_compile_fail_restore(root)
         case_multi_stem(root)
