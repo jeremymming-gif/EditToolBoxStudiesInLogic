@@ -82,10 +82,14 @@ def make_issue(root: str) -> None:
     # 没有 pdf：走「有 tex 无 pdf」的分支
 
 
-def make_report(root: str, *, none_title: bool = False) -> str:
+def make_report(root: str, *, none_title: bool = False,
+                english_authors: list[str] | None = None) -> str:
     """造一份检查报告（格式与 infocheck 的产物一致）。"""
     path = os.path.join(root, "信息检查2026_01_01_00_00_00.txt")
     title = "None" if none_title else "论示例悖论及其解决方案——从扩展的X标准看"
+    en_author_lines = "".join(
+        f"{role}作者英文: {name}\r\n"
+        for role, name in zip(("第一", "第二", "第三"), english_authors or []))
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(
             "Ning_Wang\r\n"
@@ -96,7 +100,8 @@ def make_report(root: str, *, none_title: bool = False) -> str:
             "英文标题: On the Example Paradox: \\\\A Study Based on the Extended X Criterion\r\n"
             "第一作者中文: 陆王\r\n"
             "第二作者中文: 王二\r\n"
-            "全文行距: 13\r\n"
+            + en_author_lines
+            + "全文行距: 13\r\n"
             "\r\n")
     return path
 
@@ -517,7 +522,9 @@ try:
           and iss.articles[0].title_lines == ["假标题一"]
           and iss.articles[1].abstract == "假摘要乙。",
           repr([a.abstract for a in iss.articles]))
-    _env = dict(os.environ, PYTHONPATH=str(ENGINE) + os.pathsep + str(ENGINE / "vendor"))
+    _pypath = [str(ENGINE), str(ENGINE / "vendor")]
+    _pypath += [p for p in (os.environ.get("PYTHONPATH") or "").split(os.pathsep) if p]
+    _env = dict(os.environ, PYTHONPATH=os.pathsep.join(_pypath))
     r = subprocess.run([sys.executable, str(ENGINE / "dirpush.py"), "--issue", d3,
                         "--out", out_root, "--json", "--dry-run"],
                        capture_output=True, text=True, encoding="utf-8",
@@ -1097,7 +1104,7 @@ check("(l4) 中文栏目块：缺项设置不启用（不发），齐全时按�
 # 端到端：不完整设置一律拒绝生成（不建工作目录、不写 .tex），四项齐全才出双目录
 _l_root = tempfile.mkdtemp(prefix="slcn_col_en_")
 make_issue(_l_root)
-_l_report = make_report(_l_root)
+_l_report = make_report(_l_root, english_authors=["Lu Wang", "Wang Er"])
 _l_logs: list[str] = []
 _l_outs = TOC.run(_l_report, _s_en_empty, log=_l_logs.append, stamp="COL")
 check("(l5) 端到端：缺英文名 ⇒ 两份都拒绝生成、无 .toolbox-tmp、日志明确报缺项",
@@ -1108,9 +1115,26 @@ _l_en = open(_l_outs2[0], encoding="utf-8").read() if len(_l_outs2) == 2 else ""
 _l_zh = open(_l_outs2[1], encoding="utf-8").read() if len(_l_outs2) == 2 else ""
 check("(l6) 端到端：四项齐全 ⇒ 英文 Special Issue、中文专辑表头、栏目条目带 ~~~~",
       len(_l_outs2) == 2 and "Special Issue: Preference Logic" in _l_en
-      and "专辑：偏好逻辑" in _l_zh and "~~~~ " in _l_en)
+      and "专辑：偏好逻辑" in _l_zh and "~~~~ " in _l_en
+      and "Lu Wang" in _l_en and "Wang Er" in _l_en
+      and "On the Example Paradox" in _l_en)
 check("(l7) 反例：英文表头只用 columnNameEN，不含「Special Issue: 偏好逻辑」",
       "Special Issue: 偏好逻辑" not in _l_en)
+# 英文作者为空是合法路径：不造名、不回退中文作者、不为缺字段新增退出码；
+# 英文条目仍生成，只是没有可标记的首位作者。
+_l_noen_root = tempfile.mkdtemp(prefix="slcn_col_en_noauthor_")
+make_issue(_l_noen_root)
+_l_noen_report = make_report(_l_noen_root)
+_l_noen_outs = TOC.run(_l_noen_report, _s_en_full, log=lambda _s: None, stamp="COL3")
+_l_noen_en = open(_l_noen_outs[0], encoding="utf-8").read() if len(_l_noen_outs) == 2 else ""
+_l_noen_zh = open(_l_noen_outs[1], encoding="utf-8").read() if len(_l_noen_outs) == 2 else ""
+check("(l8) 缺英文作者边界：仍生成双目录；英文不伪造/不回退中文作者、不打印 ~~~~",
+      len(_l_noen_outs) == 2
+      and "Special Issue: Preference Logic" in _l_noen_en
+      and "On the Example Paradox" in _l_noen_en
+      and "~~~~ " not in _l_noen_en
+      and "陆王" not in _l_noen_en and "王二" not in _l_noen_en
+      and "专辑：偏好逻辑" in _l_noen_zh and "~~~~ " in _l_noen_zh)
 
 print("\n── (n) 双源守卫：内置模板 JSON 夹具 ↔ slcn/content_templates.py ──")
 # 为什么常驻：`content_templates.py` 是生成物，手改它、或改夹具却不重生成，都会让
