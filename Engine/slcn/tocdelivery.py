@@ -417,7 +417,8 @@ def fit_single_page(toc_dir: str, stems: list[tuple[str, str]] | tuple[tuple[str
         if max_total <= 0:
             return counts, (
                 f"{stem}.tex 当前行距 {old_value}（每处约 {base_pt:.2f}pt）"
-                f"已不低于自动适配下限（每处 {floor:.1f}pt），无法再压缩 —— "
+                f"已越过自动适配下限（每处 {floor:.1f}pt，当前更紧），"
+                f"按当前下限无法继续压缩 —— "
                 f"请人工调整该份目录的行距/断行"), fit
 
         attempts = 0

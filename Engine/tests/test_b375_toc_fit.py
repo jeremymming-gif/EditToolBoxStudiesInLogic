@@ -221,9 +221,24 @@ def case_below_floor(root: Path) -> None:
     d = mk_dir(zh_base="-3.5mm", zh_pages=2, en_pages=1)
     fake = FakeCompile({ZH: 80.0}, gaps=8)
     counts, err, fit = TD.fit_single_page(str(d), (("zh", ZH), ("en", EN)), fake)
-    check("(f1) 原因含已不低于自动适配下限/人工",
-          "已不低于自动适配下限" in err and "人工" in err, err[:200])
+    check("(f1) 原因含已越过自动适配下限（当前更紧）/人工",
+          "已越过自动适配下限" in err and "当前更紧" in err and "人工" in err, err[:200])
     check("(f2) 未编译", fake.calls == [])
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def case_below_floor_r3_en(root: Path) -> None:
+    print("\n── (f2) R3 英文形态：继承 -3.05mm 已越过 -6pt 下限，拒绝且不编译 ──")
+    d = mk_dir(en_base="-3.05mm", zh_pages=1, en_pages=2)
+    before = tex_text(d, EN)
+    fake = FakeCompile({EN: 80.0}, gaps=8)
+    counts, err, fit = TD.fit_single_page(str(d), (("zh", ZH), ("en", EN)), fake)
+    check("(f2a) 原因方向正确：已越过/当前更紧/每处 -8.68pt/-6.0pt",
+          "已越过自动适配下限" in err and "当前更紧" in err
+          and "-8.68pt" in err and "-6.0pt" in err, err[:220])
+    check("(f2b) 不编译、英文仍 2 页、原文逐字节不变、明细空",
+          fake.calls == [] and counts.get("en") == 2 and tex_text(d, EN) == before
+          and fit == {}, f"calls={fake.calls} counts={counts} fit={fit}")
     shutil.rmtree(d, ignore_errors=True)
 
 
@@ -381,6 +396,7 @@ def main() -> None:
         case_no_macro(root)
         case_unparsable(root)
         case_below_floor(root)
+        case_below_floor_r3_en(root)
         case_rerun_no_accumulate(root)
         case_compile_fail_restore(root)
         case_multi_stem(root)
