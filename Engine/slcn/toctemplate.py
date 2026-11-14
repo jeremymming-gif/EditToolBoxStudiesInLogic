@@ -612,7 +612,12 @@ def _replace_host_with_optional_break(line: str, host: str) -> str:
     """把栏目行的旧主持人替换成本期主持人；过长时格内分两行（防孤字/裁切）。
 
     返回值同时规范成跨列右对齐形态（见 `_to_multicolumn_host_line`）。
+    已是 multicolumn 的上一代产物必须原样返回：旧式整格正则只认一个收尾 `}`，
+    对 `…{\textit{\large …}}` 会多吃外层 `}`，留下悬空 `{`，二次编译报
+    `File ended while scanning use of \TX@get@body`。
     """
+    if "\\multicolumn" in line:
+        return line
     replacement = _host_cell_content(host)
     # 必须函数式替换：字符串 replacement 会被 re.sub 当转义模板 ——
     # "\newline" 变「真换行 + ewline」（Lead 实测 bug），嵌套 tabular 里的 "\\"

@@ -26,6 +26,7 @@ import tempfile
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ENGINE))
 
 ISSUE_NAME = "2026年第5期(999)"
 GS = "/usr/local/bin/gs"
@@ -253,6 +254,38 @@ def multicolumn_body(line: str) -> str | None:
     return None
 
 
+def run_toc(issue: Path, result_path: Path):
+    proc = subprocess.run(
+        [sys.executable, str(ENGINE / "toc.py"),
+         "--report", str(issue / "信息检查_ANON.txt"),
+         "--place", "--compile",
+         "--result-json", str(result_path)],
+        cwd=str(ENGINE), env=env(), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900)
+    out = (proc.stdout or "") + (proc.stderr or "")
+    result = {}
+    if result_path.is_file():
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except ValueError:
+            result = {}
+    return proc, out, result
+
+
+def host_line_of(text: str) -> str:
+    return next((ln for ln in text.splitlines() if "主持人" in ln), "")
+
+
+def braces_balanced(line: str) -> bool:
+    return line.count("{") == line.count("}")
+
+
+def newest_intermediate(issue: Path) -> Path | None:
+    files = sorted((issue / ".toolbox-tmp").glob("Chinese Content_*.tex"),
+                   key=lambda p: p.stat().st_mtime_ns)
+    return files[-1] if files else None
+
+
 def make_issue(root: Path) -> Path:
     """在临时目录内合成匿名期目录（不读任何外部夹具）。"""
     issue = root / "issue" / ISSUE_NAME
@@ -268,27 +301,16 @@ def make_issue(root: Path) -> Path:
 
 
 def main() -> None:
+    from slcn import toctemplate as TT
+
     with tempfile.TemporaryDirectory(prefix="r3-toc-host-") as tmp:
         issue = make_issue(Path(tmp))
         result_path = Path(tmp) / "result.json"
-        proc = subprocess.run(
-            [sys.executable, str(ENGINE / "toc.py"),
-             "--report", str(issue / "信息检查_ANON.txt"),
-             "--place", "--compile",
-             "--result-json", str(result_path)],
-            cwd=str(ENGINE), env=env(), capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=900)
-        out = (proc.stdout or "") + (proc.stderr or "")
+        proc, out, result = run_toc(issue, result_path)
 
         print("── (a) rc=0、中英 PDF 各 1 页 ──")
         check("(a1) toc.py 生成/编译 rc=0", proc.returncode == 0,
               f"rc={proc.returncode}\n{out[-2000:]}")
-        result = {}
-        if result_path.is_file():
-            try:
-                result = json.loads(result_path.read_text(encoding="utf-8"))
-            except ValueError:
-                result = {}
         toc_dir = issue / "000 Table of Contents"
         zh_tex = toc_dir / "Chinese Content.tex"
         en_tex = toc_dir / "contents.tex"
@@ -346,6 +368,52 @@ def main() -> None:
                   "{@{}>{\\raggedright\\arraybackslash}X@{\\hspace{2em}}"
                   ">{\\raggedleft\\arraybackslash}p{0.26\\textwidth}"
                   "@{\\hspace{1.5em}}r@{}}"), repr(spec_line))
+
+        print("\n── (e) 已是 multicolumn 的主持人行替换幂等 ──")
+        new_form = "&\\multicolumn{2}{@{}r@{}}{\\textit{\\large 主持人：匿名主持人}}"
+        once = TT._replace_host_with_optional_break(new_form, "匿名主持人")
+        twice = TT._replace_host_with_optional_break(once, "匿名主持人")
+        check("(e1) 已是 multicolumn → 原样返回（不吞外层花括号）",
+              once == new_form, repr(once))
+        check("(e2) 连续替换两次 == 替换一次", twice == once,
+              f"once={once!r} twice={twice!r}")
+        check("(e3) 主持人行花括号配对", braces_balanced(once), repr(once))
+
+        print("\n── (f) 第二代：旧式→新式后再生成一次 ──")
+        check("(f0) 第一代由内置模板生成（旧式主持人）",
+              result.get("templateSource") == "内置模板",
+              repr(result.get("templateSource")))
+        result2_path = Path(tmp) / "result2.json"
+        proc2, out2, result2 = run_toc(issue, result2_path)
+        check("(f1) 第二次生成/编译 rc=0", proc2.returncode == 0,
+              f"rc={proc2.returncode}\n{out2[-2000:]}")
+        check(r"(f2) 第二次日志无 File ended while scanning use of \TX@get@body",
+              "File ended while scanning use of \\TX@get@body" not in out2,
+              out2[-2000:])
+        check("(f3) 第二次 result-json 落盘且 pages 1/1",
+              result2_path.is_file()
+              and (result2.get("pages") or {}).get("zh") == 1
+              and (result2.get("pages") or {}).get("en") == 1,
+              f"exists={result2_path.is_file()} pages={result2.get('pages')}")
+        check("(f4) 第二次模板来源=本期成品（继承第一代产物）",
+              result2.get("templateSource") == "本期成品",
+              repr(result2.get("templateSource")))
+        check("(f5) 两次编译后中英 PDF 仍各 1 页",
+              pdf_pages(zh_pdf) == 1 and pdf_pages(en_pdf) == 1,
+              f"zh={pdf_pages(zh_pdf)} en={pdf_pages(en_pdf)}")
+        zh2 = zh_tex.read_text(encoding="utf-8") if zh_tex.is_file() else ""
+        host2 = host_line_of(zh2)
+        check("(f6) 第二代主持人行与第一代完全一致",
+              host2 == host_line and host2.startswith(
+                  "&\\multicolumn{2}{@{}r@{}}{"), f"got={host2!r}")
+        check("(f7) 落位成品的主持人行花括号配对",
+              braces_balanced(host2), repr(host2))
+        tmp_tex = newest_intermediate(issue)
+        tmp_text = (tmp_tex.read_text(encoding="utf-8")
+                    if tmp_tex is not None else "")
+        check("(f8) 第二代中间 tex 的主持人行花括号配对（失败根源不在落位成品）",
+              bool(tmp_text) and braces_balanced(host_line_of(tmp_text)),
+              f"file={tmp_tex} host={host_line_of(tmp_text)!r}")
 
     if _fails:
         print(f"\n失败 {len(_fails)} 项：{_fails}")
