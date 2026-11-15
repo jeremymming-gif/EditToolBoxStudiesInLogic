@@ -20,6 +20,7 @@ from pathlib import Path
 import flet as ft
 
 import main as M  # noqa: F401  （保证 app/ 在 sys.path，与其它壳测试一致）
+from services import engine_bridge as EB
 from services import toc_settings as TS
 from ui import toc as TOC
 
@@ -182,6 +183,19 @@ def _flat_controls(control) -> list:
     return found
 
 
+def _all_texts(control) -> list[str]:
+    """递归收集文本（含 Container.content —— notice_bar 的文案在 content 里）。"""
+    found: list[str] = []
+    if isinstance(control, ft.Text):
+        found.append(str(control.value))
+    content = getattr(control, "content", None)
+    if content is not None and not isinstance(content, str):
+        found.extend(_all_texts(content))
+    for child in getattr(control, "controls", None) or []:
+        found.extend(_all_texts(child))
+    return found
+
+
 def test_album_kind_includes_all_articles_without_writing_selection(tmp_path):
     report, _ = _write_report(tmp_path, ARTICLES)
     panel, _, page = _album_panel(tmp_path)
@@ -330,3 +344,103 @@ def test_no_column_mode_hides_checklist_and_keeps_stale_selection_harmless(tmp_p
     assert any("本期无栏目" in value for value in texts), texts
     assert panel.column_issue() == (False, "")
     assert panel.selected == ["Jingru_Kou"], "隐藏旧选择，但专栏历史不清空"
+
+
+# ── 2026-11-15 空报告修复 B1/B3：保护反例 ─────────────────────────────────
+# 合法零选择（专栏首进入 / 主动清空）已由 test_column_first_entry_without_draft_
+# does_not_default_select_all 与 test_toggle_select_all_and_clear_update_selected
+# 锁住；这里只补「有效报告剔除过期条目」「空报告不自动清空且仍可手动删」
+# 「换报告恢复」「异步预览 0 篇」「专辑空报告文案」。
+def test_valid_report_normalizes_and_drops_stale_selection(tmp_path):
+    report, _ = _write_report(tmp_path, ARTICLES)
+    panel, _, _ = _make_panel(tmp_path, settings={"columnKind": "专栏"},
+                              selected=["01 Jingru_Kou", "99 Ghost_Author", "Yanjun_Li"])
+
+    panel._ensure_articles(str(report))
+
+    assert panel.selected == ["Jingru_Kou", "Yanjun_Li"], "过期条目必须剔除、全名映射到 folderName"
+    assert panel._dirty is True, "剔除后要写回，脏名单不得带进生成"
+
+
+def test_empty_report_keeps_selection_allows_manual_delete_and_caches(tmp_path):
+    report, _ = _write_report(tmp_path, [])
+    panel, _, page = _make_panel(tmp_path, settings={"columnKind": "专栏"},
+                                 selected=["01 Jingru_Kou"])
+
+    panel._ensure_articles(str(report))
+
+    assert panel.available == []
+    assert panel.selected == ["01 Jingru_Kou"], "空报告不得自动清空既有栏目选择"
+    assert panel._dirty is False, "只读确认 0 篇不得标脏"
+    marks = [fields for event, fields in page.marks if event == "toc_report_empty"]
+    assert len(marks) == 1 and marks[0]["articles"] == 1
+    assert not any(event == "toc_articles_loaded" for event, _ in page.marks)
+
+    controls = panel._editor_controls()
+    texts = [value for control in controls for value in _all_texts(control)]
+    assert any("当前报告没有篇目（0 篇）" in v and "未被自动清空" in v for v in texts), texts
+    assert not any("先运行第 1 步" in v for v in texts), "0 篇已完成，不得劝用户重跑第 1 步"
+
+    # 合法手动编辑仍可用：删除历史行照常生效并标脏。
+    panel._remove(0)
+    assert panel.selected == [] and panel._dirty is True
+
+    # 同一报告重复进入不重复报标记（缓存生效）。
+    page.marks.clear()
+    panel._ensure_articles(str(report))
+    assert [e for e, _ in page.marks] == []
+
+
+def test_switching_from_empty_to_valid_report_recovers_list(tmp_path):
+    empty_dir = tmp_path / "空期"
+    valid_dir = tmp_path / "有稿"
+    empty_dir.mkdir()
+    valid_dir.mkdir()
+    empty_report, _ = _write_report(empty_dir, [])
+    valid_report, _ = _write_report(valid_dir, ARTICLES)
+    panel, _, page = _make_panel(tmp_path, settings={"columnKind": "专栏"},
+                                 selected=["Jingru_Kou"])
+
+    panel._ensure_articles(str(empty_report))
+    assert panel._report_empty == str(empty_report)
+
+    page.set_field("toc_report", str(valid_report))
+    panel._ensure_articles(str(valid_report))
+
+    assert panel._report_empty == "", "换到有效报告必须清掉 0 篇缓存"
+    assert [row["name"] for row in panel.available] == ["Jingru_Kou", "Yanjun_Li"]
+    assert panel.selected == ["Jingru_Kou"]
+
+
+def test_async_preview_zero_articles_keeps_selection(tmp_path, monkeypatch):
+    empty_dir = tmp_path / "空期"
+    empty_dir.mkdir()
+    report, _ = _write_report(empty_dir, [])
+    panel, _, page = _make_panel(tmp_path, settings={"columnKind": "专栏"},
+                                 selected=["01 Jingru_Kou"])
+    page.set_field("issue_dir", str(empty_dir))
+    page.set_field("toc_report", str(report))
+
+    def fake_read(call, **kwargs):  # 经 asyncio.to_thread 调用，必须是同步实现
+        return {"ok": True, "json": {"articles": []}}
+
+    monkeypatch.setattr(EB, "read_json_command", fake_read)
+    asyncio.run(panel._load_articles())
+
+    assert panel.available == []
+    assert panel.selected == ["01 Jingru_Kou"], "异步预览 0 篇不得清空选择"
+    assert panel._report_empty == str(report)
+    assert any(event == "toc_report_empty" for event, _ in page.marks)
+
+
+def test_album_with_empty_report_says_nothing_to_include(tmp_path):
+    report, _ = _write_report(tmp_path, [])
+    panel, _, _ = _album_panel(tmp_path)
+    panel._ensure_articles(str(report))
+
+    controls = panel._editor_controls()
+    flat = [c for control in controls for c in _flat_controls(control)]
+    texts = [value for control in controls for value in _all_texts(control)]
+    assert any("当前报告没有篇目（0 篇）" in v for v in texts), texts
+    assert not any("运行第 1 步载入篇目" in v for v in texts), "0 篇已完成，不得劝重跑"
+    assert not any(isinstance(c, ft.Checkbox) for c in flat), "专辑仍不显示逐篇勾选"

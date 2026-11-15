@@ -27,6 +27,9 @@ INFO_COLUMNS = (
     "字号/行距", "第一作者", "中文标题",
 )
 EMPTY_INFO = "（还没检查：选一期的目录，点「运行」）"
+#: 已完成但报告解析出 0 篇：不能与「还没检查」同形，也不诱导重跑刚完成的检查。
+EMPTY_DONE_INFO = ("检查完成 · 0 篇：本期没有识别到编号篇目（如「01 作者」这类子目录）；"
+                   "报告已保留，可直接打开核对。")
 UNREADABLE_INFO = "报告已生成，但结构化数据读不回；表格留空，可直接打开报告。"
 #: 非 0 退出码的统一后续建议（用户可执行；不要求“发给技术人员”）。
 FAIL_HINT = "请查看上方输出；常见原因是 TeX 工具链未装好或路径含特殊字符，可到「设置 → 环境检查」看修复建议。"
@@ -116,12 +119,19 @@ def inconsistencies(payload, articles: list[dict] | None = None) -> list[str]:
     return notes
 
 
+def _has_payload(payload) -> bool:
+    """本轮是否有可展示的结果载荷：None/{} = 没跑；`[]` = 跑完但 0 篇。"""
+    return payload is not None and payload != {}
+
+
 def info_summary(payload, *, articles: list[dict] | None = None,
                  notes: list[str] | None = None) -> str:
     """检查结果摘要（PC-005/006/028/029），与 Tk 版三种句式一致。"""
     arts = articles if articles is not None else normalize_articles(payload)
     if not arts:
-        return EMPTY_INFO
+        # payload 非空 = 本轮确实跑完且报告为 0 篇；与「从未运行」分开说。
+        # 裸 list（旧外壳/旧引擎）同样是完成态：[] 不能按 falsy 当「没跑」。
+        return EMPTY_DONE_INFO if _has_payload(payload) else EMPTY_INFO
     notes = notes if notes is not None else inconsistencies(payload, arts)
     if notes:
         head = f"共 {len(arts)} 篇；发现 {len(notes)} 处需要核对：" + "；".join(notes[:3])
@@ -137,7 +147,7 @@ def info_level(payload, articles: list[dict] | None = None,
                notes: list[str] | None = None) -> str:
     arts = articles if articles is not None else normalize_articles(payload)
     if not arts:
-        return "idle"
+        return "empty" if _has_payload(payload) else "idle"
     notes = notes if notes is not None else inconsistencies(payload, arts)
     return "warn" if notes else "done"
 
@@ -393,6 +403,11 @@ class InfoCheckCard:
         self.report = ""
         self.articles: list[dict] = []
         self.notes: list[str] = []
+        # 结果区据此区分「未运行 / 运行中 / 失败 / 读不回 / 完成(含 0 篇)」；
+        # payload 为空 dict 表示本轮还没有可展示的结构化结果。
+        self.payload: dict = {}
+        self.state = "idle"
+        self.code: int | None = None
         self.chip = C.status_chip("还没检查", t, "idle")
         # 摘要/警告初始为空且不渲染：空 Text 带 max_lines 在 flet 1.0.5 里仍按
         # 最大行数占高（P1-9 实测 192/136 px），空态会凭空多出半屏空白。
@@ -440,6 +455,7 @@ class InfoCheckCard:
 
     def busy(self) -> None:
         self.reset()
+        self.state = "running"
         self._set_chip("运行中", "running")
         self.summary.value = "运行中 · 扫描整期 tex…（完成后出表格）"
         self.summary.color = self.t.palette.text_muted
@@ -451,6 +467,9 @@ class InfoCheckCard:
         self.report = ""
         self.articles = []
         self.notes = []
+        self.payload = {}
+        self.state = "idle"
+        self.code = None
         self._set_chip("还没检查", "idle")
         self.chip.visible = True
         self.summary.value = ""
@@ -464,12 +483,19 @@ class InfoCheckCard:
 
     def show(self, payload, *, report: str = "") -> None:
         self.report = report or ""
+        self.payload = payload if isinstance(payload, dict) else (
+            {"articles": payload} if isinstance(payload, list) else {})
         self.articles = normalize_articles(payload)
-        self.notes = inconsistencies(payload, self.articles)
-        self.summary.value = info_summary(payload, articles=self.articles, notes=self.notes)
+        self.notes = inconsistencies(self.payload, self.articles)
+        # 用规范化后的 self.payload 判定：裸 list `[]` 也是「跑完 0 篇」，
+        # 不能因为原参数 falsy 就退回「还没检查」。
+        self.summary.value = info_summary(self.payload, articles=self.articles, notes=self.notes)
         self.summary.color = self.t.palette.text
-        state = info_level(payload, self.articles, self.notes)
-        self._set_chip({"done": "一致", "warn": "需要核对", "idle": "还没检查"}[state], state)
+        state = info_level(self.payload, self.articles, self.notes)
+        self.state = state
+        self.code = 0
+        self._set_chip({"done": "一致", "warn": "需要核对", "idle": "还没检查",
+                        "empty": "已检查 · 0 篇"}[state], state)
         self.chip.visible = True
         self.warning.visible = False
         self.table_box.controls = [build_info_table(self.articles, self.t)] if self.articles else []
@@ -485,6 +511,9 @@ class InfoCheckCard:
         self.report = report or ""
         self.articles = []
         self.notes = []
+        self.payload = {}
+        self.state = "unreadable"
+        self.code = None
         self._set_chip("读不回", "warn")
         self.chip.visible = True
         self.summary.value = "表格留空：报告已生成，但结构化数据没读到。"
@@ -501,6 +530,9 @@ class InfoCheckCard:
     def show_failed(self, code: int) -> None:
         self.report = ""
         self.articles = []
+        self.payload = {}
+        self.state = "failed"
+        self.code = int(code)
         self._set_chip("失败", "error")
         self.chip.visible = True
         self.summary.value = f"失败 · 检查未完成（退出码 {code}）。{FAIL_HINT}"

@@ -141,6 +141,33 @@ def articles_from_report(report: str) -> list[dict]:
     return []
 
 
+def report_is_empty(report: str) -> bool:
+    """报告同 stem 的 JSON 读得回且 `articles` 明确为空 → 确认为 0 篇。
+
+    只认报告自己的同名 JSON（不拿 glob 兜底去认别的报告）；缺文件、坏 JSON、
+    结构不认识一律 False——「0 篇」不能从读不到推断。
+    """
+    path = str(report or "").strip()
+    if not path:
+        return False
+    candidate = Path(path)
+    json_path = (candidate if candidate.suffix.lower() == ".json"
+                 else candidate.with_suffix(".json"))
+    try:
+        if not json_path.is_file():
+            return False
+        import json
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if isinstance(data, dict):
+        articles = data.get("articles")
+        return isinstance(articles, list) and not articles
+    if isinstance(data, list):
+        return not data
+    return False
+
+
 
 def preview_lines(payload: dict, *, column_kind: str = "",
                   report_articles: int | None = None) -> list[str]:
@@ -311,6 +338,8 @@ class TocPanel:
         # 批 123（用户 m02698）：专栏篇目勾选清单 = 当前报告已加载到哪个报告 + 是否在异步加载。
         self._articles_for = ""
         self._articles_loading = False
+        # 已确认报告解析出 0 篇（同 stem JSON 明确 articles=[]）的报告路径。
+        self._report_empty = ""
 
     # ── 参数区 ─────────────────────────────────────────────────────────
     def params(self) -> list:
@@ -764,6 +793,7 @@ class TocPanel:
         """真实生成路径也把篇目清单载入面板（此前只死在 _preview_task 里）。
 
         先同步读《信息检查》旁边的 JSON（无需跑引擎）；读不到再异步回退旧预览接口。
+        报告确认 0 篇（JSON 明确 articles=[]）时只提示、保留既有 selected，不自动清空。
         """
         report = str(report or "")
         if report and report == getattr(self, "_articles_for", "") and self.available:
@@ -771,8 +801,12 @@ class TocPanel:
                 self._mark_dirty()
             return
         self._articles_for = report
+        if report and report == getattr(self, "_report_empty", ""):
+            self.available = []
+            return
         rows = articles_from_report(report)
         if rows:
+            self._report_empty = ""
             self.available = rows
             self._normalize_selected()
             if self._apply_album_default():
@@ -780,6 +814,13 @@ class TocPanel:
             self.page.mark("toc_articles_loaded", report=report, count=len(rows))
             return
         self.available = []
+        if report and report_is_empty(report):
+            # B1：确认为 0 篇时明确告知；selected 原样保留（编辑/删除/主动清空仍合法）。
+            self._report_empty = report
+            self.page.mark("toc_report_empty", report=report,
+                           articles=len(self.selected))
+            return
+        self._report_empty = ""
         runner = getattr(getattr(self, "page", None), "page", None)
         run_task = getattr(runner, "run_task", None)
         if report and run_task is not None and not getattr(self, "_articles_loading", False):
@@ -961,7 +1002,13 @@ class TocPanel:
             rows.append(self._article_checklist())
         elif kind == "专栏":
             # 专栏但篇目还没载入：保留历史勾选的手动增删（专栏专属，见用户决定(b)）。
-            if not self.selected:
+            # B1：报告确认 0 篇时先说明「选择未被自动清空」，不误报「还没运行第 1 步」。
+            empty_report = str(getattr(self, "_report_empty", "") or "")
+            if empty_report:
+                rows.append(C.notice_bar(
+                    "当前报告没有篇目（0 篇）：栏目选择未被自动清空；"
+                    "下面仍可手动编辑/删除，或主动清空。", t, "warn"))
+            if not self.selected and not empty_report:
                 rows.append(C.text("栏目篇目：尚未选择。先运行第 1 步「检查 tex 信息」，篇目清单会自动载入。",
                                    t, "caption", t.palette.text_faint))
             for index, article in enumerate(self.selected):
@@ -979,14 +1026,19 @@ class TocPanel:
                     C.danger_button("删除", lambda e, i=index: self._remove(i), t,
                                     icon="DELETE_OUTLINE"),
                 ]))
-            if not self.selected:
+            if not self.selected and not empty_report:
                 rows.append(C.text("还没有篇目清单：先运行第 1 步「检查 tex 信息」生成报告，篇目会自动载入。",
                                    t, "caption", t.palette.text_faint))
         elif kind == "专辑":
             # 2026-11-06 用户决定(c)：专辑 = 当期全部篇目自动收入；不显示逐篇勾选/手动增删。
             count = len(self.available)
-            note = (f"本期全部 {count} 篇自动收入（自动，无需勾选）。" if count
-                    else "本期全部篇目自动收入；运行第 1 步载入篇目后这里显示数量。")
+            if count:
+                note = f"本期全部 {count} 篇自动收入（自动，无需勾选）。"
+            elif str(getattr(self, "_report_empty", "") or ""):
+                # B1：报告确认 0 篇时如实告知，不再劝用户「运行第 1 步载入」。
+                note = "当前报告没有篇目（0 篇）：本期没有可自动收入的篇目。"
+            else:
+                note = "本期全部篇目自动收入；运行第 1 步载入篇目后这里显示数量。"
             rows.append(C.text(note, t, "caption", t.palette.text_muted))
         else:
             # 2026-11-06 用户决定(a)：本期无栏目 → 目录不带栏目信息，勾选/手动增删全部隐藏。
@@ -1156,10 +1208,18 @@ class TocPanel:
             return
         self.available = article_rows(result.get("json") or {})
         if self.available:
+            self._report_empty = ""
             self._articles_for = self._report()
             self._normalize_selected()
         if not self.available:
-            self._notice("篇目清单为空：先运行「检查 tex 信息」生成报告", "warn")
+            report = self._report()
+            if report and report_is_empty(report):
+                self._report_empty = report
+                self.page.mark("toc_report_empty", report=report,
+                               articles=len(self.selected))
+                self._notice("当前报告没有篇目（0 篇）：栏目选择未被自动清空。", "warn")
+            else:
+                self._notice("篇目清单为空：先运行「检查 tex 信息」生成报告", "warn")
 
     async def _generate_task(self) -> None:
         report = self._report()

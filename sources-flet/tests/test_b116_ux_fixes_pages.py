@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import flet as ft
 
 from ui import assembly as ASM
+from ui import checks as CK
 from ui import pages as P
 from ui.components import danger_button
 
@@ -171,6 +172,69 @@ def test_issue_empty_info_without_issue_dir_offers_picker():
     btn.on_click(None)
     assert calls and calls[0][0][2] == "dir"
     assert calls[0][0][3] == "issue_dir"
+
+
+def test_issue_info_zero_article_result_keeps_report_entry():
+    """空报告修复 A1：0 篇完成态要给出报告入口与判据，不再显示「还没检查结果」。"""
+    page, _root = _build_issue()
+    page.set_field("issue_dir", "/tmp/期目录")
+    page._info_payload = {"articles": []}
+    page._info_articles = []
+    page._info_state = "empty"
+    page._info_report = "/tmp/期目录/信息检查2026_11_15.txt"
+
+    result = page._info_result()
+    labels = _texts(result)
+
+    assert any("检查完成 · 0 篇" in value for value in labels), labels
+    assert any("报告已生成并保留" in value for value in labels), labels
+    assert not any("还没有检查结果" in value for value in labels), "0 篇完成不得退回未运行"
+    assert any("2026_11_15" in value for value in labels), "必须显示报告路径"
+    opened = [c for c in _walk(result) if isinstance(c, ft.OutlinedButton)
+              and "打开报告" in _text(c)]
+    assert opened and opened[0].disabled is False
+
+
+def test_issue_info_failed_running_unreadable_states_override_stale_result():
+    page, _root = _build_issue()
+    page.set_field("issue_dir", "/tmp/期目录")
+    page._info_payload = {"articles": []}  # 旧完成态不得盖住失败/运行说明
+    page._info_state = "failed"
+    page._info_code = 2
+    labels = _texts(page._info_result())
+    assert any("本次检查未完成（退出码 2）" in value for value in labels), labels
+    assert not any("检查完成 · 0 篇" in value for value in labels)
+
+    page._info_state = "running"
+    labels = _texts(page._info_result())
+    assert any("正在检查…" in value for value in labels), labels
+
+    page._info_state = "unreadable"
+    page._info_report = "/tmp/期目录/信息检查.txt"
+    result = page._info_result()
+    labels = _texts(result)
+    assert any(CK.UNREADABLE_INFO in value for value in labels), labels
+    assert any("打开报告" in _text(c) for c in _walk(result)
+               if isinstance(c, ft.OutlinedButton))
+
+
+def test_issue_switch_clears_info_completion_state():
+    """A1：换期不得沿用旧完成态（含 0 篇完成、失败码与报告路径）。"""
+    page, _root = _build_issue()
+    page.set_field("issue_dir", "/tmp/旧期")
+    page._info_payload = {"articles": []}
+    page._info_articles = []
+    page._info_notes = ["旧项"]
+    page._info_state = "empty"
+    page._info_code = 2
+    page._info_report = "/tmp/旧期/信息检查.txt"
+
+    page._reset_issue_runtime()
+
+    assert page._info_state == "idle" and page._info_code is None
+    assert page._info_payload is None and page._info_articles == []
+    assert page._info_report == "" and page._info_notes == []
+    assert page._info.state == "idle", "卡片自身也要回到未运行"
 
 
 def test_runall_dialog_tight_and_no_unchecked_05_warning():

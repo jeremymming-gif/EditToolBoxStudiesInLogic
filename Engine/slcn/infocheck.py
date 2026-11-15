@@ -213,11 +213,23 @@ def _swift_json(value, indent: int = 0) -> str:
 
 # ── B-285a：报告摘要（四类报告同一套读法：结论 / 计数 / top5 / 折叠明细）──
 
+def _conclusion(articles: list[ArticleInfo], inconsistencies: list[str]) -> str:
+    """0 篇不构成「一致」：没有可比对的篇目，结论保持中性。
+
+    只有「0 篇且没有任何不一致项」才中性；已有不一致项时仍如实报数量
+    （`_summary_md` 允许单独喂不一致项，旧口径不能破）。
+    """
+    if not articles and not inconsistencies:
+        return "未发现篇目"
+    if not inconsistencies:
+        return "✅ 全部一致"
+    return f"❗ 有 {len(inconsistencies)} 项不一致"
+
+
 def _summary_dict(articles: list[ArticleInfo], inconsistencies: list[str]) -> dict:
     """`.json` 里新增的 `summary` 键（数值与摘要头同源，不另算一套）。"""
     return {
-        "conclusion": ("✅ 全部一致" if not inconsistencies
-                       else f"❗ 有 {len(inconsistencies)} 项不一致"),
+        "conclusion": _conclusion(articles, inconsistencies),
         "articles": len(articles),
         "hasTeX": sum(1 for a in articles if a.hasTeX),
         "hasPDF": sum(1 for a in articles if a.hasPDF),
@@ -235,8 +247,7 @@ def _summary_md(articles: list[ArticleInfo], inconsistencies: list[str]) -> str:
         details.append(f"`{a.folderName}`：{title}"
                        f"（声明 {a.pages or '—'} 页 / PDF {actual} 页）{flag}")
     header = _rh.render(
-        conclusion=("✅ 全部一致" if not inconsistencies
-                    else f"❗ 有 {len(inconsistencies)} 项不一致"),
+        conclusion=_conclusion(articles, inconsistencies),
         counts=(("篇数", len(articles)),
                 ("有 tex", sum(1 for a in articles if a.hasTeX)),
                 ("有 pdf", sum(1 for a in articles if a.hasPDF)),

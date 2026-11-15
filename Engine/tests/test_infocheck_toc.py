@@ -147,6 +147,32 @@ check("(a) json 里**空字段省略**（不写 null）——与 Swift 的 encod
 check("(a) json 可被正常解析且字段齐全",
       json.loads(raw_json)["articles"][0]["folder"] == "01 Ning_Wang")
 
+print("\n── (a2) 空期（0 篇）：摘要中性，旧契约（txt/退出码/最后一行/JSON 结构）不动 ──")
+# 2026-11-15 空报告修复 A2：0 篇不是「全部一致」——没有可比对的篇目。
+_empty_issue = tempfile.mkdtemp(prefix="slcn_ic_empty_")
+_rep_empty = IC.process_folders(_empty_issue, stamp="EMPTY")
+check("(a2) 0 篇：txt 仍为 0 字节（旧契约冻结不变）",
+      os.path.getsize(os.path.join(_empty_issue, "信息检查EMPTY.txt")) == 0)
+check("(a2) 0 篇：json summary.conclusion = 「未发现篇目」（空输入不冒充一致）",
+      json.load(open(os.path.join(_empty_issue, "信息检查EMPTY.json"),
+                     encoding="utf-8"))["summary"]["conclusion"] == "未发现篇目")
+check("(a2) 0 篇：_摘要.md 头部同为中性结论",
+      "未发现篇目" in open(os.path.join(_empty_issue, "信息检查EMPTY_摘要.md"),
+                          encoding="utf-8").read())
+check("(a2) 非空输入结论保持原样（一致 / N 项不一致）",
+      IC._conclusion([art], []) == "✅ 全部一致"
+      and IC._conclusion([art], ["x"]) == "❗ 有 1 项不一致"
+      and _rep_empty.articles == [])
+_empty_cli_dir = tempfile.mkdtemp(prefix="slcn_ic_empty_cli_")
+_r_empty = subprocess.run([sys.executable, str(ENGINE / "infocheck.py"),
+                           "--folder", _empty_cli_dir],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", env=os.environ, cwd=ENGINE)
+_empty_lines = [ln for ln in _r_empty.stdout.strip().splitlines() if ln.strip()]
+check("(a2) 0 篇 CLI：退出码 0、最后一行仍以「完成。检查 0 篇」开头（外壳契约不变）",
+      _r_empty.returncode == 0 and bool(_empty_lines)
+      and _empty_lines[-1].startswith("完成。检查 0 篇"), f"rc={_r_empty.returncode}")
+
 print("\n── (b) 三处「上游会出错」的修正 ──")
 # ① 第一作者：关键词在文件末尾（下一行不存在）→ 留空不崩
 edge = tempfile.mkdtemp(prefix="slcn_edge_")
