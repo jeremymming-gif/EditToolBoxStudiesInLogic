@@ -32,6 +32,27 @@ def _w(t: Tokens, key: str):
     return getattr(ft.FontWeight, t.weight(key))
 
 
+def tstyle(t: Tokens, *, font_family: str | None = None,
+           font_family_fallback: list[str] | tuple[str, ...] | None = None,
+           **kwargs) -> ft.TextStyle:
+    """显式 TextStyle 的唯一出口：补 Windows 正文族 + 回退（B-Windows）。
+
+    Flet 1.0.5 的 Theme.font_family 不会穿透显式 TextStyle（按钮/输入框/下拉等），
+    因此这些样式必须自己带族。显式 font_family / font_family_fallback 优先；
+    mac / linux 两者都不带，保持平台默认；等宽调用方显式传 mono 族即可。
+    """
+    explicit_family = font_family is not None
+    if font_family is None:
+        font_family = t.font_family
+    if font_family:
+        kwargs["font_family"] = font_family
+        if font_family_fallback is not None:
+            kwargs["font_family_fallback"] = list(font_family_fallback)
+        elif not explicit_family and t.font_fallback:
+            kwargs["font_family_fallback"] = list(t.font_fallback)
+    return ft.TextStyle(**kwargs)
+
+
 def _pad(t: Tokens, left: float = 0, top: float = 0, right: float = 0, bottom: float = 0) -> ft.Padding:
     return ft.Padding(left=t.px(left), top=t.px(top), right=t.px(right), bottom=t.px(bottom))
 
@@ -246,19 +267,22 @@ def text(value: str, t: Tokens, size: str = "body", color: str | None = None,
          weight: str = "regular", *, role: str | None = None, **kwargs) -> ft.Text:
     """唯一的文字出口：给了 role 就用 tokens 里的字号+字重（忽略 size/weight）。"""
     font_family = kwargs.pop("font_family", None)
+    explicit_family = font_family is not None
     if role is not None:
         size, weight = t.text_role(role)
         if font_family is None and role in MONO_ROLES:
             font_family = t.mono_family
+    if font_family is None:
+        font_family = t.font_family
     if font_family:
         kwargs["font_family"] = font_family
         # Flet 的 font_family 只收单个族名；回退必须显式给（批 112 GUI-07）。
         if font_family == t.mono_family:
             kwargs.setdefault("font_family_fallback", list(t.mono_fallback))
-    elif t.font_fallback:
-        # Windows 正文：主题已是 Microsoft YaHei UI，文字控件带同类回退（B-Windows）。
-        # 调用方显式 font_family_fallback 优先，setdefault 不覆盖。
-        kwargs.setdefault("font_family_fallback", list(t.font_fallback))
+        elif not explicit_family and t.font_fallback:
+            # Windows 正文：主题已是 Microsoft YaHei UI，文字控件带同类回退（B-Windows）。
+            # 调用方显式 font_family_fallback 优先，setdefault 不覆盖。
+            kwargs.setdefault("font_family_fallback", list(t.font_fallback))
     return ft.Text(
         value, size=t.font(size), color=color or t.palette.text,
         weight=_w(t, weight), **kwargs,
@@ -621,7 +645,7 @@ def _button_style(t: Tokens) -> ft.ButtonStyle:
     这里再显式给四个按钮补 text_style/icon_size，保证任何主题/版本下都同源缩放。
     """
     return ft.ButtonStyle(
-        text_style=ft.TextStyle(size=t.font("body"), weight=ft.FontWeight.W_500),
+        text_style=tstyle(t, size=t.font("body"), weight=ft.FontWeight.W_500),
         icon_size=t.px(14),
         shape=ft.RoundedRectangleBorder(radius=t.radius("control")),
         padding=ft.Padding(left=t.px(10), top=0, right=t.px(10), bottom=0),
@@ -773,10 +797,11 @@ def text_field(t: Tokens, *, value: str = "", hint_text: str | None = None,
     field = ft.TextField(
         value=value,
         hint_text=hint_text,
-        hint_style=ft.TextStyle(size=size, color=t.palette.text_faint),
+        hint_style=tstyle(t, size=size, color=t.palette.text_faint),
         text_size=size,
-        text_style=ft.TextStyle(size=size, color=t.palette.text,
-                                font_family=t.mono_family if mono else None),
+        text_style=tstyle(t, size=size, color=t.palette.text,
+                          font_family=t.mono_family if mono else None,
+                          font_family_fallback=(list(t.mono_fallback) if mono else None)),
         text_align=text_align or ft.TextAlign.LEFT,
         height=None if multiline else t.control_h(),
         min_lines=min_lines if multiline else 1,
@@ -979,8 +1004,8 @@ class Select(ft.PopupMenuButton):
         self._callback = on_select
         self._options: list[ft.DropdownOption] = []
         self._value = ""
-        self._value_text = ft.Text(
-            "", size=t.font("body"), color=t.palette.text, max_lines=1,
+        self._value_text = text(
+            "", t, "body", color=t.palette.text, max_lines=1,
             overflow=ft.TextOverflow.ELLIPSIS, no_wrap=True, expand=True)
         chrome = ft.Container(
             height=t.control_h(),
@@ -1062,7 +1087,6 @@ class Select(ft.PopupMenuButton):
     def _rebuild_items(self) -> None:
         if not hasattr(self, "_options"):
             return
-        body = self.t.font("body")
         self.items = [
             ft.PopupMenuItem(
                 height=self.t.control_h(),
@@ -1072,8 +1096,8 @@ class Select(ft.PopupMenuButton):
                     height=self.t.control_h(),
                     padding=_pad(self.t, 10, 0, 10, 0),
                     alignment=ft.Alignment.CENTER_LEFT,
-                    content=ft.Text(str(option.text), size=body,
-                                    color=self.t.palette.text),
+                    content=text(str(option.text), self.t, "body",
+                                 color=self.t.palette.text),
                 ),
                 on_click=self._pick(str(option.key)),
             )
@@ -1122,11 +1146,11 @@ def _apply_floating(field: ft.TextField, t: Tokens, label: str, *, hint: str | N
                     width: float | None = None, expand: bool | None = None) -> ft.TextField:
     p = t.palette
     field.label = label
-    field.label_style = ft.TextStyle(size=t.font("small"), color=p.text_muted)
+    field.label_style = tstyle(t, size=t.font("small"), color=p.text_muted)
     field.align_label_with_hint = True
     if hint and not field.hint_text:
         field.hint_text = hint
-    field.hint_style = ft.TextStyle(size=t.font("body"), color=p.text_faint)
+    field.hint_style = tstyle(t, size=t.font("body"), color=p.text_faint)
     field.height = t.px(48)
     field.filled = False
     field.fill_color = None
@@ -1137,7 +1161,7 @@ def _apply_floating(field: ft.TextField, t: Tokens, label: str, *, hint: str | N
     field.dense = False
     field.content_padding = ft.Padding(left=t.px(12), top=t.px(16), right=t.px(8), bottom=t.px(10))
     field.text_size = t.font("body")
-    field.text_style = ft.TextStyle(size=t.font("body"), color=p.text)
+    field.text_style = tstyle(t, size=t.font("body"), color=p.text)
     field.cursor_color = p.accent
     if width is not None:
         field.width = width
@@ -1168,9 +1192,9 @@ def floating_field(t: Tokens, label: str, *, value: str = "", hint: str | None =
         on_change=on_change,
         on_blur=on_blur,
         error=error,
-        error_style=ft.TextStyle(size=t.font("small"), color=p.error),
+        error_style=tstyle(t, size=t.font("small"), color=p.error),
         input_filter=input_filter,
-        hint_style=ft.TextStyle(size=t.font("body"), color=p.text_faint),
+        hint_style=tstyle(t, size=t.font("body"), color=p.text_faint),
         **kwargs,
     )
     field = _apply_floating(field, t, label, hint=hint, width=width, expand=expand)
@@ -1435,7 +1459,7 @@ def switch(t: Tokens, *, value: bool = False, on_change=None, disabled: bool = F
         thumb_color=thumb,
         track_color=track,
         label=label if labels else None,
-        label_text_style=ft.TextStyle(size=t.font("small"), color=p.text_muted),
+        label_text_style=tstyle(t, size=t.font("small"), color=p.text_muted),
         **kwargs,
     )
 

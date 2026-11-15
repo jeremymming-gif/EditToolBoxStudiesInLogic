@@ -859,7 +859,7 @@ class TocPanel:
             controls: list[ft.Control] = [
                 ft.Checkbox(
                     label=name, value=self._is_article_selected(name),
-                    label_style=ft.TextStyle(size=t.font("small"), color=t.palette.text),
+                    label_style=C.tstyle(t, size=t.font("small"), color=t.palette.text),
                     on_change=lambda e, n=name: self._toggle_article(
                         n, bool(e.control.value)),
                 ),

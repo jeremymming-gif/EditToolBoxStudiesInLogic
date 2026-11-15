@@ -1,7 +1,7 @@
 """B-Windows：Windows 正文族与回退（2026-11-15）。
 
-tokens 在 import 期按 sys.platform 定值；这里用 importlib.reload + monkeypatch
-在无 GUI 下验证三个平台分支，以及 components.text 唯一出口的注入规则：
+tokens 在 import 期按 sys.platform 定值；这里用「独立加载一份 tokens 模块」的方式
+在无 GUI 下验证三个平台分支，以及 components.text / tstyle 的注入规则：
 
 - win32 正文族 = "Microsoft YaHei UI"，显式回退 = ("Microsoft YaHei",)；
 - macOS / Linux 正文族仍为 None，不注入回退；
@@ -10,8 +10,9 @@ tokens 在 import 期按 sys.platform 定值；这里用 importlib.reload + monk
 """
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -20,22 +21,23 @@ from ui import tokens as T
 
 
 @pytest.fixture
-def reload_tokens(monkeypatch):
-    """按需重载 tokens；teardown 恢复真实平台并重载，避免污染其它测试。"""
-    original = sys.platform
-
-    def _reload(platform: str):
+def load_tokens(monkeypatch):
+    """按平台独立加载 tokens，不 reload ui.tokens，避免换掉全局单例污染其它测试。"""
+    def _load(platform: str):
         monkeypatch.setattr(sys, "platform", platform)
-        return importlib.reload(T)
+        name = f"_tokens_platform_{platform}"
+        spec = importlib.util.spec_from_file_location(name, Path(T.__file__))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
 
-    yield _reload
-    monkeypatch.setattr(sys, "platform", original)
-    importlib.reload(T)
+    return _load
 
 
-def test_windows_body_font_and_fallback(reload_tokens) -> None:
-    reload_tokens("win32")
-    t = T.Tokens()
+def test_windows_body_font_and_fallback(load_tokens) -> None:
+    tokens = load_tokens("win32")
+    t = tokens.Tokens()
     assert t.font_family == "Microsoft YaHei UI"
     assert t.font_fallback == ("Microsoft YaHei",)
     # 单族名：Flet 的 font_family 不认逗号串（批 112 GUI-07）。
@@ -43,9 +45,9 @@ def test_windows_body_font_and_fallback(reload_tokens) -> None:
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_non_windows_keeps_system_default(reload_tokens, platform) -> None:
-    reload_tokens(platform)
-    t = T.Tokens()
+def test_non_windows_keeps_system_default(load_tokens, platform) -> None:
+    tokens = load_tokens(platform)
+    t = tokens.Tokens()
     assert t.font_family is None
     assert t.font_fallback == ()
     body = C.text("正文", t)
@@ -53,18 +55,18 @@ def test_non_windows_keeps_system_default(reload_tokens, platform) -> None:
     assert body.font_family_fallback is None
 
 
-def test_text_injects_windows_body_fallback(reload_tokens) -> None:
-    reload_tokens("win32")
-    t = T.Tokens()
+def test_text_injects_windows_body_family_and_fallback(load_tokens) -> None:
+    tokens = load_tokens("win32")
+    t = tokens.Tokens()
     body = C.text("正文", t)
-    # 正文族由主题统一给，控件不重复写；只补同类回退。
-    assert body.font_family is None
+    # C.text 也显式带族：控件样式不继承 Theme.font_family 时仍走同一字体。
+    assert body.font_family == "Microsoft YaHei UI"
     assert body.font_family_fallback == ["Microsoft YaHei"]
 
 
-def test_explicit_family_and_fallback_win(reload_tokens) -> None:
-    reload_tokens("win32")
-    t = T.Tokens()
+def test_explicit_family_and_fallback_win(load_tokens) -> None:
+    tokens = load_tokens("win32")
+    t = tokens.Tokens()
     custom = C.text(
         "正文", t, font_family="Arial", font_family_fallback=["Arial Fallback"],
     )
@@ -74,10 +76,40 @@ def test_explicit_family_and_fallback_win(reload_tokens) -> None:
     assert explicit.font_family_fallback == ["Explicit"]
 
 
-def test_mono_role_does_not_take_body_fallback(reload_tokens) -> None:
-    reload_tokens("win32")
-    t = T.Tokens()
+def test_mono_role_does_not_take_body_fallback(load_tokens) -> None:
+    tokens = load_tokens("win32")
+    t = tokens.Tokens()
     log = C.text("日志", t, role="log")
     assert log.font_family == t.mono_family
     assert log.font_family_fallback == list(t.mono_fallback)
     assert "Microsoft YaHei" not in (log.font_family_fallback or [])
+
+
+def test_tstyle_covers_explicit_styles(load_tokens) -> None:
+    tokens = load_tokens("win32")
+    t = tokens.Tokens()
+    style = C.tstyle(t, size=t.font("body"))
+    assert style.font_family == "Microsoft YaHei UI"
+    assert style.font_family_fallback == ["Microsoft YaHei"]
+    mono = C.tstyle(t, size=t.font("body"), font_family=t.mono_family,
+                    font_family_fallback=list(t.mono_fallback))
+    assert mono.font_family == t.mono_family
+    assert mono.font_family_fallback == list(t.mono_fallback)
+
+
+def test_tstyle_explicit_family_wins(load_tokens) -> None:
+    tokens = load_tokens("win32")
+    t = tokens.Tokens()
+    custom = C.tstyle(t, font_family="Arial",
+                      font_family_fallback=["Arial Fallback"])
+    assert custom.font_family == "Arial"
+    assert custom.font_family_fallback == ["Arial Fallback"]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_tstyle_non_windows_keeps_system_default(load_tokens, platform) -> None:
+    tokens = load_tokens(platform)
+    t = tokens.Tokens()
+    style = C.tstyle(t, size=t.font("body"))
+    assert style.font_family is None
+    assert style.font_family_fallback is None
