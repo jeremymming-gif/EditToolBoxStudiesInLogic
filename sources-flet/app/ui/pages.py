@@ -1820,16 +1820,21 @@ class IssuePage(BasePage):
         hairline 分隔，最后一个区块不再画底边。
         """
         t = self.t
+        # FR-20261115：flet 1.0.5 会把「显式 key 相同、对象不同」的列表项按
+        # frozen 语义比较并冻结新子树；换期重建后状态词便无法更新。代次 key
+        # 每次重建都不同，补丁改走 remove+add，新控件不再被冻结。
+        uid = getattr(self, "_section_uid", 0) + 1
+        self._section_uid = uid
         steps = self._view_steps(self._view_of_step(key))
         expanded = self.expanded_step(self._view_of_step(key)) == key
-        head = self._detail_header(key)
+        head = self._detail_header(key, uid)
         body_col = ft.Column(spacing=t.sp("2"),
                              controls=self._section_body_controls(key),
                              visible=expanded)
         self._section_bodies[key] = body_col
         last = bool(steps) and steps[-1] == key
         wrapper = ft.Container(
-            key=f"issue-section-{key}",
+            key=f"issue-section-{key}-{uid}",
             border=None if last else ft.Border(
                 bottom=ft.BorderSide(width=t.px(1), color=t.palette.border)),
             padding=C._pad(t, 0, 6, 0, 6),
@@ -1861,7 +1866,7 @@ class IssuePage(BasePage):
             chevron,
         ])
 
-    def _detail_header(self, key: str) -> ft.Control:
+    def _detail_header(self, key: str, uid: int) -> ft.Control:
         """区块头（40 高）：15px 标题 + 状态点/状态词 + 右侧 Filled 主按钮 + chevron。
 
         点击区只包住左侧头部与 chevron；主按钮在点击区之外——点主按钮只运行
@@ -1871,7 +1876,7 @@ class IssuePage(BasePage):
         expanded = self.expanded_step(self._view_of_step(key)) == key
         state = self._state_of(key)
         head = ft.Container(
-            key=f"issue-head-{key}", expand=True, height=t.px(40),
+            key=f"issue-head-{key}-{uid}", expand=True, height=t.px(40),
             alignment=ft.Alignment.CENTER_LEFT,
             on_click=lambda e, k=key: self._toggle_section(k),
             content=self._detail_head_content(key, expanded=expanded, state=state))
