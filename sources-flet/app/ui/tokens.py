@@ -79,18 +79,23 @@ FONT_WEIGHT: dict[str, str] = {
     "regular": "W_400", "medium": "W_500", "semibold": "W_600", "bold": "W_700",
 }
 
-# 字体族：不打包字体，正文用系统默认（macOS = SF Pro + PingFang SC，Windows =
-# Segoe UI + 微软雅黑，均由系统按字符自动回退）。
+# 字体族：不打包字体。Windows 正文族显式用「Microsoft YaHei UI」，并以
+# `font_family_fallback` 回退到旧版 Windows 也自带的「Microsoft YaHei」（B-Windows，
+# 覆盖旧的「Windows 正文交给系统」决策）；macOS / Linux 仍不指定族（= 交给系统：
+# SF Pro + PingFang SC / 发行版默认）。
 #
 # 注意（批 112 GUI-07）：这里曾写成 "Segoe UI, PingFang SC, …" 逗号串。Flet 1.0.5 的
 # `ft.Theme.font_family` 是**单个 Optional[str]**（不是 CSS font-family），整串会被当成
-# 一个不存在的族名 → 实际落平台默认。因此正文族改为 None（= 不指定，交给系统），
-# 等宽族用平台单族 + `font_family_fallback` 显式回退。
+# 一个不存在的族名 → 实际落平台默认。因此正文族只用单族；Windows 另给单族回退，
+# 等宽族同样用平台单族 + `font_family_fallback` 显式回退。
 FONT_FAMILY: str | None = None
+FONT_FALLBACK: tuple[str, ...] = ()
 if sys.platform == "darwin":
     FONT_FAMILY_MONO = "Menlo"
     MONO_FALLBACK: tuple[str, ...] = ("SF Mono", "Monaco")
 elif sys.platform == "win32":
+    FONT_FAMILY = "Microsoft YaHei UI"
+    FONT_FALLBACK = ("Microsoft YaHei",)
     FONT_FAMILY_MONO = "Consolas"
     MONO_FALLBACK = ("Cascadia Mono", "Courier New")
 else:
@@ -381,6 +386,11 @@ class Tokens:
     def font_family(self) -> str | None:
         """正文族：None = 平台默认（Flet 的 font_family 只收单个族名，不能是逗号串）。"""
         return FONT_FAMILY
+
+    @property
+    def font_fallback(self) -> tuple[str, ...]:
+        """正文族的显式回退；非 Windows 为空（正文族继续交给系统默认）。"""
+        return FONT_FALLBACK
 
     @property
     def mono_family(self) -> str:

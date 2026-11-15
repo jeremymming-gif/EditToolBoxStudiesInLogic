@@ -255,6 +255,10 @@ def text(value: str, t: Tokens, size: str = "body", color: str | None = None,
         # Flet 的 font_family 只收单个族名；回退必须显式给（批 112 GUI-07）。
         if font_family == t.mono_family:
             kwargs.setdefault("font_family_fallback", list(t.mono_fallback))
+    elif t.font_fallback:
+        # Windows 正文：主题已是 Microsoft YaHei UI，文字控件带同类回退（B-Windows）。
+        # 调用方显式 font_family_fallback 优先，setdefault 不覆盖。
+        kwargs.setdefault("font_family_fallback", list(t.font_fallback))
     return ft.Text(
         value, size=t.font(size), color=color or t.palette.text,
         weight=_w(t, weight), **kwargs,
