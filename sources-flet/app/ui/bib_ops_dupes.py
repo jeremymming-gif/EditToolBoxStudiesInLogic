@@ -352,7 +352,7 @@ class BibDuplicatesView(_OpsView):
             self.field_choice[field] = str(e.control.value or "left")
             self._refresh()
 
-        radio_style = ft.TextStyle(size=t.font("small"))
+        radio_style = C.tstyle(t, size=t.font("small"))
         return ft.Container(
             padding=C._pad(t, 8, 4, 8, 4),
             border=ft.Border(bottom=C._side(t, t.palette.border)),

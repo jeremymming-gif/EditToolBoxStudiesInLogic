@@ -1342,6 +1342,11 @@ class IssuePage(BasePage):
         self._info_articles: list = []
         self._info_notes: list = []
         self._info_report = ""
+        # 本轮信息检查形态（idle/running/done/warn/empty/failed/unreadable）：
+        # 0 篇完成态不能与「还没检查」同形。
+        self._info_state = "idle"
+        self._info_code: int | None = None
+        self._info_box = None
         self._info_filter = "all"
         self._info_expanded = ""
         self._compile_rows: dict = {}
@@ -1815,16 +1820,21 @@ class IssuePage(BasePage):
         hairline 分隔，最后一个区块不再画底边。
         """
         t = self.t
+        # FR-20261115：flet 1.0.5 会把「显式 key 相同、对象不同」的列表项按
+        # frozen 语义比较并冻结新子树；换期重建后状态词便无法更新。代次 key
+        # 每次重建都不同，补丁改走 remove+add，新控件不再被冻结。
+        uid = getattr(self, "_section_uid", 0) + 1
+        self._section_uid = uid
         steps = self._view_steps(self._view_of_step(key))
         expanded = self.expanded_step(self._view_of_step(key)) == key
-        head = self._detail_header(key)
+        head = self._detail_header(key, uid)
         body_col = ft.Column(spacing=t.sp("2"),
                              controls=self._section_body_controls(key),
                              visible=expanded)
         self._section_bodies[key] = body_col
         last = bool(steps) and steps[-1] == key
         wrapper = ft.Container(
-            key=f"issue-section-{key}",
+            key=f"issue-section-{key}-{uid}",
             border=None if last else ft.Border(
                 bottom=ft.BorderSide(width=t.px(1), color=t.palette.border)),
             padding=C._pad(t, 0, 6, 0, 6),
@@ -1856,7 +1866,7 @@ class IssuePage(BasePage):
             chevron,
         ])
 
-    def _detail_header(self, key: str) -> ft.Control:
+    def _detail_header(self, key: str, uid: int) -> ft.Control:
         """区块头（40 高）：15px 标题 + 状态点/状态词 + 右侧 Filled 主按钮 + chevron。
 
         点击区只包住左侧头部与 chevron；主按钮在点击区之外——点主按钮只运行
@@ -1866,7 +1876,7 @@ class IssuePage(BasePage):
         expanded = self.expanded_step(self._view_of_step(key)) == key
         state = self._state_of(key)
         head = ft.Container(
-            key=f"issue-head-{key}", expand=True, height=t.px(40),
+            key=f"issue-head-{key}-{uid}", expand=True, height=t.px(40),
             alignment=ft.Alignment.CENTER_LEFT,
             on_click=lambda e, k=key: self._toggle_section(k),
             content=self._detail_head_content(key, expanded=expanded, state=state))
@@ -2406,7 +2416,10 @@ class IssuePage(BasePage):
         if banner and self._result is not None:
             parts.append(self._result.root)
         if key == "infocheck":
-            parts.append(self._info_result())
+            # 与 _toc_box/_merge_box 同思路：持久结果容器，步骤结束后
+            # _sync_info_from_card 能原地刷新，不必等下一次整页重建。
+            self._info_box = ft.Column(spacing=t.sp("2"), controls=[self._info_result()])
+            parts.append(self._info_box)
         elif key == "toc":
             parts.append(self._toc_result_box())
         elif key == "compileall":
@@ -2440,7 +2453,28 @@ class IssuePage(BasePage):
 
     def _info_result(self) -> ft.Control:
         t = self.t
+        state = str(getattr(self, "_info_state", "idle") or "idle")
         payload = self._info_payload
+        if state == "failed":
+            code = getattr(self, "_info_code", None)
+            suffix = f"（退出码 {code}）" if code is not None else ""
+            return ft.Column(spacing=t.sp("1"), controls=[
+                C.notice_bar(f"本次检查未完成{suffix}：原因见右上「整期日志」；"
+                             "修好后可重新运行。", t, "error"),
+            ])
+        if state == "unreadable":
+            report = self._info_report
+            controls: list = [C.notice_bar(CK.UNREADABLE_INFO, t, "warn")]
+            if report:
+                controls.append(C.text(f"报告：{report}", t, "caption",
+                                       t.palette.text_faint, max_lines=2))
+                controls.append(C.secondary_button(
+                    "打开报告", self._artifact_open_action(report), t,
+                    icon="OPEN_IN_NEW", height=t.px(28)))
+            return ft.Column(spacing=t.sp("1"), controls=controls)
+        if state == "running":
+            return self._empty_result(
+                "正在检查…", "完成后这里显示结果；进度见右上「整期日志」。")
         if not payload:
             if not self.field("issue_dir"):
                 return self._empty_result(
@@ -2452,6 +2486,26 @@ class IssuePage(BasePage):
                 "还没有检查结果",
                 "点右上「运行检查」，或按 Enter；切到别的步再回来，结果还在。")
         articles = self._info_articles
+        if not articles:
+            # 已完成但 0 篇：与未运行分开说，给报告入口与下一步判据，不诱导重跑。
+            report = self._info_report
+            actions: list = []
+            if report:
+                actions.append(C.secondary_button(
+                    "打开报告", self._artifact_open_action(report), t,
+                    icon="OPEN_IN_NEW", height=t.px(28)))
+            return ft.Column(spacing=t.sp("1"), controls=[
+                C.section_label("检查结果", t, trailing=C.badge("只读", t, "success")),
+                C.hairline(t),
+                C.text(CK.info_summary(payload, articles=[], notes=[]), t, "small",
+                       t.palette.text, max_lines=2),
+                C.text("期目录里没有编号篇目文件夹（如「01 作者」）；报告已生成并保留，"
+                       "可打开核对。若期目录确实有稿件，确认子目录以编号开头后再重新运行。",
+                       t, "caption", t.palette.text_muted),
+                C.text(f"报告：{report or '—'}", t, "caption", t.palette.text_faint,
+                       max_lines=2),
+                ft.Row(spacing=t.sp("1"), controls=actions) if actions else ft.Container(),
+            ])
         verdict = CK.info_summary(payload, articles=articles, notes=self._info_notes)
         tone = "warn" if self._info_notes else "info"
         head = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -3171,6 +3225,9 @@ class IssuePage(BasePage):
         self._info_articles = []
         self._info_notes = []
         self._info_report = ""
+        self._info_state = "idle"
+        self._info_code = None
+        self._info_box = None
         self._info_filter = "all"
         self._info_expanded = ""
         self._compile_rows = {}
@@ -3766,6 +3823,8 @@ class IssuePage(BasePage):
         if articles is None:
             return
         self._info_articles = list(articles or [])
+        self._info_state = str(getattr(info, "state", "idle") or "idle")
+        self._info_code = getattr(info, "code", None)
         self._info_payload = getattr(info, "payload", None) or (
             {"articles": articles} if articles else None)
         self._info_notes = list(getattr(info, "notes", None) or [])
@@ -3773,6 +3832,7 @@ class IssuePage(BasePage):
         box = getattr(self, "_info_box", None)
         if box is not None:
             box.controls = [self._info_result()]
+            self._safe_update(box)
 
     def _sync_toc_payload(self, *, code=None, failed: bool = False,
                           cancelled: bool = False) -> None:

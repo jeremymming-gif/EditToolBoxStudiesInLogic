@@ -454,7 +454,8 @@ class App:
         # 这里把 TextTheme 全量投影到 tokens 字号（×k），按钮字与正文同源、同缩放。
         def _ts(key: str, weight: ft.FontWeight | None = None,
                 color: str | None = None) -> ft.TextStyle:
-            return ft.TextStyle(size=tokens.font(key), weight=weight, color=color)
+            # 显式 TextStyle 不继承 Theme.font_family；统一走出口补 FONT_FAMILY/FONT_FALLBACK。
+            return C.tstyle(tokens, size=tokens.font(key), weight=weight, color=color)
 
         text_color = palette.text
 
@@ -838,8 +839,8 @@ class App:
         # 描边交给外层白卡胶囊，输入框本身透明无框（用户 m02855）。
         search.border = None
         search.content_padding = C._pad(t, 8, 4, 8, 4)
-        search.hint_style = ft.TextStyle(size=t.font("body"), color=t.palette.text_faint)
-        search.text_style = ft.TextStyle(size=t.font("body"), color=t.palette.text)
+        search.hint_style = C.tstyle(t, size=t.font("body"), color=t.palette.text_faint)
+        search.text_style = C.tstyle(t, size=t.font("body"), color=t.palette.text)
         card = self._toolbar_search_card
         card.height = t.px(32)
         card.bgcolor = t.palette.surface

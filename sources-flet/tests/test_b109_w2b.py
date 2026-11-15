@@ -84,7 +84,9 @@ def test_info_summary_four_variants():
     arts = CK.normalize_articles(_payload())
     summary = CK.info_summary(_payload(), articles=arts)
     assert summary.startswith("共 2 篇；发现 1 处需要核对：")
-    assert CK.info_summary({"articles": []}) == CK.EMPTY_INFO
+    # 批 2026-11-15 空报告修复 A1：已完成但 0 篇与「还没检查」（无 payload）分开说。
+    assert CK.info_summary({"articles": []}) == CK.EMPTY_DONE_INFO
+    assert CK.info_summary([]) == CK.EMPTY_DONE_INFO
     notes = ["a", "b", "c", "d"]
     built = CK.info_summary({"articles": [_article()]}, notes=notes)
     assert built.startswith("共 1 篇；发现 4 处需要核对：a；b；c；…")
@@ -94,6 +96,7 @@ def test_info_summary_four_variants():
     no_pdf = {"articles": [_article(actualPDFPages=None, hasPDF=False)]}
     assert "1 篇没有可比对的 PDF 页数" in CK.info_summary(no_pdf)
     assert CK.info_level({}) == "idle" and CK.info_level(good) == "done"
+    assert CK.info_level({"articles": []}) == "empty"
     assert CK.info_level(_payload()) == "warn"
 
 

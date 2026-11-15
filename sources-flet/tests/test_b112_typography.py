@@ -1,7 +1,7 @@
 """批 112 S1：字体 / 选中态排版契约（GUI-01 / GUI-07）。
 
 覆盖：
-- 字体 S1：正文族 None、等宽平台单族 + 显式回退、输入框主题字号 = 正文；
+- 字体 S1：正文族 Windows 单族 + 回退 / 其他平台 None、等宽平台单族 + 显式回退、输入框主题字号 = 正文；
 - 选中态字重唯一来源：TEXT_ROLE 四个 selected 角色全部 medium(W500)；
 - 五处选中态都走角色（chip / nav 运行时，步骤卡 / tab / 配对卡静态契约）；
 - 8 处 h3 旁路清零；gui_auto 断言与产品侧 item-title 对齐。
@@ -31,9 +31,11 @@ SELECTED_ROLES = {
 
 
 # ── 字体 S1 ─────────────────────────────────────────────────────────────────
-def test_body_font_family_is_none_not_comma_string() -> None:
-    assert T.FONT_FAMILY is None
-    assert T.Tokens().font_family is None
+def test_body_font_family_is_single_platform_family() -> None:
+    # B-Windows：win32 正文族为 Microsoft YaHei UI；macOS / Linux 仍交给系统。
+    expected = "Microsoft YaHei UI" if sys.platform == "win32" else None
+    assert T.FONT_FAMILY == expected
+    assert T.Tokens().font_family == expected
     # 历史 bug：逗号串被 Flet 当成单个族名（记住这个形状，别再写回去）。
     assert "," not in str(T.FONT_FAMILY or "")
 
@@ -69,7 +71,8 @@ def test_mono_text_carries_fallback() -> None:
 def test_theme_unifies_textfield_size_to_body() -> None:
     t = T.Tokens()
     theme = M.App._flet_theme(T.LIGHT)
-    assert theme.font_family is None
+    # B-Windows：win32 主题正文族 = Microsoft YaHei UI；其他平台仍 None。
+    assert theme.font_family == ("Microsoft YaHei UI" if sys.platform == "win32" else None)
     assert theme.text_theme is not None
     assert theme.text_theme.body_large is not None
     assert theme.text_theme.body_large.size == t.font("body") == 13

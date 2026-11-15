@@ -106,6 +106,30 @@ def test_info_check_result_state_keeps_summary_table_and_open():
     assert called == ["C:/report.txt"]
 
 
+def test_info_check_zero_article_done_state_differs_from_not_run():
+    """空报告修复 A1：运行成功但 0 篇 ≠「还没检查」；重跑/换期不得沿用旧完成态。"""
+    card = CK.InfoCheckCard(_t())
+    card.show({"articles": []}, report="C:/期/信息检查.txt")
+
+    assert card.state == "empty"
+    assert card.chip.content.value == "已检查 · 0 篇"
+    assert card.summary.visible is True and card.summary.value == CK.EMPTY_DONE_INFO
+    assert card.empty.visible is False and card.table_box.visible is False
+    # 报告确实生成了：打开入口可用，不诱导再点一次运行。
+    assert card.open_btn in card._actions.controls and card.open_btn.disabled is False
+
+    # 旧外壳/旧引擎可能传裸 list；同样按 0 篇完成处理，不回落「还没检查」。
+    card.show([], report="C:/期/信息检查.txt")
+    assert card.state == "empty" and card.summary.value == CK.EMPTY_DONE_INFO
+
+    card.busy()
+    assert card.state == "running" and card.open_btn not in card._actions.controls
+    card.reset()
+    assert card.state == "idle" and card.chip.content.value == "还没检查"
+    assert card.summary.visible is False and card.empty.visible is True
+    assert card.open_btn not in card._actions.controls
+
+
 def test_info_check_unreadable_and_failed_do_not_duplicate_empty_line():
     card = CK.InfoCheckCard(_t())
     card.show_unreadable("C:/report.txt")
