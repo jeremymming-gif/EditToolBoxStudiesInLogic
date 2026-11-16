@@ -50,7 +50,14 @@ SKIPS = []
 # 夹具目录 2026-10-15 phase 2c 从 `tools/gui_fixtures/` 改名成 `tools/fixtures/`：
 # 人工点击时代的「回读校验」夹具已删（无任何测试引用），这里只留 mock 回放用的那一个。
 FAKE = "fixtures/merge_replies.json"
-MANUSCRIPT = os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
+
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
+
+# 以前这里是 `os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 <文档化名>",
+# "定稿.docx")`：`_MACTOOLBOX/..` 在本 worktree 里是 worktree 的**父目录**，不是
+# `~/Documents/GitHub`；再叠上文档化名的作者目录名，⑤ 只能 SKIP。取样交给 FP。
+_MANUSCRIPT = FP.resolve(FP.default_root(), "2026年第5期(90)/01", "定稿")
+MANUSCRIPT = _MANUSCRIPT.path if _MANUSCRIPT.ok else ""
 
 
 def check(name, cond, detail=""):
@@ -63,6 +70,13 @@ def check(name, cond, detail=""):
 def skip(name, why):
     print(f"SKIP  {name}  {why}")
     SKIPS.append(name)
+
+
+# 取样器把「多命中/重号」判成 fatal —— 那是取样代码自己的错，当场记 FAIL，不许被
+# 下面的 `if not MANUSCRIPT: skip(...)` 吞成 SKIP。断言放在这里是因为 `check()`
+# 在 `_MANUSCRIPT` 之后才定义（模块级顺序所限）。
+if _MANUSCRIPT.fatal:
+    check(f"取样代码的错（{_MANUSCRIPT.status}）：2026年第5期(90)/01 定稿", False, _MANUSCRIPT.detail)
 
 
 # ── 语料 ──────────────────────────────────────────────────────────────────
@@ -445,8 +459,8 @@ def run_convert(src, out, extra):
 
 if not (os.path.isfile(_MOCK) and os.path.isfile(_FIXTURE)):
     skip("⑤ 端到端", f"缺 mock 或夹具（{_MOCK} / {_FIXTURE}）")
-elif not os.path.isfile(MANUSCRIPT):
-    skip("⑤ 端到端", f"缺真实稿件（{MANUSCRIPT}）")
+elif not MANUSCRIPT:
+    skip("⑤ 端到端", FP.skip_line(_MANUSCRIPT))
 else:
     mock = load_mock()
     mock.STATE.mode = "replay"
@@ -459,14 +473,29 @@ else:
         with tempfile.TemporaryDirectory() as tmp:
             base = os.path.join(tmp, "noai")
             ai = os.path.join(tmp, "ai")
-            # 先跑一遍**不并入**的，作为「合并前」的基准
-            p0 = run_convert(MANUSCRIPT, base, ["--no-ai-merge", "--no-original"])
+            # 先跑一遍**不并入**的，作为「合并前」的基准。
+            # `--ai-budget-tokens 0`（不限）是本仓 mock 端到端测试的既有写法
+            # （见 `test_batch63_api_char_cap.py` 的 `_RO`）：默认 30000 是**真实 API**
+            # 的省钱闸，这里打的是本机 mock、不产生费用，闸门按 20 次调用估 47101 tokens
+            # 就把整条路拦下了 —— 拦下后的产物目录是空的，后续 ⑤ 断言全部失真。
+            # `--no-bibdb`：设了 `SLCN_NOTES` 时默认引用库自动启用，命中已核实条目的键
+            # **不再发 AI 请求**（产品的省钱口径，行为正确）。但本组要验的正是「AI 合并
+            # 通道」本身，所以显式关掉查库，让请求真的打到本机 mock 上。
+            _B = ["--ai-budget-tokens", "0", "--no-bibdb"]
+            p0 = run_convert(MANUSCRIPT, base, ["--no-ai-merge", "--no-original", *_B])
             p1 = run_convert(MANUSCRIPT, ai, [
-                "--no-original",
+                "--no-original", *_B,
                 "--llm-base", f"http://127.0.0.1:{port}/v1",
                 "--llm-key", "mock", "--llm-model", "mock-model"])
-            out0 = os.path.join(base, "Meimei_Han")
-            out1 = os.path.join(ai, "Meimei_Han")
+            # 输出名来自**真实作者**（`convert.py` 的 ④「拿不到就问用户，不猜」），
+            # 不是固定的文档化名 —— 测试里再写死一个化名只会得到一个不存在的
+            # 目录。这里按产物实际落地的那个唯一子目录取名，断言对象不变。
+            def _one_dir(root):
+                _ds = [d for d in sorted(os.listdir(root))
+                       if os.path.isdir(os.path.join(root, d))]
+                return os.path.join(root, _ds[0]) if len(_ds) == 1 else ""
+            out0 = _one_dir(base)
+            out1 = _one_dir(ai)
             check("⑤ 两次 convert.py 都正常结束（AI 通道不改退出码）",
                   p0.returncode == 0 and p1.returncode == 0,
                   (p1.stderr or p1.stdout)[-200:])
@@ -475,7 +504,7 @@ else:
             roll = os.path.join(out1, "reference.bib.ai前")
             check("⑤ `--no-ai-merge` 真的不并：产物与从前一致（无 .ai前、无报告）",
                   not os.path.exists(os.path.join(out0, "reference.bib.ai前"))
-                  and not os.path.exists(os.path.join(out0, "Meimei_Han_回读校验报告.md")), "")
+                  and not [f for f in os.listdir(out0) if f.endswith("_回读校验报告.md")], "")
             check("⑤ 并入路径：写了回滚副本，且它 = 未并入时的那份 reference.bib（逐字节相同）",
                   os.path.isfile(roll) and open(roll, encoding="utf-8").read() == bib0, "")
             check("⑤ 合并后的 reference.bib 确实变了（至少 1 条）", bib1 != bib0, "")
@@ -511,8 +540,10 @@ else:
                   _k_order == ["author", "title", "booktitle", "editor", "publisher",
                                "address", "pages", "year"], f"{_k_order}")
 
-            _rpt = os.path.join(out1, "Meimei_Han_回读校验报告.md")
-            _rp = open(_rpt, encoding="utf-8").read() if os.path.isfile(_rpt) else ""
+            _rpts = [f for f in os.listdir(out1) if f.endswith("_回读校验报告.md")] \
+                if os.path.isdir(out1) else []
+            _rpt = os.path.join(out1, _rpts[0]) if len(_rpts) == 1 else ""
+            _rp = open(_rpt, encoding="utf-8").read() if _rpt and os.path.isfile(_rpt) else ""
             check("⑤ 回读校验报告已生成，且控制台打印了它的结论行",
                   bool(_rp) and "**结论：" in _rp and "结论：" in p1.stdout, "")
             check("⑤ 报告把「原件」标成 reference.bib.ai前（diff 有对象）",
@@ -526,7 +557,10 @@ else:
             check("⑤ GAP3：字段顺序汇总提示里不再点名合并过的 Kaplan1989",
                   "Kaplan1989" not in next(
                       (ln for ln in _rp.splitlines() if "字段顺序与任务书第三节" in ln), ""), "")
-            _md = open(os.path.join(out1, "Meimei_Han_文献核实.md"), encoding="utf-8").read()
+            _mds = [f for f in os.listdir(out1) if f.endswith("_文献核实.md")] \
+                if os.path.isdir(out1) else []
+            _md = open(os.path.join(out1, _mds[0]), encoding="utf-8").read() \
+                if len(_mds) == 1 else ""
             check("⑤ 任务书里有「六、合并记录」，逐条给出并入/跳过与原因",
                   "## 六、合并记录（本次已并入 reference.bib）" in _md
                   and "`Chalmers2011`" in _md and "不一致" in _md, "")

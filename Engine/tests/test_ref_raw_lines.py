@@ -29,10 +29,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn import refmark  # noqa: E402
 from slcn.docxsource import DocxDoc, _numbered_refs, parse_docx  # noqa: E402
@@ -242,10 +243,14 @@ check("(f) 含反引号的原文进任务书后行内代码仍闭合",
 # ══ (g) 真实稿 ═════════════════════════════════════════════════════════════
 print("\n── (g) 真实稿：`Dang2022` 的原文逐字等于那份 `[17]` 行 ──")
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
-if not os.path.exists(REAL):
-    skip("(g) 真实稿 01 Meimei_Han/定稿.docx", "语料不在本机")
+# 取样只按期号+序号，正文由 `pick_main_docx()` 按**内容**认（不按文件名、不看断言）。
+_REAL = FP.resolve_main(FP.default_root(), "2026年第5期(90)/01")
+if _REAL.fatal:
+    check(f"取样代码的错（{_REAL.status}）：2026年第5期(90)/01", False, _REAL.detail)
+if not _REAL.ok:
+    skip("(g) 真实稿 2026年第5期(90)/01", FP.skip_line(_REAL))
 else:
+    REAL = _REAL.path
     d = parse_docx(REAL)
     check("(g) 真实稿：20 条编号清单全部拿到原文",
           len(d.bib_entries) == 20 and len(d.ref_raw_by_key) == 20,

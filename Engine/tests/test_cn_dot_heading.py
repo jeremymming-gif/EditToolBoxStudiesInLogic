@@ -26,10 +26,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxsource import (  # noqa: E402
     _HEAD_CN_DOT, classify_en_heading, _is_cn_dot_heading, parse_docx,
@@ -234,11 +235,16 @@ for _p in TMP:
 print("\n── ③ 真实语料与人工成品对账 ──")
 
 
-def find(d: str, needle: str) -> str:
-    import glob
-    hits = [x for x in glob.glob(os.path.join(_REPO, d, "**", "*.docx"), recursive=True)
-            if needle in os.path.basename(x) and zipfile.is_zipfile(x)]
-    return hits[0] if hits else ""
+def find(d: str, needle: str, exclude: str = ""):
+    """按**稳定期号/序号** + 文件名片段取样（作者名那截是文档示例化名，不参与定位）。
+
+    返回 `FP.Resolution`：`ok` 跑原断言，`missing` 如实 SKIP，`fatal`（重号/多命中）
+    当场记 FAIL —— 那是取样代码自己的错，不许拿「本机没有」盖住。
+    """
+    res = FP.resolve(FP.default_root(), d, needle, exclude=exclude)
+    if res.fatal:
+        check(f"取样代码的错（{res.status}）：{d}", False, res.detail)
+    return res
 
 
 def human_sections(tex: str) -> tuple[list[str], list[str]]:
@@ -276,15 +282,18 @@ CASES = [
     ("2026年第2期(87)/08 Jing_Ren", "陈那派与正理派",
      {"sections": ["从康德哲学的角度看陈那派知识论的特征", "从比较逻辑视角看印度逻辑的特异性", "结论"]},
      "08 Jing_Ren：3 个标题认出来，因明五支那 9 条列表项一条都不许进来"),
-    ("2026年第2期(87)/09 Chen_Liang", "梁晨+最终",
+    # `梁晨+最终` 是 B-269 匿名化过的示例姓名；真实语料该序号下的稿件文件名与化名不同
+    # （此处不复述真姓名）。序号不变，needle 只留文件名里真实存在的那截 `+最终`。
+    ("2026年第2期(87)/09 Chen_Liang", "+最终",
      {"sections": ["引言", "约翰逊和汉比的标准", "新标准", "新标准的应用", "结论"]},
      "09 Chen_Liang：`1.`–`5.` 认出来（`2.1` 等本就由 _HEAD_EN3 认）"),
 ]
 for _dir, needle, want, why in CASES:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     rd = parse_docx(path)
     secs = [h for lv, h in rd.headings if lv == 1]
     subs = [h for lv, h in rd.headings if lv == 2]
@@ -294,23 +303,30 @@ for _dir, needle, want, why in CASES:
           f"L1={secs[:6]} L2={subs[:4]}")
 
 # ③-b 与人工成品逐条对账：新认出的标题必须**都在**人工成品的章节表里
+# (语料目录, 文件名片段, 人工成品 .tex)。成品文件名里那截作者名是文档示例化名，
+# 不参与定位：`.tex` 由 `FP.resolve_tex()` 按**期号+序号**取，排除模板类文件。
 PAIRS = [
-    ("2022年第5期(66)/04 Lei_Li", "逻辑例外论", "Lei_Li.tex"),
-    ("2022年第4期(65)/02 Ning_Shan", "20160050580_O_editing", "shanpengshu.tex"),
-    ("2023年第4期(71)/06 Ting_Lu", "20160050685_O_editing", "Ting_Lu.tex"),
-    ("2023年第5期(72)/03 Jie_Song", "20160050777_O_editing", "Jie_Song.tex"),
-    ("2024年第1期(74)/07 Min_Jiao", "202402文献标注", "Min_Jiao.tex"),
-    ("2026年第1期(86)/07 Qiang_Chen", "返修版（无修订标记）", "Qiang_Chen.tex"),
-    ("2026年第2期(87)/07 Hai_Feng", "格赖斯和布兰顿", "Hai_Feng.tex"),
-    ("2026年第2期(87)/08 Jing_Ren", "陈那派与正理派", "Jing_Ren.tex"),
-    ("2026年第2期(87)/09 Chen_Liang", "梁晨+最终", "Chen_Liang.tex"),
+    ("2022年第5期(66)/04 Lei_Li", "逻辑例外论"),
+    ("2022年第4期(65)/02 Ning_Shan", "20160050580_O_editing"),
+    ("2023年第4期(71)/06 Ting_Lu", "20160050685_O_editing"),
+    ("2023年第5期(72)/03 Jie_Song", "20160050777_O_editing"),
+    ("2024年第1期(74)/07 Min_Jiao", "202402文献标注"),
+    ("2026年第1期(86)/07 Qiang_Chen", "返修版（无修订标记）"),
+    ("2026年第2期(87)/07 Hai_Feng", "格赖斯和布兰顿"),
+    ("2026年第2期(87)/08 Jing_Ren", "陈那派与正理派"),
+    ("2026年第2期(87)/09 Chen_Liang", "+最终"),
 ]
-for _dir, needle, texname in PAIRS:
+for _dir, needle in PAIRS:
     path = find(_dir, needle)
-    tex = os.path.join(_REPO, _dir, texname)
-    if not path or not os.path.isfile(tex):
-        print(f"SKIP  {_dir}（语料或人工成品不在本机）")
+    _tres = FP.resolve_tex(FP.default_root(), _dir)
+    if _tres.fatal:
+        check(f"取样代码的错（{_tres.status}）：{_dir} 的人工成品 .tex", False, _tres.detail)
+    if not path.ok or not _tres.ok:
+        print(f"SKIP  {FP.skip_line(path if not path.ok else _tres)}")
         continue
+    tex = _tres.path
+    texname = os.path.basename(tex)
+    path = path.path
     rd = parse_docx(path)
     sec, sub = human_sections(tex)
     known = {re.sub(r"\\cndash\s*", "-", x).strip() for x in sec + sub}
@@ -331,10 +347,11 @@ NEG = [
      "01 Xue_Wang：英文标题结尾带冒号，仍不认（英文判据不动）"),
 ]
 for _dir, needle, why in NEG:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     rd = parse_docx(path)
     bodies = [h for _lv, h in rd.headings]
     unwanted = [h for h in bodies if "审稿" in h or "Problems for" in h

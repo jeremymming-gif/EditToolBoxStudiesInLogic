@@ -47,11 +47,20 @@ from slcn.latex import parse_macros  # noqa: E402
 FAILS = []
 SKIPS = []
 
-_ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
-BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
-                       "李雷 当代逻辑论题鸟瞰.docx")
-EN_ABS = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
-                      "当代逻辑论题鸟瞰英文摘要.docx")
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
+
+# 以前这里写死 `2026年第5期(90)/10 Lei_Li/original/李雷 …docx`：期号与篇序号是真
+# 的，作者名是文档化名，真语料那一篇对不上 → ②③④ 只能 SKIP。取样交给 FP，
+# 断言仍在本文件；英文摘要 sibling 用同一篇里的文件名片段定位。
+_REF = "2026年第5期(90)/10"
+_BO = FP.resolve_main(FP.default_root(), _REF)
+_EN = FP.resolve(FP.default_root(), _REF, "英文摘要")
+BO_CHEN = _BO.path if _BO.ok else ""
+EN_ABS = _EN.path if _EN.ok else ""
+
+
+def _skipd(_r):
+    return FP.skip_line(_r)
 
 _TPL_ZH = open(T.resolve("zh").skeleton, encoding="utf-8").read()
 _TPL_DEFAULTS = build.template_defaults(_TPL_ZH)
@@ -67,6 +76,14 @@ def check(name, cond, detail=""):
 def skip(name, why):
     print(f"SKIP  {name}  {why}")
     SKIPS.append(name)
+
+
+# 取样器把「多命中 / 重号 / ref 写坏」判成 fatal —— 那是取样代码自己的错，必须当场
+# 记 FAIL，不许被下面的 `if not BO_CHEN: skip(...)` 吞成 SKIP。放在这里是因为
+# `check()` 在 `_BO/_EN` 之后才定义（模块级顺序所限）。
+for _r in (_BO, _EN):
+    if _r.fatal:
+        check(f"取样代码的错（{_r.status}）：{_r.ref}", False, _r.detail)
 
 
 def build_case(src, out_dir, *, overrides=None, patch_doc=None):
@@ -149,8 +166,8 @@ check("① 占位符文案不含模板示例文字（`First Author` / `Affiliati
 # ── ② 正例：没有英文作者 → 占位符，而不是模板示例文字 ────────────────────
 print("\n── ② 正例：源稿没有英文作者 → 写占位符，而不是 `First Author` ──")
 
-if not os.path.isfile(BO_CHEN):
-    skip("② 正例（Lei_Li）", f"缺真实稿件（{BO_CHEN}）")
+if not BO_CHEN:
+    skip("② 正例（真实稿正文）", _skipd(_BO))
 else:
     def _clear_en(doc):
         # 把「源稿没给英文作者/单位」这一前提**钉死**（不依赖解析器随版本变化）
@@ -179,7 +196,7 @@ else:
 print("\n── ③ 反例 1：源稿**有**英文作者 → 不许写占位符 ──")
 
 _EN_REAL = None
-if os.path.isfile(EN_ABS):
+if EN_ABS:
     from slcn import docxsource  # noqa: E402
     try:
         _EN_REAL = docxsource.parse_docx(EN_ABS).author_en
@@ -187,13 +204,16 @@ if os.path.isfile(EN_ABS):
         _EN_REAL = None
         skip("③ 真实英文摘要 docx 解析", f"{type(e).__name__}: {e}")
     if _EN_REAL:
-        check("③ 真实稿件 `当代逻辑论题鸟瞰英文摘要.docx` 解析出英文作者",
-              _EN_REAL == "Li Lei", f"{_EN_REAL!r}")
+        # 期望值**不写死人名**：那是 B-269 的匿名化字面量，而真实姓名不许进公开代码
+        # （§15）。这里只钉「解析出了罗马字母姓名」这个结构事实，值本身由稿件决定。
+        check("③ 真实英文摘要 docx 解析出了罗马字母英文作者",
+              bool(_EN_REAL) and all(c.isascii() for c in _EN_REAL)
+              and len(_EN_REAL.split()) >= 2, f"{_EN_REAL!r}")
 else:
-    skip("③ 真实英文摘要 docx 解析", f"缺真实稿件（{EN_ABS}）")
+    skip("③ 真实英文摘要 docx 解析", _skipd(_EN))
 
-if not os.path.isfile(BO_CHEN):
-    skip("③ 反例 1（Lei_Li 注入英文作者）", f"缺真实稿件（{BO_CHEN}）")
+if not BO_CHEN:
+    skip("③ 反例 1（注入英文作者）", _skipd(_BO))
 else:
     def _inject_en(doc):
         doc.author_en = _EN_REAL or "Li Lei"
@@ -216,8 +236,8 @@ else:
 # ── ④ 反例 2：手工覆盖优先，不许被占位符覆盖 ─────────────────────────────
 print("\n── ④ 反例 2：手工覆盖的字段不许被占位符覆盖 ──")
 
-if not os.path.isfile(BO_CHEN):
-    skip("④ 反例 2（Lei_Li + overrides）", f"缺真实稿件（{BO_CHEN}）")
+if not BO_CHEN:
+    skip("④ 反例 2（真实稿 + overrides）", _skipd(_BO))
 else:
     def _clear_all(doc):
         # 让这几个字段在源稿里都解析不出来，确保「不是占位符」只能归功于覆盖

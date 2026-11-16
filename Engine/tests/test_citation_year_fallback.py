@@ -29,10 +29,11 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxsource import (  # noqa: E402
     RefEntry,
@@ -187,11 +188,14 @@ check("(d) 日志末尾仍报总账（`引用替换命中 …；未匹配 …`�
 # ══ (e) 真实稿回归 ═════════════════════════════════════════════════════════
 print("\n── (e) 真实稿回归：10 Lei_Li 的 Williamson 引用进 unmatched，Hjortland2017 只剩 1 处 ──")
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Lei_Li", "original",
-                    "李雷 当代逻辑论题鸟瞰.docx")
-if not os.path.exists(REAL):
-    skip("(e) 真实稿 10 Lei_Li", "语料不在本机")
+# 取样只按期号+序号，正文由 `pick_main_docx()` 按**内容**认（不按文件名、不看断言）。
+_REAL = FP.resolve_main(FP.default_root(), "2026年第5期(90)/10")
+if _REAL.fatal:
+    check(f"取样代码的错（{_REAL.status}）：2026年第5期(90)/10", False, _REAL.detail)
+if not _REAL.ok:
+    skip("(e) 真实稿 2026年第5期(90)/10", FP.skip_line(_REAL))
 else:
+    REAL = _REAL.path
     from slcn.docxsource import parse_docx
 
     d = parse_docx(REAL)

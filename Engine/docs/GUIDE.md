@@ -276,6 +276,34 @@ exit 2；老式 `.doc` → exit 2 提示另存 `.docx`/`.tex`（**第 63b 批起
 TeX 发行版；没有 `\begin{document}` 的纯正文稿无法区分前言/正文，沿用旧行为（整份按正文
 可达收宏，见第 120 条）。
 
+**第 142 条补丁（2026-11-16，Springer sn-jnl 这类「完整期刊类」来稿）**：作者交来的
+不一定是 `article` 稿或本刊旧模板稿，而是别家期刊的整套模板稿——`.tex` 里
+`\documentclass{sn-jnl}`，同目录一个 `sn-jnl.cls`。那套类里成批 `\renewcommand` 的是
+LaTeX 内核/标准类**已经定义**的名字（字号 `\small`、分节 `\section`/`\subsection`/
+`\subsubsection`、标题页 `\maketitle`…），还用 `\RequirePackage{natbib}` 装了参考文献宏包
+（作者 `.tex` 前言里一个字都没有）。工具现在这样处理：
+
+- **内核/类内已定义命令不搬**：`KERNEL_DEFINED_NAMES` 白名单（字号、分节层级、标题页/
+  文档元数据、版式与脚注、别家分类号，共 29 个名字）命中即**不迁入产物**，只记一条日志
+  「…（`sn-jnl.cls`：LaTeX 内核/文档类已有，未搬）」。原因是双向的：保留 `\renewcommand`
+  会改坏本刊版面，降为 `\newcommand` 会撞 `Command \X already defined` 整篇失败。
+  **作者真正自定义的新命令照旧迁**，不受影响。
+- **natbib 命令自动改写**：模板走 biblatex 时，正文里真出现 `\citep`/`\citet`/`\citealt`/
+  `\citealp`（含星号形式）→ 改写成 biblatex 等价命令（`\parencite`/`\textcite`/`\cite`/
+  `\parencite`），作者的 `\usepackage{natbib}` 包行不迁。日志与「⚠ 注意事项」写明改写了几处，
+  请按提示核对引用样式（圆括号/叙述式）。`\citestyle`/`\citepunct`/`\citetext` 这类排版设置
+  命令不误伤；裸 `\cite` biblatex 本来就有定义，不改也不触发。
+- **别家前置区整段切除**：正文里 `\title`→`\maketitle` 这一段若出现 sn-jnl 专有命令
+  （`\affil`/`\keywords`/`\pacs`/`\bmhead`/`\fnm`/`\orcid`…），整段切掉（否则作者的
+  `\maketitle` 会与模板标题页撞成两个）。**纯 `article` 稿不受影响**：单位/邮箱只写在
+  `\author{}` 里，段内没有别家专有命令就一个字都不动。这些信息本来就由 texfront 解析进
+  模板 `my*` 字段，正文里那份是重复的。
+
+边界（如实说清）：白名单是手写常量，不解析 TeX 发行版，名单外的更冷门内核命令仍会被当
+作者定义搬入；专有命令按**行首**匹配，`\author{张三}\affil[1]{单位}` 写在同一行时前置区
+不切（宁可留多余命令，也不误删作者信息）；被注释掉的 `% \citep{x}` 也会触发改写（只多重写
+了注释里的命令，不影响编译）。
+
 #### C 类新口径：脚注分类 + 并集参考文献（第 52 批，2026-10-19 默认开启）
 
 C 类口径从第 52 批起**默认开启**（v9b 41 篇全量 PASS 后用户拍板），只影响 **Word 通道**；
@@ -815,6 +843,51 @@ cd Engine && bash tools/run_engine_tests.sh full    # 默认档 = 全部 tests/t
 - quick 白名单写在脚本注释里；quick 全绿不等于能发版 —— **full 才是回归的完整口径**。
 - 解释器优先 `/opt/homebrew/bin/python3.14`，找不到回落 `python3`；`PYTHONPATH` 自动指向 `Engine/vendor`。
 - `SLCN_TEST_JOBS=4` 开并行档（默认 1 = 旧的逐套串行）；并行红的套件会自动串行复核，抖动不计红，汇总行与退出码口径不变。
+
+### 3.3.2 文档数字门禁：`tools/gen_docs.py`
+
+`Engine/README.md` 里的「普查 / corpus 回归 / 测试计数 / 红线快照」几行由 `tools/gen_docs.py` 生成，夹在 `AUTO:STATE` 标记之间，**不要手改**（改了 `--check` 会判过期）。
+
+```bash
+cd Engine && python3 tools/gen_docs.py                  # 写模式：现算并就地更新 AUTO 块
+cd Engine && python3 tools/gen_docs.py --check          # 只查文档新鲜度（不声称套件通过）
+cd Engine && python3 tools/gen_docs.py --check --strict-tests   # 严格档：套件必须实测且全绿
+```
+
+三种退出码的含义**不一样**，按它决定下一步：
+
+| 退出码 | 含义 | 该怎么办 |
+|---|---|---|
+| `0` | 块新鲜（严格档还要求本次实跑套件全绿） | 无事 |
+| `1` | 块过期，或块新鲜但本次套件有异常 | 写模式重生成；套件异常看打印的异常套件清单 |
+| `2` | `BLOCKED`：严格档前提不全（缺稿件库 / `xelatex` 等），**或用法错误**（如 `--no-test-runs` 与 `--strict-tests` 同给、`--strict-tests` 不带 `--check`） | 前提不全：换到前提齐全的机器重跑，或改用非严格的 `--check`；用法错误：按 argparse 报错改正命令行 |
+
+- **非严格 `--check` 只保证「文档新鲜度」**，不保证「套件通过」；文档块新鲜但套件崩溃/超时/非零退出时它会打印 `FAIL  套件异常` 并退出 1，两者分开表达。
+- **严格档不会把「前提不全」当「通过」**：缺前提直接 `BLOCKED` + 退出 2，不降级成宽松归一的比较。
+- 写模式会复用 `out/auto-inputs.json` 里的测试计数缓存（省掉重跑套件），但只认**能自证**的缓存：必须是四列带套件状态（`status` 严格 `None` 才算没有状态，空串 / `False` / `0` 都算有状态、一律不采信）、**恰好**覆盖当前全部套件（多一行、少一行、换名、全是假名都算不成立）、且与 README 里已写着的测试段逐行一致。三列旧缓存、被截断/改名/篡改/带 falsy 状态的缓存一律拒，拒了就回退到现跑分支 —— 回退后现跑若是全绿，退出 0 是**真跑出来的**结论，不是缓存放行。
+- `--no-test-runs` 只能配 `--check` 用，且**不声称任何套件状态**；它与 `--strict-tests` 互斥。
+
+### 3.3.3 引用库测试的可选真实样本入口
+
+`tests/test_bibdb_verify.py` 默认全程使用临时匿名稿件/匿名引用库，**不读取本机任何真实来稿**，也不探测 `~/Desktop` 或稿件仓。真实材料的端到端覆盖是**可选**的，默认关闭，输出里会明确写 `NOT_RUN (h-real) 真实材料额外覆盖：未启用（默认关闭）`。
+
+要启用（仅在你自己的机器上、材料确属可读时）：
+
+```bash
+cd Engine && SLCN_BIBDB_REAL_DIR=/path/to/sample python3 tests/test_bibdb_verify.py
+```
+
+该目录必须同时提供三件，缺任何一件都判 **FAIL 并打印用法错误**（不会降级成 `NOT_RUN`、也不会静默通过）：
+
+| 文件 | 是什么 |
+|---|---|
+| `manuscript.tex` | 稿件正文 |
+| `refs.bib` | 稿件自己的 bib |
+| `library.jsonl` | 引用库（一行一条记录，含 `verified` 字段） |
+
+- 该开关**只**指定一份材料目录，不授予任何禁读目录的权限，也不改变默认库的解析顺序。
+- 跑完会核对三件源文件的 SHA256 未变（字节保护），并断言任务书的「五、库内已核实」只列安全命中。
+- 本机没有可放的真实材料时，保持该变量不设即可；`NOT_RUN` 是需要如实记录的事实，不是缺陷。
 
 ### 3.4 依赖
 

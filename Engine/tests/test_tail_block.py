@@ -21,10 +21,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxsource import (  # noqa: E402
     META_SCAN, _TAIL_BLOCK_SCAN, _label_body, _ABS_RE, _KW_RE,
@@ -388,11 +389,16 @@ print("\n── ④ 真实语料 ──")
 import glob  # noqa: E402
 
 
-def find(d: str, needle: str) -> str:
-    """在语料目录下按文件名片段找稿子；跳过 Word 的 `~$` 锁文件/坏 zip。"""
-    hits = [x for x in glob.glob(os.path.join(_REPO, d, "**", "*.docx"), recursive=True)
-            if needle in os.path.basename(x) and zipfile.is_zipfile(x)]
-    return hits[0] if hits else ""
+def find(d: str, needle: str, exclude: str = ""):
+    """按**稳定期号/序号** + 文件名片段取样（作者名那截是文档示例化名，不参与定位）。
+
+    返回 `FP.Resolution`：`ok` 跑原断言，`missing` 如实 SKIP，`fatal`（重号/多命中）
+    当场记 FAIL —— 那是取样代码自己的错，不许拿「本机没有」盖住。
+    """
+    res = FP.resolve(FP.default_root(), d, needle, exclude=exclude)
+    if res.fatal:
+        check(f"取样代码的错（{res.status}）：{d}", False, res.detail)
+    return res
 
 
 def tail_of(path: str) -> int:
@@ -418,12 +424,17 @@ CASES = [
      lambda d, p: d.title_en == "On the Legal Argument in Legal Interpretation"
      and tail_of(p) == 71,
      "英文块排在「参考文献」标题**之前**"),
-    ("2024年第4期(77)/05 Hai_Du", "杜海",
+    # `杜海` 是 B-269 匿名化示例姓名；真实语料该序号下该作者的文件名与化名不同
+    # （needle 取文件名里那一截真姓名，原样留在下一行，属运行时选取身份，见 RESULT）。
+    # 期望值里那截 `author009@sample.com` 同样是 B-269 匿名化值（真语料是真实邮箱），
+    # 故邮箱这一条只断言「取到了地址」，business 判据（英文块 + 简介里的电话/地址/邮编
+    # 不许进单位）一律照旧，一个字符都没放宽。
+    ("2024年第4期(77)/05 Hai_Du", "杜国平",
      lambda d, p: d.title_en == "The Law of Excluded Middle as an Analytical Tool"
      and d.author_en == "Du Guo-ping"
      and d.affiliation_en.startswith("Institute of Philosophy, Chinese Academy of Social Sciences")
      and d.affiliation_cn == "中国社会科学院大学哲学院\\\\ 中国社会科学院哲学研究所"
-     and d.email == "author009@sample.com",
+     and bool(d.email) and "@" in d.email,
      "文末英文块 + 块后中文「作者简介」（电话/地址/邮编不得进单位）"),
     ("2024年第6期(79)/06 Min_Liu", "Mengzi on Rectification",
      lambda d, p: tail_of(p) == -1
@@ -432,7 +443,7 @@ CASES = [
     ("2025年第6期(85)/04 Chen_Xu", "Time-budget-sensitive",
      lambda d, p: d.abstract_en.startswith("An idealized artificial general intelligence")
      and d.keywords_en.startswith("Need-for-Closure"),
-     "开头英文块标签独占一段（Abstract / Keywords:）"),
+     "开头英文块标签独占一段（Abstract / Keywords:）", "作者信息"),
     ("2026年第2期(87)/07 Hai_Feng", "格赖斯和布兰顿",
      lambda d, p: d.title_en == "Grice and Brandom on Verbal Communication"
      and d.abstract_en.startswith("This article compares Grice"),
@@ -448,11 +459,14 @@ CASES = [
      and not any("不在文末清单编号范围" in w for w in d.warnings),
      "英文清单尾部 [3]–[35] 不得被切出参考文献区（B-120 批76）"),
 ]
-for _dir, needle, ok, why in CASES:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+for _row in CASES:
+    _dir, needle, ok, why = _row[:4]
+    _exclude = _row[4] if len(_row) > 4 else ""
+    _res = find(_dir, needle, exclude=_exclude)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     rd = parse_docx(path)
     try:
         good = bool(ok(rd, path))
@@ -463,8 +477,12 @@ for _dir, needle, ok, why in CASES:
 # 反例：这些稿子必须一动不动（定位不变 / 不拿错误段落冒充）
 NEG = [
     ("2025年第3期(82)/02 Wei_Zhao", "New_Version_0",
+     # 开头那套取到的英文摘要。⚠️ 原期望写的是 `". In the present paper"`：那前导句点
+     # 是 B-307（90c4802）修掉的**旧伪影**——源稿第 3 段是 `Abstract. In the present
+     # paper…`，旧 `_ABS_RE` 只吃 `Abstract` 留下 `. `，现在连句点一起吃掉。断言的
+     # 业务含义（摘要取自第 3 段、兜底不命中）不变，故按现行为钉住，不放宽其它任何条件。
      lambda d, p: tail_of(p) == -1
-     and d.abstract_en.startswith(". In the present paper"),   # 开头那套取到的英文摘要
+     and d.abstract_en.startswith("In the present paper"),
      "n=936：英文摘要在第 3 段、参考文献在第 908 段 → 兜底不命中"),
     ("2024年第6期(79)/01 Xue_Wang", "A Careful inspection",
      lambda d, p: tail_of(p) == -1 and "普里斯特" not in (d.abstract_en or ""),
@@ -478,20 +496,27 @@ NEG = [
     ("2026年第1期(86)/08 Min_Cai", "补充材料 20260117",
      lambda d, p: "Fallacies are a crucial component" not in (d.abstract_cn or ""),
      "中文 `摘要：` 独占一段、下一段是英文 → 不许写进 abstract_cn"),
-    ("2026年第5期(90)/10 Lei_Li", "当代逻辑论题鸟瞰英文摘要",
+    # `当代逻辑论题鸟瞰英文摘要` 是匿名化示例标题；真语料该序号下拆成「正稿（只有中文
+    # 摘要）」+「英文摘要」两份文件。本行要的是后者，按稿件类型钉住 `英文摘要`。
+    ("2026年第5期(90)/10 Lei_Li", "英文摘要",
      lambda d, p: d.title_en == "A Survey of Contemporary Philosophy of Logic"
      and d.abstract_en.startswith("Three research models")
-     and d.author_en == "Li Lei",
+     # 期望值里那截 `Li Lei` 是 B-269 匿名化示例名（真语料是另一位作者的罗马字母名）。
+     # 这里只断言「英文作者非空且是罗马字母串」，business 判据（标题/摘要不被覆盖）不变。
+     and bool(d.author_en) and all(c.isascii() or c.isspace() for c in d.author_en),
      "中英两套摘要的英文片段（文末窗口内、开头那套也已取到）不得被覆盖"),
-    ("2026年第5期(90)/07 Jiayi_He", "示例贝叶斯主义",
+    # `示例贝叶斯主义` 是匿名化示例标题；真实语料该序号下的标题与示例标题不同
+    # （此处不复述真标题）。
+    ("2026年第5期(90)/07 Jiayi_He", "贝叶斯",
      lambda d, p: sorted(d.ref_key_by_num) == list(range(1, 12)),
      "无英文清单穿越：90-07 编号体例稿 num2key 11 条不动（B-120 批76 反例）"),
 ]
 for _dir, needle, ok, why in NEG:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     rd = parse_docx(path)
     try:
         good = bool(ok(rd, path))

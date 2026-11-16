@@ -1097,7 +1097,11 @@ class SinglePage(BasePage):
                 year=self.field("convert_year"), pages=self.field("convert_pages"),
                 received=self.field("convert_received"), author=self.field("convert_author"),
                 name=self.field("convert_name"), bib=self.field("convert_bib"),
-                lang=self.field("convert_lang"), editor=self.field("convert_editor"),
+                # F-04：语种/责编由下拉写入 store 的 form.convert_lang / form.convert_editor，
+                # 从未登记进 self.fields；旧写法 field() 恒为空串 → argv 丢 --lang → 引擎按
+                # 正文误检测成中文模板。这里直接读 store，空值仍不传参（保持自动检测）。
+                lang=(self.app.store.get("form.convert_lang", "") or "").strip(),
+                editor=(self.app.store.get("form.convert_editor", "") or "").strip(),
                 grants=self.field("convert_grants"), refs=self.field("convert_refs"),
                 sty=self.field("convert_sty"), skeleton=self.field("convert_skeleton"),
                 force=bool(options.get("convert_force", False)),

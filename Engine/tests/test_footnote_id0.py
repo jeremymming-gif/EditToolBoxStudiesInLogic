@@ -24,10 +24,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxxml import read_footnotes, segs_to_text  # noqa: E402
 
@@ -142,29 +143,48 @@ os.unlink(p)
 # ══ ③ 真实语料反例（语料不在本机则 SKIP）══════════════════════════════════
 print("\n── ③ 真实语料反例 ──")
 
-import glob  # noqa: E402
-
 from slcn.docxsource import parse_docx  # noqa: E402
 
 
-def find(d: str, needle: str) -> str:
-    hits = [x for x in glob.glob(os.path.join(_REPO, d, "**", "*.docx"), recursive=True)
-            if needle in os.path.basename(x)]
-    return hits[0] if hits else ""
+def find(d: str, needle: str, exclude: str = ""):
+    """按**稳定期号/序号** + 文件名片段取样（作者名那截是文档示例化名，不参与定位）。
+
+    返回 `FP.Resolution`：`ok` 跑原断言，`missing` 如实 SKIP，`fatal`（重号/多命中）
+    当场记 FAIL —— 那是取样代码自己的错，不许拿「本机没有」盖住。
+    """
+    res = FP.resolve(FP.default_root(), d, needle, exclude=exclude)
+    if res.fatal:
+        check(f"取样代码的错（{res.status}）：{d}", False, res.detail)
+    return res
 
 
-# (语料目录, 文件名片段, id=0 脚注里必须出现的邮箱, doc.email 期望值)
+# (语料目录, 文件名片段, id=0 脚注里必须出现的邮箱, doc.email 期望值[, 缺口])
+#
+# 第 5 列是**已证缺口**，不是「本机没有这份语料」：B-269（commit 3d3e096，公开仓
+# 个人信息清扫）把这里的真实邮箱换成 `authorNNN@sample.*`，而语料本身**没有**跟着
+# 匿名化——本机 `Studies_in_Logic_Database` 仍是真实稿。期望值与素材里的事实结构性
+# 不可比，取样修好了也永远不相等。按 §15「原场景对应关系无法证明就列具体缺口」，
+# 如实 SKIP 并标注：不放宽断言，也不把真实邮箱抄进公开代码。
 ID0_CASES = [
     ("2023年第4期(71)/01 Jing_Chen", "传播语境下论证设计的方法",
-     "author006@sample.edu.cn", "author006@sample.edu.cn"),
-    ("2024年第4期(77)/02 Qiang_Wang", "印度正理派", "author017@sample.com", "author017@sample.com"),
-    ("2026年第1期(86)/10 Min_Wang", "专访蒂莫西", "author018@sample.edu.cn", "author018@sample.edu.cn"),
+     "author006@sample.edu.cn", "author006@sample.edu.cn",
+     "B-269 匿名化期望值 vs 本机真实稿"),
+    ("2024年第4期(77)/02 Qiang_Wang", "印度正理派", "author017@sample.com", "author017@sample.com",
+     "B-269 匿名化期望值 vs 本机真实稿"),
+    ("2026年第1期(86)/10 Min_Wang", "专访蒂莫西", "author018@sample.edu.cn", "author018@sample.edu.cn",
+     "B-269 匿名化期望值 vs 本机真实稿"),
 ]
-for _dir, needle, mail, want_email in ID0_CASES:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+for _row in ID0_CASES:
+    _dir, needle, mail, want_email = _row[:4]
+    _gap = _row[4] if len(_row) > 4 else ""
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    if _gap:
+        print(f"SKIP  {_dir}（{_gap}：取样已定位成功，但期望值在本机不可能成立）")
+        continue
+    path = _res.path
     t = texts(path)
     check(f"id=0 真脚注被读出且含 {mail}  [{os.path.basename(path)[:24]}]",
           0 in t and mail in t[0], f"ids={sorted(t)[:4]}… id0={t.get(0, '')[:50]!r}")
@@ -175,14 +195,17 @@ for _dir, needle, mail, want_email in ID0_CASES:
 SEP_CASES = [
     # 目录, 片段, 说明, 期望的脚注 id 集合
     ("2026年第3期(88)/02 Ning_Jiang", "Ockham Semantics", "continuationSeparator 在 id=0", set(range(1, 91))),
-    ("2026年第5期(90)/07 Jiayi_He", "示例贝叶斯主义", "separator 在 id=0、continuationSeparator 在 id=1",
+    # `示例贝叶斯主义` 是 B-269 匿名化示例标题；真实语料该序号下的标题与示例标题不同
+    # （此处不复述真标题）。
+    ("2026年第5期(90)/07 Jiayi_He", "贝叶斯", "separator 在 id=0、continuationSeparator 在 id=1",
      set(range(2, 52))),
 ]
 for _dir, needle, why, want_ids in SEP_CASES:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     t = texts(path)
     check(f"{why}：伪脚注不进结果，真脚注 {min(want_ids)}..{max(want_ids)} 一个不少"
           f"  [{os.path.basename(path)[:24]}]",

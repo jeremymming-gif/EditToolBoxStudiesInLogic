@@ -481,7 +481,96 @@ def extract_body_text(text: str) -> str:
             body = body[:j]
     # 去掉残留的模板注释块
     lines = [ln for ln in body.split("\n") if not ln.strip().startswith("%---")]
+    # 别家文档类专有的前置命令：本刊模板没有定义 → 留在正文里编译必炸
+    limit = len(lines)
+    for idx, ln in enumerate(lines):
+        if re.match(r"\s*\\(?:section|chapter)\*?\{", ln):
+            limit = idx
+            break
+    lines, removed = _strip_foreign_frontmatter(lines, limit)
+    if removed:
+        print(
+            "   · 正文顶部别家文档类专有命令未迁（模板无此定义）："
+            + "、".join(removed[:6]),
+            flush=True,
+        )
     return "\n".join(lines).strip("\n")
+
+
+# 别家文档类（Springer sn-jnl 等）**专有**的前置命令：本刊模板一个都没定义。
+# 摘要/关键词/单位写在正文里时若原样保留，编译必报 Undefined control sequence；
+# 这些信息本来就由 texfront 解析进模板的 my* 字段，正文里那份是重复的。
+FOREIGN_FRONTMATTER_CMDS = (
+    "affil", "keywords", "pacs", "bmhead", "fnm", "sur", "spfx", "sfx",
+    "orcid", "artnotes",
+)
+_FOREIGN_FM_RE = re.compile(r"^\s*\\(?:" + "|".join(FOREIGN_FRONTMATTER_CMDS) + r")\b")
+
+
+def _brace_depth(s: str) -> int:
+    r"""一行的花括号净深度（跳过 \{ 、\} 转义）。"""
+    depth = 0
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    return depth
+
+
+def _strip_foreign_frontmatter(
+    lines: list[str], limit: int
+) -> tuple[list[str], list[str]]:
+    r"""删掉正文顶部**别家文档类专有**的前置命令（含跨行的花括号体）。
+
+    只在第一个 `\section` / `\chapter` 之前动手（`limit` 之后是正文，
+    不碰）；`\title` / `\author` / `\abstract` / `\maketitle` 这类
+    **通用**命令不在此列——article 稿的单位/邮箱只写在 `\author{}` 里，
+    删了就丢信息（语料实测 4 篇文章 / 5 个文件会中招——含同一篇的两份副本）。
+    """
+    # 先看有没有「作者自带的一整段标题页」：\title → \maketitle。
+    # 只有当这一段里出现别家文档类专有命令时，才认定整段是别家的前置块，
+    # 整段切掉（否则产物里会有两个标题页：模板的 \printtitlepage + 作者的 \maketitle）。
+    # 纯 article 稿的 \title/\author/\maketitle 里不会出现这些专有命令，
+    # 因此整段保持不动（语料 359 篇实测 0 触发）。
+    start = None
+    for i in range(limit):
+        if re.match(r"\s*\\title\b", lines[i]):
+            start = i
+            break
+    if start is not None:
+        for j in range(start, limit):
+            if re.match(r"\s*\\maketitle\b", lines[j]):
+                block = lines[start : j + 1]
+                if any(_FOREIGN_FM_RE.match(ln) for ln in block):
+                    return (
+                        lines[:start] + lines[j + 1 :],
+                        [ln.strip() for ln in block if _FOREIGN_FM_RE.match(ln)],
+                    )
+                break
+
+    out: list[str] = []
+    removed: list[str] = []
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if i < limit and _FOREIGN_FM_RE.match(ln):
+            removed.append(ln.strip())
+            depth = _brace_depth(ln)
+            i += 1
+            while depth > 0 and i < len(lines):
+                depth += _brace_depth(lines[i])
+                i += 1
+            continue
+        out.append(ln)
+        i += 1
+    return out, removed
 
 
 def extract_bibkeys_from_body(body: str) -> set[str]:

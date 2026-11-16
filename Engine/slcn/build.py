@@ -17,10 +17,13 @@ from .latex import (
     collect_custom_macros,
     copy_referenced_graphics,
     count_active_inputs,
+    editorial_slots,
     escape_metadata_value,
     expand_inputs,
     find_all_macros,
     insert_body,
+    join_slot_text,
+    live_field_value,
     parse_macros,
     set_field,
 )
@@ -1211,17 +1214,39 @@ def build_latex(
     if os.path.exists(meta_src):
         src_macros = parse_macros(meta_text)
         moved = 0
+        _slots = editorial_slots(tpl_fields)
+        _single = _slots["grants"] and _slots["grants"] == _slots["thanks"]
+        # 单槽模板（英文）下 \mygrants/\mythanks 共用一格：先收齐再一次性写，
+        # 保证「既有致谢在前、基金在后」的顺序与去重与 meta 通道完全一致，
+        # 也不受源稿里两个宏的先后顺序影响。
+        _single_vals: dict[str, list[str]] = {"thanks": [], "grants": []}
         for name, m in src_macros.items():
-            if not name.startswith("my") or name not in tpl_fields:
+            if not name.startswith("my"):
                 continue
+            if name not in tpl_fields:
+                # 源稿写的是 \mygrants、模板却只有 \mythanks（英文标准模板）：
+                # 直接跳过等于丢基金（P1）。并进唯一那个槽，且与模板现值拼接去重。
+                if not (_single and name in ("mygrants", "mythanks")):
+                    continue
             val, notes = clean_field_value(name, m.value)
             for n in notes:
                 say(f"   · {n}")
             if val.strip() in ("", "null"):
                 continue
+            if _single and name in ("mygrants", "mythanks"):
+                _single_vals["grants" if name == "mygrants" else "thanks"].append(val)
+                continue
             tpl = set_field(tpl, name, escape_metadata_value(val))
             moved_vals[name] = val
             moved += 1
+        if _single and (_single_vals["grants"] or _single_vals["thanks"]):
+            _slot = _slots["grants"]
+            _group = join_slot_text(live_field_value(tpl, _slot),
+                                    *(_single_vals["thanks"] + _single_vals["grants"]))
+            if _group and _group.strip() != live_field_value(tpl, _slot).strip():
+                tpl = set_field(tpl, _slot, escape_metadata_value(_group))
+                moved_vals[_slot] = _group
+                moved += 1
         say(f"   搬入 {moved} 个字段")
     else:
         warnings.append(f"元数据源不存在，所有字段留空：{meta_src}")
@@ -1230,12 +1255,16 @@ def build_latex(
         if f not in src_macros or src_macros[f].is_null:
             missing.append(f)
     ed = editorial_fields(meta)
-    for k, v in ed.items():
-        if k in tpl_fields:
-            tpl = set_field(tpl, k, escape_metadata_value(v))
+    # 基金/致谢按模板实际槽位写入（中文 mygrants+mythanks 分离；英文并进 mythanks），
+    # 与模板现值和 meta 致谢拼接去重；其余出版信息仍走 editorial_fields()。
+    # 返回值是**真正 set_field 成功**的槽名——日志按它统计，不再按 ed 条数虚报。
+    tpl, _ed_wrote = apply_editorial_fields(tpl, meta, tpl_fields=tpl_fields)
     missing = [f for f in missing if f not in ed]
-    if ed:
-        say(f"   填入出版信息 {len(ed)} 项：{'、'.join(ed)}")
+    if _ed_wrote:
+        say(f"   填入出版信息 {len(_ed_wrote)} 项：{'、'.join(_ed_wrote)}")
+    # P1 返工：编辑侧数据（如 --grants/--thanks）有值但模板无槽时，apply 静默跳过；
+    # 同 Word 通道，必须如实告警，避免先删源内容再静默丢基金。
+    warnings.extend(editorial_missing_slot_notes(tpl_fields, meta, _ed_wrote))
     if missing:
         warnings.append("以下编辑侧字段需人工填写：" + "、".join(missing))
 
@@ -1255,7 +1284,18 @@ def build_latex(
             warnings.append(f"标准 LaTeX 前言解析异常（已忽略）：{_exc}")
         if _front is not None:
             _tex_fields: list[str] = []
-            for _name, _val in _front.template_values().items():
+            # 按模板实际槽位落值：中文模板 grants→\mygrants、thanks→\mythanks 各自写入
+            # （与改动前逐字节相同）；英文模板只有 \mythanks 一槽，基金并进去。
+            _tv = _front.template_values(tpl_fields)
+            _slots = editorial_slots(tpl_fields)
+            if _slots["grants"] and _slots["grants"] == _slots["thanks"]:
+                _slot = _slots["grants"]
+                _merged = join_slot_text(live_field_value(tpl, _slot), _tv.get(_slot))
+                if _merged:
+                    _tv[_slot] = _merged
+                else:
+                    _tv.pop(_slot, None)
+            for _name, _val in _tv.items():
                 if _name not in tpl_fields or _val.strip() in ("", "null"):
                     continue
                 tpl = set_field(tpl, _name, escape_metadata_value(_val))
@@ -1577,7 +1617,7 @@ def build_latex(
     )
 
 
-def editorial_fields(meta: dict | None) -> dict[str, str]:
+def editorial_fields(meta: dict | None, *, grants_slot: str = "mygrants") -> dict[str, str]:
     """编辑侧**出版信息** → 模板字段。
 
     这些信息作者稿里没有、工具也推不出来。缺了它们的后果很显眼（09 Jiawei_Zhong 实测）：
@@ -1590,7 +1630,8 @@ def editorial_fields(meta: dict | None) -> dict[str, str]:
                        或只给单页 `137`（此时 mypages 留空，编译后可据 PDF 页数补）
       received         收稿日期
       editor           责任编辑（只给姓名即可，会自动包成 `{\\bf （责任编辑：XXX）}`）
-      grants           基金项目（走模板那行被注释的 `%\\renewcommand`，不碰 `\\newcommand`）
+      grants           基金项目（中文模板落 `mygrants`；英文模板没有这个槽，只能并进
+                       `mythanks`，由 `grants_slot` 决定。绝不写模板里不存在的宏）
     """
     m = {k: (v or "").strip() for k, v in (meta or {}).items()}
     out: dict[str, str] = {}
@@ -1616,8 +1657,82 @@ def editorial_fields(meta: dict | None) -> dict[str, str]:
         e = m["editor"]
         out["myeditor"] = e if "责任编辑" in e else "{\\bf （责任编辑：%s）}" % e
     if m.get("grants"):
-        out["mygrants"] = m["grants"]
+        out[grants_slot or "mygrants"] = m["grants"]
     return out
+
+
+def apply_editorial_fields(tpl: str, meta: dict | None, *,
+                           tpl_fields) -> tuple[str, list[str]]:
+    """写编辑侧出版信息（含基金项目/致谢），返回 (新模板, 真正写成功的槽名)。
+
+    基金/致谢的落点由模板决定（见 `latex.editorial_slots()`）：
+      · 中文模板有 `\\mygrants` + `\\mythanks` 两槽 → 各自逐字写入，绝不合并；
+      · 英文模板只有 `\\mythanks` 一槽 → 基金必须并进去，并与模板现值、meta 致谢
+        **拼接去重**（`\\mythanks` 在 SLEN.sty 里排成标题的 `\\thanks` 脚注）。
+    绝不写模板里不存在的宏：英文模板没有 `\\mygrants`，凭空写等于丢字段。
+
+    日志按这里返回的槽名统计——以前按 `editorial_fields()` 条目数上报，被
+    `if k in tpl_fields` 静默跳过的槽也算进去，等于虚报。
+    """
+    fields = set(tpl_fields or ())
+    slots = editorial_slots(fields)
+    gslot, tslot = slots["grants"], slots["thanks"]
+    m = meta or {}
+    grants = str(m.get("grants") or "").strip()
+    thanks = str(m.get("thanks") or "").strip()
+
+    # 其余出版信息（卷/期/年/页/收稿日期/责任编辑）与基金无关，沿用既有映射。
+    ed = editorial_fields(m, grants_slot=gslot or "mygrants")
+    ed.pop("mygrants", None)
+    ed.pop("mythanks", None)
+    planned: dict[str, str] = {k: v for k, v in ed.items() if k in fields}
+
+    if gslot and gslot != tslot:  # 中文模板：两槽分离，逐字写入（行为不变）
+        if grants:
+            planned[gslot] = grants
+        if thanks and tslot:
+            planned[tslot] = thanks
+    elif gslot:  # 英文模板：基金与既有致谢共用一个 mythanks，拼接去重
+        if grants or thanks:
+            merged = join_slot_text(live_field_value(tpl, gslot), thanks, grants)
+            if merged:
+                planned[gslot] = merged
+
+    wrote: list[str] = []
+    for k, v in planned.items():
+        if not k or not v:
+            continue
+        try:
+            tpl = set_field(tpl, k, escape_metadata_value(v))
+        except KeyError:
+            continue
+        wrote.append(k)
+    return tpl, wrote
+
+
+def editorial_missing_slot_notes(tpl_fields, meta: dict | None,
+                                 wrote=None) -> list[str]:
+    """模板没有基金/致谢槽位、值却存在时，给出「内容未写入」的告警（P1 返工）。
+
+    `apply_editorial_fields()` 只写模板里**真实存在**的宏（绝不凭空造
+    `\\mygrants`）。自定义骨架可能连 `\\mythanks` 都没有，此时 grants/thanks
+    整段留在 meta 里没落盘。从前调用方只看「有没有值」，照样打
+    「填入出版信息 N 项」「基金项目：从作者信息脚注/正文填入…」，等于**先把源内容
+    丢掉、再谎报成功**。这里把「有值但没槽位/没写成功」如实报成 warnings，
+    由调用方决定文案；没有任何内容丢失时返回空列表（无值不误报）。
+    """
+    slots = editorial_slots(tpl_fields)
+    wrote_set = set(wrote or ())
+    notes: list[str] = []
+    for key, label in (("grants", "基金项目"), ("thanks", "致谢")):
+        val = str(((meta or {}).get(key)) or "").strip()
+        if not val:
+            continue
+        slot = slots.get(key) or ""
+        if slot and slot in wrote_set:
+            continue
+        notes.append(f"模板没有{label}槽位，以下内容未写入，请人工处理：{val[:40]}")
+    return notes
 
 
 # ── 第四十六批②：LaTeX 稿「参考文献之后的内容」（附录/致谢）迁移 ────────────
@@ -2714,19 +2829,26 @@ def build_docx(
         from .docxsource import escape_latex as _esc
         _grants, _gn = clean_field_value("mygrants", doc.grants)
         _meta_src["grants"] = _esc(_grants)
-        say(f"   基金项目：从作者信息脚注/正文填入「{_grants[:40]}」")
+        # P1 返工：此处仅「解析到」基金，真正落盘要看模板有无对应槽位（下方
+        # apply_editorial_fields + editorial_missing_slot_notes）。旧文案直接说
+        # 「填入」会在无槽骨架下谎报成功，故改为如实说明。
+        say(f"   基金项目：从作者信息脚注/正文解析到「{_grants[:40]}」（将按槽位写入，"
+            f"若模板无槽则告警请人工处理）")
         warnings.extend(_gn)
     if not str(_meta_src.get("received") or "").strip() and getattr(doc, "received", ""):
         _meta_src["received"] = doc.received
         say(f"   收稿日期：从作者信息脚注填入「{doc.received}」")
     ed = editorial_fields(_meta_src)
-    for k, v in ed.items():
-        if k in tpl_fields:
-            tpl = set_field(tpl, k, escape_metadata_value(v))
-    if ed:
-        say(f"   填入出版信息 {len(ed)} 项：{'、'.join(ed)}")
+    # 基金/致谢按模板实际槽位写入：中文模板 mygrants/mythanks 分离；英文模板只有
+    # mythanks，基金必须并进去（并与既有致谢拼接去重）。日志按真实写入的槽统计。
+    tpl, _ed_wrote = apply_editorial_fields(tpl, _meta_src, tpl_fields=tpl_fields)
+    if _ed_wrote:
+        say(f"   填入出版信息 {len(_ed_wrote)} 项：{'、'.join(_ed_wrote)}")
     else:
         say("   出版信息未提供（--vol/--issue/--year/--pages/--received/--editor/--grants）")
+    # P1 返工：自定义骨架连 \mythanks/\mygrants 都没有时，grants/thanks 有值却无处
+    # 落盘——按上面的「填入」日志会谎报成功。如实报 warnings，由编辑人工处理。
+    warnings.extend(editorial_missing_slot_notes(tpl_fields, _meta_src, _ed_wrote))
     if is_en and doc.keywords_en:
         warnings.append(f"英文模板无关键词字段，英文关键词需人工放置：{doc.keywords_en[:40]}…")
     elif not is_en and doc.keywords_en and "mykeywordsEN" not in tpl_fields:

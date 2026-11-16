@@ -11,6 +11,8 @@ r"""第二十二批（第 122 条）工具的回归测试：案例库治理 + �
 
 全部离线、不需要稿件库；平台中立（Windows/mac 的路径分隔符都在断言里归一到 `/`）。
 """
+import contextlib
+import io
 import os
 import re
 import shutil
@@ -158,6 +160,69 @@ check("③ selfcheck 输出「自查通过」", "自查通过" in out)
 check("③ 嵌套调用时套件/文档被 SKIP（防递归）",
       "SKIP" in out and "防递归" in out)
 check("③ App 包内检查被 --skip-app 跳过（O9）", "SKIP  App 包内一致性（--skip-app" in out)
+
+# ── ③b G2：严格请求必须真的透传给下游（不许静默降级成宽松/SKIP）─────────────
+# 反例本体（改动前）：`check_docs(strict_tests=True)` 只做 `if not strict_tests` 的**反选**，
+# 从不把 `--strict-tests` 传给 test_docs_consistency（它的 `_STRICT_TESTS` 默认 False）；
+# 于是 `selfcheck.py --full` 号称严格档，下游照旧非严格，本机还因缺稿件库退化成 SKIP ——
+# 结论仍是「失败 0 项 / 自查通过」。这就是「显式严格请求被静默降级成通过」。
+# 判据（**纯进程内**，不跑子进程、不需要稿件库、不受机器前提影响 → 零耗时且结果确定）：
+#   ① CLI 真的认得 `--strict-tests`（RELEASING.md:160 / AGENTS.md:101 早就这么写了）；
+#   ② 严格档拼出的命令**含** `--strict-tests`，且**不含** `--no-test-runs`（下游两者互斥）；
+#   ③ 非严格档拼出的命令含 `--no-test-runs` 且不含 `--strict-tests`（低成本行为不退化）；
+#   ④ 下游非零 → check_docs 必须让 FAILS 变长（rc 不许被吞）；
+#   ⑤ 下游 BLOCKED（严格档缺前提）→ 记成可区分的「BLOCKED」而不是「红」。
+# 用打桩替换 `S.run` 抓命令/注入 rc：这样断言的是**契约本身**，不依赖本机有没有稿件库。
+_runs: list[list[str]] = []
+
+
+def _fake_run(rc, out):
+    def _f(cmd, cwd=None, timeout=1800):
+        _runs.append(list(cmd))
+        return rc, out
+    return _f
+
+
+def _probe_docs(strict, rc, out):
+    """打桩跑一次 check_docs，返回 (拼出的命令, 新增的 FAILS 列表)。
+
+    ⚠️ 必须**吞掉** check_docs 的 stdout：它会打印以 `PASS  `/`FAIL  ` 开头的行，
+    而本文件自身也是 gen_docs 统计断言数的套件之一（见 _flat 的同类注释），
+    这些行被记账后会把 AUTO 的测试计数行搅脏。
+    """
+    _runs.clear()
+    _orig_run, _orig_fails = S.run, list(S.FAILS)
+    S.run = _fake_run(rc, out)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            S.check_docs(strict_tests=strict)
+        return _runs[0], [f for f in S.FAILS if f not in _orig_fails]
+    finally:
+        S.run = _orig_run
+        S.FAILS[:] = _orig_fails
+
+
+_cmd_strict, _fails_strict_ok = _probe_docs(True, 0, "失败 0 项（全部通过）")
+check("③b 严格档把 --strict-tests 透传给下游（不再只做 --no-test-runs 的反选）",
+      "--strict-tests" in _cmd_strict and "--no-test-runs" not in _cmd_strict,
+      " ".join(_cmd_strict[-2:]))
+check("③b 严格档下游 rc=0 → 不记失败（正常路径不被误伤）", _fails_strict_ok == [],
+      str(_fails_strict_ok))
+_cmd_lenient, _ = _probe_docs(False, 0, "失败 0 项（全部通过）")
+check("③b 非严格档仍走 --no-test-runs（quick 的低成本行为不退化）",
+      "--no-test-runs" in _cmd_lenient and "--strict-tests" not in _cmd_lenient,
+      " ".join(_cmd_lenient[-2:]))
+_, _fails_strict_red = _probe_docs(True, 1, "FAIL  (a) AUTO 块过期")
+check("③b 严格档下游非零 → check_docs 记失败（rc 不被吞）",
+      len(_fails_strict_red) == 1, str(_fails_strict_red))
+_, _fails_blocked = _probe_docs(
+    True, 2, "BLOCKED  (a) 严格测试校验无法进行：gen_docs --check --strict-tests 返回 BLOCKED")
+check("③b 严格档下游 BLOCKED → 记成可区分的「BLOCKED」而不是混作「红」",
+      any("BLOCKED" in f for f in _fails_blocked), str(_fails_blocked))
+_r_help = subprocess.run([sys.executable, SELF, "--help"], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", env=env)
+check("③b selfcheck CLI 有 --strict-tests（兑现 RELEASING.md/AGENTS.md 的写法）",
+      "--strict-tests" in (_r_help.stdout or ""), (_r_help.stdout or "")[-200:])
 
 # ── ④ O9 反例（第四十四批③a）：拆掉 test_selfcheck × App 新鲜度循环依赖 ─────
 # 判据（三反例）：

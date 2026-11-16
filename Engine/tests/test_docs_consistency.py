@@ -54,11 +54,14 @@ import sys
 
 # 第四十一批 O2：默认低成本（内部 gen_docs --check 不跑套件）；`--strict-tests` 切回老行为。
 # 保留 `--no-test-runs` 显式开关，让调用方（selfcheck quick）能自证"我知道自己在跳过重复套件"。
+# G2：`--strict-tests` 现在**透传**给下游 `gen_docs.py --check --strict-tests`（从前只在本文件内部
+#     起作用，下游照旧走非严格 —— 于是"严格请求"其实没有严格效果，本机还退化成 SKIP+通过）。
 _AP = argparse.ArgumentParser(add_help=True, description="文档一致性看门狗")
 _AP.add_argument("--no-test-runs", action="store_true",
                  help="内部 gen_docs --check 不跑套件（默认即此模式；保留显式开关便于调用方自证）")
 _AP.add_argument("--strict-tests", action="store_true",
-                 help="反选：内部 gen_docs --check 跑套件做严格 AUTO 校验（发版前用）")
+                 help="透传 --strict-tests 给内部 gen_docs --check（真跑套件、测试计数行按实测严格比对）；"
+                      "缺前提时下游给 BLOCKED，本测试判 FAIL 而不是 SKIP（发版前用）")
 _ARGS = _AP.parse_args()
 _STRICT_TESTS = _ARGS.strict_tests
 
@@ -82,6 +85,10 @@ REPO = _git_root()                                  # 仓库根
 # sys.executable 就是 /opt/homebrew/bin/python3.14，行为逐字节不变；老路径只作兜底。
 PY = sys.executable if sys.version_info >= (3, 14) else "/opt/homebrew/bin/python3.14"
 FAILS: list[str] = []
+# G2：严格请求在本机**做不到**（缺前提/下游 BLOCKED）时记这里 —— 它同时计入 FAILS，
+# 所以尾部汇总永远不会出现「失败 0 项（全部通过）」。单列一份只是为了在汇总里**可区分**：
+# 「本机条件不足、严格校验没能进行」与「校验跑了但比对不一致」是两种不同的红。
+BLOCKED: list[str] = []
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -90,12 +97,46 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         FAILS.append(name)
 
 
+def blocked(name: str, detail: str = "") -> None:
+    """严格请求在本机**无法完成**（缺前提等）：打印 BLOCKED 行，并计入失败。
+
+    为什么不只是 SKIP：`--strict-tests` 是**显式**要求「用实测套件严格比对」。本机做不到时
+    唯一诚实的结论是「没通过」，不是「跳过」—— 跳过会让 `失败 0 项（全部通过）` 与 rc=0
+    同时出现，那正是「显式严格请求被静默降级成通过」的形态（G2 要修的就是它）。
+    """
+    print("BLOCKED  " + name + ("  " + detail if detail else ""))
+    BLOCKED.append(name)
+    FAILS.append(name)
+
+
+def _dump_child(title: str, cmd: list[str], rc: int, out: str) -> None:
+    """把下游子进程的 rc / 命令 / 原始 stdout+stderr **逐行全量**转出。
+
+    严格模式判 BLOCKED/FAIL 时必须留原始证据：只打「最后一行」会把 gen_docs 的 `BLOCKED`
+    抬头与原因清单吃掉，事后没人能从日志分辨「真的通过」与「被降级成 SKIP」。
+    每行前缀 `      │ ` 也是刻意选的：gen_docs / run_engine_tests 都用 `^\\s*(PASS|FAIL)\\b`
+    数断言行，加了非空白前缀后这些转出的历史行不会被误计成本套件的断言行。
+    """
+    print(f"      ↳ {title} 原始输出（rc={rc}）")
+    print(f"      ↳ 命令：{' '.join(cmd)}")
+    for _ln in (out.rstrip("\n") or "（无输出）").split("\n"):
+        print("      │ " + _ln)
+
+
 # ── (a) AUTO 块不过期 ──────────────────────────────────────────────────────
 print("── (a) AUTO 块（tools/gen_docs.py --check）──")
-# ⚠️ 前提不全（没有稿件库 / TeX / LibreOffice）时 **SKIP 而不是 FAIL**：
+if _STRICT_TESTS:
+    print("严格模式（--strict-tests）：把严格意图透传给下游 gen_docs（真跑套件、测试计数行按实测"
+          "逐字比对）；缺前提时下游给 BLOCKED，本测试判**红**（不是 SKIP、不是通过）。")
+# ⚠️ **非严格档**：前提不全（没有稿件库 / TeX / LibreOffice）时 SKIP 而不是 FAIL ——
 #    AUTO 块里的测试计数等数字随前提浮动，公开仓与 CI 上本来就不该拿它当硬断言。
 #    严格校验留给前提齐全的开发机 —— 那里它才是"数字不许手抄"的真正守卫。
 #    （2026-10-16：CI 首跑就红在这里，逼出这条判据。）
+# ⚠️ **严格档（G2）**：SKIP 这条路被**收掉**了。`--strict-tests` 是显式要求，本机做不到时
+#    唯一诚实的结论是「没通过」；从前这里在缺前提时直接 SKIP，于是
+#    「显式严格请求 → SKIP → 失败 0 项（全部通过）→ rc=0」，严格请求被静默降级成通过。
+#    现在：**无条件**把 `--strict-tests` 透传给下游，由下游给出可区分的 BLOCKED（rc=2 +
+#    原因清单），本测试把任何非零都判红，并逐行转出下游的原始 stdout/stderr。
 # 两个路径都要挂：`tools/` 找 gen_docs，`Engine/` 让 gen_docs 内部能 `from slcn import paths`
 sys.path.insert(0, str(ENGINE / "tools"))
 sys.path.insert(0, str(ENGINE))
@@ -106,11 +147,38 @@ try:
 except Exception as _e:  # noqa: BLE001  连探测都失败 → 按前提不全处理
     _complete, _missing = False, [f"探测异常 {type(_e).__name__}"]
 
-if not _complete:
-    print(f"SKIP  (a) AUTO 块严格校验：本机缺 {'、'.join(_missing)} —— "
-          "测试计数与依赖稿件库的数字会变，这一项只在前提齐全的机器上有意义")
+_GEN_DOCS = str(ENGINE / "tools" / "gen_docs.py")
+_MISSING_TXT = "、".join(_missing)
+
+if _STRICT_TESTS:
+    # 严格请求：**不**看 _complete 就调下游 —— 缺前提的判定权归下游（它负责说 BLOCKED + 原因），
+    # 本测试只负责「非零就是红、并留原始证据」。也不追加 --no-test-runs（与 --strict-tests 互斥）。
+    _strict_cmd = [PY, _GEN_DOCS, "--check", "--strict-tests"]
+    _ps = subprocess.run(_strict_cmd, cwd=str(ENGINE), capture_output=True,
+                         text=True, encoding="utf-8", errors="replace")
+    _sout = _ps.stdout + _ps.stderr
+    if _ps.returncode == 0:
+        check("(a) gen_docs.py --check --strict-tests 通过"
+              "（严格：实跑套件、AUTO 测试计数行按实测逐字比对）", True,
+              "｜".join(_sout.strip().split("\n")[-1:])[:200])
+    elif "BLOCKED" in _sout:
+        # 可区分的第一类红：本机前提不足，严格校验**没做成**。
+        blocked("(a) 严格测试校验无法进行：gen_docs --check --strict-tests 返回 BLOCKED"
+                f"（本机缺 {_MISSING_TXT or '前提'}）",
+                f"exit={_ps.returncode}")
+        _dump_child("gen_docs.py --check --strict-tests", _strict_cmd, _ps.returncode, _sout)
+    else:
+        # 可区分的第二类红：下游真跑了校验但没通过（AUTO 过期 / 套件异常等）。
+        check("(a) gen_docs.py --check --strict-tests 通过"
+              "（严格：实跑套件、AUTO 测试计数行按实测逐字比对）", False,
+              "｜".join(_sout.strip().split("\n")[-1:])[:200])
+        _dump_child("gen_docs.py --check --strict-tests", _strict_cmd, _ps.returncode, _sout)
+elif not _complete:
+    print(f"SKIP  (a) AUTO 块严格校验：本机缺 {_MISSING_TXT} —— "
+          "测试计数与依赖稿件库的数字会变，这一项只在前提齐全的机器上有意义"
+          "（非严格档的低成本取舍；要严格校验请加 --strict-tests，那时缺前提判 BLOCKED/红）")
 else:
-    _gen_docs_cmd = [PY, str(ENGINE / "tools" / "gen_docs.py"), "--check"]
+    _gen_docs_cmd = [PY, _GEN_DOCS, "--check"]
     if not _STRICT_TESTS:
         # 低成本模式（默认）：不跑套件；测试计数行由独立的 gen_docs --check 守卫（见文件头 O2 分工）
         _gen_docs_cmd.append("--no-test-runs")
@@ -120,12 +188,20 @@ else:
     _mode = "严格（含套件）" if _STRICT_TESTS else "低成本（--no-test-runs）"
     check(f"(a) gen_docs.py --check 通过（{_mode}；README 的 AUTO 块 = 现算结果）",
           p.returncode == 0, f"exit={p.returncode} {tail}")
+    if p.returncode != 0:
+        _dump_child("gen_docs.py --check", _gen_docs_cmd, p.returncode, p.stdout + p.stderr)
 
 # ── (a2) 反例：--no-test-runs 仍必须抓住「非测试行」的漂移 ─────────────────
 # O2 把「测试计数行」排除出本项比对，但**不能**顺带把非测试行也放宽。本反例证明：
 # 故意改一行 AUTO 非测试行（普查行）→ `--check --no-test-runs` 必须退出 1 且指出过期；
 # 随后**逐字节还原** README（finally 保证，异常路径也还原）。
-if not _complete:
+# G2：严格档里这一项也**不 SKIP** —— 它是「严格请求到底做没做成」的一部分，缺前提时同样给
+#     BLOCKED（计入失败），否则严格运行的结论里会混进"有一项悄悄没跑"。
+if not _complete and _STRICT_TESTS:
+    blocked("(a2) 反例：严格档无法执行（本机缺 "
+            f"{_MISSING_TXT or '前提'}）—— 严格请求不降级成 SKIP",
+            "非严格档才允许跳过这一项")
+elif not _complete:
     print("SKIP  (a2) 反例：本机前提不全（与 (a) 同因），跳过")
 else:
     _readme_path = ENGINE / "README.md"
@@ -163,7 +239,12 @@ else:
 # ① 清单字段齐全/指纹确定；② 缓存失效条件（engine/tests 变了必须重跑套件）；
 # ③ 快速通道命中/不命中的三种情形（输入变、块被改）。
 print("\n── (e) AUTO 输入冻结（O14）──")
-if not _complete:
+# G2：与 (a2) 同理 —— 严格档不许把「本机做不到」写成 SKIP（那会让严格运行的结论虚高）。
+if not _complete and _STRICT_TESTS:
+    blocked("(e) AUTO 输入冻结检查在严格档无法执行（本机缺 "
+            f"{_MISSING_TXT or '前提'}）—— 严格请求不降级成 SKIP",
+            "非严格档才允许跳过这一项")
+elif not _complete:
     print("SKIP  (e) AUTO 输入冻结：本机前提不全（与 (a) 同因），跳过")
 else:
     try:
@@ -453,5 +534,15 @@ else:
           f"31-61.md = {len(nums_by_file.get('31-61.md', set()))} 条")
 
 print()
+# 「失败 N 项」是本文件对外的稳定契约：tools/batch_accept.py:313 用
+# `_num(r"失败 (\d+) 项", text, last=True)` 解析验收结论，格式一个字都别动。
 print(f"失败 {len(FAILS)} 项" + (f"：{FAILS}" if FAILS else "（全部通过）"))
+# G2：BLOCKED 单列一行（**仅在严格档真的被前提挡住时出现**），让「严格没做成」与
+# 「文档真的不一致」在输出层面可区分 —— 两者都计入 FAILS（rc≠0），但原因不同，
+# 排查时不该混为一谈。放在「失败 N 项」之后：上面的 last=True 取的仍是同一处匹配。
+if BLOCKED:
+    print(f"BLOCKED {len(BLOCKED)} 项（严格请求被前提挡住，未做任何严格比对；"
+          f"这**不是**通过，请在前提齐全的机器上重跑）：")
+    for _b in BLOCKED:
+        print(f"  - {_b}")
 sys.exit(1 if FAILS else 0)

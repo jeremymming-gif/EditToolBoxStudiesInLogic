@@ -56,7 +56,12 @@ _SENT_END = re.compile(r"[.。]\s+|$")
 #: 「作者简介：任静，（1984-）… 唐山师范学院…」曾被当成 ref → 多出 junk bib 条目）
 _AUTHOR_INFO = re.compile(
     r"作者简介|作者信息|基金项目|通讯作者|通信作者|收稿日期|录用日期|"
-    r"E-?mail|电子邮箱|邮箱[:：]|\bDOI\b.*作者|项目编号")
+    r"E-?mail|电子邮箱|邮箱[:：]|\bDOI\b.*作者|项目编号"
+    # F-01：英文基金/致谢块即使含年份、机构名，也绝不能当文献提升。
+    # 用 `(?i:…)` 局部忽略大小写（本正则整体不带 re.I，不可全局改）。
+    r"|(?i:\bfunding\b|\bgrants?\s+(?:no\.?|number|support)\b|"
+    r"\bsupported\s+by\b|\bproject\s+no\.?\b|"
+    r"\backnowledg(?:e)?ments?\b)")
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
 
 
@@ -227,7 +232,33 @@ _AI_NAME_LABEL = (
     r"通讯作者|通信作者|Corresponding\s+author"
 )
 _AI_RECEIVED_LABEL = r"收稿日期|录用日期|投稿日期|修回日期|修订日期"
-_AI_FUND_LABEL = r"基金项目|基金资助|资助项目|项目资助"
+# F-01：英文基金/致谢标签。中文标签保持原样在前，英文追加在后（正则整体 re.I）。
+# 英文标签仅在「[id:] label:」的段标签位置或正文独立行行首才生效，不认行中间词。
+_AI_FUND_EN_LABEL = (
+    # F-01 增量：`Fund No.:` / `Funding No.:` 独立行变体（最长匹配优先，仍不认裸 fund/funds）
+    r"fund(?:ing)?\s+no\.?|"
+    r"funding|financial\s+support|grants?(?:\s+(?:no\.?|number|support))?|"
+    r"supported\s+by|project\s+no\.?|NSFC|project\s+fund(?:ing)?|"
+    r"acknowledg(?:e)?ments?"
+)
+# F-01：段标签/作者信息判据只认**无歧义的英文基金标签**（Funding/Grant/Supported by/
+# Project No./NSFC 等）；`Acknowledgements` 在既有 B-217 作者块里是尾随的致谢行，
+# 绝不能因此把整块判成作者信息段而丢掉作者，故只放到独立行 fund-line 判据里。
+_AI_FUND_EN_SECTION = (
+    r"funding|financial\s+support|grants?(?:\s+(?:no\.?|number|support))?|"
+    r"supported\s+by|project\s+no\.?|NSFC|project\s+fund(?:ing)?"
+)
+_AI_FUND_LABEL = r"基金项目|基金资助|资助项目|项目资助|" + _AI_FUND_EN_SECTION
+_AI_FUND_LINE_LABEL = r"基金项目|基金资助|资助项目|项目资助|" + _AI_FUND_EN_LABEL
+#: `_ai_kind` 用：段标签（不含冒号）落到英文基金/致谢时也算 funds。
+_AI_FUND_EN_KIND_RE = re.compile(r"^(?:" + _AI_FUND_EN_SECTION + r")$", re.I)
+#: 无标签英文基金句（如「This work was supported by …」）的判据。
+#: 只认**强致谢措辞**，不认单纯出现 grant/funding 的普通文献句（避免误判）。
+_AI_FUND_SENTENCE_RE = re.compile(
+    r"\b(?:supported|funded)\s+by\b|\bfinancial\s+support\b|"
+    r"\bthis\s+(?:work|research|study|paper)\s+"
+    r"(?:was|is|has\s+been)\s+(?:supported|funded)\b",
+    re.I)
 _AI_LABEL_LEAD_RE = re.compile(
     r"(?:^|\n)[ \t\u3000]*(?:" + _AI_NAME_LABEL + "|" + _AI_RECEIVED_LABEL
     + "|" + _AI_FUND_LABEL + r")[ \t\u3000]*[:：]", re.M | re.I)
@@ -313,7 +344,7 @@ def _ai_kind(label: str) -> str:
         return "authors"
     if lab in _AI_RECEIVED_SET:
         return "received"
-    if lab in _AI_FUND_SET:
+    if lab in _AI_FUND_SET or _AI_FUND_EN_KIND_RE.match(lab):
         return "funds"
     return "authors"
 
@@ -733,6 +764,10 @@ def parse_author_info(
             return None
     elif _ai_unlabeled_ok(t, known_cn, known_en):
         sections = [("authors", t)]
+    elif _AI_FUND_SENTENCE_RE.search(t) and not _AI_CITE_CUE_RE.search(t):
+        # F-01 ⑧：无标签英文基金句（This work was supported by …）自带致谢措辞判据，
+        # 且不含年份/期刊/引号等文献标记 → 当成 funds 段，不臆造作者。
+        sections = [("funds", t)]
     else:
         # 无标签英文作者块（B-217 ④⑥）：姓名/单位/邮箱**自带判据**，不依赖已知名单
         # （英文稿的已知名单常为空或为拆碎的拉丁串）。
@@ -784,7 +819,8 @@ def parse_fund_line(text: str) -> str:
     t = (text or "").strip()
     if not t or len(t) > 300:
         return ""
-    m = re.match(r"^(?:" + _AI_FUND_LABEL + r")[ \t\u3000]*[:：][ \t\u3000]*(\S.*)$", t)
+    m = re.match(r"^(?:" + _AI_FUND_LINE_LABEL + r")[ \t\u3000]*[:：][ \t\u3000]*(\S.*)$",
+                 t, re.I)
     if not m:
         return ""
     return m.group(1).strip().rstrip()

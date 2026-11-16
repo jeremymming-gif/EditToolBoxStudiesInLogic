@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from slcn import bibcheck, bibnorm, refmark  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
 
 pass_n = 0
 fails: list[str] = []
@@ -201,10 +202,14 @@ out6, notes6 = bibnorm.normalize_bib(DONE)
 check("(c) 不变量：已经合规范的 SEP 条目**逐字节不变**",
       out6.strip() == DONE.strip(), f"notes={notes6}")
 
-# 端到端：仓库里那份成品的 SEP 条目跑 normalize_bib → 字段一个不少
-BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "..", "..", "2026年第5期(90)", "10 Lei_Li", "reference.bib")
-BASE = os.path.normpath(BASE)
+# 端到端：成品里那份 SEP 条目跑 normalize_bib → 字段一个不少。
+#
+# 取样只按「期号 + 篇序号 + 文件名」定：原来路径里写死了 `10 Lei_Li` —— 那是文档示例
+# 化名（见 `slcn/naming.py`），真实语料里这一篇的目录名与化名不同，于是文件明明在、断言却
+# 一直 SKIP 成「换了机器/目录」。用 `resolve_file` 以后既不再抄真实作者名，也不会
+# 因为目录显示名变了就静默跳过；真找不到才是 `no-match`（合法 SKIP）。
+_FIN = FP.resolve_file(FP.default_root(), "2026年第5期(90)/10", "reference", ".bib")
+BASE = _FIN.path if _FIN.ok else ""
 if os.path.isfile(BASE):
     text = open(BASE, encoding="utf-8", errors="replace").read()
     import re
@@ -216,7 +221,10 @@ if os.path.isfile(BASE):
     else:
         check("(d) 成品 reference.bib 里能找到 Steinberger2022", False, "没找到")
 else:
-    print("SKIP  (d) 成品 reference.bib 不在（换了机器/目录）")
+    if _FIN.fatal:
+        check(f"(d) 取样代码的错（{_FIN.status}）：成品 reference.bib", False, _FIN.detail)
+    else:
+        print(f"SKIP  (d) 成品 reference.bib  {FP.skip_line(_FIN)}")
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

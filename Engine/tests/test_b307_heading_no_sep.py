@@ -26,12 +26,12 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_GITHUB = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from slcn.docxsource import _HEAD_CN_DOT, classify_en_heading, parse_docx  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402
 from slcn.wordmeta import (  # noqa: E402
     _HEAD_CN_ARABIC, _HEAD_CN_ART_RE, _HEAD_EN3, _cn_arabic_run_ids,
 )
@@ -206,15 +206,20 @@ finally:
             os.unlink(_p)
 
 # ══ ③ 真实语料（不在本机则 SKIP）═══════════════════════════════════════════
-print("\n── ③ 真实语料 04 Yingying_Wang ──")
+print("\n── ③ 真实语料 2023年第4期(71)/04 ──")
 
-REAL = os.path.join(
-    _GITHUB, "Studies_in_Logic_Database", "2023年第4期(71)", "04 Yingying_Wang",
-    "original", "20160050760_O_editing.docx",
-)
-if not os.path.exists(REAL):
-    print("SKIP  2023年第4期(71)/04 Yingying_Wang（本机没有这份语料）")
+# 原来这里是 `_GITHUB = dirname(dirname(_ENGINE))` + 硬编码「序号 04 + 一个作者目录名」。
+# 两个错：① `_GITHUB` 在 worktree 里解析成 worktree 的**父目录**（不是 ~/Documents/GitHub）；
+# ② 路径里带作者名段（文档示例化名，B-269 后真语料里是别人）。改成按**期号+序号**定位，
+# 文件名片段沿用原来的 `20160050760_O_editing`（命中真语料同一份文件）。
+_REAL = FP.resolve(FP.default_root(), "2023年第4期(71)/04", "20160050760_O_editing")
+if _REAL.fatal:
+    print(f"FAIL  取样代码的错（{_REAL.status}）：2023年第4期(71)/04")
+    FAILS.append(f"取样代码的错（{_REAL.status}）：2023年第4期(71)/04")
+elif not _REAL.ok:
+    print(f"SKIP  {FP.skip_line(_REAL)}")
 else:
+    REAL = _REAL.path
     d = parse_docx(REAL)
     got = [h for _lv, h in d.headings]
     check("真实稿：6 个 `N、` 标题全部恢复（B-303 B1 的验收样本）",

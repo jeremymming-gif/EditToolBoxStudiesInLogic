@@ -35,10 +35,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxsource import make_key, parse_docx, parse_reference_line, refs_to_bib  # noqa: E402
 
@@ -289,10 +290,14 @@ check("⑧ 最小 docx：文献区解析出 1 条、键 Tarski2019",
 check("⑧ 最小 docx：端到端产出 = 黄金字面量", refs_to_bib(d_min.refs) == TARSKI_BIB,
       repr(refs_to_bib(d_min.refs)))
 
-REAL = os.path.join(_REPO, "2026年第5期(90)", "10 Lei_Li", "original", "李雷 当代逻辑论题鸟瞰.docx")
-if not os.path.exists(REAL):
-    skip("真实稿 10 Lei_Li", "语料不在本机")
+# 取样只按期号+序号，正文由 `pick_main_docx()` 按**内容**认（不按文件名、不看断言）。
+_REAL = FP.resolve_main(FP.default_root(), "2026年第5期(90)/10")
+if _REAL.fatal:
+    check(f"取样代码的错（{_REAL.status}）：2026年第5期(90)/10", False, _REAL.detail)
+if not _REAL.ok:
+    skip("真实稿 2026年第5期(90)/10", FP.skip_line(_REAL))
 else:
+    REAL = _REAL.path
     d_real = parse_docx(REAL)
     by_key = {e.key: e for e in d_real.refs}
     check("⑧ 真实稿：Tarski2019 源稿原行逐字等于主诉那条",

@@ -105,6 +105,15 @@ G.CORPUS_DIR = OUT / "corpus"
 # 保持 hermetic（不读真实笔记仓；CI 上本来也没有笔记仓 → 否则这里会走信息性降级分支）。
 G.notes_audit_paths = lambda: (OUT / "docx_audit.csv", OUT / "docx_audit.txt")
 
+# 卡 §9 第 3 项（测试内解决兼容）：`G.ENGINE` 指向本 fixture，`tests/` 下只放 test_a / test_b
+# 两个**空壳**套件文件。这样 `G.test_files()` 默认实现（`sorted((ENGINE/"tests").glob("test_*.py"))`）
+# 自然返回的正是 `FAKE_ROWS` 的那两个匿名套件 —— 覆盖面对得上，不必在生产代码里为测试留特例
+# （§9 第 1 项要求写模式复用的名单**无条件**恰好覆盖 `test_files()`，不保留 `covered == 0` 豁免）。
+# 空壳文件同时让 `_tests_manifest()` 的 `relative_to(ENGINE)` 与 `_sha256_file()` 都能正常工作。
+write(ROOT / "tests" / "test_a.py", "# 匿名替身套件 a（不会被执行：run_tests 已被替换）\n")
+write(ROOT / "tests" / "test_b.py", "# 匿名替身套件 b（不会被执行：run_tests 已被替换）\n")
+G.ENGINE = ROOT
+
 FAKE_ROWS = [("test_a", 3, 0), ("test_b", 4, 0)]
 CALLS: list[bool] = []
 

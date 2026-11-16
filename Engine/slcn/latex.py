@@ -686,3 +686,70 @@ def insert_body(template_text: str, body: str) -> str:
         head += "\n" + "\n".join(header).rstrip("\n")
     tail = "\n".join(lines[end:])
     return head + "\n\n" + body.strip("\n") + "\n\n" + tail
+
+
+# ── 编辑侧字段（基金项目 / 致谢）的槽位判定与安全拼接 ──────────────────────
+# 中文模板有 `\mygrants` 与 `\mythanks` 两个槽（sty 分别排「基金项目：」「致　　谢：」）；
+# 英文模板只有 `\mythanks` 一个槽（SLEN.sty 把它排成标题的 `\thanks` 脚注），
+# 所以英文稿的基金必须并进 mythanks——绝不能凭空造一个 `\mygrants`
+# （模板里没有这个 `\newcommand`，写进去等于丢掉，xelatex 也会报 undefined）。
+# 并与模板现值 / meta 致谢拼接去重、互不覆盖。
+
+_SLOT_SENT_SPLIT = re.compile(r"[；;。\n]+")
+
+
+def editorial_slots(tpl_fields) -> dict[str, str]:
+    """编辑侧字段（grants / thanks）在该模板里的落点槽位；模板没有的给空串。
+
+    中文模板：grants→mygrants、thanks→mythanks（两槽分离，不合并）。
+    英文模板：两字段都→mythanks（同一个 \\newcommand，只能拼成一段）。
+    """
+    have = set(tpl_fields or ())
+    if "mygrants" in have:
+        return {"grants": "mygrants",
+                "thanks": "mythanks" if "mythanks" in have else ""}
+    if "mythanks" in have:
+        return {"grants": "mythanks", "thanks": "mythanks"}
+    return {"grants": "", "thanks": ""}
+
+
+def split_slot_text(value: str | None) -> list[str]:
+    """按中文分号/句号/换行切成若干句，去掉空白、空串与模板惯用的 null。"""
+    if not value:
+        return []
+    out: list[str] = []
+    for piece in _SLOT_SENT_SPLIT.split(str(value)):
+        s = " ".join(piece.split())
+        if s and s != "null":
+            out.append(s)
+    return out
+
+
+def join_slot_text(*parts: str | None) -> str:
+    """把多段文字拼同一个槽值：同一句只留一次，用「；」连接、以「。」收尾。
+
+    只用于**两个字段不得不共用一个槽**的场合（英文模板的 mythanks）。中文模板
+    两槽分离，绝不走这里——那边必须保持逐字节不变。
+    """
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for p in parts:
+        for s in split_slot_text(p):
+            key = s.rstrip("。．.；;，, ")
+            if key and key not in seen:
+                seen.add(key)
+                uniq.append(s)
+    if not uniq:
+        return ""
+    return "；".join(uniq) + "。"
+
+
+def live_field_value(text: str, name: str) -> str:
+    """模板里某宏当前**有效**的值；缺失、`null`、空串一律给空串。
+
+    用于「写入前先看槽里原来有什么」，保证既有致谢不被新值覆盖。
+    """
+    m = parse_macros(text).get(name)
+    if m is None or m.is_null:
+        return ""
+    return m.value

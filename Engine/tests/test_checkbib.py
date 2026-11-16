@@ -107,7 +107,12 @@ def real_pair(need_cites=True, min_entries=3, require_closed=True):
 
 
 def clean_real_bib(min_entries=3):
-    """找一份**零问题**的真实 bib（现为 2026_08_Jing_Ren：15 条、0 问题）。"""
+    """找一份**零问题**的真实 bib（在 out/corpus 里按目录名升序扫，取条数最多的一份）。
+
+    历史注：早期本机有一份 2026_08_Jing_Ren 的 bib 恰好 15 条 0 问题，函数当初就
+    是照着它写的；那份语料在本机已不存在，所以下面只按「0 问题 + 条数 ≥ min_entries」
+    现扫现取。扫不到就是诚实的 SKIP（调用点在 `main()` 里给出原因），不是断言放宽。
+    """
     if not os.path.isdir(CORPUS):
         return None
     best = None

@@ -271,10 +271,23 @@ check("(d) build-flet 只在手动触发（发版前验证），不随 push 打�
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (e) 笔记仓 tools/run_gates.py（S1）：--help / lint 解析 / 依赖留痕 ──")
-_notes = REPO.parent / "EditToolBox-notes"
-_rg = _notes / "tools" / "run_gates.py"
-if not _rg.is_file():
-    print(f"SKIP  (e) 没有 {_rg}（笔记仓未检出本工具；门禁机上必须全跑）")
+# 笔记仓定位走房规 `slcn.paths.notes_root()`（判据：目录里有 `cases/`；`SLCN_NOTES` 优先）。
+# 旧代码写的是 `REPO.parent / "EditToolBox-notes"` —— 那是**主检出**的兄弟目录；在 worktree
+# 里 `REPO` 是 `<…>/worktrees/<名字>/EditToolBoxStudiesInLogic`，`REPO.parent` 变成
+# `<…>/worktrees/<名字>`，于是明明存在的 `tools/run_gates.py` 被判成「没有」，静默 SKIP。
+# 房规内其他套件（如 `tests/test_batch59_coop_fulltext.py:238`）都走 `paths.notes_root()`。
+if str(ENGINE) not in sys.path:
+    sys.path.insert(0, str(ENGINE))
+try:
+    from slcn import paths as _paths
+    _notes_dir = _paths.notes_root()
+    _notes_why = _paths.describe_notes()
+except Exception as _e:  # noqa: BLE001  定位器本身不可用也不能假装绿
+    _notes_dir, _notes_why = None, f"slcn.paths 不可用：{_e}"
+_rg = (Path(_notes_dir) / "tools" / "run_gates.py") if _notes_dir else None
+if _rg is None or not _rg.is_file():
+    # 两种情形要分开说：笔记仓找不到（合理 SKIP）vs 笔记仓在、工具不在（那是笔记仓的问题）。
+    print(f"SKIP  (e) 笔记仓 tools/run_gates.py（{_notes_why}；门禁机上必须全跑）")
 else:
     r = run([PY, str(_rg), "--help"], cwd=str(REPO),
             env=clean_env(PYTHONPATH=str(ENGINE / "vendor")))

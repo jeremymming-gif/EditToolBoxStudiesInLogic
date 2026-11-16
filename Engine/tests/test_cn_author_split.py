@@ -49,14 +49,6 @@ from slcn import build  # noqa: E402
 FAILS = []
 SKIPS = []
 
-_ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
-BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
-                       "李雷 当代逻辑论题鸟瞰.docx")
-JINGRU = os.path.join(_ROOT, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
-ZENG = os.path.join(_ROOT, "2024年第1期(74)", "02 Ning_Zeng", "original",
-                    "原文--论栾调甫中国逻辑研究范式.docx")
-
-
 def check(name, cond, detail=""):
     print(("PASS  " if cond else "FAIL  ") + name + ("  " + detail if detail else ""))
     if not cond:
@@ -67,6 +59,30 @@ def check(name, cond, detail=""):
 def skip(name, why):
     print(f"SKIP  {name}  {why}")
     SKIPS.append(name)
+
+
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
+
+
+def _main(ref):
+    """按「期号+篇序号」取该篇正文稿；取不到就把取样状态打出来。
+
+    以前这里写死 `2026年第5期(90)/10 Lei_Li/original/李雷 …docx` 这种作者名路径：
+    期号与篇序号是真的，作者名是文档里的化名，真语料里那一篇的作者名跟它对不上，
+    于是整组 ④/⑤ 在真机上只能 `SKIP`。取样归取样（`FP` 负责），断言仍在这里。
+    """
+    _r = FP.resolve_main(FP.default_root(), ref)
+    if _r.fatal:
+        check(f"取样代码的错（{_r.status}）：{ref}", False, _r.detail)
+    return _r
+
+
+_BO = _main("2026年第5期(90)/10")
+_JINGRU = _main("2026年第5期(90)/01")
+_ZENG = _main("2024年第1期(74)/02")
+BO_CHEN = _BO.path if _BO.ok else ""
+JINGRU = _JINGRU.path if _JINGRU.ok else ""
+ZENG = _ZENG.path if _ZENG.ok else ""
 
 
 def old_cn_author_names(author):
@@ -206,13 +222,21 @@ check("③ 真·多作者的**槽位数**一个都没少",
 # ── ④ 真实稿端到端 ───────────────────────────────────────────────────────
 print("\n── ④ 真实稿端到端（build_docx）──")
 
-if not os.path.isfile(BO_CHEN):
-    skip("④ 端到端（Lei_Li）", f"缺真实稿件（{BO_CHEN}）")
+if not BO_CHEN:
+    skip("④ 端到端（单字姓名内部空白那一篇）", FP.skip_line(_BO))
 else:
     with tempfile.TemporaryDirectory() as tmp:
         tex = build_tex(BO_CHEN, os.path.join(tmp, "bo_chen"))
-        check("④ `\\myfirstauthor` 是完整的 `李雷`（不再是 `李`）",
-              "\n{\\kaishu 李雷}" in tex, "")
+        from slcn import docxsource  # noqa: E402
+        _a = docxsource.parse_docx(BO_CHEN).author or ""
+        _names = build.cn_author_names(_a)
+        # 该稿排的是「单字姓名内部带空白」。期望值不再写死人名（那是文档化名，且
+        # 真实姓名不许进公开代码），改为「解析器判成 1 个作者」+「产物里就是那 1 个」，
+        # 而 `cn_author_names` 本身在 ③ 组已用 22 条真实作者串逐字钉住。
+        check("④ 单字姓名内部空白那一篇被判成 1 个作者（没有被拆成单字）",
+              len(_names) == 1 and len(_names[0]) >= 2, f"{_names}")
+        check("④ `\\myfirstauthor` 就是那 1 个完整姓名（不再是单字）",
+              bool(_names) and "\n{\\kaishu " + _names[0] + "}" in tex, f"{_names}")
         check("④ **没有**取消注释的 `\\renewcommand{\\mysecondauthor}` 行",
               not noncomment_lines(tex, "\\renewcommand{\\mysecondauthor}"),
               f"{noncomment_lines(tex, '\\renewcommand{\\mysecondauthor}')}")
@@ -220,34 +244,49 @@ else:
               all(f"【未识别：{lab}，请手工填写】" not in tex for lab in
                   ("第二作者单位", "第二作者邮箱", "第二作者英文姓名", "第二作者英文单位")), "")
 
-if not os.path.isfile(JINGRU):
-    skip("④ 端到端（Meimei_Han 真两作者）", f"缺真实稿件（{JINGRU}）")
+if not JINGRU:
+    skip("④ 端到端（真两作者 2026年第5期(90)/01）", FP.skip_line(_JINGRU))
 else:
     with tempfile.TemporaryDirectory() as tmp:
         tex = build_tex(JINGRU, os.path.join(tmp, "jingru"))
-        check("④ Meimei_Han 仍然拆成两作者（第一作者韩梅梅 + 第二作者王小明）",
-              "\n{\\kaishu 韩梅梅}" in tex
-              and "\\renewcommand{\\mysecondauthor}{\\kaishu 王小明}" in tex, "")
+        from slcn import docxsource  # noqa: E402
+        _a2 = docxsource.parse_docx(JINGRU).author or ""
+        _n2 = build.cn_author_names(_a2)
+        check("④ 真两作者的槽位数仍是 2",
+              len(_n2) == 2, f"{_n2}")
+        check("④ 真两作者仍按位置拆开写（第一/第二作者都不是空的）",
+              len(_n2) == 2
+              and "\n{\\kaishu " + _n2[0] + "}" in tex
+              and "\\renewcommand{\\mysecondauthor}{\\kaishu " + _n2[1] + "}" in tex, f"{_n2}")
 
-if not os.path.isfile(ZENG):
-    skip("④ 端到端（Ning_Zeng 真两作者）", f"缺真实稿件（{ZENG}）")
+if not ZENG:
+    skip("④ 端到端（真两作者 2024年第1期(74)/02）", FP.skip_line(_ZENG))
 else:
     with tempfile.TemporaryDirectory() as tmp:
         tex = build_tex(ZENG, os.path.join(tmp, "zeng"))
-        check("④ Ning_Zeng（`曾宁 凌清`）仍然拆成两作者",
-              "\n{\\kaishu 曾宁}" in tex
-              and "\\renewcommand{\\mysecondauthor}{\\kaishu 凌清}" in tex, "")
+        from slcn import docxsource  # noqa: E402
+        _a3 = docxsource.parse_docx(ZENG).author or ""
+        _n3 = build.cn_author_names(_a3)
+        check("④ 另一篇真两作者也仍然拆成两作者",
+              len(_n3) == 2
+              and "\n{\\kaishu " + _n3[0] + "}" in tex
+              and "\\renewcommand{\\mysecondauthor}{\\kaishu " + _n3[1] + "}" in tex, f"{_n3}")
 
 
 # ── ⑤ 单作者代表稿：产物与改动前**逐字节相同** ──────────────────────────
 print("\n── ⑤ 单作者代表稿：新旧实现产物逐字节相同（`author_fields()` 也动了）──")
 
-LINHE = os.path.join(_ROOT, "2023年第5期(72)", "01 Xue_Han", "original",
-                     "韩雪-康德论逻辑的本性-终版.docx")
+_LINHE = _main("2023年第5期(72)/01")
+LINHE = _LINHE.path if _LINHE.ok else ""
 
 
-def old_author_fields(author):
-    """**改动前**的 `author_fields()`（单作者原样照抄原串），非回归组用。"""
+def old_author_fields(author, *, en_names=()):
+    """**改动前**的 `author_fields()`（单作者原样照抄原串），非回归组用。
+
+    `en_names=` 是后来才有的关键字：改动前那版根本没有英文名参数（英文多作者不拆），
+    所以这里显式收下并忽略，保持「旧实现」语义；不接这个参数会让 `build_docx()`
+    在 `build.py:2610` 处 `TypeError`（这条只有在 ⑤ 真正跑起来才暴露）。
+    """
     author = (author or "").strip()
     cn = old_cn_author_names(author)
     if len(cn) > 1:
@@ -267,8 +306,8 @@ def build_tex_old_impl(src, out_dir):
         build.author_fields = real
 
 
-if not os.path.isfile(LINHE):
-    skip("⑤ 单作者逐字节回归（Xue_Han）", f"缺真实稿件（{LINHE}）")
+if not LINHE:
+    skip("⑤ 单作者逐字节回归（2023年第5期(72)/01）", FP.skip_line(_LINHE))
 else:
     from slcn import docxsource  # noqa: E402
 
