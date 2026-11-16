@@ -145,6 +145,29 @@ _ENV_KINDS = frozenset({"newtheorem", "newenvironment"})
 # 定义缺失预检里必须免报，否则每篇都会报 itemize/center/equation 无法解析。
 # ⚠️ 只收「一定不是作者自定义定理环境」的：字体大小环境、版式环境、常见宏包环境。
 #    作者自定义环境（fact / liju / 定理类缩写）**刻意不在白名单里**——那正是预检要抓的。
+#
+# 第 130 条补丁（2026-11-16）：**LaTeX 内核 / 标准文档类本来就有**的命令名。
+# 本地 .cls 若是「别家完整期刊类」（sn-jnl.cls 这类），里面成批 `\renewcommand`
+# 的是这些内核命令（字号 `\small`、分节 `\section`、标题页 `\maketitle`…），
+# 它们不是作者自定义宏，而是那套类的版面实现。搬进本刊产物只有两种结局：
+#   ① 原样 `\renewcommand` → 套进本刊类后语义全错（实测 104 条报错、无 PDF）；
+#   ② 降为 `\newcommand` → `Command \X already defined` 致命错（实测 4 条）。
+# 所以一律不搬，只记账（`PreamblePlan.kernel_skipped` + skipped 日志）。
+KERNEL_DEFINED_NAMES = frozenset({
+    # 字号（article/book/report 类与任何期刊类都定义）
+    "tiny", "scriptsize", "footnotesize", "small", "normalsize",
+    "large", "Large", "LARGE", "huge", "Huge",
+    # 分节层级
+    "part", "chapter", "section", "subsection", "subsubsection",
+    "paragraph", "subparagraph",
+    # 标题页与文档元数据
+    "title", "author", "date", "thanks", "maketitle", "abstract", "abstractname",
+    # 版式与脚注
+    "thefootnote", "baselinestretch", "headrulewidth", "proofname",
+    # 别家文档类专有的分类号命令（本刊无此概念，但名字在内核外也常被 \providecommand）
+    "pacs",
+})
+
 BASE_ENVIRONMENTS = frozenset({
     # 文档结构 / 列表 / 版式（LaTeX 内核与 article/book 类）
     "document", "itemize", "enumerate", "description", "list", "trivlist",
@@ -201,6 +224,9 @@ class PreamblePlan:
     local_definitions: list[tuple[str, str]] = field(default_factory=list)  # (名, 来源)
     overrides: list[str] = field(default_factory=list)  # 正文用到、但模板已占用的本地重定义（未搬）
     converted_renews: list[str] = field(default_factory=list)  # 模板缺 → 由 \renewcommand 降为 \newcommand
+    # 第 130 条补丁：本地旧类里对 LaTeX 内核/文档类命令的 \renewcommand，
+    # 未搬（搬过去必撞 already defined 或改坏版式），只记账
+    kernel_skipped: list[str] = field(default_factory=list)  # 「名（来源文件）」
     local_packages: list[str] = field(default_factory=list)  # 源目录有同名 .sty：不迁包行，只按差集搬定义
     counter_definitions: list[str] = field(default_factory=list)  # 第 130 条补丁：迁入的 \newcounter
     # 第 141 条：被模板 biblatex 取代、未迁移的参考文献宏包（natbib / gbt7714）
@@ -890,6 +916,14 @@ def _plan_local_definitions(
                 else:
                     skipped.append(f"{item.name}（本地 {item.origin}，模板已有）")
                 continue
+            if item.name in KERNEL_DEFINED_NAMES:
+                # LaTeX 内核/标准文档类已有这个名字：搬过来不是撞 already defined
+                # （降为 \newcommand 时）就是改坏本刊版式（保留 \renewcommand 时）。
+                plan.kernel_skipped.append(f"{item.name}（{item.origin}）")
+                skipped.append(
+                    f"{item.name}（{item.origin}：LaTeX 内核/文档类已有，未搬）"
+                )
+                continue
             seed.append(item)
 
         # 传递闭包：宏 A 的定义里用到 B、定理 [共享计数器] 指向 Y、定义体用到计数器 X
@@ -1113,6 +1147,22 @@ def plan_migration(
 
     # 本地支撑文件（.cls/.sty/.def/.cfg）里的定义：只搬「正文用到 + 模板没有」的
     _plan_local_definitions(plan, names, source_text, source_dir, body_text, skipped)
+
+    # 第 142 条补丁（2026-11-16）：模板用 biblatex 时，正文里的 natbib 专有命令必须改写。
+    # 从前这个触发条件只看「作者前言里有没有 \usepackage{natbib}」——而「完整期刊类」
+    # 来稿的 natbib 是文档类里 `\RequirePackage` 装的（sn-jnl.cls 实测），前言里一个
+    # 字都没有，于是 `\citep` 原样留在正文，编译报 Undefined control sequence。
+    # 判据收窄到「真出现 natbib 专有引用命令」（负向环视排除 \citestyle / \citepunct /
+    # \citetext 这类同前缀排版命令；`\cite` 刻意不在映射表里，不触发也不改写）。
+    # ⚠️ build.py 那边零改动：`if pre_plan.replaced_packages:` 分支只拿这个列表写日志，
+    #    真正改正文的是 `PRE.rewrite_natbib_commands(body)`。
+    if (
+        body_text
+        and template_has_biblatex
+        and "natbib" not in plan.replaced_packages
+        and re.search(r"\\(?:citep|citet|citealt|citealp)(?![A-Za-z])", body_text)
+    ):
+        plan.replaced_packages.append("natbib")
 
     # 正文里用到、但作者前言/模板都没加载对应宏包的**符号类**宏 → 自动补宏包。
     # ⚠️ 作者自己 `\newcommand{\llbracket}` 时不能再补 stmaryrd（会 already defined；

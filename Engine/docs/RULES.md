@@ -1082,3 +1082,73 @@ AI 时显示）→ 与从前逐字节相同（只出任务书）。
 - **恢复账本**：每条成功搬回后 manifest 该条 `status` 原子置 `"restored"`；重试时已恢复条目计 `alreadyRestored`
   （目标仍在），**不再报 "Missing in trash"**；冲突/缺失进 `skipped`，全部恢复完 → `success`，本次无新恢复 → `empty`。
   daily 批次冲突/缺失 → `partial`（rc2、`ok=false`）；旧 v1/v2 批次保留旧语义（只 warning、rc0）。
+
+---
+
+## 十四、Springer `sn-jnl` 这类「完整期刊类」来稿（第 142 条补丁，2026-11-16）
+
+**问题**：作者交来的不一定是 `article` 稿或本刊旧模板稿，而是**别家期刊的完整模板稿**——
+`\documentclass{sn-jnl}` 加一个同目录的 `sn-jnl.cls`。那套 `.cls` 不是作者的自定义宏集合，
+而是一整套版式实现：它成批 `\renewcommand` 了 LaTeX 内核/标准文档类**已经定义**的名字
+（字号 `\small`/`\footnotesize`、分节 `\section`/`\subsection`/`\subsubsection`、标题页
+`\maketitle`…），还用 `\RequirePackage{natbib}` 装了参考文献宏包（作者 `.tex` 前言里一个
+字都没有）。第 130 条把它们当「作者的本地旧模板定义」搬，撞出三个致命错：
+
+- 迁 `\renewcommand{\small}` → 套进本刊类后版面语义全错；降为 `\newcommand` 则
+  `Command \small already defined` 致命错，整篇无 PDF；
+- 作者的 `\citep`/`\citet` 原样留在正文（natbib 触发条件从前只看**作者前言**有没有
+  `\usepackage{natbib}`）→ biblatex 下 `Undefined control sequence`；
+- sn-jnl 专有的前置命令 `\affil`/`\keywords`/`\pacs` 留在正文里 → 本刊模板没有这些定义，
+  编译即报错（这些信息本来就由 texfront 解析进模板 `my*` 字段，正文里那份是重复的）。
+
+**口径**（权威实现：`slcn/preamble.py`、`slcn/sources.py`、`slcn/build.py`）：
+
+1. **别家文档类的内核/类内已定义命令不迁入产物**。判据是一张**常量白名单**
+   `KERNEL_DEFINED_NAMES`（29 个名字：字号 10、分节 7、标题页/文档元数据 7、版式与脚注 4、
+   别家分类号 1），命中即**不搬**，只记账：`PreamblePlan.kernel_skipped` 记「名（来源文件）」，
+   `skipped` 日志写「…（`来源`：LaTeX 内核/文档类已有，未搬）」。**不搬的理由是双向的**：
+   保留 `\renewcommand` 会改坏本刊版式，降为 `\newcommand` 会撞 `already defined`。
+   命中判断在「正文真正用到」的筛选**之后**，所以没被正文用到的内核名不会出现在
+   `kernel_skipped` 里（不是整表扫）。该表只作用于**本地支撑文件**（`.cls`/`.sty`/`.def`/`.cfg`），
+   作者 `.tex` 前言里自己写的 `\renewcommand` 若撞模板命令名，走第 130 条的**自动改名迁入**路径
+   （日志写明「宏名冲突，已自动改名」，定义降为 `\newcommand`、正文同步改名；实测与 BASE 一致，非本轮引入，
+   见 `d4final` 复证：`\cndash` → `\newcommand{\slcncndash}{---}`）。
+2. **`\renewcommand` / `\newcommand` 的正常迁移不受影响**（防过度跳过）。
+   （以下两条口径只对**本地支撑文件**（`.cls`/`.sty` 等经 `\usepackage` 采到的文件）里的定义成立；
+   作者 `.tex` 前言里的同名情形见①——`converted_renews` 的**唯一写入点**在 `preamble.py` 的
+   `_plan_local_definitions`，作者前言的定义不走它：新名原样迁入，撞名的按①自动改名。）
+   真·新名照旧迁入 `definitions` + `lines`；本地支撑文件里模板缺对应命令的
+   `\renewcommand` 照旧降为 `\newcommand` 迁入并进 `converted_renews` + 警告。
+3. **natbib 触发条件收窄到「正文真的出现 natbib 专有引用命令」**。`plan_migration()` 里
+   三个条件同时成立才把 `"natbib"` 登记进 `PreamblePlan.replaced_packages`：
+   ①`body_text` 非空；②模板（骨架或 `.sty`）加载了 `biblatex`；③正文匹配
+   `\\(?:citep|citet|citealt|citealp)(?![A-Za-z])`。负向环视刻意排除 `\citestyle` /
+   `\citepunct` / `\citetext` 这类同前缀**排版设置**命令；`\cite` 刻意**不**触发也不改写
+   （biblatex 本来就定义它）。登记后 `build.py` 既有分支调 `rewrite_natbib_commands()`
+   把正文改写成 biblatex 等价命令（`\citep`→`\parencite`、`\citet`→`\textcite`、
+   `\citealt`→`\cite`、`\citealp`→`\parencite`，星号形式保留），日志与「⚠ 注意事项」明写
+   改写处数（**不静默**）。作者前言里的 `\usepackage{natbib}` 包行本来就不迁
+   （`BIBLATEX_REPLACED_PACKAGES`，第 141 条）。
+4. **别家文档类的作者前置区专有命令，守卫条件成立时整段切除**。`extract_body_text()` 先在
+   第一个 `\section`/`\chapter` 之前找 `\title` → 其后第一个 `\maketitle`，得到候选段
+   `\title…\maketitle`；**只有当这段里出现**别家专有命令（`FOREIGN_FRONTMATTER_CMDS`：
+   `affil`/`keywords`/`pacs`/`bmhead`/`fnm`/`sur`/`spfx`/`sfx`/`orcid`/`artnotes`，按**行首**
+   匹配）时，才认定整段是别家的前置块并**整段切掉**（含 `\title`/`\author`/`\maketitle`），
+   否则一个字都不动。守卫目的：纯 `article` 稿的**单位/邮箱只写在 `\author{}` 里**，
+   盲删就丢信息（语料实测 4 篇会中招）；整段切而不是逐行删，是因为作者的 `\maketitle`
+   会与模板的 `\printtitlepage` 撞成两个标题页。跨行花括号体按 `\brace_depth` 续删到配平，
+   `\{`/`\}` 转义按 TeX 语义跳过。候选段之外的前置命令仍走逐行删（退化路径）。
+
+**边界（如实说清）**：内核白名单是**手写常量**，不是从 TeX 发行版读的——名单外的内核命令
+（第三方类重定义的更冷门的名字）仍会被当作者定义搬入；名单**只增不改**时要同步改本节数字
+与本条回归断言。专有命令按**行首**匹配：`\author{张三}\affil[1]{单位}` 写在同一行时守卫
+不触发、前置块整段保留（已知局限，宁可留多余命令也不误删作者信息）。`extract_body_text`
+不看 LaTeX 注释，正文里被注释掉的 `% \citep{x}` 也会触发 natbib 登记（结果只是多重写了几处
+注释里的命令，不影响编译）。natbib 触发只看命令名不看语义：真·natbib 与 biblatex 的
+`\citep` 都有定义时本刊一律按 biblatex 走，样式差异交编辑核对（日志已提示）。
+
+**回归**：`tests/test_sn_jnl_migration_20261116.py`（8 组 70 条断言：跳过表本身 7 条、
+不迁判据 12 条、防过度跳过 6 条、natbib 触发 14 条、守卫切除 11 条、守卫反例 6 条、
+`\brace_depth` 3 条、端到端产物 11 条）。夹具全部 `tempfile` 现造（简化版 `sn-jnl.cls` +
+`\documentclass{sn-jnl}` 正文），不读外部模板目录、不跑 xelatex；`tests/test_latex_preamble.py`
+⑦⑧ 组仍为第 130 条 / bbding 冲突的权威回归。

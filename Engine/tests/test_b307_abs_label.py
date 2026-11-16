@@ -20,12 +20,12 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_GITHUB = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from slcn.docxsource import parse_docx  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402
 from slcn.wordmeta import _ABS_RE, _abs_body_cn, parse_tail_metadata  # noqa: E402
 
 FAILS = []
@@ -96,14 +96,20 @@ check("`Abstract` 独占一段仍取下一段（既有行为）",
       out.get("abstract_en") == "We study databases.", repr(out.get("abstract_en")))
 
 # ══ ③ 真实语料（不在本机则 SKIP）═══════════════════════════════════════════
-print("\n── ③ 真实语料 06 Xiaoqi_Zhang ──")
+print("\n── ③ 真实语料 2023年第6期(73)/06 ──")
 
-REAL = os.path.join(
-    _GITHUB, "Studies_in_Logic_Database", "2023年第6期(73)", "06 Xiaoqi_Zhang", "全文gaigai.docx",
-)
-if not os.path.exists(REAL):
-    print("SKIP  2023年第6期(73)/06 Xiaoqi_Zhang（本机没有这份语料）")
+# 原来这里是 `_GITHUB = dirname(dirname(_ENGINE))` + 硬编码「序号 06 + 一个作者目录名」。
+# 两个错：① `_GITHUB` 在 worktree 里解析成 worktree 的**父目录**（不是 ~/Documents/GitHub）；
+# ② 路径里带了作者名（文档示例化名，B-269 后真语料里是别人）。改成按**期号+序号**定位，
+# 文件名片段仍用原来的那一段（它命中真语料里同一份文件）。
+_REAL = FP.resolve(FP.default_root(), "2023年第6期(73)/06", "全文gaigai")
+if _REAL.fatal:
+    print(f"FAIL  取样代码的错（{_REAL.status}）：2023年第6期(73)/06")
+    FAILS.append(f"取样代码的错（{_REAL.status}）：2023年第6期(73)/06")
+elif not _REAL.ok:
+    print(f"SKIP  {FP.skip_line(_REAL)}")
 else:
+    REAL = _REAL.path
     d = parse_docx(REAL)
     check("真实稿：abstract_en 是真摘要（不再是 '. '）",
           d.abstract_en.startswith("Sleep has become a prime example of medicalization"),

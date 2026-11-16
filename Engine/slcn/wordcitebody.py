@@ -4,11 +4,127 @@ from __future__ import annotations
 
 import re
 
+from .wordcite import _command_arg_mask as _command_arg_mask
 from .wordcite import cue_evidence as _cue_evidence
 from .wordcite import fn_in_math as _fn_in_math
 from .wordcite import fn_in_paren_depths as _fn_in_paren_depths
 from .wordcite import link_body_cue_citations as _link_body_cue_citations
 from .wordcore import (RefEntry, TRANSLATED_NAMES)
+
+
+# ── P2 返工·缺陷1：统一「不可改写区间」掩码（两条编号通道共用）─────────────
+# 旧的 `_link_bare_paged_citations` 只挡 `$…$` 与 `\footnote{}`；`_NUM_GROUP_LOC`
+# 在括号组外抢先命中，绕过了这些判据，于是 `\verb|…|`、verbatim/lstlisting、
+# `$$…$$`、`\[…\]`、数学环境、`\url{}`、裸 URL、TeX 注释、`\textsuperscript{}`、
+# 行首编号列表里的 `[18, p. 398]` 全被错误替换。这里集中求值一份掩码，
+# 覆盖上述全部区间；调用方一律「掩码覆盖处原样保留」（宁可少转不可错转）。
+# 行内 `$…$` 与 `\footnote{}` 直接复用既有判据，不另造第二份。
+_VERB_ENV_NAMES = (
+    "verbatim", "verbatim*", "lstlisting", "minted",
+    "equation", "equation*", "align", "align*", "alignat", "alignat*",
+    "flalign", "flalign*", "gather", "gather*", "multline", "multline*",
+    "eqnarray", "eqnarray*", "split", "cases",
+)
+_VERB_ENV_RE = re.compile(
+    r"\\begin\{(" + "|".join(re.escape(e) for e in _VERB_ENV_NAMES) + r")\}")
+
+
+def _unwritable_mask(text: str) -> list[bool]:
+    r"""每个位置是否落在**禁止替换**的区间（长度 ``len(text)+1``）。
+
+    覆盖：`$…$` 行内数学（复用 ``_fn_in_math``）、`\footnote{}`（复用
+    ``_command_arg_mask``）、`$$…$$`、`\[…\]`、verbatim/lstlisting/minted 与
+    equation/align/gather/multline/eqnarray 等环境、`\verb<delim>…<delim>`、
+    `\url{}`/`\href{}` 第一参数、`\textsuperscript{}` 等内容命令参数、未转义
+    `%` 起的 TeX 注释、行首普通编号列表项、裸 `http(s)://…`。
+    """
+    n = len(text)
+    mask = [False] * (n + 1)
+
+    def mark(a: int, b: int) -> None:
+        for k in range(max(0, a), min(n, b)):
+            mask[k] = True
+
+    # 行内数学 / 脚注参数：复用既有唯一判据，行为逐字节不变
+    for i, hit in enumerate(_fn_in_math(text)):
+        if hit:
+            mask[i] = True
+    for i, hit in enumerate(_command_arg_mask(text, "footnote")):
+        if hit:
+            mask[i] = True
+
+    # 内容型命令参数（花括号配平，复用 _command_arg_mask）
+    for cmd in ("url", "href", "textsuperscript", "thankstext"):
+        for i, hit in enumerate(_command_arg_mask(text, cmd)):
+            if hit:
+                mask[i] = True
+
+    # 已有引用命令的参数一律不可二次处理（R1：避免
+    # `\parencite[([18, p. 398])]{K19}` 被套成 `\parencite[\parencite{…}]`）。
+    # 必需参数 `\cmd{…}` 用既有花括号配平判据；**可选参数** `\cmd[…]`
+    # 不在 `_command_arg_mask` 覆盖内（它只认 `\cmd{`），单独按方括号配平标记。
+    for cmd in ("parencite", "cite", "citep", "textcite", "autocite",
+                "footcite", "supercite", "parencites", "cites"):
+        for i, hit in enumerate(_command_arg_mask(text, cmd)):
+            if hit:
+                mask[i] = True
+    for m in re.finditer(
+            r"\\(?:parencite|cite|citep|textcite|autocite|footcite|supercite|"
+            r"parencites|cites)\s*\[", text):
+        i = m.end() - 1
+        depth = 0
+        for j in range(i, len(text)):
+            ch = text[j]
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    for k in range(m.start(), j + 1):
+                        mask[k] = True
+                    break
+
+    # 行间数学定界符 $$…$$ / \[…\]
+    for m in re.finditer(r"\$\$.*?\$\$", text, re.S):
+        mark(m.start(), m.end())
+    for m in re.finditer(r"\\\[.*?\\\]", text, re.S):
+        mark(m.start(), m.end())
+
+    # \verb<delim>…<delim> / \verb*<delim>…<delim>（delim 为非字母字符）
+    for m in re.finditer(r"\\verb\*?([^A-Za-z0-9\s])", text):
+        delim = m.group(1)
+        j = text.find(delim, m.end())
+        mark(m.start(), (j + 1) if j >= 0 else n)
+
+    # verbatim / lstlisting / minted / 数学环境：从 \begin 到对应 \end（含）
+    for m in _VERB_ENV_RE.finditer(text):
+        end_tok = "\\end{" + m.group(1) + "}"
+        j = text.find(end_tok, m.end())
+        mark(m.start(), (j + len(end_tok)) if j >= 0 else n)
+
+    # 裸 URL（http/https）：保守地保护到下一个空白
+    for m in re.finditer(r"https?://\S+", text):
+        mark(m.start(), m.end())
+
+    # TeX 注释：未转义 `%`（前面连续反斜杠为偶数）到行尾
+    for i, ch in enumerate(text):
+        if ch != "%":
+            continue
+        j = i - 1
+        while j >= 0 and text[j] == "\\":
+            j -= 1
+        if ((i - 1 - j) % 2) == 0:          # 前导反斜杠偶数个 → 未转义
+            e = text.find("\n", i)
+            mark(i, n if e < 0 else e)
+
+    # 行首普通编号列表项 `^\s*\d+[.、)]\s*[（(]?\s*\[`：整行保护（宁缺勿错）。
+    # 允许编号后带一个可选开括号（`1. ([18, p. 398])`），否则组通道会绕过此保护。
+    for m in re.finditer(r"(?m)^[ \t]*\d+[.、)][ \t]*[(（]?[ \t]*\[", text):
+        e = text.find("\n", m.start())
+        mark(m.start(), n if e < 0 else e)
+
+    return mask
+
 
 # ── 正文引用替换 ──────────────────────────────────────────────────────────
 
@@ -208,6 +324,29 @@ def link_footnote_bare_citations(
 _NUM_GROUP = re.compile(r"\[\s*(\d{1,3}(?:\s*[，,、]\s*\d{1,3})*)\s*\]")
 
 
+# 页码写在**方括号里面**的形态：`[18, p. 398]` / `[18, pp. 398-401]` / `[18，第398页]`。
+# 旧 `_NUM_GROUP` 只认纯编号（`[18]` / `[18,19]`），带定位就不匹配 → `_cite_nums` 返回空
+# → `([18, p. 398])` 被原样保留（连 issue 都不报）。这里补上**方括号内定位**这一种：
+#   · 编号段在前、定位段在后，逗号分隔（半角/全角均可）；
+#   · 定位段必须带定位标记：`p`/`pp`（可跟 `.`、`~`、区间分隔）或 `第N页`；
+#   · **不收裸数字**（`[18, 398]`）—— 与多编号 `([18, 19])` 无法区分，宁可少转
+#     （红线：`[18,19]` 绝不能被拆成「编号 18 + 页码 19」）。
+# F-02：`pp.` 定位段扩到**逗号分隔的不连续页码列表**（`pp. 154, 165` /
+# `pp.\,75--76, 88–89`）——每段页码仍可带单区间；`\,` 是 LaTeX 细空格，
+# 必须允许它紧跟在 `pp.` 与逗号之后，否则整组不匹配。定位串原样进入
+# `_en_locator_cmd` 的可选参数，不在这里改写字符。
+_NUM_GROUP_LOC = re.compile(
+    r"\[\s*(?P<nums>\d{1,3}(?:\s*[，,、]\s*\d{1,3})*)\s*[，,]\s*"
+    r"(?P<loc>"
+    r"[Pp]{1,2}\.?(?:\\,\s*)?\s*~?\s*"
+    r"\d{1,5}(?:\s*[-–—~]{1,2}\s*\d{1,5})?"
+    r"(?:\s*,\s*(?:\\,\s*)?\d{1,5}(?:\s*[-–—~]{1,2}\s*\d{1,5})?)*"
+    r"|第\s*[0-9ivxlcdm]{1,8}(?:\s*[、,，]\s*[0-9ivxlcdm]{1,8})*"
+    r"(?:\s*[-–—~]\s*[0-9ivxlcdm]{1,8})?\s*页"
+    r")\s*\]"
+)
+
+
 def _cite_nums(text: str) -> list[int]:
     """取出文本里所有 `[N]` / `[N，M]` 的编号。"""
     out: list[int] = []
@@ -266,12 +405,83 @@ def link_numbered_citations(
                 keys.append(k)
         return keys
 
+    # P2：`$…$` 里的方括号是数学（区间/下标），不是编号——只用于新形态的排除，
+    # 既有 `([N])` 分支行为不动（见下 `_NUM_GROUP_LOC` 分支）。
+    in_math = _fn_in_math(body)
+    # R1 返工（实证阻断缺陷）：组通道 `grp.sub(repl)` 此前未应用不可改写掩码，
+    # 与裸通道 `_link_bare_paged_citations` 的判据不一致——`\verb|…|`、`%` 注释、
+    # `\url{}`、`\footnote{}`、verbatim/数学环境、已有 \parencite[…] 参数里的
+    # `([18, p. 398])` 全被误转。两条通道现在共享同一份掩码：只要匹配区间
+    # 覆盖到任一不可改写位置，整组原样返回（宁缺勿错）。
+    unwritable = _unwritable_mask(body)
+    # 例外（保旧 CN 行为，REWORK「不损坏旧 EN/CN 行为」）：脚注文本里的 CN 式
+    # 括号组 `（[N]，第M页）` 由 `link_footnote_bare_citations` 明确委托给本通道
+    # （见其 docstring「`[N]` 在括号组里 → 交给 link_numbered_citations」）。
+    # 若掩码把它也挡掉，脚注引用会静默丢失（b73 §⑥ 实测）。EN 式 `[N, p. X]`
+    # （R1 探针的 footnote-group）不在委托范围，仍受掩码保护、原样保留。
+    fn_arg = _command_arg_mask(body, "footnote")
+    # R1-c 返工：`delegated_cn_group` 的「裸 [N]」必须排除**已有可选参 cite 命令**的
+    # 参数（`(\parencite[2]{key})` / `(\cite[490]{key})` / `\citep[2]{key}` /
+    # `\textcite[2]{key}` …）。R1 首版把这些 `[N]` 误判为可委托 CN 组，绕过掩码做
+    # 二次转换，产出游离 \parencite + 嵌套键（语料 F193/F267/F311 × en/zh）。
+    # 匹配「已经有 \cmd[…]{…} 形态」即不再委托，交由既有「受保护则原样」路径。
+    _existing_optarg_cite = re.compile(
+        r"\\(?:parencite|cite|citep|textcite|autocite|footcite|supercite|"
+        r"parencites|cites)\s*\[[^\]]*\]\s*\{"
+    )
+
     def repl(m: re.Match) -> str:
         nonlocal n_done
+        # 受保护区间内的整组（含跨边界组）一律不改；与裸通道 :534 同判据。
+        if any(unwritable[m.start():m.end()]):
+            inner_text = m.group("inner")
+            delegated_cn_group = (
+                any(fn_arg[m.start():m.end()])
+                and _NUM_GROUP.search(inner_text) is not None
+                and _NUM_GROUP_LOC.search(inner_text) is None
+                and _existing_optarg_cite.search(inner_text) is None
+            )
+            if not delegated_cn_group:
+                return m.group(0)
         inner = m.group("inner")
+        # 整组落在数学里 → 新形态不转（宁缺勿错；既有分支保持原样）
+        grp_in_math = any(in_math[m.start():m.end()])
+        # P2④：**仅中文分支**——组内既有「方括号内定位」(`[18, p. 398]`) 又有
+        # 「裸编号 + 外部定位」(`[19], p. 5`) 时，原逻辑只转后者，半转并吞掉
+        # `and ` 的空格、强改半角括号。混合形态整组原样返回（都转或都不转）。
+        # 英文分支原样保留既有行为（该形态两处都能正确转成 \parencite[p.…]）。
+        segments = re.split(r"[；;]", inner)
+        if not is_en:
+            locs = list(_NUM_GROUP_LOC.finditer(inner))
+            mixed = False
+            if locs:  # 必须有「方括号内定位」段，才谈得上混合形态
+                for bm in _NUM_GROUP.finditer(inner):
+                    if any(lm.start() <= bm.start() < lm.end() for lm in locs):
+                        continue
+                    tail = inner[bm.end():]
+                    # 裸 `[19]`， p. 5` 这种「方括号外紧跟定位」才算；
+                    # `[18]，第398页` 只有一个方括号、没有 locs，不会进到这里。
+                    if (re.match(r"\s*[,，]?\s*[Pp]{1,2}\.?\s*\d", tail)
+                            or re.match(r"\s*[,，]?\s*第\s*\d+\s*页", tail)):
+                        mixed = True
+                        break
+            if mixed:
+                return m.group(0)
         # 每段：([编号…], 编号前的引导语, 编号后的定位)
         segs: list[tuple[list[int], str, str]] = []
-        for raw in re.split(r"[；;]", inner):
+        for raw in segments:
+            # P2：页码写在方括号里（`[18, p. 398]` / `[18, pp. 398-401]`）
+            loc_m = _NUM_GROUP_LOC.search(raw) if not grp_in_math else None
+            # 只认「这个方括号就是这一段的主体」：方括号之后除句读/空白外还有别的
+            # 内容（`(see [18, p. 398] and [19], p. 5)`）就退回既有逻辑，别把尾巴吞掉。
+            if loc_m and raw[loc_m.end():].strip().strip(".,;:，。；：、").strip():
+                loc_m = None
+            if loc_m:
+                nums = [int(x) for x in re.split(r"[，,、]", loc_m.group("nums"))
+                        if x.strip()]
+                pre = raw[: loc_m.start()].strip().strip("，,、:：").strip()
+                segs.append((nums, pre, loc_m.group("loc").strip()))
+                continue
             nums = _cite_nums(raw)
             if not nums:
                 segs.append(([], "", raw.strip()))
@@ -317,14 +527,21 @@ def link_numbered_citations(
         if not parts:
             return m.group(0)
         n_done += 1
+        # P2：多段分隔符按 lang 分开——英文稿用半角 `; `，中文稿才用全角 `；`。
+        sep = "; " if is_en else "；"
         if is_en:
             if len(parts) == 1 and parts[0].startswith("\\parencite["):
                 return (f"{tail_pre} " if tail_pre else "") + parts[0]
-            return (f"{tail_pre} " if tail_pre else "") + "(" + "；".join(parts) + ")"
-        return f"（{tail_pre}" + "；".join(parts) + "）"
+            return (f"{tail_pre} " if tail_pre else "") + "(" + sep.join(parts) + ")"
+        return f"（{tail_pre}" + sep.join(parts) + "）"
 
     grp = _GRP_EN if is_en else _GRP_CN
     new_body = grp.sub(repl, body)
+    # P2：括号组**之外**的「编号 + 方括号内页码」（`… [2, p.187].`）——英文稿实测
+    # 全是这种**不带外层圆括号**的写法，上面的 `_GRP_EN` 组匹配不到，故补一遍。
+    new_body, n_bare, bare_issues = _link_bare_paged_citations(
+        new_body, num2key, lang)
+    issues.extend(bare_issues)
     # B-217①：括号组之外的「引导语 + 裸编号」（参见文献[4] / 参看[5，6] /
     # 详见[7]第8–12 页 / 引自[8]）→ `\parencite`（判据在 slcn/wordcite.py，
     # 与脚注通道共用同一份引导语判据）。括号组已由上面的 pass 处理：转换过的
@@ -333,7 +550,87 @@ def link_numbered_citations(
     new_body, n_cue, cue_issues = _link_body_cue_citations(
         new_body, num2key, lang, _en_locator_cmd)
     issues.extend(cue_issues)
-    return new_body, n_done + n_cue, issues
+    return new_body, n_done + n_bare + n_cue, issues
+
+
+def _link_bare_paged_citations(
+    body: str, num2key: dict[int, str], lang: str = "zh"
+) -> tuple[str, int, list[str]]:
+    r"""括号组**之外**的「编号 + 方括号内页码」→ ``\parencite``（P2 补口）。
+
+    英文源稿实测全是**不带外层圆括号**的写法，`_GRP_EN` 组匹配不到：
+
+        … [2, p.187].      → … \parencite[p.~187]{键}.
+        … [6, pp.26-27].   → … \parencite[pp.~26--27]{键}.
+
+    中文稿同形（``[3，第268页]``）→ ``\parencite{键}，第268页``：页码留在命令
+    外的中文惯用式（与 ``link_numbered_citations`` 中文分支同口径）。
+
+    不转换（原样保留）：
+      · 在**已闭合**的括号组里（上面 ``repl`` 那遍已处理；含 ``repl`` 故意不动的
+        多段各自带页码 `([18, p. 398; 19, p. 55])`——那种也不能在括号里动刀）；
+      · 在 ``$…$`` 公式里 / 在 ``\footnote{…}`` 参数里（脚注通道负责）；
+      · 编号超出文末清单编号范围（记一条 warning，不猜）。
+
+    ⚠️ 判据只认**闭合**的括号组：实测源稿里有正文括号不配对（多打了左括号）的
+    稿件，那样 `fn_in_paren_depths` 到文末都是 1，若照搬「depth>0 就跳过」，后半篇
+    的这类引用会全部漏转。所以这里查「该位置之后深度是否真的回落到组外」。
+    """
+    if not body or not num2key:
+        return body, 0, []
+    depths = _fn_in_paren_depths(body)
+    # 后缀最小深度：depths[s] > 0 且之后出现过更小的深度 → 这个左括号是配平的。
+    lower_after = [0] * (len(depths) + 1)
+    cur = len(depths)
+    for i in range(len(depths) - 1, -1, -1):
+        cur = min(cur, depths[i])
+        lower_after[i] = cur
+    in_math = _fn_in_math(body)
+    in_footnote = _command_arg_mask(body, "footnote")
+    unwritable = _unwritable_mask(body)
+    hi = max(num2key)
+    parts: list[str] = []
+    pos = 0
+    n_done = 0
+    issues: list[str] = []
+    for m in _NUM_GROUP_LOC.finditer(body):
+        s, e = m.span()
+        if in_math[s] or in_footnote[s] or unwritable[s]:
+            continue                     # 不可改写区间（verb/环境/URL/注释/列表…）：原样
+        d = depths[s]
+        if d > 0 and lower_after[s + 1] < d:
+            continue                     # 落在配平的括号组里：归 repl / 保持原样
+        nums = [int(x) for x in re.split(r"[，,、]", m.group("nums")) if x.strip()]
+        keys: list[str] = []
+        missing = False
+        for n in nums:
+            k = num2key.get(n)
+            if not k:
+                missing = True
+                break
+            if k not in keys:
+                keys.append(k)
+        if missing:
+            snippet = body[max(0, s - 12):min(len(body), e + 12)].replace("\n", " ")
+            issues.append(
+                f"正文引用编号 {nums} 超出文末清单编号范围（1..{hi}）内，"
+                f"已原样保留（不猜）：「…{snippet}…」")
+            continue
+        cmd = "\\parencite{" + ",".join(keys) + "}"
+        loc = m.group("loc")
+        if lang == "en":
+            rep = _en_locator_cmd(cmd, loc)
+        else:
+            norm = _normalize_locator(loc)
+            rep = f"{cmd}，{norm}" if norm else cmd
+        parts.append(body[pos:s])
+        parts.append(rep)
+        pos = e
+        n_done += 1
+    if not n_done:
+        return body, 0, issues
+    parts.append(body[pos:])
+    return "".join(parts), n_done, issues
 
 
 def _en_locator_cmd(cmd: str, loc: str) -> str:

@@ -24,6 +24,7 @@ sys.path.insert(0, str(ENGINE))
 
 from pypdf import PdfReader, PdfWriter  # noqa: E402
 from slcn import pdfmerge as M  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
 
 pass_n = 0
 fails: list[str] = []
@@ -248,11 +249,19 @@ print("\n── (f) 真实成品交叉验证：与编辑用 mac 版合出来的�
 # `合并2026_10_05_17_42_45.pdf`（176 页 / 102 条大纲）。同一份输入跑引擎，
 # **页数、大纲条数、层级、名字、页码必须逐条相同** —— 这是「移植得对不对」最硬的证据。
 # 只读原稿、产物写临时目录；文件不在就跳过（换了机器/目录时不至于误报）。
-# ⚠️ 相对本文件推仓库根（`tests/` → `Engine/` → `` → 仓库根），**不写绝对路径**：
-#    写死某台机器的路径会让这条交叉验证在别人机器上静默 SKIP（2026-10-15 拆仓预演时发现）。
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-ISSUE = _REPO_ROOT / "2026年第5期(90)"
-REAL = ISSUE / "合并2026_10_05_17_42_45.pdf"
+# ⚠️ 期目录**必须**走 `slcn.paths.manuscripts_root()`（`FP.default_root()`），不能靠
+#    「相对本文件往上数几层」推：本仓的稿件库是**另一个仓**，测试又在
+#    `~/.codex/worktrees/…` 这种工作树里跑，往上数只会数到工作树父目录 →
+#    期目录看着「不在」，交叉验证被静默 SKIP 成「换了机器/目录」。
+#    取样按「期号 + 文件名片段」定，不写作者名、也不写绝对路径。
+_ISSUE_REF = "2026年第5期(90)"
+_PDF = FP.resolve_file(FP.default_root(), _ISSUE_REF, "合并2026_10_05_17_42_45", ".pdf")
+_ISSUE_DIR = FP.resolve_issue(FP.default_root(), _ISSUE_REF)
+# 只在 `ok` 时才有路径：不要用 `pathlib.Path("")` 兜底 —— 它等于 `Path(".")`，
+# `is_dir()`/`exists()` 都为 True，会把下面的 SKIP 守卫骗过去，最终 `PdfReader(".")`
+# 抛 `IsADirectoryError`。守卫一律看 `_ISSUE_DIR.ok` / `_PDF.ok` 这两个显式状态。
+ISSUE = _ISSUE_DIR.path if _ISSUE_DIR.ok else None
+REAL = _PDF.path if _PDF.ok else None
 
 
 def _flat_outline(path: str) -> list[tuple[str, int]]:
@@ -272,7 +281,12 @@ def _flat_outline(path: str) -> list[tuple[str, int]]:
     return out
 
 
-if ISSUE.is_dir() and REAL.exists():
+if _ISSUE_DIR.fatal or _PDF.fatal:
+    check("(f) 取样代码的错：真实期目录/成品 pdf", False,
+          (_ISSUE_DIR if _ISSUE_DIR.fatal else _PDF).detail)
+# 显式状态判定：`ok` 已由 resolver 保证「期目录是目录」「成品是文件」，
+# 不要再对路径调 is_dir()/exists() —— 缺料时路径是 None，那样写只会换个方式炸。
+elif _ISSUE_DIR.ok and _PDF.ok:
     with tempfile.TemporaryDirectory() as tmp:
         mine = os.path.join(tmp, "engine.pdf")
         M.merge_issue(str(ISSUE), out=mine, editors_page=True, nest_outlines=True,
@@ -284,7 +298,7 @@ if ISSUE.is_dir() and REAL.exists():
         check("(f) 真实期目录：**完整大纲（层级+名字+页码）逐条相同**", a == b,
               f"真产物 {len(a)} 条 / 引擎 {len(b)} 条")
 else:
-    print("SKIP  (f) 真实成品不在（换了机器/目录），跳过交叉验证")
+    print(f"SKIP  (f) 真实成品交叉验证  {FP.skip_line(_PDF if not _PDF.ok else _ISSUE_DIR)}")
 
 # ─────────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 66)

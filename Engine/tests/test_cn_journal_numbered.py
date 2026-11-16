@@ -34,7 +34,6 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -42,6 +41,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
 from slcn import footref  # noqa: E402
 from slcn.docxsource import parse_docx  # noqa: E402
 from slcn.footnotes import entry_to_bib  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
 
 FAILS = []
 SKIPS = []
@@ -283,10 +283,16 @@ check("⑦ 反例：纯中文逗号风格（无编号）仍走人年制通道（
 
 # ══ ⑥ 真实语料（不在本机则 SKIP）════════════════════════════════════════════
 print("\n── ⑥ 真实语料 ──")
-REAL = os.path.join(_REPO, "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
-if not os.path.exists(REAL):
-    SKIPS.append("真实语料 2026年第5期(90)/01 Meimei_Han/定稿.docx 不在本机")
-    print("SKIP  真实语料不在本机（2026年第5期(90)/01 Meimei_Han/定稿.docx）")
+# 取样只按「期号 + 篇序号 + 文件名片段」定。原来把 `01 Meimei_Han` 整段写死 ——
+# `Meimei_Han` 是文档示例化名（`slcn/naming.py`），真实语料里这一篇的目录名与化名不同，
+# 于是文件明明在、断言却 SKIP 成「不在本机」。
+_REAL = FP.resolve(FP.default_root(), "2026年第5期(90)/01", "定稿")
+REAL = _REAL.path if _REAL.ok else ""
+if _REAL.fatal:
+    check(f"⑥ 取样代码的错（{_REAL.status}）：2026年第5期(90)/01", False, _REAL.detail)
+elif not REAL:
+    SKIPS.append(f"真实语料 {FP.skip_line(_REAL)}")
+    print(f"SKIP  真实语料  {FP.skip_line(_REAL)}")
 else:
     d = parse_docx(REAL)
     dang = {k: e for k, e, _ in d.bib_entries if k.startswith("Dang")}

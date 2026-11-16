@@ -427,10 +427,33 @@ class TexFrontmatter:
         return {f.name: getattr(self, f.name) for f in fields(self)
                 if getattr(self, f.name)}
 
-    def template_values(self) -> dict[str, str]:
-        """映射到模板槽位（如 ``{"mytitle": ..., "myfirstauthor": ...}``）。"""
-        out: dict[str, str] = {}
-        for name, value in self.as_dict().items():
+    def template_values(self, tpl_fields=None) -> dict[str, str]:
+        """映射到模板槽位（如 ``{"mytitle": ..., "myfirstauthor": ...}``）。
+
+        给 ``tpl_fields``（模板真实存在的宏名集合）时按模板落槽：中文模板有
+        ``\\mygrants`` + ``\\mythanks`` 两槽，基金/致谢各自逐字写入；英文标准模板
+        只有 ``\\mythanks`` 一槽，基金必须并进 ``\\mythanks``（否则写进不存在的宏 →
+        字段丢失，P1），并与致谢拼接去重。不给参数时保持老的固定映射（兼容旧调用）。
+        """
+        vals = self.as_dict()
+        if tpl_fields is not None:
+            from .latex import editorial_slots, join_slot_text
+            slots = editorial_slots(tpl_fields)
+            gslot, tslot = slots["grants"], slots["thanks"]
+            if gslot and gslot == tslot:  # 英文模板：单槽，基金 + 致谢拼接
+                out: dict[str, str] = {}
+                for name, value in vals.items():
+                    if name in ("thanks", "grants"):
+                        continue
+                    slot = TEMPLATE_FIELDS.get(name)
+                    if slot:
+                        out[slot] = value
+                merged = join_slot_text(vals.get("thanks"), vals.get("grants"))
+                if merged:
+                    out[gslot] = merged
+                return out
+        out = {}
+        for name, value in vals.items():
             slot = TEMPLATE_FIELDS.get(name)
             if slot:
                 out[slot] = value

@@ -50,9 +50,16 @@ _CANON_MACRO = {
     "en": dict(zip(_PREVIEW_FIELD_ORDER, ("mytitle", "mysubtitle", "mytitleCN", "mysubtitleCN",
         "myfirstauthor", "myfirstauthorCN", "myfirstaffiliation", "myfirstaffiliationCN",
         "myfirstemail", "myabstract", "myabstractCN", "mykeywords", "mykeywordsCN",
-        "mygrants", "mythanks"))),
+        # 英文标准模板只有 `\newcommand{\mythanks}` 一个致谢/基金槽（SLEN.sty 把它排成
+        # 标题的 `\thanks` 脚注），没有 `\mygrants`。基金写 `\mygrants` 等于写进不存在的
+        # 宏 → 字段丢失（P1 缺陷）。因此英文稿基金并进 mythanks（compose_latex 里拼接去重）。
+        "mythanks", "mythanks"))),
 }
 _MACRO_CANON = {lg: {m: k for k, m in _CANON_MACRO[lg].items()} for lg in ("zh", "en")}
+# 旧产物/旧模板回读兼容：英文产物历史上写过 `\newcommand{\mygrants}`（虽然无效），
+# 回读旧稿时不能让它掉进 unidentified。中文表本来就有 mygrants→grants；英文这边
+# mythanks 已被上面的「thanks」占用，故显式补一条别名。
+_MACRO_CANON["en"]["mygrants"] = "grants"
 
 
 @dataclass
@@ -434,14 +441,29 @@ def compose_latex(paths, *, lang: str = "zh") -> tuple:
     lines = ["% slcn 元数据补充源合并（运行结束自动清理）",
              "% 来源：" + "、".join(r.name for r in results if r)]
     names: list = []
+    # 同一语种里两个规范化字段可能共用一个模板宏（英文模板的 grants/thanks 都写
+    # `\mythanks`）。按宏归并再拼：否则会输出两行同名 `\newcommand{\mythanks}`
+    # ——后者覆盖前者，等于丢一个字段（P1）。中文两槽各一，归并后与原先逐字节相同。
+    merged: dict[str, list[tuple[str, str]]] = {}
     for key in _PREVIEW_FIELD_ORDER:
         value, macro = m.fields.get(key), macro_map.get(key)
         if value and macro:
             _src = m.source_of.get(key, "")
             if "：" in _src and _src.split("：", 1)[1].rsplit("（", 1)[0] in _plain:
                 value = escape_latex(value)  # .docx 是明文；.tex 宏值保持原样
-            names.append(FIELD_LABELS[key])
-            lines.append("\\newcommand{\\" + macro + "}{" + value + "}")
+            merged.setdefault(macro, []).append((key, value))
+    for macro, items in merged.items():
+        # 同一槽内先「既有致谢」再「基金」，与 build.apply_editorial_fields() 的
+        # 拼接顺序一致（模板已有致谢不该被基金挤到后面）。
+        items = sorted(items, key=lambda kv: (0 if kv[0] == "thanks" else 1))
+        _vals = [v for _k, v in items if str(v).strip()]
+        if not _vals:
+            continue
+        text = _vals[0] if len(_vals) == 1 else latex.join_slot_text(*_vals)
+        if not text:
+            continue
+        names.extend(FIELD_LABELS[k] for k, _v in items if str(_v).strip())
+        lines.append("\\newcommand{\\" + macro + "}{" + text + "}")
     fd, path = tempfile.mkstemp(prefix="slcn-meta-", suffix=".tex")
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines) + "\n")

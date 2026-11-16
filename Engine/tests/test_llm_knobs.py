@@ -36,11 +36,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
 _MACTOOLBOX = os.path.dirname(_ENGINE)
+
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from slcn import llm  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402  「期号+篇序号」取样，不写作者名
 
 FAILS = []
 SKIPS = []
@@ -287,10 +289,17 @@ check("(d) CLI 传了认不出的工具名 → 回落到默认（请求照发、
 # ── (e) 端到端：真 convert.py CLI + 本地 mock，自定义工具名 ───────────────────
 print("\n── (e) mock 端到端：`--llm-search-tool web_search_preview` ──")
 _MOCK = os.path.join(_MACTOOLBOX, "tools", "mock_llm_server.py")
-MANUSCRIPT = os.path.join(_MACTOOLBOX, "..", "2026年第5期(90)", "01 Meimei_Han", "定稿.docx")
+# `_MACTOOLBOX/..` 在本 worktree 里是 worktree 的父目录，不是 `~/Documents/GitHub`；
+# 再叠上文档化名的作者目录名，这一组只能 SKIP。取样交给 FP（期号+篇序号+文件名片段）。
+_MANUSCRIPT = FP.resolve(FP.default_root(), "2026年第5期(90)/01", "定稿")
+MANUSCRIPT = _MANUSCRIPT.path if _MANUSCRIPT.ok else ""
 
-if not os.path.isfile(_MOCK) or not os.path.isfile(MANUSCRIPT):
-    skip("(e) mock 端到端", f"缺 mock 或真实稿件（{_MOCK} / {MANUSCRIPT}）")
+if _MANUSCRIPT.fatal:
+    check(f"取样代码的错（{_MANUSCRIPT.status}）：2026年第5期(90)/01 定稿", False, _MANUSCRIPT.detail)
+if not os.path.isfile(_MOCK) and MANUSCRIPT:
+    skip("(e) mock 端到端", f"缺 mock（{_MOCK}）")
+elif not MANUSCRIPT:
+    skip("(e) mock 端到端", f"缺 mock 时也缺真实稿件；稿件侧：{FP.skip_line(_MANUSCRIPT)}")
 else:
     spec = importlib.util.spec_from_file_location("mock_llm_server_knobs", _MOCK)
     mock = importlib.util.module_from_spec(spec)
@@ -309,6 +318,14 @@ else:
             cmd = [sys.executable, os.path.join(_ENGINE, "convert.py"),
                    "--source", MANUSCRIPT, "--out", os.path.join(tmp, "out"),
                    "--verify-refs", "--no-original", "--no-ai-merge",
+                   # 默认 `--ai-budget-tokens 30000` 是真实 API 的省钱闸；本机 mock 不产生
+                   # 费用，但闸门会按估算把请求全拦下（`n_tools_requested` 因此为空）。本仓
+                   # mock 端到端测试的既有写法就是显式 0（不限），见 test_batch63_api_char_cap。
+                   "--ai-budget-tokens", "0",
+                   # `--no-bibdb`：设了 `SLCN_NOTES` 时默认引用库自动启用，命中库里已核实
+                   # 条目的键**不再发 AI 请求**；本组要验的是「自定义检索工具名」这条通道，
+                   # 必须让请求真的打到 mock 上，故显式关库（不改任何断言）。
+                   "--no-bibdb",
                    "--llm-base", mbase, "--llm-key", "mock", "--llm-model", "mock-model",
                    "--llm-protocol", "responses", "--llm-web-search",
                    "--llm-search-tool", "web_search_preview"]

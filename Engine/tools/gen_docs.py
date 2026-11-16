@@ -13,7 +13,28 @@ WHY：手抄的数字必然过期，而且过期了没人知道。所以这块�
     /opt/homebrew/bin/python3.14 tools/gen_docs.py --check    # 只校验，不一致 → 打印 diff 并退出 1
     /opt/homebrew/bin/python3.14 tools/gen_docs.py --check --no-test-runs
                                                               # 只校验：不跑套件（测试计数行不参与比对）
+    /opt/homebrew/bin/python3.14 tools/gen_docs.py --check --strict-tests
+                                                              # 严格入口：前提不全 → BLOCKED + 非零；
+                                                              # 真跑套件，任何套件状态异常都判不通过
     /opt/homebrew/bin/python3.14 tools/gen_docs.py --cmp-app   # 只比对 App 包内引擎白名单（毫秒级）
+
+**G1（门禁可信化）：套件状态必须可信，`--check` 区分「文档新鲜度」与「套件通过」**
+* `run_tests()` 从前**只数 `PASS`/`FAIL` 文本行、把子进程的 returncode 丢掉了** —— rc=3 崩在
+  import、5 个 PASS 之后 exit 7、甚至超时，全都会被渲染成「FAIL 0 行 ✅」。现在每个套件带
+  `status`：`None` 才表示 `rc==0 且无 FAIL 行`；否则是含原始 rc 的可读串
+  （`rc=7` / `startup failed rc=1` / `timeout 300s` / `rc=0 FAIL 2`），并且 `subprocess.run`
+  一律带 `timeout=`、`TimeoutExpired` 算**显式失败**。
+* `build_block` 的 OK 判定与渲染都改成 status 感知：全绿时测试行**逐字节不变**（AUTO 块跨机器
+  可复现），出现异常套件时在摘要行追加 `❌ …（异常套件 k / n）`、并在「套件明细」后新增
+  `异常套件：…` 一行逐套件标状态。
+* `out/auto-inputs.json` 的 schema 升到 2：旧缓存（schema 1）一律不复用 —— 它里面根本没有
+  status 字段，复用它等于把"上次没全绿"当 PASS。带非 None status 的缓存行也一律拒绝复用，
+  快速通道同理（看不见套件状态就不许声称 PASS）。
+* `--check`（非严格）仍以**新鲜度**为主；但**本次真跑了套件**且存在异常套件时，必须打印明确的
+  非 PASS 行并以非零退出码结束（不再出现"文档一致所以套件崩了也算过"）。
+* 新增 `--strict-tests`：前提不全（缺稿件库/TeX/LibreOffice）→ `BLOCKED` + 原因清单 + 退出码 2；
+  不降级（不伪造 `environment_complete=True`、不归一化测试行）、不减少套件数。
+  `--no-test-runs` 与它互斥（前者根本不跑套件，无权声称任何套件状态）。
 
 **第四十四批③a（O9）：App 包内一致性已移出 AUTO 块** ——
 它依赖「本机是否刚 `./build.sh` 过」，留在 AUTO 里会让测试计数（经 `test_selfcheck` →
@@ -153,8 +174,10 @@ CORPUS_DIR = ENGINE / "out" / "corpus"
 # 背景：批46 O5=0 的「AUTO-corpus 循环」——重跑 corpus → AUTO corpus sha 变 → 再 gen_docs+build。
 # `Engine/out/` 是 gitignore 的产物目录；测试可用 SLCN_AUTO_INPUTS 指向临时文件。
 AUTO_INPUTS = Path(os.environ.get("SLCN_AUTO_INPUTS") or (ENGINE / "out" / "auto-inputs.json"))
-AUTO_INPUTS_SCHEMA = 1
-_LAST_TEST_ROWS: list[tuple[str, int, int]] | None = None
+# G1：schema 1 → 2。1 版的 `test_rows` 只有 `(套件, PASS, FAIL)` 三列，**没有套件状态**；
+# 复用它等于把「上次可能崩过一半」的计数当 PASS。schema 不匹配 → 缓存与快速通道一律拒用。
+AUTO_INPUTS_SCHEMA = 2
+_LAST_TEST_ROWS: list[tuple[str, int, int, str | None]] | None = None
 _FAST_PATH_USED = False
 _CACHED_TESTS_USED = False
 
@@ -220,18 +243,210 @@ def test_files() -> list[Path]:
             if f.name not in SELF_REFERENTIAL]
 
 
-def run_tests() -> tuple[list[tuple[str, int, int]], int]:
+# ── G1：套件状态可信化 ────────────────────────────────────────────────────
+# 从前这里只数 `^\s*PASS` / `^\s*FAIL` 文本行，**把子进程的 returncode 丢了**。后果实测
+# （2026-11-15 的 6 个假套件反例）：`import` 阶段崩掉（rc=3）→ 0 PASS / 0 FAIL → 渲染成
+# "FAIL 0 行 ✅"；5 个 PASS 之后 `sys.exit(7)` → 5 PASS / 0 FAIL → ✅；甚至一个什么都不做的
+# 套件（rc=0，0 PASS）也被当成功。这套计数是 AUTO 块「测试」行的唯一来源，一旦它能把崩溃
+# 说成全绿，那块绿就一文不值。
+#
+# 现在每个套件带一个 `status`：**`None` 才表示"可信的全绿"**（rc==0 且 0 个 FAIL 行）；
+# 否则是给人看的失败描述，一律带原始 rc：
+#   * `startup failed rc=1`  —— 还没打出任何断言行就非零退出（import/收集期崩溃）
+#   * `rc=7`                 —— 打出过 PASS 行，但进程非零退出
+#   * `rc=0 FAIL 2`          —— 进程正常但打出了 FAIL 行
+#   * `timeout 300s`         —— TimeoutExpired（**显式失败**，不是"没看见就当过"）
+# 成功判据收紧成一个：`rc == 0 and fails == 0`。
+TEST_TIMEOUT_SECONDS = 900
+
+
+def _suite_status(rc: int | None, passes: int, fails: int, timed_out: bool,
+                  timeout: float) -> str | None:
+    """把一次子进程运行归成 status：None = 可信全绿，否则是可读的失败串。"""
+    if timed_out:
+        return f"timeout {timeout:g}s"
+    if rc is None:
+        return "no-exit-code"
+    if fails:
+        return f"rc={rc} FAIL {fails}"
+    if rc != 0:
+        # 一个 PASS 行都没打出来就非零退出：几乎总是 import/收集期就崩了 —— 单列出来，
+        # 免得和"跑完了但有断言失败"混在一起看不出病根。
+        return f"startup failed rc={rc}" if passes == 0 else f"rc={rc}"
+    return None
+
+
+def run_tests(timeout: float | None = None,
+              files: list[Path] | None = None) -> tuple[list[tuple[str, int, int, str | None]], int]:
+    """现跑套件，返回 `([(套件, PASS 数, FAIL 数, status)], PASS 总数)`。
+
+    `status` 语义见 `_suite_status()`：**只有 None 算全绿**。
+    `timeout` / `files` 只给测试用（生产语义固定：默认超时 + 全量 `test_files()`）。
+    """
     if os.environ.get("SLCN_GEN_DOCS_NESTED"):
         sys.exit("gen_docs.py 被递归调用（SLCN_GEN_DOCS_NESTED 已置位）—— 检查测试清单")
+    if timeout is None:
+        timeout = TEST_TIMEOUT_SECONDS
     env = dict(os.environ, PYTHONPATH=str(ENGINE / "vendor"), SLCN_GEN_DOCS_NESTED="1")
-    rows = []
-    for f in test_files():
-        p = subprocess.run([PY, "-u", str(f)], cwd=str(ENGINE), env=env,
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        out = p.stdout + p.stderr
-        rows.append((f.stem, len(re.findall(r"^\s*PASS\b", out, re.M)),
-                     len(re.findall(r"^\s*FAIL\b", out, re.M))))
+    rows: list[tuple[str, int, int, str | None]] = []
+    for f in (files if files is not None else test_files()):
+        timed_out = False
+        rc: int | None = None
+        out = ""
+        try:
+            p = subprocess.run([PY, "-u", str(f)], cwd=str(ENGINE), env=env,
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=timeout)
+            out = p.stdout + p.stderr
+            rc = p.returncode
+        except subprocess.TimeoutExpired as e:
+            # 超时是**显式失败**：把已经吐出来的部分照样计数（便于看它卡在哪一项），
+            # 但 status 必须是 timeout —— 不许因为"没看到 FAIL 行"就当过。
+            timed_out = True
+            out = "".join(x.decode("utf-8", "replace") if isinstance(x, bytes) else (x or "")
+                          for x in (e.stdout, e.stderr))
+        except OSError as e:
+            print(f"⚠ gen_docs: 套件 {f.name} 启动失败：{type(e).__name__}: {e}", file=sys.stderr)
+        passes = len(re.findall(r"^\s*PASS\b", out, re.M))
+        fails = len(re.findall(r"^\s*FAIL\b", out, re.M))
+        rows.append((f.stem, passes, fails, _suite_status(rc, passes, fails, timed_out, timeout)))
     return rows, sum(r[1] for r in rows)
+
+
+def abnormal_suites(rows: list | None) -> list[tuple[str, str]]:
+    """挑出 status 非 None 的套件（兼容 3 元素旧行：缺 status 视为 None）。
+
+    卡 §9 第 2 项（qoder §22.2.2 / Codex lead §23 的 fail-return）：
+    **status 的判据是 `is not None`，不是 truthiness**。空串 / `False` / `0` 都是
+    「有人给了一个状态」而不是「没有状态」—— 按 truthiness 判会把它们当成全绿，
+    从而让一份带空串状态的缓存放行、并被 `_norm_test_rows()` 洗成 `None` 落盘。
+    """
+    out: list[tuple[str, str]] = []
+    for r in rows or []:
+        status = r[3] if len(r) > 3 else None
+        if status is not None:
+            # 空串/False/0 也要看得到"它给了个东西但不可信"（不要渲染成空白）。
+            out.append((str(r[0]), str(status) or f"status={status!r}"))
+    return out
+
+
+def suite_rows_trusted(rows: list | None, expected: list[str] | None = None) -> bool:
+    """这批测试行能不能用来声称「套件通过」：非空、每行 ≥4 列、且 status 全 None。
+
+    `expected`（G1-F5）：**证据覆盖面**校验。给了期望套件名单时，这批行必须**恰好**覆盖
+    当前 `test_files()` 的每一个套件（多一行、少一行、换一个名字都算不成立）。
+    没有它的话，一份被截断的缓存（比如 174 个套件只留 1 行、单套断言数被改成 99999）
+    也能冒充"全部套件都绿过"的直接证据 —— 缓存只能证明"曾经写过这份计数"，
+    不能证明"当前这套套件跑过且全绿"。`expected=None` 时保持历史语义（只看形状与 status）。
+
+    ⚠️ 卡 §9 第 2 项：status 的可信判据是**严格 `is None`**，不是 falsy。空串 / `False` / `0`
+    都是"给了状态"却不等于可信全绿；按 truthiness 判会让它们混过去（qoder §22.2.2 实测）。
+    """
+    if not isinstance(rows, list) or not rows:
+        return False
+    for r in rows:
+        if not isinstance(r, (list, tuple)) or len(r) < 4:
+            return False
+        try:
+            int(r[1]), int(r[2])
+        except (TypeError, ValueError):
+            return False
+        if r[3] is not None:
+            return False
+    if expected is not None:
+        want = [str(x) for x in expected]
+        have = [str(r[0]) for r in rows]
+        if len(have) != len(want) or set(have) != set(want):
+            return False
+    return True
+
+
+def render_test_section(rows: list[tuple[str, int, int, str | None]],
+                        total: int | None = None) -> list[str]:
+    """把测试行渲染成 AUTO 的「测试」段（摘要行 + 空行 + 明细 + 可选异常明细 + 空行）。
+
+    G1-F5：单独抽出来是为了让**缓存自证**成为可能 —— 严格档走快速通道前，要拿缓存里的
+    计数重新渲染一遍，与 README 里已经写着的测试段逐行核对（见 `cached_rows_match_block`）。
+    渲染逻辑只有这一份，`build_block()` 与该校验共用，避免两处走样。
+    """
+    if total is None:
+        total = sum(p for _, p, _, _st in rows)
+    abnormal = abnormal_suites(rows)
+    # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
+    #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
+    # B300-06：用 `.stem` 而不是 `.name` —— 否则 Windows 上会写 `python3.14.exe`，
+    # 同一份 README 在 mac 上 `--check` 就红（AUTO 块跨平台必须一致）。
+    t = (f"**测试**（`{Path(PY).stem}` + `PYTHONPATH=Engine/vendor`）："
+         f"**{len(rows)} 套件 / {total} 项断言 / FAIL {sum(f for _, _, f, _st in rows)} 行**")
+    # 三种事实分开表达：PASS 文本计数（上面那行）、FAIL 断言行数（bad）、套件是否成功（abnormal）。
+    # 同一个套件既非零退出又打了 FAIL 时只报状态（状态串里已含 FAIL 数）。
+    # ⚠️ 卡 §9 第 2 项：`st is not None` 才是"有状态"，空串/False/0 也算有状态（渲染成 `status=…`），
+    #    不许被 truthiness 判成"全绿"而渲染出 `✅`。
+    marks = [f"{n}({st if str(st) else f'status={st!r}'})" if st is not None else f"{n}({f} FAIL)"
+             for n, p, f, st in rows if st is not None or f]
+    if not marks:
+        # 全绿：**逐字节**保持历史渲染（AUTO 块跨机器可复现，B-136/O14 的守门断言都靠它）。
+        t += " ✅"
+    else:
+        t += " ❌ " + "、".join(marks)
+        if abnormal:
+            # 异常标记里必须带套件数：`❌ 1/2 套件异常` 一眼能看出规模，不必去数明细。
+            t += f"（异常套件 {len(abnormal)}/{len(rows)}，明细见下）"
+    t += "（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）"
+    lines = [t, ""]
+    parts = [f"`{n}` {p}" for n, p, _f, _st in rows]
+    lines.append("套件明细：" + " ｜ ".join(parts[:4]))
+    for i in range(4, len(parts), 4):
+        lines.append(" ｜ ".join(parts[i:i + 4]))
+    if abnormal:
+        # 明细里逐条标出状态异常的套件（全绿时不出现这一行 → 渲染逐字不变）。
+        lines.append(TEST_ABNORMAL_HEAD
+                     + " ｜ ".join(f"`{n}` {st}" for n, st in abnormal))
+    lines.append("")
+    return lines
+
+
+def cached_rows_match_block(old_body: str, rows: list | None) -> bool:
+    """缓存里的测试计数，是否**与 README 里已经写着的测试段逐行一致**。
+
+    G1-F5b：`suite_rows_trusted()` 只能证明「这批行覆盖了当前全部套件、且没有失败证据」，
+    它**看不懂数字对不对** —— 一份把某个套件的断言数从 45 改成 99999 的缓存，套件名
+    集合仍然完全匹配。缓存是"自己说自己对"，所以严格档还要拿它重渲染一遍，与提交进仓库的
+    README 里那段（上次写模式落下的）逐行对比：对不上就是缓存与块不是同一次生成的，
+    这时不许拿缓存当"套件通过"的证据，必须回退到现算。
+    """
+    if not rows:
+        return False
+    try:
+        got = test_section_lines(old_body)
+        if got is None:
+            return False
+        want = render_test_section(_norm_test_rows(rows))
+    except Exception:  # noqa: BLE001 —— 证据比对失败一律按"不可信"处理，绝不放行
+        return False
+    return got == want
+
+
+def _norm_test_rows(rows_in: list) -> list[tuple[str, int, int, str | None]]:
+    """把 3 或 4 元素的测试行**规范成 4 元素**：`(套件, PASS, FAIL, status)`。
+
+    为什么要容 3 元素：G1 之前写出的 `out/auto-inputs.json` 与若干测试里的
+    `[["test_x", 1, 0]]` 都是三列（没有套件状态）。缺第 4 列时 status 记 None ——
+    即「这三列本身不含失败证据」；能不能真复用另由 `cached_test_rows()` 判
+    （schema 与 status 两道闸在那里，不在渲染层）。
+
+    ⚠️ 本函数只管**形状**，不管「能不能当通过证据」：写模式走的是 `reusable_test_rows()`
+    （卡 §7 第 1 项，在 `cached_test_rows()` 之上再要求 4 列 + 覆盖面 + 与块逐行一致），
+    三列行在那里一律被拒。渲染层保留三列兼容只为历史块与测试替身。
+    """
+    out: list[tuple[str, int, int, str | None]] = []
+    for r in rows_in:
+        n, p, f = r[0], r[1], r[2]
+        st = r[3] if len(r) > 3 else None
+        # ⚠️ 卡 §9 第 2 项：只有 None 才是"没有状态"。空串 / False / 0 一律**原样保留**
+        # （`str(st)`），不许被 truthiness 洗成 None —— 那等于替一份坏缓存伪造"全绿"证据。
+        out.append((str(n), int(p), int(f), None if st is None else str(st)))
+    return out
 
 
 # ── 普查：读 out/docx_audit.csv（**只读**，绝不重生成基线）──────────────────
@@ -587,11 +802,18 @@ def load_auto_inputs() -> dict | None:
 
 
 def cached_test_rows(inputs_now: dict, project: dict | None) -> list | None:
-    """写模式复用测试计数：**只有 engine/tests/稿件库/环境前提都没变**时才允许。
+    """测试计数缓存的第一道闸：**只有 engine/tests/稿件库/环境前提都没变**时才允许复用。
 
     测试计数只取决于这几项（同一环境下）；corpus/audit 变了不影响计数。
+
+    ⚠️ **写模式不要直接调本函数**（卡 §7 第 1 项）：它的判据是「不含失败证据」，于是
+    缺 status 的三列缓存也能过 —— 拿它当写模式的判据，等于把「上次可能没跑完」的计数
+    升级成「套件通过」的证据。写模式用 `reusable_test_rows()`（本函数 + 4 列/覆盖面/块自证）。
+    本函数保留原语义，是因为 (e3) 与 `test_b74` ③ 直接断言它、且渲染层要兼容三列替身。
     """
     if not project or project.get("schema") != AUTO_INPUTS_SCHEMA:
+        # G1：schema 1 的三列行**没有套件状态**，复用等于把「上次可能崩过一半」的计数
+        # 当成 PASS。旧缓存一律不认 —— 宁可多跑一遍套件，也不许把不可信数字写进块里。
         return None
     old = project.get("inputs") or {}
     keys = ("engine_py_sha256", "tests_manifest_sha256", "env_complete", "manuscripts_fingerprint")
@@ -607,6 +829,55 @@ def cached_test_rows(inputs_now: dict, project: dict | None) -> list | None:
         if any(int(r[2]) for r in rows):
             return None
     except (TypeError, ValueError, IndexError):
+        return None
+    # G1：**套件状态**非 None 的缓存行同样不许复用（0 FAIL 但崩溃/超时/非零退出）。
+    # 缺第 4 列的三元素行（G1 之前的写法，或测试里手写的 `[["test_x", 1, 0]]`）
+    # 视为「不含失败证据」，语义与 B-110 之前一致，继续可复用。
+    #
+    # ⚠️ 这里只做「不含失败证据」这一层判断 —— 三列行**能过**这一关是历史语义，是给
+    #    渲染与 `test_docs_consistency.py` 的 (e3) / `test_b74` ③ 留的兼容面。
+    #    **写模式不许走这条宽口径**：它要的是「能声称套件通过」的证据，必须 4 列且与
+    #    块内测试段自洽 —— 见 `reusable_test_rows()`（卡 §7 第 1 项）。
+    if abnormal_suites(rows):
+        return None
+    return rows
+
+
+def reusable_test_rows(inputs_now: dict, project: dict | None, block_body: str | None) -> list | None:
+    """**写模式**真正采用的测试计数缓存：在 `cached_test_rows()` 之上再加两道闸。
+
+    GATE-RELIABILITY §7 第 1 项（qoder §18 / Codex lead §19 的「G1 写模式缓存复用 FAIL」）：
+    `cached_test_rows()` 的宽口径会把**缺 status 的三列缓存**当成「不含失败证据」放行，
+    写模式随后 `_norm_test_rows()` 把 status 补成 None、渲染成 `✅` 并 `save_auto_inputs()`
+    落盘 —— 等于把「上次可能没跑完/没跑过」的计数升级成「套件通过」的证据。
+
+    所以写模式的复用判据是下面三条**同时**成立，任一条不成立就回退到「现跑套件」分支：
+
+    ① `cached_test_rows()` 全过（schema/指纹/无 FAIL/无异常 status）；
+    ② `suite_rows_trusted(rows, expected=[f.stem for f in test_files()])`：
+       每行 **≥4 列**、status **严格 `is None`**、且套件名单**恰好**覆盖当前全部套件
+       （卡 §9 第 1 项：不保留 `covered == 0` 豁免 —— 全假名缓存也要拒）；
+    ③ `cached_rows_match_block(block_body, rows)`：拿缓存重渲染一遍，与 README 里**已经写着**
+       的测试段逐行一致 —— 被截断（174 个套件只剩 1 行）、被改名、被塞进多余行，都会与块
+       对不上；对不上说明缓存和块不是同一次生成的，不许当证据。
+
+    ③ 是「缓存自证」：缓存自己说自己对没有意义，必须与提交进仓库的那段文字互相印证。
+    真实的成功缓存（写模式刚写出来的那种）天然满足三条，所以**没有关掉缓存**；
+    只有「形状不全 / 名单不符 / 与块不一致」的缓存被拒，且拒了之后走的是原有的现跑分支。
+    """
+    rows = cached_test_rows(inputs_now, project)
+    if rows is None:
+        return None
+    # ③a 覆盖面（卡 §9 第 1 项）：缓存的套件名单必须**无条件恰好**覆盖当前 `test_files()`。
+    # 多一行 / 少一行 / 换一个名字 / 全是假名（`covered == 0`）都算不成立 —— 一律回退现跑。
+    #
+    # ⚠️ 这里曾有一个 `covered == 0` 的豁免（"一行都对不上就当测试替身"），
+    #    qoder §22.2.1 用它把 all-fake 缓存 + all-fake README 段自洽地复用成功并落盘了假名。
+    #    卡 §9 第 1 项明确**不许保留这个特例**；测试替身改在测试自己那边注入 `test_files()`
+    #    （`test_b74_gen_docs_write_once.py`），不再占用生产的判据。
+    if not suite_rows_trusted(rows, expected=[f.stem for f in test_files()]):
+        return None
+    if not cached_rows_match_block(block_body or "", rows):
         return None
     return rows
 
@@ -624,6 +895,10 @@ def fast_check_ok(old_body: str, project: dict | None, inputs_now: dict) -> bool
         return False
     stored = project.get("block_sha256")
     if not stored:
+        return False
+    # G1：缓存里只要有**套件状态异常**的行，就不能靠指纹直接宣布 PASS ——
+    # 块指纹只能证明「README 与上次写出的一致」，不能证明「套件那次真的跑成功了」。
+    if abnormal_suites(project.get("test_rows")):
         return False
     return hashlib.sha256(normalize_for_check(old_body, lenient=False).encode("utf-8")).hexdigest() == stored
 
@@ -664,47 +939,41 @@ def build_block(run_test_suites: bool = True,
         # B-110：写模式的**中间态**——数据块先行落盘时，原样保留 README 里尚未重算的测试段。
         # 它不参与 `--no-test-runs` 比对（那两行会被整段剔除），也不会被当成新算的数字。
         lines = list(test_section)
-        rows = []
+        rows: list[tuple[str, int, int, str | None]] = []
         total = 0
         _LAST_TEST_ROWS = None
     elif test_rows_in is not None:
         # B-110：套件已跑完（写模式第二阶段），直接渲染测试计数。
-        rows = [(str(n), int(p), int(f)) for n, p, f in test_rows_in]
-        total = sum(p for _, p, _ in rows)
+        rows = _norm_test_rows(test_rows_in)
+        total = sum(p for _, p, _, _st in rows)
         _LAST_TEST_ROWS = rows
     elif cached_test_rows_in is not None:
         # O14：engine/tests 未变 → 测试计数直接复用（corpus/audit 变化不必整跑套件）
         global _CACHED_TESTS_USED
-        rows = [(str(n), int(p), int(f)) for n, p, f in cached_test_rows_in]
-        total = sum(p for _, p, _ in rows)
+        rows = _norm_test_rows(cached_test_rows_in)
+        total = sum(p for _, p, _, _st in rows)
         _LAST_TEST_ROWS = rows
         _CACHED_TESTS_USED = True
         print("提示  测试计数复用 out/auto-inputs.json 缓存（engine/tests 未变；本次未跑套件）",
               file=sys.stderr)
     elif run_test_suites:
         rows, total = run_tests()
+        # G1：`run_tests()` 现在给的是 4 列（含 status）；这里过一遍 `_norm_test_rows`
+        # 只为兼容老测试替身（3 列）—— 别让一行旧形状的替身把整个门禁炸掉。
+        rows = _norm_test_rows(rows)
+        total = sum(p for _, p, _, _st in rows)
         _LAST_TEST_ROWS = rows
     else:
         # `--no-test-runs`：**不跑**套件，只保留套件清单的行数与形状（比对前测试行会被整段剔除）。
         # 用 0 而不是真值，是为了"绝不把占位数字写进 README"——写模式禁用本开关，见 main()。
-        rows, total = [(f.stem, 0, 0) for f in test_files()], 0
+        rows, total = [(f.stem, 0, 0, None) for f in test_files()], 0
         _LAST_TEST_ROWS = None
-    bad = [(n, f) for n, p, f in rows if f]
+    # G1：FAIL 断言数（bad）与「套件本身是否可信」（abnormal）是**两件事**——
+    # 一个套件可以 0 FAIL 却崩溃/超时/根本没跑起来（rc!=0）。ok 必须同时看这两者。
+    bad = [(n, f) for n, p, f, _st in rows if f]
+    abnormal = abnormal_suites(rows)
     if test_section is None:
-        # ⚠️ 这一行**不许出现绝对路径**：块是提交进仓库的，换台机器/换个克隆目录就会
-        #    `--check` 失败（2026-10-15 在一个新克隆里实测到）。只写解释器名与相对路径。
-        # B300-06：用 `.stem` 而不是 `.name` —— 否则 Windows 上会写 `python3.14.exe`，
-        # 同一份 README 在 mac 上 `--check` 就红（AUTO 块跨平台必须一致）。
-        t = (f"**测试**（`{Path(PY).stem}` + `PYTHONPATH=Engine/vendor`）："
-             f"**{len(rows)} 套件 / {total} 项断言 / FAIL {sum(f for _, _, f in rows)} 行**")
-        t += " ✅" if not bad else " ❌ " + "、".join(f"{n}({f} FAIL)" for n, f in bad)
-        t += "（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）"
-        lines = [t, ""]
-        parts = [f"`{n}` {p}" for n, p, _ in rows]
-        lines.append("套件明细：" + " ｜ ".join(parts[:4]))
-        for i in range(4, len(parts), 4):
-            lines.append(" ｜ ".join(parts[i:i + 4]))
-        lines.append("")
+        lines = render_test_section(rows, total)
     for fn in (audit_block, corpus_block):
         sub, sub_ok = fn()
         lines += sub + [""]
@@ -714,7 +983,8 @@ def build_block(run_test_suites: bool = True,
     # 形成「gen_docs×2 + build×2」的循环依赖。现在由 build.sh 末尾 `--cmp-app` 守卫（见 app_cmp）。
     lines += placeholder_block() + [""]
     lines += git_block()
-    if bad:
+    if bad or abnormal:
+        # G1：**FAIL 行数**与**套件状态**分开判 —— 一个套件可以 0 FAIL 却崩溃/超时/没跑起来。
         ok = False
     return "\n".join(lines).rstrip() + "\n", ok
 
@@ -743,6 +1013,9 @@ TEST_BREAKDOWN_LINE = re.compile(r"^`test_[a-z0-9_]+` \d+( ｜ `test_[a-z0-9_]+`
 # ⚠️ 明细的**第一行**带前缀（`套件明细：`test_…` 45 ｜ …`），不匹配上面的纯明细正则 ——
 #    `strip_test_lines()` 必须单独认它，否则 --no-test-runs 会把这一行留在比对里而误红。
 TEST_BREAKDOWN_HEAD = "套件明细："
+# G1：套件**状态**异常（崩溃/超时/非零退出）时的逐条明细行。全绿时这一行根本不出现，
+# 所以历史渲染逐字不变；出现时它同样属于「测试段」，--no-test-runs 必须一并剔除。
+TEST_ABNORMAL_HEAD = "异常套件："
 _TEST_PLACEHOLDER = "**测试**：（计数随本机前提浮动，本次不参与校验）"
 
 
@@ -808,7 +1081,8 @@ def strip_test_lines(body: str) -> str:
     keep = [ln for ln in body.split("\n")
             if not TEST_SUMMARY_LINE.match(ln)
             and not TEST_BREAKDOWN_LINE.match(ln)
-            and not ln.startswith(TEST_BREAKDOWN_HEAD)]
+            and not ln.startswith(TEST_BREAKDOWN_HEAD)
+            and not ln.startswith(TEST_ABNORMAL_HEAD)]
     return "\n".join(keep)
 
 
@@ -872,6 +1146,10 @@ def _main_impl(argv: list[str] | None = None) -> int:
                     help="（只能配 --check）不跑套件：AUTO 的「测试」计数行不参与比对。"
                          "供 full 套件 / selfcheck quick 去掉重复的一遍套件；"
                          "测试计数守卫由独立的 `gen_docs.py --check` 负责")
+    ap.add_argument("--strict-tests", action="store_true",
+                    help="（只能配 --check）严格测试入口：前提不全 → 打印 BLOCKED + 原因清单并退出 2；"
+                         "测试计数行按实测严格比对（不做宽松归一化）。"
+                         "把「文档新鲜度」与「套件通过」分开报，两者都绿才算真绿")
     ap.add_argument("--cmp-app", action="store_true",
                     help="只比对 App 包内引擎白名单（APP_FILES，28 个）与仓库；毫秒级。"
                          "build.sh 末尾用；不读写 README")
@@ -880,6 +1158,12 @@ def _main_impl(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.no_test_runs and not a.check:
         ap.error("--no-test-runs 只能与 --check 一起用：写模式必须现算测试计数")
+    if a.strict_tests and not a.check:
+        ap.error("--strict-tests 只能与 --check 一起用：写模式的成功判据已经是实跑套件")
+    if a.no_test_runs and a.strict_tests:
+        # G1：两件事互相矛盾 —— 一个声称"没跑套件、不表态"，一个要求"必须实测通过"。
+        # 允许叠加等于给"我没跑，但请当它过了"开口子，直接拒。
+        ap.error("--no-test-runs 与 --strict-tests 互斥：前者不声称任何套件状态，后者要求实测")
 
     if a.cmp_app:
         # O9（第四十四批③a）：包内一致性的**唯一守卫**。build.sh 末尾调用；
@@ -897,7 +1181,17 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
     if a.check:
         complete, missing = environment_complete()
-        lenient = not complete
+        # G1：严格入口。缺前提时**不许**退化成宽松校验 —— 那正是「红灯变绿」的元凶
+        # （CI 上没有稿件库 → 测试用例全 SKIP、计数变小 → 宽松归一化 → 永远 PASS）。
+        if a.strict_tests and not complete:
+            print(f"BLOCKED  严格测试校验无法进行：本机缺 {'、'.join(missing)}")
+            for m in missing:
+                print(f"      - {m}：缺它时相关用例会 SKIP，测试计数与依赖稿件库的数字必然不可信")
+            print("      严格模式不会把「前提不全」当「通过」；请在具备前提的机器上重跑，")
+            print("      或改用非严格的 `tools/gen_docs.py --check`（只保证文档新鲜度）。")
+            return 2
+        # 严格模式绝不宽化：测试计数行按实测逐字比对（契约 3 的宽松归一化在严格下禁用）。
+        lenient = (not complete) and not a.strict_tests
         # O14（第四十七批）快速通道：`out/auto-inputs.json` 的输入指纹未变 **且** README 块指纹
         # 等于上次写出的块 → 直接 PASS，**不跑套件**（严格模式下这是 ~90s/次 的节省）。
         # 任何一项对不上（输入变了/块被改过/缓存损坏）都回退到下面的「现算 + 逐行比对」。
@@ -905,14 +1199,39 @@ def _main_impl(argv: list[str] | None = None) -> int:
             project = load_auto_inputs()
             if project:
                 inputs_now = collect_auto_inputs()
-                if fast_check_ok(old, project, inputs_now):
+                # G1：严格模式只在**缓存行全都 status 为 None**（且形状可信）时才允许走快速通道；
+                # 旧 schema 已被 fast_check_ok 拒掉，这里再挡一层「行不全/有空缺」的缓存。
+                _fast_ok = fast_check_ok(old, project, inputs_now)
+                _want_suites = [f.stem for f in test_files()]
+                if _fast_ok and a.strict_tests and not suite_rows_trusted(
+                        project.get("test_rows"), expected=_want_suites):
+                    _fast_ok = False
+                # G1-F5b：套件名集合对上还不够 —— 缓存里的**数字**也得是 README 里那段
+                # 已经写着的数字。缓存是"自己说自己对"，一份把某套件断言数改大的缓存
+                # 集合仍然完全匹配；这里拿缓存重渲染一遍与块逐行对比，对不上就回退现算。
+                if _fast_ok and a.strict_tests and not cached_rows_match_block(
+                        old, project.get("test_rows")):
+                    _fast_ok = False
+                if _fast_ok:
                     global _FAST_PATH_USED
                     _FAST_PATH_USED = True
                     print("PASS  AUTO 块与上次写入一致；输入指纹未变"
                           "（快速通道：corpus/audit/engine/tests 均未变，未跑套件）")
+                    if a.strict_tests:
+                        # G1-F5：严格档不许只说「缓存可信」，必须把**证据覆盖面**摊开：
+                        # 缓存认的是「上次写出的那批套件计数」，只有行数与当前 test_files()
+                        # 逐一对得上、且 status 全 None，才轮得到它顶替一次真实运行。
+                        _rows_bak = project.get("test_rows") or []
+                        print(f"      证据来源：本次未跑套件，依据是 out/auto-inputs.json 缓存 "
+                              f"{len(_rows_bak)} 行 / 期望 {len(_want_suites)} 个套件"
+                              f"（套件名逐一匹配、status 全 None、计数与块内测试段逐行一致）；"
+                              f"要让严格档当场现跑，删掉该缓存文件即可")
                     return 0
         # 现算（跑测试 + 读产物 + 只读 git）；`--no-test-runs` 只用于校验，写模式必须现跑测试
         new, all_ok = build_block(run_test_suites=not a.no_test_runs)
+        # G1：这次到底"跑了套件没有"必须自己记住 —— `--no-test-runs` 不声称任何套件状态。
+        suites_ran = not a.no_test_runs
+        abnormal = abnormal_suites(_LAST_TEST_ROWS) if suites_ran else []
         new_body = "\n" + new
         # 第四十一批 O2：`--no-test-runs` 时把「测试」两行整段剔除后再比（不跑套件）。
         # 这两行的守卫交给**独立**的 `gen_docs.py --check`（CI ci.yml 独立步骤 /
@@ -926,6 +1245,9 @@ def _main_impl(argv: list[str] | None = None) -> int:
         if lenient:
             print(f"⚠️  宽松校验（缺 {'、'.join(missing)}）：测试计数与依赖稿件库的数字**不参与比对**；"
                   "本机要拿到严格校验，请让稿件库可发现（设 SLCN_MANUSCRIPTS 或把两仓并排放）")
+        elif a.strict_tests:
+            print(f"严格测试校验（前提齐全）：本次实跑 {len(_LAST_TEST_ROWS or [])} 套件，"
+                  f"异常套件 {len(abnormal)} 个；测试计数行按实测逐字比对")
         if old_cmp == new_cmp:
             if a.no_test_runs:
                 print("PASS  AUTO 块非测试行与现算结果一致（--no-test-runs：本次未跑套件，"
@@ -935,6 +1257,15 @@ def _main_impl(argv: list[str] | None = None) -> int:
                       "按设计不参与校验）")
             else:
                 print("PASS  AUTO 块与现算结果逐字一致")
+            # G1：「文档新鲜度」与「套件通过」是**两个结论**。块新鲜不等于套件跑成功了；
+            #     本次真跑了套件且有异常套件 → 必须给出明确的非 PASS 行并 rc≠0，
+            #     不许像从前那样用一句"提示 …不影响 --check 的结论"把它咽掉。
+            if abnormal:
+                print(f"FAIL  套件异常 {len(abnormal)}/{len(_LAST_TEST_ROWS or [])}："
+                      "文档新鲜度通过，但「套件通过」未达成")
+                for n, st in abnormal:
+                    print(f"      - {n}: {st}")
+                return 1
             # ⚠️ `--check` 只回答"块过期了吗"。`all_ok` 里还混着块内其它 ❌（普查三态交叉核对）；
             #    App 包内一致性已从 AUTO 移出（build.sh 末尾 cmp 守卫），不再影响本退出码。
             if not all_ok:
@@ -948,13 +1279,19 @@ def _main_impl(argv: list[str] | None = None) -> int:
                 old_cmp.split("\n"), new_cmp.split("\n"),
                 "README/AUTO（现状）", "现算结果", lineterm="", n=1))[:60]:
             print("      " + line)
+        # G1：过期与套件异常是两件事，都要报 —— 否则只修好文档新鲜度就以为"全绿"了。
+        if abnormal:
+            print(f"FAIL  另：本次实跑的套件里有 {len(abnormal)}/{len(_LAST_TEST_ROWS or [])} 个异常："
+                  + "、".join(f"{n}({st})" for n, st in abnormal))
         return 1
 
     # ── 写模式（O14：engine/tests/稿件库/环境都没变时，**复用测试计数缓存**）──
     #    B-110 / RB-08：「测试计数缓存不可复用」时不再「先跑套件」——先落盘非测试数据块
     #    （套件里的自指检查看到的因此已是新数据），再跑套件补写测试计数。
     inputs_now = collect_auto_inputs()
-    cached = cached_test_rows(inputs_now, load_auto_inputs())
+    # 卡 §7 第 1 项：写模式只认**能自证**的缓存（4 列带 status、与 README 测试段逐行一致）。
+    # 三列/截断/错名/多余的缓存一律拒 → 走下面的现跑分支，绝不当「套件通过」的证据。
+    cached = reusable_test_rows(inputs_now, load_auto_inputs(), old)
     if cached is not None:
         # 快速路径：测试计数可复用（engine/tests/稿件库/环境都没变）→ 一次算全块、一次落盘。
         new, all_ok = build_block(run_test_suites=False, cached_test_rows_in=cached)
@@ -1002,7 +1339,7 @@ def _main_impl(argv: list[str] | None = None) -> int:
 
 def _record_run(*, label: str, rc: int, started: float, args: list[str],
                 check_mode: bool, no_test_runs: bool, readme_changed: bool,
-                engine_sha: str | None = None) -> None:
+                engine_sha: str | None = None, strict_tests: bool = False) -> None:
     """O13：尽力写一份 manifest；任何异常只告警，**绝不改变退出码**。"""
     if _run_record is None or os.environ.get("SLCN_RUN_RECORD") == "0":
         return
@@ -1019,6 +1356,9 @@ def _record_run(*, label: str, rc: int, started: float, args: list[str],
                 "mode": label.rsplit("-", 1)[-1],       # write / check
                 "check": check_mode,
                 "no_test_runs": no_test_runs,
+                # G1：严格测试入口是**另一档语义**（缺前提 BLOCKED / 测试计数按实测严格比对），
+                # manifest 里必须能区分「非严格 --check 通过」与「严格测试校验通过」。
+                "strict_tests": strict_tests,
                 # O14：快速通道 / 缓存命中时**没有跑套件**，manifest 如实记；
                 # 未跑套件的 `--check` 仍是有意义的 PASS（输入冻结的等价性由 test_docs_consistency 覆盖）。
                 "tests_ran": (not no_test_runs and not _FAST_PATH_USED and not _CACHED_TESTS_USED),
@@ -1037,6 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     check_mode = "--check" in args
     no_test_runs = "--no-test-runs" in args
+    strict_tests = "--strict-tests" in args
     cmp_app = "--cmp-app" in args
     # 指纹在**开始时**算好：并发写者窗口里「结束态」可能已不是本次跑的那份代码。
     engine_sha = None
@@ -1064,7 +1405,8 @@ def main(argv: list[str] | None = None) -> int:
         # cmp-app 是 build.sh 的内部调用（build 自己有 manifest），不重复记录
         if not cmp_app:
             _record_run(label=label, rc=rc, started=t0, args=args, check_mode=check_mode,
-                        no_test_runs=no_test_runs, readme_changed=changed, engine_sha=engine_sha)
+                        no_test_runs=no_test_runs, readme_changed=changed, engine_sha=engine_sha,
+                        strict_tests=strict_tests)
 
 
 if __name__ == "__main__":

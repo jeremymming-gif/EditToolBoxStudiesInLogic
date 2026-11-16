@@ -59,6 +59,7 @@ for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
         sys.path.insert(0, _p)
 
 from slcn import docxsource as D  # noqa: E402
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 # B-207：`_clean_affil_line` 的定义已搬进 `slcn/wordmeta.py`（docxsource 只是门面）。
 # `parse_docx` 内部调用它时，**global 查找发生在 wordmeta 命名空间**——所以 monkeypatch
@@ -68,27 +69,53 @@ from slcn import wordmeta as M  # noqa: E402
 FAILS = []
 SKIPS = []
 
-_ROOT = os.path.dirname(os.path.dirname(_ENGINE))          # 仓库根
-BO_CHEN = os.path.join(_ROOT, "2026年第5期(90)", "10 Lei_Li", "original",
-                       "李雷 当代逻辑论题鸟瞰.docx")
-# 03 Ming_He 的作者简介在开头元数据区（不是脚注）：`作者简介：何明，武汉大学哲学学院博士生，…`
-YUANCHANG = os.path.join(_ROOT, "2025年第1期(80)", "03 Ming_He")
-# 05 Hai_Du 的作者简介里有 联系电话 / 通信地址 / 邮政编码 / 工作单位（尾块）+ 脚注里的长简介
-GUOPING = os.path.join(_ROOT, "2024年第4期(77)", "05 Hai_Du")
-# 单位本来就在开头括号行里、值已经正确的代表稿（不许被动）
-OTHER_DOCS = [
-    ("01 Meimei_Han", os.path.join(_ROOT, "2026年第5期(90)", "01 Meimei_Han")),
-    ("07 Min_Zhang", os.path.join(_ROOT, "2025年第4期(83)", "07 Min_Zhang")),
-    ("07 Ming_Qu", os.path.join(_ROOT, "2024年第2期(75)", "07 Ming_Qu")),
-    ("07 Jiayi_He", os.path.join(_ROOT, "2026年第5期(90)", "07 Jiayi_He")),
-]
-
-
 def check(name, cond, detail=""):
     print(("PASS  " if cond else "FAIL  ") + name + ("  " + detail if detail else ""))
     if not cond:
         FAILS.append(name)
     return bool(cond)
+
+
+# ── 真实稿定位：只按**期号+序号**（`Engine/tests/test_corpus_fixture_paths.py`）──
+# 原来这里写的是 `"<期号>/<NN 作者名>"` + 文件名。**期号与序号是真的，作者名是文档
+# 示例化名**（`slcn/naming.py` 里 `李雷 → Lei_Li` 那套），于是真实语料里该序号的目录名
+# 与化名不同，稿子被写成去找 `10 Lei_Li` —— 文件明明在，断言却一律 SKIP。下面改成按序号定位，
+# 正文由 `pick_main_docx()` 按**内容**认（不看文件名、不看断言结果）。
+def _slot(ref):
+    """序号目录；定位不到就返回 ""（调用方按 `skip()` 如实标注原因）。"""
+    _r = FP.resolve_dir(FP.default_root(), ref)
+    if _r.fatal:
+        check(f"取样代码的错（{_r.status}）：{ref}", False, _r.detail)
+    return _r.path if _r.ok else ""
+
+
+# 案例 75 的主诉稿：作者简介在**脚注**里（形如 `作者简介: <姓名>，<性别>，… <单位>教授`）
+BO_CHEN = FP.resolve_main(FP.default_root(), "2026年第5期(90)/10")
+# 多命中 / 重号 / ref 写坏 = 取样代码自己的错，记 FAIL；不许被下面的 skip 吞掉。
+if BO_CHEN.fatal:
+    check(f"取样代码的错（{BO_CHEN.status}）：2026年第5期(90)/10", False, BO_CHEN.detail)
+BO_CHEN = BO_CHEN.path if BO_CHEN.ok else ""
+# 2025年第1期(80)/03 的作者简介在开头元数据区（不是脚注）
+YUANCHANG = _slot("2025年第1期(80)/03")
+# 2024年第4期(77)/05 的作者简介里有 联系电话 / 通信地址 / 邮政编码 / 工作单位（尾块）+ 脚注长简介
+GUOPING = _slot("2024年第4期(77)/05")
+# 单位本来就在开头括号行里、值已经正确的代表稿（不许被动）
+#
+# ⚠️ 2026年第5期(90)/07 曾经也在这个「不许被动」组里，是**错的**：它的单位不在开头
+#    括号行，而在一条**双作者**的 `作者简介：` 脚注里（第一位…／第二位…）。旧实现的
+#    聚合值只拿到第一作者那一个单位（来自开头标签路径），新实现把三处单位都抽出来拼进
+#    第一作者聚合字段 —— 于是「旧非空 ⇒ 新逐字相同」这条不变量对它不成立，那不是回归，
+#    而是本缺陷本来就期望的**收益**（`slcn/wordmeta.py:373-386` 明写：stage ② 只可能让
+#    空行变非空，不可能改掉既有值）。它因此移到下面 ④c 的收益组单独断言，不靠「相等」。
+OTHER_DOCS = [
+    ("2026年第5期(90)/01", _slot("2026年第5期(90)/01")),
+    ("2025年第4期(83)/07", _slot("2025年第4期(83)/07")),
+    ("2024年第2期(75)/07", _slot("2024年第2期(75)/07")),
+]
+# 双作者 `作者简介：` 脚注稿：旧聚合值 = 第一作者 1 个单位；新聚合值 = 3 个单位。
+# 这是**产品行为**（`wordbody.py` ③.6 把脚注里所有作者的都给了第一作者聚合字段），
+# 不属于本测试的写作范围（`Engine/slcn/` 只读），按约定原样保留并在报告里如实列出。
+TWO_AUTHOR_REF = "2026年第5期(90)/07"
 
 
 def skip(name, why):
@@ -252,10 +279,11 @@ def _spy(line):
     return new
 
 
-_DOCS = [("Lei_Li", BO_CHEN), ("Ming_He", YUANCHANG), ("Hai_Du", GUOPING)] + OTHER_DOCS
+_DOCS = [("2026年第5期(90)/10", BO_CHEN), ("2025年第1期(80)/03", YUANCHANG),
+         ("2024年第4期(77)/05", GUOPING)] + OTHER_DOCS
 _checked_docs = []
-if not os.path.isfile(BO_CHEN):
-    skip("③ 真实稿逐行不变量（Lei_Li 等）", f"缺真实稿件（{BO_CHEN}）")
+if not BO_CHEN:
+    skip("③ 真实稿逐行不变量", "2026年第5期(90)/10 定位不到可用正文 docx")
 else:
     from slcn import sources  # noqa: E402
 
@@ -308,13 +336,13 @@ def aff_of(src):
     return doc
 
 
-if not os.path.isfile(BO_CHEN):
-    skip("④ Lei_Li 端到端", f"缺真实稿件（{BO_CHEN}）")
+if not BO_CHEN:
+    skip("④ 端到端", "2026年第5期(90)/10 定位不到可用正文 docx")
 else:
     _doc = aff_of(BO_CHEN)
-    check("④ 案例 75：Lei_Li 的 `affiliation_cn` = `武汉大学哲学系`（原来是空）",
+    check("④ 案例 75：2026年第5期(90)/10 的 `affiliation_cn` = `武汉大学哲学系`（原来是空）",
           _doc.affiliation_cn == "武汉大学哲学系", repr(_doc.affiliation_cn))
-    check("④ Lei_Li 的 `affiliation_cn` 不带邮箱/职衔",
+    check("④ 该稿的 `affiliation_cn` 不带邮箱/职衔",
           "@" not in _doc.affiliation_cn and "教授" not in _doc.affiliation_cn,
           repr(_doc.affiliation_cn))
 
@@ -340,6 +368,45 @@ for nm, path in _DOCS:
     check(f"④ {nm}：不会「非空 → 空」", (not _old["cn"]) or _new["cn"], "")
 
 # `_affil_lines_to_units` 的空白归一：只在**同一次调用内**去重，跨调用保持历史行为
+# ── ④c 双作者 `作者简介：` 脚注稿：断言真实收益，不套「相等」不变量 ──────────
+# 90/07 的 `作者简介：` 一条脚注里有两位作者（第一作者 1 个单位、第二作者 2 个单位）。
+# 旧实现的聚合字段只有第一作者那 1 个（开头标签路径），新实现把 3 个都抽出来拼进**第一
+# 作者聚合字段**；`doc.author_meta` 仍按作者正确分派（[第一作者→1]，[第二作者→2]）。
+# 逐作者分派渲染属于 `build.py` 的 B-217 ⑤ 范围，不在本测试写作用域内，故此处只锁：
+#   ① 新值 = 旧值 + 第二作者那 2 个单位（顺序按文档出现顺序，逐字比对）；
+#   ② `author_meta` 逐作者分派正确（这正是「数据没丢、只是聚合口径」的证据）；
+#   ③ 不会「非空 → 空」。
+print("\n── ④c 双作者作者简介稿：聚合字段的收益（不套相等不变量）──")
+_TWO = FP.resolve_main(FP.default_root(), TWO_AUTHOR_REF)
+if _TWO.fatal:
+    check(f"取样代码的错（{_TWO.status}）：{TWO_AUTHOR_REF}", False, _TWO.detail)
+elif not _TWO.ok:
+    skip(f"④c {TWO_AUTHOR_REF}", FP.skip_line(_TWO))
+else:
+    _old2, _new2 = {}, {}
+    for tag, impl, box in (("old", old_clean_affil_line, _old2), ("new", _real_clean, _new2)):
+        M._clean_affil_line = impl
+        try:
+            doc2 = D.parse_docx(_TWO.path)
+        finally:
+            M._clean_affil_line = _real_clean
+        box["cn"] = doc2.affiliation_cn or ""
+        box["meta"] = doc2.author_meta
+    _old_units = [x for x in _old2["cn"].split("\\\\ ") if x]
+    _new_units = [x for x in _new2["cn"].split("\\\\ ") if x]
+    check(f"④c {TWO_AUTHOR_REF}：旧实现只剩第一作者 1 个单位（{_old_units!r}）",
+          len(_old_units) == 1, repr(_old2["cn"]))
+    check(f"④c {TWO_AUTHOR_REF}：新实现 = 旧值 + 第二作者的 2 个单位，顺序逐字一致",
+          _new_units[:len(_old_units)] == _old_units and len(_new_units) == 3,
+          f"old={_old_units!r} new={_new_units!r}")
+    check(f"④c {TWO_AUTHOR_REF}：author_meta 按作者分派（1 + 2 个单位），数据没丢",
+          [len(a.get("affiliation_cn") or []) for a in _new2["meta"]] == [1, 2],
+          f"{[(a.get('name'), a.get('affiliation_cn')) for a in _new2['meta']]}")
+    check(f"④c {TWO_AUTHOR_REF}：不会「非空 → 空」", bool(_new2["cn"]), repr(_new2["cn"]))
+    check(f"④c {TWO_AUTHOR_REF}：聚合口径把第二作者单位算给了第一作者（已知产品行为，报告里列明）",
+          _new_units != [u for a in _new2["meta"][:1] for u in (a.get("affiliation_cn") or [])],
+          f"aggregate={_new_units!r} first-author={_new2['meta'][0].get('affiliation_cn')!r}")
+
 print("\n── ④b 空白归一去重（案例 75 的连带修正）──")
 _cn_a, _ = D._affil_lines_to_units(
     ["（河北大学 哲学与社会学学院，河北 保定 071002）",

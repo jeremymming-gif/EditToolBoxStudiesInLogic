@@ -135,9 +135,10 @@
 % 英文条目按拉丁字母正常排序；含中文条目的英文稿也按拼音序，与历期成品一致。
 \usepackage[firstinits=true,maxcitenames=3,maxbibnames=99,sorting=nyt, sortcites=true, sortlocale=zh__pinyin]{biblatex}	
 % 参考文献页码用一字线 \cndash（与中文模板同口径；\bibrangedash 在 \DefineBibliographyExtras 里改写）
-\DefineBibliographyExtras{english}{%
-	\renewcommand*{\bibrangedash}{\cndash}%
-}
+% 2026-11-16 按用户要求注释掉：\bibrangedash 不再强制改写为 \cndash（保留 \cndash 宏定义本身不动）
+% \DefineBibliographyExtras{english}{%
+% 	\renewcommand*{\bibrangedash}{\cndash}%
+% }
 \renewcommand{\bibfont}{\normalfont\small}					%字体大小
 \defbibenvironment{bibliography}						%修改行距
   {\list
@@ -187,129 +188,221 @@
  }
 
 %定义article格式，report 采用 article 的标题
-\DeclareFieldFormat[article,report]{title}{``\MakeSentenceCase{#1}''}	
-\DeclareFieldFormat[article]{pages}{#1}			%消除article的pp.
-\DeclareFieldFormat[article]{volume}{\mkbibbold{#1}}
-\DeclareFieldFormat*{number}{\mkbibbold{(#1)}}
+\DeclareFieldFormat[article,report]{title}{\cegen{“#1”}{``\MakeSentenceCase{#1}''}}% 中英混排：中文用弯引号，英文逐字保留（仿 SLCN-MIX:740-741）
+\DeclareFieldFormat[article]{pages}{\cegen{第#1页}{#1}}%消除article的pp.（仿 SLCN-MIX:793）
+\DeclareFieldFormat[article]{volume}{\cegen{第{#1}卷}{\mkbibbold{#1}}}%（仿 SLCN-MIX:767-768）
+\DeclareFieldFormat*{number}{\cegen{第{#1}期}{\mkbibbold{(#1)}}}%（仿 SLCN-MIX:771）
 
 \DeclareFieldFormat*{url}{\url{#1}}
 %使bib文件中可以直接使用url={wetbsite},
 
 \newbibmacro*{volume+number}{%
-	\iffieldundef{volume}%
-		{%1无volume的情况下
-			\iffieldundef{pages}{\printfield{number}}{\printfield{number}{:}}%无page的情况下取消冒号
-		}%
-		{%2有volume的情况下
-		\iffieldundef{pages}%
-		 {%2.1 无page的情况下取消冒号
-		 \printfield{volume}%
-			\printfield{number}}%
-		{%2.2 有page的情况下添加冒号
-			\printfield{volume}%
-			\printfield{number}{:}}%若无number则打冒号
-		}%
-	}
+	\cegen{%中文：仅打期号
+		\printfield{number}%
+	}{%英文：逐字保留原口径
+		\iffieldundef{volume}%
+			{%1无volume的情况下
+				\iffieldundef{pages}{\printfield{number}}{\printfield{number}{:}}%无page的情况下取消冒号
+			}%
+			{%2有volume的情况下
+			\iffieldundef{pages}%
+			 {%2.1 无page的情况下取消冒号
+			 \printfield{volume}%
+				\printfield{number}}%
+			{%2.2 有page的情况下添加冒号
+				\printfield{volume}%
+				\printfield{number}{:}}%若无number则打冒号
+			}%
+	}%
+}
 \DeclareBibliographyDriver{article}{%
-	\printnames{author}%
-	\newunit
-	\printfield{year}%
-	\newunit
-	\printfield{title}%
-	\newunit
-	\printfield{journaltitle}%
-	\newunit
-	\usebibmacro{volume+number}%
-	\newunit
-	\printfield{pages}%
-	\newunit%
-	\printfield{note}%
-	\newunit%
-	\printfield{url}%
-	\finentry}
+	\ifthenelse{\iffieldequalstr{userf}{cn}}%
+	{%中文分支：仿 SLCN-MIX:816-853，年份置于末尾
+		\printnames{author}\setunit{\cecomma}%
+		\printfield{title}\setunit*{\cecomma}%
+		\printfield{journaltitle}\setunit*{\cecomma}%
+		\setunit{\cecomma}%
+		\printfield{year}%中文只打年份
+		\usebibmacro{volume+number}%
+		\setunit{\cecomma}%
+		\printfield{note}%
+		\setunit{\cecomma}%
+		\printfield{pages}%
+		\setunit{\cecomma}%
+		\usebibmacro{publisher+location}%
+		\setunit{\cecomma}%
+		\printfield{url}%
+		\finentry%
+	}%
+	{%英文分支：原内容逐字保留
+		\printnames{author}%
+		\newunit
+		\printfield{year}%
+		\newunit
+		\printfield{title}%
+		\newunit
+		\printfield{journaltitle}%
+		\newunit
+		\usebibmacro{volume+number}%
+		\newunit
+		\printfield{pages}%
+		\newunit%
+		\printfield{note}%
+		\newunit%
+		\printfield{url}%
+		\finentry%
+	}%
+}
 
 %定义book格式
 \DeclareBibliographyDriver{book}{% 					
-	\printnames{author}%
-	\newunit
-	\printfield{year}%
-	\newunit
-	\printfield{title}%
-	\newunit
-	\usebibmacro{publisher+location}%
-	\newunit%
-	\printfield{note}%
-	\finentry}
+	\ifthenelse{\iffieldequalstr{userf}{cn}}%
+	{%中文分支：仿 SLCN-MIX:857-882，年份置于末尾
+		\printnames{author}\setunit{\cecomma}%
+		\printfield{title}\setunit*{\cecomma}%
+		\iffieldequalstr{volume}{}{}{\printfield{volume}\setunit{\cecomma}}%
+		\iffieldequalstr{note}{}{}{\printfield{note}\setunit{\cecomma}}%
+		\usebibmacro{publisher+location}\setunit{\cecomma}%
+		\printfield{year}\setunit{\cecomma}%中文只打年份
+		\iffieldequalstr{url}{}{}{\printfield{url}\setunit{\cecomma}}%
+		\finentry%
+	}%
+	{%英文分支：原内容逐字保留
+		\printnames{author}%
+		\newunit
+		\printfield{year}%
+		\newunit
+		\printfield{title}%
+		\newunit
+		\usebibmacro{publisher+location}%
+		\newunit%
+		\printfield{note}%
+		\finentry%
+	}%
+}
 
 
-\DeclareFieldFormat[inproceedings,incollection]{title}{``\MakeSentenceCase{#1}''}	
+\DeclareFieldFormat[inproceedings,incollection]{title}{\cegen{“#1”}{``\MakeSentenceCase{#1}''}}	
 \DeclareFieldFormat[inproceedings,incollection]{volume}{\textbf{Vol.\,#1}}
 
-\DeclareFieldFormat[inproceedings,incollection]{pages}{pp.\,#1}
+\DeclareFieldFormat[inproceedings,incollection]{pages}{\cegen{第#1页}{pp.\,#1}}
 
 %定义inproceedings格式
 \DeclareBibliographyDriver{inproceedings}{% 					
-	\printnames{author}%
-	\newunit
-	\printfield{year}%
-	\newunit
-	\printfield{title}%
-	\newunit
-	\usebibmacro{editor}%
-	\newunit
-	\printfield{booktitle}%
-	\newunit
-	\printfield{volume}%
-	\newunit
-	\printfield{pages}%
-	\newunit
-	\usebibmacro{publisher+location}%
-	\newunit%
-	\printfield{note}%
-	\newunit%
-	\printfield{url}%
-	\finentry}
+	\ifthenelse{\iffieldequalstr{userf}{cn}}%
+	{%中文分支：仿 SLCN-MIX:885-926，年份置于末尾
+		\printnames{author}\setunit{\cecomma}%
+		\printfield{title}\setunit*{\cecomma}%
+		\usebibmacro{editor}\setunit{\cecomma}%
+		\printfield{booktitle}\setunit*{\cecomma}%
+		\setunit{\cecomma}%
+		\usebibmacro{volume+number}%
+		\setunit{\cecomma}%
+		\printfield{note}%
+		\setunit{\cecomma}%
+		\usebibmacro{publisher+location}\setunit{\cecomma}%
+		\printfield{year}\setunit{\cecomma}%中文只打年份
+		\printfield{pages}%
+		\setunit{\cecomma}%
+		\printfield{url}%
+		\finentry%
+	}%
+	{%英文分支：原内容逐字保留
+		\printnames{author}%
+		\newunit
+		\printfield{year}%
+		\newunit
+		\printfield{title}%
+		\newunit
+		\usebibmacro{editor}%
+		\newunit
+		\printfield{booktitle}%
+		\newunit
+		\printfield{volume}%
+		\newunit
+		\printfield{pages}%
+		\newunit
+		\usebibmacro{publisher+location}%
+		\newunit%
+		\printfield{note}%
+		\newunit%
+		\printfield{url}%
+		\finentry%
+	}%
+}
 
 %定义incollection格式
 \DeclareBibliographyDriver{incollection}{% 					
-	\printnames{author}%
-	\newunit
-	\printfield{year}%
-	\newunit
-	\printfield{title}%
-	\newunit
-	\usebibmacro{editor}%
-	\newunit
-	\printfield{booktitle}%
-	\newunit
-	\printfield{volume}%
-	\newunit
-	\printfield{pages}%
-	\newunit
-	\usebibmacro{publisher+location}%
-	\newunit%
-	\printfield{note}%
-	\newunit%
-	\printfield{url}%
-	\finentry}
+	\ifthenelse{\iffieldequalstr{userf}{cn}}%
+	{%中文分支：仿 SLCN-MIX:929-970，年份置于末尾
+		\printnames{author}\setunit{\cecomma}%
+		\printfield{title}\setunit*{\cecomma}%
+		\usebibmacro{editor}\setunit{\cecomma}%
+		\printfield{booktitle}\setunit*{\cecomma}%
+		\setunit{\cecomma}%
+		\usebibmacro{volume+number}%
+		\setunit{\cecomma}%
+		\printfield{note}%
+		\setunit{\cecomma}%
+		\usebibmacro{publisher+location}\setunit{\cecomma}%
+		\printfield{year}\setunit{\cecomma}%中文只打年份
+		\printfield{pages}%
+		\setunit{\cecomma}%
+		\printfield{url}%
+		\finentry%
+	}%
+	{%英文分支：原内容逐字保留
+		\printnames{author}%
+		\newunit
+		\printfield{year}%
+		\newunit
+		\printfield{title}%
+		\newunit
+		\usebibmacro{editor}%
+		\newunit
+		\printfield{booktitle}%
+		\newunit
+		\printfield{volume}%
+		\newunit
+		\printfield{pages}%
+		\newunit
+		\usebibmacro{publisher+location}%
+		\newunit%
+		\printfield{note}%
+		\newunit%
+		\printfield{url}%
+		\finentry%
+	}%
+}
 
 \DeclareFieldFormat[thesis]{title}{\it{#1}}	
 %定义thesis格式
 \DeclareBibliographyDriver{thesis}{%
-	\printnames{author}%
-	\newunit%
-	\printfield{year}%
-	\newunit%
-	\printfield{title}%
-	\newunit%
-	\printfield{type}%
-	\newunit%
-	\printlist{institution}%
-	\newunit%
-	\printfield{url}%
-	\newunit%
-	\printfield{note}%
-	\finentry%
+	\ifthenelse{\iffieldequalstr{userf}{cn}}%
+	{%中文分支：仿 SLCN-MIX:973-981，年份置于末尾
+		\printnames{author}\setunit{\cecomma}%
+		\printfield{title}\setunit*{\cecomma}%
+		\printfield{type}\setunit{\cecomma}%
+		\printlist{institution}\setunit{\cecomma}%
+		\printfield{year}\setunit{\cecomma}%中文只打年份
+		\finentry%
+	}%
+	{%英文分支：原内容逐字保留
+		\printnames{author}%
+		\newunit%
+		\printfield{year}%
+		\newunit%
+		\printfield{title}%
+		\newunit%
+		\printfield{type}%
+		\newunit%
+		\printlist{institution}%
+		\newunit%
+		\printfield{url}%
+		\newunit%
+		\printfield{note}%
+		\finentry%
+	}%
 }
 
 \DeclareFieldFormat[thesis,report]{type}{#1}	
@@ -358,6 +451,11 @@
 	{\iffieldequalstr{userf}{zh} \or \iffieldequalstr{userf}{cn}}%
 	{#1}{#2}%
 }						%定义cegen，如果userf=zh or cn，则使用参数1，否则用参数2			
+%通用 year/month field format：仿 SLCN-MIX:732-734，中文加"年/月"、英文逐字保留。
+% 与 5.4 的 \DeclareFieldFormat[misc]{year}{{#1}年}(原:385)不冲突：biblatex 类型专属格式优先于通用格式，
+% misc 仍走原格式；其余类型走此通用格式。
+\DeclareFieldFormat{year}{\cegen{{#1}年}{#1}}%
+\DeclareFieldFormat{month}{\cegen{{#1}月}{#1}}%
 \providecommand{\cncomma}{，}							%关于中文逗号
 \providecommand{\cecomma}{\cegen{\cncomma}{\addcomma\space}}	%cecomma根据userf输出逗号
 \renewcommand{\newunitpunct}{\cecomma}		%重新定义newunit

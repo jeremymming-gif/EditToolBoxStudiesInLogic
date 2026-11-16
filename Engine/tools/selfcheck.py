@@ -133,19 +133,41 @@ def check_docs(strict_tests: bool = False) -> None:
 
     第四十一批 O3：quick 档默认传 `--no-test-runs` —— 文档看门狗内部的 `gen_docs --check`
     不再重复跑一整遍套件（省 ~45–50s/次；测试计数行由 full 档/独立 gen_docs --check 守卫）。
-    `--full`（发版前）用 `--strict-tests` 保留老的严格校验。
+
+    G2（严格请求透传）：`strict_tests=True` 时**必须**把 `--strict-tests` 真的传给
+    test_docs_consistency.py。从前这里只做 `if not strict_tests: cmd.append("--no-test-runs")`
+    的**反选** —— 不传就等于什么都不传，而 test_docs_consistency 的 `_STRICT_TESTS` 默认 False，
+    于是下游照旧走非严格：`selfcheck.py --full` 号称严格档，实际从未严格过（本机还因为缺稿件库
+    退化成 SKIP，结论仍是「失败 0 项」）。现在：严格意图逐层透传，任一层非零即红。
+
+    严格档缺前提时下游会给可区分的 `BLOCKED` 结论（rc=2 + 原因清单）：这里把它**单独**记成
+    「文档看门狗 BLOCKED」并计入 FAILS —— 它不是通过，也不该被读成「文档不一致」，但都必须
+    让自查整体非零，绝不能出现「--full 绿」。
     """
     cmd = [sys.executable, os.path.join(ENGINE, "tests", "test_docs_consistency.py")]
-    if not strict_tests:
+    if strict_tests:
+        # 透传严格意图；不要同时加 --no-test-runs（gen_docs 那边两者互斥）
+        cmd.append("--strict-tests")
+    else:
         cmd.append("--no-test-runs")
     rc, out = run(cmd)
     if rc == 0 and "失败 0 项" in out:
-        print("PASS  文档看门狗（AUTO/路径/编号/App 包内一致）")
-    else:
-        FAILS.append("文档看门狗红")
-        print("FAIL  文档看门狗")
-        for ln in out.splitlines()[-8:]:
+        print("PASS  文档看门狗（AUTO/路径/编号/App 包内一致）"
+              + ("（严格：实跑套件）" if strict_tests else ""))
+        return
+    # 可区分的第一类红：严格请求被前提挡住，严格校验**没做成**（区别于「比对不一致」）。
+    _blocked = [ln.strip() for ln in out.splitlines() if ln.startswith("BLOCKED  ")]
+    if strict_tests and _blocked:
+        FAILS.append("文档看门狗 BLOCKED（严格测试校验无法进行）")
+        print("FAIL  文档看门狗 BLOCKED（严格请求被前提挡住，不是通过）")
+        for ln in _blocked:
             print("   ", ln)
+        print(f"    （下游退出码 {rc}；严格校验需要稿件库等前提，请在具备前提的机器上重跑）")
+        return
+    FAILS.append("文档看门狗红")
+    print("FAIL  文档看门狗")
+    for ln in out.splitlines()[-8:]:
+        print("   ", ln)
 
 
 def _iter_text_files() -> list[str]:
@@ -364,10 +386,17 @@ def main(argv: list[str] | None = None) -> int:
                          "构建后守卫在 build.sh 末尾的 gen_docs.py --cmp-app）")
     ap.add_argument("--deep", action="store_true", help="加 docx_audit 全库体检")
     ap.add_argument("--corpus", action="store_true", help="加 corpus 全库回归（慢）")
+    ap.add_argument("--strict-tests", action="store_true",
+                    help="文档看门狗走严格档（透传 --strict-tests 给 test_docs_consistency）；"
+                         "缺前提时记 BLOCKED 并判红，绝不降级成 SKIP/通过。"
+                         "RELEASING.md/AGENTS.md 里写的 `selfcheck.py --full --strict-tests` "
+                         "就靠这个开关（G2：从前只有 --full 隐式声称严格，CLI 根本不存在）")
     args = ap.parse_args(argv)
     if os.environ.get("SLCN_SELFCHECK_NESTED"):
         # 被套件/自查嵌套调用时不做任何子进程检查，只跑静态项（防递归）
         pass
+    # 严格档 = --full（发版前）或显式 --strict-tests；两者等价，合并成一个布尔往下传。
+    _strict_docs = bool(args.full or args.strict_tests)
     t0 = time.time()
     print("=" * 70)
     print("引擎自查（selfcheck）")
@@ -380,10 +409,13 @@ def main(argv: list[str] | None = None) -> int:
         SKIPS.append("引擎套件（嵌套调用时跳过，防递归）")
         print("SKIP  引擎套件（嵌套调用，防递归）")
     if not args.skip_docs and os.environ.get("SLCN_SELFCHECK_NESTED") != "1":
-        check_docs(strict_tests=args.full)
+        check_docs(strict_tests=_strict_docs)
     elif not args.skip_docs:
         SKIPS.append("文档看门狗（嵌套调用时跳过）")
         print("SKIP  文档看门狗（嵌套调用，防递归）")
+        if _strict_docs:
+            # 严格档却因嵌套被跳过：不静默 —— 记一条 SKIP 说明，免得「严格」标签在嵌套调用里变成空话。
+            print("      （注意：本次是嵌套调用，严格档的严格校验未执行）")
     scan_code_health()
     if not args.no_cases:
         check_cases()

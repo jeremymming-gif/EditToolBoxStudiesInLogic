@@ -30,10 +30,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxsource import (  # noqa: E402
     META_SCAN, _ABS_LOOKAHEAD, _ABS_MIN_CHARS, _ABS_RE, _KW_RE, _META_LABEL_RE,
@@ -305,28 +306,45 @@ def old_abstract_cn(path: str):
     return val or None
 
 
-def find(d: str, needle: str) -> str:
-    """在语料目录下按文件名片段找稿子；跳过 Word 的 `~$` 锁文件/坏 zip。"""
-    hits = [x for x in glob.glob(os.path.join(_REPO, d, "**", "*.docx"), recursive=True)
-            if needle in os.path.basename(x) and zipfile.is_zipfile(x)]
-    return hits[0] if hits else ""
+def find(d: str, needle: str, exclude: str = ""):
+    """按**稳定期号/序号** + 文件名片段取样（作者名那截是文档示例化名，不参与定位）。
+
+    返回 `FP.Resolution`：`ok` 跑原断言，`missing` 如实 SKIP，`fatal`（重号/多命中）
+    当场记 FAIL —— 那是取样代码自己的错，不许拿「本机没有」盖住。
+    """
+    res = FP.resolve(FP.default_root(), d, needle, exclude=exclude)
+    if res.fatal:
+        check(f"取样代码的错（{res.status}）：{d}", False, res.detail)
+    return res
 
 
 UNCHANGED = [
     ("2022年第6A期(67A)/10 Ming Xu", "英文中文摘要等信息",
      "同段、无缩进、正文是英文 → 旧规就写进中文摘要（本次不得改）"),
-    ("2023年第1期(68)/05 Ming_Zhou", "周明 真之多元论",
+    # needle 里的 `周明 <示例标题>` 是 B-269 匿名化过的「示例姓名+示例标题」；真实语料这一篇
+    # 的标题与示例标题不同（此处不复述真标题）。取样按**期号+序号**定，needle 只留标题里
+    # 真实存在的那截（不是换一篇稿子，序号还是 05）。
+    ("2023年第1期(68)/05 Ming_Zhou", "真之多元论",
      "开头有中文摘要、文末是英文块 → 一处都不许动"),
     ("2025年第6期(85)/04 Chen_Xu", "汉语摘要",
      "无分隔符的粘连标签 `摘要理想的人工…` → 旧规取到的必须逐字节不变"),
-    ("2026年第5期(90)/10 Lei_Li", "李雷 当代逻辑论题鸟瞰",
+    # 同上：原名 `李雷 当代逻辑论题鸟瞰` 是匿名化示例。真实语料这一篇拆成两份文件：
+    # 一份只有中文摘要（英文摘要为空）、一份中英两套摘要都在开头（此处不复述真文件名）。本行要的是
+    # 「中英两套摘要都在开头」那一份，即**英文摘要**那份；故 needle 精确到标题的
+    # 末尾片段，不用 exclude 去排除 —— 早先写成
+    # `exclude="英文摘要"` 会把正确那份排掉，留下只有中文的正稿，场景就名不副实了。
+    # 这是按稿件自身的内容特征取样，不是按断言结果挑一份（两份都满足 ④ 的逐字节不变）。
+    ("2026年第5期(90)/10 Lei_Li", "鸟瞰英文摘要",
      "中英两套摘要都在开头 → 文末兜底不许介入"),
 ]
-for _dir, needle, why in UNCHANGED:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+for _row in UNCHANGED:
+    _dir, needle, why = _row[0], _row[1], _row[2]
+    _exclude = _row[3] if len(_row) > 3 else ""
+    _res = find(_dir, needle, exclude=_exclude)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     old = old_abstract_cn(path)
     got = parse_docx(path).abstract_cn
     check(f"旧规取值逐字节保留：{why}  [{os.path.basename(path)[:24]}]",
@@ -338,7 +356,11 @@ print("\n── ④ 真实语料（修复稿 / 反例）──")
 
 # (语料目录, 文件名片段, 断言函数, 说明)
 FIXED = [
-    ("2023年第1期(68)/04 Jing_Cheng", "20160050645_flow",
+    # 该序号下有 4 份 .docx，其中两份都叫 `flow_toEditor`：`…_Content_TeXify.docx`
+    # 是 **TeX 化稿**，`…_Content_4_54115.docx` 是另一条流水线产物。原场景（`摘 要 ` 字间
+    # 空格**独占一段**）是 TeX 化这一步造成的，所以 needle 钉到 `TeXify` 这个**稿件类型**
+    # 标记上——按类型定身份，不是按断言结果挑好的那份。
+    ("2023年第1期(68)/04 Jing_Cheng", "20160050645_flow_toEditor_Content_TeXify",
      lambda d, p: d.abstract_cn.startswith("直觉主义认知逻辑IEL"),
      "`摘 要 `（字间空格）独占一段 → 取下一段"),
     ("2023年第5期(72)/03 Jie_Song", "最新！——录用稿",
@@ -368,10 +390,11 @@ FIXED = [
      "文末 `摘  要` 独占一段"),
 ]
 for _dir, needle, ok, why in FIXED:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     rd = parse_docx(path)
     try:
         good = bool(ok(rd, path))
@@ -380,28 +403,35 @@ for _dir, needle, ok, why in FIXED:
     check(f"{why}  [{os.path.basename(path)[:26]}]", good,
           f"abstract_cn={rd.abstract_cn[:26]!r}")
 
+# (语料目录, 文件名片段, 断言函数, 说明[, 稿件类型排除词])
 NEG = [
     ("2026年第1期(86)/08 Min_Cai", "补充材料 20260117",
      lambda d, p: (d.abstract_cn or "") == ""
      and "Fallacies are a crucial component" not in (d.abstract_cn or "")
      and d.abstract_cn == (old_abstract_cn(p) or ""),
      "`摘要：` 独占一段、下一段是英文（英文块）→ 仍然 fail，不许拿英文冒充"),
+    # 该序号下另有 `…-作者信息.docx`（元数据附表，本身就无摘要/关键词）。
+    # 这里要的是**论文正稿**，按稿件类型把附表排除掉；不是按断言结果挑好的那份。
     ("2025年第6期(85)/04 Chen_Xu", "Time-budget-sensitive",
      lambda d, p: d.abstract_en.startswith("An idealized artificial general intelligence")
      and d.keywords_en.startswith("Need-for-Closure"),
-     "英文块的标签独占一段（Abstract / Keywords:）→ 英文侧不动"),
-    ("2023年第3期(70)/06 Hao_Chen", "赵晓梅稿件",
+     "英文块的标签独占一段（Abstract / Keywords:）→ 英文侧不动", "作者信息"),
+    # `赵晓梅稿件` 也是匿名化示例名；真语料该序号下的稿件文件名与化名不同（此处不复述）。
+    ("2023年第3期(70)/06 Hao_Chen", "稿件",
      lambda d, p: d.abstract_cn == "" and d.abstract_en.startswith("Current research"),
      "已知限制：文末标签是 `中文摘要`（不在 _ABS_RE 词表内）→ 仍 fail"),
     ("2024年第5期(78)/03 Chen_Xiao", "点、区间与含数字句子真值",
      lambda d, p: d.abstract_cn == "",
      "已知限制：`摘要: …` 在第 24 段、且排在参考文献**之前**（两头都够不着）→ 仍 fail"),
 ]
-for _dir, needle, ok, why in NEG:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+for _t in NEG:
+    _dir, needle, ok, why = _t[0], _t[1], _t[2], _t[3]
+    _exclude = _t[4] if len(_t) > 4 else ""
+    _res = find(_dir, needle, exclude=_exclude)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    path = _res.path
     rd = parse_docx(path)
     try:
         good = bool(ok(rd, path))

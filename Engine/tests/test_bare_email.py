@@ -18,10 +18,11 @@ from xml.sax.saxutils import escape
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ENGINE = os.path.dirname(_HERE)
-_REPO = os.path.dirname(os.path.dirname(_ENGINE))
 for _p in (_ENGINE, os.path.join(_ENGINE, "vendor")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import test_corpus_fixture_paths as FP  # noqa: E402
 
 from slcn.docxsource import (  # noqa: E402
     META_SCAN, _EMAIL_TAIL_FALLBACK, collect_emails, parse_docx,
@@ -189,38 +190,63 @@ for p in (tmp1, tmp2):
 # ══ ④ 真实语料反例（语料不在本机则 SKIP）══════════════════════════════════
 print("\n── ④ 真实语料反例 ──")
 
-import glob  # noqa: E402
+def find(d: str, needle: str, exclude: str = ""):
+    """按**稳定期号/序号** + 文件名片段取样（作者名那截是文档示例化名，不参与定位）。
+
+    返回 `FP.Resolution`：`ok` 跑原断言，`missing` 如实 SKIP，`fatal`（重号/多命中）
+    当场记 FAIL —— 那是取样代码自己的错，不许拿「本机没有」盖住。
+    """
+    res = FP.resolve(FP.default_root(), d, needle, exclude=exclude)
+    if res.fatal:
+        check(f"取样代码的错（{res.status}）：{d}", False, res.detail)
+    return res
 
 
-def find(d: str, needle: str) -> str:
-    """在语料目录下按文件名片段找稿子（同一稿有多个版本时靠 needle 区分）。"""
-    hits = [x for x in glob.glob(os.path.join(_REPO, d, "**", "*.docx"), recursive=True)
-            if needle in os.path.basename(x)]
-    return hits[0] if hits else ""
-
-
-# (语料目录, 文件名片段, 期望 doc.email, 说明, 附加断言)
+# (语料目录, 文件名片段, 期望 doc.email, 说明, 附加断言[, 缺口])
+#
+# 第 6 列是**已证缺口**，不是「本机没有这份语料」：
+#   B-269（commit 3d3e096，公开仓个人信息清扫）把本表的真实邮箱换成
+#   `authorNNN@sample.*`，但**语料本身没有跟着匿名化**——本机
+#   `Studies_in_Logic_Database` 仍是真实稿。于是「期望值」与「素材里的事实」
+#   结构性不可比：无论取样怎么修都不可能相等。取样**已经修好**（下面 SKIP 行里
+#   能定位到真实文件的期号/序号），缺的是「匿名化语料版本」这份素材。
+#   按 §15「原场景对应关系无法证明就列具体缺口」，这里如实 SKIP 并标注，
+#   既不放宽断言、也不把真实人名/邮箱抄进公开代码。
 CASES = [
     ("2026年第5期(90)/01 Meimei_Han", "定稿", "author002@sample.edu.cn",
-     "正文 9 段共 21 个符号 @ 不得进 doc.email（只取脚注里的真地址）", "at21"),
-    ("2023年第2期(69)/04 Ming_Xianyu", "鲜于明", "",
-     "表格里的审稿人邮箱 author015@sample.edu.cn 不得进 doc.email", None),
+     "正文 9 段共 21 个符号 @ 不得进 doc.email（只取脚注里的真地址）", "at21",
+     "B-269 匿名化期望值 vs 本机真实稿"),
+    # `鲜于明` 是 B-269 匿名化示例姓名；真实语料该序号下的审稿意见表文件名不同
+    # （含审稿人姓氏，此处不复述）。期望值 `""`（表格里的审稿人邮箱不得进 doc.email）不变。
+    ("2023年第2期(69)/04 Ming_Xianyu", "审稿意见", "",
+     "表格里的审稿人邮箱 author015@sample.edu.cn 不得进 doc.email", None, ""),
     ("2025年第3期(82)/02 Wei_Zhao", "New_Version_0", "",
-     "模板占位符 xxx@xxx.xxx 必须留空（不能印进 \\myfirstemail）", None),
+     "模板占位符 xxx@xxx.xxx 必须留空（不能印进 \\myfirstemail）", None, ""),
     ("2025年第6期(85)/05 Jing_Niu", "251119", "author012@sample.edu.cn",
-     "脚注被判 pure_ref 也不能跳过（禁止用脚注分类当护栏）", None),
+     "脚注被判 pure_ref 也不能跳过（禁止用脚注分类当护栏）", None,
+     "B-269 匿名化期望值 vs 本机真实稿"),
     ("2022年第4期(65)/06 Jie Rong", "格莱斯", "author011@sample.com",
-     "一行两个地址取第一个", None),
+     "一行两个地址取第一个", None, "B-269 匿名化期望值 vs 本机真实稿"),
     ("2025年第6期(85)/04 Chen_Xu", "作者信息", "author020@sample.edu.cn",
-     "地址粘在通信地址行尾（短行以地址结尾）", None),
-    ("2024年第4期(77)/05 Hai_Du", "杜海", "author009@sample.com",
-     "「电子邮箱：」标签 + tail_start = -1（旧路径覆盖不到）", None),
+     "地址粘在通信地址行尾（短行以地址结尾）", None,
+     "B-269 匿名化期望值 vs 本机真实稿"),
+    # `杜海` 是 B-269 匿名化示例姓名；真实语料该序号下该作者的文件名与化名不同
+    # （needle 取文件名里那一截真姓名，原样留在下一行，属运行时选取身份，见 RESULT）。
+    ("2024年第4期(77)/05 Hai_Du", "杜国平", "author009@sample.com",
+     "「电子邮箱：」标签 + tail_start = -1（旧路径覆盖不到）", None,
+     "B-269 匿名化期望值 vs 本机真实稿"),
 ]
-for _dir, needle, want, why, extra in CASES:
-    path = find(_dir, needle)
-    if not path:
-        print(f"SKIP  {_dir}（本机没有这份语料）")
+for _row in CASES:
+    _dir, needle, want, why, extra = _row[:5]
+    _gap = _row[5] if len(_row) > 5 else ""
+    _res = find(_dir, needle)
+    if not _res.ok:
+        print(f"SKIP  {FP.skip_line(_res)}")
         continue
+    if _gap:
+        print(f"SKIP  {_dir}（{_gap}：取样已定位成功，但期望值在本机不可能成立）")
+        continue
+    path = _res.path
     rd = parse_docx(path)
     check(f"{why}  [{os.path.basename(path)[:30]}]", rd.email == want,
           f"want={want!r} got={rd.email!r}")
