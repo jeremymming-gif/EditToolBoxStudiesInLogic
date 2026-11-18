@@ -11,9 +11,7 @@ from __future__ import annotations
 import difflib, json, os, re
 
 from slcn import bibdb, bibnorm, fsutil
-from slcn.bibdb_core import (
-    _clip,
-)  # noqa: F401
+from slcn.bibparse import pair_summary
 
 # ── 预览（--dry-run）与 BibTeX 渲染（界面「引用库」页用；第 132 条）──────────
 #
@@ -711,9 +709,9 @@ def build_normalize_apply_md(db_path: str, stats: dict, applied: list[dict],
     for index, item in enumerate(applied, start=1):
         changes = []
         for name, values in item["diff"].items():
-            old_value = _md_code(_clip(values.get("old") or "（空）", 50))
-            new_value = _md_code(_clip(values.get("new") or "（空）", 50))
-            changes.append(f"{name}：{old_value} → {new_value}")
+            was, should = pair_summary(values.get("old") or "（空）",
+                                       values.get("new") or "（空）", 50)
+            changes.append(f"{name}：{_md_code(was)} → {_md_code(should)}")
         lines.append(
             f"| A{index:04d} | `{_md_escape(item['key'])}` | {_md_escape(item['entry_type'])} | "
             f"{'<br>'.join(changes) or '（仅类型）'} | "
@@ -860,9 +858,9 @@ def build_normalize_md(store: "bibdb.Store", db_path: str, rows: list[dict],
     for index, row in enumerate(stats["semantic_rows"], start=1):
         changes = []
         for name, values in row["diff"].items():
-            old_value = _md_code(_clip(values.get("old") or "（空）", 60))
-            new_value = _md_code(_clip(values.get("new") or "（空）", 60))
-            changes.append(f"{name}：{old_value} → {new_value}")
+            was, should = pair_summary(values.get("old") or "（空）",
+                                       values.get("new") or "（空）", 60)
+            changes.append(f"{name}：{_md_code(was)} → {_md_code(should)}")
         rules_text = "；".join(row["rules"])
         if row["risks"]:
             rules_text = "⚠️ " + rules_text
@@ -1103,8 +1101,9 @@ def build_author_report_md(db_path: str, stats: dict, sha_before: str,
     lines += ["", f"## {sample_label}", "",
               "| # | 库内 key | 旧值 | 新值 |", "|---|---|---|---|"]
     for index, row in enumerate(stats["change_rows"][:20], start=1):
+        was, should = pair_summary(row['old'], row['new'], 60)
         lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
-                     f"`{_md_escape(row['old'], width=60)}` | `{_md_escape(row['new'], width=60)}` |")
+                     f"`{_md_escape(was)}` | `{_md_escape(should)}` |")
     if not stats["change_rows"]:
         lines.append("| — | （无） | — | — |")
     lines += ["", "## 跳过样例（前 20）", "",
@@ -1355,6 +1354,7 @@ def _editor_table_row(index: int, row: dict, *, applied: bool = False) -> str:
     """逐条明细表的一行（列：#/key/期篇文件/entry_type/题名/旧值/新值/状态/跳过原因/风险标记）。"""
     status = ("已倒装" if applied else "将倒装") if row["status"] == "change" else "跳过"
     new = row["new"] if row["status"] == "change" else "（保持原样）"
+    was, should = pair_summary(row["old"], new, 60)
     return ("| {index:04d} | `{key}` | {sources} | {etype} | {title} | {old} | {new} | "
             "{status} | {reason} | {flags} |").format(
         index=index,
@@ -1362,8 +1362,8 @@ def _editor_table_row(index: int, row: dict, *, applied: bool = False) -> str:
         sources=_md_escape(_editor_sources_text(row)),
         etype=_md_escape(row["entry_type"]),
         title=_md_escape(row["title"], width=50),
-        old=f"`{_md_escape(row['old'], width=60)}`",
-        new=f"`{_md_escape(new, width=60)}`",
+        old=f"`{_md_escape(was)}`",
+        new=f"`{_md_escape(should)}`",
         status=status,
         reason=_md_escape(row["reason"] or "—"),
         flags=_md_escape(_editor_flags_text(row)),
@@ -1486,10 +1486,10 @@ def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
     if eds_rows:
         lines += ["| # | 库内 key | 期/篇/文件 | 旧值 | 同规则将改为 |", "|---|---|---|---|---|"]
         for index, row in enumerate(eds_rows, start=1):
+            was, should = pair_summary(row['old'], row['new'], 60)
             lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
                          f"{_md_escape(_editor_sources_text(row))} | "
-                         f"`{_md_escape(row['old'], width=60)}` | "
-                         f"`{_md_escape(row['new'], width=60)}` |")
+                         f"`{_md_escape(was)}` | `{_md_escape(should)}` |")
         lines += [
             "",
             "- **方案 A（默认建议，与 B2 同规则自动改）**：沿用 B2 先例（作者字段也这么处理，"
@@ -1527,9 +1527,10 @@ def build_editor_report_md(db_path: str, stats: dict, sha_before: str,
         "|---|---|---|---|---|",
     ]
     for index, row in enumerate(stats["change_rows"][:20], start=1):
+        was, should = pair_summary(row['old'], row['new'], 60)
         lines.append(f"| {index:02d} | `{_md_escape(row['key'])}` | "
-                     f"`{_md_escape(row['old'], width=60)}` | "
-                     f"`{_md_escape(row['new'], width=60)}` | "
+                     f"`{_md_escape(was)}` | "
+                     f"`{_md_escape(should)}` | "
                      f"{_md_escape(_editor_flags_text(row))} |")
     if not stats["change_rows"]:
         lines.append("| — | （无） | — | — | — |")

@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import docxxml, latex, sources
+from .bibparse import pair_summary
 
 # 规范化字段 → (中文名, 模板槽位)，顺序即展示顺序
 _CANON = {
@@ -300,11 +301,6 @@ def form_fields(structured: dict | None) -> dict:
     return out
 
 
-def _clip(text: str, n: int = 50) -> str:
-    text = _clean(text)
-    return text if len(text) <= n else text[:n] + "…"
-
-
 def _unlink(path: str) -> None:
     try:
         os.unlink(path)
@@ -412,8 +408,9 @@ def apply_word_supplements(doc, paths, *, say=None, warnings=None) -> tuple:
                 skipped.append(f"{FIELD_LABELS[key]}（暂无对应槽位，未应用）")
             elif old:
                 if old != value:
-                    skipped.append(f"{FIELD_LABELS[key]}（正文已有「{_clip(old)}」，"
-                                   f"未采用「{_clip(value)}」）")
+                    was, should = pair_summary(old, value, 50)
+                    skipped.append(f"{FIELD_LABELS[key]}（正文已有「{was}」，"
+                                   f"未采用「{should}」）")
             else:
                 setattr(doc, attr, value)
                 added.append(key)

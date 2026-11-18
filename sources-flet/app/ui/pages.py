@@ -149,6 +149,49 @@ def _basename(path: str) -> str:
         return path
 
 
+# 批 117 R1：笔记仓填成 `bib_db` 子目录是最常见的填错法（引擎只认下面有 `cases/`
+# 的那一层，见 `Engine/slcn/paths.py` 的 notes_root），文案必须在字段本身上说清楚。
+NOTES_REPO_SHAPE_HINT = (
+    "这里应该是笔记仓根（含 cases/）的那一层，不是 bib_db 子目录"
+)
+
+
+def _notes_repo_shape_warning(value: str) -> str | None:
+    """「私有笔记仓」填的像不像笔记仓根：像 `bib_db` 子目录才返回提示文案。
+
+    只提示、不阻断保存 —— 用户常常先填路径再建目录，空值也合法。
+    判定按「形状」而非「存在」：以 `bib_db` 结尾，或该目录下是
+    `bib_db/bibliography.jsonl` 的库目录形状，且自身没有 `cases/`。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        path = Path(text)
+        if (path / "cases").is_dir():
+            return None
+        looks_like_bib_db = (
+            path.name == "bib_db"
+            or (path / "bib_db" / "bibliography.jsonl").is_file()
+        )
+    except (OSError, ValueError):
+        return None
+    return NOTES_REPO_SHAPE_HINT if looks_like_bib_db else None
+
+
+def _sync_warning(ctl: ft.Text, value: str) -> None:
+    """把校验结果写进常驻提示控件：无文案就整行不占高度（不闪、不跳动）。"""
+    message = _notes_repo_shape_warning(value) or ""
+    if str(ctl.value or "") == message and bool(ctl.visible) == bool(message):
+        return
+    ctl.value = message
+    ctl.visible = bool(message)
+    try:
+        ctl.update()
+    except Exception:  # noqa: BLE001 构建期/未挂载：属性已就位，等下次渲染
+        pass
+
+
 # ── 工作台 ─────────────────────────────────────────────────────────────────
 _ACTIVITY_LABELS = {
     "process_start": "启动",
@@ -239,10 +282,18 @@ class HomePage(BasePage):
 
         引用库页是统计的唯一加载方（stats + lint）；首页只借用其结果，避免重复读盘，
         也避免「引用库 —」在启动后长期占位。
+
+        `_bib_kick_done` 是一次性闸门（批 117 R4）：`stats_data is not None` 只在取数
+        **成功**时成立，而打包态 `_load_stats` 恒失败（引擎子进程起不来）→ stats_data
+        永远 None → `_refresh_band()` 里的 `self.root = self.build()` 又走到这里 → 每轮
+        再 kick，实测 106 次 / 11.9 秒自激到 `RuntimeError: An attempt to fetch destroyed
+        session.`。闸门与取数成败解耦：每次页面生命周期只 kick 一次，失败就停在「引用库 —」。
         """
         bib = self.app.pages.get("bib")
-        if bib is None or bib.stats_data is not None:
+        if (bib is None or bib.stats_data is not None
+                or getattr(self, "_bib_kick_done", False)):
             return
+        self._bib_kick_done = True
 
         async def _load() -> None:
             try:
@@ -315,7 +366,7 @@ class HomePage(BasePage):
         specs = (
             ("单篇", "single_source", "single", "初排转换 / 一校核查"),
             ("整期", "issue_dir", "issue", "目录 / 合刊 / 清理"),
-            ("引用库", "bib_out", "bib", "查库 · 入藏 · 回读校验"),
+            ("引用库", "bib_out", "bib", "查库 · 入藏 · AI 辅助处理 Bib"),
         )
         rows: list = []
         for tag, key, target, meta in specs:
@@ -361,7 +412,7 @@ class HomePage(BasePage):
         items = (
             ("DESCRIPTION_OUTLINED", "单篇稿件", "初排转换 · 一校核查", "single"),
             ("VIEW_AGENDA_OUTLINED", "整期装配", "目录 · 合刊 · 清理", "issue"),
-            ("LIBRARY_BOOKS_OUTLINED", "引用库", "查库 · 入藏 · 回读校验", "bib"),
+            ("LIBRARY_BOOKS_OUTLINED", "引用库", "查库 · 入藏 · AI 辅助处理 Bib", "bib"),
         )
         controls: list = []
         for index, (icon, title, desc, key) in enumerate(items):
@@ -420,6 +471,90 @@ class HomePage(BasePage):
 
 
 # ── 单篇稿件 ───────────────────────────────────────────────────────────────
+class _SingleAiHost:
+    """`BibAiAssistView` 的**显式适配器**（UI-REWORK-DESIGN §2）。
+
+    `SinglePage.self.page` 是裸 Flet Page（没有 .t/.app/.store），直接传进去就是
+    `Page.t` 崩溃的根因。这里把满足宿主协议的各服务逐项接到 SinglePage/App 的
+    真实入口上；缺项构造时立刻抛错，绝不往裸 Page 上塞 .t/.app 假装能用。
+
+    · t / app / mark / page 由 BasePage 提供；`store` 取 `single.app.store`
+      （SinglePage 本身没有 .store，别去裸 Page 上找）；
+    · `page` 仍是真 Flet Page（文件选择/剪贴板/刷新 by Identity 依赖它）；
+    · `_render` 映射到 SinglePage 的**实际重绘入口** `_rerender_flow`（不是空实现）；
+    · `notify`→app.toast、`set_view`→app.goto、`run_task_ui`→page.run_task；
+    · `browse_field` 走 app 的文件选择服务，recent key 用 bib_ai 前缀。
+    """
+
+    def __init__(self, single: "SinglePage") -> None:
+        app = getattr(single, "app", None)
+        store = getattr(app, "store", None)
+        missing = [name for name, ok in (
+            ("app", app is not None), ("t", getattr(single, "t", None) is not None),
+            ("app.store", store is not None), ("mark", callable(getattr(single, "mark", None))),
+            ("page", getattr(single, "page", None) is not None))
+            if not ok]
+        if missing:
+            raise TypeError(
+                "SinglePage 缺少 BibAiAssistView 宿主服务：" + "、".join(missing)
+                + "（UI-REWORK-DESIGN §2：不得传裸 Flet Page）")
+        self._single = single
+        self.app = app
+        self.t = single.t
+        self.store = store
+        self.page = single.page
+
+    def mark(self, event: str, **fields) -> None:
+        self._single.mark(event, **fields)
+
+    def ai_initial_paths(self) -> tuple[str, str]:
+        return self._single.field("single_source"), self._single.field("single_out")
+
+    def build_ai_initial_call(self, view, work_dir: str) -> EB.EngineCall:
+        return self._single._build_ai_initial_call(view=view, work_dir=work_dir)
+
+    def finish_ai_initial_call(self) -> None:
+        self._single._cleanup_meta_temp()
+
+    def _render(self) -> None:
+        # 折叠区展开/收起的真实重绘入口；视图内部状态变更后由这里重排 flow。
+        self._single._rerender_flow()
+
+    def notify(self, message: str) -> None:
+        toast = getattr(self.app, "toast", None)
+        if callable(toast):
+            toast(str(message))
+
+    def log_line(self, text: str) -> None:
+        """AI 初排的完成态日志写进单篇页底部「运行日志」（合同 §4.3）。
+
+        复用 `SinglePage._on_line` 这条真实入口：段头、级别、汇总行标记、
+        `_log_buffer` 截断全按既有规矩走，不另造一份日志通道。写日志失败
+        不影响业务结论（调用方只把它当证据）。
+        """
+        handler = getattr(self._single, "_on_line", None)
+        if not callable(handler):
+            return
+        try:
+            handler(str(text))
+        except Exception:  # noqa: BLE001 - 日志失败不改业务结果
+            pass
+
+    def set_view(self, view: str) -> None:
+        goto = getattr(self.app, "goto", None)
+        if callable(goto):
+            goto(view)
+
+    def run_task_ui(self, coro_fn) -> None:
+        self.page.run_task(coro_fn)
+
+    def browse_field(self, ref, title: str, kind: str, key: str,
+                     store_prefix: str = "recent") -> None:
+        browse = getattr(self.app, "browse_field", None)
+        if callable(browse):
+            browse(ref, title, kind, key, store_prefix)
+
+
 class SinglePage(BasePage):
     key = "single"
 
@@ -445,7 +580,14 @@ class SinglePage(BasePage):
         self._result = None
         self._run_btn = None
         self._stop_btn = None
-        self._ai = None
+        # DESIGN §3.2：旧两段式 AI 卡片不再渲染；这里只保留一个**轻量 provider**
+        # （纯逻辑，不 build()）供运行链复用 api_env/on_line/budget_notice/
+        # after_run/refresh_running/build_call，普通无 AI 转换仍走原链。
+        self._ai = AIP.AiPanel(self)
+        # 初排页的「AI 辅助初排」折叠区（DESIGN §3.1）：默认收起、惰性实例化。
+        self._aiw_open = False
+        self._aiw_view = None
+        self._aiw_box = None
         # 批 115 P1-2（设计评审；D1-115-24）：Single 只有 2 级（页面→子页），
         # 按「breadcrumb 只在层级 >2 出现」去 crumb；h1 是唯一锚点。
         # `_crumb` 仅保留属性给旧测试/外部调用，不进入布局、不显示。
@@ -486,7 +628,7 @@ class SinglePage(BasePage):
         self._flow_box.controls = [self._flow_builder(self.flow_key)()]
         self._proof.root.visible = False
         self._norm_jump_btn = C.secondary_button(
-            "去引用库 → 回读校验", self._goto_normalize, t, icon="FACT_CHECK")
+            "去引用库 → AI 辅助处理 Bib", self._goto_normalize, t, icon="FACT_CHECK")
         # 批 115：入口搬出页头胶囊行，落到输入区末尾（结果区之前），功能不变。
         norm_row = ft.Row(spacing=t.sp("2"), alignment=ft.MainAxisAlignment.END,
                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -582,7 +724,8 @@ class SinglePage(BasePage):
             return
         self.flow_key = view
         self.app.store.set("single_flow", view)
-        self._ai = None
+        # 轻量 provider 随流程切换重建（旧 AiPanel 不再渲染，但运行链仍需要它）。
+        self._ai = AIP.AiPanel(self)
         if getattr(self, "_flow_box", None) is not None:
             self._flow_box.controls = [self._flow_builder(view)()]
             if self._result is not None:
@@ -660,13 +803,82 @@ class SinglePage(BasePage):
             C.hairline(t),
             advanced,
             metadata.root,
-            C.text(SS.bibdb_convert_hint(self.app.store.data), t, "caption", p.text_faint),
-            self._ai_section(),
+            # DESIGN §3.2：唯一 AI 分区「AI 辅助初排」。旧两段式 AiPanel 卡片
+            # 不再渲染（其纯逻辑仍由 __init__ 里的轻量 provider 供运行链复用）。
+            self._ai_workflow_section(),
         ])
 
-    def _ai_section(self) -> ft.Control:
-        self._ai = AIP.AiPanel(self)
-        return self._ai.build()
+    def _ai_workflow_section(self) -> ft.Control:
+        """初排入口的「AI 辅助初排」折叠区（DESIGN §3 两个入口之一）。
+
+        这是初排页**唯一**的 AI 分区：旧两段式 AiPanel 卡片已不渲染。折叠区
+        首次展开才实例化 `BibAiAssistView`，且**显式传 purpose="initial"**；
+        宿主是符合 §2 协议的 `_SingleAiHost` 适配器（不是裸 Flet Page）。
+        compact=True 下视图继承父页的源稿/输出/选项，只留目标 Bib + 处理方式 +
+        阶段 + 主动作 + 可选关联 TeX，不与上面的表单重复六路径。
+        """
+        t = self.t
+        label = "收起 AI 辅助初排" if self._aiw_open else "AI 辅助初排（可选）"
+        toggle = C.text_button(label, self._toggle_ai_workflow, t, height=28)
+        toggle.tooltip = ("按类别执行 AI、按类别采纳；写目标 Bib 由引擎完成，"
+                          "先备份可撤销；源稿与正文永不回写")
+        toggle._bib_ai_toggle = True
+        head = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                      controls=[toggle])
+        # 与「输入」「处理选项」同级的**分区小标题 + 发丝线**：不加的话本区在页面上
+        # 只是一个不起眼的文字链，用户会以为这页没变过（本轮返工的实况）。这里用
+        # `section_label`/`hairline`（不是 C.card/C.section_title，本页测试禁的正是后者）。
+        title = C.section_label("AI 辅助初排", t, note="可选，默认收起")
+        content = None
+        if self._aiw_open and self._aiw_view is not None:
+            try:
+                # compact=True（DESIGN §3）：初排继承父页源稿/输出/选项，视图内
+                # 只留目标 Bib + 处理方式 + 阶段 + 主动作 + 可选关联 TeX。
+                content = self._aiw_view.body_only(compact=True)
+            except Exception as exc:  # noqa: BLE001 - 内嵌视图坏了不能连带坏本页
+                content = C.inline_note(
+                    f"AI 辅助初排绘制失败（{type(exc).__name__}: {exc}）。", t, "error")
+        self._aiw_box = ft.Container(content=content, visible=self._aiw_open,
+                                     padding=ft.Padding(left=0, top=0, right=0, bottom=0))
+        return ft.Column(spacing=t.sp("1"),
+                         controls=[title, C.hairline(t), head, self._aiw_box])
+
+    def _toggle_ai_workflow(self, e=None) -> None:
+        """展开/收起初排页的 AI 区；首次展开才导入并实例化视图（失败如实报错）。"""
+        if self._aiw_open:
+            self._aiw_open = False
+            self.mark("ai_workflow_toggle", open=False)
+            self._rerender_flow()
+            return
+        if self._aiw_view is None:
+            try:
+                from ui import bib_ai_assist as BAA  # 局部导入：收起时不拉进来
+                # 传显式适配器（含 t/app/store/mark 与刷新/调度/文件选择/通知/
+                # 设置跳转），绝不把裸 Flet Page 传进去——那正是 Page.t 崩溃根因。
+                host = _SingleAiHost(self)
+                self._aiw_view = BAA.BibAiAssistView(host, purpose="initial")
+            except Exception as exc:  # noqa: BLE001 - 视图坏了不能连带坏本页
+                # BasePage 没有 toast，宿主 App 才有：取不到就退回 mark，绝不静默。
+                _toast = getattr(getattr(self, "app", None), "toast", None)
+                if callable(_toast):
+                    _toast(f"AI 辅助初排打不开（{type(exc).__name__}: {exc}）")
+                else:
+                    self.mark("ai_workflow_open_failed", error=type(exc).__name__)
+                return
+        self._aiw_open = True
+        activate = getattr(self._aiw_view, "activate", None)
+        if callable(activate):
+            activate()
+        self.mark("ai_workflow_toggle", open=True)
+        self._rerender_flow()
+
+    def _rerender_flow(self) -> None:
+        """重排当前子流程（折叠区开关后必须重画才能生效）。"""
+        try:
+            self._flow_box.controls = [self._flow_builder(self.flow_key)()]
+            self._flow_box.update()
+        except Exception:  # noqa: BLE001 - 未挂载/测试假宿主：重画失败不影响状态
+            pass
 
     def _build_metadata_section(self) -> ft.Control:
         t = self.t
@@ -1060,7 +1272,7 @@ class SinglePage(BasePage):
         self.app.open_bib_view("normalize", source="single")
         if not self._norm_hinted:
             self._norm_hinted = True
-            self.app.toast("已切到「引用库 → 回读校验」")
+            self.app.toast("已切到「引用库 → AI 辅助处理 Bib」")
 
     def _on_metadata_preview(self, e=None) -> None:
         """CV-002/003：跑与「开始转换」同一 argv，只多 --metadata-preview-out（只读）。"""
@@ -1079,41 +1291,82 @@ class SinglePage(BasePage):
     def _on_stop(self, e=None) -> None:
         self.app.stop_run()
 
+    def _convert_kwargs(self, preview_path: str = "") -> dict:
+        """普通初排 `convert_call` 的**同一组** kwargs（在跑 AI 之前构造）。
+
+        从 `_build_call()` 抽出，供普通转换与 R3 初排入口共用：两边必须拿同一组
+        参数，R3 只在其上叠加三个普通转换选项，绝不另造一套表单。
+        """
+        source = self.field("single_source")
+        out = self.field("single_out")
+        if not source:
+            raise ValueError("请先选择源稿件")
+        if not out:
+            raise ValueError("请先选择输出根目录")
+        options = self.app.store.get("options", {}) or {}
+        kwargs = dict(
+            source=source, out=out,
+            compile_pdf=bool(options.get("convert_compile", True)),
+            clean=bool(options.get("convert_clean", False)),
+            source_pdf=bool(options.get("convert_source_pdf", False)),
+            vol=self.field("convert_vol"), issue=self.field("convert_issue"),
+            year=self.field("convert_year"), pages=self.field("convert_pages"),
+            received=self.field("convert_received"), author=self.field("convert_author"),
+            name=self.field("convert_name"), bib=self.field("convert_bib"),
+            # F-04：语种/责编由下拉写入 store 的 form.convert_lang / form.convert_editor，
+            # 从未登记进 self.fields；旧写法 field() 恒为空串 → argv 丢 --lang → 引擎按
+            # 正文误检测成中文模板。这里直接读 store，空值仍不传参（保持自动检测）。
+            lang=(self.app.store.get("form.convert_lang", "") or "").strip(),
+            editor=(self.app.store.get("form.convert_editor", "") or "").strip(),
+            grants=self.field("convert_grants"), refs=self.field("convert_refs"),
+            sty=self.field("convert_sty"), skeleton=self.field("convert_skeleton"),
+            force=bool(options.get("convert_force", False)),
+            # 批 116 SINGLE-FN（F1 P0-1）：只预演不落盘；默认 False。
+            dry_run=bool(options.get("convert_dry_run", False)),
+            metadata_preview_out=preview_path,
+        )
+        if self._meta_panel is not None:
+            # 人工元数据：写临时 JSON（运行结束删除），argv 里是 --metadata-json。
+            self._cleanup_meta_temp()
+            self._meta_temp, _text = self._meta_panel.payload_for_run()
+            kwargs["metadata_json"] = self._meta_temp
+        return kwargs
+
+    def initial_ai_inputs(self) -> dict:
+        """初排 R3 入口的普通转换 kwargs（与普通「运行」按同一组参数构造）。
+
+        不含任何 R3 选项：那些只在 `_build_ai_initial_call()` 里叠加。这样
+        「AI 辅助初排」与普通转换永远共用一份表单，不会因 AI 而改变输入。
+        """
+        kwargs = self._convert_kwargs("")
+        if self._ai is not None:
+            # 与普通 `_build_call()` 一致：引用库设置只在核实链路进 argv。
+            kwargs.update(SS.bibdb_convert_args(self.app.store.data))
+        return kwargs
+
+    def _build_ai_initial_call(self, view=None, work_dir: str = "") -> EB.EngineCall:
+        """初排 R3：普通转换 CLI + 三个 R3 选项，走**正常转换**而非 AI 工作流子命令。
+
+        由视图在父输出根旁指定任务目录，`execute` 由执行组勾选直接映射。执行范围为空时
+        `ai_execute=""`，桥不会用默认值把它重开（规格 §3 / 执行卡 §4）。
+        """
+        if view is None:
+            view = getattr(self, "_aiw_view", None)
+        execute_scope = list(getattr(view, "execute_scope", lambda: [])())
+        if not work_dir and view is not None:
+            work_dir = str(getattr(view, "_work_dir_path", lambda: "")() or "")
+        kwargs = self.initial_ai_inputs()
+        # 三个 R3 选项只在这里叠加：同一组 convert_call 参数 + 普通转换入口。
+        kwargs.update(
+            ai_taskbook_version=3,
+            ai_execute=",".join(str(item) for item in execute_scope),
+            ai_work_dir=str(work_dir or ""),
+        )
+        return EB.convert_call(**kwargs)
+
     def _build_call(self, preview_path: str = "") -> EB.EngineCall:
         if self.flow_key == "convert":
-            source = self.field("single_source")
-            out = self.field("single_out")
-            if not source:
-                raise ValueError("请先选择源稿件")
-            if not out:
-                raise ValueError("请先选择输出根目录")
-            options = self.app.store.get("options", {}) or {}
-            kwargs = dict(
-                source=source, out=out,
-                compile_pdf=bool(options.get("convert_compile", True)),
-                clean=bool(options.get("convert_clean", False)),
-                source_pdf=bool(options.get("convert_source_pdf", False)),
-                vol=self.field("convert_vol"), issue=self.field("convert_issue"),
-                year=self.field("convert_year"), pages=self.field("convert_pages"),
-                received=self.field("convert_received"), author=self.field("convert_author"),
-                name=self.field("convert_name"), bib=self.field("convert_bib"),
-                # F-04：语种/责编由下拉写入 store 的 form.convert_lang / form.convert_editor，
-                # 从未登记进 self.fields；旧写法 field() 恒为空串 → argv 丢 --lang → 引擎按
-                # 正文误检测成中文模板。这里直接读 store，空值仍不传参（保持自动检测）。
-                lang=(self.app.store.get("form.convert_lang", "") or "").strip(),
-                editor=(self.app.store.get("form.convert_editor", "") or "").strip(),
-                grants=self.field("convert_grants"), refs=self.field("convert_refs"),
-                sty=self.field("convert_sty"), skeleton=self.field("convert_skeleton"),
-                force=bool(options.get("convert_force", False)),
-                # 批 116 SINGLE-FN（F1 P0-1）：只预演不落盘；默认 False。
-                dry_run=bool(options.get("convert_dry_run", False)),
-                metadata_preview_out=preview_path,
-            )
-            if self._meta_panel is not None:
-                # 人工元数据：写临时 JSON（运行结束删除），argv 里是 --metadata-json。
-                self._cleanup_meta_temp()
-                self._meta_temp, _text = self._meta_panel.payload_for_run()
-                kwargs["metadata_json"] = self._meta_temp
+            kwargs = self._convert_kwargs(preview_path)
             if self._ai is not None:
                 # 批 109 W1b（R6）：引用库设置只在核实链路（AI 面板 → verify_refs）
                 # 进 argv；普通初排没有核实入口，绝不注入 --verify-plan（否则会变成只算账）。
@@ -4214,7 +4467,7 @@ BIB_WRITE_RULES = (
     "（不符即拒绝、零写入）→ 原子替换。\n"
     "W2 只本地：写成功后自动本地提交 1 条（批量也只 1 条），"
     "只提交 bib_db/bibliography.jsonl；不 git push、不同步远端。\n"
-    "只读视图：概况、查库、回读校验；回读校验只产出报告文件。"
+    "只读视图：概览、查库；AI 辅助处理 Bib 只改你选定的 .bib，不碰中央库。"
     "（库健康与字段归位是写库视图，批量裁决同样走 W1 四步）。"
 )
 
@@ -4363,7 +4616,13 @@ class SettingsPage(BasePage):
             C.section_label("路径", t, note="引擎目录留空 = 自动定位"),
             C.hairline(t),
             self._path_field("engine_override", "引擎目录（可空）", kind="dir"),
-            self._path_field("notes_repo", "私有笔记仓（可空）", kind="dir"),
+            # 引擎认「有 cases/ 子目录」为笔记仓根（Engine/slcn/paths.py:160），
+            # 填成 <笔记仓>/bib_db 会一直报缺引用库 —— 提示必须写在这一行上。
+            self._path_field(
+                "notes_repo", "私有笔记仓（可空）", kind="dir",
+                hint="笔记仓根目录（含 cases/）",
+                note="填笔记仓根目录（里面要有 cases/），不要填它下面的 bib_db/。",
+            ),
             t=t, gap="1",
         )
 
@@ -4473,11 +4732,20 @@ class SettingsPage(BasePage):
         column.controls = [C.section_label(title, t, note=note), *column.controls[1:]]
         return column
 
-    def _path_field(self, key: str, label: str, *, kind: str = "dir") -> ft.Container:
+    def _path_field(self, key: str, label: str, *, kind: str = "dir",
+                    hint: str = "", note: str | None = None) -> ft.Container:
+        """路径输入行：描边浮动标签 + 「浏览…」，值写回 `paths.{key}`。
+
+        `hint` 落输入框占位文案（仅空值时可见），`note` 落控件下方常显说明
+        （有值时也看得见）。两者缺省为空 —— 不传的调用点与扩参前行为一致。
+        """
         ref: list = []
         value = self.app.store.get(f"paths.{key}", "") or self.app.store.get(key, "") or ""
         if key == "engine_override":
             value = self.app.store.get("engine_override", "") or ""
+
+        # 只有笔记仓这一行带「填错层」的实时校验（R1）；其它路径行行为不变。
+        warn_ctl: ft.Text | None = None
 
         def _browse(e) -> None:
             self.app.browse_field(ref, f"选择{label}", kind, key, store_prefix="paths")
@@ -4492,10 +4760,21 @@ class SettingsPage(BasePage):
             if key == "engine_override":
                 # 旧键同步（启动读取 engine_override；浏览分支同样双写）。
                 self.app.store.set("engine_override", text)
+            if warn_ctl is not None:
+                # R1：填成 bib_db 子目录时给提示，但**不阻断保存**（用户可能先填后建）。
+                _sync_warning(warn_ctl, text)
             self.app.mark("path_change", key=key, typed=True)
 
-        control = C.path_picker(label, value, "", self.t, required=False, on_change=_typed,
+        control = C.path_picker(label, value, hint, self.t, required=False, on_change=_typed,
                                 on_browse=_browse, show_note=False, field_ref=ref)
+        if note:
+            # 说明常显在输入行下方（`show_note` 的「可粘贴」提示在本页已关，文案不重复）。
+            control.controls.append(C.text(note, self.t, "caption", self.t.palette.text_faint))
+        if key == "notes_repo":
+            # 校验提示位：文案为空即不占高度（visible=False），不改变合法情形的观感。
+            warn_ctl = C.text("", self.t, "caption", self.t.palette.warn)
+            _sync_warning(warn_ctl, value)
+            control.controls.append(warn_ctl)
         self.fields[key] = ref
         return control
 

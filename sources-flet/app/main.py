@@ -319,6 +319,23 @@ def _retint_text_style(style, mapping: dict[str, str]) -> int:
     return 1
 
 
+def _looks_like_path(text: str) -> bool:
+    """剪贴板内容是不是一个文件/目录路径（批 246 P4：决定复制成功文案）。
+
+    判据刻意简单可靠，不做正则猜测：单行、无制表符/换行、长度不超过常见上限，
+    且以绝对路径前缀开头（``/`` ``~`` ``./`` ``../``、盘符 ``C:\\``/``C:/``、UNC ``\\\\``）。
+    多行 stderr、诊断文本、制表符拼的信息行一律不算路径——那类内容只说「已复制」。
+    """
+    one = str(text or "").strip()
+    if not one or "\n" in one or "\r" in one or "\t" in one:
+        return False
+    if len(one) > 260:  # Windows MAX_PATH；超长内容不可能是单条路径
+        return False
+    if one.startswith(("/", "~", "./", "../", ".\\", "..\\", "\\\\")):
+        return True
+    return len(one) > 2 and one[1] == ":" and one[2] in "\\/"
+
+
 def _picker_label(dialog_title: str) -> str:
     """从对话框标题抽出「受影响的输入名」：「选择引擎目录」→「引擎目录」（R01）。
 
@@ -917,7 +934,7 @@ class App:
         store = getattr(self, "store", None)
         data = getattr(store, "data", None)
         data = data if isinstance(data, dict) else {}
-        # 批 115 D1-115-31/32：搜索用 IA 的 10 条路由标签（概览 / 回读校验），
+        # 批 115 D1-115-31/32：搜索用 IA 的 10 条路由标签（概览 / AI 辅助处理 Bib），
         # 不再借 pages.BibPage.VIEWS（它仍写着旧名「规范化」，且页内顺序不同）。
         bib_views = [(str(view["key"]), str(view["label"]))
                      for view in IA.route_views("bib")]
@@ -2224,11 +2241,31 @@ class App:
         if not self.persist():
             return False
         self._apply_engine_override()
+        self._apply_notes_repo()
         self.mark("settings_saved", file=str(self.store.path), exists=self.store.path.exists(),
                   dirty=self.store.dirty)
         if toast:
             self.toast("设置已保存")
         return True
+
+    def _apply_notes_repo(self) -> None:
+        """保存成功后让手输的笔记仓路径立即生效（批 246 P6：此前必须重启）。
+
+        只刷新 ``self.notes_repo``：各页面 ``_notes()`` 每次调用都取它，并经
+        ``engine_bridge.env_for_run(notes=…)`` 传给子进程，所以下一次运行就用新路径。
+        这里**不写** ``os.environ["SLCN_NOTES"]``——引擎 ``paths.notes_root()`` 对已设的
+        环境变量是严格的（目录下没有 ``cases/`` 就返回 None，不回退），把未校验的输入
+        塞进去会让本来能回落到同级笔记仓的用户反而找不到笔记仓。
+        """
+        raw = str(self.store.get("paths.notes_repo", "") or "").strip()
+        if raw == str(getattr(self, "notes_repo", "") or "").strip():
+            return
+        self.notes_repo = raw
+        try:
+            has_cases = bool(raw) and os.path.isdir(os.path.join(raw, "cases"))
+        except OSError:
+            has_cases = False
+        self.mark("notes_repo", path=raw, has_cases=has_cases)
 
     def _apply_engine_override(self) -> None:
         """保存成功后让手输的引擎目录参与引擎解析（R02：路径值要参与校验）。
@@ -2354,6 +2391,9 @@ class App:
             return
         # R01：失败提示要说清是哪个输入受影响（引擎目录 / 期目录 / 源稿件…）。
         self._picker_label_text = _picker_label(dialog_title)
+        # 选择中的真实状态（供页面轮询）：取消/失败/选中都会把它放回 idle，
+        # 页面不必靠「值有没有变」猜——那条路在取消时会白等满 60 秒。
+        self._picker_state = "opening"
         self.mark("picker_open_begin", kind=kind, key=key,
                   label=self._picker_label_text)
         try:
@@ -2366,35 +2406,44 @@ class App:
         if label:
             self._picker_label_text = label  # 供 _picker_error 兜底取用
         try:
-            if self._picker is None:
-                self._picker_error("file picker 未初始化", label=label)
-                return
-            if kind == "dir":
-                value = await self._picker.get_directory_path(dialog_title=dialog_title)
-            else:
-                files = await self._picker.pick_files(dialog_title=dialog_title, allow_multiple=False)
-                value = files[0].path if files else None
-            self.mark("picker_result", kind=kind, key=key, value=value or "")
-            if not value:
-                self._picker_error("", cancel=True)
-                return
-            ref[0].value = value
-            C.sync_clearable(ref[0])     # m03131：浏览回填后显示框内 ✕
+            # 无论选中/取消/异常，都算「这次选择结束了」——页面靠这个状态
+            # 立刻收工，不用干等轮询超时（验收 §3.2-12）。
+            self._picker_state = "opening"
             try:
-                ref[0].update()
-            except Exception:  # noqa: BLE001
-                pass
-            if store_prefix == "paths":
-                self.store.set(f"paths.{key}", value)
-                if key == "engine_override":
-                    self.store.set("engine_override", value)
-                    os.environ["P2_ENGINE"] = value
-                    self.refresh_engine_status()
-            else:
-                self.store.set_recent(key, value)
-            self.persist()
-        except Exception as exc:  # noqa: BLE001
-            self._picker_error(f"{type(exc).__name__}: {exc}")
+                if self._picker is None:
+                    self._picker_error("file picker 未初始化", label=label)
+                    return
+                if kind == "dir":
+                    value = await self._picker.get_directory_path(dialog_title=dialog_title)
+                else:
+                    files = await self._picker.pick_files(dialog_title=dialog_title, allow_multiple=False)
+                    value = files[0].path if files else None
+                self.mark("picker_result", kind=kind, key=key, value=value or "")
+                if not value:
+                    self._picker_error("", cancel=True)
+                    return
+                ref[0].value = value
+                C.sync_clearable(ref[0])     # m03131：浏览回填后显示框内 ✕
+                try:
+                    ref[0].update()
+                except Exception:  # noqa: BLE001
+                    pass
+                if store_prefix == "paths":
+                    self.store.set(f"paths.{key}", value)
+                    if key == "engine_override":
+                        self.store.set("engine_override", value)
+                        os.environ["P2_ENGINE"] = value
+                        self.refresh_engine_status()
+                    elif key == "notes_repo":
+                        # 批 246 P6：浏览选中的笔记仓也立即生效，不等下一次保存/重启。
+                        self._apply_notes_repo()
+                else:
+                    self.store.set_recent(key, value)
+                self.persist()
+            except Exception as exc:  # noqa: BLE001
+                self._picker_error(f"{type(exc).__name__}: {exc}")
+        finally:
+            self._picker_state = "idle"
 
     def _picker_error(self, error: str, *, cancel: bool = False, label: str = "") -> None:
         """文件选择失败/取消都要有中文提示（B4/R01）；失败不弹系统错误，可改手输。
@@ -2403,10 +2452,12 @@ class App:
         - 失败：说清受影响的输入名（引擎目录 / 期目录…）与下一步（粘贴路径或重试）。
         """
         if cancel:
+            self._picker_state = "idle"
             self.mark("picker_cancel")
             self.toast("已取消选择")
             return
         name = label or getattr(self, "_picker_label_text", "")
+        self._picker_state = "idle"
         self.mark("picker_error", error=error, label=name)
         if name:
             self.toast(f"打不开文件选择器（{name}）：可直接粘贴路径，或重试「浏览…」。")
@@ -2438,21 +2489,42 @@ class App:
         except OSError as exc:
             self.toast(f"打开失败：{exc}")
 
-    def copy_text(self, value: str) -> None:
-        text = (value or "").strip()
-        if not text:
-            self.toast("没有可复制的路径")
-            return
+    def copy_text(self, value: str, *, preserve_whitespace: bool = False) -> bool:
+        """把文本放进剪贴板；**返回真实成败**（A/V22 验收 §3.1-8）。
+
+        返回值是调用方唯一可信的判据：任何调用点都不许在失败后再 toast「已复制」。
+        """
+        text = (value or "") if preserve_whitespace else (value or "").strip()
+        if not text.strip():
+            self.toast("没有可复制的内容")
+            return False
+        # 批 20261117 A/V22：`check=False` 会把 pbcopy/clip 的失败吞掉——剪贴板里其实
+        # 什么都没有，界面却报「已复制」。必须**看真实结果**再决定文案（假成功不许留）。
         try:
             if os.name == "nt":
-                subprocess.run(["clip"], input=text.encode("utf-16le"),
-                               creationflags=CREATE_NO_WINDOW, timeout=5, check=False)
+                done = subprocess.run(["clip"], input=text.encode("utf-16le"),
+                                      creationflags=CREATE_NO_WINDOW, timeout=5,
+                                      check=False, capture_output=True)
             else:
-                subprocess.run(["pbcopy"], input=text.encode("utf-8"), timeout=5, check=False)
-            self.toast("已复制路径")
-            self.mark("copy_path", path=text)
+                done = subprocess.run(["pbcopy"], input=text.encode("utf-8"),
+                                      timeout=5, check=False, capture_output=True)
         except (OSError, subprocess.SubprocessError):
             self.toast("复制失败")
+            return False
+        # 验收 §3.2-13：只有 int 才判失败会把 None/怪返回值当成功；直接比 `!= 0`。
+        if getattr(done, "returncode", None) != 0:
+            self.toast("复制失败")
+            return False
+        # 批 246：同一入口也复制错误摘要 / 诊断文本 / 制表符信息行，
+        # 一律说「已复制路径」会让人以为剪贴板里是路径。
+        self.toast("已复制路径" if _looks_like_path(text) else "已复制")
+        # A/V22：会话记录只留身份与规模。整段正文（任务书/报告可上万字）写进 marker
+        # 既撑大会话文件，又把未刊内容复制到第二个地方；路径类才记真实值。
+        if _looks_like_path(text):
+            self.mark("copy_path", path=text)
+        else:
+            self.mark("copy_path", chars=len(text), lines=text.count("\n") + 1)
+        return True
 
     # ── 事件 ────────────────────────────────────────────────────────────
     def on_resize(self, e) -> None:
@@ -2670,7 +2742,14 @@ class App:
             try:
                 await self.page.window.close()
             except Exception as exc:  # noqa: BLE001
-                self.mark("auto_close_error", error=str(exc))
+                # 关闭请求送达后客户端随即断开，Flet 用 RuntimeError("Session closed")
+                # 结束这次 invoke：窗口确实关掉了，属正常收尾，不该记成失败。
+                if "Session closed" in str(exc):
+                    self.mark("auto_close_done", ok=True, note="session closed after request")
+                else:
+                    self.mark("auto_close_error", error=f"{type(exc).__name__}: {exc}")
+            else:
+                self.mark("auto_close_done", ok=True)
         SLOG.log("after_boot_done")
 
     # ── P3 平台补齐：客户端窗口旁路 / 标题栏 / 拖放探测 / 托盘 / 几何 ────

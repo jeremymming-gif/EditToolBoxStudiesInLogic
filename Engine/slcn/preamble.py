@@ -137,8 +137,13 @@ _ANY_PKG_RE = re.compile(
     r"\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}"
 )
 
-# 宏类定义（\\newcommand 家族 + 算子）：都占「控制序列」这一个命名空间。
-_MACRO_KINDS = frozenset({"newcommand", "renewcommand", "providecommand", "operator"})
+# 宏类定义（\\newcommand 家族 + 算子 + 数学字体/符号声明）：都占「控制序列」这一个命名空间。
+# 第 143 条（2026-11-17）：\\DeclareMathAlphabet / \\DeclareMathSymbol 的目标也是控制
+# 序列（正文只写 \\cmsf / \\Kap），声明本身必须能按「宏」迁移与依赖闭包。
+_MACRO_KINDS = frozenset({
+    "newcommand", "renewcommand", "providecommand", "operator",
+    "mathalphabet", "mathsymbol",
+})
 _ENV_KINDS = frozenset({"newtheorem", "newenvironment"})
 
 # 编译期才知道的环境（LaTeX 内核 / 模板类 / 常用宏包自带）：文本扫描看不到它们，
@@ -201,6 +206,7 @@ class DefItem:
 
     kind: str  # newtheorem / newenvironment / operator / columntype / color
     #           / newcommand / renewcommand / providecommand / counter
+    #           / mathalphabet / mathsymbol（第 143 条：数学字体/符号声明）
     name: str
     source: str  # 原始定义文本（含注释行之外的部分）
     pos: int = 0  # 在**来源文本**里的起始下标（多文件合并后排序/日志用；0 = 未记）
@@ -320,12 +326,44 @@ def _skip_optional(text: str, i: int) -> int:
     return i
 
 
+# 第 143 条：数学字体 / 符号声明 =「目标控制序列 + N 个平衡组」。组数不能少读：
+# MathAlphabet 是 {字体}{编码}{族}{系列}{形状} 共 4 组；MathSymbol 是
+# {类别}{符号字体}{码位} 共 3 组（少读会把下一条命令吞进来，DIAG 实测编译报
+# `Missing \\endcsname inserted.`）。
+_MATH_DECL_SPECS = (
+    ("\\DeclareMathAlphabet", "mathalphabet", 4),
+    ("\\DeclareMathSymbol", "mathsymbol", 3),
+)
+
+
+def _read_math_decl_target(pre: str, i: int) -> tuple[str, int]:
+    r"""读数学声明的目标控制序列：`{\name}` 或裸 `\name`，返回（名, 收尾后下标）。
+
+    只接受**控制词**名（字母/@，不含数字）：TeX 里 `\foo1` 是 `\foo` 后接字符 `1`，
+    不是另一个控制序列名，按「不支持的目标」处理（ValueError → 整条声明不误收）。
+    """
+    i = skip_ws_comments(pre, i)
+    if i < len(pre) and pre[i] == "{":
+        inner, i = _read_group(pre, i)
+        m = re.fullmatch(r"\s*\\([A-Za-z@]+)\s*", inner)
+        if m is None:
+            raise ValueError("不是控制序列目标")
+        return m.group(1), i
+    # 裸目标同样只认控制词名：`\foo1` 在 TeX 里是 `\foo` 后接字符 `1`，不是 `\foo1`
+    # 这个控制序列，紧跟数字的一律按「不支持的目标」处理。
+    m = re.match(r"\\([A-Za-z@]+)(?![A-Za-z@0-9])", pre[i:])
+    if m is None:
+        raise ValueError("不是控制序列目标")
+    return m.group(1), i + m.end()
+
+
 def scan_preamble(pre: str) -> list[DefItem]:
     """扫出可安全搬运的前言定义（保持原文顺序，同名同类去重取第一条）。
 
-    认这六类**纯定义**：`\\newtheorem` / `\\newenvironment`（按环境名）、
+    认这八类**纯定义**：`\\newtheorem` / `\\newenvironment`（按环境名）、
     `\\DeclareMathOperator`（按宏名）、`\\newcolumntype`（按列类型）、`\\definecolor`、
-    `\\newcounter`（第 130 条补丁：按计数器名；是否真搬由 `plan_migration` 按「用到」判）。
+    `\\newcounter`（第 130 条补丁：按计数器名；是否真搬由 `plan_migration` 按「用到」判）、
+    `\\DeclareMathAlphabet` / `\\DeclareMathSymbol`（第 143 条：按目标控制序列名）。
     其它内容（`\\setlength`、`\\setmainfont`、`\\geometry`…）属版面设置，不搬。
     """
     found: list[tuple[int, DefItem]] = []
@@ -416,6 +454,23 @@ def scan_preamble(pre: str) -> list[DefItem]:
         if re.fullmatch(r"[A-Za-z@][A-Za-z@0-9]*", name):
             found.append((m.start(), DefItem("counter", name, pre[m.start() : i], pos=m.start())))
 
+    # 第 143 条：数学字体/符号声明。保留 `pre[m.start():i]` 完整原文（含组间注释），
+    # i 停在最后一个必读组的 `}` 之后——绝不把紧随其后的下一条命令吃进 source。
+    for command, kind, n_groups in _MATH_DECL_SPECS:
+        for m in re.finditer(re.escape(command) + r"(?![A-Za-z@])", pre):
+            if not usable(m.start()):
+                continue
+            try:
+                name, i = _read_math_decl_target(pre, m.end())
+                for _ in range(n_groups):
+                    _value, i = _read_group(pre, i)
+            except ValueError:
+                continue
+            # 兜底：声明绝不能跨进正文区（未配平的组可能一路吞到 \begin{document}）
+            if "\\begin{document}" in pre[m.start() : i]:
+                continue
+            found.append((m.start(), DefItem(kind, name, pre[m.start() : i], pos=m.start())))
+
     seen: set[tuple[str, str]] = set()
     out: list[DefItem] = []
     for _pos, item in sorted(found, key=lambda x: x[0]):
@@ -450,6 +505,25 @@ def defined_names(text: str) -> set[str]:
     for pat in _NAME_PATTERNS:
         names.update(re.findall(pat, clean))
     return names
+
+
+def math_decl_names(text: str) -> set[str]:
+    r"""文本里 `\DeclareMathAlphabet` / `\DeclareMathSymbol` 声明的目标名（注释不算）。
+
+    **只给 `plan_migration` 判「模板已有同名声明」用**，刻意不并进 `defined_names()`：
+    后者喂给 build 的宏改名判据，把数学声明名算成「模板已定义」会把作者合法的
+    `\renewcommand` 覆盖误改名/降级（DIAG §3.2 裁定）。
+
+    只看前言区：有 `\begin{document}` 时取它之前；支撑文件（.sty/.cls/.def/.cfg）
+    没有正文标记，全文都算前言。
+    """
+    idx = text.find("\\begin{document}")
+    pre = text[:idx] if idx >= 0 else text
+    return {
+        it.name
+        for it in scan_preamble(pre)
+        if it.kind in ("mathalphabet", "mathsymbol")
+    }
 
 
 def package_names(text: str) -> set[str]:
@@ -633,7 +707,8 @@ def _top_level_macros(
     为什么必须过滤：旧 SLCN.sty 的 `\\definitionnamechange` 体里有一行
     `\\renewcommand{\\definitionname}{#1}`——按字面扫会把它误当成顶层重定义，
     于是「正文用到 + 模板已有」时白记一条 `\\renewcommand` 覆盖告警。
-    `containers` 是其它定义（五类声明）的 [起, 止) 区间，落在里面的宏也算嵌套。
+    `containers` 是其它定义（`scan_preamble` 认的八类声明）的 [起, 止) 区间，
+    落在里面的宏也算嵌套。
     """
     macros = find_all_macros(text)
     spans = [m.span for m in macros] + containers
@@ -647,12 +722,64 @@ def _top_level_macros(
     return out
 
 
+def mask_definition_containers(text: str) -> str:
+    """把定义容器（`scan_preamble` 认的八类声明）的原文挖成等长空白，只留换行。
+
+    第 143 条：`\\newenvironment{claimproof}{…\\renewcommand{\\qedsymbol}…}{…}` 的
+    begin/end 体是**环境局部**定义，不是模板/顶层的定义。但 `defined_names` /
+    `parse_macros` 按字面线性扫描，会把环境体里的局部名算成"已有"——于是：
+
+      · build 判「模板已有」时把作者同名的顶层定义误判为冲突 → 改名；
+      · 改名后环境体里出现新名字，`insert_custom_macros` 的 `parse_macros` 又说
+        "已存在" → 顶层定义被丢弃，产物只剩悬空名（历史 qedsymbol 缺陷的签名）。
+
+    这里按 `[pos, pos+len(source))` 把容器原文替换为空格（只保留换行），让判据
+    只看见顶层声明。文本长度与行号不变，产物报错行不漂移；`defined_names` 本身
+    **不改**（数学声明名仍不进全局，见 `math_decl_names` 的裁定）。
+    """
+    spans = [(d.pos, d.pos + len(d.source)) for d in scan_preamble(text)]
+    if not spans:
+        return text
+    chars = list(text)
+    for start, end in spans:
+        for i in range(start, min(end, len(chars))):
+            if chars[i] != "\n":
+                chars[i] = " "
+    return "".join(chars)
+
+
+# 第 143 条：这些声明自身也在顶层占住一个控制序列（`\newtheorem{prop}` 占住 `\prop`、
+# `\newenvironment{claimproof}` 占住 `\claimproof`），挖空容器后名字要补回「模板已有」。
+# 数学声明的目标名**不**补回：作者用 `\renewcommand` 覆盖它时不应改名（DIAG §3.2）。
+_CONTAINER_MACRO_KINDS = frozenset({"newtheorem", "newenvironment", "operator"})
+
+
+def defined_names_outside_containers(text: str) -> set[str]:
+    r"""`defined_names()` 的「只看顶层」版本：容器体里的局部定义不算，声明名本身算。
+
+    第 143 条：`mask_definition_containers()` 会把整条 `\newenvironment` /
+    `\newtheorem` 挖掉（连同环境名、定理名），但那些名字确实占住了控制序列——作者
+    的顶层同名 `\newcommand` 仍须改名，否则插进模板会 `already defined`。所以这里
+    把 `_CONTAINER_MACRO_KINDS` 的声明名补回，环境体内部的 `\renewcommand` 仍不算。
+
+    数学声明的目标名不补（`math_decl_names` 的裁定）：作者写
+    `\renewcommand{\Kap}{…}` 覆盖模板的 `\DeclareMathSymbol{\Kap}` 是合法用法，
+    算成「模板已有」会把这次覆盖改名/降级。
+    """
+    names = defined_names(mask_definition_containers(text))
+    for item in scan_preamble(text):
+        if item.kind in _CONTAINER_MACRO_KINDS:
+            names.add(item.name)
+    return names
+
+
 def scan_support_definitions(text: str) -> list[DefItem]:
     """本地支撑文件 / 正文区里的**全部**可搬运定义（第 130 条，保持原文顺序）。
 
-    = 六类声明（`\\newtheorem` / `\\newenvironment` / `\\DeclareMathOperator` /
-    `\\newcolumntype` / `\\definecolor` / `\\newcounter`，与 `scan_preamble` 同口径；
-    计数器只在 plan_migration 里按「用到」筛）
+    = 八类声明（`\\newtheorem` / `\\newenvironment` / `\\DeclareMathOperator` /
+    `\\newcolumntype` / `\\definecolor` / `\\newcounter` / `\\DeclareMathAlphabet` /
+    `\\DeclareMathSymbol`，与 `scan_preamble` 同口径；计数器只在 plan_migration
+    里按「用到」筛）
     + 顶层 `\\newcommand` / `\\renewcommand` / `\\providecommand`。
 
     - 嵌套在另一个定义体里的宏不算（见 `_top_level_macros`）；
@@ -671,6 +798,38 @@ def scan_support_definitions(text: str) -> list[DefItem]:
         )
     items.sort(key=lambda d: d.pos)
     return items
+
+
+def top_level_macros(text: str) -> list[Macro]:
+    r"""文本里**顶层**的 `\newcommand` 家族定义（环境体/其它定义体里的不算）。
+
+    容器区间来自 `scan_preamble`：`\newenvironment` 的 source 覆盖 begin/end 两个
+    环境体，所以 `\newenvironment{claimproof}{\renewcommand{\qedsymbol}…}{}` 里的
+    那条重定义会被判为嵌套。这是修「环境局部 qedsymbol 被抽到全局并改名」的关键
+    （第 143 条）：环境体里的定义属于该环境，不能当全局定义收走。
+    """
+    decls = scan_preamble(text)
+    containers = [(d.pos, d.pos + len(d.source)) for d in decls]
+    return _top_level_macros(text, containers)
+
+
+def collect_top_level_custom_macros(
+    text: str, exclude_prefix: str = "my"
+) -> list[tuple[str, str, str]]:
+    r"""收集**顶层** `\newcommand` 家族定义，形状同 `latex.collect_custom_macros()`。
+
+    与 `latex.collect_custom_macros()` 的唯一差别：环境体/其它定义体里的嵌套定义
+    不收（那些定义属于所在环境，不能抽到全局，也不能参与改名）。跳过 `my` 前缀
+    （模板元数据槽位）与同名重复（先出现的为准，与 collect_custom_macros 同序）。
+    """
+    out: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for m in top_level_macros(text):
+        if m.name.startswith(exclude_prefix) or m.name in seen:
+            continue
+        seen.add(m.name)
+        out.append((m.kind, m.name, text[m.span[0] : m.span[1]]))
+    return out
 
 
 # ── 「正文用到」判据（第 130 条）────────────────────────────────────────────
@@ -789,6 +948,7 @@ def _def_key(item: DefItem) -> tuple[str, str]:
         return ("color", item.name)
     if item.kind == "counter":
         return ("counter", item.name)
+    # newcommand 家族 / operator / 第 143 条的数学字体·符号声明：同一「控制序列」命名空间
     return ("macro", item.name)
 
 
@@ -823,7 +983,8 @@ def _item_used_by_body(
         return _name_in_arg_text(item.name, color_args)
     if item.kind == "counter":
         return item.name in (used_counters or set())
-    return item.name in used_macros  # newcommand 家族 + operator
+    # newcommand 家族 + operator + 第 143 条的数学字体/符号声明（目标都是控制序列）
+    return item.name in used_macros
 
 
 def missing_environments(
@@ -852,7 +1013,7 @@ def _plan_local_definitions(
     body_text: str,
     skipped: list[str],
 ) -> None:
-    r"""本地支撑文件里的定义 → 迁移计划（第 127 条环境 → 第 130 条六类 + 普通宏）。
+    r"""本地支撑文件里的定义 → 迁移计划（第 127 条环境 → 第 130 条八类声明 + 普通宏）。
 
     作者交来的旧模板稿常把定义放在同目录的 .sty/.cls/.def/.cfg 里：定理环境
     （第 127 条，期 87）只是其中一类；普通宏（`\definitionnamechange`、`\cp`/`\cpp`）、
@@ -868,7 +1029,7 @@ def _plan_local_definitions(
     传递闭包覆盖「宏 A 定义里用到 B」「定理共享计数器 [Y]」以及「定义体用到的
     `\newcounter{X}`」；插入顺序按原文，共享计数器/依赖的计数器若排在后面则先插。
     """
-    # ── 本地支撑文件里的定义（第 127 条环境 → 第 130 条扩到六类 + 普通宏）──────
+    # ── 本地支撑文件里的定义（第 127 条环境 → 第 130 条扩到八类声明 + 普通宏）──
     # 作者交来的旧模板稿常把定义放在同目录的 .sty/.cls/.def/.cfg 里：定理环境
     # （第 127 条，期 87 02 Hai_Xing）只是其中一类；普通宏（\definitionnamechange、
     # \cp/\cpp）、算子、列类型、颜色也在那里（2023(71) 04、2024(75) 05 真稿）。
@@ -1037,6 +1198,10 @@ def plan_migration(
     # 第 130 条补丁：模板显式 `\newcounter{X}` 也算「模板已有」（`\newtheorem` 隐式定义的
     # 计数器已由 defined_names 的定理环境名覆盖）。当前两套模板都没有显式 newcounter。
     names |= counter_names(skeleton_text) | counter_names(sty_text)
+    # 第 143 条：模板已经声明过同一个数学字体/符号名 → 不再从作者前言重复迁。
+    # 只并进本函数的局部 `names`（to_migrate 与本地闭包判据），**不**并进全局
+    # defined_names()——那个集合喂 build 的改名判据，会把合法的 \renewcommand 覆盖改名。
+    names |= math_decl_names(skeleton_text) | math_decl_names(sty_text)
     skipped: list[str] = []
     template_has_biblatex = bool(
         {"biblatex"} & (package_names(skeleton_text) | package_names(sty_text))
@@ -1101,10 +1266,10 @@ def plan_migration(
                 libs.update(need)
             continue
 
-    # 作者前言里的定义：五类声明（模板没有就搬）在前；`\newcounter` 是第 130 条补丁新增
-    # 的第六类，**只搬真正被用到的**——正文里直接用了（`\theX` 等），或已迁移的定义体里
-    # 用了（如 `\newenvironment{liju}` 的 body 里 `\setcounter{userinput}`）。计数器统一
-    # 排在定义块最前：`\newcounter`/`\setcounter` 在使用方之前就绪（任务书要求）。
+    # 作者前言里的定义：八类声明（模板没有就搬）在前；其中 `\newcounter`（第 130 条补丁）
+    # **只搬真正被用到的**——正文里直接用了（`\theX` 等），或已迁移的定义体里用了（如
+    # `\newenvironment{liju}` 的 body 里 `\setcounter{userinput}`）。计数器统一排在定义块
+    # 最前：`\newcounter`/`\setcounter` 在使用方之前就绪（任务书要求）。
     pre_items = scan_preamble(pre)
     pre_defs = [it for it in pre_items if it.kind != "counter"]
     pre_counters = [it for it in pre_items if it.kind == "counter"]

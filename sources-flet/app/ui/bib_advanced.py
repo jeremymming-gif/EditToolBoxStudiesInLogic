@@ -610,17 +610,29 @@ class BibQueryView:
         self._refresh()
 
     async def _set_clipboard(self, text: str) -> bool:
+        """写剪贴板；True = **有证据**写成功（V22 / 验收 §3.1-8）。
+
+        flet 1.0.5 的 `Clipboard.set()` 只返回 None ——「没抛异常」不等于「剪贴板
+        真的变了」。所以客户端路径必须 `get()` 回读比对确认；回读不到（无会话 /
+        测试桩 / 平台不支持）就退回壳 `copy_text` 的真实布尔值；两条都拿不到证据
+        时报失败。以前这里无条件 `return True`，pbcopy 失败时紧接着 toast
+        「已复制 BibTeX…」把「复制失败」覆盖掉 —— 用户看到的是假成功。
+        """
         page = getattr(self.page, "page", None)
         try:
             clipboard = ft.Clipboard()
             page.services.append(clipboard)
             await clipboard.set(text)
-            return True
+            echo = await clipboard.get()
+            if isinstance(echo, str) and echo == text:
+                return True
         except Exception:  # noqa: BLE001  客户端剪贴板不可用时回落到平台命令
             pass
+        fn = getattr(self.page.app, "copy_text", None)
+        if not callable(fn):
+            return False
         try:
-            self.page.app.copy_text(text)
-            return True
+            return bool(fn(text))
         except Exception:  # noqa: BLE001
             return False
 
@@ -632,9 +644,15 @@ class BibQueryView:
             self._notice("warn", NO_BIBTEX_TEXT)
             self._refresh()
             return
-        if await self._set_clipboard(view["bibtex"]):
+        bibtex = view["bibtex"]
+        ok = await self._set_clipboard(bibtex)
+        # 只记长度/行数，不把整段 BibTeX 写进 marker（V22 附加要求）。
+        self.page.mark("bib_query_copy", key=view["key"], ok=ok,
+                       chars=len(bibtex), lines=bibtex.count("\n") + 1)
+        if ok:
             self.page.app.toast(copy_done_message(view["key"]))
         else:
+            # 失败分支**不发**成功 toast，避免覆盖 `copy_text` 已提示的「复制失败」。
             self._notice("error", "复制失败：剪贴板不可写。")
             self._refresh()
 

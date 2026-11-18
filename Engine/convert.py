@@ -55,12 +55,9 @@ from slcn import coop as _coop  # noqa: E402  B-287：人工元数据来源/摘�
 # ── B-229：旧 convert 的 81 个顶层符号全部从 owning 模块显式 re-export（`is` 同一对象）──
 from slcn.convert_metadata import (  # noqa: E402
     WORD_EXT, TEX_EXT, _OWN_FIXED, _OWN_STEM_SUFFIXES, _IMG_SUFFIXES, _MID_SUFFIXES, is_own_product, _BACKUP_RE, require_source, die, _has_cjk, detect_lang, author_from_source, find_en_metadata, mark_en_abstract_roles, _find_db_root, list_editors,
-    MetadataJSONError, _METADATA_JSON_SCALARS, _METADATA_JSON_AUTHOR_KEYS, _MAX_JSON_AUTHORS, _json_clean, _json_affil_list, _normalize_json_author, load_metadata_json, supports_structured, structured_kwargs, _ensure_vendor, resolve_c_class_union,
-    _OVERRIDE_FIELDS,
+    MetadataJSONError, _METADATA_JSON_SCALARS, _METADATA_JSON_AUTHOR_KEYS, _MAX_JSON_AUTHORS, _json_clean, _json_affil_list, _normalize_json_author, load_metadata_json, supports_structured, structured_kwargs, _ensure_vendor, resolve_c_class_union, _OVERRIDE_FIELDS,
 )
-from slcn.convert_compile import (  # noqa: E402
-    pdf_page_count, _STALE_COMPILE_EXTS, clean_stale_compile_artifacts, compile_pdf,
-)
+from slcn.convert_compile import pdf_page_count, _STALE_COMPILE_EXTS, clean_stale_compile_artifacts, compile_pdf  # noqa: E402
 from slcn.convert_stage import (  # noqa: E402
     _FINISH_WHY, channel_provenance, stage_original, collect_overrides, supports_overrides, overrides_kwargs, apply_ai_merge, _coop_find_bib, _coop_find_tex, _coop_locate_state, run_coop_replies, LLM_FULLTEXT_CHUNK_CHARS, LLM_FULLTEXT_REPORT_SUFFIX,
     LLM_FULLTEXT_RUBRIC, split_fulltext_chunks, _fulltext_chunk_items, _llm_fulltext_system, _llm_fulltext_user, _llm_fulltext_review, render_llm_fulltext_report, _add_handoff_args, _handoff_enabled, _add_c_class_union_args, build_arg_parser,
@@ -74,8 +71,20 @@ def main() -> int:
     # 第 86 条：Windows 的 stdout 默认是控制台代码页（cp936），中文日志会被管道接走后
     # 乱码甚至 UnicodeEncodeError 崩在半路。这里**第一步**就切到 UTF-8（mac 上是空操作）。
     _plat.utf8_stdio()
+    if "--ai-workflow" in sys.argv[1:]:  # §8 的 7 个操作：独立子命令，先于 --source 必填校验
+        from slcn import ai_workflow_cli as _awc  # noqa: PLC0415 — 只在这个分支才导入
+        return _awc.main([a for a in sys.argv[1:] if a != "--ai-workflow"])
     ap = _bibitem.add_cli_args(build_arg_parser())  # B-233：--no-bibitem-convert
+    # R3 薄接点：新增三选项（--ai-taskbook-version/--ai-execute/--ai-work-dir）
+    # 幂等注册到同一个 parser；旧参数路径不受影响。ai_workflow_convert 为独立模块，
+    # 这里只 import 模块对象，不改任何 re-export 符号身份（run_coop_taskbook 等仍指向原对象）。
+    from slcn import ai_workflow_convert as _awc  # noqa: PLC0415
+    _awc.add_convert_args(ap)
     args = _bibitem.apply_cli_args(ap.parse_args())
+    try:
+        _ai_mode = _awc.normalize_convert_args(args)
+    except ValueError as exc:
+        ap.error(str(exc))
     if not args.scan and not args.out and not args.list_editors:
         ap.error("除 --scan / --list-editors 外，必须指定 --out")
     if args.list_editors:
@@ -188,10 +197,8 @@ def main() -> int:
     )
     refs_auto = False  # 第 134 条：附件是自动挑的还是用户 --refs 显式给的
     _inventory = multisource.scan(_src_dir)
-    # ── 第 76 条：把「英文摘要 docx」从【未识别】改判为明确角色 en_abstract ──
-    # ⚠️ `--scan` 走的是 `multisource.scan()`（不是 `sources.identify()`），而
-    #    `multisource.py` 不在本条的改动范围（只读件），所以角色在这里补。
-    #    判据与 Word 通道的第二源发现**共用** `sources.en_metadata_sheet()`。
+    # 第 76 条：把「英文摘要 docx」从【未识别】改判为 en_abstract（`--scan` 走 multisource.scan
+    # 而非 sources.identify，multisource.py 是只读件，故角色在这里补；判据共用 sources 的发现函数）。
     mark_en_abstract_roles(_inventory)
     if args.scan:
         print(multisource.format_inventory(_inventory, "源稿清单"))
@@ -203,12 +210,9 @@ def main() -> int:
             for x in _mains:
                 print(f"      · {x.name}（{x.chars} 字符）")
         if not args.refs:
-            # 第 134 条：附件选择保守化——
-            #   · 已有「真 .bib」（--bib / 源内 \addbibresource / 同目录 .bib）时**不自动**
-            #     合并附件（需要合并的人会显式 --refs）；71/04 就属于这种：正文同目录本来
-            #     就有 reference.bib，再去并 `预处理/用于上传text2bib.txt` 是纯帮倒忙。
-            #   · 没有真 bib 时才挑文本/BibTeX 附件，且候选要过结构校验；
-            #     每个被跳过的候选都写明原因（日志可解释）。
+            # 第 134 条：附件选择保守化——有真 .bib（--bib/源内 \addbibresource/同目录）时不自动并
+            # （需要合并的人显式 --refs；71/04 正文同目录有 reference.bib，再并 text2bib 中间产物帮倒忙）；
+            # 无真 bib 才挑文本/BibTeX 附件且过结构校验，每个跳过候选都写明原因（日志可解释）。
             _src_is_tex = os.path.splitext(args.source)[1].lower() in TEX_EXT
             _real_bib = real_bib_path(args.source, args.bib)
             if _real_bib:
@@ -418,9 +422,7 @@ def main() -> int:
         print(f"  ⚠ 多音字需确认：{h}  如读音不对，请用 --name 显式指定")
 
     out_root = os.path.abspath(args.out)
-    # 若用户选的目录**本身就叫这个名字**（如 …/Desktop/Lei_Li），就用它，
-    # 不再套一层。否则会生成 …/Desktop/Lei_Li/Lei_Li/，
-    # 且第二次运行时会因为「目标已存在」直接拒绝——实测踩到过。
+    # 同名输出根直接使用，避免套两层。
     if os.path.basename(out_root) == name:
         out_dir = out_root
     else:
@@ -428,10 +430,7 @@ def main() -> int:
     stem = name
     final_dir = out_dir
 
-    # ── 第五十四批：两段式 AI 协同初排的目录分流（默认路径一个字节都不改）──────
-    #   · 第一段（--coop-taskbook-only）：本次转换写**暂存目录**，最终目录不碰；
-    #   · 第二段（--coop-replies）：不在主流程里重新转换，直接走协同收尾
-    #     `run_coop_replies()`（读状态 → 解析回填 → 并入/建议 → 编译 → 原子 promote）。
+    # 协同第一段写暂存；旧第二段直接消费冻结产物。
     coop_stage = ""
     if args.coop_taskbook_only or args.coop_replies:
         coop_stage = (os.path.abspath(args.coop_stage) if args.coop_stage
@@ -443,8 +442,15 @@ def main() -> int:
             lang=lang, sty=sel.sty, skeleton=sel.skeleton,
             structured=structured_meta, structured_origin=_structured_origin,
         )
-    if args.coop_taskbook_only:
+    if _ai_mode.get("ai_mode"):
+        try:
+            out_dir = _awc.conversion_stage(_ai_mode["work_dir"], final_dir, source,
+                                            dry_run=args.dry_run)
+        except (OSError, ValueError) as exc:
+            die(str(exc))
+    elif args.coop_taskbook_only:
         out_dir = coop_stage
+    if args.coop_taskbook_only or _ai_mode.get("ai_mode"):
         print(f"输出到    {out_dir}{os.sep}{stem}.tex")
         print("          （**暂存**：协同初排第一段；最终交付目录本次不写）")
     else:
@@ -479,20 +485,9 @@ def main() -> int:
 
     if os.path.exists(out_dir) and not args.force:
         contents = sorted(os.listdir(out_dir))
-        # 用户**显式选了这个目录**（名字与输出名一致）时，意图明确，不必再拦。
-        # 但仍要保护「里面装着别的文章」的情况——那才是真的可能覆盖到编辑部成果。
-        # 允许的情况：空的、只有系统垃圾文件（.DS_Store）、或只含本工具自己的产物。
-        # 判定规则见文件头的 `is_own_product()`（本工具产物 + 编译中间文件）。
         foreign = [c for c in contents
                    if not is_own_product(c, stem) and not c.startswith(".")
                    and not (args.coop_taskbook_only and _coop_own_artifact(c))]
-        # 判据只有一条：**目录里有没有不属于本工具的东西**。
-        #   · 只有本工具的产物 → 直接覆盖，这就是「重跑一次」的常见情形，不该拦。
-        #   · 混着别人的文件 → 拦住，那才可能是编辑部已有的稿件目录。
-        #
-        # ⚠️ 这里曾经还加过一个「用户选的是不是同名目录」的条件，是错的：
-        #    正常用法是 `--out ~/Desktop` → `~/Desktop/Lei_Li`，两者不同名，
-        #    于是**每次重跑都被拦**，哪怕目录里全是自己的产物。
         if foreign:
             die(
                 f"目标文件夹已存在，且含非本工具的文件，拒绝覆盖：{out_dir}\n"
@@ -506,6 +501,18 @@ def main() -> int:
         print("\n（--dry-run：以上为将要执行的操作，未写入任何文件）")
         return 0
 
+    _bib_path = None
+    if _ai_mode.get("ai_mode"):
+        try:
+            _bib_path = (find_bib(source, args.bib)
+                         if os.path.splitext(source)[1].lower() not in WORD_EXT else None)
+            _ai_inputs = _awc.freeze_conversion_inputs(
+                source, args, template=sel, bib_path=_bib_path,
+                metadata_paths=[*_meta_paths, *_meta_json_paths, en_meta,
+                                metadata if not _meta_word_tmp else None],
+            )
+        except (OSError, ValueError) as exc:
+            die(str(exc))
     _coop.source_fingerprint_guard(out_dir, stem, source, args)  # P02R R03：写盘前拒绝换源覆盖
 
     # ⑤ 生成
@@ -517,7 +524,10 @@ def main() -> int:
     ext = os.path.splitext(source)[1].lower()
     # B-220 N6：短引库解析用的 Store（Word 通道才用；只读；开关同默认回填）。
     # 与 ⑦ 的 bibdb_readonly_scan 共用——扫描端通过 `res._bibdb_store_shared` 复用。
-    _bibdb_store = resolve_bibdb_apply_store(args) if ext in WORD_EXT else None
+    # R3 第一段（--ai-taskbook-version 3 + --ai-execute）：一个字节都不读共享库，
+    # 短引库解析同样关闭（传 None 等价于「本次不查库」）。
+    _bibdb_store = (None if _ai_mode.get("ai_mode")
+                    else (resolve_bibdb_apply_store(args) if ext in WORD_EXT else None))
     try:
         if ext in WORD_EXT:
             res = build_docx(
@@ -544,7 +554,8 @@ def main() -> int:
                 compile_requested=bool(args.compile),  # P02R R02：旧 PDF 未请求 --compile
             )
         else:
-            _bib_path = find_bib(source, args.bib)
+            if not _ai_mode.get("ai_mode"):
+                _bib_path = find_bib(source, args.bib)
             if _bib_path:
                 print(f"  · 参考文献：{os.path.basename(_bib_path)}"
                       f"（{bib_origin(source, _bib_path)}）")
@@ -569,16 +580,9 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             pass
 
-    # ⑦ 合并参考文献附件（全库 28% 的稿件把参考文献放在单独文件里）
-    #
-    # 实测 02 Lili_Zhao：正文 docx 里没有参考文献，全在 `附件一 完整参考文献.docx`。
-    # 不合并的话引用全部无法替换（22 处）。
-    #
-    # 第 134 条（2026-10-18）：附件不能「扫到就并」——
-    #   · 有真 .bib（--bib / 源内 \addbibresource / 同目录 .bib）时，**自动挑的附件跳过**
-    #     （71/04 正文目录本来就有 reference.bib，再并 text2bib 中间产物只会帮倒忙）；
-    #   · 没有真 bib 时才并：BibTeX 附件按原文直入，纯文本清单先过结构校验；
-    #   · 合并结果逐条再做结构校验，坏条目（嵌套花括号等）不写进产物（biber 会整份报废）。
+    # ⑦ 合并参考文献附件（28% 稿件把参考文献放单独文件；不合并引用全替换不了）。
+    # 第 134 条：不能「扫到就并」——有真 .bib（--bib/源内 \addbibresource/同目录）时跳过自动附件；
+    # 没有真 bib 时才并（BibTeX 直入、纯文本先过结构校验），合并结果逐条校验，坏条目不写产物。
     if args.refs and os.path.exists(args.refs):
         res = run_refs_attach(args, res, source=source, out_dir=out_dir,
                               stem=stem, refs_auto=refs_auto)
@@ -611,7 +615,12 @@ def main() -> int:
     #    回填必须同样生效——否则同一源「compile 模式 vs --verify-plan 模式」的
     #    reference.bib 不同（两遍 sha 不一致 → NONDETERMINISTIC）。
     if not args.verify_refs:
-        bibdb_info = bibdb_readonly_scan(args, res)
+        # R3 第一段（--ai-taskbook-version 3 + --ai-execute）：**完全不查库**。
+        # 第一段只按源稿实际引用范围出任务书；查库/回填留到第二段，且共享库路径即使不可用也不得影响出任务书。这里给空结果，形状与扫描返回值兼容。
+        if _ai_mode.get("ai_mode"):
+            bibdb_info = {}
+        else:
+            bibdb_info = bibdb_readonly_scan(args, res)
         # B-221 C1：交接单在「全部产物写完」之后刷新一次——build_docx 生成时看不到 ⑦
         # 引用库回填（它改的是 build 之后才写回的 reference.bib），这里用 ⑦ 的现成返回值
         # 补上「引用库回填命中/应用条数」，并把最终 .tex 作为 ③ 的汇总对象。只重渲染汇总，
@@ -623,28 +632,19 @@ def main() -> int:
                 _handoff.write_from_result(res, bibdb=bibdb_info, log=print)
             except Exception as e:  # noqa: BLE001  附加产物，不许连累出稿
                 print(f"   ⚠ 初排交接单刷新失败（不影响出稿）：{type(e).__name__}: {e}")
+    else:
+        bibdb_info = {}
 
-    # ⚠️ ⑨ 编译 / ⑩ 导出原稿 PDF **挪到了 ⑪ 之后**（2026-10-15，见下面第 ⑪ 节末尾）：
-    #    用户决定「AI 结果要进产物」，而并进去的条目必须体现在 PDF 里——所以顺序必须是
-    #    「写 bib → 并入 AI 结果 → 编译」。非 AI 路径（没配 LLM）产物逐字节不变，
-    #    只是控制台上 ⑪ 的几行现在打在 ⑨ 之前。
+    if _ai_mode.get("ai_mode"):
+        return _awc.dispatch_taskbook(
+            args, res, out_dir=out_dir, final_dir=final_dir, stem=stem, lang=lang,
+            inputs=_ai_inputs, source=source, bib_source=_bib_path,
+            metadata_paths=[p for p in [*_meta_paths, en_meta,
+                                         metadata if not _meta_word_tmp else None] if p],
+            bibdb_info=bibdb_info,
+        )
 
-    # ⑪ 参考文献核实任务书（交给编辑各自的 AI）+ 把 AI 结果**并入 reference.bib**
-    #
-    # ⚠️ 2026-10-14 按编辑部要求**移除了 CrossRef 通道**：中文文献覆盖差，
-    #    而且会给跨类型错配的「建议」（书被判成期刊论文，照着改就是照错改）。
-    #    改为生成一份 markdown：写明编辑部规范、查证来源优先级、每条缺什么、
-    #    以及固定回答格式——编辑把它交给自己的 AI（谁的模型都行）。
-    #    `SLCN_LLM_*` 仍保留：配了就按**同一份规范**自动跑一遍，结果标为「AI 建议，须核实」。
-    # ⚠️ 2026-10-15 用户决定：**AI 结果要进产物**（取代 README 第 41 条的「AI 结果永不进产物」）。
-    #    配了 LLM 时，通过安全校验的条目由 `slcn/aibib.py` 并入 `reference.bib`
-    #    （回滚副本 `reference.bib.ai前` + 离线回读校验报告 + 任务书「六、合并记录」）。
-    #    因此这一节必须在**编译之前**跑，PDF 才会反映并入结果——见上面 ⑨/⑩ 挪走的说明。
-    #    要退回旧行为：`--no-ai-merge`（只出任务书）。没配 LLM 时行为与从前一字不差。
-    # ⚠️ `--verify-plan` 也进这一块：它要算「本次会核实多少条」，而引用键只有在**转换之后**
-    #    （build 已把正文引用替换成 `\parencite`、写进产物 .tex）才拿得准。所以它是
-    #    「照常转换、只算账」而不是 --dry-run：--dry-run 在 ⑤ 之前就退出，那时还没有 bib/tex。
-    # 第五十四批：第一段的任务书路径/文献键/低置信项在这里收集，块外写状态。
+    # 旧文献核实先并入参考文献，后运行编译和原稿 PDF 导出。
     coop_taskbook_path = ""
     coop_bib_keys: list[str] = []
     coop_low_items: list[dict] = []

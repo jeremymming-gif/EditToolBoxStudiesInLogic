@@ -32,7 +32,7 @@ from ui.tokens import DARK, LIGHT, Tokens, palette_remap
 
 BIB_LEAVES = [
     ("overview", "概览"), ("query", "查库"),
-    ("import", "入藏"), ("normalize", "回读校验"),
+    ("import", "入藏"), ("normalize", "AI 处理"),  # 页签用短别名，避开页头全名（用户裁定）
     ("review", "待处理"), ("edit", "编辑"), ("dupes", "查重合并"),
     ("fieldfix", "字段归位"), ("health", "库健康"),
 ]
@@ -354,7 +354,7 @@ def test_narrow_window_wraps_to_two_rows_with_all_nine_chips(monkeypatch) -> Non
     assert not [c for c in _walk(nav)
                 if isinstance(c, ft.Text) and c.value in CAPTIONS]
     assert [chip.content.value for chip in _chips(rows[0])] == [
-        "概览", "查库", "入藏", "回读校验"]
+        "概览", "查库", "入藏", "AI 处理"]
     assert [chip.content.value for chip in _chips(rows[1])] == [
         "待处理", "编辑", "查重合并", "字段归位", "库健康"]
     # 行 1 有 read|intake 一条线；行 2 只有 treat 组，行间不画多余分隔符。
@@ -450,7 +450,8 @@ def test_search_index_still_lists_all_ten_bib_views() -> None:
              if entry.kind == "page" and entry.action.startswith("goto:bib:")]
     assert len(pages) == 10
     labels = {entry.label for entry in pages}
-    for _, label in BIB_LEAVES:
+    # 搜索索引用全名（IA 的 label），不是页签短别名 BIB_LEAVES。
+    for _, label in bib_views:
         assert f"引用库 · {label}" in labels
     assert "引用库 · 设置" in labels
 
@@ -511,3 +512,36 @@ def test_five_write_views_replant_after_root_content_swap() -> None:
 
     host_source = inspect.getsource(BH.BibHost._replant_nav)
     assert "inner.controls.insert(0, nav)" in host_source
+
+
+def test_only_one_page_title_in_mounted_bib_page(monkeypatch) -> None:
+    """全局改名守卫（ANALYSIS-3 §5.5/§5.6，测试映射 #23）。
+
+    真宿主树上「页头大字」（role="page-title" / size=h1）恰好 1 个，值为全名。
+    改名后宿主合法地同时有短页签（"AI 处理"，small 号）与全名页头，二者不是
+    重复大字——所以不把 view.build() 的 texts.count(...)==1 搬到宿主层。
+    C.text 不给 ft.Text 写 role 属性，h1 只能按 size==t.font("h1") 识别。
+    """
+    class _FullTitleView(FakeView):
+        def build(self):
+            return S.page_shell(
+                self.page.t, title=IA.view_label("bib", "normalize"),
+                meta="meta", body=ft.Container(expand=True), gear=True)
+
+    monkeypatch.setattr(BH, "load_view_class", lambda module, cls: _FullTitleView)
+    app = FakeApp(data={"bib_view": "normalize"})
+    host = BH.BibHost(app)
+    host._sync_toolbar_meta = lambda: None
+    root = host.build()
+
+    full = IA.view_label("bib", "normalize")
+    assert full == "AI 辅助处理 Bib"
+    big = [n for n in _walk(root)
+           if isinstance(n, ft.Text) and (n.size or 0) >= host.t.font("h1") - 0.01]
+    assert len(big) == 1, f"页内只许一个页头大字，实际 {[b.value for b in big]}"
+    assert big[0].value == full
+
+    # 页签走短别名，不与页头撞名（且页签是 small 号，不计入 big）。
+    chips = [chip.content.value for chip in _chips(_nav(host))]
+    assert chips[BIB_LEAVES.index(("normalize", "AI 处理"))] == "AI 处理"
+    assert "AI 处理" in chips and full not in chips

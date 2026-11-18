@@ -14,7 +14,6 @@ from . import rules as R
 from . import templates as T
 from . import bibitem_convert
 from .latex import (
-    collect_custom_macros,
     copy_referenced_graphics,
     count_active_inputs,
     editorial_slots,
@@ -834,7 +833,10 @@ def insert_custom_macros(template_text: str, macros: list[tuple[str, str, str]])
     它就是来覆盖的（作者前言覆盖本地旧 sty 的定义，与旧稿编译顺序一致）。本地迁移
     定义插在 hyperref 之前，这里插在它之后 → 后定义生效。
     """
-    existing = set(parse_macros(template_text))
+    # 第 143 条：只按**顶层**定义判重——环境体里的局部 new/renewcommand 不算"已有"。
+    # 否则同名顶层定义会被判重复而丢弃，正文里的使用就变成 undefined（历史 qedsymbol
+    # 缺陷的第二步签名）；`mask_definition_containers` 把容器原文挖空、保留行号。
+    existing = set(parse_macros(PRE.mask_definition_containers(template_text)))
     add = [
         (k, n, src) for k, n, src in macros
         if n not in existing or k == "renewcommand"
@@ -1301,6 +1303,37 @@ def build_latex(
                 tpl = set_field(tpl, _name, escape_metadata_value(_val))
                 moved_vals[_name] = _val
                 _tex_fields.append(_name)
+            # ── F6：多作者 / 多单位（SN、authblk 等别家文档类的 \author[2]/\affil[2]）──
+            # 槽位名只在这里拼：`_ORDINALS`/`_AUTHOR_MACRO` 是本模块唯一的序数词来源，
+            # texfront 只交列表（authors/author_affiliations），不碰槽位命名。
+            # 只填「模板真有的槽」且「还没被写过」的位置，第 1 位作者仍由上面的
+            # TEMPLATE_FIELDS 落 myfirstauthor（单作者稿这里一条都不写）。
+            _multi_authors = getattr(_front, "authors", ())
+            _multi_affils = getattr(_front, "author_affiliations", ())
+            for _idx, _word in enumerate(_ORDINALS):
+                if _idx == 0 or _idx >= len(_multi_authors):
+                    continue
+                _name = _AUTHOR_MACRO(_word)
+                if _name in tpl_fields and not is_parsed(moved_vals.get(_name), _name, tpl_defaults):
+                    _val = _multi_authors[_idx]
+                    tpl = set_field(tpl, _name, escape_metadata_value(_val))
+                    moved_vals[_name] = _val
+                    _tex_fields.append(_name)
+                _aname = f"my{_word}affiliation"
+                _aval = _multi_affils[_idx] if _idx < len(_multi_affils) else ""
+                if (_aval and _aname in tpl_fields
+                        and not is_parsed(moved_vals.get(_aname), _aname, tpl_defaults)):
+                    tpl = set_field(tpl, _aname, escape_metadata_value(_aval))
+                    moved_vals[_aname] = _aval
+                    _tex_fields.append(_aname)
+            # 认出来了却对不上任何作者槽位的单位：如实告警，不猜它属于谁（F6 要求）。
+            _unmapped = getattr(_front, "unmapped_affiliations", None)
+            _unmapped = _unmapped() if callable(_unmapped) else ()
+            if _unmapped:
+                warnings.append(
+                    "源稿里还有未能对应到作者的作者单位（模板无对应槽位，未写入）："
+                    + "；".join(_unmapped) + "。请在模板里手工补到对应作者的"
+                    " affiliation 字段")
             if _tex_fields:
                 say(f"   标准 LaTeX 前言识别 {len(_tex_fields)} 个字段："
                     f"{'、'.join(_tex_fields)}")
@@ -1384,8 +1417,18 @@ def build_latex(
         if "\\begin{document}" in meta_text
         else meta_text
     )
-    custom = collect_custom_macros(macro_scope)
-    existing_names = PRE.defined_names(tpl) | PRE.defined_names(sty_text)
+    # 第 143 条：只收**顶层** new/renewcommand（环境体里的定义属于该环境，抽到全局会
+    # 变成悬空名——`\newenvironment{claimproof}{…\renewcommand{\qedsymbol}…}{}` 被
+    # 改名成 \slcnqedsymbol 就是历史缺陷）；收集器据此把环境体定义排除在外。
+    custom = PRE.collect_top_level_custom_macros(macro_scope)
+    # 第 143 条：判「模板已有」只看**顶层**定义。`tpl` 里已经插入了迁入的
+    # `\newenvironment{claimproof}{…\renewcommand{\qedsymbol}…}`——环境体里的局部
+    # 名字若被算成"模板已有"，作者同名顶层定义会被改名，改名后环境体又含新名，
+    # `insert_custom_macros` 再把顶层定义判重丢弃 → 产物只剩悬空名。
+    existing_names = (
+        PRE.defined_names_outside_containers(tpl)
+        | PRE.defined_names_outside_containers(sty_text)
+    )
     # 第 130 条：本地支撑文件搬进来的同名宏**不算冲突**——作者前言里的 `\renewcommand`
     # 本来就是覆盖旧 sty 的那个定义（旧稿编译时也是这个先后顺序）。把它排除在改名判据外，
     # 前言里的重定义按 TeX 顺序自然覆盖；否则会被改名成一个没人用的新名字（语义丢失）。

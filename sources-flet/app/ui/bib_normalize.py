@@ -1,4 +1,4 @@
-"""引用库 · 回读校验（批 115 夜间重设计 BPAGES-A，VIEW_KEY="normalize"）。
+"""引用库 · AI 辅助处理 Bib（批 115 夜间重设计 BPAGES-A，VIEW_KEY="normalize"）。
 
 只读：跑 ``Engine/checkbib.py`` 体检并读取它写出的 Markdown 报告；不写库、
 不 git、不做 ``--merge-into``。引擎没有 ``--json``，所以这里解析报告里的
@@ -20,10 +20,11 @@ import flet as ft
 from services import engine_bridge as EB
 from ui import bib_shell as S
 from ui import components as C
+from ui import ia_map as IA
 from ui.tokens import Tokens
 
 VIEW_KEY = "normalize"
-TITLE = "回读校验"
+TITLE = "AI 辅助处理 Bib"
 ROLE = "readonly"
 
 REPORT_SUFFIX = "_回读校验报告.md"
@@ -31,6 +32,17 @@ CONCLUDE = re.compile(r"结论：\s*(\d+)\s*处问题\s*/\s*(\d+)\s*处提示")
 ENTRIES = re.compile(r"解析出\s*(\d+)\s*条条目")
 APPENDIX_ROW = re.compile(r"^\|\s*`[^`]+`\s*\|\s*@")
 BULLET = re.compile(r"^-\s+(.+)$")
+
+#: 引擎报告的**抬头三行**（`bibreport.render()` 原文）。用真实前缀匹配，
+#: 不要只写半截 `原件：`——引擎写的是 `原件（--original）：`，半截前缀匹配不上，
+#: 抬头就被当成「提示」塞进表里（DESIGN §11.2 A 的「路径噪声」）。
+#: 旧写法（`原件：` / `正文：`）一并保留：手工改过的报告与旧测试夹具里还有它。
+HEADER_PREFIXES = (
+    "退回文件：",
+    "原件（--original）：", "原件：",
+    "正文（--tex）：", "正文：",
+    "说明：", "diff 静音：", "diff 匹配：",
+)
 
 
 def default_report_path(returned: str) -> str:
@@ -48,7 +60,18 @@ def parse_report(text: str) -> dict:
             "rows": [], "ok": None, "conclusion": "", "has_table": False}
     lines = str(text or "").splitlines()
     in_appendix = False
+    # 引擎报告 = `report_header` 的「摘要 / 最需处理 / 全部明细」+ 正文。
+    # 抬头那一段**把同样的发现又列了一遍**（还夹着三条路径），若照单全收，
+    # 界面上每条问题都会出现两次、路径还会冒充「提示」。所以只从正文标题
+    # （第一个 `# ` 行）开始收行——夹具与手写报告都以标题开头，行为不变。
+    started = False
+    in_problem = False
     for line in lines:
+        if not started:
+            if line.startswith("# "):
+                started = True
+            else:
+                continue
         match = CONCLUDE.search(line)
         if match:
             data["errors"] = int(match.group(1))
@@ -62,17 +85,25 @@ def parse_report(text: str) -> dict:
             in_appendix = True
         if in_appendix and APPENDIX_ROW.match(line):
             data["keys"] = (data["keys"] or 0) + 1
-        if line.startswith("**问题（") or line.startswith("**提示（"):
+        # 真实报告的分节里，`## 二、编辑部规范` 之后才是 `**问题（N）**` / `**提示（N）**`；
+        # 分节标题本身不含「问题」二字，只看标题会把**问题**全判成「提示」（计数对、标色错）。
+        if line.startswith("**问题（"):
+            in_problem = True
+            continue
+        if line.startswith("**提示（"):
+            in_problem = False
             continue
         bullet = BULLET.match(line)
         if bullet and "`" in bullet.group(1):
             text = bullet.group(1)
-            if "解析出" in text or text.startswith(("退回文件：", "原件：", "正文：")):
-                continue  # 这三条是报告抬头，不是问题行
-            kind = "error" if "问题" in data.get("_section", "") else "warn"
+            if "解析出" in text or text.startswith(HEADER_PREFIXES):
+                continue  # 抬头行不是问题行
+            kind = ("error" if (in_problem or "问题" in data.get("_section", ""))
+                    else "warn")
             data["rows"].append({"kind": kind, "text": text})
         if line.startswith("## "):
             data["_section"] = line[3:].strip()
+            in_problem = False  # 新分节：`**问题（` / `**提示（` 会重新标记
     rows = data.pop("_section", None)
     if data["keys"] is None and data["records"] is not None:
         data["keys"] = data["records"]
@@ -121,6 +152,17 @@ class NormalizeView:
         self._proc = None
         self._task_running = False
         self._build_width = 0.0
+        # N02/N04：路径输入框引用（真实选择器回填用）与「正文粘贴」的独立控件。
+        self._refs: dict[str, list] = {"returned": [], "original": [], "tex": []}
+        self._picking = False
+        # DESIGN §4（权威裁定）：本页**就是**「AI 辅助处理 Bib」，BibAiAssistView
+        # 直接成为页面内容，不再是旧报告下面默认收起的附属区。下面的 _ai_* 字段
+        # 只保留为兼容（旧调用/状态读取），不再驱动任何折叠 UI；视图本体由
+        # _ensure_ai_view() 一次性构造，构造失败如实报错，绝不吞异常假装成功。
+        self._ai_open = False
+        self._ai_view = None
+        self._ai_box: ft.Container | None = None
+        self._ai_role_chip = "write"  # 写语义；构造视图后与 BAA.ROLE_CHIP 对齐
 
     # ── 基础 ────────────────────────────────────────────────────────────
     @property
@@ -143,6 +185,10 @@ class NormalizeView:
             except Exception:  # noqa: BLE001
                 pass
 
+    def mark(self, event: str, **kwargs) -> None:
+        """兼容面：对外可调用的埋点入口（委托 ``_mark``，宿主可缺省）。"""
+        self._mark(event, **kwargs)
+
     def _schedule(self, runner) -> None:
         if self._task_running:
             return
@@ -155,17 +201,69 @@ class NormalizeView:
 
     # ── 生命周期 ────────────────────────────────────────────────────────
     def activate(self) -> None:
+        activate_ai = getattr(self._ai_view, "activate", None)
+        if callable(activate_ai):
+            activate_ai()
         if not self.loaded and not self.loading:
             self._schedule(self._load_last)
 
     def refresh_running(self) -> None:
         return None
 
+    def _ensure_ai_view(self):
+        """设计 §4：一次性构造「AI 辅助处理 Bib」视图，构造失败如实报错。
+
+        宿主 ``self.page`` 是工具箱宿主 BibHost（t/app/page/mark/_render/
+        set_view/notify/run_task_ui），是 BibAiAssistView 期望的宿主，**不是**
+        裸 Flet Page，不要改成 self.page.page。字段 ``purpose="library"`` 表示
+        这是引用库 Bib 入口，不是初排稿。
+        """
+        if self._ai_view is None:
+            # 局部导入：与下方旧兼容方法里的 import 同名别名，保持单一入口。
+            from ui import bib_ai_assist as BAA  # noqa: PLC0415
+            self._ai_view = BAA.BibAiAssistView(self.page, purpose="library")
+            # 写语义页头 chip：与 BAA 的 ROLE_CHIP 对齐，不依赖别人的字面量。
+            self._ai_role_chip = BAA.ROLE_CHIP
+        return self._ai_view
+
+    def _render(self) -> None:
+        """BibHost / 本页状态变化后的幂等重绘入口。
+
+        真实宿主 BibHost._render() 调的是本类 build()，不会调这个名字；但
+        ``bib_host._NormalizeCompat`` 等兼容面仍会按需调用它。这里做到：
+        已构造过页面壳就只换 body（不重建整壳、不重复造滚动），没构造过就
+        通过宿主 _refresh() 让 BibHost 走标准 build() 路径。
+        """
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            try:
+                body_box = getattr(shell, "_bib_body", None)
+                if body_box is not None:
+                    body_box.content = self._body()
+                dock_box = getattr(shell, "_bib_dock", None)
+                if dock_box is not None:
+                    dock_box.content = self._dock()
+            finally:
+                self._flet_update()
+            return
+        self._refresh()
+
+    def _flet_update(self) -> None:
+        updater = getattr(getattr(self.page, "page", None), "update", None)
+        if callable(updater):
+            try:
+                updater()
+            except Exception:  # noqa: BLE001 - 构建期尚未挂载
+                pass
+
     def header_actions(self) -> list:
-        return [self._open_report_button()]
+        # 设计 §4：报告工具条整个移除，页头不再挂「打开报告」。
+        return []
 
     def primary_action(self):
-        return self._generate_button()
+        # 设计 §4/§6：唯一主按钮跟随当前阶段，由内嵌 BibAiAssistView 提供，
+        # 本兼容外壳不再返回「生成报告」。
+        return None
 
     # ── 表单 ────────────────────────────────────────────────────────────
     def _on_path(self, field: str):
@@ -183,22 +281,61 @@ class NormalizeView:
         return _handler
 
     def _browse(self, field: str):
+        """N02：走真实的文件选择服务；选完回读并触发与手工输入相同的处理。
+
+        旧实现取 `app.pick_file`——App 上根本没有这个方法，于是永远落到
+        「文件选择器不可用」；文案还只在宿主恰好有 `show_dialog` 时才出现，
+        等于两个分支都是死的。`browse_field` 只写 `ref[0].value`、不触发
+        `on_change`，所以这里自己轮询回读。
+        """
         def _handler(e=None) -> None:
-            dialog = getattr(self.page.page, "show_dialog", None)
-            picker = getattr(getattr(self.page, "app", None), "pick_file", None)
-            if callable(picker):
-                try:
-                    picked = picker()
-                    if picked:
-                        setattr(self, field, str(picked))
-                        self._refresh()
-                    return
-                except Exception:  # noqa: BLE001
-                    pass
-            if callable(dialog):
+            if self._picking:
+                return
+            app = getattr(self.page, "app", None)
+            browse = getattr(app, "browse_field", None)
+            ref = self._refs.get(field)
+            if not callable(browse) or not ref:
                 self.input_error = "文件选择器不可用；请粘贴路径。"
                 self._refresh()
+                return
+            before = (ref[0].value or "").strip() if ref else ""
+            titles = {"returned": "选择交回的 .bib", "original": "选择原件 .bib",
+                      "tex": "选择正文 .tex"}
+            try:
+                browse(ref, titles.get(field, "选择文件"), "file",
+                       f"bib_normalize_{field}")
+            except Exception as exc:  # noqa: BLE001 - 选择器实现因平台而异
+                self.input_error = f"文件选择器不可用（{type(exc).__name__}）；请粘贴路径。"
+                self._refresh()
+                return
+            self._picking = True
+            self._schedule(lambda: self._watch_pick(field, ref, before))
         return _handler
+
+    async def _watch_pick(self, field: str, ref: list, before: str) -> None:
+        """等真实选择结果写回输入框；取消时保持原值、不报错。"""
+        try:
+            for _ in range(240):
+                await asyncio.sleep(0.25)
+                after = (ref[0].value or "").strip() if ref else ""
+                if after == before:
+                    continue
+                if after:
+                    setattr(self, field, after)
+                    if field == "returned":
+                        self.report_path = default_report_path(after)
+                    if field == "original" and not self.compare_touched:
+                        self.compare = True
+                    if field == "tex" and not self.keys_touched:
+                        self.close_keys = True
+                    self.input_error = ""
+                    self._mark("bib_normalize_browse", field=field, picked=True)
+                    self._refresh()
+                else:
+                    self._mark("bib_normalize_browse", field=field, picked=False)
+                return
+        finally:
+            self._picking = False
 
     def _on_compare(self, e) -> None:
         self.compare = bool(getattr(e.control, "value", False))
@@ -437,14 +574,78 @@ class NormalizeView:
         return ft.Column(spacing=t.sp("1"), controls=[
             C.path_picker("交回稿（.bib）", self.returned, "作者交回的参考文献文件",
                           t, on_change=self._on_path("returned"),
-                          on_browse=self._browse("returned"), required=True, show_note=False),
+                          on_browse=self._browse("returned"), required=True, show_note=False,
+                          field_ref=self._refs["returned"]),
             C.path_picker("原件（.bib）", self.original, "编辑部手上的原 .bib",
                           t, on_change=self._on_path("original"),
-                          on_browse=self._browse("original"), required=False, show_note=False),
+                          on_browse=self._browse("original"), required=False, show_note=False,
+                          field_ref=self._refs["original"]),
             C.path_picker("正文（.tex）", self.tex, "用于键闭合核对",
                           t, on_change=self._on_path("tex"),
-                          on_browse=self._browse("tex"), required=False, show_note=False),
+                          on_browse=self._browse("tex"), required=False, show_note=False,
+                          field_ref=self._refs["tex"]),
         ])
+
+    def _ai_section(self) -> ft.Control:
+        """AI 处理 Bib 的折叠入口（C，DESIGN §3.2 / §4）。
+
+        为什么放在这里而不是新增一个引用库视图：`BibPage.VIEWS` / 导航 chip 数 /
+        命令数被 `test_b116_bib_host`、`test_b116_bib_inpage_nav`、`test_b114_polish`
+        多处钉死；把它做成「AI 辅助处理 Bib」页里的折叠区，既不新增路由，也不改这些计数。
+        控件约束（同页测试）：本区不得新增 `ft.FilledButton`、不得引入 `ft.Card`、
+        不得再出现一次页头大字标题——所以入口是扁平的 `TextButton`，
+        且内部视图**首次展开才创建**（`body_only()` 不带页头）。
+        """
+        t = self.t
+        label = "收起 AI 处理 Bib" if self._ai_open else "AI 处理 Bib（可选）"
+        toggle = C.text_button(label, self._toggle_ai, t, height=28)
+        toggle.tooltip = ("按类别执行 AI、按类别采纳；写目标 Bib 由引擎完成，"
+                          "先备份可撤销，不改中央库")
+        toggle._bib_ai_toggle = True
+        head = ft.Row(
+            spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                toggle,
+                # 文案里**不出现页面标题**：本页测试钉死 `texts.count("AI 辅助处理 Bib") == 1`。
+                C.text("与上面的体检互不影响：这里只调引擎、只写你选定的目标 Bib。",
+                       t, "caption", t.palette.text_faint, expand=True,
+                       max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+            ])
+        content = None
+        if self._ai_open and self._ai_view is not None:
+            try:
+                content = self._ai_view.body_only()
+            except Exception as exc:  # noqa: BLE001 - 内嵌区坏了不能连带坏本页
+                # 视图构造成功、渲染失败也要如实说：否则页面会静默少一整块。
+                self.input_error = (f"AI 处理 Bib 绘制失败（{type(exc).__name__}: {exc}）"
+                                    "；上面的 AI 辅助处理 Bib 仍可用。")
+                content = C.inline_note(self.input_error, t, "error")
+        self._ai_box = ft.Container(content=content, visible=self._ai_open,
+                                    padding=ft.Padding(left=0, top=0, right=0, bottom=0))
+        return ft.Column(spacing=t.sp("1"), controls=[head, self._ai_box])
+
+    def _toggle_ai(self, e=None) -> None:
+        """展开/收起 AI 区；首次展开才导入并实例化视图（失败如实报错）。"""
+        if self._ai_open:
+            self._ai_open = False
+            self._mark("bib_ai_toggle", open=False)
+            self._refresh()
+            return
+        if self._ai_view is None:
+            try:
+                from ui import bib_ai_assist as BAA  # 局部导入：收起时不拉进来
+                # 本页是「引用库 Bib」入口（库内条目核实/规范化），不是初排稿：
+                # 必须显式传 purpose，否则视图默认按 initial 显示「初排稿 .tex」，
+                # 会让人以为这条链路在改初排源稿（验收 §3.1-11③）。
+                self._ai_view = BAA.BibAiAssistView(self.page, purpose="library")
+            except Exception as exc:  # noqa: BLE001 - 视图坏了不能连带坏本页
+                self.input_error = (f"AI 处理 Bib 打不开（{type(exc).__name__}: {exc}）"
+                                    "；上面的 AI 辅助处理 Bib 仍可用。")
+                self._refresh()
+                return
+        self._ai_open = True
+        self._mark("bib_ai_toggle", open=True)
+        self._refresh()
 
     def _range_row(self) -> ft.Control:
         t = self.t
@@ -608,23 +809,22 @@ class NormalizeView:
         return parts
 
     def _body(self) -> ft.Control:
+        """设计 §4/§6：页面内容**只有** AI 辅助处理 Bib 一个视图，扁平、单滚动。
+
+        - 不再渲染旧三字段（交回稿/原件/正文）、字段对比/键闭合开关、生成报告、
+          旧问题表、报告路径工具条；旧报告的底层解析/校验逻辑保留给兼容调用。
+        - ``body_only()`` 自带无壳、无滚动；唯一滚动由本层的
+          ``ft.Column(scroll=C.scrollbar(t), expand=True)`` 提供。
+        - 关联 TeX 的可选展开、当前阶段/动作按钮等由 BAA 内部处理，不在此重复造。
+        """
         t = self.t
         self._build_width = self._design_width()
-        parts = [self._paths(), self._range_row(), *self._banners()]
-        if self.loading:
-            parts.append(S.state_banner(t, "loading", message="运行中"))
-        if self.running:
-            parts.append(S.state_banner(
-                t, "running", message="运行中：解析 → 对比 → 写报告",
-                stage=self.elapsed_text(), on_cancel=lambda e: self.cancel(),
-                page=self.page.page))
-        if self.identified:
-            parts.append(C.inline_note(self.identified, t) if hasattr(C, "inline_note")
-                         else C.text(self.identified, t, "caption", t.palette.text_muted))
-        parts.append(self._conclusion())
-        parts.append(self._rows())
+        view = self._ensure_ai_view()  # 构造失败在此如实抛出，不吞异常
+        # compact=True（DESIGN §4）：库页默认只显示目标 Bib（必填，也是输入）、
+        # 处理方式、当前阶段；关联 TeX 可选展开。不显示用途单选/正文交付件/
+        # 工作目录/重复源 Bib，也不显示旧的回读表单。
         return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
-                         controls=parts)
+                         controls=[view.body_only(compact=True)])
 
     def _dock(self) -> ft.Control:
         t = self.t
@@ -634,16 +834,19 @@ class NormalizeView:
                 ft.Container(expand=True),
                 C.text_button("取消", lambda e: self.cancel(), t, height=28),
             ])
-        return C.text("只读 · 只写报告文件，不改库", t, "caption", t.palette.text_faint)
+        return C.text("仅更新选定 Bib，不改中央库", t, "caption", t.palette.text_faint)
 
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
-        return S.page_shell(
-            self.t, title=TITLE,
-            meta="只读 · 只写报告",
-            role_chip="readonly", action=self._open_report_button(),
+        # 构造视图（purpose=library 的引用库入口）；关掉异常会静默少一整页，禁止。
+        self._ensure_ai_view()
+        self._shell = S.page_shell(
+            self.t, title=IA.view_label("bib", "normalize") or "AI 辅助处理 Bib",
+            meta="仅更新选定 Bib，不改中央库",
+            role_chip=self._ai_role_chip, action=None,
             on_gear=lambda e: self._goto("settings"),
             body=self._body(), dock=self._dock(), dock_height=S.DOCK_H)
+        return self._shell
 
     def _goto(self, view: str) -> None:
         setter = getattr(self.page, "set_view", None)

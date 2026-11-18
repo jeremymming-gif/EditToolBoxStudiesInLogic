@@ -98,6 +98,7 @@ from .bibparse import (
     _FULL_COMMENT,
     _clip,
     Entry,
+    pair_summary,
     parse_entries,
     parse_one,
     top_field_extents,
@@ -473,8 +474,9 @@ def normalize_role_fields(entry_text: str, e: Entry, body_off: int) -> tuple[str
         new = bibnorm.normalize_author_field(old)
         if new != old:
             edits.append((vs, ve, new))
+            was, should = pair_summary(old, new, 40)
             notes.append(
-                f"`{name}` 已按编辑部硬规则倒装：`{_clip(old, 40)}` → `{_clip(new, 40)}`"
+                f"`{name}` 已按编辑部硬规则倒装：`{was}` → `{should}`"
                 "（`bibnorm.normalize_author_field`，幂等）"
             )
     if not edits:
@@ -547,7 +549,8 @@ def diff_fields(old: Entry, new: Entry) -> FieldDiff:
     for name in old.fields:
         if name in new.fields and old.fields[name].strip() and new.fields[name].strip():
             if _norm_ws(old.fields[name]) != _norm_ws(new.fields[name]):
-                d.changed.append(f"{name}: {_clip(old.fields[name], 50)} → {_clip(new.fields[name], 50)}")
+                was, should = pair_summary(old.fields[name], new.fields[name], 50)
+                d.changed.append(f"{name}: {was} → {should}")
                 d.touched.append(name)
     return d
 

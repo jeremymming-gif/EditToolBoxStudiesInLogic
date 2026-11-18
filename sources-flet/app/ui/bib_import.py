@@ -94,6 +94,11 @@ class BibImportView:
         self.dirty_reason = ""
         self.shown = 100
         self._root: ft.Container | None = None
+        # N01（DESIGN §11）：浏览入口必须接回真实文件选择服务。这里保留本次渲染
+        # 创建的来源输入框引用，`app.browse_field` 直接往里写值（旧 `page.file_picker`
+        # 在 Flet 1.0.5 上根本不存在，是永久失效的分支）。
+        self._source_ref: list = []
+        self._picking = False
 
     # ── 宿主 / 状态小工具 ──────────────────────────────────────────────
     def _flet(self):
@@ -591,22 +596,31 @@ class BibImportView:
                 ]))
         controls: list[ft.Control] = [self._segment()]
         if self.mode == "paste":
-            paste_field = C.floating_field(
-                t, "粘贴 .bib 文本 *", value=self.paste_text, hint="整段 BibTeX 条目",
-                multiline=True, min_lines=6, max_lines=10, on_change=self._on_paste,
-                expand=True)
-            # Q11：按钮固定在多行框右侧（顶部对齐），不嵌 suffix、不改多行框几何。
-            controls.append(ft.Row(
+            # N03（DESIGN §11）：多行框不能用 `floating_field`——它把 height 钉成 48，
+            # 6～10 行的框被压扁，右侧 28 高「粘贴」按钮看着像错位。改成
+            # `text_field`（多行 height=None）+ `form_field`（标签上置），与
+            # bib_write/normalize 的多行粘贴区同一套布局。
+            paste_field = C.text_field(
+                t, value=self.paste_text,
+                hint_text="整段 BibTeX 条目",
+                multiline=True, min_lines=6, max_lines=10,
+                on_change=self._on_paste, expand=True)
+            # 按钮固定在多行框右侧（顶部对齐），不嵌 suffix、不改多行框几何。
+            body = ft.Row(
                 spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.START,
                 controls=[paste_field,
                           C.paste_button(t, self.page, paste_field,
-                                         height=t.control_h())]))
+                                         height=t.control_h())])
+            controls.append(C.form_field(t, "粘贴 .bib 文本", body,
+                                         expand=True, clearable=False))
         else:
             field = C.floating_field(
                 t, "来源 *" if self.mode == "bib" else "整期目录 *",
                 value=self.path,
                 hint=".bib 文件路径" if self.mode == "bib" else "期目录路径",
                 on_change=self._on_path, expand=True)
+            # N01：登记本次渲染的来源框，供真实文件选择器回填。
+            self._source_ref = [field]
             controls.append(ft.Container(
                 height=t.px(48),
                 content=ft.Row(spacing=t.sp("1"), controls=[
@@ -670,16 +684,82 @@ class BibImportView:
         self._render()
 
     def _browse(self) -> None:
-        """用 Flet 文件选择器挑一个来源；宿主没挂 picker 时只提示。"""
-        page = self._flet()
-        picker = getattr(page, "file_picker", None) if page is not None else None
-        if picker is None:
+        """N01：调真实的文件选择服务（`app.browse_field`），选完回填并失效旧预览。
+
+        旧实现取 `page.file_picker`——Flet 1.0.5 的 Page 上没有这个属性，
+        于是永远落到「可直接粘贴路径」的提示分支，按钮等于死的。
+        `browse_field` 只写 `ref[0].value`、**不触发 on_change**，所以这里
+        自己轮询回读，再走与手工输入同一条 `_on_path` 失效逻辑。
+        """
+        if self._picking:
+            return
+        app = getattr(self.page, "app", None)
+        browse = getattr(app, "browse_field", None)
+        if not callable(browse):
             self._notify("可直接粘贴路径，或点「浏览…」")
             return
+        if not self._source_ref:
+            self._notify("来源输入框尚未就绪；请重新展开参数区再选。")
+            return
+        kind = "dir" if self.mode == "dir" else "file"
+        title = "选择整期目录" if kind == "dir" else "选择来源 .bib"
+        before = (self._source_ref[0].value or "").strip()
         try:
-            picker.pick_files(allow_multiple=False)
-        except Exception:  # noqa: BLE001 - 选择器实现因平台而异
-            self._notify("文件选择器不可用；请直接粘贴路径")
+            browse(self._source_ref, title, kind, "bib_import_src")
+        except Exception as exc:  # noqa: BLE001 - 选择器实现因平台而异
+            self._notify(f"文件选择器不可用：{type(exc).__name__}。可直接粘贴路径。")
+            return
+        self._picking = True
+        self._task(lambda: self._watch_pick(before))
+
+    async def _watch_pick(self, before: str) -> None:
+        """等真实选择结果写回输入框；取消时保持原值、不报错。
+
+        验收 §3.2-12 的两个坑：①重画会换一个新的 `self._source_ref` 列表，必须
+        每轮重新取（不能先取 `[0]` 再循环）；②取消时选择器**不一定**写回任何
+        值，`_picking` 不能一直卡到 60s 才解开——轮询期间同时看宿主的
+        `picker_cancel`/`picker_error` 标记，看到就立刻收工。
+        """
+        try:
+            for _ in range(240):
+                await asyncio.sleep(0.25)
+                host = self._host()                      # 每轮重取：列表会被重画换掉
+                if host is not None and not self._picker_idle(host):
+                    self._mark("bib_import_browse", mode=self.mode, picked=False)
+                    return
+                field = self._source_ref[0] if self._source_ref else None
+                if field is None:
+                    return
+                after = (field.value or "").strip()
+                if after == before:
+                    continue
+                if after:
+                    self.path = after
+                    self._store_set("recent.bib_import", after)
+                    self._invalidate("来源已修改，请重新预览")
+                    self._mark("bib_import_browse", mode=self.mode,
+                               picked=True)
+                    self._render()
+                else:
+                    self._mark("bib_import_browse", mode=self.mode,
+                               picked=False)
+                return
+        finally:
+            self._picking = False
+
+    def _host(self):
+        """取当前渲染用的宿主控件（重画后可能已经换了一个）。"""
+        return self._source_ref[0] if self._source_ref else None
+
+    def _picker_idle(self, host) -> bool:
+        """宿主是否已经离开「选择中」状态。
+
+        `App.browse_field` 会维护 `_picker_state`（opening → idle）：取消、失败、
+        选中都会把它放回 idle。假宿主没有这个字段时按「已空闲」处理，保持旧行为。
+        """
+        app = getattr(self.page, "app", None)
+        state = getattr(app, "_picker_state", None)
+        return state != "opening"
 
     def _segment(self) -> ft.Control:
         t = self.t

@@ -130,7 +130,7 @@ def test_single_options_two_columns_at_1000():
 # ── 5. 文案 / 页头 / 只读步 / 空态 CTA / 运行整期 ─────────────────────
 def test_single_proofcheck_cta_says_readback_check():
     page, _root = _build_single()
-    assert _text(page._norm_jump_btn) == "去引用库 → 回读校验"
+    assert _text(page._norm_jump_btn) == "去引用库 → AI 辅助处理 Bib"
 
 
 def test_issue_header_keeps_fixed_product_line():

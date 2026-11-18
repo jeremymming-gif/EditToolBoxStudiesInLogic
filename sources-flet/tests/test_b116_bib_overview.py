@@ -191,7 +191,7 @@ def test_overview_queue_fixed_order_and_next_steps(monkeypatch):
     _load(host)
     _tree, texts = _labels(host)
     order = [texts.index(name) for name in ("去待处理 →", "去字段归位 →", "去库健康 →",
-                                            "去查重合并 →", "去回读校验 →")]
+                                            "去查重合并 →", "去 AI 辅助处理 Bib →")]
     assert order == sorted(order)
 
 

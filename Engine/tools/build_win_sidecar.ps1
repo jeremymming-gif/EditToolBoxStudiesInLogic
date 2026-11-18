@@ -181,6 +181,8 @@ try {
         $PyArgs += @("--hidden-import", [IO.Path]::GetFileNameWithoutExtension($e))
     }
     $PyArgs += @("--add-data", "$TplSrc;编辑笔记\模板文件", "engine_main.py")
+    # 2026-11-17 P1：pushcopy 渲染资产（master.docx / prototypes.json）随包，否则 dirpush 运行期 FileNotFoundError
+    $PyArgs += @("--add-data", "$EngineDir\slcn\pushcopy\assets;slcn\pushcopy\assets")
     $PyArgs += @("--version-file", $VersionFileEngine)
     & $VenvPy @PyArgs
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 冻结引擎失败（rc=$LASTEXITCODE）" }

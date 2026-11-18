@@ -130,53 +130,58 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 > 新鲜度看块内各数据源的 sha256。
 
 <!-- AUTO:STATE:BEGIN -->
-**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**177 套件 / 8812 项断言 / FAIL 0 行** ✅（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
+**测试**（`python3` + `PYTHONPATH=Engine/vendor`）：**194 套件 / 9298 项断言 / FAIL 2 行** ❌ test_bib_url_render(rc=1 FAIL 2)（异常套件 1/194，明细见下）（不含 `test_docs_consistency.py` 自身：它调用本脚本，属自指）
 
-套件明细：`test_abstract_label` 61 ｜ `test_affil_from_bio` 57 ｜ `test_aibib` 90 ｜ `test_author_plausible` 60
-`test_authornorm` 76 ｜ `test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7
-`test_b121_toc_workdir` 49 ｜ `test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48
-`test_b204_health_ignore` 40 ｜ `test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 90 ｜ `test_b268_conflict` 15
-`test_b268_frontmatter` 17 ｜ `test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b270_url_note` 27
-`test_b285_contract` 48 ｜ `test_b285_diagnose` 179 ｜ `test_b285_report_header` 64 ｜ `test_b287_coop_metadata` 43
-`test_b288_taskcard` 52 ｜ `test_b290_bib_parse_fixes` 43 ｜ `test_b291_bibdb_institution_guard` 64 ｜ `test_b301_placeholder_author` 41
-`test_b303_coop_bak_recycle` 30 ｜ `test_b307_abs_label` 27 ｜ `test_b307_bib_syntax` 21 ｜ `test_b307_heading_no_sep` 36
-`test_b309_gate_speedup` 31 ｜ `test_b311_slices` 53 ｜ `test_b312_footnote_container` 13 ｜ `test_b312_post_en_rules` 0
-`test_b355_toc_layout` 62 ｜ `test_b375_toc_column` 68 ｜ `test_b375_toc_fit` 55 ｜ `test_b375_toc_host` 33
-`test_b375_toc_preview_source` 16 ｜ `test_b375_toc_rollback` 25 ｜ `test_b71_word_author_meta` 81 ｜ `test_b73_bibdb_adjudication` 84
-`test_b73_footnote_bare_cite` 45 ｜ `test_b74_fulltext_analysis` 99 ｜ `test_b74_gen_docs_write_once` 14 ｜ `test_b75_b137_cite_residual` 39
-`test_b75_coop_report_only` 63 ｜ `test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22 ｜ `test_b79_b131_delivery_record` 27
-`test_bare_email` 32 ｜ `test_batch45_bib` 10 ｜ `test_batch46_bib` 10 ｜ `test_batch47b` 4
-`test_batch48` 5 ｜ `test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8 ｜ `test_batch49_no_cites` 10
-`test_batch52_default_on` 16 ｜ `test_batch52_u1` 11 ｜ `test_batch54_coop` 101 ｜ `test_batch56_coop` 54
-`test_batch57_coop_apply` 71 ｜ `test_batch58_bibdb_auto` 79 ｜ `test_batch58_bibdb_hits` 54 ｜ `test_batch59_coop_fulltext` 59
-`test_batch60_llm_fulltext` 69 ｜ `test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14 ｜ `test_batch63_chat_no_limit` 20
-`test_batch63_fulltext_apply` 39 ｜ `test_batch63_metadata_docx` 37 ｜ `test_batch63b_metadata_json` 88 ｜ `test_batch68_bibparse` 36
-`test_batch68_p0fix` 16 ｜ `test_batch68_word_numbering` 53 ｜ `test_batch70_b001` 46 ｜ `test_batch_case_test` 0
-`test_bib_key_determinism` 29 ｜ `test_bib_protection_forms` 45 ｜ `test_bib_url_render` 58 ｜ `test_bibdb` 384
+套件明细：`test_abstract_label` 61 ｜ `test_affil_from_bio` 57 ｜ `test_ai_bib_candidate_c_20261117` 96 ｜ `test_ai_text_corrections_c_20261117` 80
+`test_ai_workflow_cli_c_20261117` 57 ｜ `test_ai_workflow_delivery_20261118` 0 ｜ `test_ai_workflow_library_20261118b` 0 ｜ `test_ai_workflow_reply_20261118` 0
+`test_ai_workflow_reply_import_20261118b` 0 ｜ `test_ai_workflow_scope_20261118b` 0 ｜ `test_ai_workflow_state_r3` 0 ｜ `test_ai_workflow_taskbook_20261118` 0
+`test_aibib` 90 ｜ `test_author_block_fund_split_20261117` 53 ｜ `test_author_plausible` 60 ｜ `test_authornorm` 76
+`test_b115_toc_preview` 7 ｜ `test_b115_toc_result` 31 ｜ `test_b116_bib_review_sha` 7 ｜ `test_b121_toc_workdir` 49
+`test_b159_gen_docs_state_line` 14 ｜ `test_b188_bibdb_maintenance` 82 ｜ `test_b199_footnote_promotion` 48 ｜ `test_b204_health_ignore` 40
+`test_b205_ack_duplicates` 60 ｜ `test_b211_cleanup` 90 ｜ `test_b268_conflict` 15 ｜ `test_b268_frontmatter` 17
+`test_b268_noteurl` 18 ｜ `test_b268_report` 19 ｜ `test_b270_url_note` 27 ｜ `test_b285_contract` 48
+`test_b285_diagnose` 179 ｜ `test_b285_report_header` 64 ｜ `test_b287_coop_metadata` 43 ｜ `test_b288_taskcard` 52
+`test_b290_bib_parse_fixes` 43 ｜ `test_b291_bibdb_institution_guard` 64 ｜ `test_b301_placeholder_author` 41 ｜ `test_b303_coop_bak_recycle` 30
+`test_b307_abs_label` 27 ｜ `test_b307_bib_syntax` 21 ｜ `test_b307_heading_no_sep` 36 ｜ `test_b309_gate_speedup` 31
+`test_b311_slices` 53 ｜ `test_b312_footnote_container` 13 ｜ `test_b312_post_en_rules` 0 ｜ `test_b355_toc_layout` 62
+`test_b375_toc_column` 68 ｜ `test_b375_toc_fit` 55 ｜ `test_b375_toc_host` 33 ｜ `test_b375_toc_preview_source` 16
+`test_b375_toc_rollback` 25 ｜ `test_b71_word_author_meta` 81 ｜ `test_b73_bibdb_adjudication` 84 ｜ `test_b73_footnote_bare_cite` 45
+`test_b74_fulltext_analysis` 99 ｜ `test_b74_gen_docs_write_once` 14 ｜ `test_b75_b137_cite_residual` 39 ｜ `test_b75_coop_report_only` 63
+`test_b76_bibdb_lint` 40 ｜ `test_b77_b136_auto_single_source` 22 ｜ `test_b79_b131_delivery_record` 27 ｜ `test_bare_email` 32
+`test_batch45_bib` 10 ｜ `test_batch46_bib` 10 ｜ `test_batch47b` 4 ｜ `test_batch48` 5
+`test_batch49_cclass` 32 ｜ `test_batch49_cclass_render` 8 ｜ `test_batch49_no_cites` 10 ｜ `test_batch52_default_on` 16
+`test_batch52_u1` 11 ｜ `test_batch54_coop` 101 ｜ `test_batch56_coop` 54 ｜ `test_batch57_coop_apply` 71
+`test_batch58_bibdb_auto` 79 ｜ `test_batch58_bibdb_hits` 54 ｜ `test_batch59_coop_fulltext` 59 ｜ `test_batch60_llm_fulltext` 69
+`test_batch61_bibdb_rules` 54 ｜ `test_batch63_api_char_cap` 14 ｜ `test_batch63_chat_no_limit` 20 ｜ `test_batch63_fulltext_apply` 39
+`test_batch63_metadata_docx` 37 ｜ `test_batch63b_metadata_json` 88 ｜ `test_batch68_bibparse` 36 ｜ `test_batch68_p0fix` 16
+`test_batch68_word_numbering` 53 ｜ `test_batch70_b001` 46 ｜ `test_batch_case_test` 0 ｜ `test_bib_key_determinism` 29
+`test_bib_protection_forms` 45 ｜ `test_bib_report_reliability_c_20261117` 31 ｜ `test_bib_url_render` 56 ｜ `test_bibdb` 384
 `test_bibdb_rehash` 31 ｜ `test_bibdb_verify` 88 ｜ `test_bibnorm` 46 ｜ `test_bibparse_inline_pct` 50
 `test_bibreport_note_and_clause` 49 ｜ `test_checkbib` 105 ｜ `test_citation_year_fallback` 31 ｜ `test_clean_daily` 205
 `test_cleanup_manifest_contract` 44 ｜ `test_cn_author_split` 38 ｜ `test_cn_dot_heading` 60 ｜ `test_cn_journal_numbered` 37
 `test_coauthor_en` 28 ｜ `test_convert_compile_clean` 5 ｜ `test_convert_proof_autofix` 74 ｜ `test_corpus_fixture_paths` 26
 `test_docx_labels` 41 ｜ `test_docx_math_spacing` 45 ｜ `test_docx_quote_footnote` 16 ｜ `test_docxxml_deterministic` 14
 `test_duplicates_merge_plan` 26 ｜ `test_en_abstract_sibling` 66 ｜ `test_en_docx_funding_cites_20261116` 133 ｜ `test_en_slot_placeholder` 23
-`test_english_manuscripts` 28 ｜ `test_envcheck` 68 ｜ `test_evidence_injection` 27 ｜ `test_footnote_id0` 16
-`test_gen_docs_gate_reliability_20261115` 194 ｜ `test_incollection_fields` 46 ｜ `test_infocheck_toc` 145 ｜ `test_issue_tools` 69
-`test_latex_appendix` 20 ｜ `test_latex_preamble` 117 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65
-`test_llm_knobs` 27 ｜ `test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56
-`test_llm_usage_and_jsonmode` 61 ｜ `test_mc02_en_subsection_case_20261113` 12 ｜ `test_mc04_pushcopy_tex_macros_20261113` 6 ｜ `test_merge_into` 52
-`test_merge_record_provenance` 36 ｜ `test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17
-`test_omml_structures` 28 ｜ `test_paths` 19 ｜ `test_pdfmerge` 38 ｜ `test_pkg_b375r_toc_robustness` 106
+`test_english_manuscripts` 28 ｜ `test_envcheck` 68 ｜ `test_evidence_injection` 27 ｜ `test_f01_en_docx_funding` 17
+`test_f02_discontiguous_pages` 48 ｜ `test_f5_fund_dedupe_20261117` 23 ｜ `test_footnote_id0` 16 ｜ `test_gen_docs_gate_reliability_20261115` 194
+`test_incollection_fields` 46 ｜ `test_infocheck_toc` 145 ｜ `test_issue_tools` 69 ｜ `test_latex_appendix` 20
+`test_latex_preamble` 158 ｜ `test_llm_error` 10 ｜ `test_llm_finish_reason` 65 ｜ `test_llm_knobs` 27
+`test_llm_request_params` 12 ｜ `test_llm_responses` 62 ｜ `test_llm_thinking_and_reasoning` 56 ｜ `test_llm_usage_and_jsonmode` 61
+`test_mc02_en_subsection_case_20261113` 12 ｜ `test_mc04_pushcopy_tex_macros_20261113` 6 ｜ `test_merge_into` 52 ｜ `test_merge_record_provenance` 36
+`test_mock_keyed_responses` 18 ｜ `test_multisource_discovery` 22 ｜ `test_omml_stack` 17 ｜ `test_omml_structures` 28
+`test_pair_summary_v20_20261117` 39 ｜ `test_paths` 19 ｜ `test_pdfmerge` 38 ｜ `test_pkg_b375r_toc_robustness` 106
 `test_pkg_b377_sortlocale_sortname` 77 ｜ `test_pkg_fix_20261112_q4` 34 ｜ `test_pkg_fix_20261112_q56` 28 ｜ `test_pkg_fix_20261112_q789` 48
 `test_pkg_p02_delivery` 76 ｜ `test_pkg_p02_promote_sigterm` 58 ｜ `test_pkg_p02h_guard_hardening` 74 ｜ `test_pkg_p02r_convert_contract` 39
 `test_pkg_p03_taskbook_modes` 95 ｜ `test_pkg_p04_atomic_merge` 95 ｜ `test_pkg_p05_pushcopy` 23 ｜ `test_pkg_p06_query_paging` 106
-`test_pkg_p07_bib_asset` 49 ｜ `test_platform` 82 ｜ `test_proofcheck` 294 ｜ `test_publish` 58
+`test_pkg_p07_bib_asset` 49 ｜ `test_platform` 85 ｜ `test_proofcheck` 294 ｜ `test_publish` 58
 `test_r3_dirpush_default_000` 22 ｜ `test_r3_docx_group_text` 17 ｜ `test_r3_language_mode` 43 ｜ `test_r3_toc_host` 46
 `test_ref_raw_lines` 39 ｜ `test_refmark_raw_refs` 29 ｜ `test_refs_apa_struct` 68 ｜ `test_refs_attach` 29
 `test_refs_batch45a2` 27 ｜ `test_refs_p0_2026_10_18` 30 ｜ `test_refs_p1_2026_10_18` 89 ｜ `test_ruleset` 20
 `test_run_record` 36 ｜ `test_search_refs` 54 ｜ `test_selfcheck` 30 ｜ `test_sep_style` 30
-`test_sn_jnl_migration_20261116` 70 ｜ `test_table_images` 11 ｜ `test_tail_block` 74 ｜ `test_tex_frontmatter` 0
-`test_unmatched_in_report` 76 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4 ｜ `test_word_tail_metadata_body` 55
-`test_xref_autoref` 14
+`test_sn_jnl_migration_20261116` 70 ｜ `test_sn_multi_author_20261117` 0 ｜ `test_table_images` 11 ｜ `test_tail_block` 74
+`test_tex_frontmatter` 0 ｜ `test_unmatched_in_report` 76 ｜ `test_verify_scope` 75 ｜ `test_vml_footnotes` 4
+`test_word_tail_metadata_body` 55 ｜ `test_xref_autoref` 14
+异常套件：`test_bib_url_render` rc=1 FAIL 2
 
 **普查**（来源：笔记仓冻结基线 `baselines/docx_audit.csv`，132 份源稿；成功解析 **132** 份 / 解析失败 **0** 份；三态互斥、相加 = 篇数）：
 
@@ -195,9 +200,9 @@ GUI 一句话：Flet 单壳（`sources-flet/`）15 个页面按编辑流程分�
 - `n_headings` 合计 **611**；`n_bib` 合计 **2233**
 - sha256[:12]：`baselines/docx_audit.csv` = `95d97871fafa`，`baselines/docx_audit.txt` = `ba87c1c57fc5`（来源：笔记仓冻结基线；与 `_ok` 列交叉核对，不一致 **0** 行 ✅）
 
-**corpus 回归**（`out/corpus/corpus.csv`）：成功 **71 / 92** 篇；裸相似度中位 LaTeX **98.47%**、Word **89.50%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
+**corpus 回归**（`out/corpus/corpus.csv`）：成功 **69 / 90** 篇；裸相似度中位 LaTeX **98.49%**、Word **89.42%**（第 125 条起去重确定性：同输入连跑两遍 `corpus.csv` 应逐字节一致，不一致即回归）
 
-**占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**230 处 / 53 篇**
+**占位符**（`out/corpus/**/*.tex` 里 `【未识别：…】`）：**228 处 / 52 篇**
 
 **红线只读快照**（只跑 `git rev-parse` / `git status`，不写）：本机工作区状态不写进提交物；现况见 `out/gen_docs-state.txt`（不提交）
 <!-- AUTO:STATE:END -->

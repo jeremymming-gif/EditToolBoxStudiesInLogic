@@ -564,6 +564,9 @@ def convert_call(
     force: bool = False,
     dry_run: bool = False,
     extra: str = "",
+    ai_taskbook_version: int | None = None,
+    ai_execute: str = "",
+    ai_work_dir: str = "",
 ) -> EngineCall:
     args = ["--source", source, "--out", out]
     _append_flag(args, "--compile", compile_pdf)
@@ -594,6 +597,13 @@ def convert_call(
     # 批 116 SINGLE-FN（F1 P0-1）：引擎 `convert_stage.py:1291` 的 `--dry-run`
     # 在生成前返回（不建产物目录、不写任何文件）；壳只在初排页显式勾选时传。
     _append_flag(args, "--dry-run", dry_run)
+    # R3 三选项（执行卡 §5）：仅非空才传，位置在 --dry-run 之后、extra 之前。
+    # 它们让初排页走**普通 convert** 而非 `--ai-workflow prepare` 假装已做首次转换；
+    # 空 ai_execute 与未提供都是「不传 --ai-execute」，绝不用 or defaults 重开范围。
+    _append_opt(args, "--ai-taskbook-version",
+                ai_taskbook_version if ai_taskbook_version is not None else None)
+    _append_opt(args, "--ai-execute", ai_execute)
+    _append_opt(args, "--ai-work-dir", ai_work_dir)
     if extra:
         args.extend(extra.split())
     return _call("convert.py", args, "初排转换")
@@ -743,6 +753,259 @@ def checkbib_call(
     _append_opt(args, "--out", out)
     label = "识别文献键" if list_keys else "参考文献规范化"
     return _call("checkbib.py", args, label)
+
+
+# ── AI 工作流（DESIGN §8 的 7 个操作）────────────────────────────────────
+# 全部走 `convert.py --ai-workflow <op>`：不新增第 14 个引擎入口（入口表在
+# engine_main.ENTRIES / build_win_sidecar.ps1 / 本文件 ENTRIES 三处互相钉死）。
+# 路径一律进 argv；API Key 只走 env（`env_for_run(api=...)`），绝不进命令行。
+_AI_WF_FLAG = "--ai-workflow"
+
+
+def _aiw_args(work_dir: str, op: str, *parts: str) -> list[str]:
+    """`--ai-workflow --work-dir DIR <op> ...`（顺序固定，便于测试与日志）。"""
+    args: list[str] = [_AI_WF_FLAG]
+    _append_opt(args, "--work-dir", str(work_dir or "").strip())
+    args.append(op)
+    args.extend([str(p) for p in parts if str(p)])
+    return args
+
+
+def _aiw_scope(values) -> str:
+    """勾选序列 → `a,b`（保持传入顺序；空 = 不传，引擎用 §4 缺省）。"""
+    if not values:
+        return ""
+    if isinstance(values, str):
+        values = values.split(",")
+    seen: list[str] = []
+    for item in values:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.append(text)
+    return ",".join(seen)
+
+
+def ai_prepare_call(
+    *,
+    work_dir: str,
+    target_bib: str,
+    tex: str = "",
+    source: str = "",
+    stem: str = "",
+    execute=(),
+    adopt=(),
+    text: bool = False,
+    entry: str = "bib",
+    tex_out: str = "",
+    bib_out: str = "",
+    taskbook_version: int | None = None,
+    json_output: bool = False,
+) -> EngineCall:
+    """出任务书（`prepare`）：冻结执行范围，**不写目标 bib**。
+
+    `tex_out` = 文字纠错候选的写回目标（初排的交付件）；空 = 正文只报告不写回。
+    """
+    args = _aiw_args(work_dir, "prepare")
+    _append_opt(args, "--target-bib", str(target_bib or "").strip())
+    _append_opt(args, "--tex", str(tex or "").strip())
+    _append_opt(args, "--source", str(source or "").strip())
+    _append_opt(args, "--stem", str(stem or "").strip())
+    _append_opt(args, "--entry", str(entry or "").strip())
+    _append_opt(args, "--tex-out", str(tex_out or "").strip())
+    _append_opt(args, "--bib-out", str(bib_out or "").strip())
+    _append_opt(args, "--execute", _aiw_scope(execute))
+    _append_opt(args, "--adopt", _aiw_scope(adopt))
+    _append_flag(args, "--text", text)
+    if taskbook_version is not None:
+        args.extend(["--taskbook-version", str(taskbook_version)])
+        # R3 distinguishes an empty selection from omission.
+        if not _aiw_scope(execute):
+            args.extend(["--execute", ""])
+        if not _aiw_scope(adopt):
+            args.extend(["--adopt", ""])
+    if json_output:
+        args.insert(1, "--json")
+    return _call("convert.py", args, "AI 出任务书")
+
+
+def ai_request_call(*, work_dir: str, taskbook: str = "", reply_out: str = "",
+                    timeout: int = 0, json_output: bool = False) -> EngineCall:
+    """直连 API 取结果（`request`）：与 Chat 通道走同一套后续解析，不自动采纳。"""
+    args = _aiw_args(work_dir, "request")
+    _append_opt(args, "--taskbook", str(taskbook or "").strip())
+    _append_opt(args, "--reply-out", str(reply_out or "").strip())
+    if timeout and int(timeout) > 0:
+        _append_opt(args, "--timeout", str(int(timeout)))
+    if json_output:
+        args.insert(1, "--json")
+    return _call("convert.py", args, "AI 请求（直连）")
+
+
+def ai_import_call(*, work_dir: str, reply: str = "", stdin: bool = False,
+                   task_id: str = "", body_text: str = "", source_kind: str = "",
+                   replace_active: bool = False, json_output: bool = False) -> EngineCall:
+    """导入结果（`import`）：文件走 `--reply`，粘贴正文走 `--stdin` + stdin_text。
+
+    `body_text` 是**正文**（用户粘贴的 AI 回复），不是路径：给了正文就自动走
+    `--stdin`，由调用方把同一份正文通过 `run_call(stdin_text=…)` 喂给子进程。
+    路径与正文是两个不同的入口（DESIGN §10），这里也不把正文当路径用。
+    """
+    body = str(body_text or "")
+    use_stdin = bool(stdin or (body.strip() and not str(reply or "").strip()))
+    args = _aiw_args(work_dir, "import")
+    _append_opt(args, "--reply", str(reply or "").strip())
+    _append_flag(args, "--stdin", use_stdin)
+    _append_opt(args, "--task-id", str(task_id or "").strip())
+    _append_opt(args, "--source-kind", source_kind)
+    _append_flag(args, "--replace-active", replace_active)
+    if json_output:
+        args.insert(1, "--json")
+    label = "AI 导入结果（粘贴）" if use_stdin else "AI 导入结果"
+    call = _call("convert.py", args, label)
+    # 正文随 call 带出去，界面用 `getattr(call, "stdin_text", "")` 取；不进 argv。
+    call.stdin_text = body if use_stdin else ""
+    return call
+
+
+#: 字段级冲突裁决只允许这三个值（与引擎 `ai_workflow_state_v3.CHOICES` 同口径）。
+AI_DECIDE_CHOICES = ("library", "reply", "original")
+
+
+def ai_decide_pairs(decisions) -> list[tuple[str, str]]:
+    """`{conflict_id: 值}` → 稳定排序的 `[(conflict_id, 值)]`，供 `--decide` 逐条拼。
+
+    只做**投影**（不改值、不猜默认）：非映射一律当空；空 id / 空值跳过；值统一小写。
+    未知 conflict_id 与非法值由引擎拒绝（退出码 2、错误里带该 ID），桥不预先判死。
+    """
+    if not isinstance(decisions, dict):
+        return []
+    pairs = []
+    for raw_id, raw_value in decisions.items():
+        conflict_id = str(raw_id or "").strip()
+        value = str(raw_value or "").strip().lower()
+        if conflict_id and value:
+            pairs.append((conflict_id, value))
+    pairs.sort()
+    return pairs
+
+
+def ai_preview_call(*, work_dir: str, reply: str = "", adopt=(),
+                    explicit_adopt: bool = False, json_output: bool = False,
+                    skip_items=(), decisions=None, requery: bool = False) -> EngineCall:
+    """生成拟应用结果（`preview`）：写工作区候选文件，**不写目标 bib**。
+
+    `decisions` = `{conflict_id: "library"|"reply"|"original"}`，逐条转成
+    `--decide cf-xxxxxxxx=值`；`requery=True` 追加 `--requery` 强制重新查库
+    （默认复用本次预览的查库快照）。两个参数缺省时命令行**逐字**与以前相同。
+    """
+    args = _aiw_args(work_dir, "preview")
+    _append_opt(args, "--reply", str(reply or "").strip())
+    if explicit_adopt:
+        args.extend(["--adopt", _aiw_scope(adopt)])
+    else:
+        _append_opt(args, "--adopt", _aiw_scope(adopt))
+    for item_id in skip_items:
+        _append_opt(args, "--skip-item", item_id)
+    for conflict_id, value in ai_decide_pairs(decisions):
+        args.extend(["--decide", f"{conflict_id}={value}"])
+    _append_flag(args, "--requery", requery)
+    if json_output:
+        args.insert(1, "--json")
+    return _call("convert.py", args, "AI 生成拟应用结果")
+
+
+def ai_apply_call(*, work_dir: str, preview_id: str, confirm_from: str = "",
+                  confirm_tex: str = "", json_output: bool = False) -> EngineCall:
+    """应用（`apply`）：preview_id 过期/目标指纹变了都会被引擎拒绝。
+
+    `confirm_from` / `confirm_tex` 留空 = 用本次预览记下的候选文件（界面走这条，
+    不猜路径）。正文只写到 prepare 时用 `--tex-out` 指定的交付件，源正文永不回写。
+    """
+    args = _aiw_args(work_dir, "apply")
+    _append_opt(args, "--preview-id", str(preview_id or "").strip())
+    _append_opt(args, "--confirm-from", str(confirm_from or "").strip())
+    _append_opt(args, "--confirm-tex", str(confirm_tex or "").strip())
+    if json_output:
+        args.insert(1, "--json")
+    return _call("convert.py", args, "AI 应用到目标 Bib")
+
+
+def ai_undo_call(*, work_dir: str, json_output: bool = False) -> EngineCall:
+    """撤销本次写入（`undo`）：目标在应用后又被改过会被拒绝。"""
+    args = _aiw_args(work_dir, "undo")
+    if json_output:
+        args.insert(1, "--json")
+    return _call("convert.py", args, "AI 撤销写入")
+
+
+def ai_status_call(*, work_dir: str, json_output: bool = False) -> EngineCall:
+    """状态/续跑（`status`）：不抛异常，没有任务也如实说。"""
+    args = _aiw_args(work_dir, "status")
+    if json_output:
+        args.insert(1, "--json")
+    return _call("convert.py", args, "AI 工作流状态")
+
+
+def ai_library_view(payload) -> dict:
+    """从 `status --json` / `preview --json` 的返回体投影「查库 + 冲突 + 裁决」三键。
+
+    返回 `{"library": dict, "conflicts": list, "decisions": dict}`，形状与合同 §1 一致；
+    缺键或类型不符时给安全默认（`library.checked=False` + `state="unconfigured"`、
+    `conflicts=[]`、`decisions={}`），**绝不把「没有查库」显示成「查过、零冲突」**。
+    """
+    source = payload if isinstance(payload, dict) else {}
+    library = source.get("library")
+    if not isinstance(library, dict):
+        library = {"checked": False, "state": "unconfigured", "path": "", "sha256": "",
+                   "matched": 0, "conflicts": 0, "skipped_reason": ""}
+    conflicts = source.get("conflicts")
+    if not isinstance(conflicts, list):
+        conflicts = []
+    decisions = source.get("decisions")
+    if not isinstance(decisions, dict):
+        decisions = {}
+    return {"library": dict(library), "conflicts": list(conflicts),
+            "decisions": dict(decisions)}
+
+
+def ai_conflict_choices() -> tuple[str, str, str]:
+    """冲突行的三个可选值（界面做单选按钮时用它，避免各处手抄）。"""
+    return AI_DECIDE_CHOICES
+
+
+# ── R3 只读内容桥 / 交付桥（Task5）─────────────────────────────────────────
+# 只读 taskbook / deliver 全部走 `convert.py --ai-workflow <op>` 的第 14 入口复用；
+# 机器 JSON 只从 stdout 解析（read_json_command），绝不读日志正文、不导入 Engine 判据模块。
+def ai_taskbook_call(*, work_dir: str, task_id: str = "") -> EngineCall:
+    """只读任务书全文：`ai-workflow --work-dir DIR taskbook --json [--task-id ID]`。
+
+    返回体由 `read_json_command` 解析；GUI 侧用 `taskbook_result_fields` 取全文，
+    并核对 work_dir/task_id/request_seq 后才允许复制。空 task_id = 引擎默认最新任务。
+    """
+    args = _aiw_args(work_dir, "taskbook", "--json")
+    _append_opt(args, "--task-id", task_id)
+    return _call("convert.py", args, "读取任务书全文")
+
+
+def ai_deliver_call(*, work_dir: str, preview_id: str = "",
+                    use_original: bool = False) -> EngineCall:
+    """交付新 Bib：`ai-workflow --work-dir DIR deliver --json [--preview-id P] [--use-original]`。
+
+    `use_original` 表示保留原 Bib 而不采纳 AI 候选（对应界面「不采纳，继续原初排」）。
+    """
+    args = _aiw_args(work_dir, "deliver", "--json")
+    _append_opt(args, "--preview-id", preview_id)
+    _append_flag(args, "--use-original", use_original)
+    return _call("convert.py", args, "交付 AI 新 Bib")
+
+
+def initial_ai_inputs() -> dict:
+    """初排 R3 入口的桥侧默认参数占位。
+
+    真正的初排父页同组参数由 `SinglePage.initial_ai_inputs()` 提供（见 ui/pages.py）；
+    这里返回空签名，避免接口缺失时调用点抛错，不携带任何 R3 选项默认值。
+    """
+    return {}
 
 
 def proofcheck_call(*, tex: str, fix: bool = False, lang: str = "") -> EngineCall:
@@ -1521,6 +1784,34 @@ def read_json_command(
     return result
 
 
+def taskbook_result_fields(result: dict) -> dict:
+    """把 `read_json_command` 的返回体投影成只读任务书字段（规格 §10）。
+
+    只从 stdout 解出的 `result["json"]` 映射，**绝不读** `result["lines"]` 或
+    `result["stderr"]` 正文——那些是给人看的日志/警告，里面若出现 JSON 是诱饵。
+    返回恰好 7 个键；缺字段时给空串/0，`ok` 还要求 code 成功与 payload 是 dict。
+    """
+    payload = result.get("json") if isinstance(result, dict) else None
+    ok = bool(result.get("ok")) and isinstance(payload, dict) and payload.get("ok", True) is True
+    text = str(payload.get("text") or "") if isinstance(payload, dict) else ""
+    chars = payload.get("chars", "") if isinstance(payload, dict) else ""
+    try:
+        chars_int = int(chars)
+        if chars_int < 0:
+            chars_int = len(text)
+    except (TypeError, ValueError):
+        chars_int = len(text)
+    return {
+        "ok": ok,
+        "task_id": str(payload.get("task_id", "") or "") if isinstance(payload, dict) else "",
+        "template_version": str(payload.get("template_version", "") or "") if isinstance(payload, dict) else "",
+        "path": str(payload.get("path", "") or "") if isinstance(payload, dict) else "",
+        "sha256": str(payload.get("sha256", "") or "") if isinstance(payload, dict) else "",
+        "text": text,
+        "chars": chars_int,
+    }
+
+
 # ── 运行环境 ────────────────────────────────────────────────────────────
 def env_for_run(api: dict | None = None, notes: str = "") -> dict:
     env = dict(os.environ)
@@ -1553,7 +1844,17 @@ def env_for_run(api: dict | None = None, notes: str = "") -> dict:
     if api.get("searchRefs"):
         env["SLCN_SEARCH_REFS"] = "1"
     if notes:
-        env["SLCN_NOTES"] = notes
+        # R1（task-13）：只把**校验过**的笔记仓写进环境，别拿用户输入无条件覆盖。
+        # 引擎侧 `slcn/paths.py: notes_root()` 对 SLCN_NOTES 是"显式优先且严格"：
+        # 设了但里面没有 `cases/` → 直接返回 None，**且不再回退自动探测**。
+        # 而本函数从 `dict(os.environ)` 起手，外部（终端启动、或上层已设好的）
+        # 正确 SLCN_NOTES 本来就在 env 里；这里再覆盖成设置页里填的非法路径
+        # （实测典型值：`.../EditToolBox-notes/bib_db`，没有 `cases/`），
+        # 就会把"本来能用"的笔记仓打成"找不到"。
+        # 判据与引擎逐字一致（`isdir(<notes>/cases)`），通过才覆盖，不通过就保留外部值。
+        cand = os.path.abspath(os.path.expanduser(str(notes)))
+        if os.path.isdir(os.path.join(cand, "cases")):
+            env["SLCN_NOTES"] = notes
     return env
 
 

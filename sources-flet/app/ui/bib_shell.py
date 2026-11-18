@@ -861,7 +861,7 @@ def _copy_button(t: Tokens, text: str, page, on_copy):
 
 def state_banner(t: Tokens, kind: str, *, message: str | None = None,
                  detail: str | None = None, stage: str | None = None,
-                 action: Any = None, next_label: str = "下一步", on_next=None,
+                 action: Any = None, next_label: str | None = None, on_next=None,
                  on_cancel=None, stderr: str | None = None, page=None,
                  on_copy=None, expected_sha: str | None = None,
                  actual_sha: str | None = None, on_repreview=None) -> ft.Control:
@@ -879,18 +879,23 @@ def state_banner(t: Tokens, kind: str, *, message: str | None = None,
         raise ValueError(f"未知状态：{kind!r}")
 
     def _next_action(default_label: str):
-        """优先用调用方给的 action，否则按需造一个扁平按钮。"""
+        """优先用调用方给的 action，否则按需造一个扁平按钮。
+
+        按钮文字优先取调用方 ``next_label``（批 246：此前忽略该参数，导致
+        ``bib_overview`` 传「复制摘要」却显示「重试」——用户点了以为是重试）。
+        未传时才回落到各状态的默认文字。
+        """
         if action is not None:
             return action
         if on_next is not None:
-            return C.text_button(default_label, on_next, t, height=28)
+            return C.text_button(next_label or default_label, on_next, t, height=28)
         return None
 
     if kind == "empty":
         box = ft.Container(
             height=t.px(BANNER_H), padding=_pad(t, 8, 0, 8, 0),
             content=C.empty_line(message or "没有匹配记录", t,
-                                 action=_next_action(next_label)),
+                                 action=_next_action("下一步")),
         )
         box._bib_state = kind
         return box
@@ -933,7 +938,7 @@ def state_banner(t: Tokens, kind: str, *, message: str | None = None,
     if kind == "success":
         box = _banner_44(t, "success", "CHECK_CIRCLE_OUTLINE", "CHECK_CIRCLE",
                          message or "已完成", detail,
-                         [a for a in (_next_action(next_label),) if a is not None])
+                         [a for a in (_next_action("下一步"),) if a is not None])
         box._bib_state = kind
         return box
 

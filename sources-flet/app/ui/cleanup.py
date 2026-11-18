@@ -18,6 +18,7 @@ lastOperationId/lastTrashDir/lastCount/lastFinishedAt 保留上一可撤销批�
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import os
 import re
@@ -1006,40 +1007,88 @@ class CleanupPanel:
                    operationId=operation_id)
 
     # ── 明细 ────────────────────────────────────────────────────────────
+    def _copy_done(self, copied: bool, text: str, what: str) -> None:
+        """一句如实文案 + 一条只含长度的 marker（V22：正文不进日志）。"""
+        self._mark("cleanup_copy", what=what, ok=copied,
+                   chars=len(text), lines=text.count("\n") + 1)
+        self._toast(f"已复制{what}" if copied else f"复制失败：剪贴板不可用（{what}）")
+
+    @staticmethod
+    def _clipboard_service(flet_page):
+        """复用/新建页面级 `ft.Clipboard`；拿不到就返回 None（同 components._paste_service）。"""
+        services = getattr(flet_page, "services", None)
+        if services is None:
+            return None
+        try:
+            for service in list(services):
+                if isinstance(service, ft.Clipboard):
+                    return service
+            clipboard = ft.Clipboard()
+            services.append(clipboard)
+            return clipboard
+        except Exception:  # noqa: BLE001  假 page / 未连接会话：当作不可用
+            return None
+
+    @staticmethod
+    async def _write_clipboard(clipboard, text: str) -> bool:
+        """真写 + 回读确认。flet 的 `set()` 只返回 None，不抛异常≠写成功。"""
+        await clipboard.set(text)
+        echo = await clipboard.get()
+        return isinstance(echo, str) and echo == text
+
     def _copy(self, text: str, what: str) -> None:
-        """复制全部：优先壳的 copy_text，其次 Flet 剪贴板；失败如实提示。"""
+        """复制全部：优先壳的 copy_text，其次 Flet 剪贴板；**失败如实提示**（V22）。
+
+        以前 Flet 分支 `runner(_write)` 只是把协程排进队列就 `copied = True` ——
+        协程还没跑、剪贴板还没写，界面已经说「已复制」。现在要么真等到写入结果
+        （无运行中的事件循环时 `asyncio.run`），要么由协程自己报结果，绝不在写入
+        完成前宣称成功。
+        """
         if not text.strip():
             self._toast(f"{what}为空，没有可复制的内容")
             return
-        copied = False
-        app = self.page.app
-        fn = getattr(app, "copy_text", None)
+        fn = getattr(self.page.app, "copy_text", None)
         if callable(fn):
             try:
-                fn(text)
-                copied = True
+                # A/V22（验收 §3.1-8）：看**真实**返回值。以前写死 `copied = True`，
+                # 失败时会走到下面那句「已复制{what}」——假成功。
+                copied = bool(fn(text))
             except Exception:  # noqa: BLE001
                 copied = False
+            self._copy_done(copied, text, what)
+            return
         flet_page = getattr(self.page, "page", None)
-        setter = getattr(flet_page, "set_clipboard", None)
-        if not copied and callable(setter):
-            async def _write():
-                result = setter(text)
-                if hasattr(result, "__await__"):
-                    await result
-
-            runner = getattr(flet_page, "run_task", None)
+        clipboard = self._clipboard_service(flet_page)
+        if clipboard is None:
+            self._copy_done(False, text, what)
+            return
+        coro = self._write_clipboard(clipboard, text)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # 无事件循环：可以真等（pytest / 同步点击回调）
             try:
-                if callable(runner):
-                    runner(_write)
-                else:
-                    result = setter(text)
-                    if hasattr(result, "__await__"):
-                        result.close()
-                copied = True
+                copied = bool(asyncio.run(coro))
             except Exception:  # noqa: BLE001
                 copied = False
-        self._toast(f"已复制{what}" if copied else f"复制失败：剪贴板不可用（{what}）")
+            self._copy_done(copied, text, what)
+            return
+        runner = getattr(flet_page, "run_task", None)
+        if not callable(runner):  # 已在循环里又不能排队：不给假成功
+            coro.close()
+            self._copy_done(False, text, what)
+            return
+
+        async def _job() -> None:
+            try:
+                copied = bool(await coro)
+            except Exception:  # noqa: BLE001
+                copied = False
+            self._copy_done(copied, text, what)
+
+        try:
+            runner(_job)
+        except Exception:  # noqa: BLE001
+            self._copy_done(False, text, what)
 
     def _detail_rows(self, items: list, formatter) -> list:
         t = self.page.t

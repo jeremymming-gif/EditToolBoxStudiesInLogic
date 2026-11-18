@@ -4,7 +4,7 @@
 - 侧栏引用库 section 只有一个叶子「引用库」（图标 + 待处理徽标），
   无组 caption、无 9 子行、无 chevron；3 组 9 视图移入 Bib 页内 chip 导航。
 - 设置只在页头齿轮/⌘K，不进侧栏，但 `bib:settings` 仍可深链。
-- normalize 显示名「回读校验」贯穿 IA / 搜索索引 / 工具栏标题。
+- normalize 显示名「AI 辅助处理 Bib」贯穿 IA / 搜索索引 / 工具栏标题，页内页签用短别名「AI 处理」。
 - `set_bib_badge(n)` 暴露给 BibPage owner：待办冲突数，0/None 隐藏。
 """
 
@@ -22,7 +22,7 @@ from ui.tokens import Tokens
 
 BIB_LEAVES = [
     ("overview", "概览"), ("query", "查库"),
-    ("import", "入藏"), ("normalize", "回读校验"),
+    ("import", "入藏"), ("normalize", "AI 辅助处理 Bib"),
     ("review", "待处理"), ("edit", "编辑"), ("dupes", "查重合并"),
     ("fieldfix", "字段归位"), ("health", "库健康"),
 ]
@@ -118,7 +118,7 @@ def test_ia_contract_three_groups_nine_leaves_and_settings_route_only() -> None:
         ("settings", "设置")]
     assert views[-1]["route_only"] is True
     assert IA.group_of_view("bib", "settings") == ""
-    assert IA.route_labels("bib:normalize")["view_label"] == "回读校验"
+    assert IA.route_labels("bib:normalize")["view_label"] == "AI 辅助处理 Bib"
 
 
 def test_sidebar_has_one_bib_leaf_no_captions_no_children() -> None:
@@ -221,7 +221,7 @@ def test_toolbar_title_names_bib_leaf_even_for_default_overview() -> None:
     for route, expected in [
         ("bib", "引用库 · 概览"),  # 裸 bib 归一成默认叶，标题同样带叶名
         ("bib:overview", "引用库 · 概览"),
-        ("bib:normalize", "引用库 · 回读校验"),
+        ("bib:normalize", "引用库 · AI 辅助处理 Bib"),
         ("bib:settings", "引用库 · 设置"),
     ]:
         app.current_route = route
@@ -269,6 +269,6 @@ def test_search_index_lists_all_ten_bib_routes_with_new_labels() -> None:
     assert {entry.action for entry in pages} == {
         "goto:bib:" + key for key, _ in BIB_LEAVES} | {"goto:bib:settings"}
     labels = {entry.label for entry in pages}
-    assert "引用库 · 回读校验" in labels
+    assert "引用库 · AI 辅助处理 Bib" in labels
     assert "引用库 · 设置" in labels  # 可搜索直达，只是不列侧栏
     assert not any("规范化" in label for label in labels)

@@ -24,6 +24,7 @@ from datetime import datetime
 
 import flet as ft
 
+from services import bib_git as GIT
 from services import engine_bridge as EB
 from ui import bib_shell as S
 from ui import components as C
@@ -38,7 +39,7 @@ QUEUE = (
     ("fieldfix", "字段归位", "fieldfix", "去字段归位"),
     ("lint", "体检警告", "health", "去库健康"),
     ("dupes", "重复候选", "dupes", "去查重合并"),
-    ("normalize", "回读校验", "normalize", "去回读校验"),
+    ("normalize", "AI 辅助处理 Bib", "normalize", "去 AI 辅助处理 Bib"),
 )
 
 _BAND = (
@@ -75,6 +76,36 @@ def _basename(path: str) -> str:
     return path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or path
 
 
+def _engine_reason(result) -> tuple[str, str]:
+    """引擎失败原文 →（一行摘要，完整原文）。
+
+    F1（P5）：此前只写「X 读取失败」，引擎真正说的那句（例如
+    「SLCN_NOTES 指向 …，但那里没有 `cases/` 目录」）被整段吞掉，用户无从判断
+    是库坏了还是根本没找到笔记仓。``read_json_command`` 里 stderr 才是引擎原文
+    （error 只在 payload 解析不出且有非零退出码时才填），所以优先读 stderr。
+    """
+    if not isinstance(result, dict):
+        return "", ""
+    full = str(result.get("stderr") or result.get("error") or "").strip()
+    if not full:
+        return "", ""
+    lines = [raw.strip().lstrip("✗⚠️ ").strip() for raw in full.splitlines()]
+    lines = [text for text in lines if text]
+    if not lines:
+        return "", full
+    # 首行是「找不到私有笔记仓」这类总述、中间是通用设置指引，真正点出毛病的是
+    # 「指向 X，但那里没有 cases/ 目录」那句。按可操作性排优先级，横幅一行才装
+    # 得下有用信息。
+    line = next((text for text in lines if "但那里没有" in text), "")
+    if not line:
+        line = next((text for text in lines if "cases/" in text), "")
+    if not line:
+        line = next((text for text in lines if "SLCN_NOTES" in text), lines[0])
+    if len(line) > 120:
+        line = f"{line[:117]}…"
+    return line, full
+
+
 class OverviewView:
     """概览视图；`build()` 只按当前状态重建控件。"""
 
@@ -83,6 +114,7 @@ class OverviewView:
         self.loaded = False
         self.loading = False
         self.error = ""
+        self.error_detail = ""
         self.stale = False
         self.cancelled = False
         self.success = ""
@@ -104,8 +136,25 @@ class OverviewView:
         return str(getattr(getattr(self.page, "app", None), "notes_repo", "") or "")
 
     def _db(self) -> str:
+        """引用库物理路径：stats_data["db"] → stats_data["path"] → GIT.default_db。
+
+        R2-1（DEF-01）：真实引擎 ``cmd_stats`` 输出的是 ``store.stats()``（只有
+        ``path``/``bytes``/``sha256``/``records`` 等，没有 ``db`` 键），
+        ``bib_host._load_stats`` 又原样存进 ``stats_data``，所以只读 ``["db"]``
+        在真实装配里恒为空 —— 查重报告与归位建议会因此退回引擎默认库。第二级
+        读 ``path``；第三级回退到用户设置里的默认库，与 bib_query / bib_edit /
+        bib_dupes / bib_fieldfix / bib_import 兄弟页同款。
+        """
         stats = getattr(self.page, "stats_data", None) or {}
-        return str(stats.get("db") or "")
+        path = ""
+        if isinstance(stats, dict):
+            path = str(stats.get("db") or stats.get("path") or "")
+        if path:
+            return path
+        try:
+            return str(GIT.default_db(self._notes()) or "")
+        except Exception:  # noqa: BLE001 —— 设置读不到时由调用方按「未配置路径」提示
+            return ""
 
     def _store(self):
         return getattr(getattr(self.page, "app", None), "store", None)
@@ -173,6 +222,7 @@ class OverviewView:
             return
         self.loading = True
         self.error = ""
+        self.error_detail = ""
         self.cancelled = False
         self.success = ""
         self.phase = "运行中 0/5"
@@ -306,8 +356,14 @@ class OverviewView:
             first = failures[0]
             labels = {"records": "库概况", "pending": "冲突", "warnings": "体检",
                       "pairs": "查重报告", "suggest": "归位建议"}
+            results = {"records": stats_r, "pending": conflicts_r, "warnings": lint_r,
+                       "pairs": dup_r, "suggest": sug_r}
+            reason, detail = _engine_reason(results.get(first))
             self.error = f"{labels.get(first, first)}读取失败"
-            self._mark("bib_overview_partial_failure", cells=failures)
+            if reason:
+                self.error = f"{self.error} · {reason}"
+            self.error_detail = detail
+            self._mark("bib_overview_partial_failure", cells=failures, reason=reason)
 
     # ── 控件 ────────────────────────────────────────────────────────────
     def _design_width(self) -> float:
@@ -499,8 +555,11 @@ class OverviewView:
         copy = None
         if self.error:
             copy = lambda e: self._copy(self.error)
+        # F1（P5）：把引擎原文（含「没有 cases/ 目录」这类关键行）放进 stderr 区，
+        # 用户能选中/复制；message 仍是一句话摘要，detail 保留降级说明。
         return S.state_banner(t, "failure", message=self.error,
                               detail="其余格子仍显示上次成功读取的值。",
+                              stderr=self.error_detail or None,
                               on_next=lambda e: self._copy(self.error),
                               next_label="复制摘要", page=self.page.page,
                               on_copy=copy)

@@ -82,6 +82,79 @@ def _clip(s: str, n: int = 60) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+#: `pair_summary()` 的省略号：与 `_clip()` 的「…」区分开，一眼能看出是「掐头去尾」。
+_PAIR_ELLIPSIS = "⋯"
+
+
+def pair_summary(old: str, new: str, n: int = 40) -> tuple[str, str]:
+    r"""**成对**值的摘要：两段并排显示时，**真实差异不许被截断吃掉**。
+
+    为什么需要它（案例第 139 条 / DESIGN §11.2 A）
+    --------------------------------------------
+    `_clip(s, n)` 是**单值**摘要：长度超过 n 就 `s[:n] + "…"`。可报告里大量地方是
+    「旧 → 新」**成对**打印，两个值各自 clip 就出过这样的事：
+
+        · 旧 `Smith, John and Doe, Jane and Roe, Richard`（40 字符后才是差异）
+          → `Smith, John and Doe, Jane and Roe, Richard`（前面 40 字符完全相同）
+        · 新同上一模一样的前缀 → 两次 clip 结果**逐字节相同**
+
+    报告于是印成 `字段值有改动：\`author\`：\`Smith, John and Doe, Jane and Roe, Ri…\` →
+    \`Smith, John and Doe, Jane and Roe, Ri…\``——编辑看见「有改动」却看不出改了哪里，
+    比不报还糟（本次缺陷报告的原始现象）。只有**共同长前缀**会这样；共同后缀、多段、
+    纯空白差异同样是「有改动但看不出」。
+
+    判据（**行为保持**：短值一字不改）
+    --------------------------------
+      · 两个值都 ≤ n 个字符 → 原样返回（报告里短值照样完整显示，旧断言不动）；
+      · 否则保留「共同前缀 + 差异窗口 + 共同后缀」：先算公共前缀 `p` 与公共**后缀**
+        `s`（不重叠），把窗口 `old[p:len-p-s]` / `new[...]` 居中截到 n 字符，
+        两端加 `⋯` 表示被掐掉的公共部分；
+      · 纯空白差异（clip 后两侧相等但原文不同）→ 追加可见标记 `⟨空白差异⟩`，
+        不让「看起来一模一样」进报告。
+
+    返回 `(old_side, new_side)`：两侧都带省略号，调用方只负责拼 `→`。
+    """
+    a = re.sub(r"\s+", " ", str(old)).strip()
+    b = re.sub(r"\s+", " ", str(new)).strip()
+    if a == b:
+        # 只有空白不同（或完全相同）：原文差异必须**看得见**，不能印成一行等号。
+        if str(old) == str(new):
+            return _clip(a, n), _clip(b, n)
+        side = _clip(a, n)
+        return f"{side} ⟨空白差异⟩", f"{side} ⟨空白差异⟩"
+    if len(a) <= n and len(b) <= n:
+        return a, b
+    # 公共前缀 / 公共后缀（互不重叠，避免 "aaa"/"aaaa" 这种自重叠）
+    limit = min(len(a), len(b))
+    p = 0
+    while p < limit and a[p] == b[p]:
+        p += 1
+    s = 0
+    while s < limit - p and a[len(a) - 1 - s] == b[len(b) - 1 - s]:
+        s += 1
+
+    # 每侧上下文：共同前缀/后缀各留一点定位；**差异窗口短就把预算还给上下文**，
+    # 免得报告里只剩「⋯ and p7」这种看不出改了哪的碎片。
+    base_ctx = max((n // 4) // 2, 4)
+
+    def _side(text: str) -> str:
+        pre, suf = text[:p], (text[len(text) - s:] if s else "")
+        mid = text[p:len(text) - s] if s else text[p:]
+        # 差异窗口先按「最多占 n 的一半」压缩，剩下的预算给两侧上下文
+        mid_budget = max(n // 2, 6)
+        if len(mid) > mid_budget:
+            head_len = max(mid_budget // 2, 1)
+            tail_len = max(mid_budget - head_len - 1, 1)
+            mid = mid[:head_len] + "…" + mid[-tail_len:]
+        ctx = max((n - len(mid)) // 2, base_ctx)
+        pre_keep, suf_keep = pre[-ctx:], suf[:ctx]
+        lead = _PAIR_ELLIPSIS if len(pre) > len(pre_keep) else ""
+        trail = _PAIR_ELLIPSIS if len(suf) > len(suf_keep) else ""
+        return lead + pre_keep + mid + suf_keep + trail
+
+    return _side(a), _side(b)
+
+
 # ── 解析（总函数：任何输入都返回结果，不抛异常）────────────────────────────
 
 

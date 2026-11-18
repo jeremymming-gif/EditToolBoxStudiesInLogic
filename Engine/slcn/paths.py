@@ -183,9 +183,18 @@ def describe_notes() -> str:
     if found:
         return f"笔记仓：{found}" + ("（环境变量）" if env else "（自动探测）")
     if env:
-        return f"⚠️ {NOTES_ENV} 指向 {env}，但那里没有 `cases/` 目录。"
-    return (f"本机没有笔记仓（案例法/交接说明/冻结基线在那里）。"
-            f"若在别处，设 {NOTES_ENV}=<笔记仓路径>。")
+        return (f"⚠️ {NOTES_ENV} 指向 {env}，但那里没有 `cases/` 目录。"
+                f"（要填笔记仓根目录，不是它下面的 `bib_db/`。）")
+    # 措辞刻意不说「本机没有笔记仓」：打包版（PyInstaller one-dir）里探测范围被冻结在
+    # `.app` 内 —— `engine_root()` 在 `_internal/`，向上 4 层只到 `Contents/`，同级候选也只到
+    # `Contents/Resources/`，所以**包里没有仓就必然探测不到**，与这台机器上有没有笔记仓无关。
+    # 对着这种用户说「本机没有」是假话，让他去 `setenv` 也不是双击启动能做的动作。
+    # 这里给两条都能执行的路：应用「设置 → 路径 → 私有笔记仓」（GUI 字段，见
+    # `sources-flet/app/ui/pages.py` 的 `_path_field("notes_repo", …)`），或环境变量（CLI/CI）。
+    return (f"没找到笔记仓（案例法/交接说明/冻结基线在那里）：自动探测只在引擎仓同级找，"
+            f"打包版在包内找、包内没有就找不到。"
+            f"请显式指定：应用「设置 → 路径 → 私有笔记仓」，"
+            f"或设 {NOTES_ENV}=<笔记仓路径>（目录下要有 `cases/`）。")
 
 
 def require(tool: str, log=print) -> str | None:

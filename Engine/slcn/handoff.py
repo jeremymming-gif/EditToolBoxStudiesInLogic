@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 import re
 
+from .bibparse import pair_summary
+
 #: 交接单文件名后缀（`convert.is_own_product()` 也用这个后缀认自己产物）。
 HANDOFF_SUFFIX = "_初排交接单.txt"
 
@@ -158,7 +160,8 @@ def _conflict_lines(bibdb: dict | None) -> list[str]:
                       sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
     lines = [f"回填冲突（⑦ 覆盖库内已有值）：{n} 项（{detail}）"]
     for key, name, old, new in samples[:_CONFLICT_SAMPLES]:
-        lines.append(f"  · [{key}] {name}：「{_short(old)}」→「{_short(new)}」")
+        was, should = pair_summary(old, new, 40)
+        lines.append(f"  · [{key}] {name}：「{was}」→「{should}」")
     if n > len(samples):
         lines.append(f"  · …另 {n - len(samples)} 项见核对报告逐条行")
     return lines

@@ -133,28 +133,63 @@ def test_default_report_path_matches_engine():
     assert NV.default_report_path("/tmp/a/Foo.bib").endswith("Foo_回读校验报告.md")
 
 
-def test_normalize_initial_state_keeps_header_one_primary():
+def test_normalize_initial_state_is_sole_ai_view_no_old_form():
+    """DESIGN §4：库页直接就是「AI 辅助处理 Bib」一页，旧回读表单不再渲染。
+
+    旧断言钉的是「回读校验 + 生成报告 + 三字段 + 空态表头」（已按 lead 授权
+    替换为更强的新业务断言，见交付的旧→新映射）：现在要求唯一标题、唯一
+    主按钮是当前阶段的真主动作（idle → 「生成任务书」）、扁平无 Card、
+    旧表单/开关/报告工具条全无、默认只留目标 Bib + 关联正文（可选），
+    底栏写明「仅更新选定 Bib」。
+    """
     host = _Host()
     view = NV.NormalizeView(host)
     tree = view.build()
     texts = _texts(tree)
-    assert NV.VIEW_KEY == "normalize" and NV.ROLE == "readonly"
-    assert texts.count("回读校验") == 1
-    assert "还没有报告；先选 .bib 再生成。" in texts
-    assert "级别" in texts and "问题" in texts  # 空态保留表头
+    # 视图身份：路由 key 不变（bib_host 兼容），但页头语义改为「写目标 Bib」。
+    assert NV.VIEW_KEY == "normalize"
+    assert texts.count("AI 辅助处理 Bib") == 1, "唯一页头，不许折叠区再画一次"
+    assert "仅更新选定 Bib，不改中央库" in texts, "页头/底栏必须写清楚写语义"
+    # 唯一主按钮 = 当前阶段的真主动作（方案 B：主操作随阶段切换）。
+    # idle 阶段是「生成任务书」；「应用到目标 Bib」退成阶段③的次要按钮。
     primaries = [n for n in _walk(tree) if isinstance(n, ft.FilledButton)]
-    assert len(primaries) == 1 and primaries[0].content == "生成报告"
-    assert not any(isinstance(n, ft.Card) for n in _walk(tree))
-    for label in ("交回稿（.bib）", "原件（.bib", "正文（.tex"):
-        assert any(label in text for text in texts), label
+    assert len(primaries) == 1 and primaries[0].content == "生成任务书", \
+        "主操作随阶段：idle → 生成任务书"
+    # 旧断言钉「应用未到 preview 时禁用」；方案 B 下 idle 的主按钮是「生成任务书」，
+    # 它**常可点**（缺目标 Bib 时点它会给「生成任务书失败：请先选择待处理 Bib」的明确红字，
+    # 而不是灰着不给反馈）。「应用」仍禁用，但它是阶段③的次要按钮，单独钉。
+    assert primaries[0].disabled is False, "生成任务书在 idle 可点，缺输入时如实报错"
+    apply_btn = view._ai_view._action_buttons["apply"]
+    assert isinstance(apply_btn, ft.OutlinedButton) and apply_btn.disabled, \
+        "没有 preview 结果时应用必须禁用（阶段③的次要按钮）"
+    assert not any(isinstance(n, ft.Card) for n in _walk(tree)), "不许引入 Card"
+    # 旧表单/开关/工具条彻底不渲染（§4）。
+    for gone in ("生成报告", "字段对比", "键闭合", "报告路径", "去入藏",
+                 "还没有报告；先选 .bib 再生成。"):
+        assert not any(gone in text for text in texts), f"旧表单残留：{gone}"
+    # 新默认字段：待处理 Bib（必填、也是输入）+ 关联正文（可选）；不再有
+    # 用途单选/正文交付件/工作目录/重复源 Bib。
+    assert any("待处理 Bib" in text and "必填" in text for text in texts)
+    tex_labels = [text for text in texts if ".tex" in text]
+    assert tex_labels and all("关联正文" in text and "可选" in text for text in tex_labels)
+    for gone in ("工作目录", "正文交付件", "用途"):
+        assert not any(gone in text for text in texts), f"compact 未生效：{gone}"
+    # 视图在构造期就建好（新版直接成为页面内容，不再是折叠惰性实例）。
+    assert view._ai_view is not None and getattr(view._ai_view, "purpose", "") == "library"
 
 
 def test_normalize_requires_returned_path():
+    """功能契约（非展示）：没有交回稿就绝不排引擎任务，并如实写明原因。
+
+    旧断言读 build() 里的报文字串；旧表单已移除，改为断言数据层
+    `input_error` 与「未调度任何任务」——比原先只测文本更强，防止
+    generate() 在缺路径时仍静默起子进程（_NormalizeCompat 依赖这条红线）。
+    """
     host = _Host()
     view = NV.NormalizeView(host)
     view.generate()
-    texts = _texts(view.build())
-    assert "先选交回的 .bib 文件。" in texts
+    assert view.input_error == "先选交回的 .bib 文件。"
+    assert not host.page.tasks, "缺交回稿时不得调度 checkbib 子进程"
 
 
 def _fake_engine(monkeypatch, report: str, code: int = 1, captured=None):
@@ -175,7 +210,13 @@ def _fake_engine(monkeypatch, report: str, code: int = 1, captured=None):
     monkeypatch.setattr(EB, "run_call", fake_run)
 
 
-def test_normalize_success_renders_counts_and_remaining(monkeypatch, tmp_path):
+def test_normalize_success_parses_counts_and_keeps_report_fresh(monkeypatch, tmp_path):
+    """报告解析/计数是数据层契约（§5 只读检查兼容面依赖），不随 UI 移除而弱化。
+
+    旧断言读旧表单里的「体检未通过 / 5 错误 · 7 警告 / 还有 2 条 / 报告未更新」
+    文案（已移除）；改为断言数据层解析结果、success 摘要、loaded 与「本次确实
+    写出并回读了报告」——比读文案更贴近引擎输出契约。
+    """
     _fake_engine(monkeypatch, REPORT)
     host = _Host()
     view = NV.NormalizeView(host)
@@ -184,15 +225,20 @@ def test_normalize_success_renders_counts_and_remaining(monkeypatch, tmp_path):
     view.compare = True
     view.report_path = str(tmp_path / "report.md")
     asyncio.run(view._run_check())
-    texts = _texts(view.build())
     assert view.success.startswith("体检未通过：5 错误、7 警告")
-    assert "体检未通过" in texts
-    assert "5 错误 · 7 警告 · 9 记录 · 6 键" in texts
-    assert "还有 2 条 · 完整内容见报告" in texts
-    assert "报告未更新" not in " ".join(texts)
+    assert (view.data["errors"], view.data["warnings"],
+            view.data["records"], view.data["keys"]) == (5, 7, 9, 6)
+    assert view.loaded is True
+    assert Path(view.report_path).read_text(encoding="utf-8") == REPORT
+    assert not view.error, "正常解析路径不得留错误态"
 
 
-def test_normalize_pass_offers_import(monkeypatch, tmp_path):
+def test_normalize_pass_marks_ok_without_side_effects(monkeypatch, tmp_path):
+    """0 错误报告要标体检通过；新版不再提供「去入藏」按钮（§4 不改中央库）。
+
+    旧断言「去入藏」是旧表单里的入藏预填入口，已按 §4 移除；改为断言数据层
+    errors==0 + success 文案 + 没有触发任何入藏/Git 副作用（本页无这些方法调用）。
+    """
     report = REPORT.replace("**结论：5 处问题 / 7 处提示**", "**结论：0 处问题 / 2 处提示**")
     _fake_engine(monkeypatch, report, code=0)
     host = _Host()
@@ -200,13 +246,16 @@ def test_normalize_pass_offers_import(monkeypatch, tmp_path):
     view.returned = str(tmp_path / "returned.bib")
     view.report_path = str(tmp_path / "report.md")
     asyncio.run(view._run_check())
-    texts = _texts(view.build())
     assert view.data["errors"] == 0
-    assert "体检通过：0 错误、2 警告。" in texts
-    assert "去入藏" in texts
+    assert view.success == "体检通过：0 错误、2 警告。"
+    assert view.loaded is True
+    # §4：不自动定位/覆盖来稿，不触发中央库入藏或 Git 提交。
+    assert not getattr(view, "_import_requested", False)
+    assert "去入藏" not in " ".join(_texts(view.build()))
 
 
 def test_normalize_failure_keeps_old_report(monkeypatch, tmp_path):
+    """引擎抛错时：如实记 error，且绝不覆盖上次报告（保留旧文件/旧内容）。"""
     async def fake_run(call, **kwargs):
         raise RuntimeError("checkbib exploded")
 
@@ -217,10 +266,11 @@ def test_normalize_failure_keeps_old_report(monkeypatch, tmp_path):
     view.returned = str(tmp_path / "returned.bib")
     view.report_path = str(tmp_path / "report.md")
     view.loaded = True
+    view.report_text = "OLD-REPORT-CONTENT"
     asyncio.run(view._run_check())
-    texts = _texts(view.build())
-    assert "生成失败：checkbib exploded" in " ".join(texts)
-    assert "旧报告未更新" in " ".join(texts)
+    assert view.error == "生成失败：checkbib exploded"
+    assert view.report_text == "OLD-REPORT-CONTENT", "失败不得覆盖上次报告内容"
+    assert not Path(view.report_path).exists(), "失败不得写出新报告文件"
 
 
 def test_normalize_narrow_no_horizontal_scroll():

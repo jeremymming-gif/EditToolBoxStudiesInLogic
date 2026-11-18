@@ -446,6 +446,50 @@ pbpaste | python3 checkbib.py --returned-stdin --merge-into <产物 reference.bi
 并回 `0` **未改动** / `1` 已并入 ≥1 条 / `2` 用法或 IO 错误；
 列表（`--list-keys`）`0` 打印了 / `2` 出错。`--version` 同 `convert.py`。
 
+## 三·五、AI 工作流子命令：`convert.py --ai-workflow`（两段式之外的按类别工作流）
+
+第 20261117 批（C）。**不是新的入口文件**：入口表在 `Engine/engine_main.py`、Windows 侧
+`tools/build_win_sidecar.ps1`、外壳 `engine_bridge.ENTRIES` 三处互相钉死，所以这 7 个操作挂在
+`convert.py` 上；`--ai-workflow` 必须在 argparse **之前**被识别（`--source` 是 `required=True`），
+命中即整段转交给 `slcn/ai_workflow_cli.py`，**普通初排路径一行都不变**。
+
+```bash
+python3 convert.py --ai-workflow --work-dir <工作区> prepare  --target-bib <目标.bib> [--tex <正文.tex>]         [--source <源稿>] [--stem <名>] [--execute cat,...] [--adopt cat,...] [--text] [--json]
+python3 convert.py --ai-workflow --work-dir <工作区> request  [--taskbook <任务书.md>] [--reply-out <存哪>] [--timeout S]
+python3 convert.py --ai-workflow --work-dir <工作区> import    (--reply <结果文件> | --stdin) [--task-id ID]
+python3 convert.py --ai-workflow --work-dir <工作区> preview  [--reply <结果文件>] [--adopt cat,...]
+python3 convert.py --ai-workflow --work-dir <工作区> apply     --preview-id <pv-…> [--confirm-from <候选文件>]
+python3 convert.py --ai-workflow --work-dir <工作区> undo
+python3 convert.py --ai-workflow --work-dir <工作区> status
+```
+
+| 操作 | 写什么 | 绝不做什么 |
+|---|---|---|
+| `prepare` | 工作区 + 任务书 + `.aiw/state.json`（`schema_version` + 冻结输入指纹） | 不写目标 bib、不联网、零上传 |
+| `request` | 本机保存模型原文 → 进入与 Chat **同一条**解析 | 不自动采纳、失败不无限重试 |
+| `import` | 解析结果（bib 块 / 结构化建议）+ 覆盖状态 | 不写目标；TASK-ID 不符则**整份拒收** |
+| `preview` | `<stem>_AI候选.bib/.tex` + `preview_id` + 阻断原因 | 阻断时**不产候选文件**；不写目标 |
+| `apply` | 先 `<目标>.ai前` 备份，再**原子替换**目标；记 `undo_id` | 指纹不符 / 预览过期 / 有阻断 → 拒绝写 |
+| `status` | 只读：阶段、TASK-ID、计数、阻断项、`next` | 只读查询，没有任务也返回 0 |
+| `undo` | 目标回到 `.ai前`（仅当应用后目标没被再改过） | 不覆盖用户后续编辑 |
+
+- **类别**：`bib_verify`（文献核实）/ `typeset`（初排检查）/ `text`（文字纠错）。执行范围与采纳范围
+  是**两组独立参数**（`--execute` / `--adopt`）；缺省 `bib_verify`、`typeset` 执行且采纳，
+  **`text` 两端都默认关**（DESIGN §4）。`--text` = 把 `text` 加进执行范围。
+- **文字纠错的基线**：`prepare --tex` 会把正文路径与指纹冻结进状态；`preview` 按同一份正文
+  （指纹不符则**只报告不采纳**）算候选，写 `<stem>_AI候选.tex`。**源稿与正文永不回写**——
+  候选只在工作区，是否落到交付件由调用方决定。
+- **退出码**：`0` 成功 / `2` 失败（用法、IO、指纹不符、预览过期、有阻断项、TASK-ID 不符）。
+  `status` 例外：**没有任务也是 0**（那是有效答复，不是失败）。
+- **API Key**：只从环境（`SLCN_LLM_*`，由外壳 `env_for_run(api=…)` 注入），**永不进 argv / 任务书 / 状态 / 日志**。
+- **状态文件**：`.aiw/state.json`（旧工作区的根目录 `_AI工作流状态.json` 仍可只读兼容），`schema_version = "slcn.ai_workflow/1"`；版本不认 → 当作没有状态
+  （不猜旧格式）。写入一律 `<path>.tmp-aiwf` + `os.replace` 原子替换。
+- **任务书身份**：`TASK-ID`（`AIW-` + 12 位）+ 源 bib 指纹 + 引用键 + 规则版本 + 稳定 `item_id`；
+  外来 TASK-ID 的回复整份拒收，不按 key 相似度猜。
+- **报告口径**：「引用闭合」「AI 核实完成」「能编译」**三行分开**；前两行都不代表能编译。
+- 外壳：`sources-flet` 的引擎桥同名函数带 `ai_` 前缀（`ai_prepare_call` … ），因为 `ui/normalize.py`
+  已占用裸名 `preview_call`。页面（`ui/bib_ai_assist.py`）只调桥、只显示结构化结果。
+
 ## 四、入口 3：`mergepdf.py`（合并一期的 PDF，第 88 条）
 
 ```bash
@@ -1045,3 +1089,26 @@ python3 Engine/dirpush.py --check-out-root <输出根路径> [--json]
   单期留空沿用 000 默认不触发该确认。
 - **形态差异**：mac 可勾「同时生成年度汇总」→ 顺序跑两趟（当期 → 年度，`--with-en-toc` 只作用于当期）；
   Windows 一次只跑一个模式（模式单选），不照搬两趟。
+
+---
+
+## R3 任务书引擎接口（2026-11-18）
+
+- **`ai_workflow_taskbook.build_context(*, state, bib_text, tex_text, source_evidence,
+  rule_sections) -> dict`**：按冻结原文逐字切片，产出 v3 context（集合 `O/C/R/F/T/U/M/A`、
+  定义、条目、覆盖、正文单元）。`render_taskbook(*, context) -> str` 出八节固定顺序任务书。
+  `DEFAULT_RULE_SECTIONS` 为已放行的 8 类规则节常量（去真实案例、不自创判据）；
+  同一冻结输入重复渲染 SHA 一致。
+- **`ai_workflow.read_taskbook(*, work_dir, task_id='') -> dict`**：只读接口，
+  返回恰好 `{ok,task_id,template_version,path,sha256,text,chars}`。只认状态登记的
+  `taskbook{path,sha256}`，核 `task_id` 与文件实 SHA，不符/缺件整份降级 `ok=False, text=""`。
+- **`ai_workflow.request(..., retry: bool=False) -> dict`**：单请求显式重试；
+  只在 `failed/cancelled/unknown` 且显式 `retry=True` 时才新发，成功/进行中拒发。
+  返回保留 `ok/phase/reply_text/reply_path/chars/error/imported`，新增
+  `request_id/request_status`；Key 不入 argv/任务书/状态/日志。
+- **`ai_workflow_convert` 五接口**：`add_convert_args(parser)` 幂等注册三新选项；
+  `normalize_convert_args(args)` 新/旧分流（混用抛 `ValueError`，不改
+  `compile/source_pdf/clean`）；`dispatch_taskbook(args, res, **kwargs)->int|None`
+  第一段早退并生成登记任务书（非新模式返回 `None`）；
+  `deliver(*,work_dir,preview_id,use_original=False)` 真写入两类采纳；
+  `undo_delivery(*,work_dir)` 整目录撤销。`convert.py` 只做薄接点，re-export 符号身份不变。

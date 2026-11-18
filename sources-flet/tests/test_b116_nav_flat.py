@@ -159,6 +159,7 @@ def test_bib_has_one_sidebar_leaf_and_no_group_captions_or_children() -> None:
 
     labels = _labels(nav)
     for gone in ("查阅", "采录", "治理", "概览", "查库", "入藏", "回读校验",
+                 "AI 辅助处理 Bib", "AI 处理",
                  "待处理", "编辑", "查重合并", "字段归位", "库健康"):
         assert gone not in labels, f"引用库子项应在页内导航，不在侧栏：{gone}"
     assert labels.count("引用库") == 1

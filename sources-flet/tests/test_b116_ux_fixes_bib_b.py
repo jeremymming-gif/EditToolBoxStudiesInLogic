@@ -276,51 +276,88 @@ def test_fieldfix_apply_all_only_when_rows_checked():
     assert "预览所选" in _texts(bar)
 
 
-# ── P1-14 回读校验：None / 重复可空 / 无报告禁用+原因 / 识别解释 ───────
+# ── P1-14 AI 辅助处理 Bib（原回读校验）：None / 重复可空 / 无报告禁用+原因 / 识别解释 ───────
 def test_normalize_empty_counts_and_labels_have_no_none_or_duplicate_suffix():
+    """P1-14 契约升级（DESIGN §4）：数据层不漏 None + 新页无旧三字段。
+
+    旧断言钉的是「空态计数表头 0/0/0/0 出现在页面 + 原件/正文旧字段」
+    （旧回读表单，已按 §4 删除）。新断言两层都钉：
+      · 数据层：无报告时 `_conclusion()` 用 0 计数、不漏 None；
+      · 展示层：新页「AI 辅助处理 Bib」无旧原件/正文字段、无「（可空）（可空）」。
+    """
     view = NV.NormalizeView(_Host())
-    tree = view.build()
-    texts = _texts(tree)
+    assert not any("None" in t for t in _texts(view._conclusion()))
+    assert "0 错误 · 0 警告 · 0 记录 · 0 键" in _texts(view._conclusion())
+
+    texts = _texts(view.build())
     assert not any("None" in text for text in texts)
-    assert "0 错误 · 0 警告 · 0 记录 · 0 键" in texts
     assert "（可空）（可空）" not in " ".join(texts)
-    assert any("原件（.bib）" in text for text in texts)
-    assert any("正文（.tex）" in text for text in texts)
+    # §4：旧「原件（.bib）/正文（.tex）」表单字段不再作为交付件渲染；
+    # 新页只有「目标 Bib（必填）+ 关联正文（.tex，可选）」。
+    assert not any("原件（.bib）" in text for text in texts)
+    assert all("关联正文" in text for text in texts if ".tex" in text)
+    assert any("目标 Bib" in text for text in texts)
 
 
 def test_normalize_no_report_disables_open_copy_with_reason():
-    view = NV.NormalizeView(_Host())
-    tree = view.build()
-    for label in ("打开", "复制"):
-        buttons = _buttons(tree, label)
-        assert buttons and buttons[0].disabled is True, label
-        assert "还没有报告" in (buttons[0].tooltip or ""), label
-    header = _buttons(tree, "打开报告")
-    assert header and header[0].disabled is True
-    assert "还没有报告" in (header[0].tooltip or "")
+    """P1-14 契约升级（DESIGN §4）：报告路径工具条已移除，改为钉数据层与页头语义。
 
-    identify = [n for n in _walk(tree) if getattr(n, "_bib_identify_btn", None)]
-    assert identify and identify[0].tooltip
+    旧断言钉旧表单的「打开/复制/打开报告」禁用按钮与 tooltip、识别按钮
+    （均随旧回读表单删除）。新断言钉：无报告时数据层仍诚实标记无数据、
+    结论区不漏 None；新页不再出现任何旧报告工具条按钮，底栏写明写语义。
+    """
+    view = NV.NormalizeView(_Host())
+    assert view.data.get("errors") is None, "无报告：数据层应标记不可解析"
+    assert "还没有报告" in _texts(view._conclusion())
+    assert not any("None" in t for t in _texts(view._conclusion()))
+
+    tree = view.build()
+    texts = _texts(tree)
+    for label in ("打开", "复制", "打开报告"):
+        assert not _buttons(tree, label), f"§4 旧报告工具条不应渲染：{label}"
+    # 旧「识别」按钮（回读列键）也不再是主界面控件。
+    assert not [n for n in _walk(tree) if getattr(n, "_bib_identify_btn", None)]
+    assert "仅更新选定 Bib，不改中央库" in texts
 
 
 def test_normalize_unparseable_report_uses_dashes_not_none():
+    """P1-14 数据层契约（**独立钉住，防真实回归**）：不可解析报告不漏 None。
+
+    `parse_report` 用 None 表示「格式无法解析」；渲染层 `_conclusion()` 必须
+    把它转成 `— 错误 · — 警告 · — 记录 · — 键`，绝不把 None 拼进 UI。旧断言
+    读的是整页 build()，新断言直接喂渲染函数，钉住这条数据→渲染契约本身。
+    """
     view = NV.NormalizeView(_Host())
     view.report_text = "not a report"
     view.data = NV.parse_report(view.report_text)
-    texts = _texts(view.build())
-    assert not any("None" in text for text in texts)
-    assert "— 错误 · — 警告 · — 记录 · — 键" in texts
+    # 数据层：None 是「不可解析」的诚实信号，不是 bug。
+    assert (view.data["errors"], view.data["warnings"],
+            view.data["records"], view.data["keys"]) == (None, None, None, None)
+    conclusion_texts = _texts(view._conclusion())
+    # 渲染层：None 绝不外泄，计数走 dash。
+    assert not any("None" in text for text in conclusion_texts)
+    assert "— 错误 · — 警告 · — 记录 · — 键" in conclusion_texts
+    assert "报告格式无法解析" in conclusion_texts
 
 
 def test_normalize_existing_report_enables_open_and_copy(tmp_path):
+    """P1-14 契约升级（DESIGN §4）：有报告也不渲染旧「打开/复制」工具条。
+
+    旧断言钉「设了 report_path 后旧工具条按钮变可用」。§4 已删除整条报告路径
+    工具条（新页以目标 Bib 为输入、不写报告文件），新断言钉：即使设了报告
+    路径，新页仍无旧按钮，唯一主按钮是当前阶段主操作（idle → 出任务书）；页头语义明确。
+    """
     report = tmp_path / "report.md"
     report.write_text("# report\n", encoding="utf-8")
     view = NV.NormalizeView(_Host())
     view.report_path = str(report)
     tree = view.build()
-    for label in ("打开", "复制"):
-        buttons = _buttons(tree, label)
-        assert buttons and buttons[0].disabled is False, label
+    for label in ("打开", "复制", "打开报告"):
+        assert not _buttons(tree, label), f"§4 旧报告工具条不应渲染：{label}"
+    primaries = [n for n in _walk(tree) if isinstance(n, ft.FilledButton)]
+    assert len(primaries) == 1 and primaries[0].content == "生成任务书", \
+        "主操作随阶段：idle → 生成任务书（不是「应用到目标 Bib」）"
+    assert "仅更新选定 Bib，不改中央库" in _texts(tree)
 
 
 def test_fieldfix_no_candidate_row_still_shows_dash():

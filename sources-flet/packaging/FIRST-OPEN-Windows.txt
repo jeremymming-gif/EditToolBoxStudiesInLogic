@@ -22,7 +22,7 @@
 
 5) 完整性校验（可选）：PowerShell 里执行
    Get-FileHash .\编辑部工具箱.exe -Algorithm SHA256
-   与压缩包内 sha256.txt 对照。zip 的 sha256 见 CI 运行摘要。
+   与压缩包内 sha256.txt 对照。zip 的 sha256 由构建方随发布说明另行提供。
 
 已知限制：未签名（SmartScreen 提示）；文件拖放走「浏览...」原生对话框。
 托盘为可选功能（Windows 10/11 通知区，默认关；设置「窗口与托盘」开启），依赖 pystray/Pillow，已随包安装。

@@ -22,12 +22,13 @@ r"""参考文献核对**报告**：把一份 .bib 文本变成人可读的四节
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from . import bibcheck, bibnorm, report_header as _rh
-from .bibparse import LEVEL_INFO, LEVEL_PROBLEM, Entry, Finding, _clip, parse_entries
+from . import bibcheck, bibnorm, paths as _paths, report_header as _rh
+from .bibparse import LEVEL_INFO, LEVEL_PROBLEM, Entry, Finding, _clip, pair_summary, parse_entries
 
 SECTION_ORDER = ("syntax", "spec", "cite", "diff")
 SECTION_TITLES = {
@@ -325,12 +326,13 @@ def check_spec(rep: Report, entries: list[Entry]) -> None:
             raw = f["pages"].strip()
             cleaned = bibnorm._clean_field_value("pages", raw)
             if cleaned is not None and cleaned != raw:
+                was, should = pair_summary(raw, cleaned, 30)
                 rep.add(
                     e.key,
                     "spec",
                     LEVEL_PROBLEM,
-                    f"页码写法不对（应用双短横、不写 pp.）：pages = {{{_clip(raw, 30)}}}"
-                    f" → 应为 {{{_clip(cleaned, 30)}}}",
+                    f"页码写法不对（应用双短横、不写 pp.）：pages = {{{was}}}"
+                    f" → 应为 {{{should}}}",
                 )
 
         # ── 期号前导零（复用 bibnorm 的清洗规则）──
@@ -339,12 +341,13 @@ def check_spec(rep: Report, entries: list[Entry]) -> None:
                 raw = f[name].strip()
                 cleaned = bibnorm._clean_field_value(name, raw)
                 if cleaned is not None and cleaned != raw:
+                    was, should = pair_summary(raw, cleaned, 20)
                     rep.add(
                         e.key,
                         "spec",
                         level,
-                        f"{'期号' if name == 'number' else '卷号'}有前导零：{name} = {{{_clip(raw, 20)}}}"
-                        f" → 应为 {{{_clip(cleaned, 20)}}}",
+                        f"{'期号' if name == 'number' else '卷号'}有前导零：{name} = {{{was}}}"
+                        f" → 应为 {{{should}}}",
                     )
 
         # ── 月份：三字母缩写（复用 bibnorm._MONTHS）──
@@ -416,12 +419,12 @@ def check_spec(rep: Report, entries: list[Entry]) -> None:
             else:
                 clean_au = bibnorm._clean_field_value("author", raw_au)
                 if clean_au and clean_au != raw_au:
+                    was, should = pair_summary(raw_au, clean_au, 50)
                     rep.add(
                         e.key,
                         "spec",
                         LEVEL_INFO,
-                        f"作者写法可规范（多作者用 `and` 分隔）：{{{_clip(raw_au, 50)}}} → "
-                        f"{{{_clip(clean_au, 50)}}}",
+                        f"作者写法可规范（多作者用 `and` 分隔）：{{{was}}} → {{{should}}}",
                     )
 
         # ── 多作者：逗号与 and 混用（任务书第一节第 2 条的实测错名案例）──
@@ -639,9 +642,10 @@ def check_diff(rep: Report, orig_entries: list[Entry], entries: list[Entry]) -> 
                 if _norm_val(of[name]) != _norm_val(nf[name]):
                     row.kind = "changed"
                     row.changed.append(name)
+                    was, should = pair_summary(of[name], nf[name], 40)
                     rep.add(
                         k, "diff", LEVEL_INFO,
-                        f"字段值有改动：`{name}`：`{_clip(of[name], 40)}` → `{_clip(nf[name], 40)}`",
+                        f"字段值有改动：`{name}`：`{was}` → `{should}`",
                     )
 
     # ── 逐键比对（两边都有的键）──
@@ -846,10 +850,48 @@ def _diff_status(row: DiffRow | None) -> str:
     return "、".join(bits) or "有改动"
 
 
+def _path_for_report(shown: str, report_dir: str) -> str:
+    r"""报告抬头里的路径：**默认按报告自身所在目录**给相对路径（案例第 140 条）。
+
+    为什么（DESIGN §11.2 A「报告里的链接必须指向真的还在的快照」）
+    ------------------------------------------------------------
+    报告抬头原本原样打印调用方传进来的绝对路径。可是报告是**给人看的文件**：
+      · 暂存目录会被清理（`convert.py` 成功交付后删暂存），绝对路径当场失效；
+      · 整份交付目录被复制/挪走后，绝对路径指向**别人的**旧目录，比没有链接更坏。
+    相对路径跟着报告一起搬，只要快照真的在报告旁边就永远点得到。
+
+    判据（**行为保持**：`checkbib.py` 的通道不变）
+    --------------------------------------------
+      · `report_dir` 为空（`render()` 没被告知报告位置）→ 原样返回，绝对路径照旧；
+      · 该路径**当下确实存在**才换算（"指向真的还在的快照"）；
+      · 换算后为 `..` 开头的（快照在报告目录之外、需要往上跳）→ **不换算**：
+        这种相对路径一挪就错，不如给能直接复制的绝对路径；
+      · 换算一律走 `paths.rel()`（跨盘符安全，`test_platform.py` 的 (f) 组守卫）。
+    """
+    raw = str(shown or "").strip()
+    if not raw or not report_dir:
+        return shown
+    # 这些不是路径，是渲染时给的占位说明，不许当成路径去算相对。
+    if raw.startswith("(") or raw == "—":
+        return shown
+    try:
+        if not os.path.exists(raw):
+            return shown
+        rel = _paths.rel(raw, report_dir)
+    except (OSError, ValueError):
+        return shown
+    rel = str(rel).replace(os.sep, "/")
+    if rel.startswith("../") or rel == "..":
+        return shown            # 在报告目录之外：相对路径一搬就错，维持绝对路径
+    return rel
+
+
 def render(
     rep: Report,
     title: str = "退回版参考文献核对报告",
     source_note: str = SOURCE_NOTE_CHECKBIB,
+    *,
+    report_dir: str = "",
 ) -> str:
     """渲染 markdown 报告：结论 → 分节 → 附录逐条状态。"""
     L: list[str] = [f"# {title}", ""]
@@ -857,12 +899,14 @@ def render(
     L.append(f"**结论：{rep.n_problem} 处问题 / {rep.n_info} 处提示** —— {verdict}")
     L.append("")
     entries_txt = f"{rep.total} 条条目"
-    L.append(f"- 退回文件：`{rep.returned or '—'}`（解析出 {entries_txt}）")
+    L.append(f"- 退回文件：`{_path_for_report(rep.returned, report_dir)}`（解析出 {entries_txt}）")
     L.append(
-        f"- 原件（--original）：`{rep.original}`" if rep.original else "- 原件（--original）：**未提供**（不做字段级 diff）"
+        f"- 原件（--original）：`{_path_for_report(rep.original, report_dir)}`"
+        if rep.original else "- 原件（--original）：**未提供**（不做字段级 diff）"
     )
     L.append(
-        f"- 正文（--tex）：`{rep.tex}`" if rep.tex else "- 正文（--tex）：**未提供**（不做引用键闭合核对）"
+        f"- 正文（--tex）：`{_path_for_report(rep.tex, report_dir)}`"
+        if rep.tex else "- 正文（--tex）：**未提供**（不做引用键闭合核对）"
     )
     stats = rep.match_stats or {}
     if stats.get("degraded"):
@@ -984,6 +1028,7 @@ def build_report_and_conclusion(
     tex_path: str = "",
     notes: tuple[str, ...] | list[str] = (),
     source_note: str = SOURCE_NOTE_CHECKBIB,
+    report_dir: str = "",
 ) -> tuple[str, str]:
     """**唯一**的报告入口：一份 bib 文本 → (四节 markdown, 结论行)。
 
@@ -1001,7 +1046,7 @@ def build_report_and_conclusion(
         tex_path=tex_path,
     )
     rep.notes = list(notes) + rep.notes
-    return render(rep, title, source_note=source_note), conclusion_line(rep)
+    return render(rep, title, source_note=source_note, report_dir=report_dir), conclusion_line(rep)
 
 
 def build_report(

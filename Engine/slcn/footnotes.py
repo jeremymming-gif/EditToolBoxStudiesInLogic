@@ -764,17 +764,31 @@ def parse_author_info(
             return None
     elif _ai_unlabeled_ok(t, known_cn, known_en):
         sections = [("authors", t)]
-    elif _AI_FUND_SENTENCE_RE.search(t) and not _AI_CITE_CUE_RE.search(t):
-        # F-01 ⑧：无标签英文基金句（This work was supported by …）自带致谢措辞判据，
-        # 且不含年份/期刊/引号等文献标记 → 当成 funds 段，不臆造作者。
-        sections = [("funds", t)]
     else:
         # 无标签英文作者块（B-217 ④⑥）：姓名/单位/邮箱**自带判据**，不依赖已知名单
         # （英文稿的已知名单常为空或为拆碎的拉丁串）。
+        # ⚠️ 顺序不可颠倒（F-10）：英文稿常把「作者块 + 末尾基金句」写进**同一条**
+        # 脚注；若先判 `_AI_FUND_SENTENCE_RE`，整条会被当 funds —— grants 取到第一
+        # 作者的姓名+单位，真正的基金句与作者列表一起丢失。故先认作者块，块后尾部
+        # 再单独判 funds（与中文块「尾部标签另算」同一思路）。
         _en_block = _ai_en_block_prefix(t)
-        if not _en_block:
+        if _en_block:
+            sections = [("authors", _en_block)]
+            # 块后尾部（基金/致谢句）：`_ai_en_block_prefix` 只收**开头连续段**，
+            # 返回的是清洗后的行，与这里 `lines` 的前 n 项逐行对应（两处同用
+            # `_ai_clean_text`、同一 `[\n\r]+` 切分，空行/制表符都被滤掉）。
+            lines = [x for x in re.split(r"[\n\r]+", t) if _ai_clean_text(x)]
+            n = len(_en_block.splitlines())
+            rest = "\n".join(lines[n:]).strip()
+            if rest and _AI_FUND_SENTENCE_RE.search(rest) \
+                    and not _AI_CITE_CUE_RE.search(rest):
+                sections.append(("funds", rest))
+        elif _AI_FUND_SENTENCE_RE.search(t) and not _AI_CITE_CUE_RE.search(t):
+            # F-01 ⑧：无标签英文基金句（This work was supported by …）自带致谢措辞
+            # 判据，且不含年份/期刊/引号等文献标记 → 当成 funds 段，不臆造作者。
+            sections = [("funds", t)]
+        else:
             return None
-        sections = [("authors", _en_block)]
     authors: list[dict] = []
     received = ""
     grants = ""

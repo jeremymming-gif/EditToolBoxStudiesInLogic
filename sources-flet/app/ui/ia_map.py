@@ -18,8 +18,9 @@
 `bib:settings` 仍是可深链路由（⌘K/搜索直达），只在 NAV_TREE 的 `views` 中保留。
 
 「取长补短」的两条关键取舍（详见 p1-design.md）：
-1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → 回读校验」，与「入藏」同组（采录）：它的输入是
-   单篇 returned.docx，体检放在入库前；「单篇稿件」页只留「去引用库 → 回读校验」跳转，不再有第三步骤。
+1. 「参考文献规范化」随 GUI-06 纯迁到「引用库 → AI 辅助处理 Bib」，与「入藏」同组（采录，
+   内部键 `normalize` 保留）：它核实并改写你选定的 .bib，不改中央库；「单篇稿件」页只留
+   「去引用库 → AI 辅助处理 Bib」跳转，不再有第三步骤。
 2. 「整期装配」批 114 曾把 6 个步骤全部挂到侧栏；批 115（D1-115-26）起改为一个**单页工作台**：
    侧栏只留「整期装配」叶子，4 个功能在页内 chip 切换（生成目录 / 编译并合并 /
    清理临时文件 / 生成推送文案）——它们彼此独立，不要求按顺序执行。
@@ -57,7 +58,7 @@ NAV_TREE: list[dict] = [
              {"key": "overview", "label": "概览", "group": "read"},
              {"key": "query", "label": "查库", "group": "read"},
              {"key": "import", "label": "入藏", "group": "intake"},
-             {"key": "normalize", "label": "回读校验", "group": "intake"},
+             {"key": "normalize", "label": "AI 辅助处理 Bib", "tab_label": "AI 处理", "group": "intake"},
              {"key": "review", "label": "待处理", "group": "treat"},
              {"key": "edit", "label": "编辑", "group": "treat"},
              {"key": "dupes", "label": "查重合并", "group": "treat"},
@@ -328,7 +329,7 @@ IA_MAP: list[dict] = [
      "new_view": "步骤「初排转换」", "component": "PathPicker + OptionRow×4 + 运行按钮 + LogConsole",
      "action": "convert（P2 接 Engine/convert.py）", "first_batch": "骨架已实现（模拟运行）"},
     {"idx": 1, "old_page": "参考文献规范化", "old_group": "引用库", "new_page": "引用库",
-     "new_view": "视图「回读校验」（采录组）", "component": "PathPicker + OptionRow + 运行按钮 + LogConsole",
+     "new_view": "视图「AI 辅助处理 Bib」（采录组）", "component": "PathPicker + OptionRow + 运行按钮 + LogConsole",
      "action": "checkbib（Engine/checkbib.py；只出报告、不并回、不写库）", "first_batch": "已实装（S3a2）"},
     {"idx": 2, "old_page": "合并文件", "old_group": "整期装配", "new_page": "整期装配",
      "new_view": "步骤 4「合并文件」", "component": "步骤行 + 状态徽标 + 运行按钮",
@@ -421,7 +422,7 @@ def stats() -> dict:
         1 for row in IA_MAP
         if row["first_batch"].startswith(("骨架已实现", "已实装"))
     )
-    # IA_MAP idx1 从「单篇稿件」迁到「引用库 → 回读校验」（采录组）后，new_pages 仍是 4 个：
+    # IA_MAP idx1 从「单篇稿件」迁到「引用库 → AI 辅助处理 Bib」（采录组）后，new_pages 仍是 4 个：
     # 单篇稿件 / 整期装配 / 引用库 / 设置；15 个旧页的映射总数不变。
     pages = sorted({row["new_page"] for row in IA_MAP})
     p3_done = sum(1 for row in IA_MAP if row.get("p3_status") == "done")

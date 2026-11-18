@@ -244,7 +244,7 @@ def apply_ai_merge(bib_path: str, taskbook_path: str, replies: dict[str, str],
             returned_path=bib_path,
             original_path=rollback,
             tex_path=tex_path if tex_text is not None else "",
-            source_note=bibreport.SOURCE_NOTE_MERGE,
+            source_note=bibreport.SOURCE_NOTE_MERGE, report_dir=out_dir,  # 抬头给相对路径
         )
         report_path = os.path.join(out_dir, f"{stem}_回读校验报告.md")
         with open(report_path, "w", encoding="utf-8", newline="\n") as f:

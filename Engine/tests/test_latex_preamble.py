@@ -26,6 +26,9 @@ r"""LaTeX 前言依赖迁移 + 多文件正文（**第 120 条**，2026-10-17 ma
   ⑦ **定义位置加固**（第 130 条，2026-10-18）：本地 .sty 的六类定义 + 普通宏、
      本地 .cls / 嵌套 .def、正文区定义提示（不迁移）、定义缺失预检、Word 通道零变化；
      补丁：`\newcounter` 依赖迁移与顺序、本地非标准命名 .sty 的包行不迁（按差集搬定义）。
+  ⑨ **数学字体/符号声明 + 环境局部定义**（第 143 条，2026-11-17）：`\DeclareMathAlphabet`
+     / `\DeclareMathSymbol` 的迁移与依赖闭包、目标括号/裸控制序列、注释/缺组/未配平
+     不误收、模板已有不重复迁、环境体里的 `\renewcommand` 不外提不改名。
 
 只写临时目录；不联网、不读稿件库、不跑 corpus.py / build.sh。
 
@@ -886,6 +889,304 @@ _plan_c2 = PRE.plan_migration(
 check("⑧ 反例：模板无 marvosym 时 bbding 照旧迁移",
       not _plan_c2.conflicts and any("bbding" in ln for ln in _plan_c2.lines),
       str(_plan_c2.lines))
+
+# ══════════════════════════════════════════════════════════════════════════
+# ⑨ 数学字体/符号声明迁移 + 环境局部定义不外提（第 143 条，2026-11-17）
+# ══════════════════════════════════════════════════════════════════════════
+# 症状一：作者前言 \DeclareMathAlphabet{\cmsf}{OT1}{cmss}{m}{n} 整行丢失，
+# 正文经 \E 等宏间接用到 \cmsf → 编译报 Undefined control sequence。
+# 症状二：\DeclareMathSymbol{\Kap}{\mathalpha}{operators}{"4B} 同样没搬。
+# 症状三（潜伏）：\newenvironment{claimproof}{\renewcommand{\qedsymbol}…}{} 的
+# 环境体定义被当成顶层定义，抽到全局并改名 → 环境一旦使用就 Command undefined。
+_MATH_SRC = r"""\documentclass{article}
+\DeclareMathAlphabet{\cmsf}{OT1}{cmss}{m}{n}
+\DeclareMathSymbol{\Kap}{\mathalpha}{operators}{"4B}
+\DeclareMathSymbol{\Ghosted}{\mathalpha}{operators}{"4C}
+% \DeclareMathAlphabet{\commentedmath}{OT1}{cmss}{m}{n}
+\newcommand{\E}{\cmsf{E}}
+\begin{document}
+正文 $\E$、$\Kap$。
+\end{document}
+"""
+write("mathdecl/author.tex", _MATH_SRC)
+_math_pre = PRE.source_preamble(_MATH_SRC)
+_math_items = PRE.scan_preamble(_math_pre)
+_math_by = {(it.kind, it.name): it for it in _math_items}
+check("⑨ scan_preamble 认 \\DeclareMathAlphabet（kind=mathalphabet、name=cmsf）",
+      ("mathalphabet", "cmsf") in _math_by,
+      str(sorted(_math_by)))
+check("⑨ scan_preamble 认 \\DeclareMathSymbol（kind=mathsymbol、name=Kap）",
+      ("mathsymbol", "Kap") in _math_by)
+check("⑨ 数学声明保留完整原文（4 组 / 3 组都在，不吃下一条）",
+      _math_by.get(("mathalphabet", "cmsf")) is not None
+      and _math_by[("mathalphabet", "cmsf")].source
+      == r"\DeclareMathAlphabet{\cmsf}{OT1}{cmss}{m}{n}"
+      and _math_by.get(("mathsymbol", "Kap")) is not None
+      and _math_by[("mathsymbol", "Kap")].source
+      == r'\DeclareMathSymbol{\Kap}{\mathalpha}{operators}{"4B}',
+      str(_math_by.get(("mathalphabet", "cmsf"))))
+check("⑨ 注释掉的数学声明不误收（commentedmath）",
+      ("mathalphabet", "commentedmath") not in _math_by)
+_BARE_SRC = r"""\documentclass{article}
+\DeclareMathAlphabet\cmsfbare{OT1}{cmss}{m}{n}
+\DeclareMathSymbol\Kapbare{\mathalpha}{operators}{"4B}
+\begin{document}
+正文。
+\end{document}
+"""
+write("mathdecl/bare.tex", _BARE_SRC)
+_bare = {
+    (it.kind, it.name)
+    for it in PRE.scan_preamble(PRE.source_preamble(_BARE_SRC))
+}
+check("⑨ 裸控制序列目标也认（\\cmsfbare / \\Kapbare）",
+      ("mathalphabet", "cmsfbare") in _bare
+      and ("mathsymbol", "Kapbare") in _bare, str(sorted(_bare)))
+_NODIGIT_SRC = r"""\documentclass{article}
+\DeclareMathAlphabet{\cmsf1}{OT1}{cmss}{m}{n}
+\DeclareMathSymbol{\Kap2}{\mathalpha}{operators}{"4B}
+\DeclareMathAlphabet\cmsfbare1{OT1}{cmss}{m}{n}
+\DeclareMathSymbol\Kapbare2{\mathalpha}{operators}{"4B}
+\begin{document}
+正文。
+\end{document}
+"""
+write("mathdecl/nodigit.tex", _NODIGIT_SRC)
+_nodigit = PRE.scan_preamble(PRE.source_preamble(_NODIGIT_SRC))
+check("⑨ 控制词名不含数字：{\\cmsf1}/{\\Kap2} 与裸目标 \\cmsfbare1/\\Kapbare2 都不误收",
+      not _nodigit, str([(it.kind, it.name) for it in _nodigit]))
+_BROKEN_SRC = r"""\documentclass{article}
+\DeclareMathAlphabet{\shortalpha}{OT1}{cmss}{m}
+\DeclareMathSymbol{\shortkap}{\mathalpha}{operators}
+\DeclareMathAlphabet{\unbalanced}{OT1}{cmss}{m}{n
+\newcommand{\survivor}{S}
+\begin{document}
+正文 \survivor。
+\end{document}
+"""
+write("mathdecl/broken.tex", _BROKEN_SRC)
+_broken_names = {
+    it.name for it in PRE.scan_support_definitions(PRE.source_preamble(_BROKEN_SRC))
+}
+check("⑨ 缺组/未配平不误收、也不吞下一条（survivor 仍在）",
+      "shortalpha" not in _broken_names and "shortkap" not in _broken_names
+      and "unbalanced" not in _broken_names and "survivor" in _broken_names,
+      str(sorted(_broken_names)))
+
+# 作者前言：两种声明直接进产物
+_res_md, _tex_md = build_one("mathdecl/author.tex", "mathauthor")
+check("⑨ 作者前言：\\DeclareMathAlphabet 迁入产物（cmsf）",
+      "\\DeclareMathAlphabet{\\cmsf}{OT1}{cmss}{m}{n}" in _tex_md)
+check("⑨ 作者前言：\\DeclareMathSymbol 迁入产物（Kap）",
+      "\\DeclareMathSymbol{\\Kap}{\\mathalpha}{operators}{\"4B}" in _tex_md)
+check("⑨ 作者前言：注释掉的数学声明不进产物（commentedmath）",
+      "commentedmath" not in _tex_md)
+
+# 本地 .sty：正文直接用的迁、经宏体间接依赖的也迁、没用到的不迁
+write("mathdecl/local/SLCNMATH.sty", r"""\DeclareMathAlphabet{\cmsf}{OT1}{cmss}{m}{n}
+\DeclareMathSymbol{\Kap}{\mathalpha}{operators}{"4B}
+\DeclareMathSymbol{\unusedkap}{\mathalpha}{operators}{"4C}
+\newcommand{\E}{\cmsf{E}}
+\newcommand{\unusedE}{\cmsf{X}}
+""")
+write("mathdecl/local/main.tex", r"""\documentclass{article}
+\usepackage{SLCNMATH}
+\begin{document}
+正文 $\E$、$\Kap$。
+\end{document}
+""")
+_res_ml, _tex_ml = build_one("mathdecl/local/main.tex", "mathlocal")
+check("⑨ 本地 .sty：正文直接用的 \\DeclareMathSymbol 迁入（Kap）",
+      "\\DeclareMathSymbol{\\Kap}" in _tex_ml)
+check("⑨ 本地 .sty：经宏体间接用到的 \\DeclareMathAlphabet 迁入（\\E → cmsf）",
+      "\\DeclareMathAlphabet{\\cmsf}" in _tex_ml
+      and "\\newcommand{\\E}" in _tex_ml)
+check("⑨ 本地 .sty：没用到的不迁（unusedkap / unusedE）",
+      "unusedkap" not in _tex_ml and "unusedE" not in _tex_ml)
+check("⑨ 本地 .sty：\\usepackage{SLCNMATH} 包行不迁（按差集搬定义）",
+      "\\usepackage{SLCNMATH}" not in _tex_ml)
+
+# 本地 .cls：同样按正文可达搬数学声明
+write("mathdecl/cls/SLCNMATHCLS.cls", r"""\NeedsTeXFormat{LaTeX2e}
+\ProvidesClass{SLCNMATHCLS}
+\LoadClass{article}
+\DeclareMathSymbol{\ClsKap}{\mathalpha}{operators}{"4B}
+""")
+write("mathdecl/cls/main.tex", r"""\documentclass{SLCNMATHCLS}
+\begin{document}
+正文 $\ClsKap$。
+\end{document}
+""")
+_res_mc, _tex_mc = build_one("mathdecl/cls/main.tex", "mathcls")
+check("⑨ 本地 .cls：\\DeclareMathSymbol 迁入（ClsKap）",
+      "\\DeclareMathSymbol{\\ClsKap}" in _tex_mc)
+
+# 模板已有同名数学声明：不重复迁；模板没有的照旧迁
+_TPL_DUP = r"""\documentclass{article}
+\DeclareMathAlphabet{\cmsf}{OT1}{cmss}{m}{n}
+\begin{document}
+\end{document}
+"""
+_plan_dup = PRE.plan_migration(
+    _MATH_SRC, _TPL_DUP, "", "", body_text="正文 $\\E$、$\\Kap$。")
+check("⑨ 模板已有同名数学声明：不重复迁（cmsf 不在 plan.lines）",
+      not any("DeclareMathAlphabet" in ln for ln in _plan_dup.lines),
+      str(_plan_dup.lines))
+check("⑨ 模板已有同名数学声明：记进 skipped（cmsf）",
+      "cmsf" in _plan_dup.skipped, str(_plan_dup.skipped))
+check("⑨ 模板没有的数学声明照旧迁（Kap）",
+      any("DeclareMathSymbol" in ln and "Kap" in ln for ln in _plan_dup.lines))
+
+# 关键裁定：数学声明名**不得**并进全局 defined_names（否则作者合法的
+# \renewcommand 覆盖会被改名/降级）
+_TPL_SYM = r"""\documentclass{article}
+\DeclareMathSymbol{\Kap}{\mathalpha}{operators}{"4B}
+\begin{document}
+\end{document}
+"""
+check("⑨ 数学声明名不进 defined_names（模板声明 Kap 也不进）",
+      "Kap" not in PRE.defined_names(_TPL_SYM)
+      and "cmsf" not in PRE.defined_names(_TPL_DUP))
+_sel_ren, _ren_ren = PRE.select_custom_macros(
+    [("renewcommand", "Kap", "\\renewcommand{\\Kap}{\\mathcal{K}}")],
+    "正文 $\\Kap$。", PRE.defined_names(_TPL_SYM))
+check("⑨ 作者 \\renewcommand 覆盖数学声明名：不改名、不降 newcommand",
+      "Kap" not in _ren_ren
+      and any(k == "renewcommand" and n == "Kap" for k, n, _s in _sel_ren),
+      f"{_ren_ren} / {_sel_ren}")
+
+# 环境局部定义（qedsymbol 潜伏 bug）：留在环境体、不外提、不改名
+write("mathdecl/envlocal/main.tex", r"""\documentclass{article}
+\newenvironment{claimproof}{\renewcommand{\qedsymbol}{$\blacksquare$}}{}
+\newcommand{\topcmd}{T}
+\begin{document}
+正文 \topcmd。
+\begin{claimproof}证明。\end{claimproof}
+\end{document}
+""")
+_res_el, _tex_el = build_one("mathdecl/envlocal/main.tex", "envlocal")
+check("⑨ 环境体里的 \\renewcommand{\\qedsymbol} 不外提（产物只出现一次）",
+      _tex_el.count("\\renewcommand{\\qedsymbol}") == 1,
+      str(_tex_el.count("\\renewcommand{\\qedsymbol}")))
+check("⑨ 环境体里的 qedsymbol 定义不改名（无 \\slcnqedsymbol）",
+      "\\slcnqedsymbol" not in _tex_el)
+check("⑨ 环境定义原文保留（begin 体仍是作者写的 \\renewcommand）",
+      "\\newenvironment{claimproof}{\\renewcommand{\\qedsymbol}{$\\blacksquare$}}{}"
+      in _tex_el)
+check("⑨ 顶层 \\newcommand 照旧迁移（topcmd）",
+      "\\newcommand{\\topcmd}" in _tex_el)
+check("⑨ 环境局部定义不触发改名告警（qedsymbol）",
+      not any("qedsymbol" in w for w in _res_el.warnings),
+      str([w for w in _res_el.warnings if "qedsymbol" in w]))
+
+# 顶层（非环境体）的 \renewcommand 仍按原逻辑迁移（不能过度过滤）
+write("mathdecl/globalren/main.tex", r"""\documentclass{article}
+\renewcommand{\qedsymbol}{$\star$}
+\begin{document}
+正文结束记号 \qedsymbol。
+\end{document}
+""")
+_res_gr, _tex_gr = build_one("mathdecl/globalren/main.tex", "globalren")
+check("⑨ 顶层（非环境体）\\renewcommand 仍按原逻辑迁移（qedsymbol）",
+      _tex_gr.count("\\renewcommand{\\qedsymbol}{$\\star$}") == 1,
+      str(_tex_gr.count("\\renewcommand{\\qedsymbol}{$\\star$}")))
+
+# 直接钉住顶层收集器：环境体里的定义不收、同名的顶层定义保留
+_top_collect = getattr(PRE, "collect_top_level_custom_macros", None)
+_env_scope = PRE.source_preamble(r"""\documentclass{article}
+\newenvironment{claimproof}{\renewcommand{\qedsymbol}{$\blacksquare$}}{}
+\renewcommand{\qedsymbol}{$\star$}
+\newcommand{\topcmd}{T}
+\begin{document}
+正文。
+\end{document}
+""")
+check("⑨ 顶层收集器：环境体定义不收、同名顶层定义保留",
+      callable(_top_collect)
+      and [n for _k, n, _s in _top_collect(_env_scope)] == ["qedsymbol", "topcmd"],
+      str([n for _k, n, _s in _top_collect(_env_scope)] if callable(_top_collect) else None))
+
+# 混合形态**端到端**（首轮验收 FAIL 的形态）：环境局部定义 + 同名顶层定义共存。
+# 两条定义都必须留在产物里、都不许加 \slcn 前缀——只测收集器不够：build 的
+# 「模板已有」判据若把环境体里的局部名算进来，顶层定义会被改名，改名后又因
+# insert_custom_macros 判重而整条丢失（正文使用即 undefined）。
+write("mathdecl/mixed/renew.tex", r"""\documentclass{article}
+\newenvironment{claimproof}{\renewcommand{\qedsymbol}{$\blacksquare$}}{\par}
+\renewcommand{\qedsymbol}{$\star$}
+\begin{document}
+正文结束记号 \qedsymbol。
+\begin{claimproof}证明。\end{claimproof}
+\end{document}
+""")
+_res_mxr, _tex_mxr = build_one("mathdecl/mixed/renew.tex", "mixedrenew")
+check("⑨ 混合形态：环境局部 \\renewcommand 原文保留",
+      "\\newenvironment{claimproof}{\\renewcommand{\\qedsymbol}{$\\blacksquare$}}{\\par}"
+      in _tex_mxr)
+check("⑨ 混合形态：同名顶层 \\renewcommand 定义仍在（不被判重丢弃）",
+      _tex_mxr.count("\\renewcommand{\\qedsymbol}{$\\star$}") == 1,
+      str(_tex_mxr.count("\\renewcommand{\\qedsymbol}{$\\star$}")))
+check("⑨ 混合形态：\\qedsymbol 定义共两处（环境体 + 顶层）",
+      _tex_mxr.count("\\renewcommand{\\qedsymbol}") == 2,
+      str(_tex_mxr.count("\\renewcommand{\\qedsymbol}")))
+_mxr_lines = [ln for ln in _tex_mxr.split("\n") if "qedsymbol" in ln]
+check("⑨ 混合形态：qedsymbol 相关行都不带 \\slcn 前缀（未改名）",
+      bool(_mxr_lines) and not any("\\slcn" in ln for ln in _mxr_lines),
+      str(_mxr_lines))
+check("⑨ 混合形态：无「宏名冲突，已自动改名」告警",
+      not any("改名" in w for w in _res_mxr.warnings),
+      str([w for w in _res_mxr.warnings if "改名" in w]))
+
+# 同一缺陷的 \newcommand 形态：环境体里的局部 \newcommand 不得让同名顶层
+# \newcommand 在插入去重时被当成"已有"而丢弃。环境在正文里不启用（启用时
+# 局部 \newcommand 会重复定义，属稿件语义问题），只钉产物完整性。
+write("mathdecl/mixed/newcmd.tex", r"""\documentclass{article}
+\newenvironment{boxed}{\newcommand{\boxsym}{$\square$}}{}
+\newcommand{\boxsym}{$\star$}
+\begin{document}
+正文结束记号 \boxsym。
+\end{document}
+""")
+_res_mxn, _tex_mxn = build_one("mathdecl/mixed/newcmd.tex", "mixednewcmd")
+check("⑨ 混合形态（newcommand）：环境局部定义原文保留",
+      "\\newenvironment{boxed}{\\newcommand{\\boxsym}{$\\square$}}{}" in _tex_mxn)
+check("⑨ 混合形态（newcommand）：同名顶层定义仍在（不被判重丢弃）",
+      _tex_mxn.count("\\newcommand{\\boxsym}{$\\star$}") == 1,
+      str(_tex_mxn.count("\\newcommand{\\boxsym}{$\\star$}")))
+check("⑨ 混合形态（newcommand）：\\boxsym 定义共两处",
+      _tex_mxn.count("\\newcommand{\\boxsym}") == 2,
+      str(_tex_mxn.count("\\newcommand{\\boxsym}")))
+_mxn_lines = [ln for ln in _tex_mxn.split("\n") if "boxsym" in ln]
+check("⑨ 混合形态（newcommand）：相关行都不带 \\slcn 前缀（未改名）",
+      bool(_mxn_lines) and not any("\\slcn" in ln for ln in _mxn_lines),
+      str(_mxn_lines))
+check("⑨ 混合形态（newcommand）：无「宏名冲突，已自动改名」告警",
+      not any("改名" in w for w in _res_mxn.warnings),
+      str([w for w in _res_mxn.warnings if "改名" in w]))
+
+# 判据 helper：挖空容器后，环境/定理**声明名本身**仍算「模板已有」（否则作者同名
+# \newcommand 不被改名，插进模板会 already defined）；环境体**内部**的局部名不算；
+# 数学声明目标名也不算（作者可合法 \renewcommand 覆盖它，DIAG §3.2）。
+_SCOPE_TEXT = r"""\newtheorem{prop}{命题}[section]
+\newenvironment{claimproof}{%
+  \renewcommand{\qedsymbol}{$\blacksquare$}%
+}{}
+\newcommand{\topcmd}{T}
+\DeclareMathSymbol{\Kap}{\mathalpha}{operators}{"4B}
+"""
+_scope_names = PRE.defined_names_outside_containers(_SCOPE_TEXT)
+check("⑨ 顶层判据：环境/定理声明名与顶层宏都算「模板已有」",
+      {"prop", "claimproof", "topcmd"} <= _scope_names, str(sorted(_scope_names)))
+check("⑨ 顶层判据：环境体里的局部 \\renewcommand 不算（qedsymbol 可被作者覆盖）",
+      "qedsymbol" not in _scope_names, str(sorted(_scope_names)))
+check("⑨ 顶层判据：数学声明目标名不算「模板已有」（作者 renewcommand 覆盖不改名）",
+      "Kap" not in _scope_names, str(sorted(_scope_names)))
+_masked = PRE.mask_definition_containers(_SCOPE_TEXT)
+check("⑨ 挖空容器：长度与换行数不变（报错行号不漂移）、定义原文仍保留",
+      len(_masked) == len(_SCOPE_TEXT)
+      and _masked.count("\n") == _SCOPE_TEXT.count("\n")
+      and "claimproof" not in _masked
+      and "qedsymbol" not in _masked,
+      f"{len(_masked)}/{len(_SCOPE_TEXT)}")
 
 shutil.rmtree(TMP, ignore_errors=True)
 

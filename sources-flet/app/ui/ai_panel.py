@@ -170,6 +170,12 @@ class AiPanel:
         ])
         return [
             C.text("第一段不交付、不联网；第二段只读本地回填文件。", t, "caption", t.palette.text_faint),
+            # DESIGN §4：**执行范围**（发给 AI 什么）与**采纳范围**（回填后用什么）
+            # 必须分成两组、各自独立勾选；这里把第一段的输入范围归到「执行」，
+            # 把第二段的并回/应用归到「采纳」，中间用标题隔开，默认值一个也不改
+            # （argv 契约仍由 _apply / _coop_no_ai_merge 决定，见 build_call）。
+            C.text("执行范围（第一段：任务书里带什么；零上传，只写本地任务书）",
+                   t, "small", t.palette.text_muted, weight="medium"),
             self._fulltext_row,
             self._scope_row,
             C.text("任务书形态（只影响第一段；第二段只导入回填，不再分卷/分片）",
@@ -190,12 +196,19 @@ class AiPanel:
             C.text("回填文件（一份回复一个文件；路径可粘贴）", t, "small", t.palette.text_muted),
             self._reply_box,
             add,
+            C.text("采纳范围（第二段：回填结果怎么用；与上面的执行范围是两组，互不影响）",
+                   t, "small", t.palette.text_muted, weight="medium"),
             merge_row,
             C.text("勾选 = 文献核实结果只记录，不改 reference.bib（默认安全并回，改前备份 "
                    "reference.bib.ai前）", t, "caption", t.palette.text_faint),
             apply_row,
             C.text("勾选 = 低置信 BIB/META/FN 建议写进产物（改前自动备份）；不勾 = 低置信只写建议清单。"
                    "文献核实结果的并回见上一行。", t, "caption", t.palette.text_faint),
+            # 文字纠错（§7）**默认不在执行范围、采纳永远默认关**；它只在「按类别
+            # 执行 + 逐条采纳」的工作流页里出现，本页不重复摆一个勾不了实事的框。
+            C.text("文字纠错（§7）不在本页执行：它在「引用库 → AI 辅助处理 Bib」里"
+                   "按类别单独执行、逐条采纳，且采纳默认关闭。",
+                   t, "caption", t.palette.text_faint),
         ]
 
     def _direct_controls(self) -> list[ft.Control]:

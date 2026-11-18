@@ -96,11 +96,63 @@ def test_workflow_resigns_after_plist_and_before_zip():
     idx_launcher = text.index(launcher_sign)
     idx_outer = text.index(outer_sign)
     idx_verify = text.index("codesign --verify --deep --strict \"$APPDIR\"")
-    idx_zip = text.index("ditto -c -k --keepParent pkg-mac")
+    # 只锚 `ditto -c -k` 前缀：zip 步骤可能追加 --norsrc（去 AppleDouble），
+    # 但「zip 必须排在重签/verify 之后」这条顺序契约不变。
+    idx_zip = text.index("ditto -c -k")
     assert idx_sha < idx_launcher < idx_outer < idx_verify < idx_zip
     # 不得对 .app 用 --deep 重签（会剥掉随包 flet-client 的 entitlements）
     assert "codesign --force --sign - --deep" not in text
     assert 'codesign --force --deep' not in text
+
+
+def test_macos_zip_creation_strips_appledouble():
+    """两个 workflow 的 macOS zip 步骤都必须删掉多余的 `._*` 影子条目。
+
+    `ditto -c -k` 会把 `._*` 影子条目（AppleDouble：xattr/资源叉）一起塞进 zip
+    （实测 1185 条里 592 条是 `._*`）。
+
+    **不能用 `--norsrc` 来去重**：它隐含 `--noextattr`，会把
+    `Contents/MacOS/SLCNEngine`（sh launcher）的 ad-hoc 签名一起剥掉 —— codesign
+    对脚本只能把签名存进 xattr（`com.apple.cs.*`），丢掉后解包即
+    `codesign --verify --deep --strict` 失败（`code object is not signed at all`，
+    实测 exit=1）。所以口径是：正常打包后 `zip -d` 删 `._*`，只留 launcher 那一条。
+    """
+    for name in ("build-flet.yml", "release.yml"):
+        text = _text(WORKFLOWS / name)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("ditto -c -k")]
+        assert lines, f"{name} 找不到 macOS zip 的 ditto 命令"
+        for line in lines:
+            assert "--norsrc" not in line, (
+                f"{name} 的 zip 命令不得用 --norsrc（会剥掉 launcher 的 xattr 签名，"
+                f"解包后封条校验失败）：{line}"
+            )
+        # 删 `._*` 时必须排除 launcher 的签名载体
+        assert "zip -q -d \"$ZIP\" '*/._*' -x '*MacOS/._SLCNEngine'" in text, (
+            f"{name} 缺少「删 `._*` 但保留 launcher AppleDouble」这一步"
+        )
+        # 删完要有自检，防止 `._*` 再次失控增长
+        assert "zip 里残留 AppleDouble 影子条目" in text, f"{name} 缺 AppleDouble 残留自检"
+        # 自检必须 locale 无关：`unzip -l` 按 locale 转换非 ASCII 文件名，UTF-8 下
+        # 中文路径（编辑部工具箱.app/...）变乱码，`grep '/\._'` 数不到 ——
+        # 同一个包实测默认 locale 数到 4、LC_ALL=C 数到 592。数错等于没自检。
+        ad_lines = [ln.strip() for ln in text.splitlines() if "grep -c '/\\._'" in ln]
+        assert ad_lines, f"{name} 找不到 AppleDouble 计数命令"
+        for line in ad_lines:
+            assert line.startswith("AD=$(LC_ALL=C "), (
+                f"{name} 的 AppleDouble 计数必须带 LC_ALL=C（否则 UTF-8 locale 下"
+                f"中文路径的 `._*` 数不到，自检形同虚设）：{line}"
+            )
+        # 失败路径要把真实数字和排查提示打出来，否则 CI 日志只有一行 exit 1
+        assert "预期 <=1，只应剩 Contents/MacOS/._SLCNEngine" in text, (
+            f"{name} 的自检失败文案没说明预期值"
+        )
+        assert 'head -20' in text, f"{name} 的自检失败时没打印残留条目样本"
+        # `$AD（` 这种「变量名紧跟中文全角括号」的写法 bash 会当成 $AD（ 变量名的一部分，
+        # 实测报 `AD?: unbound variable` 并以 127 退出（脚本自己崩，而不是给出诊断）。
+        # 必须写成 ${AD}。
+        assert "$AD（" not in text and "$AD 条" not in text, (
+            f"{name} 里 $AD 紧邻中文会导致 bash 解析出非法变量名，必须写成 ${{AD}}"
+        )
 
 
 def test_readme_documents_codesign_verification():

@@ -270,3 +270,63 @@ def test_clear_form_resets_state(tmp_path, monkeypatch):
     assert view.payload is None and view.state == "empty"
     assert view.path == "" and view.expect_sha == ""
     assert any("清空" in text for text in host.app.toasts)
+
+
+# ── N01（验收 §3.1-11① / §3.2-12）：真实选择器 + 取消立刻收工 ─────────────
+def _db_dir() -> str:
+    import tempfile
+    return tempfile.mkdtemp(prefix="bibimp_")
+
+
+def test_browse_uses_real_picker_not_file_picker_attribute():
+    """旧实现读 `page.file_picker`（Flet 1.0.5 上没有）→ 永久失效分支。"""
+    src = inspect.getsource(BI.BibImportView._browse)
+    assert 'app.browse_field' in src or 'browse_field' in src
+    assert 'getattr(page, "file_picker", None)' not in src
+
+
+def test_browse_reports_when_host_has_no_picker():
+    host = _Host(_db_dir())
+    host.app.toasts = []       # 没有 browse_field 的宿主
+    view = BI.BibImportView(host)
+    view._browse()
+    assert any("粘贴路径" in toast for toast in host.app.toasts), "取不到选择器要如实提示"
+
+
+def test_picker_cancel_stops_polling_without_waiting_60s(monkeypatch):
+    """取消时选择器不一定写回任何值：靠宿主的 `_picker_state` 立刻收工。"""
+    host = _Host(_db_dir())
+    host.app._picker_state = "idle"   # browse_field 之后立刻就 idle（已取消）
+    calls: list = []
+
+    def _browse_field(ref, title, kind, key, **_k):
+        calls.append((title, kind, key))
+
+    host.app.browse_field = _browse_field
+    view = BI.BibImportView(host)
+    view.mode = "bib"
+    view._params(narrow=False)         # 渲染一次，登记真实输入框引用
+    view._browse()
+    assert calls and calls[0][1] == "file"
+
+    async def _run():
+        await view._watch_pick("")    # 值没变，但宿主已 idle → 必须马上返回
+
+    asyncio.run(_run())
+    assert view._picking is False
+
+
+def test_picker_dir_mode_asks_for_directory():
+    host = _Host(_db_dir())
+    host.app._picker_state = "idle"
+    seen: list = []
+
+    def _browse_field(ref, title, kind, key, **_k):
+        seen.append(kind)
+
+    host.app.browse_field = _browse_field
+    view = BI.BibImportView(host)
+    view.mode = "dir"
+    view._params(narrow=False)
+    view._browse()
+    assert seen == ["dir"], "期目录模式必须选目录，不是文件"

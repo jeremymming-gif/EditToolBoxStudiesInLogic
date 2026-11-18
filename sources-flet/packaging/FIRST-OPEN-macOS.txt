@@ -26,7 +26,7 @@
      cd 编辑部工具箱.app/Contents/Resources/SLCNEngine && shasum -a 256 -c sha256.txt
    主程序摘要需单独计算，与上面的 sha256.txt 不是同一文件，勿互相核对：
      shasum -a 256 编辑部工具箱.app/Contents/MacOS/编辑部工具箱
-   zip 的 sha256 见 CI 运行摘要。
+   zip 的 sha256 由构建方随发布说明另行提供。
    签名自检（可选；应无输出、退出码 0）：
    codesign --verify --deep --strict 编辑部工具箱.app
    说明：本包是 ad-hoc 签名（无 Team ID、未公证），这一步只验证包内封条自洽；

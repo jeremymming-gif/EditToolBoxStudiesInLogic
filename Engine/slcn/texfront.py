@@ -70,6 +70,17 @@ _TEX_ORG_WORDS = (
 # 多作者分隔：\\ 换行、\and、\quad/\qquad、全/半角逗号、顿号、分号、字面 ` and `
 _AUTHOR_SEP_RE = re.compile(r"\\\\|\\and\b|\\qquad\b|\\quad\b|\s+and\s+|[,，、;；]")
 
+# **多作者**切分：与上面同源，但**故意不含逗号**（B-217 ④：英文倒装名
+# `Han, Meimei` 是「姓, 名」，按逗号拆会把一个人拆成两个；中文 `张三，李四`
+# 由上面的 `_AUTHOR_SEP_RE` 在第一作者路径里照旧切）。多作者列表只认
+# `\\` / `\and` / `\quad` / `\qquad` / 字面 ` and ` / 顿号 / 分号。
+_MULTI_AUTHOR_SEP_RE = re.compile(r"\\\\|\\and\b|\\qquad\b|\\quad\b|\s+and\s+|[;；、]")
+
+# 最多认 5 位作者：与 build.py 的 `_ORDINALS`/`_AUTHOR_SLOTS`（模板
+# `\mysecondauthor`…`\myfifthauthor`）同数。**序数词表只在 build.py 有一份**，
+# 这里只留上限，避免两处各拼一套 second/third/… 互相错位。
+_MAX_AUTHORS = 5
+
 # 字体/字号/上下标命令：出现在姓名前后的排版命令不是姓名内容
 _FONT_CMD_RE = re.compile(
     r"\\(?:rm|bf|it|sl|sc|tt|em|kaishu|heiti|songti|fangsong|lishu|youyuan|"
@@ -183,6 +194,42 @@ def _iter_cmds(text: str, *names: str):
         yield name, content
 
 
+def _iter_cmd_with_opt_pos(text: str, name: str):
+    """按出现顺序 yield ``(位置, 可选编号, 花括号内容)``。
+
+    与 ``_iter_cmd`` 同源（同样跳过宏定义位点），额外读回 ``[...]`` 里的编号——
+    别家文档类（Springer SN 的 ``\\author[2]`` / ``\\affil[1]``）用这个编号把作者
+    与单位对上。没有可选参数时编号为空串（不是 None，便于直接比较）。
+    """
+    for m in _cmd_re(name).finditer(text):
+        if _is_definition_site(text, m.start()):
+            continue
+        # 手工重读一遍可选参数：_braced_arg 会跳过它，这里要先把它捞出来
+        i = m.end()
+        n = len(text)
+        while i < n and text[i].isspace():
+            i += 1
+        key = ""
+        while i < n and text[i] == "[":
+            j = text.find("]", i)
+            if j < 0:
+                break
+            if not key:  # 只认第一个 [...]（authblk/SN 都只用第一个编号）
+                key = _norm_ws(text[i + 1:j])
+            i = j + 1
+            while i < n and text[i].isspace():
+                i += 1
+        content = _braced_arg(text, m.end())
+        if content is not None:
+            yield m.start(), key, content
+
+
+def _iter_cmd_with_opt(text: str, name: str):
+    """按出现顺序 yield ``(可选编号, 花括号内容)``；编号如 ``\\author[2]{...}`` 的 ``"2"``。"""
+    for _pos, key, content in _iter_cmd_with_opt_pos(text, name):
+        yield key, content
+
+
 def _first_cmd_value(text: str, *names: str) -> str | None:
     """文档顺序第一个**非空**的 ``\\name{...}`` 内容；没有则 None。"""
     for _, content in _iter_cmds(text, *names):
@@ -261,15 +308,80 @@ def _strip_author_tail(name: str) -> str:
     return s
 
 
-def _first_author_from_byline(content: str) -> str:
-    """从 ``\\author{...}`` 的花括号内容里取第一作者；拿不准返回空串。"""
+def _byline_plain(content: str) -> str:
+    """把 ``\\author{...}`` 内容剥成纯文本 byline（剥 thanks/脚注/上标/字体命令/花括号）。
+
+    单作者路径与多作者路径共用这一段，**只在这里**实现一次；两条路径的区别只在
+    随后用什么分隔符切（见 ``_AUTHOR_SEP_RE`` / ``_MULTI_AUTHOR_SEP_RE``）。
+    """
     for cmd in _AUTHOR_STRIP_CMDS:
         content = _strip_balanced_cmd(content, cmd)
     content = _FONT_CMD_RE.sub("", content)
-    content = re.sub(r"[{}]", "", content).replace("~", " ")
-    first = _AUTHOR_SEP_RE.split(content)[0]
+    return re.sub(r"[{}]", "", content).replace("~", " ")
+
+
+def _first_author_from_byline(content: str) -> str:
+    """从 ``\\author{...}`` 的花括号内容里取第一作者；拿不准返回空串。"""
+    first = _AUTHOR_SEP_RE.split(_byline_plain(content))[0]
     first = _strip_author_tail(first)
     return first if _looks_like_byline_author(first) else ""
+
+
+def _authors_from_byline(content: str) -> list[str]:
+    """从**一个** ``\\author{...}`` 内容里切出全部作者（保守：拿不准就只算一个）。
+
+    分隔符用 ``_MULTI_AUTHOR_SEP_RE``（**不含逗号**，B-217 ④：``Han, Meimei`` 是
+    「姓, 名」不能拆成两个人）。切出来的每一段都要过 ``_looks_like_byline_author``
+    闸门；一段都过不了时**退回** ``_first_author_from_byline``（例如中文
+    ``\\author{张三，李四}`` 用逗号分隔，多作者规则不拆，仍按老口径取第一作者）。
+    """
+    plain = _byline_plain(content)
+    parts = [p for p in (_strip_author_tail(x) for x in _MULTI_AUTHOR_SEP_RE.split(plain))
+             if p and _looks_like_byline_author(p)]
+    if parts:
+        return parts
+    one = _first_author_from_byline(content)
+    return [one] if one else []
+
+
+def _author_entries(text: str) -> list[tuple[str, str]]:
+    """按文档顺序取 ``(编号, 姓名)``：``\\author[2]{Test Author B}`` → ``("2", "Test Author B")``。
+
+    编号来自别家文档类的可选参数（SN/authblk 用它把作者和 ``\\affil[2]`` 对上），
+    没有可选参数时为空串。先扫 ``\\begin{document}`` 之前；前言里一个都读不到时
+    再扫正文（B-275 限界补充：作者写在正文里的真实稿存在）。按姓名去重保序，
+    最多 ``_MAX_AUTHORS``（5）位——与模板 ``mysecondauthor``…``myfifthauthor`` 同数。
+    """
+    if not text:
+        return []
+    stripped = strip_comments(text)
+    pre, body = _scopes(stripped)
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for scope in (pre, body):
+        if not scope:
+            continue
+        for key, content in _iter_cmd_with_opt(scope, "author"):
+            for name in _authors_from_byline(content):
+                if name in seen:
+                    continue
+                seen.add(name)
+                out.append((key, name))
+                if len(out) >= _MAX_AUTHORS:
+                    return out
+        if out:  # 前言里读到了就不再看正文（与 author_from_document_author 同序）
+            return out
+    return out
+
+
+def authors_from_document_author(text: str) -> tuple[str, ...]:
+    """从普通 article / 别家文档类的 ``\\author{...}`` 取**多作者列表**（F6）。
+
+    单作者稿返回一元组（与 ``author_from_document_author`` 完全同值）；多作者稿
+    返回按文档顺序的姓名元组，最多 5 位。分隔符口径见 ``_MULTI_AUTHOR_SEP_RE``
+    （不含逗号）；一个都认不出时返回空元组，**不猜**。
+    """
+    return tuple(name for _key, name in _author_entries(text))
 
 
 def author_from_document_author(text: str) -> str:
@@ -281,6 +393,9 @@ def author_from_document_author(text: str) -> str:
     典型形态：``\\author{李雷\\thanks{单位}\\thanks{基金}}``、
     ``\\author{Michael Rathjen and Shuangshuang Shu}``、authblk 的
     ``\\author[1]{...}``。
+
+    F6：本函数仍是**单作者**口径（B-275 契约不变）；多作者列表见
+    ``authors_from_document_author``。
     """
     if not text:
         return ""
@@ -405,12 +520,46 @@ def _front_region(pre: str, body: str) -> str:
     return pre + "\n" + body[:2000]
 
 
+def _affiliation_entries(text: str) -> list[tuple[str, str]]:
+    """按文档顺序取 ``(编号, 单位)``：``\\affil[2]{Another Test University}`` → ``("2", "…")``。
+
+    认 ``\\affil`` / ``\\affiliation`` / ``\\institute`` 三个别家常用命令（authblk、
+    Springer SN、elsarticle 各有其一）。编号来自 ``[...]`` 可选参数，没有则为空串。
+    先扫前言；前言一个都没有时再扫正文（与作者解析同序）。**只解析、不改写**。
+    """
+    if not text:
+        return []
+    stripped = strip_comments(text)
+    pre, body = _scopes(stripped)
+    out: list[tuple[str, str]] = []
+    for scope in (pre, body):
+        if not scope:
+            continue
+        found: list[tuple[int, str, str]] = []
+        for name in ("affil", "affiliation", "institute"):
+            for pos, key, content in _iter_cmd_with_opt_pos(scope, name):
+                val = _clean_inline(content)
+                if val:
+                    found.append((pos, key, val))
+        found.sort(key=lambda x: x[0])
+        out.extend((key, val) for _pos, key, val in found)
+        if out:
+            return out
+    return out
+
+
 # ── 结果对象 ─────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class TexFrontmatter:
-    """一份普通 article 主文件里能保守识别出的前置元数据（无值 = None）。"""
+    """一份普通 article 主文件里能保守识别出的前置元数据（无值 = None）。
+
+    F6：``authors``/``author_affiliations``/``affiliations`` 三个元组只在**多作者或
+    多单位**时才非空（单作者稿保持全空，``as_dict()``/``template_values()`` 的旧口径
+    与逐字节产物都不变）。这样既保住 B-276 的单字段契约，又能把第二作者/第二单位
+    送到 ``build.py``。
+    """
 
     title: str | None = None
     running_title: str | None = None
@@ -421,11 +570,33 @@ class TexFrontmatter:
     keywords: str | None = None
     thanks: str | None = None
     grants: str | None = None
+    # F6 多作者/多单位（≥2 位作者或 ≥2 个单位时才填）
+    authors: tuple[str, ...] = ()
+    author_affiliations: tuple[str, ...] = ()
+    affiliations: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, str]:
-        """只含识别出的字段（源字段名，如 ``title``）。"""
+        """只含识别出的**单值**字段（源字段名，如 ``title``）。
+
+        元组字段（``authors`` 等）不进来：本方法的契约是 ``dict[str, str]``，
+        调用方（``template_values`` 之外）按字符串消费。
+        """
         return {f.name: getattr(self, f.name) for f in fields(self)
-                if getattr(self, f.name)}
+                if getattr(self, f.name) and not isinstance(getattr(self, f.name), tuple)}
+
+    def unmapped_affiliations(self) -> tuple[str, ...]:
+        """F6：识别到但**没能对到任何作者槽位**的单位（交给 build.py 告警，不凭空编造）。
+
+        口径：``affiliations`` 里既不是第一单位、也不在 ``author_affiliations`` 中的
+        条目。作者没编号（或编号对不上）时这些单位无处安放——宁可如实告警，也不
+        猜它属于谁。
+        """
+        if len(self.affiliations) < 2:
+            return ()
+        used = {a for a in self.author_affiliations if a}
+        if self.affiliation:
+            used.add(self.affiliation)
+        return tuple(a for a in self.affiliations if a and a not in used)
 
     def template_values(self, tpl_fields=None) -> dict[str, str]:
         """映射到模板槽位（如 ``{"mytitle": ..., "myfirstauthor": ...}``）。
@@ -434,30 +605,34 @@ class TexFrontmatter:
         ``\\mygrants`` + ``\\mythanks`` 两槽，基金/致谢各自逐字写入；英文标准模板
         只有 ``\\mythanks`` 一槽，基金必须并进 ``\\mythanks``（否则写进不存在的宏 →
         字段丢失，P1），并与致谢拼接去重。不给参数时保持老的固定映射（兼容旧调用）。
+
+        F6：**第 2–5 位作者/单位不在这里出槽**——槽位名（``mysecondauthor`` 等）只在
+        ``build.py`` 的 ``_ORDINALS``/``_AUTHOR_MACRO`` 里定义一次，那边直接读
+        ``authors``/``author_affiliations`` 填槽，避免两处各拼一份序数词表。
         """
         vals = self.as_dict()
+        base: dict[str, str] = {}
+        for name, value in vals.items():
+            if name in ("thanks", "grants"):
+                continue  # 基金/致谢单独落槽（见下），口径与改动前一致
+            slot = TEMPLATE_FIELDS.get(name)
+            if slot:
+                base[slot] = value
         if tpl_fields is not None:
             from .latex import editorial_slots, join_slot_text
             slots = editorial_slots(tpl_fields)
             gslot, tslot = slots["grants"], slots["thanks"]
             if gslot and gslot == tslot:  # 英文模板：单槽，基金 + 致谢拼接
-                out: dict[str, str] = {}
-                for name, value in vals.items():
-                    if name in ("thanks", "grants"):
-                        continue
-                    slot = TEMPLATE_FIELDS.get(name)
-                    if slot:
-                        out[slot] = value
                 merged = join_slot_text(vals.get("thanks"), vals.get("grants"))
                 if merged:
-                    out[gslot] = merged
-                return out
-        out = {}
-        for name, value in vals.items():
+                    base[gslot] = merged
+                return base
+        for name in ("thanks", "grants"):
+            value = vals.get(name)
             slot = TEMPLATE_FIELDS.get(name)
-            if slot:
-                out[slot] = value
-        return out
+            if value and slot:
+                base[slot] = value
+        return base
 
 
 def parse_tex_frontmatter(text: str) -> TexFrontmatter | None:
@@ -482,12 +657,37 @@ def parse_tex_frontmatter(text: str) -> TexFrontmatter | None:
 
     author = author_from_document_author(stripped) or None
 
+    # ── F6：多作者 / 多单位 ──────────────────────────────────────────────
+    # 只有真的 ≥2 位作者或 ≥2 个单位时才填元组字段，单作者稿的三个元组保持空，
+    # as_dict()/template_values() 的旧口径与逐字节产物都不变。
+    author_entries = _author_entries(stripped)
+    authors = tuple(name for _key, name in author_entries)
+    affil_entries = _affiliation_entries(stripped)
+    affiliations = tuple(val for _key, val in affil_entries)
+    author_affiliations: tuple[str, ...] = ()
+    if len(authors) >= 2:
+        # 用源稿自己的编号对齐 \author[2] ↔ \affil[2]；编号对不上就留空
+        # （宁可空着让 build.py 写占位符，也不猜某单位属于谁）。
+        # 无编号作者按「第 N 位 ↔ \affil[N]」兜底——SN 的 \author{...} 不写 [1]，
+        # 但 \affil[1] 是它的单位；只有该编号确实存在时才这么对，不凭空配对。
+        by_key = {key: val for key, val in affil_entries if key}
+        if by_key:
+            author_affiliations = tuple(
+                by_key.get(key) or by_key.get(str(idx + 1), "")
+                for idx, (key, _name) in enumerate(author_entries))
+    if len(authors) < 2:
+        authors = ()
+    if len(affiliations) < 2:
+        affiliations = ()
+
     # 单位/邮箱/致谢/基金：前言 + 正文开头窄窗口；优先显式命令
     front = _front_region(pre, body)
     affiliation = _first_cmd_value(pre, "affil", "affiliation", "institute")
     if affiliation is None:
         affiliation = _first_cmd_value(body, "affil", "affiliation", "institute")
     affiliation = _clean_inline(affiliation)
+    if affiliation is None and affiliations:
+        affiliation = affiliations[0]
 
     thanks_entries: list[str] = []
 
@@ -548,5 +748,8 @@ def parse_tex_frontmatter(text: str) -> TexFrontmatter | None:
         keywords=_font_cmd_free(keywords) if keywords else None,
         thanks=_font_cmd_free(thanks) if thanks else None,
         grants=_font_cmd_free(grants) if grants else None,
+        authors=authors,
+        author_affiliations=author_affiliations,
+        affiliations=affiliations,
     )
     return fm if fm.as_dict() else None

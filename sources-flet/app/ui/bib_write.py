@@ -344,7 +344,7 @@ class BibImportView:
         t = self.t
         if self.mode == "file":
             return C.path_picker(
-                "bib 文件", self.file_path, "选择回读校验导出的 .bib（只读源文件）", t,
+                "bib 文件", self.file_path, "选择 .bib 源文件（只读）", t,
                 on_change=self._on_file_change,
                 on_browse=lambda e: self.page.app.browse_field(
                     self._file_ref, "选择 bib 文件", "file", "bib_import_file"),

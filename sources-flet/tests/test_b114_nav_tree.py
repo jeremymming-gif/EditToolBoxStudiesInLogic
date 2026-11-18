@@ -107,14 +107,14 @@ def test_nav_tree_views_and_bib_groups_are_three_level() -> None:
     assert [group["key"] for group in bib_groups] == ["read", "intake", "treat"]
     assert [group["label"] for group in bib_groups] == ["查阅", "采录", "治理"]
     assert [view["key"] for view in bib_groups[1]["views"]] == ["import", "normalize"]
-    assert [view["label"] for view in bib_groups[1]["views"]] == ["入藏", "回读校验"]
+    assert [view["label"] for view in bib_groups[1]["views"]] == ["入藏", "AI 辅助处理 Bib"]
     assert [view["key"] for view in bib_groups[2]["views"]] == [
         "review", "edit", "dupes", "fieldfix", "health"]
     views = IA.nav_views("bib")
     assert len(views) == 10
     assert [view["key"] for view in views][-1] == "settings"
     assert [view["label"] for view in views][:2] == ["概览", "查库"]
-    assert "回读校验" in {view["label"] for view in views}
+    assert "AI 辅助处理 Bib" in {view["label"] for view in views}
     assert "规范化" not in {view["label"] for view in views}
     assert IA.group_of_view("bib", "edit") == "treat"
     assert IA.group_of_view("bib", "health") == "treat"
@@ -152,10 +152,10 @@ def test_route_labels_give_breadcrumb_and_child_title() -> None:
     assert labels["crumb"] == "引用库 / 治理 / 编辑"
     assert labels["title"] == "编辑"
     assert labels["group"] == "treat"
-    # 批 115 D1-115-31/32：normalize 全 UI 改名「回读校验」；设置无组但可深链。
+    # 批 115 D1-115-31/32：normalize 全 UI 改名「AI 辅助处理 Bib」；设置无组但可深链。
     normalize = IA.route_labels("bib:normalize")
-    assert normalize["view_label"] == "回读校验"
-    assert normalize["crumb"] == "引用库 / 采录 / 回读校验"
+    assert normalize["view_label"] == "AI 辅助处理 Bib"
+    assert normalize["crumb"] == "引用库 / 采录 / AI 辅助处理 Bib"
     settings = IA.route_labels("bib:settings")
     assert settings["crumb"] == "引用库 / 设置" and settings["group"] == ""
     single = IA.route_labels("single:proofcheck")
@@ -462,7 +462,7 @@ def test_search_index_lists_parents_and_children_with_routes() -> None:
     assert "goto:bib:edit" in actions
     assert "goto:bib:settings" in actions
     bib_labels = {entry.label for entry in pages if entry.action.startswith("goto:bib:")}
-    assert "引用库 · 回读校验" in bib_labels
+    assert "引用库 · AI 辅助处理 Bib" in bib_labels
     assert "引用库 · 概览" in bib_labels
     assert "引用库 · 设置" in bib_labels
     assert not any("规范化" in label for label in bib_labels)
@@ -483,9 +483,9 @@ def test_search_commands_route_through_goto() -> None:
     assert "goto:issue:infocheck" in issue_actions
     # 批 115 D1-115-26：6 步仍可从搜索/命令面板直达（只是不再占侧栏子项）。
     assert "goto:issue:toc" in issue_actions
-    # 批 115 D1-115-31/32：命令面板同样用 IA 新标签（回读校验），不再读 pages 旧名。
+    # 批 115 D1-115-31/32：命令面板同样用 IA 新标签（AI 辅助处理 Bib），不再读 pages 旧名。
     bib_labels = [entry.label for entry in commands if entry.action.startswith("goto:bib:")]
-    assert "引用库 · 回读校验" in bib_labels
+    assert "引用库 · AI 辅助处理 Bib" in bib_labels
     assert not any("规范化" in label for label in bib_labels)
     # 10 个真命令（主题/缩放/引擎/运行…）保持 id 直呼，不改成 goto。
     assert any(entry.action == "theme.toggle" for entry in commands)

@@ -35,7 +35,7 @@ from ui.base_page import BasePage
 VIEW_SPECS: dict[str, tuple[str, str, str, str]] = {
     "overview": ("ui.bib_overview", "OverviewView", "概览", "readonly"),
     "query": ("ui.bib_query", "QueryView", "查库", "readonly"),
-    "normalize": ("ui.bib_normalize", "NormalizeView", "回读校验", "readonly"),
+    "normalize": ("ui.bib_normalize", "NormalizeView", "AI 辅助处理 Bib", "readonly"),
     "import": ("ui.bib_import", "BibImportView", "入藏", "write"),
     "review": ("ui.bib_review", "ReviewView", "待处理", "write"),
     "edit": ("ui.bib_edit", "BibEditView", "编辑", "write"),
@@ -54,7 +54,7 @@ BIB_NAV_NARROW_BELOW = 1100
 BIB_WRITE_RULES = (
     "W1 写库四步：预览（不写库）→ 确认 → 校验库指纹 → 原子替换。\n"
     "W2 只本地：写成功后自动提交 1 条，只含 bibliography.jsonl；绝不自动 push。\n"
-    "W3 概览 / 查库 / 回读校验只读，不写库。"
+    "W3 概览 / 查库只读；AI 辅助处理 Bib 只改你选定的 .bib，不碰中央库。"
 )
 
 #: 旧 BibPage 属性名 → 新路由。`__getattr__` 返回懒实例化后的视图对象；
@@ -94,7 +94,7 @@ class _NormalizeCompat:
     def _impl(self):
         view = self._host._get_view("normalize")
         if view is None:
-            raise RuntimeError("回读校验页未接入")
+            raise RuntimeError("AI 辅助处理 Bib 页未接入")
         return view
 
     def ensure_built(self):
@@ -340,6 +340,16 @@ class BibHost(BasePage):
         """兼容别名：main.py 的 P2_BIB_VIEW / P2_BIB_QUERY_UI 仍走这个入口。"""
         self.set_view(view, source=source)
 
+    def _notes(self) -> str:
+        """笔记仓路径：与各叶页同款取法（main.py 启动不写环境，只能逐次传）。
+
+        F1（P2）：``_load_stats`` 此前调 ``read_json_command`` 不带 notes，
+        打包态下引擎拿不到 ``SLCN_NOTES`` → ``bibdb stats`` rc=2 → 工具栏恒
+        「运行中」。宿主本身是 BasePage，``self.app`` 就是 MainApp，与
+        bib_edit / bib_dupes 等页同一来源。
+        """
+        return str(getattr(getattr(self, "app", None), "notes_repo", "") or "")
+
     def _ensure_loaded(self, view: str) -> None:
         """首开补一次只读统计；再让当前叶的 activate() 自己刷新数据。"""
         if self.stats_data is None and not self._stats_loading:
@@ -365,10 +375,15 @@ class BibHost(BasePage):
 
     async def _load_stats(self) -> None:
         """并行取库概况与 lint 计数：工具栏条数/警告与页面 db/sha 都靠它。"""
+        notes = self._notes()
 
         async def _read(call) -> dict:
+            # F1（P2）：notes 必须透传，否则引擎找不到笔记仓 → rc=2。
+            # 为空时不传关键字：env_for_run 的 ``if notes:`` 本来也空转，
+            # 且既有测试替身是单参数签名（test_b116_bib_host）。
+            extra = {"notes": notes} if notes else {}
             try:
-                return await asyncio.to_thread(EB.read_json_command, call)
+                return await asyncio.to_thread(EB.read_json_command, call, **extra)
             except Exception as exc:  # noqa: BLE001 - 引擎缺失不阻塞页面
                 return {"ok": False, "error": str(exc), "json": {}}
 
@@ -380,15 +395,20 @@ class BibHost(BasePage):
         self.stats_data = result.get("json") or None
         lint_json = lint_result.get("json") or {}
         self.lint_counts = (lint_json.get("counts") or None) if lint_json else None
-        self.stats_error = "" if result.get("ok") else str(result.get("error") or "读取失败")
         stats = self.stats_data or {}
         aliases = stats.get("aliases") or {}
         conflicts = stats.get("conflicts") or {}
         counts = self.lint_counts or {}
+        # F1（P5）：stats_error 此前赋值后无人读取（死字段）。宿主自身没有可见
+        # 横幅面（build() 只挂 view_slot；_notice_slot 只服务写库视图），所以
+        # 让它成为 bib_stats 标记的唯一来源：GUI 实测/marker 里能直接看到
+        # 「为什么读不到」（引擎 stderr 优先；error 只在 payload 解析不出时才有）。
+        detail = str(result.get("stderr") or result.get("error") or "").strip()
+        self.stats_error = "" if result.get("ok") else (detail or "读取失败")
         self.mark("bib_stats", ok=bool(result.get("ok")), code=result.get("code"),
                   records=stats.get("records"), warnings=counts.get("warnings"),
                   aliases_total=aliases.get("total"), conflicts=conflicts.get("records"),
-                  bytes=stats.get("bytes"))
+                  bytes=stats.get("bytes"), error=self.stats_error[-500:])
         self._sync_badge(stats)
         self._render()
         self._sync_toolbar_meta()
@@ -528,7 +548,7 @@ class BibHost(BasePage):
         if narrow and 0 < split < len(groups):
             narrow_after = str(groups[split - 1]["views"][-1]["key"])
         payload = [
-            [{"key": str(view["key"]), "label": str(view["label"]),
+            [{"key": str(view["key"]), "label": str(view.get("tab_label") or view["label"]),
               "tooltip": str(group["label"]) if position == 0 else None}
              for position, view in enumerate(group["views"])]
             for group in groups

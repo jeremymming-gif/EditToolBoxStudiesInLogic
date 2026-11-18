@@ -277,6 +277,23 @@ check("(e) 打包脚本的版本号是**现取**的，不再写死（旧 build.s
       'slcn\\__init__.py' in _ps_text.replace("/", "\\") and "__version__" in _ps_text
       and "1.5.0" not in _ps_text)
 
+# 验收 B3（终验阻断）：`slcn/pushcopy/assets`（master.docx / prototypes.json）必须随包，
+# 否则 dirpush 运行期在 `slcn/pushcopy/render_docx.py:28 _ASSETS` FileNotFoundError。
+# 两个打包脚本（Engine 侧 onedir/onefile 与 Flet 侧 onedir）都要有这一条，且路径一致。
+_PUSHCOPY_ADD = '--add-data", "$EngineDir\\slcn\\pushcopy\\assets;slcn\\pushcopy\\assets'
+_onedir_ps = (ENGINE.parent / "sources-flet" / "packaging"
+              / "build_win_sidecar_onedir.ps1")
+_onedir_text = _onedir_ps.read_text(encoding="utf-8") if _onedir_ps.is_file() else ""
+check("(e) Engine 侧打包脚本带 pushcopy 资产",
+      _PUSHCOPY_ADD in _ps_text.replace("/", "\\"), "build_win_sidecar.ps1")
+check("(e) Flet 侧 onedir 打包脚本也带 pushcopy 资产（B3：release.yml 用的就是它）",
+      bool(_onedir_text) and _PUSHCOPY_ADD in _onedir_text.replace("/", "\\"),
+      _onedir_ps.name if _onedir_text else "（脚本不存在）")
+check("(e) pushcopy 资产文件本身在仓库里（打包才有东西可加）",
+      (ENGINE / "slcn" / "pushcopy" / "assets" / "master.docx").is_file()
+      and (ENGINE / "slcn" / "pushcopy" / "assets" / "prototypes.json").is_file(),
+      "master.docx + prototypes.json")
+
 # ─────────────────────────────────────────────────────────────────────────
 print("\n── (f) 跨盘符路径：`paths.rel()` 不许让一句汇报打断整个转换 ──")
 

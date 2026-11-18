@@ -18,6 +18,8 @@ from __future__ import annotations
 import os
 import re
 
+from .bibparse import pair_summary
+
 #: 允许回填的字段（spec §8.4 的 8 类；url/doi 等不在其列——那是别的卡的范围）
 FILL_FIELDS: tuple[str, ...] = (
     "journal", "volume", "number", "pages", "booktitle", "editor",
@@ -602,12 +604,6 @@ def conflict_summary(applied: list[dict]) -> tuple[dict[str, int], list[tuple[st
     return counts, samples
 
 
-def _short_value(value: str, n: int = 40) -> str:
-    """样本里的值截断（只影响显示，不参与任何判据）。"""
-    v = " ".join(str(value or "").split())
-    return v if len(v) <= n else v[: n - 1] + "…"
-
-
 def format_conflicts(applied: list[dict]) -> list[str]:
     """B-268 S3：核对单里的「覆盖库值」统计行 + 样本（时点 = ⑦ 回填后）。"""
     counts, samples = conflict_summary(applied)
@@ -618,8 +614,8 @@ def format_conflicts(applied: list[dict]) -> list[str]:
                       sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
     lines = [f"  · 覆盖库值（⑦ 回填时改了已有值）：{n} 项（{detail}）"]
     for key, name, old, new in samples:
-        lines.append(f"      样本 [{key}] {name}：「{_short_value(old)}」"
-                     f"→「{_short_value(new)}」")
+        was, should = pair_summary(old, new, 40)
+        lines.append(f"      样本 [{key}] {name}：「{was}」→「{should}」")
     if n > len(samples):
         lines.append(f"      （其余 {n - len(samples)} 项按条目见上文逐条行）")
     return lines

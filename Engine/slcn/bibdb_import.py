@@ -17,6 +17,7 @@ from slcn.bibdb_core import (
 from slcn.bibdb_reports import (
     _record_brief,
 )  # noqa: F401
+from slcn.bibparse import pair_summary
 
 def _change_rows(before: dict, store) -> list[dict]:
     """导入前后对比 → 逐条变化明细（给 `--dry-run --json` 与界面用）。
@@ -383,7 +384,8 @@ def cmd_rehash(args) -> int:
     print(f"条目 {payload['records']}；content_sha256 与当前规范化规则不一致 "
           f"{len(rows)} 条")
     for row in rows:
-        print(f"  ✗ {row['key']}：{_clip_sha(row['old'])} → {_clip_sha(row['new'])}")
+        was, should = pair_summary(str(row['old'] or ""), str(row['new'] or ""), 12)
+        print(f"  ✗ {row['key']}：{was or '（空）'} → {should or '（空）'}")
     if not rows:
         print("✓ 全部条目一致（0 条需迁移）——库已与当前规范化规则对齐。")
     elif args.apply:

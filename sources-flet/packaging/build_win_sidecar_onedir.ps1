@@ -103,6 +103,10 @@ try {
         $PyArgs += @("--hidden-import", [IO.Path]::GetFileNameWithoutExtension($e))
     }
     $PyArgs += @("--add-data", "$TplSrc;编辑笔记\模板文件", "engine_main.py")
+    # 验收 B3（终验阻断）：pushcopy 渲染资产（master.docx / prototypes.json）必须随包，
+    # 否则 dirpush 运行期在 `slcn/pushcopy/render_docx.py` 里 FileNotFoundError。
+    # 与 `Engine/tools/build_win_sidecar.ps1` 的那条**必须一致**（双平台同源）。
+    $PyArgs += @("--add-data", "$EngineDir\slcn\pushcopy\assets;slcn\pushcopy\assets")
     & $Python @PyArgs
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller 冻结引擎失败（rc=$LASTEXITCODE）" }
 } finally {

@@ -744,18 +744,17 @@ def parse_docx(path: str, quote_threshold: int = 105,
             doc.warnings.append(
                 "作者信息脚注存在但无法判定作者（保持现有解析结果，请人工填写）："
                 + _text.strip()[:60])
-    # 正文里的独立一行 `基金项目：…`（90-08 实测：作者信息只在正文出现、且没有
-    # 作者姓名/单位）→ **只填基金项目、绝不臆造作者**；该行从正文里移出（否则
-    # 标题页基金脚注 + 正文会重复印一遍）。
+    # 正文里的独立一行 `基金项目：…`（90-08 实测：作者信息只在正文出现、且没有作者姓名/单位）→ 只填基金项目、
+    # 绝不臆造作者；该行从正文移出。F5：脚注已有基金项时同样移出，只去重不取值（否则同一基金号印两次）。
+    _fund_note = next((_i["grants"] for _i in _ai_infos if _i.get("grants")), "")
     _drop_fund_para = None
-    if not any(_i.get("grants") for _i in _ai_infos):
-        for _i, _p in enumerate(plains[1:], start=1):
-            _g = parse_fund_line(_p)
-            if _g:
+    for _i, _p in enumerate(plains[1:], start=1):
+        if (_g := parse_fund_line(_p)):
+            if not _fund_note:
                 _ai_infos.append({"authors": [], "received": "", "grants": _g,
                                   "warnings": []})
-                _drop_fund_para = paras[_i]
-                break
+            _drop_fund_para = paras[_i]
+            break
     _ai = merge_author_info(_ai_infos, known_cn=tuple(_known_cn),
                             known_en=tuple(_known_en))
     doc.author_meta = _ai["authors"]
@@ -803,9 +802,10 @@ def parse_docx(path: str, quote_threshold: int = 105,
         body_paras = [p for p in body_paras if p is not _drop_fund_para]
         paras = [p for p in paras if p is not _drop_fund_para]
         blocks = [b for b in blocks if b is not _drop_fund_para]
-        doc.warnings.append(
-            f"正文中的「基金项目：…」行已移入元数据（标题页基金项）："
-            f"{doc.grants[:60]}")
+        _w = ("正文中的「基金项目：…」行与标题页基金项重复，已去重删除："
+              + _drop_fund_para.plain.strip()[:60]) if _fund_note else (
+            f"正文中的「基金项目：…」行已移入元数据（标题页基金项）：{doc.grants[:60]}")
+        doc.warnings.append(_w)
 
     # B-219③：正文里只由「中图分类号/文献标识码」组成的整段 → 删除（标题页由
     # SLCN-MIX.sty 固定印刷 B81/A，不得重复）。与上面基金行同口径：从 body_paras /

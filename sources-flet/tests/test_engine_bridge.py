@@ -140,6 +140,7 @@ def test_artifact_path_ignores_directories_and_missing_files(tmp_path):
 
 def test_env_for_run(tmp_path, monkeypatch):
     monkeypatch.setenv("P2_ENGINE", str(tmp_path))
+    (tmp_path / "cases").mkdir()
     env = EB.env_for_run(notes=str(tmp_path))
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["PYTHONIOENCODING"] == "utf-8"

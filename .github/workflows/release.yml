@@ -108,6 +108,7 @@ jobs:
               --hidden-import bibdb --hidden-import envcheck --hidden-import diagnose \
               --hidden-import dirpush \
               --add-data "$GITHUB_WORKSPACE/编辑笔记/模板文件:编辑笔记/模板文件" \
+              --add-data "$GITHUB_WORKSPACE/Engine/slcn/pushcopy/assets:slcn/pushcopy/assets" \
               engine_main.py )
           # --onedir 产出的是**目录**：dist-engine/SLCNEngine/{SLCNEngine,_internal/}
           rm -rf build-flet/SLCNEngine
@@ -214,7 +215,27 @@ jobs:
           set -euo pipefail
           V="${{ steps.ver.outputs.value }}"
           ZIP="EditToolBox-$V-macOS-arm64.zip"
+          # 先按原样打包（保留 xattr），再删掉多余的 `._*` 影子条目。
+          # 不能改用 `ditto -c -k --norsrc`：它隐含 --noextattr，会把
+          # Contents/MacOS/SLCNEngine 这个 sh launcher 的 ad-hoc 签名一起剥掉
+          # （codesign 对脚本只能把签名存进 xattr：com.apple.cs.*），解包后
+          # `codesign --verify --deep --strict` 报 "code object is not signed at all"。
           ditto -c -k --keepParent pkg-mac "$ZIP"
+          # 只保留 launcher 的 AppleDouble（脚本签名载体），其余 `._*` 全删。
+          # zip -d 在「没有可删条目」时返回 12（Nothing to do!），属正常情况。
+          zip -q -d "$ZIP" '*/._*' -x '*MacOS/._SLCNEngine' || [ $? -eq 12 ]
+          # 自检：`._*` 至多剩 launcher 那一条（无 .app 分支为 0 条）。
+          # 必须 LC_ALL=C：`unzip -l` 会按 locale 转换非 ASCII 文件名，UTF-8 下
+          # 中文路径（编辑部工具箱.app/...）被转成乱码，`grep '/\._'` 数不到 ——
+          # 同一个包实测默认 locale 数到 4、LC_ALL=C 数到 592，数错等于没自检。
+          AD=$(LC_ALL=C unzip -l "$ZIP" | grep -c '/\._' || true)
+          echo "zip 内 AppleDouble 条目：${AD}（预期 <=1，仅 launcher）"
+          if [ "$AD" -gt 1 ]; then
+            echo "::error::zip 里残留 AppleDouble 影子条目 ${AD} 条（预期 <=1，只应剩 Contents/MacOS/._SLCNEngine）"
+            echo "排查：确认上一行 zip -d 是否生效；条目清单用 LC_ALL=C unzip -l \"$ZIP\" 查看。前 20 条："
+            LC_ALL=C unzip -l "$ZIP" | grep '/\._' | head -20 || true
+            exit 1
+          fi
           ZHASH=$(shasum -a 256 "$ZIP" | awk '{print $1}')
           echo "zip: $ZIP"
           echo "sha256: $ZHASH"
@@ -360,7 +381,7 @@ jobs:
           | macOS | 双击提示「已损坏，无法打开」 | 右键点应用 →「打开」→ 弹窗里再点「打开」；<br>或终端一条命令：`xattr -dr com.apple.quarantine "/Applications/编辑部工具箱.app"` |
           | Windows | 蓝色 SmartScreen「Windows 已保护你的电脑」 | 点「更多信息」→ 再点「**仍要运行**」 |
 
-          **v1.7.0 本次更新**
+          **v1.8.0 本次更新**
 
           - 页内子导航统一（单篇 / 整期 / 引用库同一套步骤 chip；引用库设置页右空栏消失）。
           - 中文目录 PDF 修复：标题/作者/页码不再重叠，右侧大片空白消失；栏目期作者列限宽。

@@ -4,7 +4,7 @@
 1. 入口计数由 `ia_map` 现算，不再是「六个入口」：5 个一级页（引用库在侧栏无父行）
    + 引用库 3 组 9 叶 + 页头齿轮进设置；文案同时给出 `bib:settings` 可深链。
 2. 旧 IA 名一律不得回流：四组 / 10 视图 / 规范化 / 六个入口 / 「维护」组。
-3. 视图名统一「回读校验」；9 叶名称与 `ia_map` 逐一对得上（组名 查阅 / 采录 / 治理）。
+3. 视图名统一「AI 辅助处理 Bib」；9 叶名称与 `ia_map` 逐一对得上（组名 查阅 / 采录 / 治理）。
 4. 快捷键段仍与外壳同源（`settings_shell.shortcut_rows`），不另抄一份。
 5. 目录点击后只有该行选中（accent_soft），`_active_toc` 记最近跳转；滚动联动高亮
    不做比例猜测（flet 1.0.5 无分区几何），见证据 notes 的 backlog。
@@ -114,13 +114,13 @@ def test_stale_ia_wording_is_gone_from_copy_and_render():
     for stale in STALE:
         assert stale not in rendered, stale
         assert stale not in data, stale
-    assert "回读校验" in rendered
-    assert "回读校验" in next(d for _n, _w, d in HC.ENTRIES if "单篇" in _n)
+    assert "AI 辅助处理 Bib" in rendered
+    assert "AI 辅助处理 Bib" in next(d for _n, _w, d in HC.ENTRIES if "单篇" in _n)
 
 
 def test_single_page_points_to_intake_group_readback_check():
     entry = next(detail for name, _where, detail in HC.ENTRIES if name == "单篇稿件")
-    assert "「引用库 → 采录 → 回读校验」" in entry
+    assert "「引用库 → 采录 → AI 辅助处理 Bib」" in entry
 
 
 # ── 3. 快捷键与外壳同源（不另抄一份）──────────────────────────────────────

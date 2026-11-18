@@ -1490,6 +1490,58 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
 - **`--json`**：stdout 最后一行 JSON，保留旧字段（`ok/command/mode/dryRun/root/count/entryCount/entries/trashDir/restoreDir/failures/warnings/error`），
   新增 `operationId/status/kept`；字段语义见 `docs/ENGINE_API.md` §五。
 
+### 3.11 AI 工作流（两段式 / 直连共用一套引擎；2026-11-17）
+
+新批次把「初排页的 AI 协同」和「引用库 → 规范化 → AI 处理 Bib」收敛到**同一套引擎工作流**：
+`slcn/ai_workflow.py`（状态机 + 七个操作）+ `slcn/ai_workflow_cli.py`（命令行）。两处界面
+只是**入口不同**，校验、候选合成、备份与撤销**完全同一条路径**；命令行接口见
+[`ENGINE_API.md`](ENGINE_API.md)「三·五」。
+
+**为什么 Chat 与 API 走同一套**：两条通道**只差「结果从哪来」**——Chat 是人把任务书复制给
+外部 AI 再把回复贴回来，API 是引擎自己请求。除此之外的解析、类别采纳、阻断判据、
+指纹校验、备份与撤销一个字都不能分叉；否则「Chat 能过、API 不能过」这类差异会变成
+两套真相。API Key 只从环境/设置读，**绝不进任务书、argv、状态文件或日志**。
+
+**七个操作**（`prepare / request / import / preview / apply / status / undo`）：
+
+| 操作 | 写什么 | 绝不做什么 |
+|---|---|---|
+| `prepare` | 工作区 + 任务书 + 冻结指纹 | 不写目标 bib |
+| `request` | 模型原始响应 | 不自动采纳 |
+| `import` | 解析结果、覆盖状态 | 不写目标 bib |
+| `preview` | 确定性候选文件 + `preview_id` | 有阻断项时不产候选 |
+| `apply` | 备份 + 原子替换目标 | 指纹不符时拒绝 |
+| `status` | 只读 | 没有任务也返回 0（那是有效答复） |
+| `undo` | 恢复备份 | 目标被外部改过就拒绝 |
+
+**执行范围 ≠ 采纳范围**：`--execute` / `--adopt` 是两组独立参数。缺省
+`bib_verify`（文献核实）与 `typeset`（初排检查）执行且采纳，`text`（文字纠错）
+**两端默认关**，`--text` 才把文字纠错加进执行范围。界面上同样是两个独立勾选组，
+默认值见 `sources-flet/app/ui/bib_ai_assist.py` 的 `EXECUTE_DEFAULTS` /
+`ACCEPT_DEFAULTS`。
+
+**「AI 处理 Bib」在界面上的位置**：**回读校验页里的折叠区**（`引用库 → 规范化`），
+不新增第 11 个引用库视图——`BibPage.VIEWS`、导航 chip 数与命令数被多处测试钉死，
+新增路由会连带改这些计数。折叠区默认收起，**首次展开才实例化**，因此初始控件树
+与从前一致（同页仍只有「生成报告」一个主按钮）。
+
+**「在 VS Code 里对比…」**（DESIGN §10）：把「冻结旧版 + 候选新版」写成一对**标准文件名**
+的副本放在隐藏的 `<产物目录>/.diff/<preview_id>/` 下，再 `code --diff` 打开；
+`preview_id` 由两侧 SHA 派生，打开前后都重算 SHA（副本被改过就不算有效）。
+**本轮只做双文件对比**，不提供 `code -m` 三方合并。编辑器不可用时**如实给两条副本路径**，
+绝不把「给了路径」说成「已打开对比」；对比**不绑应用**——应用只认 `preview_id` + 指纹。
+
+**报告里的路径**：`bibreport` 的抬头三行（退回文件 / 原件 / 正文）在**报告落点已知时**
+写成相对报告目录的路径（初排的 `<stem>_回读校验报告.md` 与 `checkbib.py --merge-into`
+都传 `report_dir`），这样整个交付目录搬走之后链接仍然指得到；快照不在报告目录内、
+或路径不存在时退回绝对路径；`checkbib.py` 的普通体检模式不传 `report_dir`，
+**保持绝对路径**不变。
+
+**`@string` / `crossref` 这类依赖**：候选只保留**真正用到**的 `@string` 定义，
+且旧版优先；同名定义不同 → 阻断（不猜）。`crossref` / `xdata` 递归求闭包并检环。
+
+---
+
 ## 五、目录结构
 
 
@@ -1731,3 +1783,28 @@ Swift 侧只做界面 + 参数拼装 + 找路径，构建时把引擎打包进 a
    ② `Abstract. ` 这种「标签后只有一个句点」让 `abstract_en` 取到 `'. '`，而普查按"标签存在"仍记 `ok`
    —— 判据与取值不一致。两条都是**既有**问题（与第 56 条的改动无关），见第 56 条末段。
    （task-7 已清账；PDF-only 21 篇见第 45 条、`HANDOFF.md` §六。）
+
+---
+
+## 十、R3 任务书与初排闭环（2026-11-18）
+
+本功能是「足量任务书 → 精简回填 → 两类真采纳 → 真正交付/撤销」的引擎闭环；
+规格见 `EditToolBox-notes` 的 `TASKBOOK-SPEC-R3-20261118.md`，执行卡见同目录
+`TASKBOOK-IMPLEMENTATION-PLAN-R3-20261118.md`。全程不润色、不付费 API、不新增依赖。
+
+- **第一段（生成任务）**：`convert.py --ai-taskbook-version 3 --ai-execute <类别> --ai-work-dir <根>`
+  只冻结输入、生成任务书并登记状态；本次**不**编译、不导 PDF、不清理、不写最终目录。
+  任务书由引擎用 `ai_workflow_taskbook.build_context/render_taskbook` 生成，
+  规则节取 `DEFAULT_RULE_SECTIONS`（8 类，逐字取自已放行样本，去真实案例）。
+  新选项不能与旧 `--coop-replies`/分片参数混用（混用报用法错误）。
+- **只读取全文**：`convert.py --ai-workflow --work-dir <根> taskbook --json --task-id <ID>`。
+  只认状态登记的任务书路径并核对文件实 SHA；身份或 SHA 不符整份拒收、正文置空，
+  不从日志正文里猜。返回恰好七键：`ok/task_id/template_version/path/sha256/text/chars`。
+- **回填与请求**：`request` 增加可选 `--retry`。默认成功不重发、失败不自动重试；
+  只有 `failed/cancelled/unknown` 结果在显式 `--retry` 下才新发一次，
+  进行中（in_flight）拒发；每次发送留 `request_id` 与历史 attempt，不清日志换身份。
+- **交付与撤销**：`deliver --work-dir <根> --preview-id <ID> [--use-original]`
+  只把 `metadata_fill`（填空/占位值）与 `footnote_link`（唯一 span、键在最终 Bib）
+  两类真写入最终 TeX，计数来自写后回读；`--use-original` 跳过采纳但仍交付。
+  `undo` 按状态派发：R3 交付走整目录原子移保留区再恢复，外部改动阻断，不物理删。
+- **测试**：`tests/test_ai_workflow_taskbook_20261118.py`、`...reply...`、`...delivery...`。
