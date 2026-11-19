@@ -199,13 +199,13 @@ def test_sync_settings_skips_rewrite_when_nothing_changed(tmp_path):
 
 
 # ── A4：负向校验 ─────────────────────────────────────────────────────────
-def test_column_issue_requires_all_four_fields_when_column_enabled():
+def test_column_issue_requires_all_four_fields_when_column_enabled(tmp_path):
     """2026-11-06 用户决定(b)：专栏/专辑四项（类型/中文名/英文名/主持人）全部非空才可生成。
 
     旧行为只检查「类型已选但中文名为空」，且「无栏目 + 有勾选」会给一条提示；
     新规则下无栏目永不被字段阻断，旧提示（勾选不生效）已删除。
     """
-    panel, _report, _ = _make_panel(Path("/tmp"))
+    panel, _report, _ = _make_panel(tmp_path)
     panel.values.update({"columnKind": "专栏", "columnName": "",
                          "columnNameEN": "", "columnHost": ""})
 

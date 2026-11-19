@@ -2383,11 +2383,21 @@ class App:
 
     # ── 文件选择 / 剪贴板 / 打开 ────────────────────────────────────────
     def browse_field(self, ref, dialog_title: str, kind: str, key: str,
-                     store_prefix: str = "recent") -> None:
+                     store_prefix: str = "recent", *, on_result=None,
+                     result_guard=None) -> None:
+        """选择后先用同步 `result_guard()` 确认请求仍有效，再回填和持久化。
+
+        guard 返回假值或抛错时不写控件/设置；结束后仍以 None 通知 on_result，
+        让调用方释放选择状态。未传 guard 的普通选择器保留原有行为。
+        """
         if ref is None:
+            if callable(on_result):
+                on_result(None)
             return
         if self.running:
             self.toast("运行中不能打开文件对话框：等当前任务结束，或先点「停止」")
+            if callable(on_result):
+                on_result(None)
             return
         # R01：失败提示要说清是哪个输入受影响（引擎目录 / 期目录 / 源稿件…）。
         self._picker_label_text = _picker_label(dialog_title)
@@ -2397,11 +2407,18 @@ class App:
         self.mark("picker_open_begin", kind=kind, key=key,
                   label=self._picker_label_text)
         try:
-            self.page.run_task(self._browse_task, ref, dialog_title, kind, key, store_prefix)
+            self.page.run_task(self._browse_task, ref, dialog_title, kind, key,
+                               store_prefix, on_result, result_guard)
         except Exception as exc:  # noqa: BLE001  调度失败也落到中文提示（GUI-04 加固）
+            self._picker_state = "idle"
             self._picker_error(f"run_task: {type(exc).__name__}: {exc}")
+            if callable(on_result):
+                on_result(None)
 
-    async def _browse_task(self, ref, dialog_title: str, kind: str, key: str, store_prefix: str) -> None:
+    async def _browse_task(self, ref, dialog_title: str, kind: str, key: str,
+                           store_prefix: str, on_result=None,
+                           result_guard=None) -> None:
+        selected = None
         label = _picker_label(dialog_title)
         if label:
             self._picker_label_text = label  # 供 _picker_error 兜底取用
@@ -2422,6 +2439,10 @@ class App:
                 if not value:
                     self._picker_error("", cancel=True)
                     return
+                # 调用方掌握请求身份；过期结果必须在任何回填/设置写入之前丢弃。
+                if result_guard is not None and not result_guard():
+                    self.mark("picker_stale", kind=kind, key=key)
+                    return
                 ref[0].value = value
                 C.sync_clearable(ref[0])     # m03131：浏览回填后显示框内 ✕
                 try:
@@ -2437,13 +2458,21 @@ class App:
                     elif key == "notes_repo":
                         # 批 246 P6：浏览选中的笔记仓也立即生效，不等下一次保存/重启。
                         self._apply_notes_repo()
+                elif store_prefix == "form":
+                    self.store.set(f"form.{key}", value)
                 else:
                     self.store.set_recent(key, value)
                 self.persist()
+                selected = value
             except Exception as exc:  # noqa: BLE001
                 self._picker_error(f"{type(exc).__name__}: {exc}")
         finally:
             self._picker_state = "idle"
+            if callable(on_result):
+                try:
+                    on_result(selected)
+                except Exception as exc:  # noqa: BLE001 - 同步失败也要给出下一步
+                    self._picker_error(f"结果同步: {type(exc).__name__}: {exc}", label=label)
 
     def _picker_error(self, error: str, *, cancel: bool = False, label: str = "") -> None:
         """文件选择失败/取消都要有中文提示（B4/R01）；失败不弹系统错误，可改手输。
@@ -2549,6 +2578,9 @@ class App:
 
     def on_window_event(self, e) -> None:
         if getattr(e, "type", None) == ft.WindowEventType.CLOSE:
+            single = self.pages.get("single")
+            if isinstance(single, P.SinglePage) and single.keep_window_for_initial_ai():
+                return
             self._close_requested = True
             self.mark("close_requested")
             if self.client_hwnd:
@@ -2893,7 +2925,7 @@ class App:
             self._picker_error(f"{type(exc).__name__}: {exc}")
 
     async def _autorun_normalize(self) -> None:
-        """P2_AUTORUN=checkbib 的新路径：进「引用库 → 规范化」，有样例才真跑。
+        """P2_AUTORUN=checkbib 统一进「引用库 → 规范化」，有样例才真跑。
 
         checkbib 只读（产出报告文件、绝不写库）；没给 P2_DEMO_BIB 时只到面板预填，
         不触发运行，避免旧证据脚本在无输入时把 `_wait_run_finished` 空等到超时。
@@ -2917,15 +2949,14 @@ class App:
     async def _autorun(self, target: str) -> None:
         await asyncio.sleep(0.5)
         self.mark("autorun_begin", target=target)
-        legacy_checkbib = _env_str("P2_AUTORUN_LEGACY") in ("1", "true", "yes")
         normalize_redirect = False
-        if target == "checkbib" and not legacy_checkbib:
-            # 批 112 S3a2：交回 .bib 体检改道「引用库 → 规范化」；旧单篇路径只在
-            # P2_AUTORUN_LEGACY=1 时保留一次（兼容旧证据脚本，下批可删）。
+        if target == "checkbib":
+            # P2_AUTORUN_LEGACY 仍接受为旧脚本的兼容输入，但不再切换路由。
+            # 单篇页已无体检流程，所有 checkbib 请求统一进入规范化，避免误跑初排。
             await self._autorun_normalize()
             await asyncio.sleep(0.2)  # 让 run_task 的 begin_run 先落地
             normalize_redirect = True
-        elif target in ("convert", "checkbib", "proofcheck"):
+        elif target in ("convert", "proofcheck"):
             page = self.pages.get("single")
             if page is None:
                 self.mark("autorun_error", error="no single page")

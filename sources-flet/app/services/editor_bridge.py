@@ -198,10 +198,15 @@ def _ensure_subdir(parent: str, label: str) -> None:
         raise ValueError(f"建不了目录 {parent}：{exc}") from exc
 
 
-def make_preview(*, old_file: str, new_text: str, ext: str = DEFAULT_EXT,
-                 work_dir: str, stem: str = DEFAULT_STEM,
-                 dir_name: str = DIFF_DIRNAME) -> Preview:
-    """把「旧版文件 + 新版文本」写成一对标准文件名副本，返回 :class:`Preview`。
+class CandidateIntegrityError(ValueError):
+    """新版字节与调用方提供的候选摘要不一致。"""
+
+
+def make_preview(*, old_file: str, new_text: str = "", ext: str = DEFAULT_EXT,
+                 work_dir: str, stem: str = DEFAULT_STEM, dir_name: str = DIFF_DIRNAME,
+                 new_bytes: bytes | None = None, expected_old_sha256: str = "",
+                 expected_new_sha256: str = "") -> Preview:
+    """把旧版文件与新版文本或原始字节写成两份副本，返回 :class:`Preview`。
 
     只读 ``old_file``（一个字节都不写它），只写
     ``<work_dir>/<dir_name>/<preview_id>/{<stem><ext>, <stem>_proposed<ext>, preview.json}``。
@@ -218,6 +223,8 @@ def make_preview(*, old_file: str, new_text: str, ext: str = DEFAULT_EXT,
         raise ValueError("没有原文件路径（old_file 为空），无法生成对比预览。")
     if not isinstance(new_text, str):
         raise ValueError(f"新版内容必须是文本（拿到 {type(new_text).__name__}），无法生成对比预览。")
+    if new_bytes is not None and (not isinstance(new_bytes, bytes) or new_text):
+        raise ValueError("请只提供新版文本或原始字节其中之一。")
     suffix = _clean_ext(ext)
     name = _clean_stem(stem)
 
@@ -237,12 +244,17 @@ def make_preview(*, old_file: str, new_text: str, ext: str = DEFAULT_EXT,
     except OSError as exc:
         raise ValueError(f"读不了原文件 {source}：{exc}") from exc
     old_sha = hashlib.sha256(old_bytes).hexdigest()
+    if expected_old_sha256 and old_sha != expected_old_sha256:
+        raise ValueError("冻结稿件版 Bib 与任务记录不一致，无法生成对比预览。")
 
-    try:
-        new_bytes = new_text.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise ValueError(f"新版内容含无法按 UTF-8 编码的字符：{exc}") from exc
+    if new_bytes is None:
+        try:
+            new_bytes = new_text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError(f"新版内容含无法按 UTF-8 编码的字符：{exc}") from exc
     new_sha = hashlib.sha256(new_bytes).hexdigest()
+    if expected_new_sha256 and new_sha != expected_new_sha256:
+        raise CandidateIntegrityError("候选 Bib 与引擎登记的摘要不一致，请重新生成拟应用结果。")
 
     diff_dir = preview_dir(base_dir, dir_name)
     _ensure_subdir(diff_dir, "预览根目录")
@@ -265,8 +277,8 @@ def make_preview(*, old_file: str, new_text: str, ext: str = DEFAULT_EXT,
         raise ValueError(f"写不了旧版副本 {old_path}：{exc}") from exc
 
     try:
-        with open(new_path, "w", encoding="utf-8", newline="") as handle:
-            handle.write(new_text)
+        with open(new_path, "wb") as handle:
+            handle.write(new_bytes)
     except OSError as exc:
         raise ValueError(f"写不了新版副本 {new_path}：{exc}") from exc
 

@@ -112,6 +112,8 @@ def _status_lines(st: dict) -> list[str]:
     cand = str(st.get("candidate_bib") or "")
     if cand:
         lines.append(f"candidate_bib={cand}")
+        if st.get("candidate_bib_sha256"):
+            lines.append(f"candidate_bib_sha256={st['candidate_bib_sha256']}")
     lines.append(f"message={st.get('message', '')}")
     cats = st.get("categories") or {}
     for cat in _w.CATS:
@@ -296,9 +298,18 @@ def _op_status(a) -> dict:
     work = os.path.abspath(a.work_dir)
     st = _w.status(work)
     state = _w.load_state(work) or {}
+    preview = state.get("preview") or {}
+    # 两次读状态之间可能恰好生成了另一份预览。摘要只属于同一任务、同一候选。
+    digest = ""
+    if (st.get("candidate_bib") and st.get("preview_id")
+            and st.get("task_id") == state.get("task_id")
+            and st["preview_id"] == preview.get("preview_id")
+            and st["candidate_bib"] == preview.get("candidate_bib")):
+        digest = str(preview.get("bib_new_sha256") or "")
     # 合同 §1：status 必须带 library / conflicts / decisions 三键。
     # `_w.status()` 是 A 包门面、保持不动；这里只做投影合并（缺省给「尚未查库」）。
     return {"op": "status", **st,
+            "candidate_bib_sha256": digest,
             "library": _sv3.library_of(state),
             "conflicts": _sv3.conflicts_of(state),
             "decisions": _sv3.decisions_of(state)}

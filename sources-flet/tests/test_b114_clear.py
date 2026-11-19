@@ -91,8 +91,8 @@ def test_clear_all_advanced_params_resets_store_fields_and_selects():
     assert ("advanced_params_cleared", {"count": 14}) in app.marked
     assert any("已清空高级参数" in message for message in app.toasts)
     # 处理选项 / 元数据不受影响：清空后仍在页面里
-    assert any("编译 PDF" in value for value in
-               [str(getattr(c, "value", "")) for c in _walk(root)])
+    assert any(isinstance(c, ft.Checkbox) and c.label == "编译 PDF"
+               for c in _walk(root)), "原生复选框仍可控制编译；清空高级信息不移除它"
 
 
 # ── 3. 下拉重置（m03131 已下沉到 select_box(reset=True)）────────────────

@@ -1,7 +1,8 @@
 """批 109 W1b：写库高级能力（编辑 / 查重合并 / 字段归位 / 库健康 / 批量裁决 dry-run）。
 
 纪律（与 `test_bib_write.py` 同款）：不碰真实库、不碰真实 GUI。命令拼装只看 argv；
-视图层用桩 `read_json_command` + 桩 `GIT.commit_db`；真实库的 sha 只读校验放在最后。
+视图层用桩 `read_json_command` + 桩 `GIT.commit_db`；本文件每条测试都隔离到临时匿名中央库，
+在测试前后校验库字节与 sha 不变；最后实际执行含待裁决冲突的引擎批量预览。
 """
 from __future__ import annotations
 
@@ -13,6 +14,42 @@ from services import bib_git as GIT
 from services import engine_bridge as EB
 from ui import bib_ops as BO
 from ui import bib_ops_health as BOH
+
+
+@pytest.fixture(autouse=True)
+def anonymous_library(tmp_path, monkeypatch):
+    """整组 operations 的中央库哨兵：隔离发现路径，每项执行前后都禁止改库。"""
+    import hashlib
+    from pathlib import Path
+
+    notes = tmp_path / "isolated-notes"
+    (notes / "cases").mkdir(parents=True)
+    monkeypatch.setenv("SLCN_NOTES", str(notes))
+    engine_root = Path(__file__).resolve().parents[2] / "Engine"
+    monkeypatch.syspath_prepend(str(engine_root))
+    from slcn import bibdb
+
+    db = Path(_db_path(notes))
+    store = bibdb.Store.load(str(db))
+    for publisher, source in (("Original Press", "original.bib"),
+                              ("Incoming Press", "incoming.bib")):
+        store.import_bib_text(
+            "@book{Anon2026, author={Example, A.}, title={Anonymous Work}, "
+            "year={2026}, publisher={" + publisher + "}}",
+            {"kind": "verified", "file": source}, verified=True)
+    assert store.save() is True
+    assert Path(GIT.default_db()).resolve() == db.resolve()
+    assert Path(bibdb.default_db_path()).resolve() == db.resolve()
+    before = db.read_bytes()
+    before_sha = hashlib.sha256(before).hexdigest()
+    assert GIT.file_sha256(str(db)) == before_sha
+
+    yield db
+
+    after = db.read_bytes()
+    assert after == before, "operations 测试不得改动隔离中央库"
+    assert hashlib.sha256(after).hexdigest() == before_sha
+    assert GIT.file_sha256(str(db)) == before_sha
 
 
 @pytest.fixture()
@@ -397,16 +434,55 @@ def test_health_view_degrades_when_no_pending():
     assert "待裁决 0，已裁决 157" in BO.health_lines(counts)[2]
 
 
-def test_real_db_untouched_after_ops_tests():
-    """真实库只读：2026-11-08 BIB-MIGRATION 后锚点（3,875 条／3,664,354 B；2026-11-10 更新）；若本机有引用库，sha256 必须一致（否则报警）。"""
-    import os
+def test_anonymous_db_untouched_by_batch_preview(anonymous_library, monkeypatch):
+    """真实预览含可采用的冲突，仍须零写库、零提交；不依赖本机库或历史指纹。"""
+    import hashlib
+    import sys
     from pathlib import Path
 
-    notes = os.environ.get("SLCN_NOTES") or str(
-        Path(__file__).resolve().parents[3] / "EditToolBox-notes")
-    db = Path(notes) / "bib_db" / "bibliography.jsonl"
-    if not db.exists():
-        pytest.skip("本机没有引用库（CI / 独立检出）：真实库零写入由 stub 测试保证")
-    # 依据：2026-11-10 实测真库 sha（3,875 条／3,664,354 B；notes bb1a041 BIB-MIGRATION-20261108 后）
-    assert GIT.file_sha256(str(db)) == \
-        "bae9b714f0268d3f979d1842ba0f4c72d1a1e9dc8d150e14e5821cda755b49ce"
+    engine_root = Path(__file__).resolve().parents[2] / "Engine"
+    monkeypatch.setenv("P2_ENGINE", str(engine_root))
+    monkeypatch.setenv("P2_ENGINE_PYTHON", sys.executable)
+    for name in ("P2_ENGINE_EXE", "SLCN_ENGINE_EXE"):
+        monkeypatch.delenv(name, raising=False)
+    db = anonymous_library
+    notes_root = db.parent.parent
+    before = db.read_bytes()
+    before_sha = hashlib.sha256(before).hexdigest()
+
+    page = _FakePage(str(db))
+    page.app.notes_repo = str(notes_root)
+    view = BOH.BibHealthView(page)
+    read_command = EB.read_json_command
+    calls, commits = [], []
+
+    def read_preview(call, *, notes=""):
+        calls.append(list(call.argv))
+        assert notes == str(notes_root)
+        assert args_of(call) == ["resolve", "--json", "--adopt-all-pending", "--dry-run"]
+        return read_command(call, notes=notes, timeout=10)
+
+    monkeypatch.setattr(BOH.EB, "read_json_command", read_preview)
+    monkeypatch.setattr(BOH.GIT, "commit_db",
+                        lambda path, message: commits.append((path, message)))
+
+    asyncio.run(view._preview_all())
+
+    assert view.error == ""
+    assert len(calls) == 1
+    payload = view.preview
+    assert payload and Path(payload["db"]) == db
+    assert payload["dry_run"] is True and payload["written"] is False
+    assert payload["changed"] is False  # 引擎 changed 表示实际变更；采用计划另行逐项核对。
+    assert payload["records"] == 1 and payload["conflicts"] == 1
+    assert payload["totals_before"]["pending"] == 1
+    assert payload["totals_after"]["pending"] == 0
+    assert len(payload["adopted"]) == 1
+    assert payload["adopted"][0]["fields"]["publisher"] == {
+        "old": "Original Press", "new": "Incoming Press", "remove": False}
+    assert payload["db_sha256_before"] == payload["db_sha256_after"] == before_sha
+    assert view.pending == {"adopt_all_pending": True, "dry_run": False,
+                            "expect_db_sha256": before_sha}
+    assert commits == []
+    assert db.read_bytes() == before, "预览不得写入字段或冲突裁决元数据"
+    assert GIT.file_sha256(str(db)) == before_sha

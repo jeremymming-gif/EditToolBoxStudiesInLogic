@@ -170,26 +170,23 @@ python3 corpus.py --sty SLEN.sty                 # 全库回归时统一覆盖
 **源文件必须显式提供**（`--source` 必填），工具不做任何自动发现，也不替用户默认填充。
 输出目录按作者姓名规范命名。
 
+以下命令从仓库根目录运行。先把试用文稿放入 `Engine` 下的 `examples` 文件夹，
+或将示例文件名换成自己的路径。Windows PowerShell 中可用 `py -3.14` 代替 `python3.14`。
+
 ```bash
 cd Engine
-PY=/Users/zhangwenming/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3
 
-# Word 文稿：李雷 → 生成 Lei_Li/Lei_Li.tex
-$PY convert.py \
-    --source "/…/10 Lei_Li/original/李雷 当代逻辑论题鸟瞰.docx" \
-    --out    "/…/2026年第5期(90)" \
-    --compile
+# Word 文稿
+python3.14 convert.py --source examples/sample.docx --out out/example-word
 
-# LaTeX 源文件：多源合并（正文来自新稿 + 元数据来自上一轮模板稿）
-$PY convert.py \
-    --source   "/…/03示例悖论（定稿）/main.tex" \
-    --metadata "/…/03示例悖论（定稿）/example puzzle.tex" \
-    --out      "/…/2026年第5期(90)" \
-    --compile
+# LaTeX 正文和元数据来自两个文件
+python3.14 convert.py --source examples/paper.tex --metadata examples/metadata.tex --out out/example-tex
 
-# 先看会发生什么，不落盘
-$PY convert.py --source X.docx --out Y --dry-run
+# 先预览输出计划
+python3.14 convert.py --source examples/sample.docx --out out/example-word --dry-run
 ```
+
+这两种转换会生成初排 `.tex`。如需同时生成 PDF，请在装好 TeX、biber 和模板所需字体后加 `--compile`。
 
 #### LaTeX 通道补充说明（第 120 条，2026-10-17 基于期 89 五篇真实 LaTeX 来稿）
 
@@ -1490,12 +1487,12 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
 - **`--json`**：stdout 最后一行 JSON，保留旧字段（`ok/command/mode/dryRun/root/count/entryCount/entries/trashDir/restoreDir/failures/warnings/error`），
   新增 `operationId/status/kept`；字段语义见 `docs/ENGINE_API.md` §五。
 
-### 3.11 AI 工作流（两段式 / 直连共用一套引擎；2026-11-17）
+### 3.11 AI 工作流（Chat / API 共用引擎）
 
-新批次把「初排页的 AI 协同」和「引用库 → 规范化 → AI 处理 Bib」收敛到**同一套引擎工作流**：
-`slcn/ai_workflow.py`（状态机 + 七个操作）+ `slcn/ai_workflow_cli.py`（命令行）。两处界面
-只是**入口不同**，校验、候选合成、备份与撤销**完全同一条路径**；命令行接口见
-[`ENGINE_API.md`](ENGINE_API.md)「三·五」。
+「初排转换 → 使用 AI 辅助初排」与「引用库 → AI 辅助处理 Bib」使用共享引擎：
+`slcn/ai_workflow.py`（通用工作流）+ `slcn/ai_workflow_cli.py`（命令行）。两处共享任务书、
+回件校验与候选审阅逻辑；初排通过 `deliver` 交付整组文件，引用库通过 `apply` 更新选定 Bib。
+命令行接口见 [`ENGINE_API.md`](ENGINE_API.md)「三·五」，初排交付与撤销另见第十节。
 
 **为什么 Chat 与 API 走同一套**：两条通道**只差「结果从哪来」**——Chat 是人把任务书复制给
 外部 AI 再把回复贴回来，API 是引擎自己请求。除此之外的解析、类别采纳、阻断判据、
@@ -1514,22 +1511,31 @@ python3 cleantemp.py --folder "<期目录>" --restore "<.toolbox-trash/<目录�
 | `status` | 只读 | 没有任务也返回 0（那是有效答复） |
 | `undo` | 恢复备份 | 目标被外部改过就拒绝 |
 
-**执行范围 ≠ 采纳范围**：`--execute` / `--adopt` 是两组独立参数。缺省
+**执行范围 ≠ 采纳范围**：`--execute` / `--adopt` 是两组独立参数。单篇初排及通用 CLI 缺省
 `bib_verify`（文献核实）与 `typeset`（初排检查）执行且采纳，`text`（文字纠错）
-**两端默认关**，`--text` 才把文字纠错加进执行范围。界面上同样是两个独立勾选组，
+**两端默认关**，`--text` 才把文字纠错加进执行范围。单篇 AI 辅助初排界面上同样是两个独立勾选组，
 默认值见 `sources-flet/app/ui/bib_ai_assist.py` 的 `EXECUTE_DEFAULTS` /
 `ACCEPT_DEFAULTS`。
 
-**「AI 处理 Bib」在界面上的位置**：**回读校验页里的折叠区**（`引用库 → 规范化`），
-不新增第 11 个引用库视图——`BibPage.VIEWS`、导航 chip 数与命令数被多处测试钉死，
-新增路由会连带改这些计数。折叠区默认收起，**首次展开才实例化**，因此初始控件树
-与从前一致（同页仍只有「生成报告」一个主按钮）。
+**界面流程与写入边界**：普通初排按「源稿与输出 → 输出选项 → 可选稿件信息 → 开始转换」组织；只有源稿与输出根目录必填。选「使用 AI 辅助初排」后，输入与选项可收纳和修改，当前任务按「准备任务 → 获取结果 → 审阅采纳 → 完成」呈现。引用库的 AI 页采用同一交互结构，不再把 AI 表单叠加在回读报告表单下。
 
-**「在 VS Code 里对比…」**（DESIGN §10）：把「冻结旧版 + 候选新版」写成一对**标准文件名**
-的副本放在隐藏的 `<产物目录>/.diff/<preview_id>/` 下，再 `code --diff` 打开；
-`preview_id` 由两侧 SHA 派生，打开前后都重算 SHA（副本被改过就不算有效）。
-**本轮只做双文件对比**，不提供 `code -m` 三方合并。编辑器不可用时**如实给两条副本路径**，
-绝不把「给了路径」说成「已打开对比」；对比**不绑应用**——应用只认 `preview_id` + 指纹。
+- Chat：生成任务书后复制给外部对话工具，粘贴完整回复或从文件读取，点「读取并检查结果」。
+- API：生成任务书后点「开始 API 核实」；失败不自动重试，由用户明确重试。
+- 审阅：执行范围与采纳范围分别管理。原稿与 AI 回件有实质字段差异就需逐项审阅，默认保留原稿，不以库内命中为前提。库内无匹配或该字段无可用库值时，只能选择原稿或 AI 回件；有可用库值时才提供库值选项。字段差异本身不构成结构阻断。改选字段取值或采纳范围会使旧候选失效，须重新生成拟应用结果，才能对比或写入。
+- 初排：以 `deliver` 写最终交付目录，显示真实采纳与编译回执，完成后主操作为「打开交付目录」。对应引擎交付/撤销契约见第十节。
+- 引用库：以 `apply` 更新选定 Bib，不改中央库、不自动入藏。库页只接收 `.bib`，仅提供 `bib_verify`（文献核实）类别；采纳可取消，取消后任务保留、可继续审阅，零写入不显示为已应用。不关联正文，不提供初排检查或文字纠错。无正文时，所选 Bib 的全部有效条目构成核实范围；库内安全命中沿用已核实记录，其余条目才进入 AI 任务。初排入口仍可选择 `bib_verify`、`typeset`（初排检查）和 `text`（文字纠错），文字纠错默认关闭。
+- 旧库页任务：此前带有关联正文或额外类别的任务保留在原工作区，但库页不会恢复或继续执行；请重新生成仅含文献核实的任务书。引擎 CLI 的通用类别与参数不受此界面范围限制。
+- 完成页只读；历史采用值、任务身份和处理日志按需展开。撤销位于「其他操作」，仍按引擎的外部改动检查与恢复契约执行。零写入回执不能被 GUI 当作成功应用。
+
+当前阶段的唯一主动作在滚动内容之外；库页和初排任务区只保留一层内容滚动。页面只组织参数、显示引擎结果，不复制判据或从预览数量推算实际写入数。
+
+**「在 VS Code 里对比…」**：左侧是本次任务冻结的旧 Bib，右侧是当前有效候选 Bib，
+两份逐字节副本放在工作区的 `compare/<对比编号>/` 中，文件名为 `reference.bib` 和
+`reference_proposed.bib`，由 `code --diff` 打开。生成副本前核对冻结输入与引擎登记的
+候选摘要，写出后再次核对副本字节。对比编号由两侧内容派生，与引擎的 `preview_id` 分开。
+编辑器不可用时给出两份副本路径；发起打开请求不能证明窗口已打开。
+修改对比副本不会改变交付；`apply` / `deliver` 以引擎登记的当前任务、回件、预览身份及
+候选指纹为准，拒绝过期或被改动的候选。
 
 **报告里的路径**：`bibreport` 的抬头三行（退回文件 / 原件 / 正文）在**报告落点已知时**
 写成相对报告目录的路径（初排的 `<stem>_回读校验报告.md` 与 `checkbib.py --merge-into`

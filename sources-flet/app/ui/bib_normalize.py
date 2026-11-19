@@ -1,10 +1,9 @@
-"""引用库 · AI 辅助处理 Bib（批 115 夜间重设计 BPAGES-A，VIEW_KEY="normalize"）。
+"""引用库 · AI 辅助处理 Bib（VIEW_KEY="normalize"）。
 
-只读：跑 ``Engine/checkbib.py`` 体检并读取它写出的 Markdown 报告；不写库、
-不 git、不做 ``--merge-into``。引擎没有 ``--json``，所以这里解析报告里的
-「结论 / 条目数 / 附录键数」，降级时只保留结论 + 打开报告。
+生产页面嵌入共享 AI 工作区：选择目标 Bib → 获取结果 → 审阅 → 并入目标。
+当前阶段动作固定在单一滚动内容之外；写入和撤销均由引擎执行，不改中央库。
 
-状态：empty / loading / running / success / failure / cancelled / stale 七态。
+旧 checkbib 报告解析及只读检查方法保留供兼容入口调用，不再渲染旧表单。
 """
 
 from __future__ import annotations
@@ -809,36 +808,21 @@ class NormalizeView:
         return parts
 
     def _body(self) -> ft.Control:
-        """设计 §4/§6：页面内容**只有** AI 辅助处理 Bib 一个视图，扁平、单滚动。
+        """共享视图负责单一滚动及固定动作，本层只提供有界页面空间。
 
-        - 不再渲染旧三字段（交回稿/原件/正文）、字段对比/键闭合开关、生成报告、
-          旧问题表、报告路径工具条；旧报告的底层解析/校验逻辑保留给兼容调用。
-        - ``body_only()`` 自带无壳、无滚动；唯一滚动由本层的
-          ``ft.Column(scroll=C.scrollbar(t), expand=True)`` 提供。
-        - 关联 TeX 的可选展开、当前阶段/动作按钮等由 BAA 内部处理，不在此重复造。
+        目标 Bib 与可选关联正文由 purpose=library 的共享工作区管理。
+        不叠加旧回读表单，也不再用外层滚动把主动作一起滚走。
         """
-        t = self.t
         self._build_width = self._design_width()
-        view = self._ensure_ai_view()  # 构造失败在此如实抛出，不吞异常
-        # compact=True（DESIGN §4）：库页默认只显示目标 Bib（必填，也是输入）、
-        # 处理方式、当前阶段；关联 TeX 可选展开。不显示用途单选/正文交付件/
-        # 工作目录/重复源 Bib，也不显示旧的回读表单。
-        return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
-                         controls=[view.body_only(compact=True)])
+        view = self._ensure_ai_view()
+        return view.body_only(compact=True, pinned_actions=True)
 
-    def _dock(self) -> ft.Control:
-        t = self.t
-        if self.running:
-            return ft.Row(spacing=t.sp("1"), controls=[
-                C.text("运行中", t, "caption", t.palette.text_muted),
-                ft.Container(expand=True),
-                C.text_button("取消", lambda e: self.cancel(), t, height=28),
-            ])
-        return C.text("仅更新选定 Bib，不改中央库", t, "caption", t.palette.text_faint)
+    def _dock(self) -> ft.Control | None:
+        # 当前动作已固定在工作区底部；页头保留写入边界，不再重复一条空底栏。
+        return None
 
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
-        # 构造视图（purpose=library 的引用库入口）；关掉异常会静默少一整页，禁止。
         self._ensure_ai_view()
         self._shell = S.page_shell(
             self.t, title=IA.view_label("bib", "normalize") or "AI 辅助处理 Bib",

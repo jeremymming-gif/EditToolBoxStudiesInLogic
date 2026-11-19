@@ -376,7 +376,18 @@ def _click_and_run(view, pending, action):
     view.body_only(compact=True)
     button = view._action_buttons[action]
     assert not button.disabled
-    button.on_click(None)
+    if action == "undo" and view._r3:
+        confirmations = []
+        original_confirm = view._confirm
+        view._confirm = lambda **kwargs: confirmations.append(kwargs)
+        try:
+            button.on_click(None)
+            assert len(confirmations) == 1
+            confirmations[0]["callback"]()
+        finally:
+            view._confirm = original_confirm
+    else:
+        button.on_click(None)
     assert pending
     return asyncio.run(pending.pop(0)())
 
@@ -416,7 +427,9 @@ def test_initial_parent_controls_prepare_import_preview_deliver_and_undo(monkeyp
             state.update(phase="previewed", preview_id="pv-frozen", adopt=[])
             result.update(phase="previewed", preview_id="pv-frozen")
         elif op == "deliver":
-            result["final_dir"] = str(out / "Anonymous")
+            final = out / "Anonymous"
+            final.mkdir(parents=True)
+            result.update(final_dir=str(final), delivered=True, task_id=state["task_id"])
         on_line(json.dumps(result))
         return 0
 
@@ -464,29 +477,29 @@ def test_initial_parent_controls_prepare_import_preview_deliver_and_undo(monkeyp
     assert sum("--ai-taskbook-version" in argv for argv, _ in calls) == 1
 
 
-def test_initial_original_delivery_button_reads_business_result(monkeypatch):
+def test_initial_original_delivery_button_reads_business_result(monkeypatch, tmp_path):
+    import asyncio
+
     _fake_head(monkeypatch)
-    page = _single()
-    page._rerender_flow = lambda: None
-    page._toggle_ai_workflow(None)
-    view = page._aiw_view
-    view.work_dir = "/tmp/work"
-    view.task_id = "T-original"
-    view.scope_frozen = True
-    view.phase = "waiting"
-    pending = []
-    view._task = pending.append
+    view, status, _, pending, dialogs = _original_offer(monkeypatch, tmp_path)
+    status.update(phase="prepared", preview_id="")
+    view._receive_status(status)
 
     async def run(call, *, on_line, **kwargs):
-        assert call.argv[-4:] == [view.work_dir, "deliver", "--json", "--use-original"]
-        on_line(json.dumps({"op": "deliver", "ok": False, "error": "编译失败"}))
+        if "status" in call.argv:
+            on_line(json.dumps(status))
+        else:
+            assert call.argv[-4:] == [view.work_dir, "deliver", "--json", "--use-original"]
+            on_line(json.dumps({"op": "deliver", "ok": False, "error": "编译失败"}))
         return 0
 
     monkeypatch.setattr(EB, "run_call", run)
     _click_and_run(view, pending, "deliver_original")
+    dialogs[0].actions[1].on_click(None)
+    asyncio.run(pending.pop(0)())
     assert view.phase == "waiting"
     assert "编译失败" in view.error
-    assert not any("初排已交付" in toast for toast in page.app.toasts)
+    assert not any("初排已交付" in toast for toast in view.page.app.toasts)
 
 
 def test_initial_actual_cli_from_controls_and_read_only_resume(monkeypatch, tmp_path):
@@ -534,7 +547,10 @@ A short anonymous example.
     asyncio.run(pending.pop(0)())
     assert restored.phase == "waiting"
     pending.clear()
+    dialogs = _initial_dialogs(monkeypatch, restored)
     _click_and_run(restored, pending, "deliver_original")
+    dialogs[0].actions[1].on_click(None)
+    asyncio.run(pending.pop(0)())
     assert not restored.error, restored.error
     assert restored.phase == "applied"
     final = Path(restored._final_dir)
@@ -547,6 +563,7 @@ A short anonymous example.
 
 
 def test_library_actual_cli_defaults_to_subset_and_registers_explicit_copies(monkeypatch, tmp_path):
+    import asyncio
     import sys
     from pathlib import Path
 
@@ -556,30 +573,26 @@ def test_library_actual_cli_defaults_to_subset_and_registers_explicit_copies(mon
     monkeypatch.setattr(EB, "base_cmd",
                         lambda entry: [sys.executable, "-B", str(engine / entry)])
     monkeypatch.setenv("SLCN_MANUSCRIPTS", str(tmp_path / "unavailable"))
+    notes = tmp_path / "notes"
+    (notes / "cases").mkdir(parents=True)
+    monkeypatch.setenv("SLCN_NOTES", str(notes))
     bib = tmp_path / "input.bib"
-    tex = tmp_path / "associated.tex"
     old_bib = "@book{example, author={Anon}, title={Old}, year={2020}}\n"
     bib.write_text(old_bib, encoding="utf-8")
-    old_tex = "An anonymous body \\cite{example}.\n"
-    tex.write_text(old_tex, encoding="utf-8")
     host = _Host()
     view = A.BibAiAssistView(host, purpose="library")
     view.target_bib = str(bib)
     view.body_only(compact=True)
-    assert view._execute_boxes["proofcheck"].disabled
-    assert view._accept_boxes["textfix"].disabled
-    view.tex_path = str(tex)
-    view.body_only(compact=True)
-    assert not view._execute_boxes["proofcheck"].disabled
-    assert view._accept_boxes["textfix"].disabled
+    assert set(view._execute_boxes) == {"verify"}
+    assert view.execute_scope() == ["bib_verify"]
+    assert not view._accept_boxes, "准备态不创建采纳控件；采纳在审阅阶段进行"
+    assert view._task_inputs() == [str(bib), ""]
+    assert view._call_kwargs()["tex"] == view._call_kwargs()["tex_out"] == ""
 
     dialogs = []
     monkeypatch.setattr(view, "_confirm", lambda **kwargs: dialogs.append(kwargs))
     view._register_copy("bib_out")
     assert not view.bib_out
-    dialogs.pop()["callback"]()
-    view._register_copy("tex_out")
-    assert not view.tex_out
     dialogs.pop()["callback"]()
     destination = Path(view.bib_out)
     assert destination != bib and not destination.exists()
@@ -588,23 +601,45 @@ def test_library_actual_cli_defaults_to_subset_and_registers_explicit_copies(mon
     view._task = pending.append
     _click_and_run(view, pending, "prepare")
     assert not view.error and view.task_id, view.error
-    assert not destination.exists() and not Path(view.tex_out).exists()
+    assert not destination.exists()
     pending.clear()
     view.body_text = (f"% TASK-ID: {view.task_id}\n"
                       "```bibtex\n@book{example, author={Anon}, title={New}, year={2020}}\n```\n")
     _click_and_run(view, pending, "import")
+    task_id, work_dir = view.task_id, view.work_dir
+    view.set_accept("verify", False)
     _click_and_run(view, pending, "preview")
+    assert (view.task_id, view.work_dir) == (task_id, work_dir)
+    assert view.can_apply() and view.accept_scope() == []
+    assert Path(view.candidate_bib).read_text(encoding="utf-8") == old_bib
+    assert not destination.exists()
+
+    view.set_accept("verify", True)
+    _click_and_run(view, pending, "preview")
+    if view.conflicts:
+        for item in view.conflicts:
+            assert view.set_decision(item["conflict_id"], "reply")
+        _click_and_run(view, pending, "preview")
     assert view.can_apply(), (view.error, view.blocked)
+    candidate = Path(view.candidate_bib)
+    registered = view._candidate_bib_sha
+    assert registered == A.file_sha256(str(candidate))
+    candidate.write_bytes(b"modified after the engine registered its SHA")
+    assert asyncio.run(view._read_status(work_dir))["candidate_bib_sha256"] == registered
+    view.open_diff()
+    assert not view.can_apply() and "重新生成拟应用结果" in view.error
+    assert not (Path(work_dir) / "compare").exists() and not destination.exists()
+    _click_and_run(view, pending, "preview")
+    assert view.can_apply() and view._candidate_bib_sha == A.file_sha256(view.candidate_bib)
     _click_and_run(view, pending, "apply")
     assert view.phase == "applied", view.error
     assert "New" in destination.read_text(encoding="utf-8")
     assert bib.read_text(encoding="utf-8") == old_bib
-    assert tex.read_text(encoding="utf-8") == old_tex
     _click_and_run(view, pending, "undo")
     assert view.phase == "stale" and not destination.exists(), view.error
 
 
-@pytest.mark.parametrize("purpose", ["library", "initial"])
+@pytest.mark.parametrize("purpose", ["library", "initial", "initial_changed"])
 def test_replace_reply_opens_once_and_imports_only_on_confirm(monkeypatch, tmp_path, purpose):
     import asyncio
 
@@ -614,7 +649,7 @@ def test_replace_reply_opens_once_and_imports_only_on_confirm(monkeypatch, tmp_p
     from ui.bib_normalize import NormalizeView
 
     head = _fake_head(monkeypatch)
-    if purpose == "initial":
+    if purpose.startswith("initial"):
         parent = _single()
         parent._toggle_ai_workflow()
         view = parent._aiw_view
@@ -651,6 +686,8 @@ def test_replace_reply_opens_once_and_imports_only_on_confirm(monkeypatch, tmp_p
     view.phase = "waiting"
     view._has_active_reply = True
     view.body_text = "replacement reply"
+    view.body_only(compact=True)
+    view._action_buttons["replace_reply"].on_click(None)
 
     _click_and_run(view, pending, "import")
     assert len(dialogs) == 1
@@ -665,8 +702,418 @@ def test_replace_reply_opens_once_and_imports_only_on_confirm(monkeypatch, tmp_p
     assert not dialogs and not calls
     assert not A.C._open_dialogs
     assert len(pending) == 1
+    if purpose == "initial_changed":
+        previous = view.page.ai_initial_paths()
+        monkeypatch.setattr(view.page, "ai_initial_paths", lambda: (*previous, "different output"))
     asyncio.run(pending.pop()())
+    if purpose == "initial_changed":
+        assert not calls
+        assert "变化" in view.error
+        return
     assert len(calls) == 1 and not pending
     argv, reply = calls[0]
     assert "import" in argv and "--replace-active" in argv
     assert reply == "replacement reply"
+
+
+def _initial_dialogs(monkeypatch, view):
+    dialogs = []
+    monkeypatch.setattr(A.C, "_open_dialogs", [])
+    monkeypatch.setattr(view._flet(), "show_dialog", dialogs.append)
+    monkeypatch.setattr(view._flet(), "pop_dialog", lambda: dialogs.pop() if dialogs else None)
+    return dialogs
+
+
+def _original_offer(monkeypatch, tmp_path):
+    parent = _single()
+    parent._rerender_flow = lambda: None
+    parent._toggle_ai_workflow(None)
+    view = parent._aiw_view
+    view.work_dir = str(tmp_path / "work")
+    view.task_id = "T-frozen"
+    final = tmp_path / "final"
+    final.mkdir()
+    output = final / "anonymous.tex"
+    output.write_bytes(b"existing output")
+    status = {"op": "status", "ok": True, "task_id": view.task_id,
+              "phase": "previewed", "preview_id": "pv-active", "imported": True,
+              "execute": ["bib_verify", "typeset"], "adopt": ["bib_verify"],
+              "conversion": {"final_dir": str(final)}}
+    view._receive_status(status)
+    pending = []
+    view._task = pending.append
+    return view, status, output, pending, _initial_dialogs(monkeypatch, view)
+
+
+@pytest.mark.parametrize("cancel_with_escape", [False, True])
+def test_original_delivery_cancel_preserves_preview_and_files(monkeypatch, tmp_path,
+                                                              cancel_with_escape):
+    view, _, output, pending, dialogs = _original_offer(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(EB, "ai_deliver_call", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(EB, "run_call", lambda *a, **kw: calls.append(a))
+    before = (view.phase, view.preview_id, view.accept_scope(), output.read_bytes())
+    _click_and_run(view, pending, "deliver_original")
+    assert len(dialogs) == 1 and not calls and not pending
+    dialog = dialogs[0]
+    assert dialog.actions[0].content == "返回检查" and dialog.actions[0].autofocus
+    assert str(output.parent) in dialog.content.content.controls[0].value
+    if cancel_with_escape:
+        assert A.C.dismiss_top_dialog(view._flet())
+    else:
+        dialog.actions[0].on_click(None)
+    dialog.actions[1].on_click(None)  # a delayed click on a dismissed dialog
+    assert not dialogs and not calls and not pending
+    assert (view.phase, view.preview_id, view.accept_scope(), output.read_bytes()) == before
+
+
+@pytest.mark.parametrize("change", ["none", "task", "work", "status_task", "status_final", "during_status"])
+def test_original_delivery_rechecks_full_identity_and_runs_once(monkeypatch, tmp_path, change):
+    import asyncio
+
+    head = _fake_head(monkeypatch)
+    view, status, output, pending, dialogs = _original_offer(monkeypatch, tmp_path)
+    calls = []
+
+    async def run(call, *, on_line, **kwargs):
+        argv = _tail(call, head)
+        if "status" in argv:
+            calls.append("status")
+            if change == "during_status":
+                view.set_work_dir(str(tmp_path / "other"))
+            on_line(json.dumps(status))
+        else:
+            calls.append("deliver")
+            assert argv[-1] == "--use-original"
+            on_line(json.dumps({"op": "deliver", "ok": True, "task_id": view.task_id,
+                                "delivered": True, "final": str(output.parent)}))
+        return 0
+
+    monkeypatch.setattr(EB, "run_call", run)
+    _click_and_run(view, pending, "deliver_original")
+    assert not calls and not pending
+    dialog = dialogs[0]
+    if change == "task":
+        view.set_task_id("T-other")
+    elif change == "work":
+        view.set_work_dir(str(tmp_path / "other"))
+    elif change == "status_task":
+        status["task_id"] = "T-other"
+    elif change == "status_final":
+        status["conversion"]["final_dir"] = str(tmp_path / "other")
+    dialog.actions[1].on_click(None)
+    dialog.actions[1].on_click(None)
+    assert len(pending) <= 1
+    while pending:
+        asyncio.run(pending.pop(0)())
+    assert calls == ({"none": ["status", "deliver"], "task": [], "work": []}
+                     .get(change, ["status"]))
+    assert view.delivery_ok is (change == "none")
+    if change != "none":
+        assert "变化" in view.error
+    if change == "during_status":
+        assert view.log == []
+
+
+@pytest.mark.parametrize(("action", "change"), [
+    ("apply", "task"), ("apply", "preview"), ("apply", "queued_preview"),
+    ("deliver_original", "task"), ("deliver_original", "queued_preview"),
+    ("undo", "task"),
+])
+def test_initial_old_visible_action_cannot_act_on_new_context(monkeypatch, tmp_path, action, change):
+    import asyncio
+
+    view, status, output, pending, dialogs = _original_offer(monkeypatch, tmp_path)
+    if action == "undo":
+        status.update(phase="delivered", delivery={"delivered": True, "final": str(output.parent)})
+        view._receive_status(status)
+    calls = []
+    monkeypatch.setattr(EB, "run_call", lambda *a, **kw: calls.append(a))
+    view.body_only(compact=True)
+    old_click = view._action_buttons[action].on_click
+    if change.startswith("queued"):
+        old_click(None)
+        assert len(pending) == 1
+    if change == "task":
+        view.set_task_id("T-new")
+        status["task_id"] = "T-new"
+    status["preview_id"] = "pv-new"
+    view._receive_status(status)
+    view.body_only(compact=True)
+    if not change.startswith("queued"):
+        old_click(None)
+    while pending:
+        asyncio.run(pending.pop(0)())
+    assert not calls and not dialogs
+    assert view.can_undo() if action == "undo" else view.can_apply()
+
+
+def test_initial_refresh_preserves_local_preview_inputs(monkeypatch, tmp_path):
+    view, status, _, _, _ = _original_offer(monkeypatch, tmp_path)
+    status.update(conflicts=[{"conflict_id": "cf-a", "key": "a"}],
+                  decisions={"cf-a": "original"}, skip_items=["T1"])
+    view._receive_status(status)
+    assert view.set_decision("cf-a", "library")
+    view.set_accept("proofcheck", True)
+    view._skip_items.discard("T1")
+    assert not view.can_apply()
+    view._receive_status(status)
+    assert view.decisions["cf-a"] == "library"
+    assert view.accept["proofcheck"] and not view._skip_items
+    assert view.imported and not view.can_apply() and not view._can_diff()
+
+
+def test_initial_four_steps_and_return_to_review_keep_current_candidate(monkeypatch, tmp_path):
+    import flet as ft
+
+    from test_bib_ai_assist_c_20261117 import _walk
+
+    view, _, _, pending, _ = _original_offer(monkeypatch, tmp_path)
+    view.body_text = "reply to keep"
+    for width in (340, 900):
+        monkeypatch.setattr(view, "_design_width", lambda: width)
+        controls = list(_walk(view.body_only(compact=True)))
+        summaries = [node.value for node in controls if isinstance(node, ft.Text)
+                     and getattr(node, "_initial_stage_heading", False)]
+        assert summaries == ["准备任务", "获取结果", "审阅采纳", "完成"]
+        buttons = [node for node in controls if isinstance(node, ft.FilledButton)
+                   and not node.disabled]
+        assert [button._bib_ai_action for button in buttons] == ["apply"]
+        assert [node for node in controls if getattr(node, "_bib_ai_action", "")
+                == "deliver_original"] == [view._action_buttons["deliver_original"]]
+    assert view._primary_slot == ("review", "apply")
+    assert view.preview_id == "pv-active" and view.body_text == "reply to keep"
+    assert not pending, "审阅有效候选无需多一次无业务意义的确认跳转"
+
+
+def test_initial_failed_preview_keeps_local_choices_and_retries_once(monkeypatch, tmp_path):
+    import asyncio
+
+    head = _fake_head(monkeypatch)
+    view, status, _, pending, _ = _original_offer(monkeypatch, tmp_path)
+    conflict = {"conflict_id": "cf-a", "key": "entry", "field": "title"}
+    status.update(conflicts=[conflict], decisions={"cf-a": "original"})
+    view._receive_status(status)
+    view.set_decision("cf-a", "library")
+    calls = []
+
+    async def run(call, *, on_line, **kwargs):
+        argv = _tail(call, head)
+        if "status" in argv:
+            on_line(json.dumps(status))
+            return 0
+        calls.append(argv)
+        assert view.running and not view.set_decision("cf-a", "reply")
+        await view.preview()  # already executing
+        if len(calls) == 1:
+            on_line(json.dumps({"op": "preview", "ok": False, "error": "预览写入失败"}))
+            return 1
+        status.update(preview_id="pv-new", decisions={"cf-a": "library"})
+        on_line(json.dumps({"op": "preview", "ok": True, "preview_id": "pv-new"}))
+        return 0
+
+    monkeypatch.setattr(EB, "run_call", run)
+    _click_and_run(view, pending, "preview")
+    assert "预览写入失败" in view.error and view._preview_dirty
+    assert view.decisions["cf-a"] == "library" and not view.can_apply()
+    asyncio.run(view.refresh_status())
+    pending.clear()
+    assert view.decisions["cf-a"] == "library" and not view.can_apply()
+    _click_and_run(view, pending, "preview")
+    assert len(calls) == 2 and all("cf-a=library" in argv for argv in calls)
+    assert view.preview_id == "pv-new" and view.can_apply() and not view._preview_dirty
+
+
+@pytest.mark.parametrize("outcome", ["new_reply", "same_reply", "failure"])
+def test_initial_replace_reply_keeps_review_only_for_same_or_failed_reply(monkeypatch, tmp_path, outcome):
+    import asyncio
+
+    head = _fake_head(monkeypatch)
+    view, status, _, pending, dialogs = _original_offer(monkeypatch, tmp_path)
+    status.update(library={"checked": True, "matched": 2, "conflicts": 1},
+                  conflicts=[{"conflict_id": "cf-old", "key": "old", "field": "title"}],
+                  decisions={"cf-old": "reply"})
+    view._receive_status(status)
+    status.update(preview_id="pv-replacement",
+                  conflicts=[{"conflict_id": "cf-new", "key": "new", "field": "title"}],
+                  decisions={})
+    calls = []
+
+    async def run(call, *, on_line, **kwargs):
+        argv = _tail(call, head)
+        calls.append(argv)
+        if "import" in argv:
+            assert "--replace-active" in argv
+            payload = {"op": "import", "ok": outcome != "failure",
+                       "idempotent": outcome == "same_reply", "error": "回件校验未通过"}
+        elif "preview" in argv:
+            assert "--decide" not in argv
+            payload = {"op": "preview", "ok": True, "preview_id": "pv-replacement"}
+        else:
+            payload = status
+        on_line(json.dumps(payload))
+        return 0 if payload["ok"] else 1
+
+    monkeypatch.setattr(EB, "run_call", run)
+    view.body_only(compact=True)
+    view._action_buttons["replace_reply"].on_click(None)
+    view.body_text = "revised reply"
+    _click_and_run(view, pending, "import")
+    assert len(dialogs) == 1 and not calls
+    dialogs[0].actions[1].on_click(None)
+    asyncio.run(pending.pop()())
+
+    if outcome != "new_reply":
+        assert view.preview_id == "pv-active" and view.can_apply()
+        assert view.library["checked"] and view.decision_scope() == {"cf-old": "reply"}
+        assert bool(view.error) is (outcome == "failure")
+        return
+
+    assert not view.preview_id and not view.can_apply()
+    assert "尚未查库" in view._initial_library_summary()
+    _click_and_run(view, pending, "preview")
+    assert view.preview_id == "pv-replacement" and view.can_apply()
+    assert [row["conflict_id"] for row in view.conflicts] == ["cf-new"]
+    assert view.decision_scope() == {"cf-new": "original"}
+
+
+@pytest.mark.parametrize("idempotent", [True, False])
+def test_initial_api_success_uses_nested_reply_identity(monkeypatch, tmp_path, idempotent):
+    import asyncio
+
+    head = _fake_head(monkeypatch)
+    view, status, _, _, _ = _original_offer(monkeypatch, tmp_path)
+    view.channel = "api"
+    status.update(library={"checked": True, "matched": 2, "conflicts": 1},
+                  conflicts=[{"conflict_id": "cf-old", "key": "old", "field": "title"}],
+                  decisions={"cf-old": "reply"})
+    view._receive_status(status)
+
+    async def run(call, *, on_line, **kwargs):
+        assert "request" in _tail(call, head)
+        on_line(json.dumps({"op": "request", "ok": True, "reply_path": "/work/api-reply.md",
+                            "imported": {"ok": True, "idempotent": idempotent}}))
+        return 0
+
+    monkeypatch.setattr(EB, "run_call", run)
+    asyncio.run(view.request_api())
+    assert view.result_path == "/work/api-reply.md"
+    assert bool(view.library) is idempotent and bool(view.decisions) is idempotent
+    assert view.can_apply() is idempotent
+
+
+@pytest.mark.parametrize("launcher_ok", [True, False])
+def test_initial_compare_copies_exact_bytes_and_clears_stale_paths(monkeypatch, tmp_path, launcher_ok):
+    from pathlib import Path
+
+    from services import editor_bridge as ED
+
+    view, status, _, _, _ = _original_offer(monkeypatch, tmp_path)
+    work = Path(view.work_dir)
+    work.mkdir()
+    frozen, candidate = work / "frozen.bib", work / "candidate.bib"
+    frozen.write_bytes(b"old\r\nline\r\n")
+    candidate.write_bytes(b"new\r\nline\r\n")
+    status.update(candidate_bib=str(candidate), candidate_bib_sha256=A.file_sha256(str(candidate)),
+                  frozen_bib={"path": str(frozen),
+                                                            "sha256": A.file_sha256(str(frozen))})
+    view._receive_status(status)
+    previews, markers = [], []
+    monkeypatch.setattr(ED, "open_diff", lambda preview: (previews.append(preview) or launcher_ok, "launcher result"))
+    monkeypatch.setattr(view, "_mark", lambda event, **fields: markers.append((event, fields)))
+    view.open_diff()
+    preview = previews[0]
+    assert Path(preview.old_path).read_bytes() == frozen.read_bytes()
+    assert Path(preview.new_path).read_bytes() == candidate.read_bytes()
+    assert Path(preview.dir).is_relative_to(work / "compare")
+    assert ("已请求 VS Code 打开对比" if launcher_ok else "无法启动 VS Code 对比") in view._compare_feedback
+    marker = next(fields for event, fields in markers if event == "bib_ai_diff")
+    assert marker["launch_requested"] is launcher_ok and marker["window_observed"] is None
+    assert "opened" not in marker
+    view.body_only(compact=True)
+    copy = view._action_buttons["copy_compare"]
+    copy.on_click(None)
+    assert view.page.app.toasts[-1] == f"copied:{preview.old_path}\n{preview.new_path}"
+    view.set_accept("proofcheck", True)
+    assert not view._compare_paths and not view._compare_feedback
+    copy.on_click(None)
+    assert view.page.app.toasts.count(f"copied:{preview.old_path}\n{preview.new_path}") == 1
+
+
+@pytest.mark.parametrize("digest", ["", "0" * 64])
+def test_initial_compare_refuses_unverified_right_side(monkeypatch, tmp_path, digest):
+    from pathlib import Path
+
+    from services import editor_bridge as ED
+
+    view, status, _, _, _ = _original_offer(monkeypatch, tmp_path)
+    work = Path(view.work_dir)
+    work.mkdir()
+    frozen, candidate = work / "frozen.bib", work / "candidate.bib"
+    frozen.write_bytes(b"old\r\n")
+    candidate.write_bytes(b"candidate\r\n")
+    status.update(candidate_bib=str(candidate), candidate_bib_sha256=digest,
+                  frozen_bib={"path": str(frozen), "sha256": A.file_sha256(str(frozen))})
+    view._receive_status(status)
+    launches = []
+    monkeypatch.setattr(ED, "open_diff", launches.append)
+
+    if not digest:
+        button = view._diff_button()
+        assert button.disabled and "更新引擎" in button.tooltip
+    view.open_diff()
+
+    assert not launches and not (work / "compare").exists()
+    assert "重新生成拟应用结果" in view.error
+    if digest:
+        assert not view.can_apply() and view.preview_id == "" and view._candidate_bib_sha == ""
+    else:
+        assert view.can_apply(), "旧引擎的状态缺字段只限制对比，不应阻断引擎自己的交付校验"
+
+
+@pytest.mark.parametrize("receipt", ["matching", "wrong_task", "not_delivered", "missing_directory"])
+def test_initial_delivery_status_fallback_requires_success_with_matching_task(monkeypatch, tmp_path, receipt):
+    head = _fake_head(monkeypatch)
+    view, status, output, pending, _ = _original_offer(monkeypatch, tmp_path)
+    status["delivery"] = {"delivered": True, "final": str(output.parent),
+                          "compile_status": "编译成功", "n_applied": 999}
+    if receipt == "wrong_task":
+        status["delivery"]["task_id"] = "T-other"
+    elif receipt == "not_delivered":
+        status["delivery"]["delivered"] = False
+    elif receipt == "missing_directory":
+        status["delivery"]["final"] = str(tmp_path / "missing")
+
+    async def run(call, *, on_line, **kwargs):
+        if "status" in _tail(call, head):
+            on_line(json.dumps(status))
+        else:
+            on_line(json.dumps({"op": "deliver", "ok": True, "task_id": view.task_id}))
+        return 0
+
+    monkeypatch.setattr(EB, "run_call", run)
+    _click_and_run(view, pending, "apply")
+    view.body_only(compact=True)
+    matched = receipt == "matching"
+    assert view.delivery_ok is matched and view.can_undo() is matched
+    assert ("open_final" in view._action_buttons) is matched
+    assert ("undo" in view._action_buttons) is matched
+    assert all("999" not in line for line in view.delivery_log)
+    if matched:
+        assert view._final_dir == str(output.parent) and view.delivery_compile == "成功"
+    else:
+        assert view.error and not view._final_dir
+
+
+def test_initial_running_task_retains_window_with_feedback(monkeypatch, tmp_path):
+    import flet as ft
+    from main import App
+
+    view, _, _, _, _ = _original_offer(monkeypatch, tmp_path)
+    parent = view.page._single
+    view.running = True
+    state = SimpleNamespace(pages={"single": parent}, _close_requested=False,
+                            mark=lambda *a, **kw: None)
+    App.on_window_event(state, SimpleNamespace(type=ft.WindowEventType.CLOSE))
+    assert not state._close_requested
+    assert "仍在运行" in view.page.app.toasts[-1]

@@ -88,8 +88,8 @@ def test_single_input_area_sits_on_white_panel_without_nested_card():
               and "浏览…" == str(getattr(ctl, "content", ""))]
     assert len(browse) >= 2, "输入区两行各有一个「浏览…」按钮"
     # 组标题留在面板上、不再是卡片标题。
-    assert _find_text(panel, "输入") is not None
-    assert _find_text(panel, "处理选项") is not None
+    assert _find_text(panel, "源稿与输出") is not None
+    assert _find_text(panel, "输出选项") is not None
 
 
 def _find_text(control, value: str) -> ft.Text | None:

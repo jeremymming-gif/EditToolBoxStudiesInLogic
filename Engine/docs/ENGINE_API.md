@@ -484,6 +484,8 @@ python3 convert.py --ai-workflow --work-dir <工作区> status
 - **API Key**：只从环境（`SLCN_LLM_*`，由外壳 `env_for_run(api=…)` 注入），**永不进 argv / 任务书 / 状态 / 日志**。
 - **状态文件**：`.aiw/state.json`（旧工作区的根目录 `_AI工作流状态.json` 仍可只读兼容），`schema_version = "slcn.ai_workflow/1"`；版本不认 → 当作没有状态
   （不猜旧格式）。写入一律 `<path>.tmp-aiwf` + `os.replace` 原子替换。
+- **候选身份**：`status` 的 `candidate_bib_sha256` 来自引擎登记的当前预览摘要，不现场读取候选文件重算。外壳须用该摘要核验候选或对比副本，不能把现场文件的自算摘要当作已登记身份。
+- **冲突表达式显示**：冲突保留原有逻辑键与裁决值；引擎可选下发 `expressions: {original, reply}` 字符串以区分 Bib 宏/拼接与字面量，外壳仅原样显示该元数据、不解析或推断语义；缺失或无效时回退显示逻辑值，引擎始终是语义权威。
 - **任务书身份**：`TASK-ID`（`AIW-` + 12 位）+ 源 bib 指纹 + 引用键 + 规则版本 + 稳定 `item_id`；
   外来 TASK-ID 的回复整份拒收，不按 key 相似度猜。
 - **报告口径**：「引用闭合」「AI 核实完成」「能编译」**三行分开**；前两行都不代表能编译。

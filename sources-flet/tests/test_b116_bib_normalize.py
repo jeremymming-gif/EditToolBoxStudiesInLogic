@@ -139,8 +139,8 @@ def test_normalize_initial_state_is_sole_ai_view_no_old_form():
     旧断言钉的是「回读校验 + 生成报告 + 三字段 + 空态表头」（已按 lead 授权
     替换为更强的新业务断言，见交付的旧→新映射）：现在要求唯一标题、唯一
     主按钮是当前阶段的真主动作（idle → 「生成任务书」）、扁平无 Card、
-    旧表单/开关/报告工具条全无、默认只留目标 Bib + 关联正文（可选），
-    底栏写明「仅更新选定 Bib」。
+    旧表单/开关/报告工具条全无、只留目标 Bib 输入与文献核实范围，
+    页头写明「仅更新选定 Bib」。
     """
     host = _Host()
     view = NV.NormalizeView(host)
@@ -151,28 +151,27 @@ def test_normalize_initial_state_is_sole_ai_view_no_old_form():
     assert texts.count("AI 辅助处理 Bib") == 1, "唯一页头，不许折叠区再画一次"
     assert "仅更新选定 Bib，不改中央库" in texts, "页头/底栏必须写清楚写语义"
     # 唯一主按钮 = 当前阶段的真主动作（方案 B：主操作随阶段切换）。
-    # idle 阶段是「生成任务书」；「应用到目标 Bib」退成阶段③的次要按钮。
+    # idle 阶段是「生成任务书」；尚不创建未来阶段的应用按钮。
     primaries = [n for n in _walk(tree) if isinstance(n, ft.FilledButton)]
     assert len(primaries) == 1 and primaries[0].content == "生成任务书", \
         "主操作随阶段：idle → 生成任务书"
-    # 旧断言钉「应用未到 preview 时禁用」；方案 B 下 idle 的主按钮是「生成任务书」，
-    # 它**常可点**（缺目标 Bib 时点它会给「生成任务书失败：请先选择待处理 Bib」的明确红字，
-    # 而不是灰着不给反馈）。「应用」仍禁用，但它是阶段③的次要按钮，单独钉。
+    # 缺目标时准备动作仍可点击并给明确反馈；没有有效候选就不能应用。
     assert primaries[0].disabled is False, "生成任务书在 idle 可点，缺输入时如实报错"
-    apply_btn = view._ai_view._action_buttons["apply"]
-    assert isinstance(apply_btn, ft.OutlinedButton) and apply_btn.disabled, \
-        "没有 preview 结果时应用必须禁用（阶段③的次要按钮）"
+    assert "apply" not in view._ai_view._action_buttons
+    assert view._ai_view.can_apply() is False
     assert not any(isinstance(n, ft.Card) for n in _walk(tree)), "不许引入 Card"
     # 旧表单/开关/工具条彻底不渲染（§4）。
     for gone in ("生成报告", "字段对比", "键闭合", "报告路径", "去入藏",
                  "还没有报告；先选 .bib 再生成。"):
         assert not any(gone in text for text in texts), f"旧表单残留：{gone}"
-    # 新默认字段：待处理 Bib（必填、也是输入）+ 关联正文（可选）；不再有
-    # 用途单选/正文交付件/工作目录/重复源 Bib。
+    # 新默认字段：待处理 Bib（必填、也是输入）；不再提供正文、用途单选、
+    # 正文交付件、工作目录或重复源 Bib。
     assert any("待处理 Bib" in text and "必填" in text for text in texts)
     tex_labels = [text for text in texts if ".tex" in text]
-    assert tex_labels and all("关联正文" in text and "可选" in text for text in tex_labels)
-    for gone in ("工作目录", "正文交付件", "用途"):
+    assert not tex_labels and not any("关联正文" in text for text in texts)
+    assert set(view._ai_view._execute_boxes) == {"verify"}
+    assert view._ai_view.execute_scope() == ["bib_verify"]
+    for gone in ("工作目录", "正文交付件", "用途", "初排检查", "文字纠错"):
         assert not any(gone in text for text in texts), f"compact 未生效：{gone}"
     # 视图在构造期就建好（新版直接成为页面内容，不再是折叠惰性实例）。
     assert view._ai_view is not None and getattr(view._ai_view, "purpose", "") == "library"

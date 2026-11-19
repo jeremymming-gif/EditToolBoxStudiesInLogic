@@ -549,10 +549,10 @@ class _SingleAiHost:
         self.page.run_task(coro_fn)
 
     def browse_field(self, ref, title: str, kind: str, key: str,
-                     store_prefix: str = "recent") -> None:
+                     store_prefix: str = "recent", *, on_result=None) -> None:
         browse = getattr(self.app, "browse_field", None)
         if callable(browse):
-            browse(ref, title, kind, key, store_prefix)
+            browse(ref, title, kind, key, store_prefix, on_result=on_result)
 
 
 class SinglePage(BasePage):
@@ -588,6 +588,13 @@ class SinglePage(BasePage):
         self._aiw_open = False
         self._aiw_view = None
         self._aiw_box = None
+        self._aiw_parameters_open = False
+        self._aiw_first_open = True
+        self._aiw_last_phase = ""
+        self._aiw_last_task_id = ""
+        self._convert_form = None
+        self._convert_root = None
+        self._convert_parameters = None
         # 批 115 P1-2（设计评审；D1-115-24）：Single 只有 2 级（页面→子页），
         # 按「breadcrumb 只在层级 >2 出现」去 crumb；h1 是唯一锚点。
         # `_crumb` 仅保留属性给旧测试/外部调用，不进入布局、不显示。
@@ -618,13 +625,12 @@ class SinglePage(BasePage):
         # 批 115 P1-2：页头只有 h1 + 说明（crumb 已去）；列存起来供测试核对。
         self._title_col = ft.Column(spacing=t.sp("xs"), expand=True,
                                     controls=[self._child_title, self._flow_desc])
+        self._header_run_actions = ft.Row(
+            spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[self._stop_btn, self._run_btn],
+        )
         header = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.START,
-                        controls=[
-                            self._title_col,
-                            ft.Row(spacing=t.sp("1"),
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                                   controls=[self._stop_btn, self._run_btn]),
-                        ])
+                        controls=[self._title_col, self._header_run_actions])
         self._flow_box.controls = [self._flow_builder(self.flow_key)()]
         self._proof.root.visible = False
         self._norm_jump_btn = C.secondary_button(
@@ -633,6 +639,11 @@ class SinglePage(BasePage):
         norm_row = ft.Row(spacing=t.sp("2"), alignment=ft.MainAxisAlignment.END,
                           vertical_alignment=ft.CrossAxisAlignment.CENTER,
                           controls=[self._norm_jump_btn])
+        self._norm_row = norm_row
+        # 普通转换的结果与 AI 工作区各有自己的结果呈现，切换时保留其内部状态。
+        self._ordinary_results = ft.Column(spacing=t.sp("2"), controls=[
+            self._result.root, self._artifact_row, self._proof.root,
+        ])
         status = ft.Row(spacing=t.sp("2"), vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         controls=[
                             C.busy_bar(t, visible=False),
@@ -644,10 +655,14 @@ class SinglePage(BasePage):
         self._log_spacer = ft.Container(height=t.px(52))
         self._log.on_layout_change = self._sync_log_reserve
         body = C.page_body(header, self._chip_row, status, self._flow_box, norm_row,
-                           self._result.root, self._artifact_row, self._proof.root,
+                           self._ordinary_results,
                            t=t, gap=10,
                            overlay=self._log.dock_root, overlay_reserve=0,
                            panel=True, tail=self._log_spacer)
+        self._single_scroll_body = body.controls[0].content
+        self._single_scroll_mode = self._single_scroll_body.scroll
+        self._single_inner_host = self._single_scroll_body.controls[0]
+        self._single_inner = self._single_inner_host.content
         self.refresh_running()
         return body
 
@@ -734,6 +749,7 @@ class SinglePage(BasePage):
             CK.on_flow_switch(self)
         self._sync_header()
         self._sync_chips()
+        self._sync_ai_workspace_chrome()
         self._safe_update(self._flow_box, self._child_title, self._flow_desc,
                           getattr(self, "_chip_row", None))
         self.mark("single_flow", flow=view, source=source)
@@ -761,6 +777,11 @@ class SinglePage(BasePage):
         客户端收到失效控件的方法调用并断开 session（表现为整页重建循环）。因此
         落点必须按 `flow_key` 限定在本步骤自己的字段里。
         """
+        if (getattr(self, "flow_key", "") == "convert"
+                and getattr(self, "_aiw_open", False)
+                and not getattr(self, "_aiw_parameters_open", False)):
+            # 当前任务展示时，父表单藏在参数入口后，不向不可见输入框发焦点调用。
+            return None
         keys = {
             "convert": ("single_source", "single_out"),
             "proofcheck": ("proof_tex",),
@@ -774,39 +795,175 @@ class SinglePage(BasePage):
 
     # ── 三个步骤的输入卡 ────────────────────────────────────────────────
     def _build_convert(self) -> ft.Control:
-        t, p = self.t, self.t.palette
+        t = self.t
         options = self.app.store.get("options", {}) or {}
-        rows = self._option_tiles(options)
         advanced = self._advanced_params()
-        # 元数据表单：默认展开 + 扁平箭头（用户 m02696：不要灰底展开按钮）。
         metadata = C.CollapsibleSection(
             t, title="元数据（可选）", content=self._build_metadata_section(),
             expanded=True,
         )
         self._meta_section = metadata
-        # 批 115 D1-115-12：页面=一张纸白面板，分区用 section_label + 发丝线，
-        # 不再用页面级 C.card/C.section_title（用户 m02855 的「字段躺在纸灰底上」）。
-        return ft.Column(spacing=t.sp("2"), controls=[
-            C.section_label("输入", t),
-            C.hairline(t),
-            # 必填语义已进每个输入框的 label（「源稿件（必填）」），不再另起一行提示。
-            ft.Column(spacing=t.sp("2"), controls=[
-                self.add_picker("源稿件", "single_source",
-                                "作者来稿 .tex / .docx", kind="file"),
-                self.add_picker("输出根目录", "single_out",
-                                "产物写到该目录下的 <作者>/ 里", kind="dir", show_note=False),
-            ]),
-            C.section_label("处理选项", t, note="默认勾选常用项"),
-            C.hairline(t),
-            rows,
-            self._advanced_title(),
-            C.hairline(t),
-            advanced,
-            metadata.root,
-            # DESIGN §3.2：唯一 AI 分区「AI 辅助初排」。旧两段式 AiPanel 卡片
-            # 不再渲染（其纯逻辑仍由 __init__ 里的轻量 provider 供运行链复用）。
-            self._ai_workflow_section(),
+        self._convert_inputs = ft.Column(spacing=t.sp("2"), controls=[
+            C.section_label("源稿与输出", t), C.hairline(t),
+            self.add_picker("源稿件", "single_source",
+                            "作者来稿 .tex / .docx", kind="file"),
+            self.add_picker("输出根目录", "single_out",
+                            "产物写到该目录下的 <作者>/ 里", kind="dir", show_note=False),
         ])
+        self._convert_common_options = ft.Column(spacing=t.sp("1"), controls=[
+            C.section_label("输出选项", t),
+            self._convert_option_checks(options, common=True),
+        ])
+        more_output = C.CollapsibleSection(
+            t, title="更多输出选项", expanded=False,
+            content=self._convert_option_checks(options, common=False),
+        )
+        self._convert_more_output = more_output
+        self._convert_supplement = C.CollapsibleSection(
+            t, title="稿件信息、附件与元数据（可选）", expanded=False,
+            content=ft.Column(spacing=t.sp("2"), controls=[
+                C.text("仅源稿与输出必填；以下内容按需补充。", t, "caption",
+                       color=t.palette.text_muted),
+                self._advanced_title(), C.hairline(t), advanced, metadata.root,
+            ]),
+        )
+        self._convert_options = ft.Column(spacing=t.sp("2"), controls=[
+            self._convert_common_options, more_output.root, self._convert_supplement.root,
+        ])
+        self._convert_form = ft.Column(spacing=t.sp("2"), controls=[
+            self._convert_inputs, self._convert_options,
+        ])
+        self._convert_parameters = C.CollapsibleSection(
+            t, title="转换输入与选项", content=self._convert_form,
+            expanded=self._aiw_parameters_open,
+        )
+        self._convert_parameters._toggle_btn.on_click = self._toggle_ai_parameters
+        self._convert_run_actions = ft.Row(
+            spacing=t.sp("1"), wrap=True,
+            controls=[self._stop_btn, self._run_btn],
+        )
+        self._convert_root = ft.Column(spacing=t.sp("2"))
+        self._compose_convert_workspace()
+        return self._convert_root
+
+    def _convert_option_checks(self, options: dict, *, common: bool) -> ft.Control:
+        """保留现有 option 键，标签与原生勾选共同构成可点击区域。"""
+        specs = (("编译 PDF", "convert_compile", True,
+                  "生成初排稿后编译 PDF"),
+                 ("清理临时文件", "convert_clean", False,
+                  "编译后删除 .aux、.log 等临时文件")) if common else (
+            ("导出原稿 PDF", "convert_source_pdf", False,
+             "另存原稿 PDF 以备查阅"),
+            ("强制覆盖已有产物", "convert_force", False,
+             "目标已存在时覆盖，请先确认输出位置"),
+            ("只预演（不写入）", "convert_dry_run", False,
+             "只显示将执行的操作，不创建产物"),
+        )
+        checks = []
+        for label, key, default, hint in specs:
+            check = ft.Checkbox(
+                label=label, value=bool(options.get(key, default)),
+                on_change=lambda e, k=key: self.app.set_option(k, e.control.value),
+                tooltip=hint,
+            )
+            check._convert_option_key = key
+            checks.append(check)
+        return ft.Row(spacing=self.t.sp("2"), wrap=True, controls=checks)
+
+    def _toggle_ai_parameters(self, e=None) -> None:
+        section = self._convert_parameters
+        if section is None:
+            return
+        self._aiw_parameters_open = not self._aiw_parameters_open
+        self._compose_convert_workspace()
+        self._safe_update(self._flow_box)
+
+    def _compose_convert_workspace(self) -> None:
+        """只重排工作区，保留父表单控件、已输入值和正在等待的选择器引用。"""
+        if self._convert_root is None or self._convert_form is None:
+            return
+        t = self.t
+        if not self._aiw_open:
+            # 可选配置保持折叠，普通转换与 AI 分支紧接同一份短表单。
+            self._convert_root.controls = [
+                self._convert_inputs, self._convert_options,
+                self._convert_run_actions, self._ai_workflow_section(),
+            ]
+        else:
+            source = self.field("single_source")
+            out = self.field("single_out")
+            source_name = str(Path(*Path(source).parts[-2:])) if source else "未选择源稿件"
+            out_name = str(Path(*Path(out).parts[-2:])) if out else "未选择输出目录"
+            context = C.text(f"源稿：{source_name}  ·  输出：{out_name}", t, "small",
+                             color=t.palette.text_muted, selectable=True)
+            context.max_lines = 2
+            context.overflow = ft.TextOverflow.ELLIPSIS
+            context.tooltip = f"源稿：{source or '未选择'}\n输出：{out or '未选择'}"
+            self._convert_parameters.set_expanded(self._aiw_parameters_open)
+            if self._aiw_parameters_open:
+                # 编辑参数与审阅任务分开显示，避免父页与 AI 区两个滚动面竞争。
+                self._convert_root.controls = [
+                    C.text_button("返回 AI 任务", self._toggle_ai_parameters, t),
+                    self._convert_parameters.root,
+                ]
+            else:
+                self._convert_root.controls = [
+                    context, self._convert_parameters.root, self._ai_workflow_section(),
+                ]
+        self._sync_ai_workspace_chrome()
+
+    def _sync_ai_workspace_chrome(self) -> None:
+        convert = self.flow_key == "convert"
+        active = convert and getattr(self, "_aiw_open", False)
+        # AI 阶段拥有自己的运行与结果动作；普通转换动作在输入之后，一校沿用页头。
+        for name in ("_run_btn", "_stop_btn", "_norm_row", "_ordinary_results"):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.visible = not active
+        stop = getattr(self, "_stop_btn", None)
+        if stop is not None and convert:
+            stop.visible = bool(self.app.running) and not active
+        run = getattr(self, "_run_btn", None)
+        if run is not None:
+            run.content = "开始转换" if convert else "运行"
+        header = getattr(self, "_header_run_actions", None)
+        if header is not None:
+            header.controls = [] if convert else [self._stop_btn, self._run_btn]
+        fixed_task = active and not self._aiw_parameters_open
+        self._flow_box.expand = fixed_task
+        convert_root = getattr(self, "_convert_root", None)
+        if convert_root is not None:
+            convert_root.expand = fixed_task
+        scroll_body = getattr(self, "_single_scroll_body", None)
+        if scroll_body is not None:
+            scroll_body.scroll = None if fixed_task else self._single_scroll_mode
+            self._single_inner_host.expand = fixed_task
+            self._single_inner.expand = fixed_task
+        self._safe_update(*(getattr(self, name, None) for name in (
+            "_run_btn", "_stop_btn", "_header_run_actions", "_norm_row", "_ordinary_results",
+            "_single_scroll_body", "_single_inner_host", "_single_inner")
+            if getattr(self, name, None) is not None))
+
+    def _sync_ai_workspace_transition(self) -> None:
+        """日志只在首次进入或实际完成的边界收起，不覆盖用户中途展开。"""
+        if not self._aiw_open or self._aiw_view is None:
+            return
+        phase = str(getattr(self._aiw_view, "phase", ""))
+        task_id = str(getattr(self._aiw_view, "task_id", ""))
+        if task_id and task_id != self._aiw_last_task_id:
+            self._aiw_parameters_open = False
+        self._aiw_last_task_id = task_id
+        completed = (phase == "applied" and phase != self._aiw_last_phase
+                     and bool(getattr(self._aiw_view, "delivery_ok", False))
+                     and not getattr(self._aiw_view, "error", ""))
+        if self._aiw_first_open or completed:
+            log = getattr(self, "_log", None)
+            if log is not None:
+                log.collapse()
+            self._aiw_first_open = False
+        if completed:
+            self._aiw_parameters_open = False
+        self._aiw_last_phase = phase
 
     def _ai_workflow_section(self) -> ft.Control:
         """初排入口的「AI 辅助初排」折叠区（DESIGN §3 两个入口之一）。
@@ -818,7 +975,7 @@ class SinglePage(BasePage):
         阶段 + 主动作 + 可选关联 TeX，不与上面的表单重复六路径。
         """
         t = self.t
-        label = "收起 AI 辅助初排" if self._aiw_open else "AI 辅助初排（可选）"
+        label = "返回普通转换" if self._aiw_open else "使用 AI 辅助初排"
         toggle = C.text_button(label, self._toggle_ai_workflow, t, height=28)
         toggle.tooltip = ("按类别执行 AI、按类别采纳；写目标 Bib 由引擎完成，"
                           "先备份可撤销；源稿与正文永不回写")
@@ -828,20 +985,34 @@ class SinglePage(BasePage):
         # 与「输入」「处理选项」同级的**分区小标题 + 发丝线**：不加的话本区在页面上
         # 只是一个不起眼的文字链，用户会以为这页没变过（本轮返工的实况）。这里用
         # `section_label`/`hairline`（不是 C.card/C.section_title，本页测试禁的正是后者）。
-        title = C.section_label("AI 辅助初排", t, note="可选，默认收起")
+        title = C.section_label("AI 辅助初排", t,
+                                note="" if self._aiw_open else "可选")
         content = None
         if self._aiw_open and self._aiw_view is not None:
             try:
                 # compact=True（DESIGN §3）：初排继承父页源稿/输出/选项，视图内
                 # 只留目标 Bib + 处理方式 + 阶段 + 主动作 + 可选关联 TeX。
-                content = self._aiw_view.body_only(compact=True)
+                try:
+                    content = self._aiw_view.body_only(compact=True, pinned_actions=True)
+                except TypeError as exc:
+                    # 旧证据宿主只实现 compact；真正内部绘制异常继续如实显示。
+                    if "pinned_actions" not in str(exc):
+                        raise
+                    content = self._aiw_view.body_only(compact=True)
             except Exception as exc:  # noqa: BLE001 - 内嵌视图坏了不能连带坏本页
                 content = C.inline_note(
                     f"AI 辅助初排绘制失败（{type(exc).__name__}: {exc}）。", t, "error")
         self._aiw_box = ft.Container(content=content, visible=self._aiw_open,
+                                     expand=self._aiw_open,
                                      padding=ft.Padding(left=0, top=0, right=0, bottom=0))
-        return ft.Column(spacing=t.sp("1"),
+        return ft.Column(spacing=t.sp("1"), expand=self._aiw_open,
                          controls=[title, C.hairline(t), head, self._aiw_box])
+
+    def keep_window_for_initial_ai(self) -> bool:
+        if self._aiw_view is None or not self._aiw_view.running:
+            return False
+        self.app.toast("初排任务仍在运行。请等待本次操作完成后再关闭窗口。")
+        return True
 
     def _toggle_ai_workflow(self, e=None) -> None:
         """展开/收起初排页的 AI 区；首次展开才导入并实例化视图（失败如实报错）。"""
@@ -866,6 +1037,8 @@ class SinglePage(BasePage):
                     self.mark("ai_workflow_open_failed", error=type(exc).__name__)
                 return
         self._aiw_open = True
+        self._aiw_parameters_open = not (
+            self.field("single_source") and self.field("single_out"))
         activate = getattr(self._aiw_view, "activate", None)
         if callable(activate):
             activate()
@@ -875,7 +1048,11 @@ class SinglePage(BasePage):
     def _rerender_flow(self) -> None:
         """重排当前子流程（折叠区开关后必须重画才能生效）。"""
         try:
-            self._flow_box.controls = [self._flow_builder(self.flow_key)()]
+            if self.flow_key == "convert" and getattr(self, "_convert_root", None) is not None:
+                self._sync_ai_workspace_transition()
+                self._compose_convert_workspace()
+            else:
+                self._flow_box.controls = [self._flow_builder(self.flow_key)()]
             self._flow_box.update()
         except Exception:  # noqa: BLE001 - 未挂载/测试假宿主：重画失败不影响状态
             pass
@@ -976,7 +1153,8 @@ class SinglePage(BasePage):
             self.app.store.set(f"form.{key}", value)
 
         def _browse(e) -> None:
-            self.app.browse_field(self.fields[key], f"选择{label}", kind, key)
+            self.app.browse_field(self.fields[key], f"选择{label}", kind, key,
+                                  store_prefix="form")
 
         field = C.floating_field(
             t, f"{label}（可空）",
@@ -1518,6 +1696,7 @@ class SinglePage(BasePage):
             self._busy.visible = running
         if self._ai is not None:
             self._ai.refresh_running()
+        self._sync_ai_workspace_chrome()
         self._safe_update(*(c for c in (self._run_btn, self._stop_btn, getattr(self, "_busy", None)) if c is not None))
 
     # 证据钩子 ─────────────────────────────────────────────────────────

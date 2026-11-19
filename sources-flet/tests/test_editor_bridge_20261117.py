@@ -315,6 +315,19 @@ def test_newline_bytes_are_preserved(work, old_bib):
     assert EB.verify_preview(preview.preview_id, str(work))[0] is True
 
 
+def test_candidate_digest_checks_the_actual_bytes_before_writing_copies(work, old_bib):
+    payload = b"@misc{x,\r\n  title = {T},\r\n}\r\n"
+    expected = hashlib.sha256(payload).hexdigest()
+    kwargs = {"old_file": str(old_bib), "work_dir": str(work),
+              "expected_new_sha256": expected}
+    with pytest.raises(EB.CandidateIntegrityError, match="重新生成拟应用结果"):
+        EB.make_preview(new_bytes=payload.replace(b"\r\n", b"\n"), **kwargs)
+    assert not (work / EB.DIFF_DIRNAME).exists()
+    preview = EB.make_preview(new_bytes=payload, **kwargs)
+    assert Path(preview.new_path).read_bytes() == payload
+    assert preview.new_sha256 == expected
+
+
 def test_preview_dir_and_stem_customisation(work, old_bib):
     assert EB.preview_dir(str(work)) == os.path.join(os.path.abspath(str(work)), ".diff")
     with pytest.raises(ValueError):

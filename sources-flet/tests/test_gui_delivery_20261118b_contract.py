@@ -187,6 +187,10 @@ def _blob(control) -> str:
 
 def _view(*, bridge=None, purpose="library") -> tuple[A.BibAiAssistView, _Host]:
     host = _Host()
+    if purpose == "initial":
+        # 初排来源由真实宿主协议判定，不能用库入口假装初排交付。
+        host.build_ai_initial_call = lambda **kwargs: None
+        host.ai_initial_paths = lambda: ("/tmp/anonymous/article.tex", "/tmp/anonymous/output")
     view = A.BibAiAssistView(host, bridge=bridge or _Bridge(), purpose=purpose)
     return view, host
 
@@ -202,14 +206,15 @@ def _bib(path: Path, title: str) -> Path:
 
 
 def _preview_ready(tmp_path: Path, *, with_source: bool = True,
-                   with_frozen: bool = True, frozen_sha: str | None = None):
+                   with_frozen: bool = True, frozen_sha: str | None = None,
+                   purpose: str = "library"):
     """造一份「阶段③ 已出有效 preview」的最小视图。
 
     `with_frozen` 决定引擎是否给了 `status.frozen_bib`（合同 v1.1）：
     给了就是「冻结快照可核」，没给就是旧 /1 任务（只能退化 + 明示）。
     `frozen_sha` 可覆盖，用来造「sha 对不上」的反例。
     """
-    view, host = _view()
+    view, host = _view(purpose=purpose)
     work = tmp_path / "work"
     (work / "stage").mkdir(parents=True)
     (work / "stage" / "main.tex").write_text("\\documentclass{article}\n", encoding="utf-8")
@@ -223,6 +228,7 @@ def _preview_ready(tmp_path: Path, *, with_source: bool = True,
         view._frozen_bib_sha = (frozen_sha if frozen_sha is not None
                                 else A.file_sha256(str(frozen)))
     view.candidate_bib = str(candidate)
+    view._candidate_bib_sha = A.file_sha256(str(candidate))
     view.preview_id = "pv-abc"
     view.phase = "preview"
     view.blocked = []
@@ -258,10 +264,11 @@ def test_conflict_row_offers_three_choices_and_defaults_to_original(tmp_path):
     assert len(conflict_groups) == 1
     group = conflict_groups[0]
     assert group.value == "original", "缺省裁决必须是「保留原值」"
-    assert [r.value for r in group.content.controls] == ["library", "reply", "original"]
+    assert [r.value for r in _walk(group) if isinstance(r, ft.Radio)] == [
+        "original", "reply", "library"]
 
     text = _blob(view.build())
-    assert A.CONFLICT_TITLE in text
+    assert "字段差异 · 1 项" in text
     for needle in ("zhang2020", "title", "原条目标题", "库里的标题", "回件里的标题"):
         assert needle in text, f"冲突行缺内容：{needle}"
     for _key, label in A.DECISION_CHOICES:
@@ -303,6 +310,7 @@ def test_decision_change_invalidates_preview_and_keeps_scope():
 def test_unavailable_library_shows_reason_not_zero_conflicts():
     view, _host = _view()
     view.phase = "waiting"
+    view.task_id = "T-LIBRARY-MISSING"
     view.imported = True
     view._receive_library({"library": {
         "checked": False,
@@ -359,11 +367,11 @@ def test_diff_button_enabled_only_after_valid_preview(tmp_path):
 
 
 @pytest.mark.parametrize("phase,blocked,expected", [
-    ("idle", [], 1),
-    ("preparing", [], 1),
-    ("waiting", [], 1),
-    ("blocked", ["回件缺条目：zhang2020"], 1),
-    # 阶段④（已应用 / 已失效）：对比入口整个不出现——合同 §4.2 只允许它在阶段③。
+    ("idle", [], 0),
+    ("preparing", [], 0),
+    ("waiting", [], 0),
+    ("blocked", ["回件缺条目：zhang2020"], 0),
+    # 没有有效候选时不创建对比入口；底层资格检查也必须拒绝。
     ("stale", [], 0),
     ("applied", [], 0),
 ])
@@ -387,7 +395,8 @@ def test_diff_disabled_after_decision_change(tmp_path):
     view.set_decision(view.conflicts[0]["conflict_id"], "reply")
     view.body_only(compact=True)
     assert view._can_diff() is False
-    assert _diff_buttons(view)[0].disabled is True
+    assert _diff_buttons(view) == [], "裁决改变后旧预览和对比入口一起失效"
+    assert view.preview_id == ""
 
 
 def test_waiting_block_has_no_second_diff_entry(tmp_path):
@@ -565,6 +574,17 @@ def test_no_frozen_and_no_fallback_disables_diff_with_reason(tmp_path):
     assert view.phase == "preview", "对比失败不能改阶段"
 
 
+def test_legacy_compare_without_candidate_digest_discloses_unverified_side(tmp_path, monkeypatch):
+    _missing_editor(monkeypatch)
+    view, _host, work, _frozen, _candidate = _preview_ready(tmp_path, with_frozen=False)
+    view._r3 = False
+    view._candidate_bib_sha = ""
+    assert view._can_diff()
+    view.open_diff()
+    assert (work / "compare").is_dir()
+    assert "右侧副本无法核对身份" in view.notice
+
+
 def test_compare_requires_valid_preview(tmp_path):
     view, _host, _work, _frozen, _candidate = _preview_ready(tmp_path)
     view.phase = "waiting"
@@ -635,17 +655,20 @@ def test_delivery_without_final_never_reports_success():
     assert any("引擎没有返回最终交付路径" in line for line in view.delivery_log)
 
 
-def test_status_delivery_block_is_the_single_authority():
-    view, _host = _view()
+def test_status_delivery_block_is_the_single_authority(tmp_path):
+    view, _host = _view(purpose="initial")
+    final = tmp_path / "final"
+    final.mkdir()
     view._receive_status({
         "phase": "delivered", "task_id": "T-1", "preview_id": "pv-1",
+        "entry": "convert", "tex": "", "text_target": "",
         "target_bib": "/tmp/t.bib", "source_bib": "/tmp/s.bib",
-        "delivery": {"delivered": True, "final": "/tmp/out/final",
+        "delivery": {"delivered": True, "final": str(final),
                      "compile_status": "编译成功"},
     })
     assert view.phase == "applied"
     assert view.delivery_ok is True
-    assert view._final_dir == "/tmp/out/final"
+    assert view._final_dir == str(final)
     assert view.delivery_compile == "成功"
 
 
@@ -665,6 +688,8 @@ def test_status_frozen_bib_drives_left_side_identity(tmp_path):
 
     view._receive_status({
         "phase": "previewed", "task_id": "T-1", "preview_id": "pv-1",
+        "entry": "bib", "tex": "", "text_target": "",
+        "execute": ["bib_verify"], "adopt": ["bib_verify"],
         "target_bib": str(target), "source_bib": str(source),
         "frozen_bib": {"path": str(snapshot),
                        "sha256": A.file_sha256(str(snapshot))},
@@ -691,6 +716,8 @@ def test_status_without_frozen_bib_is_treated_as_legacy(tmp_path):
 
     view._receive_status({
         "phase": "previewed", "task_id": "T-1", "preview_id": "pv-1",
+        "entry": "bib", "tex": "", "text_target": "",
+        "execute": ["bib_verify"], "adopt": ["bib_verify"],
         "target_bib": str(source), "source_bib": str(source),
     })
 
@@ -703,7 +730,7 @@ def test_status_without_frozen_bib_is_treated_as_legacy(tmp_path):
 
 # ── (g) 成功卡主操作 = 打开交付目录 ─────────────────────────────────────────
 def test_success_card_main_action_opens_final(tmp_path):
-    view, host, work, _frozen, _candidate = _preview_ready(tmp_path)
+    view, host, work, _frozen, _candidate = _preview_ready(tmp_path, purpose="initial")
     final = work / "delivered"
     final.mkdir()
     view.phase = "applied"

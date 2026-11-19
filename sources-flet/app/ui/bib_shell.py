@@ -977,7 +977,7 @@ def state_banner(t: Tokens, kind: str, *, message: str | None = None,
 
 def danger_confirm(page, t: Tokens, *, title: str, message: str, impact: int | str,
                    confirm_label: str = "确认", on_confirm=None,
-                   cancel_label: str = "取消") -> ft.AlertDialog:
+                   cancel_label: str = "取消", cancel_autofocus: bool = False) -> ft.AlertDialog:
     """危险操作二次确认：红色主按钮 + 影响范围，必须带条数/范围。
 
     为什么强制 ``impact``：设计稿 §9.9 要求危险动作第二道确认里出现“影响 N 条”。
@@ -991,6 +991,8 @@ def danger_confirm(page, t: Tokens, *, title: str, message: str, impact: int | s
     impact_text = f"将影响 {impact} 条记录" if isinstance(impact, int) else str(impact)
     p = t.palette
 
+    cancel = C.text_button(cancel_label, lambda e: _close(), t)
+    cancel.autofocus = cancel_autofocus
     dialog = ft.AlertDialog(
         modal=True,
         title=C.text(title, t, role="dialog-title"),
@@ -1006,23 +1008,25 @@ def danger_confirm(page, t: Tokens, *, title: str, message: str, impact: int | s
             ],
         )),
         actions=[
-            C.text_button(cancel_label, lambda e: _close(), t),
+            cancel,
             C.danger_button(confirm_label, lambda e: _ok(), t),
         ],
     )
 
     registry = getattr(C, "_open_dialogs", None)
 
-    def _close() -> None:
-        """先出组件对话框栈，再关页面对话框，Esc 才不会错位。"""
-        if isinstance(registry, list) and registry and registry[-1] is dialog:
+    def _close() -> bool:
+        """只关闭栈顶的确认框，忽略 Esc 后到达的旧点击。"""
+        if isinstance(registry, list):
+            if not registry or registry[-1] is not dialog:
+                return False
             registry.pop()
         page.pop_dialog()
+        return True
 
     def _ok() -> None:
         """关闭后按回调签名调用（零参或一参都兼容）。"""
-        _close()
-        if on_confirm is not None:
+        if _close() and on_confirm is not None:
             try:
                 params = inspect.signature(on_confirm).parameters
             except (TypeError, ValueError):

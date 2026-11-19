@@ -201,7 +201,7 @@ ACTION_LABELS = {
 
 R3_ACTION_LABELS = {
     "prepare": "生成任务书",
-    "deliver_original": "不采纳 AI 结果，继续原初排",
+    "deliver_original": "按原稿交付…",
     "restart": "更换任务",
     "replace_reply": "重新导入结果",
 }
@@ -302,7 +302,8 @@ def parse_status(lines) -> dict:
         value = value.strip()
         if not key:
             continue
-        if key in ("phase", "task_id", "preview_id", "backup", "candidate_bib", "work_dir", "taskbook"):
+        if key in ("phase", "task_id", "preview_id", "backup", "candidate_bib",
+                   "candidate_bib_sha256", "work_dir", "taskbook"):
             out[key] = value
         elif key in ("keys", "key_count"):
             out["keys"] = _int_of(value, 0)
@@ -394,7 +395,7 @@ def parse_conflicts(payload) -> list:
         choices = [ch for ch in DECISION_VALUES if ch in choices]
         if not choices:
             choices = list(DECISION_VALUES)
-        out.append({
+        conflict = {
             "conflict_id": cid,
             "key": str(item.get("key") or ""),
             "field": str(item.get("field") or ""),
@@ -404,7 +405,17 @@ def parse_conflicts(payload) -> list:
             "choices": choices,
             "default": normalize_decision(item.get("default")),
             "group": str(item.get("group") or ""),
-        })
+        }
+        raw_expressions = item.get("expressions")
+        if isinstance(raw_expressions, dict):
+            expressions = {
+                side: raw_expressions[side]
+                for side in ("original", "reply")
+                if isinstance(raw_expressions.get(side), str)
+            }
+            if expressions:
+                conflict["expressions"] = expressions
+        out.append(conflict)
     return out
 
 
@@ -671,7 +682,17 @@ class BibAiAssistView:
         self._r3 = (taskbook_version == 3 if taskbook_version is not None
                     else purpose == "library" or callable(self._initial_call))
         self._parent_paths: tuple[str, str] | None = None
+        self._original_final_dir = ""
+        self._original_dialog = None
+        self._initial_open_stage = ""
+        self._external_import_draft: tuple | None = None
+        self._reply_revision = 0
+        self._initial_operation = ""
+        self._initial_action_pending = False
+        self._compare_paths: tuple[str, ...] = ()
+        self._compare_feedback = ""
         self._review_notes: list[str] = []
+        self._category_reports: dict = {}
         self._text_items: dict[str, str] = {}
         self._skip_items: set[str] = set()
         self._preview_dirty = False
@@ -680,6 +701,8 @@ class BibAiAssistView:
         #: `delivery_ok` 区分「真交付成功」与「交付失败但有错误原因」——成功横幅
         #: 只在 delivery_ok 且 final 与 status 一致时出现，绝不因为「没报错」就报成功。
         self.delivery_ok = False
+        self._operation_receipt: dict = {}
+        self._disclosure_open: dict[str, bool] = {}
         self.delivery_compile = ""
         self.delivery_error = ""
         #: 本次交付写进底部运行日志的那几行（与页面 LogConsole 同一份文本）。
@@ -701,6 +724,8 @@ class BibAiAssistView:
         self.result_path = ""
         self.work_dir = ""
 
+        self._enforce_library_boundaries()
+
         # AI 结果正文（与"路径粘贴"是两个不同控件）。
         self.body_text = ""
 
@@ -721,6 +746,7 @@ class BibAiAssistView:
         self.backup = ""
         #: 「在 VS Code 里对比」用的新版一侧：引擎 preview 写的候选文件（只读展示）。
         self.candidate_bib = ""
+        self._candidate_bib_sha = ""
         #: 左侧「冻结稿件版 Bib」——**引擎冻结快照**的路径与 sha（合同 v1.1 的
         #: `status.frozen_bib = {"path","sha256"}`，来源 `state["snapshot"]["bib"]`）。
         #: 只有 sha 对得上才认这是冻结版；空串 = 旧 /1 任务，允许退化但必须明示。
@@ -1002,12 +1028,15 @@ class BibAiAssistView:
 
     # ── 两组勾选（独立控件对象；采纳组文字纠错默认恒 False）────────────
     def set_execute(self, key: str, value: bool) -> None:
-        if key not in EXECUTE_DEFAULTS:
+        if key not in EXECUTE_DEFAULTS or (self._is_library_page() and key != "verify"):
             return
         self.execute[key] = bool(value)
 
     def set_accept(self, key: str, value: bool) -> None:
-        if key not in ACCEPT_DEFAULTS or self.accept.get(key) == bool(value):
+        if (callable(self._initial_call) and self.running
+                or key not in ACCEPT_DEFAULTS
+                or (self._is_library_page() and key != "verify")
+                or self.accept.get(key) == bool(value)):
             return
         self.accept[key] = bool(value)
         self._invalidate_preview()
@@ -1021,10 +1050,15 @@ class BibAiAssistView:
         必须重新「生成拟应用结果」。这里不静默重算——重算要跑引擎，用户点了
         才跑。
         """
+        if callable(self._initial_call) and self.running:
+            return False
         cid = str(conflict_id or "").strip()
         if not cid.startswith("cf-"):
             return False
         chosen = normalize_decision(value)
+        row = next((item for item in self.conflicts if item["conflict_id"] == cid), None)
+        if row is not None and chosen not in (row.get("choices") or DECISION_VALUES):
+            return False
         if self.decisions.get(cid) == chosen:
             return False
         self.decisions[cid] = chosen
@@ -1033,12 +1067,68 @@ class BibAiAssistView:
 
     def reset_decisions(self) -> None:
         """把全部裁决恢复成条目默认值（「保留原值」）。"""
+        if callable(self._initial_call) and self.running:
+            return
         self.decisions = {}
         self._invalidate_preview(notice="冲突裁决已恢复默认（保留原值）；请重新生成拟应用结果。")
 
     def decision_scope(self) -> dict:
         """当前生效的完整裁决表（每条冲突都有值，默认 original）。"""
         return conflict_decision_map(self.conflicts, self.decisions)
+
+    def _is_library_page(self) -> bool:
+        return self._r3 and self.purpose == "library"
+
+    def _enforce_library_boundaries(self) -> None:
+        if not self._is_library_page():
+            return
+        self.source_path = ""
+        self.tex_path = ""
+        self.tex_out = ""
+        for key in EXECUTE_DEFAULTS:
+            if key != "verify":
+                self.execute[key] = False
+                self.accept[key] = False
+
+    def _library_status_issue(self, status: dict) -> str:
+        if not self._is_library_page():
+            return ""
+        entry = str(status.get("entry") or "").strip()
+        if entry != "bib":
+            return "任务入口不是引用库 Bib"
+        if status.get("tex") or status.get("text_target"):
+            return "任务包含关联正文或正文交付目标"
+        scope = status.get("scope") or {}
+        adoption = status.get("adopt", scope.get("adopt"))
+        # 任务执行范围仍固定为 bib_verify。预览的采纳范围可显式为空。
+        has_preview = bool(status.get("preview_id")) and phase_from_engine(
+            status.get("phase")) in ("preview", "blocked", "applied", "stale")
+        ranges = [("执行", status.get("execute", scope.get("exec")), False),
+                  ("采纳", adoption, has_preview)]
+        if "exec" in scope:
+            ranges.append(("任务执行", scope["exec"], False))
+        if "adopt" in scope:
+            ranges.append(("任务采纳", scope["adopt"], False))
+        for label, categories, allow_empty in ranges:
+            if not isinstance(categories, (list, tuple, set)):
+                return f"任务未明确记录{label}范围"
+            normalized = {str(item) for item in categories}
+            if allow_empty and not normalized:
+                continue
+            if normalized != {"bib_verify"}:
+                extras = sorted(normalized - {"bib_verify"})
+                if extras:
+                    return f"任务的{label}范围含有 {', '.join(extras)}"
+                return f"任务的{label}范围不是仅文献核实"
+        return ""
+
+    def _deactivate_legacy_library_task(self, reason: str) -> None:
+        self._clear_task()
+        self.work_dir = ""
+        self.running = False
+        self._initial_operation = ""
+        self._enforce_library_boundaries()
+        self.notice = f"旧引用库任务已停用（{reason}）；请重新生成任务书。"
 
     def _invalidate_preview(self, notice: str = "采纳范围已改；请重新生成拟应用结果。") -> None:
         if self.phase in ("preview", "blocked", "applied"):
@@ -1049,11 +1139,15 @@ class BibAiAssistView:
             if previous in ("preview", "blocked"):
                 self.imported = True
             self.notice = notice
+        elif callable(self._initial_call) and self._has_active_reply:
+            self._preview_dirty = True
+            self.notice = notice
 
     def reset_accept(self) -> None:
         """重建采纳组：文字纠错**永远**从 False 起（DESIGN §4）。"""
         self.accept = dict(ACCEPT_DEFAULTS)
         self.accept["textfix"] = False
+        self._enforce_library_boundaries()
 
     def execute_scope(self) -> list[str]:
         """执行组 → **引擎类别名**（内部键不下传，见 `CATEGORY_MAP`）。"""
@@ -1066,24 +1160,44 @@ class BibAiAssistView:
                 if self.accept[key] and self._can_accept_category(key)]
 
     def _can_execute_category(self, key: str) -> bool:
-        return not (self._r3 and self.purpose == "library" and key != "verify"
-                    and not self.tex_path)
+        return not (self._is_library_page() and key != "verify")
 
     def _can_accept_category(self, key: str) -> bool:
-        return not (self._r3 and self.purpose == "library" and key != "verify"
-                    and not (self.tex_path and self.tex_out))
+        if self._is_library_page():
+            return key == "verify"
+        return True
+
+    def _visible_categories(self) -> tuple[tuple[str, str], ...]:
+        return CATEGORIES[:1] if self._is_library_page() else CATEGORIES
 
     def _clear_preview(self) -> None:
         self.preview_id = ""
         self.candidate_bib = ""
+        self._candidate_bib_sha = ""
         self.blocked = []
         self._review_notes = []
+        self._clear_comparison()
         # `conflicts` 与 `decisions` **不在这里清**：它们描述的是「这次任务里
         # 有哪些冲突、用户选了哪个」，与「有没有一份有效预览」是两件事。
         # 清掉它们会让用户在一次失效后看不到自己刚才的裁决依据。
 
+    def _clear_initial_reply_review(self) -> None:
+        """活动回件更换后，清除只对上一份回件有效的检查结果。"""
+        self._reply_revision += 1
+        self._category_reports.clear()
+        self._clear_preview()
+        self._preview_dirty = False
+        self._skip_items.clear()
+        self._text_items.clear()
+        self.library = {}
+        self.conflicts = []
+        self.decisions = {}
+        self.preview_revision = 0
+
     def _clear_task(self) -> None:
         self._bump_request()
+        if callable(self._initial_call):
+            self.log = []
         self.task_id = ""
         self.task_text = ""
         self.taskbook_path = ""
@@ -1097,14 +1211,20 @@ class BibAiAssistView:
         self.key_count = 0
         self.entry_count = 0
         self._final_dir = ""
+        self._original_final_dir = ""
+        self._initial_open_stage = ""
+        self._external_import_draft = None
         self.delivery_ok = False
         self.delivery_compile = ""
         self.delivery_error = ""
         self.delivery_log.clear()
+        self._operation_receipt.clear()
+        self._disclosure_open.clear()
         self._clear_preview()
         self._preview_dirty = False
         self._skip_items.clear()
         self._text_items.clear()
+        self._category_reports.clear()
         # 换任务/换工作区：库状态与冲突属于「上一个任务」，裁决属于上一个任务的
         # 冲突 ID，全部清空，避免把旧 ID 下发给新任务（引擎会以退出码 2 拒绝）。
         self.library = {}
@@ -1178,20 +1298,21 @@ class BibAiAssistView:
         t = self.t
         self._execute_boxes = {}
         rows: list[ft.Control] = []
-        for key, label in CATEGORIES:
+        for key, label in self._visible_categories():
             available = self._can_execute_category(key)
             row, box = self._checkbox(label, self.execute[key] and available,
                                       self._on_execute(key),
                                       disabled=self.scope_frozen or self.running or not available)
             self._execute_boxes[key] = box
             rows.append(row)
-        note = ("选择关联 TeX 后可执行初排检查与文字纠错。"
-                if not self._can_execute_category("textfix") else "")
+        note = ""
+        if self._is_library_page():
+            note = "引用库仅执行文献核实。"
         if self.scope_frozen and not self._r3:
             note = "执行范围在任务书生成后冻结；如需更改，请再出任务书。"
         controls: list[ft.Control] = [
             S.section(t, "执行范围（生成任务书时生效）"),
-            *rows,
+            ft.Row(wrap=True, spacing=t.sp("2"), controls=rows),
         ]
         if note:
             controls.append(C.text(note, t, "caption", t.palette.text_faint,
@@ -1203,20 +1324,27 @@ class BibAiAssistView:
         t = self.t
         self._accept_boxes = {}
         rows: list[ft.Control] = []
-        for key, label in CATEGORIES:
+        for key, label in self._visible_categories():
             available = self._can_accept_category(key)
+            report = self._category_reports.get(CATEGORY_MAP[key]) or {}
+            if self._r3 and (report.get("status") == "not_run" or not self.execute.get(key)):
+                rows.append(C.text(f"{label} · 本次未执行", t, "caption", t.palette.text_muted))
+                continue
+            if self._r3 and not available:
+                reason = ("仅报告" if self.purpose == "library" and key == "proofcheck"
+                          else "只报告，未登记正文副本")
+                rows.append(C.text(f"{label} · {reason}", t, "caption", t.palette.text_muted))
+                continue
             row, box = self._checkbox(label, self.accept[key] and available,
                                       self._on_accept(key), disabled=self.running or not available)
             self._accept_boxes[key] = box
             rows.append(row)
         return ft.Column(spacing=t.sp("half"), controls=[
             S.section(t, "采纳范围（生成拟应用结果时生效）"),
-            *rows,
+            ft.Row(wrap=True, spacing=t.sp("2"), controls=rows),
             *self._text_item_checks(),
-            self._caption(f"正文交付副本：{self.tex_out}" if self.tex_out else
-                          "未登记正文副本，初排检查和文字纠错只报告。")
-            if self._r3 and self.purpose == "library" else
-            self._caption("文字纠错默认不采纳。"),
+            self._caption("引用库仅采纳文献核实结果。") if self._is_library_page()
+            else self._caption("文字纠错默认不采纳。"),
         ])
 
     # ── 库比对与冲突裁决（CONTRACT.md §4.1）────────────────────────────
@@ -1248,51 +1376,66 @@ class BibAiAssistView:
         return controls
 
     def _conflict_row(self, item: dict) -> ft.Control:
-        """一条冲突：条目键 + 字段 + 三值并列 + 三选一（默认「保留原值」）。"""
+        """字段候选与采用动作放在同一列，完整值可选择复制。"""
         t = self.t
         cid = str(item.get("conflict_id") or "")
         chosen = decision_for(item, self.decisions)
-        allowed = [ch for ch in DECISION_VALUES if ch in (item.get("choices") or DECISION_VALUES)]
-        options = [(key, label) for key, label in DECISION_CHOICES if key in allowed]
-        style = C.tstyle(t, size=t.font("small"))
+        allowed = item.get("choices") or DECISION_VALUES
+        values = (("original", "原稿", "保留原值"),
+                  ("reply", "AI 结果", "用回件值"),
+                  ("library", "引用库", "用库值"))
+        narrow = self._workspace_width() < 600
+        cells = []
+        expressions = item.get("expressions")
+        for key, heading, action in values:
+            raw_value = item.get(key)
+            if (key in ("original", "reply") and isinstance(expressions, dict)
+                    and isinstance(expressions.get(key), str)):
+                raw_value = expressions[key]
+            value = str(raw_value or ("无库值" if key == "library" and key not in allowed else "（空）"))
+            radio = ft.Radio(value=key, label=action,
+                             label_style=C.tstyle(t, size=t.font("small")),
+                             disabled=key not in allowed)
+            cells.append(ft.Container(
+                expand=not narrow, padding=t.sp("1"),
+                bgcolor=t.palette.surface_2,
+                border_radius=t.radius("control"),
+                content=ft.Column(spacing=t.sp("half"), controls=[
+                    C.text(heading, t, "caption", t.palette.text_muted),
+                    C.text(value, t, "body", selectable=True),
+                    radio,
+                ])))
         group = ft.RadioGroup(
             value=chosen, disabled=self.running,
             on_change=self._on_decision(cid),
-            content=ft.Row(spacing=t.sp("2"), wrap=True, controls=[
-                ft.Radio(value=key, label=label, label_style=style)
-                for key, label in options]))
+            content=(ft.Column(spacing=t.sp("half"), controls=cells) if narrow else
+                     ft.Row(spacing=t.sp("half"),
+                            vertical_alignment=ft.CrossAxisAlignment.START, controls=cells)))
         group._bib_ai_field = f"conflict:{cid}"
         group._bib_ai_conflict = cid
         self._conflict_groups[cid] = group
-
-        head = C.text(f"{item.get('key') or '（无条目键）'} · {item.get('field') or '（无字段）'}",
-                      t, "body", weight="medium", max_lines=1)
-        values = ft.Column(spacing=t.sp("half"), controls=[
-            C.text(f"{label}：{value}", t, "caption", t.palette.text_faint, max_lines=2)
-            for label, value in _three_values(item)])
-        pad = t.sp("2")
-        return ft.Container(
-            padding=ft.Padding(left=pad, top=pad, right=pad, bottom=pad),
-            border_radius=t.radius("sm"), bgcolor=t.palette.surface_2,
-            content=ft.Column(spacing=t.sp("half"), controls=[head, values, group]))
+        return ft.Column(spacing=t.sp("half"), controls=[
+            C.text(f"{item.get('key') or '（无条目键）'} · {item.get('field') or '（无字段）'}",
+                   t, "body", weight="medium", selectable=True), group])
 
     def _conflict_section(self) -> list[ft.Control]:
-        """冲突裁决区：**仅 conflicts 非空时出现**（合同 §4.1）。"""
+        """差异数不代表阻断；默认保留原稿是一项有效选择。"""
         if not self._r3 or not self.conflicts:
             return []
         t = self.t
         self._conflict_groups = {}
+        rows = [self._conflict_row(item) for item in self.conflicts]
         controls: list[ft.Control] = [
-            S.section(t, CONFLICT_TITLE),
-            *[self._conflict_row(item) for item in self.conflicts],
-            ft.Row(spacing=t.sp("2"), wrap=True,
-                   vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                C.secondary_button("全部保留原值", lambda e: self._on_reset_decisions(), t,
-                                   height=28, disabled=self.running),
-                C.text("裁决随「生成拟应用结果」一次性下发；改过裁决要重新生成。",
-                       t, "caption", t.palette.text_faint, max_lines=2),
-            ]),
+            S.section(t, f"字段差异 · {len(self.conflicts)} 项"),
+            self._caption("默认保留原稿；需要时逐项改选。改选后须重新生成拟应用结果。"),
+            *rows[:2],
         ]
+        if len(rows) > 2:
+            controls.append(self._disclosure(
+                "more_differences", f"其余 {len(rows) - 2} 项字段差异", rows[2:]))
+        controls.append(C.secondary_button(
+            "全部保留原值", lambda e: self._on_reset_decisions(), t,
+            height=28, disabled=self.running))
         return controls
 
     def _on_decision(self, conflict_id: str):
@@ -1366,6 +1509,9 @@ class BibAiAssistView:
         return _handler
 
     def _set_path(self, field: str, value: str) -> bool:
+        if self._is_library_page() and field in {
+                "source_path", "tex_path", "tex_out", "work_dir"}:
+            return False
         if value == getattr(self, field) or self.running:
             return False
         if field == "work_dir":
@@ -1374,6 +1520,8 @@ class BibAiAssistView:
             self.result_path = value
         else:
             self._clear_task()
+            if self._is_library_page() and field == "target_bib":
+                self.work_dir = ""
             setattr(self, field, value)
             if field == "tex_path":
                 self.tex_out = ""
@@ -1411,7 +1559,7 @@ class BibAiAssistView:
                       impact=dest, callback=register)
 
     def _browse(self, field: str, title: str, *, kind: str = "file"):
-        """「浏览…」走真实文件选择服务；选不到就明说，不伪造路径。"""
+        """真实选择器结束时同步业务状态，不限制用户在原生窗口里的选择时长。"""
         def _handler(e=None) -> None:
             if self._picking:
                 return
@@ -1421,41 +1569,43 @@ class BibAiAssistView:
                 self.error = "文件选择器不可用；请直接粘贴路径。"
                 self._refresh()
                 return
-            before = (ref[0].value or "").strip() if ref else ""
-            try:
-                browse(ref, title, kind, f"bib_ai_{field}")
-            except Exception as exc:  # noqa: BLE001 - 选择器实现因平台而异
-                self.error = f"文件选择器不可用（{type(exc).__name__}）；请粘贴路径。"
-                self._refresh()
-                return
+            request_seq = self.request_seq
+            before = getattr(self, field)
             self._picking = True
-            self._task(lambda: self._watch_pick(field, ref, before))
-        return _handler
 
-    async def _watch_pick(self, field: str, ref: list, before: str) -> None:
-        try:
-            for _ in range(240):
-                await asyncio.sleep(0.25)
-                after = (ref[0].value or "").strip() if ref else ""
-                if after == before or not after:
-                    continue
-                if not self._set_path(field, after):
+            def guard() -> bool:
+                # 选择期间换任务、改输入或开跑后，在宿主写入前拒收迟到结果。
+                return (request_seq == self.request_seq and not self.running
+                        and before == getattr(self, field))
+
+            def _picked(value) -> None:
+                self._picking = False
+                if not guard():
+                    self._mark("bib_ai_browse", field=field, picked=False, stale=True)
                     return
+                after = str(value or "").strip()
+                if not after:
+                    self._mark("bib_ai_browse", field=field, picked=False)
+                    return
+                self._set_path(field, after)
                 self.error = ""
                 self._mark("bib_ai_browse", field=field, picked=True)
                 self._refresh()
-                return
-        finally:
-            self._picking = False
+
+            try:
+                browse(ref, title, kind, f"bib_ai_{field}", on_result=_picked, result_guard=guard)
+            except Exception as exc:  # noqa: BLE001 - 选择器实现因平台而异
+                self._picking = False
+                self.error = f"文件选择器不可用（{type(exc).__name__}）；请粘贴路径。"
+                self._refresh()
+        return _handler
 
     def _paths(self, *, compact: bool = False) -> ft.Control:
-        """阶段①（准备）的路径区：选目标 Bib / 关联正文（+ 完整版的其他路径）。
+        """阶段①（准备）的路径区：库页只选 Bib，单篇流程可选关联正文。
 
-        `compact=True`（`body_only()` 内嵌）按 UI-REWORK-DESIGN §3/§4 精简：只保留
-        **目标 Bib（必填，也是输入）**与**关联 TeX（可选）**；用途单选、重复源 Bib、
-        正文交付件、工作目录都不内嵌。独立 `build()` 仍给全套路径，保持本视图单测
-        （test_bib_ai_assist_c_*）的六路径契约（`AI 结果文件` 在阶段②，见
-        `_result_picker()`）。
+        `compact=True`（`body_only()` 内嵌）不显示用途、重复源 Bib、正文交付件和工作目录；
+        单篇流程保留可选关联 TeX，引用库页只显示目标 Bib。独立 `build()` 对旧式非 R3
+        流程仍提供完整路径；`AI 结果文件` 位于阶段②，见 `_result_picker()`。
 
         清空 `_refs` 的动作在 `_parts()` 开头统一做（四个阶段块共用一次重画）。
         """
@@ -1479,27 +1629,22 @@ class BibAiAssistView:
             on_browse=self._browse("target_bib", "选择目标 .bib"),
             required=True, show_note=False,
             field_ref=self._refs["target_bib"]))
-        pickers.append(C.path_picker(
-            "关联正文（.tex，可选）", self.tex_path,
-            "用来算引用键闭合与文字纠错基线；源正文只读，永不回写",
-            t, on_change=self._on_path("tex_path"),
-            on_browse=self._browse("tex_path", "选择正文 .tex", kind="file"),
-            required=False, show_note=False,
-            field_ref=self._refs["tex_path"]))
-        if self._r3 and self.purpose == "library":
+        if not self._is_library_page():
+            pickers.append(C.path_picker(
+                "关联正文（.tex，可选）", self.tex_path,
+                "用来算引用键闭合与文字纠错基线；源正文只读，永不回写",
+                t, on_change=self._on_path("tex_path"),
+                on_browse=self._browse("tex_path", "选择正文 .tex", kind="file"),
+                required=False, show_note=False,
+                field_ref=self._refs["tex_path"]))
+        if self._is_library_page():
             if self.target_bib:
                 pickers.extend([
                     C.secondary_button("另存为新 Bib…", lambda e: self._register_copy("bib_out"), t,
                                        disabled=self.running or self.scope_frozen),
                     self._caption(self.bib_out or "默认并入所选 Bib，可登记新副本。"),
                 ])
-            if self.tex_path:
-                pickers.extend([
-                    C.secondary_button("登记正文交付副本…", lambda e: self._register_copy("tex_out"), t,
-                                       disabled=self.running or self.scope_frozen),
-                    self._caption(self.tex_out or "关联正文只读，可登记新副本以采纳正文修正。"),
-                ])
-        elif not compact:
+        elif not compact and not self._is_library_page():
             pickers.extend([
                 C.path_picker("正文交付件（可选）", self.tex_out,
                               "文字纠错的候选写到这里（新建或已存在的交付件），"
@@ -1519,14 +1664,14 @@ class BibAiAssistView:
             ])
         return ft.Column(spacing=t.sp("1"), controls=pickers)
 
-    def _result_picker(self) -> ft.Control:
+    def _result_picker(self, *, label: str = "AI 结果文件") -> ft.Control:
         """阶段②（等待结果）的「AI 结果文件」：紧挨「导入结果」按钮（完整版才有）。
 
         生产内嵌视图（`compact=True`）不显示它——用户把回复直接粘进下面的正文框。
         """
         t = self.t
         return ft.Column(spacing=t.sp("1"), controls=[
-            C.path_picker("AI 结果文件", self.result_path,
+            C.path_picker(label, self.result_path,
                           "AI 返回的新 .bib 或整份回复（可选）",
                           t, on_change=self._on_path("result_path"),
                           on_browse=self._browse("result_path", "选择 AI 结果文件"),
@@ -1534,12 +1679,12 @@ class BibAiAssistView:
                           field_ref=self._refs["result_path"]),
         ])
 
-    def _body_paste_row(self) -> ft.Control:
+    def _body_paste_row(self, *, label: str = "", hint: str = "") -> ft.Control:
         """「一键粘贴正文」：读剪贴板里的**正文**，不是路径（DESIGN §10 / N04）。"""
         t = self.t
         field = C.text_field(
             t, value=self.body_text,
-            hint_text="把 AI 返回的 bib 文本或整份回复正文粘贴到这里（不是文件路径）",
+            hint_text=hint or "把 AI 返回的 bib 文本或整份回复正文粘贴到这里（不是文件路径）",
             multiline=True, min_lines=4, max_lines=8, expand=True,
             on_change=self._on_body_change)
         field._value_tooltip = False
@@ -1549,7 +1694,7 @@ class BibAiAssistView:
         self._paste_button = button
         row = ft.Row(spacing=t.sp("1"), vertical_alignment=ft.CrossAxisAlignment.START,
                      controls=[field, button])
-        return C.form_field(t, "AI 结果正文（可选，纯文本，不是文件路径）", row,
+        return C.form_field(t, label or "AI 结果正文（可选，纯文本，不是文件路径）", row,
                             expand=True, clearable=False)
 
     def _on_body_change(self, e) -> None:
@@ -1700,28 +1845,74 @@ class BibAiAssistView:
         return parts
 
     # ── 动作 ───────────────────────────────────────────────────────────
-    def _button(self, key: str, *, primary: bool = False, disabled: bool = False):
-        label = R3_ACTION_LABELS.get(key) if self._r3 else None
-        label = label or ACTION_LABELS[key]
+    def _button(self, key: str, *, primary: bool = False, disabled: bool = False,
+                label: str = ""):
+        default = R3_ACTION_LABELS.get(key) if self._r3 else None
+        label = label or default or ACTION_LABELS[key]
         if self._r3 and key == "apply":
             if self.purpose == "initial":
                 label = "完成初排转换"
             else:
                 label = "并入目标 Bib 与正文副本" if self.tex_out else "并入目标 Bib"
         maker = C.primary_button if primary else C.secondary_button
-        btn = maker(label, lambda e, k=key: self._click(k), self.t, height=28,
+        context = self._initial_action_context() if self._r3 else None
+        btn = maker(label, lambda e: self._click(key, context), self.t,
+                    height=36 if self._r3 and primary else 28,
                     disabled=disabled or self.running)
         btn._bib_ai_action = key
         self._action_buttons[key] = btn
         return btn
 
-    def _click(self, key: str) -> None:
+    def _click(self, key: str, displayed_context: tuple | None = None) -> None:
         """按钮统一入口：同一个 key 既可点击也可直接测协程方法。"""
-        if self.running:
+        initial = callable(self._initial_call)
+        if self.running or (initial and self._initial_action_pending):
             return
+        old_task = self.task_id
         self._check_parent_task()
+        if initial and old_task and not self.task_id and key not in ("prepare", "restart"):
+            self._refresh()
+            return
+        if displayed_context is not None and displayed_context != self._initial_action_context():
+            return
+        if self._r3 and key in ("review", "confirm_stage", "replace_reply", "open_final"):
+            if key == "open_final":
+                self._open_result_location()
+            else:
+                self._initial_open_stage = {"review": "review", "confirm_stage": "", "replace_reply": "waiting"}[key]
+                self._refresh()
+            return
+        if key in ("use_chat", "use_api"):
+            self.set_channel("chat" if key == "use_chat" else "api")
+            self._initial_open_stage = "waiting"
+            self._refresh()
+            return
         if key == "restart":
             self._restart()
+            return
+        if key == "cancel_external_import":
+            self._cancel_external_import()
+            return
+        if key == "import_external":
+            if self._initial_open_stage != "external" or self._external_import_draft is None:
+                return
+            if not self.result_path.strip() and not self.body_text.strip():
+                self._fail("采用完整外部 Bib", "请先选择完整 Bib 文件，或粘贴完整 Bib 正文。")
+                self._refresh()
+                return
+            self._confirm_import("complete_external")
+            return
+        if key == "undo" and self._r3:
+            context = displayed_context
+            task = (self.task_id, self.work_dir, self.preview_id, self.phase)
+            def confirmed() -> None:
+                if task == (self.task_id, self.work_dir, self.preview_id, self.phase):
+                    self._click("undo_confirmed", context)
+            self._confirm(
+                title="撤销本次交付" if initial else "撤销本次写入",
+                message=("恢复本次交付前的目录状态。" if initial else
+                         "用本次备份恢复目标文件，撤回本次写入的修改。"),
+                impact="确认后由引擎检查并恢复；不会修改源稿。", callback=confirmed)
             return
         if key == "replace_reply":
             self.imported = False
@@ -1737,10 +1928,26 @@ class BibAiAssistView:
             "preview": self.preview,
             "apply": self.apply,
             "undo": self.undo,
+            "undo_confirmed": self.undo,
             "refresh": self.refresh_status,
         }.get(key)
-        if runner is not None:
+        if runner is None:
+            return
+        if not initial:
             self._do(runner)
+            return
+        context = displayed_context or self._initial_action_context()
+        self._initial_action_pending = True
+
+        async def run_current() -> None:
+            try:
+                if context == self._initial_action_context():
+                    await runner()
+            finally:
+                self._initial_action_pending = False
+
+        self._mark("bib_ai_action", action=runner.__name__)
+        self._task(run_current)
 
     def _do(self, coro_fn) -> None:
         self._mark("bib_ai_action", action=getattr(coro_fn, "__name__", ""))
@@ -1769,6 +1976,11 @@ class BibAiAssistView:
         path, kind, message = self._frozen_identity()
         return "" if kind == FROZEN_OK else message
 
+    def _candidate_diff_hint(self) -> str:
+        if self._r3 and not self._candidate_bib_sha:
+            return "引擎状态未提供候选 Bib 的摘要。请重新生成拟应用结果，若仍缺摘要，请更新引擎。"
+        return ""
+
     def _can_diff(self) -> bool:
         """能不能打开对比：既要能应用、有真实候选，左侧身份还得核得出来。
 
@@ -1781,9 +1993,12 @@ class BibAiAssistView:
         sha 不符或文件不在 → 这里就是 False，按钮禁用，绝不拿别的 Bib 顶替。
         """
         if not (self.can_apply() and self.candidate_bib
-                and os.path.isfile(self.candidate_bib)):
+                and os.path.isfile(self.candidate_bib)) or self._candidate_diff_hint():
             return False
-        return self._frozen_identity()[1] != FROZEN_MISSING
+        kind = self._frozen_identity()[1]
+        if callable(self._initial_call):
+            return kind == FROZEN_OK and os.path.isdir(self.work_dir)
+        return kind != FROZEN_MISSING
 
     def _compare_work_dir(self) -> str:
         """对比副本的落点（合同 §4.2：`<work_dir>/compare/`，绝不许进 stage/）。
@@ -1810,6 +2025,19 @@ class BibAiAssistView:
                 return folder
         return base
 
+    def _clear_comparison(self) -> None:
+        self._compare_paths = ()
+        self._compare_feedback = ""
+
+    def _copy_compare_paths(self, paths: tuple[str, ...]) -> None:
+        self._check_parent_task()
+        if not paths or paths != self._compare_paths or not self._can_diff():
+            return
+        copied = self._copy("\n".join(paths), exact=True)
+        self._compare_feedback = ("已复制两份对比副本的路径。" if copied else
+                                  "剪贴板不可用，可从下方选取路径。")
+        self._refresh()
+
     def open_diff(self) -> None:
         """DESIGN §10 / 合同 §4.2：双文件 diff。**只展示**，不写用户文件、不绑应用。
 
@@ -1817,11 +2045,19 @@ class BibAiAssistView:
         有效 preview 的 `candidate_bib`（逐字节就是待交付候选）。两侧副本由
         `editor_bridge` 写成一对标准文件名，落在 `<work_dir>/compare/`。
         """
+        initial = callable(self._initial_call)
+        self._check_parent_task()
+        self._clear_comparison()
         # 两道门分开报，别用一句笼统的「先生成拟应用结果」盖住身份问题
         # （红线2-⑦：左侧核不出来时必须说出真实原因）。
         if not (self.can_apply() and self.candidate_bib
                 and os.path.isfile(self.candidate_bib)):
             self._fail("对比", "还没有可对比的候选：先「生成拟应用结果」")
+            self._refresh()
+            return
+        candidate_issue = self._candidate_diff_hint()
+        if candidate_issue:
+            self._fail("对比", candidate_issue)
             self._refresh()
             return
         try:
@@ -1834,35 +2070,47 @@ class BibAiAssistView:
                 self._refresh()
                 return
         frozen, frozen_kind, frozen_message = self._frozen_identity()
-        if not frozen:
+        if not frozen or (initial and frozen_kind != FROZEN_OK):
             # 合同 v1.1：身份核不出来就禁用并说明原因，绝不退化冒充冻结版。
             self._fail("对比", frozen_message or "找不到冻结的稿件版 Bib：无法对比")
-            self._mark("bib_ai_diff", opened=False, frozen_kind=frozen_kind,
-                       frozen_reason=frozen_message)
+            launch = {"launch_requested": False, "window_observed": None} if initial else {"opened": False}
+            self._mark("bib_ai_diff", frozen_kind=frozen_kind, frozen_reason=frozen_message, **launch)
             self._refresh()
             return
+        work_dir = self.work_dir if initial else self._compare_work_dir()
         try:
-            with open(self.candidate_bib, "r", encoding="utf-8") as handle:
-                new_text = handle.read()
-        except OSError as exc:
-            self._fail("对比", f"读不了候选文件：{exc}")
+            with open(self.candidate_bib, "rb") as handle:
+                new_content = handle.read()
+            preview = ED.make_preview(
+                old_file=frozen, new_bytes=new_content, ext=".bib", work_dir=work_dir,
+                expected_old_sha256=self._frozen_bib_sha if frozen_kind == FROZEN_OK else "",
+                expected_new_sha256=self._candidate_bib_sha, dir_name=ED.COMPARE_DIRNAME)
+        except ED.CandidateIntegrityError as exc:
+            self._invalidate_preview(notice=str(exc))
+            self._fail("对比", exc)
             self._refresh()
             return
-        work_dir = self._compare_work_dir()
-        try:
-            preview = ED.make_preview(old_file=frozen, new_text=new_text,
-                                      ext=".bib", work_dir=work_dir,
-                                      dir_name=ED.COMPARE_DIRNAME)
         except Exception as exc:  # noqa: BLE001 - 生成失败如实报
             self._fail("对比", str(exc) or f"{type(exc).__name__}")
             self._refresh()
             return
         ok, message = ED.open_diff(preview)
+        if initial:
+            self._compare_paths = (preview.old_path, preview.new_path)
+            self._compare_feedback = ("已请求 VS Code 打开对比。" if ok else
+                                      f"无法启动 VS Code 对比：{message}")
+            self._mark("bib_ai_diff", preview_id=preview.preview_id, launch_requested=ok,
+                       window_observed=None, old_sha256=preview.old_sha256, new_sha256=preview.new_sha256,
+                       frozen_kind=frozen_kind)
+            self._refresh()
+            return
         # 红线2-⑦：旧任务退化到 source_bib/target_bib 时**必须**说出来。降级说明
         # 追加在成功文案**之后**，不挡既有「已在编辑器里打开对比…」的前缀断言，
         # 也不改 `self.error`（这不是失败，但也不是「一切照旧」）。
-        degraded = ("" if frozen_kind == FROZEN_OK
-                    else f"（{frozen_message}）")
+        limitations = [] if frozen_kind == FROZEN_OK else [frozen_message]
+        if not self._candidate_bib_sha:
+            limitations.append("旧任务没有登记候选 Bib 的摘要，右侧副本无法核对身份。")
+        degraded = f"（{' '.join(limitations)}）" if limitations else ""
         if ok:
             self.notice = (f"已在编辑器里打开对比（{preview.preview_id}）："
                            "只读展示，不会自动应用。" + degraded)
@@ -1885,9 +2133,14 @@ class BibAiAssistView:
 
     def can_apply(self) -> bool:
         return (self.phase == "preview" and not self.blocked
+                and not (callable(self._initial_call) and (self._preview_dirty or self.running))
                 and bool(self.preview_id) and (self._r3 or not self.error))
 
     def can_undo(self) -> bool:
+        if callable(self._initial_call):
+            return (self.phase == "applied" and not self.undone and self.delivery_ok
+                    and os.path.isdir(self._final_dir)
+                    and (not self.backup or os.path.isdir(self.backup)))
         return self.phase == "applied" and (self._r3 or not self.error)
 
     # ── 阶段块（方案 B：按操作时序分块，按钮紧挨它操作的输入框）──────────────
@@ -1951,7 +2204,7 @@ class BibAiAssistView:
                     and os.path.isfile(self.candidate_bib)):
                 diff_btn.tooltip = "先「生成拟应用结果」：对比的是冻结的旧版与候选新版"
             else:
-                diff_btn.tooltip = (self._frozen_hint() or
+                diff_btn.tooltip = (self._candidate_diff_hint() or self._frozen_hint() or
                                     "先「生成拟应用结果」：对比的是冻结的旧版与候选新版")
         diff_btn._bib_ai_action = "diff"
         self._action_buttons["diff"] = diff_btn
@@ -2121,13 +2374,16 @@ class BibAiAssistView:
         if not callable(runner):
             self._bridge_fail(["run_call"])
             return None
-        self.log = []
+        lines: list[str] = []
+        self.log = lines
+        identity = self._initial_identity() if callable(self._initial_call) else None
 
         def on_line(line) -> None:
-            self.log.append(str(line))
+            lines.append(str(line))
 
         def on_proc(proc) -> None:
-            self._proc = proc
+            if self.log is lines:
+                self._proc = proc
 
         # 正文粘贴（不是路径）：`ai_import_call` 把正文挂在 call 上，这里原样喂进去。
         stdin_text = getattr(call, "stdin_text", "") or None
@@ -2153,7 +2409,10 @@ class BibAiAssistView:
         try:
             code = await _await_if_needed(runner(call, **run_kwargs))
         except Exception as exc:  # noqa: BLE001 - 引擎异常也要有失败文案
-            self._fail("引擎调用", f"{type(exc).__name__}: {exc}")
+            if identity is None or identity == self._initial_identity():
+                self._fail("引擎调用", f"{type(exc).__name__}: {exc}")
+            return None
+        if identity is not None and identity != self._initial_identity():
             return None
         try:
             return int(code)
@@ -2217,16 +2476,16 @@ class BibAiAssistView:
             "mode": self.purpose,
             "purpose": self.purpose,
             "entry": "convert" if self.purpose == "initial" else "bib",
-            "source": self.source_path,
-            "source_path": self.source_path,
+            "source": "" if self._is_library_page() else self.source_path,
+            "source_path": "" if self._is_library_page() else self.source_path,
             "target": self.target_bib,
             "target_bib": self.target_bib,
             # 验收 §3.1-2：桥的形参叫 `reply`
             "reply": self.result_path,
             "result_path": self.result_path,
-            "tex": self.tex_path,
-            "tex_path": self.tex_path,
-            "tex_out": self.tex_out,
+            "tex": "" if self._is_library_page() else self.tex_path,
+            "tex_path": "" if self._is_library_page() else self.tex_path,
+            "tex_out": "" if self._is_library_page() else self.tex_out,
             "bib_out": self.bib_out,
             "result_text": self.body_text,
             "body_text": self.body_text,
@@ -2259,6 +2518,8 @@ class BibAiAssistView:
     def _task_inputs(self) -> list[str]:
         if callable(self._initial_call):
             return list(self.page.ai_initial_paths())
+        if self._is_library_page():
+            return [self.target_bib, ""]
         return [self.target_bib, self.tex_path]
 
     def _remember_task(self) -> None:
@@ -2297,11 +2558,20 @@ class BibAiAssistView:
             return None
         return await self._run_r3("status", call, "读取任务状态")
 
-    def _receive_status(self, status: dict) -> None:
+    def _receive_status(self, status: dict) -> bool:
+        issue = self._library_status_issue(status)
+        if issue:
+            self._deactivate_legacy_library_task(issue)
+            return False
+        candidate_sha = str(status.get("candidate_bib_sha256") or "")
+        if (self.preview_id, self.candidate_bib, self._candidate_bib_sha) != (
+                status.get("preview_id") or "", status.get("candidate_bib") or "", candidate_sha):
+            self._clear_comparison()
         self.phase = phase_from_engine(status["phase"])
         self.scope_frozen = True
         self.preview_id = str(status.get("preview_id") or "")
         self.candidate_bib = str(status.get("candidate_bib") or "")
+        self._candidate_bib_sha = candidate_sha
         self.blocked = [str(item) for item in status.get("blocked") or []]
         self.backup = str(status.get("backup") or "")
         self.key_count = _int_of(status.get("cite_keys"), self.key_count)
@@ -2322,8 +2592,10 @@ class BibAiAssistView:
             self._frozen_bib_path = ""
             self._frozen_bib_sha = ""
         self._source_bib = str(status.get("source_bib") or "")
-        if callable(self._initial_call):
+        initial = callable(self._initial_call)
+        if initial:
             self.target_bib = target
+            self._original_final_dir = self._conversion_final_dir(status)
         elif status.get("source_bib") and target:
             self.target_bib = str(status["source_bib"])
             self.bib_out = target if target != self.target_bib else ""
@@ -2344,24 +2616,33 @@ class BibAiAssistView:
             self.phase = "waiting"
             self.imported = True
         else:
-            self._skip_items.update(status.get("skip_items") or [])
+            if "skip_items" in status and not (initial and self._preview_dirty):
+                if initial:
+                    self._skip_items.clear()
+                self._skip_items.update(status.get("skip_items") or [])
             self._receive_text_items(status.get("text_items") or {})
         delivery = status.get("delivery") or {}
+        if isinstance(delivery, dict) and delivery:
+            self._operation_receipt = dict(delivery)
         self.undone = bool(delivery.get("undone"))
-        self._final_dir = str(delivery.get("final") or delivery.get("final_dir") or "") if not self.undone else ""
-        # 合同 §4.3「日志与状态同源」：status 里的交付结论就是唯一权威——它说
-        # delivered/ok 且给了 final，才算成功；它没给 final 就绝不因为「没报错」
-        # 把成功横幅亮出来。
-        if delivery:
+        if initial:
+            self._final_dir = self._delivered_output(delivery)
+            self.delivery_ok = bool(self._final_dir)
+            self.delivery_compile = compile_status_text(delivery) if delivery else ""
+            self.delivery_error = str(delivery.get("error") or "") if not self.delivery_ok else ""
+            self.backup = str(delivery.get("backup") or "") if self.delivery_ok else ""
+        elif delivery:
+            self._final_dir = str(delivery.get("final") or delivery.get("final_dir") or "") if not self.undone else ""
             delivered = bool(delivery.get("delivered", delivery.get("ok")))
             self.delivery_ok = bool(delivered and self._final_dir)
             self.delivery_compile = compile_status_text(delivery)
             self.delivery_error = str(delivery.get("error") or "") if not delivered else ""
-        elif self.undone:
-            self.delivery_ok = False
-        self.notice = str(status.get("message") or "")
+        if not (initial and self._preview_dirty):
+            self.notice = str(status.get("message") or "")
         self._receive_library(status)
         self._set_review_notes(status)
+        self._enforce_library_boundaries()
+        return True
 
     def _receive_library(self, payload: dict) -> None:
         """把 status/preview 里的库比对与冲突裁决收进视图状态（合同 §1/§2）。
@@ -2381,7 +2662,7 @@ class BibAiAssistView:
         if "conflicts" in payload:
             self.conflicts = parse_conflicts(payload)
         engine_decisions = parse_decisions(payload)
-        if engine_decisions:
+        if engine_decisions and not (callable(self._initial_call) and self._preview_dirty):
             self.decisions.update(engine_decisions)
         revision = _int_of(payload.get("preview_revision"), self.preview_revision)
         if revision and revision != self.preview_revision:
@@ -2390,6 +2671,8 @@ class BibAiAssistView:
     def _set_review_notes(self, payload: dict) -> None:
         notes = [str(note) for note in payload.get("notes") or []]
         category_results = payload.get("category_results") or {}
+        if "category_results" in payload:
+            self._category_reports = dict(category_results)
         counts = payload.get("categories") or {}
         status_labels = {
             "completed": "AI 报告已执行",
@@ -2431,6 +2714,8 @@ class BibAiAssistView:
             return rows
         for item_id, label in self._text_items.items():
             def change(e, item=item_id):
+                if self.running:
+                    return
                 if e.control.value:
                     self._skip_items.discard(item)
                 else:
@@ -2469,6 +2754,7 @@ class BibAiAssistView:
         self.work_dir = work
         self.phase = "preparing"
         self.running = True
+        self._initial_operation = "正在生成任务书…"
         self._refresh()
         expected_id, taskbook = "", ""
         if initial:
@@ -2512,7 +2798,9 @@ class BibAiAssistView:
             return
         self.task_id = expected_id
         self.taskbook_path = taskbook
-        self._receive_status(status)
+        if not self._receive_status(status):
+            self._refresh()
+            return
         self._ok()
         self._remember_task()
         self._notify("任务书已就绪")
@@ -2576,6 +2864,9 @@ class BibAiAssistView:
         Key 只走环境（`env_for_run`），**不进 argv / 任务书 / 日志**；失败保留已取得的
         部分结果、不自动重试；成功也只是「结果已落盘」，仍需 import/preview 后才谈采纳。
         """
+        initial = callable(self._initial_call)
+        if initial and self.running:
+            return
         if self.channel != "api":
             self._fail("直接请求", "先切到「直接调 API」通道（Chat 通道请复制任务书）")
             self._refresh()
@@ -2595,21 +2886,35 @@ class BibAiAssistView:
         if call is None:
             self._refresh()
             return
+        identity = self._initial_identity() if initial else None
         self.running = True
+        self._initial_operation = "正在请求 API…"
         self.error = ""
         self.notice = ""
         self._refresh()
         if self._r3:
             payload = await self._run_r3("request", call, "直接请求")
+            if initial and not self._same_initial_task(identity):
+                return
             if not payload:
                 self._refresh()
                 return
             self.result_path = str(payload.get("reply_path") or payload.get("reply") or "")
-            self._clear_preview()
+            imported = payload.get("imported")
+            same_reply = initial and isinstance(imported, dict) and imported.get("idempotent") is True
+            if not same_reply:
+                if initial:
+                    self._clear_initial_reply_review()
+                    if isinstance(imported, dict):
+                        self._set_review_notes(imported)
+                else:
+                    self._clear_preview()
+                self.phase = "waiting"
             self._ok()
             self._has_active_reply = True
-            self.phase = "waiting"
-            self.notice = "模型结果已取回，检查后可生成拟应用结果。"
+            self._initial_open_stage = ""
+            self.notice = ("同一份回件，已保留当前检查结果。" if same_reply else
+                           "模型结果已取回，检查后可生成拟应用结果。")
             self.imported = True
             self._refresh()
             return
@@ -2629,12 +2934,46 @@ class BibAiAssistView:
         self._mark("bib_ai_request_ok", chars=len(self.log))
         self._refresh()
 
+    def _begin_external_import(self, expected: tuple) -> None:
+        if self.running or expected != self._initial_action_context():
+            return
+        if not self.task_id or self.phase == "applied":
+            return
+        if self._external_import_draft is None:
+            self._external_import_draft = (self.result_path, self.body_text, self._initial_open_stage,
+                                           self.error, self.notice)
+        self.result_path = ""
+        self.body_text = ""
+        self.error = ""
+        self.notice = ""
+        self._initial_open_stage = "external"
+        self._refresh()
+
+    def _cancel_external_import(self) -> None:
+        if self.running or self._external_import_draft is None:
+            return
+        (self.result_path, self.body_text, self._initial_open_stage,
+         self.error, self.notice) = self._external_import_draft
+        self._external_import_draft = None
+        self._refresh()
+
     def _confirm_import(self, source_kind: str) -> None:
         identity = (self.work_dir, self.task_id, self.result_path, self.body_text)
         external = source_kind == "complete_external"
+        initial_identity = self._initial_identity() if callable(self._initial_call) else None
+
+        async def import_current() -> None:
+            if (initial_identity != self._initial_identity()
+                    or identity != (self.work_dir, self.task_id, self.result_path, self.body_text)):
+                self._fail("导入结果", "任务或回件已变化，请重新确认")
+                self._refresh()
+                return
+            await self.import_result(source_kind=source_kind, replace_active=True)
 
         def import_confirmed() -> None:
-            if identity == (self.work_dir, self.task_id, self.result_path, self.body_text):
+            if initial_identity is not None:
+                self._do(import_current)
+            elif identity == (self.work_dir, self.task_id, self.result_path, self.body_text):
                 self._do(lambda: self.import_result(source_kind=source_kind, replace_active=True))
 
         self._confirm(title="采用完整外部 Bib" if external else "替换活动回复",
@@ -2669,25 +3008,37 @@ class BibAiAssistView:
         if call is None:
             self._refresh()
             return
+        initial = callable(self._initial_call)
+        identity = self._initial_identity() if initial else None
         self.running = True
+        self._initial_operation = "正在读取回件…"
         self.error = ""
         self._refresh()
         if self._r3:
             payload = await self._run_r3("import", call, "导入结果")
+            if initial and not self._same_initial_task(identity):
+                return
             if payload:
-                self._clear_preview()
-                self._preview_dirty = False
-                self._skip_items.clear()
-                self._text_items.clear()
+                same_reply = initial and payload.get("idempotent") is True
+                if not same_reply:
+                    if initial:
+                        self._clear_initial_reply_review()
+                    else:
+                        self._clear_preview()
+                        self._preview_dirty = False
+                        self._skip_items.clear()
+                        self._text_items.clear()
+                    self.phase = "waiting"
+                    self._set_review_notes(payload)
                 self._ok()
                 self.imported = True
                 self._has_active_reply = True
-                self.phase = "waiting"
+                self._initial_open_stage = ""
+                self._external_import_draft = None
                 self.notice = ("结果已导入，回复身份未验证。请生成拟应用结果。"
                                if payload.get("identity_status") == "unverified" else
                                "结果已导入，请生成拟应用结果。")
-                self._set_review_notes(payload)
-                self._notify("结果已导入")
+                self._notify("同一份回件，已保留当前检查结果。" if same_reply else "结果已导入")
             self._refresh()
             return
         code = await self._run(call)
@@ -2718,6 +3069,11 @@ class BibAiAssistView:
 
     async def preview(self) -> None:
         """生成拟应用结果（采纳范围在这里生效，每次重新生成 preview_id）。"""
+        initial = callable(self._initial_call)
+        if initial and self.running:
+            return
+        if initial:
+            self._check_parent_task()
         if not self._require("preview_call", "run_call"):
             self._refresh()
             return
@@ -2734,20 +3090,31 @@ class BibAiAssistView:
             self._refresh()
             return
         kwargs = self._call_kwargs()
+        old_preview_id = self.preview_id
+        previous_conflicts = {item["conflict_id"] for item in self.conflicts}
+        identity = self._initial_identity() if initial else None
+        if initial:
+            self._initial_open_stage = "review"
+            self._preview_dirty = self._preview_dirty or bool(old_preview_id)
+            if self.phase in ("preview", "blocked", "stale"):
+                self.imported = True
+                self.phase = "waiting"
         if self._r3:
             # 预览只消费已登记者，绝不隐式再导入路径上的内容。
             kwargs["reply"] = ""
             self._clear_preview()
-        old_preview_id = self.preview_id
         call = self._build_call("preview_call", kwargs)
         if call is None:
             self._refresh()
             return
         self.running = True
+        self._initial_operation = "正在生成拟应用结果…"
         self.error = ""
         self._refresh()
         if self._r3:
             payload = await self._run_r3("preview", call, "生成拟应用结果", blocked_ok=True)
+            if initial and not self._same_initial_task(identity):
+                return
             if payload:
                 self.preview_id = str(payload.get("preview_id") or "")
                 self.blocked = [str(item) for item in payload.get("blocked") or []]
@@ -2765,10 +3132,17 @@ class BibAiAssistView:
                 else:
                     notes = self._review_notes
                     status = await self._read_status(self.work_dir)
+                    if initial and not self._same_initial_task(identity):
+                        return
                     if (status and status.get("task_id") == self.task_id
                             and status.get("preview_id") == self.preview_id):
                         self._preview_dirty = False
-                        self._receive_status(status)
+                        if not self._receive_status(status):
+                            self._refresh()
+                            return
+                        if initial:
+                            new_conflicts = {item["conflict_id"] for item in self.conflicts} - previous_conflicts
+                            self._initial_open_stage = "review" if new_conflicts else ""
                         self._review_notes = list(dict.fromkeys(notes + self._review_notes))
                         self.notice = "拟应用结果已生成。"
                         self._ok()
@@ -2812,8 +3186,85 @@ class BibAiAssistView:
                    has_preview=bool(self.preview_id))
         self._refresh()
 
+    @staticmethod
+    def _conversion_final_dir(status: dict) -> str:
+        conversion = status.get("conversion") or {}
+        return str(conversion.get("final_dir") or "").strip()
+
+    def _initial_identity(self) -> tuple:
+        return (self.request_seq, self.task_id, self.work_dir,
+                os.path.realpath(self.work_dir) if self.work_dir else "",
+                self.page.ai_initial_paths() if callable(self._initial_call) else None)
+
+    def _initial_action_context(self) -> tuple:
+        """把按钮与所展示的任务、回件及预览绑定。"""
+        return (self._initial_identity(), self._reply_revision, self.phase,
+                self.preview_id, self.preview_revision, self.candidate_bib,
+                self._original_final_dir, self._final_dir, self.backup,
+                self._initial_open_stage)
+
+    def _same_initial_task(self, expected: tuple) -> bool:
+        self._check_parent_task()
+        if expected == self._initial_identity():
+            return True
+        self.running = False
+        self._refresh()
+        return False
+
     async def deliver_original(self) -> None:
-        await self._deliver(use_original=True)
+        if self.running or self._original_dialog in C._open_dialogs:
+            return
+        self._check_parent_task()
+        if not (self.task_id and self.work_dir and self._original_final_dir) or self.phase == "applied":
+            self._fail("按原稿交付", "请刷新状态以取得本次任务的最终输出目录")
+            self._refresh()
+            return
+        identity = self._initial_identity()
+        final = self._original_final_dir
+        preview_inputs = (self.phase, self.preview_id, self.accept_scope(),
+                          self.decision_scope(), set(self._skip_items))
+        labels = [label for key, label in CATEGORIES if CATEGORY_MAP[key] in self.execute_scope()]
+        skipped = "、".join(labels) or "本次任务的 AI 结果"
+
+        def unchanged() -> bool:
+            return (identity == self._initial_identity() and final == self._original_final_dir
+                    and preview_inputs == (self.phase, self.preview_id, self.accept_scope(),
+                                           self.decision_scope(), self._skip_items))
+
+        def changed() -> None:
+            self._fail("按原稿交付", "任务或交付上下文已变化，请返回检查后重新确认")
+            self._refresh()
+
+        async def confirm_delivery() -> None:
+            if self.running:
+                return
+            if not unchanged():
+                changed()
+                return
+            self.running = True
+            self._initial_operation = "正在核对交付任务…"
+            self._refresh()
+            status = await self._read_status(identity[3])
+            if not unchanged():
+                changed()
+                return
+            if status is None:
+                self.running = False
+                self._refresh()
+                return
+            if (status.get("task_id") != identity[1] or self._conversion_final_dir(status) != final
+                    or phase_from_engine(status.get("phase", "")) == "applied"):
+                changed()
+                return
+            self.running = False
+            await self._deliver(use_original=True, confirmed_work_dir=identity[3])
+
+        self._original_dialog = S.danger_confirm(
+            self._flet(), self.t, title="按原稿交付", message=f"最终输出目录\n{final}",
+            impact=f"本次交付将跳过以下 AI 结果：{skipped}。引擎将按冻结的初排设置交付。",
+            cancel_label="返回检查", cancel_autofocus=True, confirm_label="确认按原稿交付",
+            on_confirm=lambda: self._do(confirm_delivery),
+        )
 
     def _log_line(self, text: str) -> None:
         """把一行写进宿主底部「运行日志」（合同 §4.3），并留在 `delivery_log` 里。
@@ -2868,7 +3319,7 @@ class BibAiAssistView:
             self._fail("打开交付目录", f"{type(exc).__name__}: {exc}")
         self._refresh()
 
-    async def _deliver(self, *, use_original: bool = False) -> None:
+    async def _deliver(self, *, use_original: bool = False, confirmed_work_dir: str = "") -> None:
         if self.running:
             return
         self._check_parent_task()
@@ -2878,63 +3329,82 @@ class BibAiAssistView:
             self._refresh()
             return
         call = self._build_call("deliver_call", {
-            "work_dir": self.work_dir, "preview_id": "" if use_original else self.preview_id,
+            "work_dir": confirmed_work_dir or self.work_dir,
+            "preview_id": "" if use_original else self.preview_id,
             "use_original": use_original,
         })
         if not call:
             self._refresh()
             return
+        identity = self._initial_identity()
         self.running = True
+        self._initial_operation = "正在交付初排…"
         self.error = ""
         self.delivery_ok = False
         self.delivery_compile = ""
         self.delivery_error = ""
         self._refresh()
         payload = await self._run_r3("deliver", call, "完成初排转换")
+        if not self._same_initial_task(identity):
+            return
         if payload:
-            await self._finish_delivery(payload, use_original=use_original)
+            await self._finish_delivery(payload, use_original=use_original, identity=identity)
         else:
-            # 失败也写日志：任务号 + 编译状态（引擎没报告就如实说）+ 失败原因。
-            self.delivery_ok = False
-            self.delivery_compile = "引擎未报告"
-            self.delivery_error = str(self.error or "").strip()
-            self._log_delivery(task_id=self.task_id, final="", compile_text="引擎未报告",
-                               ok=False, error=self.delivery_error,
-                               use_original=use_original)
-            self._mark("bib_ai_deliver_failed", task_id=self.task_id,
-                       error=self.delivery_error)
+            from services import engine_bridge as EB
+
+            receipt = EB.parse_json_document("\n".join(self.log)) or {}
+            compile_text = compile_status_text(receipt) if receipt.get("op") == "deliver" else "引擎未报告"
+            self._record_delivery_failure(self.error, compile_text=compile_text, use_original=use_original)
         self._refresh()
 
-    async def _finish_delivery(self, payload: dict, *, use_original: bool) -> None:
-        """交付成功后定状态 + 写日志；final 与状态不同源就不许报成功（§4.3）。"""
-        task_id = str(payload.get("task_id") or self.task_id or "")
+    def _record_delivery_failure(self, error: str, *, compile_text: str, use_original: bool) -> None:
+        self.delivery_ok = False
+        self.delivery_compile = compile_text
+        self.delivery_error = error
+        self._log_delivery(task_id=self.task_id, final="", compile_text=compile_text,
+                           ok=False, error=error, use_original=use_original)
+        self._mark("bib_ai_deliver_failed", task_id=self.task_id, error=error)
+
+    def _delivered_output(self, payload: dict) -> str:
+        if (payload.get("delivered") is not True or payload.get("undone")
+                or payload.get("task_id") not in (None, "", self.task_id)):
+            return ""
         final = str(payload.get("final") or payload.get("final_dir") or "").strip()
+        if self._original_final_dir and final != self._original_final_dir:
+            return ""
+        return final if os.path.isdir(final) else ""
+
+    async def _finish_delivery(self, payload: dict, *, use_original: bool,
+                               identity: tuple | None = None) -> None:
+        identity = identity or self._initial_identity()
+        task_id = self.task_id
+        final = self._delivered_output(payload)
+        if (not final and identity[3] and payload.get("delivered") is not False
+                and payload.get("task_id") in (None, "", task_id)):
+            status = await self._read_status(identity[3])
+            if not self._same_initial_task(identity):
+                return
+            if status and status.get("task_id") == task_id:
+                receipt = status.get("delivery") or {}
+                final = self._delivered_output(receipt)
+                if final:
+                    payload = receipt
         compile_text = compile_status_text(payload)
         if not final:
-            # 引擎只在 payload 里没给时，才去只读 status 里再问一次（不猜路径）。
-            status = await self._read_status(self.work_dir) if self.work_dir else None
-            if status:
-                delivery = status.get("delivery") or {}
-                final = str(delivery.get("final") or delivery.get("final_dir") or "").strip()
-                if final and str(status.get("task_id") or task_id) != task_id:
-                    final = ""
-        if not final:
-            self.delivery_ok = False
-            self.delivery_compile = compile_text
-            self._log_delivery(task_id=task_id, final="", compile_text=compile_text,
-                               ok=False, error="引擎没有返回最终交付路径",
-                               use_original=use_original)
-            self._fail("完成初排转换", "引擎没有返回最终交付路径")
-            self._mark("bib_ai_deliver_failed", task_id=task_id,
-                       error="引擎没有返回最终交付路径")
+            reason = str(payload.get("error") or self.error or "引擎没有返回最终交付路径或匹配的成功记录")
+            self._record_delivery_failure(reason, compile_text=compile_text, use_original=use_original)
+            self._fail("完成初排转换", reason)
             return
         self._ok()
         self.delivery_ok = True
+        self._operation_receipt = dict(payload)
         self.delivery_compile = compile_text
         self.delivery_error = ""
         self.phase = "applied"
         self.undone = False
+        self.backup = str(payload.get("backup") or "")
         self._final_dir = final
+        self._clear_comparison()
         self.notice = "初排已交付（未采纳 AI）" if use_original else "初排已交付"
         self._log_delivery(task_id=task_id, final=final, compile_text=compile_text,
                            ok=True, use_original=use_original)
@@ -2962,19 +3432,54 @@ class BibAiAssistView:
         if call is None:
             self._refresh()
             return
+        context = self._initial_action_context()
+        work = self._work_dir_path()
         self.running = True
         self.error = ""
         self._refresh()
         if self._r3:
-            payload = await self._run_r3("apply", call, "并入目标 Bib")
+            payload = await self._run_r3("apply", call, "写入所选目标")
+            if not self._same_initial_task(context[0]):
+                return
+            if context != self._initial_action_context():
+                self.running = False
+                self._refresh()
+                return
             if payload:
-                self._ok()
-                self.phase = "applied"
-                self.undone = False
-                self.backup = str(payload.get("backup") or "")
-                self.notice = ("已并入目标 Bib 与正文副本" if payload.get("text_target") else
-                               "已并入目标 Bib")
-                self._notify(self.notice)
+                if _int_of(payload.get("wrote"), -1) > 0:
+                    self._ok()
+                    self._operation_receipt = dict(payload)
+                    self.phase = "applied"
+                    self.undone = False
+                    self.backup = str(payload.get("backup") or "")
+                    self.notice = self._library_completion_title()
+                elif payload.get("wrote") == 0:
+                    self._ok()
+                    self._operation_receipt = dict(payload)
+                    self.notice = "本次未写入文件。" + str(payload.get("note") or "")
+                else:
+                    # 调用成功不等于写入成功；身份不一致时不接纳任何回填字段。
+                    status = await self._read_status(work)
+                    if not self._same_initial_task(context[0]):
+                        return
+                    if context != self._initial_action_context():
+                        self.running = False
+                        self._refresh()
+                        return
+                    if status and status.get("task_id") != self.task_id:
+                        self._clear_task()
+                        self._fail("核实写入状态", "工作区中的任务身份已变化，请重新选择任务")
+                    elif status and status.get("task_id") and status.get("phase"):
+                        self._ok()
+                        self._operation_receipt = dict(payload)
+                        if not self._receive_status(status):
+                            self._refresh()
+                            return
+                        self.notice = "引擎未报告写入数量，请核对任务详情与结果文件。"
+                    else:
+                        self._fail("核实写入状态", "未能确认本次写入状态，请刷新任务后核对。")
+                if not self.error:
+                    self._notify(self.notice)
             self._refresh()
             return
         code = await self._run(call)
@@ -2999,6 +3504,9 @@ class BibAiAssistView:
         if not self._require("undo_call", "run_call"):
             self._refresh()
             return
+        initial = callable(self._initial_call)
+        if initial and self.running:
+            return
         if not self.can_undo():
             self._fail("撤销", "本次没有可撤销的写入")
             self._refresh()
@@ -3007,14 +3515,20 @@ class BibAiAssistView:
         if call is None:
             self._refresh()
             return
+        identity = self._initial_identity() if initial else None
         self.running = True
+        self._initial_operation = "正在撤销本次交付…"
         self.error = ""
         self._refresh()
         if self._r3:
             payload = await self._run_r3("undo", call, "撤销本次写入")
+            if initial and not self._same_initial_task(identity):
+                return
             if payload:
                 self._ok()
                 self.undone = True
+                self.delivery_ok = False
+                self._initial_open_stage = ""
                 self.phase = "stale"
                 self._clear_preview()
                 self._final_dir = ""
@@ -3040,15 +3554,22 @@ class BibAiAssistView:
 
     async def refresh_status(self) -> None:
         """刷新状态：读引擎报告的阶段/计数/阻断，不猜、不补。"""
+        initial = callable(self._initial_call)
+        if initial and self.running:
+            return
         if self._r3:
             work = self._work_dir_path()
             if not work:
                 self._fail("刷新状态", "请先生成任务书")
                 self._refresh()
                 return
+            identity = self._initial_identity() if initial else None
             self.running = True
+            self._initial_operation = "正在刷新任务状态…"
             self._refresh()
             status = await self._read_status(work)
+            if initial and not self._same_initial_task(identity):
+                return
             if status and status.get("phase") and status.get("task_id"):
                 expected = str(status["task_id"])
                 if self.task_id and self.task_id != expected:
@@ -3057,9 +3578,9 @@ class BibAiAssistView:
                 else:
                     self.task_id = expected
                     self.work_dir = work
-                    self._receive_status(status)
-                    self._ok()
-                    self._task(self._prefetch_taskbook)
+                    if self._receive_status(status):
+                        self._ok()
+                        self._task(self._prefetch_taskbook)
             elif status:
                 self._fail("刷新状态", "引擎未返回任务身份与阶段")
             self.running = False
@@ -3121,6 +3642,7 @@ class BibAiAssistView:
         # 候选路径以引擎为唯一来源：这次没给就**清空**（不许沿用上一次的旧路径，
         # 否则「对比」按钮会对着一个已经作废的候选打开 diff）。
         self.candidate_bib = str(status.get("candidate_bib") or "")
+        self._candidate_bib_sha = str(status.get("candidate_bib_sha256") or "")
         if "blocked" in status:
             self.blocked = status["blocked"]
         if status.get("stale"):
@@ -3231,6 +3753,327 @@ class BibAiAssistView:
             self._refresh()
 
     # ── 布局 ───────────────────────────────────────────────────────────
+    def _workspace_width(self) -> float:
+        """估算内容宽度，断点须扣掉导航与页面边距。"""
+        width = self._build_width or self._design_width()
+        return max(240.0, width - (220.0 if width >= 720 else 56.0) - 64.0)
+
+    def _disclosure(self, key: str, title: str, controls: list[ft.Control]) -> ft.Control:
+        def changed(e) -> None:
+            self._disclosure_open[key] = str(getattr(e, "data", "")).lower() == "true"
+        tile = ft.ExpansionTile(
+            title=C.text(title, self.t, role="body-strong"),
+            expanded=self._disclosure_open.get(key, False),
+            expanded_cross_axis_alignment=ft.CrossAxisAlignment.START,
+            controls_padding=self.t.sp("1"), dense=True,
+            on_change=changed, controls=controls)
+        tile._bib_ai_disclosure = key
+        return tile
+
+    def _initial_stage(self) -> str:
+        """两个生产入口共用的展示阶段；有效候选仍在审阅阶段。"""
+        if self.phase == "applied":
+            return "done"
+        if not self.task_id:
+            return "prepare"
+        if self._initial_open_stage in ("waiting", "external"):
+            return "waiting"
+        if (self._has_active_reply or self.imported or self._preview_dirty
+                or self.phase in ("preview", "blocked", "stale")):
+            return "review"
+        return "waiting"
+
+    def _initial_library_summary(self) -> str:
+        differences = f"{len(self.conflicts)} 项字段差异"
+        if self.library.get("checked"):
+            return f"匹配 {self.library['matched']} 条文献 · {differences}"
+        if self.conflicts:
+            return " · ".join([*library_lines(self.library), differences])
+        if not self.library or str(self.library.get("skipped_reason") or "").startswith("尚未查库"):
+            return "尚未查库，生成拟应用结果后显示查库结论。"
+        return " · ".join(library_lines(self.library))
+
+    def _library_completion_title(self) -> str:
+        kinds = {str(item.get("kind") or "")
+                 for item in self._operation_receipt.get("writes") or []}
+        if kinds == {"text"}:
+            return "已更新正文副本"
+        if kinds == {"bib"}:
+            return "已更新 Bib"
+        if kinds == {"bib", "text"}:
+            return "已更新 Bib 与正文副本"
+        return "本次处理已完成"
+
+    def _result_location(self) -> str:
+        if callable(self._initial_call):
+            return self._final_dir
+        receipt = self._operation_receipt
+        target = str(receipt.get("target") or self.bib_out or self.target_bib)
+        return os.path.dirname(os.path.abspath(target)) if target else ""
+
+    def _open_result_location(self) -> None:
+        if callable(self._initial_call):
+            self._open_delivery_dir()
+            return
+        path = self._result_location()
+        opener = getattr(self._app(), "open_path", None)
+        if not path or not callable(opener):
+            self._fail("打开结果位置", "结果路径或打开路径服务不可用")
+        else:
+            try:
+                opener(path)
+            except Exception as exc:  # noqa: BLE001 - 打开失败应可见
+                self._fail("打开结果位置", f"{type(exc).__name__}: {exc}")
+        self._refresh()
+
+    def _adoption_history(self) -> list[ft.Control]:
+        """只读历史，不构造可编辑采纳/裁决/回件控件。"""
+        t = self.t
+        receipt = self._operation_receipt
+        rows: list[ft.Control] = []
+        for item in receipt.get("adopted") or []:
+            category = next((label for key, label in CATEGORIES
+                             if CATEGORY_MAP[key] == item.get("action")), str(item.get("action") or "采用"))
+            rows.append(C.text(f"{category} · {item.get('item_id') or '引擎未报告编号'}",
+                               t, "body", selectable=True))
+        for item in receipt.get("deferred") or []:
+            rows.append(C.text(f"待人工确认 · {item.get('item_id') or ''} · {item.get('reason') or ''}",
+                               t, "body", selectable=True))
+        for item in self.conflicts:
+            choice = ("original" if receipt.get("use_original") or not self.accept.get("verify")
+                      else decision_for(item, self.decisions))
+            label = dict(DECISION_CHOICES).get(choice, choice)
+            rows.append(C.text(
+                f"{item.get('key') or '（无条目键）'} · {item.get('field') or '（无字段）'} · "
+                f"{label}：{item.get(choice) or '（空）'}", t, "body", selectable=True))
+        if not rows:
+            rows.append(self._caption("引擎未提供逐项采用记录。"))
+        return rows
+
+    def _completion_content(self) -> list[ft.Control]:
+        t = self.t
+        initial = callable(self._initial_call)
+        receipt = self._operation_receipt
+        rows: list[ft.Control] = []
+        if initial:
+            if self.delivery_ok:
+                rows.append(C.text(os.path.basename(self._final_dir) or self._final_dir,
+                                   t, role="body-strong", selectable=True))
+                if receipt.get("use_original") is True:
+                    rows.append(self._caption("按原稿交付，未采纳 AI 建议。"))
+                elif "n_applied" in receipt:
+                    rows.append(self._caption(f"实际采纳 {receipt['n_applied']} 项建议"))
+                else:
+                    rows.append(self._caption("引擎未报告本次采纳数量。"))
+                if receipt.get("deferred"):
+                    rows.append(C.inline_note(
+                        f"另有 {len(receipt['deferred'])} 项保留待人工确认，可展开本次采用详情。", t, "warn"))
+                rows.append(self._caption(f"编译：{self.delivery_compile or '引擎未报告'}"))
+            else:
+                rows.append(C.inline_note("引擎未返回可确认的成功交付。请刷新状态核实。", t, "warn"))
+        else:
+            target = str(receipt.get("target") or self.bib_out or self.target_bib)
+            if target:
+                rows.append(C.text(os.path.basename(target), t, role="body-strong", selectable=True))
+            wrote = _int_of(receipt.get("wrote"), -1)
+            rows.append(self._caption(f"实际写入 {wrote} 个文件" if wrote > 0 else
+                                      "引擎已记录应用完成；未报告本次写入数量。"))
+            for item in receipt.get("writes") or []:
+                kind = {"bib": "Bib 文件", "text": "正文副本"}.get(item.get("kind"), "文件")
+                rows.append(C.text(f"{kind} · {item.get('target') or ''}", t, "caption", selectable=True))
+        return rows
+
+    def _initial_parts(self) -> list[ft.Control]:
+        """共享工作区：任务与阶段 → 必要内容 → 唯一主动作 → 渐进披露。"""
+        t = self.t
+        initial = callable(self._initial_call)
+        stage = self._initial_stage()
+        ready = self.can_apply()
+        done = self.phase == "applied"
+        external = self._initial_open_stage == "external" and self._external_import_draft is not None
+        titles = {"prepare": "准备 AI 任务", "waiting": "获取 AI 结果",
+                  "review": "审阅拟应用结果" if ready else "选择要采纳的内容",
+                  "done": ("初排转换已完成" if self.delivery_ok else "核实交付结果")
+                  if initial else self._library_completion_title()}
+        if external:
+            titles["waiting"] = "选择完整外部 Bib 来源"
+        descriptions = {
+            "prepare": "确认文件、处理方式和执行范围，再生成任务书。",
+            "waiting": ("使用本机配置请求 API，取回结果后再审阅。" if self.channel == "api" else
+                        "先把任务书交给 AI，再将完整回复粘贴回来。"),
+            "review": ("检查差异与采用值，确认后写入结果。" if ready else
+                       "默认保留原稿；生成拟应用结果不会改动目标文件。"),
+            "done": "本次处理已经结束，可打开结果或查看采用记录。",
+        }
+        if external:
+            descriptions["waiting"] = "重新选择完整 Bib 文件或粘贴其全部正文；本步不会使用之前隐藏的 AI 回复。"
+        labels = (("prepare", "准备任务"), ("waiting", "获取结果"),
+                  ("review", "审阅采纳"), ("done", "完成"))
+        step_controls = []
+        narrow = self._workspace_width() < 520
+        for index, (key, label) in enumerate(labels, 1):
+            text = C.text(label, t, role="body-strong" if key == stage else "caption",
+                          color=t.palette.accent if key == stage else t.palette.text_muted)
+            text._initial_stage_heading = True
+            step_controls.append(ft.Container(
+                # False still becomes Expanded(0) in Flet; Wrap must omit expand.
+                expand=None if narrow else True, width=t.px(130) if narrow else None,
+                padding=t.sp("1"), border_radius=t.radius("control"),
+                bgcolor=t.palette.surface_2 if key == stage else None,
+                content=ft.Row(spacing=t.sp("half"), controls=[
+                    C.text(str(index), t, "caption", t.palette.text_muted), text])))
+        context_path = (self._task_inputs()[0] if initial else self.target_bib) or "未选择文件"
+        context = os.path.basename(context_path)
+        heading = C.text(titles[stage], t, role="section")
+        heading._bib_ai_status = True
+        body: list[ft.Control] = [heading, self._caption(descriptions[stage])]
+        if self._bridge_missing:
+            body.append(C.inline_note(bridge_error_text(self._bridge_missing), t, "error"))
+        if self.error or self.delivery_error:
+            body.append(C.inline_note(self.error or self.delivery_error, t, "error"))
+        if self.running:
+            body.append(C.inline_note(self._initial_operation or "正在处理任务…", t, "info"))
+        elif self.blocked and not done:
+            body.append(C.inline_note("暂不能写入：" + "；".join(self.blocked), t, "warn"))
+        elif self._preview_dirty:
+            body.append(C.inline_note("已改选，需重新生成拟应用结果后才能交付。", t, "info"))
+        elif self.undone:
+            body.append(C.inline_note("已撤销本次写入；重新生成拟应用结果后可再次处理。", t, "info"))
+        elif self.notice.startswith("本次未写入") or self.notice.startswith("引擎未报告写入"):
+            body.append(C.inline_note(self.notice, t, "info"))
+        primary = ""
+        label = ""
+        disabled = False
+        secondary: list[ft.Control] = []
+        if stage == "prepare":
+            body.extend([self._paths(compact=True), self._channel_row(), self._execute_section()])
+            primary, label = "prepare", "生成任务书"
+        elif stage == "waiting":
+            if external:
+                body.extend([
+                    C.inline_note("完整外部 Bib 将成为合并基础，未出现在其中的旧条目可能省略。", t, "warn"),
+                    self._body_paste_row(label="完整 Bib 正文", hint="粘贴完整外部 Bib 的全部内容，不是之前的 AI 子集回复。"),
+                    self._disclosure("external_file", "选择完整 Bib 文件（替代粘贴）", [
+                        self._result_picker(label="完整外部 Bib 文件")]),
+                ])
+                primary, label = "import_external", "检查并采用完整 Bib…"
+                secondary.append(self._button("cancel_external_import", label="取消，返回当前任务"))
+            elif self.channel == "api":
+                body.append(C.inline_note("请求可能产生费用；失败后由你手动重试。", t, "warn"))
+                primary, label = "request", "手动重试 API" if self.error else "开始 API 核实"
+            else:
+                body.extend([self._copy_task_button(), self._body_paste_row(),
+                             self._disclosure("reply_file", "从文件读取结果（替代粘贴）", [self._result_picker()])])
+                primary, label = "import", "读取并检查结果"
+            if self._has_active_reply and not external:
+                secondary.append(self._button("confirm_stage", label="返回当前结果"))
+        elif stage == "review":
+            body.extend([self._accept_section(),
+                         C.inline_note(self._initial_library_summary(), t,
+                                       "info" if self.library.get("checked") else "warn"),
+                         *self._conflict_section()])
+            if self._review_notes:
+                body.append(self._disclosure("review_notes", "各项检查的执行情况", [
+                    self._caption(note) for note in self._review_notes]))
+            if ready:
+                primary, label = "apply", ("完成初排转换" if initial else "并入目标 Bib")
+                secondary.append(self._diff_button())
+                if self._compare_paths:
+                    paths = self._compare_paths
+                    copy_btn = C.secondary_button("复制两份文件路径", lambda e: self._copy_compare_paths(paths), t)
+                    self._action_buttons["copy_compare"] = copy_btn
+                    secondary.append(copy_btn)
+                    body.append(self._caption("在 VS Code 中修改对比副本不会改变交付。"))
+                    body.append(self._caption(self._compare_feedback))
+            else:
+                primary = "preview"
+                label = "重新生成拟应用结果" if self._preview_dirty or self.error or self.blocked or self.undone else "生成拟应用结果"
+        else:
+            body.extend(self._completion_content())
+            if not initial or self.delivery_ok:
+                primary, label = "open_final", "打开交付目录" if initial else "打开结果位置"
+                disabled = not os.path.isdir(self._result_location())
+        self._primary_slot = (stage, primary)
+        self._workspace_action_bar = None
+        if primary:
+            consequence = ("确认后由引擎写入最终目录；源稿不变。" if initial else
+                           "确认后由引擎备份并写入目标文件。") if primary == "apply" else (
+                           "仅生成候选，不写入目标文件。" if primary == "preview" else "")
+            action_buttons = [
+                self._button(primary, primary=True, label=label, disabled=disabled), *secondary]
+            uniform_initial_actions = initial and primary == "apply"
+            if uniform_initial_actions:
+                # Set the actual buttons, not just surrounding boxes; keep all
+                # ready-stage borders equal through wrapping and user zoom.
+                for button in action_buttons:
+                    button.width = t.px(184)
+                    button.height = t.px(36)
+                    button.style.visual_density = ft.VisualDensity.STANDARD
+            actions = ft.Column(spacing=t.sp("half"), controls=[
+                ft.Row(wrap=True, spacing=t.sp("1"),
+                       run_spacing=t.sp("1") if uniform_initial_actions else None,
+                       controls=action_buttons),
+                *([self._caption(consequence)] if consequence else []),
+            ])
+            actions._bib_ai_action_bar = True
+            self._workspace_action_bar = actions
+            body.append(actions)
+        work = ft.Container(
+            content=ft.Column(spacing=t.sp("1"), controls=body),
+            border=C.box(t), border_radius=t.radius("control"), padding=t.sp("2"))
+        work._bib_ai_stage = stage
+        self._workspace_body = work.content
+        self._stage_boxes = {stage: work}
+        result: list[ft.Control] = [
+            ft.Row(wrap=narrow, spacing=t.sp("half"), controls=step_controls),
+            C.text(f"{context} · {'Chat' if self.channel == 'chat' else 'API'}", t,
+                   "caption", t.palette.text_muted, selectable=True), work]
+        if done:
+            result.append(self._disclosure("adoption_history", "本次采用详情（只读）", self._adoption_history()))
+        other = []
+        if self.work_dir:
+            other.extend([self._button("refresh"), self._button("restart")])
+            if not done:
+                if self._has_active_reply and stage != "waiting":
+                    other.insert(0, self._button("replace_reply", label="替换 AI 结果…"))
+                if initial and self.task_id and self._original_final_dir:
+                    other.insert(0, self._button("deliver_original"))
+                if stage == "waiting" and not external:
+                    other.append(self._button("use_chat" if self.channel == "api" else "use_api",
+                        label="改用 Chat 获取结果" if self.channel == "api" else "改用 API 获取结果"))
+                if self.purpose == "library" and not external:
+                    expected = self._initial_action_context()
+                    other.append(C.secondary_button("采用完整外部 Bib…",
+                        lambda e: self._begin_external_import(expected), t, disabled=self.running))
+        if done and self.can_undo():
+            other.append(self._button("undo", label="撤销本次交付…" if initial else "撤销本次写入…"))
+            other.append(self._caption("撤销将恢复本次交付前的目录状态。" if initial else
+                                       "撤销将把写入的文件恢复到本次处理前。"))
+        if other:
+            result.append(self._disclosure("other_actions", "其他操作", [ft.Row(wrap=True, controls=other)]))
+        technical = []
+        for caption, value in (("任务编号", self.task_id), ("任务目录", self.work_dir),
+                               ("任务书", self.taskbook_path), ("输入文件", context_path),
+                               ("结果位置", self._result_location() if done else ""),
+                               ("最终输出目录", self._original_final_dir),
+                               ("库文件", self.library.get("path")),
+                               ("库 SHA-256", self.library.get("sha256")),
+                               ("冻结 Bib", self._frozen_bib_path),
+                               ("冻结 SHA-256", self._frozen_bib_sha),
+                               ("拟应用结果", self.candidate_bib), ("备份", self.backup),
+                               ("引擎阶段", self.phase), ("引用键数", str(self.key_count)),
+                               ("文献条目数", str(self.entry_count))):
+            if value:
+                technical.append(C.text(f"{caption} · {value}", t, "caption", selectable=True))
+        if self._compare_paths:
+            technical.extend(C.text(path, t, "caption", selectable=True) for path in self._compare_paths)
+        if technical:
+            result.append(self._disclosure("task_details", "任务详情", technical))
+        if self.log:
+            result.append(self._disclosure("task_log", "处理日志", [
+                C.text("\n".join(self.log), t, "caption", selectable=True)]))
+        return result
+
     def _parts(self, *, compact: bool = False) -> list[ft.Control]:
         """本页所有内容区控件（build 与 body_only 共用，避免两套顺序漂移）。
 
@@ -3251,6 +4094,13 @@ class BibAiAssistView:
         # 页面上的旧控件（点了没反应），列表还会无限增长。四个阶段块共用这次清空。
         for key in self._refs:
             self._refs[key] = []
+        if self._r3:
+            self._action_buttons.clear()
+            self._conflict_groups.clear()
+            self._execute_boxes.clear()
+            self._accept_boxes.clear()
+            self._paste_field = None
+            return self._initial_parts()
         self._primary_slot = primary_slot(self.phase, self.channel, self.imported)
         if self._r3 and self.phase in ("idle", "preparing"):
             self._primary_slot = ("prepare", "prepare")
@@ -3277,18 +4127,26 @@ class BibAiAssistView:
         return ft.Column(spacing=t.sp("1"), scroll=C.scrollbar(t), expand=True,
                          controls=self._parts())
 
-    def body_only(self, *, compact: bool = False) -> ft.Control:
-        """**无壳内嵌**：只返回内容区，不包 `page_shell`。
+    def body_only(self, *, compact: bool = False, pinned_actions: bool = False) -> ft.Control:
+        """无壳内容。生产宿主用有界工作区固定唯一动作条。
 
-        给「初排转换」/「回读校验」页复用。`build()` 会包一层页头；直接把它嵌进
-        别的页面会多出一个页头，并撞上既有页面的计数钉子（只能有 1 个
-        FilledButton、不许出现 Card）。这里刻意不加滚动容器——外层页面已经在滚。
-
-        `compact=True`（两个生产入口都传）按 §3/§4 只留目标 Bib、处理方式、阶段、
-        主动作与可选关联 TeX；`compact=False` 是兼容默认，保留全套内容区供
-        本视图单测逐项钉子（路径 kind、六路径 field_ref 等）使用。
+        默认不加滚动，兼容原有嵌入。``pinned_actions=True`` 返回 expand Column：
+        唯一滚动内容在上、当前动作在下；宿主须给有界高度，并撤掉外层纵向滚动。
+        ``compact`` 只控制兼容版路径字段；R3 两入口共享当前阶段与必要输入。
         """
-        return ft.Column(spacing=self.t.sp("1"), controls=self._parts(compact=compact))
+        parts = self._parts(compact=compact)
+        if pinned_actions and self._r3:
+            action_bar = self._workspace_action_bar
+            if action_bar is not None:
+                self._workspace_body.controls.remove(action_bar)
+            content = ft.Column(spacing=self.t.sp("1"), controls=parts,
+                                scroll=C.scrollbar(self.t), expand=True)
+            content._bib_ai_workspace_scroll = True
+            controls = [content]
+            if action_bar is not None:
+                controls.append(ft.Container(padding=self.t.sp("1"), content=action_bar))
+            return ft.Column(spacing=0, expand=True, controls=controls)
+        return ft.Column(spacing=self.t.sp("1"), controls=parts)
 
     def build(self) -> ft.Control:
         self._build_width = self._design_width()
@@ -3307,10 +4165,18 @@ class BibAiAssistView:
                 return
             self._check_parent_task()
             if not callable(self._initial_call):
-                for field in ("target_bib", "tex_path"):
+                fields = ("target_bib",) if self._is_library_page() else ("target_bib", "tex_path")
+                for field in fields:
                     if not getattr(self, field):
                         setattr(self, field, str(self._store_get(f"bib_ai.{field}", "") or ""))
+                self._enforce_library_boundaries()
             stored = self._store_get(self._task_store_key(), {})
+            stored_inputs = stored.get("inputs") if isinstance(stored, dict) else None
+            if (self._is_library_page() and isinstance(stored_inputs, (list, tuple))
+                    and stored_inputs and stored_inputs[0] == self.target_bib
+                    and list(stored_inputs) != self._task_inputs()):
+                self._deactivate_legacy_library_task("任务身份与当前引用库范围不一致")
+                return
             if (isinstance(stored, dict) and not self.task_id and
                     stored.get("inputs") == self._task_inputs()
                     and stored.get("work_dir") and stored.get("task_id")):
@@ -3342,6 +4208,8 @@ class BibAiAssistView:
     def on_resize(self) -> None:
         """宽度跨档时重画一次；同档不动，避免打断输入焦点。"""
         width = self._design_width()
-        if abs(width - self._build_width) < 1e-6:
-            return
-        self._refresh()
+        def band(value):
+            content = max(240.0, value - (220.0 if value >= 720 else 56.0) - 64.0)
+            return (value >= 720, content < 520, content < 600)
+        if band(width) != band(self._build_width):
+            self._refresh()

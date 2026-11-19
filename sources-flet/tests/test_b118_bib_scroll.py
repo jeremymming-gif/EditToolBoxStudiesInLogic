@@ -56,7 +56,13 @@ def test_page_scroll_columns_are_always_on() -> None:
                  "bib_review.py", "bib_query.py", "bib_prefs.py",
                  "bib_fieldfix.py"):
         src = _src(name)
-        assert "C.scrollbar(t)" in src, f"{name} 未接常显条"
+        if name == "bib_normalize.py":
+            # 共享 AI 工作区拥有唯一滚动；外层不再重复套滚动列。
+            assert "body_only(compact=True, pinned_actions=True)" in src
+            shared = _src("bib_ai_assist.py")
+            assert "scroll=C.scrollbar(self.t), expand=True" in shared
+        else:
+            assert "C.scrollbar(t)" in src, f"{name} 未接常显条"
         assert "S.scrollbar(" not in src, f"{name} 仍走 bib 本地旧 helper"
         assert "scroll=ft.ScrollMode.AUTO" not in src, f"{name} 仍有 AUTO 滚动列"
 

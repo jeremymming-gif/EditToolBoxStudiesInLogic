@@ -54,13 +54,29 @@ class WorkflowStateR3(unittest.TestCase):
 
     def test_subset_preserves_undelegated_entries_and_correction_invalidates_preview(self):
         task = self.prepare()
+        self.assertEqual(task.state["context"]["sets"]["T"], ["K1"])
         self.assertTrue(self.import_reply(task.task_id)["ok"])
         preview = w.preview(work_dir=self.work)
         self.assertTrue(preview.ok, preview.blocked)
-        self.assertIn("title={Two}", preview.bib["text"])
-        self.assertIn("title={Changed}", preview.bib["text"])
+        self.assertEqual(preview.bib["text"], self.old)
+        self.assertEqual(self.bib.read_bytes(), self.old.encode("utf-8"))
+        rows = preview.state["conflicts"]
+        self.assertEqual([(row["key"], row["field"]) for row in rows], [("K1", "title")])
+        row = rows[0]
+        self.assertEqual((row["original"], row["reply"], row["default"]),
+                         ("One", "Changed", "original"))
+        selected = w.preview(work_dir=self.work, decisions={row["conflict_id"]: "reply"})
+        self.assertTrue(selected.ok, selected.blocked)
+        self.assertNotEqual(selected.preview_id, preview.preview_id)
+        self.assertIn("title={Changed}", selected.bib["text"])
+        self.assertTrue(selected.bib["text"].endswith('@article{K2, title={Two}}\n'))
+        with self.assertRaises(w.WorkflowError):
+            w.apply(work_dir=self.work, preview_id=preview.preview_id)
         self.assertTrue(self.import_reply(task.task_id, "\nExtra commentary\n")["ok"])
         self.assertIsNone(w.load_state(self.work)["preview"])
+        with self.assertRaises(w.WorkflowError):
+            w.apply(work_dir=self.work, preview_id=selected.preview_id)
+        self.assertEqual(self.bib.read_bytes(), self.old.encode("utf-8"))
 
     def test_unselected_bib_never_writes_even_if_adopted(self):
         task = self.prepare(scope=w.Scope(exec={w.CAT_TYPESET}, adopt={w.CAT_BIB_VERIFY}))
@@ -154,13 +170,34 @@ class WorkflowStateR3(unittest.TestCase):
         task = self.prepare(bib_out=str(path))
         self.assertTrue(self.import_reply(task.task_id)["ok"])
         preview = w.preview(work_dir=self.work)
+        self.assertTrue(preview.ok, preview.blocked)
+        self.assertEqual(preview.bib["text"], self.old)
+        self.assertEqual(self.bib.read_bytes(), self.old.encode("utf-8"))
+        self.assertFalse(path.exists())
+        rows = preview.state["conflicts"]
+        self.assertEqual([(row["key"], row["field"]) for row in rows], [("K1", "title")])
+        row = rows[0]
+        self.assertEqual((row["original"], row["reply"], row["default"]),
+                         ("One", "Changed", "original"))
+        selected = w.preview(work_dir=self.work, decisions={row["conflict_id"]: "reply"})
+        self.assertTrue(selected.ok, selected.blocked)
+        self.assertNotEqual(selected.preview_id, preview.preview_id)
+        self.assertIn("title={Changed}", selected.bib["text"])
+        self.assertTrue(selected.bib["text"].endswith('@article{K2, title={Two}}\n'))
+        self.assertFalse(path.exists())
         self.assertEqual(w.status(self.work)["target_bib"], str(path))
-        result = w.apply(work_dir=self.work, preview_id=preview.preview_id)
+        with self.assertRaises(w.WorkflowError):
+            w.apply(work_dir=self.work, preview_id=preview.preview_id)
+        self.assertFalse(path.exists())
+        result = w.apply(work_dir=self.work, preview_id=selected.preview_id)
         self.assertEqual(result["wrote"], 1)
-        self.assertEqual(self.bib.read_text(), self.old)
-        self.assertIn("Changed", path.read_text())
+        self.assertEqual(self.bib.read_bytes(), self.old.encode("utf-8"))
+        self.assertEqual(path.read_bytes(), selected.bib["text"].encode("utf-8"))
+        self.assertIn("title={Changed}", path.read_text(encoding="utf-8"))
+        self.assertTrue(path.read_bytes().endswith(b'@article{K2, title={Two}}\n'))
         self.assertTrue(w.undo(work_dir=self.work)["ok"])
         self.assertFalse(path.exists())
+        self.assertEqual(self.bib.read_bytes(), self.old.encode("utf-8"))
 
 
     def test_bib_and_tex_apply_rolls_back_when_second_write_fails(self):

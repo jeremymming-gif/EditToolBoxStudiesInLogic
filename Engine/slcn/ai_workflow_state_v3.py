@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,6 +16,7 @@ from . import ai_workflow_taskbook as book
 from . import bibcheck as bibcheck_mod
 from . import bibdb as db
 from . import bibdbapply as dbapply
+from . import bibparse
 from . import coop
 
 
@@ -385,7 +387,7 @@ def _text_result(tex, context, suggestions, adopt, excluded):
 # 一次 preview 对全部待核实键做**一次**批量查询（复用 `bibpipeline.classify_bibdb`
 # 的既有入口，不新写库访问）；全流程对库**只读**（记库路径 + sha256，前后可比对）；
 # 只有「同作品 + 同版本」才自动采纳库值，版本不同一律降级为冲突行或跳过；
-# 冲突行默认 `original`，裁决三选一（library / reply / original）。
+# 冲突行默认 `original`；库字段不可用时仅允许 original / reply。
 
 #: 互相依赖的事实字段同组：整组一致裁决（publisher+year+edition+address、serial 五字段）
 _FIELD_GROUPS = {
@@ -463,11 +465,12 @@ def _entries(text):
 
 
 def _field_map(text):
-    """{key: (etype, {字段名: 值文本})}——值与 `bibdbapply` 回填用的是同一套解析。"""
+    """{key: (etype, fields)}；沿用顶层字段解析，兼容花括号、引号与裸数字。"""
     out = {}
     for etype, key, body in _entries(text):
         try:
-            out[key] = (etype, dbapply._field_text_map(body))
+            out[key] = (etype, {name: body[start:end].strip()
+                               for name, start, end in bibparse.top_field_spans(body)})
         except Exception:
             continue
     return out
@@ -485,10 +488,144 @@ def _same_value(name, first, second) -> bool:
         return False
 
 
-def conflict_id(key, field, original, library, reply) -> str:
-    """稳定 ID：同一（键 + 字段 + 三值）永远算出同一个 conflict_id。"""
-    return "cf-" + digest([str(key), str(field), str(original or ""),
-                           str(library or ""), str(reply or "")])[:16]
+def _skip_bib_space(text, pos):
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+        elif text[pos] == "%":
+            newline = text.find("\n", pos)
+            pos = len(text) if newline < 0 else newline + 1
+        else:
+            break
+    return pos
+
+
+def _raw_atom(text, pos):
+    if pos >= len(text):
+        raise ValueError("missing BibTeX value atom")
+    start = pos
+    if text[pos] == "{":
+        depth = 1
+        pos += 1
+        while pos < len(text):
+            ch = text[pos]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return pos + 1, ("literal", text[start + 1:pos])
+            pos += 1
+        raise ValueError("unclosed braced BibTeX value")
+    if text[pos] == '"':
+        pos += 1
+        brace_depth = 0
+        while pos < len(text):
+            ch = text[pos]
+            if ch == "\\":
+                pos += 2
+                continue
+            if ch == "{":
+                brace_depth += 1
+            elif ch == "}":
+                brace_depth -= 1
+                if brace_depth < 0:
+                    raise ValueError("unbalanced braces in quoted BibTeX value")
+            elif ch == '"' and brace_depth == 0:
+                return pos + 1, ("literal", text[start + 1:pos])
+            pos += 1
+        raise ValueError("unclosed quoted BibTeX value")
+    while pos < len(text) and not text[pos].isspace() and text[pos] not in ",#}%":
+        if text[pos] in "{\"":
+            raise ValueError("malformed bare BibTeX value")
+        pos += 1
+    if pos == start:
+        raise ValueError("empty bare BibTeX value")
+    token = text[start:pos]
+    if re.fullmatch(r"[+-]?\d+", token):
+        return pos, ("literal", token)
+    return pos, ("macro", token.lower())
+
+
+def _raw_field_spans(body):
+    """Locate complete BibTeX value expressions without normalizing their tokens."""
+    fields = []
+    pos = 0
+    while True:
+        pos = _skip_bib_space(body, pos)
+        if pos >= len(body):
+            return fields
+        if body[pos] == ",":
+            pos += 1
+            continue
+        match = dbapply._FIELD_HEAD_RE.match(body, pos)
+        if not match:
+            raise ValueError("unrecognized BibTeX field syntax")
+        name = match.group(1).lower()
+        field_start = pos
+        value_start = _skip_bib_space(body, match.end())
+        atom_pos = value_start
+        signature = []
+        while True:
+            atom_end, atom_signature = _raw_atom(body, atom_pos)
+            signature.append(atom_signature)
+            after_atom = _skip_bib_space(body, atom_end)
+            if after_atom < len(body) and body[after_atom] == "#":
+                atom_pos = _skip_bib_space(body, after_atom + 1)
+                if atom_pos >= len(body):
+                    raise ValueError("incomplete BibTeX concatenation")
+                continue
+            value_end = atom_end
+            fields.append({"name": name, "start": field_start,
+                           "value_start": value_start, "value_end": value_end,
+                           "comma": after_atom if after_atom < len(body)
+                           and body[after_atom] == "," else None,
+                           "raw": body[value_start:value_end],
+                           "signature": tuple(signature)})
+            if after_atom >= len(body):
+                return fields
+            if body[after_atom] != ",":
+                raise ValueError("unrecognized text after BibTeX value")
+            pos = after_atom + 1
+            break
+
+
+def _raw_entry_fields(text, key, names, *, missing_entry_ok=False):
+    spans = [span for span in dbapply.entry_spans(text or "") if span[1] == key]
+    if not spans and missing_entry_ok:
+        return {}
+    if len(spans) != 1:
+        raise workflow.WorkflowError("`%s` 的原始字段定位不唯一，未生成候选。" % key)
+    _etype, _key, _start, body_start, close = spans[0]
+    try:
+        parsed = _raw_field_spans(text[body_start:close])
+    except ValueError as exc:
+        raise workflow.WorkflowError("`%s` 的原始字段表达式无法安全定位：%s" % (key, exc)) from exc
+    wanted = set(names)
+    out = {}
+    for field in parsed:
+        name = field["name"]
+        if name not in wanted:
+            continue
+        if name in out:
+            raise workflow.WorkflowError("`%s` 的 `%s` 字段重复，未生成候选。" % (key, name))
+        out[name] = field
+    return out
+
+
+def _expression_difference(first, second):
+    if not first or not second or first == second:
+        return False
+    return (any(kind == "macro" for kind, _value in first + second)
+            or len(first) > 1 or len(second) > 1)
+
+
+def conflict_id(key, field, original, library, reply, expressions=None) -> str:
+    """稳定 ID；原有普通三值冲突保持原 ID，表达式差异另纳入身份。"""
+    values = [str(key), str(field), str(original or ""), str(library or ""), str(reply or "")]
+    if expressions is not None:
+        values.append(expressions)
+    return "cf-" + digest(values)[:16]
 
 
 def library_query(path, entries, originals):
@@ -575,73 +712,93 @@ def _same_version(entry_fields, record_fields) -> bool:
     return True
 
 
-def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot):
-    """逐字段比较「原条目 / 库条目 / 回件值」三值；只有实质差异才进 conflicts。
+def build_conflicts(*, old_bib, reply_bib, candidate_bib, snapshot, review_keys=None):
+    """审阅已进入候选的回件字段变更；库只是可选的第三个来源。
 
-    返回 `(rows, auto_fills, notes)`：
-    - `auto_fills` = 同版命中且候选缺值 → 直接采纳库值（不产生冲突行）；
-    - 不同版本（第 2 版 vs 第 3 版、不同年份）**不得自动顶替**，只降级为冲突行；
-    - 三值全等价、或候选已是库等价值 → 不产生任何行。
+    `review_keys` 来自本次 synthesize_bib 的实际采纳清单，不扩到原 Bib 的保全项。
+    兼容直接调用：未传时也只看回件与候选共有的键，且 AI 差异须在候选里生效。
+    同版库的缺值回填仍自动执行；AI 增删改优先审阅，默认保留原稿。
     """
     original = _field_map(old_bib)
     reply = _field_map(reply_bib)
     candidate = _field_map(candidate_bib)
-    rows = []
-    auto_fills = {}
-    notes = []
-    for key in sorted(snapshot):
-        item = snapshot[key] or {}
+    keys = set(reply) & set(candidate)
+    if review_keys is not None:
+        keys.intersection_update(review_keys)
+    rows, auto_fills, notes = [], {}, []
+    for key in sorted(keys):
+        item = (snapshot or {}).get(key) or {}
         tier = str(item.get("tier") or "")
-        if tier not in ("safe", "candidate"):
-            continue
-        if item.get("weak"):
-            notes.append("`%s` 库内命中属弱身份（题名相似度 %s < %s），不采纳库值。"
-                         % (key, item.get("title_similarity"), dbapply.WEAK_TITLE_SIM))
-            continue
-        fields = item.get("fields") or []
-        if not fields:
-            continue
-        # 只有「safe 命中 + 同版」才允许自动补齐缺值；candidate 命中（典型是同作品
-        # 不同版本）**一律不自动顶替**，只把差异降级成冲突行交给编辑裁决。
+        library_fields = {}
+        if tier in ("safe", "candidate"):
+            if item.get("weak"):
+                notes.append("`%s` 库内命中属弱身份（题名相似度 %s < %s），不采纳库值。"
+                             % (key, item.get("title_similarity"), dbapply.WEAK_TITLE_SIM))
+            else:
+                for pair in item.get("fields") or []:
+                    try:
+                        name, value = str(pair[0]).strip().lower(), str(pair[1]).strip()
+                    except (TypeError, IndexError):
+                        continue
+                    if name and value:
+                        library_fields[name] = value
         same_version = bool(item.get("same_version")) and tier == "safe"
-        if not same_version:
+        if library_fields and not same_version:
             notes.append("`%s` 与库内记录**版本不同**（年份/版次/出版社判据不满足，"
                          "命中层级 %s），库值不自动采纳，只列为冲突行待裁决。"
                          % (key, tier))
         _etype, orig_fields = original.get(key, ("", {}))
-        _rtype, reply_fields = reply.get(key, ("", {}))
-        _ctype, cand_fields = candidate.get(key, ("", {}))
-        for pair in fields:
-            try:
-                name, value = str(pair[0]), str(pair[1])
-            except (TypeError, IndexError):
-                continue
-            value = value.strip()
-            if not name or not value:
-                continue
+        _rtype, reply_fields = reply[key]
+        _ctype, cand_fields = candidate[key]
+        names = set(orig_fields) | set(reply_fields) | set(library_fields)
+        original_raw = _raw_entry_fields(old_bib, key, names,
+                                         missing_entry_ok=key not in original)
+        reply_raw = _raw_entry_fields(reply_bib, key, names)
+        candidate_raw = _raw_entry_fields(candidate_bib, key, names)
+        for name in sorted(names):
             before = str(orig_fields.get(name) or "").strip()
             after = str(cand_fields.get(name) or "").strip()
             replied = str(reply_fields.get(name) or "").strip()
-            if _same_value(name, after, value):
-                continue          # 候选已是库等价值：不算冲突，也不产生改动
-            if _same_value(name, before, value) and _same_value(name, replied, value):
-                continue          # 三值全等价
-            if not after and same_version:
-                # 同版命中 + 候选缺值 → 直接采纳库值（既有回填口径，不进冲突）
-                auto_fills.setdefault(key, {})[name] = value
-                continue
-            rows.append({
-                "conflict_id": conflict_id(key, name, before, value, replied),
-                "key": key,
-                "field": name,
-                "original": before,
-                "library": value,
-                "reply": replied,
-                "choices": list(CHOICES),
-                "default": "original",
-                "group": field_group(name),
-            })
-    rows.sort(key=lambda row: (row["key"], row["field"]))
+            value = library_fields.get(name, "")
+            original_expression = original_raw.get(name)
+            reply_expression = reply_raw.get(name)
+            candidate_expression = candidate_raw.get(name)
+            original_signature = original_expression["signature"] if original_expression else None
+            reply_signature = reply_expression["signature"] if reply_expression else None
+            candidate_signature = candidate_expression["signature"] if candidate_expression else None
+            expression_changed = _expression_difference(original_signature, reply_signature)
+            same_expression = (original_signature == reply_signature and original_signature
+                               and (len(original_signature) > 1
+                                    or original_signature[0][0] == "macro"))
+            adopted_expression = (candidate_signature == reply_signature and reply_signature
+                                  and (len(reply_signature) > 1
+                                       or reply_signature[0][0] == "macro"))
+            reply_adopted = bool(adopted_expression or _same_value(name, after, replied))
+            if _expression_difference(candidate_signature, reply_signature):
+                reply_adopted = False
+            reply_changed = ((not (same_expression or _same_value(name, before, replied))
+                              or expression_changed) and reply_adopted)
+            if not reply_changed:
+                if not value or _same_value(name, after, value):
+                    continue
+                if _same_value(name, before, value) and _same_value(name, replied, value):
+                    continue
+                if not after and same_version:
+                    auto_fills.setdefault(key, {})[name] = value
+                    continue
+            row = {
+                "conflict_id": conflict_id(
+                    key, name, before, value, replied,
+                    [original_signature, reply_signature] if expression_changed else None),
+                "key": key, "field": name,
+                "original": before, "library": value, "reply": replied,
+                "choices": list(CHOICES) if value else ["original", "reply"],
+                "default": "original", "group": field_group(name),
+            }
+            if expression_changed and original_expression and reply_expression:
+                row["expressions"] = {"original": original_expression["raw"],
+                                      "reply": reply_expression["raw"]}
+            rows.append(row)
     return rows, auto_fills, notes
 
 
@@ -664,10 +821,13 @@ def check_decisions(rows, decisions):
                 "不认识的 conflict_id：%s（本次预览的冲突行里没有这一项；"
                 "对非冲突项裁决一律拒绝）" % cid)
         value = str(raw_value or "").strip().lower()
-        if value not in CHOICES:
+        # 老任务行未登记 choices 时沿用三选一；新行逐字段限制实际可用来源。
+        choices = known[cid].get("choices", CHOICES)
+        if (value not in CHOICES or value not in choices
+                or value == "library" and not str(known[cid].get("library") or "").strip()):
             raise workflow.WorkflowError(
-                "conflict_id %s 的裁决值不合法：%s（只能是 %s 之一）"
-                % (cid, raw_value, " / ".join(CHOICES)))
+                "conflict_id %s 的裁决值不合法：%s（本行只能是 %s 之一）"
+                % (cid, raw_value, " / ".join(choices)))
         out[cid] = value
     # 组内一致：校验**生效后**的整组，而不是只看用户显式传的那些。
     # 只看显式项会漏掉「只改 year、publisher 走缺省 original」这种静默混裁
@@ -719,143 +879,222 @@ def _pad_entry_tails(bib_text, keys):
     return out
 
 
-def apply_decisions(bib_text, rows, decisions, auto_fills=None):
-    """把选定值合成进候选 Bib；未裁决项按 default=original 保留原条目。
+def _insert_original_fields(body, fields):
+    """仅插入已裁决的原值表达式；不把宏或拼接包装成文字。"""
+    spans = _raw_field_spans(body)
+    if spans and spans[-1]["comma"] is None:
+        end = spans[-1]["value_end"]
+        body = body[:end] + "," + body[end:]
+    indent_match = re.search(r"(?m)^([ \t]*)[A-Za-z][\w:\-]*\s*=", body)
+    indent = (indent_match.group(1) or "  ") if indent_match else "  "
+    return body + ("" if body.endswith("\n") else "\n") + "".join(
+        f"{indent}{name} = {expression},\n" for name, expression in sorted(fields.items()))
 
-    红线「未裁决项按 original 回退」是**字节级**要求：若本次没有任何值真正落地
-    （全部裁决为 original/reply 且与现值等价），必须原样返回 `bib_text`。
-    否则 `_pad_entry_tails` 会给「字段体紧贴 `}`」的条目补一个换行，产出语义等价
-    但字节不同的候选，编辑器里「采纳前后」对比就会出现无意义的差异。
 
-    调用方须先过 `check_decisions(rows, decisions)`：这里只负责落地，不做合法性校验
-    （未知 conflict_id、非法取值、组内混裁都归 `check_decisions` 判）。`decisions=None`
-    按「全部走缺省 original」处理，不会抛异常。
+def _check_original_tokens(text, expected):
+    for key, fields in expected.items():
+        actual = _raw_entry_fields(text, key, fields)
+        for name, raw in fields.items():
+            restored = actual.get(name)
+            if (restored["raw"] if restored else None) != raw:
+                raise workflow.WorkflowError(
+                    "`%s` 的 `%s` 原稿值表达式未原样恢复，未生成候选。" % (key, name))
+
+
+def apply_decisions(bib_text, rows, decisions, auto_fills=None, *, original_bib=None):
+    """只改已裁决字段；original 从冻结原稿恢复完整值 token 并逐字校验。
+
+    无 original_bib 的旧调用沿用逻辑值行为。当前预览不从冲突行的显示值重建
+    原值；恢复宏、拼接、引号和空值时只搬原始表达式，保全其他字段/条目字节。
     """
-    decisions = decisions or {}
     chosen = effective_decisions(rows, decisions)
     entries = _field_map(bib_text)
-    plans = []
-    notes = []
-    by_key = {}
+    originals = _field_map(original_bib or "")
+    by_key, notes, expected_originals = {}, [], {}
+
+    def plan_for(key):
+        return by_key.setdefault(key, {"fills": {}, "replaces": {}, "raw": {},
+                                       "removes": set()})
+
     for key, fields in sorted((auto_fills or {}).items()):
         etype, present = entries.get(key, ("", {}))
         if not etype:
             notes.append("`%s` 不在候选 Bib 里，同版库值未补齐。" % key)
             continue
-        plan = {"etype": etype, "key": key, "fills": {}, "replaces": {}}
         for name, value in sorted(fields.items()):
-            plan["replaces" if name in present else "fills"][name] = value
-        by_key[key] = plan
-        plans.append(plan)
+            if not _same_value(name, present.get(name), value):
+                plan_for(key)["replaces" if name in present else "fills"][name] = value
     for row in rows:
+        key, name = row["key"], row["field"]
         choice = chosen.get(row["conflict_id"], "original")
         value = str(row.get(choice) or "").strip()
-        etype, fields = entries.get(row["key"], ("", {}))
+        etype, present = entries.get(key, ("", {}))
         if not etype:
-            notes.append("`%s` 不在候选 Bib 里，裁决未落地。" % row["key"])
+            if choice == "original" and original_bib is not None:
+                raise workflow.WorkflowError("`%s` 不在候选 Bib 里，原稿值未恢复。" % key)
+            notes.append("`%s` 不在候选 Bib 里，裁决未落地。" % key)
             continue
-        plan = by_key.get(row["key"])
-        if plan is None:
-            plan = {"etype": etype, "key": row["key"], "fills": {}, "replaces": {}}
-            by_key[row["key"]] = plan
-            plans.append(plan)
+        if choice == "original" and original_bib is not None:
+            source = _raw_entry_fields(original_bib, key, {name},
+                                       missing_entry_ok=key not in originals)
+            current = _raw_entry_fields(bib_text, key, {name})
+            original_expression, current_expression = source.get(name), current.get(name)
+            raw = original_expression["raw"] if original_expression else None
+            expected_originals.setdefault(key, {})[name] = raw
+            if original_expression is None:
+                if current_expression is not None:
+                    plan_for(key)["removes"].add(name)
+            elif current_expression is None or current_expression["raw"] != raw:
+                plan = plan_for(key)
+                plan["replaces" if current_expression else "fills"][name] = value
+                plan["raw"][name] = raw
+            continue
         if value:
-            bucket = "replaces" if row["field"] in fields else "fills"
-            plan[bucket][row["field"]] = value
-        elif choice == "original" and row["field"] in fields:
-            notes.append("`%s` 的 `%s` 原条目为空，保留空值需手工删除候选里的该字段。"
-                         % (row["key"], row["field"]))
-    if not plans:
+            if not _same_value(name, present.get(name), value):
+                plan_for(key)["replaces" if name in present else "fills"][name] = value
+        elif name in present:
+            plan_for(key)["removes"].add(name)
+    if not by_key:
+        _check_original_tokens(bib_text, expected_originals)
         return bib_text, [], notes
-    try:
-        prepared = _pad_entry_tails(bib_text, {plan["key"] for plan in plans})
-        new_text, applied = dbapply.apply_text(prepared, plans)
-    except Exception as exc:  # 结构异常 fail-soft：候选保持原样，改动记账
-        notes.append("裁决落地失败（%s），候选 Bib 保持未裁决状态。" % exc)
-        return bib_text, [], notes
+    prepared = _pad_entry_tails(bib_text, {key for key, plan in by_key.items() if plan["fills"]})
+    edits, applied = [], []
+    for etype, key, _start, body_start, close in dbapply.entry_spans(prepared):
+        plan = by_key.get(key)
+        if plan is None:
+            continue
+        body = prepared[body_start:close]
+        field_edits, located = [], set()
+        try:
+            field_spans = _raw_field_spans(body)
+        except ValueError as exc:
+            raise workflow.WorkflowError("`%s` 的字段裁决无法安全定位。" % key) from exc
+        for field in field_spans:
+            name, start, end = field["name"], field["start"], field["value_end"]
+            if name not in plan["removes"] and name not in plan["replaces"]:
+                continue
+            if name in located:
+                raise workflow.WorkflowError("`%s` 的 `%s` 字段重复，未生成候选。" % (key, name))
+            if name in plan["removes"]:
+                end = field["comma"] + 1 if field["comma"] is not None else end
+                field_edits.append((start, end, ""))
+            else:
+                expression = plan["raw"].get(name, "{" + plan["replaces"][name] + "}")
+                field_edits.append((field["value_start"], end, expression))
+            located.add(name)
+        if located != set(plan["replaces"]) | plan["removes"]:
+            raise workflow.WorkflowError("`%s` 的字段裁决无法定位，未生成候选。" % key)
+        new_body = body
+        for start, end, value in sorted(field_edits, reverse=True):
+            new_body = new_body[:start] + value + new_body[end:]
+        normal_fills = {name: value for name, value in plan["fills"].items()
+                        if name not in plan["raw"]}
+        if normal_fills:
+            new_body = dbapply._render_entry(new_body, normal_fills)
+        if new_body is None:
+            raise workflow.WorkflowError("`%s` 的字段裁决结构不合法，未生成候选。" % key)
+        raw_fills = {name: plan["raw"][name] for name in plan["fills"] if name in plan["raw"]}
+        if raw_fills:
+            new_body = _insert_original_fields(new_body, raw_fills)
+        if new_body != body:
+            edits.append((body_start, close, new_body))
+            present = entries[key][1]
+            applied.append({"key": key, "etype": etype,
+                            "filled": {**plan["fills"], **plan["replaces"]},
+                            "replaced": {name: present.get(name, "") for name in located},
+                            "removed": sorted(plan["removes"])})
     if not applied:
-        # 没有任何值真正落地 → 字节级回退到原条目（padding 也不许留下痕迹）。
+        _check_original_tokens(bib_text, expected_originals)
         return bib_text, [], notes
+    new_text = prepared
+    for start, end, value in sorted(edits, reverse=True):
+        new_text = new_text[:start] + value + new_text[end:]
+    _check_original_tokens(new_text, expected_originals)
+    actual = _field_map(new_text)
+    for row in rows:
+        choice = chosen[row["conflict_id"]]
+        if choice == "original" and original_bib is not None:
+            continue  # 上面已按冻结原稿完整 token 校验，不能退回有损逻辑值判据。
+        value = row.get(choice) or ""
+        if not _same_value(row["field"], actual.get(row["key"], ("", {}))[1].get(row["field"]), value):
+            raise workflow.WorkflowError("`%s` 的 `%s` 裁决未落地，未生成候选。"
+                                         % (row["key"], row["field"]))
     return new_text, applied, notes
 
 
-def _library_probe(state, *, old_bib, reply_bib, candidate_bib, decisions, requery):
-    """第二段查库总入口 → (library 投影, conflicts, 候选 Bib 文本, 说明)。"""
-    active = state.get("active_reply") or {}
-    if not active:
-        return (_library_state(False, "skipped",
-                              skipped_reason="回件未通过校验：没有通过校验的活动回件，本次不查库。"),
-                [], candidate_bib, [])
-    if not active.get("ok"):
-        return (_library_state(False, "skipped",
-                              skipped_reason="回件未通过校验：回件被整份拒收，本次不查库。"),
-                [], candidate_bib, [])
-    identity = str(active.get("identity_status") or "")
-    if identity == "mismatch":
-        return (_library_state(False, "skipped",
-                              skipped_reason="回件未通过校验：TASK-ID 不符，本次不查库。"),
-                [], candidate_bib, [])
-
-    originals = _field_map(old_bib)
-    entries = _entries(old_bib)
+def _library_snapshot(state, entries, originals, requery):
+    """查库失败只影响库来源；原稿/回件字段审阅由调用方继续完成。"""
     if not entries:
         return (_library_state(False, "skipped",
-                              skipped_reason="原 Bib 没有可核实的条目，本次不查库。"),
-                [], candidate_bib, [])
-
+                               skipped_reason="原 Bib 没有本次可核实的条目，本次不查库。"), {}, [])
     saved = state.get("library_query") if isinstance(state.get("library_query"), dict) else {}
     path = str(saved.get("path") or "")
     snapshot = None
-    notes = []
     if saved and not requery:
         current = db.db_sha256(path) if path else ""
         if current and saved.get("sha256") and current != saved.get("sha256"):
             return (_library_state(
                 False, "failed", path=path, sha256=current,
-                skipped_reason="引用库在预览后已变动（sha256 不一致），需 --requery 重新查库。"),
-                [], candidate_bib,
+                skipped_reason="引用库在预览后已变动（sha256 不一致），需 --requery 重新查库。"), {},
                 ["引用库文件已变动，本次不采纳库值：请加 --requery 重新查库。"])
-        snapshot = saved.get("matches") if isinstance(saved.get("matches"), dict) else None
-
+        if current:
+            snapshot = saved.get("matches") if isinstance(saved.get("matches"), dict) else None
     if snapshot is None:
         try:
             path = db.default_db_path()
         except db.BibDBError as exc:
             return (_library_state(False, "unconfigured",
-                                   skipped_reason="未配置引用库：%s" % exc),
-                    [], candidate_bib, [])
+                                   skipped_reason="未配置引用库：%s" % exc), {}, [])
         if not path or not os.path.isfile(path):
             return (_library_state(False, "missing", path=path,
-                                   skipped_reason="引用库文件不存在：%s（本次不查库）" % path),
-                    [], candidate_bib, [])
+                                   skipped_reason="引用库文件不存在：%s（本次不查库）" % path), {}, [])
         try:
             snapshot = library_query(path, entries, originals)
         except db.BibDBError as exc:
             return (_library_state(False, "unreadable", path=path, sha256=db.db_sha256(path),
-                                   skipped_reason="引用库读取失败：%s" % exc),
-                    [], candidate_bib, [])
+                                   skipped_reason="引用库读取失败：%s" % exc), {}, [])
         except Exception as exc:
             return (_library_state(False, "failed", path=path, sha256=db.db_sha256(path),
-                                   skipped_reason="引用库查询失败：%s" % exc),
-                    [], candidate_bib, [])
+                                   skipped_reason="引用库查询失败：%s" % exc), {}, [])
         state["library_query"] = {"path": path, "sha256": db.db_sha256(path),
                                   "at": workflow._now(), "matches": snapshot}
+    return _library_state(True, "ok", path=path, sha256=db.db_sha256(path)), snapshot, []
 
-    rows, auto_fills, more = build_conflicts(old_bib=old_bib, reply_bib=reply_bib,
-                                             candidate_bib=candidate_bib, snapshot=snapshot)
+
+def _library_probe(state, *, old_bib, reply_bib, candidate_bib, decisions, requery,
+                   review_keys=None):
+    """第二段查库与审阅 → (library 投影, conflicts, 候选 Bib 文本, 说明)。"""
+    active = state.get("active_reply") or {}
+    if not active:
+        reason = "回件未通过校验：没有通过校验的活动回件，本次不查库。"
+    elif not active.get("ok"):
+        reason = "回件未通过校验：回件被整份拒收，本次不查库。"
+    elif active.get("identity_status") == "mismatch":
+        reason = "回件未通过校验：TASK-ID 不符，本次不查库。"
+    elif review_keys is not None and not review_keys:
+        reason = "本次没有采纳的文献条目，不查库、不生成可写字段差异。"
+    else:
+        reason = ""
+    if reason:
+        return _library_state(False, "skipped", skipped_reason=reason), [], candidate_bib, []
+    originals = _field_map(old_bib)
+    entries = [entry for entry in _entries(old_bib)
+               if review_keys is None or entry[1] in review_keys]
+    library, snapshot, notes = _library_snapshot(state, entries, originals, requery)
+    if review_keys is not None:
+        snapshot = {key: item for key, item in snapshot.items() if key in review_keys}
+    rows, auto_fills, more = build_conflicts(
+        old_bib=old_bib, reply_bib=reply_bib, candidate_bib=candidate_bib,
+        snapshot=snapshot, review_keys=review_keys)
     notes.extend(more)
     checked = check_decisions(rows, decisions)
-    merged_text, applied, tail = apply_decisions(candidate_bib, rows, checked, auto_fills)
+    merged_text, _applied, tail = apply_decisions(candidate_bib, rows, checked, auto_fills,
+                                                original_bib=old_bib)
     notes.extend(tail)
-    del applied
-    # `matched` = 库内命中数（safe + candidate 都算「库里有这条」）；
-    # `conflicts` 只数真正需要编辑裁决的行。
-    matched = sum(1 for item in snapshot.values()
-                  if str((item or {}).get("tier") or "") in ("safe", "candidate"))
-    library = _library_state(True, "ok", path=path, sha256=db.db_sha256(path),
-                             matched=matched, conflicts=len(rows))
-    if not rows:
-        library["skipped_reason"] = ""
+    library["matched"] = sum(1 for item in snapshot.values()
+                             if str((item or {}).get("tier") or "") in ("safe", "candidate"))
+    # 即使 checked=False，原稿/回件也可能有待审阅差异；不能假报零行。
+    library["conflicts"] = len(rows)
     return library, rows, merged_text, notes
 
 
@@ -900,7 +1139,9 @@ def preview(state, adopt, skip_items=(), decisions=None, requery=False):
     # 第二段查库：只在回件已导入且合格之后（不合格时 library.checked=False + state=skipped）。
     library, conflicts, decided_bib, library_notes = _library_probe(
         state, old_bib=old_bib, reply_bib=active.get("bib_text", ""),
-        candidate_bib=bib_info["text"], decisions=decisions, requery=requery)
+        candidate_bib=bib_info["text"], decisions=decisions, requery=requery,
+        review_keys={item["key"] for item in bib_info["items"]
+                     if item["status"] == bib.ST_APPLIED})
     notes.extend(library_notes)
     if decided_bib != bib_info["text"]:
         bib_info = dict(bib_info, text=decided_bib,

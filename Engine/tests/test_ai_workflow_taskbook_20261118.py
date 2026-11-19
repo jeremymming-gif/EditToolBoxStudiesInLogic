@@ -138,9 +138,8 @@ RULE_SECTIONS = [
 ]
 
 
-# 全引用正文：11 条都在正文里被引用过。范围口径（用户裁定）是「没有可核引用就
-# 生成零条文献核查任务」，所以凡是要验证「委派材料逐字渲染」的用例，必须给出
-# 真实引用；无正文不再等于「保守委派全量」。
+# 全引用正文：11 条都在正文里被引用过。初排入口没有可识别引用时零委派；引用库
+# 独立入口无正文时，则以选定 Bib 为核实对象并委派全部有效条目。
 TEX_ALL11 = "".join("\\cite{K%02d} " % i for i in range(1, 12))
 
 
@@ -244,23 +243,60 @@ class TaskbookContextTest(unittest.TestCase):
         acm = next(d for d in ctx["definitions"]["strings"] if d["name"].lower() == "acm")
         self.assertIn("{ACM Press}", acm["raw"])
 
-    def test_sets_no_tex_bibverify_on(self):
-        """无 TeX：O=11；**没有可核引用 → R/T 为空**（不退回保守全量）；U=O−F。
-
-        范围口径（用户裁定，见 `evidence/lead/LEDGER.md`）：没有可靠引用键时生成
-        零条文献核查任务；原 Bib 的保全靠 `input.bib` 快照与交付候选，不靠委派全集。
-        """
-        ctx = _build(state=_state(safe=["K09"], allowed=[f"K{i:02d}" for i in range(1, 12)]))
+    def test_sets_no_tex_convert_entry_stays_empty(self):
+        """初排入口无正文且无引用证据时：R/T 为空，不能把未引用条目送给 AI。"""
+        ctx = _build(state=_state(entry="convert", safe=["K09"],
+                                  allowed=[f"K{i:02d}" for i in range(1, 12)]))
         s = ctx["sets"]
         self.assertEqual(_keys(s["O"]), {f"K{i:02d}" for i in range(1, 12)})
         self.assertEqual(_keys(s["C"]), set(), "无 TeX 时 C 为空")
-        self.assertEqual(_keys(s["R"]), set(), "无 TeX 时 R 为空（不许退回保守全量）")
+        self.assertEqual(_keys(s["R"]), set(), "初排入口无 TeX 时 R 为空")
         self.assertIn("K09", _keys(s["F"]))
-        self.assertEqual(_keys(s["T"]), set(), "无 TeX 时 T 为空（零条文献核查任务）")
+        self.assertEqual(_keys(s["T"]), set(), "初排入口无 TeX 时 T 为空")
         self.assertEqual(_keys(s["U"]), _keys(s["O"]) - _keys(s["F"]))
         self.assertEqual(_keys(s["M"]), set(), "R 为空时 M 为空")
         self.assertIn("零条文献核查任务", ctx["coverage"]["citation_scope"])
         self.assertIn("保全", ctx["coverage"]["citation_scope"])
+
+    def test_standalone_bib_without_tex_covers_all_valid_entries(self):
+        """引用库覆盖全部有效条目，安全命中沿用库内结果，其余才委派 AI。"""
+        ctx = _build(state=_state(safe=["K09"],
+                                  allowed=[f"K{i:02d}" for i in range(1, 12)]))
+        s = ctx["sets"]
+        all_keys = {f"K{i:02d}" for i in range(1, 12)}
+        self.assertTrue(ctx["standalone_bib"])
+        self.assertEqual(_keys(s["O"]), all_keys)
+        self.assertEqual(_keys(s["R"]), all_keys)
+        self.assertEqual(_keys(s["F"]), {"K09"})
+        self.assertEqual(_keys(s["T"]), all_keys - _keys(s["F"]))
+        self.assertEqual(_keys(s["U"]), set())
+        self.assertEqual(_keys(s["M"]), set())
+        note = ctx["coverage"]["citation_scope"]
+        self.assertIn("引用库独立核实", note)
+        self.assertIn("全部 11 条有效条目", note)
+        self.assertIn("安全命中沿用库内已核实记录", note)
+        self.assertNotIn("零条文献核查任务", note)
+        self.assertIn("安全命中（沿用库内已核实记录） 1 条", render_taskbook(context=ctx))
+
+    def test_standalone_bib_with_only_safe_hits_needs_no_ai_reply(self):
+        """所有条目均已在库内核实：不伪称已委派 AI，也不索取 Bib 回复。"""
+        all_keys = [f"K{i:02d}" for i in range(1, 12)]
+        ctx = _build(state=_state(safe=all_keys, allowed=all_keys))
+        self.assertEqual(_keys(ctx["sets"]["F"]), set(all_keys))
+        self.assertEqual(_keys(ctx["sets"]["T"]), set())
+        text = render_taskbook(context=ctx)
+        self.assertIn("待核条目 0 条", text)
+        self.assertIn("安全命中（沿用库内已核实记录） 11 条", text)
+        self.assertNotIn("bibtex 围栏", text)
+
+    def test_bib_entry_with_tex_remains_cited_only(self):
+        """引用库通用 CLI 若提供正文，仍按实际正文引用键裁剪。"""
+        ctx = _build(tex=r"\cite{K01}", state=_state(entry="bib"))
+        self.assertFalse(ctx["standalone_bib"])
+        self.assertEqual(_keys(ctx["sets"]["C"]), {"K01"})
+        self.assertEqual(_keys(ctx["sets"]["R"]), {"K01"})
+        self.assertEqual(_keys(ctx["sets"]["T"]), {"K01"})
+        self.assertNotIn("K02", _keys(ctx["sets"]["T"]))
 
     def test_sets_with_tex_delegates_cited_minus_safe(self):
         """有正文且全部被引用：R=O；T=(R∩O)−F；U=O−F−T。"""
@@ -314,9 +350,9 @@ class TaskbookContextTest(unittest.TestCase):
         self.assertIn("K99", joined, "未知依赖键 K99 必须出现在缺件清单")
         self.assertNotIn("K99", _keys(ctx["sets"]["O"]), "不得伪造 K99 条目")
 
-    def test_nocite_star_without_body_delegates_nothing(self):
-        """nocite 星号 + 无正文：仍判不出可核引用 → R/T 为空（不退回保守全量）。"""
-        ctx = _build(state=_state(nocite=True))
+    def test_nocite_star_without_body_delegates_nothing_on_convert_entry(self):
+        """初排入口只有 nocite 星号、无正文：不把整份 Bib 送进委派集合。"""
+        ctx = _build(state=_state(entry="convert", nocite=True))
         self.assertEqual(_keys(ctx["sets"]["R"]), set())
         self.assertEqual(_keys(ctx["sets"]["T"]), set())
         self.assertIn("nocite", ctx["coverage"]["citation_scope"])

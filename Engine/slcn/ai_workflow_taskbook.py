@@ -219,6 +219,11 @@ def build_context(*, state: dict, bib_text: str, tex_text: str,
 
     # cited_keys 保留与 nocite{*} 同时出现的具体引用。
     has_tex = bool(tex_text.strip())
+    scope = dict(state.get("scope") or {})
+    execution = _flag_map(scope.get("exec") or [])
+    adopt = _flag_map(scope.get("adopt") or [])
+    entry = str(state.get("entry", "") or "")
+    standalone_bib = entry == "bib" and not has_tex and execution["bib_verify"]
     # 转换侧可能另外给出「正文实际引用键」（Word 纯文本 `[N]` 清单没有 cite 命令，
     # 由 `ai_workflow_convert._number_cited_keys` 从条目原文前缀 + 正文 `[N]` 反推）。
     evidence_cited = {str(k) for k in (source_evidence.get("cited_keys") or []) if str(k)}
@@ -235,13 +240,15 @@ def build_context(*, state: dict, bib_text: str, tex_text: str,
     # 清单的漏网写法）。此时**不得**退回保守全量：那会把正文未引用的条目原文整条
     # 送给 AI（红线 2）。只按已识别出来的引用键裁剪，并在 citation_scope 里说明。
     scope_unresolved = bool(source_evidence.get("scope_unresolved"))
-    # 范围口径（用户裁定）：**没有可识别引用就生成零条文献核查任务**，不再退回
-    # 「保守保全旧 Bib」把全部条目原文倒给 AI——那是红线 2 的泄漏面。
-    # 原 Bib 的保全不靠这里：`input.bib` 快照与交付候选各自保全全部条目与依赖
-    # （见 `ai_workflow_state_v3.prepare` 的 `allowed_keys = sorted(set(old) | required)`）。
-    # `\nocite{*}` 只是「不必逐条核实」的信号，同样不放大暴露面。
+    # 初排入口没有可识别引用时生成零条文献核查任务，避免把作者未引用条目送给 AI。
+    # 引用库独立入口则以用户明确选择的 Bib 为核实对象，需核实其中全部有效条目。
     PRESERVED = "原 Bib 已在本地与交付候选保全（未删除任何条目或依赖）。"
-    if scope_unresolved:
+    if standalone_bib:
+        cite_note = ("引用库独立核实：以本次选定 Bib 为核实范围，覆盖全部 %d 条有效条目及其必要依赖；"
+                     "安全命中沿用库内已核实记录，其余条目进入本次 AI 任务。"
+                     "未另提供源侧参考文献原文或正文引用上下文；这些材料不作为逐条缺件。" % len(O)
+                     + PRESERVED)
+    elif scope_unresolved:
         cite_note = ("正文里有编号标记或脚注引用，但判不出对应的条目键："
                      "按已识别的引用键裁剪，**未识别部分不在此披露**"
                      "（请人工核对正文编号、脚注与文末清单）。" + PRESERVED)
@@ -266,7 +273,7 @@ def build_context(*, state: dict, bib_text: str, tex_text: str,
     else:
         cite_note = ("按正文实际引用的 %d 个键裁剪范围；未引用条目原文不在此披露。"
                      % len(cited) + PRESERVED)
-    r_base = [k for k in O if k in cited]
+    r_base = list(O) if standalone_bib else [k for k in O if k in cited]
     R_set, unresolved = ai_bib_candidate.closure(r_base, table, label="原")
     R = [k for k in O if k in R_set] + sorted((R_set | cited) - O_set)
 
@@ -276,11 +283,6 @@ def build_context(*, state: dict, bib_text: str, tex_text: str,
     F = _ordered_unique(
         [k for k in O if k in F_set] + [k for k in sorted(F_set) if k not in O_set]
     )
-
-    # ── 执行/采纳范围 ────────────────────────────────────────────────────
-    scope = dict(state.get("scope") or {})
-    execution = _flag_map(scope.get("exec") or [])
-    adopt = _flag_map(scope.get("adopt") or [])
 
     # ── 委派集 T / 保全集 U / 已知缺条 M / 并集 A ──────────────────────
     if execution["bib_verify"]:
@@ -335,7 +337,11 @@ def build_context(*, state: dict, bib_text: str, tex_text: str,
     # 源侧文献原文只以「正文实际引用键 → 该条源稿原文」的映射进入任务书；
     # 整段 `raw_refs`（整份 .bib / Word 文末参考文献区）不再作为材料来源。
     src_has_refs = bool(ref_map)
-    if src_has_refs:
+    if standalone_bib:
+        source_side = ("独立 Bib 核实：以选定 Bib 原文为核实依据（有效条目 %d 条）；"
+                       "未另提供源侧参考文献原文或正文引用上下文。" % len(O))
+        fidelity = "未执行独立源稿对照；按选定 Bib 原文核实书目信息。"
+    elif src_has_refs:
         source_side = ("源侧原始参考文献原文已提供（限正文实际引用的 %d 条）；"
                        "正文单元 %d 个。" % (len(ref_map), len(body_units)))
         fidelity = ("源/产物对照材料已提供，可逐项核对；"
@@ -366,7 +372,8 @@ def build_context(*, state: dict, bib_text: str, tex_text: str,
     return {
         "version": 3,
         "task_id": str(state.get("task_id", "") or ""),
-        "entry": str(state.get("entry", "") or ""),
+        "entry": entry,
+        "standalone_bib": standalone_bib,
         "execution": execution,
         "adopt": adopt,
         "sets": {"O": O, "C": C, "R": R, "F": F, "T": T, "U": U, "M": M, "A": A},
@@ -470,6 +477,7 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
     ref_map = _evidence_map(evidence, "refs_by_key", "original_refs", "raw_refs_by_key")
     supplied_contexts = _evidence_map(evidence, "cite_contexts", "cite_context_by_key")
     generated_contexts = evidence.get("generated_cite_contexts") or {}
+    standalone_bib = bool(ctx.get("standalone_bib"))
     types_by_key = evidence.get("entry_types_by_key") or {}
     missing = {
         key: {"original_ref": str(ref_map.get(key) or ""),
@@ -487,7 +495,10 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
     add("## 文献核实")
     if ctx.get("coverage", {}).get("citation_scope"):
         add(ctx["coverage"]["citation_scope"])
-    add(f"- 可用材料：待核条目 {len(T)} 条，正文引用缺条 {len(cited_missing)} 条，必要依赖缺条 {len(dep_missing)} 条。")
+    if standalone_bib:
+        add(f"- 可用材料：待核条目 {len(T)} 条，必要依赖缺条 {len(dep_missing)} 条。")
+    else:
+        add(f"- 可用材料：待核条目 {len(T)} 条，正文引用缺条 {len(cited_missing)} 条，必要依赖缺条 {len(dep_missing)} 条。")
     if T or fillable:
         lines.extend([
             "",
@@ -526,9 +537,9 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
             if value:
                 add(label)
                 _add_data(lines, str(value))
-        if not item.get("original_ref"):
+        if not standalone_bib and not item.get("original_ref"):
             add("- 缺件：该键的源参考文献原文未取得。")
-        if not (item.get("cite_context") or generated_contexts.get(key)):
+        if not standalone_bib and not (item.get("cite_context") or generated_contexts.get(key)):
             add("- 缺件：该键的引用上下文未取得。")
         _add_data(lines, item["raw"], "bibtex")
 
@@ -553,7 +564,8 @@ def _render_bib(lines: list[str], ctx: dict, evidence: dict) -> bool:
                 _add_data(lines, item["cite_context"])
 
     add("### 软件保全说明")
-    for label, keys in (("安全命中", sets["F"]), ("其他未委派", sets["U"])):
+    safe_label = "安全命中（沿用库内已核实记录）" if standalone_bib else "安全命中"
+    for label, keys in ((safe_label, sets["F"]), ("其他未委派", sets["U"])):
         known = [key for key in keys if key in by_key]
         add(f"- {label} {len(known)} 条。")
     pending = list(T)

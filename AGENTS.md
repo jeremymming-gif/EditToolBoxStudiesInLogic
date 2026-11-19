@@ -61,7 +61,7 @@ py -3.14 -m flet.cli pack sources-flet/app/main.py --name 编辑部工具箱 --y
 
 - `P2_BIB_VIEW=<view>`：启动即进「引用库」的指定视图（10 视图：`overview/query/normalize/import/review/edit/dupes/fieldfix/health/settings`）；
 - `P2_SINGLE_FLOW=<convert|proofcheck>`：启动即进「单篇稿件」的指定步骤；
-- `P2_AUTORUN_LEGACY=1`：让 `P2_AUTORUN=checkbib` 走单篇页旧路径（默认已改道「引用库 → 规范化」，只保留一版兼容）。
+- `P2_AUTORUN_LEGACY=1`：保留为旧证据脚本的兼容输入；`P2_AUTORUN=checkbib` 无论是否设置该键，都进入「引用库 → AI 辅助处理 Bib」（内部路由仍为 `normalize`）。
 
 **重活验收需要稿件库**（全库普查 / 全库回归 / 代表稿）。引擎用 `Engine/slcn/paths.py`
 统一解析：环境变量 `SLCN_MANUSCRIPTS` → 向上找 → **同级目录**

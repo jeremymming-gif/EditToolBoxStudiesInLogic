@@ -293,10 +293,10 @@ def test_normalize_empty_counts_and_labels_have_no_none_or_duplicate_suffix():
     assert not any("None" in text for text in texts)
     assert "（可空）（可空）" not in " ".join(texts)
     # §4：旧「原件（.bib）/正文（.tex）」表单字段不再作为交付件渲染；
-    # 新页只有「目标 Bib（必填）+ 关联正文（.tex，可选）」。
+    # 新页只有「待处理 Bib（必填）+ 关联正文（.tex，可选）」。
     assert not any("原件（.bib）" in text for text in texts)
     assert all("关联正文" in text for text in texts if ".tex" in text)
-    assert any("目标 Bib" in text for text in texts)
+    assert any("待处理 Bib" in text and "必填" in text for text in texts)
 
 
 def test_normalize_no_report_disables_open_copy_with_reason():

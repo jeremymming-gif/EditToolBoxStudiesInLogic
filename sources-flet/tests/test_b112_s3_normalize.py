@@ -2,11 +2,14 @@
 
 覆盖 impl-plan §2.7 的 7–10、12：SinglePage 删净 checkbib 面、open_bib_view 顺序、
 NormalizeView 宿主转发 / 剪贴板服务、T4 两处 bug（`page.root.update`、剪贴板读取）、
-P2 钩子源码契约。全部不建窗口、不跑引擎。
+P2 钩子源码契约与兼容输入的实际分派。全部不建窗口、不跑引擎。
 """
 import asyncio
 import os
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -280,9 +283,120 @@ def test_p2_hooks_are_wired_in_source():
     assert 'source="env_fallback"' in source  # 非法视图回落概况并留证据
     assert 'navigate(f"single:{single_flow}", source="env")' in source
     assert 'self.mark("single_flow_hook", flow=single_flow, source="env")' in source
-    assert 'legacy_checkbib = _env_str("P2_AUTORUN_LEGACY")' in source
     assert "await self._autorun_normalize()" in source
     assert "normalize_redirect" in source  # 无输入时不再空等 _wait_run_finished
+
+
+# ── P2 自动运行行为：旧 flag 不得把体检送进初排 ─────────────────────────
+def _autorun_app(monkeypatch, *, bib="", initial_flow="convert"):
+    monkeypatch.setenv("P2_DEMO_BIB", bib)
+    monkeypatch.setenv("P2_DEMO_SINGLE_SOURCE", "anonymous.tex")
+    monkeypatch.setenv("P2_DEMO_SINGLE_OUT", "anonymous-out")
+    monkeypatch.setenv("P2_DEMO_PROOF_TEX", "anonymous-proof.tex")
+    monkeypatch.delenv("P2_CANCEL_MS", raising=False)
+
+    async def no_sleep(_delay):
+        pass
+
+    monkeypatch.setattr(M.asyncio, "sleep", no_sleep)
+    events = []
+
+    class Single:
+        FLOWS = P.SinglePage.FLOWS
+        prefill = P.SinglePage.prefill
+
+        def __init__(self):
+            self.flow_key = initial_flow
+            self.fields = {}
+
+        def ensure_built(self):
+            events.append(("single_built",))
+
+        def set_field(self, key, value):
+            self.fields[key] = value
+
+        def mark(self, event, **fields):
+            events.append((event, fields))
+
+        def run_demo(self):
+            events.append(("single_run", self.flow_key))
+
+    class Normalize:
+        def ensure_built(self):
+            events.append(("normalize_built",))
+
+        def set_field(self, key, value):
+            events.append(("normalize_field", key, value))
+
+        def _on_run(self):
+            events.append(("normalize_run",))
+
+    async def wait_finished():
+        events.append(("wait",))
+
+    app = SimpleNamespace(
+        pages={"single": Single(), "bib": SimpleNamespace(
+            normalize_view=Normalize(),
+            mark=lambda event, **fields: events.append((event, fields)),
+        )},
+        mark=lambda event, **fields: events.append((event, fields)),
+        open_bib_view=lambda view, **kw: events.append(("open_bib", view, kw)),
+        _wait_run_finished=wait_finished,
+        run_seen=False, running=False, line_count=0,
+    )
+    app._autorun_normalize = lambda: M.App._autorun_normalize(app)
+    return app, events
+
+
+@pytest.mark.parametrize("legacy", [None, "", "0", "1", "true", "yes"])
+@pytest.mark.parametrize("bib", ["", "anonymous.bib"])
+def test_checkbib_autorun_uses_normalize_even_with_legacy_flag(monkeypatch, legacy, bib):
+    if legacy is None:
+        monkeypatch.delenv("P2_AUTORUN_LEGACY", raising=False)
+    else:
+        monkeypatch.setenv("P2_AUTORUN_LEGACY", legacy)
+    app, events = _autorun_app(monkeypatch, bib=bib)
+
+    asyncio.run(M.App._autorun(app, "checkbib"))
+
+    assert ("open_bib", "normalize", {"source": "autorun"}) in events
+    assert ("normalize_built",) in events
+    assert not any(event[0] in ("single_built", "single_run", "wait") for event in events)
+    if bib:
+        assert ("normalize_field", "bib_returned", bib) in events
+        assert ("normalize_run",) in events
+    else:
+        assert ("autorun_normalize_ready", {"bib": "", "ran": False}) in events
+        assert not any(event[0] == "normalize_run" for event in events)
+
+
+@pytest.mark.parametrize("flow", ["convert", "proofcheck"])
+@pytest.mark.parametrize("legacy", ["", "1"])
+def test_single_autorun_preserves_flow_with_legacy_flag(monkeypatch, flow, legacy):
+    monkeypatch.setenv("P2_AUTORUN_LEGACY", legacy)
+    app, events = _autorun_app(monkeypatch, initial_flow=(
+        "proofcheck" if flow == "convert" else "convert"))
+
+    asyncio.run(M.App._autorun(app, flow))
+
+    assert ("single_run", flow) in events
+    assert ("wait",) in events
+    assert not any(event[0] in ("open_bib", "normalize_run") for event in events)
+    assert app.pages["single"].fields["single_source"] == "anonymous.tex"
+    assert app.pages["single"].fields["single_out"] == "anonymous-out"
+    assert app.pages["single"].fields["proof_tex"] == "anonymous-proof.tex"
+
+
+@pytest.mark.parametrize("state", ["run_seen", "running"])
+def test_checkbib_autorun_waits_for_started_run(monkeypatch, state):
+    monkeypatch.setenv("P2_AUTORUN_LEGACY", "1")
+    app, events = _autorun_app(monkeypatch, bib="anonymous.bib")
+    setattr(app, state, True)
+
+    asyncio.run(M.App._autorun(app, "checkbib"))
+
+    assert ("normalize_run",) in events
+    assert ("wait",) in events
 
 
 def test_run_call_accepts_stdin_text():

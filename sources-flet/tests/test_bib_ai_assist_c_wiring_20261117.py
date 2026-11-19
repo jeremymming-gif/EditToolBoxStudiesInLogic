@@ -142,20 +142,21 @@ def test_normalize_page_is_sole_ai_view_no_old_form():
     assert len(primaries) == 1, "每阶段恰一个主操作"
     assert primaries[0].content == BAA.R3_ACTION_LABELS["prepare"], \
         "主操作须绑当前阶段真动作（idle → 出任务书）"
-    # 旧→新：旧版钉「唯一 FilledButton 是应用且禁用」；方案 B 把它换成「应用是
-    # 阶段③的次要按钮、仍禁用」，产品意图（没有候选时不能应用）保持不变。
-    apply_btn = view._ai_view._action_buttons["apply"]
-    assert isinstance(apply_btn, ft.OutlinedButton), \
-        "apply 只在 preview 阶段当主操作，idle 时必须是次要按钮"
-    assert apply_btn.disabled is True, "没有 preview 结果时不能应用"
+    assert "apply" not in view._ai_view._action_buttons, "准备态不创建未来阶段动作"
+    assert not view._ai_view.can_apply(), "没有有效候选仍然禁止应用"
     assert not any(isinstance(n, ft.Card) for n in _walk(tree)), "不许引入 Card"
     for gone in ("交回稿（.bib）", "原件（.bib", "字段对比",
                  "键闭合", "生成报告", "报告路径"):
         assert not any(gone in t for t in texts), f"旧表单控件必须移除：{gone}"
-    # 关联 TeX 是 §4 允许的可选项；旧表单的「正文（.tex」独立必填字段已并入此处
-    tex_labels = [t for t in texts if "正文" in t and ".tex" in t]
-    assert all("关联正文" in t and "可选" in t for t in tex_labels), \
-        f"正文路径只能以「关联正文（可选）」出现：{tex_labels}"
+    assert any("待处理 Bib" in text for text in texts), "库页只保留目标 Bib 输入"
+    assert not any(".tex" in t or "关联正文" in t for t in texts), \
+        "库页不显示正文路径"
+    execute = view._ai_view._execute_boxes
+    assert set(execute) == {"verify"}, "库页执行范围只有文献核实"
+    assert view._ai_view.execute_scope() == ["bib_verify"]
+    accept_tree = view._ai_view._accept_section()
+    assert set(view._ai_view._accept_boxes) == {"verify"}, "库页采纳范围只有文献核实"
+    assert not any("初排检查" in t or "文字纠错" in t for t in _texts(accept_tree))
     assert "仅更新选定 Bib，不改中央库" in texts, "底栏/页头语义必须是新边界"
     # 新版直接成为页面内容：构造即建视图（不再是「首次展开才建」的折叠区）
     assert view._ai_view is not None
@@ -172,13 +173,11 @@ def test_library_page_folds_to_current_stage_block():
     tree = view.build()
     boxes = {getattr(n, "_bib_ai_stage"): n for n in _walk(tree)
              if getattr(n, "_bib_ai_stage", None)}
-    assert set(boxes) == {"prepare", "waiting", "review", "done"}, "四块都要建好"
-    assert [key for key in ("prepare", "waiting", "review", "done")
-            if boxes[key].visible] == ["prepare"], "只有当前阶段块展开"
+    assert set(boxes) == {"prepare"}, "只创建当前工作区，不保留隐藏的过程输入"
     texts = _texts(tree)
-    assert "① 准备" in texts and "② 等待结果" in texts, "阶段块要有阶段标题"
-    # 非当前阶段折叠不等于删除：按钮对象仍登记着（阶段切回时无需重建）
-    assert view._ai_view._action_buttons["apply"] is not None
+    assert all(label in texts for label in ("准备任务", "获取结果", "审阅采纳", "完成"))
+    assert "apply" not in view._ai_view._action_buttons
+    assert not view._ai_view.can_apply()
 
 
 def test_normalize_page_uses_body_only_compact(monkeypatch):
@@ -194,7 +193,8 @@ def test_normalize_page_uses_body_only_compact(monkeypatch):
         def __init__(self, page, *, purpose=""):
             called.append(("init", purpose))
 
-        def body_only(self, *, compact=False):
+        def body_only(self, *, compact=False, pinned_actions=False):
+            assert pinned_actions is True, "宿主将唯一动作区固定在工作区底部"
             called.append(("body_only", compact))
             return ft.Column(controls=[ft.Text("LIBRARY-AI-BODY")])
 
@@ -218,7 +218,7 @@ def test_ai_section_passes_library_purpose(monkeypatch):
         def __init__(self, page, *, purpose=""):
             seen.append(purpose)
 
-        def body_only(self, *, compact=False):
+        def body_only(self, *, compact=False, pinned_actions=False):
             return ft.Column(controls=[])
 
     monkeypatch.setattr(BAA, "BibAiAssistView", _FakeView)
@@ -505,7 +505,7 @@ def test_convert_page_toggle_builds_initial_purpose_via_adapter(monkeypatch):
             assert callable(getattr(page, "run_task_ui", None))
             assert callable(getattr(page, "browse_field", None))
 
-        def body_only(self, *, compact=False):
+        def body_only(self, *, compact=False, pinned_actions=False):
             assert compact is True, "初排嵌视图必须 compact=True（不重复六路径）"
             return ft.Column(controls=[ft.Text("INITIAL-AI-BODY")])
 
@@ -514,6 +514,8 @@ def test_convert_page_toggle_builds_initial_purpose_via_adapter(monkeypatch):
 
     page, _root = _build_single()
     page._build_convert()
+    page.set_field("single_source", "/tmp/anonymous.tex")
+    page.set_field("single_out", "/tmp/output")
     page._toggle_ai_workflow(None)
     assert page._aiw_open is True
     assert [p for p, _ in seen] == ["initial"], "初排入口必须传 purpose=initial"
@@ -536,6 +538,8 @@ def test_convert_page_real_toggle_no_page_t_crash():
 
     page, _root = _build_single()
     page._build_convert()
+    page.set_field("single_source", "/tmp/anonymous.tex")
+    page.set_field("single_out", "/tmp/output")
     page._toggle_ai_workflow(None)
     assert page._aiw_open is True, "真视图必须能展开"
     assert type(page._aiw_view).__name__ == "BibAiAssistView"
@@ -725,7 +729,9 @@ class _BrowseHost(_Host):
         self.picked: list[tuple[str, str, str]] = []
         self.app.browse_field = self._record
 
-    def _record(self, ref, title, kind, key, store_prefix="recent") -> None:
+    def _record(self, ref, title, kind, key, store_prefix="recent", *, on_result=None,
+                result_guard=None) -> None:
+        assert callable(result_guard) and result_guard()
         self.picked.append((str(key), str(title), str(kind)))
 
 
