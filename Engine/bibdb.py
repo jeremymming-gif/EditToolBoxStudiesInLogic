@@ -131,48 +131,28 @@ r"""编辑部引用库（`bib_db`）的 CLI 薄壳 —— **两个平台都随�
                                             含 @string/@preamble/@comment 或 0 条目 → 退出 2；
                                             引号未闭合的条目原样保留（kept，需人工核对）
 
-用法示例（在本目录下跑）
-------------------------
+用法示例（在 Engine 下运行，使用临时引用库）
+--------------------------------------------
     export PYTHONPATH="$PWD:$PWD/vendor"
-    /opt/homebrew/bin/python3.14 bibdb.py init
-    /opt/homebrew/bin/python3.14 bibdb.py import-bib \
-        --bib "../Studies_in_Logic_Database/2025年第6期(85)/01 Lei_Wang/name.bib" \
-        --issue "2025年第6期(85)" --slug "01 Lei_Wang"
-    /opt/homebrew/bin/python3.14 bibdb.py query --doi 10.1007/s10992-020-09558-5
-    /opt/homebrew/bin/python3.14 bibdb.py query --title "A Theory of Everything" --author Smith
-    /opt/homebrew/bin/python3.14 bibdb.py stats
-    /opt/homebrew/bin/python3.14 bibdb.py lint
-    /opt/homebrew/bin/python3.14 bibdb.py ack-duplicates --code near_duplicates \
-        --keys <keyA>,<keyB> [--apply]   # 默认 dry-run；确认不同只写 sidecar、不改库
-    /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action keep --all-fields
-    /opt/homebrew/bin/python3.14 bibdb.py resolve --key <库内 key> --action adopt \
-        --incoming-sha256 <指纹> [--allow-overlap] [--dry-run]
-    /opt/homebrew/bin/python3.14 bibdb.py report --out ../EditToolBox-notes/bib_db
-    /opt/homebrew/bin/python3.14 bibdb.py normalize --out-dir ../EditToolBox-notes/bib_db
-    # ↑ B1 dry-run 报告（B1-normalize-dryrun.md/.json）；只读库、不写 bibliography.jsonl
-    cp ../EditToolBox-notes/bib_db/bibliography.jsonl /tmp/before_B1.jsonl
-    /opt/homebrew/bin/python3.14 bibdb.py normalize --apply --backup /tmp/before_B1.jsonl \
-        --report ../EditToolBox-notes/bib_db/B1-apply-2026-10-18.md
-    # ↑ 真正 apply（只改安全条目；解析失败/高危形状/待裁决冲突字段 → 跳过并列清单）
-    /opt/homebrew/bin/python3.14 bibdb.py normalize-authors --out-dir ../EditToolBox-notes/bib_db
-    /opt/homebrew/bin/python3.14 bibdb.py normalize-authors --apply --backup /tmp/before_B2.jsonl \
-        --report ../EditToolBox-notes/bib_db/B2-author-normalize-2026-10-18.md
-    # ↑ 生成 CONFLICTS.md / DUPLICATES.md / duplicates.csv（同一份库重复生成逐字节相同）
-    /opt/homebrew/bin/python3.14 bibdb.py normalize-editors --out-dir ../EditToolBox-notes/bib_db
-    # ↑ B3 编者倒装 dry-run 报告（B3-editor-normalize-dryrun.md/.csv/.json）；只读库、
-    #   不写 bibliography.jsonl
-    cp ../EditToolBox-notes/bib_db/bibliography.jsonl /tmp/before_B3_editors.jsonl
-    /opt/homebrew/bin/python3.14 bibdb.py normalize-editors --apply \
-        --backup /tmp/before_B3_editors.jsonl \
-        --report ../EditToolBox-notes/bib_db/B3-editor-normalize-apply.md
-    # ↑ 真正 apply（只改 editor / content_sha256 / updated_at；备份 sha 必须与当前库一致）
-    /opt/homebrew/bin/python3.14 bibdb.py merge-duplicates --out-dir ../EditToolBox-notes/bib_db
-    # ↑ 重复候选合并计划 dry-run（DUPLICATES-MERGE-PLAN.md/.csv + RENAMES/MANUAL/PLAN.json；只读库）
-    cp ../EditToolBox-notes/bib_db/bibliography.jsonl /tmp/bibliography_before_merge.jsonl
-    /opt/homebrew/bin/python3.14 bibdb.py merge-duplicates --apply \
-        --backup /tmp/bibliography_before_merge.jsonl \
-        --out-dir ../EditToolBox-notes/bib_db
-    # ↑ 真正合并（按 dry-run 计划；13 人工簇暂不合并；旧 key→aliases；须备份 sha 一致）
+    DEMO=$(mktemp -d)
+    DB="$DEMO/bibliography.jsonl"
+    cat > "$DEMO/sample.bib" <<'BIB'
+    @book{example2025,
+      author = {Example, Alex},
+      title = {An Example of Logical Inference},
+      year = {2025},
+      publisher = {Example Press}
+    }
+    BIB
+    python3.14 bibdb.py init --db "$DB"
+    python3.14 bibdb.py import-bib --db "$DB" --bib "$DEMO/sample.bib" --slug demo
+    python3.14 bibdb.py query --db "$DB" --title "An Example of Logical Inference" --author Example
+    python3.14 bibdb.py stats --db "$DB"
+    python3.14 bibdb.py lint --db "$DB"
+    python3.14 bibdb.py report --db "$DB" --out "$DEMO"
+    python3.14 bibdb.py normalize --db "$DB" --out-dir "$DEMO"
+
+`report` 写清单文件，`normalize` 默认只生成预览。合并或修改现有库前请先核对预览并准备备份，参数见上文与各子命令的 `--help`。
 
 退出码
 ------
