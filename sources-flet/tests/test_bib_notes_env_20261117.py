@@ -101,7 +101,14 @@ def test_cases_must_be_directory_not_file(tmp_path):
 def test_tilde_and_relative_paths_are_expanded(tmp_path, monkeypatch):
     good = tmp_path / "notes"
     (good / "cases").mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # os.path.expanduser 在每个平台读取的家目录变量不同：POSIX 读 HOME，
+    # Windows(ntpath) 读 USERPROFILE（HOME 被忽略）。产品校验与引擎解析都用
+    # expanduser，所以这里必须按平台设置，否则 Windows 上 "~" 展开不到 tmp_path，
+    # 校验失败 -> SLCN_NOTES 根本不写入 -> 测试误报 KeyError（非产品缺陷）。
+    if os.name == "nt":
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    else:
+        monkeypatch.setenv("HOME", str(tmp_path))
 
     env = EB.env_for_run(notes="~/notes")
     assert env[ENV_KEY] == "~/notes", "校验通过时应原样写入（与引擎 expanduser 对齐）"

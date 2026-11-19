@@ -192,9 +192,11 @@ def _view(*, bridge=None, purpose="library") -> tuple[A.BibAiAssistView, _Host]:
 
 
 def _bib(path: Path, title: str) -> Path:
-    path.write_text(
-        "@article{a,\n  title = {%s},\n  year = {2020},\n}\n" % title,
-        encoding="utf-8",
+    # 显式以二进制写入固定 LF：Path.write_text 在 Windows 会把 \n 转成 \r\n，
+    # 而产品 make_preview 用 newline="" 写副本（LF 原样保留）。fixture 必须固定
+    # 字节，才能检验「复制未改动文件、逐字节一致」的原意，不受平台行尾影响。
+    path.write_bytes(
+        ("@article{a,\n  title = {%s},\n  year = {2020},\n}\n" % title).encode("utf-8")
     )
     return path
 

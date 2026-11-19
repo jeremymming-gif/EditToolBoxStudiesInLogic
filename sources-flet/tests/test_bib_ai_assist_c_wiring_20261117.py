@@ -873,6 +873,17 @@ def test_prepare_argv_derives_work_dir_from_target_bib(tmp_path):
     assert target.read_bytes() == before, "出任务书不许动目标 Bib 一个字节"
 
 
+def _path_parts_without_anchor(value: str) -> tuple[str, ...]:
+    """路径分量（去掉盘符/根锚点），供 POSIX 与 Windows 跨平台比较。
+
+    Windows 下 `os.path.abspath("/tmp/x")` 会用当前盘符补成 `D:\\tmp\\x`；
+    去掉锚点后两边都只剩 ('tmp', 'x')。这样既钉住「目录结构与文件名完全相同」，
+    又不把平台盘符差异误判成产品缺陷。
+    """
+    p = Path(value)
+    return p.parts[1:] if p.anchor else p.parts
+
+
 def test_status_call_uses_keyword_work_dir_on_real_signature():
     """真桥 `ai_status_call(*, work_dir)` 是 keyword-only：按位置数参数会漏传。"""
     bridge = _StatusBridge()
@@ -885,7 +896,13 @@ def test_status_call_uses_keyword_work_dir_on_real_signature():
     assert bridge.ran, "status 必须真的跑一次引擎调用"
     argv = _argv_of(bridge.ran[0])
     assert "status" in argv, argv
-    assert argv[argv.index("--work-dir") + 1] == "/tmp/ws/中文 空格/.aiw"
+    assert "--work-dir" in argv, "status 调用必须真的带 --work-dir 关键字"
+    # 原断言：argv[argv.index("--work-dir") + 1] == "/tmp/ws/中文 空格/.aiw"
+    # Windows 实际是 D:\tmp\ws\中文 空格\.aiw（abspath 补了盘符）。改为按路径分量比较，
+    # 仍要求值恰好是 target_bib 所在目录 + ".aiw"，一字不差（含中文与空格）。
+    assert _path_parts_without_anchor(argv[argv.index("--work-dir") + 1]) == (
+        "tmp", "ws", "中文 空格", ".aiw",
+    )
     assert view.phase == "preview"
 
 

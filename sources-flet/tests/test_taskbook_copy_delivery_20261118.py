@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -346,7 +347,11 @@ def test_copy_task_text_copies_engine_full_text_not_stale_or_path(monkeypatch):
     # 只读调用：经 taskbook_call 构造，带工作目录/任务 id，不写稿件。
     assert any(name == "taskbook" for name, _ in bridge.calls), bridge.calls
     taskbook_kwargs = [kw for name, kw in bridge.calls if name == "taskbook"][-1]
-    assert "/tmp/wd" in str(taskbook_kwargs.get("work_dir", ""))
+    # 原断言："/tmp/wd" in str(work_dir)。Windows 下产品经 abspath 补盘符 -> D:\tmp\wd。
+    # 改为按路径分量（去盘符锚点）精确比较：既跨平台，又比原来的子串判断更严格——
+    # 要求 work_dir 恰好指向 tmp/wd 这个目录，而不是仅包含该片段。
+    work_dir = Path(str(taskbook_kwargs.get("work_dir", "")))
+    assert (work_dir.parts[1:] if work_dir.anchor else work_dir.parts) == ("tmp", "wd")
     assert str(taskbook_kwargs.get("task_id", "")) == "T-7"
 
 
