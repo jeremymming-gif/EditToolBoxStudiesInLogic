@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """B-309 门禁/CI/测试执行提速：契约 + 反例（全部 hermetic）。
 
-钉住（不读真实稿件库、不写仓库 out/、不开真窗口；跑一次约 5 秒）：
+钉住（不读真实稿件库、不写仓库 out/、不开真窗口；跑一次约 15 秒）：
   (a) `corpus.py --out DIR`：输出根可换、`_worker_init` 把 OUT 带进子进程（macOS 3.14
       spawn 下父进程改全局无效）、两遍 CSV 逐字节一致；不传 --out 时默认仍是
       `Engine/out/corpus`，仓库里的 canonical `out/corpus/` 一个字节都不许动。
-  (b) `run_engine_tests.sh` 的 `SLCN_TEST_JOBS`：并行跑 → 红套件**串行复核** →
-      抖动（并行红/串行绿）不计红；退出码 = 复核后的红套数；汇总行格式不变；
-      串行 allowlist 照跑照计数；非法值退出 2；`SLCN_TEST_JOBS` 不设时走旧串行。
+  (b) `run_engine_tests.sh` 的 `SLCN_TEST_JOBS` 与单套超时：并行红套件**串行复核**，
+      抖动（并行红/串行绿）不计红；超时清理整棵进程树并继续后续套件；退出码 =
+      复核后的红套数；manifest 全覆盖；串行 allowlist 照跑照计；未设 jobs 时走旧串行。
   (c) `test_bridge.py` 的 `SLCN_BRIDGE_SKIP_GUI=1`：只跳 (g)/(h) 真窗口与 (o) 的
       tkinter import，纯逻辑断言照跑、退出 0；默认分支仍在（静态守卫）。
   (d) `ci.yml`：engine 套件 3 路并行、AUTO 守卫显式 SKIP（缺本机解释器时退出 0）、
@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -227,6 +228,15 @@ try:
     check("(b) 非法 SLCN_TEST_JOBS=0 → 退出 2 且说明原因",
           r2.returncode == 2 and "SLCN_TEST_JOBS 只能是 ≥1 的整数" in (r2.stdout + r2.stderr),
           f"rc={r2.returncode}")
+    r_timeout_invalid = run(
+        ["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_eng),
+        env=_suite_env(SLCN_TEST_TIMEOUT_SECONDS="0"))
+    check("(b) 默认单套超时为 720 秒且 0 被拒绝",
+          'SLCN_TEST_TIMEOUT_SECONDS:-720' in text_of(_eng / "tools" / "run_engine_tests.sh")
+          and r_timeout_invalid.returncode == 2
+          and "SLCN_TEST_TIMEOUT_SECONDS 只能是 1 到 4000000 的整数"
+          in (r_timeout_invalid.stdout + r_timeout_invalid.stderr),
+          f"rc={r_timeout_invalid.returncode} {r_timeout_invalid.stdout + r_timeout_invalid.stderr}")
 
     _manifest_path = _tmp / "full-result.json"
     r_manifest = run(["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_eng),
@@ -289,6 +299,183 @@ try:
           and not _quick_manifest.exists(),
           f"quick suites={len(_quick_names)} rc={r_quick_manifest.returncode} "
           f"output={(r_quick_manifest.stdout + r_quick_manifest.stderr)[-300:]}")
+
+    print("\n── (b) 单套超时：串行 / allowlist / 并行 / 串行复核清理进程树 ──")
+    _timeout_eng = _tmp / "TimeoutEngine"
+    (_timeout_eng / "tools").mkdir(parents=True)
+    _timeout_tests = _timeout_eng / "tests"
+    _timeout_tests.mkdir()
+    shutil.copy(ENGINE / "tools" / "run_engine_tests.sh",
+                _timeout_eng / "tools" / "run_engine_tests.sh")
+
+    def _install_timeout_suites(tag: str):
+        _pid_file = _tmp / f"{tag}.child.pid"
+        _parent_file = _tmp / f"{tag}.suite.pid"
+        _pulse_file = _tmp / f"{tag}.pulse"
+        _child = (
+            "import os, signal, time\n"
+            "from pathlib import Path\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            f"pid_path = Path({str(_pid_file)!r})\n"
+            f"pulse_path = Path({str(_pulse_file)!r})\n"
+            "pid_path.write_text(str(os.getpid()), encoding='ascii')\n"
+            "i = 0\n"
+            "while True:\n"
+            "    pulse_path.write_text(str(i), encoding='ascii')\n"
+            "    i += 1\n"
+            "    time.sleep(0.03)\n"
+        )
+        _hanging_suite = (
+            "import os, subprocess, sys, time\n"
+            "from pathlib import Path\n"
+            f"Path({str(_parent_file)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+            f"child = {_child!r}\n"
+            "subprocess.Popen([sys.executable, '-u', '-c', child])\n"
+            f"pid_path = Path({str(_pid_file)!r})\n"
+            "deadline = time.monotonic() + 10\n"
+            "while not pid_path.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "print('CHILD_PID=' + (pid_path.read_text(encoding='ascii') if pid_path.exists() else 'missing'), flush=True)\n"
+            "while True:\n"
+            "    time.sleep(1)\n"
+        )
+        (_timeout_tests / "test_a_timeout.py").write_text(_hanging_suite, encoding="utf-8")
+        (_timeout_tests / "test_b_after_timeout.py").write_text(
+            f"from pathlib import Path\nPath({str(_tmp / (tag + '.continued'))!r}).write_text('ran', encoding='ascii')\n"
+            "import os\nprint('phase=' + os.environ.get('SLCN_TEST_PHASE', 'serial'))\n"
+            "print(' PASS after timeout')\n",
+            encoding="utf-8")
+        return _pid_file, _parent_file, _pulse_file, _tmp / f"{tag}.continued"
+
+    def _active_process(pid: int) -> bool:
+        if os.name == "nt":
+            result = run(["tasklist", "/FI", f"PID eq {pid}", "/NH"])
+            return re.search(rf"\b{pid}\b", result.stdout + result.stderr) is not None
+        result = run(["ps", "-o", "stat=", "-p", str(pid)])
+        state = result.stdout.strip()
+        return bool(state) and not state.startswith("Z")
+
+    def _tree_is_stopped(pid_file: Path, parent_file: Path, pulse_file: Path) -> bool:
+        if not pid_file.is_file() or not parent_file.is_file() or not pulse_file.is_file():
+            return False
+        try:
+            child_pid = int(pid_file.read_text(encoding="ascii"))
+            parent_pid = int(parent_file.read_text(encoding="ascii"))
+        except (OSError, ValueError):
+            return False
+        for _ in range(20):
+            first = text_of(pulse_file)
+            time.sleep(0.1)
+            second = text_of(pulse_file)
+            if first == second:
+                return not _active_process(child_pid) and not _active_process(parent_pid)
+        return False
+
+    _serial_pid, _serial_parent, _serial_pulse, _serial_continued = _install_timeout_suites("serial-timeout")
+    _serial_manifest_path = _tmp / "serial-timeout-result.json"
+    r_serial_timeout = run(
+        ["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_timeout_eng),
+        env=_suite_env(SLCN_TEST_TIMEOUT_SECONDS="2",
+                       SLCN_TEST_RESULT_MANIFEST=str(_serial_manifest_path),
+                       SLCN_TEST_INPUTS_SHA256="c" * 64), timeout=12)
+    _serial_out = r_serial_timeout.stdout + r_serial_timeout.stderr
+    check("(b) 默认串行超时计 1 红、退出 1，并继续运行后续套件",
+          r_serial_timeout.returncode == 1
+          and "FAIL test_a_timeout" in _serial_out and "PASS test_b_after_timeout" in _serial_out
+          and _serial_continued.is_file()
+          and re.search(r"汇总：2 套件，红 1 ｜ full 档耗时 [\d.]+ 秒", _serial_out) is not None,
+          f"rc={r_serial_timeout.returncode} {_serial_out[-500:]}")
+    _serial_log_match = re.search(r"完整日志：([^\s）]+)", _serial_out)
+    _serial_logs = native(_serial_log_match.group(1)) if _serial_log_match else None
+    _serial_timeout_log = (_serial_logs / "test_a_timeout.log") if _serial_logs else Path("/nonexistent")
+    _serial_timeout_rc = (_serial_logs / "test_a_timeout.log.rc") if _serial_logs else Path("/nonexistent")
+    _serial_timeout_duration = (_serial_logs / "test_a_timeout.log.duration") if _serial_logs else Path("/nonexistent")
+    check("(b) 串行超时日志标记 TIMEOUT，退出码 124 和耗时落盘",
+          "TIMEOUT:" in text_of(_serial_timeout_log)
+          and text_of(_serial_timeout_rc).strip() == "124"
+          and _serial_timeout_duration.is_file(),
+          str(_serial_timeout_log))
+    try:
+        _serial_timeout_manifest = json.loads(_serial_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as _e:
+        _serial_timeout_manifest = {}
+        _serial_timeout_manifest_error = str(_e)
+    else:
+        _serial_timeout_manifest_error = ""
+    _serial_timeout_rows = {row.get("name"): row for row in _serial_timeout_manifest.get("suites", [])}
+    check("(b) 串行超时 manifest 覆盖两套且 timeout 状态/rc 明确",
+          set(_serial_timeout_rows) == {"test_a_timeout", "test_b_after_timeout"}
+          and _serial_timeout_rows.get("test_a_timeout", {}).get("return_code") == 124
+          and _serial_timeout_rows.get("test_a_timeout", {}).get("status") == "timeout"
+          and _serial_timeout_rows.get("test_b_after_timeout", {}).get("return_code") == 0,
+          _serial_timeout_manifest_error or str(_serial_timeout_manifest))
+    check("(b) 默认串行超时后没有存活的 suite/child 进程",
+          _tree_is_stopped(_serial_pid, _serial_parent, _serial_pulse))
+    if _serial_logs is not None:
+        shutil.rmtree(_serial_logs, ignore_errors=True)
+
+    _allow_pid, _allow_parent, _allow_pulse, _allow_continued = _install_timeout_suites("allow-timeout")
+    r_allow_timeout = run(
+        ["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_timeout_eng),
+        env=_suite_env(SLCN_TEST_TIMEOUT_SECONDS="2", SLCN_TEST_JOBS="2",
+                       SLCN_TEST_SERIAL_ALLOWLIST="test_a_timeout"), timeout=12)
+    _allow_out = r_allow_timeout.stdout + r_allow_timeout.stderr
+    _allow_log_match = re.search(r"完整日志：([^\s）]+)", _allow_out)
+    _allow_logs = native(_allow_log_match.group(1)) if _allow_log_match else None
+    _allow_timeout_log = (_allow_logs / "test_a_timeout.allow.log") if _allow_logs else Path("/nonexistent")
+    check("(b) serial allowlist 超时计红且并行中的后续套件照跑",
+          r_allow_timeout.returncode == 1 and "FAIL test_a_timeout" in _allow_out
+          and "PASS test_b_after_timeout" in _allow_out and _allow_continued.is_file()
+          and "TIMEOUT:" in text_of(_allow_timeout_log),
+          f"rc={r_allow_timeout.returncode} {_allow_out[-500:]}")
+    check("(b) serial allowlist 超时后没有存活的 suite/child 进程",
+          _tree_is_stopped(_allow_pid, _allow_parent, _allow_pulse))
+    if _allow_logs is not None:
+        shutil.rmtree(_allow_logs, ignore_errors=True)
+
+    _par_pid, _par_parent, _par_pulse, _par_continued = _install_timeout_suites("parallel-timeout")
+    _parallel_manifest_path = _tmp / "parallel-timeout-result.json"
+    _parallel_started = time.monotonic()
+    r_parallel_timeout = run(
+        ["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_timeout_eng),
+        env=_suite_env(SLCN_TEST_TIMEOUT_SECONDS="2", SLCN_TEST_JOBS="2",
+                       SLCN_TEST_RESULT_MANIFEST=str(_parallel_manifest_path),
+                       SLCN_TEST_INPUTS_SHA256="d" * 64), timeout=12)
+    _parallel_elapsed = time.monotonic() - _parallel_started
+    _parallel_out = r_parallel_timeout.stdout + r_parallel_timeout.stderr
+    _parallel_log_match = re.search(r"完整日志：([^\s）]+)", _parallel_out)
+    _parallel_logs = native(_parallel_log_match.group(1)) if _parallel_log_match else None
+    _parallel_log = (_parallel_logs / "test_a_timeout.par.log") if _parallel_logs else Path("/nonexistent")
+    _recheck_log = (_parallel_logs / "test_a_timeout.serial.log") if _parallel_logs else Path("/nonexistent")
+    check("(b) 并行超时被串行复核；复核超时也返回红并继续完成汇总",
+          r_parallel_timeout.returncode == 1 and _parallel_elapsed < 8
+          and "↺ 串行复核 test_a_timeout（并行红）" in _parallel_out
+          and "并行红 1 套 → 串行复核红 1 套（抖动 0 套）" in _parallel_out
+          and "PASS test_b_after_timeout" in _parallel_out and _par_continued.is_file()
+          and re.search(r"汇总：2 套件，红 1 ｜ full 档耗时 [\d.]+ 秒", _parallel_out) is not None,
+          f"rc={r_parallel_timeout.returncode} elapsed={_parallel_elapsed:.2f}s {_parallel_out[-700:]}")
+    check("(b) 并行和串行复核日志都记录 TIMEOUT/124",
+          "TIMEOUT:" in text_of(_parallel_log) and "TIMEOUT:" in text_of(_recheck_log)
+          and text_of(Path(str(_parallel_log) + ".rc")).strip() == "124"
+          and text_of(Path(str(_recheck_log) + ".rc")).strip() == "124")
+    try:
+        _parallel_timeout_manifest = json.loads(_parallel_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as _e:
+        _parallel_timeout_manifest = {}
+        _parallel_timeout_manifest_error = str(_e)
+    else:
+        _parallel_timeout_manifest_error = ""
+    _parallel_timeout_rows = {row.get("name"): row for row in _parallel_timeout_manifest.get("suites", [])}
+    check("(b) 并行超时 manifest 仍覆盖每套一次并采用超时复核结果",
+          set(_parallel_timeout_rows) == {"test_a_timeout", "test_b_after_timeout"}
+          and _parallel_timeout_rows.get("test_a_timeout", {}).get("return_code") == 124
+          and _parallel_timeout_rows.get("test_a_timeout", {}).get("status") == "timeout"
+          and _parallel_timeout_rows.get("test_b_after_timeout", {}).get("return_code") == 0,
+          _parallel_timeout_manifest_error or str(_parallel_timeout_manifest))
+    check("(b) 并行 timeout + timed-out recheck 后没有存活的 suite/child 进程",
+          _tree_is_stopped(_par_pid, _par_parent, _par_pulse))
+    if _parallel_logs is not None:
+        shutil.rmtree(_parallel_logs, ignore_errors=True)
 finally:
     shutil.rmtree(_tmp, ignore_errors=True)
 

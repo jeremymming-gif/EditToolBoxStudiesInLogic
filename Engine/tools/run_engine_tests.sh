@@ -39,6 +39,8 @@
 # B-309 并行档：`SLCN_TEST_JOBS=N`（≥1；默认 1 = 旧串行行为，输出/退出码逐字不变）。
 #   · >1 时同时最多跑 N 套；**并行的红套件会再串行复核一遍**，只有串行仍红才计红
 #     （并行红/串行绿 = 抖动：显式警告、日志留着，但不计红）。
+#   · 单套超时：`SLCN_TEST_TIMEOUT_SECONDS=N`（正整数；默认 720 秒）。超时按红套处理，
+#     先清理整棵套件进程树，再按原规则串行复核并计数。无需 GNU `timeout`。
 #   · 固定端口 / 共享路径的套件要放 SERIAL_ALLOWLIST（串行跑，仍计入总数）。本批审计
 #     Engine/tests 全库：无固定端口、无固定 /tmp 写、无仓库 out/ 写 → 默认空。
 #   · 汇总行格式与退出码语义不变：`汇总：N 套件，红 R ｜ full 档耗时 S 秒`；退出码 = 红套数。
@@ -186,6 +188,119 @@ suite_red() {
   [ "${rc:-1}" -ne 0 ] || [ "${bad:-0}" -ne 0 ]
 }
 
+TIMEOUT_SECONDS="${SLCN_TEST_TIMEOUT_SECONDS:-720}"
+case "$TIMEOUT_SECONDS" in
+  ''|*[!0-9]*)
+    echo "❌ SLCN_TEST_TIMEOUT_SECONDS 只能是 ≥1 的整数，收到：$TIMEOUT_SECONDS" >&2
+    exit 2 ;;
+esac
+if ! "$PY" -c 'import sys; n=int(sys.argv[1]); sys.exit(0 if 1 <= n <= 4000000 else 1)' \
+    "$TIMEOUT_SECONDS" >/dev/null 2>&1; then
+  echo "❌ SLCN_TEST_TIMEOUT_SECONDS 只能是 1 到 4000000 的整数，收到：$TIMEOUT_SECONDS" >&2
+  exit 2
+fi
+
+# Use a Python supervisor instead of GNU `timeout`, which is not guaranteed on macOS.
+# POSIX suites get a fresh process group; Windows Git Bash uses native taskkill /T /F.
+SUPERVISOR="$LOG_DIR/run_suite.py"
+cat >"$SUPERVISOR" <<'PY'
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+
+def group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_posix_tree(proc):
+    cleanup_ok = True
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        print(f"process-group SIGTERM failed: {exc}", file=sys.stderr)
+        cleanup_ok = False
+
+    deadline = time.monotonic() + 0.5
+    while cleanup_ok and group_exists(proc.pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if group_exists(proc.pid):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as exc:
+            print(f"process-group SIGKILL failed: {exc}", file=sys.stderr)
+            cleanup_ok = False
+    proc.wait()
+    return cleanup_ok
+
+
+def stop_windows_tree(proc):
+    taskkill = shutil.which("taskkill.exe") or shutil.which("taskkill")
+    if taskkill:
+        try:
+            result = subprocess.run(
+                [taskkill, "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                check=False,
+            )
+            if result.returncode == 0:
+                proc.wait()
+                return True
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"taskkill process-tree cleanup failed: {exc}", file=sys.stderr)
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    proc.wait()
+    return False
+
+
+timeout_seconds = int(sys.argv[1])
+command = [sys.argv[2], "-u", sys.argv[3]]
+kwargs = {}
+if os.name == "nt":
+    kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+else:
+    kwargs["start_new_session"] = True
+
+proc = subprocess.Popen(command, **kwargs)
+try:
+    sys.exit(proc.wait(timeout=timeout_seconds))
+except subprocess.TimeoutExpired:
+    if os.name == "nt":
+        cleanup_ok = stop_windows_tree(proc)
+    else:
+        cleanup_ok = stop_posix_tree(proc)
+    cleanup = "completed" if cleanup_ok else "attempted with warning"
+    print(
+        f"TIMEOUT: suite exceeded {timeout_seconds} seconds; "
+        f"process-tree cleanup {cleanup}",
+        file=sys.stderr,
+        flush=True,
+    )
+    sys.exit(124)
+PY
+
+run_suite() {
+  "$PY" "$SUPERVISOR" "$TIMEOUT_SECONDS" "$PY" "$1"
+}
+
 write_result_manifest() {
   [ "$MANIFEST_ENABLED" -eq 1 ] || return 0
 
@@ -245,7 +360,9 @@ for i in range(0, len(records), 4):
         fail(f"invalid duration for {name}")
     passes = len(re.findall(r"^\s*PASS\b", output, re.MULTILINE))
     fails = len(re.findall(r"^\s*FAIL\b", output, re.MULTILINE))
-    if return_code == 0 and fails == 0:
+    if return_code == 124 and re.search(r"^TIMEOUT: suite exceeded [0-9]+ seconds; process-tree cleanup (?:completed|attempted with warning)$", output, re.MULTILINE):
+        status = "timeout"
+    elif return_code == 0 and fails == 0:
         status = None
     elif fails:
         status = f"rc={return_code} FAIL {fails}"
@@ -323,7 +440,7 @@ run_parallel() {
       name="$(basename "$f" .py)"
       log="$LOG_DIR/$name.allow.log"
       if [ "$MANIFEST_ENABLED" -eq 1 ]; then suite_t0="$(now)"; fi
-      SLCN_TEST_PHASE=serial "$PY" -u "$f" >"$log" 2>&1
+      SLCN_TEST_PHASE=serial run_suite "$f" >"$log" 2>&1
       rc=$?
       printf '%s\n' "$rc" >"$log.rc"
       if [ "$MANIFEST_ENABLED" -eq 1 ]; then
@@ -337,13 +454,14 @@ run_parallel() {
   if [ "${#PAR_FILES[@]}" -gt 0 ]; then
     echo "▶ 并行：最多 $JOBS 路（红套件随后串行复核）"
     export SLCN_B309_PY="$PY" SLCN_B309_LOGDIR="$LOG_DIR" SLCN_B309_MANIFEST="$MANIFEST_ENABLED"
+    export SLCN_B309_SUPERVISOR="$SUPERVISOR" SLCN_B309_TIMEOUT="$TIMEOUT_SECONDS"
     printf '%s\n' "${PAR_FILES[@]}" | xargs -n 1 -P "$JOBS" bash -c '
       f="$1"; n="$(basename "$f" .py)"
       if [ "$SLCN_B309_MANIFEST" = 1 ]; then
         if [ -n "${EPOCHREALTIME:-}" ]; then t0="$EPOCHREALTIME"
         else t0="$("$SLCN_B309_PY" -c '\''import time; print(time.time())'\'')"; fi
       fi
-      SLCN_TEST_PHASE=parallel "$SLCN_B309_PY" -u "$f" > "$SLCN_B309_LOGDIR/$n.par.log" 2>&1
+      SLCN_TEST_PHASE=parallel "$SLCN_B309_PY" "$SLCN_B309_SUPERVISOR" "$SLCN_B309_TIMEOUT" "$SLCN_B309_PY" "$f" > "$SLCN_B309_LOGDIR/$n.par.log" 2>&1
       rc=$?
       if [ "$SLCN_B309_MANIFEST" = 1 ]; then
         if [ -n "${EPOCHREALTIME:-}" ]; then t1="$EPOCHREALTIME"
@@ -352,7 +470,7 @@ run_parallel() {
       fi
       echo "$rc" > "$SLCN_B309_LOGDIR/$n.par.log.rc"
     ' _
-    unset SLCN_B309_PY SLCN_B309_LOGDIR SLCN_B309_MANIFEST
+    unset SLCN_B309_PY SLCN_B309_LOGDIR SLCN_B309_MANIFEST SLCN_B309_SUPERVISOR SLCN_B309_TIMEOUT
   fi
 
   # 1) 并行红 → 逐套串行复核（同一份 PY、同一套环境；phase 标记便于套件自检/复现）
@@ -363,7 +481,7 @@ run_parallel() {
       PAR_RED=$((PAR_RED + 1))
       echo "  ↺ 串行复核 ${name}（并行红）"
       if [ "$MANIFEST_ENABLED" -eq 1 ]; then suite_t0="$(now)"; fi
-      SLCN_TEST_PHASE=serial "$PY" -u "$f" >"$LOG_DIR/$name.serial.log" 2>&1
+      SLCN_TEST_PHASE=serial run_suite "$f" >"$LOG_DIR/$name.serial.log" 2>&1
       rc=$?
       if [ "$MANIFEST_ENABLED" -eq 1 ]; then
         suite_t1="$(now)"
@@ -455,7 +573,7 @@ for f in "${FILES[@]}"; do
   name="$(basename "$f" .py)"
   log="$LOG_DIR/$name.log"
   if [ "$MANIFEST_ENABLED" -eq 1 ]; then suite_t0="$(now)"; fi
-  "$PY" -u "$f" >"$log" 2>&1
+  run_suite "$f" >"$log" 2>&1
   rc=$?
   if [ "$MANIFEST_ENABLED" -eq 1 ]; then
     suite_t1="$(now)"

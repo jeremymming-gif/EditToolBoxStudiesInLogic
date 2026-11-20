@@ -840,6 +840,7 @@ cd Engine && bash tools/run_engine_tests.sh full    # 默认档 = 全部 tests/t
 - quick 白名单写在脚本注释里；quick 全绿不等于能发版 —— **full 才是回归的完整口径**。
 - 解释器优先 `/opt/homebrew/bin/python3.14`，找不到回落 `python3`；`PYTHONPATH` 自动指向 `Engine/vendor`。
 - `SLCN_TEST_JOBS=4` 开并行档（默认 1 = 旧的逐套串行）；并行红的套件会自动串行复核，抖动不计红，汇总行与退出码口径不变。
+- `SLCN_TEST_TIMEOUT_SECONDS=720` 可设置单套时限（默认 720 秒）；超时会清理套件进程树、按红套记录并继续运行后续套件。
 
 ### 3.3.2 文档数字门禁：`tools/gen_docs.py`
 
