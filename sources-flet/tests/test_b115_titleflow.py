@@ -123,10 +123,13 @@ def test_step_page_primary_is_run_this_step_only():
     page.set_field("issue_dir", "/tmp/期目录")
     page.activate("toc")
     detail_filled = [ctl for ctl in _of(page._content_box, ft.FilledButton)]
-    # 批 116 决策（I-2 E′）：toc 与 infocheck 同属「生成目录」视图，两个区块
-    # 各有一个主按钮；选中步（02）的主按钮仍是 _step_run_primary。
+    # 展开的目录区块用 Filled，收起的信息检查区块用 Outlined；各保留一个动作。
+    detail_outlined = _of(page._content_box, ft.OutlinedButton)
     contents = [str(ctl.content) for ctl in detail_filled]
-    assert "生成目录" in contents and "运行检查" in contents
+    assert contents == ["生成目录"], "只有展开区块的主按钮使用 Filled"
+    outlined_contents = [str(ctl.content) for ctl in detail_outlined]
+    assert outlined_contents.count("运行检查") == 1 and "生成目录" not in outlined_contents, \
+        "收起区块保留唯一的 Outlined 主按钮"
     assert "运行整期…" not in contents
     toc_btn = next(ctl for ctl in detail_filled if str(ctl.content) == "生成目录")
     assert toc_btn is page._step_run_primary
