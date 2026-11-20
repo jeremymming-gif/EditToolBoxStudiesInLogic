@@ -138,6 +138,19 @@ _CITE_RE = re.compile(
 )
 
 
+# 行文式只处理明确双作者；完整捕获作者串，避免截取三作者或复合姓的尾部。
+_NARRATIVE_WORD = r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ]*(?:[-'’][A-Za-zÀ-ÖØ-öø-ÿ]+)*"
+_NARRATIVE_NAME = rf"{_NARRATIVE_WORD}(?:[ \t]+{_NARRATIVE_WORD})*"
+# 作者分隔和前导姓名可续接单次行断；空行仍是段落边界。
+_NARRATIVE_SPACE = r"(?:[ \t]+|[ \t]*\r?\n[ \t]*)"
+_NARRATIVE_SEP = (rf"(?:{_NARRATIVE_SPACE}?,{_NARRATIVE_SPACE}?(?:(?:\\?&|and){_NARRATIVE_SPACE})?"
+                  rf"|{_NARRATIVE_SPACE}?\\?&{_NARRATIVE_SPACE}?|{_NARRATIVE_SPACE}and{_NARRATIVE_SPACE})")
+_NARRATIVE_CITE_RE = re.compile(
+    rf"(?<![\w\\'’~-])(?P<names>{_NARRATIVE_NAME}(?:{_NARRATIVE_SEP}{_NARRATIVE_NAME})+)"
+    r"[ \t]*(?:(?P<half>\()|（)(?P<year>[0-9]{4}[a-z]?)(?(half)\)|）)"
+)
+
+
 def _normalize_locator(tail: str) -> str:
     r"""把引用尾巴里的页码统一成中文惯用式。
 
@@ -728,12 +741,16 @@ def _year_fallback_evidence(names: str, cands: list[str], entry: RefEntry) -> st
 
 
 def link_citations(body: str, refs: list[RefEntry]) -> tuple[str, list[str], list[str]]:
-    """把正文里的人年制引用换成 \\parencite{key}。
+    r"""人年引用：括号式换成 \parencite，明确双作者行文式换成 \textcite。
 
     返回 (新正文, 未匹配上的引用, 日志)。
-    匹配策略：先用「姓+年」精确匹配；再试译名表；最后**只在该年唯一且有姓名证据**
-    时按年兜底（证据写进日志）；仍然落空就保留原文并报告，**绝不按年份硬配**。
+    明确拉丁双作者按两姓同序＋完整年份唯一 key 匹配；其余括号式先用「姓+年」
+    精确匹配，再试译名表，最后只在该年唯一且有姓名证据时按年兜底（证据写进日志）。
+    仍然落空就保留原文并报告，绝不按年份硬配。
     """
+    from .wordentry import _bib_author
+
+    by_pair_year: dict[tuple[str, str, str], set[str]] = {}
     by_sur_year: dict[tuple[str, str], RefEntry] = {}
     by_sur_cn_year: dict[tuple[str, str], RefEntry] = {}
     by_year: dict[str, list[RefEntry]] = {}
@@ -743,6 +760,14 @@ def link_citations(body: str, refs: list[RefEntry]) -> tuple[str, list[str], lis
         if e.surname_cn:
             by_sur_cn_year.setdefault((e.surname_cn, e.year), e)
         by_year.setdefault(e.year, []).append(e)
+        # 两种双作者引用共用 refs_to_bib 的姓名规范化及完整候选集合。
+        authors = re.split(r"\s+and\s+", _bib_author(e.author))
+        if len(authors) == 2 and e.key:
+            surnames = [a.split(",", 1)[0].strip().casefold() for a in authors]
+            pair = (surnames[0], surnames[1], e.year)
+            if pair not in by_pair_year:
+                by_pair_year[pair] = set()
+            by_pair_year[pair].add(e.key)
 
     unmatched: list[str] = []
     logs: list[str] = []
@@ -762,62 +787,104 @@ def link_citations(body: str, refs: list[RefEntry]) -> tuple[str, list[str], lis
             # `\parencite{…，}）` 这类不平衡产物；01 Avery_Blake 实测）。
             unmatched.append(m.group(0))
             return m.group(0)
-        # names 可能是「苏珊·哈克」「李雷」「Haack」「Beall 和 Restall」
-        cands = re.split(r"[、,，和与&\s]+", names)
-        cands = [c for c in cands if c]
-        hit = None
-        for c in cands:
-            c2 = re.sub(r"^[\u4e00-\u9fff]{0,3}·", "", c)  # 去掉「苏珊·」这类译名
-            if (c, year) in by_sur_cn_year:
-                hit = by_sur_cn_year[(c, year)]
-                break
-            if (c2, year) in by_sur_cn_year:
-                hit = by_sur_cn_year[(c2, year)]
-                break
-            if (c.lower(), year) in by_sur_year:
-                hit = by_sur_year[(c.lower(), year)]
-                break
-            if c in TRANSLATED_NAMES:
-                pass
-        if hit is None:
+        pair_names = re.fullmatch(
+            rf"({_NARRATIVE_NAME})(?:\s*\\?&\s*|\s+and\s+)({_NARRATIVE_NAME})",
+            m.group("names").strip(),
+        )
+        if pair_names:
+            pair = (pair_names[1].casefold(), pair_names[2].casefold(), year)
+            keys = by_pair_year.get(pair, set())
+            if len(keys) != 1:
+                unmatched.append(m.group(0))
+                logs.append(f"INFO 括号引用『{m.group(0)}』匹配 {len(keys)} 个 key，保留原文")
+                return m.group(0)
+            key = next(iter(keys))
+        else:
+            # names 可能是「苏珊·哈克」「李雷」「Haack」「Beall 和 Restall」
+            cands = re.split(r"[、,，和与&\s]+", names)
+            cands = [c for c in cands if c]
+            hit = None
             for c in cands:
-                for cn, en in TRANSLATED_NAMES.items():
-                    if c.startswith(cn) or cn.endswith(c):
-                        for e in refs:
-                            if e.key.startswith(en) and e.year == year:
-                                hit = e
-                                break
-                        if hit:
-                            break
-                if hit:
+                c2 = re.sub(r"^[\u4e00-\u9fff]{0,3}·", "", c)  # 去掉「苏珊·」这类译名
+                if (c, year) in by_sur_cn_year:
+                    hit = by_sur_cn_year[(c, year)]
                     break
-        if hit is None and len(by_year.get(year, [])) == 1:
-            # ⚠️ 第 73 条：年份唯一只是候选范围，**不是**匹配依据。这里必须拿到姓名证据
-            #    才配（见 _year_fallback_evidence），否则让该引用点进入 unmatched，
-            #    而不是静默替换成同年的另一条文献。
-            ev = _year_fallback_evidence(names, cands, by_year[year][0])
-            if ev:
-                hit = by_year[year][0]
-                logs.append(
-                    f"『{names} {year}』按年份唯一兜底到 {hit.key}"
-                    f"（姓+年精确匹配落空；证据：{ev}，请核对）"
-                )
+                if (c2, year) in by_sur_cn_year:
+                    hit = by_sur_cn_year[(c2, year)]
+                    break
+                if (c.lower(), year) in by_sur_year:
+                    hit = by_sur_year[(c.lower(), year)]
+                    break
+                if c in TRANSLATED_NAMES:
+                    pass
+            if hit is None:
+                for c in cands:
+                    for cn, en in TRANSLATED_NAMES.items():
+                        if c.startswith(cn) or cn.endswith(c):
+                            for e in refs:
+                                if e.key.startswith(en) and e.year == year:
+                                    hit = e
+                                    break
+                            if hit:
+                                break
+                    if hit:
+                        break
+            if hit is None and len(by_year.get(year, [])) == 1:
+                # ⚠️ 第 73 条：年份唯一只是候选范围，**不是**匹配依据。这里必须拿到姓名证据
+                #    才配（见 _year_fallback_evidence），否则让该引用点进入 unmatched，
+                #    而不是静默替换成同年的另一条文献。
+                ev = _year_fallback_evidence(names, cands, by_year[year][0])
+                if ev:
+                    hit = by_year[year][0]
+                    logs.append(
+                        f"『{names} {year}』按年份唯一兜底到 {hit.key}"
+                        f"（姓+年精确匹配落空；证据：{ev}，请核对）"
+                    )
 
-        if hit is None:
-            unmatched.append(m.group(0))
-            return m.group(0)
-        used.add(hit.key)
+            if hit is None:
+                unmatched.append(m.group(0))
+                return m.group(0)
+            key = hit.key
+        used.add(key)
         # 页码：统一成中文惯用式「第N页」「第N\\cndash M页」。
         # 源稿里常见 `p.632`、`P632`、`632-635`，人工成品一律写作「第632页」。
         loc = _normalize_locator(tail)
         if loc:
-            return f"（\\parencite{{{hit.key}}}，{loc}）"
+            return f"（\\parencite{{{key}}}，{loc}）"
         # ⚠️ **没有页码时也必须包外层括号**。_CITE_RE 要求源稿里本来就带
         # `（`/`(`，所以输出永远应该有括号——早先只写 `\\parencite{key}`，
         # 结果正文里出现「……《逻辑的认识论》\\parencite{Martin2025}一书中」，
         # 与人工成品的「（\\parencite{Martin2025}）」不一致。
-        return f"（\\parencite{{{hit.key}}}）"
+        return f"（\\parencite{{{key}}}）"
 
     new_body = _CITE_RE.sub(repl, body)
+    if _NARRATIVE_CITE_RE.search(new_body):
+        from .footnotes import _AUTHOR_PARTICLE
+
+        mask = _unwritable_mask(new_body)
+
+        def narrative_repl(m: re.Match) -> str:
+            original = m.group(0)
+            if any(mask[m.start():m.end()]):
+                return original
+            names = re.split(_NARRATIVE_SEP, m.group("names"))
+            if len(names) != 2 or not re.search(r"&|\band\b", m.group("names")):
+                return original
+            # 起点前仍有姓名词/既有姓氏虚词时，不截取这个较长姓名的尾部。
+            lead = re.search(rf"({_NARRATIVE_WORD}|[a-z]+){_NARRATIVE_SPACE}$", new_body[:m.start()])
+            if lead and (lead[1][0].isupper()
+                         or _AUTHOR_PARTICLE.match(lead[1] + " " + names[0])):
+                return original
+            pair = (names[0].casefold(), names[1].casefold(), m.group("year"))
+            keys = by_pair_year.get(pair, set())
+            if len(keys) != 1:
+                unmatched.append(original)
+                logs.append(f"INFO 行文引用『{original}』匹配 {len(keys)} 个 key，保留原文")
+                return original
+            key = next(iter(keys))
+            used.add(key)
+            return f"\\textcite{{{key}}}"
+
+        new_body = _NARRATIVE_CITE_RE.sub(narrative_repl, new_body)
     logs.append(f"引用替换命中 {len(used)} 个不同条目；未匹配 {len(unmatched)} 处")
     return new_body, unmatched, logs
