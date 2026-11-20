@@ -34,6 +34,7 @@
 #   15 次 windows 运行里套件打印的全部诊断都被 `tail -3` 吃掉，**而且** `set -e`+pipefail
 #   在第一套红时就退出 —— 排在 test_llm_finish_reason 之后的 17 套在 Windows 上从来没跑过。
 #   这个脚本从设计上就是「跑完全部套件、逐套留日志」，CI 复用它才是唯一一份逻辑。
+# 可选：`SLCN_TEST_RESULT_MANIFEST=/path/result.json` 仅在 full 档写本次结果清单。
 #
 # B-309 并行档：`SLCN_TEST_JOBS=N`（≥1；默认 1 = 旧串行行为，输出/退出码逐字不变）。
 #   · >1 时同时最多跑 N 套；**并行的红套件会再串行复核一遍**，只有串行仍红才计红
@@ -42,6 +43,13 @@
 #     Engine/tests 全库：无固定端口、无固定 /tmp 写、无仓库 out/ 写 → 默认空。
 #   · 汇总行格式与退出码语义不变：`汇总：N 套件，红 R ｜ full 档耗时 S 秒`；退出码 = 红套数。
 set -uo pipefail
+
+CALLER_DIR="$PWD"
+MANIFEST_REQUESTED=0
+MANIFEST_PATH="${SLCN_TEST_RESULT_MANIFEST-}"
+if [ -n "$MANIFEST_PATH" ]; then
+  MANIFEST_REQUESTED=1
+fi
 
 # `-h` 要读自己的抬头：必须在 cd 之前把自身路径**绝对化**（cd 之后 $0 的相对路径就找不到自己了）
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -75,6 +83,15 @@ case "$MODE" in
   -h|--help) awk 'NR>1 && /^set -uo pipefail$/{exit} NR>1{sub(/^# ?/,""); print}' "$SELF"; exit 0 ;;
   *) echo "用法：bash tools/run_engine_tests.sh [quick|full]（默认 full；CI 加 SLCN_DUMP_RED_LOGS=1）" >&2; exit 2 ;;
 esac
+
+MANIFEST_ENABLED=0
+if [ "$MANIFEST_REQUESTED" -eq 1 ]; then
+  if [ "$MODE" != full ]; then
+    echo "⚠ SLCN_TEST_RESULT_MANIFEST 仅支持 full 档；本次不写 manifest" >&2
+  else
+    MANIFEST_ENABLED=1
+  fi
+fi
 
 # quick 档白名单（名字同上 tests/<name>.py；按字母序）。每一行的理由都是**核实过的**：
 QUICK=(
@@ -169,6 +186,112 @@ suite_red() {
   [ "${rc:-1}" -ne 0 ] || [ "${bad:-0}" -ne 0 ]
 }
 
+write_result_manifest() {
+  [ "$MANIFEST_ENABLED" -eq 1 ] || return 0
+
+  local f name log
+  local manifest_args=()
+  for f in "${FILES[@]}"; do
+    name="$(basename "$f" .py)"
+    if [ -f "$LOG_DIR/$name.allow.log" ]; then
+      log="$LOG_DIR/$name.allow.log"
+    elif [ -f "$LOG_DIR/$name.serial.log" ]; then
+      log="$LOG_DIR/$name.serial.log"
+    elif [ -f "$LOG_DIR/$name.par.log" ]; then
+      log="$LOG_DIR/$name.par.log"
+    else
+      log="$LOG_DIR/$name.log"
+    fi
+    if [ ! -f "$log.rc" ] || [ ! -f "$log.duration" ]; then
+      echo "⚠ 无法写测试结果 manifest：$name 的退出码或耗时记录缺失" >&2
+      return 0
+    fi
+    manifest_args+=("$name" "$log" "$log.rc" "$log.duration")
+  done
+
+  if ! "$PY" - "$MANIFEST_PATH" "$CALLER_DIR" "${SLCN_TEST_INPUTS_SHA256:-}" "${manifest_args[@]}" <<'PY'
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+
+def fail(message):
+    print(f"manifest error: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+if (len(sys.argv) - 4) % 4:
+    fail("incomplete suite records")
+
+raw_path, caller_dir, identity = sys.argv[1:4]
+target = Path(raw_path)
+if not target.is_absolute():
+    target = Path(caller_dir) / target
+records = sys.argv[4:]
+suites = []
+for i in range(0, len(records), 4):
+    name, log_path, rc_path, duration_path = records[i:i + 4]
+    try:
+        output = Path(log_path).read_text(encoding="utf-8", errors="replace")
+        return_code = int(Path(rc_path).read_text(encoding="ascii").strip())
+        duration = float(Path(duration_path).read_text(encoding="ascii").strip())
+    except (OSError, UnicodeError, ValueError) as exc:
+        fail(f"cannot read result for {name}: {exc}")
+    if not math.isfinite(duration) or duration < 0:
+        fail(f"invalid duration for {name}")
+    passes = len(re.findall(r"^\s*PASS\b", output, re.MULTILINE))
+    fails = len(re.findall(r"^\s*FAIL\b", output, re.MULTILINE))
+    if return_code == 0 and fails == 0:
+        status = None
+    elif fails:
+        status = f"rc={return_code} FAIL {fails}"
+    elif passes == 0:
+        status = f"startup failed rc={return_code}"
+    else:
+        status = f"rc={return_code}"
+    suites.append({
+        "name": name,
+        "passes": passes,
+        "fails": fails,
+        "return_code": return_code,
+        "status": status,
+        "duration_seconds": duration,
+    })
+
+payload = {
+    "schema": 1,
+    "mode": "full",
+    "identity_sha256": identity or None,
+    "suites": suites,
+}
+temporary = None
+try:
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp",
+                                     dir=str(target.parent))
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+except (OSError, ValueError) as exc:
+    if temporary:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+    fail(f"cannot atomically write {target}: {exc}")
+PY
+  then
+    echo "⚠ 写测试结果 manifest 失败；不影响测试结果和退出码" >&2
+  fi
+  return 0
+}
+
 # 红的细节：贴 FAIL 行（最多 8 行）；CI 加 SLCN_DUMP_RED_LOGS=1 时贴完整日志
 dump_red() {  # $1=name $2=log
   echo "         $1 的 FAIL 行"
@@ -199,21 +322,37 @@ run_parallel() {
     for f in "${ALLOW_FILES[@]}"; do
       name="$(basename "$f" .py)"
       log="$LOG_DIR/$name.allow.log"
+      if [ "$MANIFEST_ENABLED" -eq 1 ]; then suite_t0="$(now)"; fi
       SLCN_TEST_PHASE=serial "$PY" -u "$f" >"$log" 2>&1
-      echo $? >"$log.rc"
+      rc=$?
+      printf '%s\n' "$rc" >"$log.rc"
+      if [ "$MANIFEST_ENABLED" -eq 1 ]; then
+        suite_t1="$(now)"
+        LC_NUMERIC=C awk -v a="$suite_t0" -v b="$suite_t1" 'BEGIN{d=b-a; if(d<0)d=0; printf "%.3f\n", d}' >"$log.duration"
+      fi
       printf '  … %s（串行）\n' "$name"
     done
   fi
 
   if [ "${#PAR_FILES[@]}" -gt 0 ]; then
     echo "▶ 并行：最多 $JOBS 路（红套件随后串行复核）"
-    export SLCN_B309_PY="$PY" SLCN_B309_LOGDIR="$LOG_DIR"
+    export SLCN_B309_PY="$PY" SLCN_B309_LOGDIR="$LOG_DIR" SLCN_B309_MANIFEST="$MANIFEST_ENABLED"
     printf '%s\n' "${PAR_FILES[@]}" | xargs -n 1 -P "$JOBS" bash -c '
       f="$1"; n="$(basename "$f" .py)"
+      if [ "$SLCN_B309_MANIFEST" = 1 ]; then
+        if [ -n "${EPOCHREALTIME:-}" ]; then t0="$EPOCHREALTIME"
+        else t0="$("$SLCN_B309_PY" -c '\''import time; print(time.time())'\'')"; fi
+      fi
       SLCN_TEST_PHASE=parallel "$SLCN_B309_PY" -u "$f" > "$SLCN_B309_LOGDIR/$n.par.log" 2>&1
-      echo $? > "$SLCN_B309_LOGDIR/$n.par.log.rc"
+      rc=$?
+      if [ "$SLCN_B309_MANIFEST" = 1 ]; then
+        if [ -n "${EPOCHREALTIME:-}" ]; then t1="$EPOCHREALTIME"
+        else t1="$("$SLCN_B309_PY" -c '\''import time; print(time.time())'\'')"; fi
+        LC_NUMERIC=C awk -v a="$t0" -v b="$t1" '\''BEGIN{d=b-a; if(d<0)d=0; printf "%.3f\n", d}'\'' > "$SLCN_B309_LOGDIR/$n.par.log.duration"
+      fi
+      echo "$rc" > "$SLCN_B309_LOGDIR/$n.par.log.rc"
     ' _
-    unset SLCN_B309_PY SLCN_B309_LOGDIR
+    unset SLCN_B309_PY SLCN_B309_LOGDIR SLCN_B309_MANIFEST
   fi
 
   # 1) 并行红 → 逐套串行复核（同一份 PY、同一套环境；phase 标记便于套件自检/复现）
@@ -223,8 +362,16 @@ run_parallel() {
     if suite_red "$log" "$log.rc"; then
       PAR_RED=$((PAR_RED + 1))
       echo "  ↺ 串行复核 ${name}（并行红）"
+      if [ "$MANIFEST_ENABLED" -eq 1 ]; then suite_t0="$(now)"; fi
       SLCN_TEST_PHASE=serial "$PY" -u "$f" >"$LOG_DIR/$name.serial.log" 2>&1
-      echo $? >"$LOG_DIR/$name.serial.log.rc"
+      rc=$?
+      if [ "$MANIFEST_ENABLED" -eq 1 ]; then
+        suite_t1="$(now)"
+        printf '%s\n' "$rc" >"$LOG_DIR/$name.serial.log.rc"
+        LC_NUMERIC=C awk -v a="$suite_t0" -v b="$suite_t1" 'BEGIN{d=b-a; if(d<0)d=0; printf "%.3f\n", d}' >"$LOG_DIR/$name.serial.log.duration"
+      else
+        echo "$rc" >"$LOG_DIR/$name.serial.log.rc"
+      fi
     fi
   done
   if [ "$PAR_RED" -gt 0 ]; then
@@ -286,6 +433,7 @@ run_parallel() {
   fi
   if [ "$RED" -eq 0 ]; then
     echo "✅ 全部通过"
+    write_result_manifest
     exit 0
   fi
   KEEP_LOGS=1
@@ -293,6 +441,7 @@ run_parallel() {
   if [ "$MODE" = quick ]; then
     echo "   ⚠️ quick 只覆盖纯逻辑套件；修完请再跑一次 full"
   fi
+  write_result_manifest
   exit "$RED"
 }
 
@@ -305,8 +454,14 @@ RED=0
 for f in "${FILES[@]}"; do
   name="$(basename "$f" .py)"
   log="$LOG_DIR/$name.log"
+  if [ "$MANIFEST_ENABLED" -eq 1 ]; then suite_t0="$(now)"; fi
   "$PY" -u "$f" >"$log" 2>&1
   rc=$?
+  if [ "$MANIFEST_ENABLED" -eq 1 ]; then
+    suite_t1="$(now)"
+    printf '%s\n' "$rc" >"$log.rc"
+    LC_NUMERIC=C awk -v a="$suite_t0" -v b="$suite_t1" 'BEGIN{d=b-a; if(d<0)d=0; printf "%.3f\n", d}' >"$log.duration"
+  fi
   # 套件自己的末行就是它的汇总（`失败 0 项（全部通过）` / `SUMMARY: 0 FAIL` / `全部 PASS`）
   last="$(grep -v '^[[:space:]]*$' "$log" | tail -1 | tr -d '\r')"
   bad_lines="$(grep -cE '^[[:space:]]*FAIL\b' "$log")"
@@ -335,6 +490,7 @@ echo
 echo "汇总：$TOTAL 套件，红 $RED ｜ $MODE 档耗时 ${ELAPSED} 秒"
 if [ "$RED" -eq 0 ]; then
   echo "✅ 全部通过"
+  write_result_manifest
   exit 0
 fi
 KEEP_LOGS=1
@@ -342,4 +498,5 @@ echo "❌ 有 $RED 套红（完整日志：${LOG_DIR}）"
 if [ "$MODE" = quick ]; then
   echo "   ⚠️ quick 只覆盖纯逻辑套件；修完请再跑一次 full"
 fi
+write_result_manifest
 exit "$RED"

@@ -51,6 +51,7 @@ os.environ["SLCN_AUTO_INPUTS"] = str(TMP / "out" / "auto-inputs.json")
 os.environ["SLCN_RUN_RECORD"] = "0"
 
 import gen_docs as G  # noqa: E402
+REAL_LOAD_CURRENT_TEST_MANIFEST = G.load_current_test_manifest
 
 # ⚠️ 真的 `gen_docs.py --check` 跑本套件时，环境里带着 SLCN_GEN_DOCS_NESTED=1（它给每个子进程
 #    都置了它，防止套件再回头调 gen_docs → 无限递归）。本套件的 A 段要**直接**调
@@ -280,9 +281,9 @@ check("B 兼容：3 元素旧行渲染 == 4 元素全绿行渲染", body_old3 ==
 
 # ═══════════════════════════════════════════════════════════════════════════
 print()
-print("== C. 缓存契约：schema 升 2 + 拒收带状态的快照 ==")
+print("== C. 缓存契约：schema 升 3 + 拒收带状态的快照 ==")
 # ═══════════════════════════════════════════════════════════════════════════
-check("C schema 已升到 2", G.AUTO_INPUTS_SCHEMA == 2, G.AUTO_INPUTS_SCHEMA)
+check("C schema 已升到 3", G.AUTO_INPUTS_SCHEMA == 3, G.AUTO_INPUTS_SCHEMA)
 _inputs = {"engine_py_sha256": "e" * 64, "tests_manifest_sha256": "t" * 64,
            "env_complete": True, "manuscripts_fingerprint": "m" * 16}
 
@@ -297,8 +298,8 @@ def proj(**kw):
 check("C 命中：全绿 4 元素行可复用", G.cached_test_rows(_inputs, proj()) == [["test_x", 1, 0, None]])
 check("C 拒用：schema=1 的旧缓存",
       G.cached_test_rows(_inputs, proj(schema=1)) is None)
-check("C 拒用：schema=3 的未来缓存",
-      G.cached_test_rows(_inputs, proj(schema=3)) is None)
+check("C 拒用：schema=4 的未来缓存",
+      G.cached_test_rows(_inputs, proj(schema=4)) is None)
 check("C 拒用：缓存行带非 None status（0 FAIL 但崩溃/超时）",
       G.cached_test_rows(_inputs, proj(test_rows=[["test_x", 1, 0, "startup failed rc=1"]])) is None)
 check("C 拒用：缓存行带 FAIL 计数（B-110 语义保留）",
@@ -313,12 +314,12 @@ check("C 拒用：inputs 指纹变了（tests）",
       G.cached_test_rows(dict(_inputs, tests_manifest_sha256="cafe"), proj()) is None)
 check("C 拒用：空 test_rows", G.cached_test_rows(_inputs, proj(test_rows=[])) is None)
 
-# save_auto_inputs 必须写出 schema=2 与 4 列行
+# save_auto_inputs 必须写出 schema=3 与 4 列行
 G.AUTO_INPUTS = TMP / "out" / "auto-inputs.json"
 _rows_to_save = [("test_a", 3, 0, None), ("test_b", 4, 0, "rc=7")]
 G.save_auto_inputs(_inputs, _rows_to_save, "\n**测试**：x\n")
 _saved = json.loads(G.AUTO_INPUTS.read_text(encoding="utf-8"))
-check("C 落盘：schema 写 2", _saved.get("schema") == 2, _saved.get("schema"))
+check("C 落盘：schema 写 3", _saved.get("schema") == 3, _saved.get("schema"))
 check("C 落盘：test_rows 保留 status 列（4 列）",
       _saved.get("test_rows") == [["test_a", 3, 0, None], ["test_b", 4, 0, "rc=7"]],
       _saved.get("test_rows"))
@@ -387,17 +388,58 @@ def ef_pin(*, complete: bool, missing: list[str] | None = None, rows: list | Non
     G.README = E_README
     G.AUTO_INPUTS = TMP / "out" / "auto-inputs.json"
     G.load_auto_inputs = lambda: None            # 默认关掉快速通道：E/F 只验「现算」路径
+    G.load_current_test_manifest = lambda _inputs: (None, "synthetic fixture")
     G.notes_audit_paths = lambda: None
+    G._manuscripts_info = lambda: (str(TMP / "no-manuscripts"), "m" * 64)
+    G.test_runtime_fingerprint = lambda: {
+        "python": {"identity": "synthetic-python", "version": "3.14-test",
+                   "version_info": [3, 14, 0], "implementation": "cpython",
+                   "dependencies": {name: "1.0" for name in G.TEST_DEPENDENCIES}},
+        "xelatex": {"identity": "synthetic-xelatex", "version": "XeTeX test"},
+        "libreoffice": {"identity": "synthetic-soffice", "version": "LibreOffice test"},
+        "fonts": {"source": "synthetic", "files": 1, "sha256": "f" * 64},
+    }
+    def _fixture_inputs():
+        return {
+            "schema": G.AUTO_INPUTS_SCHEMA,
+            "corpus_csv_sha256": "c" * 64,
+            "corpus_tex_manifest_sha256": "t" * 64,
+            "corpus_tex_files": 0,
+            "audit_csv_sha256": "",
+            "audit_txt_sha256": "",
+            "notes_audit_csv_sha256": "",
+            "notes_audit_txt_sha256": "",
+            "tests_manifest_sha256": "s" * 64,
+            "tests_files": len(G.test_files()),
+            "requirements_sha256": "r" * 64,
+            "engine_py_sha256": "e" * 64,
+            "test_runtime_fingerprint": G.test_runtime_fingerprint(),
+            "env_complete": True,
+            "env_missing": [],
+            "manuscripts_present": False,
+            "manuscripts_root": str(TMP / "no-manuscripts"),
+            "manuscripts_fingerprint": "m" * 64,
+            "test_dataset_id_sha256": "",
+        }
+    G.collect_auto_inputs = _fixture_inputs
     if complete:
         G.environment_complete = lambda: (True, [])
     else:
         G.environment_complete = lambda: (False, list(missing or ["稿件库"]))
     if rows is not None:
-        G.run_tests = lambda *a, **k: (list(rows), sum(int(r[1]) for r in rows))
+        def _fixture_run(*a, **k):
+            selected = list(rows)
+            if k.get("files") is not None:
+                by_name = {str(row[0]): row for row in selected}
+                return ([by_name.get(f.stem, (f.stem, 2, 0, None))
+                         for f in k["files"]], 2 * len(k["files"]))
+            return selected, sum(int(r[1]) for r in selected)
+        G.run_tests = _fixture_run
 
 
-EF_ROWS_OK = [(f.stem, 2, 0, None) for f in G.test_files()[:4]]
-EF_ROWS_BAD = [("fake_ok", 3, 0, None), ("fake_crash", 0, 0, "startup failed rc=1")]
+EF_ROWS_OK = [(f.stem, 2, 0, None) for f in G.test_files()]
+EF_ROWS_BAD = list(EF_ROWS_OK)
+EF_ROWS_BAD[0] = (EF_ROWS_BAD[0][0], 3, 0, "startup failed rc=1")
 
 
 def ef_check(*args: str) -> tuple[int, str]:
@@ -429,7 +471,7 @@ check("E2 套件异常：文档新鲜度仍报 PASS（两件事分开）", "PASS
 check("E2 套件异常：必须打印明确的非 PASS 行", "FAIL  套件异常" in _out_e2, _out_e2[:600])
 check("E2 套件异常：rc 必须非零（旧实现这里是 0）", _rc_e2 != 0, f"rc={_rc_e2}")
 check("E2 套件异常：逐条列出异常套件与状态",
-      "fake_crash" in _out_e2 and "startup failed rc=1" in _out_e2, _out_e2[:600])
+      EF_ROWS_BAD[0][0] in _out_e2 and "startup failed rc=1" in _out_e2, _out_e2[:600])
 check("E2 套件异常：不再用「不影响 --check 的结论」把异常咽掉",
       "不影响 --check 的结论" not in _out_e2, _out_e2[:600])
 
@@ -469,9 +511,9 @@ _rc_f3, _out_f3 = ef_check("--check", "--strict-tests")
 check("F2 严格齐全 + 套件异常：rc≠0", _rc_f3 != 0, f"rc={_rc_f3}")
 check("F2 严格齐全 + 套件异常：报出异常套件", "FAIL  套件异常" in _out_f3, _out_f3[:600])
 
-# —— F3：严格模式不许借「3 元素旧缓存行」走快速通道 ——
+# —— F3：严格模式不以持久缓存替代本轮 full runner 证据 ——
 # 非严格：块指纹与输入指纹都对得上 → 走快速通道（历史行为，保留）。
-# 严格：缓存行是 3 列（没有 status 证据）→ 必须回退到现算，不许宣布 PASS。
+# 严格：无当前运行 manifest 时必须实跑，不许宣布 PASS。
 import hashlib as _hl2  # noqa: E402
 _ef_inputs = G.collect_auto_inputs()
 _cached_body, _ = G.build_block(run_test_suites=False, test_rows_in=EF_ROWS_OK)
@@ -490,6 +532,10 @@ _RAN = {"n": 0}
 
 def _counting_run(*a, **k):
     _RAN["n"] += 1
+    if k.get("files") is not None:
+        by_name = {str(row[0]): row for row in EF_ROWS_OK}
+        return ([by_name.get(f.stem, (f.stem, 2, 0, None))
+                 for f in k["files"]], 2 * len(k["files"]))
     return list(EF_ROWS_OK), sum(int(r[1]) for r in EF_ROWS_OK)
 
 
@@ -497,7 +543,7 @@ ef_pin(complete=True)
 G.run_tests = _counting_run
 G.load_auto_inputs = lambda: dict(_legacy_proj)
 _rc_sf, _out_sf = ef_check("--check", "--strict-tests")
-check("F3 严格：3 列缓存行不足以走快速通道 → 必须现算",
+check("F3 严格：持久缓存不替代当前 full run → 必须现算",
       "快速通道" not in _out_sf and _RAN["n"] >= 1, f"rc={_rc_sf}｜ran={_RAN['n']}｜{_out_sf[:300]}")
 
 # —— F5：缓存能不能当「套件通过」的证据 ——
@@ -545,6 +591,10 @@ def _f5_run(*args: str, rows: list, spy_rows: list | None = None) -> tuple[int, 
 
     def _spy(*a, **k):
         ran["n"] += 1
+        if k.get("files") is not None:
+            by_name = {str(row[0]): row for row in _rows}
+            full_rows = [by_name.get(f.stem, (f.stem, 2, 0, None)) for f in k["files"]]
+            return full_rows, sum(int(row[1]) for row in full_rows)
         return list(_rows), sum(int(r[1]) for r in _rows)
 
     ef_pin(complete=True)
@@ -590,16 +640,11 @@ for _lbl, _rows_b, _name in (("少一个", _ROWS_MISSING, "F5b 少一个套件")
     check(f"{_name}：不得打印严格缓存放行说明",
           "证据来源：本次未跑套件" not in _out_b, _out_b[:300])
 
-# F5c：严格 + 缓存 174 行且集合完全匹配、status 全 None → **允许**走快速通道（正向兼容）。
+# F5c：严格 + 完整持久缓存仍不替代本轮 full runner 证据，必须实跑。
 _rc_f5c, _out_f5c, _ran_f5c = _f5_run("--check", "--strict-tests", rows=_ROWS_FULL)
-check("F5c 严格+完整缓存：允许走快速通道（别把功能做成永不命中）",
-      _rc_f5c == 0 and "快速通道" in _out_f5c, f"rc={_rc_f5c}｜{_out_f5c[:400]}")
-check("F5c 严格+完整缓存：本次确实没跑套件", _ran_f5c == 0, _ran_f5c)
-check("F5c 严格+完整缓存：证据来源可读（缓存行数 / 期望套件数 / status 全 None）",
-      "证据来源：本次未跑套件" in _out_f5c
-      and f"缓存 {len(_ROWS_FULL)} 行" in _out_f5c
-      and f"期望 {len(_ALL_STEMS)} 个套件" in _out_f5c
-      and "status 全 None" in _out_f5c, _out_f5c[:600])
+check("F5c 严格+完整持久缓存：本轮实际运行，不走快速通道",
+      _rc_f5c == 0 and "快速通道" not in _out_f5c and _ran_f5c >= 1,
+      f"rc={_rc_f5c}｜ran={_ran_f5c}｜{_out_f5c[:400]}")
 
 # F5d：非严格 + 同样被截断的缓存 → 历史行为保持（仍可走快速通道），证明没顺手改掉非严格语义。
 _rc_f5d, _out_f5d, _ran_f5d = _f5_run("--check", rows=_ROWS_TRUNC)
@@ -668,7 +713,7 @@ check("G 拒用：带非 None status 的缓存",
                            "\n" + _W_BODY) is None)
 check("G 拒用：块里没有测试段（缓存无法与块互证）",
       G.reusable_test_rows(_F5_INPUTS, _f5_proj(_ROWS_FULL), "\n**普查**：没有测试段\n") is None)
-check("G 拒用：schema 不是 2",
+check("G 拒用：schema 不是 3",
       G.reusable_test_rows(_F5_INPUTS, dict(_f5_proj(_ROWS_FULL), schema=1), "\n" + _W_BODY) is None)
 check("G 正向：真实的 4 列全绿缓存 + 与块一致 → 仍可复用（没有靠关掉缓存修绿）",
       G.reusable_test_rows(_F5_INPUTS, _f5_proj(_ROWS_FULL), "\n" + _W_BODY) == _ROWS_FULL)
@@ -787,7 +832,7 @@ check("I9 严格快路+falsy 状态缓存：不得走快速通道", "快速通�
 # 若全绿，rc=0 是诚实的结论（证明的是"本次真跑了"，而不是"缓存说它绿"）。判据落在
 # 「有没有真跑」与「有没有拿缓存当证据」上，别用 rc 代替。
 check("I9 严格快路+falsy 状态缓存：必须回退现算（真跑了套件）",
-      _ran_i9 >= 1 and "本次实跑" in _out_i9, f"ran={_ran_i9}｜{_out_i9[:400]}")
+      _ran_i9 >= 1 and "严格档将实跑全部" in _out_i9, f"ran={_ran_i9}｜{_out_i9[:400]}")
 check("I9 严格快路+falsy 状态缓存：不得把缓存当作「套件通过」的证据",
       "证据来源：本次未跑套件" not in _out_i9, _out_i9[:400])
 check("I9 严格快路+falsy 状态缓存：不得打印「status 全 None」的放行说明",
@@ -813,6 +858,125 @@ check("F4 互斥：报错文案写明「互斥」", "互斥" in (_p_both.stdout 
 _p_write = run_cli("--strict-tests")
 check("F4 --strict-tests 不带 --check：rc!=0（写模式不许假装严格）",
       _p_write.returncode != 0, _p_write.returncode)
+
+print()
+print("== J. full runner manifest contract and cache isolation ==")
+MANIFEST_PATH = TMP / "runner-result.json"
+MANIFEST_INPUTS = {"manuscripts_present": True, "test_dataset_id_sha256": ""}
+MANIFEST_ID = G.test_run_identity(MANIFEST_INPUTS)
+MANIFEST_NAMES = [f.stem for f in G.runner_test_files()]
+
+
+def manifest_data() -> dict:
+    return {
+        "schema": 1,
+        "mode": "full",
+        "identity_sha256": MANIFEST_ID,
+        "suites": [{"name": name, "passes": 1, "fails": 0, "return_code": 0,
+                    "status": None, "duration_seconds": 0.01}
+                   for name in MANIFEST_NAMES],
+    }
+
+
+def validate_fixture_manifest(data: dict, env_identity: str = MANIFEST_ID):
+    old_path = os.environ.get("SLCN_TEST_RESULT_MANIFEST")
+    old_identity = os.environ.get("SLCN_TEST_INPUTS_SHA256")
+    try:
+        write(MANIFEST_PATH, json.dumps(data, sort_keys=True))
+        os.environ["SLCN_TEST_RESULT_MANIFEST"] = str(MANIFEST_PATH)
+        os.environ["SLCN_TEST_INPUTS_SHA256"] = env_identity
+        return REAL_LOAD_CURRENT_TEST_MANIFEST(MANIFEST_INPUTS)
+    finally:
+        if old_path is None:
+            os.environ.pop("SLCN_TEST_RESULT_MANIFEST", None)
+        else:
+            os.environ["SLCN_TEST_RESULT_MANIFEST"] = old_path
+        if old_identity is None:
+            os.environ.pop("SLCN_TEST_INPUTS_SHA256", None)
+        else:
+            os.environ["SLCN_TEST_INPUTS_SHA256"] = old_identity
+
+
+_valid_manifest = manifest_data()
+_valid_rows, _valid_reason = validate_fixture_manifest(_valid_manifest)
+check("J1 identity helper deterministic and SHA-256 shaped",
+      G.test_run_identity(MANIFEST_INPUTS) == MANIFEST_ID and len(MANIFEST_ID) == 64)
+check("J2 full manifest accepted without persistent dataset id",
+      _valid_rows is not None and _valid_reason == ""
+      and [row[0] for row in _valid_rows] == [f.stem for f in G.test_files()])
+check("J3 docs self-test is validated but excluded from AUTO rows",
+      "test_docs_consistency" in MANIFEST_NAMES
+      and all(row[0] != "test_docs_consistency" for row in (_valid_rows or [])))
+check("J4 persistent cache fails closed without dataset ID when manuscripts are present",
+      not G.persistent_cache_allowed(MANIFEST_INPUTS)
+      and G.persistent_cache_allowed(dict(MANIFEST_INPUTS, test_dataset_id_sha256="d" * 64)))
+
+_bad = manifest_data()
+_bad["schema"] = 2
+check("J5 schema mismatch rejected", validate_fixture_manifest(_bad)[0] is None)
+_bad = manifest_data()
+_bad["mode"] = "quick"
+check("J5 non-full mode rejected", validate_fixture_manifest(_bad)[0] is None)
+_bad = manifest_data()
+_bad["suites"].pop()
+check("J5 incomplete full-suite coverage rejected", validate_fixture_manifest(_bad)[0] is None)
+_bad = manifest_data()
+_bad["suites"][1]["name"] = _bad["suites"][0]["name"]
+check("J5 duplicate suite names rejected", validate_fixture_manifest(_bad)[0] is None)
+_bad = manifest_data()
+_bad["suites"][0]["passes"] = True
+check("J5 bool is rejected as a numeric assertion count", validate_fixture_manifest(_bad)[0] is None)
+_bad = manifest_data()
+_bad["suites"][0]["return_code"] = 2
+check("J5 status=null with nonzero return code rejected", validate_fixture_manifest(_bad)[0] is None)
+_bad = manifest_data()
+_doc = next(row for row in _bad["suites"] if row["name"] == "test_docs_consistency")
+_doc.update(return_code=1, status="rc=1")
+check("J5 non-green docs self-test rejected", validate_fixture_manifest(_bad)[0] is None)
+check("J5 stale environment identity rejected",
+      validate_fixture_manifest(manifest_data(), "0" * 64)[0] is None)
+
+# The strict path must select the current-run proof before considering any persistent cache.
+ef_pin(complete=True, rows=EF_ROWS_OK)
+_manifest_body, _ = G.build_block(run_test_suites=False, test_rows_in=EF_ROWS_OK)
+ef_readme("\n" + _manifest_body)
+G.load_current_test_manifest = lambda _inputs: (list(EF_ROWS_OK), "")
+G.run_tests = _explode
+_rc_j, _out_j = ef_check("--check", "--strict-tests")
+check("J6 valid current manifest is preferred and avoids another suite run",
+      _rc_j == 0 and "full runner manifest" in _out_j and "严格校验证据" in _out_j,
+      f"rc={_rc_j}｜{_out_j[:400]}")
+
+_runtime = {
+    "python": {"version": "3.14", "version_info": [3, 14, 0],
+               "dependencies": {name: "1" for name in G.TEST_DEPENDENCIES}},
+    "xelatex": {"identity": "xelatex", "version": "XeTeX"},
+    "libreoffice": {"identity": "soffice", "version": "LibreOffice"},
+    "fonts": {"source": "synthetic", "files": 2, "sha256": "a" * 64},
+}
+check("J7 strict runtime preflight accepts a complete synthetic environment",
+      G.strict_runtime_missing(_runtime) == [])
+check("J7 strict runtime preflight fails closed on a missing dependency",
+      "Python 依赖 pypdf" in G.strict_runtime_missing(
+          {**_runtime, "python": {"version": "3.14", "dependencies": {"lxml": "1"}}}))
+check("J7 strict runtime preflight rejects Python below the project baseline",
+      "测试 Python 需要 ≥3.14" in G.strict_runtime_missing(
+          {**_runtime, "python": {**_runtime["python"], "version_info": [3, 13, 9]}}))
+
+_font_dir = TMP / "synthetic-fonts"
+_font_dir.mkdir(parents=True, exist_ok=True)
+(_font_dir / "sample.ttf").write_bytes(b"synthetic font metadata fixture")
+_font_before = G.font_inventory_fingerprint([_font_dir])
+(_font_dir / "added.otf").write_bytes(b"second synthetic font metadata fixture")
+_font_after = G.font_inventory_fingerprint([_font_dir])
+check("J8 font inventory is synthetic, metadata-only, and changes with installed fonts",
+      _font_before["files"] == 1 and _font_after["files"] == 2
+      and _font_before["sha256"] != _font_after["sha256"])
+_font_id_before = G.test_run_identity(dict(MANIFEST_INPUTS,
+                                           test_runtime_fingerprint={"fonts": _font_before}))
+_font_id_after = G.test_run_identity(dict(MANIFEST_INPUTS,
+                                          test_runtime_fingerprint={"fonts": _font_after}))
+check("J8 font inventory participates in full-run identity", _font_id_before != _font_id_after)
 
 # —— 隔离：本套件绝不写真实 out/auto-inputs.json ——
 _now_bytes = REAL_AUTO.read_bytes() if REAL_AUTO.is_file() else None

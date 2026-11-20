@@ -43,6 +43,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,10 +73,14 @@ def _env() -> dict:
     return env
 
 
-def run(cmd: list[str], cwd: str | None = None, timeout: int = 1800) -> tuple[int, str]:
+def run(cmd: list[str], cwd: str | None = None, timeout: int = 1800,
+        env_extra: dict[str, str] | None = None) -> tuple[int, str]:
     from slcn import platform as _slcn_plat  # noqa: PLC0415  控制台窗口（B300-03）
 
-    r = subprocess.run(cmd, cwd=cwd or ENGINE, env=_env(), capture_output=True,
+    env = _env()
+    if env_extra:
+        env.update(env_extra)
+    r = subprocess.run(cmd, cwd=cwd or ENGINE, env=env, capture_output=True,
                        text=True, encoding="utf-8", errors="replace", timeout=timeout,
                        **_slcn_plat.no_window_kwargs())
     return r.returncode, (r.stdout or "") + (r.stderr or "")
@@ -118,8 +123,18 @@ def check_imports() -> None:
         print(f"PASS  模块 import 冒烟：{len(files)}/{len(files)}")
 
 
-def check_tests(level: str) -> None:
-    rc, out = run(["bash", os.path.join(ENGINE, "tools", "run_engine_tests.sh"), level])
+def full_test_preflight() -> tuple[bool, list[str]]:
+    """检查 full 档前提；缺项时必须在启动长套件之前 BLOCKED。"""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import gen_docs  # noqa: PLC0415
+
+    return gen_docs.environment_complete()
+
+
+def check_tests(level: str, env_extra: dict[str, str] | None = None) -> None:
+    rc, out = run(["bash", os.path.join(ENGINE, "tools", "run_engine_tests.sh"), level],
+                  env_extra=env_extra)
     tail = [ln for ln in out.splitlines() if "汇总" in ln or "❌" in ln or "✅" in ln]
     if rc == 0:
         print(f"PASS  引擎套件（{level}）：{tail[-1].strip() if tail else 'rc=0'}")
@@ -128,7 +143,8 @@ def check_tests(level: str) -> None:
         print(f"FAIL  引擎套件（{level}）")
 
 
-def check_docs(strict_tests: bool = False) -> None:
+def check_docs(strict_tests: bool = False,
+               env_extra: dict[str, str] | None = None) -> None:
     """文档看门狗。
 
     第四十一批 O3：quick 档默认传 `--no-test-runs` —— 文档看门狗内部的 `gen_docs --check`
@@ -150,10 +166,10 @@ def check_docs(strict_tests: bool = False) -> None:
         cmd.append("--strict-tests")
     else:
         cmd.append("--no-test-runs")
-    rc, out = run(cmd)
+    rc, out = run(cmd, env_extra=env_extra)
     if rc == 0 and "失败 0 项" in out:
         print("PASS  文档看门狗（AUTO/路径/编号/App 包内一致）"
-              + ("（严格：实跑套件）" if strict_tests else ""))
+              + ("（严格：测试计数已校验）" if strict_tests else ""))
         return
     # 可区分的第一类红：严格请求被前提挡住，严格校验**没做成**（区别于「比对不一致」）。
     _blocked = [ln.strip() for ln in out.splitlines() if ln.startswith("BLOCKED  ")]
@@ -403,19 +419,59 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 70)
     check_env()
     check_imports()
-    if not args.skip_tests and os.environ.get("SLCN_SELFCHECK_NESTED") != "1":
-        check_tests("full" if args.full else "quick")
-    elif not args.skip_tests:
-        SKIPS.append("引擎套件（嵌套调用时跳过，防递归）")
-        print("SKIP  引擎套件（嵌套调用，防递归）")
-    if not args.skip_docs and os.environ.get("SLCN_SELFCHECK_NESTED") != "1":
-        check_docs(strict_tests=_strict_docs)
-    elif not args.skip_docs:
-        SKIPS.append("文档看门狗（嵌套调用时跳过）")
-        print("SKIP  文档看门狗（嵌套调用，防递归）")
-        if _strict_docs:
-            # 严格档却因嵌套被跳过：不静默 —— 记一条 SKIP 说明，免得「严格」标签在嵌套调用里变成空话。
-            print("      （注意：本次是嵌套调用，严格档的严格校验未执行）")
+    nested = os.environ.get("SLCN_SELFCHECK_NESTED") == "1"
+    full_blocked = False
+    evidence_dir = None
+    evidence_env = {"SLCN_TEST_RESULT_MANIFEST": "", "SLCN_TEST_INPUTS_SHA256": ""}
+    if args.full and not args.skip_tests and not nested:
+        # Fail before the long suite when required full-test dependencies are absent.
+        try:
+            complete, missing = full_test_preflight()
+        except Exception as e:  # noqa: BLE001
+            complete, missing = False, [f"门禁环境预检异常（{type(e).__name__}）"]
+        if not complete:
+            full_blocked = True
+            FAILS.append("full 门禁 BLOCKED（长测试前提不全）")
+            print(f"BLOCKED  full 门禁未启动：缺 {'、'.join(missing)}")
+        else:
+            try:
+                import gen_docs as _gen_docs  # noqa: PLC0415
+
+                inputs = _gen_docs.collect_auto_inputs()
+                identity = _gen_docs.test_run_identity(inputs)
+                evidence_dir = tempfile.TemporaryDirectory(prefix="slcn-selfcheck-full-")
+                evidence_env = {
+                    "SLCN_TEST_RESULT_MANIFEST": os.path.join(evidence_dir.name, "engine-full.json"),
+                    "SLCN_TEST_INPUTS_SHA256": identity,
+                }
+            except Exception as e:  # noqa: BLE001 — no manifest means strict consumer must rerun
+                evidence_dir = None
+                print(f"WARN  full 结果复用未启用，将由严格文档检查自行验证：{type(e).__name__}: {e}")
+
+    try:
+        if not args.skip_tests and not nested and not full_blocked:
+            check_tests("full" if args.full else "quick", env_extra=evidence_env)
+        elif not args.skip_tests and nested:
+            SKIPS.append("引擎套件（嵌套调用时跳过，防递归）")
+            print("SKIP  引擎套件（嵌套调用，防递归）")
+        elif full_blocked:
+            print("SKIP  引擎套件（full 前提预检未通过，避免耗时后再 BLOCKED）")
+    finally:
+        try:
+            if not args.skip_docs and not nested and not full_blocked:
+                check_docs(strict_tests=_strict_docs, env_extra=evidence_env)
+            elif not args.skip_docs and nested:
+                SKIPS.append("文档看门狗（嵌套调用时跳过）")
+                print("SKIP  文档看门狗（嵌套调用，防递归）")
+                if _strict_docs:
+                    print("      （注意：本次是嵌套调用，严格档的严格校验未执行）")
+            elif full_blocked:
+                if not args.skip_docs:
+                    check_docs(strict_tests=False, env_extra=evidence_env)
+                print("BLOCKED  严格测试计数未执行（full 前提预检已 BLOCKED）")
+        finally:
+            if evidence_dir is not None:
+                evidence_dir.cleanup()
     scan_code_health()
     if not args.no_cases:
         check_cases()

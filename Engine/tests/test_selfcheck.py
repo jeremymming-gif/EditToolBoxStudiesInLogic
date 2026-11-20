@@ -174,16 +174,18 @@ check("③ App 包内检查被 --skip-app 跳过（O9）", "SKIP  App 包内一�
 #   ⑤ 下游 BLOCKED（严格档缺前提）→ 记成可区分的「BLOCKED」而不是「红」。
 # 用打桩替换 `S.run` 抓命令/注入 rc：这样断言的是**契约本身**，不依赖本机有没有稿件库。
 _runs: list[list[str]] = []
+_run_envs: list[dict | None] = []
 
 
 def _fake_run(rc, out):
-    def _f(cmd, cwd=None, timeout=1800):
+    def _f(cmd, cwd=None, timeout=1800, env_extra=None):
         _runs.append(list(cmd))
+        _run_envs.append(dict(env_extra) if env_extra else None)
         return rc, out
     return _f
 
 
-def _probe_docs(strict, rc, out):
+def _probe_docs(strict, rc, out, env_extra=None):
     """打桩跑一次 check_docs，返回 (拼出的命令, 新增的 FAILS 列表)。
 
     ⚠️ 必须**吞掉** check_docs 的 stdout：它会打印以 `PASS  `/`FAIL  ` 开头的行，
@@ -191,38 +193,92 @@ def _probe_docs(strict, rc, out):
     这些行被记账后会把 AUTO 的测试计数行搅脏。
     """
     _runs.clear()
+    _run_envs.clear()
     _orig_run, _orig_fails = S.run, list(S.FAILS)
     S.run = _fake_run(rc, out)
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            S.check_docs(strict_tests=strict)
-        return _runs[0], [f for f in S.FAILS if f not in _orig_fails]
+            S.check_docs(strict_tests=strict, env_extra=env_extra)
+        return _runs[0], [f for f in S.FAILS if f not in _orig_fails], _run_envs[0]
     finally:
         S.run = _orig_run
         S.FAILS[:] = _orig_fails
 
 
-_cmd_strict, _fails_strict_ok = _probe_docs(True, 0, "失败 0 项（全部通过）")
+_cmd_strict, _fails_strict_ok, _ = _probe_docs(True, 0, "失败 0 项（全部通过）")
 check("③b 严格档把 --strict-tests 透传给下游（不再只做 --no-test-runs 的反选）",
       "--strict-tests" in _cmd_strict and "--no-test-runs" not in _cmd_strict,
       " ".join(_cmd_strict[-2:]))
 check("③b 严格档下游 rc=0 → 不记失败（正常路径不被误伤）", _fails_strict_ok == [],
       str(_fails_strict_ok))
-_cmd_lenient, _ = _probe_docs(False, 0, "失败 0 项（全部通过）")
+_cmd_lenient, _, _ = _probe_docs(False, 0, "失败 0 项（全部通过）")
 check("③b 非严格档仍走 --no-test-runs（quick 的低成本行为不退化）",
       "--no-test-runs" in _cmd_lenient and "--strict-tests" not in _cmd_lenient,
       " ".join(_cmd_lenient[-2:]))
-_, _fails_strict_red = _probe_docs(True, 1, "FAIL  (a) AUTO 块过期")
+_, _fails_strict_red, _ = _probe_docs(True, 1, "FAIL  (a) AUTO 块过期")
 check("③b 严格档下游非零 → check_docs 记失败（rc 不被吞）",
       len(_fails_strict_red) == 1, str(_fails_strict_red))
-_, _fails_blocked = _probe_docs(
+_, _fails_blocked, _ = _probe_docs(
     True, 2, "BLOCKED  (a) 严格测试校验无法进行：gen_docs --check --strict-tests 返回 BLOCKED")
 check("③b 严格档下游 BLOCKED → 记成可区分的「BLOCKED」而不是混作「红」",
       any("BLOCKED" in f for f in _fails_blocked), str(_fails_blocked))
+_evidence = {"SLCN_TEST_RESULT_MANIFEST": "/tmp/current-run.json",
+             "SLCN_TEST_INPUTS_SHA256": "synthetic-input-id"}
+_, _, _passed_env = _probe_docs(True, 0, "失败 0 项（全部通过）", _evidence)
+check("③b 严格档把本轮 runner 清单与身份传给文档检查",
+      _passed_env == _evidence, str(_passed_env))
+_runs.clear()
+_run_envs.clear()
+_orig_run = S.run
+S.run = _fake_run(0, "汇总：1 套件，红 0")
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        S.check_tests("full", env_extra=_evidence)
+    check("③c full runner 收到本轮清单与身份",
+          _run_envs == [_evidence] and _runs[0][-1] == "full", str(_run_envs))
+finally:
+    S.run = _orig_run
 _r_help = subprocess.run([sys.executable, SELF, "--help"], capture_output=True, text=True,
                         encoding="utf-8", errors="replace", env=env)
 check("③b selfcheck CLI 有 --strict-tests（兑现 RELEASING.md/AGENTS.md 的写法）",
       "--strict-tests" in (_r_help.stdout or ""), (_r_help.stdout or "")[-200:])
+
+# ── ③d full 前提预检：缺少前提时应 BLOCKED，且不启动长套件 ────────────────
+_orig_preflight = S.full_test_preflight
+_orig_run = S.run
+_orig_health, _orig_cases, _orig_app = S.scan_code_health, S.check_cases, S.check_app_bundle
+_orig_selfcheck_fails, _orig_selfcheck_skips = list(S.FAILS), list(S.SKIPS)
+_runs.clear()
+S.full_test_preflight = lambda: (False, ["xelatex"])
+
+
+def _blocked_preflight_run(cmd, cwd=None, timeout=1800, env_extra=None):
+    _runs.append(list(cmd))
+    _run_envs.append(dict(env_extra) if env_extra else None)
+    if any("test_docs_consistency.py" in part for part in cmd):
+        return 0, "失败 0 项（全部通过）"
+    return 99, "unexpected runner"
+
+
+S.run = _blocked_preflight_run
+S.scan_code_health = lambda: None
+S.check_cases = lambda: None
+S.check_app_bundle = lambda: None
+try:
+    _stdout = io.StringIO()
+    with contextlib.redirect_stdout(_stdout):
+        _blocked_rc = S.main(["--full"])
+    check("③d1 full 前提缺失时 BLOCKED、不启动 full runner，并保留低成本文档检查",
+          _blocked_rc != 0 and "BLOCKED  full 门禁未启动" in _stdout.getvalue()
+          and any(any("test_docs_consistency.py" in part for part in cmd)
+                  and "--no-test-runs" in cmd for cmd in _runs)
+          and not any(any("run_engine_tests.sh" in part for part in cmd) for cmd in _runs),
+          _stdout.getvalue()[-300:] + str(_runs))
+finally:
+    S.full_test_preflight = _orig_preflight
+    S.run = _orig_run
+    S.scan_code_health, S.check_cases, S.check_app_bundle = _orig_health, _orig_cases, _orig_app
+    S.FAILS[:], S.SKIPS[:] = _orig_selfcheck_fails, _orig_selfcheck_skips
 
 # ── ④ O9 反例（第四十四批③a）：拆掉 test_selfcheck × App 新鲜度循环依赖 ─────
 # 判据（三反例）：

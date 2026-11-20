@@ -41,17 +41,19 @@ tools/                  开发工具：门禁证据夹具、案例索引生成�
 cd Engine && python3 -m pip install --target vendor -r requirements.txt
 export PYTHONPATH="$PWD/vendor"
 
-python3 tools/gen_docs.py            # 现算并刷新 README 的 AUTO 块（数字唯一出处）
-python3 tests/test_docs_consistency.py   # 文档看门狗（期望「失败 0 项」）
-for f in tests/test_*.py; do python3 "$f" | tail -1; done   # 全部套件
+python3 tools/gen_docs.py            # 刷新 README 的 AUTO 块；测试计数可复用有效缓存
+python3 tests/test_docs_consistency.py   # 默认低成本：检查文档新鲜度等，不校验 AUTO 测试计数行
+bash tools/run_engine_tests.sh full  # 全部 Engine 套件；由 runner 汇总真实退出码
 
-# 一键自查（第二十二批）：环境/import 冒烟 + 套件 + 文档看门狗 + 代码健康 + 案例引用/案例库体检
+# 一键自查：quick（默认）跑 quick 引擎套件和低成本文档检查；full 跑全套件及严格文档检查
 python3 tools/selfcheck.py           # quick；发版前用 --full
+python3 tools/selfcheck.py --full    # 全套引擎测试 + 严格文档/测试计数校验
 # 只查案例库（编号/索引/状态/相似度/历史路径；在公开仓根跑）
 python3 ../tools/case_audit.py --check
 
 # Flet 壳测试（pytest；跨平台）
-python3 -m pytest sources-flet/tests -q     # 期望 538 passed / 5 skipped（Windows 的 gui_auto 需交互桌面，另计）
+python3 -m pytest sources-flet/tests -q --durations=20  # 需 0 failed；报告实际 pass/skip 数，最慢 20 项仅供观察
+# 默认串行、保持全量覆盖；Windows 的 gui_auto 需交互桌面，另跑并复核
 
 # Windows 打包（flet pack；引擎 sidecar 由 Engine/tools/build_win_sidecar.ps1 生成）
 py -3.14 -m flet.cli pack sources-flet/app/main.py --name 编辑部工具箱 --yes
@@ -106,15 +108,17 @@ CI 上就是这样，所以 CI 不该因为它们红。
    **已在第 125 条修掉**：现在同输入连跑两次 `corpus.csv` 应**逐字节一致**，不一致即回归。
    历史基线数字的 ±0.03pp 抖动（`05 Chuan_Hu`）见 `EditToolBox-notes/cases/62+.md` 第 122/125 条。
 5. **打包冒烟**：`flet pack` 产物（Windows exe）跑一次，逐项核对包内引擎与仓库同名文件（"包内引擎过期"踩过）。
-6. **文档一致性**：`python3 tests/test_docs_consistency.py`（第四十一批 O2 起默认 `--no-test-runs`：
-   不重复跑套件，**AUTO 的「测试计数行」不在此校验**）；**因此 full 之外必须显式跑一次
-   `python3 tools/gen_docs.py --check`（默认严格，跑套件，约 61s）**——它是测试计数行的唯一严格守卫
-   （发版前必跑；`selfcheck --full --strict-tests` 亦可）。
-7. **Flet 壳改动**：`python3 -m pytest sources-flet/tests -q`（0 failed；≥538 passed / 5 skipped；`sources-flet/tests/gui_auto` 需 Windows 交互桌面，另跑并复核）。
+6. **文档一致性**：`python3 tests/test_docs_consistency.py` 默认低成本（内部使用
+   `--no-test-runs`），检查文档新鲜度、路径等，但**不校验 AUTO 的测试计数行**。严格校验用
+   `python3 tools/gen_docs.py --check --strict-tests`（或 `python3 tests/test_docs_consistency.py --strict-tests`）；
+   `selfcheck.py --full` 已包含全套引擎测试和严格文档/计数校验；严格档只接受本次调用生成、与本轮
+   输入指纹匹配且覆盖完整的 full-run manifest，不以历史计数缓存替代本轮证据。没有有效 manifest 时，
+   严格校验会自行运行套件；严格模式缺少必要前提会报 `BLOCKED`，不算通过。
+7. **Flet 壳改动**：`python3 -m pytest sources-flet/tests -q --durations=20`（0 failed；报告实际 pass/skip 数；最慢 20 项仅供观察，不改变覆盖；默认串行、不并行、不减覆盖；`sources-flet/tests/gui_auto` 需 Windows 交互桌面，另跑并复核）。
 
 > 只改文档的轮次：第 1–5 项可以不做，但必须说清"包内 README/版本已与仓库不同，下次 `flet pack` 会同步"。
-> **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick，第四十一批 O3 起不再整跑套件）/
-> `--full`（发版前，含严格测试计数校验）——覆盖本清单的离线部分。
+> **一键自查**：`cd Engine && python3 tools/selfcheck.py`（quick：quick 引擎套件 + 低成本文档检查）/
+> `python3 tools/selfcheck.py --full`（全套引擎测试 + 严格文档/测试计数校验）——覆盖本清单的离线部分。
 
 ## 文档维护
 
@@ -136,7 +140,7 @@ CI 上就是这样，所以 CI 不该因为它们红。
 公开仓只放**可复制的命令与指针**；案例、成本、人员与内部流程留在**笔记仓**。新维护者从零接入按下列顺序：
 
 1. **本机接入**（Windows / macOS 双平台单命令源）：[`docs/maintain/quickstart.md`](docs/maintain/quickstart.md) §1；
-2. **自检与门禁**：同页 §2 —— `Engine/tools/selfcheck.py`（quick；发版前 `--full`）+ 文档看门狗（本清单上面第 3 条）；
+2. **自检与门禁**：同页 §2 —— `Engine/tools/selfcheck.py`（quick；发版前 `--full`，其中文档新鲜度检查与严格测试计数校验的区别见本清单第 6 条）；
 3. **构建/发版**：`RELEASING.md`；Windows 用 `Engine/tools/build_win_sidecar.ps1` + `flet pack`，macOS 由 CI 打包；
 4. **文档站维护**：同页 §4 —— Node ≥ 18；改/加页面必须同步 `docs/.vitepress/config.mts` 的 nav/sidebar；
    下载资产放 `docs/public/templates/`；

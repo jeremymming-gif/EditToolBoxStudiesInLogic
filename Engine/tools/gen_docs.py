@@ -27,9 +27,10 @@ WHY：手抄的数字必然过期，而且过期了没人知道。所以这块�
 * `build_block` 的 OK 判定与渲染都改成 status 感知：全绿时测试行**逐字节不变**（AUTO 块跨机器
   可复现），出现异常套件时在摘要行追加 `❌ …（异常套件 k / n）`、并在「套件明细」后新增
   `异常套件：…` 一行逐套件标状态。
-* `out/auto-inputs.json` 的 schema 升到 2：旧缓存（schema 1）一律不复用 —— 它里面根本没有
-  status 字段，复用它等于把"上次没全绿"当 PASS。带非 None status 的缓存行也一律拒绝复用，
-  快速通道同理（看不见套件状态就不许声称 PASS）。
+* `out/auto-inputs.json` 的 schema 升到 3：旧缓存版本一律不复用。缓存还记录测试运行时指纹；
+  稿件库存在但没有 `SLCN_TEST_DATASET_ID` 时，持久套件缓存拒绝复用。
+* 严格校验优先验证本轮 full runner manifest（identity、全套件覆盖及成功的文档自检）；
+  manifest 缺失或无效时实跑 full suites，不使用持久快速缓存替代本轮证据。
 * `--check`（非严格）仍以**新鲜度**为主；但**本次真跑了套件**且存在异常套件时，必须打印明确的
   非 PASS 行并以非零退出码结束（不再出现"文档一致所以套件崩了也算过"）。
 * 新增 `--strict-tests`：前提不全（缺稿件库/TeX/LibreOffice）→ `BLOCKED` + 原因清单 + 退出码 2；
@@ -96,8 +97,10 @@ import csv
 import difflib
 import hashlib
 import json
+import math
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -174,9 +177,10 @@ CORPUS_DIR = ENGINE / "out" / "corpus"
 # 背景：批46 O5=0 的「AUTO-corpus 循环」——重跑 corpus → AUTO corpus sha 变 → 再 gen_docs+build。
 # `Engine/out/` 是 gitignore 的产物目录；测试可用 SLCN_AUTO_INPUTS 指向临时文件。
 AUTO_INPUTS = Path(os.environ.get("SLCN_AUTO_INPUTS") or (ENGINE / "out" / "auto-inputs.json"))
-# G1：schema 1 → 2。1 版的 `test_rows` 只有 `(套件, PASS, FAIL)` 三列，**没有套件状态**；
-# 复用它等于把「上次可能崩过一半」的计数当 PASS。schema 不匹配 → 缓存与快速通道一律拒用。
-AUTO_INPUTS_SCHEMA = 2
+# G1：schema 3 包含套件状态和测试运行时指纹；旧 schema 缓存一律不复用。
+# schema 不匹配 → 缓存与快速通道一律拒用。
+AUTO_INPUTS_SCHEMA = 3
+TEST_DEPENDENCIES = ("lxml", "pypdf", "pypinyin")
 _LAST_TEST_ROWS: list[tuple[str, int, int, str | None]] | None = None
 _FAST_PATH_USED = False
 _CACHED_TESTS_USED = False
@@ -241,6 +245,177 @@ def test_files() -> list[Path]:
     """参与 AUTO「测试」计数的套件清单（排除自指的 test_docs_consistency.py）。"""
     return [f for f in sorted((ENGINE / "tests").glob("test_*.py"))
             if f.name not in SELF_REFERENTIAL]
+
+
+def runner_test_files() -> list[Path]:
+    """full runner 清单：与 shell runner 一样包含自指的文档自检套件。"""
+    return [f for f in sorted((ENGINE / "tests").glob("test_*.py")) if f.is_file()]
+
+
+def _runner_python() -> str:
+    """按 `run_engine_tests.sh` 的解释器优先级解析测试 Python。"""
+    explicit = os.environ.get("SLCN_TEST_PYTHON", "").strip()
+    if explicit:
+        return shutil.which(explicit) or explicit
+    mac_python = "/opt/homebrew/bin/python3.14"
+    if os.path.isfile(mac_python) and os.access(mac_python, os.X_OK):
+        return mac_python
+    return shutil.which("python3") or shutil.which("python") or sys.executable
+
+
+def _resolve_executable(command: str | None) -> str | None:
+    if not command:
+        return None
+    found = shutil.which(command)
+    candidate = found or command
+    try:
+        return str(Path(candidate).resolve())
+    except OSError:
+        return candidate
+
+
+_FONT_EXTENSIONS = {".ttf", ".otf", ".ttc", ".otc", ".dfont", ".pfb", ".pfa"}
+
+
+def font_inventory_fingerprint(roots: list[Path] | None = None) -> dict:
+    """Fingerprint installed font paths and metadata without reading font contents."""
+    source = "fixture-directories"
+    files: list[Path] = []
+    if roots is None:
+        fc_list = shutil.which("fc-list")
+        if fc_list:
+            try:
+                p = subprocess.run([fc_list, "--format=%{file}\\n"], capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace", timeout=8)
+                if p.returncode == 0:
+                    files = [Path(line.strip()) for line in p.stdout.splitlines() if line.strip()]
+                    source = "fontconfig"
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if not files:
+            home = Path.home()
+            if os.name == "nt":
+                roots = [Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts",
+                         Path(os.environ.get("LOCALAPPDATA", str(home)))
+                         / "Microsoft" / "Windows" / "Fonts"]
+            else:
+                roots = [Path("/System/Library/Fonts"), Path("/Library/Fonts"),
+                         home / "Library" / "Fonts", Path("/usr/share/fonts"),
+                         Path("/usr/local/share/fonts"), home / ".local" / "share" / "fonts",
+                         home / ".fonts"]
+            source = "standard-font-directories"
+    if roots is not None:
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                files.extend(p for p in root.rglob("*")
+                             if p.is_file() and p.suffix.lower() in _FONT_EXTENSIONS)
+            except OSError:
+                continue
+
+    records = []
+    for path in sorted(set(files), key=lambda item: str(item).casefold()):
+        if path.suffix.lower() not in _FONT_EXTENSIONS:
+            continue
+        try:
+            resolved = path.resolve()
+            stat = resolved.stat()
+        except OSError:
+            continue
+        records.append((str(resolved), stat.st_size, stat.st_mtime_ns))
+    digest = hashlib.sha256(json.dumps(records, ensure_ascii=False, separators=(",", ":"))
+                            .encode("utf-8")).hexdigest()
+    return {"source": source, "files": len(records), "sha256": digest}
+
+
+def _version_probe(command: list[str]) -> str | None:
+    try:
+        p = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=8)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    text = p.stdout or p.stderr
+    return next((line.strip() for line in text.splitlines() if line.strip()), None) if p.returncode == 0 else None
+
+
+def test_runtime_fingerprint() -> dict:
+    """测试运行时身份：Python/依赖与 TeX、LibreOffice 可执行文件及版本。"""
+    python = _runner_python()
+    python_identity = _resolve_executable(python) or python
+    dep_names = json.dumps(TEST_DEPENDENCIES)
+    probe = (
+        "import importlib.metadata as m,json,sys;"
+        f"names={dep_names};"
+        "installed={d.metadata.get('Name','').lower().replace('_','-'):d.version "
+        "for d in m.distributions() if d.metadata.get('Name')};"
+        "print(json.dumps({'version':sys.version,'implementation':sys.implementation.name,"
+        "'version_info':list(sys.version_info[:3]),"
+        "'dependencies':{n:installed.get(n) for n in names}},sort_keys=True))"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ENGINE / "vendor")
+    try:
+        p = subprocess.run([python, "-c", probe], cwd=str(ENGINE), env=env,
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=8)
+        py_data = json.loads(p.stdout) if p.returncode == 0 else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        py_data = {}
+
+    xelatex = _resolve_executable(shutil.which("xelatex"))
+    try:
+        if str(ENGINE) not in sys.path:
+            sys.path.insert(0, str(ENGINE))
+        from slcn.platform import find_soffice, soffice_cli_for  # noqa: PLC0415
+        soffice = _resolve_executable(soffice_cli_for(find_soffice()))
+    except Exception:  # noqa: BLE001 - strict preflight will report unavailable tool identity
+        soffice = None
+
+    return {
+        "python": {
+            "identity": python_identity,
+            "version": py_data.get("version"),
+            "version_info": py_data.get("version_info"),
+            "implementation": py_data.get("implementation"),
+            "dependencies": py_data.get("dependencies", {name: None for name in TEST_DEPENDENCIES}),
+        },
+        "xelatex": {
+            "identity": xelatex or "",
+            "version": _version_probe([xelatex, "--version"]) if xelatex else None,
+        },
+        "libreoffice": {
+            "identity": soffice or "",
+            "version": _version_probe([soffice, "--version"]) if soffice else None,
+        },
+        "fonts": font_inventory_fingerprint(),
+    }
+
+
+def strict_runtime_missing(runtime: dict) -> list[str]:
+    """严格校验启动长套件前的快速环境检查。"""
+    missing: list[str] = []
+    py = runtime.get("python") if isinstance(runtime, dict) else None
+    if not isinstance(py, dict) or not py.get("version"):
+        missing.append("测试 Python 无法启动或读取版本")
+    version_info = py.get("version_info") if isinstance(py, dict) else None
+    if (not isinstance(version_info, list) or len(version_info) < 2
+            or not all(type(part) is int and part >= 0 for part in version_info[:2])
+            or tuple(version_info[:2]) < (3, 14)):
+        missing.append("测试 Python 需要 ≥3.14")
+    deps = py.get("dependencies", {}) if isinstance(py, dict) else {}
+    for name in TEST_DEPENDENCIES:
+        if not isinstance(deps, dict) or not deps.get(name):
+            missing.append(f"Python 依赖 {name}")
+    for key, label in (("xelatex", "xelatex 版本探测"), ("libreoffice", "LibreOffice 版本探测")):
+        item = runtime.get(key) if isinstance(runtime, dict) else None
+        if not isinstance(item, dict) or not item.get("identity") or not item.get("version"):
+            missing.append(label)
+    fonts = runtime.get("fonts") if isinstance(runtime, dict) else None
+    if (not isinstance(fonts, dict) or type(fonts.get("files")) is not int
+            or fonts["files"] < 1 or not fonts.get("sha256")):
+        missing.append("字体清单不可用")
+    return missing
 
 
 # ── G1：套件状态可信化 ────────────────────────────────────────────────────
@@ -712,6 +887,89 @@ def _sha256_file(p: Path) -> str:
         return ""
 
 
+def test_run_identity(inputs: dict) -> str:
+    """Stable full-run identity shared with selfcheck and the strict consumer."""
+    runner = ENGINE / "tools" / "run_engine_tests.sh"
+    runner_sha = _sha256_file(runner)
+    if not runner_sha:
+        raise RuntimeError(f"full runner script is unavailable: {runner}")
+    payload = {"auto_inputs": inputs, "runner_script_sha256": runner_sha}
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def load_current_test_manifest(inputs_now: dict) -> tuple[list | None, str]:
+    """Load and validate the runner's ephemeral schema-1 full-run manifest.
+
+    A returned row list contains only AUTO suites. The self-referential docs suite is
+    nevertheless mandatory in the runner manifest and must be green before this proof
+    can replace a strict test run.
+    """
+    path_text = os.environ.get("SLCN_TEST_RESULT_MANIFEST", "").strip()
+    identity_text = os.environ.get("SLCN_TEST_INPUTS_SHA256", "").strip().lower()
+    if not path_text:
+        return None, "没有配置当前运行 manifest"
+    if not re.fullmatch(r"[0-9a-f]{64}", identity_text):
+        return None, "当前运行 identity 缺失或格式错误"
+    try:
+        expected_identity = test_run_identity(inputs_now)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None, "无法计算当前 full runner identity"
+    if identity_text != expected_identity:
+        return None, "SLCN_TEST_INPUTS_SHA256 与当前输入/runner 不匹配"
+    try:
+        manifest_path = Path(path_text).expanduser()
+        if not manifest_path.is_file() or manifest_path.stat().st_size > 4 * 1024 * 1024:
+            return None, "当前运行 manifest 缺失或超过大小上限"
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return None, "当前运行 manifest 不可读或 JSON 无效"
+    if not isinstance(data, dict) or type(data.get("schema")) is not int or data.get("schema") != 1:
+        return None, "manifest schema 必须为整数 1"
+    if data.get("mode") != "full":
+        return None, "manifest mode 必须为 full"
+    if data.get("identity_sha256") != expected_identity:
+        return None, "manifest identity 与当前输入/runner 不匹配"
+
+    expected_names = [f.stem for f in runner_test_files()]
+    suites = data.get("suites")
+    if not isinstance(suites, list) or len(suites) != len(expected_names):
+        return None, "manifest suite 覆盖面与 full runner 不一致"
+    by_name: dict[str, dict] = {}
+    for row in suites:
+        if not isinstance(row, dict):
+            return None, "manifest suite row 必须为对象"
+        name = row.get("name")
+        if not isinstance(name, str) or name not in expected_names or name in by_name:
+            return None, "manifest suite 名称无效或重复"
+        passes, fails, return_code = row.get("passes"), row.get("fails"), row.get("return_code")
+        status, duration = row.get("status"), row.get("duration_seconds")
+        if (type(passes) is not int or passes < 0 or type(fails) is not int or fails < 0
+                or type(return_code) is not int):
+            return None, f"manifest suite {name} 的计数/退出码类型无效"
+        if status is not None and not isinstance(status, str):
+            return None, f"manifest suite {name} 的 status 类型无效"
+        if (isinstance(duration, bool) or not isinstance(duration, (int, float))
+                or not math.isfinite(duration) or duration < 0):
+            return None, f"manifest suite {name} 的 duration_seconds 无效"
+        if status is None and (return_code != 0 or fails != 0):
+            return None, f"manifest suite {name} 以 status=null 标记，但退出码或 FAIL 数非零"
+        by_name[name] = row
+    if set(by_name) != set(expected_names):
+        return None, "manifest 未精确覆盖 full runner suites"
+
+    docs_name = "test_docs_consistency"
+    docs = by_name.get(docs_name)
+    if (docs is None or docs["status"] is not None or docs["return_code"] != 0
+            or docs["fails"] != 0):
+        return None, "manifest 缺少成功的 test_docs_consistency 自检"
+    auto_names = [f.stem for f in test_files()]
+    rows = [(name, by_name[name]["passes"], by_name[name]["fails"], by_name[name]["status"])
+            for name in auto_names]
+    return rows, ""
+
+
 def _corpus_tex_manifest() -> tuple[str, int]:
     """`out/corpus/**/*.tex` 的相对路径 + 内容 sha 聚合（占位符那一行的输入）。"""
     h = hashlib.sha256()
@@ -767,6 +1025,7 @@ def collect_auto_inputs() -> dict:
     tex_sha, tex_n = _corpus_tex_manifest()
     tests_sha, tests_n = _tests_manifest()
     manuscripts_root, manuscripts_fp = _manuscripts_info()
+    dataset_id = os.environ.get("SLCN_TEST_DATASET_ID", "").strip()
     notes = notes_audit_paths()
     return {
         "schema": AUTO_INPUTS_SCHEMA,
@@ -781,11 +1040,16 @@ def collect_auto_inputs() -> dict:
         "notes_audit_txt_sha256": _sha256_file(notes[1]) if notes else "",
         "tests_manifest_sha256": tests_sha,
         "tests_files": tests_n,
+        "requirements_sha256": _sha256_file(ENGINE / "requirements.txt"),
         "engine_py_sha256": (_run_record.engine_py_sha256() if _run_record is not None else ""),
+        "test_runtime_fingerprint": test_runtime_fingerprint(),
         "env_complete": env_ok,
         "env_missing": missing,
+        "manuscripts_present": not any(str(item).startswith("稿件库") for item in missing),
         "manuscripts_root": manuscripts_root,
         "manuscripts_fingerprint": manuscripts_fp,
+        "test_dataset_id_sha256": hashlib.sha256(dataset_id.encode("utf-8")).hexdigest()
+        if dataset_id else "",
     }
 
 
@@ -815,8 +1079,12 @@ def cached_test_rows(inputs_now: dict, project: dict | None) -> list | None:
         # G1：schema 1 的三列行**没有套件状态**，复用等于把「上次可能崩过一半」的计数
         # 当成 PASS。旧缓存一律不认 —— 宁可多跑一遍套件，也不许把不可信数字写进块里。
         return None
+    if not persistent_cache_allowed(inputs_now):
+        return None
     old = project.get("inputs") or {}
-    keys = ("engine_py_sha256", "tests_manifest_sha256", "env_complete", "manuscripts_fingerprint")
+    keys = ("engine_py_sha256", "tests_manifest_sha256", "env_complete", "manuscripts_fingerprint",
+            "manuscripts_present", "test_dataset_id_sha256", "requirements_sha256",
+            "test_runtime_fingerprint")
     if any(old.get(k) != inputs_now.get(k) for k in keys):
         return None
     rows = project.get("test_rows")
@@ -841,6 +1109,12 @@ def cached_test_rows(inputs_now: dict, project: dict | None) -> list | None:
     if abnormal_suites(rows):
         return None
     return rows
+
+
+def persistent_cache_allowed(inputs_now: dict) -> bool:
+    """A persistent suite cache needs an explicit identity for any detected manuscript root."""
+    return not (inputs_now.get("manuscripts_present") is True
+                and not inputs_now.get("test_dataset_id_sha256"))
 
 
 def reusable_test_rows(inputs_now: dict, project: dict | None, block_body: str | None) -> list | None:
@@ -888,6 +1162,8 @@ def fast_check_ok(old_body: str, project: dict | None, inputs_now: dict) -> bool
     成立时可直接 PASS（不必重跑套件）；任一项对不上都回退到「现算 + 逐行比对」。
     """
     if not project or project.get("schema") != AUTO_INPUTS_SCHEMA:
+        return False
+    if not persistent_cache_allowed(inputs_now):
         return False
     if not inputs_now.get("env_complete"):
         return False
@@ -1192,45 +1468,60 @@ def _main_impl(argv: list[str] | None = None) -> int:
             return 2
         # 严格模式绝不宽化：测试计数行按实测逐字比对（契约 3 的宽松归一化在严格下禁用）。
         lenient = (not complete) and not a.strict_tests
-        # O14（第四十七批）快速通道：`out/auto-inputs.json` 的输入指纹未变 **且** README 块指纹
-        # 等于上次写出的块 → 直接 PASS，**不跑套件**（严格模式下这是 ~90s/次 的节省）。
-        # 任何一项对不上（输入变了/块被改过/缓存损坏）都回退到下面的「现算 + 逐行比对」。
-        if not lenient:
+        inputs_now = collect_auto_inputs() if a.strict_tests else None
+        if a.strict_tests:
+            runtime_missing = strict_runtime_missing(inputs_now.get("test_runtime_fingerprint", {}))
+            if runtime_missing:
+                print("BLOCKED  严格测试校验环境预检失败：")
+                for item in runtime_missing:
+                    print(f"      - {item}")
+                print("      尚未启动测试套件；请先修复运行时依赖/工具，再重跑严格校验。")
+                return 2
+            manifest_rows, manifest_reason = load_current_test_manifest(inputs_now)
+            if manifest_rows is None:
+                print(f"提示  当前 full runner manifest 未采信（{manifest_reason}）；"
+                      f"严格档将实跑全部 {len(runner_test_files())} 个套件，含文档自检")
+            else:
+                print("严格校验证据：已采信与当前输入和 runner 匹配的 full manifest；"
+                      "文档自检成功，AUTO 只计入非自指套件")
+        else:
+            manifest_rows = None
+        # O14 快速通道只供非严格新鲜度校验使用。严格档优先接受本轮 full manifest；
+        # 缺少有效 manifest 时必须实跑，不以历史快照替代本轮及文档自检证据。
+        if not lenient and not a.strict_tests:
             project = load_auto_inputs()
             if project:
                 inputs_now = collect_auto_inputs()
-                # G1：严格模式只在**缓存行全都 status 为 None**（且形状可信）时才允许走快速通道；
-                # 旧 schema 已被 fast_check_ok 拒掉，这里再挡一层「行不全/有空缺」的缓存。
                 _fast_ok = fast_check_ok(old, project, inputs_now)
-                _want_suites = [f.stem for f in test_files()]
-                if _fast_ok and a.strict_tests and not suite_rows_trusted(
-                        project.get("test_rows"), expected=_want_suites):
-                    _fast_ok = False
-                # G1-F5b：套件名集合对上还不够 —— 缓存里的**数字**也得是 README 里那段
-                # 已经写着的数字。缓存是"自己说自己对"，一份把某套件断言数改大的缓存
-                # 集合仍然完全匹配；这里拿缓存重渲染一遍与块逐行对比，对不上就回退现算。
-                if _fast_ok and a.strict_tests and not cached_rows_match_block(
-                        old, project.get("test_rows")):
-                    _fast_ok = False
                 if _fast_ok:
                     global _FAST_PATH_USED
                     _FAST_PATH_USED = True
                     print("PASS  AUTO 块与上次写入一致；输入指纹未变"
                           "（快速通道：corpus/audit/engine/tests 均未变，未跑套件）")
-                    if a.strict_tests:
-                        # G1-F5：严格档不许只说「缓存可信」，必须把**证据覆盖面**摊开：
-                        # 缓存认的是「上次写出的那批套件计数」，只有行数与当前 test_files()
-                        # 逐一对得上、且 status 全 None，才轮得到它顶替一次真实运行。
-                        _rows_bak = project.get("test_rows") or []
-                        print(f"      证据来源：本次未跑套件，依据是 out/auto-inputs.json 缓存 "
-                              f"{len(_rows_bak)} 行 / 期望 {len(_want_suites)} 个套件"
-                              f"（套件名逐一匹配、status 全 None、计数与块内测试段逐行一致）；"
-                              f"要让严格档当场现跑，删掉该缓存文件即可")
                     return 0
-        # 现算（跑测试 + 读产物 + 只读 git）；`--no-test-runs` 只用于校验，写模式必须现跑测试
-        new, all_ok = build_block(run_test_suites=not a.no_test_runs)
-        # G1：这次到底"跑了套件没有"必须自己记住 —— `--no-test-runs` 不声称任何套件状态。
-        suites_ran = not a.no_test_runs
+        if a.strict_tests:
+            if manifest_rows is None:
+                full_rows, _ = run_tests(files=runner_test_files())
+                full_by_name = {str(row[0]): row for row in full_rows}
+                docs_row = full_by_name.get("test_docs_consistency")
+                if (docs_row is None or len(docs_row) < 4 or docs_row[3] is not None
+                        or int(docs_row[2]) != 0):
+                    status = "缺失" if docs_row is None else str(docs_row[3] or "非绿色退出")
+                    print(f"FAIL  严格校验的 test_docs_consistency 自检未通过：{status}")
+                    return 1
+                expected = {f.stem for f in test_files()}
+                if not expected.issubset(full_by_name):
+                    print("FAIL  严格实跑结果未覆盖全部 AUTO suites")
+                    return 1
+                rows = [full_by_name[f.stem] for f in test_files()]
+            else:
+                rows = manifest_rows
+            new, all_ok = build_block(run_test_suites=False, test_rows_in=rows)
+            suites_ran = True
+        else:
+            # 非严格检查可显式跳过 suites；默认的非严格 --check 仍走现算。
+            new, all_ok = build_block(run_test_suites=not a.no_test_runs)
+            suites_ran = not a.no_test_runs
         abnormal = abnormal_suites(_LAST_TEST_ROWS) if suites_ran else []
         new_body = "\n" + new
         # 第四十一批 O2：`--no-test-runs` 时把「测试」两行整段剔除后再比（不跑套件）。
@@ -1246,8 +1537,10 @@ def _main_impl(argv: list[str] | None = None) -> int:
             print(f"⚠️  宽松校验（缺 {'、'.join(missing)}）：测试计数与依赖稿件库的数字**不参与比对**；"
                   "本机要拿到严格校验，请让稿件库可发现（设 SLCN_MANUSCRIPTS 或把两仓并排放）")
         elif a.strict_tests:
-            print(f"严格测试校验（前提齐全）：本次实跑 {len(_LAST_TEST_ROWS or [])} 套件，"
-                  f"异常套件 {len(abnormal)} 个；测试计数行按实测逐字比对")
+            source = "full runner manifest" if manifest_rows is not None else "本次完整实跑"
+            print(f"严格测试校验（前提齐全）：证据={source}，"
+                  f"AUTO suites {len(_LAST_TEST_ROWS or [])} 个，异常 {len(abnormal)} 个；"
+                  "测试计数行按实测逐字比对")
         if old_cmp == new_cmp:
             if a.no_test_runs:
                 print("PASS  AUTO 块非测试行与现算结果一致（--no-test-runs：本次未跑套件，"

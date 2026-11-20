@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import math
 import os
 import re
 import shutil
@@ -151,14 +153,26 @@ try:
     (_eng / "tests").mkdir()
     shutil.copy(ENGINE / "tools" / "run_engine_tests.sh", _eng / "tools" / "run_engine_tests.sh")
     _suites = {
-        "test_ok": 'print("ok")\n',
-        "test_red": 'print("FAIL 故意红")\nraise SystemExit(1)\n',
+        "test_ok": (
+            'print("\\tPASS counted")\n'
+            'print("PASSAGE not counted")\n'
+            'print("prefix FAIL not counted")\n'
+            'print("FAILURE not counted")\n'),
+        "test_red": (
+            'print(" PASS reached")\n'
+            'print("  FAIL intended")\n'
+            'print("prefix PASS not counted")\n'
+            'print("FAILURE not counted")\n'
+            'raise SystemExit(1)\n'),
         # 只在并行档红：用来验证「并行红 → 串行复核绿 = 抖动，不计红」
         "test_flaky": (
             'import os\n'
             'p = os.environ.get("SLCN_TEST_PHASE", "")\n'
             'print("phase=%s" % p)\n'
-            'raise SystemExit(1 if p == "parallel" else 0)\n'),
+            'print(" PASS parallel" if p == "parallel" else " PASS serial-final")\n'
+            'if p == "parallel":\n'
+            '    print(" FAIL transient")\n'
+            '    raise SystemExit(1)\n'),
         # allowlist 套件：必须串行跑、且照常计数
         "test_shared_paths": (
             'import os\n'
@@ -175,16 +189,17 @@ try:
                            SLCN_TEST_SERIAL_ALLOWLIST="test_shared_paths"))
     out = r.stdout + r.stderr
     check("(b) 并行档退出码 = 复核后的红套数（1，不是并行红 2）",
-          r.returncode == 1, f"rc={r.returncode}")
+          r.returncode == 1, f"rc={r.returncode} {out[-800:]}")
     check("(b) 汇总行格式不变（`汇总：N 套件，红 R ｜ full 档耗时 S 秒`）",
           re.search(r"汇总：4 套件，红 1 ｜ full 档耗时 [\d.]+ 秒", out) is not None,
-          [ln for ln in out.splitlines() if ln.startswith("汇总")])
+          f"{[ln for ln in out.splitlines() if ln.startswith('汇总')]}\n{out[-800:]}")
     check("(b) 并行红/串行复核红/抖动分别报告",
           "并行红 2 套 → 串行复核红 1 套（抖动 1 套）" in out, out[-500:])
     check("(b) 四套都跑了、没有静默跳过（PASS/FAIL/⚠️ 各一行）",
           len(re.findall(r"^  (?:PASS|FAIL|⚠️) ", out, re.M)) == 4
           and "PASS test_ok" in out and "FAIL test_red" in out
-          and "⚠️ test_flaky" in out and "PASS test_shared_paths" in out)
+          and "⚠️ test_flaky" in out and "PASS test_shared_paths" in out,
+          out[-800:])
     _kept = re.search(r"完整日志：([^\s）]+)", out)
     _logs = native(_kept.group(1)) if _kept else None
     check("(b) 有红时保留日志目录并打印路径", _logs is not None and _logs.is_dir(), str(_logs))
@@ -212,6 +227,68 @@ try:
     check("(b) 非法 SLCN_TEST_JOBS=0 → 退出 2 且说明原因",
           r2.returncode == 2 and "SLCN_TEST_JOBS 只能是 ≥1 的整数" in (r2.stdout + r2.stderr),
           f"rc={r2.returncode}")
+
+    _manifest_path = _tmp / "full-result.json"
+    r_manifest = run(["bash", "tools/run_engine_tests.sh", "full"], cwd=str(_eng),
+                     env=_suite_env(SLCN_TEST_JOBS="2",
+                                    SLCN_TEST_SERIAL_ALLOWLIST="test_shared_paths",
+                                    SLCN_TEST_RESULT_MANIFEST=str(_manifest_path),
+                                    SLCN_TEST_INPUTS_SHA256="b" * 64))
+    try:
+        _manifest = json.loads(_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as _e:
+        _manifest = {}
+        _manifest_error = str(_e)
+    else:
+        _manifest_error = ""
+    _rows = _manifest.get("suites", [])
+    _by_suite = {row.get("name"): row for row in _rows if isinstance(row, dict)}
+    check("(b) manifest schema/full/identity 正确",
+          _manifest.get("schema") == 1 and _manifest.get("mode") == "full"
+          and _manifest.get("identity_sha256") == "b" * 64,
+          _manifest_error or str(_manifest))
+    check("(b) manifest 对当前 full suites 恰好覆盖一次",
+          len(_rows) == len(_suites)
+          and {row.get("name") for row in _rows if isinstance(row, dict)} == set(_suites)
+          and len(_by_suite) == len(_suites),
+          str([row.get("name") for row in _rows if isinstance(row, dict)]))
+    _ok_row = _by_suite.get("test_ok", {})
+    _red_row = _by_suite.get("test_red", {})
+    _flaky_row = _by_suite.get("test_flaky", {})
+    check("(b) manifest 使用锚定 PASS/FAIL 计数并忽略近似行",
+          (_ok_row.get("passes"), _ok_row.get("fails")) == (1, 0)
+          and (_red_row.get("passes"), _red_row.get("fails")) == (1, 1),
+          f"ok={_ok_row} red={_red_row}")
+    check("(b) manifest 记录退出码、状态和有限的非负耗时",
+          _ok_row.get("return_code") == 0 and _ok_row.get("status") is None
+          and _red_row.get("return_code") == 1 and _red_row.get("status") == "rc=1 FAIL 1"
+          and all(isinstance(row.get("duration_seconds"), (int, float))
+                  and math.isfinite(row["duration_seconds"])
+                  and row["duration_seconds"] >= 0 for row in _rows if isinstance(row, dict)),
+          f"ok={_ok_row} red={_red_row}")
+    check("(b) 并行红/串行绿的 manifest 采用最终串行结果",
+          _flaky_row.get("passes") == 1 and _flaky_row.get("fails") == 0
+          and _flaky_row.get("return_code") == 0 and _flaky_row.get("status") is None,
+          str(_flaky_row))
+    _manifest_kept = re.search(r"完整日志：([^\s）]+)", r_manifest.stdout + r_manifest.stderr)
+    if _manifest_kept:
+        shutil.rmtree(native(_manifest_kept.group(1)), ignore_errors=True)
+    _quick_match = re.search(r"^QUICK=\(([\s\S]*?)^\)",
+                             text_of(_eng / "tools" / "run_engine_tests.sh"), re.M)
+    _quick_names = (re.findall(r"^\s+(test_[A-Za-z0-9_]+)\s+#", _quick_match.group(1), re.M)
+                    if _quick_match else [])
+    for _name in _quick_names:
+        (_eng / "tests" / f"{_name}.py").write_text('print(" PASS quick fixture")\n',
+                                                      encoding="utf-8")
+    _quick_manifest = _tmp / "quick-result.json"
+    r_quick_manifest = run(["bash", "tools/run_engine_tests.sh", "quick"], cwd=str(_eng),
+                           env=_suite_env(SLCN_TEST_RESULT_MANIFEST=str(_quick_manifest)))
+    check("(b) quick manifest 请求会警告但不写清单",
+          bool(_quick_names) and r_quick_manifest.returncode == 0
+          and "仅支持 full 档" in (r_quick_manifest.stdout + r_quick_manifest.stderr)
+          and not _quick_manifest.exists(),
+          f"quick suites={len(_quick_names)} rc={r_quick_manifest.returncode} "
+          f"output={(r_quick_manifest.stdout + r_quick_manifest.stderr)[-300:]}")
 finally:
     shutil.rmtree(_tmp, ignore_errors=True)
 
